@@ -728,20 +728,12 @@ func TestW1FImagePreflightFinalForbiddenArms(t *testing.T) {
 // chain_preflight.go：speed-first 准入门辅助
 // ---------------------------------------------------------------------------
 
-// w1fHybridRuntime 构造 hybrid_smart 运行态：运行时不解码 normalRoutingConfig，
-// NormalRoutingConfig 恒 nil（准入门依赖该解码契约排除 hybrid_smart）。
-func w1fHybridRuntime(mode *string) *gatewayruntimecache.GatewayRuntime {
-	runtime := speedFirstRuntime(mode, nil, nil, nil, 1)
-	runtime.APIKey.NormalRoutingConfig = nil
-	return runtime
-}
-
 func TestW1FSpeedFirstAdmissionGuards(t *testing.T) {
 	personal := "personal"
 	weightedMode := "weighted"
 	failoverMode := "failover"
 	roundRobinMode := "round_robin"
-	hybridMode := "hybrid_smart"
+	mergeMode := "merge"
 	costFirst := "cost_first"
 
 	t.Run("applicability 守卫", func(t *testing.T) {
@@ -755,7 +747,7 @@ func TestW1FSpeedFirstAdmissionGuards(t *testing.T) {
 			{"weighted 模式适用", speedFirstRuntime(&weightedMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
 			{"failover 模式适用", speedFirstRuntime(&failoverMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
 			{"round_robin 模式适用", speedFirstRuntime(&roundRobinMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
-			{"hybrid_smart 不适用", w1fHybridRuntime(&hybridMode), gatewayproto.LaneText, false},
+			{"merge 模式适用", speedFirstRuntime(&mergeMode, nil, nil, nil, 1), gatewayproto.LaneText, true},
 			{"非 speed_first 偏好", speedFirstRuntime(nil, &costFirst, nil, nil, 1), gatewayproto.LaneText, false},
 			{"非 high_concurrency 分组", speedFirstRuntime(nil, nil, &personal, nil, 1), gatewayproto.LaneText, false},
 			{"无账户", speedFirstRuntime(nil, nil, nil, nil, 0), gatewayproto.LaneText, false},

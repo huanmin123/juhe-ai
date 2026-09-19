@@ -8,7 +8,6 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -87,20 +86,39 @@ func TestEnsureGatewaySQLiteStoragePreflight(t *testing.T) {
 	assertPreflightTables(t, filepath.Join(root, "shards", "state-001.sqlite3"))
 }
 
-func TestEnsureGatewaySQLiteStoragePreflightMissingPaths(t *testing.T) {
-	cfg, root := gatewayPreflightTestConfig(t)
-	cfg.ChatDatabasePath = ""
-	businessDB, err := bootstrap.OpenSQLiteFile(filepath.Join(root, "business.sqlite3"))
+// TestZeroConfigStoragePreflightWithDerivedPaths 取代原 MissingPaths 用例
+// （2026-09-19 起路径未配置按 datadir 固定名表派生，preflight 不再缺路径
+// fail-fast）：空 env（DATA_DIR 指向临时目录）派生出的六库路径直接通过
+// ensure+seed preflight，且幂等、文件落位正确。
+func TestZeroConfigStoragePreflightWithDerivedPaths(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{"JUHE_AI_DATA_DIR": root}))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("空 env loadRuntimeConfig: %v", err)
+	}
+	businessDB, err := bootstrap.OpenSQLiteFile(cfg.DatabasePath)
+	if err != nil {
+		t.Fatalf("open business db: %v", err)
 	}
 	defer businessDB.Close()
-	err = ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, businessDB)
-	if err == nil {
-		t.Fatal("preflight with missing chat path should fail")
+	if err := ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, businessDB); err != nil {
+		t.Fatalf("first preflight: %v", err)
 	}
-	if got := err.Error(); !strings.Contains(got, "JUHE_AI_CHAT_DATABASE_PATH") {
-		t.Fatalf("missing path error = %q", got)
+	if err := ensureGatewaySQLiteStoragePreflight(context.Background(), cfg, businessDB); err != nil {
+		t.Fatalf("second preflight (idempotency): %v", err)
+	}
+	assertPreflightTables(t, filepath.Join(root, "stats.sqlite3"))
+	assertPreflightTables(t, filepath.Join(root, "chat.sqlite3"))
+	assertPreflightTables(t, filepath.Join(root, "dataset.sqlite3"))
+	assertPreflightTables(t, filepath.Join(root, "usage-catalog.sqlite3"))
+	assertPreflightTables(t, filepath.Join(root, "codex-context", "state-shards", "state-000.sqlite3"))
+	assertPreflightTables(t, filepath.Join(root, "codex-context", "state-shards", "state-015.sqlite3"))
+	var adminRows int
+	if err := businessDB.QueryRow("SELECT count(*) FROM system_accounts WHERE id = 'sys_admin' AND username = 'admin' AND role = 'super_admin'").Scan(&adminRows); err != nil {
+		t.Fatalf("query seeded admin: %v", err)
+	}
+	if adminRows != 1 {
+		t.Fatalf("admin rows = %d, want 1", adminRows)
 	}
 }
 

@@ -299,13 +299,6 @@ func changedSet(t *testing.T, payload map[string]any) map[string]bool {
 	return changed
 }
 
-// hybridConfigBody builds a contiguous 1-10 coverage config with two tiers.
-func hybridConfigBody(firstMax int, secondModel string) string {
-	return `{"scoringModel":"score-model-a","levelRoutes":[` +
-		`{"minLevel":1,"maxLevel":` + fmt.Sprint(firstMax) + `,"targetModel":"model-low"},` +
-		`{"minLevel":` + fmt.Sprint(firstMax+1) + `,"maxLevel":10,"targetModel":"` + secondModel + `"}]}`
-}
-
 func TestRouteStrategyAdminLifecycle(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -524,34 +517,6 @@ func TestRouteStrategyModeConfigValidation(t *testing.T) {
 		t.Fatalf("normal two bindings: %d %v", code, payload)
 	}
 
-	// normal + hybridRoutingConfig → 普通路由不能配置混合评分规则.
-	code, payload = env.createStrategy(t, path,
-		`{"name":"nh","hybridRoutingConfig":`+hybridConfigBody(5, "model-high")+`,"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || payload["message"] != "普通路由不能配置混合评分规则" {
-		t.Fatalf("normal hybrid config: %d %v", code, payload)
-	}
-
-	// weighted + hybridRoutingConfig → 只有混合智能路由可以配置混合评分规则.
-	code, payload = env.createStrategy(t, path,
-		`{"name":"wh","mode":"weighted","hybridRoutingConfig":`+hybridConfigBody(5, "model-high")+`,"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || payload["message"] != "只有混合智能路由可以配置混合评分规则" {
-		t.Fatalf("weighted hybrid config: %d %v", code, payload)
-	}
-
-	// hybrid_smart + normalRoutingConfig → 混合智能路由不支持调度偏好.
-	code, payload = env.createStrategy(t, path,
-		`{"name":"hn","mode":"hybrid_smart","normalRoutingConfig":{"schedulingPreference":"speed_first"},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || payload["message"] != "混合智能路由不支持调度偏好" {
-		t.Fatalf("hybrid normal config: %d %v", code, payload)
-	}
-
-	// hybrid_smart without config → 混合路由配置不能为空.
-	code, payload = env.createStrategy(t, path,
-		`{"name":"hc","mode":"hybrid_smart","groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || payload["message"] != "混合路由配置不能为空" {
-		t.Fatalf("hybrid missing config: %d %v", code, payload)
-	}
-
 	// speed_first normal config ok; deadline range enforced.
 	code, speedPayload := env.createStrategy(t, path,
 		`{"name":"sf","normalRoutingConfig":{"schedulingPreference":"speed_first","firstByteDeadlineMs":20000,"speedFirstConfig":{"slowTriggerCount":5}},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
@@ -619,42 +584,6 @@ func TestRouteStrategyModeConfigValidation(t *testing.T) {
 	code, payload = env.createStrategy(t, path, `{"name":"nb","groupBindings":[]}`)
 	if code != http.StatusBadRequest || payload["message"] != "策略路由至少需要绑定一个分组" {
 		t.Fatalf("empty bindings: %d %v", code, payload)
-	}
-
-	// hybrid_smart full normalization: defaults materialized (verified via
-	// the detail endpoint — the create response is the list-item projection
-	// without hybridRoutingConfig, matching createdRouteStrategyListItem).
-	code, hybridPayload := env.createStrategy(t, path,
-		`{"name":"hy","mode":"hybrid_smart","hybridRoutingConfig":`+hybridConfigBody(5, "model-high")+`,"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusCreated {
-		t.Fatalf("hybrid create: %d %v", code, hybridPayload)
-	}
-	hybridID := dataMap(t, hybridPayload)["id"].(string)
-	code, hybridDetail := env.do(t, http.MethodGet, path+"/"+hybridID, "")
-	if code != 200 {
-		t.Fatalf("hybrid detail: %d %v", code, hybridDetail)
-	}
-	hybridConfig := dataMap(t, hybridDetail)["hybridRoutingConfig"].(map[string]any)
-	if hybridConfig["scoringCacheEnabled"] != true || hybridConfig["scoringTimeoutMs"] != float64(15000) {
-		t.Fatalf("hybrid defaults: %v", hybridConfig)
-	}
-	inspection := hybridConfig["qualityInspection"].(map[string]any)
-	if inspection["enabled"] != true || inspection["scoringModel"] != "score-model-a" || inspection["maxTriggerLevel"] != float64(6) {
-		t.Fatalf("quality inspection defaults: %v", inspection)
-	}
-	levelRoutes := hybridConfig["levelRoutes"].([]any)
-	if len(levelRoutes) != 2 {
-		t.Fatalf("levelRoutes: %v", levelRoutes)
-	}
-
-	// hybrid coverage violations.
-	code, payload = env.createStrategy(t, path, `{"name":"hy2","mode":"hybrid_smart","hybridRoutingConfig":{"scoringModel":"m","levelRoutes":[{"minLevel":1,"maxLevel":5,"targetModel":"a"},{"minLevel":6,"maxLevel":9,"targetModel":"b"}]},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || payload["message"] != "混合路由等级范围必须按从小到大连续覆盖 1-10" {
-		t.Fatalf("coverage: %d %v", code, payload)
-	}
-	code, payload = env.createStrategy(t, path, `{"name":"hy3","mode":"hybrid_smart","hybridRoutingConfig":{"scoringModel":"m","levelRoutes":[{"minLevel":1,"maxLevel":5,"targetModel":"a"},{"minLevel":6,"maxLevel":10,"targetModel":"a"}]},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || payload["message"] != "混合路由至少需要配置 2 个不同的目标模型" {
-		t.Fatalf("distinct models: %d %v", code, payload)
 	}
 
 	// Binding boundary: disabled group cannot be activated; foreign groups

@@ -187,7 +187,7 @@ import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 
 type ResultFilter = 'all' | 'success' | 'failed'
-type TrafficSourceFilter = 'all' | 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+type TrafficSourceFilter = 'all' | 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest'
 type FilterOption<T extends string> = {
   label: string
   value: T

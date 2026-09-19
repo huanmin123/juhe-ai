@@ -335,10 +335,8 @@ func (g *chainSpeedFirstBodyAdmissionGate) AdmitBody(
 
 // chainSpeedFirstBodyAdmissionApplies mirrors the applicability guard:
 // speed_first key on a high_concurrency group with hydrated accounts, off the
-// image lane. The normalRoutingConfig key is shared by the four scheduling
-// modes (normal/weighted/failover/round_robin; historical naming) and the
-// runtime cache only decodes it off non-hybrid rows, so the nil/preference
-// check below already excludes hybrid_smart keys.
+// image lane. The normalRoutingConfig key is shared by the five scheduling
+// modes (normal/weighted/failover/round_robin/merge; historical naming).
 func chainSpeedFirstBodyAdmissionApplies(runtime *gatewayruntimecache.GatewayRuntime, requestLane gatewayproto.RequestLane) bool {
 	if runtime == nil || runtime.APIKey == nil || runtime.GroupAccess == nil {
 		return false

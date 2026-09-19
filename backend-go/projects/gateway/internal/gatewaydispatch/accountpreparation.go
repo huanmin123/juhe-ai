@@ -360,7 +360,7 @@ func accountApiKeySelectionCredentials(account AccountCandidate) map[string]any 
 // 判据，对齐 accounts/patch_runtime_state.go isAccountAPIKeyPoolIsolationEnabled
 // 与 cmd/juhe-ai-gateway/chain_accounts_secret.go
 // chainAccountAPIKeyPoolIsolationEnabled（后两处本波不改；cmd 版额外放行
-// xai/hybrid，偏差披露见该文件）。三处为同源副本，未抽公共函数的原因：
+// xai 与混合供应商码，偏差披露见该文件）。三处为同源副本，未抽公共函数的原因：
 // 允许修改面仅 gatewaydispatch（accounts/cmd/shared 均在本波边界外）。
 func isAccountApiKeyPoolIsolationEnabled(account AccountCandidate, entries []apiKeyEntry) bool {
 	if account.Type != "api_key" {

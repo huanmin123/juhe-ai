@@ -65,12 +65,18 @@ type routePlanInput struct {
 	apiKeyRecord               *gatewayruntimecache.GatewayAPIKeyRow
 	gatewayRequestWallBudget   *gatewayrouting.GatewayRequestWallBudget
 	normalRouteFirstByteConfig *NormalRouteFirstByteRuntimeConfig
-	hybridRoute                *HybridRuntimeRoute
 }
 
 // createOpenAIGatewayRoutePlanSnapshot mirrors createOpenAIGatewayRoutePlanSnapshot.
 func (s *Service) createOpenAIGatewayRoutePlanSnapshot(input routePlanInput) (gatewayrouting.RoutePlanSnapshot[string], error) {
 	orderedAllowedTargets := uniqueActiveRouteGroupIds(input.apiKeyRecord)
+	// B18（合并路由设计 3.4）：merge 池已包含全部分组的账号，不存在分组回
+	// 退——快照截断为单目标 [窗口组]，cursor=0。单目标下
+	// canAttemptAPIKeyGroupFallback 的 `cursor < len-1` 恒假，回退链路自然
+	// 短路，无需为其新增 merge 分支。
+	if input.apiKeyRecord != nil && input.apiKeyRecord.RouteStrategyMode == gatewayruntimecache.RouteStrategyModeMerge {
+		orderedAllowedTargets = []string{input.groupId}
+	}
 	if !containsString(orderedAllowedTargets, input.groupId) {
 		orderedAllowedTargets = append([]string{input.groupId}, orderedAllowedTargets...)
 	}
@@ -79,21 +85,11 @@ func (s *Service) createOpenAIGatewayRoutePlanSnapshot(input routePlanInput) (ga
 		cursor = 0
 	}
 	var weightedDecisionToken string
-	var hybridScoreDecision any
 	if input.apiKeyRecord != nil && input.apiKeyRecord.RouteStrategyMode == gatewayruntimecache.RouteStrategyModeWeighted {
 		if binding, ok := bindingForGroup(*input.apiKeyRecord, input.groupId); ok {
 			weightedDecisionToken = binding.ID
 		} else {
 			weightedDecisionToken = input.groupId
-		}
-	}
-	if input.hybridRoute != nil {
-		hybridScoreDecision = map[string]any{
-			"level":            hybridRouteField(input.hybridRoute.Scoring, "level"),
-			"targetModel":      input.hybridRoute.TargetModel,
-			"minLevel":         hybridRouteField(input.hybridRoute.Route, "minLevel"),
-			"maxLevel":         hybridRouteField(input.hybridRoute.Route, "maxLevel"),
-			"scoringDefaulted": hybridRouteBool(input.hybridRoute.Scoring, "defaulted"),
 		}
 	}
 	var wallBudgetMs *int64
@@ -122,22 +118,7 @@ func (s *Service) createOpenAIGatewayRoutePlanSnapshot(input routePlanInput) (ga
 		OrderedAllowedTargets:        orderedAllowedTargets,
 		Cursor:                       &cursor,
 		WeightedDecisionToken:        weightedDecisionToken,
-		HybridScoreDecision:          hybridScoreDecision,
 	})
-}
-
-func hybridRouteField(source map[string]any, key string) any {
-	if source == nil {
-		return nil
-	}
-	return source[key]
-}
-
-func hybridRouteBool(source map[string]any, key string) bool {
-	if value, ok := hybridRouteField(source, key).(bool); ok {
-		return value
-	}
-	return false
 }
 
 func bindingForGroup(apiKey gatewayruntimecache.GatewayAPIKeyRow, groupID string) (gatewayruntimecache.GatewayAPIKeyGroupBindingRow, bool) {
@@ -168,6 +149,58 @@ func canAttemptAPIKeyGroupFallback(apiKeyRecord *gatewayruntimecache.GatewayAPIK
 	return currentIndex >= 0 && currentIndex < len(bindings)-1
 }
 
+// isMergeRouteStrategy reports whether the record is bound to a merge mode
+// strategy（合并路由设计：mode 识别统一走
+// gatewayruntimecache.RouteStrategyModeMerge）。
+func isMergeRouteStrategy(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) bool {
+	return apiKeyRecord != nil && apiKeyRecord.RouteStrategyMode == gatewayruntimecache.RouteStrategyModeMerge
+}
+
+// mergeFanoutCandidateAccounts 按绑定优先级逐组列出并扇出合并 merge 扁平池
+// （合并路由设计 3.4“候选重解析扇出”防池收窄）：跨组重复账号按绑定优先级去
+// 重（首次出现组胜出，3.1 第 5 条）；重建后全量重新组标 BoundGroupID=所在组
+// ——listing 只对 account_authorized 账号赋值（chain_accounts_secret.go），
+// owner / group_authorized 账号恒 nil，必须显式覆盖写（3.1 第 4 条）。list
+// 为单组列出闭包，保持 Cached/Fresh/Recoverable 各自的模型过滤与运行态语义。
+func mergeFanoutCandidateAccounts(groupIDs []string, list func(groupID string) ([]gatewayruntimecache.OpenAIAccountSecret, error)) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+	pool := make([]gatewayruntimecache.OpenAIAccountSecret, 0)
+	seen := map[string]bool{}
+	for _, groupID := range groupIDs {
+		accounts, err := list(groupID)
+		if err != nil {
+			return nil, err
+		}
+		for _, account := range accounts {
+			if seen[account.ID] {
+				continue
+			}
+			seen[account.ID] = true
+			boundGroupID := groupID
+			account.BoundGroupID = &boundGroupID
+			pool = append(pool, account)
+		}
+	}
+	return pool, nil
+}
+
+// listMergeOrSingleAccounts 统一单组 / merge 扇出读取：mergeGroupIDs 非空时
+// 扇出合并（去重 + 组标），否则按单组读取（不组标，保持存量语义）。
+func listMergeOrSingleAccounts(mergeGroupIDs []string, fallbackGroupID string, list func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error)) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+	if len(mergeGroupIDs) == 0 {
+		return list(fallbackGroupID)
+	}
+	return mergeFanoutCandidateAccounts(mergeGroupIDs, list)
+}
+
+// listMergeAffinityCandidatePool 构造 B20 亲和过滤用的 merge 合并池：按绑定
+// 优先级逐组 ListCached（不按请求模型预过滤，与单组亲和路径的空 options 列
+// 出语义一致）+ 组标 + 去重。
+func (s *Service) listMergeAffinityCandidatePool(ctx context.Context, apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, systemAccountID string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+	return mergeFanoutCandidateAccounts(uniqueActiveRouteGroupIds(apiKeyRecord), func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+		return s.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(ctx, group, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{})
+	})
+}
+
 // normalRouteFirstByteConfigForAPIKey mirrors normalRouteFirstByteConfigForApiKey
 // with the lane applicability gate.
 func (s *Service) normalRouteFirstByteConfigForAPIKey(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, lane gatewayProtoLane, compactionTimeoutsDisabled bool, override *NormalRouteFirstByteRuntimeConfig) *NormalRouteFirstByteRuntimeConfig {
@@ -188,8 +221,6 @@ func (s *Service) normalRouteFirstByteConfigForAPIKey(apiKeyRecord *gatewayrunti
 }
 
 // normalRouteSpeedFirstConfigForAPIKey mirrors normalRouteSpeedFirstConfigForApiKey.
-// 不再按模式硬门控：运行时 NormalRoutingConfig 只在非 hybrid 模式被解码
-// （hybrid 行恒 nil），下方 nil/偏好判断已兜底排除 hybrid_smart。
 func (s *Service) normalRouteSpeedFirstConfigForAPIKey(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, lane gatewayProtoLane, compactionTimeoutsDisabled bool) *NormalRouteSpeedFirstRuntimeConfig {
 	if compactionTimeoutsDisabled || !gatewayrouting.NormalRouteSpeedFirstAppliesToLane(lane) {
 		return nil
@@ -236,8 +267,7 @@ func (s *Service) normalRouteSpeedFirstConfigForAPIKey(apiKeyRecord *gatewayrunt
 }
 
 // normalRouteFirstByteConfigForAPIKeyRecord mirrors the Node helper without
-// the lane gate. 不再按模式硬门控：hybrid 行的 NormalRoutingConfig 运行时恒
-// nil，下方 cost_first 缺省分支已兜底返回 nil。
+// the lane gate.
 func normalRouteFirstByteConfigForAPIKeyRecord(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) *NormalRouteFirstByteRuntimeConfig {
 	if apiKeyRecord == nil {
 		return nil
@@ -519,11 +549,15 @@ func projectRuntimeAccount(account gatewayruntimecache.OpenAIAccountSecret) *gat
 // ---------------------------------------------------------------------------
 
 type recoveryInput struct {
-	req                      *GatewayRequest
-	auditCapture             AuditCaptureContext
-	systemAccountID          string
-	apiKeyID                 string
-	groupID                  string
+	req             *GatewayRequest
+	auditCapture    AuditCaptureContext
+	systemAccountID string
+	apiKeyID        string
+	groupID         string
+	// mergeGroupIDs（合并路由设计 3.4）：merge 上下文下按绑定优先级的启用
+	// 分组集合；非空时 active/recoverable 读取按其扇出重建扁平池，等待
+	// scopeKey 仍取 input.groupID（窗口组）。空保持单组读取。
+	mergeGroupIDs            []string
 	startedAt                int64
 	serverRetryBudget        *ServerRetryBudget
 	routeCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
@@ -537,15 +571,19 @@ func (s *Service) waitForRecoverableOpenAIGatewayCandidateAccounts(input recover
 	requestedModel, _ := RequestModel(input.req)
 	requestedEndpointFamily := gatewayRequestEndpointFamily(input.req)
 	loadActiveAccounts := func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-		return s.RuntimeCache.ListFreshOpenAIAccountsForGroupAsync(s.requestContext(), input.groupID, input.systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
-			RequestedModel: requestedModel, RequestedEndpointFamily: requestedEndpointFamily,
+		return listMergeOrSingleAccounts(input.mergeGroupIDs, input.groupID, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+			return s.RuntimeCache.ListFreshOpenAIAccountsForGroupAsync(s.requestContext(), group, input.systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
+				RequestedModel: requestedModel, RequestedEndpointFamily: requestedEndpointFamily,
+			})
 		})
 	}
 	windowMs := input.serverRetryBudget.RemainingMs(nil)
 	loadRecoverableAccounts := func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-		return s.RuntimeCache.ListRecoverableUnavailableOpenAIAccountsForGroupAsync(s.requestContext(), input.groupID, input.systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
-			RequestedModel: requestedModel, RequestedEndpointFamily: requestedEndpointFamily,
-		}, &windowMs)
+		return listMergeOrSingleAccounts(input.mergeGroupIDs, input.groupID, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+			return s.RuntimeCache.ListRecoverableUnavailableOpenAIAccountsForGroupAsync(s.requestContext(), group, input.systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
+				RequestedModel: requestedModel, RequestedEndpointFamily: requestedEndpointFamily,
+			}, &windowMs)
+		})
 	}
 	activeAccounts, err := loadActiveAccounts()
 	if err != nil {

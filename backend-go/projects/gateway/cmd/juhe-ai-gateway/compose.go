@@ -297,14 +297,23 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		composed.db = db
 		composed.ownDB = true
 	}
+	// SQLite 失败路径需要先关闭已持有的业务句柄：Windows 文件锁会让泄漏的
+	// business.sqlite3 句柄阻塞测试 TempDir 清理（X05 时代缺失分支的句柄
+	// 泄漏由注释约定规避；2026-09-19 起 stats 等守卫不再经由会关闭句柄的
+	// preflight，统一在此收口）。
+	closeOwnedBusiness := func() {
+		if composed.ownDB && composed.db != nil {
+			_ = composed.db.Close()
+		}
+	}
 
 	// ipstats data source (Node getStatsDatabase() split): the client_ip_*
 	// tables live only in the stats database — PostgreSQL reaches juhe_stats
 	// through schema qualification on the shared business pool, SQLite needs
-	// its own handle over the dedicated stats file. The stats path is
-	// required in SQLite mode like every other Go stats consumer (auditlog F3
-	// isolation validation, jobs tablemonitor/statsverify); there is no
-	// CWD-relative default.
+	// its own handle over the dedicated stats file. The stats path derives
+	// from JUHE_AI_DATA_DIR in loadRuntimeConfig since 2026-09-19 (explicit
+	// env still wins); compose keeps the empty-path guard below for directly
+	// constructed configs.
 	//
 	// X05 six-database startup preflight (BUG-0167/0168): SQLite mode runs the
 	// Node db-service open path (database.ts getBusinessDatabase ->
@@ -324,15 +333,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		composed.statsDB = composed.db
 	} else {
 		if cfg.StatsDatabasePath == "" {
+			closeOwnedBusiness()
 			return nil, errors.New("sqlite 模式缺少 JUHE_AI_STATS_DATABASE_PATH，无法打开 ip-stats stats 数据库")
 		}
 		statsDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.StatsDatabasePath))
 		if err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("open stats sqlite database: %w", err)
 		}
 		statsDB.SetMaxOpenConns(1)
 		if err := configureSQLiteConnection(statsDB); err != nil {
 			_ = statsDB.Close()
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("configure stats sqlite database: %w", err)
 		}
 		composed.statsDB = statsDB
@@ -348,15 +360,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		usageCatalogDB = composed.db
 	} else {
 		if cfg.UsageCatalogDatabasePath == "" {
+			closeOwnedBusiness()
 			return nil, errors.New("sqlite 模式缺少 JUHE_AI_USAGE_CATALOG_DATABASE_PATH，无法打开 usage-records 目录数据库")
 		}
 		catalog, err := sql.Open("sqlite", sqliteFileDSN(cfg.UsageCatalogDatabasePath))
 		if err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("open usage catalog sqlite database: %w", err)
 		}
 		catalog.SetMaxOpenConns(1)
 		if err := configureSQLiteConnection(catalog); err != nil {
 			_ = catalog.Close()
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("configure usage catalog sqlite database: %w", err)
 		}
 		usageCatalogDB = catalog
@@ -367,15 +382,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		tableMonitorDB = composed.db
 	} else {
 		if cfg.TableMonitorDatabasePath == "" {
+			closeOwnedBusiness()
 			return nil, errors.New("sqlite 模式缺少 JUHE_AI_TABLE_MONITOR_DATABASE_PATH，无法打开表监控快照数据库")
 		}
 		monitorDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.TableMonitorDatabasePath))
 		if err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("open table monitor sqlite database: %w", err)
 		}
 		monitorDB.SetMaxOpenConns(1)
 		if err := configureSQLiteConnection(monitorDB); err != nil {
 			_ = monitorDB.Close()
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("configure table monitor sqlite database: %w", err)
 		}
 		tableMonitorDB = monitorDB
@@ -402,13 +420,16 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 	} else {
 		if auditConfig.AuditDatabasePath == "" {
+			closeOwnedBusiness()
 			return nil, errors.New("sqlite 模式缺少 JUHE_AI_AUDIT_LOG_DATABASE_PATH，无法打开审计日志读面数据库")
 		}
 		if _, err := os.Stat(auditConfig.AuditDatabasePath); err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("audit 数据集文件不存在（F3 input server 应已初始化）: %w", err)
 		}
 		handle, err := openSQLiteReadOnly(auditConfig.AuditDatabasePath)
 		if err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("open audit dataset sqlite database: %w", err)
 		}
 		auditDatasetDB = handle
@@ -423,10 +444,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		runtimeLogDatasetDB = composed.db
 	} else {
 		if cfg.RuntimeLogDatabasePath == "" {
+			closeOwnedBusiness()
 			return nil, errors.New("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH，无法打开运行日志读面数据库")
 		}
 		handle, err := openSQLiteReadOnly(cfg.RuntimeLogDatabasePath)
 		if err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("open runtime-log dataset sqlite database: %w", err)
 		}
 		runtimeLogDatasetDB = handle
@@ -437,13 +460,16 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		publicApiLogDatasetDB = composed.db
 	} else {
 		if cfg.DatasetDatabasePath == "" {
+			closeOwnedBusiness()
 			return nil, errors.New("sqlite 模式缺少 JUHE_AI_DATASET_DATABASE_PATH，无法打开公开接口日志读面数据库")
 		}
 		if _, err := os.Stat(cfg.DatasetDatabasePath); err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("dataset 数据集文件不存在（启动 preflight 应已创建）: %w", err)
 		}
 		handle, err := openSQLiteReadOnly(cfg.DatasetDatabasePath)
 		if err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("open public-api-log dataset sqlite database: %w", err)
 		}
 		publicApiLogDatasetDB = handle
@@ -592,15 +618,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	apiKeyStore.SetCleanupSubmitter(apiKeyCleanupSubmitter{store: apiKeyStore})
 	if !composed.pgDialect {
 		if cfg.DatasetDatabasePath == "" {
+			closeOwnedBusiness()
 			return nil, errors.New("sqlite 模式缺少 JUHE_AI_DATASET_DATABASE_PATH，无法登记 API Key 删除清理目标")
 		}
 		apiKeyDatasetDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.DatasetDatabasePath))
 		if err != nil {
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("open api-key cleanup dataset sqlite database: %w", err)
 		}
 		apiKeyDatasetDB.SetMaxOpenConns(1)
 		if err := configureSQLiteConnection(apiKeyDatasetDB); err != nil {
 			_ = apiKeyDatasetDB.Close()
+			closeOwnedBusiness()
 			return nil, fmt.Errorf("configure api-key cleanup dataset sqlite database: %w", err)
 		}
 		apiKeyStore.SetDatasetDB(apiKeyDatasetDB)
@@ -840,7 +869,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// same authsys producer sink as the other management families (the Deps
 	// port existed without its composition wiring until this wave's assembly
 	// handover).
-	(&providers.Deps{Store: providerStore, Auth: authDeps, Sink: sink}).Mount(kern)
+	// 模型 CRUD 提交后的目录缓存失效（custom_provider_model_saved 等）通过 K5 bus
+	// 发布；*inval.Bus 的 Invalidate(topic, reason) 结构性满足 providers.RuntimeInvalidator，
+	// 无需适配器（对照下方 delegated 的 apikeys.BusInvalidator 接法）。
+	(&providers.Deps{Store: providerStore, Auth: authDeps, Sink: sink, Inval: bus}).Mount(kern)
 	(&oauthmgmt.Deps{Store: oauthStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&policyreads.InspectionDeps{Store: inspectionStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&policyreads.ExternalDeps{Store: externalStore, Auth: authDeps, Sink: sink}).Mount(kern)
@@ -1004,10 +1036,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			spoolDirectory = filepath.Join(filepath.Dir(cfg.StatsDatabasePath), "usage-record-spool")
 		}
 		// BUG-0175 D-72：spool 是 /v1 用量记录唯一持久投递面（gateway 写入、
-		// jobs usage spool drain 消费）。派生规则只覆盖配置了
-		// JUHE_AI_STATS_DATABASE_PATH 的模式（SQLite 必配、PostgreSQL 可缺），
-		// 目录最终为空时记录只会被静默丢弃，用量链断供且无任何信号——按组合根
-		// 约定启动即失败并具名缺失项，不允许 nil 投递面继续运行。
+		// jobs usage spool drain 消费）。2026-09-19 起 loadRuntimeConfig 把
+		// JUHE_AI_STATS_DATABASE_PATH 派生到 JUHE_AI_DATA_DIR（缺省 ./data）
+		// 下，未配置 spool 的 standalone 部署默认落 <DATA_DIR>/usage-record-
+		// spool；显式 JUHE_AI_USAGE_SPOOL_DIRECTORY 仍优先。此分支只剩直接
+		// 构造 runtimeConfig 且 stats/spool 均为空的护栏（env 路径不可达）。
 		if spoolDirectory == "" {
 			return nil, fmt.Errorf("AI 网关链缺少用量 spool 目录（gateway→jobs 用量交接表，用量记录将无处投递）：设置 JUHE_AI_USAGE_SPOOL_DIRECTORY，或配置 JUHE_AI_STATS_DATABASE_PATH 以派生 <目录>/usage-record-spool")
 		}
@@ -1103,15 +1136,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			Avoidance:                    chainServices.Avoidance,
 			Affinity:                     chainServices.Affinity,
 			Recoverable:                  chainServices.Recoverable,
-			// G20 phase-3: hybrid Redis collaborators + the G14 session
-			// identity services (both degrade by driver axes, never nil).
-			HybridScoringCache: chainServices.HybridScoringCache,
-			HybridRuntimeState: chainServices.HybridRuntimeState,
-			Identity:           chainServices.Identity,
-			// T2 终局遗留①: the auxiliary dispatch loop replays in-process over
-			// the routing runtime cache + shared provider driver + engine
-			// transport (Node dispatchHybridAuxiliaryChatCompletion).
-			HybridAuxiliary: newChainHybridAuxiliaryDispatcher(chainServices.Cache),
+			// G14 session identity services (degrade by driver axes, never nil).
+			Identity: chainServices.Identity,
 			// 显式账户错误策略：failureKind / 换 Key 授权 / cooldown-disable
 			// 状态变更 / system quota 归因（Node decideAccountErrorPolicy 接线）。
 			AccountErrorPolicy:        errorPolicyService,
@@ -1277,8 +1303,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 	}))
 
-	// GET /__aisys__/health: liveness contract consumed by the K8s hybrid-era
-	// probe docs and the watchdog guide. Same aggregated owner readiness as
+	// GET /__aisys__/health: liveness contract consumed by the K8s probe
+	// docs and the watchdog guide. Same aggregated owner readiness as
 	// the loopback /health listener (shared gatewayOwnerHealth): 503 when any
 	// enabled owner component is not running. The IP/authenticated rate
 	// limiters bypass it (ratelimit mirror) and the SPA catch-all must not

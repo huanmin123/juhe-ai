@@ -109,30 +109,19 @@ func TestW11GConfigNormalizeArms(t *testing.T) {
 	if err != nil || config.FirstByteDeadlineMs == nil || *config.FirstByteDeadlineMs != 20000 {
 		t.Fatalf("speed config=%+v err=%v", config, err)
 	}
-	// 等级范围：min>max 与非对象。
-	if _, err := normalizeHybridRoutingConfig(map[string]any{
-		"scoringModel": "m", "levelRoutes": []any{map[string]any{"minLevel": 5, "maxLevel": 2, "targetModel": "t"}},
-	}); err == nil {
-		t.Fatal("inverted level range must fail")
-	}
-	if _, err := normalizeHybridRoutingConfig(map[string]any{
-		"scoringModel": "m", "levelRoutes": []any{"bad"},
-	}); err == nil {
-		t.Fatal("non-object level route must fail")
-	}
 	// parseStoredConfig：空/无效/合法 normal。
-	if normal, hybrid, err := parseStoredConfig(sql.NullString{}); err != nil || normal != nil || hybrid != nil {
-		t.Fatalf("empty stored config=%v/%v err=%v", normal, hybrid, err)
+	if normal, err := parseStoredConfig(sql.NullString{}); err != nil || normal != nil {
+		t.Fatalf("empty stored config=%v err=%v", normal, err)
 	}
-	if _, _, err := parseStoredConfig(sql.NullString{String: "not-json", Valid: true}); err == nil {
+	if _, err := parseStoredConfig(sql.NullString{String: "not-json", Valid: true}); err == nil {
 		t.Fatal("bad stored json must fail")
 	}
-	if _, _, err := parseStoredConfig(sql.NullString{String: `{"normalRoutingConfig":{"schedulingPreference":"bogus"}}`, Valid: true}); err == nil {
+	if _, err := parseStoredConfig(sql.NullString{String: `{"normalRoutingConfig":{"schedulingPreference":"bogus"}}`, Valid: true}); err == nil {
 		t.Fatal("bad stored normal must fail")
 	}
-	normal, hybrid, err := parseStoredConfig(sql.NullString{String: `{"normalRoutingConfig":{"schedulingPreference":"cost_first"}}`, Valid: true})
-	if err != nil || normal == nil || hybrid != nil {
-		t.Fatalf("stored normal=%v hybrid=%v err=%v", normal, hybrid, err)
+	normal, err := parseStoredConfig(sql.NullString{String: `{"normalRoutingConfig":{"schedulingPreference":"cost_first"}}`, Valid: true})
+	if err != nil || normal == nil {
+		t.Fatalf("stored normal=%v err=%v", normal, err)
 	}
 	// 构造守卫：NewStore nil db 与 itoa(0)。
 	if _, err := NewStore(nil, false, nil, nil, nil); err == nil {

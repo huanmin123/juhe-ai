@@ -1136,7 +1136,6 @@ type RoutePlanSnapshot[TTarget any] struct {
 	OrderedAllowedTargets          []TTarget
 	Cursor                         int
 	WeightedDecisionToken          string
-	HybridScoreDecision            any
 }
 
 // CreateGatewayRoutePlanSnapshotInput mirrors
@@ -1154,7 +1153,6 @@ type CreateGatewayRoutePlanSnapshotInput[TTarget any] struct {
 	OrderedAllowedTargets          []TTarget
 	Cursor                         *int
 	WeightedDecisionToken          string
-	HybridScoreDecision            any
 }
 
 // CreateGatewayRoutePlanSnapshot mirrors createGatewayRoutePlanSnapshot;
@@ -1220,7 +1218,6 @@ func CreateGatewayRoutePlanSnapshot[TTarget any](input CreateGatewayRoutePlanSna
 		OrderedAllowedTargets:          orderedAllowedTargets,
 		Cursor:                         cursor,
 		WeightedDecisionToken:          weightedDecisionToken,
-		HybridScoreDecision:            input.HybridScoreDecision,
 	}, nil
 }
 
@@ -1240,7 +1237,6 @@ func AdvanceGatewayRoutePlanCursor[TTarget any](plan RoutePlanSnapshot[TTarget],
 		OrderedAllowedTargets:          plan.OrderedAllowedTargets,
 		Cursor:                         &nextCursor,
 		WeightedDecisionToken:          plan.WeightedDecisionToken,
-		HybridScoreDecision:            plan.HybridScoreDecision,
 	})
 }
 

@@ -175,13 +175,13 @@ func TestWCMockStrategyFamily(t *testing.T) {
 		t.Fatalf("mock strategy list 默认: %v", item)
 	}
 
-	// update：显式 routeStrategyId 投影；mock 摘要不渲染 hybridRoutingConfig
-	//（mockStrategySummary 只落 normalRoutingConfig）。
+	// update：显式 routeStrategyId 投影（mockStrategySummary 只落
+	// normalRoutingConfig，请求体其余字段不进入摘要）。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/route-strategy/update",
-		`{"targetUsername":"u1","routeStrategyId":"rs-1","hybridRoutingConfig":{"unavailableThreshold":3}}`, token)
+		`{"targetUsername":"u1","routeStrategyId":"rs-1","name":"改名"}`, token)
 	data = mustMockEnvelope(t, status, payload, http.StatusOK)
 	strategy = data["routeStrategy"].(map[string]any)
-	if strategy["id"] != "rs-1" || strategy["hybridRoutingConfig"] != nil {
+	if strategy["id"] != "rs-1" {
 		t.Fatalf("mock strategy update: %v", strategy)
 	}
 
@@ -399,10 +399,6 @@ func TestWCMockBodyHelpers(t *testing.T) {
 	}
 	if summary.NormalRoutingConfig.(map[string]any)["schedulingPreference"] != "cost_first" {
 		t.Fatalf("摘要默认路由配置: %v", summary.NormalRoutingConfig)
-	}
-	hybrid := mockStrategySummary("id", "n", "hybrid_smart", "active", nil, map[string]any{"k": 1})
-	if hybrid.NormalRoutingConfig != nil || hybrid.HybridRoutingConfig != nil {
-		t.Fatalf("hybrid_smart 摘要不落任何路由配置: %+v", hybrid)
 	}
 	// weighted 与 normal 同组：mock 投影补 cost_first 默认。
 	weighted := mockStrategySummary("id", "n", "weighted", "active", nil, nil)

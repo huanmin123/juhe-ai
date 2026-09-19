@@ -119,7 +119,6 @@
     "test:route-strategy-first-byte-config": "tsx --tsconfig tsconfig.json scripts/regression/route-strategy-first-byte-config-regression.ts",
     "test:route-strategy-create-api": "tsx --tsconfig tsconfig.json scripts/regression/route-strategy-create-api-regression.ts",
     "test:ip-stats-policy-api": "tsx --tsconfig tsconfig.json scripts/regression/ip-stats-policy-api-regression.ts",
-    "test:api-key-hybrid-config": "tsx --tsconfig tsconfig.json scripts/regression/api-key-hybrid-config-regression.ts",
     "test:api-key-lazy-options": "tsx --tsconfig tsconfig.json src/scripts/regression/api-key-lazy-options-regression.ts",
     "test:api-key-edit-open-race": "tsx --tsconfig tsconfig.json src/scripts/regression/api-key-edit-open-race-regression.ts",
     "test:api-key-update-payload": "tsx --tsconfig tsconfig.json scripts/regression/api-key-update-payload-regression.ts",

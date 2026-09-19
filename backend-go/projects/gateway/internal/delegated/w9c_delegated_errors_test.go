@@ -80,12 +80,12 @@ func TestW9CErrorTextAndSchedulingPolicyHelpers(t *testing.T) {
 	if gotMap, ok := got.(map[string]any); !ok || gotMap["mode"] != "weighted" {
 		t.Fatalf("scheduling = %v", got)
 	}
-	input := &strategyMutationInput{HasNormal: true, HasHybrid: true}
-	if normalConfigRaw(input) != nil || hybridConfigRaw(input) != nil {
+	input := &strategyMutationInput{HasNormal: true}
+	if normalConfigRaw(input) != nil {
 		t.Fatal("nil configs must render nil raw")
 	}
-	nonNil := &strategyMutationInput{HasNormal: true, HasHybrid: true, NormalConfig: policy, HybridConfig: policy}
-	if normalConfigRaw(nonNil) == nil || hybridConfigRaw(nonNil) == nil {
+	nonNil := &strategyMutationInput{HasNormal: true, NormalConfig: policy}
+	if normalConfigRaw(nonNil) == nil {
 		t.Fatal("non-nil configs must pass through")
 	}
 	if (&apiKeyRevisionConflict{CurrentRevision: "r"}).Error() != apiKeyRevisionConflictMessage {

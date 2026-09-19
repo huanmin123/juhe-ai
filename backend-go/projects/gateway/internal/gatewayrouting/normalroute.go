@@ -14,20 +14,27 @@ const (
 
 // Skip reasons emitted by resolveNormalGatewayModelRoute.
 const (
-	SkipReasonRouteStrategyIsHybridSmart = "route_strategy_is_hybrid_smart"
-	SkipReasonMissingRequestedModel      = "missing_requested_model"
-	SkipReasonEmptyBinding               = "empty_binding"
-	SkipReasonSingleProvider             = "single_provider"
+	SkipReasonMissingRequestedModel = "missing_requested_model"
+	SkipReasonEmptyBinding          = "empty_binding"
+	SkipReasonSingleProvider        = "single_provider"
 )
 
 // Failure codes emitted by resolveNormalGatewayModelRoute.
 const (
-	FailCodeModelNotRoutableForAPIKey = "model_not_routable_for_api_key"
-	FailCodeModelRouteAmbiguous       = "model_route_ambiguous"
-	FailCodeModelRouteUnavailable     = "model_route_unavailable"
-	FailCodeModelTargetGroupNotBound  = "model_target_group_not_bound"
+	FailCodeModelNotRoutableForAPIKey   = "model_not_routable_for_api_key"
+	FailCodeModelRouteAmbiguous         = "model_route_ambiguous"
+	FailCodeModelRouteUnavailable       = "model_route_unavailable"
+	FailCodeModelTargetGroupNotBound    = "model_target_group_not_bound"
 	FailCodeModelTargetGroupUnavailable = "model_target_group_unavailable"
 )
+
+// NormalRouteGroupSegment carries one binding group's contribution to a
+// merged route pool (merge mode only; empty for other modes).
+type NormalRouteGroupSegment struct {
+	GroupID     string
+	GroupAccess GroupUsageAccessMetadata
+	Accounts    []UpstreamAccount
+}
 
 // NormalGatewayModelRouteResult mirrors the Node
 // NormalGatewayModelRouteResult union: Outcome picks the active variant and
@@ -50,26 +57,31 @@ type NormalGatewayModelRouteResult struct {
 	MatchedProviderCodes []string
 
 	// selected
-	APIKeyRecord                *APIKeyRow
-	GroupID                     string
-	GroupAccess                 GroupUsageAccessMetadata
-	Accounts                    []UpstreamAccount
-	ResponseInspectionPolicies  []ResponseInspectionPolicySummary
-	RouteSource                 NormalGatewayModelRouteSource
-	MatchedProviderCode         string
+	APIKeyRecord               *APIKeyRow
+	GroupID                    string
+	GroupAccess                GroupUsageAccessMetadata
+	Accounts                   []UpstreamAccount
+	ResponseInspectionPolicies []ResponseInspectionPolicySummary
+	RouteSource                NormalGatewayModelRouteSource
+	MatchedProviderCode        string
+	// GroupSegments holds the per-binding-group fragments behind the merged
+	// flat pool; filled only when RouteSource == RouteSourceMerged (merge
+	// mode), nil for every other mode. GroupID is the window group (the
+	// first non-empty segment's group, 合并路由设计 3.4).
+	GroupSegments []NormalRouteGroupSegment
 }
 
 // ResolveNormalGatewayModelRouteInput mirrors
 // ResolveNormalGatewayModelRouteInput.
 type ResolveNormalGatewayModelRouteInput struct {
-	Request                     RequestView
-	APIKeyRecord                *APIKeyRow
-	RequestClientCompatibility  string
+	Request                    RequestView
+	APIKeyRecord               *APIKeyRow
+	RequestClientCompatibility string
 }
 
 // NormalModelRouteService mirrors normal-model-route.service.ts
-// resolveNormalGatewayModelRoute: resolve the target group for a non-hybrid
-// strategy API key, or produce the exact skip/failure contract.
+// resolveNormalGatewayModelRoute: resolve the target group for the API key's
+// strategy, or produce the exact skip/failure contract.
 type NormalModelRouteService struct {
 	TargetGroups *TargetGroupSelector
 }
@@ -101,9 +113,6 @@ type catalogRouteResult struct {
 // ResolveNormalGatewayModelRoute mirrors resolveNormalGatewayModelRoute.
 func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Context, input ResolveNormalGatewayModelRouteInput) (NormalGatewayModelRouteResult, error) {
 	apiKeyRecord := input.APIKeyRecord
-	if apiKeyRecord.RouteStrategyMode == RouteStrategyModeHybridSmart {
-		return NormalGatewayModelRouteResult{Outcome: NormalRouteOutcomeSkipped, Reason: SkipReasonRouteStrategyIsHybridSmart}, nil
-	}
 
 	requestedModel := trimSpace(input.Request.requestModel())
 	if requestedModel == "" {
@@ -113,6 +122,13 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 	bindings := activeGatewayAPIKeyGroupBindings(apiKeyRecord)
 	if len(bindings) == 0 {
 		return NormalGatewayModelRouteResult{Outcome: NormalRouteOutcomeSkipped, Reason: SkipReasonEmptyBinding, RequestedModel: requestedModel}, nil
+	}
+
+	// Merge mode (合并路由设计 3.1/B9-B13): collect every bound group's
+	// surviving fragment into one flat pool. The single-provider shortcut
+	// below must not apply (B9).
+	if apiKeyRecord.RouteStrategyMode == RouteStrategyModeMerge {
+		return s.resolveMergeGatewayModelRoute(ctx, input, apiKeyRecord, bindings, requestedModel)
 	}
 
 	activeProviderCodes := make(map[string]struct{}, len(bindings))
@@ -140,11 +156,11 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 	}
 
 	mappingTarget, err := s.TargetGroups.SelectGatewayModelTargetGroup(ctx, ModelTargetGroupInput{
-		Request:                     input.Request,
-		APIKeyRecord:                apiKeyRecord,
-		Bindings:                    bindings,
-		TargetModel:                 requestedModel,
-		RequestClientCompatibility:  input.RequestClientCompatibility,
+		Request:                    input.Request,
+		APIKeyRecord:               apiKeyRecord,
+		Bindings:                   bindings,
+		TargetModel:                requestedModel,
+		RequestClientCompatibility: input.RequestClientCompatibility,
 		CandidatePriority: func(candidate ModelTargetGroupCandidate) float64 {
 			catalogProviderMatched := catalogRoute.outcome == ProviderModelRouteMatched &&
 				candidate.Binding.ProviderCode == catalogRoute.route.providerCode
@@ -234,6 +250,117 @@ func (s *NormalModelRouteService) ResolveNormalGatewayModelRoute(ctx context.Con
 		Message:              fmt.Sprintf("请求模型对应的供应商分组当前没有可用账号：%s", requestedModel),
 		RequestedModel:       requestedModel,
 		MatchedProviderCodes: matchedRoute.matchedProviderCodes,
+	}, nil
+}
+
+// resolveMergeGatewayModelRoute implements the merge-mode branch of
+// ResolveNormalGatewayModelRoute (合并路由设计 3.1): every active+enabled
+// binding group contributes its surviving account fragment, fragments join
+// one flat pool in binding order, and the pool is dispatched as a whole.
+// B9: no single-provider shortcut. B11: no model_route_ambiguous, no single
+// provider narrowing (GroupBindings stay full), RouteSource=merged,
+// MatchedProviderCode empty. B12: duplicate accounts dedupe by binding
+// priority, the first group wins. B13: the catalog route is consulted only
+// to classify the all-fragments-empty failure.
+func (s *NormalModelRouteService) resolveMergeGatewayModelRoute(ctx context.Context, input ResolveNormalGatewayModelRouteInput, apiKeyRecord *APIKeyRow, bindings []GroupBindingRow, requestedModel string) (NormalGatewayModelRouteResult, error) {
+	// Defensive only (the runtime cache SQL already loads enabled groups):
+	// merge consults enabled bindings exclusively.
+	enabled := make([]GroupBindingRow, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.GroupEnabled == 0 {
+			continue
+		}
+		enabled = append(enabled, binding)
+	}
+	if len(enabled) == 0 {
+		return NormalGatewayModelRouteResult{Outcome: NormalRouteOutcomeSkipped, Reason: SkipReasonEmptyBinding, RequestedModel: requestedModel}, nil
+	}
+
+	candidates, err := s.TargetGroups.CollectGatewayModelGroupSegments(ctx, ModelTargetGroupInput{
+		Request:                    input.Request,
+		APIKeyRecord:               apiKeyRecord,
+		Bindings:                   enabled,
+		TargetModel:                requestedModel,
+		RequestClientCompatibility: input.RequestClientCompatibility,
+	})
+	if err != nil {
+		return NormalGatewayModelRouteResult{}, err
+	}
+
+	segments := make([]NormalRouteGroupSegment, 0, len(candidates))
+	accounts := make([]UpstreamAccount, 0)
+	seenAccounts := make(map[string]struct{})
+	for _, candidate := range candidates {
+		fragment := make([]UpstreamAccount, 0, len(candidate.Accounts))
+		for _, account := range candidate.Accounts {
+			if _, ok := seenAccounts[account.ID]; ok {
+				// B12: the same account bound to several groups joins the
+				// pool through its highest-priority (first-seen) group.
+				continue
+			}
+			seenAccounts[account.ID] = struct{}{}
+			fragment = append(fragment, account)
+		}
+		if len(fragment) == 0 {
+			continue
+		}
+		segments = append(segments, NormalRouteGroupSegment{
+			GroupID:     candidate.Binding.GroupID,
+			GroupAccess: candidate.GroupAccess,
+			Accounts:    fragment,
+		})
+		accounts = append(accounts, fragment...)
+	}
+	if len(segments) == 0 {
+		return s.resolveMergeEmptyPoolFailure(ctx, enabled, requestedModel, apiKeyRecord.SystemAccountID)
+	}
+
+	updatedRecord := *apiKeyRecord
+	updatedRecord.SelectedGroupID = segments[0].GroupID
+	return NormalGatewayModelRouteResult{
+		Outcome:                    NormalRouteOutcomeSelected,
+		APIKeyRecord:               &updatedRecord,
+		GroupID:                    segments[0].GroupID,
+		GroupAccess:                segments[0].GroupAccess,
+		Accounts:                   accounts,
+		ResponseInspectionPolicies: []ResponseInspectionPolicySummary{},
+		RequestedModel:             requestedModel,
+		RouteSource:                RouteSourceMerged,
+		GroupSegments:              segments,
+	}, nil
+}
+
+// resolveMergeEmptyPoolFailure classifies the all-fragments-empty merge
+// failure against the catalog route (B13): a matched provider inside the
+// bound set means the bound groups simply hold no usable account
+// (model_target_group_unavailable, 503); anything else means no bound
+// provider group corresponds to the requested model
+// (model_target_group_not_bound, 400). model_route_ambiguous is never
+// emitted in merge (B11).
+func (s *NormalModelRouteService) resolveMergeEmptyPoolFailure(ctx context.Context, bindings []GroupBindingRow, requestedModel, systemAccountID string) (NormalGatewayModelRouteResult, error) {
+	catalogRoute, err := s.resolveCatalogProviderRoute(ctx, bindings, requestedModel, systemAccountID)
+	if err != nil {
+		return NormalGatewayModelRouteResult{}, err
+	}
+	if catalogRoute.outcome == ProviderModelRouteMatched {
+		return NormalGatewayModelRouteResult{
+			Outcome:              NormalRouteOutcomeFailed,
+			StatusCode:           503,
+			Type:                 "service_unavailable",
+			Code:                 FailCodeModelTargetGroupUnavailable,
+			Message:              fmt.Sprintf("请求模型对应的供应商分组当前没有可用账号：%s", requestedModel),
+			RequestedModel:       requestedModel,
+			MatchedProviderCodes: catalogRoute.route.matchedProviderCodes,
+		}, nil
+	}
+	return NormalGatewayModelRouteResult{
+		Outcome:              NormalRouteOutcomeFailed,
+		StatusCode:           400,
+		Type:                 "invalid_request_error",
+		Code:                 FailCodeModelTargetGroupNotBound,
+		Message:              fmt.Sprintf("当前 API Key 未绑定请求模型对应的供应商分组：%s", requestedModel),
+		RequestedModel:       requestedModel,
+		MatchedProviderCodes: catalogRoute.matchedProviderCodes,
 	}, nil
 }
 

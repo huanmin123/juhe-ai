@@ -109,19 +109,19 @@ func TestWCParseStrategyBodies(t *testing.T) {
 	if _, issue := parseStrategyListQuery(mustParseQuery(t, "targetUsername=ab&keyword="+strings.Repeat("k", 121))); issue != zodStringMax(120) {
 		t.Fatalf("keyword 过长: %q", issue)
 	}
-	query, issue := parseStrategyListQuery(mustParseQuery(t, "targetUsername=ab&keyword=k&mode=hybrid_smart&status=disabled&page=3&pageSize=7"))
-	if issue != "" || query.Mode != "hybrid_smart" || query.Status != "disabled" || query.Page != 3 {
+	query, issue := parseStrategyListQuery(mustParseQuery(t, "targetUsername=ab&keyword=k&mode=merge&status=disabled&page=3&pageSize=7"))
+	if issue != "" || query.Mode != "merge" || query.Status != "disabled" || query.Page != 3 {
 		t.Fatalf("list 全量: %+v %q", query, issue)
 	}
 
 	add, issue := parseStrategyAddBody(map[string]any{
 		"targetUsername": "ab", "name": "n", "description": nil, "mode": "normal", "status": "active",
 		"groupBindings":       []any{map[string]any{"groupId": "g", "priority": 2.0, "weight": 30.0, "status": "disabled"}},
-		"normalRoutingConfig": map[string]any{}, "hybridRoutingConfig": nil,
+		"normalRoutingConfig": map[string]any{},
 	})
 	if issue != "" || add.Description != nil || add.Mode != "normal" || add.Status != "active" ||
 		!add.HasBindings || add.Bindings[0].Priority == nil || add.Bindings[0].Weight == nil ||
-		add.Bindings[0].Status != "disabled" || !add.HasNormalConfig || !add.HasHybridConfig {
+		add.Bindings[0].Status != "disabled" || !add.HasNormalConfig {
 		t.Fatalf("add 全字段: %+v %q", add, issue)
 	}
 	// mode 枚举先于绑定校验（字段序即 zod 定义序）。
@@ -159,9 +159,6 @@ func TestWCParseStrategyBodies(t *testing.T) {
 	}
 	if _, issue := parseStrategyUpdateBody(map[string]any{"routeStrategyId": "s"}); issue != "路由策略修改至少提供一个要修改的字段" {
 		t.Fatalf("无可变字段: %q", issue)
-	}
-	if _, issue := parseStrategyUpdateBody(map[string]any{"routeStrategyId": "s", "hybridRoutingConfig": 1.5}); issue != zodInvalidType("object", 1.5) {
-		t.Fatalf("hybrid 非对象: %q", issue)
 	}
 }
 
@@ -362,21 +359,21 @@ func TestWCCaptureHolderNilSafe(t *testing.T) {
 	}
 }
 
-// TestWCDTOValueHelpers：混合路由配置/时间计划的非 nil 投影。
+// TestWCDTOValueHelpers：时间计划的非 nil 投影。
 func TestWCDTOValueHelpers(t *testing.T) {
-	if hybridRoutingConfigValue(nil) != nil {
-		t.Fatalf("nil 必须返回 nil")
-	}
-	config := &routestrategies.HybridRoutingConfig{}
-	if hybridRoutingConfigValue(config) == nil {
-		t.Fatalf("非 nil 必须透传")
-	}
 	if availabilityScheduleValue(nil) != nil {
 		t.Fatalf("nil 计划必须返回 nil")
 	}
 	schedule := &apikeys.AvailabilitySchedule{}
 	if availabilityScheduleValue(schedule) == nil {
 		t.Fatalf("非 nil 计划必须透传")
+	}
+	if normalRoutingConfigValue(nil) != nil {
+		t.Fatalf("nil 配置必须返回 nil")
+	}
+	normal := &routestrategies.NormalRoutingConfig{}
+	if normalRoutingConfigValue(normal) == nil {
+		t.Fatalf("非 nil 配置必须透传")
 	}
 }
 

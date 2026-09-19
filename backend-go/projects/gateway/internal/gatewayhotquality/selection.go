@@ -1,6 +1,7 @@
-package gatewayhybrid
+package gatewayhotquality
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -11,6 +12,12 @@ import (
 // backend/src/modules/gateway/routing/hot-quality-candidate-selection.ts.
 // Fully deterministic: tier ordering plus cursor-based same-tier exploration
 // fairness (Node has no randomness here, so no rng is injected).
+//
+// This file was migrated verbatim from internal/gatewayhybrid/hotquality.go
+// when the hybrid_smart routing mode was removed; only the selection-view
+// type names were adjusted to avoid the storage-layer names below
+// (HotQualitySelectionSnapshot / HotQualitySelectionWindowSnapshot /
+// SameTierExplorationDecisionState).
 
 // HotQualityRoutingMode mirrors HotQualityRoutingMode.
 type HotQualityRoutingMode = string
@@ -28,31 +35,12 @@ const (
 	DispatchIntentSameTierExploration = "same_tier_exploration"
 )
 
-// Hot quality reliability / sample states (mirror the Node unions).
-type HotQualityReliabilityLevel = string
-
-const (
-	ReliabilityUnknown   = "unknown"
-	ReliabilityHealthy   = "healthy"
-	ReliabilityUncertain = "uncertain"
-	ReliabilityUnhealthy = "unhealthy"
-)
-
-type HotQualitySampleState = string
-
-const (
-	SampleStateCold    = "cold"
-	SampleStateWarming = "warming"
-	SampleStateKnown   = "known"
-)
-
 // Exploration credit constants (mirror the exported Node constants).
 const (
 	SameTierExplorationCreditPerEligibleDispatch = 0.05
 	SameTierExplorationCreditCap                 = 1.0
 	SameTierExplorationCreditCost                = 1.0
 	SameTierExplorationTargetCooldownMs          = int64(60_000)
-	maxSafeInteger                                = int64(1)<<53 - 1
 )
 
 // GatewayAccountConfigurationTier mirrors GatewayAccountConfigurationTier.
@@ -63,19 +51,20 @@ type GatewayAccountConfigurationTier struct {
 	Priority             int
 }
 
-// HotQualityWindowSnapshot carries the window fields candidate selection
-// reads (subset of HotQualityWindowSnapshot).
-type HotQualityWindowSnapshot struct {
-	QualityAttempts    int
-	LastCompletedAtMs  *int64
-	LastFailureAtMs    *int64
+// HotQualitySelectionWindowSnapshot carries the window fields candidate
+// selection reads (reduced view of HotQualityWindowSnapshot).
+type HotQualitySelectionWindowSnapshot struct {
+	QualityAttempts   int
+	LastCompletedAtMs *int64
+	LastFailureAtMs   *int64
 }
 
-// HotQualitySnapshot carries the snapshot fields candidate selection reads.
-type HotQualitySnapshot struct {
-	Window5m              HotQualityWindowSnapshot
-	Window10m             HotQualityWindowSnapshot
-	Window30m             HotQualityWindowSnapshot
+// HotQualitySelectionSnapshot carries the snapshot fields candidate selection
+// reads (reduced view of HotQualitySnapshot).
+type HotQualitySelectionSnapshot struct {
+	Window5m              HotQualitySelectionWindowSnapshot
+	Window10m             HotQualitySelectionWindowSnapshot
+	Window30m             HotQualitySelectionWindowSnapshot
 	EffectiveReliability  float64
 	ReliabilityLevel      HotQualityReliabilityLevel
 	SampleState           HotQualitySampleState
@@ -85,43 +74,45 @@ type HotQualitySnapshot struct {
 
 // HotQualityCandidate mirrors HotQualityCandidate.
 type HotQualityCandidate struct {
-	AccountID                   string
-	AccountRuntimeKey           string
-	RouteScopeKey               string
-	ConfigurationTier           GatewayAccountConfigurationTier
-	StableBindingOrder          int
-	HotQuality                  *HotQualitySnapshot
-	LatencyDegraded             bool
-	LastExplorationAttemptAtMs  *int64
+	AccountID                  string
+	AccountRuntimeKey          string
+	RouteScopeKey              string
+	ConfigurationTier          GatewayAccountConfigurationTier
+	StableBindingOrder         int
+	HotQuality                 *HotQualitySelectionSnapshot
+	LatencyDegraded            bool
+	LastExplorationAttemptAtMs *int64
 }
 
-// SameTierExplorationState mirrors SameTierExplorationState.
-type SameTierExplorationState struct {
-	Enabled                       bool
-	EligibleFirstPrimaryDispatch  bool
-	CreditAccrualAlreadyApplied   bool
-	RequestAlreadyExplored        bool
-	HasLeftHighestNormalTier      bool
-	Credit                        float64
-	Cursor                        int64
-	NowMs                         int64
-	KnownSampleStaleAfterMs       int64
-	TargetInFlightRuntimeKeys     []string
+// SameTierExplorationDecisionState mirrors the decision-input view of
+// SameTierExplorationState built from the stored pool state
+// (same-tier-exploration-store.ts).
+type SameTierExplorationDecisionState struct {
+	Enabled                           bool
+	EligibleFirstPrimaryDispatch      bool
+	CreditAccrualAlreadyApplied       bool
+	RequestAlreadyExplored            bool
+	HasLeftHighestNormalTier          bool
+	Credit                            float64
+	Cursor                            int64
+	NowMs                             int64
+	KnownSampleStaleAfterMs           int64
+	TargetInFlightRuntimeKeys         []string
 	TargetCooldownUntilMsByRuntimeKey map[string]int64
 }
 
 // Same-tier exploration statuses (mirror the Node union).
 const (
-	ExplorationStatusNotConfigured           = "not_configured"
-	ExplorationStatusDisabled                = "disabled"
-	ExplorationStatusNoPrimaryCandidate      = "no_primary_candidate"
+	ExplorationStatusNotConfigured             = "not_configured"
+	ExplorationStatusDisabled                  = "disabled"
+	ExplorationStatusNoPrimaryCandidate        = "no_primary_candidate"
 	ExplorationStatusIneligiblePrimaryDispatch = "ineligible_primary_dispatch"
-	ExplorationStatusRequestAlreadyExplored  = "request_already_explored"
-	ExplorationStatusLeftHighestNormalTier   = "left_highest_normal_tier"
-	ExplorationStatusFallbackTier            = "fallback_tier"
-	ExplorationStatusInsufficientCredit      = "insufficient_credit"
-	ExplorationStatusNoEligibleTarget        = "no_eligible_target"
-	ExplorationStatusSelected                = "selected"
+	ExplorationStatusRequestAlreadyExplored    = "request_already_explored"
+	ExplorationStatusLeftHighestNormalTier     = "left_highest_normal_tier"
+	ExplorationStatusFallbackTier              = "fallback_tier"
+	ExplorationStatusInsufficientCredit        = "insufficient_credit"
+	ExplorationStatusNoEligibleTarget          = "no_eligible_target"
+	ExplorationStatusSelected                  = "selected"
 )
 
 // Selection reasons (mirror the Node union).
@@ -152,19 +143,19 @@ type SameTierExplorationExplanation struct {
 // HotQualityCandidateSelectionExplanation mirrors
 // HotQualityCandidateSelectionExplanation.
 type HotQualityCandidateSelectionExplanation struct {
-	Mode                          HotQualityRoutingMode
-	RouteScopeKey                 string
-	SelectionReason               string
-	BaselinePrimaryAccountID      string
-	SelectedAccountID             string
-	SelectedAccountRuntimeKey     string
-	SelectedTierKey               string
-	SelectedSampleState           HotQualitySampleState
-	SelectedReliabilityLevel      HotQualityReliabilityLevel
+	Mode                           HotQualityRoutingMode
+	RouteScopeKey                  string
+	SelectionReason                string
+	BaselinePrimaryAccountID       string
+	SelectedAccountID              string
+	SelectedAccountRuntimeKey      string
+	SelectedTierKey                string
+	SelectedSampleState            HotQualitySampleState
+	SelectedReliabilityLevel       HotQualityReliabilityLevel
 	LatencyDegradedOverrideApplied bool
-	QualityReorderedTierKeys      []string
-	DuplicateRuntimeAccountIDs    []string
-	Exploration                   SameTierExplorationExplanation
+	QualityReorderedTierKeys       []string
+	DuplicateRuntimeAccountIDs     []string
+	Exploration                    SameTierExplorationExplanation
 }
 
 // HotQualityCandidateDecision mirrors HotQualityCandidateDecision; candidates
@@ -185,26 +176,26 @@ type DecideHotQualityCandidateInput[T any] struct {
 	RouteScopeKey string
 	Candidates    []T
 	Base          func(T) HotQualityCandidate
-	Exploration   *SameTierExplorationState
+	Exploration   *SameTierExplorationDecisionState
 }
 
 // indexedCandidate mirrors IndexedCandidate; identity comparisons in Node
 // become original-index comparisons here.
 type indexedCandidate[T any] struct {
-	payload         T
-	base            HotQualityCandidate
-	originalIndex   int
-	tierKey         string
-	sampleState     HotQualitySampleState
+	payload          T
+	base             HotQualityCandidate
+	originalIndex    int
+	tierKey          string
+	sampleState      HotQualitySampleState
 	reliabilityLevel HotQualityReliabilityLevel
 }
 
 type explorationRankedCandidate[T any] struct {
-	indexed                       *indexedCandidate[T]
-	sampleRank                    int
-	sampleGap                     int
+	indexed                          *indexedCandidate[T]
+	sampleRank                       int
+	sampleGap                        int
 	lastValidBusinessObservationAtMs int64
-	lastExplorationAttemptAtMs    int64
+	lastExplorationAttemptAtMs       int64
 }
 
 // GatewayAccountConfigurationTierKey mirrors
@@ -346,7 +337,7 @@ func decideExploration[T any](
 	candidates []*indexedCandidate[T],
 	qualityOrdered []*indexedCandidate[T],
 	baseTierOrder []string,
-	state *SameTierExplorationState,
+	state *SameTierExplorationDecisionState,
 ) (explorationOutcome[T], error) {
 	var primary *indexedCandidate[T]
 	if len(qualityOrdered) > 0 {
@@ -396,18 +387,18 @@ func decideExploration[T any](
 
 	baseExplanation := func(status string) SameTierExplorationExplanation {
 		return SameTierExplorationExplanation{
-			Status:                        status,
-			CreditBefore:                  creditBefore,
-			CreditAccrued:                 creditAccrued,
-			CreditAfterAccrual:            creditAfterAccrual,
+			Status:                          status,
+			CreditBefore:                    creditBefore,
+			CreditAccrued:                   creditAccrued,
+			CreditAfterAccrual:              creditAfterAccrual,
 			CreditSpendOnSuccessfulDispatch: 0,
-			CreditAfterSuccessfulDispatch: creditAfterAccrual,
-			CreditAfterFailedDispatch:     creditAfterAccrual,
-			CursorBefore:                  cursorBefore,
-			CursorAfterSuccessfulDispatch: cursorBefore,
-			CursorAfterFailedDispatch:     cursorBefore,
-			EligibleTargetAccountIDs:      []string{},
-			FairCursorPeerAccountIDs:      []string{},
+			CreditAfterSuccessfulDispatch:   creditAfterAccrual,
+			CreditAfterFailedDispatch:       creditAfterAccrual,
+			CursorBefore:                    cursorBefore,
+			CursorAfterSuccessfulDispatch:   cursorBefore,
+			CursorAfterFailedDispatch:       cursorBefore,
+			EligibleTargetAccountIDs:        []string{},
+			FairCursorPeerAccountIDs:        []string{},
 		}
 	}
 	if state == nil {
@@ -539,9 +530,9 @@ func decideExploration[T any](
 
 func explorationRank[T any](candidate *indexedCandidate[T], nowMs int64) *explorationRankedCandidate[T] {
 	sampleRank := 2
-	if candidate.sampleState == SampleStateCold {
+	if candidate.sampleState == HotQualitySampleCold {
 		sampleRank = 0
-	} else if candidate.sampleState == SampleStateWarming {
+	} else if candidate.sampleState == HotQualitySampleWarming {
 		sampleRank = 1
 	}
 	qualityAttempts10m := 0
@@ -553,11 +544,11 @@ func explorationRank[T any](candidate *indexedCandidate[T], nowMs int64) *explor
 		sampleGap = 0
 	}
 	return &explorationRankedCandidate[T]{
-		indexed:                       candidate,
-		sampleRank:                    sampleRank,
-		sampleGap:                     sampleGap,
+		indexed:                          candidate,
+		sampleRank:                       sampleRank,
+		sampleGap:                        sampleGap,
 		lastValidBusinessObservationAtMs: lastValidBusinessObservationAtMs(candidate.base.HotQuality, nowMs),
-		lastExplorationAttemptAtMs:    normalizedPastTimestamp(pointerInt64OrZero(candidate.base.LastExplorationAttemptAtMs), nowMs),
+		lastExplorationAttemptAtMs:       normalizedPastTimestamp(pointerInt64OrZero(candidate.base.LastExplorationAttemptAtMs), nowMs),
 	}
 }
 
@@ -603,7 +594,7 @@ func compareWithinTier[T any](left, right *indexedCandidate[T]) int {
 		}
 		return -1
 	}
-	if left.sampleState != SampleStateCold && right.sampleState != SampleStateCold {
+	if left.sampleState != HotQualitySampleCold && right.sampleState != HotQualitySampleCold {
 		speed := compareSpeed(left.base.HotQuality, right.base.HotQuality)
 		if speed != 0 {
 			return speed
@@ -619,17 +610,17 @@ func compareWithinTier[T any](left, right *indexedCandidate[T]) int {
 }
 
 // compareSpeed mirrors compareSpeed.
-func compareSpeed(left, right *HotQualitySnapshot) int {
-	leftEwma, leftOK := normalizedOptionalDuration(left, func(snapshot *HotQualitySnapshot) *float64 { return snapshot.FirstByteEwma5m })
-	rightEwma, rightOK := normalizedOptionalDuration(right, func(snapshot *HotQualitySnapshot) *float64 { return snapshot.FirstByteEwma5m })
+func compareSpeed(left, right *HotQualitySelectionSnapshot) int {
+	leftEwma, leftOK := normalizedOptionalDuration(left, func(snapshot *HotQualitySelectionSnapshot) *float64 { return snapshot.FirstByteEwma5m })
+	rightEwma, rightOK := normalizedOptionalDuration(right, func(snapshot *HotQualitySelectionSnapshot) *float64 { return snapshot.FirstByteEwma5m })
 	if leftOK && rightOK && leftEwma != rightEwma {
 		if leftEwma < rightEwma {
 			return -1
 		}
 		return 1
 	}
-	leftP95, leftP95OK := normalizedOptionalDuration(left, func(snapshot *HotQualitySnapshot) *float64 { return snapshot.FirstByteP95Bucket10m })
-	rightP95, rightP95OK := normalizedOptionalDuration(right, func(snapshot *HotQualitySnapshot) *float64 { return snapshot.FirstByteP95Bucket10m })
+	leftP95, leftP95OK := normalizedOptionalDuration(left, func(snapshot *HotQualitySelectionSnapshot) *float64 { return snapshot.FirstByteP95Bucket10m })
+	rightP95, rightP95OK := normalizedOptionalDuration(right, func(snapshot *HotQualitySelectionSnapshot) *float64 { return snapshot.FirstByteP95Bucket10m })
 	if leftP95OK && rightP95OK && leftP95 != rightP95 {
 		if leftP95 < rightP95 {
 			return -1
@@ -664,7 +655,7 @@ func normalizeCandidates[T any](
 			return nil, nil, err
 		}
 		if candidateRouteScopeKey != routeScopeKey {
-			return nil, nil, rangeError("候选账号 %s 不属于当前路由范围", accountID)
+			return nil, nil, selectionRangeError("候选账号 %s 不属于当前路由范围", accountID)
 		}
 		if _, err := normalizedNonNegativeInteger(int64(candidate.StableBindingOrder), "稳定绑定顺序"); err != nil {
 			return nil, nil, err
@@ -678,12 +669,12 @@ func normalizeCandidates[T any](
 			continue
 		}
 		seenRuntimeKeys[accountRuntimeKey] = true
-		sampleState := SampleStateCold
+		sampleState := HotQualitySampleCold
 		if candidate.HotQuality != nil && candidate.HotQuality.SampleState != "" {
 			sampleState = candidate.HotQuality.SampleState
 		}
-		reliabilityLevel := ReliabilityUnknown
-		if sampleState != SampleStateCold && candidate.HotQuality != nil && candidate.HotQuality.ReliabilityLevel != "" {
+		reliabilityLevel := HotQualityReliabilityUnknown
+		if sampleState != HotQualitySampleCold && candidate.HotQuality != nil && candidate.HotQuality.ReliabilityLevel != "" {
 			reliabilityLevel = candidate.HotQuality.ReliabilityLevel
 		}
 		normalized = append(normalized, &indexedCandidate[T]{
@@ -699,24 +690,24 @@ func normalizeCandidates[T any](
 }
 
 func reliabilityRank(level HotQualityReliabilityLevel) int {
-	if level == ReliabilityHealthy {
+	if level == HotQualityReliabilityHealthy {
 		return 0
 	}
-	if level == ReliabilityUncertain {
+	if level == HotQualityReliabilityUncertain {
 		return 1
 	}
-	if level == ReliabilityUnknown {
+	if level == HotQualityReliabilityUnknown {
 		return 2
 	}
 	return 3
 }
 
-func lastValidBusinessObservationAtMs(snapshot *HotQualitySnapshot, nowMs int64) int64 {
+func lastValidBusinessObservationAtMs(snapshot *HotQualitySelectionSnapshot, nowMs int64) int64 {
 	if snapshot == nil {
 		return 0
 	}
 	maxMs := int64(0)
-	for _, window := range []HotQualityWindowSnapshot{snapshot.Window30m, snapshot.Window10m, snapshot.Window5m} {
+	for _, window := range []HotQualitySelectionWindowSnapshot{snapshot.Window30m, snapshot.Window10m, snapshot.Window5m} {
 		maxMs = int64(math.Max(float64(maxMs), float64(normalizedPastTimestamp(pointerInt64OrZero(window.LastCompletedAtMs), nowMs))))
 		maxMs = int64(math.Max(float64(maxMs), float64(normalizedPastTimestamp(pointerInt64OrZero(window.LastFailureAtMs), nowMs))))
 	}
@@ -793,7 +784,7 @@ func sortedWithinTier[T any](tier []*indexedCandidate[T]) []*indexedCandidate[T]
 
 func normalizedMode(value HotQualityRoutingMode) (HotQualityRoutingMode, error) {
 	if value != HotQualityModeCostFirst && value != HotQualityModeSpeedFirst {
-		return "", typeError("热质量路由模式无效")
+		return "", selectionTypeError("热质量路由模式无效")
 	}
 	return value, nil
 }
@@ -801,14 +792,14 @@ func normalizedMode(value HotQualityRoutingMode) (HotQualityRoutingMode, error) 
 func requiredKey(value string, name string) (string, error) {
 	normalized := strings.TrimSpace(value)
 	if normalized == "" {
-		return "", typeError("%s不能为空", name)
+		return "", selectionTypeError("%s不能为空", name)
 	}
 	return normalized, nil
 }
 
 func normalizedCredit(value float64) (float64, error) {
 	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > SameTierExplorationCreditCap {
-		return 0, rangeError("同层探索 credit 必须位于 0..1")
+		return 0, selectionRangeError("同层探索 credit 必须位于 0..1")
 	}
 	return roundedCredit(value), nil
 }
@@ -823,7 +814,7 @@ func normalizedCursor(value int64) (int64, error) {
 
 func normalizedSafeInteger(value int64, name string) (int64, error) {
 	if value > maxSafeInteger || value < -maxSafeInteger {
-		return 0, rangeError("%s 必须是安全整数", name)
+		return 0, selectionRangeError("%s 必须是安全整数", name)
 	}
 	return value, nil
 }
@@ -834,14 +825,14 @@ func normalizedNonNegativeInteger(value int64, name string) (int64, error) {
 		return 0, err
 	}
 	if normalized < 0 {
-		return 0, rangeError("%s 不能为负数", name)
+		return 0, selectionRangeError("%s 不能为负数", name)
 	}
 	return normalized, nil
 }
 
 func normalizedTimestamp(value int64, name string) (int64, error) {
 	if value > maxSafeInteger || value < -maxSafeInteger {
-		return 0, rangeError("%s 必须是有限数值", name)
+		return 0, selectionRangeError("%s 必须是有限数值", name)
 	}
 	return value, nil
 }
@@ -858,7 +849,7 @@ func normalizedPastTimestamp(value int64, nowMs int64) int64 {
 
 func normalizedCooldownUntil(value int64) (int64, error) {
 	if value > maxSafeInteger || value < -maxSafeInteger {
-		return 0, rangeError("探索冷却截止时间必须是有限数值")
+		return 0, selectionRangeError("探索冷却截止时间必须是有限数值")
 	}
 	return value, nil
 }
@@ -871,7 +862,7 @@ func normalizedReliability(value float64, present bool) float64 {
 }
 
 func effectiveReliabilityForOrdering[T any](candidate *indexedCandidate[T]) float64 {
-	if candidate.sampleState == SampleStateCold {
+	if candidate.sampleState == HotQualitySampleCold {
 		return 0.5
 	}
 	if candidate.base.HotQuality == nil {
@@ -880,7 +871,7 @@ func effectiveReliabilityForOrdering[T any](candidate *indexedCandidate[T]) floa
 	return normalizedReliability(candidate.base.HotQuality.EffectiveReliability, true)
 }
 
-func normalizedOptionalDuration(snapshot *HotQualitySnapshot, selector func(*HotQualitySnapshot) *float64) (float64, bool) {
+func normalizedOptionalDuration(snapshot *HotQualitySelectionSnapshot, selector func(*HotQualitySelectionSnapshot) *float64) (float64, bool) {
 	if snapshot == nil {
 		return 0, false
 	}
@@ -896,4 +887,16 @@ func pointerInt64OrZero(value *int64) int64 {
 		return 0
 	}
 	return *value
+}
+
+// selectionTypeError / selectionRangeError carry the byte-identical Chinese
+// error messages the Node selection layer throws (TypeError / RangeError with
+// `message`). No consumer inspects the concrete Go type, so plain errors keep
+// the messages intact.
+func selectionTypeError(format string, args ...any) error {
+	return fmt.Errorf(format, args...)
+}
+
+func selectionRangeError(format string, args ...any) error {
+	return fmt.Errorf(format, args...)
 }

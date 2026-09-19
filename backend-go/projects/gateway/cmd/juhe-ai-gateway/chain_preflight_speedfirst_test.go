@@ -173,19 +173,13 @@ func speedFirstRequest(t *testing.T, runtime *gatewayruntimecache.GatewayRuntime
 
 func TestChainSpeedFirstBodyAdmissionGateSkipsNonApplicable(t *testing.T) {
 	personal := "personal"
-	hybridMode := "hybrid_smart"
 	costFirst := "cost_first"
-	// 运行时 hybrid 行不解码 normalRoutingConfig，NormalRoutingConfig 恒 nil，
-	// 准入门依赖该解码契约排除 hybrid_smart。
-	hybridRuntime := speedFirstRuntime(&hybridMode, nil, nil, nil, 1)
-	hybridRuntime.APIKey.NormalRoutingConfig = nil
 	cases := []struct {
 		name    string
 		runtime *gatewayruntimecache.GatewayRuntime
 		lane    gatewayproto.RequestLane
 	}{
 		{"missing runtime", nil, gatewayproto.LaneText},
-		{"hybrid_smart route strategy", hybridRuntime, gatewayproto.LaneText},
 		{"cost_first preference", speedFirstRuntime(nil, &costFirst, nil, nil, 1), gatewayproto.LaneText},
 		{"personal group", speedFirstRuntime(nil, nil, &personal, nil, 1), gatewayproto.LaneText},
 		{"no accounts", speedFirstRuntime(nil, nil, nil, nil, 0), gatewayproto.LaneText},

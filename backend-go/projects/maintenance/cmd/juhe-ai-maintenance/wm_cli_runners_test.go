@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,9 +21,11 @@ import (
 
 // 本文件在同包内直调 CLI 运行层：main() 的 flag/版本分支、runStorageBootstrap
 // 的 SQLite/Postgres 驱动矩阵、各只读检查 runner 的成功路径与退出码 helper。
+// 全部经 *Result 函数（返回退出码）进程内直调并断言返回码；os.Exit 包装已删除，
+// 失败/未就绪出口由 wm_main_exit_branches_test.go 经 runMaintenance 直调覆盖
+// （测试单进程纪律：一次 go test 只允许一个测试进程，禁止 exec 子进程）。
 // 依赖真实 PostgreSQL 或与当前仓库状态强相关的 runner（capability manifest、
-// owner manifest、PG bootstrap/backfill、schema snapshot 顶层入口）不在直调
-// 范围内——它们的 os.Exit 分支会终止测试进程，已由 exec 子进程测试另行覆盖。
+// PG bootstrap/backfill、schema snapshot 顶层入口）仍不在直调范围内。
 
 // wmCaptureStdout 捕获 fn 期间写入 os.Stdout 的内容。
 func wmCaptureStdout(t *testing.T, fn func()) string {
@@ -48,30 +49,37 @@ func wmCaptureStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// wmCallMainWithFreshFlags 用全新的 FlagSet 调用 main()，避免 flag 状态在多次
-// Parse 之间泄漏；调用方负责恢复 os.Args。
-func wmCallMainWithFreshFlags(t *testing.T, args []string) string {
+// wmCaptureRunnerOutput 捕获 runner（*Result 函数）的 stdout 并断言返回码为
+// 0；返回码检查放在捕获结束之后，避免 t.Fatalf 在捕获闭包内中断清理。
+func wmCaptureRunnerOutput(t *testing.T, name string, fn func() int) string {
 	t.Helper()
-	savedCommandLine := flag.CommandLine
-	savedArgs := os.Args
-	flag.CommandLine = flag.NewFlagSet("wm-test", flag.ExitOnError)
-	os.Args = append([]string{"juhe-ai-maintenance"}, args...)
-	defer func() {
-		flag.CommandLine = savedCommandLine
-		os.Args = savedArgs
-	}()
-	return wmCaptureStdout(t, main)
+	var code int
+	output := wmCaptureStdout(t, func() { code = fn() })
+	if code != 0 {
+		t.Fatalf("%s exit=%d, want 0", name, code)
+	}
+	return output
+}
+
+// wmCallRunMaintenance 进程内直调 runMaintenance（main 的同参异体：main 仅多
+// 一层非零 os.Exit），断言出口 0 并返回 stdout。FlagSet 由 runMaintenance 每次
+// 新建（ContinueOnError），无需替换 flag.CommandLine 或 os.Args。
+func wmCallRunMaintenance(t *testing.T, args []string) string {
+	t.Helper()
+	return wmCaptureRunnerOutput(t, "runMaintenance", func() int {
+		return runMaintenance(args)
+	})
 }
 
 func TestWMMainVersionAndBoundaryBranches(t *testing.T) {
 	t.Run("version", func(t *testing.T) {
-		output := wmCallMainWithFreshFlags(t, []string{"-version"})
+		output := wmCallRunMaintenance(t, []string{"-version"})
 		if !strings.Contains(output, "juhe-ai-maintenance project=") || !strings.Contains(output, "contract=") {
 			t.Fatalf("--version 输出必须包含项目与契约版本: %q", output)
 		}
 	})
 	t.Run("check boundary", func(t *testing.T) {
-		output := wmCallMainWithFreshFlags(t, []string{"-check-boundary"})
+		output := wmCallRunMaintenance(t, []string{"-check-boundary"})
 		if !strings.Contains(output, "boundary=ready") {
 			t.Fatalf("--check-boundary 输出异常: %q", output)
 		}
@@ -195,11 +203,15 @@ func TestWMRunJ3bSQLiteBootstrapRunner(t *testing.T) {
 	}
 	t.Run("check mode returns on ready schema", func(t *testing.T) {
 		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, checkPath)
-		wmCaptureStdout(t, func() { runJ3bModelCheckSQLiteBootstrap(false, false, false, false) })
+		wmCaptureRunnerOutput(t, "j3bModelCheckSQLiteBootstrapResult", func() int {
+			return j3bModelCheckSQLiteBootstrapResult(false, false, false, false)
+		})
 	})
 	t.Run("apply mode requires confirmations handled upstream", func(t *testing.T) {
 		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, applyPath)
-		wmCaptureStdout(t, func() { runJ3bModelCheckSQLiteBootstrap(true, true, true, true) })
+		wmCaptureRunnerOutput(t, "j3bModelCheckSQLiteBootstrapResult", func() int {
+			return j3bModelCheckSQLiteBootstrapResult(true, true, true, true)
+		})
 		if _, err := os.Stat(applyPath); err != nil {
 			t.Fatalf("apply 应创建专属文件: %v", err)
 		}
@@ -258,7 +270,9 @@ func TestWMRunJ3bSQLiteReadbackAndBackfillRunners(t *testing.T) {
 		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, targetPath)
 		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH", datasetPath)
 		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH", statsPath)
-		output := wmCaptureStdout(t, func() { runJ3bModelCheckSQLiteReadback() })
+		output := wmCaptureRunnerOutput(t, "j3bModelCheckSQLiteReadbackResult", func() int {
+			return j3bModelCheckSQLiteReadbackResult()
+		})
 		var report j3bmodelcheck.BackfillVerificationReport
 		if err := json.Unmarshal([]byte(output), &report); err != nil {
 			t.Fatalf("readback 报告必须可解码: %v", err)
@@ -285,8 +299,8 @@ func TestWMRunJ3bSQLiteReadbackAndBackfillRunners(t *testing.T) {
 		t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, secondTarget)
 		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH", datasetPath)
 		t.Setenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_STATS_PATH", statsPath)
-		output := wmCaptureStdout(t, func() {
-			runJ3bModelCheckSQLiteBackfill(true, true, true, evidencePath)
+		output := wmCaptureRunnerOutput(t, "j3bModelCheckSQLiteBackfillResult", func() int {
+			return j3bModelCheckSQLiteBackfillResult(true, true, true, evidencePath)
 		})
 		var report j3bmodelcheck.BackfillReport
 		if err := json.Unmarshal([]byte(output), &report); err != nil {
@@ -364,7 +378,9 @@ func wmWriteCompleteCutoverEvidenceWithManifest(t *testing.T) string {
 
 func TestWMRunJ3bCutoverEvidenceCheckReadyPath(t *testing.T) {
 	evidencePath := wmWriteCompleteCutoverEvidenceWithManifest(t)
-	output := wmCaptureStdout(t, func() { runJ3bCutoverEvidenceCheck(evidencePath) })
+	output := wmCaptureRunnerOutput(t, "j3bCutoverEvidenceCheckResult", func() int {
+		return j3bCutoverEvidenceCheckResult(evidencePath)
+	})
 	var report businesshandoff.J3bCutoverEvidenceReport
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("cutover 报告必须可解码: %v", err)
@@ -400,7 +416,9 @@ func TestWMRunBusinessSQLiteRunners(t *testing.T) {
 			t.Fatal(err)
 		}
 		j3b.Close()
-		wmCaptureStdout(t, func() { runBusinessSQLiteHandoffCheck(businessPath, j3bPath) })
+		wmCaptureRunnerOutput(t, "businessSQLiteHandoffCheckResult", func() int {
+			return businessSQLiteHandoffCheckResult(businessPath, j3bPath)
+		})
 	})
 
 	t.Run("schema runner returns on contract-ready business file", func(t *testing.T) {
@@ -409,7 +427,9 @@ func TestWMRunBusinessSQLiteRunners(t *testing.T) {
 		if report, err := businesshandoff.VerifySQLiteSchema(context.Background(), businessPath); err != nil || !report.Ready {
 			t.Skipf("schema 包 business 库未满足 handoff 契约，跳过直调: %+v err=%v", report, err)
 		}
-		wmCaptureStdout(t, func() { runBusinessSQLiteSchemaCheck(businessPath) })
+		wmCaptureRunnerOutput(t, "businessSQLiteSchemaCheckResult", func() int {
+			return businessSQLiteSchemaCheckResult(businessPath)
+		})
 	})
 }
 
@@ -423,10 +443,14 @@ func TestWMRepoStateDependentRunnersReturnCleanly(t *testing.T) {
 		t.Skip("Node archive contract sources present; runner may exit non-zero by design")
 	}
 	t.Run("node active path scan exits zero on trimmed archive", func(t *testing.T) {
-		wmCaptureStdout(t, func() { runNodeJ3bActivePathCheck() })
+		wmCaptureRunnerOutput(t, "nodeJ3bActivePathResult", func() int {
+			return nodeJ3bActivePathResult(resolveRepositoryRoot())
+		})
 	})
 	t.Run("j3c readonly boundary exits zero", func(t *testing.T) {
-		wmCaptureStdout(t, func() { runJ3cReadOnlyBoundaryCheck() })
+		wmCaptureRunnerOutput(t, "j3cReadOnlyBoundaryResult", func() int {
+			return j3cReadOnlyBoundaryResult(resolveRepositoryRoot())
+		})
 	})
 }
 
@@ -482,7 +506,9 @@ func TestWMRunJ3bModelCheckInventoryRunner(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	output := wmCaptureStdout(t, func() { runJ3bModelCheckInventory(path) })
+	output := wmCaptureRunnerOutput(t, "j3bModelCheckInventoryResult", func() int {
+		return j3bModelCheckInventoryResult(path)
+	})
 	var report j3bmodelcheck.LegacyJ3bFactCoverageReport
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("inventory 报告必须可解码: %v", err)
@@ -500,7 +526,16 @@ func TestWMRunBusinessOwnerManifestCheckAgainstGraveyard(t *testing.T) {
 	if _, err := os.Stat(typesPath); err != nil {
 		t.Skip("migration-backup-1 墓地契约源缺席，无法直调 owner manifest runner")
 	}
-	wmCaptureStdout(t, func() { runBusinessOwnerManifestCheck() })
+	// owner manifest Result 与 runMaintenance 分发共用同一默认路径解析（env
+	// 回落 + 仓库根相对解析）；清单记录原始 Node 源位置作为 provenance，其不可
+	// 变事实源文件现居 final-archive 墓地。
+	wmCaptureRunnerOutput(t, "businessOwnerManifestResult", func() int {
+		return businessOwnerManifestResult(
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json")),
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", filepath.Join(archivedDBServiceSourceRoot, "db-service-types.ts"))),
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", filepath.Join(archivedDBServiceSourceRoot, "db-service-operation-access-mode.ts"))),
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", filepath.Join(archivedDBServiceSourceRoot, "db-service-handlers.ts"))))
+	})
 }
 
 func TestWMRunBusinessSQLiteHandoffCheckEnvFallback(t *testing.T) {
@@ -524,5 +559,7 @@ func TestWMRunBusinessSQLiteHandoffCheckEnvFallback(t *testing.T) {
 	// 形参为空时必须回落到环境变量（runner 的 env fallback 分支）。
 	t.Setenv("JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH", businessPath)
 	t.Setenv(j3bmodelcheck.SQLiteBootstrapEnv, j3bPath)
-	wmCaptureStdout(t, func() { runBusinessSQLiteHandoffCheck("", "") })
+	wmCaptureRunnerOutput(t, "businessSQLiteHandoffCheckResult", func() int {
+		return businessSQLiteHandoffCheckResult("", "")
+	})
 }

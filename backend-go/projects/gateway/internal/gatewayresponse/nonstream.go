@@ -975,6 +975,12 @@ func nonStreamJsonProtocolValidationAllowed(input HandleUpstreamResponseInput, e
 	if isKnownBinaryGatewayDownloadPath(requestPath) {
 		return false
 	}
+	// 图像生图响应（b64_json）体积随图片大小无上限增长，1MiB 校验窗口会把
+	// 大图整单拒绝（AI 问答 generate_image 的唯一数据通道就是本响应，被拒即
+	// 生图失败）。图像路径改走纯透传，错误体仍由 !OK() 分支缓冲诊断。
+	if imagePathPattern.MatchString(normalizeV1PrefixPath(requestPath)) {
+		return false
+	}
 	return endpointFamily != gatewayproto.EndpointFamilyUnknown || isKnownNonStreamJSONRequestPath(requestPath)
 }
 

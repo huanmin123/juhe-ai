@@ -11,8 +11,8 @@
 // Node service exactly; the exported entity snapshot structs mirror the Node
 // return shapes field by field.
 //
-// Downstream packages (gatewaypreauth/gatewayrouting/gatewayquota/
-// gatewayhybrid) consume the exported read-only methods; the underlying
+// Downstream packages (gatewaypreauth/gatewayrouting/gatewayquota) consume the
+// exported read-only methods; the underlying
 // read-model fetches are behind the ReadModels interface so every cache
 // behaviour is testable against mocks and future slices can supply their own
 // selectors. SQLReadModels provides the default dual-mode (SQLite +
@@ -24,10 +24,10 @@ import "encoding/json"
 // Route strategy modes mirror domain/route-strategy.ts RouteStrategyMode.
 const (
 	RouteStrategyModeNormal     = "normal"
-	RouteStrategyModeHybridSmart = "hybrid_smart"
 	RouteStrategyModeWeighted   = "weighted"
 	RouteStrategyModeFailover   = "failover"
 	RouteStrategyModeRoundRobin = "round_robin"
+	RouteStrategyModeMerge      = "merge"
 )
 
 // IsDynamicRouteStrategyMode mirrors isDynamicRouteStrategyMode: only
@@ -45,8 +45,8 @@ func IsDynamicRouteStrategyMode(mode string) bool {
 // empty values fall back to "normal".
 func NormalizeRouteStrategyMode(value string) string {
 	switch value {
-	case RouteStrategyModeNormal, RouteStrategyModeHybridSmart, RouteStrategyModeWeighted,
-		RouteStrategyModeFailover, RouteStrategyModeRoundRobin:
+	case RouteStrategyModeNormal, RouteStrategyModeWeighted,
+		RouteStrategyModeFailover, RouteStrategyModeRoundRobin, RouteStrategyModeMerge:
 		return value
 	default:
 		return RouteStrategyModeNormal
@@ -130,31 +130,18 @@ func (c RouteStrategyNormalRoutingConfig) Clone() RouteStrategyNormalRoutingConf
 	}
 }
 
-// ApiKeyHybridRoutingConfig mirrors the stored hybrid routing config object as
-// an opaque snapshot: the Node cache only ever deep-clones it
-// ({...config, levelRoutes: config.levelRoutes.map(r => ({...r}))}), which is
-// value-identical to a byte copy of the stored JSON.
-type ApiKeyHybridRoutingConfig struct {
-	Raw json.RawMessage `json:"-"`
-}
-
-// Clone mirrors the hybrid deep clone.
-func (c ApiKeyHybridRoutingConfig) Clone() ApiKeyHybridRoutingConfig {
-	return ApiKeyHybridRoutingConfig{Raw: append(json.RawMessage(nil), c.Raw...)}
-}
-
 // GatewayAPIKeyGroupBindingRow mirrors GatewayApiKeyGroupBindingRow
 // (storage/gateway-api-key.repository.ts).
 type GatewayAPIKeyGroupBindingRow struct {
-	ID               string `json:"id"`
-	APIKeyID         string `json:"api_key_id"`
-	SystemAccountID  string `json:"system_account_id"`
-	GroupID          string `json:"group_id"`
-	Priority         int    `json:"priority"`
-	Weight           int    `json:"weight"`
-	Status           string `json:"status"`
-	ProviderCode     string `json:"provider_code"`
-	GroupEnabled     int    `json:"group_enabled"`
+	ID              string `json:"id"`
+	APIKeyID        string `json:"api_key_id"`
+	SystemAccountID string `json:"system_account_id"`
+	GroupID         string `json:"group_id"`
+	Priority        int    `json:"priority"`
+	Weight          int    `json:"weight"`
+	Status          string `json:"status"`
+	ProviderCode    string `json:"provider_code"`
+	GroupEnabled    int    `json:"group_enabled"`
 }
 
 // Clone mirrors the per-binding spread clone.
@@ -164,21 +151,20 @@ func (b GatewayAPIKeyGroupBindingRow) Clone() GatewayAPIKeyGroupBindingRow { ret
 // route strategy and the owner's system account, plus the normalized runtime
 // route fields and the active group bindings.
 type GatewayAPIKeyRow struct {
-	ID                                    string                            `json:"id"`
-	SystemAccountID                       string                            `json:"system_account_id"`
-	RouteStrategyID                       string                            `json:"route_strategy_id"`
-	RouteStrategyMode                     string                            `json:"route_strategy_mode"`
-	RouteStrategyConfigJSON               *string                           `json:"route_strategy_config_json"`
-	SelectedGroupID                       string                            `json:"selected_group_id"`
-	Status                                string                            `json:"status"`
-	ExpiresAt                             *string                           `json:"expires_at"`
-	QuotaLimitsJSON                       *string                           `json:"quota_limits_json"`
-	NormalRoutingConfig                   *RouteStrategyNormalRoutingConfig `json:"normal_routing_config,omitempty"`
-	HybridRoutingConfig                   *ApiKeyHybridRoutingConfig        `json:"hybrid_routing_config,omitempty"`
-	SystemAccountImageGenerationEnabled   int                               `json:"system_account_image_generation_enabled"`
-	SystemAccountRequestLimitsJSON        *string                           `json:"system_account_request_limits_json,omitempty"`
-	SystemAccountRequestLimits            *UserRequestLimits                `json:"system_account_request_limits,omitempty"`
-	GroupBindings                         []GatewayAPIKeyGroupBindingRow    `json:"group_bindings,omitempty"`
+	ID                                  string                            `json:"id"`
+	SystemAccountID                     string                            `json:"system_account_id"`
+	RouteStrategyID                     string                            `json:"route_strategy_id"`
+	RouteStrategyMode                   string                            `json:"route_strategy_mode"`
+	RouteStrategyConfigJSON             *string                           `json:"route_strategy_config_json"`
+	SelectedGroupID                     string                            `json:"selected_group_id"`
+	Status                              string                            `json:"status"`
+	ExpiresAt                           *string                           `json:"expires_at"`
+	QuotaLimitsJSON                     *string                           `json:"quota_limits_json"`
+	NormalRoutingConfig                 *RouteStrategyNormalRoutingConfig `json:"normal_routing_config,omitempty"`
+	SystemAccountImageGenerationEnabled int                               `json:"system_account_image_generation_enabled"`
+	SystemAccountRequestLimitsJSON      *string                           `json:"system_account_request_limits_json,omitempty"`
+	SystemAccountRequestLimits          *UserRequestLimits                `json:"system_account_request_limits,omitempty"`
+	GroupBindings                       []GatewayAPIKeyGroupBindingRow    `json:"group_bindings,omitempty"`
 }
 
 // CloneGatewayAPIKeyRow mirrors cloneGatewayApiKeyRow.
@@ -191,10 +177,6 @@ func CloneGatewayAPIKeyRow(row GatewayAPIKeyRow) GatewayAPIKeyRow {
 	if row.NormalRoutingConfig != nil {
 		cloned := row.NormalRoutingConfig.Clone()
 		out.NormalRoutingConfig = &cloned
-	}
-	if row.HybridRoutingConfig != nil {
-		cloned := row.HybridRoutingConfig.Clone()
-		out.HybridRoutingConfig = &cloned
 	}
 	if row.SystemAccountRequestLimits != nil {
 		cloned := row.SystemAccountRequestLimits.Clone()
@@ -209,16 +191,16 @@ func CloneGatewayAPIKeyRow(row GatewayAPIKeyRow) GatewayAPIKeyRow {
 // Account access / type enums mirror domain/types.ts unions; they are kept as
 // plain strings so repository rows scan directly.
 const (
-	AccountAccessTypeOwner            = "owner"
+	AccountAccessTypeOwner             = "owner"
 	AccountAccessTypeAccountAuthorized = "account_authorized"
 	AccountAccessTypeGroupAuthorized   = "group_authorized"
 
 	GroupAccessTypeOwner      = "owner"
 	GroupAccessTypeAuthorized = "authorized"
 
-	AccountStatusActive              = "active"
+	AccountStatusActive               = "active"
 	AccountStatusTemporaryUnavailable = "temporary_unavailable"
-	AccountStatusRateLimited         = "rate_limited"
+	AccountStatusRateLimited          = "rate_limited"
 )
 
 // AccountModelMapping mirrors AccountModelMapping.
@@ -268,70 +250,70 @@ func (s AccountAPIKeyRuntimeSelectionState) Clone() AccountAPIKeyRuntimeSelectio
 // decrypted upstream credentials and therefore never leaves the process:
 // exactly like the Node service, it is only cached process-locally.
 type OpenAIAccountSecret struct {
-	ID                                 string                                  `json:"id"`
-	ConfigRevision                     *int64                                  `json:"configRevision,omitempty"`
-	DispatchRevision                   *int64                                  `json:"dispatchRevision,omitempty"`
-	ProviderCode                       string                                  `json:"providerCode"`
-	ProviderProtocolProfileID          string                                  `json:"providerProtocolProfileId"`
-	ProtocolCode                       string                                  `json:"protocolCode"`
-	ProtocolVersion                    string                                  `json:"protocolVersion"`
-	SystemAccountID                    string                                  `json:"systemAccountId"`
-	AccountOwnerSystemAccountID        string                                  `json:"accountOwnerSystemAccountId"`
-	GroupOwnerSystemAccountID          string                                  `json:"groupOwnerSystemAccountId"`
-	AccountAccessType                  string                                  `json:"accountAccessType"`
-	GroupAccessType                    string                                  `json:"groupAccessType"`
-	AccountAuthorizationID             *string                                 `json:"accountAuthorizationId,omitempty"`
-	AccountAuthorizationExpiresAt      *string                                 `json:"accountAuthorizationExpiresAt,omitempty"`
-	AccountAuthorizationQuotaLimited   *bool                                   `json:"accountAuthorizationQuotaLimited,omitempty"`
-	AccountAuthorizationSourceType     *string                                 `json:"accountAuthorizationSourceType,omitempty"`
-	AccountAuthorizationSourceTeamID   *string                                 `json:"accountAuthorizationSourceTeamId,omitempty"`
-	BindingSystemAccountID             *string                                 `json:"bindingSystemAccountId,omitempty"`
-	BoundGroupID                       *string                                 `json:"boundGroupId,omitempty"`
-	GroupAuthorizationID               *string                                 `json:"groupAuthorizationId,omitempty"`
-	GroupAuthorizationExpiresAt        *string                                 `json:"groupAuthorizationExpiresAt,omitempty"`
-	GroupAuthorizationQuotaLimited     *bool                                   `json:"groupAuthorizationQuotaLimited,omitempty"`
-	GroupAuthorizationSourceType       *string                                 `json:"groupAuthorizationSourceType,omitempty"`
-	GroupAuthorizationSourceTeamID     *string                                 `json:"groupAuthorizationSourceTeamId,omitempty"`
-	Name                               string                                  `json:"name"`
-	Type                               string                                  `json:"type"`
-	Status                             string                                  `json:"status"`
-	ConcurrencyLimit                   int                                     `json:"concurrencyLimit"`
-	Priority                           int                                     `json:"priority"`
-	SuperPriorityEnabled               bool                                    `json:"superPriorityEnabled"`
-	FallbackEnabled                    bool                                    `json:"fallbackEnabled"`
-	ClientCompatibility                string                                  `json:"clientCompatibility"`
-	SupportedEndpointModes             []string                                `json:"supportedEndpointModes,omitempty"`
-	SupportedModels                    []string                                `json:"supportedModels,omitempty"`
-	ModelMappings                      []AccountModelMapping                   `json:"modelMappings,omitempty"`
-	HealthCheckModel                   string                                  `json:"healthCheckModel"`
-	HealthCheckEndpointMode            string                                  `json:"healthCheckEndpointMode"`
-	QualityScore                       *float64                                `json:"qualityScore,omitempty"`
-	QualityState                       *string                                 `json:"qualityState,omitempty"`
-	QualityEwmaFirstTokenMs            *float64                                `json:"qualityEwmaFirstTokenMs,omitempty"`
-	CurrentConcurrency                 *int                                    `json:"currentConcurrency,omitempty"`
-	BaseURL                            string                                  `json:"baseUrl"`
-	APIKey                             string                                  `json:"apiKey"`
-	APIKeys                            []string                                `json:"apiKeys,omitempty"`
-	APIKeyRuntimeStates                []AccountAPIKeyRuntimeSelectionState    `json:"apiKeyRuntimeStates,omitempty"`
-	SelectedAPIKeyFingerprint          *string                                 `json:"selectedApiKeyFingerprint,omitempty"`
-	SelectedAPIKeyIndex                *int                                    `json:"selectedApiKeyIndex,omitempty"`
-	SelectedAPIKeyTransientGeneration  *string                                 `json:"selectedApiKeyTransientGeneration,omitempty"`
-	SelectedAPIKeyRecoveryStartedAt    *string                                 `json:"selectedApiKeyRecoveryStartedAt,omitempty"`
-	APIKeyRuntimeStateDisabled         bool                                    `json:"apiKeyRuntimeStateDisabled,omitempty"`
-	RefreshToken                       *string                                 `json:"refreshToken,omitempty"`
-	ClientID                           *string                                 `json:"clientId,omitempty"`
-	CredentialSourceAccountID          *string                                 `json:"credentialSourceAccountId,omitempty"`
-	ProxyProfileID                     *string                                 `json:"proxyProfileId,omitempty"`
-	ProxyURL                           *string                                 `json:"proxyUrl,omitempty"`
-	ProxyProfileUnavailable            *bool                                   `json:"proxyProfileUnavailable,omitempty"`
-	ProxyProfileErrorMessage           *string                                 `json:"proxyProfileErrorMessage,omitempty"`
-	CooldownUntil                      *string                                 `json:"cooldownUntil,omitempty"`
-	LastErrorMessage                   *string                                 `json:"lastErrorMessage,omitempty"`
-	StreamFailureCount                 int                                     `json:"streamFailureCount"`
-	StreamFailureWindowStartedAt       *string                                 `json:"streamFailureWindowStartedAt,omitempty"`
-	AccountExpiresAt                   *string                                 `json:"accountExpiresAt,omitempty"`
-	ExpiresAt                          *string                                 `json:"expiresAt,omitempty"`
-	Credentials                        map[string]any                          `json:"credentials"`
+	ID                                string                               `json:"id"`
+	ConfigRevision                    *int64                               `json:"configRevision,omitempty"`
+	DispatchRevision                  *int64                               `json:"dispatchRevision,omitempty"`
+	ProviderCode                      string                               `json:"providerCode"`
+	ProviderProtocolProfileID         string                               `json:"providerProtocolProfileId"`
+	ProtocolCode                      string                               `json:"protocolCode"`
+	ProtocolVersion                   string                               `json:"protocolVersion"`
+	SystemAccountID                   string                               `json:"systemAccountId"`
+	AccountOwnerSystemAccountID       string                               `json:"accountOwnerSystemAccountId"`
+	GroupOwnerSystemAccountID         string                               `json:"groupOwnerSystemAccountId"`
+	AccountAccessType                 string                               `json:"accountAccessType"`
+	GroupAccessType                   string                               `json:"groupAccessType"`
+	AccountAuthorizationID            *string                              `json:"accountAuthorizationId,omitempty"`
+	AccountAuthorizationExpiresAt     *string                              `json:"accountAuthorizationExpiresAt,omitempty"`
+	AccountAuthorizationQuotaLimited  *bool                                `json:"accountAuthorizationQuotaLimited,omitempty"`
+	AccountAuthorizationSourceType    *string                              `json:"accountAuthorizationSourceType,omitempty"`
+	AccountAuthorizationSourceTeamID  *string                              `json:"accountAuthorizationSourceTeamId,omitempty"`
+	BindingSystemAccountID            *string                              `json:"bindingSystemAccountId,omitempty"`
+	BoundGroupID                      *string                              `json:"boundGroupId,omitempty"`
+	GroupAuthorizationID              *string                              `json:"groupAuthorizationId,omitempty"`
+	GroupAuthorizationExpiresAt       *string                              `json:"groupAuthorizationExpiresAt,omitempty"`
+	GroupAuthorizationQuotaLimited    *bool                                `json:"groupAuthorizationQuotaLimited,omitempty"`
+	GroupAuthorizationSourceType      *string                              `json:"groupAuthorizationSourceType,omitempty"`
+	GroupAuthorizationSourceTeamID    *string                              `json:"groupAuthorizationSourceTeamId,omitempty"`
+	Name                              string                               `json:"name"`
+	Type                              string                               `json:"type"`
+	Status                            string                               `json:"status"`
+	ConcurrencyLimit                  int                                  `json:"concurrencyLimit"`
+	Priority                          int                                  `json:"priority"`
+	SuperPriorityEnabled              bool                                 `json:"superPriorityEnabled"`
+	FallbackEnabled                   bool                                 `json:"fallbackEnabled"`
+	ClientCompatibility               string                               `json:"clientCompatibility"`
+	SupportedEndpointModes            []string                             `json:"supportedEndpointModes,omitempty"`
+	SupportedModels                   []string                             `json:"supportedModels,omitempty"`
+	ModelMappings                     []AccountModelMapping                `json:"modelMappings,omitempty"`
+	HealthCheckModel                  string                               `json:"healthCheckModel"`
+	HealthCheckEndpointMode           string                               `json:"healthCheckEndpointMode"`
+	QualityScore                      *float64                             `json:"qualityScore,omitempty"`
+	QualityState                      *string                              `json:"qualityState,omitempty"`
+	QualityEwmaFirstTokenMs           *float64                             `json:"qualityEwmaFirstTokenMs,omitempty"`
+	CurrentConcurrency                *int                                 `json:"currentConcurrency,omitempty"`
+	BaseURL                           string                               `json:"baseUrl"`
+	APIKey                            string                               `json:"apiKey"`
+	APIKeys                           []string                             `json:"apiKeys,omitempty"`
+	APIKeyRuntimeStates               []AccountAPIKeyRuntimeSelectionState `json:"apiKeyRuntimeStates,omitempty"`
+	SelectedAPIKeyFingerprint         *string                              `json:"selectedApiKeyFingerprint,omitempty"`
+	SelectedAPIKeyIndex               *int                                 `json:"selectedApiKeyIndex,omitempty"`
+	SelectedAPIKeyTransientGeneration *string                              `json:"selectedApiKeyTransientGeneration,omitempty"`
+	SelectedAPIKeyRecoveryStartedAt   *string                              `json:"selectedApiKeyRecoveryStartedAt,omitempty"`
+	APIKeyRuntimeStateDisabled        bool                                 `json:"apiKeyRuntimeStateDisabled,omitempty"`
+	RefreshToken                      *string                              `json:"refreshToken,omitempty"`
+	ClientID                          *string                              `json:"clientId,omitempty"`
+	CredentialSourceAccountID         *string                              `json:"credentialSourceAccountId,omitempty"`
+	ProxyProfileID                    *string                              `json:"proxyProfileId,omitempty"`
+	ProxyURL                          *string                              `json:"proxyUrl,omitempty"`
+	ProxyProfileUnavailable           *bool                                `json:"proxyProfileUnavailable,omitempty"`
+	ProxyProfileErrorMessage          *string                              `json:"proxyProfileErrorMessage,omitempty"`
+	CooldownUntil                     *string                              `json:"cooldownUntil,omitempty"`
+	LastErrorMessage                  *string                              `json:"lastErrorMessage,omitempty"`
+	StreamFailureCount                int                                  `json:"streamFailureCount"`
+	StreamFailureWindowStartedAt      *string                              `json:"streamFailureWindowStartedAt,omitempty"`
+	AccountExpiresAt                  *string                              `json:"accountExpiresAt,omitempty"`
+	ExpiresAt                         *string                              `json:"expiresAt,omitempty"`
+	Credentials                       map[string]any                       `json:"credentials"`
 }
 
 // CloneStaticOpenAIAccountSecret mirrors cloneStaticOpenAIAccountSecret: the
@@ -384,16 +366,16 @@ type GroupSchedulingPolicy = map[string]any
 // GroupUsageAccessMetadata mirrors GroupUsageAccessMetadata
 // (storage/openai-account-selector.types.ts).
 type GroupUsageAccessMetadata struct {
-	GroupOwnerSystemAccountID        string                 `json:"groupOwnerSystemAccountId"`
-	ProviderCode                     string                 `json:"providerCode"`
-	GroupAccessType                  string                 `json:"groupAccessType"`
-	GroupType                        *string                `json:"groupType,omitempty"`
-	SchedulingPolicy                 *GroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
-	GroupAuthorizationID             *string                `json:"groupAuthorizationId,omitempty"`
-	GroupAuthorizationExpiresAt      *string                `json:"groupAuthorizationExpiresAt,omitempty"`
-	GroupAuthorizationQuotaLimited   *bool                  `json:"groupAuthorizationQuotaLimited,omitempty"`
-	GroupAuthorizationSourceType     *string                `json:"groupAuthorizationSourceType,omitempty"`
-	GroupAuthorizationSourceTeamID   *string                `json:"groupAuthorizationSourceTeamId,omitempty"`
+	GroupOwnerSystemAccountID      string                 `json:"groupOwnerSystemAccountId"`
+	ProviderCode                   string                 `json:"providerCode"`
+	GroupAccessType                string                 `json:"groupAccessType"`
+	GroupType                      *string                `json:"groupType,omitempty"`
+	SchedulingPolicy               *GroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
+	GroupAuthorizationID           *string                `json:"groupAuthorizationId,omitempty"`
+	GroupAuthorizationExpiresAt    *string                `json:"groupAuthorizationExpiresAt,omitempty"`
+	GroupAuthorizationQuotaLimited *bool                  `json:"groupAuthorizationQuotaLimited,omitempty"`
+	GroupAuthorizationSourceType   *string                `json:"groupAuthorizationSourceType,omitempty"`
+	GroupAuthorizationSourceTeamID *string                `json:"groupAuthorizationSourceTeamId,omitempty"`
 }
 
 // CloneGroupUsageAccessMetadata mirrors cloneGroupUsageAccessMetadata.
@@ -411,27 +393,27 @@ func CloneGroupUsageAccessMetadata(value GroupUsageAccessMetadata) GroupUsageAcc
 
 // OpenAIAccountsForGroupDiagnostics mirrors OpenAIAccountsForGroupDiagnostics.
 type OpenAIAccountsForGroupDiagnostics struct {
-	ScanLimit             int   `json:"scanLimit"`
-	FinalLimit            int   `json:"finalLimit"`
-	CandidateRowCount     int   `json:"candidateRowCount"`
-	ScannedRowCount       int   `json:"scannedRowCount"`
-	EligibleRowCount      int   `json:"eligibleRowCount"`
-	HydrationBatchCount   int   `json:"hydrationBatchCount"`
-	HydratedAccountCount  int   `json:"hydratedAccountCount"`
-	HydrationDroppedCount int   `json:"hydrationDroppedCount"`
-	FinalAccountCount     int   `json:"finalAccountCount"`
-	ScanLimitReached      bool  `json:"scanLimitReached"`
+	ScanLimit             int  `json:"scanLimit"`
+	FinalLimit            int  `json:"finalLimit"`
+	CandidateRowCount     int  `json:"candidateRowCount"`
+	ScannedRowCount       int  `json:"scannedRowCount"`
+	EligibleRowCount      int  `json:"eligibleRowCount"`
+	HydrationBatchCount   int  `json:"hydrationBatchCount"`
+	HydratedAccountCount  int  `json:"hydratedAccountCount"`
+	HydrationDroppedCount int  `json:"hydrationDroppedCount"`
+	FinalAccountCount     int  `json:"finalAccountCount"`
+	ScanLimitReached      bool `json:"scanLimitReached"`
 }
 
 // OpenAIAccountsForGroupResult mirrors OpenAIAccountsForGroupResult.
 type OpenAIAccountsForGroupResult struct {
-	Accounts    []OpenAIAccountSecret             `json:"accounts"`
+	Accounts    []OpenAIAccountSecret              `json:"accounts"`
 	Diagnostics *OpenAIAccountsForGroupDiagnostics `json:"diagnostics,omitempty"`
 }
 
 // CachedOpenAIAccountsForGroupOptions mirrors CachedOpenAIAccountsForGroupOptions.
 type CachedOpenAIAccountsForGroupOptions struct {
-	RequestedModel         string
+	RequestedModel          string
 	RequestedEndpointFamily string
 }
 
@@ -525,12 +507,12 @@ const (
 // (modules/db-service/db-service-types.ts): the full validated runtime
 // snapshot served to the dispatch path.
 type GatewayRuntime struct {
-	APIKey                     *GatewayAPIKeyRow                 `json:"apiKey,omitempty"`
-	Settings                   GatewaySettings                   `json:"settings"`
-	GroupAccess                *GroupUsageAccessMetadata         `json:"groupAccess,omitempty"`
-	Accounts                   []OpenAIAccountSecret             `json:"accounts"`
+	APIKey                     *GatewayAPIKeyRow                  `json:"apiKey,omitempty"`
+	Settings                   GatewaySettings                    `json:"settings"`
+	GroupAccess                *GroupUsageAccessMetadata          `json:"groupAccess,omitempty"`
+	Accounts                   []OpenAIAccountSecret              `json:"accounts"`
 	AccountDispatchDiagnostics *OpenAIAccountsForGroupDiagnostics `json:"accountDispatchDiagnostics,omitempty"`
-	ResponseInspectionPolicies []ResponseInspectionPolicySummary `json:"responseInspectionPolicies,omitempty"`
+	ResponseInspectionPolicies []ResponseInspectionPolicySummary  `json:"responseInspectionPolicies,omitempty"`
 }
 
 // ProviderModelCatalogItem mirrors ProviderModelCatalogItem
@@ -540,62 +522,62 @@ type GatewayRuntime struct {
 // Model), so the deep billing structures stay raw JSON exactly as delivered by
 // the loader; the flat pricing fields are mirrored field by field.
 type ProviderModelCatalogItem struct {
-	ID                                       *string          `json:"id,omitempty"`
-	Scope                                    string           `json:"scope"`
-	Status                                   string           `json:"status"`
-	ProviderCode                             string           `json:"providerCode"`
-	Model                                    string           `json:"model"`
-	Mode                                     *string          `json:"mode,omitempty"`
-	CatalogOrder                             *int             `json:"catalogOrder,omitempty"`
-	ReleaseDate                              *string          `json:"releaseDate,omitempty"`
-	ShutdownDate                             *string          `json:"shutdownDate,omitempty"`
-	SupportedAPIProtocols                    []string         `json:"supportedApiProtocols"`
-	InputModalities                          []string         `json:"inputModalities"`
-	OutputModalities                         []string         `json:"outputModalities"`
-	SupportedTools                           []string         `json:"supportedTools"`
-	GenerationParameterCapabilities          json.RawMessage  `json:"generationParameterCapabilities,omitempty"`
-	InputUsdPer1M                            *float64         `json:"inputUsdPer1M,omitempty"`
-	OutputUsdPer1M                           *float64         `json:"outputUsdPer1M,omitempty"`
-	CachedInputUsdPer1M                      *float64         `json:"cachedInputUsdPer1M,omitempty"`
-	CacheWriteUsdPer1M                       *float64         `json:"cacheWriteUsdPer1M,omitempty"`
-	CacheWrite1hUsdPer1M                     *float64         `json:"cacheWrite1hUsdPer1M,omitempty"`
-	CacheStorageUsdPer1MPerHour              *float64         `json:"cacheStorageUsdPer1MPerHour,omitempty"`
-	ServiceTierPrices                        json.RawMessage  `json:"serviceTierPrices,omitempty"`
-	ImageInputUsdPer1M                       *float64         `json:"imageInputUsdPer1M,omitempty"`
-	CachedImageInputUsdPer1M                 *float64         `json:"cachedImageInputUsdPer1M,omitempty"`
-	ImageOutputUsdPer1M                      *float64         `json:"imageOutputUsdPer1M,omitempty"`
-	AudioInputUsdPer1M                       *float64         `json:"audioInputUsdPer1M,omitempty"`
-	AudioOutputUsdPer1M                      *float64         `json:"audioOutputUsdPer1M,omitempty"`
-	OutputUsdPerImage                        *float64         `json:"outputUsdPerImage,omitempty"`
-	ContextWindowTokens                      *int64           `json:"contextWindowTokens,omitempty"`
-	MaxInputTokens                           *int64           `json:"maxInputTokens,omitempty"`
-	MaxOutputTokens                          *int64           `json:"maxOutputTokens,omitempty"`
-	MaxTokens                                *int64           `json:"maxTokens,omitempty"`
-	LongContextInputTokenThreshold           *int64           `json:"longContextInputTokenThreshold,omitempty"`
-	LongContextInputTokenThresholdInclusive  *bool            `json:"longContextInputTokenThresholdInclusive,omitempty"`
-	LongContextInputCostMultiplier           *float64         `json:"longContextInputCostMultiplier,omitempty"`
-	LongContextOutputCostMultiplier          *float64         `json:"longContextOutputCostMultiplier,omitempty"`
-	SupportsPromptCaching                    bool             `json:"supportsPromptCaching"`
-	SupportedServiceTiers                    []string         `json:"supportedServiceTiers"`
-	SupportedReasoningEfforts                []string         `json:"supportedReasoningEfforts"`
-	DefaultReasoningEffort                   *string          `json:"defaultReasoningEffort,omitempty"`
-	CodexSupportedReasoningLevels            json.RawMessage  `json:"codexSupportedReasoningLevels,omitempty"`
-	CodexDefaultReasoningLevel               json.RawMessage  `json:"codexDefaultReasoningLevel,omitempty"`
-	CodexMultiAgentVersion                   *string          `json:"codexMultiAgentVersion,omitempty"`
-	SupportsServiceTier                      bool             `json:"supportsServiceTier"`
-	CatalogVisible                           *bool            `json:"catalogVisible,omitempty"`
-	SourcePricingCurrency                    *string          `json:"sourcePricingCurrency,omitempty"`
-	SourceExchangeRateToUsd                  *float64         `json:"sourceExchangeRateToUsd,omitempty"`
-	SourceExchangeRateDate                   *string          `json:"sourceExchangeRateDate,omitempty"`
-	SourcePricingNote                        *string          `json:"sourcePricingNote,omitempty"`
-	Source                                   string           `json:"source"`
-	SystemAccountID                          *string          `json:"systemAccountId,omitempty"`
-	PricingNotes                             *string          `json:"pricingNotes,omitempty"`
-	CapabilityNotes                          *string          `json:"capabilityNotes,omitempty"`
-	Notes                                    *string          `json:"notes,omitempty"`
-	CreatedAt                                *string          `json:"createdAt,omitempty"`
-	UpdatedAt                                *string          `json:"updatedAt,omitempty"`
-	CatalogDisplay                           json.RawMessage  `json:"catalogDisplay,omitempty"`
+	ID                                      *string         `json:"id,omitempty"`
+	Scope                                   string          `json:"scope"`
+	Status                                  string          `json:"status"`
+	ProviderCode                            string          `json:"providerCode"`
+	Model                                   string          `json:"model"`
+	Mode                                    *string         `json:"mode,omitempty"`
+	CatalogOrder                            *int            `json:"catalogOrder,omitempty"`
+	ReleaseDate                             *string         `json:"releaseDate,omitempty"`
+	ShutdownDate                            *string         `json:"shutdownDate,omitempty"`
+	SupportedAPIProtocols                   []string        `json:"supportedApiProtocols"`
+	InputModalities                         []string        `json:"inputModalities"`
+	OutputModalities                        []string        `json:"outputModalities"`
+	SupportedTools                          []string        `json:"supportedTools"`
+	GenerationParameterCapabilities         json.RawMessage `json:"generationParameterCapabilities,omitempty"`
+	InputUsdPer1M                           *float64        `json:"inputUsdPer1M,omitempty"`
+	OutputUsdPer1M                          *float64        `json:"outputUsdPer1M,omitempty"`
+	CachedInputUsdPer1M                     *float64        `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUsdPer1M                      *float64        `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUsdPer1M                    *float64        `json:"cacheWrite1hUsdPer1M,omitempty"`
+	CacheStorageUsdPer1MPerHour             *float64        `json:"cacheStorageUsdPer1MPerHour,omitempty"`
+	ServiceTierPrices                       json.RawMessage `json:"serviceTierPrices,omitempty"`
+	ImageInputUsdPer1M                      *float64        `json:"imageInputUsdPer1M,omitempty"`
+	CachedImageInputUsdPer1M                *float64        `json:"cachedImageInputUsdPer1M,omitempty"`
+	ImageOutputUsdPer1M                     *float64        `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUsdPer1M                      *float64        `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUsdPer1M                     *float64        `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUsdPerImage                       *float64        `json:"outputUsdPerImage,omitempty"`
+	ContextWindowTokens                     *int64          `json:"contextWindowTokens,omitempty"`
+	MaxInputTokens                          *int64          `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens                         *int64          `json:"maxOutputTokens,omitempty"`
+	MaxTokens                               *int64          `json:"maxTokens,omitempty"`
+	LongContextInputTokenThreshold          *int64          `json:"longContextInputTokenThreshold,omitempty"`
+	LongContextInputTokenThresholdInclusive *bool           `json:"longContextInputTokenThresholdInclusive,omitempty"`
+	LongContextInputCostMultiplier          *float64        `json:"longContextInputCostMultiplier,omitempty"`
+	LongContextOutputCostMultiplier         *float64        `json:"longContextOutputCostMultiplier,omitempty"`
+	SupportsPromptCaching                   bool            `json:"supportsPromptCaching"`
+	SupportedServiceTiers                   []string        `json:"supportedServiceTiers"`
+	SupportedReasoningEfforts               []string        `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort                  *string         `json:"defaultReasoningEffort,omitempty"`
+	CodexSupportedReasoningLevels           json.RawMessage `json:"codexSupportedReasoningLevels,omitempty"`
+	CodexDefaultReasoningLevel              json.RawMessage `json:"codexDefaultReasoningLevel,omitempty"`
+	CodexMultiAgentVersion                  *string         `json:"codexMultiAgentVersion,omitempty"`
+	SupportsServiceTier                     bool            `json:"supportsServiceTier"`
+	CatalogVisible                          *bool           `json:"catalogVisible,omitempty"`
+	SourcePricingCurrency                   *string         `json:"sourcePricingCurrency,omitempty"`
+	SourceExchangeRateToUsd                 *float64        `json:"sourceExchangeRateToUsd,omitempty"`
+	SourceExchangeRateDate                  *string         `json:"sourceExchangeRateDate,omitempty"`
+	SourcePricingNote                       *string         `json:"sourcePricingNote,omitempty"`
+	Source                                  string          `json:"source"`
+	SystemAccountID                         *string         `json:"systemAccountId,omitempty"`
+	PricingNotes                            *string         `json:"pricingNotes,omitempty"`
+	CapabilityNotes                         *string         `json:"capabilityNotes,omitempty"`
+	Notes                                   *string         `json:"notes,omitempty"`
+	CreatedAt                               *string         `json:"createdAt,omitempty"`
+	UpdatedAt                               *string         `json:"updatedAt,omitempty"`
+	CatalogDisplay                          json.RawMessage `json:"catalogDisplay,omitempty"`
 }
 
 // CloneProviderModelCatalogItems mirrors the per-item {...item} shallow clone.

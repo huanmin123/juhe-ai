@@ -262,7 +262,7 @@ API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.t
 - PG 模式下 API Key 摘要会读取真实绑定路由策略及其策略分组；列表按当前页 Key 批量读取 `juhe_stats` 预聚合 `usage`，不再通过前端独立用量请求补发，也不扫描使用记录明细。
 - PG 模式下删除 API Key 会删除业务库中的 key 和绑定，并投递关联记录清理目标；record-maintenance 通过 PostgreSQL usage / dataset / stats 清理实现推进，不再因 PostgreSQL driver 跳过历史数据清理。
 - PG 模式下 API Key 列表 keyword 搜索使用 `matched_api_key_ids` materialized CTE 先按 `lower(name) COLLATE "C"` 前缀范围命中名称索引，再按原列表排序输出；如果直接在主查询中叠加 keyword 过滤，PostgreSQL 可能优先选择列表排序索引后过滤名称，导致大表搜索退化。
-- PG 模式下 API Key 创建 / 更新混合路由配置会通过 async provider 与模型目录读取校验评分模型、质量评分模型和等级目标模型；`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下混合路由 API Key 的 HTTP 创建、更新和删除。
+- （历史口径）已删除的混合智能路由 API Key 配置曾在 PG 模式下通过 async provider 与模型目录读取校验评分模型、质量评分模型和等级目标模型；`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下相关 API Key 的 HTTP 创建、更新和删除。该校验路径已随混合智能路由删除，不再适用于新配置。
 - `backend/src/modules/api-keys/api-keys.routes.ts` 的列表、secret、创建、更新、刷新密钥和删除已切到 async repository。
 - `pnpm --filter juhe-ai-backend test:api-key-management-driver` 已覆盖本地 SQLite 和远端 PostgreSQL / Redis URL 下的 API Key 管理读写、网关 Key 校验和 `read_gateway_runtime` Key 读取入口一致性。
 - `pnpm --filter juhe-ai-backend test:performance-system-api-smoke` 已扩展覆盖 accounts POST / GET 列表 / 详情 / options / PATCH / clearFailureState / DELETE、authorizations `POST` / `GET /:id/usage` / `PATCH /:id` / `PATCH /:id/expire` / `DELETE /:id` 以及 api-keys GET / POST / PATCH / secret / refresh-key / DELETE 的最小 HTTP 链路。

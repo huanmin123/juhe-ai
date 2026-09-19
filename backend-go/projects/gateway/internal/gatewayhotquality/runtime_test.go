@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 )
 
 func TestGatewayHotQualityRuntimeSingletonIdentity(t *testing.T) {
@@ -172,7 +170,7 @@ func TestOrderGatewayAccountsByHotQualityEmpty(t *testing.T) {
 	result, err := OrderGatewayAccountsByHotQuality(context.Background(), runtime, GatewayHotQualityCandidateOrderInput[GatewayHotQualityAccountView]{
 		Accounts:    []GatewayHotQualityAccountView{},
 		Base:        baseView,
-		Mode:        gatewayhybrid.HotQualityModeSpeedFirst,
+		Mode:        HotQualityModeSpeedFirst,
 		RequestLane: "text",
 		NowMs:       int64Ptr(1_000_000),
 	})
@@ -202,7 +200,7 @@ func TestOrderGatewayAccountsByHotQualityExplorationReservation(t *testing.T) {
 	result, err := OrderGatewayAccountsByHotQuality(context.Background(), runtime, GatewayHotQualityCandidateOrderInput[GatewayHotQualityAccountView]{
 		Accounts:                     accounts,
 		Base:                         baseView,
-		Mode:                         gatewayhybrid.HotQualityModeSpeedFirst,
+		Mode:                         HotQualityModeSpeedFirst,
 		SystemAccountID:              "sys",
 		GroupID:                      "g1",
 		RequestLane:                  "text",
@@ -272,7 +270,7 @@ func TestOrderGatewayAccountsByHotQualityExplorationContended(t *testing.T) {
 	result, err := OrderGatewayAccountsByHotQuality(context.Background(), runtime, GatewayHotQualityCandidateOrderInput[GatewayHotQualityAccountView]{
 		Accounts:                     []GatewayHotQualityAccountView{accA, accB},
 		Base:                         baseView,
-		Mode:                         gatewayhybrid.HotQualityModeSpeedFirst,
+		Mode:                         HotQualityModeSpeedFirst,
 		SystemAccountID:              "sys",
 		GroupID:                      "g1",
 		RequestLane:                  "text",
@@ -316,7 +314,7 @@ func TestOrderGatewayAccountsByHotQualityPrimaryWithoutCredit(t *testing.T) {
 	result, err := OrderGatewayAccountsByHotQuality(context.Background(), runtime, GatewayHotQualityCandidateOrderInput[GatewayHotQualityAccountView]{
 		Accounts:        []GatewayHotQualityAccountView{accA},
 		Base:            baseView,
-		Mode:            gatewayhybrid.HotQualityModeCostFirst,
+		Mode:            HotQualityModeCostFirst,
 		SystemAccountID: "sys",
 		GroupID:         "g1",
 		RequestLane:     "text",

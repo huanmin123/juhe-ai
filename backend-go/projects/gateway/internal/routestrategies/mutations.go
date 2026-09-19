@@ -45,15 +45,13 @@ type MutationInput struct {
 
 	NormalConfigRaw any
 	HasNormalConfig bool
-	HybridConfigRaw any
-	HasHybridConfig bool
 }
 
 // Empty reports whether no patchable field is present (Node refine:
 // 请提供要修改的策略路由内容).
 func (m MutationInput) Empty() bool {
 	return m.Name == nil && !m.HasDescription && m.Mode == nil && m.Status == nil &&
-		!m.HasBindings && !m.HasNormalConfig && !m.HasHybridConfig
+		!m.HasBindings && !m.HasNormalConfig
 }
 
 // Change mirrors RouteStrategyPatchChange with raw values (stringified at the
@@ -91,7 +89,7 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	if !input.HasBindings || len(input.Bindings) == 0 {
 		return nil, &ValidationError{Message: "策略路由至少需要绑定一个分组"}
 	}
-	normalConfig, hybridConfig, err := normalizeConfigForWrite(input.NormalConfigRaw, input.HybridConfigRaw, mode)
+	normalConfig, err := normalizeConfigForWrite(input.NormalConfigRaw, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +105,7 @@ func (s *Store) Create(ctx context.Context, input MutationInput, access AccessSc
 	if err != nil {
 		return nil, err
 	}
-	configJSON := routeStrategyConfigJSON(normalConfig, hybridConfig)
+	configJSON := routeStrategyConfigJSON(normalConfig)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -234,7 +232,7 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		return conflict()
 	}
 
-	currentNormal, currentHybrid, err := parseStoredConfig(current.configJSON)
+	currentNormal, err := parseStoredConfig(current.configJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -303,27 +301,23 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 		}
 	}
 
-	// Config recompute when mode or either config is present (Node
+	// Config recompute when mode or the scheduling config is present (Node
 	// routeStrategyScalarPatch config block).
-	if input.Mode != nil || input.HasNormalConfig || input.HasHybridConfig {
-		normalInput := input.normalInput(mode, currentNormal)
-		hybridInput := input.hybridInput(mode, currentHybrid)
-		nextNormal, nextHybrid, configErr := normalizeConfigForWrite(normalInput, hybridInput, mode)
+	if input.Mode != nil || input.HasNormalConfig {
+		normalInput := input.normalInput(currentNormal)
+		nextNormal, configErr := normalizeConfigForWrite(normalInput, mode)
 		if configErr != nil {
 			return nil, configErr
 		}
-		nextJSON := routeStrategyConfigJSON(nextNormal, nextHybrid)
+		nextJSON := routeStrategyConfigJSON(nextNormal)
 		// The current projection keys the scheduling config off
-		// ModeSupportsSchedulingPreference — normal/weighted/failover/round_robin
-		// all own normalRoutingConfig now (typedToRaw(nil) stays nil); only the
-		// hybrid side still goes through rawForMode.
+		// ModeSupportsSchedulingPreference — every mode owns
+		// normalRoutingConfig now (typedToRaw(nil) stays nil).
 		currentNormalRaw := any(nil)
 		if ModeSupportsSchedulingPreference(current.mode) {
 			currentNormalRaw = typedToRaw(currentNormal)
 		}
-		currentJSON, jsonErr := routeStrategyConfigJSONFromRaw(
-			currentNormalRaw,
-			rawForMode(current.mode, ModeHybridSmart, currentHybrid))
+		currentJSON, jsonErr := routeStrategyConfigJSONFromRaw(currentNormalRaw)
 		if jsonErr != nil {
 			return nil, jsonErr
 		}
@@ -339,16 +333,6 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 				rowPatch["normalRoutingConfig"] = nil
 			} else {
 				rowPatch["normalRoutingConfig"] = nextNormalForMode
-			}
-		}
-		currentHybridForMode := hybridConfigForMode(current.mode, currentHybrid)
-		nextHybridForMode := hybridConfigForMode(mode, nextHybrid)
-		if !configValuesEqual(currentHybridForMode, nextHybridForMode) {
-			addChange("hybridRoutingConfig", currentHybridForMode, nextHybridForMode)
-			if nextHybridForMode == nil {
-				rowPatch["hybridRoutingConfig"] = nil
-			} else {
-				rowPatch["hybridRoutingConfig"] = nextHybridForMode
 			}
 		}
 	}
@@ -451,47 +435,14 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	}, nil
 }
 
-// normalInput mirrors the config recompute input selection: hybrid_smart never
-// carries the scheduling preference (explicit input reaches the validator for
-// 混合智能路由不支持调度偏好, absent input stays nil), while the preference-carrying
-// modes (normal/weighted/failover/round_robin) feed the current config forward
-// when no new value arrived — patches keep the scheduling config across mode
-// switches inside that group.
-func (m MutationInput) normalInput(mode string, currentNormal *NormalRoutingConfig) any {
-	if mode == ModeHybridSmart {
-		if m.HasNormalConfig {
-			return m.NormalConfigRaw
-		}
-		return nil
-	}
+// normalInput mirrors the config recompute input selection: the
+// preference-carrying modes feed the current config forward when no new value
+// arrived — patches keep the scheduling config across mode switches.
+func (m MutationInput) normalInput(currentNormal *NormalRoutingConfig) any {
 	if m.HasNormalConfig {
 		return m.NormalConfigRaw
 	}
 	return typedToRaw(currentNormal)
-}
-
-func (m MutationInput) hybridInput(mode string, currentHybrid *HybridRoutingConfig) any {
-	if mode != ModeHybridSmart {
-		if m.HasHybridConfig {
-			return m.HybridConfigRaw
-		}
-		return nil
-	}
-	if m.HasHybridConfig {
-		return m.HybridConfigRaw
-	}
-	return typedToRaw(currentHybrid)
-}
-
-// rawForMode passes the current hybrid config raw through only when the stored
-// mode is hybrid_smart; the Patch hybrid side is the function's only remaining
-// call site (the normal side keys off ModeSupportsSchedulingPreference
-// directly).
-func rawForMode(rowMode string, wantedMode string, value any) any {
-	if rowMode != wantedMode {
-		return nil
-	}
-	return typedToRaw(value)
 }
 
 func typedToRaw(value any) any {
@@ -507,28 +458,21 @@ func typedToRaw(value any) any {
 	return decoded
 }
 
-// routeStrategyConfigJSONFromRaw renders the stored JSON shape from raw
-// config maps (re-normalized like the source does).
-func routeStrategyConfigJSONFromRaw(normalRaw, hybridRaw any) (sql.NullString, error) {
+// routeStrategyConfigJSONFromRaw renders the stored JSON shape from the raw
+// normal config map (re-normalized like the source does).
+func routeStrategyConfigJSONFromRaw(normalRaw any) (sql.NullString, error) {
 	normal, err := normalizeNormalRoutingConfig(normalRaw)
 	if err != nil {
 		return sql.NullString{}, err
 	}
-	hybrid := (*HybridRoutingConfig)(nil)
-	if hybridRaw != nil {
-		hybrid, err = normalizeHybridRoutingConfig(hybridRaw)
-		if err != nil {
-			return sql.NullString{}, err
-		}
-	}
-	return routeStrategyConfigJSON(normal, hybrid), nil
+	return routeStrategyConfigJSON(normal), nil
 }
 
 // gatewayRuntimeChanged mirrors routeStrategyGatewayRuntimeChanged.
 func gatewayRuntimeChanged(fields []string) bool {
 	for _, field := range fields {
 		switch field {
-		case "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig":
+		case "mode", "status", "groupBindings", "normalRoutingConfig":
 			return true
 		}
 	}

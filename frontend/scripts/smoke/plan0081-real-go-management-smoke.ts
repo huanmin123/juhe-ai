@@ -235,7 +235,7 @@ interface GroupDetailRecord extends GroupRecord {
   accountIds: string[]
 }
 
-type RouteStrategyMode = 'normal' | 'hybrid_smart' | 'weighted' | 'failover' | 'round_robin'
+type RouteStrategyMode = 'normal' | 'weighted' | 'failover' | 'round_robin' | 'merge'
 
 interface RouteStrategyListItem {
   id: string
@@ -2113,7 +2113,7 @@ function assertApiKeyListItem(value: unknown, scope: 'admin' | 'self', label: st
   }
   if (Object.hasOwn(value, 'routeStrategyMode')) {
     expect(
-      ['normal', 'hybrid_smart', 'weighted', 'failover', 'round_robin'].includes(String(value.routeStrategyMode)),
+      ['normal', 'weighted', 'failover', 'round_robin', 'merge'].includes(String(value.routeStrategyMode)),
       `${label}.routeStrategyMode must be a valid route strategy mode`
     )
   }
@@ -2198,7 +2198,6 @@ function assertRouteStrategyListItem(value: unknown, index: number): RouteStrate
   expect(isNonNegativeInteger(value.bindingCount), `${label}.bindingCount must be a non-negative integer`)
   expect(isNonNegativeInteger(value.apiKeyCount), `${label}.apiKeyCount must be a non-negative integer`)
   expect(!Object.hasOwn(value, 'groupBindings'), `${label} must not expose groupBindings`)
-  expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig`)
   assertRouteStrategyConfigForMode(value, label, false)
   return value as unknown as RouteStrategyListItem
 }
@@ -2243,26 +2242,17 @@ function assertRouteStrategyConfigForMode(
   label: string,
   detail: boolean
 ): void {
-  // 调度偏好（历史命名 normalRoutingConfig）自通用化起由 normal/weighted/failover/round_robin 共享；仅 hybrid_smart 禁止。
-  if (value.mode === 'hybrid_smart') {
-    expect(!Object.hasOwn(value, 'normalRoutingConfig'), `${label} must not expose normalRoutingConfig for hybrid_smart mode`)
-    if (detail) {
-      expect(isRecord(value.hybridRoutingConfig), `${label}.hybridRoutingConfig must be an object for hybrid_smart mode`)
-      return
-    }
-    expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig for hybrid_smart mode`)
-    return
-  }
+  // 调度偏好（历史命名 normalRoutingConfig）自通用化起由 normal/weighted/failover/round_robin/merge 五种模式共享。
+  void detail
   expect(isRecord(value.normalRoutingConfig), `${label}.normalRoutingConfig must be an object for ${String(value.mode)} mode`)
-  expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig for ${String(value.mode)} mode`)
 }
 
 function isRouteStrategyMode(value: unknown): value is RouteStrategyMode {
   return value === 'normal'
-    || value === 'hybrid_smart'
     || value === 'weighted'
     || value === 'failover'
     || value === 'round_robin'
+    || value === 'merge'
 }
 
 function assertClientIPStatsList(value: unknown): ClientIPStatsListResult {

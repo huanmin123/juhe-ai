@@ -187,12 +187,16 @@ func constrainChatModelOptionForAccounts(option *ChatModelOption, model string, 
 	return &constrained
 }
 
-// hasChatImageGenerationRoute mirrors hasChatImageGenerationRoute.
+// hasChatImageGenerationRoute mirrors hasChatImageGenerationRoute: 任一注册
+// 图像模型存在 api_key 类型账户即视为有生图路由。镜像实现见
+// cmd/juhe-ai-gateway/chain_chat_tool_capabilities.go chatToolHasImageGenerationRoute。
 func (rt *chatRoutes) hasChatImageGenerationRoute(groupIDs []string, systemAccountID string) bool {
-	accounts := rt.accountsForGroups(groupIDs, systemAccountID, "gpt-image-2", "")
-	for _, account := range accounts {
-		if account.Type == "api_key" {
-			return true
+	for _, model := range SupportedChatImageModels() {
+		accounts := rt.accountsForGroups(groupIDs, systemAccountID, string(model), "")
+		for _, account := range accounts {
+			if account.Type == "api_key" {
+				return true
+			}
 		}
 	}
 	return false

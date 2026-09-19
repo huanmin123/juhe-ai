@@ -90,9 +90,6 @@ func ResolveAccountModelMapping(account *RuntimeAccount, requestedModel, sourceE
 	if mapping.UpstreamModel == mapping.SourceModel && mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
 		return nil
 	}
-	if mapping.RuntimeSource == RuntimeSourceExplicitHybridRoute {
-		return nil
-	}
 	if !isOpenAIModelMappingRuntimeConversionSupported(mapping, account) {
 		return nil
 	}

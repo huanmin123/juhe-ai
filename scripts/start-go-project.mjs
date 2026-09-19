@@ -63,18 +63,6 @@ function configured(name) {
   return { defined: false, value: '' }
 }
 
-function resolveStore(componentName, env, runtimeMode, hasPerformanceHints) {
-  const explicit = configured(componentName).value.trim().toLowerCase()
-  const driver = configured('JUHE_AI_DATABASE_DRIVER').value.trim().toLowerCase()
-  const inferred = runtimeMode === 'performance' || (!runtimeMode && hasPerformanceHints) ? 'postgres' : 'sqlite'
-  const store = explicit || driver || inferred
-  if (store !== 'sqlite' && store !== 'postgres') {
-    throw new Error(`${componentName} must be sqlite or postgres.`)
-  }
-  env[componentName] = store
-  return store
-}
-
 function absoluteBackendPath(value, fallback) {
   const selected = String(value || fallback).trim()
   return isAbsolute(selected) ? selected : resolve(backendRoot, selected)
@@ -183,36 +171,41 @@ for (const name of removedCrossProcessEnvNames) delete env[name]
 // 2026-09-19 J1/worker 启用开关移除：J1 账户健康检查与 worker 任务族改为
 // 强制常开（Go 侧缺配置 fail-fast），历史开关值即使残留在历史 .env 或父进程
 // 环境中也不得进入 Go 子进程，避免制造仍可开关的假象。
+// 同日零配置收口：7 个 worker 任务族开关与 6 个 retention 子开关一并删除、
+// 任务恒开，残留值同款处理，不进入 Go 子进程。
 const removedLegacySwitchEnvNames = [
   'JUHE_AI_ACCOUNT_HEALTH_ENABLED',
-  'JUHE_AI_JOBS_WORKER_ENABLED'
+  'JUHE_AI_JOBS_WORKER_ENABLED',
+  'JUHE_AI_JOBS_STATS_ENABLED',
+  'JUHE_AI_JOBS_OAUTH_ENABLED',
+  'JUHE_AI_JOBS_TASK_RUNS_ENABLED',
+  'JUHE_AI_JOBS_USAGE_WRITER_ENABLED',
+  'JUHE_AI_JOBS_BALANCE_DETECT_ENABLED',
+  'JUHE_AI_JOBS_RETENTION_ENABLED',
+  'JUHE_AI_JOBS_RETENTION_CHAT_ENABLED',
+  'JUHE_AI_JOBS_RETENTION_DATA_ENABLED',
+  'JUHE_AI_JOBS_RETENTION_RECORD_MAINTENANCE_ENABLED',
+  'JUHE_AI_JOBS_RETENTION_EXPIRED_ACCOUNT_ENABLED',
+  'JUHE_AI_JOBS_RETENTION_API_KEY_RETRY_ENABLED',
+  'JUHE_AI_JOBS_RETENTION_ACCOUNT_RETRY_ENABLED',
+  'JUHE_AI_JOBS_PROBE_ENABLED'
 ]
 for (const name of removedLegacySwitchEnvNames) delete env[name]
 
-const runtimeMode = String(env.JUHE_AI_RUNTIME_MODE ?? '').trim().toLowerCase()
-const hasPerformanceHints = ['JUHE_AI_POSTGRES_URL', 'JUHE_AI_REDIS_CACHE_URL', 'JUHE_AI_REDIS_STATE_URL', 'JUHE_AI_REDIS_QUEUE_URL']
-  .some((name) => Boolean(configured(name).value.trim()))
-
+// 2026-09-19 零配置收口：store 推断与 SQLite 路径注入表删除。Go 侧在未配置时
+// 自动派生：路径类 env 落 JUHE_AI_DATA_DIR（缺省 ./data），*_STORE 跟随
+// JUHE_AI_DATABASE_DRIVER / JUHE_AI_RUNTIME_MODE，*_INSTANCE_ID 缺省主机名。
+// launcher 只保留 DATA_DIR 与显式 env 的透传，以及 listen address / log dir
+// 两个启动期默认值。
 if (project === 'jobs') {
-  for (const name of ['JUHE_AI_RUNTIME_LOG_INSTANCE_ID', 'JUHE_AI_TABLE_MONITOR_INSTANCE_ID']) {
-    if (!String(env[name] ?? '').trim()) throw new Error(`${name} is required; release startup does not generate owner identities.`)
-  }
-  const runtimeLogStore = resolveStore('JUHE_AI_RUNTIME_LOG_STORE', env, runtimeMode, hasPerformanceHints)
-  const tableMonitorStore = resolveStore('JUHE_AI_TABLE_MONITOR_STORE', env, runtimeMode, hasPerformanceHints)
-  // J1 账户健康检查 2026-09-19 起强制常开（ENABLED 开关移除）：OWNER 缺省
-  // go，显式非 go 拒绝；INSTANCE_ID 缺省主机名、CREDENTIAL_SECRET 缺省取
-  // JUHE_AI_SECRET（由 Go 侧解析），启动器只校验无法缺省的必填项。
+  // J1 账户健康检查强制常开：OWNER 缺省 go，显式非 go 拒绝；INSTANCE_ID 缺省
+  // 主机名、INPUT_DIRECTORY 自动创建、SIGNING_KEY 自动生成并持久化、
+  // CREDENTIAL_SECRET 缺省取 JUHE_AI_SECRET、STORE 跟随 driver，均由 Go 侧
+  // 解析，launcher 不再硬校验或注入。
   const accountHealthOwner = String(env.JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER ?? '').trim().toLowerCase()
   if (accountHealthOwner && accountHealthOwner !== 'go') {
     throw new Error('JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER=go is the only accepted owner; release startup refuses a non-Go J1 owner.')
   }
-  for (const name of [
-    'JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY',
-    'JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY'
-  ]) {
-    if (!String(env[name] ?? '').trim()) throw new Error(`${name} is required; J1 account health runs always-on.`)
-  }
-  env.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY = absoluteBackendPath(env.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY, '')
   const accountBalanceEnabled = String(env.JUHE_AI_ACCOUNT_BALANCE_ENABLED ?? '').trim().toLowerCase() === 'true'
   if (accountBalanceEnabled) {
     if (String(env.JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER ?? '').trim().toLowerCase() !== 'go') {
@@ -228,53 +221,13 @@ if (project === 'jobs') {
     if (balanceStore !== 'postgres') throw new Error('JUHE_AI_ACCOUNT_BALANCE_STORE=postgres is required for Go-owner J2; SQLite outcomes cannot be projected by Node.')
     if (!String(env.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL ?? '').trim()) throw new Error('JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL is required for postgres J2 store.')
   }
-  const accountHealthStore = resolveStore('JUHE_AI_ACCOUNT_HEALTH_STORE', env, runtimeMode, hasPerformanceHints)
   env.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS = String(env.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS ?? '').trim() || '127.0.0.1:3305'
   env.JUHE_AI_LOG_DIR = absoluteBackendPath(env.JUHE_AI_LOG_DIR, './logs')
-  if (runtimeLogStore === 'sqlite' || tableMonitorStore === 'sqlite') {
-    env.JUHE_AI_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_DATABASE_PATH, './data/juhe-ai.sqlite3')
-    env.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
-    env.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, './data/juhe-ai-usage-catalog.sqlite3')
-    env.JUHE_AI_STATS_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_STATS_DATABASE_PATH, './data/juhe-ai-stats.sqlite3')
-    env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = absoluteBackendPath(env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, './data/codex-context/state-shards')
-    env.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/juhe-ai-runtime-log.sqlite3')
-    env.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/juhe-ai-table-monitor.sqlite3')
-  }
-  if (accountHealthStore === 'sqlite') {
-    env.JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH, './data/juhe-ai-account-health.sqlite3')
-  }
-  if (String(env.JUHE_AI_GO_RUNTIME_METRICS_STORE ?? '').trim().toLowerCase() === 'sqlite'
-    && String(env.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH ?? '').trim()) {
-    env.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH, '')
-  }
 } else {
-  for (const name of ['JUHE_AI_AUDIT_LOG_INSTANCE_ID', 'JUHE_AI_OPERATION_LOG_INSTANCE_ID']) {
-    if (!String(env[name] ?? '').trim()) throw new Error(`${name} is required; release startup does not generate owner identities.`)
-  }
-  const auditLogStore = resolveStore('JUHE_AI_AUDIT_LOG_STORE', env, runtimeMode, hasPerformanceHints)
-  const operationLogStore = resolveStore('JUHE_AI_OPERATION_LOG_STORE', env, runtimeMode, hasPerformanceHints)
+  // gateway：F3/F4 INSTANCE_ID 缺省主机名，store 与路径类 env 由 Go 侧自派生，
+  // launcher 不再硬校验或注入。
   env.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS = String(env.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS ?? '').trim() || '127.0.0.1:3306'
   env.JUHE_AI_LOG_DIR = absoluteBackendPath(env.JUHE_AI_LOG_DIR, './logs')
-  if (auditLogStore === 'sqlite' || operationLogStore === 'sqlite') {
-    env.JUHE_AI_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_DATABASE_PATH, './data/juhe-ai.sqlite3')
-    env.JUHE_AI_DATASET_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_DATASET_DATABASE_PATH, './data/juhe-ai-dataset.sqlite3')
-    env.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, './data/juhe-ai-runtime-log.sqlite3')
-    env.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, './data/juhe-ai-table-monitor.sqlite3')
-    env.JUHE_AI_AUDIT_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_DATABASE_PATH, './data/juhe-ai-audit-log.sqlite3')
-    env.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, './data/audit-payload-blobs')
-    env.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, './data/audit-hot-search')
-    env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = absoluteBackendPath(env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, env.JUHE_AI_DATABASE_PATH)
-    env.JUHE_AI_OPERATION_LOG_DATABASE_PATH = absoluteBackendPath(env.JUHE_AI_OPERATION_LOG_DATABASE_PATH, './data/juhe-ai-operation-log.sqlite3')
-    env.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH = absoluteBackendPath(env.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, env.JUHE_AI_DATABASE_PATH)
-    env.JUHE_AI_USAGE_SHARD_ROOT = absoluteBackendPath(env.JUHE_AI_USAGE_SHARD_ROOT, './data/usage-shards')
-    env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = absoluteBackendPath(env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, './data/codex-context/state-shards')
-  }
-  if (auditLogStore === 'postgres' && !String(env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL ?? '').trim()) {
-    env.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL = String(env.JUHE_AI_AUDIT_LOG_POSTGRES_URL || env.JUHE_AI_POSTGRES_URL || '').trim()
-  }
-  if (operationLogStore === 'postgres' && !String(env.JUHE_AI_OPERATION_LOG_POSTGRES_URL ?? '').trim()) {
-    env.JUHE_AI_OPERATION_LOG_POSTGRES_URL = String(env.JUHE_AI_OPERATION_LOG_POSTGRES_URL || env.JUHE_AI_POSTGRES_URL || '').trim()
-  }
 }
 
 const logFd = openSync(logPath, 'a')

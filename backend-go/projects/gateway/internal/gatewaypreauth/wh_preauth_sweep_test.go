@@ -10,25 +10,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// 混合路由失败的文案映射表（reason → 客户端文案）。
-func TestWhHybridRouteFailureMessages(t *testing.T) {
-	cases := map[string]string{
-		"no_scoring_account":                  "混合路由评分模型暂不可用：绑定分组池没有可用评分账户",
-		"scoring_account_busy":                "混合路由评分模型暂不可用：评分账户并发已满",
-		"hybrid_scoring_failed":               "混合路由评分模型调用失败",
-		"hybrid_scoring_http_error":           "混合路由评分模型调用失败",
-		"hybrid_level_route_missing":          "混合路由等级配置不可用",
-		"hybrid_scoring_fallback_unavailable": "混合路由评分模型不可用，且低档兜底范围内没有可用目标模型",
-		"hybrid_target_group_unavailable":     "混合路由目标分组暂不可用",
-		"unknown_reason":                      "混合路由暂不可用",
-	}
-	for reason, want := range cases {
-		if got := hybridRouteFailureMessage(reason); got != want {
-			t.Fatalf("hybridRouteFailureMessage(%q) = %q, want %q", reason, got, want)
-		}
-	}
-}
-
 // 暂时阻塞的路由终态判定与协调结果。
 func TestWhTemporarilyBlockedRouteFailure(t *testing.T) {
 	if isTemporarilyBlockedRouteFailure(nil) {

@@ -155,10 +155,10 @@ func (c *fixedClock) Now() int64 { return c.nowMs }
 // Builders
 // ---------------------------------------------------------------------------
 
-func int64Ptr(v int64) *int64    { return &v }
-func intPtr(v int) *int          { return &v }
-func weightPtr(v int64) *int64   { return &v }
-func boolPtr(v bool) *bool       { return &v }
+func int64Ptr(v int64) *int64  { return &v }
+func intPtr(v int) *int        { return &v }
+func weightPtr(v int64) *int64 { return &v }
+func boolPtr(v bool) *bool     { return &v }
 
 func mustDeadline(t *testing.T, input NormalRouteAttemptFirstByteDeadlineInput) NormalRouteAttemptFirstByteDeadline {
 	t.Helper()
@@ -176,8 +176,8 @@ func mustDeadline(t *testing.T, input NormalRouteAttemptFirstByteDeadlineInput) 
 func TestResolveNormalGatewayModelRoute(t *testing.T) {
 	account := func(id, providerCode string, supportedModels ...string) UpstreamAccount {
 		return UpstreamAccount{
-			ID:           id,
-			ProviderCode: providerCode,
+			ID:              id,
+			ProviderCode:    providerCode,
 			SupportedModels: supportedModels,
 		}
 	}
@@ -209,25 +209,19 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 		capability    AccountCapabilityFilter
 		providerRoute ProviderModelRouteResolution
 		// expectations
-		wantOutcome       string
-		wantReason        string
-		wantStatusCode    int
-		wantType          string
-		wantCode          string
-		wantMessage       string
-		wantGroupID       string
-		wantRouteSource   NormalGatewayModelRouteSource
-		wantMatchedCode   string
-		wantMatchedCodes  []string
-		wantAccounts      []string
+		wantOutcome          string
+		wantReason           string
+		wantStatusCode       int
+		wantType             string
+		wantCode             string
+		wantMessage          string
+		wantGroupID          string
+		wantRouteSource      NormalGatewayModelRouteSource
+		wantMatchedCode      string
+		wantMatchedCodes     []string
+		wantAccounts         []string
 		wantSelectedBindings []string
 	}{
-		{
-			name:        "hybrid_smart skips with reason",
-			apiKey:      &APIKeyRow{RouteStrategyMode: RouteStrategyModeHybridSmart},
-			wantOutcome: NormalRouteOutcomeSkipped,
-			wantReason:  SkipReasonRouteStrategyIsHybridSmart,
-		},
 		{
 			name:        "missing requested model skips",
 			apiKey:      apiKey(),
@@ -272,11 +266,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
 				ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
 			},
-			wantOutcome:     NormalRouteOutcomeSelected,
-			wantGroupID:     "grp_a",
-			wantRouteSource: RouteSourceCatalogProvider,
-			wantMatchedCode: "openai",
-			wantAccounts:    []string{"acc1"},
+			wantOutcome:          NormalRouteOutcomeSelected,
+			wantGroupID:          "grp_a",
+			wantRouteSource:      RouteSourceCatalogProvider,
+			wantMatchedCode:      "openai",
+			wantAccounts:         []string{"acc1"},
 			wantSelectedBindings: []string{"b1"},
 		},
 		{
@@ -304,11 +298,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				Outcome: ProviderModelRouteMissing, ModelKey: "my-model",
 				MatchedProviderCodes: []string{},
 			},
-			wantOutcome:     NormalRouteOutcomeFailed,
-			wantStatusCode:  400,
-			wantType:        "invalid_request_error",
-			wantCode:        FailCodeModelNotRoutableForAPIKey,
-			wantMessage:     "当前 API Key 绑定的供应商中没有可路由模型：my-model",
+			wantOutcome:      NormalRouteOutcomeFailed,
+			wantStatusCode:   400,
+			wantType:         "invalid_request_error",
+			wantCode:         FailCodeModelNotRoutableForAPIKey,
+			wantMessage:      "当前 API Key 绑定的供应商中没有可路由模型：my-model",
 			wantMatchedCodes: []string{},
 		},
 		{
@@ -322,11 +316,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				Outcome: ProviderModelRouteMissing, ModelKey: "gpt-4o",
 				MatchedProviderCodes: []string{},
 			},
-			wantOutcome:     NormalRouteOutcomeFailed,
-			wantStatusCode:  400,
-			wantType:        "invalid_request_error",
-			wantCode:        FailCodeModelNotRoutableForAPIKey,
-			wantMessage:     "当前 API Key 绑定的供应商中没有可路由模型：gpt-4o",
+			wantOutcome:      NormalRouteOutcomeFailed,
+			wantStatusCode:   400,
+			wantType:         "invalid_request_error",
+			wantCode:         FailCodeModelNotRoutableForAPIKey,
+			wantMessage:      "当前 API Key 绑定的供应商中没有可路由模型：gpt-4o",
 			wantMatchedCodes: []string{},
 		},
 		{
@@ -340,11 +334,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
 				ProviderCode: "gemini", MatchedProviderCodes: []string{"gemini"},
 			},
-			wantOutcome:     NormalRouteOutcomeFailed,
-			wantStatusCode:  400,
-			wantType:        "invalid_request_error",
-			wantCode:        FailCodeModelNotRoutableForAPIKey,
-			wantMessage:     "当前 API Key 绑定的供应商中没有可路由模型：gpt-4o",
+			wantOutcome:      NormalRouteOutcomeFailed,
+			wantStatusCode:   400,
+			wantType:         "invalid_request_error",
+			wantCode:         FailCodeModelNotRoutableForAPIKey,
+			wantMessage:      "当前 API Key 绑定的供应商中没有可路由模型：gpt-4o",
 			wantMatchedCodes: []string{"gemini"},
 		},
 		{
@@ -365,11 +359,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				Outcome: ProviderModelRouteAmbiguous, ModelKey: "gpt-x",
 				MatchedProviderCodes: []string{"openai", "anthropic"},
 			},
-			wantOutcome:     NormalRouteOutcomeFailed,
-			wantStatusCode:  400,
-			wantType:        "invalid_request_error",
-			wantCode:        FailCodeModelRouteAmbiguous,
-			wantMessage:     "请求模型在多个供应商中同时存在，无法确定目标号池：gpt-x",
+			wantOutcome:      NormalRouteOutcomeFailed,
+			wantStatusCode:   400,
+			wantType:         "invalid_request_error",
+			wantCode:         FailCodeModelRouteAmbiguous,
+			wantMessage:      "请求模型在多个供应商中同时存在，无法确定目标号池：gpt-x",
 			wantMatchedCodes: []string{"openai", "anthropic"},
 		},
 		{
@@ -387,11 +381,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				Outcome: ProviderModelRouteMissing, ModelKey: "gpt-x",
 				MatchedProviderCodes: []string{},
 			},
-			wantOutcome:     NormalRouteOutcomeFailed,
-			wantStatusCode:  400,
-			wantType:        "invalid_request_error",
-			wantCode:        FailCodeModelNotRoutableForAPIKey,
-			wantMessage:     "当前 API Key 绑定的供应商中没有可路由模型：gpt-x",
+			wantOutcome:      NormalRouteOutcomeFailed,
+			wantStatusCode:   400,
+			wantType:         "invalid_request_error",
+			wantCode:         FailCodeModelNotRoutableForAPIKey,
+			wantMessage:      "当前 API Key 绑定的供应商中没有可路由模型：gpt-x",
 			wantMatchedCodes: []string{},
 		},
 		{
@@ -412,11 +406,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
 				ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
 			},
-			wantOutcome:     NormalRouteOutcomeFailed,
-			wantStatusCode:  503,
-			wantType:        "service_unavailable",
-			wantCode:        FailCodeModelTargetGroupUnavailable,
-			wantMessage:     "请求模型对应的供应商分组当前没有可用账号：gpt-4o",
+			wantOutcome:      NormalRouteOutcomeFailed,
+			wantStatusCode:   503,
+			wantType:         "service_unavailable",
+			wantCode:         FailCodeModelTargetGroupUnavailable,
+			wantMessage:      "请求模型对应的供应商分组当前没有可用账号：gpt-4o",
 			wantMatchedCodes: []string{"openai"},
 		},
 		{
@@ -437,11 +431,11 @@ func TestResolveNormalGatewayModelRoute(t *testing.T) {
 				Outcome: ProviderModelRouteMatched, ModelKey: "gpt-4o",
 				ProviderCode: "openai", MatchedProviderCodes: []string{"openai"},
 			},
-			wantOutcome:     NormalRouteOutcomeSelected,
-			wantGroupID:     "grp_b",
-			wantRouteSource: RouteSourceCatalogProvider,
-			wantMatchedCode: "openai",
-			wantAccounts:    []string{"acc2"},
+			wantOutcome:          NormalRouteOutcomeSelected,
+			wantGroupID:          "grp_b",
+			wantRouteSource:      RouteSourceCatalogProvider,
+			wantMatchedCode:      "openai",
+			wantAccounts:         []string{"acc2"},
 			wantSelectedBindings: []string{"b2"},
 		},
 	}
@@ -556,7 +550,7 @@ func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 	}
 
 	result, err := service.ResolveNormalGatewayModelRoute(context.Background(), ResolveNormalGatewayModelRouteInput{
-		Request:  RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "my-model"},
+		Request:      RequestView{Method: "POST", OriginalURL: "/v1/chat/completions", BodyModel: "my-model"},
 		APIKeyRecord: apiKey,
 	})
 	if err != nil {
@@ -596,11 +590,11 @@ func TestResolveNormalGatewayModelRouteAccountMappingSelection(t *testing.T) {
 
 func TestNormalGatewayModelTargetPriority(t *testing.T) {
 	tests := []struct {
-		name                  string
-		directMatchedCount    int
-		mappingMatchedCount   int
+		name                   string
+		directMatchedCount     int
+		mappingMatchedCount    int
 		catalogProviderMatched bool
-		want                  float64
+		want                   float64
 	}{
 		{"direct wins", 1, 0, false, 2},
 		{"mapping second", 0, 1, false, 1},
@@ -650,69 +644,69 @@ func TestFilterAccountsByRequestedModel(t *testing.T) {
 	noConstraint := UpstreamAccount{ID: "no-constraint"}
 
 	tests := []struct {
-		name                          string
-		accounts                      []UpstreamAccount
-		requestedModel                string
-		wantAccounts                  []string
-		wantSkipped                   int
-		wantLimited                   int
-		wantInvalidModelConstraint    int
-		wantDirect                    int
-		wantMapping                   int
-		wantReason                    string
+		name                       string
+		accounts                   []UpstreamAccount
+		requestedModel             string
+		wantAccounts               []string
+		wantSkipped                int
+		wantLimited                int
+		wantInvalidModelConstraint int
+		wantDirect                 int
+		wantMapping                int
+		wantReason                 string
 	}{
 		{
-			name:         "direct matches are ordered before mapping matches",
-			accounts:     []UpstreamAccount{mapping, direct},
+			name:           "direct matches are ordered before mapping matches",
+			accounts:       []UpstreamAccount{mapping, direct},
 			requestedModel: "alias",
-			wantAccounts: []string{"mapping"},
-			wantMapping:  1,
-			wantLimited:  2,
-			wantSkipped:  1,
+			wantAccounts:   []string{"mapping"},
+			wantMapping:    1,
+			wantLimited:    2,
+			wantSkipped:    1,
 		},
 		{
-			name:         "mapping whose upstream is unsupported is skipped",
-			accounts:     []UpstreamAccount{mappingToUnsupported},
+			name:           "mapping whose upstream is unsupported is skipped",
+			accounts:       []UpstreamAccount{mappingToUnsupported},
 			requestedModel: "alias",
-			wantAccounts: []string{},
-			wantSkipped:  1,
-			wantLimited:  1,
-			wantReason:   ModelFilterReasonUnsupportedModel,
+			wantAccounts:   []string{},
+			wantSkipped:    1,
+			wantLimited:    1,
+			wantReason:     ModelFilterReasonUnsupportedModel,
 		},
 		{
-			name:         "accounts without model constraints are invalid constraints",
-			accounts:     []UpstreamAccount{noConstraint},
-			requestedModel: "gpt-4o",
-			wantAccounts: []string{},
-			wantSkipped:  1,
+			name:                       "accounts without model constraints are invalid constraints",
+			accounts:                   []UpstreamAccount{noConstraint},
+			requestedModel:             "gpt-4o",
+			wantAccounts:               []string{},
+			wantSkipped:                1,
 			wantInvalidModelConstraint: 1,
-			wantReason:   ModelFilterReasonUnsupportedModel,
+			wantReason:                 ModelFilterReasonUnsupportedModel,
 		},
 		{
-			name:         "missing model without constraints reports missing_model",
-			accounts:     []UpstreamAccount{noConstraint},
-			requestedModel: "",
-			wantAccounts: []string{},
-			wantSkipped:  1,
+			name:                       "missing model without constraints reports missing_model",
+			accounts:                   []UpstreamAccount{noConstraint},
+			requestedModel:             "",
+			wantAccounts:               []string{},
+			wantSkipped:                1,
 			wantInvalidModelConstraint: 1,
-			wantReason:   ModelFilterReasonMissingModel,
+			wantReason:                 ModelFilterReasonMissingModel,
 		},
 		{
-			name:         "disabled mapping falls through to direct match",
-			accounts:     []UpstreamAccount{disabledMapping},
+			name:           "disabled mapping falls through to direct match",
+			accounts:       []UpstreamAccount{disabledMapping},
 			requestedModel: "alias",
-			wantAccounts: []string{},
-			wantSkipped:  1,
-			wantLimited:  1,
-			wantReason:   ModelFilterReasonUnsupportedModel,
+			wantAccounts:   []string{},
+			wantSkipped:    1,
+			wantLimited:    1,
+			wantReason:     ModelFilterReasonUnsupportedModel,
 		},
 		{
-			name:         "direct model hit",
-			accounts:     []UpstreamAccount{direct},
+			name:           "direct model hit",
+			accounts:       []UpstreamAccount{direct},
 			requestedModel: "gpt-4o-mini",
-			wantAccounts: []string{"direct"},
-			wantDirect:   1,
-			wantLimited:  1,
+			wantAccounts:   []string{"direct"},
+			wantDirect:     1,
+			wantLimited:    1,
 		},
 	}
 
@@ -746,9 +740,9 @@ func TestFilterAccountsByRequestedModel(t *testing.T) {
 
 func TestGatewayModelFilterFailureMessage(t *testing.T) {
 	tests := []struct {
-		name    string
-		result  GatewayModelAccountFilterResult
-		want    string
+		name   string
+		result GatewayModelAccountFilterResult
+		want   string
 	}{
 		{
 			name:   "missing model",
@@ -816,7 +810,7 @@ func TestSelectGatewayModelTargetGroup(t *testing.T) {
 				{ID: "b1-dup", GroupID: "grp_a", ProviderCode: "openai", Status: RowStatusActive, GroupEnabled: 1},
 				baseBindings[1],
 			},
-			TargetModel: "gpt-4o",
+			TargetModel:       "gpt-4o",
 			CandidatePriority: func(ModelTargetGroupCandidate) float64 { return 0 },
 		})
 		if err != nil {
@@ -921,10 +915,10 @@ func TestSelectGatewayModelTargetGroup(t *testing.T) {
 		cache.accounts["grp_a"] = []UpstreamAccount{{ID: "acc1", SupportedModels: []string{"gpt-4o"}}}
 		selector := &TargetGroupSelector{RuntimeCache: cache, CapabilityFilter: PassthroughCapabilityFilter{}}
 		selection, err := selector.SelectGatewayModelTargetGroup(context.Background(), ModelTargetGroupInput{
-			Request:      RequestView{Method: "POST", OriginalURL: "/v1/chat/completions"},
-			APIKeyRecord: apiKey,
-			Bindings:     baseBindings[:1],
-			TargetModel:  "gpt-4o",
+			Request:         RequestView{Method: "POST", OriginalURL: "/v1/chat/completions"},
+			APIKeyRecord:    apiKey,
+			Bindings:        baseBindings[:1],
+			TargetModel:     "gpt-4o",
 			AcceptCandidate: func(ModelTargetGroupCandidate) bool { return false },
 		})
 		if err != nil || selection != nil {
@@ -1068,7 +1062,7 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 	t.Run("weighted smooth ordering distributes by debt", func(t *testing.T) {
 		selector := NewAPIKeyGroupRouteSelector("memory", nil, "")
 		apiKey := &APIKeyRow{
-			ID: "key1",
+			ID:                "key1",
 			RouteStrategyMode: RouteStrategyModeWeighted,
 			GroupBindings: []GroupBindingRow{
 				binding("heavy", "grp_a", 1, weight(3)),
@@ -1156,7 +1150,7 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 		counter := &scriptedRedisCounter{values: []int64{3}}
 		selector := NewAPIKeyGroupRouteSelector("redis", counter, "redis://example:6379/0")
 		apiKey := &APIKeyRow{
-			ID: "key1",
+			ID:                "key1",
 			RouteStrategyMode: RouteStrategyModeWeighted,
 			GroupBindings: []GroupBindingRow{
 				binding("w3", "grp_a", 1, weight(3)),
@@ -1233,9 +1227,9 @@ func TestOrderAPIKeyGroupBindingsForDispatch(t *testing.T) {
 
 func TestRequestEndpointFamilyAndModel(t *testing.T) {
 	tests := []struct {
-		name   string
-		view   RequestView
-		wantModel string
+		name       string
+		view       RequestView
+		wantModel  string
 		wantFamily string
 	}{
 		{
@@ -1349,10 +1343,10 @@ func TestNormalRouteAttemptFirstByteDeadline(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
+		name   string
 		budget *GatewayRequestWallBudget
-		input NormalRouteAttemptFirstByteDeadlineInput
-		want NormalRouteAttemptFirstByteDeadline
+		input  NormalRouteAttemptFirstByteDeadlineInput
+		want   NormalRouteAttemptFirstByteDeadline
 	}{
 		{
 			name:   "configured deadline is the limiting factor",
@@ -1476,12 +1470,12 @@ func TestNormalRouteAttemptFirstByteDeadline(t *testing.T) {
 		budget := newBudget(t, 0, 270_000)
 		reserve := int64(-1)
 		_, err := ResolveNormalRouteAttemptFirstByteDeadline(NormalRouteAttemptFirstByteDeadlineInput{
-			Config:                 NormalRouteFirstByteRuntimeConfig{SchedulingPreference: SchedulingPreferenceSpeedFirst, FirstByteDeadlineMs: 1_000},
-			GatewayRequestWallBudget: budget,
-			AttemptStartedAtMs:     0,
-			LaneFirstByteTimeoutMs: 1_000,
+			Config:                          NormalRouteFirstByteRuntimeConfig{SchedulingPreference: SchedulingPreferenceSpeedFirst, FirstByteDeadlineMs: 1_000},
+			GatewayRequestWallBudget:        budget,
+			AttemptStartedAtMs:              0,
+			LaneFirstByteTimeoutMs:          1_000,
 			UncommittedAttemptMaxLifetimeMs: 1_000,
-			FinalResponseReserveMs: &reserve,
+			FinalResponseReserveMs:          &reserve,
 		})
 		var rangeErr *RangeError
 		if !errors.As(err, &rangeErr) || rangeErr.Message != "route coordination duration must be a non-negative finite number" {
@@ -1554,7 +1548,7 @@ func TestGatewayTimeoutProfileForLane(t *testing.T) {
 			lane:            gatewayproto.LaneText,
 			disableTimeouts: true,
 			want: GatewayTimeoutProfile{
-				TimeoutsDisabled: true,
+				TimeoutsDisabled:       true,
 				FirstResponseTimeoutMs: 120_000, NonStreamFirstResponseTimeoutMs: 600_000,
 				FirstByteTimeoutMs: 120_000, IdleTimeoutMs: 30_000,
 				UncommittedAttemptMaxLifetimeMs: 240_000, NoAvailableAccountWaitMs: 10_000,
@@ -2179,7 +2173,7 @@ func TestGatewayAttemptProtocolModelKey(t *testing.T) {
 			want: `["acc1","openai","v1","gpt-4o"]`,
 		},
 		{
-			name:      "empty account fails", account: "  ",
+			name: "empty account fails", account: "  ",
 			wantError: true,
 		},
 	}
@@ -2209,9 +2203,9 @@ func TestGatewayAttemptProtocolModelKey(t *testing.T) {
 func TestCreateGatewayRoutePlanSnapshot(t *testing.T) {
 	t.Run("defaults and clamping", func(t *testing.T) {
 		snapshot, err := CreateGatewayRoutePlanSnapshot(CreateGatewayRoutePlanSnapshotInput[string]{
-			RoutePlanID:         " plan-1 ",
-			Mode:                RouteStrategyModeFailover,
-			RequestAcceptedAtMs: 1_000,
+			RoutePlanID:           " plan-1 ",
+			Mode:                  RouteStrategyModeFailover,
+			RequestAcceptedAtMs:   1_000,
 			OrderedAllowedTargets: []string{"a", "b", "c"},
 		})
 		if err != nil {

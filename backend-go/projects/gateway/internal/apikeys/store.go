@@ -548,20 +548,20 @@ func emptyListUsageSummary() ListUsageSummary { return ListUsageSummary{} }
 // apiKeySummariesFromRowsAsync (usage = loadApiKeyUsageSummariesForScopes —
 // usage_stats_totals aggregate), unlike the bounded three-field list summary.
 type AccountUsageSummary struct {
-	RequestCount      int     `json:"requestCount"`
-	InputTokens       int     `json:"inputTokens"`
-	OutputTokens      int     `json:"outputTokens"`
-	CacheReadTokens   int     `json:"cacheReadTokens"`
-	CacheReadCost     float64 `json:"cacheReadCost"`
-	CacheWriteTokens  int     `json:"cacheWriteTokens"`
-	CacheWrite1hTokens int    `json:"cacheWrite1hTokens"`
-	CacheWriteCost    float64 `json:"cacheWriteCost"`
-	ThinkingTokens    int     `json:"thinkingTokens"`
-	InputImageTokens  int     `json:"inputImageTokens"`
-	OutputImageTokens int     `json:"outputImageTokens"`
-	TotalTokens       int     `json:"totalTokens"`
-	TotalCost         float64 `json:"totalCost"`
-	LastUsedAt        *string `json:"lastUsedAt,omitempty"`
+	RequestCount       int     `json:"requestCount"`
+	InputTokens        int     `json:"inputTokens"`
+	OutputTokens       int     `json:"outputTokens"`
+	CacheReadTokens    int     `json:"cacheReadTokens"`
+	CacheReadCost      float64 `json:"cacheReadCost"`
+	CacheWriteTokens   int     `json:"cacheWriteTokens"`
+	CacheWrite1hTokens int     `json:"cacheWrite1hTokens"`
+	CacheWriteCost     float64 `json:"cacheWriteCost"`
+	ThinkingTokens     int     `json:"thinkingTokens"`
+	InputImageTokens   int     `json:"inputImageTokens"`
+	OutputImageTokens  int     `json:"outputImageTokens"`
+	TotalTokens        int     `json:"totalTokens"`
+	TotalCost          float64 `json:"totalCost"`
+	LastUsedAt         *string `json:"lastUsedAt,omitempty"`
 }
 
 func emptyAccountUsageSummary() AccountUsageSummary { return AccountUsageSummary{} }
@@ -883,7 +883,7 @@ func apiKeyKeywordClause(pg bool, keyword string) (string, []any) {
 }
 
 // rowLockClause mirrors `const lockClause = tx.driver === 'postgres' ? '
-// FOR UPDATE' : ''` on the single-table refresh/delete row reads.
+// FOR UPDATE' : ”` on the single-table refresh/delete row reads.
 func rowLockClause(pg bool) string {
 	if pg {
 		return " FOR UPDATE"
@@ -917,23 +917,23 @@ func (s *Store) newListItem(row apiKeyRow, access AccessScope) (ListItem, error)
 		return ListItem{}, err
 	}
 	item := ListItem{
-		ID:                  row.id,
-		Name:                row.name,
-		Description:         nullPtrString(row.description),
-		KeyPrefix:           row.keyPrefix,
-		KeySuffix:           row.keySuffix,
-		Status:              row.status,
-		IsDefault:           row.isDefault == 1,
-		Purpose:             normalizePurpose(row.purpose),
-		RouteStrategyID:     row.routeStrategyID,
-		RouteStrategyName:   nullPtrString(row.routeStrategyName),
-		RouteStrategyMode:   mode,
-		RouteStrategyStatus: normalizedRouteStrategyStatus(row.routeStrategyStatus),
-		ExpiresAt:           nullPtrString(row.expiresAt),
-		QuotaLimits:         quotaLimits,
+		ID:                   row.id,
+		Name:                 row.name,
+		Description:          nullPtrString(row.description),
+		KeyPrefix:            row.keyPrefix,
+		KeySuffix:            row.keySuffix,
+		Status:               row.status,
+		IsDefault:            row.isDefault == 1,
+		Purpose:              normalizePurpose(row.purpose),
+		RouteStrategyID:      row.routeStrategyID,
+		RouteStrategyName:    nullPtrString(row.routeStrategyName),
+		RouteStrategyMode:    mode,
+		RouteStrategyStatus:  normalizedRouteStrategyStatus(row.routeStrategyStatus),
+		ExpiresAt:            nullPtrString(row.expiresAt),
+		QuotaLimits:          quotaLimits,
 		AvailabilitySchedule: schedule,
-		Usage:               emptyListUsageSummary(),
-		Revision:            row.updatedAt,
+		Usage:                emptyListUsageSummary(),
+		Revision:             row.updatedAt,
 	}
 	if access.canAccessAll() {
 		item.SystemAccountID = &row.systemAccountID
@@ -958,7 +958,7 @@ func normalizedRouteStrategyMode(value sql.NullString) (*string, error) {
 		return nil, nil
 	}
 	switch value.String {
-	case "normal", "hybrid_smart", "weighted", "failover", "round_robin":
+	case "normal", "weighted", "failover", "round_robin", "merge":
 		mode := value.String
 		return &mode, nil
 	default:

@@ -36,8 +36,13 @@ import (
 )
 
 func w13gPrivateUpstreamAllowed() bool {
-	value := os.Getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS")
-	return value == "true" || value == "1"
+	// 2026-09-19 决策（PLAN-20260919T000723744Z）：默认放行私网上游；
+	// 仅当显式设置 false/0 时恢复限制。
+	value := strings.TrimSpace(os.Getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS"))
+	if value == "false" || value == "0" {
+		return false
+	}
+	return true
 }
 
 // w13gOpenAIContext 构造已注册 gpt/openai-compatible 驱动的默认上下文。

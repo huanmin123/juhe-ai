@@ -4,8 +4,8 @@ package main
 // （chain_chat_mount.go 的 composeChatFamily / chatAttachStreamHandler /
 // chatAttachSubscriber.TrySend / openChatDatabase）、聊天图片观察 SQLite
 // 分支（chain_chat_observation.go 的 table/bind/claim/setObservation）与
-// chain_compose.go 剩余可构造函数（DispatchHybridAuxiliaryChatCompletion、
-// ListClientModelCatalog、spoolOverflow.PersistOverflow）。
+// chain_compose.go 剩余可构造函数（ListClientModelCatalog、
+// spoolOverflow.PersistOverflow）。
 //
 // 不覆盖：openChatDatabase 的 pgDialect=true 分支与 chatImageObservations
 // 的 postgres 方言 SQL 真实执行（需要 pgpool.Registry 与真实 PostgreSQL，
@@ -15,7 +15,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -27,8 +26,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
@@ -668,221 +665,6 @@ func TestW1HListClientModelCatalog(t *testing.T) {
 	if got := (chainClientModelCatalog{}).ListClientModelCatalog("sys-w1h", []string{"openai"}); got != nil {
 		t.Fatalf("cache 为 nil 时 = %+v, want nil", got)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// C7. DispatchHybridAuxiliaryChatCompletion（httptest 上游 + stub runtime cache）
-// ---------------------------------------------------------------------------
-
-func w1hAuxInput(record gatewayhybrid.APIKeyRecord) gatewayhybrid.AuxiliaryDispatchInput {
-	return gatewayhybrid.AuxiliaryDispatchInput{
-		RawBody:                    []byte(`{"model":"w1h-aux-model","messages":[{"role":"user","content":"w1h"}]}`),
-		APIKeyRecord:               record,
-		TargetModel:                "w1h-aux-model",
-		TraceID:                    "trace-w1h",
-		Endpoint:                   "/v1/chat/completions",
-		TimeoutMs:                  5000,
-		ResponseMaxBytes:           64 * 1024,
-		NoAccountErrorCode:         "w1h_no_account",
-		NoAccountErrorMessage:      "无可用辅助账户",
-		DispatchErrorCode:          "w1h_dispatch_failed",
-		DispatchErrorMessage:       "辅助派发失败",
-		HTTPErrorCode:              "w1h_upstream_http_error",
-		ResponseTooLargeMessage:    "辅助响应过大",
-		RequestClientCompatibility: "",
-	}
-}
-
-func w1hAuxAccount(baseURL string) gatewayruntimecache.OpenAIAccountSecret {
-	return gatewayruntimecache.OpenAIAccountSecret{
-		ID:              "acc-w1h",
-		BaseURL:         baseURL,
-		APIKey:          "sk-w1h-upstream",
-		ProviderCode:    "openai",
-		ProtocolCode:    "openai",
-		Status:          "active",
-		Type:            "api_key",
-		SystemAccountID: "sys-w1h",
-	}
-}
-
-func w1hAuxGroupAccess() *gatewayruntimecache.GroupUsageAccessMetadata {
-	return &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: "personal"}
-}
-
-func TestW1HDispatchHybridAuxiliaryChatCompletionSuccess(t *testing.T) {
-	var gotAuth, gotBody string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		payload, _ := io.ReadAll(r.Body)
-		gotBody = string(payload)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-w1h","choices":[{"message":{"role":"assistant","content":"aux-ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
-	}))
-	defer upstream.Close()
-
-	cache := w1hNewRuntimeCache(t, &w1hReadModels{
-		groupAccess: w1hAuxGroupAccess(),
-		accounts:    []gatewayruntimecache.OpenAIAccountSecret{w1hAuxAccount(upstream.URL)},
-	})
-	record := gatewayhybrid.APIKeyRecord{ID: "key-w1h", SystemAccountID: "sys-w1h", SelectedGroupID: "group-w1h"}
-	success, failure := newChainHybridAuxiliaryDispatcher(cache).DispatchHybridAuxiliaryChatCompletion(context.Background(), w1hAuxInput(record))
-	if failure != nil {
-		t.Fatalf("success 路径返回 failure: %+v", failure)
-	}
-	if success.Account.ID != "acc-w1h" {
-		t.Errorf("success.Account.ID = %q, want acc-w1h", success.Account.ID)
-	}
-	if success.GroupID != "group-w1h" {
-		t.Errorf("success.GroupID = %q, want group-w1h", success.GroupID)
-	}
-	if success.StatusCode != http.StatusOK {
-		t.Errorf("success.StatusCode = %d, want %d", success.StatusCode, http.StatusOK)
-	}
-	if !strings.Contains(success.ResponseBodyText, "aux-ok") {
-		t.Errorf("success.ResponseBodyText = %q, want 含 aux-ok", success.ResponseBodyText)
-	}
-	if success.ParsedResponseBody.Status != "valid" {
-		t.Errorf("success.ParsedResponseBody.Status = %q, want valid", success.ParsedResponseBody.Status)
-	}
-	if success.Usage.InputTokens == nil || *success.Usage.InputTokens != 3 {
-		t.Errorf("success.Usage.InputTokens = %v, want 3", success.Usage.InputTokens)
-	}
-	if success.Usage.OutputTokens == nil || *success.Usage.OutputTokens != 2 {
-		t.Errorf("success.Usage.OutputTokens = %v, want 2", success.Usage.OutputTokens)
-	}
-	if success.Finish == nil {
-		t.Fatalf("success.Finish = nil, want call-once 回调")
-	}
-	if err := success.Finish(context.Background(), gatewayhybrid.AuxiliaryDispatchFinishInput{Success: true}); err != nil {
-		t.Errorf("success.Finish = %v, want nil", err)
-	}
-	if gotAuth != "Bearer sk-w1h-upstream" {
-		t.Errorf("上游 Authorization = %q, want Bearer sk-w1h-upstream", gotAuth)
-	}
-	if !strings.Contains(gotBody, "w1h-aux-model") {
-		t.Errorf("上游 body = %q, want 含 w1h-aux-model", gotBody)
-	}
-}
-
-func TestW1HDispatchHybridAuxiliaryChatCompletionUpstreamFailure(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":{"code":"w1h_boom","message":"上游爆炸"}}`))
-	}))
-	defer upstream.Close()
-
-	cache := w1hNewRuntimeCache(t, &w1hReadModels{
-		groupAccess: w1hAuxGroupAccess(),
-		accounts:    []gatewayruntimecache.OpenAIAccountSecret{w1hAuxAccount(upstream.URL)},
-	})
-	record := gatewayhybrid.APIKeyRecord{ID: "key-w1h", SystemAccountID: "sys-w1h", SelectedGroupID: "group-w1h"}
-	success, failure := newChainHybridAuxiliaryDispatcher(cache).DispatchHybridAuxiliaryChatCompletion(context.Background(), w1hAuxInput(record))
-	if success.Finish != nil {
-		t.Errorf("failure 路径 success.Finish 应为零值")
-	}
-	if failure == nil {
-		t.Fatalf("非 2xx 路径 failure = nil")
-	}
-	if failure.ErrorCode != "w1h_boom" {
-		t.Errorf("failure.ErrorCode = %q, want w1h_boom（error payload 优先）", failure.ErrorCode)
-	}
-	if failure.ErrorMessage != "上游爆炸" {
-		t.Errorf("failure.ErrorMessage = %q, want 上游爆炸", failure.ErrorMessage)
-	}
-	if failure.StatusCode != http.StatusInternalServerError || !failure.HasStatusCode {
-		t.Errorf("failure.StatusCode = %d/%t, want %d/true", failure.StatusCode, failure.HasStatusCode, http.StatusInternalServerError)
-	}
-	if failure.Account == nil || failure.Account.ID != "acc-w1h" {
-		t.Errorf("failure.Account = %+v, want acc-w1h", failure.Account)
-	}
-	if !failure.HasGroupID || failure.GroupID != "group-w1h" {
-		t.Errorf("failure.GroupID/HasGroupID = %q/%t, want group-w1h/true", failure.GroupID, failure.HasGroupID)
-	}
-	if !failure.ShouldRecordUsage {
-		t.Errorf("failure.ShouldRecordUsage = false, want true")
-	}
-}
-
-func TestW1HDispatchHybridAuxiliaryChatCompletionTransportError(t *testing.T) {
-	// 127.0.0.1:1 固定拒绝连接：网络错误臂不依赖时序。
-	cache := w1hNewRuntimeCache(t, &w1hReadModels{
-		groupAccess: w1hAuxGroupAccess(),
-		accounts:    []gatewayruntimecache.OpenAIAccountSecret{w1hAuxAccount("http://127.0.0.1:1")},
-	})
-	record := gatewayhybrid.APIKeyRecord{ID: "key-w1h", SystemAccountID: "sys-w1h", SelectedGroupID: "group-w1h"}
-	success, failure := newChainHybridAuxiliaryDispatcher(cache).DispatchHybridAuxiliaryChatCompletion(context.Background(), w1hAuxInput(record))
-	if success.Finish != nil {
-		t.Errorf("网络错误路径 success.Finish 应为零值")
-	}
-	if failure == nil {
-		t.Fatalf("网络错误路径 failure = nil")
-	}
-	if failure.ErrorCode != "w1h_dispatch_failed" {
-		t.Errorf("failure.ErrorCode = %q, want w1h_dispatch_failed", failure.ErrorCode)
-	}
-	if failure.ErrorMessage == "" || failure.ErrorMessage == "辅助派发失败" {
-		t.Errorf("failure.ErrorMessage = %q, want 传输层原始错误文本", failure.ErrorMessage)
-	}
-	if failure.StatusCode != 0 || failure.HasStatusCode {
-		t.Errorf("failure.StatusCode/HasStatusCode = %d/%t, want 0/false", failure.StatusCode, failure.HasStatusCode)
-	}
-	if failure.Account == nil || failure.Account.ID != "acc-w1h" {
-		t.Errorf("failure.Account = %+v, want acc-w1h", failure.Account)
-	}
-	if !failure.HasGroupID || !failure.ShouldRecordUsage {
-		t.Errorf("failure.HasGroupID/ShouldRecordUsage = %t/%t, want true/true", failure.HasGroupID, failure.ShouldRecordUsage)
-	}
-}
-
-func TestW1HDispatchHybridAuxiliaryChatCompletionGuards(t *testing.T) {
-	record := gatewayhybrid.APIKeyRecord{ID: "key-w1h", SystemAccountID: "sys-w1h", SelectedGroupID: "group-w1h"}
-	var nilDispatcher *chainHybridAuxiliaryDispatcher
-	cases := []struct {
-		name       string
-		dispatcher *chainHybridAuxiliaryDispatcher
-		input      gatewayhybrid.APIKeyRecord
-		wantCode   string
-		wantGroup  bool
-	}{
-		{name: "dispatcher 为 nil", dispatcher: nilDispatcher, input: record, wantCode: "w1h_dispatch_failed", wantGroup: false},
-		{name: "cache 缺失", dispatcher: &chainHybridAuxiliaryDispatcher{}, input: record, wantCode: "w1h_dispatch_failed", wantGroup: false},
-		{name: "SelectedGroupID 缺失", dispatcher: newChainHybridAuxiliaryDispatcher(w1hNewRuntimeCache(t, &w1hReadModels{})), input: gatewayhybrid.APIKeyRecord{ID: "key-w1h", SystemAccountID: "sys-w1h"}, wantCode: "w1h_no_account", wantGroup: false},
-		{name: "分组元数据缺失", dispatcher: newChainHybridAuxiliaryDispatcher(w1hNewRuntimeCache(t, &w1hReadModels{})), input: record, wantCode: "w1h_no_account", wantGroup: false},
-		{name: "账户列表为空", dispatcher: newChainHybridAuxiliaryDispatcher(w1hNewRuntimeCache(t, &w1hReadModels{groupAccess: w1hAuxGroupAccess()})), input: record, wantCode: "w1h_no_account", wantGroup: false},
-	}
-	for _, testCase := range cases {
-		success, failure := testCase.dispatcher.DispatchHybridAuxiliaryChatCompletion(context.Background(), w1hAuxInput(testCase.input))
-		if success.Finish != nil {
-			t.Errorf("%s: success.Finish 应为零值", testCase.name)
-		}
-		if failure == nil {
-			t.Fatalf("%s: failure = nil", testCase.name)
-		}
-		if failure.ErrorCode != testCase.wantCode {
-			t.Errorf("%s: ErrorCode = %q, want %q", testCase.name, failure.ErrorCode, testCase.wantCode)
-		}
-		if failure.ErrorMessage == "" {
-			t.Errorf("%s: ErrorMessage 为空, want 输入错误消息", testCase.name)
-		}
-		if failure.Account != nil {
-			t.Errorf("%s: Account = %+v, want nil", testCase.name, failure.Account)
-		}
-		if failure.HasGroupID != testCase.wantGroup {
-			t.Errorf("%s: HasGroupID = %t, want %t", testCase.name, failure.HasGroupID, testCase.wantGroup)
-		}
-		if failure.ShouldRecordUsage {
-			t.Errorf("%s: 未派发上游时 ShouldRecordUsage = true, want false", testCase.name)
-		}
-	}
-}
-
-func TestW1HWireChainHybridAuxiliaryTransport(t *testing.T) {
-	// nil dispatcher 不 panic；具体 dispatcher 注入零值 deps 保持可调用语义。
-	wireChainHybridAuxiliaryTransport(nil, gatewaydispatch.TransportDeps{})
-	dispatcher := newChainHybridAuxiliaryDispatcher(w1hNewRuntimeCache(t, &w1hReadModels{}))
-	wireChainHybridAuxiliaryTransport(dispatcher, gatewaydispatch.TransportDeps{})
 }
 
 // ---------------------------------------------------------------------------

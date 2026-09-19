@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/routestrategymigration"
 )
 
 // db-service 契约源在二次伪迁移第一轮（63793f367）移入 migration-backup-1
@@ -23,190 +25,205 @@ import (
 const archivedDBServiceSourceRoot = "migration-backup-1/node/final-archive/backend/src/modules/db-service"
 
 func main() {
-	version := flag.Bool("version", false, "print the maintenance project contract version")
-	check := flag.Bool("check-boundary", false, "verify the scaffold boundary")
-	j3Check := flag.Bool("check-j3a-proxy-latency-postgres", false, "read-only verify pre-provisioned J3a PostgreSQL jobs schema")
-	j3Apply := flag.Bool("apply-j3a-proxy-latency-postgres", false, "add missing J3a PostgreSQL jobs tables/indexes after explicit authorization")
-	j3bCheck := flag.Bool("check-j3b-model-check-postgres", false, "read-only verify pre-provisioned J3b PostgreSQL juhe_j3b schema")
-	j3bApply := flag.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL juhe_j3b tables/indexes after explicit authorization")
-	j3bPostgresReadback := flag.Bool("verify-j3b-model-check-postgres-backfill", false, "read-only compare legacy PostgreSQL J3b facts with juhe_j3b; never writes")
-	j3bPostgresReadbackURL := flag.String("j3b-postgres-readback-url", "", "explicit maintenance-scoped PostgreSQL URL for --verify-j3b-model-check-postgres-backfill")
-	j3bPostgresReadbackMaxRows := flag.Int64("j3b-postgres-readback-max-rows", j3bmodelcheck.DefaultPostgresReadbackMaxRows, "maximum rows per J3b fact table accepted as complete readback evidence")
-	j3bPostgresBackfill := flag.Bool("backfill-j3b-model-check-postgres", false, "copy whitelisted legacy PostgreSQL J3b facts into juhe_j3b after explicit stop and backup confirmations")
-	j3bPostgresBackfillURL := flag.String("j3b-postgres-backfill-url", "", "explicit maintenance-scoped PostgreSQL URL for --backfill-j3b-model-check-postgres")
-	j3bPostgresBackfillMaxRows := flag.Int64("j3b-postgres-backfill-max-rows", j3bmodelcheck.DefaultPostgresBackfillMaxRows, "maximum rows per J3b fact table accepted by PostgreSQL backfill")
-	j3bPostgresBackfillMaxBytes := flag.Int64("j3b-postgres-backfill-max-bytes", j3bmodelcheck.DefaultPostgresBackfillMaxBytes, "maximum source bytes per J3b fact table accepted by PostgreSQL backfill")
-	j3bBackfillEvidence := flag.String("j3b-backfill-evidence", "", "explicit JSON pre-backfill handoff evidence required before J3b PostgreSQL/SQLite backfill")
-	j3bInventoryCheck := flag.Bool("verify-j3b-model-check-inventory", false, "read-only verify legacy J3b fact inventory against explicit evidence; never writes")
-	j3bInventoryEvidence := flag.String("j3b-inventory-evidence", "", "explicit JSON evidence file for --verify-j3b-model-check-inventory")
-	j3bCutoverEvidence := flag.String("verify-j3b-cutover-evidence", "", "read-only verify J3b cutover evidence JSON; never writes")
-	j3bSQLiteCheck := flag.Bool("check-j3b-model-check-sqlite", false, "read-only verify dedicated J3b SQLite schema")
-	j3bSQLiteApply := flag.Bool("apply-j3b-model-check-sqlite", false, "bootstrap dedicated J3b SQLite schema after stop and backup confirmations")
-	goRuntimeMetricsCheck := flag.Bool("check-go-runtime-metrics", false, "read-only verify independent Go runtime metrics PostgreSQL schema")
-	goRuntimeMetricsApply := flag.Bool("apply-go-runtime-metrics", false, "add missing Go runtime metrics PostgreSQL tables after explicit stop and backup confirmations")
-	goRuntimeMetricsURL := flag.String("go-runtime-metrics-postgres-url", "", "explicit maintenance-scoped PostgreSQL URL for Go runtime metrics (or JUHE_AI_MAINTENANCE_GO_RUNTIME_METRICS_POSTGRES_URL)")
-	nodeStopped := flag.Bool("node-stopped", false, "confirm Node writers are stopped for an offline migration")
-	goStopped := flag.Bool("go-stopped", false, "confirm Go owners are stopped for an offline migration")
-	backupConfirmed := flag.Bool("backup-confirmed", false, "confirm a recoverable backup was verified")
-	j3bBackfill := flag.Bool("backfill-j3b-model-check-sqlite", false, "copy legacy J3b SQLite facts into the dedicated file")
-	j3bReadback := flag.Bool("verify-j3b-model-check-sqlite-backfill", false, "read-only verify legacy-to-dedicated J3b SQLite row and digest parity")
-	ownerManifestCheck := flag.Bool("verify-business-owner-manifest", false, "read-only verify the Business SQLite operation handoff manifest")
-	capabilityManifestCheck := flag.Bool("verify-business-capability-manifest", false, "read-only verify the Go Business capability handoff manifest")
-	routeOwnerManifestCheck := flag.Bool("verify-gateway-route-owner-manifest", false, "read-only verify Node system-api mutation routes and Gateway owner mapping")
-	businessHandoffCheck := flag.Bool("verify-business-sqlite-handoff", false, "read-only verify Business/J3b SQLite path isolation and query_only write fencing")
-	businessSchemaCheck := flag.Bool("verify-business-sqlite-schema", false, "read-only verify required Gateway Business SQLite tables, columns and indexes")
-	businessSQLitePath := flag.String("business-sqlite-path", "", "Business SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH)")
-	j3bSQLitePath := flag.String("j3b-sqlite-path", "", "dedicated J3b SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH)")
-	nodeActivePathCheck := flag.Bool("scan-node-j3b-active-path", false, "read-only scan Node J3b routes, workers and writers")
-	j3cReadOnlyCheck := flag.Bool("verify-j3c-readonly-boundary", false, "read-only audit the J3b-to-J3c health reader boundary")
-	ensureSchema := flag.Bool("ensure-schema", false, "idempotently apply the six-database SQLite schema or the full PostgreSQL schema (with --driver plus --paths/--dsn)")
-	seedDefaults := flag.Bool("seed", false, "idempotently run the default seed (business SQLite or PostgreSQL; runs after --ensure-schema when both are set)")
-	bootstrapDriver := flag.String("driver", "", "storage driver for --ensure-schema/--seed: sqlite or postgres")
-	bootstrapPaths := flag.String("paths", "", "sqlite storage paths: business=...,chat=...,dataset=...,usage-catalog=...,stats=...,codex-context-shard-root=...,codex-context-shard-count=...")
-	bootstrapDSN := flag.String("dsn", "", "postgres URL for --ensure-schema/--seed")
-	seedSecret := flag.String("secret", "", "seed encryption secret (or JUHE_AI_SECRET); empty selects the Node dev default")
-	postgresSchemaSnapshot := flag.Bool("postgres-schema-snapshot", false, "read-only PostgreSQL schema snapshot JSON to stdout (requires JUHE_AI_SCHEMA_SNAPSHOT_TARGET=production|test, JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL and JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY; PostgreSQL only, SQLite is rejected)")
-	flag.Parse()
-	if *postgresSchemaSnapshot {
-		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
-			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
-			os.Exit(2)
-		}
-		runPostgresSchemaSnapshot()
-		return
-	}
-	if *ensureSchema || *seedDefaults {
-		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
-			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
-			os.Exit(2)
-		}
-		os.Exit(runStorageBootstrap(*ensureSchema, *seedDefaults, *bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *seedSecret))
-	}
-	if *goRuntimeMetricsCheck || *goRuntimeMetricsApply {
-		if *goRuntimeMetricsCheck && *goRuntimeMetricsApply {
-			fmt.Fprintln(os.Stderr, "Go runtime metrics check and apply flags are mutually exclusive")
-			os.Exit(2)
-		}
-		if *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bCutoverEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
-			fmt.Fprintln(os.Stderr, "Go runtime metrics flags are mutually exclusive with other maintenance commands")
-			os.Exit(2)
-		}
-		runGoRuntimeMetricsBootstrap(*goRuntimeMetricsApply, *goRuntimeMetricsURL, *nodeStopped, *goStopped, *backupConfirmed)
-		return
-	}
-	if strings.TrimSpace(*j3bCutoverEvidence) != "" {
-		if strings.TrimSpace(*j3bBackfillEvidence) != "" || *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
-			fmt.Fprintln(os.Stderr, "J3b cutover evidence verification is mutually exclusive with other maintenance commands")
-			os.Exit(2)
-		}
-		runJ3bCutoverEvidenceCheck(*j3bCutoverEvidence)
-		return
-	}
-	if *version {
-		fmt.Printf("juhe-ai-maintenance project=%s contract=%s\n", contracts.ProjectMaintenance, contracts.ArchitectureVersion)
-		return
-	}
-	if *check {
-		fmt.Println("juhe-ai-maintenance boundary=ready runtime=one-shot-scaffold")
-		return
-	}
-	if *ownerManifestCheck {
-		runBusinessOwnerManifestCheck()
-		return
-	}
-	if *capabilityManifestCheck {
-		runBusinessCapabilityManifestCheck()
-		return
-	}
-	if *routeOwnerManifestCheck {
-		runGatewayRouteOwnerManifestCheck()
-		return
-	}
-	if *businessHandoffCheck {
-		runBusinessSQLiteHandoffCheck(*businessSQLitePath, *j3bSQLitePath)
-		return
-	}
-	if *businessSchemaCheck {
-		runBusinessSQLiteSchemaCheck(*businessSQLitePath)
-		return
-	}
-	if *nodeActivePathCheck {
-		runNodeJ3bActivePathCheck()
-		return
-	}
-	if *j3cReadOnlyCheck {
-		runJ3cReadOnlyBoundaryCheck()
-		return
-	}
-	if *j3bInventoryCheck {
-		if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
-			fmt.Fprintln(os.Stderr, "J3b inventory verification flag is mutually exclusive with bootstrap, backfill and readback flags")
-			os.Exit(2)
-		}
-		runJ3bModelCheckInventory(*j3bInventoryEvidence)
-		return
-	}
-	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
-		if (*j3bPostgresReadback || *j3bPostgresBackfill) && (*j3Check || *j3Apply || *j3bCheck || *j3bApply || (*j3bPostgresReadback && *j3bPostgresBackfill) || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback) {
-			fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill/readback flags are mutually exclusive with bootstrap, SQLite and other backfill flags")
-			os.Exit(2)
-		}
-		if *j3Check && *j3Apply {
-			fmt.Fprintln(os.Stderr, "J3a PostgreSQL bootstrap flags are mutually exclusive")
-			os.Exit(2)
-		}
-		if *j3bCheck && *j3bApply {
-			fmt.Fprintln(os.Stderr, "J3b PostgreSQL bootstrap flags are mutually exclusive")
-			os.Exit(2)
-		}
-		if *j3bSQLiteCheck && *j3bSQLiteApply {
-			fmt.Fprintln(os.Stderr, "J3b SQLite bootstrap flags are mutually exclusive")
-			os.Exit(2)
-		}
-		if *j3bBackfill && *j3bReadback {
-			fmt.Fprintln(os.Stderr, "J3b SQLite backfill and readback flags are mutually exclusive")
-			os.Exit(2)
-		}
-		if *j3bSQLiteCheck || *j3bSQLiteApply {
-			runJ3bModelCheckSQLiteBootstrap(*j3bSQLiteApply, *nodeStopped, *goStopped, *backupConfirmed)
-			return
-		}
-		if *j3bBackfill {
-			runJ3bModelCheckSQLiteBackfill(*nodeStopped, *goStopped, *backupConfirmed, *j3bBackfillEvidence)
-			return
-		}
-		if *j3bReadback {
-			runJ3bModelCheckSQLiteReadback()
-			return
-		}
-		if *j3bPostgresReadback {
-			runJ3bModelCheckPostgresBackfillReadback(*j3bPostgresReadbackURL, *j3bPostgresReadbackMaxRows)
-			return
-		}
-		if *j3bPostgresBackfill {
-			runJ3bModelCheckPostgresBackfill(*j3bPostgresBackfillURL, *j3bPostgresBackfillMaxRows, *j3bPostgresBackfillMaxBytes, *nodeStopped, *goStopped, *backupConfirmed, *j3bBackfillEvidence)
-			return
-		}
-		if *j3bCheck || *j3bApply {
-			runJ3bModelCheckBootstrap(*j3bApply)
-			return
-		}
-		runJ3aProxyLatencyBootstrap(*j3Apply)
-		return
-	}
-	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
-	os.Exit(2)
-}
-
-func runGoRuntimeMetricsBootstrap(apply bool, rawURL string, nodeStopped, goStopped, backupConfirmed bool) {
-	if code := goRuntimeMetricsBootstrapResult(apply, rawURL, nodeStopped, goStopped, backupConfirmed); code != 0 {
+	// 出口 0 走正常返回（等价于以状态 0 退出），非零出口才 os.Exit；进程内
+	// 直调 runMaintenance 的任意出口分支因此都不终止宿主进程（测试单进程纪律，
+	// 见 docs/develop/后端测试分层规则.md「测试进程纪律（硬性）」）。
+	if code := runMaintenance(os.Args[1:]); code != 0 {
 		os.Exit(code)
 	}
 }
 
-// goRuntimeMetricsBootstrapResult is runGoRuntimeMetricsBootstrap without the
-// process-terminating os.Exit calls so the whole flow stays testable in
-// process; the wrapper keeps the CLI exit-code contract.
+// runMaintenance carries the original main() body with every exit converted
+// into a returned code; main() is the only remaining os.Exit site, so the
+// whole dispatch stays callable in-process from tests (wm_main_exit_branches_test.go).
+// The CLI contract (flags, exit codes, stdout/stderr text) is unchanged branch
+// by branch. Flags are registered on a fresh flag.ContinueOnError FlagSet per
+// call: ExitOnError would os.Exit straight out of the host process on parse
+// errors, while ContinueOnError turns them into a returned code — flag itself
+// already prints the parse error and usage to stderr before returning, and
+// ErrHelp maps back to exit 0 to keep the old ExitOnError contract.
+func runMaintenance(argv []string) int {
+	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	version := fs.Bool("version", false, "print the maintenance project contract version")
+	check := fs.Bool("check-boundary", false, "verify the scaffold boundary")
+	j3Check := fs.Bool("check-j3a-proxy-latency-postgres", false, "read-only verify pre-provisioned J3a PostgreSQL jobs schema")
+	j3Apply := fs.Bool("apply-j3a-proxy-latency-postgres", false, "add missing J3a PostgreSQL jobs tables/indexes after explicit authorization")
+	j3bCheck := fs.Bool("check-j3b-model-check-postgres", false, "read-only verify pre-provisioned J3b PostgreSQL juhe_j3b schema")
+	j3bApply := fs.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL juhe_j3b tables/indexes after explicit authorization")
+	j3bPostgresReadback := fs.Bool("verify-j3b-model-check-postgres-backfill", false, "read-only compare legacy PostgreSQL J3b facts with juhe_j3b; never writes")
+	j3bPostgresReadbackURL := fs.String("j3b-postgres-readback-url", "", "explicit maintenance-scoped PostgreSQL URL for --verify-j3b-model-check-postgres-backfill")
+	j3bPostgresReadbackMaxRows := fs.Int64("j3b-postgres-readback-max-rows", j3bmodelcheck.DefaultPostgresReadbackMaxRows, "maximum rows per J3b fact table accepted as complete readback evidence")
+	j3bPostgresBackfill := fs.Bool("backfill-j3b-model-check-postgres", false, "copy whitelisted legacy PostgreSQL J3b facts into juhe_j3b after explicit stop and backup confirmations")
+	j3bPostgresBackfillURL := fs.String("j3b-postgres-backfill-url", "", "explicit maintenance-scoped PostgreSQL URL for --backfill-j3b-model-check-postgres")
+	j3bPostgresBackfillMaxRows := fs.Int64("j3b-postgres-backfill-max-rows", j3bmodelcheck.DefaultPostgresBackfillMaxRows, "maximum rows per J3b fact table accepted by PostgreSQL backfill")
+	j3bPostgresBackfillMaxBytes := fs.Int64("j3b-postgres-backfill-max-bytes", j3bmodelcheck.DefaultPostgresBackfillMaxBytes, "maximum source bytes per J3b fact table accepted by PostgreSQL backfill")
+	j3bBackfillEvidence := fs.String("j3b-backfill-evidence", "", "explicit JSON pre-backfill handoff evidence required before J3b PostgreSQL/SQLite backfill")
+	j3bInventoryCheck := fs.Bool("verify-j3b-model-check-inventory", false, "read-only verify legacy J3b fact inventory against explicit evidence; never writes")
+	j3bInventoryEvidence := fs.String("j3b-inventory-evidence", "", "explicit JSON evidence file for --verify-j3b-model-check-inventory")
+	j3bCutoverEvidence := fs.String("verify-j3b-cutover-evidence", "", "read-only verify J3b cutover evidence JSON; never writes")
+	j3bSQLiteCheck := fs.Bool("check-j3b-model-check-sqlite", false, "read-only verify dedicated J3b SQLite schema")
+	j3bSQLiteApply := fs.Bool("apply-j3b-model-check-sqlite", false, "bootstrap dedicated J3b SQLite schema after stop and backup confirmations")
+	goRuntimeMetricsCheck := fs.Bool("check-go-runtime-metrics", false, "read-only verify independent Go runtime metrics PostgreSQL schema")
+	goRuntimeMetricsApply := fs.Bool("apply-go-runtime-metrics", false, "add missing Go runtime metrics PostgreSQL tables after explicit stop and backup confirmations")
+	goRuntimeMetricsURL := fs.String("go-runtime-metrics-postgres-url", "", "explicit maintenance-scoped PostgreSQL URL for Go runtime metrics (or JUHE_AI_MAINTENANCE_GO_RUNTIME_METRICS_POSTGRES_URL)")
+	nodeStopped := fs.Bool("node-stopped", false, "confirm Node writers are stopped for an offline migration")
+	goStopped := fs.Bool("go-stopped", false, "confirm Go owners are stopped for an offline migration")
+	backupConfirmed := fs.Bool("backup-confirmed", false, "confirm a recoverable backup was verified")
+	j3bBackfill := fs.Bool("backfill-j3b-model-check-sqlite", false, "copy legacy J3b SQLite facts into the dedicated file")
+	j3bReadback := fs.Bool("verify-j3b-model-check-sqlite-backfill", false, "read-only verify legacy-to-dedicated J3b SQLite row and digest parity")
+	ownerManifestCheck := fs.Bool("verify-business-owner-manifest", false, "read-only verify the Business SQLite operation handoff manifest")
+	capabilityManifestCheck := fs.Bool("verify-business-capability-manifest", false, "read-only verify the Go Business capability handoff manifest")
+	routeOwnerManifestCheck := fs.Bool("verify-gateway-route-owner-manifest", false, "read-only verify Node system-api mutation routes and Gateway owner mapping")
+	businessHandoffCheck := fs.Bool("verify-business-sqlite-handoff", false, "read-only verify Business/J3b SQLite path isolation and query_only write fencing")
+	businessSchemaCheck := fs.Bool("verify-business-sqlite-schema", false, "read-only verify required Gateway Business SQLite tables, columns and indexes")
+	businessSQLitePath := fs.String("business-sqlite-path", "", "Business SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH)")
+	j3bSQLitePath := fs.String("j3b-sqlite-path", "", "dedicated J3b SQLite path for handoff preflight (or JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH)")
+	nodeActivePathCheck := fs.Bool("scan-node-j3b-active-path", false, "read-only scan Node J3b routes, workers and writers")
+	j3cReadOnlyCheck := fs.Bool("verify-j3c-readonly-boundary", false, "read-only audit the J3b-to-J3c health reader boundary")
+	ensureSchema := fs.Bool("ensure-schema", false, "idempotently apply the six-database SQLite schema or the full PostgreSQL schema (with --driver plus --paths/--dsn)")
+	seedDefaults := fs.Bool("seed", false, "idempotently run the default seed (business SQLite or PostgreSQL; runs after --ensure-schema when both are set)")
+	bootstrapDriver := fs.String("driver", "", "storage driver for --ensure-schema/--seed: sqlite or postgres")
+	bootstrapPaths := fs.String("paths", "", "sqlite storage paths: business=...,chat=...,dataset=...,usage-catalog=...,stats=...,codex-context-shard-root=...,codex-context-shard-count=...")
+	bootstrapDSN := fs.String("dsn", "", "postgres URL for --ensure-schema/--seed/--migrate-hybrid-smart-strategies")
+	seedSecret := fs.String("secret", "", "seed encryption secret (or JUHE_AI_SECRET); empty selects the Node dev default")
+	migrateHybridSmart := fs.Bool("migrate-hybrid-smart-strategies", false, "one-shot migration of hybrid_smart route strategies to failover+disabled with config_json=NULL (PostgreSQL only via --dsn; default read-only dry-run listing the affected rows, add --confirm to write)")
+	migrateConfirm := fs.Bool("confirm", false, "execute the --migrate-hybrid-smart-strategies migration; without it the migration stays a dry-run")
+	postgresSchemaSnapshot := fs.Bool("postgres-schema-snapshot", false, "read-only PostgreSQL schema snapshot JSON to stdout (requires JUHE_AI_SCHEMA_SNAPSHOT_TARGET=production|test, JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL and JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY; PostgreSQL only, SQLite is rejected)")
+	if err := fs.Parse(argv); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if *migrateHybridSmart {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "hybrid_smart strategy migration flag is mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return hybridSmartStrategyMigrationResult(*bootstrapDSN, *migrateConfirm)
+	}
+	if *postgresSchemaSnapshot {
+		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return postgresSchemaSnapshotResult()
+	}
+	if *ensureSchema || *seedDefaults {
+		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return runStorageBootstrap(*ensureSchema, *seedDefaults, *bootstrapDriver, *bootstrapPaths, *bootstrapDSN, *seedSecret)
+	}
+	if *goRuntimeMetricsCheck || *goRuntimeMetricsApply {
+		if *goRuntimeMetricsCheck && *goRuntimeMetricsApply {
+			fmt.Fprintln(os.Stderr, "Go runtime metrics check and apply flags are mutually exclusive")
+			return 2
+		}
+		if *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bCutoverEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "Go runtime metrics flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return goRuntimeMetricsBootstrapResult(*goRuntimeMetricsApply, *goRuntimeMetricsURL, *nodeStopped, *goStopped, *backupConfirmed)
+	}
+	if strings.TrimSpace(*j3bCutoverEvidence) != "" {
+		if strings.TrimSpace(*j3bBackfillEvidence) != "" || *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "J3b cutover evidence verification is mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return j3bCutoverEvidenceCheckResult(*j3bCutoverEvidence)
+	}
+	if *version {
+		fmt.Printf("juhe-ai-maintenance project=%s contract=%s\n", contracts.ProjectMaintenance, contracts.ArchitectureVersion)
+		return 0
+	}
+	if *check {
+		fmt.Println("juhe-ai-maintenance boundary=ready runtime=one-shot-scaffold")
+		return 0
+	}
+	if *ownerManifestCheck {
+		return businessOwnerManifestResult(
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json")),
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", filepath.Join(archivedDBServiceSourceRoot, "db-service-types.ts"))),
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", filepath.Join(archivedDBServiceSourceRoot, "db-service-operation-access-mode.ts"))),
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", filepath.Join(archivedDBServiceSourceRoot, "db-service-handlers.ts"))))
+	}
+	if *capabilityManifestCheck {
+		return businessCapabilityManifestResult(
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_CAPABILITY_MANIFEST", "docs/migration/GoBusinessCapabilityManifest.json")),
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json")))
+	}
+	if *routeOwnerManifestCheck {
+		return gatewayRouteOwnerManifestResult(
+			resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_GATEWAY_ROUTE_MANIFEST", "docs/migration/GatewayManagementRouteOwnerManifest.json")),
+			resolveRepositoryRoot())
+	}
+	if *businessHandoffCheck {
+		return businessSQLiteHandoffCheckResult(*businessSQLitePath, *j3bSQLitePath)
+	}
+	if *businessSchemaCheck {
+		return businessSQLiteSchemaCheckResult(*businessSQLitePath)
+	}
+	if *nodeActivePathCheck {
+		return nodeJ3bActivePathResult(resolveRepositoryRoot())
+	}
+	if *j3cReadOnlyCheck {
+		return j3cReadOnlyBoundaryResult(resolveRepositoryRoot())
+	}
+	if *j3bInventoryCheck {
+		if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+			fmt.Fprintln(os.Stderr, "J3b inventory verification flag is mutually exclusive with bootstrap, backfill and readback flags")
+			return 2
+		}
+		return j3bModelCheckInventoryResult(*j3bInventoryEvidence)
+	}
+	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
+		if (*j3bPostgresReadback || *j3bPostgresBackfill) && (*j3Check || *j3Apply || *j3bCheck || *j3bApply || (*j3bPostgresReadback && *j3bPostgresBackfill) || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback) {
+			fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill/readback flags are mutually exclusive with bootstrap, SQLite and other backfill flags")
+			return 2
+		}
+		if *j3Check && *j3Apply {
+			fmt.Fprintln(os.Stderr, "J3a PostgreSQL bootstrap flags are mutually exclusive")
+			return 2
+		}
+		if *j3bCheck && *j3bApply {
+			fmt.Fprintln(os.Stderr, "J3b PostgreSQL bootstrap flags are mutually exclusive")
+			return 2
+		}
+		if *j3bSQLiteCheck && *j3bSQLiteApply {
+			fmt.Fprintln(os.Stderr, "J3b SQLite bootstrap flags are mutually exclusive")
+			return 2
+		}
+		if *j3bBackfill && *j3bReadback {
+			fmt.Fprintln(os.Stderr, "J3b SQLite backfill and readback flags are mutually exclusive")
+			return 2
+		}
+		if *j3bSQLiteCheck || *j3bSQLiteApply {
+			return j3bModelCheckSQLiteBootstrapResult(*j3bSQLiteApply, *nodeStopped, *goStopped, *backupConfirmed)
+		}
+		if *j3bBackfill {
+			return j3bModelCheckSQLiteBackfillResult(*nodeStopped, *goStopped, *backupConfirmed, *j3bBackfillEvidence)
+		}
+		if *j3bReadback {
+			return j3bModelCheckSQLiteReadbackResult()
+		}
+		if *j3bPostgresReadback {
+			return j3bModelCheckPostgresReadbackResult(*j3bPostgresReadbackURL, *j3bPostgresReadbackMaxRows)
+		}
+		if *j3bPostgresBackfill {
+			return j3bModelCheckPostgresBackfillResult(*j3bPostgresBackfillURL, *j3bPostgresBackfillMaxRows, *j3bPostgresBackfillMaxBytes, *nodeStopped, *goStopped, *backupConfirmed, *j3bBackfillEvidence)
+		}
+		if *j3bCheck || *j3bApply {
+			return j3bModelCheckBootstrapResult(*j3bApply)
+		}
+		return j3aProxyLatencyBootstrapResult(*j3Apply)
+	}
+	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
+	return 2
+}
+
+// goRuntimeMetricsBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func goRuntimeMetricsBootstrapResult(apply bool, rawURL string, nodeStopped, goStopped, backupConfirmed bool) int {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
@@ -261,15 +278,41 @@ func goRuntimeMetricsApplyPreflightExitCode(rawURL string, nodeStopped, goStoppe
 	return 0
 }
 
-func runJ3bModelCheckPostgresBackfill(rawURL string, maxRowsPerTable, maxBytesPerTable int64, nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {
-	if code := j3bModelCheckPostgresBackfillResult(rawURL, maxRowsPerTable, maxBytesPerTable, nodeStopped, goStopped, backupConfirmed, evidencePath); code != 0 {
-		os.Exit(code)
+// hybridSmartStrategyMigrationResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
+func hybridSmartStrategyMigrationResult(rawDSN string, confirm bool) int {
+	rawDSN = strings.TrimSpace(rawDSN)
+	if rawDSN == "" {
+		fmt.Fprintln(os.Stderr, "hybrid_smart strategy migration requires --dsn with an explicit maintenance-scoped PostgreSQL URL (PostgreSQL only; SQLite is not supported by this command)")
+		return 2
 	}
+	db, err := routestrategymigration.Open(rawDSN)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open hybrid_smart strategy migration connection: %v\n", err)
+		return 2
+	}
+	defer db.Close()
+	report, runErr := routestrategymigration.Run(context.Background(), db, routestrategymigration.DialectPostgres, confirm, time.Now())
+	return hybridSmartMigrationOutcomeExitCode(report, runErr)
 }
 
-// j3bModelCheckPostgresBackfillResult is runJ3bModelCheckPostgresBackfill
-// without the process-terminating os.Exit calls; the wrapper keeps the CLI
-// exit-code contract.
+// hybridSmartMigrationOutcomeExitCode renders the migration report and maps
+// the outcome to the maintenance exit-code contract.
+func hybridSmartMigrationOutcomeExitCode(report routestrategymigration.Report, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "hybrid_smart strategy migration failed: %v\n", runErr)
+		return 1
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode hybrid_smart strategy migration report: %v\n", err)
+		return 1
+	}
+	if !report.Ready() {
+		return 3
+	}
+	return 0
+}
+
+// j3bModelCheckPostgresBackfillResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3bModelCheckPostgresBackfillResult(rawURL string, maxRowsPerTable, maxBytesPerTable int64, nodeStopped, goStopped, backupConfirmed bool, evidencePath string) int {
 	if strings.TrimSpace(rawURL) == "" {
 		fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill requires --j3b-postgres-backfill-url with an explicit maintenance-scoped PostgreSQL URL")
@@ -331,15 +374,7 @@ func j3bBackfillEvidencePreflight(path string) (businesshandoff.J3bCutoverEviden
 	return report, 0, nil
 }
 
-func runJ3bModelCheckPostgresBackfillReadback(rawURL string, maxRowsPerTable int64) {
-	if code := j3bModelCheckPostgresReadbackResult(rawURL, maxRowsPerTable); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3bModelCheckPostgresReadbackResult is runJ3bModelCheckPostgresBackfillReadback
-// without the process-terminating os.Exit calls; the wrapper keeps the CLI
-// exit-code contract.
+// j3bModelCheckPostgresReadbackResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3bModelCheckPostgresReadbackResult(rawURL string, maxRowsPerTable int64) int {
 	rawURL = strings.TrimSpace(rawURL)
 	if j3bPostgresReadbackURLRequiredExitCode(rawURL) != 0 {
@@ -387,15 +422,7 @@ func j3bPostgresReadbackExitCode(report j3bmodelcheck.PostgresBackfillVerificati
 	return 0
 }
 
-func runJ3bModelCheckInventory(evidencePath string) {
-	if code := j3bModelCheckInventoryResult(evidencePath); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3bModelCheckInventoryResult is runJ3bModelCheckInventory without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// j3bModelCheckInventoryResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3bModelCheckInventoryResult(evidencePath string) int {
 	if j3bInventoryEvidenceRequiredExitCode(evidencePath) != 0 {
 		fmt.Fprintln(os.Stderr, "J3b inventory verification requires --j3b-inventory-evidence with an explicit JSON evidence file")
@@ -431,15 +458,7 @@ func j3bInventoryExitCode(report j3bmodelcheck.LegacyJ3bFactCoverageReport) int 
 	return 0
 }
 
-func runJ3cReadOnlyBoundaryCheck() {
-	if code := j3cReadOnlyBoundaryResult(resolveRepositoryRoot()); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3cReadOnlyBoundaryResult is runJ3cReadOnlyBoundaryCheck without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// j3cReadOnlyBoundaryResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3cReadOnlyBoundaryResult(root string) int {
 	report, err := ownermanifest.VerifyJ3cReadOnlyBoundary(root)
 	if err != nil {
@@ -456,15 +475,7 @@ func j3cReadOnlyBoundaryResult(root string) int {
 	return 0
 }
 
-func runJ3bCutoverEvidenceCheck(path string) {
-	if code := j3bCutoverEvidenceCheckResult(path); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3bCutoverEvidenceCheckResult is runJ3bCutoverEvidenceCheck without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// j3bCutoverEvidenceCheckResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3bCutoverEvidenceCheckResult(path string) int {
 	report, err := businesshandoff.VerifyJ3bCutoverEvidence(path, time.Now().UTC())
 	if err != nil {
@@ -488,17 +499,7 @@ func j3bCutoverEvidenceExitCode(report businesshandoff.J3bCutoverEvidenceReport)
 	return 0
 }
 
-func runGatewayRouteOwnerManifestCheck() {
-	if code := gatewayRouteOwnerManifestResult(
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_GATEWAY_ROUTE_MANIFEST", "docs/migration/GatewayManagementRouteOwnerManifest.json")),
-		resolveRepositoryRoot()); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// gatewayRouteOwnerManifestResult is runGatewayRouteOwnerManifestCheck without
-// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// gatewayRouteOwnerManifestResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func gatewayRouteOwnerManifestResult(manifestPath, root string) int {
 	report, err := ownermanifest.VerifyGatewayRouteOwnerManifest(manifestPath, root)
 	if err != nil {
@@ -515,15 +516,7 @@ func gatewayRouteOwnerManifestResult(manifestPath, root string) int {
 	return 0
 }
 
-func runBusinessSQLiteSchemaCheck(path string) {
-	if code := businessSQLiteSchemaCheckResult(path); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// businessSQLiteSchemaCheckResult is runBusinessSQLiteSchemaCheck without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// businessSQLiteSchemaCheckResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func businessSQLiteSchemaCheckResult(path string) int {
 	if strings.TrimSpace(path) == "" {
 		path = strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH"))
@@ -547,17 +540,7 @@ func businessSQLiteSchemaCheckResult(path string) int {
 	return 0
 }
 
-func runBusinessCapabilityManifestCheck() {
-	if code := businessCapabilityManifestResult(
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_CAPABILITY_MANIFEST", "docs/migration/GoBusinessCapabilityManifest.json")),
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json"))); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// businessCapabilityManifestResult is runBusinessCapabilityManifestCheck
-// without the process-terminating os.Exit calls; the wrapper keeps the CLI
-// exit-code contract.
+// businessCapabilityManifestResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func businessCapabilityManifestResult(capabilityPath, operationPath string) int {
 	report, err := ownermanifest.VerifyCapabilityManifest(capabilityPath, operationPath)
 	if err != nil {
@@ -576,15 +559,7 @@ func businessCapabilityManifestResult(capabilityPath, operationPath string) int 
 	return 0
 }
 
-func runJ3bModelCheckSQLiteReadback() {
-	if code := j3bModelCheckSQLiteReadbackResult(); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3bModelCheckSQLiteReadbackResult is runJ3bModelCheckSQLiteReadback without
-// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// j3bModelCheckSQLiteReadbackResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3bModelCheckSQLiteReadbackResult() int {
 	targetPath := strings.TrimSpace(os.Getenv(j3bmodelcheck.SQLiteBootstrapEnv))
 	datasetPath := strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_J3B_SOURCE_DATASET_PATH"))
@@ -618,15 +593,7 @@ func j3bSQLiteReadbackExitCode(report j3bmodelcheck.BackfillVerificationReport) 
 	return 0
 }
 
-func runBusinessSQLiteHandoffCheck(businessPath, j3bPath string) {
-	if code := businessSQLiteHandoffCheckResult(businessPath, j3bPath); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// businessSQLiteHandoffCheckResult is runBusinessSQLiteHandoffCheck without
-// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// businessSQLiteHandoffCheckResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func businessSQLiteHandoffCheckResult(businessPath, j3bPath string) int {
 	if strings.TrimSpace(businessPath) == "" {
 		businessPath = strings.TrimSpace(os.Getenv("JUHE_AI_MAINTENANCE_BUSINESS_SQLITE_PATH"))
@@ -653,15 +620,7 @@ func businessSQLiteHandoffCheckResult(businessPath, j3bPath string) int {
 	return 0
 }
 
-func runNodeJ3bActivePathCheck() {
-	if code := nodeJ3bActivePathResult(resolveRepositoryRoot()); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// nodeJ3bActivePathResult is runNodeJ3bActivePathCheck without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// nodeJ3bActivePathResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func nodeJ3bActivePathResult(root string) int {
 	report, err := ownermanifest.ScanNodeJ3bActivePaths(root)
 	if err != nil {
@@ -714,21 +673,7 @@ func isRepositoryRoot(dir string) bool {
 	return true
 }
 
-func runBusinessOwnerManifestCheck() {
-	// The manifest records original Node source locations for provenance, but
-	// its immutable source-of-truth files now live in final-archive.
-	if code := businessOwnerManifestResult(
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_OWNER_MANIFEST", "docs/migration/BusinessSQLite-owner-manifest.json")),
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_TYPES", filepath.Join(archivedDBServiceSourceRoot, "db-service-types.ts"))),
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_ACCESS", filepath.Join(archivedDBServiceSourceRoot, "db-service-operation-access-mode.ts"))),
-		resolveRepoPath(envOrDefault("JUHE_AI_MAINTENANCE_DB_SERVICE_HANDLERS", filepath.Join(archivedDBServiceSourceRoot, "db-service-handlers.ts")))); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// businessOwnerManifestResult is runBusinessOwnerManifestCheck without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// businessOwnerManifestResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func businessOwnerManifestResult(manifestPath, typesPath, accessPath, handlerPath string) int {
 	report, err := ownermanifest.Verify(manifestPath, typesPath, accessPath, handlerPath)
 	if err != nil {
@@ -771,15 +716,7 @@ func resolveRepoPath(path string) string {
 	return path
 }
 
-func runJ3bModelCheckSQLiteBackfill(nodeStopped, goStopped, backupConfirmed bool, evidencePath string) {
-	if code := j3bModelCheckSQLiteBackfillResult(nodeStopped, goStopped, backupConfirmed, evidencePath); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3bModelCheckSQLiteBackfillResult is runJ3bModelCheckSQLiteBackfill without
-// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// j3bModelCheckSQLiteBackfillResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3bModelCheckSQLiteBackfillResult(nodeStopped, goStopped, backupConfirmed bool, evidencePath string) int {
 	if !nodeStopped || !goStopped || !backupConfirmed {
 		fmt.Fprintln(os.Stderr, "J3b SQLite backfill requires --node-stopped --go-stopped --backup-confirmed")
@@ -827,15 +764,7 @@ func j3bSQLiteBackfillOutcomeExitCode(report j3bmodelcheck.BackfillReport, runEr
 	return 0
 }
 
-func runJ3bModelCheckSQLiteBootstrap(apply, nodeStopped, goStopped, backupConfirmed bool) {
-	if code := j3bModelCheckSQLiteBootstrapResult(apply, nodeStopped, goStopped, backupConfirmed); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3bModelCheckSQLiteBootstrapResult is runJ3bModelCheckSQLiteBootstrap without
-// the process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// j3bModelCheckSQLiteBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3bModelCheckSQLiteBootstrapResult(apply, nodeStopped, goStopped, backupConfirmed bool) int {
 	path := strings.TrimSpace(os.Getenv(j3bmodelcheck.SQLiteBootstrapEnv))
 	if path == "" {
@@ -873,15 +802,7 @@ func j3bSQLiteBootstrapOutcomeExitCode(report j3bmodelcheck.SQLiteReport, runErr
 	return 0
 }
 
-func runJ3bModelCheckBootstrap(apply bool) {
-	if code := j3bModelCheckBootstrapResult(apply); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3bModelCheckBootstrapResult is runJ3bModelCheckBootstrap without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// j3bModelCheckBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3bModelCheckBootstrapResult(apply bool) int {
 	rawURL := strings.TrimSpace(os.Getenv(j3bmodelcheck.BootstrapEnv))
 	if rawURL == "" {
@@ -915,15 +836,7 @@ func j3bBootstrapOutcomeExitCode(report j3bmodelcheck.Report, runErr error) int 
 	return 0
 }
 
-func runJ3aProxyLatencyBootstrap(apply bool) {
-	if code := j3aProxyLatencyBootstrapResult(apply); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// j3aProxyLatencyBootstrapResult is runJ3aProxyLatencyBootstrap without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// j3aProxyLatencyBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func j3aProxyLatencyBootstrapResult(apply bool) int {
 	rawURL := strings.TrimSpace(os.Getenv(j3aproxylatency.BootstrapEnv))
 	if rawURL == "" {

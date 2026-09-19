@@ -258,7 +258,7 @@ Chat 入口没有完整 hosted tool item 结构时，只输出合法 Chat Comple
 | computer | adapter 未配置、`computer=mock` JSON / SSE 固定 `computer_call`、`computer_call_output` 收口且不回显截图正文、不请求上游；`computer=local_runtime` 首段覆盖 adapter gate、测试 adapter `computer_call` 输出、动作/会话 metadata、截图正文省略和不上游；HTTP sandbox adapter 首段覆盖显式配置、adapter HTTP 调用、响应大小限制、JSON schema 归一化、动作/metadata 脱敏和不上游；后续完整 Playwright / container adapter 再补动作执行、域名 allowlist、截图引用持久化、人工确认和审计摘要 |
 | SSE | tool in_progress、delta / action、completed、failed、response terminal |
 | 审计 | 工具大输出和截图正文省略，metadata 保留 |
-| 回归 | OpenAI -> Anthropic bridge、Responses -> Chat bridge、混合路由不回归 |
+| 回归 | OpenAI -> Anthropic bridge、Responses -> Chat bridge、混合供应商账户链路不回归 |
 
 真实联调只能在 mock 全过后做小批量抽样。
 

@@ -29,8 +29,7 @@ const (
 
 var usageRecordTrafficSourceSet = map[string]bool{
 	"gateway": true, "manual_account_test": true, "account_health_check": true,
-	"runtime_recovery_probe": true, "cooldown_retest": true, "hybrid_scoring": true,
-	"hybrid_quality_scoring": true,
+	"runtime_recovery_probe": true, "cooldown_retest": true,
 }
 
 // allSystemAccountUnsupportedFilterKeys mirror usage-records.routes.ts.

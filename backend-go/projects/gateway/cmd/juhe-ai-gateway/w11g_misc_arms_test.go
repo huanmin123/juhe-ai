@@ -5,7 +5,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"fmt"
 	"image"
@@ -40,25 +39,10 @@ func w11gPreflightBase(t *testing.T) (runtimeConfig, *sql.DB) {
 	}, db
 }
 
-func TestW11GPreflightMissingPathArms(t *testing.T) {
-	ctx := context.Background()
-	// 各缺路径分支。
-	for _, testCase := range []struct {
-		name  string
-		clear func(*runtimeConfig)
-	}{
-		{"chat", func(c *runtimeConfig) { c.ChatDatabasePath = "" }},
-		{"dataset", func(c *runtimeConfig) { c.DatasetDatabasePath = "" }},
-		{"usage-catalog", func(c *runtimeConfig) { c.UsageCatalogDatabasePath = "" }},
-		{"codex-root", func(c *runtimeConfig) { c.CodexContextShardRoot = "" }},
-	} {
-		cfg, db := w11gPreflightBase(t)
-		testCase.clear(&cfg)
-		if err := ensureGatewaySQLiteStoragePreflight(ctx, cfg, db); err == nil {
-			t.Fatalf("missing %s must fail", testCase.name)
-		}
-	}
-}
+// TestW11GPreflightMissingPathArms 已随 2026-09-19 零配置改造移除：路径类
+// env 未配置时由 loadRuntimeConfig 按 datadir 固定名表派生，preflight 不再
+// 承担缺路径 fail-fast 职责；派生路径直通 preflight 的覆盖见
+// storage_bootstrap_test.go TestZeroConfigStoragePreflightWithDerivedPaths。
 
 func TestW11GChatImageProcessingEdges(t *testing.T) {
 	processor := newChatImageProcessor()

@@ -37,6 +37,7 @@ export type AccountTestEndpointModeDraftSource = {
 }
 
 export const accountEndpointModeOptions: Array<{ label: string; value: AccountSupportedEndpointMode }> = [
+  { label: 'Images API', value: 'images_json' },
   { label: 'Chat Completions (JSON)', value: 'chat_json' },
   { label: 'Chat Completions (Streaming)', value: 'chat_sse' },
   { label: 'Responses API (JSON)', value: 'responses_json' },

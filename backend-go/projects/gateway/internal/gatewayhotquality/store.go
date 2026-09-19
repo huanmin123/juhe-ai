@@ -7,8 +7,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 )
 
 // Hot quality store contracts mirroring
@@ -42,16 +40,15 @@ var HotQualityFirstByteEwmaAlpha = float64(0.4)
 var HotQualityFirstByteBucketUpperBoundsMS = [8]int64{1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000, math.MaxInt64}
 
 // HotQualityModelFamily / HotQualityRequestLane / reliability / sample state
-// mirror the branded string unions. gatewayhybrid exports the reliability and
-// sample-state literals for the selection layer; they are reused below.
+// mirror the branded string unions. The reliability and sample-state literals
+// are shared with the candidate-selection layer (selection.go).
 type (
 	// HotQualityModelFamily mirrors HotQualityModelFamily.
 	HotQualityModelFamily = string
 	// HotQualityRequestLane mirrors HotQualityRequestLane.
 	HotQualityRequestLane = string
-	// HotQualityReliabilityLevel mirrors HotQualityReliabilityLevel (alias of
-	// the gatewayhybrid selection-layer alias).
-	HotQualityReliabilityLevel = gatewayhybrid.HotQualityReliabilityLevel
+	// HotQualityReliabilityLevel mirrors HotQualityReliabilityLevel.
+	HotQualityReliabilityLevel = string
 	// HotQualitySampleState mirrors HotQualitySampleState.
 	HotQualitySampleState = string
 )
@@ -62,19 +59,19 @@ const (
 	RequestLaneImage HotQualityRequestLane = "image"
 )
 
-// Reliability levels re-exported from the selection layer literals.
+// Reliability levels (mirror the Node union; shared with the selection layer).
 const (
-	HotQualityReliabilityUnknown   = gatewayhybrid.ReliabilityUnknown
-	HotQualityReliabilityHealthy   = gatewayhybrid.ReliabilityHealthy
-	HotQualityReliabilityUncertain = gatewayhybrid.ReliabilityUncertain
-	HotQualityReliabilityUnhealthy = gatewayhybrid.ReliabilityUnhealthy
+	HotQualityReliabilityUnknown   = "unknown"
+	HotQualityReliabilityHealthy   = "healthy"
+	HotQualityReliabilityUncertain = "uncertain"
+	HotQualityReliabilityUnhealthy = "unhealthy"
 )
 
-// Sample states re-exported from the selection layer literals.
+// Sample states (mirror the Node union; shared with the selection layer).
 const (
-	HotQualitySampleCold    = gatewayhybrid.SampleStateCold
-	HotQualitySampleWarming = gatewayhybrid.SampleStateWarming
-	HotQualitySampleKnown   = gatewayhybrid.SampleStateKnown
+	HotQualitySampleCold    = "cold"
+	HotQualitySampleWarming = "warming"
+	HotQualitySampleKnown   = "known"
 )
 
 // HotQualityScope mirrors HotQualityScope.
@@ -166,7 +163,7 @@ type HotQualityMinuteBucket struct {
 type HotQualityBucketState = HotQualityMinuteBucket
 
 // HotQualityWindowSnapshot mirrors HotQualityWindowSnapshot (the storage-layer
-// superset of the gatewayhybrid selection view).
+// superset of the HotQualitySelectionWindowSnapshot selection view).
 type HotQualityWindowSnapshot struct {
 	HotQualityCounters
 	Minutes                int     `json:"minutes"`
@@ -193,17 +190,17 @@ type HotQualitySnapshot struct {
 }
 
 // SelectionView converts the storage snapshot into the reduced
-// gatewayhybrid.HotQualitySnapshot the candidate-selection layer consumes
+// HotQualitySelectionSnapshot the candidate-selection layer consumes
 // (Node passes the structurally compatible full snapshot directly).
-func (s *HotQualitySnapshot) SelectionView() gatewayhybrid.HotQualitySnapshot {
-	window := func(w HotQualityWindowSnapshot) gatewayhybrid.HotQualityWindowSnapshot {
-		return gatewayhybrid.HotQualityWindowSnapshot{
+func (s *HotQualitySnapshot) SelectionView() HotQualitySelectionSnapshot {
+	window := func(w HotQualityWindowSnapshot) HotQualitySelectionWindowSnapshot {
+		return HotQualitySelectionWindowSnapshot{
 			QualityAttempts:   int(w.QualityAttempts),
 			LastCompletedAtMs: w.LastCompletedAtMs,
 			LastFailureAtMs:   w.LastFailureAtMs,
 		}
 	}
-	view := gatewayhybrid.HotQualitySnapshot{
+	view := HotQualitySelectionSnapshot{
 		Window5m:             window(s.Window5m),
 		Window10m:            window(s.Window10m),
 		Window30m:            window(s.Window30m),

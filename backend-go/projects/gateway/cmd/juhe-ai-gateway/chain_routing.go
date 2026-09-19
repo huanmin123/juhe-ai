@@ -1,35 +1,32 @@
 package main
 
 // G20 phase-2 composition-root adapter: the gatewaypreauth.RouteResolver port
-// (resolverport.go) bridged onto the frozen routing cores
-// gatewayrouting.NormalModelRouteService (G08) and gatewayhybrid.RouteService
-// (G09).
+// (resolverport.go) bridged onto the frozen routing core
+// gatewayrouting.NormalModelRouteService (G08).
 //
 // Node authority:
-//   - request/preflight.ts resolveNormalGatewayModelRoute /
-//     resolveHybridGatewayRoute call sites,
-//   - normal-model-route.service.ts + hybrid/routing.service.ts.
+//   - request/preflight.ts resolveNormalGatewayModelRoute call sites,
+//   - normal-model-route.service.ts.
 //
-// The two routing cores return lossy projections
-// (gatewayrouting.UpstreamAccount / gatewayhybrid.OpenAIAccountSecret /
-// gatewayhybrid.APIKeyRecord) while the preflight contract carries full
-// runtime accounts (gatewayruntimecache.OpenAIAccountSecret, credentials
-// included) and runtime-cache key rows. The adapter translates between the
-// two vocabularies and re-hydrates the full accounts / group access from the
-// gateway runtime cache, exactly like the Node selector-backed call sites.
+// The routing core returns a lossy projection (gatewayrouting.UpstreamAccount)
+// while the preflight contract carries full runtime accounts
+// (gatewayruntimecache.OpenAIAccountSecret, credentials included) and
+// runtime-cache key rows. The adapter translates between the two vocabularies
+// and re-hydrates the full accounts / group access from the gateway runtime
+// cache, exactly like the Node selector-backed call sites.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
 // chainRoutingCache adapts *gatewayruntimecache.Service to the
@@ -124,13 +121,17 @@ func projectGroupAccessForRuntime(meta gatewayrouting.GroupUsageAccessMetadata) 
 }
 
 // projectAccountForRouting projects the full runtime account into the
-// routing-layer view. ModelMappings stay empty on purpose: the mapping row
-// type (gatewayrouting.gatewayAccountModelMapping) is package-private, so the
-// routing model filter resolves direct supported-model matches only; the
-// dispatch driver re-applies the full mapping resolution
-// (gatewayopenai.ResolveAccountModelMapping) when the request is built.
+// routing-layer view. ModelMappings are carried over (合并路由设计 3.1/3.2)：
+// routing 层模型过滤（gatewayrouting.FilterAccountsByRequestedModel）需要映
+// 射行才能承认“映射来源模型”账号——丢行会把映射账号静默过滤出合并池/目标
+// 组；dispatch driver 的权威映射解析不受影响。
+//
+// 范围边界说明：gatewayrouting 的映射行类型（gatewayAccountModelMapping）与
+// 其构造函数未导出，组合根无法以类型字面量构造该行——此处以受控反射按导出
+// 字段名填充（字段签名由 cmd 端到端跨组映射测试锁定）。gatewayrouting 导出
+// 映射行构造函数后，应替换为直接投影。
 func projectAccountForRouting(account gatewayruntimecache.OpenAIAccountSecret) gatewayrouting.UpstreamAccount {
-	return gatewayrouting.UpstreamAccount{
+	projected := gatewayrouting.UpstreamAccount{
 		ID:                        account.ID,
 		ProviderCode:              account.ProviderCode,
 		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
@@ -138,6 +139,48 @@ func projectAccountForRouting(account gatewayruntimecache.OpenAIAccountSecret) g
 		ProtocolVersion:           account.ProtocolVersion,
 		SupportedModels:           append([]string(nil), account.SupportedModels...),
 	}
+	appendRoutingModelMappings(&projected, account)
+	return projected
+}
+
+// appendRoutingModelMappings 把 secret.ModelMappings 反射投影到 routing 层
+// UpstreamAccount.ModelMappings。字段缺失或类型漂移时静默返回（路由层退回
+// “仅直配模型”语义），不改变请求结果形状。
+func appendRoutingModelMappings(account *gatewayrouting.UpstreamAccount, secret gatewayruntimecache.OpenAIAccountSecret) {
+	if len(secret.ModelMappings) == 0 {
+		return
+	}
+	field := reflect.ValueOf(account).Elem().FieldByName("ModelMappings")
+	if !field.IsValid() || field.Kind() != reflect.Slice || !field.CanSet() {
+		return
+	}
+	rowType := field.Type().Elem()
+	for _, mapping := range secret.ModelMappings {
+		row := reflect.New(rowType).Elem()
+		enabled := mapping.Enabled
+		if !setRoutingMappingField(row, "SourceModel", mapping.SourceModel) ||
+			!setRoutingMappingField(row, "SourceEndpointFamily", mapping.SourceEndpointFamily) ||
+			!setRoutingMappingField(row, "UpstreamModel", mapping.UpstreamModel) ||
+			!setRoutingMappingField(row, "UpstreamEndpointFamily", mapping.UpstreamEndpointFamily) {
+			return
+		}
+		enabledField := row.FieldByName("Enabled")
+		if enabledField.IsValid() && enabledField.Kind() == reflect.Pointer && enabledField.CanSet() {
+			enabledField.Set(reflect.ValueOf(&enabled))
+		}
+		field.Set(reflect.Append(field, row))
+	}
+}
+
+// setRoutingMappingField 设置映射行的导出 string 字段；字段不存在或类型漂
+// 移返回 false（调用方放弃整行投影）。
+func setRoutingMappingField(row reflect.Value, name, value string) bool {
+	field := row.FieldByName(name)
+	if !field.IsValid() || field.Kind() != reflect.String || !field.CanSet() {
+		return false
+	}
+	field.SetString(value)
+	return true
 }
 
 // chainCapabilityFilter is the routing-side capability probe. The routing
@@ -156,10 +199,12 @@ func (chainCapabilityFilter) FilterAccountsByRequestCapability(_ context.Context
 
 // chainRouteResolver implements gatewaypreauth.RouteResolver.
 type chainRouteResolver struct {
-	cache   *gatewayruntimecache.Service
-	normal  *gatewayrouting.NormalModelRouteService
-	hybrid  *gatewayhybrid.RouteService
-	scoring *gatewayhybrid.ScoringService
+	cache  *gatewayruntimecache.Service
+	normal *gatewayrouting.NormalModelRouteService
+	// quota 承载 merge 解析期逐片段配额批查（B14 权威门）。与 dispatch 窗口
+	// 门同一底层服务（chainDispatchQuota）；nil（部分组合测试零值）时片段
+	// 配额剔除不生效，生产组合根 fail-fast 要求必装配。
+	quota gatewaydispatch.AuthorizationQuotaChecker
 }
 
 // ResolveNormalGatewayModelRoute mirrors resolveNormalGatewayModelRoute with
@@ -203,6 +248,11 @@ func (r *chainRouteResolver) ResolveNormalGatewayModelRoute(ctx context.Context,
 		updated.GroupBindings = projectBindingsForRuntime(result.APIKeyRecord.GroupBindings, input.APIKeyRecord.GroupBindings)
 		out.APIKeyRecord = &updated
 	}
+	// merge（合并路由设计 3.1/3.4/B14-B16）：按片段扇出 rehydrate + 全池组标
+	// + 逐片段配额批查（权威门），窗口组在幸存片段上重算。
+	if result.RouteSource == gatewayrouting.RouteSourceMerged || len(result.GroupSegments) > 0 {
+		return r.resolveMergeSelectedRoute(ctx, input, view, result, out)
+	}
 	out.GroupID = result.GroupID
 	out.GroupAccess = r.rehydrateGroupAccess(ctx, result.GroupID, input.APIKeyRecord.SystemAccountID, result.GroupAccess)
 	out.Accounts, out.RouteSource, out.MatchedProviderCode = r.rehydrateAccounts(
@@ -212,56 +262,106 @@ func (r *chainRouteResolver) ResolveNormalGatewayModelRoute(ctx context.Context,
 	return out, nil
 }
 
-// ResolveHybridGatewayRoute mirrors resolveHybridGatewayRoute. The hybrid
-// core is optional at assembly (normal-only deployments keep it nil and the
-// preflight treats skipped as "not a hybrid request").
-func (r *chainRouteResolver) ResolveHybridGatewayRoute(ctx context.Context, input gatewaypreauth.HybridRouteInput) (gatewaypreauth.HybridRouteResult, error) {
-	if r.hybrid == nil {
-		return gatewaypreauth.HybridRouteResult{Outcome: gatewaypreauth.HybridRouteOutcomeSkipped, Reason: gatewayhybrid.RouteSkipNotHybridStrategy}, nil
+// resolveMergeSelectedRoute 兑现 merge selected 结果的组合根语义（合并路由设
+// 计 3.1/3.4/B14/B15）：
+//  1. 按片段扇出 rehydrate：每个片段用其 GroupID 走现有 listFullAccounts 机
+//     制取全量账号（保留 ModelMappings），按账号 ID 映射回片段；
+//  2. 全池组标（3.1 第 4 条）：每个账号显式写 BoundGroupID = 所在片段组——
+//     现有赋值点只覆盖 account_authorized 账号（chain_accounts_secret.go），
+//     owner / group_authorized 账号恒 nil，必须全量覆盖写；
+//  3. 逐片段配额批查（B14 权威门）：对每片段以该组 groupAccess 调
+//     CheckBatchAsync，被否决账号从片段剔除，片段空则丢弃；全部片段被剔空
+//     → 失败结果（429 + rate_limit_exceeded + 配额超限文案），由 preflight
+//     的 NormalRoute 失败路径渲染；
+//  4. 结果组装：Accounts = 各幸存片段扁平池（片段序），GroupID/GroupAccess =
+//     首个幸存片段的组（首片段被配额剔空时窗口组后移，与“首个非空片段”口
+//     径一致），APIKeyRecord.SelectedGroupID 同步窗口组。
+func (r *chainRouteResolver) resolveMergeSelectedRoute(
+	ctx context.Context,
+	input gatewaypreauth.NormalRouteInput,
+	view gatewayrouting.RequestView,
+	result gatewayrouting.NormalGatewayModelRouteResult,
+	out gatewaypreauth.NormalRouteResult,
+) (gatewaypreauth.NormalRouteResult, error) {
+	systemAccountID := input.APIKeyRecord.SystemAccountID
+	endpointFamily := localEndpointFamily(view)
+	type mergeSegment struct {
+		groupID     string
+		groupAccess *gatewayruntimecache.GroupUsageAccessMetadata
+		accounts    []gatewayruntimecache.OpenAIAccountSecret
 	}
-	record, err := projectAPIKeyRowForHybrid(input.APIKeyRecord)
-	if err != nil {
-		return gatewaypreauth.HybridRouteResult{}, err
+	survivors := make([]mergeSegment, 0, len(result.GroupSegments))
+	for _, segment := range result.GroupSegments {
+		if segment.GroupID == "" {
+			continue
+		}
+		full := r.listFullAccounts(ctx, segment.GroupID, systemAccountID, result.RequestedModel, endpointFamily)
+		byID := make(map[string]gatewayruntimecache.OpenAIAccountSecret, len(full))
+		for _, account := range full {
+			byID[account.ID] = account
+		}
+		accounts := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(segment.Accounts))
+		for _, projection := range segment.Accounts {
+			account, ok := byID[projection.ID]
+			if !ok {
+				account = accountFromRoutingProjection(projection)
+			}
+			// 全池组标：不限于授权账号（合并路由设计 3.1 第 4 条）。
+			boundGroupID := segment.GroupID
+			account.BoundGroupID = &boundGroupID
+			accounts = append(accounts, account)
+		}
+		if len(accounts) == 0 {
+			continue
+		}
+		groupAccess := r.rehydrateGroupAccess(ctx, segment.GroupID, systemAccountID, segment.GroupAccess)
+		// B14 权威门：逐片段授权配额批查。quota 未装配（部分组合测试）时
+		// 不做剔除——生产组合根 fail-fast 要求 AuthorizationQuota 必装配。
+		if r.quota != nil {
+			decisions, err := r.quota.CheckBatchAsync(ctx, *groupAccess, accounts)
+			if err != nil {
+				return gatewaypreauth.NormalRouteResult{}, err
+			}
+			allowed := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(accounts))
+			for _, account := range accounts {
+				if decision, ok := decisions[account.ID]; ok && !decision.Allowed {
+					continue
+				}
+				allowed = append(allowed, account)
+			}
+			accounts = allowed
+		}
+		if len(accounts) == 0 {
+			continue
+		}
+		survivors = append(survivors, mergeSegment{groupID: segment.GroupID, groupAccess: groupAccess, accounts: accounts})
 	}
-	result, err := r.hybrid.Resolve(ctx, gatewayhybrid.RouteInput{
-		View:                       hybridRequestView(input.Req),
-		Body:                       hybridRequestBody{request: input.Req},
-		APIKeyRecord:               *record,
-		TraceID:                    input.TraceID,
-		ClientIP:                   input.ClientIP,
-		Endpoint:                   input.Endpoint,
-		Audit:                      hybridAuditMetadata{capture: input.AuditCapture},
-		RequestClientCompatibility: input.RequestClientCompatibility,
-	}, r.scoring)
-	if err != nil {
-		return gatewaypreauth.HybridRouteResult{}, err
+	if len(survivors) == 0 {
+		// B14：全部片段被配额剔空 → 429 终局（与 preparation.go 窗口门的
+		// authorization_quota_exceeded 终局同形态），走 NormalRoute 失败路径
+		// 由 preflight 渲染。
+		return gatewaypreauth.NormalRouteResult{
+			Outcome:              gatewaypreauth.NormalRouteOutcomeFailed,
+			RequestedModel:       result.RequestedModel,
+			StatusCode:           429,
+			Type:                 "rate_limit_exceeded",
+			Code:                 "rate_limit_exceeded",
+			Message:              gatewayquota.AuthorizationQuotaExceededMessage,
+			MatchedProviderCodes: result.MatchedProviderCodes,
+			APIKeyRecord:         input.APIKeyRecord,
+		}, nil
 	}
-	out := gatewaypreauth.HybridRouteResult{
-		Outcome:      result.Outcome,
-		Reason:       result.Reason,
-		APIKeyRecord: input.APIKeyRecord,
+	window := survivors[0]
+	accounts := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(survivors))
+	for _, segment := range survivors {
+		accounts = append(accounts, segment.accounts...)
 	}
-	if result.Outcome != gatewayhybrid.RouteOutcomeSelected {
-		return out, nil
+	out.GroupID = window.groupID
+	out.GroupAccess = window.groupAccess
+	out.Accounts = accounts
+	if out.APIKeyRecord != nil {
+		out.APIKeyRecord.SelectedGroupID = window.groupID
 	}
-	updated := *input.APIKeyRecord
-	if result.APIKeyRecord != nil {
-		updated.SelectedGroupID = result.APIKeyRecord.SelectedGroupID
-	}
-	out.APIKeyRecord = &updated
-	out.GroupID = result.GroupID
-	out.GroupAccess = r.rehydrateGroupAccess(ctx, result.GroupID, input.APIKeyRecord.SystemAccountID, gatewayrouting.GroupUsageAccessMetadata{
-		ProviderCode:     result.GroupAccess.ProviderCode,
-		SchedulingPolicy: result.GroupAccess.SchedulingPolicy,
-		GroupAccessType:  "",
-	})
-	out.Accounts = r.rehydrateAccountsByID(ctx, result.GroupID, input.APIKeyRecord.SystemAccountID, hybridAccountIDs(result.Accounts), input.Req)
-	out.TargetModel = result.TargetModel
-	out.AffinityApplied = result.AffinityApplied
-	out.ScoringFallbackApplied = result.ScoringFallbackApplied
-	out.Config = hybridConfigToMap(result.Config)
-	out.Scoring = hybridScoringToMap(result.Scoring)
-	out.Route = hybridRouteToMap(result.Route)
 	return out, nil
 }
 
@@ -307,23 +407,6 @@ func (r *chainRouteResolver) rehydrateAccounts(
 	return accounts, routeSource, matchedProviderCode
 }
 
-func (r *chainRouteResolver) rehydrateAccountsByID(ctx context.Context, groupID, systemAccountID string, ids []string, req *gatewaypreauth.GatewayRequest) []gatewayruntimecache.OpenAIAccountSecret {
-	full := r.listFullAccounts(ctx, groupID, systemAccountID, hybridTargetModelHint(req), "")
-	byID := make(map[string]gatewayruntimecache.OpenAIAccountSecret, len(full))
-	for _, account := range full {
-		byID[account.ID] = account
-	}
-	accounts := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(ids))
-	for _, id := range ids {
-		if account, ok := byID[id]; ok {
-			accounts = append(accounts, account)
-			continue
-		}
-		accounts = append(accounts, gatewayruntimecache.OpenAIAccountSecret{ID: id})
-	}
-	return accounts
-}
-
 func (r *chainRouteResolver) listFullAccounts(ctx context.Context, groupID, systemAccountID, requestedModel, endpointFamily string) []gatewayruntimecache.OpenAIAccountSecret {
 	if groupID == "" || r.cache == nil {
 		return nil
@@ -361,146 +444,8 @@ func routingRequestView(req *gatewaypreauth.GatewayRequest, record *gatewayrunti
 	return view
 }
 
-// hybridRequestView mirrors the express view the hybrid modules read.
-func hybridRequestView(req *gatewaypreauth.GatewayRequest) *gatewayhybrid.GatewayRequestView {
-	view := &gatewayhybrid.GatewayRequestView{}
-	if req == nil {
-		return view
-	}
-	view.Method = req.MethodUpper()
-	view.Path = req.Path()
-	view.ContentType = req.Header("content-type")
-	if req.Body != nil {
-		view.RawBody = req.Body.RawBody
-		view.BodyAvailable = req.Body.Body != nil || len(req.Body.RawBody) > 0
-		if req.Body.Body != nil {
-			view.ParsedBody = req.Body.Body
-		}
-	}
-	if state := req.BodyState(); state != nil {
-		model := ""
-		if state.Model != nil {
-			model = *state.Model
-		}
-		view.OriginalModel = model
-		view.OriginalModelPresent = model != ""
-		view.BodyState = &gatewayhybrid.RequestBodyState{
-			RawBodyBytes:            int64(len(req.Body.RawBody)),
-			ContentType:             state.ContentType,
-			JSONParseStatus:         string(state.JSONParseStatus),
-			Model:                   model,
-			Stream:                  state.Stream,
-			ImageGeneration:         boolPtr(state.ImageGeneration),
-			ImageGenerationForced:   boolPtr(state.ImageGenerationForced),
-			StrictOutputRequirement: state.StrictOutputRequirement,
-		}
-	}
-	view.ConversationKey = req.Header("x-conversation-key")
-	return view
-}
-
-// boolPtr lifts a bool into the optional-pointer union of
-// gatewayhybrid.RequestBodyState (present == defined in the Node payload).
+// boolPtr lifts a bool into an optional pointer.
 func boolPtr(value bool) *bool { return &value }
-
-// hybridTargetModelHint returns the parsed body model for the re-hydration
-// listing (a best-effort hint only).
-func hybridTargetModelHint(req *gatewaypreauth.GatewayRequest) string {
-	if req == nil || req.BodyState() == nil || req.BodyState().Model == nil {
-		return ""
-	}
-	return *req.BodyState().Model
-}
-
-func hybridAccountIDs(accounts []gatewayhybrid.OpenAIAccountSecret) []string {
-	ids := make([]string, 0, len(accounts))
-	for _, account := range accounts {
-		ids = append(ids, account.ID)
-	}
-	return ids
-}
-
-// hybridRequestBody bridges the gateway body pipeline to the
-// gatewayhybrid.RequestBodyGateway port (rewriteHybridRequestModel). The
-// model rewrite reuses the gatewaybody ReplaceGatewayJSONBodyModel helper so
-// the serialized raw body, the parsed object and the body state stay one
-// consistent unit (Node mutates req.body + rawBody through body.ts).
-type hybridRequestBody struct {
-	request *gatewaypreauth.GatewayRequest
-}
-
-func (b hybridRequestBody) ReplaceModel(targetModel string) bool {
-	if b.request == nil || b.request.Body == nil {
-		return false
-	}
-	return gatewaybody.ReplaceGatewayJSONBodyModel(b.request.Body, targetModel, nil)
-}
-
-func (b hybridRequestBody) HasRawBody() bool {
-	return b.request != nil && b.request.Body != nil && len(b.request.Body.RawBody) > 0
-}
-
-func (b hybridRequestBody) ParseRawBody(ctx context.Context) (any, error) {
-	if !b.HasRawBody() {
-		return nil, fmt.Errorf("混合路由无法改写空请求体")
-	}
-	return gatewayhybrid.ParseJSONOrdered(b.request.Body.RawBody)
-}
-
-func (b hybridRequestBody) ReplaceModelWithParsed(targetModel string, parsed *gatewayhybrid.OrderedJSON) bool {
-	if parsed == nil || b.request == nil || b.request.Body == nil {
-		return false
-	}
-	return gatewaybody.ReplaceGatewayJSONBodyModel(b.request.Body, targetModel, orderedJSONObjectMap(parsed))
-}
-
-// orderedJSONObjectMap converts the hybrid ordered object into the plain map
-// the gatewaybody serializer consumes (key order is re-derived from the
-// original raw body by the serializer's JSON round trip; Node keeps the
-// mutation on the same JS object, so identity order of untouched keys is
-// preserved by the raw-body replace path in ReplaceGatewayJSONBody).
-func orderedJSONObjectMap(object *gatewayhybrid.OrderedJSON) map[string]any {
-	out := map[string]any{}
-	if object == nil {
-		return out
-	}
-	for _, key := range object.Keys() {
-		value, _ := object.Get(key)
-		out[key] = orderedValueToPlain(value)
-	}
-	return out
-}
-
-func orderedValueToPlain(value any) any {
-	switch typed := value.(type) {
-	case *gatewayhybrid.OrderedJSON:
-		return orderedJSONObjectMap(typed)
-	case []any:
-		out := make([]any, len(typed))
-		for index, item := range typed {
-			out[index] = orderedValueToPlain(item)
-		}
-		return out
-	default:
-		return typed
-	}
-}
-
-// hybridAuditMetadata bridges the frozen capture context to the hybrid
-// diagnostics sink.
-type hybridAuditMetadata struct {
-	capture gatewaypreauth.AuditCaptureContext
-}
-
-func (m hybridAuditMetadata) AddGatewayMetadata(label string, metadata *gatewayhybrid.OrderedJSON) {
-	if m.capture == nil || metadata == nil {
-		return
-	}
-	// orderedValueToPlain 对 *gatewayhybrid.OrderedJSON 恒返回 map[string]any
-	// （OrderedJSON 只承载 JSON 对象），断言恒成功。
-	rendered := orderedValueToPlain(metadata).(map[string]any)
-	m.capture.AddGatewayMetadata(label, rendered)
-}
 
 // ---------------------------------------------------------------------------
 // key row / config projections
@@ -571,57 +516,6 @@ func projectBindingsForRuntime(projected []gatewayrouting.GroupBindingRow, origi
 			GroupEnabled:    int(binding.GroupEnabled),
 		})
 	}
-	return out
-}
-
-// projectAPIKeyRowForHybrid decodes the stored hybrid routing config for the
-// hybrid core. A missing / unparsable config yields the exact nil the hybrid
-// skip branch expects (not_hybrid_route_strategy).
-func projectAPIKeyRowForHybrid(record *gatewayruntimecache.GatewayAPIKeyRow) (*gatewayhybrid.APIKeyRecord, error) {
-	if record == nil {
-		return &gatewayhybrid.APIKeyRecord{RouteStrategyMode: ""}, nil
-	}
-	out := &gatewayhybrid.APIKeyRecord{
-		ID:                record.ID,
-		SystemAccountID:   record.SystemAccountID,
-		RouteStrategyMode: record.RouteStrategyMode,
-		SelectedGroupID:   record.SelectedGroupID,
-	}
-	if record.HybridRoutingConfig != nil && len(record.HybridRoutingConfig.Raw) > 0 {
-		config := &routestrategies.HybridRoutingConfig{}
-		if err := json.Unmarshal(record.HybridRoutingConfig.Raw, config); err != nil {
-			return nil, fmt.Errorf("解析混合路由配置失败: %w", err)
-		}
-		out.HybridRoutingConfig = config
-	}
-	return out, nil
-}
-
-// hybridConfigToMap / hybridScoringToMap / hybridRouteToMap round-trip pure
-// flat JSON structures (scalar / slice-of-scalar / nested-flat-struct fields,
-// no chan/func/custom marshaler): Marshal and Unmarshal into map[string]any
-// cannot fail, so the error arms are omitted by construction.
-func hybridConfigToMap(config *routestrategies.HybridRoutingConfig) map[string]any {
-	if config == nil {
-		return nil
-	}
-	raw, _ := json.Marshal(config)
-	out := map[string]any{}
-	_ = json.Unmarshal(raw, &out)
-	return out
-}
-
-func hybridScoringToMap(scoring gatewayhybrid.HybridScoringResult) map[string]any {
-	raw, _ := json.Marshal(scoring)
-	out := map[string]any{}
-	_ = json.Unmarshal(raw, &out)
-	return out
-}
-
-func hybridRouteToMap(route routestrategies.HybridLevelRoute) map[string]any {
-	raw, _ := json.Marshal(route)
-	out := map[string]any{}
-	_ = json.Unmarshal(raw, &out)
 	return out
 }
 

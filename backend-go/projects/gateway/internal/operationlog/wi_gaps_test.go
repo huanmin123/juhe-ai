@@ -40,26 +40,48 @@ func TestWILoadConfigMatrix(t *testing.T) {
 	if !cfg.Enabled || cfg.Mode != ModeSQLite || cfg.RetentionDays != 365 {
 		t.Fatalf("cfg=%+v", cfg)
 	}
-	// 未显式启用 → 空 Config（默认关闭）。
+	// 2026-09-19 零配置默认：空 env 不再是“默认关闭”，而是跟随 sqlite 驱动
+	// 并按 datadir 固定名表派生路径（实例 ID 回落 hostname）。
 	empty, err := LoadConfig(func(string) string { return "" })
-	if err != nil || empty.Enabled {
-		t.Fatalf("未启用=%+v err=%v", empty, err)
+	if err != nil || !empty.Enabled || empty.Mode != ModeSQLite {
+		t.Fatalf("空 env 默认=%+v err=%v", empty, err)
+	}
+	if empty.InstanceID == "" {
+		t.Fatal("空 env 实例 ID 必须回落 hostname 默认值")
+	}
+	if empty.DatabasePath != filepath.Join("data", "operation-log.sqlite3") || empty.BusinessSettingsPath != filepath.Join("data", "business.sqlite3") || empty.UsageShardRoot != filepath.Join("data", "usage-shards") {
+		t.Fatalf("空 env 派生路径=%+v", empty)
+	}
+	// JUHE_AI_DATA_DIR 指向临时目录时派生根随之切换（STORE 与路径族全部
+	// 未配置 → 跟随 sqlite 驱动，Enabled 保持默认开启）。
+	dataRoot := filepath.Join(root, "datadir")
+	dataDirected, err := LoadConfig(wiEnv(base, map[string]string{
+		"JUHE_AI_OPERATION_LOG_STORE":                  "",
+		"JUHE_AI_OPERATION_LOG_DATABASE_PATH":          "",
+		"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": "",
+		"JUHE_AI_USAGE_SHARD_ROOT":                     "",
+		"JUHE_AI_DATA_DIR":                             dataRoot,
+	}))
+	if err != nil {
+		t.Fatalf("DATA_DIR 派生配置失败: %v", err)
+	}
+	if !dataDirected.Enabled || dataDirected.Mode != ModeSQLite {
+		t.Fatalf("DATA_DIR 派生 Enabled=%t Mode=%s", dataDirected.Enabled, dataDirected.Mode)
+	}
+	if dataDirected.DatabasePath != filepath.Join(dataRoot, "operation-log.sqlite3") || dataDirected.BusinessSettingsPath != filepath.Join(dataRoot, "business.sqlite3") || dataDirected.UsageShardRoot != filepath.Join(dataRoot, "usage-shards") {
+		t.Fatalf("DATA_DIR 派生路径=%+v", dataDirected)
 	}
 	// 非法矩阵。
 	invalids := map[string]map[string]string{
-		"owner lease 太短":    {"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "1s"},
-		"owner lease 非法":    {"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "abc"},
-		"retention 太短":      {"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL": "500ms"},
-		"retention 太长":      {"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL": "25h"},
-		"batch 越界":          {"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "5097"},
-		"batch 非数字":         {"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "x"},
-		"pg max open 非数字":   {"JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS": "x"},
-		"pg max idle 非数字":   {"JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS": "0"},
-		"缺 instance id":     {"JUHE_AI_OPERATION_LOG_INSTANCE_ID": ""},
-		"非法 mode":           {"JUHE_AI_OPERATION_LOG_STORE": "weird"},
-		"sqlite 缺 db path":  {"JUHE_AI_OPERATION_LOG_DATABASE_PATH": ""},
-		"sqlite 缺 settings": {"JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH": ""},
-		"sqlite 缺 shard":    {"JUHE_AI_USAGE_SHARD_ROOT": ""},
+		"owner lease 太短":  {"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "1s"},
+		"owner lease 非法":  {"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "abc"},
+		"retention 太短":    {"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL": "500ms"},
+		"retention 太长":    {"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL": "25h"},
+		"batch 越界":        {"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "5097"},
+		"batch 非数字":       {"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "x"},
+		"pg max open 非数字": {"JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS": "x"},
+		"pg max idle 非数字": {"JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS": "0"},
+		"非法 mode":         {"JUHE_AI_OPERATION_LOG_STORE": "weird"},
 	}
 	for name, overrides := range invalids {
 		if _, err := LoadConfig(wiEnv(base, overrides)); err == nil {

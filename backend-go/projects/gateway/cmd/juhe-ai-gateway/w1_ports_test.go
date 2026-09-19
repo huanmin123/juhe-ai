@@ -17,7 +17,6 @@ import (
 
 	"bytes"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -391,11 +390,6 @@ func TestW1AdapterGuardsAndIdentity(t *testing.T) {
 	statusPointerValue := attemptStatusCodeOf(gatewaydispatch.FailedAttemptRecord{HasStatusCode: true, StatusCode: status})
 	if statusPointerValue == nil || *statusPointerValue != 502 {
 		t.Fatalf("status = %v", statusPointerValue)
-	}
-	// hybrid 身份降级端口：会话键恒空。
-	hybridKey := (hybridSessionIdentityPort{}).HybridRouteAffinityKey(nil, gatewayhybrid.AffinityKeyScope{})
-	if hybridKey != "" {
-		t.Fatalf("hybrid key = %q", hybridKey)
 	}
 	// 会话身份适配器：nil 请求 / 无身份服务时回退请求头。
 	nilIdentity := sessionIdentityAdapter{}.ResolveGatewaySessionIdentity(nil, gatewaypreauth.SessionIdentityInput{})

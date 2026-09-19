@@ -10,20 +10,20 @@ export function apiKeyRouteStrategyName(apiKey: ApiKeySummary): string {
 }
 
 export function apiKeyRouteStrategyModeText(mode?: RouteStrategyMode): string {
-  if (mode === 'hybrid_smart') return '混合智能路由'
   if (mode === 'weighted') return '权重调度路由'
   if (mode === 'round_robin') return '轮询路由'
   if (mode === 'failover') return '故障回退路由'
+  if (mode === 'merge') return '合并路由'
   if (mode === 'normal') return '普通路由'
   return '未识别'
 }
 
 export function apiKeyRouteStrategyTagColor(apiKey: ApiKeySummary): string {
   if (apiKey.routeStrategyStatus === 'disabled') return 'default'
-  if (apiKey.routeStrategyMode === 'hybrid_smart') return 'cyan'
   if (apiKey.routeStrategyMode === 'weighted') return 'purple'
   if (apiKey.routeStrategyMode === 'round_robin') return 'blue'
   if (apiKey.routeStrategyMode === 'failover') return 'orange'
+  if (apiKey.routeStrategyMode === 'merge') return 'lime'
   return 'green'
 }
 

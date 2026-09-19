@@ -677,17 +677,25 @@ func TestW1BBootCoverOwnerFailFastArms(t *testing.T) {
 	w1bRequireExitCode(t, "K1-driver-bogus", code, 1)
 	w1bRequireContains(t, "K1-driver-bogus", stderr, "load gateway runtime config: JUHE_AI_DATABASE_DRIVER 必须为 sqlite 或 postgres")
 
-	// K2: 仅启用 chain（缺 system-api）→ loadRuntimeConfig 的组合根门槛
-	// 快速失败（gateGatewayChain phase-2 后恒通过，见文件头注释）。
+	// K2: 显式 chain=true + system-api=false → loadRuntimeConfig 的组合根
+	// 联动门槛快速失败（2026-09-19 起 system-api 未配置默认开启，“仅启用
+	// chain”不再构成联动违规，必须显式关闭 system-api 才触发该错误臂；
+	// gateGatewayChain phase-2 后恒通过，见文件头注释）。
 	coverageDir = w1bCoverageDir(t, "K2-chain-without-systemapi")
-	_, stderr, code = w1bRunScenario(t, "K2-chain-without-systemapi", w1bOwnerBaseEnv(t, coverageDir, "JUHE_AI_GATEWAY_CHAIN_ENABLED=true"))
+	_, stderr, code = w1bRunScenario(t, "K2-chain-without-systemapi", w1bOwnerBaseEnv(t, coverageDir,
+		"JUHE_AI_GATEWAY_CHAIN_ENABLED=true",
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false"))
 	w1bRequireExitCode(t, "K2-chain-without-systemapi", code, 1)
 	w1bRequireContains(t, "K2-chain-without-systemapi", stderr, "load gateway runtime config: 启用 JUHE_AI_GATEWAY_CHAIN_ENABLED 时必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED")
 
-	// K3: 仅启用 system-api（businessOwnerGate 首步：JUHE_AI_BUSINESS_OWNER
-	// 未配置为 gateway）→ stderr 含 verify business owner gates。
+	// K3: businessOwnerGate 首步（JUHE_AI_BUSINESS_OWNER 非 gateway）→
+	// stderr 含 verify business owner gates。2026-09-19 起 sqlite +
+	// BUSINESS_* 家族全空会零配置自动认领（新装部署直通），错误臂改用显式
+	// 非 gateway owner 保持门禁覆盖。
 	coverageDir = w1bCoverageDir(t, "K3-business-owner-gate")
-	_, stderr, code = w1bRunScenario(t, "K3-business-owner-gate", w1bOwnerBaseEnv(t, coverageDir, "JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true"))
+	_, stderr, code = w1bRunScenario(t, "K3-business-owner-gate", w1bOwnerBaseEnv(t, coverageDir,
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
+		"JUHE_AI_BUSINESS_OWNER=legacy"))
 	w1bRequireExitCode(t, "K3-business-owner-gate", code, 1)
 	w1bRequireContains(t, "K3-business-owner-gate", stderr, "verify business owner gates: 启用系统 API 组合根时 JUHE_AI_BUSINESS_OWNER 必须为 gateway")
 

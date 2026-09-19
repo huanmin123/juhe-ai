@@ -408,18 +408,28 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 	accounts := []AccountCandidate{}
 	var hotQualityExplorationReservation *HotQualityReservation
 	var settleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
+	var err error
 
-	accountQuotaDecisions, err := e.Quota.CheckBatchAsync(ctx, req.GroupAccess, input.accounts)
-	if err != nil {
-		return PreparationResult{}, err
-	}
-	for _, account := range input.accounts {
-		decision, ok := accountQuotaDecisions[account.ID]
-		if ok && !decision.Allowed {
-			authorizationQuotaDeniedAccountCount++
-			continue
+	// T4/B14（合并路由设计）：merge 上下文跳过窗口级配额批查——此处用窗口
+	// 组 GroupAccess 对整池 CheckBatchAsync，窗口组为带组级配额的授权组时会
+	// 否决整池（首组配额耗尽 + 次组充足也 429）。merge 的权威门是解析期逐
+	// 片段批查（组合根 chain_routing.go resolveMergeSelectedRoute），此门有
+	// 意跳过；全池实际耗尽由下方 no_available_upstream_account 终局承接。
+	if req.SkipGroupQuotaWindowCheck {
+		accounts = input.accounts
+	} else {
+		accountQuotaDecisions, batchErr := e.Quota.CheckBatchAsync(ctx, req.GroupAccess, input.accounts)
+		if batchErr != nil {
+			return PreparationResult{}, batchErr
 		}
-		accounts = append(accounts, account)
+		for _, account := range input.accounts {
+			decision, ok := accountQuotaDecisions[account.ID]
+			if ok && !decision.Allowed {
+				authorizationQuotaDeniedAccountCount++
+				continue
+			}
+			accounts = append(accounts, account)
+		}
 	}
 
 	// capacity.account_snapshot: high-concurrency groups refresh the

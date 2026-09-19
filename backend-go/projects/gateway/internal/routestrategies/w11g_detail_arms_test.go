@@ -141,15 +141,7 @@ func TestW11GBindingSnapshotCountsAndPreviews(t *testing.T) {
 	ctx := context.Background()
 	viewer := AccessScope{ViewerID: admin}
 	created, err := store.Create(ctx, MutationInput{
-		Name: ptrString("w11g 计数"), Mode: ptrString(ModeHybridSmart), HasBindings: true,
-		HybridConfigRaw: map[string]any{
-			"scoringModel":      "score-model-w11g",
-			"scoringContextMode": "full_request",
-			"levelRoutes": []any{
-				map[string]any{"minLevel": 1, "maxLevel": 5, "targetModel": "model-low"},
-				map[string]any{"minLevel": 6, "maxLevel": 10, "targetModel": "model-high"},
-			},
-		},
+		Name: ptrString("w11g 计数"), Mode: ptrString(ModeWeighted), HasBindings: true,
 		Bindings: []BindingInput{
 			{GroupID: group1, Priority: intPtr(1), Status: "active"},
 			{GroupID: group2, Priority: intPtr(2), Status: "active"},

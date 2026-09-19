@@ -328,7 +328,7 @@ if [ ! -f backend/.env ]; then
     : > backend/.env
     echo 'Created empty backend/.env (go-only release ships no backend/.env.example).'
   fi
-  echo 'Configure all JUHE_AI_*_INSTANCE_ID values before production use.'
+  echo 'JUHE_AI_*_INSTANCE_ID values are optional and default to the hostname when unset.'
 fi
 
 load_dotenv_environment

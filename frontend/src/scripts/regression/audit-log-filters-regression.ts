@@ -65,10 +65,8 @@ assert(!viewSource.includes('emptyAuditLogListResult'), '审计列表不应在�
 assert(viewSource.includes('systemAccountFilter: allSystemAccountsValue'), '审计列表应默认选择全部系统账户')
 assert(viewSource.includes("{ label: '网关请求', value: 'gateway' }"), '审计来源筛选应保留网关请求')
 assert(viewSource.includes("{ label: 'AI账户测试', value: 'manual_account_test' }"), '审计来源筛选应保留人工账户测试')
-assert(viewSource.includes("{ label: '混合路由选型', value: 'hybrid_scoring' }"), '审计来源筛选应保留混合路由选型')
-assert(viewSource.includes("{ label: '回答质量复核', value: 'hybrid_quality_scoring' }"), '审计来源筛选应保留回答质量复核')
-for (const excludedSource of ['account_health_check', 'runtime_recovery_probe', 'cooldown_retest']) {
-  assert(!viewSource.includes(`value: '${excludedSource}'`), `审计来源筛选不得暴露后台来源：${excludedSource}`)
+for (const excludedSource of ['account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring']) {
+  assert(!viewSource.includes(`value: '${excludedSource}'`), `审计来源筛选不得暴露已删除或后台来源：${excludedSource}`)
 }
 assert((viewSource.match(/v-model:session-id="sessionIdFilter"/g) ?? []).length === 2, '桌面与移动端更多筛选均应绑定会话 ID')
 assert(!viewSource.includes('v-model:trace-id="traceIdFilter"'), 'traceId 只能由顶部主搜索框查询，不应出现在更多筛选')

@@ -20,15 +20,7 @@ import (
 // explicit read-only confirmation, a REPEATABLE READ READ ONLY transaction
 // and the schema JSON (with digest) written to stdout. PostgreSQL is the only
 // supported dialect; SQLite targets are rejected by openSnapshotDB.
-func runPostgresSchemaSnapshot() {
-	if code := postgresSchemaSnapshotResult(); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// postgresSchemaSnapshotResult is runPostgresSchemaSnapshot without the
-// process-terminating os.Exit calls; the wrapper keeps the CLI exit-code
-// contract.
+// postgresSchemaSnapshotResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
 func postgresSchemaSnapshotResult() int {
 	target, err := schemasnapshot.AssertSnapshotTarget(os.Getenv(schemasnapshot.EnvTarget))
 	if err != nil {

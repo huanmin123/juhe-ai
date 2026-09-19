@@ -295,9 +295,9 @@ func (m *w11dGroupRecorder) ResolveGroupUsageAccessMetadata(ctx context.Context,
 // w11dGroupBlockRefreshModels 让前 passThrough 次分组访问直通，其余阻塞。
 type w11dGroupBlockRefreshModels struct {
 	*fakeModels
-	block      chan struct{}
+	block       chan struct{}
 	passThrough int
-	calls      int
+	calls       int
 }
 
 func (m *w11dGroupBlockRefreshModels) ResolveGroupUsageAccessMetadata(ctx context.Context, groupID, systemAccountID string) (*GroupUsageAccessMetadata, error) {
@@ -595,7 +595,7 @@ func TestW11DRuntimePopulateAndIndexArms(t *testing.T) {
 		t.Fatalf("nil key fresh selection = %+v err=%v", static.APIKey, err)
 	}
 	// 绑定去重与空 GroupID 跳过。
-	dynamicRow := testAPIKeyRow("k_dup", RouteStrategyModeHybridSmart, "g1", "g2")
+	dynamicRow := testAPIKeyRow("k_dup", RouteStrategyModeWeighted, "g1", "g2")
 	modelsDyn := newFakeModels()
 	modelsDyn.groupAccess["g1:sys_owner"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner"}
 	modelsDyn.accounts["g1"] = OpenAIAccountsForGroupResult{Accounts: []OpenAIAccountSecret{testAccount("a1", "sys_owner")}}
@@ -714,6 +714,7 @@ func w11dZ(score float64, member string) redis.Z { return redis.Z{Score: score, 
 func w11dRedisClient(addr string) *redis.Client {
 	return redis.NewClient(&redis.Options{Addr: addr})
 }
+
 // accounts.go / sqlmodels.go / sqlruntime.go 剩余臂
 // ---------------------------------------------------------------------------
 
@@ -938,8 +939,3 @@ func TestW11DSQLBindingFailureArms(t *testing.T) {
 		t.Fatal("sk- 分支绑定查询失败必须上抛")
 	}
 }
-
-
-
-
-

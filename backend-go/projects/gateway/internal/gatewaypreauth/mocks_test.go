@@ -471,14 +471,10 @@ func (f *fakeAccountAvoidance) CreateTracker(ClientIPAccountAvoidanceInput) Clie
 
 type fakeRouteResolver struct {
 	normal NormalRouteResult
-	hybrid HybridRouteResult
 }
 
 func (f *fakeRouteResolver) ResolveNormalGatewayModelRoute(context.Context, NormalRouteInput) (NormalRouteResult, error) {
 	return f.normal, nil
-}
-func (f *fakeRouteResolver) ResolveHybridGatewayRoute(context.Context, HybridRouteInput) (HybridRouteResult, error) {
-	return f.hybrid, nil
 }
 
 // ---------------------------------------------------------------------------

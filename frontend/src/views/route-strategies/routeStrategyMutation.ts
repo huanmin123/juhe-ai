@@ -7,8 +7,7 @@ const editableFields = [
   'mode',
   'status',
   'groupBindings',
-  'normalRoutingConfig',
-  'hybridRoutingConfig'
+  'normalRoutingConfig'
 ] as const
 
 export function buildRouteStrategyMutationPatch(

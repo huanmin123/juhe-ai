@@ -15,7 +15,6 @@ import (
 
 	miniredis "github.com/alicebob/miniredis/v2"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
@@ -79,7 +78,7 @@ func w14eOrderInput(accounts []GatewayHotQualityAccountView, mutate func(*Gatewa
 	input := GatewayHotQualityCandidateOrderInput[GatewayHotQualityAccountView]{
 		Accounts:        accounts,
 		Base:            baseView,
-		Mode:            gatewayhybrid.HotQualityModeSpeedFirst,
+		Mode:            HotQualityModeSpeedFirst,
 		SystemAccountID: "sys",
 		GroupID:         "g1",
 		RequestLane:     "text",
@@ -841,9 +840,15 @@ func TestW14EExplorationNormalizeArms(t *testing.T) {
 		name   string
 		mutate func(*SameTierExplorationState)
 	}{
-		{"reservation empty id", func(s *SameTierExplorationState) { s.Reservations = []SameTierExplorationReservation{{ReservationID: " ", AccountRuntimeKey: "a", LeaseUntilMs: 2_000}} }},
-		{"reservation empty runtime key", func(s *SameTierExplorationState) { s.Reservations = []SameTierExplorationReservation{{ReservationID: "r", AccountRuntimeKey: " ", LeaseUntilMs: 2_000}} }},
-		{"reservation negative lease", func(s *SameTierExplorationState) { s.Reservations = []SameTierExplorationReservation{{ReservationID: "r", AccountRuntimeKey: "a", LeaseUntilMs: -1}} }},
+		{"reservation empty id", func(s *SameTierExplorationState) {
+			s.Reservations = []SameTierExplorationReservation{{ReservationID: " ", AccountRuntimeKey: "a", LeaseUntilMs: 2_000}}
+		}},
+		{"reservation empty runtime key", func(s *SameTierExplorationState) {
+			s.Reservations = []SameTierExplorationReservation{{ReservationID: "r", AccountRuntimeKey: " ", LeaseUntilMs: 2_000}}
+		}},
+		{"reservation negative lease", func(s *SameTierExplorationState) {
+			s.Reservations = []SameTierExplorationReservation{{ReservationID: "r", AccountRuntimeKey: "a", LeaseUntilMs: -1}}
+		}},
 		{"cooldown empty key", func(s *SameTierExplorationState) { s.CooldownUntilMsByRuntimeKey = map[string]int64{" ": 2_000} }},
 
 		{"accrued empty token", func(s *SameTierExplorationState) { s.AccruedTokens = []string{"ok", ""} }},

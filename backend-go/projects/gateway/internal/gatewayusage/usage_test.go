@@ -82,8 +82,7 @@ func TestResolveUsageServiceTiers(t *testing.T) {
 func TestNormalizeOpenAIGatewayTrafficSource(t *testing.T) {
 	valid := []string{
 		"gateway", "manual_account_test", "account_health_check",
-		"runtime_recovery_probe", "cooldown_retest", "hybrid_scoring",
-		"hybrid_quality_scoring",
+		"runtime_recovery_probe", "cooldown_retest",
 	}
 	for _, source := range valid {
 		t.Run("valid "+source, func(t *testing.T) {
@@ -109,17 +108,16 @@ func TestNormalizeOpenAIGatewayTrafficSource(t *testing.T) {
 
 func TestTrafficSourceClassifications(t *testing.T) {
 	tests := []struct {
-		source      string
-		probe       bool
-		diagnostic  bool
-		cooldown    bool
+		source     string
+		probe      bool
+		diagnostic bool
+		cooldown   bool
 	}{
 		{TrafficSourceGateway, false, false, false},
 		{TrafficSourceManualAccountTest, false, true, false},
 		{TrafficSourceAccountHealthCheck, true, true, false},
 		{TrafficSourceRuntimeRecoveryProbe, true, true, false},
 		{TrafficSourceCooldownRetest, true, true, true},
-		{TrafficSourceHybridScoring, false, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.source, func(t *testing.T) {

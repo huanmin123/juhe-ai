@@ -65,7 +65,6 @@ type Detail struct {
 	Status               string               `json:"status"`
 	IsDefault            bool                 `json:"isDefault"`
 	NormalRoutingConfig  *NormalRoutingConfig `json:"normalRoutingConfig,omitempty"`
-	HybridRoutingConfig  *HybridRoutingConfig `json:"hybridRoutingConfig,omitempty"`
 	GroupBindings        []GroupBinding       `json:"groupBindings"`
 	APIKeyCount          int                  `json:"apiKeyCount"`
 	CreatedAt            string               `json:"createdAt"`
@@ -465,7 +464,7 @@ func newListItem(row strategyRow, names map[string]string, bindingCount, apiKeyC
 	if statusErr != nil {
 		return ListItem{}, statusErr
 	}
-	normal, _, configErr := parseStoredConfig(row.configJSON)
+	normal, configErr := parseStoredConfig(row.configJSON)
 	if configErr != nil {
 		return ListItem{}, configErr
 	}
@@ -541,7 +540,7 @@ func (s *Store) newDetail(ctx context.Context, row strategyRow, bindings []Group
 	if statusErr != nil {
 		return nil, statusErr
 	}
-	normal, hybrid, err := parseStoredConfig(row.configJSON)
+	normal, err := parseStoredConfig(row.configJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -554,7 +553,6 @@ func (s *Store) newDetail(ctx context.Context, row strategyRow, bindings []Group
 		Status:               status,
 		IsDefault:            row.isDefault,
 		NormalRoutingConfig:  normalConfigForMode(mode, normal),
-		HybridRoutingConfig:  hybridConfigForMode(mode, hybrid),
 		GroupBindings:        bindings,
 		APIKeyCount:          row.apiKeyCount,
 		CreatedAt:            row.createdAt,
@@ -571,8 +569,8 @@ func (s *Store) newDetail(ctx context.Context, row strategyRow, bindings []Group
 }
 
 // normalConfigForMode renders normalRoutingConfig for every mode supporting the
-// scheduling preference (normal/weighted/failover/round_robin; the cost_first
-// default fills in when absent), nil for hybrid_smart.
+// scheduling preference (all five modes; the cost_first default fills in when
+// absent).
 func normalConfigForMode(mode string, normal *NormalRoutingConfig) *NormalRoutingConfig {
 	if !ModeSupportsSchedulingPreference(mode) {
 		return nil
@@ -581,14 +579,6 @@ func normalConfigForMode(mode string, normal *NormalRoutingConfig) *NormalRoutin
 		return &NormalRoutingConfig{SchedulingPreference: defaultNormalSchedulingPreference}
 	}
 	return normal
-}
-
-// hybridConfigForMode renders hybridRoutingConfig for hybrid_smart only.
-func hybridConfigForMode(mode string, hybrid *HybridRoutingConfig) *HybridRoutingConfig {
-	if mode != ModeHybridSmart {
-		return nil
-	}
-	return hybrid
 }
 
 func (s *Store) lookupName(ctx context.Context, id string) *string {
@@ -737,7 +727,6 @@ type EditBasicDetail struct {
 	Status              string               `json:"status"`
 	IsDefault           bool                 `json:"isDefault"`
 	NormalRoutingConfig *NormalRoutingConfig `json:"normalRoutingConfig,omitempty"`
-	HybridRoutingConfig *HybridRoutingConfig `json:"hybridRoutingConfig,omitempty"`
 	GroupBindings       []GroupBinding       `json:"groupBindings"`
 	UpdatedAt           string               `json:"updatedAt"`
 }
@@ -780,7 +769,7 @@ func (s *Store) FindEditBasic(ctx context.Context, id string, access AccessScope
 	if statusErr != nil {
 		return nil, statusErr
 	}
-	normal, hybrid, configErr := parseStoredConfig(configJSON)
+	normal, configErr := parseStoredConfig(configJSON)
 	if configErr != nil {
 		return nil, configErr
 	}
@@ -796,7 +785,6 @@ func (s *Store) FindEditBasic(ctx context.Context, id string, access AccessScope
 		Status:              normalizedStatus,
 		IsDefault:           isDefault == 1,
 		NormalRoutingConfig: normalConfigForMode(normalizedMode, normal),
-		HybridRoutingConfig: hybridConfigForMode(normalizedMode, hybrid),
 		GroupBindings:       bindings[rowID],
 		UpdatedAt:           updatedAt,
 	}

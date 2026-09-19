@@ -33,24 +33,103 @@ const (
 // ChatImageModel mirrors ChatImageModel.
 type ChatImageModel string
 
-const ImageModelGPTImage2 ChatImageModel = "gpt-image-2"
+const (
+	ImageModelGPTImage2          ChatImageModel = "gpt-image-2"
+	ImageModelGrokImagineImage   ChatImageModel = "grok-imagine-image"
+	ImageModelGrokImagineQuality ChatImageModel = "grok-imagine-image-quality"
+)
+
+// supportedChatImageModels is the chat image model registry. Order is the
+// public enum order (gpt-image-2 stays first); new conversations keep
+// defaulting to gpt-image-2.
+var supportedChatImageModels = []ChatImageModel{
+	ImageModelGPTImage2,
+	ImageModelGrokImagineImage,
+	ImageModelGrokImagineQuality,
+}
+
+// SupportedChatImageModels returns the registry in stable display order.
+func SupportedChatImageModels() []ChatImageModel {
+	out := make([]ChatImageModel, len(supportedChatImageModels))
+	copy(out, supportedChatImageModels)
+	return out
+}
+
+// IsSupportedChatImageModel reports whether model is in the registry.
+func IsSupportedChatImageModel(model string) bool {
+	for _, candidate := range supportedChatImageModels {
+		if string(candidate) == model {
+			return true
+		}
+	}
+	return false
+}
+
+// chatImageModelEnumValues renders the registry as plain strings for schema
+// enums and error copy.
+func chatImageModelEnumValues() []string {
+	models := SupportedChatImageModels()
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		out = append(out, string(model))
+	}
+	return out
+}
+
+// chatImageModelEnumHint renders the registry as a quoted list for the PATCH
+// defaultImageModel enum error copy.
+func chatImageModelEnumHint() string {
+	values := chatImageModelEnumValues()
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, "'"+value+"'")
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// chatImageModelProfile is the per-model upstream parameter profile.
+// 来源：2026-09-19 对 https://api.shenwenai.com/v1 的实测——grok 两个生图模型
+// 收到 quality=auto 返回 HTTP 400，且仅显式 response_format=b64_json 时才返回
+// 内联数据（默认只给 data[0].url 临时链接）；gpt-image-2 两者相反。
+type chatImageModelProfile struct {
+	// SupportsAutoQuality：上游接受 quality=auto；false 时请求需省略 quality 字段。
+	SupportsAutoQuality bool
+	// RequiresB64JSONFormat：请求需携带 response_format=b64_json。
+	RequiresB64JSONFormat bool
+}
+
+var chatImageModelProfiles = map[ChatImageModel]chatImageModelProfile{
+	ImageModelGPTImage2:          {SupportsAutoQuality: true},
+	ImageModelGrokImagineImage:   {SupportsAutoQuality: false, RequiresB64JSONFormat: true},
+	ImageModelGrokImagineQuality: {SupportsAutoQuality: false, RequiresB64JSONFormat: true},
+}
+
+// chatImageModelProfileFor resolves the profile for a (possibly unregistered)
+// model. Unregistered models keep the legacy request shape (always send
+// quality, never send response_format).
+func chatImageModelProfileFor(model string) chatImageModelProfile {
+	if profile, ok := chatImageModelProfiles[ChatImageModel(model)]; ok {
+		return profile
+	}
+	return chatImageModelProfile{SupportsAutoQuality: true}
+}
 
 // Conversation mirrors ChatConversation (route response shape).
 type Conversation struct {
-	ID                 string          `json:"id"`
-	SystemAccountID    string          `json:"systemAccountId"`
-	APIKeyID           *string         `json:"apiKeyId,omitempty"`
-	APIKeyNameSnapshot string          `json:"apiKeyNameSnapshot"`
-	Title              string          `json:"title"`
-	IsPinned           bool            `json:"isPinned"`
-	LastModel          *string         `json:"lastModel,omitempty"`
-	DefaultImageModel  ChatImageModel  `json:"defaultImageModel"`
-	ActiveTurnID       *string         `json:"activeTurnId,omitempty"`
-	UserTurnCount      int64           `json:"userTurnCount"`
-	MessageRevision    int64           `json:"messageRevision"`
-	LastMessageAt      string          `json:"lastMessageAt"`
-	CreatedAt          string          `json:"createdAt"`
-	UpdatedAt          string          `json:"updatedAt"`
+	ID                 string         `json:"id"`
+	SystemAccountID    string         `json:"systemAccountId"`
+	APIKeyID           *string        `json:"apiKeyId,omitempty"`
+	APIKeyNameSnapshot string         `json:"apiKeyNameSnapshot"`
+	Title              string         `json:"title"`
+	IsPinned           bool           `json:"isPinned"`
+	LastModel          *string        `json:"lastModel,omitempty"`
+	DefaultImageModel  ChatImageModel `json:"defaultImageModel"`
+	ActiveTurnID       *string        `json:"activeTurnId,omitempty"`
+	UserTurnCount      int64          `json:"userTurnCount"`
+	MessageRevision    int64          `json:"messageRevision"`
+	LastMessageAt      string         `json:"lastMessageAt"`
+	CreatedAt          string         `json:"createdAt"`
+	UpdatedAt          string         `json:"updatedAt"`
 }
 
 // ContentBlock is the union of ChatMessageContentBlock variants. Stored and
@@ -73,23 +152,23 @@ type ContentBlock struct {
 
 // Message mirrors ChatMessage.
 type Message struct {
-	ID             string          `json:"id"`
-	ConversationID string          `json:"conversationId"`
-	TurnID         string          `json:"turnId"`
-	SequenceNo     int64           `json:"sequenceNo"`
-	ClientMessageID *string        `json:"clientMessageId,omitempty"`
-	Role           ChatMessageRole `json:"role"`
-	Status         ChatMessageStatus `json:"status"`
-	ContentText    string          `json:"contentText"`
-	ContentBlocks  []ContentBlock  `json:"contentBlocks"`
-	Model          string          `json:"model"`
-	TraceID        *string         `json:"traceId,omitempty"`
-	FinishReason   *string         `json:"finishReason,omitempty"`
-	ErrorCode      *string         `json:"errorCode,omitempty"`
-	ErrorMessage   *string         `json:"errorMessage,omitempty"`
-	CreatedAt      string          `json:"createdAt"`
-	CompletedAt    *string         `json:"completedAt,omitempty"`
-	ExpiresAt      string          `json:"expiresAt"`
+	ID              string            `json:"id"`
+	ConversationID  string            `json:"conversationId"`
+	TurnID          string            `json:"turnId"`
+	SequenceNo      int64             `json:"sequenceNo"`
+	ClientMessageID *string           `json:"clientMessageId,omitempty"`
+	Role            ChatMessageRole   `json:"role"`
+	Status          ChatMessageStatus `json:"status"`
+	ContentText     string            `json:"contentText"`
+	ContentBlocks   []ContentBlock    `json:"contentBlocks"`
+	Model           string            `json:"model"`
+	TraceID         *string           `json:"traceId,omitempty"`
+	FinishReason    *string           `json:"finishReason,omitempty"`
+	ErrorCode       *string           `json:"errorCode,omitempty"`
+	ErrorMessage    *string           `json:"errorMessage,omitempty"`
+	CreatedAt       string            `json:"createdAt"`
+	CompletedAt     *string           `json:"completedAt,omitempty"`
+	ExpiresAt       string            `json:"expiresAt"`
 }
 
 // conversationRow is the raw scan target with the full chat_conversations
@@ -154,8 +233,8 @@ func scanConversationRow(scan func(...any) error) (conversationRow, error) {
 }
 
 func normalizedImageModel(value string) (ChatImageModel, error) {
-	if value == string(ImageModelGPTImage2) {
-		return ImageModelGPTImage2, nil
+	if IsSupportedChatImageModel(value) {
+		return ChatImageModel(value), nil
 	}
 	return "", &DomainError{Message: "聊天会话默认图像模型无效"}
 }

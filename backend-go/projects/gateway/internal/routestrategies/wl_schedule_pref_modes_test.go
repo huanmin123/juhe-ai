@@ -1,6 +1,5 @@
-// 调度偏好通用化回归：normal/weighted/failover/round_robin 四种模式共享
-// normalRoutingConfig（speed_first 落盘、cost_first 保持 config_json NULL），
-// hybrid_smart 拒绝调度偏好；四模式间 patch 保留配置，切到 hybrid_smart 丢弃。
+// 调度偏好通用化回归：全部五种模式共享 normalRoutingConfig（speed_first 落盘、
+// cost_first 保持 config_json NULL）。
 package routestrategies
 
 import (
@@ -11,12 +10,12 @@ import (
 )
 
 func TestWlSchedulePrefModeSupportsPredicate(t *testing.T) {
-	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin} {
+	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge} {
 		if !ModeSupportsSchedulingPreference(mode) {
 			t.Fatalf("mode %q 必须支持调度偏好", mode)
 		}
 	}
-	for _, mode := range []string{ModeHybridSmart, "", "bogus"} {
+	for _, mode := range []string{"", "bogus"} {
 		if ModeSupportsSchedulingPreference(mode) {
 			t.Fatalf("mode %q 不得支持调度偏好", mode)
 		}
@@ -25,7 +24,6 @@ func TestWlSchedulePrefModeSupportsPredicate(t *testing.T) {
 
 // TestWlSchedulePrefNormalizeForWriteModes：normalizeConfigForWrite 的模式矩阵。
 func TestWlSchedulePrefNormalizeForWriteModes(t *testing.T) {
-	hybridRaw := wlValidHybridRaw()
 	speedRaw := func() map[string]any {
 		return map[string]any{
 			"schedulingPreference": "speed_first",
@@ -36,25 +34,25 @@ func TestWlSchedulePrefNormalizeForWriteModes(t *testing.T) {
 	costRaw := map[string]any{"schedulingPreference": "cost_first"}
 	badPrefRaw := map[string]any{"schedulingPreference": "bogus"}
 
-	for _, mode := range []string{ModeWeighted, ModeFailover, ModeRoundRobin} {
+	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge} {
 		t.Run(mode, func(t *testing.T) {
 			// nil 输入回落 cost_first 默认对象（routeStrategyConfigJSON 仍判 NULL）。
-			normal, hybrid, err := normalizeConfigForWrite(nil, nil, mode)
-			if err != nil || hybrid != nil || normal == nil || normal.SchedulingPreference != defaultNormalSchedulingPreference {
-				t.Fatalf("nil 输入: normal=%+v hybrid=%v err=%v", normal, hybrid, err)
+			normal, err := normalizeConfigForWrite(nil, mode)
+			if err != nil || normal == nil || normal.SchedulingPreference != defaultNormalSchedulingPreference {
+				t.Fatalf("nil 输入: normal=%+v err=%v", normal, err)
 			}
 			// cost_first 归一为仅 preference。
-			normal, hybrid, err = normalizeConfigForWrite(costRaw, nil, mode)
-			if err != nil || hybrid != nil || normal == nil || normal.FirstByteDeadlineMs != nil || normal.SpeedFirstConfig != nil {
-				t.Fatalf("cost_first: normal=%+v hybrid=%v err=%v", normal, hybrid, err)
+			normal, err = normalizeConfigForWrite(costRaw, mode)
+			if err != nil || normal == nil || normal.FirstByteDeadlineMs != nil || normal.SpeedFirstConfig != nil {
+				t.Fatalf("cost_first: normal=%+v err=%v", normal, err)
 			}
-			if routeStrategyConfigJSON(normal, nil).Valid {
+			if routeStrategyConfigJSON(normal).Valid {
 				t.Fatal("cost_first 必须存 NULL")
 			}
 			// speed_first 附带 deadline + 完整 speedFirstConfig。
-			normal, hybrid, err = normalizeConfigForWrite(speedRaw(), nil, mode)
-			if err != nil || hybrid != nil || normal == nil {
-				t.Fatalf("speed_first: normal=%+v hybrid=%v err=%v", normal, hybrid, err)
+			normal, err = normalizeConfigForWrite(speedRaw(), mode)
+			if err != nil || normal == nil {
+				t.Fatalf("speed_first: normal=%+v err=%v", normal, err)
 			}
 			if normal.SchedulingPreference != "speed_first" || normal.FirstByteDeadlineMs == nil || *normal.FirstByteDeadlineMs != 20000 {
 				t.Fatalf("speed_first 归一: %+v", normal)
@@ -64,29 +62,10 @@ func TestWlSchedulePrefNormalizeForWriteModes(t *testing.T) {
 				t.Fatalf("speedFirstConfig 默认回填: %+v", normal.SpeedFirstConfig)
 			}
 			// 非法 preference → 调度偏好无效。
-			if _, _, err = normalizeConfigForWrite(badPrefRaw, nil, mode); err == nil || err.Error() != "调度偏好无效" {
+			if _, err = normalizeConfigForWrite(badPrefRaw, mode); err == nil || err.Error() != "调度偏好无效" {
 				t.Fatalf("非法 preference: err=%v", err)
 			}
-			// 带 hybridRaw → 只有混合智能路由可以配置混合评分规则。
-			if _, _, err = normalizeConfigForWrite(nil, hybridRaw, mode); err == nil || err.Error() != "只有混合智能路由可以配置混合评分规则" {
-				t.Fatalf("带 hybridRaw: err=%v", err)
-			}
 		})
-	}
-
-	// hybrid_smart + normalRaw → 新文案；不带时走原 hybrid 必填链路。
-	if _, _, err := normalizeConfigForWrite(costRaw, hybridRaw, ModeHybridSmart); err == nil || err.Error() != "混合智能路由不支持调度偏好" {
-		t.Fatalf("hybrid + normalRaw: err=%v", err)
-	}
-	if _, _, err := normalizeConfigForWrite(nil, nil, ModeHybridSmart); err == nil || err.Error() != "混合路由配置不能为空" {
-		t.Fatalf("hybrid 缺配置: err=%v", err)
-	}
-	// normal 回归：带 hybridRaw 报原文案，speed_first 照常。
-	if _, _, err := normalizeConfigForWrite(nil, hybridRaw, ModeNormal); err == nil || err.Error() != "普通路由不能配置混合评分规则" {
-		t.Fatalf("normal + hybridRaw: err=%v", err)
-	}
-	if normal, _, err := normalizeConfigForWrite(speedRaw(), nil, ModeNormal); err != nil || normal == nil || normal.SchedulingPreference != "speed_first" {
-		t.Fatalf("normal speed_first 回归: %+v err=%v", normal, err)
 	}
 }
 
@@ -98,11 +77,11 @@ func TestWlSchedulePrefConfigJSONRoundTrip(t *testing.T) {
 		"speedFirstConfig":     map[string]any{"probeIntervalSeconds": 45},
 	}
 	for _, mode := range []string{ModeWeighted, ModeFailover, ModeRoundRobin} {
-		normal, _, err := normalizeConfigForWrite(speedRaw, nil, mode)
+		normal, err := normalizeConfigForWrite(speedRaw, mode)
 		if err != nil {
 			t.Fatalf("%s: %v", mode, err)
 		}
-		stored := routeStrategyConfigJSON(normal, nil)
+		stored := routeStrategyConfigJSON(normal)
 		if !stored.Valid {
 			t.Fatalf("%s speed_first 必须落盘", mode)
 		}
@@ -113,48 +92,45 @@ func TestWlSchedulePrefConfigJSONRoundTrip(t *testing.T) {
 		if _, has := document["normalRoutingConfig"]; !has {
 			t.Fatalf("%s 落盘缺 normalRoutingConfig 键: %s", mode, stored.String)
 		}
-		parsedNormal, parsedHybrid, err := parseStoredConfig(stored)
-		if err != nil || parsedHybrid != nil || parsedNormal == nil {
-			t.Fatalf("%s 回读: normal=%+v hybrid=%v err=%v", mode, parsedNormal, parsedHybrid, err)
+		parsedNormal, err := parseStoredConfig(stored)
+		if err != nil || parsedNormal == nil {
+			t.Fatalf("%s 回读: normal=%+v err=%v", mode, parsedNormal, err)
 		}
 		if parsedNormal.SchedulingPreference != "speed_first" || parsedNormal.FirstByteDeadlineMs == nil || *parsedNormal.FirstByteDeadlineMs != 45000 {
 			t.Fatalf("%s 回读值: %+v", mode, parsedNormal)
 		}
 		// cost_first（含 nil 归一结果）保持 NULL。
-		costNormal, _, err := normalizeConfigForWrite(nil, nil, mode)
+		costNormal, err := normalizeConfigForWrite(nil, mode)
 		if err != nil {
 			t.Fatalf("%s: %v", mode, err)
 		}
-		if stored := routeStrategyConfigJSON(costNormal, nil); stored.Valid {
+		if stored := routeStrategyConfigJSON(costNormal); stored.Valid {
 			t.Fatalf("%s cost_first 必须存 NULL: %v", mode, stored)
 		}
 		// 坏值经 parseStoredConfig 报错。
-		if _, _, err := parseStoredConfig(sql.NullString{String: `{"normalRoutingConfig":{"schedulingPreference":"bogus"}}`, Valid: true}); err == nil {
+		if _, err := parseStoredConfig(sql.NullString{String: `{"normalRoutingConfig":{"schedulingPreference":"bogus"}}`, Valid: true}); err == nil {
 			t.Fatalf("%s 坏值必须报错", mode)
 		}
 	}
 }
 
-// TestWlSchedulePrefNormalInput：四种模式 feed-forward，hybrid_smart 丢弃。
+// TestWlSchedulePrefNormalInput：各模式 feed-forward 当前配置。
 func TestWlSchedulePrefNormalInput(t *testing.T) {
 	current := &NormalRoutingConfig{SchedulingPreference: "cost_first"}
 	empty := MutationInput{}
-	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin} {
-		if got := empty.normalInput(mode, current); got == nil {
+	for _, mode := range []string{ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge} {
+		if got := empty.normalInput(current); got == nil {
 			t.Fatalf("mode %q 无新输入必须 feed-forward 当前配置", mode)
 		}
 	}
-	if got := empty.normalInput(ModeHybridSmart, current); got != nil {
-		t.Fatalf("hybrid_smart 无新输入必须为 nil: %v", got)
-	}
 	withRaw := MutationInput{HasNormalConfig: true, NormalConfigRaw: map[string]any{"schedulingPreference": "speed_first"}}
-	if got := withRaw.normalInput(ModeHybridSmart, current); got == nil {
-		t.Fatal("hybrid_smart 带 HasNormalConfig 必须透传 raw（交给校验器报新文案）")
+	if got := withRaw.normalInput(current); got == nil {
+		t.Fatal("带 HasNormalConfig 必须透传 raw")
 	}
 }
 
 // TestWlSchedulePrefPatchFeedForward：normal(speed_first) → weighted patch 保留
-// 调度配置（config_json 不变），weighted → hybrid_smart 丢弃。
+// 调度配置（config_json 不变）。
 func TestWlSchedulePrefPatchFeedForward(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -207,36 +183,10 @@ func TestWlSchedulePrefPatchFeedForward(t *testing.T) {
 	if !ok || detailConfig["schedulingPreference"] != "speed_first" {
 		t.Fatalf("weighted detail 必须保留 speed_first: %v", dataMap(t, detail)["normalRoutingConfig"])
 	}
-
-	// 切到 hybrid_smart：必须带 hybrid 配置；调度配置被丢弃。
-	updatedAt = env.strategyUpdatedAt(t, strategyID)
-	code, patched = env.do(t, http.MethodPatch, path+"/"+strategyID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","mode":"hybrid_smart","hybridRoutingConfig":`+hybridConfigBody(4, "model-high")+`}`)
-	if code != http.StatusOK {
-		t.Fatalf("patch to hybrid: %d %v", code, patched)
-	}
-	rowPatch = dataMap(t, patched)["rowPatch"].(map[string]any)
-	if value, has := rowPatch["normalRoutingConfig"]; !has || value != nil {
-		t.Fatalf("切到 hybrid_smart 必须清空 normalRoutingConfig: %v", rowPatch)
-	}
-	if err := env.db.QueryRow(`SELECT config_json FROM route_strategies WHERE id = ?`, strategyID).Scan(&configJSON); err != nil {
-		t.Fatal(err)
-	}
-	if !configJSON.Valid || !contains(configJSON.String, "hybridRoutingConfig") || contains(configJSON.String, "normalRoutingConfig") {
-		t.Fatalf("hybrid 切换后 config_json: %v", configJSON)
-	}
-
-	// hybrid_smart 带 normalRoutingConfig 的 patch → 新文案。
-	updatedAt = env.strategyUpdatedAt(t, strategyID)
-	code, patched = env.do(t, http.MethodPatch, path+"/"+strategyID,
-		`{"expectedUpdatedAt":"`+updatedAt+`","normalRoutingConfig":{"schedulingPreference":"speed_first"}}`)
-	if code != http.StatusBadRequest || patched["message"] != "混合智能路由不支持调度偏好" {
-		t.Fatalf("hybrid patch + normalRaw: %d %v", code, patched)
-	}
 }
 
 // TestWlSchedulePrefHTTPModeMatrix：三种新模式 speed_first/cost_first 的
-// 创建、落盘、渲染与 hybrid 拒绝。
+// 创建、落盘与渲染。
 func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
@@ -294,13 +244,6 @@ func TestWlSchedulePrefHTTPModeMatrix(t *testing.T) {
 		if configJSON.Valid {
 			t.Fatalf("%s cost_first config_json 必须为 NULL: %v", mode, configJSON)
 		}
-	}
-
-	// hybrid_smart + normalRoutingConfig → 400 新文案。
-	code, payload := env.createStrategy(t, path,
-		`{"name":"hnsf","mode":"hybrid_smart","normalRoutingConfig":{"schedulingPreference":"cost_first"},"hybridRoutingConfig":`+hybridConfigBody(5, "model-high")+`,"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || payload["message"] != "混合智能路由不支持调度偏好" {
-		t.Fatalf("hybrid create + normalRaw: %d %v", code, payload)
 	}
 }
 

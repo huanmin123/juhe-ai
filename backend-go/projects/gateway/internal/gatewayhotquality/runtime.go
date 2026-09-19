@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 )
 
 // Gateway hot quality runtime mirroring
@@ -231,7 +229,7 @@ type GatewayHotQualityCandidateOrderInput[T any] struct {
 	Accounts                       []T
 	Base                           func(T) GatewayHotQualityAccountView
 	ModelPriorityRankByAccountID   map[string]int
-	Mode                           gatewayhybrid.HotQualityRoutingMode
+	Mode                           HotQualityRoutingMode
 	SystemAccountID                string
 	RouteStrategyID                string
 	GroupID                        string
@@ -266,7 +264,7 @@ type GatewayHotQualityCandidateOrderResult[T any] struct {
 }
 
 type orderedCandidatePayload[T any] struct {
-	base    gatewayhybrid.HotQualityCandidate
+	base    HotQualityCandidate
 	account T
 }
 
@@ -330,18 +328,18 @@ func OrderGatewayAccountsByHotQuality[T any](
 			}
 			snapshots[index] = snapshot
 		}
-		candidates := make([]gatewayhybrid.HotQualityCandidate, len(group.accounts))
+		candidates := make([]HotQualityCandidate, len(group.accounts))
 		for index, account := range group.accounts {
 			view := input.Base(account)
 			runtimeKey, err := GatewayAccountRuntimeKey(view)
 			if err != nil {
 				return nil, err
 			}
-			candidates[index] = gatewayhybrid.HotQualityCandidate{
+			candidates[index] = HotQualityCandidate{
 				AccountID:         view.ID,
 				AccountRuntimeKey: runtimeKey,
 				RouteScopeKey:     routeScopeKey,
-				ConfigurationTier: gatewayhybrid.GatewayAccountConfigurationTier{
+				ConfigurationTier: GatewayAccountConfigurationTier{
 					ModelMatchRank:       modelRank(view, input.ModelPriorityRankByAccountID),
 					FallbackEnabled:      view.FallbackEnabled,
 					SuperPriorityEnabled: view.SuperPriorityEnabled,
@@ -362,11 +360,11 @@ func OrderGatewayAccountsByHotQuality[T any](
 				return nil, err
 			}
 		} else {
-			decision, err := gatewayhybrid.DecideHotQualityCandidate[gatewayhybrid.HotQualityCandidate](gatewayhybrid.DecideHotQualityCandidateInput[gatewayhybrid.HotQualityCandidate]{
+			decision, err := DecideHotQualityCandidate[HotQualityCandidate](DecideHotQualityCandidateInput[HotQualityCandidate]{
 				Mode:          input.Mode,
 				RouteScopeKey: routeScopeKey,
 				Candidates:    candidates,
-				Base:          func(candidate gatewayhybrid.HotQualityCandidate) gatewayhybrid.HotQualityCandidate { return candidate },
+				Base:          func(candidate HotQualityCandidate) HotQualityCandidate { return candidate },
 			})
 			if err != nil {
 				return nil, err
@@ -446,7 +444,7 @@ func selectFirstProtocolGroup[T any](
 	runtime *GatewayHotQualityRuntime,
 	input GatewayHotQualityCandidateOrderInput[T],
 	payloads []orderedCandidatePayload[T],
-	candidates []gatewayhybrid.HotQualityCandidate,
+	candidates []HotQualityCandidate,
 	routeScopeKey string,
 	protocolProfile string,
 	nowMs int64,
@@ -455,7 +453,7 @@ func selectFirstProtocolGroup[T any](
 		return nil, errors.New("热质量首协议候选为空")
 	}
 	topCandidate := candidates[0]
-	tierKey, err := gatewayhybrid.GatewayAccountConfigurationTierKey(topCandidate.ConfigurationTier)
+	tierKey, err := GatewayAccountConfigurationTierKey(topCandidate.ConfigurationTier)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +479,7 @@ func selectFirstProtocolGroup[T any](
 	if err != nil {
 		return nil, err
 	}
-	decision, err := gatewayhybrid.DecideHotQualityCandidate(orderedDecisionInput(payloads, candidates, input.Mode, routeScopeKey, decisionState))
+	decision, err := DecideHotQualityCandidate(orderedDecisionInput(payloads, candidates, input.Mode, routeScopeKey, decisionState))
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +487,7 @@ func selectFirstProtocolGroup[T any](
 	if decision.SelectedCandidate != nil {
 		selectedAccountID = decision.SelectedCandidate.AccountID
 	}
-	if decision.DispatchIntent != gatewayhybrid.DispatchIntentSameTierExploration || decision.SelectedCandidate == nil {
+	if decision.DispatchIntent != DispatchIntentSameTierExploration || decision.SelectedCandidate == nil {
 		orderedPayloads, err := orderedPayloadsFromDecision(payloads, candidates, decision.OrderedCandidates)
 		if err != nil {
 			return nil, err
@@ -580,24 +578,24 @@ func selectFirstProtocolGroup[T any](
 // orderedDecisionInput pairs the decision candidates with payload ordering.
 func orderedDecisionInput[T any](
 	payloads []orderedCandidatePayload[T],
-	candidates []gatewayhybrid.HotQualityCandidate,
-	mode gatewayhybrid.HotQualityRoutingMode,
+	candidates []HotQualityCandidate,
+	mode HotQualityRoutingMode,
 	routeScopeKey string,
-	exploration *gatewayhybrid.SameTierExplorationState,
-) gatewayhybrid.DecideHotQualityCandidateInput[gatewayhybrid.HotQualityCandidate] {
-	return gatewayhybrid.DecideHotQualityCandidateInput[gatewayhybrid.HotQualityCandidate]{
+	exploration *SameTierExplorationDecisionState,
+) DecideHotQualityCandidateInput[HotQualityCandidate] {
+	return DecideHotQualityCandidateInput[HotQualityCandidate]{
 		Mode:          mode,
 		RouteScopeKey: routeScopeKey,
 		Candidates:    candidates,
-		Base:          func(candidate gatewayhybrid.HotQualityCandidate) gatewayhybrid.HotQualityCandidate { return candidate },
+		Base:          func(candidate HotQualityCandidate) HotQualityCandidate { return candidate },
 		Exploration:   exploration,
 	}
 }
 
 func orderedPayloadsFromDecision[T any](
 	payloads []orderedCandidatePayload[T],
-	candidates []gatewayhybrid.HotQualityCandidate,
-	ordered []gatewayhybrid.HotQualityCandidate,
+	candidates []HotQualityCandidate,
+	ordered []HotQualityCandidate,
 ) ([]orderedCandidatePayload[T], error) {
 	result := make([]orderedCandidatePayload[T], 0, len(ordered))
 	for _, orderedCandidate := range ordered {
@@ -616,7 +614,7 @@ func orderedPayloadsFromDecision[T any](
 	return result, nil
 }
 
-func firstAccountID(candidates []gatewayhybrid.HotQualityCandidate) string {
+func firstAccountID(candidates []HotQualityCandidate) string {
 	if len(candidates) == 0 {
 		return ""
 	}
@@ -633,7 +631,7 @@ func sameTierExplorationDecisionState(
 	state *SameTierExplorationState,
 	nowMs int64,
 	eligibleFirstPrimaryDispatch bool,
-) (*gatewayhybrid.SameTierExplorationState, error) {
+) (*SameTierExplorationDecisionState, error) {
 	if state == nil {
 		return nil, errors.New("同层探索状态缺失")
 	}
@@ -645,7 +643,7 @@ func sameTierExplorationDecisionState(
 	for key, value := range state.CooldownUntilMsByRuntimeKey {
 		cooldown[key] = value
 	}
-	return &gatewayhybrid.SameTierExplorationState{
+	return &SameTierExplorationDecisionState{
 		Enabled:                           true,
 		EligibleFirstPrimaryDispatch:      eligibleFirstPrimaryDispatch,
 		CreditAccrualAlreadyApplied:       true,
@@ -850,7 +848,7 @@ func newUUIDv4() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16]), nil
 }
 
-func selectionViewOrNil(snapshot *HotQualitySnapshot) *gatewayhybrid.HotQualitySnapshot {
+func selectionViewOrNil(snapshot *HotQualitySnapshot) *HotQualitySelectionSnapshot {
 	if snapshot == nil {
 		return nil
 	}

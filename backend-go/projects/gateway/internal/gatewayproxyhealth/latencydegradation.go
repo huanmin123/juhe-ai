@@ -279,7 +279,8 @@ func OrderGatewayAccountsByNormalRouteLatencyDegradation[T any](
 	// nil), so per-account semantics are identical to loadLatencyState.
 	keys := make([]string, len(accounts))
 	for i, account := range accounts {
-		keys[i] = accountLatencyStateKey(*scope, accountOf(account))
+		projected := accountOf(account)
+		keys[i] = accountLatencyStateKey(resolvedLatencyScopeForAccount(*scope, projected), projected)
 	}
 	rawStates, err := s.store.GetJSONMany(ctx, keys)
 	if err != nil {
@@ -332,7 +333,10 @@ func (s *LatencyDegradationService) RecordNormalRouteFirstByteSlow(
 	if reason == "" {
 		reason = "普通路由速度优先首字等待超时"
 	}
-	key, err := accountLatencyStateKeyChecked(*scope, account)
+	// 键与存储 Scope 必须同源（设计 3.6 / B25）：state.Scope 落盘解析后的
+	// scope，jobs 探针按存储 Scope 重建键、按 Scope.GroupID 找凭据。
+	resolvedScope := resolvedLatencyScopeForAccount(*scope, account)
+	key, err := accountLatencyStateKeyChecked(resolvedScope, account)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +346,7 @@ func (s *LatencyDegradationService) RecordNormalRouteFirstByteSlow(
 	}
 	var result *LatencySlowResult
 	ok, err := s.withLatencyStateMutationLock(ctx, key, generation, func() (bool, error) {
-		value, err := s.recordNormalRouteFirstByteSlowLocked(ctx, account, *scope, *config, reason, key, generation)
+		value, err := s.recordNormalRouteFirstByteSlowLocked(ctx, account, resolvedScope, *config, reason, key, generation)
 		if err != nil {
 			return false, err
 		}
@@ -471,7 +475,9 @@ func (s *LatencyDegradationService) RecordNormalRouteFirstByteSuccess(
 	if scope == nil || config == nil || firstByteMs == nil || *firstByteMs > config.FirstByteDeadlineMs {
 		return nil, nil
 	}
-	key, err := accountLatencyStateKeyChecked(*scope, account)
+	// 读键与写慢样本同源解析（设计 3.6 / B25）：恢复观察只 clone 既有
+	// state（Scope 不变），键必须落在同一存储 Scope 的组分量上。
+	key, err := accountLatencyStateKeyChecked(resolvedLatencyScopeForAccount(*scope, account), account)
 	if err != nil {
 		return nil, err
 	}
@@ -652,7 +658,7 @@ func (s *LatencyDegradationService) IsNormalRouteAccountLatencyDegraded(
 	if err != nil {
 		return false, err
 	}
-	state, err := s.loadLatencyState(ctx, accountLatencyStateKey(*scope, account), generation)
+	state, err := s.loadLatencyState(ctx, accountLatencyStateKey(resolvedLatencyScopeForAccount(*scope, account), account), generation)
 	if err != nil {
 		return false, err
 	}
@@ -1390,6 +1396,24 @@ func isRouteStrategySpeedFirstConfig(config SpeedFirstRuntimeConfig) bool {
 }
 
 func isFinitePositiveInt(value int64) bool { return value > 0 }
+
+// resolvedLatencyScopeForAccount resolves the scope group component per
+// account at the service boundary (设计 3.6 / B25): merge-route accounts are
+// keyed and stored under their bound group (账号组 ≠ 窗口组), while accounts
+// without a bound group fall back to the inbound window group so legacy keys
+// and stored scopes stay byte-identical. Callers must build the state key and
+// latencyState.Scope from this same resolved value — jobs recovery probes
+// rebuild the key from the stored Scope and look up credentials by
+// Scope.GroupID, so the two must never diverge.
+func resolvedLatencyScopeForAccount(scope LatencyDegradationScope, account SuppressibleGatewayAccount) LatencyDegradationScope {
+	boundGroupID := strings.TrimSpace(account.BoundGroupID)
+	if boundGroupID == "" {
+		return scope
+	}
+	resolved := scope
+	resolved.GroupID = boundGroupID
+	return resolved
+}
 
 func accountLatencyStateKey(scope LatencyDegradationScope, account SuppressibleGatewayAccount) string {
 	runtimeKey, err := GatewayAccountRuntimeKey(account)

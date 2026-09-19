@@ -646,6 +646,7 @@ func isImageGenerationModel(model string) bool {
 		strings.HasPrefix(normalized, "dall-e") ||
 		strings.HasPrefix(normalized, "imagen-") ||
 		strings.HasPrefix(normalized, "nano-banana") ||
+		strings.HasPrefix(normalized, "grok-imagine") ||
 		geminiImageModelPattern.MatchString(normalized)
 }
 

@@ -400,13 +400,23 @@ func chainBaseURLOf(credentials map[string]any, protocolCode, protocolVersion st
 // ---------------------------------------------------------------------------
 
 var (
-	chainOpenAIEndpointModeValues = []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}
+	// chainOpenAIEndpointModeValues mirrors accountscore.OpenAIEndpointModeValues:
+	// images_json first, so openai family accounts with an explicit
+	// supported_endpoint_modes containing images_json keep that mode through
+	// the gateway secret projection and survive the images-lane filter.
+	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse"}
 	chainOpenAIChatEndpointModes  = []string{"chat_json", "chat_sse"}
 	chainOpenAIResponsesModes     = []string{"responses_json", "responses_sse"}
-	chainAnthropicEndpointModes   = []string{"messages_json", "messages_sse", "message_token_counting"}
-	chainGeminiDefaultModes       = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse"}
-	chainHybridEndpointModes      = []string{
-		"chat_json", "chat_sse", "responses_json", "responses_sse",
+	// chainOpenAIDefaultEndpointModes mirrors
+	// accountscore.OpenAIDefaultEndpointModes: the runtime fallback defaults
+	// stay the four chat/responses modes — images_json is opt-in only.
+	chainOpenAIDefaultEndpointModes = []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}
+	chainAnthropicEndpointModes     = []string{"messages_json", "messages_sse", "message_token_counting"}
+	chainGeminiDefaultModes         = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse"}
+	// chainHybridEndpointModes mirrors accountscore.HybridEndpointModeValues
+	// (the three-family union; images_json rides the openai family).
+	chainHybridEndpointModes = []string{
+		"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse",
 		"messages_json", "messages_sse", "message_token_counting",
 		"generate_content_json", "generate_content_sse", "count_tokens", "embed_content", "interactions_json", "interactions_sse",
 	}
@@ -434,7 +444,9 @@ func chainNormalizeGatewayEndpointModesForRuntime(value []any, providerCode, acc
 }
 
 // chainNormalizeOpenAIEndpointModesForRuntime mirrors
-// normalizeOpenAIEndpointModesForRuntime + defaultOpenAIEndpointModes.
+// normalizeOpenAIEndpointModesForRuntime + defaultOpenAIEndpointModes. The
+// fallback defaults stay the four chat/responses modes (images_json is
+// opt-in); an explicit credential list passes through the widened filter.
 func chainNormalizeOpenAIEndpointModesForRuntime(value []any, providerCode, accountType, clientCompatibility string) []string {
 	filtered := chainFilterEndpointModes(value, chainOpenAIEndpointModeValues)
 	if len(filtered) > 0 {
@@ -446,14 +458,14 @@ func chainNormalizeOpenAIEndpointModesForRuntime(value []any, providerCode, acco
 	code := chainNormalizeProviderToken(providerCode)
 	switch code {
 	case "gpt", "deepseek":
-		return append([]string{}, chainOpenAIEndpointModeValues...)
+		return append([]string{}, chainOpenAIDefaultEndpointModes...)
 	case "openai", "glm", "gemini", "hybrid":
 		return append([]string{}, chainOpenAIChatEndpointModes...)
 	}
 	if clientCompatibility == "codex_responses" {
-		return append([]string{}, chainOpenAIEndpointModeValues...)
+		return append([]string{}, chainOpenAIDefaultEndpointModes...)
 	}
-	return append([]string{}, chainOpenAIEndpointModeValues...)
+	return append([]string{}, chainOpenAIDefaultEndpointModes...)
 }
 
 func chainFilterEndpointModes(value []any, allowed []string) []string {

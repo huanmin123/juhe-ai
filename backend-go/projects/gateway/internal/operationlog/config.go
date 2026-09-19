@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlitepath"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
@@ -46,9 +47,15 @@ const (
 func LoadConfig(getenv func(string) string) (Config, error) {
 	modeRaw := strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_STORE"))
 	if modeRaw == "" {
-		// F4 store 未显式启用（去跨进程战役第四刀起不再依赖 loopback input
-		// listener 地址判定启用）：保持默认关闭。
-		return Config{}, nil
+		// 2026-09-19 零配置默认：F4 store 缺省跟随业务库驱动
+		// （JUHE_AI_DATABASE_DRIVER，postgres→postgres，否则 sqlite）——
+		// system-api 组合根默认开启后 F4 producer 是管理面审计唯一写入口，
+		// 空配置部署也必须有可用 store；显式配置优先。
+		if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")), "postgres") {
+			modeRaw = string(ModePostgres)
+		} else {
+			modeRaw = string(ModeSQLite)
+		}
 	}
 	postgresURL := strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_POSTGRES_URL"))
 	ownerLease, err := durationOrDefault("JUHE_AI_OPERATION_LOG_OWNER_LEASE", getenv("JUHE_AI_OPERATION_LOG_OWNER_LEASE"), defaultOwnerLease)
@@ -71,22 +78,32 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{Enabled: true, InstanceID: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_INSTANCE_ID")), Mode: Mode(strings.ToLower(modeRaw)), DatabasePath: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_DATABASE_PATH")), BusinessSettingsPath: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH")), PostgresURL: postgresURL, PostgresMaxOpenConns: postgresMaxOpen, PostgresMaxIdleConns: postgresMaxIdle, OwnerLease: ownerLease, RetentionInterval: retentionInterval, RetentionDays: 365, RetentionBatchSize: retentionBatch}
+	// 路径类 env 派生（2026-09-19 零配置约定，internal/datadir 固定名表）：
+	// 未配置时落 <JUHE_AI_DATA_DIR=./data>/<固定名>，显式配置优先。PG 模式
+	// OpenStore 不消费 DatabasePath/BusinessSettingsPath，派生值无副作用。
+	dataDir := datadir.Dir(getenv)
+	cfg := Config{Enabled: true, InstanceID: strings.TrimSpace(getenv("JUHE_AI_OPERATION_LOG_INSTANCE_ID")), Mode: Mode(strings.ToLower(modeRaw)), DatabasePath: datadir.Path(getenv, dataDir, "JUHE_AI_OPERATION_LOG_DATABASE_PATH", datadir.OperationLogDatabase), BusinessSettingsPath: datadir.Path(getenv, dataDir, "JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH", datadir.BusinessDatabase), PostgresURL: postgresURL, PostgresMaxOpenConns: postgresMaxOpen, PostgresMaxIdleConns: postgresMaxIdle, OwnerLease: ownerLease, RetentionInterval: retentionInterval, RetentionDays: 365, RetentionBatchSize: retentionBatch}
 	if cfg.Mode == ModePostgres {
 		if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
 			return Config{}, fmt.Errorf("F4 PostgreSQL 连接池配置无效: %w", err)
 		}
 	}
 	for _, key := range []string{"JUHE_AI_DATABASE_PATH", "JUHE_AI_DATASET_DATABASE_PATH", "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", "JUHE_AI_AUDIT_LOG_DATABASE_PATH", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "JUHE_AI_STATS_DATABASE_PATH"} {
-		for _, path := range strings.Split(getenv(key), ",") {
+		// 未配置的隔离路径按 datadir 固定名表派生后并入隔离清单（2026-09-19）。
+		value := getenv(key)
+		if strings.TrimSpace(value) == "" {
+			value = datadir.Path(getenv, dataDir, key, isolationFixedName(key))
+		}
+		for _, path := range strings.Split(value, ",") {
 			if path = strings.TrimSpace(path); path != "" {
 				cfg.SQLiteIsolationPaths = append(cfg.SQLiteIsolationPaths, path)
 			}
 		}
 	}
-	cfg.UsageShardRoot = strings.TrimSpace(getenv("JUHE_AI_USAGE_SHARD_ROOT"))
+	cfg.UsageShardRoot = datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_SHARD_ROOT", datadir.UsageShardRoot)
 	if cfg.InstanceID == "" {
-		return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_INSTANCE_ID is required")
+		// 2026-09-19 零配置默认：os.Hostname()，空/错退化 "juhe-ai-gateway"。
+		cfg.InstanceID = datadir.DefaultInstanceID()
 	}
 	if cfg.Mode != ModeSQLite && cfg.Mode != ModePostgres {
 		return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_STORE must be sqlite or postgres")
@@ -102,10 +119,39 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, err
 		}
 	}
-	if cfg.Mode == ModePostgres && cfg.PostgresURL == "" {
-		return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_POSTGRES_URL is required for postgres")
+	if cfg.Mode == ModePostgres {
+		if cfg.PostgresURL == "" {
+			// 2026-09-19：PG 模式 F4 store URL 缺省回退主 JUHE_AI_POSTGRES_URL，
+			// 仍为空时按原契约报错。
+			cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
+		}
+		if cfg.PostgresURL == "" {
+			return Config{}, fmt.Errorf("JUHE_AI_OPERATION_LOG_POSTGRES_URL is required for postgres")
+		}
 	}
 	return cfg, nil
+}
+
+// isolationFixedName maps the shared business-family isolation env names onto
+// their datadir fixed names (2026-09-19 zero-config table).
+func isolationFixedName(envName string) string {
+	switch envName {
+	case "JUHE_AI_DATABASE_PATH":
+		return datadir.BusinessDatabase
+	case "JUHE_AI_DATASET_DATABASE_PATH":
+		return datadir.DatasetDatabase
+	case "JUHE_AI_RUNTIME_LOG_DATABASE_PATH":
+		return datadir.RuntimeLogDatabase
+	case "JUHE_AI_TABLE_MONITOR_DATABASE_PATH":
+		return datadir.TableMonitorDatabase
+	case "JUHE_AI_AUDIT_LOG_DATABASE_PATH":
+		return datadir.AuditLogDatabase
+	case "JUHE_AI_USAGE_CATALOG_DATABASE_PATH":
+		return datadir.UsageCatalogDatabase
+	case "JUHE_AI_STATS_DATABASE_PATH":
+		return datadir.StatsDatabase
+	}
+	return ""
 }
 
 func durationOrDefault(name, value string, fallback time.Duration) (time.Duration, error) {

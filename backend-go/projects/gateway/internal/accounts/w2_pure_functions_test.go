@@ -6,12 +6,47 @@ package accounts
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
+
+// TestW2OpenAIImagesEndpointMode 覆盖 images_json 能力修复的写入侧契约：
+// images_json 是 openai 族合法模式（显式启用可写入并被网关运行时投影保留），
+// 但新账户默认集仍是四个 chat/responses 模式，images_json 不进默认集。
+func TestW2OpenAIImagesEndpointMode(t *testing.T) {
+	t.Run("词表与并集", func(t *testing.T) {
+		if !isOpenAIEndpointMode("images_json") {
+			t.Fatal("images_json 应是 openai 族合法上游接口能力")
+		}
+		if !isHybridEndpointMode("images_json") {
+			t.Fatal("hybrid 词表是三族并集，应随 openai 族扩展包含 images_json")
+		}
+		if got := accountscore.OpenAIEndpointModeValues; len(got) != 5 || got[0] != "images_json" {
+			t.Fatalf("openai 模式表应含 images_json 且居首：%v", got)
+		}
+	})
+	t.Run("显式启用可写入", func(t *testing.T) {
+		modes, err := normalizeOpenAIEndpointModesForWrite(opt([]any{"images_json", "chat_json"}),
+			endpointModeDefaultContext{providerCode: gptVendorCode, accountType: "api_key",
+				protocolCode: openAIProtocolCode, protocolVersion: openAIProtocolVersion})
+		if err != nil || len(modes) != 2 || modes[0] != "images_json" || modes[1] != "chat_json" {
+			t.Fatalf("images_json 显式启用应保留：%v %v", modes, err)
+		}
+	})
+	t.Run("默认集不含 images_json", func(t *testing.T) {
+		gpt := defaultOpenAIEndpointModes(endpointModeDefaultContext{providerCode: gptVendorCode, accountType: "api_key"})
+		fallback := defaultOpenAIEndpointModes(endpointModeDefaultContext{accountType: "api_key"})
+		for label, defaults := range map[string][]string{"gpt": gpt, "fallback": fallback} {
+			if len(defaults) != 4 || containsString(defaults, "images_json") {
+				t.Fatalf("%s 新账户默认集不得包含 images_json（应保持四个 chat/responses 模式）：%v", label, defaults)
+			}
+		}
+	})
+}
 
 func TestW2NormalizeEndpointModeList(t *testing.T) {
 	known := isOpenAIEndpointMode

@@ -132,72 +132,49 @@ type RecordFailedUpstreamAttemptInput struct {
 // RecordCompletedUpstreamAttemptInput mirrors the
 // recordCompletedUpstreamAttempt input object.
 type RecordCompletedUpstreamAttemptInput struct {
-	TraceID                 string
-	TrafficSource           OpenAIGatewayTrafficSource
-	ClientIP                string
-	SystemAccountID         string
-	APIKeyID                string
-	GroupID                 string
-	Account                 UsageModelAccount
-	Endpoint                string
-	StatusCode              *int
-	Success                 bool
-	ProtocolValidatedSuccess bool
+	TraceID                             string
+	TrafficSource                       OpenAIGatewayTrafficSource
+	ClientIP                            string
+	SystemAccountID                     string
+	APIKeyID                            string
+	GroupID                             string
+	Account                             UsageModelAccount
+	Endpoint                            string
+	StatusCode                          *int
+	Success                             bool
+	ProtocolValidatedSuccess            bool
 	AccountAPIKeySuccessAlreadyRecorded bool
-	Stream                  bool
-	FirstTokenMs            *int
-	StartedAtMs             int64
-	CompletedAtMs           int64
-	Model                   string
-	SourceEndpointFamily    string
-	Usage                   gatewayprotoParsedUsage
-	RequestedServiceTier    UsageServiceTier
-	EffectiveServiceTier    UsageServiceTier
-	RequestedReasoningEffort UsageReasoningEffort
-	EffectiveReasoningEffort UsageReasoningEffort
-	ErrorCode               string
-	ErrorMessage            string
-	FailureAttribution      UsageFailureAttribution
-	RequestSnapshot         *UsageRequestSnapshot
-	ResponseSnapshot        *UsageResponseSnapshot
-}
-
-// RecordHybridScoringAttemptInput mirrors the recordHybridScoringAttempt
-// input object.
-type RecordHybridScoringAttemptInput struct {
-	TraceID           string
-	ClientIP          string
-	SystemAccountID   string
-	APIKeyID          string
-	GroupID           string
-	Account           UsageModelAccount
-	Endpoint          string
-	StatusCode        *int
-	Success           bool
-	StartedAtMs       int64
-	ScoringModel      string
-	Usage             gatewayprotoParsedUsage
-	ErrorCode         string
-	ErrorMessage      string
-	FailureAttribution UsageFailureAttribution
-	RequestSnapshot   any
-	ResponseSnapshot  any
-	TrafficSource     OpenAIGatewayTrafficSource
+	Stream                              bool
+	FirstTokenMs                        *int
+	StartedAtMs                         int64
+	CompletedAtMs                       int64
+	Model                               string
+	SourceEndpointFamily                string
+	Usage                               gatewayprotoParsedUsage
+	RequestedServiceTier                UsageServiceTier
+	EffectiveServiceTier                UsageServiceTier
+	RequestedReasoningEffort            UsageReasoningEffort
+	EffectiveReasoningEffort            UsageReasoningEffort
+	ErrorCode                           string
+	ErrorMessage                        string
+	FailureAttribution                  UsageFailureAttribution
+	RequestSnapshot                     *UsageRequestSnapshot
+	ResponseSnapshot                    *UsageResponseSnapshot
 }
 
 // RecordGatewayFailureInput mirrors the recordGatewayFailure input object
 // plus the request-derived facts (model, stream).
 type RecordGatewayFailureInput struct {
-	Model            string
-	Stream           bool
-	StatusCode       int
-	StartedAtMs      int64
-	CompletedAtMs    int64
-	ResponsePayload  any
-	ErrorMessage     string
-	ErrorCode        string
+	Model              string
+	Stream             bool
+	StatusCode         int
+	StartedAtMs        int64
+	CompletedAtMs      int64
+	ResponsePayload    any
+	ErrorMessage       string
+	ErrorCode          string
 	FailureAttribution UsageFailureAttribution
-	ResponseSnapshot *UsageResponseSnapshot
+	ResponseSnapshot   *UsageResponseSnapshot
 }
 
 // AccountAPIKeySuccessRecorder ports
@@ -227,17 +204,17 @@ type ServiceConfig struct {
 
 // Service assembles the usage record builders with their ports.
 type Service struct {
-	clock    Clock
-	logger   Logger
-	dispatch *FinalizationDispatch
-	models   UsageModelResolver
-	semantics UsageSemanticResolver
-	defaultProviderCode DefaultUsageProviderCodeResolver
-	pricing  PricingCatalog
-	metrics  UpstreamFailureMetricRecorder
+	clock                Clock
+	logger               Logger
+	dispatch             *FinalizationDispatch
+	models               UsageModelResolver
+	semantics            UsageSemanticResolver
+	defaultProviderCode  DefaultUsageProviderCodeResolver
+	pricing              PricingCatalog
+	metrics              UpstreamFailureMetricRecorder
 	accountAPIKeySuccess AccountAPIKeySuccessRecorder
-	protocolErrors ProtocolErrorPayloadParser
-	config   ServiceConfig
+	protocolErrors       ProtocolErrorPayloadParser
+	config               ServiceConfig
 }
 
 // NewService wires the service with the finalization dispatch pipeline
@@ -360,6 +337,9 @@ func (s *Service) RecordFailedUpstreamAttempt(ctx Ctx, usageContext GatewayUsage
 	fields.Set("errorCode", orNil(errorCode))
 	setLogErrorMessageFields(fields, logErrorMessage)
 	fields.Set("apiKeyId", orNil(usageContext.APIKeyID))
+	// 诊断字段（合并路由设计 3.5 已知口径）：保持请求级窗口组口径，不随账
+	// 号 BoundGroupID 覆盖——统计事实在 usage 记录的 GroupID（由调用方
+	// choke point 按账号解析）与账号五元组，日志 groupId 非统计事实。
 	fields.Set("groupId", orNil(usageContext.GroupID))
 	fields.Set("endpoint", orNil(usageContext.Endpoint))
 	if failureObservation != nil {
@@ -506,82 +486,6 @@ func (s *Service) RecordCompletedUpstreamAttempt(ctx Ctx, input RecordCompletedU
 		ErrorMessage:                     input.ErrorMessage,
 		RequestSnapshot:                  usageRecordSnapshot(input.TrafficSource, snapshotOrNil(input.RequestSnapshot)),
 		ResponseSnapshot:                 usageRecordSnapshot(input.TrafficSource, responseSnapshotOrNil(input.ResponseSnapshot)),
-	})
-}
-
-// RecordHybridScoringAttempt mirrors recordHybridScoringAttempt.
-func (s *Service) RecordHybridScoringAttempt(ctx Ctx, input RecordHybridScoringAttemptInput) error {
-	trafficSource := input.TrafficSource
-	if trafficSource == "" {
-		trafficSource = TrafficSourceHybridScoring
-	}
-	catalogSystemAccountID := firstNonEmpty(input.Account.UsageAccess.AccountOwnerSystemAccountID, input.SystemAccountID)
-	modelAccounting := s.accountUsageModelAccounting(input.Account, input.ScoringModel, catalogSystemAccountID, "chat_completions")
-	costModel := usageCostCatalogModel(modelAccounting, input.ScoringModel)
-	serviceTiers := ResolveUsageServiceTiers(ResolveUsageServiceTiersInput{
-		ReportedServiceTier: input.Usage.ServiceTier,
-	})
-	durationMs := s.clock.Now().UnixMilli() - input.StartedAtMs
-	failureAttribution := ""
-	if !input.Success {
-		failureAttribution = firstNonEmpty(input.FailureAttribution, FailureAttributionAccountUpstream)
-	}
-	return s.dispatchUsageRecord(ctx, UsageRecordInput{
-		TraceID:                          input.TraceID,
-		TrafficSource:                    trafficSource,
-		ClientIP:                         input.ClientIP,
-		SystemAccountID:                  input.SystemAccountID,
-		APIKeyID:                         input.APIKeyID,
-		GroupID:                          input.GroupID,
-		AccountID:                        input.Account.ID,
-		AccountOwnerSystemAccountID:      input.Account.UsageAccess.AccountOwnerSystemAccountID,
-		GroupOwnerSystemAccountID:        input.Account.UsageAccess.GroupOwnerSystemAccountID,
-		AccountAccessType:                input.Account.UsageAccess.AccountAccessType,
-		GroupAccessType:                  input.Account.UsageAccess.GroupAccessType,
-		AccountAuthorizationID:           input.Account.UsageAccess.AccountAuthorizationID,
-		AccountAuthorizationSourceType:   input.Account.UsageAccess.AccountAuthorizationSourceType,
-		AccountAuthorizationSourceTeamID: input.Account.UsageAccess.AccountAuthorizationSourceTeamID,
-		GroupAuthorizationID:             input.Account.UsageAccess.GroupAuthorizationID,
-		GroupAuthorizationSourceType:     input.Account.UsageAccess.GroupAuthorizationSourceType,
-		GroupAuthorizationSourceTeamID:   input.Account.UsageAccess.GroupAuthorizationSourceTeamID,
-		Endpoint:                         input.Endpoint,
-		ProviderCode:                     input.Account.ProviderCode,
-		ProviderProtocolProfileID:        input.Account.ProviderProtocolProfileID,
-		UsageSemantic:                    s.usageSemanticForAccount(input.Account),
-		Model:                            input.ScoringModel,
-		UpstreamModel:                    modelAccounting.UpstreamModel,
-		PricingModel:                     modelAccounting.PricingModel,
-		ModelMappingApplied:              boolPointer(modelAccounting.ModelMappingApplied),
-		ModelMappingSource:               modelAccounting.ModelMappingSource,
-		SourceEndpointFamily:             modelAccounting.SourceEndpointFamily,
-		UpstreamEndpointFamily:           modelAccounting.UpstreamEndpointFamily,
-		Stream:                           boolPointer(false),
-		StatusCode:                       input.StatusCode,
-		Success:                          input.Success,
-		FailureAttribution:               failureAttribution,
-		DurationMs:                       intPointer(int(durationMs)),
-		InputTokens:                      input.Usage.InputTokens,
-		OutputTokens:                     input.Usage.OutputTokens,
-		CacheReadTokens:                  input.Usage.CacheReadTokens,
-		CacheWriteTokens:                 input.Usage.CacheWriteTokens,
-		CacheWrite1hTokens:               input.Usage.CacheWrite1hTokens,
-		ThinkingTokens:                   input.Usage.ThinkingTokens,
-		RequestedServiceTier:             serviceTiers.RequestedServiceTier,
-		EffectiveServiceTier:             serviceTiers.EffectiveServiceTier,
-		ReportedServiceTier:              serviceTiers.ReportedServiceTier,
-		BilledServiceTier:                serviceTiers.BilledServiceTier,
-		InputImageTokens:                 input.Usage.InputImageTokens,
-		OutputImageTokens:                input.Usage.OutputImageTokens,
-		InputAudioTokens:                 input.Usage.InputAudioTokens,
-		OutputAudioTokens:                input.Usage.OutputAudioTokens,
-		OutputImageCount:                 input.Usage.OutputImageCount,
-		CacheReadCostUsd:                 s.estimateCacheReadCost(catalogSystemAccountID, input.Account.ProviderCode, costModel, serviceTiers.BilledServiceTier, input.Usage.CacheReadTokens),
-		CacheWriteCostUsd:                s.estimateCacheWriteCost(catalogSystemAccountID, input.Account.ProviderCode, costModel, serviceTiers.BilledServiceTier, input.Usage.CacheWriteTokens, input.Usage.CacheWrite1hTokens),
-		CostUsd:                          s.estimateCost(catalogSystemAccountID, input.Account.ProviderCode, costModel, serviceTiers.BilledServiceTier, input.Usage),
-		ErrorCode:                        input.ErrorCode,
-		ErrorMessage:                     input.ErrorMessage,
-		RequestSnapshot:                  input.RequestSnapshot,
-		ResponseSnapshot:                 input.ResponseSnapshot,
 	})
 }
 

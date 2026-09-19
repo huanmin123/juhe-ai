@@ -25,7 +25,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -35,62 +34,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
-
-// ---------------------------------------------------------------------------
-// hybrid collaborator aliases
-// ---------------------------------------------------------------------------
-
-type hybridSharedJSONCache = gatewayhybrid.SharedJSONCache
-type hybridRuntimeStateStore = gatewayhybrid.RuntimeStateStore
-type hybridAuxiliaryDispatcher = gatewayhybrid.AuxiliaryDispatcher
-type hybridUsageRecorder = gatewayhybrid.UsageRecorder
-type hybridRouteDiagnostics = gatewayhybrid.RouteDiagnosticsPublisher
-
-// hybridSessionIdentityPort degrades the hybrid affinity identity: without
-// the G14 session identity service bound into the hybrid core the
-// conversation key is unknown, which mirrors the Node no-identity branch.
-type hybridSessionIdentityPort struct{}
-
-func (hybridSessionIdentityPort) HybridRouteAffinityKey(_ *gatewayhybrid.GatewayRequestView, _ gatewayhybrid.AffinityKeyScope) string {
-	return ""
-}
-
-// hybridTargetGroups implements gatewayhybrid.TargetGroupSelector over the
-// routing runtime cache bridge (selectGatewayModelTargetGroup).
-type hybridTargetGroups struct {
-	cache *gatewayruntimecache.Service
-}
-
-func (s hybridTargetGroups) SelectTargetGroup(ctx context.Context, input gatewayhybrid.TargetGroupSelectorInput) (*gatewayhybrid.TargetGroupSelection, error) {
-	if s.cache == nil || input.APIKeyRecord.SelectedGroupID == "" {
-		return nil, nil
-	}
-	groupAccess, err := s.cache.ResolveCachedGroupUsageAccessMetadataAsync(ctx, input.APIKeyRecord.SelectedGroupID, input.APIKeyRecord.SystemAccountID)
-	if err != nil {
-		return nil, err
-	}
-	if groupAccess == nil {
-		return nil, nil
-	}
-	accounts, err := s.cache.ListCachedOpenAIAccountsForGroupAsync(ctx, input.APIKeyRecord.SelectedGroupID, input.APIKeyRecord.SystemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
-		RequestedModel: input.TargetModel,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(accounts) == 0 {
-		return nil, nil
-	}
-	selection := &gatewayhybrid.TargetGroupSelection{
-		GroupID:                    input.APIKeyRecord.SelectedGroupID,
-		GroupAccess:                gatewayhybrid.GroupUsageAccessMetadata{ProviderCode: groupAccess.ProviderCode},
-		ResponseInspectionPolicies: []gatewayhybrid.ResponseInspectionPolicySummary{},
-	}
-	for _, account := range accounts {
-		selection.Accounts = append(selection.Accounts, gatewayhybrid.OpenAIAccountSecret{ID: account.ID})
-	}
-	return selection, nil
-}
 
 // ---------------------------------------------------------------------------
 // dispatch engine adapters
@@ -106,7 +49,7 @@ func (a usageAttemptRecorderAdapter) RecordFailedUpstreamAttempt(ctx context.Con
 	if a.service == nil {
 		return nil
 	}
-	return a.service.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContext), usageModelAccountOf(account), gatewayusage.RecordFailedUpstreamAttemptInput{
+	return a.service.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(usageContext, account)), usageModelAccountOf(account), gatewayusage.RecordFailedUpstreamAttemptInput{
 		Model:                      requestModelHintOf(req),
 		UpstreamURL:                record.UpstreamURL,
 		StartedAtMs:                record.StartedAt,
@@ -116,6 +59,21 @@ func (a usageAttemptRecorderAdapter) RecordFailedUpstreamAttempt(ctx context.Con
 		FailureAttribution:         gatewayusage.UsageFailureAttribution(record.FailureAttribution),
 		InterpretUpstreamSemantics: record.InterpretUpstreamSemantics,
 	})
+}
+
+// usageContextForAccount 按账号解析尝试级 usage 组作用域（合并路由设计 3.5
+// 第 2 条，engine 失败路 choke point）：账号 BoundGroupID 非空且不等于请求级
+// 窗口组时，浅拷贝 usage context 并把 GroupID 覆盖为账号组——不修改共享请求
+// 级上下文；访问五元组由 usageModelAccountOf 从账号自带值投影（service 失败
+// 路取 account.UsageAccess），组 ID 与五元组因此成套。为空/相等保持窗口组，
+// 存量模式行为不变。
+func usageContextForAccount(context gatewaypreauth.GatewayFailureUsageContext, account gatewaydispatch.AccountCandidate) gatewaypreauth.GatewayFailureUsageContext {
+	if account.BoundGroupID == nil || *account.BoundGroupID == "" || *account.BoundGroupID == context.GroupID {
+		return context
+	}
+	scoped := context
+	scoped.GroupID = *account.BoundGroupID
+	return scoped
 }
 
 func attemptStatusCodeOf(record gatewaydispatch.FailedAttemptRecord) *int {
@@ -263,7 +221,7 @@ const chainFailureErrorBodyCaptureBytes = 256 * 1024
 //	                      | provider's actual terminal response; the response
 //	                      | layer's ok gate (routes.ts:1550) renders a non-2xx
 //	                      | + SSE body as the non-stream error contract
-//	non-gateway (hybrid)  | forget session affinity + return_response
+//	non-gateway          | forget session affinity + return_response
 //	gateway               | bounded body capture + audit complete + usage
 //	                      | record + skip_account (candidate failover) with
 //	                      | the same-account key-rotation facts
@@ -448,7 +406,7 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		})
 	}
 	if d.usage != nil {
-		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(input.UsageContext), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
+		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
 			UpstreamURL:  input.UpstreamURL,
 			StartedAtMs:  input.AttemptStartedAt,
 			StatusCode:   statusPointer(hasStatus, statusCode),
@@ -690,7 +648,7 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 		})
 	}
 	if d.usage != nil {
-		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(input.UsageContext), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
+		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
 			UpstreamURL:  input.UpstreamURL,
 			StartedAtMs:  input.AttemptStartedAt,
 			ErrorMessage: message,
@@ -901,7 +859,7 @@ func (d *chainFailureDispatcher) recordDownstreamClosedRequestError(ctx context.
 		hasStatus = true
 	}
 	if d.usage != nil {
-		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(input.UsageContext), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
+		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
 			UpstreamURL:        input.UpstreamURL,
 			StartedAtMs:        input.AttemptStartedAt,
 			StatusCode:         statusPointer(hasStatus, statusCode),
@@ -1180,8 +1138,7 @@ func statusPointer(has bool, value int) *int {
 // process-local memory map (Node sessionAffinityState semantics in the
 // memory runtime-state mode: entries never cross instances, ordering only
 // re-ranks remembered accounts, the affinity TTL refreshes on remember).
-// The Redis-driver shared store lands with the hybrid runtime slice; the
-// degradation is logged once on first use.
+// The degradation is logged once on first use.
 type localSessionAffinity struct {
 	once sync.Once
 	mu   sync.Mutex

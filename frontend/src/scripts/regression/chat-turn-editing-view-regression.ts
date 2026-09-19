@@ -15,7 +15,7 @@ assert.match(viewSource, /interface ChatTurnEditingState[\s\S]*conversationId:[\
 assert.match(viewSource, /Object\.freeze\(\{[\s\S]{0,500}clientMessageId[\s\S]{0,500}replaceTurnId[\s\S]{0,500}snapshot/, '每次发送必须捕获不可变请求上下文')
 assert.match(viewSource, /writeStoredPendingConfirmation\(\{[\s\S]{0,1600}chatGenerationRuntime\.start\(\{/, 'clientMessageId 与草稿必须在 POST runtime 启动前持久化')
 assert.match(viewSource, /chatGenerationRuntime\.start\(\{[\s\S]{0,500}replaceTurnId:\s*requestContext\.replaceTurnId/, '最近轮次替换必须交给应用级 runtime 保留 replaceTurnId')
-assert.match(viewSource, /applyRuntimeTurn[\s\S]{0,1800}finishAcceptedTurnEdit\(active\.request\)/, 'runtime 获得 accepted turn 后才能完成替换编辑态')
+assert.match(viewSource, /applyRuntimeTurn[\s\S]{0,2600}finishAcceptedTurnEdit\(active\.request\)/, 'runtime 获得 accepted turn 后才能完成替换编辑态')
 assert.match(viewSource, /ChatStreamHttpError[\s\S]{0,900}chat_replace_conflict/, '替换冲突仍必须按 typed HTTP code 单独处理')
 assert.match(viewSource, /reconcileChatSubmission\(\{[\s\S]{0,500}getSubmissionStatus:[\s\S]{0,300}request\.clientMessageId/, 'POST 是否接受未知时必须按 clientMessageId 查询专用提交状态')
 const runtimePreacceptFailureSource = viewSource.slice(
@@ -40,6 +40,26 @@ assert.match(
 assert.match(viewSource, /最近一轮已变化，已保留当前草稿/, '替换冲突必须显示中文顶部提示')
 assert.match(viewSource, /function cancelTurnEdit/, '取消编辑必须是独立的零后端副作用操作')
 assert.match(viewSource, /await cancelTurnEdit\(\)[\s\S]{0,300}selectedConversationId\.value = id/, '切换会话前必须先退出编辑态')
+assert.match(
+  viewSource,
+  /shouldRebuildChatStopTarget\(\{[\s\S]{0,300}lifecycleEpoch: active\.request\.lifecycleEpoch/,
+  'runtime 回放旧轮次时必须用纯函数判断是否重建 stopTarget，本地在途编辑请求不得被无 replaceTurnId 的重建覆盖'
+)
+assert.match(
+  viewSource,
+  /if \(!turn\) \{[\s\S]{0,400}activeStopTarget\.request\.lifecycleEpoch === undefined[\s\S]{0,120}activeStopTarget = undefined/,
+  'runtime undefined 投递（如 forget 后 notify）只代表 map 无条目，不得清掉带 lifecycleEpoch 的本地在途编辑 stopTarget'
+)
+assert.match(
+  viewSource,
+  /turn\.status === 'canceled' && !turn\.turnId && active\?\.request\.clientMessageId === turn\.clientMessageId[\s\S]{0,200}rollbackUnacceptedTurnEdit\(active\.request\)[\s\S]{0,160}requestLifecycleEpochs\.invalidate\(turn\.conversationId\)/,
+  '停止生成发生在服务端接受前时必须对称回滚未接受的编辑替换；canceled 无需 failed 分支的服务端对账'
+)
+assert.match(
+  viewSource,
+  /const leavingEdit = editingTurn\.value[\s\S]{0,200}phase === 'submitting'[\s\S]{0,100}editingTurn\.value = undefined[\s\S]{0,60}await cancelTurnEdit\(\)/,
+  '提交中的编辑态在切换会话时必须直接放弃（cancelTurnEdit 对 submitting 静默拒绝），编辑中仍走原有取消恢复'
+)
 assert.doesNotMatch(viewSource, /if \(generating\.value \|\| blockedBySubmission\) return false/, '生成中必须允许切换会话，不能把 runtime 生命周期绑在当前页面')
 assert.match(viewSource, /:editable-message-id="generating \|\| submissionBlocked \? undefined : editableUserMessageId"/, '当前会话生成或待确认期间必须移除编辑入口')
 assert.match(viewSource, /@edit-message="beginTurnEdit"/, '消息列表编辑入口必须接入页面状态')

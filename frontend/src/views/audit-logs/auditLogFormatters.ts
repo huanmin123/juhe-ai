@@ -37,15 +37,11 @@ export function payloadPartText(value: AuditPayloadPartType): string {
 export function trafficSourceText(value: AuditTrafficSource): string {
   return {
     gateway: '网关请求',
-    manual_account_test: 'AI账户测试',
-    hybrid_scoring: '混合路由选型',
-    hybrid_quality_scoring: '回答质量复核'
+    manual_account_test: 'AI账户测试'
   }[value] ?? '网关请求'
 }
 
 export function trafficSourceColor(value: AuditTrafficSource): string {
-  if (value === 'hybrid_quality_scoring') return 'purple'
-  if (value === 'hybrid_scoring') return 'blue'
   if (value === 'manual_account_test') return 'cyan'
   return 'default'
 }

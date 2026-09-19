@@ -1,7 +1,7 @@
 package main
 
 // w1: chain_routing.go 的路由投影与 rehydrate 适配层单测。localEndpointFamily
-// 的全家族分支、请求视图投影、hybrid 请求体桥与 key 行投影全部进程内断言。
+// 的全家族分支、请求视图投影与 key 行投影全部进程内断言。
 
 import (
 	"context"
@@ -10,11 +10,9 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
 func TestW1ProjectGroupAccessForRoutingAndRuntime(t *testing.T) {
@@ -116,94 +114,6 @@ func TestW1LocalEndpointFamily(t *testing.T) {
 	}
 }
 
-func TestW1HybridRequestBodyBridge(t *testing.T) {
-	// nil request / nil body：全部安全返回。
-	nilBridge := hybridRequestBody{}
-	if nilBridge.ReplaceModel("m") || nilBridge.HasRawBody() {
-		t.Fatal("nil bridge 必须返回 false")
-	}
-	if _, err := nilBridge.ParseRawBody(context.Background()); err == nil {
-		t.Fatal("空 body 解析必须报错")
-	}
-	if nilBridge.ReplaceModelWithParsed("m", nil) {
-		t.Fatal("nil parsed 必须返回 false")
-	}
-	// 有 body：替换 model 并保持 raw body 一致。
-	request := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"a","messages":[]}`)))
-	request.Body = &gatewaybody.Request{RawBody: []byte(`{"model":"a","messages":[]}`), Body: map[string]any{"model": "a", "messages": []any{}}, ContentTypeHeader: "application/json"}
-	bridge := hybridRequestBody{request: request}
-	if !bridge.HasRawBody() {
-		t.Fatal("HasRawBody 必须为真")
-	}
-	if !bridge.ReplaceModel("b") {
-		t.Fatal("ReplaceModel 必须成功")
-	}
-	if !strings.Contains(string(request.Body.RawBody), `"b"`) {
-		t.Fatalf("替换后 raw body = %s", request.Body.RawBody)
-	}
-	parsedAny, err := bridge.ParseRawBody(context.Background())
-	if err != nil {
-		t.Fatalf("ParseRawBody: %v", err)
-	}
-	parsed, ok := parsedAny.(*gatewayhybrid.OrderedJSON)
-	if !ok {
-		t.Fatalf("ParseRawBody 类型 = %T", parsedAny)
-	}
-	// ReplaceModelWithParsed 走 ordered map 序列化路径。
-	if !bridge.ReplaceModelWithParsed("c", parsed) {
-		t.Fatal("ReplaceModelWithParsed 必须成功")
-	}
-	if !strings.Contains(string(request.Body.RawBody), `"c"`) {
-		t.Fatalf("ordered 替换后 = %s", request.Body.RawBody)
-	}
-	// orderedJSONObjectMap / orderedValueToPlain：嵌套对象 + 数组 + 标量。
-	nested := gatewayhybrid.NewOrderedJSON()
-	nested.Set("model", "a")
-	child := gatewayhybrid.NewOrderedJSON()
-	child.Set("k", "v")
-	nested.Set("child", child)
-	nested.Set("list", []any{int64(1), "x", child})
-	plain := orderedJSONObjectMap(nested)
-	if plain["model"] != "a" {
-		t.Fatalf("plain model = %v", plain["model"])
-	}
-	childMap, ok := plain["child"].(map[string]any)
-	if !ok || childMap["k"] != "v" {
-		t.Fatalf("child = %#v", plain["child"])
-	}
-	list, ok := plain["list"].([]any)
-	if !ok || len(list) != 3 {
-		t.Fatalf("list = %#v", plain["list"])
-	}
-	// nil ordered object → 空 map。
-	if got := orderedJSONObjectMap(nil); len(got) != 0 {
-		t.Fatalf("nil object = %v", got)
-	}
-	orderedValueToPlain([]any{"deep"})
-}
-
-func TestW1HybridAuditMetadataAndViews(t *testing.T) {
-	// nil capture / nil metadata 安全。
-	(hybridAuditMetadata{}).AddGatewayMetadata("label", nil)
-	// 有 capture：metadata 落盘。
-	request := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat/completions", nil))
-	_ = request
-	if hybridTargetModelHint(nil) != "" {
-		t.Fatal("nil req 的 model hint 必须为空")
-	}
-	view := hybridRequestView(nil)
-	if view.Method != "" || view.Path != "" {
-		t.Fatalf("nil req view = %+v", view)
-	}
-	ids := hybridAccountIDs([]gatewayhybrid.OpenAIAccountSecret{{ID: "a"}, {ID: "b"}})
-	if len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
-		t.Fatalf("ids = %v", ids)
-	}
-	if boolPtr(true) == nil || !*boolPtr(true) {
-		t.Fatal("boolPtr 错误")
-	}
-}
-
 func TestW1ProjectAPIKeyRowProjections(t *testing.T) {
 	if projectAPIKeyRowForRouting(nil) != nil {
 		t.Fatal("nil record 必须投影 nil")
@@ -254,31 +164,7 @@ func TestW1ProjectAPIKeyRowProjections(t *testing.T) {
 	}
 }
 
-func TestW1ProjectAPIKeyRowForHybridAndMaps(t *testing.T) {
-	nilRecord, err := projectAPIKeyRowForHybrid(nil)
-	if err != nil || nilRecord == nil || nilRecord.RouteStrategyMode != "" {
-		t.Fatalf("nil record = %+v, %v", nilRecord, err)
-	}
-	plain, err := projectAPIKeyRowForHybrid(&gatewayruntimecache.GatewayAPIKeyRow{ID: "key_1", RouteStrategyMode: "hybrid"})
-	if err != nil || plain == nil || plain.HybridRoutingConfig != nil {
-		t.Fatalf("plain = %+v, %v", plain, err)
-	}
-	badRecord := &gatewayruntimecache.GatewayAPIKeyRow{ID: "key_2", HybridRoutingConfig: &gatewayruntimecache.ApiKeyHybridRoutingConfig{Raw: []byte("{not-json")}}
-	if _, err := projectAPIKeyRowForHybrid(badRecord); err == nil {
-		t.Fatal("非法 config 必须报错")
-	}
-	if got := hybridConfigToMap(nil); got != nil {
-		t.Fatalf("nil config map = %v", got)
-	}
-	if hybridConfigToMap(&routestrategies.HybridRoutingConfig{}) == nil {
-		t.Fatal("空 config map 不应为 nil")
-	}
-	if hybridScoringToMap(gatewayhybrid.HybridScoringResult{}) == nil {
-		t.Fatal("scoring map 不应为 nil")
-	}
-	if hybridRouteToMap(routestrategies.HybridLevelRoute{}) == nil {
-		t.Fatal("route map 不应为 nil")
-	}
+func TestW1ProjectAPIKeyRowHelperArms(t *testing.T) {
 	account := accountFromRoutingProjection(gatewayrouting.UpstreamAccount{
 		ID: "acc_1", ProviderCode: "openai", ProtocolCode: "openai",
 		ProviderProtocolProfileID: "prof_1", ProtocolVersion: "v1", SupportedModels: []string{"gpt-test"},
@@ -315,10 +201,6 @@ func TestW1ChainRouteResolverGuards(t *testing.T) {
 	if _, err := resolver.ResolveNormalGatewayModelRoute(context.Background(), gatewaypreauth.NormalRouteInput{}); err == nil {
 		t.Fatal("nil normal 必须报错")
 	}
-	result, err := resolver.ResolveHybridGatewayRoute(context.Background(), gatewaypreauth.HybridRouteInput{})
-	if err != nil || result.Outcome != gatewaypreauth.HybridRouteOutcomeSkipped {
-		t.Fatalf("nil hybrid = %+v, %v", result, err)
-	}
 	empty := resolver.rehydrateGroupAccess(context.Background(), "", "sys_1", gatewayrouting.GroupUsageAccessMetadata{ProviderCode: "openai", GroupType: "personal"})
 	if empty == nil || empty.ProviderCode != "openai" {
 		t.Fatalf("empty group access = %+v", empty)
@@ -331,10 +213,6 @@ func TestW1ChainRouteResolverGuards(t *testing.T) {
 		[]gatewayrouting.UpstreamAccount{{ID: "acc_x", ProviderCode: "openai"}}, "m", "", "source", "matched")
 	if len(accounts) != 1 || accounts[0].ID != "acc_x" || routeSource != "source" || matched != "matched" {
 		t.Fatalf("rehydrate = %+v %q %q", accounts, routeSource, matched)
-	}
-	byID := resolver.rehydrateAccountsByID(context.Background(), "", "sys_1", []string{"acc_y"}, nil)
-	if len(byID) != 1 || byID[0].ID != "acc_y" {
-		t.Fatalf("rehydrateByID = %+v", byID)
 	}
 }
 
@@ -361,27 +239,12 @@ func TestW1RoutingRequestView(t *testing.T) {
 			ImageGeneration: true, ImageGenerationForced: true, StrictOutputRequirement: true,
 		},
 	}
-	hybridView := hybridRequestView(request2)
-	if hybridView.Method != "POST" || hybridView.ContentType != "application/json" || !hybridView.BodyAvailable {
-		t.Fatalf("hybrid view = %+v", hybridView)
-	}
-	if hybridView.OriginalModel != "gpt-test" || !hybridView.OriginalModelPresent {
-		t.Fatalf("model = %q present=%v", hybridView.OriginalModel, hybridView.OriginalModelPresent)
-	}
-	if hybridView.ConversationKey != "conv_1" {
-		t.Fatalf("conversation key = %q", hybridView.ConversationKey)
-	}
-	if hybridView.BodyState == nil || hybridView.BodyState.Stream == nil || !*hybridView.BodyState.ImageGeneration {
-		t.Fatalf("body state = %+v", hybridView.BodyState)
-	}
+	// 状态缺席投影：BodyState 为 nil、model 缺席。
 	request3 := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat/completions", nil))
 	request3.Body = &gatewaybody.Request{RawBody: []byte("{}")}
-	view3 := hybridRequestView(request3)
-	if view3.BodyState != nil || view3.OriginalModelPresent {
+	view3 := routingRequestView(request3, nil)
+	if view3.Method != "POST" {
 		t.Fatalf("无 state view = %+v", view3)
-	}
-	if got := hybridTargetModelHint(request2); got != "gpt-test" {
-		t.Fatalf("model hint = %q", got)
 	}
 }
 

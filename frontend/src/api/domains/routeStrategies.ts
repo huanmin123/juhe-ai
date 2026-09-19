@@ -1,5 +1,4 @@
 import type {
-  ApiKeyHybridRoutingConfig,
   RouteStrategyEditBasicDetail,
   RouteStrategyListItem,
   RouteStrategyNormalRoutingConfig,
@@ -43,7 +42,6 @@ export interface RouteStrategyMutationPayload {
     status?: RouteStrategyGroupBindingStatus
   }>
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig | null
-  hybridRoutingConfig?: ApiKeyHybridRoutingConfig | null
 }
 
 export interface RouteStrategyPatchPayload extends RouteStrategyMutationPayload {

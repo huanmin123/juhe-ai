@@ -253,7 +253,7 @@ func TestWCStrategyValidation(t *testing.T) {
 		{"add 绑定非数组", `{"targetUsername":"pusher","name":"s","groupBindings":"x"}`},
 		{"add mode 非法", `{"targetUsername":"pusher","name":"s","mode":"bogus","groupBindings":[{"groupId":"g"}]}`},
 		{"add normalRoutingConfig 非对象", `{"targetUsername":"pusher","name":"s","normalRoutingConfig":1,"groupBindings":[{"groupId":"g"}]}`},
-		{"add hybridRoutingConfig 非对象", `{"targetUsername":"pusher","name":"s","hybridRoutingConfig":1,"groupBindings":[{"groupId":"g"}]}`},
+		{"add 顶层未知键", `{"targetUsername":"pusher","name":"s","foo":1,"groupBindings":[{"groupId":"g"}]}`},
 		{"update 无可变字段", `{"targetUsername":"pusher","routeStrategyId":"rs_x"}`},
 		{"list mode 非法", ""},
 	}
@@ -270,8 +270,8 @@ func TestWCStrategyValidation(t *testing.T) {
 		})
 	}
 
-	// add：description null + status disabled + weighted 模式（hybrid 配置需
-	// scoringModel，是 M06 store 的独立契约，不在此展开）。
+	// add：description null + status disabled + weighted 模式（store 侧
+	// 调度偏好契约在 routestrategies 包内覆盖，不在此展开）。
 	status, payload, _ := env.doAuth(http.MethodPost, Prefix+"/route-strategy/add",
 		`{"targetUsername":"pusher","name":"加权策略","description":null,"mode":"weighted","status":"disabled",`+
 			`"groupBindings":[{"groupId":"`+groupID+`","priority":2,"weight":60}]}`,

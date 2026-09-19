@@ -404,6 +404,9 @@ func validateModeBindings(mode string, bindings []bindingWrite) error {
 			return &ValidationError{Message: "故障回退路由至少需要一个启用备用分组"}
 		}
 	}
+	if mode == ModeMerge && activeCount < 2 {
+		return &ValidationError{Message: "合并路由至少需要两个启用分组"}
+	}
 	return nil
 }
 

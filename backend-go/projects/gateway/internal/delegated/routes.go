@@ -837,7 +837,7 @@ func textQuery(values url.Values, name string) string {
 
 func routeStrategyModeQuery(text string) string {
 	switch text {
-	case "normal", "hybrid_smart", "weighted", "failover", "round_robin", "all":
+	case "normal", "weighted", "failover", "round_robin", "merge", "all":
 		return text
 	}
 	return ""
@@ -886,8 +886,8 @@ func strategyDTO(detail *routestrategies.Detail) map[string]any {
 	dto := map[string]any{
 		"id": detail.ID, "name": detail.Name, "mode": detail.Mode, "status": detail.Status,
 		"isDefault":           detail.IsDefault,
-		"normalRoutingConfig": detail.NormalRoutingConfig, "hybridRoutingConfig": detail.HybridRoutingConfig,
-		"groupBindings": bindings, "apiKeyCount": detail.APIKeyCount,
+		"normalRoutingConfig": detail.NormalRoutingConfig,
+		"groupBindings":       bindings, "apiKeyCount": detail.APIKeyCount,
 		"createdAt": detail.CreatedAt, "updatedAt": detail.UpdatedAt,
 	}
 	if detail.Description != nil && *detail.Description != "" {
@@ -923,21 +923,19 @@ type strategyMutationInput struct {
 	Status       *string
 	Bindings     []strategyBindingInput
 	NormalConfig map[string]any
-	HybridConfig map[string]any
 	HasName      bool
 	HasBindings  bool
 	HasNormal    bool
-	HasHybrid    bool
 }
 
-var strategyModes = map[string]bool{"normal": true, "hybrid_smart": true, "weighted": true, "failover": true, "round_robin": true}
+var strategyModes = map[string]bool{"normal": true, "weighted": true, "failover": true, "round_robin": true, "merge": true}
 
 // parseStrategyMutation mirrors routeStrategyMutationSchema (strict) with the
 // two create refinements: POST requires name (min 1 after trim) and at least
 // one binding (策略路由至少需要绑定一个分组); PATCH uses the partial schema
 // where every field — including name — is optional.
 func parseStrategyMutation(body map[string]any, create bool) (*strategyMutationInput, bool, string) {
-	allowed := []string{"name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig"}
+	allowed := []string{"name", "description", "mode", "status", "groupBindings", "normalRoutingConfig"}
 	if !create {
 		allowed = append(allowed, "expectedUpdatedAt")
 	}
@@ -1032,16 +1030,6 @@ func parseStrategyMutation(body map[string]any, create bool) (*strategyMutationI
 			return nil, false, "策略路由参数无效"
 		}
 	}
-	if value, exists := body["hybridRoutingConfig"]; exists {
-		if value == nil {
-			input.HasHybrid = true
-		} else if policy, isObject := value.(map[string]any); isObject {
-			input.HybridConfig = policy
-			input.HasHybrid = true
-		} else {
-			return nil, false, "策略路由参数无效"
-		}
-	}
 	if create && len(input.Bindings) == 0 {
 		return nil, false, "策略路由至少需要绑定一个分组"
 	}
@@ -1103,10 +1091,6 @@ func strategyMutation(input *strategyMutationInput) routestrategies.MutationInpu
 		mutation.HasNormalConfig = true
 		mutation.NormalConfigRaw = normalConfigRaw(input)
 	}
-	if input.HasHybrid {
-		mutation.HasHybridConfig = true
-		mutation.HybridConfigRaw = hybridConfigRaw(input)
-	}
 	return mutation
 }
 
@@ -1115,13 +1099,6 @@ func normalConfigRaw(input *strategyMutationInput) any {
 		return nil
 	}
 	return input.NormalConfig
-}
-
-func hybridConfigRaw(input *strategyMutationInput) any {
-	if input.HybridConfig == nil {
-		return nil
-	}
-	return input.HybridConfig
 }
 
 func (d *Deps) createRouteStrategy(w http.ResponseWriter, r *http.Request) {
@@ -1183,7 +1160,7 @@ func (d *Deps) patchRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
 	}
-	if !strictBody(body, "name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig", "expectedUpdatedAt") {
+	if !strictBody(body, "name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "expectedUpdatedAt") {
 		kernel.WriteBadRequest(w, "策略路由参数无效")
 		return
 	}
@@ -1193,7 +1170,7 @@ func (d *Deps) patchRouteStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hasChange := false
-	for _, key := range []string{"name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig"} {
+	for _, key := range []string{"name", "description", "mode", "status", "groupBindings", "normalRoutingConfig"} {
 		if _, exists := body[key]; exists {
 			hasChange = true
 		}

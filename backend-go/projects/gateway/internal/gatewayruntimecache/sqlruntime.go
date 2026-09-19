@@ -251,15 +251,9 @@ func (m *SQLReadModels) loadGatewayAPIKeyByHash(ctx context.Context, keyHash str
 	}
 	row.SelectedGroupID = bindings[0].GroupID
 	if routeConfigJSON.Valid && strings.TrimSpace(routeConfigJSON.String) != "" {
-		// normalRoutingConfig 是四种调度模式（normal/weighted/failover/
-		// round_robin）共享的组内调度配置键（历史命名，键名不再对应单一
-		// normal 模式）；只有 hybrid_smart 不解码它。
-		if row.RouteStrategyMode != RouteStrategyModeHybridSmart {
-			row.NormalRoutingConfig = decodeNormalRoutingConfig(routeConfigJSON.String)
-		}
-		if row.RouteStrategyMode == RouteStrategyModeHybridSmart {
-			row.HybridRoutingConfig = decodeHybridRoutingConfig(routeConfigJSON.String)
-		}
+		// normalRoutingConfig 是调度模式共享的组内调度配置键（历史命名，
+		// 键名不再对应单一 normal 模式），统一解码。
+		row.NormalRoutingConfig = decodeNormalRoutingConfig(routeConfigJSON.String)
 	}
 	return row, nil
 }
@@ -451,22 +445,4 @@ func decodeNormalRoutingConfig(raw string) *RouteStrategyNormalRoutingConfig {
 		return &RouteStrategyNormalRoutingConfig{SchedulingPreference: preference}
 	}
 	return &RouteStrategyNormalRoutingConfig{SchedulingPreference: preference, Raw: encoded}
-}
-
-// decodeHybridRoutingConfig mirrors parseRouteStrategyRuntimeConfigJson for
-// the hybrid branch (opaque snapshot carrier).
-func decodeHybridRoutingConfig(raw string) *ApiKeyHybridRoutingConfig {
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
-		return nil
-	}
-	hybridRaw, ok := decoded["hybridRoutingConfig"]
-	if !ok || hybridRaw == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(hybridRaw)
-	if err != nil {
-		return nil
-	}
-	return &ApiKeyHybridRoutingConfig{Raw: encoded}
 }

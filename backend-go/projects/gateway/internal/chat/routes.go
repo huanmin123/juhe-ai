@@ -675,8 +675,8 @@ func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversa
 			if err := json.Unmarshal(value, &model); err != nil {
 				return fields, &invalidRequestError{Message: "Expected string, received " + jsonValueTypeName(value)}
 			}
-			if model != string(ImageModelGPTImage2) {
-				return fields, &invalidRequestError{Message: "Invalid enum value. Expected 'gpt-image-2', received '" + model + "'"}
+			if !IsSupportedChatImageModel(model) {
+				return fields, &invalidRequestError{Message: "Invalid enum value. Expected one of: " + chatImageModelEnumHint() + ", received '" + model + "'"}
 			}
 			fields.defaultImageModel = &model
 		}

@@ -46,14 +46,6 @@ func TestW11GCreateValidationArms(t *testing.T) {
 	}), viewer); err == nil {
 		t.Fatal("bogus normal config must fail")
 	}
-	// 非法 hybrid 配置。
-	if _, err := store.Create(ctx, mk(func(i *MutationInput) {
-		i.Mode = ptrString(ModeHybridSmart)
-		i.HasHybridConfig = true
-		i.HybridConfigRaw = map[string]any{"tiers": "not-array"}
-	}), viewer); err == nil {
-		t.Fatal("bogus hybrid config must fail")
-	}
 	// 描述超长（>200 UTF-16 单位）。
 	longDesc := strings.Repeat("说", 201)
 	if _, err := store.Create(ctx, mk(func(i *MutationInput) {
@@ -127,10 +119,6 @@ func TestW11GPatchValidationArms(t *testing.T) {
 	}); err == nil {
 		t.Fatal("unknown group binding must fail")
 	}
-	// 混合模式绑定校验（bare mode switch 下重复优先级）。
-	if _, err := patch(func(i *MutationInput) { i.Mode = ptrString(ModeHybridSmart) }); err == nil {
-		t.Fatal("bare mode switch with invalid bindings must fail")
-	}
 	// 版本时间戳非法。
 	if _, err := store.Patch(ctx, created.ID, MutationInput{Name: ptrString("x")}, "not-a-time", viewer); err == nil {
 		t.Fatal("bad expectedUpdatedAt must fail")
@@ -176,46 +164,35 @@ func TestW11GPatchConfigRecomputeAndModeSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 配置重算：mode 切到 hybrid 后 normal 输入仍取 raw。
+	// 配置重算：mode 切到 weighted 后非法 preference 仍校验失败。
 	result, err := store.Patch(ctx, created.ID, MutationInput{
-		Mode:             ptrString(ModeHybridSmart),
-		HasHybridConfig:  true,
-		HybridConfigRaw:  map[string]any{"tiers": []any{map[string]any{"name": "w11g-t", "weight": 1, "groupId": group}}},
-		HasNormalConfig:  true,
-		NormalConfigRaw:  map[string]any{"unknownField": 1},
+		Mode:            ptrString(ModeWeighted),
+		HasNormalConfig: true,
+		NormalConfigRaw: map[string]any{"schedulingPreference": "bogus"},
 	}, created.UpdatedAt, viewer)
 	if err == nil {
-		t.Fatalf("recompute with unknown normal field must fail: %+v", result)
+		t.Fatalf("recompute with bogus preference must fail: %+v", result)
 	}
 	// 纯函数输入选择。
 	input := MutationInput{HasNormalConfig: true, NormalConfigRaw: map[string]any{"k": 1}}
-	if got := input.normalInput(ModeHybridSmart, nil); got == nil {
-		t.Fatal("hybrid mode keeps normal raw")
+	if got := input.normalInput(nil); got == nil {
+		t.Fatal("with raw must pass through")
 	}
 	input = MutationInput{}
-	if got := input.normalInput(ModeHybridSmart, nil); got != nil {
-		t.Fatalf("hybrid mode nil raw = %v", got)
-	}
-	if got := input.hybridInput(ModeNormal, nil); got != nil {
-		t.Fatalf("normal mode nil raw = %v", got)
+	if got := input.normalInput(nil); got != nil {
+		t.Fatalf("no input no current = %v", got)
 	}
 	config := &NormalRoutingConfig{}
-	encoded := input.normalInput(ModeNormal, config)
+	encoded := input.normalInput(config)
 	if encoded == nil {
 		t.Fatal("normal mode feeds typed current")
 	}
 	if got := typedToRaw(nil); got != nil {
 		t.Fatalf("typedToRaw nil = %v", got)
 	}
-	if got := rawForMode(ModeHybridSmart, ModeNormal, map[string]any{"k": 1}); got != nil {
-		t.Fatalf("rawForMode mismatch = %v", got)
-	}
 	// 存量 JSON 规范化错误。
-	if _, err := routeStrategyConfigJSONFromRaw("not-a-map", nil); err == nil {
+	if _, err := routeStrategyConfigJSONFromRaw("not-a-map"); err == nil {
 		t.Fatal("bad stored normal json must fail")
-	}
-	if _, err := routeStrategyConfigJSONFromRaw(nil, "not-a-map"); err == nil {
-		t.Fatal("bad stored hybrid json must fail")
 	}
 	// nextStrategyUpdatedAt：非法格式。
 	if _, err := nextStrategyUpdatedAt("bad", time.Now()); err == nil {

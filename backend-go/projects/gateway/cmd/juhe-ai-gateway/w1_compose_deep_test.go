@@ -50,11 +50,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 )
@@ -118,7 +116,7 @@ func TestW1QComposeSmallAdapterArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1QComposeSystemAPIStorageFailureArms(t *testing.T) {
-	t.Run("缺统计库路径preflight先行失败", func(t *testing.T) {
+	t.Run("缺统计库路径组合根守卫失败", func(t *testing.T) {
 		stack := w1oNewComposeStack(t)
 		w1oRedirectDatabasePaths(t, stack)
 		stack.cfg.StatsDatabasePath = ""
@@ -129,8 +127,11 @@ func TestW1QComposeSystemAPIStorageFailureArms(t *testing.T) {
 			}
 			t.Fatal("缺统计库路径必须 fail-fast")
 		}
-		if !strings.Contains(err.Error(), "sqlite storage preflight") || !strings.Contains(err.Error(), "JUHE_AI_STATS_DATABASE_PATH") {
-			t.Fatalf("错误 = %v，want preflight 指名统计库路径", err)
+		// 2026-09-19 起 preflight 不再缺路径 fail-fast（loadRuntimeConfig 已
+		// 派生默认路径，直接构造的空路径由物理门禁跳过空项），空 stats 路径
+		// 由组合根打开 stats 数据库前的守卫指名拒绝。
+		if !strings.Contains(err.Error(), "JUHE_AI_STATS_DATABASE_PATH") {
+			t.Fatalf("错误 = %v，want 组合根守卫指名统计库路径", err)
 		}
 	})
 
@@ -670,23 +671,6 @@ func (w1qFailingPolicyEffects) RecordKeyScopedQuotaFailure(context.Context, gate
 	return errors.New("w1q 策略状态写入失败")
 }
 
-// w1qAccountListFailingReadModels 只命中目标分组所需两个读模型。
-type w1qAccountListFailingReadModels struct {
-	gatewayruntimecache.ReadModels
-	failingResolve bool
-}
-
-func (m w1qAccountListFailingReadModels) ResolveGroupUsageAccessMetadata(context.Context, string, string) (*gatewayruntimecache.GroupUsageAccessMetadata, error) {
-	if m.failingResolve {
-		return nil, errors.New("w1q 分组访问读取失败")
-	}
-	return &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"}, nil
-}
-
-func (w1qAccountListFailingReadModels) ListOpenAIAccountsForGroupResult(context.Context, string, string, gatewayruntimecache.OpenAIAccountsForGroupOptions) (gatewayruntimecache.OpenAIAccountsForGroupResult, error) {
-	return gatewayruntimecache.OpenAIAccountsForGroupResult{}, errors.New("w1q 分组账户读取失败")
-}
-
 func TestW1QChainPortsProjectionArms(t *testing.T) {
 	ctx := context.Background()
 
@@ -768,45 +752,6 @@ func TestW1QChainPortsProjectionArms(t *testing.T) {
 		}
 		if values := request.HeaderValues("X-Session-Id"); len(values) != 1 || values[0] != "sess-w1q" {
 			t.Fatalf("HeaderValues = %v", values)
-		}
-	})
-
-	t.Run("目标分组nil缓存直通臂", func(t *testing.T) {
-		selection, err := (hybridTargetGroups{}).SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{})
-		if err != nil || selection != nil {
-			t.Fatalf("nil 缓存 = (%v, %v)，want (nil, nil)", selection, err)
-		}
-	})
-
-	t.Run("目标分组账户列表读取失败臂", func(t *testing.T) {
-		cache, err := gatewayruntimecache.New(w1qAccountListFailingReadModels{}, gatewayruntimecache.Options{})
-		if err != nil {
-			t.Fatalf("构造 runtime cache: %v", err)
-		}
-		selection, selErr := (hybridTargetGroups{cache: cache}).SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
-			APIKeyRecord: gatewayhybrid.APIKeyRecord{SelectedGroupID: "grp-w1q", SystemAccountID: "sys-w1q"},
-		})
-		if selErr == nil || selection != nil {
-			t.Fatalf("列表失败 = (%v, %v)，want (nil, err)", selection, selErr)
-		}
-		if !strings.Contains(selErr.Error(), "w1q 分组账户读取失败") {
-			t.Fatalf("错误 = %v，want 保留原始信息", selErr)
-		}
-	})
-
-	t.Run("目标分组访问元数据读取失败臂", func(t *testing.T) {
-		cache, err := gatewayruntimecache.New(w1qAccountListFailingReadModels{failingResolve: true}, gatewayruntimecache.Options{})
-		if err != nil {
-			t.Fatalf("构造 runtime cache: %v", err)
-		}
-		selection, selErr := (hybridTargetGroups{cache: cache}).SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
-			APIKeyRecord: gatewayhybrid.APIKeyRecord{SelectedGroupID: "grp-w1q", SystemAccountID: "sys-w1q"},
-		})
-		if selErr == nil || selection != nil {
-			t.Fatalf("元数据失败 = (%v, %v)，want (nil, err)", selection, selErr)
-		}
-		if !strings.Contains(selErr.Error(), "w1q 分组访问读取失败") {
-			t.Fatalf("错误 = %v，want 保留原始信息", selErr)
 		}
 	})
 }
@@ -935,7 +880,8 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		{"信任代理非法", map[string]string{"JUHE_AI_TRUST_PROXY": "maybe"}, "JUHE_AI_TRUST_PROXY 只能配置为 true/false 或 0-16"},
 		{"临时访问白名单非法", map[string]string{"JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST": "example.com"}, "只能填写逗号分隔的单个 IPv4 或 IPv6 地址"},
 		{"OIDC缺加密密钥", map[string]string{"JUHE_AI_OIDC_ENABLED": "true", "JUHE_AI_OIDC_ISSUER": "https://issuer.example"}, "必须显式配置 JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET"},
-		{"链条缺系统API开关", map[string]string{"JUHE_AI_GATEWAY_CHAIN_ENABLED": "true"}, "必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED"},
+		// 2026-09-19 起 system-api 未配置默认开启，联动违规必须显式关闭。
+		{"链条缺系统API开关", map[string]string{"JUHE_AI_GATEWAY_CHAIN_ENABLED": "true", "JUHE_AI_GATEWAY_SYSTEM_API_ENABLED": "false"}, "必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED"},
 		{"候选上限非整数", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "abc"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须配置为整数"},
 		{"候选上限越界", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "0"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须在 1-50000 范围内"},
 		{"Go运行时指标store非法", map[string]string{"JUHE_AI_GO_RUNTIME_METRICS_STORE": "memory"}, "JUHE_AI_GO_RUNTIME_METRICS_STORE 必须为 sqlite 或 postgres"},

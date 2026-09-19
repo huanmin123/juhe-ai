@@ -40,7 +40,4 @@ const (
 	FamilyAnthropicMessages     = "messages"
 	FamilyGeminiGenerateContent = "generate_content"
 	FamilyGeminiStreamGenerate  = "stream_generate_content"
-
-	// Model mapping runtime sources.
-	RuntimeSourceExplicitHybridRoute = "explicit_hybrid_route"
 )

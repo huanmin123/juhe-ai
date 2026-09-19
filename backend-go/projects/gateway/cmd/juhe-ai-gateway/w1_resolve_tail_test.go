@@ -6,7 +6,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -21,7 +20,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
@@ -101,68 +99,6 @@ func w1kNormalResolver(fixture *chainFixture) *chainRouteResolver {
 	}
 }
 
-// w1kHybridConfigJSON 是最小可用的 hybrid_smart 路由配置：单条 level 路由
-// 命中 fixture 分组的 gpt-test，scoring 回落窗口覆盖全部 level。
-const w1kHybridConfigJSON = `{` +
-	`"scoringModel":"gpt-test",` +
-	`"scoringContextMode":"conversation",` +
-	`"qualityPreference":"quality_first",` +
-	`"scoringTimeoutMs":3000,` +
-	`"scoringFallbackMaxLevel":100,` +
-	`"scoringCacheEnabled":false,` +
-	`"scoringCacheTtlSeconds":300,` +
-	`"cacheAffinityEnabled":false,` +
-	`"affinityTtlSeconds":3600,` +
-	`"switchMinLevelDelta":10,` +
-	`"downgradeConsecutiveLowCount":3,` +
-	`"levelRoutes":[{"minLevel":0,"maxLevel":100,"targetModel":"gpt-test","enabled":true}]` +
-	`}`
-
-// w1kHybridKeyRow 构造 hybrid 策略 Key 行（SelectedGroupID 指向 fixture 分组，
-// hybridTargetGroups.SelectTargetGroup 依赖它读组访问与账户）。
-func w1kHybridKeyRow(fixture *chainFixture, mode, configJSON string) *gatewayruntimecache.GatewayAPIKeyRow {
-	row := &gatewayruntimecache.GatewayAPIKeyRow{
-		ID:                "key_w1k_hybrid",
-		SystemAccountID:   fixture.systemAccount,
-		RouteStrategyID:   "rs_w1k_hybrid",
-		RouteStrategyMode: mode,
-		SelectedGroupID:   fixture.groupID,
-		Status:            "active",
-	}
-	if configJSON != "" {
-		row.HybridRoutingConfig = &gatewayruntimecache.ApiKeyHybridRoutingConfig{Raw: json.RawMessage(configJSON)}
-	}
-	return row
-}
-
-// w1kFixedTime 返回固定 hybrid Clock（func() time.Time 形状）。
-func w1kFixedTime() time.Time {
-	return time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
-}
-
-// w1kFailingAuxDispatcher 是 gatewayhybrid.AuxiliaryDispatcher 的失败 fake：
-// 辅助打分请求必然失败，驱动 hybrid Resolve 走 scoring 回落分支。
-type w1kFailingAuxDispatcher struct{}
-
-func (w1kFailingAuxDispatcher) DispatchHybridAuxiliaryChatCompletion(_ context.Context, _ gatewayhybrid.AuxiliaryDispatchInput) (gatewayhybrid.AuxiliaryDispatchSuccess, *gatewayhybrid.AuxiliaryDispatchFailure) {
-	return gatewayhybrid.AuxiliaryDispatchSuccess{}, &gatewayhybrid.AuxiliaryDispatchFailure{
-		ErrorCode:    "w1k_dispatch_failed",
-		ErrorMessage: "测试注入的辅助派发失败",
-	}
-}
-
-// w1kHybridResolver 装配真实 hybrid 路由核心：selector 走 fixture 运行时缓存
-// 桥，identity 用降级端口，scoring 用必然失败的 fake dispatcher。
-func w1kHybridResolver(fixture *chainFixture) *chainRouteResolver {
-	affinity := gatewayhybrid.NewAffinityService(w1kFixedTime, hybridSessionIdentityPort{}, nil)
-	scoring := gatewayhybrid.NewScoringService(w1kFixedTime, w1kFailingAuxDispatcher{}, nil, nil, nil)
-	return &chainRouteResolver{
-		cache:   fixture.cache,
-		hybrid:  gatewayhybrid.NewRouteService(affinity, hybridTargetGroups{cache: fixture.cache}, hybridSessionIdentityPort{}, nil),
-		scoring: scoring,
-	}
-}
-
 // w1kUsageService 组装真实 gatewayusage.Service + 内存记录器（收尾队列异步
 // 落记录，测试用 WaitForIdle 有界等待）。
 func w1kUsageService() (*gatewayusage.Service, *gatewayusage.MemoryUsageRecorder, *gatewayusage.FinalizationDispatch) {
@@ -197,7 +133,6 @@ func TestW1KResolveNormalGatewayModelRouteArms(t *testing.T) {
 		providers  []string
 		wantReason string
 	}{
-		{"hybrid 策略跳过", gatewayruntimecache.RouteStrategyModeHybridSmart, "gpt-test", []string{"openai", "anthropic"}, "route_strategy_is_hybrid_smart"},
 		{"缺少请求模型跳过", gatewayruntimecache.RouteStrategyModeNormal, "", []string{"openai", "anthropic"}, "missing_requested_model"},
 		{"无绑定跳过", gatewayruntimecache.RouteStrategyModeNormal, "gpt-test", nil, "empty_binding"},
 		{"单供应商跳过", gatewayruntimecache.RouteStrategyModeNormal, "gpt-test", []string{"openai"}, "single_provider"},
@@ -275,162 +210,6 @@ func TestW1KResolveNormalGatewayModelRouteArms(t *testing.T) {
 			t.Fatalf("RequestedModel = %q", result.RequestedModel)
 		}
 	})
-}
-
-// ---------------------------------------------------------------------------
-// A1. chainRouteResolver.ResolveHybridGatewayRoute
-// ---------------------------------------------------------------------------
-
-func TestW1KResolveHybridGatewayRouteArms(t *testing.T) {
-	fixture := newChainFixture(t)
-	ctx := context.Background()
-
-	t.Run("未装配 hybrid 核心按跳过返回", func(t *testing.T) {
-		result, err := (&chainRouteResolver{}).ResolveHybridGatewayRoute(ctx, gatewaypreauth.HybridRouteInput{
-			Req:          w1kBodyRequest(t, http.MethodPost, "/v1/chat/completions", "gpt-test"),
-			APIKeyRecord: w1kHybridKeyRow(fixture, gatewayruntimecache.RouteStrategyModeHybridSmart, w1kHybridConfigJSON),
-		})
-		if err != nil {
-			t.Fatalf("未装配核心必须静默跳过: %v", err)
-		}
-		if result.Outcome != gatewaypreauth.HybridRouteOutcomeSkipped || result.Reason != "not_hybrid_route_strategy" {
-			t.Fatalf("结果 = %s/%s, want skipped/not_hybrid_route_strategy", result.Outcome, result.Reason)
-		}
-	})
-
-	t.Run("混合路由配置解析失败", func(t *testing.T) {
-		resolver := w1kHybridResolver(fixture)
-		_, err := resolver.ResolveHybridGatewayRoute(ctx, gatewaypreauth.HybridRouteInput{
-			Req:          w1kBodyRequest(t, http.MethodPost, "/v1/chat/completions", "gpt-test"),
-			APIKeyRecord: w1kHybridKeyRow(fixture, gatewayruntimecache.RouteStrategyModeHybridSmart, "{not-json"),
-		})
-		if err == nil || !strings.Contains(err.Error(), "解析混合路由配置失败") {
-			t.Fatalf("非法配置必须报解析错误: %v", err)
-		}
-	})
-
-	t.Run("非 hybrid 策略跳过", func(t *testing.T) {
-		result, err := w1kHybridResolver(fixture).ResolveHybridGatewayRoute(ctx, gatewaypreauth.HybridRouteInput{
-			Req:          w1kBodyRequest(t, http.MethodPost, "/v1/chat/completions", "gpt-test"),
-			APIKeyRecord: w1kHybridKeyRow(fixture, gatewayruntimecache.RouteStrategyModeNormal, w1kHybridConfigJSON),
-		})
-		if err != nil {
-			t.Fatalf("解析失败: %v", err)
-		}
-		if result.Outcome != gatewaypreauth.HybridRouteOutcomeSkipped || result.Reason != "not_hybrid_route_strategy" {
-			t.Fatalf("结果 = %s/%s, want skipped/not_hybrid_route_strategy", result.Outcome, result.Reason)
-		}
-		if result.APIKeyRecord == nil || result.APIKeyRecord.ID != "key_w1k_hybrid" {
-			t.Fatalf("跳过分支必须原样携带 Key 行: %+v", result.APIKeyRecord)
-		}
-	})
-
-	t.Run("非 JSON POST 跳过", func(t *testing.T) {
-		result, err := w1kHybridResolver(fixture).ResolveHybridGatewayRoute(ctx, gatewaypreauth.HybridRouteInput{
-			Req:          w1kBodyRequest(t, http.MethodGet, "/v1/chat/completions", ""),
-			APIKeyRecord: w1kHybridKeyRow(fixture, gatewayruntimecache.RouteStrategyModeHybridSmart, w1kHybridConfigJSON),
-		})
-		if err != nil {
-			t.Fatalf("解析失败: %v", err)
-		}
-		if result.Outcome != gatewaypreauth.HybridRouteOutcomeSkipped || result.Reason != "not_json_post_request" {
-			t.Fatalf("结果 = %s/%s, want skipped/not_json_post_request", result.Outcome, result.Reason)
-		}
-	})
-
-	t.Run("打分失败回落选中并回填账户", func(t *testing.T) {
-		result, err := w1kHybridResolver(fixture).ResolveHybridGatewayRoute(ctx, gatewaypreauth.HybridRouteInput{
-			Req:          w1kBodyRequest(t, http.MethodPost, "/v1/chat/completions", "client-model"),
-			APIKeyRecord: w1kHybridKeyRow(fixture, gatewayruntimecache.RouteStrategyModeHybridSmart, w1kHybridConfigJSON),
-			TraceID:      "trace_w1k_hybrid",
-		})
-		if err != nil {
-			t.Fatalf("解析失败: %v", err)
-		}
-		if result.Outcome != gatewaypreauth.HybridRouteOutcomeSelected {
-			t.Fatalf("结果 = %s/%s, want selected", result.Outcome, result.Reason)
-		}
-		if result.TargetModel != "gpt-test" || result.GroupID != fixture.groupID {
-			t.Fatalf("目标 = %s/%s, want gpt-test/%s", result.TargetModel, result.GroupID, fixture.groupID)
-		}
-		if !result.ScoringFallbackApplied || result.AffinityApplied {
-			t.Fatalf("回落标记 = %v/%v, want true/false", result.ScoringFallbackApplied, result.AffinityApplied)
-		}
-		if result.APIKeyRecord == nil || result.APIKeyRecord.SelectedGroupID != fixture.groupID {
-			t.Fatalf("选中分支必须回写 SelectedGroupID: %+v", result.APIKeyRecord)
-		}
-		if len(result.Accounts) != 1 || result.Accounts[0].ID != fixture.accountID {
-			t.Fatalf("回填账户 = %+v, want [%s]", result.Accounts, fixture.accountID)
-		}
-		if result.Accounts[0].APIKey != "sk-upstream-account-key" {
-			t.Fatalf("回填账户必须携带凭据: %q", result.Accounts[0].APIKey)
-		}
-		if result.Config == nil || result.Scoring == nil || result.Route == nil {
-			t.Fatalf("Config/Scoring/Route 映射必须非空: %+v", result)
-		}
-		if result.Route["targetModel"] != "gpt-test" {
-			t.Fatalf("Route.targetModel = %v, want gpt-test", result.Route["targetModel"])
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// A2. hybridSessionIdentityPort.HybridRouteAffinityKey + hybridTargetGroups.SelectTargetGroup
-// ---------------------------------------------------------------------------
-
-func TestW1KHybridSessionIdentityAndTargetGroups(t *testing.T) {
-	fixture := newChainFixture(t)
-	ctx := context.Background()
-
-	if key := (hybridSessionIdentityPort{}).HybridRouteAffinityKey(&gatewayhybrid.GatewayRequestView{Method: "POST"}, gatewayhybrid.AffinityKeyScope{SystemAccountID: fixture.systemAccount}); key != "" {
-		t.Fatalf("降级身份端口必须返回空亲和键: %q", key)
-	}
-
-	if selection, err := (hybridTargetGroups{}).SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
-		APIKeyRecord: gatewayhybrid.APIKeyRecord{SelectedGroupID: fixture.groupID},
-	}); err != nil || selection != nil {
-		t.Fatalf("缓存缺失必须返回空选择: %+v, %v", selection, err)
-	}
-
-	selector := hybridTargetGroups{cache: fixture.cache}
-	if selection, err := selector.SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
-		APIKeyRecord: gatewayhybrid.APIKeyRecord{SystemAccountID: fixture.systemAccount},
-	}); err != nil || selection != nil {
-		t.Fatalf("未选中分组必须返回空选择: %+v, %v", selection, err)
-	}
-	if selection, err := selector.SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
-		APIKeyRecord: gatewayhybrid.APIKeyRecord{SystemAccountID: fixture.systemAccount, SelectedGroupID: "group_missing"},
-	}); err != nil || selection != nil {
-		t.Fatalf("分组缺失必须返回空选择: %+v, %v", selection, err)
-	}
-
-	selection, err := selector.SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
-		APIKeyRecord: gatewayhybrid.APIKeyRecord{SystemAccountID: fixture.systemAccount, SelectedGroupID: fixture.groupID},
-		TargetModel:  "gpt-test",
-	})
-	if err != nil {
-		t.Fatalf("正常选择失败: %v", err)
-	}
-	if selection == nil || selection.GroupID != fixture.groupID || selection.GroupAccess.ProviderCode != "openai" {
-		t.Fatalf("选择 = %+v, want 分组 %s", selection, fixture.groupID)
-	}
-	if len(selection.Accounts) != 1 || selection.Accounts[0].ID != fixture.accountID {
-		t.Fatalf("选择账户 = %+v, want [%s]", selection.Accounts, fixture.accountID)
-	}
-	if selection.ResponseInspectionPolicies == nil {
-		t.Fatal("ResponseInspectionPolicies 必须初始化为空切片")
-	}
-
-	// 分组存在但无账户（model 过滤后为空）必须返回空选择。
-	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('group_w1k_empty', ?, 'openai', 1, 'personal')`, fixture.systemAccount); err != nil {
-		t.Fatalf("seed 空分组: %v", err)
-	}
-	if selection, err := selector.SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
-		APIKeyRecord: gatewayhybrid.APIKeyRecord{SystemAccountID: fixture.systemAccount, SelectedGroupID: "group_w1k_empty"},
-		TargetModel:  "gpt-test",
-	}); err != nil || selection != nil {
-		t.Fatalf("无可用账户必须返回空选择: %+v, %v", selection, err)
-	}
 }
 
 // ---------------------------------------------------------------------------

@@ -470,9 +470,6 @@ func TestW13DTrafficSourceEdges(t *testing.T) {
 	if !IsAccountDiagnosticTrafficSource(TrafficSourceManualAccountTest) || !IsAccountDiagnosticTrafficSource(TrafficSourceRuntimeRecoveryProbe) {
 		t.Fatal("diagnostic 判定错误")
 	}
-	if IsAccountDiagnosticTrafficSource(TrafficSourceHybridScoring) {
-		t.Fatal("hybrid 不属于 diagnostic")
-	}
 	// ClockFunc 适配器。
 	if ClockFunc(func() time.Time { return time.UnixMilli(42) }).Now().UnixMilli() != 42 {
 		t.Fatal("ClockFunc 错误")

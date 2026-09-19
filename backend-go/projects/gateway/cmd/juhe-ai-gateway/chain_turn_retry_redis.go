@@ -5,7 +5,7 @@ package main
 // surface of shared/runtime-state-store.ts: getJson / compareSetJson / incr).
 //
 // The gateway module cannot import the shared Node store implementation and
-// the other gateway Redis drivers (gatewayhybrid / gatewayquota) expose
+// the other gateway Redis drivers (gatewayquota) expose
 // different store-name-keyed surfaces, so this file replicates the exact
 // Redis contract of RedisRuntimeStateStore('gateway-codex-turn-retry'):
 //

@@ -26,10 +26,10 @@
 //     speedfirst_cutover_reservation.go
 //
 // Candidate *selection* (tier ordering, cursor fairness decision) is owned by
-// internal/gatewayhybrid (G09, hot-quality-candidate-selection.ts); this
-// package imports gatewayhybrid for the shared tier key, decision-state and
-// credit constants, and converts its full snapshot into the reduced
-// gatewayhybrid.HotQualitySnapshot selection view. Body lane detection lives
+// this package as well (selection.go, migrated from the former
+// internal/gatewayhybrid, G09, hot-quality-candidate-selection.ts); the
+// storage snapshot converts into the reduced HotQualitySelectionSnapshot
+// selection view. Body lane detection lives
 // in internal/gatewaybody and is imported by callers, not here.
 //
 // Every store is dual-driver (memory + Redis, Redis keys under the

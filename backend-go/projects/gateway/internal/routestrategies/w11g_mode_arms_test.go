@@ -63,7 +63,7 @@ func TestW11GFailoverModeValidationArms(t *testing.T) {
 	}
 }
 
-func TestW11GHybridSamePriorityDisabledSort(t *testing.T) {
+func TestW11GWeightedSamePriorityDisabledSort(t *testing.T) {
 	env := newTestEnv(t)
 	admin := env.login(t, "w11g-hs", "root-pass", "super_admin")
 	groupA := env.createGroup(t, admin, "aaa", true)
@@ -72,14 +72,7 @@ func TestW11GHybridSamePriorityDisabledSort(t *testing.T) {
 	store := w9eStore(t, env)
 	viewer := AccessScope{ViewerID: admin}
 	created, err := store.Create(context.Background(), MutationInput{
-		Name: ptrString("w11g 同序"), Mode: ptrString(ModeHybridSmart),
-		HybridConfigRaw: map[string]any{
-			"scoringModel": "m", "scoringContextMode": "full_request",
-			"levelRoutes": []any{
-				map[string]any{"minLevel": 1, "maxLevel": 5, "targetModel": "t-low"},
-				map[string]any{"minLevel": 6, "maxLevel": 10, "targetModel": "t-high"},
-			},
-		},
+		Name: ptrString("w11g 同序"), Mode: ptrString(ModeWeighted),
 		HasBindings: true,
 		Bindings: []BindingInput{
 			{GroupID: groupA, Priority: intPtr(1), Status: "active"},

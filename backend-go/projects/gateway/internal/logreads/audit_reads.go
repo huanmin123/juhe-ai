@@ -723,7 +723,7 @@ var auditLogNonPersistedTrafficSources = []string{"account_health_check", "runti
 
 // auditLogTrafficSources mirrors the route trafficSource validation set.
 var auditLogTrafficSources = map[string]bool{
-	"gateway": true, "manual_account_test": true, "hybrid_scoring": true, "hybrid_quality_scoring": true,
+	"gateway": true, "manual_account_test": true,
 }
 
 // auditLogOutcomes mirrors the route outcome validation set ('all' included).

@@ -283,7 +283,6 @@ func TestW14dStrategyGapSweep(t *testing.T) {
 		{http.MethodPost, "/__aipublic__/route-strategy/add", `{"targetUsername":"w14downer","groupBindings":[{"groupId":"` + groupID + `"}]}`, http.StatusBadRequest},
 		{http.MethodPost, "/__aipublic__/route-strategy/add", `{"targetUsername":"w14downer","name":"长描述","description":"` + strings.Repeat("d", 201) + `","groupBindings":[{"groupId":"` + groupID + `"}]}`, http.StatusBadRequest},
 		{http.MethodPost, "/__aipublic__/route-strategy/add", `{"targetUsername":"w14downer","name":"s1","groupBindings":[{"groupId":"` + groupID + `"}],"normalRoutingConfig":"x"}`, http.StatusBadRequest},
-		{http.MethodPost, "/__aipublic__/route-strategy/add", `{"targetUsername":"w14downer","name":"s2","groupBindings":[{"groupId":"` + groupID + `"}],"hybridRoutingConfig":"x"}`, http.StatusBadRequest},
 	} {
 		status, payload, _ = env.doAuth(route.method, route.path, route.body, token)
 		if status != route.status {
@@ -291,13 +290,7 @@ func TestW14dStrategyGapSweep(t *testing.T) {
 		}
 	}
 
-	// Add with a valid hybrid smart payload (L477 hybrid branch).
-	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/route-strategy/add",
-		`{"targetUsername":"w14downer","name":"混合策略","mode":"hybrid_smart","groupBindings":[{"groupId":"`+groupID+`"}],`+
-			`"hybridRoutingConfig":{"scoringModel":"gpt-4o-mini","levelRoutes":[{"minLevel":1,"maxLevel":5,"targetModel":"gpt-4o-mini"},{"minLevel":6,"maxLevel":10,"targetModel":"gpt-4o"}]}}`, token)
-	if status != http.StatusCreated {
-		t.Fatalf("hybrid add: %d %v", status, payload)
-	}
+	// Add arm: unknown target user renders 404.
 	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/route-strategy/add",
 		`{"targetUsername":"ghost","name":"s3","groupBindings":[{"groupId":"`+groupID+`"}]}`, token)
 	if status != http.StatusNotFound {
@@ -323,13 +316,6 @@ func TestW14dStrategyGapSweep(t *testing.T) {
 		`{"routeStrategyId":"`+strategyID+`","groupBindings":[{"groupId":"`+groupID+`","priority":2,"weight":5}]}`, token)
 	if status != http.StatusOK {
 		t.Fatalf("update bindings: %d %v", status, payload)
-	}
-
-	// Switch to hybrid smart with a minimal hybrid payload (L477/L655).
-	status, payload, _ = env.doAuth(http.MethodPost, "/__aipublic__/route-strategy/update",
-		`{"routeStrategyId":"`+strategyID+`","mode":"hybrid_smart","hybridRoutingConfig":{"scoringModel":"gpt-4o-mini","levelRoutes":[{"minLevel":1,"maxLevel":5,"targetModel":"gpt-4o-mini"},{"minLevel":6,"maxLevel":10,"targetModel":"gpt-4o"}]}}`, token)
-	if status != http.StatusOK {
-		t.Fatalf("update hybrid mode: %d %v", status, payload)
 	}
 
 	// Delete parse arms (L684/L698).

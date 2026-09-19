@@ -2,10 +2,10 @@ package main
 
 // w12g 波次：runStorageBootstrap 的 PostgreSQL/SQLite 失败返回码路径直调，
 // 以及 main() 中安全只读检查分支的进程内直调。
-// 不可达（w12g 登记，传统 go test -cover 口径）：main.go 与各 runner 的
-// os.Exit 出口分支只能由子进程重执行覆盖（wm_main_exit_branches_test.go），
-// 该模式的覆盖数据在 -coverprofile 口径下不计入父进程统计，但行为已由
-// exit-code 断言与 GOCOVERDIR 二进制覆盖模式验证。
+// 不可达（w12g 登记，传统 go test -cover 口径）：runMaintenance 的非零出口
+// 分支行为已由 wm_main_exit_branches_test.go 以 runMaintenance 进程内直调
+// 断言返回码覆盖（测试单进程纪律，禁止 exec 子进程）；-coverprofile 语句
+// 计数口径对该形态的统计限制见 w14k_runner_results_test.go 头注释。
 
 import (
 	"os"
@@ -82,24 +82,24 @@ func TestW12GRunStorageBootstrapSQLiteFailures(t *testing.T) {
 }
 
 func TestW12GMainDirectReadOnlyCheckBranches(t *testing.T) {
-	// 仓库状态使这些只读检查在当前目录状态下是真实成功分支（进程内 return，
-	// 不触发 os.Exit），可直接直调覆盖 main() 的分发分支。
+	// 仓库状态使这些只读检查在当前目录状态下是真实成功分支（进程内 return 0），
+	// 可直接直调覆盖 main() 的分发分支。
 	t.Run("owner manifest check", func(t *testing.T) {
-		output := wmCallMainWithFreshFlags(t, []string{"-verify-business-owner-manifest"})
+		output := wmCallRunMaintenance(t, []string{"-verify-business-owner-manifest"})
 		if strings.Contains(output, "verification failed") {
 			t.Fatalf("owner manifest 检查不应失败: %q", output)
 		}
 	})
 
 	t.Run("node active path scan", func(t *testing.T) {
-		output := wmCallMainWithFreshFlags(t, []string{"-scan-node-j3b-active-path"})
+		output := wmCallRunMaintenance(t, []string{"-scan-node-j3b-active-path"})
 		if strings.Contains(output, "scan failed") {
 			t.Fatalf("active path 扫描不应失败: %q", output)
 		}
 	})
 
 	t.Run("j3c readonly boundary", func(t *testing.T) {
-		output := wmCallMainWithFreshFlags(t, []string{"-verify-j3c-readonly-boundary"})
+		output := wmCallRunMaintenance(t, []string{"-verify-j3c-readonly-boundary"})
 		if strings.Contains(output, "verification failed") {
 			t.Fatalf("j3c 边界检查不应失败: %q", output)
 		}

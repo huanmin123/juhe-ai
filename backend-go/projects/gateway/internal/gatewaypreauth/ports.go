@@ -308,6 +308,12 @@ type DispatchPreparationInput struct {
 	Signal                          context.Context
 	IgnoreAccountRuntimeSuppression bool
 	RouteCoordinator                gatewayrouting.GatewayRouteCoordinatorOwner
+	// SkipGroupQuotaWindowCheck（合并路由设计 B14/T4）：merge 上下文必须跳
+	// 过以窗口组 GroupAccess 对整池做 CheckBatchAsync 的窗口级配额门——窗口
+	// 组为带组级配额的授权组时会否决整池（首组配额耗尽 + 次组充足也 429）。
+	// merge 的权威门是解析期逐片段批查（组合根 chain_routing.go）。preflight
+	// 组装处对 merge 置 true，其余模式保持 false（行为不变）。
+	SkipGroupQuotaWindowCheck bool
 }
 
 // DispatchPreparationResult mirrors DispatchPreparationResult.
@@ -349,8 +355,8 @@ type GroupFallbackCandidateInput struct {
 	// The preflight-time requestFallback stays nil — Node passes no
 	// excludedAccountIds there (preflight.ts:1078), the set only exists on
 	// the dispatch loop.
-	ExcludedAccountIDs         map[string]struct{}
-	RoutePlanSnapshot          gatewayrouting.RoutePlanSnapshot[string]
+	ExcludedAccountIDs map[string]struct{}
+	RoutePlanSnapshot  gatewayrouting.RoutePlanSnapshot[string]
 	// AuditCapture 携带请求级审计面，供候选加载层的切号 fail-closed 诊断
 	// （switch_target_unresolved）落到请求审计。可派发候选的加载入口
 	// （PrepareAPIKeyGroupFallbackDispatchContext）传入；仅做回退决策的

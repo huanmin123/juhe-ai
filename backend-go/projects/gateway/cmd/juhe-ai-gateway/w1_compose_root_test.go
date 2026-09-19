@@ -662,11 +662,9 @@ func TestW1OComposeChainRuntimeServicesMemorySuccess(t *testing.T) {
 		t.Fatalf("G14 内部服务缺失: Identity=%v Affinity=%v",
 			services.Identity.Identity != nil, services.Identity.Affinity != nil)
 	}
-	if services.StateClient != nil || services.HybridScoringCache != nil ||
-		services.HybridRuntimeState != nil || services.RateLimitStore != nil {
-		t.Fatalf("memory 驱动下 redis 协作者必须为 nil: StateClient=%v HybridScoringCache=%v HybridRuntimeState=%v RateLimitStore=%v",
-			services.StateClient != nil, services.HybridScoringCache != nil,
-			services.HybridRuntimeState != nil, services.RateLimitStore != nil)
+	if services.StateClient != nil || services.RateLimitStore != nil {
+		t.Fatalf("memory 驱动下 redis 协作者必须为 nil: StateClient=%v RateLimitStore=%v",
+			services.StateClient != nil, services.RateLimitStore != nil)
 	}
 }
 
@@ -716,17 +714,14 @@ func TestW1OComposeChainRuntimeServicesRedisStateArms(t *testing.T) {
 		if services.StateClient == nil {
 			t.Error("redis 状态驱动必须暴露共享 StateClient")
 		}
-		if services.HybridRuntimeState == nil {
-			t.Error("redis 状态驱动必须装配 HybridRuntimeState")
-		}
 		if services.HotQuality == nil || services.Identity == nil || services.Affinity == nil {
 			t.Errorf("热质量 / 身份服务必须装配: HotQuality=%v Identity=%v Affinity=%v",
 				services.HotQuality != nil, services.Identity != nil, services.Affinity != nil)
 		}
-		// 缓存驱动仍为 memory：混合评分共享缓存与系统限流 redis store 不得装配。
-		if services.HybridScoringCache != nil || services.RateLimitStore != nil {
-			t.Errorf("memory 缓存驱动下 HybridScoringCache/RateLimitStore 必须为 nil: %v/%v",
-				services.HybridScoringCache != nil, services.RateLimitStore != nil)
+		// 缓存驱动仍为 memory：系统限流 redis store 不得装配。
+		if services.RateLimitStore != nil {
+			t.Errorf("memory 缓存驱动下 RateLimitStore 必须为 nil: %v",
+				services.RateLimitStore != nil)
 		}
 	})
 }

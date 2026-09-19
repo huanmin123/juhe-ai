@@ -13,13 +13,11 @@ package main
 // behaviour when the corresponding runtime feature is absent.
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -33,11 +31,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayobs"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
@@ -139,14 +134,6 @@ type chainRuntimeDeps struct {
 	Identity    *sessionIdentityServices
 	CodexBridge gatewaypreauth.CodexBridgePreflight
 	Recoverable gatewaypreauth.RecoverableWait
-
-	// Hybrid routing collaborators (optional; nil keeps the hybrid resolver
-	// in the skip state Node produces for non-hybrid keys).
-	HybridScoringCache  hybridSharedJSONCache
-	HybridRuntimeState  hybridRuntimeStateStore
-	HybridAuxiliary     hybridAuxiliaryDispatcher
-	HybridUsageRecorder hybridUsageRecorder
-	RouteDiagnostics    hybridRouteDiagnostics
 
 	// Suppression / degradation / locks (optional; disabled implementations
 	// below keep the attempt loop defined). AccountLocks 生产装配为
@@ -375,13 +362,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		chainRoutingCache{cache: deps.Cache},
 		chainCapabilityFilter{},
 	)
-	routeResolver := &chainRouteResolver{cache: deps.Cache, normal: normalRoute}
-	if deps.HybridAuxiliary != nil || deps.HybridScoringCache != nil || deps.HybridRuntimeState != nil {
-		hybridAffinity := gatewayhybrid.NewAffinityService(hybridClockOf(clock), hybridSessionIdentityPort{}, hybridRuntimeStateOf(deps.HybridRuntimeState))
-		hybridScoring := gatewayhybrid.NewScoringService(hybridClockOf(clock), hybridAuxiliaryOf(deps.HybridAuxiliary), hybridUsageRecorderOf(deps.HybridUsageRecorder), hybridSharedCacheOf(deps.HybridScoringCache), nil)
-		routeResolver.scoring = hybridScoring
-		routeResolver.hybrid = gatewayhybrid.NewRouteService(hybridAffinity, hybridTargetGroups{cache: deps.Cache}, hybridSessionIdentityPort{}, hybridDiagnosticsOf(deps.RouteDiagnostics))
-	}
+	// merge（B14）：解析期逐片段配额批查与 dispatch 窗口门共用同一 G07 服务
+	// （chainDispatchQuota → gatewaydispatch.AuthorizationQuotaChecker）。
+	routeResolver := &chainRouteResolver{cache: deps.Cache, normal: normalRoute, quota: newChainDispatchQuota(deps.AuthzQuota)}
 
 	// ---- dispatch engine + provider driver (adapter 2) ----
 	// The failure dispatcher shares the engine's session-affinity port: the
@@ -475,9 +458,6 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		ClientPool: upstreamClientPool,
 		DialGuard:  upstreamURLPolicy.Guard(),
 	}
-	// 辅助派发器与主尝试链共用同一 TransportDeps（零值 deps 仅保留给组合
-	// 测试——newChainHybridAuxiliaryDispatcher 不经由此接线时）。
-	wireChainHybridAuxiliaryTransport(deps.HybridAuxiliary, engine.Transport)
 	// B-3（BUG-0174）波1遗留接线：Redis 轮转计数器（nil 保持进程内回退）。
 	engine.KeyRotation = deps.KeyRotation
 	engine.Clock = clock
@@ -752,264 +732,6 @@ func (o spoolOverflow) PersistOverflow(ctx gatewayusage.Ctx, input gatewayusage.
 	return o.spool.Persist(ctx, input)
 }
 
-func hybridClockOf(clock gatewaypreauth.Clock) gatewayhybrid.Clock { return clock.Now }
-
-func hybridSharedCacheOf(cache hybridSharedJSONCache) gatewayhybrid.SharedJSONCache {
-	if cache == nil {
-		return nil
-	}
-	return cache
-}
-
-func hybridRuntimeStateOf(state hybridRuntimeStateStore) gatewayhybrid.RuntimeStateStore {
-	if state == nil {
-		return nil
-	}
-	return state
-}
-
-func hybridAuxiliaryOf(dispatcher hybridAuxiliaryDispatcher) gatewayhybrid.AuxiliaryDispatcher {
-	if dispatcher == nil {
-		return nil
-	}
-	return dispatcher
-}
-
-// ---------------------------------------------------------------------------
-// hybrid auxiliary dispatcher (T2 终局遗留①装配; Node
-// modules/gateway/hybrid/auxiliary-dispatch.service.ts dispatchHybridAuxiliaryChatCompletion)
-// ---------------------------------------------------------------------------
-
-// chainHybridAuxiliaryDispatcher implements gatewayhybrid.AuxiliaryDispatcher
-// by replaying the Node auxiliary loop over the same in-process pieces the /v1
-// orchestrator uses: the routing runtime cache selects the target group and
-// provides the hydrated account secrets (prepareOpenAIGatewayDispatchAccounts
-// equivalent for the single-attempt auxiliary lane), the shared provider
-// driver builds the upstream URL/headers/body (buildGatewayUpstream*), and the
-// engine transport executes the one attempt (fetchFirstAvailableUpstream).
-//
-// Assembled-minimal residuals against the full Node loop (documented handover,
-// each degrades to the Node failure path, never to a wrong success):
-//   - audit capture / hot-quality attempt records / client-ip avoidance
-//     tracker: the auxiliary call is invisible to those channels;
-//   - circuit confirm/lease hooks (confirmSameAccountApiKeyFailures,
-//     confirmHalfOpenSuccess) run inside Finish in Node; the Go Finish is a
-//     call-once no-op because the adapter holds no circuit lease;
-//   - server retry budget rides on the caller context deadline only.
-type chainHybridAuxiliaryDispatcher struct {
-	cache  *gatewayruntimecache.Service
-	driver *chainProviderDriver
-	// transport 是与主尝试链同源的 TransportDeps（D-192/D-146）：并发槽 +
-	// URL 安全策略 + 钉扎拨号对辅助派发同样生效。
-	transport gatewaydispatch.TransportDeps
-}
-
-func newChainHybridAuxiliaryDispatcher(cache *gatewayruntimecache.Service) *chainHybridAuxiliaryDispatcher {
-	return &chainHybridAuxiliaryDispatcher{
-		cache:  cache,
-		driver: newChainProviderDriver(),
-	}
-}
-
-// wireChainHybridAuxiliaryTransport 把链条引擎的 TransportDeps 注回辅助派发
-// 器（D-192/D-146：组合根在 engine.Transport 装配完成后调用；非具体类型或
-// nil 引擎保持零值 deps 的测试语义）。
-func wireChainHybridAuxiliaryTransport(dispatcher hybridAuxiliaryDispatcher, transport gatewaydispatch.TransportDeps) {
-	if concrete, ok := dispatcher.(*chainHybridAuxiliaryDispatcher); ok && concrete != nil {
-		concrete.transport = transport
-	}
-}
-
-// auxiliaryDispatchFailure mirrors the failed arm constructor.
-func auxiliaryDispatchFailure(input gatewayhybrid.AuxiliaryDispatchInput, errorCode, errorMessage string, account *gatewayhybrid.OpenAIAccountSecret, groupID string, hasGroupID bool, statusCode int, hasStatusCode bool, shouldRecordUsage bool) (gatewayhybrid.AuxiliaryDispatchSuccess, *gatewayhybrid.AuxiliaryDispatchFailure) {
-	return gatewayhybrid.AuxiliaryDispatchSuccess{}, &gatewayhybrid.AuxiliaryDispatchFailure{
-		ErrorCode:         errorCode,
-		ErrorMessage:      errorMessage,
-		Account:           account,
-		GroupID:           groupID,
-		HasGroupID:        hasGroupID,
-		StatusCode:        statusCode,
-		HasStatusCode:     hasStatusCode,
-		ShouldRecordUsage: shouldRecordUsage,
-	}
-}
-
-// DispatchHybridAuxiliaryChatCompletion mirrors dispatchHybridAuxiliaryChatCompletion:
-// select the auxiliary target group, dispatch the synthesized body once, and
-// settle through the returned Finish callback (call-once, side-effect free in
-// the assembled-minimal wiring).
-func (d *chainHybridAuxiliaryDispatcher) DispatchHybridAuxiliaryChatCompletion(ctx context.Context, input gatewayhybrid.AuxiliaryDispatchInput) (gatewayhybrid.AuxiliaryDispatchSuccess, *gatewayhybrid.AuxiliaryDispatchFailure) {
-	if d == nil || d.cache == nil {
-		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, nil, "", false, 0, false, false)
-	}
-	// SwitchTarget（切号冻结目标）：混合打分是内部合成辅助请求，不是客户端
-	// 请求的上游尝试。它在主请求 ctx 上同步执行（preflight 混合智能路由 →
-	// Score → 本派发），若不剥离请求级冻结载体，打分账户的构造会在主请求
-	// 任何账户构造之前抢先冻结 (ScoringModel, chat_completions) 目标，污染
-	// 初始候选筛选与全部切号过滤。剥离后冻结入口与消费点门恢复惰性。
-	ctx = gatewaydispatch.WithoutSwitchTargetCapture(ctx)
-	// 1. selectGatewayModelTargetGroup over the routing runtime cache.
-	selection, err := (hybridTargetGroups{cache: d.cache}).SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
-		APIKeyRecord:               input.APIKeyRecord,
-		TargetModel:                input.TargetModel,
-		RequestClientCompatibility: input.RequestClientCompatibility,
-	})
-	if err != nil {
-		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, nil, "", false, 0, false, false)
-	}
-	if selection == nil || len(selection.Accounts) == 0 {
-		return auxiliaryDispatchFailure(input, input.NoAccountErrorCode, input.NoAccountErrorMessage, nil, "", false, 0, false, false)
-	}
-
-	// 2. Hydrated candidate accounts (Node prepareOpenAIGatewayDispatchAccounts):
-	// the runtime cache snapshots carry the decrypted upstream credentials.
-	candidates, err := d.cache.ListCachedOpenAIAccountsForGroupAsync(ctx, selection.GroupID, input.APIKeyRecord.SystemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
-		RequestedModel:          input.TargetModel,
-		RequestedEndpointFamily: requestEndpointFamilyOf("/v1/chat/completions"),
-	})
-	if err != nil {
-		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, nil, selection.GroupID, true, 0, false, false)
-	}
-	byID := make(map[string]gatewayruntimecache.OpenAIAccountSecret, len(candidates))
-	for _, candidate := range candidates {
-		byID[candidate.ID] = candidate
-	}
-	// Keep the selection order (Node preparation preserves the binding order).
-	ordered := make([]gatewayruntimecache.OpenAIAccountSecret, 0, len(selection.Accounts))
-	for _, secret := range selection.Accounts {
-		if candidate, ok := byID[secret.ID]; ok {
-			ordered = append(ordered, candidate)
-		}
-	}
-	if len(ordered) == 0 {
-		return auxiliaryDispatchFailure(input, input.NoAccountErrorCode, input.NoAccountErrorMessage, nil, selection.GroupID, true, 0, false, false)
-	}
-
-	// 3. One upstream attempt over the first available account
-	// (fetchFirstAvailableUpstream, single-shot; per-account compatibility
-	// skipping mirrors the attempt loop's capability filter).
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(input.TimeoutMs)*time.Millisecond)
-	defer cancel()
-	var lastAccount *gatewayhybrid.OpenAIAccountSecret
-	for _, account := range ordered {
-		if account.BaseURL == "" {
-			continue
-		}
-		lastAccount = &gatewayhybrid.OpenAIAccountSecret{ID: account.ID}
-		httpReq, reqErr := http.NewRequestWithContext(timeoutCtx, http.MethodPost, "http://hybrid-auxiliary.internal/v1/chat/completions", bytes.NewReader(input.RawBody))
-		if reqErr != nil {
-			break
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		gatewayReq := gatewaypreauth.NewGatewayRequest(httpReq)
-		gatewayReq.Body = &gatewaybody.Request{RawBody: input.RawBody, ContentTypeHeader: "application/json"}
-		urls, urlErr := d.driver.BuildGatewayUpstreamURLsForAccount(ctx, account, gatewayReq)
-		if urlErr != nil || len(urls) == 0 {
-			continue
-		}
-		parts, partsErr := d.driver.BuildGatewayUpstreamRequestParts(ctx, gatewayReq, account, gatewaydispatch.UsageIdentity{}, input.RequestClientCompatibility)
-		if partsErr != nil {
-			continue
-		}
-		body := parts.Body
-		// The synthesized body carries the scoring/quality model as the
-		// target model; an account-level model mapping switches it upstream
-		// exactly like the dispatch pipeline (the generic parsed-body path
-		// cannot run on the synthetic request, so the mapping replays through
-		// the shared openai resolver directly).
-		if mapping := resolveAuxiliaryAccountModelMapping(account, input.TargetModel); mapping != nil {
-			transformed, transformErr := d.driver.openai.BuildUpstreamRequest(gatewayproto.BuildUpstreamRequestInput{
-				Method:              http.MethodPost,
-				ClientPathAndQuery:  "/v1/chat/completions",
-				Body:                body,
-				Header:              parts.Headers,
-				ParsedBody:          gatewayhybrid.ToNativeValue(input.Body),
-				ParsedBodyAvailable: input.Body != nil,
-				ModelMapping:        mapping,
-			})
-			if transformErr != nil {
-				continue
-			}
-			body = transformed.Body
-		}
-		timeoutMs := int64(input.TimeoutMs)
-		// D-192/D-146：辅助派发与主尝试链共用同一 TransportDeps（并发槽 +
-		// URL 安全策略 + 钉扎拨号），此前零值 deps 完全绕过这两层。
-		response, requestErr := gatewaydispatch.RequestUpstream(timeoutCtx, urls[0], gatewaydispatch.UpstreamRequestOptions{
-			Method:    http.MethodPost,
-			Header:    parts.Headers,
-			Body:      body,
-			ProxyURL:  deref(account.ProxyURL),
-			TimeoutMs: &timeoutMs,
-			Signal:    timeoutCtx,
-		}, d.transport)
-		if requestErr != nil {
-			message := requestErr.Error()
-			return auxiliaryDispatchFailure(input, input.DispatchErrorCode, firstNonEmptyString(message, input.DispatchErrorMessage), lastAccount, selection.GroupID, true, 0, false, true)
-		}
-		// 4. Bounded body read (readUpstreamBodyLimited) + parse + usage.
-		bodyBytes, readErr := io.ReadAll(io.LimitReader(response.Body, int64(input.ResponseMaxBytes)+1))
-		_ = response.Body.Close()
-		if readErr != nil {
-			return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, lastAccount, selection.GroupID, true, response.Status(), true, true)
-		}
-		truncated := len(bodyBytes) > input.ResponseMaxBytes
-		if truncated {
-			bodyBytes = bodyBytes[:input.ResponseMaxBytes]
-			return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.ResponseTooLargeMessage, lastAccount, selection.GroupID, true, response.Status(), true, true)
-		}
-		bodyText := string(bodyBytes)
-		if !response.OK() {
-			errorCode, errorMessage := gatewayhybrid.AuxiliaryUpstreamFailure(gatewayhybrid.AuxiliaryUpstreamFailureInput{
-				Account:           *lastAccount,
-				BodyText:          bodyText,
-				ContentType:       response.ContentType(),
-				StatusCode:        response.Status(),
-				FallbackErrorCode: input.HTTPErrorCode,
-			})
-			return auxiliaryDispatchFailure(input, errorCode, errorMessage, lastAccount, selection.GroupID, true, response.Status(), true, true)
-		}
-		parsedResponseBody, usage := gatewayhybrid.ParseHybridAuxiliaryResponse(bodyText, response.ContentType())
-		return gatewayhybrid.AuxiliaryDispatchSuccess{
-			Account:               *lastAccount,
-			GroupID:               selection.GroupID,
-			StatusCode:            response.Status(),
-			ResponseBody:          bodyBytes,
-			ResponseBodyText:      bodyText,
-			ResponseBodyTruncated: false,
-			ParsedResponseBody:    parsedResponseBody,
-			Usage:                 usage,
-			Finish: func(context.Context, gatewayhybrid.AuxiliaryDispatchFinishInput) error {
-				// createFinish call-once guard (the scoring service wraps it
-				// in AuxiliaryFinishOnce); the audit / hot-quality /
-				// circuit-lease side effects stay unported (residuals above).
-				return nil
-			},
-		}, nil
-	}
-	if lastAccount != nil {
-		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, lastAccount, selection.GroupID, true, 0, false, true)
-	}
-	return auxiliaryDispatchFailure(input, input.NoAccountErrorCode, input.NoAccountErrorMessage, nil, selection.GroupID, true, 0, false, false)
-}
-
-// resolveAuxiliaryAccountModelMapping resolves the account mapping for the
-// auxiliary target model through the shared openai resolver (the same source
-// of truth the provider driver uses).
-func resolveAuxiliaryAccountModelMapping(account gatewayruntimecache.OpenAIAccountSecret, targetModel string) *gatewayproto.ResolvedModelMapping {
-	if targetModel == "" {
-		return nil
-	}
-	runtime := &gatewayopenai.RuntimeAccount{
-		ModelMappings:             openAIModelMappingsOf(account.ModelMappings),
-		ProviderCode:              account.ProviderCode,
-		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
-		ProtocolCode:              account.ProtocolCode,
-		ProtocolVersion:           account.ProtocolVersion,
-	}
-	return gatewayopenai.ResolveAccountModelMapping(runtime, targetModel, gatewayopenai.FamilyChatCompletions)
-}
-
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -1017,20 +739,6 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func hybridUsageRecorderOf(recorder hybridUsageRecorder) gatewayhybrid.UsageRecorder {
-	if recorder == nil {
-		return nil
-	}
-	return recorder
-}
-
-func hybridDiagnosticsOf(publisher hybridRouteDiagnostics) gatewayhybrid.RouteDiagnosticsPublisher {
-	if publisher == nil {
-		return nil
-	}
-	return publisher
 }
 
 // ---------------------------------------------------------------------------

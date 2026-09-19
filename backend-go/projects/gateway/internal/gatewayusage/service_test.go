@@ -101,7 +101,7 @@ func (s *stubProtocolErrors) ParseProtocolErrorPayload(account UsageModelAccount
 }
 
 type captureLogger struct {
-	warns []capturedLog
+	warns  []capturedLog
 	debugs []capturedLog
 }
 
@@ -121,16 +121,16 @@ func (l *captureLogger) Warn(msg string, fields map[string]any) {
 func (l *captureLogger) Error(msg string, fields map[string]any) {}
 
 type testHarness struct {
-	service     *Service
-	recorder    *MemoryUsageRecorder
-	models      *stubModelResolver
-	pricing     *stubPricing
-	metrics     *stubMetrics
-	apiKey      *stubAPIKeySuccess
-	logger      *captureLogger
-	idFactory   *countingIDFactory
-	protocol    *stubProtocolErrors
-	clock       fixedClock
+	service   *Service
+	recorder  *MemoryUsageRecorder
+	models    *stubModelResolver
+	pricing   *stubPricing
+	metrics   *stubMetrics
+	apiKey    *stubAPIKeySuccess
+	logger    *captureLogger
+	idFactory *countingIDFactory
+	protocol  *stubProtocolErrors
+	clock     fixedClock
 }
 
 func newHarness(config ServiceConfig) *testHarness {
@@ -335,16 +335,16 @@ func TestRecordCompletedUpstreamAttemptRedisGateAndDefaults(t *testing.T) {
 	harness := newHarness(ServiceConfig{SyncPricingAllowed: false, FinalizationMaxItems: 8, FinalizationMaxConcurrency: 2})
 	status := 200
 	if err := harness.service.RecordCompletedUpstreamAttempt(context.Background(), RecordCompletedUpstreamAttemptInput{
-		TraceID:          "trace-1",
-		TrafficSource:    TrafficSourceGateway,
-		SystemAccountID:  "sys-owner",
-		Account:          testAccount(),
-		Endpoint:         "POST /v1/chat/completions",
-		StatusCode:       &status,
-		Success:          true,
-		StartedAtMs:      1000,
-		CompletedAtMs:    0,
-		Model:            "gpt-requested",
+		TraceID:              "trace-1",
+		TrafficSource:        TrafficSourceGateway,
+		SystemAccountID:      "sys-owner",
+		Account:              testAccount(),
+		Endpoint:             "POST /v1/chat/completions",
+		StatusCode:           &status,
+		Success:              true,
+		StartedAtMs:          1000,
+		CompletedAtMs:        0,
+		Model:                "gpt-requested",
 		RequestedServiceTier: "flex",
 	}); err != nil {
 		t.Fatalf("err = %v", err)
@@ -478,67 +478,6 @@ func TestRecordDownstreamClosedUpstreamAttempt(t *testing.T) {
 	}
 }
 
-func TestRecordHybridScoringAttempt(t *testing.T) {
-	harness := newHarness(ServiceConfig{SyncPricingAllowed: true, FinalizationMaxItems: 8, FinalizationMaxConcurrency: 2})
-	status := 200
-	inputTokens := 10
-	err := harness.service.RecordHybridScoringAttempt(context.Background(), RecordHybridScoringAttemptInput{
-		TraceID:         "trace-hybrid",
-		SystemAccountID: "sys-owner",
-		Account:         testAccount(),
-		Endpoint:        "POST /v1/chat/completions",
-		StatusCode:      &status,
-		Success:         true,
-		StartedAtMs:     1700000000000 - 40,
-		ScoringModel:    "gpt-scoring",
-		Usage:           gatewayproto.ParsedUsage{InputTokens: &inputTokens},
-	})
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if !harness.service.dispatch.WaitForIdle(2000) {
-		t.Fatal("not idle")
-	}
-	record, _ := harness.recorder.LastRecord()
-	if record.TrafficSource != TrafficSourceHybridScoring {
-		t.Fatalf("trafficSource = %q", record.TrafficSource)
-	}
-	if record.Model != "gpt-scoring" || *record.Stream {
-		t.Fatalf("model/stream = %q/%v", record.Model, record.Stream)
-	}
-	if record.FailureAttribution != "" {
-		t.Fatalf("success must clear attribution: %q", record.FailureAttribution)
-	}
-	// Hybrid scoring passes snapshots through untouched.
-	requestSnapshot := NewOrderedObject().Set("scoring", true)
-	if err := harness.service.RecordHybridScoringAttempt(context.Background(), RecordHybridScoringAttemptInput{
-		TraceID:         "trace-hybrid-2",
-		SystemAccountID: "sys-owner",
-		Account:         testAccount(),
-		Endpoint:        "POST /v1/chat/completions",
-		Success:         false,
-		StartedAtMs:     1700000000000 - 40,
-		ScoringModel:    "gpt-scoring",
-		RequestSnapshot: requestSnapshot,
-		TrafficSource:   TrafficSourceHybridQualityScoring,
-	}); err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if !harness.service.dispatch.WaitForIdle(2000) {
-		t.Fatal("not idle")
-	}
-	record, _ = harness.recorder.LastRecord()
-	if record.TrafficSource != TrafficSourceHybridQualityScoring {
-		t.Fatalf("quality trafficSource = %q", record.TrafficSource)
-	}
-	if record.FailureAttribution != FailureAttributionAccountUpstream {
-		t.Fatalf("failure attribution = %q", record.FailureAttribution)
-	}
-	if record.RequestSnapshot == nil {
-		t.Fatal("hybrid snapshots must not be dropped")
-	}
-}
-
 func TestRecordGatewayFailure(t *testing.T) {
 	harness := newHarness(ServiceConfig{FinalizationMaxItems: 8, FinalizationMaxConcurrency: 2})
 	payload := NewOrderedObject()
@@ -609,8 +548,8 @@ func TestRecordGatewayFailureOmitsUnresolvedGroupScope(t *testing.T) {
 			GroupID:       "group-1",
 		},
 	}, RecordGatewayFailureInput{
-		Model:      "gpt-requested",
-		StatusCode: 429,
+		Model:       "gpt-requested",
+		StatusCode:  429,
 		StartedAtMs: 1700000000000 - 5,
 	})
 	if err != nil {

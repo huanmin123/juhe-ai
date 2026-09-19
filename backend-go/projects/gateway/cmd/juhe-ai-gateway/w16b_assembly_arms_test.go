@@ -97,8 +97,6 @@ func TestW16BAcquireRetryLeaseCASFailArm(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW16BBridgeMappingOfPointerArms(t *testing.T) {
-	// 注意：RuntimeSource 取 "explicit_hybrid_route" 会命中解析器的
-	// hybrid-route 拒绝守卫（mapping.go:93），这里用无关来源值覆盖指针臂。
 	runtimeSource := "manual_override"
 	runtimeRouteRuleID := "rule-w16b"
 	request := newEndpointGateRequest(t, "POST", "/v1/chat/completions", `{"model":"w16b-model"}`)

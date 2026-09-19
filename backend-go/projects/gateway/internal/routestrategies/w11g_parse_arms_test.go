@@ -43,9 +43,6 @@ func TestW11GParseMutationFieldArms(t *testing.T) {
 		{"bindingStatusBad", map[string]any{"name": "n", "groupBindings": []any{map[string]any{"groupId": "g", "status": "bogus"}}}, true},
 		{"normalBadShape", map[string]any{"name": "n", "normalRoutingConfig": "bad"}, true},
 		{"normalSpeedFirstBad", map[string]any{"name": "n", "normalRoutingConfig": map[string]any{"speedFirstConfig": map[string]any{"unknownKey": 1}}}, true},
-		{"hybridBadShape", map[string]any{"name": "n", "hybridRoutingConfig": "bad"}, true},
-		{"hybridLevelRouteBad", map[string]any{"name": "n", "hybridRoutingConfig": map[string]any{"levelRoutes": []any{map[string]any{"unknownKey": 1}}}}, true},
-		{"hybridInspectionBad", map[string]any{"name": "n", "hybridRoutingConfig": map[string]any{"qualityInspection": map[string]any{"unknownKey": 1}}}, true},
 	}
 	for _, testCase := range cases {
 		if _, message := parseMutationFields(testCase.body, testCase.requireNew); message == "" {
@@ -61,10 +58,10 @@ func TestW11GParseMutationFieldArms(t *testing.T) {
 	}
 	// 正常分支：显式 null 描述与 null 配置。
 	input, message := parseMutationFields(map[string]any{
-		"name": "n", "description": nil, "normalRoutingConfig": nil, "hybridRoutingConfig": nil,
+		"name": "n", "description": nil, "normalRoutingConfig": nil,
 		"groupBindings": []any{map[string]any{"groupId": "g"}},
 	}, true)
-	if message != "" || !input.HasDescription || !input.HasNormalConfig || !input.HasHybridConfig {
+	if message != "" || !input.HasDescription || !input.HasNormalConfig {
 		t.Fatalf("null fields input=%+v message=%s", input, message)
 	}
 	// priority 缺省回填序号。

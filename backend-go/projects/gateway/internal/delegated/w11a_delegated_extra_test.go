@@ -186,10 +186,9 @@ func TestW11AStrategyCreatePatchArms(t *testing.T) {
 // parseStrategyMutation arms: binding priority/status, config null vs object.
 func TestW11AParseStrategyMutationExtraArms(t *testing.T) {
 	body := map[string]any{
-		"name":                 "s",
-		"groupBindings":        []any{map[string]any{"groupId": "g", "priority": float64(2), "weight": float64(3), "status": "disabled"}},
-		"normalRoutingConfig":  map[string]any{"k": "v"},
-		"hybridRoutingConfig":  nil,
+		"name":                "s",
+		"groupBindings":       []any{map[string]any{"groupId": "g", "priority": float64(2), "weight": float64(3), "status": "disabled"}},
+		"normalRoutingConfig": map[string]any{"k": "v"},
 	}
 	input, ok, message := parseStrategyMutation(body, true)
 	if !ok {
@@ -201,12 +200,17 @@ func TestW11AParseStrategyMutationExtraArms(t *testing.T) {
 	if !input.HasNormal || input.NormalConfig == nil {
 		t.Fatal("normalRoutingConfig object arm must set HasNormal with config")
 	}
-	if !input.HasHybrid || input.HybridConfig != nil {
-		t.Fatal("hybridRoutingConfig null arm must set HasHybrid without config")
+	body = map[string]any{
+		"name":                "s",
+		"groupBindings":       []any{map[string]any{"groupId": "g"}},
+		"normalRoutingConfig": nil,
 	}
-
-	if _, ok, _ := parseStrategyMutation(map[string]any{"hybridRoutingConfig": "bad"}, false); ok {
-		t.Fatal("hybridRoutingConfig non-object must fail")
+	input, ok, _ = parseStrategyMutation(body, true)
+	if !ok {
+		t.Fatal("null normalRoutingConfig arm must parse")
+	}
+	if !input.HasNormal || input.NormalConfig != nil {
+		t.Fatal("normalRoutingConfig null arm must set HasNormal without config")
 	}
 
 	// strategyMutation defaults: blank binding status → active, nil priority

@@ -728,7 +728,7 @@ func TestW2CChatToolCapabilitiesResolverMatrix(t *testing.T) {
 			t.Fatalf("无路由 image reason = %v", entry["reason"])
 		}
 		// 仅 chat_completions 协议：web 落“路由不支持 Responses”，image 落缺
-		// gpt-image-2 账户的 default 臂。
+		// 图像生成 API Key 账户的 default 臂。
 		chatOnlyAccount := w2cResponsesAccount()
 		chatOnlyAccount.SupportedEndpointModes = []string{"chat_sse"}
 		chatOnly := w2cModelCatalogFake{
@@ -743,7 +743,7 @@ func TestW2CChatToolCapabilitiesResolverMatrix(t *testing.T) {
 		if entry := w2cToolEntryOf(t, payload, "web_search"); entry["reason"] != "当前路由不支持 Responses 网页搜索" {
 			t.Fatalf("chat-only web reason = %v", entry["reason"])
 		}
-		if entry := w2cToolEntryOf(t, payload, "generate_image"); entry["reason"] != "当前 API Key 路由没有可用的 gpt-image-2 API Key 账户" {
+		if entry := w2cToolEntryOf(t, payload, "generate_image"); entry["reason"] != "当前 API Key 路由没有可用的图像生成 API Key 账户" {
 			t.Fatalf("chat-only image reason = %v", entry["reason"])
 		}
 		// 模型不支持 web_search（95-96）。
@@ -1691,9 +1691,12 @@ func TestW2CMainPrivateF4LeaseErrorRetries(t *testing.T) {
 	w2cSabotageLeaseInsert(t, boot.operationPath, "operation_log_owner_leases")
 
 	coverageDir := w1bCoverageDir(t, "W2C-f4-private-lease")
-	// 复用基础 env，但把 SYSTEM_API_ENABLED 关掉（其余 F4 配置不变），使
-	// F4 组件走私有租约分支（main 513-521）。
-	env := w2cBootEnv(t, coverageDir, boot, "JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false")
+	// 复用基础 env，但把 SYSTEM_API_ENABLED 与 CHAIN_ENABLED 关掉（其余 F4
+	// 配置不变），使 F4 组件走私有租约分支（main 513-521）。2026-09-19 起
+	// 两者未配置默认开启，必须显式关闭才能进入私有租约分支。
+	env := w2cBootEnv(t, coverageDir, boot,
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false",
+		"JUHE_AI_GATEWAY_CHAIN_ENABLED=false")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

@@ -67,7 +67,7 @@ func RedisNamespacedKey(namespace string, key string) (string, error) {
 }
 
 // normalizedNamespace accepts the short namespace or a full juhe-ai: prefixed
-// namespace (mirrors the gatewayhybrid namespacedKey convention).
+// namespace (the former gatewayhybrid namespacedKey convention, kept here).
 func normalizedNamespace(namespace string) string {
 	normalized := strings.TrimRight(strings.TrimSpace(namespace), ":")
 	if strings.HasPrefix(normalized, redisRootPrefix) {
@@ -76,8 +76,8 @@ func normalizedNamespace(namespace string) string {
 	return normalized
 }
 
-// namespacedKey is the Go-side helper used by business/key_model_runtime and
-// internal/gatewayhybrid: accept the short namespace or the full juhe-ai
+// namespacedKey is the Go-side helper used by business/key_model_runtime:
+// accept the short namespace or the full juhe-ai
 // prefix, never double-prefix. The namespace part is used verbatim (it is
 // validated by the callers).
 func namespacedKey(namespace string, key string) string {

@@ -14,8 +14,10 @@ import {
   accountClientCompatibilityCapabilities,
   canCreateOAuthAccount,
   defaultEndpointModesForAccount,
+  endpointModesForProfile,
   managedOAuthProviderKind
 } from '../../views/accounts/accountProviderCapabilities'
+import { accountEndpointModeOptions, accountEndpointModeOptionsForProfile } from '../../views/accounts/accountEndpointModes'
 import { FALLBACK_PROVIDERS, XAI_PROVIDER } from '../../views/accounts/accountOptions'
 
 assert.equal(isXaiProviderCode(XAI_PROVIDER_CODE), true)
@@ -31,6 +33,24 @@ assert.equal(managedOAuthProviderKind({ provider: XAI_PROVIDER, profile }), 'gro
 assert.deepEqual(
   defaultEndpointModesForAccount({ provider: XAI_PROVIDER, profile, type: 'api_key' }),
   ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
+)
+// images_json 是 openai 族显式可选能力：默认集不得包含，但选项必须可见。
+assert.equal(
+  defaultEndpointModesForAccount({ provider: XAI_PROVIDER, profile, type: 'api_key' }).includes('images_json'),
+  false,
+  '新账户默认集不得包含 images_json（只能显式开启）'
+)
+assert(
+  endpointModesForProfile(profile).includes('images_json'),
+  'openai 档案的上游接口能力可勾选集合必须包含 images_json'
+)
+assert(
+  accountEndpointModeOptions.some((option) => option.value === 'images_json'),
+  '账户表单上游接口能力选项必须包含 Images API'
+)
+assert(
+  accountEndpointModeOptionsForProfile(profile).some((option) => option.value === 'images_json' && option.label === 'Images API'),
+  'openai 档案的 Images API 选项必须渲染且标签为 Images API'
 )
 assert.deepEqual(
   accountClientCompatibilityCapabilities({

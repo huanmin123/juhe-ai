@@ -7,19 +7,15 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
 // w1rBoolPtr 提升 bool 到可选指针（projectGroupAccessForRouting 保留三态布尔）。
@@ -192,232 +188,6 @@ func TestW1RChainCapabilityFilterPassesThrough(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// hybridRequestBody 四方法 + orderedJSON 投影（覆盖清单 3）
-// ---------------------------------------------------------------------------
-
-// TestW1RHybridRequestBodyMethods 覆盖 ReplaceModel / HasRawBody /
-// ParseRawBody / ReplaceModelWithParsed 的成功与守卫路径。
-func TestW1RHybridRequestBodyMethods(t *testing.T) {
-	// ReplaceModel：nil 请求、nil body、空白目标模型都拒绝。
-	nilWrapper := hybridRequestBody{request: nil}
-	if nilWrapper.ReplaceModel("gpt-5") {
-		t.Error("nil 请求 ReplaceModel 必须返回 false")
-	}
-	emptyRequest := &gatewaypreauth.GatewayRequest{}
-	emptyWrapper := hybridRequestBody{request: emptyRequest}
-	if emptyWrapper.ReplaceModel("gpt-5") {
-		t.Error("nil body ReplaceModel 必须返回 false")
-	}
-	withBody := &gatewaypreauth.GatewayRequest{Body: w1rGatewayBodyRequest(
-		`{"model":"gpt-4","top_p":0.9}`, map[string]any{"model": "gpt-4", "top_p": 0.9}, nil)}
-	withBodyWrapper := hybridRequestBody{request: withBody}
-	if withBodyWrapper.ReplaceModel("   ") {
-		t.Error("空白目标模型 ReplaceModel 必须返回 false")
-	}
-	if !withBodyWrapper.ReplaceModel("gpt-5") {
-		t.Fatal("合法 ReplaceModel 必须返回 true")
-	}
-	if got := string(withBody.Body.RawBody); got != `{"model":"gpt-5","top_p":0.9}` {
-		t.Errorf("改写后 RawBody = %q, want {\"model\":\"gpt-5\",\"top_p\":0.9}", got)
-	}
-	if withBody.Body.Body.(map[string]any)["model"] != "gpt-5" {
-		t.Errorf("改写后解析对象 model = %v, want gpt-5", withBody.Body.Body.(map[string]any)["model"])
-	}
-	if withBody.Body.State == nil || withBody.Body.State.Model == nil || *withBody.Body.State.Model != "gpt-5" {
-		t.Errorf("改写后状态 model = %v, want gpt-5", withBody.Body.State)
-	}
-
-	// HasRawBody：nil 请求 / nil body / 空 rawBody 均为 false。
-	if nilWrapper.HasRawBody() {
-		t.Error("nil 请求 HasRawBody 必须为 false")
-	}
-	if emptyWrapper.HasRawBody() {
-		t.Error("nil body HasRawBody 必须为 false")
-	}
-	blankRaw := &gatewaypreauth.GatewayRequest{Body: &gatewaybody.Request{}}
-	blankRawWrapper := hybridRequestBody{request: blankRaw}
-	if blankRawWrapper.HasRawBody() {
-		t.Error("空 rawBody HasRawBody 必须为 false")
-	}
-	if !withBodyWrapper.HasRawBody() {
-		t.Error("有 rawBody 时 HasRawBody 必须为 true")
-	}
-
-	// ParseRawBody：空体报中文错误；成功路径保持键插入顺序。
-	if _, err := emptyWrapper.ParseRawBody(context.Background()); err == nil ||
-		!strings.Contains(err.Error(), "混合路由无法改写空请求体") {
-		t.Errorf("空体 ParseRawBody err = %v, want 混合路由无法改写空请求体", err)
-	}
-	parsedRequest := &gatewaypreauth.GatewayRequest{Body: w1rGatewayBodyRequest(
-		`{"model":"gpt-4","messages":[{"role":"user"}]}`, nil, nil)}
-	parsedRequestWrapper := hybridRequestBody{request: parsedRequest}
-	parsed, err := parsedRequestWrapper.ParseRawBody(context.Background())
-	if err != nil {
-		t.Fatalf("ParseRawBody: %v", err)
-	}
-	object, ok := parsed.(*gatewayhybrid.OrderedJSON)
-	if !ok {
-		t.Fatalf("ParseRawBody 结果类型 = %T, want *OrderedJSON", parsed)
-	}
-	if keys := object.Keys(); len(keys) != 2 || keys[0] != "model" || keys[1] != "messages" {
-		t.Errorf("键顺序 = %v, want [model messages]", keys)
-	}
-	if value, _ := object.GetString("model"); value != "gpt-4" {
-		t.Errorf("model = %q, want gpt-4", value)
-	}
-
-	// ReplaceModelWithParsed：nil parsed / nil 请求 / nil body 拒绝；成功时
-	// 以解析对象为体并写入目标模型。
-	parsedBodyRequest := &gatewaypreauth.GatewayRequest{Body: w1rGatewayBodyRequest(
-		`{"model":"old"}`, map[string]any{"model": "old"}, nil)}
-	parsedBodyWrapper := hybridRequestBody{request: parsedBodyRequest}
-	if parsedBodyWrapper.ReplaceModelWithParsed("gpt-5", nil) {
-		t.Error("nil parsed ReplaceModelWithParsed 必须返回 false")
-	}
-	config := gatewayhybrid.NewOrderedJSON()
-	config.Set("temperature", 0.7)
-	if nilWrapper.ReplaceModelWithParsed("gpt-5", config) {
-		t.Error("nil 请求 ReplaceModelWithParsed 必须返回 false")
-	}
-	if emptyWrapper.ReplaceModelWithParsed("gpt-5", config) {
-		t.Error("nil body ReplaceModelWithParsed 必须返回 false")
-	}
-	if !parsedBodyWrapper.ReplaceModelWithParsed("gpt-5", config) {
-		t.Fatal("合法 ReplaceModelWithParsed 必须返回 true")
-	}
-	nextBody, ok := parsedBodyRequest.Body.Body.(map[string]any)
-	if !ok {
-		t.Fatalf("改写后 body 类型 = %T, want map[string]any", parsedBodyRequest.Body.Body)
-	}
-	if nextBody["temperature"] != 0.7 {
-		t.Errorf("改写后 temperature = %v, want 0.7（保留解析对象内容）", nextBody["temperature"])
-	}
-	if nextBody["model"] != "gpt-5" {
-		t.Errorf("改写后 model = %v, want gpt-5", nextBody["model"])
-	}
-	if got := string(parsedBodyRequest.Body.RawBody); !strings.Contains(got, `"gpt-5"`) {
-		t.Errorf("改写后 RawBody = %q, 必须包含 gpt-5", got)
-	}
-}
-
-// TestW1ROrderedJSONPlainConversion 覆盖 orderedJSONObjectMap /
-// orderedValueToPlain：嵌套对象转 map、数组递归、标量透传、nil 入参返回空表。
-func TestW1ROrderedJSONPlainConversion(t *testing.T) {
-	if out := orderedJSONObjectMap(nil); len(out) != 0 {
-		t.Errorf("nil 对象转换 = %v, want 空 map", out)
-	}
-	inner := gatewayhybrid.NewOrderedJSON()
-	inner.Set("level", 3.0)
-	outer := gatewayhybrid.NewOrderedJSON()
-	outer.Set("obj", inner)
-	outer.Set("arr", []any{inner, "text", nil, true, 2.5})
-	outer.Set("plain", "value")
-
-	converted := orderedJSONObjectMap(outer)
-	if len(converted) != 3 {
-		t.Fatalf("转换键数 = %d, want 3", len(converted))
-	}
-	nestedObject, ok := converted["obj"].(map[string]any)
-	if !ok {
-		t.Fatalf("嵌套对象类型 = %T, want map[string]any", converted["obj"])
-	}
-	if nestedObject["level"] != 3.0 {
-		t.Errorf("嵌套 level = %v, want 3", nestedObject["level"])
-	}
-	array, ok := converted["arr"].([]any)
-	if !ok {
-		t.Fatalf("数组类型 = %T, want []any", converted["arr"])
-	}
-	if len(array) != 5 {
-		t.Fatalf("数组长度 = %d, want 5", len(array))
-	}
-	if _, ok := array[0].(map[string]any); !ok {
-		t.Errorf("数组内对象类型 = %T, want map[string]any", array[0])
-	}
-	if array[1] != "text" || array[2] != nil || array[3] != true || array[4] != 2.5 {
-		t.Errorf("数组标量 = %v, want [.. text nil true 2.5]", array)
-	}
-	if converted["plain"] != "value" {
-		t.Errorf("plain = %v, want value", converted["plain"])
-	}
-
-	// orderedValueToPlain 标量与嵌套直接覆盖。
-	if out := orderedValueToPlain("s"); out != "s" {
-		t.Errorf("标量转换 = %v, want s", out)
-	}
-	if out := orderedValueToPlain(inner); !reflect.DeepEqual(out, map[string]any{"level": 3.0}) {
-		t.Errorf("OrderedJSON 转换 = %#v, want map[level:3]", out)
-	}
-	if out := orderedValueToPlain([]any{1.0, "x"}); !reflect.DeepEqual(out, []any{1.0, "x"}) {
-		t.Errorf("数组转换 = %#v, want [1 x]", out)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// hybridAuditMetadata（覆盖清单 4）
-// ---------------------------------------------------------------------------
-
-// w1rAuditMetadataEntry 记录一次 AddGatewayMetadata 调用。
-type w1rAuditMetadataEntry struct {
-	label    string
-	metadata map[string]any
-}
-
-// w1rAuditCapture 是 gatewaypreauth.AuditCaptureContext 的记录用 fake。
-type w1rAuditCapture struct {
-	boundContext gatewaypreauth.AuditGatewayContext
-	entries      []w1rAuditMetadataEntry
-	finalized    int
-}
-
-func (c *w1rAuditCapture) BindContext(ctx gatewaypreauth.AuditGatewayContext) { c.boundContext = ctx }
-
-func (c *w1rAuditCapture) AddGatewayMetadata(label string, metadata map[string]any) {
-	c.entries = append(c.entries, w1rAuditMetadataEntry{label: label, metadata: metadata})
-}
-
-func (c *w1rAuditCapture) Finalize(input gatewaypreauth.AuditFinalizeInput) { c.finalized++ }
-
-// TestW1RHybridAuditMetadataAddGatewayMetadata 覆盖 nil capture / nil
-// metadata 的无操作路径与嵌套 OrderedJSON 的渲染投递。
-func TestW1RHybridAuditMetadataAddGatewayMetadata(t *testing.T) {
-	nested := gatewayhybrid.NewOrderedJSON()
-	nested.Set("level", 3.0)
-	plain := gatewayhybrid.NewOrderedJSON()
-	plain.Set("plain", "x")
-	plain.Set("nested", nested)
-
-	// nil capture：不 panic、无副作用。
-	hybridAuditMetadata{capture: nil}.AddGatewayMetadata("route", plain)
-
-	capture := &w1rAuditCapture{}
-	// nil metadata：不投递。
-	hybridAuditMetadata{capture: capture}.AddGatewayMetadata("route", nil)
-	if len(capture.entries) != 0 {
-		t.Fatalf("nil metadata 不应投递, entries = %+v", capture.entries)
-	}
-	// 正常投递：嵌套对象渲染为 map。
-	hybridAuditMetadata{capture: capture}.AddGatewayMetadata("route", plain)
-	if len(capture.entries) != 1 {
-		t.Fatalf("entries = %d, want 1", len(capture.entries))
-	}
-	entry := capture.entries[0]
-	if entry.label != "route" {
-		t.Errorf("label = %q, want route", entry.label)
-	}
-	if entry.metadata["plain"] != "x" {
-		t.Errorf("plain = %v, want x", entry.metadata["plain"])
-	}
-	rendered, ok := entry.metadata["nested"].(map[string]any)
-	if !ok {
-		t.Fatalf("嵌套渲染类型 = %T, want map[string]any", entry.metadata["nested"])
-	}
-	if rendered["level"] != 3.0 {
-		t.Errorf("嵌套 level = %v, want 3", rendered["level"])
-	}
-}
-
-// ---------------------------------------------------------------------------
 // key row / config 投影（覆盖清单 5、6）
 // ---------------------------------------------------------------------------
 
@@ -520,95 +290,6 @@ func TestW1RProjectBindingsForRuntime(t *testing.T) {
 // strPtrOf_int64 是 GroupBindingRow.Weight 的指针构造（w1r 前缀别名）。
 func strPtrOf_int64(value int64) *int64 { return &value }
 
-// TestW1RProjectAPIKeyRowForHybrid 覆盖 nil 行回退、配置解码与坏配置报错。
-func TestW1RProjectAPIKeyRowForHybrid(t *testing.T) {
-	nilRow, err := projectAPIKeyRowForHybrid(nil)
-	if err != nil {
-		t.Fatalf("nil 行投影错误: %v", err)
-	}
-	if nilRow == nil || nilRow.RouteStrategyMode != "" || nilRow.HybridRoutingConfig != nil {
-		t.Fatalf("nil 行投影 = %+v, want 空模式无配置", nilRow)
-	}
-
-	validRaw := json.RawMessage(`{"scoringModel":"gpt-score","levelRoutes":[{"minLevel":1,"maxLevel":3,"targetModel":"gpt-pro","enabled":true}]}`)
-	record := &gatewayruntimecache.GatewayAPIKeyRow{
-		ID: "key_1", SystemAccountID: "sys_owner",
-		RouteStrategyMode: "hybrid_smart", SelectedGroupID: "group_main",
-		HybridRoutingConfig: &gatewayruntimecache.ApiKeyHybridRoutingConfig{Raw: validRaw},
-	}
-	row, err := projectAPIKeyRowForHybrid(record)
-	if err != nil {
-		t.Fatalf("合法配置投影: %v", err)
-	}
-	if row.ID != "key_1" || row.SystemAccountID != "sys_owner" || row.RouteStrategyMode != "hybrid_smart" || row.SelectedGroupID != "group_main" {
-		t.Fatalf("投影行 = %+v, want 身份列原样", row)
-	}
-	if row.HybridRoutingConfig == nil {
-		t.Fatal("配置必须解码")
-	}
-	if row.HybridRoutingConfig.ScoringModel != "gpt-score" {
-		t.Errorf("ScoringModel = %q, want gpt-score", row.HybridRoutingConfig.ScoringModel)
-	}
-	if len(row.HybridRoutingConfig.LevelRoutes) != 1 || row.HybridRoutingConfig.LevelRoutes[0].TargetModel != "gpt-pro" {
-		t.Errorf("LevelRoutes = %+v, want 1 条 gpt-pro", row.HybridRoutingConfig.LevelRoutes)
-	}
-
-	broken := *record
-	broken.HybridRoutingConfig = &gatewayruntimecache.ApiKeyHybridRoutingConfig{Raw: json.RawMessage(`{"scoringModel":`)}
-	if _, err := projectAPIKeyRowForHybrid(&broken); err == nil || !strings.Contains(err.Error(), "解析混合路由配置失败") {
-		t.Errorf("坏配置 err = %v, want 解析混合路由配置失败", err)
-	}
-
-	noConfig := *record
-	noConfig.HybridRoutingConfig = nil
-	row, err = projectAPIKeyRowForHybrid(&noConfig)
-	if err != nil || row.HybridRoutingConfig != nil {
-		t.Errorf("无配置投影 = %+v err %v, want 无配置无错误", row, err)
-	}
-}
-
-// TestW1RHybridConfigScoringRouteMaps 覆盖 config/scoring/route 到诊断 map
-// 的往返投影与 nil 入参。
-func TestW1RHybridConfigScoringRouteMaps(t *testing.T) {
-	if out := hybridConfigToMap(nil); out != nil {
-		t.Errorf("nil config = %v, want nil", out)
-	}
-	config := &routestrategies.HybridRoutingConfig{
-		ScoringModel:      "gpt-score",
-		LevelRoutes:       []routestrategies.HybridLevelRoute{{MinLevel: 1, MaxLevel: 3, TargetModel: "gpt-pro", Enabled: true}},
-		QualityInspection: &routestrategies.HybridQualityInspection{Enabled: true, ScoringModel: "gpt-judge"},
-	}
-	configMap := hybridConfigToMap(config)
-	if configMap["scoringModel"] != "gpt-score" {
-		t.Errorf("configMap[scoringModel] = %v, want gpt-score", configMap["scoringModel"])
-	}
-	routes, ok := configMap["levelRoutes"].([]any)
-	if !ok || len(routes) != 1 {
-		t.Fatalf("configMap[levelRoutes] = %v, want 1 条", configMap["levelRoutes"])
-	}
-	if first, ok := routes[0].(map[string]any); !ok || first["targetModel"] != "gpt-pro" {
-		t.Errorf("configMap 路由条目 = %v, want gpt-pro", routes[0])
-	}
-	if configMap["qualityInspection"].(map[string]any)["enabled"] != true {
-		t.Errorf("configMap[qualityInspection][enabled] = %v, want true", configMap["qualityInspection"])
-	}
-
-	scoringMap := hybridScoringToMap(gatewayhybrid.HybridScoringResult{Level: 2, Defaulted: true, Factors: []string{"quality"}, ScoringGroupID: "grp_score"})
-	// HybridScoringResult 无小写 json tag：map 键保持 Go 字段名。
-	if scoringMap["Level"] != float64(2) || scoringMap["Defaulted"] != true {
-		t.Errorf("scoringMap = %v, want Level 2 Defaulted true", scoringMap)
-	}
-	factors, ok := scoringMap["Factors"].([]any)
-	if !ok || len(factors) != 1 || factors[0] != "quality" {
-		t.Errorf("scoringMap[Factors] = %v, want [quality]", scoringMap["Factors"])
-	}
-
-	routeMap := hybridRouteToMap(routestrategies.HybridLevelRoute{MinLevel: 1, MaxLevel: 3, TargetModel: "gpt-pro", Enabled: true})
-	if routeMap["minLevel"] != float64(1) || routeMap["maxLevel"] != float64(3) || routeMap["targetModel"] != "gpt-pro" || routeMap["enabled"] != true {
-		t.Errorf("routeMap = %v, want minLevel 1 maxLevel 3 gpt-pro enabled", routeMap)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // 账户回填 / 小工具（覆盖清单 7、8、9）
 // ---------------------------------------------------------------------------
@@ -703,36 +384,6 @@ func TestW1RLocalEndpointFamily(t *testing.T) {
 	}
 }
 
-// TestW1RHybridTargetModelHintAndAccountIDs 覆盖 rehydrate 的模型提示提取与
-// 账户 ID 列表投影。
-func TestW1RHybridTargetModelHintAndAccountIDs(t *testing.T) {
-	if got := hybridTargetModelHint(nil); got != "" {
-		t.Errorf("nil 请求提示 = %q, want 空", got)
-	}
-	noBody := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
-	if got := hybridTargetModelHint(noBody); got != "" {
-		t.Errorf("无 body 提示 = %q, want 空", got)
-	}
-	noModel := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
-	noModel.Body = w1rGatewayBodyRequest(`{}`, nil, &gatewaybody.BodyState{})
-	if got := hybridTargetModelHint(noModel); got != "" {
-		t.Errorf("无模型提示 = %q, want 空", got)
-	}
-	withModel := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
-	withModel.Body = w1rGatewayBodyRequest(`{"model":"gpt-test"}`, nil, &gatewaybody.BodyState{Model: strPtrOf("gpt-test")})
-	if got := hybridTargetModelHint(withModel); got != "gpt-test" {
-		t.Errorf("模型提示 = %q, want gpt-test", got)
-	}
-
-	if ids := hybridAccountIDs(nil); ids == nil || len(ids) != 0 {
-		t.Errorf("空账户 IDs = %v, want 空切片", ids)
-	}
-	ids := hybridAccountIDs([]gatewayhybrid.OpenAIAccountSecret{{ID: "acc_a"}, {ID: "acc_b"}})
-	if len(ids) != 2 || ids[0] != "acc_a" || ids[1] != "acc_b" {
-		t.Errorf("账户 IDs = %v, want [acc_a acc_b]", ids)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // 请求视图投影（覆盖清单 10）
 // ---------------------------------------------------------------------------
@@ -766,78 +417,6 @@ func TestW1RRoutingRequestView(t *testing.T) {
 	view = routingRequestView(bare, nil)
 	if view.Method != "GET" || view.BodyModel != "" || view.Path != "/v1/models" {
 		t.Errorf("无 body 视图 = %+v, want GET /v1/models 空模型", view)
-	}
-}
-
-// TestW1RHybridRequestView 覆盖混合视图：nil 请求、完整 body + 状态、
-// 仅状态无 raw body 三种形态。
-func TestW1RHybridRequestView(t *testing.T) {
-	view := hybridRequestView(nil)
-	if view == nil || view.Method != "" || view.BodyState != nil || view.BodyAvailable {
-		t.Fatalf("nil 请求视图 = %+v, want 非nil 零值", view)
-	}
-
-	rawRequest := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	rawRequest.Header.Set("Content-Type", "application/json")
-	rawRequest.Header.Set("X-Conversation-Key", "conv_1")
-	parsed := map[string]any{"model": "gpt-4"}
-	request := &gatewaypreauth.GatewayRequest{
-		HTTP: rawRequest,
-		Body: w1rGatewayBodyRequest(`{"model":"gpt-4"}`, parsed, &gatewaybody.BodyState{
-			ContentType:             "application/json",
-			JSONParseStatus:         gatewaybody.JSONParseStatusParsed,
-			Model:                   strPtrOf("gpt-4"),
-			Stream:                  w1rBoolPtr(true),
-			ImageGeneration:         true,
-			ImageGenerationForced:   true,
-			StrictOutputRequirement: true,
-		}),
-	}
-	view = hybridRequestView(request)
-	if view.Method != "POST" || view.Path != "/v1/chat/completions" {
-		t.Errorf("Method/Path = %q/%q, want POST /v1/chat/completions", view.Method, view.Path)
-	}
-	if view.ContentType != "application/json" || view.ConversationKey != "conv_1" {
-		t.Errorf("ContentType/ConversationKey = %q/%q, want application/json/conv_1", view.ContentType, view.ConversationKey)
-	}
-	if string(view.RawBody) != `{"model":"gpt-4"}` || !view.BodyAvailable {
-		t.Errorf("RawBody/BodyAvailable = %q/%v, want 原样/true", view.RawBody, view.BodyAvailable)
-	}
-	if !reflect.DeepEqual(view.ParsedBody, parsed) {
-		t.Errorf("ParsedBody = %#v, want 解析 map", view.ParsedBody)
-	}
-	if view.OriginalModel != "gpt-4" || !view.OriginalModelPresent {
-		t.Errorf("OriginalModel/ Present = %q/%v, want gpt-4/true", view.OriginalModel, view.OriginalModelPresent)
-	}
-	if view.BodyState == nil {
-		t.Fatal("BodyState 必须投影")
-	}
-	state := view.BodyState
-	if state.RawBodyBytes != int64(len(`{"model":"gpt-4"}`)) || state.ContentType != "application/json" {
-		t.Errorf("BodyState 字节/类型 = %d/%q, want 16/application/json", state.RawBodyBytes, state.ContentType)
-	}
-	if state.JSONParseStatus != "parsed" || state.Model != "gpt-4" {
-		t.Errorf("BodyState 状态/模型 = %q/%q, want parsed/gpt-4", state.JSONParseStatus, state.Model)
-	}
-	if state.Stream == nil || !*state.Stream || state.ImageGeneration == nil || !*state.ImageGeneration ||
-		state.ImageGenerationForced == nil || !*state.ImageGenerationForced || !state.StrictOutputRequirement {
-		t.Errorf("BodyState 可选字段 = %+v, want 全部置位", state)
-	}
-
-	// 无 body 但有状态：BodyAvailable false、模型缺失投影为空字符串。
-	stateOnly := &gatewaypreauth.GatewayRequest{
-		HTTP: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		Body: &gatewaybody.Request{State: &gatewaybody.BodyState{ContentType: "application/json"}},
-	}
-	view = hybridRequestView(stateOnly)
-	if view.BodyAvailable || view.RawBody != nil || view.ParsedBody != nil {
-		t.Errorf("仅状态视图 body 字段 = %+v, want 全空", view)
-	}
-	if view.OriginalModel != "" || view.OriginalModelPresent {
-		t.Errorf("仅状态视图模型 = %q/%v, want 空/false", view.OriginalModel, view.OriginalModelPresent)
-	}
-	if view.BodyState == nil || view.BodyState.RawBodyBytes != 0 || view.BodyState.ContentType != "application/json" || view.BodyState.Model != "" {
-		t.Errorf("仅状态 BodyState = %+v, want 0 字节 application/json 空模型", view.BodyState)
 	}
 }
 
@@ -1003,39 +582,6 @@ func TestW1RRehydrateAccounts(t *testing.T) {
 	}
 }
 
-// TestW1RRehydrateAccountsByID 覆盖混合路由按 ID 回源：命中带凭据、未命中
-// 仅保留 ID。
-func TestW1RRehydrateAccountsByID(t *testing.T) {
-	fixture := newChainFixture(t)
-	resolver := &chainRouteResolver{cache: fixture.cache}
-	ctx := context.Background()
-	request := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
-	request.Body = w1rGatewayBodyRequest(`{"model":"gpt-test"}`, nil,
-		&gatewaybody.BodyState{Model: strPtrOf("gpt-test")})
-
-	accounts := resolver.rehydrateAccountsByID(ctx, fixture.groupID, fixture.systemAccount,
-		[]string{fixture.accountID, "acc_unknown"}, request)
-	if len(accounts) != 2 {
-		t.Fatalf("账户数 = %d, want 2", len(accounts))
-	}
-	if accounts[0].ID != fixture.accountID || accounts[0].APIKey != "sk-upstream-account-key" {
-		t.Errorf("账户一 = %+v, want 缓存完整账户", accounts[0])
-	}
-	if accounts[1].ID != "acc_unknown" || accounts[1].ProviderCode != "" {
-		t.Errorf("账户二 = %+v, want 仅 ID 占位", accounts[1])
-	}
-
-	// 空 ID 列表与 nil cache。
-	if got := resolver.rehydrateAccountsByID(ctx, fixture.groupID, fixture.systemAccount, nil, request); len(got) != 0 {
-		t.Errorf("空 ID 列表 = %v, want 空", got)
-	}
-	bare := &chainRouteResolver{}
-	accounts = bare.rehydrateAccountsByID(ctx, fixture.groupID, fixture.systemAccount, []string{"acc_x"}, request)
-	if len(accounts) != 1 || accounts[0].ID != "acc_x" || accounts[0].APIKey != "" {
-		t.Errorf("nil cache 回源 = %+v, want ID 占位", accounts)
-	}
-}
-
 // TestW1RListFullAccountsGuards 覆盖 listFullAccounts 的守卫分支：空
 // groupID 与 nil cache 返回 nil，缓存未命中的缺失分组返回空结果。
 func TestW1RListFullAccountsGuards(t *testing.T) {
@@ -1145,3 +691,24 @@ func TestW1RChainCompatScopeResolver(t *testing.T) {
 		t.Errorf("APIKeyID = %q, want key_1", scope.APIKeyID)
 	}
 }
+
+// w1rAuditMetadataEntry 记录一次 AddGatewayMetadata 调用。
+type w1rAuditMetadataEntry struct {
+	label    string
+	metadata map[string]any
+}
+
+// w1rAuditCapture 是 gatewaypreauth.AuditCaptureContext 的记录用 fake。
+type w1rAuditCapture struct {
+	boundContext gatewaypreauth.AuditGatewayContext
+	entries      []w1rAuditMetadataEntry
+	finalized    int
+}
+
+func (c *w1rAuditCapture) BindContext(ctx gatewaypreauth.AuditGatewayContext) { c.boundContext = ctx }
+
+func (c *w1rAuditCapture) AddGatewayMetadata(label string, metadata map[string]any) {
+	c.entries = append(c.entries, w1rAuditMetadataEntry{label: label, metadata: metadata})
+}
+
+func (c *w1rAuditCapture) Finalize(input gatewaypreauth.AuditFinalizeInput) { c.finalized++ }

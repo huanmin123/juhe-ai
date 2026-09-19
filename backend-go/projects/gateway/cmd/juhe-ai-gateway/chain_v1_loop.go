@@ -232,7 +232,7 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 // (routes.ts:1899-2398) for the reasons the Go response layer produces
 // (response_inspection / pre_commit_stream_failure). The deep per-branch
 // server-retry loops that stay engine-internal in Go (speed-first cutover,
-// codex encrypted-content recovery, account-lock lease carry, hybrid quality)
+// codex encrypted-content recovery, account-lock lease carry)
 // never reach this method, and the same-account retry reservation
 // (routes.ts:2245-2300) is a Node dispatch-loop nicety the Go chain does not
 // carry: the verdict rotates to the next account instead. Returns true when

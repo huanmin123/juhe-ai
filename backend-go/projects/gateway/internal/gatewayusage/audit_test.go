@@ -10,8 +10,8 @@ import (
 
 // recordingAuditDispatcher is the in-memory AuditDispatcher mock.
 type recordingAuditDispatcher struct {
-	mu        sync.Mutex
-	inputs    []AuditLogInput
+	mu         sync.Mutex
+	inputs     []AuditLogInput
 	onDispatch func(AuditLogInput)
 }
 
@@ -72,15 +72,15 @@ func captureInput(dispatcher *recordingAuditDispatcher, mutate func(*AuditCaptur
 func TestResolveAuditFinalization(t *testing.T) {
 	root := &FailedAuditAttemptRoot{ErrorPhase: "upstream_request", ErrorCode: "connect_timeout", ErrorMessage: "连接超时"}
 	tests := []struct {
-		name        string
-		input       ResolveAuditFinalizationInput
-		closed      bool
-		hadFailed   bool
-		root        *FailedAuditAttemptRoot
-		outcome     AuditOutcome
-		success     bool
-		errorPhase  string
-		errorCode   string
+		name         string
+		input        ResolveAuditFinalizationInput
+		closed       bool
+		hadFailed    bool
+		root         *FailedAuditAttemptRoot
+		outcome      AuditOutcome
+		success      bool
+		errorPhase   string
+		errorCode    string
 		errorMessage string
 	}{
 		{
@@ -237,15 +237,15 @@ func TestAuditCaptureSamplingGate(t *testing.T) {
 			ResetActiveAuditCaptureCountForTest()
 			dispatcher := &recordingAuditDispatcher{}
 			capture := captureInput(dispatcher, func(input *AuditCaptureInput) {
-								input.Settings = FixedAuditLogSettingsSource{Settings: AuditLogSettings{
+				input.Settings = FixedAuditLogSettingsSource{Settings: AuditLogSettings{
 					Enabled: true, FullBodyCaptureEnabled: true,
 					SuccessSampleRate: tt.sampleRate, ActiveCaptureMaxBytes: DefaultAuditCaptureHardLimitBytes,
-					SuccessHotRetentionHours: boolHours(tt.hotRetention),
+					SuccessHotRetentionHours:  boolHours(tt.hotRetention),
 					SuccessFullBodyLimitBytes: 1024, ProblemFullBodyLimitBytes: 2048,
 				}}
 			})
 			finalizeInput := FinalizeAuditInput{
-				StatusCode: intPointer(200),
+				StatusCode:   intPointer(200),
 				ResponseBody: []byte(`{"ok":true}`), HasResponseBody: true,
 				ResponseHeaders: map[string]any{"content-type": "application/json"},
 			}
@@ -516,7 +516,7 @@ func TestAuditCaptureOmitPayloadBodies(t *testing.T) {
 		ResponseBody: []byte("response body"), HasResponseBody: true,
 	})
 	capture.OmitPayloadBodies(OmitPayloadBodiesInput{
-		Label: "payload_bodies_omitted",
+		Label:     "payload_bodies_omitted",
 		PartTypes: []AuditPayloadPartType{AuditPartUpstreamRequest, AuditPartUpstreamResponse, AuditPartClientRequest},
 	})
 	capture.FinalizeLazy(func() FinalizeAuditInput {
@@ -588,8 +588,6 @@ func TestAuditTrafficSourceGate(t *testing.T) {
 	}{
 		{TrafficSourceGateway, true},
 		{TrafficSourceManualAccountTest, true},
-		{TrafficSourceHybridScoring, true},
-		{TrafficSourceHybridQualityScoring, true},
 		{TrafficSourceAccountHealthCheck, false},
 		{TrafficSourceRuntimeRecoveryProbe, false},
 		{TrafficSourceCooldownRetest, false},

@@ -288,9 +288,7 @@ const viewModeOptions = [
 const trafficSourceOptions = [
   { label: '全部来源', value: 'all' },
   { label: '网关请求', value: 'gateway' },
-  { label: 'AI账户测试', value: 'manual_account_test' },
-  { label: '混合路由选型', value: 'hybrid_scoring' },
-  { label: '回答质量复核', value: 'hybrid_quality_scoring' }
+  { label: 'AI账户测试', value: 'manual_account_test' }
 ] satisfies Array<{ label: string; value: AuditTrafficSource | 'all' }>
 const {
   managedColumns,

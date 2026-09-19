@@ -428,10 +428,15 @@ func TestGateGatewayChainPassesAfterPhase2(t *testing.T) {
 func TestLoadRuntimeConfigDriverTriState(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "juhe-ai.sqlite3")
 
-	// Standalone defaults (no hints): sqlite + memory drivers, but sqlite
-	// mode requires the explicit database path (no CWD-relative default).
-	if _, err := loadRuntimeConfig(func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_DATABASE_PATH") {
-		t.Fatalf("sqlite without database path must fail, got %v", err)
+	// Standalone defaults (no hints): sqlite + memory drivers. 2026-09-19 起
+	// sqlite 数据库路径未配置时按 datadir 固定名表派生（<DATA_DIR>/
+	// business.sqlite3），不再是启动失败条件（零配置可启动）。
+	empty, err := loadRuntimeConfig(func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("sqlite without database path must derive a default, got %v", err)
+	}
+	if empty.DatabasePath != filepath.Join("data", "business.sqlite3") {
+		t.Fatalf("derived database path = %q", empty.DatabasePath)
 	}
 	cfg, err := loadRuntimeConfig(func(key string) string {
 		if key == "JUHE_AI_DATABASE_PATH" {

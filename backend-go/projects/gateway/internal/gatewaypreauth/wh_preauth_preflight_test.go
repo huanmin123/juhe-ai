@@ -203,7 +203,7 @@ func TestWhPreflightNormalRouteFailed(t *testing.T) {
 	req, _, writer := whAuthorizedChatRequest()
 	result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
 		Options: &PreflightOptions{},
-		Req: req, Res: writer, AuditCapture: audit,
+		Req:     req, Res: writer, AuditCapture: audit,
 		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
 	})
 	if err != nil || result.DispatchContext != nil {
@@ -227,97 +227,13 @@ func TestWhPreflightNormalRouteFailed(t *testing.T) {
 	req2, _, writer2 := whAuthorizedChatRequest()
 	if _, err := service2.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
 		Options: &PreflightOptions{},
-		Req: req2, Res: writer2, AuditCapture: &fakeAuditCapture{},
+		Req:     req2, Res: writer2, AuditCapture: &fakeAuditCapture{},
 		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if failure2, ok := sink2.lastFailure(); !ok || failure2.Audit.ErrorPhase != "dispatch" {
 		t.Fatalf("500+ 阶段 = %+v", failure2)
-	}
-}
-
-// 混合智能路由：命中目标分组或整体失败两条路径。
-func TestWhPreflightHybridRoute(t *testing.T) {
-	account := gatewayruntimecache.OpenAIAccountSecret{ID: "acc_h", ProviderCode: "openai"}
-	hybridRow := validRuntimeRow()
-	hybridRow.RouteStrategyMode = gatewayruntimecache.RouteStrategyModeHybridSmart
-
-	buildService := func(hybrid HybridRouteResult) (*Service, *fakeResponseSink, *fakeAuditCapture) {
-		audit := &fakeAuditCapture{}
-		hybridRuntime := map[string]gatewayruntimecache.GatewayRuntime{"sk-good": {
-			APIKey: hybridRow,
-			Settings: gatewayruntimecache.GatewaySettings{
-				NoAvailableAccountWaitTimeoutSeconds: 30,
-				ImageRequestWallTimeoutSeconds:       300,
-			},
-			GroupAccess: &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
-		}}
-		service, _, sink := newTestService(t, func(s *Service) {
-			s.RuntimeCache = &fakeRuntimeCache{
-				runtimeByKey: hybridRuntime,
-				groupAccess:  &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
-				accounts:     []gatewayruntimecache.OpenAIAccountSecret{account},
-			}
-			s.RouteResolver = &fakeRouteResolver{hybrid: hybrid}
-			s.Candidates = whSuccessfulCandidates(account)
-			s.Codex = &fakeCodex{compactResult: CodexCompactPreflightResult{Accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}}
-		})
-		return service, sink, audit
-	}
-
-	// 命中：目标分组与评分决策进入上下文。
-	service, _, audit := buildService(HybridRouteResult{
-		Outcome: HybridRouteOutcomeSelected, GroupID: "g-hybrid",
-		APIKeyRecord: hybridRow, TargetModel: "gpt-4o",
-		Config: map[string]any{"level": 3}, Scoring: map[string]any{"level": 3},
-		Route:    map[string]any{"minLevel": 1, "maxLevel": 4},
-		Accounts: []gatewayruntimecache.OpenAIAccountSecret{account},
-	})
-	req, _, writer := whAuthorizedChatRequest()
-	result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Options: &PreflightOptions{},
-		Req: req, Res: writer, AuditCapture: audit,
-		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
-	})
-	if err != nil || result.DispatchContext == nil {
-		t.Fatalf("result = %+v err=%v", result, err)
-	}
-	if result.DispatchContext.UsageContext.GroupID != "g-hybrid" {
-		t.Fatalf("混合分组 = %q", result.DispatchContext.UsageContext.GroupID)
-	}
-
-	// 失败：评分失败按 502 渲染。
-	service2, sink2, audit2 := buildService(HybridRouteResult{
-		Outcome: HybridRouteOutcomeFailed, Reason: "hybrid_scoring_failed", TargetModel: "gpt-4o",
-		Scoring: map[string]any{"failed": true, "errorCode": "E1"},
-	})
-	req2, _, writer2 := whAuthorizedChatRequest()
-	if _, err := service2.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Options: &PreflightOptions{},
-		Req: req2, Res: writer2, AuditCapture: audit2,
-		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if failure, ok := sink2.lastFailure(); !ok || failure.StatusCode != 502 || failure.Audit.ErrorCode != "hybrid_scoring_failed" {
-		t.Fatalf("混合失败 = %+v", failure)
-	}
-
-	// 失败：目标分组不可用按 503 渲染。
-	service3, sink3, audit3 := buildService(HybridRouteResult{
-		Outcome: HybridRouteOutcomeFailed, Reason: "hybrid_target_group_unavailable",
-	})
-	req3, _, writer3 := whAuthorizedChatRequest()
-	if _, err := service3.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
-		Options: &PreflightOptions{},
-		Req: req3, Res: writer3, AuditCapture: audit3,
-		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if failure, ok := sink3.lastFailure(); !ok || failure.StatusCode != 503 {
-		t.Fatalf("503 失败 = %+v", failure)
 	}
 }
 
@@ -387,7 +303,7 @@ func TestWhPreflightDispatchPreparationFallback(t *testing.T) {
 	req, _, writer := whAuthorizedChatRequest()
 	result, err := service.PrepareOpenAIGatewayDispatchContext(context.Background(), PreflightInput{
 		Options: &PreflightOptions{},
-		Req: req, Res: writer, AuditCapture: audit,
+		Req:     req, Res: writer, AuditCapture: audit,
 		StartedAt: 1, TraceID: "trace", Endpoint: "POST /v1/chat/completions",
 	})
 	if err != nil {
@@ -455,10 +371,10 @@ func TestWhCandidateAndRecoverableLoaders(t *testing.T) {
 		s.RuntimeCache = whRuntimeCacheFor([]gatewayruntimecache.OpenAIAccountSecret{account})
 	})
 	// options.CandidateAccounts 非空 → 不构造闭包。
-	if candidateLoader(service, &PreflightOptions{CandidateAccounts: []gatewayruntimecache.OpenAIAccountSecret{account}}, nil, "g", "sys") != nil {
+	if candidateLoader(service, &PreflightOptions{CandidateAccounts: []gatewayruntimecache.OpenAIAccountSecret{account}}, nil, nil, "g", "sys") != nil {
 		t.Fatal("自带候选必须返回 nil 闭包")
 	}
-	loader := candidateLoader(service, &PreflightOptions{}, nil, "group_1", "sys_1")
+	loader := candidateLoader(service, &PreflightOptions{}, nil, nil, "group_1", "sys_1")
 	if loader == nil {
 		t.Fatal("应返回加载闭包")
 	}
@@ -466,10 +382,10 @@ func TestWhCandidateAndRecoverableLoaders(t *testing.T) {
 	if err != nil || len(accounts) != 1 {
 		t.Fatalf("加载 = %v err=%v", accounts, err)
 	}
-	if recoverableLoader(service, &PreflightOptions{CandidateAccounts: []gatewayruntimecache.OpenAIAccountSecret{account}}, nil, recoveryInput{}) != nil {
+	if recoverableLoader(service, &PreflightOptions{CandidateAccounts: []gatewayruntimecache.OpenAIAccountSecret{account}}, nil, nil, recoveryInput{}) != nil {
 		t.Fatal("自带候选必须返回 nil 可恢复闭包")
 	}
-	if recoverableLoader(service, &PreflightOptions{}, nil, recoveryInput{}) == nil {
+	if recoverableLoader(service, &PreflightOptions{}, nil, nil, recoveryInput{}) == nil {
 		t.Fatal("应返回可恢复闭包")
 	}
 	// 亲和池标识：按 profile/provider 去重排序，空集合折叠为 empty。

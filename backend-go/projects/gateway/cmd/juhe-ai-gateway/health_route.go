@@ -11,7 +11,7 @@ import (
 // gatewayOwnerHealth aggregates this process' resident owner readiness for
 // both health faces: the loopback /health listener (main.go) and the main
 // port's GET /__aisys__/health route (compose.go). Single readiness source —
-// the hybrid-era exec healthcheck and the post-cutover HTTP liveness probe
+// the exec healthcheck and the post-cutover HTTP liveness probe
 // must report identical owner facts.
 type gatewayOwnerHealth struct {
 	ownerMode             ownermode.Mode

@@ -9,14 +9,14 @@ const typesSource = readSource('frontend/src/types/domain/access.ts')
 const apiSource = readSource('frontend/src/api/domains/routeStrategies.ts')
 
 assert(
-  viewSource.includes("const schedulingPreferenceSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin']"),
-  '调度偏好必须对 normal/weighted/failover/round_robin 四种模式开放'
+  viewSource.includes("const schedulingPreferenceSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin', 'merge']"),
+  '调度偏好必须对 normal/weighted/failover/round_robin/merge 五种模式开放'
 )
-assert(viewSource.includes('v-if="schedulingPreferenceSupported"'), '调度偏好区块必须由四模式计算属性控制展示')
+assert(viewSource.includes('v-if="schedulingPreferenceSupported"'), '调度偏好区块必须由多模式计算属性控制展示')
 assert(!viewSource.includes("record.mode !== 'normal'"), '模式展示文本不得再把调度偏好限定在 normal 模式')
 assert(
   viewSource.includes('schedulingPreferenceSupportedModes.includes(record.mode) && record.normalRoutingConfig?.schedulingPreference === \'speed_first\''),
-  '速度优先判断必须按四模式集合加调度偏好取值判断'
+  '速度优先判断必须按多模式集合加调度偏好取值判断'
 )
 assert(viewSource.includes('v-if="form.normal.schedulingPreference === \'speed_first\'" label="首字截止"'), '首字截止控件只能在速度优先时展示')
 assert(viewSource.includes('const firstByteDeadlineMs = secondsToMilliseconds(form.normal.firstByteDeadlineSeconds)'), '速度优先保存必须把首字截止转换为毫秒')
@@ -29,16 +29,14 @@ assert(!typesSource.includes('firstByteThresholdMs'), '前端领域类型不得�
 assert(apiSource.includes('normalRoutingConfig?: RouteStrategyNormalRoutingConfig | null'), '前端 API payload 必须承载规范化普通路由配置')
 
 const payloadSource = sliceBetween(viewSource, 'function buildRouteStrategyFormPayload', 'async function deleteRouteStrategy')
-const hybridSmartBranch = sliceBetween(payloadSource, "if (form.mode === 'hybrid_smart') {", "} else if (form.mode === 'normal')")
 const schedulingPreferenceElseBranch = sliceBetween(payloadSource, '} else {', 'return payload')
-assert(hybridSmartBranch.includes('payload.normalRoutingConfig = null'), 'hybrid_smart 提交必须保留 normalRoutingConfig: null')
 assert(
   schedulingPreferenceElseBranch.includes('payload.normalRoutingConfig = buildNormalRoutingConfigPayload()'),
-  'weighted/failover/round_robin 必须与 normal 同源提交真实调度偏好配置'
+  'weighted/failover/round_robin/merge 必须与 normal 同源提交真实调度偏好配置'
 )
-assert(schedulingPreferenceElseBranch.includes('payload.hybridRoutingConfig = null'), '三种新模式提交必须保留 hybridRoutingConfig: null')
+assert(schedulingPreferenceElseBranch.includes('weighted/failover/round_robin/merge'), '调度偏好提交分支注释必须把 merge 纳入共享模式清单')
 
-console.log('前端策略路由速度优先首字截止契约回归通过：调度偏好对四种模式开放，仅速度优先展示和保存首字截止，默认 30 秒')
+console.log('前端策略路由速度优先首字截止契约回归通过：调度偏好对五种模式开放，仅速度优先展示和保存首字截止，默认 30 秒')
 
 function readSource(relativePath: string): string {
   return readFileSync(resolve(repoRoot, relativePath), 'utf8')

@@ -163,7 +163,7 @@ import {
 import { createChatConversationSummaryRefresher, mergeChatConversationSummary } from './chatConversationSummary'
 import { canSubmitChatTurn, chatTurnLimitMessage, isChatTurnLimitReached, markChatConversationTurnLimitReached } from './chatTurnLimit'
 import { isCurrentChatConversationLoad } from './chatConversationLoad'
-import { resolveChatStopTarget, stopActiveChatGeneration } from './chatStopGeneration'
+import { resolveChatStopTarget, shouldRebuildChatStopTarget, stopActiveChatGeneration } from './chatStopGeneration'
 import {
   clearChatPendingSubmission,
   readChatPendingSubmission,
@@ -271,7 +271,9 @@ const conversationMutationVersions = new Map<string, number>()
 const conversationMutationConfirmedValues = new Map<string, string | boolean>()
 const conversationMutationQueue = new ChatConversationMutationQueue()
 const imageModelOptions: ReadonlyArray<{ value: ChatImageModel; label: string }> = [
-  { value: 'gpt-image-2', label: 'GPT Image 2' }
+  { value: 'gpt-image-2', label: 'GPT Image 2' },
+  { value: 'grok-imagine-image', label: 'Grok Imagine' },
+  { value: 'grok-imagine-image-quality', label: 'Grok Imagine 高清' }
 ]
 const requestLifecycleEpochs = new ChatRequestLifecycleEpochs()
 let activeStopTarget: ActiveChatStopTarget | undefined
@@ -421,7 +423,12 @@ async function selectConversation(id: string, options: {
   const nextModelCacheKey = nextConversation ? nextConversation.apiKeyId ?? nextConversation.id : undefined
   if (previousModelCacheKey !== nextModelCacheKey) modelLoadCoordinator.cancel(previousModelCacheKey)
   modelCapabilitiesLoadCoordinator.cancel()
-  await cancelTurnEdit()
+  // cancelTurnEdit 在 phase === 'submitting' 时静默拒绝，若不处理，编辑态会跨会话卡死。
+  // 离开编辑所属会话时：提交中的编辑直接放弃（后台替换请求由 ui/lifecycle epoch fencing
+  // 收敛，不会污染新会话）；仍在编辑中的维持 cancelTurnEdit 原行为（恢复被顶替的草稿）。
+  const leavingEdit = editingTurn.value
+  if (leavingEdit && leavingEdit.conversationId === selectedConversationId.value && leavingEdit.phase === 'submitting') editingTurn.value = undefined
+  else await cancelTurnEdit()
   const loadEpoch = ++conversationLoadEpoch
   selectedConversationId.value = id
   activeRuntimeTurn.value = undefined
@@ -772,13 +779,28 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
   activeRuntimeTurn.value = turn
   generating.value = turn?.status === 'preparing' || turn?.status === 'running'
   if (!turn) {
-    activeStopTarget = undefined
+    // undefined 投递只代表 runtime map 当前无条目（如 refreshConversationFromSync 在
+    // 服务端无活动轮时 forget 掉轮次投影后 notify），不代表没有本地在途请求：编辑重发
+    // 刚注册的 stopTarget（含 replaceTurnId）若在此被清，后续 message.started 会走重建
+    // 分支并丢失 replaceTurnId，编辑态再次卡死。因此只清理非本地发起（无 lifecycleEpoch）
+    // 的目标；本地在途请求保留，仍由轮次终端处理与接受前回滚路径收口。
+    if (!activeStopTarget || activeStopTarget.request.lifecycleEpoch === undefined) activeStopTarget = undefined
     runtimeReconciliationScheduler.clearConversation(conversation.systemAccountId, conversation.id)
     return
   }
   if (!turn.reconciliationReason) runtimeReconciliationScheduler.clear(turn)
   let active = activeStopTarget
-  if (turn.turnId && turn.clientMessageId && (!active || active.request.conversationId !== turn.conversationId || active.request.clientMessageId !== turn.clientMessageId)) {
+  if (
+    turn.turnId
+    && turn.clientMessageId
+    && shouldRebuildChatStopTarget({
+      active: active
+        ? { conversationId: active.request.conversationId, clientMessageId: active.request.clientMessageId, lifecycleEpoch: active.request.lifecycleEpoch }
+        : undefined,
+      conversationId: turn.conversationId,
+      clientMessageId: turn.clientMessageId
+    })
+  ) {
     active = {
       request: {
         systemAccountId: turn.systemAccountId,
@@ -857,6 +879,16 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
         requestLifecycleEpochs.invalidate(failedRequest.conversationId)
       }
     })()
+  }
+  // 停止生成发生在服务端接受之前时，runtime 会以无 turnId 的 canceled 终端轮收口。
+  // 与上面 failed 分支不同：canceled 是本地主动停止、服务端必然未接受，不需要提交状态
+  // 对账（无 reconciliation IIFE），直接对称回滚未接受的编辑替换，否则编辑态会像
+  // failed 一样无人收口，永久卡死在 submitting。
+  if (turn.status === 'canceled' && !turn.turnId && active?.request.clientMessageId === turn.clientMessageId) {
+    if (activeStopTarget?.request.clientMessageId === turn.clientMessageId) activeStopTarget = undefined
+    clearPendingConfirmation(active.request.systemAccountId)
+    rollbackUnacceptedTurnEdit(active.request)
+    requestLifecycleEpochs.invalidate(turn.conversationId)
   }
 }
 async function refreshConversationFromSync(conversationId: string): Promise<void> {

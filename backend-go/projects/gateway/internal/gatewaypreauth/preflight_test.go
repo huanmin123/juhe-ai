@@ -527,30 +527,6 @@ func TestUniqueActiveRouteGroupIds(t *testing.T) {
 	}
 }
 
-func TestHybridRouteFailureCopy(t *testing.T) {
-	cases := map[string]struct {
-		message string
-		status  int
-	}{
-		"no_scoring_account":                  {"混合路由评分模型暂不可用：绑定分组池没有可用评分账户", 503},
-		"scoring_account_busy":                {"混合路由评分模型暂不可用：评分账户并发已满", 503},
-		"hybrid_scoring_failed":               {"混合路由评分模型调用失败", 502},
-		"hybrid_scoring_http_error":           {"混合路由评分模型调用失败", 502},
-		"hybrid_level_route_missing":          {"混合路由等级配置不可用", 503},
-		"hybrid_scoring_fallback_unavailable": {"混合路由评分模型不可用，且低档兜底范围内没有可用目标模型", 503},
-		"hybrid_target_group_unavailable":     {"混合路由目标分组暂不可用", 503},
-		"unknown":                             {"混合路由暂不可用", 503},
-	}
-	for reason, want := range cases {
-		if got := hybridRouteFailureMessage(reason); got != want.message {
-			t.Fatalf("%s message = %q", reason, got)
-		}
-		if got := hybridRouteFailureStatusCode(reason); got != want.status {
-			t.Fatalf("%s status = %d", reason, got)
-		}
-	}
-}
-
 func TestGatewayModelsProviderCodes(t *testing.T) {
 	row := &gatewayruntimecache.GatewayAPIKeyRow{GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
 		{ProviderCode: "openai", Status: "active"},

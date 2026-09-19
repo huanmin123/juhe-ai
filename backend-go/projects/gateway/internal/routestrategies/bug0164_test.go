@@ -107,7 +107,7 @@ func TestRouteStrategyNullFieldRejection(t *testing.T) {
 
 	// description:null and top-level config nulls stay accepted (nullable).
 	code, created := env.createStrategy(t, path,
-		`{"name":"nullable","description":null,"normalRoutingConfig":null,"hybridRoutingConfig":null,"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
+		`{"name":"nullable","description":null,"normalRoutingConfig":null,"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("nullable fields accepted: %d %v", code, created)
 	}
@@ -193,12 +193,12 @@ func TestRouteStrategyReadModelIntegrity(t *testing.T) {
 	env.exec(t, `UPDATE route_strategies SET mode = 'normal', status = 'active' WHERE id = ?`, strategyID)
 
 	// Binding weight integrity: 0, 101 and non-integer weights fail the read.
-	code, hybridCreated := env.createStrategy(t, path,
+	code, weightedCreated := env.createStrategy(t, path,
 		`{"name":"weighted","mode":"weighted","groupBindings":[{"groupId":"`+groupA+`","priority":1,"weight":2}]}`)
 	if code != http.StatusCreated {
-		t.Fatalf("weighted create: %d %v", code, hybridCreated)
+		t.Fatalf("weighted create: %d %v", code, weightedCreated)
 	}
-	weightedID := dataMap(t, hybridCreated)["id"].(string)
+	weightedID := dataMap(t, weightedCreated)["id"].(string)
 	for _, weight := range []any{0, 101, "abc"} {
 		env.exec(t, `UPDATE route_strategy_groups SET weight = ? WHERE route_strategy_id = ?`, weight, weightedID)
 		code, _ = env.do(t, http.MethodGet, path, "")
@@ -758,14 +758,14 @@ func TestRouteStrategyDescriptionUTF16Boundary(t *testing.T) {
 	}
 }
 
-func TestRouteStrategyCreateOperationLogSixFields(t *testing.T) {
+func TestRouteStrategyCreateOperationLogFiveFields(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	groupA := env.createGroup(t, adminID, "alpha", true)
 	path := "/__aisys__/api/route-strategies"
 
-	// cost_first normal create without hybrid config still logs all six
-	// audit fields, with bindings rendered presence-only.
+	// cost_first normal create still logs all five audit fields, with
+	// bindings rendered presence-only.
 	code, created := env.createStrategy(t, path,
 		`{"name":"audited","groupBindings":[{"groupId":"`+groupA+`"}]}`)
 	if code != http.StatusCreated {
@@ -781,10 +781,10 @@ func TestRouteStrategyCreateOperationLogSixFields(t *testing.T) {
 	if createEntry == nil {
 		t.Fatalf("create log missing: %v", env.sink.keys())
 	}
-	if len(createEntry.Changes) != 6 {
-		t.Fatalf("create must log exactly six changes: %d (%+v)", len(createEntry.Changes), createEntry.Changes)
+	if len(createEntry.Changes) != 5 {
+		t.Fatalf("create must log exactly five changes: %d (%+v)", len(createEntry.Changes), createEntry.Changes)
 	}
-	wantFields := []string{"name", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig"}
+	wantFields := []string{"name", "mode", "status", "groupBindings", "normalRoutingConfig"}
 	for index, field := range wantFields {
 		if createEntry.Changes[index].Field != field {
 			t.Fatalf("change order %d: got %s want %s", index, createEntry.Changes[index].Field, field)
@@ -794,34 +794,27 @@ func TestRouteStrategyCreateOperationLogSixFields(t *testing.T) {
 	if createEntry.Changes[4].After == "" || !strings.Contains(createEntry.Changes[4].After, "cost_first") {
 		t.Fatalf("normalRoutingConfig change: %q", createEntry.Changes[4].After)
 	}
-	// hybridRoutingConfig absent → empty audit value.
-	if createEntry.Changes[5].After != "" {
-		t.Fatalf("hybridRoutingConfig must render absent: %q", createEntry.Changes[5].After)
-	}
 	// groupBindings logs only what the caller sent (no defaulted
 	// priority/status/weight keys).
 	if createEntry.Changes[3].After != `[{"groupId":"`+groupA+`"}]` {
 		t.Fatalf("groupBindings change: %q", createEntry.Changes[3].After)
 	}
 
-	// hybrid create logs the raw hybrid input and provided binding fields.
-	code, hybrid := env.createStrategy(t, path,
-		`{"name":"audited-hybrid","mode":"hybrid_smart","hybridRoutingConfig":`+hybridConfigBody(5, "model-high")+`,"groupBindings":[{"groupId":"`+groupA+`","priority":3,"weight":7,"status":"active"}]}`)
+	// A second create with provided binding fields logs them verbatim.
+	code, provided := env.createStrategy(t, path,
+		`{"name":"audited-provided","mode":"weighted","groupBindings":[{"groupId":"`+groupA+`","priority":3,"weight":7,"status":"active"}]}`)
 	if code != http.StatusCreated {
-		t.Fatalf("hybrid create: %d %v", code, hybrid)
+		t.Fatalf("provided create: %d %v", code, provided)
 	}
 	entries = env.sink.entries
 	createEntry = nil
 	for index := range entries {
-		if entries[index].OperationKey == "route_strategies.create" && entries[index].ResourceName == "audited-hybrid" {
+		if entries[index].OperationKey == "route_strategies.create" && entries[index].ResourceName == "audited-provided" {
 			createEntry = &entries[index]
 		}
 	}
 	if createEntry == nil {
-		t.Fatal("hybrid create log missing")
-	}
-	if !strings.Contains(createEntry.Changes[5].After, "model-high") {
-		t.Fatalf("hybridRoutingConfig change: %q", createEntry.Changes[5].After)
+		t.Fatal("provided create log missing")
 	}
 	if createEntry.Changes[3].After != `[{"groupId":"`+groupA+`","priority":3,"weight":7,"status":"active"}]` {
 		t.Fatalf("groupBindings raw change: %q", createEntry.Changes[3].After)

@@ -30,7 +30,6 @@ func TestW11ELoadConfigValidationArms(t *testing.T) {
 		want      string
 	}{
 		{"store mode", map[string]string{"JUHE_AI_AUDIT_LOG_STORE": "oracle"}, "JUHE_AI_AUDIT_LOG_STORE"},
-		{"instance id", map[string]string{"JUHE_AI_AUDIT_LOG_INSTANCE_ID": " "}, "INSTANCE_ID"},
 		{"owner lease", map[string]string{"JUHE_AI_AUDIT_LOG_OWNER_LEASE": "1s"}, "OWNER_LEASE"},
 		{"owner lease parse", map[string]string{"JUHE_AI_AUDIT_LOG_OWNER_LEASE": "x"}, "OWNER_LEASE"},
 		{"retention interval", map[string]string{"JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL": "10ms"}, "RETENTION_INTERVAL"},
@@ -45,13 +44,10 @@ func TestW11ELoadConfigValidationArms(t *testing.T) {
 		{"problem days", map[string]string{"JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS": "0"}, "PROBLEM_RETENTION_DAYS"},
 		{"sample/days mismatch", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE": "0", "JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS": "3"}, "同时为 0"},
 		{"success days below hot", map[string]string{"JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS": "72", "JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS": "1"}, "覆盖"},
-		{"settings missing", map[string]string{"JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH": " "}, "BUSINESS_SETTINGS"},
-		{"sqlite db path missing", map[string]string{"JUHE_AI_AUDIT_LOG_DATABASE_PATH": " "}, "DATABASE_PATH"},
-		{"business db missing", map[string]string{"JUHE_AI_DATABASE_PATH": " "}, "JUHE_AI_DATABASE_PATH"},
-
-		{"codex root missing", map[string]string{"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": " "}, "CODEX_CONTEXT_STATE_SHARD_ROOT"},
-		{"usage root missing", map[string]string{"JUHE_AI_USAGE_SHARD_ROOT": " "}, "USAGE_SHARD_ROOT"},
 	}
+	// 2026-09-19 零配置默认后，instance id（回落 hostname）、路径族（按
+	// datadir 固定名表派生）与 F3 settings 二选一（sqlite 回落业务库文件）
+	// 不再是错误臂，见 TestW11EZeroConfigDerivedDefaults。
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := LoadConfig(w11eEnvWith(tc.overrides)); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -59,14 +55,16 @@ func TestW11ELoadConfigValidationArms(t *testing.T) {
 			}
 		})
 	}
-	// postgres 模式缺 URL / blob 目录 / 连接池配置。
+	// postgres 模式缺 URL / 连接池配置（2026-09-19 起 blob 目录派生，不再
+	// 是 PG 模式错误臂）。
 	pgBase := map[string]string{"JUHE_AI_AUDIT_LOG_STORE": "postgres"}
 	if _, err := LoadConfig(w11eEnvWith(pgBase)); err == nil || !strings.Contains(err.Error(), "POSTGRES_URL") {
 		t.Fatalf("postgres 缺 URL 必须拒绝: %v", err)
 	}
 	pgWithURL := map[string]string{"JUHE_AI_AUDIT_LOG_STORE": "postgres", "JUHE_AI_AUDIT_LOG_POSTGRES_URL": "postgres://w11e.invalid/db", "JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": "postgres://w11e.invalid/settings", "JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY": " "}
-	if _, err := LoadConfig(w11eEnvWith(pgWithURL)); err == nil || !strings.Contains(err.Error(), "BLOB_DIRECTORY") {
-		t.Fatalf("postgres 缺 blob 目录必须拒绝: %v", err)
+	pgCfg, err := LoadConfig(w11eEnvWith(pgWithURL))
+	if err != nil || pgCfg.PayloadBlobDirectory != filepath.Join("data", "audit-blob") {
+		t.Fatalf("postgres 空 blob 目录必须派生 <DATA_DIR>/audit-blob: %+v err=%v", pgCfg, err)
 	}
 	// 与业务库共用物理文件必须拒绝。
 	sameRoot := t.TempDir()
@@ -106,6 +104,58 @@ func TestW11ELoadConfigValidationArms(t *testing.T) {
 	within["JUHE_AI_AUDIT_LOG_DATABASE_PATH"] = filepath.Join(shardRoot, "audit.sqlite3")
 	if _, err := LoadConfig(func(name string) string { return within[name] }); err == nil || !strings.Contains(err.Error(), "不得放入") {
 		t.Fatalf("shard 内审计库必须拒绝: %v", err)
+	}
+}
+
+// TestW11EZeroConfigDerivedDefaults 覆盖 2026-09-19 零配置默认：空 env /
+// 仅 DATA_DIR 时 LoadConfig 成功，路径落 <DATA_DIR>/<固定名>，实例 ID 回落
+// hostname，F3 只读 settings 二选一按模式回退。
+func TestW11EZeroConfigDerivedDefaults(t *testing.T) {
+	empty, err := LoadConfig(func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("空 env LoadConfig: %v", err)
+	}
+	if empty.Mode != ModeSQLite {
+		t.Fatalf("空 env mode=%q want sqlite", empty.Mode)
+	}
+	if empty.InstanceID == "" {
+		t.Fatal("空 env 实例 ID 必须回落 hostname 默认值")
+	}
+	if empty.AuditDatabasePath != filepath.Join("data", "audit-log.sqlite3") || empty.PayloadBlobDirectory != filepath.Join("data", "audit-blob") {
+		t.Fatalf("空 env 派生路径=%+v", empty)
+	}
+	if empty.BusinessSettingsPath != empty.BusinessPath || empty.BusinessPath != filepath.Join("data", "business.sqlite3") {
+		t.Fatalf("空 env settings 路径必须回落业务库文件: %+v", empty)
+	}
+	// DATA_DIR 指向临时目录：派生根随之切换。
+	root := t.TempDir()
+	directed, err := LoadConfig(func(name string) string {
+		if name == "JUHE_AI_DATA_DIR" {
+			return root
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("DATA_DIR LoadConfig: %v", err)
+	}
+	if directed.AuditDatabasePath != filepath.Join(root, "audit-log.sqlite3") || directed.StatsPath != filepath.Join(root, "stats.sqlite3") || directed.UsageShardRoot != filepath.Join(root, "usage-shards") || directed.CodexShardRoot != filepath.Join(root, "codex-context", "state-shards") {
+		t.Fatalf("DATA_DIR 派生路径=%+v", directed)
+	}
+	// PG 模式：store/settings URL 均回退主 JUHE_AI_POSTGRES_URL。
+	pg, err := LoadConfig(func(name string) string {
+		if name == "JUHE_AI_AUDIT_LOG_STORE" {
+			return "postgres"
+		}
+		if name == "JUHE_AI_POSTGRES_URL" {
+			return "postgres://w11e.zero/db"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("PG 回退 LoadConfig: %v", err)
+	}
+	if pg.Mode != ModePostgres || pg.PostgresURL != "postgres://w11e.zero/db" || pg.BusinessSettingsURL != "postgres://w11e.zero/db" {
+		t.Fatalf("PG 回退配置=%+v", pg)
 	}
 }
 

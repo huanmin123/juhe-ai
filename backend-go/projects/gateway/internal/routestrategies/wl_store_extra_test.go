@@ -98,7 +98,7 @@ func TestWlBindingWritesEqual(t *testing.T) {
 
 // ---- 请求体形态校验 ----
 
-func TestWlStrictObjectAndHybridShape(t *testing.T) {
+func TestWlStrictObjectShape(t *testing.T) {
 	if _, ok := strictObject("x", map[string]bool{}); ok {
 		t.Fatal("非对象必须失败")
 	}
@@ -108,21 +108,6 @@ func TestWlStrictObjectAndHybridShape(t *testing.T) {
 	record, ok := strictObject(map[string]any{"a": 1}, map[string]bool{"a": true})
 	if !ok || record["a"] != 1 {
 		t.Fatalf("record=%v ok=%v", record, ok)
-	}
-	if validHybridConfigShape("x") {
-		t.Fatal("非对象必须无效")
-	}
-	if validHybridConfigShape(map[string]any{"levelRoutes": "x"}) {
-		t.Fatal("levelRoutes 非数组必须无效")
-	}
-	if validHybridConfigShape(map[string]any{"levelRoutes": []any{"x"}}) {
-		t.Fatal("等级项非对象必须无效")
-	}
-	if validHybridConfigShape(map[string]any{"levelRoutes": []any{map[string]any{"bogus": 1}}}) {
-		t.Fatal("等级项未知键必须无效")
-	}
-	if !validHybridConfigShape(map[string]any{"levelRoutes": []any{map[string]any{"minLevel": 1}}}) {
-		t.Fatal("合法等级项必须有效")
 	}
 }
 
@@ -154,7 +139,7 @@ func TestWlErrorTypesAndMisc(t *testing.T) {
 	}
 	labels := map[string]string{
 		"name": "名称", "description": "说明", "mode": "路由模式", "status": "状态",
-		"groupBindings": "绑定分组", "normalRoutingConfig": "普通路由调度配置", "hybridRoutingConfig": "混合智能路由配置",
+		"groupBindings": "绑定分组", "normalRoutingConfig": "普通路由调度配置",
 	}
 	for field, want := range labels {
 		if got := patchFieldLabel(field); got != want {
@@ -189,38 +174,20 @@ func TestWlDuplicateNameError(t *testing.T) {
 
 func TestWlMutationInputSelection(t *testing.T) {
 	currentNormal := &NormalRoutingConfig{SchedulingPreference: "cost_first"}
-	currentHybrid := &HybridRoutingConfig{ScoringModel: "m"}
 	input := MutationInput{}
-	// 非 normal 模式且无新值：normalInput 必须为 nil。
-	if got := input.normalInput(ModeHybridSmart, currentNormal); got != nil {
-		t.Fatalf("got=%v", got)
-	}
-	// normal 模式且无新值：透传当前配置的 raw 形态。
-	raw := input.normalInput(ModeNormal, currentNormal)
+	// 无新输入：normalInput feed-forward 当前配置的 raw 形态。
+	raw := input.normalInput(currentNormal)
 	if raw == nil {
 		t.Fatal("必须透传当前配置")
 	}
 	// 带 HasNormalConfig 时透传 raw。
 	withRaw := MutationInput{HasNormalConfig: true, NormalConfigRaw: map[string]any{}}
-	if withRaw.normalInput(ModeNormal, nil) == nil {
+	if withRaw.normalInput(nil) == nil {
 		t.Fatal("显式 raw 必须透传")
 	}
-	// hybrid 对称分支。
-	if got := input.hybridInput(ModeNormal, currentHybrid); got != nil {
-		t.Fatalf("got=%v", got)
-	}
-	if input.hybridInput(ModeHybridSmart, currentHybrid) == nil {
-		t.Fatal("必须透传当前混合配置")
-	}
-	withHybrid := MutationInput{HasHybridConfig: true, HybridConfigRaw: map[string]any{}}
-	if withHybrid.hybridInput(ModeHybridSmart, nil) == nil {
-		t.Fatal("显式 raw 必须透传")
-	}
-	if rawForMode(ModeNormal, ModeHybridSmart, "x") != nil {
-		t.Fatal("模式不匹配必须为 nil")
-	}
-	if rawForMode(ModeNormal, ModeNormal, "x") == nil {
-		t.Fatal("模式匹配必须透传")
+	// 当前配置为 nil 且无新输入：rawForMode 语义已并入 normalInput，返回 nil。
+	if input.normalInput(nil) != nil {
+		t.Fatal("nil 当前配置必须为 nil")
 	}
 	if typedToRaw(nil) != nil {
 		t.Fatal("nil 输入必须为 nil")
@@ -233,29 +200,25 @@ func TestWlMutationInputSelection(t *testing.T) {
 		t.Fatal("name 不触发运行时失效")
 	}
 	if !gatewayRuntimeChanged([]string{"status"}) || !gatewayRuntimeChanged([]string{"mode"}) ||
-		!gatewayRuntimeChanged([]string{"groupBindings"}) || !gatewayRuntimeChanged([]string{"normalRoutingConfig"}) ||
-		!gatewayRuntimeChanged([]string{"hybridRoutingConfig"}) {
+		!gatewayRuntimeChanged([]string{"groupBindings"}) || !gatewayRuntimeChanged([]string{"normalRoutingConfig"}) {
 		t.Fatal("运行时相关字段必须触发失效")
 	}
 }
 
 func TestWlRouteStrategyConfigJSONFromRaw(t *testing.T) {
 	normalRaw := map[string]any{"schedulingPreference": "cost_first"}
-	if stored, err := routeStrategyConfigJSONFromRaw(normalRaw, nil); err != nil || stored.Valid {
+	if stored, err := routeStrategyConfigJSONFromRaw(normalRaw); err != nil || stored.Valid {
 		t.Fatalf("cost_first 必须存 NULL: %v %v", stored, err)
 	}
 	speedRaw := map[string]any{"schedulingPreference": "speed_first"}
-	if stored, err := routeStrategyConfigJSONFromRaw(speedRaw, nil); err != nil || !stored.Valid {
+	if stored, err := routeStrategyConfigJSONFromRaw(speedRaw); err != nil || !stored.Valid {
 		t.Fatalf("speed_first 必须落盘: %v %v", stored, err)
 	}
-	if _, err := routeStrategyConfigJSONFromRaw("bad", nil); err == nil {
+	if _, err := routeStrategyConfigJSONFromRaw("bad"); err == nil {
 		t.Fatal("普通配置损坏必须报错")
 	}
-	if _, err := routeStrategyConfigJSONFromRaw(nil, "bad"); err == nil {
-		t.Fatal("混合配置损坏必须报错")
-	}
-	if _, err := routeStrategyConfigJSONFromRaw(nil, nil); err != nil {
-		t.Fatalf("err=%v", err)
+	if stored, err := routeStrategyConfigJSONFromRaw(nil); err != nil || stored.Valid {
+		t.Fatalf("nil 输入回落 cost_first 默认且存 NULL: %v %v", stored, err)
 	}
 }
 

@@ -48,7 +48,7 @@
 - 不做同时请求多个上游后取最快结果的并发抢跑。
 - 不用热质量直接修改 `accounts.status`、`schedulable`、`cooldown_until` 或用户配置的优先级。
 - 不把请求语义错误、客户端取消或模型能力不匹配升级为账号故障。
-- 不在本设计中改变策略路由的分组绑定、权重、轮询、故障回退或混合智能语义。
+- 不在本设计中改变策略路由的分组绑定、权重、轮询、故障回退或合并语义。
 
 ## 3. 术语与分层
 
@@ -68,7 +68,7 @@ API Key
 
 - 不重新选择或混排路由策略绑定的分组；
 - 不改变普通路由单分组边界；
-- 不改变权重、轮询、故障回退、混合智能或其他策略路由的分组选择结果；
+- 不改变权重、轮询、故障回退、合并或其他策略路由的分组选择结果；
 - 当前分组账户耗尽时，只向路由协调器报告当前分组不可承接；是否进入后续分组由路由策略决定；
 - 路由目标与 AI 账户偏好冲突时，路由目标优先。快速模式确认慢后切号可以覆盖账户超级优先、账号优先级、备用、会话亲和和热质量。
 
@@ -172,7 +172,6 @@ client_handoff {
 | `failover` | 在当前主用或备用分组内派发 | 当前分组此刻不可承接，由路由协调器按既有主用、备用顺序继续；所有允许分组都临时阻断时才考虑有界等待 | 本请求停止扫描当前分组，按既有备用顺序继续 | 当前分组硬耗尽，立即按既有备用顺序继续 |
 | `round_robin` | 在本轮路由选中的分组内派发 | 继续本轮稳定环中的后续允许分组；全环临时阻断时才考虑最早到期时间 | 本请求停止扫描当前分组，继续稳定环中的后续允许分组 | 继续本轮稳定环中的后续允许分组 |
 | `weighted` | 在本次权重选择的分组内派发 | 由权重路由协调器在本请求剩余允许分组中继续，不能由账户层重写权重或形成持久重分配 | 本请求停止扫描当前分组，由权重路由协调器在剩余允许分组中继续 | 由权重路由协调器在剩余允许分组中继续 |
-| `hybrid_smart` | 在评分结果允许的目标模型和分组内派发 | 仅继续评分等级规则已允许的后续目标；账户层不能修改评分、模型档位或扩大分组范围 | 本请求停止扫描当前目标，仅继续评分等级规则已允许的后续目标 | 仅继续评分等级规则已允许的后续目标 |
 
 `temporarily_blocked` 不是让低层强制等待的指令。存在当前路由模式允许的后续分组时，路由协调器优先推进其自身策略；只有**本请求**仍可在预算内合法取得 confirmation / half-open / capacity lease，且所有允许路径都暂时阻断、共享 `ServerRetryBudget` 与 `GatewayRequestWallBudget` 仍有余额时，才等待最近的 `earliestRetryAtMs` 或容量唤醒。墙钟不足时返回 `client_handoff`；既无 waitable 资源也无后续分组时返回 `request_exhausted`。该结果只终止本请求的当前分组扫描，不能影响下一请求的候选。
 
@@ -214,7 +213,6 @@ uncommittedAttemptDeadlineAtMs
 orderedAllowedTargets
 cursor
 weightedDecisionToken
-hybridScoreDecision
 ```
 
 ### 3.6 三类预算，互不替代
@@ -231,7 +229,7 @@ hybridScoreDecision
 
 `GatewayRequestWallBudget` 规则：
 
-1. `gatewayRequestWallDeadlineAtMs = requestAcceptedAtMs + gatewayRequestWallBudgetMs`。文本 `gatewayRequestWallBudgetMs` 固定默认 270 秒，图片读取 `imageRequestWallTimeoutSeconds`（默认 3600 秒），二者都不从 `noAvailableAccountWaitTimeoutSeconds` 派生；请求开始只解析一次，跨 Key、账户、分组、主备、轮询和混合智能均不重置。账户模型映射把文本 lane 升级为图片时，只扩展原墙钟并保留原 `requestAcceptedAtMs`，不得缩短或重新计时。
+1. `gatewayRequestWallDeadlineAtMs = requestAcceptedAtMs + gatewayRequestWallBudgetMs`。文本 `gatewayRequestWallBudgetMs` 固定默认 270 秒，图片读取 `imageRequestWallTimeoutSeconds`（默认 3600 秒），二者都不从 `noAvailableAccountWaitTimeoutSeconds` 派生；请求开始只解析一次，跨 Key、账户、分组、主备、轮询和合并均不重置。账户模型映射把文本 lane 升级为图片时，只扩展原墙钟并保留原 `requestAcceptedAtMs`，不得缩短或重新计时。
 2. 只在**决策点**强制检查：启动下一个账号 attempt、confirmation、half-open、同层探索、快速模式 rescue、进入可恢复等待、跨分组 fallback。
 3. 决策点若 `now + finalResponseReserveMs >= gatewayRequestWallDeadlineAtMs`，或剩余时间不够一次有意义 attempt，则不得再启动新 attempt；路由协调器返回客户端可重试的服务端接管结束（handoff），**不**把账号写成共享硬耗尽。
 4. 下游**已提交**可见语义内容后，墙钟预算不再为了“再切一个号”而中断当前流；当前流继续受 lane timeout / idle timeout 约束。墙钟预算的职责是防止把客户端时间烧在切换上，不是截断已经对客户端可见的成功响应。
@@ -250,7 +248,7 @@ min(
 )
 ```
 
-剩余墙钟或首字前预算不足以完成一次有意义的 attempt 时，禁止 confirmation、half-open、探索或快速切号，直接按当前路由模式 handoff 给客户端。账户结果只能推进 cursor：weighted 不能重新抽样或改变本次权重决策，round-robin 不能重建环，failover 不能跳过既有主备顺序，hybrid 不能重新评分或扩大等级目标。该快照与四类账户结果一起构成 route-coordinator 的实现契约。
+剩余墙钟或首字前预算不足以完成一次有意义的 attempt 时，禁止 confirmation、half-open、探索或快速切号，直接按当前路由模式 handoff 给客户端。账户结果只能推进 cursor：weighted 不能重新抽样或改变本次权重决策，round-robin 不能重建环，failover 不能跳过既有主备顺序，merge 不能重建合并池或改变池内组标。该快照与四类账户结果一起构成 route-coordinator 的实现契约。
 
 ## 4. 不跨层探索，同层受控探索
 
@@ -864,7 +862,7 @@ routeCoordinationBudget
 - `retry_next` 是唯一的同账户兄弟 Key 轮换授权；账户级候选切换不依赖用户规则，完整非 `2xx` 在语义未提交时都按统一路径继续。规则命中后可以按用户显式选择建立易失短电路，避免其他请求继续灌入；已提交响应不得因该动作再次执行，未配置规则的完整响应也不得建立共享短电路。
 - `cooldown / disable` 由显式策略推进持久状态，账户短电路只承担状态写回完成前的即时止损，不能覆盖或撤销持久动作。
 - 显式策略 TTL 未到期时，短电路 canary 或普通成功不能提前解除该 TTL。
-- 所有路由模式都可以消费 Key / protocol-model / account 电路给出的账户可执行性，但只能在路由已选分组内过滤候选。weighted、round-robin、failover、hybrid 等路由仍由各自协调器解释 `dispatchable / temporarily_blocked / request_exhausted / hard_exhausted`，账户层不改变分组顺序和策略算法。
+- 所有路由模式都可以消费 Key / protocol-model / account 电路给出的账户可执行性，但只能在路由已选分组内过滤候选。weighted、round-robin、failover、merge 等路由仍由各自协调器解释 `dispatchable / temporarily_blocked / request_exhausted / hard_exhausted`，账户层不改变分组顺序和策略算法。
 
 ## 14. 日志与指标
 
@@ -950,7 +948,7 @@ gateway_request_wall_handoff_total
 22. 大量未知模型名统一进入有界 `unknown` 桶；内存 / Redis 高基数保护和退化指标生效。
 23. Redis 不可用：performance 模式记录基础设施故障并保守处理，不回退本机共享假象。
 24. 同一个 confirmation / half-open 结果被重复提交：CAS 只生效一次，due 索引与状态一致，并增加幂等重放指标。
-25. `normal / failover / round_robin / weighted / hybrid_smart` 分别收到四类账户结果：分组推进、等待和最终错误均由各自路由协调器决定，账户层不能跨分组或重置 `ServerRetryBudget`。
+25. `normal / failover / round_robin / weighted / merge` 分别收到四类账户结果：分组推进、等待和最终错误均由各自路由协调器决定，账户层不能跨分组或重置 `ServerRetryBudget`。
 26. 用户显式 `retry_next` 依次尝试完多个仍为 `CLOSED` 的账号：返回 `request_exhausted`，不重复扫描已尝试账号，也不把这些账号写成共享硬耗尽；副作用 lane 与文本共用统一候选去重和预算门禁。
 27. 旧 generation、错误 leaseId 或重复 transitionId 在新状态提交结果：全部被原子拒绝，不能改写 state、退避、恢复计数或 due 索引。
 28. `OPEN` 到期后两个 server 同时调度 `HALF_OPEN / RECOVERING`：只有一个 matching-generation lease 生效，状态值与 due 索引始终原子一致。

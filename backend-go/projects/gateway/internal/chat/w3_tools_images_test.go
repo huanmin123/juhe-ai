@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -660,4 +662,170 @@ func TestStorageKeysAndObjectStoreW3(t *testing.T) {
 func mustSum256W3(data []byte) []byte {
 	sum := sha256.Sum256(data)
 	return sum[:]
+}
+
+// TestChatImageModelRegistryW3 覆盖图像模型注册表：稳定顺序、成员判断与会话归一。
+func TestChatImageModelRegistryW3(t *testing.T) {
+	models := SupportedChatImageModels()
+	if len(models) != 3 || models[0] != ImageModelGPTImage2 || models[1] != ImageModelGrokImagineImage || models[2] != ImageModelGrokImagineQuality {
+		t.Fatalf("注册表顺序错误: %v", models)
+	}
+	for _, model := range []string{"gpt-image-2", "grok-imagine-image", "grok-imagine-image-quality"} {
+		if !IsSupportedChatImageModel(model) {
+			t.Fatalf("%s 应在注册表内", model)
+		}
+		if _, err := normalizedImageModel(model); err != nil {
+			t.Fatalf("%s 归一失败: %v", model, err)
+		}
+	}
+	for _, model := range []string{"", "dall-e-3", "GPT-IMAGE-2", " grok-imagine-image "} {
+		if IsSupportedChatImageModel(model) {
+			t.Fatalf("%q 不应在注册表内", model)
+		}
+	}
+	if _, err := normalizedImageModel("dall-e-3"); err == nil {
+		t.Fatalf("未登记模型应报错")
+	}
+}
+
+// TestGenerateChatImageGrokProfileW3 覆盖 grok 参数画像（quality=auto 省略、
+// 显式 response_format=b64_json；生成与 edits 两条路径）与 b64_json 缺失时
+// data[0].url 回退下载。画像来源：2026-09-19 对上游实测。
+func TestGenerateChatImageGrokProfileW3(t *testing.T) {
+	grokModels := []string{"grok-imagine-image", "grok-imagine-image-quality"}
+
+	t.Run("grok 生成请求体画像", func(t *testing.T) {
+		var bodies []string
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				bodies = append(bodies, call.Body)
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		for _, model := range grokModels {
+			if _, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: model, Prompt: "猫"}, "key", ""); err != nil {
+				t.Fatalf("%s 生成失败: %v", model, err)
+			}
+		}
+		if len(bodies) != len(grokModels) {
+			t.Fatalf("dispatch 次数 = %d", len(bodies))
+		}
+		for _, body := range bodies {
+			if strings.Contains(body, `"quality"`) {
+				t.Fatalf("grok auto 应省略 quality: %s", body)
+			}
+			if !strings.Contains(body, `"response_format":"b64_json"`) {
+				t.Fatalf("grok 应显式请求 b64_json: %s", body)
+			}
+			if !strings.Contains(body, `"size":"auto"`) || !strings.Contains(body, `"output_format":"webp"`) {
+				t.Fatalf("grok 请求体缺 size/output_format: %s", body)
+			}
+		}
+	})
+
+	t.Run("grok 指定 quality 仍透传", func(t *testing.T) {
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫", Quality: "low"}, "key", "")
+		if err != nil {
+			t.Fatalf("生成失败: %v", err)
+		}
+		body := executor.calls[0].Body
+		if !strings.Contains(body, `"quality":"low"`) {
+			t.Fatalf("low quality 应透传: %s", body)
+		}
+	})
+
+	t.Run("gpt-image-2 请求体保持恒带 quality 且不带 response_format", func(t *testing.T) {
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "gpt-image-2", Prompt: "猫"}, "key", "")
+		if err != nil {
+			t.Fatalf("生成失败: %v", err)
+		}
+		body := executor.calls[0].Body
+		if !strings.Contains(body, `"quality":"auto"`) {
+			t.Fatalf("gpt-image-2 应保留 quality=auto: %s", body)
+		}
+		if strings.Contains(body, "response_format") {
+			t.Fatalf("gpt-image-2 不应携带 response_format: %s", body)
+		}
+	})
+
+	t.Run("grok edits multipart 画像", func(t *testing.T) {
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/edits" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`"}]}`)
+			},
+		}}}
+		_, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{
+			Model: "grok-imagine-image", Prompt: "改猫",
+			References: []ChatImageEditReference{{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), Filename: "a.png"}},
+		}, "key", "")
+		if err != nil {
+			t.Fatalf("编辑失败: %v", err)
+		}
+		body := executor.calls[0].Body
+		if !strings.Contains(body, `name="response_format"`) {
+			t.Fatalf("grok edits 应带 response_format 字段: %s", body)
+		}
+		if strings.Contains(body, `name="quality"`) {
+			t.Fatalf("grok edits auto 应省略 quality 字段: %s", body)
+		}
+	})
+
+	t.Run("b64_json 缺失回退下载 url", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(testTinyPNGBytesW3)
+		}))
+		defer server.Close()
+		executor := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"url":"`+server.URL+`/img","mime_type":"image/png"}]}`)
+			},
+		}}}
+		result, err := GenerateChatImage(context.Background(), &executor, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", "")
+		if err != nil {
+			t.Fatalf("url 回退失败: %v", err)
+		}
+		if result.MimeType != "image/png" || result.Width != 1 || result.Height != 1 || result.Bytes != int64(len(testTinyPNGBytesW3)) {
+			t.Fatalf("url 回退结果不正确: %+v", result)
+		}
+	})
+
+	t.Run("url 下载失败与双缺失", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+		notFound := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"url":"`+server.URL+`/missing"}]}`)
+			},
+		}}}
+		if _, err := GenerateChatImage(context.Background(), &notFound, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", ""); err == nil || !strings.Contains(err.Error(), "下载失败") {
+			t.Fatalf("url 下载失败应报错: %v", err)
+		}
+		missing := mockExecutor{steps: []scriptStep{{
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			respond: func(call dispatchCall) *GenerationDispatchResponse {
+				return jsonStatusResponse(200, `{"data":[{"mime_type":"image/png"}]}`)
+			},
+		}}}
+		if _, err := GenerateChatImage(context.Background(), &missing, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", ""); err == nil || !strings.Contains(err.Error(), "缺少 b64_json") {
+			t.Fatalf("双缺失应报错: %v", err)
+		}
+	})
 }

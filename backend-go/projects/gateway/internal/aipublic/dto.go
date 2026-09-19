@@ -64,7 +64,6 @@ type PublicStrategySummary struct {
 	Status              string                 `json:"status"`
 	IsDefault           bool                   `json:"isDefault"`
 	NormalRoutingConfig any                    `json:"normalRoutingConfig,omitempty"`
-	HybridRoutingConfig any                    `json:"hybridRoutingConfig,omitempty"`
 	GroupBindings       []PublicBindingSummary `json:"groupBindings"`
 	APIKeyCount         int                    `json:"apiKeyCount,omitempty"`
 	CreatedAt           string                 `json:"createdAt"`
@@ -206,7 +205,6 @@ func sanitizeStrategy(detail *routestrategies.Detail) PublicStrategySummary {
 		Status:              detail.Status,
 		IsDefault:           detail.IsDefault,
 		NormalRoutingConfig: normalRoutingConfigValue(detail.NormalRoutingConfig),
-		HybridRoutingConfig: hybridRoutingConfigValue(detail.HybridRoutingConfig),
 		GroupBindings:       bindings,
 		APIKeyCount:         detail.APIKeyCount,
 		CreatedAt:           detail.CreatedAt,
@@ -215,13 +213,6 @@ func sanitizeStrategy(detail *routestrategies.Detail) PublicStrategySummary {
 }
 
 func normalRoutingConfigValue(config *routestrategies.NormalRoutingConfig) any {
-	if config == nil {
-		return nil
-	}
-	return config
-}
-
-func hybridRoutingConfigValue(config *routestrategies.HybridRoutingConfig) any {
 	if config == nil {
 		return nil
 	}

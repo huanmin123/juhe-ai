@@ -101,9 +101,9 @@ export function mergeSelectedRouteStrategyOptions(
 }
 
 export function routeStrategyModeText(mode: RouteStrategyMode | undefined): string {
-  if (mode === 'hybrid_smart') return '混合智能路由'
   if (mode === 'weighted') return '权重调度路由'
   if (mode === 'round_robin') return '轮询路由'
   if (mode === 'failover') return '故障回退路由'
+  if (mode === 'merge') return '合并路由'
   return '普通路由'
 }

@@ -1,18 +1,15 @@
 package main
 
 // w14k 波次：main.go 各 runner 抽出的 result 函数的进程内覆盖。runner 原主体
-// 以 os.Exit 终止，传统 -coverprofile 口径只能靠子进程重执行（wm_main_exit_
-// branches_test.go）拿到行为断言、拿不到计数；本文件直调等价的 *Result /
-// *OutcomeExitCode 函数，覆盖 usage 预检、Open 拒绝、运行时失败、encode 失败、
-// 未就绪门与成功路径的全部语句。wrapper 改为“非零才 os.Exit”，成功时返回
-// main 正常退出（CLI 契约不变），使既有直调用例与进程内测试可用。
+// 曾以 os.Exit 终止；os.Exit 包装已全部删除（os.Exit→return 收敛，出口契约由
+// runMaintenance 统一承载，测试单进程纪律禁止 exec 子进程重执行），本文件直调
+// 等价的 *Result / *OutcomeExitCode 函数，覆盖 usage 预检、Open 拒绝、运行时
+// 失败、encode 失败、未就绪门与成功路径的全部语句。
 //
 // 结构性限制登记（w14k 终态 96.7%，未覆盖 20 语句，均为以下四类）：
-//  1. os.Exit 终止行只能由子进程行为覆盖（wm_main_exit_branches_test.go 已断
-//     言退出码），传统 -coverprofile 口径无计数：main.go:83 的
-//     os.Exit(runStorageBootstrap(...))，以及 runJ3cReadOnlyBoundaryCheck /
-//     runNodeJ3bActivePathCheck / runBusinessOwnerManifestCheck 三个 wrapper
-//     的 os.Exit(code) 行。
+//  1. main() 的非零 os.Exit 行（main.go main() 内唯一残留）：仅当二进制以非
+//     零码退出时执行；出口行为已由 wm_main_exit_branches_test.go 进程内直调
+//     runMaintenance 断言返回码覆盖，传统 -coverprofile 口径对该行无计数。
 //  2. os.Getwd 失败分支（resolveRepositoryRoot / resolveRepoPath）：测试进程
 //     无法注入工作目录不可用，Windows 下不可触发。
 //  3. database/sql 懒连接使 sql.Open 的错误分支不可达（openSnapshotDB /

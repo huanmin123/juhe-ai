@@ -54,13 +54,8 @@ package main
 //     构造器调用点的 err 守卫，同参上游先失败，按铁律保留不删）
 //   - chain_routing.go 500（OrderedJSON 只承载 JSON 对象，
 //     orderedValueToPlain(*OrderedJSON) 恒为 map[string]any，!ok 分支
-//     死代码）（已于 w3 清理）、606/610/618/622/630/634（HybridRoutingConfig /
-//     HybridScoringResult / HybridLevelRoute 均为纯 JSON 平面结构：
-//     Marshal 不会失败，Marshal 产物为 JSON object，Unmarshal 进
-//     map[string]any 不会失败）（已于 w3 清理）、672（与 669-671 行逐字
-//     重复的第二次 "?" 截断，第一次之后 path 不再含 "?"）（已于 w3 清理）、
-//     236 登记为不可达尝试失败（见 TestW2ARoutingHybridResolveError 注释；
-//     w3 复核为 hybrid.Resolve 调用点 if err != nil 守卫，按铁律保留不删）。
+//     死代码）（已于 w3 清理）、672（与 669-671 行逐字
+//     重复的第二次 "?" 截断，第一次之后 path 不再含 "?"）（已于 w3 清理）。
 //   - chain_dispatch.go 547（state.UntilMs > now 在 539 行已判，
 //     同一 now 下 547 行 retryAtMs<=now 恒假）、565（nextRetryAtMs 取
 //     自幸存面外的 UntilMs，恒 > now，retryAfter 恒 > 0）、705
@@ -116,7 +111,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
@@ -218,6 +212,7 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		"temporaryUnschedulableRetryIntervalSeconds": "60",
 		"temporaryUnschedulableRetryAttempts":        "2",
 		"textFirstResponseTimeoutSeconds":            "60",
+		"textNonStreamFirstResponseTimeoutSeconds":   "600",
 		"textStreamIdleTimeoutSeconds":               "60",
 		"textUncommittedAttemptMaxLifetimeSeconds":   "300",
 		"imageFirstResponseTimeoutSeconds":           "60",
@@ -1171,59 +1166,6 @@ func TestW2ARoutingNormalResolveError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("normal route over closed cache must fail")
-	}
-}
-
-func TestW2ARoutingHybridResolveError(t *testing.T) {
-	// 236：hybrid.Resolve 错误出口。评分桩恒失败 → 回退目标组选择读取
-	// 已关闭底库的 hybridTargetGroups → 报错上抛。
-	cache := w2aBrokenRoutingCache(t)
-	clock := func() time.Time { return time.Now() }
-	scoring := gatewayhybrid.NewScoringService(clock, w2aHybridAuxiliaryFailureStub{}, nil, nil, nil)
-	affinity := gatewayhybrid.NewAffinityService(clock, hybridSessionIdentityPort{}, nil)
-	hybrid := gatewayhybrid.NewRouteService(affinity, hybridTargetGroups{cache: cache}, hybridSessionIdentityPort{}, nil)
-	resolver := &chainRouteResolver{cache: cache, normal: gatewayrouting.NewNormalModelRouteService(&chainRoutingCache{cache: cache}, chainCapabilityFilter{}), hybrid: hybrid, scoring: scoring}
-	config := map[string]any{
-		"scoringModel":            "gpt-test",
-		"scoringContextMode":      "conversation",
-		"qualityPreference":       "quality_first",
-		"scoringTimeoutMs":        3000,
-		"scoringFallbackMaxLevel": 1,
-		"levelRoutes": []any{map[string]any{
-			"minLevel": float64(1), "maxLevel": float64(10), "groupId": "g_w2a",
-			"targetModel": "gpt-test", "enabled": true,
-		}},
-	}
-	raw, err := json.Marshal(config)
-	if err != nil {
-		t.Fatalf("marshal hybrid config: %v", err)
-	}
-	record := &gatewayruntimecache.GatewayAPIKeyRow{
-		ID:                  "key_w2a",
-		SystemAccountID:     "sys",
-		RouteStrategyID:     "rs_w2a",
-		RouteStrategyMode:   "hybrid_smart",
-		SelectedGroupID:     "g_w2a",
-		HybridRoutingConfig: &gatewayruntimecache.ApiKeyHybridRoutingConfig{Raw: raw},
-	}
-	_, err = resolver.ResolveHybridGatewayRoute(context.Background(), gatewaypreauth.HybridRouteInput{
-		Req:          w2aGatewayRequestWithModel(`{"model":"gpt-test"}`),
-		APIKeyRecord: record,
-		TraceID:      "w2a-trace",
-		Endpoint:     "/v1/chat/completions",
-	})
-	if err == nil {
-		t.Fatalf("hybrid resolve over closed cache must fail")
-	}
-}
-
-// w2aHybridAuxiliaryFailureStub 是恒失败的辅助评分派发桩。
-type w2aHybridAuxiliaryFailureStub struct{}
-
-func (w2aHybridAuxiliaryFailureStub) DispatchHybridAuxiliaryChatCompletion(context.Context, gatewayhybrid.AuxiliaryDispatchInput) (gatewayhybrid.AuxiliaryDispatchSuccess, *gatewayhybrid.AuxiliaryDispatchFailure) {
-	return gatewayhybrid.AuxiliaryDispatchSuccess{}, &gatewayhybrid.AuxiliaryDispatchFailure{
-		ErrorCode:    "w2a_scoring_unavailable",
-		ErrorMessage: "w2a hybrid scoring stub failure",
 	}
 }
 

@@ -108,14 +108,6 @@ func TestW9EStorePatchAndDelete(t *testing.T) {
 		t.Fatalf("status patch = %v", err)
 	}
 	updatedAt = env.strategyUpdatedAt(t, created.ID)
-	// hybrid 配置更新需要先有多分组绑定；直接对 single-binding 策略改 hybrid 应失败。
-	if _, err := store.Patch(ctx, created.ID, MutationInput{
-		Mode:            ptrString("hybrid"),
-		HybridConfigRaw: map[string]any{},
-		HasHybridConfig: true,
-	}, updatedAt, access); err == nil {
-		t.Fatal("单绑定 hybrid 应失败")
-	}
 	// 不存在的策略 → 幂等 no-op（HTTP 层渲染 404）。
 	if _, err := store.Patch(ctx, "route_strategy_ghost", MutationInput{HasDescription: true, Description: ptrString("x")}, updatedAt, access); err != nil {
 		t.Fatalf("ghost patch 应幂等: %v", err)

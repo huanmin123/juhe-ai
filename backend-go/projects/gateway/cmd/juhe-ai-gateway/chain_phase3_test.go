@@ -1,8 +1,7 @@
 package main
 
-// G20 phase-3 composition tests: hybrid Redis collaborator interop
-// (miniredis), the pricing estimate vectors and the openai-compatible route
-// probe.
+// G20 phase-3 composition tests: the pricing estimate vectors and the
+// openai-compatible route probe.
 
 import (
 	"context"
@@ -16,80 +15,17 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 )
 
-// ---------------------------------------------------------------------------
-// item 3: hybrid Redis collaborators + G14 identity wiring
-// ---------------------------------------------------------------------------
-
-// TestChainHybridRedisCollaboratorsInterop: the chain-assembled hybrid Redis
-// stores round-trip through miniredis with the Node-compatible key layout
-// (state:gateway-hybrid-route-affinity / cache:gateway:hybrid-scoring-result).
-func TestChainHybridRedisCollaboratorsInterop(t *testing.T) {
-	server := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
-	t.Cleanup(func() { _ = client.Close() })
-
-	state, err := gatewayhybrid.NewRedisRuntimeStateStore(client, "juhe-ai:dev")
-	if err != nil {
-		t.Fatalf("create hybrid runtime state: %v", err)
-	}
-	ctx := context.Background()
-	affinity := map[string]any{"accountId": "acc_1", "groupId": "group_main"}
-	if err := state.SetJSON(ctx, "key-1", affinity, 60_000); err != nil {
-		t.Fatalf("set affinity: %v", err)
-	}
-	var loaded map[string]any
-	ok, err := state.GetJSON(ctx, "key-1", &loaded)
-	if err != nil || !ok {
-		t.Fatalf("get affinity: ok=%v err=%v", ok, err)
-	}
-	if loaded["accountId"] != "acc_1" {
-		t.Fatalf("affinity = %v", loaded)
-	}
-	// Node-compatible key layout: juhe-ai:<ns>:state:gateway-hybrid-route-affinity:<key>.
-	if _, err := server.Get("juhe-ai:dev:state:gateway-hybrid-route-affinity:key-1"); err != nil {
-		t.Fatalf("state key missing in redis: %v", err)
-	}
-
-	scoring, err := gatewayhybrid.NewRedisSharedJSONCache(client, "dev")
-	if err != nil {
-		t.Fatalf("create hybrid scoring cache: %v", err)
-	}
-	entry := gatewayhybrid.HybridScoringCacheEntry{Level: 2, Reason: strPtrCompat("healthy")}
-	if err := scoring.Set(ctx, "cache-key", entry, 60_000); err != nil {
-		t.Fatalf("set scoring entry: %v", err)
-	}
-	loadedEntry, err := scoring.Get(ctx, "cache-key")
-	if err != nil || loadedEntry == nil {
-		t.Fatalf("get scoring entry: %v %v", loadedEntry, err)
-	}
-	if loadedEntry.Level != 2 || loadedEntry.Reason == nil || *loadedEntry.Reason != "healthy" {
-		t.Fatalf("scoring entry = %+v", loadedEntry)
-	}
-	if _, err := server.Get("juhe-ai:dev:cache:gateway:hybrid-scoring-result:cache-key"); err != nil {
-		t.Fatalf("scoring key missing in redis: %v", err)
-	}
-	if err := scoring.Clear(ctx); err != nil {
-		t.Fatalf("clear scoring cache: %v", err)
-	}
-	if cleared, _ := scoring.Get(ctx, "cache-key"); cleared != nil {
-		t.Fatalf("scoring entry survived clear: %+v", cleared)
-	}
-}
-
-// TestComposeChainRuntimeServicesWiresRedisCollaborators: with redis cache driver
-// the hybrid collaborators and the G14 identity services assemble (no silent nil).
-// Note: RuntimeStateDriver=memory because D-137 hot quality service only supports memory driver
-// (hybrid RuntimeState = redis is W3-B enhancement).
-func TestComposeChainRuntimeServicesWiresRedisCollaborators(t *testing.T) {
+// TestComposeChainRuntimeServicesWiresIdentity: with redis cache driver the
+// G14 identity services assemble (no silent nil). Note: RuntimeStateDriver=memory
+// because D-137 hot quality service only supports memory driver.
+func TestComposeChainRuntimeServicesWiresIdentity(t *testing.T) {
 	server := miniredis.RunT(t)
 	cfg := composeTestConfig(t)
 	cfg.RedisNamespace = "compose-test"
@@ -109,26 +45,9 @@ func TestComposeChainRuntimeServicesWiresRedisCollaborators(t *testing.T) {
 		t.Fatalf("compose chain runtime services: %v", err)
 	}
 	t.Cleanup(services.Close)
-	if services.HybridScoringCache == nil {
-		t.Fatal("HybridScoringCache must assemble under cacheDriver=redis")
-	}
-	if services.HybridRuntimeState == nil && cfg.RuntimeStateDriver == "redis" {
-		t.Fatal("HybridRuntimeState must assemble under runtimeStateDriver=redis")
-	}
 	if services.Identity == nil || services.Identity.Identity == nil || services.Identity.Affinity == nil {
 		t.Fatal("G14 identity services must assemble")
 	}
-	// The assembled collaborators interop through Redis keys: hybrid scoring
-	// cache uses Redis regardless of runtimeStateDriver; hybrid runtime state
-	// uses memory here (D-137 hot quality constraint).
-	ctx := context.Background()
-	if err := services.HybridScoringCache.Set(ctx, "interop", gatewayhybrid.HybridScoringCacheEntry{}, 60_000); err != nil {
-		t.Fatalf("set via assembled cache: %v", err)
-	}
-	if _, err := server.Get("juhe-ai:compose-test:cache:gateway:hybrid-scoring-result:interop"); err != nil {
-		t.Fatalf("assembled cache key missing: %v", err)
-	}
-	_ = ctx
 }
 
 // ---------------------------------------------------------------------------
@@ -321,5 +240,3 @@ func TestComposeSystemAPIServesOpenAICompatFamilies(t *testing.T) {
 		t.Fatalf("family miss status=%d body=%s", wrongMethod.StatusCode, string(wrongMethodBody))
 	}
 }
-
-func strPtrCompat(value string) *string { return &value }

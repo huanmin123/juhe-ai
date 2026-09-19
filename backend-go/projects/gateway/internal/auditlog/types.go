@@ -47,8 +47,6 @@ const (
 	TrafficSourceAccountHealthCheck   TrafficSource = "account_health_check"
 	TrafficSourceRuntimeRecoveryProbe TrafficSource = "runtime_recovery_probe"
 	TrafficSourceCooldownRetest       TrafficSource = "cooldown_retest"
-	TrafficSourceHybridScoring        TrafficSource = "hybrid_scoring"
-	TrafficSourceHybridQualityScoring TrafficSource = "hybrid_quality_scoring"
 )
 
 type PayloadPartType string
@@ -350,7 +348,7 @@ func validateInput(input AuditLogInput) error {
 	if !isKnown(input.AuditOutcome, AuditOutcomeSuccess, AuditOutcomeSuccessAfterRetry, AuditOutcomeGatewaySucceeded, AuditOutcomeGatewayFailed, AuditOutcomeUpstreamFailed, AuditOutcomeStreamFailed, AuditOutcomeDownstreamClosed) {
 		return fmt.Errorf("auditOutcome 无效: %q", input.AuditOutcome)
 	}
-	if !isKnown(input.TrafficSource, TrafficSourceGateway, TrafficSourceManualAccountTest, TrafficSourceAccountHealthCheck, TrafficSourceRuntimeRecoveryProbe, TrafficSourceCooldownRetest, TrafficSourceHybridScoring, TrafficSourceHybridQualityScoring) {
+	if !isKnown(input.TrafficSource, TrafficSourceGateway, TrafficSourceManualAccountTest, TrafficSourceAccountHealthCheck, TrafficSourceRuntimeRecoveryProbe, TrafficSourceCooldownRetest) {
 		return fmt.Errorf("trafficSource 无效: %q", input.TrafficSource)
 	}
 	if input.TrafficSource == TrafficSourceAccountHealthCheck || input.TrafficSource == TrafficSourceRuntimeRecoveryProbe || input.TrafficSource == TrafficSourceCooldownRetest {

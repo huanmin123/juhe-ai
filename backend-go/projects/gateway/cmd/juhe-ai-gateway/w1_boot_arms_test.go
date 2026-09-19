@@ -43,6 +43,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -305,6 +306,9 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 		)...,
 	)...)
 	env1 = append(env1, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr)
+	// 2026-09-19 起 system api 未配置默认开启；专有租约分支契约要求显式关闭
+	// 组合根与网关链。
+	env1 = append(env1, "JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false", "JUHE_AI_GATEWAY_CHAIN_ENABLED=false")
 	cmd1, done1, cancel1, _, _ := w1mStartOwnerProcess(t, coverageDir1, env1)
 	w1mWaitHealthReady(t, client, healthAddr)
 
@@ -349,12 +353,18 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 			filepath.Join(root2, "usage-shards"),
 		)...,
 	)...)
-	cmd2, done2, cancel2, stdout2, _ := w1mStartOwnerProcess(t, coverageDir2, env2)
+	// 同进程 1：专有租约分支要求显式关闭 system api 与网关链（2026-09-19
+	// 默认开启）；health 监听用空闲端口，避免与本机开发实例默认端口冲突。
+	env2 = append(env2,
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false",
+		"JUHE_AI_GATEWAY_CHAIN_ENABLED=false",
+		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
+	cmd2, done2, cancel2, stdout2, stderr2 := w1mStartOwnerProcess(t, coverageDir2, env2)
 	if !w1mWaitOutputContains(t, stdout2, "F4 operation log owner lease held by another owner process", 15*time.Second) {
 		cancel2()
 		_ = cmd2.Process.Kill()
 		<-done2
-		t.Fatalf("进程 2 的 F4 专有租约冲突未在 15s 内出现，stdout: %s", stdout2.String())
+		t.Fatalf("进程 2 的 F4 专有租约冲突未在 15s 内出现，stdout: %s stderr: %s", stdout2.String(), stderr2.String())
 	}
 	w1mGracefulShutdownOwner(t, cmd2, done2, cancel2, coverageDir2, "M1-f4-lease-conflict")
 
@@ -428,7 +438,16 @@ func TestW1MBootConfigFastFailArms(t *testing.T) {
 	t.Run("owner侧健康监听地址非法", func(t *testing.T) {
 		root := w1mAuditRoot(t, "m2-listen")
 		coverageDir := w1bCoverageDir(t, "M2-owner-bad-listen")
-		env := w1bScenarioEnv(t, coverageDir, w1mAuditEnvPairs(t, root, "w1m-m2-e")...)
+		// 2026-09-19 起 F4 store 缺省启用：显式配置 F4（临时目录文件），
+		// 保证 boot 走到健康监听守卫而不是在派生 F4 路径处先失败。
+		env := w1bScenarioEnv(t, coverageDir, append(
+			w1mAuditEnvPairs(t, root, "w1m-m2-e"),
+			w1mF4EnvPairs(t,
+				filepath.Join(root, "f4-operation.sqlite3"),
+				filepath.Join(root, "f4-business-settings.sqlite3"),
+				filepath.Join(root, "usage-shards"),
+			)...,
+		)...)
 		_, stderr, code := w1bRunScenario(t, "M2-owner-bad-listen", env, "-health-listen-address", "127.0.0.1:99999")
 		w1bRequireExitCode(t, "M2-owner-bad-listen", code, 1)
 		w1bRequireContains(t, "M2-owner-bad-listen", stderr, `listen gateway health endpoint "127.0.0.1:99999"`)
@@ -514,6 +533,10 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 		env := w1bScenarioEnv(t, coverageDir, append(w1mJ3BEnvPairs(t, root,
 			filepath.Join(root, "j3b-business.sqlite"), notReadyJ3b),
 			"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+validBusiness,
+			// 2026-09-19 起 system api 默认开启会先触发业务 owner 门禁；
+			// 本臂只验证 J3b 证据，显式关闭组合根与网关链以保持测点隔离。
+			"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false",
+			"JUHE_AI_GATEWAY_CHAIN_ENABLED=false",
 		)...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-evidence-not-ready", w1bOwnerBaseEnv(t, coverageDir, env...))
 		w1bRequireExitCode(t, "M3-j3b-evidence-not-ready", code, 1)
@@ -679,7 +702,10 @@ func TestW1MBootSystemAPICompositionLifecycle(t *testing.T) {
 			filepath.Join(root, "usage-shards"),
 		)...)
 		pairs = append(pairs, w1mSystemAPIEnvPairs(t, root, evidence, w1bFreePort(t))...)
+		// health 监听用空闲端口：默认 127.0.0.1:3306 可能被本机开发实例占用，
+		// 不能让它先于被测的组合根失败臂触发。
 		env := w1bScenarioEnv(t, coverageDir, pairs...)
+		env = append(env, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
 		_, stderr, code := w1bRunScenario(t, "M4-systemapi-compose-fail", env)
 		w1bRequireExitCode(t, "M4-systemapi-compose-fail", code, 1)
 		w1bRequireContains(t, "M4-systemapi-compose-fail", stderr, "compose gateway system api")
@@ -703,7 +729,9 @@ func TestW1MBootSystemAPICompositionLifecycle(t *testing.T) {
 			filepath.Join(root, "usage-shards"),
 		)...)
 		pairs = append(pairs, w1mSystemAPIEnvPairs(t, root, evidence, occupied)...)
+		// health 监听用空闲端口（同上：默认 3306 可能被本机开发实例占用）。
 		env := w1bScenarioEnv(t, coverageDir, pairs...)
+		env = append(env, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
 		_, stderr, code := w1bRunScenario(t, "M4-systemapi-port-conflict", env)
 		w1bRequireExitCode(t, "M4-systemapi-port-conflict", code, 1)
 		w1bRequireContains(t, "M4-systemapi-port-conflict", stderr, "listen gateway system api endpoint")

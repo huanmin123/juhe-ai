@@ -216,13 +216,6 @@ func TestWhRoutePlanSnapshot(t *testing.T) {
 	if snapshot.WeightedDecisionToken != "binding-9" {
 		t.Fatalf("加权令牌 = %q", snapshot.WeightedDecisionToken)
 	}
-	// hybridRouteField/hybridRouteBool 的 nil 安全读取。
-	if hybridRouteField(nil, "level") != nil || hybridRouteField(map[string]any{}, "missing") != nil {
-		t.Fatal("缺失字段必须返回 nil")
-	}
-	if !hybridRouteBool(map[string]any{"defaulted": true}, "defaulted") || hybridRouteBool(map[string]any{"defaulted": "x"}, "defaulted") {
-		t.Fatal("hybridRouteBool 只接受布尔")
-	}
 }
 
 // 用量上下文装配：默认 tier、分组元数据透传。
@@ -345,30 +338,6 @@ func TestWhSendInteractionAffinityFailure(t *testing.T) {
 	failure, _ = sink.lastFailure()
 	if failure.StatusCode != 503 || failure.Audit.ErrorPhase != "dispatch" {
 		t.Fatalf("dispatch 阶段 = %+v", failure)
-	}
-}
-
-// 混合路由失败元数据与状态码映射。
-func TestWhHybridFailureMetadata(t *testing.T) {
-	metadata := hybridFailedMetadata(nil, HybridRouteResult{
-		Reason: "hybrid_scoring_failed", TargetModel: "m1",
-		Scoring: map[string]any{"failed": true, "defaulted": true, "errorCode": "E", "errorMessage": "bad"},
-	})
-	if metadata["level"] != nil || metadata["scoringDefaulted"] != true || metadata["scoringErrorCode"] != "E" || metadata["scoringErrorMessage"] != "bad" {
-		t.Fatalf("失败元数据 = %v", metadata)
-	}
-	plain := hybridFailedMetadata(nil, HybridRouteResult{Reason: "hybrid_target_group_unavailable", Scoring: map[string]any{"level": 3}})
-	if plain["level"] != 3 {
-		t.Fatalf("level 透传 = %v", plain["level"])
-	}
-	if got := hybridRouteFailureStatusCode("hybrid_scoring_failed"); got != 502 {
-		t.Fatalf("评分失败状态码 = %d", got)
-	}
-	if got := hybridRouteFailureStatusCode("hybrid_scoring_http_error"); got != 502 {
-		t.Fatalf("评分 HTTP 状态码 = %d", got)
-	}
-	if got := hybridRouteFailureStatusCode("other"); got != 503 {
-		t.Fatalf("其他状态码 = %d", got)
 	}
 }
 

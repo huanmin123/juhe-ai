@@ -175,7 +175,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 		options.PageSize = 50
 	}
 	switch strings.TrimSpace(r.URL.Query().Get("mode")) {
-	case ModeNormal, ModeHybridSmart, ModeWeighted, ModeFailover, ModeRoundRobin:
+	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge:
 		options.Mode = strings.TrimSpace(r.URL.Query().Get("mode"))
 	}
 	switch strings.TrimSpace(r.URL.Query().Get("status")) {
@@ -445,15 +445,14 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 			return
 		}
 		if d.Sink != nil {
-			// Node logs the six fixed safeChange entries; the config entries
-			// render 未设置 when their value is absent.
+			// Node logs the five fixed safeChange entries; the config entry
+			// renders 未设置 when its value is absent.
 			changes := []authsys.OperationLogChange{
 				{Field: "name", Label: "名称", After: item.Name},
 				{Field: "mode", Label: "路由模式", After: item.Mode},
 				{Field: "status", Label: "状态", After: item.Status},
 				{Field: "groupBindings", Label: "绑定分组", After: summarizeBindings(input.Bindings)},
 				{Field: "normalRoutingConfig", Label: "普通路由调度配置", After: changeText(item.NormalRoutingConfig)},
-				{Field: "hybridRoutingConfig", Label: "混合智能路由配置", After: changeText(input.HybridConfigRaw)},
 			}
 			d.Sink.Record(authsys.OperationLogEntry{
 				ActorSystemAccountID:          auth.SystemAccountID,
@@ -667,7 +666,7 @@ func (d *Deps) writeMutationError(w http.ResponseWriter, err error) {
 }
 
 // normalRouteSpeedFirstRuntimeFields mirrors normalRouteSpeedFirstRuntimeFields
-// (the cleanup trigger set; hybridRoutingConfig is not part of it).
+// (the cleanup trigger set).
 var normalRouteSpeedFirstRuntimeFields = map[string]bool{
 	"mode":                true,
 	"status":              true,
@@ -706,8 +705,6 @@ func patchFieldLabel(field string) string {
 		return "绑定分组"
 	case "normalRoutingConfig":
 		return "普通路由调度配置"
-	case "hybridRoutingConfig":
-		return "混合智能路由配置"
 	default:
 		return field
 	}

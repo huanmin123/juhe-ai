@@ -132,7 +132,14 @@ func TestLoadConfigPrefersDedicatedPostgresURL(t *testing.T) {
 	if err != nil || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 10 {
 		t.Fatalf("configured F3 PostgreSQL pool=%d/%d err=%v", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns, err)
 	}
+	// 2026-09-19：专职 URL 缺省回退主 JUHE_AI_POSTGRES_URL（显式仍优先）；
+	// 两者皆空才保持 fail-fast。
 	delete(env, "JUHE_AI_AUDIT_LOG_POSTGRES_URL")
+	cfg, err = LoadConfig(func(name string) string { return env[name] })
+	if err != nil || cfg.PostgresURL != env["JUHE_AI_POSTGRES_URL"] {
+		t.Fatalf("fallback shared PostgresURL=%q err=%v", cfg.PostgresURL, err)
+	}
+	delete(env, "JUHE_AI_POSTGRES_URL")
 	if _, err = LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_AUDIT_LOG_POSTGRES_URL") {
 		t.Fatalf("missing dedicated PostgresURL must fail, got %v", err)
 	}

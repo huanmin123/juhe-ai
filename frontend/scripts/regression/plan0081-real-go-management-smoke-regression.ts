@@ -2102,7 +2102,6 @@ async function handleRouteStrategiesListRequest(
   const result = { items, total: items.length, hasMore: false, page: 1, pageSize: 200 }
   if (requestScenario === 'route_strategies_invalid' && result.items[0]) {
     result.items[0].groupBindings = routeStrategyBindings()
-    result.items[0].hybridRoutingConfig = { scoringModel: 'route-config-sensitive-model' }
   }
   sendEnvelope(res, result)
 }

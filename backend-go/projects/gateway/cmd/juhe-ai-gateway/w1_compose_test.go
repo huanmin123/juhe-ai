@@ -1,6 +1,6 @@
 package main
 
-// w1: chain_compose.go 装配收割——上游响应模型观察者、hybrid 端口适配器、
+// w1: chain_compose.go 装配收割——上游响应模型观察者、
 // 客户端模型目录选择（Node client-model-catalog.service.ts 纯函数面）、
 // body 拒绝记录缺席守卫与用量 spool 组装。
 
@@ -17,7 +17,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
@@ -45,61 +44,6 @@ func TestW1UpstreamResponseModelObserver(t *testing.T) {
 	// joinChinese：顿号拼接。
 	if got := joinChinese([]string{"甲", "乙"}); got != "甲；乙" {
 		t.Fatalf("join = %q", got)
-	}
-}
-
-func TestW1HybridAdapterHelpers(t *testing.T) {
-	// 时钟/缓存/运行态/辅助派发适配器：nil 保留 nil、值透传。
-	if hybridUsageRecorderOf(nil) != nil || hybridDiagnosticsOf(nil) != nil {
-		t.Fatal("nil 适配必须保留 nil")
-	}
-	// 组合根 transport 注线：非具体类型 / nil 安全。
-	wireChainHybridAuxiliaryTransport(nil, gatewaydispatch.TransportDeps{})
-	wireChainHybridAuxiliaryTransport(w1FakeAuxiliary{}, gatewaydispatch.TransportDeps{})
-	// 失败臂构造器：字段逐一投影。
-	success, failure := auxiliaryDispatchFailure(gatewayhybrid.AuxiliaryDispatchInput{}, "code_x", "消息", nil, "grp_1", true, 429, true, true)
-	if success.Account.ID != "" || failure == nil {
-		t.Fatalf("failure = %+v", failure)
-	}
-	if failure.ErrorCode != "code_x" || failure.ErrorMessage != "消息" || failure.GroupID != "grp_1" || !failure.HasGroupID || failure.StatusCode != 429 || !failure.HasStatusCode || !failure.ShouldRecordUsage {
-		t.Fatalf("failure = %+v", failure)
-	}
-	// nil 接收器 / nil cache：输入码回传的失败臂。
-	var nilDispatcher *chainHybridAuxiliaryDispatcher
-	_, nilFailure := nilDispatcher.DispatchHybridAuxiliaryChatCompletion(context.Background(), gatewayhybrid.AuxiliaryDispatchInput{
-		DispatchErrorCode: "dispatch_failed", DispatchErrorMessage: "派发失败",
-	})
-	if nilFailure == nil || nilFailure.ErrorCode != "dispatch_failed" || nilFailure.ShouldRecordUsage {
-		t.Fatalf("nil dispatcher failure = %+v", nilFailure)
-	}
-	_, cacheFailure := newChainHybridAuxiliaryDispatcher(nil).DispatchHybridAuxiliaryChatCompletion(context.Background(), gatewayhybrid.AuxiliaryDispatchInput{})
-	if cacheFailure == nil || cacheFailure.Account != nil {
-		t.Fatalf("nil cache failure = %+v", cacheFailure)
-	}
-}
-
-type w1FakeAuxiliary struct{}
-
-func (w1FakeAuxiliary) DispatchHybridAuxiliaryChatCompletion(context.Context, gatewayhybrid.AuxiliaryDispatchInput) (gatewayhybrid.AuxiliaryDispatchSuccess, *gatewayhybrid.AuxiliaryDispatchFailure) {
-	return gatewayhybrid.AuxiliaryDispatchSuccess{}, nil
-}
-
-func TestW1ResolveAuxiliaryModelMapping(t *testing.T) {
-	if resolveAuxiliaryAccountModelMapping(gatewayruntimecache.OpenAIAccountSecret{}, "") != nil {
-		t.Fatal("空目标模型必须 nil")
-	}
-	resolved := resolveAuxiliaryAccountModelMapping(gatewayruntimecache.OpenAIAccountSecret{
-		ProviderCode: "openai", ProtocolCode: "chat_completions",
-		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
-			SourceModel:            "scoring-model",
-			SourceEndpointFamily:   "chat_completions",
-			UpstreamModel:          "gpt-5-mini",
-			UpstreamEndpointFamily: "chat_completions",
-			Enabled:                true,
-		}},
-	}, "scoring-model")
-	if resolved == nil || resolved.UpstreamModel != "gpt-5-mini" {
-		t.Fatalf("mapping = %+v", resolved)
 	}
 }
 

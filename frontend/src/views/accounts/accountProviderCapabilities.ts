@@ -55,7 +55,10 @@ export const clientCompatibilityCapabilityOptions: Array<{ label: string; value:
 
 export const chatEndpointModes: AccountSupportedEndpointMode[] = ['chat_json', 'chat_sse']
 export const responsesEndpointModes: AccountSupportedEndpointMode[] = ['responses_json', 'responses_sse']
-export const openAIEndpointModes: AccountSupportedEndpointMode[] = [...chatEndpointModes, ...responsesEndpointModes]
+// images_json 是 openai 族的合法可表达能力（/v1/images 图像 lane 派发依赖它），
+// 词表与后端 OpenAIEndpointModeValues 同构（images_json 居首）；但它只能显式
+// 开启——defaultEndpointModesForAccount 会在默认集中过滤掉它。
+export const openAIEndpointModes: AccountSupportedEndpointMode[] = ['images_json', ...chatEndpointModes, ...responsesEndpointModes]
 export const anthropicAccountEndpointModes: AccountSupportedEndpointMode[] = ['messages_json', 'messages_sse', 'message_token_counting']
 export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content', 'interactions_json', 'interactions_sse']
 export const allAccountEndpointModes: AccountSupportedEndpointMode[] = [
@@ -230,7 +233,9 @@ export function defaultEndpointModesForAccount(input: {
   if (protocolKind === 'gemini_v1beta') return endpointModesForProfile(input.profile ?? input.provider)
   if (input.type === 'oauth' && protocolKind === 'openai_v1') return [...responsesEndpointModes]
   if (protocolKind === 'openai_v1') {
+    // 新账户默认集保持 chat/responses 推导结果；images_json 只能显式开启。
     return endpointModesForProfile(input.profile ?? input.provider)
+      .filter((mode) => mode !== 'images_json')
   }
   return [...allAccountEndpointModes]
 }
@@ -258,14 +263,20 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
     { family: GEMINI_EMBED_CONTENT_FAMILY, modes: ['embed_content'] },
     { family: 'interactions', modes: ['interactions_json', 'interactions_sse'] }
   ])
-  if (protocolKind === 'openai_v1') return endpointModesForFamilies(
-    profile,
-    profileSupportsCodexResponsesChatBridge(profile) ? chatEndpointModes : openAIEndpointModes,
-    [
-      { family: OPENAI_CHAT_COMPLETIONS_FAMILY, modes: chatEndpointModes },
-      { family: OPENAI_RESPONSES_FAMILY, modes: responsesEndpointModes }
-    ]
-  )
+  if (protocolKind === 'openai_v1') {
+    const familyModes = endpointModesForFamilies(
+      profile,
+      profileSupportsCodexResponsesChatBridge(profile) ? chatEndpointModes : openAIEndpointModes,
+      [
+        { family: OPENAI_CHAT_COMPLETIONS_FAMILY, modes: chatEndpointModes },
+        { family: OPENAI_RESPONSES_FAMILY, modes: responsesEndpointModes }
+      ]
+    )
+    // images_json 是 openai 族的显式可选能力：允许勾选（图像 lane 派发依赖），
+    // 不进默认集（defaultEndpointModesForAccount 过滤）。
+    const selectable: AccountSupportedEndpointMode[] = [...familyModes, 'images_json']
+    return [...new Set(selectable)]
+  }
   return [...allAccountEndpointModes]
 }
 

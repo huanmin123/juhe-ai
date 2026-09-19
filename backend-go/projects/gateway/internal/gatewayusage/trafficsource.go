@@ -13,8 +13,6 @@ const (
 	TrafficSourceAccountHealthCheck   OpenAIGatewayTrafficSource = "account_health_check"
 	TrafficSourceRuntimeRecoveryProbe OpenAIGatewayTrafficSource = "runtime_recovery_probe"
 	TrafficSourceCooldownRetest       OpenAIGatewayTrafficSource = "cooldown_retest"
-	TrafficSourceHybridScoring        OpenAIGatewayTrafficSource = "hybrid_scoring"
-	TrafficSourceHybridQualityScoring OpenAIGatewayTrafficSource = "hybrid_quality_scoring"
 )
 
 // NormalizeOpenAIGatewayTrafficSource mirrors
@@ -39,9 +37,7 @@ func isValidTrafficSource(value string) bool {
 		TrafficSourceManualAccountTest,
 		TrafficSourceAccountHealthCheck,
 		TrafficSourceRuntimeRecoveryProbe,
-		TrafficSourceCooldownRetest,
-		TrafficSourceHybridScoring,
-		TrafficSourceHybridQualityScoring:
+		TrafficSourceCooldownRetest:
 		return true
 	}
 	return false

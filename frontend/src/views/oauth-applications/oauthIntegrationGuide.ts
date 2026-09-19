@@ -277,7 +277,7 @@ function buildDelegatedApiContract(issuer: string, scopes: string[]): string[] {
     lines.push(
       '### 路由策略写入',
       '',
-      '`POST /route-strategies` 至少包含名称与一个本人分组绑定：`{ "name": "默认路由", "groupBindings": [{ "groupId": "<GROUP_ID>", "priority": 1, "status": "active" }] }`。可选 `description`、`mode`、`status`、`normalRoutingConfig` 和 `hybridRoutingConfig`。',
+      '`POST /route-strategies` 至少包含名称与一个本人分组绑定：`{ "name": "默认路由", "groupBindings": [{ "groupId": "<GROUP_ID>", "priority": 1, "status": "active" }] }`。可选 `description`、`mode`、`status` 和 `normalRoutingConfig`。',
       '`PATCH /route-strategies/:id` 先读取详情，再提交部分更新加 `expectedUpdatedAt`，例如 `{"expectedUpdatedAt":"<ISO-8601>","status":"disabled"}`。所有 `groupBindings` 都必须属于当前授权用户；删除为 `DELETE /route-strategies/:id`。',
       ''
     )

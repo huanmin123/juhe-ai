@@ -27,7 +27,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
@@ -53,11 +52,6 @@ type chainRuntimeServices struct {
 	AuthzQuota      *gatewayquota.AuthorizationQuotaService
 	InflightQuota   *gatewayquota.InflightQuotaService
 	Accounts        *chainAccountsSelector
-	// HybridScoringCache / HybridRuntimeState are the cacheDriver==='redis'
-	// collaborators of the hybrid route resolver (nil keeps the memory
-	// drivers, mirroring the Node runtimeConfig axes).
-	HybridScoringCache gatewayhybrid.SharedJSONCache
-	HybridRuntimeState gatewayhybrid.RuntimeStateStore
 	// Identity carries the G14 session identity + affinity services (nil is
 	// rejected by the chain assembly: the preflight dereferences them).
 	Identity *sessionIdentityServices
@@ -710,26 +704,6 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		},
 		gatewayaccounteffects.SystemClock{},
 	)
-
-	// ---- hybrid Redis collaborators (cacheDriver==='redis') ----
-	// Node createSharedJsonCache('gateway:hybrid-scoring-result') +
-	// createRuntimeStateStore('gateway-hybrid-route-affinity').
-	if redisCache && cacheClient != nil {
-		scoringCache, scoringErr := gatewayhybrid.NewRedisSharedJSONCache(cacheClient, cfg.RedisNamespace)
-		if scoringErr != nil {
-			services.Close()
-			return nil, fmt.Errorf("create hybrid scoring shared cache: %w", scoringErr)
-		}
-		services.HybridScoringCache = scoringCache
-	}
-	if redisState && stateClient != nil {
-		hybridState, hybridErr := gatewayhybrid.NewRedisRuntimeStateStore(stateClient, cfg.RedisNamespace)
-		if hybridErr != nil {
-			services.Close()
-			return nil, fmt.Errorf("create hybrid route affinity state: %w", hybridErr)
-		}
-		services.HybridRuntimeState = hybridState
-	}
 
 	// ---- G14 session identity + affinity services ----
 	identityService, identityErr := gatewaysession.NewIdentityService(cfg.Secret)

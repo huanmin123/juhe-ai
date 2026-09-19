@@ -128,7 +128,7 @@ func TestW1iLoadRuntimeConfigDefaults(t *testing.T) {
 	if cfg.Port != 3000 {
 		t.Fatalf("port = %d", cfg.Port)
 	}
-	if cfg.ChatAssetsRoot != "data/chat-assets" {
+	if cfg.ChatAssetsRoot != filepath.Join("data", "chat-assets") {
 		t.Fatalf("chat assets = %q", cfg.ChatAssetsRoot)
 	}
 }

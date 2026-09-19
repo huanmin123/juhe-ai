@@ -50,13 +50,8 @@ func TestW9EMutationValidationMatrix(t *testing.T) {
 			t.Fatalf("%s: code = %d payload=%v", tc.name, code, payload)
 		}
 	}
-	// 混合模式非法配置形状。
-	code, _ := env.do(t, http.MethodPost, "/__aisys__/api/route-strategies", `{"name":"hy","mode":"hybrid","hybridConfig":{"noSuchKey":1},"groupBindings":[{"groupId":"`+group+`","priority":1}]}`)
-	if code != http.StatusBadRequest {
-		t.Fatalf("hybrid 非法形状 = %d", code)
-	}
 	// speed-first 非法配置键。
-	code, _ = env.do(t, http.MethodPost, "/__aisys__/api/route-strategies", `{"name":"sf","mode":"speed_first","speedFirstConfig":{"noSuchKey":1},"groupBindings":[{"groupId":"`+group+`","priority":1}]}`)
+	code, _ := env.do(t, http.MethodPost, "/__aisys__/api/route-strategies", `{"name":"sf","mode":"speed_first","speedFirstConfig":{"noSuchKey":1},"groupBindings":[{"groupId":"`+group+`","priority":1}]}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("speed-first 非法形状 = %d", code)
 	}

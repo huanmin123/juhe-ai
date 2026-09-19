@@ -18,47 +18,8 @@ export interface RequestQuotaLimits {
 
 export type RouteStrategyGroupBindingStatus = 'active' | 'disabled'
 export type RouteStrategyNormalSchedulingPreference = 'cost_first' | 'speed_first'
-export type ApiKeyHybridQualityPreference = 'cost_first' | 'balanced' | 'quality_first'
-export type ApiKeyHybridQualityInspectionTriggerMode = 'quality_first_only' | 'risk_based' | 'always_for_hybrid'
-export type ApiKeyHybridQualityInspectionFailureAction = 'repair_then_upgrade' | 'upgrade_next_level' | 'retry_same_model' | 'return_error'
-export type ApiKeyHybridQualityInspectionUnavailableAction = 'pass_through' | 'return_error'
 export type ApiKeyAvailabilityScheduleMode = 'allow_windows'
 export type ApiKeyAvailabilityScheduleExceptionAction = 'allow' | 'deny'
-
-export interface ApiKeyHybridLevelRoute {
-  minLevel: number
-  maxLevel: number
-  targetModel: string
-  enabled: boolean
-}
-
-export interface ApiKeyHybridQualityInspectionConfig {
-  enabled: boolean
-  scoringGroupId?: string
-  scoringModel: string
-  triggerMode: ApiKeyHybridQualityInspectionTriggerMode
-  maxTriggerLevel: number
-  maxRetries: number
-  failureAction: ApiKeyHybridQualityInspectionFailureAction
-  unavailableAction: ApiKeyHybridQualityInspectionUnavailableAction
-}
-
-export interface ApiKeyHybridRoutingConfig {
-  scoringGroupId?: string
-  scoringModel: string
-  scoringContextMode: 'full_request'
-  qualityPreference: ApiKeyHybridQualityPreference
-  scoringTimeoutMs: number
-  scoringFallbackMaxLevel: number
-  scoringCacheEnabled: boolean
-  scoringCacheTtlSeconds: number
-  cacheAffinityEnabled: boolean
-  affinityTtlSeconds: number
-  switchMinLevelDelta: number
-  downgradeConsecutiveLowCount: number
-  levelRoutes: ApiKeyHybridLevelRoute[]
-  qualityInspection?: ApiKeyHybridQualityInspectionConfig
-}
 
 export interface RouteStrategyGroupBindingSummary {
   id: string
@@ -119,7 +80,7 @@ export interface RouteStrategySpeedFirstLatencyRuntime {
   items: RouteStrategySpeedFirstLatencyRuntimeItem[]
 }
 
-// 调度偏好配置（历史命名 normalRoutingConfig）：自调度偏好通用化起由 normal/weighted/failover/round_robin 四种模式共享；hybrid_smart 恒不返回该配置。
+// 调度偏好配置（历史命名 normalRoutingConfig）：自调度偏好通用化起由 normal/weighted/failover/round_robin/merge 五种模式共享。
 export type RouteStrategyNormalRoutingConfig =
   | {
       schedulingPreference: 'cost_first'
@@ -134,7 +95,7 @@ export type RouteStrategyNormalRoutingConfig =
 
 export type RouteStrategyGroupBindingPreview = Pick<RouteStrategyGroupBindingSummary, 'id' | 'groupId' | 'groupName' | 'providerCode' | 'status' | 'groupEnabled'>
 
-export type RouteStrategyMode = 'normal' | 'round_robin' | 'weighted' | 'failover' | 'hybrid_smart'
+export type RouteStrategyMode = 'normal' | 'round_robin' | 'weighted' | 'failover' | 'merge'
 export type RouteStrategyStatus = 'active' | 'disabled'
 
 export interface RouteStrategySummary {
@@ -147,7 +108,6 @@ export interface RouteStrategySummary {
   status: RouteStrategyStatus
   isDefault: boolean
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
-  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: RouteStrategyGroupBindingSummary[]
   apiKeyCount?: number
   createdAt: string
@@ -163,7 +123,6 @@ export interface RouteStrategyEditBasicDetail {
   status: RouteStrategyStatus
   isDefault: boolean
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
-  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: RouteStrategyGroupBindingSummary[]
   updatedAt: string
 }
@@ -175,7 +134,6 @@ export type RouteStrategyMutableField =
   | 'status'
   | 'groupBindings'
   | 'normalRoutingConfig'
-  | 'hybridRoutingConfig'
 
 export interface RouteStrategyMutationRowPatch {
   name?: string
@@ -183,7 +141,6 @@ export interface RouteStrategyMutationRowPatch {
   mode?: RouteStrategyMode
   status?: RouteStrategyStatus
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig | null
-  hybridRoutingConfig?: ApiKeyHybridRoutingConfig | null
   bindingCount?: number
   groupBindingPreview?: RouteStrategyGroupBindingPreview[]
   updatedAt?: string

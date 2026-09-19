@@ -239,7 +239,7 @@ mock 回归至少覆盖：
 | 图片 / 文件 | Chat `image_url` URL / data URL、Responses `input_image.image_url` URL / data URL、Chat / Responses 图片 data URL MIME / base64 拒绝边界且不上游、Responses `input_image.file_id` 成功 / 未知 / 非图片 MIME / 非法 base64 边界、Chat/Responses inline PDF / text/* 文件、inline 文件非法 base64 / 不支持 MIME 拒绝且不上游、Chat `file_url` 拒绝、Responses PDF URL 成功与非 PDF URL 拒绝、`/v1/files` 上传后 Chat/Responses `file_id` 成功路径、Chat / Responses 未知 / 不支持 MIME / 非法 base64 的 `file_id` 受控失败且不上游 |
 | 状态 / Compact | `previous_response_id` Codex SSE / 普通 JSON / 普通 SSE 续链、`previous_response_id` 未知 id / 跨 API Key 拒绝、`conversation` 本地拒绝、`background=true` 本地拒绝、`store=true` 本地拒绝、`truncation=auto` 本地拒绝、`context_management` 本地拒绝、`compaction` / `compaction_summary` 恢复、compact item 缺失 / 非法 / 未知 envelope 本地拒绝、`/responses/compact` 返回 `response.compaction`、不直转 Anthropic、跨边界 snapshot 拒绝、`juhecmp.v2` digest 篡改拒绝且不上游 |
 | SSE | text delta、tool input_json_delta、thinking_delta、Chat `stream_options.include_usage` usage chunk、上游 `event:error` |
-| 回归 | Anthropic native `/v1/messages`、OpenAI-compatible `responses -> chat_completions`、混合路由 |
+| 回归 | Anthropic native `/v1/messages`、OpenAI-compatible `responses -> chat_completions`、混合供应商账户链路 |
 
 真实账户验证至少覆盖：
 

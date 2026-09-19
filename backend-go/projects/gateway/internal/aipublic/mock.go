@@ -308,7 +308,7 @@ func (d *Deps) mockStrategyList(w http.ResponseWriter, query map[string]string, 
 // mockStrategySummary mirrors mockRouteStrategySummary: default bindings and
 // the normalRoutingConfig projection aligned with the store's
 // normalConfigForMode (cost_first default for every preference-carrying mode,
-// nil for hybrid_smart).
+// nil when the mode is unknown).
 func mockStrategySummary(id, name, mode, status string, bindings []PublicBindingSummary, normalConfig any) PublicStrategySummary {
 	if len(bindings) == 0 {
 		bindings = []PublicBindingSummary{{

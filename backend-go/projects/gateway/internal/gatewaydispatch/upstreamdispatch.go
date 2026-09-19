@@ -114,7 +114,7 @@ func (s *UpstreamResponseModelSlot) Bind(consumer func(model string)) {
 
 // RequestCoordinationContext mirrors GatewayUpstreamRequestCoordinationContext.
 type RequestCoordinationContext struct {
-	Scope                          string // 'gateway_request' | 'internal_hybrid_auxiliary'
+	Scope                          string // 'gateway_request'
 	Reason                         string
 	TimeoutPolicy                  string // 'codex_compaction_unbounded' | ''
 	ServerRetryBudget              *gatewaypreauth.ServerRetryBudget
@@ -133,8 +133,7 @@ type RequestCoordinationContext struct {
 
 // Coordination scopes.
 const (
-	CoordinationScopeGatewayRequest          = "gateway_request"
-	CoordinationScopeInternalHybridAuxiliary = "internal_hybrid_auxiliary"
+	CoordinationScopeGatewayRequest = "gateway_request"
 )
 
 // Timeout policies.

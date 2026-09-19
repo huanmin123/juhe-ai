@@ -233,7 +233,7 @@ func TestChatToolCapabilitiesImageReasonMatrix(t *testing.T) {
 	}), "generate_image", false, "当前模型不支持函数工具调用")
 	expectTool(t, build(func(_ *chat.GatewayKeyView, catalog toolCapsCatalog) {
 		catalog.accountsByGroup["grp-image|gpt-image-2|"] = []chat.ChatTransportAccount{toolCapsAccount("acct-image", "oauth", "chat_sse")}
-	}), "generate_image", false, "当前 API Key 路由没有可用的 gpt-image-2 API Key 账户")
+	}), "generate_image", false, "当前 API Key 路由没有可用的图像生成 API Key 账户")
 }
 
 // TestChatToolCapabilitiesUnavailableFallbacks: no model, missing key row,

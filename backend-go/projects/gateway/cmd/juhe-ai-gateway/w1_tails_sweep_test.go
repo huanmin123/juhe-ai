@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -37,7 +36,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
@@ -79,7 +77,7 @@ func w1tNewRequest(t *testing.T, method, target, body string) *gatewaypreauth.Ga
 }
 
 // w1tTailModels 是可编程的 runtime cache read models stub：账户按调用次序
-// 回放（用于 hybrid auxiliary 的 select → hydrate 两次读取分叉）。
+// 回放（供 select → hydrate 两次读取分叉用）。
 type w1tTailModels struct {
 	groupAccess  *gatewayruntimecache.GroupUsageAccessMetadata
 	accountPlans []w1tAccountPlan
@@ -837,192 +835,6 @@ func TestW1TBodyRejectionRecorderArms(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// chain_compose.go：hybrid auxiliary 剩余错误臂（可编程 read models）
-// ---------------------------------------------------------------------------
-
-func w1tAuxInput(record gatewayhybrid.APIKeyRecord, maxBytes int) gatewayhybrid.AuxiliaryDispatchInput {
-	body := gatewayhybrid.NewOrderedJSON()
-	body.Set("model", "src")
-	body.Set("messages", []any{map[string]any{"role": "user", "content": "w1t"}})
-	return gatewayhybrid.AuxiliaryDispatchInput{
-		Body:                       body,
-		RawBody:                    []byte(`{"model":"src","messages":[{"role":"user","content":"w1t"}]}`),
-		APIKeyRecord:               record,
-		TargetModel:                "src",
-		TraceID:                    "trace-w1t",
-		Endpoint:                   "/v1/chat/completions",
-		TimeoutMs:                  5000,
-		ResponseMaxBytes:           maxBytes,
-		NoAccountErrorCode:         "w1t_no_account",
-		NoAccountErrorMessage:      "无可用辅助账户",
-		DispatchErrorCode:          "w1t_dispatch_failed",
-		DispatchErrorMessage:       "辅助派发失败",
-		HTTPErrorCode:              "w1t_upstream_http_error",
-		ResponseTooLargeMessage:    "辅助响应过大",
-		RequestClientCompatibility: "",
-	}
-}
-
-func w1tAuxAccount(baseURL string) gatewayruntimecache.OpenAIAccountSecret {
-	return gatewayruntimecache.OpenAIAccountSecret{
-		ID: "acc-w1t-aux", BaseURL: baseURL, APIKey: "sk-w1t-upstream",
-		ProviderCode: "openai", ProtocolCode: "openai", Status: "active", Type: "api_key", SystemAccountID: "sys-w1t",
-	}
-}
-
-func TestW1THybridAuxiliaryTailArms(t *testing.T) {
-	record := gatewayhybrid.APIKeyRecord{ID: "key-w1t", SystemAccountID: "sys-w1t", SelectedGroupID: "grp-w1t"}
-	groupAccess := &gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai", GroupAccessType: "personal"}
-
-	newDispatch := func(t *testing.T, plans ...w1tAccountPlan) *chainHybridAuxiliaryDispatcher {
-		t.Helper()
-		return newChainHybridAuxiliaryDispatcher(w1tNewTailCache(t, &w1tTailModels{groupAccess: groupAccess, accountPlans: plans}))
-	}
-	requireFailure := func(t *testing.T, name string, dispatcher *chainHybridAuxiliaryDispatcher, input gatewayhybrid.AuxiliaryDispatchInput) *gatewayhybrid.AuxiliaryDispatchFailure {
-		t.Helper()
-		success, failure := dispatcher.DispatchHybridAuxiliaryChatCompletion(context.Background(), input)
-		if failure == nil {
-			t.Fatalf("%s: failure = nil", name)
-		}
-		if success.Finish != nil {
-			t.Fatalf("%s: failure 路径 success.Finish 应为零值", name)
-		}
-		return failure
-	}
-
-	t.Run("目标组选择失败", func(t *testing.T) {
-		failure := requireFailure(t, "select-error",
-			newDispatch(t, w1tAccountPlan{err: errors.New("选择失败")}), w1tAuxInput(record, 64*1024))
-		if failure.ErrorCode != "w1t_dispatch_failed" || failure.HasGroupID {
-			t.Fatalf("failure = %+v, want dispatch_failed 且不带 groupID", failure)
-		}
-	})
-
-	t.Run("水合候选失败", func(t *testing.T) {
-		failure := requireFailure(t, "hydrate-error",
-			newDispatch(t,
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{w1tAuxAccount("http://127.0.0.1:1")}},
-				w1tAccountPlan{err: errors.New("水合失败")}), w1tAuxInput(record, 64*1024))
-		if failure.ErrorCode != "w1t_dispatch_failed" || !failure.HasGroupID || failure.GroupID != "grp-w1t" {
-			t.Fatalf("failure = %+v, want dispatch_failed + groupID", failure)
-		}
-	})
-
-	t.Run("候选与选择无交集", func(t *testing.T) {
-		other := w1tAuxAccount("http://127.0.0.1:1")
-		other.ID = "acc-other"
-		failure := requireFailure(t, "no-intersection",
-			newDispatch(t,
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{w1tAuxAccount("http://127.0.0.1:1")}},
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{other}}), w1tAuxInput(record, 64*1024))
-		if failure.ErrorCode != "w1t_no_account" || !failure.HasGroupID {
-			t.Fatalf("failure = %+v, want no_account + groupID", failure)
-		}
-	})
-
-	t.Run("账户缺 BaseURL 跳过后无账户", func(t *testing.T) {
-		empty := w1tAuxAccount("")
-		failure := requireFailure(t, "empty-baseurl",
-			newDispatch(t,
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{empty}},
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{empty}}), w1tAuxInput(record, 64*1024))
-		if failure.ErrorCode != "w1t_no_account" {
-			t.Fatalf("failure.ErrorCode = %q, want w1t_no_account", failure.ErrorCode)
-		}
-	})
-
-	t.Run("URL 构建失败消耗完候选", func(t *testing.T) {
-		bad := w1tAuxAccount("https://gem.example")
-		bad.ProtocolCode = "anthropic"
-		bad.Type = "weird_type"
-		failure := requireFailure(t, "url-error",
-			newDispatch(t,
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{bad}},
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{bad}}), w1tAuxInput(record, 64*1024))
-		if failure.ErrorCode != "w1t_dispatch_failed" || failure.Account == nil || failure.Account.ID != "acc-w1t-aux" {
-			t.Fatalf("failure = %+v, want dispatch_failed + lastAccount", failure)
-		}
-	})
-
-	t.Run("请求构建失败消耗完候选", func(t *testing.T) {
-		oauth := w1tAuxAccount("https://up.example")
-		oauth.Type = "oauth"
-		oauth.Credentials = map[string]any{"service_tier_override": 123}
-		failure := requireFailure(t, "parts-error",
-			newDispatch(t,
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{oauth}},
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{oauth}}), w1tAuxInput(record, 64*1024))
-		if failure.ErrorCode != "w1t_dispatch_failed" || failure.Account == nil {
-			t.Fatalf("failure = %+v, want dispatch_failed + lastAccount", failure)
-		}
-	})
-
-	t.Run("账户映射转换上游模型", func(t *testing.T) {
-		var upstreamBody string
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			payload, _ := io.ReadAll(r.Body)
-			upstreamBody = string(payload)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
-		}))
-		t.Cleanup(upstream.Close)
-
-		mapped := w1tAuxAccount(upstream.URL)
-		mapped.ModelMappings = []gatewayruntimecache.AccountModelMapping{{
-			SourceModel: "src", SourceEndpointFamily: "chat_completions",
-			UpstreamModel: "up", UpstreamEndpointFamily: "chat_completions", Enabled: true,
-		}}
-		success, failure := newDispatch(t,
-			w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{mapped}},
-			w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{mapped}}).
-			DispatchHybridAuxiliaryChatCompletion(context.Background(), w1tAuxInput(record, 64*1024))
-		if failure != nil {
-			t.Fatalf("映射转换 success 路径返回 failure: %+v", failure)
-		}
-		if !strings.Contains(upstreamBody, `"up"`) {
-			t.Fatalf("上游 body = %s, want 含映射上游模型 up", upstreamBody)
-		}
-		if success.Account.ID != "acc-w1t-aux" {
-			t.Fatalf("success.Account.ID = %q", success.Account.ID)
-		}
-	})
-
-	t.Run("响应超过上限", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(strings.Repeat("x", 4096)))
-		}))
-		t.Cleanup(upstream.Close)
-		account := w1tAuxAccount(upstream.URL)
-		failure := requireFailure(t, "too-large",
-			newDispatch(t,
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{account}},
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}), w1tAuxInput(record, 1024))
-		if failure.ErrorMessage != "辅助响应过大" || !failure.HasStatusCode {
-			t.Fatalf("failure = %+v, want 辅助响应过大 + statusCode", failure)
-		}
-	})
-
-	t.Run("响应体截断读取错误", func(t *testing.T) {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 宣称 4096 字节但只写 11 字节后返回：客户端读取以 unexpected EOF 收敛。
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Content-Length", "4096")
-			_, _ = w.Write([]byte(`{"partial":`))
-		}))
-		t.Cleanup(upstream.Close)
-		account := w1tAuxAccount(upstream.URL)
-		failure := requireFailure(t, "read-error",
-			newDispatch(t,
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{account}},
-				w1tAccountPlan{accounts: []gatewayruntimecache.OpenAIAccountSecret{account}}), w1tAuxInput(record, 64*1024))
-		if failure.ErrorCode != "w1t_dispatch_failed" || !failure.HasStatusCode {
-			t.Fatalf("failure = %+v, want dispatch_failed + statusCode", failure)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // chain_chat_mount.go：SSE 事件循环剩余臂 + openChatDatabase SQLite 臂
 // ---------------------------------------------------------------------------
 
@@ -1349,7 +1161,7 @@ func TestW1TRuntimeComposeRedisDriverClosures(t *testing.T) {
 		t.Fatalf("redis 驱动组合: %v", err)
 	}
 	defer services.Close()
-	if services.StateClient == nil || services.RateLimitStore == nil || services.HybridScoringCache == nil || services.HybridRuntimeState == nil {
+	if services.StateClient == nil || services.RateLimitStore == nil {
 		t.Fatalf("redis 驱动协作组件未装配: %+v", services)
 	}
 	_ = client

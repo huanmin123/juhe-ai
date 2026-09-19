@@ -482,7 +482,7 @@ func TestGetRouteStrategy(t *testing.T) {
 		}
 		data := r.data(t)
 		for _, key := range []string{"id", "name", "mode", "status", "isDefault",
-			"normalRoutingConfig", "hybridRoutingConfig", "groupBindings", "apiKeyCount", "createdAt", "updatedAt"} {
+			"normalRoutingConfig", "groupBindings", "apiKeyCount", "createdAt", "updatedAt"} {
 			if _, ok := data[key]; !ok {
 				t.Fatalf("strategy detail missing %q: %v", key, data)
 			}
@@ -491,9 +491,6 @@ func TestGetRouteStrategy(t *testing.T) {
 		normal, _ := data["normalRoutingConfig"].(map[string]any)
 		if normal["schedulingPreference"] != "cost_first" {
 			t.Fatalf("normalRoutingConfig = %v, want the normal-mode default", data["normalRoutingConfig"])
-		}
-		if data["hybridRoutingConfig"] != nil {
-			t.Fatalf("hybridRoutingConfig = %v, want null", data["hybridRoutingConfig"])
 		}
 		binding, _ := data["groupBindings"].([]any)[0].(map[string]any)
 		if binding["groupName"] != "g1" {
@@ -588,7 +585,6 @@ func TestCreateRouteStrategy(t *testing.T) {
 			{"binding_weight_over", `{"name":"s","groupBindings":[{"groupId":"grp-1","weight":101}]}`},
 			{"binding_bad_status", `{"name":"s","groupBindings":[{"groupId":"grp-1","status":"paused"}]}`},
 			{"normal_config_not_object", `{"name":"s","groupBindings":[{"groupId":"grp-1"}],"normalRoutingConfig":[]}`},
-			{"hybrid_config_not_object", `{"name":"s","groupBindings":[{"groupId":"grp-1"}],"hybridRoutingConfig":"x"}`},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {

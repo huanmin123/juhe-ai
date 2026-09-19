@@ -57,13 +57,13 @@ type AuditCaptureInput struct {
 	RequestHeaders map[string]any
 
 	// Ports.
-	Settings               AuditLogSettingsSource
-	HTTPCompletion         GatewayHTTPCompletionObserver
-	Dispatcher             AuditDispatcher
-	Models                 UsageModelResolver
-	Pricing                PricingCatalog
-	Logger                 Logger
-	StageLogger            AuditStageLogger
+	Settings                AuditLogSettingsSource
+	HTTPCompletion          GatewayHTTPCompletionObserver
+	Dispatcher              AuditDispatcher
+	Models                  UsageModelResolver
+	Pricing                 PricingCatalog
+	Logger                  Logger
+	StageLogger             AuditStageLogger
 	OffloadPayloadRetention bool // processRole === 'server'
 	// SyncPricingAllowed mirrors runtimeConfig.cacheDriver !== 'redis'.
 	SyncPricingAllowed bool
@@ -76,56 +76,56 @@ type AuditCaptureInput struct {
 
 // AuditAttemptState mirrors AuditAttemptState.
 type AuditAttemptState struct {
-	TempID                  string
-	Attempt                 AuditLogAttemptInput
-	RequestPayload          *AuditLogPayloadInput
-	RequestPayloadCaptured  bool
-	StartedAtMs             int64
-	Completed               bool
+	TempID                 string
+	Attempt                AuditLogAttemptInput
+	RequestPayload         *AuditLogPayloadInput
+	RequestPayloadCaptured bool
+	StartedAtMs            int64
+	Completed              bool
 }
 
 // AuditCaptureContext mirrors the AuditCaptureContext class.
 type AuditCaptureContext struct {
-	input          AuditCaptureInput
-	clock          Clock
-	httpCompletion GatewayHTTPCompletionObserver
-	traceID        string
-	auditLogID     string
-	clientIP       string
-	startedAtMs    int64
-	startedAtIso   string
-	trafficSource  OpenAIGatewayTrafficSource
-	sampleBucket   int
-	successCaptureSelected   bool
+	input                      AuditCaptureInput
+	clock                      Clock
+	httpCompletion             GatewayHTTPCompletionObserver
+	traceID                    string
+	auditLogID                 string
+	clientIP                   string
+	startedAtMs                int64
+	startedAtIso               string
+	trafficSource              OpenAIGatewayTrafficSource
+	sampleBucket               int
+	successCaptureSelected     bool
 	successHotRetentionEnabled bool
-	metadataOnly    bool
-	capturePayloadBodies bool
-	enabled         bool
-	successSampleRate float64
-	activeCaptureMaxBytes int
-	successFullBodyLimitBytes int
-	problemFullBodyLimitBytes int
+	metadataOnly               bool
+	capturePayloadBodies       bool
+	enabled                    bool
+	successSampleRate          float64
+	activeCaptureMaxBytes      int
+	successFullBodyLimitBytes  int
+	problemFullBodyLimitBytes  int
 
-	mu              sync.Mutex
-	payloads        []AuditLogPayloadInput
-	attempts        []AuditLogAttemptInput
-	activeAttempts  map[string]*AuditAttemptState
-	gatewayContext  AuditGatewayContext
-	finalized       bool
-	inProgressAuditEnqueued bool
-	hadFailedAttempt bool
-	downstreamClosed bool
-	serverDiagnosticTimeout bool
+	mu                           sync.Mutex
+	payloads                     []AuditLogPayloadInput
+	attempts                     []AuditLogAttemptInput
+	activeAttempts               map[string]*AuditAttemptState
+	gatewayContext               AuditGatewayContext
+	finalized                    bool
+	inProgressAuditEnqueued      bool
+	hadFailedAttempt             bool
+	downstreamClosed             bool
+	serverDiagnosticTimeout      bool
 	serverDiagnosticCancellation bool
-	overflowed      bool
-	approximateBytes int
-	residentPayloadBytes int
-	sequenceIndex   int
+	overflowed                   bool
+	approximateBytes             int
+	residentPayloadBytes         int
+	sequenceIndex                int
 	clientRequestPayloadCaptured bool
-	httpCompletedAtMs *int64
-	pendingFinalizeInput *FinalizeAuditInput
-	cancelHTTPListener func()
-	activeCaptureRegistered bool
+	httpCompletedAtMs            *int64
+	pendingFinalizeInput         *FinalizeAuditInput
+	cancelHTTPListener           func()
+	activeCaptureRegistered      bool
 }
 
 // FinalizeAuditInput mirrors FinalizeAuditInput.
@@ -175,11 +175,10 @@ func ResolveAuditFinalization(input ResolveAuditFinalizationInput, downstreamClo
 	isDownstreamClose := input.Outcome == AuditOutcomeDownstreamClosed ||
 		input.ErrorPhase == "downstream" ||
 		input.ErrorCode == "downstream_connection_closed"
-	hasInputRootFailure := !isDownstreamClose && (
-		input.Outcome == AuditOutcomeGatewayFailed ||
-			input.Outcome == AuditOutcomeUpstreamFailed ||
-			input.Outcome == AuditOutcomeStreamFailed ||
-			input.ErrorPhase != "" || input.ErrorCode != "" || input.ErrorMessage != "")
+	hasInputRootFailure := !isDownstreamClose && (input.Outcome == AuditOutcomeGatewayFailed ||
+		input.Outcome == AuditOutcomeUpstreamFailed ||
+		input.Outcome == AuditOutcomeStreamFailed ||
+		input.ErrorPhase != "" || input.ErrorCode != "" || input.ErrorMessage != "")
 	hasAttemptRootFailure := downstreamClosed && !input.Success && failedAttemptRoot != nil
 	// `upstream_retryable_error` is a client-facing retry contract after the
 	// candidate pool is exhausted. Keep the concrete final attempt cause in
@@ -281,15 +280,15 @@ func NewAuditCaptureContext(input AuditCaptureInput) *AuditCaptureContext {
 	}
 	startedAtMs := input.StartedAtMs
 	context := &AuditCaptureContext{
-		input:         input,
-		clock:         clock,
-		traceID:       input.TraceID,
-		auditLogID:    "audit_" + itoa64(startedAtMs) + "_" + newUUID(),
-		clientIP:      input.ClientIP,
-		startedAtMs:   startedAtMs,
-		startedAtIso:  msToIso(startedAtMs),
-		trafficSource: trafficSource,
-		metadataOnly:  input.CaptureMode == CaptureModeMetadataOnly,
+		input:          input,
+		clock:          clock,
+		traceID:        input.TraceID,
+		auditLogID:     "audit_" + itoa64(startedAtMs) + "_" + newUUID(),
+		clientIP:       input.ClientIP,
+		startedAtMs:    startedAtMs,
+		startedAtIso:   msToIso(startedAtMs),
+		trafficSource:  trafficSource,
+		metadataOnly:   input.CaptureMode == CaptureModeMetadataOnly,
 		activeAttempts: map[string]*AuditAttemptState{},
 		gatewayContext: AuditGatewayContext{ProviderCode: OpenAIProtocolCode},
 	}
@@ -459,10 +458,9 @@ func (c *AuditCaptureContext) ShouldCaptureSuccessPayloads() bool {
 }
 
 func (c *AuditCaptureContext) shouldCaptureSuccessPayloadsLocked() bool {
-	return c.enabled && c.capturePayloadBodies && (
-		c.successHotRetentionEnabled ||
-			c.successCaptureSelected ||
-			c.hadFailedAttempt)
+	return c.enabled && c.capturePayloadBodies && (c.successHotRetentionEnabled ||
+		c.successCaptureSelected ||
+		c.hadFailedAttempt)
 }
 
 // FinalizeLazy mirrors finalizeLazy.
@@ -518,11 +516,11 @@ func (c *AuditCaptureContext) AddGatewayMetadata(label string, metadata any) {
 
 // OmitPayloadBodiesInput mirrors OmitPayloadBodiesInput.
 type OmitPayloadBodiesInput struct {
-	Metadata                    any
-	Label                       string
-	PartTypes                   []AuditPayloadPartType
-	AlreadyOmittedPayloadCount  int
-	AlreadyOmittedBodyBytes     int
+	Metadata                   any
+	Label                      string
+	PartTypes                  []AuditPayloadPartType
+	AlreadyOmittedPayloadCount int
+	AlreadyOmittedBodyBytes    int
 }
 
 // OmitPayloadBodies mirrors omitPayloadBodies: hash-only retention for the
@@ -594,42 +592,50 @@ func (c *AuditCaptureContext) OmitPayloadBodies(input OmitPayloadBodiesInput) {
 
 // StartAttemptInput mirrors StartAttemptInput.
 type StartAttemptInput struct {
-	Account               UsageModelAccount
-	AttemptIndex          int
-	UpstreamURL           string
-	Method                string
-	Headers               map[string]any
-	Body                  []byte
-	HasBody               bool
-	Model                 string // requestForModelAccounting override
-	SourceEndpointFamily  string // requestForModelAccounting override
+	Account              UsageModelAccount
+	AttemptIndex         int
+	UpstreamURL          string
+	Method               string
+	Headers              map[string]any
+	Body                 []byte
+	HasBody              bool
+	Model                string // requestForModelAccounting override
+	SourceEndpointFamily string // requestForModelAccounting override
+	// GroupIDOverride（合并路由设计 3.5）：尝试级审计行 group_id 的显式来源
+	// ——merge 上下文按所服务账号 BoundGroupID 填充；空回落共享
+	// gatewayContext 快照的请求级窗口组。禁止通过临时改写共享快照实现
+	// （in-progress 审计与 finalize 都读该快照）。
+	GroupIDOverride string
 }
 
 // CompleteAttemptInput mirrors CompleteAttemptInput.
 type CompleteAttemptInput struct {
-	StatusCode     *int
+	StatusCode      *int
 	ResponseHeaders map[string]any
-	ResponseBody   []byte
+	ResponseBody    []byte
 	HasResponseBody bool
-	Success        bool
-	ErrorPhase     string
-	ErrorCode      string
-	ErrorMessage   string
+	Success         bool
+	ErrorPhase      string
+	ErrorCode       string
+	ErrorMessage    string
 }
 
 // RecordFailedDispatchAttemptInput mirrors FailedDispatchAttemptInput.
 type RecordFailedDispatchAttemptInput struct {
-	Account               UsageModelAccount
-	AttemptIndex          int
-	UpstreamURL           string
-	Method                string
-	StartedAtMs           int64
-	StatusCode            *int
-	ErrorPhase            string
-	ErrorCode             string
-	ErrorMessage          string
-	Model                 string
-	SourceEndpointFamily  string
+	Account              UsageModelAccount
+	AttemptIndex         int
+	UpstreamURL          string
+	Method               string
+	StartedAtMs          int64
+	StatusCode           *int
+	ErrorPhase           string
+	ErrorCode            string
+	ErrorMessage         string
+	Model                string
+	SourceEndpointFamily string
+	// GroupIDOverride（合并路由设计 3.5）：同 StartAttemptInput——尝试级
+	// group_id 按账号 BoundGroupID 显式传入，空回落窗口组快照。
+	GroupIDOverride string
 }
 
 // StartAttempt mirrors startAttempt: account context binding, in-progress
@@ -660,19 +666,21 @@ func (c *AuditCaptureContext) StartAttempt(input StartAttemptInput) string {
 		AttemptIndex:                input.AttemptIndex,
 		AccountID:                   input.Account.ID,
 		AccountOwnerSystemAccountID: input.Account.UsageAccess.AccountOwnerSystemAccountID,
-		GroupID:                     c.gatewayContextSnapshot().GroupID,
-		ProxyURL:                    SanitizeURLCredentialsForLog(input.Account.ProxyURL),
-		ProviderCode:                input.Account.ProviderCode,
-		Model:                       requestedModel,
-		UpstreamModel:               accounting.upstreamModel,
-		PricingModel:                accounting.pricingModel,
-		ModelMappingApplied:         accounting.modelMappingApplied,
-		ModelMappingSource:          accounting.modelMappingSource,
-		SourceEndpointFamily:        accounting.sourceEndpointFamily,
-		UpstreamEndpointFamily:      accounting.upstreamEndpointFamily,
-		UpstreamMethod:              input.Method,
-		UpstreamURL:                 orUnknown(SanitizeURLCredentialsForLog(input.UpstreamURL)),
-		StartedAt:                   msToIso(nowMs),
+		// 3.5：尝试级 group_id 优先取显式账号组覆盖（merge 按账号记账），
+		// 空回落请求级窗口组快照。
+		GroupID:                firstNonEmpty(input.GroupIDOverride, c.gatewayContextSnapshot().GroupID),
+		ProxyURL:               SanitizeURLCredentialsForLog(input.Account.ProxyURL),
+		ProviderCode:           input.Account.ProviderCode,
+		Model:                  requestedModel,
+		UpstreamModel:          accounting.upstreamModel,
+		PricingModel:           accounting.pricingModel,
+		ModelMappingApplied:    accounting.modelMappingApplied,
+		ModelMappingSource:     accounting.modelMappingSource,
+		SourceEndpointFamily:   accounting.sourceEndpointFamily,
+		UpstreamEndpointFamily: accounting.upstreamEndpointFamily,
+		UpstreamMethod:         input.Method,
+		UpstreamURL:            orUnknown(SanitizeURLCredentialsForLog(input.UpstreamURL)),
+		StartedAt:              msToIso(nowMs),
 	}
 	c.mu.Lock()
 	c.attempts = append(c.attempts, attempt)
@@ -802,26 +810,28 @@ func (c *AuditCaptureContext) RecordFailedDispatchAttempt(input RecordFailedDisp
 		AttemptIndex:                input.AttemptIndex,
 		AccountID:                   input.Account.ID,
 		AccountOwnerSystemAccountID: input.Account.UsageAccess.AccountOwnerSystemAccountID,
-		GroupID:                     c.gatewayContextSnapshot().GroupID,
-		ProxyURL:                    SanitizeURLCredentialsForLog(input.Account.ProxyURL),
-		ProviderCode:                input.Account.ProviderCode,
-		Model:                       requestedModel,
-		UpstreamModel:               accounting.upstreamModel,
-		PricingModel:                accounting.pricingModel,
-		ModelMappingApplied:         accounting.modelMappingApplied,
-		ModelMappingSource:          accounting.modelMappingSource,
-		SourceEndpointFamily:        accounting.sourceEndpointFamily,
-		UpstreamEndpointFamily:      accounting.upstreamEndpointFamily,
-		UpstreamMethod:              input.Method,
-		UpstreamURL:                 firstNonEmpty(sanitizedUpstreamURL, "unknown"),
-		UpstreamStatusCode:          input.StatusCode,
-		Success:                     boolPointer(false),
-		ErrorPhase:                  input.ErrorPhase,
-		ErrorCode:                   input.ErrorCode,
-		ErrorMessage:                input.ErrorMessage,
-		StartedAt:                   msToIso(input.StartedAtMs),
-		EndedAt:                     msToIso(nowMs),
-		DurationMs:                  intPointer(int(nowMs - input.StartedAtMs)),
+		// 3.5：尝试级 group_id 优先取显式账号组覆盖（merge 按账号记账），
+		// 空回落请求级窗口组快照。
+		GroupID:                firstNonEmpty(input.GroupIDOverride, c.gatewayContextSnapshot().GroupID),
+		ProxyURL:               SanitizeURLCredentialsForLog(input.Account.ProxyURL),
+		ProviderCode:           input.Account.ProviderCode,
+		Model:                  requestedModel,
+		UpstreamModel:          accounting.upstreamModel,
+		PricingModel:           accounting.pricingModel,
+		ModelMappingApplied:    accounting.modelMappingApplied,
+		ModelMappingSource:     accounting.modelMappingSource,
+		SourceEndpointFamily:   accounting.sourceEndpointFamily,
+		UpstreamEndpointFamily: accounting.upstreamEndpointFamily,
+		UpstreamMethod:         input.Method,
+		UpstreamURL:            firstNonEmpty(sanitizedUpstreamURL, "unknown"),
+		UpstreamStatusCode:     input.StatusCode,
+		Success:                boolPointer(false),
+		ErrorPhase:             input.ErrorPhase,
+		ErrorCode:              input.ErrorCode,
+		ErrorMessage:           input.ErrorMessage,
+		StartedAt:              msToIso(input.StartedAtMs),
+		EndedAt:                msToIso(nowMs),
+		DurationMs:             intPointer(int(nowMs - input.StartedAtMs)),
 	}
 	c.mu.Lock()
 	c.attempts = append(c.attempts, attempt)
@@ -944,10 +954,9 @@ func (c *AuditCaptureContext) flushFinalizedAudit() {
 	if input.AccountID != "" {
 		c.gatewayContext.AccountID = input.AccountID
 	}
-	shouldCapturePayloadBodies := c.capturePayloadBodies && (
-		outcome != AuditOutcomeSuccess ||
-			c.successHotRetentionEnabled ||
-			c.successCaptureSelected)
+	shouldCapturePayloadBodies := c.capturePayloadBodies && (outcome != AuditOutcomeSuccess ||
+		c.successHotRetentionEnabled ||
+		c.successCaptureSelected)
 	if outcome != AuditOutcomeSuccess || c.shouldCaptureSuccessPayloadsLocked() {
 		c.addClientRequestPayloadLocked()
 	}
@@ -1032,46 +1041,46 @@ func (c *AuditCaptureContext) flushFinalizedAudit() {
 		queryString = strings.Join(parts[1:], "?")
 	}
 	auditLog := AuditLogInput{
-		ID:                        auditLogID,
-		LifecycleStatus:           AuditLifecycleFinalized,
-		TraceID:                   c.traceID,
-		SessionID:                 gatewayContext.SessionID,
-		SessionClientType:         gatewayContext.SessionClientType,
-		ConversationKey:           gatewayContext.ConversationKey,
-		SystemAccountID:           gatewayContext.SystemAccountID,
-		APIKeyID:                  gatewayContext.APIKeyID,
-		GroupID:                   gatewayContext.GroupID,
-		ProviderCode:              gatewayContext.ProviderCode,
-		TrafficSource:             firstNonEmpty(gatewayContext.TrafficSource, c.trafficSource),
-		AccountID:                 firstNonEmpty(input.AccountID, gatewayContext.AccountID),
-		Method:                    strings.ToUpper(c.input.Method),
-		Path:                      path,
-		QueryString:               queryString,
-		Model:                     c.input.Model,
-		UpstreamModel:             gatewayContext.UpstreamModel,
-		PricingModel:              gatewayContext.PricingModel,
-		ModelMappingApplied:       gatewayContext.ModelMappingApplied,
-		ModelMappingSource:        gatewayContext.ModelMappingSource,
-		SourceEndpointFamily:      gatewayContext.SourceEndpointFamily,
-		UpstreamEndpointFamily:    gatewayContext.UpstreamEndpointFamily,
-		Stream:                    boolPointer(c.input.Stream),
-		ClientIP:                  c.clientIP,
-		UserAgent:                 c.input.UserAgent,
-		AuditOutcome:              outcome,
-		Success:                   success,
-		FinalStatusCode:           input.StatusCode,
-		ErrorPhase:                finalization.ErrorPhase,
-		ErrorCode:                 finalization.ErrorCode,
-		ErrorMessage:              finalization.ErrorMessage,
-		SampleBucket:              sampleBucket,
-		SampleReason:              c.sampleReasonForOutcome(outcome, metadataOnly, successHotRetention, successSelected),
-		CaptureStatus:             captureStatusFor(overflowed, metadataOnly || unsampledSuccessEnvelope),
-		StartedAt:                 startedAtIso,
-		EndedAt:                   msToIso(endedAtMs),
-		DurationMs:                intPointer(int(endedAtMs - startedAtMs)),
-		FirstTokenMs:              input.FirstTokenMs,
-		Attempts:                  retainedAttempts,
-		Payloads:                  retainedPayloads,
+		ID:                     auditLogID,
+		LifecycleStatus:        AuditLifecycleFinalized,
+		TraceID:                c.traceID,
+		SessionID:              gatewayContext.SessionID,
+		SessionClientType:      gatewayContext.SessionClientType,
+		ConversationKey:        gatewayContext.ConversationKey,
+		SystemAccountID:        gatewayContext.SystemAccountID,
+		APIKeyID:               gatewayContext.APIKeyID,
+		GroupID:                gatewayContext.GroupID,
+		ProviderCode:           gatewayContext.ProviderCode,
+		TrafficSource:          firstNonEmpty(gatewayContext.TrafficSource, c.trafficSource),
+		AccountID:              firstNonEmpty(input.AccountID, gatewayContext.AccountID),
+		Method:                 strings.ToUpper(c.input.Method),
+		Path:                   path,
+		QueryString:            queryString,
+		Model:                  c.input.Model,
+		UpstreamModel:          gatewayContext.UpstreamModel,
+		PricingModel:           gatewayContext.PricingModel,
+		ModelMappingApplied:    gatewayContext.ModelMappingApplied,
+		ModelMappingSource:     gatewayContext.ModelMappingSource,
+		SourceEndpointFamily:   gatewayContext.SourceEndpointFamily,
+		UpstreamEndpointFamily: gatewayContext.UpstreamEndpointFamily,
+		Stream:                 boolPointer(c.input.Stream),
+		ClientIP:               c.clientIP,
+		UserAgent:              c.input.UserAgent,
+		AuditOutcome:           outcome,
+		Success:                success,
+		FinalStatusCode:        input.StatusCode,
+		ErrorPhase:             finalization.ErrorPhase,
+		ErrorCode:              finalization.ErrorCode,
+		ErrorMessage:           finalization.ErrorMessage,
+		SampleBucket:           sampleBucket,
+		SampleReason:           c.sampleReasonForOutcome(outcome, metadataOnly, successHotRetention, successSelected),
+		CaptureStatus:          captureStatusFor(overflowed, metadataOnly || unsampledSuccessEnvelope),
+		StartedAt:              startedAtIso,
+		EndedAt:                msToIso(endedAtMs),
+		DurationMs:             intPointer(int(endedAtMs - startedAtMs)),
+		FirstTokenMs:           input.FirstTokenMs,
+		Attempts:               retainedAttempts,
+		Payloads:               retainedPayloads,
 	}
 	if httpCompletedAtMs != nil {
 		auditLog.HTTPCompletedAt = msToIso(*httpCompletedAtMs)
@@ -1534,36 +1543,36 @@ func headerValueText(value any) string {
 // ResponseInspectionDecision fields of audit/metadata.ts
 // (responseInspectionAuditMetadata).
 type ResponseInspectionDecisionAuditMetadataInput struct {
-	Action                   string
-	Reason                   string
-	Transport                string
-	EndpointFamily           string
-	FrameType                string
-	TriggerPhase             string
-	UpstreamEventType        string
-	UpstreamErrorCode        string
-	UpstreamErrorType        string
-	UpstreamErrorMessage     string
-	FinishReason             string
-	ClientProfile            string
-	CodexCompactionExpected  bool
-	RewriteErrorCode         string
-	RewriteMessage           string
-	DownstreamWritten        bool
-	PolicyID                 string
-	PolicyName               string
-	PolicySource             string
-	PolicyScopeType          string
-	PolicyProtocolCode       string
-	PolicyProviderCode       string
-	ExecutionMode            string
-	DataHandling             string
-	RetryEnabled             bool
-	AccountSwitch            string
-	AccountState             string
-	MatchedField             string
-	MatchedValue             string
-	MatchedSnippet           string
+	Action                  string
+	Reason                  string
+	Transport               string
+	EndpointFamily          string
+	FrameType               string
+	TriggerPhase            string
+	UpstreamEventType       string
+	UpstreamErrorCode       string
+	UpstreamErrorType       string
+	UpstreamErrorMessage    string
+	FinishReason            string
+	ClientProfile           string
+	CodexCompactionExpected bool
+	RewriteErrorCode        string
+	RewriteMessage          string
+	DownstreamWritten       bool
+	PolicyID                string
+	PolicyName              string
+	PolicySource            string
+	PolicyScopeType         string
+	PolicyProtocolCode      string
+	PolicyProviderCode      string
+	ExecutionMode           string
+	DataHandling            string
+	RetryEnabled            bool
+	AccountSwitch           string
+	AccountState            string
+	MatchedField            string
+	MatchedValue            string
+	MatchedSnippet          string
 }
 
 // ResponseInspectionDecisionAuditMetadata mirrors

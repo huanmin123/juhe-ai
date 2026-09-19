@@ -215,7 +215,7 @@
         </a-form-item>
         <a-row :gutter="12">
           <a-col :span="12">
-            <a-form-item label="路由模式" required tooltip="决定请求如何在绑定分组之间选择：普通、混合智能、权重、故障回退或轮询。">
+            <a-form-item label="路由模式" required tooltip="决定请求如何在绑定分组之间选择：普通、权重、故障回退、轮询或合并。">
               <a-select v-model:value="form.mode" :options="modeOptions" />
             </a-form-item>
           </a-col>
@@ -233,15 +233,15 @@
               <InfoCircleOutlined class="route-strategy-field-help-icon" />
             </a-tooltip>
           </div>
-          <div class="hybrid-config-grid">
-            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。作用域为当前请求所落分组内的账号调度，混合智能路由不支持调度偏好。">
+          <div class="scheduling-config-grid">
+            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。作用域为当前请求所落分组内的账号调度。">
               <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
             </a-form-item>
             <a-form-item v-if="form.normal.schedulingPreference === 'speed_first'" label="首字截止" required tooltip="只作用于速度优先的可重放文本；图像和其他副作用请求永久排除，不记录慢样本也不自动切号。">
               <a-input-number v-model:value="form.normal.firstByteDeadlineSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
             </a-form-item>
           </div>
-          <div v-if="form.normal.schedulingPreference === 'speed_first'" class="hybrid-config-grid">
+          <div v-if="form.normal.schedulingPreference === 'speed_first'" class="scheduling-config-grid">
             <a-form-item label="慢速触发次数" required tooltip="窗口期内达到这个慢速次数后，账号进入速度降级。">
               <a-input-number v-model:value="form.normal.speedFirstConfig.slowTriggerCount" :min="2" :max="10" addon-after="次" />
             </a-form-item>
@@ -343,146 +343,6 @@
           <template #icon><PlusOutlined /></template>
           {{ bindingAddButtonText }}
         </a-button>
-
-        <template v-if="form.mode === 'hybrid_smart'">
-          <div class="modal-section-title">
-            <span>混合智能配置</span>
-            <a-tooltip :title="hybridConfigTooltip">
-              <InfoCircleOutlined class="route-strategy-field-help-icon" />
-            </a-tooltip>
-          </div>
-          <div class="hybrid-config-grid">
-            <a-form-item label="评分模型" required tooltip="先用这个模型判断请求难度和适合的能力档位，通常选择成本较低且稳定的模型。">
-              <a-select
-                v-model:value="form.hybrid.scoringModel"
-                show-search
-                allow-clear
-                :filter-option="filterModelOption"
-                :loading="modelOptionsLoading"
-                :options="modelSelectOptions"
-                placeholder="选择评分模型"
-                @dropdown-visible-change="handleModelOptionsDropdown"
-                @search="handleModelOptionsSearch"
-              />
-            </a-form-item>
-            <a-form-item label="质量偏好" tooltip="控制混合智能路由在成本和质量之间的倾向，会影响最终目标模型选择。">
-              <a-segmented v-model:value="form.hybrid.qualityPreference" block :options="qualityPreferenceOptions" />
-            </a-form-item>
-            <a-form-item label="评分超时" tooltip="评分请求最长等待时间；超时后按兜底最高等级继续路由。">
-              <a-input-number v-model:value="form.hybrid.scoringTimeoutMs" :min="1000" :max="60000" addon-after="ms" />
-            </a-form-item>
-            <a-form-item label="评分失败兜底最高等级" tooltip="评分模型不可用或超时时允许使用的最高等级，等级越高越可能进入更强模型。">
-              <a-input-number v-model:value="form.hybrid.scoringFallbackMaxLevel" :min="2" :max="5" />
-            </a-form-item>
-          </div>
-
-          <div class="modal-section-title">
-            <span>等级模型</span>
-            <a-tooltip :title="hybridLevelRoutesTooltip">
-              <InfoCircleOutlined class="route-strategy-field-help-icon" />
-            </a-tooltip>
-          </div>
-          <div class="hybrid-level-route-list">
-            <div class="hybrid-level-route-header">
-              <span>等级范围</span>
-              <span>目标模型</span>
-              <span></span>
-            </div>
-            <div v-for="(route, index) in form.hybrid.levelRoutes" :key="route.key" class="hybrid-level-route-row">
-              <div class="hybrid-level-range">
-                <a-input-number v-model:value="route.minLevel" :min="1" :max="10" disabled />
-                <span>-</span>
-                <a-input-number
-                  v-model:value="route.maxLevel"
-                  :min="hybridRouteMinMaxLevel(index)"
-                  :max="hybridRouteMaxMaxLevel(index)"
-                  :disabled="index === form.hybrid.levelRoutes.length - 1"
-                  @change="normalizeHybridLevelRouteRanges"
-                />
-              </div>
-              <a-select
-                v-model:value="route.targetModel"
-                show-search
-                allow-clear
-                :filter-option="filterModelOption"
-                :loading="modelOptionsLoading"
-                :options="modelSelectOptions"
-                placeholder="选择目标模型"
-                @dropdown-visible-change="handleModelOptionsDropdown"
-                @search="handleModelOptionsSearch"
-              />
-              <a-button type="text" danger :disabled="form.hybrid.levelRoutes.length <= 2" @click="removeHybridLevelRoute(index)">
-                <template #icon><DeleteOutlined /></template>
-              </a-button>
-            </div>
-          </div>
-          <a-button type="dashed" block :disabled="form.hybrid.levelRoutes.length >= 5" @click="addHybridLevelRoute">
-            <template #icon><PlusOutlined /></template>
-            添加等级
-          </a-button>
-
-          <div class="modal-section-title">
-            <span>质量检查</span>
-            <a-tooltip :title="qualityInspectionTooltip">
-              <InfoCircleOutlined class="route-strategy-field-help-icon" />
-            </a-tooltip>
-          </div>
-          <a-form-item label="启用质量检查" tooltip="开启后会对命中条件的响应做二次质量判断，可能增加额外模型调用成本。">
-            <a-switch v-model:checked="form.hybrid.qualityInspection.enabled" checked-children="启用" un-checked-children="停用" />
-          </a-form-item>
-          <div class="hybrid-config-grid">
-            <a-form-item label="质量评分模型" tooltip="用于复审响应质量；不选择时默认复用上面的评分模型。">
-              <a-select
-                v-model:value="form.hybrid.qualityInspection.scoringModel"
-                show-search
-                allow-clear
-                :disabled="!form.hybrid.qualityInspection.enabled"
-                :filter-option="filterModelOption"
-                :loading="modelOptionsLoading"
-                :options="modelSelectOptions"
-                placeholder="默认使用评分模型"
-                @dropdown-visible-change="handleModelOptionsDropdown"
-                @search="handleModelOptionsSearch"
-              />
-            </a-form-item>
-            <a-form-item label="触发模式" tooltip="决定哪些请求或响应需要进入质量检查。">
-              <a-select v-model:value="form.hybrid.qualityInspection.triggerMode" :disabled="!form.hybrid.qualityInspection.enabled" :options="qualityInspectionTriggerOptions" />
-            </a-form-item>
-            <a-form-item label="最高触发等级" tooltip="评分等级不高于这个值时触发质量检查，适合优先复审低档或中档模型输出。">
-              <a-input-number v-model:value="form.hybrid.qualityInspection.maxTriggerLevel" :disabled="!form.hybrid.qualityInspection.enabled" :min="1" :max="10" />
-            </a-form-item>
-            <a-form-item label="最多重试" tooltip="质量检查判定失败后允许额外尝试的次数。">
-              <a-input-number v-model:value="form.hybrid.qualityInspection.maxRetries" :disabled="!form.hybrid.qualityInspection.enabled" :min="0" :max="2" />
-            </a-form-item>
-            <a-form-item label="失败处理" tooltip="响应未通过质量检查时的处理方式，例如升级模型、重试或直接返回错误。">
-              <a-select v-model:value="form.hybrid.qualityInspection.failureAction" :disabled="!form.hybrid.qualityInspection.enabled" :options="qualityInspectionFailureActionOptions" />
-            </a-form-item>
-            <a-form-item label="检查不可用处理" tooltip="质量检查模型不可用、超时或检查流程异常时如何处理原响应。">
-              <a-select v-model:value="form.hybrid.qualityInspection.unavailableAction" :disabled="!form.hybrid.qualityInspection.enabled" :options="qualityInspectionUnavailableActionOptions" />
-            </a-form-item>
-          </div>
-
-          <div class="modal-section-title">
-            <span>缓存与切换</span>
-            <a-tooltip :title="hybridCacheSwitchTooltip">
-              <InfoCircleOutlined class="route-strategy-field-help-icon" />
-            </a-tooltip>
-          </div>
-          <div class="hybrid-config-grid">
-            <a-form-item label="评分缓存 TTL" tooltip="同类请求评分结果的缓存时长，用于减少重复评分成本。">
-              <a-input-number v-model:value="form.hybrid.scoringCacheTtlSeconds" :min="1" :max="3600" addon-after="秒" />
-            </a-form-item>
-            <a-form-item label="模型亲和 TTL" tooltip="同一会话或上下文保持目标模型不频繁切换的时间。">
-              <a-input-number v-model:value="form.hybrid.affinityTtlSeconds" :min="1" :max="86400" addon-after="秒" />
-            </a-form-item>
-            <a-form-item label="切换等级差" tooltip="新评分与当前亲和等级差达到这个值才切换模型，避免小幅波动导致频繁切换。">
-              <a-input-number v-model:value="form.hybrid.switchMinLevelDelta" :min="0" :max="9" />
-            </a-form-item>
-            <a-form-item label="降级确认次数" tooltip="连续低评分达到这个次数后才降级，避免偶发低分立即切换。">
-              <a-input-number v-model:value="form.hybrid.downgradeConsecutiveLowCount" :min="1" :max="20" />
-            </a-form-item>
-          </div>
-        </template>
       </a-form>
     </a-modal>
 
@@ -511,7 +371,6 @@ import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { loadGroupOptionsResource } from '@/composables/useGroupOptionsResource'
 import {
-  filterModelOption,
   useProviderModelSelectOptions,
   type ProviderModelSelectOption
 } from '@/composables/useProviderModelSelectOptions'
@@ -529,12 +388,6 @@ import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelectio
 import SpeedFirstRuntimeDrawer from './SpeedFirstRuntimeDrawer.vue'
 import { buildRouteStrategyMutationPatch, hasRouteStrategyMutationChanges, mergeRouteStrategyMutationResult } from './routeStrategyMutation'
 import type {
-  ApiKeyHybridLevelRoute,
-  ApiKeyHybridQualityInspectionFailureAction,
-  ApiKeyHybridQualityInspectionTriggerMode,
-  ApiKeyHybridQualityInspectionUnavailableAction,
-  ApiKeyHybridQualityPreference,
-  ApiKeyHybridRoutingConfig,
   RouteStrategyGroupOption,
   RouteStrategyEditBasicDetail,
   RouteStrategyNormalRoutingConfig,
@@ -566,10 +419,6 @@ interface BindingColumn {
   tooltip?: string
 }
 
-interface HybridLevelRouteFormRow extends ApiKeyHybridLevelRoute {
-  key: string
-}
-
 interface RouteStrategiesPageState {
   keyword: string
   modeFilter: RouteStrategyMode | 'all'
@@ -580,29 +429,6 @@ interface RouteStrategiesPageState {
   statusFilter: RouteStrategyStatus | 'all'
   systemAccountFilter: string
   systemAccountFilterSelection?: PrincipalSelection
-}
-
-interface HybridQualityInspectionForm {
-  enabled: boolean
-  scoringModel: string
-  triggerMode: ApiKeyHybridQualityInspectionTriggerMode
-  maxTriggerLevel: number
-  maxRetries: number
-  failureAction: ApiKeyHybridQualityInspectionFailureAction
-  unavailableAction: ApiKeyHybridQualityInspectionUnavailableAction
-}
-
-interface HybridRoutingForm {
-  scoringModel: string
-  qualityPreference: ApiKeyHybridQualityPreference
-  scoringTimeoutMs: number
-  scoringFallbackMaxLevel: number
-  scoringCacheTtlSeconds: number
-  affinityTtlSeconds: number
-  switchMinLevelDelta: number
-  downgradeConsecutiveLowCount: number
-  levelRoutes: HybridLevelRouteFormRow[]
-  qualityInspection: HybridQualityInspectionForm
 }
 
 interface NormalRoutingForm {
@@ -682,8 +508,7 @@ const form = reactive({
   mode: 'normal' as RouteStrategyMode,
   status: 'active' as RouteStrategyStatus,
   groupBindings: [] as BindingFormRow[],
-  normal: defaultNormalRoutingForm(),
-  hybrid: defaultHybridRoutingForm()
+  normal: defaultNormalRoutingForm()
 })
 const modelProviderCodes = computed(() => {
   const selectedGroupIds = new Set(form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
@@ -692,11 +517,8 @@ const modelProviderCodes = computed(() => {
     .map((group) => group.providerCode?.trim() ?? '')
     .filter(Boolean))]
 })
-const selectedModelIds = computed(() => [
-  form.hybrid.scoringModel,
-  form.hybrid.qualityInspection.scoringModel,
-  ...form.hybrid.levelRoutes.map((route) => route.targetModel)
-].map((model) => model?.trim()).filter((model): model is string => Boolean(model)))
+// 混合智能路由移除后，表单内暂无可选模型；模型候选机制保留，按绑定分组供应商作用域按需加载。
+const selectedModelIds = computed<string[]>(() => [])
 const {
   loading: modelOptionsLoading,
   loadModelOptions,
@@ -724,10 +546,10 @@ const modelSelectOptions = computed<ProviderModelSelectOption[]>(() => {
 
 const modeOptions: Array<{ label: string; value: RouteStrategyMode }> = [
   { label: '普通路由', value: 'normal' },
-  { label: '混合智能路由', value: 'hybrid_smart' },
   { label: '权重调度路由', value: 'weighted' },
   { label: '故障回退路由', value: 'failover' },
-  { label: '轮询路由', value: 'round_robin' }
+  { label: '轮询路由', value: 'round_robin' },
+  { label: '合并路由', value: 'merge' }
 ]
 
 const statusOptions: Array<{ label: string; value: RouteStrategyStatus }> = [
@@ -750,38 +572,10 @@ const normalSchedulingPreferenceOptions = [
   { label: '速度优先', value: 'speed_first' }
 ]
 
-// 调度偏好（历史命名 normalRoutingConfig）支持的路由模式；hybrid_smart 恒不支持。
-const schedulingPreferenceSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin']
+// 调度偏好（历史命名 normalRoutingConfig）支持的路由模式。
+const schedulingPreferenceSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin', 'merge']
 
-const qualityPreferenceOptions = [
-  { label: '成本优先', value: 'cost_first' },
-  { label: '均衡', value: 'balanced' },
-  { label: '质量优先', value: 'quality_first' }
-]
-
-const qualityInspectionTriggerOptions = [
-  { label: '质量优先时触发', value: 'quality_first_only' },
-  { label: '风险场景触发', value: 'risk_based' },
-  { label: '混合路由总是触发', value: 'always_for_hybrid' }
-]
-
-const qualityInspectionFailureActionOptions = [
-  { label: '修复后升级', value: 'repair_then_upgrade' },
-  { label: '升级下一档', value: 'upgrade_next_level' },
-  { label: '重试当前模型', value: 'retry_same_model' },
-  { label: '直接返回错误', value: 'return_error' }
-]
-
-const qualityInspectionUnavailableActionOptions = [
-  { label: '放行响应', value: 'pass_through' },
-  { label: '返回错误', value: 'return_error' }
-]
-
-const hybridConfigTooltip = '混合智能路由会先评分请求难度，再按等级模型和质量偏好选择目标模型。'
 const normalRoutingConfigTooltip = '首字软截止只作用于速度优先的可重放文本，并用于累计慢样本、临时降级和探针恢复。成本优先、图像及其他副作用请求不创建该截止。'
-const hybridLevelRoutesTooltip = '把评分等级 1-10 映射到目标模型；请求评分落入某个范围后优先使用该目标模型。'
-const qualityInspectionTooltip = '在高风险或指定场景复审上游响应，未通过时按失败处理策略重试、升级或返回错误。'
-const hybridCacheSwitchTooltip = '控制评分缓存、模型亲和和升降级节奏，减少重复评分和频繁切换。'
 
 const columns = computed<Array<Record<string, unknown>>>(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -812,15 +606,15 @@ const bindingAddDisabled = computed(() => {
   return false
 })
 const bindingRemoveDisabled = computed(() => form.groupBindings.length <= minimumBindingRowsForMode(form.mode))
-const bindingShowsDragHandle = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover' || form.mode === 'round_robin')
+const bindingShowsDragHandle = computed(() => form.mode === 'failover' || form.mode === 'round_robin' || form.mode === 'merge')
 const bindingShowsDragColumn = computed(() => {
   if (!bindingShowsDragHandle.value) return false
-  if (form.mode === 'hybrid_smart' || form.mode === 'round_robin') return form.groupBindings.length > 1
+  if (form.mode === 'round_robin' || form.mode === 'merge') return form.groupBindings.length > 1
   if (form.mode === 'failover') return form.groupBindings.length > 1
   return false
 })
 const bindingShowsRole = computed(() => form.mode === 'failover')
-const bindingOrderUsesPosition = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover' || form.mode === 'round_robin')
+const bindingOrderUsesPosition = computed(() => form.mode === 'failover' || form.mode === 'round_robin' || form.mode === 'merge')
 const bindingShowsWeight = computed(() => form.mode === 'weighted')
 const schedulingPreferenceSupported = computed(() => schedulingPreferenceSupportedModes.includes(form.mode))
 const bindingAddButtonText = computed(() => form.mode === 'failover' && form.groupBindings.length >= 1 ? '添加备用分组' : '添加分组')
@@ -829,7 +623,8 @@ const bindingSectionTooltip = computed(() => {
   if (form.mode === 'weighted') return '权重调度按分组权重比例分配流量，所有分组权重总和不能超过 100。'
   if (form.mode === 'failover') return '故障回退按当前顺序将第一行作为主用分组，后续为备用分组；所有行都可拖拽，备用拖到第一行即可晋升主用。主用恢复后继续优先使用主用。'
   if (form.mode === 'round_robin') return '轮询路由按当前分组顺序依次调度，可通过拖拽改变轮询顺序。'
-  return '混合智能路由按评分和目标模型选择分组；分组顺序用于同等条件下的候选顺序。'
+  if (form.mode === 'merge') return '合并路由把所有绑定分组的账号合并成一个大池统一调度，不区分分组；拖拽顺序仅决定调度平局时的基础先后。'
+  return ''
 })
 const bindingColumns = computed<BindingColumn[]>(() => [
   ...(bindingShowsDragColumn.value ? [{ key: 'drag', label: '' }] : []),
@@ -875,15 +670,11 @@ const targetSystemAccountLabel = computed(() => {
 
 watch(() => form.mode, (mode) => {
   clearModelOptionsSearchTimer()
-  if (mode !== 'hybrid_smart') resetModelOptions()
   if (mode === 'normal' && form.groupBindings.length > 1) {
     form.groupBindings = [form.groupBindings[0] ?? createBindingRow()]
   }
   ensureMinimumBindingRowsForMode()
   normalizeBindingRowsForMode()
-  if (mode === 'hybrid_smart') {
-    normalizeHybridLevelRouteRanges()
-  }
 })
 watch(() => modelProviderCodes.value.join('\u0000'), () => {
   clearModelOptionsSearchTimer()
@@ -1067,10 +858,10 @@ function sanitizeRouteStrategiesPageState(value: unknown, fallback: RouteStrateg
 function isRouteStrategyModeFilter(value: unknown): value is RouteStrategyMode | 'all' {
   return value === 'all'
     || value === 'normal'
-    || value === 'hybrid_smart'
     || value === 'weighted'
     || value === 'failover'
     || value === 'round_robin'
+    || value === 'merge'
 }
 
 function isRouteStrategyStatusFilter(value: unknown): value is RouteStrategyStatus | 'all' {
@@ -1122,7 +913,6 @@ function openCreate() {
   form.status = 'active'
   form.groupBindings = [createBindingRow()]
   form.normal = defaultNormalRoutingForm()
-  form.hybrid = defaultHybridRoutingForm()
   resetGroupOptions()
   resetRouteModelOptions()
   modalOpen.value = true
@@ -1181,9 +971,7 @@ function fillEditForm(record: RouteStrategyEditBasicDetail, fallbackSystemAccoun
     ? record.groupBindings.map((binding) => createBindingRow(binding.groupId, binding.priority, binding.weight, binding.status, binding.groupName))
     : [createBindingRow()]
   form.normal = normalRoutingFormFromConfig(record.normalRoutingConfig)
-  form.hybrid = hybridRoutingFormFromConfig(record.hybridRoutingConfig)
   normalizeBindingRowsForMode()
-  if (record.mode === 'hybrid_smart') normalizeHybridLevelRouteRanges()
   resetGroupOptions()
   resetRouteModelOptions()
   groupOptionsRaw.value = selectedGroupOptionsFromBindings(record.groupBindings)
@@ -1308,18 +1096,11 @@ function buildRouteStrategyFormPayload(reportValidation = true): RouteStrategyMu
       status: binding.status
     }))
   }
-  if (form.mode === 'hybrid_smart') {
-    const hybridRoutingConfig = buildHybridRoutingConfigPayload(reportValidation)
-    if (hybridRoutingConfig === false) return false
-    payload.hybridRoutingConfig = hybridRoutingConfig
-    payload.normalRoutingConfig = null
-  } else if (form.mode === 'normal') {
+  if (form.mode === 'normal') {
     payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
-    payload.hybridRoutingConfig = null
   } else {
-    // weighted/failover/round_robin 与 normal 共用调度偏好配置（历史命名 normalRoutingConfig）；hybrid_smart 已在上方分支提交 null。
+    // weighted/failover/round_robin/merge 与 normal 共用调度偏好配置（历史命名 normalRoutingConfig）。
     payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
-    payload.hybridRoutingConfig = null
   }
   return payload
 }
@@ -1387,7 +1168,7 @@ function moveBindingForMode(fromIndex: number, toIndex: number) {
 }
 
 function bindingRowDragEnabled(index: number): boolean {
-  if (form.mode === 'hybrid_smart' || form.mode === 'round_robin') return form.groupBindings.length > 1
+  if (form.mode === 'round_robin' || form.mode === 'merge') return form.groupBindings.length > 1
   if (form.mode === 'failover') return index >= 0 && index < form.groupBindings.length && form.groupBindings.length > 1
   return false
 }
@@ -1622,7 +1403,7 @@ function ensureMinimumBindingRowsForMode() {
 }
 
 function minimumBindingRowsForMode(mode: RouteStrategyMode): number {
-  return mode === 'weighted' || mode === 'round_robin' || mode === 'failover' ? 2 : 1
+  return mode === 'weighted' || mode === 'round_robin' || mode === 'failover' || mode === 'merge' ? 2 : 1
 }
 
 function validateGroupBindingsForMode(groupBindings: Array<{ groupId: string; priority: number; weight: number; status: 'active' | 'disabled' }>): boolean {
@@ -1645,16 +1426,12 @@ function validateGroupBindingsForMode(groupBindings: Array<{ groupId: string; pr
       return false
     }
   }
-  if ((form.mode === 'weighted' || form.mode === 'round_robin') && activeBindings.length < 2) {
+  if ((form.mode === 'weighted' || form.mode === 'round_robin' || form.mode === 'merge') && activeBindings.length < 2) {
     message.warning(`${routeStrategyModeText(form.mode)}至少需要两个启用分组`)
     return false
   }
   if (form.mode === 'weighted' && totalBindingWeight(groupBindings) > 100) {
     message.warning('权重调度路由的分组权重总和不能超过 100')
-    return false
-  }
-  if (form.mode === 'hybrid_smart' && activeBindings.length < 1) {
-    message.warning('混合智能路由至少需要一个启用分组')
     return false
   }
   return true
@@ -1838,10 +1615,10 @@ function isCurrentSpeedFirstRuntimeRequest(token: number, signature: string, rec
 }
 
 function routeStrategyModeColor(mode: RouteStrategyMode): string {
-  if (mode === 'hybrid_smart') return 'cyan'
   if (mode === 'weighted') return 'purple'
   if (mode === 'round_robin') return 'blue'
   if (mode === 'failover') return 'orange'
+  if (mode === 'merge') return 'lime'
   return 'default'
 }
 
@@ -1927,168 +1704,6 @@ function millisecondsToSeconds(value: unknown, fallback: number): number {
 
 function secondsToMilliseconds(value: unknown): number {
   return boundedInteger(value, 10, 60) * 1000
-}
-
-function defaultHybridRoutingForm(): HybridRoutingForm {
-  return {
-    scoringModel: '',
-    qualityPreference: 'balanced',
-    scoringTimeoutMs: 15000,
-    scoringFallbackMaxLevel: 5,
-    scoringCacheTtlSeconds: 300,
-    affinityTtlSeconds: 900,
-    switchMinLevelDelta: 2,
-    downgradeConsecutiveLowCount: 2,
-    levelRoutes: [
-      createHybridLevelRoute(1, 5, ''),
-      createHybridLevelRoute(6, 10, '')
-    ],
-    qualityInspection: defaultHybridQualityInspectionForm()
-  }
-}
-
-function defaultHybridQualityInspectionForm(scoringModel = ''): HybridQualityInspectionForm {
-  return {
-    enabled: true,
-    scoringModel,
-    triggerMode: 'risk_based',
-    maxTriggerLevel: 6,
-    maxRetries: 2,
-    failureAction: 'repair_then_upgrade',
-    unavailableAction: 'pass_through'
-  }
-}
-
-function hybridRoutingFormFromConfig(config?: ApiKeyHybridRoutingConfig): HybridRoutingForm {
-  const fallback = defaultHybridRoutingForm()
-  if (!config) return fallback
-  return {
-    scoringModel: config.scoringModel ?? '',
-    qualityPreference: config.qualityPreference ?? fallback.qualityPreference,
-    scoringTimeoutMs: config.scoringTimeoutMs ?? fallback.scoringTimeoutMs,
-    scoringFallbackMaxLevel: config.scoringFallbackMaxLevel ?? fallback.scoringFallbackMaxLevel,
-    scoringCacheTtlSeconds: config.scoringCacheTtlSeconds ?? fallback.scoringCacheTtlSeconds,
-    affinityTtlSeconds: config.affinityTtlSeconds ?? fallback.affinityTtlSeconds,
-    switchMinLevelDelta: config.switchMinLevelDelta ?? fallback.switchMinLevelDelta,
-    downgradeConsecutiveLowCount: config.downgradeConsecutiveLowCount ?? fallback.downgradeConsecutiveLowCount,
-    levelRoutes: config.levelRoutes?.length
-      ? config.levelRoutes.map((route) => createHybridLevelRoute(route.minLevel, route.maxLevel, route.targetModel, route.enabled))
-      : fallback.levelRoutes,
-    qualityInspection: config.qualityInspection
-      ? {
-          enabled: config.qualityInspection.enabled,
-          scoringModel: config.qualityInspection.scoringModel ?? config.scoringModel ?? '',
-          triggerMode: config.qualityInspection.triggerMode,
-          maxTriggerLevel: config.qualityInspection.maxTriggerLevel,
-          maxRetries: config.qualityInspection.maxRetries,
-          failureAction: config.qualityInspection.failureAction,
-          unavailableAction: config.qualityInspection.unavailableAction
-        }
-      : defaultHybridQualityInspectionForm(config.scoringModel)
-  }
-}
-
-function createHybridLevelRoute(minLevel: number, maxLevel: number, targetModel: string, enabled = true): HybridLevelRouteFormRow {
-  return {
-    key: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    minLevel,
-    maxLevel,
-    targetModel,
-    enabled
-  }
-}
-
-function normalizeHybridLevelRouteRanges() {
-  let minLevel = 1
-  form.hybrid.levelRoutes.forEach((route, index) => {
-    const remaining = form.hybrid.levelRoutes.length - index - 1
-    const minMaxLevel = index === 0 ? Math.max(2, minLevel) : minLevel
-    const maxMaxLevel = index === 0
-      ? Math.min(5, 10 - remaining)
-      : 10 - remaining
-    route.minLevel = minLevel
-    route.maxLevel = index === form.hybrid.levelRoutes.length - 1
-      ? 10
-      : boundedInteger(route.maxLevel, minMaxLevel, maxMaxLevel)
-    route.enabled = true
-    minLevel = route.maxLevel + 1
-  })
-}
-
-function hybridRouteMinMaxLevel(index: number): number {
-  const route = form.hybrid.levelRoutes[index]
-  if (!route) return 1
-  return index === 0 ? 2 : route.minLevel
-}
-
-function hybridRouteMaxMaxLevel(index: number): number {
-  const remaining = form.hybrid.levelRoutes.length - index - 1
-  return index === 0 ? Math.min(5, 10 - remaining) : 10 - remaining
-}
-
-function addHybridLevelRoute() {
-  if (form.hybrid.levelRoutes.length >= 5) return
-  normalizeHybridLevelRouteRanges()
-  const lastRoute = form.hybrid.levelRoutes[form.hybrid.levelRoutes.length - 1]
-  if (!lastRoute || lastRoute.minLevel >= 10) return
-  const nextMaxLevel = lastRoute.maxLevel
-  lastRoute.maxLevel = Math.max(lastRoute.minLevel, nextMaxLevel - 1)
-  form.hybrid.levelRoutes.push(createHybridLevelRoute(lastRoute.maxLevel + 1, nextMaxLevel, ''))
-  normalizeHybridLevelRouteRanges()
-}
-
-function removeHybridLevelRoute(index: number) {
-  if (form.hybrid.levelRoutes.length <= 2) return
-  form.hybrid.levelRoutes.splice(index, 1)
-  normalizeHybridLevelRouteRanges()
-}
-
-function buildHybridRoutingConfigPayload(reportValidation = true): ApiKeyHybridRoutingConfig | false {
-  normalizeHybridLevelRouteRanges()
-  const scoringModel = form.hybrid.scoringModel.trim()
-  if (!scoringModel && reportValidation) {
-    message.warning('请选择混合智能路由评分模型')
-    return false
-  }
-  const levelRoutes = form.hybrid.levelRoutes.map((route) => ({
-    minLevel: route.minLevel,
-    maxLevel: route.maxLevel,
-    targetModel: route.targetModel.trim(),
-    enabled: true
-  }))
-  if (!levelRoutes.every((route) => route.targetModel) && reportValidation) {
-    message.warning('请选择每个等级范围的目标模型')
-    return false
-  }
-  const distinctModels = new Set(levelRoutes.map((route) => route.targetModel.toLowerCase()))
-  if (distinctModels.size < 2 && reportValidation) {
-    message.warning('混合智能路由至少需要两个不同目标模型')
-    return false
-  }
-  const qualityInspection = form.hybrid.qualityInspection
-  return {
-    scoringModel,
-    scoringContextMode: 'full_request',
-    qualityPreference: form.hybrid.qualityPreference,
-    scoringTimeoutMs: boundedInteger(form.hybrid.scoringTimeoutMs, 1000, 60000),
-    scoringFallbackMaxLevel: boundedInteger(form.hybrid.scoringFallbackMaxLevel, 2, 5),
-    scoringCacheEnabled: true,
-    scoringCacheTtlSeconds: boundedInteger(form.hybrid.scoringCacheTtlSeconds, 1, 3600),
-    cacheAffinityEnabled: true,
-    affinityTtlSeconds: boundedInteger(form.hybrid.affinityTtlSeconds, 1, 86400),
-    switchMinLevelDelta: boundedInteger(form.hybrid.switchMinLevelDelta, 0, 9),
-    downgradeConsecutiveLowCount: boundedInteger(form.hybrid.downgradeConsecutiveLowCount, 1, 20),
-    levelRoutes,
-    qualityInspection: {
-      enabled: qualityInspection.enabled,
-      scoringModel: qualityInspection.scoringModel.trim() || scoringModel,
-      triggerMode: qualityInspection.triggerMode,
-      maxTriggerLevel: boundedInteger(qualityInspection.maxTriggerLevel, 1, 10),
-      maxRetries: boundedInteger(qualityInspection.maxRetries, 0, 2),
-      failureAction: qualityInspection.failureAction,
-      unavailableAction: qualityInspection.unavailableAction
-    }
-  }
 }
 
 function boundedInteger(value: unknown, min: number, max: number): number {
@@ -2324,48 +1939,15 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   width: 100%;
 }
 
-.hybrid-config-grid {
+.scheduling-config-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 12px;
 }
 
-.hybrid-config-grid :deep(.ant-input-number),
-.hybrid-config-grid :deep(.ant-select),
-.hybrid-config-grid :deep(.ant-segmented) {
-  width: 100%;
-}
-
-.hybrid-level-route-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.hybrid-level-route-header,
-.hybrid-level-route-row {
-  display: grid;
-  grid-template-columns: minmax(132px, 156px) minmax(0, 1fr) 32px;
-  gap: 8px;
-  align-items: center;
-}
-
-.hybrid-level-route-header {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.hybrid-level-range {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr);
-  gap: 6px;
-  align-items: center;
-}
-
-.hybrid-level-range :deep(.ant-input-number),
-.hybrid-level-route-row :deep(.ant-select) {
+.scheduling-config-grid :deep(.ant-input-number),
+.scheduling-config-grid :deep(.ant-select),
+.scheduling-config-grid :deep(.ant-segmented) {
   width: 100%;
 }
 
@@ -2375,13 +1957,8 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   }
 
   .route-strategy-binding-row,
-  .hybrid-config-grid,
-  .hybrid-level-route-row {
+  .scheduling-config-grid {
     grid-template-columns: 1fr;
-  }
-
-  .hybrid-level-route-header {
-    display: none;
   }
 }
 </style>

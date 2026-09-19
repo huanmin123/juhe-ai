@@ -11,7 +11,7 @@
 - OpenAI 协议内部桥接：Codex `/v1/responses` 可以在显式条件下转为上游 OpenAI-compatible `/v1/chat/completions`。
 - 混合供应商账户：真实上游账户自己声明允许的下游协议、上游协议和模型映射，承接跨协议桥接。
 
-现有缺口是：当下游是 Codex、OpenAI SDK、OpenAI-compatible 客户端或混合智能路由入口，而混合路由最终选中了 Anthropic Messages 账号时，OpenAI Chat / Responses 与 Anthropic Messages 协议不兼容。仅做 `responses -> chat_completions` 不能解决这个问题，因为 Anthropic 原生上游只承接 `/v1/messages`。
+现有缺口是：当下游是 Codex、OpenAI SDK、OpenAI-compatible 客户端，而路由命中了承载 Anthropic Messages 上游的混合供应商账户时，OpenAI Chat / Responses 与 Anthropic Messages 协议不兼容。仅做 `responses -> chat_completions` 不能解决这个问题，因为 Anthropic 原生上游只承接 `/v1/messages`。
 
 本设计把该能力作为长期主线能力处理：新增受控的 OpenAI-compatible 到 Anthropic Messages 桥接层，覆盖 Chat / Responses 的非流式 JSON 和 SSE 流式四类入口。
 
@@ -34,7 +34,7 @@ OpenAI 到 Anthropic Messages 桥接可以长期支持，但必须按显式桥�
 
 ### 2.1 v1 收口边界
 
-v1 的交付目标是让 OpenAI Chat / Responses 客户端在混合路由命中 Anthropic Messages 上游时保持协议可用，而不是把 Anthropic Messages 扩展成完整 OpenAI Responses 运行时。
+v1 的交付目标是让 OpenAI Chat / Responses 客户端在命中 Anthropic Messages 上游的混合供应商账户时保持协议可用，而不是把 Anthropic Messages 扩展成完整 OpenAI Responses 运行时。
 
 v1 必须承接：
 
@@ -57,7 +57,7 @@ v1 不强制承接：
 - 上游账号真实能力保持 Anthropic Messages：`supported_endpoint_modes` 仍保存 `messages_json`、`messages_sse`、`message_token_counting`，不新增伪造的 `chat_json`、`responses_sse`。
 - 桥接必须显式触发：通过混合供应商账户声明 `chat_completions/responses -> messages`，并且 API Key 绑定的策略路由能够调度到该混合账户。
 - 路由右侧仍以目标分组供应商为边界：Anthropic 官方账号右侧模型来自 Anthropic 模型目录；DeepSeek / GLM Anthropic-compatible 档案右侧模型来自各自供应商目录。
-- 混合智能路由只负责选目标模型和目标分组；目标分组能通过原生协议或本桥接承接当前下游协议时才可进入候选。
+- 路由策略只负责选择候选分组；目标分组能通过原生协议或本桥接承接当前下游协议时才可进入候选。
 - OpenAI 下游本地错误、上游 Anthropic 错误和流内错误都要按下游协议渲染，不能把 Anthropic error shape 直接返回给 OpenAI 客户端。
 - 使用记录和审计必须同时记录下游 endpoint family、上游实际 endpoint family、下游模型、实际上游模型、桥接类型和 usage 语义。
 - 上游供应商或当前模型不支持的 hosted/native 能力必须走 agent guidance 或受控拒绝，不因为能力缺口返回 500，也不把不支持能力伪装成上游成功。guidance 只写通用客户端 agent 可执行的下一步，不绑定具体客户端名称。
@@ -92,7 +92,7 @@ v1 不强制承接：
 
 | Chat 字段 | Anthropic Messages 字段 | 规则 |
 | --- | --- | --- |
-| `model` | `model` | 使用模型映射或混合路由后的上游模型 |
+| `model` | `model` | 使用模型映射后的上游模型 |
 | `messages[].role=system` | 顶层 `system` | 多条 system 以空行合并 |
 | `messages[].role=developer` | 顶层 `system` | 作为系统约束合并，标记来源为 developer |
 | `messages[].name` | 对应消息文本前缀 | Anthropic Messages 无 Chat `name` 顶层字段；非空 `name` 以 `参与者: <name>` 前缀保留在该条 user / assistant 文本内容中，不作为上游字段透传 |
@@ -137,7 +137,7 @@ Chat web search 边界：
 
 | Responses 字段 | Anthropic Messages 字段 | 规则 |
 | --- | --- | --- |
-| `model` | `model` | 使用模型映射或混合路由后的上游模型 |
+| `model` | `model` | 使用模型映射后的上游模型 |
 | `instructions` | 顶层 `system` | 作为本轮系统指令 |
 | `input` 字符串 | `messages[].role=user` | 作为单条用户消息 |
 | `input[].type=message` | `messages[]` / 顶层 `system` | `system/developer` 入 system；`user/assistant` 入 messages |
@@ -310,10 +310,9 @@ Chat 入口示例：
 - `responses -> messages` 的 SSE 请求要求 `messages_sse`；JSON 请求要求 `messages_json`。
 - `chat_completions -> messages` 同理按 stream 选择 `messages_sse` 或 `messages_json`。
 
-混合智能路由调整：
+混合供应商账户承接下的路由调整：
 
-- 目标模型规则可以指向 Anthropic / Messages 模型。
-- 混合路由选择目标模型后，候选分组筛选必须判断“当前下游 OpenAI 请求是否能被该目标分组通过桥接承接”。
+- 路由候选分组绑定混合供应商账户时，候选筛选必须判断“当前下游 OpenAI 请求是否能被该目标分组通过桥接承接”。
 - 原有“目标分组必须能承接当前请求协议和端点”改为“目标分组必须具备原生承接能力或显式桥接承接能力”。
 
 ## 10. 使用记录、审计和成本
@@ -373,7 +372,7 @@ mock 回归必须覆盖：
 | JSON 输出 | JSON object / JSON schema 的受控支持与不支持错误 |
 | 错误转换 | Anthropic JSON error、SSE `event:error` 和本地桥接错误按下游协议渲染 |
 | 路由 | API Key 所选路由策略绑定多分组时，OpenAI 请求可命中 Anthropic 映射账号 |
-| 混合路由 | 混合 API Key 选择 Anthropic 目标模型时可通过桥接承接当前 OpenAI 请求 |
+| 混合供应商账户 | 通过混合供应商账户选择 Anthropic 上游模型时可通过桥接承接当前 OpenAI 请求 |
 | Responses 状态 | `previous_response_id` 成功续链、未知 id 受控拒绝、跨分组拒绝 |
 | compact | `/responses/compact` 走本地 Anthropic Messages 摘要，不透传上游 |
 | 回归 | Anthropic native `/v1/messages` 原生链路不受影响 |
@@ -384,9 +383,8 @@ mock 回归必须覆盖：
 - `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_API_KEY`
 - `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_BASE_URL`
 - `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_MODEL`
-- `JUHE_REAL_OPENAI_ANTHROPIC_BRIDGE_SCORING_MODEL`（需要混合路由真实验证时使用）
 
-真实联调至少覆盖四类入口各一次成功、工具调用一次、一个错误样本和一个混合路由样本。真实平台如果某模型或端点返回 403 / 429 / 5xx，只记录为上游稳定性事实，不写死到桥接规则。
+真实联调至少覆盖四类入口各一次成功、工具调用一次、一个错误样本和一个混合供应商账户样本。真实平台如果某模型或端点返回 403 / 429 / 5xx，只记录为上游稳定性事实，不写死到桥接规则。
 
 ## 13. 官方资料
 

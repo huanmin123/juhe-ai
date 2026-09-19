@@ -265,7 +265,7 @@ if (-not (Test-Path -LiteralPath 'backend/.env')) {
     New-Item -ItemType File -Force 'backend/.env' | Out-Null
     Write-Host 'Created empty backend/.env (go-only release ships no backend/.env.example).'
   }
-  Write-Host 'Configure all JUHE_AI_*_INSTANCE_ID values before production use.'
+  Write-Host 'JUHE_AI_*_INSTANCE_ID values are optional and default to the hostname when unset.'
 }
 $baseEnvPath = Join-Path $appDir 'backend/.env'
 $overlayProcessValue = [Environment]::GetEnvironmentVariable('JUHE_AI_ENV_FILE', 'Process')

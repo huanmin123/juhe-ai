@@ -21,7 +21,6 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
@@ -41,32 +40,10 @@ func ensureGatewaySQLiteStoragePreflight(ctx context.Context, cfg runtimeConfig,
 		return fmt.Errorf("seed business sqlite defaults: %w", err)
 	}
 
-	// The auxiliary five databases must be explicitly configured like every
-	// other Go storage path (no CWD-relative default; the Node distinct
-	// storage path proof requires explicit files as well).
-	missing := make([]string, 0, 4)
-	if cfg.ChatDatabasePath == "" {
-		missing = append(missing, "JUHE_AI_CHAT_DATABASE_PATH")
-	}
-	if cfg.DatasetDatabasePath == "" {
-		missing = append(missing, "JUHE_AI_DATASET_DATABASE_PATH")
-	}
-	if cfg.UsageCatalogDatabasePath == "" {
-		missing = append(missing, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH")
-	}
-	if cfg.CodexContextShardRoot == "" {
-		missing = append(missing, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("sqlite 模式启动 preflight 需要六库路径，缺少 %s", strings.Join(missing, "、"))
-	}
-	if cfg.StatsDatabasePath == "" {
-		return fmt.Errorf("sqlite 模式缺少 JUHE_AI_STATS_DATABASE_PATH，无法打开 ip-stats stats 数据库")
-	}
-
-	// D-44（BUG-0175）六库物理身份门禁（Node assertDistinctStoragePaths，
-	// database.ts:331-457）：canonical path（realpath）/ 符号链接 / dev:ino /
-	// nlink=1 逐对核验，任何两个角色指向同一物理 SQLite 文件都拒绝启动。
+	// 路径必填校验（2026-09-19 起移除）：loadRuntimeConfig 已按
+	// internal/datadir 固定名表把六库路径派生到 JUHE_AI_DATA_DIR（缺省
+	// ./data）下，未配置不再是启动失败条件；显式配置仍然优先。物理身份
+	// 门禁（下方 assertDistinctSQLiteStoragePaths）继续逐对核验派生结果。
 	if err := assertDistinctSQLiteStoragePaths(cfg); err != nil {
 		return err
 	}

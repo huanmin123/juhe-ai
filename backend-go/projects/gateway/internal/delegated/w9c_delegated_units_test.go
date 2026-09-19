@@ -532,14 +532,10 @@ func TestW9CParseStrategyMutationArms(t *testing.T) {
 	if _, ok, _ := parseStrategyMutation(map[string]any{"name": "s", "normalRoutingConfig": 3}, false); ok {
 		t.Fatal("non-object normal config must fail")
 	}
-	if _, ok, _ := parseStrategyMutation(map[string]any{"name": "s", "hybridRoutingConfig": []any{}}, false); ok {
-		t.Fatal("non-object hybrid config must fail")
-	}
 	input, ok, _ := parseStrategyMutation(map[string]any{
 		"name": "s", "description": "  d  ",
 		"groupBindings":       []any{map[string]any{"groupId": " grp ", "weight": float64(50)}},
 		"normalRoutingConfig": nil,
-		"hybridRoutingConfig": map[string]any{"mode": "hybrid_smart"},
 	}, false)
 	if !ok {
 		t.Fatal("valid strategy payload must parse")
@@ -554,9 +550,6 @@ func TestW9CParseStrategyMutationArms(t *testing.T) {
 	if !input.HasNormal || input.NormalConfig != nil {
 		t.Fatalf("normal config = %+v", input.NormalConfig)
 	}
-	if !input.HasHybrid || input.HybridConfig == nil {
-		t.Fatalf("hybrid config = %+v", input.HybridConfig)
-	}
 	// Create with no bindings yields the dedicated message.
 	if _, ok, message := parseStrategyMutation(map[string]any{"name": "s"}, true); ok || message != "策略路由至少需要绑定一个分组" {
 		t.Fatalf("create-without-bindings = %v %q", ok, message)
@@ -568,9 +561,6 @@ func TestW9CParseStrategyMutationArms(t *testing.T) {
 	}
 	if !mutation.HasNormalConfig || normalConfigRaw(input) != nil {
 		t.Fatalf("normal raw = %v", normalConfigRaw(input))
-	}
-	if !mutation.HasHybridConfig || hybridConfigRaw(input) == nil {
-		t.Fatalf("hybrid raw = %v", hybridConfigRaw(input))
 	}
 }
 

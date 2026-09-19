@@ -78,11 +78,11 @@ func TestW14dParseAccountListQuery(t *testing.T) {
 
 func TestW14dParseStrategyListQuery(t *testing.T) {
 	query, issue := parseStrategyListQuery(w14dQuery("targetUsername", "alice", "keyword", "k",
-		"mode", "hybrid_smart", "status", "active", "page", "1", "pageSize", "10"))
+		"mode", "merge", "status", "active", "page", "1", "pageSize", "10"))
 	if issue != "" {
 		t.Fatalf("happy path: %q", issue)
 	}
-	if query.Mode != "hybrid_smart" || query.Status != "active" || !query.HasMode || !query.HasStatus {
+	if query.Mode != "merge" || query.Status != "active" || !query.HasMode || !query.HasStatus {
 		t.Fatalf("parsed: %+v", query)
 	}
 	_, issue = parseStrategyListQuery(w14dQuery("targetUsername", "alice", "mode", "mystery"))
@@ -130,7 +130,7 @@ func TestW14dParseStrategyBodySchemas(t *testing.T) {
 	// parseStrategyAddBody: required fields and the bindings list.
 	parsed, issue := parseStrategyAddBody(map[string]any{
 		"targetUsername": " alice ", "name": "strategy", "mode": "normal",
-		"groupBindings":  []any{map[string]any{"groupId": "g1"}},
+		"groupBindings": []any{map[string]any{"groupId": "g1"}},
 	})
 	if issue != "" {
 		t.Fatalf("strategy add: %q", issue)

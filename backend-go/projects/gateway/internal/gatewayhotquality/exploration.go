@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"math"
 	"strings"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 )
 
 // Same-tier exploration store contracts mirroring
 // backend/src/modules/gateway/runtime/same-tier-exploration-store.ts.
-// The credit/cursor constants re-use the gatewayhybrid selection-layer
-// literals (same Node values, single source of truth in Go).
+// The credit/cursor constants re-use the selection-layer literals
+// (selection.go; same Node values, single source of truth in Go).
 
 const (
 	// SameTierExplorationStateTTLMS mirrors SAME_TIER_EXPLORATION_STATE_TTL_MS (40 min).
@@ -23,14 +21,13 @@ const (
 	// SameTierExplorationIdentityCapacity mirrors SAME_TIER_EXPLORATION_IDENTITY_CAPACITY.
 	SameTierExplorationIdentityCapacity = 2_048
 	// SameTierExplorationCreditIncrement mirrors SAME_TIER_EXPLORATION_CREDIT_INCREMENT
-	// (same value as gatewayhybrid.SameTierExplorationCreditPerEligibleDispatch).
-	SameTierExplorationCreditIncrement = gatewayhybrid.SameTierExplorationCreditPerEligibleDispatch
-	// SameTierExplorationCreditCost mirrors SAME_TIER_EXPLORATION_CREDIT_COST.
-	SameTierExplorationCreditCost = gatewayhybrid.SameTierExplorationCreditCost
-	// SameTierExplorationCreditCap mirrors SAME_TIER_EXPLORATION_CREDIT_CAP.
-	SameTierExplorationCreditCap = gatewayhybrid.SameTierExplorationCreditCap
+	// (same value as SameTierExplorationCreditPerEligibleDispatch).
+	SameTierExplorationCreditIncrement = SameTierExplorationCreditPerEligibleDispatch
+	// SameTierExplorationCreditCost / SameTierExplorationCreditCap mirror
+	// SAME_TIER_EXPLORATION_CREDIT_COST / _CREDIT_CAP and are declared by
+	// selection.go with identical values.
 	// SameTierExplorationTargetCooldownMS mirrors SAME_TIER_EXPLORATION_TARGET_COOLDOWN_MS.
-	SameTierExplorationTargetCooldownMS = gatewayhybrid.SameTierExplorationTargetCooldownMs
+	SameTierExplorationTargetCooldownMS = SameTierExplorationTargetCooldownMs
 )
 
 // SameTierExplorationReservation mirrors SameTierExplorationReservation.
@@ -41,8 +38,9 @@ type SameTierExplorationReservation struct {
 }
 
 // SameTierExplorationState mirrors same-tier-exploration-store.ts
-// SameTierExplorationState (the *stored* pool state; the gatewayhybrid
-// SameTierExplorationState is the decision-input view built from it).
+// SameTierExplorationState (the *stored* pool state; the
+// SameTierExplorationDecisionState in selection.go is the decision-input view
+// built from it).
 type SameTierExplorationState struct {
 	PoolKey                     string                           `json:"poolKey"`
 	Credit                      float64                          `json:"credit"`

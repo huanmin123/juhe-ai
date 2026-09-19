@@ -102,20 +102,12 @@ func TestW14HRoutePlanSnapshotArms(t *testing.T) {
 		startedAt:    1,
 		groupId:      "g2",
 		apiKeyRecord: weighted,
-		hybridRoute: &HybridRuntimeRoute{
-			TargetModel: "gem-2.5",
-			Scoring:     map[string]any{"level": "high", "defaulted": true},
-			Route:       map[string]any{"minLevel": "low", "maxLevel": "high"},
-		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if snapshot.WeightedDecisionToken != "g2" {
 		t.Fatalf("加权 token=%q", snapshot.WeightedDecisionToken)
-	}
-	if snapshot.HybridScoreDecision == nil {
-		t.Fatal("混合决策不能为空")
 	}
 }
 

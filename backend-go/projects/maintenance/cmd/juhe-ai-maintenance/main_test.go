@@ -5,9 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +16,12 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
 )
 
+// 本文件原以 go build + 运行编译产物的方式验证 CLI 契约；按“测试单进程纪律”
+// （docs/develop/后端测试分层规则.md “测试进程纪律（硬性）”章节）改写为进程内
+// 直调 runMaintenance（wmRunMaintenanceCapture 捕获退出码与 stdout/stderr），
+// 退出码与输出断言语义不变。“编译产物 + 真实启动”的验证走 acceptance/ 冒烟
+// 体系，不进 go test。
+
 func TestMaintenanceCommandDefaultsUseFinalArchive(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..")
 	// 归档裁剪后 db-service 契约源与 system-api-app.ts 缺席（对照
@@ -27,52 +31,31 @@ func TestMaintenanceCommandDefaultsUseFinalArchive(t *testing.T) {
 		"backend", "src", "modules", "db-service", "db-service-types.ts")); err != nil {
 		t.Skip("Node archive db-service contract sources absent (trimmed archive)")
 	}
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
 
-	commandExitCode := func(t *testing.T, args ...string) ([]byte, int) {
-		t.Helper()
-		output, err := exec.Command(binary, args...).CombinedOutput()
-		if err == nil {
-			return output, 0
-		}
-		exitErr, ok := err.(*exec.ExitError)
-		if !ok {
-			t.Fatalf("run maintenance command %v: %v\n%s", args, err, output)
-		}
-		return output, exitErr.ExitCode()
-	}
-
-	output, exitCode := commandExitCode(t, "-verify-business-owner-manifest")
-	if exitCode != 0 {
-		t.Fatalf("business owner manifest exit=%d output=%s", exitCode, output)
+	code, output, stderr := wmRunMaintenanceCapture(t, "-verify-business-owner-manifest")
+	if code != 0 {
+		t.Fatalf("business owner manifest exit=%d output=%s stderr=%s", code, output, stderr)
 	}
 	var ownerReport ownermanifest.Report
-	if err := json.Unmarshal(output, &ownerReport); err != nil || ownerReport.Operations == 0 {
+	if err := json.Unmarshal([]byte(output), &ownerReport); err != nil || ownerReport.Operations == 0 {
 		t.Fatalf("business owner manifest report=%s err=%v", output, err)
 	}
 
-	output, exitCode = commandExitCode(t, "-verify-gateway-route-owner-manifest")
-	if exitCode != 3 {
-		t.Fatalf("gateway owner manifest exit=%d output=%s", exitCode, output)
+	code, output, stderr = wmRunMaintenanceCapture(t, "-verify-gateway-route-owner-manifest")
+	if code != 3 {
+		t.Fatalf("gateway owner manifest exit=%d output=%s stderr=%s", code, output, stderr)
 	}
 	var routeReport ownermanifest.GatewayRouteOwnerReport
-	if err := json.Unmarshal(output, &routeReport); err != nil || len(routeReport.PendingFamilies) == 0 {
+	if err := json.Unmarshal([]byte(output), &routeReport); err != nil || len(routeReport.PendingFamilies) == 0 {
 		t.Fatalf("gateway owner manifest report=%s err=%v", output, err)
 	}
 
-	output, exitCode = commandExitCode(t, "-scan-node-j3b-active-path")
-	if exitCode != 0 {
-		t.Fatalf("node active path scan exit=%d output=%s", exitCode, output)
+	code, output, stderr = wmRunMaintenanceCapture(t, "-scan-node-j3b-active-path")
+	if code != 0 {
+		t.Fatalf("node active path scan exit=%d output=%s stderr=%s", code, output, stderr)
 	}
 	var activeReport ownermanifest.ActivePathReport
-	if err := json.Unmarshal(output, &activeReport); err != nil || activeReport.ScannedFiles != 0 || activeReport.BlockedFindings != 0 {
+	if err := json.Unmarshal([]byte(output), &activeReport); err != nil || activeReport.ScannedFiles != 0 || activeReport.BlockedFindings != 0 {
 		t.Fatalf("node active path report=%s err=%v", output, err)
 	}
 }
@@ -96,37 +79,16 @@ func TestJ3bInventoryExitCodeKeepsUnreadyGateClosed(t *testing.T) {
 }
 
 func TestMaintenanceCommandRejectsJ3bInventoryWithoutEvidencePath(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
+	code, _, stderr := wmRunMaintenanceCapture(t, "-verify-j3b-model-check-inventory")
+	if code != 2 {
+		t.Fatalf("missing inventory evidence exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
-	command := exec.Command(binary, "-verify-j3b-model-check-inventory")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("missing inventory evidence unexpectedly succeeded")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("missing inventory evidence error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "requires --j3b-inventory-evidence") {
-		t.Fatalf("missing inventory evidence output=%q", output)
+	if !strings.Contains(stderr, "requires --j3b-inventory-evidence") {
+		t.Fatalf("missing inventory evidence stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandAcceptsCompleteJ3bInventoryEvidence(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
 	evidence := make(map[string]j3bmodelcheck.LegacyJ3bFactEvidence, len(j3bmodelcheck.LegacyJ3bFactInventory))
 	for _, item := range j3bmodelcheck.LegacyJ3bFactInventory {
 		evidence[item.Name] = j3bmodelcheck.LegacyJ3bFactEvidence{
@@ -146,13 +108,12 @@ func TestMaintenanceCommandAcceptsCompleteJ3bInventoryEvidence(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(binary, "-verify-j3b-model-check-inventory", "-j3b-inventory-evidence", path)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("complete inventory evidence failed: %v\n%s", err, output)
+	code, output, stderr := wmRunMaintenanceCapture(t, "-verify-j3b-model-check-inventory", "-j3b-inventory-evidence", path)
+	if code != 0 {
+		t.Fatalf("complete inventory evidence failed: exit=%d\noutput=%s\nstderr=%s", code, output, stderr)
 	}
 	var report j3bmodelcheck.LegacyJ3bFactCoverageReport
-	if err := json.Unmarshal(output, &report); err != nil {
+	if err := json.Unmarshal([]byte(output), &report); err != nil {
 		t.Fatalf("decode inventory report: %v\n%s", err, output)
 	}
 	if !report.Ready || !report.InventoryComplete {
@@ -237,49 +198,23 @@ func TestGoRuntimeMetricsApplyPreflightRequiresURLAndAllConfirmations(t *testing
 }
 
 func TestMaintenanceCommandRejectsGoRuntimeMetricsCheckWithoutURL(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
+	t.Setenv("JUHE_AI_MAINTENANCE_GO_RUNTIME_METRICS_POSTGRES_URL", "")
+	code, _, stderr := wmRunMaintenanceCapture(t, "-check-go-runtime-metrics")
+	if code != 2 {
+		t.Fatalf("missing Go runtime metrics URL exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
-	command := exec.Command(binary, "-check-go-runtime-metrics")
-	command.Env = append(os.Environ(), "JUHE_AI_MAINTENANCE_GO_RUNTIME_METRICS_POSTGRES_URL=")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("missing Go runtime metrics URL unexpectedly succeeded")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("missing Go runtime metrics URL error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "requires --go-runtime-metrics-postgres-url") {
-		t.Fatalf("missing Go runtime metrics URL output=%q", output)
+	if !strings.Contains(stderr, "requires --go-runtime-metrics-postgres-url") {
+		t.Fatalf("missing Go runtime metrics URL stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandRejectsGoRuntimeMetricsApplyWithoutConfirmations(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
+	code, _, stderr := wmRunMaintenanceCapture(t, "-apply-go-runtime-metrics", "-go-runtime-metrics-postgres-url", "postgres://metrics@db.example.invalid:5432/juhe")
+	if code != 2 {
+		t.Fatalf("missing confirmation exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
-	command := exec.Command(binary, "-apply-go-runtime-metrics", "-go-runtime-metrics-postgres-url", "postgres://metrics@db.example.invalid:5432/juhe")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("missing Go runtime metrics confirmations unexpectedly succeeded")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("missing confirmation error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "--node-stopped --go-stopped --backup-confirmed") {
-		t.Fatalf("missing confirmation output=%q", output)
+	if !strings.Contains(stderr, "--node-stopped --go-stopped --backup-confirmed") {
+		t.Fatalf("missing confirmation stderr=%q", stderr)
 	}
 }
 
@@ -360,192 +295,88 @@ func TestJ3bBackfillEvidencePreflightRejectsLegacyEvidenceWithoutTargetDigest(t 
 }
 
 func TestMaintenanceCommandRejectsJ3bPostgresReadbackWithoutURL(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
+	code, _, stderr := wmRunMaintenanceCapture(t, "-verify-j3b-model-check-postgres-backfill")
+	if code != 2 {
+		t.Fatalf("missing explicit readback URL exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
-	command := exec.Command(binary, "-verify-j3b-model-check-postgres-backfill")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("missing explicit readback URL unexpectedly succeeded")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("missing explicit readback URL error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "requires --j3b-postgres-readback-url") {
-		t.Fatalf("missing explicit readback URL output=%q", output)
+	if !strings.Contains(stderr, "requires --j3b-postgres-readback-url") {
+		t.Fatalf("missing explicit readback URL stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandRejectsMalformedJ3bPostgresReadbackURL(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
+	code, _, stderr := wmRunMaintenanceCapture(t, "-verify-j3b-model-check-postgres-backfill", "-j3b-postgres-readback-url", "sqlite:///legacy.db")
+	if code != 2 {
+		t.Fatalf("malformed readback URL exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
-	command := exec.Command(binary, "-verify-j3b-model-check-postgres-backfill", "-j3b-postgres-readback-url", "sqlite:///legacy.db")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("malformed readback URL unexpectedly succeeded")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("malformed readback URL error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "必须提供包含主机、数据库和显式角色") {
-		t.Fatalf("malformed readback URL output=%q", output)
+	if !strings.Contains(stderr, "必须提供包含主机、数据库和显式角色") {
+		t.Fatalf("malformed readback URL stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandRejectsJ3bPostgresBackfillWithoutConfirmations(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
+	code, _, stderr := wmRunMaintenanceCapture(t, "-backfill-j3b-model-check-postgres", "-j3b-postgres-backfill-url", "postgres://reader@db.example.invalid:5432/juhe")
+	if code != 2 {
+		t.Fatalf("missing confirmation exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
-	command := exec.Command(binary, "-backfill-j3b-model-check-postgres", "-j3b-postgres-backfill-url", "postgres://reader@db.example.invalid:5432/juhe")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("missing confirmations unexpectedly succeeded")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("missing confirmation error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "--node-stopped --go-stopped --backup-confirmed") {
-		t.Fatalf("missing confirmation output=%q", output)
+	if !strings.Contains(stderr, "--node-stopped --go-stopped --backup-confirmed") {
+		t.Fatalf("missing confirmation stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandRejectsJ3bPostgresBackfillWithoutCutoverEvidence(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
+	code, _, stderr := wmRunMaintenanceCapture(t, "-backfill-j3b-model-check-postgres", "-j3b-postgres-backfill-url", "postgres://reader@db.example.invalid:5432/juhe", "-node-stopped", "-go-stopped", "-backup-confirmed")
+	if code != 2 {
+		t.Fatalf("missing cutover evidence exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
-	command := exec.Command(binary, "-backfill-j3b-model-check-postgres", "-j3b-postgres-backfill-url", "postgres://reader@db.example.invalid:5432/juhe", "-node-stopped", "-go-stopped", "-backup-confirmed")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("missing cutover evidence unexpectedly succeeded")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("missing cutover evidence error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "requires --j3b-backfill-evidence") {
-		t.Fatalf("missing cutover evidence output=%q", output)
+	if !strings.Contains(stderr, "requires --j3b-backfill-evidence") {
+		t.Fatalf("missing cutover evidence stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandRejectsMixedBackfillAndCutoverEvidenceModes(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
 	evidence := writeCompleteJ3bCutoverEvidence(t)
-	command := exec.Command(binary, "-verify-j3b-cutover-evidence", evidence, "-j3b-backfill-evidence", evidence)
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("mixed evidence modes unexpectedly succeeded")
+	code, _, stderr := wmRunMaintenanceCapture(t, "-verify-j3b-cutover-evidence", evidence, "-j3b-backfill-evidence", evidence)
+	if code != 2 {
+		t.Fatalf("mixed evidence modes exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("mixed evidence modes error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "mutually exclusive") {
-		t.Fatalf("mixed evidence modes output=%q", output)
+	if !strings.Contains(stderr, "mutually exclusive") {
+		t.Fatalf("mixed evidence modes stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandRejectsJ3bPostgresBackfillWithValidEvidenceButMissingConfirmations(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
 	evidence := writeCompleteJ3bCutoverEvidence(t)
-	command := exec.Command(binary, "-backfill-j3b-model-check-postgres", "-j3b-postgres-backfill-url", "postgres://reader@db.example.invalid:5432/juhe", "-j3b-backfill-evidence", evidence)
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("missing confirmations unexpectedly succeeded")
+	code, _, stderr := wmRunMaintenanceCapture(t, "-backfill-j3b-model-check-postgres", "-j3b-postgres-backfill-url", "postgres://reader@db.example.invalid:5432/juhe", "-j3b-backfill-evidence", evidence)
+	if code != 2 {
+		t.Fatalf("missing confirmation exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("missing confirmation error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "--node-stopped --go-stopped --backup-confirmed") {
-		t.Fatalf("missing confirmation output=%q", output)
+	if !strings.Contains(stderr, "--node-stopped --go-stopped --backup-confirmed") {
+		t.Fatalf("missing confirmation stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandRejectsJ3bSQLiteBackfillWithoutCutoverEvidence(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
+	code, _, stderr := wmRunMaintenanceCapture(t, "-backfill-j3b-model-check-sqlite", "-node-stopped", "-go-stopped", "-backup-confirmed")
+	if code != 2 {
+		t.Fatalf("missing cutover evidence exit=%d, want exit status 2; stderr=%s", code, stderr)
 	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
-	command := exec.Command(binary, "-backfill-j3b-model-check-sqlite", "-node-stopped", "-go-stopped", "-backup-confirmed")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("missing cutover evidence unexpectedly succeeded")
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("missing cutover evidence error=%v, want exit status 2; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "requires --j3b-backfill-evidence") {
-		t.Fatalf("missing cutover evidence output=%q", output)
+	if !strings.Contains(stderr, "requires --j3b-backfill-evidence") {
+		t.Fatalf("missing cutover evidence stderr=%q", stderr)
 	}
 }
 
 func TestMaintenanceCommandRejectsMalformedJ3bPostgresBackfillEvidence(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "juhe-ai-maintenance")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance command: %v\n%s", err, output)
-	}
 	evidence := filepath.Join(t.TempDir(), "malformed.json")
 	if err := os.WriteFile(evidence, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(binary, "-backfill-j3b-model-check-postgres", "-j3b-postgres-backfill-url", "postgres://reader@db.example.invalid:5432/juhe", "-node-stopped", "-go-stopped", "-backup-confirmed", "-j3b-backfill-evidence", evidence)
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatal("malformed cutover evidence unexpectedly succeeded")
+	code, _, stderr := wmRunMaintenanceCapture(t, "-backfill-j3b-model-check-postgres", "-j3b-postgres-backfill-url", "postgres://reader@db.example.invalid:5432/juhe", "-node-stopped", "-go-stopped", "-backup-confirmed", "-j3b-backfill-evidence", evidence)
+	if code != 3 {
+		t.Fatalf("malformed cutover evidence exit=%d, want exit status 3; stderr=%s", code, stderr)
 	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 3 {
-		t.Fatalf("malformed cutover evidence error=%v, want exit status 3; output=%s", err, output)
-	}
-	if !strings.Contains(string(output), "decode J3b cutover evidence") {
-		t.Fatalf("malformed cutover evidence output=%q", output)
+	if !strings.Contains(stderr, "decode J3b cutover evidence") {
+		t.Fatalf("malformed cutover evidence stderr=%q", stderr)
 	}
 }
 

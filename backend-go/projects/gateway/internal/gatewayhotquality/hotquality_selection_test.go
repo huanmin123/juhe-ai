@@ -1,9 +1,13 @@
-package gatewayhybrid
+package gatewayhotquality
 
 import (
 	"strings"
 	"testing"
 )
+
+// Candidate-selection tests migrated from
+// internal/gatewayhybrid/hotquality_test.go together with selection.go; only
+// the selection-view type names were adjusted.
 
 type hqPayload struct {
 	label string
@@ -75,14 +79,14 @@ func TestDecideHotQualityCandidateValidationErrors(t *testing.T) {
 	if _, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
 		RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf,
 		Candidates:  []HotQualityCandidatePayload{hqCandidate("a", normalTier(), nil)},
-		Exploration: &SameTierExplorationState{Enabled: true, Credit: 1.5},
+		Exploration: &SameTierExplorationDecisionState{Enabled: true, Credit: 1.5},
 	}); err == nil || err.Error() != "同层探索 credit 必须位于 0..1" {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
 		RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf,
 		Candidates:  []HotQualityCandidatePayload{hqCandidate("a", normalTier(), nil)},
-		Exploration: &SameTierExplorationState{Enabled: true, Credit: 0.5, Cursor: -1},
+		Exploration: &SameTierExplorationDecisionState{Enabled: true, Credit: 0.5, Cursor: -1},
 	}); err == nil || err.Error() != "同层探索 cursor 不能为负数" {
 		t.Fatalf("err = %v", err)
 	}
@@ -168,14 +172,14 @@ func TestDecideHotQualityCandidateTierOrdering(t *testing.T) {
 	reliabilityCandidates := []HotQualityCandidatePayload{
 		hqCandidate("warm", normalTier(), func(candidate *HotQualityCandidate) {
 			candidate.StableBindingOrder = 0
-			candidate.HotQuality = &HotQualitySnapshot{SampleState: SampleStateWarming, ReliabilityLevel: ReliabilityUnhealthy}
+			candidate.HotQuality = &HotQualitySelectionSnapshot{SampleState: HotQualitySampleWarming, ReliabilityLevel: HotQualityReliabilityUnhealthy}
 		}),
 		hqCandidate("cold", normalTier(), func(candidate *HotQualityCandidate) {
 			candidate.StableBindingOrder = 1
 		}),
 		hqCandidate("healthy", normalTier(), func(candidate *HotQualityCandidate) {
 			candidate.StableBindingOrder = 2
-			candidate.HotQuality = &HotQualitySnapshot{SampleState: SampleStateKnown, ReliabilityLevel: ReliabilityHealthy}
+			candidate.HotQuality = &HotQualitySelectionSnapshot{SampleState: HotQualitySampleKnown, ReliabilityLevel: HotQualityReliabilityHealthy}
 		}),
 	}
 	decision, err = DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
@@ -232,10 +236,10 @@ func TestDecideHotQualityCandidateSpeedFirstLatencyGrouping(t *testing.T) {
 func TestDecideHotQualityCandidateSpeedCompareEwma(t *testing.T) {
 	candidates := []HotQualityCandidatePayload{
 		hqCandidate("slow", normalTier(), func(candidate *HotQualityCandidate) {
-			candidate.HotQuality = &HotQualitySnapshot{SampleState: SampleStateKnown, ReliabilityLevel: ReliabilityHealthy, FirstByteEwma5m: floatPtr(500)}
+			candidate.HotQuality = &HotQualitySelectionSnapshot{SampleState: HotQualitySampleKnown, ReliabilityLevel: HotQualityReliabilityHealthy, FirstByteEwma5m: floatPtr(500)}
 		}),
 		hqCandidate("quick", normalTier(), func(candidate *HotQualityCandidate) {
-			candidate.HotQuality = &HotQualitySnapshot{SampleState: SampleStateKnown, ReliabilityLevel: ReliabilityHealthy, FirstByteEwma5m: floatPtr(120)}
+			candidate.HotQuality = &HotQualitySelectionSnapshot{SampleState: HotQualitySampleKnown, ReliabilityLevel: HotQualityReliabilityHealthy, FirstByteEwma5m: floatPtr(120)}
 		}),
 	}
 	decision, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
@@ -257,15 +261,15 @@ func TestDecideExplorationStatuses(t *testing.T) {
 	// targets the cold candidate.
 	primary := candidateFor("primary", func(candidate *HotQualityCandidate) {
 		candidate.StableBindingOrder = 0
-		candidate.HotQuality = &HotQualitySnapshot{SampleState: SampleStateWarming, ReliabilityLevel: ReliabilityHealthy}
+		candidate.HotQuality = &HotQualitySelectionSnapshot{SampleState: HotQualitySampleWarming, ReliabilityLevel: HotQualityReliabilityHealthy}
 	})
 	coldTarget := candidateFor("cold-target", func(candidate *HotQualityCandidate) {
 		candidate.StableBindingOrder = 1
 	})
 	candidates := []HotQualityCandidatePayload{primary, coldTarget}
 
-	state := func(mutate func(*SameTierExplorationState)) *SameTierExplorationState {
-		exploration := &SameTierExplorationState{
+	state := func(mutate func(*SameTierExplorationDecisionState)) *SameTierExplorationDecisionState {
+		exploration := &SameTierExplorationDecisionState{
 			Enabled:                      true,
 			EligibleFirstPrimaryDispatch: true,
 			// Full credit: per-dispatch accrual is only 0.05, so selection
@@ -284,16 +288,16 @@ func TestDecideExplorationStatuses(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		state      *SameTierExplorationState
+		state      *SameTierExplorationDecisionState
 		wantStatus string
 	}{
-		{"disabled", state(func(exploration *SameTierExplorationState) { exploration.Enabled = false }), ExplorationStatusDisabled},
-		{"ineligible", state(func(exploration *SameTierExplorationState) { exploration.EligibleFirstPrimaryDispatch = false }), ExplorationStatusIneligiblePrimaryDispatch},
-		{"already explored", state(func(exploration *SameTierExplorationState) { exploration.RequestAlreadyExplored = true }), ExplorationStatusRequestAlreadyExplored},
-		{"left highest tier", state(func(exploration *SameTierExplorationState) { exploration.HasLeftHighestNormalTier = true }), ExplorationStatusLeftHighestNormalTier},
+		{"disabled", state(func(exploration *SameTierExplorationDecisionState) { exploration.Enabled = false }), ExplorationStatusDisabled},
+		{"ineligible", state(func(exploration *SameTierExplorationDecisionState) { exploration.EligibleFirstPrimaryDispatch = false }), ExplorationStatusIneligiblePrimaryDispatch},
+		{"already explored", state(func(exploration *SameTierExplorationDecisionState) { exploration.RequestAlreadyExplored = true }), ExplorationStatusRequestAlreadyExplored},
+		{"left highest tier", state(func(exploration *SameTierExplorationDecisionState) { exploration.HasLeftHighestNormalTier = true }), ExplorationStatusLeftHighestNormalTier},
 		{
 			// Accrual is skipped when already applied: 0.99 + 0 < 1.
-			"insufficient credit", state(func(exploration *SameTierExplorationState) {
+			"insufficient credit", state(func(exploration *SameTierExplorationDecisionState) {
 				exploration.Credit = 0.99
 				exploration.CreditAccrualAlreadyApplied = true
 			}), ExplorationStatusInsufficientCredit,
@@ -333,7 +337,7 @@ func TestDecideExplorationStatuses(t *testing.T) {
 	t.Run("credit boundary 1.0 selects and spends", func(t *testing.T) {
 		decision, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
 			RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf, Candidates: candidates,
-			Exploration: state(func(exploration *SameTierExplorationState) { exploration.Credit = 1 }),
+			Exploration: state(func(exploration *SameTierExplorationDecisionState) { exploration.Credit = 1 }),
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -380,7 +384,7 @@ func TestDecideExplorationStatuses(t *testing.T) {
 		}
 		second, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
 			RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf, Candidates: all,
-			Exploration: state(func(exploration *SameTierExplorationState) { exploration.Cursor = 1 }),
+			Exploration: state(func(exploration *SameTierExplorationDecisionState) { exploration.Cursor = 1 }),
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -396,7 +400,7 @@ func TestDecideExplorationStatuses(t *testing.T) {
 	t.Run("in flight and cooldown filter targets", func(t *testing.T) {
 		blocked, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
 			RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf, Candidates: candidates,
-			Exploration: state(func(exploration *SameTierExplorationState) {
+			Exploration: state(func(exploration *SameTierExplorationDecisionState) {
 				exploration.TargetInFlightRuntimeKeys = []string{"rt-cold-target"}
 			}),
 		})
@@ -408,7 +412,7 @@ func TestDecideExplorationStatuses(t *testing.T) {
 		}
 		cooled, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
 			RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf, Candidates: candidates,
-			Exploration: state(func(exploration *SameTierExplorationState) {
+			Exploration: state(func(exploration *SameTierExplorationDecisionState) {
 				exploration.TargetCooldownUntilMsByRuntimeKey = map[string]int64{"rt-cold-target": 10_000}
 			}),
 		})
@@ -421,7 +425,7 @@ func TestDecideExplorationStatuses(t *testing.T) {
 		}
 		blockedCooldown, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
 			RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf, Candidates: candidates,
-			Exploration: state(func(exploration *SameTierExplorationState) {
+			Exploration: state(func(exploration *SameTierExplorationDecisionState) {
 				exploration.TargetCooldownUntilMsByRuntimeKey = map[string]int64{"rt-cold-target": 10_001}
 			}),
 		})
@@ -436,14 +440,14 @@ func TestDecideExplorationStatuses(t *testing.T) {
 	t.Run("known sample needs staleness", func(t *testing.T) {
 		warmingPrimary := candidateFor("warm", func(candidate *HotQualityCandidate) {
 			candidate.StableBindingOrder = 0
-			candidate.HotQuality = &HotQualitySnapshot{SampleState: SampleStateWarming, ReliabilityLevel: ReliabilityHealthy}
+			candidate.HotQuality = &HotQualitySelectionSnapshot{SampleState: HotQualitySampleWarming, ReliabilityLevel: HotQualityReliabilityHealthy}
 		})
 		known := candidateFor("known", func(candidate *HotQualityCandidate) {
 			candidate.StableBindingOrder = 1
-			candidate.HotQuality = &HotQualitySnapshot{
-				SampleState:      SampleStateKnown,
-				ReliabilityLevel: ReliabilityHealthy,
-				Window30m:        HotQualityWindowSnapshot{LastCompletedAtMs: int64Ptr(9_000)},
+			candidate.HotQuality = &HotQualitySelectionSnapshot{
+				SampleState:      HotQualitySampleKnown,
+				ReliabilityLevel: HotQualityReliabilityHealthy,
+				Window30m:        HotQualitySelectionWindowSnapshot{LastCompletedAtMs: int64Ptr(9_000)},
 			}
 		})
 		pair := []HotQualityCandidatePayload{warmingPrimary, known}
@@ -459,7 +463,7 @@ func TestDecideExplorationStatuses(t *testing.T) {
 		}
 		stale, err := DecideHotQualityCandidate(DecideHotQualityCandidateInput[HotQualityCandidatePayload]{
 			RouteScopeKey: "scope", Mode: HotQualityModeCostFirst, Base: baseOf, Candidates: pair,
-			Exploration: state(func(exploration *SameTierExplorationState) {
+			Exploration: state(func(exploration *SameTierExplorationDecisionState) {
 				exploration.NowMs = 200_000
 			}),
 		})

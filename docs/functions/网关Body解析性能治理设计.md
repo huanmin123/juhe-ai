@@ -20,7 +20,6 @@
 | --- | --- | --- |
 | 请求接收 | Express raw parser 读取字节；所有普通网关 JSON 均执行受 Body 上限约束的严格语法和元数据扫描，不构建完整对象 | raw 读取和语法校验必须保留；小 Body 与大 Body 均只在业务消费者需要改写或解释协议时按需完整解析 |
 | 请求元数据 | 提取 model、stream、service tier、reasoning、输出上限和生图提示 | 路由必需；优先复用扫描结果，不应重复完整解析 |
-| 混合路由 | scoring、routing、quality inspection、quality repair 各自可能从 `rawBody` 解析 | 同请求应统一缓存；禁止各模块重复解析 |
 | 账号与协议适配 | OAuth normalizer、模型映射、请求覆盖、OpenAI/Anthropic/Gemini bridge 在实际重建 Body 时解析 | 重建时必需；原生透传不应进入；跨账号重试应复用下游请求解析结果 |
 | 非流式响应 | 响应检查、usage、错误对象、协议成功校验、usage fallback、Gemini interaction ID 可能分别解析同一正文 | 需要统一 parsed response context，解析一次后派生各项结果 |
 | 流式响应 | 协议 inspector 按 SSE event 解析，响应检查 interceptor 也可能消费相同事件 | 协议语义必需；重点检查同一 event 是否被两套 parser 重复解析 |
@@ -34,7 +33,7 @@
 
 | 项目 | 结果 | 判定 |
 | --- | --- | --- |
-| 原始请求 JSON | 普通网关入口统一写入 `scanned_json` 元数据状态并保留 raw Buffer；新增 request-scoped 解析结果与 in-flight Promise，并把成功物化的对象绑定回该原始 Buffer，Codex context/compact、OAuth、模型映射、API Key 兼容、hybrid、账户覆盖、Gemini Interactions 和六种 bridge 统一复用 | 原生 API Key 透传完整解析 0 次；真正需要结构化 Body 时同一原始请求最多完整解析一次 |
+| 原始请求 JSON | 普通网关入口统一写入 `scanned_json` 元数据状态并保留 raw Buffer；新增 request-scoped 解析结果与 in-flight Promise，并把成功物化的对象绑定回该原始 Buffer，Codex context/compact、OAuth、模型映射、API Key 兼容、账户覆盖、Gemini Interactions 和六种 bridge 统一复用 | 原生 API Key 透传完整解析 0 次；真正需要结构化 Body 时同一原始请求最多完整解析一次 |
 | Body 改写 | `replaceGatewayJsonBody`、compact 合成请求和账号能力模型覆盖均清除旧 Promise/解析结果 | 必须保留失效边界 |
 | 审计超限摘要 | 删除原始 Body 完整 JSON 解析和顶层 key 扫描 | 纯展示用途，直接删除 |
 | 会话身份 | 会话请求类型删除 `body`；账户熔断和 Codex OAuth 不再从 Body 的 session/conversation/metadata 字段推导会话 | 只消费客户端专属 Header resolver 的结果 |
@@ -48,7 +47,6 @@
 | 非 2xx 错误响应 | 以真实上游协议建立 failure context，并把 parsed response 随 attempt 传递给最终诊断错误；策略、usage、摘要、账号副作用和最终错误共享，显式区分“已解析但无摘要” | 有策略路径最多完整解析一次；generic opaque 无策略路径完整解析 0 次，最终确需诊断时也只解析一次 |
 | SSE | 响应策略 interceptor、Codex guard 和 OpenAI/Anthropic/Gemini inspector 共享同一 parsed event；内存网关把已解析 event 和 inspection 直接交给账户诊断、模型检测 | 同一 SSE event 只解码一次；诊断 event 缓存受 256 KiB 预览上限约束 |
 | 账户诊断与模型检测 | JSON、SSE、错误、输出、模型、usage 和完成证据统一消费 `DiagnosticResponseContext`；非流式与流式均复用内存网关解析结果 | 不再对完整诊断正文重复解析；图片响应只做有界 envelope 扫描，不物化 base64 |
-| Hybrid 辅助响应 | dispatch 一次解析并把 parsed value 同时交给 usage、评分和质量检查；错误摘要复用内部网关发布的非流式 context | 同一辅助响应最多完整解析一次 |
 | 审计与运行日志 | 审计传输按精确字节账本裁剪，最终 Redis codec 只整体编码一次；预处理 IPC 不再二次裁剪；公开接口日志和操作日志删除纯展示反解析 | 原始模型 Body 不为日志展示解析；JSONL、Redis、DB 和 IPC 的边界编解码保留 |
 
 ## 4. 删除与保留判定
@@ -67,7 +65,6 @@
 - 非流式完整 JSON 上游响应解析。
 - 同一 SSE event 的协议分类、usage、错误和响应检查。
 - 账户测试、健康探针和模型检测对内存网关 JSON/SSE 解析结果的复用。
-- Hybrid 辅助响应对 usage、评分、质量检查和错误摘要的复用。
 
 缓存必须绑定单个 Express request 或单次 upstream attempt，Body 被改写时必须失效；不能跨请求或跨租户保存解析对象。单请求内跨账号复用时，必须把所有账号敏感输入纳入缓存键。
 
@@ -89,7 +86,7 @@
 
 1. 删除审计摘要中的 Body JSON 解析与前缀 key 扫描。
 2. 为下游请求增加 request-scoped 完整 JSON 解析结果与 in-flight Promise 复用。
-3. 将混合路由、OAuth、模型映射和协议 bridge 迁移到统一请求解析入口。
+3. 将 OAuth、模型映射和协议 bridge 迁移到统一请求解析入口。
 4. 为非流式上游响应建立单次解析结果，复用到响应检查、usage、错误、成功校验和 interaction ID。
 5. 审计 SSE inspector 与响应检查 interceptor，确认是否可以共享同一事件解析结果。
 6. 小于等于 256KB 请求已从入口立即完整解析改为单遍严格语法/元数据扫描和按需完整解析；扫描器只解码顶层目标键与嵌套 `type`，大请求继续在 worker 扫描。
@@ -100,7 +97,7 @@
 
 - 原生 API Key raw passthrough 不新增完整 Body 解析。
 - 小 JSON 原生 API Key raw passthrough 的完整 Body 物化次数为 0，按需消费者跨模块复用时为 1。
-- 同一大 JSON 请求即使发生混合评分、协议重建和多账号重试，也只完整解析一次下游 Body。
+- 同一大 JSON 请求即使发生协议重建和多账号重试，也只完整解析一次下游 Body。
 - 同一完整非流式 JSON 响应不被 usage、错误和协议校验重复解析。
 - 审计、usage 和运行日志不为展示目的解析原始模型 Body。
 - Body 改写后缓存失效，后续上游请求使用新 Body。

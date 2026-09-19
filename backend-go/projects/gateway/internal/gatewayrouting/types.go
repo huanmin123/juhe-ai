@@ -1,14 +1,16 @@
 package gatewayrouting
 
 // RouteStrategyMode mirrors the Node RouteStrategyMode union
-// (domain/types.ts): 'normal' | 'hybrid_smart' | 'weighted' | 'failover' |
-// 'round_robin'.
+// (domain/types.ts): 'normal' | 'weighted' | 'failover' | 'round_robin' |
+// 'merge'. merge is the merged-route mode
+// (docs/functions/合并路由设计.md): all bound groups' servable accounts join
+// one flat pool.
 const (
-	RouteStrategyModeNormal      = "normal"
-	RouteStrategyModeHybridSmart = "hybrid_smart"
-	RouteStrategyModeWeighted    = "weighted"
-	RouteStrategyModeFailover    = "failover"
-	RouteStrategyModeRoundRobin  = "round_robin"
+	RouteStrategyModeNormal     = "normal"
+	RouteStrategyModeWeighted   = "weighted"
+	RouteStrategyModeFailover   = "failover"
+	RouteStrategyModeRoundRobin = "round_robin"
+	RouteStrategyModeMerge      = "merge"
 )
 
 // Row status values (storage/gateway-api-key.repository.ts).
@@ -26,38 +28,40 @@ const (
 // GatewayRequestEndpointFamily mirrors the Node GatewayRequestEndpointFamily
 // union (domain/types.ts).
 const (
-	EndpointFamilyChatCompletions     = "chat_completions"
-	EndpointFamilyResponses           = "responses"
-	EndpointFamilyMessages            = "messages"
-	EndpointFamilyGenerateContent     = "generate_content"
-	EndpointFamilyStreamGenerate      = "stream_generate_content"
-	EndpointFamilyCountTokens         = "count_tokens"
-	EndpointFamilyEmbedContent        = "embed_content"
-	EndpointFamilyInteractions        = "interactions"
-	EndpointFamilyGeminiModelsPath    = "models"
+	EndpointFamilyChatCompletions  = "chat_completions"
+	EndpointFamilyResponses        = "responses"
+	EndpointFamilyMessages         = "messages"
+	EndpointFamilyGenerateContent  = "generate_content"
+	EndpointFamilyStreamGenerate   = "stream_generate_content"
+	EndpointFamilyCountTokens      = "count_tokens"
+	EndpointFamilyEmbedContent     = "embed_content"
+	EndpointFamilyInteractions     = "interactions"
+	EndpointFamilyGeminiModelsPath = "models"
 )
 
 // NormalGatewayModelRouteSource mirrors the Node
 // NormalGatewayModelRouteSource union: where the routed model was resolved
-// from.
+// from. RouteSourceMerged extends the Node union for merge mode (设计 B11:
+// merge 固定 routeSource=merged，写进审计字段契约).
 type NormalGatewayModelRouteSource string
 
 const (
 	RouteSourceAccountMapping  NormalGatewayModelRouteSource = "account_mapping"
 	RouteSourceCatalogProvider NormalGatewayModelRouteSource = "catalog_provider"
+	RouteSourceMerged          NormalGatewayModelRouteSource = "merged"
 )
 
 // APIKeyRow mirrors storage/gateway-api-key.repository.ts
 // GatewayApiKeyRow, restricted to the fields the routing layer reads.
 type APIKeyRow struct {
-	ID                     string
-	SystemAccountID        string
-	RouteStrategyID        string
-	RouteStrategyMode      string
+	ID                      string
+	SystemAccountID         string
+	RouteStrategyID         string
+	RouteStrategyMode       string
 	RouteStrategyConfigJSON string
-	SelectedGroupID        string
-	Status                 string
-	GroupBindings          []GroupBindingRow
+	SelectedGroupID         string
+	Status                  string
+	GroupBindings           []GroupBindingRow
 }
 
 // GroupBindingRow mirrors storage/gateway-api-key.repository.ts
@@ -65,30 +69,30 @@ type APIKeyRow struct {
 // undefined/null weight as the default 1 while rejecting out-of-range
 // integers (normalizeApiKeyGroupBindingWeight).
 type GroupBindingRow struct {
-	ID               string
-	APIKeyID         string
-	SystemAccountID  string
-	GroupID          string
-	Priority         int64
-	Weight           *int64
-	Status           string
-	ProviderCode     string
-	GroupEnabled     int64 // Node group_enabled !== 0 marks the group enabled.
+	ID              string
+	APIKeyID        string
+	SystemAccountID string
+	GroupID         string
+	Priority        int64
+	Weight          *int64
+	Status          string
+	ProviderCode    string
+	GroupEnabled    int64 // Node group_enabled !== 0 marks the group enabled.
 }
 
 // GroupUsageAccessMetadata mirrors storage/openai-account-selector.types.ts
 // GroupUsageAccessMetadata. Tri-state optional booleans stay pointers.
 type GroupUsageAccessMetadata struct {
-	GroupOwnerSystemAccountID         string
-	ProviderCode                      string
-	GroupAccessType                   string
-	GroupType                         string
-	SchedulingPolicy                  string
-	GroupAuthorizationID              string
-	GroupAuthorizationExpiresAt       string
-	GroupAuthorizationQuotaLimited    *bool
-	GroupAuthorizationSourceType      string
-	GroupAuthorizationSourceTeamID    string
+	GroupOwnerSystemAccountID      string
+	ProviderCode                   string
+	GroupAccessType                string
+	GroupType                      string
+	SchedulingPolicy               string
+	GroupAuthorizationID           string
+	GroupAuthorizationExpiresAt    string
+	GroupAuthorizationQuotaLimited *bool
+	GroupAuthorizationSourceType   string
+	GroupAuthorizationSourceTeamID string
 }
 
 // UpstreamAccount is the routing-layer projection of Node

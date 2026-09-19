@@ -276,12 +276,11 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 			t.Fatalf("gemini-openai-chat 档位应拒绝 anthropic 来源: %+v", resolved)
 		}
 	})
-	t.Run("禁用与同构映射与显式混合路由", func(t *testing.T) {
+	t.Run("禁用与同构映射", func(t *testing.T) {
 		disabled := false
 		account := &RuntimeAccount{ProviderCode: "hybrid", ModelMappings: []AccountModelMapping{
 			{SourceModel: "m", SourceEndpointFamily: FamilyChatCompletions, UpstreamModel: "m", UpstreamEndpointFamily: FamilyChatCompletions},
 			{SourceModel: "m", SourceEndpointFamily: FamilyResponses, UpstreamModel: "m2", UpstreamEndpointFamily: FamilyChatCompletions, Enabled: &disabled},
-			{SourceModel: "m", SourceEndpointFamily: FamilyAnthropicMessages, UpstreamModel: "m3", UpstreamEndpointFamily: FamilyChatCompletions, RuntimeSource: RuntimeSourceExplicitHybridRoute},
 		}}
 		account.ProtocolCode = "openai"
 		account.ProtocolVersion = "v1"
@@ -290,9 +289,6 @@ func TestWAResolveAccountModelMapping(t *testing.T) {
 		}
 		if resolved := ResolveAccountModelMapping(account, "m", FamilyResponses); resolved != nil {
 			t.Fatalf("禁用映射不解析: %+v", resolved)
-		}
-		if resolved := ResolveAccountModelMapping(account, "m", FamilyAnthropicMessages); resolved != nil {
-			t.Fatalf("显式混合路由不解析: %+v", resolved)
 		}
 	})
 	t.Run("openai 账户 responses 到 chat", func(t *testing.T) {

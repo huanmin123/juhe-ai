@@ -8,53 +8,44 @@ import (
 )
 
 // Route strategy mode/config normalization mirrors
-// backend/src/domain/route-strategy.ts and api-key-hybrid-routing.ts. Only the
-// five RouteStrategyMode values are accepted ('normal' | 'hybrid_smart' |
-// 'weighted' | 'failover' | 'round_robin'); the scheduling preference
-// (normalRoutingConfig) is carried by normal/weighted/failover/round_robin and
-// still only persists when speed_first (cost_first keeps config_json NULL),
-// while hybridRoutingConfig stays hybrid_smart-only.
+// backend/src/domain/route-strategy.ts. Only the five RouteStrategyMode values
+// are accepted ('normal' | 'weighted' | 'failover' | 'round_robin' | 'merge');
+// the scheduling preference (normalRoutingConfig) is carried by every mode and
+// still only persists when speed_first (cost_first keeps config_json NULL).
 
 // Route strategy modes (RouteStrategyMode, domain/types.ts).
 const (
-	ModeNormal      = "normal"
-	ModeHybridSmart = "hybrid_smart"
-	ModeWeighted    = "weighted"
-	ModeFailover    = "failover"
-	ModeRoundRobin  = "round_robin"
+	ModeNormal     = "normal"
+	ModeWeighted   = "weighted"
+	ModeFailover   = "failover"
+	ModeRoundRobin = "round_robin"
+	ModeMerge      = "merge"
 )
 
 // IsRouteStrategyMode reports whether the raw value is one of the five modes.
 func IsRouteStrategyMode(value string) bool {
 	switch value {
-	case ModeNormal, ModeHybridSmart, ModeWeighted, ModeFailover, ModeRoundRobin:
+	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge:
 		return true
 	}
 	return false
 }
 
 // ModeSupportsSchedulingPreference reports whether the mode may carry the
-// scheduling preference (normalRoutingConfig): normal plus the three
-// passthrough modes weighted/failover/round_robin; hybrid_smart never does.
+// scheduling preference (normalRoutingConfig): normal plus the passthrough
+// modes weighted/failover/round_robin and merge.
 func ModeSupportsSchedulingPreference(mode string) bool {
 	switch mode {
-	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin:
+	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin, ModeMerge:
 		return true
 	}
 	return false
 }
 
-// defaults mirror domain/route-strategy.ts + api-key-hybrid-routing.ts.
+// defaults mirror domain/route-strategy.ts.
 const (
 	defaultNormalSchedulingPreference = "cost_first"
 	defaultSpeedFirstDeadlineMs       = 30_000
-	defaultHybridScoringTimeoutMs     = 15_000
-	defaultHybridFallbackMaxLevel     = 5
-	defaultHybridScoringCacheTTL      = 300
-	defaultHybridAffinityTTL          = 900
-	defaultHybridSwitchMinLevelDelta  = 2
-	defaultHybridDowngradeLowCount    = 2
-	hybridLevelRouteMaxCount          = 5
 )
 
 // SpeedFirstConfig mirrors RouteStrategySpeedFirstConfig.
@@ -76,64 +67,20 @@ type NormalRoutingConfig struct {
 	SpeedFirstConfig     *SpeedFirstConfig `json:"speedFirstConfig,omitempty"`
 }
 
-// HybridLevelRoute mirrors ApiKeyHybridLevelRoute.
-type HybridLevelRoute struct {
-	MinLevel    int    `json:"minLevel"`
-	MaxLevel    int    `json:"maxLevel"`
-	TargetModel string `json:"targetModel"`
-	Enabled     bool   `json:"enabled"`
-}
-
-// HybridQualityInspection mirrors ApiKeyHybridQualityInspectionConfig; the
-// repository always materializes it (defaults when absent from input).
-type HybridQualityInspection struct {
-	Enabled           bool    `json:"enabled"`
-	ScoringGroupID    *string `json:"scoringGroupId,omitempty"`
-	ScoringModel      string  `json:"scoringModel"`
-	TriggerMode       string  `json:"triggerMode"`
-	MaxTriggerLevel   int     `json:"maxTriggerLevel"`
-	MaxRetries        int     `json:"maxRetries"`
-	FailureAction     string  `json:"failureAction"`
-	UnavailableAction string  `json:"unavailableAction"`
-}
-
-// HybridRoutingConfig mirrors ApiKeyHybridRoutingConfig (normalized output
-// shape: scoringGroupId dropped when empty, qualityInspection always present).
-type HybridRoutingConfig struct {
-	ScoringGroupID               *string                  `json:"scoringGroupId,omitempty"`
-	ScoringModel                 string                   `json:"scoringModel"`
-	ScoringContextMode           string                   `json:"scoringContextMode"`
-	QualityPreference            string                   `json:"qualityPreference"`
-	ScoringTimeoutMs             int                      `json:"scoringTimeoutMs"`
-	ScoringFallbackMaxLevel      int                      `json:"scoringFallbackMaxLevel"`
-	ScoringCacheEnabled          bool                     `json:"scoringCacheEnabled"`
-	ScoringCacheTTLSeconds       int                      `json:"scoringCacheTtlSeconds"`
-	CacheAffinityEnabled         bool                     `json:"cacheAffinityEnabled"`
-	AffinityTTLSeconds           int                      `json:"affinityTtlSeconds"`
-	SwitchMinLevelDelta          int                      `json:"switchMinLevelDelta"`
-	DowngradeConsecutiveLowCount int                      `json:"downgradeConsecutiveLowCount"`
-	LevelRoutes                  []HybridLevelRoute       `json:"levelRoutes"`
-	QualityInspection            *HybridQualityInspection `json:"qualityInspection"`
-}
-
-// storedConfig is the config_json document (routeStrategyConfigJson): only
-// non-default normalRoutingConfig and hybrid_smart hybridRoutingConfig persist.
+// storedConfig is the config_json document (routeStrategyConfigJson): only a
+// non-default normalRoutingConfig persists.
 type storedConfig struct {
 	NormalRoutingConfig *NormalRoutingConfig `json:"normalRoutingConfig,omitempty"`
-	HybridRoutingConfig *HybridRoutingConfig `json:"hybridRoutingConfig,omitempty"`
 }
 
 // routeStrategyConfigJSON mirrors routeStrategyConfigJson: the stored JSON is
 // NULL when nothing non-default remains.
-func routeStrategyConfigJSON(normal *NormalRoutingConfig, hybrid *HybridRoutingConfig) sql.NullString {
+func routeStrategyConfigJSON(normal *NormalRoutingConfig) sql.NullString {
 	document := storedConfig{}
 	if normal != nil && normal.SchedulingPreference != defaultNormalSchedulingPreference {
 		document.NormalRoutingConfig = normal
 	}
-	if hybrid != nil {
-		document.HybridRoutingConfig = hybrid
-	}
-	if document.NormalRoutingConfig == nil && document.HybridRoutingConfig == nil {
+	if document.NormalRoutingConfig == nil {
 		return sql.NullString{}
 	}
 	encoded, err := json.Marshal(document)
@@ -145,81 +92,36 @@ func routeStrategyConfigJSON(normal *NormalRoutingConfig, hybrid *HybridRoutingC
 
 // parseStoredConfig mirrors parseRouteStrategyRuntimeConfigJson: unknown keys
 // are ignored on read; broken values surface the domain errors.
-func parseStoredConfig(raw sql.NullString) (normal *NormalRoutingConfig, hybrid *HybridRoutingConfig, err error) {
+func parseStoredConfig(raw sql.NullString) (*NormalRoutingConfig, error) {
 	if !raw.Valid || raw.String == "" {
-		return nil, nil, nil
+		return nil, nil
 	}
 	var document storedConfig
 	if err := json.Unmarshal([]byte(raw.String), &document); err != nil {
-		return nil, nil, &ValidationError{Message: "策略路由配置无效"}
+		return nil, &ValidationError{Message: "策略路由配置无效"}
 	}
-	if document.NormalRoutingConfig != nil {
-		// Re-normalize through the raw shape so legacy/partial rows repair.
-		encoded, encodeErr := json.Marshal(document.NormalRoutingConfig)
-		if encodeErr != nil {
-			return nil, nil, &ValidationError{Message: "策略路由配置无效"}
-		}
-		var decoded any
-		_ = json.Unmarshal(encoded, &decoded)
-		normal, err = normalizeNormalRoutingConfig(decoded)
-		if err != nil {
-			return nil, nil, err
-		}
+	if document.NormalRoutingConfig == nil {
+		return nil, nil
 	}
-	if document.HybridRoutingConfig != nil {
-		encoded, encodeErr := json.Marshal(document.HybridRoutingConfig)
-		if encodeErr != nil {
-			return nil, nil, &ValidationError{Message: "策略路由配置无效"}
-		}
-		var decoded any
-		_ = json.Unmarshal(encoded, &decoded)
-		hybrid, err = normalizeHybridRoutingConfig(decoded)
-		if err != nil {
-			return nil, nil, err
-		}
+	// Re-normalize through the raw shape so legacy/partial rows repair.
+	encoded, encodeErr := json.Marshal(document.NormalRoutingConfig)
+	if encodeErr != nil {
+		return nil, &ValidationError{Message: "策略路由配置无效"}
 	}
-	return normal, hybrid, nil
+	var decoded any
+	_ = json.Unmarshal(encoded, &decoded)
+	return normalizeNormalRoutingConfig(decoded)
 }
 
-// normalizeConfigForWrite mirrors normalizeRouteStrategyConfigForWrite: the
-// scheduling preference (normalRoutingConfig) is accepted by
-// normal/weighted/failover/round_robin, hybrid_smart rejects it, only
-// hybrid_smart may carry hybridRoutingConfig, and hybrid_smart requires the
-// hybrid config.
-func normalizeConfigForWrite(normalRaw, hybridRaw any, mode string) (*NormalRoutingConfig, *HybridRoutingConfig, error) {
-	if mode == ModeNormal {
-		if rawValueConfigured(hybridRaw) {
-			return nil, nil, &ValidationError{Message: "普通路由不能配置混合评分规则"}
-		}
-		normal, err := normalizeNormalRoutingConfig(normalRaw)
-		if err != nil {
-			return nil, nil, err
-		}
-		return normal, nil, nil
-	}
-	if mode == ModeHybridSmart {
-		if rawValueConfigured(normalRaw) {
-			return nil, nil, &ValidationError{Message: "混合智能路由不支持调度偏好"}
-		}
-		hybrid, err := normalizeHybridRoutingConfig(hybridRaw)
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, hybrid, nil
-	}
-	if rawValueConfigured(hybridRaw) {
-		return nil, nil, &ValidationError{Message: "只有混合智能路由可以配置混合评分规则"}
-	}
+// normalizeConfigForWrite mirrors normalizeRouteStrategyConfigForWrite: every
+// mode accepts the scheduling preference (normalRoutingConfig); the former
+// hybridRoutingConfig key is gone so no hybrid branch remains.
+func normalizeConfigForWrite(normalRaw any, mode string) (*NormalRoutingConfig, error) {
 	normal, err := normalizeNormalRoutingConfig(normalRaw)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return normal, nil, nil
-}
-
-// rawValueConfigured mirrors `value !== undefined && value !== null`.
-func rawValueConfigured(value any) bool {
-	return value != nil
+	return normal, nil
 }
 
 // normalizeMode mirrors normalizeRouteStrategyMode: absent falls back to
@@ -353,222 +255,6 @@ func normalizeSpeedFirstConfig(value any) (*SpeedFirstConfig, error) {
 	}, nil
 }
 
-// normalizeHybridRoutingConfig mirrors domain/api-key-hybrid-routing.ts.
-func normalizeHybridRoutingConfig(value any) (*HybridRoutingConfig, error) {
-	if value == nil {
-		return nil, &ValidationError{Message: "混合路由配置不能为空"}
-	}
-	record, ok := value.(map[string]any)
-	if !ok {
-		return nil, &ValidationError{Message: "混合路由配置不能为空"}
-	}
-	scoringGroupID := optionalTrimmedString(record["scoringGroupId"])
-	scoringModel, err := requiredTrimmedString(record["scoringModel"], "混合路由评分模型不能为空")
-	if err != nil {
-		return nil, err
-	}
-	scoringContextMode, err := normalizeEnumField(record["scoringContextMode"], "full_request", []string{"full_request"}, "混合路由评分上下文模式无效")
-	if err != nil {
-		return nil, err
-	}
-	qualityPreference, err := normalizeEnumField(record["qualityPreference"], "balanced",
-		[]string{"cost_first", "balanced", "quality_first"}, "混合路由质量偏好无效")
-	if err != nil {
-		return nil, err
-	}
-	scoringTimeoutMs, err := normalizeIntegerRange(record["scoringTimeoutMs"], defaultHybridScoringTimeoutMs, 1000, 60_000, "混合路由评分超时时间必须是 1000-60000 毫秒")
-	if err != nil {
-		return nil, err
-	}
-	scoringFallbackMaxLevel, err := normalizeIntegerRange(record["scoringFallbackMaxLevel"], defaultHybridFallbackMaxLevel, 2, 5, "混合路由评分不可用兜底上限必须是 2-5")
-	if err != nil {
-		return nil, err
-	}
-	scoringCacheTTLSeconds, err := normalizeIntegerRange(record["scoringCacheTtlSeconds"], defaultHybridScoringCacheTTL, 1, 3600, "混合路由评分缓存 TTL 必须是 1-3600 秒")
-	if err != nil {
-		return nil, err
-	}
-	affinityTTLSeconds, err := normalizeIntegerRange(record["affinityTtlSeconds"], defaultHybridAffinityTTL, 1, 86_400, "混合路由缓存亲和 TTL 必须是 1-86400 秒")
-	if err != nil {
-		return nil, err
-	}
-	switchMinLevelDelta, err := normalizeIntegerRange(record["switchMinLevelDelta"], defaultHybridSwitchMinLevelDelta, 0, 9, "混合路由切换等级差必须是 0-9")
-	if err != nil {
-		return nil, err
-	}
-	downgradeLowCount, err := normalizeIntegerRange(record["downgradeConsecutiveLowCount"], defaultHybridDowngradeLowCount, 1, 20, "混合路由降级确认次数必须是 1-20")
-	if err != nil {
-		return nil, err
-	}
-	levelRoutes, err := normalizeHybridLevelRoutes(record["levelRoutes"])
-	if err != nil {
-		return nil, err
-	}
-	qualityInspection, err := normalizeQualityInspection(record["qualityInspection"], scoringModel)
-	if err != nil {
-		return nil, err
-	}
-	config := &HybridRoutingConfig{
-		ScoringModel:                 scoringModel,
-		ScoringContextMode:           scoringContextMode,
-		QualityPreference:            qualityPreference,
-		ScoringTimeoutMs:             scoringTimeoutMs,
-		ScoringFallbackMaxLevel:      scoringFallbackMaxLevel,
-		ScoringCacheEnabled:          true,
-		ScoringCacheTTLSeconds:       scoringCacheTTLSeconds,
-		CacheAffinityEnabled:         true,
-		AffinityTTLSeconds:           affinityTTLSeconds,
-		SwitchMinLevelDelta:          switchMinLevelDelta,
-		DowngradeConsecutiveLowCount: downgradeLowCount,
-		LevelRoutes:                  levelRoutes,
-		QualityInspection:            qualityInspection,
-	}
-	if scoringGroupID != "" {
-		config.ScoringGroupID = &scoringGroupID
-	}
-	return config, nil
-}
-
-// normalizeHybridLevelRoutes enforces the full coverage contract: enabled
-// routes only, at most 5, at least 2 distinct target models, first tier
-// 1-2..1-5, contiguous coverage of levels 1-10.
-func normalizeHybridLevelRoutes(value any) ([]HybridLevelRoute, error) {
-	list, ok := value.([]any)
-	if !ok || len(list) == 0 {
-		return nil, &ValidationError{Message: "混合路由等级范围不能为空"}
-	}
-	normalized := make([]HybridLevelRoute, 0, len(list))
-	for _, item := range list {
-		record, ok := item.(map[string]any)
-		if !ok {
-			return nil, &ValidationError{Message: "混合路由等级范围无效"}
-		}
-		minLevel, err := normalizeIntegerRange(record["minLevel"], 0, 1, 10, "混合路由最小等级必须是 1-10")
-		if err != nil {
-			return nil, err
-		}
-		maxLevel, err := normalizeIntegerRange(record["maxLevel"], 0, 1, 10, "混合路由最大等级必须是 1-10")
-		if err != nil {
-			return nil, err
-		}
-		if minLevel > maxLevel {
-			return nil, &ValidationError{Message: "混合路由等级范围最小值不能大于最大值"}
-		}
-		targetModel, err := requiredTrimmedString(record["targetModel"], "混合路由目标模型不能为空")
-		if err != nil {
-			return nil, err
-		}
-		enabled := true
-		if raw, present := record["enabled"]; present && raw != nil {
-			enabled, ok = raw.(bool)
-			if !ok {
-				return nil, &ValidationError{Message: "混合路由等级范围启用状态必须是布尔值"}
-			}
-		}
-		if enabled {
-			normalized = append(normalized, HybridLevelRoute{MinLevel: minLevel, MaxLevel: maxLevel, TargetModel: targetModel, Enabled: true})
-		}
-	}
-	if len(normalized) == 0 {
-		return nil, &ValidationError{Message: "混合路由至少需要一个启用的等级范围"}
-	}
-	if len(normalized) > hybridLevelRouteMaxCount {
-		return nil, &ValidationError{Message: "混合路由最多只能配置 5 个等级范围"}
-	}
-	modelKeys := map[string]bool{}
-	for _, route := range normalized {
-		modelKeys[strings.ToLower(route.TargetModel)] = true
-	}
-	if len(modelKeys) < 2 {
-		return nil, &ValidationError{Message: "混合路由至少需要配置 2 个不同的目标模型"}
-	}
-	if normalized[0].MinLevel != 1 || normalized[0].MaxLevel < 2 || normalized[0].MaxLevel > 5 {
-		return nil, &ValidationError{Message: "混合路由最低档必须从等级 1 开始，并覆盖 1-2 到 1-5 之间的范围"}
-	}
-	expectedMinLevel := 1
-	for index, route := range normalized {
-		if route.MinLevel != expectedMinLevel {
-			return nil, &ValidationError{Message: "混合路由第 " + strconv.Itoa(index+1) + " 个等级范围必须从等级 " + strconv.Itoa(expectedMinLevel) + " 开始"}
-		}
-		expectedMinLevel = route.MaxLevel + 1
-	}
-	if expectedMinLevel != 11 {
-		return nil, &ValidationError{Message: "混合路由等级范围必须按从小到大连续覆盖 1-10"}
-	}
-	return normalized, nil
-}
-
-// normalizeQualityInspection mirrors normalizeQualityInspectionConfig: absent
-// input materializes the defaults with the primary scoring model inherited.
-func normalizeQualityInspection(value any, primaryScoringModel string) (*HybridQualityInspection, error) {
-	if value == nil {
-		return &HybridQualityInspection{
-			Enabled:           true,
-			ScoringModel:      primaryScoringModel,
-			TriggerMode:       "risk_based",
-			MaxTriggerLevel:   6,
-			MaxRetries:        2,
-			FailureAction:     "repair_then_upgrade",
-			UnavailableAction: "pass_through",
-		}, nil
-	}
-	record, ok := value.(map[string]any)
-	if !ok {
-		return nil, &ValidationError{Message: "混合路由质量评分配置无效"}
-	}
-	enabled := true
-	if raw, present := record["enabled"]; present && raw != nil {
-		enabled, ok = raw.(bool)
-		if !ok {
-			return nil, &ValidationError{Message: "混合路由质量评分开关必须是布尔值"}
-		}
-	}
-	scoringGroupID := optionalTrimmedString(record["scoringGroupId"])
-	scoringModel := optionalTrimmedString(record["scoringModel"])
-	if scoringModel == "" {
-		scoringModel = primaryScoringModel
-	}
-	if enabled && scoringModel == "" {
-		return nil, &ValidationError{Message: "混合路由质量评分模型不能为空"}
-	}
-	triggerMode, err := normalizeEnumField(record["triggerMode"], "risk_based",
-		[]string{"quality_first_only", "risk_based", "always_for_hybrid"}, "混合路由质量评分触发模式无效")
-	if err != nil {
-		return nil, err
-	}
-	maxTriggerLevel, err := normalizeIntegerRange(record["maxTriggerLevel"], 6, 1, 10, "混合路由质量评分最高触发等级必须是 1-10")
-	if err != nil {
-		return nil, err
-	}
-	maxRetries, err := normalizeIntegerRange(record["maxRetries"], 2, 0, 2, "混合路由质量评分重试次数必须是 0-2")
-	if err != nil {
-		return nil, err
-	}
-	failureAction, err := normalizeEnumField(record["failureAction"], "repair_then_upgrade",
-		[]string{"repair_then_upgrade", "upgrade_next_level", "retry_same_model", "return_error"}, "混合路由质量评分失败动作无效")
-	if err != nil {
-		return nil, err
-	}
-	unavailableAction, err := normalizeEnumField(record["unavailableAction"], "pass_through",
-		[]string{"pass_through", "return_error"}, "混合路由质量评分不可用处理方式无效")
-	if err != nil {
-		return nil, err
-	}
-	inspection := &HybridQualityInspection{
-		Enabled:           enabled,
-		ScoringModel:      scoringModel,
-		TriggerMode:       triggerMode,
-		MaxTriggerLevel:   maxTriggerLevel,
-		MaxRetries:        maxRetries,
-		FailureAction:     failureAction,
-		UnavailableAction: unavailableAction,
-	}
-	if scoringGroupID != "" {
-		inspection.ScoringGroupID = &scoringGroupID
-	}
-	return inspection, nil
-}
-
 // ---- shared raw-value helpers ----
 
 func optionalRecord(value any, message string) (map[string]any, error) {
@@ -628,37 +314,6 @@ func numericValue(value any) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func normalizeEnumField(value any, fallback string, allowed []string, message string) (string, error) {
-	if value == nil || value == "" {
-		return fallback, nil
-	}
-	text, ok := value.(string)
-	if !ok {
-		return "", &ValidationError{Message: message}
-	}
-	for _, candidate := range allowed {
-		if text == candidate {
-			return text, nil
-		}
-	}
-	return "", &ValidationError{Message: message}
-}
-
-func optionalTrimmedString(value any) string {
-	if text, ok := value.(string); ok {
-		return strings.TrimSpace(text)
-	}
-	return ""
-}
-
-func requiredTrimmedString(value any, message string) (string, error) {
-	text := optionalTrimmedString(value)
-	if text == "" {
-		return "", &ValidationError{Message: message}
-	}
-	return text, nil
 }
 
 // configValuesEqual mirrors routeStrategyPatchValuesEqual (JSON stringify).

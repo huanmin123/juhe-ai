@@ -243,6 +243,9 @@ func (s chainAttemptAuditSink) StartAttempt(input gatewaydispatch.StartAttemptIn
 		Body:         input.Body,
 		HasBody:      len(input.Body) > 0,
 		Model:        requestModelHintOf(input.RequestForModelAccounting),
+		// 3.5：尝试级审计行 group_id 按所服务账号 BoundGroupID 显式覆盖
+		// （merge 按账号记账），空回落请求级窗口组快照。
+		GroupIDOverride: usageAccountGroupIDOverride(input.Account),
 	})
 }
 
@@ -292,7 +295,20 @@ func (s chainAttemptAuditSink) RecordFailedDispatchAttempt(input gatewaydispatch
 		ErrorCode:    input.ErrorCode,
 		ErrorMessage: input.ErrorMessage,
 		Model:        requestModelHintOf(input.RequestForModelAccounting),
+		// 3.5：同 StartAttempt——尝试级 group_id 按账号 BoundGroupID 显式覆盖。
+		GroupIDOverride: usageAccountGroupIDOverride(input.Account),
 	})
+}
+
+// usageAccountGroupIDOverride 解析尝试级记账的账号组覆盖值（合并路由设计
+// 3.5）：账号 BoundGroupID 非空时返回该组（账号按组加载后 merge 池全量组
+// 标），为空返回空串（回落窗口组）。gatewaydispatch.AccountCandidate 即
+// gatewayruntimecache.OpenAIAccountSecret 的类型别名，直接取值。
+func usageAccountGroupIDOverride(account gatewaydispatch.AccountCandidate) string {
+	if account.BoundGroupID == nil {
+		return ""
+	}
+	return *account.BoundGroupID
 }
 
 // chainFinalizationUsage implements gatewayresponse.UsageAttemptRecorder —
@@ -351,6 +367,14 @@ func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresp
 // applyUsageAccountScope 把账户视图携带的 usage scope 投影到记录（对齐
 // usageModelAccountOf 的 UsageAccessFields 投影面；非 OpenAIAccountView 的
 // 测试实现保持零值，归一化按缺失 scope 清空 accountId，与 Node 行为一致）。
+//
+// 合并路由设计 3.5（按账号所属组记账）：账号 BoundGroupID 非空时，该尝试记
+// 录的 GroupID 与访问五元组（GroupOwnerSystemAccountID / GroupAccessType /
+// GroupAuthorizationID / SourceType / SourceTeamID）整体取账号自带值——账号
+// 按组加载时已由该组 groupAccess 填充（chain_accounts_secret.go），整体替换
+// 而非只改 GroupID，避免“组 ID 属账号组、五元组属窗口组”的混合记录。为空
+// 保持现状（UsageContext 优先，firstNonEmpty）。存量模式账号 BoundGroupID
+// 为空或等于窗口组，行为不变。
 func applyUsageAccountScope(record *gatewayusage.UsageRecordInput, account gatewayresponse.AccountView) {
 	if account == nil {
 		return
@@ -366,6 +390,15 @@ func applyUsageAccountScope(record *gatewayusage.UsageRecordInput, account gatew
 	record.AccountAuthorizationID = derefString(secret.AccountAuthorizationID)
 	record.AccountAuthorizationSourceType = derefString(secret.AccountAuthorizationSourceType)
 	record.AccountAuthorizationSourceTeamID = derefString(secret.AccountAuthorizationSourceTeamID)
+	if secret.BoundGroupID != nil && *secret.BoundGroupID != "" {
+		record.GroupID = *secret.BoundGroupID
+		record.GroupOwnerSystemAccountID = secret.GroupOwnerSystemAccountID
+		record.GroupAccessType = secret.GroupAccessType
+		record.GroupAuthorizationID = derefString(secret.GroupAuthorizationID)
+		record.GroupAuthorizationSourceType = derefString(secret.GroupAuthorizationSourceType)
+		record.GroupAuthorizationSourceTeamID = derefString(secret.GroupAuthorizationSourceTeamID)
+		return
+	}
 	record.GroupOwnerSystemAccountID = firstNonEmptyChainUsage(record.GroupOwnerSystemAccountID, secret.GroupOwnerSystemAccountID)
 	record.GroupAccessType = firstNonEmptyChainUsage(record.GroupAccessType, secret.GroupAccessType)
 	record.GroupAuthorizationID = firstNonEmptyChainUsage(record.GroupAuthorizationID, derefString(secret.GroupAuthorizationID))

@@ -3,7 +3,7 @@ package main
 // w1_compose_pure_test.go —— chain_compose.go / compose.go /
 // chain_accounts_secret.go 纯 helper 的单元测试（w1c 前缀，TestW1C 入口）。
 // 全部用例确定性可重放：不依赖网络、数据库、磁盘与并发时序；外部协作
-// （时钟 / settings store / runtime cache 读模型 / hybrid 端口）一律注入
+// （时钟 / settings store / runtime cache 读模型）一律注入
 // 本文件内定义的 fake。
 
 import (
@@ -23,13 +23,9 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/settings"
-	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // ---------------------------------------------------------------------------
@@ -40,47 +36,6 @@ import (
 type w1cFixedClock struct{ now time.Time }
 
 func (c w1cFixedClock) Now() time.Time { return c.now }
-
-// w1cFakeSharedJSONCache 实现 gatewayhybrid.SharedJSONCache。
-type w1cFakeSharedJSONCache struct{}
-
-func (w1cFakeSharedJSONCache) Get(context.Context, string) (*gatewayhybrid.HybridScoringCacheEntry, error) {
-	return nil, nil
-}
-
-func (w1cFakeSharedJSONCache) Set(context.Context, string, gatewayhybrid.HybridScoringCacheEntry, int64) error {
-	return nil
-}
-
-func (w1cFakeSharedJSONCache) Clear(context.Context) error { return nil }
-
-// w1cFakeRuntimeStateStore 实现 gatewayhybrid.RuntimeStateStore。
-type w1cFakeRuntimeStateStore struct{}
-
-func (w1cFakeRuntimeStateStore) GetJSON(context.Context, string, any) (bool, error) {
-	return false, nil
-}
-
-func (w1cFakeRuntimeStateStore) SetJSON(context.Context, string, any, int64) error { return nil }
-
-// w1cFakeAuxiliaryDispatcher 实现 gatewayhybrid.AuxiliaryDispatcher。
-type w1cFakeAuxiliaryDispatcher struct{}
-
-func (w1cFakeAuxiliaryDispatcher) DispatchHybridAuxiliaryChatCompletion(context.Context, gatewayhybrid.AuxiliaryDispatchInput) (gatewayhybrid.AuxiliaryDispatchSuccess, *gatewayhybrid.AuxiliaryDispatchFailure) {
-	return gatewayhybrid.AuxiliaryDispatchSuccess{}, nil
-}
-
-// w1cFakeUsageRecorder 实现 gatewayhybrid.UsageRecorder。
-type w1cFakeUsageRecorder struct{}
-
-func (w1cFakeUsageRecorder) RecordHybridScoringAttempt(context.Context, gatewayhybrid.ScoringAttemptRecord) error {
-	return nil
-}
-
-// w1cFakeRouteDiagnostics 实现 gatewayhybrid.RouteDiagnosticsPublisher。
-type w1cFakeRouteDiagnostics struct{}
-
-func (w1cFakeRouteDiagnostics) PublishHybridRouteDecision(*gatewayhybrid.OrderedJSON) {}
 
 // w1cErrDriver / w1cErrConnector 让任何数据库访问都按固定错误失败（settings
 // store 错误透传路径用；不起真实数据库）。
@@ -151,120 +106,6 @@ func TestW1CGatewaybodyLoggerMethods(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// chain_compose.go：hybrid *Of 适配器
-// ---------------------------------------------------------------------------
-
-func TestW1CHybridAdapterOfHelpers(t *testing.T) {
-	now := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
-	if got := hybridClockOf(w1cFixedClock{now: now}); !got().Equal(now) {
-		t.Fatalf("hybridClockOf 应透传时钟 Now，实际 %v", got())
-	}
-
-	if got := hybridSharedCacheOf(nil); got != nil {
-		t.Fatalf("hybridSharedCacheOf(nil) 应返回 nil，实际 %#v", got)
-	}
-	fakeCache := &w1cFakeSharedJSONCache{}
-	if got := hybridSharedCacheOf(fakeCache); got != gatewayhybrid.SharedJSONCache(fakeCache) {
-		t.Fatalf("hybridSharedCacheOf 应透传非 nil 实现，实际 %#v", got)
-	}
-
-	if got := hybridRuntimeStateOf(nil); got != nil {
-		t.Fatalf("hybridRuntimeStateOf(nil) 应返回 nil，实际 %#v", got)
-	}
-	fakeState := &w1cFakeRuntimeStateStore{}
-	if got := hybridRuntimeStateOf(fakeState); got != gatewayhybrid.RuntimeStateStore(fakeState) {
-		t.Fatalf("hybridRuntimeStateOf 应透传非 nil 实现，实际 %#v", got)
-	}
-
-	if got := hybridAuxiliaryOf(nil); got != nil {
-		t.Fatalf("hybridAuxiliaryOf(nil) 应返回 nil，实际 %#v", got)
-	}
-	fakeDispatcher := &w1cFakeAuxiliaryDispatcher{}
-	if got := hybridAuxiliaryOf(fakeDispatcher); got != gatewayhybrid.AuxiliaryDispatcher(fakeDispatcher) {
-		t.Fatalf("hybridAuxiliaryOf 应透传非 nil 实现，实际 %#v", got)
-	}
-
-	if got := hybridUsageRecorderOf(nil); got != nil {
-		t.Fatalf("hybridUsageRecorderOf(nil) 应返回 nil，实际 %#v", got)
-	}
-	fakeRecorder := &w1cFakeUsageRecorder{}
-	if got := hybridUsageRecorderOf(fakeRecorder); got != gatewayhybrid.UsageRecorder(fakeRecorder) {
-		t.Fatalf("hybridUsageRecorderOf 应透传非 nil 实现，实际 %#v", got)
-	}
-
-	if got := hybridDiagnosticsOf(nil); got != nil {
-		t.Fatalf("hybridDiagnosticsOf(nil) 应返回 nil，实际 %#v", got)
-	}
-	fakeDiagnostics := &w1cFakeRouteDiagnostics{}
-	if got := hybridDiagnosticsOf(fakeDiagnostics); got != gatewayhybrid.RouteDiagnosticsPublisher(fakeDiagnostics) {
-		t.Fatalf("hybridDiagnosticsOf 应透传非 nil 实现，实际 %#v", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// chain_compose.go：auxiliaryDispatchFailure / firstNonEmptyString
-// ---------------------------------------------------------------------------
-
-func TestW1CAuxiliaryDispatchFailureArms(t *testing.T) {
-	input := gatewayhybrid.AuxiliaryDispatchInput{
-		DispatchErrorCode:     "dispatch-code",
-		DispatchErrorMessage:  "dispatch-msg",
-		NoAccountErrorCode:    "no-account-code",
-		NoAccountErrorMessage: "no-account-msg",
-		TargetModel:           "gpt-x",
-	}
-	cases := []struct {
-		name              string
-		errorCode         string
-		errorMessage      string
-		account           *gatewayhybrid.OpenAIAccountSecret
-		groupID           string
-		hasGroupID        bool
-		statusCode        int
-		hasStatusCode     bool
-		shouldRecordUsage bool
-	}{
-		{"nil账户无分组", "no-account-code", "no-account-msg", nil, "", false, 0, false, false},
-		{"带账户分组与状态码", "dispatch-code", "upstream失败", &gatewayhybrid.OpenAIAccountSecret{ID: "acc-1"}, "grp-1", true, 502, true, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			success, failure := auxiliaryDispatchFailure(input, tc.errorCode, tc.errorMessage, tc.account, tc.groupID, tc.hasGroupID, tc.statusCode, tc.hasStatusCode, tc.shouldRecordUsage)
-			if success.GroupID != "" || success.StatusCode != 0 || len(success.ResponseBody) != 0 || success.Finish != nil {
-				t.Fatalf("成功臂应保持零值，实际 GroupID=%q StatusCode=%d BodyLen=%d FinishNil=%v", success.GroupID, success.StatusCode, len(success.ResponseBody), success.Finish == nil)
-			}
-			if success.Account != (gatewayhybrid.OpenAIAccountSecret{}) {
-				t.Fatalf("成功臂账户应为零值，实际 %+v", success.Account)
-			}
-			if failure == nil {
-				t.Fatalf("失败臂不应为 nil")
-			}
-			if failure.ErrorCode != tc.errorCode {
-				t.Errorf("ErrorCode 不符，期望 %q 实际 %q", tc.errorCode, failure.ErrorCode)
-			}
-			if failure.ErrorMessage != tc.errorMessage {
-				t.Errorf("ErrorMessage 不符，期望 %q 实际 %q", tc.errorMessage, failure.ErrorMessage)
-			}
-			if failure.GroupID != tc.groupID || failure.HasGroupID != tc.hasGroupID {
-				t.Errorf("分组透传不符，期望 (%q,%v) 实际 (%q,%v)", tc.groupID, tc.hasGroupID, failure.GroupID, failure.HasGroupID)
-			}
-			if failure.StatusCode != tc.statusCode || failure.HasStatusCode != tc.hasStatusCode {
-				t.Errorf("状态码透传不符，期望 (%d,%v) 实际 (%d,%v)", tc.statusCode, tc.hasStatusCode, failure.StatusCode, failure.HasStatusCode)
-			}
-			if failure.ShouldRecordUsage != tc.shouldRecordUsage {
-				t.Errorf("ShouldRecordUsage 不符，期望 %v 实际 %v", tc.shouldRecordUsage, failure.ShouldRecordUsage)
-			}
-			if (failure.Account != nil) != (tc.account != nil) {
-				t.Fatalf("账户指针透传不符，期望 nil=%v 实际 nil=%v", tc.account == nil, failure.Account == nil)
-			}
-			if failure.Account != nil && failure.Account.ID != tc.account.ID {
-				t.Errorf("账户 ID 透传不符，期望 %q 实际 %q", tc.account.ID, failure.Account.ID)
-			}
-		})
-	}
-}
-
 func TestW1CFirstNonEmptyString(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -280,81 +121,6 @@ func TestW1CFirstNonEmptyString(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := firstNonEmptyString(tc.value...); got != tc.want {
 				t.Fatalf("期望 %q 实际 %q", tc.want, got)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// chain_compose.go：resolveAuxiliaryAccountModelMapping
-// ---------------------------------------------------------------------------
-
-func TestW1CResolveAuxiliaryAccountModelMapping(t *testing.T) {
-	sameFamily := gatewayruntimecache.AccountModelMapping{
-		SourceModel:            "gpt-4o",
-		SourceEndpointFamily:   "chat_completions",
-		UpstreamModel:          "gpt-4o-2024-11-20",
-		UpstreamEndpointFamily: "chat_completions",
-		Enabled:                true,
-	}
-	disabled := sameFamily
-	disabled.Enabled = false
-	identity := sameFamily
-	identity.UpstreamModel = "gpt-4o"
-	explicitRoute := sameFamily
-	explicitRoute.RuntimeSource = w1cStringPtr(gatewayopenai.RuntimeSourceExplicitHybridRoute)
-	crossAnthropic := gatewayruntimecache.AccountModelMapping{
-		SourceModel:            "gpt-x",
-		SourceEndpointFamily:   "chat_completions",
-		UpstreamModel:          "claude-x",
-		UpstreamEndpointFamily: "messages",
-		Enabled:                true,
-	}
-	responsesSource := gatewayruntimecache.AccountModelMapping{
-		SourceModel:            "gpt-x",
-		SourceEndpointFamily:   "responses",
-		UpstreamModel:          "chat-x",
-		UpstreamEndpointFamily: "chat_completions",
-		Enabled:                true,
-	}
-	cases := []struct {
-		name               string
-		account            gatewayruntimecache.OpenAIAccountSecret
-		target             string
-		wantNil            bool
-		wantSource         string
-		wantUpstream       string
-		wantSourceFamily   string
-		wantUpstreamFamily string
-	}{
-		{"目标模型为空", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "unknown", ModelMappings: []gatewayruntimecache.AccountModelMapping{sameFamily}}, "", true, "", "", "", ""},
-		{"无映射", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "unknown"}, "gpt-4o", true, "", "", "", ""},
-		{"同族改名", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "unknown", ModelMappings: []gatewayruntimecache.AccountModelMapping{sameFamily}}, "gpt-4o", false, "gpt-4o", "gpt-4o-2024-11-20", "chat_completions", "chat_completions"},
-		{"映射禁用", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "unknown", ModelMappings: []gatewayruntimecache.AccountModelMapping{disabled}}, "gpt-4o", true, "", "", "", ""},
-		{"显式混合路由来源跳过", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "unknown", ModelMappings: []gatewayruntimecache.AccountModelMapping{explicitRoute}}, "gpt-4o", true, "", "", "", ""},
-		{"恒等映射跳过", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "unknown", ModelMappings: []gatewayruntimecache.AccountModelMapping{identity}}, "gpt-4o", true, "", "", "", ""},
-		{"目标模型无匹配", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "unknown", ModelMappings: []gatewayruntimecache.AccountModelMapping{sameFamily}}, "other-model", true, "", "", "", ""},
-		{"跨协议混合供应商支持", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "Hybrid", ModelMappings: []gatewayruntimecache.AccountModelMapping{crossAnthropic}}, "gpt-x", false, "gpt-x", "claude-x", "chat_completions", "messages"},
-		{"跨协议普通供应商不支持", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "unknown", ModelMappings: []gatewayruntimecache.AccountModelMapping{crossAnthropic}}, "gpt-x", true, "", "", "", ""},
-		{"源协议族不匹配", gatewayruntimecache.OpenAIAccountSecret{ProviderCode: "Hybrid", ModelMappings: []gatewayruntimecache.AccountModelMapping{responsesSource}}, "gpt-x", true, "", "", "", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := resolveAuxiliaryAccountModelMapping(tc.account, tc.target)
-			if tc.wantNil {
-				if got != nil {
-					t.Fatalf("应解析为 nil，实际 %+v", got)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatalf("不应解析为 nil")
-			}
-			if got.SourceModel != tc.wantSource || got.UpstreamModel != tc.wantUpstream ||
-				got.SourceEndpointFamily != tc.wantSourceFamily || got.UpstreamEndpointFamily != tc.wantUpstreamFamily {
-				t.Fatalf("映射字段不符，期望 (%s,%s,%s,%s) 实际 (%s,%s,%s,%s)",
-					tc.wantSource, tc.wantUpstream, tc.wantSourceFamily, tc.wantUpstreamFamily,
-					got.SourceModel, got.UpstreamModel, got.SourceEndpointFamily, got.UpstreamEndpointFamily)
 			}
 		})
 	}
@@ -1316,58 +1082,5 @@ func TestW1CChainStreamFailureCountConfigRevisionNullInt64(t *testing.T) {
 				t.Fatalf("期望 %d 实际 %#v", tc.want, got)
 			}
 		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// chain_compose.go：辅助派发器接线与缺席臂
-// ---------------------------------------------------------------------------
-
-func TestW1CWireChainHybridAuxiliaryTransportAndNilCacheArms(t *testing.T) {
-	dispatcher := newChainHybridAuxiliaryDispatcher(nil)
-	if dispatcher == nil {
-		t.Fatalf("构造器不应返回 nil")
-	}
-	if dispatcher.cache != nil {
-		t.Fatalf("nil cache 应保持 nil")
-	}
-	if dispatcher.driver == nil {
-		t.Fatalf("驱动不应为 nil")
-	}
-
-	// 接线只命中具体类型；fake 与 nil 安全跳过。
-	pool := sharedupstreamhttp.NewClientPool()
-	transport := gatewaydispatch.TransportDeps{ClientPool: pool}
-	wireChainHybridAuxiliaryTransport(dispatcher, transport)
-	if dispatcher.transport.ClientPool != pool {
-		t.Fatalf("transport 未注入辅助派发器")
-	}
-	wireChainHybridAuxiliaryTransport(&w1cFakeAuxiliaryDispatcher{}, transport)
-	wireChainHybridAuxiliaryTransport(nil, transport)
-
-	// nil 接收者与 nil cache 都走派发错误臂（确定性，无网络等待）。
-	input := gatewayhybrid.AuxiliaryDispatchInput{
-		DispatchErrorCode:     "dispatch-code",
-		DispatchErrorMessage:  "dispatch-msg",
-		NoAccountErrorCode:    "no-account-code",
-		NoAccountErrorMessage: "no-account-msg",
-	}
-	var nilDispatcher *chainHybridAuxiliaryDispatcher
-	success, failure := nilDispatcher.DispatchHybridAuxiliaryChatCompletion(context.Background(), input)
-	if failure == nil || failure.ErrorCode != "dispatch-code" || failure.ErrorMessage != "dispatch-msg" ||
-		failure.Account != nil || failure.HasGroupID || failure.HasStatusCode || failure.ShouldRecordUsage {
-		t.Fatalf("nil 接收者应返回派发错误臂，实际 failure=%+v", failure)
-	}
-	if success.StatusCode != 0 || success.Finish != nil {
-		t.Fatalf("成功臂应保持零值，实际 StatusCode=%d FinishNil=%v", success.StatusCode, success.Finish == nil)
-	}
-
-	success2, failure2 := dispatcher.DispatchHybridAuxiliaryChatCompletion(context.Background(), input)
-	if failure2 == nil || failure2.ErrorCode != "dispatch-code" || failure2.ErrorMessage != "dispatch-msg" ||
-		failure2.Account != nil || failure2.HasGroupID || failure2.ShouldRecordUsage {
-		t.Fatalf("nil cache 应返回派发错误臂，实际 failure=%+v", failure2)
-	}
-	if success2.Finish != nil {
-		t.Fatalf("成功臂应保持零值")
 	}
 }

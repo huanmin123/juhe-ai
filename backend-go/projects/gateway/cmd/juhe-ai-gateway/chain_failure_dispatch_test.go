@@ -185,8 +185,11 @@ func TestChainFailureDispatcherDiagnosticTrafficReturnsResponse(t *testing.T) {
 	}
 }
 
-// TestChainFailureDispatcherNonGatewayForgetsAffinityThenReturns：非 gateway
-// 流量先遗忘会话亲和，再 return_response。
+// TestChainFailureDispatcherNonGatewayForgetsAffinityThenReturns：非网关且非
+// 诊断来源（含已退役的历史来源如 hybrid_scoring——不在
+// NormalizeOpenAIGatewayTrafficSource 白名单，归类为非诊断）先遗忘会话亲和，
+// 再 return_response；诊断来源（manual_account_test 与探针类）走诊断分支、
+// 不遗忘亲和，见 TestChainFailureDispatcherDiagnosticTrafficReturnsResponse。
 func TestChainFailureDispatcherNonGatewayForgetsAffinityThenReturns(t *testing.T) {
 	response := failureDispatchUpstreamResponse(t, http.StatusBadGateway, "application/json", `{"error":"bad gateway"}`)
 	sink := &failureDispatchAuditSink{}
@@ -681,20 +684,20 @@ func TestChainFailureDispatcherClientSourceAvoidanceRecordsTransportFailure(t *t
 // key 时避让天然关闭）。
 func TestChainFailureDispatcherClientSourceAvoidanceGuards(t *testing.T) {
 	// 非 gateway 流量。
-	hybridSink := &failureDispatchAuditSink{}
-	hybridDispatcher, _, hybridAdapter := newAvoidanceDispatcherForTest()
-	hybridInput := avoidanceRecordRequestInput(t, hybridSink, "hybrid_scoring")
-	if _, err := hybridDispatcher.HandleUpstreamRequestError(context.Background(), hybridInput); err != nil {
-		t.Fatalf("hybrid transport failure: %v", err)
+	nonGatewaySink := &failureDispatchAuditSink{}
+	nonGatewayDispatcher, _, nonGatewayAdapter := newAvoidanceDispatcherForTest()
+	nonGatewayInput := avoidanceRecordRequestInput(t, nonGatewaySink, "manual_account_test")
+	if _, err := nonGatewayDispatcher.HandleUpstreamRequestError(context.Background(), nonGatewayInput); err != nil {
+		t.Fatalf("non-gateway transport failure: %v", err)
 	}
-	hybridOrder, err := hybridAdapter.OrderAsync(context.Background(),
+	nonGatewayOrder, err := nonGatewayAdapter.OrderAsync(context.Background(),
 		[]gatewaydispatch.AccountCandidate{{ID: "acc_1"}},
 		gatewaypreauth.ClientStrategyContext{}, nil)
 	if err != nil {
-		t.Fatalf("hybrid avoidance order: %v", err)
+		t.Fatalf("non-gateway avoidance order: %v", err)
 	}
-	if hybridOrder.Applied || hybridOrder.FailureCount != 0 {
-		t.Fatalf("non-gateway traffic must not record: %+v", hybridOrder)
+	if nonGatewayOrder.Applied || nonGatewayOrder.FailureCount != 0 {
+		t.Fatalf("non-gateway traffic must not record: %+v", nonGatewayOrder)
 	}
 
 	// 无 client-ip：源身份缺失 → 策略不允许避让。

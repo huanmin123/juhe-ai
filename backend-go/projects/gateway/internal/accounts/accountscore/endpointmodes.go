@@ -38,12 +38,23 @@ const (
 )
 
 // Endpoint-mode value tables mirror the *-endpoint-modes.ts families.
+// OpenAIEndpointModeValues carries images_json first (order mirrors
+// accountHealthCheckEndpointModeOrder): the Images API is an expressible
+// openai-family capability, so explicit supported_endpoint_modes containing
+// images_json survive the dispatch candidate filter instead of every new
+// account being rejected by the images lane (endpoint_mode_unsupported).
 var (
-	OpenAIEndpointModeValues     = []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}
+	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse"}
 	OpenAIChatEndpointModes      = []string{"chat_json", "chat_sse"}
 	OpenAIResponsesEndpointModes = []string{"responses_json", "responses_sse"}
-	AnthropicEndpointModeValues  = []string{"messages_json", "messages_sse", "message_token_counting"}
-	GeminiEndpointModeValues     = []string{
+	// OpenAIDefaultEndpointModes is the write-side default set for new openai
+	// family accounts: the chat and responses pairs only. images_json stays
+	// opt-in and never enters the defaults (DefaultOpenAIEndpointModes pins
+	// this list so expanding OpenAIEndpointModeValues does not leak into
+	// account defaults).
+	OpenAIDefaultEndpointModes  = []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}
+	AnthropicEndpointModeValues = []string{"messages_json", "messages_sse", "message_token_counting"}
+	GeminiEndpointModeValues    = []string{
 		"generate_content_json", "generate_content_sse", "count_tokens",
 		"embed_content", "interactions_json", "interactions_sse",
 	}
@@ -141,7 +152,9 @@ type ModeDefaultContext struct {
 	ClientCompatibility       string
 }
 
-// DefaultOpenAIEndpointModes mirrors defaultOpenAIEndpointModes.
+// DefaultOpenAIEndpointModes mirrors defaultOpenAIEndpointModes. The api_key
+// defaults stay the four chat/responses modes (OpenAIDefaultEndpointModes) —
+// images_json is expressible but opt-in, never a default.
 func DefaultOpenAIEndpointModes(input ModeDefaultContext) []string {
 	if input.AccountType == "oauth" {
 		return append([]string{}, OpenAIResponsesEndpointModes...)
@@ -149,11 +162,11 @@ func DefaultOpenAIEndpointModes(input ModeDefaultContext) []string {
 	providerCode := NormalizeProviderToken(input.ProviderCode)
 	switch providerCode {
 	case GptVendorCode, DeepSeekProviderCode:
-		return append([]string{}, OpenAIEndpointModeValues...)
+		return append([]string{}, OpenAIDefaultEndpointModes...)
 	case OpenAICompatibleProviderCode, GlmProviderCode, GeminiProviderCode, HybridProviderCode:
 		return append([]string{}, OpenAIChatEndpointModes...)
 	}
-	return append([]string{}, OpenAIEndpointModeValues...)
+	return append([]string{}, OpenAIDefaultEndpointModes...)
 }
 
 // DefaultAnthropicEndpointModes mirrors defaultAnthropicEndpointModes.

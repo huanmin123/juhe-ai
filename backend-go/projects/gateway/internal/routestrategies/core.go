@@ -179,8 +179,8 @@ type Store struct {
 	newI  func(prefix string) string
 	inval RuntimeInvalidator
 
-	validationInval   ValidationCacheInvalidator
-	speedFirst        SpeedFirstRuntimeFacade
+	validationInval ValidationCacheInvalidator
+	speedFirst      SpeedFirstRuntimeFacade
 }
 
 // SetValidationCacheInvalidator wires the API-Key validation-cache

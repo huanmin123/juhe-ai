@@ -222,9 +222,8 @@ func WithSwitchTargetCapture(ctx context.Context, capture *SwitchTargetCapture) 
 }
 
 // WithoutSwitchTargetCapture 从 ctx 剥掉请求级冻结载体：供内部合成 / 辅助
-// / 打分类派发（如混合路由打分的 DispatchHybridAuxiliaryChatCompletion）在
-// 主请求 ctx 上构造上游请求时使用——它们不是客户端请求的上游尝试，不得
-// 抢先冻结主请求目标。剥离后冻结入口与消费点门均恢复惰性。
+// / 打分类派发在主请求 ctx 上构造上游请求时使用——它们不是客户端请求的
+// 上游尝试，不得抢先冻结主请求目标。剥离后冻结入口与消费点门均恢复惰性。
 func WithoutSwitchTargetCapture(ctx context.Context) context.Context {
 	if ctx == nil {
 		return ctx

@@ -34,41 +34,7 @@ func TestWlNumericValueTypes(t *testing.T) {
 	}
 }
 
-func TestWlNormalizeEnumAndStrings(t *testing.T) {
-	t.Run("normalizeEnumField", func(t *testing.T) {
-		got, err := normalizeEnumField(nil, "fallback", []string{"a"}, "m")
-		if err != nil || got != "fallback" {
-			t.Fatalf("nil 必须回落: %q %v", got, err)
-		}
-		if got, _ := normalizeEnumField("", "fallback", []string{"a"}, "m"); got != "fallback" {
-			t.Fatalf("空串必须回落: %q", got)
-		}
-		if got, _ := normalizeEnumField("a", "fallback", []string{"a", "b"}, "m"); got != "a" {
-			t.Fatalf("合法值: %q", got)
-		}
-		if _, err := normalizeEnumField(3, "fallback", []string{"a"}, "m"); err == nil {
-			t.Fatal("非字符串必须报错")
-		}
-		if _, err := normalizeEnumField("c", "fallback", []string{"a"}, "m"); err == nil {
-			t.Fatal("不在允许列表必须报错")
-		}
-	})
-	t.Run("optionalTrimmedString", func(t *testing.T) {
-		if got := optionalTrimmedString("  x  "); got != "x" {
-			t.Fatalf("got=%q", got)
-		}
-		if got := optionalTrimmedString(7); got != "" {
-			t.Fatalf("非字符串=%q", got)
-		}
-	})
-	t.Run("requiredTrimmedString", func(t *testing.T) {
-		if _, err := requiredTrimmedString("   ", "m"); err == nil {
-			t.Fatal("空白必须报错")
-		}
-		if got, err := requiredTrimmedString(" v ", "m"); err != nil || got != "v" {
-			t.Fatalf("got=%q err=%v", got, err)
-		}
-	})
+func TestWlOptionalRecordAndConfiguredValue(t *testing.T) {
 	t.Run("optionalRecord 与 hasConfiguredValue", func(t *testing.T) {
 		if record, err := optionalRecord(nil, "m"); err != nil || record != nil {
 			t.Fatalf("nil 必须返回 nil: %v %v", record, err)
@@ -85,12 +51,6 @@ func TestWlNormalizeEnumAndStrings(t *testing.T) {
 		}
 		if !hasConfiguredValue(0) {
 			t.Fatal("0 算已配置")
-		}
-		if rawValueConfigured(nil) {
-			t.Fatal("nil 不算已配置")
-		}
-		if !rawValueConfigured(struct{}{}) {
-			t.Fatal("任意非 nil 值算已配置")
 		}
 	})
 }
@@ -227,228 +187,12 @@ func TestWlNormalizeSpeedFirstConfigRanges(t *testing.T) {
 	})
 }
 
-// ---- hybrid 混合路由配置 ----
-
-// wlHybridLevelRoutes 构造合法的三档覆盖 1-10。
-func wlHybridLevelRoutes() []any {
-	return []any{
-		map[string]any{"minLevel": 1, "maxLevel": 3, "targetModel": "model-a"},
-		map[string]any{"minLevel": 4, "maxLevel": 6, "targetModel": "model-b"},
-		map[string]any{"minLevel": 7, "maxLevel": 10, "targetModel": "model-c"},
-	}
-}
-
-func wlValidHybridRaw() map[string]any {
-	return map[string]any{
-		"scoringModel":   " judge-model ",
-		"levelRoutes":    wlHybridLevelRoutes(),
-		"scoringGroupId": "  group-1  ",
-	}
-}
-
-func TestWlNormalizeHybridRoutingConfig(t *testing.T) {
-	t.Run("nil 拒绝", func(t *testing.T) {
-		if _, err := normalizeHybridRoutingConfig(nil); err == nil {
-			t.Fatal("nil 必须拒绝")
-		}
-		if _, err := normalizeHybridRoutingConfig("x"); err == nil {
-			t.Fatal("非对象必须拒绝")
-		}
-	})
-	t.Run("合法负载", func(t *testing.T) {
-		config, err := normalizeHybridRoutingConfig(wlValidHybridRaw())
-		if err != nil {
-			t.Fatalf("err=%v", err)
-		}
-		if config.ScoringModel != "judge-model" || config.ScoringGroupID == nil || *config.ScoringGroupID != "group-1" {
-			t.Fatalf("config=%+v", config)
-		}
-		if !config.ScoringCacheEnabled || !config.CacheAffinityEnabled {
-			t.Fatalf("缓存默认开启: %+v", config)
-		}
-		if len(config.LevelRoutes) != 3 {
-			t.Fatalf("levelRoutes=%+v", config.LevelRoutes)
-		}
-		if config.QualityInspection == nil || config.QualityInspection.ScoringModel != "judge-model" {
-			t.Fatalf("qualityInspection=%+v", config.QualityInspection)
-		}
-	})
-	t.Run("评分模型必填", func(t *testing.T) {
-		payload := wlValidHybridRaw()
-		delete(payload, "scoringModel")
-		if _, err := normalizeHybridRoutingConfig(payload); err == nil {
-			t.Fatal("缺评分模型必须报错")
-		}
-	})
-	tests := []struct {
-		name  string
-		field string
-		value any
-		want  string
-	}{
-		{"上下文模式无效", "scoringContextMode", "partial", "上下文模式"},
-		{"质量偏好无效", "qualityPreference", "random", "质量偏好"},
-		{"评分超时超范围", "scoringTimeoutMs", 1, "评分超时"},
-		{"兜底上限超范围", "scoringFallbackMaxLevel", 6, "兜底上限"},
-		{"缓存 TTL 超范围", "scoringCacheTtlSeconds", 0, "缓存 TTL"},
-		{"亲和 TTL 超范围", "affinityTtlSeconds", 100000, "缓存亲和"},
-		{"切换等级差超范围", "switchMinLevelDelta", 10, "切换等级差"},
-		{"降级确认超范围", "downgradeConsecutiveLowCount", 21, "降级确认"},
-		{"等级范围缺失", "levelRoutes", nil, "等级范围不能为空"},
-		{"质量评分配置无效", "qualityInspection", "x", "质量评分配置无效"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			payload := wlValidHybridRaw()
-			payload[test.field] = test.value
-			_, err := normalizeHybridRoutingConfig(payload)
-			if err == nil || !contains(err.Error(), test.want) {
-				t.Fatalf("field=%s err=%v want 含 %q", test.field, err, test.want)
-			}
-		})
-	}
-}
-
-func TestWlNormalizeHybridLevelRoutes(t *testing.T) {
-	valid := wlHybridLevelRoutes()
-	t.Run("合法三档", func(t *testing.T) {
-		routes, err := normalizeHybridLevelRoutes(valid)
-		if err != nil || len(routes) != 3 {
-			t.Fatalf("routes=%+v err=%v", routes, err)
-		}
-	})
-	tests := []struct {
-		name   string
-		mutate func([]any) []any
-		want   string
-	}{
-		{"空列表", func(r []any) []any { return nil }, "等级范围不能为空"},
-		{"项非对象", func(r []any) []any { return []any{"x"} }, "等级范围无效"},
-		{"min 大于 max", func(r []any) []any { r[0] = map[string]any{"minLevel": 5, "maxLevel": 1, "targetModel": "a"}; return r }, "最小值不能大于最大值"},
-		{"目标模型缺失", func(r []any) []any { r[0] = map[string]any{"minLevel": 1, "maxLevel": 3}; return r }, "目标模型不能为空"},
-		{"enabled 非布尔", func(r []any) []any {
-			r[0] = map[string]any{"minLevel": 1, "maxLevel": 3, "targetModel": "a", "enabled": "yes"}
-			return r
-		}, "布尔值"},
-		{"全部禁用", func(r []any) []any {
-			for index, item := range r {
-				item.(map[string]any)["enabled"] = false
-				r[index] = item
-			}
-			return r
-		}, "至少需要一个启用"},
-		{"不足两个模型", func(r []any) []any {
-			for index, item := range r {
-				item.(map[string]any)["targetModel"] = "same"
-				r[index] = item
-			}
-			return r
-		}, "2 个不同的目标模型"},
-		{"首档越界", func(r []any) []any { r[0] = map[string]any{"minLevel": 1, "maxLevel": 6, "targetModel": "a"}; return r }, "最低档"},
-		{"首档不从 1 开始", func(r []any) []any { r[0] = map[string]any{"minLevel": 2, "maxLevel": 3, "targetModel": "a"}; return r }, "最低档"},
-		{"等级不连续", func(r []any) []any { r[1] = map[string]any{"minLevel": 5, "maxLevel": 6, "targetModel": "b"}; return r }, "必须从等级"},
-		{"覆盖不满 1-10", func(r []any) []any { r[2] = map[string]any{"minLevel": 7, "maxLevel": 9, "targetModel": "c"}; return r }, "连续覆盖"},
-		{"等级越界", func(r []any) []any {
-			r[2] = map[string]any{"minLevel": 7, "maxLevel": 11, "targetModel": "c"}
-			return r
-		}, "必须是 1-10"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := normalizeHybridLevelRoutes(test.mutate(wlHybridLevelRoutes()))
-			if err == nil || !contains(err.Error(), test.want) {
-				t.Fatalf("err=%v want 含 %q", err, test.want)
-			}
-		})
-	}
-	t.Run("超过五个启用档", func(t *testing.T) {
-		routes := []any{}
-		boundaries := []int{1, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 10}
-		for index := 0; index < 6; index++ {
-			routes = append(routes, map[string]any{
-				"minLevel": boundaries[index*2], "maxLevel": boundaries[index*2+1],
-				"targetModel": "model-" + string(rune('a'+index)),
-			})
-		}
-		if _, err := normalizeHybridLevelRoutes(routes); err == nil || !contains(err.Error(), "最多只能配置 5 个") {
-			t.Fatalf("err=%v", err)
-		}
-	})
-	t.Run("禁用档不计入覆盖", func(t *testing.T) {
-		routes := []any{
-			map[string]any{"minLevel": 1, "maxLevel": 5, "targetModel": "a"},
-			map[string]any{"minLevel": 6, "maxLevel": 10, "targetModel": "b"},
-			map[string]any{"minLevel": 2, "maxLevel": 3, "targetModel": "c", "enabled": false},
-		}
-		routesOut, err := normalizeHybridLevelRoutes(routes)
-		if err != nil || len(routesOut) != 2 {
-			t.Fatalf("routes=%+v err=%v", routesOut, err)
-		}
-	})
-}
-
-func TestWlNormalizeQualityInspection(t *testing.T) {
-	t.Run("缺失物化默认", func(t *testing.T) {
-		inspection, err := normalizeQualityInspection(nil, "primary-model")
-		if err != nil || !inspection.Enabled || inspection.ScoringModel != "primary-model" || inspection.TriggerMode != "risk_based" {
-			t.Fatalf("inspection=%+v err=%v", inspection, err)
-		}
-	})
-	t.Run("非对象拒绝", func(t *testing.T) {
-		if _, err := normalizeQualityInspection(5, "m"); err == nil {
-			t.Fatal("非对象必须拒绝")
-		}
-	})
-	t.Run("启用但缺模型", func(t *testing.T) {
-		payload := map[string]any{"enabled": true, "scoringModel": "  "}
-		if _, err := normalizeQualityInspection(payload, ""); err == nil {
-			t.Fatal("启用且无模型必须报错")
-		}
-	})
-	t.Run("禁用时允许缺模型", func(t *testing.T) {
-		payload := map[string]any{"enabled": false}
-		inspection, err := normalizeQualityInspection(payload, "")
-		if err != nil || inspection.Enabled || inspection.ScoringModel != "" {
-			t.Fatalf("inspection=%+v err=%v", inspection, err)
-		}
-	})
-	tests := []struct {
-		name  string
-		field string
-		value any
-		want  string
-	}{
-		{"开关非布尔", "enabled", "yes", "开关必须是布尔值"},
-		{"触发模式无效", "triggerMode", "random", "触发模式无效"},
-		{"触发等级超范围", "maxTriggerLevel", 11, "最高触发等级"},
-		{"重试次数超范围", "maxRetries", 3, "重试次数"},
-		{"失败动作无效", "failureAction", "none", "失败动作无效"},
-		{"不可用动作无效", "unavailableAction", "ignore", "不可用处理方式无效"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			payload := map[string]any{test.field: test.value, "scoringModel": "m"}
-			_, err := normalizeQualityInspection(payload, "m")
-			if err == nil || !contains(err.Error(), test.want) {
-				t.Fatalf("field=%s err=%v want 含 %q", test.field, err, test.want)
-			}
-		})
-	}
-	t.Run("评分组保留", func(t *testing.T) {
-		payload := map[string]any{"scoringGroupId": " g9 ", "scoringModel": "m"}
-		inspection, err := normalizeQualityInspection(payload, "m")
-		if err != nil || inspection.ScoringGroupID == nil || *inspection.ScoringGroupID != "g9" {
-			t.Fatalf("inspection=%+v err=%v", inspection, err)
-		}
-	})
-}
-
 // ---- 模式 / 状态 / 写入归一化 ----
 
 func TestWlNormalizeModeAndStatus(t *testing.T) {
-	mode := ModeHybridSmart
+	mode := ModeWeighted
 	got, err := normalizeMode(&mode)
-	if err != nil || got != ModeHybridSmart {
+	if err != nil || got != ModeWeighted {
 		t.Fatalf("got=%q err=%v", got, err)
 	}
 	if got, _ := normalizeMode(nil); got != ModeNormal {
@@ -476,90 +220,67 @@ func TestWlNormalizeModeAndStatus(t *testing.T) {
 func strPtrWl(value string) *string { return &value }
 
 func TestWlNormalizeConfigForWrite(t *testing.T) {
-	hybridRaw := wlValidHybridRaw()
 	normalRaw := map[string]any{"schedulingPreference": "cost_first"}
-	if _, _, err := normalizeConfigForWrite(normalRaw, nil, ModeNormal); err != nil {
+	if _, err := normalizeConfigForWrite(normalRaw, ModeNormal); err != nil {
 		t.Fatalf("normal 合法: %v", err)
 	}
-	if _, _, err := normalizeConfigForWrite(normalRaw, hybridRaw, ModeHybridSmart); err == nil || !contains(err.Error(), "混合智能路由不支持调度偏好") {
-		t.Fatalf("err=%v", err)
-	}
-	if _, _, err := normalizeConfigForWrite(nil, hybridRaw, ModeWeighted); err == nil || !contains(err.Error(), "只有混合智能路由可以配置混合评分规则") {
-		t.Fatalf("err=%v", err)
-	}
 	// weighted 无配置回落 cost_first 默认对象（config_json 仍判 NULL）。
-	normal, hybrid, err := normalizeConfigForWrite(nil, nil, ModeWeighted)
-	if err != nil || hybrid != nil || normal == nil || normal.SchedulingPreference != defaultNormalSchedulingPreference {
-		t.Fatalf("weighted 无配置回落 cost_first 默认: %v %v %v", normal, hybrid, err)
+	normal, err := normalizeConfigForWrite(nil, ModeWeighted)
+	if err != nil || normal == nil || normal.SchedulingPreference != defaultNormalSchedulingPreference {
+		t.Fatalf("weighted 无配置回落 cost_first 默认: %v %v", normal, err)
 	}
-	if _, _, err := normalizeConfigForWrite(nil, hybridRaw, ModeNormal); err == nil || !contains(err.Error(), "普通路由不能配置混合评分规则") {
-		t.Fatalf("err=%v", err)
-	}
-	if _, _, err := normalizeConfigForWrite(normalRaw, nil, ModeHybridSmart); err == nil {
-		t.Fatal("hybrid 缺混合配置必须报错")
+	if _, err := normalizeConfigForWrite(map[string]any{"schedulingPreference": "bogus"}, ModeWeighted); err == nil {
+		t.Fatal("无效偏好必须报错")
 	}
 }
 
 func TestWlRouteStrategyConfigJSONAndParse(t *testing.T) {
 	t.Run("cost_first 存 NULL", func(t *testing.T) {
 		normal := &NormalRoutingConfig{SchedulingPreference: "cost_first"}
-		if stored := routeStrategyConfigJSON(normal, nil); stored.Valid {
+		if stored := routeStrategyConfigJSON(normal); stored.Valid {
 			t.Fatalf("cost_first 必须存 NULL: %v", stored)
 		}
-		if stored := routeStrategyConfigJSON(nil, nil); stored.Valid {
+		if stored := routeStrategyConfigJSON(nil); stored.Valid {
 			t.Fatalf("全空必须存 NULL: %v", stored)
 		}
 	})
 	t.Run("speed_first 落盘", func(t *testing.T) {
 		deadline := 20000
 		normal := &NormalRoutingConfig{SchedulingPreference: "speed_first", FirstByteDeadlineMs: &deadline}
-		stored := routeStrategyConfigJSON(normal, nil)
+		stored := routeStrategyConfigJSON(normal)
 		if !stored.Valid || !contains(stored.String, "speed_first") {
 			t.Fatalf("stored=%v", stored)
 		}
-		parsedNormal, parsedHybrid, err := parseStoredConfig(stored)
-		if err != nil || parsedNormal == nil || parsedHybrid != nil {
-			t.Fatalf("normal=%+v hybrid=%v err=%v", parsedNormal, parsedHybrid, err)
+		parsedNormal, err := parseStoredConfig(stored)
+		if err != nil || parsedNormal == nil {
+			t.Fatalf("normal=%+v err=%v", parsedNormal, err)
 		}
 		if parsedNormal.SchedulingPreference != "speed_first" || *parsedNormal.FirstByteDeadlineMs != 20000 {
 			t.Fatalf("normal=%+v", parsedNormal)
 		}
 	})
-	t.Run("hybrid 落盘并修复", func(t *testing.T) {
-		hybrid, err := normalizeHybridRoutingConfig(wlValidHybridRaw())
-		if err != nil {
-			t.Fatal(err)
-		}
-		stored := routeStrategyConfigJSON(nil, hybrid)
-		parsedNormal, parsedHybrid, err := parseStoredConfig(stored)
-		if err != nil || parsedNormal != nil || parsedHybrid == nil {
-			t.Fatalf("normal=%v hybrid=%+v err=%v", parsedNormal, parsedHybrid, err)
-		}
-		if parsedHybrid.ScoringModel != "judge-model" {
-			t.Fatalf("hybrid=%+v", parsedHybrid)
+	t.Run("未知落盘键按未知键忽略", func(t *testing.T) {
+		stored := sql.NullString{String: `{"legacyRoutingConfig":{"scoringModel":""}}`, Valid: true}
+		parsedNormal, err := parseStoredConfig(stored)
+		if err != nil || parsedNormal != nil {
+			t.Fatalf("normal=%+v err=%v", parsedNormal, err)
 		}
 	})
 	t.Run("无效 JSON", func(t *testing.T) {
-		if _, _, err := parseStoredConfig(sql.NullString{String: "{broken", Valid: true}); err == nil {
+		if _, err := parseStoredConfig(sql.NullString{String: "{broken", Valid: true}); err == nil {
 			t.Fatal("坏 JSON 必须报错")
 		}
 	})
 	t.Run("空值", func(t *testing.T) {
-		normal, hybrid, err := parseStoredConfig(sql.NullString{})
-		if err != nil || normal != nil || hybrid != nil {
-			t.Fatalf("%v %v %v", normal, hybrid, err)
+		normal, err := parseStoredConfig(sql.NullString{})
+		if err != nil || normal != nil {
+			t.Fatalf("%v %v", normal, err)
 		}
 	})
 	t.Run("普通配置损坏", func(t *testing.T) {
 		raw := `{"normalRoutingConfig":{"schedulingPreference":"bogus"}}`
-		if _, _, err := parseStoredConfig(sql.NullString{String: raw, Valid: true}); err == nil {
+		if _, err := parseStoredConfig(sql.NullString{String: raw, Valid: true}); err == nil {
 			t.Fatal("损坏普通配置必须报错")
-		}
-	})
-	t.Run("混合配置损坏", func(t *testing.T) {
-		raw := `{"hybridRoutingConfig":{"scoringModel":""}}`
-		if _, _, err := parseStoredConfig(sql.NullString{String: raw, Valid: true}); err == nil {
-			t.Fatal("损坏混合配置必须报错")
 		}
 	})
 }

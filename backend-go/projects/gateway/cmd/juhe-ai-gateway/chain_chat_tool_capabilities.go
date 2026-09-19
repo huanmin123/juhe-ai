@@ -106,7 +106,7 @@ func resolveChatToolCapabilities(deps *chat.Deps, conversation *chat.Conversatio
 		case !functionCallingAvailable:
 			imageReason = "当前模型不支持函数工具调用"
 		default:
-			imageReason = "当前 API Key 路由没有可用的 gpt-image-2 API Key 账户"
+			imageReason = "当前 API Key 路由没有可用的图像生成 API Key 账户"
 		}
 	}
 	return chatToolCapabilitiesPayload(modelValue,
@@ -309,16 +309,19 @@ func chatToolSelectTransport(supportedProtocols []chat.ChatTransportProtocol, pr
 }
 
 // chatToolHasImageGenerationRoute mirrors hasChatImageGenerationRoute
-// (generation_deps.go): any api_key-type account routed for gpt-image-2.
+// (generation_deps.go): 任一注册图像模型存在 api_key 类型账户即视为有生图路由；
+// 与 chat 包实现保持镜像（chat 包 ports 未导出，镜像契约见 generation_deps.go）。
 func chatToolHasImageGenerationRoute(deps *chat.Deps, groupIDs []string, systemAccountID string) bool {
 	if deps == nil || deps.ModelCatalog == nil {
 		return false
 	}
 	for _, groupID := range chatToolUniqueStrings(groupIDs) {
-		accounts := deps.ModelCatalog.ListAccountsForGroup(groupID, systemAccountID, "gpt-image-2", "")
-		for _, account := range accounts {
-			if account.Type == "api_key" {
-				return true
+		for _, model := range chat.SupportedChatImageModels() {
+			accounts := deps.ModelCatalog.ListAccountsForGroup(groupID, systemAccountID, string(model), "")
+			for _, account := range accounts {
+				if account.Type == "api_key" {
+					return true
+				}
 			}
 		}
 	}

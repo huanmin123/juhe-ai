@@ -514,6 +514,10 @@ func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePa
 		"JUHE_AI_DATABASE_DRIVER=postgres",
 		"JUHE_AI_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+tempAppURL,
+		// 2026-09-19 起 system api 默认开启；本臂只验证 J3b 契约，显式关闭
+		// 组合根与网关链。
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false",
+		"JUHE_AI_GATEWAY_CHAIN_ENABLED=false",
 		"JUHE_AI_CACHE_DRIVER=memory",
 		"JUHE_AI_RUNTIME_STATE_DRIVER=memory",
 		"JUHE_AI_SECRET=w1w-pg-contract-secret",

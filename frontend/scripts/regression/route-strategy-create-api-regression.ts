@@ -24,7 +24,7 @@ const routeStrategyId = 'route_strategy_update_regression'
 const payload: RouteStrategyMutationPayload = {
   name: '策略路由创建 HTTP 契约回归',
   description: null,
-  mode: 'hybrid_smart',
+  mode: 'normal',
   status: 'active',
   groupBindings: [
     {
@@ -40,8 +40,7 @@ const payload: RouteStrategyMutationPayload = {
       status: 'disabled'
     }
   ],
-  normalRoutingConfig: null,
-  hybridRoutingConfig: null
+  normalRoutingConfig: null
 }
 
 const costFirstNormalRoutingConfig = {
@@ -74,6 +73,11 @@ const roundRobinCreatePayload: RouteStrategyMutationPayload = {
   ...payload,
   mode: 'round_robin',
   normalRoutingConfig: costFirstNormalRoutingConfig
+}
+const mergeCreatePayload: RouteStrategyMutationPayload = {
+  ...payload,
+  mode: 'merge',
+  normalRoutingConfig: speedFirstNormalRoutingConfig
 }
 const patchPayload: RouteStrategyPatchPayload = {
   description: '仅更新说明',
@@ -129,11 +133,12 @@ try {
   await routeStrategiesApi.create(weightedCreatePayload, { systemAccountId })
   await routeStrategiesApi.create(failoverCreatePayload)
   await routeStrategiesApi.create(roundRobinCreatePayload)
+  await routeStrategiesApi.create(mergeCreatePayload)
 } finally {
   http.defaults.adapter = originalAdapter
 }
 
-assert.equal(capturedRequests.length, 16, '应捕获创建/更新各四个、删除五个和三种新模式创建请求')
+assert.equal(capturedRequests.length, 17, '应捕获创建/更新各四个、删除五个和四种新模式创建请求')
 
 assertManagementCreate(capturedRequests[0], 'routeStrategiesApi.create')
 assertPersonalCreate(capturedRequests[1], 'myRouteStrategiesApi.create')
@@ -160,8 +165,9 @@ assertPersonalDelete(capturedRequests[12], 'useScopedRouteStrategiesApi 个人�
 assertSchedulingPreferenceModeCreate(capturedRequests[13], weightedCreatePayload, 'weighted')
 assertSchedulingPreferenceModeCreate(capturedRequests[14], failoverCreatePayload, 'failover')
 assertSchedulingPreferenceModeCreate(capturedRequests[15], roundRobinCreatePayload, 'round_robin')
+assertSchedulingPreferenceModeCreate(capturedRequests[16], mergeCreatePayload, 'merge')
 
-console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query、请求 body 契约以及四模式调度偏好提交正确')
+console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query、请求 body 契约以及五种模式调度偏好提交正确')
 
 function assertManagementCreate(request: CapturedRequest, source: string): void {
   assert.equal(request.method, 'POST', `${source} 必须发送 POST`)
@@ -236,18 +242,16 @@ function assertPersonalDelete(request: CapturedRequest, source: string): void {
 function assertMutationBody(body: unknown, source: string, action: '创建' | '更新'): void {
   assert.deepEqual(body, payload, `${source} 必须原样发送策略路由${action} body`)
   assert.ok(isRecord(body), `${source} body 必须是对象`)
-  assert.equal(body.mode, 'hybrid_smart', `${source} 固定 body 契约必须锁定 hybrid_smart 模式`)
+  assert.equal(body.mode, 'normal', `${source} 固定 body 契约必须锁定 normal 模式`)
   assert.ok(Object.hasOwn(body, 'normalRoutingConfig'), `${source} 必须保留 normalRoutingConfig 字段`)
-  assert.equal(body.normalRoutingConfig, null, `${source} 必须为 hybrid_smart 提交 normalRoutingConfig: null`)
-  assert.ok(Object.hasOwn(body, 'hybridRoutingConfig'), `${source} 必须保留 hybridRoutingConfig 字段`)
-  assert.equal(body.hybridRoutingConfig, null, `${source} 必须保留 hybridRoutingConfig: null`)
+  assert.ok(!Object.hasOwn(body, 'hybridRoutingConfig'), `${source} 不得再携带已删除的 hybridRoutingConfig 字段`)
   assert.deepEqual(body.groupBindings, payload.groupBindings, `${source} 必须原样保留 groupBindings`)
 }
 
 function assertSchedulingPreferenceModeCreate(
   request: CapturedRequest,
   expectedPayload: RouteStrategyMutationPayload,
-  mode: 'weighted' | 'failover' | 'round_robin'
+  mode: 'weighted' | 'failover' | 'round_robin' | 'merge'
 ): void {
   assert.equal(request.method, 'POST', `${mode} 模式创建必须发送 POST`)
   assert.equal(request.url, '/route-strategies', `${mode} 模式创建必须请求 /route-strategies`)

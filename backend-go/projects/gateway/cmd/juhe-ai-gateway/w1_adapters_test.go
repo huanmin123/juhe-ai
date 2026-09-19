@@ -11,8 +11,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
@@ -103,34 +101,6 @@ func TestW1GatewaybodyLoggerAndSpoolOverflow(t *testing.T) {
 	// spoolOverflow：nil spool 吞掉；有 spool 透传。
 	if err := (spoolOverflow{}).PersistOverflow(gatewayusage.Ctx(context.Background()), gatewayusage.UsageRecordInput{}); err != nil {
 		t.Fatalf("nil spool 必须成功: %v", err)
-	}
-}
-
-func TestW1AuxiliaryDispatchHelpers(t *testing.T) {
-	input := gatewayhybrid.AuxiliaryDispatchInput{TraceID: "trace_aux", TargetModel: "m", Endpoint: "/v1/chat/completions"}
-	// auxiliaryDispatchFailure：字段投影。
-	_, failure := auxiliaryDispatchFailure(input, "code_1", "消息", nil, "grp_1", true, 502, true, true)
-	if failure.ErrorCode != "code_1" || failure.ErrorMessage != "消息" || !failure.HasGroupID || failure.GroupID != "grp_1" {
-		t.Fatalf("failure = %+v", failure)
-	}
-	if !failure.HasStatusCode || failure.StatusCode != 502 || !failure.ShouldRecordUsage {
-		t.Fatalf("failure 状态 = %+v", failure)
-	}
-	// wireChainHybridAuxiliaryTransport：非具体类型安全。
-	wireChainHybridAuxiliaryTransport(nil, gatewaydispatch.TransportDeps{})
-	var dispatcher hybridAuxiliaryDispatcher = &chainHybridAuxiliaryDispatcher{}
-	wireChainHybridAuxiliaryTransport(dispatcher, gatewaydispatch.TransportDeps{})
-	// 具体类型：注入后 transport 落位。
-	concrete := &chainHybridAuxiliaryDispatcher{}
-	wireChainHybridAuxiliaryTransport(concrete, gatewaydispatch.TransportDeps{})
-	_ = concrete
-	// chainHybridAuxiliaryDispatcher nil / 无 cache：失败臂。
-	if _, failure := concrete.DispatchHybridAuxiliaryChatCompletion(context.Background(), input); failure == nil {
-		t.Fatal("无 cache 必须走失败臂")
-	}
-	var nilDispatcher *chainHybridAuxiliaryDispatcher
-	if _, failure := nilDispatcher.DispatchHybridAuxiliaryChatCompletion(context.Background(), input); failure == nil {
-		t.Fatal("nil dispatcher 必须走失败臂")
 	}
 }
 

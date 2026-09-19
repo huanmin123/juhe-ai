@@ -31,7 +31,7 @@ type strategyListQuery struct {
 	HasPageSize    bool
 }
 
-var strategyModeOptions = []string{"normal", "hybrid_smart", "weighted", "failover", "round_robin", "all"}
+var strategyModeOptions = []string{"normal", "weighted", "failover", "round_robin", "merge", "all"}
 var strategyStatusOptions = []string{"active", "disabled", "all"}
 
 func parseStrategyListQuery(values url.Values) (*strategyListQuery, string) {
@@ -249,8 +249,6 @@ type strategyAddBody struct {
 	HasBindings     bool
 	NormalConfig    any
 	HasNormalConfig bool
-	HybridConfig    any
-	HasHybridConfig bool
 }
 
 type strategyBindingInput struct {
@@ -260,7 +258,7 @@ type strategyBindingInput struct {
 	Status   string
 }
 
-var strategyMutationModes = []string{"normal", "hybrid_smart", "weighted", "failover", "round_robin"}
+var strategyMutationModes = []string{"normal", "weighted", "failover", "round_robin", "merge"}
 
 func parseStrategyBindings(body map[string]any) ([]strategyBindingInput, string) {
 	raw, exists := body["groupBindings"]
@@ -326,7 +324,7 @@ func parseStrategyBindings(body map[string]any) ([]strategyBindingInput, string)
 }
 
 func parseStrategyAddBody(body map[string]any) (*strategyAddBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig")
+	unknown := strictObjectKeys(body, "targetUsername", "name", "description", "mode", "status", "groupBindings", "normalRoutingConfig")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -366,13 +364,6 @@ func parseStrategyAddBody(body map[string]any) (*strategyAddBody, string) {
 	if value, exists := body["normalRoutingConfig"]; exists {
 		if value == nil || isPlainObject(value) {
 			parsed.NormalConfig, parsed.HasNormalConfig = value, true
-		} else {
-			return nil, zodInvalidType("object", value)
-		}
-	}
-	if value, exists := body["hybridRoutingConfig"]; exists {
-		if value == nil || isPlainObject(value) {
-			parsed.HybridConfig, parsed.HasHybridConfig = value, true
 		} else {
 			return nil, zodInvalidType("object", value)
 		}
@@ -474,10 +465,6 @@ func strategyMutationFrom(parsed *strategyAddBody, bindings []strategyBindingInp
 		mutation.HasNormalConfig = true
 		mutation.NormalConfigRaw = parsed.NormalConfig
 	}
-	if parsed.HasHybridConfig {
-		mutation.HasHybridConfig = true
-		mutation.HybridConfigRaw = parsed.HybridConfig
-	}
 	return mutation
 }
 
@@ -498,14 +485,12 @@ type strategyUpdateBody struct {
 	HasBindings     bool
 	NormalConfig    any
 	HasNormalConfig bool
-	HybridConfig    any
-	HasHybridConfig bool
 }
 
-var strategyUpdateMutableFields = []string{"name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig"}
+var strategyUpdateMutableFields = []string{"name", "description", "mode", "status", "groupBindings", "normalRoutingConfig"}
 
 func parseStrategyUpdateBody(body map[string]any) (*strategyUpdateBody, string) {
-	unknown := strictObjectKeys(body, "targetUsername", "routeStrategyId", "name", "description", "mode", "status", "groupBindings", "normalRoutingConfig", "hybridRoutingConfig")
+	unknown := strictObjectKeys(body, "targetUsername", "routeStrategyId", "name", "description", "mode", "status", "groupBindings", "normalRoutingConfig")
 	if unknown != nil {
 		return nil, zodUnrecognizedKeys(unknown...)
 	}
@@ -556,13 +541,6 @@ func parseStrategyUpdateBody(body map[string]any) (*strategyUpdateBody, string) 
 	if value, exists := body["normalRoutingConfig"]; exists {
 		if value == nil || isPlainObject(value) {
 			parsed.NormalConfig, parsed.HasNormalConfig = value, true
-		} else {
-			return nil, zodInvalidType("object", value)
-		}
-	}
-	if value, exists := body["hybridRoutingConfig"]; exists {
-		if value == nil || isPlainObject(value) {
-			parsed.HybridConfig, parsed.HasHybridConfig = value, true
 		} else {
 			return nil, zodInvalidType("object", value)
 		}
@@ -651,10 +629,6 @@ func (d *Deps) updateRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	if parsed.HasNormalConfig {
 		mutation.HasNormalConfig = true
 		mutation.NormalConfigRaw = parsed.NormalConfig
-	}
-	if parsed.HasHybridConfig {
-		mutation.HasHybridConfig = true
-		mutation.HybridConfigRaw = parsed.HybridConfig
 	}
 	updated, err := d.Strategies.Patch(r.Context(), parsed.RouteStrategyID, mutation, ownerUpdatedAt(owner), access)
 	if err != nil {

@@ -493,14 +493,19 @@ func TestLoadRuntimeConfigQueueDriverConfigRemoved(t *testing.T) {
 	}
 
 	// 仅设置 JUHE_AI_REDIS_QUEUE_URL 不再触发 performance 提示。
+	// 2026-09-19 起缺省 DATABASE_PATH 按 datadir 派生（不再启动失败），
+	// 断言改为校验派生默认值与 standalone 模式保持。
 	env = developmentSecurityEnv(t)
 	delete(env, "JUHE_AI_DATABASE_PATH")
 	env["JUHE_AI_REDIS_QUEUE_URL"] = "redis://127.0.0.1:6379/2"
 	cfg, err = loadRuntimeConfigEnv(t, env)
-	if err == nil {
-		t.Fatalf("sqlite without database path must still fail, got %#v", cfg)
+	if err != nil {
+		t.Fatalf("sqlite without database path must derive a default, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "JUHE_AI_DATABASE_PATH") {
-		t.Fatalf("unexpected error: %v", err)
+	if cfg.RuntimeMode != "standalone" {
+		t.Fatalf("dead queue URL must not flip the runtime mode: %q", cfg.RuntimeMode)
+	}
+	if cfg.DatabasePath != filepath.Join("data", "business.sqlite3") {
+		t.Fatalf("derived database path = %q", cfg.DatabasePath)
 	}
 }

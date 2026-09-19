@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Image generation transport, artifact sink and object storage ports ported
@@ -158,6 +159,9 @@ func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input Ch
 	if traceID != "" {
 		headers["x-trace-id"] = traceID
 	}
+	profile := chatImageModelProfileFor(model)
+	// grok 生图模型不支持 quality=auto：auto 时省略 quality 字段而不是透传。
+	omitQuality := !profile.SupportsAutoQuality && quality == "auto"
 	var dispatch GenerationDispatchRequest
 	if len(input.References) > 0 {
 		if err := validateChatImageEditReferenceLimits(input.References); err != nil {
@@ -168,8 +172,13 @@ func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input Ch
 		_ = writer.WriteField("model", model)
 		_ = writer.WriteField("prompt", prompt)
 		_ = writer.WriteField("size", size)
-		_ = writer.WriteField("quality", quality)
+		if !omitQuality {
+			_ = writer.WriteField("quality", quality)
+		}
 		_ = writer.WriteField("output_format", outputFormat)
+		if profile.RequiresB64JSONFormat {
+			_ = writer.WriteField("response_format", "b64_json")
+		}
 		for _, reference := range input.References {
 			part, partErr := writer.CreateFormFile("image[]", reference.Filename)
 			if partErr != nil {
@@ -185,9 +194,16 @@ func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input Ch
 		dispatch = GenerationDispatchRequest{Path: "/v1/images/edits", Method: "POST", Headers: headers, Body: body.Bytes()}
 		dispatch.Headers["content-type"] = writer.FormDataContentType()
 	} else {
-		payload, _ := json.Marshal(map[string]any{
-			"model": model, "prompt": prompt, "n": 1, "size": size, "quality": quality, "output_format": outputFormat,
-		})
+		payloadValues := map[string]any{
+			"model": model, "prompt": prompt, "n": 1, "size": size, "output_format": outputFormat,
+		}
+		if !omitQuality {
+			payloadValues["quality"] = quality
+		}
+		if profile.RequiresB64JSONFormat {
+			payloadValues["response_format"] = "b64_json"
+		}
+		payload, _ := json.Marshal(payloadValues)
 		dispatch = GenerationDispatchRequest{Path: "/v1/images/generations", Method: "POST", Headers: headers, Body: payload}
 		dispatch.Headers["content-type"] = "application/json"
 	}
@@ -213,12 +229,24 @@ func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input Ch
 		}
 	}
 	base64Values := extractImageResultChunksWithFields(string(bodyBytes), "b64_json")
-	if len(base64Values) == 0 || base64Values[0] == "" {
-		return result, errors.New("图像生成响应缺少 b64_json")
-	}
-	decoded, err := decodeBase64Payload(base64Values[0], chatAssetGeneratedMaxBytes)
-	if err != nil {
-		return result, err
+	var decoded []byte
+	if len(base64Values) > 0 && base64Values[0] != "" {
+		var err error
+		decoded, err = decodeBase64Payload(base64Values[0], chatAssetGeneratedMaxBytes)
+		if err != nil {
+			return result, err
+		}
+	} else {
+		// grok 默认只返回 data[0].url 临时链接；b64_json 缺失时回退下载。
+		urlValues := extractImageResultChunksWithFields(string(bodyBytes), "url")
+		if len(urlValues) == 0 || trimSpace(urlValues[0]) == "" {
+			return result, errors.New("图像生成响应缺少 b64_json 或可下载的 url")
+		}
+		var err error
+		decoded, err = downloadGeneratedImage(ctx, urlValues[0])
+		if err != nil {
+			return result, err
+		}
 	}
 	digest := sha256.Sum256(decoded)
 	result.Data = decoded
@@ -293,6 +321,41 @@ func decodeBase64Payload(value string, maxBytes int64) ([]byte, error) {
 		return nil, errors.New("生成图片超过 16 MiB 上限")
 	}
 	return decoded, nil
+}
+
+// chatImageURLDownloadClient downloads upstream-returned image URLs (grok's
+// x.ai temporary links). It must not ride GenerationExecutor: the production
+// executor only serves the in-process /v1 chain. Timeout 60s and the 16 MiB
+// read cap mirror the b64 payload contract.
+var chatImageURLDownloadClient = &http.Client{Timeout: 60 * time.Second}
+
+// downloadGeneratedImage GETs an upstream image URL with a bounded read; the
+// bytes rejoin the same MIME sniffing / dimension parsing path as b64_json.
+func downloadGeneratedImage(ctx requestContext, rawURL string) ([]byte, error) {
+	trimmed := trimSpace(rawURL)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, trimmed, nil)
+	if err != nil {
+		return nil, fmt.Errorf("图像生成响应 url 无效: %w", err)
+	}
+	response, err := chatImageURLDownloadClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("图像生成 url 下载失败: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("图像生成 url 下载失败（HTTP %d）", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, chatAssetGeneratedMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("图像生成 url 下载失败: %w", err)
+	}
+	if int64(len(data)) > chatAssetGeneratedMaxBytes {
+		return nil, errors.New("生成图片超过 16 MiB 上限")
+	}
+	if len(data) == 0 {
+		return nil, errors.New("图像生成 url 下载内容为空")
+	}
+	return data, nil
 }
 
 func imageMimeTypeFromBytes(data []byte) string {

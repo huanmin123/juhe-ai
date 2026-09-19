@@ -1,7 +1,7 @@
 // Request body validation mirroring route-strategies.routes.ts zod schemas:
 // strict key sets, field types and the create/patch refinements. Store-level
-// domain normalization (ranges, hybrid coverage, binding boundary) lives in
-// config.go / bindings.go.
+// domain normalization (ranges, binding boundary) lives in config.go /
+// bindings.go.
 package routestrategies
 
 import "strings"
@@ -16,7 +16,6 @@ var mutationTopLevelKeys = map[string]bool{
 	"status":              true,
 	"groupBindings":       true,
 	"normalRoutingConfig": true,
-	"hybridRoutingConfig": true,
 }
 
 var normalRoutingConfigKeys = map[string]bool{
@@ -33,41 +32,6 @@ var speedFirstConfigKeys = map[string]bool{
 	"probeIntervalSeconds":          true,
 	"degradedTtlSeconds":            true,
 	"maxFirstByteRetriesPerRequest": true,
-}
-
-var hybridRoutingConfigKeys = map[string]bool{
-	"scoringGroupId":               true,
-	"scoringModel":                 true,
-	"scoringContextMode":           true,
-	"qualityPreference":            true,
-	"scoringTimeoutMs":             true,
-	"scoringFallbackMaxLevel":      true,
-	"scoringCacheEnabled":          true,
-	"scoringCacheTtlSeconds":       true,
-	"cacheAffinityEnabled":         true,
-	"affinityTtlSeconds":           true,
-	"switchMinLevelDelta":          true,
-	"downgradeConsecutiveLowCount": true,
-	"levelRoutes":                  true,
-	"qualityInspection":            true,
-}
-
-var hybridLevelRouteKeys = map[string]bool{
-	"minLevel":    true,
-	"maxLevel":    true,
-	"targetModel": true,
-	"enabled":     true,
-}
-
-var hybridQualityInspectionKeys = map[string]bool{
-	"enabled":           true,
-	"scoringGroupId":    true,
-	"scoringModel":      true,
-	"triggerMode":       true,
-	"maxTriggerLevel":   true,
-	"maxRetries":        true,
-	"failureAction":     true,
-	"unavailableAction": true,
 }
 
 var bindingItemKeys = map[string]bool{
@@ -201,17 +165,6 @@ func parseMutationFields(body map[string]any, requireName bool) (MutationInput, 
 			input.HasNormalConfig = true
 		}
 	}
-	if raw, present := body["hybridRoutingConfig"]; present {
-		if raw != nil {
-			if !validHybridConfigShape(raw) {
-				return input, invalidMutationMessage
-			}
-			input.HasHybridConfig = true
-			input.HybridConfigRaw = raw
-		} else {
-			input.HasHybridConfig = true
-		}
-	}
 	return input, ""
 }
 
@@ -283,32 +236,6 @@ func parseBindingWeight(raw any) (int, string) {
 		return 0, "分组权重必须在 1-100 之间"
 	}
 	return int(number), ""
-}
-
-// validHybridConfigShape checks the strict key sets of the hybrid config,
-// its level route items and the nested quality inspection (zod .strict()).
-func validHybridConfigShape(raw any) bool {
-	record, ok := strictObject(raw, hybridRoutingConfigKeys)
-	if !ok {
-		return false
-	}
-	if levelRoutes, present := record["levelRoutes"]; present && levelRoutes != nil {
-		list, ok := levelRoutes.([]any)
-		if !ok {
-			return false
-		}
-		for _, item := range list {
-			if _, ok := strictObject(item, hybridLevelRouteKeys); !ok {
-				return false
-			}
-		}
-	}
-	if inspection, present := record["qualityInspection"]; present && inspection != nil {
-		if _, ok := strictObject(inspection, hybridQualityInspectionKeys); !ok {
-			return false
-		}
-	}
-	return true
 }
 
 // strictObject requires a JSON object whose keys all appear in allowed.

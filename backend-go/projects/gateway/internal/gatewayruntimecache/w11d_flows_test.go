@@ -545,7 +545,7 @@ func TestW11DRuntimeSanitizeAndDispatchArms(t *testing.T) {
 
 	// 动态路由派发：nil APIKey 静态克隆；Orderer 失败无 last-good → 上抛；
 	// 有 last-good → 回退 + 告警；成功路径选组。
-	dynamicRow := testAPIKeyRow("k_dyn", RouteStrategyModeHybridSmart, "g1", "g2")
+	dynamicRow := testAPIKeyRow("k_dyn", RouteStrategyModeWeighted, "g1", "g2")
 	dynamicRow.ExpiresAt = &future
 	staticDyn, err := svc.routeCachedDynamicGatewayRuntimeForDispatch(ctx, GatewayRuntime{Settings: models.settings})
 	if err != nil || staticDyn.APIKey != nil {
@@ -704,9 +704,9 @@ func TestW11DRegistryConfigArms(t *testing.T) {
 	}
 	server := miniredis.RunT(t)
 	registry, err := NewRegistry(RegistryConfig{
-		RedisURL:  "redis://" + server.Addr() + "/0",
-		Namespace: "w11d:ns:",
-		Secret:    "w11d-secret",
+		RedisURL:   "redis://" + server.Addr() + "/0",
+		Namespace:  "w11d:ns:",
+		Secret:     "w11d-secret",
 		InstanceID: "w11d-inst",
 	})
 	if err != nil {
@@ -876,16 +876,16 @@ func TestW11DRegistryEntryParsingArms(t *testing.T) {
 
 	// isLoopbackHTTPOrigin 各臂。
 	cases := map[string]bool{
-		"http://127.0.0.1:9000":     true,
-		"http://127.0.0.1:9000/":    true,
-		"http://127.0.0.1":          false, // 无端口
-		"https://127.0.0.1:9000":    false, // 非 http
-		"http://localhost:9000":     false, // 非 127.0.0.1
+		"http://127.0.0.1:9000":      true,
+		"http://127.0.0.1:9000/":     true,
+		"http://127.0.0.1":           false, // 无端口
+		"https://127.0.0.1:9000":     false, // 非 http
+		"http://localhost:9000":      false, // 非 127.0.0.1
 		"http://user@127.0.0.1:9000": false,
-		"http://127.0.0.1:9000/p":   false, // 带路径
-		"http://127.0.0.1:9000?q=1": false,
-		"http://127.0.0.1:9000#f":   false,
-		"://bad":                    false,
+		"http://127.0.0.1:9000/p":    false, // 带路径
+		"http://127.0.0.1:9000?q=1":  false,
+		"http://127.0.0.1:9000#f":    false,
+		"://bad":                     false,
 	}
 	for origin, want := range cases {
 		if got := isLoopbackHTTPOrigin(origin); got != want {

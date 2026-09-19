@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -129,7 +131,10 @@ func main() {
 	if err := runtimeCfg.businessOwnerGate(); err != nil {
 		fail(fmt.Errorf("verify business owner gates: %w", err))
 	}
-	if runtimeCfg.SystemAPIEnabled {
+	// 2026-09-19 零配置自动认领（BusinessOwnerAutoClaimed）下没有 cutover
+	// evidence 文件可读：新装 standalone 部署无 Node 切流历史，跳过证据校验；
+	// 显式配置 JUHE_AI_BUSINESS_* 的部署（生产切流）仍强制完整证据。
+	if runtimeCfg.SystemAPIEnabled && !runtimeCfg.BusinessOwnerAutoClaimed {
 		evidenceReport, evidenceErr := modelcheckowner.VerifyConfiguredCutoverEvidence(runtimeCfg.BusinessCutoverEvidencePath, runtimeCfg.BusinessOwnerEpoch, time.Now().UTC())
 		if evidenceErr != nil {
 			fail(fmt.Errorf("read business owner cutover evidence: %w", evidenceErr))
@@ -417,6 +422,28 @@ func main() {
 	if err != nil {
 		fail(fmt.Errorf("load F4 operation-log config: %w", err))
 	}
+	// 2026-09-19 零配置自动认领臂：F4 sqlite 镜像与业务库同文件（同为
+	// <DATA_DIR>/business.sqlite3 派生）时，业务库文件在组合根 preflight 之前
+	// 尚不存在，F4 store 的只读镜像打开会失败。此处先对业务库执行一次
+	// ensure+seed preflight（与组合根稍后的同一 preflight 幂等）。F4 显式
+	// 配置了独立 settings 镜像的部署不满足同文件条件，维持原启动顺序。
+	if runtimeCfg.BusinessOwnerAutoClaimed && operationConfig.Enabled && operationConfig.Mode == operationlog.ModeSQLite &&
+		filepath.Clean(operationConfig.BusinessSettingsPath) == filepath.Clean(runtimeCfg.BusinessDatabasePath) {
+		seedDB, seedErr := sql.Open("sqlite", sqliteFileDSN(runtimeCfg.BusinessDatabasePath))
+		if seedErr != nil {
+			fail(fmt.Errorf("open business sqlite database for zero-config seed: %w", seedErr))
+		}
+		seedDB.SetMaxOpenConns(1)
+		if configureErr := configureSQLiteConnection(seedDB); configureErr != nil {
+			_ = seedDB.Close()
+			fail(fmt.Errorf("configure business sqlite database for zero-config seed: %w", configureErr))
+		}
+		if preflightErr := ensureGatewaySQLiteStoragePreflight(context.Background(), runtimeCfg, seedDB); preflightErr != nil {
+			_ = seedDB.Close()
+			fail(fmt.Errorf("zero-config sqlite storage preflight: %w", preflightErr))
+		}
+		_ = seedDB.Close()
+	}
 	var operationStore operationlog.Store
 	if operationConfig.Enabled {
 		if operationConfig.Mode == operationlog.ModePostgres {
@@ -429,9 +456,12 @@ func main() {
 		// 业务库本体路径交给 F4 store，镜像缺失运行期新建/改名账户时名字
 		// 解析兜底到业务库（部署契约里镜像路径常直接指向业务库文件，此时
 		// store 复用句柄不重复打开）。PostgreSQL 模式直读 juhe_business，
-		// 无镜像概念。
+		// 无镜像概念。2026-09-19：只透传显式 JUHE_AI_BUSINESS_DATABASE_PATH，
+		// 不传 loadRuntimeConfig 的派生值——兜底句柄是可选增强，派生业务库
+		// 文件尚不存在时（零配置首启动）不允许它阻塞 store 打开；零配置下
+		// 镜像本身就是业务库文件，兜底无增益。
 		if operationConfig.Mode == operationlog.ModeSQLite {
-			operationConfig.BusinessDatabasePath = runtimeCfg.BusinessDatabasePath
+			operationConfig.BusinessDatabasePath = strings.TrimSpace(os.Getenv("JUHE_AI_BUSINESS_DATABASE_PATH"))
 		}
 		operationStore, err = operationlog.OpenStore(operationConfig)
 		if err != nil {

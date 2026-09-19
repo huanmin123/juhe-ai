@@ -185,7 +185,7 @@ func newGenerateImageTool() *toolDefinition {
 				"action":              map[string]any{"type": "string", "enum": []string{"auto", "generate", "edit"}},
 				"prompt":              map[string]any{"type": "string", "minLength": 1, "maxLength": 65536},
 				"reference_asset_ids": map[string]any{"type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^chat_asset_[a-f0-9]{32}$"}},
-				"model":               map[string]any{"type": "string", "enum": []string{"gpt-image-2"}},
+				"model":               map[string]any{"type": "string", "enum": chatImageModelEnumValues()},
 				"size":                map[string]any{"type": "string", "pattern": "^(?:auto|[1-9]\\d{1,3}x[1-9]\\d{1,3})$", "description": "使用 auto，或 WIDTHxHEIGHT；宽高必须是 16 的倍数，最长边不超过 3840px，比例不超过 3:1，总像素为 655360..8294400。"},
 				"quality":             map[string]any{"type": "string", "enum": []string{"auto", "low", "medium", "high"}},
 				"output_format":       map[string]any{"type": "string", "enum": []string{"webp", "png", "jpeg"}},
@@ -242,14 +242,14 @@ func executeGenerateImageTool(input map[string]any, context *chatToolExecutionCo
 	}
 	imageModel := context.DefaultImageModel
 	if imageModel == "" {
-		imageModel = "gpt-image-2"
+		imageModel = string(ImageModelGPTImage2)
 	}
 	if input["model"] != nil {
 		if value, ok := input["model"].(string); ok && value != "" {
 			imageModel = value
 		}
 	}
-	if imageModel != "gpt-image-2" {
+	if !IsSupportedChatImageModel(imageModel) {
 		return chatToolExecutionResult{}, fmt.Errorf("图像模型 %s 不受支持", imageModel)
 	}
 	references := []ChatImageEditReference{}

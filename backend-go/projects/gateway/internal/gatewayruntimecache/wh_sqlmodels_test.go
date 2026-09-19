@@ -155,11 +155,11 @@ func TestWhSQLReadGatewayRuntimeGates(t *testing.T) {
 		`INSERT INTO system_accounts (id, status) VALUES ('sys_owner', 'active')`,
 		`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('g1', 'sys_owner', 'gpt', 1, 'personal')`,
 		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_normal', 'sys_owner', 'normal', '{}', 'active')`,
-		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_hybrid', 'sys_owner', 'hybrid_smart', '{"hybridRoutingConfig":{"levelRoutes":[]}}', 'active')`,
+		`INSERT INTO route_strategies (id, system_account_id, mode, config_json, status) VALUES ('rs_weighted', 'sys_owner', 'weighted', '{}', 'active')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_expired', 'sys_owner', 'rs_normal', '` + HashSecret("sk-expired") + `', 'active', '2000-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_disabled', 'sys_owner', 'rs_normal', '` + HashSecret("sk-disabled") + `', 'disabled', NULL)`,
-		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_dynamic', 'sys_owner', 'rs_hybrid', '` + HashSecret("sk-dynamic") + `', 'active', NULL)`,
-		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('bh', 'rs_hybrid', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
+		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_dynamic', 'sys_owner', 'rs_weighted', '` + HashSecret("sk-dynamic") + `', 'active', NULL)`,
+		`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at) VALUES ('bh', 'rs_weighted', 'sys_owner', 'g1', 1, 1, 'active', '2026-01-01T00:00:00.000Z')`,
 		`INSERT INTO api_keys (id, system_account_id, route_strategy_id, key_hash, status, expires_at) VALUES ('key_nobinding', 'sys_owner', 'rs_normal', '` + HashSecret("sk-nobinding") + `', 'active', NULL)`,
 	}
 	for _, statement := range seed {
@@ -189,19 +189,8 @@ func TestWhSQLReadGatewayRuntimeGates(t *testing.T) {
 	if err != nil || dynamic.APIKey == nil {
 		t.Fatalf("动态 key = %+v err=%v", dynamic.APIKey, err)
 	}
-	if dynamic.APIKey.HybridRoutingConfig == nil || len(dynamic.Accounts) != 0 {
-		t.Fatalf("动态形态 = hybrid:%v accounts:%d", dynamic.APIKey.HybridRoutingConfig != nil, len(dynamic.Accounts))
-	}
-	// 混合路由配置解码：合法 JSON 与坏 JSON 的回退。
-	if got := decodeHybridRoutingConfig(`{"hybridRoutingConfig":{"levelRoutes":[]}}`); got == nil {
-		t.Fatal("合法混合配置必须解码")
-	}
-	// 缺 hybridRoutingConfig 键与坏 JSON 都返回 nil。
-	if got := decodeHybridRoutingConfig(`{"levelRoutes":[]}`); got != nil {
-		t.Fatal("缺键必须返回 nil")
-	}
-	if got := decodeHybridRoutingConfig(`[nope`); got != nil {
-		t.Fatal("坏 JSON 必须返回 nil")
+	if dynamic.APIKey.RouteStrategyMode != RouteStrategyModeWeighted || len(dynamic.Accounts) != 0 {
+		t.Fatalf("动态形态 = mode:%s accounts:%d", dynamic.APIKey.RouteStrategyMode, len(dynamic.Accounts))
 	}
 	if got := decodeNormalRoutingConfig(`{"schedulingPreference":"cost_first"}`); got == nil {
 		t.Fatal("合法普通配置必须解码")

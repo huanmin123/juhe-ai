@@ -1,6 +1,6 @@
 export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
-export type ChatImageModel = 'gpt-image-2'
+export type ChatImageModel = 'gpt-image-2' | 'grok-imagine-image' | 'grok-imagine-image-quality'
 export type ChatConversationToolId = 'web_search' | 'generate_image'
 
 export interface ChatConversationToolCapability {

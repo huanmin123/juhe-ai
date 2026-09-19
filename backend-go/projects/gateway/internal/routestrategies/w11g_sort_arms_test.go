@@ -19,14 +19,7 @@ func TestW11GBindingSortComparatorArms(t *testing.T) {
 	viewer := AccessScope{ViewerID: admin}
 	// 同优先级 active+disabled（active 优先级唯一性只约束 active）。
 	created, err := store.Create(ctx, MutationInput{
-		Name: ptrString("w11g 排序"), Mode: ptrString(ModeHybridSmart),
-		HybridConfigRaw: map[string]any{
-			"scoringModel": "m", "scoringContextMode": "full_request",
-			"levelRoutes": []any{
-				map[string]any{"minLevel": 1, "maxLevel": 5, "targetModel": "t-low"},
-				map[string]any{"minLevel": 6, "maxLevel": 10, "targetModel": "t-high"},
-			},
-		},
+		Name: ptrString("w11g 排序"), Mode: ptrString(ModeWeighted),
 		HasBindings: true,
 		Bindings: []BindingInput{
 			{GroupID: groupB, Priority: intPtr(1), Status: "disabled"},

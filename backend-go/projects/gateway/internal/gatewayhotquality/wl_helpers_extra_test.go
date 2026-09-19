@@ -5,8 +5,6 @@ import (
 	"math"
 	"strings"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 )
 
 func TestWlNamespaceHelpers(t *testing.T) {
@@ -278,7 +276,7 @@ func TestWlModelRankAndFirstAccountID(t *testing.T) {
 	if got := firstAccountID(nil); got != "" {
 		t.Fatalf("空列表=%q", got)
 	}
-	if got := firstAccountID([]gatewayhybrid.HotQualityCandidate{{AccountID: "a9"}}); got != "a9" {
+	if got := firstAccountID([]HotQualityCandidate{{AccountID: "a9"}}); got != "a9" {
 		t.Fatalf("got=%q", got)
 	}
 }

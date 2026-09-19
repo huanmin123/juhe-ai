@@ -139,15 +139,11 @@ export function trafficSourceText(record: UsageRecordListItem): string {
     manual_account_test: '账号测试',
     account_health_check: '健康检查',
     runtime_recovery_probe: '快速恢复检测',
-    cooldown_retest: '冷却账户复测',
-    hybrid_scoring: '混合路由选型',
-    hybrid_quality_scoring: '回答质量复核'
+    cooldown_retest: '冷却账户复测'
   }[record.trafficSource] ?? '网关请求'
 }
 
 export function trafficSourceColor(record: UsageRecordListItem): string {
-  if (record.trafficSource === 'hybrid_quality_scoring') return 'purple'
-  if (record.trafficSource === 'hybrid_scoring') return 'blue'
   if (record.trafficSource === 'runtime_recovery_probe') return 'orange'
   if (record.trafficSource === 'account_health_check') return 'green'
   if (record.trafficSource === 'cooldown_retest') return 'gold'

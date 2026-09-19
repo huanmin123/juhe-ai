@@ -8,17 +8,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhybrid"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -353,76 +350,6 @@ func TestSwitchTargetFreezeFilterFamilyVocabularyConsistent(t *testing.T) {
 			t.Fatal("countTokens 形态冻结目标可解析，不得误判 fail-closed")
 		}
 	})
-}
-
-// TestHybridAuxiliaryDispatchDoesNotFreezeSwitchTarget：混合打分派发在请求
-// ctx 上同步执行时不得冻结主请求目标（blocker 回归）；主派发首个账户构造后
-// 正常冻结。
-func TestHybridAuxiliaryDispatchDoesNotFreezeSwitchTarget(t *testing.T) {
-	fixture := newChainFixture(t)
-	// 给种子账户配置 base_url，使打分派发能走到构造步骤。
-	credentials, err := accounts.EncryptJSON("chain-test-secret", map[string]any{
-		"api_key":  "sk-upstream-account-key",
-		"base_url": "https://upstream.example",
-	})
-	if err != nil {
-		t.Fatalf("encrypt credentials: %v", err)
-	}
-	if _, err := fixture.db.Exec(`UPDATE accounts SET credentials_encrypted = ? WHERE id = ?`, credentials, fixture.accountID); err != nil {
-		t.Fatalf("update account credentials: %v", err)
-	}
-
-	dispatcher := &chainHybridAuxiliaryDispatcher{cache: fixture.cache, driver: newChainProviderDriver()}
-	capture := &gatewaydispatch.SwitchTargetCapture{}
-	requestCtx := gatewaydispatch.WithSwitchTargetCapture(context.Background(), capture)
-
-	scoringBody := gatewayhybrid.NewOrderedJSON()
-	scoringBody.Set("model", "gpt-test")
-	scoringBody.Set("messages", []any{map[string]any{"role": "user", "content": "score"}})
-	rawBody, err := json.Marshal(map[string]any{"model": "gpt-test", "messages": []any{map[string]any{"role": "user", "content": "score"}}})
-	if err != nil {
-		t.Fatalf("marshal scoring body: %v", err)
-	}
-	_, failure := dispatcher.DispatchHybridAuxiliaryChatCompletion(requestCtx, gatewayhybrid.AuxiliaryDispatchInput{
-		Body:               scoringBody,
-		RawBody:            rawBody,
-		APIKeyRecord:       gatewayhybrid.APIKeyRecord{SystemAccountID: fixture.systemAccount, SelectedGroupID: fixture.groupID},
-		TargetModel:        "gpt-test",
-		TraceID:            "trace-test",
-		TrafficSource:      gatewayhybrid.AuxiliaryTrafficSourceHybridScoring,
-		TimeoutMs:          2000,
-		ResponseMaxBytes:   1 << 20,
-		NoAccountErrorCode: "scoring_no_account",
-		DispatchErrorCode:  "scoring_dispatch_failed",
-	})
-	if failure == nil {
-		t.Fatal("零值 transport 下打分派发应失败")
-	}
-	// 非空转断言：失败必须发生在构造之后的上游请求阶段（派发错误 + 已选定
-	// 账户），证明构造步骤真实执行过——若非剥离修复，此处必然已冻结。
-	if failure.Account == nil || failure.ErrorCode != "scoring_dispatch_failed" {
-		t.Fatalf("打分派发应到达构造后的上游请求阶段，实际 failure = %#v", failure)
-	}
-	if snapshot := capture.Snapshot(); snapshot.Frozen {
-		t.Fatalf("混合打分派发不得冻结主请求目标：snapshot=%#v", snapshot)
-	}
-
-	// 主派发：同一 ctx 上首个账户构造后正常冻结。
-	mainReq := switchTargetRequest(t, "/v1/responses", `{"model":"gpt-5","stream":true}`, "gpt-5", true)
-	mainAccount := gatewaydispatch.AccountCandidate{
-		ID:              fixture.accountID,
-		ProviderCode:    "openai",
-		ProtocolCode:    "openai",
-		ProtocolVersion: "v1",
-		SupportedModels: []string{"gpt-5"},
-	}
-	if _, err := dispatcher.driver.BuildGatewayUpstreamRequestParts(requestCtx, mainReq, mainAccount, gatewaydispatch.UsageIdentity{}, ""); err != nil {
-		t.Fatalf("main build: %v", err)
-	}
-	snapshot := capture.Snapshot()
-	if !snapshot.Frozen || snapshot.SourceAccountID != fixture.accountID {
-		t.Fatalf("主派发首个账户构造后应正常冻结：snapshot=%#v", snapshot)
-	}
 }
 
 // ---------------------------------------------------------------------------

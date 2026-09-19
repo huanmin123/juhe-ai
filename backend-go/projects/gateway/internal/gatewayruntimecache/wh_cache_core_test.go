@@ -353,11 +353,7 @@ func TestWhTypeClones(t *testing.T) {
 	if got := (RouteStrategyNormalRoutingConfig{SchedulingPreference: "cost_first", Raw: json.RawMessage(`{"a":1}`)}).Clone(); got.SchedulingPreference != "cost_first" || got.Raw != nil {
 		t.Fatalf("cost_first 折叠 = %+v", got)
 	}
-	hybrid := ApiKeyHybridRoutingConfig{Raw: json.RawMessage(`{"levelRoutes":[]}`)}
-	if got := hybrid.Clone(); string(got.Raw) != `{"levelRoutes":[]}` {
-		t.Fatalf("hybrid 克隆 = %+v", got)
-	}
-	source := "explicit_hybrid_route"
+	source := "runtime_source"
 	mapping := AccountModelMapping{RuntimeSource: &source}
 	if got := mapping.Clone(); got.RuntimeSource == mapping.RuntimeSource || *got.RuntimeSource != source {
 		t.Fatal("映射克隆指针契约失败")

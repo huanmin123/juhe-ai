@@ -73,7 +73,6 @@ type DispatchContext struct {
 	ResponseInspectionPolicies               []gatewayruntimecache.ResponseInspectionPolicySummary
 	APIKeyRecord                             *gatewayruntimecache.GatewayAPIKeyRow
 	GroupFallbackAPIKeyRecord                *gatewayruntimecache.GatewayAPIKeyRow
-	HybridRoute                              *HybridRuntimeRoute
 	NormalRouteLatencyDegradationApplied     bool
 	CodexTurnAccountAvoidanceApplied         bool
 	CodexTurnAvoidedAccountIDs               []string
@@ -146,7 +145,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		runtimeGroupAccess                *gatewayruntimecache.GroupUsageAccessMetadata
 		runtimeAccounts                   []gatewayruntimecache.OpenAIAccountSecret
 		runtimeAccountDispatchDiagnostics *gatewayruntimecache.OpenAIAccountsForGroupDiagnostics
-		selectedHybridRoute               *HybridRuntimeRoute
 	)
 	if groupFallbackAPIKeyRecord == nil {
 		groupFallbackAPIKeyRecord = asRecordAlias(apiKeyRecord)
@@ -418,9 +416,18 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		if err != nil {
 			return PreflightResult{}, err
 		}
+		mergeStrategy := isMergeRouteStrategy(apiKeyRecord)
 		affinityCandidates := options.CandidateAccounts
 		if affinityCandidates == nil {
-			affinityCandidates, err = s.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(ctx, groupID, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{})
+			if mergeStrategy {
+				// B20（合并路由设计“交互资源亲和”）：亲和账号可能来自任一
+				// 绑定分组——过滤在合并池进行（按绑定扇出列出 + 组标；模型
+				// 过滤语义与单组亲和路径一致：不按请求模型预过滤，下游
+				// FilterCandidates 对亲和请求 BypassModelFilter）。
+				affinityCandidates, err = s.listMergeAffinityCandidatePool(ctx, apiKeyRecord, systemAccountID)
+			} else {
+				affinityCandidates, err = s.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(ctx, groupID, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{})
+			}
 			if err != nil {
 				return PreflightResult{}, err
 			}
@@ -444,6 +451,17 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			})
 			return PreflightResult{}, nil
 		}
+		if mergeStrategy {
+			// B20：命中后窗口身份取该账号所在片段组（请求级身份与账号组一致）。
+			if bound := filtered[0].BoundGroupID; bound != nil && *bound != "" && *bound != groupID {
+				groupID = *bound
+				identity = &OpenAIGatewayRequestIdentity{SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID}
+				runtimeGroupAccess, err = s.RuntimeCache.ResolveCachedGroupUsageAccessMetadataAsync(ctx, groupID, systemAccountID)
+				if err != nil {
+					return PreflightResult{}, err
+				}
+			}
+		}
 		auditCapture.BindContext(AuditGatewayContext{GroupID: groupID, ProviderCode: affinity.ProviderCode})
 		auditCapture.AddGatewayMetadata("gemini_interaction_account_affinity", map[string]any{
 			"interactionId": interactionResourceID,
@@ -461,7 +479,7 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	bindAuditSessionIdentity(auditCapture, sessionIdentity, initialClientStrategy.ClientProfile)
 
 	if interactionResourceAffinity == nil && !hasInitialModelsResponseProtocol && options.Identity == nil &&
-		trafficSource == TrafficSourceGateway && apiKeyRecord != nil && apiKeyRecord.RouteStrategyMode != gatewayruntimecache.RouteStrategyModeHybridSmart {
+		trafficSource == TrafficSourceGateway && apiKeyRecord != nil {
 		previousGroupID := groupID
 		previousBindingCount := len(apiKeyRecord.GroupBindings)
 		normalRoute, err := s.RouteResolver.ResolveNormalGatewayModelRoute(ctx, NormalRouteInput{
@@ -481,6 +499,11 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			runtimeGroupAccess = normalRoute.GroupAccess
 			runtimeAccounts = normalRoute.Accounts
 			runtimeAccountDispatchDiagnostics = nil
+			// 3.4 窗口身份：merge 的窗口组（首个非空片段组）可不同于加载时的
+			// SelectedGroupID（首个绑定组）——请求级审计上下文同步取窗口组。
+			if isMergeRouteStrategy(apiKeyRecord) {
+				auditCapture.BindContext(AuditGatewayContext{GroupID: groupID})
+			}
 			auditCapture.AddGatewayMetadata("normal_model_route", map[string]any{
 				"requestedModel":        normalRoute.RequestedModel,
 				"fromGroupId":           previousGroupID,
@@ -528,78 +551,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 				},
 			})
 			return PreflightResult{}, nil
-		}
-	}
-
-	if interactionResourceAffinity == nil && !hasInitialModelsResponseProtocol && options.Identity == nil &&
-		trafficSource == TrafficSourceGateway && apiKeyRecord != nil && apiKeyRecord.RouteStrategyMode == gatewayruntimecache.RouteStrategyModeHybridSmart {
-		hybridRoute, err := s.RouteResolver.ResolveHybridGatewayRoute(ctx, HybridRouteInput{
-			Req: req, APIKeyRecord: apiKeyRecord, TraceID: input.TraceID,
-			ClientIP: input.ClientIP, Endpoint: input.Endpoint,
-			AuditCapture:               auditCapture,
-			RequestClientCompatibility: initialClientStrategy.RequestClientCompatibility,
-			Signal:                     input.Signal,
-		})
-		if err != nil {
-			return PreflightResult{}, err
-		}
-		if hybridRoute.Outcome == HybridRouteOutcomeFailed {
-			auditCapture.AddGatewayMetadata("hybrid_route", hybridFailedMetadata(apiKeyRecord, hybridRoute))
-			statusCode := hybridRouteFailureStatusCode(hybridRoute.Reason)
-			payloadType := "upstream_response_error"
-			if statusCode == 503 {
-				payloadType = "service_unavailable"
-			}
-			responsePayload := GatewayErrorPayloadOf(hybridRouteFailureMessage(hybridRoute.Reason), payloadType, hybridRoute.Reason)
-			failureGroupAccess := runtimeGroupAccess
-			if failureGroupAccess == nil {
-				failureGroupAccess, err = s.RuntimeCache.ResolveCachedGroupUsageAccessMetadataAsync(ctx, groupID, systemAccountID)
-				if err != nil {
-					return PreflightResult{}, err
-				}
-			}
-			s.Responses.SendGatewayFailureResponse(FailureResponseInput{
-				Req: req, Res: res, AuditCapture: auditCapture,
-				UsageContext: currentGroupUsageContext(groupID, failureGroupAccess), StartedAt: input.StartedAt,
-				StatusCode: statusCode, ResponsePayload: responsePayload,
-				Audit: FailureAudit{
-					Outcome: AuditOutcomeGatewayFailed, ErrorPhase: "dispatch",
-					ErrorCode: hybridRoute.Reason, ErrorMessage: responsePayload.Error.Message,
-				},
-			})
-			return PreflightResult{}, nil
-		}
-		if hybridRoute.Outcome == HybridRouteOutcomeSelected {
-			requestLane = ResolveOpenAIGatewayRequestLane(req)
-			apiKeyRecord = hybridRoute.APIKeyRecord
-			groupID = hybridRoute.GroupID
-			identity = &OpenAIGatewayRequestIdentity{SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID}
-			runtimeGroupAccess = hybridRoute.GroupAccess
-			runtimeAccounts = hybridRoute.Accounts
-			runtimeAccountDispatchDiagnostics = nil
-			selectedHybridRoute = &HybridRuntimeRoute{
-				APIKeyRecord: apiKeyRecord, Config: hybridRoute.Config,
-				Scoring: hybridRoute.Scoring, Route: hybridRoute.Route,
-				TargetModel:            hybridRoute.TargetModel,
-				AffinityApplied:        hybridRoute.AffinityApplied,
-				ScoringFallbackApplied: hybridRoute.ScoringFallbackApplied,
-				QualityRetryCount:      0,
-			}
-			targetCircuit, err := s.Circuits.InspectClientIPErrorCircuit(ctx, ClientIPErrorCircuitInput{
-				SystemAccountID: systemAccountID, APIKeyID: apiKeyID, GroupID: groupID,
-				ClientIP: gatewayClientIP, Endpoint: input.Endpoint,
-			})
-			if err != nil {
-				return PreflightResult{}, err
-			}
-			if s.sendClientIPErrorCircuitGatewayResponse(ctx, clientIPResponseInput{
-				req: req, res: res, auditCapture: auditCapture,
-				usageContext: currentGroupUsageContext(groupID, runtimeGroupAccess), startedAt: input.StartedAt,
-				circuit: targetCircuit, systemAccountID: systemAccountID,
-				apiKeyID: apiKeyID, groupID: groupID, clientIP: gatewayClientIP,
-			}) {
-				return PreflightResult{}, nil
-			}
 		}
 	}
 
@@ -797,7 +748,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 			apiKeyRecord:               firstNonNilRecord(groupFallbackAPIKeyRecord, apiKeyRecord),
 			gatewayRequestWallBudget:   gatewayRequestWallBudget,
 			normalRouteFirstByteConfig: s.normalRouteFirstByteConfigForAPIKey(apiKeyRecord, requestLane, compactionTimeoutsDisabled, options.NormalRouteFirstByteConfig),
-			hybridRoute:                selectedHybridRoute,
 		})
 		if snapshotErr != nil {
 			return PreflightResult{}, snapshotErr
@@ -863,8 +813,8 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		Endpoint:                        input.Endpoint,
 		BypassModelFilter:               interactionResourceAffinity != nil || options.ForwardModelsRequestToUpstream,
 		RequestModelOverride:            probeModelOverride(options),
-		LoadModelAwareCandidateAccounts: candidateLoader(s, options, interactionResourceAffinity, groupID, systemAccountID),
-		RecoverUnavailableCandidateAccounts: recoverableLoader(s, options, interactionResourceAffinity, recoveryInput{
+		LoadModelAwareCandidateAccounts: candidateLoader(s, options, interactionResourceAffinity, apiKeyRecord, groupID, systemAccountID),
+		RecoverUnavailableCandidateAccounts: recoverableLoader(s, options, interactionResourceAffinity, apiKeyRecord, recoveryInput{
 			req: req, auditCapture: auditCapture, systemAccountID: systemAccountID,
 			apiKeyID: apiKeyID, groupID: groupID, startedAt: input.StartedAt,
 			serverRetryBudget: serverRetryBudget, routeCoordinationBudget: routeCoordinationBudget,
@@ -952,6 +902,8 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		Signal:                          input.Signal,
 		IgnoreAccountRuntimeSuppression: options.IgnoreAccountRuntimeSuppression,
 		RouteCoordinator:                routeCoordinator,
+		// B14/T4：merge 上下文跳过窗口级配额门（解析期逐片段批查是权威门）。
+		SkipGroupQuotaWindowCheck: isMergeRouteStrategy(apiKeyRecord),
 	})
 	if err != nil {
 		return PreflightResult{}, err
@@ -1043,7 +995,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		ResponseInspectionPolicies:               orEmptyPolicies(runtimeResponseInspectionPolicies),
 		APIKeyRecord:                             apiKeyRecord,
 		GroupFallbackAPIKeyRecord:                groupFallbackAPIKeyRecord,
-		HybridRoute:                              selectedHybridRoute,
 		NormalRouteLatencyDegradationApplied:     dispatchPreparation.NormalRouteLatencyDegradationApplied,
 		CodexTurnAccountAvoidanceApplied:         dispatchPreparation.CodexTurnAccountAvoidanceApplied,
 		CodexTurnAvoidedAccountIDs:               dispatchPreparation.CodexTurnAvoidedAccountIDs,
@@ -1226,60 +1177,6 @@ type clientIPResponseInput struct {
 	apiKeyID        string
 	groupID         string
 	clientIP        string
-}
-
-// hybridRouteFailureMessage mirrors hybridRouteFailureMessage.
-func hybridRouteFailureMessage(reason string) string {
-	switch reason {
-	case "no_scoring_account":
-		return "混合路由评分模型暂不可用：绑定分组池没有可用评分账户"
-	case "scoring_account_busy":
-		return "混合路由评分模型暂不可用：评分账户并发已满"
-	case "hybrid_scoring_failed", "hybrid_scoring_http_error":
-		return "混合路由评分模型调用失败"
-	case "hybrid_level_route_missing":
-		return "混合路由等级配置不可用"
-	case "hybrid_scoring_fallback_unavailable":
-		return "混合路由评分模型不可用，且低档兜底范围内没有可用目标模型"
-	case "hybrid_target_group_unavailable":
-		return "混合路由目标分组暂不可用"
-	default:
-		return "混合路由暂不可用"
-	}
-}
-
-// hybridRouteFailureStatusCode mirrors hybridRouteFailureStatusCode.
-func hybridRouteFailureStatusCode(reason string) int {
-	if reason == "hybrid_scoring_failed" || reason == "hybrid_scoring_http_error" {
-		return 502
-	}
-	return 503
-}
-
-// hybridFailedMetadata mirrors the failed hybrid_route audit metadata.
-func hybridFailedMetadata(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, route HybridRouteResult) map[string]any {
-	metadata := map[string]any{
-		"failed":      true,
-		"reason":      route.Reason,
-		"targetModel": route.TargetModel,
-	}
-	if route.Scoring != nil {
-		if failed, ok := route.Scoring["failed"].(bool); ok && failed {
-			metadata["level"] = nil
-		} else if level, ok := route.Scoring["level"]; ok {
-			metadata["level"] = level
-		}
-		if defaulted, ok := route.Scoring["defaulted"]; ok {
-			metadata["scoringDefaulted"] = defaulted
-		}
-		if code, ok := route.Scoring["errorCode"]; ok {
-			metadata["scoringErrorCode"] = code
-		}
-		if message, ok := route.Scoring["errorMessage"]; ok {
-			metadata["scoringErrorMessage"] = message
-		}
-	}
-	return metadata
 }
 
 // sendInteractionAffinityFailure mirrors sendInteractionAffinityFailure.
@@ -1606,9 +1503,22 @@ func probeModelOverride(options *PreflightOptions) string {
 }
 
 // candidateLoader mirrors the loadModelAwareCandidateAccounts closure.
-func candidateLoader(s *Service, options *PreflightOptions, interaction *gatewaygemini.AffinityBinding, groupID, systemAccountID string) func(model, sourceEndpointFamily string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+func candidateLoader(s *Service, options *PreflightOptions, interaction *gatewaygemini.AffinityBinding, apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, groupID, systemAccountID string) func(model, sourceEndpointFamily string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 	if options.CandidateAccounts != nil || interaction != nil {
 		return nil
+	}
+	// 3.4（合并路由设计“候选重解析扇出”）：merge 下默认闭包按单一 groupID
+	// 重读会把扁平池静默收窄回窗口组，必须按绑定分组扇出重建扁平池（去重
+	// + 重组标）；模型过滤语义与单组闭包一致（同参数逐组列出）。
+	if isMergeRouteStrategy(apiKeyRecord) {
+		groupIDs := uniqueActiveRouteGroupIds(apiKeyRecord)
+		return func(model, sourceEndpointFamily string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+			return mergeFanoutCandidateAccounts(groupIDs, func(group string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+				return s.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(s.requestContext(), group, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
+					RequestedModel: model, RequestedEndpointFamily: sourceEndpointFamily,
+				})
+			})
+		}
 	}
 	return func(model, sourceEndpointFamily string) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 		return s.RuntimeCache.ListCachedOpenAIAccountsForGroupAsync(s.requestContext(), groupID, systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
@@ -1619,9 +1529,13 @@ func candidateLoader(s *Service, options *PreflightOptions, interaction *gateway
 
 // recoverableLoader mirrors the recoverUnavailableCandidateAccounts closure:
 // it delegates to waitForRecoverableOpenAIGatewayCandidateAccounts.
-func recoverableLoader(s *Service, options *PreflightOptions, interaction *gatewaygemini.AffinityBinding, input recoveryInput) func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+func recoverableLoader(s *Service, options *PreflightOptions, interaction *gatewaygemini.AffinityBinding, apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, input recoveryInput) func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 	if options.CandidateAccounts != nil || interaction != nil {
 		return nil
+	}
+	// 3.4：merge 下逐绑定扇出刷新/恢复读取（等待 scopeKey 保持窗口组）。
+	if isMergeRouteStrategy(apiKeyRecord) {
+		input.mergeGroupIDs = uniqueActiveRouteGroupIds(apiKeyRecord)
 	}
 	return func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
 		return s.waitForRecoverableOpenAIGatewayCandidateAccounts(input)

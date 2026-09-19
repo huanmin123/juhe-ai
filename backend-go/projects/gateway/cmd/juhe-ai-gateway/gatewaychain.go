@@ -8,8 +8,8 @@ package main
 // The frozen orchestration ports and their composition-root owners:
 //
 //	gatewaypreauth.RouteResolver          -> chain_routing.go
-//	  (gatewayrouting.NormalModelRouteService (G08) + gatewayhybrid.RouteService
-//	  (G09) projections re-hydrated through the runtime cache)
+//	  (gatewayrouting.NormalModelRouteService (G08) projections re-hydrated
+//	  through the runtime cache)
 //	gatewaydispatch.ProviderDriver        -> chain_driver.go
 //	  (gatewayproto/gatewayopenai/gatewayanthropic/gatewaygemini driver surface
 //	  + per-protocol upstream URL construction)
@@ -52,8 +52,8 @@ package main
 // the legacy bridge proxy is deleted, so these are the only /v1 file and
 // container surfaces), the
 // in-flight quota cost estimator attaches to the pricing catalog
-// (chain_pricing.go), the hybrid Redis collaborators and the G14 session
-// identity services wire through chain_runtime.go / chain_ports.go.
+// (chain_pricing.go), and the G14 session identity services wire through
+// chain_runtime.go / chain_ports.go.
 
 // gateGatewayChain is the phase-2 gate: every frozen port has an authored
 // adapter, so enabling the chain no longer fails. The flag only requires the
