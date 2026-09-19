@@ -207,7 +207,13 @@ func (s *Store) ListProviderModels(ctx context.Context, providerCode string, inc
 	q := "SELECT provider_code,model,status,COALESCE(mode,''),catalog_order,supported_api_protocols_json,context_window_tokens,max_input_tokens,max_output_tokens FROM " + s.table("provider_model_catalog") + " WHERE provider_code=?"
 	args := []any{providerCode}
 	if !includeInactive {
-		q += " AND status='active' AND catalog_visible=1"
+		// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，
+		// 比较 must 按方言生成（见 providers.Store.visibleTruePredicate 同因）。
+		visiblePredicate := "catalog_visible=1"
+		if s.mode == Postgres {
+			visiblePredicate = "catalog_visible=TRUE"
+		}
+		q += " AND status='active' AND " + visiblePredicate
 	}
 	q += " ORDER BY COALESCE(catalog_order,2147483647),model"
 	rows, err := s.db.QueryContext(ctx, s.bind(q), args...)

@@ -295,9 +295,9 @@ func (s *Store) listBuiltInCatalogModels(ctx context.Context, providerCodes []st
 	availabilityFilter := ""
 	if !includeInactive {
 		availabilityFilter = `
-		AND status = 'active'
-		AND catalog_visible = 1
-		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ` + s.todayText() + `)`
+			AND status = 'active'
+			AND ` + s.visibleTruePredicate("catalog_visible") + `
+			AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ` + s.todayText() + `)`
 	}
 	args := append([]any{}, stringSliceToAny(codes)...)
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+builtInCatalogColumns+`
@@ -742,6 +742,15 @@ func (s *Store) todayText() string {
 	return "date('now')"
 }
 
+// visibleTruePredicate renders the catalog visibility predicate for the
+// active dialect: SQLite stores 1/0, PostgreSQL uses boolean.
+func (s *Store) visibleTruePredicate(column string) string {
+	if s.pg {
+		return column + " = TRUE"
+	}
+	return column + " = 1"
+}
+
 // ListProviderModelSelectionOptions ports listProviderModelSelectionOptionsAsync
 // (the GET /models/options body).
 func (s *Store) ListProviderModelSelectionOptions(ctx context.Context, query ModelOptionQuery) ([]ModelSelectionOption, error) {
@@ -816,7 +825,7 @@ func (s *Store) listBuiltInModelOptions(ctx context.Context, providerCodes []str
 	clauses := []string{
 		"provider_code IN (" + placeholders(len(codes)) + ")",
 		"status = 'active'",
-		"catalog_visible = 1",
+		s.visibleTruePredicate("catalog_visible"),
 		"(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > " + s.todayText() + ")",
 	}
 	args := append([]any{}, stringSliceToAny(codes)...)
@@ -1154,7 +1163,7 @@ func (s *Store) findBuiltInTestCatalogItems(ctx context.Context, providerCodes [
 		WHERE provider_code IN (`+placeholders(len(codes))+`)
 			AND model = ?
 			AND status = 'active'
-			AND catalog_visible = 1
+			AND `+s.visibleTruePredicate("catalog_visible")+`
 			AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.todayText()+`)
 		ORDER BY provider_code ASC, catalog_order ASC, model ASC, id ASC`), args...)
 	if err != nil {
