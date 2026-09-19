@@ -270,11 +270,13 @@ func TestW2ChannelAdapterNewAPIAndOneAPI(t *testing.T) {
 	if result.Source.Records != 9 {
 		t.Fatalf("记录数不一致：%+v", result.Source)
 	}
-	if result.Source.Accepted != 5 || result.Source.Skipped != 4 {
+	// 2026-09-19 决策：私网 base_url 默认放行，原被拒绝的条目转为接受
+	// （接受 5→6、跳过 4→3）。
+	if result.Source.Accepted != 6 || result.Source.Skipped != 3 {
 		t.Fatalf("接受/跳过数不一致：%+v", result.Source)
 	}
-	// 忽略字段计数：weight（未知记录字段）+ 私网 base_url（上游地址策略拒绝）。
-	if result.Source.IgnoredFields != 2 {
+	// 忽略字段计数：weight（未知记录字段）；私网 base_url 不再被策略拒绝。
+	if result.Source.IgnoredFields != 1 {
 		t.Fatalf("忽略字段计数不一致：%d", result.Source.IgnoredFields)
 	}
 

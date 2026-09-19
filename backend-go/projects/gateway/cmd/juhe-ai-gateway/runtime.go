@@ -5,9 +5,11 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
@@ -34,10 +36,17 @@ const (
 //
 // The production signal for every HTTP security gate is the normalized
 // NODE_ENV (Node isProductionRuntime, runtime.ts:979-980); the same-process
-// operationlog/config.go and auditlog/input_server.go compositions read
+// operationlog/config.go and auditlog/config.go compositions read
 // NODE_ENV too. JUHE_AI_NODE_ENV only overrides the chat tool environment
 // (falling back to NODE_ENV when unset) and carries no production semantics;
 // ownermode and JUHE_AI_DEPLOY_MODE carry none either.
+//
+// 2026-09-19 产品决策（开源项目降门槛）：gateway 二进制在空 env（standalone
+// sqlite）下零配置可启动——system-api 与 /v1 网关链组合根默认开启（显式
+// false 才关闭），路径类 env 未配置时按 internal/datadir 固定名表派生到
+// JUHE_AI_DATA_DIR（缺省 ./data）下，非生产未配置 JUHE_AI_SECRET 时回退
+// 内置开发密钥。生产切流/性能拓扑仍通过显式 env 控制（NODE_ENV=production
+// 保留全部强校验；显式配置的业务 owner handoff 证据门禁原样生效）。
 type runtimeConfig struct {
 	RuntimeMode        string // "standalone" | "performance"
 	DatabaseDriver     string // "sqlite" | "postgres"
@@ -95,14 +104,15 @@ type runtimeConfig struct {
 	OIDCKeyEncryptionSecret string
 
 	// SystemAPIEnabled gates the Go system-api composition
-	// (/__aisys__/api + /__aipublic__ + /__aidelegated__/v1). It mirrors the
-	// opt-in pattern of every earlier migration wave: the composition assembles
-	// only when the operator explicitly hands the system API to this process.
+	// (/__aisys__/api + /__aipublic__ + /__aidelegated__/v1). 2026-09-19 起
+	// 默认开启（开源零配置可启动）：未配置时视为 true，显式 false 才关闭；
+	// 非法值启动即失败（strictEnvBool）。
 	SystemAPIEnabled bool
 	// ChainEnabled gates the AI gateway /v1 composition. When enabled the
 	// startup assembles the full serving chain; when disabled /v1 traffic
 	// answers the kernel 404 JSON contract (X01: the legacy bridge proxy was
-	// deleted together with the archived Node origin).
+	// deleted together with the archived Node origin). 2026-09-19 起默认开启，
+	// 语义同 SystemAPIEnabled；两者联动校验（chain 开须 system 开）保留。
 	ChainEnabled bool
 
 	// Chain collaborator config: the audit capture switch (Node
@@ -221,6 +231,11 @@ type runtimeConfig struct {
 	BusinessSchemaReady         bool
 	BusinessOwnerEpoch          string
 	BusinessCutoverEvidencePath string
+	// BusinessOwnerAutoClaimed marks the 2026-09-19 zero-config standalone
+	// arm: sqlite 模式下 JUHE_AI_BUSINESS_* 家族全部未配置时，组合根自动认领
+	// 业务库 owner（无 Node 切流历史的新装部署）。显式配置任一家族成员则
+	// 保持原 handoff 证据门禁。main 据此跳过 cutover evidence 校验。
+	BusinessOwnerAutoClaimed bool
 }
 
 // UpstreamURLSecurityConfig mirrors Node runtimeConfig.upstreamUrlSecurity.
@@ -379,16 +394,27 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	if production && (cfg.Secret == defaultRuntimeSecret || len(cfg.Secret) < minimumProductionSecretLength) {
 		return runtimeConfig{}, fmt.Errorf("JUHE_AI_SECRET 在生产环境必须配置为至少 %d 位的稳定随机密钥，不能使用默认开发密钥或过短密钥", minimumProductionSecretLength)
 	}
+	// 2026-09-19 零配置回退（Node runtime.ts:399-400 原语义）：非生产未配置
+	// JUHE_AI_SECRET 时回落内置开发密钥——apikeys/accounts/oauth 组合根的空
+	// 密钥守卫会让空 env 启动失败，零配置 standalone 必须有可用密钥。生产
+	// 分支已在上方拒绝空/短/默认密钥，不受影响。
+	if cfg.Secret == "" {
+		cfg.Secret = defaultRuntimeSecret
+	}
 	cfg.RedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 
-	cfg.DatabasePath = strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH"))
-	cfg.ChatDatabasePath = strings.TrimSpace(getenv("JUHE_AI_CHAT_DATABASE_PATH"))
-	cfg.DatasetDatabasePath = strings.TrimSpace(getenv("JUHE_AI_DATASET_DATABASE_PATH"))
-	cfg.RuntimeLogDatabasePath = strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_DATABASE_PATH"))
-	cfg.UsageCatalogDatabasePath = strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH"))
-	cfg.StatsDatabasePath = strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH"))
-	cfg.TableMonitorDatabasePath = strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_DATABASE_PATH"))
-	cfg.CodexContextShardRoot = strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"))
+	// 路径类 env 派生（2026-09-19 零配置约定，internal/datadir 固定名表）：
+	// 未配置时落 <JUHE_AI_DATA_DIR=./data>/<固定名>，显式配置优先。PG 模式下
+	// 这些派生值仅作为 spool 等本地目录派生的根，不改变 PG 存储语义。
+	dataDir := datadir.Dir(getenv)
+	cfg.DatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_DATABASE_PATH", datadir.BusinessDatabase)
+	cfg.ChatDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_CHAT_DATABASE_PATH", datadir.ChatDatabase)
+	cfg.DatasetDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_DATASET_DATABASE_PATH", datadir.DatasetDatabase)
+	cfg.RuntimeLogDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", datadir.RuntimeLogDatabase)
+	cfg.UsageCatalogDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", datadir.UsageCatalogDatabase)
+	cfg.StatsDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_STATS_DATABASE_PATH", datadir.StatsDatabase)
+	cfg.TableMonitorDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", datadir.TableMonitorDatabase)
+	cfg.CodexContextShardRoot = datadir.Path(getenv, dataDir, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", datadir.CodexContextStateShardRoot)
 	cfg.CodexContextShardCount = 16
 	if raw := strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT")); raw != "" {
 		shardCount, err := strconv.Atoi(raw)
@@ -397,16 +423,13 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		}
 		cfg.CodexContextShardCount = shardCount
 	}
-	if cfg.DatabaseDriver == "sqlite" && cfg.DatabasePath == "" {
-		return runtimeConfig{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_DATABASE_PATH")
-	}
 
 	cfg.OpenAICompatibleFilesRoot = strings.TrimSpace(getenv("JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT"))
 
 	// Chat mount config (Node runtimeConfig.chat + chatAssetsRoot).
 	cfg.ChatAssetsRoot = strings.TrimSpace(getenv("JUHE_AI_CHAT_ASSETS_ROOT"))
 	if cfg.ChatAssetsRoot == "" {
-		cfg.ChatAssetsRoot = "data/chat-assets"
+		cfg.ChatAssetsRoot = filepath.Join(dataDir, datadir.ChatAssetsDirectory)
 	}
 	cfg.ChatMaxTurnsPerConversation = 50
 	if raw := strings.TrimSpace(getenv("JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION")); raw != "" {
@@ -553,8 +576,20 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		}
 	}
 
-	cfg.SystemAPIEnabled = envBoolTrue(getenv("JUHE_AI_GATEWAY_SYSTEM_API_ENABLED"))
-	cfg.ChainEnabled = envBoolTrue(getenv("JUHE_AI_GATEWAY_CHAIN_ENABLED"))
+	// 2026-09-19 产品决策：system-api 与 /v1 网关链默认开启（开源零配置可
+	// 启动；生产切流用显式配置控制）。strictEnvBool 保留非法值 fail-fast 与
+	// 显式 false/0/no/off 关闭语义；联动校验（chain 开须 system 开）保留，
+	// 默认双 true 自洽，显式 chain=true+system=false 仍被拒。
+	systemAPIEnabled, systemAPIErr := strictEnvBool("JUHE_AI_GATEWAY_SYSTEM_API_ENABLED", getenv("JUHE_AI_GATEWAY_SYSTEM_API_ENABLED"), true)
+	if systemAPIErr != nil {
+		return runtimeConfig{}, systemAPIErr
+	}
+	chainEnabled, chainEnabledErr := strictEnvBool("JUHE_AI_GATEWAY_CHAIN_ENABLED", getenv("JUHE_AI_GATEWAY_CHAIN_ENABLED"), true)
+	if chainEnabledErr != nil {
+		return runtimeConfig{}, chainEnabledErr
+	}
+	cfg.SystemAPIEnabled = systemAPIEnabled
+	cfg.ChainEnabled = chainEnabled
 	if cfg.ChainEnabled && !cfg.SystemAPIEnabled {
 		return runtimeConfig{}, fmt.Errorf("启用 JUHE_AI_GATEWAY_CHAIN_ENABLED 时必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED")
 	}
@@ -721,13 +756,35 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 
 	cfg.BusinessOwner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER")))
-	cfg.BusinessDatabasePath = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_DATABASE_PATH"))
+	cfg.BusinessDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_BUSINESS_DATABASE_PATH", datadir.BusinessDatabase)
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_POSTGRES_URL"))
 	cfg.BusinessHandoffConfirmed = envBoolTrue(getenv("JUHE_AI_BUSINESS_HANDOFF_CONFIRMED"))
 	cfg.BusinessNodeWriterStopped = envBoolTrue(getenv("JUHE_AI_BUSINESS_NODE_WRITER_STOPPED"))
 	cfg.BusinessSchemaReady = envBoolTrue(getenv("JUHE_AI_BUSINESS_SCHEMA_READY"))
 	cfg.BusinessOwnerEpoch = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER_EPOCH"))
 	cfg.BusinessCutoverEvidencePath = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH"))
+	// 2026-09-19 零配置自动认领：sqlite 模式下 JUHE_AI_BUSINESS_* 家族全部
+	// 未配置时，按"新装部署、无 Node 切流历史"处理——组合根自动认领业务库
+	// owner（handoff 三证置真、epoch 用固定 standalone 值）。显式配置家族内
+	// 任一成员则保持原门禁（businessOwnerGate + cutover evidence 校验），
+	// 生产切流纪律不变。
+	if cfg.DatabaseDriver == "sqlite" && !hasAnyRawConfig(getenv,
+		"JUHE_AI_BUSINESS_OWNER",
+		"JUHE_AI_BUSINESS_DATABASE_PATH",
+		"JUHE_AI_BUSINESS_POSTGRES_URL",
+		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED",
+		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED",
+		"JUHE_AI_BUSINESS_SCHEMA_READY",
+		"JUHE_AI_BUSINESS_OWNER_EPOCH",
+		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH",
+	) {
+		cfg.BusinessOwner = "gateway"
+		cfg.BusinessHandoffConfirmed = true
+		cfg.BusinessNodeWriterStopped = true
+		cfg.BusinessSchemaReady = true
+		cfg.BusinessOwnerEpoch = "standalone"
+		cfg.BusinessOwnerAutoClaimed = true
+	}
 
 	return cfg, nil
 }
@@ -735,9 +792,14 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 // businessOwnerGate validates the business database owner handoff the same way
 // the J3b owner contract does (modelcheckowner.LoadConfig): an enabled system
 // api composition must prove it owns the business database before any store is
-// opened; otherwise the process fails closed.
+// opened; otherwise the process fails closed. The 2026-09-19 zero-config
+// standalone arm (BusinessOwnerAutoClaimed) already carries the auto-claimed
+// owner facts from loadRuntimeConfig and skips the cutover evidence proof.
 func (c *runtimeConfig) businessOwnerGate() error {
 	if !c.SystemAPIEnabled {
+		return nil
+	}
+	if c.BusinessOwnerAutoClaimed {
 		return nil
 	}
 	if c.BusinessOwner != "gateway" {
@@ -853,14 +915,16 @@ func temporaryAccessIPAllowlistConfig(name, raw string) ([]string, error) {
 // strict boolean refused under the production signal; the private origin
 // allowlist accepts only http/https IP origins and keeps the normalized
 // origin keys (D-192/D-146).
+//
+// 2026-09-19 用户决策（PLAN-20260919T000723744Z，开源项目优先易用性）：
+// 默认放行私网/本机上游 Base URL，不再拒绝生产信号；strictEnvBool 的
+// fallback 翻转为 true，JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false/0
+// 可选择性恢复限制。
 func upstreamURLSecurityConfig(production bool, getenv func(string) string) (UpstreamURLSecurityConfig, error) {
 	config := UpstreamURLSecurityConfig{PrivateOriginAllowlist: map[string]bool{}}
-	allowPrivate, err := strictEnvBool("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS", getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS"), false)
+	allowPrivate, err := strictEnvBool("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS", getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS"), true)
 	if err != nil {
 		return config, err
-	}
-	if production && allowPrivate {
-		return config, fmt.Errorf("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS 只能用于本地开发或回归测试，生产环境不能启用")
 	}
 	config.AllowPrivateBaseUrls = allowPrivate
 	for _, part := range strings.Split(getenv("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST"), ",") {

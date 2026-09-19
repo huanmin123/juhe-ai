@@ -15,7 +15,9 @@ import (
 // belongs to the gateway upstream request slices and stays unported here.
 
 // unsafeUpstreamBaseURLMessage mirrors UnsafeUpstreamUrlError's default copy.
-const unsafeUpstreamBaseURLMessage = "上游 Base URL 不能指向本机、内网、链路本地或保留地址；本地联调请显式配置 JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST，只有临时回归才使用 JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=true"
+// unsafeUpstreamBaseURLMessage 仅在部署显式设置
+// JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false 恢复限制时出现。
+const unsafeUpstreamBaseURLMessage = "当前部署已启用私网上游限制（JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=false）；如需使用本机/内网上游，请移除该环境变量或将 origin 加入 JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST"
 
 // upstreamURLSecurity mirrors RuntimeConfig['upstreamUrlSecurity'] (config
 // runtime.ts:1679-1689): env-driven once at process start in Node, lazily
@@ -32,10 +34,13 @@ var (
 
 func upstreamURLSecurityConfig() upstreamURLSecurity {
 	upstreamSecurityOnce.Do(func() {
-		allow := false
+		// 2026-09-19 用户决策（PLAN-20260919T000723744Z，开源项目优先易用性）：
+		// 默认允许私网/本机上游 Base URL；JUHE_AI_ALLOW_PRIVATE_UPSTREAM_
+		// BASE_URLS=false/0 可选择性恢复限制。
+		allow := true
 		switch strings.TrimSpace(os.Getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS")) {
-		case "true", "1":
-			allow = true
+		case "false", "0":
+			allow = false
 		}
 		allowlist := []string{}
 		raw := os.Getenv("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST")

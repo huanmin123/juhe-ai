@@ -56,8 +56,10 @@ func TestW14BSub2APIFullFieldAdaptation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sub2api 预览应成功：%v", err)
 	}
-	if len(result.Accounts) != 2 {
-		t.Fatalf("应接受两条账户条目：%d", len(result.Accounts))
+	// 2026-09-19 决策：私网 base_url 默认放行，原被 SSRF 策略拒绝的条目
+	// 现在被接受（2→3）。
+	if len(result.Accounts) != 3 {
+		t.Fatalf("应接受三条账户条目：%d", len(result.Accounts))
 	}
 	joined := ""
 	for _, item := range result.Accounts {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -335,10 +336,11 @@ func TestW2UpstreamBaseURLValidation(t *testing.T) {
 		}
 	})
 	t.Run("安全策略", func(t *testing.T) {
-		// 环境变量可能放行私网：只有默认配置下才断言拒绝路径。
-		if os.Getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS") == "true" || os.Getenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS") == "1" {
-			t.Skipf("已设置 JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS；跳过私网拒绝断言")
-		}
+		// 2026-09-19 决策：默认放行私网上游；本子测试显式恢复限制模式，
+		// 验证 opt-in 拒绝路径仍然可用。
+		t.Setenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS", "false")
+		upstreamSecurityOnce = sync.Once{}
+		t.Cleanup(func() { upstreamSecurityOnce = sync.Once{} })
 		for _, value := range []string{"http://127.0.0.1:8080/v1", "http://localhost/v1",
 			"http://10.0.0.1/v1", "http://192.168.1.1/v1", "http://169.254.1.1/v1"} {
 			err := assertSafeUpstreamBaseURL(value)

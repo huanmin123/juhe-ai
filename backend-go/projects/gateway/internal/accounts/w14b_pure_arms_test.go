@@ -574,6 +574,12 @@ func TestW14BBalanceConfigArms(t *testing.T) {
 // -------------------------------------------------- upstream_base_url.go
 
 func TestW14BUpstreamBaseURLArms(t *testing.T) {
+
+	// 2026-09-19 决策：默认放行私网上游；本测试验证 opt-in 限制模式，
+	// 显式恢复限制并重置惰性缓存。
+	t.Setenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS", "false")
+	upstreamSecurityOnce = sync.Once{}
+	t.Cleanup(func() { upstreamSecurityOnce = sync.Once{} })
 	// 惰性缓存可被测试重置：先探测默认（拒绝私有）配置。
 	resetUpstreamSecurityOnce := func(env map[string]string) {
 		for key, value := range env {
@@ -598,8 +604,9 @@ func TestW14BUpstreamBaseURLArms(t *testing.T) {
 	if err := assertSafeUpstreamBaseURL("http://127.0.0.1:8080/v1"); err != nil {
 		t.Fatalf("allow 模式下私有地址应放行：%v", err)
 	}
+	// 2026-09-19 决策：unset 现在默认放行；deny 臂显式恢复限制模式。
 	resetUpstreamSecurityOnce(map[string]string{
-		"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS":    "",
+		"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS":    "false",
 		"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST": "http://127.0.0.1:8080/",
 	})
 	if err := assertSafeUpstreamBaseURL("http://127.0.0.1:8080/v1"); err != nil {

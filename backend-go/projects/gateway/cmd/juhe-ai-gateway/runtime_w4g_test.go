@@ -181,8 +181,9 @@ func TestLoadRuntimeConfigUpstreamURLSecurity(t *testing.T) {
 	if !cfg.UpstreamURLSecurity.PrivateOriginAllowlist["https://192.168.1.5:443"] {
 		t.Fatalf("allowlist missing default-port key: %#v", cfg.UpstreamURLSecurity.PrivateOriginAllowlist)
 	}
-	if cfg.UpstreamURLSecurity.AllowPrivateBaseUrls {
-		t.Fatal("allowPrivateBaseUrls must default off")
+	if !cfg.UpstreamURLSecurity.AllowPrivateBaseUrls {
+		// 2026-09-19 决策（PLAN-20260919T000723744Z）：默认放行私网上游。
+		t.Fatal("allowPrivateBaseUrls must default on")
 	}
 	// Domain entries fail the startup.
 	if _, err := loadRuntimeConfig(w4gEnv(map[string]string{
@@ -191,14 +192,15 @@ func TestLoadRuntimeConfigUpstreamURLSecurity(t *testing.T) {
 	})); err == nil {
 		t.Fatal("domain allowlist entry accepted")
 	}
-	// allowPrivateBaseUrls is refused under the production signal.
+	// 2026-09-19 决策（PLAN-20260919T000723744Z）：生产信号不再拒绝
+	// allowPrivateBaseUrls，默认放行（开源项目优先易用性）。
 	if _, err := loadRuntimeConfig(w4gEnv(map[string]string{
 		"NODE_ENV":              "production",
 		"JUHE_AI_DATABASE_PATH": "data/business.sqlite3",
 		"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": "true",
 		"JUHE_AI_SECRET":          strings.Repeat("x", 40),
 		"JUHE_AI_ALLOWED_ORIGINS": "https://admin.example.com",
-	})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS") {
+	})); err != nil {
 		t.Fatalf("production allowPrivateBaseUrls err = %v", err)
 	}
 	// Non-production keeps the escape hatch.

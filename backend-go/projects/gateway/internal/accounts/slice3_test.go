@@ -310,6 +310,12 @@ func TestNormalizeCredentialPolicies(t *testing.T) {
 }
 
 func TestUnsafeUpstreamBaseURLRejected(t *testing.T) {
+
+	// 2026-09-19 决策：默认放行私网上游；本测试验证 opt-in 限制模式，
+	// 显式恢复限制并重置惰性缓存。
+	t.Setenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS", "false")
+	upstreamSecurityOnce = sync.Once{}
+	t.Cleanup(func() { upstreamSecurityOnce = sync.Once{} })
 	// The unsafe-target copy only holds while private base URLs are not
 	// explicitly allowed for this process.
 	if strings.TrimSpace(envOrEmpty("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS")) != "" {
