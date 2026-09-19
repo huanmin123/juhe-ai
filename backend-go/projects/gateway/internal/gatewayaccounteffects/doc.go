@@ -32,11 +32,9 @@
 // 生产接线边界（PLAN-20260918T142845703Z W6 / PLAN-20260919T000723744Z）:
 // 生产组合根只使用本包的 apikey*（AccountAPIKeyEffects/AccountAPIKeyFailureGuard/
 // transient store）、keymodel*、policyavoidance 家族与 SideEffectsConfig 中的
-// RuntimeStateDriver 字段。sideeffects.go 的 SideEffectsService、sideeffectqueue.go
-// 的 epoch registry/queue、sideeffectpolicy.go 全部、accounteffects.go 的
-// AccountEffects（ApplyAccountErrorHandling/MarkTemporaryUnavailable/ClearStreamFailure/
-// HandleStreamFailure）是 Node 未接线机制的移植残留，生产零调用（Node 归档中
-// recordGatewayAccountFailureForPrecheck 等同样零生产调用，终态归档已删除
-// local-suppression-preflight）。整簇删除因 8 个测试文件与活符号混测而暂缓，
-// 待专项清理计划按文件拆解。
+// RuntimeStateDriver 字段。Node account-side-effects 半区（SideEffectsService、
+// epoch registry/queue、policy 谓词、AccountEffects 门面）在 Go 生产链路从未
+// 接线（Node 归档中 recordGatewayAccountFailureForPrecheck 等同样零生产调用，
+// 终态归档已删除 local-suppression-preflight），已于 2026-09-19 随死代码清理
+// 提交 412f679a4 整簇删除；本包现仅保留上述活家族。
 package gatewayaccounteffects
