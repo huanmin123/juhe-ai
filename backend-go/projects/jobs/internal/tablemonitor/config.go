@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
@@ -29,13 +30,26 @@ const (
 )
 
 func LoadConfig(getenv func(string) string) (Config, error) {
+	// INSTANCE_ID 缺省取 os.Hostname()（2026-09-19 零配置决策；hostname 不可
+	// 用或为空时回落固定名，与 accounthealth/runtimelog 同约定）。
 	instanceID := strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_INSTANCE_ID"))
 	if instanceID == "" {
-		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_INSTANCE_ID 是必填配置")
+		hostname, hostErr := os.Hostname()
+		if hostErr != nil || strings.TrimSpace(hostname) == "" {
+			hostname = "juhe-ai-jobs"
+		}
+		instanceID = hostname
 	}
+	// STORE 缺省跟随 JUHE_AI_DATABASE_DRIVER（与 jobs 组合根 loadWorkerConfig
+	// 同一依据，2026-09-19 零配置决策）：postgres → ModePostgres，否则
+	// ModeSQLite；显式配置仍必须为 sqlite|postgres。
 	configuredMode := strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_STORE"))
 	if configuredMode == "" {
-		return Config{}, fmt.Errorf("必须设置 JUHE_AI_TABLE_MONITOR_STORE")
+		if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")), "postgres") {
+			configuredMode = string(ModePostgres)
+		} else {
+			configuredMode = string(ModeSQLite)
+		}
 	}
 	mode := Mode(strings.ToLower(configuredMode))
 	if mode != ModeSQLite && mode != ModePostgres {
@@ -80,15 +94,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES 无效: %w", err)
 	}
 	cfg := Config{
-		InstanceID:           instanceID,
-		OwnerLease:           ownerLease,
-		Mode:                 mode,
-		OutputPath:           strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_DATABASE_PATH")),
-		BusinessPath:         strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH")),
-		DatasetPath:          strings.TrimSpace(getenv("JUHE_AI_DATASET_DATABASE_PATH")),
-		UsageCatalogPath:     strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH")),
-		StatsPath:            strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH")),
-		CodexShardRoot:       strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")),
+		InstanceID: instanceID,
+		OwnerLease: ownerLease,
+		Mode:       mode,
+		// 路径类 env 按 DATA_DIR 约定派生（2026-09-19 零配置决策，
+		// internal/datadir）：显式配置优先，固定名与 gateway/worker_config 一致。
+		OutputPath:           datadir.Path(getenv, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", "table-monitor.sqlite3"),
+		BusinessPath:         datadir.Path(getenv, "JUHE_AI_DATABASE_PATH", "business.sqlite3"),
+		DatasetPath:          datadir.Path(getenv, "JUHE_AI_DATASET_DATABASE_PATH", "dataset.sqlite3"),
+		UsageCatalogPath:     datadir.Path(getenv, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "usage-catalog.sqlite3"),
+		StatsPath:            datadir.Path(getenv, "JUHE_AI_STATS_DATABASE_PATH", "stats.sqlite3"),
+		CodexShardRoot:       datadir.Path(getenv, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", "codex-context/state-shards"),
 		PostgresURL:          strings.TrimSpace(getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_URL")),
 		PostgresMaxOpenConns: 0,
 		PostgresMaxIdleConns: 0,
@@ -115,10 +131,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if cfg.OutputPath == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_TABLE_MONITOR_DATABASE_PATH")
 		}
-		runtimeLogPath := strings.TrimSpace(getenv("JUHE_AI_RUNTIME_LOG_DATABASE_PATH"))
-		if runtimeLogPath == "" {
-			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH，无法验证 F1/F2 专用库隔离")
-		}
+		// F1 专库路径同样按 DATA_DIR 约定派生（恒非空），仅用于隔离校验。
+		runtimeLogPath := datadir.Path(getenv, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH", "runtime-log.sqlite3")
 		same, err := sameSQLiteFile(cfg.OutputPath, runtimeLogPath)
 		if err != nil {
 			return Config{}, fmt.Errorf("校验 JUHE_AI_TABLE_MONITOR_DATABASE_PATH 与 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 的 SQLite 隔离失败: %w", err)

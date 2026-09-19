@@ -48,20 +48,10 @@ func TestW13G8LoadWorkerConfigRemainingArms(t *testing.T) {
 		{"投影批量越界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED": "true", "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "101"}, "PROJECTION_BATCH_SIZE"},
 		{"投影轮次越界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED": "true", "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN": "401"}, "MAX_BATCHES_PER_RUN"},
 		{"投影并发越界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED": "true", "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY": "9"}, "WORKER_CONCURRENCY"},
-		{"开关非布尔", map[string]string{"JUHE_AI_JOBS_PROBE_ENABLED": "maybe"}, "JUHE_AI_JOBS_PROBE_ENABLED"},
-		{"stats 缺路径", map[string]string{"JUHE_AI_JOBS_STATS_ENABLED": "true", "JUHE_AI_DATABASE_PATH": "", "JUHE_AI_STATS_DATABASE_PATH": ""}, "JUHE_AI_STATS_DATABASE_PATH"},
-		// 下方用例按 loadWorkerConfig 的 SQLite 门禁顺序（stats → oauth →
-		// task-runs → usage-writer → retention → balance → probe）禁用无关
-		// 家族，确保 patch 命中的是目标门禁分支而非前置拦截。
-		{"oauth 缺路径", map[string]string{"JUHE_AI_JOBS_OAUTH_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_DATABASE_PATH": ""}, "JUHE_AI_JOBS_OAUTH_ENABLED"},
-		{"task-runs 缺路径", map[string]string{"JUHE_AI_JOBS_TASK_RUNS_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_JOBS_OAUTH_ENABLED": "false", "JUHE_AI_TASK_RUNS_DATABASE_PATH": ""}, "JUHE_AI_TASK_RUNS_DATABASE_PATH"},
-		{"usage-writer 缺 catalog", map[string]string{"JUHE_AI_JOBS_USAGE_WRITER_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_JOBS_OAUTH_ENABLED": "false", "JUHE_AI_JOBS_TASK_RUNS_ENABLED": "false", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH": "", "JUHE_AI_USAGE_SHARD_ROOT": ""}, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH"},
-		{"usage-writer 缺业务库", map[string]string{"JUHE_AI_JOBS_USAGE_WRITER_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_JOBS_OAUTH_ENABLED": "false", "JUHE_AI_JOBS_TASK_RUNS_ENABLED": "false", "JUHE_AI_USAGE_CATALOG_DATABASE_PATH": "w13g8-catalog.sqlite3", "JUHE_AI_USAGE_SHARD_ROOT": "w13g8-shards", "JUHE_AI_DATABASE_PATH": ""}, "usage 记录的业务库副作用"},
-		{"retention 缺 dataset", map[string]string{"JUHE_AI_JOBS_RETENTION_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_JOBS_OAUTH_ENABLED": "false", "JUHE_AI_JOBS_TASK_RUNS_ENABLED": "false", "JUHE_AI_JOBS_USAGE_WRITER_ENABLED": "false", "JUHE_AI_DATASET_DATABASE_PATH": ""}, "JUHE_AI_DATASET_DATABASE_PATH"},
-		{"retention 缺 chat", map[string]string{"JUHE_AI_JOBS_RETENTION_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_JOBS_OAUTH_ENABLED": "false", "JUHE_AI_JOBS_TASK_RUNS_ENABLED": "false", "JUHE_AI_JOBS_USAGE_WRITER_ENABLED": "false", "JUHE_AI_DATASET_DATABASE_PATH": "w13g8-dataset.sqlite3", "JUHE_AI_CHAT_DATABASE_PATH": ""}, "JUHE_AI_CHAT_DATABASE_PATH"},
-		{"retention 缺 codex shard", map[string]string{"JUHE_AI_JOBS_RETENTION_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_JOBS_OAUTH_ENABLED": "false", "JUHE_AI_JOBS_TASK_RUNS_ENABLED": "false", "JUHE_AI_JOBS_USAGE_WRITER_ENABLED": "false", "JUHE_AI_DATASET_DATABASE_PATH": "w13g8-dataset.sqlite3", "JUHE_AI_CHAT_DATABASE_PATH": "w13g8-chat.sqlite3", "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": ""}, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"},
-		{"balance 缺路径", map[string]string{"JUHE_AI_JOBS_BALANCE_DETECT_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_JOBS_OAUTH_ENABLED": "false", "JUHE_AI_JOBS_TASK_RUNS_ENABLED": "false", "JUHE_AI_JOBS_USAGE_WRITER_ENABLED": "false", "JUHE_AI_JOBS_RETENTION_ENABLED": "false", "JUHE_AI_DATABASE_PATH": ""}, "JUHE_AI_JOBS_BALANCE_DETECT_ENABLED"},
-		{"probe 缺 secret", map[string]string{"JUHE_AI_JOBS_PROBE_ENABLED": "true", "JUHE_AI_JOBS_STATS_ENABLED": "false", "JUHE_AI_JOBS_OAUTH_ENABLED": "false", "JUHE_AI_JOBS_TASK_RUNS_ENABLED": "false", "JUHE_AI_JOBS_USAGE_WRITER_ENABLED": "false", "JUHE_AI_JOBS_RETENTION_ENABLED": "false", "JUHE_AI_JOBS_BALANCE_DETECT_ENABLED": "false", "JUHE_AI_SECRET": ""}, "JUHE_AI_SECRET"},
+		// 家族开关与 sqlite 路径门禁的失败臂已删除（2026-09-19 家族开关移除 +
+		// DATA_DIR 派生：开关 env 不再被读取，路径类 env 派生后恒非空）。
+		// 非 production 空 SECRET 回退开发密钥，仅 production 仍 fail closed。
+		{"production probe 缺 secret", map[string]string{"JUHE_AI_SECRET": "", "NODE_ENV": "production"}, "JUHE_AI_SECRET"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			getenv := func(key string) string {

@@ -44,16 +44,33 @@ func getenvFrom(env map[string]string) func(string) string {
 	return func(name string) string { return env[name] }
 }
 
-// TestWorkerConfigGatesFailsClosed 验证机制强制常开后存储门禁恒生效：
-// 缺存储配置时报错且文案指名对应变量名。
+// TestWorkerConfigGatesFailsClosed 验证零配置语义：空 env（sqlite 路径按
+// DATA_DIR 派生、SECRET 回退开发密钥）可成功加载；postgres 缺连接串与
+// production 空 SECRET 仍 fail closed。
 func TestWorkerConfigGatesFailsClosed(t *testing.T) {
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_STATS_DATABASE_PATH") {
-		t.Fatalf("worker 缺存储配置必须 fail closed 且文案含 JUHE_AI_STATS_DATABASE_PATH: %v", err)
+	config, err := loadWorkerConfig(getenvFrom(map[string]string{}))
+	if err != nil {
+		t.Fatalf("空 env 零配置必须可加载 worker 配置: %v", err)
+	}
+	if config.Secret != "juhe-ai-dev-secret-change-me" {
+		t.Fatalf("非生产空 SECRET 应回退开发密钥（与 gateway defaultRuntimeSecret 同值）: %q", config.Secret)
+	}
+	if config.BusinessSQLitePath == "" {
+		t.Fatal("空 env 下业务库路径应按 DATA_DIR 派生，不应为空")
 	}
 	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
 		"JUHE_AI_DATABASE_DRIVER": "postgres",
 	})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
 		t.Fatalf("postgres 模式缺少 JUHE_AI_POSTGRES_URL 必须 fail closed: %v", err)
+	}
+	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
+		"NODE_ENV": "production",
+	})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_SECRET") {
+		t.Fatalf("production 空 JUHE_AI_SECRET 必须 fail closed: %v", err)
+	}
+	explicit, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_SECRET": "explicit-secret"}))
+	if err != nil || explicit.Secret != "explicit-secret" {
+		t.Fatalf("显式 JUHE_AI_SECRET 必须优先: err=%v secret=%q", err, explicit.Secret)
 	}
 }
 

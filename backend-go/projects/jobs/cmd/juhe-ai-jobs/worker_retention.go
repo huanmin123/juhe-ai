@@ -26,9 +26,6 @@ import (
 const retentionFamilyBatchSize = retention.CleanupBatchSize
 
 func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
-	if !a.config.RetentionEnabled {
-		return nil
-	}
 	postgres := a.config.Driver == "postgres"
 	family := &retentionFamily{assembly: a, postgres: postgres}
 
@@ -42,7 +39,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 			return &cleanuprepo.DB{DB: handle.DB(), Postgres: true}, nil
 		}
 		if strings.TrimSpace(sqlitePath) == "" {
-			return nil, fmt.Errorf("启用 JUHE_AI_JOBS_RETENTION_ENABLED 后 SQLite 模式必须配置 %s", postgresPath)
+			return nil, fmt.Errorf("retention 家族 SQLite 模式必须配置 %s", postgresPath)
 		}
 		db, err := a.openSQLite(sqlitePath, label)
 		if err != nil {
@@ -149,7 +146,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	}
 	if !postgres {
 		if strings.TrimSpace(a.config.CodexContextStateShardRoot) == "" {
-			return fmt.Errorf("启用 JUHE_AI_JOBS_RETENTION_ENABLED 后 SQLite 模式必须配置 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
+			return fmt.Errorf("retention 家族 SQLite 模式必须配置 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT")
 		}
 		if a.config.CodexContextStateShardCount < 1 {
 			return fmt.Errorf("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 必须 >= 1")

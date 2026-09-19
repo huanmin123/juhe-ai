@@ -1,6 +1,10 @@
 package accounthealth
 
 import (
+	"encoding/base64"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -227,37 +231,157 @@ func TestLoadConfigCredentialSecretFallsBackToSharedSecret(t *testing.T) {
 	if err != nil || cfg.CredentialSecret != "explicit-envelope-secret" {
 		t.Fatalf("explicit CREDENTIAL_SECRET must win: cfg=%#v err=%v", cfg, err)
 	}
-	_, err = LoadConfig(func(name string) string { return base[name] })
-	if err == nil || !strings.Contains(err.Error(), "需配置 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET 或 JUHE_AI_SECRET（凭据封套密钥）") {
-		t.Fatalf("missing both secrets must fail with the combined message, got %v", err)
+	// 两者均空：非生产回退开发密钥（与 gateway defaultRuntimeSecret 同值）；
+	// production 仍 fail-fast。
+	devFallback, err := LoadConfig(func(name string) string { return base[name] })
+	if err != nil || devFallback.CredentialSecret != "juhe-ai-dev-secret-change-me" {
+		t.Fatalf("missing both secrets must fall back to the dev envelope secret in non-production, got cfg=%#v err=%v", devFallback, err)
+	}
+	prodEnv := make(map[string]string, len(base)+1)
+	for name, value := range base {
+		prodEnv[name] = value
+	}
+	prodEnv["NODE_ENV"] = "production"
+	if _, err := LoadConfig(func(name string) string { return prodEnv[name] }); err == nil || !strings.Contains(err.Error(), "凭据封套密钥") {
+		t.Fatalf("production missing both secrets must fail, got %v", err)
 	}
 }
 
-// TestLoadConfigFailsFastOnMissingRequiredEnv：无任何 J1 env 时 LoadConfig
-// 直接报错（恒开终态无静默空配置路径）；按 fail-fast 顺序逐项补齐后，错误
-// 文案依次指名 STORE、INPUT_DIRECTORY 与 INPUT_SIGNING_KEY 缺项。
-func TestLoadConfigFailsFastOnMissingRequiredEnv(t *testing.T) {
-	_, err := LoadConfig(func(string) string { return "" })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_ACCOUNT_HEALTH_STORE") {
-		t.Fatalf("no-env LoadConfig must fail on the first missing required entry, got %v", err)
+// TestLoadConfigZeroConfigFailsArms：J1 必填项默认化后（2026-09-19 零配置
+// 决策），路径/input 目录/签名 key/凭据密钥（非生产回退开发密钥）均有缺省，
+// 仅注 DATA_DIR 即可完整装载；production 下凭据封套密钥缺失仍 fail-fast，
+// 显式配置始终优先。
+func TestLoadConfigZeroConfigFailsArms(t *testing.T) {
+	loaded, err := LoadConfig(func(name string) string {
+		if name == "JUHE_AI_DATA_DIR" {
+			return t.TempDir()
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("zero-config LoadConfig must succeed (dev secret fallback), got %v", err)
 	}
-	key := strings.Repeat("A", 43)
+	if loaded.CredentialSecret != "juhe-ai-dev-secret-change-me" {
+		t.Fatalf("zero-config credential secret must fall back to the dev envelope secret, got %q", loaded.CredentialSecret)
+	}
+	if _, err := LoadConfig(func(name string) string {
+		switch name {
+		case "JUHE_AI_DATA_DIR":
+			return t.TempDir()
+		case "NODE_ENV":
+			return "production"
+		}
+		return ""
+	}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET") {
+		t.Fatalf("production zero-config must fail on the credential envelope secret, got %v", err)
+	}
+	if _, err := LoadConfig(func(name string) string {
+		if name == "JUHE_AI_DATA_DIR" {
+			return t.TempDir()
+		}
+		if name == "JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET" {
+			return "credential-secret"
+		}
+		return ""
+	}); err != nil {
+		t.Fatalf("zero-config env with only DATA_DIR + credential secret must load: %v", err)
+	}
+}
+
+// TestLoadConfigZeroConfigDefaultsKeyFileAndSource 覆盖 2026-09-19 零配置
+// 决策：仅注 DATA_DIR + 凭据封套密钥（唯一无法派生的共享密钥）即可完整装载。
+// 校验四件事：store/source 缺省推导两臂、派生路径落 <DATA_DIR> 固定名、
+// 签名 key 文件首次装载生成（48 字节 base64rawurl、0600）、二次装载复用
+// 同一 key（进程重启后签名密钥稳定）。
+func TestLoadConfigZeroConfigDefaultsKeyFileAndSource(t *testing.T) {
+	dataDir := t.TempDir()
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":         "sqlite",
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": t.TempDir() + "/state.sqlite3",
+		"JUHE_AI_DATA_DIR":                         dataDir,
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "zero-config-secret",
 	}
-	_, err = LoadConfig(func(name string) string { return base[name] })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY") {
-		t.Fatalf("missing INPUT_DIRECTORY must be named by the error, got %v", err)
+	getenv := func(name string) string { return base[name] }
+
+	// 臂一：sqlite 缺省（DATABASE_DRIVER 缺省非 postgres）→ source=files。
+	cfg, err := LoadConfig(getenv)
+	if err != nil {
+		t.Fatalf("DATA_DIR + credential secret must load: %v", err)
 	}
-	base["JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY"] = t.TempDir()
-	base["JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"] = "credential-secret"
-	_, err = LoadConfig(func(name string) string { return base[name] })
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY") {
-		t.Fatalf("missing INPUT_SIGNING_KEY must be named by the error, got %v", err)
+	if cfg.Store.Mode != StoreSQLite || cfg.InputSource != "files" {
+		t.Fatalf("sqlite 缺省臂: mode=%v source=%q", cfg.Store.Mode, cfg.InputSource)
 	}
-	base["JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY"] = key
-	if _, err := LoadConfig(func(name string) string { return base[name] }); err != nil {
-		t.Fatalf("fully populated env must load: %v", err)
+	if expected := filepath.Join(dataDir, "account-health.sqlite3"); cfg.Store.DatabasePath != expected {
+		t.Fatalf("store path = %q, want %q", cfg.Store.DatabasePath, expected)
+	}
+	if expected := filepath.Join(dataDir, "account-health-input"); cfg.InputDirectory != expected {
+		t.Fatalf("input dir = %q, want %q", cfg.InputDirectory, expected)
+	}
+	if _, statErr := os.Stat(cfg.InputDirectory); statErr != nil {
+		t.Fatalf("派生 input 目录必须被创建: %v", statErr)
+	}
+	firstKey, keyOK := cfg.InputKeys["runtime-v1"]
+	if !keyOK || len(firstKey) != 48 {
+		t.Fatalf("缺省签名 key 必须是 48 字节: len=%d ok=%v", len(firstKey), keyOK)
+	}
+	keyFile := filepath.Join(dataDir, "account-health-input.key")
+	raw, readErr := os.ReadFile(keyFile)
+	if readErr != nil {
+		t.Fatalf("签名 key 文件必须被创建: %v", readErr)
+	}
+	decoded, decodeErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if decodeErr != nil || len(decoded) != 48 {
+		t.Fatalf("key 文件内容必须是 48 字节 base64rawurl: %v len=%d", decodeErr, len(decoded))
+	}
+	if info, statErr := os.Stat(keyFile); statErr == nil && runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("key 文件权限必须为 0600: %v", info.Mode().Perm())
+		}
+	}
+
+	// 臂二（重启一致性）：二次 LoadConfig 读取同一 key 文件。
+	reloaded, err := LoadConfig(getenv)
+	if err != nil {
+		t.Fatalf("second LoadConfig: %v", err)
+	}
+	secondKey := reloaded.InputKeys["runtime-v1"]
+	if string(secondKey) != string(firstKey) {
+		t.Fatal("二次装载必须复用同一签名 key（可重启一致）")
+	}
+
+	// 臂三：显式 env 始终优先于 key 文件。
+	explicit := map[string]string{
+		"JUHE_AI_DATA_DIR":                         dataDir,
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "zero-config-secret",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": strings.Repeat("A", 43),
+	}
+	withExplicit, err := LoadConfig(func(name string) string { return explicit[name] })
+	if err != nil {
+		t.Fatalf("explicit signing key must load: %v", err)
+	}
+	decodedExplicit, decodeErr := base64.RawURLEncoding.DecodeString(strings.Repeat("A", 43))
+	if decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if got := string(withExplicit.InputKeys["runtime-v1"]); got != string(decodedExplicit) {
+		t.Fatalf("显式签名 key 必须优先: %q", got)
+	}
+
+	// 臂四：postgres 缺省臂——DATABASE_DRIVER=postgres → store/source 均
+	// postgres，store URL 回退 JUHE_AI_POSTGRES_URL。
+	pg := map[string]string{
+		"JUHE_AI_DATA_DIR":                          dataDir,
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":  "zero-config-secret",
+		"JUHE_AI_DATABASE_DRIVER":                   "postgres",
+		"JUHE_AI_POSTGRES_URL":                      "postgres://shared/juhe",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://shared/business",
+	}
+	pgCfg, err := LoadConfig(func(name string) string { return pg[name] })
+	if err != nil {
+		t.Fatalf("postgres 缺省臂必须装载: %v", err)
+	}
+	if pgCfg.Store.Mode != StorePostgres || pgCfg.InputSource != "postgres" {
+		t.Fatalf("postgres 缺省臂: mode=%v source=%q", pgCfg.Store.Mode, pgCfg.InputSource)
+	}
+	if pgCfg.Store.PostgresURL != "postgres://shared/juhe" {
+		t.Fatalf("store URL 必须回退 JUHE_AI_POSTGRES_URL: %q", pgCfg.Store.PostgresURL)
 	}
 }

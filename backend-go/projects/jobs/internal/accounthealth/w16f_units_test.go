@@ -56,6 +56,9 @@ func TestW16fLoadConfigPoolArms(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w16f-instance",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "postgres",
 		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":      "postgres://w16f.invalid:5432/db",
+		// INPUT_SOURCE 显式 files：缺省已改为跟随 store 模式（2026-09-19），
+		// postgres store 会默认 direct input 并要求 INPUT_POSTGRES_URL。
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE":      "files",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   `C:\w16f\inputs`,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": w16fSigningKey(),
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "w16f-secret",

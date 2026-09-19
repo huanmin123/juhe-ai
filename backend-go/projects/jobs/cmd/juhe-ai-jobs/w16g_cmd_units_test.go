@@ -72,7 +72,6 @@ func TestW16GRetentionOpenDualAndCodexArms(t *testing.T) {
 		config := workerConfig{
 			Driver:                      "sqlite",
 			InstanceID:                  "w16g-retention",
-			RetentionEnabled:            true,
 			BusinessSQLitePath:          filepath.Join(root, "business.sqlite3"),
 			StatsSQLitePath:             filepath.Join(root, "stats.sqlite3"),
 			DatasetSQLitePath:           filepath.Join(root, "dataset.sqlite3"),
@@ -86,15 +85,7 @@ func TestW16GRetentionOpenDualAndCodexArms(t *testing.T) {
 		}
 		return config
 	}
-	t.Run("家族未启用直接返回", func(t *testing.T) {
-		assembly := newWorkerAssembly(retentionConfig(func(config *workerConfig) {
-			config.RetentionEnabled = false
-		}), nil)
-		t.Cleanup(assembly.closeStores)
-		if err := assembly.wireRetentionFamily(context.Background()); err != nil {
-			t.Fatalf("RetentionEnabled=false 必须直接返回 nil: %v", err)
-		}
-	})
+	// 「家族未启用直接返回」臂已删除（2026-09-19 家族开关移除：retention 恒装配）。
 	t.Run("postgres 空 URL acquirePool 失败", func(t *testing.T) {
 		assembly := newWorkerAssembly(retentionConfig(func(config *workerConfig) {
 			config.Driver = "postgres"
@@ -180,7 +171,6 @@ func TestW16GRetentionRecordMaintenanceViewConflictArm(t *testing.T) {
 	assembly := newWorkerAssembly(workerConfig{
 		Driver:                      "sqlite",
 		InstanceID:                  "w16g-retention-view",
-		RetentionEnabled:            true,
 		BusinessSQLitePath:          businessPath,
 		StatsSQLitePath:             filepath.Join(root, "stats.sqlite3"),
 		DatasetSQLitePath:           filepath.Join(root, "dataset.sqlite3"),
@@ -225,10 +215,6 @@ func TestW16GPGBadURLWireFamilyArms(t *testing.T) {
 				PostgresURL:            "",
 				PostgresMaxOpenConns:   2,
 				PostgresMaxIdleConns:   1,
-				TaskRunsEnabled:        family.name == "task-runs",
-				StatsEnabled:           family.name == "stats",
-				OAuthEnabled:           family.name == "oauth",
-				UsageWriterEnabled:     family.name == "usage-writer",
 				StatsSQLitePath:        w16gValidSQLitePath(t, "unused.sqlite3"),
 				BusinessSQLitePath:     w16gValidSQLitePath(t, "unused-business.sqlite3"),
 				UsageCatalogSQLitePath: w16gValidSQLitePath(t, "unused-catalog.sqlite3"),
@@ -247,7 +233,6 @@ func TestW16GSQLiteBadPathArms(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
 			Driver:             "sqlite",
 			InstanceID:         "w16g-oauth",
-			OAuthEnabled:       true,
 			Secret:             wgBalanceSecret,
 			BusinessSQLitePath: w16gGarbageSQLite(t, filepath.Join(t.TempDir(), "oauth-garbage.sqlite3")),
 		}, nil)
@@ -260,7 +245,6 @@ func TestW16GSQLiteBadPathArms(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
 			Driver:                 "sqlite",
 			InstanceID:             "w16g-usage",
-			UsageWriterEnabled:     true,
 			UsageCatalogSQLitePath: w16gValidSQLitePath(t, "catalog.sqlite3"),
 			UsageShardRoot:         filepath.Join(t.TempDir(), "shards"),
 			BusinessSQLitePath:     w16gGarbageSQLite(t, filepath.Join(t.TempDir(), "usage-garbage.sqlite3")),
@@ -274,7 +258,6 @@ func TestW16GSQLiteBadPathArms(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
 			Driver:             "sqlite",
 			InstanceID:         "w16g-probe",
-			ProbeEnabled:       true,
 			Secret:             wgBalanceSecret,
 			BusinessSQLitePath: w16gGarbageSQLite(t, filepath.Join(t.TempDir(), "probe-garbage.sqlite3")),
 		}, nil)
@@ -292,7 +275,6 @@ func TestW16GViewConflictAndCancelledCtxArms(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
 			Driver:             "sqlite",
 			InstanceID:         "w16g-probe-view",
-			ProbeEnabled:       true,
 			Secret:             wgBalanceSecret,
 			BusinessSQLitePath: businessPath,
 		}, nil)
@@ -316,7 +298,6 @@ func TestW16GViewConflictAndCancelledCtxArms(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
 			Driver:                 "sqlite",
 			InstanceID:             "w16g-usage-view",
-			UsageWriterEnabled:     true,
 			UsageCatalogSQLitePath: catalogPath,
 			UsageShardRoot:         filepath.Join(t.TempDir(), "shards"),
 			BusinessSQLitePath:     w16gValidSQLitePath(t, "business.sqlite3"),
@@ -337,7 +318,6 @@ func TestW16GViewConflictAndCancelledCtxArms(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
 			Driver:             "sqlite",
 			InstanceID:         "w16g-stats-ctx",
-			StatsEnabled:       true,
 			StatsSQLitePath:    w16gValidSQLitePath(t, "stats.sqlite3"),
 			BusinessSQLitePath: w16gValidSQLitePath(t, "business.sqlite3"),
 		}, nil)
@@ -369,12 +349,11 @@ func TestW16GBalanceDetectSnapshotTableMissingArm(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = leaseStore.Close() })
 	assembly := newWorkerAssembly(workerConfig{
-		Driver:               "sqlite",
-		InstanceID:           "w16g-balance",
-		BalanceDetectEnabled: true,
-		Secret:               wgBalanceSecret,
-		BusinessSQLitePath:   businessPath,
-		StatsSQLitePath:      filepath.Join(root, "stats-empty.sqlite3"),
+		Driver:             "sqlite",
+		InstanceID:         "w16g-balance",
+		Secret:             wgBalanceSecret,
+		BusinessSQLitePath: businessPath,
+		StatsSQLitePath:    filepath.Join(root, "stats-empty.sqlite3"),
 	}, nil)
 	t.Cleanup(assembly.closeStores)
 	assembly.taskRunsStore = leaseStore
@@ -689,7 +668,6 @@ func TestW16GProbeFamilyCircuitErrorArm(t *testing.T) {
 	assembly := newWorkerAssembly(workerConfig{
 		Driver:             "sqlite",
 		InstanceID:         "w16g-probe-circuit",
-		ProbeEnabled:       true,
 		Secret:             wgBalanceSecret,
 		BusinessSQLitePath: businessPath,
 		StatsSQLitePath:    w16gValidSQLitePath(t, "stats.sqlite3"),
@@ -727,22 +705,10 @@ func TestW16GProbeRecoveryRedisClosedArm(t *testing.T) {
 	}
 }
 
-func TestW16GConfigProbePathAndScanNullTimeArms(t *testing.T) {
-	env := map[string]string{
-		"JUHE_AI_DATABASE_DRIVER":             "sqlite",
-		"JUHE_AI_JOBS_PROBE_ENABLED":          "true",
-		"JUHE_AI_JOBS_STATS_ENABLED":          "false",
-		"JUHE_AI_JOBS_OAUTH_ENABLED":          "false",
-		"JUHE_AI_JOBS_TASK_RUNS_ENABLED":      "false",
-		"JUHE_AI_JOBS_USAGE_WRITER_ENABLED":   "false",
-		"JUHE_AI_JOBS_RETENTION_ENABLED":      "false",
-		"JUHE_AI_JOBS_BALANCE_DETECT_ENABLED": "false",
-		"JUHE_AI_SECRET":                      wgBalanceSecret,
-	}
-	_, err := loadWorkerConfig(getenvFrom(env))
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_DATABASE_PATH") {
-		t.Fatalf("探针族缺业务库路径必须 fail closed: %v", err)
-	}
+// TestW16GScanNullTimeArm 覆盖 scanNullTime 的 PG []byte 解析失败分支。
+// 原「探针族缺业务库路径必须 fail closed」臂已删除（2026-09-19 家族开关
+// 移除 + DATA_DIR 派生：业务库路径派生后恒非空）。
+func TestW16GScanNullTimeArm(t *testing.T) {
 	if _, err := scanNullTime(true, []byte("w16g-not-a-time")); err == nil {
 		t.Fatal("PG []byte 非 RFC3339 必须解析失败")
 	}

@@ -212,7 +212,7 @@ func TestW13G8ProjectionCredentialsAdapter(t *testing.T) {
 func TestW13G8ProbeFamilyDisabledOnMissingCoreTables(t *testing.T) {
 	dir := t.TempDir()
 	assembly := w13g8NewUnitAssembly(t, func(config *workerConfig) {
-		config.ProbeEnabled = true
+		// ProbeEnabled 字段已删除（2026-09-19 家族开关移除）：探针族恒装配。
 		config.BusinessSQLitePath = filepath.Join(dir, "business.sqlite3")
 		config.StatsSQLitePath = filepath.Join(dir, "stats.sqlite3")
 	})
@@ -274,23 +274,17 @@ func TestW13G8BuildWorkerAssemblySQLiteStoreFailArms(t *testing.T) {
 		fragment string
 	}{
 		{"task-runs 目录路径", func(config *workerConfig) {
-			config.TaskRunsEnabled = true
 			config.TaskRunsSQLitePath = dir
 		}, "task-runs"},
 		{"stats 目录路径", func(config *workerConfig) {
-			config.StatsEnabled = true
 			config.StatsSQLitePath = dir
 		}, "stats"},
 		{"usage-writer 目录路径", func(config *workerConfig) {
-			config.UsageWriterEnabled = true
 			config.UsageCatalogSQLitePath = dir
 		}, "usage-writer"},
-		{"balance-detect stats 目录路径", func(config *workerConfig) {
-			// balance-detect 需要 task-runs 租约存储先装配成功才会打开 stats。
-			config.TaskRunsEnabled = true
-			config.BalanceDetectEnabled = true
-			config.StatsSQLitePath = dir
-		}, "balance-detect"},
+		// 「balance-detect stats 目录路径」臂已删除（2026-09-19 家族开关移除）：
+		// stats 家族先于 balance-detect 装配，同一垃圾路径在 stats-verify 打开处
+		// 先行失败，balance-detect 臂在恒装配顺序下不可达。
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			config := workerConfig{
@@ -312,16 +306,27 @@ func TestW13G8BuildWorkerAssemblySQLiteStoreFailArms(t *testing.T) {
 			}
 		})
 	}
-	// retention：SQLite 模式缺必需路径的显式报错分支。
+	// retention：SQLite 模式缺 Codex shard 根的显式报错分支（家族开关已删除，
+	// 报错文案不再携带 RETENTION_ENABLED；其余路径给到临时目录，让装配推进
+	// 到 retention 家族的 shard 根校验处失败）。
+	retentionDir := t.TempDir()
 	retentionConfig := workerConfig{
-		Driver:           "sqlite",
-		InstanceID:       "w13g8-retention-fail",
-		WorkerRole:       "ingest-worker",
-		RetentionEnabled: true,
-		DrainTimeout:     time.Second,
+		Driver:                      "sqlite",
+		InstanceID:                  "w13g8-retention-fail",
+		WorkerRole:                  "ingest-worker",
+		Secret:                      wgBalanceSecret,
+		DrainTimeout:                time.Second,
+		BusinessSQLitePath:          filepath.Join(retentionDir, "business.sqlite3"),
+		StatsSQLitePath:             filepath.Join(retentionDir, "stats.sqlite3"),
+		TaskRunsSQLitePath:          filepath.Join(retentionDir, "task-runs.sqlite3"),
+		ChatSQLitePath:              filepath.Join(retentionDir, "chat.sqlite3"),
+		DatasetSQLitePath:           filepath.Join(retentionDir, "dataset.sqlite3"),
+		UsageCatalogSQLitePath:      filepath.Join(retentionDir, "usage.sqlite3"),
+		UsageShardRoot:              filepath.Join(retentionDir, "usage-shards"),
+		CodexContextStateShardCount: 1,
 	}
-	if _, err := buildWorkerAssembly(retentionConfig, nil); err == nil || !strings.Contains(err.Error(), "RETENTION_ENABLED") {
-		t.Fatalf("缺业务库路径必须报 retention 配置错误: %v", err)
+	if _, err := buildWorkerAssembly(retentionConfig, nil); err == nil || !strings.Contains(err.Error(), "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") {
+		t.Fatalf("缺 codex shard 根路径必须报 retention 配置错误: %v", err)
 	}
 }
 

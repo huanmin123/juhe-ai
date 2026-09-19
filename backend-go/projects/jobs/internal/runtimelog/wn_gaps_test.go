@@ -222,11 +222,32 @@ func TestConfigValueParsers(t *testing.T) {
 	if value, err := positiveIntOrDefault("X", "", 3); err != nil || value != 3 {
 		t.Fatalf("连接数缺省值必须生效: %d %v", value, err)
 	}
-	if mode, err := parseMode(" postgres "); err != nil || mode != ModePostgres {
+	if mode, err := parseStoreMode(func(name string) string {
+		if name == "JUHE_AI_RUNTIME_LOG_STORE" {
+			return " postgres "
+		}
+		return ""
+	}); err != nil || mode != ModePostgres {
 		t.Fatalf("postgres 模式必须可解析: %s %v", mode, err)
 	}
-	if _, err := parseMode("bogus"); err == nil {
+	if _, err := parseStoreMode(func(name string) string {
+		if name == "JUHE_AI_RUNTIME_LOG_STORE" {
+			return "bogus"
+		}
+		return ""
+	}); err == nil {
 		t.Fatal("未知 Store 模式必须报错")
+	}
+	if mode, err := parseStoreMode(func(string) string { return "" }); err != nil || mode != ModeSQLite {
+		t.Fatalf("缺省 Store 必须跟随默认 sqlite 驱动: %s %v", mode, err)
+	}
+	if mode, err := parseStoreMode(func(name string) string {
+		if name == "JUHE_AI_DATABASE_DRIVER" {
+			return "postgres"
+		}
+		return ""
+	}); err != nil || mode != ModePostgres {
+		t.Fatalf("缺省 Store 必须跟随 postgres 驱动: %s %v", mode, err)
 	}
 }
 
@@ -284,8 +305,20 @@ func TestLoadConfigPostgresModeAndRejects(t *testing.T) {
 		missingLogDir[name] = value
 	}
 	delete(missingLogDir, "JUHE_AI_LOG_DIR")
-	if _, err := LoadConfig(func(name string) string { return missingLogDir[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_LOG_DIR") {
-		t.Fatalf("缺少日志目录必须拒绝: %v", err)
+	// 缺省 LOG_DIR 改为派生 <DATA_DIR>/logs 并代建目录（2026-09-19 零配置
+	// 决策）；DATA_DIR 指向临时目录，验证派生与创建且不污染包目录。
+	dataRoot := t.TempDir()
+	missingLogDir["JUHE_AI_DATA_DIR"] = dataRoot
+	derivedConfig, deriveErr := LoadConfig(func(name string) string { return missingLogDir[name] })
+	if deriveErr != nil {
+		t.Fatalf("缺省 LOG_DIR 必须从 DATA_DIR 派生: %v", deriveErr)
+	}
+	expectedLogDir := filepath.Join(dataRoot, "logs")
+	if derivedConfig.LogDirectory != expectedLogDir {
+		t.Fatalf("LOG_DIR 必须派生为 <DATA_DIR>/logs: %q", derivedConfig.LogDirectory)
+	}
+	if _, statErr := os.Stat(expectedLogDir); statErr != nil {
+		t.Fatalf("派生日志目录必须被创建: %v", statErr)
 	}
 
 	badLease := map[string]string{}

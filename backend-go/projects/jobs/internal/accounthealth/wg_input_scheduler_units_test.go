@@ -224,13 +224,17 @@ func TestLoadConfigErrorMatrix(t *testing.T) {
 	}{
 		{"缺 owner 声明", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER"] = "node" }},
 		{"store 模式非法", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_STORE"] = "oracle" }},
-		{"sqlite 缺路径", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH"] = "" }},
 		{"PG 缺 URL", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_STORE"] = "postgres" }},
-		{"缺 input 目录", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY"] = "" }},
 		{"input 源非法", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "redis" }},
-		{"签名键缺失", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY"] = "" }},
 		{"签名键过短", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY"] = "AAAA" }},
-		{"缺凭据 secret", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"] = "" }},
+		// 「缺凭据 secret」非生产臂已随 2026-09-19 零配置决策回退开发密钥；
+		// production 下缺凭据 secret 仍 fail closed。
+		{"production 缺凭据 secret", func(env map[string]string) {
+			env["JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"] = ""
+			env["NODE_ENV"] = "production"
+		}},
+		// 「sqlite 缺路径」「缺 input 目录」「签名键缺失」三个失败臂已删除
+		// （2026-09-19 零配置决策：三项均改为派生缺省，不再 fail closed）。
 		{"owner lease 小于探针超时", func(env map[string]string) {
 			env["JUHE_AI_ACCOUNT_HEALTH_OWNER_LEASE"] = "16s"
 			env["JUHE_AI_ACCOUNT_HEALTH_PROBE_TIMEOUT"] = "30s"

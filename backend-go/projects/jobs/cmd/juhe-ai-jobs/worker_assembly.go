@@ -230,9 +230,6 @@ func (a *workerAssembly) registerDisabledJob(name, reason string) {
 // 启动对账（kill-restart 收口）与 background-task-run-reconcile 任务；
 // 同时作为 postgres 模式下 scheduled lease 的获取点。
 func (a *workerAssembly) wireTaskRunsFamily(ctx context.Context) error {
-	if !a.config.TaskRunsEnabled {
-		return nil
-	}
 	config := taskruns.StoreConfig{
 		Mode:                 taskruns.StoreMode(a.config.Driver),
 		DatabasePath:         a.config.TaskRunsSQLitePath,
@@ -322,9 +319,6 @@ func (s statsTimezoneSource) StatsTimezone(ctx context.Context) (*time.Location,
 // wireStatsFamily：statsverify（client-ip / group stats / 一致性检查）+
 // statsagg（在线聚合与全部窗口刷新任务）。
 func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
-	if !a.config.StatsEnabled {
-		return nil
-	}
 	config := statsverify.StoreConfig{
 		Mode:                 statsverify.StoreMode(a.config.Driver),
 		SQLiteStatsPath:      a.config.StatsSQLitePath,
@@ -548,9 +542,6 @@ func hotUsageWindowStages() []statsagg.WindowStageName {
 // wireOAuthFamily：J4 家族（OpenAI OAuth 刷新、两类可用性排期同步、
 // 授权过期 sweep）。
 func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
-	if !a.config.OAuthEnabled {
-		return nil
-	}
 	var db *sql.DB
 	postgres := a.config.Driver == "postgres"
 	if postgres {
@@ -629,9 +620,6 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 //     业务库句柄，usagewriter SqliteShardStore 由此回写 accounts.last_used_at
 //     与账户健康副作用（此前 nil = queryOnly 静默跳过，业务库副作用断供）。
 func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
-	if !a.config.UsageWriterEnabled {
-		return nil
-	}
 	postgres := a.config.Driver == "postgres"
 	var catalogDB *sql.DB
 	var store usagewriter.ShardStore
@@ -689,7 +677,7 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 // sqlite 模式从 stats 库目录的同规则派生，见 worker_config.go）；两者皆空
 // 时（PG 模式未配置 env）交接表无人消费，按组合根约定显式告警登记，不静默。
 func (a *workerAssembly) wireUsageSpoolDrain() error {
-	if !a.config.UsageWriterEnabled || a.writer == nil {
+	if a.writer == nil {
 		return nil
 	}
 	if a.config.UsageSpoolDirectory == "" {

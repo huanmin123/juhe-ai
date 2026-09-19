@@ -636,35 +636,18 @@ func TestW9GConfigValidationArms(t *testing.T) {
 			override: map[string]string{"JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS": "abc"},
 			wantErr:  "必须是正整数",
 		},
-		{
-			name:     "sqlite 缺输出路径",
-			override: map[string]string{"JUHE_AI_TABLE_MONITOR_DATABASE_PATH": ""},
-			wantErr:  "缺少 JUHE_AI_TABLE_MONITOR_DATABASE_PATH",
-		},
-		{
-			name:     "sqlite 缺运行日志路径",
-			override: map[string]string{"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": ""},
-			wantErr:  "缺少 JUHE_AI_RUNTIME_LOG_DATABASE_PATH",
-		},
+		// 「sqlite 缺输出路径」「sqlite 缺运行日志路径」「源库路径缺失」
+		// 「缺 Codex shard 根」四个失败臂已删除（2026-09-19 零配置决策：
+		// 路径类 env 缺省按 DATA_DIR 派生，恒非空，不再是校验失败分支）。
 		{
 			name:     "sqlite 与运行日志共用文件",
 			override: map[string]string{"JUHE_AI_RUNTIME_LOG_DATABASE_PATH": env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"]},
 			wantErr:  "不得与 JUHE_AI_RUNTIME_LOG_DATABASE_PATH 共用",
 		},
 		{
-			name:     "源库路径缺失",
-			override: map[string]string{"JUHE_AI_DATABASE_PATH": ""},
-			wantErr:  "数据库路径",
-		},
-		{
 			name:     "源库与输出共用文件",
 			override: map[string]string{"JUHE_AI_DATABASE_PATH": env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"]},
 			wantErr:  "不得与 JUHE_AI_DATABASE_PATH 共用",
-		},
-		{
-			name:     "缺 Codex shard 根",
-			override: map[string]string{"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT": ""},
-			wantErr:  "缺少 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT",
 		},
 		{
 			name:     "输出路径的父目录是文件",

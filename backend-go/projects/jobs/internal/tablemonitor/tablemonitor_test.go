@@ -52,14 +52,18 @@ func TestLoadConfigRequiresDedicatedSQLiteOutput(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	env := sqliteTestEnv(root)
-	delete(env, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH")
-	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil {
-		t.Fatal("expected missing dedicated output path to fail")
-	}
+	// 缺省输出路径派生 <DATA_DIR>/table-monitor.sqlite3（2026-09-19 零配置
+	// 决策），不再缺省报错；缺失 F1 路径的失败臂同因删除（两条路径都派生，
+	// 固定名不同，隔离恒成立）。
 	env = sqliteTestEnv(root)
-	delete(env, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH")
-	if _, err := LoadConfig(func(key string) string { return env[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_DATABASE_PATH") {
-		t.Fatalf("缺少 F1 专用库路径必须拒绝 F2 SQLite 启动，实际为 %v", err)
+	delete(env, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH")
+	env["JUHE_AI_DATA_DIR"] = root
+	derived, err := LoadConfig(func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatalf("缺省输出路径必须派生而非报错: %v", err)
+	}
+	if expected := filepath.Join(root, "table-monitor.sqlite3"); derived.OutputPath != expected {
+		t.Fatalf("derived output path = %q, want %q", derived.OutputPath, expected)
 	}
 	env = sqliteTestEnv(root)
 	env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = env["JUHE_AI_STATS_DATABASE_PATH"]
@@ -484,15 +488,43 @@ func TestCleanupUntilCompleteAcceptsExactFinalBatch(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRequiresExplicitStoreMode(t *testing.T) {
-	_, err := LoadConfig(func(key string) string {
+// TestLoadConfigDefaultsStoreModeFromDriver 覆盖 2026-09-19 零配置决策：
+// STORE 缺省跟随 JUHE_AI_DATABASE_DRIVER（默认 sqlite，postgres 跟随）。
+func TestLoadConfigDefaultsStoreModeFromDriver(t *testing.T) {
+	config, err := LoadConfig(func(key string) string {
 		if key == "JUHE_AI_TABLE_MONITOR_INSTANCE_ID" {
 			return "test-instance"
 		}
 		return ""
 	})
-	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_STORE") {
-		t.Fatalf("missing store mode must fail explicitly, got %v", err)
+	if err != nil || config.Mode != ModeSQLite {
+		t.Fatalf("缺省 store 模式必须为 sqlite: %v %v", config.Mode, err)
+	}
+	config, err = LoadConfig(func(key string) string {
+		if key == "JUHE_AI_TABLE_MONITOR_INSTANCE_ID" {
+			return "test-instance"
+		}
+		if key == "JUHE_AI_DATABASE_DRIVER" {
+			return "postgres"
+		}
+		if key == "JUHE_AI_TABLE_MONITOR_POSTGRES_URL" {
+			return "postgres://jobs:secret@127.0.0.1:5432/db?sslmode=disable"
+		}
+		return ""
+	})
+	if err != nil || config.Mode != ModePostgres {
+		t.Fatalf("store 模式必须跟随 postgres 驱动: %v %v", config.Mode, err)
+	}
+	if _, err := LoadConfig(func(key string) string {
+		if key == "JUHE_AI_TABLE_MONITOR_INSTANCE_ID" {
+			return "test-instance"
+		}
+		if key == "JUHE_AI_TABLE_MONITOR_STORE" {
+			return "bogus"
+		}
+		return ""
+	}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_TABLE_MONITOR_STORE") {
+		t.Fatalf("显式非法 store 模式必须拒绝, got %v", err)
 	}
 }
 

@@ -484,9 +484,8 @@ func TestW16DSQLiteProbeFamilyStatsFailArm(t *testing.T) {
 		BusinessSQLitePath: businessPath,
 		StatsSQLitePath:    statsGarbage,
 		Secret:             w16dSecret,
-		ProbeEnabled:       true,
-		StatsEnabled:       false, OAuthEnabled: false, TaskRunsEnabled: false,
-		UsageWriterEnabled: false, BalanceDetectEnabled: false, RetentionEnabled: false,
+		// 家族开关字段已删除（2026-09-19）：探针族恒装配，直接调
+		// wireProbeFamily 驱动 stats 打开失败臂。
 	}, slog.Default())
 	t.Cleanup(assembly.closeStores)
 	armErr := assembly.wireProbeFamily(context.Background())

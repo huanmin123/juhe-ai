@@ -121,9 +121,7 @@ func balanceDetectAssemblyEnv(t *testing.T, businessPath, statsPath string) map[
 		"JUHE_AI_CHAT_DATABASE_PATH":              filepath.Join(filepath.Dir(businessPath), "chat.sqlite3"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT":  filepath.Join(filepath.Dir(businessPath), "codex-state"),
 		"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "1",
-		"JUHE_AI_JOBS_STATS_ENABLED":              "false",
-		"JUHE_AI_JOBS_OAUTH_ENABLED":              "false",
-		"JUHE_AI_JOBS_USAGE_WRITER_ENABLED":       "false",
+		// 家族开关 env 已删除（2026-09-19）：全部家族恒装配。
 	}
 }
 

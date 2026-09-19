@@ -700,14 +700,21 @@ func TestSQLiteOwnerLeaseReleasePreservesMonotonicFenceToken(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRequiresOwnerLeaseInstanceID(t *testing.T) {
+// TestLoadConfigDefaultsMissingInstanceIDToHostname 覆盖 2026-09-19 零配置
+// 决策：INSTANCE_ID 缺省取 os.Hostname()，不再必填报错。
+func TestLoadConfigDefaultsMissingInstanceIDToHostname(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_RUNTIME_LOG_STORE":     "sqlite",
 		"JUHE_AI_DATASET_DATABASE_PATH": "dataset.sqlite",
 		"JUHE_AI_LOG_DIR":               "logs",
 	}
-	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_INSTANCE_ID") {
-		t.Fatalf("缺少 owner 实例 ID 必须拒绝启动，实际为 %v", err)
+	config, err := LoadConfig(func(name string) string { return values[name] })
+	if err != nil {
+		t.Fatalf("缺省 INSTANCE_ID 必须回落 hostname 而非报错: %v", err)
+	}
+	hostname, _ := os.Hostname()
+	if !strings.HasPrefix(config.OwnerID, hostname+":") {
+		t.Fatalf("OwnerID 必须由 hostname 缺省实例 ID 组成: %q (hostname=%q)", config.OwnerID, hostname)
 	}
 }
 
@@ -729,15 +736,23 @@ func TestLoadConfigAcceptsInstanceWithoutNodeGoOwnerSwitch(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRequiresDedicatedRuntimeLogSQLitePath(t *testing.T) {
+// TestLoadConfigDerivesRuntimeLogSQLitePath 覆盖 2026-09-19 零配置决策：
+// 专用运行日志 SQLite 路径缺省派生 <DATA_DIR>/runtime-log.sqlite3。
+func TestLoadConfigDerivesRuntimeLogSQLitePath(t *testing.T) {
+	dataRoot := t.TempDir()
 	values := map[string]string{
 		"JUHE_AI_RUNTIME_LOG_INSTANCE_ID": "test-instance",
 		"JUHE_AI_RUNTIME_LOG_STORE":       "sqlite",
 		"JUHE_AI_DATABASE_PATH":           "business.sqlite",
+		"JUHE_AI_DATA_DIR":                dataRoot,
 		"JUHE_AI_LOG_DIR":                 "logs",
 	}
-	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_DATABASE_PATH") {
-		t.Fatalf("缺少专用运行日志 SQLite 路径必须拒绝启动，实际为 %v", err)
+	config, err := LoadConfig(func(name string) string { return values[name] })
+	if err != nil {
+		t.Fatalf("缺省运行日志路径必须派生而非报错: %v", err)
+	}
+	if expected := filepath.Join(dataRoot, "runtime-log.sqlite3"); config.RuntimeLogDatabasePath != expected {
+		t.Fatalf("运行日志路径必须派生为 <DATA_DIR>/runtime-log.sqlite3: %q", config.RuntimeLogDatabasePath)
 	}
 }
 
@@ -1025,17 +1040,6 @@ func TestMigrateLegacySQLiteRejectsNonCanonicalAbsoluteTime(t *testing.T) {
 	}
 	if err := MigrateLegacySQLite(testOwnerContext(t, store), config, store); err == nil {
 		t.Fatal("legacy offset-less absolute time must fail closed before copying rows")
-	}
-}
-
-func TestLoadConfigRequiresExplicitInstanceID(t *testing.T) {
-	values := map[string]string{
-		"JUHE_AI_RUNTIME_LOG_STORE":     "sqlite",
-		"JUHE_AI_DATASET_DATABASE_PATH": "dataset.sqlite",
-		"JUHE_AI_LOG_DIR":               "logs",
-	}
-	if _, err := LoadConfig(func(name string) string { return values[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_INSTANCE_ID") {
-		t.Fatalf("Go 索引必须拒绝缺少实例 ID 的启动，实际为 %v", err)
 	}
 }
 

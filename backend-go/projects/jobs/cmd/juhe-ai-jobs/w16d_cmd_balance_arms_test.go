@@ -427,13 +427,7 @@ func w16dSQLiteAssemblyConfig(t *testing.T, mutate func(*workerConfig)) workerCo
 		CodexContextStateShardRoot:  filepath.Join(root, "codex-state"),
 		CodexContextStateShardCount: 4,
 		ChatAssetsRoot:              filepath.Join(root, "chat-assets"),
-		StatsEnabled:                true,
-		OAuthEnabled:                true,
-		TaskRunsEnabled:             true,
-		UsageWriterEnabled:          true,
-		BalanceDetectEnabled:        false,
-		RetentionEnabled:            true,
-		ProbeEnabled:                true,
+		// 家族开关字段已删除（2026-09-19）：全部家族恒装配。
 	}
 	if mutate != nil {
 		mutate(&config)
@@ -469,29 +463,9 @@ func TestW16DBuildWorkerAssemblyFailArms(t *testing.T) {
 		}
 		t.Fatal("垃圾 task-runs 必须使装配失败")
 	}
-	// OAuth 开启且 secret 为空 → OpenStore 失败（575-577）并经 wireFamilies 传播（197-199）。
-	oauthConfig := w16dSQLiteAssemblyConfig(t, func(config *workerConfig) {
-		config.Secret = ""
-		config.ProbeEnabled = false
-		config.BalanceDetectEnabled = false
-	})
-	if assembly, err := buildWorkerAssembly(oauthConfig, slog.Default()); err == nil {
-		if assembly != nil {
-			assembly.closeStores()
-		}
-		t.Fatal("空 secret 必须使 OAuth 族装配失败")
-	}
-	// 探针族 secret 为空 → NewStore 失败（42-45）并传播（209-211）。
-	probeConfig := w16dSQLiteAssemblyConfig(t, func(config *workerConfig) {
-		config.Secret = ""
-		config.OAuthEnabled = false
-	})
-	if assembly, err := buildWorkerAssembly(probeConfig, slog.Default()); err == nil {
-		if assembly != nil {
-			assembly.closeStores()
-		}
-		t.Fatal("空 secret 必须使探针族装配失败")
-	}
+	// 空 secret 的装配失败臂已删除（2026-09-19）：loadWorkerConfig 现在对空
+	// JUHE_AI_SECRET fail-fast，组合根不再有「OAuth/探针族各自撞空 secret」
+	// 的到达路径；装配层空 secret 由 family 侧既有错误保留。
 }
 
 func TestW16DWireBalanceDetectFamilyArms(t *testing.T) {
@@ -500,7 +474,7 @@ func TestW16DWireBalanceDetectFamilyArms(t *testing.T) {
 	// 租约存储门禁才能触达业务库打开。
 	pgAssembly := newWorkerAssembly(workerConfig{
 		Driver: "postgres", PostgresURL: "pgx://w16d-invalid",
-		BalanceDetectEnabled: true, Secret: "0123456789abcdef0123456789abcdef",
+		Secret: "0123456789abcdef0123456789abcdef",
 	}, slog.Default())
 	pgAssembly.taskRunsStore = w16dOpenTaskRunsStore(t)
 	if err := pgAssembly.wireBalanceDetectFamily(ctx); err == nil {
@@ -530,7 +504,6 @@ func TestW16DWireBalanceDetectFamilyArms(t *testing.T) {
 		StatsSQLitePath:    filepath.Join(root, "stats-no-snapshots.sqlite3"),
 		TaskRunsSQLitePath: filepath.Join(root, "task-runs.sqlite3"),
 		Secret:             "0123456789abcdef0123456789abcdef",
-		TaskRunsEnabled:    true,
 	}, slog.Default())
 	t.Cleanup(assembly.closeStores)
 	if err := assembly.wireTaskRunsFamily(ctx); err != nil {

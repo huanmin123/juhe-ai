@@ -32,8 +32,7 @@ func seedRecordMaintenanceDrain(t *testing.T, dir string) {
 		"CREATE TABLE IF NOT EXISTS account_record_cleanup_targets (account_id TEXT PRIMARY KEY, system_account_id TEXT, related_account_ids_json TEXT DEFAULT '[]', authorization_ids_json TEXT DEFAULT '[]', team_scope_ids_json TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT, attempt_count INTEGER DEFAULT 0, last_attempt_at TEXT, last_blocked_reason TEXT, last_error_message TEXT)")
 	_ = dataset.Close()
 
-	stats := openTestSQLite(t, filepath.Join(dir, "stats.sqlite3"))
-	statsCleanupTables(t, stats)
+	stats := statsCleanupTables(t, filepath.Join(dir, "stats.sqlite3"))
 	// 使用记录清理的安全游标（global + usage_shard 两个必需 job）。
 	mustExec(t, stats,
 		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'global', 'usage_stats_aggregation')`,
@@ -41,16 +40,15 @@ func seedRecordMaintenanceDrain(t *testing.T, dir string) {
 		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'usage_shard', '20200101:s01', 'client_ip_stats_aggregation')`)
 	_ = stats.Close()
 
+	// usage catalog schema 由 usagewriter 幂等建表（家族开关删除后
+	// usage-writer 恒装配，手工最小表会让 EnsureCatalogSchema 失败）。
 	catalog := openTestSQLite(t, filepath.Join(dir, "usage-catalog.sqlite3"))
 	shardPath := filepath.Join(dir, "usage-shards", "shard.sqlite3")
+	seedUsageCatalogSchema(t, catalog, filepath.Join(dir, "usage-shards"))
 	mustExec(t, catalog,
-		`CREATE TABLE IF NOT EXISTS usage_record_shards (shard_key TEXT PRIMARY KEY, bucket_date TEXT, shard_id INTEGER, file_path TEXT, status TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_shard_entries (usage_id TEXT, shard_key TEXT, created_at TEXT, system_account_id TEXT, api_key_id TEXT, account_id TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_account_shards (account_id TEXT, shard_key TEXT, first_created_at TEXT, last_seen_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_api_key_shards (api_key_id TEXT, system_account_id TEXT, shard_key TEXT, first_created_at TEXT, last_seen_at TEXT)`,
-		"INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status) VALUES ('20200101:s01', '2020-01-01', 1, '"+shardPath+"', 'active')",
-		`INSERT INTO usage_record_shard_entries (usage_id, shard_key, created_at, system_account_id)
-		 VALUES ('usage-old', '20200101:s01', '2020-01-01T00:00:00.000Z', 'sys_a')`)
+		"INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status, first_seen_at, created_at, updated_at) VALUES ('20200101:s01', '2020-01-01', 1, '"+shardPath+"', 'active', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')",
+		`INSERT INTO usage_record_shard_entries (usage_id, shard_key, created_at, system_account_id, trace_id, traffic_source, indexed_at)
+		 VALUES ('usage-old', '20200101:s01', '2020-01-01T00:00:00.000Z', 'sys_a', '', '', '1970-01-01T00:00:00.000Z')`)
 	_ = catalog.Close()
 
 	if err := os.MkdirAll(filepath.Dir(shardPath), 0o755); err != nil {

@@ -38,8 +38,8 @@ func registerDisabledJobsStartup(assembly *workerAssembly, logger *slog.Logger) 
 		}
 		assembly.registerDisabledJob(gap.JobName, gap.Reason)
 	}
-	// GoWired 但所属家族未启用（JUHE_AI_JOBS_*_ENABLED=false）的任务同样必须
-	// 显式登记，不允许从未接线任务静默消失。
+	// GoWired 但当前部署形态未装配的任务同样必须显式登记，不允许从未接线
+	// 任务静默消失（现行缺口来源是存储驱动分叉，不再是已删除的家族开关）。
 	registered := map[string]bool{}
 	for _, job := range assembly.wiredJobs {
 		registered[job] = true
@@ -51,7 +51,7 @@ func registerDisabledJobsStartup(assembly *workerAssembly, logger *slog.Logger) 
 		if entry.GoStatus != jobregistry.GoWired || registered[entry.JobName] {
 			continue
 		}
-		assembly.registerDisabledJob(entry.JobName, "所属家族未启用（对应 JUHE_AI_JOBS_*_ENABLED=false，组合根未装配依赖）")
+		assembly.registerDisabledJob(entry.JobName, "当前部署形态未装配（driver 分叉不注册，组合根未装配依赖）")
 	}
 	_ = logger
 }

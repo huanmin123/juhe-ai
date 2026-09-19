@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -97,19 +98,27 @@ func seedProbeCoreTables(t *testing.T, path string) {
 func probeWorkerTestEnv(t *testing.T) map[string]string {
 	t.Helper()
 	env := workerSmokeTestEnv(t)
-	env["JUHE_AI_JOBS_PROBE_ENABLED"] = "true"
+	// JUHE_AI_JOBS_PROBE_ENABLED 已删除（2026-09-19 家族开关移除），探针族恒装配。
 	// 速度优先降级运行态无 Redis：组合根必须把该任务登记 disabled，
 	// 其余两个探针任务照常接线。
 	seedProbeCoreTables(t, env["JUHE_AI_DATABASE_PATH"])
 	return env
 }
 
-// TestProbeFamilyWiringFailsClosed 验证缺 JUHE_AI_SECRET 时探针族 fail closed。
-func TestProbeFamilyWiringFailsClosed(t *testing.T) {
+// TestProbeFamilySecretFallbackAndProductionGate 验证 SECRET 语义（2026-09-19
+// 零配置决策）：非生产空值回退开发密钥可装载；production 空值仍 fail closed。
+func TestProbeFamilySecretFallbackAndProductionGate(t *testing.T) {
 	env := probeWorkerTestEnv(t)
 	delete(env, "JUHE_AI_SECRET")
-	if _, err := loadWorkerConfig(getenvFrom(env)); err == nil {
-		t.Fatal("启用探针族而缺少 JUHE_AI_SECRET 必须 fail closed")
+	config, err := loadWorkerConfig(getenvFrom(env))
+	if err != nil || config.Secret != "juhe-ai-dev-secret-change-me" {
+		t.Fatalf("非生产空 SECRET 应回退开发密钥: config=%+v err=%v", config, err)
+	}
+	prod := probeWorkerTestEnv(t)
+	prod["JUHE_AI_SECRET"] = ""
+	prod["NODE_ENV"] = "production"
+	if _, err := loadWorkerConfig(getenvFrom(prod)); err == nil || !strings.Contains(err.Error(), "JUHE_AI_SECRET") {
+		t.Fatalf("production 空 JUHE_AI_SECRET 必须 fail closed: %v", err)
 	}
 }
 
@@ -174,8 +183,8 @@ func TestProbeFamilyConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.ProbeEnabled || config.ProbeConcurrency != 512 {
-		t.Fatalf("probe defaults: enabled=%v concurrency=%d", config.ProbeEnabled, config.ProbeConcurrency)
+	if config.ProbeConcurrency != 512 {
+		t.Fatalf("probe defaults: concurrency=%d", config.ProbeConcurrency)
 	}
 	if config.PostgresMaxOpenConns != 50 || config.PostgresMaxIdleConns != 50 {
 		t.Fatalf("postgres pool defaults: open=%d idle=%d", config.PostgresMaxOpenConns, config.PostgresMaxIdleConns)

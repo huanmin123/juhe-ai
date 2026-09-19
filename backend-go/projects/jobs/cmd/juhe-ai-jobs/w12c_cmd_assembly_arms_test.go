@@ -394,7 +394,7 @@ func TestW12CLoadWorkerConfigErrorMatrix(t *testing.T) {
 		{"非法 chat retention", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}},
 		{"非法 batch size", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE": "0"}},
 		{"非法 flush batches", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES": "0"}},
-		{"非法 stats toggle", map[string]string{"JUHE_AI_JOBS_STATS_ENABLED": "maybe"}},
+		// 「非法 stats toggle」臂已删除（2026-09-19 家族开关移除：开关 env 不再被读取）。
 		{"非法 probe concurrency", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "0"}},
 		{"非法 projection interval", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "1"}},
 		{"非法 projection batch", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "101"}},
@@ -444,9 +444,16 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 	if disabledErr != nil || disabled != nil {
 		t.Fatalf("env 关闭后投影面必须缺席: %v %v", disabled, disabledErr)
 	}
-	// J1 配置缺失 → 恒开语义下 LoadConfig 失败即装配失败（无静默缺席路径）。
-	if absent, err := assembly.wireHealthOutcomeProjector(func(string) string { return "" }, &accounthealth.Store{}); err == nil {
-		t.Fatalf("J1 配置缺失必须使投影装配失败: %v", absent)
+	// production 下 J1 凭据密钥缺失 → 恒开语义下 LoadConfig 失败即装配失败
+	//（非生产空值回退开发密钥，装配成功是预期行为）。
+	prodGetenv := func(name string) string {
+		if name == "NODE_ENV" {
+			return "production"
+		}
+		return ""
+	}
+	if absent, err := assembly.wireHealthOutcomeProjector(prodGetenv, &accounthealth.Store{}); err == nil {
+		t.Fatalf("production J1 凭据密钥缺失必须使投影装配失败: %v", absent)
 	}
 	// 轮询/批量 env 非法 → 装配失败（业务库可开）。
 	getenv := func(name string) string {
@@ -571,13 +578,6 @@ func TestW12CWireFamiliesErrorPropagation(t *testing.T) {
 		PostgresMaxIdleConns:        5,
 		Secret:                      wgBalanceSecret,
 		InstanceID:                  "w12c-propagation",
-		StatsEnabled:                true,
-		OAuthEnabled:                true,
-		TaskRunsEnabled:             true,
-		UsageWriterEnabled:          true,
-		BalanceDetectEnabled:        true,
-		RetentionEnabled:            true,
-		ProbeEnabled:                true,
 		ProbeConcurrency:            1,
 		DrainTimeout:                time.Second,
 		BusinessSQLitePath:          filepath.Join(t.TempDir(), "business.sqlite3"),

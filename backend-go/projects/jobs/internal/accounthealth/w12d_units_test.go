@@ -117,6 +117,9 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID", "w12d-instance")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "postgres")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL", "postgres://w12d/w12d")
+		// INPUT_SOURCE 显式 files：缺省已改为跟随 store 模式（2026-09-19），
+		// postgres store 会默认 direct input 并要求 INPUT_POSTGRES_URL。
+		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE", "files")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", t.TempDir())
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY", key)
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET", "w12d-secret")
@@ -128,20 +131,20 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 	}{
 		{"owner not go", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "node"}, "JOBS_OWNER"},
 		{"bad store", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "mysql"}, "sqlite 或 postgres"},
-		{"sqlite missing path", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": ""}, "DATABASE_PATH"},
+		// 「sqlite missing path」「missing input dir」「missing signing key」三个
+		// 失败臂已删除（2026-09-19 零配置决策：DATABASE_PATH/INPUT_DIRECTORY
+		// 按 DATA_DIR 派生，SIGNING_KEY 缺省生成/复用 key 文件，均不再必填）。
 		{"postgres missing url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": ""}, "POSTGRES_URL"},
 		{"pool invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS": "2", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS": "4"}, "连接池配置无效"},
 		{"pool zero", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS": "0"}, "必须是正整数"},
-		{"missing input dir", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY": ""}, "INPUT_DIRECTORY"},
 		{"sqlite db inside input dir", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY": filepath.Join(rootOnce(), "w12d-inputs"), "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": filepath.Join(rootOnce(), "w12d-inputs", "x.sqlite3")}, "不得放入 input 目录"},
 		{"bad input source", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "redis"}, "files 或 postgres"},
 		{"pg input with sqlite store", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": filepath.Join(t.TempDir(), "jobs", "x.sqlite3"), "JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres"}, "只允许与 postgres"},
 		{"missing input pg url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": ""}, "INPUT_POSTGRES_URL"},
 		{"input pool invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://w12d/b", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS": "-1"}, "必须是正整数"},
-		{"missing signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": ""}, "SIGNING_KEY"},
 		{"short signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "aaaa"}, "至少 32 字节"},
 		{"bad signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "!!!"}, "至少 32 字节"},
-		{"missing credential secret", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": ""}, "CREDENTIAL_SECRET"},
+		{"production missing credential secret", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "", "NODE_ENV": "production"}, "CREDENTIAL_SECRET"},
 		{"input ttl below min", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS": "1"}, "必须在"},
 		{"input ttl above max", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS": "999999999999"}, "必须在"},
 		{"scan interval invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_SCAN_INTERVAL": "1s"}, "duration"},

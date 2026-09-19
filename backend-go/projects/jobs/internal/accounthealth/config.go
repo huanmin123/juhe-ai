@@ -1,6 +1,7 @@
 package accounthealth
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
@@ -83,16 +85,37 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		cfg.InstanceID = hostname
 	}
 	var err error
+	// STORE 缺省跟随 JUHE_AI_DATABASE_DRIVER（与 jobs 组合根 loadWorkerConfig
+	// 同一依据，2026-09-19 零配置决策）：postgres → StorePostgres，否则
+	// StoreSQLite；显式配置仍必须为 sqlite|postgres。
 	mode := StoreMode(strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_STORE"))))
+	if mode == "" {
+		if strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")), "postgres") {
+			mode = StorePostgres
+		} else {
+			mode = StoreSQLite
+		}
+	}
 	if mode != StoreSQLite && mode != StorePostgres {
 		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_STORE 必须为 sqlite 或 postgres")
 	}
-	cfg.Store = StoreConfig{Mode: mode, DatabasePath: strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH")), PostgresURL: strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL"))}
-	if mode == StoreSQLite && cfg.Store.DatabasePath == "" {
-		return Config{}, errors.New("sqlite 模式缺少 JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH")
+	// sqlite 库路径按 DATA_DIR 约定派生（account-health.sqlite3）；PG 连接串
+	// 无法凭空默认：显式 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL 优先，缺省回退
+	// worker/gateway 共用的 JUHE_AI_POSTGRES_URL，PG 模式仍空则 fail-fast。
+	storePath := datadir.Path(getenv, "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH", "account-health.sqlite3")
+	postgresURL := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL"))
+	if postgresURL == "" {
+		postgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
+	}
+	cfg.Store = StoreConfig{Mode: mode, DatabasePath: storePath, PostgresURL: postgresURL}
+	if mode == StoreSQLite && strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH")) == "" {
+		// 派生路径的父目录由配置装载负责创建（显式配置保持既有语义，不代建）。
+		if err := os.MkdirAll(filepath.Dir(storePath), 0o755); err != nil {
+			return Config{}, fmt.Errorf("创建 J1 SQLite store 目录失败: %w", err)
+		}
 	}
 	if mode == StorePostgres && cfg.Store.PostgresURL == "" {
-		return Config{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL")
+		return Config{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL（或 JUHE_AI_POSTGRES_URL）")
 	}
 	if mode == StorePostgres {
 		if cfg.Store.PostgresMaxOpenConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS", defaultPostgresPoolSize); err != nil {
@@ -105,9 +128,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("J1 jobs PostgreSQL 连接池配置无效: %w", err)
 		}
 	}
-	cfg.InputDirectory = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY"))
-	if cfg.InputDirectory == "" {
-		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY 是必填配置")
+	cfg.InputDirectory = datadir.Path(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", "account-health-input")
+	if strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY")) == "" {
+		// 派生 input 目录在使用前创建；显式配置保持既有语义，不代建。
+		if err := os.MkdirAll(cfg.InputDirectory, 0o755); err != nil {
+			return Config{}, fmt.Errorf("创建 J1 input 目录失败: %w", err)
+		}
 	}
 	if mode == StoreSQLite {
 		if err := validateSQLiteIsolation(cfg.Store.DatabasePath, cfg.InputDirectory, getenv); err != nil {
@@ -116,7 +142,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	cfg.InputSource = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE")))
 	if cfg.InputSource == "" {
-		cfg.InputSource = "files"
+		// 缺省跟随 store 模式（2026-09-19 零配置决策）：PG store 直读业务库
+		// direct input，sqlite store 读签名文件输入。
+		if mode == StorePostgres {
+			cfg.InputSource = "postgres"
+		} else {
+			cfg.InputSource = "files"
+		}
 	}
 	if cfg.InputSource != "files" && cfg.InputSource != "postgres" {
 		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE 必须为 files 或 postgres")
@@ -142,13 +174,24 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("J1 业务读取 PostgreSQL 连接池配置无效: %w", err)
 		}
 	}
+	var key []byte
 	keyText := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY"))
 	if keyText == "" {
-		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY 是必填配置")
-	}
-	key, err := base64.RawURLEncoding.DecodeString(keyText)
-	if err != nil || len(key) < 32 {
-		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY 必须是至少 32 字节的 base64url")
+		// 签名密钥缺省落 <DATA_DIR>/account-health-input.key（2026-09-19 零配置
+		// 决策）：不存在则生成 48 字节随机密钥、base64rawurl 编码写入（权限
+		// 0600，Windows 下尽最大努力）；存在则复用，进程重启后密钥保持稳定。
+		// 显式 env 始终优先；文件读写失败 fail-fast，不静默换 key。
+		loaded, keyErr := loadOrCreateInputSigningKey(filepath.Join(datadir.Root(getenv), "account-health-input.key"))
+		if keyErr != nil {
+			return Config{}, keyErr
+		}
+		key = loaded
+	} else {
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(keyText)
+		if decodeErr != nil || len(decoded) < 32 {
+			return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY 必须是至少 32 字节的 base64url")
+		}
+		key = decoded
 	}
 	keyID := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY_ID"))
 	if keyID == "" {
@@ -156,13 +199,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	cfg.InputKeys = map[string][]byte{keyID: key}
 	// 凭据封套密钥：显式 CREDENTIAL_SECRET 优先；缺省回退 JUHE_AI_SECRET；
-	// 两者均空 fail-fast。
+	// 两者均空时非生产回退与 gateway defaultRuntimeSecret 同值的开发密钥
+	// （探针解密凭据要求与 gateway 加密侧同值），production 仍 fail-fast。
 	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"))
 	if cfg.CredentialSecret == "" {
 		cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_SECRET"))
 	}
 	if cfg.CredentialSecret == "" {
-		return Config{}, errors.New("需配置 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET 或 JUHE_AI_SECRET（凭据封套密钥）")
+		if strings.EqualFold(strings.TrimSpace(getenv("NODE_ENV")), "production") {
+			return Config{}, errors.New("production 模式必须配置 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET 或 JUHE_AI_SECRET（凭据封套密钥）")
+		}
+		cfg.CredentialSecret = "juhe-ai-dev-secret-change-me"
 	}
 	if cfg.InputTTL, err = configMilliseconds(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS", defaultInputTTL, time.Minute, 7*24*time.Hour); err != nil {
 		return Config{}, err
@@ -201,6 +248,32 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// loadOrCreateInputSigningKey 读取派生签名密钥文件；首次使用时生成 48 字节
+// 随机密钥并以 base64rawurl 写入（0600，Windows 权限尽力而为），随后读取
+// 复用。文件存在但内容无效、读写失败均返回错误（fail-fast，不静默换 key）。
+func loadOrCreateInputSigningKey(path string) ([]byte, error) {
+	if raw, err := os.ReadFile(path); err == nil {
+		key, decodeErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(raw)))
+		if decodeErr != nil || len(key) < 32 {
+			return nil, fmt.Errorf("J1 input 签名密钥文件 %s 内容无效（须为至少 32 字节的 base64rawurl）", path)
+		}
+		return key, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("读取 J1 input 签名密钥文件 %s 失败: %w", path, err)
+	}
+	buffer := make([]byte, 48)
+	if _, err := rand.Read(buffer); err != nil {
+		return nil, fmt.Errorf("生成 J1 input 签名密钥失败: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("创建 J1 input 签名密钥目录失败: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(base64.RawURLEncoding.EncodeToString(buffer)), 0o600); err != nil {
+		return nil, fmt.Errorf("写入 J1 input 签名密钥文件 %s 失败: %w", path, err)
+	}
+	return buffer, nil
 }
 
 func validateSQLiteIsolation(storePath, inputDirectory string, getenv func(string) string) error {

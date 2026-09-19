@@ -563,11 +563,9 @@ func TestLoadConfigRejectsEachInvalidEnv(t *testing.T) {
 		{name: "batch size", key: "JUHE_AI_RUNTIME_LOG_BATCH_SIZE", value: "0"},
 		{name: "postgres max conns", key: "JUHE_AI_RUNTIME_LOG_POSTGRES_MAX_CONNS", value: "-2"},
 		{name: "postgres min conns", key: "JUHE_AI_RUNTIME_LOG_POSTGRES_MIN_CONNS", value: "-2"},
-		{name: "missing business path", key: "JUHE_AI_DATABASE_PATH", value: ""},
-		{name: "missing dataset path", key: "JUHE_AI_DATASET_DATABASE_PATH", value: ""},
-		{name: "missing usage catalog path", key: "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", value: ""},
-		{name: "missing stats path", key: "JUHE_AI_STATS_DATABASE_PATH", value: ""},
-		{name: "missing codex root", key: "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", value: ""},
+		// 缺失 business/dataset/usage-catalog/stats/codex 根的失败臂已删除
+		// （2026-09-19 零配置决策：路径类 env 缺省按 DATA_DIR 派生，恒非空，
+		// 不再是校验失败分支）。
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

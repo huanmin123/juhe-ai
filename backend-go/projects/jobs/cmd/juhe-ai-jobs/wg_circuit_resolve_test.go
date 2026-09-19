@@ -173,11 +173,10 @@ func TestWireBalanceDetectFamilyDisabledBranches(t *testing.T) {
 	for _, item := range cases {
 		t.Run(item.name, func(t *testing.T) {
 			config := workerConfig{
-				Driver:               "sqlite",
-				StatsSQLitePath:      filepath.Join(t.TempDir(), "stats.sqlite3"),
-				BusinessSQLitePath:   filepath.Join(t.TempDir(), "business.sqlite3"),
-				Secret:               wgBalanceSecret,
-				BalanceDetectEnabled: true,
+				Driver:             "sqlite",
+				StatsSQLitePath:    filepath.Join(t.TempDir(), "stats.sqlite3"),
+				BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3"),
+				Secret:             wgBalanceSecret,
 			}
 			item.mutate(&config)
 			assembly := newWorkerAssembly(config, nil)
@@ -198,19 +197,13 @@ func TestWireBalanceDetectFamilyDisabledBranches(t *testing.T) {
 }
 
 // TestWireFamiliesFailsClosedOnBrokenSQLite 覆盖 wireFamilies 的错误传播
-// （业务库路径是目录 → openSQLite 失败 → 装配失败）。
+// （业务库路径是目录 → openSQLite 失败 → 装配失败；家族开关删除后全部
+// 家族恒装配，第一个打开业务库的家族即触发）。
 func TestWireFamiliesFailsClosedOnBrokenSQLite(t *testing.T) {
 	root := t.TempDir()
 	config := workerConfig{
 		Driver:                      "sqlite",
 		BusinessSQLitePath:          root, // 目录不是合法 SQLite 文件
-		TaskRunsEnabled:             false,
-		StatsEnabled:                false,
-		OAuthEnabled:                false,
-		UsageWriterEnabled:          false,
-		BalanceDetectEnabled:        false,
-		RetentionEnabled:            false,
-		ProbeEnabled:                false,
 		CodexContextStateShardCount: 1,
 	}
 	if _, err := buildWorkerAssembly(config, nil); err == nil {
@@ -260,13 +253,12 @@ func TestOpenBusinessDBPostgresPath(t *testing.T) {
 // TestWireUsageSpoolDrainBranches 覆盖 spool drain 的未接线与缺目录分支。
 func TestWireUsageSpoolDrainBranches(t *testing.T) {
 	// writer 未装配 → 静默返回。
-	assembly := newWorkerAssembly(workerConfig{UsageWriterEnabled: false}, nil)
+	assembly := newWorkerAssembly(workerConfig{}, nil)
 	if err := assembly.wireUsageSpoolDrain(); err != nil {
 		t.Fatalf("未装配必须静默返回: %v", err)
 	}
 	// 目录缺失（PG 模式未配置 env）→ 显式 warn 登记不报错。
 	assembly2 := newWorkerAssembly(workerConfig{
-		UsageWriterEnabled:  true,
 		UsageSpoolDirectory: "",
 	}, assemblyTestLogger(t))
 	assembly2.writer = usagewriter.NewWriter(usagewriter.Config{}, nil, nil)

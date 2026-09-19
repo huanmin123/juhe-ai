@@ -363,10 +363,18 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "sqlite 或 postgres") {
 		t.Fatalf("store err=%v", err)
 	}
-	// sqlite mode without a path.
+	// sqlite mode without a path derives <DATA_DIR>/account-health.sqlite3
+	// (2026-09-19 zero-config decision); DATA_DIR points at a temp dir so the
+	// derived store stays on the same volume as the input directory.
+	dataDir := t.TempDir()
 	env = w9hValidConfigEnv("sqlite", "", inputDir)
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "DATABASE_PATH") {
+	env["JUHE_AI_DATA_DIR"] = dataDir
+	cfg, err := load(env)
+	if err != nil {
 		t.Fatalf("sqlite path err=%v", err)
+	}
+	if expected := filepath.Join(dataDir, "account-health.sqlite3"); cfg.Store.DatabasePath != expected {
+		t.Fatalf("derived store path = %q, want %q", cfg.Store.DatabasePath, expected)
 	}
 	// postgres mode without a URL.
 	env = w9hValidConfigEnv("postgres", storePath, inputDir)
@@ -381,10 +389,21 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "连接池配置无效") {
 		t.Fatalf("pg pool err=%v", err)
 	}
-	// Missing input directory.
+	// Missing input directory derives <DATA_DIR>/account-health-input and is
+	// created on load (2026-09-19 zero-config decision).
+	dataDir = t.TempDir()
 	env = w9hValidConfigEnv("sqlite", storePath, "")
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "INPUT_DIRECTORY") {
+	env["JUHE_AI_DATA_DIR"] = dataDir
+	cfg, err = load(env)
+	if err != nil {
 		t.Fatalf("input dir err=%v", err)
+	}
+	expectedInputDir := filepath.Join(dataDir, "account-health-input")
+	if cfg.InputDirectory != expectedInputDir {
+		t.Fatalf("derived input dir = %q, want %q", cfg.InputDirectory, expectedInputDir)
+	}
+	if _, statErr := os.Stat(expectedInputDir); statErr != nil {
+		t.Fatalf("derived input dir must be created: %v", statErr)
 	}
 	// Store file inside the input directory is rejected.
 	env = w9hValidConfigEnv("sqlite", filepath.Join(inputDir, "j1.sqlite3"), inputDir)
@@ -403,9 +422,10 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "SIGNING_KEY") {
 		t.Fatalf("signing key err=%v", err)
 	}
-	// Missing credential secret.
+	// Missing credential secret（production；非生产回退开发密钥）。
 	env = w9hValidConfigEnv("sqlite", storePath, inputDir)
 	env["JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"] = ""
+	env["NODE_ENV"] = "production"
 	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "CREDENTIAL_SECRET") {
 		t.Fatalf("credential secret err=%v", err)
 	}
@@ -430,7 +450,7 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 		t.Fatalf("direct input url err=%v", err)
 	}
 	// The happy sqlite path parses every knob.
-	cfg, err := load(w9hValidConfigEnv("sqlite", storePath, inputDir))
+	cfg, err = load(w9hValidConfigEnv("sqlite", storePath, inputDir))
 	if err != nil {
 		t.Fatalf("valid sqlite config err=%v", err)
 	}

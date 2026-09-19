@@ -771,10 +771,6 @@ func (r *balanceDetectRuntime) proxyEnvelope(proxyID, kind, host string, port in
 // 任一依赖缺失→登记 disabled 并说明（不阻塞其他 job）。
 func (a *workerAssembly) wireBalanceDetectFamily(ctx context.Context) error {
 	name := "account-balance-auto-detect-recovery"
-	if !a.config.BalanceDetectEnabled {
-		a.registerDisabledJob(name, "JUHE_AI_JOBS_BALANCE_DETECT_ENABLED=false")
-		return nil
-	}
 	if a.config.Driver != "postgres" && a.config.StatsSQLitePath == "" {
 		a.registerDisabledJob(name, "缺 JUHE_AI_STATS_DATABASE_PATH（relay_balance 快照库）")
 		return nil
@@ -784,7 +780,7 @@ func (a *workerAssembly) wireBalanceDetectFamily(ctx context.Context) error {
 		return nil
 	}
 	if a.taskRunsStore == nil {
-		a.registerDisabledJob(name, "缺 background_job_leases 租约存储（JUHE_AI_JOBS_TASK_RUNS_ENABLED=false）")
+		a.registerDisabledJob(name, "缺 background_job_leases 租约存储（task-runs 家族未装配）")
 		return nil
 	}
 	business, err := openBusinessDB(a, "balance-detect-business")

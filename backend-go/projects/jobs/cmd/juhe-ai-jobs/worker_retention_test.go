@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
 )
 
 // 组合根级测试：seed → 跑一轮 → 断言删了该删的/留了该留的。
@@ -28,6 +30,8 @@ func retentionTestConfig(dir string) workerConfig {
 		UsageShardCount:                2,
 		BusinessSQLitePath:             filepath.Join(dir, "business.sqlite3"),
 		StatsSQLitePath:                filepath.Join(dir, "stats.sqlite3"),
+		TaskRunsSQLitePath:             filepath.Join(dir, "task-runs.sqlite3"),
+		Secret:                         "0123456789abcdef0123456789abcdef",
 		DatasetSQLitePath:              filepath.Join(dir, "dataset.sqlite3"),
 		ChatSQLitePath:                 filepath.Join(dir, "chat.sqlite3"),
 		UsageCatalogSQLitePath:         filepath.Join(dir, "usage-catalog.sqlite3"),
@@ -37,15 +41,24 @@ func retentionTestConfig(dir string) workerConfig {
 		ChatAssetsRoot:                 filepath.Join(dir, "chat-assets"),
 		CodexContextRoot:               filepath.Join(dir, "codex-context"),
 		ChatRetentionDays:              3,
-		RetentionEnabled:               true,
-		StatsEnabled:                   false,
-		OAuthEnabled:                   false,
-		TaskRunsEnabled:                false,
-		UsageWriterEnabled:             false,
-		BalanceDetectEnabled:           false,
 		DrainTimeout:                   time.Second,
 		RecordMaintenanceQueueMaxItems: 100,
 		RecordMaintenanceQueueMaxMb:    1,
+	}
+}
+
+// seedUsageCatalogSchema 用 usagewriter 的幂等建表初始化 usage catalog
+// （家族开关删除后 usage-writer 恒装配，fixture 必须产出与 writer 兼容的
+// catalog schema，否则 EnsureCatalogSchema 会在最小手工表上报缺列错误）。
+func seedUsageCatalogSchema(t *testing.T, catalog *sql.DB, shardRoot string) {
+	t.Helper()
+	catalogStore := usagewriter.NewSqliteShardStore(usagewriter.SqliteShardStoreConfig{
+		CatalogDB:  catalog,
+		ShardRoot:  shardRoot,
+		ShardCount: 2,
+	})
+	if err := catalogStore.EnsureCatalogSchema(); err != nil {
+		t.Fatalf("seed usage catalog schema: %v", err)
 	}
 }
 
@@ -72,16 +85,29 @@ func openTestSQLite(t *testing.T, path string) *sql.DB {
 }
 
 // statsCleanupTables 覆盖 CleanupUsageStatsRetention/CleanupSystemMetricsRetention
-// 会 DELETE 的全部表（测试只建时间列）。
-func statsCleanupTables(t *testing.T, db *sql.DB) {
+// 会 DELETE 的全部表（测试只建时间列）。accountquality 自有的三张
+// account_quality_* 表交由 accountquality 包幂等建表：家族开关删除后
+// （2026-09-19）探针族恒装配，最小手工表缺 provider_code 等列会让
+// EnsureSchema 的索引创建失败。
+func statsCleanupTables(t *testing.T, path string) *sql.DB {
 	t.Helper()
+	db := openTestSQLite(t, path)
+	statsStore, err := accountquality.OpenStatsStore(accountquality.StatsStoreConfig{Mode: accountquality.StatsSQLite, DatabasePath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := statsStore.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := statsStore.Close(); err != nil {
+		t.Fatal(err)
+	}
 	type tableColumn struct{ table, column string }
 	tables := []tableColumn{
-		{"account_quality_minute_stats", "stat_minute"},
 		{"group_account_stats", "updated_at"},
-		{"account_quality_scores", "updated_at"},
 		{"account_quality_scores_acct", ""},
-		{"account_quality_dirty_accounts", "updated_at"},
 		{"account_usage_snapshots", "updated_at"},
 		{"usage_stats_totals", "updated_at"},
 		{"usage_stats_minute", "stat_minute"},
@@ -160,12 +186,6 @@ func statsCleanupTables(t *testing.T, db *sql.DB) {
 	// hasDeletedAccountStatsRowsSQLite 按 account_id 探测这些表，测试建表带
 	// account_id 列（含 usage_record_cleanup_deductions 的扣减台账列）。
 	statements = append(statements,
-		"DROP TABLE IF EXISTS account_quality_minute_stats",
-		"CREATE TABLE account_quality_minute_stats (account_id TEXT, system_account_id TEXT DEFAULT '', provider_code TEXT DEFAULT '', stat_minute TEXT, request_count INTEGER DEFAULT 0, success_count INTEGER DEFAULT 0, error_count INTEGER DEFAULT 0, first_token_ms_sum REAL DEFAULT 0, first_token_ms_count INTEGER DEFAULT 0, last_sample_at TEXT, last_success_at TEXT, last_error_at TEXT, last_error_message TEXT, updated_at TEXT, PRIMARY KEY (account_id, stat_minute))",
-		"DROP TABLE IF EXISTS account_quality_scores",
-		"CREATE TABLE account_quality_scores (account_id TEXT, updated_at TEXT)",
-		"DROP TABLE IF EXISTS account_quality_dirty_accounts",
-		"CREATE TABLE account_quality_dirty_accounts (account_id TEXT, first_dirty_at TEXT, updated_at TEXT)",
 		"DROP TABLE IF EXISTS account_usage_snapshots",
 		"CREATE TABLE account_usage_snapshots (account_id TEXT, updated_at TEXT)",
 		"DROP TABLE IF EXISTS account_health_hourly",
@@ -188,6 +208,7 @@ func statsCleanupTables(t *testing.T, db *sql.DB) {
 		"ALTER TABLE stats_job_state ADD COLUMN scope_type TEXT",
 		"ALTER TABLE stats_job_state ADD COLUMN scope_id TEXT")
 	mustExec(t, db, statements...)
+	return db
 }
 
 func seedDataRetention(t *testing.T, dir string) {
@@ -203,22 +224,21 @@ func seedDataRetention(t *testing.T, dir string) {
 		`INSERT INTO public_api_logs (id, created_at) VALUES ('old', '2020-01-01T00:00:00.000Z')`,
 		`INSERT INTO public_api_logs (id, created_at) VALUES ('fresh', '2100-01-01T00:00:00.000Z')`)
 
-	stats := openTestSQLite(t, filepath.Join(dir, "stats.sqlite3"))
-	statsCleanupTables(t, stats)
+	stats := statsCleanupTables(t, filepath.Join(dir, "stats.sqlite3"))
 	mustExec(t, stats,
 		`INSERT INTO usage_stats_minute (stat_minute) VALUES ('2020-01-01T00:00')`,
 		`INSERT INTO system_metrics_samples (sampled_at) VALUES ('2020-01-01T00:00:00.000Z')`)
 
 	// usage catalog + 一个 active 分片（目录条目早于安全游标 → 清理链路放行）。
+	// 家族开关删除后（2026-09-19）usage-writer 家族恒装配：catalog schema 由
+	// usagewriter.EnsureCatalogSchema 建立（fixture 的手工最小表缺 trace_id/
+	// NOT NULL 列，会让 EnsureCatalogSchema 的幂等建表在既有表上失败）。
 	catalog := openTestSQLite(t, filepath.Join(dir, "usage-catalog.sqlite3"))
+	seedUsageCatalogSchema(t, catalog, filepath.Join(dir, "usage-shards"))
 	mustExec(t, catalog,
-		`CREATE TABLE IF NOT EXISTS usage_record_shards (shard_key TEXT PRIMARY KEY, bucket_date TEXT, shard_id INTEGER, file_path TEXT, status TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_shard_entries (usage_id TEXT, shard_key TEXT, created_at TEXT, system_account_id TEXT, api_key_id TEXT, account_id TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_account_shards (account_id TEXT, shard_key TEXT, first_created_at TEXT, last_seen_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_api_key_shards (api_key_id TEXT, system_account_id TEXT, shard_key TEXT, first_created_at TEXT, last_seen_at TEXT)`,
-		"INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status) VALUES ('20200101:s01', '2020-01-01', 1, '"+filepath.Join(dir, "usage-shards", "shard.sqlite3")+"', 'active')",
-		`INSERT INTO usage_record_shard_entries (usage_id, shard_key, created_at, system_account_id)
-		 VALUES ('usage-old', '20200101:s01', '2020-01-01T00:00:00.000Z', 'sys_a')`)
+		"INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status, first_seen_at, created_at, updated_at) VALUES ('20200101:s01', '2020-01-01', 1, '"+filepath.Join(dir, "usage-shards", "shard.sqlite3")+"', 'active', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')",
+		`INSERT INTO usage_record_shard_entries (usage_id, shard_key, created_at, system_account_id, trace_id, traffic_source, indexed_at)
+		 VALUES ('usage-old', '20200101:s01', '2020-01-01T00:00:00.000Z', 'sys_a', '', '', '1970-01-01T00:00:00.000Z')`)
 	// 安全游标：两个必需 job 都建立 global 游标（PG 语义）与 shard 游标（SQLite 语义）。
 	mustExec(t, stats,
 		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'global', 'usage_stats_aggregation')`,
@@ -438,8 +458,7 @@ func seedDeletedAccount(t *testing.T, dir string) {
 		// 未过期删除：保留
 		`INSERT INTO accounts (id, system_account_id, deleted_at, updated_at) VALUES ('acc-keep', 'sys_a', '2100-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z')`)
 
-	stats := openTestSQLite(t, filepath.Join(dir, "stats.sqlite3"))
-	statsCleanupTables(t, stats)
+	statsCleanupTables(t, filepath.Join(dir, "stats.sqlite3"))
 
 	dataset := openTestSQLite(t, filepath.Join(dir, "dataset.sqlite3"))
 	mustExec(t, dataset,
@@ -448,11 +467,7 @@ func seedDeletedAccount(t *testing.T, dir string) {
 		"CREATE TABLE IF NOT EXISTS account_record_cleanup_targets (account_id TEXT PRIMARY KEY, system_account_id TEXT, related_account_ids_json TEXT DEFAULT '[]', authorization_ids_json TEXT DEFAULT '[]', team_scope_ids_json TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT, attempt_count INTEGER DEFAULT 0, last_attempt_at TEXT, last_blocked_reason TEXT, last_error_message TEXT)")
 
 	catalog := openTestSQLite(t, filepath.Join(dir, "usage-catalog.sqlite3"))
-	mustExec(t, catalog,
-		`CREATE TABLE IF NOT EXISTS usage_record_shards (shard_key TEXT PRIMARY KEY, bucket_date TEXT, shard_id INTEGER, file_path TEXT, status TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_shard_entries (usage_id TEXT, shard_key TEXT, created_at TEXT, system_account_id TEXT, api_key_id TEXT, account_id TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_account_shards (account_id TEXT, shard_key TEXT, first_created_at TEXT, last_seen_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS usage_record_api_key_shards (api_key_id TEXT, system_account_id TEXT, shard_key TEXT, first_created_at TEXT, last_seen_at TEXT)`)
+	seedUsageCatalogSchema(t, catalog, filepath.Join(dir, "usage-shards"))
 }
 
 func TestWorkerRetentionExpiredDeletedAccountRound(t *testing.T) {
@@ -539,9 +554,9 @@ func TestWorkerRetentionRecordCleanupRetryRound(t *testing.T) {
 	catalog := openTestSQLite(t, filepath.Join(dir, "usage-catalog.sqlite3"))
 	shardPath := filepath.Join(dir, "usage-shards", "2020", "01", "01", "usage-20200101-s01.sqlite3")
 	mustExec(t, catalog,
-		fmt.Sprintf("INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status) VALUES ('20200101:s01', '2020-01-01', 1, '%s', 'active')", shardPath), //nolint
-		`INSERT INTO usage_record_shard_entries (usage_id, shard_key, created_at, system_account_id, api_key_id, account_id)
-		 VALUES ('u1', '20200101:s01', '2020-01-01T00:00:00.000Z', 'sys_a', 'key1', 'acc-1')`,
+		fmt.Sprintf("INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status, first_seen_at, created_at, updated_at) VALUES ('20200101:s01', '2020-01-01', 1, '%s', 'active', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')", shardPath), //nolint
+		`INSERT INTO usage_record_shard_entries (usage_id, shard_key, created_at, system_account_id, trace_id, traffic_source, api_key_id, account_id, indexed_at)
+		 VALUES ('u1', '20200101:s01', '2020-01-01T00:00:00.000Z', 'sys_a', '', '', 'key1', 'acc-1', '1970-01-01T00:00:00.000Z')`,
 		`INSERT INTO usage_record_api_key_shards (api_key_id, system_account_id, shard_key, first_created_at, last_seen_at)
 		 VALUES ('key1', 'sys_a', '20200101:s01', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`,
 		`INSERT INTO usage_record_account_shards (account_id, shard_key, first_created_at, last_seen_at)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,70 @@ import (
 func wgFullValidWorkerEnv(t *testing.T) map[string]string {
 	t.Helper()
 	return workerSmokeTestEnv(t)
+}
+
+// TestLoadWorkerConfigZeroConfigDataDirDerivation 覆盖 2026-09-19 零配置
+// 决策：仅注 DATA_DIR（SECRET 非生产回退开发密钥）即可通过校验，全部路径
+// 类 env 派生为 <DATA_DIR>/<固定名>，与 gateway 侧同名字段共享同一数据目录。
+func TestLoadWorkerConfigZeroConfigDataDirDerivation(t *testing.T) {
+	dataDir := t.TempDir()
+	env := map[string]string{
+		"JUHE_AI_DATA_DIR": dataDir,
+		"JUHE_AI_SECRET":   "0123456789abcdef0123456789abcdef",
+	}
+	config, err := loadWorkerConfig(getenvFrom(env))
+	if err != nil {
+		t.Fatalf("DATA_DIR + SECRET 必须构成可启动配置: %v", err)
+	}
+	pathExpectations := []struct {
+		field string
+		got   string
+		fixed string
+	}{
+		{"BusinessSQLitePath", config.BusinessSQLitePath, "business.sqlite3"},
+		{"StatsSQLitePath", config.StatsSQLitePath, "stats.sqlite3"},
+		{"TaskRunsSQLitePath", config.TaskRunsSQLitePath, "task-runs.sqlite3"},
+		{"UsageCatalogSQLitePath", config.UsageCatalogSQLitePath, "usage-catalog.sqlite3"},
+		{"DatasetSQLitePath", config.DatasetSQLitePath, "dataset.sqlite3"},
+		{"ChatSQLitePath", config.ChatSQLitePath, "chat.sqlite3"},
+		{"UsageShardRoot", config.UsageShardRoot, "usage-shards"},
+		{"CodexContextStateShardRoot", config.CodexContextStateShardRoot, filepath.Join("codex-context", "state-shards")},
+	}
+	for _, item := range pathExpectations {
+		want := filepath.Join(dataDir, item.fixed)
+		if item.got != want {
+			t.Fatalf("%s 必须派生为 %q，得到 %q", item.field, want, item.got)
+		}
+	}
+	// usage spool 目录从派生的 stats 库目录派生，同落 DATA_DIR。
+	if want := filepath.Join(dataDir, "usage-record-spool"); config.UsageSpoolDirectory != want {
+		t.Fatalf("UsageSpoolDirectory 必须派生为 %q，得到 %q", want, config.UsageSpoolDirectory)
+	}
+	// 显式配置始终优先。
+	env["JUHE_AI_DATABASE_PATH"] = filepath.Join(t.TempDir(), "explicit.sqlite3")
+	config, err = loadWorkerConfig(getenvFrom(env))
+	if err != nil {
+		t.Fatalf("显式路径必须可解析: %v", err)
+	}
+	if config.BusinessSQLitePath != env["JUHE_AI_DATABASE_PATH"] {
+		t.Fatalf("显式 DATABASE_PATH 必须优先: %q", config.BusinessSQLitePath)
+	}
+}
+
+// TestLoadWorkerConfigEmptyEnvZeroConfig 锁定零配置结论（2026-09-19）：真·空
+// env 可完整装载，非生产空 SECRET 回退与 gateway defaultRuntimeSecret 同值的
+// 开发密钥；production 空 SECRET 仍 fail-fast。
+func TestLoadWorkerConfigEmptyEnvZeroConfig(t *testing.T) {
+	config, err := loadWorkerConfig(getenvFrom(map[string]string{}))
+	if err != nil {
+		t.Fatalf("空 env 零配置必须可装载: %v", err)
+	}
+	if config.Secret != "juhe-ai-dev-secret-change-me" {
+		t.Fatalf("非生产空 SECRET 应回退开发密钥: %q", config.Secret)
+	}
+	if _, err := loadWorkerConfig(getenvFrom(map[string]string{"NODE_ENV": "production"})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_SECRET") {
+		t.Fatalf("production 空 SECRET 必须 fail-fast: %v", err)
+	}
 }
 
 // TestLoadWorkerConfigDefaults 验证合法 env 下的默认值契约（与 Node worker
@@ -120,15 +185,13 @@ func TestLoadWorkerConfigRejectsInvalidEnv(t *testing.T) {
 		{"postgres 缺 URL", func(e map[string]string) {
 			e["JUHE_AI_DATABASE_DRIVER"] = "postgres"
 		}, "必须配置 JUHE_AI_POSTGRES_URL"},
-		{"缺 stats 库路径", func(e map[string]string) { delete(e, "JUHE_AI_STATS_DATABASE_PATH") }, "必须配置 JUHE_AI_STATS_DATABASE_PATH"},
-		{"缺业务库路径", func(e map[string]string) { delete(e, "JUHE_AI_DATABASE_PATH") }, "必须配置 JUHE_AI_DATABASE_PATH"},
-		{"缺 task-runs 库路径", func(e map[string]string) { delete(e, "JUHE_AI_TASK_RUNS_DATABASE_PATH") }, "必须配置 JUHE_AI_TASK_RUNS_DATABASE_PATH"},
-		{"缺 usage catalog 路径", func(e map[string]string) { delete(e, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH") }, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH"},
-		{"缺 dataset 库路径", func(e map[string]string) { delete(e, "JUHE_AI_DATASET_DATABASE_PATH") }, "JUHE_AI_DATASET_DATABASE_PATH"},
-		{"缺 chat 库路径", func(e map[string]string) { delete(e, "JUHE_AI_CHAT_DATABASE_PATH") }, "JUHE_AI_CHAT_DATABASE_PATH"},
-		{"缺 codex 分片根", func(e map[string]string) { delete(e, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") }, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"},
-		{"codex 分片数为 0", func(e map[string]string) { e["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT"] = "0" }, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT"},
-		{"缺探针密钥", func(e map[string]string) { delete(e, "JUHE_AI_SECRET") }, "必须配置 JUHE_AI_SECRET"},
+		// 路径类 env 已按 DATA_DIR 约定派生（恒非空），原「缺路径」门禁随
+		// 家族开关移除一并删除（2026-09-19 零配置决策），不再有对应失败臂。
+		// 非 production 空 SECRET 回退开发密钥，仅 production 仍 fail closed。
+		{"production 缺探针密钥", func(e map[string]string) {
+			delete(e, "JUHE_AI_SECRET")
+			e["NODE_ENV"] = "production"
+		}, "必须配置 JUHE_AI_SECRET"},
 		{"列表投影开关非法", func(e map[string]string) {
 			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED"] = "yes-please"
 		}, "必须是布尔值"},

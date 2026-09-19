@@ -357,11 +357,13 @@ func TestW16DWireHealthOutcomeProjectorArms(t *testing.T) {
 	if _, err := sqliteAssembly.wireHealthOutcomeProjector(envWithBounds("", "abc"), &accounthealth.Store{}); err == nil {
 		t.Fatal("非法 batch 必须使投影装配失败")
 	}
-	// 空 credential secret：投影器 fail closed（95-98；LoadConfig 接受空 secret 时命中）。
+	// 空 credential secret（production）：投影器 fail closed；非生产空值回退
+	// 开发密钥后装配成功是预期行为（2026-09-19 零配置决策）。
 	noSecretEnv := w16dJ1Env(t, root)
 	noSecretEnv["JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"] = ""
+	noSecretEnv["NODE_ENV"] = "production"
 	if _, err := sqliteAssembly.wireHealthOutcomeProjector(func(name string) string { return noSecretEnv[name] }, &accounthealth.Store{}); err == nil {
-		t.Fatal("空凭据 secret 必须使投影装配失败或被 LoadConfig 拒绝")
+		t.Fatal("production 空凭据 secret 必须使投影装配失败或被 LoadConfig 拒绝")
 	}
 }
 

@@ -23,7 +23,7 @@ type gateFunc func(ctx context.Context) error
 func (f gateFunc) EnsureUsageRecordsIngested(ctx context.Context) error { return f(ctx) }
 
 // ingestDrainProbe 把 usagewriter 运行态适配为 ingestgate.Probe。
-// writer 未装配（UsageWriterEnabled=false）时返回 (nil, nil)：等价 Node
+// writer 未装配时返回 (nil, nil)：等价 Node
 // ingest worker 不可达（requestIngestWorkerDrainStatus → undefined），
 // 门控按"快照不可用"失败本轮，不静默放行。
 func (a *workerAssembly) ingestDrainProbe() ingestgate.Probe {

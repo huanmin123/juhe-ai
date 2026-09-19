@@ -208,8 +208,18 @@ func TestW16HRunStartupFailArms(t *testing.T) {
 		w16hRunArms(t, []string{"-health-listen-address=10.0.0.8:3305"}, 1,
 			"listen passive jobs health endpoint")
 	})
-	t.Run("F1 配置缺失返回 1", func(t *testing.T) {
-		w16hRunArms(t, nil, 1, "load F1 runtime-log-indexer config")
+	t.Run("F1 配置默认化后空 env 在 store 打开处失败返回 1", func(t *testing.T) {
+		// 2026-09-19 零配置决策：F1 配置不再有必填缺失臂（INSTANCE_ID/STORE/
+		// 路径全部派生默认）；空 env 装配推进到 store 打开，因派生的共享
+		// SQLite 数据源尚不存在而 fail-fast（只读数据源校验保留）。DATA_DIR
+		// 指向自管理目录，避免在包目录创建 ./data。
+		root, mkdirErr := os.MkdirTemp("", "w16h-empty-env-")
+		if mkdirErr != nil {
+			t.Fatal(mkdirErr)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		w16hApplyEnv(t, map[string]string{"JUHE_AI_DATA_DIR": root})
+		w16hRunArms(t, nil, 1, "open F1 runtime-log-indexer store")
 	})
 	t.Run("F1 ONCE 不支持返回 1", func(t *testing.T) {
 		w16hApplyEnv(t, w16hBaseEnv(t))
@@ -241,10 +251,12 @@ func TestW16HRunStartupFailArms(t *testing.T) {
 
 // TestW16HRunTableMonitorArms 覆盖 F2 链错误臂与 --once 单轮分支。
 func TestW16HRunTableMonitorArms(t *testing.T) {
-	t.Run("F2 配置缺失返回 1", func(t *testing.T) {
+	t.Run("F2 配置非法返回 1", func(t *testing.T) {
 		env := w16hBaseEnv(t)
-		// F1 专库隔离校验依赖 TABLE_MONITOR_DATABASE_PATH，只能删实例标识。
-		delete(env, "JUHE_AI_TABLE_MONITOR_INSTANCE_ID")
+		// 零配置决策下 TABLE_MONITOR_INSTANCE_ID 缺省取 hostname，「配置缺失」
+		// 不再 fail-fast；保留 F2 配置链的确定性失败臂：store 模式非法在
+		// LoadConfig 处拒绝。
+		env["JUHE_AI_TABLE_MONITOR_STORE"] = "w16h-bogus"
 		w16hApplyEnv(t, env)
 		w16hRunArms(t, nil, 1, "load F2 table-monitor config")
 	})

@@ -27,9 +27,6 @@ import (
 // 探针上游调用在 jobs 侧直接发起（accountprobe 移植 Node 协议诊断栈的
 // 后台探针窄路径），不经任何跨进程回调。
 func (a *workerAssembly) wireProbeFamily(ctx context.Context) error {
-	if !a.config.ProbeEnabled {
-		return nil
-	}
 	business, err := openBusinessDB(a, "probe-family-business")
 	if err != nil {
 		return err

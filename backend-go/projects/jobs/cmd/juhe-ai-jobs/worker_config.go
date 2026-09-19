@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/datadir"
 )
 
 // workerConfig 是 jobs 组合根 worker 侧的 env 约定，与 Node worker 进程
@@ -20,13 +22,17 @@ import (
 //     JUHE_AI_USAGE_SHARD_COUNT：usagewriter 分片写入。
 //
 // jobs 专属 env：
-//   - JUHE_AI_JOBS_WORKER_ENABLED 已废弃（2026-09-19 决策）：worker 调度器
-//     强制常开，该变量不再被读取（启动早期对非 true 值输出废弃告警）；usage
-//     spool 消费、用量记录与统计预聚合/额度快照由常开的 worker 任务族承载；
+//   - JUHE_AI_DATA_DIR（2026-09-19 零配置决策）：数据根目录，缺省 ./data
+//     （相对进程 cwd，TrimSpace 后为空也视为未配置）。上列「路径类」env
+//     未配置时派生为 <DATA_DIR>/<固定名>（internal/datadir），显式配置始终
+//     优先；固定名与 gateway 侧一致，两进程靠相同 DATA_DIR 共享同一业务库。
+//   - JUHE_AI_JOBS_WORKER_ENABLED 与 JUHE_AI_JOBS_<FAMILY>_ENABLED（stats/
+//     oauth/task_runs/usage_writer/balance_detect/retention/probe）已废弃
+//     （2026-09-19 决策）：worker 调度器与全部任务族强制常开，这些变量不再
+//     被读取（总开关非 true 值仍在启动早期输出废弃告警）；usage spool 消费、
+//     用量记录与统计预聚合/额度快照由常开的 worker 任务族承载；
 //   - JUHE_AI_TASK_RUNS_DATABASE_PATH / JUHE_AI_TASK_RUNS_POSTGRES_URL：
 //     background_task_runs + background_job_leases 双模存储；
-//   - JUHE_AI_JOBS_<FAMILY>_ENABLED：家族级开关（stats/oauth/task_runs/
-//     usage_writer/internal_api，默认 true）；
 //   - JUHE_AI_JOBS_DRAIN_TIMEOUT_MS：停机排空上限（默认 10s，对齐 Node
 //     stopBackgroundJobs(10_000)）。
 type workerConfig struct {
@@ -63,7 +69,6 @@ type workerConfig struct {
 	ChatAssetsRoot                 string
 	CodexContextRoot               string
 	ChatRetentionDays              int
-	RetentionEnabled               bool
 	RecordMaintenanceQueueMaxItems int
 	RecordMaintenanceQueueMaxMb    int
 
@@ -73,13 +78,6 @@ type workerConfig struct {
 	// 同名 env 与默认值）。
 	RecordMaintenanceBatchSize               int
 	RecordMaintenanceShutdownFlushMaxBatches int
-
-	StatsEnabled         bool
-	OAuthEnabled         bool
-	TaskRunsEnabled      bool
-	UsageWriterEnabled   bool
-	BalanceDetectEnabled bool
-	ProbeEnabled         bool
 
 	// ProbeConcurrency 限制探针族在途上游诊断请求与队列并发。Node 侧对应
 	// globalSharedQueueConcurrency 取 runtimeConfig.concurrency.globalMax
@@ -171,12 +169,6 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		RecordMaintenanceQueueMaxMb:              32,
 		RecordMaintenanceBatchSize:               10,
 		RecordMaintenanceShutdownFlushMaxBatches: 1,
-		StatsEnabled:                             true,
-		OAuthEnabled:                             true,
-		TaskRunsEnabled:                          true,
-		UsageWriterEnabled:                       true,
-		BalanceDetectEnabled:                     true,
-		ProbeEnabled:                             true,
 		// 默认 512：jobs 内 J1/J2 家族既有档位（非 Node globalMax 5000 直译，
 		// 见 ProbeConcurrency 字段注释）。
 		ProbeConcurrency:                512,
@@ -207,9 +199,19 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		return config, fmt.Errorf("JUHE_AI_WORKER_REPLICA_INDEX 必须介于 0 和 63 之间")
 	}
 	config.Secret = strings.TrimSpace(getenv("JUHE_AI_SECRET"))
-	config.BusinessSQLitePath = strings.TrimSpace(getenv("JUHE_AI_DATABASE_PATH"))
-	config.StatsSQLitePath = strings.TrimSpace(getenv("JUHE_AI_STATS_DATABASE_PATH"))
-	config.TaskRunsSQLitePath = strings.TrimSpace(getenv("JUHE_AI_TASK_RUNS_DATABASE_PATH"))
+	// 非生产空 SECRET 回退与 gateway runtime.go defaultRuntimeSecret 同值的开发
+	// 密钥（两侧凭据封套互操作要求同值；gateway 对生产强制 ≥32 位真实密钥）。
+	if config.Secret == "" {
+		if strings.EqualFold(strings.TrimSpace(getenv("NODE_ENV")), "production") {
+			return config, fmt.Errorf("production 模式必须配置 JUHE_AI_SECRET（凭据封套密钥）")
+		}
+		config.Secret = "juhe-ai-dev-secret-change-me"
+	}
+	// 路径类 env 按 DATA_DIR 约定派生（internal/datadir）：显式配置优先，
+	// 未配置落 <DATA_DIR>/<固定名>；固定名与 gateway 侧同名 env 一致。
+	config.BusinessSQLitePath = datadir.Path(getenv, "JUHE_AI_DATABASE_PATH", "business.sqlite3")
+	config.StatsSQLitePath = datadir.Path(getenv, "JUHE_AI_STATS_DATABASE_PATH", "stats.sqlite3")
+	config.TaskRunsSQLitePath = datadir.Path(getenv, "JUHE_AI_TASK_RUNS_DATABASE_PATH", "task-runs.sqlite3")
 	config.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
 	config.PostgresMaxOpenConns, err = workerEnvInt(getenv, "JUHE_AI_POSTGRES_MAX_OPEN_CONNS", config.PostgresMaxOpenConns)
 	if err != nil {
@@ -219,8 +221,8 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if err != nil {
 		return config, err
 	}
-	config.UsageCatalogSQLitePath = strings.TrimSpace(getenv("JUHE_AI_USAGE_CATALOG_DATABASE_PATH"))
-	config.UsageShardRoot = strings.TrimSpace(getenv("JUHE_AI_USAGE_SHARD_ROOT"))
+	config.UsageCatalogSQLitePath = datadir.Path(getenv, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "usage-catalog.sqlite3")
+	config.UsageShardRoot = datadir.Path(getenv, "JUHE_AI_USAGE_SHARD_ROOT", "usage-shards")
 	// usage spool 交接表目录：与 gateway 组合根（compose.go spoolDirectory）
 	// 同名 env、同派生规则；sqlite 模式从 stats 库目录派生，PG 模式保持为空
 	// （drain 未接线并告警），部署须显式配置 JUHE_AI_USAGE_SPOOL_DIRECTORY。
@@ -232,14 +234,14 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if err != nil {
 		return config, err
 	}
-	config.DatasetSQLitePath = strings.TrimSpace(getenv("JUHE_AI_DATASET_DATABASE_PATH"))
-	config.ChatSQLitePath = strings.TrimSpace(getenv("JUHE_AI_CHAT_DATABASE_PATH"))
-	config.CodexContextStateShardRoot = strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"))
+	config.DatasetSQLitePath = datadir.Path(getenv, "JUHE_AI_DATASET_DATABASE_PATH", "dataset.sqlite3")
+	config.ChatSQLitePath = datadir.Path(getenv, "JUHE_AI_CHAT_DATABASE_PATH", "chat.sqlite3")
+	config.CodexContextStateShardRoot = datadir.Path(getenv, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", "codex-context/state-shards")
 	config.CodexContextStateShardCount, err = workerEnvInt(getenv, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT", config.CodexContextStateShardCount)
 	if err != nil {
 		return config, err
 	}
-	config.ChatAssetsRoot = strings.TrimSpace(getenv("JUHE_AI_CHAT_ASSETS_ROOT"))
+	config.ChatAssetsRoot = datadir.Path(getenv, "JUHE_AI_CHAT_ASSETS_ROOT", "chat-assets")
 	config.CodexContextRoot = strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_ROOT"))
 	config.ChatRetentionDays, err = workerEnvInt(getenv, "JUHE_AI_CHAT_RETENTION_DAYS", config.ChatRetentionDays)
 	if err != nil {
@@ -270,24 +272,8 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if config.RecordMaintenanceShutdownFlushMaxBatches < 1 || config.RecordMaintenanceShutdownFlushMaxBatches > 10_000 {
 		return config, fmt.Errorf("JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES 必须介于 1 和 10000 之间")
 	}
-	for _, toggle := range []struct {
-		name     string
-		target   *bool
-		fallback bool
-	}{
-		{"JUHE_AI_JOBS_STATS_ENABLED", &config.StatsEnabled, true},
-		{"JUHE_AI_JOBS_OAUTH_ENABLED", &config.OAuthEnabled, true},
-		{"JUHE_AI_JOBS_TASK_RUNS_ENABLED", &config.TaskRunsEnabled, true},
-		{"JUHE_AI_JOBS_USAGE_WRITER_ENABLED", &config.UsageWriterEnabled, true},
-		{"JUHE_AI_JOBS_BALANCE_DETECT_ENABLED", &config.BalanceDetectEnabled, true},
-		{"JUHE_AI_JOBS_RETENTION_ENABLED", &config.RetentionEnabled, true},
-		{"JUHE_AI_JOBS_PROBE_ENABLED", &config.ProbeEnabled, true},
-	} {
-		*toggle.target, err = workerEnvBool(getenv, toggle.name, toggle.fallback)
-		if err != nil {
-			return config, err
-		}
-	}
+	// 家族级开关（JUHE_AI_JOBS_<FAMILY>_ENABLED）已随 2026-09-19 零配置决策
+	// 删除：全部任务族强制常开，该循环不再读取任何家族开关变量。
 	config.ProbeConcurrency, err = workerEnvInt(getenv, "JUHE_AI_JOBS_PROBE_CONCURRENCY", config.ProbeConcurrency)
 	if err != nil {
 		return config, err
@@ -355,51 +341,12 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	config.DrainTimeout = time.Duration(drainMS) * time.Millisecond
 
-	// 配置门禁（机制强制常开）：家族启用而存储缺失必须 fail closed，不允许静默降级。
+	// 配置门禁（机制强制常开，2026-09-19 决策）：路径类 env 已按 DATA_DIR
+	// 约定派生（恒非空），原 sqlite 路径门禁随之整体删除；仅保留 PG 模式
+	// 连接串必填（无法凭空默认）。凭据封套密钥已在上方回退：显式 SECRET
+	// 优先，非生产空值回退开发密钥，production 空/短值 fail-fast。
 	if config.Driver == "postgres" && config.PostgresURL == "" {
 		return config, fmt.Errorf("JUHE_AI_DATABASE_DRIVER=postgres 必须配置 JUHE_AI_POSTGRES_URL（worker 任务族强制常开）")
-	}
-	if config.Driver == "sqlite" {
-		if config.StatsEnabled && config.StatsSQLitePath == "" {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_STATS_ENABLED 后必须配置 JUHE_AI_STATS_DATABASE_PATH（business 库还必须配置 JUHE_AI_DATABASE_PATH）")
-		}
-		if config.StatsEnabled && config.BusinessSQLitePath == "" {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_STATS_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH")
-		}
-		if config.OAuthEnabled && config.BusinessSQLitePath == "" {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_OAUTH_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH")
-		}
-		if config.TaskRunsEnabled && config.TaskRunsSQLitePath == "" {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_TASK_RUNS_ENABLED 后必须配置 JUHE_AI_TASK_RUNS_DATABASE_PATH")
-		}
-		if config.UsageWriterEnabled && (config.UsageCatalogSQLitePath == "" || config.UsageShardRoot == "") {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_USAGE_WRITER_ENABLED 后必须配置 JUHE_AI_USAGE_CATALOG_DATABASE_PATH 与 JUHE_AI_USAGE_SHARD_ROOT")
-		}
-		// last_used_at / 账户健康副作用回写业务库（usagewriter SqliteShardStore
-		// BusinessDB）；缺库路径时 fail closed，不允许静默 queryOnly。
-		if config.UsageWriterEnabled && config.BusinessSQLitePath == "" {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_USAGE_WRITER_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH（usage 记录的业务库副作用）")
-		}
-		if config.RetentionEnabled {
-			if config.DatasetSQLitePath == "" {
-				return config, fmt.Errorf("启用 JUHE_AI_JOBS_RETENTION_ENABLED 后 SQLite 模式必须配置 JUHE_AI_DATASET_DATABASE_PATH")
-			}
-			if config.ChatSQLitePath == "" {
-				return config, fmt.Errorf("启用 JUHE_AI_JOBS_RETENTION_ENABLED 后 SQLite 模式必须配置 JUHE_AI_CHAT_DATABASE_PATH")
-			}
-			if config.CodexContextStateShardRoot == "" || config.CodexContextStateShardCount < 1 {
-				return config, fmt.Errorf("启用 JUHE_AI_JOBS_RETENTION_ENABLED 后 SQLite 模式必须配置 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 与 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT")
-			}
-		}
-		if config.BalanceDetectEnabled && (config.BusinessSQLitePath == "" || config.StatsSQLitePath == "") {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_BALANCE_DETECT_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH 与 JUHE_AI_STATS_DATABASE_PATH")
-		}
-		if config.ProbeEnabled && config.BusinessSQLitePath == "" {
-			return config, fmt.Errorf("启用 JUHE_AI_JOBS_PROBE_ENABLED 后必须配置 JUHE_AI_DATABASE_PATH")
-		}
-	}
-	if config.ProbeEnabled && config.Secret == "" {
-		return config, fmt.Errorf("启用探针族后必须配置 JUHE_AI_SECRET（凭据解密与 Key 指纹不可用）")
 	}
 	return config, nil
 }

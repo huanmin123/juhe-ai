@@ -255,15 +255,22 @@ func TestW7DLoadConfigEnvironmentMatrix(t *testing.T) {
 		return LoadConfig(func(key string) string { return env[key] })
 	}
 
-	// 缺 instance id / store 模式 / 非法模式。
-	if _, err := run(t, func(env map[string]string) { delete(env, "JUHE_AI_TABLE_MONITOR_INSTANCE_ID") }); err == nil {
-		t.Fatal("缺 instance id 必须拒绝")
-	}
-	if _, err := run(t, func(env map[string]string) { delete(env, "JUHE_AI_TABLE_MONITOR_STORE") }); err == nil {
-		t.Fatal("缺 store 模式必须拒绝")
-	}
+	// 缺 instance id / store 模式的失败臂已删除（2026-09-19 零配置决策：
+	// INSTANCE_ID 缺省 os.Hostname()、STORE 缺省跟随 JUHE_AI_DATABASE_DRIVER，
+	// 两者不再是必填）。非法模式仍拒绝。
 	if _, err := run(t, func(env map[string]string) { env["JUHE_AI_TABLE_MONITOR_STORE"] = "redis" }); err == nil {
 		t.Fatal("非法 store 模式必须拒绝")
+	}
+	// 缺省 store 模式跟随驱动（sqlite 默认；DATABASE_DRIVER=postgres 跟随）。
+	if cfg, err := run(t, func(env map[string]string) { delete(env, "JUHE_AI_TABLE_MONITOR_STORE") }); err != nil || cfg.Mode != ModeSQLite {
+		t.Fatalf("缺省 store 模式必须为 sqlite: %v %v", cfg.Mode, err)
+	}
+	if cfg, err := run(t, func(env map[string]string) {
+		delete(env, "JUHE_AI_TABLE_MONITOR_STORE")
+		env["JUHE_AI_DATABASE_DRIVER"] = "postgres"
+		env["JUHE_AI_TABLE_MONITOR_POSTGRES_URL"] = "postgres://jobs:secret@127.0.0.1:5432/db?sslmode=disable"
+	}); err != nil || cfg.Mode != ModePostgres {
+		t.Fatalf("store 模式必须跟随 postgres 驱动: %v %v", cfg.Mode, err)
 	}
 
 	// duration 与数值解析错误。
@@ -316,19 +323,9 @@ func TestW7DLoadConfigEnvironmentMatrix(t *testing.T) {
 		t.Fatalf("postgres 配置未生效: %#v", pgCfg)
 	}
 
-	// sqlite 模式：输出路径缺失 / 运行日志库路径缺失 / 与源库共用 / shard 隔离。
-	if _, err := run(t, func(env map[string]string) { delete(env, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH") }); err == nil {
-		t.Fatal("缺输出路径必须拒绝")
-	}
-	if _, err := run(t, func(env map[string]string) { delete(env, "JUHE_AI_RUNTIME_LOG_DATABASE_PATH") }); err == nil {
-		t.Fatal("缺运行日志库路径必须拒绝")
-	}
-	if _, err := run(t, func(env map[string]string) { delete(env, "JUHE_AI_DATABASE_PATH") }); err == nil {
-		t.Fatal("缺业务库路径必须拒绝")
-	}
-	if _, err := run(t, func(env map[string]string) { delete(env, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT") }); err == nil {
-		t.Fatal("缺 shard 根目录必须拒绝")
-	}
+	// sqlite 模式：输出/运行日志/业务库/shard 根的「缺失必须拒绝」四臂已
+	// 删除（2026-09-19 零配置决策：路径类 env 缺省按 DATA_DIR 派生，恒非空，
+	// 不再是校验失败分支）。
 	// 输出库放入 shard 根目录必须拒绝。
 	if _, err := run(t, func(env map[string]string) {
 		env["JUHE_AI_TABLE_MONITOR_DATABASE_PATH"] = filepath.Join(env["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"], "tm.sqlite3")

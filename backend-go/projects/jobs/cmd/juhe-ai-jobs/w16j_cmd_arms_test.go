@@ -42,7 +42,6 @@ func w16jWireStatsAssembly(t *testing.T, root string) *workerAssembly {
 		BusinessSQLitePath: businessPath,
 		StatsSQLitePath:    statsPath,
 		Secret:             "w16j-stats-secret",
-		StatsEnabled:       true,
 	})
 	if err := assembly.wireStatsFamily(context.Background()); err != nil {
 		t.Fatalf("wire stats family: %v", err)
@@ -93,7 +92,6 @@ func TestW16JStatsSettingsInvalidJSON(t *testing.T) {
 		BusinessSQLitePath: businessPath,
 		StatsSQLitePath:    filepath.Join(root, "stats.sqlite3"),
 		Secret:             "w16j-stats-secret",
-		StatsEnabled:       true,
 	})
 	if err := assembly.wireStatsFamily(context.Background()); err != nil {
 		t.Fatalf("wire stats family: %v", err)
@@ -298,7 +296,6 @@ func w16jWireRetentionAssembly(t *testing.T, root string) *workerAssembly {
 		CodexContextStateShardRoot:  paths["JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT"],
 		CodexContextStateShardCount: 2,
 		Secret:                      "w16j-retention-secret",
-		RetentionEnabled:            true,
 	})
 	if err := assembly.wireRetentionFamily(context.Background()); err != nil {
 		t.Fatalf("wire retention family: %v", err)
@@ -339,7 +336,6 @@ func TestW16JRetentionSettingsBadTimezone(t *testing.T) {
 		CodexContextStateShardRoot:  filepath.Join(root, "codex-shards"),
 		CodexContextStateShardCount: 2,
 		Secret:                      "w16j-retention-secret",
-		RetentionEnabled:            true,
 	})
 	if err := assembly.wireRetentionFamily(context.Background()); err != nil {
 		t.Fatalf("wire retention family: %v", err)

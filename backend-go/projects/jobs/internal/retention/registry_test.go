@@ -74,20 +74,16 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.ChatRetentionDays != chatRetentionDefaultDays {
 		t.Fatalf("chat retention days = %d, want 3", cfg.ChatRetentionDays)
 	}
-	if !cfg.DataEnabled || !cfg.ChatEnabled || !cfg.ExpiredAccountEnabled || !cfg.RecordMaintenanceEnabled || !cfg.APIKeyRetryEnabled || !cfg.AccountRetryEnabled {
-		t.Fatal("domains must default to enabled")
-	}
+	// 域级开关已随 2026-09-19 零配置决策删除（任务恒启用），字段不复存在。
 }
 
 func TestLoadConfigOverrides(t *testing.T) {
 	environment := map[string]string{
-		"JUHE_AI_DATABASE_DRIVER":                           "postgres",
-		"JUHE_AI_PROCESS_ROLE":                              "worker",
-		"JUHE_AI_WORKER_ROLE":                               "ingest-worker",
-		"JUHE_AI_CHAT_RETENTION_DAYS":                       "30",
-		"JUHE_AI_CODEX_CONTEXT_ROOT":                        "/tmp/codex",
-		"JUHE_AI_JOBS_RETENTION_DATA_ENABLED":               "false",
-		"JUHE_AI_JOBS_RETENTION_RECORD_MAINTENANCE_ENABLED": "0",
+		"JUHE_AI_DATABASE_DRIVER":     "postgres",
+		"JUHE_AI_PROCESS_ROLE":        "worker",
+		"JUHE_AI_WORKER_ROLE":         "ingest-worker",
+		"JUHE_AI_CHAT_RETENTION_DAYS": "30",
+		"JUHE_AI_CODEX_CONTEXT_ROOT":  "/tmp/codex",
 	}
 	cfg, err := LoadConfig(func(name string) string { return environment[name] })
 	if err != nil {
@@ -98,12 +94,6 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 	if cfg.ChatRetentionDays != 30 || cfg.CodexContextRoot != "/tmp/codex" {
 		t.Fatalf("chat config not applied: %+v", cfg)
-	}
-	if cfg.DataEnabled || cfg.RecordMaintenanceEnabled {
-		t.Fatal("disable toggles not applied")
-	}
-	if !cfg.ChatEnabled || !cfg.ExpiredAccountEnabled || !cfg.APIKeyRetryEnabled || !cfg.AccountRetryEnabled {
-		t.Fatal("untouched toggles must stay enabled")
 	}
 }
 
@@ -128,11 +118,8 @@ func TestLoadConfigValidation(t *testing.T) {
 			env:     map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "366"},
 			wantErr: "JUHE_AI_CHAT_RETENTION_DAYS 必须在 1 到 365 之间的整数",
 		},
-		{
-			name:    "non-boolean toggle",
-			env:     map[string]string{"JUHE_AI_JOBS_RETENTION_CHAT_ENABLED": "maybe"},
-			wantErr: "JUHE_AI_JOBS_RETENTION_CHAT_ENABLED 必须是布尔值",
-		},
+		// 「non-boolean toggle」臂已删除：JUHE_AI_JOBS_RETENTION_<DOMAIN>_ENABLED
+		// 子开关随 2026-09-19 零配置决策移除，env 不再被读取、也不再校验。
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

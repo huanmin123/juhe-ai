@@ -55,9 +55,9 @@ type groupStatsDirtyMarker interface {
 
 // markAllGroupAccountStatsAfterAuthzWrite 对齐 Node
 // refreshGroupAccountStatsAfterWriteAsync({all:true, reason})：marker 为 nil
-// （stats 家族未装配，statsverify store 缺席）时显式 warn——Node 由
-// db-service 单进程承担该写入，Go jobs 只在 StatsEnabled 时持有写入目标——
-// 不静默跳过。
+// （statsverify store 缺席，stats 家族装配失败等）时显式 warn——Node 由
+// db-service 单进程承担该写入，Go jobs 只有在 statsverify store 装配成功时
+// 持有写入目标——不静默跳过。
 func markAllGroupAccountStatsAfterAuthzWrite(ctx context.Context, logger *slog.Logger, marker groupStatsDirtyMarker, reason string) error {
 	if marker == nil {
 		logger.Warn("background_resource_authorization_stats_dirty_handoff_skipped",

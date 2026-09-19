@@ -3,7 +3,8 @@
 //   - worker_business_db.go 的 scanNullTime 方言分支；
 //   - main.go healthHandler 槽位类型断言失败时的默认值调用臂（875/883/885）；
 //   - worker_schedule_settings.go 的 OnlineFreshnessCap 收敛臂；
-//   - worker_config.go 的 env 整数解析错误臂与 ProbeEnabled 业务库门禁；
+//   - worker_config.go 的 env 整数解析错误臂（家族开关与路径门禁已随
+//     2026-09-19 零配置决策移除）；
 //   - worker_health_probe_outbox.go 的保留天数解析臂；
 //   - worker_health_projection.go 的 poll/batch 边界臂。
 package main
@@ -195,11 +196,8 @@ func TestW16DLoadWorkerConfigErrorArms(t *testing.T) {
 		{"投影 batch 非整数", base(map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "abc"})},
 		{"投影 max batches 非整数", base(map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN": "abc"})},
 		{"投影 worker concurrency 非整数", base(map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY": "abc"})},
-		// ProbeEnabled 门禁：禁用 balance-detect 后缺业务库路径在探针族检查处失败。
-		{"probe 缺业务库路径", base(map[string]string{
-			"JUHE_AI_JOBS_BALANCE_DETECT_ENABLED": "false",
-			"JUHE_AI_SECRET":                      "0123456789abcdef0123456789abcdef",
-		})},
+		// 「probe 缺业务库路径」臂已删除（2026-09-19 家族开关移除 + DATA_DIR
+		// 派生：业务库路径派生后恒非空，不再是 loadWorkerConfig 失败分支）。
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {

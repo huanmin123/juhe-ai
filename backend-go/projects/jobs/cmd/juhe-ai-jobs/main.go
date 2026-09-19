@@ -125,6 +125,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	runtimeStore, err := runtimelog.OpenStore(context.Background(), runtimeConfig)
 	if err != nil {
+		if runtimeConfig.Mode == runtimelog.ModeSQLite {
+			if _, statErr := os.Stat(runtimeConfig.BusinessPath); statErr != nil {
+				return failWith(stderr, fmt.Errorf("open F1 runtime-log-indexer store: %w（业务库 %s 尚不存在：先启动 juhe-ai-gateway（零配置下会自动初始化业务库），或先运行 juhe-ai-maintenance --ensure-schema）", err, runtimeConfig.BusinessPath))
+			}
+		}
 		return failWith(stderr, fmt.Errorf("open F1 runtime-log-indexer store: %w", err))
 	}
 	defer runtimeStore.Close()
