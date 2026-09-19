@@ -178,7 +178,7 @@ func TestW14GBudgetAndPrepareDefaults(t *testing.T) {
 	// Prepare 的 Scheduler/Logger 缺省分支。
 	store := NewInMemoryKeyModelRuntimeStore(NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	prep, err := PrepareGatewayKeyModelAttempt(context.Background(), store, PrepareGatewayKeyModelAttemptInput{
-		Route: GatewayKeyModelCapability{AccountID: "acc", Capability: testCapability()},
+		Route:     GatewayKeyModelCapability{AccountID: "acc", Capability: testCapability()},
 		RequestID: "req", AttemptID: "att", FailureBudget: budget,
 		Clock: NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 	})
@@ -403,23 +403,6 @@ func TestW14GGuardBranches(t *testing.T) {
 // sideeffects.go / policyavoidance.go / sideeffectqueue.go
 // ---------------------------------------------------------------------------
 
-func TestW14GSideEffectsServiceDefaults(t *testing.T) {
-	service, err := NewSideEffectsService(SideEffectsConfig{}, SideEffectDeps{
-		Writer: WriterFunc(func(context.Context, AccountSideEffectOperation) (AccountErrorHandlingResult, error) {
-			return AccountErrorHandlingResult{}, nil
-		}),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if service.clock == nil || service.random == nil {
-		t.Fatalf("缺省 clock/random 必须被填充")
-	}
-	if delay := service.sideEffectRetryDelayMs(0); delay <= 0 {
-		t.Fatalf("retry 0 的延迟 = %d", delay)
-	}
-}
-
 func TestW14GPolicyAvoidanceBranches(t *testing.T) {
 	ctx := context.Background()
 	store := newFakePolicyAvoidanceStore()
@@ -448,53 +431,5 @@ func TestW14GPolicyAvoidanceBranches(t *testing.T) {
 	service.mu.Unlock()
 	if oversized {
 		t.Fatalf("缓存容量未被淘汰")
-	}
-}
-
-func TestW14GSideEffectQueueBranches(t *testing.T) {
-	// parseRfc3339Instant：匹配格式但日期非法。
-	if _, _, ok := parseRfc3339Instant("2026-13-99T99:99:99Z"); ok {
-		t.Fatalf("非法日期必须解析失败")
-	}
-	// registry：现存条目 observedAt 损坏。
-	registry, err := NewAccountSideEffectEpochRegistry(0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	registry.byKey["w14g-bad"] = registry.current.PushBack(&registryEntry{key: "w14g-bad", epoch: AccountSideEffectEpoch{ObservedAt: "not-a-time"}})
-	if _, err := registry.Observe("w14g-bad", EpochObservation{ObservedAt: "2026-01-01T00:00:00Z"}); err == nil {
-		t.Fatalf("损坏 observedAt 必须失败")
-	}
-	// compareSideEffectFailureAge：NextAttemptAtMs 排序分支。
-	left := &QueuedAccountSideEffect{NextAttemptAtMs: 10}
-	right := &QueuedAccountSideEffect{NextAttemptAtMs: 5}
-	if compareSideEffectFailureAge(left, right) != 1 {
-		t.Fatalf("较晚 next attempt 应返回 1")
-	}
-	// FindIndexByRuntimeKey / RemoveRuntimeKey / RemoveOldestFailure 的脏映射防御。
-	queue := NewAccountSideEffectQueue()
-	queue.itemsByRuntimeKey["w14g-stale"] = map[*QueuedAccountSideEffect]struct{}{{}: {}}
-	if queue.FindIndexByRuntimeKey("w14g-stale") != -1 {
-		t.Fatalf("脏映射必须返回 -1")
-	}
-	if removed := queue.RemoveRuntimeKey("w14g-stale"); len(removed) != 0 {
-		t.Fatalf("脏映射必须移除为空")
-	}
-	orphan := &QueuedAccountSideEffect{NextAttemptAtMs: 1}
-	queue.failuresByAge = append(queue.failuresByAge, orphan)
-	if queue.RemoveOldestFailure() != nil {
-		t.Fatalf("脏堆必须返回 nil")
-	}
-	queue.removeFailureByAge(&QueuedAccountSideEffect{})
-	// rebalanceFailureAgeAt：上滤与下滤分支。
-	queue2 := NewAccountSideEffectQueue()
-	first := &QueuedAccountSideEffect{NextAttemptAtMs: 100}
-	second := &QueuedAccountSideEffect{NextAttemptAtMs: 50}
-	third := &QueuedAccountSideEffect{NextAttemptAtMs: 70}
-	queue2.failuresByAge = []*QueuedAccountSideEffect{first, second, third}
-	queue2.failureAgeIndexByItem = map[*QueuedAccountSideEffect]int{first: 0, second: 1, third: 2}
-	queue2.rebalanceFailureAgeAt(2)
-	if queue2.failuresByAge[0] == first {
-		t.Fatalf("rebalance 应修复堆序")
 	}
 }

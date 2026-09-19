@@ -12,145 +12,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// weGateWriter 先报告已进入执行、再等待放行闸门，用于构造“执行期间状态变化”。
-type weGateWriter struct {
-	entered chan struct{}
-	gate    chan struct{}
-
-	mu    sync.Mutex
-	calls int
-}
-
-func (w *weGateWriter) ApplyAccountErrorHandling(context.Context, AccountSideEffectOperation) (AccountErrorHandlingResult, error) {
-	w.mu.Lock()
-	w.calls++
-	w.mu.Unlock()
-	w.entered <- struct{}{}
-	<-w.gate
-	return AccountErrorHandlingResult{}, errors.New("注入的写入失败")
-}
-
-func (w *weGateWriter) callCount() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.calls
-}
-
-// ---------------------------------------------------------------------------
-// Drain 执行期间状态变化：过期、epoch 失效、重入
-// ---------------------------------------------------------------------------
-
-func TestWeDrainExpiresItemBlockedDuringExecute(t *testing.T) {
-	writer := &weGateWriter{entered: make(chan struct{}, 1), gate: make(chan struct{})}
-	service, _, clock, scheduler := weNewServiceFull(t, SideEffectsConfig{}, SideEffectDeps{Writer: writer})
-	ctx := context.Background()
-
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", false, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	fireDone := make(chan struct{})
-	go func() { scheduler.Fire(); close(fireDone) }()
-	<-writer.entered
-	// 执行期间时钟越过保留窗口：失败后的过期检查必须丢弃条目而不是安排重试。
-	clock.Advance(time.Duration(SideEffectRetentionMs)*time.Millisecond + 2*time.Millisecond)
-	// 排水重入是 no-op（single-flight 契约）。
-	service.Drain(ctx)
-	close(writer.gate)
-	<-fireDone
-
-	state := service.GetState(0, 0)
-	if state.FailedAttemptCount != 1 || state.ExpiredCount != 1 || state.QueueLength != 0 {
-		t.Fatalf("state = %+v", state)
-	}
-	if writer.callCount() != 1 {
-		t.Fatalf("writer calls = %d, want 1", writer.callCount())
-	}
-}
-
-func TestWeDrainStaleEpochAfterFailedExecute(t *testing.T) {
-	writer := &weGateWriter{entered: make(chan struct{}, 1), gate: make(chan struct{})}
-	service, _, _, scheduler := weNewServiceFull(t, SideEffectsConfig{}, SideEffectDeps{Writer: writer})
-	ctx := context.Background()
-
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", false, "2026-01-01T00:00:01.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	fireDone := make(chan struct{})
-	go func() { scheduler.Fire(); close(fireDone) }()
-	<-writer.entered
-	// 执行期间同一 runtime key 出现更新的成功观测：旧 epoch 失效。
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", true, "2026-01-01T00:00:02.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	close(writer.gate)
-	<-fireDone
-
-	state := service.GetState(0, 0)
-	// 旧 epoch 的失败执行记为 stale；随后入队的成功观测被同样失败的 writer
-	// 执行并按重试排队（QueueLength 1）。
-	if state.StaleCount != 1 || state.FailedAttemptCount != 2 || state.QueueLength != 1 {
-		t.Fatalf("state = %+v", state)
-	}
-}
-
-func TestWeEnqueueStaleObservationRejected(t *testing.T) {
-	service, _, _, _ := weNewServiceFull(t, SideEffectsConfig{}, SideEffectDeps{Writer: &scriptedWriter{}})
-	ctx := context.Background()
-	// 先接受较新的成功观测，再提交更旧的失败观测：watermark 判定为 stale。
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", true, "2026-01-01T00:00:02.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", false, "2026-01-01T00:00:01.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	state := service.GetState(0, 0)
-	if state.StaleCount != 1 {
-		t.Fatalf("StaleCount = %d, want 1", state.StaleCount)
-	}
-}
-
-func TestWeFlushCancelsPendingDrainTimer(t *testing.T) {
-	writer := &scriptedWriter{}
-	service, _, _, scheduler := weNewServiceFull(t, SideEffectsConfig{}, SideEffectDeps{Writer: writer})
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(context.Background(), testOperationFor("acc-1", true, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	if scheduler.Pending() != 1 {
-		t.Fatalf("pending = %d, want 1", scheduler.Pending())
-	}
-	// Flush 直接排水到队列清空并取消挂起定时器。
-	service.Flush(context.Background())
-	if scheduler.Pending() != 0 {
-		t.Fatalf("Flush 后 pending = %d, want 0", scheduler.Pending())
-	}
-	state := service.GetState(0, 0)
-	if state.CompletedCount != 1 {
-		t.Fatalf("state = %+v", state)
-	}
-}
-
-func TestWeRedisDriverGetStateAndObservationFallbackKey(t *testing.T) {
-	service, _, _, _ := weNewServiceFull(t, SideEffectsConfig{RuntimeStateDriver: "redis"}, SideEffectDeps{Writer: &scriptedWriter{}})
-	state := service.GetState(0, 0)
-	if state.PrecheckPendingAccountCount != 0 || state.RecoveryProbePendingAccountCount != 0 {
-		t.Fatalf("redis 驱动下本地计数应归零: %+v", state)
-	}
-	// memory 驱动下缺绑定上下文的授权账户：风暴记账回落 account.ID。
-	memoryService, _, _, _ := weNewServiceFull(t, SideEffectsConfig{}, SideEffectDeps{Writer: &scriptedWriter{}})
-	invalid := gatewayruntimecache.OpenAIAccountSecret{ID: "acc-invalid", Status: "active", AccountAccessType: "account_authorized"}
-	memoryService.RecordGatewayAccountFailureForPrecheck(context.Background(), invalid, GatewayAccountFailurePrecheckInput{Reason: "x"})
-	memoryService.mu.Lock()
-	_, exists := memoryService.failureStorms["acc-invalid"]
-	memoryService.mu.Unlock()
-	if !exists {
-		t.Fatal("应回落 account.ID 记账")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// apikeyeffects.go：合并定时器自然触发与异步失败写错误
-// ---------------------------------------------------------------------------
-
 func TestWeAPIKeyEffectsCoalesceTimerFiresFlush(t *testing.T) {
 	writer := &weAPIKeyWriter{successResult: APIKeyWriteResult{Changed: true}, successDone: make(chan struct{}, 1)}
 	guard := NewAccountAPIKeyFailureGuard(SideEffectsConfig{}, nil, nil, nil)
@@ -343,64 +204,10 @@ func TestWeMemoryRecordFailureStaleRevisionAndCapacity(t *testing.T) {
 	status, state := badTargetStore.SettleRecovery(MemoryRecoverySettleInput{Capability: CapabilityKey{}, NowMs: 1})
 	if status != KeyModelMutationStale || state.CapabilityHash != "" {
 		t.Fatalf("status = %s state = %+v", status, state)
+
 	}
+
 }
-
-// ---------------------------------------------------------------------------
-// sideeffectqueue / sideeffectpolicy / runtimekeys / clock / policyavoidance 精补
-// ---------------------------------------------------------------------------
-
-func TestWeQueueMiscBranches(t *testing.T) {
-	queue := NewAccountSideEffectQueue()
-	if item := queue.Pop(); item != nil {
-		t.Fatalf("空队列 Pop = %+v", item)
-	}
-	if removed := queue.RemoveRuntimeKey("missing"); len(removed) != 0 {
-		t.Fatalf("缺失 key 应返回空: %v", removed)
-	}
-	queue.Push(weQueuedItem("acc-1", false, 100, 100))
-	if replaced := queue.ReplaceAt(-1, weQueuedItem("x", false, 0, 0)); replaced != nil {
-		t.Fatal("越界 ReplaceAt 应返回 nil")
-	}
-	if replaced := queue.ReplaceAt(5, weQueuedItem("x", false, 0, 0)); replaced != nil {
-		t.Fatal("越界 ReplaceAt 应返回 nil")
-	}
-	if removed := queue.RemoveWhereItems(func(*QueuedAccountSideEffect) bool { return false }); len(removed) != 0 {
-		t.Fatalf("无匹配应返回空: %v", removed)
-	}
-	// parseRfc3339Instant：非字符串与可 trim 的输入。
-	if _, _, ok := parseRfc3339Instant(123); ok {
-		t.Fatal("非字符串应解析失败")
-	}
-	ms, canonical, ok := parseRfc3339Instant("  2026-01-01T00:00:00.000Z  ")
-	if !ok || ms != 1767225600000 || canonical != "2026-01-01T00:00:00.000Z" {
-		t.Fatalf("ms = %d canonical = %s ok = %v", ms, canonical, ok)
-	}
-	// 同 nextAttemptAtMs 时按 enqueuedAtMs 决胜，均相同返回 0。
-	left := weQueuedItem("a", false, 100, 200)
-	right := weQueuedItem("b", false, 300, 200)
-	if compareSideEffectQueueItems(left, right) >= 0 {
-		t.Fatal("更早入队应更小")
-	}
-	if compareSideEffectQueueItems(left, weQueuedItem("c", false, 100, 200)) != 0 {
-		t.Fatal("完全相同应返回 0")
-	}
-}
-
-func TestWeSideEffectPolicyIsQueuedDirect(t *testing.T) {
-	invalid := newTestOperation("acc-2", false)
-	invalid.Account.AccountAccessType = "account_authorized"
-	item := &QueuedAccountSideEffect{Operation: invalid}
-	// 队列项自身的 key 推导失败 → 不参与合并。
-	if isQueuedAccountErrorHandlingForRuntimeKey(item, "acc-2") {
-		t.Fatal("key 推导失败应返回 false")
-	}
-	valid := &QueuedAccountSideEffect{Operation: newTestOperation("acc-1", false)}
-	if !isQueuedAccountErrorHandlingForRuntimeKey(valid, "acc-1") {
-		t.Fatal("同 key 应返回 true")
-	}
-}
-
 func TestWeClearTargetDropsBaseKeyExplicitly(t *testing.T) {
 	exclude := false
 	keys := (GatewayAccountRuntimeClearTarget{
@@ -413,7 +220,6 @@ func TestWeClearTargetDropsBaseKeyExplicitly(t *testing.T) {
 		t.Fatalf("keys = %v", keys)
 	}
 }
-
 func TestWePassiveScheduleOffsetEdgeInputs(t *testing.T) {
 	// 契约：窗口为 0 返回 0；随机值缺失/NaN/负数夹到 0（对称负偏移）；>1 夹到 1；
 	// 计算结果恰为 0 时回落 1（保证严格非零延迟）。

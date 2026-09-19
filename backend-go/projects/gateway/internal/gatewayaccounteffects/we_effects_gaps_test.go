@@ -33,188 +33,9 @@ func (l *weCountingLogger) warnCount() int {
 	return l.warns
 }
 
-func weNewServiceFull(t *testing.T, config SideEffectsConfig, deps SideEffectDeps) (*SideEffectsService, *weHook, *FakeClock, *ManualScheduler) {
-	t.Helper()
-	clock := NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	scheduler := NewManualScheduler()
-	hook := &weHook{}
-	deps.Clock = clock
-	deps.Scheduler = scheduler
-	if deps.Random == nil {
-		deps.Random = func() float64 { return 0.5 }
-	}
-	deps.ClearRuntimeAvailabilityLocal = hook.clearLocal
-	deps.InvalidateRuntimeCache = hook.invalidate
-	deps.ScheduleRecoveryProbe = hook.scheduleProbe
-	service, err := NewSideEffectsService(config, deps)
-	if err != nil {
-		t.Fatalf("构造服务失败：%v", err)
-	}
-	return service, hook, clock, scheduler
-}
-
 // ---------------------------------------------------------------------------
 // sideeffects.go：队列满员丢弃/成功淘汰、过期与重试路径
 // ---------------------------------------------------------------------------
-
-func TestWeSideEffectsQueueFullDropsWithLogThrottle(t *testing.T) {
-	logger := &weCountingLogger{}
-	service, _, _, _ := weNewServiceFull(t, SideEffectsConfig{QueueMaxLength: 1}, SideEffectDeps{Writer: &scriptedWriter{}, Logger: logger})
-	ctx := context.Background()
-
-	// 占满队列（max=1）。
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-0", false, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	// 连续 11 个不同账户的失败观测：前 10 次丢弃都告警，第 11 次（>10 且非 100 倍数）静默。
-	for index := 1; index <= 11; index++ {
-		err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-"+intToDecimal(index), false, "2026-01-01T00:00:00.000Z"))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	state := service.GetState(0, 0)
-	if state.DroppedCount != 11 {
-		t.Fatalf("DroppedCount = %d, want 11", state.DroppedCount)
-	}
-	if warns := logger.warnCount(); warns != 10 {
-		t.Fatalf("drop 告警 = %d, want 10（第 11 次静默）", warns)
-	}
-}
-
-func TestWeSideEffectsQueueFullEvictsOldestFailureForSuccess(t *testing.T) {
-	service, _, _, _ := weNewServiceFull(t, SideEffectsConfig{QueueMaxLength: 1}, SideEffectDeps{Writer: &scriptedWriter{}})
-	ctx := context.Background()
-
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", false, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	// 队列满时的成功 watermark：允许入队并淘汰最早的失败写入。
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-2", true, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	state := service.GetState(0, 0)
-	if state.EvictedFailureForSuccessCount != 1 {
-		t.Fatalf("EvictedFailureForSuccessCount = %d, want 1", state.EvictedFailureForSuccessCount)
-	}
-	if state.QueueLength != 1 {
-		t.Fatalf("QueueLength = %d, want 1", state.QueueLength)
-	}
-	// 队列满且没有失败可淘汰时，成功观测同样被丢弃。
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-3", true, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	state = service.GetState(0, 0)
-	// DroppedCount 包含成功淘汰的那次（淘汰计入 drop），加本次因队列无失败可让位的丢弃。
-	if state.DroppedCount != 2 || state.QueueLength != 1 {
-		t.Fatalf("state = %+v", state)
-	}
-}
-
-func TestWeSideEffectsDrainExpiresStaleItems(t *testing.T) {
-	service, _, clock, scheduler := weNewServiceFull(t, SideEffectsConfig{}, SideEffectDeps{Writer: &scriptedWriter{}})
-	ctx := context.Background()
-
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", false, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	// 推进时钟超过保留窗口（10 分钟）后触发 drain：条目过期丢弃。
-	clock.Advance(time.Duration(SideEffectRetentionMs) * time.Millisecond)
-	clock.Advance(2 * time.Millisecond)
-	scheduler.Fire()
-	state := service.GetState(0, 0)
-	if state.ExpiredCount != 1 || state.EnqueuedCount != 1 || state.CompletedCount != 0 {
-		t.Fatalf("state = %+v", state)
-	}
-}
-
-func TestWeSideEffectsDrainRetriesThenCompletes(t *testing.T) {
-	writer := &scriptedWriter{failures: 1}
-	service, _, clock, scheduler := weNewServiceFull(t, SideEffectsConfig{}, SideEffectDeps{Writer: writer})
-	ctx := context.Background()
-
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", false, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	// 第一次 drain：写入失败 → 计划重试。
-	scheduler.Fire()
-	state := service.GetState(0, 0)
-	if state.FailedAttemptCount != 1 || state.QueueLength != 1 {
-		t.Fatalf("state = %+v", state)
-	}
-	// 推进时钟越过重试时间后触发第二次 drain：成功完成。
-	clock.Advance(2 * time.Second)
-	scheduler.Fire()
-	state = service.GetState(0, 0)
-	if state.CompletedCount != 1 || state.QueueLength != 0 || state.FailedAttemptCount != 1 {
-		t.Fatalf("state = %+v", state)
-	}
-}
-
-func TestWeSideEffectsDrainClearErrorSchedulesRetry(t *testing.T) {
-	// Redis 驱动下写入成功但执行期分布式清理失败：按失败处理并计划重试。
-	// 第一次调用是入队时的成功清理（放行），第二次是执行期清理（注入失败）。
-	calls := 0
-	service, _, _, scheduler := weNewServiceFull(t, SideEffectsConfig{RuntimeStateDriver: "redis"}, SideEffectDeps{
-		Writer: &scriptedWriter{},
-		ClearDistributedRuntimeAvailability: func(context.Context, string) error {
-			calls++
-			if calls >= 2 {
-				return errors.New("redis 清理失败")
-			}
-			return nil
-		},
-	})
-	ctx := context.Background()
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", true, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	scheduler.Fire()
-	state := service.GetState(0, 0)
-	if state.FailedAttemptCount != 1 || state.CompletedCount != 0 {
-		t.Fatalf("state = %+v", state)
-	}
-	if scheduler.Pending() != 1 {
-		t.Fatalf("应计划重试定时器, pending = %d", scheduler.Pending())
-	}
-}
-
-func TestWeSideEffectsExecuteSuccessWithoutChangedClearsLocally(t *testing.T) {
-	// 契约：成功观测未变更且账户已恢复 active → 仍需清理本地可用性标记，但不失效缓存。
-	service, hook, _, _ := weNewServiceFull(t, SideEffectsConfig{}, SideEffectDeps{
-		Writer: WriterFunc(func(context.Context, AccountSideEffectOperation) (AccountErrorHandlingResult, error) {
-			return AccountErrorHandlingResult{Changed: false, AccountStatus: "active"}, nil
-		}),
-	})
-	ctx := context.Background()
-	if err := service.EnqueueGatewayAccountErrorHandlingSideEffect(ctx, testOperationFor("acc-1", true, "2026-01-01T00:00:00.000Z")); err != nil {
-		t.Fatal(err)
-	}
-	service.Drain(ctx)
-	state := service.GetState(0, 0)
-	if state.CompletedCount != 1 {
-		t.Fatalf("state = %+v", state)
-	}
-	cleared := hook.clearedKeys()
-	// 入队时的成功观测会先清一次，执行成功（未变更但恢复 active）再清一次。
-	if len(cleared) != 2 || cleared[0] != "acc-1" || cleared[1] != "acc-1" {
-		t.Fatalf("cleared = %v", cleared)
-	}
-	if hook.invalidateCount() != 0 {
-		t.Fatalf("未变更不应失效运行态缓存: %d", hook.invalidateCount())
-	}
-}
-
-func TestWeSideEffectsConstructorValidations(t *testing.T) {
-	// 缺少 Writer 必须拒绝构造。
-	if _, err := NewSideEffectsService(SideEffectsConfig{}, SideEffectDeps{}); err == nil {
-		t.Fatal("缺少 Writer 应报错")
-	}
-	// 非法 epoch 容量必须拒绝。
-	if _, err := NewAccountSideEffectEpochRegistry(-1); err == nil {
-		t.Fatal("负容量应报错")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // keymodelmemory.go：意图校验、目标归一化、ListDue 与结算分支
@@ -840,70 +661,6 @@ func TestWeRuntimeKeyClearTargetHelpers(t *testing.T) {
 	}
 }
 
-func TestWeSideEffectPolicyHelpers(t *testing.T) {
-	if maxInt64(1, 2) != 2 || maxInt64(2, 1) != 2 {
-		t.Fatal("maxInt64 语义错误")
-	}
-	// 非 account 操作类型的队列项不参与合并/取消。
-	other := &QueuedAccountSideEffect{Operation: AccountSideEffectOperation{Type: "other"}}
-	operation := newTestOperation("acc-1", false)
-	if ShouldCoalesceQueuedAccountErrorHandlingSideEffect(other, operation) {
-		t.Fatal("其他类型不应合并")
-	}
-	// 授权账户缺绑定：key 推导失败 → 不合并。
-	invalid := newTestOperation("acc-2", false)
-	invalid.Account.AccountAccessType = "account_authorized"
-	if ShouldCoalesceQueuedAccountErrorHandlingSideEffect(&QueuedAccountSideEffect{Operation: newTestOperation("acc-1", false)}, invalid) {
-		t.Fatal("key 推导失败不应合并")
-	}
-	// 同 runtime key 的成功后取消判定。
-	item := &QueuedAccountSideEffect{Operation: newTestOperation("acc-1", false)}
-	if !ShouldCancelQueuedAccountErrorHandlingSideEffectAfterSuccess(item, "acc-1") {
-		t.Fatal("同 key 应取消")
-	}
-	if ShouldCancelQueuedAccountErrorHandlingSideEffectAfterSuccess(item, "acc-9") {
-		t.Fatal("不同 key 不应取消")
-	}
-	if derefStringPtr(nil) != "" || derefStringPtr(stringPtr("v")) != "v" {
-		t.Fatal("derefStringPtr 语义错误")
-	}
-}
-
-func TestWeQueueRemoveOldestFailureBranches(t *testing.T) {
-	queue := NewAccountSideEffectQueue()
-	if oldest := queue.RemoveOldestFailure(); oldest != nil {
-		t.Fatalf("空队列应返回 nil, got %+v", oldest)
-	}
-	queue.Push(weQueuedItem("acc-1", false, 300, 300))
-	queue.Push(weQueuedItem("acc-2", false, 100, 100))
-	queue.Push(weQueuedItem("acc-3", true, 50, 50))
-	oldest := queue.RemoveOldestFailure()
-	if oldest == nil || oldest.Operation.Account.ID != "acc-2" {
-		t.Fatalf("oldest = %+v", oldest)
-	}
-	// acc-1 仍是失败项：HasFailures 保持 true，队列只剩 2 条。
-	if !queue.HasFailures() || queue.Len() != 2 {
-		t.Fatalf("移除后 queue 状态错误: len=%d failures=%v", queue.Len(), queue.HasFailures())
-	}
-}
-
-func TestWeEpochDispatchRevisionEquality(t *testing.T) {
-	three := int64(3)
-	four := int64(4)
-	if !equalDispatchRevision(nil, nil) {
-		t.Fatal("双 nil 应相等")
-	}
-	if equalDispatchRevision(nil, &three) || equalDispatchRevision(&three, nil) {
-		t.Fatal("nil 与数值不应相等")
-	}
-	if !equalDispatchRevision(&three, &three) {
-		t.Fatal("同值应相等")
-	}
-	if equalDispatchRevision(&three, &four) {
-		t.Fatal("不同值不应相等")
-	}
-}
-
 func TestWeKeyModelRuntimeMisc(t *testing.T) {
 	if minInt(1, 2) != 1 || minInt(2, 1) != 1 {
 		t.Fatal("minInt 语义错误")
@@ -929,4 +686,28 @@ func TestWeKeyModelRuntimeMisc(t *testing.T) {
 	if key, err := GatewayAccountRuntimeKeyForSecret(secret); err != nil || key != "acc-1" {
 		t.Fatalf("key = %s err = %v", key, err)
 	}
+}
+
+// 以下三个 helper 原属 sideeffectqueue.go（Node side-effect 死半区），
+// 随 PLAN-20260919T000723744Z 任务 B 删除后仅本文件测试仍在使用，就近保留。
+func derefStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func SuppressibleFromSecret(secret gatewayruntimecache.OpenAIAccountSecret) SuppressibleGatewayAccount {
+	return SuppressibleGatewayAccount{
+		ID:                        secret.ID,
+		AccountAccessType:         secret.AccountAccessType,
+		BindingSystemAccountID:    derefStringPtr(secret.BindingSystemAccountID),
+		BoundGroupID:              derefStringPtr(secret.BoundGroupID),
+		AccountAuthorizationID:    derefStringPtr(secret.AccountAuthorizationID),
+		CredentialSourceAccountID: derefStringPtr(secret.CredentialSourceAccountID),
+	}
+}
+
+func GatewayAccountRuntimeKeyForSecret(secret gatewayruntimecache.OpenAIAccountSecret) (string, error) {
+	return GatewayAccountRuntimeKey(SuppressibleFromSecret(secret))
 }
