@@ -163,6 +163,12 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 
 测试应断言状态转移和副作用，而不是只断言最终客户端 HTTP 状态。任何新增的错误分类器都必须证明它只用于诊断，或删除具体供应商语义分类。
 
+## 7. 当前事实登记：stream_failure_count 与流失败阈值动作
+
+- Go 链路不存在"流失败计数达到阈值触发 `disable` / `cooldown`"的写入方：网关流失败只进入进程内诊断窗口与传输电路运行态，不写 `accounts.stream_failure_count`。生产对该列的唯一动作是错误策略成功 / 冷却 / 恢复路径的清零（`chain_error_policy_effects.go`），用于清洗 Node 时代遗留值。
+- Node 归档中承担该阈值的 `account-effects` / `account-side-effects` 半区在 Go 侧属未接线移植残留（`gatewayaccounteffects` 包 `doc.go` 生产接线边界），不得作为新功能的接线基础；若未来需要流失败阈值动作，必须按本文件的状态变更授权来源重新设计。
+- 2026-09 复审（PLAN-20260918T142845703Z / PLAN-20260919T000723744Z）确认以上口径；`gatewaydispatch` 内另一套同源死代码（`engine.AccountState` 端口与 `business/account_runtime` 包）已删除。
+
 相关实现：
 
 - `backend/src/modules/gateway/response/failure-dispatch.ts`

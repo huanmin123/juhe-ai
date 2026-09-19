@@ -13,6 +13,7 @@ import (
 type whLatencyStore struct {
 	*MemoryRuntimeStateStore
 	getJSONFail     func(key string) error
+	getJSONManyFail func(keys []string) error
 	setJSONFail     func(key string) error
 	compareSetErr   func(key string) error // 命中即返回错误
 	compareSetForce map[string]bool        // 键 → 强制 applied（不再委托真实存储）
@@ -37,6 +38,15 @@ func (s *whLatencyStore) GetJSON(ctx context.Context, key string) (json.RawMessa
 		}
 	}
 	return s.MemoryRuntimeStateStore.GetJSON(ctx, key)
+}
+
+func (s *whLatencyStore) GetJSONMany(ctx context.Context, keys []string) ([]json.RawMessage, error) {
+	if s.getJSONManyFail != nil {
+		if err := s.getJSONManyFail(keys); err != nil {
+			return nil, err
+		}
+	}
+	return s.MemoryRuntimeStateStore.GetJSONMany(ctx, keys)
 }
 
 func (s *whLatencyStore) SetJSON(ctx context.Context, key string, value any, ttlMs int64) error {

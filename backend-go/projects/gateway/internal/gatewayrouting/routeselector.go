@@ -18,18 +18,25 @@ const (
 // state (Node module-level roundRobinStates / weightedRouteStates Maps).
 // Insertion-order trimming mirrors Map iteration order; re-setting an
 // existing key keeps its original position, exactly like Map#set.
+// roundRobinSeen / weightedSeen mirror the membership of the matching keys
+// slice so appendKeyOnce is O(1) instead of a linear scan; both are only
+// touched under mu and kept in sync by appendKeyOnce / trimLocked.
 type routeStateRegistry struct {
 	mu             sync.Mutex
 	roundRobin     map[string]int
 	roundRobinKeys []string
+	roundRobinSeen map[string]struct{}
 	weighted       map[string]map[string]int64
 	weightedKeys   []string
+	weightedSeen   map[string]struct{}
 }
 
 func newRouteStateRegistry() *routeStateRegistry {
 	return &routeStateRegistry{
-		roundRobin: make(map[string]int),
-		weighted:   make(map[string]map[string]int64),
+		roundRobin:     make(map[string]int),
+		roundRobinSeen: make(map[string]struct{}),
+		weighted:       make(map[string]map[string]int64),
+		weightedSeen:   make(map[string]struct{}),
 	}
 }
 
@@ -39,39 +46,24 @@ func (r *routeStateRegistry) nextRoundRobinIndex(key string, bindingCount int) i
 	state := r.roundRobin[key]
 	index := state % bindingCount
 	r.roundRobin[key] = (index + 1) % bindingCount
-	r.appendKeyOnce(&r.roundRobinKeys, key)
+	r.appendKeyOnce(r.roundRobinSeen, &r.roundRobinKeys, key)
 	r.trimLocked()
 	return index
-}
-
-func (r *routeStateRegistry) weightedStateView(key string) map[string]int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.weighted[key]
-	if state == nil {
-		return nil
-	}
-	view := make(map[string]int64, len(state))
-	for id, value := range state {
-		view[id] = value
-	}
-	return view
 }
 
 func (r *routeStateRegistry) weightedStateStore(key string, state map[string]int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.weighted[key] = state
-	r.appendKeyOnce(&r.weightedKeys, key)
+	r.appendKeyOnce(r.weightedSeen, &r.weightedKeys, key)
 	r.trimLocked()
 }
 
-func (r *routeStateRegistry) appendKeyOnce(keys *[]string, key string) {
-	for _, existing := range *keys {
-		if existing == key {
-			return
-		}
+func (r *routeStateRegistry) appendKeyOnce(seen map[string]struct{}, keys *[]string, key string) {
+	if _, ok := seen[key]; ok {
+		return
 	}
+	seen[key] = struct{}{}
 	*keys = append(*keys, key)
 }
 
@@ -80,11 +72,13 @@ func (r *routeStateRegistry) trimLocked() {
 		oldest := r.roundRobinKeys[0]
 		r.roundRobinKeys = r.roundRobinKeys[1:]
 		delete(r.roundRobin, oldest)
+		delete(r.roundRobinSeen, oldest)
 	}
 	for len(r.weighted) > apiKeyGroupRouteStateMaxEntries {
 		oldest := r.weightedKeys[0]
 		r.weightedKeys = r.weightedKeys[1:]
 		delete(r.weighted, oldest)
+		delete(r.weightedSeen, oldest)
 	}
 }
 
@@ -227,29 +221,46 @@ func normalizeGatewayAPIKeyGroupBindings(bindings []GroupBindingRow) ([]GroupBin
 // orderWeightedBindings mirrors orderWeightedBindings: smooth weighted
 // selection where each binding accrues its weight and the selected one pays
 // the total weight back; the remainder is emitted by current-weight debt.
+// Weights are normalized up front (a pure function of binding.Weight), so the
+// first failure surfaces at the same binding as the original two-pass loop
+// and the route state stays untouched on error; applyWeightedOrder then
+// updates the stored per-key state in place under the registry lock instead
+// of copying the whole map out and replacing it.
 func (s *APIKeyGroupRouteSelector) orderWeightedBindings(key string, bindings []GroupBindingRow) ([]GroupBindingRow, error) {
-	state := s.states.weightedStateView(key)
+	weights := make([]int64, len(bindings))
+	var totalWeight int64
+	for i, binding := range bindings {
+		weight, err := NormalizeAPIKeyGroupBindingWeight(binding.Weight)
+		if err != nil {
+			return nil, err
+		}
+		weights[i] = weight
+		totalWeight += weight
+	}
+	return s.states.applyWeightedOrder(key, bindings, weights, totalWeight), nil
+}
+
+// applyWeightedOrder performs the stateful half of orderWeightedBindings
+// while holding the registry lock: the stored per-key state map is cleaned,
+// accrued and debited in place, then the remainder is sorted by the
+// post-update current weights. Holding the lock across the sort keeps every
+// reader of the smooth-weighted current weights on a consistent view — the
+// stored map is never observed mid-update. The lock is the registry's single
+// mutex and no other lock or callback is taken inside, so no new lock order
+// is introduced.
+func (r *routeStateRegistry) applyWeightedOrder(key string, bindings []GroupBindingRow, weights []int64, totalWeight int64) []GroupBindingRow {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.weighted[key]
 	if state == nil {
 		state = make(map[string]int64)
 	}
 	cleanupWeightedState(state, bindings)
-	var totalWeight int64
-	for _, binding := range bindings {
-		weight, err := NormalizeAPIKeyGroupBindingWeight(binding.Weight)
-		if err != nil {
-			return nil, err
-		}
-		totalWeight += weight
-	}
 	selected := bindings[0]
 	selectedCurrentWeight := int64(0)
 	selectedSet := false
-	for _, binding := range bindings {
-		weight, err := NormalizeAPIKeyGroupBindingWeight(binding.Weight)
-		if err != nil {
-			return nil, err
-		}
-		current := state[binding.ID] + weight
+	for i, binding := range bindings {
+		current := state[binding.ID] + weights[i]
 		state[binding.ID] = current
 		if !selectedSet || current > selectedCurrentWeight ||
 			(current == selectedCurrentWeight && compareBindingOrderByPriority(binding, selected) < 0) {
@@ -261,7 +272,9 @@ func (s *APIKeyGroupRouteSelector) orderWeightedBindings(key string, bindings []
 	if selectedSet {
 		state[selected.ID] = state[selected.ID] - totalWeight
 	}
-	s.states.weightedStateStore(key, state)
+	r.weighted[key] = state
+	r.appendKeyOnce(r.weightedSeen, &r.weightedKeys, key)
+	r.trimLocked()
 	selectedIndex := -1
 	for i, binding := range bindings {
 		if binding.ID == selected.ID && selectedSet {
@@ -297,12 +310,12 @@ func (s *APIKeyGroupRouteSelector) orderWeightedBindings(key string, bindings []
 		return compareBindingOrderByPriority(left, right) < 0
 	})
 	if selectedIndex < 0 {
-		return bindings, nil
+		return bindings
 	}
 	result := make([]GroupBindingRow, 0, len(bindings))
 	result = append(result, bindings[selectedIndex])
 	result = append(result, orderedByWeightDebt...)
-	return result, nil
+	return result
 }
 
 // orderWeightedBindingsWithRedisCounter mirrors

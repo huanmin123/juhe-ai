@@ -29,17 +29,13 @@ func TestWhLatencyOrderAndSuccessErrorSweep(t *testing.T) {
 	if _, err := OrderGatewayAccountsByNormalRouteLatencyDegradation(ctx, service, accounts, view, scope, &config, nil); err == nil {
 		t.Fatal("排序 generation 故障必须传播")
 	}
-	// 泛型排序：状态读取故障（generation 键放行）。
-	store.getJSONFail = func(key string) error {
-		if key == stateKey {
-			return errWhInject
-		}
-		return nil
-	}
+	store.getJSONFail = nil
+	// 泛型排序：状态读取故障（批量 GetJSONMany 整体失败，generation 键放行）。
+	store.getJSONManyFail = func([]string) error { return errWhInject }
 	if _, err := OrderGatewayAccountsByNormalRouteLatencyDegradation(ctx, service, accounts, view, scope, &config, nil); err == nil {
 		t.Fatal("排序状态故障必须传播")
 	}
-	store.getJSONFail = nil
+	store.getJSONManyFail = nil
 
 	fast := int64(100)
 	// success 入口：锁获取故障。

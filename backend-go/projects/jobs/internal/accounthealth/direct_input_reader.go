@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,52 @@ type PostgresDirectInputReader struct {
 	inputTTL         time.Duration
 	now              func() time.Time
 	suppression      func(context.Context, time.Time) ([]DirectInputSuppression, error)
+	// scheduleCache 是 loadDirectSchedule 的进程内短 TTL 缓存（D 任务④）：
+	// J1 每周期与 outbox drain 逐行 LoadAccount 都开只读事务重读
+	// system_settings；缓存命中期内不再查库，设置变更最迟一个 TTL（60s）
+	// 生效（可接受的最终一致窗口）。读取失败不缓存。
+	scheduleCache *directScheduleCache
+}
+
+// directScheduleCacheTTL 是 system_settings 调度快照的进程内缓存时长。
+const directScheduleCacheTTL = time.Minute
+
+// directScheduleCacheEntry 是一份缓存快照：调度参数 + 统计时区 + 过期时刻。
+type directScheduleCacheEntry struct {
+	schedule  Schedule
+	timezone  *time.Location
+	expiresAt time.Time
+}
+
+// directScheduleCache 承载调度快照的短 TTL 缓存；fetch 由调用方注入（真实
+// 实现经当前只读事务查询 system_settings），clock 可注入（测试）。并发安全
+// （J1 runCycle 与 outbox drain 的 LoadAccount 可能并发进入）；miss 窗口内
+// 的并发 fetch 各自查询属良性（结果一致，最后一次写入胜出）。
+type directScheduleCache struct {
+	ttl   time.Duration
+	now   func() time.Time
+	mu    sync.Mutex
+	entry *directScheduleCacheEntry
+}
+
+// load 返回缓存快照；命中（now < expiresAt）直接复用，miss/过期经 fetch
+// 重读并回填。fetch 失败原样返回且不缓存（下一次读取立即重试真实查询）。
+func (c *directScheduleCache) load(ctx context.Context, fetch func(context.Context) (Schedule, *time.Location, error)) (Schedule, *time.Location, error) {
+	c.mu.Lock()
+	entry := c.entry
+	if entry != nil && c.now().Before(entry.expiresAt) {
+		c.mu.Unlock()
+		return entry.schedule, entry.timezone, nil
+	}
+	c.mu.Unlock()
+	schedule, timezone, err := fetch(ctx)
+	if err != nil {
+		return Schedule{}, nil, err
+	}
+	c.mu.Lock()
+	c.entry = &directScheduleCacheEntry{schedule: schedule, timezone: timezone, expiresAt: c.now().Add(c.ttl)}
+	c.mu.Unlock()
+	return schedule, timezone, nil
 }
 
 // DirectInputLoadResult separates a candidate-local construction failure from
@@ -58,7 +105,7 @@ func NewPostgresDirectInputReader(db *sql.DB, credentialSecret string, inputTTL 
 	if now == nil {
 		now = time.Now
 	}
-	return &PostgresDirectInputReader{db: db, credentialSecret: credentialSecret, inputTTL: inputTTL, now: now}, nil
+	return &PostgresDirectInputReader{db: db, credentialSecret: credentialSecret, inputTTL: inputTTL, now: now, scheduleCache: &directScheduleCache{ttl: directScheduleCacheTTL, now: now}}, nil
 }
 
 // SetSuppressionProvider wires the jobs-owned retry snapshot without giving
@@ -171,7 +218,9 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, ignoreS
 	if _, err := tx.ExecContext(ctx, "SET LOCAL TRANSACTION READ ONLY"); err != nil {
 		return DirectInputLoadResult{}, fmt.Errorf("设置 PG direct input 只读事务失败: %w", err)
 	}
-	schedule, timezone, err := loadDirectSchedule(ctx, tx)
+	schedule, timezone, err := r.scheduleCache.load(ctx, func(fetchCtx context.Context) (Schedule, *time.Location, error) {
+		return loadDirectSchedule(fetchCtx, tx)
+	})
 	if err != nil {
 		return DirectInputLoadResult{}, err
 	}

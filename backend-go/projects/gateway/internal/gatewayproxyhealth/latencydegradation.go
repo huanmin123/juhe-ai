@@ -274,14 +274,20 @@ func OrderGatewayAccountsByNormalRouteLatencyDegradation[T any](
 		account T
 		state   *latencyState
 	}
+	// One batched read replaces the per-account GetJSON round trips. The store
+	// drivers return raws positionally aligned with keys (missing keys stay
+	// nil), so per-account semantics are identical to loadLatencyState.
+	keys := make([]string, len(accounts))
+	for i, account := range accounts {
+		keys[i] = accountLatencyStateKey(*scope, accountOf(account))
+	}
+	rawStates, err := s.store.GetJSONMany(ctx, keys)
+	if err != nil {
+		return LatencyDegradationOrderResult[T]{}, err
+	}
 	states := make([]accountState, 0, len(accounts))
-	for _, account := range accounts {
-		view := accountOf(account)
-		state, err := s.loadLatencyState(ctx, accountLatencyStateKey(*scope, view), generation)
-		if err != nil {
-			return LatencyDegradationOrderResult[T]{}, err
-		}
-		states = append(states, accountState{account: account, state: state})
+	for i, account := range accounts {
+		states = append(states, accountState{account: account, state: latencyStateFromRaw(rawStates[i], generation)})
 	}
 	var normalAccounts, degradedAccounts []T
 	degradedAccountIDs := make([]string, 0)
@@ -1314,17 +1320,23 @@ func (s *LatencyDegradationService) loadLatencyState(ctx context.Context, key st
 	if err != nil {
 		return nil, err
 	}
+	return latencyStateFromRaw(raw, generation), nil
+}
+
+// latencyStateFromRaw applies the shared "no state" fallbacks: missing raw,
+// undecodable/invalid payload and stale generation all read as no state.
+func latencyStateFromRaw(raw json.RawMessage, generation string) *latencyState {
 	if raw == nil {
-		return nil, nil
+		return nil
 	}
 	state, ok := decodeLatencyState(raw)
 	if !ok {
-		return nil, nil
+		return nil
 	}
 	if !isCurrentLatencyState(state, generation) {
-		return nil, nil
+		return nil
 	}
-	return &state, nil
+	return &state
 }
 
 func isCurrentLatencyState(state latencyState, generation string) bool {

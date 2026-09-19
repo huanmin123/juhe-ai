@@ -29,6 +29,9 @@ type Runner struct {
 	// probeDrain 是 account_health_probe_request_outbox 的消费面（去跨进程
 	// 战役第二刀接入；nil 表示通道未装配，runCycle 跳过 drain）。
 	probeDrain *ProbeRequestDrain
+	// backlogWarnedAt 是 outbox 堆积告警的上次触发时刻（drain 频控用；
+	// mu 保护：告警窗口 10 分钟内不重复）。
+	backlogWarnedAt time.Time
 
 	mu     sync.RWMutex
 	status RunnerStatus

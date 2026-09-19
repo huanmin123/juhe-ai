@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -63,11 +64,43 @@ type ProbeRequestDrain struct {
 	Store       ProbeRequestOutboxStore
 	Boundary    ProbeRequestBoundary
 	SettleFence ProbeSourceFenceSettler
-	// Limit 是单周期 claim 上限（<=0 时取 defaultProbeOutboxDrainLimit）。
+	// Limit 是单周期 claim 上限（<=0 时取 defaultProbeOutboxDrainLimit；
+	// 组合根经 env JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_LIMIT 配置，
+	// 默认 256、边界 16..4096）。
 	Limit int
+	// Concurrency 是行消费的有界并发 worker 数（<=1 保持既有串行语义；
+	// 上限 clamp 到 maxProbeOutboxDrainConcurrency。组合根经 env
+	// JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_CONCURRENCY 配置，默认 2、
+	// 边界 1..8）。行间无顺序依赖：幂等键是逐行 RequestID（HasRequest），
+	// 账户级状态收敛由 outcome 投影面的 epoch/fence 校验兜底。
+	Concurrency int
+	// BacklogWarnThreshold 是 drain 后 pending 堆积告警阈值（<=0 关闭告警；
+	// 组合根经 env JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_BACKLOG_WARN 配置，
+	// 默认 1000）。
+	BacklogWarnThreshold int
 }
 
-const defaultProbeOutboxDrainLimit = 64
+// defaultProbeOutboxDrainLimit 是未配置（<=0）时的单周期 claim 上限兜底
+// （组合根默认同值：D 任务②把原 64 上调至 256，缓解派发风暴下溢出行在
+// 消费前过期的堆积）。
+const defaultProbeOutboxDrainLimit = 256
+
+// maxProbeOutboxDrainConcurrency 是行消费并发的硬上限（组合根 env 边界
+// 1..8；包内 clamp 防御直接构造 ProbeRequestDrain 的调用方）。
+const maxProbeOutboxDrainConcurrency = 8
+
+// ProbeRequestBacklogCounter 是 outbox store 的可选只读能力：统计 pending
+// 行数与最旧行创建时间（堆积告警用）。可选接口——既有测试 fake 与极简
+// store 不必实现计数也能接入 drain。
+type ProbeRequestBacklogCounter interface {
+	// CountPendingProbeRequests 返回 pending 行总数与最旧行 created_at
+	//（无 pending 行时 oldest 为零值）。
+	CountPendingProbeRequests(ctx context.Context) (count int64, oldest time.Time, err error)
+}
+
+// probeOutboxBacklogWarnSuppressInterval 是堆积告警的频控窗口：同一窗口内
+// 不重复告警，防日志风暴（D 任务③）。
+const probeOutboxBacklogWarnSuppressInterval = 10 * time.Minute
 
 // SetProbeRequestDrain 注入 outbox 消费面（组合根在 J1 runner 与 worker 业务
 // 库都就绪后调用；不注入则 runCycle 不消费 outbox——J1 未启用时的合法形态）。
@@ -76,7 +109,9 @@ func (r *Runner) SetProbeRequestDrain(drain *ProbeRequestDrain) {
 }
 
 // drainProbeRequestOutbox 消费 pending probe_request 行；返回首个错误（其余
-// 行仍处理完）。
+// 行仍处理完）。行消费经有界并发 worker 池（Concurrency<=1 时保持逐行串行
+// 的既有语义）；行级 deadline 校验与失败隔离不变：单行失败保持 pending 并
+// 记入 firstErr，不阻塞其余行。
 func (r *Runner) drainProbeRequestOutbox(ctx context.Context, lease OwnerLease) error {
 	if r.probeDrain == nil || r.probeDrain.Store == nil || r.probeDrain.Boundary == nil {
 		return nil
@@ -90,25 +125,131 @@ func (r *Runner) drainProbeRequestOutbox(ctx context.Context, lease OwnerLease) 
 	if err != nil {
 		return err
 	}
+	// 堆积可见性（D 任务③）：每个 claim 成功的周期（含 0 行——pending 行
+	// 可能因 available_at 未到期而不被 claim，但堆积真实存在）在 drain 完成
+	// 后廉价 COUNT pending 行，达到阈值时结构化告警（带频控）。
+	defer r.warnProbeOutboxBacklog(ctx)
 	if len(rows) == 0 {
 		return nil
 	}
-	var firstErr error
-	for _, row := range rows {
-		if err := r.consumeProbeOutboxRow(ctx, lease, row, now); err != nil {
-			if firstErr == nil {
+	return r.consumeProbeOutboxRows(ctx, lease, rows, now)
+}
+
+// consumeProbeOutboxRows 以有界并发消费已 claim 的行。行间无顺序依赖：
+// 每行是独立 ProbeRequest（幂等键 RequestID；HasRequest 防重复 outcome），
+// 同账户并发探针的状态收敛由 outcome 投影面的 epoch/fence 校验兜底（既有
+// 机制，与调度批量路径的并发语义一致）。ctx 取消时停止派发新行并等待在途
+// worker 返回。
+func (r *Runner) consumeProbeOutboxRows(ctx context.Context, lease OwnerLease, rows []ProbeOutboxRow, now time.Time) error {
+	concurrency := r.probeDrain.Concurrency
+	if concurrency > maxProbeOutboxDrainConcurrency {
+		concurrency = maxProbeOutboxDrainConcurrency
+	}
+	if concurrency <= 1 || len(rows) == 1 {
+		var firstErr error
+		for _, row := range rows {
+			if err := r.consumeOneProbeOutboxRow(ctx, lease, row, now); err != nil && firstErr == nil {
 				firstErr = err
 			}
-			r.logger.Warn("消费账户健康探针 outbox 行失败；行保持 pending 等待下周期",
-				"event", "account_health_probe_outbox_row_failed",
-				"requestId", row.RequestID, "accountId", row.AccountID, "error", err.Error())
-			continue
 		}
-		if _, err := r.probeDrain.Store.CompleteProbeRequest(ctx, row.RequestID, r.cfg.Now().UTC()); err != nil && firstErr == nil {
+		return firstErr
+	}
+	var (
+		wg       sync.WaitGroup
+		errMu    sync.Mutex
+		firstErr error
+	)
+	recordError := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
 			firstErr = err
 		}
+		errMu.Unlock()
 	}
+	rowsCh := make(chan ProbeOutboxRow)
+	for range concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for row := range rowsCh {
+				recordError(r.consumeOneProbeOutboxRow(ctx, lease, row, now))
+			}
+		}()
+	}
+	for _, row := range rows {
+		select {
+		case <-ctx.Done():
+			close(rowsCh)
+			wg.Wait()
+			return context.Cause(ctx)
+		case rowsCh <- row:
+		}
+	}
+	close(rowsCh)
+	wg.Wait()
+	errMu.Lock()
+	defer errMu.Unlock()
 	return firstErr
+}
+
+// consumeOneProbeOutboxRow 消费单行：处理成功后幂等出队；处理失败记 warn 并
+// 保持 pending（下周期重试），出队失败只记入返回错误（沿用既有语义）。
+func (r *Runner) consumeOneProbeOutboxRow(ctx context.Context, lease OwnerLease, row ProbeOutboxRow, now time.Time) error {
+	if err := r.consumeProbeOutboxRow(ctx, lease, row, now); err != nil {
+		r.logger.Warn("消费账户健康探针 outbox 行失败；行保持 pending 等待下周期",
+			"event", "account_health_probe_outbox_row_failed",
+			"requestId", row.RequestID, "accountId", row.AccountID, "error", err.Error())
+		return err
+	}
+	if _, err := r.probeDrain.Store.CompleteProbeRequest(ctx, row.RequestID, r.cfg.Now().UTC()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// warnProbeOutboxBacklog 在 drain 完成后统计 pending 堆积；达到阈值时输出
+// 一条结构化 warn（pending 数、最旧行年龄），并做 10 分钟频控防日志风暴。
+// store 未实现 ProbeRequestBacklogCounter 或阈值 <=0 时保持沉默（能力缺席
+// 不构成告警条件）。
+func (r *Runner) warnProbeOutboxBacklog(ctx context.Context) {
+	if r.probeDrain == nil || r.probeDrain.BacklogWarnThreshold <= 0 {
+		return
+	}
+	counter, ok := r.probeDrain.Store.(ProbeRequestBacklogCounter)
+	if !ok {
+		return
+	}
+	count, oldest, err := counter.CountPendingProbeRequests(ctx)
+	if err != nil {
+		r.logger.Warn("统计账户健康探针 outbox pending 堆积失败",
+			"event", "account_health_probe_outbox_backlog_count_failed", "error", err.Error())
+		return
+	}
+	if count < int64(r.probeDrain.BacklogWarnThreshold) {
+		return
+	}
+	now := r.cfg.Now()
+	r.mu.Lock()
+	suppressed := now.Sub(r.backlogWarnedAt) < probeOutboxBacklogWarnSuppressInterval
+	if !suppressed {
+		r.backlogWarnedAt = now
+	}
+	r.mu.Unlock()
+	if suppressed {
+		return
+	}
+	attrs := []any{
+		"event", "account_health_probe_outbox_backlog",
+		"pending", count,
+		"threshold", r.probeDrain.BacklogWarnThreshold,
+	}
+	if age := now.Sub(oldest).Seconds(); !oldest.IsZero() && age > 0 {
+		attrs = append(attrs, "oldestAgeSeconds", int64(age))
+	}
+	r.logger.Warn("账户健康探针 outbox pending 堆积超过阈值；消费吞吐不足或派发风暴，请检查 J1 drain 上限/并发配置", attrs...)
 }
 
 // consumeProbeOutboxRow 对单行复刻被删 HTTP 派发 handler 的发布语义
