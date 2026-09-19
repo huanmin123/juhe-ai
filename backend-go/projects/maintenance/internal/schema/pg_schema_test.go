@@ -251,8 +251,8 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
 	}
-	if len(pgSeedSystemSettings) != 60 {
-		t.Fatalf("system settings = %d, want 60", len(pgSeedSystemSettings))
+	if len(pgSeedSystemSettings) != 61 {
+		t.Fatalf("system settings = %d, want 61", len(pgSeedSystemSettings))
 	}
 	profileFamilyCount := 0
 	for _, profile := range pgSeedProfiles {

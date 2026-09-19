@@ -562,6 +562,7 @@ func (c *gatewayChain) preflightOptions(requestLane gatewayproto.RequestLane) *g
 func timeoutProfileOf(settings gatewayruntimecache.GatewaySettings, lane string) gatewayresponse.TimeoutProfile {
 	profile := gatewayrouting.GatewayTimeoutProfileForLane(gatewayrouting.GatewayTimeoutSettings{
 		TextFirstResponseTimeoutSeconds:           settings.TextFirstResponseTimeoutSeconds,
+		TextNonStreamFirstResponseTimeoutSeconds:  settings.TextNonStreamFirstResponseTimeoutSeconds,
 		TextStreamIdleTimeoutSeconds:              settings.TextStreamIdleTimeoutSeconds,
 		TextUncommittedAttemptMaxLifetimeSeconds:  settings.TextUncommittedAttemptMaxLifetimeSeconds,
 		ImageFirstResponseTimeoutSeconds:          settings.ImageFirstResponseTimeoutSeconds,

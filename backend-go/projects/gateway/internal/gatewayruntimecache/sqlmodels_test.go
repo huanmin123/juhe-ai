@@ -61,6 +61,7 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"temporaryUnschedulableRetryIntervalSeconds": "5",
 		"temporaryUnschedulableRetryAttempts":        "3",
 		"textFirstResponseTimeoutSeconds":            "60",
+		"textNonStreamFirstResponseTimeoutSeconds":   "600",
 		"textStreamIdleTimeoutSeconds":               "30",
 		"textUncommittedAttemptMaxLifetimeSeconds":   "300",
 		"imageFirstResponseTimeoutSeconds":           "60",

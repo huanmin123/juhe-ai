@@ -246,7 +246,8 @@ func TestDispatchWithNormalRouteFirstByteConfig(t *testing.T) {
 	driver.urlByAccount = map[string][]string{
 		"a-1": {okServer.URL + "/v1/chat/completions"},
 	}
-	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	// speed-first 首字截止只作用于流式请求（非流式已豁免）。
+	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 	args := fastDispatchArgs(t, req, testAccounts("a-1"))
 	args.RequestCoordination.NormalRouteFirstByteConfig = &gatewayrouting.NormalRouteFirstByteRuntimeConfig{
 		SchedulingPreference: "speed_first",
@@ -264,6 +265,35 @@ func TestDispatchWithNormalRouteFirstByteConfig(t *testing.T) {
 	}
 	if result.FirstByteDeadlineCoordinator == nil {
 		t.Fatal("成功结果必须携带首字协调器")
+	}
+}
+
+func TestDispatchNonStreamExemptFromNormalRouteFirstByteDeadline(t *testing.T) {
+	okServer := sequentialServer(t, 0, 500)
+	defer okServer.Close()
+	engine, driver, _ := newTestEngine(t)
+	driver.urlByAccount = map[string][]string{
+		"a-1": {okServer.URL + "/v1/chat/completions"},
+	}
+	// 非流式即使配置了 speed-first 首字截止也豁免：上游生成完才返回首响应。
+	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	args := fastDispatchArgs(t, req, testAccounts("a-1"))
+	args.RequestCoordination.NormalRouteFirstByteConfig = &gatewayrouting.NormalRouteFirstByteRuntimeConfig{
+		SchedulingPreference: "speed_first",
+		FirstByteDeadlineMs:  30_000,
+	}
+	result, err := engine.FetchFirstAvailableUpstream(context.Background(), args)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if result.NormalRouteFirstByteDeadline != nil {
+		t.Fatalf("非流式必须豁免首字截止, got %+v", result.NormalRouteFirstByteDeadline)
+	}
+	if result.OnFirstByteDeadline != nil {
+		t.Fatal("非流式不得携带首字截止处理器")
+	}
+	if result.FirstByteDeadlineCoordinator != nil {
+		t.Fatal("非流式不得携带首字协调器")
 	}
 }
 

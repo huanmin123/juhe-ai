@@ -277,7 +277,7 @@
             <div>
               <h3 class="section-title">
                 <span>请求等待与流式中断</span>
-                <a-tooltip title="文本和图像请求使用独立的当前账号尝试超时；只有暂时没有可派发账号时才累计无账号等待时间。">
+                <a-tooltip title="文本和图像请求使用独立的当前账号尝试超时；文本请求按流式/非流式分别配置等待时间；只有暂时没有可派发账号时才累计无账号等待时间。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>
@@ -286,21 +286,29 @@
 
           <a-skeleton v-if="!sectionReady['gateway-core']" active :paragraph="{ rows: 3 }" />
           <div v-else class="settings-grid">
+            <div class="settings-subgroup-title">文本流式请求</div>
             <div class="setting-item">
-              <a-form-item label="文本首响应等待（秒）" tooltip="只作用于文本 lane：当前账号超过该时间仍未返回响应头或非流式首字节时，进入未提交接管。">
+              <a-form-item label="文本首响应等待（秒）" tooltip="只作用于文本 lane 的流式请求：当前账号超过该时间仍未返回响应头时，进入未提交接管。">
                 <a-input-number v-model:value="systemForm.textFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="文本流式停顿（秒）" tooltip="只作用于文本 lane：收到首段内容后，超过该时间没有任何上游新数据时收口当前尝试。">
+              <a-form-item label="文本流式停顿（秒）" tooltip="只作用于文本 lane 的流式请求：收到首段内容后，超过该时间没有任何上游新数据时收口当前尝试。">
                 <a-input-number v-model:value="systemForm.textStreamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="文本未提交尝试寿命（秒）" tooltip="只作用于文本 lane：当前账号尚未产生模型语义输出时的单次尝试最大存活时间；语义输出后不再使用该绝对寿命。">
+              <a-form-item label="文本未提交尝试寿命（秒）" tooltip="只作用于文本 lane 的流式请求：当前账号尚未产生模型语义输出时的单次尝试最大存活时间；语义输出后不再使用该绝对寿命。">
                 <a-input-number v-model:value="systemForm.textUncommittedAttemptMaxLifetimeSeconds" :min="60" :max="86400" style="width: 100%" />
               </a-form-item>
             </div>
+            <div class="settings-subgroup-title">文本非流式请求</div>
+            <div class="setting-item">
+              <a-form-item label="文本非流式响应等待（秒）" tooltip="只作用于文本 lane 的非流式请求：上游需生成完整结果后才返回，超过该等待时间未收到首个响应则终止当前尝试。默认 600 秒。">
+                <a-input-number v-model:value="systemForm.textNonStreamFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="settings-subgroup-title">图像请求</div>
             <div class="setting-item">
               <a-form-item label="图像首响应等待（秒）" tooltip="只作用于 image lane 的单次 attempt；超时终止当前候选，若下游尚未提交则按统一候选机制继续切 Key、账户或分组。快速模式的文本首 token 截止不作用于图片。">
                 <a-input-number v-model:value="systemForm.imageFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
@@ -414,7 +422,7 @@ const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | und
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
 const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
-  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
+  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textNonStreamFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
   'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth', 'userAiAccountLimit'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
@@ -805,6 +813,13 @@ onBeforeUnmount(() => {
 
 .setting-item-wide {
   grid-column: 1 / -1;
+}
+
+.settings-subgroup-title {
+  grid-column: 1 / -1;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .settings-actions {

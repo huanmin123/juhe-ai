@@ -728,8 +728,9 @@ func TestGeminiScopedHeadersAndHeadersToObject(t *testing.T) {
 
 func TestUpstreamTimeoutHelpers(t *testing.T) {
 	profile := gatewayrouting.GatewayTimeoutProfile{
-		FirstResponseTimeoutMs: 30_000,
-		IdleTimeoutMs:          120_000,
+		FirstResponseTimeoutMs:          30_000,
+		NonStreamFirstResponseTimeoutMs: 600_000,
+		IdleTimeoutMs:                   120_000,
 	}
 	if UpstreamSocketTimeoutMs(nil, profile, nil) == nil {
 		t.Fatal("非禁用超时应返回值")
@@ -739,17 +740,22 @@ func TestUpstreamTimeoutHelpers(t *testing.T) {
 	if UpstreamSocketTimeoutMs(nil, disabled, nil) != nil {
 		t.Fatal("禁用超时返回 nil")
 	}
-	if UpstreamRequestTimeoutMs(disabled) != nil {
+	if UpstreamRequestTimeoutMs(nil, nil, disabled) != nil {
 		t.Fatal("禁用请求超时返回 nil")
 	}
-	if got := UpstreamRequestTimeoutMs(profile); got == nil || *got != 30_000 {
-		t.Fatalf("request timeout = %#v", got)
+	// 非流式请求（req=nil 不携带 stream:true）取非流式首响应窗口。
+	if got := UpstreamRequestTimeoutMs(nil, nil, profile); got == nil || *got != 600_000 {
+		t.Fatalf("non-stream request timeout = %#v", got)
 	}
 	// 流式请求 socket 超时覆盖 idle+15s。
 	streamReq := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 	socket := UpstreamSocketTimeoutMs(streamReq, profile, &UpstreamHeaderAccount{})
 	if socket == nil || *socket != 135_000 {
 		t.Fatalf("stream socket timeout = %#v", socket)
+	}
+	// 流式请求超时取流式首响应窗口。
+	if got := UpstreamRequestTimeoutMs(streamReq, nil, profile); got == nil || *got != 30_000 {
+		t.Fatalf("stream request timeout = %#v", got)
 	}
 	// oauth compact 规则：compact 请求非流式。
 	compactAccount := &UpstreamHeaderAccount{Type: "oauth"}

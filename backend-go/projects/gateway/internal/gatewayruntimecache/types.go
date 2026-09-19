@@ -57,27 +57,28 @@ func NormalizeRouteStrategyMode(value string) string {
 // modules/gateway/policy/account-error-policy.service.ts. streamCircuitBreakerEnabled
 // is forced to true by the Node projection (cloneGatewaySettings keeps it true).
 type GatewaySettings struct {
-	GatewayTextRawBodyLimitMegabytes          int64  `json:"gatewayTextRawBodyLimitMegabytes"`
+	GatewayTextRawBodyLimitMegabytes           int64  `json:"gatewayTextRawBodyLimitMegabytes"`
 	AccountCircuitConfirmationFailuresRequired int64  `json:"accountCircuitConfirmationFailuresRequired"`
-	GatewayUserRequestLimitPerMinute          *int64 `json:"gatewayUserRequestLimitPerMinute,omitempty"`
-	GatewayUserRequestLimitPerDay             *int64 `json:"gatewayUserRequestLimitPerDay,omitempty"`
-	GatewayUserRequestLimitPerWeek            *int64 `json:"gatewayUserRequestLimitPerWeek,omitempty"`
-	GatewayUserRequestLimitPerMonth           *int64 `json:"gatewayUserRequestLimitPerMonth,omitempty"`
-	UsageStatsTimezone                        string `json:"usageStatsTimezone"`
-	DefaultTemporaryUnschedulableMinutes      int64  `json:"defaultTemporaryUnschedulableMinutes"`
+	GatewayUserRequestLimitPerMinute           *int64 `json:"gatewayUserRequestLimitPerMinute,omitempty"`
+	GatewayUserRequestLimitPerDay              *int64 `json:"gatewayUserRequestLimitPerDay,omitempty"`
+	GatewayUserRequestLimitPerWeek             *int64 `json:"gatewayUserRequestLimitPerWeek,omitempty"`
+	GatewayUserRequestLimitPerMonth            *int64 `json:"gatewayUserRequestLimitPerMonth,omitempty"`
+	UsageStatsTimezone                         string `json:"usageStatsTimezone"`
+	DefaultTemporaryUnschedulableMinutes       int64  `json:"defaultTemporaryUnschedulableMinutes"`
 	TemporaryUnschedulableRetryIntervalSeconds int64  `json:"temporaryUnschedulableRetryIntervalSeconds"`
-	TemporaryUnschedulableRetryAttempts       int64  `json:"temporaryUnschedulableRetryAttempts"`
-	StreamCircuitBreakerEnabled               bool   `json:"streamCircuitBreakerEnabled"`
-	TextFirstResponseTimeoutSeconds           int64  `json:"textFirstResponseTimeoutSeconds"`
-	TextStreamIdleTimeoutSeconds              int64  `json:"textStreamIdleTimeoutSeconds"`
-	TextUncommittedAttemptMaxLifetimeSeconds  int64  `json:"textUncommittedAttemptMaxLifetimeSeconds"`
-	ImageFirstResponseTimeoutSeconds          int64  `json:"imageFirstResponseTimeoutSeconds"`
-	ImageStreamIdleTimeoutSeconds             int64  `json:"imageStreamIdleTimeoutSeconds"`
-	ImageUncommittedAttemptMaxLifetimeSeconds int64  `json:"imageUncommittedAttemptMaxLifetimeSeconds"`
-	ImageRequestWallTimeoutSeconds            int64  `json:"imageRequestWallTimeoutSeconds"`
-	NoAvailableAccountWaitTimeoutSeconds      int64  `json:"noAvailableAccountWaitTimeoutSeconds"`
-	StreamFailureThresholdCount               int64  `json:"streamFailureThresholdCount"`
-	StreamFailureThresholdWindowMinutes       int64  `json:"streamFailureThresholdWindowMinutes"`
+	TemporaryUnschedulableRetryAttempts        int64  `json:"temporaryUnschedulableRetryAttempts"`
+	StreamCircuitBreakerEnabled                bool   `json:"streamCircuitBreakerEnabled"`
+	TextFirstResponseTimeoutSeconds            int64  `json:"textFirstResponseTimeoutSeconds"`
+	TextNonStreamFirstResponseTimeoutSeconds   int64  `json:"textNonStreamFirstResponseTimeoutSeconds"`
+	TextStreamIdleTimeoutSeconds               int64  `json:"textStreamIdleTimeoutSeconds"`
+	TextUncommittedAttemptMaxLifetimeSeconds   int64  `json:"textUncommittedAttemptMaxLifetimeSeconds"`
+	ImageFirstResponseTimeoutSeconds           int64  `json:"imageFirstResponseTimeoutSeconds"`
+	ImageStreamIdleTimeoutSeconds              int64  `json:"imageStreamIdleTimeoutSeconds"`
+	ImageUncommittedAttemptMaxLifetimeSeconds  int64  `json:"imageUncommittedAttemptMaxLifetimeSeconds"`
+	ImageRequestWallTimeoutSeconds             int64  `json:"imageRequestWallTimeoutSeconds"`
+	NoAvailableAccountWaitTimeoutSeconds       int64  `json:"noAvailableAccountWaitTimeoutSeconds"`
+	StreamFailureThresholdCount                int64  `json:"streamFailureThresholdCount"`
+	StreamFailureThresholdWindowMinutes        int64  `json:"streamFailureThresholdWindowMinutes"`
 }
 
 // CloneGatewaySettings mirrors cloneGatewaySettings: the shallow copy keeps

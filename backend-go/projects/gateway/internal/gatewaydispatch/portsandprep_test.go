@@ -176,7 +176,8 @@ func TestDispatchFailedResponseSupersedesCoordinator(t *testing.T) {
 	driver.urlByAccount = map[string][]string{
 		"a-1": {failServer.URL + "/v1/chat/completions"},
 	}
-	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	// speed-first 首字截止只作用于流式请求（非流式已豁免）。
+	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 	args := fastDispatchArgs(t, req, testAccounts("a-1"))
 	args.RequestCoordination.NormalRouteFirstByteConfig = &gatewayrouting.NormalRouteFirstByteRuntimeConfig{
 		SchedulingPreference: "speed_first",

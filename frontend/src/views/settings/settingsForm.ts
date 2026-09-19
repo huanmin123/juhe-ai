@@ -24,6 +24,7 @@ export interface SystemForm {
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
   textFirstResponseTimeoutSeconds: number
+  textNonStreamFirstResponseTimeoutSeconds: number
   textStreamIdleTimeoutSeconds: number
   textUncommittedAttemptMaxLifetimeSeconds: number
   imageFirstResponseTimeoutSeconds: number
@@ -66,6 +67,7 @@ export const defaultSystemSettings: SystemForm = {
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
   textFirstResponseTimeoutSeconds: 120,
+  textNonStreamFirstResponseTimeoutSeconds: 600,
   textStreamIdleTimeoutSeconds: 30,
   textUncommittedAttemptMaxLifetimeSeconds: 1800,
   imageFirstResponseTimeoutSeconds: 600,
@@ -111,6 +113,7 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '安全原地重试间隔', 0, 3600),
     temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '安全原地重试次数', 0, 10),
     textFirstResponseTimeoutSeconds: integerValue(settings.textFirstResponseTimeoutSeconds, '文本首响应等待上限', 10, 3600),
+    textNonStreamFirstResponseTimeoutSeconds: integerValue(settings.textNonStreamFirstResponseTimeoutSeconds, '非流式响应等待上限', 10, 3600),
     textStreamIdleTimeoutSeconds: integerValue(settings.textStreamIdleTimeoutSeconds, '文本流式停顿上限', 1, 3600),
     textUncommittedAttemptMaxLifetimeSeconds: integerValue(settings.textUncommittedAttemptMaxLifetimeSeconds, '文本未提交尝试最大存活时间', 60, 86400),
     imageFirstResponseTimeoutSeconds: integerValue(settings.imageFirstResponseTimeoutSeconds, '图像首响应等待上限', 10, 3600),

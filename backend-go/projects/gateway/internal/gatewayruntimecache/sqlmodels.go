@@ -226,6 +226,9 @@ func projectGatewaySettings(raw map[string]any) (GatewaySettings, error) {
 	if out.TextFirstResponseTimeoutSeconds, err = numberSetting(raw, "textFirstResponseTimeoutSeconds", 10, 3600); err != nil {
 		return GatewaySettings{}, err
 	}
+	if out.TextNonStreamFirstResponseTimeoutSeconds, err = numberSetting(raw, "textNonStreamFirstResponseTimeoutSeconds", 10, 3600); err != nil {
+		return GatewaySettings{}, err
+	}
 	if out.TextStreamIdleTimeoutSeconds, err = numberSetting(raw, "textStreamIdleTimeoutSeconds", 1, 3600); err != nil {
 		return GatewaySettings{}, err
 	}

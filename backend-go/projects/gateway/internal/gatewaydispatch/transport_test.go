@@ -380,19 +380,27 @@ func TestCopyResponseHeadersSkipsHopByHop(t *testing.T) {
 
 func TestUpstreamSocketTimeoutMs(t *testing.T) {
 	profile := gatewayTimeoutProfileForTest()
-	if value := UpstreamSocketTimeoutMs(nil, profile, nil); value == nil || *value != 30_000 {
+	profile.NonStreamFirstResponseTimeoutMs = 600_000
+	streamReq := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
+	if value := UpstreamSocketTimeoutMs(streamReq, profile, nil); value == nil || *value != 30_000 {
+		t.Fatalf("stream socket timeout floor = %v", value)
+	}
+	if value := UpstreamSocketTimeoutMs(nil, profile, nil); value == nil || *value != 600_000 {
 		t.Fatalf("non-stream socket timeout = %v", value)
 	}
-	if value := UpstreamSocketTimeoutMs(nil, profile, nil); value == nil || *value < profile.FirstResponseTimeoutMs {
-		t.Fatalf("stream socket timeout floor violated: %v", value)
+	if value := UpstreamRequestTimeoutMs(streamReq, nil, profile); value == nil || *value != profile.FirstResponseTimeoutMs {
+		t.Fatalf("stream request timeout = %v", value)
 	}
-	if value := UpstreamRequestTimeoutMs(profile); value == nil || *value != profile.FirstResponseTimeoutMs {
-		t.Fatalf("request timeout = %v", value)
+	if value := UpstreamRequestTimeoutMs(nil, nil, profile); value == nil || *value != profile.NonStreamFirstResponseTimeoutMs {
+		t.Fatalf("non-stream request timeout = %v", value)
 	}
 	disabled := profile
 	disabled.TimeoutsDisabled = true
 	if value := UpstreamSocketTimeoutMs(nil, disabled, nil); value != nil {
 		t.Fatalf("disabled socket timeout = %v", value)
+	}
+	if value := UpstreamRequestTimeoutMs(nil, nil, disabled); value != nil {
+		t.Fatalf("disabled request timeout = %v", value)
 	}
 }
 

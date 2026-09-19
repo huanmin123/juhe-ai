@@ -16,6 +16,7 @@ export interface SystemSettings {
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
   textFirstResponseTimeoutSeconds: number
+  textNonStreamFirstResponseTimeoutSeconds: number
   textStreamIdleTimeoutSeconds: number
   textUncommittedAttemptMaxLifetimeSeconds: number
   imageFirstResponseTimeoutSeconds: number

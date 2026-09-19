@@ -7,6 +7,7 @@ import "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 // bounds: min 1, max 3600 seconds).
 type GatewayTimeoutSettings struct {
 	TextFirstResponseTimeoutSeconds           int64
+	TextNonStreamFirstResponseTimeoutSeconds  int64
 	TextStreamIdleTimeoutSeconds              int64
 	TextUncommittedAttemptMaxLifetimeSeconds  int64
 	ImageFirstResponseTimeoutSeconds          int64
@@ -20,6 +21,7 @@ type GatewayTimeoutSettings struct {
 type GatewayTimeoutProfile struct {
 	TimeoutsDisabled                bool
 	FirstResponseTimeoutMs          int64
+	NonStreamFirstResponseTimeoutMs int64
 	FirstByteTimeoutMs              int64
 	IdleTimeoutMs                   int64
 	UncommittedAttemptMaxLifetimeMs int64
@@ -31,10 +33,12 @@ type GatewayTimeoutProfile struct {
 // disableTimeouts flag mirrors options.disableTimeouts === true.
 func GatewayTimeoutProfileForLane(settings GatewayTimeoutSettings, lane gatewayproto.RequestLane, disableTimeouts bool) GatewayTimeoutProfile {
 	firstResponseTimeoutSeconds := settings.TextFirstResponseTimeoutSeconds
+	nonStreamFirstResponseSeconds := settings.TextNonStreamFirstResponseTimeoutSeconds
 	idleTimeoutSeconds := settings.TextStreamIdleTimeoutSeconds
 	uncommittedAttemptMaxLifetimeSeconds := settings.TextUncommittedAttemptMaxLifetimeSeconds
 	if lane == gatewayproto.LaneImage {
 		firstResponseTimeoutSeconds = settings.ImageFirstResponseTimeoutSeconds
+		nonStreamFirstResponseSeconds = settings.ImageFirstResponseTimeoutSeconds
 		idleTimeoutSeconds = settings.ImageStreamIdleTimeoutSeconds
 		uncommittedAttemptMaxLifetimeSeconds = settings.ImageUncommittedAttemptMaxLifetimeSeconds
 	}
@@ -42,6 +46,7 @@ func GatewayTimeoutProfileForLane(settings GatewayTimeoutSettings, lane gatewayp
 	return GatewayTimeoutProfile{
 		TimeoutsDisabled:                disableTimeouts,
 		FirstResponseTimeoutMs:          secondsToMilliseconds(firstResponseTimeoutSeconds),
+		NonStreamFirstResponseTimeoutMs: secondsToMilliseconds(nonStreamFirstResponseSeconds),
 		FirstByteTimeoutMs:              secondsToMilliseconds(firstResponseTimeoutSeconds),
 		IdleTimeoutMs:                   secondsToMilliseconds(idleTimeoutSeconds),
 		UncommittedAttemptMaxLifetimeMs: secondsToMilliseconds(uncommittedAttemptMaxLifetimeSeconds),

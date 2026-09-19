@@ -820,6 +820,7 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "temporaryUnschedulableRetryIntervalSeconds", ValueJSON: "3"},
 	{Key: "temporaryUnschedulableRetryAttempts", ValueJSON: "2"},
 	{Key: "textFirstResponseTimeoutSeconds", ValueJSON: "120"},
+	{Key: "textNonStreamFirstResponseTimeoutSeconds", ValueJSON: "600"},
 	{Key: "textStreamIdleTimeoutSeconds", ValueJSON: "30"},
 	{Key: "textUncommittedAttemptMaxLifetimeSeconds", ValueJSON: "1800"},
 	{Key: "imageFirstResponseTimeoutSeconds", ValueJSON: "600"},

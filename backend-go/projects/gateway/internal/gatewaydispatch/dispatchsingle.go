@@ -531,12 +531,15 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 			}
 			attemptStartedAt := gatewayupstream.NowMs()
 
-			// Normal-route first-byte deadline.
+			// Normal-route first-byte deadline. Non-stream requests are
+			// exempt: the upstream only answers after the full generation,
+			// so a first-byte deadline would cut legitimate long outputs.
 			var normalRouteFirstByteDeadline *gatewayrouting.NormalRouteAttemptFirstByteDeadline
 			var firstByteDeadlineCoordinator *NormalRouteFirstByteAttemptCoordinator
 			if !in.compactionTimeoutsDisabled &&
 				gatewayrouting.NormalRouteFirstByteDeadlineAppliesToLane(gatewayprotoLane(in.requestLane)) &&
-				in.coordination.NormalRouteFirstByteConfig != nil {
+				in.coordination.NormalRouteFirstByteConfig != nil &&
+				IsEffectiveOpenAIStreamRequest(in.args.Req, headerAccountOf(c.account)) {
 				deadline, err := gatewayrouting.ResolveNormalRouteAttemptFirstByteDeadline(gatewayrouting.NormalRouteAttemptFirstByteDeadlineInput{
 					Config:                          *in.coordination.NormalRouteFirstByteConfig,
 					GatewayRequestWallBudget:        in.coordination.GatewayRequestWallBudget,

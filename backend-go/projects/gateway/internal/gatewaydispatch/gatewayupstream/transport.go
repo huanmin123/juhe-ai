@@ -680,7 +680,10 @@ func (b *slotReleasingBody) stopIdleWatch() {
 // Timeout profile helpers
 // ---------------------------------------------------------------------------
 
-// UpstreamSocketTimeoutMs mirrors upstreamSocketTimeoutMs.
+// UpstreamSocketTimeoutMs mirrors upstreamSocketTimeoutMs. Non-stream requests
+// ride the non-stream first-response window (long generations must not be cut
+// by the stream first-response floor); stream requests keep the original
+// first-response/idle+15s floor.
 func UpstreamSocketTimeoutMs(req *gatewaypreauth.GatewayRequest, profile gatewayrouting.GatewayTimeoutProfile, account *UpstreamHeaderAccount) *int64 {
 	if profile.TimeoutsDisabled {
 		return nil
@@ -688,19 +691,26 @@ func UpstreamSocketTimeoutMs(req *gatewaypreauth.GatewayRequest, profile gateway
 	isStreamRequest := IsEffectiveOpenAIStreamRequest(req, account)
 	var value int64
 	if !isStreamRequest {
-		value = MaxInt64(profile.FirstResponseTimeoutMs, 30_000)
+		value = MaxInt64(profile.NonStreamFirstResponseTimeoutMs, 30_000)
 	} else {
 		value = MaxInt64(MaxInt64(profile.FirstResponseTimeoutMs, profile.IdleTimeoutMs+15_000), 30_000)
 	}
 	return &value
 }
 
-// UpstreamRequestTimeoutMs mirrors upstreamRequestTimeoutMs.
-func UpstreamRequestTimeoutMs(profile gatewayrouting.GatewayTimeoutProfile) *int64 {
+// UpstreamRequestTimeoutMs mirrors upstreamRequestTimeoutMs, split by request
+// shape: stream requests keep the first-response window, non-stream requests
+// use the dedicated non-stream first-response window.
+func UpstreamRequestTimeoutMs(req *gatewaypreauth.GatewayRequest, account *UpstreamHeaderAccount, profile gatewayrouting.GatewayTimeoutProfile) *int64 {
 	if profile.TimeoutsDisabled {
 		return nil
 	}
-	value := profile.FirstResponseTimeoutMs
+	var value int64
+	if IsEffectiveOpenAIStreamRequest(req, account) {
+		value = profile.FirstResponseTimeoutMs
+	} else {
+		value = profile.NonStreamFirstResponseTimeoutMs
+	}
 	return &value
 }
 

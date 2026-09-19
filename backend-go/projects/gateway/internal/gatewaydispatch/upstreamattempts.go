@@ -183,5 +183,5 @@ func socketTimeoutMsOf(input AttemptInput) *int64 {
 }
 
 func requestTimeoutMsOf(input AttemptInput) *int64 {
-	return UpstreamRequestTimeoutMs(input.TimeoutProfile)
+	return UpstreamRequestTimeoutMs(input.Req, headerAccountOf(input.Account), input.TimeoutProfile)
 }

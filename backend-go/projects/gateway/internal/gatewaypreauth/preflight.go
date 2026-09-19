@@ -1134,6 +1134,9 @@ func mergeGatewaySettings(base gatewayruntimecache.GatewaySettings, override *ga
 	if override.TextFirstResponseTimeoutSeconds != 0 {
 		merged.TextFirstResponseTimeoutSeconds = override.TextFirstResponseTimeoutSeconds
 	}
+	if override.TextNonStreamFirstResponseTimeoutSeconds != 0 {
+		merged.TextNonStreamFirstResponseTimeoutSeconds = override.TextNonStreamFirstResponseTimeoutSeconds
+	}
 	if override.TextStreamIdleTimeoutSeconds != 0 {
 		merged.TextStreamIdleTimeoutSeconds = override.TextStreamIdleTimeoutSeconds
 	}

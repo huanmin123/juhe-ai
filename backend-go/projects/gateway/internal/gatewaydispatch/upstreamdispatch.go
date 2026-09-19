@@ -434,6 +434,7 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 		e.codexCompactionExpectedForRequest(args.Req)
 	timeoutProfile := gatewayrouting.GatewayTimeoutProfileForLane(gatewayrouting.GatewayTimeoutSettings{
 		TextFirstResponseTimeoutSeconds:           settings.TextFirstResponseTimeoutSeconds,
+		TextNonStreamFirstResponseTimeoutSeconds:  settings.TextNonStreamFirstResponseTimeoutSeconds,
 		TextStreamIdleTimeoutSeconds:              settings.TextStreamIdleTimeoutSeconds,
 		TextUncommittedAttemptMaxLifetimeSeconds:  settings.TextUncommittedAttemptMaxLifetimeSeconds,
 		ImageFirstResponseTimeoutSeconds:          settings.ImageFirstResponseTimeoutSeconds,

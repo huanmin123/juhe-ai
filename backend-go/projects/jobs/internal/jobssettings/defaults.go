@@ -26,6 +26,7 @@ var DefaultSystemSettings = map[string]any{
 	"temporaryUnschedulableRetryIntervalSeconds": float64(3),
 	"temporaryUnschedulableRetryAttempts":        float64(2),
 	"textFirstResponseTimeoutSeconds":            float64(120),
+	"textNonStreamFirstResponseTimeoutSeconds":   float64(600),
 	"textStreamIdleTimeoutSeconds":               float64(30),
 	"textUncommittedAttemptMaxLifetimeSeconds":   float64(1800),
 	"imageFirstResponseTimeoutSeconds":           float64(600),

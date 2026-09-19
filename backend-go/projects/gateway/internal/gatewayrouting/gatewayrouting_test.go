@@ -1517,6 +1517,7 @@ func TestNormalRouteSpeedFirstAppliesToLane(t *testing.T) {
 func TestGatewayTimeoutProfileForLane(t *testing.T) {
 	settings := GatewayTimeoutSettings{
 		TextFirstResponseTimeoutSeconds:           120,
+		TextNonStreamFirstResponseTimeoutSeconds:  600,
 		TextStreamIdleTimeoutSeconds:              30,
 		TextUncommittedAttemptMaxLifetimeSeconds:  240,
 		ImageFirstResponseTimeoutSeconds:          600,
@@ -1534,7 +1535,8 @@ func TestGatewayTimeoutProfileForLane(t *testing.T) {
 			name: "text lane reads text settings",
 			lane: gatewayproto.LaneText,
 			want: GatewayTimeoutProfile{
-				FirstResponseTimeoutMs: 120_000, FirstByteTimeoutMs: 120_000, IdleTimeoutMs: 30_000,
+				FirstResponseTimeoutMs: 120_000, NonStreamFirstResponseTimeoutMs: 600_000,
+				FirstByteTimeoutMs: 120_000, IdleTimeoutMs: 30_000,
 				UncommittedAttemptMaxLifetimeMs: 240_000, NoAvailableAccountWaitMs: 10_000,
 			},
 		},
@@ -1542,7 +1544,8 @@ func TestGatewayTimeoutProfileForLane(t *testing.T) {
 			name: "image lane reads image settings",
 			lane: gatewayproto.LaneImage,
 			want: GatewayTimeoutProfile{
-				FirstResponseTimeoutMs: 600_000, FirstByteTimeoutMs: 600_000, IdleTimeoutMs: 60_000,
+				FirstResponseTimeoutMs: 600_000, NonStreamFirstResponseTimeoutMs: 600_000,
+				FirstByteTimeoutMs: 600_000, IdleTimeoutMs: 60_000,
 				UncommittedAttemptMaxLifetimeMs: 900_000, NoAvailableAccountWaitMs: 10_000,
 			},
 		},
@@ -1552,7 +1555,8 @@ func TestGatewayTimeoutProfileForLane(t *testing.T) {
 			disableTimeouts: true,
 			want: GatewayTimeoutProfile{
 				TimeoutsDisabled: true,
-				FirstResponseTimeoutMs: 120_000, FirstByteTimeoutMs: 120_000, IdleTimeoutMs: 30_000,
+				FirstResponseTimeoutMs: 120_000, NonStreamFirstResponseTimeoutMs: 600_000,
+				FirstByteTimeoutMs: 120_000, IdleTimeoutMs: 30_000,
 				UncommittedAttemptMaxLifetimeMs: 240_000, NoAvailableAccountWaitMs: 10_000,
 			},
 		},
@@ -1560,7 +1564,8 @@ func TestGatewayTimeoutProfileForLane(t *testing.T) {
 			name: "sub-second settings clamp to one second",
 			lane: gatewayproto.LaneText,
 			want: GatewayTimeoutProfile{
-				FirstResponseTimeoutMs: 1_000, FirstByteTimeoutMs: 1_000, IdleTimeoutMs: 1_000,
+				FirstResponseTimeoutMs: 1_000, NonStreamFirstResponseTimeoutMs: 1_000,
+				FirstByteTimeoutMs: 1_000, IdleTimeoutMs: 1_000,
 				UncommittedAttemptMaxLifetimeMs: 1_000, NoAvailableAccountWaitMs: 1_000,
 			},
 		},

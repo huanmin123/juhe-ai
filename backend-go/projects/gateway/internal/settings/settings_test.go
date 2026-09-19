@@ -93,6 +93,7 @@ var seedSystemSettings = map[string]any{
 	"temporaryUnschedulableRetryIntervalSeconds": 3,
 	"temporaryUnschedulableRetryAttempts":        2,
 	"textFirstResponseTimeoutSeconds":            120,
+	"textNonStreamFirstResponseTimeoutSeconds":   600,
 	"textStreamIdleTimeoutSeconds":               30,
 	"textUncommittedAttemptMaxLifetimeSeconds":   1800,
 	"imageFirstResponseTimeoutSeconds":           600,

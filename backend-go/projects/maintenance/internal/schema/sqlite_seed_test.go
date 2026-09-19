@@ -160,7 +160,7 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"api_keys":                            8,
 		"external_integration_sources":        1,
 		"external_integration_source_tokens":  1,
-		"system_settings":                     60,
+		"system_settings":                     61,
 		"provider_model_catalog":              106,
 	}
 	for table, want := range expectCounts {
