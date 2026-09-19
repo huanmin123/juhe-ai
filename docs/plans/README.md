@@ -1,6 +1,6 @@
 # 计划目录
 
-- [PLAN-20260919T000723744Z](计划-20260919T000723744Z-核心系统缺陷修复第二轮-登记项处置.md)：处置第一轮登记项（dial 阶段失败拆分、死代码群删除、OAuth 保活最小装配、outbox drain 并发/告警、路由状态锁内扫描与 latency_degraded 批量读、图像 lane 瞬态语义文档澄清）；因并行工作线占用 gateway cmd，装配面项降级注记；进行中。
+- [PLAN-20260919T000723744Z](计划-20260919T000723744Z-核心系统缺陷修复第二轮-登记项处置.md)：处置第一轮登记项：dial 阶段失败拆分、account_runtime 死包删除、gatewayaccounteffects 接线边界标注、outbox drain 并发/告警/settings 缓存、路由状态锁内扫描与 latency_degraded 批量读、图像 lane 瞬态语义文档澄清。无争议范围已提交（`4d47decaa`）；gatewaydispatch/gatewaycircuit/jobs-cmd 范围因并行工作线占用暂缓提交（代码已落盘工作区），见计划"暂缓提交登记"；阻塞（待并行线收尾）。
 
 - [PLAN-20260918T142845703Z](计划-20260918T142845703Z-调度状态探活核心系统缺陷修复.md)：修复三大核心系统复审确认的生产可达缺陷（调度 reacquire panic/双重释放、锁死 fence 断链、SSE 心跳竞态）与低风险加固项；P0-3 软阻断写面经 Node 归档对照判定为 Node 本就未接线（结论 B），按登记路线处置不接线；代码级修复与验证已完成（提交 `2eb2154e6`）。
 
