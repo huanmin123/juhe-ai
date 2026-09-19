@@ -32,7 +32,7 @@ func (s *Store) Delete(ctx context.Context, accountID string, access AccessScope
 	}
 	defer tx.Rollback()
 
-	scoped := access.manageableID()
+	scoped := access.ManageableID()
 	scopeClause := ""
 	args := []any{id}
 	if scoped != "" {

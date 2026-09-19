@@ -111,7 +111,7 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 	}
 	defer tx.Rollback()
 
-	scoped := access.manageableID()
+	scoped := access.ManageableID()
 	scopeClause := ""
 	args := []any{id}
 	if scoped != "" {
@@ -130,7 +130,7 @@ func (s *Store) SetLock(ctx context.Context, input SetLockInput, access AccessSc
 	if err != nil {
 		return nil, err
 	}
-	if !access.canAccessAll() && systemAccountID != access.ViewerID {
+	if !access.CanAccessAll() && systemAccountID != access.ViewerID {
 		return nil, nil
 	}
 	if input.ExpectedConfigRevision > 0 && configRevision != input.ExpectedConfigRevision {

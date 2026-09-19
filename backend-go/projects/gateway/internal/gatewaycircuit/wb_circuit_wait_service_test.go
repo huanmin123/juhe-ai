@@ -464,8 +464,8 @@ func TestWBCircuitPureHelpers(t *testing.T) {
 		t.Fatal("带证据的原因必须带标记")
 	}
 	list := stringList{"a"}
-	if list.equal(stringList{"a"}) != true || list.equal(stringList{"b"}) || list.equal(nil) {
-		t.Fatal("stringList.equal 语义不正确")
+	if stringListEqual(list, stringList{"a"}) != true || stringListEqual(list, stringList{"b"}) || stringListEqual(list, nil) {
+		t.Fatal("stringListEqual 语义不正确")
 	}
 	if got := sortedCopy([]string{"b", "a"}); got[0] != "a" || got[1] != "b" {
 		t.Fatalf("sortedCopy = %v", got)

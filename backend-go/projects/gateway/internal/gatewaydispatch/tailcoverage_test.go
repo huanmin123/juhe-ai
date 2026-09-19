@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -21,15 +23,15 @@ import (
 
 func TestNormalizeOpenAIOAuthCodexInstructions(t *testing.T) {
 	body := map[string]any{}
-	if err := normalizeOpenAIOAuthCodexInstructions(body); err != nil || body["instructions"] != "" {
+	if err := gatewayoauthcodex.NormalizeOpenAIOAuthCodexInstructions(body); err != nil || body["instructions"] != "" {
 		t.Fatalf("缺省 instructions = %#v err=%v", body["instructions"], err)
 	}
 	body = map[string]any{"instructions": "custom"}
-	if err := normalizeOpenAIOAuthCodexInstructions(body); err != nil || body["instructions"] != "custom" {
+	if err := gatewayoauthcodex.NormalizeOpenAIOAuthCodexInstructions(body); err != nil || body["instructions"] != "custom" {
 		t.Fatal("字符串 instructions 保留")
 	}
 	body = map[string]any{"instructions": 42}
-	if err := normalizeOpenAIOAuthCodexInstructions(body); !IsOpenAIOAuthCodexAdapterError(err) {
+	if err := gatewayoauthcodex.NormalizeOpenAIOAuthCodexInstructions(body); !IsOpenAIOAuthCodexAdapterError(err) {
 		t.Fatalf("expected adapter error, got %v", err)
 	}
 }
@@ -105,7 +107,7 @@ func TestPipeInspectionBuffersThenCommits(t *testing.T) {
 	var chunkReads []string
 	result, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), reader, &downstream, InspectableNonStreamPipeInput{
 		NonStreamPipeInput: NonStreamPipeInput{
-			StartedAt:   NowMs(),
+			StartedAt:   gatewayupstream.NowMs(),
 			Signal:      context.Background(),
 			OnChunkRead: func(chunk []byte) { chunkReads = append(chunkReads, string(chunk)) },
 		},
@@ -137,7 +139,7 @@ func TestPipeUsageTailAndCaptureBodyDisabled(t *testing.T) {
 	disabled := false
 	var downstream strings.Builder
 	result, err := PipeNonStreamUpstreamResponse(context.Background(), strings.NewReader("abcdef"), &downstream, NonStreamPipeInput{
-		StartedAt:      NowMs(),
+		StartedAt:      gatewayupstream.NowMs(),
 		Signal:         context.Background(),
 		CaptureBody:    &disabled,
 		UsageTailBytes: ptrInt64(2),

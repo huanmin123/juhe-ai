@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 )
 
@@ -88,10 +89,10 @@ func TestW14EErrorHelpersPayloadArms(t *testing.T) {
 }
 
 func TestW14EUtilAndErrorsArms(t *testing.T) {
-	if got := jsonCloneValue(map[string]any{"a": 1}); got == nil {
+	if got := gatewayupstream.JSONCloneValue(map[string]any{"a": 1}); got == nil {
 		t.Fatal("clone must succeed")
 	}
-	if got := jsonCloneValue(func() {}); got != nil {
+	if got := gatewayupstream.JSONCloneValue(func() {}); got != nil {
 		t.Fatal("unmarshalable value must clone to nil")
 	}
 	started := &StartedBodyTransportError{Err: errorsNewW14E("boom")}

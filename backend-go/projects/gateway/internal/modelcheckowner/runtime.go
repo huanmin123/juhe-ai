@@ -2,7 +2,6 @@ package modelcheckowner
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -16,6 +15,7 @@ import (
 	keymodelruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/key_model_runtime"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 )
 
 type Target struct {
@@ -759,11 +759,8 @@ func targetOwnerOrDefault(owner, fallback string) string {
 }
 
 func newID(prefix string) string {
-	var bytes [12]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return prefix + "-fallback"
-	}
-	return prefix + "-" + hex.EncodeToString(bytes[:])
+	// 随机段收敛到 shared/platform/idgen（格式不变：<prefix>-<24hex>）。
+	return prefix + "-" + idgen.RandomHex(12)
 }
 
 func endpointFingerprint(endpoint string) string {

@@ -33,7 +33,7 @@ func TestW13ACreateBodyValidationArms(t *testing.T) {
 		t.Fatalf("最小合法体应通过：%s", message)
 	}
 	cases := []struct {
-		name    string
+		name      string
 		overrides map[string]any
 	}{
 		{"缺失 providerCode", map[string]any{"providerCode": nil}},

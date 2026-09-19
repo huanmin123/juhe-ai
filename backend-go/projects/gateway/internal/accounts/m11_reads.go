@@ -66,16 +66,16 @@ const systemInsufficientQuotaRuleID = "system.upstream_insufficient_quota"
 // (account-error-policy-system-rules.ts systemRules[0]).
 func systemAccountErrorHandlingRule() map[string]any {
 	return map[string]any{
-		"enabled":         true,
-		"name":            "上游额度不足",
-		"priority":        float64(1),
-		"action":          "rate_limited",
-		"reset_strategy":  "duration",
-		"duration_hours":  float64(1),
-		"status_codes":    []any{float64(402), float64(403)},
-		"error_codes":     []any{"insufficient_user_quota", "insufficient_quota", "insufficient_balance", "quota_exceeded", "quota_exhausted", "default_group_global_quota_exhausted", "billing_hard_limit_reached", "wallet_balance_exhausted", "pre_consume_token_quota_failed"},
-		"keywords":        []any{"余额不足", "额度不足", "insufficient balance", "insufficient quota", "subscription quota insufficient", "credit balance too low", "wallet balance exhausted"},
-		"description":     "匹配 HTTP 402 或 HTTP 403 的明确余额/额度不足响应；默认进入限流，可按普通规则调整恢复策略。",
+		"enabled":        true,
+		"name":           "上游额度不足",
+		"priority":       float64(1),
+		"action":         "rate_limited",
+		"reset_strategy": "duration",
+		"duration_hours": float64(1),
+		"status_codes":   []any{float64(402), float64(403)},
+		"error_codes":    []any{"insufficient_user_quota", "insufficient_quota", "insufficient_balance", "quota_exceeded", "quota_exhausted", "default_group_global_quota_exhausted", "billing_hard_limit_reached", "wallet_balance_exhausted", "pre_consume_token_quota_failed"},
+		"keywords":       []any{"余额不足", "额度不足", "insufficient balance", "insufficient quota", "subscription quota insufficient", "credit balance too low", "wallet balance exhausted"},
+		"description":    "匹配 HTTP 402 或 HTTP 403 的明确余额/额度不足响应；默认进入限流，可按普通规则调整恢复策略。",
 	}
 }
 
@@ -159,17 +159,17 @@ func rulePriority(rule map[string]any) float64 {
 func defaultQuotaRecoverySchedule(accountType string) map[string]any {
 	if accountType == "api_key" {
 		return map[string]any{
-			"reset_strategy":  "duration",
+			"reset_strategy":   "duration",
 			"duration_minutes": float64(60),
-			"jitter_minutes":  float64(quotaRecoveryFixedJitterMinutes),
-			"timezone":        "UTC",
+			"jitter_minutes":   float64(quotaRecoveryFixedJitterMinutes),
+			"timezone":         "UTC",
 		}
 	}
 	return map[string]any{
-		"reset_strategy":  "daily",
+		"reset_strategy":   "daily",
 		"daily_reset_hour": float64(0),
-		"jitter_minutes":  float64(quotaRecoveryFixedJitterMinutes),
-		"timezone":        "UTC",
+		"jitter_minutes":   float64(quotaRecoveryFixedJitterMinutes),
+		"timezone":         "UTC",
 	}
 }
 
@@ -248,7 +248,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 	authorized := s.authorizedReadableIDs(ctx, access)[id]
 	scopeClause := ""
 	args := []any{now, id}
-	if scoped := access.manageableID(); scoped != "" && !authorized {
+	if scoped := access.ManageableID(); scoped != "" && !authorized {
 		scopeClause = " AND accounts.system_account_id = ?"
 		args = append(args, scoped)
 	}
@@ -307,7 +307,7 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 	if err != nil {
 		return nil, err
 	}
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
+	if !access.CanAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
 		return nil, nil
 	}
 	isAuthorized := row.authorizationID.Valid && row.authorizationID.String != "" ||
@@ -387,10 +387,10 @@ func (s *Store) FindAdvancedDetail(ctx context.Context, accountID string, access
 		AccountExpiresAt:             nullPtrString(row.accountExpiresAt),
 		TemporaryUnavailableContinuousProbeEnabled: row.probeEnabled == 1,
 		BalanceQueryEnabled:                        row.balanceQueryEnabled == 1,
-		LockEnabled:             false,
-		LockState:               "UNLOCKED",
-		LockDeathTimeoutSeconds: 300,
-		LockRetryIntervalSeconds: 5,
+		LockEnabled:                                false,
+		LockState:                                  "UNLOCKED",
+		LockDeathTimeoutSeconds:                    300,
+		LockRetryIntervalSeconds:                   5,
 	}
 	if isAuthorized {
 		detail.AccessType = "authorized"
@@ -533,17 +533,17 @@ func (s *Store) FindOAuthReauthorizationContext(ctx context.Context, accountID s
 	authorized := s.authorizedReadableIDs(ctx, access)[id]
 	scopeClause := ""
 	args := []any{id}
-	if scoped := access.manageableID(); scoped != "" && !authorized {
+	if scoped := access.ManageableID(); scoped != "" && !authorized {
 		scopeClause = " AND accounts.system_account_id = ?"
 		args = append(args, scoped)
 	}
 	var row struct {
-		id               string
-		configRevision   int64
-		systemAccountID  string
-		credentials      string
-		authorizationID  sql.NullString
-		sourceAccountID  sql.NullString
+		id              string
+		configRevision  int64
+		systemAccountID string
+		credentials     string
+		authorizationID sql.NullString
+		sourceAccountID sql.NullString
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id, accounts.credentials_encrypted,
@@ -563,7 +563,7 @@ func (s *Store) FindOAuthReauthorizationContext(ctx context.Context, accountID s
 	if err != nil {
 		return nil, err
 	}
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
+	if !access.CanAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
 		return nil, nil
 	}
 	if row.authorizationID.Valid && row.authorizationID.String != "" ||
@@ -657,15 +657,15 @@ func (s *Store) FindAPIKeyRuntimeAccount(ctx context.Context, accountID string, 
 	authorized := s.authorizedReadableIDs(ctx, access)[id]
 	scopeClause := ""
 	args := []any{id}
-	if scoped := access.manageableID(); scoped != "" && !authorized {
+	if scoped := access.ManageableID(); scoped != "" && !authorized {
 		scopeClause = " AND accounts.system_account_id = ?"
 		args = append(args, scoped)
 	}
 	var row struct {
-		id             string
-		configRevision int64
+		id              string
+		configRevision  int64
 		systemAccountID string
-		authorized     int
+		authorized      int
 	}
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
 			accounts.system_account_id,
@@ -685,7 +685,7 @@ func (s *Store) FindAPIKeyRuntimeAccount(ctx context.Context, accountID string, 
 	if err != nil {
 		return nil, err
 	}
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
+	if !access.CanAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
 		return nil, nil
 	}
 	accessType := "owner"

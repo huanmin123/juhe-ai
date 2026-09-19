@@ -10,15 +10,17 @@ package accounts
 
 import (
 	"errors"
-	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // Protocol tokens mirror provider-protocol.ts:1-2; the gpt vendor token is
 // the package-wide gptVendorCode constant (import_source.go), matching
-// provider-protocol.ts:4.
+// provider-protocol.ts:4. REFACTOR-0005 阶段 0：常量与 normalizeProviderToken
+// 下沉 accountscore，根包保留别名/转发。
 const (
-	openAIProtocolCode    = "openai"
-	openAIProtocolVersion = "v1"
+	openAIProtocolCode    = accountscore.OpenAIProtocolCode
+	openAIProtocolVersion = accountscore.OpenAIProtocolVersion
 )
 
 // protocolProfileRef mirrors the protocolProfile argument Node passes from
@@ -37,7 +39,7 @@ type protocolProfileRef struct {
 // lowercase; Node maps the empty result to undefined, which never equals the
 // tokens below — the empty Go string compares the same way).
 func normalizeProviderToken(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return accountscore.NormalizeProviderToken(value)
 }
 
 // deriveOpenAIAccountClientCompatibility mirrors

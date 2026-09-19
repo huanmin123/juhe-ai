@@ -21,14 +21,14 @@ func TestW13ANormalizeModelMappingBodyArms(t *testing.T) {
 		t.Fatalf("合法映射应通过：%+v", mapping)
 	}
 	for name, mutate := range map[string]func(map[string]any){
-		"空 sourceModel":   func(m map[string]any) { m["sourceModel"] = " " },
-		"空 upstream":      func(m map[string]any) { m["upstreamModel"] = "" },
-		"空 source 族":      func(m map[string]any) { m["sourceEndpointFamily"] = "" },
-		"空 upstream 族":    func(m map[string]any) { m["upstreamEndpointFamily"] = "" },
-		"非法 source 族":     func(m map[string]any) { m["sourceEndpointFamily"] = "bogus" },
-		"非法 upstream 族":   func(m map[string]any) { m["upstreamEndpointFamily"] = "stream_generate_content" },
-		"enabled 非布尔":     func(m map[string]any) { m["enabled"] = 3 },
-		"未知键":             func(m map[string]any) { m["bogus"] = 1 },
+		"空 sourceModel": func(m map[string]any) { m["sourceModel"] = " " },
+		"空 upstream":    func(m map[string]any) { m["upstreamModel"] = "" },
+		"空 source 族":    func(m map[string]any) { m["sourceEndpointFamily"] = "" },
+		"空 upstream 族":  func(m map[string]any) { m["upstreamEndpointFamily"] = "" },
+		"非法 source 族":   func(m map[string]any) { m["sourceEndpointFamily"] = "bogus" },
+		"非法 upstream 族": func(m map[string]any) { m["upstreamEndpointFamily"] = "stream_generate_content" },
+		"enabled 非布尔":   func(m map[string]any) { m["enabled"] = 3 },
+		"未知键":           func(m map[string]any) { m["bogus"] = 1 },
 	} {
 		caseBody := map[string]any{}
 		for key, value := range valid {
@@ -80,7 +80,7 @@ func TestW13ARequiredCredentialSourceAndTags(t *testing.T) {
 	}
 	many := []any{}
 	for i := 0; i < maxTagsPerAccount+1; i++ {
-		many = append(many, "标签" + string(rune('A'+i)))
+		many = append(many, "标签"+string(rune('A'+i)))
 	}
 	if _, err := normalizeAccountTagNamesInput(many); err == nil {
 		t.Fatal("超量标签应拒绝")

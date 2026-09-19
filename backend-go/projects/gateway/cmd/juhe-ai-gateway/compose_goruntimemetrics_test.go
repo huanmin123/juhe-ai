@@ -67,7 +67,7 @@ func composeForGoRuntimeTest(t *testing.T, cfg runtimeConfig) *composition {
 	store := openComposeOperationStore(t)
 	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	t.Cleanup(closeAudit)
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}

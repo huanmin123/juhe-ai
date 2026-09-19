@@ -153,22 +153,22 @@ func TestW2ExportHelpers(t *testing.T) {
 	})
 	t.Run("exportAccountStatus", func(t *testing.T) {
 		// active 需同时 schedulable；pending_test 透传；其余 disabled。
-		if got := exportAccountStatus(&exportAccountRow{status: "active", schedulable: true}); got != "active" {
+		if got := exportAccountStatus(&exportAccountRow{Status: "active", Schedulable: true}); got != "active" {
 			t.Fatalf("active 判定不一致：%s", got)
 		}
-		if got := exportAccountStatus(&exportAccountRow{status: "active", schedulable: false}); got != "disabled" {
+		if got := exportAccountStatus(&exportAccountRow{Status: "active", Schedulable: false}); got != "disabled" {
 			t.Fatalf("不可调度导出为 disabled：%s", got)
 		}
-		if got := exportAccountStatus(&exportAccountRow{status: "pending_test"}); got != "pending_test" {
+		if got := exportAccountStatus(&exportAccountRow{Status: "pending_test"}); got != "pending_test" {
 			t.Fatalf("pending_test 透传不一致：%s", got)
 		}
-		if got := exportAccountStatus(&exportAccountRow{status: "cooldown"}); got != "disabled" {
+		if got := exportAccountStatus(&exportAccountRow{Status: "cooldown"}); got != "disabled" {
 			t.Fatalf("cooldown 导出为 disabled：%s", got)
 		}
 	})
 	t.Run("credentials orderedKeys", func(t *testing.T) {
 		credentials := Credentials{"b": 1, "a": 2, "c": 3}
-		got := credentials.orderedKeys()
+		got := orderedKeys(credentials)
 		// 键按字典序稳定输出（导出 JSON 的确定性契约）。
 		if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
 			t.Fatalf("键序不一致：%v", got)

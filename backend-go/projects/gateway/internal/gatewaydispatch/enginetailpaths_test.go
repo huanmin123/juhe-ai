@@ -11,6 +11,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -522,7 +523,7 @@ func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("下游�
 
 func TestPipeNonStreamUpstreamResponseWriteError(t *testing.T) {
 	_, err := PipeNonStreamUpstreamResponse(context.Background(), strings.NewReader("payload"), failingWriter{}, NonStreamPipeInput{
-		StartedAt: NowMs(),
+		StartedAt: gatewayupstream.NowMs(),
 		Signal:    context.Background(),
 	})
 	var pipeErr *NonStreamUpstreamBodyPipeError
@@ -539,7 +540,7 @@ func TestPipeNonStreamUpstreamResponseWriteError(t *testing.T) {
 
 func TestPipeInspectionLimitExceededRequireFullyBuffered(t *testing.T) {
 	result, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), strings.NewReader("body-too-large"), &strings.Builder{}, InspectableNonStreamPipeInput{
-		NonStreamPipeInput:   NonStreamPipeInput{StartedAt: NowMs(), Signal: context.Background()},
+		NonStreamPipeInput:   NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), Signal: context.Background()},
 		InspectBytes:         4,
 		RequireFullyBuffered: true,
 	})
@@ -557,7 +558,7 @@ func TestPipeInspectionLimitExceededRequireFullyBuffered(t *testing.T) {
 func TestPipeInspectionBeforeDownstreamCommitError(t *testing.T) {
 	commitErr := errors.New("提交校验失败")
 	_, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), strings.NewReader("payload-exceeds-limit"), &strings.Builder{}, InspectableNonStreamPipeInput{
-		NonStreamPipeInput:     NonStreamPipeInput{StartedAt: NowMs(), Signal: context.Background()},
+		NonStreamPipeInput:     NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), Signal: context.Background()},
 		InspectBytes:           4,
 		BeforeDownstreamCommit: func([]byte) error { return commitErr },
 	})

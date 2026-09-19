@@ -21,7 +21,7 @@ func TestW11GComposeEarlyAndPostgresArms(t *testing.T) {
 	// 中段（stats/catalog 等）失败场景在 Windows 上泄漏已打开的 business
 	// 句柄导致 TempDir 清理失败（compose 失败路径不回滚已开句柄），故此
 	// 处只覆盖早期参数守卫与 PG 池分支（不开任何 sqlite 文件）。
-	if _, err := composeSystemAPI(composeTestConfig(t), pgpool.NewRegistry(), nil, nil, nil, auditlog.Config{}); err == nil {
+	if _, err := composeSystemAPI(composeTestConfig(t), pgpool.NewRegistry(), nil, nil, nil, auditlog.Config{}, composeTestOwnerHealth()); err == nil {
 		t.Fatal("nil operation store must fail")
 	}
 	cfg := composeTestConfig(t)
@@ -38,7 +38,7 @@ func TestW11GComposeEarlyAndPostgresArms(t *testing.T) {
 		pgStore := openComposeOperationStore(t)
 		pgAuditConfig, pgProducer, closePgAudit := openComposeAuditSources(t, filepath.Dir(pgCfg.DatasetDatabasePath))
 		defer closePgAudit()
-		_, err := composeSystemAPI(pgCfg, pgpool.NewRegistry(), pgStore, openComposeOperationLease(t, pgStore), pgProducer, pgAuditConfig)
+		_, err := composeSystemAPI(pgCfg, pgpool.NewRegistry(), pgStore, openComposeOperationLease(t, pgStore), pgProducer, pgAuditConfig, composeTestOwnerHealth())
 		return err
 	}
 	if err := pgTry("postgres://w11g-no-user@127.0.0.1:1/w11g?sslmode=disable&connect_timeout=1"); err == nil {

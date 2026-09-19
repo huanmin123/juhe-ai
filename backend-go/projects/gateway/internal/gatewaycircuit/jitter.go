@@ -1,57 +1,29 @@
 package gatewaycircuit
 
 import (
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"math"
+	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 // Passive schedule jitter policy mirrors shared/passive-schedule-jitter.ts.
 // Passive polling and periodic scans must use it so same-phase fleets never
 // converge; lease/ownership deadlines never do.
-const (
-	passiveScheduleSubMinuteWindowMs = int64(30_000)
-	passiveScheduleMinuteWindowMs    = int64(30_000)
-	passiveScheduleHourWindowMs      = int64(30 * 60_000)
-	passiveScheduleDayWindowMs       = int64(60 * 60_000)
-	passiveScheduleWeekWindowMs      = int64(8 * 60 * 60_000)
-)
 
 func truncMs(value float64) int64 {
 	return int64(math.Trunc(value))
 }
 
-// passiveScheduleJitterWindowMs mirrors passiveScheduleJitterWindowMs.
+// passiveScheduleJitterWindowMs mirrors shared/passive-schedule-jitter.ts.
+// 实现收敛到 shared/platform/schedulejitter（REFACTOR-0008 附录收口，与
+// gatewayaccounteffects/clock.go 同款：全输入域等价，含 interval<1 钳制与
+// ms 整除语义；档位常量随实现移除）。
 func passiveScheduleJitterWindowMs(intervalMs int64) int64 {
-	interval := int64(1)
-	if raw := truncMs(float64(intervalMs)); raw >= 1 {
-		interval = raw
-	}
-	var windowMs int64
-	switch {
-	case interval < 60_000:
-		windowMs = passiveScheduleSubMinuteWindowMs
-		if half := interval / 2; half < windowMs {
-			windowMs = half
-		}
-	case interval < 60*60_000:
-		windowMs = passiveScheduleMinuteWindowMs
-	case interval < 24*60*60_000:
-		windowMs = passiveScheduleHourWindowMs
-	case interval < 7*24*60*60_000:
-		windowMs = passiveScheduleDayWindowMs
-	default:
-		windowMs = passiveScheduleWeekWindowMs
-	}
-	half := interval / 2
-	if half < 0 {
-		half = 0
-	}
-	if windowMs > half {
-		return half
-	}
-	return windowMs
+	return int64(schedulejitter.Window(time.Duration(intervalMs)*time.Millisecond) / time.Millisecond)
 }
 
 // passiveScheduleOffsetWithinWindowMs mirrors passiveScheduleOffsetWithinWindowMs.
@@ -103,10 +75,9 @@ func passiveScheduleNotBeforeDelayMs(intervalMs int64, random func() float64) in
 }
 
 // sha1Hex returns the lowercase hex SHA-1 digest (Node createHash('sha1')).
-func sha1Hex(value string) string {
-	sum := sha1.Sum([]byte(value))
-	return hex.EncodeToString(sum[:])
-}
+// REFACTOR-0008 下潜委托壳：与 circuitstore 逐字节相同，收敛到
+// shared/platform/circuitstate。
+func sha1Hex(value string) string { return circuitstate.SHA1Hex(value) }
 
 // sha256Hex returns the lowercase hex SHA-256 digest.
 func sha256Hex(value string) string {

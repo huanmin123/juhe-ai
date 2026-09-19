@@ -57,7 +57,7 @@ func ComputerExecutorForRequest(config Config, client HTTPDoer, override Compute
 	if override != nil {
 		return override
 	}
-	config = config.withDefaults()
+	config = config.WithDefaults()
 	if config.HostedToolComputerMode != "local_runtime" {
 		return nil
 	}

@@ -136,7 +136,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			DefaultImageModel:  input.defaultImageModel,
 			Aborted:            runCtx.Aborted,
 			LoadImageEditReferences: func(assetIDs []string) ([]ChatImageEditReference, error) {
-				return rt.deps.Store.loadImageEditReferences(rt.deps.ObjectStore, assetIDs, identity.OwnerID, input.conversation.ID, rt.now())
+				return loadImageEditReferences(rt.deps.AssetEditReferences, rt.deps.ObjectStore, assetIDs, identity.OwnerID, input.conversation.ID, rt.now())
 			},
 			ImageGeneration: func(request ChatImageGenerationRequest) (ChatImageGenerationToolResult, error) {
 				failureCode = GenErrImageFailed

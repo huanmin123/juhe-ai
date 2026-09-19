@@ -607,7 +607,7 @@ func TestW14EParseListDuePageArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid page: %v", err)
 	}
-	if !page.exhausted || page.scanned != 3 || page.nextOffset != 4 || len(page.scopeKeys) != 3 {
+	if !page.Exhausted || page.Scanned != 3 || page.NextOffset != 4 || len(page.ScopeKeys) != 3 {
 		t.Fatalf("page = %+v", page)
 	}
 }

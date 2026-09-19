@@ -41,10 +41,16 @@ func TestW15RuntimeStateReaderCloseNonClientCmdable(t *testing.T) {
 }
 
 func TestW15EncodeJSONPanicsOnUnserializablePayload(t *testing.T) {
+	// encodeJSON 保持快速失败 panic 契约（复审 P1-1 恢复）：序列化失败属
+	// 编程错误，与 jsonenc"返空串"的静默降级语义不同，本包为登记在案的
+	// 语义变体。
 	defer func() {
 		if recover() == nil {
-			t.Fatal("encodeJSON 对不可序列化载荷必须 panic（内部载荷序列化失败属编程错误）")
+			t.Fatal("不可序列化载荷必须触发 panic 快速失败")
 		}
 	}()
-	encodeJSON(map[string]any{"unserializable": func() {}})
+	_ = encodeJSON(map[string]any{"unserializable": func() {}})
+	if got := encodeJSON(map[string]any{"k": "v"}); got != `{"k":"v"}` {
+		t.Fatalf("encodeJSON 正常路径 = %q", got)
+	}
 }

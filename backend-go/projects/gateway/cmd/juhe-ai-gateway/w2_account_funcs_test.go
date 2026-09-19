@@ -431,7 +431,7 @@ func TestW2BAccountTestDispatchWireDegradeAndResume(t *testing.T) {
 	createRuntimeLogDataset(t, composeCfg.RuntimeLogDatabasePath)
 	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(composeCfg.DatasetDatabasePath))
 	defer closeAudit()
-	composedFull, err := composeSystemAPI(composeCfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
+	composedFull, err := composeSystemAPI(composeCfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose system api: %v", err)
 	}

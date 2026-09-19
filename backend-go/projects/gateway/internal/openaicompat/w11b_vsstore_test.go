@@ -130,7 +130,7 @@ func TestW11BVectorStoreStoreMethodBranches(t *testing.T) {
 
 func TestW11BCodeInterpreterCollectArtifacts(t *testing.T) {
 	executor := &CodeInterpreterExecutor{
-		config: Config{}.withDefaults().CodeInterpreter,
+		config: Config{}.WithDefaults().CodeInterpreter,
 	}
 	workDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workDir, "chart.png"), []byte("png"), 0o644); err != nil {

@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Redis driver projection of shared/redis-client.ts + shared/redis-namespace.ts
@@ -87,8 +88,6 @@ func (c *GoRedisClient) SendCommand(ctx context.Context, args ...any) (any, erro
 // redisNamespacedKey mirrors shared/redis-namespace.ts redisNamespacedKey.
 const redisRootPrefix = "juhe-ai:"
 
-var redisNamespaceSanitizePattern = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
-
 // RedisNamespacedKey mirrors redisNamespacedKey with an explicit namespace
 // value (runtimeConfig.redis.namespace projection).
 func RedisNamespacedKey(namespace string, key string) (string, error) {
@@ -120,8 +119,9 @@ func RedisNamespacePrefix(namespace string) (string, error) {
 }
 
 // SanitizeRedisNamespacePart mirrors sanitizeRedisNamespacePart.
+// 实现收敛到 shared/platform/rediscfg（正则折叠语义等价），保留空值报错契约。
 func SanitizeRedisNamespacePart(value string) (string, error) {
-	normalized := strings.Trim(redisNamespaceSanitizePattern.ReplaceAllString(strings.TrimSpace(value), "_"), "_")
+	normalized := rediscfg.SanitizeRedisNamespacePart(value)
 	if normalized == "" {
 		return "", errors.New("Redis namespace 不能为空")
 	}

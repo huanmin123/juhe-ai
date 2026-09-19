@@ -262,8 +262,8 @@ func (s *Store) finishCreateSideEffects(ctx context.Context, result *CreateResul
 // itself stays import-only). It must run inside the caller's transaction.
 func (s *Store) AdvanceDispatchRevisionFamily(ctx context.Context, tx *sql.Tx, accountID, transitionID string, nowMs int64) error {
 	return s.advanceBatchDispatchRevisionFamily(ctx, tx, batchDispatchRevision{
-		accountID:    accountID,
-		transitionID: transitionID,
-		nowMS:        nowMs,
+		AccountID:    accountID,
+		TransitionID: transitionID,
+		NowMS:        nowMs,
 	})
 }

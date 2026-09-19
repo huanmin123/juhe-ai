@@ -76,12 +76,12 @@ func parseTrafficMigrationBody(body map[string]any) (TrafficMigrationInput, stri
 // TrafficMigrationResult mirrors the sanitized route response
 // (sanitizeAccountTrafficMigrationResponse).
 type TrafficMigrationResult struct {
-	SourceAccount       *ListItem `json:"sourceAccount"`
-	TargetAccount       *ListItem `json:"targetAccount"`
-	SourceCooldownUntil *string   `json:"sourceCooldownUntil,omitempty"`
-	MigratedSessionCount int      `json:"migratedSessionCount"`
-	SourceStatus        string    `json:"sourceStatus"`
-	GroupID             *string   `json:"-"`
+	SourceAccount        *ListItem `json:"sourceAccount"`
+	TargetAccount        *ListItem `json:"targetAccount"`
+	SourceCooldownUntil  *string   `json:"sourceCooldownUntil,omitempty"`
+	MigratedSessionCount int       `json:"migratedSessionCount"`
+	SourceStatus         string    `json:"sourceStatus"`
+	GroupID              *string   `json:"-"`
 }
 
 // TrafficRuntimeMigrator is the narrow port of the gateway runtime session
@@ -92,11 +92,11 @@ type TrafficRuntimeMigrator interface {
 
 // TrafficRuntimeMigrationInput mirrors OpenAIAccountTrafficMigrationRuntimeRequest.
 type TrafficRuntimeMigrationInput struct {
-	SourceAccountID       string
-	TargetAccountID       string
+	SourceAccountID        string
+	TargetAccountID        string
 	PreferMigratedSessions bool
-	AffinityScope         *TrafficMigrationScope
-	PreferenceScope       *TrafficMigrationScope
+	AffinityScope          *TrafficMigrationScope
+	PreferenceScope        *TrafficMigrationScope
 }
 
 // TrafficMigrationScope mirrors { systemAccountId, groupId }.
@@ -275,9 +275,9 @@ func (s *Store) migrateOwnerTraffic(ctx context.Context, sourceAccountID string,
 				updated_at = ?
 			WHERE id = ?
 				AND system_account_id = ?`),
-		 nullableStringPointer(sourceCooldownUntil), manualTrafficMigrationReason,
-		 nullableStringPointer(sourceObservationStartedAt), nullableStringPointer(sourceCooldownGeneration),
-		 nowISO, sourceRow.id, sourceRow.systemAccountID)
+			nullableStringPointer(sourceCooldownUntil), manualTrafficMigrationReason,
+			nullableStringPointer(sourceObservationStartedAt), nullableStringPointer(sourceCooldownGeneration),
+			nowISO, sourceRow.id, sourceRow.systemAccountID)
 	}
 	if err != nil {
 		return nil, err
@@ -315,7 +315,7 @@ func (s *Store) migrateAuthorizedBindingTraffic(ctx context.Context, sourceAccou
 	if sourceAccountID == input.TargetAccountID {
 		return nil, errTrafficSameAccount
 	}
-	grantee := access.viewerID()
+	grantee := access.EffectiveViewerID()
 	if grantee == "" {
 		return nil, nil
 	}
@@ -459,7 +459,7 @@ func (s *Store) trafficManagedRow(ctx context.Context, accountID string, access 
 	authorized := s.authorizedReadableIDs(ctx, access)[accountID]
 	scopeClause := ""
 	args := []any{strings.TrimSpace(accountID)}
-	if scoped := access.manageableID(); scoped != "" && !authorized {
+	if scoped := access.ManageableID(); scoped != "" && !authorized {
 		scopeClause = " AND accounts.system_account_id = ?"
 		args = append(args, scoped)
 	}
@@ -478,7 +478,7 @@ func (s *Store) trafficManagedRow(ctx context.Context, accountID string, access 
 	if err != nil {
 		return nil, err
 	}
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
+	if !access.CanAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
 		return nil, nil
 	}
 	return &row, nil
@@ -545,7 +545,7 @@ func buildRuntimeMigrationInput(result *TrafficMigrationResult, input TrafficMig
 		runtime.PreferMigratedSessions = true
 	}
 	summary := result.SourceAccount
-	systemAccountID := access.viewerID()
+	systemAccountID := access.EffectiveViewerID()
 	if summary.AccessType == "authorized" && summary.BoundGroupID != nil && systemAccountID != "" {
 		runtime.AffinityScope = &TrafficMigrationScope{SystemAccountID: systemAccountID, GroupID: *summary.BoundGroupID}
 	}

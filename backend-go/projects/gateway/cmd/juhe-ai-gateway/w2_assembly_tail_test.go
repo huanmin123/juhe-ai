@@ -1263,7 +1263,7 @@ func w2cComposeWithSetting(t *testing.T, key, valueJSON string) *composition {
 	if err := business.Close(); err != nil {
 		t.Fatalf("close business after seed: %v", err)
 	}
-	composed, err := composeSystemAPI(stack.cfg, pgpool.NewRegistry(), stack.store, stack.lease, stack.auditProducer, stack.auditConfig)
+	composed, err := composeSystemAPI(stack.cfg, pgpool.NewRegistry(), stack.store, stack.lease, stack.auditProducer, stack.auditConfig, composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose: %v", err)
 	}
@@ -1337,7 +1337,7 @@ func w2cComposeChainStack(t *testing.T, upstream *httptest.Server) *composition 
 	if err := business.Close(); err != nil {
 		t.Fatalf("close business after chain seed: %v", err)
 	}
-	composed, err := composeSystemAPI(stack.cfg, pgpool.NewRegistry(), stack.store, stack.lease, stack.auditProducer, stack.auditConfig)
+	composed, err := composeSystemAPI(stack.cfg, pgpool.NewRegistry(), stack.store, stack.lease, stack.auditProducer, stack.auditConfig, composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose chain stack: %v", err)
 	}

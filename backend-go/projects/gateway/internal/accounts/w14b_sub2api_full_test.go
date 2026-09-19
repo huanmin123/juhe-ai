@@ -26,7 +26,7 @@ func TestW14BSub2APIFullFieldAdaptation(t *testing.T) {
 			map[string]any{
 				"name": "w14b-full-key", "platform": "openai", "type": "api_key",
 				"credentials": map[string]any{"api_key": "sk-src-full", "base_url": "https://api.openai.com/v1"},
-				"notes": "w14b 来源备注", "concurrency": float64(7), "priority": float64(3),
+				"notes":       "w14b 来源备注", "concurrency": float64(7), "priority": float64(3),
 				"expires_at": "2031-01-01", "proxy_key": "p1",
 			},
 			// OAuth：refresh+access+account_id 全齐（凭据归一化臂）。

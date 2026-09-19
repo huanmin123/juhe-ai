@@ -27,20 +27,20 @@ func NewCandidatePipeline(engine *Engine) *CandidatePipeline {
 // FilterCandidates implements gatewaypreauth.CandidatePipeline.
 func (p *CandidatePipeline) FilterCandidates(ctx context.Context, input gatewaypreauth.CandidateFilterInput) (gatewaypreauth.CandidateFilterResult, error) {
 	output, err := p.FilterOpenAIGatewayRequestCandidateAccounts(ctx, CandidateFilterArgs{
-		Req:                      input.Req,
-		AuditCapture:             p.engine.auditCaptureOf(input.AuditCapture),
-		UsageContext:             input.UsageContext,
-		StartedAt:                input.StartedAt,
-		RawCandidateAccounts:     input.RawCandidates,
-		ClientStrategy:           input.ClientStrategy,
-		SystemAccountID:          input.SystemAccountID,
-		APIKeyID:                 input.APIKeyID,
-		GroupID:                  input.GroupID,
-		ClientIP:                 input.ClientIP,
-		Endpoint:                 input.Endpoint,
-		BypassModelFilter:        input.BypassModelFilter,
-		RequestModelOverride:     input.RequestModelOverride,
-		RouteCoordinator:         input.RouteCoordinator,
+		Req:                  input.Req,
+		AuditCapture:         p.engine.auditCaptureOf(input.AuditCapture),
+		UsageContext:         input.UsageContext,
+		StartedAt:            input.StartedAt,
+		RawCandidateAccounts: input.RawCandidates,
+		ClientStrategy:       input.ClientStrategy,
+		SystemAccountID:      input.SystemAccountID,
+		APIKeyID:             input.APIKeyID,
+		GroupID:              input.GroupID,
+		ClientIP:             input.ClientIP,
+		Endpoint:             input.Endpoint,
+		BypassModelFilter:    input.BypassModelFilter,
+		RequestModelOverride: input.RequestModelOverride,
+		RouteCoordinator:     input.RouteCoordinator,
 		RecoverUnavailableCandidateAccounts: func(ctx context.Context) ([]AccountCandidate, error) {
 			if input.RecoverUnavailableCandidateAccounts == nil {
 				return nil, nil
@@ -106,7 +106,7 @@ func (p *CandidatePipeline) PrepareDispatchAccounts(ctx context.Context, input g
 
 // ResolveNextGroupFallbackCandidateResult adapts the two-value resolution.
 type ResolveNextGroupFallbackCandidateResult struct {
-	Found    bool
+	Found     bool
 	Candidate GroupFallbackCandidateOutput
 }
 

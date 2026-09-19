@@ -98,7 +98,6 @@ type Engine struct {
 	KeyModelStore         gatewayaccounteffects.KeyModelRuntimeStore
 	Circuits              *gatewaycircuit.CircuitService
 	APIKeyEffects         APIKeyEffectsPort
-	AccountState          AccountStateMutations
 	CodexBridge           CodexBridgePort
 	// ResponseTransformer 挂 B-4 跨协议桥响应面（Node transformUpstreamResponse
 	// driver 链；UpstreamResponseTransformer 端口定义在 ports.go）。nil 时上游

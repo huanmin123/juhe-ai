@@ -10,6 +10,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -494,7 +495,7 @@ func testAccounts(ids ...string) []AccountCandidate {
 // newTestCoordination builds the per-request coordination context.
 func newTestCoordination(t *testing.T) *RequestCoordinationContext {
 	t.Helper()
-	now := NowMs()
+	now := gatewayupstream.NowMs()
 	wallBudget, err := gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
 		RequestAcceptedAtMs: now,
 		BudgetMs:            ptrInt64(60_000),

@@ -8,18 +8,40 @@ package operationlog
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
+)
+
+const (
+	// producerQueueCapacity bounds the in-flight operation-log entries; the
+	// store is the bottleneck (SQLite single-writer / pooled PG), so the queue
+	// absorbs bursts instead of unbounded goroutine growth.
+	producerQueueCapacity = 4096
+	// producerWorkers caps concurrent store writers; renewal + persist run
+	// sequentially per entry inside one worker.
+	producerWorkers = 4
 )
 
 // Producer persists operation logs directly through the store with a held
 // owner lease (the process-wide LeaseKeeper owns the renewal lifecycle; the
 // producer only extends the same lease per record).
+//
+// Concurrency contract (2026-09-18 hardening, mirror of the F3 auditlog
+// producer): entries flow through a bounded queue drained by a fixed worker
+// pool, so a slow store cannot pile up one goroutine per entry. A full queue
+// drops the entry with a warn carrying the running drop total — Record stays
+// fire-and-forget and never blocks the business transaction.
 type Producer struct {
 	store Store
 	lease OwnerLease
 	cfg   Config
 	log   slogLogger
+
+	queue   chan Input
+	start   sync.Once
+	dropped atomic.Int64
 }
 
 type slogLogger interface {
@@ -36,43 +58,78 @@ func (p *Producer) warn(msg string, args ...any) {
 // NewProducer binds the producer to an already-held lease shared with the
 // resident F4 owner component (retention).
 func NewProducer(store Store, lease OwnerLease, cfg Config, log slogLogger) *Producer {
-	return &Producer{store: store, lease: lease, cfg: cfg, log: log}
+	return &Producer{
+		store: store,
+		lease: lease,
+		cfg:   cfg,
+		log:   log,
+		queue: make(chan Input, producerQueueCapacity),
+	}
 }
 
 // Record persists one entry asynchronously (fire-and-forget). Errors are
 // logged and swallowed: operation logs never fail the business transaction
-// (Node recordOperationLogAsync contract).
+// (Node recordOperationLogAsync contract). When the bounded queue is full the
+// entry is dropped with a warn instead of blocking the caller.
 func (p *Producer) Record(entry Input) {
 	if p == nil || p.store == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		// Extending the lease per record keeps it alive under write activity
-		// (the LeaseKeeper ticker covers the idle case). A non-positive TTL
-		// would set lease_until to the current instant and self-destruct the
-		// fence, so the renewal is skipped instead — the configured
-		// composition always passes the real owner-lease TTL.
-		if p.cfg.OwnerLease > 0 {
-			renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer renewCancel()
-			renewed, err := p.store.RenewOwnerLease(renewCtx, p.lease, p.cfg.OwnerLease)
-			if err != nil || !renewed {
-				p.warn("F4 owner lease renewal failed; dropping operation log", "error", err)
-				return
-			}
-		}
-		if _, err := p.store.Persist(ctx, p.lease, entry); err != nil {
-			p.warn("F4 Go 操作日志提交失败", "error", err)
+	p.start.Do(p.startWorkers)
+	select {
+	case p.queue <- entry:
+	default:
+		dropped := p.dropped.Add(1)
+		p.warn("F4 操作日志队列已满，丢弃本条记录", "droppedTotal", dropped, "traceID", entry.TraceID, "operationLogID", entry.ID)
+	}
+}
+
+func (p *Producer) startWorkers() {
+	for i := 0; i < producerWorkers; i++ {
+		go p.workerLoop()
+	}
+}
+
+func (p *Producer) workerLoop() {
+	for entry := range p.queue {
+		p.persistOne(entry)
+	}
+}
+
+// persistOne keeps the original write sequence (renew → persist) with panic
+// isolation: one broken entry must not take down the worker pool or the
+// process.
+func (p *Producer) persistOne(entry Input) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			p.warn("F4 操作日志持久化 panic 已隔离", "panic", recovered, "traceID", entry.TraceID, "operationLogID", entry.ID)
 		}
 	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Extending the lease per record keeps it alive under write activity
+	// (the LeaseKeeper ticker covers the idle case). A non-positive TTL
+	// would set lease_until to the current instant and self-destruct the
+	// fence, so the renewal is skipped instead — the configured
+	// composition always passes the real owner-lease TTL.
+	if p.cfg.OwnerLease > 0 {
+		renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer renewCancel()
+		renewed, err := p.store.RenewOwnerLease(renewCtx, p.lease, p.cfg.OwnerLease)
+		if err != nil || !renewed {
+			p.warn("F4 owner lease renewal failed; dropping operation log", "error", err, "traceID", entry.TraceID, "operationLogID", entry.ID)
+			return
+		}
+	}
+	if _, err := p.store.Persist(ctx, p.lease, entry); err != nil {
+		p.warn("F4 Go 操作日志提交失败", "error", err)
+	}
 }
 
 // SafeChange mirrors operation-log.service.ts safeChange (:181-192): sensitive
 // fields never record values and an emptied value shows 未设置 (Node :186-187 —
-// undefined/null/'' → '未设置', otherwise 已设置 before / 已变更 after); normal
-// fields go through normalizeSafeValue.
+// undefined/null/空字符串 → '未设置', otherwise 已设置 before / 已变更 after);
+// normal fields go through normalizeSafeValue.
 func SafeChange(field, label string, before, after any, sensitive bool) Change {
 	change := Change{Field: field, Label: label}
 	if sensitive {
@@ -87,7 +144,7 @@ func SafeChange(field, label string, before, after any, sensitive bool) Change {
 }
 
 // sensitiveAuditValue mirrors operation-log.service.ts:186-187. The emptiness
-// test is the strict Node check (`=== undefined || === null || === ''`); Go
+// test is the strict Node check (undefined / null / 空字符串 三态全等); Go
 // nil covers undefined/null (both serialize as an omitted/null JSON value).
 func sensitiveAuditValue(value any, setLabel string) string {
 	if value == nil {

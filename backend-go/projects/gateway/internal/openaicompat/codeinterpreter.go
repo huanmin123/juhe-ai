@@ -92,7 +92,7 @@ type interpreterRunnerFunc func(ctx context.Context, config CodeInterpreterConfi
 // openAICompatibleCodeInterpreterExecutorForGatewayRequest: nil unless the
 // hosted tool runtime is local_runtime and a python command is configured.
 func CodeInterpreterExecutorForRequest(config Config, store *Store, scope *CodeInterpreterScope) *CodeInterpreterExecutor {
-	config = config.withDefaults()
+	config = config.WithDefaults()
 	if config.HostedToolCodeInterpreterMode != "local_runtime" {
 		return nil
 	}
@@ -104,10 +104,10 @@ func CodeInterpreterExecutorForRequest(config Config, store *Store, scope *CodeI
 
 func newCodeInterpreterExecutor(config Config, store *Store, scope *CodeInterpreterScope) *CodeInterpreterExecutor {
 	return &CodeInterpreterExecutor{
-		config: config.withDefaults().CodeInterpreter,
+		config: config.WithDefaults().CodeInterpreter,
 		scope:  scope,
 		store:  store,
-		root:   config.withDefaults().FilesRoot,
+		root:   config.WithDefaults().FilesRoot,
 		runner: runPythonProcess,
 		now:    time.Now,
 	}

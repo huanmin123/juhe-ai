@@ -114,10 +114,10 @@ func TestW13GApplyRuntimeStateColumns(t *testing.T) {
 	changed := map[string]any{}
 	setColumn := func(column string, value any) { changed[column] = value }
 	before := patchRuntimeStateBefore{
-		cooldownUntil:     w13gNullString("old"),
-		lastErrorCode:     w13gNullString("up"),
-		lastErrorMessage:  w13gNullString("m"),
-		lastErrorTraceID:  w13gNullString("tr"),
+		cooldownUntil:              w13gNullString("old"),
+		lastErrorCode:              w13gNullString("up"),
+		lastErrorMessage:           w13gNullString("m"),
+		lastErrorTraceID:           w13gNullString("tr"),
 		cooldownRetestFailureCount: 2,
 	}
 	after := patchRuntimeState{

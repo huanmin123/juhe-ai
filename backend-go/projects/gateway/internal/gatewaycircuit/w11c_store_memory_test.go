@@ -705,7 +705,7 @@ func TestW11CMemoryEscalationAttachesAndShadows(t *testing.T) {
 	}
 	unshadowed := false
 	scopeKeyOfChild := MustScopeKey(scope)
-	for _, related := range restored.RelatedStates.slice() {
+	for _, related := range restored.RelatedStates.Slice() {
 		if related.ScopeKey == scopeKeyOfChild && related.ShadowedByIncidentID == nil {
 			unshadowed = true
 		}

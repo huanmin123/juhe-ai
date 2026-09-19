@@ -10,6 +10,8 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
 // codex 源探针 fence 结算（background_worker_codex_source_fence_settled 的
@@ -35,13 +37,10 @@ const (
 	ProbeDefaultRetentionMS = int64(5 * 60_000)
 )
 
-// ProbeSourceFence mirrors AvailabilityProbeSourceFence.
-type ProbeSourceFence struct {
-	StateKey         string
-	AccountID        string
-	SourceGeneration int64
-	SourceFenceID    string
-}
+// REFACTOR-0008 下潜：与 gatewaycircuit/probe.go 逐字节相同的 fence 词汇
+// 收敛到 shared/platform/circuitstate；fence 的校验（NormalizeSourceFence）
+// 为 jobs 侧独有，留守本包。
+type ProbeSourceFence = circuitstate.ProbeSourceFence
 
 // ProbeOutcome 取值镜像 AvailabilityProbeOutcome。
 const (
@@ -287,10 +286,8 @@ func AvailabilityProbeRuntimeKey(accountRuntimeScope, probeKind string, configRe
 
 // encodeSourceFence mirrors availability-probe-coordinator 的编码
 // （JSON [stateKey, accountId, sourceGeneration, sourceFenceId]）。
-func encodeSourceFence(fence ProbeSourceFence) string {
-	encoded, _ := json.Marshal([]any{fence.StateKey, fence.AccountID, fence.SourceGeneration, fence.SourceFenceID})
-	return string(encoded)
-}
+// REFACTOR-0008 下潜委托壳。
+func encodeSourceFence(fence ProbeSourceFence) string { return circuitstate.EncodeSourceFence(fence) }
 
 var probeFenceUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 

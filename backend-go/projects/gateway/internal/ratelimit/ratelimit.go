@@ -187,14 +187,14 @@ func (l *Limiter) IPRateLimitMiddleware(next http.Handler) http.Handler {
 // already-authenticated system account (requireAuth -> user rate limit order).
 // It returns false after writing the 429 contract.
 func (l *Limiter) AuthenticatedRateLimit(w http.ResponseWriter, r *http.Request, systemAccountID string) bool {
-	if r.URL.Path == "/health" || strings.HasSuffix(r.URL.Path, "/__aisys__/api/health") {
+	if r.URL.Path == "/health" || strings.HasSuffix(r.URL.Path, "/__aisys__/api/health") || strings.HasSuffix(r.URL.Path, "/__aisys__/health") {
 		return true
 	}
 	return l.authenticatedRateLimit(w, r, systemAccountID)
 }
 
 func (l *Limiter) ipRateLimit(w http.ResponseWriter, r *http.Request) bool {
-	if r.URL.Path == "/health" || strings.HasSuffix(r.URL.Path, "/__aisys__/api/health") {
+	if r.URL.Path == "/health" || strings.HasSuffix(r.URL.Path, "/__aisys__/api/health") || strings.HasSuffix(r.URL.Path, "/__aisys__/health") {
 		return true
 	}
 	settings, ok := l.load(w, r)

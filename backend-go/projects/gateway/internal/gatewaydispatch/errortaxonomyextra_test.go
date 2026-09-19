@@ -3,13 +3,14 @@ package gatewaydispatch
 import (
 	"context"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"testing"
 	"time"
 )
 
 // 错误分类与纯函数单元测试：errors.go / attempt.go / util.go /
 // providerprotocol.go / codexturnavoidance.go / apikeyrotation.go。
-// 断言只依赖标准库；确定性：所有时间通过注入 NowMs 控制。
+// 断言只依赖标准库；确定性：所有时间通过注入 gatewayupstream.NowMs 控制。
 
 func TestErrorTaxonomyMessagesAndCodes(t *testing.T) {
 	cases := []struct {
@@ -214,8 +215,8 @@ func TestInt64CeilDiv(t *testing.T) {
 		{5, -1, 5},
 	}
 	for _, testCase := range cases {
-		if got := int64CeilDiv(testCase.value, testCase.divisor); got != testCase.want {
-			t.Fatalf("int64CeilDiv(%d, %d) = %d, 期望 %d", testCase.value, testCase.divisor, got, testCase.want)
+		if got := gatewayupstream.Int64CeilDiv(testCase.value, testCase.divisor); got != testCase.want {
+			t.Fatalf("gatewayupstream.Int64CeilDiv(%d, %d) = %d, 期望 %d", testCase.value, testCase.divisor, got, testCase.want)
 		}
 	}
 }
@@ -277,7 +278,7 @@ func TestUtilPureHelpers(t *testing.T) {
 	if sha256HexBytes([]byte("abc")) != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
 		t.Fatalf("sha256HexBytes 结果不符: %s", sha256HexBytes([]byte("abc")))
 	}
-	if jsonCloneValue(map[string]any{"a": 1}).(map[string]any)["a"] != float64(1) {
+	if gatewayupstream.JSONCloneValue(map[string]any{"a": 1}).(map[string]any)["a"] != float64(1) {
 		t.Fatal("jsonCloneValue 应保持字段")
 	}
 }
@@ -295,7 +296,7 @@ func TestProviderProtocolTokens(t *testing.T) {
 	if isOpenAIProtocolProfileWith("anthropic", "v1") {
 		t.Fatal("anthropic 不是 openai 协议画像")
 	}
-	if !isOpenAIProtocolProfileSecret("OpenAI", " V1 ") {
+	if !gatewayupstream.IsOpenAIProtocolProfileSecret("OpenAI", " V1 ") {
 		t.Fatal("大小写与空白应归一化")
 	}
 	account := UpstreamHeaderAccount{ProtocolCode: "openai", ProtocolVersion: "v1"}
@@ -336,9 +337,9 @@ func TestCodexTurnAvoidanceHelpers(t *testing.T) {
 
 func TestCooldownUntilActiveUsesInjectedClock(t *testing.T) {
 	base := int64(1_000)
-	previous := NowMs
-	NowMs = func() int64 { return base }
-	t.Cleanup(func() { NowMs = previous })
+	previous := gatewayupstream.NowMs
+	gatewayupstream.NowMs = func() int64 { return base }
+	t.Cleanup(func() { gatewayupstream.NowMs = previous })
 
 	// RFC3339 只有秒精度，未来/过去时间用整秒偏移构造。
 	future := time.UnixMilli(base + 60_000).UTC().Format(time.RFC3339)

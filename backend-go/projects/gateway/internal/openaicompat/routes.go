@@ -5,17 +5,8 @@ import (
 	"strings"
 )
 
-// GatewayScope mirrors the apiKey subset of the Node gateway runtime that the
-// five modules consume: scope binding for every store query.
-type GatewayScope struct {
-	SystemAccountID string
-	APIKeyID        string
-}
-
-// ScopeResolver supplies the gateway runtime scope for a request (the Go
-// equivalent of req.gatewayRuntime set by preResolveGatewayRuntime). Returning
-// nil mirrors a missing/invalid runtime and renders the 401 contract.
-type ScopeResolver func(*http.Request) *GatewayScope
+// GatewayScope / ScopeResolver live in openaicompatcore (阶段 A-1); the
+// aliases stay resolvable from this package via aliases.go.
 
 // Deps wires the openaicompat route family and executors.
 type Deps struct {
@@ -33,9 +24,9 @@ type Deps struct {
 	Warn func(err error, fields map[string]any)
 }
 
-func (d *Deps) maxFileBytes() int64 { return d.Config.withDefaults().MaxFileBytes }
+func (d *Deps) maxFileBytes() int64 { return d.Config.WithDefaults().MaxFileBytes }
 
-func (d *Deps) filesRoot() string { return d.Config.withDefaults().FilesRoot }
+func (d *Deps) filesRoot() string { return d.Config.WithDefaults().FilesRoot }
 
 func (d *Deps) scope(r *http.Request) *GatewayScope {
 	if d.Scope == nil {
@@ -50,7 +41,7 @@ func (d *Deps) requireScope(w http.ResponseWriter, r *http.Request) *GatewayScop
 	if scope == nil {
 		err := badRequest("缺少或无效的 API Key", "invalid_api_key")
 		err.StatusCode = http.StatusUnauthorized
-		err.write(w)
+		err.Write(w)
 		return nil
 	}
 	return scope
@@ -65,7 +56,7 @@ func handle(w http.ResponseWriter, run func() error) {
 		return
 	}
 	if requestErr, ok := err.(*RequestError); ok {
-		requestErr.write(w)
+		requestErr.Write(w)
 		return
 	}
 	if indexingErr, ok := err.(*IndexingError); ok {

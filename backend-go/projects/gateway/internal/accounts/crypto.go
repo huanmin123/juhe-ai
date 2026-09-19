@@ -13,28 +13,27 @@
 package accounts
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 )
 
-// EncryptJSON delegates to the shared platform accountcrypto envelope (the
-// single AES-256-GCM v1 copy shared with the apikeys slice and jobs
-// oauthrefresh). Existing Node accounts.credentials_encrypted rows decrypt
-// byte-for-byte through DecryptJSON.
+// EncryptJSON delegates to the neutral accountscore envelope forwarder (the
+// shared platform accountcrypto copy; REFACTOR-0005 阶段 0 下沉后根包保留同名
+// 转发).
 func EncryptJSON(secret string, value any) (string, error) {
-	return accountcrypto.EncryptJSON(secret, value)
+	return accountscore.EncryptJSON(secret, value)
 }
 
-// DecryptJSON delegates to the shared platform accountcrypto envelope: only
+// DecryptJSON delegates to the neutral accountscore envelope forwarder: only
 // the v1 envelope is accepted and the GCM tag is verified before JSON
 // decoding.
 func DecryptJSON(secret string, envelope string, target any) error {
-	return accountcrypto.DecryptJSON(secret, envelope, target)
+	return accountscore.DecryptJSON(secret, envelope, target)
 }
 
 // HashSecret mirrors hashSecret: sha256 hex digest (credential fingerprint
@@ -73,8 +72,7 @@ func NewAccountID() string {
 func NewTagID() string { return newID("acctag") }
 
 func newID(prefix string) string {
-	buf := make([]byte, 4)
-	_, _ = rand.Read(buf)
+	// 随机段收敛到 shared/platform/idgen（格式不变：<prefix>_<ms>_<8hex>）。
 	return prefix + "_" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "_" +
-		hex.EncodeToString(buf)[:8]
+		idgen.RandomHex(4)[:8]
 }

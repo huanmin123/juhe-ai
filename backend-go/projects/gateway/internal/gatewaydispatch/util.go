@@ -4,21 +4,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"strings"
 )
 
-// decodeJSONObject parses a JSON object payload into a map; ok=false when
-// the payload is not a JSON object (mirrors the isPlainObject guard).
-func decodeJSONObject(raw []byte) (map[string]any, bool) {
-	var parsed any
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, false
-	}
-	object, ok := parsed.(map[string]any)
-	return object, ok
-}
+// REFACTOR-0006 阶段 A：decodeJSONObject / trimString / jsonCloneValue 随
+// 传输族迁入 gatewayupstream（helpers.go），本包经 gatewayupstream_bridge.go
+// 的私有转发保持消费点零改动；阶段 B ports 下沉时随 util.go 归位。
 
 // isPlainObjectValue mirrors the Node isPlainObject guard.
 func isPlainObjectValue(value any) bool {
@@ -35,28 +26,8 @@ func uuid4String() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }
 
-// trimString mirrors the Node `.trim()`-based normalization used throughout
-// the dispatch pipeline (empty string stays empty).
-func trimString(value string) string {
-	return strings.TrimSpace(value)
-}
-
 // sha256HexBytes mirrors Node createHash('sha256')...digest('hex').
 func sha256HexBytes(payload []byte) string {
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:])
-}
-
-// jsonCloneValue deep-clones through a JSON round trip (mirrors structured
-// clone usage in the codex normalizer).
-func jsonCloneValue(value any) any {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var cloned any
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		return nil
-	}
-	return cloned
 }

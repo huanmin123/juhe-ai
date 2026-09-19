@@ -89,7 +89,7 @@ func NewImageGenerationExecutor(config Config, authorization string, client HTTP
 	if strings.TrimSpace(authorization) == "" {
 		return nil
 	}
-	config = config.withDefaults()
+	config = config.WithDefaults()
 	provider := ImageGenerationProviderRuntime{
 		Endpoint:      fmt.Sprintf("http://127.0.0.1:%d/v1/images/generations", config.Port),
 		Authorization: authorization,

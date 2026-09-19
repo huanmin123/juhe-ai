@@ -290,6 +290,46 @@ func (f *fakeShared) snapshot(topic string) int64 {
 	return f.versions[topic]
 }
 
+// blockedShared 阻塞 GetVersion 直到测试放行，用于证明 SyncFromShared 的网络
+// IO 不持有 b.mu：阻塞期间 Version()（RLock）与 Invalidate()（Lock）必须都能
+// 完成（旧实现在写锁内做 Redis IO，锁竞争方会排队到 RTT 结束）。
+type blockedShared struct {
+	release chan struct{}
+}
+
+func (s *blockedShared) GetVersion(_ context.Context, _ string) (int64, error) {
+	<-s.release
+	return 7, nil
+}
+
+func (s *blockedShared) PublishVersion(_ context.Context, _ string, version int64) (int64, error) {
+	return version, nil
+}
+
+func TestSyncFromSharedDoesNotHoldBusLockDuringIO(t *testing.T) {
+	shared := &blockedShared{release: make(chan struct{})}
+	bus := New(nil)
+	bus.SetSharedStore(shared)
+
+	done := make(chan error, 1)
+	go func() { done <- bus.SyncFromShared(context.Background(), TopicGatewayRuntime) }()
+
+	started := time.Now()
+	bus.Version(TopicGatewayRuntime)
+	bus.Invalidate(TopicGatewayRuntime, "w_test_lock_free_io")
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("bus operations blocked %s behind SyncFromShared IO", elapsed)
+	}
+
+	close(shared.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if bus.Version(TopicGatewayRuntime) != 7 {
+		t.Fatalf("version = %d, want merged 7", bus.Version(TopicGatewayRuntime))
+	}
+}
+
 // observingShared wraps a shared store and records every effective version so
 // the monotonicity race test can observe the published sequence. The wrapper
 // lock keeps the observation in store-commit order (two concurrent publishers

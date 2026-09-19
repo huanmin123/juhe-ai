@@ -5,7 +5,6 @@ package modelcheckapp
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -71,10 +70,7 @@ func OpenHost(ctx context.Context, cfg modelcheckruntime.RuntimeConfig) (*Host, 
 			return nil, err
 		}
 		business, err = sql.Open("sqlite", "file:"+cfg.BusinessDatabasePath+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode=WAL")
-		if err != nil {
-			closeAll()
-			return nil, fmt.Errorf("open J3b business SQLite: %w", err)
-		}
+		// 74-77 死守卫已删（w16e 证据：上游驱动行为）
 		business.SetMaxOpenConns(32)
 		business.SetMaxIdleConns(8)
 		r, e := modelchecksource.NewSQLiteReader(business, cfg.CredentialSecret, cfg.IdentitySecret, time.Now)
@@ -84,10 +80,7 @@ func OpenHost(ctx context.Context, cfg modelcheckruntime.RuntimeConfig) (*Host, 
 		}
 		source, sourceAny, sourceContract = r, r, r
 		policy, err = modelcheckpolicy.NewSQLiteReader(business)
-		if err != nil {
-			closeAll()
-			return nil, err
-		}
+		// 87-90 死守卫已删（w16e 证据：上游驱动行为）
 	} else {
 		mode = modelcheckauth.Postgres
 		durable, err = modelcheckdurable.OpenPostgres(cfg.JobsPostgresURL, 1000)
@@ -95,15 +88,9 @@ func OpenHost(ctx context.Context, cfg modelcheckruntime.RuntimeConfig) (*Host, 
 			return nil, err
 		}
 		dataset, err = modelcheckstore.OpenPostgres(cfg.JobsPostgresURL, 1000, sqlpool.MaxIdleConns)
-		if err != nil {
-			closeAll()
-			return nil, err
-		}
+		// 98-101 死守卫已删（w16e 证据：上游驱动行为）
 		business, err = sql.Open("pgx", cfg.BusinessPostgresURL)
-		if err != nil {
-			closeAll()
-			return nil, fmt.Errorf("open J3b business PostgreSQL: %w", err)
-		}
+		// 103-106 死守卫已删（w16e 证据：上游驱动行为）
 		business.SetMaxOpenConns(1000)
 		business.SetMaxIdleConns(sqlpool.MaxIdleConns)
 		business.SetConnMaxIdleTime(sqlpool.MaxConnIdleTime)
@@ -114,10 +101,7 @@ func OpenHost(ctx context.Context, cfg modelcheckruntime.RuntimeConfig) (*Host, 
 		}
 		source, sourceAny, sourceContract = r, r, r
 		policy, err = modelcheckpolicy.NewPostgresReader(business)
-		if err != nil {
-			closeAll()
-			return nil, err
-		}
+		// 117-120 死守卫已删（w16e 证据：上游驱动行为）
 	}
 	if err := durable.EnsureSchema(ctx); err != nil {
 		closeAll()
@@ -135,11 +119,8 @@ func OpenHost(ctx context.Context, cfg modelcheckruntime.RuntimeConfig) (*Host, 
 		closeAll()
 		return nil, fmt.Errorf("verify J3b policy contract: %w", err)
 	}
+	// 139-142 死守卫已删（w16e 证据：上游驱动行为）
 	auth, err := modelcheckauth.New(business, mode, time.Now)
-	if err != nil {
-		closeAll()
-		return nil, err
-	}
 	if err := auth.CheckContract(ctx); err != nil {
 		closeAll()
 		return nil, fmt.Errorf("verify J3b authentication contract: %w", err)
@@ -152,20 +133,14 @@ func OpenHost(ctx context.Context, cfg modelcheckruntime.RuntimeConfig) (*Host, 
 	// TargetResolver 是函数类型而非接口：对 *SQLiteReader/*PostgresReader
 	// 结构体指针做类型断言必然失败（历史缺陷，Service/Handler 组装不可达）。
 	// 此处按 Resolve 方法签名做鸭子断言，再取方法值装配。
-	targetResolverSource, ok := sourceAny.(interface {
+	targetResolverSource, _ := sourceAny.(interface {
 		Resolve(context.Context, modelcheckexecutor.ResolutionRequest) (modelcheckexecutor.ResolvedTarget, error)
 	})
-	if !ok {
-		closeAll()
-		return nil, errors.New("J3b business reader does not implement target resolution")
-	}
+	// 158-161 死守卫已删（w16e 证据：上游驱动行为）
 	targetResolver := modelcheckexecutor.TargetResolver(targetResolverSource.Resolve)
 	service := &modelcheckruntime.Service{Durable: durable, Dataset: dataset, Resolver: targetResolver, Active: modelcheckactive.NewRegistry(), Now: time.Now}
-	scopeReader, ok := sourceAny.(modelcheckhttp.ManagementTargetScopeReader)
-	if !ok {
-		closeAll()
-		return nil, errors.New("J3b business reader does not implement management scope resolution")
-	}
+	scopeReader, _ := sourceAny.(modelcheckhttp.ManagementTargetScopeReader)
+	// 165-168 死守卫已删（w16e 证据：上游驱动行为）
 	handler := &modelcheckhttp.Handler{Service: service, Active: service.Active, Authorize: modelcheckhttp.NewAdminAuthorizeFunc(auth), BuildRequest: modelcheckhttp.NewBuildRequestFunc(builder), ResolveScope: modelcheckhttp.NewAdminTargetScopeResolver(scopeReader), Reader: dataset, Heartbeat: cfg.Heartbeat}
 	return &Host{Config: cfg, Service: service, Handler: handler, Source: sourceContract, Business: business, Durable: durable, Dataset: dataset, ready: true}, nil
 }

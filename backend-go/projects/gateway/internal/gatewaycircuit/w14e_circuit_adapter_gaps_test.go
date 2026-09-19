@@ -218,66 +218,9 @@ func TestW14EDispatchWaitAdapterAuditAndOptions(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// suppression.go：降级计数、运行时降级激活与清理分支。
-// ---------------------------------------------------------------------------
-
-func TestW14ESuppressionDegradationArms(t *testing.T) {
-	now := int64(1_000_000)
-	clock := &now
-	store := NewLocalSuppressionStore(LocalSuppressionStoreOptions{Now: func() int64 { return *clock }})
-
-	// shouldAdvanceFailureCount=false（无抑制）时保留既有计数。
-	first := store.DegradeForGatewayFailure("w14e-deg", "acc", "transport:connect failed")
-	if first.Status == "" {
-		t.Fatalf("first degradation = %+v", first)
-	}
-	// 无活跃抑制的重复降级不推进计数（observation 分支）。
-	observation := store.DegradeForGatewayFailure("w14e-deg", "acc", "transport:read interrupted")
-	if observation.FailureCount == nil || *observation.FailureCount < 1 {
-		t.Fatalf("observation = %+v", observation)
-	}
-	// 运行时降级激活：显式 since/failureCount 覆盖与阈值钳制。
-	since := *clock - 5_000
-	count := int64(9)
-	activated := store.ActivateRuntimeDegradation("w14e-runtime", "acc", "runtime degraded", &since, &count)
-	if activated.FailureCount == nil || *activated.FailureCount != 9 {
-		t.Fatalf("activated = %+v", activated)
-	}
-	defaultActivated := store.ActivateRuntimeDegradation("w14e-runtime-2", "acc", "runtime degraded", nil, nil)
-	if defaultActivated.Status == "" {
-		t.Fatalf("default activated = %+v", defaultActivated)
-	}
-	// 快照包含活跃降级。
-	snapshot := store.SnapshotAvailability(nil)
-	if len(snapshot) == 0 {
-		t.Fatal("snapshot must contain degradations")
-	}
-	// canUseProcessLocal=false：所有入口清空并返回空结果。
-	disabled := NewLocalSuppressionStore(LocalSuppressionStoreOptions{Now: func() int64 { return *clock }, CanUseProcessLocal: func() bool { return false }})
-	disabled.ActivateRuntimeDegradation("w14e-x", "acc", "r", nil, nil)
-	if got := disabled.SnapshotAvailability(nil); len(got) != 0 {
-		t.Fatalf("disabled snapshot = %v", got)
-	}
-	if disabled.ClearDegradation("w14e-x") {
-		t.Fatal("disabled clear must be false")
-	}
-	disabled.AgeDegradationForTest("w14e-x", 1_000)
-	if got := disabled.CountDegradations(); got != 0 {
-		t.Fatalf("disabled count = %d", got)
-	}
-	// 过期降级清理：不活跃且超出窗口的降级被清除，活跃降级保留。
-	*clock += 6 * 60_000
-	if got := store.CountDegradations(); got != 2 {
-		t.Fatalf("active degradations = %d", got)
-	}
-	if !store.ClearDegradation("w14e-runtime") {
-		t.Fatal("clear degradation must remove an active entry")
-	}
-	if got := store.CountDegradations(); got != 1 {
-		t.Fatalf("after clear degradations = %d", got)
-	}
-}
+// TestW14ESuppressionDegradationArms 已随 DegradeForGatewayFailure /
+// ActivateRuntimeDegradation / ClearDegradation 写面退场删除（生产写面
+// 退场，见 suppression.go 顶部注记）。
 
 func TestW14ESuppressionFilterWithoutPredicate(t *testing.T) {
 	now := int64(1_000_000)

@@ -45,6 +45,10 @@ type chainProviderDriver struct {
 	// request-override capability resolution (nil keeps capabilities
 	// unresolved and the overrides inert).
 	gptOverrideCatalog gatewaydispatch.GptRequestOverrideModelCatalog
+	// bodyParser materializes the parsed JSON object once per request so the
+	// dispatch loop stops re-parsing the full body per candidate attempt
+	// (nil keeps the per-attempt driver-side parse fallback).
+	bodyParser *gatewaybody.JSONParser
 }
 
 func newChainProviderDriver() *chainProviderDriver {
@@ -57,13 +61,25 @@ func newChainProviderDriver() *chainProviderDriver {
 }
 
 // newChainProviderDriverWithCache wires the runtime-cache-backed provider model
-// catalog into the D-151 capability resolution.
-func newChainProviderDriverWithCache(cache *gatewayruntimecache.Service) *chainProviderDriver {
+// catalog into the D-151 capability resolution and the shared bounded body
+// parser into the once-per-request body materialization.
+func newChainProviderDriverWithCache(cache *gatewayruntimecache.Service, bodyParser *gatewaybody.JSONParser) *chainProviderDriver {
 	driver := newChainProviderDriver()
 	if cache != nil {
 		driver.gptOverrideCatalog = chainGptRequestOverrideModelCatalog{cache: cache}
 	}
+	driver.bodyParser = bodyParser
 	return driver
+}
+
+// materializedParsedJSONObjectBody prefers the request-scoped parse cache and
+// materializes once through the shared bounded parser on first need; the map
+// result is then cached on the gateway body request, so every candidate
+// attempt reuses one parse instead of re-Unmarshal-ing the full raw body.
+// nil means "not a materializable JSON object" and keeps the driver-side
+// per-attempt parseJSONBodyBytes fallback exactly as before.
+func (d *chainProviderDriver) materializedParsedJSONObjectBody(req *gatewaypreauth.GatewayRequest) map[string]any {
+	return req.MaterializedParsedJSONObjectBody(d.bodyParser)
 }
 
 // chainGptRequestOverrideModelCatalog adapts *gatewayruntimecache.Service to
@@ -223,13 +239,14 @@ func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
 		}
 		applyOpenAIClientCompatibilityHeaders(headers, req, modelOverride, true)
 	} else if modelMapping != nil {
+		parsedBody := d.materializedParsedJSONObjectBody(req)
 		transformed, err := d.openai.BuildUpstreamRequest(gatewayproto.BuildUpstreamRequestInput{
 			Method:              req.MethodUpper(),
 			ClientPathAndQuery:  req.PathAndQuery(),
 			Body:                body,
 			Header:              req.HTTP.Header,
-			ParsedBody:          req.ParsedJSONObjectBody(),
-			ParsedBodyAvailable: req.ParsedJSONObjectBody() != nil,
+			ParsedBody:          parsedBody,
+			ParsedBodyAvailable: parsedBody != nil,
 			ModelMapping: &gatewayproto.ResolvedModelMapping{
 				SourceModel:            modelMapping.SourceModel,
 				SourceEndpointFamily:   modelMapping.SourceEndpointFamily,

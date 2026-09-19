@@ -78,10 +78,10 @@ func TestPerformUpstreamRequestAttemptAppliesResponseTransformer(t *testing.T) {
 	engine := newTransformTestEngine(transformer)
 	request := newBridgeTransformRequest(t, `{"model":"m"}`)
 	response, err := engine.PerformUpstreamRequestAttempt(context.Background(), AttemptInput{
-		Req:     request,
-		Account: AccountCandidate{ID: "acc-1"},
-		UpstreamURL: upstream.URL,
-		Headers: http.Header{},
+		Req:            request,
+		Account:        AccountCandidate{ID: "acc-1"},
+		UpstreamURL:    upstream.URL,
+		Headers:        http.Header{},
 		TimeoutProfile: gatewayrouting.GatewayTimeoutProfile{TimeoutsDisabled: true},
 	})
 	if err != nil {

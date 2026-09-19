@@ -118,6 +118,31 @@ func (req *GatewayRequest) ParsedJSONObjectBody() map[string]any {
 	return gatewaybody.GatewayJSONObjectBody(req.Body)
 }
 
+// MaterializedParsedJSONObjectBody returns the parsed JSON object body,
+// materializing it once through the shared bounded parser on first use.
+// Later calls hit the request-scoped parse cache (gatewaybody.Request keeps
+// parsedAvailable/parsedBody), so per-candidate dispatch attempts stop re-
+// Unmarshal-ing the full raw body. A nil parser, an empty body, a parse
+// failure or a non-object JSON body returns nil and leaves the caller's
+// previous driver-side fallback behavior untouched.
+func (req *GatewayRequest) MaterializedParsedJSONObjectBody(parser *gatewaybody.JSONParser) map[string]any {
+	if req == nil || req.Body == nil {
+		return nil
+	}
+	if object := req.ParsedJSONObjectBody(); object != nil {
+		return object
+	}
+	if parser == nil || len(req.Body.RawBody) == 0 {
+		return nil
+	}
+	value, err := parser.ParseRequestJSONBody(req.Body.RequestContext(), req.Body, 0)
+	if err != nil || value == nil {
+		return nil
+	}
+	object, _ := value.(map[string]any)
+	return object
+}
+
 // gatewayRequestPathAndQuery mirrors gatewayanthropic.RequestPathAndQuery.
 func gatewayRequestPathAndQuery(r *http.Request) string {
 	if r == nil || r.URL == nil {

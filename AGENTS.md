@@ -5,7 +5,7 @@
 - 本文件只承担项目级导航、核心业务边界和高频事件入口，不复制专题文档正文。
 - 具体架构、功能、前后端实现、测试、问题、重构、迁移和报告规则以 `docs/` 下对应权威文档为准。
 - 本文件不自动触发生产部署或线上运维流程；只有用户主动提出生产操作并明确提供适用资料后，才读取和执行对应范围内的外部操作规范。
-- 后端为 Go 三项目（`backend-go/projects/{gateway,jobs,maintenance}`）；原 Node 后端（`backend/`）已完成 Node→Go 全量迁移并归档至 `migration-backup/node/final-archive/`（不得恢复、修改或运行），运行事实以 Go 实现为准。
+- 后端为 Go 三项目（`backend-go/projects/{gateway,jobs,maintenance}`）；原 Node 后端（`backend/`）已完成 Node→Go 全量迁移并归档至 `migration-backup/node/final-archive/`（不得恢复、修改或运行），运行事实以 Go 实现为准。代码归档不等于生产切流完成：生产运行态当前为 K3s 三容器混合形态（`node-runtime` 仍现役 Web/API/网关），运行态事实以平台配置仓 `apps/juhe-ai` 为准，go-only 切流是待完成里程碑。
 
 ## 项目定位
 

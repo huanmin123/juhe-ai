@@ -12,9 +12,7 @@ package announcements
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +23,8 @@ import (
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 )
 
 var (
@@ -402,11 +402,8 @@ func (s *Store) stamp() string {
 }
 
 func newID() string {
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return fmt.Sprintf("ann_%d_%d", time.Now().UnixNano(), idSequence.Add(1))
-	}
-	return "ann_" + hex.EncodeToString(raw[:]) + fmt.Sprintf("_%d", idSequence.Add(1))
+	// 随机段收敛到 shared/platform/idgen（格式不变：ann_<16hex>_<seq>）。
+	return "ann_" + idgen.RandomHex(8) + fmt.Sprintf("_%d", idSequence.Add(1))
 }
 
 func (s *Store) ListPublicAnnouncements(ctx context.Context, systemAccountID string, limit int) ([]PublicListItem, error) {

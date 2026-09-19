@@ -68,7 +68,7 @@ func TestW14BScheduleExceptionAndOccurrenceArms(t *testing.T) {
 		t.Fatal("空 daysOfWeek 应报错")
 	}
 	if _, err := NormalizeSchedule(map[string]any{"enabled": true, "mode": "allow_windows",
-		"windows":  []any{map[string]any{"start": "18:00", "end": "09:00", "daysOfWeek": []any{1}}},
+		"windows":   []any{map[string]any{"start": "18:00", "end": "09:00", "daysOfWeek": []any{1}}},
 		"dateRange": map[string]any{"startDate": "2026-03-01", "endDate": "bad"}}); err == nil {
 		t.Fatal("非法结束日期应报错")
 	}
@@ -87,7 +87,7 @@ func TestW14BBatchEffectsFamilyArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = env.store.advanceBatchDispatchRevisionFamily(ctx, tx, batchDispatchRevision{
-		accountID: "acc-w14b-fx", transitionID: "w14b-fx-1", nowMS: time.Now().UnixMilli(),
+		AccountID: "acc-w14b-fx", TransitionID: "w14b-fx-1", NowMS: time.Now().UnixMilli(),
 	})
 	if err != nil {
 		_ = tx.Rollback()
@@ -102,7 +102,7 @@ func TestW14BBatchEffectsFamilyArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = env.store.advanceBatchDispatchRevisionFamily(ctx, tx2, batchDispatchRevision{
-		accountID: "acc-w14b-fx", transitionID: "w14b-fx-1", nowMS: time.Now().UnixMilli(),
+		AccountID: "acc-w14b-fx", TransitionID: "w14b-fx-1", NowMS: time.Now().UnixMilli(),
 	})
 	if err != nil {
 		_ = tx2.Rollback()
@@ -117,7 +117,7 @@ func TestW14BBatchEffectsFamilyArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = env.store.advanceBatchDispatchRevisionFamily(ctx, tx3, batchDispatchRevision{
-		accountID: "acc-w14b-fx-none", transitionID: "w14b-fx-2", nowMS: time.Now().UnixMilli(),
+		AccountID: "acc-w14b-fx-none", TransitionID: "w14b-fx-2", NowMS: time.Now().UnixMilli(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "AI 账户不存在") {
 		t.Fatalf("缺失账户应报错：%v", err)

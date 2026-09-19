@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 )
@@ -308,14 +309,14 @@ func TestSanitizePreparedCodexResponsesHistoryForAccount(t *testing.T) {
 		t.Fatal("无 sanitizer 透传")
 	}
 	// sanitizer 改写 input。
-	previous := SanitizeCodexHistory
-	SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
+	previous := gatewayoauthcodex.SanitizeCodexHistory
+	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
 		if options.TargetScopeKey != "account:a-1" {
 			t.Fatalf("scope key = %q", options.TargetScopeKey)
 		}
 		return CodexHistorySanitizeResult{Items: []any{"sanitized"}, Changed: true}
 	}
-	t.Cleanup(func() { SanitizeCodexHistory = previous })
+	t.Cleanup(func() { gatewayoauthcodex.SanitizeCodexHistory = previous })
 	sanitized := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], []byte(`{"model":"gpt-test","input":[{"role":"user"}]}`), "codex_responses")
 	parsed := mustJSONObject(t, string(sanitized))
 	if parsed["input"].([]any)[0] != "sanitized" {
@@ -334,7 +335,7 @@ func TestSanitizePreparedCodexResponsesHistoryForAccount(t *testing.T) {
 		t.Fatal("input 非数组透传")
 	}
 	// sanitizer 未改写 → 原文。
-	SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
+	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
 		return CodexHistorySanitizeResult{Items: items, Changed: false}
 	}
 	if got := engine.SanitizePreparedCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], original, "codex_responses"); string(got) != string(original) {
@@ -349,11 +350,11 @@ func TestBuildPreparedUpstreamRequestPartsAppliesSanitizerAndTier(t *testing.T) 
 	engine.Usage = &fakeUsage{}
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
 	req.Body = newTestRequestBody(t, `{"model":"gpt-test","input":[],"service_tier":"flex","reasoning_effort":"low"}`)
-	previous := SanitizeCodexHistory
-	SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
+	previous := gatewayoauthcodex.SanitizeCodexHistory
+	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
 		return CodexHistorySanitizeResult{Items: []any{"clean"}, Changed: true}
 	}
-	t.Cleanup(func() { SanitizeCodexHistory = previous })
+	t.Cleanup(func() { gatewayoauthcodex.SanitizeCodexHistory = previous })
 	parts, err := engine.BuildPreparedUpstreamRequestParts(context.Background(), req, testAccounts("a-1")[0], testUsageContext(), "codex_responses")
 	if err != nil {
 		t.Fatalf("BuildPreparedUpstreamRequestParts: %v", err)
@@ -461,11 +462,11 @@ func TestSanitizeOpenAIOAuthCodexHistoryHook(t *testing.T) {
 	// input 非数组不处理。
 	sanitizeOpenAIOAuthCodexHistory(map[string]any{"input": "text"}, "a-1")
 	// 注入 sanitizer 后改写。
-	previous := SanitizeCodexHistory
-	SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
+	previous := gatewayoauthcodex.SanitizeCodexHistory
+	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
 		return CodexHistorySanitizeResult{Items: []any{"x"}, Changed: true}
 	}
-	t.Cleanup(func() { SanitizeCodexHistory = previous })
+	t.Cleanup(func() { gatewayoauthcodex.SanitizeCodexHistory = previous })
 	target := map[string]any{"input": []any{"a"}}
 	sanitizeOpenAIOAuthCodexHistory(target, "a-1")
 	if target["input"].([]any)[0] != "x" {

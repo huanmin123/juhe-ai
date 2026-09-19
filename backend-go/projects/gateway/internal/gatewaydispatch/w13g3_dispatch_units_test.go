@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -28,35 +29,6 @@ import (
 // ---------------------------------------------------------------------------
 // handleUpstreamAttemptError 直测补支
 // ---------------------------------------------------------------------------
-
-// w13g3AccountState 记录账户状态突变调用。
-type w13g3AccountState struct {
-	markErr        error
-	markCalls      int
-	markReason     string
-	suppressCalled bool
-}
-
-func (a *w13g3AccountState) SuppressLocally(account AccountCandidate, settings gatewaySettingsType, message string) LocalSuppression {
-	a.suppressCalled = true
-	return LocalSuppression{}
-}
-
-func (a *w13g3AccountState) RecordFailureForPrecheck(ctx context.Context, account AccountCandidate, settings gatewaySettingsType, input PrecheckFailureInput) {
-}
-
-func (a *w13g3AccountState) ApplyErrorHandlingWithCacheInvalidation(ctx context.Context, account AccountCandidate, input AccountErrorInput) error {
-	return nil
-}
-
-func (a *w13g3AccountState) MarkTemporaryUnavailableWithCacheInvalidation(ctx context.Context, account AccountCandidate, message, reason string) (bool, error) {
-	a.markCalls++
-	a.markReason = reason
-	if a.markErr != nil {
-		return false, a.markErr
-	}
-	return true, nil
-}
 
 // w13g3ErrorDispatcher 在请求错误处理时注入失败。
 type w13g3ErrorDispatcher struct {
@@ -87,33 +59,15 @@ func (d *w13g3ErrorDispatcher) IsOpaqueUpstreamFailoverAllowed(req *gatewaypreau
 	return d.inner.IsOpaqueUpstreamFailoverAllowed(req)
 }
 
-func TestW13g3AttemptErrorUnsafeURLMarksAccount(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		markErr error
-	}{
-		{"marks temporary unavailable", nil},
-		{"mark error surfaces", errW13g3},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newAttemptErrorHarness(t)
-			state := &w13g3AccountState{markErr: tc.markErr}
-			h.engine.AccountState = state
-			failure := &UnsafeResolvedUpstreamURLError{Message: "unsafe dns"}
-			_, kind, stop, err := h.errorContext(testAccounts("a-1")[0], failure, nil)
-			if tc.markErr != nil {
-				if !errors.Is(err, errW13g3) {
-					t.Fatalf("expected mark error, got %v", err)
-				}
-				return
-			}
-			if kind != errorKindRethrow || stop.rethrown != failure {
-				t.Fatalf("unsafe url must rethrow: kind=%v err=%v", kind, err)
-			}
-			if state.markCalls != 1 || state.markReason != "unsafe_resolved_upstream_url" {
-				t.Fatalf("mark calls = %d reason = %q", state.markCalls, state.markReason)
-			}
-		})
+// 原 TestW13g3AttemptErrorUnsafeURLMarksAccount 断言的账户临时不可用标记
+// 已随 engine.AccountState 端口删除（生产组合根按设计不装配，分支受 nil
+// 守卫从未执行）；本用例改断言当前语义：unsafe URL 直接 rethrow。
+func TestW13g3AttemptErrorUnsafeURLRethrows(t *testing.T) {
+	h := newAttemptErrorHarness(t)
+	failure := &UnsafeResolvedUpstreamURLError{Message: "unsafe dns"}
+	_, kind, stop, err := h.errorContext(testAccounts("a-1")[0], failure, nil)
+	if kind != errorKindRethrow || stop.rethrown != failure || err != nil {
+		t.Fatalf("unsafe url must rethrow: kind=%v stop=%v err=%v", kind, stop, err)
 	}
 }
 
@@ -239,26 +193,26 @@ func (c *w13g3Counter) NextIndex(ctx context.Context, accountID, scope string, t
 // ---------------------------------------------------------------------------
 
 func TestW13g3RollingCaptureCompaction(t *testing.T) {
-	capture := &rollingBufferCapture{limit: 1 << 20}
-	capture.push([]byte("ab"))
-	if capture.headIndex != 0 {
+	capture := &rollingBufferCapture{Limit: 1 << 20}
+	capture.Push([]byte("ab"))
+	if capture.HeadIndex != 0 {
 		t.Fatal("compact at head 0 must be a no-op")
 	}
 	// headIndex 越界 → 清空。
-	empty := &rollingBufferCapture{chunks: nil, headIndex: 3, limit: 10}
-	empty.compactConsumedChunks()
-	if empty.chunks != nil || empty.headIndex != 0 {
+	empty := &rollingBufferCapture{Chunks: nil, HeadIndex: 3, Limit: 10}
+	empty.CompactConsumedChunks()
+	if empty.Chunks != nil || empty.HeadIndex != 0 {
 		t.Fatalf("out-of-range compaction = %+v", empty)
 	}
 	// 大头索引 → 截断复制。
-	big := &rollingBufferCapture{limit: 1 << 20}
+	big := &rollingBufferCapture{Limit: 1 << 20}
 	for i := 0; i < 80; i++ {
-		big.push([]byte("x"))
+		big.Push([]byte("x"))
 	}
-	big.headIndex = 70
-	big.compactConsumedChunks()
-	if big.headIndex != 0 || len(big.chunks) != 10 {
-		t.Fatalf("compaction = head %d chunks %d", big.headIndex, len(big.chunks))
+	big.HeadIndex = 70
+	big.CompactConsumedChunks()
+	if big.HeadIndex != 0 || len(big.Chunks) != 10 {
+		t.Fatalf("compaction = head %d chunks %d", big.HeadIndex, len(big.Chunks))
 	}
 }
 
@@ -341,39 +295,39 @@ func TestW13g3MappingAllowedBySupportedModels(t *testing.T) {
 }
 
 func TestW13g3AfterDeadlineDecisionBranches(t *testing.T) {
-	input := firstByteDeadlineReadInput{startedAt: NowMs(), firstByteDeadlineMs: ptrInt64(1_000)}
+	input := firstByteDeadlineReadInput{StartedAt: gatewayupstream.NowMs(), FirstByteDeadlineMs: ptrInt64(1_000)}
 	t.Run("superseded pending read returns raw chunk", func(t *testing.T) {
 		superseded := false
 		local := input
-		local.pendingReadSupersedesDeadline = true
-		local.onFirstByteDeadlineSuperseded = func() { superseded = true }
-		chunk, observed, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{hasRead: true, read: chunkResult{n: 3}}, false, local)
-		if err != nil || chunk.n != 3 || observed || !superseded {
+		local.PendingReadSupersedesDeadline = true
+		local.OnFirstByteDeadlineSuperseded = func() { superseded = true }
+		chunk, observed, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Read: chunkResult{N: 3}}, false, local)
+		if err != nil || chunk.N != 3 || observed || !superseded {
 			t.Fatalf("chunk=%+v observed=%v superseded=%v err=%v", chunk, observed, superseded, err)
 		}
-		eof, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{hasRead: true, read: chunkResult{err: io.EOF}}, false, local)
-		if err != nil || !eof.done {
+		eof, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Read: chunkResult{Err: io.EOF}}, false, local)
+		if err != nil || !eof.Done {
 			t.Fatalf("eof chunk = %+v err = %v", eof, err)
 		}
 	})
 	t.Run("decision error and abort", func(t *testing.T) {
-		chunk, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{hasRead: true, decisionErr: errW13g3}, true, input)
-		if !errors.Is(err, errW13g3) || chunk.n != 0 {
+		chunk, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, DecisionErr: errW13g3}, true, input)
+		if !errors.Is(err, errW13g3) || chunk.N != 0 {
 			t.Fatalf("decision error = %+v %v", chunk, err)
 		}
-		_, _, err = firstNonStreamReadAfterDeadlineDecision(deadlineDecision{hasRead: true, action: FirstByteDeadlineActionAbort}, true, input)
+		_, _, err = firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Action: FirstByteDeadlineActionAbort}, true, input)
 		var timeoutErr *GatewayFirstByteTimeoutError
 		if !errorsAs(err, &timeoutErr) || timeoutErr.Source != FirstByteTimeoutSourceConfiguredDeadline {
 			t.Fatalf("expected configured deadline timeout, got %v", err)
 		}
 	})
 	t.Run("read result and eof without supersede", func(t *testing.T) {
-		chunk, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{hasRead: true, read: chunkResult{n: 5}}, true, input)
-		if err != nil || chunk.n != 5 {
+		chunk, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Read: chunkResult{N: 5}}, true, input)
+		if err != nil || chunk.N != 5 {
 			t.Fatalf("read chunk = %+v err = %v", chunk, err)
 		}
-		eof, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{hasRead: true, read: chunkResult{err: io.EOF}}, true, input)
-		if err != nil || !eof.done {
+		eof, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Read: chunkResult{Err: io.EOF}}, true, input)
+		if err != nil || !eof.Done {
 			t.Fatalf("eof = %+v err = %v", eof, err)
 		}
 	})

@@ -31,6 +31,23 @@ func TestReadBoundedPartialKeepsBytesOnReadError(t *testing.T) {
 	}
 }
 
+func TestNewTransportIdleConnsPerHost(t *testing.T) {
+	transport, err := NewTransport("", TransportOptions{})
+	if err != nil {
+		t.Fatalf("direct transport: %v", err)
+	}
+	if transport.MaxIdleConnsPerHost != DefaultMaxIdleConnsPerHost {
+		t.Fatalf("default MaxIdleConnsPerHost=%d, want %d", transport.MaxIdleConnsPerHost, DefaultMaxIdleConnsPerHost)
+	}
+	transport, err = NewTransport("", TransportOptions{MaxIdleConnsPerHost: 7})
+	if err != nil {
+		t.Fatalf("explicit transport: %v", err)
+	}
+	if transport.MaxIdleConnsPerHost != 7 {
+		t.Fatalf("explicit MaxIdleConnsPerHost=%d, want 7", transport.MaxIdleConnsPerHost)
+	}
+}
+
 type tailErrorReader struct {
 	body string
 	err  error

@@ -193,21 +193,30 @@ func (b *Bus) Version(topic string) int64 {
 }
 
 // SyncFromShared pulls the shared version (multi-instance: the higher of
-// local and shared wins). Called by cache services on cache miss.
+// local and shared wins). Called by cache services on cache miss — on the
+// request hot path when the Redis runtime-state driver is on — so the Redis
+// round-trips run OUTSIDE b.mu: each topic is fetched lock-free and merged
+// back under a short critical section, and Invalidate/Subscribe/Version never
+// queue behind a slow shared store. The max-merge keeps the interleaving with
+// concurrent Invalidate calls monotonic (a bump landing between fetch and
+// merge can only raise the local version; the merge never moves it back).
 func (b *Bus) SyncFromShared(ctx context.Context, topics ...string) error {
-	if b.shared == nil {
+	b.mu.RLock()
+	shared := b.shared
+	b.mu.RUnlock()
+	if shared == nil {
 		return nil
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	for _, topic := range topics {
-		shared, err := b.shared.GetVersion(ctx, topic)
+		version, err := shared.GetVersion(ctx, topic)
 		if err != nil {
 			return err
 		}
-		if shared > b.versions[topic] {
-			b.versions[topic] = shared
+		b.mu.Lock()
+		if version > b.versions[topic] {
+			b.versions[topic] = version
 		}
+		b.mu.Unlock()
 	}
 	return nil
 }

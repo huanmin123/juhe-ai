@@ -340,7 +340,7 @@ func isAccountAPIKeyPoolProviderSupported(providerCode, protocolCode, protocolVe
 func (s *Store) hasRetainedActiveAccountAPIKeyState(ctx context.Context, q queryer, accountID string, current, next Credentials) (bool, error) {
 	nextFingerprints := map[string]bool{}
 	for _, entry := range accountAPIKeyEntries(s.secret, next) {
-		nextFingerprints[entry.fingerprint] = true
+		nextFingerprints[entry.Fingerprint] = true
 	}
 	if len(nextFingerprints) == 0 {
 		return false, nil
@@ -364,10 +364,10 @@ func (s *Store) hasRetainedActiveAccountAPIKeyState(ctx context.Context, q query
 		return false, err
 	}
 	for _, entry := range accountAPIKeyEntries(s.secret, current) {
-		if !nextFingerprints[entry.fingerprint] {
+		if !nextFingerprints[entry.Fingerprint] {
 			continue
 		}
-		if status, ok := statusByFingerprint[entry.fingerprint]; !ok || status == "active" {
+		if status, ok := statusByFingerprint[entry.Fingerprint]; !ok || status == "active" {
 			return true, nil
 		}
 	}

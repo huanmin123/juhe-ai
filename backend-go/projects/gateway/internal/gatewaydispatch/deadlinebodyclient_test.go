@@ -3,6 +3,7 @@ package gatewaydispatch
 import (
 	"context"
 	"errors"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"io"
 	"net/http"
 	"sync"
@@ -16,9 +17,9 @@ import (
 // injectNowMs 替换包级时钟并在测试结束恢复。
 func injectNowMs(t *testing.T, now func() int64) {
 	t.Helper()
-	previous := NowMs
-	NowMs = now
-	t.Cleanup(func() { NowMs = previous })
+	previous := gatewayupstream.NowMs
+	gatewayupstream.NowMs = now
+	t.Cleanup(func() { gatewayupstream.NowMs = previous })
 }
 
 // preSettledPendingRead 返回一个已 settle 的 pending read（与 Decide* 的
@@ -34,7 +35,7 @@ func TestObservedFirstBytePendingReadLifecycle(t *testing.T) {
 	base := int64(1_000)
 	injectNowMs(t, func() int64 { return base })
 	observed := ObserveFirstBytePendingRead(func() (chunkResult, error) {
-		return chunkResult{n: 3}, nil
+		return chunkResult{N: 3}, nil
 	})
 	// 轮询 settle 标记（goroutine 调度无固定顺序，用短超时上限保证确定性收敛）。
 	deadline := time.Now().Add(2 * time.Second)
@@ -51,7 +52,7 @@ func TestObservedFirstBytePendingReadLifecycle(t *testing.T) {
 	// Await 可重复调用（重复 Await 语义）。
 	for i := 0; i < 2; i++ {
 		result, err := observed.Await()
-		if err != nil || result.n != 3 {
+		if err != nil || result.N != 3 {
 			t.Fatalf("Await#%d = %+v %v", i, result, err)
 		}
 	}
@@ -65,14 +66,14 @@ func TestObservedFirstBytePendingReadError(t *testing.T) {
 	if err != io.EOF {
 		t.Fatalf("err = %v", err)
 	}
-	if result.n != 0 {
-		t.Fatalf("n = %d", result.n)
+	if result.N != 0 {
+		t.Fatalf("n = %d", result.N)
 	}
 }
 
 func TestDecideFirstByteDeadlineNilHandlerAborts(t *testing.T) {
 	observed := ObserveFirstBytePendingRead(func() (chunkResult, error) {
-		return chunkResult{n: 1}, nil // 永不 settle 的等待由决策先行返回
+		return chunkResult{N: 1}, nil // 永不 settle 的等待由决策先行返回
 	})
 	result := DecideFirstByteDeadlineAfterPendingRead(observed, nil, FirstByteDeadlineDecisionInput{}, FirstByteDeadlineDecisionWaitOptions{})
 	if result.Type != DeadlineDecisionAction || result.Action != FirstByteDeadlineActionAbort {
@@ -84,12 +85,12 @@ func TestDecideFirstByteDeadlineNilHandlerAborts(t *testing.T) {
 }
 
 func TestDecideFirstByteDeadlineHandlerContinueWithSettledRead(t *testing.T) {
-	observed := preSettledPendingRead(t, chunkResult{n: 5}, nil, 2_000)
+	observed := preSettledPendingRead(t, chunkResult{N: 5}, nil, 2_000)
 	awaitPendingReadSettled(t, observed)
 	result := DecideFirstByteDeadlineAfterPendingRead(observed, func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 		return FirstByteDeadlineActionContinue
 	}, FirstByteDeadlineDecisionInput{}, FirstByteDeadlineDecisionWaitOptions{})
-	if result.Type != DeadlineDecisionRead || result.Result.n != 5 {
+	if result.Type != DeadlineDecisionRead || result.Result.N != 5 {
 		t.Fatalf("result = %#v", result)
 	}
 	if result.Action != FirstByteDeadlineActionContinue || result.SettledAtMs != 2_000 {
@@ -101,7 +102,7 @@ func TestDecideFirstByteDeadlineHandlerContinueWithSettledRead(t *testing.T) {
 // 未 settle 的 pending read 时以 action 形态返回错误。
 func TestDecideFirstByteDeadlineHandlerErrorUnsettled(t *testing.T) {
 	handlerErr := errors.New("决策失败")
-	blocked := &ObservedFirstBytePendingRead[chunkResult]{outcome: make(chan readOutcome[chunkResult], 1)}
+	blocked := &ObservedFirstBytePendingRead[chunkResult]{Outcome: make(chan ReadOutcome[chunkResult], 1)}
 	result := DecideFirstByteDeadlineAfterPendingRead(blocked, func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 		panic(handlerErr)
 	}, FirstByteDeadlineDecisionInput{}, FirstByteDeadlineDecisionWaitOptions{})
@@ -114,7 +115,7 @@ func TestDecideFirstByteDeadlineHandlerErrorUnsettled(t *testing.T) {
 }
 
 func TestDecideFirstByteDeadlineHandlerPanicBecomesError(t *testing.T) {
-	blocked := &ObservedFirstBytePendingRead[chunkResult]{outcome: make(chan readOutcome[chunkResult], 1)}
+	blocked := &ObservedFirstBytePendingRead[chunkResult]{Outcome: make(chan ReadOutcome[chunkResult], 1)}
 	handlerErr := errors.New("handler 崩溃")
 	result := DecideFirstByteDeadlineAfterPendingRead(blocked, func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 		panic(handlerErr)
@@ -126,11 +127,11 @@ func TestDecideFirstByteDeadlineHandlerPanicBecomesError(t *testing.T) {
 	if !errors.Is(result.Error, handlerErr) {
 		t.Fatalf("error = %v", result.Error)
 	}
-	// 非错误 panic 值包装为 deadlineHandlerPanic。
+	// 非错误 panic 值包装为 DeadlineHandlerPanic。
 	result = DecideFirstByteDeadlineAfterPendingRead(blocked, func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 		panic("字符串崩溃")
 	}, FirstByteDeadlineDecisionInput{}, FirstByteDeadlineDecisionWaitOptions{})
-	var panicErr *deadlineHandlerPanic
+	var panicErr *DeadlineHandlerPanic
 	if !errorsAs(result.Error, &panicErr) || panicErr.Error() != "网关首字截止决策失败" {
 		t.Fatalf("error = %v", result.Error)
 	}
@@ -140,7 +141,7 @@ func TestDecideFirstByteDeadlineHandlerPanicBecomesError(t *testing.T) {
 // （Node: decision.then(notify) 的合并语义）。
 func TestDecideFirstByteDeadlineHandlerErrorWithSettledRead(t *testing.T) {
 	handlerErr := errors.New("决策失败")
-	observed := preSettledPendingRead(t, chunkResult{n: 9}, io.EOF, 3_000)
+	observed := preSettledPendingRead(t, chunkResult{N: 9}, io.EOF, 3_000)
 	awaitPendingReadSettled(t, observed)
 	result := DecideFirstByteDeadlineAfterPendingRead(observed, func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 		panic(handlerErr)
@@ -151,7 +152,7 @@ func TestDecideFirstByteDeadlineHandlerErrorWithSettledRead(t *testing.T) {
 	if !errors.Is(result.DecisionError, handlerErr) {
 		t.Fatalf("decision error = %v", result.DecisionError)
 	}
-	if result.Error != io.EOF || result.Result.n != 9 || result.SettledAtMs != 3_000 {
+	if result.Error != io.EOF || result.Result.N != 9 || result.SettledAtMs != 3_000 {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -182,7 +183,7 @@ func TestRunDeadlineHandlerErrorPath(t *testing.T) {
 func TestDecideFirstByteDeadlinePrecommitWallWins(t *testing.T) {
 	base := int64(5_000)
 	notifyCalled := false
-	observed := preSettledPendingRead(t, chunkResult{n: 4}, nil, base)
+	observed := preSettledPendingRead(t, chunkResult{N: 4}, nil, base)
 	awaitPendingReadSettled(t, observed)
 	result := DecideFirstByteDeadlineAfterPendingRead(observed, func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 		return FirstByteDeadlineActionContinue
@@ -204,7 +205,7 @@ func TestDecideFirstByteDeadlinePrecommitWallWins(t *testing.T) {
 
 func TestDecideFirstByteDeadlinePrecommitReadSettledBeforeDeadline(t *testing.T) {
 	base := int64(5_000)
-	observed := preSettledPendingRead(t, chunkResult{n: 4}, nil, base-200)
+	observed := preSettledPendingRead(t, chunkResult{N: 4}, nil, base-200)
 	awaitPendingReadSettled(t, observed)
 	// 决策时刻的当前时钟晚于墙钟截止：墙钟已过期。
 	injectNowMs(t, func() int64 { return base })
@@ -223,7 +224,7 @@ func TestDecideFirstByteDeadlinePrecommitReadSettledBeforeDeadline(t *testing.T)
 
 func TestFinishDeadlineDecisionBranches(t *testing.T) {
 	// 未 settle + 无决策错误 → action。
-	blocked := &ObservedFirstBytePendingRead[chunkResult]{outcome: make(chan readOutcome[chunkResult], 1)}
+	blocked := &ObservedFirstBytePendingRead[chunkResult]{Outcome: make(chan ReadOutcome[chunkResult], 1)}
 	result := finishDeadlineDecision(blocked, FirstByteDeadlineActionContinue, nil)
 	if result.Type != DeadlineDecisionAction || result.Action != FirstByteDeadlineActionContinue {
 		t.Fatalf("result = %#v", result)
@@ -235,10 +236,10 @@ func TestFinishDeadlineDecisionBranches(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	// 已 settle → read 形态（先等 goroutine 完成 settle，保证确定性）。
-	settled := preSettledPendingRead(t, chunkResult{n: 2}, nil, 100)
+	settled := preSettledPendingRead(t, chunkResult{N: 2}, nil, 100)
 	awaitPendingReadSettled(t, settled)
 	result = finishDeadlineDecision(settled, FirstByteDeadlineActionContinue, nil)
-	if result.Type != DeadlineDecisionRead || result.Result.n != 2 || result.SettledAtMs != 100 {
+	if result.Type != DeadlineDecisionRead || result.Result.N != 2 || result.SettledAtMs != 100 {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -307,31 +308,6 @@ func TestGatewayCodexHistorySanitizedFlag(t *testing.T) {
 	// 不同内容不命中。
 	if IsGatewayCodexHistorySanitized([]byte(`{"input":[3]}`)) {
 		t.Fatal("不同内容不应命中")
-	}
-}
-
-func TestMarkCodexHistorySanitizedCapacityEviction(t *testing.T) {
-	gatewaySerializedFlagsMu.Lock()
-	previous := gatewayCodexSanitizedBodies
-	// 构造满容量注册表（白盒：验证逐出分支不 panic 且仍写入新键）。
-	gatewayCodexSanitizedBodies = make(map[string]struct{}, gatewaySerializedFlagCapacity+1)
-	for i := 0; i < gatewaySerializedFlagCapacity; i++ {
-		gatewayCodexSanitizedBodies["old-"+intToStringTest(i)] = struct{}{}
-	}
-	gatewaySerializedFlagsMu.Unlock()
-	t.Cleanup(func() {
-		gatewaySerializedFlagsMu.Lock()
-		gatewayCodexSanitizedBodies = previous
-		gatewaySerializedFlagsMu.Unlock()
-	})
-	MarkGatewayCodexHistorySanitized([]byte("fresh"))
-	gatewaySerializedFlagsMu.Lock()
-	defer gatewaySerializedFlagsMu.Unlock()
-	if len(gatewayCodexSanitizedBodies) > gatewaySerializedFlagCapacity {
-		t.Fatalf("容量应受限, got %d", len(gatewayCodexSanitizedBodies))
-	}
-	if _, ok := gatewayCodexSanitizedBodies["fresh"]; !ok {
-		t.Fatal("新键必须写入")
 	}
 }
 

@@ -76,8 +76,15 @@ func TestW15ClaimDirtyPostgresOnW1Cover(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.account_list_availability_dirty
 		(account_id, viewer_system_account_id, generation, reason, available_at_ms, created_at_ms, updated_at_ms)
 		VALUES ('w15-acct', $1, 1, 'w15-test', 1, 1, 1)
-		ON CONFLICT (account_id) DO UPDATE SET available_at_ms = 1, claim_token = NULL, claimed_by = NULL, claim_until_ms = NULL`, viewer); err != nil {
+		ON CONFLICT (account_id) DO UPDATE SET generation = 1, available_at_ms = 1, claim_token = NULL, claimed_by = NULL, claim_until_ms = NULL`, viewer); err != nil {
 		t.Fatalf("dirty 种子行插入失败: %v", err)
+	}
+
+	// boundDB 包装路径：QueryRowContext 经 sqldialect.BindSQL 转发。
+	bound := &boundDB{DB: db, postgres: true}
+	var probe int
+	if err := bound.QueryRowContext(ctx, `SELECT 1`).Scan(&probe); err != nil || probe != 1 {
+		t.Fatalf("boundDB QueryRowContext 应可用: %v", err)
 	}
 
 	repo, err := NewListAvailabilityRepo(ListAvailabilityConfig{DB: db, Postgres: true})

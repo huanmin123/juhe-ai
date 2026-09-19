@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -105,7 +106,7 @@ func dispatchPreparationInput(t *testing.T, accounts []AccountCandidate) gateway
 	t.Helper()
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 	wallBudget, err := gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
-		RequestAcceptedAtMs: NowMs(),
+		RequestAcceptedAtMs: gatewayupstream.NowMs(),
 		BudgetMs:            ptrInt64(60_000),
 	}, nil)
 	if err != nil {
@@ -116,7 +117,7 @@ func dispatchPreparationInput(t *testing.T, accounts []AccountCandidate) gateway
 		Req:                      req,
 		AuditCapture:             &frozenAudit{sink: &fakeAuditSink{}},
 		UsageContext:             testUsageContext(),
-		StartedAt:                NowMs(),
+		StartedAt:                gatewayupstream.NowMs(),
 		CandidateAccounts:        accounts,
 		ModelPriority:            &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{}},
 		GroupAccess:              gatewayruntimecache.GroupUsageAccessMetadata{},
@@ -661,7 +662,7 @@ func TestReserveSameAccountRetryWallBudgetWindowExhausted(t *testing.T) {
 func mustWallBudget(t *testing.T, budgetMs int64) *gatewayrouting.GatewayRequestWallBudget {
 	t.Helper()
 	budget, err := gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
-		RequestAcceptedAtMs: NowMs(),
+		RequestAcceptedAtMs: gatewayupstream.NowMs(),
 		BudgetMs:            &budgetMs,
 	}, nil)
 	if err != nil {

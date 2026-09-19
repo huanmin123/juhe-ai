@@ -1,5 +1,10 @@
 # 重构案例库
 
+- [重构-0008](重构-0008-剩余god包拆分判定与设计.md)：剩余六个 god 包（openaicompat/gatewaycircuit/gatewayresponse/modelcheckowner/circuitstore/cleanuprepo）逐包扇入构成判定——5 包判定不拆（词汇主导/行为面闭合/热路径禁间接层），仅 openaicompat 值得拆（三阶段：openaicompatcore 中立下沉 → bridge 9.6k → storage 4.7k）；**关键发现：gatewaycircuit × circuitstore 的 lua.go 除 package 声明外逐字节相同（1,225 行 Lua 脚本 + 66 个同名声明）**，设计下潜 `shared/platform/circuitstate` 消除脚本漂移风险。
+- [重构-0006](重构-0006-chat与gatewaydispatch拆分设计.md)：chat（16.1k）与 gatewaydispatch（13.4k）拆分设计——chat 热路径 SSE 泵保持自由函数直调、拆 chatassets 资产子域；dispatch 两阶段（传输族/oauthcodex 叶子 → candidates 纯函数族，ports 词汇层先下沉）；根 alias 保 80 个消费文件零改动。
+- [重构-0007](重构-0007-组合根cmd拆分设计.md)：cmd/juhe-ai-gateway（26.9k）拆分设计——`package main` 零外部消费方，门面 alias 策略不适用；改为"组合根留守 + 5 波下沉 11.2k 行到约 8 个 internal 子包"，chain_v1.go 定位留守 + 文件内拆分。
+- [复查-0001](复查-0001-gatewaypreauth职责边界复查.md)：gatewaypreauth（扇入 198）职责边界复查——830 处生产限定引用 73.6% 为类型词汇、行为入口仅 5 处在组合根，判定不拆包维持现状；含拆包反事实收益测算与评估文档一处依赖方向事实纠正。R2 该项验收证据。
+- [REFACTOR-0005](重构-0005-accounts包子域拆分设计.md)：accounts god 包（29.8k 行 / Store 221 方法）按子域（测试会话/余额/运行时重置/导入导出/授权）分三阶段包级拆分设计；共享类型留门面 + alias 兼容 53 个外部消费文件零改动；循环依赖经窄写接口收敛。状态：设计完成待实施。
 - [REFACTOR-0004](重构-0004-管理接口场景DTO与字段级写入.md)：把 Node 管理列表、编辑、options、runtime、secret 和 mutation 从共享宽 Summary 拆为场景 DTO 与字段级写命令；Vue 配套按需消费，Go 未触碰。
 
 > 面向 AI 和维护者。

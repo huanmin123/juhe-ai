@@ -402,7 +402,6 @@ func TestBalanceCleanupCloseRefusesAndCancels(t *testing.T) {
 	env.cleaner.Close()
 }
 
-
 // TestRetryQueueStopDropsPending pins the stop contract at the queue level:
 // stop() refuses new enqueues, drops every pending item (they never run),
 // and the running item finishes verbatim without retry scheduling.

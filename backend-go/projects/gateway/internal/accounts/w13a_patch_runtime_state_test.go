@@ -169,7 +169,7 @@ func TestW13ARetainedActiveAPIKeyState(t *testing.T) {
 	for _, entry := range entries {
 		env.exec(t, `INSERT INTO account_api_key_runtime_states (id, system_account_id, account_id,
 			key_fingerprint, key_index, status, updated_at) VALUES (?, ?, 'acc-w13a-pool', ?, 0, 'active', ?)`,
-			"w13a-rt-"+entry.fingerprint[:12], adminID, entry.fingerprint, now)
+			"w13a-rt-"+entry.Fingerprint[:12], adminID, entry.Fingerprint, now)
 	}
 	// 池中保留的 Key 均为 active → 有保留（367-368 之前的 true 返回）。
 	retained, err := env.store.hasRetainedActiveAccountAPIKeyState(context.Background(), env.db,

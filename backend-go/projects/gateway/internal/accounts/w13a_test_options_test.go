@@ -51,9 +51,9 @@ func TestW13ATestEndpointModeRuntimeHelpers(t *testing.T) {
 func TestW13AAccountManualTestEndpointModes(t *testing.T) {
 	// OpenAI api_key：chat 族默认在前，health 模式优先。
 	source := manualTestModeSource{
-		providerCode: "openai", providerProtocolProfileID: "profile_openai_openai_v1",
-		protocolCode: "openai", protocolVersion: "v1", accountType: "api_key",
-		healthCheckEndpointMode: "chat_sse",
+		ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProtocolCode: "openai", ProtocolVersion: "v1", AccountType: "api_key",
+		HealthCheckEndpointMode: "chat_sse",
 	}
 	modes := accountManualTestEndpointModes(source)
 	if len(modes) == 0 || modes[0] != "chat_sse" {
@@ -61,29 +61,29 @@ func TestW13AAccountManualTestEndpointModes(t *testing.T) {
 	}
 	// Anthropic 协议只保留 messages 族。
 	anthropic := manualTestModeSource{
-		providerCode: "anthropic", providerProtocolProfileID: "profile_anthropic_anthropic_v1",
-		protocolCode: "anthropic", protocolVersion: "v1", accountType: "api_key",
+		ProviderCode: "anthropic", ProviderProtocolProfileID: "profile_anthropic_anthropic_v1",
+		ProtocolCode: "anthropic", ProtocolVersion: "v1", AccountType: "api_key",
 	}
 	if modes = accountManualTestEndpointModes(anthropic); len(modes) == 0 || modes[0] != "messages_json" {
 		t.Fatalf("Anthropic 顺序不一致：%v", modes)
 	}
 	// Gemini 协议。
 	gemini := manualTestModeSource{
-		providerCode: "gemini", providerProtocolProfileID: "profile_gemini_native_v1beta",
-		protocolCode: "gemini", protocolVersion: "v1beta", accountType: "api_key",
+		ProviderCode: "gemini", ProviderProtocolProfileID: "profile_gemini_native_v1beta",
+		ProtocolCode: "gemini", ProtocolVersion: "v1beta", AccountType: "api_key",
 	}
 	if modes = accountManualTestEndpointModes(gemini); len(modes) == 0 {
 		t.Fatal("Gemini 模式不应为空")
 	}
 	// Hybrid 供应商。
 	hybrid := manualTestModeSource{
-		providerCode: "hybrid", accountType: "api_key",
+		ProviderCode: "hybrid", AccountType: "api_key",
 	}
 	if modes = accountManualTestEndpointModes(hybrid); len(modes) == 0 {
 		t.Fatal("Hybrid 模式不应为空")
 	}
 	// 未知供应商：空。
-	unknown := manualTestModeSource{providerCode: "bogus", accountType: "api_key"}
+	unknown := manualTestModeSource{ProviderCode: "bogus", AccountType: "api_key"}
 	if modes = accountManualTestEndpointModes(unknown); len(modes) != 0 {
 		t.Fatalf("未知供应商应为空：%v", modes)
 	}
@@ -94,7 +94,7 @@ func TestW13ATestMappingHelpers(t *testing.T) {
 		t.Fatal("映射源族判定不一致")
 	}
 	openaiSource := manualTestModeSource{
-		providerCode: "openai", protocolCode: "openai", protocolVersion: "v1",
+		ProviderCode: "openai", ProtocolCode: "openai", ProtocolVersion: "v1",
 	}
 	// 同族直通、流式转非流式、responses→chat 在 OpenAI 协议支持。
 	if !isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "chat_completions", UpstreamEndpointFamily: "chat_completions"}, openaiSource) {
@@ -109,7 +109,7 @@ func TestW13ATestMappingHelpers(t *testing.T) {
 	if isOpenAIModelMappingRuntimeConversionSupported(ModelMapping{SourceEndpointFamily: "messages", UpstreamEndpointFamily: "chat_completions"}, openaiSource) {
 		t.Fatal("messages→chat 在非 Hybrid 不应支持")
 	}
-	hybrid := manualTestModeSource{providerCode: "hybrid"}
+	hybrid := manualTestModeSource{ProviderCode: "hybrid"}
 	for _, pair := range [][2]string{
 		{"responses", "chat_completions"}, {"messages", "chat_completions"},
 		{"generate_content", "chat_completions"}, {"stream_generate_content", "chat_completions"},

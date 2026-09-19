@@ -138,8 +138,8 @@ func (s *w14lScript) wantNullRows(query string) bool {
 
 // w14lNullRows 返回一行全 NULL 再 EOF；非可空目标的 Scan 必然失败。
 type w14lNullRows struct {
-	cols  []string
-	sent  bool
+	cols []string
+	sent bool
 }
 
 func (r *w14lNullRows) Columns() []string { return r.cols }

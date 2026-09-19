@@ -438,7 +438,7 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 	}
 	t.Cleanup(operationLease.Close)
 
-	composed, err := composeSystemAPI(cfg, pools, operationStore, operationLease, auditProducer, auditConfig)
+	composed, err := composeSystemAPI(cfg, pools, operationStore, operationLease, auditProducer, auditConfig, composeTestOwnerHealth())
 	if err != nil {
 		// 已证实生产缺陷的记录性门禁：PG 模式下组合根在
 		// wireInProcessBalanceAndCatalogRefresh 处恒失败（compose_account_balance_refresh.go

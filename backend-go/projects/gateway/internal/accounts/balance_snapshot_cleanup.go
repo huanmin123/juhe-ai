@@ -20,37 +20,13 @@ import (
 //     balance_configuration_changed（归档 validateAccountBalanceCapability
 //     恒返回 false，Go 侧 reason 恒为 balance_configuration_changed）。
 //
-// Go 侧余额快照读取面已由 M11 承载（m11_balance.go 读
-// account_usage_snapshots），删除执行器与屏蔽读取属于组合根装配，因此这里
-// 只保留窄接口端口——对照 CacheInvalidator / batch_effects.go 的注入模式：
-// nil 端口保持本包自包含（测试与未装配部署下清理静默跳过）。
-
-// BalanceSnapshotCleanupReason values mirror
-// AccountBalanceSnapshotCleanupReason (account-balance-snapshot-cleanup.service.ts:16).
-const (
-	BalanceSnapshotCleanupReasonConfigurationChanged = "balance_configuration_changed"
-	BalanceSnapshotCleanupReasonMultipleAPIKeys      = "multiple_api_keys"
-	BalanceSnapshotCleanupReasonBatchMultipleAPIKeys = "batch_multiple_api_keys"
-	BalanceSnapshotCleanupReasonBatchIdentityChanged = "batch_balance_identity_changed"
-)
-
-// BalanceSnapshotCleanupRequest mirrors AccountBalanceSnapshotCleanupRequest
-// (account-balance-snapshot-cleanup.service.ts:18-23); BatchID stays empty on
-// the single-account PATCH path.
-type BalanceSnapshotCleanupRequest struct {
-	AccountID      string
-	ConfigRevision int64
-	Reason         string
-	BatchID        string
-}
-
-// BalanceSnapshotCleaner is the nil-safe post-commit cleanup port: drop the
-// superseded balance snapshot (older than the save instant) for the account.
-// Implementations must be best-effort and non-blocking from the caller's
-// perspective (Node enqueues into a bounded retry queue).
-type BalanceSnapshotCleaner interface {
-	CleanupBalanceSnapshotAfterSave(request BalanceSnapshotCleanupRequest)
-}
+// Go 侧余额快照读取面已由 M11 承载（accountsbalance/balance.go 读
+// account_usage_snapshots），删除执行器与屏蔽读取属于组合根装配。清理端口
+// （BalanceSnapshotCleaner / BalanceSnapshotCleanupRequest / reason 常量）
+// 已随 REFACTOR-0005 阶段 B 下沉 accountsbalance（门面在
+// balance_subdomain_bridge.go 保留别名）；执行器实现依赖门面 retryQueue 泛型
+// 与 *Store 统计删除面，按阶段 A 降级先例留在这里：nil 端口保持 PATCH
+// cache/snapshot 静默。
 
 // SetBalanceSnapshotCleaner wires the cleanup port (compose handover; nil
 // keeps the patch path snapshot-silent).

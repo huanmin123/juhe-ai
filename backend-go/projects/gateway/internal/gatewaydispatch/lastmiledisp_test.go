@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -22,7 +23,7 @@ func TestPipeInspectionCommitsWhenLimitExceeded(t *testing.T) {
 	var committed []byte
 	result, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), reader, &downstream, InspectableNonStreamPipeInput{
 		NonStreamPipeInput: NonStreamPipeInput{
-			StartedAt:      NowMs(),
+			StartedAt:      gatewayupstream.NowMs(),
 			Signal:         context.Background(),
 			OnChunkWritten: func(n int) { written += n },
 		},
@@ -53,7 +54,7 @@ func TestPipeInspectionCommitsWhenLimitExceeded(t *testing.T) {
 func TestPipeInspectionBufferedWriteError(t *testing.T) {
 	reader := &multiChunkReader{chunks: [][]byte{[]byte("aa"), []byte("bb")}}
 	_, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), reader, failingWriter{}, InspectableNonStreamPipeInput{
-		NonStreamPipeInput: NonStreamPipeInput{StartedAt: NowMs(), Signal: context.Background()},
+		NonStreamPipeInput: NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), Signal: context.Background()},
 		InspectBytes:       1,
 	})
 	var pipeErr *NonStreamUpstreamBodyPipeError

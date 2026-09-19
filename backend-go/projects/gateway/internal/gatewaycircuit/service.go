@@ -512,7 +512,7 @@ func (s *CircuitService) notifyMutation(
 	if s.onMutation == nil || result.Status == MutationNotFound {
 		return nil
 	}
-	for _, relatedState := range result.RelatedStates.slice() {
+	for _, relatedState := range result.RelatedStates.Slice() {
 		if err := s.onMutation(ctx, MutationEvent{
 			Scope:     relatedState.Scope,
 			State:     relatedState,
@@ -890,7 +890,7 @@ func (s *CircuitService) CompleteConfirmation(
 		if err != nil {
 			return MutationResult{}, err
 		}
-		for _, relatedState := range escalation.RelatedStates.slice() {
+		for _, relatedState := range escalation.RelatedStates.Slice() {
 			if s.onMutation != nil {
 				if err := s.onMutation(ctx, MutationEvent{
 					Scope:     relatedState.Scope,

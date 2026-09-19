@@ -2,18 +2,16 @@ package accountquality
 
 import (
 	"context"
-	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
-// Clock 注入时间源（硬门禁：时间可 Mock）。
-type Clock interface {
-	Now() time.Time
-}
+// Clock/SystemClock 收敛到 shared/platform/timeclock（签名相同，别名零
+// 调用点改动；硬门禁不变：时间可 Mock）。
+type Clock = timeclock.Clock
 
 // SystemClock 真实时间。
-type SystemClock struct{}
-
-func (SystemClock) Now() time.Time { return time.Now() }
+type SystemClock = timeclock.SystemClock
 
 // SettingsNumber 读取系统设置（Node settingsNumber(key, min, max) 语义：
 // 越界回落边界值）。由宿主进程注入；测试用 map 实现。

@@ -34,11 +34,11 @@ import (
 
 type w13g3Driver struct {
 	*fakeDriver
-	prepareErr     error
-	prepareErrOnN  int
-	prepareCalls   int
-	urlsPlan       [][]string // 按调用次序消费，末位重复
-	urlsCalls      int
+	prepareErr    error
+	prepareErrOnN int
+	prepareCalls  int
+	urlsPlan      [][]string // 按调用次序消费，末位重复
+	urlsCalls     int
 }
 
 func (d *w13g3Driver) PrepareGatewayUpstreamAccount(ctx context.Context, account AccountCandidate) (AccountCandidate, error) {

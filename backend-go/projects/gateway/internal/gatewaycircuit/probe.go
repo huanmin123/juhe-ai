@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
 // Availability probe kinds mirror AvailabilityProbeKind.
@@ -18,12 +20,12 @@ const (
 
 // Availability probe outcomes mirror AvailabilityProbeOutcome.
 const (
-	ProbeOutcomeSuccess         = "success"
-	ProbeOutcomeHealthFailure   = "health_failure"
-	ProbeOutcomeUnknown         = "unknown"
+	ProbeOutcomeSuccess          = "success"
+	ProbeOutcomeHealthFailure    = "health_failure"
+	ProbeOutcomeUnknown          = "unknown"
 	ProbeOutcomeProbeTaskFailure = "probe_task_failure"
-	ProbeOutcomeCanceled        = "canceled"
-	ProbeOutcomeStale           = "stale"
+	ProbeOutcomeCanceled         = "canceled"
+	ProbeOutcomeStale            = "stale"
 )
 
 // Probe ownership defaults (availability-probe-coordinator.ts): the account
@@ -34,13 +36,10 @@ const (
 	defaultProbeRetentionMs = int64(5 * 60_000)
 )
 
-// ProbeSourceFence mirrors AvailabilityProbeSourceFence.
-type ProbeSourceFence struct {
-	StateKey         string
-	AccountID        string
-	SourceGeneration int64
-	SourceFenceID    string
-}
+// REFACTOR-0008 下潜：与 circuitstore/probestate.go 逐字节相同的 fence 词汇
+// 收敛到 shared/platform/circuitstate；解码/校验（decodeSourceFence 等）两侧
+// 已漂移，按对账结论留守本包。
+type ProbeSourceFence = circuitstate.ProbeSourceFence
 
 // ProbeState mirrors the AvailabilityProbeState stored per runtime key.
 type ProbeState struct {
@@ -132,8 +131,8 @@ type ProbeCoordinator struct {
 	now      func() int64
 	createID func() string
 
-	mu          sync.Mutex
-	testStore   ProbeStateStore
+	mu        sync.Mutex
+	testStore ProbeStateStore
 }
 
 // NewProbeCoordinator mirrors the module singleton wiring with explicit
@@ -216,13 +215,13 @@ func (c *ProbeCoordinator) Acquire(ctx context.Context, input ProbeAcquireInput)
 			return ProbeAcquireResult{Disposition: ProbeDispositionOwner, RuntimeKey: runtimeKey, Generation: generation, OwnerToken: ownerToken}, nil
 		}
 		return c.joinOrTakeOver(ctx, joinOrTakeOverInput{
-			store:       store,
-			runtimeKey:  runtimeKey,
-			ownerToken:  ownerToken,
-			nowMs:       nowMs,
-			leaseMs:     leaseMs,
-			retentionMs: retentionMs,
-			sourceFence: input.SourceFence,
+			store:         store,
+			runtimeKey:    runtimeKey,
+			ownerToken:    ownerToken,
+			nowMs:         nowMs,
+			leaseMs:       leaseMs,
+			retentionMs:   retentionMs,
+			sourceFence:   input.SourceFence,
 			executionRole: input.ExecutionRole,
 			replacement: &probeReplacementIdentity{
 				accountRuntimeScope: accountRuntimeScope,
@@ -248,14 +247,14 @@ func (c *ProbeCoordinator) Acquire(ctx context.Context, input ProbeAcquireInput)
 		})
 	}
 	return c.joinOrTakeOver(ctx, joinOrTakeOverInput{
-		store:       store,
-		runtimeKey:  runtimeKey,
-		ownerToken:  ownerToken,
-		nowMs:       nowMs,
-		leaseMs:     leaseMs,
-		retentionMs: retentionMs,
-		provided:    current,
-		sourceFence: input.SourceFence,
+		store:         store,
+		runtimeKey:    runtimeKey,
+		ownerToken:    ownerToken,
+		nowMs:         nowMs,
+		leaseMs:       leaseMs,
+		retentionMs:   retentionMs,
+		provided:      current,
+		sourceFence:   input.SourceFence,
 		executionRole: input.ExecutionRole,
 		replacement: &probeReplacementIdentity{
 			accountRuntimeScope: accountRuntimeScope,
@@ -740,10 +739,7 @@ func settlementFromReplacedGeneration(state ProbeState) *ReplacedProbeFenceSettl
 	}
 }
 
-func encodeSourceFence(fence ProbeSourceFence) string {
-	encoded, _ := json.Marshal([]any{fence.StateKey, fence.AccountID, fence.SourceGeneration, fence.SourceFenceID})
-	return string(encoded)
-}
+func encodeSourceFence(fence ProbeSourceFence) string { return circuitstate.EncodeSourceFence(fence) }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 

@@ -239,36 +239,36 @@ func TestBug0162ImportSourceBaseURLSSRFMatrix(t *testing.T) {
 		"ftp://api.openai.com/v1",
 	}
 	for _, value := range unsafe {
-		state := &adapterState{source: emptySourceSummary(importSourceNewAPI)}
+		state := &adapterState{Source: emptySourceSummary(importSourceNewAPI)}
 		if safeSourceBaseURL(value, state) {
 			t.Fatalf("unsafe source base url accepted: %s", value)
 		}
-		if state.source.IgnoredFields != 1 {
-			t.Fatalf("%s: ignoredFields = %d, want 1", value, state.source.IgnoredFields)
+		if state.Source.IgnoredFields != 1 {
+			t.Fatalf("%s: ignoredFields = %d, want 1", value, state.Source.IgnoredFields)
 		}
 	}
-	state := &adapterState{source: emptySourceSummary(importSourceNewAPI)}
+	state := &adapterState{Source: emptySourceSummary(importSourceNewAPI)}
 	if !safeSourceBaseURL(defaultOpenAIBaseURL, state) {
 		t.Fatal("public upstream base url must pass")
 	}
-	if state.source.IgnoredFields != 0 {
-		t.Fatalf("ignoredFields = %d, want 0", state.source.IgnoredFields)
+	if state.Source.IgnoredFields != 0 {
+		t.Fatalf("ignoredFields = %d, want 0", state.Source.IgnoredFields)
 	}
 
 	// Adapter-level wiring: a NewAPI channel record with a loopback base_url
 	// is skipped with the upstream policy message instead of being accepted.
-	state = &adapterState{source: emptySourceSummary(importSourceNewAPI)}
+	state = &adapterState{Source: emptySourceSummary(importSourceNewAPI)}
 	adaptChannelSource([]any{map[string]any{
 		"type":     "openai",
 		"key":      "sk-channel-1",
 		"base_url": "http://127.0.0.1:9/v1",
 		"name":     "loopback",
 	}}, importSourceNewAPI, state)
-	if state.source.Accepted != 0 || state.source.Skipped != 1 {
-		t.Fatalf("adapter outcome: accepted=%d skipped=%d", state.source.Accepted, state.source.Skipped)
+	if state.Source.Accepted != 0 || state.Source.Skipped != 1 {
+		t.Fatalf("adapter outcome: accepted=%d skipped=%d", state.Source.Accepted, state.Source.Skipped)
 	}
-	joined := strings.Join(state.source.Messages, "\n")
+	joined := strings.Join(state.Source.Messages, "\n")
 	if !strings.Contains(joined, "不符合上游地址策略") {
-		t.Fatalf("skip messages: %v", state.source.Messages)
+		t.Fatalf("skip messages: %v", state.Source.Messages)
 	}
 }

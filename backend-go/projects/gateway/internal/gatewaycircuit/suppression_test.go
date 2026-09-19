@@ -125,53 +125,9 @@ func TestFilterSuppressionsAndHalfOpenLease(t *testing.T) {
 	}
 }
 
-func TestSuppressionDegradationActivation(t *testing.T) {
-	now := int64(0)
-	store := newTestSuppressionStore(func() int64 { return now }, nil, false)
-	first := store.DegradeForGatewayFailure("acc", "acc", "transport:boom")
-	if first.Status != AvailabilityStatusNormal || first.FailureCount == nil || *first.FailureCount != 1 {
-		t.Fatalf("first = %+v", first)
-	}
-	// Second failure inside the window but below the observation floor.
-	now = 1000
-	second := store.DegradeForGatewayFailure("acc", "acc", "transport:boom")
-	if second.Status != AvailabilityStatusNormal || *second.FailureCount != 2 {
-		t.Fatalf("second = %+v", second)
-	}
-	// Past the minimum observation the degradation activates.
-	now = 61_000
-	third := store.DegradeForGatewayFailure("acc", "acc", "transport:boom")
-	if third.Status != AvailabilityStatusDegraded || *third.FailureCount != 3 {
-		t.Fatalf("third = %+v", third)
-	}
-	// Ordering places degraded accounts after normal ones and preserves tiers.
-	accounts := []SuppressibleAccount{suppressibleAccount("acc"), suppressibleAccount("b"), suppressibleAccount("c")}
-	order := store.OrderDegradations(accounts, nil)
-	if !order.Applied || order.DegradedCount != 1 || order.Accounts[0].ID != "b" {
-		t.Fatalf("order = %+v", order)
-	}
-	if store.CountDegradations() != 1 {
-		t.Fatalf("degradations = %d", store.CountDegradations())
-	}
-	// Active degradations persist (Node only cleans inactive ones whose
-	// window elapsed).
-	now = 61_000 + 5*60_000 + 1
-	if count := store.CountDegradations(); count != 1 {
-		t.Fatalf("active degradations = %d", count)
-	}
-	// An inactive degradation is dropped once its window elapses.
-	single := newTestSuppressionStore(func() int64 { return now }, nil, false)
-	single.DegradeForGatewayFailure("once", "once", "r")
-	// CountDegradations only counts active degradations (Node semantics).
-	if single.CountDegradations() != 0 {
-		t.Fatalf("inactive degradation must not be counted")
-	}
-	// Backend-activated degradation starts active.
-	availability := store.ActivateRuntimeDegradation("acc2", "acc2", "probe failed", nil, nil)
-	if availability.Status != AvailabilityStatusDegraded {
-		t.Fatalf("activated = %+v", availability)
-	}
-}
+// TestSuppressionDegradationActivation 已随 DegradeForGatewayFailure /
+// ActivateRuntimeDegradation 写面退场删除（生产写面退场，见
+// suppression.go 顶部注记）。
 
 func TestSuppressionRedisManaged(t *testing.T) {
 	now := int64(0)
@@ -179,9 +135,6 @@ func TestSuppressionRedisManaged(t *testing.T) {
 	result := store.SuppressForGatewayFailure("acc", "acc", "r", "")
 	if result.Action != SuppressionActionRedisManaged || result.LocalFailureCount != 0 {
 		t.Fatalf("result = %+v", result)
-	}
-	if availability := store.DegradeForGatewayFailure("acc", "acc", "r"); availability.Status != AvailabilityStatusNormal {
-		t.Fatalf("degrade under redis = %+v", availability)
 	}
 	if snapshot := store.SnapshotAvailability(func(string) bool { return false }); len(snapshot) != 0 {
 		t.Fatalf("snapshot under redis = %+v", snapshot)

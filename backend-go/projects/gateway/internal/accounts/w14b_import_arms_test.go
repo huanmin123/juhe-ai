@@ -24,7 +24,7 @@ func TestW14BImportAccountValidationArms(t *testing.T) {
 				"credentials": map[string]any{"api_key": "sk-x", "base_url": "https://api.openai.com/v1"}},
 			map[string]any{"name": "w14b-i2", "providerCode": "openai", "type": "api_key",
 				"status": "bogus", "concurrencyLimit": float64(-1), "accountExpiresAt": "not-a-time",
-				"groupName": "w14b-g1",
+				"groupName":   "w14b-g1",
 				"credentials": map[string]any{"api_key": "sk-x", "base_url": "https://api.openai.com/v1"}},
 			map[string]any{"name": "w14b-i3", "providerCode": "openai", "providerProtocolProfileId": openAICompatibleProfileID,
 				"type": "api_key", "status": "active", "groupName": "w14b-g1",
@@ -134,15 +134,15 @@ func TestW14BImportModelCatalogValidationArms(t *testing.T) {
 }
 
 func TestW14BImportPushNilAndEmptyMessages(t *testing.T) {
-	// push 的 nil messages 臂（messages 为 nil 时直接返回）。
+	// Push 的 nil messages 臂（messages 为 nil 时直接返回）。
 	source := &normalizedImportAccount{}
-	source.push("w14b-should-noop")
-	if source.messages != nil {
+	source.Push("w14b-should-noop")
+	if source.Messages != nil {
 		t.Fatal("nil messages 不应分配")
 	}
 	messages := []string{}
-	source.messages = &messages
-	source.push("w14b-append")
+	source.Messages = &messages
+	source.Push("w14b-append")
 	if len(messages) != 1 || messages[0] != "w14b-append" {
 		t.Fatalf("push 应追加消息：%v", messages)
 	}

@@ -54,7 +54,7 @@ type returnableGrant struct {
 // as 400.
 func (s *Store) ReturnAuthorizationInstance(ctx context.Context, accountID string, access AccessScope) error {
 	ctx = ensureCtx(ctx)
-	grantee := access.viewerID()
+	grantee := access.EffectiveViewerID()
 	if grantee == "" || s.returner == nil {
 		// No grantee context or an unwired authz port: the grant cannot be
 		// returned (Node renders the same 404 for every localization miss).
@@ -68,7 +68,7 @@ func (s *Store) ReturnAuthorizationInstance(ctx context.Context, accountID strin
 	authorized := s.authorizedReadableIDs(ctx, access)[id]
 	scopeClause := ""
 	args := []any{id, grantee}
-	if scoped := access.manageableID(); scoped != "" && !authorized {
+	if scoped := access.ManageableID(); scoped != "" && !authorized {
 		scopeClause = " AND system_account_id = ?"
 		args = append(args, scoped)
 	}
@@ -88,10 +88,10 @@ func (s *Store) ReturnAuthorizationInstance(ctx context.Context, accountID strin
 	// The runtime authorization row: grantee-scoped, owner must differ. Its
 	// resource identity (type/resource_id/owner) keys the direct grant.
 	var runtime struct {
-		id          string
-		ownerID     string
+		id           string
+		ownerID      string
 		resourceType string
-		resourceID  string
+		resourceID   string
 	}
 	err = s.db.QueryRowContext(ctx, s.bind(`SELECT id, resource_owner_system_account_id, resource_type, resource_id
 		FROM `+s.table("resource_authorizations")+`

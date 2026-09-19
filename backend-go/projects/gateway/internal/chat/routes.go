@@ -83,6 +83,11 @@ type ToolCapabilitiesResolver func(conversation *Conversation, ownerID string) a
 // Deps carries the route collaborators.
 type Deps struct {
 	Store *Store
+	// AssetEditReferences is the narrow asset-read port consumed by the
+	// generation family (REFACTOR-0006 phase C: implemented by
+	// chatassets.AssetStore). Register wires it from Store when left nil,
+	// so the composition root needs no extra assembly.
+	AssetEditReferences AssetEditReferenceReader
 	// RequireSession mirrors the my-chat mount middleware (requireAuth +
 	// forceSelfAccessScope). Optional in tests that install the context
 	// directly.
@@ -292,6 +297,9 @@ func (e *invalidRequestError) Error() string { return e.Message }
 func (d *Deps) Register(k *kernel.Kernel, prefix string) {
 	if prefix == "" {
 		prefix = "/__aisys__/api/my-chat"
+	}
+	if d.AssetEditReferences == nil && d.Store != nil {
+		d.AssetEditReferences = d.Store.assets
 	}
 	rt := &chatRoutes{deps: d, preps: map[string]*activePreparation{}, actions: map[string]*activeConversationAction{}}
 	mount := func(method, pattern string, handler http.HandlerFunc) {

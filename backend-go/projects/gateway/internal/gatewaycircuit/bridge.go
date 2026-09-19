@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
 // Durable incident state names mirror AccountCircuitIncidentState.
@@ -1255,7 +1257,7 @@ func (b *Bridge) refreshDesiredState(ctx context.Context, scope Scope, observedS
 }
 
 func (b *Bridge) observeRestoredRelationships(result MutationResult) {
-	for _, state := range result.RelatedStates.slice() {
+	for _, state := range result.RelatedStates.Slice() {
 		b.Observe(state.Scope, state)
 	}
 }
@@ -1815,14 +1817,11 @@ func compareCursor(left, right *RebuildCursor) int {
 	return strings.Compare(left.CircuitScopeKey, right.CircuitScopeKey)
 }
 
-func derefString(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
+// REFACTOR-0008 下潜委托壳：与 circuitstore 逐字节相同，收敛到
+// shared/platform/circuitstate，包内调用点零改动。
+func derefString(value *string) string { return circuitstate.DerefString(value) }
 
-func boolPtr(value bool) *bool { return &value }
+func boolPtr(value bool) *bool { return circuitstate.BoolPtr(value) }
 
 func durationToMs(d time.Duration) int64 {
 	return int64(d / time.Millisecond)

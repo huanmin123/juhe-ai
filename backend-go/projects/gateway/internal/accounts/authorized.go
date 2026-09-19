@@ -13,15 +13,16 @@ package accounts
 import (
 	"context"
 	"sort"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // AuthorizedAccountReader is the narrow cross-package port of the authz
 // slice's authorized-instance projection
 // (authz.Store.AuthorizedReadableAccountIDs). It maps the readable
 // authorization instance account ids for one viewer.
-type AuthorizedAccountReader interface {
-	AuthorizedReadableAccountIDs(ctx context.Context, viewerSystemAccountID string) (map[string]bool, error)
-}
+// （REFACTOR-0005 阶段 0 下沉 accountscore，根包保留类型别名。）
+type AuthorizedAccountReader = accountscore.AuthorizedAccountReader
 
 // SetAuthorizedReader wires the reader. A nil reader keeps the pure owner
 // view (the legacy behavior before the M10 hookup).
@@ -33,10 +34,10 @@ func (s *Store) SetAuthorizedReader(reader AuthorizedAccountReader) {
 // the scope viewer. Admins see every row, so the projection is skipped; a
 // failing reader degrades to the owner view (logged, never fatal for reads).
 func (s *Store) authorizedReadableIDs(ctx context.Context, access AccessScope) map[string]bool {
-	if access.canAccessAll() || s.authorized == nil {
+	if access.CanAccessAll() || s.authorized == nil {
 		return nil
 	}
-	viewer := access.manageableID()
+	viewer := access.ManageableID()
 	if viewer == "" {
 		viewer = access.ViewerID
 	}

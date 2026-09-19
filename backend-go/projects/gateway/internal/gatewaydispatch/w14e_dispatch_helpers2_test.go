@@ -61,12 +61,12 @@ func TestW14EUsageHeadersNumberAndResetArms(t *testing.T) {
 		t.Fatal("headers without codex data must return nil")
 	}
 	snapshot := ParseOpenAICodexUsageHeaders(http.Header{
-		"X-Codex-Primary-Used-Percent":          {"10.5"},
-		"X-Codex-Primary-Reset-After-Seconds":   {"3600"},
-		"X-Codex-Primary-Window-Minutes":        {"60"},
-		"X-Codex-Secondary-Used-Percent":        {"20"},
-		"X-Codex-Secondary-Reset-After-Seconds": {"60"},
-		"X-Codex-Secondary-Window-Minutes":      {"5"},
+		"X-Codex-Primary-Used-Percent":                 {"10.5"},
+		"X-Codex-Primary-Reset-After-Seconds":          {"3600"},
+		"X-Codex-Primary-Window-Minutes":               {"60"},
+		"X-Codex-Secondary-Used-Percent":               {"20"},
+		"X-Codex-Secondary-Reset-After-Seconds":        {"60"},
+		"X-Codex-Secondary-Window-Minutes":             {"5"},
 		"X-Codex-Primary-Over-Secondary-Limit-Percent": {"1.5"},
 	})
 	if snapshot == nil || snapshot.PrimaryUsedPercent == nil || snapshot.SecondaryWindowMinutes == nil {
@@ -80,7 +80,7 @@ func TestW14EUsageHeadersNumberAndResetArms(t *testing.T) {
 func TestW14EAssignNormalizedWindowArms(t *testing.T) {
 	normalized := &NormalizedCodexLimits{}
 	// 窗口分钟非法（<=0）直接跳过。
-	zeroMinutes := codexWindowCandidate{windowMinutes: int64PtrW14E(0)}
+	zeroMinutes := codexWindowCandidate{WindowMinutes: int64PtrW14E(0)}
 	assignNormalizedWindow(normalized, "5h", zeroMinutes)
 	// 全空候选跳过。
 	empty := codexWindowCandidate{}
@@ -89,8 +89,8 @@ func TestW14EAssignNormalizedWindowArms(t *testing.T) {
 	used := 42.0
 	seconds := int64(3600)
 	minutes := int64(60)
-	assignNormalizedWindow(normalized, "5h", codexWindowCandidate{usedPercent: &used, resetAfterSeconds: &seconds, windowMinutes: &minutes})
-	assignNormalizedWindow(normalized, "7d", codexWindowCandidate{usedPercent: &used, resetAfterSeconds: &seconds})
+	assignNormalizedWindow(normalized, "5h", codexWindowCandidate{UsedPercent: &used, ResetAfterSeconds: &seconds, WindowMinutes: &minutes})
+	assignNormalizedWindow(normalized, "7d", codexWindowCandidate{UsedPercent: &used, ResetAfterSeconds: &seconds})
 	if normalized.Used5hPercent == nil || normalized.Used7dPercent == nil {
 		t.Fatalf("normalized = %+v", normalized)
 	}

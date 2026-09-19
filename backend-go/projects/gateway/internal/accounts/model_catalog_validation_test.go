@@ -352,7 +352,7 @@ func TestCreateWiresGptRequestOverridesAssertion(t *testing.T) {
 	if result.ID == "" || fake.callCount() == 0 {
 		t.Fatalf("create must run the override assertion: id=%q calls=%d", result.ID, fake.callCount())
 	}
-	if call := fake.lastCall(); call.systemAccountID != scope.viewerID() {
+	if call := fake.lastCall(); call.systemAccountID != scope.EffectiveViewerID() {
 		t.Fatalf("override assertion must use the request scope: %+v", call)
 	}
 	// 未命中：支持模型全部不在目录 → modelItems 为空 → tier 断言失败 → 400。
@@ -483,7 +483,7 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 		t.Fatal("created id must not be empty")
 	}
 	last := fake.lastCall()
-	if !last.includeUnpriced || last.providerCode != "gpt" || last.systemAccountID != scope.viewerID() {
+	if !last.includeUnpriced || last.providerCode != "gpt" || last.systemAccountID != scope.EffectiveViewerID() {
 		t.Fatalf("supported-models catalog call contract: %+v", last)
 	}
 	// 目录外 → 400，文案逐字对照归档。
@@ -505,7 +505,7 @@ func TestCreateWiresSupportedModelsCatalogAssertion(t *testing.T) {
 		VALUES ('prof-openai-compat', 'openai', 'OpenAI 兼容协议', 1, 'openai', 'v1', 'https://compat.example.com/v1',
 		'gpt-4o-mini', '["api_key","oauth"]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, provider_code, enabled, is_default, group_type, created_at, updated_at)
-		VALUES ('grp-openai-compat-default', ?, '兼容默认分组', 'openai', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, scope.viewerID())
+		VALUES ('grp-openai-compat-default', ?, '兼容默认分组', 'openai', 1, 1, 'personal', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, scope.EffectiveViewerID())
 	messagesOnly := &fakeAccountModelCatalog{catalog: []AccountModelCatalogFact{{
 		Model:                 "gpt-4o-mini",
 		SupportedAPIProtocols: []string{"messages"},

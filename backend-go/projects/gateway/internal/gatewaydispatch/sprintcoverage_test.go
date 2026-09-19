@@ -116,15 +116,15 @@ func TestDispatchPostCycleRecoverableWaitNotAllSuppressed(t *testing.T) {
 // TestRollingBufferCaptureFullConsumption: 逐块消费清空后压缩为 nil。
 func TestRollingBufferCaptureFullConsumption(t *testing.T) {
 	capture := newRollingBufferCapture(4)
-	capture.push([]byte("ab"))
-	capture.push([]byte("cd"))
-	capture.push([]byte("ef"))
-	capture.push([]byte("gh"))
+	capture.Push([]byte("ab"))
+	capture.Push([]byte("cd"))
+	capture.Push([]byte("ef"))
+	capture.Push([]byte("gh"))
 	// 头部两块被完整消费 → compact 清空 chunks。
-	if capture.toText() == nil {
+	if capture.ToText() == nil {
 		t.Fatal("仍有活跃块")
 	}
-	if got := *capture.toText(); got != "efgh" {
+	if got := *capture.ToText(); got != "efgh" {
 		t.Fatalf("text = %q", got)
 	}
 }

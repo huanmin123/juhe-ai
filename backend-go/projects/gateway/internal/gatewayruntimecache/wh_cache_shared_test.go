@@ -255,13 +255,10 @@ func TestWhRuntimeIdentityIndexMigration(t *testing.T) {
 	if _, err := svc.ReadCachedGatewayRuntimeAsync(ctx, "sk-same"); err != nil {
 		t.Fatal(err)
 	}
-	// 纯助手：克隆绑定行与快照不可用错误。
+	// 纯助手：克隆绑定行。
 	cloned := GatewayAPIKeyGroupBindingRow{ID: "b"}.Clone()
 	if cloned.ID != "b" {
 		t.Fatal("绑定克隆失败")
-	}
-	if (errSnapshotUnavailableError{}).Error() != "运行时快照依赖不可用" {
-		t.Fatal("快照错误文案契约失败")
 	}
 }
 

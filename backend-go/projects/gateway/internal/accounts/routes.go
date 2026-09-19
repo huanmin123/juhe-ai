@@ -487,7 +487,7 @@ func (d *Deps) lock(enabled bool) http.HandlerFunc {
 				ActorUsername:                 auth.Username,
 				ActorDisplayName:              auth.DisplayName,
 				ActorRole:                     auth.Role,
-				OperationScopeSystemAccountID: access.manageableID(),
+				OperationScopeSystemAccountID: access.ManageableID(),
 				Mode:                          operationMode(access),
 				Module:                        "accounts",
 				Action:                        action,
@@ -544,7 +544,7 @@ func (d *Deps) lockConfig(w http.ResponseWriter, r *http.Request) {
 			ActorUsername:                 auth.Username,
 			ActorDisplayName:              auth.DisplayName,
 			ActorRole:                     auth.Role,
-			OperationScopeSystemAccountID: access.manageableID(),
+			OperationScopeSystemAccountID: access.ManageableID(),
 			Mode:                          operationMode(access),
 			Module:                        "accounts",
 			Action:                        "lock-config",
@@ -731,7 +731,7 @@ func (d *Deps) writeError(w http.ResponseWriter, err error) {
 		kernel.WriteJSON(w, http.StatusConflict, map[string]string{"message": batchConflict.Error()})
 	case errors.As(err, &batchAccess):
 		status := http.StatusNotFound
-		if batchAccess.sameScope() {
+		if batchAccess.SameScope() {
 			status = http.StatusBadRequest
 		}
 		kernel.WriteError(w, status, batchAccess.Message)

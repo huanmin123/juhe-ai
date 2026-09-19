@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // Credentials write normalization (第 1 段): the port of
@@ -58,27 +60,14 @@ var deprecatedAccountCredentialKeys = map[string]bool{
 	"codex_responses_strict_intercept_enabled": true,
 }
 
-// EndpointModeDefaultContext mirrors ProviderAccountCredentialContext: the
-// provider profile identity the endpoint-mode defaults resolve against.
-type EndpointModeDefaultContext struct {
-	ProviderCode              string
-	AccountType               string
-	ClientCompatibility       string
-	ProtocolCode              string
-	ProtocolVersion           string
-	ProviderProtocolProfileID string
-}
+// EndpointModeDefaultContext 下沉中立层 accountscore（accountstransfer 的
+// 凭据归一化端口签名复用同一契约），门面保留别名；原方法面改为自由函数
+// （Go 不允许在别名上定义方法），行为逐字节一致。
+type EndpointModeDefaultContext = accountscore.EndpointModeDefaultContext
 
-// modeContextWith pins the account type exactly like the Node call sites that
-// spread `{ ...endpointModeDefaults, accountType: '<type>' }` into the
-// endpoint-mode defaults.
-func (c EndpointModeDefaultContext) modeContextWith(accountType string) endpointModeDefaultContext {
-	copied := c.modeContext()
-	copied.accountType = accountType
-	return copied
-}
-
-func (c EndpointModeDefaultContext) modeContext() endpointModeDefaultContext {
+// endpointModeContextOf mirrors the original modeContext method: the
+// facade-private endpoint-mode context projection.
+func endpointModeContextOf(c EndpointModeDefaultContext) endpointModeDefaultContext {
 	return endpointModeDefaultContext{
 		providerCode:              c.ProviderCode,
 		accountType:               c.AccountType,
@@ -87,6 +76,15 @@ func (c EndpointModeDefaultContext) modeContext() endpointModeDefaultContext {
 		providerProtocolProfileID: c.ProviderProtocolProfileID,
 		clientCompatibility:       c.ClientCompatibility,
 	}
+}
+
+// endpointModeContextWithOf pins the account type exactly like the Node call
+// sites that spread `{ ...endpointModeDefaults, accountType: '<type>' }` into
+// the endpoint-mode defaults (原 modeContextWith 方法).
+func endpointModeContextWithOf(c EndpointModeDefaultContext, accountType string) endpointModeDefaultContext {
+	copied := endpointModeContextOf(c)
+	copied.accountType = accountType
+	return copied
 }
 
 // NormalizeAccountCredentialsForWrite mirrors normalizeAccountCredentialsForWrite.
@@ -186,7 +184,7 @@ func normalizeAPIKeyAccountCredentials(input map[string]any, defaults EndpointMo
 		"api_key":  apiKeys[0],
 		"base_url": baseURL,
 	}
-	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), defaults.modeContextWith("api_key"))
+	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "api_key"))
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +310,7 @@ func normalizeOAuthAccountCredentials(input map[string]any, defaults EndpointMod
 	if err != nil {
 		return nil, err
 	}
-	anthropicProfile := isAnthropicProtocolProfileOf(defaults.modeContext().predicate())
+	anthropicProfile := isAnthropicProtocolProfileOf(endpointModeContextOf(defaults).predicate())
 	if anthropicProfile && accessToken == "" {
 		return nil, &ValidationError{Message: "Anthropic OAuth Access Token 不能为空"}
 	}
@@ -323,7 +321,7 @@ func normalizeOAuthAccountCredentials(input map[string]any, defaults EndpointMod
 	if err != nil {
 		return nil, err
 	}
-	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), defaults.modeContextWith("oauth"))
+	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "oauth"))
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +429,7 @@ func normalizeGoogleOAuthAccountCredentials(input map[string]any, defaults Endpo
 	if err != nil {
 		return nil, err
 	}
-	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), defaults.modeContextWith("google_oauth"))
+	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "google_oauth"))
 	if err != nil {
 		return nil, err
 	}
@@ -730,16 +728,8 @@ func credentialsDeepEqual(left, right Credentials) bool {
 	return string(leftEncoded) == string(rightEncoded)
 }
 
-// canonicalizeJSONValue JSON-round-trips arbitrary decoded values so both
-// sides of a comparison carry identical shapes (float64, []any, map[string]any).
+// canonicalizeJSONValue 阶段 C 下沉 accountscore（批量域深比较与凭据归一化
+// 共用），根包保留同名转发.
 func canonicalizeJSONValue(value any) any {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return value
-	}
-	var decoded any
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		return value
-	}
-	return decoded
+	return accountscore.CanonicalizeJSONValue(value)
 }

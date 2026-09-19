@@ -49,6 +49,9 @@ func TestW9BAuthenticatedRateLimitHealthBypass(t *testing.T) {
 	if !limiter.AuthenticatedRateLimit(recorder, httptest.NewRequest(http.MethodGet, "/__aisys__/api/health", nil), "acct-1") {
 		t.Fatal("后缀 health 必须直通")
 	}
+	if !limiter.AuthenticatedRateLimit(recorder, httptest.NewRequest(http.MethodGet, "/__aisys__/health", nil), "acct-1") {
+		t.Fatal("__aisys__/health 必须直通")
+	}
 }
 
 func TestW9BIntegerSettingArms(t *testing.T) {

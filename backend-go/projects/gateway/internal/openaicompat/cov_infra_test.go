@@ -467,16 +467,16 @@ func TestCovConfigAndEndpointFamilies(t *testing.T) {
 		}
 	})
 	t.Run("withDefaults", func(t *testing.T) {
-		defaulted := Config{}.withDefaults()
+		defaulted := Config{}.WithDefaults()
 		if defaulted.MaxFileBytes != DefaultMaxFileBytes || defaulted.FilesRoot == "" {
 			t.Errorf("Config 缺省 = %+v", defaulted)
 		}
-		ci := CodeInterpreterConfig{}.withDefaults()
+		ci := CodeInterpreterConfig{}.WithDefaults()
 		if ci.PythonCommand != "python" || ci.TimeoutMs != 5000 || ci.MaxCodeBytes != 64*1024 ||
 			ci.MaxOutputBytes != 64*1024 || ci.MaxArtifactCount != 8 || ci.TempRoot == "" {
 			t.Errorf("CodeInterpreter 缺省 = %+v", ci)
 		}
-		ca := ComputerAdapterConfig{}.withDefaults()
+		ca := ComputerAdapterConfig{}.WithDefaults()
 		if ca.TimeoutMs != 30000 || ca.MaxBodyBytes != 512*1024 {
 			t.Errorf("ComputerAdapter 缺省 = %+v", ca)
 		}
@@ -492,7 +492,7 @@ func TestCovRoutesAndErrorsContract(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		unauthorized := badRequest("缺少或无效的 API Key", "invalid_api_key")
 		unauthorized.StatusCode = 401
-		unauthorized.write(recorder)
+		unauthorized.Write(recorder)
 		if recorder.Code != 401 || !strings.Contains(recorder.Body.String(), "invalid_api_key") {
 			t.Errorf("401 渲染 = %d %s", recorder.Code, recorder.Body.String())
 		}

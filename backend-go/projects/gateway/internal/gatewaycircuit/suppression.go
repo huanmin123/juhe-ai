@@ -173,11 +173,21 @@ type LocalSuppressionStoreOptions struct {
 	AccountConcurrency func(concurrencyAccountID string) int
 	// Logger defaults to a no-op logger.
 	Logger Logger
+	// DelayLadderMs 覆盖本地屏蔽退避阶梯（默认 localSuppressionDelayMs，
+	// 生产契约 3000/5000/10000）。注入点供链路测试注入短退避；空值 =
+	// 生产行为（R4 时钟注入约定：默认值即生产，测试覆写）。
+	DelayLadderMs []int64
 }
 
 // LocalSuppressionStore mirrors the module-level suppression state of
 // account-local-suppression-store.ts. The zero value is not usable; construct
 // through NewLocalSuppressionStore.
+//
+// 生产写面已退场：Node 侧本就未接线（普通请求不写 precheck/运行态），Go 与
+// Node 终态一致，生产组合根不装配任何写入入口，suppressions/degradations
+// 恒空；读面（FilterSuppressions/SnapshotAvailability/OrderDegradations 等）
+// 生产已装配，按恒空透传保留。见 PLAN-20260918T142845703Z W6 与
+// PLAN-20260919T000723744Z。
 type LocalSuppressionStore struct {
 	mu                    sync.Mutex
 	suppressions          map[string]*LocalAccountSuppression
@@ -187,6 +197,7 @@ type LocalSuppressionStore struct {
 	canUseProcessLocal    func() bool
 	accountConcurrency    func(string) int
 	logger                Logger
+	delayLadderMs         []int64
 }
 
 // NewLocalSuppressionStore mirrors the module initialization.
@@ -207,6 +218,10 @@ func NewLocalSuppressionStore(options LocalSuppressionStoreOptions) *LocalSuppre
 	if logger == nil {
 		logger = NopLogger
 	}
+	delayLadder := options.DelayLadderMs
+	if len(delayLadder) == 0 {
+		delayLadder = localSuppressionDelayMs
+	}
 	return &LocalSuppressionStore{
 		suppressions:       map[string]*LocalAccountSuppression{},
 		degradations:       map[string]*localAccountDegradation{},
@@ -214,89 +229,15 @@ func NewLocalSuppressionStore(options LocalSuppressionStoreOptions) *LocalSuppre
 		canUseProcessLocal: canUse,
 		accountConcurrency: concurrency,
 		logger:             logger,
+		delayLadderMs:      delayLadder,
 	}
-}
-
-// DegradeForGatewayFailure mirrors degradeLocalAccountForGatewayFailure.
-func (s *LocalSuppressionStore) DegradeForGatewayFailure(runtimeKey, accountID, reason string) AccountRuntimeAvailability {
-	if !s.canUseProcessLocal() {
-		s.mu.Lock()
-		s.clearLocked()
-		s.mu.Unlock()
-		return AccountRuntimeAvailability{
-			Status:       AvailabilityStatusNormal,
-			Reason:       reason,
-			Since:        msToRFC3339(s.now()),
-			FailureCount: int64Ptr(0),
-		}
-	}
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cleanupExpiredDegradationsLocked(now)
-	currentSuppression := s.suppressions[runtimeKey]
-	shouldAdvanceFailureCount := shouldAdvanceLocalDegradationFailureCount(currentSuppression, now)
-	current := s.degradations[runtimeKey]
-	withinWindow := current != nil && now-current.firstFailureMs <= LocalDegradationWindowMs
-	var nextFailureCount int64
-	if shouldAdvanceFailureCount {
-		if withinWindow {
-			nextFailureCount = current.failureCount + 1
-		} else {
-			nextFailureCount = 1
-		}
-	} else {
-		nextFailureCount = int64(1)
-		if current != nil && current.failureCount > 1 {
-			nextFailureCount = current.failureCount
-		}
-	}
-	degradation := &localAccountDegradation{
-		accountID:      accountID,
-		reason:         reason,
-		sinceMs:        now,
-		firstFailureMs: now,
-		lastFailureMs:  now,
-		failureCount:   nextFailureCount,
-	}
-	if current != nil {
-		degradation.sinceMs = current.sinceMs
-		if withinWindow {
-			degradation.firstFailureMs = current.firstFailureMs
-		}
-	}
-	s.degradations[runtimeKey] = degradation
-	if !shouldAdvanceFailureCount {
-		if isLocalAccountDegradationActive(degradation) {
-			return localAccountDegradationAvailability(degradation)
-		}
-		return localAccountDegradationObservationAvailability(degradation)
-	}
-	if !isLocalAccountDegradationActive(degradation) {
-		s.logger.Info(map[string]any{
-			"event":                      "gateway_account_runtime_degradation_observed",
-			"accountId":                  accountID,
-			"runtimeKey":                 runtimeKey,
-			"failureCount":               degradation.failureCount,
-			"activationFailureThreshold": LocalDegradationActivationFailureThreshold,
-			"observationWindowSeconds":   LocalDegradationWindowMs / 1000,
-			"reason":                     reason,
-		}, "账号近期失败已记录，暂未达到运行态调度降级门槛")
-		return localAccountDegradationObservationAvailability(degradation)
-	}
-	s.logger.Warn(map[string]any{
-		"event":                      "gateway_account_runtime_degraded",
-		"accountId":                  accountID,
-		"runtimeKey":                 runtimeKey,
-		"failureCount":               degradation.failureCount,
-		"activationFailureThreshold": LocalDegradationActivationFailureThreshold,
-		"observationWindowSeconds":   LocalDegradationWindowMs / 1000,
-		"reason":                     reason,
-	}, "账号近期失败，已进入运行态调度降级，仅在普通候选不足时兜底尝试")
-	return localAccountDegradationAvailability(degradation)
 }
 
 // SuppressForGatewayFailure mirrors suppressLocalAccountForGatewayFailure.
+//
+// 写面已退场：Node 未接线机制，生产组合根不调用本方法（degradations map
+// 恒空）；保留仅因 cmd 测试直接以具体类型调用，删除会破坏不可动的 cmd
+// 测试编译。见 PLAN-20260918T142845703Z W6 与 PLAN-20260919T000723744Z。
 func (s *LocalSuppressionStore) SuppressForGatewayFailure(runtimeKey, accountID, reason string, accountConcurrencyAccountID string) LocalSuppressionResult {
 	if accountConcurrencyAccountID == "" {
 		accountConcurrencyAccountID = accountID
@@ -335,8 +276,8 @@ func (s *LocalSuppressionStore) SuppressForGatewayFailure(runtimeKey, accountID,
 	}
 	s.mu.Unlock()
 
-	if localFailureCount > int64(len(localSuppressionDelayMs)) {
-		fallbackDelayMs := localSuppressionDelayMs[len(localSuppressionDelayMs)-1]
+	if localFailureCount > int64(len(s.delayLadderMs)) {
+		fallbackDelayMs := s.delayLadderMs[len(s.delayLadderMs)-1]
 		var observedForMs int64
 		s.mu.Lock()
 		if current != nil {
@@ -386,7 +327,7 @@ func (s *LocalSuppressionStore) SuppressForGatewayFailure(runtimeKey, accountID,
 		}
 	}
 
-	delayMs := localSuppressionDelayMs[localFailureCount-1]
+	delayMs := s.delayLadderMs[localFailureCount-1]
 	s.mu.Lock()
 	suppress(delayMs, AvailabilityStatusLocalSuppressed)
 	s.mu.Unlock()
@@ -416,6 +357,10 @@ type suppressionMetadata struct {
 }
 
 // Suppress mirrors suppressLocalAccount.
+//
+// 写面已退场：Node 未接线机制，生产组合根不调用本方法（suppressions map
+// 恒空）；保留仅因 cmd 测试直接以具体类型调用，删除会破坏不可动的 cmd
+// 测试编译。见 PLAN-20260918T142845703Z W6 与 PLAN-20260919T000723744Z。
 func (s *LocalSuppressionStore) Suppress(runtimeKey string, durationMs int64, reason string, status string, metadata *suppressionMetadata) {
 	if !s.canUseProcessLocal() {
 		s.mu.Lock()
@@ -659,6 +604,10 @@ func (s *LocalSuppressionStore) OrderDegradations(accounts []SuppressibleAccount
 }
 
 // FilterSuppressions mirrors filterLocalAccountSuppressions.
+//
+// 生产写面退场，读面恒空透传保留：suppressions map 生产恒空，本方法对
+// 候选列表原样放行；组合根（chain_suppression_port）仍装配本读面。
+// 见 PLAN-20260918T142845703Z W6 与 PLAN-20260919T000723744Z。
 func (s *LocalSuppressionStore) FilterSuppressions(
 	accounts []SuppressibleAccount,
 	isPrecheckRuntimeBlocking PrecheckRuntimeBlockingPredicate,
@@ -772,36 +721,6 @@ func (s *LocalSuppressionStore) precheckRuntimeBlockingLocked(runtimeKey string,
 	return suppression.UntilMs > now
 }
 
-// ClearSuppression mirrors clearLocalAccountSuppression.
-func (s *LocalSuppressionStore) ClearSuppression(runtimeKey string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.canUseProcessLocal() {
-		s.clearLocked()
-		return false
-	}
-	if _, ok := s.suppressions[runtimeKey]; !ok {
-		return false
-	}
-	delete(s.suppressions, runtimeKey)
-	return true
-}
-
-// ClearDegradation mirrors clearLocalAccountDegradation.
-func (s *LocalSuppressionStore) ClearDegradation(runtimeKey string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.canUseProcessLocal() {
-		s.clearLocked()
-		return false
-	}
-	if _, ok := s.degradations[runtimeKey]; !ok {
-		return false
-	}
-	delete(s.degradations, runtimeKey)
-	return true
-}
-
 // AgeDegradationForTest mirrors ageLocalAccountDegradationForTest.
 func (s *LocalSuppressionStore) AgeDegradationForTest(runtimeKey string, ageMs int64) {
 	if !s.canUseProcessLocal() {
@@ -819,55 +738,6 @@ func (s *LocalSuppressionStore) AgeDegradationForTest(runtimeKey string, ageMs i
 		current.sinceMs = firstFailureMs
 	}
 	current.firstFailureMs = firstFailureMs
-}
-
-// ActivateRuntimeDegradation mirrors activateLocalAccountRuntimeDegradation.
-func (s *LocalSuppressionStore) ActivateRuntimeDegradation(runtimeKey, accountID, reason string, sinceMs *int64, failureCount *int64) AccountRuntimeAvailability {
-	if !s.canUseProcessLocal() {
-		s.mu.Lock()
-		s.clearLocked()
-		s.mu.Unlock()
-		return AccountRuntimeAvailability{
-			Status:       AvailabilityStatusNormal,
-			Reason:       reason,
-			Since:        msToRFC3339(s.now()),
-			FailureCount: int64Ptr(0),
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := s.now()
-	effectiveSinceMs := now - LocalDegradationMinObservationMs
-	if sinceMs != nil {
-		effectiveSinceMs = *sinceMs
-	}
-	effectiveFailureCount := LocalDegradationActivationFailureThreshold
-	if failureCount != nil && *failureCount > LocalDegradationActivationFailureThreshold {
-		effectiveFailureCount = *failureCount
-	}
-	degradation := &localAccountDegradation{
-		accountID:      accountID,
-		reason:         reason,
-		sinceMs:        effectiveSinceMs,
-		firstFailureMs: effectiveSinceMs,
-		lastFailureMs:  now,
-		failureCount:   effectiveFailureCount,
-	}
-	minFirstFailure := now - LocalDegradationMinObservationMs
-	if degradation.firstFailureMs > minFirstFailure {
-		degradation.firstFailureMs = minFirstFailure
-	}
-	s.degradations[runtimeKey] = degradation
-	s.logger.Warn(map[string]any{
-		"event":                      "gateway_account_runtime_degraded",
-		"accountId":                  accountID,
-		"runtimeKey":                 runtimeKey,
-		"failureCount":               effectiveFailureCount,
-		"activationFailureThreshold": LocalDegradationActivationFailureThreshold,
-		"observationWindowSeconds":   LocalDegradationWindowMs / 1000,
-		"reason":                     reason,
-	}, "后台探针确认账号近期不稳，已进入运行态调度降级")
-	return localAccountDegradationAvailability(degradation)
 }
 
 // AgeSuppressionSinceForTest rewrites the suppression's sinceMs so tests can
@@ -1066,28 +936,9 @@ func minRetryAtMs(current *int64, candidate int64) *int64 {
 	return &value
 }
 
-func shouldAdvanceLocalDegradationFailureCount(currentSuppression *LocalAccountSuppression, now int64) bool {
-	if currentSuppression == nil {
-		return true
-	}
-	if currentSuppression.Status == AvailabilityStatusHalfOpen {
-		return true
-	}
-	return currentSuppression.Status == AvailabilityStatusLocalSuppressed && currentSuppression.UntilMs <= now
-}
-
 func localAccountDegradationAvailability(degradation *localAccountDegradation) AccountRuntimeAvailability {
 	return AccountRuntimeAvailability{
 		Status:       AvailabilityStatusDegraded,
-		Reason:       degradation.reason,
-		Since:        msToRFC3339(degradation.sinceMs),
-		FailureCount: int64Ptr(degradation.failureCount),
-	}
-}
-
-func localAccountDegradationObservationAvailability(degradation *localAccountDegradation) AccountRuntimeAvailability {
-	return AccountRuntimeAvailability{
-		Status:       AvailabilityStatusNormal,
 		Reason:       degradation.reason,
 		Since:        msToRFC3339(degradation.sinceMs),
 		FailureCount: int64Ptr(degradation.failureCount),

@@ -10,30 +10,36 @@ import (
 	"time"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
-// ConflictError maps to the Node route family 409 paths: the owner-scoped
-// duplicate account name error.
-type ConflictError struct{ Message string }
-
-func (e *ConflictError) Error() string { return e.Message }
-
-// ValidationError maps to the Node 400 mutation message set surfaced through
-// the body validation and repository normalization layers.
-type ValidationError struct{ Message string }
-
-func (e *ValidationError) Error() string { return e.Message }
-
-// RevisionConflictError maps to AccountManagementPatchRevisionConflictError /
-// the lock config-revision CAS failures: the route family renders 409 with the
-// Node copy ('账户配置已被其他操作更新，请刷新后重试' for the patch, the lock
-// copies for the lock family).
-type RevisionConflictError struct{ Message string }
-
-func (e *RevisionConflictError) Error() string { return e.Message }
+// REFACTOR-0005 阶段 0：错误三件套、RevisionConflictMessage、AccessScope、
+// queryer 已下沉中立包 accountscore；根包保留别名，外部 accounts.XXX 消费面
+// 零改动。
+type (
+	// ConflictError maps to the Node route family 409 paths: the owner-scoped
+	// duplicate account name error.
+	ConflictError = accountscore.ConflictError
+	// ValidationError maps to the Node 400 mutation message set surfaced through
+	// the body validation and repository normalization layers.
+	ValidationError = accountscore.ValidationError
+	// RevisionConflictError maps to AccountManagementPatchRevisionConflictError /
+	// the lock config-revision CAS failures: the route family renders 409 with the
+	// Node copy ('账户配置已被其他操作更新，请刷新后重试' for the patch, the lock
+	// copies for the lock family).
+	RevisionConflictError = accountscore.RevisionConflictError
+	// AccessScope mirrors storage/access-scope.ts for the accounts slice: admins
+	// see every row unless a systemAccountId filter narrows the view; users are
+	// pinned to their own rows (forceSelfAccessScope).
+	AccessScope = accountscore.AccessScope
+	// queryer abstracts *sql.DB / *sql.Tx so transactional paths never touch
+	// s.db while a transaction holds the single SQLite test connection.
+	queryer = accountscore.Queryer
+)
 
 // RevisionConflictMessage mirrors the accounts.routes.ts PATCH catch copy.
-const RevisionConflictMessage = "账户配置已被其他操作更新，请刷新后重试"
+const RevisionConflictMessage = accountscore.RevisionConflictMessage
 
 // Lock messages mirror account-lock.routes.ts.
 const (
@@ -46,48 +52,10 @@ const (
 const (
 	tagNotFoundMessage   = "标签不存在"
 	tagInUseMessage      = "标签已绑定账户，不能删除"
-	maxTagsPerAccount    = 24
-	maxTagNameLength     = 40
+	maxTagsPerAccount    = accountscore.MaxTagsPerAccount
+	maxTagNameLength     = accountscore.MaxTagNameLength
 	maxAccountNameLength = 128
 )
-
-// AccessScope mirrors storage/access-scope.ts for the accounts slice: admins
-// see every row unless a systemAccountId filter narrows the view; users are
-// pinned to their own rows (forceSelfAccessScope).
-type AccessScope struct {
-	ViewerID string
-	IsAdmin  bool
-	FilterID string
-}
-
-// manageableID mirrors manageableSystemAccountId: admins pass the filter
-// through (possibly empty = unscoped), non-admins are pinned to themselves.
-func (a AccessScope) manageableID() string {
-	if a.IsAdmin {
-		return a.FilterID
-	}
-	return a.ViewerID
-}
-
-func (a AccessScope) canAccessAll() bool { return a.IsAdmin }
-
-// viewerID mirrors userVisibleSystemAccountId: the filter for scoped admins,
-// the caller otherwise.
-func (a AccessScope) viewerID() string {
-	if id := a.manageableID(); id != "" {
-		return id
-	}
-	return a.ViewerID
-}
-
-// ownerID mirrors writeSystemAccountId: the account stamped on newly created
-// rows (explicit group ownership may override it in Create).
-func (a AccessScope) ownerID() (string, error) {
-	if a.ViewerID != "" {
-		return a.ViewerID, nil
-	}
-	return "", &ValidationError{Message: "缺少系统账户上下文"}
-}
 
 // Store is the dual-mode accounts persistence (SQLite + PostgreSQL). secret
 // is the Node runtimeConfig.secret material: accounts.credentials_encrypted
@@ -182,65 +150,37 @@ func newRandomID(prefix string) string {
 	return prefix + "_" + itoa64(time.Now().UnixMilli()) + "_" + hex.EncodeToString(buf)[:8]
 }
 
-func itoa64(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	digits := ""
-	for v > 0 {
-		digits = string(rune('0'+v%10)) + digits
-		v /= 10
-	}
-	return digits
-}
-
 func (s *Store) table(name string) string {
-	if s.pg {
-		return "juhe_business." + name
-	}
-	return name
+	return accountscore.SQLTable(s.pg, name)
 }
 
 // bind rewrites ? placeholders into $N for PostgreSQL.
 func (s *Store) bind(query string) string {
-	if !s.pg {
-		return query
-	}
-	var out strings.Builder
-	index := 1
-	for i := 0; i < len(query); i++ {
-		if query[i] == '?' {
-			out.WriteString("$" + itoa(index))
-			index++
-		} else {
-			out.WriteByte(query[i])
-		}
-	}
-	return out.String()
+	return accountscore.SQLBind(s.pg, query)
+}
+
+// boolTrueLiteral renders the dialect TRUE literal（原 test_store.go 定义，
+// 阶段 0 逻辑下沉 accountscore，根包保留方法转发）.
+func (s *Store) boolTrueLiteral() string {
+	return accountscore.BoolTrueLiteral(s.pg)
+}
+
+// boolFalseLiteral renders the dialect FALSE literal.
+func (s *Store) boolFalseLiteral() string {
+	return accountscore.BoolFalseLiteral(s.pg)
 }
 
 func itoa(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	digits := ""
-	for v > 0 {
-		digits = string(rune('0'+v%10)) + digits
-		v /= 10
-	}
-	return digits
+	return accountscore.Itoa(v)
 }
 
 func ensureCtx(ctx context.Context) context.Context {
-	if ctx == nil {
-		return context.Background()
-	}
-	return ctx
+	return accountscore.EnsureCtx(ctx)
 }
 
 // isoMillis mirrors Node toISOString() millisecond precision.
 func isoMillis(t time.Time) string {
-	return t.UTC().Format("2006-01-02T15:04:05.000") + "Z"
+	return accountscore.IsoMillis(t)
 }
 
 // canonicalRFC3339 mirrors canonicalizeRfc3339Instant (offset required, UTC/Z
@@ -436,26 +376,23 @@ func normalizeTextList(values []string, cap int) []string {
 	return out
 }
 
+// sortStrings 阶段 B 下沉 accountscore，根包保留同名转发.
 func sortStrings(values []string) {
-	for i := 1; i < len(values); i++ {
-		for j := i; j > 0 && values[j] < values[j-1]; j-- {
-			values[j], values[j-1] = values[j-1], values[j]
-		}
-	}
+	accountscore.SortStrings(values)
 }
 
+// itoa64 阶段 B 下沉 accountscore，根包保留同名转发.
+func itoa64(v int64) string {
+	return accountscore.Itoa64(v)
+}
+
+// minInt / maxInt 阶段 B 下沉 accountscore，根包保留同名转发.
 func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return accountscore.MinInt(a, b)
 }
 
 func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	return accountscore.MaxInt(a, b)
 }
 
 func textPrefixUpperBound(value string) string {
@@ -471,16 +408,5 @@ func textPrefixUpperBound(value string) string {
 
 // nullPtrString renders NULL/empty SQL text as an omitted JSON field.
 func nullPtrString(value sql.NullString) *string {
-	if !value.Valid || value.String == "" {
-		return nil
-	}
-	return &value.String
-}
-
-// queryer abstracts *sql.DB / *sql.Tx so transactional paths never touch
-// s.db while a transaction holds the single SQLite test connection.
-type queryer interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	return accountscore.NullPtrString(value)
 }

@@ -354,8 +354,13 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		usage:        usageService,
 		clock:        clock,
 	}
+	// One shared bounded JSON parser for the whole chain: the body pipeline's
+	// materialization jobs and the dispatch driver's once-per-request body
+	// parse share the same worker pool.
+	chainBodyParser := gatewaybody.NewJSONParser(gatewaybody.JSONParserOptions{Logger: gatewaybodyLogger{inner: logger}})
 	bodyPipeline := gatewaybody.NewMiddleware(gatewaybody.Config{
 		Logger:                    gatewaybodyLogger{inner: logger},
+		Parser:                    chainBodyParser,
 		Recorder:                  rejectionRecorder,
 		TextRawBodyLimitMegabytes: chainTextRawBodyLimitOf(deps.Cache),
 	})
@@ -415,7 +420,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	}
 	// D-151（BUG-0175）接线：把 runtime cache 的 provider model catalog 适配进
 	// gpt 请求覆盖能力解析（Nil cache 保持能力解析为空，覆盖保持惰性）。
-	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache), &chainFailureDispatcher{
+	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache, chainBodyParser), &chainFailureDispatcher{
 		usage:             usageService,
 		affinity:          sessionAffinity,
 		clientStrategy:    codexClientStrategy,

@@ -130,5 +130,3 @@ func errorCodeOf(err error) string {
 	}
 	return ""
 }
-
-

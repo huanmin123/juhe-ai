@@ -106,8 +106,8 @@ func TestW2RuntimeEndpointModeNormalizers(t *testing.T) {
 }
 
 func TestW2OpenAIModelMappingRuntimeConversion(t *testing.T) {
-	openAI := manualTestModeSource{providerCode: "gpt", protocolCode: openAIProtocolCode, protocolVersion: openAIProtocolVersion}
-	hybrid := manualTestModeSource{providerCode: hybridProviderCode}
+	openAI := manualTestModeSource{ProviderCode: "gpt", ProtocolCode: openAIProtocolCode, ProtocolVersion: openAIProtocolVersion}
+	hybrid := manualTestModeSource{ProviderCode: hybridProviderCode}
 
 	cases := []struct {
 		name      string
@@ -141,8 +141,8 @@ func TestW2OpenAIModelMappingRuntimeConversion(t *testing.T) {
 
 func TestW2ResolveTestAccountModelMapping(t *testing.T) {
 	source := manualTestModeSource{
-		providerCode: "gpt", protocolCode: openAIProtocolCode, protocolVersion: openAIProtocolVersion,
-		modelMappings: []ModelMapping{
+		ProviderCode: "gpt", ProtocolCode: openAIProtocolCode, ProtocolVersion: openAIProtocolVersion,
+		ModelMappings: []ModelMapping{
 			{SourceModel: "m1", SourceEndpointFamily: "responses", UpstreamModel: "u1", UpstreamEndpointFamily: "chat_completions", Enabled: boolPtr(true)},
 			{SourceModel: "m2", SourceEndpointFamily: "chat_completions", UpstreamModel: "u2", UpstreamEndpointFamily: "responses", Enabled: boolPtr(false)},
 			{SourceModel: "m3", SourceEndpointFamily: "chat_completions", UpstreamModel: "m3", UpstreamEndpointFamily: "chat_completions"},
@@ -171,92 +171,92 @@ func TestW2ResolveTestAccountModelMapping(t *testing.T) {
 		t.Fatalf("不支持的转换应返回 nil：%v", got)
 	}
 	resolved := resolveTestAccountModelMapping(source, "m1", "responses")
-	if resolved == nil || resolved.upstreamModel != "u1" || resolved.upstreamEndpointFamily != "chat_completions" {
+	if resolved == nil || resolved.UpstreamModel != "u1" || resolved.UpstreamEndpointFamily != "chat_completions" {
 		t.Fatalf("正常解析不一致：%v", resolved)
 	}
 	// gemini 的 openai chat 档案不支持 messages 源。
-	geminiChat := manualTestModeSource{providerCode: geminiProviderCode,
-		providerProtocolProfileID: geminiOpenAIChatV1BetaProfile,
-		modelMappings:             source.modelMappings}
+	geminiChat := manualTestModeSource{ProviderCode: geminiProviderCode,
+		ProviderProtocolProfileID: geminiOpenAIChatV1BetaProfile,
+		ModelMappings:             source.ModelMappings}
 	if got := resolveTestAccountModelMapping(geminiChat, "m1", "messages"); got != nil {
 		t.Fatalf("gemini chat 档案 messages 源应返回 nil：%v", got)
 	}
 }
 
 func TestW2IsAccountManualTestModel(t *testing.T) {
-	openAI := manualTestModeSource{providerCode: "gpt", protocolCode: openAIProtocolCode, protocolVersion: openAIProtocolVersion}
-	anthropic := manualTestModeSource{providerCode: anthropicProviderCode, protocolCode: anthropicProtocolCodeConstant, protocolVersion: anthropicProtocolVersionConstant}
-	gemini := manualTestModeSource{providerCode: geminiProviderCode, protocolCode: geminiProtocolCodeConstant, protocolVersion: geminiProtocolVersionConstant}
-	hybrid := manualTestModeSource{providerCode: hybridProviderCode}
+	openAI := manualTestModeSource{ProviderCode: "gpt", ProtocolCode: openAIProtocolCode, ProtocolVersion: openAIProtocolVersion}
+	anthropic := manualTestModeSource{ProviderCode: anthropicProviderCode, ProtocolCode: anthropicProtocolCodeConstant, ProtocolVersion: anthropicProtocolVersionConstant}
+	gemini := manualTestModeSource{ProviderCode: geminiProviderCode, ProtocolCode: geminiProtocolCodeConstant, ProtocolVersion: geminiProtocolVersionConstant}
+	hybrid := manualTestModeSource{ProviderCode: hybridProviderCode}
 
 	t.Run("audio 模式一律不可测", func(t *testing.T) {
-		if isAccountManualTestModel(testCatalogItem{mode: "Audio"}, openAI) {
+		if isAccountManualTestModel(testCatalogItem{Mode: "Audio"}, openAI) {
 			t.Fatal("audio 模式应不可测")
 		}
 	})
 	t.Run("有启用映射即通过", func(t *testing.T) {
-		source := manualTestModeSource{modelMappings: []ModelMapping{{SourceModel: "m1", Enabled: boolPtr(true)}}}
-		if !isAccountManualTestModel(testCatalogItem{model: "m1", mode: "image_generation"}, source) {
+		source := manualTestModeSource{ModelMappings: []ModelMapping{{SourceModel: "m1", Enabled: boolPtr(true)}}}
+		if !isAccountManualTestModel(testCatalogItem{Model: "m1", Mode: "image_generation"}, source) {
 			t.Fatal("映射命中的模型应可测")
 		}
-		disabled := manualTestModeSource{modelMappings: []ModelMapping{{SourceModel: "m1", Enabled: boolPtr(false)}}}
-		if isAccountManualTestModel(testCatalogItem{model: "m1", mode: "image_generation"}, disabled) {
+		disabled := manualTestModeSource{ModelMappings: []ModelMapping{{SourceModel: "m1", Enabled: boolPtr(false)}}}
+		if isAccountManualTestModel(testCatalogItem{Model: "m1", Mode: "image_generation"}, disabled) {
 			t.Fatal("禁用映射不应命中")
 		}
 	})
 	t.Run("空协议列表按模式排除图像", func(t *testing.T) {
-		if !isAccountManualTestModel(testCatalogItem{mode: "chat"}, openAI) {
+		if !isAccountManualTestModel(testCatalogItem{Mode: "chat"}, openAI) {
 			t.Fatal("空协议列表的文本模型应可测")
 		}
-		if isAccountManualTestModel(testCatalogItem{mode: "image_generation"}, openAI) {
+		if isAccountManualTestModel(testCatalogItem{Mode: "image_generation"}, openAI) {
 			t.Fatal("图像生成模式应排除")
 		}
-		if isAccountManualTestModel(testCatalogItem{mode: "image"}, openAI) {
+		if isAccountManualTestModel(testCatalogItem{Mode: "image"}, openAI) {
 			t.Fatal("图像模式应排除")
 		}
 	})
 	t.Run("hybrid 协议判定", func(t *testing.T) {
-		if !isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"chat_completions"}}, hybrid) {
+		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"chat_completions"}}, hybrid) {
 			t.Fatal("hybrid 支持文本协议")
 		}
-		if !isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"stream_generate_content"}}, hybrid) {
+		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"stream_generate_content"}}, hybrid) {
 			t.Fatal("hybrid 支持流式协议")
 		}
-		if !isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"images"}}, manualTestModeSource{providerCode: hybridProviderCode, accountType: "api_key"}) {
+		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"images"}}, manualTestModeSource{ProviderCode: hybridProviderCode, AccountType: "api_key"}) {
 			t.Fatal("hybrid api_key 支持 images")
 		}
-		if isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"images"}}, manualTestModeSource{providerCode: hybridProviderCode, accountType: "oauth"}) {
+		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"images"}}, manualTestModeSource{ProviderCode: hybridProviderCode, AccountType: "oauth"}) {
 			t.Fatal("hybrid oauth 不支持 images")
 		}
-		if isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"embeddings"}}, hybrid) {
+		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"embeddings"}}, hybrid) {
 			t.Fatal("hybrid 不支持 embeddings")
 		}
 	})
 	t.Run("openai 协议判定", func(t *testing.T) {
-		if !isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"responses"}}, openAI) {
+		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"responses"}}, openAI) {
 			t.Fatal("openai 支持 responses")
 		}
-		if !isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"images"}}, manualTestModeSource{providerCode: "gpt", protocolCode: openAIProtocolCode, protocolVersion: openAIProtocolVersion, accountType: "api_key"}) {
+		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"images"}}, manualTestModeSource{ProviderCode: "gpt", ProtocolCode: openAIProtocolCode, ProtocolVersion: openAIProtocolVersion, AccountType: "api_key"}) {
 			t.Fatal("openai api_key 支持 images")
 		}
-		if isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"messages"}}, openAI) {
+		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"messages"}}, openAI) {
 			t.Fatal("openai 不支持 messages")
 		}
 	})
 	t.Run("anthropic 与 gemini 协议判定", func(t *testing.T) {
-		if !isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"messages"}}, anthropic) {
+		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"messages"}}, anthropic) {
 			t.Fatal("anthropic 支持 messages")
 		}
-		if isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"chat_completions"}}, anthropic) {
+		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"chat_completions"}}, anthropic) {
 			t.Fatal("anthropic 不支持 chat_completions")
 		}
-		if !isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"generate_content"}}, gemini) {
+		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"generate_content"}}, gemini) {
 			t.Fatal("gemini 支持 generate_content")
 		}
-		if !isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"interactions"}}, gemini) {
+		if !isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"interactions"}}, gemini) {
 			t.Fatal("gemini 支持 interactions")
 		}
-		if isAccountManualTestModel(testCatalogItem{supportedAPIProtocols: []string{"responses"}}, gemini) {
+		if isAccountManualTestModel(testCatalogItem{SupportedAPIProtocols: []string{"responses"}}, gemini) {
 			t.Fatal("gemini 不支持 responses")
 		}
 	})
@@ -342,29 +342,29 @@ func TestW2OptionMergeHelpers(t *testing.T) {
 }
 
 func TestW2AccountTestEndpointModeOrder(t *testing.T) {
-	anthropic := manualTestModeSource{providerCode: anthropicProviderCode, protocolCode: anthropicProtocolCodeConstant,
-		protocolVersion: anthropicProtocolVersionConstant, healthCheckEndpointMode: "messages_sse"}
+	anthropic := manualTestModeSource{ProviderCode: anthropicProviderCode, ProtocolCode: anthropicProtocolCodeConstant,
+		ProtocolVersion: anthropicProtocolVersionConstant, HealthCheckEndpointMode: "messages_sse"}
 	got := accountTestEndpointModeOrder(anthropic)
 	if len(got) != 2 || got[0] != "messages_sse" || got[1] != "messages_json" {
 		t.Fatalf("anthropic 顺序不一致：%v", got)
 	}
-	gemini := manualTestModeSource{providerCode: geminiProviderCode, protocolCode: geminiProtocolCodeConstant,
-		protocolVersion: geminiProtocolVersionConstant}
+	gemini := manualTestModeSource{ProviderCode: geminiProviderCode, ProtocolCode: geminiProtocolCodeConstant,
+		ProtocolVersion: geminiProtocolVersionConstant}
 	got = accountTestEndpointModeOrder(gemini)
 	if len(got) == 0 || got[0] != "interactions_json" {
 		t.Fatalf("gemini 顺序不一致：%v", got)
 	}
-	hybrid := manualTestModeSource{providerCode: hybridProviderCode, healthCheckEndpointMode: "chat_json"}
+	hybrid := manualTestModeSource{ProviderCode: hybridProviderCode, HealthCheckEndpointMode: "chat_json"}
 	got = accountTestEndpointModeOrder(hybrid)
 	if len(got) < 8 || got[0] != "chat_json" {
 		t.Fatalf("hybrid 顺序不一致：%v", got)
 	}
-	oauth := manualTestModeSource{providerCode: "gpt", accountType: "oauth", healthCheckEndpointMode: "responses_sse"}
+	oauth := manualTestModeSource{ProviderCode: "gpt", AccountType: "oauth", HealthCheckEndpointMode: "responses_sse"}
 	got = accountTestEndpointModeOrder(oauth)
 	if len(got) != 2 || got[0] != "responses_sse" || got[1] != "responses_json" {
 		t.Fatalf("oauth 顺序不一致：%v", got)
 	}
-	apiKey := manualTestModeSource{providerCode: "gpt", accountType: "api_key", healthCheckEndpointMode: "chat_sse"}
+	apiKey := manualTestModeSource{ProviderCode: "gpt", AccountType: "api_key", HealthCheckEndpointMode: "chat_sse"}
 	got = accountTestEndpointModeOrder(apiKey)
 	if len(got) != 4 || got[0] != "chat_sse" || got[3] != "responses_json" {
 		t.Fatalf("api_key 顺序不一致：%v", got)
@@ -374,16 +374,16 @@ func TestW2AccountTestEndpointModeOrder(t *testing.T) {
 func TestW2AccountManualTestEndpointModesFilters(t *testing.T) {
 	// anthropic 源只保留 anthropic 模式，且顺序按 mode order 收敛。
 	source := manualTestModeSource{
-		providerCode: anthropicProviderCode, protocolCode: anthropicProtocolCodeConstant, protocolVersion: anthropicProtocolVersionConstant,
-		supportedEndpointModes:  []string{"messages_json", "chat_json", "messages_sse"},
-		healthCheckEndpointMode: "messages_sse",
+		ProviderCode: anthropicProviderCode, ProtocolCode: anthropicProtocolCodeConstant, ProtocolVersion: anthropicProtocolVersionConstant,
+		SupportedEndpointModes:  []string{"messages_json", "chat_json", "messages_sse"},
+		HealthCheckEndpointMode: "messages_sse",
 	}
 	got := accountManualTestEndpointModes(source)
 	if len(got) != 2 || got[0] != "messages_sse" || got[1] != "messages_json" {
 		t.Fatalf("anthropic 模式过滤不一致：%v", got)
 	}
 	// 未知协议族回落为空。
-	unknown := manualTestModeSource{providerCode: "custom", protocolCode: "grpc", protocolVersion: "v9"}
+	unknown := manualTestModeSource{ProviderCode: "custom", ProtocolCode: "grpc", ProtocolVersion: "v9"}
 	if got := accountManualTestEndpointModes(unknown); len(got) != 0 {
 		t.Fatalf("未知协议族应为空：%v", got)
 	}

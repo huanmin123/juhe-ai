@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -91,10 +92,10 @@ func (a *w13g3Affinity) AreHighConcurrencyAccountsBusyForLaneAsync(ctx context.C
 
 type w13g3HotQuality struct {
 	fakeHotQuality
-	err        error
-	intent     string
-	tierKeys   []string
-	reordered  bool
+	err       error
+	intent    string
+	tierKeys  []string
+	reordered bool
 }
 
 func (q *w13g3HotQuality) OrderAsync(ctx context.Context, input HotQualityOrderInput) (HotQualityOrder, error) {
@@ -198,7 +199,7 @@ func w13g3DispatchPrepInput(t *testing.T, req *gatewaypreauth.GatewayRequest, ac
 		Req:               req,
 		AuditCapture:      &frozenAudit{sink: &fakeAuditSink{}},
 		UsageContext:      testUsageContext(),
-		StartedAt:         NowMs(),
+		StartedAt:         gatewayupstream.NowMs(),
 		CandidateAccounts: accounts,
 		ModelPriority:     &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{}},
 		GroupAccess:       gatewayruntimecache.GroupUsageAccessMetadata{},
@@ -222,7 +223,7 @@ func w13g3CandidateArgs(req *gatewaypreauth.GatewayRequest, accounts []AccountCa
 		Req:                  req,
 		AuditCapture:         AuditCapture{Context: &frozenAudit{sink: &fakeAuditSink{}}, Sink: &fakeAuditSink{}},
 		UsageContext:         testUsageContext(),
-		StartedAt:            NowMs(),
+		StartedAt:            gatewayupstream.NowMs(),
 		RawCandidateAccounts: accounts,
 		SystemAccountID:      "system-1",
 		GroupID:              "group-1",
@@ -850,8 +851,8 @@ func TestW13g3DiagnosticErrorHelpers(t *testing.T) {
 	})
 	t.Run("error object extra fields preserved", func(t *testing.T) {
 		diagnostic := BuildDiagnosticUpstreamError(&UpstreamAttempt{
-			AccountID:         "a-1",
-			ResponseBodyText:  `{"error":{"message":"m","type":"t","code":"c","meta":42}}`,
+			AccountID:        "a-1",
+			ResponseBodyText: `{"error":{"message":"m","type":"t","code":"c","meta":42}}`,
 		}, "fallback", nil)
 		if diagnostic.Payload.Error.Extra == nil || diagnostic.Payload.Error.Extra["meta"] != float64(42) {
 			t.Fatalf("extra = %#v", diagnostic.Payload.Error.Extra)
@@ -1081,7 +1082,9 @@ func TestW13g3ApplyOverridesToUpstreamBody(t *testing.T) {
 	})
 }
 
-type w13g3OverrideCatalog struct{ items []GptRequestOverrideModelCatalogItem }
+type w13g3OverrideCatalog struct {
+	items []GptRequestOverrideModelCatalogItem
+}
 
 func (c *w13g3OverrideCatalog) ListGptRequestOverrideModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeUnpriced bool) ([]GptRequestOverrideModelCatalogItem, error) {
 	return c.items, nil

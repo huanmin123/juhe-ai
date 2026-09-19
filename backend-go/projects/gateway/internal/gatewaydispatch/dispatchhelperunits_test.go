@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -796,7 +797,7 @@ func TestAssertGatewayRequestWallBudgetAvailableForAttempt(t *testing.T) {
 		t.Fatalf("预算充足不应报错: %v", err)
 	}
 	exhausted, err := gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
-		RequestAcceptedAtMs: NowMs() - 60_000,
+		RequestAcceptedAtMs: gatewayupstream.NowMs() - 60_000,
 		BudgetMs:            ptrInt64(60_000),
 	}, nil)
 	if err != nil {

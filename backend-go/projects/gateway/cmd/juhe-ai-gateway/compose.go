@@ -256,7 +256,13 @@ func settingsString(value any) string {
 // Callers must prove the business owner gates first (businessOwnerGate plus
 // cutover evidence verification); this function fails fast on any incomplete
 // wiring instead of serving a partial surface.
-func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operationStore operationlog.Store, operationLease *operationlog.LeaseKeeper, auditProducer *auditlog.Producer, auditConfig auditlog.Config) (*composition, error) {
+func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operationStore operationlog.Store, operationLease *operationlog.LeaseKeeper, auditProducer *auditlog.Producer, auditConfig auditlog.Config, ownerHealth *gatewayOwnerHealth) (*composition, error) {
+	if ownerHealth == nil {
+		return nil, errors.New("系统 API 组合根要求 owner 健康聚合状态已接线（loopback /health 与 /__aisys__/health 共用）")
+	}
+	if err := ownerHealth.validate(); err != nil {
+		return nil, err
+	}
 	if operationStore == nil {
 		return nil, errors.New("系统 API 组合根要求 F4 操作日志 store 已启用（JUHE_AI_OPERATION_LOG_* 配置）")
 	}
@@ -1268,6 +1274,17 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			"proxyLatency":   map[string]any{"enabled": false, "ready": true},
 			"checkedAt":      time.Now().UTC().Format(time.RFC3339Nano),
 		}
+	}))
+
+	// GET /__aisys__/health: liveness contract consumed by the K8s hybrid-era
+	// probe docs and the watchdog guide. Same aggregated owner readiness as
+	// the loopback /health listener (shared gatewayOwnerHealth): 503 when any
+	// enabled owner component is not running. The IP/authenticated rate
+	// limiters bypass it (ratelimit mirror) and the SPA catch-all must not
+	// shadow it (exact route wins).
+	kern.Register("GET /__aisys__/health", kernel.HealthHandler(func() (int, any) {
+		status, payload := ownerHealth.readiness()
+		return status, payload
 	}))
 
 	// X01 go-only terminal state: no legacy bridge fallback remains. The

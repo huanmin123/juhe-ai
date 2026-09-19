@@ -28,9 +28,9 @@ type ModelPriority = gatewayrouting.GatewayAccountModelPriority
 
 // PreparedRequestParts mirrors PreparedUpstreamRequestParts.
 type PreparedRequestParts struct {
-	Headers                 http.Header
-	Body                    []byte
-	EffectiveServiceTier    string
+	Headers                  http.Header
+	Body                     []byte
+	EffectiveServiceTier     string
 	EffectiveReasoningEffort string
 }
 
@@ -39,7 +39,7 @@ type PreparedRequestParts struct {
 // buildGatewayUpstreamRequestParts / accountSupportsGatewayRequest /
 // gatewayRequestCapabilityMismatchReason /
 // transformGatewayUpstreamResponseForAccount.
-type ProviderDriver interface {	// PrepareGatewayUpstreamAccount mirrors prepareGatewayUpstreamAccount.
+type ProviderDriver interface { // PrepareGatewayUpstreamAccount mirrors prepareGatewayUpstreamAccount.
 	PrepareGatewayUpstreamAccount(ctx context.Context, account AccountCandidate) (AccountCandidate, error)
 	// BuildGatewayUpstreamURLsForAccount mirrors buildGatewayUpstreamUrlsForAccount.
 	BuildGatewayUpstreamURLsForAccount(ctx context.Context, account AccountCandidate, req *gatewaypreauth.GatewayRequest) ([]string, error)
@@ -101,13 +101,13 @@ type UsageIdentity struct {
 
 // FailedAttemptRecord mirrors recordFailedUpstreamAttempt's input.
 type FailedAttemptRecord struct {
-	UpstreamURL              string
-	StartedAt                int64
-	StatusCode               int
-	HasStatusCode            bool
-	BodyText                 string
-	ErrorMessage             string
-	FailureAttribution       string
+	UpstreamURL                string
+	StartedAt                  int64
+	StatusCode                 int
+	HasStatusCode              bool
+	BodyText                   string
+	ErrorMessage               string
+	FailureAttribution         string
 	InterpretUpstreamSemantics *bool
 }
 
@@ -194,12 +194,12 @@ func (c AuditCapture) RecordFailedDispatchAttempt(input FailedDispatchAttemptInp
 
 // StartAttemptInput mirrors startAttempt's input.
 type StartAttemptInput struct {
-	Account                  AccountCandidate
-	AttemptIndex             int
-	UpstreamURL              string
-	Method                   string
-	Headers                  map[string]string
-	Body                     []byte
+	Account                   AccountCandidate
+	AttemptIndex              int
+	UpstreamURL               string
+	Method                    string
+	Headers                   map[string]string
+	Body                      []byte
 	RequestForModelAccounting *gatewaypreauth.GatewayRequest
 }
 
@@ -219,14 +219,14 @@ type CompleteAttemptInput struct {
 
 // FailedDispatchAttemptInput mirrors recordFailedDispatchAttempt's input.
 type FailedDispatchAttemptInput struct {
-	Account                  AccountCandidate
-	AttemptIndex             int
-	UpstreamURL              string
-	Method                   string
-	StartedAtMs              int64
-	ErrorPhase               string
-	ErrorCode                string
-	ErrorMessage             string
+	Account                   AccountCandidate
+	AttemptIndex              int
+	UpstreamURL               string
+	Method                    string
+	StartedAtMs               int64
+	ErrorPhase                string
+	ErrorCode                 string
+	ErrorMessage              string
 	RequestForModelAccounting *gatewaypreauth.GatewayRequest
 }
 
@@ -246,32 +246,32 @@ type FailureDispatcher interface {
 
 // FailedUpstreamResponseInput mirrors the handleFailedUpstreamResponse input.
 type FailedUpstreamResponseInput struct {
-	Req                        *gatewaypreauth.GatewayRequest
-	RequestLane                string
-	UsageContext               gatewaypreauth.GatewayFailureUsageContext
-	AuditCapture               AuditCapture
-	AuditAttemptID             string
-	Account                    AccountCandidate
-	UpstreamURL                string
-	Response                   *GatewayUpstreamResponse
-	RequestBody                []byte
-	Settings                   gatewayruntimecache.GatewaySettings
-	AttemptStartedAt           int64
-	AttemptIndex               int
-	AuditAttemptIndex          int
-	SessionAffinityKey         string
-	LastAttempt                *UpstreamAttempt
-	RequestClientCompatibility string
-	ClientIPAccountAvoidance   gatewaypreauth.ClientIPAccountAvoidanceTracker
-	AccountStateMutationEnabled bool
+	Req                                  *gatewaypreauth.GatewayRequest
+	RequestLane                          string
+	UsageContext                         gatewaypreauth.GatewayFailureUsageContext
+	AuditCapture                         AuditCapture
+	AuditAttemptID                       string
+	Account                              AccountCandidate
+	UpstreamURL                          string
+	Response                             *GatewayUpstreamResponse
+	RequestBody                          []byte
+	Settings                             gatewayruntimecache.GatewaySettings
+	AttemptStartedAt                     int64
+	AttemptIndex                         int
+	AuditAttemptIndex                    int
+	SessionAffinityKey                   string
+	LastAttempt                          *UpstreamAttempt
+	RequestClientCompatibility           string
+	ClientIPAccountAvoidance             gatewaypreauth.ClientIPAccountAvoidanceTracker
+	AccountStateMutationEnabled          bool
 	AutomaticAccountStateMutationEnabled bool
 	DeferAutomaticSameAccountKeyRotation bool
 }
 
 // Failed response action union mirrors the Node action union.
 const (
-	FailedResponseActionReturnResponse                = "return_response"
-	FailedResponseActionSkipAccount                   = "skip_account"
+	FailedResponseActionReturnResponse                 = "return_response"
+	FailedResponseActionSkipAccount                    = "skip_account"
 	FailedResponseActionRetryWithCompatibilityRecovery = "retry_with_compatibility_recovery"
 )
 
@@ -296,14 +296,14 @@ type PendingAccountApiKeyFailure struct {
 type FailedUpstreamResponseResult struct {
 	// Action is 'return_response' | 'skip_account' |
 	// 'retry_with_compatibility_recovery'.
-	Action        string
-	Response      *GatewayUpstreamResponse
-	Recovery      CompatibilityRecovery
-	LastAttempt   *UpstreamAttempt
-	FailureKind   string
+	Action                  string
+	Response                *GatewayUpstreamResponse
+	Recovery                CompatibilityRecovery
+	LastAttempt             *UpstreamAttempt
+	FailureKind             string
 	TryNextApiKeyForRequest bool
-	KeyScopedFailure         bool
-	PendingApiKeyFailure     *PendingAccountApiKeyFailure
+	KeyScopedFailure        bool
+	PendingApiKeyFailure    *PendingAccountApiKeyFailure
 }
 
 // CompatibilityRecovery mirrors recovery.
@@ -354,15 +354,15 @@ type HalfOpenLease interface {
 
 // SuppressionFilterResult mirrors LocalAccountSuppressionFilterResult.
 type SuppressionFilterResult struct {
-	Accounts                              []AccountCandidate
-	SuppressedCount                       int
-	AllSuppressed                         bool
-	SuppressedAccountIDs                  []string
-	NextRetryAfterMs                      *int64
-	PrecheckSuppressedAccountIDs          []string
-	PrecheckSuppressedRuntimeScopes       []PrecheckSuppressedRuntimeScope
-	AcquiredHalfOpenLeases                []HalfOpenLease
-	ConfiguredPolicySuppressedAccountIDs  []string
+	Accounts                             []AccountCandidate
+	SuppressedCount                      int
+	AllSuppressed                        bool
+	SuppressedAccountIDs                 []string
+	NextRetryAfterMs                     *int64
+	PrecheckSuppressedAccountIDs         []string
+	PrecheckSuppressedRuntimeScopes      []PrecheckSuppressedRuntimeScope
+	AcquiredHalfOpenLeases               []HalfOpenLease
+	ConfiguredPolicySuppressedAccountIDs []string
 }
 
 // PrecheckSuppressedRuntimeScope mirrors the scope entries.
@@ -391,28 +391,28 @@ type SuppressionPort interface {
 // LocalSuppressionPreflightInput mirrors resolveLocalSuppressionFilter's
 // input.
 type LocalSuppressionPreflightInput struct {
-	Req                        *gatewaypreauth.GatewayRequest
-	UsageContext               gatewaypreauth.GatewayFailureUsageContext
-	AuditCapture               AuditCapture
-	StartedAt                  int64
-	Accounts                   []AccountCandidate
-	SystemAccountID            string
-	APIKeyID                   string
-	GroupID                    string
-	ServerRetryBudget          *gatewaypreauth.ServerRetryBudget
-	RouteCoordinationBudget    *gatewayrouting.RouteCoordinationBudget
-	GatewayRequestWallBudget   *gatewayrouting.GatewayRequestWallBudget
-	RouteCoordinator           gatewayrouting.GatewayRouteCoordinatorOwner
-	Signal                     context.Context
+	Req                      *gatewaypreauth.GatewayRequest
+	UsageContext             gatewaypreauth.GatewayFailureUsageContext
+	AuditCapture             AuditCapture
+	StartedAt                int64
+	Accounts                 []AccountCandidate
+	SystemAccountID          string
+	APIKeyID                 string
+	GroupID                  string
+	ServerRetryBudget        *gatewaypreauth.ServerRetryBudget
+	RouteCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
+	GatewayRequestWallBudget *gatewayrouting.GatewayRequestWallBudget
+	RouteCoordinator         gatewayrouting.GatewayRouteCoordinatorOwner
+	Signal                   context.Context
 }
 
 // DegradationOrder mirrors the orderGatewayAccountsByRuntimeDegradation
 // result.
 type DegradationOrder struct {
-	Accounts           []AccountCandidate
-	Applied            bool
-	DegradedCount      int
-	DegradedAccountIDs []string
+	Accounts            []AccountCandidate
+	Applied             bool
+	DegradedCount       int
+	DegradedAccountIDs  []string
 	BypassedAllDegraded bool
 }
 
@@ -458,14 +458,14 @@ type LatencyScopeInput struct {
 
 // ProxyHealthOrder mirrors the ordering result.
 type ProxyHealthOrder struct {
-	Accounts            []AccountCandidate
-	Applied             bool
-	AvoidedBucketKeys   []string
-	AvoidedProxyKeys    []string
-	AvoidedAccountIDs   []string
-	HalfOpenBucketKeys  []string
-	HalfOpenAccountIDs  []string
-	BypassedAllAvoided  bool
+	Accounts           []AccountCandidate
+	Applied            bool
+	AvoidedBucketKeys  []string
+	AvoidedProxyKeys   []string
+	AvoidedAccountIDs  []string
+	HalfOpenBucketKeys []string
+	HalfOpenAccountIDs []string
+	BypassedAllAvoided bool
 }
 
 // ProxyHealthPort mirrors the consumed proxy-health surface.
@@ -605,10 +605,10 @@ type HighConcurrencyBusyOptions struct {
 
 // QueueWaitResult mirrors waitForHighConcurrencyGroupCapacity's result.
 type QueueWaitResult struct {
-	Ready      bool
-	Reason     string // 'timeout' | ''
-	WaitedMs   int64
-	QueueSize  int
+	Ready     bool
+	Reason    string // 'timeout' | ''
+	WaitedMs  int64
+	QueueSize int
 }
 
 // HighConcurrencyWaiter mirrors runtime/high-concurrency-queue.service.ts.
@@ -618,14 +618,14 @@ type HighConcurrencyWaiter interface {
 
 // HighConcurrencyWaitInput mirrors the wait input.
 type HighConcurrencyWaitInput struct {
-	SystemAccountID           string
-	GroupID                   string
-	APIKeyID                  string
-	AccountIDs                []string
-	AccountConcurrencyLimits  map[string]int
-	Lane                      string
-	Policy                    *gatewayruntimecache.GroupSchedulingPolicy
-	MaxWaitMs                 int64
+	SystemAccountID          string
+	GroupID                  string
+	APIKeyID                 string
+	AccountIDs               []string
+	AccountConcurrencyLimits map[string]int
+	Lane                     string
+	Policy                   *gatewayruntimecache.GroupSchedulingPolicy
+	MaxWaitMs                int64
 }
 
 // ClientIPConcurrencyDecision mirrors ClientIpConcurrencyDecision.
@@ -677,12 +677,12 @@ type AuthorizationQuotaChecker interface {
 
 // ConcurrencySlot mirrors AccountConcurrencySlot.
 type ConcurrencySlot struct {
-	Acquired   bool
-	Current    int
-	Limit      int
-	Lane       string
+	Acquired    bool
+	Current     int
+	Limit       int
+	Lane        string
 	LaneCurrent int
-	LaneLimit  int
+	LaneLimit   int
 	// Release mirrors slot.release.
 	Release func()
 	// MarkFirstOutput mirrors slot.markFirstOutput (image-lane probe
@@ -692,7 +692,7 @@ type ConcurrencySlot struct {
 
 // AccountConcurrencyAcquireOptions mirrors AccountConcurrencyAcquireOptions.
 type AccountConcurrencyAcquireOptions struct {
-	Lane     string
+	Lane      string
 	LaneLimit *int
 }
 
@@ -723,8 +723,8 @@ type RuntimeCachePort interface {
 
 // CachedAccountsOptions mirrors the loader options.
 type CachedAccountsOptions struct {
-	RequestedModel           string
-	RequestedEndpointFamily  string
+	RequestedModel          string
+	RequestedEndpointFamily string
 }
 
 // AccountLockObservation mirrors AccountLockObservation.
@@ -736,8 +736,8 @@ type AccountLockObservation struct {
 
 // AccountLockStateView mirrors the lock state row the dispatch reads.
 type AccountLockStateView struct {
-	Generation int64
-	IncidentID string
+	Generation         int64
+	IncidentID         string
 	BlocksCrossAccount bool
 }
 
@@ -769,9 +769,9 @@ type AccountLockRetryLease struct {
 
 // ReleaseRetryLeaseInput mirrors releaseAccountLockRetryLeaseAsync's input.
 type ReleaseRetryLeaseInput struct {
-	AccountID       string
-	LeaseID         string
-	GlobalDelayMs   int64
+	AccountID         string
+	LeaseID           string
+	GlobalDelayMs     int64
 	ScheduleNextRetry bool
 }
 
@@ -792,18 +792,18 @@ type RecoverableSuppressionWaiter interface {
 
 // SuppressionWaitInput mirrors the wait input.
 type SuppressionWaitInput struct {
-	ScopeKey             string
-	Reason               string
-	Refresh              func(ctx context.Context) (SuppressionFilterResult, error)
-	IsReady              func(state SuppressionFilterResult) bool
-	NextRetryAfterMs     func(state SuppressionFilterResult) *int64
-	AuditCapture         AuditCapture
-	MaxWaitMs            int64
-	RequestStartedAtMs   int64
-	DeadlineAtMs         int64
-	RouteCoordinationBudget *gatewayrouting.RouteCoordinationBudget
+	ScopeKey                 string
+	Reason                   string
+	Refresh                  func(ctx context.Context) (SuppressionFilterResult, error)
+	IsReady                  func(state SuppressionFilterResult) bool
+	NextRetryAfterMs         func(state SuppressionFilterResult) *int64
+	AuditCapture             AuditCapture
+	MaxWaitMs                int64
+	RequestStartedAtMs       int64
+	DeadlineAtMs             int64
+	RouteCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
 	GatewayRequestWallBudget *gatewayrouting.GatewayRequestWallBudget
-	Signal               context.Context
+	Signal                   context.Context
 }
 
 // ---------------------------------------------------------------------------
@@ -827,52 +827,6 @@ type CodexBridgePort interface {
 	CompletionHandlerForRequest(req *gatewaypreauth.GatewayRequest, account AccountCandidate) CodexBridgeCompletionHandler
 	// PrepareContextForAccount mirrors prepareCodexResponsesContextForAccount.
 	PrepareContextForAccount(req *gatewaypreauth.GatewayRequest, account AccountCandidate) error
-}
-
-// ---------------------------------------------------------------------------
-// Account state mutations (runtime/account-effects +
-// account-side-effects + account-api-key-effects, G13)
-// ---------------------------------------------------------------------------
-
-// AccountStateMutations mirrors the consumed account state mutation surface.
-type AccountStateMutations interface {
-	// SuppressLocally mirrors suppressGatewayAccountLocally.
-	SuppressLocally(account AccountCandidate, settings gatewayruntimecache.GatewaySettings, message string) LocalSuppression
-	// RecordFailureForPrecheck mirrors recordGatewayAccountFailureForPrecheck.
-	RecordFailureForPrecheck(ctx context.Context, account AccountCandidate, settings gatewayruntimecache.GatewaySettings, input PrecheckFailureInput)
-	// ApplyErrorHandlingWithCacheInvalidation mirrors
-	// applyAccountErrorHandlingWithCacheInvalidation.
-	ApplyErrorHandlingWithCacheInvalidation(ctx context.Context, account AccountCandidate, input AccountErrorInput) error
-	// MarkTemporaryUnavailableWithCacheInvalidation mirrors
-	// markGatewayAccountTemporaryUnavailableWithCacheInvalidation.
-	MarkTemporaryUnavailableWithCacheInvalidation(ctx context.Context, account AccountCandidate, message, reason string) (bool, error)
-}
-
-// LocalSuppression mirrors the suppression result.
-type LocalSuppression struct {
-	Action  string // 'precheck_required' | ''
-	DelayMs int64
-}
-
-// PrecheckFailureInput mirrors GatewayAccountFailurePrecheckInput.
-type PrecheckFailureInput struct {
-	SystemAccountID         string
-	GroupID                 string
-	APIKeyID                string
-	ClientIP                string
-	Endpoint                string
-	Reason                  string
-	ForcePrecheck           bool
-	LocalSuppressionDelayMs int64
-}
-
-// AccountErrorInput mirrors applyAccountErrorHandlingWithCacheInvalidation's
-// input.
-type AccountErrorInput struct {
-	Success       bool
-	ErrorMessage  string
-	Settings      gatewayruntimecache.GatewaySettings
-	TrafficSource string
 }
 
 // APIKeyEffectsPort mirrors runtime/account-api-key-effects.service.ts.

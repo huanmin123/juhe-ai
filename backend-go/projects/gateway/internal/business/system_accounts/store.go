@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf16"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 )
 
 var postgresIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -1024,11 +1026,8 @@ func uniqueStrings(values []string) []string {
 var idSequence atomic.Uint64
 
 func newID(prefix string) string {
-	var random [8]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return fmt.Sprintf("%s_%d_%d", prefix, time.Now().UnixNano(), idSequence.Add(1))
-	}
-	return prefix + "_" + hex.EncodeToString(random[:]) + fmt.Sprintf("_%d", idSequence.Add(1))
+	// 随机段收敛到 shared/platform/idgen（格式不变：<prefix>_<16hex>_<seq>）。
+	return prefix + "_" + idgen.RandomHex(8) + fmt.Sprintf("_%d", idSequence.Add(1))
 }
 
 func routeIDsInSeedOrder(values map[string]string) []string {

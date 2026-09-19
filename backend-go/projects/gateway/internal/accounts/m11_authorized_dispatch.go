@@ -122,11 +122,11 @@ type AuthorizedDispatchChange struct {
 // AuthorizedDispatchPatch mirrors AuthorizedAccountDispatchMutationPatch.
 type AuthorizedDispatchPatch struct {
 	Status               *string `json:"status,omitempty"`
-	Schedulable          *bool `json:"schedulable,omitempty"`
-	Priority             *int  `json:"priority,omitempty"`
-	SuperPriorityEnabled *bool `json:"superPriorityEnabled,omitempty"`
-	FallbackEnabled      *bool `json:"fallbackEnabled,omitempty"`
-	FailureStateCleared  bool  `json:"failureStateCleared,omitempty"`
+	Schedulable          *bool   `json:"schedulable,omitempty"`
+	Priority             *int    `json:"priority,omitempty"`
+	SuperPriorityEnabled *bool   `json:"superPriorityEnabled,omitempty"`
+	FallbackEnabled      *bool   `json:"fallbackEnabled,omitempty"`
+	FailureStateCleared  bool    `json:"failureStateCleared,omitempty"`
 }
 
 // AuthorizedDispatchBinding mirrors the authorizedBinding triple.
@@ -138,15 +138,15 @@ type AuthorizedDispatchBinding struct {
 
 // AuthorizedDispatchResult mirrors AuthorizedAccountDispatchMutationResult.
 type AuthorizedDispatchResult struct {
-	ID                     string                      `json:"id"`
-	ConfigRevision         int64                       `json:"configRevision"`
-	ChangedFields          []string                    `json:"changedFields"`
-	Patch                  AuthorizedDispatchPatch     `json:"patch"`
-	Changes                []AuthorizedDispatchChange  `json:"-"`
-	Name                   string                      `json:"-"`
-	OwnerSystemAccountID   string                      `json:"-"`
-	RuntimeRestoreRequired bool                        `json:"-"`
-	AuthorizedBinding      AuthorizedDispatchBinding   `json:"-"`
+	ID                     string                     `json:"id"`
+	ConfigRevision         int64                      `json:"configRevision"`
+	ChangedFields          []string                   `json:"changedFields"`
+	Patch                  AuthorizedDispatchPatch    `json:"patch"`
+	Changes                []AuthorizedDispatchChange `json:"-"`
+	Name                   string                     `json:"-"`
+	OwnerSystemAccountID   string                     `json:"-"`
+	RuntimeRestoreRequired bool                       `json:"-"`
+	AuthorizedBinding      AuthorizedDispatchBinding  `json:"-"`
 }
 
 // authorizedDispatchRow is the instance row projection the state machine
@@ -197,7 +197,7 @@ type authorizedDispatchBinding struct {
 // 授权账户不存在或尚未绑定分组).
 func (s *Store) UpdateAuthorizedDispatch(ctx context.Context, accountID string, input AuthorizedDispatchInput, access AccessScope) (*AuthorizedDispatchResult, error) {
 	ctx = ensureCtx(ctx)
-	grantee := access.viewerID()
+	grantee := access.EffectiveViewerID()
 	if grantee == "" {
 		return nil, nil
 	}
@@ -583,12 +583,12 @@ func (s *Store) patchAuthorizedDispatchTx(ctx context.Context, tx *sql.Tx, row *
 	}
 	if len(accountSets) == 0 && len(bindingSets) == 0 {
 		return &AuthorizedDispatchResult{
-			ID:              row.id,
-			ConfigRevision:  row.configRevision,
-			ChangedFields:   []string{},
-			Patch:           patch,
-			Changes:         changes,
-			Name:            row.name,
+			ID:                   row.id,
+			ConfigRevision:       row.configRevision,
+			ChangedFields:        []string{},
+			Patch:                patch,
+			Changes:              changes,
+			Name:                 row.name,
 			OwnerSystemAccountID: row.systemAccountID,
 			AuthorizedBinding: AuthorizedDispatchBinding{
 				SystemAccountID:        row.systemAccountID,
@@ -656,12 +656,12 @@ func (s *Store) patchAuthorizedDispatchTx(ctx context.Context, tx *sql.Tx, row *
 	}
 	sort.Strings(changedFields)
 	return &AuthorizedDispatchResult{
-		ID:              row.id,
-		ConfigRevision:  row.configRevision + 1,
-		ChangedFields:   changedFields,
-		Patch:           patch,
-		Changes:         changes,
-		Name:            row.name,
+		ID:                   row.id,
+		ConfigRevision:       row.configRevision + 1,
+		ChangedFields:        changedFields,
+		Patch:                patch,
+		Changes:              changes,
+		Name:                 row.name,
 		OwnerSystemAccountID: row.systemAccountID,
 		// Node runtimeRestoreRequired: clearFailureState || input.status ===
 		// 'active'.
@@ -673,7 +673,6 @@ func (s *Store) patchAuthorizedDispatchTx(ctx context.Context, tx *sql.Tx, row *
 		},
 	}, nil
 }
-
 
 func deepEqualAny(left, right any) bool {
 	leftRaw, errLeft := json.Marshal(left)

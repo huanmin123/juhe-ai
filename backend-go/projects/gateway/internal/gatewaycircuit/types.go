@@ -2,13 +2,12 @@ package gatewaycircuit
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
-	"strconv"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
 // Circuit phase names mirror AccountCircuitPhase exactly.
@@ -68,7 +67,7 @@ const (
 
 // Confirmation outcomes mirror the shared outcome union.
 const (
-	OutcomeFramingComplete = "framing_complete"
+	OutcomeFramingComplete  = "framing_complete"
 	OutcomeTransportFailure = "transport_failure"
 	OutcomeUnknown          = "unknown"
 )
@@ -130,39 +129,25 @@ func DefaultSettings() Settings {
 	}
 }
 
-// Scope mirrors AccountCircuitScope. Kind selects the active fields exactly
-// like the Node discriminated union.
-type Scope struct {
-	Kind              string `json:"kind"`
-	AccountRuntimeKey string `json:"accountRuntimeKey,omitempty"`
-	KeyFingerprint    string `json:"keyFingerprint,omitempty"`
-	ProtocolProfile   string `json:"protocolProfile,omitempty"`
-	RequestLane       string `json:"requestLane,omitempty"`
-	ModelBucket       string `json:"modelBucket,omitempty"`
-}
+// REFACTOR-0008 跨模块成对收敛：与 jobs/internal/circuitstore 逐字节相同的
+// 共享运行态词汇（Scope/Lease/State/MutationResult 及其列表类型、CloneState）
+// 下潜到 shared/platform/circuitstate 作为单一事实；本包保留类型别名，
+// 调用点零改动。
+type (
+	Scope          = circuitstate.Scope
+	Lease          = circuitstate.Lease
+	State          = circuitstate.State
+	MutationResult = circuitstate.MutationResult
+	stringList     = circuitstate.StringList
+	stateList      = circuitstate.StateList
+)
 
-// Lease mirrors AccountCircuitLease.
-type Lease struct {
-	Kind         string `json:"kind"`
-	LeaseID      string `json:"leaseId"`
-	LeaseUntilMs int64  `json:"leaseUntilMs"`
-}
+// CloneState mirrors cloneAccountCircuitState（下潜委托壳）。
+func CloneState(state State) State { return circuitstate.CloneState(state) }
 
-// stringList decodes Lua round-tripped JSON arrays: an empty Lua array is
-// encoded as `{}`, which must behave like an empty list (Node tolerates the
-// same shapes through cloneStringArray).
-type stringList []string
-
-func (l stringList) clone() stringList {
-	if l == nil {
-		return nil
-	}
-	out := make(stringList, len(l))
-	copy(out, l)
-	return out
-}
-
-func (l stringList) equal(other stringList) bool {
+// stringListEqual 保留原 stringList.equal 的比较语义（REFACTOR-0008：equal
+// 方法仅 gateway 侧存在、仅测试消费，别名类型无法挂方法，收敛为包内函数）。
+func stringListEqual(l, other stringList) bool {
 	if len(l) != len(other) {
 		return false
 	}
@@ -174,109 +159,8 @@ func (l stringList) equal(other stringList) bool {
 	return true
 }
 
-func (l *stringList) UnmarshalJSON(raw []byte) error {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" {
-		*l = nil
-		return nil
-	}
-	if trimmed == "{}" || trimmed == "[]" {
-		*l = stringList{}
-		return nil
-	}
-	var values []string
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return err
-	}
-	*l = values
-	return nil
-}
-
-// State mirrors AccountCircuitState. Optional fields are pointers so the JSON
-// encoding keeps Node's undefined-presence semantics (a present 0 stays).
-type State struct {
-	ScopeKey                     string     `json:"scopeKey"`
-	Scope                        Scope      `json:"scope"`
-	Phase                        string     `json:"phase"`
-	Generation                   int64      `json:"generation"`
-	DispatchRevision             string     `json:"dispatchRevision"`
-	TransitionID                 string     `json:"transitionId"`
-	BackoffAttempt               int64      `json:"backoffAttempt"`
-	RecoverySuccessCount         int64      `json:"recoverySuccessCount"`
-	ConfirmationFailuresRequired *int64     `json:"confirmationFailuresRequired,omitempty"`
-	ConfirmationFailureCount     *int64     `json:"confirmationFailureCount,omitempty"`
-	FailureEvidenceKeys          stringList `json:"failureEvidenceKeys,omitempty"`
-	OpenedAtMs                   *int64     `json:"openedAtMs,omitempty"`
-	RetryAtMs                    *int64     `json:"retryAtMs,omitempty"`
-	FailureReason                *string    `json:"failureReason,omitempty"`
-	Lease                        *Lease     `json:"lease,omitempty"`
-	HalfOpenOrigin               *string    `json:"halfOpenOrigin,omitempty"`
-	IncidentID                   *string    `json:"incidentId,omitempty"`
-	ShadowedByIncidentID         *string    `json:"shadowedByIncidentId,omitempty"`
-	ChildIncidentIDs             stringList `json:"childIncidentIds,omitempty"`
-	ChildScopeKeys               stringList `json:"childScopeKeys,omitempty"`
-	RequiredRecoveryScopeKeys    stringList `json:"requiredRecoveryScopeKeys,omitempty"`
-	RecoveryEvidenceScopeKeys    stringList `json:"recoveryEvidenceScopeKeys,omitempty"`
-	UpdatedAtMs                  int64      `json:"updatedAtMs"`
-}
-
-// CloneState mirrors cloneAccountCircuitState.
-func CloneState(state State) State {
-	out := state
-	out.Scope = Scope{
-		Kind:              state.Scope.Kind,
-		AccountRuntimeKey: state.Scope.AccountRuntimeKey,
-		KeyFingerprint:    state.Scope.KeyFingerprint,
-		ProtocolProfile:   state.Scope.ProtocolProfile,
-		RequestLane:       state.Scope.RequestLane,
-		ModelBucket:       state.Scope.ModelBucket,
-	}
-	if state.Lease != nil {
-		lease := *state.Lease
-		out.Lease = &lease
-	}
-	out.FailureEvidenceKeys = state.FailureEvidenceKeys.clone()
-	out.ChildIncidentIDs = state.ChildIncidentIDs.clone()
-	out.ChildScopeKeys = state.ChildScopeKeys.clone()
-	out.RequiredRecoveryScopeKeys = state.RequiredRecoveryScopeKeys.clone()
-	out.RecoveryEvidenceScopeKeys = state.RecoveryEvidenceScopeKeys.clone()
-	return out
-}
-
-// stateList decodes Lua-encoded `relatedStates`: an empty Lua array is
-// encoded as `{}`, which must decode as an empty list.
-type stateList []State
-
-func (l *stateList) UnmarshalJSON(raw []byte) error {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" || trimmed == "{}" || trimmed == "[]" {
-		*l = nil
-		return nil
-	}
-	var values []State
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return err
-	}
-	*l = values
-	return nil
-}
-
-func (l stateList) slice() []State {
-	if l == nil {
-		return nil
-	}
-	return append([]State{}, l...)
-}
-
-// MutationResult mirrors AccountCircuitMutationResult.
-type MutationResult struct {
-	Status        string    `json:"status"`
-	State         State     `json:"state"`
-	RelatedStates stateList `json:"relatedStates,omitempty"`
-}
-
-// RelatedStatesSlice returns the related states as a plain slice.
-func (r MutationResult) RelatedStatesSlice() []State { return r.RelatedStates.slice() }
+// ScopeKey 与 MustScopeKey 留守：两侧实现已文本漂移（本包用作用域 kind
+// 常量，circuitstore 内联字面量），行为等价，按对账结论不强行统一。
 
 // TransitionIdentity mirrors AccountCircuitTransitionIdentity.
 type TransitionIdentity struct {
@@ -300,26 +184,26 @@ type SuspectInput struct {
 
 // AcquireConfirmationLeaseInput mirrors the store.acquireConfirmationLease input.
 type AcquireConfirmationLeaseInput struct {
-	Scope                     Scope
-	Generation                int64
-	DispatchRevision          string
-	TransitionID              string
-	LeaseID                   string
-	LeaseUntilMs              int64
+	Scope                      Scope
+	Generation                 int64
+	DispatchRevision           string
+	TransitionID               string
+	LeaseID                    string
+	LeaseUntilMs               int64
 	ExpectedFailureEvidenceKey *string
 	ConfirmationEvidenceKey    *string
-	NowMs                     *int64
+	NowMs                      *int64
 }
 
 // CloseSuspectFromObserverInput mirrors the store.closeSuspectFromObserver input.
 type CloseSuspectFromObserverInput struct {
-	Scope                     Scope
-	Generation                int64
-	DispatchRevision          string
-	TransitionID              string
+	Scope                      Scope
+	Generation                 int64
+	DispatchRevision           string
+	TransitionID               string
 	ExpectedFailureEvidenceKey string
 	ObserverEvidenceKey        string
-	NowMs                     *int64
+	NowMs                      *int64
 }
 
 // CloseSuspectFromKeyRotationInput mirrors the store.closeSuspectFromKeyRotation input.
@@ -334,16 +218,16 @@ type CloseSuspectFromKeyRotationInput struct {
 
 // CompleteConfirmationInput mirrors the store.completeConfirmation input.
 type CompleteConfirmationInput struct {
-	Scope                       Scope
-	Generation                  int64
-	DispatchRevision            string
-	TransitionID                string
-	LeaseID                     string
-	Outcome                     string
-	Reason                      *string
-	FailureEvidenceKey          *string
-	FramingCompleteDisposition  *string
-	NowMs                       *int64
+	Scope                      Scope
+	Generation                 int64
+	DispatchRevision           string
+	TransitionID               string
+	LeaseID                    string
+	Outcome                    string
+	Reason                     *string
+	FailureEvidenceKey         *string
+	FramingCompleteDisposition *string
+	NowMs                      *int64
 }
 
 // AcquireCanaryLeaseInput mirrors the store.acquireCanaryLease input.
@@ -389,17 +273,17 @@ type ReplaceAccountDispatchRevisionInput struct {
 
 // ProtocolModelOpenEvidenceInput mirrors AccountCircuitProtocolModelOpenEvidenceInput.
 type ProtocolModelOpenEvidenceInput struct {
-	Scope                   Scope
-	Generation              int64
-	DispatchRevision        string
-	EvidenceID              string
-	AccountTransitionID     string
-	Reason                  string
-	ConfirmedFailureCount   int64
-	DistinctScopeThreshold  int64
-	WindowMs                int64
-	MaxProtocolScopes       int64
-	NowMs                   *int64
+	Scope                  Scope
+	Generation             int64
+	DispatchRevision       string
+	EvidenceID             string
+	AccountTransitionID    string
+	Reason                 string
+	ConfirmedFailureCount  int64
+	DistinctScopeThreshold int64
+	WindowMs               int64
+	MaxProtocolScopes      int64
+	NowMs                  *int64
 }
 
 // EscalationResult mirrors AccountCircuitEscalationResult.
@@ -412,7 +296,7 @@ type EscalationResult struct {
 }
 
 // RelatedStatesSlice returns the related states as a plain slice.
-func (r EscalationResult) RelatedStatesSlice() []State { return r.RelatedStates.slice() }
+func (r EscalationResult) RelatedStatesSlice() []State { return r.RelatedStates.Slice() }
 
 // Store mirrors AccountCircuitStore. nowMs nil means "use the store clock".
 type Store interface {
@@ -658,25 +542,12 @@ func LastFailureEvidenceKey(state State) (string, bool, error) {
 	return keys[len(keys)-1], true, nil
 }
 
-func isSHA256Hex(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return false
-		}
-	}
-	return true
-}
+// REFACTOR-0008 下潜委托壳：两侧逐字节相同的解析/校验原语收敛到
+// shared/platform/circuitstate，包内调用点零改动。
+func isSHA256Hex(value string) bool { return circuitstate.IsSHA256Hex(value) }
 
 func requiredScopePart(value, name string) (string, error) {
-	normalized := strings.TrimSpace(value)
-	if normalized == "" {
-		return "", fmt.Errorf("账户电路作用域缺少 %s", name)
-	}
-	return normalized, nil
+	return circuitstate.RequiredScopePart(value, name)
 }
 
 func requiredRequestLane(value string) (string, error) {
@@ -686,13 +557,7 @@ func requiredRequestLane(value string) (string, error) {
 	return value, nil
 }
 
-func encodedScopeKey(parts ...string) string {
-	encoded := make([]string, len(parts))
-	for i, part := range parts {
-		encoded[i] = fmt.Sprintf("%d:%s", len(part), part)
-	}
-	return strings.Join(encoded, "|")
-}
+func encodedScopeKey(parts ...string) string { return circuitstate.EncodedScopeKey(parts...) }
 
 // olderNumericDispatchRevision mirrors isOlderNumericDispatchRevision: true
 // when candidate is a safe positive integer and current is a strictly larger
@@ -712,20 +577,7 @@ func olderNumericDispatchRevision(candidate, current string) bool {
 // parseSafeInteger mirrors Number(value) + Number.isSafeInteger checks for
 // dispatch revision strings. Revision values are decimal numbers ("3") or
 // opaque digests ("v1:<sha256>"); anything Number() would reject stays false.
-func parseSafeInteger(value string) (float64, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, false
-	}
-	number, err := strconv.ParseFloat(trimmed, 64)
-	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
-		return 0, false
-	}
-	if number != math.Trunc(number) || math.Abs(number) > 9007199254740991 {
-		return 0, false
-	}
-	return number, true
-}
+func parseSafeInteger(value string) (float64, bool) { return circuitstate.ParseSafeInteger(value) }
 
 // sortedCopy returns a sorted copy of values (Node [...values].sort()).
 func sortedCopy(values []string) []string {

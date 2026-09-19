@@ -75,11 +75,11 @@ func TestW1DriverPredicatesAndPrepare(t *testing.T) {
 	if err != nil || passthrough.ID != "acc_1" {
 		t.Fatalf("prepare = %+v, %v", passthrough, err)
 	}
-	// 带缓存构造：nil cache 不挂目录。
-	if newChainProviderDriverWithCache(nil).gptOverrideCatalog != nil {
+	// 带缓存构造：nil cache 不挂目录；nil parser 保持逐次解析回退。
+	if newChainProviderDriverWithCache(nil, nil).gptOverrideCatalog != nil {
 		t.Fatal("nil cache 不得挂目录")
 	}
-	if newChainProviderDriverWithCache(nil).openai == nil {
+	if newChainProviderDriverWithCache(nil, nil).openai == nil {
 		t.Fatal("openai 驱动必须装配")
 	}
 	// 谓词：codex OAuth = oauth + openai 协议。

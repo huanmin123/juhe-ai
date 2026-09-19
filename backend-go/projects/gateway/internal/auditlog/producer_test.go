@@ -3,7 +3,10 @@ package auditlog
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -140,15 +143,28 @@ func recordingProducerLogger(warns *[]string) producerLogger {
 }
 
 type fakeProducerLogger struct {
+	mu    sync.Mutex
 	warns *[]string
 }
 
 func (l *fakeProducerLogger) Warn(msg string, _ ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	*l.warns = append(*l.warns, msg)
 }
 
 func (l *fakeProducerLogger) Error(msg string, _ ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	*l.warns = append(*l.warns, msg)
+}
+
+// snapshot returns a mutex-guarded copy: producer warns come from worker
+// goroutines, so test assertions must not read the slice directly.
+func (l *fakeProducerLogger) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), *l.warns...)
 }
 
 // TestProducerCapturePersistsAndAppendsHotSearch pins the happy path: renew →
@@ -192,15 +208,15 @@ func TestProducerCaptureDropsOnLostOwnerLease(t *testing.T) {
 		"renew rejected": {renewOK: false},
 		"renew error":    {renewErr: errors.New("storage down")},
 	} {
-		var warns []string
-		producer := NewProducer(fake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, recordingProducerLogger(&warns))
+		logger := &fakeProducerLogger{warns: &[]string{}}
+		producer := NewProducer(fake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, logger)
 		producer.Capture(producerTestInput("audit-drop"))
 		fake.waitForCalls(t, 1)
 
 		if _, persists, hots := fake.counts(); persists != 0 || hots != 0 {
 			t.Fatalf("%s: dropped capture must not persist or mirror: persist=%d hot=%d", name, persists, hots)
 		}
-		if len(warns) == 0 {
+		if len(logger.snapshot()) == 0 {
 			t.Fatalf("%s: lease-loss drop must warn", name)
 		}
 	}
@@ -224,20 +240,20 @@ func TestProducerCapturePersistsWithoutRenewWhenTTLUnset(t *testing.T) {
 // contract: persist failures and hot-search mirror failures are logged warns;
 // the producer goroutine must not panic nor propagate.
 func TestProducerCaptureSwallowsPersistAndHotSearchErrors(t *testing.T) {
-	var warns []string
+	logger := &fakeProducerLogger{warns: &[]string{}}
 	persistFake := &fakeStore{renewOK: true, persistErr: errors.New("persist failed")}
-	NewProducer(persistFake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, recordingProducerLogger(&warns)).Capture(producerTestInput("audit-persist-fail"))
+	NewProducer(persistFake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, logger).Capture(producerTestInput("audit-persist-fail"))
 	persistFake.waitForCalls(t, 2)
 	if _, _, hots := persistFake.counts(); hots != 0 {
 		t.Fatalf("failed persist must not reach hot search: hot=%d", hots)
 	}
 
 	hotFake := &fakeStore{renewOK: true, hotErr: errors.New("hot search failed")}
-	NewProducer(hotFake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, recordingProducerLogger(&warns)).Capture(producerTestInput("audit-hot-fail"))
+	NewProducer(hotFake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, logger).Capture(producerTestInput("audit-hot-fail"))
 	hotFake.waitForCalls(t, 3)
 
-	if len(warns) < 2 {
-		t.Fatalf("persist/hot failures must warn, got %v", warns)
+	if len(logger.snapshot()) < 2 {
+		t.Fatalf("persist/hot failures must warn, got %v", logger.snapshot())
 	}
 }
 
@@ -264,6 +280,70 @@ func TestProducerCaptureConcurrentWrites(t *testing.T) {
 	}
 	if stored := fake.persistedInputs(); len(stored) != writers {
 		t.Fatalf("persisted %d inputs, want %d", len(stored), writers)
+	}
+}
+
+// gatedStore blocks the per-record lease renewal so tests can hold every
+// worker inside the write path and fill the queue deterministically.
+type gatedStore struct {
+	*fakeStore
+	gate    chan struct{}
+	entered atomic.Int32
+}
+
+func (g *gatedStore) RenewOwnerLease(_ context.Context, _ OwnerLease, _ time.Duration) (bool, error) {
+	g.entered.Add(1)
+	<-g.gate
+	return true, nil
+}
+
+// TestProducerCaptureDropsWhenQueueSaturated pins the bounded-queue contract:
+// with every worker blocked in the store, the queue accepts exactly
+// producerQueueCapacity records and a further capture is dropped with a warn
+// carrying the running total — capture stays fire-and-forget on the caller.
+func TestProducerCaptureDropsWhenQueueSaturated(t *testing.T) {
+	inner := &fakeStore{renewOK: true}
+	gate := make(chan struct{})
+	store := &gatedStore{fakeStore: inner, gate: gate}
+	logger := &fakeProducerLogger{warns: &[]string{}}
+	producer := NewProducer(store, OwnerLease{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, logger)
+
+	// Park every worker inside the gated renewal so no further dequeues race
+	// with the fills below.
+	for i := 0; i < producerWorkers; i++ {
+		producer.Capture(producerTestInput(fmt.Sprintf("inflight-%d", i)))
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for store.entered.Load() < producerWorkers && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if store.entered.Load() != producerWorkers {
+		t.Fatalf("only %d workers entered the gated renewal, want %d", store.entered.Load(), producerWorkers)
+	}
+
+	for i := 0; i < producerQueueCapacity; i++ {
+		producer.Capture(producerTestInput(fmt.Sprintf("fill-%d", i)))
+	}
+	producer.Capture(producerTestInput("overflow-dropped"))
+	if snapshot := logger.snapshot(); len(snapshot) == 0 || !strings.Contains(snapshot[len(snapshot)-1], "F3 审计采集队列已满") {
+		t.Fatalf("saturated queue must warn on drop, got %v", snapshot)
+	}
+
+	close(gate)
+	// The overflow record was dropped, so only the parked + queued records
+	// reach the store. Renewals run through the gatedStore override (counted
+	// by `entered`), so the fake counters only see persist + hot search.
+	want := producerWorkers + producerQueueCapacity
+	deadline = time.Now().Add(10 * time.Second)
+	for inner.countCalls() < want*2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	renews, persists, hots := inner.counts()
+	if renews != 0 || persists != want || hots != want {
+		t.Fatalf("store calls after drain: renew=%d persist=%d hot=%d, want 0/%d/%d", renews, persists, hots, want, want)
+	}
+	if entered := store.entered.Load(); entered != int32(want) {
+		t.Fatalf("gate renewals = %d, want %d", entered, want)
 	}
 }
 

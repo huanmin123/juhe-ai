@@ -19,14 +19,14 @@ func TestLoadImageEditReferencesW3(t *testing.T) {
 	if assetID == "" {
 		t.Fatalf("上传失败: %s", created.rawString())
 	}
-	_, err := env.deps.Store.loadImageEditReferences(env.deps.ObjectStore, nil, routeTestOwner, "chat_conv_editref", env.fixture.nowISO)
+	_, err := loadImageEditReferences(env.deps.Store, env.deps.ObjectStore, nil, routeTestOwner, "chat_conv_editref", env.fixture.nowISO)
 	if err == nil || !strings.Contains(err.Error(), "至少引用一张") {
 		t.Fatalf("空引用应报错: %v", err)
 	}
-	if _, err := env.deps.Store.loadImageEditReferences(env.deps.ObjectStore, []string{"missing"}, routeTestOwner, "chat_conv_editref", env.fixture.nowISO); err == nil {
+	if _, err := loadImageEditReferences(env.deps.Store, env.deps.ObjectStore, []string{"missing"}, routeTestOwner, "chat_conv_editref", env.fixture.nowISO); err == nil {
 		t.Fatalf("非法 ID 应报错")
 	}
-	references, err := env.deps.Store.loadImageEditReferences(env.deps.ObjectStore, []string{assetID}, routeTestOwner, "chat_conv_editref", env.fixture.nowISO)
+	references, err := loadImageEditReferences(env.deps.Store, env.deps.ObjectStore, []string{assetID}, routeTestOwner, "chat_conv_editref", env.fixture.nowISO)
 	if err != nil || len(references) != 1 || references[0].Filename != assetID+".webp" {
 		t.Fatalf("装载失败: %+v err=%v", references, err)
 	}

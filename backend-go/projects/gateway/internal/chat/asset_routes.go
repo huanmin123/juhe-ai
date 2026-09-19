@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Asset lifecycle routes ported from chat.routes.ts (POST .../assets,
@@ -408,11 +409,13 @@ func (rt *chatRoutes) deleteAsset(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// releaseRetryAt renders now + passiveScheduleDelayMs(60_000) with the base
-// interval (jitter is applied by the clock owner).
+// releaseRetryAt renders now + 60_000ms with the base interval（Node
+// passiveScheduleDelayMs(60_000) 的基数；Go 链路未施加抖动，与 Node 的
+// clock-owner 抖动存在确定性行为差异，复审 P2-2 登记）。Node 语义是毫秒域
+// Date.now() + 60_000ms，Go 时间域为纳秒，基数必须用 60*time.Second。
 func (rt *chatRoutes) releaseRetryAt() string {
 	if rt.deps.Now != nil {
-		return isoMillis(rt.deps.Now().Add(60_000))
+		return isoMillis(rt.deps.Now().Add(60 * time.Second))
 	}
-	return isoMillis(nowWallclock().Add(60_000))
+	return isoMillis(nowWallclock().Add(60 * time.Second))
 }

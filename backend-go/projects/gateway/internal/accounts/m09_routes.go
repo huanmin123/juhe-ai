@@ -233,11 +233,11 @@ func (d *Deps) runExportAccounts(w http.ResponseWriter, r *http.Request, access 
 	}
 	var result *ExportResult
 	var err error
-	if parsed.byIDs {
-		result, err = d.Store.ExportAccounts(r.Context(), ExportOptions{AccountIDs: parsed.accountIDs}, access)
+	if parsed.ByIDs {
+		result, err = d.Store.ExportAccounts(r.Context(), ExportOptions{AccountIDs: parsed.AccountIDs}, access)
 	} else {
 		var accountIDs []string
-		accountIDs, err = d.Store.CollectExportIDs(r.Context(), parsed.filters, access)
+		accountIDs, err = d.Store.CollectExportIDs(r.Context(), parsed.Filters, access)
 		if err == nil && len(accountIDs) == 0 {
 			err = &ValidationError{Message: "当前筛选条件下没有匹配的 AI 账户"}
 		}

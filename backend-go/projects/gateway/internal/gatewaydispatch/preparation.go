@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -25,13 +26,13 @@ type PreparationResult struct {
 	// Outcome is 'ready' | 'fallback' | 'completed'.
 	Outcome string
 	// ready variant
-	Accounts                               []AccountCandidate
-	ReleaseClientIPConcurrency             func()
-	NormalRouteLatencyDegradationApplied   bool
-	CodexTurnAccountAvoidanceApplied       bool
-	CodexTurnAvoidedAccountIDs             []string
-	PrecheckHalfOpenEligible               bool
-	HotQualityExplorationReservation       *HotQualityReservation
+	Accounts                                 []AccountCandidate
+	ReleaseClientIPConcurrency               func()
+	NormalRouteLatencyDegradationApplied     bool
+	CodexTurnAccountAvoidanceApplied         bool
+	CodexTurnAvoidedAccountIDs               []string
+	PrecheckHalfOpenEligible                 bool
+	HotQualityExplorationReservation         *HotQualityReservation
 	SettleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
 	// fallback variant
 	Reason  string
@@ -41,10 +42,10 @@ type PreparationResult struct {
 // localSuppressionBypassResult mirrors localSuppressionBypassResult.
 func localSuppressionBypassResult(accounts []AccountCandidate) SuppressionFilterResult {
 	return SuppressionFilterResult{
-		Accounts:             accounts,
-		SuppressedCount:      0,
-		AllSuppressed:        false,
-		SuppressedAccountIDs: []string{},
+		Accounts:               accounts,
+		SuppressedCount:        0,
+		AllSuppressed:          false,
+		SuppressedAccountIDs:   []string{},
 		AcquiredHalfOpenLeases: []HalfOpenLease{},
 	}
 }
@@ -248,13 +249,13 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 	}
 	if proxyHealthOrder.Applied || proxyHealthOrder.BypassedAllAvoided {
 		input.AuditCapture.AddGatewayMetadata("upstream_bucket_health_avoidance", map[string]any{
-			"applied":             proxyHealthOrder.Applied,
-			"avoidedBucketKeys":   proxyHealthOrder.AvoidedBucketKeys,
-			"avoidedProxyKeys":    proxyHealthOrder.AvoidedProxyKeys,
-			"avoidedAccountIds":   proxyHealthOrder.AvoidedAccountIDs,
-			"halfOpenBucketKeys":  proxyHealthOrder.HalfOpenBucketKeys,
-			"halfOpenAccountIds":  proxyHealthOrder.HalfOpenAccountIDs,
-			"bypassedAllAvoided":  proxyHealthOrder.BypassedAllAvoided,
+			"applied":            proxyHealthOrder.Applied,
+			"avoidedBucketKeys":  proxyHealthOrder.AvoidedBucketKeys,
+			"avoidedProxyKeys":   proxyHealthOrder.AvoidedProxyKeys,
+			"avoidedAccountIds":  proxyHealthOrder.AvoidedAccountIDs,
+			"halfOpenBucketKeys": proxyHealthOrder.HalfOpenBucketKeys,
+			"halfOpenAccountIds": proxyHealthOrder.HalfOpenAccountIDs,
+			"bypassedAllAvoided": proxyHealthOrder.BypassedAllAvoided,
 		})
 	}
 
@@ -269,9 +270,9 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 	}
 	if clientIpAccountAvoidance.Applied || clientIpAccountAvoidance.BypassedAllAvoided {
 		input.AuditCapture.AddGatewayMetadata("client_ip_account_avoidance", map[string]any{
-			"applied":             clientIpAccountAvoidance.Applied,
-			"avoidedAccountIds":   clientIpAccountAvoidance.AvoidedAccountIDs,
-			"bypassedAllAvoided":  clientIpAccountAvoidance.BypassedAllAvoided,
+			"applied":            clientIpAccountAvoidance.Applied,
+			"avoidedAccountIds":  clientIpAccountAvoidance.AvoidedAccountIDs,
+			"bypassedAllAvoided": clientIpAccountAvoidance.BypassedAllAvoided,
 		})
 	}
 
@@ -281,10 +282,10 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 	}
 	if clientSourceAvoidance.Applied || clientSourceAvoidance.BypassedAllAvoided {
 		input.AuditCapture.AddGatewayMetadata("client_source_account_avoidance", map[string]any{
-			"applied":             clientSourceAvoidance.Applied,
-			"failureCount":        clientSourceAvoidance.FailureCount,
-			"avoidedAccountIds":   clientSourceAvoidance.AvoidedAccountIDs,
-			"bypassedAllAvoided":  clientSourceAvoidance.BypassedAllAvoided,
+			"applied":            clientSourceAvoidance.Applied,
+			"failureCount":       clientSourceAvoidance.FailureCount,
+			"avoidedAccountIds":  clientSourceAvoidance.AvoidedAccountIDs,
+			"bypassedAllAvoided": clientSourceAvoidance.BypassedAllAvoided,
 		})
 	}
 
@@ -626,7 +627,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		return fail(err)
 	}
 	if highConcurrencyBusy {
-		queueWaitStartedAtMs := NowMs()
+		queueWaitStartedAtMs := gatewayupstream.NowMs()
 		req.ServerRetryBudget.BeginNoAvailableWait(&queueWaitStartedAtMs)
 		queueWait, waitErr := func() (QueueWaitResult, error) {
 			defer req.ServerRetryBudget.PauseNoAvailableWait(&queueWaitStartedAtMs)

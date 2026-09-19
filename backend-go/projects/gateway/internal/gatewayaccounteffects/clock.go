@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
@@ -162,43 +163,11 @@ func (c *FakeClock) Set(now time.Time) {
 	c.mu.Unlock()
 }
 
-// passiveScheduleJitterPolicy mirrors shared/passive-schedule-jitter.ts.
-const (
-	jitterSubMinuteWindowMs = int64(30_000)
-	jitterMinuteWindowMs    = int64(30_000)
-	jitterHourWindowMs      = int64(30 * 60_000)
-	jitterDayWindowMs       = int64(60 * 60_000)
-	jitterWeekWindowMs      = int64(8 * 60 * 60_000)
-)
-
-// passiveScheduleJitterWindowMs mirrors passiveScheduleJitterWindowMs.
+// passiveScheduleJitterWindowMs mirrors shared/passive-schedule-jitter.ts.
+// 实现收敛到 shared/platform/schedulejitter（全输入域等价，含 interval<1
+// 钳制与 ms 整除语义；档位常量随实现移除）。
 func passiveScheduleJitterWindowMs(intervalMs int64) int64 {
-	interval := int64(math.Max(1, math.Trunc(float64(intervalMs))))
-	var windowMs int64
-	switch {
-	case interval < 60_000:
-		window := jitterSubMinuteWindowMs
-		if interval/2 < window {
-			window = interval / 2
-		}
-		windowMs = window
-	case interval < 60*60_000:
-		windowMs = jitterMinuteWindowMs
-	case interval < 24*60*60_000:
-		windowMs = jitterHourWindowMs
-	case interval < 7*24*60*60_000:
-		windowMs = jitterDayWindowMs
-	default:
-		windowMs = jitterWeekWindowMs
-	}
-	half := interval / 2
-	if half < 0 {
-		half = 0
-	}
-	if windowMs > half {
-		windowMs = half
-	}
-	return windowMs
+	return int64(schedulejitter.Window(time.Duration(intervalMs) * time.Millisecond) / time.Millisecond)
 }
 
 // passiveScheduleOffsetMs mirrors passiveScheduleOffsetMs with the random

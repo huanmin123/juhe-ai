@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
@@ -53,7 +54,7 @@ func (w *w13g3Writer) Write(p []byte) (int, error) {
 }
 
 func TestW13g3PipeDeadlineTimeouts(t *testing.T) {
-	now := NowMs()
+	now := gatewayupstream.NowMs()
 	tiny := int64(20)
 	t.Run("hard first-byte timeout", func(t *testing.T) {
 		_, err := PipeNonStreamUpstreamResponse(context.Background(), &w13g3SlowReader{delay: 150 * time.Millisecond, data: []byte("x")},
@@ -64,7 +65,7 @@ func TestW13g3PipeDeadlineTimeouts(t *testing.T) {
 		}
 	})
 	t.Run("soft configured deadline aborts without handler", func(t *testing.T) {
-		started := NowMs()
+		started := gatewayupstream.NowMs()
 		deadline := int64(20)
 		_, err := PipeNonStreamUpstreamResponse(context.Background(), &w13g3SlowReader{delay: 150 * time.Millisecond, data: []byte("x")},
 			&w13g3Writer{}, NonStreamPipeInput{StartedAt: started, FirstByteDeadlineMs: &deadline})
@@ -74,8 +75,8 @@ func TestW13g3PipeDeadlineTimeouts(t *testing.T) {
 		}
 	})
 	t.Run("response precommit race timeout", func(t *testing.T) {
-		started := NowMs()
-		precommit := NowMs() + 20
+		started := gatewayupstream.NowMs()
+		precommit := gatewayupstream.NowMs() + 20
 		_, err := PipeNonStreamUpstreamResponse(context.Background(), &w13g3SlowReader{delay: 150 * time.Millisecond, data: []byte("x")},
 			&w13g3Writer{}, NonStreamPipeInput{StartedAt: started, ResponsePrecommitDeadlineAtMs: &precommit})
 		var precommitErr *GatewayResponsePrecommitDeadlineError
@@ -84,7 +85,7 @@ func TestW13g3PipeDeadlineTimeouts(t *testing.T) {
 		}
 	})
 	t.Run("max lifetime timeout", func(t *testing.T) {
-		started := NowMs()
+		started := gatewayupstream.NowMs()
 		lifetime := int64(20)
 		_, err := PipeNonStreamUpstreamResponse(context.Background(), &w13g3SlowReader{delay: 150 * time.Millisecond, data: []byte("x")},
 			&w13g3Writer{}, NonStreamPipeInput{StartedAt: started, MaxLifetimeMs: &lifetime})
@@ -97,23 +98,23 @@ func TestW13g3PipeDeadlineTimeouts(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		defer cancel()
 		_, err := PipeNonStreamUpstreamResponse(ctx, &w13g3SlowReader{delay: 300 * time.Millisecond, data: []byte("x")},
-			&w13g3Writer{}, NonStreamPipeInput{StartedAt: NowMs(), Signal: ctx})
+			&w13g3Writer{}, NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), Signal: ctx})
 		var aborted *UpstreamRequestAbortedError
 		if !errorsAs(err, &aborted) {
 			t.Fatalf("expected abort, got %v", err)
 		}
 	})
 	t.Run("expired precommit fails at entry", func(t *testing.T) {
-		past := NowMs() - 5
+		past := gatewayupstream.NowMs() - 5
 		_, err := PipeNonStreamUpstreamResponse(context.Background(), &w13g3SlowReader{delay: time.Millisecond, data: []byte("x")},
-			&w13g3Writer{}, NonStreamPipeInput{StartedAt: NowMs(), ResponsePrecommitDeadlineAtMs: &past})
+			&w13g3Writer{}, NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), ResponsePrecommitDeadlineAtMs: &past})
 		var precommitErr *GatewayResponsePrecommitDeadlineError
 		if !errorsAs(err, &precommitErr) {
 			t.Fatalf("expected precommit deadline error, got %v", err)
 		}
 	})
 	t.Run("expired max lifetime fails at entry", func(t *testing.T) {
-		started := NowMs() - 10_000
+		started := gatewayupstream.NowMs() - 10_000
 		lifetime := int64(20)
 		_, err := PipeNonStreamUpstreamResponse(context.Background(), &w13g3SlowReader{delay: time.Millisecond, data: []byte("x")},
 			&w13g3Writer{}, NonStreamPipeInput{StartedAt: started, MaxLifetimeMs: &lifetime})
@@ -125,7 +126,7 @@ func TestW13g3PipeDeadlineTimeouts(t *testing.T) {
 	t.Run("downstream write failure wraps pipe error", func(t *testing.T) {
 		writer := &w13g3Writer{errOnNth: 1}
 		_, err := PipeNonStreamUpstreamResponse(context.Background(),
-			strings.NewReader(`{"id":"x"}`), writer, NonStreamPipeInput{StartedAt: NowMs()})
+			strings.NewReader(`{"id":"x"}`), writer, NonStreamPipeInput{StartedAt: gatewayupstream.NowMs()})
 		var pipeErr *NonStreamUpstreamBodyPipeError
 		if !errorsAs(err, &pipeErr) {
 			t.Fatalf("expected pipe error, got %v", err)
@@ -138,7 +139,7 @@ func TestW13g3PipeDeadlineTimeouts(t *testing.T) {
 		writer := &w13g3Writer{}
 		result, err := PipeNonStreamUpstreamResponse(context.Background(),
 			strings.NewReader(`{"id":"hook"}`), writer, NonStreamPipeInput{
-				StartedAt:         NowMs(),
+				StartedAt:         gatewayupstream.NowMs(),
 				CaptureBody:       &captureOff,
 				PrepareDownstream: func() { prepared = true },
 				OnChunkRead:       func([]byte) { chunksRead++ },
@@ -161,7 +162,7 @@ func TestW13g3PipeInspectionPaths(t *testing.T) {
 	t.Run("fully buffered complete body", func(t *testing.T) {
 		outcome, pipeErr := PipeNonStreamUpstreamResponseForInspection(context.Background(),
 			strings.NewReader(`{"a":1}`), &w13g3Writer{}, InspectableNonStreamPipeInput{
-				NonStreamPipeInput: NonStreamPipeInput{StartedAt: NowMs()},
+				NonStreamPipeInput: NonStreamPipeInput{StartedAt: gatewayupstream.NowMs()},
 				InspectBytes:       64,
 			})
 		if pipeErr != nil {
@@ -177,7 +178,7 @@ func TestW13g3PipeInspectionPaths(t *testing.T) {
 	t.Run("limit exceeded with requireFullyBuffered", func(t *testing.T) {
 		outcome, pipeErr := PipeNonStreamUpstreamResponseForInspection(context.Background(),
 			strings.NewReader(strings.Repeat("y", 200)), &w13g3Writer{}, InspectableNonStreamPipeInput{
-				NonStreamPipeInput:    NonStreamPipeInput{StartedAt: NowMs()},
+				NonStreamPipeInput:   NonStreamPipeInput{StartedAt: gatewayupstream.NowMs()},
 				InspectBytes:         32,
 				RequireFullyBuffered: true,
 			})
@@ -195,7 +196,7 @@ func TestW13g3PipeInspectionPaths(t *testing.T) {
 		writer := &w13g3Writer{}
 		outcome, pipeErr := PipeNonStreamUpstreamResponseForInspection(context.Background(),
 			strings.NewReader(strings.Repeat("z", 200)), writer, InspectableNonStreamPipeInput{
-				NonStreamPipeInput: NonStreamPipeInput{StartedAt: NowMs()},
+				NonStreamPipeInput: NonStreamPipeInput{StartedAt: gatewayupstream.NowMs()},
 				InspectBytes:       32,
 			})
 		if pipeErr != nil {
@@ -211,7 +212,7 @@ func TestW13g3PipeInspectionPaths(t *testing.T) {
 	t.Run("commit hook error aborts pipe", func(t *testing.T) {
 		_, pipeErr := PipeNonStreamUpstreamResponseForInspection(context.Background(),
 			strings.NewReader(strings.Repeat("w", 200)), &w13g3Writer{}, InspectableNonStreamPipeInput{
-				NonStreamPipeInput:     NonStreamPipeInput{StartedAt: NowMs()},
+				NonStreamPipeInput:     NonStreamPipeInput{StartedAt: gatewayupstream.NowMs()},
 				InspectBytes:           32,
 				BeforeDownstreamCommit: func([]byte) error { return errW13g3 },
 			})
@@ -222,7 +223,7 @@ func TestW13g3PipeInspectionPaths(t *testing.T) {
 }
 
 func TestW13g3AbsoluteDeadlineReader(t *testing.T) {
-	now := NowMs()
+	now := gatewayupstream.NowMs()
 	t.Run("expired precommit and lifetime", func(t *testing.T) {
 		past := now - 5
 		_, err, _ := readNonStreamChunkWithAbsoluteDeadline(strings.NewReader("x"), make([]byte, 8), context.Background(), nil, nil, &past)
@@ -240,7 +241,7 @@ func TestW13g3AbsoluteDeadlineReader(t *testing.T) {
 	t.Run("race abort and timeouts", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
-		deadlineAt := NowMs() + 60_000
+		deadlineAt := gatewayupstream.NowMs() + 60_000
 		_, err, _ := readNonStreamChunkWithAbsoluteDeadline(&w13g3SlowReader{delay: 300 * time.Millisecond, data: []byte("x")},
 			make([]byte, 8), ctx, &deadlineAt, ptrInt64(60_000), nil)
 		var aborted *UpstreamRequestAbortedError
@@ -249,12 +250,12 @@ func TestW13g3AbsoluteDeadlineReader(t *testing.T) {
 		}
 		lifetime := int64(20)
 		_, err, _ = readNonStreamChunkWithAbsoluteDeadline(&w13g3SlowReader{delay: 200 * time.Millisecond, data: []byte("x")},
-			make([]byte, 8), context.Background(), ptrInt64(NowMs()+30), &lifetime, nil)
+			make([]byte, 8), context.Background(), ptrInt64(gatewayupstream.NowMs()+30), &lifetime, nil)
 		var lifetimeErr *UpstreamBodyReadMaxLifetimeError
 		if !errorsAs(err, &lifetimeErr) {
 			t.Fatalf("expected lifetime race error, got %v", err)
 		}
-		precommit := NowMs() + 30
+		precommit := gatewayupstream.NowMs() + 30
 		_, err, _ = readNonStreamChunkWithAbsoluteDeadline(&w13g3SlowReader{delay: 200 * time.Millisecond, data: []byte("x")},
 			make([]byte, 8), context.Background(), nil, nil, &precommit)
 		var precommitErr *GatewayResponsePrecommitDeadlineError
@@ -263,7 +264,7 @@ func TestW13g3AbsoluteDeadlineReader(t *testing.T) {
 		}
 	})
 	t.Run("read done returns data", func(t *testing.T) {
-		precommit := NowMs() + 60_000
+		precommit := gatewayupstream.NowMs() + 60_000
 		n, err, _ := readNonStreamChunkWithAbsoluteDeadline(strings.NewReader("ok"), make([]byte, 8), context.Background(), nil, nil, &precommit)
 		if err != nil || n != 2 {
 			t.Fatalf("n=%d err=%v", n, err)

@@ -270,7 +270,7 @@ func TestW1UComposeFinalPostgresAuditPoolAndSpoolArms(t *testing.T) {
 	t.Run("缺F3审计数据集连接池", func(t *testing.T) {
 		auditConfigWithoutPool := fixture.auditConfig
 		auditConfigWithoutPool.PostgresPool = nil
-		composed, err := composeSystemAPI(fixture.cfg, fixture.pools, fixture.operationStore, fixture.operationLease, fixture.auditProducer, auditConfigWithoutPool)
+		composed, err := composeSystemAPI(fixture.cfg, fixture.pools, fixture.operationStore, fixture.operationLease, fixture.auditProducer, auditConfigWithoutPool, composeTestOwnerHealth())
 		if err == nil {
 			if composed != nil {
 				composed.Shutdown()
@@ -289,7 +289,7 @@ func TestW1UComposeFinalPostgresAuditPoolAndSpoolArms(t *testing.T) {
 		cfg := fixture.cfg
 		cfg.UsageSpoolDirectory = ""
 		cfg.StatsDatabasePath = ""
-		composed, err := composeSystemAPI(cfg, fixture.pools, fixture.operationStore, fixture.operationLease, fixture.auditProducer, fixture.auditConfig)
+		composed, err := composeSystemAPI(cfg, fixture.pools, fixture.operationStore, fixture.operationLease, fixture.auditProducer, fixture.auditConfig, composeTestOwnerHealth())
 		if err == nil {
 			if composed != nil {
 				composed.Shutdown()
@@ -305,7 +305,7 @@ func TestW1UComposeFinalPostgresAuditPoolAndSpoolArms(t *testing.T) {
 	})
 
 	t.Run("完整成功加余额wire", func(t *testing.T) {
-		composed, err := composeSystemAPI(fixture.cfg, fixture.pools, fixture.operationStore, fixture.operationLease, fixture.auditProducer, fixture.auditConfig)
+		composed, err := composeSystemAPI(fixture.cfg, fixture.pools, fixture.operationStore, fixture.operationLease, fixture.auditProducer, fixture.auditConfig, composeTestOwnerHealth())
 		if err != nil {
 			t.Fatalf("juhe_jobs 四表就绪后 PG 组合根必须组装成功（含进程内余额刷新 wire 成功路径）: %v", err)
 		}

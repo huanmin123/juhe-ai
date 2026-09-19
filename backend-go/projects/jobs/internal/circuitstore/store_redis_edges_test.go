@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	miniredis "github.com/alicebob/miniredis/v2"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 	redis "github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
@@ -61,8 +63,9 @@ func TestStringListUnmarshalJSON(t *testing.T) {
 			}
 		})
 	}
-	var list stringList
-	if list.clone() != nil {
+	// clone 实现已下潜 circuitstate（未导出方法跨包不可见）；nil/深拷贝语义
+	// 由平台包测试覆盖，这里验证 CloneState 委托后的等价 nil 行为。
+	if circuitstate.CloneState(State{ScopeKey: "s"}).FailureEvidenceKeys != nil {
 		t.Fatal("nil clone 应保持 nil")
 	}
 	// 空串分支由直接调用 UnmarshalJSON 覆盖（encoding/json 对空输入
@@ -71,10 +74,10 @@ func TestStringListUnmarshalJSON(t *testing.T) {
 	if err := direct.UnmarshalJSON([]byte("")); err != nil || direct != nil {
 		t.Fatalf("空串应解码为 nil: %v %v", direct, err)
 	}
-	populated := stringList{"a"}
-	cloned := populated.clone()
-	cloned[0] = "changed"
-	if populated[0] != "a" {
+	populated := State{ScopeKey: "s", FailureEvidenceKeys: stringList{"a"}}
+	cloned := circuitstate.CloneState(populated)
+	cloned.FailureEvidenceKeys[0] = "changed"
+	if populated.FailureEvidenceKeys[0] != "a" {
 		t.Fatal("clone 必须深拷贝")
 	}
 }
@@ -86,7 +89,7 @@ func TestStateListDecode(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &list); err != nil {
 			t.Fatalf("空壳 %q 不得报错: %v", raw, err)
 		}
-		if list.slice() != nil {
+		if list.Slice() != nil {
 			t.Fatalf("nil stateList slice 应为 nil: %v", list)
 		}
 	}
@@ -98,7 +101,7 @@ func TestStateListDecode(t *testing.T) {
 	if err := json.Unmarshal([]byte(`[{"phase":"OPEN"}]`), &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list.slice()) != 1 || list.slice()[0].Phase != "OPEN" {
+	if len(list.Slice()) != 1 || list.Slice()[0].Phase != "OPEN" {
 		t.Fatalf("slice 应拷贝元素: %v", list)
 	}
 }
@@ -525,10 +528,10 @@ func TestParseListDuePageValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.scopeKeys) != 2 || page.scopeKeys[0] != "sk-1" || page.scopeKeys[1] != "2" {
-		t.Fatalf("scopeKeys 应字符串化: %v", page.scopeKeys)
+	if len(page.ScopeKeys) != 2 || page.ScopeKeys[0] != "sk-1" || page.ScopeKeys[1] != "2" {
+		t.Fatalf("scopeKeys 应字符串化: %v", page.ScopeKeys)
 	}
-	if page.scanned != 3 || page.nextOffset != 4 || !page.exhausted {
+	if page.Scanned != 3 || page.NextOffset != 4 || !page.Exhausted {
 		t.Fatalf("分页字段不符: %+v", page)
 	}
 }
@@ -803,11 +806,11 @@ func TestListDueLimitValidation(t *testing.T) {
 // TestMutationResultRelatedSlice 覆盖 relatedStates 出口。
 func TestMutationResultRelatedSlice(t *testing.T) {
 	var empty MutationResult
-	if empty.relatedSlice() != nil {
+	if empty.RelatedStatesSlice() != nil {
 		t.Fatal("nil relatedStates 出口应为 nil")
 	}
 	withRelated := MutationResult{RelatedStates: stateList{{Phase: "CLOSED"}}}
-	if len(withRelated.relatedSlice()) != 1 {
+	if len(withRelated.RelatedStatesSlice()) != 1 {
 		t.Fatalf("relatedSlice 应拷贝: %+v", withRelated)
 	}
 }

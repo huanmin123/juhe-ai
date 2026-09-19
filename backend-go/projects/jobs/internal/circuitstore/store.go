@@ -2,19 +2,17 @@ package circuitstore
 
 import (
 	"context"
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
-	"strconv"
 	"strings"
 
 	redis "github.com/redis/go-redis/v9"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
@@ -36,135 +34,26 @@ const (
 	StoreName = "gateway-account-circuit"
 )
 
-// Scope mirrors AccountCircuitScope（camelCase JSON 与 Lua/Node 逐字段一致）。
-type Scope struct {
-	Kind              string `json:"kind"`
-	AccountRuntimeKey string `json:"accountRuntimeKey,omitempty"`
-	KeyFingerprint    string `json:"keyFingerprint,omitempty"`
-	ProtocolProfile   string `json:"protocolProfile,omitempty"`
-	RequestLane       string `json:"requestLane,omitempty"`
-	ModelBucket       string `json:"modelBucket,omitempty"`
-}
+// REFACTOR-0008 跨模块成对收敛：与 gateway/internal/gatewaycircuit 逐字节
+// 相同的共享运行态词汇（Scope/Lease/State/MutationResult 及其列表类型、
+// CloneState）下潜到 shared/platform/circuitstate 作为单一事实；本包保留
+// 类型别名，调用点零改动。MutationResult 的 RelatedStatesSlice 方法随类型
+// 来自平台包（原未导出 relatedSlice 与 gateway 导出 RelatedStatesSlice 是
+// 同一行为的两个名字，收敛为平台导出名）。
+type (
+	Scope          = circuitstate.Scope
+	Lease          = circuitstate.Lease
+	State          = circuitstate.State
+	MutationResult = circuitstate.MutationResult
+	stringList     = circuitstate.StringList
+	stateList      = circuitstate.StateList
+)
 
-// Lease mirrors AccountCircuitLease.
-type Lease struct {
-	Kind         string `json:"kind"`
-	LeaseID      string `json:"leaseId"`
-	LeaseUntilMs int64  `json:"leaseUntilMs"`
-}
+// CloneState mirrors cloneAccountCircuitState（下潜委托壳）。
+func CloneState(state State) State { return circuitstate.CloneState(state) }
 
-// stringList 解码 Lua cjson 往返的数组（空数组编码为 {}）。
-type stringList []string
-
-func (l stringList) clone() stringList {
-	if l == nil {
-		return nil
-	}
-	out := make(stringList, len(l))
-	copy(out, l)
-	return out
-}
-
-func (l *stringList) UnmarshalJSON(raw []byte) error {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" {
-		*l = nil
-		return nil
-	}
-	if trimmed == "{}" || trimmed == "[]" {
-		*l = stringList{}
-		return nil
-	}
-	var values []string
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return err
-	}
-	*l = values
-	return nil
-}
-
-// State mirrors AccountCircuitState（可选字段用指针保持 Node 的 undefined 语义）。
-type State struct {
-	ScopeKey                     string     `json:"scopeKey"`
-	Scope                        Scope      `json:"scope"`
-	Phase                        string     `json:"phase"`
-	Generation                   int64      `json:"generation"`
-	DispatchRevision             string     `json:"dispatchRevision"`
-	TransitionID                 string     `json:"transitionId"`
-	BackoffAttempt               int64      `json:"backoffAttempt"`
-	RecoverySuccessCount         int64      `json:"recoverySuccessCount"`
-	ConfirmationFailuresRequired *int64     `json:"confirmationFailuresRequired,omitempty"`
-	ConfirmationFailureCount     *int64     `json:"confirmationFailureCount,omitempty"`
-	FailureEvidenceKeys          stringList `json:"failureEvidenceKeys,omitempty"`
-	OpenedAtMs                   *int64     `json:"openedAtMs,omitempty"`
-	RetryAtMs                    *int64     `json:"retryAtMs,omitempty"`
-	FailureReason                *string    `json:"failureReason,omitempty"`
-	Lease                        *Lease     `json:"lease,omitempty"`
-	HalfOpenOrigin               *string    `json:"halfOpenOrigin,omitempty"`
-	IncidentID                   *string    `json:"incidentId,omitempty"`
-	ShadowedByIncidentID         *string    `json:"shadowedByIncidentId,omitempty"`
-	ChildIncidentIDs             stringList `json:"childIncidentIds,omitempty"`
-	ChildScopeKeys               stringList `json:"childScopeKeys,omitempty"`
-	RequiredRecoveryScopeKeys    stringList `json:"requiredRecoveryScopeKeys,omitempty"`
-	RecoveryEvidenceScopeKeys    stringList `json:"recoveryEvidenceScopeKeys,omitempty"`
-	UpdatedAtMs                  int64      `json:"updatedAtMs"`
-}
-
-// CloneState mirrors cloneAccountCircuitState.
-func CloneState(state State) State {
-	out := state
-	out.Scope = Scope{
-		Kind:              state.Scope.Kind,
-		AccountRuntimeKey: state.Scope.AccountRuntimeKey,
-		KeyFingerprint:    state.Scope.KeyFingerprint,
-		ProtocolProfile:   state.Scope.ProtocolProfile,
-		RequestLane:       state.Scope.RequestLane,
-		ModelBucket:       state.Scope.ModelBucket,
-	}
-	if state.Lease != nil {
-		lease := *state.Lease
-		out.Lease = &lease
-	}
-	out.FailureEvidenceKeys = state.FailureEvidenceKeys.clone()
-	out.ChildIncidentIDs = state.ChildIncidentIDs.clone()
-	out.ChildScopeKeys = state.ChildScopeKeys.clone()
-	out.RequiredRecoveryScopeKeys = state.RequiredRecoveryScopeKeys.clone()
-	out.RecoveryEvidenceScopeKeys = state.RecoveryEvidenceScopeKeys.clone()
-	return out
-}
-
-// stateList 解码 relatedStates（Lua 空数组 = {}）。
-type stateList []State
-
-func (l *stateList) UnmarshalJSON(raw []byte) error {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" || trimmed == "{}" || trimmed == "[]" {
-		*l = nil
-		return nil
-	}
-	var values []State
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return err
-	}
-	*l = values
-	return nil
-}
-
-func (l stateList) slice() []State {
-	if l == nil {
-		return nil
-	}
-	return append([]State{}, l...)
-}
-
-// MutationResult mirrors AccountCircuitMutationResult.
-type MutationResult struct {
-	Status        string    `json:"status"`
-	State         State     `json:"state"`
-	RelatedStates stateList `json:"relatedStates,omitempty"`
-}
-
-func (r MutationResult) relatedSlice() []State { return r.RelatedStates.slice() }
+// ScopeKey 与 MustScopeKey 留守：两侧实现已文本漂移（本包内联字面量，
+// gatewaycircuit 用作用域 kind 常量），行为等价，按对账结论不强行统一。
 
 // ScopeKey mirrors accountCircuitScopeKey（与 opsjobs.AccountCircuitScopeKey
 // 同一长度前缀编码，独立保留以形成单一键契约校验点）。
@@ -603,15 +492,15 @@ func (s *RedisStore) ListDue(ctx context.Context, nowMs int64, limit int) ([]Sta
 		if err != nil {
 			return nil, err
 		}
-		scanned += page.scanned
-		retainedOffset = page.nextOffset
-		for _, scopeKey := range page.scopeKeys {
+		scanned += page.Scanned
+		retainedOffset = page.NextOffset
+		for _, scopeKey := range page.ScopeKeys {
 			if _, ok := seen[scopeKey]; !ok {
 				seen[scopeKey] = struct{}{}
 				scopeKeys = append(scopeKeys, scopeKey)
 			}
 		}
-		if page.exhausted || page.scanned == 0 {
+		if page.Exhausted || page.Scanned == 0 {
 			break
 		}
 	}
@@ -791,30 +680,17 @@ func (s *RedisStore) execute(
 	return parsed, nil
 }
 
-func pointerNowMs(payload map[string]any) *int64 {
-	switch value := payload["nowMs"].(type) {
-	case int64:
-		return &value
-	case *int64:
-		return value
-	}
-	return nil
-}
+// REFACTOR-0008 下潜委托壳：两侧逐字节相同的解析原语收敛到
+// shared/platform/circuitstate，包内调用点零改动。
+func pointerNowMs(payload map[string]any) *int64 { return circuitstate.PointerNowMs(payload) }
 
 func cursorString(value any, fallback string) string {
-	switch typed := value.(type) {
-	case string:
-		if typed != "" {
-			return typed
-		}
-	case float64:
-		return fmt.Sprintf("%d", int64(typed))
-	case json.Number:
-		return typed.String()
-	}
-	return fallback
+	return circuitstate.CursorString(value, fallback)
 }
 
+// encodeJSON 保持快速失败 panic 契约（复审 P1-1 恢复）：与 gatewaycircuit 侧
+// "忽略错误返空串"的 jsonenc 语义不同，内部 payload 序列化失败属编程错误，
+// 本包登记为语义变体不随 jsonenc 收敛。
 func encodeJSON(value any) string {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -823,48 +699,11 @@ func encodeJSON(value any) string {
 	return string(encoded)
 }
 
-// decodeStrict 解析 Lua cjson 响应（UseNumber 保持整数精度）。
-func decodeStrict(encoded string, dst any) error {
-	decoder := json.NewDecoder(strings.NewReader(encoded))
-	decoder.UseNumber()
-	if err := decoder.Decode(dst); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("trailing JSON value")
-		}
-		return err
-	}
-	return nil
-}
+func decodeStrict(encoded string, dst any) error { return circuitstate.DecodeStrict(encoded, dst) }
 
-func redisStringResult(raw any) (string, bool) {
-	switch typed := raw.(type) {
-	case string:
-		return typed, true
-	case []byte:
-		return string(typed), true
-	}
-	return "", false
-}
+func redisStringResult(raw any) (string, bool) { return circuitstate.RedisStringResult(raw) }
 
-func numericRedisResult(raw any) (int64, error) {
-	switch typed := raw.(type) {
-	case int64:
-		return typed, nil
-	case float64:
-		return int64(typed), nil
-	case string:
-		value, ok := parseSafeInteger(typed)
-		if !ok {
-			return 0, errors.New("Redis 账户电路数值返回无效")
-		}
-		return int64(value), nil
-	}
-	return 0, errors.New("Redis 账户电路数值返回无效")
-}
+func numericRedisResult(raw any) (int64, error) { return circuitstate.NumericRedisResult(raw) }
 
 func redisAccountCircuitStoreKeys(name, namespace string) redisCircuitKeys {
 	safeName := sanitizeRedisName(name)
@@ -896,38 +735,8 @@ func sanitizeRedisNamespacePart(value string) string {
 	return rediscfg.SanitizeRedisNamespacePart(value)
 }
 
-type redisListDuePage struct {
-	scopeKeys  []string
-	scanned    int64
-	nextOffset int64
-	exhausted  bool
-}
-
-func parseListDuePage(encoded string) (redisListDuePage, error) {
-	if encoded == "" {
-		return redisListDuePage{}, errors.New("Redis 账户电路 due 分页返回无效")
-	}
-	var parsed struct {
-		ScopeKeys  *[]any `json:"scopeKeys"`
-		Scanned    *int64 `json:"scanned"`
-		NextOffset *int64 `json:"nextOffset"`
-		Exhausted  *bool  `json:"exhausted"`
-	}
-	if err := json.Unmarshal([]byte(encoded), &parsed); err != nil {
-		return redisListDuePage{}, errors.New("Redis 账户电路 due 分页返回无效")
-	}
-	if parsed.ScopeKeys == nil || parsed.Scanned == nil || parsed.NextOffset == nil {
-		return redisListDuePage{}, errors.New("Redis 账户电路 due 分页 scopeKeys 无效")
-	}
-	if *parsed.Scanned < 0 || *parsed.NextOffset < 0 {
-		return redisListDuePage{}, errors.New("Redis 账户电路 due 分页游标无效")
-	}
-	scopeKeys := make([]string, 0, len(*parsed.ScopeKeys))
-	for _, item := range *parsed.ScopeKeys {
-		scopeKeys = append(scopeKeys, fmt.Sprintf("%v", item))
-	}
-	exhausted := parsed.Exhausted != nil && *parsed.Exhausted
-	return redisListDuePage{scopeKeys: scopeKeys, scanned: *parsed.Scanned, nextOffset: *parsed.NextOffset, exhausted: exhausted}, nil
+func parseListDuePage(encoded string) (circuitstate.RedisListDuePage, error) {
+	return circuitstate.ParseListDuePage(encoded)
 }
 
 func validateOperationPayload(operation string, input map[string]any) error {
@@ -992,38 +801,19 @@ func validateOperationPayload(operation string, input map[string]any) error {
 }
 
 func requiredPayloadString(input map[string]any, key string) (string, error) {
-	value, _ := input[key].(string)
-	normalized, err := requiredValue(value, key)
-	if err != nil {
-		return "", err
-	}
-	return normalized, nil
+	return circuitstate.RequiredPayloadString(input, key)
 }
 
 func requiredEvidenceKeyPayload(input map[string]any, key string) error {
-	value, _ := input[key].(string)
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	if normalized == "" {
-		return fmt.Errorf("账户电路操作缺少 %s", key)
-	}
-	if !isSHA256Hex(normalized) {
-		return errors.New("账户电路 failureEvidenceKey 必须是 SHA256")
-	}
-	return nil
+	return circuitstate.RequiredEvidenceKeyPayload(input, key)
 }
 
-func payloadInt64(value any) (int64, bool) {
-	switch typed := value.(type) {
-	case int64:
-		return typed, true
-	case float64:
-		return int64(typed), true
-	}
-	return 0, false
-}
+func payloadInt64(value any) (int64, bool) { return circuitstate.PayloadInt64(value) }
 
 // ---- 小工具（与 gatewaycircuit 同源）----
 
+// defaultNowMs 留守：经本包 timeNowUnixMilli 读钟（与 gateway 侧直接
+// time.Now 实现已漂移，行为等价）。
 func defaultNowMs() int64 { return timeNowUnixMilli() }
 
 func accountCircuitDueAtMs(state State) int64 {
@@ -1042,90 +832,34 @@ func accountCircuitDueAtMs(state State) int64 {
 	return math.MaxInt64
 }
 
+// REFACTOR-0008 下潜委托壳：两侧逐字节相同，收敛到
+// shared/platform/circuitstate，包内调用点零改动。
 func requiredValue(value, name string) (string, error) {
-	normalized := strings.TrimSpace(value)
-	if normalized == "" {
-		return "", fmt.Errorf("账户电路操作缺少 %s", name)
-	}
-	return normalized, nil
+	return circuitstate.RequiredValue(value, name)
 }
 
 func requiredScopePart(value, name string) (string, error) {
-	normalized := strings.TrimSpace(value)
-	if normalized == "" {
-		return "", fmt.Errorf("账户电路作用域缺少 %s", name)
-	}
-	return normalized, nil
+	return circuitstate.RequiredScopePart(value, name)
 }
 
-func encodedScopeKey(parts ...string) string {
-	encoded := make([]string, len(parts))
-	for i, part := range parts {
-		encoded[i] = fmt.Sprintf("%d:%s", len(part), part)
-	}
-	return strings.Join(encoded, "|")
-}
+func encodedScopeKey(parts ...string) string { return circuitstate.EncodedScopeKey(parts...) }
 
 // normalizedNowValue mirrors normalizedNow（负值截 0）。
 func normalizedNowValue(nowMs *int64, fallback func() int64) int64 {
-	value := int64(0)
-	if nowMs != nil {
-		value = *nowMs
-	} else if fallback != nil {
-		value = fallback()
-	}
-	if value < 0 {
-		return 0
-	}
-	return value
+	return circuitstate.NormalizedNowValue(nowMs, fallback)
 }
 
 func positiveInteger(value int64, name string) (int64, error) {
-	if value < 1 {
-		return 0, fmt.Errorf("账户电路 %s 必须是正整数", name)
-	}
-	return value, nil
+	return circuitstate.PositiveInteger(value, name)
 }
 
-func isSHA256Hex(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return false
-		}
-	}
-	return true
-}
+func isSHA256Hex(value string) bool { return circuitstate.IsSHA256Hex(value) }
 
 // parseSafeInteger mirrors Number(value) + Number.isSafeInteger 检查。
-func parseSafeInteger(value string) (float64, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return 0, false
-	}
-	number, err := strconv.ParseFloat(trimmed, 64)
-	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
-		return 0, false
-	}
-	if number != math.Trunc(number) || math.Abs(number) > 9007199254740991 {
-		return 0, false
-	}
-	return number, true
-}
+func parseSafeInteger(value string) (float64, bool) { return circuitstate.ParseSafeInteger(value) }
 
-func int64Min(left, right int64) int64 {
-	if left < right {
-		return left
-	}
-	return right
-}
+func int64Min(left, right int64) int64 { return circuitstate.Int64Min(left, right) }
 
-func sha1Hex(value string) string {
-	sum := sha1.Sum([]byte(value))
-	return hex.EncodeToString(sum[:])
-}
+func sha1Hex(value string) string { return circuitstate.SHA1Hex(value) }
 
-func strPtr(value string) *string { return &value }
+func strPtr(value string) *string { return circuitstate.StrPtr(value) }

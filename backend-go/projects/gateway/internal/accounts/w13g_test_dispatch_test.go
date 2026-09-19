@@ -328,9 +328,9 @@ func TestW13GParseTestBodies(t *testing.T) {
 	full := map[string]any{
 		"providerCode": "gpt", "providerProtocolProfileId": "prof-gpt", "name": " n ", "type": "api_key",
 		"healthCheckModel": "m", "healthCheckEndpointMode": "chat_json", "groupId": " g1 ",
-		"credentials":    map[string]any{"api_key": "sk"},
-		"supportedModels": []any{" a ", "a"},
-		"modelMappings":  []any{},
+		"credentials":      map[string]any{"api_key": "sk"},
+		"supportedModels":  []any{" a ", "a"},
+		"modelMappings":    []any{},
 		"concurrencyLimit": float64(5), "priority": float64(2),
 		"superPriorityEnabled": true, "fallbackEnabled": false,
 		"proxyProfileId": " pp ", "accountExpiresAt": " 2026-02-02 ",
@@ -379,8 +379,8 @@ func TestW13GDraftSnapshotPreparationArms(t *testing.T) {
 		input := &TestDraftAccountInput{
 			ProviderCode: "gpt", ProviderProtocolProfileID: "prof-gpt", Name: "d1", Type: "api_key",
 			HealthCheckModel: "gpt-4o-mini", HealthCheckEndpointMode: "chat_json", GroupID: groupID,
-			Credentials:      Credentials{"api_key": "sk-w13g-d", "base_url": "https://api.openai.com/v1"},
-			SupportedModels:  []string{"gpt-4o-mini"},
+			Credentials:     Credentials{"api_key": "sk-w13g-d", "base_url": "https://api.openai.com/v1"},
+			SupportedModels: []string{"gpt-4o-mini"},
 		}
 		if mutate != nil {
 			mutate(input)
@@ -552,7 +552,7 @@ func TestW13GDraftOAuthAndHelpers(t *testing.T) {
 	record := map[string]any{
 		"providerCode": "gpt", "providerProtocolProfileId": "prof-gpt", "name": "o1", "type": "oauth",
 		"healthCheckModel": "gpt-4o-mini", "healthCheckEndpointMode": "responses_json", "groupId": groupID,
-		"credentials": map[string]any{"refresh_token": "r"},
+		"credentials":     map[string]any{"refresh_token": "r"},
 		"supportedModels": []any{"gpt-4o-mini"},
 	}
 	input, message := parseTestDraftAccountInput(record)
@@ -572,7 +572,7 @@ func TestW13GDraftOAuthAndHelpers(t *testing.T) {
 	record2 := map[string]any{
 		"providerCode": "gpt", "providerProtocolProfileId": "prof-gpt", "name": "o2", "type": "oauth",
 		"healthCheckModel": "gpt-4o-mini", "healthCheckEndpointMode": "responses_json", "groupId": groupID,
-		"credentials": map[string]any{"refresh_token": "r"},
+		"credentials":     map[string]any{"refresh_token": "r"},
 		"supportedModels": []any{"gpt-4o-mini"},
 	}
 	input2, _ := parseTestDraftAccountInput(record2)

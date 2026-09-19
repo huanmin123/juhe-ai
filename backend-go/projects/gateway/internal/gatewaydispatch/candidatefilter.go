@@ -23,20 +23,20 @@ type CandidateFilterOutput struct {
 
 // CandidateFilterArgs mirrors the Node input object.
 type CandidateFilterArgs struct {
-	Req                        *gatewaypreauth.GatewayRequest
-	AuditCapture               AuditCapture
-	UsageContext               gatewaypreauth.GatewayFailureUsageContext
-	StartedAt                  int64
-	RawCandidateAccounts       []AccountCandidate
-	ClientStrategy             gatewaypreauth.ClientStrategyContext
-	SystemAccountID            string
-	APIKeyID                   string
-	GroupID                    string
-	ClientIP                   string
-	Endpoint                   string
-	BypassModelFilter          bool
-	RequestModelOverride       string
-	RouteCoordinator           gatewayrouting.GatewayRouteCoordinatorOwner
+	Req                                 *gatewaypreauth.GatewayRequest
+	AuditCapture                        AuditCapture
+	UsageContext                        gatewaypreauth.GatewayFailureUsageContext
+	StartedAt                           int64
+	RawCandidateAccounts                []AccountCandidate
+	ClientStrategy                      gatewaypreauth.ClientStrategyContext
+	SystemAccountID                     string
+	APIKeyID                            string
+	GroupID                             string
+	ClientIP                            string
+	Endpoint                            string
+	BypassModelFilter                   bool
+	RequestModelOverride                string
+	RouteCoordinator                    gatewayrouting.GatewayRouteCoordinatorOwner
 	RecoverUnavailableCandidateAccounts func(ctx context.Context) ([]AccountCandidate, error)
 	LoadModelAwareCandidateAccounts     func(ctx context.Context, requestedModel, sourceEndpointFamily string) ([]AccountCandidate, error)
 }
@@ -166,12 +166,12 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 					reasonAttribute = nil
 				}
 				input.AuditCapture.AddGatewayMetadata("account_model_candidate_window", map[string]any{
-					"requestedModel":             requestedModelAttribute,
-					"sourceEndpointFamily":       familyAttribute,
-					"directMatchedCount":         modelAwareModelFilter.DirectMatchedCount,
-					"mappingMatchedCount":        modelAwareModelFilter.MappingMatchedCount,
+					"requestedModel":              requestedModelAttribute,
+					"sourceEndpointFamily":        familyAttribute,
+					"directMatchedCount":          modelAwareModelFilter.DirectMatchedCount,
+					"mappingMatchedCount":         modelAwareModelFilter.MappingMatchedCount,
 					"invalidModelConstraintCount": modelAwareModelFilter.InvalidModelConstraintCount,
-					"remainingCount":             len(modelAwareModelFilter.Accounts),
+					"remainingCount":              len(modelAwareModelFilter.Accounts),
 				})
 			}
 		}
@@ -190,15 +190,15 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 			reasonAttribute = nil
 		}
 		input.AuditCapture.AddGatewayMetadata("account_model_filter", map[string]any{
-			"requestedModel":             requestedModelAttribute,
-			"sourceEndpointFamily":       familyAttribute,
-			"skippedCount":               modelFilter.SkippedCount,
-			"limitedAccountCount":        modelFilter.LimitedAccountCount,
+			"requestedModel":              requestedModelAttribute,
+			"sourceEndpointFamily":        familyAttribute,
+			"skippedCount":                modelFilter.SkippedCount,
+			"limitedAccountCount":         modelFilter.LimitedAccountCount,
 			"invalidModelConstraintCount": modelFilter.InvalidModelConstraintCount,
-			"directMatchedCount":         modelFilter.DirectMatchedCount,
-			"mappingMatchedCount":        modelFilter.MappingMatchedCount,
-			"remainingCount":             len(modelFilter.Accounts),
-			"reason":                     reasonAttribute,
+			"directMatchedCount":          modelFilter.DirectMatchedCount,
+			"mappingMatchedCount":         modelFilter.MappingMatchedCount,
+			"remainingCount":              len(modelFilter.Accounts),
+			"reason":                      reasonAttribute,
 		})
 	}
 	if len(capabilityFilter.Accounts) > 0 && len(modelFilter.Accounts) == 0 {

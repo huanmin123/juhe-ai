@@ -21,11 +21,11 @@ func TestW10AClearAuthorizedFailureStateColumns(t *testing.T) {
 		t.Fatal("空行不应报告变更")
 	}
 	full := authorizedDispatchResetRow{
-		cooldownUntil:              sqlNullStr("2030-01-01T00:00:00Z"),
-		lastErrorCode:              sqlNullStr("rate_limited"),
-		lastErrorMessage:           sqlNullStr("boom"),
-		lastErrorTraceID:           sqlNullStr("trace-1"),
-		cooldownRetestFailureCount: sqlInt64Lit(2),
+		CooldownUntil:              sqlNullStr("2030-01-01T00:00:00Z"),
+		LastErrorCode:              sqlNullStr("rate_limited"),
+		LastErrorMessage:           sqlNullStr("boom"),
+		LastErrorTraceID:           sqlNullStr("trace-1"),
+		CooldownRetestFailureCount: sqlInt64Lit(2),
 	}
 	sets := map[string]any{}
 	if !clearAuthorizedFailureStateColumnsForReset(sets, full) {
@@ -39,9 +39,9 @@ func TestW10AClearAuthorizedFailureStateColumns(t *testing.T) {
 	}
 	// 全零/全空行（除 stream 计数外）也覆盖 0 计数不写分支。
 	zeroCounts := authorizedDispatchResetRow{
-		cooldownRetestFailureCount: sqlInt64Lit(0),
-		streamFailureCount:         sqlInt64Lit(0),
-		lastErrorCode:              sqlNullStr("x"),
+		CooldownRetestFailureCount: sqlInt64Lit(0),
+		StreamFailureCount:         sqlInt64Lit(0),
+		LastErrorCode:              sqlNullStr("x"),
 	}
 	sets2 := map[string]any{}
 	if !clearAuthorizedFailureStateColumnsForReset(sets2, zeroCounts) {
@@ -54,36 +54,36 @@ func TestW10AClearAuthorizedFailureStateColumns(t *testing.T) {
 
 func TestW10AUnchangedResetResults(t *testing.T) {
 	row := authorizedDispatchResetRow{
-		id:              "acc-1",
-		configRevision:  7,
-		systemAccountID: "owner-1",
-		name:            "实例",
-		status:          "active",
-		schedulable:     1,
-		lastErrorCode:   sqlNullStr("rate_limited"),
+		ID:              "acc-1",
+		ConfigRevision:  7,
+		SystemAccountID: "owner-1",
+		Name:            "实例",
+		Status:          "active",
+		Schedulable:     1,
+		LastErrorCode:   sqlNullStr("rate_limited"),
 	}
 	result := unchangedAuthorizedResetResult(row, authorizedDispatchResetBinding{
-		groupID:                "grp-1",
-		accountAuthorizationID: "ra-1",
+		GroupID:                "grp-1",
+		AccountAuthorizationID: "ra-1",
 	})
-	if result.configRevision != 7 || result.ownerSystemAccountID != "owner-1" || len(result.changedFields) != 0 {
+	if result.ConfigRevision != 7 || result.OwnerSystemAccountID != "owner-1" || len(result.ChangedFields) != 0 {
 		t.Fatalf("unchanged 结果字段不一致：%+v", result)
 	}
-	if result.authorizedBinding == nil || result.authorizedBinding.GroupID != "grp-1" ||
-		result.authorizedBinding.AccountAuthorizationID != "ra-1" {
-		t.Fatalf("unchanged 绑定不一致：%+v", result.authorizedBinding)
+	if result.AuthorizedBinding == nil || result.AuthorizedBinding.GroupID != "grp-1" ||
+		result.AuthorizedBinding.AccountAuthorizationID != "ra-1" {
+		t.Fatalf("unchanged 绑定不一致：%+v", result.AuthorizedBinding)
 	}
-	patchRow := patchFailureStateRow{id: "acc-2", configRevision: 3, name: "n",
-		systemAccountID: "owner-2", status: "disabled"}
+	patchRow := patchFailureStateRow{ID: "acc-2", ConfigRevision: 3, Name: "n",
+		SystemAccountID: "owner-2", Status: "disabled"}
 	patchResult, patchErr := (&Store{}).unchangedFailureStateResult(nil, patchRow)
 	if patchErr != nil {
 		t.Fatalf("unchangedFailureStateResult 意外错误：%v", patchErr)
 	}
-	if patchResult.id != "acc-2" || patchResult.configRevision != 3 || patchResult.status != "disabled" {
+	if patchResult.ID != "acc-2" || patchResult.ConfigRevision != 3 || patchResult.Status != "disabled" {
 		t.Fatalf("unchanged failure 结果不一致：%+v", patchResult)
 	}
-	if len(patchResult.changedFields) != 0 {
-		t.Fatalf("unchanged 不应有变更字段：%v", patchResult.changedFields)
+	if len(patchResult.ChangedFields) != 0 {
+		t.Fatalf("unchanged 不应有变更字段：%v", patchResult.ChangedFields)
 	}
 	if healthCheckReasonValue(true) != "activation" || healthCheckReasonValue(false) != "" {
 		t.Fatal("healthCheckReasonValue 分支不一致")
@@ -104,7 +104,7 @@ func TestW10AResetEffectiveAvailability(t *testing.T) {
 	fake := &fakeRuntimeEffects{}
 	env.store.SetRuntimeResetEffects(fake)
 
-	ownerBase := resetSummary{accessType: "owner", status: "active", schedulable: true, accountType: "oauth"}
+	ownerBase := resetSummary{AccessType: "owner", Status: "active", Schedulable: true, AccountType: "oauth"}
 	cases := []struct {
 		name string
 		make func() *resetSummary
@@ -112,37 +112,37 @@ func TestW10AResetEffectiveAvailability(t *testing.T) {
 	}{
 		{"owner 健康活跃", func() *resetSummary { return w10aSummary(ownerBase, nil) }, true},
 		{"owner 冷却已过", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.cooldownUntil = sqlNullStr("2026-09-16T00:00:00Z") })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.CooldownUntil = sqlNullStr("2026-09-16T00:00:00Z") })
 		}, true},
 		{"owner 未来冷却", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.cooldownUntil = sqlNullStr("2030-01-01T00:00:00Z") })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.CooldownUntil = sqlNullStr("2030-01-01T00:00:00Z") })
 		}, false},
 		{"owner 停用", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.status = "disabled" })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.Status = "disabled" })
 		}, false},
 		{"owner 待检查", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.status = "pending_test" })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.Status = "pending_test" })
 		}, false},
 		{"owner 异常", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.status = "error" })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.Status = "error" })
 		}, false},
 		{"owner 限流", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.status = "rate_limited" })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.Status = "rate_limited" })
 		}, false},
 		{"owner 临时不可用", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.status = "temporary_unavailable" })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.Status = "temporary_unavailable" })
 		}, false},
 		{"owner 质量隔离", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.status = "quality_isolated" })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.Status = "quality_isolated" })
 		}, false},
 		{"owner 关闭调度", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.schedulable = false })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.Schedulable = false })
 		}, false},
 		{"owner 套餐过期标记", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.lastErrorCode = sqlNullStr("account_expired") })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.LastErrorCode = sqlNullStr("account_expired") })
 		}, false},
 		{"owner 套餐到期时间已过", func() *resetSummary {
-			return w10aSummary(ownerBase, func(s *resetSummary) { s.accountExpiresAt = sqlNullStr("2020-01-01T00:00:00Z") })
+			return w10aSummary(ownerBase, func(s *resetSummary) { s.AccountExpiresAt = sqlNullStr("2020-01-01T00:00:00Z") })
 		}, false},
 	}
 	for _, tc := range cases {
@@ -154,23 +154,23 @@ func TestW10AResetEffectiveAvailability(t *testing.T) {
 	// owner api_key 池全不可用：端口 allUnavailable=true → false。
 	fake.poolAllUnavailable = true
 	if env.store.resetEffectiveAvailability(context.Background(),
-		w10aSummary(ownerBase, func(s *resetSummary) { s.accountType = "api_key" }), now) {
+		w10aSummary(ownerBase, func(s *resetSummary) { s.AccountType = "api_key" }), now) {
 		t.Fatal("api_key 池全不可用应返回 false")
 	}
 	fake.poolAllUnavailable = false
 
 	authzBase := resetSummary{
-		accessType:                "authorized",
-		status:                    "active",
-		schedulable:               true,
-		boundGroupID:              sqlNullStr("grp-1"),
-		authorizationID:           sqlNullStr("ra-1"),
-		boundGroupAuthorizationID: sqlNullStr("ra-1"),
-		authorizationStatus:       sqlNullStr("active"),
-		sourceAccountID:           sqlNullStr("acc-src"),
-		sourceID:                  sqlNullStr("acc-src"),
-		sourceStatus:              sqlNullStr("active"),
-		sourceSchedulable:         sqlInt64Lit(1),
+		AccessType:                "authorized",
+		Status:                    "active",
+		Schedulable:               true,
+		BoundGroupID:              sqlNullStr("grp-1"),
+		AuthorizationID:           sqlNullStr("ra-1"),
+		BoundGroupAuthorizationID: sqlNullStr("ra-1"),
+		AuthorizationStatus:       sqlNullStr("active"),
+		SourceAccountID:           sqlNullStr("acc-src"),
+		SourceID:                  sqlNullStr("acc-src"),
+		SourceStatus:              sqlNullStr("active"),
+		SourceSchedulable:         sqlInt64Lit(1),
 	}
 	authzCases := []struct {
 		name string
@@ -179,67 +179,67 @@ func TestW10AResetEffectiveAvailability(t *testing.T) {
 	}{
 		{"authorized 健康绑定", func() *resetSummary { return w10aSummary(authzBase, nil) }, true},
 		{"authorized 未绑定分组", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.boundGroupID = sqlNullStr("") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.BoundGroupID = sqlNullStr("") })
 		}, false},
 		{"authorized 授权行缺失", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.authorizationID = sql.NullString{} })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationID = sql.NullString{} })
 		}, false},
 		{"authorized 绑定授权不匹配", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.boundGroupAuthorizationID = sqlNullStr("ra-other") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.BoundGroupAuthorizationID = sqlNullStr("ra-other") })
 		}, false},
 		{"authorized 授权已到期状态", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.authorizationStatus = sqlNullStr("expired") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationStatus = sqlNullStr("expired") })
 		}, false},
 		{"authorized 授权已暂停", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.authorizationStatus = sqlNullStr("paused") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationStatus = sqlNullStr("paused") })
 		}, false},
 		{"authorized 授权已撤销", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.authorizationStatus = sqlNullStr("revoked") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationStatus = sqlNullStr("revoked") })
 		}, false},
 		{"authorized 授权已归还", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.authorizationStatus = sqlNullStr("returned") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationStatus = sqlNullStr("returned") })
 		}, false},
 		{"authorized 授权到期时间已过", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.authorizationExpiresAt = sqlNullStr("2020-01-01T00:00:00Z") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationExpiresAt = sqlNullStr("2020-01-01T00:00:00Z") })
 		}, false},
 		{"authorized 额度用完", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.authorizationQuotaExceeded = true })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationQuotaExceeded = true })
 		}, false},
 		{"authorized 来源缺失", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceAccountID = sql.NullString{} })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceAccountID = sql.NullString{} })
 		}, false},
 		{"authorized 来源状态为空", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceStatus = sql.NullString{} })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceStatus = sql.NullString{} })
 		}, false},
 		{"authorized 来源套餐过期标记", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceLastErrorCode = sqlNullStr("account_expired") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceLastErrorCode = sqlNullStr("account_expired") })
 		}, false},
 		{"authorized 来源已停用", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceStatus = sqlNullStr("disabled") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceStatus = sqlNullStr("disabled") })
 		}, false},
 		{"authorized 来源待检查", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceStatus = sqlNullStr("pending_test") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceStatus = sqlNullStr("pending_test") })
 		}, false},
 		{"authorized 来源异常", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceStatus = sqlNullStr("error") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceStatus = sqlNullStr("error") })
 		}, false},
 		{"authorized 来源限流", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceStatus = sqlNullStr("rate_limited") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceStatus = sqlNullStr("rate_limited") })
 		}, false},
 		{"authorized 来源临时不可用", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceStatus = sqlNullStr("temporary_unavailable") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceStatus = sqlNullStr("temporary_unavailable") })
 		}, false},
 		{"authorized 来源质量隔离", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceStatus = sqlNullStr("quality_isolated") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceStatus = sqlNullStr("quality_isolated") })
 		}, false},
 		{"authorized 来源冷却中", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceCooldownUntil = sqlNullStr("2030-01-01T00:00:00Z") })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceCooldownUntil = sqlNullStr("2030-01-01T00:00:00Z") })
 		}, false},
 		{"authorized 来源关闭调度", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.sourceSchedulable = sqlInt64Lit(0) })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceSchedulable = sqlInt64Lit(0) })
 		}, false},
 		{"authorized 实例停用", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.status = "disabled" })
+			return w10aSummary(authzBase, func(s *resetSummary) { s.Status = "disabled" })
 		}, false},
 	}
 	for _, tc := range authzCases {
@@ -257,14 +257,14 @@ func TestW10AAuthorizedResetUnavailableMessage(t *testing.T) {
 	_ = now
 
 	healthy := authorizedDispatchResetRow{
-		authorizationStatus:    sqlNullStr("active"),
-		authorizationExpiresAt: sqlNullStr("2030-01-01T00:00:00Z"),
-		sourceID:               sqlNullStr("acc-src"),
-		sourceStatus:           sqlNullStr("active"),
-		sourceExpiresAt:        sqlNullStr("2030-01-01T00:00:00Z"),
-		accountExpiresAt:       sqlNullStr("2030-01-01T00:00:00Z"),
+		AuthorizationStatus:    sqlNullStr("active"),
+		AuthorizationExpiresAt: sqlNullStr("2030-01-01T00:00:00Z"),
+		SourceID:               sqlNullStr("acc-src"),
+		SourceStatus:           sqlNullStr("active"),
+		SourceExpiresAt:        sqlNullStr("2030-01-01T00:00:00Z"),
+		AccountExpiresAt:       sqlNullStr("2030-01-01T00:00:00Z"),
 	}
-	binding := authorizedDispatchResetBinding{groupID: "grp-1", accountAuthorizationID: "ra-1"}
+	binding := authorizedDispatchResetBinding{GroupID: "grp-1", AccountAuthorizationID: "ra-1"}
 	access := AccessScope{IsAdmin: true}
 
 	cases := []struct {
@@ -274,100 +274,100 @@ func TestW10AAuthorizedResetUnavailableMessage(t *testing.T) {
 	}{
 		{"授权状态到期", func() authorizedDispatchResetRow {
 			row := healthy
-			row.authorizationStatus = sqlNullStr("expired")
+			row.AuthorizationStatus = sqlNullStr("expired")
 			return row
 		}, "授权已到期，当前账户不能调用"},
 		{"授权到期时间已过", func() authorizedDispatchResetRow {
 			row := healthy
-			row.authorizationExpiresAt = sqlNullStr("2020-01-01T00:00:00Z")
+			row.AuthorizationExpiresAt = sqlNullStr("2020-01-01T00:00:00Z")
 			return row
 		}, "授权已到期，当前账户不能调用"},
 		{"授权暂停", func() authorizedDispatchResetRow {
 			row := healthy
-			row.authorizationStatus = sqlNullStr("paused")
+			row.AuthorizationStatus = sqlNullStr("paused")
 			return row
 		}, "授权已暂停，当前账户不能调用"},
 		{"授权撤销", func() authorizedDispatchResetRow {
 			row := healthy
-			row.authorizationStatus = sqlNullStr("revoked")
+			row.AuthorizationStatus = sqlNullStr("revoked")
 			return row
 		}, "授权关系已失效，当前账户不能调用"},
 		{"来源不存在", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceID = sql.NullString{}
+			row.SourceID = sql.NullString{}
 			return row
 		}, "授权方原账户不存在或已删除，当前账户不能调用"},
 		{"来源状态为空", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sql.NullString{}
+			row.SourceStatus = sql.NullString{}
 			return row
 		}, "授权方原账户不存在或已删除，当前账户不能调用"},
 		{"来源套餐过期标记", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceLastErrorCode = sqlNullStr("account_expired")
+			row.SourceLastErrorCode = sqlNullStr("account_expired")
 			return row
 		}, "授权方原账户已到期，当前账户不能调用"},
 		{"来源已停用", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("disabled")
+			row.SourceStatus = sqlNullStr("disabled")
 			return row
 		}, "授权方原账户已停用，当前账户不能调用"},
 		{"来源待检查", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("pending_test")
+			row.SourceStatus = sqlNullStr("pending_test")
 			return row
 		}, "授权方原账户尚未通过后台健康检查，当前账户不能调用"},
 		{"来源异常带消息", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("error")
-			row.sourceLastErrorMessage = sqlNullStr("源异常详情")
+			row.SourceStatus = sqlNullStr("error")
+			row.SourceLastErrorMessage = sqlNullStr("源异常详情")
 			return row
 		}, "源异常详情"},
 		{"来源异常无消息", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("error")
+			row.SourceStatus = sqlNullStr("error")
 			return row
 		}, "授权方原账户处于异常状态，当前账户不能调用"},
 		{"来源限流带消息", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("rate_limited")
-			row.sourceLastErrorMessage = sqlNullStr("源限流详情")
+			row.SourceStatus = sqlNullStr("rate_limited")
+			row.SourceLastErrorMessage = sqlNullStr("源限流详情")
 			return row
 		}, "源限流详情"},
 		{"来源限流无消息", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("rate_limited")
+			row.SourceStatus = sqlNullStr("rate_limited")
 			return row
 		}, "授权方原账户限流中，当前账户不能调用"},
 		{"来源临时不可用带消息", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("temporary_unavailable")
-			row.sourceLastErrorMessage = sqlNullStr("源临时详情")
+			row.SourceStatus = sqlNullStr("temporary_unavailable")
+			row.SourceLastErrorMessage = sqlNullStr("源临时详情")
 			return row
 		}, "源临时详情"},
 		{"来源临时不可用无消息", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("temporary_unavailable")
+			row.SourceStatus = sqlNullStr("temporary_unavailable")
 			return row
 		}, "授权方原账户临时不可调用，当前账户不能调用"},
 		{"来源质量隔离", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceStatus = sqlNullStr("quality_isolated")
+			row.SourceStatus = sqlNullStr("quality_isolated")
 			return row
 		}, "授权方原账户因模型质量不达标已隔离，恢复前不能调用"},
 		{"来源冷却中", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceCooldownUntil = sqlNullStr("2030-01-01T00:00:00Z")
+			row.SourceCooldownUntil = sqlNullStr("2030-01-01T00:00:00Z")
 			return row
 		}, "授权方原账户正在冷却，恢复前当前账户不能调用"},
 		{"来源关闭调度", func() authorizedDispatchResetRow {
 			row := healthy
-			row.sourceSchedulable = sqlInt64Lit(0)
+			row.SourceSchedulable = sqlInt64Lit(0)
 			return row
 		}, "授权方原账户已关闭调度，当前账户不能调用"},
 		{"实例套餐过期", func() authorizedDispatchResetRow {
 			row := healthy
-			row.lastErrorCode = sqlNullStr("account_expired")
+			row.LastErrorCode = sqlNullStr("account_expired")
 			return row
 		}, "授权账户已到期，当前不可用"},
 		{"未绑定分组", func() authorizedDispatchResetRow {
@@ -419,7 +419,7 @@ func (w *w10aQuotaErrEffects) AuthorizationQuotaExceeded(context.Context, Author
 
 func TestW10AResetAuthorizationQuotaExceeded(t *testing.T) {
 	env := newTestEnv(t)
-	row := authorizedDispatchResetRow{id: "acc-1", systemAccountID: "owner-1"}
+	row := authorizedDispatchResetRow{ID: "acc-1", SystemAccountID: "owner-1"}
 	fake := &fakeRuntimeEffects{quotaExceeded: true}
 	env.store.SetRuntimeResetEffects(fake)
 	if !env.store.resetAuthorizationQuotaExceeded(context.Background(), row, AccessScope{IsAdmin: true}) {

@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat/chatassets"
 )
 
 // Store is the dual-mode chat persistence (SQLite + PostgreSQL) mirroring
@@ -36,6 +38,10 @@ type Store struct {
 	pg    bool
 	now   func() time.Time
 	newID func(prefix string) string
+	// assets is the chatassets asset subdomain service (REFACTOR-0006 phase
+	// C). Constructed on the spot below; Store asset methods forward one
+	// line to it (assets_subdomain_bridge.go).
+	assets *chatassets.AssetStore
 }
 
 // NewStore builds the chat store. now is the injected clock (time injection
@@ -50,7 +56,28 @@ func NewStore(db *sql.DB, postgres bool, now func() time.Time, newID func(prefix
 	if newID == nil {
 		newID = func(prefix string) string { return chatID(prefix) }
 	}
-	return &Store{db: db, pg: postgres, now: now, newID: newID}, nil
+	store := &Store{db: db, pg: postgres, now: now, newID: newID}
+	store.assets = store.newAssetStore()
+	return store, nil
+}
+
+// newAssetStore builds the asset subdomain service with dialect/clock ports
+// wired to this store's primitives — single source of truth, no duplication.
+func (s *Store) newAssetStore() *chatassets.AssetStore {
+	return chatassets.NewAssetStore(s.db, s.pg, chatassets.Ports{
+		Table:                 s.table,
+		Bind:                  s.bind,
+		LockSuffix:            s.lockSuffix,
+		NowISO:                s.nowISO,
+		NewID:                 s.newID,
+		RequireRFC3339Instant: requireRFC3339Instant,
+		AddDays:               addDays,
+		RFC3339Millis:         rfc3339Millis,
+		UniqueStrings:         uniqueStrings,
+		Placeholders:          placeholders,
+		TrimSpace:             trimSpace,
+		DomainError:           func(message string) error { return &DomainError{Message: message} },
+	})
 }
 
 // Postgres reports the active dialect (dual-mode tests assert both).

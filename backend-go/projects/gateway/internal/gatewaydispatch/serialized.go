@@ -2,56 +2,16 @@ package gatewaydispatch
 
 import (
 	"encoding/json"
-	"sync"
 )
 
 // Serialized JSON body helpers, migrated from
 // request/serialized-json-body.ts. The Node WeakMap keyed by Buffer identity
 // becomes a bounded registry keyed by body content; the sanitized flag only
 // needs to live for the duration of one dispatch.
-
-const gatewaySerializedFlagCapacity = 8192
-
-var (
-	gatewaySerializedFlagsMu    sync.Mutex
-	gatewayCodexSanitizedBodies = make(map[string]struct{})
-)
-
-// MarkGatewayCodexHistorySanitized mirrors markGatewayCodexHistorySanitized.
-func markCodexHistorySanitizedLocked(key string) {
-	if len(gatewayCodexSanitizedBodies) >= gatewaySerializedFlagCapacity {
-		// Drop arbitrary entries (the flag is request-scoped; capacity
-		// pressure only appears under pathological fan-out).
-		for existing := range gatewayCodexSanitizedBodies {
-			delete(gatewayCodexSanitizedBodies, existing)
-			break
-		}
-	}
-	gatewayCodexSanitizedBodies[key] = struct{}{}
-}
-
-// MarkGatewayCodexHistorySanitized flags the serialized body so a later
-// dispatch attempt of the same bytes skips re-sanitization.
-func MarkGatewayCodexHistorySanitized(body []byte) []byte {
-	key := serializedBodyKey(body)
-	gatewaySerializedFlagsMu.Lock()
-	markCodexHistorySanitizedLocked(key)
-	gatewaySerializedFlagsMu.Unlock()
-	return body
-}
-
-// IsGatewayCodexHistorySanitized mirrors isGatewayCodexHistorySanitized.
-func IsGatewayCodexHistorySanitized(body []byte) bool {
-	key := serializedBodyKey(body)
-	gatewaySerializedFlagsMu.Lock()
-	defer gatewaySerializedFlagsMu.Unlock()
-	_, ok := gatewayCodexSanitizedBodies[key]
-	return ok
-}
-
-func serializedBodyKey(body []byte) string {
-	return string(body)
-}
+//
+// REFACTOR-0006 阶段 A：codex 清洗标记（MarkGatewayCodexHistorySanitized /
+// IsGatewayCodexHistorySanitized 与 registry）随 oauth/codex 族迁入
+// gatewayoauthcodex，本包经 gatewayoauthcodex_bridge.go 转发保持消费点零改动。
 
 // GatewaySerializedJSONObject mirrors gatewaySerializedJsonObject: the
 // parsed object associated with the raw body bytes, when already parsed.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // Endpoint-mode domain (第 1 段凭据规范化域的支撑面): the port of
@@ -15,84 +17,76 @@ import (
 // credentials write path consumes). Only the write-side normalization plus the
 // batch compatibility asserts are ported; the request-shape mappers
 // (endpointModeForRequestShape family) belong to the gateway proto slices.
+//
+// REFACTOR-0005 阶段 0：谓词族、模式值表与运行时默认解析已下沉
+// accountscore（中立包，供 accountstest 等子域 import）；根包保留私有结构
+// protocolPredicateInput / endpointModeDefaultContext 与同名包装，包内既有
+// 调用点零改动。写入侧归一化、凭据 driver 注册表、兼容断言与健康检查解析
+// 仍留本包。
 
 const (
 	gptOpenAIV1ProfileIDConstant         = "profile_gpt_openai_v1"
 	xaiOpenAIV1ProfileID                 = "profile_xai_openai_v1"
 	deepSeekOpenAIV1ProfileID            = "profile_deepseek_openai_v1"
-	deepSeekAnthropicV1ProfileID         = "profile_deepseek_anthropic_v1"
+	deepSeekAnthropicV1ProfileID         = accountscore.DeepSeekAnthropicV1ProfileID
 	glmGeneralOpenAIV1ProfileID          = "profile_glm_general_openai_v1"
 	glmCodingOpenAIV1ProfileID           = "profile_glm_coding_openai_v1"
-	glmCodingAnthropicV1ProfileID        = "profile_glm_coding_anthropic_v1"
+	glmCodingAnthropicV1ProfileID        = accountscore.GlmCodingAnthropicV1ProfileID
 	geminiOpenAIChatV1BetaProfileID      = "profile_gemini_openai_chat_v1beta"
-	anthropicProviderCode                = "anthropic"
-	geminiProviderCode                   = "gemini"
-	anthropicProtocolCodeConstant        = "anthropic"
-	anthropicProtocolVersionConstant     = "v1"
-	geminiProtocolCodeConstant           = "gemini"
-	geminiProtocolVersionConstant        = "v1beta"
-	deepSeekProviderCode                 = "deepseek"
-	glmProviderCode                      = "glm"
-	xaiProviderCode                      = "xai"
-	hybridProviderCode                   = "hybrid"
-	openAICompatibleProviderCodeConstant = "openai"
+	anthropicProviderCode                = accountscore.AnthropicProviderCode
+	geminiProviderCode                   = accountscore.GeminiProviderCode
+	anthropicProtocolCodeConstant        = accountscore.AnthropicProtocolCode
+	anthropicProtocolVersionConstant     = accountscore.AnthropicProtocolVersion
+	geminiProtocolCodeConstant           = accountscore.GeminiProtocolCode
+	geminiProtocolVersionConstant        = accountscore.GeminiProtocolVersion
+	deepSeekProviderCode                 = accountscore.DeepSeekProviderCode
+	glmProviderCode                      = accountscore.GlmProviderCode
+	xaiProviderCode                      = accountscore.XaiProviderCode
+	hybridProviderCode                   = accountscore.HybridProviderCode
+	openAICompatibleProviderCodeConstant = accountscore.OpenAICompatibleProviderCode
 )
 
-var openAIEndpointModeValues = []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}
-var openAIChatEndpointModes = []string{"chat_json", "chat_sse"}
-var openAIResponsesEndpointModes = []string{"responses_json", "responses_sse"}
-var anthropicEndpointModeValues = []string{"messages_json", "messages_sse", "message_token_counting"}
-var geminiEndpointModeValues = []string{
-	"generate_content_json", "generate_content_sse", "count_tokens",
-	"embed_content", "interactions_json", "interactions_sse",
-}
-var hybridEndpointModeValues = append(append(append([]string{}, openAIEndpointModeValues...), anthropicEndpointModeValues...), geminiEndpointModeValues...)
+var openAIEndpointModeValues = accountscore.OpenAIEndpointModeValues
+var openAIChatEndpointModes = accountscore.OpenAIChatEndpointModes
+var openAIResponsesEndpointModes = accountscore.OpenAIResponsesEndpointModes
+var anthropicEndpointModeValues = accountscore.AnthropicEndpointModeValues
+var geminiEndpointModeValues = accountscore.GeminiEndpointModeValues
+var hybridEndpointModeValues = accountscore.HybridEndpointModeValues
+var openAIChatEndpointModeSet = accountscore.StringSet(openAIChatEndpointModes)
 
 func stringSet(values []string) map[string]bool {
-	set := make(map[string]bool, len(values))
-	for _, value := range values {
-		set[value] = true
-	}
-	return set
+	return accountscore.StringSet(values)
 }
 
-var (
-	openAIEndpointModeSet     = stringSet(openAIEndpointModeValues)
-	anthropicEndpointModeSet  = stringSet(anthropicEndpointModeValues)
-	geminiEndpointModeSet     = stringSet(geminiEndpointModeValues)
-	hybridEndpointModeSet     = stringSet(hybridEndpointModeValues)
-	openAIChatEndpointModeSet = stringSet(openAIChatEndpointModes)
-)
-
-func isOpenAIEndpointMode(value string) bool    { return openAIEndpointModeSet[value] }
-func isAnthropicEndpointMode(value string) bool { return anthropicEndpointModeSet[value] }
-func isGeminiEndpointMode(value string) bool    { return geminiEndpointModeSet[value] }
-func isHybridEndpointMode(value string) bool    { return hybridEndpointModeSet[value] }
+func isOpenAIEndpointMode(value string) bool    { return accountscore.IsOpenAIEndpointMode(value) }
+func isAnthropicEndpointMode(value string) bool { return accountscore.IsAnthropicEndpointMode(value) }
+func isGeminiEndpointMode(value string) bool    { return accountscore.IsGeminiEndpointMode(value) }
+func isHybridEndpointMode(value string) bool    { return accountscore.IsHybridEndpointMode(value) }
 
 // ---- provider-protocol.ts predicates ----
 
 func isGptVendorCodeToken(value string) bool {
-	return normalizeProviderToken(value) == gptVendorCode
+	return accountscore.IsGptVendorCodeToken(value)
 }
 
 func isXaiProviderCodeToken(value string) bool {
-	return normalizeProviderToken(value) == xaiProviderCode
+	return accountscore.IsXaiProviderCodeToken(value)
 }
 
 func isDeepSeekProviderCodeToken(value string) bool {
-	return normalizeProviderToken(value) == deepSeekProviderCode
+	return accountscore.IsDeepSeekProviderCodeToken(value)
 }
 
 func isGlmProviderCodeToken(value string) bool {
-	return normalizeProviderToken(value) == glmProviderCode
+	return accountscore.IsGlmProviderCodeToken(value)
 }
 
 func isGeminiProviderCodeToken(value string) bool {
-	return normalizeProviderToken(value) == geminiProviderCode
+	return accountscore.IsGeminiProviderCodeToken(value)
 }
 
 func isHybridProviderCodeToken(value string) bool {
-	return normalizeProviderToken(value) == hybridProviderCode
+	return accountscore.IsHybridProviderCodeToken(value)
 }
 
 // protocolPredicateInput mirrors the ProviderProtocolDefinition/
@@ -104,19 +98,27 @@ type protocolPredicateInput struct {
 	providerProtocolProfileID string
 }
 
+// toProtocolPredicate converts the facade-private predicate input into the
+// neutral accountscore shape (包装转换，行为不变).
+func toProtocolPredicate(input protocolPredicateInput) accountscore.ProtocolPredicate {
+	return accountscore.ProtocolPredicate{
+		ProviderCode:              input.providerCode,
+		ProtocolCode:              input.protocolCode,
+		ProtocolVersion:           input.protocolVersion,
+		ProviderProtocolProfileID: input.providerProtocolProfileID,
+	}
+}
+
 func isOpenAIProtocolProfileOf(input protocolPredicateInput) bool {
-	return normalizeProviderToken(input.protocolCode) == openAIProtocolCode &&
-		normalizeProviderToken(input.protocolVersion) == openAIProtocolVersion
+	return accountscore.IsOpenAIProtocolProfileOf(toProtocolPredicate(input))
 }
 
 func isAnthropicProtocolProfileOf(input protocolPredicateInput) bool {
-	return normalizeProviderToken(input.protocolCode) == anthropicProtocolCodeConstant &&
-		normalizeProviderToken(input.protocolVersion) == anthropicProtocolVersionConstant
+	return accountscore.IsAnthropicProtocolProfileOf(toProtocolPredicate(input))
 }
 
 func isGeminiProtocolProfileOf(input protocolPredicateInput) bool {
-	return normalizeProviderToken(input.protocolCode) == geminiProtocolCodeConstant &&
-		normalizeProviderToken(input.protocolVersion) == geminiProtocolVersionConstant
+	return accountscore.IsGeminiProtocolProfileOf(toProtocolPredicate(input))
 }
 
 // ---- endpoint-mode defaults + write normalization ----
@@ -133,6 +135,19 @@ type endpointModeDefaultContext struct {
 	clientCompatibility       string
 }
 
+// toModeDefaultContext converts the facade-private default context into the
+// neutral accountscore shape (包装转换，行为不变).
+func toModeDefaultContext(input endpointModeDefaultContext) accountscore.ModeDefaultContext {
+	return accountscore.ModeDefaultContext{
+		ProviderCode:              input.providerCode,
+		AccountType:               input.accountType,
+		ProtocolCode:              input.protocolCode,
+		ProtocolVersion:           input.protocolVersion,
+		ProviderProtocolProfileID: input.providerProtocolProfileID,
+		ClientCompatibility:       input.clientCompatibility,
+	}
+}
+
 func (c endpointModeDefaultContext) predicate() protocolPredicateInput {
 	return protocolPredicateInput{
 		providerCode:              c.providerCode,
@@ -143,17 +158,7 @@ func (c endpointModeDefaultContext) predicate() protocolPredicateInput {
 }
 
 func defaultOpenAIEndpointModes(input endpointModeDefaultContext) []string {
-	if input.accountType == "oauth" {
-		return append([]string{}, openAIResponsesEndpointModes...)
-	}
-	providerCode := normalizeProviderToken(input.providerCode)
-	switch providerCode {
-	case gptVendorCode, deepSeekProviderCode:
-		return append([]string{}, openAIEndpointModeValues...)
-	case openAICompatibleProviderCodeConstant, glmProviderCode, geminiProviderCode, hybridProviderCode:
-		return append([]string{}, openAIChatEndpointModes...)
-	}
-	return append([]string{}, openAIEndpointModeValues...)
+	return accountscore.DefaultOpenAIEndpointModes(toModeDefaultContext(input))
 }
 
 // normalizeEndpointModeList carries the shared array validation body of
@@ -221,16 +226,11 @@ func renderUnsupportedValue(value any) string {
 }
 
 func defaultAnthropicEndpointModes(input endpointModeDefaultContext) []string {
-	if input.providerProtocolProfileID == deepSeekAnthropicV1ProfileID ||
-		input.providerProtocolProfileID == glmCodingAnthropicV1ProfileID {
-		return []string{"messages_json", "messages_sse"}
-	}
-	return append([]string{}, anthropicEndpointModeValues...)
+	return accountscore.DefaultAnthropicEndpointModes(toModeDefaultContext(input))
 }
 
 func defaultGeminiEndpointModes(endpointModeDefaultContext) []string {
-	return []string{"generate_content_json", "generate_content_sse", "count_tokens",
-		"interactions_json", "interactions_sse"}
+	return accountscore.DefaultGeminiEndpointModes(accountscore.ModeDefaultContext{})
 }
 
 func normalizeHybridEndpointModesForWrite(value optionalValue) ([]string, error) {

@@ -137,7 +137,7 @@ func (s *Store) boundGroupBindingUpdatedAtProjection() string {
 func (s *Store) readCloneContextOnce(ctx context.Context, id string, access AccessScope) (*CloneContext, bool, error) {
 	scopeClause := ""
 	args := []any{id}
-	if scoped := access.manageableID(); scoped != "" {
+	if scoped := access.ManageableID(); scoped != "" {
 		scopeClause = " AND accounts.system_account_id = ?"
 		args = append(args, scoped)
 	}
@@ -208,7 +208,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		return nil, false, err
 	}
 	// canManageResourceOwner: users only ever manage their own rows.
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID {
+	if !access.CanAccessAll() && row.systemAccountID != access.ViewerID {
 		return nil, false, nil
 	}
 	if row.authorizationID.Valid && row.authorizationID.String != "" ||

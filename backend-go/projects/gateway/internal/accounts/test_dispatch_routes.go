@@ -882,8 +882,8 @@ func (v *AccountForTestView) manualContext() *ManualTestContext {
 		ClientCompatibility:       v.item.ClientCompatibility,
 		HealthCheckModel:          v.item.HealthCheckModel,
 		HealthCheckEndpointMode:   v.item.HealthCheckEndpointMode,
-		SupportedEndpointModes:    v.modeSource.supportedEndpointModes,
-		ModelMappings:             v.modeSource.modelMappings,
+		SupportedEndpointModes:    v.modeSource.SupportedEndpointModes,
+		ModelMappings:             v.modeSource.ModelMappings,
 	}
 }
 
@@ -908,17 +908,17 @@ func (s *Store) FindAccountForTestView(ctx context.Context, access AccessScope, 
 	view := &AccountForTestView{item: item}
 	if context != nil {
 		view.factAccountID = context.FactAccountID
-		view.modeSource = context.modeSource()
+		view.modeSource = context.ModeSource()
 	} else {
 		view.factAccountID = item.ID
 		view.modeSource = manualTestModeSource{
-			providerCode:              item.ProviderCode,
-			providerProtocolProfileID: item.ProviderProtocolProfileID,
-			protocolCode:              item.ProtocolCode,
-			protocolVersion:           item.ProtocolVersion,
-			accountType:               item.Type,
-			clientCompatibility:       item.ClientCompatibility,
-			healthCheckEndpointMode:   item.HealthCheckEndpointMode,
+			ProviderCode:              item.ProviderCode,
+			ProviderProtocolProfileID: item.ProviderProtocolProfileID,
+			ProtocolCode:              item.ProtocolCode,
+			ProtocolVersion:           item.ProtocolVersion,
+			AccountType:               item.Type,
+			ClientCompatibility:       item.ClientCompatibility,
+			HealthCheckEndpointMode:   item.HealthCheckEndpointMode,
 		}
 	}
 	return view, nil
@@ -1106,7 +1106,7 @@ func (s *Store) prepareAccountDraftTestSnapshot(ctx context.Context, input *Test
 		if err != nil {
 			return nil, err
 		}
-		supported := item != nil && containsString(item.supportedAPIProtocols, "images")
+		supported := item != nil && containsString(item.SupportedAPIProtocols, "images")
 		modelSupportsImages = &supported
 	}
 	healthCheckEndpointMode, err := resolveHealthCheckEndpointMode(&endpointModeValue, input.ProviderCode, profile.id, enabledModes, modelSupportsImages)
@@ -1224,7 +1224,7 @@ func (s *Store) findDraftTestGroup(ctx context.Context, access AccessScope, grou
 	if row.enabled != 1 {
 		return nil, nil
 	}
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID {
+	if !access.CanAccessAll() && row.systemAccountID != access.ViewerID {
 		return nil, nil
 	}
 	return &draftTestGroupReference{

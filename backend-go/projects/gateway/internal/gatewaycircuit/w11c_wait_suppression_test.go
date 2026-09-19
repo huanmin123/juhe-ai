@@ -237,30 +237,7 @@ func TestW11CSuppressionVisibilityBranches(t *testing.T) {
 	if _, visible := snapshot["w11c-acc"]; visible {
 		t.Fatalf("lapsed suppression should be hidden: %+v", snapshot)
 	}
-	// An active degradation surfaces for keys without a suppression; a
-	// precheck-blocked runtime key stays hidden.
-	now = 100_000
-	store.DegradeForGatewayFailure("w11c-deg", "w11c-deg", "r")
-	now = 200_000
-	store.DegradeForGatewayFailure("w11c-deg", "w11c-deg", "r")
-	now = 300_000
-	store.DegradeForGatewayFailure("w11c-deg", "w11c-deg", "r")
-	blocked := map[string]bool{"w11c-deg": true}
-	snapshot = store.SnapshotAvailability(func(key string) bool { return blocked[key] })
-	if _, visible := snapshot["w11c-deg"]; visible {
-		t.Fatalf("precheck-blocked degradation should be hidden: %+v", snapshot)
-	}
-	snapshot = store.SnapshotAvailability(func(string) bool { return false })
-	if entry, visible := snapshot["w11c-deg"]; !visible || entry.Status != AvailabilityStatusDegraded {
-		t.Fatalf("degradation snapshot = %+v", snapshot)
-	}
-	// An inactive degradation (single failure) stays hidden.
-	now = 400_000
-	store.DegradeForGatewayFailure("w11c-once", "w11c-once", "r")
-	snapshot = store.SnapshotAvailability(func(string) bool { return false })
-	if _, visible := snapshot["w11c-once"]; visible {
-		t.Fatalf("inactive degradation should be hidden: %+v", snapshot)
-	}
+	// （降级可见性分支已随 DegradeForGatewayFailure 写面退场删除；生产降级恒空。）
 }
 
 func TestW11CSuppressionOrderDegradationsBranches(t *testing.T) {
@@ -272,25 +249,8 @@ func TestW11CSuppressionOrderDegradationsBranches(t *testing.T) {
 	if result.Applied || len(result.Accounts) != 2 {
 		t.Fatalf("no-degradation order = %+v", result)
 	}
-	// An active degradation reorders the account behind the healthy one
-	// (activation needs the min observation window between failures).
-	for i := 0; i < 3; i++ {
-		now += 120_000
-		store.DegradeForGatewayFailure("a", "a", "r")
-	}
-	result = store.OrderDegradations(accounts, nil)
-	if !result.Applied || result.DegradedCount != 1 || result.Accounts[0].ID != "b" || result.Accounts[1].ID != "a" {
-		t.Fatalf("degraded order = %+v", result)
-	}
-	// All degraded: bypass flag set, order unchanged.
-	for i := 0; i < 3; i++ {
-		now += 120_000
-		store.DegradeForGatewayFailure("b", "b", "r")
-	}
-	result = store.OrderDegradations(accounts, nil)
-	if result.BypassedAllDegraded != true || result.Applied {
-		t.Fatalf("all degraded = %+v", result)
-	}
+	// （降级重排与 all-degraded 旁路分支已随 DegradeForGatewayFailure 写面
+	// 退场删除；生产降级恒空。）
 	// Redis-managed mode returns the accounts untouched.
 	redis := newTestSuppressionStore(func() int64 { return now }, nil, true)
 	result = redis.OrderDegradations(accounts, nil)

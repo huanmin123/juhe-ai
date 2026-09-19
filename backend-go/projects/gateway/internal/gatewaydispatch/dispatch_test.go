@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -56,16 +57,16 @@ func sequentialServer(t *testing.T, failFirst int, status int) *httptest.Server 
 func dispatchArgs(t *testing.T, req *gatewaypreauth.GatewayRequest, accounts []AccountCandidate) FetchFirstAvailableUpstreamArgs {
 	t.Helper()
 	return FetchFirstAvailableUpstreamArgs{
-		Req:                        req,
-		Accounts:                   accounts,
-		Settings:                   gatewaySettingsForTest(),
-		UsageContext:               testUsageContext(),
-		AuditCapture:               AuditCapture{Context: &frozenAudit{sink: &fakeAuditSink{}}, Sink: &fakeAuditSink{}},
-		Signal:                     context.Background(),
-		RequestLane:                "text",
+		Req:                         req,
+		Accounts:                    accounts,
+		Settings:                    gatewaySettingsForTest(),
+		UsageContext:                testUsageContext(),
+		AuditCapture:                AuditCapture{Context: &frozenAudit{sink: &fakeAuditSink{}}, Sink: &fakeAuditSink{}},
+		Signal:                      context.Background(),
+		RequestLane:                 "text",
 		AccountStateMutationEnabled: true,
-		RequestCoordination:        newTestCoordination(t),
-		WaitForRecoverableFailures: true,
+		RequestCoordination:         newTestCoordination(t),
+		WaitForRecoverableFailures:  true,
 	}
 }
 
@@ -236,7 +237,7 @@ func TestFetchFirstAvailableUpstreamWallBudgetAssertion(t *testing.T) {
 	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
 	args := dispatchArgs(t, req, testAccounts("a-1"))
 	// Exhaust the wall budget so the pre-attempt assertion fires.
-	past := NowMs() - 60_000
+	past := gatewayupstream.NowMs() - 60_000
 	wallBudget, err := gatewayroutingNewWallBudget(past)
 	if err != nil {
 		t.Fatalf("wall budget: %v", err)
@@ -304,9 +305,9 @@ func TestSameAccountRetryReservationFlow(t *testing.T) {
 func TestBuildDiagnosticUpstreamErrorMessages(t *testing.T) {
 	t.Run("timeout classification", func(t *testing.T) {
 		diagnostic := BuildDiagnosticUpstreamError(&UpstreamAttempt{
-			AccountID:           "a-1",
-			UpstreamURL:         "https://upstream.example/v1",
-			Message:             "网关传输失败",
+			AccountID:            "a-1",
+			UpstreamURL:          "https://upstream.example/v1",
+			Message:              "网关传输失败",
 			TransportFailureKind: TransportFailureKindTimeout,
 		}, "fallback", nil)
 		if diagnostic.StatusCode != 504 {

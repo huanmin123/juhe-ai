@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
 
@@ -83,11 +84,11 @@ func TestEnsureOpenAIOAuthCodexReasoningInclude(t *testing.T) {
 }
 
 func TestNormalizeOpenAIOAuthCodexParsedBodyCompactWithSanitize(t *testing.T) {
-	previous := SanitizeCodexHistory
-	SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
+	previous := gatewayoauthcodex.SanitizeCodexHistory
+	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
 		return CodexHistorySanitizeResult{Items: []any{"compact-sanitized"}, Changed: true}
 	}
-	t.Cleanup(func() { SanitizeCodexHistory = previous })
+	t.Cleanup(func() { gatewayoauthcodex.SanitizeCodexHistory = previous })
 	input := OpenAIOAuthCodexNormalizeInput{
 		Account:              OpenAIOAuthCodexAccount{ID: "acc-9"},
 		Compact:              true,
@@ -130,18 +131,6 @@ func indexOfBytes(haystack []byte, needle string) int {
 	return -1
 }
 
-func TestNormalizeOpenAIOAuthCodexParsedBodyOverrideHookError(t *testing.T) {
-	previous := gptAccountRequestOverridesHook
-	SetGptAccountRequestOverridesHook(func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error) {
-		return nil, &GptAccountRequestOverrideError{Message: "覆盖值非法"}
-	})
-	t.Cleanup(func() { gptAccountRequestOverridesHook = previous })
-	_, err := NormalizeOpenAIOAuthCodexParsedBody(map[string]any{"model": "gpt-test", "input": "hi"}, OpenAIOAuthCodexNormalizeInput{})
-	if !IsOpenAIOAuthCodexAdapterError(err) || err.Error() != "覆盖值非法" {
-		t.Fatalf("expected account-scoped adapter error, got %v", err)
-	}
-}
-
 func TestGeminiRequestEndpointFamily(t *testing.T) {
 	// generateContent 动作端点。
 	generate := gatewaypreauth.NewGatewayRequest(httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2:generateContent", nil))
@@ -172,10 +161,10 @@ func TestReadFirstNonStreamChunkPrecommitSettledAfterDeadline(t *testing.T) {
 	})
 	reader := &sleepSettleReader{}
 	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		startedAt:                     base - 1_000,
-		signal:                        context.Background(),
-		responsePrecommitDeadlineAtMs: ptrInt64(base + 5),
-		pendingReadSupersedesDeadline: true,
+		StartedAt:                     base - 1_000,
+		Signal:                        context.Background(),
+		ResponsePrecommitDeadlineAtMs: ptrInt64(base + 5),
+		PendingReadSupersedesDeadline: true,
 	})
 	var deadlineErr *GatewayResponsePrecommitDeadlineError
 	if !errorsAs(err, &deadlineErr) || deadlineErr.DeadlineAtMs != base+5 {
@@ -205,10 +194,10 @@ func TestReadFirstNonStreamChunkMaxLifetimeRace(t *testing.T) {
 	reader := newBlockingReader()
 	t.Cleanup(reader.close)
 	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		startedAt:             base - 1_000,
-		signal:                context.Background(),
-		maxLifetimeDeadlineAt: ptrInt64(base + 1),
-		maxLifetimeMs:         ptrInt64(2_000),
+		StartedAt:             base - 1_000,
+		Signal:                context.Background(),
+		MaxLifetimeDeadlineAt: ptrInt64(base + 1),
+		MaxLifetimeMs:         ptrInt64(2_000),
 	})
 	var lifetimeErr *UpstreamBodyReadMaxLifetimeError
 	if !errorsAs(err, &lifetimeErr) {
@@ -222,9 +211,9 @@ func TestReadFirstNonStreamChunkRacePrecommitAttribution(t *testing.T) {
 	reader := newBlockingReader()
 	t.Cleanup(reader.close)
 	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		startedAt:                     base - 1_000,
-		signal:                        context.Background(),
-		responsePrecommitDeadlineAtMs: ptrInt64(base + 1),
+		StartedAt:                     base - 1_000,
+		Signal:                        context.Background(),
+		ResponsePrecommitDeadlineAtMs: ptrInt64(base + 1),
 	})
 	var deadlineErr *GatewayResponsePrecommitDeadlineError
 	if !errorsAs(err, &deadlineErr) {
@@ -238,17 +227,17 @@ func TestReadFirstNonStreamChunkSoftDeadlineContinue(t *testing.T) {
 	// 软截止先触发 + handler continue：循环重进后读完成 → 正常读出。
 	reader := &sleepSettleReader{}
 	read, observed, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		startedAt:           base - 1_000,
-		signal:              context.Background(),
-		firstByteDeadlineMs: ptrInt64(1_000),
-		onFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
+		StartedAt:           base - 1_000,
+		Signal:              context.Background(),
+		FirstByteDeadlineMs: ptrInt64(1_000),
+		OnFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 			return FirstByteDeadlineActionContinue
 		},
 	})
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
-	if read.n != 3 || !observed {
+	if read.N != 3 || !observed {
 		t.Fatalf("read = %#v observed=%v", read, observed)
 	}
 }
@@ -307,11 +296,11 @@ func TestReadFirstNonStreamChunkPrecommitAfterMaxLifetime(t *testing.T) {
 	reader := newBlockingReader()
 	t.Cleanup(reader.close)
 	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		startedAt:                     base - 1_000,
-		signal:                        context.Background(),
-		responsePrecommitDeadlineAtMs: ptrInt64(base - 50),
-		maxLifetimeDeadlineAt:         ptrInt64(base - 100),
-		maxLifetimeMs:                 ptrInt64(4_000),
+		StartedAt:                     base - 1_000,
+		Signal:                        context.Background(),
+		ResponsePrecommitDeadlineAtMs: ptrInt64(base - 50),
+		MaxLifetimeDeadlineAt:         ptrInt64(base - 100),
+		MaxLifetimeMs:                 ptrInt64(4_000),
 	})
 	var lifetimeErr *UpstreamBodyReadMaxLifetimeError
 	if !errorsAs(err, &lifetimeErr) {
@@ -325,7 +314,7 @@ func TestRaceReadWithDeadlinesNilSignalSoftOnly(t *testing.T) {
 	pendingRead := ObserveFirstBytePendingRead(func() (chunkResult, error) {
 		buffer := make([]byte, 8)
 		n, err := reader.Read(buffer)
-		return chunkResult{n: n, err: err}, err
+		return chunkResult{N: n, Err: err}, err
 	})
 	raceType, _, _ := raceReadWithDeadlines(pendingRead, nil, ptrInt64(-1), nil, nil, nil)
 	if raceType != raceSoftTimeout {

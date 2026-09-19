@@ -59,11 +59,11 @@ func TestW14LUnavailableMessageArms(t *testing.T) {
 	intNull := func(value int64) sql.NullInt64 { return sql.NullInt64{Int64: value, Valid: true} }
 	base := func(mutate func(*authorizedDispatchRow)) *authorizedDispatchRow {
 		row := &authorizedDispatchRow{
-			id:          "acc-w14l-msg",
-			status:      "active",
-			schedulable: 1,
-			sourceID:    strNull("src-1"),
-			sourceStatus: strNull("active"),
+			id:                "acc-w14l-msg",
+			status:            "active",
+			schedulable:       1,
+			sourceID:          strNull("src-1"),
+			sourceStatus:      strNull("active"),
 			sourceSchedulable: intNull(1),
 		}
 		if mutate != nil {
@@ -370,14 +370,14 @@ func TestW14LTestOptionPureArms(t *testing.T) {
 		t.Fatal("时间戳应截断到日期")
 	}
 	rows := []testOptionRow{
-		{provider: "  ", model: "m1"},
-		{provider: "p1", model: ""},
-		{provider: "p1", model: "gpt-4o", scope: catalogScopeBuiltIn, releaseDate: "2026-01-01"},
-		{provider: "p2", model: "gpt-4o", scope: catalogScopePersonal, releaseDate: "2026-02-01T00:00:00Z"},
-		{provider: "p3", model: "zzz", scope: catalogScopeGlobal},
+		{Provider: "  ", Model: "m1"},
+		{Provider: "p1", Model: ""},
+		{Provider: "p1", Model: "gpt-4o", Scope: catalogScopeBuiltIn, ReleaseDate: "2026-01-01"},
+		{Provider: "p2", Model: "gpt-4o", Scope: catalogScopePersonal, ReleaseDate: "2026-02-01T00:00:00Z"},
+		{Provider: "p3", Model: "zzz", Scope: catalogScopeGlobal},
 	}
 	merged := mergeTestOptionRows(rows, ManualTestOptionsQuery{Keyword: "gpt", SelectedIDs: []string{"zzz"}, Limit: 5})
-	if len(merged) != 2 || merged[0].model != "gpt-4o" || merged[1].model != "zzz" {
+	if len(merged) != 2 || merged[0].Model != "gpt-4o" || merged[1].Model != "zzz" {
 		t.Fatalf("合并结果不符：%+v", merged)
 	}
 	limited := mergeTestOptionRows(rows, ManualTestOptionsQuery{Limit: 0})
@@ -532,11 +532,21 @@ func TestW14LBatchFieldArms(t *testing.T) {
 
 type w14lErrorInvalidator struct{}
 
-func (w14lErrorInvalidator) InvalidateAccountLookup(string) error                  { return errors.New("w14l lookup 失效失败") }
-func (w14lErrorInvalidator) InvalidateGatewayRuntime(string) error                 { return errors.New("w14l runtime 失效失败") }
-func (w14lErrorInvalidator) InvalidateGroupAccountIds() error                      { return errors.New("w14l 分组失效失败") }
-func (w14lErrorInvalidator) ClearResourceAuthorizationLookupCaches() error         { return errors.New("w14l 授权清理失败") }
-func (w14lErrorInvalidator) InvalidateAuthorizationQuota(string) error             { return errors.New("w14l 额度失效失败") }
+func (w14lErrorInvalidator) InvalidateAccountLookup(string) error {
+	return errors.New("w14l lookup 失效失败")
+}
+func (w14lErrorInvalidator) InvalidateGatewayRuntime(string) error {
+	return errors.New("w14l runtime 失效失败")
+}
+func (w14lErrorInvalidator) InvalidateGroupAccountIds() error {
+	return errors.New("w14l 分组失效失败")
+}
+func (w14lErrorInvalidator) ClearResourceAuthorizationLookupCaches() error {
+	return errors.New("w14l 授权清理失败")
+}
+func (w14lErrorInvalidator) InvalidateAuthorizationQuota(string) error {
+	return errors.New("w14l 额度失效失败")
+}
 
 func TestW14LInvalidatorErrorArms(t *testing.T) {
 	f := newW14LFaultFixture(t)

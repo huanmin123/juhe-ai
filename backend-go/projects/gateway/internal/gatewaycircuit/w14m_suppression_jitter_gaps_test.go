@@ -8,6 +8,9 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
 func TestW14MNopLoggerAndMustHelpers(t *testing.T) {
@@ -36,27 +39,8 @@ func TestW14MNopLoggerAndMustHelpers(t *testing.T) {
 	}()
 }
 
-func TestW14MDegradeKeepsCountAndStaysActive(t *testing.T) {
-	now := int64(0)
-	clock := &now
-	store := newTestSuppressionStore(func() int64 { return *clock }, nil, false)
-	key := "w14m-degrade"
-
-	// 前两次推进计数：count=2 且观察窗 >= 60s → 进入 active。
-	store.DegradeForGatewayFailure(key, "w14m-acc", "transport:boom")
-	*clock = 61_000
-	store.DegradeForGatewayFailure(key, "w14m-acc", "transport:boom")
-
-	// 建立未到期的 local_suppressed 抑制 → shouldAdvance=false。
-	store.Suppress(key, 62_000, "transport:boom", AvailabilityStatusLocalSuppressed, nil)
-	third := store.DegradeForGatewayFailure(key, "w14m-acc", "transport:read interrupted")
-	if third.Status != AvailabilityStatusDegraded {
-		t.Fatalf("active degraded result = %+v", third)
-	}
-	if third.FailureCount == nil || *third.FailureCount != 2 {
-		t.Fatalf("failure count must be preserved: %+v", third)
-	}
-}
+// TestW14MDegradeKeepsCountAndStaysActive 已随 DegradeForGatewayFailure
+// 写面退场删除（生产写面退场，见 suppression.go 顶部注记）。
 
 func TestW14MSuppressMetadataSinceMsOnFreshKey(t *testing.T) {
 	now := int64(5_000)
@@ -81,10 +65,10 @@ func TestW14MSnapshotAvailabilityVisibilityArms(t *testing.T) {
 	// 键 B：谓词 true → cleanup 跳过且快照可见。
 	store.Suppress("w14m-blocked", 9_000, "precheck", AvailabilityStatusPrecheckPending, nil)
 
-	// 键 B 同时有 active 降级 → 快照已含该键，降级分支 continue。
-	store.DegradeForGatewayFailure("w14m-blocked", "w14m-acc", "transport:boom")
+	// （原键 B 的 active 降级 continue 分支已随 DegradeForGatewayFailure
+	// 写面退场删除；生产降级恒空。原 setup 中的时钟推进保留在此处，
+	// 使键 A 处于“已过期但未超闲置保留期”的可见性臂。）
 	*clock = 71_000
-	store.DegradeForGatewayFailure("w14m-blocked", "w14m-acc", "transport:boom")
 
 	snapshot := store.SnapshotAvailability(func(runtimeKey string) bool {
 		return runtimeKey == "w14m-blocked"
@@ -148,7 +132,7 @@ func TestW14MJitterDeterministicArms(t *testing.T) {
 		t.Fatalf("negative interval window = %d", got)
 	}
 	// 2 分钟间隔 → 分钟窗口 30s < 半间隔 60s → 返回窗口本身。
-	if got := passiveScheduleJitterWindowMs(120_000); got != passiveScheduleMinuteWindowMs {
+	if got := passiveScheduleJitterWindowMs(120_000); got != int64(schedulejitter.MinuteWindow/time.Millisecond) {
 		t.Fatalf("minute window = %d", got)
 	}
 	// 大写十六进制前缀解析。

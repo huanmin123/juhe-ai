@@ -7,6 +7,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -116,7 +117,7 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 	unavailableProxyAuditAttemptIndex := *in.auditAttemptIndex + 1
 	unavailableProxyAttempt, proxyErr := e.HandleUnavailableProxyProfile(
 		ctx, in.args.Req, *usageContext, originalAccount, in.settings,
-		in.failedProxyDispatchKeys, in.automaticAccountStateMutationAllowed,
+		in.failedProxyDispatchKeys,
 		auditCapture, unavailableProxyAuditAttemptIndex,
 	)
 	if proxyErr != nil {
@@ -343,7 +344,7 @@ rotationLoop:
 					AuditAttemptID:              "",
 					Account:                     account,
 					UpstreamURL:                 "account:preparation",
-					AttemptStartedAt:            NowMs(),
+					AttemptStartedAt:            gatewayupstream.NowMs(),
 					AttemptIndex:                0,
 					AuditAttemptIndex:           *in.auditAttemptIndex,
 					Settings:                    in.settings,
@@ -528,7 +529,7 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 					in.observedEscapedTiers[attemptTier] = struct{}{}
 				}
 			}
-			attemptStartedAt := NowMs()
+			attemptStartedAt := gatewayupstream.NowMs()
 
 			// Normal-route first-byte deadline.
 			var normalRouteFirstByteDeadline *gatewayrouting.NormalRouteAttemptFirstByteDeadline
@@ -615,7 +616,7 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 							// M-3（BUG-0174）busy 等待窗（upstream-dispatch.ts:1183-1194）:
 							// busy 是容量而非健康。在本账户 1200ms 前台窗内且 wall
 							// budget 充足时保留该 Key（下一轮可再选它），超窗剔除。
-							nowMs := NowMs()
+							nowMs := gatewayupstream.NowMs()
 							if *c.keyModelForegroundWaitStartedAtMsRef == 0 {
 								*c.keyModelForegroundWaitStartedAtMsRef = nowMs
 							}
@@ -655,13 +656,13 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 						// min(poll, 窗口余量, wall 余量-最终响应预留)，非恒 poll。
 						elapsedMs := int64(0)
 						if startedAtMs := *c.keyModelForegroundWaitStartedAtMsRef; startedAtMs != 0 {
-							elapsedMs = NowMs() - startedAtMs
+							elapsedMs = gatewayupstream.NowMs() - startedAtMs
 						}
 						waitMs := minInt64(
 							e.Config.KeyModelForegroundQueuePollMs,
 							minInt64(
 								maxInt64(0, e.Config.KeyModelForegroundQueueWaitMs-elapsedMs),
-								maxInt64(0, in.coordination.GatewayRequestWallBudget.RemainingMs(NowMs())-gatewayrouting.DefaultGatewayFinalResponseReserveMs),
+								maxInt64(0, in.coordination.GatewayRequestWallBudget.RemainingMs(gatewayupstream.NowMs())-gatewayrouting.DefaultGatewayFinalResponseReserveMs),
 							),
 						)
 						if waitMs > 0 {

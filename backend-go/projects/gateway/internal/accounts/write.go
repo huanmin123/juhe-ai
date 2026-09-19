@@ -7,16 +7,13 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // ModelMapping mirrors AccountModelMapping (accountModelMappingSchema).
-type ModelMapping struct {
-	SourceModel            string `json:"sourceModel"`
-	SourceEndpointFamily   string `json:"sourceEndpointFamily"`
-	UpstreamModel          string `json:"upstreamModel"`
-	UpstreamEndpointFamily string `json:"upstreamEndpointFamily"`
-	Enabled                *bool  `json:"enabled,omitempty"`
-}
+// （REFACTOR-0005 阶段 0 下沉 accountscore，根包保留类型别名。）
+type ModelMapping = accountscore.ModelMapping
 
 // Endpoint family enums of accountModelMappingSchema: an unknown value fails
 // the create/PATCH schema parse (400) instead of persisting an unmappable row.
@@ -65,13 +62,9 @@ func normalizeModelMappingBody(object map[string]any) (ModelMapping, bool) {
 	return mapping, true
 }
 
-var accountHealthCheckEndpointModes = map[string]bool{
-	"images_json": true, "chat_json": true, "chat_sse": true,
-	"responses_json": true, "responses_sse": true,
-	"messages_json": true, "messages_sse": true,
-	"generate_content_json": true, "generate_content_sse": true,
-	"interactions_json": true, "interactions_sse": true,
-}
+// accountHealthCheckEndpointModes 阶段 C 下沉 accountscore（导入域字段解析器
+// 共用），门面保留同名别名.
+var accountHealthCheckEndpointModes = accountscore.AccountHealthCheckEndpointModes
 
 var accountStatusValues = map[string]bool{
 	"active": true, "pending_test": true, "disabled": true, "error": true,
@@ -82,61 +75,25 @@ var accountStatusValues = map[string]bool{
 // (schema default 5000).
 const defaultAccountConcurrencyLimit = 5000
 
-// CreationStatus mirrors accountCreationStatusInput: the user-facing creation
-// choice plus the derived guarded write flags (Node overrides the body fields
-// with these in accounts.routes.ts).
-type CreationStatus struct {
-	Status                 string
-	SkipInitialHealthCheck bool
-	Schedulable            bool
-}
+// CreationStatus / AccountCreationStatusInput / CreateInput 阶段 C 下沉中立层
+// accountscore（accountstransfer 导入执行器的 AccountWriter 端口签名复用同一
+// 契约），门面保留别名，write 路径零改动.
+type (
+	// CreationStatus mirrors accountscore.CreationStatus.
+	CreationStatus = accountscore.CreationStatus
+	// CreateInput mirrors accountscore.CreateInput.
+	CreateInput = accountscore.CreateInput
+)
 
-// AccountCreationStatusInput mirrors accountCreationStatusInput.
+// AccountCreationStatusInput mirrors accountCreationStatusInput（accountscore
+// 实现，门面转发保持原调用形态）.
 func AccountCreationStatusInput(value any) CreationStatus {
-	status := "pending_test"
-	if text, ok := value.(string); ok && (text == "active" || text == "disabled") {
-		status = text
-	}
-	return CreationStatus{
-		Status:                 status,
-		SkipInitialHealthCheck: status == "active",
-		Schedulable:            status == "active",
-	}
+	return accountscore.AccountCreationStatusInput(value)
 }
 
 // CreateInput is the validated create payload (accountCreateSchema subset the
 // store consumes); nil pointers mean the field was absent.
-type CreateInput struct {
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	Name                      string
-	AccountType               string
-	Credentials               Credentials
-	SupportedModels           []string
-	HealthCheckModel          *string
-	HealthCheckEndpointMode   *string
-	ModelMappings             []ModelMapping
-	Tags                      []string
-	Status                    CreationStatus
-	ConcurrencyLimit          *int
-	Priority                  *int
-	SuperPriorityEnabled      *bool
-	FallbackEnabled           *bool
-	ProxyProfileID            *string
-	GroupID                   *string
-	AccountExpiresAt          *string
-	AvailabilitySchedule      any
-	Notes                     *string
-	BalanceQueryEnabled       bool
-	// BalanceQueryConfigCanonical carries the normalized config JSON (the
-	// create body parser already ran normalizeAccountBalanceConfig, exactly
-	// like the Node route); nil means the request did not include a config.
-	BalanceQueryConfigCanonical *string
-	// TemporaryUnavailableContinuousProbeEnabled mirrors the
-	// normalizeOptionalBooleanInput tri-state: nil = not provided (defaults
-	// to enabled), false persists the explicit opt-out.
-	TemporaryUnavailableContinuousProbeEnabled *bool
-}
+// （阶段 C 起定义为 accountscore.CreateInput 别名，见上方别名块。）
 
 // providerProfile mirrors requireEnabledProviderProtocolProfileInClientAsync.
 type providerProfile struct {
@@ -561,14 +518,14 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		AccountType:     accountType,
 		Credentials:     credentials,
 		SupportedModels: supportedModels,
-		SystemAccountID: access.viewerID(),
+		SystemAccountID: access.EffectiveViewerID(),
 	}); err != nil {
 		return nil, err
 	}
 
 	// Owner context (the group block below switches the owner for admins
 	// binding an explicit group).
-	systemAccountID, err := access.ownerID()
+	systemAccountID, err := access.OwnerID()
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +542,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		if err != nil {
 			return nil, err
 		}
-		if explicitGroup != nil && access.canAccessAll() {
+		if explicitGroup != nil && access.CanAccessAll() {
 			systemAccountID = explicitGroup.systemAccountID
 		}
 	}
@@ -785,9 +742,9 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// dispatch_revision_changed circuit outbox row (the shared batch/delete
 	// implementation, account-circuit-control-plane.repository.ts:428+).
 	if err := s.advanceBatchDispatchRevisionFamily(ctx, tx, batchDispatchRevision{
-		accountID:    id,
-		transitionID: s.newI("dispatch"),
-		nowMS:        now.UnixMilli(),
+		AccountID:    id,
+		TransitionID: s.newI("dispatch"),
+		NowMS:        now.UnixMilli(),
 	}); err != nil {
 		return nil, err
 	}
@@ -849,12 +806,9 @@ type CreateResult struct {
 	InitialHealthCheckRequired bool `json:"-"`
 }
 
+// isAccountExpired 阶段 B 下沉 accountscore，根包保留同名转发.
 func isAccountExpired(accountExpiresAt string, now time.Time) bool {
-	if strings.TrimSpace(accountExpiresAt) == "" {
-		return false
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, accountExpiresAt)
-	return err == nil && parsed.UnixMilli() <= now.UnixMilli()
+	return accountscore.IsAccountExpired(accountExpiresAt, now)
 }
 
 // AiAccountCreationLimitSettings is the narrow settings port behind the
@@ -1104,33 +1058,21 @@ func (s *Store) replaceAccountTags(ctx context.Context, q queryer, accountID, sy
 }
 
 // duplicateAccountNameError mirrors isDuplicateAccountNameError.
+// duplicateAccountNameError 阶段 C 下沉 accountscore（导入执行器与 write/patch
+// 链共用同一冲突分类），根包保留同名转发.
 func duplicateAccountNameError(err error, name string) error {
-	if err == nil {
-		return nil
-	}
-	message := err.Error()
-	if strings.Contains(message, "idx_accounts_owner_name_unique") ||
-		strings.Contains(message, "UNIQUE constraint failed: accounts.system_account_id, accounts.name") ||
-		strings.Contains(message, "UNIQUE constraint failed: juhe_business.accounts.system_account_id, juhe_business.accounts.name") {
-		return &ConflictError{Message: "同一用户下账户名称已存在：" + name}
-	}
-	return nil
+	return accountscore.DuplicateAccountNameError(err, name)
 }
 
+// boolInt 阶段 B 下沉 accountscore，根包保留同名转发.
 func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
+	return accountscore.BoolInt(value)
 }
 
+// containsString mirrors the contains helper shared by the validation paths
+// （REFACTOR-0005 阶段 0 下沉 accountscore，根包保留同名转发）.
 func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
+	return accountscore.ContainsString(values, target)
 }
 
 func anySliceOrNil(values []string) any {

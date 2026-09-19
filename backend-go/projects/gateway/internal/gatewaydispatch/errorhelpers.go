@@ -13,9 +13,9 @@ import (
 
 // DiagnosticUpstreamError mirrors the returned union.
 type DiagnosticUpstreamError struct {
-	StatusCode             int
-	Payload                gatewaypreauth.GatewayErrorPayload
-	ErrorMessage           string
+	StatusCode              int
+	Payload                 gatewaypreauth.GatewayErrorPayload
+	ErrorMessage            string
 	PreserveUpstreamMessage bool
 }
 
@@ -161,15 +161,6 @@ func gatewayErrorPayloadFromObject(payload map[string]any) gatewaypreauth.Gatewa
 
 func isHTTPStatusCode(status int) bool {
 	return status >= 400 && status <= 599
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func stringValue(value any) string {

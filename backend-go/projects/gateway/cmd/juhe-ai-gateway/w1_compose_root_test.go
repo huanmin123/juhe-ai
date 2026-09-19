@@ -76,7 +76,7 @@ func w1oNewComposeStack(t *testing.T) *w1oComposeStack {
 
 func (s *w1oComposeStack) compose(t *testing.T) (*composition, error) {
 	t.Helper()
-	return composeSystemAPI(s.cfg, pgpool.NewRegistry(), s.store, s.lease, s.auditProducer, s.auditConfig)
+	return composeSystemAPI(s.cfg, pgpool.NewRegistry(), s.store, s.lease, s.auditProducer, s.auditConfig, composeTestOwnerHealth())
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ func TestW1OComposeSystemAPINilDependencyArms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			composed, err := composeSystemAPI(stack.cfg, pgpool.NewRegistry(), tc.store, tc.lease, tc.producer, stack.auditConfig)
+			composed, err := composeSystemAPI(stack.cfg, pgpool.NewRegistry(), tc.store, tc.lease, tc.producer, stack.auditConfig, composeTestOwnerHealth())
 			if err == nil {
 				if composed != nil {
 					composed.Shutdown()

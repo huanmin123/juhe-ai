@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
 // 组合根注入端口与 codex 会话解析的收尾单测。
@@ -18,99 +18,6 @@ import (
 // ---------------------------------------------------------------------------
 // oauthnormalizer_overrides 注入端口
 // ---------------------------------------------------------------------------
-
-type stubOverrideCatalog struct {
-	items []GptRequestOverrideModelCatalogItem
-	err   error
-}
-
-func (s *stubOverrideCatalog) ListGptRequestOverrideModelCatalog(context.Context, string, string, bool) ([]GptRequestOverrideModelCatalogItem, error) {
-	return s.items, s.err
-}
-
-func TestSetGptRequestOverrideModelCatalogPort(t *testing.T) {
-	previous := gptRequestOverrideModelCatalog
-	previousCandidates := gptRequestOverrideModelCandidates
-	t.Cleanup(func() {
-		gptRequestOverrideModelCatalog = previous
-		gptRequestOverrideModelCandidates = previousCandidates
-	})
-	// 套件内其他测试可能替换过全局展开器，这里固定为恒等展开。
-	SetGptRequestOverrideModelCandidates(func(providerCode, model string) []string { return []string{model} })
-
-	SetGptRequestOverrideModelCatalog(&stubOverrideCatalog{items: []GptRequestOverrideModelCatalogItem{{
-		Model:                     "gpt-test",
-		SupportedServiceTiers:     []string{"flex"},
-		SupportedReasoningEfforts: []string{"high"},
-	}}})
-	account := AccountCandidate{
-		ID: "a-1", ProviderCode: "openai",
-		Credentials: map[string]any{
-			"service_tier_override":     "flex",
-			"reasoning_effort_override": "high",
-		},
-	}
-	capabilities, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "gpt-test")
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if capabilities == nil || len(capabilities.SupportedServiceTiers) != 1 {
-		t.Fatalf("capabilities = %#v", capabilities)
-	}
-	// 目录错误透传。
-	SetGptRequestOverrideModelCatalog(&stubOverrideCatalog{err: errors.New("目录爆炸")})
-	if _, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "gpt-test"); err == nil {
-		t.Fatal("目录错误应透传")
-	}
-	// 未命中模型返回 nil。
-	SetGptRequestOverrideModelCatalog(&stubOverrideCatalog{items: []GptRequestOverrideModelCatalogItem{{Model: "other"}}})
-	if caps, err := ResolveGptRequestOverrideModelCapabilities(context.Background(), account, "gpt-test"); err != nil || caps != nil {
-		t.Fatalf("未命中 = %#v %v", caps, err)
-	}
-}
-
-func TestSetGptRequestOverrideModelCandidatesExpander(t *testing.T) {
-	previous := gptRequestOverrideModelCandidates
-	t.Cleanup(func() { gptRequestOverrideModelCandidates = previous })
-	SetGptRequestOverrideModelCandidates(func(providerCode, model string) []string {
-		return []string{model, "alias-" + model}
-	})
-	candidates := gptRequestOverrideModelCandidates("openai", "gpt-test")
-	if len(candidates) != 2 || candidates[1] != "alias-gpt-test" {
-		t.Fatalf("candidates = %#v", candidates)
-	}
-	// nil 展开器为 no-op（保持当前注入）。
-	SetGptRequestOverrideModelCandidates(nil)
-	if got := gptRequestOverrideModelCandidates("openai", "m"); len(got) != 2 {
-		t.Fatalf("nil 展开器应保持注入, got %#v", got)
-	}
-}
-
-func TestSetGptAccountRequestOverridesHook(t *testing.T) {
-	previous := gptAccountRequestOverridesHook
-	t.Cleanup(func() { gptAccountRequestOverridesHook = previous })
-	called := false
-	SetGptAccountRequestOverridesHook(func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error) {
-		called = true
-		body["service_tier"] = "flex"
-		return body, nil
-	})
-	body := map[string]any{"model": "gpt-test"}
-	if err := applyOpenAIOAuthCodexAccountRequestOverrides(body, OpenAIOAuthCodexNormalizeInput{}); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	if !called || body["service_tier"] != "flex" {
-		t.Fatalf("hook 未生效: %#v", body)
-	}
-	// hook 返回相同内容时不改写。
-	unchanged := map[string]any{"model": "gpt-test"}
-	SetGptAccountRequestOverridesHook(func(body map[string]any, input GptAccountOverrideInput) (map[string]any, error) {
-		return body, nil
-	})
-	if err := applyOpenAIOAuthCodexAccountRequestOverrides(unchanged, OpenAIOAuthCodexNormalizeInput{}); err != nil {
-		t.Fatalf("apply unchanged: %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // codex 会话解析
@@ -193,11 +100,11 @@ func TestSanitizeCodexResponsesHistoryForAccountOnRequest(t *testing.T) {
 	// 无 sanitizer 不处理。
 	engine.sanitizeCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], "codex_responses")
 	// 注入 sanitizer 后请求 body 被替换。
-	previous := SanitizeCodexHistory
-	SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
+	previous := gatewayoauthcodex.SanitizeCodexHistory
+	gatewayoauthcodex.SanitizeCodexHistory = func(items []any, options SanitizeCodexHistoryOptions) CodexHistorySanitizeResult {
 		return CodexHistorySanitizeResult{Items: []any{"req-sanitized"}, Changed: true}
 	}
-	t.Cleanup(func() { SanitizeCodexHistory = previous })
+	t.Cleanup(func() { gatewayoauthcodex.SanitizeCodexHistory = previous })
 	engine.sanitizeCodexResponsesHistoryForAccount(req, testAccounts("a-1")[0], "codex_responses")
 	if req.Body.Body.(map[string]any)["input"].([]any)[0] != "req-sanitized" {
 		t.Fatalf("req body = %#v", req.Body.Body)
@@ -210,33 +117,11 @@ func TestSanitizeCodexResponsesHistoryForAccountOnRequest(t *testing.T) {
 	}
 }
 
-// recordingAccountState 记录账户状态变更调用。
-type recordingAccountState struct {
-	suppressed bool
-	failures   int
-	prechecks  int
-}
-
-func (r *recordingAccountState) ApplyErrorHandlingWithCacheInvalidation(ctx context.Context, account AccountCandidate, input AccountErrorInput) error {
-	return nil
-}
-
-func (r *recordingAccountState) SuppressLocally(account AccountCandidate, settings gatewayruntimecache.GatewaySettings, message string) LocalSuppression {
-	return LocalSuppression{Action: "precheck_required", DelayMs: 1_000}
-}
-
-func (r *recordingAccountState) RecordFailureForPrecheck(ctx context.Context, account AccountCandidate, settings gatewayruntimecache.GatewaySettings, input PrecheckFailureInput) {
-	r.prechecks++
-}
-
-func (r *recordingAccountState) MarkTemporaryUnavailableWithCacheInvalidation(ctx context.Context, account AccountCandidate, message, reason string) (bool, error) {
-	return true, nil
-}
-
-func TestHandleUnavailableProxyProfileRecordsPrecheck(t *testing.T) {
+// 原 recordingAccountState fake 与 TestHandleUnavailableProxyProfileRecordsPrecheck
+// 断言的软阻断行为已随 engine.AccountState 端口删除（生产组合根按设计不
+// 装配，分支受 nil 守卫从未执行）；本用例改断言当前语义。
+func TestHandleUnavailableProxyProfileRecordsFailure(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
-	state := &recordingAccountState{}
-	engine.AccountState = state
 	unavailable := true
 	message := "代理维护中"
 	account := testAccounts("a-1")[0]
@@ -249,7 +134,7 @@ func TestHandleUnavailableProxyProfileRecordsPrecheck(t *testing.T) {
 	sink := capture.Sink.(*fakeAuditSink)
 	attempt, err := engine.HandleUnavailableProxyProfile(
 		context.Background(), req, usage, account, fastDispatchSettings(),
-		map[string]string{}, true, capture, 2,
+		map[string]string{}, capture, 2,
 	)
 	if err != nil {
 		t.Fatalf("HandleUnavailableProxyProfile: %v", err)
@@ -257,26 +142,14 @@ func TestHandleUnavailableProxyProfileRecordsPrecheck(t *testing.T) {
 	if attempt == nil || attempt.UpstreamURL != "proxy:configured" || attempt.Message != "代理维护中" {
 		t.Fatalf("attempt = %#v", attempt)
 	}
-	if state.prechecks != 1 {
-		t.Fatalf("网关流量的 precheck 记录 = %d", state.prechecks)
-	}
 	if sink.failed != 1 {
 		t.Fatalf("审计失败记录 = %d", sink.failed)
-	}
-	// 非网关流量 + 状态变更启用 → ApplyErrorHandling 分支。
-	probeUsage := testUsageContext()
-	probeUsage.TrafficSource = "probe"
-	if _, err := engine.HandleUnavailableProxyProfile(
-		context.Background(), req, probeUsage, account, fastDispatchSettings(),
-		map[string]string{}, true, capture, 3,
-	); err != nil {
-		t.Fatalf("probe 分支: %v", err)
 	}
 	// usage 记录失败 → 错误透传。
 	engine.Usage = errorUsageRecorder{}
 	if _, err := engine.HandleUnavailableProxyProfile(
 		context.Background(), req, usage, account, fastDispatchSettings(),
-		map[string]string{}, true, capture, 4,
+		map[string]string{}, capture, 4,
 	); err == nil || !strings.Contains(err.Error(), "记录失败") {
 		t.Fatalf("usage 错误应透传, got %v", err)
 	}

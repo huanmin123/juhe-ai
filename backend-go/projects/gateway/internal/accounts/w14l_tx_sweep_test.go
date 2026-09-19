@@ -131,8 +131,8 @@ func w14lSequences() map[string]w14lSequence {
 				_, err := f.store.ExecuteImport(context.Background(), w13aRawDoc(
 					[]any{map[string]any{"name": "w14l-imp", "providerCode": "openai",
 						"providerProtocolProfileId": openAICompatibleProfileID,
-						"type": "api_key", "status": "active", "groupName": "w14l-imp-group",
-						"proxyRef": "p1",
+						"type":                      "api_key", "status": "active", "groupName": "w14l-imp-group",
+						"proxyRef":    "p1",
 						"credentials": map[string]any{"api_key": "sk-w14l-imp", "base_url": "https://api.openai.com/v1"}}},
 					[]any{map[string]any{"ref": "p1", "name": "w14l-imp-proxy", "type": "socks5", "host": "proxy.example.com", "port": float64(1080)}},
 				), "", ImportOptions{}, f.scope())

@@ -27,25 +27,25 @@ func TestW1ComposeSystemAPIErrorArms(t *testing.T) {
 	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	defer closeAudit()
 	// nil 三件套守卫。
-	if _, err := composeSystemAPI(cfg, pgpool.NewRegistry(), nil, lease, auditProducer, auditConfig); err == nil {
+	if _, err := composeSystemAPI(cfg, pgpool.NewRegistry(), nil, lease, auditProducer, auditConfig, composeTestOwnerHealth()); err == nil {
 		t.Fatal("nil operation store 必须拒绝")
 	}
-	if _, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, nil, auditProducer, auditConfig); err == nil {
+	if _, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, nil, auditProducer, auditConfig, composeTestOwnerHealth()); err == nil {
 		t.Fatal("nil operation lease 必须拒绝")
 	}
-	if _, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, lease, nil, auditConfig); err == nil {
+	if _, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, lease, nil, auditConfig, composeTestOwnerHealth()); err == nil {
 		t.Fatal("nil audit producer 必须拒绝")
 	}
 	// stats 路径缺失。
 	statsCfg := cfg
 	statsCfg.StatsDatabasePath = ""
-	if _, err := composeSystemAPI(statsCfg, pgpool.NewRegistry(), store, lease, auditProducer, auditConfig); err == nil {
+	if _, err := composeSystemAPI(statsCfg, pgpool.NewRegistry(), store, lease, auditProducer, auditConfig, composeTestOwnerHealth()); err == nil {
 		t.Fatal("缺失 stats 路径必须拒绝")
 	}
 	// 业务库路径不可创建：configure 阶段 fail fast。
 	badBizCfg := cfg
 	badBizCfg.BusinessDatabasePath = filepath.Join(filepath.Dir(cfg.BusinessDatabasePath), "no-such-dir", "business.sqlite3")
-	if _, err := composeSystemAPI(badBizCfg, pgpool.NewRegistry(), store, lease, auditProducer, auditConfig); err == nil {
+	if _, err := composeSystemAPI(badBizCfg, pgpool.NewRegistry(), store, lease, auditProducer, auditConfig, composeTestOwnerHealth()); err == nil {
 		t.Fatal("业务库路径不可创建必须拒绝")
 	}
 	// 说明：usage-catalog/table-monitor/runtime-log/audit/dataset 的缺失
@@ -188,7 +188,7 @@ func TestW1ComposeReadsDepsMountArms(t *testing.T) {
 	store := openComposeOperationStore(t)
 	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	defer closeAudit()
-	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
+	composed, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
 	if err != nil {
 		t.Fatalf("compose = %v", err)
 	}

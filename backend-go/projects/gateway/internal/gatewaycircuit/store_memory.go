@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
 // MemoryStoreOptions mirrors MemoryAccountCircuitStoreOptions.
@@ -1466,12 +1468,10 @@ func totalConfirmedFailures(scopes []memoryEscalationScopeEvidence) int64 {
 	return total
 }
 
+// REFACTOR-0008 下潜委托壳：与 circuitstore 逐字节相同，收敛到
+// shared/platform/circuitstate，包内调用点零改动。
 func requiredValue(value, name string) (string, error) {
-	normalized := strings.TrimSpace(value)
-	if normalized == "" {
-		return "", fmt.Errorf("账户电路操作缺少 %s", name)
-	}
-	return normalized, nil
+	return circuitstate.RequiredValue(value, name)
 }
 
 // normalizedNowValue mirrors normalizedNow: clamps negatives to zero (the
@@ -1515,6 +1515,6 @@ func mergeUnique(current []string, additions []string) []string {
 	return out
 }
 
-func strPtr(value string) *string { return &value }
+func strPtr(value string) *string { return circuitstate.StrPtr(value) }
 
 func int64Ptr(value int64) *int64 { return &value }

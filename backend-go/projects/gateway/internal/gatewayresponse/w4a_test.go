@@ -396,12 +396,13 @@ func TestHeartbeatProtocolGate(t *testing.T) {
 }
 
 // TestHeartbeatObserverWritesAndStops 观察者等待开始时立即写出首个保活块并
-// 标记 transport committed；暂停后停止写出（D-120 装配面）。
+// 标记 transport committed；暂停后停止写出（D-120 装配面）。观察统一走带锁
+// fake 或 Stop 返回后（W3：Stop 同步等待 goroutine 退出，happens-before 成立）。
 func TestHeartbeatObserverWritesAndStops(t *testing.T) {
 	commit := &DownstreamCommitState{}
-	recorder := httptest.NewRecorder()
+	res := newW3HeartbeatRecordingRes()
 	heartbeat := CreateGatewaySseWaitHeartbeat(HeartbeatDeps{
-		Res:                gatewaypreauth.NewTrackingWriter(recorder),
+		Res:                res,
 		DownstreamProtocol: "messages_sse",
 		DownstreamCommit:   commit,
 	})
@@ -413,24 +414,24 @@ func TestHeartbeatObserverWritesAndStops(t *testing.T) {
 		OnWaitPaused:  heartbeat.Stop,
 	}
 	observer.OnWaitStarted()
-	waitFor(t, func() bool { return strings.Contains(recorder.Body.String(), "juhe-ai waiting for upstream capacity") })
+	waitFor(t, func() bool { return strings.Contains(res.bodyText(), "juhe-ai waiting for upstream capacity") })
+	writes := res.writeCount()
+	observer.OnWaitPaused()
+	// Stop 返回后 goroutine 已退出，共享状态可安全观察。
 	if !commit.TransportCommitted {
 		t.Fatalf("心跳应标记 transport committed")
 	}
-	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream; charset=utf-8" {
+	if got := res.header.Get("Content-Type"); got != "text/event-stream; charset=utf-8" {
 		t.Fatalf("content-type = %q", got)
 	}
-	writes := recorder.Body.Len()
-	observer.OnWaitPaused()
-	time.Sleep(30 * time.Millisecond)
-	if recorder.Body.Len() != writes {
+	if res.writeCount() != writes {
 		t.Fatalf("暂停后不应继续写出")
 	}
-	// 语义提交后心跳不再写出。
-	observer.OnWaitStarted()
+	// 语义提交后心跳不再写出：已提交状态下重启即退出，不产生新写。
 	commit.MarkSemanticCommitted(1)
+	observer.OnWaitStarted()
 	time.Sleep(30 * time.Millisecond)
-	if recorder.Body.Len() != writes {
+	if res.writeCount() != writes {
 		t.Fatalf("语义提交后不应写出")
 	}
 	heartbeat.Stop()

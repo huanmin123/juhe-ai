@@ -48,10 +48,10 @@ func TestW2ImportDuplicateErrorsAndPlanFlag(t *testing.T) {
 		}
 	})
 	t.Run("planSkipDuplicates", func(t *testing.T) {
-		if !planSkipDuplicates(&importPlan{options: ImportOptions{SkipDuplicates: boolPtr(true)}}) {
+		if !planSkipDuplicates(&importPlan{Options: ImportOptions{SkipDuplicates: boolPtr(true)}}) {
 			t.Fatal("显式 true 应命中")
 		}
-		if planSkipDuplicates(&importPlan{options: ImportOptions{SkipDuplicates: boolPtr(false)}}) {
+		if planSkipDuplicates(&importPlan{Options: ImportOptions{SkipDuplicates: boolPtr(false)}}) {
 			t.Fatal("显式 false 不应命中")
 		}
 		// 缺省（nil 指针）按 Node 默认开启。
@@ -101,16 +101,16 @@ func TestW2RuntimeResetTimeAndBindingHelpers(t *testing.T) {
 		if bindingIsAuthorizationUnavailable(&resetSummary{}) {
 			t.Fatal("未绑定分组不算不可用")
 		}
-		if bindingIsAuthorizationUnavailable(&resetSummary{boundGroupID: valid("grp-1")}) {
+		if bindingIsAuthorizationUnavailable(&resetSummary{BoundGroupID: valid("grp-1")}) {
 			t.Fatal("缺组授权 ID 不算不可用")
 		}
-		if !bindingIsAuthorizationUnavailable(&resetSummary{boundGroupID: valid("grp-1"), boundGroupAuthorizationID: valid("authz-1")}) {
+		if !bindingIsAuthorizationUnavailable(&resetSummary{BoundGroupID: valid("grp-1"), BoundGroupAuthorizationID: valid("authz-1")}) {
 			t.Fatal("账户授权缺失应不可用")
 		}
-		if !bindingIsAuthorizationUnavailable(&resetSummary{boundGroupID: valid("grp-1"), boundGroupAuthorizationID: valid("authz-1"), authorizationID: valid("authz-2")}) {
+		if !bindingIsAuthorizationUnavailable(&resetSummary{BoundGroupID: valid("grp-1"), BoundGroupAuthorizationID: valid("authz-1"), AuthorizationID: valid("authz-2")}) {
 			t.Fatal("授权 ID 不一致应不可用")
 		}
-		if bindingIsAuthorizationUnavailable(&resetSummary{boundGroupID: valid("grp-1"), boundGroupAuthorizationID: valid("authz-1"), authorizationID: valid("authz-1")}) {
+		if bindingIsAuthorizationUnavailable(&resetSummary{BoundGroupID: valid("grp-1"), BoundGroupAuthorizationID: valid("authz-1"), AuthorizationID: valid("authz-1")}) {
 			t.Fatal("授权一致应可用")
 		}
 	})

@@ -167,6 +167,30 @@ func TestHealthPathBypass(t *testing.T) {
 	}
 }
 
+func TestAISysHealthPathBypass(t *testing.T) {
+	limiter := newLimiter()
+	k := kernel.New(kernel.Options{})
+	k.Register("GET /__aisys__/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !limiter.ipRateLimit(w, r) {
+			return
+		}
+		kernel.WriteOK(w, map[string]string{"status": "ok"}, "")
+	}))
+	server := httptest.NewServer(k.Handler())
+	defer server.Close()
+
+	for i := 0; i < 10; i++ {
+		resp, err := http.Get(server.URL + "/__aisys__/health")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("__aisys__/health must bypass limit, got %d", resp.StatusCode)
+		}
+	}
+}
+
 func TestWriteClassUsesWriteLimits(t *testing.T) {
 	limiter := newLimiter()
 	k := kernel.New(kernel.Options{})

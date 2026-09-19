@@ -10,37 +10,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-func TestW14ESuppressionDegradeCountAdvanceArms(t *testing.T) {
-	now := int64(1_000_000)
-	clock := &now
-	store := NewLocalSuppressionStore(LocalSuppressionStoreOptions{Now: func() int64 { return *clock }})
-
-	// 建立 local_suppressed 抑制（应推进计数）。
-	store.SuppressForGatewayFailure("w14e-adv", "acc", "transport:timeout", "w14e-adv")
-	first := store.DegradeForGatewayFailure("w14e-adv", "acc", "transport:read interrupted")
-	if first.FailureCount == nil || *first.FailureCount < 1 {
-		t.Fatalf("first advance = %+v", first)
-	}
-	// 窗口内第二次推进：计数继续累加。
-	second := store.DegradeForGatewayFailure("w14e-adv", "acc", "transport:timeout")
-	if second.FailureCount == nil || *second.FailureCount < *first.FailureCount {
-		t.Fatalf("second advance = %+v", second)
-	}
-	// half_open 抑制同样推进计数。
-	store.Suppress("w14e-adv-half", 1_000, "transport:timeout", "half_open", nil)
-	*clock += 2_000
-	half := store.DegradeForGatewayFailure("w14e-adv-half", "acc", "transport:read interrupted")
-	if half.FailureCount == nil || *half.FailureCount != 1 {
-		t.Fatalf("half open advance = %+v", half)
-	}
-	// 到期的 local_suppressed：重新从 1 计数。
-	store.Suppress("w14e-adv-expired", 1_000, "transport:timeout", "local_suppressed", nil)
-	*clock += 2_000
-	expired := store.DegradeForGatewayFailure("w14e-adv-expired", "acc", "transport:read interrupted")
-	if expired.FailureCount == nil || *expired.FailureCount != 1 {
-		t.Fatalf("expired advance = %+v", expired)
-	}
-}
+// TestW14ESuppressionDegradeCountAdvanceArms 已随 DegradeForGatewayFailure
+// 写面退场删除（生产写面退场，见 suppression.go 顶部注记）。
 
 func TestW14EPrecheckSummaryContextFallback(t *testing.T) {
 	// 授权账户缺绑定但上下文带系统账户：回退到上下文。

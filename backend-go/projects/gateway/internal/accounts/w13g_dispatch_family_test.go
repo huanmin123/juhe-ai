@@ -30,7 +30,7 @@ func TestW13GAdvanceDispatchFamily(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.advanceBatchDispatchRevisionFamily(ctx, tx, batchDispatchRevision{
-		accountID: instanceID, transitionID: "w13g-family-t1", nowMS: 1760000000000,
+		AccountID: instanceID, TransitionID: "w13g-family-t1", NowMS: 1760000000000,
 	}); err != nil {
 		t.Fatalf("家族推进失败：%v", err)
 	}
@@ -76,7 +76,7 @@ func TestW13GAdvanceDispatchFamily(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.advanceBatchDispatchRevisionFamily(ctx, tx3, batchDispatchRevision{
-		accountID: "acc-w13g-fam-none", transitionID: "w13g-family-t3", nowMS: 1760000002000,
+		AccountID: "acc-w13g-fam-none", TransitionID: "w13g-family-t3", NowMS: 1760000002000,
 	}); err == nil || !strings.Contains(err.Error(), "AI 账户不存在") {
 		t.Fatalf("缺失账户应报错：%v", err)
 	}

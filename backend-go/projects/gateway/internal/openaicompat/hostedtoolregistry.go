@@ -39,15 +39,9 @@ const (
 	OpenAIHostedToolModeReject      OpenAIHostedToolRuntimeMode = "reject"
 )
 
-// OpenAIHostedToolRuntimeModes carries the per-type configured modes (Node
-// runtimeConfig.hostedToolRuntimes). Zero values read as guidance.
-type OpenAIHostedToolRuntimeModes struct {
-	CodeInterpreter string
-	Computer        string
-	Shell           string
-	Skills          string
-	ToolSearch      string
-}
+// OpenAIHostedToolRuntimeModes lives in openaicompatcore (it is part of the
+// Config projection surface); the alias keeps this package's spellings
+// unchanged (see aliases.go).
 
 // OpenAIHostedToolRuntimeDecision mirrors OpenAIHostedToolRuntimeDecision.
 type OpenAIHostedToolRuntimeDecision struct {

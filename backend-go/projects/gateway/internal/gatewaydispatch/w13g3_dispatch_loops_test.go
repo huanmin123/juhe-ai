@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -193,11 +194,11 @@ func (s *w13g3Suppression) apply(phase w13g3Phase, accounts []AccountCandidate) 
 	}
 	if phase.all {
 		return SuppressionFilterResult{
-			Accounts:                            nil,
-			SuppressedCount:                     len(accounts),
-			AllSuppressed:                       true,
-			SuppressedAccountIDs:                accountIDs(accounts),
-			PrecheckSuppressedAccountIDs:        phase.precheckIDs,
+			Accounts:                             nil,
+			SuppressedCount:                      len(accounts),
+			AllSuppressed:                        true,
+			SuppressedAccountIDs:                 accountIDs(accounts),
+			PrecheckSuppressedAccountIDs:         phase.precheckIDs,
 			ConfiguredPolicySuppressedAccountIDs: phase.configuredIDs,
 		}, nil
 	}
@@ -295,7 +296,7 @@ func w13g3WallBudget(t *testing.T, remaining int64) *gatewayrouting.GatewayReque
 	t.Helper()
 	budgetMs := int64(60_000)
 	wallBudget, err := gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
-		RequestAcceptedAtMs: NowMs() - (budgetMs - remaining),
+		RequestAcceptedAtMs: gatewayupstream.NowMs() - (budgetMs - remaining),
 		BudgetMs:            &budgetMs,
 	}, nil)
 	if err != nil {
@@ -328,9 +329,9 @@ func w13g3Args(t *testing.T, req *gatewaypreauth.GatewayRequest, accounts []Acco
 // w13g3TinyElapsedBudget 返回已耗尽的小额重试预算（handoff 恒真）。
 func w13g3TinyElapsedBudget() *gatewaypreauth.ServerRetryBudget {
 	budget := gatewaypreauth.NewServerRetryBudget(1, gatewaypreauth.SystemClock{})
-	past := NowMs() - 10
+	past := gatewayupstream.NowMs() - 10
 	budget.BeginNoAvailableWait(&past)
-	now := NowMs()
+	now := gatewayupstream.NowMs()
 	budget.PauseNoAvailableWait(&now)
 	return budget
 }
@@ -421,8 +422,8 @@ func TestW13g3FirstByteCoordinatorLifecycle(t *testing.T) {
 
 func TestW13g3UpstreamResponseModelSlot(t *testing.T) {
 	var nilSlot *UpstreamResponseModelSlot
-	nilSlot.Set("m")           // nil 安全
-	if nilSlot.Get() != "" {   // nil 安全
+	nilSlot.Set("m")         // nil 安全
+	if nilSlot.Get() != "" { // nil 安全
 		t.Fatal("nil slot get must be empty")
 	}
 	nilSlot.Bind(func(string) {}) // nil 安全

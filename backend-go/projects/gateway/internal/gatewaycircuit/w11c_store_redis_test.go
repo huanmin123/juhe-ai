@@ -8,19 +8,19 @@ import (
 	"strings"
 	"testing"
 
-	redis "github.com/redis/go-redis/v9"
 	miniredis "github.com/alicebob/miniredis/v2"
+	redis "github.com/redis/go-redis/v9"
 )
 
 // w11cStubRedis overrides selected commands of an embedded Cmdable.
 type w11cStubRedis struct {
 	redis.Cmdable
-	evalErr       error
-	evalValue     any
-	hgetErr       error
+	evalErr      error
+	evalValue    any
+	hgetErr      error
 	hgetErrValue any
-	hlenErr       error
-	zcountErr     error
+	hlenErr      error
+	zcountErr    error
 }
 
 func (s *w11cStubRedis) Eval(ctx context.Context, script string, keys []string, args ...any) *redis.Cmd {
@@ -430,7 +430,7 @@ func TestW11CRedisPureHelpers(t *testing.T) {
 	w11cExpectPanic(t, func() { redisNamespacedKey("", "") })
 	// parseListDuePage happy path.
 	page, err := parseListDuePage(`{"scopeKeys":["k1","k2"],"scanned":2,"nextOffset":2,"exhausted":false}`)
-	if err != nil || len(page.scopeKeys) != 2 || page.scanned != 2 || page.nextOffset != 2 || page.exhausted {
+	if err != nil || len(page.ScopeKeys) != 2 || page.Scanned != 2 || page.NextOffset != 2 || page.Exhausted {
 		t.Fatalf("page = (%+v, %v)", page, err)
 	}
 	// validateOperationPayload guards.

@@ -8,14 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
-// PatchChange mirrors AccountManagementPatchChange.
-type PatchChange struct {
-	Field  string `json:"field"`
-	Before any    `json:"before"`
-	After  any    `json:"after"`
-}
+// PatchChange mirrors AccountManagementPatchChange（REFACTOR-0005 阶段 B 下沉
+// accountscore，运行时重置子域审计日志与门面 PATCH 面共用）.
+type PatchChange = accountscore.PatchChange
 
 // PatchResult mirrors the PATCH response payload: { id, configRevision,
 // changedFields } plus the fields the operation log needs.
@@ -166,7 +165,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	}
 	defer tx.Rollback()
 
-	scoped := access.manageableID()
+	scoped := access.ManageableID()
 	scopeClause := ""
 	args := []any{strings.TrimSpace(accountID)}
 	if scoped != "" {
@@ -266,7 +265,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	if err != nil {
 		return nil, err
 	}
-	// 说明：此处曾有一道 `!access.canAccessAll() && row.systemAccountID !=
+	// 说明：此处曾有一道 `!access.CanAccessAll() && row.systemAccountID !=
 	// access.ViewerID` 的越权守卫，但非管理员查询已带
 	// `system_account_id = manageableID()` 过滤、管理员恒可访问，条件恒为
 	// 假，属于不可达防御代码，w13a 移除。

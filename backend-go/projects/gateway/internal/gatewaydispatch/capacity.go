@@ -8,8 +8,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 )
 
 // Lane capacity ordering, migrated from dispatch/capacity.ts. Concurrency

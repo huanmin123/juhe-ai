@@ -12,16 +12,17 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // redisRootPrefix mirrors redis-namespace.ts.
 const redisRootPrefix = "juhe-ai:"
 
-var redisNamespaceSanitizePattern = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
-
 // SanitizeRedisNamespacePart mirrors sanitizeRedisNamespacePart.
+// 实现收敛到 shared/platform/rediscfg（正则折叠语义等价），保留空值报错契约。
 func SanitizeRedisNamespacePart(value string) (string, error) {
-	normalized := strings.Trim(redisNamespaceSanitizePattern.ReplaceAllString(strings.TrimSpace(value), "_"), "_")
+	normalized := rediscfg.SanitizeRedisNamespacePart(value)
 	if normalized == "" {
 		return "", errors.New("Redis namespace 不能为空")
 	}

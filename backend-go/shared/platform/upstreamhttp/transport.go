@@ -13,6 +13,13 @@ import (
 
 const DefaultMaxResponseHeaderBytes int64 = 64 * 1024
 
+// DefaultMaxIdleConnsPerHost is the idle-connection keep-alive pool per
+// upstream host applied when TransportOptions leaves it unset. Without it the
+// cloned http.DefaultTransport keeps its DefaultMaxIdleConnsPerHost of 2,
+// which forces constant re-dial + TLS handshakes against HTTP/1.1 upstreams
+// under gateway fan-out.
+const DefaultMaxIdleConnsPerHost = 64
+
 var (
 	ErrProxyURLInvalid        = errors.New("upstream proxy URL is invalid")
 	ErrProxySchemeUnsupported = errors.New("upstream proxy scheme is unsupported")
@@ -24,9 +31,12 @@ var (
 type TransportOptions struct {
 	ResponseHeaderTimeout  time.Duration
 	MaxResponseHeaderBytes int64
-	DisableCompression     bool
-	ForceRemoteSOCKS5      bool
-	ProxyConnectHeader     http.Header
+	// MaxIdleConnsPerHost overrides the per-host idle pool; zero applies
+	// DefaultMaxIdleConnsPerHost instead of the stdlib fallback of 2.
+	MaxIdleConnsPerHost int
+	DisableCompression  bool
+	ForceRemoteSOCKS5   bool
+	ProxyConnectHeader  http.Header
 	// DialGuard installs the SSRF validated-dial hook (D-192/D-146): direct
 	// and HTTP(S)-proxy transports resolve and validate the connect target
 	// through the guard before any socket is established. SOCKS dialers keep
@@ -67,7 +77,11 @@ func NewTransport(rawProxyURL string, options TransportOptions) (*http.Transport
 	transport.Proxy = nil
 	transport.ForceAttemptHTTP2 = true
 	transport.MaxIdleConns = 0
-	transport.MaxIdleConnsPerHost = 0
+	if options.MaxIdleConnsPerHost > 0 {
+		transport.MaxIdleConnsPerHost = options.MaxIdleConnsPerHost
+	} else {
+		transport.MaxIdleConnsPerHost = DefaultMaxIdleConnsPerHost
+	}
 	transport.MaxConnsPerHost = 0
 	transport.ResponseHeaderTimeout = options.ResponseHeaderTimeout
 	if options.MaxResponseHeaderBytes > 0 {

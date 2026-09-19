@@ -31,10 +31,10 @@ func (d *Deps) mountM11Routes(k *kernel.Kernel, prefix string) {
 	admin := d.Auth.RequireAdmin
 	self := d.Auth.RequireSession(true)
 	pairs := []struct {
-		path    string
-		method  string
-		admin   http.Handler
-		self    http.Handler
+		path   string
+		method string
+		admin  http.Handler
+		self   http.Handler
 	}{
 		{"/accounts/{id}/advanced", "GET", admin(d.scoped(d.advanced(false))), self(d.scoped(d.advanced(true)))},
 		{"/accounts/{id}/oauth-reauthorization-context", "GET", admin(d.scoped(d.oauthReauthorizationContext(false))), self(d.scoped(d.oauthReauthorizationContext(true)))},
@@ -270,7 +270,7 @@ func (d *Deps) refreshPermissionsAllow(r *http.Request, access AccessScope) bool
 	if auth == nil {
 		return false
 	}
-	return access.canAccessAll() || access.ViewerID != ""
+	return access.CanAccessAll() || access.ViewerID != ""
 }
 
 // wiredBalanceRefresher returns the wired port or nil.
@@ -550,7 +550,7 @@ func (d *Deps) trafficMigration(selfOnly bool) http.HandlerFunc {
 			owner := result.SourceAccount.OwnerSystemAccountID
 			targetOwner := result.TargetAccount.OwnerSystemAccountID
 			if result.SourceAccount.AccessType == "authorized" {
-				owner = access.viewerID()
+				owner = access.EffectiveViewerID()
 			}
 			d.Sink.Record(authsys.OperationLogEntry{
 				ActorSystemAccountID:          auth.SystemAccountID,
@@ -710,7 +710,7 @@ func (d *Deps) authorizedDispatch(selfOnly bool) http.HandlerFunc {
 		if d.Sink != nil && len(result.ChangedFields) > 0 {
 			owner := result.OwnerSystemAccountID
 			if owner == "" {
-				owner = access.viewerID()
+				owner = access.EffectiveViewerID()
 			}
 			changes := make([]authsys.OperationLogChange, 0, len(result.Changes))
 			for _, change := range result.Changes {

@@ -193,10 +193,10 @@ func TestW13ABatchUpdateFieldMatrix(t *testing.T) {
 	if _, err := env.store.BatchUpdate(context.Background(), BatchUpdateInput{
 		Targets: targets,
 		Updates: map[string]BatchUpdateField{
-			"supportedModels":        field("supportedModels", []any{"gpt-4o-mini", "gpt-4.1"}),
-			"healthCheckModel":       field("healthCheckModel", "gpt-4.1"),
-			"supportedEndpointModes": field("supportedEndpointModes", []any{"chat_json"}),
-			"serviceTierOverride":    field("serviceTierOverride", "flex"),
+			"supportedModels":         field("supportedModels", []any{"gpt-4o-mini", "gpt-4.1"}),
+			"healthCheckModel":        field("healthCheckModel", "gpt-4.1"),
+			"supportedEndpointModes":  field("supportedEndpointModes", []any{"chat_json"}),
+			"serviceTierOverride":     field("serviceTierOverride", "flex"),
 			"reasoningEffortOverride": field("reasoningEffortOverride", "high"),
 		},
 	}, scope); err != nil {
@@ -419,7 +419,7 @@ func TestW13ABatchHelpersAndSideEffects(t *testing.T) {
 		t.Fatalf("端点能力应去重过滤：%v", got)
 	}
 	// batchAccessError / batchVersionConflictError 语义（错误族直测）。
-	if (&batchAccessError{Message: batchSameScopeMessage}).sameScope() != true {
+	if (&batchAccessError{Message: batchSameScopeMessage}).SameScope() != true {
 		t.Fatal("同作用域错误应标记")
 	}
 	if (&batchVersionConflictError{AccountID: "acc-1"}).Error() == "" {

@@ -50,14 +50,14 @@ func poolCredentials(keys []string, strategy string, weights []any) map[string]a
 // poolAccount builds an api_key candidate carrying the credentials pool.
 func poolAccount(id, providerCode, protocolCode, protocolVersion string, credentials map[string]any) AccountCandidate {
 	account := AccountCandidate{
-		ID:             id,
-		Name:           "账号 " + id,
-		Type:           "api_key",
-		Status:         "active",
-		ProviderCode:   providerCode,
-		ProtocolCode:   protocolCode,
+		ID:              id,
+		Name:            "账号 " + id,
+		Type:            "api_key",
+		Status:          "active",
+		ProviderCode:    providerCode,
+		ProtocolCode:    protocolCode,
 		ProtocolVersion: protocolVersion,
-		Credentials:    credentials,
+		Credentials:     credentials,
 	}
 	if keys, ok := credentials["api_keys"].([]any); ok {
 		account.APIKeys = make([]string, 0, len(keys))

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 )
@@ -62,25 +63,25 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			ConfirmSameAccountApiKeyFailures: func() error {
 				return e.recordConfirmedSameAccountApiKeyFailures(ctx, confirmFailures, c.account, usageContext)
 			},
-// D-111（BUG-0175）：成功侧结算随协议成功在链上消费（Node
-				// recordGatewayAccountApiKeySuccess 的成功触发点；nil 端口时为
-				// 中性 no-op）。
-				ConfirmAccountAPIKeySuccess: func() error {
-					return e.recordAccountAPIKeySuccess(ctx, c.account, usageContext)
-				},
-				// 成功侧结算：ENGAGED 锁复位（Node 完全成功后调用
-				// completeAccountLockSuccessAsync，routes.ts:2481-2483）。
-				ConfirmAccountLockSuccess: func() error {
-					if in.accountLockTrafficEnabled && e.Locks != nil {
-						var obs *AccountLockObservation
-						if in.activeAccountLockObservation != nil {
-							obs = *in.activeAccountLockObservation
-						}
-						return e.Locks.CompleteSuccessAsync(ctx, c.account.ID, "", obs)
+			// D-111（BUG-0175）：成功侧结算随协议成功在链上消费（Node
+			// recordGatewayAccountApiKeySuccess 的成功触发点；nil 端口时为
+			// 中性 no-op）。
+			ConfirmAccountAPIKeySuccess: func() error {
+				return e.recordAccountAPIKeySuccess(ctx, c.account, usageContext)
+			},
+			// 成功侧结算：ENGAGED 锁复位（Node 完全成功后调用
+			// completeAccountLockSuccessAsync，routes.ts:2481-2483）。
+			ConfirmAccountLockSuccess: func() error {
+				if in.accountLockTrafficEnabled && e.Locks != nil {
+					var obs *AccountLockObservation
+					if in.activeAccountLockObservation != nil {
+						obs = *in.activeAccountLockObservation
 					}
-					return nil
-				},
-				ConfirmHalfOpenSuccess: func() bool {
+					return e.Locks.CompleteSuccessAsync(ctx, c.account.ID, "", obs)
+				}
+				return nil
+			},
+			ConfirmHalfOpenSuccess: func() bool {
 				if !in.automaticAccountStateMutationAllowed {
 					return false
 				}
@@ -273,6 +274,12 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 	primaryStartedTransportFailure := IsPrimaryStartedGatewayTransportError(err)
 	provenBodyTransportFailure := IsProvenUpstreamBodyTransportError(err)
 	provenStartedTransportFailure := primaryStartedTransportFailure || provenBodyTransportFailure
+	// Dial-phase failures never reached the upstream (gateway-side DNS /
+	// egress outage): every candidate-exclusion branch below keeps its
+	// behavior, but the account circuit is not fed — a local network outage
+	// would otherwise record every account as a proven upstream transport
+	// failure.
+	dialPhaseTransportFailure := IsDialPhaseStartedTransportError(err)
 	if signal.Err() != nil || *c.firstByteDeadlineTriggeredRef || localRequestFailure || !provenStartedTransportFailure {
 		if c.keyModelAttempt != nil {
 			_ = c.keyModelAttempt.ReportUnknown(ctx)
@@ -356,7 +363,7 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 				c.firstByteDeadlineCoordinator.Supersede()
 			}
 			return errorKindRethrow, errorStop{kind: errorStopNone, rethrown: &GatewayRequestWallBudgetExhaustedError{
-				WallRemainingMs: in.coordination.GatewayRequestWallBudget.RemainingMs(NowMs()),
+				WallRemainingMs: in.coordination.GatewayRequestWallBudget.RemainingMs(gatewayupstream.NowMs()),
 				BudgetKind:      WallBudgetKindWall,
 			}}, nil
 		}
@@ -406,19 +413,10 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 			"requestLane":    in.requestLane,
 			"endpoint":       usageContext.Endpoint,
 		})
-		var unsafeErr *UnsafeResolvedUpstreamURLError
-		if in.args.AccountStateMutationEnabled && usageContext.TrafficSource == "gateway" && errorsAs(err, &unsafeErr) && e.AccountState != nil {
-			marked, markErr := e.AccountState.MarkTemporaryUnavailableWithCacheInvalidation(ctx, c.account,
-				"上游 Base URL 的 DNS 解析命中本机、内网、链路本地或保留地址，已临时停止调度",
-				"unsafe_resolved_upstream_url")
-			auditCapture.AddGatewayMetadata("gateway_unsafe_resolved_upstream_url_account_temporary_unavailable", map[string]any{
-				"accountId":                  c.account.ID,
-				"markedTemporaryUnavailable": marked,
-			})
-			if markErr != nil {
-				return errorKindHandled, errorStop{}, markErr
-			}
-		}
+		// 原 unsafe URL 的账户临时不可用标记分支（engine.AccountState.
+		// MarkTemporaryUnavailableWithCacheInvalidation）已删：生产组合根按
+		// 设计不装配该端口（普通请求不写 precheck/运行态，Node 侧本就未
+		// 接线），分支受 nil 守卫从未执行。
 		if in.accountCircuitAttempt != nil {
 			_, _ = in.accountCircuitAttempt.ReportUnknown(ctx)
 		}
@@ -447,7 +445,7 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 	}
 	if in.accountLockTrafficEnabled {
 		_ = e.Locks.RecordFailureAsync(ctx, c.account.ID, "upstream_transport_failure", *in.activeAccountLockObservation)
-		_ = e.Locks.SettleDeadlineAsync(ctx, c.account.ID, NowMs(), *in.activeAccountLockObservation)
+		_ = e.Locks.SettleDeadlineAsync(ctx, c.account.ID, gatewayupstream.NowMs(), *in.activeAccountLockObservation)
 	}
 	if requestErrorResult.LastAttempt != nil {
 		*in.lastAttempt = requestErrorResult.LastAttempt
@@ -461,7 +459,7 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 				(*in.lastAttempt).TransportFailureKind = TransportFailureKindConnection
 			}
 		}
-		if in.accountCircuitAttempt != nil && signal.Err() == nil && !deferredConfirmationFailure {
+		if in.accountCircuitAttempt != nil && signal.Err() == nil && !deferredConfirmationFailure && !dialPhaseTransportFailure {
 			failure := circuitTransportFailure(err, lastMessageOf(*in.lastAttempt))
 			_, _ = in.accountCircuitAttempt.ReportTransportFailure(ctx, gatewaycircuit.TransportFailure{Kind: failure.kind, Reason: failure.reason})
 		}
@@ -494,7 +492,7 @@ func (e *Engine) handleUpstreamAttemptError(ctx context.Context, c upstreamAttem
 	if !retryAnotherAccountApiKey {
 		in.failedAccountIDs[c.account.ID] = struct{}{}
 	}
-	if in.accountCircuitAttempt != nil && signal.Err() == nil && !deferredConfirmationFailure {
+	if in.accountCircuitAttempt != nil && signal.Err() == nil && !deferredConfirmationFailure && !dialPhaseTransportFailure {
 		failure := circuitTransportFailure(err, lastMessageOf(*in.lastAttempt))
 		_, _ = in.accountCircuitAttempt.ReportTransportFailure(ctx, gatewaycircuit.TransportFailure{Kind: failure.kind, Reason: failure.reason})
 	}

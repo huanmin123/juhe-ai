@@ -12,6 +12,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -133,7 +134,7 @@ func (h *attemptErrorHarness) errorContext(account AccountCandidate, failure err
 		account:                       account,
 		attemptFailure:                failure,
 		upstreamURL:                   "https://upstream.example/v1/chat/completions",
-		attemptStartedAt:              NowMs(),
+		attemptStartedAt:              gatewayupstream.NowMs(),
 		auditAttemptID:                "audit-1",
 		hotQualityAttempt:             &hotQualityAttemptHandle{},
 		firstByteDeadlineTriggeredRef: ptrBool(false),

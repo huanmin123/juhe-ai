@@ -10,7 +10,6 @@ package authsys
 import (
 	"context"
 	"crypto/pbkdf2"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
@@ -24,6 +23,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 )
 
 // ConflictError maps to the Node 409 responses.
@@ -574,11 +574,9 @@ type CreateInput struct {
 }
 
 func newID(prefix string) (string, error) {
-	buf := make([]byte, 12)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return prefix + "_" + hex.EncodeToString(buf), nil
+	// 随机段收敛到 shared/platform/idgen（格式不变：<prefix>_<24hex>；
+	// crypto/rand 极端失败由 idgen 时间熵回退，签名保留 error 兼容调用方）。
+	return prefix + "_" + idgen.RandomHex(12), nil
 }
 
 // Create mirrors createSystemAccountWithPasswordHashInClientAsync: validation,

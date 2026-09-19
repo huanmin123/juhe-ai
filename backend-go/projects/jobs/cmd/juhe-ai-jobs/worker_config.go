@@ -21,7 +21,9 @@ import (
 //
 // jobs 专属 env：
 //   - JUHE_AI_JOBS_WORKER_ENABLED（默认 false）：worker 调度器总开关；关闭时
-//     二进制保持既有 F1/F2/J1/J2/J3a 行为不变；
+//     二进制保持既有 F1/F2/J1/J2/J3a 行为不变；但 usage spool 不被消费、
+//     用量记录与统计预聚合/额度快照断供，启动日志会输出
+//     jobs_worker_disabled_usage_supply_degraded 警告；
 //   - JUHE_AI_TASK_RUNS_DATABASE_PATH / JUHE_AI_TASK_RUNS_POSTGRES_URL：
 //     background_task_runs + background_job_leases 双模存储；
 //   - JUHE_AI_JOBS_<FAMILY>_ENABLED：家族级开关（stats/oauth/task_runs/

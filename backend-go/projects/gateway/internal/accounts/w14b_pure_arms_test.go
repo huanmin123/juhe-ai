@@ -95,18 +95,18 @@ func TestW14BStoreHelpersArms(t *testing.T) {
 }
 
 func TestW14BAccessScopeArms(t *testing.T) {
-	if _, err := (AccessScope{}).ownerID(); err == nil {
+	if _, err := (AccessScope{}).OwnerID(); err == nil {
 		t.Fatal("空 scope ownerID 应报错")
 	}
-	if _, err := (AccessScope{ViewerID: "u1"}).ownerID(); err != nil {
+	if _, err := (AccessScope{ViewerID: "u1"}).OwnerID(); err != nil {
 		t.Fatalf("带 viewer 的 ownerID 应成功：%v", err)
 	}
 	scope1 := AccessScope{ViewerID: "u1", IsAdmin: true}
-	if got := scope1.manageableID(); got != "" {
+	if got := scope1.ManageableID(); got != "" {
 		t.Fatalf("无 filter 的管理员 manageableID 应为空：%q", got)
 	}
 	scope2 := AccessScope{ViewerID: "u1", IsAdmin: true, FilterID: "u2"}
-	if got := scope2.viewerID(); got != "u2" {
+	if got := scope2.EffectiveViewerID(); got != "u2" {
 		t.Fatalf("管理员 viewerID 应取 filter：%q", got)
 	}
 	if _, err := tagOwnerSystemAccountID(AccessScope{}); err == nil {
@@ -585,8 +585,8 @@ func TestW14BUpstreamBaseURLArms(t *testing.T) {
 		})
 	}
 	resetUpstreamSecurityOnce(map[string]string{
-		"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS":     "1",
-		"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST":  " http://127.0.0.1:8080/, , http://10.0.0.9:9000, bad-scheme",
+		"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS":    "1",
+		"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST": " http://127.0.0.1:8080/, , http://10.0.0.9:9000, bad-scheme",
 	})
 	config := upstreamURLSecurityConfig()
 	if !config.allowPrivateBaseUrls {

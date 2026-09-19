@@ -1,0 +1,363 @@
+// Code generated from the Node PostgreSQL storage sources. The statements
+// in this file are a verbatim extract of one schema group from
+// pg_schema.go's postgresSchemaStatements literal (see the header of
+// pg_schema.go for the full provenance and execution model). The
+// statements are data: do not hand-edit them and keep them byte-identical
+// to the Node dump order.
+
+package schema
+
+// postgresSchemaUsage holds the juhe_usage DDL statements in execution
+// order.
+var postgresSchemaUsage = []PGStatement{
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL: `CREATE TABLE IF NOT EXISTS usage_record_shards (
+          shard_key text PRIMARY KEY,
+          bucket_date text NOT NULL,
+          shard_id integer NOT NULL,
+          file_path text NOT NULL,
+          schema_version integer NOT NULL DEFAULT 1,
+          status text NOT NULL DEFAULT 'active',
+          first_seen_at text NOT NULL,
+          last_write_at text,
+          last_error_message text,
+          created_at text NOT NULL,
+          updated_at text NOT NULL
+        )`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL: `CREATE TABLE IF NOT EXISTS usage_record_shard_entries (
+          usage_id text PRIMARY KEY,
+          shard_key text NOT NULL,
+          system_account_id text NOT NULL,
+          trace_id text NOT NULL,
+          api_key_id text,
+          account_id text,
+          group_id text,
+          model text,
+          traffic_source text NOT NULL,
+          success integer NOT NULL DEFAULT 0,
+          status_code integer,
+          client_ip text,
+          first_token_ms integer,
+          duration_ms integer,
+          cost_usd double precision,
+          created_at text NOT NULL,
+          indexed_at text NOT NULL,
+          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
+        )`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL: `CREATE TABLE IF NOT EXISTS usage_record_account_shards (
+          account_id text NOT NULL,
+          shard_key text NOT NULL,
+          first_created_at text NOT NULL,
+          last_seen_at text NOT NULL,
+          PRIMARY KEY (account_id, shard_key),
+          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
+        )`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL: `CREATE TABLE IF NOT EXISTS usage_record_api_key_shards (
+          api_key_id text NOT NULL,
+          system_account_id text NOT NULL,
+          shard_key text NOT NULL,
+          first_created_at text NOT NULL,
+          last_seen_at text NOT NULL,
+          PRIMARY KEY (api_key_id, system_account_id, shard_key),
+          FOREIGN KEY (shard_key) REFERENCES usage_record_shards(shard_key) ON DELETE CASCADE
+        )`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL: `CREATE TABLE IF NOT EXISTS usage_records (
+      id text NOT NULL,
+      system_account_id text NOT NULL,
+      trace_id text NOT NULL,
+      traffic_source text NOT NULL,
+      client_ip text,
+      api_key_id text,
+      group_id text,
+      account_id text,
+      endpoint text,
+      provider_code text,
+      provider_protocol_profile_id text,
+      usage_semantic text,
+      model text,
+      upstream_model text,
+      upstream_response_model text,
+      pricing_model text,
+      requested_service_tier text NOT NULL DEFAULT 'default',
+      effective_service_tier text NOT NULL DEFAULT 'default',
+      reported_service_tier text,
+      billed_service_tier text NOT NULL DEFAULT 'default',
+      requested_reasoning_effort text,
+      effective_reasoning_effort text,
+      cost_breakdown_snapshot_json text,
+      model_mapping_applied integer NOT NULL DEFAULT 0,
+      model_mapping_source text,
+      source_endpoint_family text,
+      upstream_endpoint_family text,
+      stream integer NOT NULL DEFAULT 0,
+      status_code integer,
+      success integer NOT NULL DEFAULT 0,
+      failure_attribution text,
+      first_token_ms integer,
+      duration_ms integer,
+      input_tokens bigint,
+      output_tokens bigint,
+      cache_read_tokens bigint,
+      cache_read_cost_usd double precision,
+      cache_write_tokens bigint,
+      cache_write_1h_tokens bigint,
+      cache_write_cost_usd double precision,
+      thinking_tokens bigint,
+      input_image_tokens bigint,
+      output_image_tokens bigint,
+      input_audio_tokens integer,
+      output_audio_tokens integer,
+      output_image_count integer,
+      cost_usd double precision,
+      error_code text,
+      error_message text,
+      request_snapshot_json text,
+      response_snapshot_json text,
+      account_owner_system_account_id text,
+      group_owner_system_account_id text,
+      account_access_type text,
+      group_access_type text,
+      account_authorization_id text,
+      account_authorization_source_type text,
+      account_authorization_source_team_id text,
+      group_authorization_id text,
+      group_authorization_source_type text,
+      group_authorization_source_team_id text,
+      created_at text NOT NULL,
+      PRIMARY KEY (created_at, id)
+    ) PARTITION BY RANGE (created_at)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "upstream-response-model-pg-columns",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_created_at`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_system_account_created_at`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_group_real_usage`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_group_created_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_first_token_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_duration_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_cost_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_system_account_first_token_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_system_account_duration_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_system_account_cost_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_api_key_created_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_account_created_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_trace_created_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_model_created_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_system_account_model_created_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_traffic_source_created`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_client_ip_created_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_system_account_client_ip_created_sort`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `DROP INDEX IF EXISTS idx_usage_records_provider_protocol_profile_created_at`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shards_bucket ON usage_record_shards(bucket_date, shard_id)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_account_shards_account_created ON usage_record_account_shards(account_id, first_created_at, shard_key)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_api_key_shards_key_created ON usage_record_api_key_shards(api_key_id, system_account_id, first_created_at, shard_key)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_shard ON usage_record_shard_entries(shard_key, created_at)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_created_sort ON usage_record_shard_entries(created_at, usage_id)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_created_sort ON usage_record_shard_entries(system_account_id, created_at, usage_id)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_trace_created_sort ON usage_record_shard_entries(system_account_id, trace_id, created_at, usage_id)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_api_key_created_sort ON usage_record_shard_entries(system_account_id, api_key_id, created_at, usage_id)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_group_created_sort ON usage_record_shard_entries(system_account_id, group_id, created_at, usage_id)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-catalog",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_record_shard_entries_system_account_created_sort ON usage_record_shard_entries(system_account_id, account_id, created_at, usage_id)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at DESC, id DESC)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_trace_created_sort ON usage_records(system_account_id, trace_id, created_at DESC, id DESC)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_group_created_sort ON usage_records(system_account_id, group_id, created_at DESC, id DESC)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_api_key_created_sort ON usage_records(system_account_id, api_key_id, created_at DESC, id DESC)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_account_created_sort ON usage_records(system_account_id, account_id, created_at DESC, id DESC)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_account_owner ON usage_records(account_owner_system_account_id, account_id, created_at)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_group_owner ON usage_records(group_owner_system_account_id, group_id, created_at)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_account_authorization ON usage_records(account_authorization_id, created_at)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_group_authorization ON usage_records(group_authorization_id, created_at)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id)`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-pg-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_account_shape ON usage_records(account_id, created_at DESC, id DESC, provider_code) WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway' AND endpoint IS NOT NULL AND btrim(endpoint) <> ''`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-pg-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_recent_openai_group_shape ON usage_records(group_id, created_at DESC, id DESC, provider_code) WHERE api_key_id IS NOT NULL AND traffic_source = 'gateway' AND endpoint IS NOT NULL AND btrim(endpoint) <> ''`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-pg-prefix-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_usage_records_system_trace_c_created_sort ON usage_records(system_account_id, (trace_id COLLATE "C"), created_at DESC, id DESC)`,
+	},
+}

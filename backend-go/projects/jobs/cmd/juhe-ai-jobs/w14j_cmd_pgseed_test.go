@@ -150,8 +150,8 @@ func w14jEnsurePGFixture(t *testing.T, db *sql.DB) {
 func w14jSeedSysAdminAccount(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.Exec(`INSERT INTO juhe_business.system_accounts
-		(id, username, display_name, role, status, password_hash, updated_at)
-		VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w14j-test-seed-not-a-login-hash', $1)
+		(id, username, display_name, role, status, password_hash, created_at, updated_at)
+		VALUES ('sys_admin', 'sys_admin', 'sys_admin', 'admin', 'active', 'w14j-test-seed-not-a-login-hash', $1, $1)
 		ON CONFLICT (id) DO NOTHING`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Skipf("w14j: sys_admin seed 失败（共享库形状漂移，跳过）: %v", err)
 	}

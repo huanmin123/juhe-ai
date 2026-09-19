@@ -209,25 +209,25 @@ func TestW14BBalanceDetailsAndSnapshotArms(t *testing.T) {
 	if balanceSnapshotMatchesConfiguration("", 1, &balanceSnapshotRecord{}) {
 		t.Fatal("空快照应不匹配")
 	}
-	mismatch := &balanceSnapshotRecord{snapshot: map[string]any{"configRevision": float64(2)}}
+	mismatch := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(2)}}
 	if balanceSnapshotMatchesConfiguration("2026-09-17T00:10:00.000Z", 1, mismatch) {
 		t.Fatal("版本不一致应不匹配")
 	}
-	nonNumber := &balanceSnapshotRecord{snapshot: map[string]any{"configRevision": "1"}}
+	nonNumber := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": "1"}}
 	if balanceSnapshotMatchesConfiguration("2026-09-17T00:10:00.000Z", 1, nonNumber) {
 		t.Fatal("非数字版本应不匹配")
 	}
-	match := &balanceSnapshotRecord{snapshot: map[string]any{"configRevision": float64(1)}, nextRefreshAfter: sql.NullString{String: "2026-09-17T00:10:00.000Z", Valid: true}}
+	match := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(1)}, NextRefreshAfter: sql.NullString{String: "2026-09-17T00:10:00.000Z", Valid: true}}
 	if !balanceSnapshotMatchesConfiguration("2026-09-17T00:10:00.000Z", 1, match) {
 		t.Fatal("版本与时刻一致应匹配")
 	}
 	// 双方无效时刻且均未持久化 → 视为从未调度，视为匹配。
-	bothInvalid := &balanceSnapshotRecord{snapshot: map[string]any{"configRevision": float64(1)}}
+	bothInvalid := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(1)}}
 	if !balanceSnapshotMatchesConfiguration("", 1, bothInvalid) {
 		t.Fatal("双方无效时刻且无持久值应视为匹配")
 	}
 	// 单侧无效 → 不匹配。
-	oneSided := &balanceSnapshotRecord{snapshot: map[string]any{"configRevision": float64(1)}, nextRefreshAfter: sql.NullString{String: "bogus", Valid: true}}
+	oneSided := &balanceSnapshotRecord{Snapshot: map[string]any{"configRevision": float64(1)}, NextRefreshAfter: sql.NullString{String: "bogus", Valid: true}}
 	if balanceSnapshotMatchesConfiguration("", 1, oneSided) {
 		t.Fatal("单侧无效时刻应不匹配")
 	}

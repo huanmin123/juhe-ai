@@ -174,10 +174,10 @@ func TestW10ANewTagID(t *testing.T) {
 
 func TestW10ABatchAndCloneErrorTypes(t *testing.T) {
 	accessErr := &batchAccessError{Message: batchSameScopeMessage}
-	if accessErr.Error() != batchSameScopeMessage || !accessErr.sameScope() {
+	if accessErr.Error() != batchSameScopeMessage || !accessErr.SameScope() {
 		t.Fatalf("batchAccessError 语义不一致：%s", accessErr.Error())
 	}
-	if (&batchAccessError{Message: batchAccessDefaultMessage}).sameScope() {
+	if (&batchAccessError{Message: batchAccessDefaultMessage}).SameScope() {
 		t.Fatal("默认消息不应标记同作用域")
 	}
 	versionErr := &batchVersionConflictError{AccountID: "acc-1"}
@@ -357,46 +357,46 @@ func TestW10ABatchLoadMappingsAndOverrides(t *testing.T) {
 }
 
 func TestW10ATestSessionCancelReasonAndTask(t *testing.T) {
-	canceled := &testSessionRow{status: TestSessionCanceled, cancelReason: sql.NullString{String: "用户停止", Valid: true}}
+	canceled := &testSessionRow{Status: TestSessionCanceled, CancelReason: sql.NullString{String: "用户停止", Valid: true}}
 	if testSessionCancelReason(canceled) != "用户停止" {
 		t.Fatal("取消原因应透传")
 	}
-	canceledNoReason := &testSessionRow{status: TestSessionCanceled}
+	canceledNoReason := &testSessionRow{Status: TestSessionCanceled}
 	if testSessionCancelReason(canceledNoReason) != "已停止测试" {
 		t.Fatalf("取消默认原因不一致：%q", testSessionCancelReason(canceledNoReason))
 	}
-	expired := &testSessionRow{status: TestSessionExpired, cancelReason: sql.NullString{String: "过期详情", Valid: true}}
+	expired := &testSessionRow{Status: TestSessionExpired, CancelReason: sql.NullString{String: "过期详情", Valid: true}}
 	if testSessionCancelReason(expired) != "过期详情" {
 		t.Fatal("过期原因应透传")
 	}
-	expiredNoReason := &testSessionRow{status: TestSessionExpired}
+	expiredNoReason := &testSessionRow{Status: TestSessionExpired}
 	if testSessionCancelReason(expiredNoReason) != "账户测试会话已过期" {
 		t.Fatalf("过期默认原因不一致：%q", testSessionCancelReason(expiredNoReason))
 	}
-	completed := &testSessionRow{status: TestSessionCompleted}
+	completed := &testSessionRow{Status: TestSessionCompleted}
 	if testSessionCancelReason(completed) != "账户测试会话已结束" {
 		t.Fatalf("结束默认原因不一致：%q", testSessionCancelReason(completed))
 	}
-	running := &testSessionRow{status: TestSessionRunning}
+	running := &testSessionRow{Status: TestSessionRunning}
 	if testSessionCancelReason(running) != "" {
 		t.Fatalf("运行中不应有取消原因：%q", testSessionCancelReason(running))
 	}
 
 	// toTask：状态消息优先、错误消息兜底、结果 JSON、queued 截止回退。
 	row := &testTaskRow{
-		id: "task-1", sessionID: sql.NullString{String: "sess-1", Valid: true},
-		accountID: "acc-1", accountName: "账户", providerCode: "gpt",
-		providerProfileID: "prof-1", protocolCode: "openai", protocolVersion: "v1",
-		accountType: "api_key", status: TestTaskSuccess,
-		model:            sql.NullString{String: "gpt-4o-mini", Valid: true},
-		testEndpointMode: sql.NullString{String: "chat_json", Valid: true},
-		createdAt:        "2026-09-16T00:00:00.000Z", queuedAt: "2026-09-16T00:00:00.000Z",
-		updatedAt:     "2026-09-16T00:00:01.000Z",
-		statusMessage: sql.NullString{String: "成功", Valid: true},
-		errorMessage:  sql.NullString{String: "错误", Valid: true},
-		resultJSON:    sql.NullString{String: `{"accountId":"acc-1","message":"成功"}`, Valid: true},
+		ID: "task-1", SessionID: sql.NullString{String: "sess-1", Valid: true},
+		AccountID: "acc-1", AccountName: "账户", ProviderCode: "gpt",
+		ProviderProfileID: "prof-1", ProtocolCode: "openai", ProtocolVersion: "v1",
+		AccountType: "api_key", Status: TestTaskSuccess,
+		Model:            sql.NullString{String: "gpt-4o-mini", Valid: true},
+		TestEndpointMode: sql.NullString{String: "chat_json", Valid: true},
+		CreatedAt:        "2026-09-16T00:00:00.000Z", QueuedAt: "2026-09-16T00:00:00.000Z",
+		UpdatedAt:     "2026-09-16T00:00:01.000Z",
+		StatusMessage: sql.NullString{String: "成功", Valid: true},
+		ErrorMessage:  sql.NullString{String: "错误", Valid: true},
+		ResultJSON:    sql.NullString{String: `{"accountId":"acc-1","message":"成功"}`, Valid: true},
 	}
-	task := row.toTask()
+	task := row.ToTask()
 	if task.ID != "task-1" || task.Status != TestTaskSuccess || task.Message == nil || *task.Message != "成功" {
 		t.Fatalf("任务投影不一致：%+v", task)
 	}
@@ -407,17 +407,17 @@ func TestW10ATestSessionCancelReasonAndTask(t *testing.T) {
 		t.Fatal("queued 截止不应为空")
 	}
 	errorOnly := &testTaskRow{
-		status: TestTaskFailed, queuedAt: "2026-09-16T00:00:00.000Z",
-		errorMessage: sql.NullString{String: "失败详情", Valid: true},
+		Status: TestTaskFailed, QueuedAt: "2026-09-16T00:00:00.000Z",
+		ErrorMessage: sql.NullString{String: "失败详情", Valid: true},
 	}
-	if errorOnly.toTask().Message == nil || *errorOnly.toTask().Message != "失败详情" {
+	if errorOnly.ToTask().Message == nil || *errorOnly.ToTask().Message != "失败详情" {
 		t.Fatal("错误消息应兜底")
 	}
 	invalidResult := &testTaskRow{
-		status: TestTaskFailed, queuedAt: "bad-time",
-		resultJSON: sql.NullString{String: "not-json", Valid: true},
+		Status: TestTaskFailed, QueuedAt: "bad-time",
+		ResultJSON: sql.NullString{String: "not-json", Valid: true},
 	}
-	broken := invalidResult.toTask()
+	broken := invalidResult.ToTask()
 	if broken.Message != nil {
 		t.Fatalf("无消息不应设置 Message：%v", broken.Message)
 	}

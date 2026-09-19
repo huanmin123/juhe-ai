@@ -2,11 +2,10 @@ package gatewayruntimecache
 
 // w11d 覆盖补齐（四）：settings / groupaccess / inspection 共享模式与后台
 // 刷新臂、catalog pending 与共享命中、runtime 索引与净化、registry 直构臂、
-// snapshot 直构臂、SQL 模型剩余查询错误臂与投影错误臂。
+// SQL 模型剩余查询错误臂与投影错误臂。
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -715,97 +714,6 @@ func w11dZ(score float64, member string) redis.Z { return redis.Z{Score: score, 
 func w11dRedisClient(addr string) *redis.Client {
 	return redis.NewClient(&redis.Options{Addr: addr})
 }
-
-// ---------------------------------------------------------------------------
-// snapshot.go：直构臂
-// ---------------------------------------------------------------------------
-
-func TestW11DSnapshotDirectArms(t *testing.T) {
-	ctx := context.Background()
-	// nil clock 默认。
-	service := NewRuntimeSnapshotService(nil, nil, nil, nil)
-	if _, availabilityOK := service.ProbeAccountRuntimeState(ctx); availabilityOK {
-		t.Fatal("无 loader 探测必须不可用")
-	}
-	// 键上限切片。
-	bigKeys := make([]string, snapshotAvailabilityKeyLimit+10)
-	for i := range bigKeys {
-		bigKeys[i] = "k"
-	}
-	loader := RuntimeAvailabilityLoader(func(ctx context.Context, keys []string) (AccountRuntimeAvailabilitySnapshot, bool, error) {
-		if len(keys) > snapshotAvailabilityKeyLimit {
-			t.Fatalf("键切片超限 = %d", len(keys))
-		}
-		return AccountRuntimeAvailabilitySnapshot{"k": []byte(`{}`)}, true, nil
-	})
-	limited := NewRuntimeSnapshotService(newManualClock(), loader, nil, nil)
-	values, ok := limited.LoadAccountRuntimeAvailabilityByKeys(ctx, bigKeys)
-	if !ok || len(values) != 1 {
-		t.Fatalf("键上限 = %v %v", values, ok)
-	}
-	// redis loader 出错 / 返回不可用。
-	failing := NewRuntimeSnapshotService(newManualClock(), func(context.Context, []string) (AccountRuntimeAvailabilitySnapshot, bool, error) {
-		return nil, false, errors.New("w11d snapshot down")
-	}, nil, nil)
-	if _, ok := failing.LoadAccountRuntimeAvailabilityByKeys(ctx, []string{"k"}); ok {
-		t.Fatal("redis 可用性失败必须不可用")
-	}
-	// redisConcurrency 路径与失败。
-	concurrencyService := NewRuntimeSnapshotService(newManualClock(), nil, func(ctx context.Context, ids []string) (AccountConcurrencySnapshot, bool, error) {
-		return AccountConcurrencySnapshot{"a": 2}, true, nil
-	}, nil)
-	values2, ok := concurrencyService.LoadAccountConcurrencyByIDs(ctx, []string{"a", ""})
-	if !ok || values2["a"] != 2 || len(values2) != 1 {
-		t.Fatalf("redis 并发 = %v %v", values2, ok)
-	}
-	concurrencyFailing := NewRuntimeSnapshotService(newManualClock(), nil, func(context.Context, []string) (AccountConcurrencySnapshot, bool, error) {
-		return nil, false, errors.New("w11d concurrency down")
-	}, nil)
-	if _, ok := concurrencyFailing.LoadAccountConcurrencyByIDs(ctx, []string{"a"}); ok {
-		t.Fatal("redis 并发失败必须不可用")
-	}
-	// server snapshot 路径：无 loader → 不可用；有 loader → 命中/缓存/peek。
-	if _, ok := service.LoadServerAccountRuntimeAvailabilitySnapshot(ctx); ok {
-		t.Fatal("无 server loader 必须不可用")
-	}
-	if _, ok := service.LoadAccountConcurrencyByIDs(ctx, []string{"a"}); ok {
-		t.Fatal("无并发来源必须不可用")
-	}
-	serverLoader := ServerSnapshotLoader(func(ctx context.Context) (*AccountRuntimeSnapshot, error) {
-		return &AccountRuntimeSnapshot{
-			AccountConcurrency:         AccountConcurrencySnapshot{"a": 3},
-			AccountRuntimeAvailability: AccountRuntimeAvailabilitySnapshot{"a": []byte(`{}`)},
-		}, nil
-	})
-	serverService := NewRuntimeSnapshotService(newManualClock(), nil, nil, serverLoader)
-	if values, ok := serverService.LoadAccountRuntimeAvailabilityByKeys(ctx, []string{"a"}); !ok || len(values) != 1 {
-		t.Fatalf("server 可用性 = %v %v", values, ok)
-	}
-	if concurrency, ok := serverService.LoadAccountConcurrencyByIDs(ctx, []string{"a"}); !ok || concurrency["a"] != 3 {
-		t.Fatalf("server 并发 = %v %v", concurrency, ok)
-	}
-	if snapshot, ok := serverService.LoadServerAccountRuntimeAvailabilitySnapshot(ctx); !ok || len(snapshot) != 1 {
-		t.Fatalf("server 快照 = %v %v", snapshot, ok)
-	}
-	if peeked, ok := serverService.PeekServerAccountRuntimeAvailabilitySnapshot(ctx); !ok || len(peeked) != 1 {
-		t.Fatalf("server peek = %v %v", peeked, ok)
-	}
-	// 无值的 peek 不可用并调度刷新。
-	fresh := NewRuntimeSnapshotService(newManualClock(), nil, nil, serverLoader)
-	if _, ok := fresh.PeekServerAccountRuntimeAvailabilitySnapshot(ctx); ok {
-		t.Fatal("冷 peek 必须不可用")
-	}
-	// numberValue json.Number 臂。
-	if numberValue(json.Number("8")) != 8 || numberValue(json.Number("bad")) != 0 {
-		t.Fatal("json.Number 收敛错误")
-	}
-	// awaitRefresh ctx 臂。
-	canceled, cancel := context.WithCancel(ctx)
-	cancel()
-	awaitRefresh(canceled, make(chan struct{}))
-}
-
-// ---------------------------------------------------------------------------
 // accounts.go / sqlmodels.go / sqlruntime.go 剩余臂
 // ---------------------------------------------------------------------------
 

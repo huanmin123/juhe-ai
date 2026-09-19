@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // Availability schedule model mirrors storage/api-key-availability-schedule.ts
@@ -14,36 +16,21 @@ import (
 // storage/account-availability-schedule.ts, including the validation
 // messages) and the stored JSON shape (enabled/timezone/mode/windows/
 // dateRange/exceptions) written by apiKeyAvailabilityScheduleJson.
+//
+// REFACTOR-0005：schedule 文档类型下沉中立层 accountscore（门面与
+// accountstransfer 的跨包契约值），解析/求值逻辑保留在本文件；门面别名保持
+// 既有引用（list/patch/clone/路由与各波测试）零改动。
 
-// ScheduleWindow is one allowed window; DaysOfWeek is 1..7 (Monday..Sunday).
-type ScheduleWindow struct {
-	DaysOfWeek []int  `json:"daysOfWeek"`
-	Start      string `json:"start"`
-	End        string `json:"end"`
-}
-
-// ScheduleException overrides a single date with allow windows or a deny.
-type ScheduleException struct {
-	Date    string           `json:"date"`
-	Action  string           `json:"action"`
-	Windows []ScheduleWindow `json:"windows,omitempty"`
-}
-
-// ScheduleDateRange bounds the whole schedule to a date interval.
-type ScheduleDateRange struct {
-	StartDate string `json:"startDate,omitempty"`
-	EndDate   string `json:"endDate,omitempty"`
-}
-
-// AvailabilitySchedule is the stored/normalized schedule document.
-type AvailabilitySchedule struct {
-	Enabled    bool                `json:"enabled"`
-	Timezone   string              `json:"timezone"`
-	Mode       string              `json:"mode"`
-	Windows    []ScheduleWindow    `json:"windows"`
-	DateRange  *ScheduleDateRange  `json:"dateRange,omitempty"`
-	Exceptions []ScheduleException `json:"exceptions,omitempty"`
-}
+type (
+	// ScheduleWindow mirrors accountscore.ScheduleWindow.
+	ScheduleWindow = accountscore.ScheduleWindow
+	// ScheduleException mirrors accountscore.ScheduleException.
+	ScheduleException = accountscore.ScheduleException
+	// ScheduleDateRange mirrors accountscore.ScheduleDateRange.
+	ScheduleDateRange = accountscore.ScheduleDateRange
+	// AvailabilitySchedule mirrors accountscore.AvailabilitySchedule.
+	AvailabilitySchedule = accountscore.AvailabilitySchedule
+)
 
 const (
 	scheduleModeAllowWindows = "allow_windows"

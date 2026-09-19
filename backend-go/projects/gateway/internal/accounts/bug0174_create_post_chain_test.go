@@ -118,8 +118,8 @@ func TestCreateSnapshotSkipsNonHealthCapable(t *testing.T) {
 			"client_secret": "cs-secret-1234567890",
 			"base_url":      "https://api.openai.com/v1",
 		},
-		SupportedModels:           []string{"gpt-4o-mini"},
-		Status:                    CreationStatus{Status: "active", SkipInitialHealthCheck: true, Schedulable: true},
+		SupportedModels: []string{"gpt-4o-mini"},
+		Status:          CreationStatus{Status: "active", SkipInitialHealthCheck: true, Schedulable: true},
 	}
 	result, err := env.store.Create(context.Background(), input, AccessScope{ViewerID: owner})
 	if err != nil {

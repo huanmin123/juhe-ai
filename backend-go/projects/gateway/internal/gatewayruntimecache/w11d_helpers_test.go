@@ -2,13 +2,11 @@ package gatewayruntimecache
 
 // w11d 覆盖补齐（一）：service.go 纯函数与 TTL/可用性助手、shared.go Redis
 // 共享缓存错误臂、cache.go peek/禁用臂、concurrency.go 后台等待与设置槽、
-// types.go 克隆臂、snapshot.go numberValue/键投影助手。
+// types.go 克隆臂。
 
 import (
 	"context"
 	"errors"
-	"math"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -601,53 +599,3 @@ func TestW11DTypesCloneArms(t *testing.T) {
 		t.Fatal("无策略克隆必须保持 nil")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// snapshot.go：numberValue 与可用性键投影
-// ---------------------------------------------------------------------------
-
-func TestW11DSnapshotNumberValueArms(t *testing.T) {
-	if numberValue(3) != 3 || numberValue(int64(4)) != 4 || numberValue(float64(5.5)) != 5 {
-		t.Fatal("数值收敛错误")
-	}
-	if numberValue(math.NaN()) != 0 || numberValue(math.Inf(1)) != 0 {
-		t.Fatal("非有限浮点必须归零")
-	}
-	if numberValue("7") != 7 || numberValue("nope") != 0 || numberValue(nil) != 0 || numberValue(true) != 0 {
-		t.Fatal("字符串/未知类型收敛错误")
-	}
-}
-
-func TestW11DAccountRuntimeAvailabilityKeyArms(t *testing.T) {
-	// 完整授权投影键。
-	if got := AccountRuntimeAvailabilityKey("a1", "authorized", "auth1", "g1", "bindSys", "sys", "owner"); got != "a1:authorized:bindSys:g1:auth1" {
-		t.Fatalf("授权键 = %q", got)
-	}
-	// 绑定账号缺失回退。
-	if got := AccountRuntimeAvailabilityKey("a1", "authorized", "auth1", "g1", "", "sys", "owner"); got != "a1:authorized:sys:g1:auth1" {
-		t.Fatalf("回退键 = %q", got)
-	}
-	// 全部缺失回退 owner。
-	if got := AccountRuntimeAvailabilityKey("a1", "authorized", "auth1", "g1", "", "", "owner"); got != "a1:authorized:owner:g1:auth1" {
-		t.Fatalf("owner 回退键 = %q", got)
-	}
-	// 条件不足：裸 ID。
-	if got := AccountRuntimeAvailabilityKey("a1", "owner", "auth1", "g1", "b", "s", "o"); got != "a1" {
-		t.Fatalf("裸键 = %q", got)
-	}
-	if got := AccountRuntimeAvailabilityKey("a1", "authorized", "", "g1", "b", "s", "o"); got != "a1" {
-		t.Fatalf("缺授权键 = %q", got)
-	}
-	if got := AccountRuntimeAvailabilityKey("a1", "authorized", "auth1", "", "b", "s", "o"); got != "a1" {
-		t.Fatalf("缺分组键 = %q", got)
-	}
-	if got := AccountRuntimeAvailabilityKey("a1", "authorized", "auth1", "g1", "", "", ""); got != "a1" {
-		t.Fatalf("无系统账号键 = %q", got)
-	}
-	if got := SortSnapshotKeys([]string{"b", "a"}); strings.Join(got, ",") != "a,b" {
-		t.Fatalf("排序键 = %v", got)
-	}
-}
-
-// 保留引用避免未使用导入误报（http 仅在部分构建标签下需要）。
-var _ = http.MethodGet

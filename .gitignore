@@ -25,6 +25,13 @@ Thumbs.db
 /backend-go/juhe-ai-runtime-log-indexer
 /backend-go/juhe-ai-runtime-log-indexer.exe
 **/*.exe
+# Go 测试二进制与性能剖析/临时产物（2026-09-18 清理误入库的
+# backend-go/go_tests_tmp.txt、gateway/gemline.tmp、gateway/w14p_prof.out）
+*.test
+*.prof
+*.out
+*.tmp
+go_tests_tmp.txt
 .worktrees/
 **/.local/
 /.tmp/

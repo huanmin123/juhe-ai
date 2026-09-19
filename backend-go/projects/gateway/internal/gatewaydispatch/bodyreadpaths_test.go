@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 )
 
 // body.go 非流式正文读取 / 截止竞速 / 捕获缓冲的单元测试。
@@ -52,24 +54,24 @@ func (c *chunkReader) Read(buffer []byte) (int, error) {
 func TestReadFirstNonStreamChunkNoDeadlines(t *testing.T) {
 	reader := &chunkReader{chunks: [][]byte{[]byte("hello")}}
 	buffer := make([]byte, 32)
-	read, observed, err := readFirstNonStreamChunkWithDeadlines(reader, buffer, NowMs(), firstByteDeadlineReadInput{
-		signal: context.Background(),
+	read, observed, err := readFirstNonStreamChunkWithDeadlines(reader, buffer, gatewayupstream.NowMs(), firstByteDeadlineReadInput{
+		Signal: context.Background(),
 	})
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
 	if observed {
 		t.Fatal("无截止时不观测首字")
 	}
-	if read.n != 5 {
-		t.Fatalf("n = %d", read.n)
+	if read.N != 5 {
+		t.Fatalf("n = %d", read.N)
 	}
 	// 读完回 EOF → done。
-	read, _, err = readFirstNonStreamChunkWithDeadlines(reader, buffer, NowMs(), firstByteDeadlineReadInput{
-		signal: context.Background(),
+	read, _, err = readFirstNonStreamChunkWithDeadlines(reader, buffer, gatewayupstream.NowMs(), firstByteDeadlineReadInput{
+		Signal: context.Background(),
 	})
-	if err != nil || !read.done {
-		t.Fatalf("EOF read: done=%v err=%v", read.done, err)
+	if err != nil || !read.Done {
+		t.Fatalf("EOF Read: done=%v err=%v", read.Done, err)
 	}
 }
 
@@ -79,12 +81,12 @@ func TestReadFirstNonStreamChunkPrecommitAlreadyElapsed(t *testing.T) {
 	reader := newBlockingReader()
 	t.Cleanup(reader.close)
 	read, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-100, firstByteDeadlineReadInput{
-		startedAt:                     base - 100,
-		signal:                        context.Background(),
-		responsePrecommitDeadlineAtMs: ptrInt64(base - 50),
-		pendingReadSupersedesDeadline: true,
+		StartedAt:                     base - 100,
+		Signal:                        context.Background(),
+		ResponsePrecommitDeadlineAtMs: ptrInt64(base - 50),
+		PendingReadSupersedesDeadline: true,
 	})
-	if read.n != 0 || read.done {
+	if read.N != 0 || read.Done {
 		t.Fatalf("read = %#v", read)
 	}
 	var deadlineErr *GatewayResponsePrecommitDeadlineError
@@ -99,10 +101,10 @@ func TestReadFirstNonStreamChunkMaxLifetimeAlreadyElapsed(t *testing.T) {
 	reader := newBlockingReader()
 	t.Cleanup(reader.close)
 	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-100, firstByteDeadlineReadInput{
-		startedAt:             base - 100,
-		signal:                context.Background(),
-		maxLifetimeDeadlineAt: ptrInt64(base - 50),
-		maxLifetimeMs:         ptrInt64(5_000),
+		StartedAt:             base - 100,
+		Signal:                context.Background(),
+		MaxLifetimeDeadlineAt: ptrInt64(base - 50),
+		MaxLifetimeMs:         ptrInt64(5_000),
 	})
 	var lifetimeErr *UpstreamBodyReadMaxLifetimeError
 	if !errorsAs(err, &lifetimeErr) || lifetimeErr.TimeoutMs != 5_000 {
@@ -117,10 +119,10 @@ func TestReadFirstNonStreamChunkSoftDeadlineConfiguredAbort(t *testing.T) {
 	reader := newBlockingReader()
 	t.Cleanup(reader.close)
 	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-5_000, firstByteDeadlineReadInput{
-		startedAt:           base - 5_000,
-		signal:              context.Background(),
-		firstByteDeadlineMs: ptrInt64(1_000),
-		onFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
+		StartedAt:           base - 5_000,
+		Signal:              context.Background(),
+		FirstByteDeadlineMs: ptrInt64(1_000),
+		OnFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 			return FirstByteDeadlineActionAbort
 		},
 	})
@@ -143,11 +145,11 @@ func TestReadFirstNonStreamChunkSoftDeadlineHandlerContinueLoops(t *testing.T) {
 	reader := newBlockingReader()
 	t.Cleanup(reader.close)
 	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-5_000, firstByteDeadlineReadInput{
-		startedAt:                     base - 5_000,
-		signal:                        context.Background(),
-		firstByteDeadlineMs:           ptrInt64(1_000),
-		responsePrecommitDeadlineAtMs: ptrInt64(base - 1),
-		onFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
+		StartedAt:                     base - 5_000,
+		Signal:                        context.Background(),
+		FirstByteDeadlineMs:           ptrInt64(1_000),
+		ResponsePrecommitDeadlineAtMs: ptrInt64(base - 1),
+		OnFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 			return FirstByteDeadlineActionContinue
 		},
 	})
@@ -165,9 +167,9 @@ func TestReadFirstNonStreamChunkHardTimeout(t *testing.T) {
 	t.Cleanup(reader.close)
 	startedAt := base - 5_000
 	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), startedAt, firstByteDeadlineReadInput{
-		startedAt:          startedAt,
-		signal:             context.Background(),
-		firstByteTimeoutMs: ptrInt64(2_000), // 硬截止 = startedAt+2000，早已过期 → 剩余为负 → 直接判超时
+		StartedAt:          startedAt,
+		Signal:             context.Background(),
+		FirstByteTimeoutMs: ptrInt64(2_000), // 硬截止 = startedAt+2000，早已过期 → 剩余为负 → 直接判超时
 	})
 	var timeoutErr *GatewayFirstByteTimeoutError
 	if !errorsAs(err, &timeoutErr) {
@@ -184,19 +186,19 @@ func TestReadFirstNonStreamChunkSoftDeadlineContinueThenRead(t *testing.T) {
 	injectNowMs(t, func() int64 { return base })
 	reader := &delayedReader{delay: 2 * time.Millisecond}
 	read, observed, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 32), base-5_000, firstByteDeadlineReadInput{
-		startedAt:                     base - 5_000,
-		signal:                        context.Background(),
-		firstByteDeadlineMs:           ptrInt64(1_000),
-		pendingReadSupersedesDeadline: true,
-		onFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
+		StartedAt:                     base - 5_000,
+		Signal:                        context.Background(),
+		FirstByteDeadlineMs:           ptrInt64(1_000),
+		PendingReadSupersedesDeadline: true,
+		OnFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 			return FirstByteDeadlineActionContinue
 		},
-		onFirstByteDeadlineSuperseded: func() {},
+		OnFirstByteDeadlineSuperseded: func() {},
 	})
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
-	if read.n != 3 || !observed {
+	if read.N != 3 || !observed {
 		t.Fatalf("read = %#v observed=%v", read, observed)
 	}
 }
@@ -206,29 +208,29 @@ func TestReadFirstNonStreamChunkSoftDeadlineContinueThenEOF(t *testing.T) {
 	base := int64(10_000)
 	injectNowMs(t, func() int64 { return base })
 	read, _, err := readFirstNonStreamChunkWithDeadlines(&chunkReader{chunks: nil}, make([]byte, 32), base-5_000, firstByteDeadlineReadInput{
-		startedAt:                     base - 5_000,
-		signal:                        context.Background(),
-		firstByteDeadlineMs:           ptrInt64(1_000),
-		pendingReadSupersedesDeadline: true,
-		onFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
+		StartedAt:                     base - 5_000,
+		Signal:                        context.Background(),
+		FirstByteDeadlineMs:           ptrInt64(1_000),
+		PendingReadSupersedesDeadline: true,
+		OnFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
 			return FirstByteDeadlineActionContinue
 		},
 	})
-	if err != nil || !read.done {
+	if err != nil || !read.Done {
 		t.Fatalf("read = %#v err = %v", read, err)
 	}
 }
 
 func TestFirstNonStreamReadAfterDeadlineDecisionDecisionErr(t *testing.T) {
-	decision := deadlineDecision{hasRead: true, decisionErr: errors.New("决策失败")}
+	decision := deadlineDecision{HasRead: true, DecisionErr: errors.New("决策失败")}
 	read, _, err := firstNonStreamReadAfterDeadlineDecision(decision, true, firstByteDeadlineReadInput{})
-	if read.n != 0 || err == nil {
+	if read.N != 0 || err == nil {
 		t.Fatalf("read = %#v err = %v", read, err)
 	}
 	// pendingReadSupersedesDeadline=false + abort 决策 → configured 超时。
-	decision = deadlineDecision{action: FirstByteDeadlineActionAbort}
+	decision = deadlineDecision{Action: FirstByteDeadlineActionAbort}
 	_, _, err = firstNonStreamReadAfterDeadlineDecision(decision, true, firstByteDeadlineReadInput{
-		firstByteDeadlineMs: ptrInt64(2_000),
+		FirstByteDeadlineMs: ptrInt64(2_000),
 	})
 	var timeoutErr *GatewayFirstByteTimeoutError
 	if !errorsAs(err, &timeoutErr) || timeoutErr.Message != "上游非流式响应 2s 后仍未返回完整语义响应" {
@@ -236,20 +238,20 @@ func TestFirstNonStreamReadAfterDeadlineDecisionDecisionErr(t *testing.T) {
 	}
 	// pendingReadSupersedesDeadline=true 时 superseded 回调先执行。
 	superseded := false
-	decision = deadlineDecision{hasRead: true, read: chunkResult{n: 3}}
+	decision = deadlineDecision{HasRead: true, Read: chunkResult{N: 3}}
 	read, _, err = firstNonStreamReadAfterDeadlineDecision(decision, true, firstByteDeadlineReadInput{
-		pendingReadSupersedesDeadline: true,
-		onFirstByteDeadlineSuperseded: func() { superseded = true },
+		PendingReadSupersedesDeadline: true,
+		OnFirstByteDeadlineSuperseded: func() { superseded = true },
 	})
-	if !superseded || read.n != 3 || err != nil {
+	if !superseded || read.N != 3 || err != nil {
 		t.Fatalf("read = %#v superseded=%v err=%v", read, superseded, err)
 	}
 	// supersede + EOF → done。
-	decision = deadlineDecision{hasRead: true, read: chunkResult{err: io.EOF}}
+	decision = deadlineDecision{HasRead: true, Read: chunkResult{Err: io.EOF}}
 	read, _, err = firstNonStreamReadAfterDeadlineDecision(decision, true, firstByteDeadlineReadInput{
-		pendingReadSupersedesDeadline: true,
+		PendingReadSupersedesDeadline: true,
 	})
-	if err != nil || !read.done {
+	if err != nil || !read.Done {
 		t.Fatalf("read = %#v err = %v", read, err)
 	}
 }
@@ -259,13 +261,13 @@ func TestRaceReadWithDeadlinesReadWins(t *testing.T) {
 	pendingRead := ObserveFirstBytePendingRead(func() (chunkResult, error) {
 		buffer := make([]byte, 8)
 		n, err := reader.Read(buffer)
-		return chunkResult{n: n, err: err}, err
+		return chunkResult{N: n, Err: err}, err
 	})
 	raceType, result, err := raceReadWithDeadlines(pendingRead, context.Background(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("race: %v", err)
 	}
-	if raceType != raceReadDone || result.n != 2 {
+	if raceType != raceReadDone || result.N != 2 {
 		t.Fatalf("raceType=%v result=%#v", raceType, result)
 	}
 }
@@ -276,7 +278,7 @@ func TestRaceReadWithDeadlinesHardTimeoutWins(t *testing.T) {
 	pendingRead := ObserveFirstBytePendingRead(func() (chunkResult, error) {
 		buffer := make([]byte, 8)
 		n, err := reader.Read(buffer)
-		return chunkResult{n: n, err: err}, err
+		return chunkResult{N: n, Err: err}, err
 	})
 	// 负剩余 → 1ms 定时（maxInt64 下限），读阻塞 → hard timeout 胜出。
 	raceType, _, _ := raceReadWithDeadlines(pendingRead, context.Background(), nil, ptrInt64(-1), nil, nil)
@@ -291,7 +293,7 @@ func TestRaceReadWithDeadlinesMaxLifetimeWins(t *testing.T) {
 	pendingRead := ObserveFirstBytePendingRead(func() (chunkResult, error) {
 		buffer := make([]byte, 8)
 		n, err := reader.Read(buffer)
-		return chunkResult{n: n, err: err}, err
+		return chunkResult{N: n, Err: err}, err
 	})
 	raceType, _, _ := raceReadWithDeadlines(pendingRead, context.Background(), nil, nil, ptrInt64(-1), nil)
 	if raceType != raceMaxLifetimeTimeout {
@@ -305,7 +307,7 @@ func TestRaceReadWithDeadlinesAbortWins(t *testing.T) {
 	pendingRead := ObserveFirstBytePendingRead(func() (chunkResult, error) {
 		buffer := make([]byte, 8)
 		n, err := reader.Read(buffer)
-		return chunkResult{n: n, err: err}, err
+		return chunkResult{N: n, Err: err}, err
 	})
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -321,7 +323,7 @@ func TestRaceReadWithDeadlinesSoftVsPrecommitAttribution(t *testing.T) {
 	pendingRead := ObserveFirstBytePendingRead(func() (chunkResult, error) {
 		buffer := make([]byte, 8)
 		n, err := reader.Read(buffer)
-		return chunkResult{n: n, err: err}, err
+		return chunkResult{N: n, Err: err}, err
 	})
 	// precommit 截止不晚于 soft → 墙钟归因胜出。
 	raceType, _, _ := raceReadWithDeadlines(pendingRead, context.Background(), ptrInt64(-1), nil, nil, ptrInt64(-1))
@@ -332,7 +334,7 @@ func TestRaceReadWithDeadlinesSoftVsPrecommitAttribution(t *testing.T) {
 	other := ObserveFirstBytePendingRead(func() (chunkResult, error) {
 		buffer := make([]byte, 8)
 		n, err := (&blockingReader2{}).Read(buffer)
-		return chunkResult{n: n, err: err}, err
+		return chunkResult{N: n, Err: err}, err
 	})
 	raceType, _, _ = raceReadWithDeadlines(other, context.Background(), ptrInt64(-1), nil, nil, ptrInt64(60_000))
 	if raceType != raceSoftTimeout {
@@ -394,7 +396,7 @@ func TestReadNonStreamChunkWithAbsoluteDeadlinePaths(t *testing.T) {
 	// 读完成后结算晚于 precommit → 墙钟归因。
 	slowSettle := ObserveFirstBytePendingRead(func() (chunkResult, error) {
 		time.Sleep(2 * time.Millisecond)
-		return chunkResult{n: 3}, nil
+		return chunkResult{N: 3}, nil
 	})
 	_ = slowSettle
 	reader3 := &delayedReader{delay: 3 * time.Millisecond}
@@ -456,64 +458,64 @@ func TestNonStreamBodyMaxLifetimeDeadlineAt(t *testing.T) {
 
 func TestLimitedAndRollingBufferCaptures(t *testing.T) {
 	capture := newLimitedBufferCapture(8)
-	capture.push([]byte("12345678"))
-	capture.push([]byte("extra")) // 截断
-	if !capture.truncated {
+	capture.Push([]byte("12345678"))
+	capture.Push([]byte("extra")) // 截断
+	if !capture.Truncated {
 		t.Fatal("超出限制必须标记截断")
 	}
-	if string(capture.buffer()) != "12345678" {
-		t.Fatalf("buffer = %q", capture.buffer())
+	if string(capture.Buffer()) != "12345678" {
+		t.Fatalf("buffer = %q", capture.Buffer())
 	}
-	if capture.completeBuffer() != nil {
+	if capture.CompleteBuffer() != nil {
 		t.Fatal("截断后 completeBuffer 为 nil")
 	}
-	if capture.toText() == nil || *capture.toText() != "12345678" {
-		t.Fatalf("toText = %#v", capture.toText())
+	if capture.ToText() == nil || *capture.ToText() != "12345678" {
+		t.Fatalf("toText = %#v", capture.ToText())
 	}
 	empty := newLimitedBufferCapture(8)
-	if empty.completeBuffer() != nil || empty.toText() != nil {
+	if empty.CompleteBuffer() != nil || empty.ToText() != nil {
 		t.Fatal("空捕获的文本面为 nil")
 	}
 	// 负 limit 不收集。
 	disabled := newLimitedBufferCapture(-1)
-	disabled.push([]byte("x"))
-	if len(disabled.buffer()) != 0 {
+	disabled.Push([]byte("x"))
+	if len(disabled.Buffer()) != 0 {
 		t.Fatal("负 limit 不收集")
 	}
 
 	rolling := newRollingBufferCapture(8)
-	rolling.push([]byte("12345678"))
-	rolling.push([]byte("90")) // 触发 trimOverflow 头部消费
-	text := rolling.toText()
+	rolling.Push([]byte("12345678"))
+	rolling.Push([]byte("90")) // 触发 trimOverflow 头部消费
+	text := rolling.ToText()
 	if text == nil || *text != "34567890" {
 		t.Fatalf("rolling text = %#v", text)
 	}
 	// 超大 chunk 直接替换窗口。
-	rolling.push([]byte("abcdefgh"))
-	rolling.push([]byte("IJKLMNOPQ"))
-	if got := *rolling.toText(); got != "JKLMNOPQ" {
+	rolling.Push([]byte("abcdefgh"))
+	rolling.Push([]byte("IJKLMNOPQ"))
+	if got := *rolling.ToText(); got != "JKLMNOPQ" {
 		t.Fatalf("replace window = %q", got)
 	}
 	// 逐块消费后 compact（headIndex>64 分支用小步推进验证不到，走基本路径）。
 	small := newRollingBufferCapture(4)
-	small.push([]byte("ab"))
-	small.push([]byte("cd"))
-	small.push([]byte("ef"))
-	if got := *small.toText(); got != "cdef" {
+	small.Push([]byte("ab"))
+	small.Push([]byte("cd"))
+	small.Push([]byte("ef"))
+	if got := *small.ToText(); got != "cdef" {
 		t.Fatalf("small rolling = %q", got)
 	}
 	zeroLimit := newRollingBufferCapture(0)
-	zeroLimit.push([]byte("x"))
-	if zeroLimit.toText() != nil {
+	zeroLimit.Push([]byte("x"))
+	if zeroLimit.ToText() != nil {
 		t.Fatal("零 limit 不收集")
 	}
 }
 
 func TestBuildNonStreamPipeResultTexts(t *testing.T) {
 	capture := newLimitedBufferCapture(4)
-	capture.push([]byte("abcdef"))
+	capture.Push([]byte("abcdef"))
 	tail := newRollingBufferCapture(3)
-	tail.push([]byte("abcdef"))
+	tail.Push([]byte("abcdef"))
 	result := buildNonStreamPipeResult(capture, tail, true, 42, 6)
 	if result.CapturedBodyText == nil || *result.CapturedBodyText != "abcd" {
 		t.Fatalf("captured = %#v", result.CapturedBodyText)
@@ -574,7 +576,7 @@ func TestReadUpstreamBodyLimitedFirstByteAndAbort(t *testing.T) {
 		Signal:      context.Background(),
 	})
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
 	if !firstByteCalled {
 		t.Fatal("首字节回调未触发")

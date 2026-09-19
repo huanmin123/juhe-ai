@@ -447,10 +447,10 @@ func TestW2MarshalJSONValueAndHelpers(t *testing.T) {
 		t.Fatal("boolValue 回退不一致")
 	}
 	// batchAccessError 的同作用域变体。
-	if !(&batchAccessError{Message: "x 同一系统账户作用域 y"}).sameScope() {
+	if !(&batchAccessError{Message: "x 同一系统账户作用域 y"}).SameScope() {
 		t.Fatal("同作用域判定不一致")
 	}
-	if (&batchAccessError{Message: "plain"}).sameScope() {
+	if (&batchAccessError{Message: "plain"}).SameScope() {
 		t.Fatal("普通错误不应命中同作用域")
 	}
 	// batchStatusForcesSchedulableOff 的状态表。

@@ -485,7 +485,6 @@ func TestPatchProxySwitchRevalidatesBalanceIdentity(t *testing.T) {
 	}
 }
 
-
 // TestStoreBalanceSnapshotCleanerDeletesSupersededSnapshots（缺口 5，归档
 // account-balance-snapshot-cleanup.service.ts:220-224 +
 // account-balance.repository.ts:887-905）：组合根默认清理器按保存时刻

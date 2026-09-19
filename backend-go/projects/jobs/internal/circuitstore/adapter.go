@@ -328,7 +328,7 @@ func toOpsMutationResult(result MutationResult) (opsjobs.CircuitMutationResult, 
 		Status: opsjobs.CircuitMutationStatus(result.Status),
 		State:  state,
 	}
-	related := result.relatedSlice()
+	related := result.RelatedStatesSlice()
 	if len(related) > 0 {
 		converted.RelatedStates = make([]opsjobs.CircuitState, 0, len(related))
 		for _, item := range related {

@@ -137,7 +137,7 @@ func TestW14BFaultInjectedStoreArms(t *testing.T) {
 	if _, err := store.findImportProxyByID(ctx, "proxy-x"); err == nil {
 		t.Fatal("findImportProxyByID 应传播错误")
 	}
-	if _, _, err := store.createImportGroup(ctx, importGroupCreatePlan{name: "w14b", providerCode: "gpt"}, adminID, "2026-09-17T00:00:00.000Z"); err == nil {
+	if _, _, err := store.createImportGroup(ctx, importGroupCreatePlan{Name: "w14b", ProviderCode: "gpt"}, adminID, "2026-09-17T00:00:00.000Z"); err == nil {
 		t.Fatal("createImportGroup 应传播错误")
 	}
 	// 导出链。

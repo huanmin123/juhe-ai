@@ -12,6 +12,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -25,16 +26,16 @@ import (
 
 // UpstreamDispatchResult mirrors OpenAIUpstreamDispatchResult.
 type UpstreamDispatchResult struct {
-	Account                    AccountCandidate
-	Response                   *GatewayUpstreamResponse
-	RequestBody                []byte
-	UpstreamURL                string
-	AuditAttemptID             string
-	AttemptStartedAt           int64
-	EffectiveServiceTier       string
-	TimeoutProfile             gatewayrouting.GatewayTimeoutProfile
-	ReleaseConcurrency         func()
-	MarkFirstOutput            func()
+	Account                          AccountCandidate
+	Response                         *GatewayUpstreamResponse
+	RequestBody                      []byte
+	UpstreamURL                      string
+	AuditAttemptID                   string
+	AttemptStartedAt                 int64
+	EffectiveServiceTier             string
+	TimeoutProfile                   gatewayrouting.GatewayTimeoutProfile
+	ReleaseConcurrency               func()
+	MarkFirstOutput                  func()
 	ConfirmSameAccountApiKeyFailures func() error
 	// ConfirmAccountAPIKeySuccess 镜像成功侧结算（D-111，BUG-0175）：
 	// recordGatewayAccountApiKeySuccess 的触发点——协议成功后在链上消费一次，
@@ -44,17 +45,17 @@ type UpstreamDispatchResult struct {
 	// 协议成功后，把 ENGAGED 账户锁 CAS 复位为 LOCKED_IDLE（Node
 	// account-lock.repository.ts:completeAccountLockSuccessAsync,
 	// routes.ts:2481-2483）。nil = 账户锁未启用或引擎未装配。
-	ConfirmAccountLockSuccess func() error
-	ConfirmHalfOpenSuccess     func() bool
-	ReleaseHalfOpenLease       func() bool
-	HotQualityAttempt          *hotQualityAttemptHandle
-	NormalRouteFirstByteDeadline *gatewayrouting.NormalRouteAttemptFirstByteDeadline
+	ConfirmAccountLockSuccess     func() error
+	ConfirmHalfOpenSuccess        func() bool
+	ReleaseHalfOpenLease          func() bool
+	HotQualityAttempt             *hotQualityAttemptHandle
+	NormalRouteFirstByteDeadline  *gatewayrouting.NormalRouteAttemptFirstByteDeadline
 	ResponsePrecommitDeadlineAtMs *int64
-	OnFirstByteDeadline        FirstByteDeadlineHandler
-	FirstByteDeadlineCoordinator *NormalRouteFirstByteAttemptCoordinator
-	AccountLockObservation     *AccountLockObservation
-	AccountLockRetryLease      *AccountLockRetryLease
-	ReleaseAccountLockRetryLease func(scheduleNextRetry bool) bool
+	OnFirstByteDeadline           FirstByteDeadlineHandler
+	FirstByteDeadlineCoordinator  *NormalRouteFirstByteAttemptCoordinator
+	AccountLockObservation        *AccountLockObservation
+	AccountLockRetryLease         *AccountLockRetryLease
+	ReleaseAccountLockRetryLease  func(scheduleNextRetry bool) bool
 	// UpstreamResponseModelSlot 携带本尝试的原始上游模型归因（Node
 	// upstream-attempts.ts:180-198 观察器在 fetch 后、transform 前挂载，观察
 	// 的是原始上游流而非转换后的客户端形态）。nil = 引擎未装配观察钩子。
@@ -113,18 +114,18 @@ func (s *UpstreamResponseModelSlot) Bind(consumer func(model string)) {
 
 // RequestCoordinationContext mirrors GatewayUpstreamRequestCoordinationContext.
 type RequestCoordinationContext struct {
-	Scope                    string // 'gateway_request' | 'internal_hybrid_auxiliary'
-	Reason                   string
-	TimeoutPolicy            string // 'codex_compaction_unbounded' | ''
-	ServerRetryBudget        *gatewaypreauth.ServerRetryBudget
-	GatewayRequestWallBudget *gatewayrouting.GatewayRequestWallBudget
-	RouteCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
-	RequestAttemptTracker    *gatewayrouting.GatewayRequestAttemptTracker
-	SameAccountRetry         *SameAccountRetry
-	AccountLockRetryLease    *AccountLockRetryLease
-	SemanticRetryID          string
-	RequestBodyOverride      *RequestBodyOverride
-	NormalRouteFirstByteConfig *gatewayrouting.NormalRouteFirstByteRuntimeConfig
+	Scope                          string // 'gateway_request' | 'internal_hybrid_auxiliary'
+	Reason                         string
+	TimeoutPolicy                  string // 'codex_compaction_unbounded' | ''
+	ServerRetryBudget              *gatewaypreauth.ServerRetryBudget
+	GatewayRequestWallBudget       *gatewayrouting.GatewayRequestWallBudget
+	RouteCoordinationBudget        *gatewayrouting.RouteCoordinationBudget
+	RequestAttemptTracker          *gatewayrouting.GatewayRequestAttemptTracker
+	SameAccountRetry               *SameAccountRetry
+	AccountLockRetryLease          *AccountLockRetryLease
+	SemanticRetryID                string
+	RequestBodyOverride            *RequestBodyOverride
+	NormalRouteFirstByteConfig     *gatewayrouting.NormalRouteFirstByteRuntimeConfig
 	OnNormalRouteFirstByteDeadline func(input FirstByteDeadlineDecisionInput, account AccountCandidate, deadline gatewayrouting.NormalRouteAttemptFirstByteDeadline, coordinator *NormalRouteFirstByteAttemptCoordinator) FirstByteDeadlineAction
 	// OnUpstreamAttemptStarted is invoked once per upstream attempt start.
 	OnUpstreamAttemptStarted func(account AccountCandidate, upstreamURL string)
@@ -132,7 +133,7 @@ type RequestCoordinationContext struct {
 
 // Coordination scopes.
 const (
-	CoordinationScopeGatewayRequest        = "gateway_request"
+	CoordinationScopeGatewayRequest          = "gateway_request"
 	CoordinationScopeInternalHybridAuxiliary = "internal_hybrid_auxiliary"
 )
 
@@ -143,8 +144,8 @@ const (
 
 // SameAccountRetry mirrors the same-account retry carry.
 type SameAccountRetry struct {
-	RetryID           string
-	Account           AccountCandidate
+	RetryID            string
+	Account            AccountCandidate
 	AccountLockLeaseID string
 }
 
@@ -285,7 +286,9 @@ type attemptLifecycleFacade struct {
 }
 
 // MarkFirstByte implements HotQualityAttemptLifecycle.
-func (f *attemptLifecycleFacade) MarkFirstByte(firstByteMs *float64) { f.MarkFirstByteFunc(firstByteMs) }
+func (f *attemptLifecycleFacade) MarkFirstByte(firstByteMs *float64) {
+	f.MarkFirstByteFunc(firstByteMs)
+}
 
 // RecordTerminal implements HotQualityAttemptLifecycle.
 func (f *attemptLifecycleFacade) RecordTerminal(ctx context.Context, terminal HotQualityTerminal) {
@@ -314,13 +317,13 @@ type HotQualityTerminal struct {
 
 // Terminal outcome classes mirror the Node union.
 const (
-	HotQualityOutcomeUnknown            = "unknown"
-	HotQualityOutcomeTimeout            = "timeout"
-	HotQualityOutcomeTransportFailure   = "transport_failure"
-	HotQualityOutcomeReadInterruption   = "read_interruption"
-	HotQualityOutcomeIncompleteResponse = "incomplete_response"
-	HotQualityOutcomeClientCancellation = "client_cancellation"
-	HotQualityOutcomeExplicitPolicyFailure = "explicit_policy_failure"
+	HotQualityOutcomeUnknown                 = "unknown"
+	HotQualityOutcomeTimeout                 = "timeout"
+	HotQualityOutcomeTransportFailure        = "transport_failure"
+	HotQualityOutcomeReadInterruption        = "read_interruption"
+	HotQualityOutcomeIncompleteResponse      = "incomplete_response"
+	HotQualityOutcomeClientCancellation      = "client_cancellation"
+	HotQualityOutcomeExplicitPolicyFailure   = "explicit_policy_failure"
 	HotQualityOutcomeUpstreamResponseFailure = "upstream_response_failure"
 )
 
@@ -365,26 +368,26 @@ func (h *hotQualityAttemptHandle) RecordTerminal(ctx context.Context, terminal H
 // FetchFirstAvailableUpstreamArgs mirrors the fetchFirstAvailableUpstream
 // parameter list (Go groups them; the doc comments name each Node arg).
 type FetchFirstAvailableUpstreamArgs struct {
-	Req                            *gatewaypreauth.GatewayRequest
-	Accounts                       []AccountCandidate
-	Settings                       gatewayruntimecache.GatewaySettings
-	UsageContext                   gatewaypreauth.GatewayFailureUsageContext
-	AuditCapture                   AuditCapture
-	SessionAffinityKey             string
-	Signal                         context.Context
-	ClientIPAccountAvoidanceTracker gatewaypreauth.ClientIPAccountAvoidanceTracker
-	RequestLane                    string // default 'text'
-	GroupSchedulingPolicy          *gatewayruntimecache.GroupSchedulingPolicy
-	AccountStateMutationEnabled    bool
-	RequestClientCompatibility     string
-	ModelPriority                  *gatewayrouting.GatewayAccountModelPriority
-	PreAcquiredConcurrency         *SpeedFirstCutoverReservationHandle
-	AllowPrecheckHalfOpen          bool
-	RequestCoordination            *RequestCoordinationContext
+	Req                                *gatewaypreauth.GatewayRequest
+	Accounts                           []AccountCandidate
+	Settings                           gatewayruntimecache.GatewaySettings
+	UsageContext                       gatewaypreauth.GatewayFailureUsageContext
+	AuditCapture                       AuditCapture
+	SessionAffinityKey                 string
+	Signal                             context.Context
+	ClientIPAccountAvoidanceTracker    gatewaypreauth.ClientIPAccountAvoidanceTracker
+	RequestLane                        string // default 'text'
+	GroupSchedulingPolicy              *gatewayruntimecache.GroupSchedulingPolicy
+	AccountStateMutationEnabled        bool
+	RequestClientCompatibility         string
+	ModelPriority                      *gatewayrouting.GatewayAccountModelPriority
+	PreAcquiredConcurrency             *SpeedFirstCutoverReservationHandle
+	AllowPrecheckHalfOpen              bool
+	RequestCoordination                *RequestCoordinationContext
 	InterpretUpstreamResponseSemantics bool
-	WaitForRecoverableFailures     bool
-	AccountCircuitConfirmation     *gatewaycircuit.Confirmation
-	BypassKeyModelAdmission        bool
+	WaitForRecoverableFailures         bool
+	AccountCircuitConfirmation         *gatewaycircuit.Confirmation
+	BypassKeyModelAdmission            bool
 	// CodexTurnAccountAvoidanceApplied / CodexTurnAvoidedAccountIDs mirror the
 	// preflight's codexTurnAccountAvoidanceApplied / codexTurnAvoidedAccountIds
 	// (routes.ts:890-892). Node filters the avoided accounts out of the
@@ -598,12 +601,12 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 
 	reserveSameAccountRetry := func(identity gatewayrouting.GatewayDispatchAttemptIdentity, reason, accountID string) (string, error) {
 		configuredDelayMs := maxInt64(0, settings.TemporaryUnschedulableRetryIntervalSeconds*1000)
-		retryWindowMs := gatewayRequestWallBudget.RemainingMs(NowMs()) - gatewayrouting.DefaultGatewayFinalResponseReserveMs
+		retryWindowMs := gatewayRequestWallBudget.RemainingMs(gatewayupstream.NowMs()) - gatewayrouting.DefaultGatewayFinalResponseReserveMs
 		if retryWindowMs < configuredDelayMs {
 			auditCapture.AddGatewayMetadata("same_account_retry_exhausted", map[string]any{
-				"accountId": identity.AccountRuntimeKey,
+				"accountId":   identity.AccountRuntimeKey,
 				"retryReason": reason,
-				"reason":    "gateway_request_wall_budget_exhausted",
+				"reason":      "gateway_request_wall_budget_exhausted",
 			})
 			return "", nil
 		}
@@ -650,13 +653,13 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 						return "", nil
 					case accountLockWaitWall:
 						return "", &GatewayRequestWallBudgetExhaustedError{
-							WallRemainingMs:            gatewayRequestWallBudget.RemainingMs(NowMs()),
+							WallRemainingMs:            gatewayRequestWallBudget.RemainingMs(gatewayupstream.NowMs()),
 							MinimumMeaningfulAttemptMs: lockLease.WaitMs,
 							BudgetKind:                 WallBudgetKindWall,
 						}
 					default:
 						return "", &GatewayRequestWallBudgetExhaustedError{
-							WallRemainingMs: gatewayRequestWallBudget.RemainingMs(NowMs()),
+							WallRemainingMs: gatewayRequestWallBudget.RemainingMs(gatewayupstream.NowMs()),
 							BudgetKind:      WallBudgetKindCoordination,
 						}
 					}
@@ -717,7 +720,7 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 								return "", err
 							}
 							return "", &GatewayRequestWallBudgetExhaustedError{
-								WallRemainingMs:            gatewayRequestWallBudget.RemainingMs(NowMs()),
+								WallRemainingMs:            gatewayRequestWallBudget.RemainingMs(gatewayupstream.NowMs()),
 								MinimumMeaningfulAttemptMs: lockLease.WaitMs,
 								BudgetKind:                 WallBudgetKindWall,
 							}
@@ -726,7 +729,7 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 								return "", err
 							}
 							return "", &GatewayRequestWallBudgetExhaustedError{
-								WallRemainingMs: gatewayRequestWallBudget.RemainingMs(NowMs()),
+								WallRemainingMs: gatewayRequestWallBudget.RemainingMs(gatewayupstream.NowMs()),
 								BudgetKind:      WallBudgetKindCoordination,
 							}
 						}
@@ -751,11 +754,11 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 			}
 		}
 		auditCapture.AddGatewayMetadata("same_account_retry_dispatch", map[string]any{
-			"accountId":                  identity.AccountRuntimeKey,
-			"retryNumber":                reservation.RetryNumber,
+			"accountId":                   identity.AccountRuntimeKey,
+			"retryNumber":                 reservation.RetryNumber,
 			"remainingSameAccountRetries": reservation.Remaining,
-			"retryReason":                reason,
-			"delayMs":                    configuredDelayMs,
+			"retryReason":                 reason,
+			"delayMs":                     configuredDelayMs,
 		})
 		return reservation.RetryID, nil
 	}
@@ -809,41 +812,41 @@ codexTurnReversalPass:
 			}
 			accountCircuitAttemptTransferred := false
 			kind, singleResult, loopErr := e.dispatchSingleAccount(ctx, dispatchSingleAccountInput{
-				args:                        &args,
-				coordination:                coordination,
-				originalAccount:             originalAccount,
-				usageContext:                &usageContext,
-				auditCapture:                auditCapture,
-				settings:                    settings,
-				timeoutProfile:              timeoutProfile,
-				signal:                      signal,
-				requestLane:                 requestLane,
-				semanticRetryID:             semanticRetryID,
-				bypassLocalSuppression:      bypassLocalSuppression,
+				args:                                 &args,
+				coordination:                         coordination,
+				originalAccount:                      originalAccount,
+				usageContext:                         &usageContext,
+				auditCapture:                         auditCapture,
+				settings:                             settings,
+				timeoutProfile:                       timeoutProfile,
+				signal:                               signal,
+				requestLane:                          requestLane,
+				semanticRetryID:                      semanticRetryID,
+				bypassLocalSuppression:               bypassLocalSuppression,
 				automaticAccountStateMutationAllowed: automaticAccountStateMutationAllowed,
-				accountLockTrafficEnabled:   accountLockTrafficEnabled,
-				compactionTimeoutsDisabled:  compactionTimeoutsDisabled,
-				requestApiKeyAttemptCount:   &requestApiKeyAttemptCount,
-				activeSameAccountRetryID:    &activeSameAccountRetryID,
-				activeAccountLockRetryLease: &activeAccountLockRetryLease,
-				activeAccountLockObservation: &activeAccountLockObservation,
-				primaryDispatchTier:         primaryDispatchTier,
-				observedEscapedTiers:        observedEscapedTiers,
-								failedProxyDispatchKeys:     failedProxyDispatchKeys,
-				failedAccountIDs:            failedAccountIDs,
-				recoverableFailedAccountIDs: recoverableFailedAccountIDs,
-				cycleRecoverableAccountIDs:  cycleRecoverableAccountIDs,
-				capacityLimitFailures:       &capacityLimitFailures,
-				pendingApiKeyFailures:       &pendingApiKeyFailures,
-				lastAttempt:                 &lastAttempt,
-				agentGuidanceResponse:       &agentGuidanceResponse,
-				auditAttemptIndex:           &auditAttemptIndex,
-				concurrencyRetryWaitBudgetMs: &concurrencyRetryWaitBudgetMs,
-				keyModelFailureBudget:       keyModelFailureBudget,
-				accountCircuitAttempt:       accountCircuitAttempt,
-				setAccountCircuitAttemptTransferred: func() { accountCircuitAttemptTransferred = true },
-				reserveSameAccountRetry:     reserveSameAccountRetry,
-				createAccountLockLeaseRelease: func(bool) func(bool) bool { return createAccountLockLeaseRelease() },
+				accountLockTrafficEnabled:            accountLockTrafficEnabled,
+				compactionTimeoutsDisabled:           compactionTimeoutsDisabled,
+				requestApiKeyAttemptCount:            &requestApiKeyAttemptCount,
+				activeSameAccountRetryID:             &activeSameAccountRetryID,
+				activeAccountLockRetryLease:          &activeAccountLockRetryLease,
+				activeAccountLockObservation:         &activeAccountLockObservation,
+				primaryDispatchTier:                  primaryDispatchTier,
+				observedEscapedTiers:                 observedEscapedTiers,
+				failedProxyDispatchKeys:              failedProxyDispatchKeys,
+				failedAccountIDs:                     failedAccountIDs,
+				recoverableFailedAccountIDs:          recoverableFailedAccountIDs,
+				cycleRecoverableAccountIDs:           cycleRecoverableAccountIDs,
+				capacityLimitFailures:                &capacityLimitFailures,
+				pendingApiKeyFailures:                &pendingApiKeyFailures,
+				lastAttempt:                          &lastAttempt,
+				agentGuidanceResponse:                &agentGuidanceResponse,
+				auditAttemptIndex:                    &auditAttemptIndex,
+				concurrencyRetryWaitBudgetMs:         &concurrencyRetryWaitBudgetMs,
+				keyModelFailureBudget:                keyModelFailureBudget,
+				accountCircuitAttempt:                accountCircuitAttempt,
+				setAccountCircuitAttemptTransferred:  func() { accountCircuitAttemptTransferred = true },
+				reserveSameAccountRetry:              reserveSameAccountRetry,
+				createAccountLockLeaseRelease:        func(bool) func(bool) bool { return createAccountLockLeaseRelease() },
 			})
 			if loopErr != nil {
 				return UpstreamDispatchResult{}, loopErr
@@ -861,7 +864,7 @@ codexTurnReversalPass:
 		}
 
 		if len(capacityLimitFailures) > 0 && args.GroupSchedulingPolicy != nil {
-			queueWaitStartedAtMs := NowMs()
+			queueWaitStartedAtMs := gatewayupstream.NowMs()
 			serverRetryBudget.BeginNoAvailableWait(&queueWaitStartedAtMs)
 			queueWait, err := func() (QueueWaitResult, error) {
 				defer serverRetryBudget.PauseNoAvailableWait(&queueWaitStartedAtMs)
@@ -997,8 +1000,8 @@ codexTurnReversalPass:
 				accountIDs = append(accountIDs, account.ID)
 			}
 			auditCapture.AddGatewayMetadata("recoverable_upstream_failure_dispatch_wait", map[string]any{
-				"accountIds":           accountIDs,
-				"retryDelayMs":         retryDelayMs,
+				"accountIds":            accountIDs,
+				"retryDelayMs":          retryDelayMs,
 				"remainingWaitBudgetMs": serverRetryBudget.RemainingMs(nil),
 			})
 			serverRetryBudget.BeginNoAvailableWait(nil)
@@ -1025,7 +1028,7 @@ codexTurnReversalPass:
 		allBlockedByPrecheck := len(precheckRuntimeScopes) > 0 &&
 			suppressionFilter.PrecheckSuppressedAccountIDs != nil &&
 			len(suppressionFilter.PrecheckSuppressedAccountIDs) == len(dispatchAccounts)
-		waitStartedAtMs := NowMs()
+		waitStartedAtMs := gatewayupstream.NowMs()
 		deadlineAtMs := serverRetryBudget.DeadlineAtMs(&waitStartedAtMs)
 		scopeCandidates := make([]string, 0, len(precheckRuntimeScopes))
 		for _, scope := range precheckRuntimeScopes {
@@ -1044,13 +1047,13 @@ codexTurnReversalPass:
 			waitErr := func() error {
 				defer serverRetryBudget.PauseNoAvailableWait(&waitStartedAtMs)
 				state, err := e.RecoverableWait.WaitForState(ctx, SuppressionWaitInput{
-					ScopeKey:  scopeKey,
-					Reason:    waitReason(allBlockedByPrecheck),
+					ScopeKey: scopeKey,
+					Reason:   waitReason(allBlockedByPrecheck),
 					Refresh: func(ctx context.Context) (SuppressionFilterResult, error) {
 						return e.Suppression.FilterAsync(ctx, recoverableAccounts, SuppressionFilterOptions{})
 					},
-					IsReady: func(state SuppressionFilterResult) bool { return !state.AllSuppressed },
-					NextRetryAfterMs: func(state SuppressionFilterResult) *int64 { return state.NextRetryAfterMs },
+					IsReady:                  func(state SuppressionFilterResult) bool { return !state.AllSuppressed },
+					NextRetryAfterMs:         func(state SuppressionFilterResult) *int64 { return state.NextRetryAfterMs },
 					AuditCapture:             auditCapture,
 					MaxWaitMs:                serverRetryBudget.RemainingMs(&waitStartedAtMs),
 					RequestStartedAtMs:       waitStartedAtMs,
@@ -1146,10 +1149,10 @@ func waitReason(allBlockedByPrecheck bool) string {
 
 // Account lock wait outcomes.
 const (
-	accountLockWaitCompleted   = "completed"
-	accountLockWaitWall        = "wall"
+	accountLockWaitCompleted    = "completed"
+	accountLockWaitWall         = "wall"
 	accountLockWaitCoordination = "coordination"
-	accountLockWaitAborted     = "aborted"
+	accountLockWaitAborted      = "aborted"
 )
 
 // waitForAccountLockDelay mirrors waitForAccountLockDelay.
@@ -1164,7 +1167,7 @@ func (e *Engine) waitForAccountLockDelay(
 	if delayMs <= 0 {
 		return accountLockWaitCompleted, nil
 	}
-	nowMs := NowMs()
+	nowMs := gatewayupstream.NowMs()
 	wallRemainingMs, err := gatewayRequestWallBudget.AvailableDecisionMs(gatewayrouting.GatewayRequestWallBudgetDecision{
 		NowMs:                  &nowMs,
 		FinalResponseReserveMs: ptrInt64(gatewayrouting.DefaultGatewayFinalResponseReserveMs),
@@ -1193,7 +1196,7 @@ func (e *Engine) waitForAccountLockDelay(
 		return accountLockWaitCoordination, nil
 	}
 	defer func() {
-		pauseNow := NowMs()
+		pauseNow := gatewayupstream.NowMs()
 		_, _ = routeCoordinationBudget.PauseWait(gatewayrouting.RouteCoordinationBudgetTransitionInput{
 			WaitToken:       waitToken,
 			ExpectedVersion: started.Snapshot.Version,
@@ -1228,7 +1231,7 @@ func (e *Engine) recordAccountCapacityLimitFailure(
 	auditCapture AuditCapture,
 	auditAttemptIndex int,
 ) error {
-	attemptStartedAt := NowMs()
+	attemptStartedAt := gatewayupstream.NowMs()
 	if e.Usage != nil {
 		if err := e.Usage.RecordFailedUpstreamAttempt(ctx, nil, usageContext, account, FailedAttemptRecord{
 			UpstreamURL:        "concurrency:limit",
@@ -1240,13 +1243,13 @@ func (e *Engine) recordAccountCapacityLimitFailure(
 		}
 	}
 	auditCapture.RecordFailedDispatchAttempt(FailedDispatchAttemptInput{
-		Account:       account,
-		AttemptIndex:  auditAttemptIndex,
-		UpstreamURL:   "concurrency:limit",
-		StartedAtMs:   attemptStartedAt,
-		ErrorPhase:    "dispatch",
-		ErrorCode:     "account_concurrency_limit",
-		ErrorMessage:  message,
+		Account:      account,
+		AttemptIndex: auditAttemptIndex,
+		UpstreamURL:  "concurrency:limit",
+		StartedAtMs:  attemptStartedAt,
+		ErrorPhase:   "dispatch",
+		ErrorCode:    "account_concurrency_limit",
+		ErrorMessage: message,
 	})
 	return nil
 }
@@ -1371,7 +1374,7 @@ func (e *Engine) explicitAccountCircuitSessionIdentity(req *gatewaypreauth.Gatew
 
 // SessionIdentityView mirrors the consumed session identity fields.
 type SessionIdentityView struct {
-	SessionID        string
+	SessionID         string
 	SemanticNamespace string
 }
 

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -182,16 +183,16 @@ func TestW13g3PipeRaceAbortAndCaptureBytes(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		defer cancel()
 		_, err := PipeNonStreamUpstreamResponse(ctx, &w13g3SlowReader{delay: 300 * time.Millisecond, data: []byte("x")},
-			&w13g3Writer{}, NonStreamPipeInput{StartedAt: NowMs(), FirstByteTimeoutMs: &hard, Signal: ctx})
+			&w13g3Writer{}, NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), FirstByteTimeoutMs: &hard, Signal: ctx})
 		var aborted *UpstreamRequestAbortedError
 		if !errorsAs(err, &aborted) {
 			t.Fatalf("expected race abort, got %v", err)
 		}
 	})
 	t.Run("soft and precommit race picks precommit", func(t *testing.T) {
-		started := NowMs()
+		started := gatewayupstream.NowMs()
 		soft := int64(200)
-		precommit := NowMs() + 20
+		precommit := gatewayupstream.NowMs() + 20
 		_, err := PipeNonStreamUpstreamResponse(context.Background(), &w13g3SlowReader{delay: 300 * time.Millisecond, data: []byte("x")},
 			&w13g3Writer{}, NonStreamPipeInput{StartedAt: started, FirstByteDeadlineMs: &soft, ResponsePrecommitDeadlineAtMs: &precommit})
 		var precommitErr *GatewayResponsePrecommitDeadlineError
@@ -203,7 +204,7 @@ func TestW13g3PipeRaceAbortAndCaptureBytes(t *testing.T) {
 		captureBytes := int64(4)
 		result, err := PipeNonStreamUpstreamResponse(context.Background(),
 			strings.NewReader(`{"id":"capture-bytes"}`), &w13g3Writer{}, NonStreamPipeInput{
-				StartedAt: NowMs(), CaptureBytes: &captureBytes,
+				StartedAt: gatewayupstream.NowMs(), CaptureBytes: &captureBytes,
 			})
 		if err != nil {
 			t.Fatalf("pipe: %v", err)
@@ -220,7 +221,7 @@ func TestW13g3PipeRaceAbortAndCaptureBytes(t *testing.T) {
 		completedBytes := -1
 		result, err := PipeNonStreamUpstreamResponse(context.Background(), &w13g3SlowReader{data: nil},
 			&w13g3Writer{}, NonStreamPipeInput{
-				StartedAt:         NowMs(),
+				StartedAt:         gatewayupstream.NowMs(),
 				PrepareDownstream: func() { prepared = true },
 				OnBodyCompleted:   func(n int) { completedBytes = n },
 			})
@@ -234,9 +235,9 @@ func TestW13g3PipeRaceAbortAndCaptureBytes(t *testing.T) {
 	})
 	t.Run("nil signal falls back to background", func(t *testing.T) {
 		outcome, downstreamWriting, err := pipeNonStreamUpstreamResponseCommon(nil,
-			strings.NewReader(`{"id":"nil-signal"}`), &w13g3Writer{}, NonStreamPipeInput{StartedAt: NowMs()}, false, nil)
-		if err != nil || downstreamWriting || !outcome.result.CaptureTruncated == false {
-			t.Fatalf("outcome=%#v writing=%v err=%v", outcome.result, downstreamWriting, err)
+			strings.NewReader(`{"id":"nil-signal"}`), &w13g3Writer{}, NonStreamPipeInput{StartedAt: gatewayupstream.NowMs()}, false, nil)
+		if err != nil || downstreamWriting || !outcome.Result.CaptureTruncated == false {
+			t.Fatalf("outcome=%#v writing=%v err=%v", outcome.Result, downstreamWriting, err)
 		}
 	})
 }

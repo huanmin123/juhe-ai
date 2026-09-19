@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // List sort fields mirror AccountListSortField (account-list-options.ts).
@@ -19,27 +21,18 @@ const (
 	maxAccountListTagFilters   = 100
 )
 
-// ListSort is one AccountListSort entry.
-type ListSort struct {
-	Field string
-	Order string // asc | desc
-}
+// ListSort / ListOptions 下沉中立层 accountscore（accountstransfer 的
+// 导出分页端口复用同一契约），门面保留别名，list 查询面零改动.
+type (
+	// ListSort mirrors accountscore.ListSort.
+	ListSort = accountscore.ListSort
+	// ListOptions mirrors accountscore.ListOptions.
+	ListOptions = accountscore.ListOptions
+)
 
-// ListOptions mirrors AccountListOptions.
-type ListOptions struct {
-	Sorts                     []ListSort
-	IDs                       []string
-	Page                      int
-	PageSize                  int
-	Keyword                   string
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	GroupID                   string
-	TagIDs                    []string
-	Type                      string
-	Status                    string
-	Schedulable               string // all | enabled | disabled | cooling
-}
+// accountListSortFields mirrors the allowed sort field set（accountscore 承载，
+// 门面别名保持 routes/list 引用旧名）.
+var accountListSortFields = accountscore.AccountListSortFields
 
 // NormalizedListOptions mirrors NormalizedAccountListOptions.
 type NormalizedListOptions struct {
@@ -55,12 +48,6 @@ type NormalizedListOptions struct {
 	Type                      string
 	Status                    string
 	Schedulable               string
-}
-
-var accountListSortFields = map[string]bool{
-	"priority": true, "superPriority": true, "fallback": true, "name": true,
-	"type": true, "providerCode": true, "systemAccount": true, "concurrency": true,
-	"status": true, "accountExpiresAt": true, "lastUsedAt": true,
 }
 
 // normalizeListOptions mirrors normalizeAccountListOptions: deduplicated sort
@@ -617,7 +604,7 @@ func listSortColumn(field, nowLiteral string) string {
 func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOptions) (*ListPageResult, error) {
 	ctx = ensureCtx(ctx)
 	normalized := normalizeListOptions(options)
-	scoped := access.manageableID()
+	scoped := access.ManageableID()
 	now := isoMillis(s.now())
 	authorized := s.authorizedReadableIDs(ctx, access)
 	cte, joins := s.listJoins()
@@ -687,23 +674,14 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	}, nil
 }
 
+// placeholders renders the ?, ?, ... list for an IN clause（REFACTOR-0005
+// 阶段 0 下沉 accountscore，根包保留同名转发）.
 func placeholders(count int) string {
-	if count <= 0 {
-		return "?"
-	}
-	parts := make([]string, count)
-	for index := range parts {
-		parts[index] = "?"
-	}
-	return strings.Join(parts, ", ")
+	return accountscore.Placeholders(count)
 }
 
 func anySlice(values []string) []any {
-	out := make([]any, 0, len(values))
-	for _, value := range values {
-		out = append(out, value)
-	}
-	return out
+	return accountscore.AnySlice(values)
 }
 
 // newListItem mirrors accountManagementListItemFromRow plus the hydrate
@@ -812,7 +790,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 	item.ClientCompatibility = clientCompatibility
 	item.AccountAuthorizationID = nullPtrString(row.authorizationID)
 	item.AuthorizationInstanceSourceAccountID = nullPtrString(row.sourceAccountID)
-	if access.canAccessAll() {
+	if access.CanAccessAll() {
 		id := row.systemAccountID
 		item.SystemAccountID = &id
 		item.SystemAccountName = nullPtrString(row.systemAccountName)
@@ -851,7 +829,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 			unavailable := !resolved || !row.sourceProxyProfileEnabled.Valid || row.sourceProxyProfileEnabled.Int64 != 1
 			if unavailable {
 				item.ProxyProfileUnavailable = &unavailable
-				if access.canAccessAll() {
+				if access.CanAccessAll() {
 					message := "代理不存在或已停用，请选择一个已启用的代理"
 					item.ProxyProfileErrorMessage = &message
 				}
@@ -877,7 +855,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		unavailable := !row.proxyProfileEnabled.Valid || row.proxyProfileEnabled.Int64 != 1
 		if unavailable {
 			item.ProxyProfileUnavailable = &unavailable
-			if access.canAccessAll() {
+			if access.CanAccessAll() {
 				message := "代理不存在或已停用，请选择一个已启用的代理"
 				item.ProxyProfileErrorMessage = &message
 			}
@@ -1094,8 +1072,8 @@ type OptionSummary struct {
 // ListOptionsPage mirrors listAccountOptionsAsync (owner rows only).
 func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, options ListOptions) ([]OptionSummary, error) {
 	ctx = ensureCtx(ctx)
-	scoped := access.manageableID()
-	if scoped == "" && !access.canAccessAll() {
+	scoped := access.ManageableID()
+	if scoped == "" && !access.CanAccessAll() {
 		return nil, &ValidationError{Message: "缺少系统账户上下文"}
 	}
 	// normalizeAccountOptionListOptions: pageSize := limit (1..50, default 50),
@@ -1214,7 +1192,7 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 		summary.AccessType = "owner"
 		summary.AccountExpiresAt = nullPtrString(accountExpiresAt)
 		summary.Permissions = ownerPermissions()
-		if access.canAccessAll() {
+		if access.CanAccessAll() {
 			summary.SystemAccountID = &systemAccountID
 			summary.SystemAccountName = nullPtrString(systemAccountName)
 		}
@@ -1253,7 +1231,8 @@ type EditBasicDetail struct {
 }
 
 // Credentials mirrors AccountCredentials: an open record of credential fields.
-type Credentials map[string]any
+// （REFACTOR-0005 阶段 0 下沉 accountscore，根包保留类型别名。）
+type Credentials = accountscore.Credentials
 
 // editBasicForbiddenError mirrors AccountEditBasicForbiddenError.
 type editBasicForbiddenError struct{}
@@ -1282,7 +1261,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	authorized := s.authorizedReadableIDs(ctx, access)[id]
 	scopeClause := ""
 	args := []any{id}
-	if scoped := access.manageableID(); scoped != "" && !authorized {
+	if scoped := access.ManageableID(); scoped != "" && !authorized {
 		scopeClause = " AND accounts.system_account_id = ?"
 		args = append(args, scoped)
 	}
@@ -1359,7 +1338,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	// users may only manage their own rows; M10 authorized instance accounts
 	// stay visible (the instance branch below renders the reserved 403) but
 	// never manageable.
-	if !access.canAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
+	if !access.CanAccessAll() && row.systemAccountID != access.ViewerID && !authorized {
 		return nil, nil
 	}
 	if row.authorizationID.Valid && row.authorizationID.String != "" ||
@@ -1448,7 +1427,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		BoundGroupID:              nullPtrString(row.boundGroupID),
 		BoundGroupName:            nullPtrString(row.boundGroupName),
 	}
-	if access.canAccessAll() {
+	if access.CanAccessAll() {
 		detail.SystemAccountID = &row.systemAccountID
 	}
 	return detail, nil

@@ -163,21 +163,6 @@ func isAnthropicMessagesPath(upstreamURL string) bool {
 	return stripV1Prefix(parsed.Path) == "/messages"
 }
 
-// stripV1Prefix mirrors `.replace(/^\/v1(?=\/|$)/, ”) || '/'`.
-func stripV1Prefix(path string) string {
-	if strings.HasPrefix(path, "/v1") && (len(path) == 3 || path[3] == '/') {
-		rest := path[3:]
-		if rest == "" {
-			return "/"
-		}
-		return rest
-	}
-	if path == "" {
-		return "/"
-	}
-	return path
-}
-
 // NormalizeOpenAIReasoningFieldsForUpstream keeps the Chat Completions and
 // Responses reasoning controls on their respective wire shapes. Some clients
 // send both shapes in one request; compatible upstreams may reject that body

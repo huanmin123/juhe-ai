@@ -191,10 +191,13 @@ func TestW9CGatewaySseWaitHeartbeat(t *testing.T) {
 		t.Fatal("non-SSE protocol must not create an observer")
 	}
 
-	recorder := httptest.NewRecorder()
+	// The heartbeat loop goroutine writes concurrently, so the body is
+	// observed through the lock-guarded fake res (plain httptest recorder
+	// polling races under -race); Stop now waits for the goroutine to exit.
+	res := newW3HeartbeatRecordingRes()
 	commit := &DownstreamCommitState{}
 	heart := CreateGatewaySseWaitHeartbeat(HeartbeatDeps{
-		Res:                gatewaypreauth.NewTrackingWriter(recorder),
+		Res:                res,
 		DownstreamProtocol: "chat_completions_sse",
 		DownstreamCommit:   commit,
 		IntervalMs:         10,
@@ -204,18 +207,18 @@ func TestW9CGatewaySseWaitHeartbeat(t *testing.T) {
 	}
 	heart.Start()
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !strings.Contains(recorder.Body.String(), "juhe-ai waiting") {
+	for time.Now().Before(deadline) && !strings.Contains(res.bodyText(), "juhe-ai waiting") {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if !strings.Contains(recorder.Body.String(), "juhe-ai waiting for upstream capacity") {
-		t.Fatalf("heartbeat chunk missing: %q", recorder.Body.String())
-	}
 	heart.Stop()
+	if !strings.Contains(res.bodyText(), "juhe-ai waiting for upstream capacity") {
+		t.Fatalf("heartbeat chunk missing: %q", res.bodyText())
+	}
 
 	// Codex compaction keepalive variant writes the keepalive event.
-	recorder2 := httptest.NewRecorder()
+	res2 := newW3HeartbeatRecordingRes()
 	heart2 := CreateGatewaySseWaitHeartbeat(HeartbeatDeps{
-		Res:                          gatewaypreauth.NewTrackingWriter(recorder2),
+		Res:                          res2,
 		DownstreamProtocol:           "responses_sse",
 		DownstreamCommit:             &DownstreamCommitState{},
 		IntervalMs:                   10,
@@ -223,13 +226,13 @@ func TestW9CGatewaySseWaitHeartbeat(t *testing.T) {
 	})
 	heart2.Start()
 	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !strings.Contains(recorder2.Body.String(), "juhe_ai.keepalive") {
+	for time.Now().Before(deadline) && !strings.Contains(res2.bodyText(), "juhe_ai.keepalive") {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if !strings.Contains(recorder2.Body.String(), "juhe_ai.keepalive") {
-		t.Fatalf("codex keepalive missing: %q", recorder2.Body.String())
-	}
 	heart2.Stop()
+	if !strings.Contains(res2.bodyText(), "juhe_ai.keepalive") {
+		t.Fatalf("codex keepalive missing: %q", res2.bodyText())
+	}
 
 	// heartbeatChunkOf variants.
 	if string(heartbeatChunkOf(HeartbeatDeps{DownstreamProtocol: "responses_sse", EmitCodexCompactionKeepalive: true})) == "" {

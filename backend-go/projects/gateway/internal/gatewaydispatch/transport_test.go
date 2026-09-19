@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
@@ -324,9 +325,9 @@ func TestCopySafeUpstreamRequestHeaders(t *testing.T) {
 
 func TestBuildUpstreamHeadersCodex(t *testing.T) {
 	account := UpstreamHeaderAccount{
-		ID:       "acc-1",
-		APIKey:   "oauth-token",
-		Type:     "oauth",
+		ID:          "acc-1",
+		APIKey:      "oauth-token",
+		Type:        "oauth",
 		Credentials: map[string]any{"account_id": "chatgpt-account"},
 	}
 	headers := BuildUpstreamHeaders(http.Header{}, account)
@@ -415,9 +416,9 @@ func TestPipeNonStreamUpstreamResponse(t *testing.T) {
 	payload := "chunk-one|chunk-two"
 	reader := strings.NewReader(payload)
 	var downstream strings.Builder
-	startedAt := NowMs()
+	startedAt := gatewayupstream.NowMs()
 	result, err := PipeNonStreamUpstreamResponse(context.Background(), reader, &downstream, NonStreamPipeInput{
-		StartedAt:  startedAt,
+		StartedAt:   startedAt,
 		OnFirstByte: func() {},
 	})
 	if err != nil {
@@ -441,7 +442,7 @@ func TestPipeNonStreamUpstreamResponseAbortMidway(t *testing.T) {
 	reader := &slowAbortReader{ctx: newCancelledContext()}
 	var downstream strings.Builder
 	_, err := PipeNonStreamUpstreamResponse(context.Background(), reader, &downstream, NonStreamPipeInput{
-		StartedAt: NowMs(),
+		StartedAt: gatewayupstream.NowMs(),
 	})
 	var aborted *UpstreamRequestAbortedError
 	if !errorsAs(err, &aborted) {
@@ -455,7 +456,7 @@ func TestPipeNonStreamUpstreamResponseForInspection(t *testing.T) {
 	var downstream strings.Builder
 	var inspectionBody []byte
 	result, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), reader, &downstream, InspectableNonStreamPipeInput{
-		NonStreamPipeInput: NonStreamPipeInput{StartedAt: NowMs()},
+		NonStreamPipeInput: NonStreamPipeInput{StartedAt: gatewayupstream.NowMs()},
 		InspectBytes:       6,
 		BeforeDownstreamCommit: func(body []byte) error {
 			inspectionBody = append([]byte(nil), body...)

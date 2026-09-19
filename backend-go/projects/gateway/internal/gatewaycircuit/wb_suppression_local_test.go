@@ -81,7 +81,8 @@ func TestWBLocalSuppressionLadderAndPrecheck(t *testing.T) {
 	}
 }
 
-// 可用性快照契约：可见屏蔽与激活降级进入快照；precheck 阻断的降级不出现。
+// 可用性快照契约：可见屏蔽进入快照。降级可见性分支已随
+// DegradeForGatewayFailure 写面退场删除（生产降级恒空）。
 func TestWBSnapshotAvailabilityVisibility(t *testing.T) {
 	now := int64(2_000_000)
 	clock := &now
@@ -94,49 +95,22 @@ func TestWBSnapshotAvailabilityVisibility(t *testing.T) {
 	if !ok || availability.Status != AvailabilityStatusLocalSuppressed || availability.Until == "" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
-	// 降级：两次观察间隔足够的失败后激活。
-	store.DegradeForGatewayFailure("acc-deg", "acc-deg", "probe failed")
-	store.AgeDegradationForTest("acc-deg", LocalDegradationMinObservationMs)
-	degraded := store.DegradeForGatewayFailure("acc-deg", "acc-deg", "probe failed again")
-	if degraded.Status != AvailabilityStatusDegraded {
-		t.Fatalf("degraded availability = %+v", degraded)
-	}
-	snapshot = store.SnapshotAvailability(func(string) bool { return false })
-	if entry, ok := snapshot["acc-deg"]; !ok || entry.Status != AvailabilityStatusDegraded {
-		t.Fatalf("degradation missing from snapshot: %#v", snapshot)
-	}
-	if store.CountDegradations() != 1 {
-		t.Fatalf("degradation count = %d", store.CountDegradations())
-	}
 	if store.CountVisibleSuppressions(func(string) bool { return false }) < 1 {
 		t.Fatal("可见屏蔽数量不足")
 	}
 }
 
-// 清理与清除契约：过期屏蔽可清理，清除接口区分命中与未命中。
-func TestWBSuppressionCleanupAndClear(t *testing.T) {
+// 清理契约：过期屏蔽可清理；ClearForTest 清空全部状态。
+// （ClearSuppression/ClearDegradation 已随写面退场删除。）
+func TestWBSuppressionCleanup(t *testing.T) {
 	now := int64(3_000_000)
 	clock := &now
 	store, _ := newSuppressionStore(t, func() int64 { return *clock })
-	store.Suppress("acc-clear", 1_000, "transport:x", AvailabilityStatusLocalSuppressed, nil)
-	if !store.ClearSuppression("acc-clear") {
-		t.Fatal("存在的屏蔽必须可清除")
-	}
-	if store.ClearSuppression("acc-clear") {
-		t.Fatal("重复清除必须返回 false")
-	}
 	store.Suppress("acc-expire", 1_000, "transport:y", AvailabilityStatusLocalSuppressed, &suppressionMetadata{accountID: "acc-expire"})
 	*clock += 1_000 + localSuppressionIdleRetentionMs + 1
 	store.CleanupExpiredSuppressions(nil)
 	if store.CountVisibleSuppressions(func(string) bool { return false }) != 0 {
 		t.Fatal("过期屏蔽必须被清理")
-	}
-	store.DegradeForGatewayFailure("acc-deg-clear", "acc-deg-clear", "probe")
-	if !store.ClearDegradation("acc-deg-clear") {
-		t.Fatal("存在的降级必须可清除")
-	}
-	if store.ClearDegradation("acc-deg-clear") {
-		t.Fatal("重复清除降级必须返回 false")
 	}
 	store.ClearForTest()
 	if store.CountVisibleSuppressions(store.PrecheckRuntimeBlockingAt) != 0 || store.CountDegradations() != 0 {
@@ -158,10 +132,6 @@ func TestWBSuppressionRedisManagedMode(t *testing.T) {
 	if result.Action != SuppressionActionRedisManaged || result.LocalFailureCount != 0 {
 		t.Fatalf("redis-managed result = %+v", result)
 	}
-	availability := store.DegradeForGatewayFailure("acc-r", "acc-r", "probe")
-	if availability.Status != AvailabilityStatusNormal {
-		t.Fatalf("redis-managed degrade = %+v", availability)
-	}
 	if got := store.SnapshotAvailability(nil); len(got) != 0 {
 		t.Fatalf("redis-managed snapshot = %#v", got)
 	}
@@ -175,9 +145,6 @@ func TestWBSuppressionRedisManagedMode(t *testing.T) {
 	filtered := store.FilterSuppressions([]SuppressibleAccount{suppressible("acc-r", "acc-r")}, nil, SuppressionFilterOptions{})
 	if len(filtered.Accounts) != 1 {
 		t.Fatalf("redis-managed filter = %+v", filtered)
-	}
-	if store.ClearSuppression("acc-r") || store.ClearDegradation("acc-r") {
-		t.Fatal("redis-managed 清除必须返回 false")
 	}
 	store.AgeDegradationForTest("acc-r", 1)
 	store.CleanupExpiredSuppressions(nil)
@@ -218,32 +185,9 @@ func TestWBHalfOpenLeaseAcquireAndRelease(t *testing.T) {
 	}
 }
 
-// 降级排序契约：降级账号排到普通账号之后；全部降级时保持原序并标记旁路。
-func TestWBOrderDegradationsReordersBehindHealthy(t *testing.T) {
-	now := int64(6_000_000)
-	store, _ := newSuppressionStore(t, func() int64 { return now })
-	store.DegradeForGatewayFailure("acc-deg", "acc-deg", "probe")
-	store.AgeDegradationForTest("acc-deg", LocalDegradationMinObservationMs)
-	store.DegradeForGatewayFailure("acc-deg", "acc-deg", "probe")
-	accounts := []SuppressibleAccount{
-		suppressible("acc-deg", "acc-deg"),
-		suppressible("acc-ok", "acc-ok"),
-	}
-	ordered := store.OrderDegradations(accounts, nil)
-	if !ordered.Applied || ordered.DegradedCount != 1 || len(ordered.DegradedAccountIDs) != 1 {
-		t.Fatalf("ordered = %+v", ordered)
-	}
-	if ordered.Accounts[0].ID != "acc-ok" || ordered.Accounts[1].ID != "acc-deg" {
-		t.Fatalf("order = %s,%s", ordered.Accounts[0].ID, ordered.Accounts[1].ID)
-	}
-	allDegraded := store.OrderDegradations([]SuppressibleAccount{suppressible("acc-deg", "acc-deg")}, nil)
-	if !allDegraded.BypassedAllDegraded || len(allDegraded.Accounts) != 1 {
-		t.Fatalf("all degraded = %+v", allDegraded)
-	}
-	if passthrough := store.OrderDegradations(nil, nil); len(passthrough.Accounts) != 0 {
-		t.Fatalf("empty passthrough = %+v", passthrough)
-	}
-}
+// TestWBOrderDegradationsReordersBehindHealthy 已随
+// DegradeForGatewayFailure 写面退场删除（生产降级恒空，OrderDegradations
+// 恒 passthrough；其 passthrough 分支仍由 redis-managed 用例覆盖）。
 
 // 调度优先层契约：重排不得跨层提升账号；未知模型层级排最后。
 func TestWBPreserveDispatchPriorityTiersKeepsLayerOrder(t *testing.T) {
@@ -309,21 +253,6 @@ func TestWBApplySuppressionMetadataPreservesExisting(t *testing.T) {
 	first := minRetryAtMs(nil, 20)
 	if got := minRetryAtMs(first, 10); *got != 10 {
 		t.Fatalf("min retry = %d", *got)
-	}
-	if shouldAdvanceLocalDegradationFailureCount(nil, 1) != true {
-		t.Fatal("无屏蔽时必须推进失败计数")
-	}
-	halfOpen := &LocalAccountSuppression{Status: AvailabilityStatusHalfOpen}
-	if !shouldAdvanceLocalDegradationFailureCount(halfOpen, 1) {
-		t.Fatal("半开状态必须推进失败计数")
-	}
-	expired := &LocalAccountSuppression{Status: AvailabilityStatusLocalSuppressed, UntilMs: 5}
-	if !shouldAdvanceLocalDegradationFailureCount(expired, 10) {
-		t.Fatal("过期屏蔽必须推进失败计数")
-	}
-	active := &LocalAccountSuppression{Status: AvailabilityStatusLocalSuppressed, UntilMs: 100}
-	if shouldAdvanceLocalDegradationFailureCount(active, 10) {
-		t.Fatal("未过期屏蔽不得推进失败计数")
 	}
 	if isNaNInt64(1) {
 		t.Fatal("int64 永远不是 NaN")

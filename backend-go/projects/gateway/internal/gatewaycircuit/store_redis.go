@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	redis "github.com/redis/go-redis/v9"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/jsonenc"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
@@ -275,22 +275,22 @@ func (s *RedisStore) RecordProtocolModelOpenEvidence(ctx context.Context, input 
 	accountScopeKey := MustScopeKey(accountScope)
 	scopeKey := MustScopeKey(input.Scope)
 	payload := map[string]any{
-		"scope":                        input.Scope,
-		"generation":                   input.Generation,
-		"dispatchRevision":             input.DispatchRevision,
-		"evidenceId":                   input.EvidenceID,
-		"accountTransitionId":          input.AccountTransitionID,
-		"reason":                       input.Reason,
-		"confirmedFailureCount":        input.ConfirmedFailureCount,
-		"distinctScopeThreshold":       distinctScopeThreshold,
-		"windowMs":                     input.WindowMs,
-		"maxProtocolScopes":            maxProtocolScopes,
-		"nowMs":                        nowMs,
-		"scopeKey":                     scopeKey,
-		"accountScope":                 accountScope,
-		"accountScopeKey":              accountScopeKey,
-		"closedAccountState":           ClosedState(accountScope, input.DispatchRevision, 0, "", 0),
-		"capacityAccountState":         CapacityExhaustedState(accountScope, input.DispatchRevision, nowMs),
+		"scope":                  input.Scope,
+		"generation":             input.Generation,
+		"dispatchRevision":       input.DispatchRevision,
+		"evidenceId":             input.EvidenceID,
+		"accountTransitionId":    input.AccountTransitionID,
+		"reason":                 input.Reason,
+		"confirmedFailureCount":  input.ConfirmedFailureCount,
+		"distinctScopeThreshold": distinctScopeThreshold,
+		"windowMs":               input.WindowMs,
+		"maxProtocolScopes":      maxProtocolScopes,
+		"nowMs":                  nowMs,
+		"scopeKey":               scopeKey,
+		"accountScope":           accountScope,
+		"accountScopeKey":        accountScopeKey,
+		"closedAccountState":     ClosedState(accountScope, input.DispatchRevision, 0, "", 0),
+		"capacityAccountState":   CapacityExhaustedState(accountScope, input.DispatchRevision, nowMs),
 	}
 	raw, err := s.client.Eval(ctx, redisAccountCircuitEscalationScript,
 		[]string{s.keys.states, s.keys.due, s.keys.closed, s.keys.escalation, s.keys.capacitySaturated},
@@ -380,15 +380,15 @@ func (s *RedisStore) ListDue(ctx context.Context, nowMs int64, limit int) ([]Sta
 		if err != nil {
 			return nil, err
 		}
-		scanned += page.scanned
-		retainedOffset = page.nextOffset
-		for _, scopeKey := range page.scopeKeys {
+		scanned += page.Scanned
+		retainedOffset = page.NextOffset
+		for _, scopeKey := range page.ScopeKeys {
 			if _, ok := seen[scopeKey]; !ok {
 				seen[scopeKey] = struct{}{}
 				scopeKeys = append(scopeKeys, scopeKey)
 			}
 		}
-		if page.exhausted || page.scanned == 0 {
+		if page.Exhausted || page.Scanned == 0 {
 			break
 		}
 	}
@@ -603,34 +603,16 @@ func (s *RedisStore) execute(
 	return parsed, nil
 }
 
-// pointerNowMs extracts the nowMs value from a payload map that may carry it
-// as int64 or *int64.
-func pointerNowMs(payload map[string]any) *int64 {
-	switch value := payload["nowMs"].(type) {
-	case int64:
-		return &value
-	case *int64:
-		return value
-	}
-	return nil
-}
+// REFACTOR-0008 下潜委托壳：两侧逐字节相同的解析原语收敛到
+// shared/platform/circuitstate，包内调用点零改动。
+func pointerNowMs(payload map[string]any) *int64 { return circuitstate.PointerNowMs(payload) }
 
 func nowMsValue(nowMs *int64, fallback func() int64) int64 {
 	return normalizedNowValue(nowMs, fallback)
 }
 
 func cursorString(value any, fallback string) string {
-	switch typed := value.(type) {
-	case string:
-		if typed != "" {
-			return typed
-		}
-	case float64:
-		return fmt.Sprintf("%d", int64(typed))
-	case json.Number:
-		return typed.String()
-	}
-	return fallback
+	return circuitstate.CursorString(value, fallback)
 }
 
 func encodeJSON(value any) string {
@@ -639,49 +621,11 @@ func encodeJSON(value any) string {
 	return jsonenc.EncodeJSON(value)
 }
 
-// decodeStrict parses a Lua cjson response. Lua encodes an empty array as
-// `{}`, so relatedStates is decoded leniently via stringList-style tolerance.
-func decodeStrict(encoded string, dst any) error {
-	decoder := json.NewDecoder(strings.NewReader(encoded))
-	decoder.UseNumber()
-	if err := decoder.Decode(dst); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("trailing JSON value")
-		}
-		return err
-	}
-	return nil
-}
+func decodeStrict(encoded string, dst any) error { return circuitstate.DecodeStrict(encoded, dst) }
 
-func redisStringResult(raw any) (string, bool) {
-	switch typed := raw.(type) {
-	case string:
-		return typed, true
-	case []byte:
-		return string(typed), true
-	}
-	return "", false
-}
+func redisStringResult(raw any) (string, bool) { return circuitstate.RedisStringResult(raw) }
 
-func numericRedisResult(raw any) (int64, error) {
-	switch typed := raw.(type) {
-	case int64:
-		return typed, nil
-	case float64:
-		return int64(typed), nil
-	case string:
-		value, ok := parseSafeInteger(typed)
-		if !ok {
-			return 0, errors.New("Redis 账户电路数值返回无效")
-		}
-		return int64(value), nil
-	}
-	return 0, errors.New("Redis 账户电路数值返回无效")
-}
+func numericRedisResult(raw any) (int64, error) { return circuitstate.NumericRedisResult(raw) }
 
 func redisAccountCircuitStoreKeys(name, namespace string) redisCircuitKeys {
 	safeName := sanitizeRedisName(name)
@@ -709,40 +653,12 @@ func redisNamespacedKey(key, namespace string) string { return rediscfg.Namespac
 
 // sanitizeRedisNamespacePart mirrors sanitizeRedisNamespacePart.
 // 实现收敛到 shared/platform/rediscfg（行为逐字节等价）。
-func sanitizeRedisNamespacePart(value string) string { return rediscfg.SanitizeRedisNamespacePart(value) }
-
-type redisListDuePage struct {
-	scopeKeys  []string
-	scanned    int64
-	nextOffset int64
-	exhausted  bool
+func sanitizeRedisNamespacePart(value string) string {
+	return rediscfg.SanitizeRedisNamespacePart(value)
 }
 
-func parseListDuePage(encoded string) (redisListDuePage, error) {
-	if encoded == "" {
-		return redisListDuePage{}, errors.New("Redis 账户电路 due 分页返回无效")
-	}
-	var parsed struct {
-		ScopeKeys  *[]any `json:"scopeKeys"`
-		Scanned    *int64 `json:"scanned"`
-		NextOffset *int64 `json:"nextOffset"`
-		Exhausted  *bool  `json:"exhausted"`
-	}
-	if err := json.Unmarshal([]byte(encoded), &parsed); err != nil {
-		return redisListDuePage{}, errors.New("Redis 账户电路 due 分页返回无效")
-	}
-	if parsed.ScopeKeys == nil || parsed.Scanned == nil || parsed.NextOffset == nil {
-		return redisListDuePage{}, errors.New("Redis 账户电路 due 分页 scopeKeys 无效")
-	}
-	if *parsed.Scanned < 0 || *parsed.NextOffset < 0 {
-		return redisListDuePage{}, errors.New("Redis 账户电路 due 分页游标无效")
-	}
-	scopeKeys := make([]string, 0, len(*parsed.ScopeKeys))
-	for _, item := range *parsed.ScopeKeys {
-		scopeKeys = append(scopeKeys, fmt.Sprintf("%v", item))
-	}
-	exhausted := parsed.Exhausted != nil && *parsed.Exhausted
-	return redisListDuePage{scopeKeys: scopeKeys, scanned: *parsed.Scanned, nextOffset: *parsed.NextOffset, exhausted: exhausted}, nil
+func parseListDuePage(encoded string) (circuitstate.RedisListDuePage, error) {
+	return circuitstate.ParseListDuePage(encoded)
 }
 
 func validateOperationPayload(operation string, input map[string]any) error {
@@ -830,39 +746,13 @@ func validateOperationPayload(operation string, input map[string]any) error {
 }
 
 func requiredPayloadString(input map[string]any, key string) (string, error) {
-	value, _ := input[key].(string)
-	normalized, err := requiredValue(value, key)
-	if err != nil {
-		return "", err
-	}
-	return normalized, nil
+	return circuitstate.RequiredPayloadString(input, key)
 }
 
 func requiredEvidenceKeyPayload(input map[string]any, key string) error {
-	value, _ := input[key].(string)
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	if normalized == "" {
-		return fmt.Errorf("账户电路操作缺少 %s", key)
-	}
-	if !isSHA256Hex(normalized) {
-		return errors.New("账户电路 failureEvidenceKey 必须是 SHA256")
-	}
-	return nil
+	return circuitstate.RequiredEvidenceKeyPayload(input, key)
 }
 
-func payloadInt64(value any) (int64, bool) {
-	switch typed := value.(type) {
-	case int64:
-		return typed, true
-	case float64:
-		return int64(typed), true
-	}
-	return 0, false
-}
+func payloadInt64(value any) (int64, bool) { return circuitstate.PayloadInt64(value) }
 
-func int64Min(left, right int64) int64 {
-	if left < right {
-		return left
-	}
-	return right
-}
+func int64Min(left, right int64) int64 { return circuitstate.Int64Min(left, right) }

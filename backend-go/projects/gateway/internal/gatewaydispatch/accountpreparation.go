@@ -9,6 +9,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
@@ -76,6 +78,13 @@ func shouldRecordAbortedUpstreamAttempt(err error) bool {
 }
 
 // HandleUnavailableProxyProfile mirrors handleUnavailableProxyProfile.
+//
+// 原实现中的账户状态突变分支（ApplyErrorHandlingWithCacheInvalidation /
+// SuppressLocally / RecordFailureForPrecheck / 顺带其内的
+// ProxyHealth.RecordFailureAsync）已删除：它们全部受
+// engine.AccountState != nil 守卫，生产组合根按设计不装配该端口
+// （普通请求不写 precheck/运行态，Node 侧本就未接线），分支从未执行。
+// 见 PLAN-20260918T142845703Z W6 与 PLAN-20260919T000723744Z。
 func (e *Engine) HandleUnavailableProxyProfile(
 	ctx context.Context,
 	req *gatewaypreauth.GatewayRequest,
@@ -83,7 +92,6 @@ func (e *Engine) HandleUnavailableProxyProfile(
 	account AccountCandidate,
 	settings gatewayruntimecache.GatewaySettings,
 	failedProxyDispatchKeys map[string]string,
-	accountStateMutationEnabled bool,
 	auditCapture AuditCapture,
 	auditAttemptIndex int,
 ) (*UpstreamAttempt, error) {
@@ -91,7 +99,7 @@ func (e *Engine) HandleUnavailableProxyProfile(
 		return nil, nil
 	}
 
-	attemptStartedAt := NowMs()
+	attemptStartedAt := gatewayupstream.NowMs()
 	message := "账户绑定的代理不可用"
 	if account.ProxyProfileErrorMessage != nil && *account.ProxyProfileErrorMessage != "" {
 		message = *account.ProxyProfileErrorMessage
@@ -128,36 +136,8 @@ func (e *Engine) HandleUnavailableProxyProfile(
 			RequestForModelAccounting: req,
 		})
 	}
-	if accountStateMutationEnabled && usageContext.TrafficSource != "gateway" && e.AccountState != nil {
-		if err := e.AccountState.ApplyErrorHandlingWithCacheInvalidation(ctx, account, AccountErrorInput{
-			Success:       false,
-			ErrorMessage:  message,
-			Settings:      settings,
-			TrafficSource: usageContext.TrafficSource,
-		}); err != nil {
-			return nil, err
-		}
-	}
-	if accountStateMutationEnabled && e.AccountState != nil {
-		localSuppression := e.AccountState.SuppressLocally(account, settings, message)
-		if usageContext.TrafficSource == "gateway" {
-			e.AccountState.RecordFailureForPrecheck(ctx, account, settings, PrecheckFailureInput{
-				SystemAccountID:         usageContext.SystemAccountID,
-				GroupID:                 usageContext.GroupID,
-				APIKeyID:                usageContext.APIKeyID,
-				ClientIP:                usageContext.ClientIP,
-				Endpoint:                gatewaypreauth.RequestEndpoint(req),
-				Reason:                  message,
-				ForcePrecheck:           localSuppression.Action == "precheck_required",
-				LocalSuppressionDelayMs: localSuppression.DelayMs,
-			})
-		}
-		if e.ProxyHealth != nil {
-			if err := e.ProxyHealth.RecordFailureAsync(ctx, account, message); err != nil {
-				return nil, err
-			}
-		}
-	}
+	// 账户状态突变分支已删（见函数注释）：生产组合根未装配
+	// engine.AccountState，原分支受 nil 守卫从未执行。
 	rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
 	return lastAttempt, nil
 }
@@ -330,7 +310,7 @@ func normalizeAPIKeyWeight(value any) int {
 }
 
 // credentialFloatValue narrows the JSON-decoded credential numbers
-//（等价 accountkeystates.asFloat 的取值面）。
+// （等价 accountkeystates.asFloat 的取值面）。
 func credentialFloatValue(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:
@@ -453,7 +433,7 @@ func cooldownUntilActive(cooldownUntil string) bool {
 	if parsed == nil {
 		return false
 	}
-	return parsed.UnixMilli() > NowMs()
+	return parsed.UnixMilli() > gatewayupstream.NowMs()
 }
 
 // BuildPreparedUpstreamRequestParts mirrors buildPreparedUpstreamRequestParts.
@@ -542,12 +522,12 @@ func (e *Engine) wrapCodexPreparationError(
 	}
 	if e.Usage != nil {
 		_ = e.Usage.RecordFailedUpstreamAttempt(ctx, req, usageContext, account, FailedAttemptRecord{
-			UpstreamURL:    upstreamURL,
-			StartedAt:      NowMs(),
-			StatusCode:     adapterErr.StatusCode,
-			HasStatusCode:  true,
-			BodyText:       string(serialized),
-			ErrorMessage:   adapterErr.Message,
+			UpstreamURL:   upstreamURL,
+			StartedAt:     gatewayupstream.NowMs(),
+			StatusCode:    adapterErr.StatusCode,
+			HasStatusCode: true,
+			BodyText:      string(serialized),
+			ErrorMessage:  adapterErr.Message,
 		})
 	}
 	return err
@@ -585,10 +565,10 @@ func (e *Engine) sanitizeCodexResponsesHistoryForAccount(
 	if !ok {
 		return
 	}
-	if SanitizeCodexHistory == nil {
+	if gatewayoauthcodex.SanitizeCodexHistory == nil {
 		return
 	}
-	result := SanitizeCodexHistory(items, SanitizeCodexHistoryOptions{
+	result := gatewayoauthcodex.SanitizeCodexHistory(items, SanitizeCodexHistoryOptions{
 		Store:                  false,
 		TargetScopeKey:         "account:" + account.ID,
 		TargetPersistenceScope: "none",
@@ -632,10 +612,10 @@ func (e *Engine) SanitizePreparedCodexResponsesHistoryForAccount(
 	if !ok {
 		return body
 	}
-	if SanitizeCodexHistory == nil {
+	if gatewayoauthcodex.SanitizeCodexHistory == nil {
 		return body
 	}
-	result := SanitizeCodexHistory(items, SanitizeCodexHistoryOptions{
+	result := gatewayoauthcodex.SanitizeCodexHistory(items, SanitizeCodexHistoryOptions{
 		Store:                  false,
 		TargetScopeKey:         "account:" + account.ID,
 		TargetPersistenceScope: "none",

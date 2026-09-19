@@ -29,7 +29,7 @@ import (
 )
 
 // schemaCircuitOutboxDDL 镜像 accounts_test.go schemaStatements 中的同名表
-//（DROP 后重建用），列集与约束保持一致。
+// （DROP 后重建用），列集与约束保持一致。
 const schemaCircuitOutboxDDL = `CREATE TABLE IF NOT EXISTS account_circuit_outbox (
 	event_id TEXT PRIMARY KEY,
 	projection_key TEXT NOT NULL,
@@ -379,7 +379,7 @@ func TestW13GRuntimeResetOwnerRuntimeFailureArms(t *testing.T) {
 	}
 	for _, col := range []string{"next_health_check_at", "last_health_success_at", "last_health_check_status_code", "last_health_check_trace_id"} {
 		var value sql.NullString
-		if err := env.db.QueryRow(`SELECT `+col+` FROM accounts WHERE id = 'acc-w13g-hc'`).Scan(&value); err != nil {
+		if err := env.db.QueryRow(`SELECT ` + col + ` FROM accounts WHERE id = 'acc-w13g-hc'`).Scan(&value); err != nil {
 			t.Fatal(err)
 		}
 		if value.Valid {
@@ -518,7 +518,7 @@ func TestW13GRuntimeResetAPIKeySurfaces(t *testing.T) {
 	effects4 := &w13gEffects{fakeRuntimeEffects: &fakeRuntimeEffects{}}
 	effects4.failClearTrans = true
 	effects4.fakeRuntimeEffects.transientStates = []AccountAPIKeyTransientSelectionState{{
-		KeyFingerprint: fingerprintAccountAPIKey(testSecret, "sk-w13g-ak4"),
+		KeyFingerprint:      fingerprintAccountAPIKey(testSecret, "sk-w13g-ak4"),
 		TransientGeneration: 7, HasGeneration: true,
 	}}
 	env.store.SetRuntimeResetEffects(effects4)
@@ -542,7 +542,7 @@ func TestW13GRuntimeResetAPIKeySurfaces(t *testing.T) {
 	env.exec(t, `UPDATE accounts SET credentials_encrypted = ? WHERE id = 'acc-w13g-ak5'`, multi)
 	effects5 := &w13gEffects{fakeRuntimeEffects: &fakeRuntimeEffects{}}
 	effects5.fakeRuntimeEffects.transientStates = []AccountAPIKeyTransientSelectionState{{
-		KeyFingerprint: fingerprintAccountAPIKey(testSecret, "sk-w13g-a"),
+		KeyFingerprint:      fingerprintAccountAPIKey(testSecret, "sk-w13g-a"),
 		TransientGeneration: 3, HasGeneration: true,
 	}}
 	env.store.SetRuntimeResetEffects(effects5)
@@ -632,15 +632,15 @@ func TestW13GPatchAccountFailureStateDirectArms(t *testing.T) {
 	env.exec(t, `UPDATE accounts SET status = 'error', last_error_code = 'e',
 		last_error_message = 'm' WHERE id = 'acc-w13g-p1'`)
 	base := patchFailureStateInput{
-		accountID:              "acc-w13g-p1",
-		expectedConfigRevision: 1,
-		access:                 AccessScope{ViewerID: adminID, IsAdmin: true},
-		now:                    time.Now().UTC(),
+		AccountID:              "acc-w13g-p1",
+		ExpectedConfigRevision: 1,
+		Access:                 AccessScope{ViewerID: adminID, IsAdmin: true},
+		Now:                    time.Now().UTC(),
 	}
 
 	// scope 过滤命中不了行 → (nil,nil)。
 	scoped := base
-	scoped.access = AccessScope{ViewerID: "someone-else"}
+	scoped.Access = AccessScope{ViewerID: "someone-else"}
 	if out, err := env.store.patchAccountFailureStateForReset(context.Background(), scoped); err != nil || out != nil {
 		t.Fatalf("scope 不匹配应返回 nil：%v %v", out, err)
 	}
@@ -649,7 +649,7 @@ func TestW13GPatchAccountFailureStateDirectArms(t *testing.T) {
 	env.seedAccount(t, "acc-w13g-p2", adminID, "w13g-p2", "active")
 	env.exec(t, `UPDATE accounts SET status = 'pending_test' WHERE id = 'acc-w13g-p2'`)
 	pending := base
-	pending.accountID = "acc-w13g-p2"
+	pending.AccountID = "acc-w13g-p2"
 	if _, err := env.store.patchAccountFailureStateForReset(context.Background(), pending); err == nil ||
 		err.Error() != "账户正在等待首次后台健康检查，无需重新检查" {
 		t.Fatalf("fresh pending 拒绝：%v", err)
@@ -659,9 +659,9 @@ func TestW13GPatchAccountFailureStateDirectArms(t *testing.T) {
 	env.seedAccount(t, "acc-w13g-p3", adminID, "w13g-p3", "active")
 	env.exec(t, `UPDATE accounts SET status = 'disabled' WHERE id = 'acc-w13g-p3'`)
 	disabled := base
-	disabled.accountID = "acc-w13g-p3"
+	disabled.AccountID = "acc-w13g-p3"
 	out, err := env.store.patchAccountFailureStateForReset(context.Background(), disabled)
-	if err != nil || out == nil || len(out.changedFields) != 0 || out.status != "disabled" {
+	if err != nil || out == nil || len(out.ChangedFields) != 0 || out.Status != "disabled" {
 		t.Fatalf("disabled unchanged：%v %v", out, err)
 	}
 
@@ -670,9 +670,9 @@ func TestW13GPatchAccountFailureStateDirectArms(t *testing.T) {
 	env.exec(t, `UPDATE accounts SET status = 'rate_limited', last_error_code = 'r',
 		last_error_message = 'm', account_expires_at = ? WHERE id = 'acc-w13g-p4'`, "2020-01-01T00:00:00Z")
 	expired := base
-	expired.accountID = "acc-w13g-p4"
+	expired.AccountID = "acc-w13g-p4"
 	out, err = env.store.patchAccountFailureStateForReset(context.Background(), expired)
-	if err != nil || out == nil || out.status != "disabled" {
+	if err != nil || out == nil || out.Status != "disabled" {
 		t.Fatalf("expired 恢复：%v %v", out, err)
 	}
 	var code, message string
@@ -688,9 +688,9 @@ func TestW13GPatchAccountFailureStateDirectArms(t *testing.T) {
 	// active 无失败列 → unchanged。
 	env.seedAccount(t, "acc-w13g-p5", adminID, "w13g-p5", "active")
 	fresh := base
-	fresh.accountID = "acc-w13g-p5"
+	fresh.AccountID = "acc-w13g-p5"
 	out, err = env.store.patchAccountFailureStateForReset(context.Background(), fresh)
-	if err != nil || out == nil || len(out.changedFields) != 0 {
+	if err != nil || out == nil || len(out.ChangedFields) != 0 {
 		t.Fatalf("active unchanged：%v %v", out, err)
 	}
 
@@ -701,9 +701,9 @@ func TestW13GPatchAccountFailureStateDirectArms(t *testing.T) {
 	env.exec(t, `INSERT INTO account_lock_states (account_id, enabled, lock_state, updated_at)
 		VALUES ('acc-w13g-p6', 1, 'DEAD_CONFIRMED', ?)`, time.Now().UTC().Format(time.RFC3339Nano))
 	locked := base
-	locked.accountID = "acc-w13g-p6"
+	locked.AccountID = "acc-w13g-p6"
 	out, err = env.store.patchAccountFailureStateForReset(context.Background(), locked)
-	if err != nil || out == nil || len(out.changedFields) != 0 || out.status != "error" {
+	if err != nil || out == nil || len(out.ChangedFields) != 0 || out.Status != "error" {
 		t.Fatalf("locked unchanged：%v %v", out, err)
 	}
 
@@ -721,8 +721,8 @@ func TestW13GPatchAccountFailureStateDirectArms(t *testing.T) {
 		env2.seedAccount(t, "acc-w13g-p7", root, "w13g-p7", "active")
 		env2.exec(t, `UPDATE accounts SET authorization_instance_authorization_id = 'ra-x',
 			authorization_instance_source_account_id = 'acc-w13g-src7' WHERE id = 'acc-w13g-p7'`)
-		stamped := patchFailureStateInput{accountID: "acc-w13g-p7", expectedConfigRevision: 1,
-			access: AccessScope{ViewerID: root, IsAdmin: true}, now: time.Now().UTC()}
+		stamped := patchFailureStateInput{AccountID: "acc-w13g-p7", ExpectedConfigRevision: 1,
+			Access: AccessScope{ViewerID: root, IsAdmin: true}, Now: time.Now().UTC()}
 		if out, err := env2.store.patchAccountFailureStateForReset(context.Background(), stamped); err != nil || out != nil {
 			t.Fatalf("stamp 行应返回 nil：%v %v", out, err)
 		}
@@ -738,8 +738,8 @@ func TestW13GPatchAccountFailureStateDirectArms(t *testing.T) {
 		admin3 := env3.login(t, "root", "root-pass", "super_admin")
 		env3.seedProviderAndDefaultGroup(t, admin3)
 		env3.seedAccount(t, "acc-w13g-p8", admin3, "w13g-p8", "active")
-		closed := patchFailureStateInput{accountID: "acc-w13g-p8", expectedConfigRevision: 1,
-			access: AccessScope{ViewerID: admin3, IsAdmin: true}, now: time.Now().UTC()}
+		closed := patchFailureStateInput{AccountID: "acc-w13g-p8", ExpectedConfigRevision: 1,
+			Access: AccessScope{ViewerID: admin3, IsAdmin: true}, Now: time.Now().UTC()}
 		env3.db.Close()
 		if _, err := env3.store.patchAccountFailureStateForReset(context.Background(), closed); err == nil {
 			t.Fatal("db 关闭 BeginTx 应报错")
@@ -759,27 +759,27 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.store.SetRuntimeResetEffects(&fakeRuntimeEffects{})
-	base := updateAuthorizedBindingDispatchInput{expectedConfigRevision: 1, access: AccessScope{ViewerID: alice}}
+	base := updateAuthorizedBindingDispatchInput{ExpectedConfigRevision: 1, Access: AccessScope{ViewerID: alice}}
 
 	// revision < 1 → ValidationError。
 	bad := base
-	bad.accountID = "acc-w13g-any"
-	bad.expectedConfigRevision = 0
+	bad.AccountID = "acc-w13g-any"
+	bad.ExpectedConfigRevision = 0
 	if _, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), bad); err == nil {
 		t.Fatal("revision<1 应报错")
 	}
 
 	// 无 scope 且非管理员 → (nil,nil)。
 	noScope := base
-	noScope.accountID = "acc-w13g-any"
-	noScope.access = AccessScope{}
+	noScope.AccountID = "acc-w13g-any"
+	noScope.Access = AccessScope{}
 	if out, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), noScope); err != nil || out != nil {
 		t.Fatalf("无 scope 应返回 nil：%v %v", out, err)
 	}
 
 	// 不存在的实例 → (nil,nil)。
 	missing := base
-	missing.accountID = "acc-w13g-missing"
+	missing.AccountID = "acc-w13g-missing"
 	if out, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), missing); err != nil || out != nil {
 		t.Fatalf("缺失实例应返回 nil：%v %v", out, err)
 	}
@@ -787,7 +787,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	// pending_test 实例 → 健康检查门拒绝。
 	id, _, _, _ := w13gSeedAuthInstance(t, env, root, alice, "pnd", "active", "pending_test", true)
 	pending := base
-	pending.accountID = id
+	pending.AccountID = id
 	if _, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), pending); err == nil ||
 		err.Error() != "待检查账户需等待后台健康检查通过后才能参与调度" {
 		t.Fatalf("pending 拒绝：%v", err)
@@ -796,8 +796,8 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	// revision 冲突。
 	id2, _, _, _ := w13gSeedAuthInstance(t, env, root, alice, "rev", "active", "rate_limited", true)
 	conflict := base
-	conflict.accountID = id2
-	conflict.expectedConfigRevision = 99
+	conflict.AccountID = id2
+	conflict.ExpectedConfigRevision = 99
 	if _, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), conflict); err == nil {
 		var conflictErr *RevisionConflictError
 		if !errors.As(err, &conflictErr) {
@@ -811,7 +811,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	id3, _, authID3, _ := w13gSeedAuthInstance(t, env, root, alice, "rvk", "active", "rate_limited", true)
 	env.exec(t, `UPDATE resource_authorizations SET status = 'revoked' WHERE id = ?`, authID3)
 	revoked := base
-	revoked.accountID = id3
+	revoked.AccountID = id3
 	if out, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), revoked); err != nil || out != nil {
 		t.Fatalf("revoked 应返回 nil：%v %v", out, err)
 	}
@@ -820,7 +820,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	id4, source4, _, _ := w13gSeedAuthInstance(t, env, root, alice, "srcdis", "active", "rate_limited", true)
 	env.exec(t, `UPDATE accounts SET status = 'disabled' WHERE id = ?`, source4)
 	srcDisabled := base
-	srcDisabled.accountID = id4
+	srcDisabled.AccountID = id4
 	if _, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), srcDisabled); err == nil ||
 		err.Error() != "授权方原账户已停用，当前账户不能调用" {
 		t.Fatalf("源停用拒绝：%v", err)
@@ -830,7 +830,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	id5, source5, _, _ := w13gSeedAuthInstance(t, env, root, alice, "srcdel", "active", "rate_limited", true)
 	env.exec(t, `UPDATE accounts SET deleted_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339Nano), source5)
 	srcGone := base
-	srcGone.accountID = id5
+	srcGone.AccountID = id5
 	if _, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), srcGone); err == nil ||
 		!strings.Contains(err.Error(), "授权方原账户不存在") {
 		t.Fatalf("源缺失拒绝：%v", err)
@@ -841,9 +841,9 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	env.exec(t, `INSERT INTO account_lock_states (account_id, enabled, lock_state, updated_at)
 		VALUES (?, 1, 'ENGAGED', ?)`, id6, time.Now().UTC().Format(time.RFC3339Nano))
 	locked := base
-	locked.accountID = id6
+	locked.AccountID = id6
 	out, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), locked)
-	if err != nil || out == nil || len(out.changedFields) != 0 {
+	if err != nil || out == nil || len(out.ChangedFields) != 0 {
 		t.Fatalf("locked unchanged：%v %v", out, err)
 	}
 
@@ -855,9 +855,9 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 		stream_failure_count = 1, stream_failure_window_started_at = ? WHERE id = ?`,
 		"2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", id7)
 	cols := base
-	cols.accountID = id7
+	cols.AccountID = id7
 	out, err = env.store.updateAuthorizedBindingDispatchForReset(context.Background(), cols)
-	if err != nil || out == nil || len(out.changedFields) == 0 || out.configRevision != 2 {
+	if err != nil || out == nil || len(out.ChangedFields) == 0 || out.ConfigRevision != 2 {
 		t.Fatalf("失败列清理：%v %v", out, err)
 	}
 	var count int
@@ -875,7 +875,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	id8, _, _, _ := w13gSeedAuthInstance(t, env, root, alice, "adv8", "active", "rate_limited", true)
 	env.exec(t, `DROP TABLE account_circuit_outbox`)
 	adv := base
-	adv.accountID = id8
+	adv.AccountID = id8
 	if _, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), adv); err == nil {
 		t.Fatal("outbox 缺失应报错")
 	}
@@ -899,7 +899,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 		'rate_limited', ?, '', 'gpt-4o-mini', 'chat_json', ?, ?, 'ra-w13g-empty', '')`,
 		alice, sealed, now, now)
 	empty := base
-	empty.accountID = "acc-w13g-inst-empty"
+	empty.AccountID = "acc-w13g-inst-empty"
 	if out, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), empty); err != nil || out != nil {
 		t.Fatalf("空 stamp 应返回 nil：%v %v", out, err)
 	}
@@ -907,7 +907,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 	// group_accounts 缺失 → binding 查询失败。
 	env.exec(t, `DROP TABLE group_accounts`)
 	gb := base
-	gb.accountID = id7
+	gb.AccountID = id7
 	if _, err := env.store.updateAuthorizedBindingDispatchForReset(context.Background(), gb); err == nil {
 		t.Fatal("group_accounts 缺失应报错")
 	}
@@ -923,7 +923,7 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 		}
 		id9, _, _, _ := w13gSeedAuthInstance(t, env2, root2, alice2, "lk9", "active", "rate_limited", true)
 		env2.exec(t, `DROP TABLE account_lock_states`)
-		lk := updateAuthorizedBindingDispatchInput{expectedConfigRevision: 1, access: AccessScope{ViewerID: alice2}, accountID: id9}
+		lk := updateAuthorizedBindingDispatchInput{ExpectedConfigRevision: 1, Access: AccessScope{ViewerID: alice2}, AccountID: id9}
 		if _, err := env2.store.updateAuthorizedBindingDispatchForReset(context.Background(), lk); err == nil {
 			t.Fatal("lock 表缺失应报错")
 		}
@@ -934,8 +934,8 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 		env3 := newTestEnv(t)
 		root3 := env3.login(t, "root", "root-pass", "super_admin")
 		env3.exec(t, `DROP TABLE accounts`)
-		drop := updateAuthorizedBindingDispatchInput{expectedConfigRevision: 1,
-			access: AccessScope{ViewerID: root3, IsAdmin: true}, accountID: "acc-w13g-any"}
+		drop := updateAuthorizedBindingDispatchInput{ExpectedConfigRevision: 1,
+			Access: AccessScope{ViewerID: root3, IsAdmin: true}, AccountID: "acc-w13g-any"}
 		if _, err := env3.store.updateAuthorizedBindingDispatchForReset(context.Background(), drop); err == nil {
 			t.Fatal("accounts 表缺失应报错")
 		}
@@ -946,8 +946,8 @@ func TestW13GAuthorizedDispatchDirectArms(t *testing.T) {
 		env4 := newTestEnv(t)
 		root4 := env4.login(t, "root", "root-pass", "super_admin")
 		env4.db.Close()
-		closed := updateAuthorizedBindingDispatchInput{expectedConfigRevision: 1,
-			access: AccessScope{ViewerID: root4, IsAdmin: true}, accountID: "acc-w13g-any"}
+		closed := updateAuthorizedBindingDispatchInput{ExpectedConfigRevision: 1,
+			Access: AccessScope{ViewerID: root4, IsAdmin: true}, AccountID: "acc-w13g-any"}
 		if _, err := env4.store.updateAuthorizedBindingDispatchForReset(context.Background(), closed); err == nil {
 			t.Fatal("db 关闭 BeginTx 应报错")
 		}
@@ -962,12 +962,12 @@ func TestW13GAdvanceResetDispatchRevision(t *testing.T) {
 
 	// 正常推进 → applied。
 	fence, err := env.store.advanceResetDispatchRevision(context.Background(), "acc-w13g-f1", "dispatch_w13g_t1", 1)
-	if err != nil || fence.status != "applied" || fence.dispatchRevision != 2 {
+	if err != nil || fence.Status != "applied" || fence.DispatchRevision != 2 {
 		t.Fatalf("fence applied：%+v %v", fence, err)
 	}
 	// 同 transitionID 重放 → idempotent。
 	fence, err = env.store.advanceResetDispatchRevision(context.Background(), "acc-w13g-f1", "dispatch_w13g_t1", 1)
-	if err != nil || fence.status != "idempotent" || fence.dispatchRevision != 2 {
+	if err != nil || fence.Status != "idempotent" || fence.DispatchRevision != 2 {
 		t.Fatalf("fence idempotent：%+v %v", fence, err)
 	}
 	// 篡改既有 dedupe 事件身份（合法枚举内换 event_type）→ 冲突。
@@ -1029,12 +1029,12 @@ func TestW13GResetPureHelpers(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("key 过滤与去重：%v", entries)
 	}
-	if fingerprintAccountAPIKey("sec", "sk-w13g-x") != entries[0].fingerprint {
+	if fingerprintAccountAPIKey("sec", "sk-w13g-x") != entries[0].Fingerprint {
 		t.Fatalf("fingerprint：%v", entries)
 	}
 	// 无 api_keys 时回落单 key。
 	entries = accountAPIKeyEntries("sec", Credentials{"api_key": " sk-single "})
-	if len(entries) != 1 || fingerprintAccountAPIKey("sec", "sk-single") != entries[0].fingerprint {
+	if len(entries) != 1 || fingerprintAccountAPIKey("sec", "sk-single") != entries[0].Fingerprint {
 		t.Fatalf("单 key 回落：%v", entries)
 	}
 
@@ -1082,14 +1082,14 @@ func TestW13GFindResetSummaryScopes(t *testing.T) {
 	}
 	// owner 读取成功。
 	out, err := env.store.findResetSummary(context.Background(), "acc-w13g-sum1", AccessScope{ViewerID: adminID, IsAdmin: true})
-	if err != nil || out == nil || out.accessType != "owner" {
+	if err != nil || out == nil || out.AccessType != "owner" {
 		t.Fatalf("owner 读取：%v %v", out, err)
 	}
 	// 损坏的 sealed 凭据 → credentials 回落空 map。
 	env.seedAccount(t, "acc-w13g-sum2", adminID, "w13g-sum2", "active")
 	env.exec(t, `UPDATE accounts SET credentials_encrypted = 'not-sealed' WHERE id = 'acc-w13g-sum2'`)
 	out, err = env.store.findResetSummary(context.Background(), "acc-w13g-sum2", AccessScope{ViewerID: adminID, IsAdmin: true})
-	if err != nil || out == nil || out.credentials == nil || len(out.credentials) != 0 {
+	if err != nil || out == nil || out.Credentials == nil || len(out.Credentials) != 0 {
 		t.Fatalf("坏凭据回落：%v %v", out, err)
 	}
 	// accounts 表缺失 → owner 查询失败。

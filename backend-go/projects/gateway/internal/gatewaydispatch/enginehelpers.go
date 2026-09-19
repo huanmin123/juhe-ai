@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -357,11 +358,11 @@ func (e *Engine) assertGatewayRequestWallBudgetAvailableForAttempt(
 	}
 	auditCapture.AddGatewayMetadata("gateway_upstream_attempt_blocked_wall_budget", map[string]any{
 		"reason":                 "gateway_request_wall_budget_exhausted",
-		"wallRemainingMs":        wallBudget.RemainingMs(NowMs()),
+		"wallRemainingMs":        wallBudget.RemainingMs(gatewayupstream.NowMs()),
 		"finalResponseReserveMs": finalResponseReserveMs,
 		"attempts":               tracker.Snapshot().AttemptedAccountRuntimeKeys,
 	})
-	return &GatewayRequestWallBudgetExhaustedError{WallRemainingMs: wallBudget.RemainingMs(NowMs())}
+	return &GatewayRequestWallBudgetExhaustedError{WallRemainingMs: wallBudget.RemainingMs(gatewayupstream.NowMs())}
 }
 
 // shouldRetainTransportFailureForRecovery mirrors

@@ -48,8 +48,8 @@ func TestBug0162LockEngagedDeadlineRecomputed(t *testing.T) {
 	env.seedEngagedLock(t, id, 300)
 
 	updated, err := env.store.SetLock(context.Background(), SetLockInput{
-		AccountID:              id,
-		Enabled:                true,
+		AccountID:               id,
+		Enabled:                 true,
 		LockDeathTimeoutSeconds: func() *int { v := 600; return &v }(),
 	}, AccessScope{ViewerID: adminID, IsAdmin: true})
 	if err != nil {

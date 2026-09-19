@@ -2,7 +2,6 @@ package tablemonitor
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -13,6 +12,8 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/pgpool"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
@@ -706,11 +707,9 @@ func sqliteTimestamp(value time.Time) string {
 }
 
 func newID(prefix string) (string, error) {
-	var raw [16]byte
-	// crypto/rand.Read 自 Go 1.24 起保证不会返回错误，原 err 分支不可达，
-	// 按死守卫删除（w12f）；签名保留 error 以免扰动调用方。
-	_, _ = rand.Read(raw[:])
-	return fmt.Sprintf("%s-%x", prefix, raw[:]), nil
+	// 随机段收敛到 shared/platform/idgen（格式不变：<prefix>-<32hex>）；
+	// 签名保留 error 以免扰动调用方。
+	return fmt.Sprintf("%s-%s", prefix, idgen.RandomHex(16)), nil
 }
 
 const sqliteSchema = `

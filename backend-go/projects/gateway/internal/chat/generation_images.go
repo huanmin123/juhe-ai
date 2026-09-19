@@ -561,15 +561,23 @@ func (s *LocalObjectStore) Delete(storageKeys []string) error {
 	return nil
 }
 
+// AssetEditReferenceReader is the narrow port through which the generation
+// family reads ready chat assets for image edits (REFACTOR-0006 phase C:
+// implemented by chatassets.AssetStore, injected via Deps at assembly —
+// root -> chatassets stays one-way).
+type AssetEditReferenceReader interface {
+	ListReadyAssetsByID(assetIDs []string, ownerID, conversationID, now string) ([]*Asset, error)
+}
+
 // loadImageEditReferences mirrors loadChatImageEditReferences over the store.
-func (s *Store) loadImageEditReferences(objectStore ObjectStore, assetIDs []string, ownerID, conversationID, nowValue string) ([]ChatImageEditReference, error) {
+func loadImageEditReferences(reader AssetEditReferenceReader, objectStore ObjectStore, assetIDs []string, ownerID, conversationID, nowValue string) ([]ChatImageEditReference, error) {
 	if len(assetIDs) == 0 {
 		return nil, errors.New("编辑图片必须至少引用一张图片")
 	}
 	if len(assetIDs) > chatImageEditMaxReferenceImages {
 		return nil, errors.New("编辑图片最多引用 5 张图片")
 	}
-	assets, err := s.ListReadyAssetsByID(assetIDs, ownerID, conversationID, nowValue)
+	assets, err := reader.ListReadyAssetsByID(assetIDs, ownerID, conversationID, nowValue)
 	if err != nil {
 		return nil, err
 	}

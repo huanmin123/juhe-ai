@@ -13,7 +13,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -433,12 +432,14 @@ func TestWdSseWaitHeartbeatFactoryAndLoop(t *testing.T) {
 	if !GatewayDownstreamProtocolUsesSSE("responses_sse") || GatewayDownstreamProtocolUsesSSE("json") {
 		t.Fatal("SSE 协议判定错误")
 	}
-	// SSE + 注入定时器：Start 立即写首个心跳，随后按节拍重复；Stop 幂等停止。
-	downstream := newDownstreamWd()
+	// SSE + 注入定时器：Start 立即写首个心跳，随后按节拍重复；观察走带锁
+	// fake（TrackingWriter/Recorder 轮询在 -race 下与循环 goroutine 竞争），
+	// 断言放在 Stop 返回后（W3：Stop 同步等待 goroutine 退出）。
+	res := newW3HeartbeatRecordingRes()
 	commit := &DownstreamCommitState{}
 	ticks := make(chan time.Time, 4)
 	heartbeat := CreateGatewaySseWaitHeartbeat(HeartbeatDeps{
-		Res:                          downstream.Res,
+		Res:                          res,
 		DownstreamProtocol:           "responses_sse",
 		DownstreamCommit:             commit,
 		IntervalMs:                   15_000,
@@ -461,13 +462,13 @@ func TestWdSseWaitHeartbeatFactoryAndLoop(t *testing.T) {
 	// Start 是异步循环：有界等待首个心跳写出（固定 Now/定时器注入，
 	// 不依赖真实时间间隔）。
 	deadline := time.Now().Add(2 * time.Second)
-	for !downstream.Res.HeadersSent() && time.Now().Before(deadline) {
+	for res.writeCount() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if !downstream.Res.HeadersSent() {
+	heartbeat.Stop()
+	if !res.HeadersSent() {
 		t.Fatal("首个心跳应带出发头")
 	}
-	heartbeat.Stop()
 	heartbeat.Stop() // Stop 幂等。
 	time.Sleep(5 * time.Millisecond)
 
@@ -478,7 +479,7 @@ func TestWdSseWaitHeartbeatFactoryAndLoop(t *testing.T) {
 	}
 	// 语义已提交后心跳写出不再继续。
 	commit.SemanticCommitted = true
-	if writeHeartbeatChunk(HeartbeatDeps{Res: downstream.Res, DownstreamCommit: commit}, gatewaySseWaitHeartbeatChunk) {
+	if writeHeartbeatChunk(HeartbeatDeps{Res: res, DownstreamCommit: commit}, gatewaySseWaitHeartbeatChunk) {
 		t.Fatal("语义已提交后不应再写出心跳")
 	}
 }
@@ -662,10 +663,3 @@ func wdInt(value *int) int {
 }
 
 func wdIntPtr(value int) *int { return &value }
-
-// newDownstreamWd 只返回写侧（无需 recorder 断言时避免未用变量）。
-func newDownstreamWd() StreamDownstream {
-	recorder := httptest.NewRecorder()
-	tracking := gatewaypreauth.NewTrackingWriter(recorder)
-	return StreamDownstream{Res: tracking}
-}

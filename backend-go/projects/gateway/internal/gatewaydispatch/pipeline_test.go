@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -26,7 +27,7 @@ func candidateFilterInput(t *testing.T, req *gatewaypreauth.GatewayRequest, acco
 		Req:              req,
 		AuditCapture:     &frozenAudit{sink: &fakeAuditSink{}},
 		UsageContext:     testUsageContext(),
-		StartedAt:        NowMs(),
+		StartedAt:        gatewayupstream.NowMs(),
 		RawCandidates:    accounts,
 		SystemAccountID:  "system-1",
 		GroupID:          "group-1",
@@ -203,7 +204,7 @@ func TestPrepareDispatchAccountsReady(t *testing.T) {
 		Req:               req,
 		AuditCapture:      &frozenAudit{sink: &fakeAuditSink{}},
 		UsageContext:      testUsageContext(),
-		StartedAt:         NowMs(),
+		StartedAt:         gatewayupstream.NowMs(),
 		CandidateAccounts: testAccounts("a-1", "a-2"),
 		ModelPriority: &gatewayrouting.GatewayAccountModelPriority{
 			RankByAccountID: map[string]int{"a-1": ModelPriorityRankDirect, "a-2": ModelPriorityRankDirect},

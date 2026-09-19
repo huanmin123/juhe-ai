@@ -34,7 +34,7 @@ func (s *Store) SetAuthorizationStatsSource(source AuthorizationStatsSource) {
 // AccessScope: admins manage every owner; scoped viewers manage their own rows
 // (the same visibility predicate FindAdvancedDetail applies to owner rows).
 func canManageResourceOwner(ownerSystemAccountID string, access AccessScope) bool {
-	if access.canAccessAll() {
+	if access.CanAccessAll() {
 		return true
 	}
 	return ownerSystemAccountID != "" && ownerSystemAccountID == access.ViewerID

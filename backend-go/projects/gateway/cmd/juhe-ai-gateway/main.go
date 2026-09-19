@@ -542,6 +542,22 @@ func main() {
 		})
 	}
 
+	// Owner readiness is wired once here and shared by the loopback /health
+	// listener and the main-port GET /__aisys__/health route (compose.go), so
+	// every probe face reports identical owner facts.
+	ownerHealth := &gatewayOwnerHealth{
+		ownerMode:             ownerMode,
+		auditRunning:          &auditRunning,
+		operationEnabled:      operationConfig.Enabled,
+		operationRunning:      &operationRunning,
+		j3bWired:              j3bHostComponent.Run != nil,
+		j3bRunning:            &j3bRunning,
+		retentionEnabled:      retentionEnabled,
+		retentionRunning:      &retentionRunning,
+		circuitRuntimeEnabled: circuitRuntimeEnabled,
+		circuitRuntimeRunning: &circuitRuntimeRunning,
+	}
+
 	listener, err := listenLoopback(*healthAddress)
 	if err != nil {
 		fail(fmt.Errorf("listen gateway health endpoint %q: %w", *healthAddress, err))
@@ -560,7 +576,7 @@ func main() {
 		// X04: the F3 audit config backs the audit-logs read face (dataset
 		// handle pool, hot-search and payload-blob roots); the in-process
 		// producer built above is the chain audit write face.
-		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore, operationLease, auditProducer, auditConfig)
+		composed, err = composeSystemAPI(runtimeCfg, postgresPools, operationStore, operationLease, auditProducer, auditConfig, ownerHealth)
 		if err != nil {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}
@@ -655,12 +671,12 @@ func main() {
 			http.NotFound(response, request)
 			return
 		}
-		ready := auditRunning.Load() && (!operationConfig.Enabled || operationRunning.Load()) && (j3bHostComponent.Run == nil || j3bRunning.Load()) && (!retentionEnabled || retentionRunning.Load()) && (!circuitRuntimeEnabled || circuitRuntimeRunning.Load())
+		status, payload := ownerHealth.readiness()
 		response.Header().Set("Content-Type", "application/json")
-		if !ready {
-			response.WriteHeader(http.StatusServiceUnavailable)
+		if status != http.StatusOK {
+			response.WriteHeader(status)
 		}
-		_ = json.NewEncoder(response).Encode(map[string]any{"ready": ready, "ownerReady": ready, "ownerMode": ownerMode, "auditLogReady": auditRunning.Load(), "operationLogReady": operationRunning.Load(), "j3bReady": j3bRunning.Load(), "sessionRetentionReady": retentionRunning.Load(), "accountCircuitRuntimeReady": circuitRuntimeRunning.Load()})
+		_ = json.NewEncoder(response).Encode(payload)
 	})
 	healthServer := &http.Server{
 		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

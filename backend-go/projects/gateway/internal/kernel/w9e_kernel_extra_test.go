@@ -11,10 +11,37 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// syncBuffer 是观测事件 sink 用的线程安全 bytes.Buffer：closed-path 等异步
+// 事件从服务端 goroutine 写入，测试 goroutine 轮询读取，直接共享 bytes.Buffer
+// 是数据竞争（-race 下 TestW9EObservabilityClosedPathAndLevels 暴露）。
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func (s *syncBuffer) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buf.Reset()
+}
 
 func TestW9ESystemErrorMessageForStatusAllBranches(t *testing.T) {
 	cases := map[int]string{
@@ -540,7 +567,7 @@ func TestW9EObservabilitySinkAndMetricHooks(t *testing.T) {
 }
 
 func TestW9EObservabilityClosedPathAndLevels(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	SetRequestEventSink(NewSlogRequestEventSink(logger))
 	defer SetRequestEventSink(nil)

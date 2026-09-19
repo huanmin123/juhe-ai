@@ -3,13 +3,40 @@ package operationlog
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 )
+
+// sliceLogger 是 producer 测试的告警收集器：worker goroutine 会并发写，读取
+// 必须经 snapshot() 加锁拷贝。
+type sliceLogger struct {
+	mu    sync.Mutex
+	warns *[]string
+}
+
+func (l *sliceLogger) Warn(msg string, _ ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	*l.warns = append(*l.warns, msg)
+}
+
+func (l *sliceLogger) Error(msg string, _ ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	*l.warns = append(*l.warns, msg)
+}
+
+func (l *sliceLogger) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), *l.warns...)
+}
 
 func TestSafeChangeSensitiveRedaction(t *testing.T) {
 	change := SafeChange("password", "登录密码", "old-secret", "new-secret", true)
@@ -29,7 +56,7 @@ func TestSafeChangeSensitiveRedaction(t *testing.T) {
 
 // TestSafeChangeSensitiveClearedValueShowsUnset pins the BUG-0157 Node
 // alignment (operation-log.service.ts:186-187): a sensitive after/before that
-// is undefined, null or '' must show 未设置, never a fixed 已变更/已设置.
+// is undefined, null or 空字符串 must show 未设置, never a fixed 已变更/已设置.
 func TestSafeChangeSensitiveClearedValueShowsUnset(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -267,6 +294,61 @@ func (f *fakeStore) Persist(ctx context.Context, lease OwnerLease, input Input) 
 		return false, context.DeadlineExceeded
 	}
 	return true, nil
+}
+
+// gatedStore 阻塞续期，让测试把全部 worker 停在写路径内以确定性地填满队列。
+type gatedStore struct {
+	*fakeStore
+	gate    chan struct{}
+	entered atomic.Int32
+}
+
+func (g *gatedStore) RenewOwnerLease(context.Context, OwnerLease, time.Duration) (bool, error) {
+	g.entered.Add(1)
+	<-g.gate
+	return true, nil
+}
+
+// TestProducerRecordDropsWhenQueueSaturated 钉住有界队列契约：全部 worker 被
+// 阻塞时，队列恰好接收 producerQueueCapacity 条，再来的记录被丢弃并告警
+// （Record 保持 fire-and-forget，绝不阻塞业务事务）。
+func TestProducerRecordDropsWhenQueueSaturated(t *testing.T) {
+	inner := &fakeStore{}
+	gate := make(chan struct{})
+	store := &gatedStore{fakeStore: inner, gate: gate}
+	var warns []string
+	logger := &sliceLogger{warns: &warns}
+	producer := NewProducer(store, OwnerLease{}, Config{InstanceID: "test", OwnerLease: 30 * time.Second}, logger)
+
+	// 把每个 worker 停在阻塞续期内，后续不再有出队与填充竞争。
+	for i := 0; i < producerWorkers; i++ {
+		producer.Record(Input{ID: fmt.Sprintf("inflight-%d", i)})
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for store.entered.Load() < producerWorkers && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if store.entered.Load() != producerWorkers {
+		t.Fatalf("只有 %d 个 worker 进入阻塞续期，期望 %d", store.entered.Load(), producerWorkers)
+	}
+
+	for i := 0; i < producerQueueCapacity; i++ {
+		producer.Record(Input{ID: fmt.Sprintf("fill-%d", i)})
+	}
+	producer.Record(Input{ID: "overflow-dropped"})
+	if snapshot := logger.snapshot(); len(snapshot) == 0 || !strings.Contains(snapshot[len(snapshot)-1], "F4 操作日志队列已满") {
+		t.Fatalf("队列饱和必须对丢弃告警，got %v", snapshot)
+	}
+
+	close(gate)
+	want := producerWorkers + producerQueueCapacity
+	deadline = time.Now().Add(10 * time.Second)
+	for store.persistAttempts() < want && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if persisted := store.persisted(); persisted != want {
+		t.Fatalf("放行后应恰好落库 %d 条（丢弃的那条不落库），got %d", want, persisted)
+	}
 }
 
 func (f *fakeStore) List(context.Context, ListOptions) (ListResult, error) {

@@ -81,7 +81,9 @@ func (k *Kernel) Handler() http.Handler {
 			lw.WriteHeader(http.StatusOK)
 		}
 	})
-	return RequestContextMiddleware(k.opts.TrustProxyCount)(localized)
+	// Recovery sits inside the request context so the panic log carries the
+	// traceId and an uncommitted panic still answers the kernel JSON contract.
+	return RequestContextMiddleware(k.opts.TrustProxyCount)(recoverMiddleware(localized))
 }
 
 func (k *Kernel) rootHandler() http.Handler {

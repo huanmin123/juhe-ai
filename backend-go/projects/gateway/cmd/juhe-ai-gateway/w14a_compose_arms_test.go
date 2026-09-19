@@ -80,7 +80,7 @@ func TestW14aComposeSystemAPIMissingPathArms(t *testing.T) {
 			store := openComposeOperationStore(t)
 			auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 			defer closeAudit()
-			_, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
+			_, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
 			if err == nil || !strings.Contains(err.Error(), item.wantErr) {
 				t.Fatalf("期望错误含 %q, got %v", item.wantErr, err)
 			}
@@ -98,7 +98,7 @@ func TestW14aComposeSystemAPITableMonitorConfigureArm(t *testing.T) {
 	store := openComposeOperationStore(t)
 	auditConfig, auditProducer, closeAudit := openComposeAuditSources(t, filepath.Dir(cfg.DatasetDatabasePath))
 	defer closeAudit()
-	_, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig)
+	_, err := composeSystemAPI(cfg, pgpool.NewRegistry(), store, openComposeOperationLease(t, store), auditProducer, auditConfig, composeTestOwnerHealth())
 	if err == nil || !strings.Contains(err.Error(), "的 SQLite 路径不是常规文件") {
 		t.Fatalf("期望物理身份门禁「不是常规文件」错误, got %v", err)
 	}

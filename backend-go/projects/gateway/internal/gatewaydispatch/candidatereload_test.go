@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -189,7 +190,7 @@ func TestResolveNextGroupFallbackWithRoutePlanSnapshot(t *testing.T) {
 	snapshotValue, err := gatewayrouting.CreateGatewayRoutePlanSnapshot(gatewayrouting.CreateGatewayRoutePlanSnapshotInput[string]{
 		RoutePlanID:           "plan-1",
 		Mode:                  "ordered",
-		RequestAcceptedAtMs:   NowMs(),
+		RequestAcceptedAtMs:   gatewayupstream.NowMs(),
 		OrderedAllowedTargets: []string{"group-1", "group-2", "group-3"},
 		Cursor:                &cursor,
 	})

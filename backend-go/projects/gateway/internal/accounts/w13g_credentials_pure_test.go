@@ -536,8 +536,8 @@ func TestW13GQuotaRecoveryPolicyArms(t *testing.T) {
 	}
 	// 合法：三类 schedule + UTC 偏移时区 + 显式 jitter 15。
 	normalized, err := normalizeQuotaRecoveryPolicy(map[string]any{
-		"api_key":     schedule(nil),
-		"oauth":       map[string]any{"reset_strategy": "daily", "daily_reset_hour": float64(6), "timezone": "utc+05:30"},
+		"api_key":      schedule(nil),
+		"oauth":        map[string]any{"reset_strategy": "daily", "daily_reset_hour": float64(6), "timezone": "utc+05:30"},
 		"google_oauth": map[string]any{"reset_strategy": "weekly", "weekly_reset_day": float64(1), "weekly_reset_hour": float64(2), "jitter_minutes": float64(15)},
 	})
 	if err != nil {
