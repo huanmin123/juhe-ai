@@ -113,7 +113,11 @@ func e2eEnsureTempDatabase(t *testing.T) string {
 	// 的 map 内同名字段与该值一致，无行为差。
 	os.Setenv("JUHE_AI_POSTGRES_URL", appDSN)
 	os.Setenv("JUHE_AI_DATABASE_DRIVER", "postgres")
+	os.Setenv("JUHE_AI_POSTGRES_MAX_OPEN_CONNS", "10")
+	os.Setenv("JUHE_AI_POSTGRES_MAX_IDLE_CONNS", "2")
 	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_ENABLED", "true")
+	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
+
 	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "postgres")
 	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL", appDSN)
 	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
@@ -159,14 +163,20 @@ func e2eDropTempDatabase(t *testing.T) {
 }
 
 // e2eCreateRealAccount 创建真实上游账户（OpenAI-compatible chat）。
-func (f *fullchainFixture) e2eCreateRealAccount(name, groupID, baseURL, apiKey, model string) string {
+func (f *fullchainFixture) e2eCreateRealAccount(name, groupID, baseURL, apiKey, model string, extraCreds ...map[string]any) string {
 	f.t.Helper()
+	credentials := map[string]any{"api_key": apiKey, "base_url": baseURL}
+	for _, extra := range extraCreds {
+		for key, value := range extra {
+			credentials[key] = value
+		}
+	}
 	payload := map[string]any{
 		"providerCode":              "openai",
 		"providerProtocolProfileId": "profile_openai_openai_v1",
 		"name":                      name,
 		"type":                      "api_key",
-		"credentials":               map[string]any{"api_key": apiKey, "base_url": baseURL},
+		"credentials":               credentials,
 		"supportedModels":           []string{model},
 		"healthCheckModel":          model,
 		"status":                    "active",
@@ -342,12 +352,29 @@ func TestE2EManualRealMix(t *testing.T) {
 		}
 	})
 
-	// ---- S4 额度 fence：403 insufficient_quota → rate_limited + fence → J1 PG direct input 复测恢复 ----
+	// ---- S4 临时不可调用 fence：500 → temporary_unavailable（3 秒初始退避）+ fence → J1 PG direct input 复测恢复 ----
 	t.Run("S4_quota_fence_recovery", func(t *testing.T) {
 		quotaGroup := f.createGroupWithProvider("e2e-quota组", "gpt")
 		quotaKey := fullchainUpstreamKey(t, "S4-quota")
-		f.createAccount("e2e-quota账户", quotaKey, quotaGroup, nil)
-		f.mock.setDefault(quotaKey, platformmock.ScenarioStatus403)
+		f.createAccount("e2e-quota账户", quotaKey, quotaGroup, map[string]any{
+			// 账户级规则：500 → cooldown(temporary_unavailable)。temporary
+			// 不可调用走 3 秒初始退避 + J1 fence 复测（额度类 403 的
+			// quota_recovery_policy 下限 30 分钟，超出 E2E 观察窗，故用本路径）。
+			"credentials": map[string]any{
+				"error_handling_rules": []any{
+					map[string]any{
+						"enabled":        true,
+						"name":           "e2e-500-cooldown",
+						"priority":       1,
+						"action":         "temp_unschedulable",
+						"status_codes":   []any{500},
+						"reset_strategy": "duration",
+						"duration_hours": 1,
+					},
+				},
+			},
+		})
+		f.mock.setDefault(quotaKey, platformmock.ScenarioStatus500)
 		strategy := f.createStrategy("e2e-S4", "normal", []map[string]any{
 			{"groupId": quotaGroup, "priority": 1, "weight": 100},
 		}, nil)
@@ -356,18 +383,18 @@ func TestE2EManualRealMix(t *testing.T) {
 		t.Logf("S4 exhausted status=%d", response.Status)
 		quotaAccount := f.accountIDByName("e2e-quota账户")
 		deadline := time.Now().Add(15 * time.Second)
-		rateLimited := false
+		unavailable := false
 		var cooldown any
 		for time.Now().Before(deadline) {
 			snapshot := f.accountSnapshot(quotaAccount)
-			if str(snapshot["status"]) == "rate_limited" {
-				rateLimited = true
+			if str(snapshot["status"]) == "temporary_unavailable" {
+				unavailable = true
 				cooldown = snapshot["cooldownUntil"]
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		if !rateLimited {
+		if !unavailable {
 			snapshot := f.accountSnapshot(quotaAccount)
 			t.Fatalf("S4 账户未进入 rate_limited: %v", snapshot)
 		}
@@ -432,4 +459,125 @@ func TestE2EManualRealMix(t *testing.T) {
 			_ = os.WriteFile(`F:/sub2api-lite/.local/project-resources/dev/logs/e2e-jobs.log`, data, 0o600)
 		}
 	}
+}
+
+// TestE2EManualRealResponsesBridge BUG-0178 真机验收：真实 chat 上游账户 +
+// 显式 responses -> chat_completions 模型映射，网关 /v1/responses 端到端桥
+// 转换（真实上游兼容性 + 真实 SSE 回转），并以无映射账户做负对照。
+func TestE2EManualRealResponsesBridge(t *testing.T) {
+	if !e2eManualEnabled() {
+		t.Skip("手工 E2E：设置 JUHE_AI_E2E_MANUAL=1 运行")
+	}
+	realBaseURL := e2eRequireEnv("E2E_REAL_BASE_URL")
+	realKey := e2eRequireEnv("E2E_REAL_KEY")
+	appDSN := e2eEnsureTempDatabase(t)
+	t.Cleanup(func() { e2eDropTempDatabase(t) })
+
+	gw := startGateway(t, gatewayEnvOptions{ChainEnabled: true, PGDSN: appDSN})
+	// LIFO：本 cleanup 在 harness TempDir 清理前运行，抢出进程完整日志。
+	t.Cleanup(func() {
+		if gw.process != nil && gw.process.logPath != "" {
+			if data, err := os.ReadFile(gw.process.logPath); err == nil {
+				_ = os.WriteFile(`F:/sub2api-lite/.local/project-resources/dev/logs/e2e-bridge-gateway.log`, data, 0o600)
+			}
+		}
+	})
+	admin := &acceptanceClient{t: t, http: gw.admin, baseURL: gw.baseURL}
+	fixture := &fullchainFixture{t: t, gw: gw, admin: admin}
+	fixture.raiseSystemAPIRateLimits()
+	f := fixture
+
+	bridgeGroup := f.createGroupWithProvider("e2e-桥接组", "openai")
+	bridgeAccount := f.e2eCreateRealAccount("e2e-真号-桥接", bridgeGroup, realBaseURL, realKey, e2eRealModel)
+	// modelMappings 不在创建契约内（bug0162：PATCH 扩展字段），创建后 PATCH。
+	_, patched := admin.do(http.MethodPatch, "/__aisys__/api/accounts/"+bridgeAccount, map[string]any{
+		"expectedConfigRevision": 1,
+		"modelMappings": []map[string]any{{
+			"sourceModel":            e2eRealModel,
+			"sourceEndpointFamily":   "responses",
+			"upstreamModel":          e2eRealModel,
+			"upstreamEndpointFamily": "chat_completions",
+		}},
+	}, wantStatus(http.StatusOK))
+	t.Logf("bridge account id=%s patched=%v", bridgeAccount, patched != nil)
+
+	bridgeStrategy := f.createStrategy("e2e-bridge", "normal", []map[string]any{{"groupId": bridgeGroup, "priority": 1, "weight": 100}}, nil)
+	bridgeKey := f.createAPIKey("e2e-bridge-key", bridgeStrategy)
+
+	// B0 对照：chat 直连必须可用（上游健康基线）。
+	t.Run("B0_chat_baseline", func(t *testing.T) {
+		response := f.chatT(t, bridgeKey, fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"只回复两个字:成功"}],"max_tokens":512}`, e2eRealModel))
+		if response.Status != http.StatusOK {
+			t.Fatalf("B0 status=%d body=%.300s", response.Status, response.Body)
+		}
+		t.Logf("B0 chat reply: %.160s", response.Body)
+	})
+
+	// B1 非流式：/v1/responses 经桥转换打到 chat 上游并回转 Responses JSON。
+	t.Run("B1_responses_buffered", func(t *testing.T) {
+		request, err := http.NewRequest(http.MethodPost, gw.baseURL+"/v1/responses",
+			strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"只回复两个字:成功","stream":false,"max_output_tokens":512}`, e2eRealModel)))
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+bridgeKey)
+		request.Header.Set("Content-Type", "application/json")
+		response := f.doRawT(t, request)
+		if response.Status != http.StatusOK {
+			t.Fatalf("B1 status=%d body=%.400s", response.Status, response.Body)
+		}
+		if !strings.Contains(response.Body, `"object":"response"`) && !strings.Contains(response.Body, `"object": "response"`) {
+			t.Fatalf("B1 缺少 Responses 对象语义: %.400s", response.Body)
+		}
+		if strings.Contains(response.Body, `"choices"`) {
+			t.Fatalf("B1 响应仍携带 chat completions 特征字段 choices: %.400s", response.Body)
+		}
+		t.Logf("B1 responses reply: %.300s", response.Body)
+	})
+
+	// B2 流式：chat SSE 上游经桥回转 Responses SSE 事件流。
+	t.Run("B2_responses_stream", func(t *testing.T) {
+		request, err := http.NewRequest(http.MethodPost, gw.baseURL+"/v1/responses",
+			strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"只回复两个字:成功","stream":true,"max_output_tokens":512}`, e2eRealModel)))
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+bridgeKey)
+		request.Header.Set("Content-Type", "application/json")
+		response := f.doRawT(t, request)
+		if response.Status != http.StatusOK {
+			t.Fatalf("B2 status=%d body=%.400s", response.Status, response.Body)
+		}
+		if !strings.Contains(response.ContentType, "text/event-stream") {
+			t.Fatalf("B2 Content-Type=%q 非 SSE", response.ContentType)
+		}
+		if !strings.Contains(response.Body, `"type":"response.`) && !strings.Contains(response.Body, `response.`) {
+			t.Fatalf("B2 缺少 Responses SSE 事件: %.400s", response.Body)
+		}
+		if strings.Contains(response.Body, `"choices"`) {
+			t.Fatalf("B2 流式响应仍携带 chat completions 特征字段 choices: %.400s", response.Body)
+		}
+		t.Logf("B2 stream head: %.300s", response.Body)
+	})
+
+	// B3 负对照：同上游账户不带映射时，/v1/responses 不得以 chat 透传方式
+	// "意外成功"（端点模式闸应淘汰或显式报错）。
+	t.Run("B3_negative_plain_account", func(t *testing.T) {
+		plainGroup := f.createGroupWithProvider("e2e-裸号组", "openai")
+		f.e2eCreateRealAccount("e2e-真号-裸", plainGroup, realBaseURL, realKey, e2eRealModel)
+		strategy := f.createStrategy("e2e-plain", "normal", []map[string]any{{"groupId": plainGroup, "priority": 1, "weight": 100}}, nil)
+		apiKey := f.createAPIKey("e2e-plain-key", strategy)
+		request, err := http.NewRequest(http.MethodPost, gw.baseURL+"/v1/responses",
+			strings.NewReader(fmt.Sprintf(`{"model":%q,"input":"只回复两个字:成功","stream":false}`, e2eRealModel)))
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+		request.Header.Set("Content-Type", "application/json")
+		response := f.doRawT(t, request)
+		if response.Status == http.StatusOK && strings.Contains(response.Body, `"choices"`) {
+			t.Fatalf("B3 无映射账户以 chat 透传形态意外成功: %.300s", response.Body)
+		}
+		t.Logf("B3 无映射行为: status=%d body=%.200s", response.Status, response.Body)
+	})
 }
