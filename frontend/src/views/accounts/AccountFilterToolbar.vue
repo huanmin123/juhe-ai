@@ -30,11 +30,13 @@
           />
         </a-form-item>
         <a-form-item label="供应商">
-          <a-select
+          <ProviderSelect
             :value="filters.providerCode || 'all'"
-            :options="providerOptions"
+            :providers="providers"
+            :loading="providerOptionsLoading"
+            include-all
             placeholder="全部供应商"
-            @change="handleProviderUpdate"
+            @update:value="handleProviderUpdate"
             @dropdown-visible-change="emit('provider-dropdown', $event)"
           />
         </a-form-item>
@@ -110,11 +112,13 @@
     <template #filters>
       <label class="mobile-filter-field">
         <span>供应商</span>
-        <a-select
+        <ProviderSelect
           :value="filters.providerCode || 'all'"
-          :options="providerOptions"
+          :providers="providers"
+          :loading="providerOptionsLoading"
+          include-all
           placeholder="全部供应商"
-          @change="handleProviderUpdate"
+          @update:value="handleProviderUpdate"
           @dropdown-visible-change="emit('provider-dropdown', $event)"
         />
       </label>
@@ -197,6 +201,7 @@ import { DownloadOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import GroupSelect from '@/components/GroupSelect.vue'
+import ProviderSelect from '@/components/ProviderSelect.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { GroupSelection } from '@/shared/groupLabelCache'
@@ -205,7 +210,6 @@ import type { AccountStatus, AccountTagSummary, GroupOptionSummary, ProviderDefi
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText } from './accountBasicFormatters'
 import type { AccountFilters } from './accountFormTypes'
-import { FALLBACK_PROVIDERS } from './accountOptions'
 
 type FilterOption<T extends string> = {
   label: string
@@ -222,6 +226,8 @@ const props = defineProps<{
   groupOptionsLoading?: boolean
   isManagementView: boolean
   providers: ProviderDefinition[]
+  providerOptionsLoading?: boolean
+  typeProviders?: ProviderDefinition[]
   refreshLoading: boolean
   allLoadedSelected?: boolean
   selectedCount?: number
@@ -259,27 +265,23 @@ const emit = defineEmits<{
 }>()
 
 const accountStatusValues = new Set<AccountStatus>(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated'])
-const resolvedProviders = computed(() => props.providers.length ? props.providers : FALLBACK_PROVIDERS)
 const exportTooltip = computed(() => props.allLoadedSelected
   ? '已全选当前列表，将按当前筛选导出全部账户（最多 500 个）'
   : props.selectedCount
     ? `已选择 ${props.selectedCount} 个账户，将导出所选自有账户`
     : '按当前筛选导出全部账户，最多 500 个，超过后请筛选或分批导出')
-const providerOptions = computed(() => [
-  { label: '全部供应商', value: 'all' },
-  ...resolvedProviders.value.map((provider) => ({ label: provider.name, value: provider.code }))
-])
 const tagSelectOptions = computed(() => props.tagOptions.map((tag) => ({
   label: tag.name,
   value: tag.id
 })))
 const tagFilterPlaceholder = computed(() => props.tagFilterDisabled ? '请先选择系统账户' : '全部标签')
+const typeProviderSource = computed(() => props.typeProviders ?? props.providers)
 const accountTypeOptions = computed(() => {
   const providerCode = props.filters.providerCode || 'all'
   const selectedProvider = providerCode !== 'all'
-    ? resolvedProviders.value.find((provider) => provider.code === providerCode)
+    ? typeProviderSource.value.find((provider) => provider.code === providerCode)
     : undefined
-  const providers = selectedProvider ? [selectedProvider] : resolvedProviders.value
+  const providers = selectedProvider ? [selectedProvider] : typeProviderSource.value
   const seenTypes = new Set<string>()
   const types = providers
     .flatMap((provider) => provider.protocolProfiles.length

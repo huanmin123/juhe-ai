@@ -19,10 +19,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { mergeSelectedSelectOptions, rememberSelectOptions, type SelectOption } from '@/shared/selectLabelCache'
-import { recordLocalSelectChoices, sortSelectOptionsByLocalPreference } from '@/shared/selectLocalPreferenceCache'
+import { recordLocalSelectChoices, refreshLocalSelectPreferenceSnapshot, sortSelectOptionsByLocalPreference } from '@/shared/selectLocalPreferenceCache'
 
 type SelectValue = string | string[] | undefined
 type SelectMode = 'multiple' | 'tags' | 'combobox'
@@ -79,6 +79,9 @@ const normalizedSelectedIds = computed(() => [
   ...props.selectedIds
 ])
 const localPreferenceKey = computed(() => props.preferenceKey ?? props.cacheKey)
+// 排序快照版本：挂载和下拉打开时自增，驱动 sortedOptions 重新应用最新偏好排序；
+// 选中动作只写偏好记录、不动该版本，当前视图不重排，下次打开下拉才生效。
+const preferenceVersion = ref(0)
 const hiddenValueSet = computed(() => new Set(props.hiddenOptionValues.map((value) => value?.trim()).filter(Boolean)))
 const mergedOptions = computed(() => mergeSelectedSelectOptions(
   props.cacheKey,
@@ -86,25 +89,32 @@ const mergedOptions = computed(() => mergeSelectedSelectOptions(
   normalizedSelectedIds.value,
   props.selectedOptions
 ))
-const sortedOptions = computed(() => sortSelectOptionsByLocalPreference(
-  localPreferenceKey.value,
-  mergedOptions.value,
-  selectedValues(props.value),
-  props.ignoredPreferenceValues
-))
-const currentValueSet = computed(() => new Set(selectedValues(props.value).map((value) => value?.trim()).filter(Boolean)))
-const selectOptions = computed(() => sortedOptions.value.map((option) => (
-  hiddenValueSet.value.has(option.value) && currentValueSet.value.has(option.value)
-    ? { ...option, style: { ...option.style, display: 'none' } }
-    : option
-)).filter((option) => !hiddenValueSet.value.has(option.value) || currentValueSet.value.has(option.value)).slice(0, 50))
-const displayValue = computed(() => {
-  const knownValues = new Set(mergedOptions.value.map((option) => option.value))
-  if (Array.isArray(props.value)) {
-    return props.value.filter((item) => knownValues.has(item))
-  }
-  return props.value && knownValues.has(props.value) ? props.value : undefined
+const sortedOptions = computed(() => {
+  void preferenceVersion.value
+  return sortSelectOptionsByLocalPreference(
+    localPreferenceKey.value,
+    mergedOptions.value,
+    selectedValues(props.value),
+    props.ignoredPreferenceValues
+  )
 })
+const currentValueSet = computed(() => new Set(selectedValues(props.value).map((value) => value?.trim()).filter((value): value is string => Boolean(value))))
+const selectOptions = computed(() => {
+  const options = sortedOptions.value.map((option) => (
+    hiddenValueSet.value.has(option.value) && currentValueSet.value.has(option.value)
+      ? { ...option, style: { ...option.style, display: 'none' } }
+      : option
+  )).filter((option) => !hiddenValueSet.value.has(option.value) || currentValueSet.value.has(option.value))
+  const knownValues = new Set(options.map((option) => option.value))
+  // 候选未就绪时为已选值注入隐藏占位（display:none 不出现在下拉列表，但输入框/tag 能显示该值），
+  // 避免已选值短暂闪空；真实候选到位后 merge 逻辑自然用真实 label 替换占位。
+  const placeholderOptions = [...currentValueSet.value]
+    .filter((value) => !knownValues.has(value))
+    .map((value) => ({ label: value, value, style: { display: 'none' } }))
+  return [...placeholderOptions, ...options].slice(0, 50)
+})
+// 不再过滤未知值：候选未就绪的短暂窗口内允许以原始值占位显示，不闪空。
+const displayValue = computed(() => props.value)
 
 watch(
   () => props.options,
@@ -124,6 +134,11 @@ watch(
   { immediate: true }
 )
 
+onMounted(() => {
+  refreshLocalSelectPreferenceSnapshot(localPreferenceKey.value)
+  preferenceVersion.value += 1
+})
+
 function handleUpdateValue(value: SelectValue) {
   rememberLocalPreference(value, lastCommittedValues.value)
   lastCommittedValues.value = selectedValues(value)
@@ -135,6 +150,10 @@ function handleChange(value: SelectValue, option: unknown) {
 }
 
 function handleDropdownVisibleChange(open: boolean) {
+  if (open) {
+    refreshLocalSelectPreferenceSnapshot(localPreferenceKey.value)
+    preferenceVersion.value += 1
+  }
   emit('dropdownVisibleChange', open)
 }
 

@@ -14,7 +14,7 @@ import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountMutationResult, AccountSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
-import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
+import { ACCOUNT_PAGE_SIZE } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSortParams, normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
@@ -77,6 +77,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const accountOptionsScopeKey = ref('')
   const accountOptionsInFlight = new Map<string, AccountOptionsRequest>()
   let accountOptionsRequestId = 0
+  const providerOptionsLoading = ref(false)
   const accountSorts = ref<AccountListSortParam[]>(normalizeAccountTableSortParams(initialPageState.sorts))
   const filters = reactive<AccountFilters>({ ...initialPageState.filters })
   let listRequestController: AbortController | undefined
@@ -354,13 +355,14 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
 
     const requestId = ++accountOptionsRequestId
+    providerOptionsLoading.value = true
     const request = (async () => {
       let providerApplied = false
       try {
         await loadProviderOptionsResource({
           apply: (nextProviders) => {
             if (!isCurrentAccountOptionsRequest(requestId, scopeKey)) return
-            providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+            providers.value = nextProviders
             providerApplied = true
           },
           force,
@@ -379,6 +381,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     })().finally(() => {
       const activeRequest = accountOptionsInFlight.get(scopeKey)
       if (activeRequest?.requestId === requestId) accountOptionsInFlight.delete(scopeKey)
+      if (requestId === accountOptionsRequestId) providerOptionsLoading.value = false
     })
     accountOptionsInFlight.set(scopeKey, { requestId, promise: request })
     return request
@@ -510,6 +513,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     accountOptionsInFlight.clear()
     accountOptionsLoaded.value = false
     accountOptionsScopeKey.value = ''
+    providerOptionsLoading.value = false
     providerDefinitions.value = []
     providerDefinitionsRequestId += 1
     providerDefinitionsInFlight.clear()
@@ -544,6 +548,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     mobileVisibleAccounts,
     accountTablePagination,
     systemAccountOptionsLoading,
+    providerOptionsLoading,
     handleSystemAccountOptionsDropdown,
     handleSystemAccountOptionsSearch,
     loadMoreMobileAccounts,

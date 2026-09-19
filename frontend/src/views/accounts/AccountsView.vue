@@ -8,7 +8,9 @@
       :group-options="filterGroupOptions"
       :group-options-loading="filterGroupOptionsLoading"
       :is-management-view="isManagementView"
-      :providers="availableProviders"
+      :providers="providers"
+      :provider-options-loading="providerOptionsLoading"
+      :type-providers="availableProviders"
       :refresh-loading="loading"
       :all-loaded-selected="allLoadedAccountsSelected"
       :selected-count="selectedAccounts.length"
@@ -386,6 +388,7 @@ const {
   accounts,
   providers,
   providerDefinitions,
+  providerOptionsLoading,
   systemAccounts,
   filters,
   accountSorts,
