@@ -365,11 +365,16 @@ func TestDecryptTokenFieldExtraction(t *testing.T) {
 }
 
 // TestParseBaseURLMatrix 覆盖 base URL 校验的全部拒绝分支。
+// 2026-09-19 决策（PLAN-20260919T000723744Z E2E 后续）：J1 探活放行
+// http 与 https，http 不再依赖 allowInsecure 旗标。
 func TestParseBaseURLMatrix(t *testing.T) {
-	for _, bad := range []string{"", "not a url", "/relative", "https://", "https://u:p@host", "https://host/path?q=1", "https://host#frag", "ftp://host", "http://host"} {
+	for _, bad := range []string{"", "not a url", "/relative", "https://", "https://u:p@host", "https://host/path?q=1", "https://host#frag", "ftp://host"} {
 		if _, err := parseBaseURL(bad, false); err == nil {
 			t.Errorf("parseBaseURL(%q) 必须报错", bad)
 		}
+	}
+	if _, err := parseBaseURL("http://host", false); err != nil {
+		t.Fatalf("http 必须无条件放行: %v", err)
 	}
 	if _, err := parseBaseURL("http://host", true); err != nil {
 		t.Fatalf("allowInsecure 必须放行 http: %v", err)
