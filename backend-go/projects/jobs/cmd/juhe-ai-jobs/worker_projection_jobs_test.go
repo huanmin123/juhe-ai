@@ -18,7 +18,10 @@ import (
 // enabled 默认 false、interval env 1s..60s 默认 1s、batch/maxBatches/
 // workerConcurrency 边界与 Node runtimeConfig.background 一致。
 func TestListProjectionConfigDefaults(t *testing.T) {
-	config, err := loadWorkerConfig(getenvFrom(map[string]string{}))
+	// 恒开语义下存储门禁恒生效：默认值断言基于完整合法存储 env（投影 env
+	// 保持未设置），越界断言在其上做单项覆盖，保证失败只来自被测项。
+	base := workerSmokeTestEnv(t)
+	config, err := loadWorkerConfig(getenvFrom(base))
 	if err != nil {
 		t.Fatalf("loadWorkerConfig: %v", err)
 	}
@@ -32,19 +35,20 @@ func TestListProjectionConfigDefaults(t *testing.T) {
 		t.Fatalf("batch/maxBatches/concurrency 默认不符: %d/%d/%d",
 			config.ListProjectionBatchSize, config.ListProjectionMaxBatchesPerRun, config.ListProjectionWorkerConcurrency)
 	}
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
-		"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "500",
-	})); err == nil {
+	withInterval := func(value string) map[string]string {
+		env := workerSmokeTestEnv(t)
+		env["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS"] = value
+		return env
+	}
+	if _, err := loadWorkerConfig(getenvFrom(withInterval("500"))); err == nil {
 		t.Fatal("interval < 1000 必须 fail closed")
 	}
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
-		"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "61000",
-	})); err == nil {
+	if _, err := loadWorkerConfig(getenvFrom(withInterval("61000"))); err == nil {
 		t.Fatal("interval > 60000 必须 fail closed")
 	}
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
-		"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "101",
-	})); err == nil {
+	withBatch := workerSmokeTestEnv(t)
+	withBatch["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE"] = "101"
+	if _, err := loadWorkerConfig(getenvFrom(withBatch)); err == nil {
 		t.Fatal("batchSize > 100 必须 fail closed")
 	}
 }

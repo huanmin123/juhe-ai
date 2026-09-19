@@ -10,8 +10,10 @@ import (
 // Route strategy mode/config normalization mirrors
 // backend/src/domain/route-strategy.ts and api-key-hybrid-routing.ts. Only the
 // five RouteStrategyMode values are accepted ('normal' | 'hybrid_smart' |
-// 'weighted' | 'failover' | 'round_robin'); weighted/failover/round_robin
-// carry no per-mode config object (stored config stays NULL).
+// 'weighted' | 'failover' | 'round_robin'); the scheduling preference
+// (normalRoutingConfig) is carried by normal/weighted/failover/round_robin and
+// still only persists when speed_first (cost_first keeps config_json NULL),
+// while hybridRoutingConfig stays hybrid_smart-only.
 
 // Route strategy modes (RouteStrategyMode, domain/types.ts).
 const (
@@ -26,6 +28,17 @@ const (
 func IsRouteStrategyMode(value string) bool {
 	switch value {
 	case ModeNormal, ModeHybridSmart, ModeWeighted, ModeFailover, ModeRoundRobin:
+		return true
+	}
+	return false
+}
+
+// ModeSupportsSchedulingPreference reports whether the mode may carry the
+// scheduling preference (normalRoutingConfig): normal plus the three
+// passthrough modes weighted/failover/round_robin; hybrid_smart never does.
+func ModeSupportsSchedulingPreference(mode string) bool {
+	switch mode {
+	case ModeNormal, ModeWeighted, ModeFailover, ModeRoundRobin:
 		return true
 	}
 	return false
@@ -168,9 +181,11 @@ func parseStoredConfig(raw sql.NullString) (normal *NormalRoutingConfig, hybrid 
 	return normal, hybrid, nil
 }
 
-// normalizeConfigForWrite mirrors normalizeRouteStrategyConfigForWrite: only
-// normal routes may carry normalRoutingConfig, only hybrid_smart may carry
-// hybridRoutingConfig, and hybrid_smart requires the hybrid config.
+// normalizeConfigForWrite mirrors normalizeRouteStrategyConfigForWrite: the
+// scheduling preference (normalRoutingConfig) is accepted by
+// normal/weighted/failover/round_robin, hybrid_smart rejects it, only
+// hybrid_smart may carry hybridRoutingConfig, and hybrid_smart requires the
+// hybrid config.
 func normalizeConfigForWrite(normalRaw, hybridRaw any, mode string) (*NormalRoutingConfig, *HybridRoutingConfig, error) {
 	if mode == ModeNormal {
 		if rawValueConfigured(hybridRaw) {
@@ -182,10 +197,10 @@ func normalizeConfigForWrite(normalRaw, hybridRaw any, mode string) (*NormalRout
 		}
 		return normal, nil, nil
 	}
-	if rawValueConfigured(normalRaw) {
-		return nil, nil, &ValidationError{Message: "只有普通路由可以配置调度偏好"}
-	}
 	if mode == ModeHybridSmart {
+		if rawValueConfigured(normalRaw) {
+			return nil, nil, &ValidationError{Message: "混合智能路由不支持调度偏好"}
+		}
 		hybrid, err := normalizeHybridRoutingConfig(hybridRaw)
 		if err != nil {
 			return nil, nil, err
@@ -195,7 +210,11 @@ func normalizeConfigForWrite(normalRaw, hybridRaw any, mode string) (*NormalRout
 	if rawValueConfigured(hybridRaw) {
 		return nil, nil, &ValidationError{Message: "只有混合智能路由可以配置混合评分规则"}
 	}
-	return nil, nil, nil
+	normal, err := normalizeNormalRoutingConfig(normalRaw)
+	if err != nil {
+		return nil, nil, err
+	}
+	return normal, nil, nil
 }
 
 // rawValueConfigured mirrors `value !== undefined && value !== null`.
@@ -233,7 +252,7 @@ func normalizeNormalRoutingConfig(value any) (*NormalRoutingConfig, error) {
 	}
 	record, ok := value.(map[string]any)
 	if !ok {
-		return nil, &ValidationError{Message: "普通路由调度配置无效"}
+		return nil, &ValidationError{Message: "调度配置无效"}
 	}
 	preference, err := normalizeSchedulingPreference(record["schedulingPreference"])
 	if err != nil {
@@ -279,7 +298,7 @@ func normalizeSchedulingPreference(value any) (string, error) {
 	if text, ok := value.(string); ok && (text == "cost_first" || text == "speed_first") {
 		return text, nil
 	}
-	return "", &ValidationError{Message: "普通路由调度偏好无效"}
+	return "", &ValidationError{Message: "调度偏好无效"}
 }
 
 // normalizeSpeedFirstConfig fills each missing knob from the built-in

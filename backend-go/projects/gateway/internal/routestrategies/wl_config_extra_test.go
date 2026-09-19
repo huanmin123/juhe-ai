@@ -481,15 +481,16 @@ func TestWlNormalizeConfigForWrite(t *testing.T) {
 	if _, _, err := normalizeConfigForWrite(normalRaw, nil, ModeNormal); err != nil {
 		t.Fatalf("normal 合法: %v", err)
 	}
-	if _, _, err := normalizeConfigForWrite(normalRaw, hybridRaw, ModeHybridSmart); err == nil || !contains(err.Error(), "只有普通路由可以配置调度偏好") {
+	if _, _, err := normalizeConfigForWrite(normalRaw, hybridRaw, ModeHybridSmart); err == nil || !contains(err.Error(), "混合智能路由不支持调度偏好") {
 		t.Fatalf("err=%v", err)
 	}
 	if _, _, err := normalizeConfigForWrite(nil, hybridRaw, ModeWeighted); err == nil || !contains(err.Error(), "只有混合智能路由可以配置混合评分规则") {
 		t.Fatalf("err=%v", err)
 	}
+	// weighted 无配置回落 cost_first 默认对象（config_json 仍判 NULL）。
 	normal, hybrid, err := normalizeConfigForWrite(nil, nil, ModeWeighted)
-	if err != nil || normal != nil || hybrid != nil {
-		t.Fatalf("weighted 无配置必须为空: %v %v %v", normal, hybrid, err)
+	if err != nil || hybrid != nil || normal == nil || normal.SchedulingPreference != defaultNormalSchedulingPreference {
+		t.Fatalf("weighted 无配置回落 cost_first 默认: %v %v %v", normal, hybrid, err)
 	}
 	if _, _, err := normalizeConfigForWrite(nil, hybridRaw, ModeNormal); err == nil || !contains(err.Error(), "普通路由不能配置混合评分规则") {
 		t.Fatalf("err=%v", err)

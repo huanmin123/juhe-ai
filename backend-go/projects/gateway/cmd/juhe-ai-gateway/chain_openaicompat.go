@@ -15,7 +15,8 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatstorage"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/openaicompatcore"
 )
 
 // mountChainOpenAICompatFamilies builds the openai-compatible families over
@@ -29,13 +30,13 @@ func mountChainOpenAICompatFamilies(composed *composition, chain *gatewayChain, 
 	if services == nil || services.Cache == nil {
 		return errChainCompat("openai-compatible 组合缺少网关链 runtime cache")
 	}
-	store, err := openaicompat.NewStore(composed.db, composed.pgDialect)
+	store, err := openaicompatstorage.NewStore(composed.db, composed.pgDialect)
 	if err != nil {
 		return err
 	}
-	deps := &openaicompat.Deps{
+	deps := &openaicompatstorage.Deps{
 		Store: store,
-		Config: openaicompat.Config{
+		Config: openaicompatcore.Config{
 			FilesRoot: cfg.OpenAICompatibleFilesRoot,
 		},
 		Scope: chainCompatScopeResolver(services.Cache),
@@ -69,8 +70,8 @@ func (e *chainCompatError) Error() string { return e.message }
 // chainCompatScopeResolver mirrors preResolveGatewayRuntime: resolve the raw
 // bearer key over the runtime cache gateway runtime read; nil renders the
 // openaicompat 401 contract.
-func chainCompatScopeResolver(cache *gatewayruntimecache.Service) openaicompat.ScopeResolver {
-	return func(r *http.Request) *openaicompat.GatewayScope {
+func chainCompatScopeResolver(cache *gatewayruntimecache.Service) openaicompatcore.ScopeResolver {
+	return func(r *http.Request) *openaicompatcore.GatewayScope {
 		if cache == nil || r == nil {
 			return nil
 		}
@@ -82,7 +83,7 @@ func chainCompatScopeResolver(cache *gatewayruntimecache.Service) openaicompat.S
 		if err != nil || runtime.APIKey == nil {
 			return nil
 		}
-		return &openaicompat.GatewayScope{
+		return &openaicompatcore.GatewayScope{
 			SystemAccountID: runtime.APIKey.SystemAccountID,
 			APIKeyID:        runtime.APIKey.ID,
 		}

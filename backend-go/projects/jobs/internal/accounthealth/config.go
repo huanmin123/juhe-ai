@@ -37,10 +37,12 @@ const (
 	maxJ1Capacity                 = 5096
 )
 
-// Config is deliberately opt-in.  A release cannot accidentally claim J1
-// ownership merely because the jobs binary was upgraded.
+// Config 是 J1 账户健康机制的终态配置：机制强制常开（2026-09-19 产品决策），
+// LoadConfig 恒走完整校验路径、缺失必填项即 fail-fast。原「deliberately
+// opt-in」开关（JUHE_AI_ACCOUNT_HEALTH_ENABLED）的防双 owner 理由已随 Node
+// 后端归档（migration-backup/node/final-archive）失效，开关与 Config.Enabled
+// 字段一并移除。
 type Config struct {
-	Enabled                         bool
 	InstanceID                      string
 	Store                           StoreConfig
 	InputDirectory                  string
@@ -67,18 +69,20 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	cfg := Config{Enabled: strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_ENABLED")), "true"), Now: time.Now}
-	var err error
-	if !cfg.Enabled {
-		return cfg, nil
-	}
-	if !strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER")), "go") {
-		return Config{}, errors.New("启用 J1 时 JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER 必须明确为 go")
+	cfg := Config{Now: time.Now}
+	// OWNER 缺省视为 go；显式设置非 go 值（trim + 大小写不敏感）拒绝。
+	if owner := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER")); owner != "" && !strings.EqualFold(owner, "go") {
+		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER 仅支持 go")
 	}
 	cfg.InstanceID = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID"))
 	if cfg.InstanceID == "" {
-		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID 是必填配置")
+		hostname, hostErr := os.Hostname()
+		if hostErr != nil || strings.TrimSpace(hostname) == "" {
+			hostname = "juhe-ai-jobs"
+		}
+		cfg.InstanceID = hostname
 	}
+	var err error
 	mode := StoreMode(strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_STORE"))))
 	if mode != StoreSQLite && mode != StorePostgres {
 		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_STORE 必须为 sqlite 或 postgres")
@@ -151,9 +155,14 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		keyID = "runtime-v1"
 	}
 	cfg.InputKeys = map[string][]byte{keyID: key}
+	// 凭据封套密钥：显式 CREDENTIAL_SECRET 优先；缺省回退 JUHE_AI_SECRET；
+	// 两者均空 fail-fast。
 	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET"))
 	if cfg.CredentialSecret == "" {
-		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET 是必填配置")
+		cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_SECRET"))
+	}
+	if cfg.CredentialSecret == "" {
+		return Config{}, errors.New("需配置 JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET 或 JUHE_AI_SECRET（凭据封套密钥）")
 	}
 	if cfg.InputTTL, err = configMilliseconds(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS", defaultInputTTL, time.Minute, 7*24*time.Hour); err != nil {
 		return Config{}, err

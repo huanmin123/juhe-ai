@@ -180,7 +180,7 @@ func TestW10BWorkerAssemblyRootHelpers(t *testing.T) {
 }
 
 func TestW10BWorkerStatusPayloadFields(t *testing.T) {
-	config := workerConfig{Enabled: true, Driver: "sqlite", InstanceID: "w10b", WorkerRole: "owner", WorkerReplicaIdx: 0}
+	config := workerConfig{Driver: "sqlite", InstanceID: "w10b", WorkerRole: "owner", WorkerReplicaIdx: 0}
 	assembly := newWorkerAssembly(config, slog.Default())
 	payload := assembly.statusPayload()
 	if payload["workerEnabled"] != true || payload["workerDriver"] != "sqlite" {

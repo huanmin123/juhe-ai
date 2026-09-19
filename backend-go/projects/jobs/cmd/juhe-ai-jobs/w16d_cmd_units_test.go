@@ -179,7 +179,7 @@ func TestW16DResolveScheduleSettingsIntervalCap(t *testing.T) {
 
 func TestW16DLoadWorkerConfigErrorArms(t *testing.T) {
 	base := func(extra map[string]string) map[string]string {
-		env := map[string]string{"JUHE_AI_JOBS_WORKER_ENABLED": "true"}
+		env := map[string]string{}
 		for key, value := range extra {
 			env[key] = value
 		}

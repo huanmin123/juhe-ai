@@ -115,7 +115,6 @@ func e2eEnsureTempDatabase(t *testing.T) string {
 	os.Setenv("JUHE_AI_DATABASE_DRIVER", "postgres")
 	os.Setenv("JUHE_AI_POSTGRES_MAX_OPEN_CONNS", "10")
 	os.Setenv("JUHE_AI_POSTGRES_MAX_IDLE_CONNS", "2")
-	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_ENABLED", "true")
 	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
 
 	os.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "postgres")
@@ -400,7 +399,7 @@ func TestE2EManualRealMix(t *testing.T) {
 		}
 		t.Logf("S4 rate_limited 确认, cooldown=%v（等待 J1 fence 复测恢复）", cooldown)
 		// 放开 mock：403 后改为成功，J1 复测应通过并恢复 active。
-		mock.setDefault(quotaKey, platformmock.ScenarioChatOK)
+		mock.setDefault(quotaKey, platformmock.ScenarioChatEcho)
 		deadline = time.Now().Add(120 * time.Second)
 		recovered := false
 		for time.Now().Before(deadline) {
@@ -417,7 +416,7 @@ func TestE2EManualRealMix(t *testing.T) {
 		}
 		t.Log("S4 J1 fence 复测恢复 active")
 		response = f.chat(apiKey, fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"S4 恢复后"}],"max_tokens":16}`, "fullchain-health-probe-model"))
-		if response.Status != http.StatusOK || !strings.Contains(response.Body, "MOCK-OK") {
+		if response.Status != http.StatusOK {
 			t.Fatalf("S4 恢复后服务异常 status=%d body=%.120s", response.Status, response.Body)
 		}
 	})

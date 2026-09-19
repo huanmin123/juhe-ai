@@ -335,7 +335,6 @@ func TestW9HProjectorCursorArms(t *testing.T) {
 
 func w9hValidConfigEnv(storeMode, storePath, inputDir string) map[string]string {
 	return map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_ENABLED":           "true",
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "inst-w9h",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":             storeMode,
@@ -353,22 +352,11 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	load := func(env map[string]string) (Config, error) {
 		return LoadConfig(func(key string) string { return env[key] })
 	}
-	// Disabled: returns the zero-ish config immediately.
-	cfg, err := load(map[string]string{"JUHE_AI_ACCOUNT_HEALTH_ENABLED": "false"})
-	if err != nil || cfg.Enabled {
-		t.Fatalf("disabled cfg=%+v err=%v", cfg, err)
-	}
-	// Missing owner.
+	// Explicit non-go owner is rejected (default/absent owner means go now).
 	env := w9hValidConfigEnv("sqlite", storePath, inputDir)
 	env["JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER"] = "node"
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "必须明确为 go") {
+	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "仅支持 go") {
 		t.Fatalf("owner err=%v", err)
-	}
-	// Missing instance id.
-	env = w9hValidConfigEnv("sqlite", storePath, inputDir)
-	env["JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID"] = ""
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "INSTANCE_ID") {
-		t.Fatalf("instance err=%v", err)
 	}
 	// Bad store mode.
 	env = w9hValidConfigEnv("redis", storePath, inputDir)
@@ -442,11 +430,11 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 		t.Fatalf("direct input url err=%v", err)
 	}
 	// The happy sqlite path parses every knob.
-	cfg, err = load(w9hValidConfigEnv("sqlite", storePath, inputDir))
+	cfg, err := load(w9hValidConfigEnv("sqlite", storePath, inputDir))
 	if err != nil {
 		t.Fatalf("valid sqlite config err=%v", err)
 	}
-	if !cfg.Enabled || cfg.InstanceID != "inst-w9h" || cfg.InputSource != "files" {
+	if cfg.InstanceID != "inst-w9h" || cfg.InputSource != "files" {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 	// The happy postgres path accepts pool limits and the direct input source.

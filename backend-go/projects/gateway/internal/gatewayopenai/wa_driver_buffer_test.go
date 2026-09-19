@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
 // Driver 身份与协议面（G02 编排层契约）。
@@ -179,11 +179,11 @@ func TestWAOpenAIDriverBuildUpstreamRequestBridge(t *testing.T) {
 
 // 桥错误语义：guidance 原样透传、BridgeRequestError 归一转换、未知错误。
 func TestWAOpenAIBridgeBuildError(t *testing.T) {
-	guidance := &openaicompat.BridgeGuidanceError{Message: "guidance", Code: "agent_guidance"}
+	guidance := &openaicompatbridge.BridgeGuidanceError{Message: "guidance", Code: "agent_guidance"}
 	if got := bridgeBuildError(guidance); got != error(guidance) {
 		t.Fatalf("guidance 错误应原样透传: %v", got)
 	}
-	bridgeErr := bridgeBuildError(&openaicompat.BridgeRequestError{Message: "负载无效", Code: "bad"})
+	bridgeErr := bridgeBuildError(&openaicompatbridge.BridgeRequestError{Message: "负载无效", Code: "bad"})
 	var buildErr *gatewayproto.BuildUpstreamError
 	if !errors.As(bridgeErr, &buildErr) {
 		t.Fatalf("BridgeRequestError 应转为 BuildUpstreamError: %v", bridgeErr)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,12 +15,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
-// workerSmokeTestEnv 构造隔离的 SQLite 目录与启用 worker 的 env。
+// workerSmokeTestEnv 构造隔离的 SQLite 目录与可通过存储门禁的完整 worker env。
 func workerSmokeTestEnv(t *testing.T) map[string]string {
 	t.Helper()
 	root := t.TempDir()
 	return map[string]string{
-		"JUHE_AI_JOBS_WORKER_ENABLED":             "true",
 		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
 		"JUHE_AI_DATABASE_PATH":                   filepath.Join(root, "business.sqlite3"),
 		"JUHE_AI_STATS_DATABASE_PATH":             filepath.Join(root, "stats.sqlite3"),
@@ -44,43 +44,37 @@ func getenvFrom(env map[string]string) func(string) string {
 	return func(name string) string { return env[name] }
 }
 
-// TestWorkerConfigGatesFailsClosed 验证未启用时零装配、启用而缺存储时报错。
+// TestWorkerConfigGatesFailsClosed 验证机制强制常开后存储门禁恒生效：
+// 缺存储配置时报错且文案指名对应变量名。
 func TestWorkerConfigGatesFailsClosed(t *testing.T) {
-	disabled, err := loadWorkerConfig(getenvFrom(map[string]string{}))
-	if err != nil || disabled.Enabled {
-		t.Fatalf("默认必须关闭 worker: %+v err=%v", disabled, err)
-	}
-	assembly, err := buildWorkerAssembly(disabled, nil)
-	if err != nil || assembly != nil {
-		t.Fatalf("禁用状态不得装配: %v %v", assembly, err)
-	}
-	if _, err := loadWorkerConfig(getenvFrom(map[string]string{"JUHE_AI_JOBS_WORKER_ENABLED": "true"})); err == nil {
-		t.Fatal("启用 worker 而缺少存储路径必须 fail closed")
+	if _, err := loadWorkerConfig(getenvFrom(map[string]string{})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_STATS_DATABASE_PATH") {
+		t.Fatalf("worker 缺存储配置必须 fail closed 且文案含 JUHE_AI_STATS_DATABASE_PATH: %v", err)
 	}
 	if _, err := loadWorkerConfig(getenvFrom(map[string]string{
-		"JUHE_AI_JOBS_WORKER_ENABLED": "true",
-		"JUHE_AI_DATABASE_DRIVER":     "postgres",
-	})); err == nil {
-		t.Fatal("postgres 模式缺少 JUHE_AI_POSTGRES_URL 必须 fail closed")
+		"JUHE_AI_DATABASE_DRIVER": "postgres",
+	})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("postgres 模式缺少 JUHE_AI_POSTGRES_URL 必须 fail closed: %v", err)
 	}
 }
 
-func TestMinimalAssemblyExistsWhenWorkerDisabled(t *testing.T) {
+// TestWorkerAssemblySchedulerAndOutboxPrunerWiring：基础 assembly 恒分配
+// scheduler；outbox 消费面恒装配 drain 与 pruner（J1 恒开终态）。
+func TestWorkerAssemblySchedulerAndOutboxPrunerWiring(t *testing.T) {
 	config := workerConfig{
 		Driver:             "sqlite",
 		BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3"),
 	}
 	assembly := newWorkerAssembly(config, nil)
 	if assembly == nil || assembly.scheduler == nil {
-		t.Fatal("minimal assembly must allocate its scheduler even when worker is disabled")
+		t.Fatal("worker assembly must allocate its scheduler")
 	}
 	defer assembly.closeStores()
 	face, err := assembly.wireHealthProbeOutboxFace(func(string) string { return "" })
 	if err != nil {
 		t.Fatalf("wire health probe outbox face: %v", err)
 	}
-	if face == nil || face.pruner == nil {
-		t.Fatal("minimal assembly must expose the health probe outbox pruner")
+	if face == nil || face.pruner == nil || face.drain == nil {
+		t.Fatal("worker assembly must expose the health probe outbox drain and pruner")
 	}
 	var table string
 	if err := assembly.sqliteDBs[0].QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='account_health_probe_request_outbox'").Scan(&table); err != nil {

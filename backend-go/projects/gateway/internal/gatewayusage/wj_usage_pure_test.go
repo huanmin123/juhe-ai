@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -396,23 +397,43 @@ func TestWJFinalizationQueueInjection(t *testing.T) {
 	}
 }
 
+// wjRecordingLogger 的消费方（finalization 队列）从后台 goroutine 并发写，
+// 读取必须经 count()/items() 加锁拷贝（裸切片在 -race 下是数据竞争）。
 type wjRecordingLogger struct {
+	mu    sync.Mutex
 	items []string
 }
 
 func (l *wjRecordingLogger) Debug(message string, _ map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.items = append(l.items, message)
 }
 
 func (l *wjRecordingLogger) Warn(message string, _ map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.items = append(l.items, message)
 }
 
 func (l *wjRecordingLogger) Error(message string, _ map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.items = append(l.items, message)
 }
 
-func (l *wjRecordingLogger) count() int { return len(l.items) }
+func (l *wjRecordingLogger) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.items)
+}
+
+// itemsSnapshot 返回事件的加锁拷贝，供测试断言逐条内容。
+func (l *wjRecordingLogger) itemsSnapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.items...)
+}
 
 // TestWJUsageMetadataHelpers 固定使用元数据选择器的字段透传。
 func TestWJUsageMetadataHelpers(t *testing.T) {

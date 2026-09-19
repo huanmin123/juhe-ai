@@ -106,7 +106,6 @@ VALUES ('acc-detect-1', 'sys-1', 'api_key', 'active', 1, ?, 0, '{}', ?, ?)
 func balanceDetectAssemblyEnv(t *testing.T, businessPath, statsPath string) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"JUHE_AI_JOBS_WORKER_ENABLED":             "true",
 		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
 		"JUHE_AI_DATABASE_PATH":                   businessPath,
 		"JUHE_AI_STATS_DATABASE_PATH":             statsPath,

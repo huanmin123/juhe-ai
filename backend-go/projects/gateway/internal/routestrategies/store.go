@@ -35,21 +35,21 @@ type GroupBinding struct {
 
 // ListItem mirrors CompleteRouteStrategyListItem (list + create response).
 type ListItem struct {
-	ID                   string                 `json:"id"`
-	SystemAccountID      *string                `json:"systemAccountId,omitempty"`
-	SystemAccountName    *string                `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID string                 `json:"-"`
-	Name                 string                 `json:"name"`
-	Description          *string                `json:"description,omitempty"`
-	Mode                 string                 `json:"mode"`
-	Status               string                 `json:"status"`
-	IsDefault            bool                   `json:"isDefault"`
-	NormalRoutingConfig  *NormalRoutingConfig   `json:"normalRoutingConfig,omitempty"`
-	BindingCount         int                    `json:"bindingCount"`
-	APIKeyCount          int                    `json:"apiKeyCount"`
-	GroupBindingPreview  []GroupBindingPreview  `json:"groupBindingPreview"`
-	CreatedAt            string                 `json:"createdAt"`
-	UpdatedAt            string                 `json:"updatedAt"`
+	ID                   string                    `json:"id"`
+	SystemAccountID      *string                   `json:"systemAccountId,omitempty"`
+	SystemAccountName    *string                   `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID string                    `json:"-"`
+	Name                 string                    `json:"name"`
+	Description          *string                   `json:"description,omitempty"`
+	Mode                 string                    `json:"mode"`
+	Status               string                    `json:"status"`
+	IsDefault            bool                      `json:"isDefault"`
+	NormalRoutingConfig  *NormalRoutingConfig      `json:"normalRoutingConfig,omitempty"`
+	BindingCount         int                       `json:"bindingCount"`
+	APIKeyCount          int                       `json:"apiKeyCount"`
+	GroupBindingPreview  []GroupBindingPreview     `json:"groupBindingPreview"`
+	CreatedAt            string                    `json:"createdAt"`
+	UpdatedAt            string                    `json:"updatedAt"`
 	SpeedFirstLatency    *SpeedFirstRuntimeSummary `json:"speedFirstLatencyRuntime,omitempty"`
 }
 
@@ -570,10 +570,11 @@ func (s *Store) newDetail(ctx context.Context, row strategyRow, bindings []Group
 	return detail, nil
 }
 
-// normalConfigForMode renders normalRoutingConfig for mode normal (default
-// filled), nil otherwise.
+// normalConfigForMode renders normalRoutingConfig for every mode supporting the
+// scheduling preference (normal/weighted/failover/round_robin; the cost_first
+// default fills in when absent), nil for hybrid_smart.
 func normalConfigForMode(mode string, normal *NormalRoutingConfig) *NormalRoutingConfig {
-	if mode != ModeNormal {
+	if !ModeSupportsSchedulingPreference(mode) {
 		return nil
 	}
 	if normal == nil {
@@ -600,13 +601,13 @@ func (s *Store) lookupName(ctx context.Context, id string) *string {
 
 // OptionSummary mirrors RouteStrategyOptionSummary (GET /options response).
 type OptionSummary struct {
-	ID                string `json:"id"`
+	ID                string  `json:"id"`
 	SystemAccountID   *string `json:"systemAccountId,omitempty"`
 	SystemAccountName *string `json:"systemAccountName,omitempty"`
-	Name              string `json:"name"`
-	Mode              string `json:"mode"`
-	Status            string `json:"status"`
-	IsDefault         bool   `json:"isDefault"`
+	Name              string  `json:"name"`
+	Mode              string  `json:"mode"`
+	Status            string  `json:"status"`
+	IsDefault         bool    `json:"isDefault"`
 }
 
 // OptionsQuery mirrors RouteStrategyOptionListOptions after the route-level

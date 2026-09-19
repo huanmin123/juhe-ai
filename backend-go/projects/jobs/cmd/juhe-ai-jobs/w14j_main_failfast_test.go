@@ -18,14 +18,12 @@ func TestW14JMainPGFailFastArms(t *testing.T) {
 	}{
 		// J1 开启且 store=postgres 但连接串非法 → Acquire 失败。
 		{"j1-pg-bad-url", map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_ENABLED":      "true",
 			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":   "go",
 			"JUHE_AI_ACCOUNT_HEALTH_STORE":        "postgres",
 			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": "pgx://w14j-invalid-url",
 		}},
 		// J1 PG 直连输入缺业务库连接串 → LoadConfig fail closed。
 		{"j1-input-pg-missing-url", map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_ENABLED":      "true",
 			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":   "go",
 			"JUHE_AI_ACCOUNT_HEALTH_STORE":        "postgres",
 			"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": "pgx://w14j-invalid-url",
@@ -47,11 +45,11 @@ func TestW14JMainPGFailFastArms(t *testing.T) {
 		}},
 		// J3a 开启但 jobs 连接串非法 → Acquire 失败。
 		{"j3a-pg-bad-url", map[string]string{
-			"JUHE_AI_PROXY_LATENCY_ENABLED":        "true",
-			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":     "go",
-			"JUHE_AI_PROXY_LATENCY_STORE":          "postgres",
-			"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":   "pgx://w14j-invalid-url",
-			"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":    "w14j-j3a",
+			"JUHE_AI_PROXY_LATENCY_ENABLED":           "true",
+			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":        "go",
+			"JUHE_AI_PROXY_LATENCY_STORE":             "postgres",
+			"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":      "pgx://w14j-invalid-url",
+			"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":       "w14j-j3a",
 			"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
 		}},
 		// worker 组合根声明 postgres 却缺连接串 → loadWorkerConfig fail。

@@ -867,6 +867,7 @@ func (f *retentionFamily) flushLoop(stop <-chan struct{}, queue *recordMaintenan
 		case <-stop:
 			return
 		case <-ticker.C:
+		drain:
 			for {
 				batch := queue.takeBatch(10)
 				if len(batch) == 0 {
@@ -880,7 +881,14 @@ func (f *retentionFamily) flushLoop(stop <-chan struct{}, queue *recordMaintenan
 							"jobType", job.Type, "jobId", job.ID, "error", err)
 						// Node：失败任务保留队头等待重试——这里重新入队。
 						_, _ = queue.enqueue(job)
-						break
+						// w16j 发现的失败重试热旋：原 break 只跳出批次循环，
+						// 外层 drain 立即取回同一失败任务，在单个 tick 内零延迟
+						// 无限重试且永不回到 select 观察 stop（CPU 空转 + 日志
+						// 洪水，goroutine 随宿主进程永久泄漏）。改为跳出 drain，
+						// 等下一个 100ms tick 再重试，与上方“定时循环（100ms
+						// 节拍）”语义一致。
+						cancel()
+						break drain
 					}
 				}
 				cancel()

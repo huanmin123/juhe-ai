@@ -173,15 +173,19 @@ func speedFirstRequest(t *testing.T, runtime *gatewayruntimecache.GatewayRuntime
 
 func TestChainSpeedFirstBodyAdmissionGateSkipsNonApplicable(t *testing.T) {
 	personal := "personal"
-	dynamicMode := "round_robin"
+	hybridMode := "hybrid_smart"
 	costFirst := "cost_first"
+	// 运行时 hybrid 行不解码 normalRoutingConfig，NormalRoutingConfig 恒 nil，
+	// 准入门依赖该解码契约排除 hybrid_smart。
+	hybridRuntime := speedFirstRuntime(&hybridMode, nil, nil, nil, 1)
+	hybridRuntime.APIKey.NormalRoutingConfig = nil
 	cases := []struct {
 		name    string
 		runtime *gatewayruntimecache.GatewayRuntime
 		lane    gatewayproto.RequestLane
 	}{
 		{"missing runtime", nil, gatewayproto.LaneText},
-		{"dynamic route strategy", speedFirstRuntime(&dynamicMode, nil, nil, nil, 1), gatewayproto.LaneText},
+		{"hybrid_smart route strategy", hybridRuntime, gatewayproto.LaneText},
 		{"cost_first preference", speedFirstRuntime(nil, &costFirst, nil, nil, 1), gatewayproto.LaneText},
 		{"personal group", speedFirstRuntime(nil, nil, &personal, nil, 1), gatewayproto.LaneText},
 		{"no accounts", speedFirstRuntime(nil, nil, nil, nil, 0), gatewayproto.LaneText},
@@ -217,6 +221,42 @@ func TestChainSpeedFirstBodyAdmissionGateSkipsNonApplicable(t *testing.T) {
 			if !found {
 				t.Fatalf("missing body.speed_first_admission skipped stage: %+v", obs.snapshotStages())
 			}
+		})
+	}
+}
+
+// weighted/failover/round_robin 共享 normalRoutingConfig 组内调度配置
+// （历史命名）：speed_first + high_concurrency 分组下准入门适用并发放租约。
+func TestChainSpeedFirstBodyAdmissionGateAppliesToSchedulingModes(t *testing.T) {
+	for _, mode := range []string{"weighted", "failover", "round_robin"} {
+		t.Run(mode, func(t *testing.T) {
+			gatewayhotquality.ClearSpeedFirstBodyAdmissionsForTest()
+			defer gatewayhotquality.ClearSpeedFirstBodyAdmissionsForTest()
+			obs := &chainCapturedObservability{}
+			gate := newChainSpeedFirstGateForTest(obs)
+			modeValue := mode
+			req, res, recorder := speedFirstRequest(t, speedFirstRuntime(&modeValue, nil, nil, nil, 1))
+
+			outcome, err := gate.AdmitBody(context.Background(), req, res, gatewayproto.LaneText)
+			if err != nil {
+				t.Fatalf("admit: %v", err)
+			}
+			if outcome.Handled || outcome.Release == nil {
+				t.Fatalf("outcome = %+v, want an admitted lease", outcome)
+			}
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("admission must not write a response, status=%d", recorder.Code)
+			}
+			admitted := false
+			for _, stage := range obs.snapshotStages() {
+				if stage.outcome == "success" && stage.fields["acquired"] == true {
+					admitted = true
+				}
+			}
+			if !admitted {
+				t.Fatalf("missing success stage: %+v", obs.snapshotStages())
+			}
+			outcome.Release()
 		})
 	}
 }

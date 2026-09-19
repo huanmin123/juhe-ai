@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20260919T093823230Z](计划-20260919T093823230Z-切号有效上游目标冻结与target-aware切号实施.md)：实施《切号时有效上游目标与上下文迁移设计》定稿契约：`gatewaydispatch` 新增请求级 `SwitchTarget` 冻结结构与 `FilterAccountsForSwitchTarget` target-aware 过滤，流式未提交重试、上游失败账户推进、分组 fallback、模型感知 reload 全部消费冻结目标，target 缺失时 fail-closed（`switch_target_unresolved`）；`ConvertedContext` 独立重构与验收矩阵第 8 行 RHS-only 候选加载暂缓。已完成（2026-09-19，独立复审通过；未提交，工作树内待入库）。
+
 - [PLAN-20260919T000723744Z](计划-20260919T000723744Z-核心系统缺陷修复第二轮-登记项处置.md)：处置第一轮登记项：dial 阶段失败拆分、account_runtime 死包删除、gatewayaccounteffects 死半区整簇删除、outbox drain 并发/告警/settings 缓存、OAuth 保活最小装配、路由状态锁内扫描与 latency_degraded 批量读、图像 lane 瞬态语义文档澄清。独立复审通过（无 blocker）。全部落地（`4d47decaa`/`d372ec2fa`/`412f679a4`/`94f879229` 等）；gatewaydispatch/gatewaycircuit 侧修复已随 R3 线提交 `d64e51c9b` 入库（HEAD 复核健在）。已完成。
 
 - [PLAN-20260918T142845703Z](计划-20260918T142845703Z-调度状态探活核心系统缺陷修复.md)：修复三大核心系统复审确认的生产可达缺陷（调度 reacquire panic/双重释放、锁死 fence 断链、SSE 心跳竞态）与低风险加固项；P0-3 软阻断写面经 Node 归档对照判定为 Node 本就未接线（结论 B），按登记路线处置不接线；代码级修复与验证已完成（提交 `2eb2154e6`）。

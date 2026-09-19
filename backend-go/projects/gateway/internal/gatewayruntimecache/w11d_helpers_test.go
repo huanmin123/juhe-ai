@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,6 +108,61 @@ func TestW11DSyncInvalidationsBestEffort(t *testing.T) {
 	}
 }
 
+// TestW11DSyncInvalidationsCoalesceWindow 钉住 2026-09-18 热路径加固：窗口内
+// 的调用只触发一次跨实例版本同步（2 topic × 每窗口 1 轮 GET），窗口滚动后恢
+// 复；窗口边界后的版本变化仍被观察；窗口为 0 保持逐读同步的既有契约。
+func TestW11DSyncInvalidationsCoalesceWindow(t *testing.T) {
+	ctx := context.Background()
+	var getCalls atomic.Int64
+	versions := map[string]int64{}
+	store := &w11dInvalStore{getVersion: func(_ context.Context, topic string) (int64, error) {
+		getCalls.Add(1)
+		return versions[topic], nil
+	}}
+	bus := inval.New(nil)
+	bus.SetSharedStore(store)
+	models := newFakeModels()
+	models.runtimes["sk-sync"] = staticRuntime(t, models, testAPIKeyRow("k_sync", RouteStrategyModeNormal, "g1"), nil, nil)
+
+	clock := newManualClock()
+	svc := newTestService(t, models, clock, func(o *Options) {
+		o.SyncInvalidationsOnRead = true
+		o.Bus = bus
+		o.SyncMinIntervalMs = 1_000
+	})
+	svc.syncInvalidationsBestEffort(ctx)
+	svc.syncInvalidationsBestEffort(ctx)
+	svc.syncInvalidationsBestEffort(ctx)
+	if n := getCalls.Load(); n != 2 {
+		t.Fatalf("窗口内同步 GET 次数 = %d, want 2（2 topic × 1 窗口）", n)
+	}
+	clock.Advance(time.Second)
+	svc.syncInvalidationsBestEffort(ctx)
+	if n := getCalls.Load(); n != 4 {
+		t.Fatalf("窗口滚动后同步 GET 次数 = %d, want 4", n)
+	}
+
+	// 窗口边界后的跨实例版本变化仍被观察到（失效语义保持）。
+	versions[inval.TopicGatewayRuntime] = 5
+	clock.Advance(time.Second)
+	svc.syncInvalidationsBestEffort(ctx)
+	if svc.runtimeCacheSize() != 0 {
+		t.Fatal("窗口边界后的版本变化必须清 runtime 缓存")
+	}
+
+	// 默认窗口 0：保持逐读同步契约（每次调用 2 topic 各一次 GET）。
+	// 此前 svc 已同步 3 轮 = 6 次，zeroSvc 两次调用再 +4。
+	zeroSvc := newTestService(t, models, newManualClock(), func(o *Options) {
+		o.SyncInvalidationsOnRead = true
+		o.Bus = bus
+	})
+	zeroSvc.syncInvalidationsBestEffort(ctx)
+	zeroSvc.syncInvalidationsBestEffort(ctx)
+	if n := getCalls.Load(); n != 10 {
+		t.Fatalf("窗口 0 时两次调用累计同步 GET 次数 = %d, want 10", n)
+	}
+}
+
 func TestW11DLogSharedFailureThrottle(t *testing.T) {
 	models := newFakeModels()
 	clock := newManualClock()
@@ -115,13 +171,13 @@ func TestW11DLogSharedFailureThrottle(t *testing.T) {
 	err := errors.New("w11d shared failure")
 	svc.logSharedFailure("w11d_event", err)
 	svc.logSharedFailure("w11d_event", err)
-	if len(logger.events) != 1 {
-		t.Fatalf("30s 窗口内只告警一次: %v", logger.events)
+	if len(logger.snapshot()) != 1 {
+		t.Fatalf("30s 窗口内只告警一次: %v", logger.snapshot())
 	}
 	clock.Advance(31 * time.Second)
 	svc.logSharedFailure("w11d_event", err)
-	if len(logger.events) != 2 {
-		t.Fatalf("窗口过后必须再次告警: %v", logger.events)
+	if len(logger.snapshot()) != 2 {
+		t.Fatalf("窗口过后必须再次告警: %v", logger.snapshot())
 	}
 	// 无 logger：静默。
 	bare := newTestService(t, newFakeModels(), newManualClock(), nil)
@@ -217,8 +273,8 @@ func TestW11DRuntimeCacheTTLAndCandidates(t *testing.T) {
 	account.AccountAuthorizationExpiresAt = &expires
 	account.GroupAuthorizationExpiresAt = &expires
 	groupAccess := &GroupUsageAccessMetadata{
-		GroupOwnerSystemAccountID:     "sys_owner",
-		GroupAuthorizationExpiresAt:   &groupExpires,
+		GroupOwnerSystemAccountID:   "sys_owner",
+		GroupAuthorizationExpiresAt: &groupExpires,
 	}
 	runtime := GatewayRuntime{APIKey: row, GroupAccess: groupAccess, Accounts: []OpenAIAccountSecret{account}}
 	candidates := runtimeCacheExpiryCandidates(runtime)
@@ -510,9 +566,9 @@ func (o *w11dOnce) close(ch chan struct{}) {
 // w11dBlockGroupModels 让前 passThrough 次分组访问直通，其余阻塞。
 type w11dBlockGroupModels struct {
 	*fakeModels
-	block      chan struct{}
+	block       chan struct{}
 	passThrough int
-	calls      int
+	calls       int
 }
 
 func (m *w11dBlockGroupModels) ResolveGroupUsageAccessMetadata(ctx context.Context, groupID, systemAccountID string) (*GroupUsageAccessMetadata, error) {

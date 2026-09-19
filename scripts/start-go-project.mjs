@@ -103,7 +103,7 @@ const projectNames = project === 'jobs'
       'JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH', 'JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL',
       'JUHE_AI_GO_RUNTIME_METRICS_INTERVAL', 'JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS', 'JUHE_AI_GO_RUNTIME_METRICS_SERVICE',
       'JUHE_AI_GO_RUNTIME_METRICS_ROLE',
-      'JUHE_AI_ACCOUNT_HEALTH_ENABLED', 'JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID',
+      'JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID',
       'JUHE_AI_ACCOUNT_HEALTH_STORE', 'JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH', 'JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL',
       'JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY', 'JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY',
       'JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY_ID', 'JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE',
@@ -180,6 +180,15 @@ const removedCrossProcessEnvNames = [
 ]
 for (const name of removedCrossProcessEnvNames) delete env[name]
 
+// 2026-09-19 J1/worker 启用开关移除：J1 账户健康检查与 worker 任务族改为
+// 强制常开（Go 侧缺配置 fail-fast），历史开关值即使残留在历史 .env 或父进程
+// 环境中也不得进入 Go 子进程，避免制造仍可开关的假象。
+const removedLegacySwitchEnvNames = [
+  'JUHE_AI_ACCOUNT_HEALTH_ENABLED',
+  'JUHE_AI_JOBS_WORKER_ENABLED'
+]
+for (const name of removedLegacySwitchEnvNames) delete env[name]
+
 const runtimeMode = String(env.JUHE_AI_RUNTIME_MODE ?? '').trim().toLowerCase()
 const hasPerformanceHints = ['JUHE_AI_POSTGRES_URL', 'JUHE_AI_REDIS_CACHE_URL', 'JUHE_AI_REDIS_STATE_URL', 'JUHE_AI_REDIS_QUEUE_URL']
   .some((name) => Boolean(configured(name).value.trim()))
@@ -190,21 +199,20 @@ if (project === 'jobs') {
   }
   const runtimeLogStore = resolveStore('JUHE_AI_RUNTIME_LOG_STORE', env, runtimeMode, hasPerformanceHints)
   const tableMonitorStore = resolveStore('JUHE_AI_TABLE_MONITOR_STORE', env, runtimeMode, hasPerformanceHints)
-  const accountHealthEnabled = String(env.JUHE_AI_ACCOUNT_HEALTH_ENABLED ?? '').trim().toLowerCase() === 'true'
-  if (accountHealthEnabled && String(env.JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER ?? '').trim().toLowerCase() !== 'go') {
-    throw new Error('JUHE_AI_ACCOUNT_HEALTH_ENABLED requires JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER=go; release startup refuses a dual J1 owner.')
+  // J1 账户健康检查 2026-09-19 起强制常开（ENABLED 开关移除）：OWNER 缺省
+  // go，显式非 go 拒绝；INSTANCE_ID 缺省主机名、CREDENTIAL_SECRET 缺省取
+  // JUHE_AI_SECRET（由 Go 侧解析），启动器只校验无法缺省的必填项。
+  const accountHealthOwner = String(env.JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER ?? '').trim().toLowerCase()
+  if (accountHealthOwner && accountHealthOwner !== 'go') {
+    throw new Error('JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER=go is the only accepted owner; release startup refuses a non-Go J1 owner.')
   }
-  if (accountHealthEnabled) {
-    for (const name of [
-      'JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID',
-      'JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY',
-      'JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY',
-      'JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET'
-    ]) {
-      if (!String(env[name] ?? '').trim()) throw new Error(`${name} is required when JUHE_AI_ACCOUNT_HEALTH_ENABLED=true.`)
-    }
-    env.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY = absoluteBackendPath(env.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY, '')
+  for (const name of [
+    'JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY',
+    'JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY'
+  ]) {
+    if (!String(env[name] ?? '').trim()) throw new Error(`${name} is required; J1 account health runs always-on.`)
   }
+  env.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY = absoluteBackendPath(env.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY, '')
   const accountBalanceEnabled = String(env.JUHE_AI_ACCOUNT_BALANCE_ENABLED ?? '').trim().toLowerCase() === 'true'
   if (accountBalanceEnabled) {
     if (String(env.JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER ?? '').trim().toLowerCase() !== 'go') {
@@ -220,9 +228,7 @@ if (project === 'jobs') {
     if (balanceStore !== 'postgres') throw new Error('JUHE_AI_ACCOUNT_BALANCE_STORE=postgres is required for Go-owner J2; SQLite outcomes cannot be projected by Node.')
     if (!String(env.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL ?? '').trim()) throw new Error('JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL is required for postgres J2 store.')
   }
-  const accountHealthStore = accountHealthEnabled
-    ? resolveStore('JUHE_AI_ACCOUNT_HEALTH_STORE', env, runtimeMode, hasPerformanceHints)
-    : undefined
+  const accountHealthStore = resolveStore('JUHE_AI_ACCOUNT_HEALTH_STORE', env, runtimeMode, hasPerformanceHints)
   env.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS = String(env.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS ?? '').trim() || '127.0.0.1:3305'
   env.JUHE_AI_LOG_DIR = absoluteBackendPath(env.JUHE_AI_LOG_DIR, './logs')
   if (runtimeLogStore === 'sqlite' || tableMonitorStore === 'sqlite') {

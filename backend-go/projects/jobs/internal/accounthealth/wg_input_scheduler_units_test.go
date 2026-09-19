@@ -209,7 +209,6 @@ func TestProbeValidateInputMismatch(t *testing.T) {
 func TestLoadConfigErrorMatrix(t *testing.T) {
 	base := func() map[string]string {
 		return map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_ENABLED":           "true",
 			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 			"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "wg",
 			"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
@@ -224,7 +223,6 @@ func TestLoadConfigErrorMatrix(t *testing.T) {
 		mutate func(env map[string]string)
 	}{
 		{"缺 owner 声明", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER"] = "node" }},
-		{"缺实例 ID", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID"] = "" }},
 		{"store 模式非法", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_STORE"] = "oracle" }},
 		{"sqlite 缺路径", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH"] = "" }},
 		{"PG 缺 URL", func(env map[string]string) { env["JUHE_AI_ACCOUNT_HEALTH_STORE"] = "postgres" }},

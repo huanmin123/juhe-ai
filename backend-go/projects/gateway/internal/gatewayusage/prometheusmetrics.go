@@ -241,6 +241,16 @@ func ResetPrometheusMetricsForTest() {
 	prometheusDefault.upstreamFailures = map[string]int64{}
 }
 
+// auditCapturedDroppedTotal 由组合根注入 F3 审计 producer 的丢弃计数访问器
+// （SetAuditCapturedDroppedTotal，启动期一次）；nil 时该指标族不输出。
+var auditCapturedDroppedTotal func() int64
+
+// SetAuditCapturedDroppedTotal wires the F3 audit producer drop counter into
+// the exposition. Call once during composition, before the HTTP server starts.
+func SetAuditCapturedDroppedTotal(fn func() int64) {
+	auditCapturedDroppedTotal = fn
+}
+
 // RenderPrometheusMetrics mirrors renderPrometheusMetrics: the exposition
 // order and the HELP/TYPE lines follow the Node contract. The Redis Stream
 // queue family renders the disabled gauge only — the Node queue monitor has
@@ -272,6 +282,12 @@ func renderPrometheusMetricsTo(w io.Writer) {
 	write("# HELP juhe_ai_http_failure_scope_metrics_enabled Whether this process exposes bounded HTTP failure scope labels.\n")
 	write("# TYPE juhe_ai_http_failure_scope_metrics_enabled gauge\n")
 	write("juhe_ai_http_failure_scope_metrics_enabled{service=%q} 1\n", prometheusServiceName)
+
+	if auditCapturedDroppedTotal != nil {
+		write("# HELP juhe_ai_audit_log_captured_dropped_total Audit captures dropped because the bounded F3 producer queue was full.\n")
+		write("# TYPE juhe_ai_audit_log_captured_dropped_total counter\n")
+		write("juhe_ai_audit_log_captured_dropped_total{service=%q} %d\n", prometheusServiceName, auditCapturedDroppedTotal())
+	}
 
 	write("# HELP juhe_ai_gateway_upstream_failures_total Gateway upstream attempt failures grouped by bounded failure, reason, and status classes.\n")
 	write("# TYPE juhe_ai_gateway_upstream_failures_total counter\n")

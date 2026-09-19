@@ -20,19 +20,17 @@ import (
 //     JUHE_AI_USAGE_SHARD_COUNT：usagewriter 分片写入。
 //
 // jobs 专属 env：
-//   - JUHE_AI_JOBS_WORKER_ENABLED（默认 false）：worker 调度器总开关；关闭时
-//     二进制保持既有 F1/F2/J1/J2/J3a 行为不变；但 usage spool 不被消费、
-//     用量记录与统计预聚合/额度快照断供，启动日志会输出
-//     jobs_worker_disabled_usage_supply_degraded 警告；
+//   - JUHE_AI_JOBS_WORKER_ENABLED 已废弃（2026-09-19 决策）：worker 调度器
+//     强制常开，该变量不再被读取（启动早期对非 true 值输出废弃告警）；usage
+//     spool 消费、用量记录与统计预聚合/额度快照由常开的 worker 任务族承载；
 //   - JUHE_AI_TASK_RUNS_DATABASE_PATH / JUHE_AI_TASK_RUNS_POSTGRES_URL：
 //     background_task_runs + background_job_leases 双模存储；
 //   - JUHE_AI_JOBS_<FAMILY>_ENABLED：家族级开关（stats/oauth/task_runs/
-//     usage_writer/internal_api，默认 true，跟随总开关）；
+//     usage_writer/internal_api，默认 true）；
 //   - JUHE_AI_JOBS_DRAIN_TIMEOUT_MS：停机排空上限（默认 10s，对齐 Node
 //     stopBackgroundJobs(10_000)）。
 type workerConfig struct {
-	Enabled bool
-	Driver  string // sqlite | postgres
+	Driver string // sqlite | postgres
 
 	InstanceID       string
 	WorkerRole       string
@@ -188,11 +186,7 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		ListProjectionWorkerConcurrency: 4,
 		DrainTimeout:                    10 * time.Second,
 	}
-	enabled, err := workerEnvBool(getenv, "JUHE_AI_JOBS_WORKER_ENABLED", false)
-	if err != nil {
-		return config, err
-	}
-	config.Enabled = enabled
+	var err error
 	if value := strings.TrimSpace(getenv("JUHE_AI_DATABASE_DRIVER")); value != "" {
 		config.Driver = strings.ToLower(value)
 	}
@@ -361,12 +355,9 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	config.DrainTimeout = time.Duration(drainMS) * time.Millisecond
 
-	if !config.Enabled {
-		return config, nil
-	}
-	// 启用后的配置门禁：家族启用而存储缺失必须 fail closed，不允许静默降级。
+	// 配置门禁（机制强制常开）：家族启用而存储缺失必须 fail closed，不允许静默降级。
 	if config.Driver == "postgres" && config.PostgresURL == "" {
-		return config, fmt.Errorf("启用 worker 后 JUHE_AI_DATABASE_DRIVER=postgres 必须配置 JUHE_AI_POSTGRES_URL")
+		return config, fmt.Errorf("JUHE_AI_DATABASE_DRIVER=postgres 必须配置 JUHE_AI_POSTGRES_URL（worker 任务族强制常开）")
 	}
 	if config.Driver == "sqlite" {
 		if config.StatsEnabled && config.StatsSQLitePath == "" {

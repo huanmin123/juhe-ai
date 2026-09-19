@@ -74,9 +74,9 @@ API Key
 
 账户状态、授权、模型能力、协议能力、额度、并发硬上限和账户电路只回答“这个账户当前能不能执行路由结果”，属于可执行性条件，不是与路由策略竞争的更高业务策略。路由策略不能强制一个实际上不可执行的账号发起请求，账户层也不能借可执行性判断改变路由策略。
 
-### 3.2 普通路由的两种调度偏好
+### 3.2 调度偏好的两种取值
 
-普通路由模式仍为 `normal`，只能绑定一个分组。`normalRoutingConfig.schedulingPreference` 区分：
+普通路由模式仍为 `normal`，只能绑定一个分组；调度偏好（`normalRoutingConfig.schedulingPreference`，普通 / 权重 / 故障回退 / 轮询路由共用）区分：
 
 - `cost_first`：本文简称“普通模式”。优先尊重账户配置、会话亲和和稳定顺序，仅在账号已不可调度或当前请求证明确实失败时切换。
 - `speed_first`：本文简称“快速模式”。在硬约束和账户可用性通过后，路由层首字速度目标高于超级优先、账号优先级、备用、会话亲和与热质量；确认进入 `latency_degraded` 的账号可以被同分组未降级硬可承接账号越过。
@@ -762,7 +762,7 @@ routeCoordinationBudget
 
 如果当前层所有账号已经处于 `SUSPECT / OPEN / HALF_OPEN`，候选扫描直接进入下一账户配置层，不等待、不重复扫描。进入新层时重置 `currentTierKey / currentTierUniqueAttemptCount`，但不清空全局 `attempted*` 集合。同一个 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在 `attemptedProtocolModelKeys` 中只允许出现一次；只有合法 confirmation / half-open lease 可以消费一次例外。只有 account 电路已经建立，或用户显式 account 级动作命中时，才把 `accountRuntimeKey` 加入全局 `attemptedAccountRuntimeKeys`；物理凭据去重写入 `attemptedPhysicalCredentialKeys`。
 
-普通路由只在快速模式请求开始时解析一次 `normalRoutingConfig.firstByteDeadlineMs`，同请求后续文本账号 attempt 复用这个路由观察值；普通模式不创建该观察。默认 30 秒、允许 10–60 秒，且始终不超过文本 first-response timeout。现有 `speedFirstConfig.firstByteThresholdMs` 作为迁移兼容别名读取；目标结构写入 `normalRoutingConfig.firstByteDeadlineMs`，禁止两个字段同时生效。confirmation 与传输电路使用 lane hard timeout，不消费这个配置值作为失败证据；image 等合法长耗时 lane 不创建文本切换观察、慢样本或 `latency_degraded`，只受图片专用单次时限和图片整请求墙钟约束。
+路由策略只在快速模式请求开始时解析一次 `normalRoutingConfig.firstByteDeadlineMs`，同请求后续文本账号 attempt 复用这个路由观察值；成本优先不创建该观察。默认 30 秒、允许 10–60 秒，且始终不超过文本 first-response timeout。现有 `speedFirstConfig.firstByteThresholdMs` 作为迁移兼容别名读取；目标结构写入 `normalRoutingConfig.firstByteDeadlineMs`，禁止两个字段同时生效。confirmation 与传输电路使用 lane hard timeout，不消费这个配置值作为失败证据；image 等合法长耗时 lane 不创建文本切换观察、慢样本或 `latency_degraded`，只受图片专用单次时限和图片整请求墙钟约束。
 
 统一首字协议固定为：真实上游派发时启动一次计时；非流式以首个 body 字节、流式以首个可见语义 chunk 为首字；响应头、SSE heartbeat、空事件和内部缓冲不算；每个 attempt 只产生一次 `observed / deadline_reached / cancelled / unknown` 结果。任何账户层、响应处理层或快速模式都不能再创建第二个首字 timer。
 
@@ -800,11 +800,11 @@ routeCoordinationBudget
 
 ## 11. 快速模式行为
 
-快速模式即普通路由 `speed_first`。路由策略是最高业务调度层，快速模式的速度目标高于任何 AI 账户偏好；账户可执行性只负责排除无法执行该路由结果的账号。本设计不能削弱现有快速模式。
+快速模式即调度偏好 `speed_first`（普通 / 权重 / 故障回退 / 轮询路由共用）。路由策略是最高业务调度层，快速模式的速度目标高于任何 AI 账户偏好；账户可执行性只负责排除无法执行该路由结果的账号。本设计不能削弱现有快速模式。
 
 固定流程：
 
-1. 接收路由策略已经选定的普通路由唯一分组和 `speed_first` 目标，不参与分组或模式选择。
+1. 接收路由策略已经选定的当前分组（普通路由为唯一绑定分组）和 `speed_first` 目标，不参与分组或模式选择。
 2. 在该分组内通过账户可执行性，以及与当前请求匹配的 Key、`protocol_model`、account 和 `upstream_bucket` 电路移除实际上不能执行的账号。
 3. 对剩余可执行候选应用路由层 `latency_degraded`：未降级账号整体优先于已确认慢账号。
 4. 未降级候选之间、降级候选之间再按账户配置层和同层热质量排序。

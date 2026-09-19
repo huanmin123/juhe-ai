@@ -35,10 +35,12 @@ func TestW14HRouteConfigArms(t *testing.T) {
 	if got := service.normalRouteSpeedFirstConfigForAPIKey(nil, lane, false); got != nil {
 		t.Fatal("nil 记录必须返回 nil")
 	}
-	wrongMode := speedRow(`{}`, "speed_first")
-	wrongMode.RouteStrategyMode = gatewayruntimecache.RouteStrategyModeWeighted
-	if got := service.normalRouteSpeedFirstConfigForAPIKey(wrongMode, lane, false); got != nil {
-		t.Fatal("非 normal 模式必须返回 nil")
+	// weighted 模式共享 normalRoutingConfig 组内调度配置：speed_first 有效解码。
+	weightedMode := speedRow(`{"firstByteDeadlineMs": 1800}`, "speed_first")
+	weightedMode.RouteStrategyMode = gatewayruntimecache.RouteStrategyModeWeighted
+	weightedGot := service.normalRouteSpeedFirstConfigForAPIKey(weightedMode, lane, false)
+	if weightedGot == nil || weightedGot.FirstByteDeadlineMs == nil || *weightedGot.FirstByteDeadlineMs != 1800 {
+		t.Fatalf("weighted 模式配置=%v", weightedGot)
 	}
 	noConfig := speedRow(`{}`, "speed_first")
 	noConfig.NormalRoutingConfig = nil
@@ -250,7 +252,7 @@ func TestW14HPrepareFallbackArms(t *testing.T) {
 	exhausted := APIKeyGroupFallbackDispatchInput{
 		Reason: "w14h", APIKeyRecord: &gatewayruntimecache.GatewayAPIKeyRow{ID: "key"}, GroupID: "g1",
 		RoutePlanSnapshot: w14hMustSnapshot("g1"),
-		AuditCapture: w14hCapture{onMetadata: func(string, map[string]any) {}},
+		AuditCapture:      w14hCapture{onMetadata: func(string, map[string]any) {}},
 	}
 	result, err = attempted.PrepareAPIKeyGroupFallbackDispatchContext(ctx, exhausted)
 	if err != nil || result.Attempted {

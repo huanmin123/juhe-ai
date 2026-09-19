@@ -32,14 +32,14 @@ func TestModelMappedUpstreamPathAnthropicMessagesTarget(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := modelMappedUpstreamPathAndQuery(tc.original, resolvedMapping(tc.source, FamilyAnthropicMessages))
+			got, ok := ModelMappedUpstreamPathAndQuery(tc.original, resolvedMapping(tc.source, FamilyAnthropicMessages))
 			if !ok || got != tc.want {
 				t.Fatalf("got %q ok=%v want %q", got, ok, tc.want)
 			}
 		})
 	}
 	// stored row vocabulary ("messages") resolves the same rewrite.
-	got, ok := modelMappedUpstreamPathAndQuery("/chat/completions?a=b", resolvedMapping(FamilyChatCompletions, "messages"))
+	got, ok := ModelMappedUpstreamPathAndQuery("/chat/completions?a=b", resolvedMapping(FamilyChatCompletions, "messages"))
 	if !ok || got != "/messages?a=b" {
 		t.Fatalf("stored vocabulary got %q ok=%v", got, ok)
 	}
@@ -47,19 +47,19 @@ func TestModelMappedUpstreamPathAnthropicMessagesTarget(t *testing.T) {
 
 func TestModelMappedUpstreamPathNonBridgeUnchanged(t *testing.T) {
 	// 同协议映射不重写。
-	got, ok := modelMappedUpstreamPathAndQuery("/chat/completions", resolvedMapping(FamilyChatCompletions, FamilyChatCompletions))
+	got, ok := ModelMappedUpstreamPathAndQuery("/chat/completions", resolvedMapping(FamilyChatCompletions, FamilyChatCompletions))
 	if ok || got != "/chat/completions" {
 		t.Fatalf("same-family mapping rewrote: %q ok=%v", got, ok)
 	}
 	// chat -> gemini 原生不在该 helper 重写（bridge errors earlier）。
-	got, ok = modelMappedUpstreamPathAndQuery("/v1/chat/completions?alt=sse&key=k", resolvedMapping(FamilyChatCompletions, FamilyGeminiGenerateContent))
+	got, ok = ModelMappedUpstreamPathAndQuery("/v1/chat/completions?alt=sse&key=k", resolvedMapping(FamilyChatCompletions, FamilyGeminiGenerateContent))
 	if ok || got != "/v1/chat/completions?alt=sse&key=k" {
 		t.Fatalf("gemini native path should not rewrite here: %q ok=%v", got, ok)
 	}
 }
 
 func TestModelMappedUpstreamPathChatTargetStillRewrites(t *testing.T) {
-	got, ok := modelMappedUpstreamPathAndQuery("/v1/responses?x=1", resolvedMapping(FamilyResponses, FamilyChatCompletions))
+	got, ok := ModelMappedUpstreamPathAndQuery("/v1/responses?x=1", resolvedMapping(FamilyResponses, FamilyChatCompletions))
 	if !ok || got != "/chat/completions?x=1" {
 		t.Fatalf("responses->chat got %q ok=%v", got, ok)
 	}

@@ -196,11 +196,13 @@ func NormalizeAnthropicFamily(family string) bool {
 	return family == "anthropic_messages" || family == "messages"
 }
 
-// modelMappedUpstreamPathAndQuery mirrors openAIModelMappedUpstreamPathAndQuery
+// ModelMappedUpstreamPathAndQuery mirrors openAIModelMappedUpstreamPathAndQuery
 // for the chat_completions-targeted rewrites, plus the cross-protocol
 // anthropic target rewrite (Node openAIToAnthropicBridgeUpstreamPath:
 // /messages + the client query; audit B-10 openAIToAnthropicBridgeUpstreamPath).
-func modelMappedUpstreamPathAndQuery(originalPathAndQuery string, mapping *gatewayproto.ResolvedModelMapping) (string, bool) {
+// Exported for the chain URL builder so the upstream path carries the same
+// mapping rewrite as the driver body transform (BUG-0178).
+func ModelMappedUpstreamPathAndQuery(originalPathAndQuery string, mapping *gatewayproto.ResolvedModelMapping) (string, bool) {
 	_, query := SplitPathAndQuery(originalPathAndQuery)
 	switch {
 	case isOpenAIResponsesToChatCompletionsModelMapping(mapping):

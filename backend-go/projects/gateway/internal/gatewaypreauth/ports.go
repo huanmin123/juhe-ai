@@ -351,6 +351,11 @@ type GroupFallbackCandidateInput struct {
 	// the dispatch loop.
 	ExcludedAccountIDs         map[string]struct{}
 	RoutePlanSnapshot          gatewayrouting.RoutePlanSnapshot[string]
+	// AuditCapture 携带请求级审计面，供候选加载层的切号 fail-closed 诊断
+	// （switch_target_unresolved）落到请求审计。可派发候选的加载入口
+	// （PrepareAPIKeyGroupFallbackDispatchContext）传入；仅做回退决策的
+	// requestFallback 可保持 nil。
+	AuditCapture AuditCaptureContext
 }
 
 // GroupFallbackCandidate mirrors ApiKeyGroupFallbackCandidate.

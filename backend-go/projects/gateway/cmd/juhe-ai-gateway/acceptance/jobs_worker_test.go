@@ -1,4 +1,5 @@
-// X05 场景 7：jobs 冒烟。worker_enabled=true 启动 juhe-ai-jobs（复用同一
+// X05 场景 7：jobs 冒烟。worker 任务族强制常开（2026-09-19 起无 ENABLED
+// 开关），直接启动 juhe-ai-jobs（复用同一
 // 隔离 SQLite 存储布局）→ /health worker 字段正确接线（workerEnabled=true
 // + worker 快照）→ 至少一个后台任务轮次成功（外部可观测证据：JSON 日志
 // outcome=success 完成事件）→ 优雅信号停机（Windows CTRL_BREAK / POSIX
@@ -29,7 +30,6 @@ func TestAcceptanceJobsWorkerSmoke(t *testing.T) {
 	codexRoot := filepath.Join(root, "storage", "codex-context")
 	env := map[string]string{
 		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS":      fmt.Sprintf("127.0.0.1:%d", jobsHealthPort),
-		"JUHE_AI_JOBS_WORKER_ENABLED":             "true",
 		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
 		"JUHE_AI_DATABASE_PATH":                   fixture.storage["business"],
 		"JUHE_AI_STATS_DATABASE_PATH":             fixture.storage["stats"],

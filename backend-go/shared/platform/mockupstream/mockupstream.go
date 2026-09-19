@@ -36,6 +36,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -50,6 +51,7 @@ type Scenario string
 
 const (
 	ScenarioChatOK          Scenario = "chat_ok"
+	ScenarioChatEcho        Scenario = "chat_echo"
 	ScenarioChatStream      Scenario = "chat_stream"
 	ScenarioToolCall        Scenario = "tool_call"
 	ScenarioStatus400       Scenario = "status_400"
@@ -312,6 +314,12 @@ func (m *Server) serve2(w http.ResponseWriter, r *http.Request, idx int, bodyStr
 		}
 		return
 	}
+	if scenario == ScenarioChatEcho && !stream {
+		// 回显最后一条 user 消息内容：J1 探活响应必须包含请求中的挑战值
+		// （containsChallenge），固定罐头响应无法通过。
+		writeJSONStatus(w, http.StatusOK, chatEchoCompletionBody(m.seenReqs[idx].Body))
+		return
+	}
 	if !stream {
 		writeJSONStatus(w, http.StatusOK, chatCompletionBody(scenario))
 		return
@@ -343,6 +351,60 @@ func chatCompletionBody(scenario Scenario) string {
 		return `{"id":"chatcmpl-mock-tool","object":"chat.completion","created":1700000000,"model":"gpt-mock","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_mock_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"hangzhou\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`
 	}
 	return `{"id":"chatcmpl-mock-ok","object":"chat.completion","created":1700000000,"model":"gpt-mock","choices":[{"index":0,"message":{"role":"assistant","content":"MOCK-OK reply"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`
+}
+
+// chatEchoCompletionBody 用请求体里的最后一条 user 消息内容构造一个
+// 完成的 chat completion（J1 探活挑战回显场景）。解析失败时回落罐头 OK。
+func chatEchoCompletionBody(requestBody string) string {
+	content := "MOCK-OK reply"
+	var parsed struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(requestBody), &parsed); err == nil {
+		for i := len(parsed.Messages) - 1; i >= 0; i-- {
+			message := parsed.Messages[i]
+			if message.Role != "user" {
+				continue
+			}
+			var text string
+			if err := json.Unmarshal(message.Content, &text); err == nil {
+				text = strings.TrimSpace(text)
+				if text != "" {
+					content = text
+					break
+				}
+				continue
+			}
+			var parts []struct {
+				Text string `json:"text"`
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(message.Content, &parts); err == nil {
+				joined := strings.Builder{}
+				for _, part := range parts {
+					if part.Type == "text" {
+						joined.WriteString(part.Text)
+					}
+				}
+				if trimmed := strings.TrimSpace(joined.String()); trimmed != "" {
+					content = trimmed
+					break
+				}
+			}
+		}
+		if parsed.Model != "" {
+			content = strings.ReplaceAll(content, `"`, `"`)
+		}
+	}
+	model := "gpt-mock"
+	if parsed.Model != "" {
+		model = parsed.Model
+	}
+	return fmt.Sprintf(`{"id":"chatcmpl-mock-echo","object":"chat.completion","created":1700000000,"model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`, model, content)
 }
 
 // responsesBody mirrors the archived Node non-stream Responses fixture:

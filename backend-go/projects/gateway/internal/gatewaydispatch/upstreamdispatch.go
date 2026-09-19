@@ -749,7 +749,10 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 			}
 		}
 		if !lockRetryScheduled && configuredDelayMs > 0 {
-			if err := waitForDelayMs(signal, configuredDelayMs); err != nil {
+			// R4：语义位 3 = same-account retry wait；注入时覆盖 settings
+			// 推导的 configuredDelayMs，nil/缺位回落原值（生产逐字节一致）。
+			sameAccountRetryDelayMs := upstreamRetryBackoffCap(e.Config.UpstreamRetryBackoffDelaysMs, 3, configuredDelayMs)
+			if err := waitForDelayMs(signal, sameAccountRetryDelayMs); err != nil {
 				return "", &UpstreamRequestAbortedError{Message: "请求已取消"}
 			}
 		}
@@ -776,9 +779,30 @@ codexTurnReversalPass:
 		cycleRecoverableAccountIDs = map[string]struct{}{}
 		capacityLimitFailures = nil
 
+		// SwitchTarget（切号冻结目标）：本请求一旦有账户完成上游请求构造，推进
+		// 到不同账户前必须按冻结目标过滤（与冻结源同账户的 Key 轮换 / 重试不是
+		// 切换点）。目标不可解析时 fail-closed：所有跨账户候选被拒，走既有
+		// UpstreamAttemptError 最终失败路径。
+		switchTargetGate := SwitchTargetGateFromContext(ctx)
+
 		for _, originalAccount := range dispatchAccounts {
 			if err := throwIfRequestAborted(signal); err != nil {
 				return UpstreamDispatchResult{}, err
+			}
+			if switchTargetGate != nil && switchTargetGate.Frozen() {
+				if len(switchTargetGate.FilterAccounts([]AccountCandidate{originalAccount})) == 0 {
+					if switchTargetGate.Unresolved() && switchTargetGate.MarkUnresolvedDiagnosed() {
+						auditCapture.AddGatewayMetadata("switch_target_unresolved", map[string]any{
+							"accountId":       originalAccount.ID,
+							"sourceAccountId": SwitchTargetGateSourceOf(switchTargetGate),
+							"traceId":         usageContext.TraceID,
+							"apiKeyId":        usageContext.APIKeyID,
+							"groupId":         usageContext.GroupID,
+							"reason":          "frozen_switch_target_unresolvable",
+						})
+					}
+					continue
+				}
 			}
 			var accountCircuitAttempt *gatewaycircuitAttemptFacade
 			if e.Circuits != nil && coordination.SameAccountRetry == nil {
@@ -906,7 +930,7 @@ codexTurnReversalPass:
 			}
 			if !serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
 				if queueWait.Reason != "timeout" {
-					retryDelayMs := minInt64(1000, serverRetryBudget.RemainingMs(nil))
+					retryDelayMs := minInt64(upstreamRetryBackoffCap(e.Config.UpstreamRetryBackoffDelaysMs, 0, 1000), serverRetryBudget.RemainingMs(nil))
 					serverRetryBudget.BeginNoAvailableWait(nil)
 					if err := waitForDelayMs(signal, retryDelayMs); err != nil {
 						serverRetryBudget.PauseNoAvailableWait(nil)
@@ -928,7 +952,7 @@ codexTurnReversalPass:
 			}
 		} else if len(capacityLimitFailures) > 0 {
 			if !serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
-				retryDelayMs := minInt64(500, serverRetryBudget.RemainingMs(nil))
+				retryDelayMs := minInt64(upstreamRetryBackoffCap(e.Config.UpstreamRetryBackoffDelaysMs, 1, 500), serverRetryBudget.RemainingMs(nil))
 				serverRetryBudget.BeginNoAvailableWait(nil)
 				if err := waitForDelayMs(signal, retryDelayMs); err != nil {
 					serverRetryBudget.PauseNoAvailableWait(nil)
@@ -994,7 +1018,7 @@ codexTurnReversalPass:
 			if serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil) {
 				break
 			}
-			retryDelayMs := minInt64(3000, serverRetryBudget.RemainingMs(nil))
+			retryDelayMs := minInt64(upstreamRetryBackoffCap(e.Config.UpstreamRetryBackoffDelaysMs, 2, 3000), serverRetryBudget.RemainingMs(nil))
 			accountIDs := make([]string, 0, len(suppressionFilter.Accounts))
 			for _, account := range suppressionFilter.Accounts {
 				accountIDs = append(accountIDs, account.ID)
@@ -1145,6 +1169,18 @@ func waitReason(allBlockedByPrecheck bool) string {
 		return "precheck_half_open"
 	}
 	return "local_account_suppression_dispatch"
+}
+
+// upstreamRetryBackoffCap selects the attempt-loop backoff cap at the given
+// semantic slot (EngineConfig.UpstreamRetryBackoffDelaysMs, R4 test injection
+// point). A nil slice or a missing index falls back to the production
+// hardcoded value, so the default construction stays byte-identical with the
+// pre-injection behaviour.
+func upstreamRetryBackoffCap(delays []int64, index int, fallback int64) int64 {
+	if index >= 0 && index < len(delays) {
+		return delays[index]
+	}
+	return fallback
 }
 
 // Account lock wait outcomes.

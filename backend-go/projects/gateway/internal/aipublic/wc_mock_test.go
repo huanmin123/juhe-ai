@@ -159,11 +159,12 @@ func TestWCMockStrategyFamily(t *testing.T) {
 	if config["schedulingPreference"] != "cost_first" {
 		t.Fatalf("mock normal 默认配置: %v", config)
 	}
-	// 非 normal 模式不渲染 normalRoutingConfig。
+	// weighted 与 normal 同属调度偏好转发的四种模式：渲染 cost_first 默认。
 	status, payload, _ = env.doAuth(http.MethodPost, Prefix+"/route-strategy/add", `{"targetUsername":"u1","name":"加权策略","mode":"weighted","groupBindings":[{"groupId":"g9"}]}`, token)
 	data = mustMockEnvelope(t, status, payload, http.StatusOK)
-	if data["routeStrategy"].(map[string]any)["normalRoutingConfig"] != nil {
-		t.Fatalf("非 normal 不得带 normalRoutingConfig: %v", data["routeStrategy"])
+	weightedConfig, ok := data["routeStrategy"].(map[string]any)["normalRoutingConfig"].(map[string]any)
+	if !ok || weightedConfig["schedulingPreference"] != "cost_first" {
+		t.Fatalf("weighted 必须渲染默认 normalRoutingConfig: %v", data["routeStrategy"])
 	}
 
 	// list：mode/status 缺省与 "all" 回退 normal/active。
@@ -401,6 +402,16 @@ func TestWCMockBodyHelpers(t *testing.T) {
 	}
 	hybrid := mockStrategySummary("id", "n", "hybrid_smart", "active", nil, map[string]any{"k": 1})
 	if hybrid.NormalRoutingConfig != nil || hybrid.HybridRoutingConfig != nil {
-		t.Fatalf("非 normal 摘要不落任何路由配置: %+v", hybrid)
+		t.Fatalf("hybrid_smart 摘要不落任何路由配置: %+v", hybrid)
+	}
+	// weighted 与 normal 同组：mock 投影补 cost_first 默认。
+	weighted := mockStrategySummary("id", "n", "weighted", "active", nil, nil)
+	weightedConfig, ok := weighted.NormalRoutingConfig.(map[string]any)
+	if !ok || weightedConfig["schedulingPreference"] != "cost_first" {
+		t.Fatalf("weighted 摘要渲染默认路由配置: %v", weighted.NormalRoutingConfig)
+	}
+	bogus := mockStrategySummary("id", "n", "bogus_mode", "active", nil, nil)
+	if bogus.NormalRoutingConfig != nil {
+		t.Fatalf("未知模式不渲染路由配置: %v", bogus.NormalRoutingConfig)
 	}
 }

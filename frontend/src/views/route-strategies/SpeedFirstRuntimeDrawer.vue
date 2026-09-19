@@ -30,7 +30,7 @@
         type="info"
         show-icon
         message="速度优先未启用"
-        description="当前策略不是启用中的速度优先普通路由，因此没有可展示的速度降级运行态。"
+        description="当前策略未启用速度优先调度，因此没有可展示的速度降级运行态。"
       />
       <a-alert
         v-else-if="runtime && !runtime.runtimeAvailable"

@@ -447,7 +447,6 @@ func startFullchainJobsWorker(t *testing.T, gw *gatewayFixture) *managedProcess 
 	root := gw.root
 	env := map[string]string{
 		"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS":      fmt.Sprintf("127.0.0.1:%d", freePort(t)),
-		"JUHE_AI_JOBS_WORKER_ENABLED":             "true",
 		"JUHE_AI_DATABASE_DRIVER":                 "sqlite",
 		"JUHE_AI_DATABASE_PATH":                   gw.storage["business"],
 		"JUHE_AI_STATS_DATABASE_PATH":             gw.storage["stats"],

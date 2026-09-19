@@ -188,11 +188,13 @@ func (s *Service) normalRouteFirstByteConfigForAPIKey(apiKeyRecord *gatewayrunti
 }
 
 // normalRouteSpeedFirstConfigForAPIKey mirrors normalRouteSpeedFirstConfigForApiKey.
+// 不再按模式硬门控：运行时 NormalRoutingConfig 只在非 hybrid 模式被解码
+// （hybrid 行恒 nil），下方 nil/偏好判断已兜底排除 hybrid_smart。
 func (s *Service) normalRouteSpeedFirstConfigForAPIKey(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, lane gatewayProtoLane, compactionTimeoutsDisabled bool) *NormalRouteSpeedFirstRuntimeConfig {
 	if compactionTimeoutsDisabled || !gatewayrouting.NormalRouteSpeedFirstAppliesToLane(lane) {
 		return nil
 	}
-	if apiKeyRecord == nil || apiKeyRecord.RouteStrategyMode != gatewayruntimecache.RouteStrategyModeNormal {
+	if apiKeyRecord == nil {
 		return nil
 	}
 	normalConfig := apiKeyRecord.NormalRoutingConfig
@@ -234,9 +236,10 @@ func (s *Service) normalRouteSpeedFirstConfigForAPIKey(apiKeyRecord *gatewayrunt
 }
 
 // normalRouteFirstByteConfigForAPIKeyRecord mirrors the Node helper without
-// the lane gate.
+// the lane gate. 不再按模式硬门控：hybrid 行的 NormalRoutingConfig 运行时恒
+// nil，下方 cost_first 缺省分支已兜底返回 nil。
 func normalRouteFirstByteConfigForAPIKeyRecord(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow) *NormalRouteFirstByteRuntimeConfig {
-	if apiKeyRecord == nil || apiKeyRecord.RouteStrategyMode != gatewayruntimecache.RouteStrategyModeNormal {
+	if apiKeyRecord == nil {
 		return nil
 	}
 	normalConfig := apiKeyRecord.NormalRoutingConfig
@@ -670,8 +673,8 @@ type APIKeyGroupFallbackDispatchInput struct {
 	// ExcludedAccountIDs mirrors the switchToFallbackGroup exhaustedAccountIds
 	// (routes.ts:625); nil on the route-action fallback (Node resolveRouteAction
 	// passes none, routes.ts:449-478).
-	ExcludedAccountIDs         map[string]struct{}
-	RoutePlanSnapshot          gatewayrouting.RoutePlanSnapshot[string]
+	ExcludedAccountIDs map[string]struct{}
+	RoutePlanSnapshot  gatewayrouting.RoutePlanSnapshot[string]
 }
 
 // APIKeyGroupFallbackDispatchResult mirrors ApiKeyGroupFallbackDispatchResult.
@@ -694,6 +697,7 @@ func (s *Service) PrepareAPIKeyGroupFallbackDispatchContext(ctx context.Context,
 		RequestClientCompatibility: input.RequestClientCompatibility,
 		ExcludedAccountIDs:         input.ExcludedAccountIDs,
 		RoutePlanSnapshot:          snapshot,
+		AuditCapture:               input.AuditCapture,
 	})
 	if err != nil {
 		return APIKeyGroupFallbackDispatchResult{}, err

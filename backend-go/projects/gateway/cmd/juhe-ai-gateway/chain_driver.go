@@ -24,7 +24,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/openaicompatcore"
 )
 
 // Protocol codes mirrored from the protocol packages (the preauth re-exports
@@ -153,7 +153,7 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// 客户端路径（/v1/chat/completions、/v1/responses、/v1/messages）
 		// 不进入原生路由 helper。
 		if mapping := chainBridgeResponseMappingOf(req, account); mapping != nil {
-			if upstream := openaicompat.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily); upstream == openaicompat.FamilyGeminiGenerateContent || upstream == openaicompat.FamilyGeminiStreamGenerate {
+			if upstream := openaicompatcore.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily); upstream == openaicompatcore.FamilyGeminiGenerateContent || upstream == openaicompatcore.FamilyGeminiStreamGenerate {
 				url, urlErr := geminiModelMappedUpstreamURL(account.BaseURL, req, mapping.UpstreamModel)
 				if urlErr != nil {
 					return nil, urlErr
@@ -172,17 +172,30 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		return urls, nil
 	default:
 		// openai-compatible (openai / hybrid and any other OpenAI-style
-		// upstream): always /v1-suffixed base + version-stripped path.
-		return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, req.PathAndQuery())}, nil
+		// upstream): always /v1-suffixed base + version-stripped path. Mapped
+		// requests carry the same path rewrite as the driver body transform
+		//（BUG-0178：responses -> chat_completions 需改写到 /chat/completions，
+		// 否则 Responses 形态请求会打到上游原生 /responses 端点）。持有原生
+		// Responses 端点模式的账户不参与该改写：/responses 按原生直通
+		//（codex OAuth 账户与 responses 模式 api_key 账户的既有语义）。
+		pathAndQuery := req.PathAndQuery()
+		if mapping := d.resolveAccountModelMapping(account, req, ""); mapping != nil && !accountHasNativeResponsesModes(account) {
+			if rewritten, ok := gatewayopenai.ModelMappedUpstreamPathAndQuery(pathAndQuery, mapping); ok {
+				pathAndQuery = rewritten
+			}
+		}
+		return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, pathAndQuery)}, nil
 	}
 }
 
-// BuildGatewayUpstreamRequestParts mirrors buildGatewayUpstreamRequestParts:
+// buildGatewayUpstreamRequestParts mirrors buildGatewayUpstreamRequestParts:
 // upstream headers + body for one account. Codex OAuth accounts run through
 // the dedicated request-parts builder; standard accounts forward the client
 // body (model mapping applied through the openai driver transform when the
 // account resolves a mapping) with the protocol auth header injected.
-func (d *chainProviderDriver) BuildGatewayUpstreamRequestParts(
+// 导出方法 BuildGatewayUpstreamRequestParts（chain_switchtarget.go）在构造
+// 成功后冻结本请求的 SwitchTarget。
+func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	ctx context.Context,
 	req *gatewaypreauth.GatewayRequest,
 	account gatewaydispatch.AccountCandidate,
@@ -1084,9 +1097,9 @@ func gptRequestOverrideEndpointFamily(req *gatewaypreauth.GatewayRequest, accoun
 	} else {
 		family = requestEndpointFamilyOf(req.PathAndQuery())
 	}
-	switch openaicompat.NormalizeEndpointFamily(family) {
+	switch openaicompatcore.NormalizeEndpointFamily(family) {
 	case "chat_completions", "responses", "anthropic_messages", "gemini_generate_content", "gemini_stream_generate":
-		return openaicompat.NormalizeEndpointFamily(family)
+		return openaicompatcore.NormalizeEndpointFamily(family)
 	default:
 		return ""
 	}
@@ -1120,6 +1133,20 @@ func (d *chainProviderDriver) endpointModeMismatchReason(req *gatewaypreauth.Gat
 	return "endpoint_mode_unsupported"
 }
 
+// accountHasNativeResponsesModes reports whether the account explicitly
+// carries OpenAI Responses endpoint modes. The BUG-0178 responses ->
+// chat_completions bridge（URL 改写 + 响应回转）只面向 chat-only 账户；持有
+// 原生 Responses 能力的账户（codex OAuth、responses 模式 api_key）对
+// /responses 按原生直通，映射改写不得介入。
+func accountHasNativeResponsesModes(account gatewaydispatch.AccountCandidate) bool {
+	for _, mode := range account.SupportedEndpointModes {
+		if mode == gatewaypreauth.EndpointModeResponsesJSON || mode == gatewaypreauth.EndpointModeResponsesSSE {
+			return true
+		}
+	}
+	return false
+}
+
 // requiredSupportedEndpointMode computes the endpoint-mode token this request
 // would exercise on the account (bridge mappings remap the vocabulary onto the
 // upstream family, mirroring the Node bridge required-mode helpers). The
@@ -1146,9 +1173,9 @@ func (d *chainProviderDriver) requiredSupportedEndpointMode(req *gatewaypreauth.
 	// openAIToAnthropicBridgeRequiredEndpointMode）。
 	if mapping := d.resolveAccountModelMapping(account, req, requestClientCompatibility); mapping != nil &&
 		mapping.UpstreamEndpointFamily != "" && mapping.UpstreamEndpointFamily != mapping.SourceEndpointFamily {
-		switch openaicompat.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily) {
+		switch openaicompatcore.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily) {
 		case "chat_completions":
-			if stream || openaicompat.NormalizeEndpointFamily(mapping.SourceEndpointFamily) == "responses" {
+			if stream || openaicompatcore.NormalizeEndpointFamily(mapping.SourceEndpointFamily) == "responses" {
 				return gatewaypreauth.EndpointModeChatSSE, true
 			}
 			return gatewaypreauth.EndpointModeChatJSON, true

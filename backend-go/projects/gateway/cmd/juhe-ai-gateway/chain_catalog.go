@@ -163,7 +163,7 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 func (s *chainCatalogSource) builtinCatalogQuery(input gatewayruntimecache.ModelCatalogListOptions, now string) (string, []any) {
 	availability := ""
 	if !input.IncludeInactive {
-		availability = " AND status = 'active' AND catalog_visible = 1 AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?) "
+		availability = " AND status = 'active' AND CAST(catalog_visible AS integer) = 1 AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?) "
 	}
 	base := fmt.Sprintf(`SELECT %s FROM %s`, catalogColumnList(chainBuiltinCatalogColumns), s.table("provider_model_catalog"))
 	query := base + " WHERE provider_code = ? " + availability + " ORDER BY catalog_order, model, id"

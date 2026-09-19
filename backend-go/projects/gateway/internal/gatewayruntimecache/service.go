@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
@@ -42,20 +43,20 @@ const (
 // Cache names mirror the Node cache names verbatim; they namespace both the
 // shared Redis caches and the log events.
 const (
-	settingsCacheName                  = "gateway:settings"
-	groupUsageAccessCacheName          = "gateway:group-usage-access"
-	providerModelCatalogCacheName      = "gateway:provider-model-catalog"
-	providerModelRouteIndexCacheName   = "gateway:provider-model-route-index"
-	responseInspectionPolicyCacheName  = "gateway:response-inspection-policies"
-	runtimeCacheName                   = "gateway:runtime"
-	runtimeAPIKeyIdentityCacheName     = "gateway:runtime-api-key-identity"
+	settingsCacheName                 = "gateway:settings"
+	groupUsageAccessCacheName         = "gateway:group-usage-access"
+	providerModelCatalogCacheName     = "gateway:provider-model-catalog"
+	providerModelRouteIndexCacheName  = "gateway:provider-model-route-index"
+	responseInspectionPolicyCacheName = "gateway:response-inspection-policies"
+	runtimeCacheName                  = "gateway:runtime"
+	runtimeAPIKeyIdentityCacheName    = "gateway:runtime-api-key-identity"
 )
 
 // Provider model catalog invalidation reasons mirror
 // modules/gateway/response/model-catalog-cache-policy.ts.
 var providerModelCatalogInvalidationReasons = map[string]bool{
-	"custom_provider_model_saved":        true,
-	"custom_provider_model_deleted":      true,
+	"custom_provider_model_saved":          true,
+	"custom_provider_model_deleted":        true,
 	"provider_model_configuration_updated": true,
 }
 
@@ -167,6 +168,12 @@ type Options struct {
 	// SyncInvalidationsOnRead mirrors runtimeStateDriver === 'redis': pre-read
 	// forced version sync against the bus shared store.
 	SyncInvalidationsOnRead bool
+	// SyncMinIntervalMs coalesces that pre-read cross-instance version sync to
+	// at most one per window (0 restores the sync-on-every-read contract).
+	// Single-instance deployments are unaffected: their own invalidations are
+	// already adopted onto the local counter at publish time, so only
+	// cross-instance propagation observes the window.
+	SyncMinIntervalMs int
 	// Orderer is the dynamic group-binding orderer (G08 seam); nil keeps the
 	// stored binding order.
 	Orderer GroupBindingOrderer
@@ -183,10 +190,10 @@ type Service struct {
 	clock  Clock
 	logger Logger
 
-	sharedSettings  SharedCache
-	sharedGroup     SharedCache
-	sharedCatalog   SharedCache
-	sharedRouteIdx  SharedCache
+	sharedSettings   SharedCache
+	sharedGroup      SharedCache
+	sharedCatalog    SharedCache
+	sharedRouteIdx   SharedCache
 	sharedInspection SharedCache
 
 	runtimeCache  *entryCache[string, gatewayRuntimeCacheEntry]
@@ -199,8 +206,8 @@ type Service struct {
 	inspectCache  *entryCache[string, responseInspectionPolicyCacheEntry]
 
 	// keysByAPIKeyID mirrors gatewayRuntimeCacheKeysByApiKeyId.
-	keysMu          sync.Mutex
-	keysByAPIKeyID  map[string]map[string]struct{}
+	keysMu         sync.Mutex
+	keysByAPIKeyID map[string]map[string]struct{}
 
 	// generations mirror the Node process-local epochs.
 	mu                      sync.Mutex
@@ -215,9 +222,12 @@ type Service struct {
 	sharedFailureMu       sync.Mutex
 	sharedFailureLoggedAt map[string]time.Time
 
-	lastSeenMu    sync.Mutex
-	lastSeenVer   map[string]int64
-	stopSubs      []func()
+	lastSeenMu  sync.Mutex
+	lastSeenVer map[string]int64
+	stopSubs    []func()
+
+	// lastRuntimeSyncMs drives the SyncMinIntervalMs coalescing window.
+	lastRuntimeSyncMs atomic.Int64
 }
 
 // gatewayRuntimeCacheEntry mirrors GatewayRuntimeCacheEntry.
@@ -274,7 +284,7 @@ func New(models ReadModels, opts Options) (*Service, error) {
 		clock:  clock,
 		logger: opts.Logger,
 
-		runtimeCache: newEntryCache[string, gatewayRuntimeCacheEntry](runtimeCacheName, cacheMaxEntries, gatewayRuntimeRetainTTL, updateAge, true, clock, nil, nil),
+		runtimeCache:  newEntryCache[string, gatewayRuntimeCacheEntry](runtimeCacheName, cacheMaxEntries, gatewayRuntimeRetainTTL, updateAge, true, clock, nil, nil),
 		settingsCache: newEntryCache[string, GatewaySettings](settingsCacheName, 1, gatewaySettingsTTL, false, enabled, clock, nil, nil),
 		groupCache:    newEntryCache[string, groupUsageAccessCacheEntry](groupUsageAccessCacheName, 1000, groupUsageAccessRetainTTL, false, enabled, clock, nil, nil),
 		accountsCache: newEntryCache[string, openAIAccountsCacheEntry]("gateway:openai-accounts", 1000, openAIAccountsRetainTTL, false, enabled, clock, nil, nil),
@@ -282,10 +292,10 @@ func New(models ReadModels, opts Options) (*Service, error) {
 		routeIdxCache: newEntryCache[string, providerModelRouteIndexCacheEntry](providerModelRouteIndexCacheName, 1000, providerModelCatalogTTL, false, enabled, clock, nil, nil),
 		inspectCache:  newEntryCache[string, responseInspectionPolicyCacheEntry](responseInspectionPolicyCacheName, 100, responseInspectionPolicyRetainTTL, false, enabled, clock, nil, nil),
 
-		keysByAPIKeyID:        map[string]map[string]struct{}{},
-		pendingRuntimeLoads:   map[string]*runtimeLoad{},
-		pendingGroupRefreshes: map[string]*refreshCall{},
-		pendingCatalogLoads:   map[string]*catalogLoad{},
+		keysByAPIKeyID:          map[string]map[string]struct{}{},
+		pendingRuntimeLoads:     map[string]*runtimeLoad{},
+		pendingGroupRefreshes:   map[string]*refreshCall{},
+		pendingCatalogLoads:     map[string]*catalogLoad{},
 		pendingInspectRefreshes: map[string]*refreshCall{},
 		sharedFailureLoggedAt:   map[string]time.Time{},
 		lastSeenVer:             map[string]int64{},
@@ -362,6 +372,19 @@ func isEntryFresh(revalidateAtMs int64, now int64) bool {
 func (s *Service) syncInvalidationsBestEffort(ctx context.Context) {
 	if !s.opts.SyncInvalidationsOnRead || s.opts.Bus == nil {
 		return
+	}
+	// 2026-09-18 热路径加固：读前跨实例同步每次消耗两次 Redis GET；窗口把它
+	// 合并为至多一次。本地失效不受影响（Invalidate 同步通知订阅者并在发布时
+	// 采纳共享版本），只有跨实例传播观察窗口。
+	if window := int64(s.opts.SyncMinIntervalMs); window > 0 {
+		nowMs := s.nowMs()
+		last := s.lastRuntimeSyncMs.Load()
+		if diff := nowMs - last; diff >= 0 && diff < window {
+			return
+		}
+		if !s.lastRuntimeSyncMs.CompareAndSwap(last, nowMs) {
+			return
+		}
 	}
 	bus := s.opts.Bus
 	if err := bus.SyncFromShared(ctx, inval.TopicGatewayRuntime, inval.TopicGatewayAPIKeyValidation); err != nil {

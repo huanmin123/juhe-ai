@@ -30,6 +30,9 @@ type GroupFallbackArgs struct {
 	RequestClientCompatibility string
 	ExcludedAccountIDs         map[string]struct{}
 	RoutePlanSnapshot          *gatewayrouting.RoutePlanSnapshot[string]
+	// AuditCapture 携带请求级审计面：切号冻结目标 fail-closed 时输出
+	// switch_target_unresolved 诊断；nil（仅做回退决策的路径）时跳过诊断。
+	AuditCapture gatewaypreauth.AuditCaptureContext
 }
 
 // CanAttemptApiKeyGroupFallback mirrors canAttemptApiKeyGroupFallback.
@@ -144,6 +147,22 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidateForArgs(ctx context
 		modelFilter := FilterGatewayAccountsByRequestedModel(capabilityFilter.Accounts, requestedModel, sourceEndpointFamily)
 		if len(modelFilter.Accounts) == 0 {
 			continue
+		}
+		// SwitchTarget（切号冻结目标）：分组回退保留同一冻结目标（设计文档 §6），
+		// 候选在投入使用（配额 / 排序）前按冻结目标后置过滤；过滤后为空或目标
+		// 不可解析（fail-closed）时跳过该分组继续下一个候选分组。
+		if gate := SwitchTargetGateFromContext(ctx); gate != nil && gate.Frozen() {
+			modelFilter.Accounts = gate.FilterAccounts(modelFilter.Accounts)
+			if gate.Unresolved() && gate.MarkUnresolvedDiagnosed() && input.AuditCapture != nil {
+				input.AuditCapture.AddGatewayMetadata("switch_target_unresolved", map[string]any{
+					"reason":          "frozen_switch_target_unresolvable",
+					"sourceAccountId": SwitchTargetGateSourceOf(gate),
+					"stage":           "group_fallback_candidate",
+				})
+			}
+			if len(modelFilter.Accounts) == 0 {
+				continue
+			}
 		}
 		quotaDecisions, err := p.engine.Quota.CheckBatchAsync(ctx, groupAccess, modelFilter.Accounts)
 		if err != nil {

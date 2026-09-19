@@ -98,7 +98,7 @@ func TestW16DPGRetentionAdapterArms(t *testing.T) {
 	pgDB := w16dPGOpen(t)
 	pgHandle := &cleanuprepo.DB{DB: pgDB, Postgres: true}
 	family := &retentionFamily{
-		assembly: newWorkerAssembly(workerConfig{Enabled: true, Driver: "postgres"}, slog.Default()),
+		assembly: newWorkerAssembly(workerConfig{Driver: "postgres"}, slog.Default()),
 		postgres: true,
 		recordCleanup: &cleanuprepo.RecordCleanupStore{
 			Business: pgHandle, Stats: pgHandle, Dataset: pgHandle, UsageCatalog: pgHandle,
@@ -209,7 +209,7 @@ func TestW16DPGCodexSettleAndDrainArms(t *testing.T) {
 	}
 	// record_maintenance 表 drain 的 PG 接线（50-52）与 closer 排空（74-78）。
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled: true, Driver: "postgres", InstanceID: "w16d-drain",
+		Driver: "postgres", InstanceID: "w16d-drain",
 		RecordMaintenanceBatchSize:               5,
 		RecordMaintenanceShutdownFlushMaxBatches: 1,
 	}, slog.Default())
@@ -229,7 +229,7 @@ func TestW16DPGFlushLoopFailureArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = closed.Close()
-	assembly := newWorkerAssembly(workerConfig{Enabled: true, Driver: "sqlite"}, slog.Default())
+	assembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
 	family := &retentionFamily{
 		assembly: assembly,
 		runner: &retention.RecordMaintenanceRunner{
@@ -268,7 +268,7 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	pgDB := w16dPGOpen(t)
 	redisServer := miniredis.RunT(t)
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled: true, Driver: "postgres", InstanceID: "w16d-list-projection",
+		Driver: "postgres", InstanceID: "w16d-list-projection",
 		Secret: w16dSecret, ListProjectionEnabled: true,
 		ListProjectionIntervalMS:        1_000,
 		ListProjectionBatchSize:         10,
@@ -347,7 +347,6 @@ func TestW16DPGManualBridgeArms(t *testing.T) {
 		t.Logf("w16d: J2 bootstrap 关闭: %v", err)
 	}
 	service, err := accountbalance.NewService(accountbalance.RuntimeConfig{
-		Enabled:              true,
 		OwnerID:              "w16d-manual-bridge",
 		Store:                accountbalance.StoreConfig{Mode: accountbalance.StorePostgres, PostgresURL: pgURL},
 		BusinessPostgresURL:  pgURL,
@@ -481,7 +480,7 @@ func TestW16DSQLiteProbeFamilyStatsFailArm(t *testing.T) {
 		t.Fatal(err)
 	}
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled: true, Driver: "sqlite", InstanceID: "w16d-probe-stats-fail",
+		Driver: "sqlite", InstanceID: "w16d-probe-stats-fail",
 		BusinessSQLitePath: businessPath,
 		StatsSQLitePath:    statsGarbage,
 		Secret:             w16dSecret,

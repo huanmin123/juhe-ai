@@ -251,7 +251,10 @@ func (m *SQLReadModels) loadGatewayAPIKeyByHash(ctx context.Context, keyHash str
 	}
 	row.SelectedGroupID = bindings[0].GroupID
 	if routeConfigJSON.Valid && strings.TrimSpace(routeConfigJSON.String) != "" {
-		if row.RouteStrategyMode == RouteStrategyModeNormal {
+		// normalRoutingConfig 是四种调度模式（normal/weighted/failover/
+		// round_robin）共享的组内调度配置键（历史命名，键名不再对应单一
+		// normal 模式）；只有 hybrid_smart 不解码它。
+		if row.RouteStrategyMode != RouteStrategyModeHybridSmart {
 			row.NormalRoutingConfig = decodeNormalRoutingConfig(routeConfigJSON.String)
 		}
 		if row.RouteStrategyMode == RouteStrategyModeHybridSmart {

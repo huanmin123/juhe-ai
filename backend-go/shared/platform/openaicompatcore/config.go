@@ -28,7 +28,8 @@ func NormalizeEndpointFamily(family string) string {
 }
 
 // IsCrossProtocolBridgeRequired reports whether a model mapping requires
-// cross-protocol bridge conversion (OpenAI <-> Anthropic / Gemini). Both the
+// cross-protocol bridge conversion (OpenAI <-> Anthropic / Gemini), including
+// the in-family Responses -> Chat Completions conversion. Both the
 // canonical protocol tokens and the stored mapping-row tokens are accepted.
 func IsCrossProtocolBridgeRequired(source, upstream string) bool {
 	source = NormalizeEndpointFamily(source)
@@ -45,6 +46,8 @@ func IsCrossProtocolBridgeRequired(source, upstream string) bool {
 	case source == FamilyResponses && upstream == FamilyGeminiGenerateContent:
 		return true
 	case source == FamilyResponses && upstream == FamilyGeminiStreamGenerate:
+		return true
+	case source == FamilyResponses && upstream == FamilyChatCompletions:
 		return true
 	case source == FamilyAnthropicMessages && upstream == FamilyChatCompletions:
 		return true

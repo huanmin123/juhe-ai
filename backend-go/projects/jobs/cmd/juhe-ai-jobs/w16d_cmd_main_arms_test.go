@@ -69,7 +69,6 @@ func TestW16DMainFailFastArms(t *testing.T) {
 		}},
 		// J1 store=postgres 但连接不可达 → OpenStore/Ping 失败（157-159）。
 		{"j1-pg-store-closed-port", nil, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_ENABLED":      "true",
 			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":   "go",
 			"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":  "w16d-j1",
 			"JUHE_AI_ACCOUNT_HEALTH_STORE":        "postgres",
@@ -200,7 +199,6 @@ func TestW16DMainProjectionWarnArm(t *testing.T) {
 	}
 	root := t.TempDir()
 	env := wgOwnerModeMainEnv(t, root)
-	delete(env, "JUHE_AI_JOBS_WORKER_ENABLED")
 	env["JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_POLL_MS"] = "1"
 	port := wgFreePort(t)
 	cmd := wgSpawnMainChild(t, env, "w16d-projection-warn", port)
@@ -238,7 +236,7 @@ func TestW16DPGWithLeaseArms(t *testing.T) {
 		t.Skipf("w16d: taskruns PG schema 初始化失败（跳过）: %v", err)
 	}
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled: true, Driver: "postgres", InstanceID: "w16d-lease",
+		Driver: "postgres", InstanceID: "w16d-lease",
 	}, slog.Default())
 	assembly.taskRunsStore = store
 	// 唯一 jobName：共享覆盖库上他人（历史 e2e 子进程）可能持有同名未过期

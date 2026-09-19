@@ -88,8 +88,9 @@ func TestWhNormalRouteConfigHelpers(t *testing.T) {
 	weightedRow := validRuntimeRow()
 	weightedRow.RouteStrategyMode = gatewayruntimecache.RouteStrategyModeWeighted
 	weightedRow.NormalRoutingConfig = &gatewayruntimecache.RouteStrategyNormalRoutingConfig{SchedulingPreference: "speed_first", Raw: speedRaw}
-	if got := normalRouteFirstByteConfigForAPIKeyRecord(weightedRow); got != nil {
-		t.Fatal("非 normal 模式必须返回 nil")
+	weightedConfig := normalRouteFirstByteConfigForAPIKeyRecord(weightedRow)
+	if weightedConfig == nil || weightedConfig.SchedulingPreference != "speed_first" || weightedConfig.FirstByteDeadlineMs == nil || *weightedConfig.FirstByteDeadlineMs != 2500 {
+		t.Fatalf("weighted 模式配置 = %+v", weightedConfig)
 	}
 	// firstByteDeadlineFromConfig：nil/无 raw/坏 JSON/缺字段 四种回退。
 	if got := firstByteDeadlineFromConfig(nil); got != nil {
@@ -138,8 +139,10 @@ func TestWhNormalRouteConfigHelpers(t *testing.T) {
 	}
 	weightedSpeedRow := validRuntimeRow()
 	weightedSpeedRow.RouteStrategyMode = gatewayruntimecache.RouteStrategyModeWeighted
-	if got := service.normalRouteSpeedFirstConfigForAPIKey(weightedSpeedRow, gatewayproto.LaneText, false); got != nil {
-		t.Fatal("非 normal 模式必须返回 nil")
+	weightedSpeedRow.NormalRoutingConfig = &gatewayruntimecache.RouteStrategyNormalRoutingConfig{SchedulingPreference: "speed_first", Raw: speedRaw}
+	weightedSpeed := service.normalRouteSpeedFirstConfigForAPIKey(weightedSpeedRow, gatewayproto.LaneText, false)
+	if weightedSpeed == nil || weightedSpeed.FirstByteDeadlineMs == nil || *weightedSpeed.FirstByteDeadlineMs != 2500 {
+		t.Fatalf("weighted 模式速度优先配置 = %+v", weightedSpeed)
 	}
 }
 
@@ -227,8 +230,8 @@ func TestWhBuildGatewayUsageContext(t *testing.T) {
 	service, _, _ := newTestService(t, nil)
 	context := service.BuildGatewayUsageContext(usageContextInput{
 		traceID: "t1", clientIP: "1.2.3.4", trafficSource: TrafficSourceGateway,
-		identity: OpenAIGatewayRequestIdentity{SystemAccountID: "sys", APIKeyID: "key", GroupID: "g"},
-		endpoint: "POST /v1/chat/completions",
+		identity:        OpenAIGatewayRequestIdentity{SystemAccountID: "sys", APIKeyID: "key", GroupID: "g"},
+		endpoint:        "POST /v1/chat/completions",
 		requestSnapshot: UsageRequestSnapshot{RequestedReasoningEffort: "high"},
 	})
 	if context.TraceID != "t1" || context.RequestedServiceTier != "default" || context.EffectiveServiceTier != "default" {

@@ -22,8 +22,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 )
 
-
 var mustChangeFalse = false
+
 func intPtr(v int) *int { return &v }
 
 func errorsAs(err error, target any) bool { return errors.As(err, target) }
@@ -538,10 +538,10 @@ func TestRouteStrategyModeConfigValidation(t *testing.T) {
 		t.Fatalf("weighted hybrid config: %d %v", code, payload)
 	}
 
-	// hybrid_smart + normalRoutingConfig → 只有普通路由可以配置调度偏好.
+	// hybrid_smart + normalRoutingConfig → 混合智能路由不支持调度偏好.
 	code, payload = env.createStrategy(t, path,
 		`{"name":"hn","mode":"hybrid_smart","normalRoutingConfig":{"schedulingPreference":"speed_first"},"groupBindings":[`+bindingJSON(groupA, 0)+`]}`)
-	if code != http.StatusBadRequest || payload["message"] != "只有普通路由可以配置调度偏好" {
+	if code != http.StatusBadRequest || payload["message"] != "混合智能路由不支持调度偏好" {
 		t.Fatalf("hybrid normal config: %d %v", code, payload)
 	}
 

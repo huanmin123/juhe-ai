@@ -11,7 +11,7 @@ package main
 //     非 nil 返回（含错误体），transformed 恒非 nil。
 //   - 114-116 与 transformToChatClient/transformToAnthropicClient/
 //     transformToGeminiNativeClient 内各 `if stream` 缓冲回退臂（284-298、
-//     307-318、340-341、360-371、398-409、433-444、455-456）：stream=true 时
+//     311-322、344-345、364-375、402-413、437-448、459-460）：stream=true 时
 //     bridgeStreamPump 对同一批白名单组合恒返回非 nil pump 并提前 return
 //     （89-93），三个缓冲 helper 只在 stream=false 时被调用。
 
@@ -145,10 +145,9 @@ func TestW14aBridgeChatUpstreamToGeminiClientInvalidJSON(t *testing.T) {
 }
 
 // 注：transformToChatClient 的 FamilyResponses 臂（chat 上游 -> responses
-// 客户端，含 bridgeStreamPump 的同名流式臂）在本组合根不可达：
-// IsCrossProtocolBridgeRequired 白名单不含 responses→chat_completions
-// （gatewayopenai 把该方向按 OpenAI 协议原生映射处理，不走跨协议桥），带
-// mapping 的响应永远到不了这两个臂，见文件头不可达清单。
+// 客户端，含 bridgeStreamPump 的同名流式臂）自 BUG-0178 修复（2026-09-19，
+// IsCrossProtocolBridgeRequired 白名单补入 responses→chat_completions）起
+// 可达，守护测试见 glm_responses_chat_bridge_adjudication_test.go。
 
 // --- 缓冲臂：anthropic 上游 -> 各客户端协议 ---
 

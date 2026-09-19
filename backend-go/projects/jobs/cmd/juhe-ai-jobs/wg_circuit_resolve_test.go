@@ -202,7 +202,6 @@ func TestWireBalanceDetectFamilyDisabledBranches(t *testing.T) {
 func TestWireFamiliesFailsClosedOnBrokenSQLite(t *testing.T) {
 	root := t.TempDir()
 	config := workerConfig{
-		Enabled:                     true,
 		Driver:                      "sqlite",
 		BusinessSQLitePath:          root, // 目录不是合法 SQLite 文件
 		TaskRunsEnabled:             false,
@@ -341,8 +340,8 @@ func TestWireScheduleSettingsAndFaceBranches(t *testing.T) {
 	if assembly.scheduleIntervals != nil {
 		t.Fatal("缺路径时设置源不得装配")
 	}
-	// getenv 为 nil 时 wireHealthProbeOutboxFace 回落 os.Getenv（测试进程未
-	// 启用 J1 → drain 缺席，仅 pruner 装配）。
+	// getenv 为 nil 时 wireHealthProbeOutboxFace 回落 os.Getenv；恒开终态下
+	// drain 与 pruner 恒装配（无 J1 门控缺席路径）。
 	workspace := t.TempDir()
 	faceAssembly := newWorkerAssembly(workerConfig{
 		Driver:             "sqlite",
@@ -350,12 +349,12 @@ func TestWireScheduleSettingsAndFaceBranches(t *testing.T) {
 	}, assemblyTestLogger(t))
 	face, err := faceAssembly.wireHealthProbeOutboxFace(nil)
 	if err != nil {
-		t.Fatalf("禁用 J1 时 outbox face 必须可装配: %v", err)
-	}
-	if face == nil || face.pruner == nil || face.drain != nil {
-		t.Fatalf("J1 禁用形态错误: %+v", face)
+		t.Fatalf("恒开 outbox face 必须可装配: %v", err)
 	}
 	defer faceAssembly.closeStores()
+	if face == nil || face.pruner == nil || face.drain == nil {
+		t.Fatalf("恒开 face 形态错误: %+v", face)
+	}
 }
 
 // TestSettingsModeAndProbeSettingsSuccess 覆盖设置模式映射与探针设置源

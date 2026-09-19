@@ -49,7 +49,10 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   assert.match(jobs, /depends_on:\s*\n\s+gateway:\s*\n\s+condition:\s+service_healthy/u, 'standalone jobs must start after the gateway is healthy')
   assert.match(jobs, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:/u, 'standalone jobs must own F1')
   assert.match(jobs, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, 'standalone jobs must own F2')
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_ENABLED: \$\{JUHE_AI_ACCOUNT_HEALTH_ENABLED:-false\}/u, 'standalone jobs must keep J1 disabled by default')
+  // 2026-09-19 起 J1 无 ENABLED 开关、强制常开：Compose 不得再注入该开关，
+  // 且签名 key 必须为硬性必填（空值在 Compose 阶段即拒绝，fail-fast 前置）。
+  assert.doesNotMatch(jobs, /JUHE_AI_ACCOUNT_HEALTH_ENABLED:/u, 'standalone jobs must not receive the removed J1 ENABLED switch (J1 runs always-on)')
+  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: \$\{JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY:\?JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY is required\}/u, 'standalone jobs must require the always-on J1 signing key')
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:/u, 'standalone jobs must receive the J1 owner declaration')
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, 'standalone jobs must receive the J1 signed-request directory')
   assert.match(jobs, /juhe-ai-account-health-data:\/app\/backend\/account-health-data\s*$/mu, 'standalone jobs must own the J1 SQLite store volume')
@@ -57,7 +60,7 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   // Health-probe outbox rows are consumed/deleted by jobs, so the shared
   // SQLite business volume must be writable by both Go owners.
   assert.match(jobs, /- juhe-ai-data:\/app\/backend\/data\s*$/mu, 'standalone jobs must write the health-probe outbox on the business volume')
-  assert.match(jobs, /JUHE_AI_JOBS_WORKER_ENABLED: \$\{JUHE_AI_JOBS_WORKER_ENABLED:-false\}/u, 'standalone jobs must forward the opt-in worker switch')
+  assert.doesNotMatch(jobs, /JUHE_AI_JOBS_WORKER_ENABLED:/u, 'standalone jobs must not receive the removed worker master switch (worker family runs always-on)')
   for (const name of [
     'JUHE_AI_SECRET', 'JUHE_AI_TASK_RUNS_DATABASE_PATH', 'JUHE_AI_CHAT_DATABASE_PATH',
     'JUHE_AI_USAGE_SHARD_ROOT', 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT',
@@ -84,7 +87,10 @@ const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-pr
   assert.match(jobs, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, `${mode} jobs must own F2`)
   assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: \$\{JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:-go\}/u, `${mode} Node must start with the fixed Go J1 owner`)
   assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, `${mode} Node must receive the J1 signed-request directory`)
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_ENABLED: \$\{JUHE_AI_ACCOUNT_HEALTH_ENABLED:-false\}/u, `${mode} jobs must keep J1 disabled by default`)
+  // 2026-09-19 起 J1 无 ENABLED 开关、强制常开：Compose 不得再注入该开关，
+  // 且签名 key 必须为硬性必填（空值在 Compose 阶段即拒绝，fail-fast 前置）。
+  assert.doesNotMatch(jobs, /JUHE_AI_ACCOUNT_HEALTH_ENABLED:/u, `${mode} jobs must not receive the removed J1 ENABLED switch (J1 runs always-on)`)
+  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: \$\{JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY:\?JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY is required\}/u, `${mode} jobs must require the always-on J1 signing key`)
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:/u, `${mode} jobs must receive the J1 owner declaration`)
   assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, `${mode} jobs must receive the J1 signed-request directory`)
   assert.doesNotMatch(jobs, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:|JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, `${mode} jobs must not receive F3/F4 ownership`)

@@ -8,6 +8,8 @@ package aipublic
 import (
 	"net/http"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
 const mockSystemAccountID = "mock_system_account_huanmin"
@@ -304,7 +306,9 @@ func (d *Deps) mockStrategyList(w http.ResponseWriter, query map[string]string, 
 }
 
 // mockStrategySummary mirrors mockRouteStrategySummary: default bindings and
-// the normal-mode default normalRoutingConfig.
+// the normalRoutingConfig projection aligned with the store's
+// normalConfigForMode (cost_first default for every preference-carrying mode,
+// nil for hybrid_smart).
 func mockStrategySummary(id, name, mode, status string, bindings []PublicBindingSummary, normalConfig any) PublicStrategySummary {
 	if len(bindings) == 0 {
 		bindings = []PublicBindingSummary{{
@@ -314,11 +318,10 @@ func mockStrategySummary(id, name, mode, status string, bindings []PublicBinding
 		}}
 	}
 	normal := normalConfig
-	if mode == "normal" && normal == nil {
-		normal = map[string]any{"schedulingPreference": "cost_first"}
-	}
-	if mode != "normal" {
+	if !routestrategies.ModeSupportsSchedulingPreference(mode) {
 		normal = nil
+	} else if normal == nil {
+		normal = map[string]any{"schedulingPreference": "cost_first"}
 	}
 	return PublicStrategySummary{
 		ID: id, Name: name, Mode: mode, Status: status, IsDefault: false,

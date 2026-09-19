@@ -328,6 +328,9 @@ func TestProducerCaptureDropsWhenQueueSaturated(t *testing.T) {
 	if snapshot := logger.snapshot(); len(snapshot) == 0 || !strings.Contains(snapshot[len(snapshot)-1], "F3 审计采集队列已满") {
 		t.Fatalf("saturated queue must warn on drop, got %v", snapshot)
 	}
+	if dropped := producer.DroppedTotal(); dropped != 1 {
+		t.Fatalf("DroppedTotal = %d, want 1", dropped)
+	}
 
 	close(gate)
 	// The overflow record was dropped, so only the parked + queued records

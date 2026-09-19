@@ -448,14 +448,13 @@ func TestW12CScheduleSettingsAndProbeSettings(t *testing.T) {
 func TestW12CLoadWorkerConfigAndDisabledStartup(t *testing.T) {
 	env := workerSmokeTestEnv(t)
 	config, err := loadWorkerConfig(getenvFrom(env))
-	if err != nil || !config.Enabled {
-		t.Fatalf("smoke env 必须启用 worker: %+v %v", config, err)
+	if err != nil {
+		t.Fatalf("smoke env 必须通过 worker 配置校验: %+v %v", config, err)
 	}
 	// 非法数值 env 失败分支（bad drain timeout）。
 	badEnv := getenvFrom(map[string]string{
-		"JUHE_AI_JOBS_WORKER_ENABLED": "true",
-		"JUHE_AI_DATABASE_DRIVER":     "sqlite",
-		"JUHE_AI_DATABASE_PATH":       filepath.Join(t.TempDir(), "business.sqlite3"),
+		"JUHE_AI_DATABASE_DRIVER":       "sqlite",
+		"JUHE_AI_DATABASE_PATH":         filepath.Join(t.TempDir(), "business.sqlite3"),
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS": "abc",
 	})
 	if _, err := loadWorkerConfig(badEnv); err == nil {

@@ -9,7 +9,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
 // B-4 cross-protocol bridge response face (audit batch ah group A). Port of
@@ -62,9 +62,16 @@ func (t *chainBridgeResponseTransformer) TransformUpstreamResponseForAccount(
 		// driver chain, ahead of the native target bridge).
 		return t.transformGeminiCodeAssistIfApplicable(input, nil, response)
 	}
-	sourceFamily := openaicompat.NormalizeEndpointFamily(mapping.SourceEndpointFamily)
-	upstreamFamily := openaicompat.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily)
-	if sourceFamily == upstreamFamily || !openaicompat.IsCrossProtocolBridgeRequired(sourceFamily, upstreamFamily) {
+	sourceFamily := openaicompatbridge.NormalizeEndpointFamily(mapping.SourceEndpointFamily)
+	upstreamFamily := openaicompatbridge.NormalizeEndpointFamily(mapping.UpstreamEndpointFamily)
+	// BUG-0178：responses -> chat_completions 回转只服务 chat-only 账户；持有
+	// 原生 Responses 端点模式的账户（codex OAuth、responses 模式 api_key）对
+	// /responses 按原生直通，与 URL 构建器的改写守卫（chain_driver.go
+	// accountHasNativeResponsesModes）成对生效，避免把原生 Responses 响应误
+	// 当 chat 上游回转。
+	if sourceFamily == upstreamFamily || !openaicompatbridge.IsCrossProtocolBridgeRequired(sourceFamily, upstreamFamily) ||
+		(sourceFamily == openaicompatbridge.FamilyResponses && upstreamFamily == openaicompatbridge.FamilyChatCompletions &&
+			accountHasNativeResponsesModes(input.Account)) {
 		// Gemini Code Assist accounts unwrap {response:...} even without a
 		// cross-protocol mapping (Node transformGeminiCodeAssistUpstreamResponse
 		// sits ahead of the native target bridge in the gemini driver chain).
@@ -101,11 +108,11 @@ func (t *chainBridgeResponseTransformer) TransformUpstreamResponseForAccount(
 
 	transformed := []byte(nil)
 	switch {
-	case upstreamFamily == openaicompat.FamilyChatCompletions:
+	case upstreamFamily == openaicompatbridge.FamilyChatCompletions:
 		transformed = t.transformToChatClient(input, sourceFamily, body, model, stream)
-	case upstreamFamily == openaicompat.FamilyAnthropicMessages:
+	case upstreamFamily == openaicompatbridge.FamilyAnthropicMessages:
 		transformed = t.transformToAnthropicClient(input, sourceFamily, body, model, stream)
-	case upstreamFamily == openaicompat.FamilyGeminiGenerateContent || upstreamFamily == openaicompat.FamilyGeminiStreamGenerate:
+	case upstreamFamily == openaicompatbridge.FamilyGeminiGenerateContent || upstreamFamily == openaicompatbridge.FamilyGeminiStreamGenerate:
 		transformed = t.transformToGeminiNativeClient(input, mapping, body, model, stream)
 	}
 	if transformed == nil {
@@ -156,63 +163,63 @@ func (t *chainBridgeResponseTransformer) bridgeStreamPump(
 	sourceFamily, upstreamFamily, model string,
 ) func(src io.Reader, dst io.Writer) error {
 	switch upstreamFamily {
-	case openaicompat.FamilyChatCompletions:
+	case openaicompatbridge.FamilyChatCompletions:
 		switch sourceFamily {
-		case openaicompat.FamilyAnthropicMessages:
+		case openaicompatbridge.FamilyAnthropicMessages:
 			// transformAnthropicMessagesChatBridgeUpstreamResponse（流式）。
-			state := openaicompat.NewAnthropicFromChatStreamState(model)
+			state := openaicompatbridge.NewAnthropicFromChatStreamState(model)
 			return func(src io.Reader, dst io.Writer) error {
-				return openaicompat.PumpBridgeSseTransform(src, dst, func(event string) []string {
-					return openaicompat.ProcessChatCompletionsSseEventAsAnthropic(state, event)
+				return openaicompatbridge.PumpBridgeSseTransform(src, dst, func(event string) []string {
+					return openaicompatbridge.ProcessChatCompletionsSseEventAsAnthropic(state, event)
 				}, func() []string {
 					if !state.Completed && !state.Failed {
 						if state.StopReason != "" {
-							return openaicompat.CompleteAnthropicFromChatStream(state)
+							return openaicompatbridge.CompleteAnthropicFromChatStream(state)
 						}
-						return openaicompat.FailAnthropicFromChatStream(state, "上游 Chat Completions SSE 在 message_stop 前中断", "upstream_stream_interrupted")
+						return openaicompatbridge.FailAnthropicFromChatStream(state, "上游 Chat Completions SSE 在 message_stop 前中断", "upstream_stream_interrupted")
 					}
 					return nil
 				})
 			}
-		case openaicompat.FamilyGeminiGenerateContent, openaicompat.FamilyGeminiStreamGenerate:
+		case openaicompatbridge.FamilyGeminiGenerateContent, openaicompatbridge.FamilyGeminiStreamGenerate:
 			// transformGeminiGenerateContentChatBridgeUpstreamResponse（流式）。
-			state := openaicompat.NewGeminiChatStreamState(model)
+			state := openaicompatbridge.NewGeminiChatStreamState(model)
 			return func(src io.Reader, dst io.Writer) error {
-				return openaicompat.PumpBridgeSseTransform(src, dst, func(event string) []string {
-					return openaicompat.ProcessChatCompletionsSseEventAsGemini(state, event)
+				return openaicompatbridge.PumpBridgeSseTransform(src, dst, func(event string) []string {
+					return openaicompatbridge.ProcessChatCompletionsSseEventAsGemini(state, event)
 				}, func() []string {
 					if !state.Completed && !state.Failed {
-						return openaicompat.CompleteGeminiChatStream(state)
+						return openaicompatbridge.CompleteGeminiChatStream(state)
 					}
 					return nil
 				})
 			}
-		case openaicompat.FamilyResponses:
+		case openaicompatbridge.FamilyResponses:
 			// transformCodexResponsesChatBridgeUpstreamResponse（chat SSE ->
 			// Responses SSE 回转）。
-			options := openaicompat.CodexResponsesChatBridgeTransformOptions{
+			options := openaicompatbridge.CodexResponsesChatBridgeTransformOptions{
 				Enabled:      true,
 				DefaultModel: model,
 				Model:        model,
 				IDPrefix:     "openai_bridge",
 			}
 			if parsed := input.Req.ParsedJSONObjectBody(); parsed != nil {
-				options.ToolAdaptersByChatName = openaicompat.CodexResponsesChatBridgeToolAdaptersFromClientBody(parsed)
-				estimated := openaicompat.EstimateCodexResponsesRequestInputTokens(parsed)
+				options.ToolAdaptersByChatName = openaicompatbridge.CodexResponsesChatBridgeToolAdaptersFromClientBody(parsed)
+				estimated := openaicompatbridge.EstimateCodexResponsesRequestInputTokens(parsed)
 				options.EstimatedInputTokens = &estimated
 				options.PreviousResponseID = chainBridgePreviousResponseIDOf(parsed)
 			}
 			return func(src io.Reader, dst io.Writer) error {
-				return openaicompat.PumpChatCompletionsSseToResponsesSse(src, dst, options)
+				return openaicompatbridge.PumpChatCompletionsSseToResponsesSse(src, dst, options)
 			}
 		}
-	case openaicompat.FamilyAnthropicMessages:
+	case openaicompatbridge.FamilyAnthropicMessages:
 		switch sourceFamily {
-		case openaicompat.FamilyGeminiGenerateContent, openaicompat.FamilyGeminiStreamGenerate:
+		case openaicompatbridge.FamilyGeminiGenerateContent, openaicompatbridge.FamilyGeminiStreamGenerate:
 			// transformGeminiGenerateContentAnthropicMessagesBridgeUpstreamResponse（流式）。
-			state := openaicompat.NewAnthropicGeminiStreamState(model)
+			state := openaicompatbridge.NewAnthropicGeminiStreamState(model)
 			return func(src io.Reader, dst io.Writer) error {
-				return openaicompat.PumpBridgeSseTransform(src, dst, func(event string) []string {
+				return openaicompatbridge.PumpBridgeSseTransform(src, dst, func(event string) []string {
 					return state.ProcessAnthropicSseEvent(event)
 				}, func() []string {
 					if !state.Completed && !state.Failed {
@@ -221,47 +228,47 @@ func (t *chainBridgeResponseTransformer) bridgeStreamPump(
 					return nil
 				})
 			}
-		case openaicompat.FamilyChatCompletions, openaicompat.FamilyResponses:
+		case openaicompatbridge.FamilyChatCompletions, openaicompatbridge.FamilyResponses:
 			// transformOpenAIToAnthropicBridgeUpstreamResponse（流式）。
 			previousResponseID := ""
 			if parsed := input.Req.ParsedJSONObjectBody(); parsed != nil {
 				previousResponseID = chainBridgePreviousResponseIDOf(parsed)
 			}
-			if sourceFamily == openaicompat.FamilyResponses {
+			if sourceFamily == openaicompatbridge.FamilyResponses {
 				return func(src io.Reader, dst io.Writer) error {
-					return openaicompat.PumpAnthropicMessagesSseToResponsesSse(src, dst, model, previousResponseID)
+					return openaicompatbridge.PumpAnthropicMessagesSseToResponsesSse(src, dst, model, previousResponseID)
 				}
 			}
-			state := openaicompat.NewAnthropicChatStreamState(model)
+			state := openaicompatbridge.NewAnthropicChatStreamState(model)
 			return func(src io.Reader, dst io.Writer) error {
-				return openaicompat.PumpBridgeSseTransform(src, dst, func(event string) []string {
-					return openaicompat.ProcessAnthropicEventAsChat(state, event)
+				return openaicompatbridge.PumpBridgeSseTransform(src, dst, func(event string) []string {
+					return openaicompatbridge.ProcessAnthropicEventAsChat(state, event)
 				}, func() []string {
 					if !state.Completed && !state.Failed {
-						return openaicompat.FailAnthropicChatStream(state, "上游 Anthropic Messages SSE 在正常结束事件前中断", "upstream_stream_interrupted")
+						return openaicompatbridge.FailAnthropicChatStream(state, "上游 Anthropic Messages SSE 在正常结束事件前中断", "upstream_stream_interrupted")
 					}
 					return nil
 				})
 			}
 		}
-	case openaicompat.FamilyGeminiGenerateContent, openaicompat.FamilyGeminiStreamGenerate:
+	case openaicompatbridge.FamilyGeminiGenerateContent, openaicompatbridge.FamilyGeminiStreamGenerate:
 		// transformGeminiNativeTargetBridgeUpstreamResponse（流式）。
-		protocol := openaicompat.GeminiNativeDownstreamProtocolForMapping(mapping.SourceEndpointFamily)
-		if protocol == openaicompat.GeminiNativeProtocolChatCompletions {
-			state := openaicompat.NewGeminiNativeChatStreamState(model)
+		protocol := openaicompatbridge.GeminiNativeDownstreamProtocolForMapping(mapping.SourceEndpointFamily)
+		if protocol == openaicompatbridge.GeminiNativeProtocolChatCompletions {
+			state := openaicompatbridge.NewGeminiNativeChatStreamState(model)
 			return func(src io.Reader, dst io.Writer) error {
-				return openaicompat.PumpBridgeSseTransform(src, dst, func(event string) []string {
-					return openaicompat.ProcessGeminiSseEventAsChat(state, event)
+				return openaicompatbridge.PumpBridgeSseTransform(src, dst, func(event string) []string {
+					return openaicompatbridge.ProcessGeminiSseEventAsChat(state, event)
 				}, func() []string {
 					if !state.Completed && !state.Failed && !state.TerminalReceived {
-						return openaicompat.CompleteGeminiNativeChatStream(state)
+						return openaicompatbridge.CompleteGeminiNativeChatStream(state)
 					}
 					return nil
 				})
 			}
 		}
 		return func(src io.Reader, dst io.Writer) error {
-			return openaicompat.PumpGeminiSseToDownstreamSse(src, dst, protocol, model)
+			return openaicompatbridge.PumpGeminiSseToDownstreamSse(src, dst, protocol, model)
 		}
 	}
 	return nil
@@ -279,72 +286,72 @@ func (t *chainBridgeResponseTransformer) transformToChatClient(
 ) []byte {
 	req := input.Req
 	switch sourceFamily {
-	case openaicompat.FamilyAnthropicMessages:
+	case openaicompatbridge.FamilyAnthropicMessages:
 		// transformAnthropicMessagesChatBridgeUpstreamResponse.
 		if stream {
-			state := openaicompat.NewAnthropicFromChatStreamState(model)
+			state := openaicompatbridge.NewAnthropicFromChatStreamState(model)
 			out := &strings.Builder{}
-			_ = openaicompat.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
-				return openaicompat.ProcessChatCompletionsSseEventAsAnthropic(state, event)
+			_ = openaicompatbridge.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
+				return openaicompatbridge.ProcessChatCompletionsSseEventAsAnthropic(state, event)
 			}, func() []string {
 				if !state.Completed && !state.Failed {
 					if state.StopReason != "" {
-						return openaicompat.CompleteAnthropicFromChatStream(state)
+						return openaicompatbridge.CompleteAnthropicFromChatStream(state)
 					}
-					return openaicompat.FailAnthropicFromChatStream(state, "上游 Chat Completions SSE 在 message_stop 前中断", "upstream_stream_interrupted")
+					return openaicompatbridge.FailAnthropicFromChatStream(state, "上游 Chat Completions SSE 在 message_stop 前中断", "upstream_stream_interrupted")
 				}
 				return nil
 			})
 			return []byte(out.String())
 		}
-		parsed, err := openaicompat.ExtractJSONObject(string(body))
+		parsed, err := openaicompatbridge.ExtractJSONObject(string(body))
 		if err != nil {
-			return openaicompat.TransformAnthropicJSONToChatErrorBody()
+			return openaicompatbridge.TransformAnthropicJSONToChatErrorBody()
 		}
 		// 缺陷修复（w14a）：chat 上游 → anthropic 客户端的缓冲臂此前误用
 		// TransformAnthropicMessagesJSONToChatJSONBody（anthropic→chat 反向
 		// 渲染）；Node transformAnthropicMessagesChatBridgeUpstreamResponse 的
 		// 非流式分支是 chatCompletionsJson → AnthropicMessagesJson。
-		return []byte(openaicompat.BridgeJSONStringifyOf(openaicompat.ChatCompletionJSONToAnthropicMessage(parsed, model)))
-	case openaicompat.FamilyGeminiGenerateContent, openaicompat.FamilyGeminiStreamGenerate:
+		return []byte(openaicompatbridge.BridgeJSONStringifyOf(openaicompatbridge.ChatCompletionJSONToAnthropicMessage(parsed, model)))
+	case openaicompatbridge.FamilyGeminiGenerateContent, openaicompatbridge.FamilyGeminiStreamGenerate:
 		// transformGeminiGenerateContentChatBridgeUpstreamResponse.
 		if stream {
-			state := openaicompat.NewGeminiChatStreamState(model)
+			state := openaicompatbridge.NewGeminiChatStreamState(model)
 			out := &strings.Builder{}
-			_ = openaicompat.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
-				return openaicompat.ProcessChatCompletionsSseEventAsGemini(state, event)
+			_ = openaicompatbridge.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
+				return openaicompatbridge.ProcessChatCompletionsSseEventAsGemini(state, event)
 			}, func() []string {
 				if !state.Completed && !state.Failed {
-					return openaicompat.CompleteGeminiChatStream(state)
+					return openaicompatbridge.CompleteGeminiChatStream(state)
 				}
 				return nil
 			})
 			return []byte(out.String())
 		}
-		parsed, err := openaicompat.ExtractJSONObject(string(body))
+		parsed, err := openaicompatbridge.ExtractJSONObject(string(body))
 		if err != nil {
 			return []byte(bridgeChatUpstreamInvalidJSONErrorBody(model, "上游 Chat Completions 返回了无法解析为 Gemini GenerateContent 的响应。客户端可以保持当前对话并重试，或换用更稳定的上游模型；网关已转换为 Gemini 文本提示，避免客户端因协议错误中断。"))
 		}
-		return []byte(openaicompat.BridgeJSONStringifyOf(openaicompat.ChatCompletionJSONToGeminiGenerateContent(parsed, model)))
-	case openaicompat.FamilyResponses:
+		return []byte(openaicompatbridge.BridgeJSONStringifyOf(openaicompatbridge.ChatCompletionJSONToGeminiGenerateContent(parsed, model)))
+	case openaicompatbridge.FamilyResponses:
 		// transformCodexResponsesChatBridgeUpstreamResponse: chat SSE -> the
 		// Responses protocol the codex client speaks (SSE 或单 JSON 响应）。
-		options := openaicompat.CodexResponsesChatBridgeTransformOptions{
+		options := openaicompatbridge.CodexResponsesChatBridgeTransformOptions{
 			Enabled:      true,
 			DefaultModel: model,
 			Model:        model,
 			IDPrefix:     "openai_bridge",
 		}
 		if parsed := req.ParsedJSONObjectBody(); parsed != nil {
-			options.ToolAdaptersByChatName = openaicompat.CodexResponsesChatBridgeToolAdaptersFromClientBody(parsed)
-			estimated := openaicompat.EstimateCodexResponsesRequestInputTokens(parsed)
+			options.ToolAdaptersByChatName = openaicompatbridge.CodexResponsesChatBridgeToolAdaptersFromClientBody(parsed)
+			estimated := openaicompatbridge.EstimateCodexResponsesRequestInputTokens(parsed)
 			options.EstimatedInputTokens = &estimated
 			options.PreviousResponseID = chainBridgePreviousResponseIDOf(parsed)
 		}
 		if stream {
-			return openaicompat.TransformChatCompletionsSseBufferToResponsesSse(body, options)
+			return openaicompatbridge.TransformChatCompletionsSseBufferToResponsesSse(body, options)
 		}
-		return openaicompat.TransformChatCompletionsSseBufferToResponsesJSON(body, options)
+		return openaicompatbridge.TransformChatCompletionsSseBufferToResponsesJSON(body, options)
 	}
 	return nil
 }
@@ -359,12 +366,12 @@ func (t *chainBridgeResponseTransformer) transformToAnthropicClient(
 	stream bool,
 ) []byte {
 	switch sourceFamily {
-	case openaicompat.FamilyGeminiGenerateContent, openaicompat.FamilyGeminiStreamGenerate:
+	case openaicompatbridge.FamilyGeminiGenerateContent, openaicompatbridge.FamilyGeminiStreamGenerate:
 		// transformGeminiGenerateContentAnthropicMessagesBridgeUpstreamResponse.
 		if stream {
-			state := openaicompat.NewAnthropicGeminiStreamState(model)
+			state := openaicompatbridge.NewAnthropicGeminiStreamState(model)
 			out := &strings.Builder{}
-			_ = openaicompat.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
+			_ = openaicompatbridge.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
 				return state.ProcessAnthropicSseEvent(event)
 			}, func() []string {
 				if !state.Completed && !state.Failed {
@@ -374,9 +381,9 @@ func (t *chainBridgeResponseTransformer) transformToAnthropicClient(
 			})
 			return []byte(out.String())
 		}
-		parsed, err := openaicompat.ExtractJSONObject(string(body))
+		parsed, err := openaicompatbridge.ExtractJSONObject(string(body))
 		if err != nil {
-			return []byte(openaicompat.BridgeJSONStringifyOf(map[string]any{
+			return []byte(openaicompatbridge.BridgeJSONStringifyOf(map[string]any{
 				"error": map[string]any{
 					"status":  "INTERNAL",
 					"code":    "upstream_anthropic_messages_invalid_json",
@@ -384,8 +391,8 @@ func (t *chainBridgeResponseTransformer) transformToAnthropicClient(
 				},
 			}))
 		}
-		return []byte(openaicompat.BridgeJSONStringifyOf(openaicompat.AnthropicMessageJSONToGeminiGenerateContent(parsed, model)))
-	case openaicompat.FamilyChatCompletions, openaicompat.FamilyResponses:
+		return []byte(openaicompatbridge.BridgeJSONStringifyOf(openaicompatbridge.AnthropicMessageJSONToGeminiGenerateContent(parsed, model)))
+	case openaicompatbridge.FamilyChatCompletions, openaicompatbridge.FamilyResponses:
 		// transformOpenAIToAnthropicBridgeUpstreamResponse: the chat target
 		// keeps the already-ported core; the responses target renders through
 		// the responses surface.
@@ -393,30 +400,30 @@ func (t *chainBridgeResponseTransformer) transformToAnthropicClient(
 		if parsed := input.Req.ParsedJSONObjectBody(); parsed != nil {
 			previousResponseID = chainBridgePreviousResponseIDOf(parsed)
 		}
-		if sourceFamily == openaicompat.FamilyResponses {
+		if sourceFamily == openaicompatbridge.FamilyResponses {
 			if stream {
-				return openaicompat.TransformAnthropicMessagesSseBufferToResponsesSse(body, model, previousResponseID)
+				return openaicompatbridge.TransformAnthropicMessagesSseBufferToResponsesSse(body, model, previousResponseID)
 			}
-			return openaicompat.TransformAnthropicMessagesJSONBufferToResponsesJSON(body, model, previousResponseID)
+			return openaicompatbridge.TransformAnthropicMessagesJSONBufferToResponsesJSON(body, model, previousResponseID)
 		}
 		if stream {
-			state := openaicompat.NewAnthropicChatStreamState(model)
+			state := openaicompatbridge.NewAnthropicChatStreamState(model)
 			out := &strings.Builder{}
-			_ = openaicompat.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
-				return openaicompat.ProcessAnthropicEventAsChat(state, event)
+			_ = openaicompatbridge.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
+				return openaicompatbridge.ProcessAnthropicEventAsChat(state, event)
 			}, func() []string {
 				if !state.Completed && !state.Failed {
-					return openaicompat.FailAnthropicChatStream(state, "上游 Anthropic Messages SSE 在正常结束事件前中断", "upstream_stream_interrupted")
+					return openaicompatbridge.FailAnthropicChatStream(state, "上游 Anthropic Messages SSE 在正常结束事件前中断", "upstream_stream_interrupted")
 				}
 				return nil
 			})
 			return []byte(out.String())
 		}
-		parsed, err := openaicompat.ExtractJSONObject(string(body))
+		parsed, err := openaicompatbridge.ExtractJSONObject(string(body))
 		if err != nil {
-			return openaicompat.TransformAnthropicJSONToChatErrorBody()
+			return openaicompatbridge.TransformAnthropicJSONToChatErrorBody()
 		}
-		return openaicompat.TransformAnthropicMessagesJSONToChatJSONBody(parsed, model)
+		return openaicompatbridge.TransformAnthropicMessagesJSONToChatJSONBody(parsed, model)
 	}
 	return nil
 }
@@ -431,35 +438,35 @@ func (t *chainBridgeResponseTransformer) transformToGeminiNativeClient(
 	model string,
 	stream bool,
 ) []byte {
-	protocol := openaicompat.GeminiNativeDownstreamProtocolForMapping(mapping.SourceEndpointFamily)
-	if protocol == openaicompat.GeminiNativeProtocolChatCompletions {
+	protocol := openaicompatbridge.GeminiNativeDownstreamProtocolForMapping(mapping.SourceEndpointFamily)
+	if protocol == openaicompatbridge.GeminiNativeProtocolChatCompletions {
 		// The existing chat-direction core (bridge_response.go).
 		if stream {
-			state := openaicompat.NewGeminiNativeChatStreamState(model)
+			state := openaicompatbridge.NewGeminiNativeChatStreamState(model)
 			out := &strings.Builder{}
-			_ = openaicompat.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
-				return openaicompat.ProcessGeminiSseEventAsChat(state, event)
+			_ = openaicompatbridge.PumpBridgeSseTransform(strings.NewReader(string(body)), out, func(event string) []string {
+				return openaicompatbridge.ProcessGeminiSseEventAsChat(state, event)
 			}, func() []string {
 				if !state.Completed && !state.Failed && !state.TerminalReceived {
-					return openaicompat.CompleteGeminiNativeChatStream(state)
+					return openaicompatbridge.CompleteGeminiNativeChatStream(state)
 				}
 				return nil
 			})
 			return []byte(out.String())
 		}
-		parsed, err := openaicompat.ExtractJSONObject(string(body))
+		parsed, err := openaicompatbridge.ExtractJSONObject(string(body))
 		if err != nil {
 			parsed = map[string]any{}
 		}
-		return []byte(openaicompat.BridgeJSONStringifyOf(openaicompat.TransformGeminiGenerateContentToOpenAIChatResponse(parsed, openaicompat.BridgeTransformResponseOptions{
+		return []byte(openaicompatbridge.BridgeJSONStringifyOf(openaicompatbridge.TransformGeminiGenerateContentToOpenAIChatResponse(parsed, openaicompatbridge.BridgeTransformResponseOptions{
 			Enabled: true,
 			Model:   model,
 		})))
 	}
 	if stream {
-		return openaicompat.TransformGeminiSseBufferToDownstreamSse(body, protocol, model)
+		return openaicompatbridge.TransformGeminiSseBufferToDownstreamSse(body, protocol, model)
 	}
-	return openaicompat.TransformGeminiJSONBufferToDownstreamJSON(body, protocol, model)
+	return openaicompatbridge.TransformGeminiJSONBufferToDownstreamJSON(body, protocol, model)
 }
 
 // transformGeminiCodeAssistIfApplicable unwraps the Code Assist {response:...}
@@ -479,7 +486,7 @@ func (t *chainBridgeResponseTransformer) transformGeminiCodeAssistIfApplicable(
 	// 解包转发，上游未 EOF 时下游已可读到首个解包事件；非流式收集合并 text
 	// 保持 buffer 语义。
 	if stream {
-		return bridgeStreamPipedResponse(response, response.Header.Clone(), openaicompat.PumpUnwrapGeminiCodeAssistSse), nil
+		return bridgeStreamPipedResponse(response, response.Header.Clone(), openaicompatbridge.PumpUnwrapGeminiCodeAssistSse), nil
 	}
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
@@ -488,7 +495,7 @@ func (t *chainBridgeResponseTransformer) transformGeminiCodeAssistIfApplicable(
 	_ = response.Body.Close()
 	// stream 已在上方管道分支 return（明显不可达守卫，w14a 删除）；此处恒为
 	// 非流式收集合并。
-	transformed := openaicompat.CollectGeminiCodeAssistSseBuffer(body)
+	transformed := openaicompatbridge.CollectGeminiCodeAssistSseBuffer(body)
 	if !strings.Contains(strings.ToLower(response.ContentType()), "json") {
 		// The non-stream collection consumes the SSE stream into one JSON
 		// payload (Node sets the JSON content type).
@@ -505,8 +512,8 @@ func (t *chainBridgeResponseTransformer) transformGeminiCodeAssistIfApplicable(
 // gemini streamGenerateContent family.
 func geminiCodeAssistDownstreamStreamForMapping(req *gatewaypreauth.GatewayRequest, mapping *gatewayproto.ResolvedModelMapping) bool {
 	if mapping != nil {
-		source := openaicompat.NormalizeEndpointFamily(mapping.SourceEndpointFamily)
-		if source == openaicompat.FamilyChatCompletions || source == openaicompat.FamilyResponses || source == openaicompat.FamilyAnthropicMessages {
+		source := openaicompatbridge.NormalizeEndpointFamily(mapping.SourceEndpointFamily)
+		if source == openaicompatbridge.FamilyChatCompletions || source == openaicompatbridge.FamilyResponses || source == openaicompatbridge.FamilyAnthropicMessages {
 			return gatewaypreauth.RequestStream(req)
 		}
 	}
@@ -586,7 +593,7 @@ func chainBridgePreviousResponseIDOf(body map[string]any) string {
 // payload for an unparseable chat upstream response (Node
 // geminiChatBridgeResponseGuidanceJson).
 func bridgeChatUpstreamInvalidJSONErrorBody(model, text string) string {
-	return openaicompat.BridgeJSONStringifyOf(map[string]any{
+	return openaicompatbridge.BridgeJSONStringifyOf(map[string]any{
 		"candidates": []any{map[string]any{
 			"content": map[string]any{
 				"role":  "model",

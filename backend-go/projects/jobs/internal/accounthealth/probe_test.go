@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -181,8 +182,13 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body["model"] != "gpt-test" || body["prompt"] != "Solid black." || body["n"] != float64(1) || body["size"] != "1024x1024" || body["quality"] != "low" || body["output_format"] != "webp" || body["output_compression"] != float64(100) {
+		if body["model"] != "gpt-test" || body["n"] != float64(1) || body["size"] != "1024x1024" || body["quality"] != "low" || body["output_format"] != "webp" || body["output_compression"] != float64(100) {
 			t.Fatalf("unexpected image probe body: %#v", body)
+		}
+		// 图片 prompt 自 2026-09 起带随机后缀：固定前缀 + 3~6 位数字。
+		prompt, _ := body["prompt"].(string)
+		if !strings.HasPrefix(prompt, "Solid black. ") || !challengeDigitsPattern.MatchString(strings.TrimPrefix(prompt, "Solid black. ")) {
+			t.Fatalf("image prompt = %q, want \"Solid black. \" + 3~6 digits", prompt)
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"data":[{"b64_json":"c2FtcGxl"}]}`))
@@ -202,6 +208,86 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 	result = ProbeOpenAI(context.Background(), testInput(missingResultServer.URL, "images_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
 	if result.Outcome != OutcomeNeutral || result.ErrorCode != "upstream_protocol_invalid" {
 		t.Fatalf("missing image result must be neutral, got %#v", result)
+	}
+}
+
+// 挑战报文自 2026-09 起带 3~6 位随机数字后缀：上游风控按固定报文指纹封号。
+// 以下正则锁定请求侧报文形态；验证侧仍宽松匹配挑战词，不要求包含后缀。
+var (
+	challengeDigitsPattern  = regexp.MustCompile(`^\d{3,6}$`)
+	challengeMessagePattern = regexp.MustCompile(`^只能回复：juhe\d{3,6}$`)
+)
+
+func TestProbeOpenAIChatSendsRandomizedChallengeMessage(t *testing.T) {
+	secret := "test-secret"
+	messageCh := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		messages, _ := body["messages"].([]any)
+		if len(messages) != 1 {
+			t.Errorf("expected single user message, got %#v", messages)
+			return
+		}
+		message, _ := messages[0].(map[string]any)
+		content, _ := message["content"].(string)
+		messageCh <- content
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+	}))
+	defer server.Close()
+
+	result := ProbeOpenAI(context.Background(), testInput(server.URL, "chat_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected probe result: %#v", result)
+	}
+	select {
+	case content := <-messageCh:
+		if !challengeMessagePattern.MatchString(content) {
+			t.Fatalf("challenge message = %q, want match %s", content, challengeMessagePattern)
+		}
+	default:
+		t.Fatal("upstream handler did not capture the challenge message")
+	}
+}
+
+func TestProbeOpenAIResponsesJSONKeepsInstructionsInRotationPool(t *testing.T) {
+	secret := "test-secret"
+	instructionsCh := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		instructions, _ := body["instructions"].(string)
+		instructionsCh <- instructions
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":"completed","object":"response","output":[{"content":[{"type":"output_text","text":"juhe"}]}]}`))
+	}))
+	defer server.Close()
+
+	result := ProbeOpenAI(context.Background(), testInput(server.URL, "responses_json"), CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, `{"api_key":"sk-test"}`)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if result.Outcome != OutcomeSuccess || result.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected probe result: %#v", result)
+	}
+	select {
+	case instructions := <-instructionsCh:
+		inPool := false
+		for _, candidate := range probeInstructionsPool {
+			if instructions == candidate {
+				inPool = true
+				break
+			}
+		}
+		if !inPool {
+			t.Fatalf("instructions = %q, want one of rotation pool %v", instructions, probeInstructionsPool)
+		}
+	default:
+		t.Fatal("upstream handler did not capture the instructions")
 	}
 }
 

@@ -1,5 +1,7 @@
 # Bug 记录目录
 
+- [BUG-0179](问题-0179-CodexResponses画像无法选中Chat桥账户.md)：端点模式闸对 codex_responses 画像请求先于映射分支无条件要求 `responses_sse`，Codex CLI 客户端无法选中 chat-only 档案桥账户（GLM chat/DeepSeek/hybrid chat），BUG-0178 修复后的桥对主力客户端仍不可达；预存在限制，Node 语义优先顺序待取证；待取证。
+- [BUG-0178](问题-0178-Responses到Chat桥执行门控缺失端到端断裂.md)：`responses -> chat_completions` 桥在 Go 网关许可层放行但转换执行门控缺失，Responses 格式请求体原样发往 chat 上游、chat 响应原样回给 Responses 客户端；运行时裁决测试确认（2026-09-19）；已修复（矩阵补组合 + 双侧裁决测试转绿，独立复审通过，组合根全包回归见文档验证记录）。
 - [BUG-0177](问题-0177-PG组合根装配与手动测试仓储占位符缺陷.md)：PG 模式 accountbalance.OpenStore 无条件要求 PostgresURL 导致组合根恒失败，manualtestrepo 的 `?` 占位符经 pgx 原样下发致 PG 全部任务 SQL 报语法错误；已修复并以真实 dev PG 门禁化测试回归，待合并。
 - [BUG-0176](问题-0176-系统主动请求缺少渠道身份被上游拒绝.md)：系统主动请求缺少统一渠道身份，导致同一 GLM Coding 账户在 OpenCode 可用、项目人工测试/探针被上游拒绝；已补 ZCode 静态身份、无精确身份时的 OpenCode UA-only 兜底，并统一人工测试、J1、J3b 和模型目录调用面，待轮换测试 Key 后真实验证。
 - [BUG-0174](问题-0174-账户核心专项深查缺陷清单.md)：账户核心专项深查（调度/状态/探活/协议）——5 blocker + 10 major + 12 minor；2026-09-07 两波清偿（指纹统一/轮转策略/隔离谓词/J1 投影器移植/skip 作用域/busy 轮换/键格式/创建路径链/ENGAGED 锁接线/协议主链认证与错误体）；已修复（B-4 转换器移植待用户裁决）。

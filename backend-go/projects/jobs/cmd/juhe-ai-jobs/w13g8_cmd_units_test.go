@@ -52,7 +52,6 @@ func (s w13g8StubConcurrency) LoadConcurrency(_ context.Context, _ []string) (ma
 func w13g8NewUnitAssembly(t *testing.T, patch func(*workerConfig)) *workerAssembly {
 	t.Helper()
 	config := workerConfig{
-		Enabled:      true,
 		Driver:       "sqlite",
 		InstanceID:   "w13g8-units",
 		WorkerRole:   "ingest-worker",
@@ -295,7 +294,6 @@ func TestW13G8BuildWorkerAssemblySQLiteStoreFailArms(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			config := workerConfig{
-				Enabled:      true,
 				Driver:       "sqlite",
 				InstanceID:   "w13g8-fail-arms",
 				WorkerRole:   "ingest-worker",
@@ -316,7 +314,6 @@ func TestW13G8BuildWorkerAssemblySQLiteStoreFailArms(t *testing.T) {
 	}
 	// retention：SQLite 模式缺必需路径的显式报错分支。
 	retentionConfig := workerConfig{
-		Enabled:          true,
 		Driver:           "sqlite",
 		InstanceID:       "w13g8-retention-fail",
 		WorkerRole:       "ingest-worker",

@@ -3,6 +3,7 @@ package gatewayruntimecache
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,13 +13,24 @@ import (
 
 func whIntPtr(v int) *int { return &v }
 
-// whWarnLogger 捕获 Warn 事件（Options.Logger 注入点）。
+// whWarnLogger 捕获 Warn 事件（Options.Logger 注入点）。后台刷新 goroutine
+// 会并发写入，读取方必须经 snapshot()（-race 下裸切片是数据竞争）。
 type whWarnLogger struct {
+	mu     sync.Mutex
 	events []string
 }
 
 func (l *whWarnLogger) Warn(event string, _ map[string]any, _ string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.events = append(l.events, event)
+}
+
+// snapshot 返回事件的加锁拷贝，供测试断言读取。
+func (l *whWarnLogger) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
 }
 
 // whFailingShared 是全部写入失败的 SharedCache（驱动共享缓存写失败告警）。
@@ -146,13 +158,13 @@ func TestWhInspectionSharedModeAndWarn(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, event := range logger2.events {
+	for _, event := range logger2.snapshot() {
 		if event == "gateway_response_inspection_policy_shared_cache_write_failed" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("共享写失败告警缺失: %v", logger2.events)
+		t.Fatalf("共享写失败告警缺失: %v", logger2.snapshot())
 	}
 	// 共享读取失败同样告警。
 	svc3 := newTestService(t, models, clock, func(o *Options) { o.Logger = logger2 })
@@ -161,7 +173,7 @@ func TestWhInspectionSharedModeAndWarn(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = false
-	for _, event := range logger2.events {
+	for _, event := range logger2.snapshot() {
 		if event == "gateway_response_inspection_policy_shared_cache_read_failed" {
 			found = true
 		}

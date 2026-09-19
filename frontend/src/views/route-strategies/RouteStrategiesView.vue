@@ -226,15 +226,15 @@
           </a-col>
         </a-row>
 
-        <template v-if="form.mode === 'normal'">
+        <template v-if="schedulingPreferenceSupported">
           <div class="modal-section-title">
-            <span>普通路由调度</span>
+            <span>调度偏好</span>
             <a-tooltip :title="normalRoutingConfigTooltip">
               <InfoCircleOutlined class="route-strategy-field-help-icon" />
             </a-tooltip>
           </div>
           <div class="hybrid-config-grid">
-            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。">
+            <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。作用域为当前请求所落分组内的账号调度，混合智能路由不支持调度偏好。">
               <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
             </a-form-item>
             <a-form-item v-if="form.normal.schedulingPreference === 'speed_first'" label="首字截止" required tooltip="只作用于速度优先的可重放文本；图像和其他副作用请求永久排除，不记录慢样本也不自动切号。">
@@ -750,6 +750,9 @@ const normalSchedulingPreferenceOptions = [
   { label: '速度优先', value: 'speed_first' }
 ]
 
+// 调度偏好（历史命名 normalRoutingConfig）支持的路由模式；hybrid_smart 恒不支持。
+const schedulingPreferenceSupportedModes: ReadonlyArray<RouteStrategyMode> = ['normal', 'weighted', 'failover', 'round_robin']
+
 const qualityPreferenceOptions = [
   { label: '成本优先', value: 'cost_first' },
   { label: '均衡', value: 'balanced' },
@@ -819,6 +822,7 @@ const bindingShowsDragColumn = computed(() => {
 const bindingShowsRole = computed(() => form.mode === 'failover')
 const bindingOrderUsesPosition = computed(() => form.mode === 'hybrid_smart' || form.mode === 'failover' || form.mode === 'round_robin')
 const bindingShowsWeight = computed(() => form.mode === 'weighted')
+const schedulingPreferenceSupported = computed(() => schedulingPreferenceSupportedModes.includes(form.mode))
 const bindingAddButtonText = computed(() => form.mode === 'failover' && form.groupBindings.length >= 1 ? '添加备用分组' : '添加分组')
 const bindingSectionTooltip = computed(() => {
   if (form.mode === 'normal') return '普通路由只绑定一个分组，请求会直接进入这个分组的账号池。'
@@ -1313,7 +1317,8 @@ function buildRouteStrategyFormPayload(reportValidation = true): RouteStrategyMu
     payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
     payload.hybridRoutingConfig = null
   } else {
-    payload.normalRoutingConfig = null
+    // weighted/failover/round_robin 与 normal 共用调度偏好配置（历史命名 normalRoutingConfig）；hybrid_smart 已在上方分支提交 null。
+    payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
     payload.hybridRoutingConfig = null
   }
   return payload
@@ -1743,13 +1748,13 @@ function routeStrategyModeText(mode: RouteStrategyMode): string {
 
 function routeStrategyModeDisplayText(record: RouteStrategyListItem | RouteStrategySummary): string {
   const base = routeStrategyModeText(record.mode)
-  if (record.mode !== 'normal') return base
+  if (!schedulingPreferenceSupportedModes.includes(record.mode)) return base
   const preference = record.normalRoutingConfig?.schedulingPreference ?? 'cost_first'
   return `${base} / ${preference === 'speed_first' ? '速度优先' : '成本优先'}`
 }
 
 function isSpeedFirstRouteStrategy(record: Pick<RouteStrategyListItem | RouteStrategySummary, 'mode' | 'normalRoutingConfig'>): boolean {
-  return record.mode === 'normal' && record.normalRoutingConfig?.schedulingPreference === 'speed_first'
+  return schedulingPreferenceSupportedModes.includes(record.mode) && record.normalRoutingConfig?.schedulingPreference === 'speed_first'
 }
 
 function speedFirstLatencyStatusText(record: RouteStrategyListItem): string {

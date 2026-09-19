@@ -32,6 +32,19 @@ type EngineConfig struct {
 	// (gateway/dispatch/upstream-dispatch.ts:305-306), not config/runtime.ts.
 	KeyModelForegroundQueueWaitMs int64
 	KeyModelForegroundQueuePollMs int64
+	// UpstreamRetryBackoffDelaysMs is the R4 test injection point for the
+	// attempt-loop backoff waits (Node upstream-dispatch.ts 的重试等待)。
+	// 按语义位索引：
+	// 0 = capacity-limit queued wait cap（生产硬编码 1000ms）、
+	// 1 = capacity-limit plain wait cap（生产硬编码 500ms）、
+	// 2 = recoverable post-cycle wait cap（生产硬编码 3000ms）、
+	// 3 = same-account retry wait（生产 = settings.
+	// TemporaryUnschedulableRetryIntervalSeconds * 1000）。
+	// nil / 缺位索引回落每处生产值（upstreamRetryBackoffCap），默认构造与
+	// 生产行为逐字节一致。Deliberately not env-backed：与
+	// CircuitSuppressionDelayLadderMs 同约定，测试直接对 cfg 赋值，运维
+	// 无理由移动生产的可用性重试节奏。
+	UpstreamRetryBackoffDelaysMs []int64
 	// Secret 是 JUHE_AI_SECRET（Node runtimeConfig.secret）：账户 API Key
 	// 指纹 HMAC-SHA256(secret, key) 的密钥（B-1，BUG-0174）。组合根接线前为
 	// 空串；Node createHmac 对空 key 正常计算，空值不产生空串快捷路径，但

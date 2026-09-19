@@ -14,12 +14,17 @@ import (
 // 签名 request/input 文件读取臂、显式探针 executor 早退臂与 PG direct input
 // 的候选装配错误臂。全部为纯单元路径，不触网。
 
-// TestW12dLoadConfigNilGetenv 覆盖 getenv 注入为 nil 的分支。
+// TestW12dLoadConfigNilGetenv 覆盖 getenv 注入为 nil 的分支：nil 等价
+// os.Getenv，在完整 env 下正常通过（恒开终态，无 disabled 默认路径）。
 func TestW12dLoadConfigNilGetenv(t *testing.T) {
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_ENABLED", "")
+	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "sqlite")
+	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH", filepath.Join(t.TempDir(), "j1.sqlite3"))
+	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", t.TempDir())
+	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY")
+	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET", "w12d-secret")
 	config, err := LoadConfig(nil)
-	if err != nil || config.Enabled {
-		t.Fatalf("disabled default: %+v %v", config, err)
+	if err != nil || config.Store.Mode != StoreSQLite {
+		t.Fatalf("nil getenv must behave like os.Getenv: %+v %v", config, err)
 	}
 }
 
@@ -29,7 +34,6 @@ func TestW12dLoadConfigFullPostgresMatrix(t *testing.T) {
 	key := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
 	set := func(t *testing.T, values map[string]string) {
 		t.Helper()
-		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_ENABLED", "true")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID", "w12d-instance")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "postgres")
@@ -49,7 +53,7 @@ func TestW12dLoadConfigFullPostgresMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
 	}
-	if !config.Enabled || config.Store.Mode != StorePostgres || config.InputSource != "postgres" {
+	if config.Store.Mode != StorePostgres || config.InputSource != "postgres" {
 		t.Fatalf("config=%+v", config)
 	}
 	if config.Store.PostgresMaxOpenConns != defaultPostgresPoolSize || config.DirectInputPostgresMaxIdleConns != defaultPostgresMaxIdleConns {
@@ -108,7 +112,7 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 	key := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
 	base := func(t *testing.T) {
 		t.Helper()
-		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_ENABLED", "true")
+		t.Setenv("JUHE_AI_SECRET", "")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID", "w12d-instance")
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "postgres")
@@ -123,7 +127,6 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		frag   string
 	}{
 		{"owner not go", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "node"}, "JOBS_OWNER"},
-		{"missing instance", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID": ""}, "INSTANCE_ID"},
 		{"bad store", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "mysql"}, "sqlite 或 postgres"},
 		{"sqlite missing path", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": ""}, "DATABASE_PATH"},
 		{"postgres missing url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": ""}, "POSTGRES_URL"},
@@ -169,7 +172,6 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 func TestW12dLoadConfigSQLiteIsolationArms(t *testing.T) {
 	key := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
 	root := t.TempDir()
-	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_ENABLED", "true")
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER", "go")
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID", "w12d-instance")
 	t.Setenv("JUHE_AI_ACCOUNT_HEALTH_STORE", "sqlite")

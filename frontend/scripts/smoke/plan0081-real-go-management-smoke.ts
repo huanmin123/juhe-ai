@@ -2243,17 +2243,18 @@ function assertRouteStrategyConfigForMode(
   label: string,
   detail: boolean
 ): void {
-  if (value.mode === 'normal') {
-    expect(isRecord(value.normalRoutingConfig), `${label}.normalRoutingConfig must be an object for normal mode`)
-    expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig for normal mode`)
+  // 调度偏好（历史命名 normalRoutingConfig）自通用化起由 normal/weighted/failover/round_robin 共享；仅 hybrid_smart 禁止。
+  if (value.mode === 'hybrid_smart') {
+    expect(!Object.hasOwn(value, 'normalRoutingConfig'), `${label} must not expose normalRoutingConfig for hybrid_smart mode`)
+    if (detail) {
+      expect(isRecord(value.hybridRoutingConfig), `${label}.hybridRoutingConfig must be an object for hybrid_smart mode`)
+      return
+    }
+    expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig for hybrid_smart mode`)
     return
   }
-  expect(!Object.hasOwn(value, 'normalRoutingConfig'), `${label} must not expose normalRoutingConfig outside normal mode`)
-  if (detail && value.mode === 'hybrid_smart') {
-    expect(isRecord(value.hybridRoutingConfig), `${label}.hybridRoutingConfig must be an object for hybrid_smart mode`)
-    return
-  }
-  expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig for this mode`)
+  expect(isRecord(value.normalRoutingConfig), `${label}.normalRoutingConfig must be an object for ${String(value.mode)} mode`)
+  expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig for ${String(value.mode)} mode`)
 }
 
 function isRouteStrategyMode(value: unknown): value is RouteStrategyMode {

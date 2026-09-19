@@ -21,8 +21,8 @@ func TestLoadWorkerConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("合法 env 必须通过校验: %v", err)
 	}
-	if !config.Enabled || config.Driver != "sqlite" {
-		t.Fatalf("开关/驱动错误: %+v", config)
+	if config.Driver != "sqlite" {
+		t.Fatalf("驱动错误: %+v", config)
 	}
 	if config.InstanceID != "smoke-instance" || config.WorkerRole != "stats-worker" || config.WorkerReplicaIdx != 0 {
 		t.Fatalf("调度 seed 三元组错误: %+v", config)
@@ -78,7 +78,6 @@ func TestLoadWorkerConfigRejectsInvalidEnv(t *testing.T) {
 		mutate   func(env map[string]string)
 		contains string
 	}{
-		{"worker 开关非法布尔", func(e map[string]string) { e["JUHE_AI_JOBS_WORKER_ENABLED"] = "maybe" }, "必须是布尔值"},
 		{"replica 非整数", func(e map[string]string) { e["JUHE_AI_WORKER_REPLICA_INDEX"] = "abc" }, "必须是整数"},
 		{"replica 越上界", func(e map[string]string) { e["JUHE_AI_WORKER_REPLICA_INDEX"] = "64" }, "必须介于 0 和 63"},
 		{"replica 负数", func(e map[string]string) { e["JUHE_AI_WORKER_REPLICA_INDEX"] = "-1" }, "必须介于 0 和 63"},

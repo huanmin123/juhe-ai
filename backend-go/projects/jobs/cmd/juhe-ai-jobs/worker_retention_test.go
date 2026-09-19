@@ -20,7 +20,6 @@ import (
 
 func retentionTestConfig(dir string) workerConfig {
 	return workerConfig{
-		Enabled:                        true,
 		Driver:                         "sqlite",
 		InstanceID:                     "retention-test",
 		WorkerRole:                     "ingest-worker",

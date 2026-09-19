@@ -7,6 +7,7 @@ package accountprobe
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -319,6 +320,39 @@ func TestW7CSuccessEvidenceMatrix(t *testing.T) {
 	}
 }
 
+// w7c output-challenge fingerprint rotation: the request-side prompt gains a
+// 3-6 digit random suffix while verification stays loose (ExpectedOutput is
+// still "juhe"), and responses instructions rotate within a fixed pool.
+func TestW7COutputChallengeRandomization(t *testing.T) {
+	challenge := CreateOutputChallenge()
+	if challenge.ExpectedOutput != "juhe" {
+		t.Fatalf("expected output: %q", challenge.ExpectedOutput)
+	}
+	promptRe := regexp.MustCompile(`^只能回复：juhe\d{3,6}$`)
+	if !promptRe.MatchString(challenge.Prompt) {
+		t.Fatalf("challenge prompt: %q", challenge.Prompt)
+	}
+	sawDifferent := false
+	for i := 0; i < 32; i++ {
+		if next := CreateOutputChallenge(); next.Prompt != challenge.Prompt {
+			sawDifferent = true
+			break
+		}
+	}
+	if !sawDifferent {
+		t.Fatal("challenge prompt never varied across repeated calls")
+	}
+	allowed := make(map[string]bool)
+	for _, instruction := range probeInstructionsPool {
+		allowed[instruction] = true
+	}
+	for i := 0; i < 32; i++ {
+		if instruction := probeInstructions(); !allowed[instruction] {
+			t.Fatalf("instructions outside pool: %q", instruction)
+		}
+	}
+}
+
 func TestW7CProtocolPayloadBuilders(t *testing.T) {
 	responses, err := buildOpenAIResponsesPayload("gpt-test", "prompt", true, false)
 	if err != nil {
@@ -341,8 +375,13 @@ func TestW7CProtocolPayloadBuilders(t *testing.T) {
 	}
 
 	images, err := buildImagesPayload("img-1")
-	if err != nil || !strings.Contains(string(images), `"prompt":"Solid black."`) {
-		t.Fatalf("images payload: %s %v", images, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Image prompt keeps the historical prefix and gains a 3-6 digit random
+	// suffix (fingerprint rotation); image verification ignores prompt text.
+	if !regexp.MustCompile(`"prompt":"Solid black\. \d{3,6}"`).MatchString(string(images)) {
+		t.Fatalf("images payload prompt: %s", images)
 	}
 	gemini, err := buildGeminiGenerateContentPayload("p")
 	if err != nil || !strings.Contains(string(gemini), `"generationConfig"`) {

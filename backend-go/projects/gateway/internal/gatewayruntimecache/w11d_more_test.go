@@ -47,7 +47,7 @@ func TestW11DSettingsCacheArms(t *testing.T) {
 		t.Fatal("共享读失败后 loader 失败必须上抛")
 	}
 	found := false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_settings_shared_cache_read_failed" {
 			found = true
 		}
@@ -66,7 +66,7 @@ func TestW11DSettingsCacheArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_settings_shared_cache_write_failed" {
 			found = true
 		}
@@ -140,13 +140,13 @@ func TestW11DGroupAccessSharedRefreshArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_group_access_stale_refresh_failed" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("分组后台刷新失败告警缺失: %v", logger.events)
+		t.Fatalf("分组后台刷新失败告警缺失: %v", logger.snapshot())
 	}
 	// 世代失效：刷新结果不回填。
 	recorder.fail = false
@@ -168,7 +168,7 @@ func TestW11DGroupAccessSharedRefreshArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if strings.Contains(event, "gateway_group_access_stale_refresh_failed") {
 			found = true
 		}
@@ -186,7 +186,7 @@ func TestW11DGroupAccessSharedRefreshArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_group_usage_access_shared_cache_write_failed" {
 			found = true
 		}
@@ -201,7 +201,7 @@ func TestW11DGroupAccessSharedRefreshArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_group_usage_access_shared_cache_read_failed" {
 			found = true
 		}
@@ -337,13 +337,13 @@ func TestW11DInspectionLocalStaleRefreshArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_response_inspection_policy_stale_refresh_failed" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("检查策略后台刷新失败告警缺失: %v", logger.events)
+		t.Fatalf("检查策略后台刷新失败告警缺失: %v", logger.snapshot())
 	}
 	// loader 失败直接上抛（缓存空时）。
 	svc2 := newTestService(t, recorder, clock, nil)
@@ -417,7 +417,7 @@ func TestW11DCatalogPendingAndSharedRouteHit(t *testing.T) {
 	if _, err := failing.ResolveCachedProviderModelRouteAsync(ctx, "m1", []string{"gpt"}, "sys", false); err != nil {
 		t.Fatal(err)
 	}
-	events := strings.Join(logger.events, ",")
+	events := strings.Join(logger.snapshot(), ",")
 	if !strings.Contains(events, "gateway_provider_model_route_index_shared_cache_read_failed") {
 		t.Fatal("路由索引共享读失败告警缺失")
 	}

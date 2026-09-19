@@ -166,11 +166,9 @@ func newWorkerAssembly(config workerConfig, logger *slog.Logger) *workerAssembly
 	return assembly
 }
 
-// buildWorkerAssembly 装配 worker 组合根；config.Enabled=false 时返回 nil。
+// buildWorkerAssembly 装配 worker 组合根（机制强制常开，无总开关门禁）；
+// 装配失败返回 error，由调用方 fail-fast。
 func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssembly, error) {
-	if !config.Enabled {
-		return nil, nil
-	}
 	assembly := newWorkerAssembly(config, logger)
 	if err := assembly.wireFamilies(context.Background()); err != nil {
 		assembly.closeStores()
@@ -899,7 +897,7 @@ func (a *workerAssembly) statusPayload() map[string]any {
 		snapshots = a.scheduler.Snapshots()
 	}
 	return map[string]any{
-		"workerEnabled":         a.config.Enabled,
+		"workerEnabled":         true, // 机制强制常开（2026-09-19 决策），字段保留以稳定 /health 载荷契约
 		"workerDriver":          a.config.Driver,
 		"workerWiredJobs":       a.wiredJobs,
 		"workerRegisteredTodo":  registeredNotWired,

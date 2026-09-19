@@ -74,7 +74,7 @@ func TestCloseStoresReportsCloserError(t *testing.T) {
 // TestStatusPayloadWithoutScheduler 验证手工构造的最小装配体也能输出健康载荷
 // （nil 调度器分支不 panic）。
 func TestStatusPayloadWithoutScheduler(t *testing.T) {
-	assembly := &workerAssembly{config: workerConfig{Enabled: true, Driver: "sqlite"}}
+	assembly := &workerAssembly{config: workerConfig{Driver: "sqlite"}}
 	payload := assembly.statusPayload()
 	if payload["workerEnabled"] != true || payload["workerDriver"] != "sqlite" {
 		t.Fatalf("健康载荷基础字段错误: %v", payload)

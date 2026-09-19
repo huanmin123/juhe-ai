@@ -226,7 +226,6 @@ func w16dJ1Env(t *testing.T, root string) map[string]string {
 		t.Fatal(err)
 	}
 	return map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_ENABLED":           "true",
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w16d-j1",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
@@ -252,7 +251,7 @@ func TestW16DWireHealthProbeOutboxFaceArms(t *testing.T) {
 		return func(name string) string { return env[name] }
 	}
 	newAssembly := func(driver, businessPath string) *workerAssembly {
-		config := workerConfig{Enabled: true, Driver: driver, InstanceID: "w16d-face"}
+		config := workerConfig{Driver: driver, InstanceID: "w16d-face"}
 		if driver == "postgres" {
 			config.PostgresURL = "pgx://w16d-invalid-url"
 		} else {
@@ -262,42 +261,28 @@ func TestW16DWireHealthProbeOutboxFaceArms(t *testing.T) {
 		t.Cleanup(assembly.closeStores)
 		return assembly
 	}
-	// LoadConfig 失败臂（非法 jobs owner）。
-	if _, err := newAssembly("sqlite", businessPath).wireHealthProbeOutboxFace(func(name string) string {
-		if name == "JUHE_AI_ACCOUNT_HEALTH_ENABLED" {
-			return "true"
-		}
-		if name == "JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER" {
-			return "not-go"
-		}
-		return ""
-	}); err == nil {
-		t.Fatal("非法 J1 配置必须使 face 装配失败")
-	}
-	// openBusinessDB 失败臂（postgres 坏 URL；getenv 返回空 → J1 关闭仍需开业务库）。
+	// openBusinessDB 失败臂（postgres 坏 URL；恒开语义下 face 恒开业务库）。
 	if _, err := newAssembly("postgres", "").wireHealthProbeOutboxFace(func(string) string { return "" }); err == nil {
 		t.Fatal("postgres 坏 URL 必须使 face 装配失败")
 	}
-	// J1 关闭：drain 缺席、pruner 就绪、保留天数非法走告警回调（228-230）。
-	face, err := newAssembly("sqlite", businessPath).wireHealthProbeOutboxFace(envLookup(map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_ENABLED":           "",
-		probeOutboxRetentionEnvVar:                 "bogus",
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "",
-		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     "",
-		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "",
-		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "",
-		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "",
-	}))
+	// 恒开终态：无 J1 门控，drain 与 pruner 恒装配；保留天数非法走告警回调
+	// （228-230）。getenv 全空（仅保留天数非法）即可触发。
+	face, err := newAssembly("sqlite", businessPath).wireHealthProbeOutboxFace(func(name string) string {
+		if name == probeOutboxRetentionEnvVar {
+			return "bogus"
+		}
+		return ""
+	})
 	if err != nil {
-		t.Fatalf("J1 关闭 face 装配: %v", err)
+		t.Fatalf("恒开 face 装配: %v", err)
 	}
-	if face.drain != nil || face.pruner == nil {
-		t.Fatalf("J1 关闭时 drain 必须缺席、pruner 必须就绪: %+v", face)
+	if face.drain == nil || face.pruner == nil {
+		t.Fatalf("恒开语义下 drain 与 pruner 必须就绪: %+v", face)
 	}
 	// J1 开启 + assembly config 携带非法 Redis URL（scheme 非 redis）：
 	// fence settler 解析失败臂（238-240 + 355-357；settler 读 a.config 而非 env）。
 	{
-		config := workerConfig{Enabled: true, Driver: "sqlite", InstanceID: "w16d-face", BusinessSQLitePath: businessPath}
+		config := workerConfig{Driver: "sqlite", InstanceID: "w16d-face", BusinessSQLitePath: businessPath}
 		config.RedisStateURL = "http://127.0.0.1:6379"
 		config.RedisNamespace = "juhe-ai:w16d"
 		badRedisAssembly := newWorkerAssembly(config, slog.Default())
@@ -329,14 +314,10 @@ func TestW16DWireHealthOutcomeProjectorArms(t *testing.T) {
 	seedProbeCoreTables(t, businessPath)
 	w16dCreateJ1FixtureTables(t, fixture)
 
-	// store 为 nil → 合法缺席（44-46）。
-	emptyAssembly := newWorkerAssembly(workerConfig{Enabled: true, Driver: "sqlite"}, slog.Default())
+	// store 为 nil → 合法缺席（防御性分支；恒开终态下 store 恒非 nil）。
+	emptyAssembly := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
 	if projector, err := emptyAssembly.wireHealthOutcomeProjector(nil, nil); err != nil || projector != nil {
 		t.Fatalf("store nil 必须合法缺席: %v %v", projector, err)
-	}
-	// getenv 为 nil 时走 os.Getenv（测试进程无 J1 配置）→ LoadConfig 后禁用缺席（41-43）。
-	if _, err := emptyAssembly.wireHealthOutcomeProjector(nil, &accounthealth.Store{}); err != nil {
-		t.Fatalf("nil getenv 需求走 os.Getenv: %v", err)
 	}
 	// env 显式关闭 → 合法缺席（47-50）。
 	if projector, err := emptyAssembly.wireHealthOutcomeProjector(func(name string) string {
@@ -348,7 +329,7 @@ func TestW16DWireHealthOutcomeProjectorArms(t *testing.T) {
 		t.Fatalf("env 关闭必须合法缺席: %v %v", projector, err)
 	}
 	// openBusinessDB 失败（postgres 坏 URL；68-70）。
-	pgAssembly := newWorkerAssembly(workerConfig{Enabled: true, Driver: "postgres", PostgresURL: "pgx://w16d-invalid"}, slog.Default())
+	pgAssembly := newWorkerAssembly(workerConfig{Driver: "postgres", PostgresURL: "pgx://w16d-invalid"}, slog.Default())
 	if _, err := pgAssembly.wireHealthOutcomeProjector(func(name string) string {
 		return w16dJ1Env(t, root)[name]
 	}, &accounthealth.Store{}); err == nil {
@@ -368,7 +349,7 @@ func TestW16DWireHealthOutcomeProjectorArms(t *testing.T) {
 			return base[name]
 		}
 	}
-	sqliteAssembly := newWorkerAssembly(workerConfig{Enabled: true, Driver: "sqlite", BusinessSQLitePath: businessPath}, slog.Default())
+	sqliteAssembly := newWorkerAssembly(workerConfig{Driver: "sqlite", BusinessSQLitePath: businessPath}, slog.Default())
 	t.Cleanup(sqliteAssembly.closeStores)
 	if _, err := sqliteAssembly.wireHealthOutcomeProjector(envWithBounds("abc", ""), &accounthealth.Store{}); err == nil {
 		t.Fatal("非法 poll 必须使投影装配失败")
@@ -394,7 +375,7 @@ func TestW16DWireCircuitFamilyArms(t *testing.T) {
 	disabled := map[string]string{}
 	registerDisabled := func(name, reason string) { disabled[name] = reason }
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled: true, Driver: "sqlite", InstanceID: "w16d-circuit",
+		Driver: "sqlite", InstanceID: "w16d-circuit",
 		BusinessSQLitePath: businessPath, Secret: wgBalanceSecret,
 	}, slog.Default())
 	t.Cleanup(assembly.closeStores)
@@ -424,7 +405,7 @@ func TestW16DWireCircuitFamilyArms(t *testing.T) {
 	// EnsureCursorSchema 错误臂：失败登记 disabled 并返回 nil（不传播）。
 	closed := w16dOpenTestSQLite(t, root+"/closed.sqlite3")
 	_ = closed.Close()
-	assembly2 := newWorkerAssembly(workerConfig{Enabled: true, Driver: "sqlite"}, slog.Default())
+	assembly2 := newWorkerAssembly(workerConfig{Driver: "sqlite"}, slog.Default())
 	t.Cleanup(assembly2.closeStores)
 	assembly2.config.RedisStateURL = "redis://" + redisServer.Addr()
 	assembly2.config.RedisNamespace = "juhe-ai:w16d"

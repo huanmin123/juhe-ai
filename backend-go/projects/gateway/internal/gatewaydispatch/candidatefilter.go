@@ -176,6 +176,19 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 			}
 		}
 	}
+	// SwitchTarget（切号冻结目标）：切号触发的候选窗口（组回退 preflight、
+	// 模型感知 reload 重载结果）在产出前按冻结目标后置过滤；初始 preflight
+	// 尚无账户完成构造（无冻结目标），此处惰性不参与（设计文档 §4）。
+	if gate := SwitchTargetGateFromContext(ctx); gate != nil && gate.Frozen() {
+		modelFilter.Accounts = gate.FilterAccounts(modelFilter.Accounts)
+		if gate.Unresolved() && gate.MarkUnresolvedDiagnosed() {
+			input.AuditCapture.AddGatewayMetadata("switch_target_unresolved", map[string]any{
+				"reason":          "frozen_switch_target_unresolvable",
+				"sourceAccountId": SwitchTargetGateSourceOf(gate),
+				"stage":           "candidate_filter",
+			})
+		}
+	}
 	if modelFilter.SkippedCount > 0 || modelFilter.MappingMatchedCount > 0 {
 		requestedModelAttribute := any(modelFilter.RequestedModel)
 		if requestedModelAttribute == "" {

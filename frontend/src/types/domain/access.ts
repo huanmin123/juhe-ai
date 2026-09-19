@@ -119,6 +119,7 @@ export interface RouteStrategySpeedFirstLatencyRuntime {
   items: RouteStrategySpeedFirstLatencyRuntimeItem[]
 }
 
+// 调度偏好配置（历史命名 normalRoutingConfig）：自调度偏好通用化起由 normal/weighted/failover/round_robin 四种模式共享；hybrid_smart 恒不返回该配置。
 export type RouteStrategyNormalRoutingConfig =
   | {
       schedulingPreference: 'cost_first'

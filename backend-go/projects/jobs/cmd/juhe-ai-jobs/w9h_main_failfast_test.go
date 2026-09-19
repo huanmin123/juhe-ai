@@ -33,7 +33,8 @@ func TestW9HMainFailFastArms(t *testing.T) {
 		{"runtime-once-unsupported", map[string]string{"JUHE_AI_RUNTIME_LOG_ONCE": "true"}},
 		{"table-monitor-store-invalid", map[string]string{"JUHE_AI_TABLE_MONITOR_STORE": "bogus-store"}},
 		// J1 开启但 owner 未声明为 go → accounthealth.LoadConfig 失败。
-		{"account-health-owner-missing", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": ""}},
+		// OWNER 缺省视为 go（不再报错）；显式非 go 值仍 fail-fast。
+		{"account-health-owner-not-go", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "node"}},
 		// model-recovery 开启（Redis state）但 J1 输入源是 files（无 reader）。
 		{"model-recovery-without-reader", map[string]string{
 			"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/9",

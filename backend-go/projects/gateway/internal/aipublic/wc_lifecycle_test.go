@@ -283,8 +283,10 @@ func TestWCStrategyValidation(t *testing.T) {
 	if strategy["mode"] != "weighted" || strategy["status"] != "disabled" || strategy["description"] != nil {
 		t.Fatalf("加权策略投影: %v", strategy)
 	}
-	if strategy["normalRoutingConfig"] != nil {
-		t.Fatalf("非 normal 模式不得渲染 normal 配置: %v", strategy["normalRoutingConfig"])
+	// weighted 与 normal 同属调度偏好转发的四种模式：渲染 cost_first 默认。
+	weightedConfig, ok := strategy["normalRoutingConfig"].(map[string]any)
+	if !ok || weightedConfig["schedulingPreference"] != "cost_first" {
+		t.Fatalf("weighted 模式渲染默认 normal 配置: %v", strategy["normalRoutingConfig"])
 	}
 	strategyID := strategy["id"].(string)
 

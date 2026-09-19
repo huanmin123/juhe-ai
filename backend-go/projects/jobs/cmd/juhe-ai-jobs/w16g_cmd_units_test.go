@@ -70,7 +70,6 @@ func TestW16GRetentionOpenDualAndCodexArms(t *testing.T) {
 	root := t.TempDir()
 	retentionConfig := func(mutate func(config *workerConfig)) workerConfig {
 		config := workerConfig{
-			Enabled:                     true,
 			Driver:                      "sqlite",
 			InstanceID:                  "w16g-retention",
 			RetentionEnabled:            true,
@@ -179,7 +178,6 @@ func TestW16GRetentionRecordMaintenanceViewConflictArm(t *testing.T) {
 	businessPath := filepath.Join(root, "business.sqlite3")
 	w16gCreateView(t, businessPath, "record_maintenance_jobs")
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled:                     true,
 		Driver:                      "sqlite",
 		InstanceID:                  "w16g-retention-view",
 		RetentionEnabled:            true,
@@ -222,7 +220,6 @@ func TestW16GPGBadURLWireFamilyArms(t *testing.T) {
 	for _, family := range families {
 		t.Run(family.name, func(t *testing.T) {
 			config := workerConfig{
-				Enabled:                true,
 				Driver:                 "postgres",
 				InstanceID:             "w16g-pg",
 				PostgresURL:            "",
@@ -248,7 +245,6 @@ func TestW16GPGBadURLWireFamilyArms(t *testing.T) {
 func TestW16GSQLiteBadPathArms(t *testing.T) {
 	t.Run("oauth 业务库打开失败", func(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
-			Enabled:            true,
 			Driver:             "sqlite",
 			InstanceID:         "w16g-oauth",
 			OAuthEnabled:       true,
@@ -262,7 +258,6 @@ func TestW16GSQLiteBadPathArms(t *testing.T) {
 	})
 	t.Run("usage-writer 业务库打开失败", func(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
-			Enabled:                true,
 			Driver:                 "sqlite",
 			InstanceID:             "w16g-usage",
 			UsageWriterEnabled:     true,
@@ -277,7 +272,6 @@ func TestW16GSQLiteBadPathArms(t *testing.T) {
 	})
 	t.Run("probe 业务库打开失败", func(t *testing.T) {
 		assembly := newWorkerAssembly(workerConfig{
-			Enabled:            true,
 			Driver:             "sqlite",
 			InstanceID:         "w16g-probe",
 			ProbeEnabled:       true,
@@ -296,7 +290,6 @@ func TestW16GViewConflictAndCancelledCtxArms(t *testing.T) {
 		businessPath := filepath.Join(t.TempDir(), "business.sqlite3")
 		w16gCreateView(t, businessPath, "account_api_key_runtime_states")
 		assembly := newWorkerAssembly(workerConfig{
-			Enabled:            true,
 			Driver:             "sqlite",
 			InstanceID:         "w16g-probe-view",
 			ProbeEnabled:       true,
@@ -321,7 +314,6 @@ func TestW16GViewConflictAndCancelledCtxArms(t *testing.T) {
 		catalogPath := filepath.Join(t.TempDir(), "catalog.sqlite3")
 		w16gCreateView(t, catalogPath, "usage_record_shards")
 		assembly := newWorkerAssembly(workerConfig{
-			Enabled:                true,
 			Driver:                 "sqlite",
 			InstanceID:             "w16g-usage-view",
 			UsageWriterEnabled:     true,
@@ -343,7 +335,6 @@ func TestW16GViewConflictAndCancelledCtxArms(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		assembly := newWorkerAssembly(workerConfig{
-			Enabled:            true,
 			Driver:             "sqlite",
 			InstanceID:         "w16g-stats-ctx",
 			StatsEnabled:       true,
@@ -378,7 +369,6 @@ func TestW16GBalanceDetectSnapshotTableMissingArm(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = leaseStore.Close() })
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled:              true,
 		Driver:               "sqlite",
 		InstanceID:           "w16g-balance",
 		BalanceDetectEnabled: true,
@@ -523,7 +513,6 @@ func TestW16GWireHealthOutcomeProjectorStatsMarkerArm(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = statsStore.Close() })
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled:            true,
 		Driver:             "sqlite",
 		InstanceID:         "w16g-projection-health",
 		BusinessSQLitePath: businessPath,
@@ -551,7 +540,6 @@ func TestW16GHealthOutboxArms(t *testing.T) {
 		businessPath := filepath.Join(root, "view-business.sqlite3")
 		w16gCreateView(t, businessPath, "account_health_probe_request_outbox")
 		assembly := newWorkerAssembly(workerConfig{
-			Enabled:            true,
 			Driver:             "sqlite",
 			InstanceID:         "w16g-face-view",
 			BusinessSQLitePath: businessPath,
@@ -567,7 +555,6 @@ func TestW16GHealthOutboxArms(t *testing.T) {
 		seedProbeCoreTables(t, businessPath)
 		w16dCreateJ1FixtureTables(t, fixture)
 		config := workerConfig{
-			Enabled:            true,
 			Driver:             "sqlite",
 			InstanceID:         "w16g-face",
 			BusinessSQLitePath: businessPath,
@@ -683,7 +670,6 @@ func TestW16GCircuitResolveArms(t *testing.T) {
 func TestW16GCircuitControlPlaneNilDBArm(t *testing.T) {
 	// 控制面仓储构造缺少业务库句柄（Redis 合法、业务库 nil → NewControlPlaneRepo 失败）。
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled:        true,
 		Driver:         "sqlite",
 		InstanceID:     "w16g-circuit-nil",
 		RedisStateURL:  "redis://127.0.0.1:1",
@@ -701,7 +687,6 @@ func TestW16GProbeFamilyCircuitErrorArm(t *testing.T) {
 	businessPath := filepath.Join(root, "business.sqlite3")
 	seedProbeCoreTables(t, businessPath)
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled:            true,
 		Driver:             "sqlite",
 		InstanceID:         "w16g-probe-circuit",
 		ProbeEnabled:       true,
@@ -744,7 +729,6 @@ func TestW16GProbeRecoveryRedisClosedArm(t *testing.T) {
 
 func TestW16GConfigProbePathAndScanNullTimeArms(t *testing.T) {
 	env := map[string]string{
-		"JUHE_AI_JOBS_WORKER_ENABLED":         "true",
 		"JUHE_AI_DATABASE_DRIVER":             "sqlite",
 		"JUHE_AI_JOBS_PROBE_ENABLED":          "true",
 		"JUHE_AI_JOBS_STATS_ENABLED":          "false",

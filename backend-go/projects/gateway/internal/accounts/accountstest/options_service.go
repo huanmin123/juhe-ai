@@ -725,7 +725,7 @@ func (s *Service) ProtocolProviderCodes(ctx context.Context, protocolCode, proto
 // test-catalog reads (active + visible + not shutdown).
 func (s *Service) testCatalogAvailability() string {
 	return ` AND status = 'active'
-		AND catalog_visible = 1
+		AND CAST(catalog_visible AS integer) = 1
 		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ` + s.TestTodayText() + `)`
 }
 

@@ -336,6 +336,8 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Logger:                  chainCacheEventLogger{inner: slog.Default()},
 		UpdateAgeOnGet:          cfg.RuntimeMode == "standalone",
 		SyncInvalidationsOnRead: redisState,
+		// 2026-09-18 热路径加固：跨实例失效同步合并窗口（0 恢复逐读同步）。
+		SyncMinIntervalMs: cfg.RuntimeInvalidationSyncMinIntervalMs,
 		// D-110: the dynamic group-binding orderer seam (nil would keep the
 		// stored binding order for every dynamic strategy mode).
 		Orderer: newChainGroupBindingOrderer(routeSelector),
@@ -563,13 +565,16 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	// memory 驱动才可用，redis 驱动按 canUseProcessLocal=false 全量直通），
 	// 恢复等待引擎复用同一 wait coordinator 语义。并发投影挂共享计数器的
 	// total 账户并发（Node getAccountCurrentConcurrency）。
+	// R4：CircuitSuppressionDelayLadderMs 为测试注入点；nil 保持生产阶梯
+	// 3000/5000/10000（NewLocalSuppressionStore 内部回落默认），生产行为不变。
 	suppressionWaiter := gatewaycircuit.NewPreAuthRecoverableWait(nil, chainCircuitWaitLogger{inner: slog.Default()})
 	services.SuppressionWaiter = suppressionWaiter
 	services.SuppressionStore = gatewaycircuit.NewLocalSuppressionStore(gatewaycircuit.LocalSuppressionStoreOptions{
 		AccountConcurrency: func(concurrencyAccountID string) int {
 			return concurrencyTracker.CurrentAccountConcurrency(concurrencyAccountID, "")
 		},
-		Logger: chainSuppressionLogger{},
+		Logger:        chainSuppressionLogger{},
+		DelayLadderMs: cfg.CircuitSuppressionDelayLadderMs,
 	})
 
 	// D-136：上游桶健康服务（Node proxy-health.service.ts 单例 fork；

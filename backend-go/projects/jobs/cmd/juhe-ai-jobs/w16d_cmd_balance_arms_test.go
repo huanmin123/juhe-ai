@@ -414,7 +414,7 @@ func TestW16DBalanceEnsureSnapshotsTableArms(t *testing.T) {
 func w16dSQLiteAssemblyConfig(t *testing.T, mutate func(*workerConfig)) workerConfig {
 	root := t.TempDir()
 	config := workerConfig{
-		Enabled: true, Driver: "sqlite", InstanceID: "w16d-assembly",
+		Driver: "sqlite", InstanceID: "w16d-assembly",
 		WorkerRole:                  "worker",
 		Secret:                      "0123456789abcdef0123456789abcdef",
 		BusinessSQLitePath:          filepath.Join(root, "business.sqlite3"),
@@ -499,7 +499,7 @@ func TestW16DWireBalanceDetectFamilyArms(t *testing.T) {
 	// openBusinessDB 失败臂（postgres 坏 URL；791-793）。需先过 secret 与
 	// 租约存储门禁才能触达业务库打开。
 	pgAssembly := newWorkerAssembly(workerConfig{
-		Enabled: true, Driver: "postgres", PostgresURL: "pgx://w16d-invalid",
+		Driver: "postgres", PostgresURL: "pgx://w16d-invalid",
 		BalanceDetectEnabled: true, Secret: "0123456789abcdef0123456789abcdef",
 	}, slog.Default())
 	pgAssembly.taskRunsStore = w16dOpenTaskRunsStore(t)
@@ -525,7 +525,7 @@ func TestW16DWireBalanceDetectFamilyArms(t *testing.T) {
 		}
 	}
 	assembly := newWorkerAssembly(workerConfig{
-		Enabled: true, Driver: "sqlite", InstanceID: "w16d-balance",
+		Driver: "sqlite", InstanceID: "w16d-balance",
 		BusinessSQLitePath: businessPath,
 		StatsSQLitePath:    filepath.Join(root, "stats-no-snapshots.sqlite3"),
 		TaskRunsSQLitePath: filepath.Join(root, "task-runs.sqlite3"),

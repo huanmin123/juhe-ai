@@ -332,10 +332,10 @@ func TestParseProbeOutboxRetentionDays(t *testing.T) {
 	}
 }
 
-// TestWireHealthProbeOutboxFaceWithoutJ1StillWiresPruner：J1 关闭（合法部署
-// 形态）时 drain 保持未装配，prune 仍装配——J1 关闭部署的 pending 堆积由
-// 保留期删除兜底。
-func TestWireHealthProbeOutboxFaceWithoutJ1StillWiresPruner(t *testing.T) {
+// TestWireHealthProbeOutboxFaceWiresDrainAndPruner：恒开终态下 drain 与
+// pruner 恒装配（无 J1 门控缺席路径）；pruner 默认保留期/间隔与空表 pruneOnce
+// 均可用。
+func TestWireHealthProbeOutboxFaceWiresDrainAndPruner(t *testing.T) {
 	assembly := &workerAssembly{
 		config: workerConfig{Driver: "sqlite", BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3")},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -344,11 +344,12 @@ func TestWireHealthProbeOutboxFaceWithoutJ1StillWiresPruner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wire face: %v", err)
 	}
-	if face.drain != nil {
-		t.Fatal("J1 disabled must keep the drain unwired")
+	t.Cleanup(assembly.closeStores)
+	if face.drain == nil {
+		t.Fatal("drain must stay wired under always-on semantics")
 	}
 	if face.pruner == nil {
-		t.Fatal("pruner must stay wired without J1")
+		t.Fatal("pruner must stay wired")
 	}
 	if face.pruner.retention != time.Duration(defaultProbeOutboxRetentionDays)*24*time.Hour {
 		t.Fatalf("pruner retention = %s", face.pruner.retention)
@@ -359,7 +360,6 @@ func TestWireHealthProbeOutboxFaceWithoutJ1StillWiresPruner(t *testing.T) {
 	if _, err := face.pruner.pruneOnce(context.Background(), time.Now()); err != nil {
 		t.Fatalf("pruneOnce on wired face: %v", err)
 	}
-	assembly.closeStores()
 }
 
 func TestHealthProbeBoundaryReadsJ1Facts(t *testing.T) {

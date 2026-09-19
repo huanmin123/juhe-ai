@@ -22,7 +22,6 @@ func newScheduleTestAssembly(t *testing.T) *workerAssembly {
 	t.Helper()
 	return &workerAssembly{
 		config: workerConfig{
-			Enabled:    true,
 			Driver:     "sqlite",
 			WorkerRole: "stats-worker",
 		},

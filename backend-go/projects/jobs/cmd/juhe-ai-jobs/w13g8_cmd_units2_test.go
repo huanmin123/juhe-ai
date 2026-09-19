@@ -29,8 +29,7 @@ import (
 // 范围校验与解析失败臂。
 func TestW13G8LoadWorkerConfigRemainingArms(t *testing.T) {
 	base := map[string]string{
-		"JUHE_AI_JOBS_WORKER_ENABLED": "true",
-		"JUHE_AI_DATABASE_PATH":       filepath.Join(t.TempDir(), "business.sqlite3"),
+		"JUHE_AI_DATABASE_PATH": filepath.Join(t.TempDir(), "business.sqlite3"),
 	}
 	for _, test := range []struct {
 		name     string

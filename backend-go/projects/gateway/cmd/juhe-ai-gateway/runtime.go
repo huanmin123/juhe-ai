@@ -132,6 +132,11 @@ type runtimeConfig struct {
 	// [1, 1_000_000]). D-147：chain_compose 曾硬传 (0,0) 使该 env 与
 	// JUHE_AI_CONCURRENCY_GLOBAL_MAX 对收尾队列失效。
 	UsageFinalizationMaxItems int
+	// RuntimeInvalidationSyncMinIntervalMs 合并 runtime 读前跨实例失效版本
+	// 同步（JUHE_AI_RUNTIME_INVALIDATION_SYNC_MIN_INTERVAL_MS，默认 100，
+	// [0, 60_000]；0 恢复逐读同步契约）。单实例部署无感知：自身失效在发布时
+	// 已采纳到本地计数，只有跨实例传播观察窗口。
+	RuntimeInvalidationSyncMinIntervalMs int
 
 	// UpstreamURLSecurity mirrors Node runtimeConfig.upstreamUrlSecurity
 	// (runtime.ts:1679-1690): JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS
@@ -176,6 +181,25 @@ type runtimeConfig struct {
 	// FrontendDistPath is the frontend dist directory backing the
 	// /__aisys__/help static surface (Node derives it from backendRoot).
 	FrontendDistPath string
+
+	// CircuitSuppressionDelayLadderMs is the R4 test injection point for the
+	// local account suppression backoff ladder
+	// (gatewaycircuit.LocalSuppressionStoreOptions.DelayLadderMs). nil keeps
+	// the production ladder (3000/5000/10000ms) — default behaviour is
+	// production behaviour. Deliberately not env-backed: tests assign the
+	// field directly on a constructed cfg; operators have no reason to move a
+	// production availability contract.
+	CircuitSuppressionDelayLadderMs []int64
+
+	// UpstreamRetryBackoffDelaysMs is the R4 test injection point for the
+	// dispatch attempt-loop backoff caps
+	// (gatewaydispatch.EngineConfig.UpstreamRetryBackoffDelaysMs：capacity
+	// queued 1000ms / capacity plain 500ms / recoverable wait 3000ms 的语义位
+	// 数组). nil keeps the production hardcoded caps — default behaviour is
+	// production behaviour. Deliberately not env-backed: tests assign the
+	// field directly on a constructed cfg; operators have no reason to move a
+	// production availability retry cadence.
+	UpstreamRetryBackoffDelaysMs []int64
 
 	// Runtime-logs grep surface (X04 404 项补齐): Node runtimeConfig.log
 	// fields the grep family reads (JUHE_AI_LOG_DIR / JUHE_AI_LOG_FILE_ENABLED
@@ -593,6 +617,17 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 			return runtimeConfig{}, parsedErr
 		}
 		cfg.UsageFinalizationMaxItems = parsed
+	}
+	// 2026-09-18 热路径加固：runtime 读前跨实例失效同步合并窗口（redis
+	// 运行态驱动下每请求两次 GET → 每窗口至多一次）。默认 100ms；0 恢复
+	// 逐读同步契约。
+	cfg.RuntimeInvalidationSyncMinIntervalMs = 100
+	if raw := strings.TrimSpace(getenv("JUHE_AI_RUNTIME_INVALIDATION_SYNC_MIN_INTERVAL_MS")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_RUNTIME_INVALIDATION_SYNC_MIN_INTERVAL_MS", raw, 0, 60_000)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.RuntimeInvalidationSyncMinIntervalMs = parsed
 	}
 	// D-192/D-146：上游 URL 安全配置（Node runtimeConfig.upstreamUrlSecurity，
 	// runtime.ts:1679-1712）。allowPrivateBaseUrls 在生产信号下启动即失败；

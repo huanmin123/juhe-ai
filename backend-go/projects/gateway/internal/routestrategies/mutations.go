@@ -313,8 +313,16 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 			return nil, configErr
 		}
 		nextJSON := routeStrategyConfigJSON(nextNormal, nextHybrid)
+		// The current projection keys the scheduling config off
+		// ModeSupportsSchedulingPreference — normal/weighted/failover/round_robin
+		// all own normalRoutingConfig now (typedToRaw(nil) stays nil); only the
+		// hybrid side still goes through rawForMode.
+		currentNormalRaw := any(nil)
+		if ModeSupportsSchedulingPreference(current.mode) {
+			currentNormalRaw = typedToRaw(currentNormal)
+		}
 		currentJSON, jsonErr := routeStrategyConfigJSONFromRaw(
-			rawForMode(current.mode, ModeNormal, currentNormal),
+			currentNormalRaw,
 			rawForMode(current.mode, ModeHybridSmart, currentHybrid))
 		if jsonErr != nil {
 			return nil, jsonErr
@@ -351,14 +359,14 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	bindingsChanged := false
 	var beforeBindings []GroupBinding
 	if input.HasBindings || input.Mode != nil {
-			currentBindings, loadErr := s.loadBindings(ctx, tx, []string{id})
-			if loadErr != nil {
-				return nil, loadErr
-			}
-			beforeBindings = currentBindings[id]
-			currentWrites := bindingWritesFromSummaries(beforeBindings)
-			if input.HasBindings {
-				normalized, normalizeErr := s.normalizeBindings(ctx, tx, input.Bindings, current.systemAccountID, true)
+		currentBindings, loadErr := s.loadBindings(ctx, tx, []string{id})
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		beforeBindings = currentBindings[id]
+		currentWrites := bindingWritesFromSummaries(beforeBindings)
+		if input.HasBindings {
+			normalized, normalizeErr := s.normalizeBindings(ctx, tx, input.Bindings, current.systemAccountID, true)
 			if normalizeErr != nil {
 				return nil, normalizeErr
 			}
@@ -443,10 +451,14 @@ func (s *Store) Patch(ctx context.Context, id string, input MutationInput, expec
 	}, nil
 }
 
-// normalInput mirrors the config recompute input selection: the current
-// config feeds forward when the mode keeps it and no new value arrived.
+// normalInput mirrors the config recompute input selection: hybrid_smart never
+// carries the scheduling preference (explicit input reaches the validator for
+// 混合智能路由不支持调度偏好, absent input stays nil), while the preference-carrying
+// modes (normal/weighted/failover/round_robin) feed the current config forward
+// when no new value arrived — patches keep the scheduling config across mode
+// switches inside that group.
 func (m MutationInput) normalInput(mode string, currentNormal *NormalRoutingConfig) any {
-	if mode != ModeNormal {
+	if mode == ModeHybridSmart {
 		if m.HasNormalConfig {
 			return m.NormalConfigRaw
 		}
@@ -471,8 +483,10 @@ func (m MutationInput) hybridInput(mode string, currentHybrid *HybridRoutingConf
 	return typedToRaw(currentHybrid)
 }
 
-// rawForMode passes the current config raw through only when the stored mode
-// owns it (routeStrategyConfigJson current projection).
+// rawForMode passes the current hybrid config raw through only when the stored
+// mode is hybrid_smart; the Patch hybrid side is the function's only remaining
+// call site (the normal side keys off ModeSupportsSchedulingPreference
+// directly).
 func rawForMode(rowMode string, wantedMode string, value any) any {
 	if rowMode != wantedMode {
 		return nil

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
 // DriverID mirrors the Node driver id.
@@ -142,7 +142,7 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 		sourceFamily := input.ModelMapping.SourceEndpointFamily
 		upstreamFamily := input.ModelMapping.UpstreamEndpointFamily
 		if sourceFamily != "" && upstreamFamily != "" && sourceFamily != upstreamFamily &&
-			openaicompat.IsCrossProtocolBridgeRequired(sourceFamily, upstreamFamily) {
+			openaicompatbridge.IsCrossProtocolBridgeRequired(sourceFamily, upstreamFamily) {
 			bridgeRoot, ok := parsedBody.(map[string]any)
 			if !ok {
 				var decodeErr error
@@ -154,7 +154,7 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 					}
 				}
 			}
-			bridgeBody, err := openaicompat.BuildBridgeRequestBody(sourceFamily, upstreamFamily, bridgeRoot, openaicompat.BridgeRequestBodyOptions{
+			bridgeBody, err := openaicompatbridge.BuildBridgeRequestBody(sourceFamily, upstreamFamily, bridgeRoot, openaicompatbridge.BridgeRequestBodyOptions{
 				ModelOverride:      upstreamModel,
 				TargetPathAndQuery: input.ClientPathAndQuery,
 				Stream:             stream,
@@ -175,7 +175,7 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 
 	upstreamPathAndQuery := input.ClientPathAndQuery
 	if input.ModelMapping != nil {
-		if rewritten, ok := modelMappedUpstreamPathAndQuery(input.ClientPathAndQuery, input.ModelMapping); ok {
+		if rewritten, ok := ModelMappedUpstreamPathAndQuery(input.ClientPathAndQuery, input.ModelMapping); ok {
 			upstreamPathAndQuery = rewritten
 		}
 	}
@@ -274,11 +274,11 @@ func (errBridgeBodyObject) Error() string { return "bridge body must be a JSON o
 // its message under the mapping conversion code (the D-149 raise point),
 // everything else keeps the code.
 func bridgeBuildError(err error) error {
-	var guidanceErr *openaicompat.BridgeGuidanceError
+	var guidanceErr *openaicompatbridge.BridgeGuidanceError
 	if errors.As(err, &guidanceErr) {
 		return err
 	}
-	bridgeErr, ok := err.(*openaicompat.BridgeRequestError)
+	bridgeErr, ok := err.(*openaicompatbridge.BridgeRequestError)
 	if !ok {
 		return &gatewayproto.BuildUpstreamError{
 			Code:    gatewayproto.ErrCodeUnsupportedModelMappingConversion,

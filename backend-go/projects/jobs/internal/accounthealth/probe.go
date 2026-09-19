@@ -3,6 +3,8 @@ package accounthealth
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,9 +24,48 @@ import (
 
 const (
 	probeChallenge      = "juhe"
-	probeInstructions   = "You are ChatGPT, a helpful assistant."
 	defaultMaxBodyBytes = int64(256 * 1024)
 )
+
+// probeInstructionsPool 是 responses 形态 system instructions 的轮换池：
+// 池首保留历史原值，其余为 OpenAI 生态常见无害 system 指令。轮换池消除
+// 单一固定指纹（上游风控按固定报文指纹封号）。
+var probeInstructionsPool = [...]string{
+	"You are ChatGPT, a helpful assistant.",
+	"You are ChatGPT, a large language model trained by OpenAI.",
+	"You are a helpful assistant.",
+	"You are a helpful AI assistant.",
+	"You are an AI assistant.",
+}
+
+// challengeDigits 返回 3~6 位随机数字，追加在挑战词后打散固定报文指纹。
+// crypto/rand 读取失败时回退时间熵：降级仅影响随机性，不影响验证语义
+// （验证只宽松匹配挑战词，不要求包含后缀）。与 platform 包
+// accounttest/accountprobe 的挑战报文实现是有意保持的独立副本——两包报文
+// 历史上各自独立（direct_input.go 已有的 accountprobe import 不为此扩展），
+// 不为此新增跨包 API 依赖。
+func challengeDigits() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		binary.LittleEndian.PutUint64(buf, uint64(time.Now().UnixNano()))
+	}
+	length := 3 + int(buf[0]&0x03)
+	digits := make([]byte, length)
+	for i := range digits {
+		digits[i] = '0' + buf[i+1]%10
+	}
+	return string(digits)
+}
+
+// pickProbeInstructions 用 crypto/rand 从轮换池随机选一条（len 取模）；
+// 读取失败时回退池首历史原值，不影响验证语义。
+func pickProbeInstructions() string {
+	var index [1]byte
+	if _, err := rand.Read(index[:]); err != nil {
+		return probeInstructionsPool[0]
+	}
+	return probeInstructionsPool[int(index[0])%len(probeInstructionsPool)]
+}
 
 type ProbeOptions struct {
 	Secret           string
@@ -35,7 +76,11 @@ type ProbeOptions struct {
 
 // ProbeOpenAI executes one frozen direct probe. The historical exported name is
 // retained for callers, but dispatches by the signed protocol profile rather
-// than assuming every account speaks OpenAI v1.
+// than assuming every account speaks OpenAI v1. "Frozen" covers the protocol
+// wire shape only: since 2026-09 the challenge text, image prompt and system
+// instructions are deliberately randomized per request because upstream risk
+// control bans fixed payload fingerprints; verification stays a loose
+// "contains juhe" check and never requires the random suffix.
 func ProbeOpenAI(ctx context.Context, input Input, credential CredentialEnvelope, options ProbeOptions) ProbeResult {
 	if err := validateInput(input, options); err != nil {
 		return taskFailure("invalid_input", err.Error())
@@ -185,13 +230,19 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	protocol := directProbeProtocolForMode(input.ProtocolProfileID, input.Provider, input.EndpointMode)
 	path := ""
 	method := http.MethodPost
+	// 请求侧报文随机化：挑战词带 3~6 位随机数字后缀，responses 形态的
+	// system 指令从轮换池随机选取。验证侧只宽松匹配挑战词，不回读请求，
+	// 也不要求包含随机后缀。
+	challengeSuffix := challengeDigits()
+	challengePrompt := "只能回复：" + probeChallenge + challengeSuffix
+	instructions := pickProbeInstructions()
 	var body any
 	switch input.EndpointMode {
 	case "chat_json", "chat_sse":
 		path = "/v1/chat/completions"
 		body = map[string]any{
 			"model":      input.HealthModel,
-			"messages":   []map[string]any{{"role": "user", "content": "只能回复：juhe"}},
+			"messages":   []map[string]any{{"role": "user", "content": challengePrompt}},
 			"max_tokens": 256,
 			"stream":     input.EndpointMode == "chat_sse",
 		}
@@ -202,8 +253,8 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		}
 		body = map[string]any{
 			"model":             input.HealthModel,
-			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "只能回复：juhe"}}}},
-			"instructions":      probeInstructions,
+			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
+			"instructions":      instructions,
 			"max_output_tokens": 256,
 			"stream":            false,
 		}
@@ -217,8 +268,8 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		}
 		body = map[string]any{
 			"model":             input.HealthModel,
-			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "只能回复：juhe"}}}},
-			"instructions":      probeInstructions,
+			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
+			"instructions":      instructions,
 			"max_output_tokens": 256,
 			"stream":            true,
 		}
@@ -226,7 +277,7 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		path = "/v1/images/generations"
 		body = map[string]any{
 			"model":              input.HealthModel,
-			"prompt":             "Solid black.",
+			"prompt":             "Solid black. " + challengeSuffix,
 			"n":                  1,
 			"size":               "1024x1024",
 			"quality":            "low",
@@ -238,7 +289,7 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		body = map[string]any{
 			"model":      input.HealthModel,
 			"max_tokens": 256,
-			"messages":   []map[string]any{{"role": "user", "content": "只能回复：juhe"}},
+			"messages":   []map[string]any{{"role": "user", "content": challengePrompt}},
 			"stream":     input.EndpointMode == "messages_sse",
 		}
 	case "generate_content_json", "generate_content_sse":
@@ -248,14 +299,14 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			path = "/v1beta/models/" + url.PathEscape(model) + ":streamGenerateContent?alt=sse"
 		}
 		body = map[string]any{
-			"contents":         []map[string]any{{"role": "user", "parts": []map[string]any{{"text": "只能回复：juhe"}}}},
+			"contents":         []map[string]any{{"role": "user", "parts": []map[string]any{{"text": challengePrompt}}}},
 			"generationConfig": map[string]any{"maxOutputTokens": 256},
 		}
 	case "interactions_json", "interactions_sse":
 		path = "/v1beta/interactions"
 		body = map[string]any{
 			"model":  input.HealthModel,
-			"input":  "只能回复：juhe",
+			"input":  challengePrompt,
 			"stream": input.EndpointMode == "interactions_sse",
 		}
 	default:
@@ -427,8 +478,12 @@ func parseBaseURL(raw string, allowInsecure bool) (*url.URL, error) {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("base URL 无效")
 	}
-	if parsed.Scheme != "https" && !(allowInsecure && parsed.Scheme == "http") {
-		return nil, errors.New("base URL 必须使用 HTTPS")
+	// 2026-09-19 用户决策（PLAN-20260919T000723744Z E2E 后续）：J1 探活
+	// 同时允许 http 与 https 上游——dev/mock 上游为纯 HTTP，HTTPS-only
+	// 会让额度/临时不可调用账户的 J1 自动恢复结构性失效。探针凭据按
+	// base_url scheme 发送，部署方应确保上游地址处于可信网络。
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return nil, errors.New("base URL 必须使用 http 或 https")
 	}
 	return parsed, nil
 }

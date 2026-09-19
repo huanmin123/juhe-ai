@@ -362,6 +362,10 @@ func main() {
 			fail(fmt.Errorf("listen J3b Gateway management endpoint %q: %w", managementAddress, listenErr))
 		}
 		defer j3bManagementListener.Close()
+		// 注意：该 server 先于 gatewayusage.SetAuditCapturedDroppedTotal 注入
+		// （main 下方）启动，但其 mux 只挂 /auth/ 与 model-checks 族，不含
+		// /__aisys__/metrics——若未来把 metrics 挂上该 mux，注入顺序即成为
+		// 真竞争，必须把注入移到本 Serve 之前。
 		j3bManagementServer = &http.Server{Handler: managementMux, ReadHeaderTimeout: 5 * time.Second}
 		j3bManagementServeErr = make(chan error, 1)
 		go func() { j3bManagementServeErr <- j3bManagementServer.Serve(j3bManagementListener) }()
@@ -406,6 +410,9 @@ func main() {
 	// The F3 producer is the process-wide chain audit sink; it shares the
 	// audit lease above and only extends it per record.
 	auditProducer := auditlog.NewProducer(auditStore, auditLease.Lease(), auditConfig, producerLogger{})
+	// Queue-saturation drops become a Prometheus gauge seam (before Serve, so
+	// the write happens before any scrape goroutine reads it).
+	gatewayusage.SetAuditCapturedDroppedTotal(auditProducer.DroppedTotal)
 	operationConfig, err := operationlog.LoadConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load F4 operation-log config: %w", err))

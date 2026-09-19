@@ -188,15 +188,16 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 		return
 	}
 	// summarizeRouteStrategySpeedFirstLatencyRuntimeAsync: one batched runtime
-	// read per page; only speed_first normal rows carry the summary. Runtime
+	// read per page; only speed_first rows carry the summary. Runtime
 	// store failures never fail the list (Node renders them unavailable).
 	d.enrichSpeedFirstSummaries(r.Context(), result.Items)
 	kernel.WriteOK(w, result, "")
 }
 
-// isNormalSpeedFirstRouteStrategy mirrors the facade predicate.
-func isNormalSpeedFirstRouteStrategy(mode string, normal *NormalRoutingConfig) bool {
-	return mode == ModeNormal && normal != nil && normal.SchedulingPreference == "speed_first"
+// isSpeedFirstRouteStrategy mirrors the facade predicate: speed_first applies
+// to every mode that supports the scheduling preference.
+func isSpeedFirstRouteStrategy(mode string, normal *NormalRoutingConfig) bool {
+	return ModeSupportsSchedulingPreference(mode) && normal != nil && normal.SchedulingPreference == "speed_first"
 }
 
 // enrichSpeedFirstSummaries mirrors summarizeRouteStrategySpeedFirstLatencyRuntimeAsync:
@@ -208,7 +209,7 @@ func (d *Deps) enrichSpeedFirstSummaries(ctx context.Context, list []ListItem) {
 	}
 	speedFirstIDs := make([]string, 0, len(list))
 	for _, item := range list {
-		if isNormalSpeedFirstRouteStrategy(item.Mode, item.NormalRoutingConfig) {
+		if isSpeedFirstRouteStrategy(item.Mode, item.NormalRoutingConfig) {
 			speedFirstIDs = append(speedFirstIDs, item.ID)
 		}
 	}
@@ -218,7 +219,7 @@ func (d *Deps) enrichSpeedFirstSummaries(ctx context.Context, list []ListItem) {
 	unavailable := &SpeedFirstRuntimeSummary{RuntimeAvailable: false, DegradedCount: 0}
 	if len(speedFirstIDs) > 50 {
 		for index := range list {
-			if isNormalSpeedFirstRouteStrategy(list[index].Mode, list[index].NormalRoutingConfig) {
+			if isSpeedFirstRouteStrategy(list[index].Mode, list[index].NormalRoutingConfig) {
 				list[index].SpeedFirstLatency = unavailable
 			}
 		}
@@ -227,7 +228,7 @@ func (d *Deps) enrichSpeedFirstSummaries(ctx context.Context, list []ListItem) {
 	items, available, err := d.Store.speedFirst.ListDegradedRuntime(ctx, nil, speedFirstIDs)
 	if err != nil || !available {
 		for index := range list {
-			if isNormalSpeedFirstRouteStrategy(list[index].Mode, list[index].NormalRoutingConfig) {
+			if isSpeedFirstRouteStrategy(list[index].Mode, list[index].NormalRoutingConfig) {
 				list[index].SpeedFirstLatency = unavailable
 			}
 		}
@@ -235,7 +236,7 @@ func (d *Deps) enrichSpeedFirstSummaries(ctx context.Context, list []ListItem) {
 	}
 	counts := speedFirstDegradedCounts(items)
 	for index := range list {
-		if isNormalSpeedFirstRouteStrategy(list[index].Mode, list[index].NormalRoutingConfig) {
+		if isSpeedFirstRouteStrategy(list[index].Mode, list[index].NormalRoutingConfig) {
 			list[index].SpeedFirstLatency = &SpeedFirstRuntimeSummary{
 				RuntimeAvailable: true,
 				DegradedCount:    counts[list[index].ID],
@@ -334,7 +335,7 @@ func (d *Deps) speedFirstRuntime(w http.ResponseWriter, r *http.Request, access 
 		"degradedCount":    0,
 		"items":            []any{},
 	}
-	if isNormalSpeedFirstRouteStrategy(detail.Mode, detail.NormalRoutingConfig) {
+	if isSpeedFirstRouteStrategy(detail.Mode, detail.NormalRoutingConfig) {
 		ownerID := detail.SystemAccountID
 		items, available, runtimeErr := d.Store.speedFirst.ListDegradedRuntime(r.Context(), ownerID, []string{detail.ID})
 		payload["enabled"] = true

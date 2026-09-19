@@ -895,6 +895,12 @@ func chainSmokeDeps(t *testing.T, fixture *chainFixture, clock gatewaypreauth.Cl
 			gatewaycircuit.NewWaitCoordinator(gatewaycircuit.WaitCoordinatorOptions{}),
 			chainTestWaitLogger{t: t},
 		),
+		// R4：组合冒烟链注入短上游重试退避（capacity queued / capacity plain
+		// / recoverable wait / same-account retry 四语义位）。生产链
+		//（compose.go）保持 nil=生产值；httptest 失败重试场景不再各睡
+		// 1000/500/3000ms 与 settings 推导的同账户重试间隔——语义位只压等待
+		// 时长，不改重试轮次与断言契约（ServerRetryBudget 仍封顶总等待）。
+		UpstreamRetryBackoffDelaysMs: []int64{5, 5, 5, 5},
 	}
 }
 

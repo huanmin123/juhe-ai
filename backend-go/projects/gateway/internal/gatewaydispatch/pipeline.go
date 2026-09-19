@@ -123,6 +123,7 @@ func (p *CandidatePipeline) ResolveNextGroupFallbackCandidate(ctx context.Contex
 		RequestClientCompatibility: input.RequestClientCompatibility,
 		ExcludedAccountIDs:         input.ExcludedAccountIDs,
 		RoutePlanSnapshot:          &input.RoutePlanSnapshot,
+		AuditCapture:               input.AuditCapture,
 	})
 	if err != nil || !found {
 		return gatewaypreauth.GroupFallbackCandidate{}, found, err

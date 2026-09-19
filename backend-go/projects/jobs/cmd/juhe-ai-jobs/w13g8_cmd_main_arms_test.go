@@ -114,12 +114,10 @@ func w13g8GarbageRuntimeEnv(t *testing.T) map[string]string {
 	return env
 }
 
-// w13g8PassiveEnv 构造 standby passive 模式 env（无 worker/J1，轻量）。
+// w13g8PassiveEnv 构造 standby passive 模式 env（passive 路径在任何装配前返回）。
 func w13g8PassiveEnv(t *testing.T) map[string]string {
 	root := t.TempDir()
 	env := wgOwnerModeMainEnv(t, root)
-	delete(env, "JUHE_AI_JOBS_WORKER_ENABLED")
-	delete(env, "JUHE_AI_ACCOUNT_HEALTH_ENABLED")
 	env["JUHE_AI_BLUE_GREEN_OWNER_MODE"] = "standby"
 	return env
 }
@@ -157,8 +155,8 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 		{"table monitor SQLite 路径非法", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_TABLE_MONITOR_DATABASE_PATH": "."}, false, 1},
 		{"J1 owner 非 go", nil, w13g8FullOwnerEnv, map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "w13g8-not-go"}, false, 1},
 		{"model-recovery 非法 namespace", nil, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_REDIS_STATE_URL":  "redis://127.0.0.1:6379/9",
-			"JUHE_AI_REDIS_NAMESPACE":  "w13g8 bad namespace!",
+			"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/9",
+			"JUHE_AI_REDIS_NAMESPACE": "w13g8 bad namespace!",
 		}, false, 1},
 		{"model-recovery Redis URL 非法", nil, w13g8FullOwnerEnv, map[string]string{
 			"JUHE_AI_REDIS_STATE_URL": "redis://w13g8-invalid-url",
@@ -178,9 +176,7 @@ func TestW13G8MainFailFastArms(t *testing.T) {
 		// migrate flag 分发臂（102-105）：迁移链路成功或失败均可，仅要求退出。
 		{"migrate 完整分发", []string{"-migrate-runtime-log-legacy-sqlite"}, w13g8FullOwnerEnv, nil, true, 0},
 		// 监听失败臂（F1/F2 SQLite 全部成功后 listen 校验失败）。
-		{"健康监听地址非法", []string{"-health-listen-address=w13g8-not-an-address"}, w13g8FullOwnerEnv, map[string]string{
-			"JUHE_AI_JOBS_WORKER_ENABLED": "false",
-		}, false, 1},
+		{"健康监听地址非法", []string{"-health-listen-address=w13g8-not-an-address"}, w13g8FullOwnerEnv, map[string]string{}, false, 1},
 		// passive standby 模式的监听失败臂（runPassiveJobs listen fail）。
 		{"passive 监听地址非法", []string{"-health-listen-address=w13g8-not-an-address"}, w13g8PassiveEnv, nil, false, 1},
 	}

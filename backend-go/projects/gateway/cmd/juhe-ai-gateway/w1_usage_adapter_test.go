@@ -52,6 +52,13 @@ func TestW1UsageAttemptRecorderRoundTrip(t *testing.T) {
 			ProviderCode: "openai", Success: true, StatusCode: 200,
 			FirstTokenMs: 120, DurationMs: 800, Stream: true,
 		})
+	// 后台 dispatch worker 异步写 spool 文件；先等 dispatch 队列排空，再
+	// Close recorder 排空其 4096 缓冲（Persist 全部落盘），之后才能让
+	// t.TempDir 清理，否则与 RemoveAll 竞争（间歇性 "directory is not empty"）。
+	if !dispatch.WaitForIdle(5000) {
+		t.Fatal("usage dispatch 5s 内未排空")
+	}
+	recorder.Close()
 }
 
 func newTestSlogLogger() *slog.Logger {

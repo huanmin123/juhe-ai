@@ -68,13 +68,23 @@ const (
 	outputChallengeExpected = "juhe"
 	outputChallengePrompt   = "只能回复：" + outputChallengeExpected
 	outputTokenLimit        = 256
-	defaultInstructions     = "You are ChatGPT, a helpful assistant."
 	anthropicVersion        = "2.1.201"
 	anthropicBuildID        = "eb7"
 	anthropicDeviceID       = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
 	clientProfileHeader     = "x-juhe-client-profile"
-	imageTestPrompt         = "Solid black."
 )
+
+// probeInstructionsPool 是 responses 形态 system 指令的轮换池，用于消除固
+// 定指纹（2026-09 上游风控开始按固定报文指纹封号）；池首保留历史原值
+// （Node account-test-request.ts 的固定值），其余为 OpenAI 生态常见的无害
+// system 指令变体。
+var probeInstructionsPool = []string{
+	"You are ChatGPT, a helpful assistant.",
+	"You are ChatGPT, a large language model trained by OpenAI.",
+	"You are a helpful assistant.",
+	"You are a helpful AI assistant.",
+	"You are an AI assistant.",
+}
 
 // OutputChallenge 等价 Node AccountTestOutputChallenge。
 type OutputChallenge struct {
@@ -82,9 +92,53 @@ type OutputChallenge struct {
 	Prompt         string
 }
 
-// CreateOutputChallenge 等价 createAccountTestOutputChallenge。
+// CreateOutputChallenge 等价 createAccountTestOutputChallenge，但有意偏离
+// Node 的固定报文：2026-09 起上游风控按固定报文指纹封号，请求侧在固定前缀
+// （outputChallengePrompt）后追加 3~6 位随机数字；验证侧保持宽松——回复包
+// 含 ExpectedOutput（juhe）即通过，不要求包含随机数字（见 probe.go 的
+// challengeMatched）。
 func CreateOutputChallenge() OutputChallenge {
-	return OutputChallenge{ExpectedOutput: outputChallengeExpected, Prompt: outputChallengePrompt}
+	return OutputChallenge{ExpectedOutput: outputChallengeExpected, Prompt: outputChallengePrompt + challengeDigits()}
+}
+
+// randomBytes 用 crypto/rand 填充 buf；读取失败时按 idgen.RandomHex 先例回
+// 退时间熵。降级仅影响随机性，不影响验证语义：输出挑战验证是宽松包含
+// ExpectedOutput，不依赖请求侧随机成分。
+func randomBytes(buf []byte) {
+	if _, err := rand.Read(buf); err != nil {
+		now := uint64(time.Now().UnixNano())
+		for i := range buf {
+			buf[i] = byte(now >> (uint(i%8) * 8))
+		}
+	}
+}
+
+// challengeDigits 生成 3~6 位随机数字：长度 = 3 + (1 字节 & 3)（256%4=0，
+// 无模偏差），每位 = '0' + (字节 % 10)。
+func challengeDigits() string {
+	buf := make([]byte, 7)
+	randomBytes(buf)
+	length := 3 + int(buf[0]&0x03)
+	out := make([]byte, length)
+	for i := 0; i < length; i++ {
+		out[i] = '0' + buf[1+i]%10
+	}
+	return string(out)
+}
+
+// probeInstructions 从轮换池随机选取 responses 形态的 system 指令；池首为
+// 历史原值（见 probeInstructionsPool）。
+func probeInstructions() string {
+	buf := make([]byte, 1)
+	randomBytes(buf)
+	return probeInstructionsPool[int(buf[0])%len(probeInstructionsPool)]
+}
+
+// buildImageTestPrompt 返回图片探针报文：历史固定值 Solid black. 加随机数
+// 字后缀以消除固定指纹；图片验证只看 HTTP envelope，不校验 prompt 文本，
+// 后缀不影响结果。
+func buildImageTestPrompt() string {
+	return "Solid black. " + challengeDigits()
 }
 
 // testRequest 是一次探针请求的协议形态（path/body/headers）。
@@ -225,7 +279,7 @@ func buildOpenAIResponsesPayload(model, prompt string, isOAuth bool, stream bool
 	fields := []orderedField{
 		{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
 		rawField("input", marshalValue(input)),
-		{key: "instructions", marshal: func() ([]byte, error) { return rawText(defaultInstructions), nil }},
+		{key: "instructions", marshal: func() ([]byte, error) { return rawText(probeInstructions()), nil }},
 		{key: "stream", marshal: func() ([]byte, error) { return rawBool(stream), nil }},
 		{key: "max_output_tokens", marshal: func() ([]byte, error) { return rawInt(outputTokenLimit), nil }},
 	}
@@ -302,7 +356,7 @@ func buildAnthropicMessagesPayload(model, prompt string, stream bool, sessionID 
 func buildImagesPayload(model string) ([]byte, error) {
 	return orderedJSON([]orderedField{
 		{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
-		{key: "prompt", marshal: func() ([]byte, error) { return rawText(imageTestPrompt), nil }},
+		{key: "prompt", marshal: func() ([]byte, error) { return rawText(buildImageTestPrompt()), nil }},
 		{key: "n", marshal: func() ([]byte, error) { return rawInt(1), nil }},
 		{key: "size", marshal: func() ([]byte, error) { return rawText("1024x1024"), nil }},
 		{key: "quality", marshal: func() ([]byte, error) { return rawText("low"), nil }},

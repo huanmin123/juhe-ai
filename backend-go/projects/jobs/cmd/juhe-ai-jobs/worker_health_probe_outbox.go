@@ -215,8 +215,8 @@ func (b healthProbeBoundary) CurrentProbeInput(ctx context.Context, accountID st
 	return currentConfig.Int64, currentDispatch.Int64, currentVersion.Int64, true, nil
 }
 
-// healthProbeOutboxFace 聚合 outbox 消费与清理装配产物：drain 仅在 J1 启用
-// 时非 nil；pruner 在业务库就绪后总是非 nil（独立于 J1）。
+// healthProbeOutboxFace 聚合 outbox 消费与清理装配产物：装配成功时 drain 与
+// pruner 均非 nil（J1 恒装配，drain 不再有 J1 门控缺席路径）。
 type healthProbeOutboxFace struct {
 	drain  *accounthealth.ProbeRequestDrain
 	pruner *healthProbeOutboxPruner
@@ -225,16 +225,11 @@ type healthProbeOutboxFace struct {
 // wireHealthProbeOutboxFace 装配 outbox 消费面 + 常驻 prune（业务库 boundary +
 // store + Redis fence 结算 + 保留清理）。装配失败不阻塞 worker 启动：调用方
 // warn 后 drain 缺席时 runCycle 跳过 outbox（gateway 行保持 pending，等同原
-// 派发能力未装配的降级），prune 同样缺席。业务库打不开则整个面本来就不存在；
-// drain 仍受 J1 门控（J1 未启用时返回 nil drain，不消费 outbox 行），prune
-// 仍装配——J1 关闭部署的 pending 堆积由保留期删除兜底。
+// 派发能力未装配的降级），prune 同样缺席。业务库打不开则整个面本来就不存在。
+// J1 强制常开（2026-09-19 决策）：drain 恒装配，无 J1 门控缺席路径。
 func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (*healthProbeOutboxFace, error) {
 	if getenv == nil {
 		getenv = os.Getenv
-	}
-	config, err := accounthealth.LoadConfig(getenv)
-	if err != nil {
-		return nil, err
 	}
 	business, err := openBusinessDB(a, "health-probe-outbox")
 	if err != nil {
@@ -255,28 +250,26 @@ func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (
 			logger:   a.logger,
 		},
 	}
-	if config.Enabled {
-		// jobs 拥有 J1：装配完整消费面。
-		settler, settlerCloser, settlerErr := a.wireHealthProbeFenceSettler()
-		if settlerErr != nil {
-			return nil, settlerErr
-		}
-		if settlerCloser != nil {
-			a.addCloser(settlerCloser)
-		}
-		// D 任务②③：drain 上限/并发与堆积告警阈值经 env 配置（非法回退默认
-		// 并 warn，风格对齐保留天数 env）。
-		warnInvalidEnv := func(message string) {
-			a.logger.Warn(message, "event", "account_health_probe_outbox_env_invalid")
-		}
-		face.drain = &accounthealth.ProbeRequestDrain{
-			Store:                healthProbeOutboxStore{business: business},
-			Boundary:             healthProbeBoundary{business: business},
-			SettleFence:          settler,
-			Limit:                parseProbeOutboxBoundedInt(getenv, probeOutboxDrainLimitEnvVar, defaultProbeOutboxDrainLimit, minProbeOutboxDrainLimit, maxProbeOutboxDrainLimit, warnInvalidEnv),
-			Concurrency:          parseProbeOutboxBoundedInt(getenv, probeOutboxDrainConcurrencyEnvVar, defaultProbeOutboxDrainConcurrency, minProbeOutboxDrainConcurrency, maxProbeOutboxDrainConcurrency, warnInvalidEnv),
-			BacklogWarnThreshold: parseProbeOutboxBoundedInt(getenv, probeOutboxBacklogWarnEnvVar, defaultProbeOutboxBacklogWarnThreshold, minProbeOutboxBacklogWarnThreshold, maxProbeOutboxBacklogWarnThreshold, warnInvalidEnv),
-		}
+	// jobs 拥有 J1（恒开）：装配完整消费面。
+	settler, settlerCloser, settlerErr := a.wireHealthProbeFenceSettler()
+	if settlerErr != nil {
+		return nil, settlerErr
+	}
+	if settlerCloser != nil {
+		a.addCloser(settlerCloser)
+	}
+	// D 任务②③：drain 上限/并发与堆积告警阈值经 env 配置（非法回退默认
+	// 并 warn，风格对齐保留天数 env）。
+	warnInvalidEnv := func(message string) {
+		a.logger.Warn(message, "event", "account_health_probe_outbox_env_invalid")
+	}
+	face.drain = &accounthealth.ProbeRequestDrain{
+		Store:                healthProbeOutboxStore{business: business},
+		Boundary:             healthProbeBoundary{business: business},
+		SettleFence:          settler,
+		Limit:                parseProbeOutboxBoundedInt(getenv, probeOutboxDrainLimitEnvVar, defaultProbeOutboxDrainLimit, minProbeOutboxDrainLimit, maxProbeOutboxDrainLimit, warnInvalidEnv),
+		Concurrency:          parseProbeOutboxBoundedInt(getenv, probeOutboxDrainConcurrencyEnvVar, defaultProbeOutboxDrainConcurrency, minProbeOutboxDrainConcurrency, maxProbeOutboxDrainConcurrency, warnInvalidEnv),
+		BacklogWarnThreshold: parseProbeOutboxBoundedInt(getenv, probeOutboxBacklogWarnEnvVar, defaultProbeOutboxBacklogWarnThreshold, minProbeOutboxBacklogWarnThreshold, maxProbeOutboxBacklogWarnThreshold, warnInvalidEnv),
 	}
 	return face, nil
 }
@@ -311,9 +304,9 @@ const (
 	maxProbeOutboxDrainLimit     = 4096
 	// 并发默认 2 保守起步（快探针串行曾是周期扫描的拖累；行间无顺序依赖，
 	// 上限 8 与 ListProjectionWorkerConcurrency 档位一致）。
-	defaultProbeOutboxDrainConcurrency = 2
-	minProbeOutboxDrainConcurrency     = 1
-	maxProbeOutboxDrainConcurrency     = 8
+	defaultProbeOutboxDrainConcurrency     = 2
+	minProbeOutboxDrainConcurrency         = 1
+	maxProbeOutboxDrainConcurrency         = 8
 	defaultProbeOutboxBacklogWarnThreshold = 1000
 	minProbeOutboxBacklogWarnThreshold     = 1
 	maxProbeOutboxBacklogWarnThreshold     = 1_000_000

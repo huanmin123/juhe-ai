@@ -34,9 +34,10 @@ const (
 	healthProjectionBatchEnvVar    = "JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_BATCH_SIZE"
 )
 
-// wireHealthOutcomeProjector 装配 J1 outcome 投影器。store 为 nil（J1 未启
-// 用）或 env 显式关闭时返回 (nil, nil)（投影面合法缺席，非错误）；装配失败
-// 返回错误，由 main 降级 warn（outcome 仅停留 juhe_jobs 审计面，不阻塞启动）。
+// wireHealthOutcomeProjector 装配 J1 outcome 投影器。store 为 nil（调用方无
+// J1 store，恒开语义下仅为防御）或 env 显式关闭时返回 (nil, nil)（投影面合法
+// 缺席，非错误）；装配失败返回错误，由 main 降级 warn（outcome 仅停留
+// juhe_jobs 审计面，不阻塞启动）。
 func (a *workerAssembly) wireHealthOutcomeProjector(getenv func(string) string, store *accounthealth.Store) (*accounthealth.OutcomeProjector, error) {
 	if getenv == nil {
 		getenv = os.Getenv
@@ -51,9 +52,6 @@ func (a *workerAssembly) wireHealthOutcomeProjector(getenv func(string) string, 
 	config, err := accounthealth.LoadConfig(getenv)
 	if err != nil {
 		return nil, err
-	}
-	if !config.Enabled {
-		return nil, nil
 	}
 	var stats accounthealth.GroupStatsDirtyMarker
 	if a.statsStore != nil {

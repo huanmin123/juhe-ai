@@ -165,6 +165,11 @@ type chainRuntimeDeps struct {
 	// 探活池命中。
 	EngineSecret string
 
+	// UpstreamRetryBackoffDelaysMs 是 dispatch 尝试循环退避上限的 R4 测试
+	// 注入点（gatewaydispatch.EngineConfig.UpstreamRetryBackoffDelaysMs）。
+	// nil 保持生产硬编码上限（1000/500/3000ms，逐字节一致）。
+	UpstreamRetryBackoffDelaysMs []int64
+
 	// KeyRotation 是账户 API Key 轮转计数器（gatewaydispatch.Engine.
 	// KeyRotation，B-3 BUG-0174）：生产装配为
 	// chain_apikey_rotation_redis.go 的 Redis 计数器（StateClient 同源）；
@@ -435,6 +440,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源
 	//（chain_runtime.go newChainAccountsSelectorWithStats 的 cfg.Secret）。
 	engine.Config.Secret = deps.EngineSecret
+	// R4：上游尝试循环退避上限注入（capacity queued / capacity plain /
+	// recoverable wait 三语义位）；nil 保持生产硬编码，组合测试注入短退避。
+	engine.Config.UpstreamRetryBackoffDelaysMs = deps.UpstreamRetryBackoffDelaysMs
 	// W2：engine.go DefaultEngineConfig 注释契约——attempt safety limit 的
 	// Node 默认即 globalConcurrencyMax（runtime.ts:769），组合根必须用 env
 	// 配置的 JUHE_AI_CONCURRENCY_GLOBAL_MAX 覆盖编译期 5000 默认。deps 值与
@@ -834,6 +842,12 @@ func (d *chainHybridAuxiliaryDispatcher) DispatchHybridAuxiliaryChatCompletion(c
 	if d == nil || d.cache == nil {
 		return auxiliaryDispatchFailure(input, input.DispatchErrorCode, input.DispatchErrorMessage, nil, "", false, 0, false, false)
 	}
+	// SwitchTarget（切号冻结目标）：混合打分是内部合成辅助请求，不是客户端
+	// 请求的上游尝试。它在主请求 ctx 上同步执行（preflight 混合智能路由 →
+	// Score → 本派发），若不剥离请求级冻结载体，打分账户的构造会在主请求
+	// 任何账户构造之前抢先冻结 (ScoringModel, chat_completions) 目标，污染
+	// 初始候选筛选与全部切号过滤。剥离后冻结入口与消费点门恢复惰性。
+	ctx = gatewaydispatch.WithoutSwitchTargetCapture(ctx)
 	// 1. selectGatewayModelTargetGroup over the routing runtime cache.
 	selection, err := (hybridTargetGroups{cache: d.cache}).SelectTargetGroup(ctx, gatewayhybrid.TargetGroupSelectorInput{
 		APIKeyRecord:               input.APIKeyRecord,

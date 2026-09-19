@@ -57,7 +57,7 @@ function assertLauncherRejectsJ1WithoutGoOwner() {
   const result = runLauncher('jobs', {
     JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
     JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
-    JUHE_AI_ACCOUNT_HEALTH_ENABLED: 'true',
+    // 2026-09-19 起 J1 无 ENABLED 开关、强制常开：显式非 go 的 owner 声明仍须拒绝。
     JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'node'
   })
   try {
@@ -72,7 +72,6 @@ function assertLauncherRejectsMissingJ1InputDirectory() {
   const result = runLauncher('jobs', {
     JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
     JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
-    JUHE_AI_ACCOUNT_HEALTH_ENABLED: 'true',
     JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID: 'j1-owner',
     JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: j1InputSigningKey,
@@ -90,7 +89,10 @@ function assertLauncherForwardsProjectScopedPaths() {
   const jobs = runLauncher('jobs', {
     JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
     JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    // J1/worker 强制常开后无 ENABLED 开关：以下历史开关残留必须被 launcher
+    // 显式 drop，不得进入 jobs 子进程（开关移除回归注入）。
     JUHE_AI_ACCOUNT_HEALTH_ENABLED: 'true',
+    JUHE_AI_JOBS_WORKER_ENABLED: 'false',
     JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID: 'j1-owner',
     JUHE_AI_ACCOUNT_HEALTH_STORE: 'sqlite',
@@ -123,6 +125,12 @@ function assertLauncherForwardsProjectScopedPaths() {
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY, join(jobs.backendRoot, 'data', 'account-health-inputs'))
     assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER, 'go')
     assert.equal(jobs.childEnvironment.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3305')
+    // 开关移除回归：历史 ENABLED/worker 总开关残留不得进入 jobs 子进程
+    // （J1 账户健康检查与 worker 任务族 2026-09-19 起强制常开）。
+    assert.equal(jobs.childEnvironment.JUHE_AI_ACCOUNT_HEALTH_ENABLED, undefined,
+      'the removed J1 ENABLED switch must not be forwarded to the jobs child')
+    assert.equal(jobs.childEnvironment.JUHE_AI_JOBS_WORKER_ENABLED, undefined,
+      'the removed worker master switch must not be forwarded to the jobs child')
     assert.equal(gateway.status, 0, `gateway launcher failed: ${gateway.output}`)
     assert.equal(gateway.childEnvironment.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, join(gateway.backendRoot, 'data', 'runtime-log.sqlite3'))
     assert.equal(gateway.childEnvironment.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, join(gateway.backendRoot, 'data', 'table-monitor.sqlite3'))
@@ -264,6 +272,9 @@ function assertLauncherForwardsJ2PathsAndOwner() {
   const jobs = runLauncher('jobs', {
     JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
     JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    // J1 强制常开后，任何 jobs 启动都必须提供 J1 必填项（launcher 统一校验）。
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY: './data/account-health-inputs',
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: j1InputSigningKey,
     JUHE_AI_ACCOUNT_BALANCE_ENABLED: 'true',
     JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',
@@ -300,6 +311,9 @@ function assertLauncherForwardsGoRuntimeMetricsConfig() {
   const jobs = runLauncher('jobs', {
     JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
     JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    // J1 强制常开后，任何 jobs 启动都必须提供 J1 必填项（launcher 统一校验）。
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY: './data/account-health-inputs',
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: j1InputSigningKey,
     JUHE_AI_GO_RUNTIME_METRICS_STORE: 'sqlite',
     JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH: './data/go-runtime-metrics.sqlite3',
     JUHE_AI_GO_RUNTIME_METRICS_INTERVAL: '15s',
@@ -330,6 +344,9 @@ function assertLauncherRejectsSqliteJ2Store() {
   const result = runLauncher('jobs', {
     JUHE_AI_RUNTIME_LOG_INSTANCE_ID: 'f1-owner',
     JUHE_AI_TABLE_MONITOR_INSTANCE_ID: 'f2-owner',
+    // J1 强制常开后，任何 jobs 启动都必须提供 J1 必填项（launcher 统一校验）。
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY: './data/account-health-inputs',
+    JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: j1InputSigningKey,
     JUHE_AI_ACCOUNT_BALANCE_ENABLED: 'true',
     JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',

@@ -43,6 +43,38 @@ const payload: RouteStrategyMutationPayload = {
   normalRoutingConfig: null,
   hybridRoutingConfig: null
 }
+
+const costFirstNormalRoutingConfig = {
+  schedulingPreference: 'cost_first'
+} as const
+const speedFirstNormalRoutingConfig = {
+  schedulingPreference: 'speed_first',
+  firstByteDeadlineMs: 30000,
+  speedFirstConfig: {
+    slowTriggerCount: 3,
+    slowWindowSeconds: 120,
+    recoverySuccessCount: 3,
+    probeIntervalSeconds: 30,
+    degradedTtlSeconds: 300,
+    maxFirstByteRetriesPerRequest: 2
+  }
+} as const
+
+const weightedCreatePayload: RouteStrategyMutationPayload = {
+  ...payload,
+  mode: 'weighted',
+  normalRoutingConfig: costFirstNormalRoutingConfig
+}
+const failoverCreatePayload: RouteStrategyMutationPayload = {
+  ...payload,
+  mode: 'failover',
+  normalRoutingConfig: speedFirstNormalRoutingConfig
+}
+const roundRobinCreatePayload: RouteStrategyMutationPayload = {
+  ...payload,
+  mode: 'round_robin',
+  normalRoutingConfig: costFirstNormalRoutingConfig
+}
 const patchPayload: RouteStrategyPatchPayload = {
   description: '仅更新说明',
   expectedUpdatedAt: '2026-07-29T00:00:00.000Z'
@@ -93,11 +125,15 @@ try {
   await myRouteStrategiesApi.delete(routeStrategyId)
   await managementApi.delete(routeStrategyId, { systemAccountId })
   await personalApi.delete(routeStrategyId, { systemAccountId: 'must_not_leak' })
+
+  await routeStrategiesApi.create(weightedCreatePayload, { systemAccountId })
+  await routeStrategiesApi.create(failoverCreatePayload)
+  await routeStrategiesApi.create(roundRobinCreatePayload)
 } finally {
   http.defaults.adapter = originalAdapter
 }
 
-assert.equal(capturedRequests.length, 13, '应捕获创建/更新各四个及删除五个底层 API / 作用域委派请求')
+assert.equal(capturedRequests.length, 16, '应捕获创建/更新各四个、删除五个和三种新模式创建请求')
 
 assertManagementCreate(capturedRequests[0], 'routeStrategiesApi.create')
 assertPersonalCreate(capturedRequests[1], 'myRouteStrategiesApi.create')
@@ -121,7 +157,11 @@ assertManagementDelete(
 )
 assertPersonalDelete(capturedRequests[12], 'useScopedRouteStrategiesApi 个人作用域 delete')
 
-console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query 和请求 body 契约正确')
+assertSchedulingPreferenceModeCreate(capturedRequests[13], weightedCreatePayload, 'weighted')
+assertSchedulingPreferenceModeCreate(capturedRequests[14], failoverCreatePayload, 'failover')
+assertSchedulingPreferenceModeCreate(capturedRequests[15], roundRobinCreatePayload, 'round_robin')
+
+console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query、请求 body 契约以及四模式调度偏好提交正确')
 
 function assertManagementCreate(request: CapturedRequest, source: string): void {
   assert.equal(request.method, 'POST', `${source} 必须发送 POST`)
@@ -196,11 +236,24 @@ function assertPersonalDelete(request: CapturedRequest, source: string): void {
 function assertMutationBody(body: unknown, source: string, action: '创建' | '更新'): void {
   assert.deepEqual(body, payload, `${source} 必须原样发送策略路由${action} body`)
   assert.ok(isRecord(body), `${source} body 必须是对象`)
+  assert.equal(body.mode, 'hybrid_smart', `${source} 固定 body 契约必须锁定 hybrid_smart 模式`)
   assert.ok(Object.hasOwn(body, 'normalRoutingConfig'), `${source} 必须保留 normalRoutingConfig 字段`)
-  assert.equal(body.normalRoutingConfig, null, `${source} 必须保留 normalRoutingConfig: null`)
+  assert.equal(body.normalRoutingConfig, null, `${source} 必须为 hybrid_smart 提交 normalRoutingConfig: null`)
   assert.ok(Object.hasOwn(body, 'hybridRoutingConfig'), `${source} 必须保留 hybridRoutingConfig 字段`)
   assert.equal(body.hybridRoutingConfig, null, `${source} 必须保留 hybridRoutingConfig: null`)
   assert.deepEqual(body.groupBindings, payload.groupBindings, `${source} 必须原样保留 groupBindings`)
+}
+
+function assertSchedulingPreferenceModeCreate(
+  request: CapturedRequest,
+  expectedPayload: RouteStrategyMutationPayload,
+  mode: 'weighted' | 'failover' | 'round_robin'
+): void {
+  assert.equal(request.method, 'POST', `${mode} 模式创建必须发送 POST`)
+  assert.equal(request.url, '/route-strategies', `${mode} 模式创建必须请求 /route-strategies`)
+  assert.deepEqual(request.body, expectedPayload, `${mode} 模式创建必须原样发送 body`)
+  assert.ok(isRecord(request.body), `${mode} 模式创建 body 必须是对象`)
+  assert.notEqual(request.body.normalRoutingConfig, null, `${mode} 模式创建必须提交真实 normalRoutingConfig 调度偏好`)
 }
 
 function parseRequestBody(data: AxiosRequestConfig['data']): unknown {

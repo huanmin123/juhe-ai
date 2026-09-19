@@ -15,7 +15,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
 // gatedUpstreamBody 模拟"写出一个事件后阻塞、从不主动 EOF"的上游 SSE 流：
@@ -203,8 +203,8 @@ func TestChainBridgeResponseStreamFirstEventReadableBeforeUpstreamEOF(t *testing
 		t.Fatalf("排空下游失败: %v", err)
 	}
 	full := first.text + string(rest)
-	buffered := openaicompat.TransformGeminiSseBufferToDownstreamSse(
-		[]byte(geminiBridgeUpstreamEvent()), openaicompat.GeminiNativeProtocolResponses, "mapped-upstream-model")
+	buffered := openaicompatbridge.TransformGeminiSseBufferToDownstreamSse(
+		[]byte(geminiBridgeUpstreamEvent()), openaicompatbridge.GeminiNativeProtocolResponses, "mapped-upstream-model")
 	// 挂钟 id（response.created/completed 的 resp_<base36>）在两次独立转换
 	// 之间不可复现，归一后比较；结构差异仍是逐字节判定（见 helper 注释）。
 	if normalizeBridgeWallClockIDs(full) != normalizeBridgeWallClockIDs(string(buffered)) {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +34,6 @@ const (
 	wgChildEnvHealthAddr = "WG_JOBS_MAIN_CHILD_HEALTH_ADDR"
 
 	wgScenarioOwner          = "owner"
-	wgScenarioMinimalOutbox  = "minimal-outbox"
 	wgScenarioPassive        = "passive"
 	wgChildReadyTimeout      = 60 * time.Second
 	wgChildGracefulTimeout   = 45 * time.Second
@@ -75,27 +74,27 @@ func TestMain(m *testing.M) {
 	if os.Getenv(wgChildEnvMode) != "1" {
 		os.Exit(m.Run())
 	}
-	// 子进程：替换 flag.CommandLine，让 main() 的 flag.Parse 只看见自己的
-	// 5 个 flag（-test.* 属于 testing，必须隔离）。
-	originalCommandLine := flag.CommandLine
-	originalArgs := os.Args
-	flag.CommandLine = flag.NewFlagSet(wgChildFlagSet, flag.ContinueOnError)
-	args := []string{originalArgs[0], "-health-listen-address=" + os.Getenv(wgChildEnvHealthAddr)}
+	// 子进程：run() 用自己的 FlagSet 解析显式 args（-test.* 属于 testing，
+	// 不再依赖全局 flag.CommandLine 替换）；run 优雅返回后以 -test.run=^$
+	// 复跑 testing 框架，让已累积的覆盖计数随 -test.gocoverdir 写出并被
+	// go test 合并。非零返回码等价原 fail() 的 os.Exit（runtime 钩子此时
+	// 写 GOCOVERDIR）。
+	childArgs := []string{"-health-listen-address=" + os.Getenv(wgChildEnvHealthAddr)}
 	if os.Getenv(wgChildEnvScenario) == "once" {
 		// --once 走 F2 单轮采样后直接返回（不进 supervisor 循环）。
-		args = append(args, "-once")
+		childArgs = append(childArgs, "-once")
 	}
-	os.Args = args
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		main()
+		if code := run(childArgs, os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
+		}
 	}()
 	<-done
-	// main() 已优雅返回：恢复 testing 的命令行，跑零个测试以触发覆盖写出。
-	flag.CommandLine = originalCommandLine
+	// run() 已优雅返回：跑零个测试以触发覆盖写出。
 	restoredArgs := []string{}
-	for _, arg := range originalArgs {
+	for _, arg := range os.Args {
 		if strings.HasPrefix(arg, "-test.run=") || strings.HasPrefix(arg, "-test.timeout=") {
 			continue
 		}
@@ -283,8 +282,8 @@ func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 		t.Fatal(err)
 	}
 	// J1 account-health（SQLite store + 文件输入源；目录必须存在且为空 =
-	// 无待消费输入）。
-	env["JUHE_AI_ACCOUNT_HEALTH_ENABLED"] = "true"
+	// 无待消费输入）。J1 与 worker 均恒装配（2026-09-19 决策），env 不再需要
+	// 启用开关。
 	env["JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER"] = "go"
 	env["JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID"] = "wg-main-e2e"
 	env["JUHE_AI_ACCOUNT_HEALTH_STORE"] = "sqlite"
@@ -326,30 +325,6 @@ func TestMainOwnerModeRunsAndShutsDownGracefully(t *testing.T) {
 	wgInterruptAndWait(t, cmd)
 }
 
-// TestMainMinimalAssemblyForOutboxWhenWorkerDisabled 验证 worker 关闭而 J1
-// 开启时，main() 装配最小 assembly 承载 outbox 消费面（P1-3 分支）。
-func TestMainMinimalAssemblyForOutboxWhenWorkerDisabled(t *testing.T) {
-	if testing.Short() {
-		t.Skip("main e2e skipped in -short mode")
-	}
-	root := t.TempDir()
-	env := wgOwnerModeMainEnv(t, root)
-	delete(env, "JUHE_AI_JOBS_WORKER_ENABLED")
-	port := wgFreePort(t)
-	cmd := wgSpawnMainChild(t, env, wgScenarioMinimalOutbox, port)
-	payload := wgPollHealthPayload(t, port, wgChildReadyTimeout, func(current map[string]any) bool {
-		ready, _ := current["ready"].(bool)
-		return ready
-	})
-	if payload["workerEnabled"] != false {
-		t.Fatalf("worker 关闭时健康载荷必须报告 workerEnabled=false: %v", payload)
-	}
-	if payload["accountHealthEnabled"] != true || payload["accountHealthReady"] != true {
-		t.Fatalf("J1 必须启用且就绪: %v", payload)
-	}
-	wgInterruptAndWait(t, cmd)
-}
-
 // TestMainPassiveModeServesStandbyHealth 验证 standby owner 模式走
 // runPassiveJobs：/health 永不声明 owner 就绪，CTRL_BREAK 后干净退出。
 func TestMainPassiveModeServesStandbyHealth(t *testing.T) {
@@ -359,8 +334,6 @@ func TestMainPassiveModeServesStandbyHealth(t *testing.T) {
 	root := t.TempDir()
 	env := wgOwnerModeMainEnv(t, root)
 	env["JUHE_AI_BLUE_GREEN_OWNER_MODE"] = "standby"
-	delete(env, "JUHE_AI_JOBS_WORKER_ENABLED")
-	delete(env, "JUHE_AI_ACCOUNT_HEALTH_ENABLED")
 	port := wgFreePort(t)
 	cmd := wgSpawnMainChild(t, env, wgScenarioPassive, port)
 	payload := wgPollHealthPayload(t, port, wgChildReadyTimeout, func(current map[string]any) bool {
@@ -384,8 +357,6 @@ func TestMainGoRuntimeMetricsEnabledComponent(t *testing.T) {
 	}
 	root := t.TempDir()
 	env := wgOwnerModeMainEnv(t, root)
-	delete(env, "JUHE_AI_JOBS_WORKER_ENABLED")
-	delete(env, "JUHE_AI_ACCOUNT_HEALTH_ENABLED")
 	metricsPath := filepath.Join(root, "metrics.sqlite3")
 	env["JUHE_AI_GO_RUNTIME_METRICS_STORE"] = "sqlite"
 	env["JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH"] = metricsPath
@@ -430,8 +401,6 @@ func TestMainOnceModeRunsSingleTableMonitorCycle(t *testing.T) {
 	}
 	root := t.TempDir()
 	env := wgOwnerModeMainEnv(t, root)
-	delete(env, "JUHE_AI_JOBS_WORKER_ENABLED")
-	delete(env, "JUHE_AI_ACCOUNT_HEALTH_ENABLED")
 	port := wgFreePort(t)
 	cmd := wgSpawnMainChild(t, env, wgScenarioOnce, port)
 	done := make(chan error, 1)
@@ -448,7 +417,7 @@ func TestMainOnceModeRunsSingleTableMonitorCycle(t *testing.T) {
 }
 
 // TestMainFlagEarlyReturnPaths 进程内覆盖 --version 与 --check-boundary 的
-// flag 早退分支（不触碰存储与信号）。
+// flag 早退分支（不触碰存储与信号）；run() 重构后直调并断言退出码 0。
 func TestMainFlagEarlyReturnPaths(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -463,25 +432,14 @@ func TestMainFlagEarlyReturnPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			originalStdout := os.Stdout
-			os.Stdout = writer
-			restoreCommandLine := flag.CommandLine
-			restoreArgs := os.Args
-			flag.CommandLine = flag.NewFlagSet(wgChildFlagSet, flag.ContinueOnError)
-			os.Args = []string{restoreArgs[0], test.flagText}
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				main()
-			}()
-			<-done
-			os.Stdout = originalStdout
-			flag.CommandLine = restoreCommandLine
-			os.Args = restoreArgs
+			code := run([]string{test.flagText}, writer, io.Discard)
 			_ = writer.Close()
 			output := make([]byte, 512)
 			read, _ := reader.Read(output)
 			_ = reader.Close()
+			if code != 0 {
+				t.Fatalf("%s 必须以退出码 0 返回，得到 %d", test.flagText, code)
+			}
 			if !strings.Contains(string(output[:read]), test.contains) {
 				t.Fatalf("输出必须包含 %q，得到 %q", test.contains, string(output[:read]))
 			}
@@ -544,10 +502,7 @@ func TestRunRuntimeLegacyMigrationCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	originalStdout := os.Stdout
-	os.Stdout = writer
-	runRuntimeLegacyMigration(config)
-	os.Stdout = originalStdout
+	runRuntimeLegacyMigration(config, writer, io.Discard)
 	_ = writer.Close()
 	output := make([]byte, 1024)
 	read, _ := reader.Read(output)

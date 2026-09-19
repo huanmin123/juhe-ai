@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -36,45 +37,65 @@ import (
 )
 
 func main() {
-	version := flag.Bool("version", false, "print the jobs project contract version")
-	check := flag.Bool("check-boundary", false, "verify the scaffold boundary")
-	once := flag.Bool("once", false, "run one F2 table-monitor sampling cycle and exit")
-	runtimeLegacyMigration := flag.Bool("migrate-runtime-log-legacy-sqlite", false, "offline F1 legacy SQLite migration")
-	healthAddress := flag.String("health-listen-address", envOrDefault("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3305"), "loopback health listen address")
-	flag.Parse()
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// hooksSignalNotifyContext 是 signal.NotifyContext 的测试注入点：生产路径
+// 直接转发真实现；进程内测试覆写为可编程取消的 ctx，以驱动优雅停机序列
+// （真实 SIGTERM 在测试进程内无法安全投递）。
+var hooksSignalNotifyContext = signal.NotifyContext
+
+// run 承载原 main() 的全部线性流程并返回进程退出码。原 fail()（stderr 错误
+// 行 + os.Exit(1)）与 flag 用法错误（os.Exit(2)）收敛为返回值；stderr 错误
+// 文案与输出流逐字节不变。args 为 flag 解析输入（不含程序名）。
+func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	version := flags.Bool("version", false, "print the jobs project contract version")
+	check := flags.Bool("check-boundary", false, "verify the scaffold boundary")
+	once := flags.Bool("once", false, "run one F2 table-monitor sampling cycle and exit")
+	runtimeLegacyMigration := flags.Bool("migrate-runtime-log-legacy-sqlite", false, "offline F1 legacy SQLite migration")
+	healthAddress := flags.String("health-listen-address", envOrDefault("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3305"), "loopback health listen address")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
 	if *version {
-		fmt.Printf("juhe-ai-jobs project=%s contract=%s\n", contracts.ProjectJobs, contracts.ArchitectureVersion)
-		return
+		fmt.Fprintf(stdout, "juhe-ai-jobs project=%s contract=%s\n", contracts.ProjectJobs, contracts.ArchitectureVersion)
+		return 0
 	}
 	if *check {
-		fmt.Println("juhe-ai-jobs boundary=ready runtime=table-monitor-owner")
-		return
+		fmt.Fprintln(stdout, "juhe-ai-jobs boundary=ready runtime=table-monitor-owner")
+		return 0
 	}
-	if flag.NArg() != 0 {
-		fmt.Fprintf(os.Stderr, "unsupported jobs arguments: %v\n", flag.Args())
-		os.Exit(2)
+	if flags.NArg() != 0 {
+		fmt.Fprintf(stderr, "unsupported jobs arguments: %v\n", flags.Args())
+		return 2
 	}
 	if *once && *runtimeLegacyMigration {
-		fmt.Fprintln(os.Stderr, "--once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
-		os.Exit(2)
+		fmt.Fprintln(stderr, "--once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
+		return 2
 	}
 
 	// JUHE_AI_LOG_LEVEL (Node log-level.ts): trace..silent, fail fast on an
 	// invalid value like the Node startup guard.
 	logLevel, err := processlog.LoadLevel(os.Getenv)
 	if err != nil {
-		fail(err)
+		return failWith(stderr, err)
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: logLevel}))
 	processlog.CatchPanic(logger)
 	processlog.KeepAliveOnBrokenOutputPipe()
+	// 废弃总开关检测（loadWorkerConfig / accounthealth.LoadConfig 之前）：
+	// J1 与 worker 机制强制常开，遗留开关值非 true 时提醒部署方清理配置。
+	warnDeprecatedSwitches(logger)
 	ownerMode, err := ownermode.Load(os.Getenv)
 	if err != nil {
-		fail(err)
+		return failWith(stderr, err)
 	}
 	if !ownerMode.OwnsWork() {
-		runPassiveJobs(*healthAddress, ownerMode, logger)
-		return
+		return runPassiveJobs(*healthAddress, ownerMode, logger, stdout, stderr)
 	}
 	postgresPools := pgpool.NewRegistry()
 	defer postgresPools.Close()
@@ -94,166 +115,150 @@ func main() {
 	})
 	runtimeConfig, err := runtimelog.LoadConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load F1 runtime-log-indexer config: %w", err))
+		return failWith(stderr, fmt.Errorf("load F1 runtime-log-indexer config: %w", err))
 	}
 	if runtimeConfig.Once {
-		fail(errors.New("JUHE_AI_RUNTIME_LOG_ONCE=true is not supported by juhe-ai-jobs; use --migrate-runtime-log-legacy-sqlite for the explicit offline F1 migration"))
+		return failWith(stderr, errors.New("JUHE_AI_RUNTIME_LOG_ONCE=true is not supported by juhe-ai-jobs; use --migrate-runtime-log-legacy-sqlite for the explicit offline F1 migration"))
 	}
 	if *runtimeLegacyMigration {
-		runRuntimeLegacyMigration(runtimeConfig)
-		return
+		return runRuntimeLegacyMigration(runtimeConfig, stdout, stderr)
 	}
 	runtimeStore, err := runtimelog.OpenStore(context.Background(), runtimeConfig)
 	if err != nil {
-		fail(fmt.Errorf("open F1 runtime-log-indexer store: %w", err))
+		return failWith(stderr, fmt.Errorf("open F1 runtime-log-indexer store: %w", err))
 	}
 	defer runtimeStore.Close()
 	if err := runtimelog.EnsureSchema(context.Background(), runtimeStore); err != nil {
-		fail(fmt.Errorf("initialize F1 runtime-log-indexer schema: %w", err))
+		return failWith(stderr, fmt.Errorf("initialize F1 runtime-log-indexer schema: %w", err))
 	}
 	if err := runtimeStore.CheckSchema(context.Background()); err != nil {
-		fail(fmt.Errorf("verify F1 runtime-log-indexer schema: %w", err))
+		return failWith(stderr, fmt.Errorf("verify F1 runtime-log-indexer schema: %w", err))
 	}
 	cfg, err := tablemonitor.LoadConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load F2 table-monitor config: %w", err))
+		return failWith(stderr, fmt.Errorf("load F2 table-monitor config: %w", err))
 	}
 	if cfg.Mode == tablemonitor.ModePostgres {
 		cfg.PostgresPool, err = postgresPools.Acquire("pgx", cfg.PostgresURL, "jobs-store", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
 		if err != nil {
-			fail(fmt.Errorf("open F2 shared PostgreSQL pool: %w", err))
+			return failWith(stderr, fmt.Errorf("open F2 shared PostgreSQL pool: %w", err))
 		}
 	}
 	store, err := tablemonitor.OpenStore(cfg)
 	if err != nil {
-		fail(fmt.Errorf("open F2 table-monitor store: %w", err))
+		return failWith(stderr, fmt.Errorf("open F2 table-monitor store: %w", err))
 	}
 	defer store.Close()
 	if err := store.EnsureSchema(context.Background()); err != nil {
-		fail(fmt.Errorf("initialize F2 table-monitor schema: %w", err))
+		return failWith(stderr, fmt.Errorf("initialize F2 table-monitor schema: %w", err))
 	}
 	if *once {
 		result, err := tablemonitor.RunSingleCycle(context.Background(), cfg, store)
 		if err != nil {
-			fail(fmt.Errorf("run F2 table-monitor sampling cycle: %w", err))
+			return failWith(stderr, fmt.Errorf("run F2 table-monitor sampling cycle: %w", err))
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
-			fail(fmt.Errorf("encode F2 table-monitor result: %w", err))
-		}
-		return
+		// 死臂已删（w16j 证据：Encode 到进程内内存 buffer 恒成功）
+		_ = json.NewEncoder(stdout).Encode(result)
+		return 0
 	}
 	accountHealthConfig, err := accounthealth.LoadConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load J1 account-health config: %w", err))
+		return failWith(stderr, fmt.Errorf("load J1 account-health config: %w", err))
 	}
 	var accountHealthStore *accounthealth.Store
 	var accountHealthInputDB *sql.DB
 	var accountHealthInputPool *pgpool.Handle
 	var accountHealthRunner *accounthealth.Runner
 	var accountHealthReader *accounthealth.PostgresDirectInputReader
-	if accountHealthConfig.Enabled {
-		if accountHealthConfig.Store.Mode == accounthealth.StorePostgres {
-			accountHealthConfig.Store.PostgresPool, err = postgresPools.Acquire("pgx", accountHealthConfig.Store.PostgresURL, "jobs-store", accountHealthConfig.Store.PostgresMaxOpenConns, accountHealthConfig.Store.PostgresMaxIdleConns)
-			if err != nil {
-				fail(fmt.Errorf("open J1 shared PostgreSQL jobs pool: %w", err))
-			}
-		}
-		accountHealthStore, err = accounthealth.OpenStore(accountHealthConfig.Store)
-		if err != nil {
-			fail(fmt.Errorf("open J1 account-health store: %w", err))
-		}
-		if err := accountHealthStore.EnsureSchema(context.Background()); err != nil {
+	// J1 runner 恒装配（机制强制常开，2026-09-19 决策）；J1 outbox drain 的
+	// 装配事实由下方 wireHealthProbeOutboxFace + SetProbeRequestDrain 承担。
+	if accountHealthConfig.Store.Mode == accounthealth.StorePostgres {
+		accountHealthConfig.Store.PostgresPool, err = postgresPools.Acquire("pgx", accountHealthConfig.Store.PostgresURL, "jobs-store", accountHealthConfig.Store.PostgresMaxOpenConns, accountHealthConfig.Store.PostgresMaxIdleConns)
+		// 死臂已删（w16j 证据：pgx 惰性 Open）
+	}
+	accountHealthStore, err = accounthealth.OpenStore(accountHealthConfig.Store)
+	if err != nil {
+		return failWith(stderr, fmt.Errorf("open J1 account-health store: %w", err))
+	}
+	if err := accountHealthStore.EnsureSchema(context.Background()); err != nil {
+		_ = accountHealthStore.Close()
+		return failWith(stderr, fmt.Errorf("initialize J1 account-health schema: %w", err))
+	}
+	if accountHealthConfig.InputSource == "postgres" {
+		accountHealthInputPool, err = postgresPools.Acquire("pgx", accountHealthConfig.BusinessPostgresURL, "business-input", accountHealthConfig.DirectInputPostgresMaxOpenConns, accountHealthConfig.DirectInputPostgresMaxIdleConns)
+		// 死臂已删（w16j 证据：pgx 惰性 Open）
+		accountHealthInputDB = accountHealthInputPool.DB()
+		pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		pingErr := accountHealthInputDB.PingContext(pingContext)
+		pingCancel()
+		if pingErr != nil {
+			_ = accountHealthInputPool.Close()
 			_ = accountHealthStore.Close()
-			fail(fmt.Errorf("initialize J1 account-health schema: %w", err))
+			return failWith(stderr, fmt.Errorf("ping J1 account-health direct-input database: %w", pingErr))
 		}
-		if accountHealthConfig.InputSource == "postgres" {
-			accountHealthInputPool, err = postgresPools.Acquire("pgx", accountHealthConfig.BusinessPostgresURL, "business-input", accountHealthConfig.DirectInputPostgresMaxOpenConns, accountHealthConfig.DirectInputPostgresMaxIdleConns)
-			if err != nil {
-				_ = accountHealthStore.Close()
-				fail(fmt.Errorf("open J1 account-health direct-input database: %w", err))
-			}
-			accountHealthInputDB = accountHealthInputPool.DB()
-			pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			pingErr := accountHealthInputDB.PingContext(pingContext)
-			pingCancel()
-			if pingErr != nil {
-				_ = accountHealthInputPool.Close()
-				_ = accountHealthStore.Close()
-				fail(fmt.Errorf("ping J1 account-health direct-input database: %w", pingErr))
-			}
-			reader, readerErr := accounthealth.NewPostgresDirectInputReader(accountHealthInputDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
-			if readerErr != nil {
-				_ = accountHealthInputPool.Close()
-				_ = accountHealthStore.Close()
-				fail(fmt.Errorf("configure J1 account-health direct-input reader: %w", readerErr))
-			}
-			contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			contractErr := reader.CheckContract(contractContext)
-			contractCancel()
-			if contractErr != nil {
-				_ = accountHealthInputPool.Close()
-				_ = accountHealthStore.Close()
-				fail(fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
-			}
-			accountHealthReader = reader
-			accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
-		} else {
-			accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
+		// 死臂已删（w16j 证据：reader secret/TTL 校验与 LoadConfig 完全重叠）
+		reader, _ := accounthealth.NewPostgresDirectInputReader(accountHealthInputDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
+		contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		contractErr := reader.CheckContract(contractContext)
+		contractCancel()
+		if contractErr != nil {
+			_ = accountHealthInputPool.Close()
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
 		}
+		accountHealthReader = reader
+		accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
+	} else {
+		accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
 	}
 	modelRecoveryConfig, err := keymodelrecovery.LoadRedisConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load model-recovery config: %w", err))
+		return failWith(stderr, fmt.Errorf("load model-recovery config: %w", err))
 	}
 	var modelRecoveryStore *keymodelrecovery.RedisStore
 	var modelRecoveryRunner *keymodelrecovery.Runner
 	if modelRecoveryConfig.Enabled {
 		if accountHealthReader == nil {
-			fail(errors.New("启用 model-recovery 必须同时启用 PostgreSQL J1 direct input reader"))
+			return failWith(stderr, errors.New("启用 model-recovery 必须同时启用 PostgreSQL J1 direct input reader"))
 		}
 		modelRecoveryStore, err = keymodelrecovery.OpenRedisStore(modelRecoveryConfig)
 		if err != nil {
-			fail(fmt.Errorf("open model-recovery Redis store: %w", err))
+			return failWith(stderr, fmt.Errorf("open model-recovery Redis store: %w", err))
 		}
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err = modelRecoveryStore.Ping(pingCtx)
 		pingCancel()
 		if err != nil {
 			_ = modelRecoveryStore.Close()
-			fail(fmt.Errorf("ping model-recovery Redis store: %w", err))
+			return failWith(stderr, fmt.Errorf("ping model-recovery Redis store: %w", err))
 		}
 		modelRecoveryRunner = keymodelrecovery.NewRunner(modelRecoveryStore, accountHealthReader, logger)
 	}
 	accountBalanceConfig, err := accountbalance.LoadRuntimeConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load J2 account-balance config: %w", err))
+		return failWith(stderr, fmt.Errorf("load J2 account-balance config: %w", err))
 	}
 	var accountBalanceService *accountbalance.Service
 	if accountBalanceConfig.Enabled {
 		accountBalanceConfig.PostgresPool, err = postgresPools.Acquire("pgx", accountBalanceConfig.Store.PostgresURL, "jobs-store", accountBalanceConfig.PostgresMaxOpenConns, accountBalanceConfig.PostgresMaxIdleConns)
-		if err != nil {
-			fail(fmt.Errorf("open J2 shared PostgreSQL jobs pool: %w", err))
-		}
+		// 死臂已删（w16j 证据：pgx 惰性 Open）
 		accountBalanceConfig.InputPostgresPool, err = postgresPools.Acquire("pgx", accountBalanceConfig.BusinessPostgresURL, "business-input", accountBalanceConfig.InputPostgresMaxOpenConns, accountBalanceConfig.InputPostgresMaxIdleConns)
-		if err != nil {
-			_ = accountBalanceConfig.PostgresPool.Close()
-			fail(fmt.Errorf("open J2 shared PostgreSQL input pool: %w", err))
-		}
+		// 死臂已删（w16j 证据：pgx 惰性 Open）
 		accountBalanceService, err = accountbalance.NewService(accountBalanceConfig, logger)
 		if err != nil {
-			fail(fmt.Errorf("initialize J2 account-balance service: %w", err))
+			return failWith(stderr, fmt.Errorf("initialize J2 account-balance service: %w", err))
 		}
 	}
 	j3Config, err := proxylatency.LoadRuntimeConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load J3a proxy-latency config: %w", err))
+		return failWith(stderr, fmt.Errorf("load J3a proxy-latency config: %w", err))
 	}
 	j3ManagementConfig, err := proxylatency.LoadManualAdminConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load J3a proxy-latency management config: %w", err))
+		return failWith(stderr, fmt.Errorf("load J3a proxy-latency management config: %w", err))
 	}
 	if j3ManagementConfig.Enabled && !j3Config.Enabled {
-		fail(errors.New("启用 J3a 管理接口前必须启用 J3a Go owner"))
+		return failWith(stderr, errors.New("启用 J3a 管理接口前必须启用 J3a Go owner"))
 	}
 	var j3Store *proxylatency.Store
 	var j3InputDB *sql.DB
@@ -269,22 +274,15 @@ func main() {
 		j3Config.Store.PostgresMaxOpenConns = j3Config.PostgresMaxOpenConns
 		j3Config.Store.PostgresMaxIdleConns = j3Config.PostgresMaxIdleConns
 		j3Config.Store.PostgresPool, err = postgresPools.Acquire("pgx", j3Config.Store.PostgresURL, "jobs-store", j3Config.Store.PostgresMaxOpenConns, j3Config.Store.PostgresMaxIdleConns)
-		if err != nil {
-			fail(fmt.Errorf("open J3a shared PostgreSQL jobs pool: %w", err))
-		}
+		// 死臂已删（w16j 证据：pgx 惰性 Open）
 		j3Store, err = proxylatency.OpenStore(j3Config.Store)
-		if err != nil {
-			fail(fmt.Errorf("open J3a proxy-latency jobs store: %w", err))
-		}
+		// 死臂已删（w16j 证据：pool 前置注入 + URL/limits LoadConfig 已校验）
 		if err := j3Store.CheckSchema(context.Background()); err != nil {
 			_ = j3Store.Close()
-			fail(fmt.Errorf("verify pre-provisioned J3a proxy-latency jobs schema: %w", err))
+			return failWith(stderr, fmt.Errorf("verify pre-provisioned J3a proxy-latency jobs schema: %w", err))
 		}
 		j3InputPool, err = postgresPools.Acquire("pgx", j3Config.BusinessPostgresURL, "business-input", j3Config.InputPostgresMaxOpenConns, j3Config.InputPostgresMaxIdleConns)
-		if err != nil {
-			_ = j3Store.Close()
-			fail(fmt.Errorf("open J3a proxy-latency direct-input database: %w", err))
-		}
+		// 死臂已删（w16j 证据：pgx 惰性 Open）
 		j3InputDB = j3InputPool.DB()
 		pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pingErr := j3InputDB.PingContext(pingContext)
@@ -292,35 +290,27 @@ func main() {
 		if pingErr != nil {
 			_ = j3InputPool.Close()
 			_ = j3Store.Close()
-			fail(fmt.Errorf("ping J3a proxy-latency direct-input database: %w", pingErr))
+			return failWith(stderr, fmt.Errorf("ping J3a proxy-latency direct-input database: %w", pingErr))
 		}
-		reader, readerErr := proxylatency.NewPostgresDirectInputReader(j3InputDB, j3Config.InputTTL, j3Config.Now)
-		if readerErr != nil {
-			_ = j3InputPool.Close()
-			_ = j3Store.Close()
-			fail(fmt.Errorf("configure J3a proxy-latency direct-input reader: %w", readerErr))
-		}
+		// 死臂已删（w16j 证据：reader TTL 校验与 LoadConfig 完全重叠）
+		reader, _ := proxylatency.NewPostgresDirectInputReader(j3InputDB, j3Config.InputTTL, j3Config.Now)
 		contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		contractErr := reader.CheckContract(contractContext)
 		contractCancel()
 		if contractErr != nil {
 			_ = j3InputPool.Close()
 			_ = j3Store.Close()
-			fail(fmt.Errorf("verify J3a proxy-latency direct-input contract: %w", contractErr))
+			return failWith(stderr, fmt.Errorf("verify J3a proxy-latency direct-input contract: %w", contractErr))
 		}
 		j3ResultPool, err = postgresPools.Acquire("pgx", j3Config.ResultPostgresURL, "business-result", j3Config.InputPostgresMaxOpenConns, j3Config.InputPostgresMaxIdleConns)
-		if err != nil {
-			_ = j3InputPool.Close()
-			_ = j3Store.Close()
-			fail(fmt.Errorf("open J3a Go business-result PostgreSQL pool: %w", err))
-		}
+		// 死臂已删（w16j 证据：pgx 惰性 Open）
 		j3ResultDB = j3ResultPool.DB()
 		resultProjector, projectorErr := proxylatency.NewResultProjector(j3Store, j3ResultDB, proxylatency.ResultProjectorConfig{PollInterval: time.Second, BatchSize: j3Config.BatchSize, Now: j3Config.Now}, logger)
 		if projectorErr != nil {
 			_ = j3ResultPool.Close()
 			_ = j3InputPool.Close()
 			_ = j3Store.Close()
-			fail(fmt.Errorf("initialize J3a Go business-result projector: %w", projectorErr))
+			return failWith(stderr, fmt.Errorf("initialize J3a Go business-result projector: %w", projectorErr))
 		}
 		projectorContext, projectorCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		projectorContractErr := resultProjector.CheckContract(projectorContext)
@@ -329,7 +319,7 @@ func main() {
 			_ = j3ResultPool.Close()
 			_ = j3InputPool.Close()
 			_ = j3Store.Close()
-			fail(fmt.Errorf("verify J3a Go business-result contract: %w", projectorContractErr))
+			return failWith(stderr, fmt.Errorf("verify J3a Go business-result contract: %w", projectorContractErr))
 		}
 		j3Runner = proxylatency.NewRunner(j3Config, j3Store, reader, logger)
 		j3Runner.SetResultProjector(resultProjector)
@@ -340,7 +330,7 @@ func main() {
 				_ = j3ResultPool.Close()
 				_ = j3InputPool.Close()
 				_ = j3Store.Close()
-				fail(fmt.Errorf("open J3a management PostgreSQL pool: %w", err))
+				return failWith(stderr, fmt.Errorf("open J3a management PostgreSQL pool: %w", err))
 			}
 			j3ManagementDB = j3ManagementPool.DB()
 			j3ManagementSource, err = proxylatency.NewPostgresManualAdminSource(j3ManagementDB, j3Config.Now)
@@ -349,7 +339,7 @@ func main() {
 				_ = j3ResultPool.Close()
 				_ = j3InputPool.Close()
 				_ = j3Store.Close()
-				fail(fmt.Errorf("initialize J3a management source: %w", err))
+				return failWith(stderr, fmt.Errorf("initialize J3a management source: %w", err))
 			}
 			managementContractCtx, managementContractCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			managementContractErr := j3ManagementSource.CheckContract(managementContractCtx)
@@ -359,74 +349,41 @@ func main() {
 				_ = j3ResultPool.Close()
 				_ = j3InputPool.Close()
 				_ = j3Store.Close()
-				fail(fmt.Errorf("verify J3a management PostgreSQL contract: %w", managementContractErr))
+				return failWith(stderr, fmt.Errorf("verify J3a management PostgreSQL contract: %w", managementContractErr))
 			}
 		}
 	}
 	j3bConfig, err := modelcheckruntime.LoadConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load J3b model-check config: %w", err))
+		return failWith(stderr, fmt.Errorf("load J3b model-check config: %w", err))
 	}
 	if j3bConfig.Enabled {
 		// Solution A reserves the J3b runtime for Gateway. Keep this guard even
 		// when a future config parser changes, so jobs can never become a second
 		// owner through an accidental startup path.
-		fail(errors.New("J3b runtime is Gateway-owned; juhe-ai-jobs cannot be enabled"))
+		return failWith(stderr, errors.New("J3b runtime is Gateway-owned; juhe-ai-jobs cannot be enabled"))
 	}
 
-	// worker 组合根（J-A~J-F 任务族）：默认关闭（JUHE_AI_JOBS_WORKER_ENABLED），
-	// 关闭时保持上方既有 F1/F2/J1/J2/J3a 行为不变；只在 owner 模式装配。
+	// worker 组合根（J-A~J-F 任务族）：机制强制常开（2026-09-19 决策，
+	// JUHE_AI_JOBS_WORKER_ENABLED 已废弃），只在 owner 模式装配。
 	workerCfg, err := loadWorkerConfig(os.Getenv)
 	if err != nil {
-		fail(fmt.Errorf("load jobs worker config: %w", err))
+		return failWith(stderr, fmt.Errorf("load jobs worker config: %w", err))
 	}
-	var worker *workerAssembly
-	if workerCfg.Enabled {
-		worker, err = buildWorkerAssembly(workerCfg, logger)
-		if err != nil {
-			fail(fmt.Errorf("assemble jobs worker: %w", err))
-		}
-	} else {
-		warnWorkerDisabled(logger)
+	worker, err := buildWorkerAssembly(workerCfg, logger)
+	if err != nil {
+		return failWith(stderr, fmt.Errorf("assemble jobs worker: %w", err))
 	}
-	// P1-3：J1 探针 outbox 消费面独立于 J-A~J-F worker 开关。当
-	// ACCOUNT_HEALTH_ENABLED=true 但 WORKER_ENABLED=false 时仍需装配 outbox
-	// drain/prune（gateway 写入的 pending 行必须被消费或清理）。
-	if worker == nil && accountHealthConfig.Enabled {
-		// buildWorkerAssembly 对 disabled config 按契约返回 nil；这里必须
-		// 使用只创建基础句柄的 minimal assembly，不能再次走 Enabled 门禁。
-		// minimal assembly 只承载 J1 outbox/projector；必须复用 J1 已校验的
-		// pool limits，不能落回 workerConfig 的 50/50 历史默认（idle=50
-		// 已被 sqlpool 合约拒绝）。否则 outbox 会静默降级为 pending。
-		workerCfg.PostgresMaxOpenConns = accountHealthConfig.Store.PostgresMaxOpenConns
-		workerCfg.PostgresMaxIdleConns = accountHealthConfig.Store.PostgresMaxIdleConns
-		worker = newWorkerAssembly(workerCfg, logger)
-		// D 任务①：J1 启用而 worker 关闭的部署同样需要 OAuth token 保活
-		// （此前保活只在 worker assembly 装配，OAuth 账户 token 过期后无自动
-		// 续期）。复用 worker 构造与既有 env；缺配置跳过并 warn（不静默），
-		// 存储打不开降级 warn 不阻塞启动（对齐下方 outbox 消费面语义）。
-		if wireErr := worker.wireMinimalOAuthRefresh(); wireErr != nil {
-			logger.Warn("minimal assembly OAuth token 保活装配失败；OAuth 账户 token 不会自动续期",
-				"event", "jobs_minimal_oauth_refresh_assembly_failed", "error", wireErr.Error())
-		}
-		logger.Info("worker 调度器关闭但账户健康已启用：装配最小 assembly 以承载 outbox 消费面",
-			"event", "jobs_minimal_assembly_for_outbox")
-	}
-	workerReady := func() bool { return true }
-	workerStatus := func() map[string]any { return nil }
-	if worker != nil {
-		workerReady = worker.ready
-		workerStatus = worker.statusPayload
-	}
+	workerReady := worker.ready
+	workerStatus := worker.statusPayload
 	// 健康检查派发 outbox 消费与清理面（去跨进程战役第二刀）：J1 runner 是
 	// 唯一探测者，worker 业务库提供 boundary/outbox 读侧
-	// （worker_health_probe_outbox.go）。drain 仍受 J1 门控（J1 未启用时不
-	// 消费，gateway 行保持 pending）；prune 组件独立于 J1 常驻，J1 关闭部署
-	// 的 pending 堆积由保留期删除兜底。装配失败降级 warn（等同原派发能力未
-	// 装配的语义），不阻塞启动。
+	// （worker_health_probe_outbox.go）。J1 恒装配，drain 随之恒接线
+	// （装配失败降级 warn 等同消费面缺席）；prune 组件独立常驻，pending
+	// 堆积由保留期删除兜底。装配失败降级 warn，不阻塞启动。
 	var probeOutboxPruner *healthProbeOutboxPruner
 	var healthOutcomeProjector *accounthealth.OutcomeProjector
-	if worker != nil {
+	{
 		face, faceErr := worker.wireHealthProbeOutboxFace(os.Getenv)
 		if faceErr != nil {
 			logger.Warn("账户健康探针 outbox 消费面装配失败；outbox 行保持 pending",
@@ -438,7 +395,7 @@ func main() {
 			probeOutboxPruner = face.pruner
 		}
 		// J1 outcome → 业务账户投影面（BUG-0174 M-1）：独立组件恢复
-		// 「探活成功→账户回归轮换」闭环；J1 未启用或 env 关闭时缺席，装配
+		// 「探活成功→账户回归轮换」闭环；env 显式关闭时缺席，装配
 		// 失败降级 warn（outcome 仅停留 juhe_jobs 审计面），不阻塞启动。
 		projector, projectorErr := worker.wireHealthOutcomeProjector(os.Getenv, accountHealthStore)
 		if projectorErr != nil {
@@ -451,7 +408,7 @@ func main() {
 
 	listener, err := listenLoopback(*healthAddress)
 	if err != nil {
-		fail(fmt.Errorf("listen jobs health endpoint %q: %w", *healthAddress, err))
+		return failWith(stderr, fmt.Errorf("listen jobs health endpoint %q: %w", *healthAddress, err))
 	}
 	defer listener.Close()
 	tableRunner := tablemonitor.NewRunner(cfg, store, logger)
@@ -460,7 +417,7 @@ func main() {
 	// 继续自采样 role=jobs；跨进程 trend HTTP 面已删除）。
 	goMetricsConfig, err := gometrics.LoadConfig(os.Getenv, "jobs")
 	if err != nil {
-		fail(fmt.Errorf("load Go runtime metrics config: %w", err))
+		return failWith(stderr, fmt.Errorf("load Go runtime metrics config: %w", err))
 	}
 	goMetricsCollector := gometrics.New(goMetricsConfig.Service, goMetricsConfig.Role)
 	var goMetricsStore *gometrics.Store
@@ -469,16 +426,16 @@ func main() {
 	if goMetricsConfig.Enabled {
 		goMetricsStore, goMetricsDB, err = gometrics.OpenStore(goMetricsConfig)
 		if err != nil {
-			fail(fmt.Errorf("open Go runtime metrics store: %w", err))
+			return failWith(stderr, fmt.Errorf("open Go runtime metrics store: %w", err))
 		}
 		if err := gometrics.EnsureReady(context.Background(), goMetricsStore); err != nil {
 			_ = goMetricsDB.Close()
-			fail(fmt.Errorf("verify Go runtime metrics schema: %w", err))
+			return failWith(stderr, fmt.Errorf("verify Go runtime metrics schema: %w", err))
 		}
 		goMetricsSampler, err = gometrics.NewSampler(goMetricsCollector, goMetricsStore, goMetricsConfig.Interval)
 		if err != nil {
 			_ = goMetricsDB.Close()
-			fail(fmt.Errorf("initialize Go runtime metrics sampler: %w", err))
+			return failWith(stderr, fmt.Errorf("initialize Go runtime metrics sampler: %w", err))
 		}
 		goMetricsSampler.Retention = time.Duration(goMetricsConfig.RetentionDays) * 24 * time.Hour
 	}
@@ -593,7 +550,7 @@ func main() {
 	if j3ManagementConfig.Enabled {
 		managementListener, listenErr := net.Listen("tcp", j3ManagementConfig.ListenAddress)
 		if listenErr != nil {
-			fail(fmt.Errorf("listen J3a management endpoint %q: %w", j3ManagementConfig.ListenAddress, listenErr))
+			return failWith(stderr, fmt.Errorf("listen J3a management endpoint %q: %w", j3ManagementConfig.ListenAddress, listenErr))
 		}
 		managementServer := &http.Server{
 			Handler:           proxylatency.NewManualAdminHandler(j3Runner, j3ManagementSource, proxylatency.NewPostgresManualAdminAuditAppender(j3ManagementDB), j3ManagementConfig.RequestDeadline, logger),
@@ -602,6 +559,14 @@ func main() {
 			WriteTimeout:      j3ManagementConfig.RequestDeadline + 5*time.Second,
 			IdleTimeout:       30 * time.Second,
 		}
+		// P2-3：Serve 持久报错时 supervisor 会在同一根 ctx 下反复调用本 Run，
+		// stop 监听 goroutine 不能随每次 Run 重复创建（按次累积）。stopDone 与
+		// goroutine 一起提升到组件作用域：supervisor 对每次重试传入同一根 ctx，
+		// sync.Once 固定首个 runCtx 即唯一停机信号源；stopDone 若留在 Run 内，
+		// 重试后的 ErrServerClosed 路径会阻塞在无人关闭的局部 channel 上，
+		// 复现「Run 等不可达收尾」的停机死锁。
+		var stopOnce sync.Once
+		stopDone := make(chan struct{})
 		components = append(components, supervisor.Component{
 			Name: "J3a management API",
 			Run: func(runCtx context.Context) error {
@@ -610,14 +575,15 @@ func main() {
 				// Close、Close 等全部 Run」的停机死锁（ctx 取消后其余组件全部
 				// 停止，本组件 Serve 永远阻塞）。Run 侧监听停机信号自行 Shutdown
 				//（5s 上限）；Close 收缩为只关 management 连接池。
-				stopDone := make(chan struct{})
-				go func() {
-					defer close(stopDone)
-					<-runCtx.Done()
-					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					_ = managementServer.Shutdown(shutdownCtx)
-				}()
+				stopOnce.Do(func() {
+					go func() {
+						defer close(stopDone)
+						<-runCtx.Done()
+						shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						_ = managementServer.Shutdown(shutdownCtx)
+					}()
+				})
 				err := managementServer.Serve(managementListener)
 				if errors.Is(err, http.ErrServerClosed) {
 					// 常规停机路径：等 Shutdown goroutine 收尾后再返回。
@@ -633,7 +599,7 @@ func main() {
 	}
 	j3bReady := func() bool { return true }
 	healthServer := &http.Server{
-		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, accountHealthConfig.Enabled, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
+		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, true, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
 			if j3Runner == nil {
 				return proxylatency.RunnerStatus{}
 			}
@@ -644,57 +610,58 @@ func main() {
 			}
 			return j3Runner.Snapshot()
 		}, false, j3bReady, goMetricsCollector, goMetricsSampler,
-			workerCfg.Enabled, workerReady, workerStatus),
+			true, workerReady, workerStatus),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := hooksSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", accountHealthConfig.Enabled, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", false, "workerEnabled", workerCfg.Enabled, "workerWiredJobs", func() []string {
-		if worker == nil {
-			return nil
-		}
-		return worker.wiredJobs
-	}())
-	if worker != nil {
-		components = append(components, worker.components()...)
-	}
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", true, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", false, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
+	components = append(components, worker.components()...)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	shutdownErr := healthServer.Shutdown(shutdownCtx)
 	shutdownCancel()
 	serveResult := <-serveErr
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
-		fail(fmt.Errorf("F2 table-monitor runner stopped: %w", runErr))
+		return failWith(stderr, fmt.Errorf("F2 table-monitor runner stopped: %w", runErr))
 	}
 	if shutdownErr != nil {
-		fail(fmt.Errorf("shutdown jobs health endpoint: %w", shutdownErr))
+		return failWith(stderr, fmt.Errorf("shutdown jobs health endpoint: %w", shutdownErr))
 	}
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
-		fail(fmt.Errorf("jobs health endpoint stopped: %w", serveResult))
+		return failWith(stderr, fmt.Errorf("jobs health endpoint stopped: %w", serveResult))
 	}
+	return 0
 }
 
-// warnWorkerDisabled 在 JUHE_AI_JOBS_WORKER_ENABLED=false 时输出用量断供告警：
-// gateway 写出的 usage spool 无人消费、用量记录不入库、统计预聚合与额度快照
-// 停止刷新；生产或长驻部署必须显式设置 JUHE_AI_JOBS_WORKER_ENABLED=true。
-// 抽成包级函数仅为可测试性，不改变装配流程。
-func warnWorkerDisabled(logger *slog.Logger) {
-	logger.Warn("worker 调度器未启用：usage spool 不会被消费、用量记录不会写入存储、统计预聚合与额度快照停止刷新；生产或长驻部署必须显式设置 JUHE_AI_JOBS_WORKER_ENABLED=true",
-		"event", "jobs_worker_disabled_usage_supply_degraded")
+// warnDeprecatedSwitches 对已移除的 Node→Go 迁移过渡期总开关输出废弃告警：
+// J1 账户健康与 worker 任务族自 2026-09-19 起强制常开（原防双 owner 理由已随
+// Node 后端归档失效），两个变量不再被任何配置读取；值（trim + 大小写不敏感）
+// 恰为 true 时保持静默（向后兼容，存量部署的 true 配置不刷告警）。
+func warnDeprecatedSwitches(logger *slog.Logger) {
+	for _, switchEnv := range []struct{ name, event string }{
+		{"JUHE_AI_ACCOUNT_HEALTH_ENABLED", "account_health_enabled_deprecated"},
+		{"JUHE_AI_JOBS_WORKER_ENABLED", "jobs_worker_enabled_deprecated"},
+	} {
+		if value, ok := os.LookupEnv(switchEnv.name); ok && !strings.EqualFold(strings.TrimSpace(value), "true") {
+			logger.Warn(fmt.Sprintf("环境变量 %s 已废弃：核心机制强制常开，该值不再生效", switchEnv.name), "event", switchEnv.event)
+		}
+	}
 }
 
 // runPassiveJobs never initializes stores or leases. It exists only for a
 // candidate readiness endpoint during standby/drain; ownerReady stays false.
-func runPassiveJobs(healthAddress string, ownerMode ownermode.Mode, logger *slog.Logger) {
+// 返回进程退出码（原 fail() 出口收敛为返回值，stderr 文案不变）。
+func runPassiveJobs(healthAddress string, ownerMode ownermode.Mode, logger *slog.Logger, stdout io.Writer, stderr io.Writer) int {
 	listener, err := listenLoopback(healthAddress)
 	if err != nil {
-		fail(fmt.Errorf("listen passive jobs health endpoint %q: %w", healthAddress, err))
+		return failWith(stderr, fmt.Errorf("listen passive jobs health endpoint %q: %w", healthAddress, err))
 	}
 	defer listener.Close()
 	server := &http.Server{Handler: passiveJobsHealthHandler(ownerMode), ReadHeaderTimeout: 5 * time.Second}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := hooksSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
@@ -705,11 +672,12 @@ func runPassiveJobs(healthAddress string, ownerMode ownermode.Mode, logger *slog
 	cancel()
 	serveResult := <-serveErr
 	if shutdownErr != nil {
-		fail(fmt.Errorf("shutdown passive jobs health endpoint: %w", shutdownErr))
+		return failWith(stderr, fmt.Errorf("shutdown passive jobs health endpoint: %w", shutdownErr))
 	}
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
-		fail(fmt.Errorf("passive jobs health endpoint stopped: %w", serveResult))
+		return failWith(stderr, fmt.Errorf("passive jobs health endpoint stopped: %w", serveResult))
 	}
+	return 0
 }
 
 func listenLoopback(address string) (net.Listener, error) {
@@ -1029,26 +997,27 @@ func proxylatencyTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func runRuntimeLegacyMigration(config runtimelog.Config) {
+func runRuntimeLegacyMigration(config runtimelog.Config, stdout io.Writer, stderr io.Writer) int {
 	store, err := runtimelog.OpenStore(context.Background(), config)
 	if err != nil {
-		fail(fmt.Errorf("open F1 runtime-log-indexer store: %w", err))
+		return failWith(stderr, fmt.Errorf("open F1 runtime-log-indexer store: %w", err))
 	}
 	defer store.Close()
 	if err := runtimelog.EnsureSchema(context.Background(), store); err != nil {
-		fail(fmt.Errorf("initialize F1 runtime-log-indexer schema: %w", err))
+		return failWith(stderr, fmt.Errorf("initialize F1 runtime-log-indexer schema: %w", err))
 	}
 	if err := store.CheckSchema(context.Background()); err != nil {
-		fail(fmt.Errorf("verify F1 runtime-log-indexer schema: %w", err))
+		return failWith(stderr, fmt.Errorf("verify F1 runtime-log-indexer schema: %w", err))
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := hooksSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := runtimelog.RunWithOwnerLease(ctx, config, store, func(ownerCtx context.Context) error {
 		return runtimelog.MigrateLegacySQLite(ownerCtx, config, store)
 	}); err != nil {
-		fail(err)
+		return failWith(stderr, err)
 	}
-	fmt.Fprintln(os.Stdout, "旧运行日志 SQLite 数据迁移和完整性校验完成")
+	fmt.Fprintln(stdout, "旧运行日志 SQLite 数据迁移和完整性校验完成")
+	return 0
 }
 
 func envOrDefault(name, fallback string) string {
@@ -1058,7 +1027,9 @@ func envOrDefault(name, fallback string) string {
 	return fallback
 }
 
-func fail(err error) {
-	fmt.Fprintln(os.Stderr, err)
-	os.Exit(1)
+// failWith 保持原 fail() 的错误输出行为（单行错误到 stderr，逐字节一致），
+// 返回退出码 1 代替原 os.Exit(1)；run 的各错误出口经它收敛。
+func failWith(stderr io.Writer, err error) int {
+	fmt.Fprintln(stderr, err)
+	return 1
 }

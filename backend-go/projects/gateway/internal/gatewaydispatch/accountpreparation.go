@@ -13,7 +13,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
 )
 
 // Account preparation, migrated from dispatch/account-preparation.ts.
@@ -473,13 +473,13 @@ func (e *Engine) BuildPreparedUpstreamRequestParts(
 	return parts, nil
 }
 
-// convertBridgeGuidanceError lifts the openaicompat.BridgeGuidanceError
+// convertBridgeGuidanceError lifts the openaicompatbridge.BridgeGuidanceError
 // payload (Node GatewayAgentGuidanceResponse: 200 agent_guidance) onto the
 // gatewaypreauth error the engine's errors.As recognition consumes
 // (dispatchsingle / attemptoutcomes guidance branches). accountScoped keeps
 // the Node `accountScoped !== false` default (nil reads as true).
 func convertBridgeGuidanceError(err error) error {
-	var guidanceErr *openaicompat.BridgeGuidanceError
+	var guidanceErr *openaicompatbridge.BridgeGuidanceError
 	if !errors.As(err, &guidanceErr) {
 		return err
 	}

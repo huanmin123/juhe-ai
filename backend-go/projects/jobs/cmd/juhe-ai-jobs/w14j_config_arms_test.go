@@ -12,7 +12,6 @@ import (
 func TestW14JLoadWorkerConfigRangeArms(t *testing.T) {
 	base := func() map[string]string {
 		return map[string]string{
-			"JUHE_AI_JOBS_WORKER_ENABLED":         "true",
 			"JUHE_AI_DATABASE_DRIVER":             "sqlite",
 			"JUHE_AI_DATABASE_PATH":               filepath.Join(t.TempDir(), "business.sqlite3"),
 			"JUHE_AI_STATS_DATABASE_PATH":         filepath.Join(t.TempDir(), "stats.sqlite3"),
@@ -25,7 +24,7 @@ func TestW14JLoadWorkerConfigRangeArms(t *testing.T) {
 		}
 	}
 	scenarios := []struct {
-		name string
+		name  string
 		patch map[string]string
 	}{
 		{"chat-retention-zero", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}},

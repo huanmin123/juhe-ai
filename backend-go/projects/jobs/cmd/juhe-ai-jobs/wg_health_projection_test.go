@@ -95,7 +95,6 @@ func TestWireHealthOutcomeProjectorBranches(t *testing.T) {
 func wgProjectionEnabledEnv(t *testing.T) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_ENABLED":           "true",
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "wg-projection",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",

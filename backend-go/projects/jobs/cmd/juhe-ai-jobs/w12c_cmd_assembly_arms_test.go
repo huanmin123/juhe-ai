@@ -430,62 +430,53 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 	defer assembly.closeStores()
 	ctx := context.Background()
 
-	// store 为 nil（J1 未启用）→ 合法缺席。
+	// store 为 nil → 合法缺席（防御性分支；恒开终态下 store 恒非 nil）。
 	if projector, err := assembly.wireHealthOutcomeProjector(func(string) string { return "" }, nil); err != nil || projector != nil {
 		t.Fatalf("nil store 应缺席: %v %v", projector, err)
 	}
 	// env 显式关闭。
 	disabled, disabledErr := assembly.wireHealthOutcomeProjector(func(name string) string {
-		if name == "JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_DISABLED" {
+		if name == healthProjectionDisabledEnvVar {
 			return "true"
 		}
-		return "JUHE_AI_ACCOUNT_HEALTH_ENABLED=true"
+		return ""
 	}, &accounthealth.Store{})
 	if disabledErr != nil || disabled != nil {
 		t.Fatalf("env 关闭后投影面必须缺席: %v %v", disabled, disabledErr)
 	}
-	// env 未启用 J1 → 投影面合法缺席（LoadConfig 默认关闭）。
-	if absent, err := assembly.wireHealthOutcomeProjector(func(string) string { return "" }, &accounthealth.Store{}); err != nil || absent != nil {
-		t.Fatalf("J1 未启用应缺席: %v %v", absent, err)
+	// J1 配置缺失 → 恒开语义下 LoadConfig 失败即装配失败（无静默缺席路径）。
+	if absent, err := assembly.wireHealthOutcomeProjector(func(string) string { return "" }, &accounthealth.Store{}); err == nil {
+		t.Fatalf("J1 配置缺失必须使投影装配失败: %v", absent)
 	}
 	// 轮询/批量 env 非法 → 装配失败（业务库可开）。
-	invalidEnv := func(name string) string {
-		if name == healthProjectionPollEnvVar {
-			return "1"
-		}
-		return "JUHE_AI_ACCOUNT_HEALTH_ENABLED=true\nJUHE_AI_ACCOUNT_HEALTH_STORE=sqlite"
-	}
 	getenv := func(name string) string {
 		pairs := map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_ENABLED":                  "true",
-			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":               "go",
-			"JUHE_AI_ACCOUNT_HEALTH_STORE":                    "sqlite",
-			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":            filepath.Join(t.TempDir(), "j1.sqlite3"),
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":          t.TempDir(),
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
-			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":        "0123456789abcdef0123456789abcdef",
-			healthProjectionDisabledEnvVar:                    "",
-			healthProjectionPollEnvVar:                        "1",
-			healthProjectionBatchEnvVar:                       "",
+			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
+			"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
+			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     filepath.Join(t.TempDir(), "j1.sqlite3"),
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
+			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
+			healthProjectionDisabledEnvVar:             "",
+			healthProjectionPollEnvVar:                 "1",
+			healthProjectionBatchEnvVar:                "",
 		}
 		return pairs[name]
 	}
-	_ = invalidEnv
 	if _, err := assembly.wireHealthOutcomeProjector(getenv, &accounthealth.Store{}); err == nil {
 		t.Fatal("非法轮询间隔必须暴露")
 	}
 	getenvBatch := func(name string) string {
 		pairs := map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_ENABLED":                  "true",
-			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":               "go",
-			"JUHE_AI_ACCOUNT_HEALTH_STORE":                    "sqlite",
-			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":            filepath.Join(t.TempDir(), "j1.sqlite3"),
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":          t.TempDir(),
-			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY":        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
-			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET":        "0123456789abcdef0123456789abcdef",
-			healthProjectionDisabledEnvVar:                    "",
-			healthProjectionPollEnvVar:                        "",
-			healthProjectionBatchEnvVar:                       "1001",
+			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
+			"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
+			"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     filepath.Join(t.TempDir(), "j1.sqlite3"),
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
+			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
+			healthProjectionDisabledEnvVar:             "",
+			healthProjectionPollEnvVar:                 "",
+			healthProjectionBatchEnvVar:                "1001",
 		}
 		return pairs[name]
 	}
@@ -495,7 +486,6 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 	// 合法配置 → 投影器装配成功（stats 家族缺席 warn）。
 	getenvOK := func(name string) string {
 		pairs := map[string]string{
-			"JUHE_AI_ACCOUNT_HEALTH_ENABLED":           "true",
 			"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w12c-j1",
 			"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 			"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
@@ -566,7 +556,6 @@ func TestW12CProbeSettingsSourceFallback(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // wireFamilies 错误传播与代理信封补充分支
 // ---------------------------------------------------------------------------
@@ -576,33 +565,32 @@ func TestW12CWireFamiliesErrorPropagation(t *testing.T) {
 	// buildWorkerAssembly 必须回收已打开句柄并上抛错误（wireFamilies 61.1%
 	// 的错误传播臂）。
 	config := workerConfig{
-		Enabled:               true,
-		Driver:                "postgres",
-		PostgresURL:           "postgres://invalid:invalid@127.0.0.1:1/none?sslmode=disable",
-		PostgresMaxOpenConns:  10,
-		PostgresMaxIdleConns:  5,
-		Secret:                wgBalanceSecret,
-		InstanceID:            "w12c-propagation",
-		StatsEnabled:          true,
-		OAuthEnabled:          true,
-		TaskRunsEnabled:       true,
-		UsageWriterEnabled:    true,
-		BalanceDetectEnabled:  true,
-		RetentionEnabled:      true,
-		ProbeEnabled:          true,
-		ProbeConcurrency:      1,
-		DrainTimeout:          time.Second,
-		BusinessSQLitePath:    filepath.Join(t.TempDir(), "business.sqlite3"),
-		StatsSQLitePath:       filepath.Join(t.TempDir(), "stats.sqlite3"),
-		TaskRunsSQLitePath:    filepath.Join(t.TempDir(), "task-runs.sqlite3"),
-		ChatSQLitePath:        filepath.Join(t.TempDir(), "chat.sqlite3"),
-		DatasetSQLitePath:     filepath.Join(t.TempDir(), "dataset.sqlite3"),
-		UsageCatalogSQLitePath: filepath.Join(t.TempDir(), "usage.sqlite3"),
-		UsageShardRoot:        filepath.Join(t.TempDir(), "usage-shards"),
-		CodexContextStateShardRoot: filepath.Join(t.TempDir(), "codex-state"),
+		Driver:                      "postgres",
+		PostgresURL:                 "postgres://invalid:invalid@127.0.0.1:1/none?sslmode=disable",
+		PostgresMaxOpenConns:        10,
+		PostgresMaxIdleConns:        5,
+		Secret:                      wgBalanceSecret,
+		InstanceID:                  "w12c-propagation",
+		StatsEnabled:                true,
+		OAuthEnabled:                true,
+		TaskRunsEnabled:             true,
+		UsageWriterEnabled:          true,
+		BalanceDetectEnabled:        true,
+		RetentionEnabled:            true,
+		ProbeEnabled:                true,
+		ProbeConcurrency:            1,
+		DrainTimeout:                time.Second,
+		BusinessSQLitePath:          filepath.Join(t.TempDir(), "business.sqlite3"),
+		StatsSQLitePath:             filepath.Join(t.TempDir(), "stats.sqlite3"),
+		TaskRunsSQLitePath:          filepath.Join(t.TempDir(), "task-runs.sqlite3"),
+		ChatSQLitePath:              filepath.Join(t.TempDir(), "chat.sqlite3"),
+		DatasetSQLitePath:           filepath.Join(t.TempDir(), "dataset.sqlite3"),
+		UsageCatalogSQLitePath:      filepath.Join(t.TempDir(), "usage.sqlite3"),
+		UsageShardRoot:              filepath.Join(t.TempDir(), "usage-shards"),
+		CodexContextStateShardRoot:  filepath.Join(t.TempDir(), "codex-state"),
 		CodexContextStateShardCount: 1,
-		ChatAssetsRoot:        filepath.Join(t.TempDir(), "chat-assets"),
-		CodexContextRoot:      filepath.Join(t.TempDir(), "codex-context"),
+		ChatAssetsRoot:              filepath.Join(t.TempDir(), "chat-assets"),
+		CodexContextRoot:            filepath.Join(t.TempDir(), "codex-context"),
 	}
 	assembly, err := buildWorkerAssembly(config, slog.Default())
 	if err == nil {

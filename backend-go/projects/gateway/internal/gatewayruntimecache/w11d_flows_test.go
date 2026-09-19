@@ -208,7 +208,7 @@ func TestW11DCatalogSharedAndErrorArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_provider_model_route_index_shared_cache_read_failed" {
 			found = true
 		}
@@ -223,7 +223,7 @@ func TestW11DCatalogSharedAndErrorArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_provider_model_route_index_shared_cache_write_failed" {
 			found = true
 		}
@@ -238,7 +238,7 @@ func TestW11DCatalogSharedAndErrorArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_provider_model_catalog_shared_cache_write_failed" {
 			found = true
 		}
@@ -359,7 +359,7 @@ func TestW11DGroupAccessAndInspectionArms(t *testing.T) {
 	svc6.sharedRouteIdx = &w11dClearErrShared{}
 	svc6.sharedSettings = &w11dClearErrShared{}
 	svc6.ClearGatewayRuntimeCacheLocal(ClearOptions{ClearModelCatalog: true})
-	events := strings.Join(logger.events, ",")
+	events := strings.Join(logger.snapshot(), ",")
 	for _, want := range []string{
 		"gateway_group_usage_access_shared_cache_clear_failed",
 		"gateway_response_inspection_policy_shared_cache_clear_failed",
@@ -576,13 +576,13 @@ func TestW11DRuntimeSanitizeAndDispatchArms(t *testing.T) {
 		t.Fatalf("last-good 回退 = %+v err=%v", fallback.APIKey, err)
 	}
 	found := false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_dynamic_route_last_good_fallback" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("last-good 回退告警缺失: %v", logger.events)
+		t.Fatalf("last-good 回退告警缺失: %v", logger.snapshot())
 	}
 	// 成功重选：Orderer 返回倒序，两个分组都有访问与账户，选第一个。
 	modelsDyn.groupAccess["g1:sys_owner"] = &GroupUsageAccessMetadata{GroupOwnerSystemAccountID: "sys_owner"}
@@ -678,13 +678,13 @@ func TestW11DRuntimeStaleRefreshWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, event := range logger.events {
+	for _, event := range logger.snapshot() {
 		if event == "gateway_runtime_stale_refresh_failed" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("运行态后台刷新失败告警缺失: %v", logger.events)
+		t.Fatalf("运行态后台刷新失败告警缺失: %v", logger.snapshot())
 	}
 }
 

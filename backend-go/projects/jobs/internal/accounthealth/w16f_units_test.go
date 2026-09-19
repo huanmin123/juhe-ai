@@ -52,7 +52,6 @@ func w16fMergeEnv(base, overlay map[string]string) map[string]string {
 // TestW16fLoadConfigPoolArms 覆盖 LoadConfig 的连接池与超时配置失败臂。
 func TestW16fLoadConfigPoolArms(t *testing.T) {
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_ENABLED":           "true",
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w16f-instance",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "postgres",
@@ -94,7 +93,6 @@ func TestW16fLoadConfigSQLiteCrossDrive(t *testing.T) {
 		t.Skip("Rel 跨盘符失败臂只在 Windows 可达")
 	}
 	cfg := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_ENABLED":           "true",
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w16f-instance",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
