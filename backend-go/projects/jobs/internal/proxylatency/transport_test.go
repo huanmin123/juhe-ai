@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"io"
 	"net"
 	"net/http"
@@ -76,8 +77,13 @@ func TestProxyTransportDoesNotSerializeConnectionsPerHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.CloseIdleConnections()
-	if transport.MaxConnsPerHost != 0 || transport.MaxIdleConnsPerHost != 0 {
-		t.Fatalf("proxy transport must not impose a per-host connection cap: max=%d idle=%d", transport.MaxConnsPerHost, transport.MaxIdleConnsPerHost)
+	// 连接上限契约只约束 MaxConnsPerHost（必须为 0 = 不限）；
+	// MaxIdleConnsPerHost 零值语义已由平台改为应用 DefaultMaxIdleConnsPerHost。
+	if transport.MaxConnsPerHost != 0 {
+		t.Fatalf("proxy transport must not impose a per-host connection cap: max=%d", transport.MaxConnsPerHost)
+	}
+	if transport.MaxIdleConnsPerHost != upstreamhttp.DefaultMaxIdleConnsPerHost {
+		t.Fatalf("proxy transport idle pool = %d, want platform default %d", transport.MaxIdleConnsPerHost, upstreamhttp.DefaultMaxIdleConnsPerHost)
 	}
 }
 

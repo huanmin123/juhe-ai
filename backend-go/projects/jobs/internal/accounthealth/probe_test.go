@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 func TestProbeOpenAIChatUsesDirectNativeRequest(t *testing.T) {
@@ -279,8 +280,14 @@ func TestProbeTransportEnablesHTTP2ForCustomDialer(t *testing.T) {
 	if !transport.ForceAttemptHTTP2 {
 		t.Fatal("direct provider probe must explicitly enable HTTP/2 when it owns a custom dialer")
 	}
-	if transport.MaxConnsPerHost != 0 || transport.MaxIdleConnsPerHost != 0 {
-		t.Fatalf("direct provider probe must not impose a per-host connection cap: max=%d idle=%d", transport.MaxConnsPerHost, transport.MaxIdleConnsPerHost)
+	// 连接上限契约只约束 MaxConnsPerHost（必须为 0 = 不限）。
+	// MaxIdleConnsPerHost 零值语义已由平台改为应用 DefaultMaxIdleConnsPerHost
+	//（64，见 upstreamhttp/transport.go），不再回退 stdlib 每主机 2 连接。
+	if transport.MaxConnsPerHost != 0 {
+		t.Fatalf("direct provider probe must not impose a per-host connection cap: max=%d", transport.MaxConnsPerHost)
+	}
+	if transport.MaxIdleConnsPerHost != upstreamhttp.DefaultMaxIdleConnsPerHost {
+		t.Fatalf("direct provider probe idle pool = %d, want platform default %d", transport.MaxIdleConnsPerHost, upstreamhttp.DefaultMaxIdleConnsPerHost)
 	}
 }
 
