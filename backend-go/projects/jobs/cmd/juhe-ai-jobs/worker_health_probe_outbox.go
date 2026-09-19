@@ -158,6 +158,29 @@ func (s healthProbeOutboxStore) CompleteProbeRequest(ctx context.Context, reques
 	return affected > 0, nil
 }
 
+// CountPendingProbeRequests 实现 accounthealth.ProbeRequestBacklogCounter
+// （D 任务③堆积告警的廉价只读面）：单条聚合查询返回 pending 行总数与最旧行
+// created_at（无 pending 行时 oldest 为零值）。created_at 解析失败（写侧异常
+// 文本）不掩盖计数，oldest 退化为零值（告警省略年龄字段）。
+func (s healthProbeOutboxStore) CountPendingProbeRequests(ctx context.Context) (int64, time.Time, error) {
+	var (
+		count  int64
+		oldest sql.NullString
+	)
+	err := s.business.db.QueryRowContext(ctx, s.business.bind(`SELECT COUNT(*), MIN(created_at) FROM `+s.business.table("account_health_probe_request_outbox")+`
+		WHERE status = 'pending'`)).Scan(&count, &oldest)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	var oldestAt time.Time
+	if oldest.Valid && oldest.String != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, oldest.String); parseErr == nil {
+			oldestAt = parsed
+		}
+	}
+	return count, oldestAt, nil
+}
+
 // healthProbeBoundary 是 accounthealth.ProbeRequestBoundary 的业务库实现：
 // SQL 迁移自被删 worker_health_dispatch.go healthDispatchBoundary（对齐 Node
 // account-health-jobs-input.repository.ts 与 input-version repository 的
@@ -241,11 +264,18 @@ func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (
 		if settlerCloser != nil {
 			a.addCloser(settlerCloser)
 		}
+		// D 任务②③：drain 上限/并发与堆积告警阈值经 env 配置（非法回退默认
+		// 并 warn，风格对齐保留天数 env）。
+		warnInvalidEnv := func(message string) {
+			a.logger.Warn(message, "event", "account_health_probe_outbox_env_invalid")
+		}
 		face.drain = &accounthealth.ProbeRequestDrain{
-			Store:       healthProbeOutboxStore{business: business},
-			Boundary:    healthProbeBoundary{business: business},
-			SettleFence: settler,
-			Limit:       config.DirectInputLimit,
+			Store:                healthProbeOutboxStore{business: business},
+			Boundary:             healthProbeBoundary{business: business},
+			SettleFence:          settler,
+			Limit:                parseProbeOutboxBoundedInt(getenv, probeOutboxDrainLimitEnvVar, defaultProbeOutboxDrainLimit, minProbeOutboxDrainLimit, maxProbeOutboxDrainLimit, warnInvalidEnv),
+			Concurrency:          parseProbeOutboxBoundedInt(getenv, probeOutboxDrainConcurrencyEnvVar, defaultProbeOutboxDrainConcurrency, minProbeOutboxDrainConcurrency, maxProbeOutboxDrainConcurrency, warnInvalidEnv),
+			BacklogWarnThreshold: parseProbeOutboxBoundedInt(getenv, probeOutboxBacklogWarnEnvVar, defaultProbeOutboxBacklogWarnThreshold, minProbeOutboxBacklogWarnThreshold, maxProbeOutboxBacklogWarnThreshold, warnInvalidEnv),
 		}
 	}
 	return face, nil
@@ -255,6 +285,16 @@ func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (
 // 非法值取默认并 warn）。
 const probeOutboxRetentionEnvVar = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_RETENTION_DAYS"
 
+// D 任务②③的 outbox 消费面 env：
+//   - DRAIN_LIMIT：单周期 claim 上限（默认 256，16..4096）；
+//   - DRAIN_CONCURRENCY：行消费有界并发（默认 2，1..8，保守起步）；
+//   - BACKLOG_WARN：drain 后 pending 堆积告警阈值（默认 1000，1..1000000）。
+const (
+	probeOutboxDrainLimitEnvVar       = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_LIMIT"
+	probeOutboxDrainConcurrencyEnvVar = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_CONCURRENCY"
+	probeOutboxBacklogWarnEnvVar      = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_BACKLOG_WARN"
+)
+
 const (
 	defaultProbeOutboxRetentionDays = 7
 	minProbeOutboxRetentionDays     = 1
@@ -262,7 +302,43 @@ const (
 	// defaultProbeOutboxPruneInterval 对齐仓库既有 maintenance 循环节拍量级
 	// （jobregistry 1h 级任务）；实际唤醒经 schedulejitter 抖动。
 	defaultProbeOutboxPruneInterval = time.Hour
+
+	// drain 上限默认 256（D 任务②由 64 上调）：派发风暴时原 64 上限使溢出
+	// 行在消费前过期；上限与 accounthealth 包内 defaultProbeOutboxDrainLimit
+	// 兜底同值。
+	defaultProbeOutboxDrainLimit = 256
+	minProbeOutboxDrainLimit     = 16
+	maxProbeOutboxDrainLimit     = 4096
+	// 并发默认 2 保守起步（快探针串行曾是周期扫描的拖累；行间无顺序依赖，
+	// 上限 8 与 ListProjectionWorkerConcurrency 档位一致）。
+	defaultProbeOutboxDrainConcurrency = 2
+	minProbeOutboxDrainConcurrency     = 1
+	maxProbeOutboxDrainConcurrency     = 8
+	defaultProbeOutboxBacklogWarnThreshold = 1000
+	minProbeOutboxBacklogWarnThreshold     = 1
+	maxProbeOutboxBacklogWarnThreshold     = 1_000_000
 )
+
+// parseProbeOutboxBoundedInt 是 outbox 家族整数 env 的通用解析：空/未设置取
+// 默认；非整数或越界回退默认并回调 warn（沿用 parseProbeOutboxRetentionDays
+// 的不 fail-closed 风格——消费面调优参数配置错误不应让 drain/prune 整体缺席）。
+func parseProbeOutboxBoundedInt(getenv func(string) string, name string, fallback, minimum, maximum int, warn func(message string)) int {
+	raw := ""
+	if getenv != nil {
+		raw = strings.TrimSpace(getenv(name))
+	}
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < minimum || value > maximum {
+		if warn != nil {
+			warn(fmt.Sprintf("%s 必须是 %d..%d 的整数，回退默认 %d", name, minimum, maximum, fallback))
+		}
+		return fallback
+	}
+	return value
+}
 
 // parseProbeOutboxRetentionDays 解析保留天数 env：空/未设置取默认；超出
 // 1..365 或非整数取默认并回调 warn（不 fail closed——保留期配置错误不应把

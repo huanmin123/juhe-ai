@@ -386,6 +386,8 @@ func main() {
 		if err != nil {
 			fail(fmt.Errorf("assemble jobs worker: %w", err))
 		}
+	} else {
+		warnWorkerDisabled(logger)
 	}
 	// P1-3：J1 探针 outbox 消费面独立于 J-A~J-F worker 开关。当
 	// ACCOUNT_HEALTH_ENABLED=true 但 WORKER_ENABLED=false 时仍需装配 outbox
@@ -399,6 +401,14 @@ func main() {
 		workerCfg.PostgresMaxOpenConns = accountHealthConfig.Store.PostgresMaxOpenConns
 		workerCfg.PostgresMaxIdleConns = accountHealthConfig.Store.PostgresMaxIdleConns
 		worker = newWorkerAssembly(workerCfg, logger)
+		// D 任务①：J1 启用而 worker 关闭的部署同样需要 OAuth token 保活
+		// （此前保活只在 worker assembly 装配，OAuth 账户 token 过期后无自动
+		// 续期）。复用 worker 构造与既有 env；缺配置跳过并 warn（不静默），
+		// 存储打不开降级 warn 不阻塞启动（对齐下方 outbox 消费面语义）。
+		if wireErr := worker.wireMinimalOAuthRefresh(); wireErr != nil {
+			logger.Warn("minimal assembly OAuth token 保活装配失败；OAuth 账户 token 不会自动续期",
+				"event", "jobs_minimal_oauth_refresh_assembly_failed", "error", wireErr.Error())
+		}
 		logger.Info("worker 调度器关闭但账户健康已启用：装配最小 assembly 以承载 outbox 消费面",
 			"event", "jobs_minimal_assembly_for_outbox")
 	}
@@ -594,22 +604,30 @@ func main() {
 		}
 		components = append(components, supervisor.Component{
 			Name: "J3a management API",
-			Run: func(context.Context) error {
+			Run: func(runCtx context.Context) error {
+				// supervisor 契约是全部组件 Run 返回后才逆序调 Close；Serve 只能
+				// 被 Shutdown 解阻，若把 Shutdown 放在 Close 侧会构成「Run 等
+				// Close、Close 等全部 Run」的停机死锁（ctx 取消后其余组件全部
+				// 停止，本组件 Serve 永远阻塞）。Run 侧监听停机信号自行 Shutdown
+				//（5s 上限）；Close 收缩为只关 management 连接池。
+				stopDone := make(chan struct{})
+				go func() {
+					defer close(stopDone)
+					<-runCtx.Done()
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = managementServer.Shutdown(shutdownCtx)
+				}()
 				err := managementServer.Serve(managementListener)
 				if errors.Is(err, http.ErrServerClosed) {
+					// 常规停机路径：等 Shutdown goroutine 收尾后再返回。
+					<-stopDone
 					return nil
 				}
 				return err
 			},
 			Close: func() error {
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				shutdownErr := managementServer.Shutdown(shutdownCtx)
-				poolErr := j3ManagementPool.Close()
-				if shutdownErr != nil {
-					return shutdownErr
-				}
-				return poolErr
+				return j3ManagementPool.Close()
 			},
 		})
 	}
@@ -656,6 +674,15 @@ func main() {
 	if serveResult != nil && !errors.Is(serveResult, http.ErrServerClosed) {
 		fail(fmt.Errorf("jobs health endpoint stopped: %w", serveResult))
 	}
+}
+
+// warnWorkerDisabled 在 JUHE_AI_JOBS_WORKER_ENABLED=false 时输出用量断供告警：
+// gateway 写出的 usage spool 无人消费、用量记录不入库、统计预聚合与额度快照
+// 停止刷新；生产或长驻部署必须显式设置 JUHE_AI_JOBS_WORKER_ENABLED=true。
+// 抽成包级函数仅为可测试性，不改变装配流程。
+func warnWorkerDisabled(logger *slog.Logger) {
+	logger.Warn("worker 调度器未启用：usage spool 不会被消费、用量记录不会写入存储、统计预聚合与额度快照停止刷新；生产或长驻部署必须显式设置 JUHE_AI_JOBS_WORKER_ENABLED=true",
+		"event", "jobs_worker_disabled_usage_supply_degraded")
 }
 
 // runPassiveJobs never initializes stores or leases. It exists only for a
