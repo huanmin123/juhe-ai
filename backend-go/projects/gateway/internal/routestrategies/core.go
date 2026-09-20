@@ -107,6 +107,13 @@ type runtimeScope struct {
 	GroupID         string `json:"groupId"`
 }
 
+// SpeedFirstRuntimeScope builds the item scope for facade adapters outside
+// this package (runtimeScope stays unexported so the wire struct shape is
+// untouched; the JSON contract is unaffected).
+func SpeedFirstRuntimeScope(routeStrategyID, groupID string) runtimeScope {
+	return runtimeScope{RouteStrategyID: routeStrategyID, GroupID: groupID}
+}
+
 // SpeedFirstRuntimeFacade mirrors
 // modules/route-strategies/route-strategy-speed-first-runtime.facade.ts: the
 // raw degraded-runtime reader plus the per-strategy cleanup. The facade-level

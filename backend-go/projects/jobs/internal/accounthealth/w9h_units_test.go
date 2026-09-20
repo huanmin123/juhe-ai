@@ -454,7 +454,7 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid sqlite config err=%v", err)
 	}
-	if cfg.InstanceID != "inst-w9h" || cfg.InputSource != "files" {
+	if cfg.InstanceID != "inst-w9h" || cfg.InputSource != "sqlite" {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 	// The happy postgres path accepts pool limits and the direct input source.

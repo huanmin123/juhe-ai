@@ -280,12 +280,34 @@ func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNames
 
 // chainKeyModelAdmission implements gatewaydispatch.KeyModelAdmission over
 // the gatewayaccounteffects preparation state machine (Node
-// prepareGatewayKeyModelAttempt, runtime/key-model-attempt.ts).
-type chainKeyModelAdmission struct{}
-
-func (chainKeyModelAdmission) Prepare(ctx context.Context, store gatewayaccounteffects.KeyModelRuntimeStore, input gatewayaccounteffects.PrepareGatewayKeyModelAttemptInput) (gatewayaccounteffects.GatewayKeyModelAttemptPreparation, error) {
-	return gatewayaccounteffects.PrepareGatewayKeyModelAttempt(ctx, store, input)
+// prepareGatewayKeyModelAttempt, runtime/key-model-attempt.ts). healthDispatch
+// wires the per-attempt health-check dispatcher port (SetDispatcher；attempt
+// 是 per-request 对象，只能在本 Prepare 出口挂载，不存在进程级单例接线点)；
+// nil 保持 dispatcher 缺席（keymodelattempt.go dispatchHealthCheck 的 nil
+// 短路），生产装配见 chainKeyModelHealthDispatcher。
+type chainKeyModelAdmission struct {
+	healthDispatch gatewayaccounteffects.AccountHealthCheckDispatcher
 }
+
+func (a chainKeyModelAdmission) Prepare(ctx context.Context, store gatewayaccounteffects.KeyModelRuntimeStore, input gatewayaccounteffects.PrepareGatewayKeyModelAttemptInput) (gatewayaccounteffects.GatewayKeyModelAttemptPreparation, error) {
+	preparation, err := gatewayaccounteffects.PrepareGatewayKeyModelAttempt(ctx, store, input)
+	if err != nil {
+		return preparation, err
+	}
+	// SetDispatcher（keymodelattempt.go:173）此前无生产调用：attempt 内部
+	// dispatchHealthCheck（main-probe 失败 / 失败 intent 应用且 J1 confirmation
+	// 认领成功两臂）恒静默跳过。挂载点必须在 Attempt 非 nil 的 admitted 分支。
+	if preparation.Attempt != nil && a.healthDispatch != nil {
+		preparation.Attempt.SetDispatcher(a.healthDispatch)
+	}
+	return preparation, nil
+}
+
+// chainKeyModelHealthDispatcher（gatewayaccounteffects.AccountHealthCheckDispatcher
+// 适配器）定义在 compose_accounts_reset.go：它包装的是 accounts runtime-reset
+// bridge（accounts.RuntimeResetEffects），随 bridge 同文件维护。
+
+var _ gatewayaccounteffects.AccountHealthCheckDispatcher = chainKeyModelHealthDispatcher{}
 
 // newChainKeyModelRuntimeStoreSelector mirrors getKeyModelRuntimeStore: one
 // store per runtime state driver, the redis store lazily built on first use.

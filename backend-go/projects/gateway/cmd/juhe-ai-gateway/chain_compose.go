@@ -187,6 +187,13 @@ type chainRuntimeDeps struct {
 	HealthProbeOutbox   *chainProbeRequestOutboxWriter
 	TurnRetryStateStore gatewaycodex.TurnRetryStateStore
 
+	// KeyModelHealthDispatch 是 key-model attempt 的健康检查派发端口
+	//（gatewayaccounteffects.GatewayKeyModelAttempt.SetDispatcher；optional：
+	// nil 保持 dispatcher 缺席）。生产装配为 compose.go 的
+	// chainKeyModelHealthDispatcher（accounts runtime-reset bridge 的
+	// DispatchAccountHealthCheck，落 account_health_probe_request_outbox）。
+	KeyModelHealthDispatch gatewayaccounteffects.AccountHealthCheckDispatcher
+
 	// ---- W2-C production wiring (BUG-0175)；nil 仅保留给显式关闭开关 /
 	// 组合测试，链条回落 chain_ports.go 的 disabled*/degraded* 直通。 ----
 	// AccountCircuits 是 D-131 账户电路服务（SUSPECT/confirmation/恢复）。
@@ -303,7 +310,16 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		WithPricingCatalog(newChainUsagePricingCatalog(deps.Cache)).
 		// D-190（BUG-0175）：上游失败 prometheus 指标族生产装配——
 		// recordGatewayUpstreamFailureMetric 从此有进程内注册表可写。
-		WithMetrics(gatewayusage.HTTPMetrics{})
+		WithMetrics(gatewayusage.HTTPMetrics{}).
+		// 审计缺口收口（chain_usage_wiring.go）：失败记录 providerCode 兜底
+		// （Node defaultGatewayUsageProviderCode = GPT_VENDOR_CODE）、语义
+		// 字段解析（usageSemanticForProfile 驱动回退）与协议错误 payload
+		// 解析（按账户协议档案分派响应驱动）。WithModelResolver /
+		// WithAccountAPIKeySuccess 保持 nil，原因见 chain_usage_wiring.go
+		// 文件头说明。
+		WithDefaultProviderCode(chainUsageDefaultProviderCode{}).
+		WithUsageSemantics(chainUsageSemanticResolver{}).
+		WithProtocolErrorParser(newChainUsageProtocolErrorParser())
 
 	// D-190 / D-191（BUG-0175）：kernel 边界的 HTTP 指标钩子与请求生命周期
 	// 事件汇。事件字段经 slog JSON handler 落成顶层键，运行日志检索
@@ -487,9 +503,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// 恢复；nil 时引擎保持缺席语义——Node runtime 缺席分叉）。
 	engine.Circuits = deps.AccountCircuits
 	// D-133（BUG-0175）接线：key-model 前台准入 + 状态存储（nil 时按
-	// BypassKeyModelAdmission 语义禁用准入）。
+	// BypassKeyModelAdmission 语义禁用准入）。KeyModelHealthDispatch 随
+	// 准入端口挂到每个 admitted attempt（SetDispatcher，attempt 为
+	// per-request 对象）。
 	if deps.KeyModelStore != nil {
-		engine.KeyModel = chainKeyModelAdmission{}
+		engine.KeyModel = chainKeyModelAdmission{healthDispatch: deps.KeyModelHealthDispatch}
 		engine.KeyModelStore = deps.KeyModelStore
 	}
 	// D-109（BUG-0175）接线：high_concurrency 分组的 client-IP 并发槽

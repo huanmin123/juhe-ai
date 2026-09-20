@@ -301,13 +301,20 @@ func TestLoadConfigZeroConfigDefaultsKeyFileAndSource(t *testing.T) {
 	}
 	getenv := func(name string) string { return base[name] }
 
-	// 臂一：sqlite 缺省（DATABASE_DRIVER 缺省非 postgres）→ source=files。
+	// 臂一：sqlite 缺省（DATABASE_DRIVER 缺省非 postgres）→ source=sqlite
+	// （2026-09 起直读业务/统计库，files 为显式后备）。
 	cfg, err := LoadConfig(getenv)
 	if err != nil {
 		t.Fatalf("DATA_DIR + credential secret must load: %v", err)
 	}
-	if cfg.Store.Mode != StoreSQLite || cfg.InputSource != "files" {
+	if cfg.Store.Mode != StoreSQLite || cfg.InputSource != "sqlite" {
 		t.Fatalf("sqlite 缺省臂: mode=%v source=%q", cfg.Store.Mode, cfg.InputSource)
+	}
+	if expected := filepath.Join(dataDir, "business.sqlite3"); cfg.BusinessSQLitePath != expected {
+		t.Fatalf("business path = %q, want %q", cfg.BusinessSQLitePath, expected)
+	}
+	if expected := filepath.Join(dataDir, "stats.sqlite3"); cfg.StatsSQLitePath != expected {
+		t.Fatalf("stats path = %q, want %q", cfg.StatsSQLitePath, expected)
 	}
 	if expected := filepath.Join(dataDir, "account-health.sqlite3"); cfg.Store.DatabasePath != expected {
 		t.Fatalf("store path = %q, want %q", cfg.Store.DatabasePath, expected)
@@ -383,5 +390,72 @@ func TestLoadConfigZeroConfigDefaultsKeyFileAndSource(t *testing.T) {
 	}
 	if pgCfg.Store.PostgresURL != "postgres://shared/juhe" {
 		t.Fatalf("store URL 必须回退 JUHE_AI_POSTGRES_URL: %q", pgCfg.Store.PostgresURL)
+	}
+}
+
+// TestLoadConfigSQLiteDirectInputArms 覆盖 2026-09 sqlite 直读输入源的新臂：
+// 显式 files 后备仍合法、sqlite+postgres store 组合拒绝、显式路径 env 优先于
+// DATA_DIR 派生（BusinessSQLitePath/StatsSQLitePath 不引入新 env 名）。
+func TestLoadConfigSQLiteDirectInputArms(t *testing.T) {
+	dataDir := t.TempDir()
+	base := map[string]string{
+		"JUHE_AI_DATA_DIR":                         dataDir,
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "sqlite-direct-secret",
+	}
+	// 臂一：显式 files 仍是合法后备（store 为 sqlite）。
+	filesEnv := map[string]string{}
+	for name, value := range base {
+		filesEnv[name] = value
+	}
+	filesEnv["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "files"
+	filesCfg, err := LoadConfig(func(name string) string { return filesEnv[name] })
+	if err != nil {
+		t.Fatalf("显式 files 必须装载: %v", err)
+	}
+	if filesCfg.InputSource != "files" {
+		t.Fatalf("显式 files 被改写: %q", filesCfg.InputSource)
+	}
+
+	// 臂二：显式 sqlite 输入源 + postgres store → 拒绝。
+	mixedEnv := map[string]string{
+		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "postgres",
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":      "postgres://jobs-output",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE":      "sqlite",
+		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "sqlite-direct-secret",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": strings.Repeat("A", 43),
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
+	}
+	if _, err := LoadConfig(func(name string) string { return mixedEnv[name] }); err == nil || !strings.Contains(err.Error(), "sqlite direct input 只允许与 sqlite jobs store") {
+		t.Fatalf("sqlite 输入 + postgres store 必须拒绝: %v", err)
+	}
+
+	// 臂三：显式路径 env 优先于 DATA_DIR 派生。
+	explicitPathEnv := map[string]string{
+		"JUHE_AI_DATA_DIR":            dataDir,
+		"JUHE_AI_DATABASE_PATH":       filepath.Join(dataDir, "custom", "biz.sqlite3"),
+		"JUHE_AI_STATS_DATABASE_PATH": filepath.Join(dataDir, "custom", "st.sqlite3"),
+	}
+	pathCfg, err := LoadConfig(func(name string) string { return explicitPathEnv[name] })
+	if err != nil {
+		t.Fatalf("显式路径 env 必须装载: %v", err)
+	}
+	if pathCfg.InputSource != "sqlite" {
+		t.Fatalf("sqlite 缺省臂: source=%q", pathCfg.InputSource)
+	}
+	if pathCfg.BusinessSQLitePath != filepath.Join(dataDir, "custom", "biz.sqlite3") {
+		t.Fatalf("BusinessSQLitePath = %q", pathCfg.BusinessSQLitePath)
+	}
+	if pathCfg.StatsSQLitePath != filepath.Join(dataDir, "custom", "st.sqlite3") {
+		t.Fatalf("StatsSQLitePath = %q", pathCfg.StatsSQLitePath)
+	}
+
+	// 臂四：输入源非法值继续 fail closed（sqlite 合法化后仍拒绝其他值）。
+	badSourceEnv := map[string]string{}
+	for name, value := range base {
+		badSourceEnv[name] = value
+	}
+	badSourceEnv["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "redis"
+	if _, err := LoadConfig(func(name string) string { return badSourceEnv[name] }); err == nil || !strings.Contains(err.Error(), "files、postgres 或 sqlite") {
+		t.Fatalf("非法输入源必须拒绝: %v", err)
 	}
 }

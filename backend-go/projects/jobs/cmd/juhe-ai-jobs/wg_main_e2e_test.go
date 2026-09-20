@@ -281,12 +281,15 @@ func wgOwnerModeMainEnv(t *testing.T, root string) map[string]string {
 	if err := business.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// J1 account-health（SQLite store + 文件输入源；目录必须存在且为空 =
-	// 无待消费输入）。J1 与 worker 均恒装配（2026-09-19 决策），env 不再需要
-	// 启用开关。
+	// J1 account-health（SQLite store + 显式 files 输入源；目录必须存在且为空 =
+	// 无待消费输入。INPUT_SOURCE 自 2026-09 缺省改为 sqlite 直读，但本 fixture
+	// 的业务库只有 worker 装配所需表，走直读会契约失败；这些用例验证 worker
+	// 装配而非 J1 输入，故显式钉住 files 后备源）。J1 与 worker 均恒装配
+	// （2026-09-19 决策），env 不再需要启用开关。
 	env["JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER"] = "go"
 	env["JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID"] = "wg-main-e2e"
 	env["JUHE_AI_ACCOUNT_HEALTH_STORE"] = "sqlite"
+	env["JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE"] = "files"
 	env["JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH"] = filepath.Join(root, "account-health.sqlite3")
 	inputDirectory := filepath.Join(root, "account-health-inputs")
 	if err := os.MkdirAll(inputDirectory, 0o755); err != nil {

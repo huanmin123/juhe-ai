@@ -271,13 +271,6 @@ export function canManageOAuthAccount(account: AccountListItem): boolean {
 
 export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
-  pushAccountLockItems(items, account)
-  const canClearRuntimeState = isAuthorizedAccount(account)
-    ? Boolean(account.boundGroupId) && account.permissions?.canUse !== false
-    : canEditAccount(account)
-  if (canClearRuntimeState) {
-    items.push({ key: 'runtime-reset', label: '清理运行状态' })
-  }
   if (isAuthorizedAccount(account)) {
     if (canTestAccount(account)) {
       items.push({ key: 'test', label: '测试' })
@@ -287,6 +280,7 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
         items.push({ key: 'restore-normal', label: '异常恢复' })
       }
       pushDispatchFlagItems(items, account)
+      pushAccountMaintenanceItems(items, account)
       return items.map(normalizeAccountMenuItem)
     }
     if (account.status !== 'pending_test' && (hasAccountRuntimeRecoveryState(account) || (account.boundGroupId && hasAuthorizedInstanceFailureState(account)))) {
@@ -296,6 +290,7 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
     if (canUseBoundAuthorizedAccount(account)) {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
     }
+    pushAccountMaintenanceItems(items, account)
     if (canBatchManageAccount(account)) {
       const instanceDisabled = account.status === 'disabled'
       items.push({
@@ -328,6 +323,7 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
       items.push({ key: 'restore-normal', label: '异常恢复' })
     }
     pushDispatchFlagItems(items, account)
+    pushAccountMaintenanceItems(items, account)
     if (canToggleAccountStatus(account)) {
       pushAccountStatusToggleItem(items, account)
     }
@@ -348,6 +344,7 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
     if (account.status !== 'pending_test') {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
     }
+    pushAccountMaintenanceItems(items, account)
     if (account.status === 'active') {
       items.push({
         key: 'manual-isolate',
@@ -361,6 +358,20 @@ export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
     }
   }
   return items.map(normalizeAccountMenuItem)
+}
+
+// 锁死与清理运行状态是低频运维操作，统一放在常用操作之后、人工隔离/停用账户之前，避免挤占菜单头部。
+function pushAccountMaintenanceItems(items: AccountMenuItem[], account: AccountListItem): void {
+  pushAccountLockItems(items, account)
+  if (canClearAccountRuntimeState(account)) {
+    items.push({ key: 'runtime-reset', label: '清理运行状态' })
+  }
+}
+
+function canClearAccountRuntimeState(account: AccountListItem): boolean {
+  return isAuthorizedAccount(account)
+    ? Boolean(account.boundGroupId) && account.permissions?.canUse !== false
+    : canEditAccount(account)
 }
 
 function pushAccountStatusToggleItem(items: AccountMenuItem[], account: AccountListItem): void {

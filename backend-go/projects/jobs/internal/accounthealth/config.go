@@ -51,6 +51,8 @@ type Config struct {
 	InputKeys                       map[string][]byte
 	InputSource                     string
 	BusinessPostgresURL             string
+	BusinessSQLitePath              string
+	StatsSQLitePath                 string
 	DirectInputLimit                int
 	DirectInputPostgresMaxOpenConns int
 	DirectInputPostgresMaxIdleConns int
@@ -142,16 +144,26 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	cfg.InputSource = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE")))
 	if cfg.InputSource == "" {
-		// 缺省跟随 store 模式（2026-09-19 零配置决策）：PG store 直读业务库
-		// direct input，sqlite store 读签名文件输入。
+		// 缺省跟随 store 模式：PG store 直读业务库（2026-09-19 零配置决策）；
+		// sqlite store 自 2026-09 起改为直读业务/统计 SQLite 库
+		// （SQLiteDirectInputReader）——原签名文件通道的发布方已随 Node 归档、
+		// 目录恒空导致导入账户永停 pending_test，故降级为显式 files 后备。
 		if mode == StorePostgres {
 			cfg.InputSource = "postgres"
 		} else {
-			cfg.InputSource = "files"
+			cfg.InputSource = "sqlite"
 		}
 	}
-	if cfg.InputSource != "files" && cfg.InputSource != "postgres" {
-		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE 必须为 files 或 postgres")
+	if cfg.InputSource != "files" && cfg.InputSource != "postgres" && cfg.InputSource != "sqlite" {
+		return Config{}, errors.New("JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE 必须为 files、postgres 或 sqlite")
+	}
+	// SQLite 直读路径按 DATA_DIR 约定派生（与 worker/gateway 同名 env 同固定
+	// 名），不新增 env 名；不做文件存在性校验——业务库缺失由组合根打开/预检
+	// 时 fail-fast。
+	cfg.BusinessSQLitePath = datadir.Path(getenv, "JUHE_AI_DATABASE_PATH", "business.sqlite3")
+	cfg.StatsSQLitePath = datadir.Path(getenv, "JUHE_AI_STATS_DATABASE_PATH", "stats.sqlite3")
+	if cfg.InputSource == "sqlite" && mode != StoreSQLite {
+		return Config{}, errors.New("sqlite direct input 只允许与 sqlite jobs store 一起启用")
 	}
 	if cfg.DirectInputLimit, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT", defaultDirectInputLimit, 1, maxJ1Capacity); err != nil {
 		return Config{}, err

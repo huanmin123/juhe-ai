@@ -591,9 +591,22 @@ func directInputFailureForCandidate(candidate directCandidate) (DirectInputFailu
 }
 
 func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (Schedule, *time.Location, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT key, value_json FROM juhe_business.system_settings WHERE system_account_id = 'sys_admin' AND key IN ('accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold', 'defaultTemporaryUnschedulableMinutes', 'cooldownAccountRetestMaxBackoffHours', 'usageStatsTimezone')`)
+	return loadDirectScheduleFrom(ctx, tx, "juhe_business.system_settings", "PG direct input")
+}
+
+// directScheduleQueryer 是 loadDirectScheduleFrom 需要的最小只读查询面
+// （*sql.Tx 满足；PG 与 SQLite reader 都经由各自只读事务读取 settings）。
+type directScheduleQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// loadDirectScheduleFrom 是 loadDirectSchedule 的方言无关内核：table 承载
+// juhe_business 前缀差异，label 承载错误文案的方言前缀；PG 与 SQLite reader
+// 共用，修改 settings 语义时必须同步全部调用方。
+func loadDirectScheduleFrom(ctx context.Context, queryer directScheduleQueryer, table, label string) (Schedule, *time.Location, error) {
+	rows, err := queryer.QueryContext(ctx, `SELECT key, value_json FROM `+table+` WHERE system_account_id = 'sys_admin' AND key IN ('accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold', 'defaultTemporaryUnschedulableMinutes', 'cooldownAccountRetestMaxBackoffHours', 'usageStatsTimezone')`)
 	if err != nil {
-		return Schedule{}, nil, fmt.Errorf("读取 PG direct input settings 失败: %w", err)
+		return Schedule{}, nil, fmt.Errorf("读取 %s settings 失败: %w", label, err)
 	}
 	defer rows.Close()
 	values := map[string]string{}
@@ -607,45 +620,45 @@ func loadDirectSchedule(ctx context.Context, tx *sql.Tx) (Schedule, *time.Locati
 	if err := rows.Err(); err != nil {
 		return Schedule{}, nil, err
 	}
-	intervalHours, err := directSettingInt(values, "accountHealthCheckIntervalHours", 1, 168)
+	intervalHours, err := directSettingInt(values, label, "accountHealthCheckIntervalHours", 1, 168)
 	if err != nil {
 		return Schedule{}, nil, err
 	}
-	jitterMinutes, err := directSettingInt(values, "accountHealthCheckJitterMinutes", 0, 1440)
+	jitterMinutes, err := directSettingInt(values, label, "accountHealthCheckJitterMinutes", 0, 1440)
 	if err != nil {
 		return Schedule{}, nil, err
 	}
-	threshold, err := directSettingInt(values, "accountHealthCheckFailureThreshold", 1, 10)
+	threshold, err := directSettingInt(values, label, "accountHealthCheckFailureThreshold", 1, 10)
 	if err != nil {
 		return Schedule{}, nil, err
 	}
-	maxPauseMinutes, err := directSettingInt(values, "defaultTemporaryUnschedulableMinutes", 1, 1440)
+	maxPauseMinutes, err := directSettingInt(values, label, "defaultTemporaryUnschedulableMinutes", 1, 1440)
 	if err != nil {
 		return Schedule{}, nil, err
 	}
-	maxRecoveryHours, err := directSettingInt(values, "cooldownAccountRetestMaxBackoffHours", 1, 24*30)
+	maxRecoveryHours, err := directSettingInt(values, label, "cooldownAccountRetestMaxBackoffHours", 1, 24*30)
 	if err != nil {
 		return Schedule{}, nil, err
 	}
 	var timezone string
 	if raw, found := values["usageStatsTimezone"]; !found || json.Unmarshal([]byte(raw), &timezone) != nil || strings.TrimSpace(timezone) == "" {
-		return Schedule{}, nil, fmt.Errorf("PG direct input 缺少有效 usageStatsTimezone")
+		return Schedule{}, nil, fmt.Errorf("%s 缺少有效 usageStatsTimezone", label)
 	}
 	location, err := time.LoadLocation(timezone)
 	if err != nil {
-		return Schedule{}, nil, fmt.Errorf("PG direct input usageStatsTimezone 无效: %w", err)
+		return Schedule{}, nil, fmt.Errorf("%s usageStatsTimezone 无效: %w", label, err)
 	}
 	return Schedule{HealthIntervalMS: int64(intervalHours) * int64(time.Hour/time.Millisecond), HealthJitterMS: int64(jitterMinutes) * int64(time.Minute/time.Millisecond), FailureThreshold: threshold, FailureRetryMS: int64(5 * time.Minute / time.Millisecond), CooldownNeutralBaseMS: int64(30 * time.Second / time.Millisecond), CooldownNeutralMaxMS: int64(15 * time.Minute / time.Millisecond), CooldownFailureBackoffMS: int64(3 * time.Second / time.Millisecond), MaxPauseMinutes: maxPauseMinutes, MaxRecoveryHours: maxRecoveryHours}, location, nil
 }
 
-func directSettingInt(values map[string]string, key string, minimum, maximum int) (int, error) {
+func directSettingInt(values map[string]string, label, key string, minimum, maximum int) (int, error) {
 	raw, found := values[key]
 	if !found {
-		return 0, fmt.Errorf("PG direct input 缺少系统设置 %s", key)
+		return 0, fmt.Errorf("%s 缺少系统设置 %s", label, key)
 	}
 	var value int
 	if err := json.Unmarshal([]byte(raw), &value); err != nil || value < minimum || value > maximum {
-		return 0, fmt.Errorf("PG direct input 系统设置 %s 无效", key)
+		return 0, fmt.Errorf("%s 系统设置 %s 无效", label, key)
 	}
 	return value, nil
 }

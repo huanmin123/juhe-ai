@@ -176,7 +176,8 @@ func TestProjectionRuntimeProbeAndCredentialsAdapter(t *testing.T) {
 }
 
 // TestFamilyTableDrainRunnerSnapshotUpsertsAdapter 覆盖 record_maintenance
-// 表 drain 的批量快照适配器（契约显式报错路径）。
+// 表 drain 的批量快照适配器（接线后空批次直通，真执行链路由
+// TestWorkerAssemblySnapshotUpsertChannel 覆盖）。
 func TestFamilyTableDrainRunnerSnapshotUpsertsAdapter(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	dir := t.TempDir()
@@ -190,8 +191,8 @@ func TestFamilyTableDrainRunnerSnapshotUpsertsAdapter(t *testing.T) {
 		t.Fatal("retention family 必须装配")
 	}
 	runner := familyTableDrainRunner{family: assembly.retention}
-	if _, err := runner.RunAccountUsageSnapshotUpserts(context.Background(), nil); err == nil {
-		t.Fatal("cleanup 侧快照批量入口必须显式报错")
+	if _, err := runner.RunAccountUsageSnapshotUpserts(context.Background(), nil); err != nil {
+		t.Fatalf("RunAccountUsageSnapshotUpserts(nil): %v", err)
 	}
 	// familyStatsWriter.store() 按契约恒 nil（StatsWriter 窄端口）。
 	if (&familyStatsWriter{family: assembly.retention}).store() != nil {

@@ -106,10 +106,14 @@ func w16hBaseEnv(t *testing.T) map[string]string {
 		"JUHE_AI_USAGE_SHARD_ROOT":        filepath.Join(root, "usage-shards"),
 		"JUHE_AI_CHAT_DATABASE_PATH":      filepath.Join(root, "chat.sqlite3"),
 		"JUHE_AI_SECRET":                  "0123456789abcdef0123456789abcdef",
-		// J1 恒装配：LoadConfig 必填项（错误臂按需覆盖单项）。
+		// J1 恒装配：LoadConfig 必填项（错误臂按需覆盖单项）。INPUT_SOURCE 显式
+		// files：sqlite store 缺省自 2026-09 起为 sqlite 直读，而本基底的
+		// business.sqlite3/stats.sqlite3 是空文件（worker 臂用），显式钉住
+		// files 后备源以维持各臂的原有失败点与文案。
 		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w16h-j1",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "sqlite",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE":      "files",
 		"JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH":     filepath.Join(root, "account-health.sqlite3"),
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   j1Inputs,
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
@@ -534,7 +538,7 @@ func TestW16HRunDeepFailArms(t *testing.T) {
 			"JUHE_AI_REDIS_STATE_URL":                  "redis://127.0.0.1:1",
 			"JUHE_AI_REDIS_NAMESPACE":                  "juhe-ai:w16h",
 		})
-		w16hRunArms(t, nil, 1, "启用 model-recovery 必须同时启用 PostgreSQL J1 direct input reader")
+		w16hRunArms(t, nil, 1, "启用 model-recovery 必须同时启用 J1 direct input reader（postgres 或 sqlite）")
 	})
 	t.Run("J2 service 初始化失败返回 1", func(t *testing.T) {
 		env := w16hBaseEnv(t)
@@ -755,4 +759,24 @@ func TestW16HRunLegacyMigrationFailArms(t *testing.T) {
 // itoa 供测试内拼接端口号。
 func itoa(value int) string {
 	return strconv.Itoa(value)
+}
+
+// TestW16HJ1SqliteLayoutEnsureFailArm 锁定 main() sqlite 直读分支的布局前置
+// 失败臂：把 stats 库路径指到一个已存在的目录——可穿过各配置校验，SQLite
+// 打开/PRAGMA 必失败 → statsverify OpenStore 报错 → 布局 ensure 必须在打开
+// 只读句柄之前 fail-fast。INPUT_SOURCE 显式 sqlite：基底缺省 files 不会进入
+// 直读分支，本臂必须真实命中（store 同显式 sqlite 满足耦合规则）。
+func TestW16HJ1SqliteLayoutEnsureFailArm(t *testing.T) {
+	env := w16hBaseEnv(t)
+	statsDirectory := filepath.Join(t.TempDir(), "w16h-stats-is-a-directory")
+	if err := os.MkdirAll(statsDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w16hApplyEnv(t, env)
+	w16hApplyEnv(t, map[string]string{
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "sqlite",
+		"JUHE_AI_ACCOUNT_HEALTH_STORE":        "sqlite",
+		"JUHE_AI_STATS_DATABASE_PATH":         statsDirectory,
+	})
+	w16hRunArms(t, nil, 1, "初始化 J1 sqlite 直读所需 SQLite 布局失败")
 }

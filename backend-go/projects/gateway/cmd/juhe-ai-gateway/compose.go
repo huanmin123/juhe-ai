@@ -600,6 +600,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create route-strategy store: %w", err)
 	}
+	// M06 runtime-relevant PATCH 的 API-Key validation cache 失效（Node
+	// notifyGatewayApiKeyValidationCacheInvalidation）通过 K5 总线的
+	// topic:gateway_api_key_validation_cache 走既有订阅链；reason
+	// "route_strategy_updated" 不带 apiKeyId 后缀，订阅方（gatewayruntimecache）
+	// 做无差别全清。适配器与偏差说明见 compose_routestrategies_wiring.go。
+	routeStrategyStore.SetValidationCacheInvalidator(gatewayAPIKeyValidationBusInvalidator{bus: bus})
 	apiKeyStore, err := apikeys.NewStore(composed.db, composed.pgDialect, cfg.Secret, time.Now, newCompositionID, apikeys.BusInvalidator{Bus: bus})
 	if err != nil {
 		return nil, fmt.Errorf("create api-key store: %w", err)
@@ -653,6 +659,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// BUG-0174 M-8：创建上限的 settings 兜底端口（Node repositories.ts:2493
 	// effectiveAiAccountCreationLimit 的 settingsRepository.getSettings 回退）。
 	accountStore.SetAiAccountLimitSettings(aiAccountLimitSettingsAdapter{settings: settingsStore})
+	// rate_limited re-arm 冷却设置的 settings 端口（patch_runtime_state.go
+	// RuntimeCooldownSettings；Node getSettings().defaultTemporaryUnschedulableMinutes）。
+	// 此前恒 nil → 冷却恒用 schema fallback 常量 2 分钟，管理设置
+	// （settings gateway-core 分区，1..1440）被忽略。
+	accountStore.SetRuntimeCooldownSettings(runtimeCooldownSettingsAdapter{settings: settingsStore})
 	// 余额快照旧代次清理装配（缺口 5，归档 accounts.routes.ts:355-364 +
 	// account-balance-snapshot-cleanup.service.ts:220-224）：PATCH 均衡身份
 	// 变化后的旧 relay_balance 快照删除经本 store 句柄执行（PG 走 juhe_stats
@@ -700,6 +711,41 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create provider store: %w", err)
 	}
+	// 账户模型目录校验端口（model_catalog_validation.go 的
+	// AccountModelCatalogReader）：把请求面 provider 模型目录适配到 accounts
+	// 断言域。SQLite/PG 双模无条件装配——nil 端口保持断言 no-op 的
+	// self-contained 约定只服务 store 级测试与隔离部署，不作为运行形态。
+	//
+	// 端口读取通道约束：accounts 断言在账户创建/更新/批量/导入的写事务内
+	// 执行（write 路径 BeginTx 之后经端口取目录），而 SQLite 业务句柄
+	// SetMaxOpenConns(1)——事务占住唯一连接后，端口若复用同一池，池等待
+	// 没有超时上限，请求只能挂到外部超时。SQLite 模式下端口改走同一业务库
+	// 文件的专用读取句柄（WAL 允许一写多读，busy_timeout 承担写锁竞争），
+	// 池上限同为 1，并按上方 apiKeyDatasetDB 的同款约定登记 shutdowns 关闭
+	// 链（先于 Shutdown 尾部的业务句柄关闭执行）；PostgreSQL 池本就是多
+	// 连接，事务内读取复用现有池，不另开句柄。
+	modelCatalogReaderStore := providerStore
+	if !composed.pgDialect {
+		modelCatalogReaderDB, err := sql.Open("sqlite", sqliteFileDSN(cfg.BusinessDatabasePath))
+		if err != nil {
+			closeOwnedBusiness()
+			return nil, fmt.Errorf("open account model catalog reader sqlite database: %w", err)
+		}
+		modelCatalogReaderDB.SetMaxOpenConns(1)
+		if err := configureSQLiteConnection(modelCatalogReaderDB); err != nil {
+			_ = modelCatalogReaderDB.Close()
+			closeOwnedBusiness()
+			return nil, fmt.Errorf("configure account model catalog reader sqlite database: %w", err)
+		}
+		modelCatalogReaderStore, err = providers.NewStore(modelCatalogReaderDB, composed.pgDialect, time.Now)
+		if err != nil {
+			_ = modelCatalogReaderDB.Close()
+			closeOwnedBusiness()
+			return nil, fmt.Errorf("create account model catalog reader provider store: %w", err)
+		}
+		composed.shutdowns = append(composed.shutdowns, func() { _ = modelCatalogReaderDB.Close() })
+	}
+	accountStore.SetModelCatalogReader(accountModelCatalogReaderAdapter{store: modelCatalogReaderStore})
 	// BUG-0162 第五刀：余额手动刷新 + 模型目录刷新两个执行端口的进程内装配
 	// （去跨进程战役：原 Node jobs /account-balance/manual HTTP 桥已随第四刀
 	// 删除；上游 /models 拉取此前在 Go 侧无实现）。SQLite 模式余额端口保持
@@ -862,9 +908,18 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// The groups family mounts the M05 return-authorization route through the
 	// authz return domain (Node returnGroupAuthorizationForGranteeAsync).
 	(&groups.Deps{Store: groupsStore, Auth: authDeps, Sink: sink, Authz: authzStore}).Mount(kern)
-	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink, Log: slog.Default()}).Mount(kern)
+	// routestrategies 的挂载移到链条装配之后（见下方 M06 speed-first 注释）：
+	// speed-first-runtime 端点只在 facade 存在时注册，而 facade 数据源是
+	// composeChainRuntimeServices 里的 LatencyDegradationService。
 	(&apikeys.Deps{Store: apiKeyStore, Auth: authDeps, Sink: sink}).Mount(kern)
-	(&accounts.Deps{Store: accountStore, Auth: authDeps, Sink: sink}).Mount(kern)
+	// M10 authorized-instance read hookup: the authz slice's store IS the
+	// AuthorizedAccountReader port (authorized.go 注释的窄接口即
+	// authz.Store.AuthorizedReadableAccountIDs 的别名，签名逐参一致，
+	// 无需适配器)。此前 Authorized 恒零值 → Store.SetAuthorizedReader(nil)，
+	// 被授权人（grantee / 团队成员）在 accounts list/detail/m11 读取面
+	// 看不到被授权实例账户（管理员路径走 CanAccessAll 短路，不受影响）。
+	// 装配顺序：authzStore 在本函数 L543 已构造，早于本 Mount，无初始化环。
+	(&accounts.Deps{Store: accountStore, Auth: authDeps, Sink: sink, Authorized: authzStore}).Mount(kern)
 	// providers built-in PATCH (update_model_configuration) operation log:
 	// same authsys producer sink as the other management families (the Deps
 	// port existed without its composition wiring until this wave's assembly
@@ -1157,6 +1212,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// chain_turn_retry_redis.go）。
 			HealthProbeOutbox:   healthProbeOutbox,
 			TurnRetryStateStore: newChainTurnRetryRedisStateStoreOrNil(chainServices.StateClient, cfg.RedisNamespace),
+			// key-model attempt 的健康检查派发（gatewayaccounteffects
+			// SetDispatcher 的生产接线）：经 chainKeyModelHealthDispatcher 复用
+			// runtime-reset bridge 的 DispatchAccountHealthCheck（同一条
+			// account_health_probe_request_outbox 交接表）。resetBridge 在本块
+			// L1103 已构造，句柄顺序先于本 deps 组装。
+			KeyModelHealthDispatch: chainKeyModelHealthDispatcher{bridge: resetBridge},
 			// ENGAGED 锁运行链（BUG-0174 B-2）：真实 SQL 运行面；显式关闭时为
 			// nil → disabledAccountLocks（视为未锁）。
 			AccountLocks: accountLockPort,
@@ -1238,6 +1299,19 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		slog.Info("gateway chain composed", "trafficSource", "gateway", "spoolDirectory", spoolDirectory != "", "auditDispatch", auditProducer != nil, "chatFamily", "mounted")
 	}
+
+	// M06 speed-first 运行态接线：facade 读取链条的时延降级服务（Node
+	// route-strategy-speed-first-runtime.facade.ts 的存储面 =
+	// gatewayproxyhealth.LatencyDegradationService，与 /v1 dispatch 的
+	// LatencyService 同一实例）。routes.go 的 speed-first-runtime 端点只在
+	// facade 存在时注册，所以本挂载必须位于 composeChainRuntimeServices 之后；
+	// 链条关闭（cfg.ChainEnabled=false）时不存在降级运行态，端点保持未挂载
+	// （routestrategies 的 nil facade 语义）。kernel 是 ServeMux，注册顺序
+	// 不影响匹配（具体模式优先）。
+	if chainServices != nil && chainServices.LatencyDegradation != nil {
+		routeStrategyStore.SetSpeedFirstRuntimeFacade(routeStrategySpeedFirstFacade{service: chainServices.LatencyDegradation})
+	}
+	(&routestrategies.Deps{Store: routeStrategyStore, Auth: authDeps, Sink: sink, Log: slog.Default()}).Mount(kern)
 
 	// X04: the /__aipublic__ externally maintained legacy family mounts after
 	// the chain runtime services exist (the penalty-window limiter shares the
@@ -1611,3 +1685,75 @@ func (a aiAccountLimitSettingsAdapter) UserAiAccountLimit(ctx context.Context) (
 }
 
 var _ accounts.AiAccountCreationLimitSettings = aiAccountLimitSettingsAdapter{}
+
+// runtimeCooldownSettingsAdapter adapts the settings store snapshot onto the
+// accounts rate_limited re-arm cooldown port (patch_runtime_state.go
+// RuntimeCooldownSettings, Node getSettings().defaultTemporaryUnschedulableMinutes).
+// 读取失败 / 缺行 / 非法值都回退 accounts 包的 schema fallback（2 分钟，
+// schema-defaults.ts:599），保持端口未接线时的既有语义：
+//   - Load 失败（存储异常）→ 回退；
+//   - 该键不在 compatibleSystemSettingDefaults（settings/store.go），缺行使
+//     assertAllSettingsPresent 让 Load 整体报错 → 同样落入回退臂；
+//   - Load 成功 ⇒ normalizeSystemSetting 已保证 [1,1440] 整数 float64，
+//     类型断言/越界臂按 w1_compose_arms2_test.go 同款约定保守保留为回退。
+//
+// 管理面改动经 settings.Load 的 60s TTL 快照生效，与
+// ratelimitSettingsProvider / aiAccountLimitSettingsAdapter 同形态。
+type runtimeCooldownSettingsAdapter struct {
+	settings *settings.Store
+}
+
+// runtimeCooldownFallbackMinutes mirrors the accounts package
+// defaultTemporaryUnschedulableMinutesFallback（私有常量不可跨包引用；
+// schema-defaults.ts:599 的同一 schema 默认 2）。
+const runtimeCooldownFallbackMinutes = 2
+
+func (a runtimeCooldownSettingsAdapter) DefaultTemporaryUnschedulableMinutes() int {
+	snapshot, err := a.settings.Load(context.Background())
+	if err != nil {
+		return runtimeCooldownFallbackMinutes
+	}
+	value, ok := snapshot["defaultTemporaryUnschedulableMinutes"].(float64)
+	if !ok || value < 1 || value > 1440 {
+		return runtimeCooldownFallbackMinutes
+	}
+	return int(value)
+}
+
+var _ accounts.RuntimeCooldownSettings = runtimeCooldownSettingsAdapter{}
+
+// accountModelCatalogReaderAdapter 把 providers Store 的请求面模型目录
+// （ListProviderModelsForRequest，Node listProviderModelsForRequestAsync）
+// 适配成 accounts.AccountModelCatalogReader 端口（model_catalog_validation.go
+// 端口注释指定的组合根交接）。includeInactive 恒传 false：两条断言路径
+// （gpt 请求覆盖、模型别名目录段）的归档实现从不放开 availability 过滤
+// （端口注释 Inactive rows stay filtered）；includeUnpriced 由 accounts 断言
+// 调用方决定（gpt 覆盖段 true、别名目录段 false）并原样透传。
+type accountModelCatalogReaderAdapter struct {
+	store *providers.Store
+}
+
+func (a accountModelCatalogReaderAdapter) ListAccountModelCatalog(ctx context.Context, providerCode, systemAccountID string, includeUnpriced bool) ([]accounts.AccountModelCatalogFact, error) {
+	items, err := a.store.ListProviderModelsForRequest(ctx, providerCode, systemAccountID, false, includeUnpriced)
+	if err != nil {
+		return nil, err
+	}
+	return accountModelCatalogFacts(items), nil
+}
+
+// accountModelCatalogFacts 把目录行投影成断言域 fact（四列直接拷贝；协议 /
+// 等级 slice 共享底层数组，断言族对目录只读，不另行深拷贝）。
+func accountModelCatalogFacts(items []providers.ModelCatalogItem) []accounts.AccountModelCatalogFact {
+	facts := make([]accounts.AccountModelCatalogFact, 0, len(items))
+	for _, item := range items {
+		facts = append(facts, accounts.AccountModelCatalogFact{
+			Model:                     item.Model,
+			SupportedAPIProtocols:     item.SupportedAPIProtocols,
+			SupportedServiceTiers:     item.SupportedServiceTiers,
+			SupportedReasoningEfforts: item.SupportedReasoningEfforts,
+		})
+	}
+	return facts
+}
+
+var _ accounts.AccountModelCatalogReader = accountModelCatalogReaderAdapter{}

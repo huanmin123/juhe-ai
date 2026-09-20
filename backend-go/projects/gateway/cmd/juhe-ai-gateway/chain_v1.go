@@ -683,7 +683,9 @@ func newRequestBudgets(traceID string, acceptedAtMs int64, clock gatewaypreauth.
 	wall, err := gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
 		RequestAcceptedAtMs: acceptedAtMs,
 		Now:                 now,
-	}, nil)
+		// G19 观测接线：budget precommit_clipped 裁剪观察（chain_obs_wiring.go
+		// 进程级槽；未装配时 nil 保持既有无观察语义）。
+	}, routingWallBudgetObserverOf())
 	if err != nil {
 		return requestBudgets{}, fmt.Errorf("create gateway request wall budget: %w", err)
 	}

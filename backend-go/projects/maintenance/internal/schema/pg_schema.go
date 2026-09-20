@@ -535,7 +535,7 @@ var pgSeedProviders = []pgSeedProvider{
 		Description:                "混合供应商账户用于创建真实上游账户，并在账户内配置允许的下游协议入口和上游模型映射；不指向其他账户、分组或 API Key",
 		ParentCode:                 "",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"gpt-5.6-sol\",\"claude-opus-5\",\"gemini-3.7-flash\",\"deepseek-v4-flash\",\"glm-5.3\"]",
+		DefaultSupportedModelsJSON: "[\"gpt-5.6-sol\",\"claude-opus-5\",\"gemini-3.7-flash\",\"glm-5.3\"]",
 	},
 }
 

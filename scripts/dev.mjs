@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -165,6 +165,14 @@ function resolveGoProjectEnv() {
   // 置自举建库的同文件判定，冷启动即 fail-fast。
   childEnv.JUHE_AI_DATA_DIR = firstConfiguredValue(childEnv.JUHE_AI_DATA_DIR, devDataRoot)
   childEnv.JUHE_AI_LOG_DIR = firstConfiguredValue(childEnv.JUHE_AI_LOG_DIR, devLogRoot)
+  // SQLite 无法在不存在的目录里建库文件（unable to open database file 14）：
+  // 启动器钉住了数据/日志根，就必须保证目录存在，删库冷启动才能自愈。
+  mkdirSync(childEnv.JUHE_AI_DATA_DIR, { recursive: true })
+  mkdirSync(childEnv.JUHE_AI_LOG_DIR, { recursive: true })
+  // gateway 进程被强杀（taskkill /f、关终端窗口）后 owner 租约要等 TTL 过期
+  // 才能接管；注入有界等待让停止后的立即重启自动接管而不是 fail-fast。默认
+  // 45s（租约 TTL 30s + 余量）；用户显式配置时不覆盖。
+  childEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT = firstConfiguredValue(childEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT, '45s')
   for (const name of removedInputServerEnvNames) delete childEnv[name]
   return childEnv
 }
@@ -238,10 +246,47 @@ function parseEnvValue(value) {
 function shutdown(exitCode) {
   if (shuttingDown) return
   shuttingDown = true
-  stopChild(frontend)
-  stopChild(goJobs, { processGroup: process.platform !== 'win32' })
-  stopChild(goGateway, { processGroup: process.platform !== 'win32' })
-  process.exit(exitCode)
+
+  if (process.platform !== 'win32') {
+    // POSIX：shutdown 只在 node 收到终止信号时触发，SIGTERM 进程组后立即
+    // 退出，保持既有行为不变。
+    stopChild(frontend)
+    stopChild(goJobs, { processGroup: true })
+    stopChild(goGateway, { processGroup: true })
+    process.exit(exitCode)
+    return
+  }
+
+  // Windows：shutdown 只在 node 自身收到 SIGINT/SIGTERM/SIGHUP 时触发，同一
+  // 控制台的子进程（go run → gateway/jobs、pnpm → vite）大概率收到同一信号
+  // 并正在优雅退出；gateway 只有走完自然退出的 defer 链才能释放 F3/F4 owner
+  // 租约并 flush 队列，立即 taskkill /f 会打断它，导致停止后立即 pnpm dev
+  // 因租约 TTL（30s）未过期而 fail-fast。因此先等子进程自然退出，8 秒宽限
+  // 到点仍存活的才强杀兜底。
+  const children = [frontend, goJobs, goGateway].filter(
+    (child) => child && child.pid && child.exitCode === null
+  )
+  if (children.length === 0) {
+    process.exit(exitCode)
+    return
+  }
+
+  let pendingExits = children.length
+  const forceKillTimer = setTimeout(() => {
+    for (const child of children) {
+      if (child.exitCode === null) stopChild(child)
+    }
+    process.exit(exitCode)
+  }, 8_000)
+
+  for (const child of children) {
+    child.once('exit', () => {
+      pendingExits -= 1
+      if (pendingExits > 0) return
+      clearTimeout(forceKillTimer)
+      process.exit(exitCode)
+    })
+  }
 }
 
 function stopChild(child, options = {}) {

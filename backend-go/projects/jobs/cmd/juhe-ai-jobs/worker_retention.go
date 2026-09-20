@@ -180,13 +180,17 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 			RelatedRecords:  &familyRelatedCleaner{family: family},
 			UsageRecords:    usageRecords,
 			NonBusinessData: nonBusinessDataset,
-			StatsWriter:     nil,
+			StatsWriter:     &familyStatsWriter{family: family},
 		},
 	}
-	// sqlite 模式统计写回调直连；postgres 模式 Runner 传 nil（Node 同语义）。
-	if !postgres {
-		runner.Executor.StatsWriter = &familyStatsWriter{family: family}
-	}
+	// StatsWriter 双模式恒接线（P0 修复：account_usage_snapshot_upsert 通道
+	// 此前 PG 模式为 nil、SQLite 模式为 stub，两条 driver 的快照任务都会以
+	// 「retention stats writer 未初始化」失败并占死 record_maintenance_jobs
+	// drain 队头）。真实现是 cleanuprepo.RecordCleanupStore.
+	// UpsertAccountUsageSnapshots（jobregistry 注册表登记 GoWired、owner=
+	// cleanuprepo）；关联清理的 statsWriter 参数仍按 Node 语义由
+	// familyRelatedCleaner 的 postgres 分支忽略（PG 清理链在事务内承担
+	// stats 半区，不经该回调）。
 	family.queue = queue
 	family.runner = runner
 
@@ -648,8 +652,16 @@ func (w *familyStatsWriter) CleanupDeletedAccountRecordStats(ctx context.Context
 	return w.family.recordCleanup.CleanupAccountRecordStatsData(ctx, input.Target, input.Rows, input.UpdatedAt, input.ShardDeleted, location)
 }
 
+// UpsertAccountUsageSnapshots 接真实现：cleanuprepo.RecordCleanupStore.
+// UpsertAccountUsageSnapshots（owners 归属查 business accounts，Stats 事务
+// 批量 upsert account_usage_snapshots）。输入类型与 retention port 共用
+// retention.AccountUsageSnapshotUpsertInput，适配器只绑定 business 句柄；
+// recordCleanup 未装配时按 executor-missing 契约显式报错（不静默成功）。
 func (w *familyStatsWriter) UpsertAccountUsageSnapshots(ctx context.Context, inputs []retention.AccountUsageSnapshotUpsertInput) error {
-	return fmt.Errorf("retention account usage snapshot upsert 未接线（归 J2/J3 探针域，cleanuprepo 不承担）")
+	if w.family.recordCleanup == nil {
+		return fmt.Errorf("retention record cleanup store 未初始化")
+	}
+	return w.family.recordCleanup.UpsertAccountUsageSnapshots(ctx, w.family.recordCleanup.Business, inputs)
 }
 
 // familyDbService 适配 retention.DbService。

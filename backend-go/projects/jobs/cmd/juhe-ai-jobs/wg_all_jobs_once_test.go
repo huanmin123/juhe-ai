@@ -431,6 +431,7 @@ var wgAllWiredJobNames = []string{
 	"usage-hot-window-refresh",
 	"usage-quota-hourly-windows-refresh",
 	"openai-oauth-access-token-refresh",
+	"oauth-keepalive-token-refresh",
 	"api-key-availability-schedule-status-sync",
 	"account-availability-schedule-status-sync",
 	"resource-authorization-expiry-sweep",
@@ -527,10 +528,10 @@ func TestWorkerAssemblyRetentionFamilyAdapters(t *testing.T) {
 	if _, err := family.runMaintenanceOnce(ctx, wgMaintenanceJob("api_key_related_cleanup", "wg-nothing")); err != nil {
 		t.Fatalf("runMaintenanceOnce: %v", err)
 	}
-	// runMaintenanceSnapshotUpserts：批量入口在 cleanup 侧按契约显式报错
-	// （快照 upsert 归 J2/J3 探针域，cleanuprepo 不承担）。
-	if _, err := family.runMaintenanceSnapshotUpserts(ctx, []retention.RecordMaintenanceJob{}); err == nil {
-		t.Fatal("cleanup 侧快照批量入口必须显式报错")
+	// runMaintenanceSnapshotUpserts：批量入口接真实现后空批次直通
+	// （len(inputs)==0 时 cleanuprepo 短路返回 nil）。
+	if _, err := family.runMaintenanceSnapshotUpserts(ctx, []retention.RecordMaintenanceJob{}); err != nil {
+		t.Fatalf("runMaintenanceSnapshotUpserts(空批次): %v", err)
 	}
 
 	// familyRelatedCleaner SQLite 路径。
@@ -550,9 +551,10 @@ func TestWorkerAssemblyRetentionFamilyAdapters(t *testing.T) {
 	if summary, err := (&familyAccountRetryer{family: family}).CleanupPendingTargets(ctx, 10, nil); err != nil || summary.Attempted != 0 {
 		t.Fatalf("CleanupPendingTargets(account): %+v %v", summary, err)
 	}
-	// 快照 upsert 端口按契约显式报错（归 J2/J3 探针域）。
-	if err := (&familyStatsWriter{family: family}).UpsertAccountUsageSnapshots(ctx, nil); err == nil {
-		t.Fatal("cleanup 侧快照 upsert 必须显式报错")
+	// 快照 upsert 端口接真实现：nil 输入直通（cleanuprepo len==0 短路），
+	// 非空输入的全链路冒烟在 TestWorkerAssemblySnapshotUpsertChannel 覆盖。
+	if err := (&familyStatsWriter{family: family}).UpsertAccountUsageSnapshots(ctx, nil); err != nil {
+		t.Fatalf("UpsertAccountUsageSnapshots(nil): %v", err)
 	}
 	// dbService 适配器（空库 → 零结果）。
 	if _, err := family.dbService.CleanupChatRetention(ctx, retention.ChatRetentionInput{Now: "2026-09-10T00:00:00.000Z", InterruptedBefore: "1970-01-01T00:00:00.000Z", Limit: 10}); err != nil {

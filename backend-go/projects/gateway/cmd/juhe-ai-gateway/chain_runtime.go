@@ -601,6 +601,15 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	services.HotQuality = hotQuality
 
+	// G19 观测暗区接线（chain_obs_wiring.go）：gatewayobs 单例 Observer 挂上
+	// D-131 账户电路观测口（circuit_dispatch/mutation/transition →
+	// Observation）与 D-137 热质量 Observer/Logger，并向 wall budget 等进程
+	// 级槽发布。构造失败按本文件组合根契约 fail-fast。
+	if obsErr := wireGatewayObservabilityArms(services, cfg); obsErr != nil {
+		services.Close()
+		return nil, fmt.Errorf("wire gateway observability arms: %w", obsErr)
+	}
+
 	// D-133：key-model 前台准入状态存储（Node getKeyModelRuntimeStore；
 	// memory 单例 + redis 惰性构建）。启动时急切选择，驱动轴非法即
 	// fail-fast，不在请求路径上回退。

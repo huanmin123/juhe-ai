@@ -18,9 +18,10 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
 )
 
-// Runner is the only J1 scheduler.  Its inputs are immutable signed files and
-// its durable state lives in the jobs-owned store; it has no Node/Gateway/IPC
-// or Redis dependency.
+// Runner is the only J1 scheduler.  Its inputs come from the configured
+// direct input reader (PostgreSQL or SQLite business/statistics reads); the
+// signed-files channel is only an explicit fallback. Durable state lives in
+// the jobs-owned store; it has no Node/Gateway/IPC or Redis dependency.
 type Runner struct {
 	cfg               Config
 	store             *Store
@@ -49,7 +50,9 @@ type scheduledDBTask struct {
 // directInputLoader permits the scheduler to load immutable, currently eligible
 // inputs from the independently configured business read model.  It deliberately
 // has no Node/Gateway client surface: signed request files only carry a trigger
-// and fences; the effective probe input is read directly from PostgreSQL.
+// and fences; the effective probe input is read directly from the business
+// PostgreSQL or SQLite store.  Signed-files input stays as the explicit
+// fallback source (JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE=files).
 type directInputLoader interface {
 	LoadDue(ctx context.Context, limit int) ([]Input, error)
 	LoadAccount(ctx context.Context, accountID string) ([]Input, error)
@@ -57,6 +60,15 @@ type directInputLoader interface {
 
 type directInputFailureLoader interface {
 	LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error)
+}
+
+// DirectInputReader 是 PG 与 SQLite 直读适配器的公共装配面：组合根用它承载
+// 两种输入源；SetSuppressionProvider 由 Runner 装配时注入 jobs 重试窗口。
+type DirectInputReader interface {
+	LoadDue(ctx context.Context, limit int) ([]Input, error)
+	LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error)
+	LoadAccount(ctx context.Context, accountID string) ([]Input, error)
+	SetSuppressionProvider(provider func(context.Context, time.Time) ([]DirectInputSuppression, error))
 }
 
 type RunnerStatus struct {
@@ -84,7 +96,7 @@ func NewRunner(cfg Config, store *Store, logger *slog.Logger) *Runner {
 	return &Runner{cfg: cfg, store: store, logger: logger}
 }
 
-func NewRunnerWithDirectInputReader(cfg Config, store *Store, logger *slog.Logger, reader *PostgresDirectInputReader) *Runner {
+func NewRunnerWithDirectInputReader(cfg Config, store *Store, logger *slog.Logger, reader DirectInputReader) *Runner {
 	runner := NewRunner(cfg, store, logger)
 	runner.directInputReader = reader
 	if reader != nil && store != nil {

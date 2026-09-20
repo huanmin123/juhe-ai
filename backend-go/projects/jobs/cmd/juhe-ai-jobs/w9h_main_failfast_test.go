@@ -36,9 +36,12 @@ func TestW9HMainFailFastArms(t *testing.T) {
 		// OWNER 缺省视为 go（不再报错）；显式非 go 值仍 fail-fast。
 		{"account-health-owner-not-go", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "node"}},
 		// model-recovery 开启（Redis state）但 J1 输入源是 files（无 reader）。
+		// INPUT_SOURCE 显式 files：sqlite 缺省自 2026-09 起会装配直读 reader，
+		// 该臂要验证的正是「reader 缺席」前提。
 		{"model-recovery-without-reader", map[string]string{
-			"JUHE_AI_REDIS_STATE_URL": "redis://127.0.0.1:6379/9",
-			"JUHE_AI_REDIS_NAMESPACE": "w9h-failfast",
+			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "files",
+			"JUHE_AI_REDIS_STATE_URL":             "redis://127.0.0.1:6379/9",
+			"JUHE_AI_REDIS_NAMESPACE":             "w9h-failfast",
 		}},
 		// J2 开启但 store=sqlite → accountbalance.LoadRuntimeConfig 失败。
 		{"account-balance-sqlite-rejected", map[string]string{

@@ -11,9 +11,10 @@ import (
 
 const inputFileSuffix = ".account-health-input.json"
 
-// LoadSignedInputFiles reads only Node-published immutable files. It never
-// opens the Node business SQLite database and treats a bad file as a visible
-// per-file error rather than silently falling back.
+// LoadSignedInputFiles 是 J1 的显式后备输入源（INPUT_SOURCE=files）：只读
+// Node 发布方遗留的已签名不可变文件。自 2026-09 起 sqlite/PG store 缺省走
+// 各自的直读 reader，本通道仅在显式配置时启用；坏文件仍是可见的单文件错误，
+// 不静默回退到任何业务库读取。
 func LoadSignedInputFiles(directory string, keys map[string][]byte) ([]Input, error) {
 	root := strings.TrimSpace(directory)
 	if root == "" {

@@ -540,8 +540,8 @@ func hotUsageWindowStages() []statsagg.WindowStageName {
 	return []statsagg.WindowStageName{statsagg.StageUsageOverviewWindows, statsagg.StageUsageScopeRangeWindows}
 }
 
-// wireOAuthFamily：J4 家族（OpenAI OAuth 刷新、两类可用性排期同步、
-// 授权过期 sweep）。
+// wireOAuthFamily：J4 家族（OpenAI OAuth 刷新、anthropic/gemini/grok
+// keepalive 刷新、两类可用性排期同步、授权过期 sweep）。
 func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	var db *sql.DB
 	postgres := a.config.Driver == "postgres"
@@ -571,6 +571,34 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	a.scheduleWiredJob("openai-oauth-access-token-refresh", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		if _, err := refreshJob.RunOnce(taskCtx, oauthrefresh.RefreshOptions{}); err != nil {
 			return jobsched.TaskResult{}, err
+		}
+		return jobsched.TaskResult{}, nil
+	})
+	// P0 修复：anthropic/gemini/grok OAuth keepalive 接入生产驱动。此前
+	// NewKeepaliveJob 零生产调用、注册表无条目、/health 不可见。复用本族
+	// 既有 store（候选查询 ListDueKeepaliveAccounts）与 TokenExchanger
+	// （NewHTTPTokenExchanger，与 refresh job 同一换发实现）；keepalive 只
+	// 处理 anthropic/gemini/grok 三族计划（oauthrefresh.KeepalivePlans），
+	// openai 族仍归 openai-oauth-access-token-refresh，互不重叠。
+	keepaliveJob := oauthrefresh.NewKeepaliveJob(store, oauthrefresh.NewHTTPTokenExchanger(), oauthrefresh.WithKeepaliveLogger(a.logger))
+	a.scheduleWiredJob("oauth-keepalive-token-refresh", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		for _, plan := range oauthrefresh.KeepalivePlans() {
+			if taskCtx.Err() != nil {
+				break
+			}
+			result, err := keepaliveJob.RunOnce(taskCtx, plan, 0)
+			if err != nil {
+				return jobsched.TaskResult{}, err
+			}
+			a.logger.Debug("oauth keepalive 计划执行完成",
+				"job", "oauth-keepalive-token-refresh",
+				"provider", result.Provider,
+				"scanned", result.Scanned,
+				"due", result.Due,
+				"refreshed", result.Refreshed,
+				"failed", result.Failed,
+				"skippedLocked", result.SkippedLocked,
+				"skippedFresh", result.SkippedFresh)
 		}
 		return jobsched.TaskResult{}, nil
 	})
@@ -612,8 +640,9 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 // ingest-worker IPC 路径按总设计消灭后的 Go 单路径），启动 flush 循环、
 // 停机排空。BUG-0175 D-72 补齐注入缺口：
 //   - FreezePricing：Node 两条路径都在入队时点冻结定价事实；Go 单路径在
-//     writer 侧冻结（jobs 暂无 C03 catalog 适配器，catalog port 为 nil 时
-//     回落确定性 fallback 快照，读侧契约不变）；
+//     writer 侧冻结（C03 目录适配器已接线，见 worker_usage_pricing_catalog.go：
+//     数据源=业务库 provider_model_catalog + custom_provider_models；目录读取
+//     失败回落确定性 fallback 快照，读侧契约不变）；
 //   - CatalogSnapshot：镜像 usageRecordPricingSnapshotForWrite 的
 //     `databaseDriver !== 'postgres'` 守卫；
 //   - BusinessDB（仅 SQLite；PG 路径的 last_used_at 副作用在主事务内随
@@ -624,6 +653,7 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	postgres := a.config.Driver == "postgres"
 	var catalogDB *sql.DB
 	var store usagewriter.ShardStore
+	var pricingCatalog *usagePricingCatalog
 	if postgres {
 		handle, err := a.acquirePool(a.config.PostgresURL, "usage-writer")
 		if err != nil {
@@ -634,6 +664,9 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 			DB:         catalogDB,
 			ShardCount: a.config.UsageShardCount,
 		})
+		// PG 模式：usage-writer 池与业务库同库（juhe_business schema 限定），
+		// 定价目录复用该句柄，不额外开池。
+		pricingCatalog = newUsagePricingCatalog(catalogDB, true)
 	} else {
 		var err error
 		if catalogDB, err = a.openSQLite(a.config.UsageCatalogSQLitePath, "usage-writer-catalog"); err != nil {
@@ -644,6 +677,9 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 			return err
 		}
 		a.addCloser(business.close)
+		// SQLite 模式：定价目录读业务库（provider_model_catalog /
+		// custom_provider_models），与 shard store 的业务库副作用共用同一句柄。
+		pricingCatalog = newUsagePricingCatalog(business.db, false)
 		sqliteStore := usagewriter.NewSqliteShardStore(usagewriter.SqliteShardStoreConfig{
 			CatalogDB:  catalogDB,
 			ShardRoot:  a.config.UsageShardRoot,
@@ -660,7 +696,7 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 		ShardRoot:       a.config.UsageShardRoot,
 		FreezePricing:   true,
 		CatalogSnapshot: !postgres,
-	}, store, nil, usagewriter.WithLogger(slogWriterLogger{logger: a.logger}))
+	}, store, nil, usagewriter.WithLogger(slogWriterLogger{logger: a.logger}), usagewriter.WithCatalog(pricingCatalog))
 	a.writer = writer
 	a.addCloser(func() error {
 		if catalogDB != nil {

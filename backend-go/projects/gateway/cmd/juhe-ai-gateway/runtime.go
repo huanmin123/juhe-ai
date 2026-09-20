@@ -763,12 +763,14 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.BusinessSchemaReady = envBoolTrue(getenv("JUHE_AI_BUSINESS_SCHEMA_READY"))
 	cfg.BusinessOwnerEpoch = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER_EPOCH"))
 	cfg.BusinessCutoverEvidencePath = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH"))
-	// 2026-09-19 零配置自动认领：sqlite 模式下 JUHE_AI_BUSINESS_* 家族全部
-	// 未配置时，按"新装部署、无 Node 切流历史"处理——组合根自动认领业务库
+	// 2026-09-19 零配置自动认领：sqlite/postgres 模式下 JUHE_AI_BUSINESS_* 家族
+	// 全部未配置时，按"新装部署、无 Node 切流历史"处理——组合根自动认领业务库
 	// owner（handoff 三证置真、epoch 用固定 standalone 值）。显式配置家族内
 	// 任一成员则保持原门禁（businessOwnerGate + cutover evidence 校验），
-	// 生产切流纪律不变。
-	if cfg.DatabaseDriver == "sqlite" && !hasAnyRawConfig(getenv,
+	// 生产切流纪律不变。postgres 自动认领时业务连接回落共享
+	// JUHE_AI_POSTGRES_URL：家族未配置即不存在独立业务连接串，独立凭据仍可
+	// 通过显式配置 JUHE_AI_BUSINESS_POSTGRES_URL 走原门禁。
+	if (cfg.DatabaseDriver == "sqlite" || cfg.DatabaseDriver == "postgres") && !hasAnyRawConfig(getenv,
 		"JUHE_AI_BUSINESS_OWNER",
 		"JUHE_AI_BUSINESS_DATABASE_PATH",
 		"JUHE_AI_BUSINESS_POSTGRES_URL",
@@ -784,6 +786,9 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		cfg.BusinessSchemaReady = true
 		cfg.BusinessOwnerEpoch = "standalone"
 		cfg.BusinessOwnerAutoClaimed = true
+		if cfg.DatabaseDriver == "postgres" && cfg.BusinessPostgresURL == "" {
+			cfg.BusinessPostgresURL = cfg.PostgresURL
+		}
 	}
 
 	return cfg, nil

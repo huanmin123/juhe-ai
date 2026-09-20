@@ -402,7 +402,16 @@ func main() {
 	// owner_id/fence_token, otherwise a second holder would permanently fence
 	// the first one out. 去跨进程战役第四刀：loopback F3 input server 删除，
 	// producer 是唯一的链审计写入口。
-	auditLease, ok, keeperErr := auditlog.StartLeaseKeeper(context.Background(), auditStore, auditConfig.InstanceID, auditConfig.OwnerLease, logger)
+	// ownerLeaseAcquireWait 在 F3/F4 两个启动获取点之前解析一次、共用同一
+	// 等待值；解析失败在此 fail 一次。默认 0 时两个获取点与既有 fail-fast
+	// 契约完全一致。
+	ownerLeaseAcquireWait, waitErr := loadOwnerLeaseAcquireWait(os.Getenv)
+	if waitErr != nil {
+		fail(waitErr)
+	}
+	auditLease, ok, keeperErr := startLeaseKeeperWithWait(logger, "F3 audit", ownerLeaseAcquireWait, func() (*auditlog.LeaseKeeper, bool, error) {
+		return auditlog.StartLeaseKeeper(context.Background(), auditStore, auditConfig.InstanceID, auditConfig.OwnerLease, logger)
+	})
 	if keeperErr != nil {
 		fail(fmt.Errorf("acquire F3 audit owner lease: %w", keeperErr))
 	}
@@ -484,7 +493,9 @@ func main() {
 	// 删除，producer 是本进程唯一写入方。
 	var operationLease *operationlog.LeaseKeeper
 	if runtimeCfg.SystemAPIEnabled && operationConfig.Enabled {
-		keeper, ok, keeperErr := operationlog.StartLeaseKeeper(context.Background(), operationStore, operationConfig.InstanceID, operationConfig.OwnerLease, logger)
+		keeper, ok, keeperErr := startLeaseKeeperWithWait(logger, "F4 operation log", ownerLeaseAcquireWait, func() (*operationlog.LeaseKeeper, bool, error) {
+			return operationlog.StartLeaseKeeper(context.Background(), operationStore, operationConfig.InstanceID, operationConfig.OwnerLease, logger)
+		})
 		if keeperErr != nil {
 			fail(fmt.Errorf("acquire F4 operation-log owner lease: %w", keeperErr))
 		}
@@ -913,6 +924,67 @@ func loadSessionRetentionConfig(getenv func(string) string) (time.Duration, int,
 		limit = parsed
 	}
 	return interval, limit, nil
+}
+
+// ownerLeaseAcquireWaitEnv 允许部署侧为进程启动时的 owner 租约获取注入有界
+// 等待（Go duration，time.ParseDuration 解析）。
+const ownerLeaseAcquireWaitEnv = "JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT"
+
+// loadOwnerLeaseAcquireWait 解析 ownerLeaseAcquireWaitEnv：空字符串 = 0；
+// 非空但解析失败或为负视为配置错误（与 loadSessionRetentionConfig 同款
+// "must be a positive duration" 风格），由调用方 fail 阻止带病启动。
+func loadOwnerLeaseAcquireWait(getenv func(string) string) (time.Duration, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	raw := strings.TrimSpace(getenv(ownerLeaseAcquireWaitEnv))
+	if raw == "" {
+		return 0, nil
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("%s must be a positive duration: %q", ownerLeaseAcquireWaitEnv, raw)
+	}
+	return parsed, nil
+}
+
+// startLeaseKeeperWithWait 包裹进程启动时的 owner 租约获取：前任 owner 被
+// 强杀（defer 释放未执行）后，租约要等 TTL 过期才能被安全接管。部署侧通过
+// JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT 注入有界等待（Go duration），默认空 /
+// 0 保持既有 fail-fast 契约——活 owner 并存场景必须快速失败而非静默排队。
+//
+// ok=false 且 wait>0 时按 1s 间隔重试 start（末次间隔截断到总 deadline），
+// deadline 到仍被持有则返回 ok=false，由调用方维持原文案 fail-fast；wait < 1s
+// 时自然退化为一次性等待后重试一次。err 非 nil 立即返回不重试——传输错误与
+// "被持有"是不同语义，保持现有行为。首条 Info 只在进入等待时打一次，不逐秒
+// 刷屏。supervisor 运行期分支（runCtx 那处）不经过这里：组件失败已由
+// supervisor 有界退避无限重试覆盖。
+func startLeaseKeeperWithWait[T any](logger *slog.Logger, label string, wait time.Duration, start func() (T, bool, error)) (T, bool, error) {
+	keeper, ok, err := start()
+	if err != nil || ok || wait <= 0 {
+		return keeper, ok, err
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	deadline := time.Now().Add(wait)
+	logger.Info("owner lease held by another owner process, waiting for predecessor lease expiry",
+		"lease", label, "waitBudget", wait.String())
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return keeper, ok, err
+		}
+		step := time.Second
+		if remaining < step {
+			step = remaining
+		}
+		time.Sleep(step)
+		keeper, ok, err = start()
+		if err != nil || ok {
+			return keeper, ok, err
+		}
+	}
 }
 
 func runSessionRetention(ctx context.Context, store *sessionretention.Store, interval time.Duration, limit int, markReady func()) error {

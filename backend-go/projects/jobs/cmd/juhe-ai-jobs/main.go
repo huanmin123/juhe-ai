@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -173,8 +174,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var accountHealthStore *accounthealth.Store
 	var accountHealthInputDB *sql.DB
 	var accountHealthInputPool *pgpool.Handle
+	// sqlite 直读的输入句柄（业务库 + 统计库；先输入句柄后 store 的 Close
+	// 顺序由 J1 组件 Close 链保证）。
+	var accountHealthBusinessInputDB *sql.DB
+	var accountHealthStatsInputDB *sql.DB
 	var accountHealthRunner *accounthealth.Runner
-	var accountHealthReader *accounthealth.PostgresDirectInputReader
+	var accountHealthReader accounthealth.DirectInputReader
 	// J1 runner 恒装配（机制强制常开，2026-09-19 决策）；J1 outbox drain 的
 	// 装配事实由下方 wireHealthProbeOutboxFace + SetProbeRequestDrain 承担。
 	if accountHealthConfig.Store.Mode == accounthealth.StorePostgres {
@@ -213,6 +218,71 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		accountHealthReader = reader
 		accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
+	} else if accountHealthConfig.InputSource == "sqlite" {
+		// 冷启动布局前置：全新环境下 business/stats 两库（含 J1 契约表与
+		// settings 缺省）可能尚不存在，而 stats 库布局真正的常规创建方
+		// buildWorkerAssembly 在本分支之后才运行——不前置会让只读 Ping/
+		// CheckContract 拉停零配置冷启动（旧 files 模式不依赖两库，此为
+		// sqlite 直读缺省化引入的回归）。ensure 与 stats-verify ensure 同一
+		// DDL 且幂等，内部以 WAL 可写句柄即开即关，不与下方只读句柄共存。
+		layoutCtx, layoutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		layoutErr := accounthealth.EnsureSQLiteDirectInputLayout(layoutCtx, accountHealthConfig.BusinessSQLitePath, accountHealthConfig.StatsSQLitePath)
+		layoutCancel()
+		if layoutErr != nil {
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("初始化 J1 sqlite 直读所需 SQLite 布局失败: %w", layoutErr))
+		}
+		// sqlite 直读：业务库/统计库两个只读句柄（query_only 强制只读，
+		// busy_timeout 与 gateway 写侧短事务错峰；禁止 WAL/txlock=immediate 的
+		// 写方 DSN——业务库写入由 gateway 单进程持有）。经上方布局前置后文件
+		// 必已存在，Ping 失败只剩真实打开故障（损坏/锁死），仍 fail-fast。
+		businessDB, businessErr := sql.Open("sqlite", sqliteReadOnlyFileDSN(accountHealthConfig.BusinessSQLitePath))
+		if businessErr != nil {
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input business database: %w", businessErr))
+		}
+		businessDB.SetMaxOpenConns(1)
+		businessPingCtx, businessPingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		businessPingErr := businessDB.PingContext(businessPingCtx)
+		businessPingCancel()
+		if businessPingErr != nil {
+			_ = businessDB.Close()
+			_ = accountHealthStore.Close()
+			// 布局前置已保证库文件存在，Ping 失败只剩打开/权限/锁或文件损坏
+			// 类真实故障：提示指向路径与磁盘排查，不再误导为「gateway 未自举」。
+			return failWith(stderr, fmt.Errorf("ping J1 account-health sqlite direct-input business database: %w（%s 已由布局前置创建；请检查路径、进程权限与文件是否被其他进程锁死或损坏）", businessPingErr, accountHealthConfig.BusinessSQLitePath))
+		}
+		statsDB, statsErr := sql.Open("sqlite", sqliteReadOnlyFileDSN(accountHealthConfig.StatsSQLitePath))
+		if statsErr != nil {
+			_ = businessDB.Close()
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input stats database: %w", statsErr))
+		}
+		statsDB.SetMaxOpenConns(1)
+		statsPingCtx, statsPingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		statsPingErr := statsDB.PingContext(statsPingCtx)
+		statsPingCancel()
+		if statsPingErr != nil {
+			_ = statsDB.Close()
+			_ = businessDB.Close()
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("ping J1 account-health sqlite direct-input stats database: %w", statsPingErr))
+		}
+		// 死臂已删（w16j 证据：reader secret/TTL 校验与 LoadConfig 完全重叠）。
+		reader, _ := accounthealth.NewSQLiteDirectInputReader(businessDB, statsDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
+		contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		contractErr := reader.CheckContract(contractContext)
+		contractCancel()
+		if contractErr != nil {
+			_ = statsDB.Close()
+			_ = businessDB.Close()
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
+		}
+		accountHealthBusinessInputDB = businessDB
+		accountHealthStatsInputDB = statsDB
+		accountHealthReader = reader
+		accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
 	} else {
 		accountHealthRunner = accounthealth.NewRunner(accountHealthConfig, accountHealthStore, logger)
 	}
@@ -224,7 +294,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var modelRecoveryRunner *keymodelrecovery.Runner
 	if modelRecoveryConfig.Enabled {
 		if accountHealthReader == nil {
-			return failWith(stderr, errors.New("启用 model-recovery 必须同时启用 PostgreSQL J1 direct input reader"))
+			return failWith(stderr, errors.New("启用 model-recovery 必须同时启用 J1 direct input reader（postgres 或 sqlite）"))
 		}
 		modelRecoveryStore, err = keymodelrecovery.OpenRedisStore(modelRecoveryConfig)
 		if err != nil {
@@ -492,6 +562,16 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				var closeErr error
 				if accountHealthInputPool != nil {
 					closeErr = accountHealthInputPool.Close()
+				}
+				if accountHealthStatsInputDB != nil {
+					if err := accountHealthStatsInputDB.Close(); err != nil && closeErr == nil {
+						closeErr = err
+					}
+				}
+				if accountHealthBusinessInputDB != nil {
+					if err := accountHealthBusinessInputDB.Close(); err != nil && closeErr == nil {
+						closeErr = err
+					}
 				}
 				if err := accountHealthStore.Close(); err != nil && closeErr == nil {
 					closeErr = err
@@ -1030,6 +1110,18 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// sqliteReadOnlyFileDSN 构造只读打开业务/统计 SQLite 的 file URI：路径转
+// POSIX 斜杠并补齐根斜杠（Windows 盘符，与 accounthealth sqliteDSN 同款形
+// 状）；mode=ro + query_only 双保险只读，busy_timeout=5000 与 gateway 写侧
+// 短事务错峰。禁止照抄写方 openSQLite 的 WAL/txlock=immediate。
+func sqliteReadOnlyFileDSN(path string) string {
+	uriPath := filepath.ToSlash(filepath.Clean(path))
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	return "file:" + uriPath + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
 }
 
 // failWith 保持原 fail() 的错误输出行为（单行错误到 stderr，逐字节一致），

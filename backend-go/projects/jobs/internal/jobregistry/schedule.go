@@ -285,6 +285,18 @@ func schedules() map[string]Schedule {
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "external-account-maintenance", Timeout: 90 * second,
 			BackoffBase: 10 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
 		},
+		// oauth-keepalive-token-refresh：归档未保留 Node keepalive 周期（该任务
+		// 族语义源自 dispatch-preparation 换发窗口，无既有 scheduler.schedule
+		// 实参可对照），按注册表约定取保守值并注明来源：interval 对齐相邻
+		// OAuth 条目 openai-oauth-access-token-refresh 的 60s 节拍
+		// （OAuthTokenRefreshInterval，覆盖最小 60s keepalive lead 窗口）；
+		// 候选查询批量受限（默认 20/族）且到点前不产生写，上游无额外压力；
+		// initial delay 40s 与 openai 刷新（35s）错峰。
+		"oauth-keepalive-token-refresh": {
+			Interval: OAuthTokenRefreshInterval, InitialDelay: 40 * second, StablePhaseWindow: 5 * second,
+			PassiveJitter: true, OverlapCoalesce: true, Lane: "external-account-maintenance", Timeout: 90 * second,
+			BackoffBase: 10 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
+		},
 
 		// stats-worker（账户质量）
 		"account-quality-refresh": {

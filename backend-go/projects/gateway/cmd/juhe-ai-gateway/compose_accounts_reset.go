@@ -249,6 +249,26 @@ func (b *accountsRuntimeResetBridge) DispatchAccountHealthCheck(accountID, reaso
 	}()
 }
 
+// chainKeyModelHealthDispatcher adapts the runtime-reset bridge onto the
+// gatewayaccounteffects attempt dispatcher port (GatewayKeyModelAttempt.
+// SetDispatcher 的生产接线，chain_wiring_w2c.go chainKeyModelAdmission 在每个
+// admitted attempt 出口挂载)。The attempt 的 fence 引用是 key-model 前台状态
+// store 的栅栏句柄；Node dispatchAccountHealthCheck(accountId, reason) 无
+// fence 参数，outbox 派发也不消费它，因此在本边界丢弃（fire-and-forget 语义
+// 由上方 DispatchAccountHealthCheck 保持）。bridge.health（probe-request
+// outbox writer）在 compose.go chain 启用块内先于本适配器构造，nil-db writer
+// 是 inert（dispatch 显式 input_unavailable），无空指针路径。bridge 字段持有
+// RuntimeResetEffects 接口（newAccountsRuntimeResetBridge 的返回形态）。
+type chainKeyModelHealthDispatcher struct {
+	bridge accounts.RuntimeResetEffects
+}
+
+func (d chainKeyModelHealthDispatcher) DispatchAccountHealthCheck(accountID string, reason string, _ *gatewayaccounteffects.KeyModelFenceReference) {
+	d.bridge.DispatchAccountHealthCheck(accountID, reason)
+}
+
+var _ gatewayaccounteffects.AccountHealthCheckDispatcher = chainKeyModelHealthDispatcher{}
+
 // AuthorizationQuotaExceeded bridges the quota gate: the authorization-scoped
 // limits plus the effective team grant, costed through the shared
 // gatewayquota StatsStore (Node loadAuthorizationQuotaExceededByAuthorizationIdAsync:

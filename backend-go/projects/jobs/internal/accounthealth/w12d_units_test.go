@@ -73,21 +73,21 @@ func TestW12dLoadConfigFullPostgresMatrix(t *testing.T) {
 	}
 	// 显式 env 值覆盖默认值并覆盖全部解析分支。
 	set(t, map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY_ID":      "w12d-key",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS":   "8",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS":   "4",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY_ID":          "w12d-key",
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS":       "8",
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS":       "4",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS": "6",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS": "2",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS":              "7200000",
-		"JUHE_AI_ACCOUNT_HEALTH_SCAN_INTERVAL":             "10s",
-		"JUHE_AI_ACCOUNT_HEALTH_OWNER_LEASE":               "60s",
-		"JUHE_AI_ACCOUNT_HEALTH_PROBE_TIMEOUT":             "5s",
-		"JUHE_AI_ACCOUNT_HEALTH_MAX_RESPONSE_BYTES":        "4096",
-		"JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY":           "16",
-		"JUHE_AI_ACCOUNT_HEALTH_IO_CONCURRENCY":            "8",
-		"JUHE_AI_ACCOUNT_HEALTH_DB_CONCURRENCY":            "4",
-		"JUHE_AI_ACCOUNT_HEALTH_DB_QUEUE_SIZE":             "64",
-		"JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT":        "32",
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS":                  "7200000",
+		"JUHE_AI_ACCOUNT_HEALTH_SCAN_INTERVAL":                 "10s",
+		"JUHE_AI_ACCOUNT_HEALTH_OWNER_LEASE":                   "60s",
+		"JUHE_AI_ACCOUNT_HEALTH_PROBE_TIMEOUT":                 "5s",
+		"JUHE_AI_ACCOUNT_HEALTH_MAX_RESPONSE_BYTES":            "4096",
+		"JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY":               "16",
+		"JUHE_AI_ACCOUNT_HEALTH_IO_CONCURRENCY":                "8",
+		"JUHE_AI_ACCOUNT_HEALTH_DB_CONCURRENCY":                "4",
+		"JUHE_AI_ACCOUNT_HEALTH_DB_QUEUE_SIZE":                 "64",
+		"JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT":            "32",
 	})
 	config, err = LoadConfig(os.Getenv)
 	if err != nil {
@@ -125,9 +125,9 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		t.Setenv("JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET", "w12d-secret")
 	}
 	cases := []struct {
-		name   string
-		env    map[string]string
-		frag   string
+		name string
+		env  map[string]string
+		frag string
 	}{
 		{"owner not go", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER": "node"}, "JOBS_OWNER"},
 		{"bad store", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "mysql"}, "sqlite 或 postgres"},
@@ -138,7 +138,7 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		{"pool invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS": "2", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS": "4"}, "连接池配置无效"},
 		{"pool zero", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS": "0"}, "必须是正整数"},
 		{"sqlite db inside input dir", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY": filepath.Join(rootOnce(), "w12d-inputs"), "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": filepath.Join(rootOnce(), "w12d-inputs", "x.sqlite3")}, "不得放入 input 目录"},
-		{"bad input source", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "redis"}, "files 或 postgres"},
+		{"bad input source", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "redis"}, "files、postgres 或 sqlite"},
 		{"pg input with sqlite store", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": filepath.Join(t.TempDir(), "jobs", "x.sqlite3"), "JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres"}, "只允许与 postgres"},
 		{"missing input pg url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": ""}, "INPUT_POSTGRES_URL"},
 		{"input pool invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://w12d/b", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS": "-1"}, "必须是正整数"},
@@ -198,7 +198,7 @@ func TestW12dLoadConfigSQLiteIsolationArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("isolated sqlite: %v", err)
 	}
-	if config.Store.Mode != StoreSQLite || config.InputSource != "files" {
+	if config.Store.Mode != StoreSQLite || config.InputSource != "sqlite" {
 		t.Fatalf("config=%+v", config)
 	}
 }

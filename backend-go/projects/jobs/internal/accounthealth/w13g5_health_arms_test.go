@@ -268,14 +268,14 @@ func TestW13g5HealthDirectHelpers(t *testing.T) {
 		t.Fatalf("零 limit 原样: %d", got)
 	}
 	// directSettingInt 边界（设置值为 JSON 编码数字）。
-	got, err := directSettingInt(map[string]string{"w13g5-key": "5"}, "w13g5-key", 1, 10)
+	got, err := directSettingInt(map[string]string{"w13g5-key": "5"}, "w13g5", "w13g5-key", 1, 10)
 	if err != nil || got != 5 {
 		t.Fatalf("合法设置读取: %d %v", got, err)
 	}
-	if _, err := directSettingInt(map[string]string{"w13g5-key": "not-int"}, "w13g5-key", 1, 10); err == nil {
+	if _, err := directSettingInt(map[string]string{"w13g5-key": "not-int"}, "w13g5", "w13g5-key", 1, 10); err == nil {
 		t.Fatal("非法数字必须报错")
 	}
-	if _, err := directSettingInt(map[string]string{"w13g5-key": "99"}, "w13g5-key", 1, 10); err == nil {
+	if _, err := directSettingInt(map[string]string{"w13g5-key": "99"}, "w13g5", "w13g5-key", 1, 10); err == nil {
 		t.Fatal("越界必须报错")
 	}
 	// openAIProfileMode。

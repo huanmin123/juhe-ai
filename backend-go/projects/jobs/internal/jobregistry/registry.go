@@ -228,6 +228,17 @@ func ScheduledEntries() []Entry {
 			GoBinding: "RefreshJob.RunOnce + HTTPTokenExchanger（Node 兼容凭据封套）",
 		},
 		{
+			JobName: "oauth-keepalive-token-refresh", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
+			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
+			Writes:   []string{"business:accounts"},
+			GoStatus: GoWired, GoPackage: "oauthrefresh",
+			// 归档 Node 无对应 scheduled job（语义源自 dispatch-preparation
+			// 的换发窗口，Go 侧收敛为定时任务族）；登记为 Go 新增 GoWired 条目，
+			// 调度间隔取相邻 openai-oauth-access-token-refresh 同款节拍
+			// （OAuthTokenRefreshInterval=60s，schedule.go 注明无归档周期依据）。
+			GoBinding: "KeepaliveJob.RunOnce(KeepalivePlans) + HTTPTokenExchanger（仅 anthropic/gemini/grok 三族：anthropic oauth / gemini google_oauth / xai oauth+XAI OpenAI v1 profile；openai 族归 openai-oauth-access-token-refresh 互不重叠）。窗口语义=派发准备 lead（anthropic/gemini 60s、grok 5min），CAS 合并写回保留 base_url，失败不落终态仅日志+调度退避",
+		},
+		{
 			JobName: "account-api-key-cooldown-retest", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
 			Hotspot: true, SingleOwner: false, Shardable: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:account_api_key_runtime_states", "usage-shards:usage_records"},

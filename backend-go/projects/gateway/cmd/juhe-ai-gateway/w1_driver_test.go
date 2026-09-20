@@ -75,10 +75,10 @@ func TestW1DriverPredicatesAndPrepare(t *testing.T) {
 	if err != nil || passthrough.ID != "acc_1" {
 		t.Fatalf("prepare = %+v, %v", passthrough, err)
 	}
-	// 带缓存构造：nil cache 不挂目录；nil parser 保持逐次解析回退。
-	if newChainProviderDriverWithCache(nil, nil).gptOverrideCatalog != nil {
-		t.Fatal("nil cache 不得挂目录")
-	}
+	// 带缓存构造：nil cache 不注册进程级目录端口（注册语义由
+	// TestNewChainProviderDriverWithCacheRegistersOverridePorts 覆盖，原
+	// driver 私有字段 gptOverrideCatalog 无消费点已删除）；nil parser 保持
+	// 逐次解析回退。
 	if newChainProviderDriverWithCache(nil, nil).openai == nil {
 		t.Fatal("openai 驱动必须装配")
 	}

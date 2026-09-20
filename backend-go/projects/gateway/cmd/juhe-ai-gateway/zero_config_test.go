@@ -6,8 +6,9 @@ package main
 //   - JUHE_AI_GATEWAY_SYSTEM_API_ENABLED / JUHE_AI_GATEWAY_CHAIN_ENABLED
 //     未配置时均为 true，显式 false 才关闭，非法值启动即失败；
 //   - chain=true + system=false 仍被联动校验拒绝；
-//   - sqlite + BUSINESS_* 家族全空时自动认领业务 owner，显式配置任一成员
-//     则 handoff 门禁保持。
+//   - sqlite / postgres + BUSINESS_* 家族全空时自动认领业务 owner（postgres
+//     业务连接回落共享 JUHE_AI_POSTGRES_URL），显式配置任一成员则 handoff
+//     门禁保持。
 
 import (
 	"path/filepath"
@@ -99,5 +100,47 @@ func TestZeroConfigGateSwitchSemantics(t *testing.T) {
 	// system API 关闭时 owner 门禁短路放行（原语义）。
 	if err := off.businessOwnerGate(); err != nil {
 		t.Fatalf("system API 关闭时门禁必须短路: %v", err)
+	}
+}
+
+func TestZeroConfigPostgresAutoClaimFallsBackToSharedPostgresURL(t *testing.T) {
+	// postgres + BUSINESS_* 家族全空：与 sqlite 同语义自动认领，业务连接回落
+	// 共享 JUHE_AI_POSTGRES_URL；显式配置家族任一成员仍走原门禁。
+	// POSTGRES_URL 本身是 performance hint（mode 推断为 performance），按真实
+	// 高性能形态补齐 Redis 连接。
+	cfg, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
+		"JUHE_AI_DATABASE_DRIVER": "postgres",
+		"JUHE_AI_POSTGRES_URL":    "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
+		"JUHE_AI_REDIS_CACHE_URL": "redis://:secret@127.0.0.1:6379/1",
+		"JUHE_AI_REDIS_STATE_URL": "redis://:secret@127.0.0.1:6379/9",
+	}))
+	if err != nil {
+		t.Fatalf("postgres 零配置 loadRuntimeConfig: %v", err)
+	}
+	if !cfg.BusinessOwnerAutoClaimed || cfg.BusinessOwner != "gateway" || cfg.BusinessOwnerEpoch != "standalone" {
+		t.Fatalf("postgres 自动认领=%+v", cfg)
+	}
+	if cfg.BusinessPostgresURL != "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable" {
+		t.Fatalf("业务连接必须回落共享 POSTGRES_URL: %q", cfg.BusinessPostgresURL)
+	}
+	if err := cfg.businessOwnerGate(); err != nil {
+		t.Fatalf("自动认领下 businessOwnerGate 必须放行: %v", err)
+	}
+	// 显式独立业务连接串：不自动认领，保持原门禁（含独立 URL 契约）。
+	explicit, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
+		"JUHE_AI_DATABASE_DRIVER":       "postgres",
+		"JUHE_AI_POSTGRES_URL":          "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
+		"JUHE_AI_REDIS_CACHE_URL":       "redis://:secret@127.0.0.1:6379/1",
+		"JUHE_AI_REDIS_STATE_URL":       "redis://:secret@127.0.0.1:6379/9",
+		"JUHE_AI_BUSINESS_POSTGRES_URL": "postgres://biz:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
+	}))
+	if err != nil {
+		t.Fatalf("显式 business postgres 配置: %v", err)
+	}
+	if explicit.BusinessOwnerAutoClaimed {
+		t.Fatal("显式配置 BUSINESS_POSTGRES_URL 时不得自动认领")
+	}
+	if explicit.BusinessPostgresURL != "postgres://biz:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable" {
+		t.Fatalf("显式业务连接串必须原样保留: %q", explicit.BusinessPostgresURL)
 	}
 }

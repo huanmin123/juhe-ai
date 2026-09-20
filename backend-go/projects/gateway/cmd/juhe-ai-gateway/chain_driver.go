@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayanthropic"
@@ -41,10 +42,6 @@ type chainProviderDriver struct {
 	// registered; anthropic/gemini expose route helpers rather than the full
 	// G01 driver surface and are handled through their URL builders below).
 	openai *gatewayopenai.Driver
-	// gptOverrideCatalog ports the provider model catalog for the D-151 gpt
-	// request-override capability resolution (nil keeps capabilities
-	// unresolved and the overrides inert).
-	gptOverrideCatalog gatewaydispatch.GptRequestOverrideModelCatalog
 	// bodyParser materializes the parsed JSON object once per request so the
 	// dispatch loop stops re-parsing the full body per candidate attempt
 	// (nil keeps the per-attempt driver-side parse fallback).
@@ -60,13 +57,39 @@ func newChainProviderDriver() *chainProviderDriver {
 	return &chainProviderDriver{openai: gatewayopenai.NewDriver()}
 }
 
+// registerGptRequestOverrideCatalogPort / registerGptRequestOverrideModelCandidates
+// 是进程级端口 Set 的测试间接层：组合测试可替换观察者而不直接污染
+// gatewaydispatch 全局状态。
+var (
+	registerGptRequestOverrideCatalogPort = func(catalog gatewaydispatch.GptRequestOverrideModelCatalog) {
+		gatewaydispatch.SetGptRequestOverrideModelCatalog(catalog)
+	}
+	registerGptRequestOverrideModelCandidates = func(expander func(providerCode, model string) []string) {
+		gatewaydispatch.SetGptRequestOverrideModelCandidates(expander)
+	}
+)
+
 // newChainProviderDriverWithCache wires the runtime-cache-backed provider model
 // catalog into the D-151 capability resolution and the shared bounded body
 // parser into the once-per-request body materialization.
 func newChainProviderDriverWithCache(cache *gatewayruntimecache.Service, bodyParser *gatewaybody.JSONParser) *chainProviderDriver {
 	driver := newChainProviderDriver()
 	if cache != nil {
-		driver.gptOverrideCatalog = chainGptRequestOverrideModelCatalog{cache: cache}
+		// D-151 P0 接线（组合根缺口收口）：能力解析端口
+		// ResolveGptRequestOverrideModelCapabilities 读的是 gatewayoauthcodex
+		// 的进程级目录端口；此前本构造器只把适配器挂在 driver 私有字段
+		// gptOverrideCatalog 上（引擎经 ProviderDriver 接口访问，无任何读取
+		// 点），端口保持 nil → 能力解析恒 nil → EffectiveGptAccountRequestOverrides
+		// 返回空 → 管理面配置的 service_tier / reasoning_effort 覆盖在运行面
+		// 整段惰性（oauth codex 分支与 api-key 覆盖应用两处消费点同盲）。
+		//
+		// 数据源选 runtimecache 而非每次直查 SQL：端口在每请求构建上游请求时
+		// 调用，runtimecache 的 provider 目录读缓存（24h TTL + Bus 失效 +
+		// singleflight，chain_runtime.go 组合根单实例，键
+		// providerCode:systemAccountID:inactive:unpriced）命中即零 SQL——
+		// 等价 Node listCachedProviderModelCatalogAsync 的 cached 语义。
+		registerGptRequestOverrideCatalogPort(chainGptRequestOverrideModelCatalog{cache: cache})
+		registerGptRequestOverrideModelCandidates(chainGptRequestOverrideModelCandidates)
 	}
 	driver.bodyParser = bodyParser
 	return driver
@@ -98,6 +121,14 @@ func (a chainGptRequestOverrideModelCatalog) ListGptRequestOverrideModelCatalog(
 	if err != nil {
 		return nil, err
 	}
+	return chainGptRequestOverrideCatalogItemsOf(items), nil
+}
+
+// chainGptRequestOverrideCatalogItemsOf projects runtime-cache catalog rows
+// onto the override capability rows: active rows only, the three fields the
+// capability resolver consumes (Node listCachedProviderModelCatalogAsync 行
+// 投影；includeUnpriced 已在 cache 读取参数层生效，这里不再过滤定价)。
+func chainGptRequestOverrideCatalogItemsOf(items []gatewayruntimecache.ProviderModelCatalogItem) []gatewaydispatch.GptRequestOverrideModelCatalogItem {
 	out := make([]gatewaydispatch.GptRequestOverrideModelCatalogItem, 0, len(items))
 	for _, item := range items {
 		if item.Status != "active" {
@@ -109,7 +140,74 @@ func (a chainGptRequestOverrideModelCatalog) ListGptRequestOverrideModelCatalog(
 			SupportedReasoningEfforts: item.SupportedReasoningEfforts,
 		})
 	}
-	return out, nil
+	return out
+}
+
+// chainGptRequestOverrideModelCandidates mirrors the
+// modelPricingProviderDriverForProvider(providerCode).buildModelCandidates(model)
+// fallback chain the capability resolver matches against the catalog rows.
+// gpt / openai vendor codes resolve to the openai-compatible pricing driver;
+// its candidate rules are mirrored from internal/pricing
+// buildOpenAIModelCandidates（该真实组件未导出，越出本写入域，组合根以
+// 逐规则镜像 + 单测钉住）。请求模型自身恒为首个候选（gatewayoauthcodex
+// 端口把 Node 的「精确名优先」折叠进候选链首位的既有语义）。其余 provider
+// code 保持端口内建默认（model + trimmed identity）。
+func chainGptRequestOverrideModelCandidates(providerCode, model string) []string {
+	switch strings.ToLower(strings.TrimSpace(providerCode)) {
+	case "gpt", "openai":
+		return chainOpenAIOverrideModelCandidates(model)
+	default:
+		candidates := []string{model}
+		if normalized := strings.TrimSpace(model); normalized != model && normalized != "" {
+			candidates = append(candidates, normalized)
+		}
+		return candidates
+	}
+}
+
+// chainOverrideModelDateSuffixPattern mirrors pricing.modelDateSuffixPattern
+// (/-(?:\d{4}-\d{2}-\d{2}|\d{8})$/).
+var chainOverrideModelDateSuffixPattern = regexp.MustCompile(`-(?:\d{4}-\d{2}-\d{2}|\d{8})$`)
+
+// chainOpenAIOverrideModelCandidates mirrors buildOpenAIModelCandidates
+// (insertion order, dedup) prefixed with the requested model identity.
+func chainOpenAIOverrideModelCandidates(model string) []string {
+	candidates := []string{model}
+	add := func(value string) {
+		if value == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == value {
+				return
+			}
+		}
+		candidates = append(candidates, value)
+	}
+	if withoutDate := chainOverrideModelDateSuffixPattern.ReplaceAllString(model, ""); withoutDate != model {
+		add(withoutDate)
+	}
+	for _, rule := range []struct{ prefix, base string }{
+		{"gpt-5.6-sol-", "gpt-5.6-sol"},
+		{"gpt-5.6-terra-", "gpt-5.6-terra"},
+		{"gpt-5.6-luna-", "gpt-5.6-luna"},
+		{"gpt-5.5-", "gpt-5.5"},
+		{"gpt-5.4-mini-", "gpt-5.4-mini"},
+		{"gpt-5.4-nano-", "gpt-5.4-nano"},
+		{"gpt-5.4-", "gpt-5.4"},
+		{"gpt-image-2-", "gpt-image-2"},
+		{"gpt-4.1-nano-", "gpt-4.1-nano"},
+		{"gpt-4.1-mini-", "gpt-4.1-mini"},
+		{"gpt-4.1-", "gpt-4.1"},
+	} {
+		if strings.HasPrefix(model, rule.prefix) {
+			add(rule.base)
+		}
+	}
+	if model == "gpt-5.3-codex" {
+		add("gpt-5.3-codex")
+	}
+	return candidates
 }
 
 // PrepareGatewayUpstreamAccount mirrors prepareGatewayUpstreamAccount. The
