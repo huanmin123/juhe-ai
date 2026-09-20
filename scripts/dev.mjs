@@ -25,6 +25,21 @@ let shuttingDown = false
 
 let goProjectEnv
 
+// 去跨进程战役第四刀：即使残留在历史 .env 或父进程环境中，已删除的
+// F3/F4 loopback input env 也不得进入 Go 子进程（gateway 进程内 producer
+// 独占写入，监听器 3303/3304 已不存在）。声明必须先于顶层 try：下方
+// resolveGoProjectEnv() 在初始化阶段就会读取本列表。
+const removedInputServerEnvNames = [
+  'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS',
+  'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
+  'JUHE_AI_AUDIT_LOG_INPUT_URL',
+  'JUHE_AI_AUDIT_LOG_INPUT_MAX_BYTES',
+  'JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT',
+  'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS',
+  'JUHE_AI_OPERATION_LOG_INPUT_SECRET',
+  'JUHE_AI_OPERATION_LOG_INPUT_URL'
+]
+
 process.on('SIGINT', () => shutdown(130))
 process.on('SIGTERM', () => shutdown(143))
 process.on('SIGHUP', () => shutdown(129))
@@ -32,6 +47,10 @@ process.on('SIGHUP', () => shutdown(129))
 try {
   goProjectEnv = resolveGoProjectEnv()
   goGateway = startGoProject('gateway')
+  // jobs 的 runtime-log-indexer 会以只读方式附加业务库；冷启动时业务库由
+  // gateway 零配置自举创建，必须等 gateway 健康后才能启动 jobs，否则 jobs
+  // 会因业务库尚不存在而 fail-fast 拉停整个 dev 会话。
+  await waitForGatewayHealth()
   goJobs = startGoProject('jobs')
   console.log('[dev] starting frontend...')
   frontend = startPnpm(['--filter', 'juhe-ai-frontend', 'dev'], 'frontend')
@@ -60,6 +79,29 @@ function startPnpm(args, label) {
   monitorChild(child, label)
 
   return child
+}
+
+async function waitForGatewayHealth() {
+  const healthAddress = goProjectEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS || '127.0.0.1:3306'
+  const healthURL = `http://${healthAddress}/health`
+  const timeoutMs = 180_000
+  const deadline = Date.now() + timeoutMs
+  console.log(`[dev] waiting for Go gateway health at ${healthURL} ...`)
+  for (;;) {
+    if (shuttingDown) throw new Error('shutting down while waiting for gateway health')
+    if (Date.now() > deadline) throw new Error(`gateway health check timed out after ${Math.round(timeoutMs / 1000)}s: ${healthURL}`)
+    try {
+      const response = await fetch(healthURL)
+      if (response.ok) return
+    } catch {
+      // 连接拒绝 = gateway 尚未监听（go run 编译中或启动中），属轮询预期路径。
+    }
+    await sleep(500)
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolveTimer) => setTimeout(resolveTimer, ms))
 }
 
 function startGoProject(project) {
@@ -116,144 +158,15 @@ function resolveBackendTarget() {
 
 function resolveGoProjectEnv() {
   const childEnv = { ...loadBackendEnv(), ...process.env }
-  const inferredStore = childEnv.JUHE_AI_RUNTIME_MODE?.trim().toLowerCase() === 'performance' || childEnv.JUHE_AI_POSTGRES_URL?.trim()
-    ? 'postgres'
-    : 'sqlite'
-  childEnv.JUHE_AI_RUNTIME_LOG_STORE = firstConfiguredValue(
-    childEnv.JUHE_AI_RUNTIME_LOG_STORE,
-    childEnv.JUHE_AI_DATABASE_DRIVER,
-    inferredStore
-  )
-  childEnv.JUHE_AI_TABLE_MONITOR_STORE = firstConfiguredValue(
-    childEnv.JUHE_AI_TABLE_MONITOR_STORE,
-    childEnv.JUHE_AI_DATABASE_DRIVER,
-    inferredStore
-  )
-  childEnv.JUHE_AI_AUDIT_LOG_STORE = firstConfiguredValue(
-    childEnv.JUHE_AI_AUDIT_LOG_STORE,
-    childEnv.JUHE_AI_DATABASE_DRIVER,
-    childEnv.JUHE_AI_AUDIT_LOG_POSTGRES_URL ? 'postgres' : undefined,
-    inferredStore
-  )
-  childEnv.JUHE_AI_OPERATION_LOG_STORE = firstConfiguredValue(
-    childEnv.JUHE_AI_OPERATION_LOG_STORE,
-    childEnv.JUHE_AI_DATABASE_DRIVER,
-    childEnv.JUHE_AI_OPERATION_LOG_POSTGRES_URL ? 'postgres' : undefined,
-    inferredStore
-  )
-  childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_DATABASE_PATH,
-    resolve(devDataRoot, 'juhe-ai.sqlite3')
-  )
-  childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_DATASET_DATABASE_PATH,
-    resolve(devDataRoot, 'juhe-ai-dataset.sqlite3')
-  )
-  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH,
-    resolve(devDataRoot, 'juhe-ai-runtime-log.sqlite3')
-  )
-  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH,
-    resolve(devDataRoot, 'juhe-ai-table-monitor.sqlite3')
-  )
-  // In the dev profile, an explicitly enabled Go metrics PostgreSQL store may
-  // reuse the already selected dev application connection. The child process
-  // still receives a concrete dedicated variable; release/Compose paths keep
-  // requiring an explicit metrics URL to avoid accidental cross-environment
-  // writes.
-  if (childEnv.JUHE_AI_GO_RUNTIME_METRICS_STORE?.trim().toLowerCase() === 'postgres'
-    && !childEnv.JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL?.trim()
-    && childEnv.JUHE_AI_POSTGRES_URL?.trim()) {
-    childEnv.JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL = childEnv.JUHE_AI_POSTGRES_URL
-  }
-  if (childEnv.JUHE_AI_GO_RUNTIME_METRICS_STORE?.trim().toLowerCase() === 'sqlite'
-    && childEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH?.trim()) {
-    childEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH = resolveBackendPath(
-      childEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH,
-      childEnv.JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH
-    )
-  }
-  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH,
-    resolve(devDataRoot, 'juhe-ai-usage-catalog.sqlite3')
-  )
-  childEnv.JUHE_AI_STATS_DATABASE_PATH = resolveBackendPath(
-    childEnv.JUHE_AI_STATS_DATABASE_PATH,
-    resolve(devDataRoot, 'juhe-ai-stats.sqlite3')
-  )
-  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = resolveBackendPath(
-    childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT,
-    resolve(devDataRoot, 'codex-context', 'state-shards')
-  )
-  childEnv.JUHE_AI_LOG_DIR = resolveBackendPath(childEnv.JUHE_AI_LOG_DIR, devLogRoot)
-  childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID = firstConfiguredValue(
-    childEnv.JUHE_AI_RUNTIME_LOG_INSTANCE_ID,
-    'dev-go-jobs-runtime-log'
-  )
-  childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID = firstConfiguredValue(
-    childEnv.JUHE_AI_TABLE_MONITOR_INSTANCE_ID,
-    'dev-go-jobs-table-monitor'
-  )
-  const instanceID = firstConfiguredValue(
-    childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID,
-    `dev-go-gateway-audit-log-pid-${process.pid}`
-  )
-  childEnv.JUHE_AI_AUDIT_LOG_INSTANCE_ID = instanceID
-  // 去跨进程战役第四刀：F3/F4 loopback input listener（3303/3304）已删除，
-  // JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS/_SECRET/_URL 与
-  // JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS/_SECRET/_URL 不再注入；
-  // 审计/操作日志写入走 gateway 进程内 producer（见文件头 drop 清单）。
-  childEnv.JUHE_AI_AUDIT_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-audit-log.sqlite3'))
-  childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY, resolve(devDataRoot, 'audit-payload-blobs'))
-  childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_HOT_SEARCH_DIRECTORY, resolve(devDataRoot, 'audit-hot-search'))
-  childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(devDataRoot, 'juhe-ai.sqlite3'))
-  const operationInstanceID = firstConfiguredValue(
-    childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID,
-    `dev-go-gateway-operation-log-pid-${process.pid}`
-  )
-  childEnv.JUHE_AI_OPERATION_LOG_INSTANCE_ID = operationInstanceID
-  childEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_OPERATION_LOG_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-operation-log.sqlite3'))
-  childEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH = resolveBackendPath(childEnv.JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH, childEnv.JUHE_AI_DATABASE_PATH || resolve(devDataRoot, 'juhe-ai.sqlite3'))
-  childEnv.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS = firstConfiguredValue(childEnv.JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3305')
-  childEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS = firstConfiguredValue(childEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS, '127.0.0.1:3306')
-  childEnv.JUHE_AI_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai.sqlite3'))
-  childEnv.JUHE_AI_DATASET_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_DATASET_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-dataset.sqlite3'))
-  childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_USAGE_CATALOG_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-usage-catalog.sqlite3'))
-  childEnv.JUHE_AI_STATS_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_STATS_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-stats.sqlite3'))
-  childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_RUNTIME_LOG_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-runtime-log.sqlite3'))
-  childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH = resolveBackendPath(childEnv.JUHE_AI_TABLE_MONITOR_DATABASE_PATH, resolve(devDataRoot, 'juhe-ai-table-monitor.sqlite3'))
-  childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = resolveBackendPath(childEnv.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT, resolve(devDataRoot, 'codex-context', 'state-shards'))
-  childEnv.JUHE_AI_USAGE_SHARD_ROOT = resolveBackendPath(childEnv.JUHE_AI_USAGE_SHARD_ROOT, resolve(devDataRoot, 'usage-shards'))
-  childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '30s')
-  childEnv.JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_RETENTION_INTERVAL, '1m')
-  if (childEnv.JUHE_AI_AUDIT_LOG_STORE === 'postgres' && !childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL) {
-    childEnv.JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL = childEnv.JUHE_AI_AUDIT_LOG_POSTGRES_URL ?? childEnv.JUHE_AI_POSTGRES_URL ?? ''
-  }
-  if (childEnv.JUHE_AI_OPERATION_LOG_STORE === 'postgres' && !childEnv.JUHE_AI_OPERATION_LOG_POSTGRES_URL) {
-    childEnv.JUHE_AI_OPERATION_LOG_POSTGRES_URL = childEnv.JUHE_AI_POSTGRES_URL ?? ''
-  }
-  // 去跨进程战役第四刀：即使残留在历史 .env 或父进程环境中，已删除的
-  // F3/F4 loopback input env 也不得进入 Go 子进程（gateway 进程内 producer
-  // 独占写入，监听器 3303/3304 已不存在）。
+  // Go 三项目遵循 2026-09-19 零配置存储约定：路径类 env 全部从单一数据根
+  // JUHE_AI_DATA_DIR 按 <DATA_DIR>/<固定名> 派生（业务库固定名
+  // business.sqlite3，gateway 与 jobs 缺省派生到同一文件）。dev 只钉住数据
+  // 根与日志根；注入旧式逐库路径会与 Go 固定名表脱节，破坏 gateway 零配
+  // 置自举建库的同文件判定，冷启动即 fail-fast。
+  childEnv.JUHE_AI_DATA_DIR = firstConfiguredValue(childEnv.JUHE_AI_DATA_DIR, devDataRoot)
+  childEnv.JUHE_AI_LOG_DIR = firstConfiguredValue(childEnv.JUHE_AI_LOG_DIR, devLogRoot)
   for (const name of removedInputServerEnvNames) delete childEnv[name]
   return childEnv
-}
-
-const removedInputServerEnvNames = [
-  'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS',
-  'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
-  'JUHE_AI_AUDIT_LOG_INPUT_URL',
-  'JUHE_AI_AUDIT_LOG_INPUT_MAX_BYTES',
-  'JUHE_AI_AUDIT_LOG_INPUT_TIMEOUT',
-  'JUHE_AI_OPERATION_LOG_INPUT_LISTEN_ADDRESS',
-  'JUHE_AI_OPERATION_LOG_INPUT_SECRET',
-  'JUHE_AI_OPERATION_LOG_INPUT_URL'
-]
-
-function resolveBackendPath(value, fallback) {
-  const configuredValue = value?.trim()
-  return configuredValue ? (isAbsolute(configuredValue) ? configuredValue : resolve(devDataRoot, configuredValue)) : fallback
 }
 
 function firstConfiguredValue(...values) {

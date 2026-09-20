@@ -31,19 +31,19 @@ func TestFindProviderModelPricingCanonicalAliasFallback(t *testing.T) {
 	if got.Source != "openai-pricing-snapshot" {
 		t.Fatalf("source = %q, want openai-pricing-snapshot", got.Source)
 	}
-	// Row: input_cost_per_token 0.000005, output 0.00003, cache_write
-	// 0.00000625, cache_read 5e-7; perMillion(x) = toFixed(8).
-	if got.InputUsdPer1M == nil || *got.InputUsdPer1M != 5 {
-		t.Fatalf("inputUsdPer1M = %v, want 5", got.InputUsdPer1M)
+	// Row: input_cost_per_token 0.000004, output 0.00002, cache_write
+	// 0.000005, cache_read 4e-7; perMillion(x) = toFixed(8).
+	if got.InputUsdPer1M == nil || *got.InputUsdPer1M != 4 {
+		t.Fatalf("inputUsdPer1M = %v, want 4", got.InputUsdPer1M)
 	}
-	if got.OutputUsdPer1M == nil || *got.OutputUsdPer1M != 30 {
-		t.Fatalf("outputUsdPer1M = %v, want 30", got.OutputUsdPer1M)
+	if got.OutputUsdPer1M == nil || *got.OutputUsdPer1M != 20 {
+		t.Fatalf("outputUsdPer1M = %v, want 20", got.OutputUsdPer1M)
 	}
-	if got.CacheWriteUsdPer1M == nil || *got.CacheWriteUsdPer1M != 6.25 {
-		t.Fatalf("cacheWriteUsdPer1M = %v, want 6.25", got.CacheWriteUsdPer1M)
+	if got.CacheWriteUsdPer1M == nil || *got.CacheWriteUsdPer1M != 5 {
+		t.Fatalf("cacheWriteUsdPer1M = %v, want 5", got.CacheWriteUsdPer1M)
 	}
-	if got.CachedInputUsdPer1M == nil || *got.CachedInputUsdPer1M != 0.5 {
-		t.Fatalf("cachedInputUsdPer1M = %v, want 0.5", got.CachedInputUsdPer1M)
+	if got.CachedInputUsdPer1M == nil || *got.CachedInputUsdPer1M != 0.4 {
+		t.Fatalf("cachedInputUsdPer1M = %v, want 0.4", got.CachedInputUsdPer1M)
 	}
 	if got.LongContextInputTokenThreshold == nil || *got.LongContextInputTokenThreshold != 272000 {
 		t.Fatalf("longContextInputTokenThreshold = %v, want 272000", got.LongContextInputTokenThreshold)
@@ -209,13 +209,21 @@ func TestListProviderModelPricingOrderAndVendor(t *testing.T) {
 	if len(openai) == 0 {
 		t.Fatal("openai list must not be empty")
 	}
-	// compareProviderModels: catalog order first; gpt-6-astra carries
-	// catalog_order -1 in the gpt5 snapshot, then gpt-5.6-sol (order 0).
-	if openai[0].Model != "gpt-6-astra" {
-		t.Fatalf("first model = %q, want gpt-6-astra (catalog_order -1)", openai[0].Model)
+	// compareProviderModels: catalog order first, but the release-date rule
+	// outranks it when only one side defines catalog_order: the
+	// 2026-09-08 gpt-image-2.5 rows (no catalog order) sort ahead of
+	// gpt-6-astra (catalog_order -1, 2026-09-03), then gpt-5.6-sol (order 0).
+	if openai[0].Model != "gpt-image-2.5-flare" {
+		t.Fatalf("first model = %q, want gpt-image-2.5-flare (release 2026-09-08)", openai[0].Model)
 	}
-	if openai[1].Model != "gpt-5.6-sol" {
-		t.Fatalf("second model = %q, want gpt-5.6-sol (catalog_order 0)", openai[1].Model)
+	if openai[1].Model != "gpt-image-2.5-sunburst" {
+		t.Fatalf("second model = %q, want gpt-image-2.5-sunburst (release 2026-09-08)", openai[1].Model)
+	}
+	if openai[2].Model != "gpt-6-astra" {
+		t.Fatalf("third model = %q, want gpt-6-astra (catalog_order -1)", openai[2].Model)
+	}
+	if openai[3].Model != "gpt-5.6-sol" {
+		t.Fatalf("fourth model = %q, want gpt-5.6-sol (catalog_order 0)", openai[3].Model)
 	}
 	for _, item := range openai {
 		if item.ShutdownDate != "" && item.ShutdownDate <= currentUTCDate() {
@@ -288,10 +296,11 @@ func TestBuildCostBreakdownOpenAIStandardTokens(t *testing.T) {
 }
 
 func TestBuildCostBreakdownOpenAICacheSplit(t *testing.T) {
-	// gpt-5.6-sol: input 5, cache_write 6.25, cache_read 0.5. OpenAI counts
-	// cache-read tokens inside the input total; the 1h column is absent so
-	// the 1h line falls back to the standard write rate. Token counts stay
-	// below the 272000 long-context threshold so standard rates bill.
+	// gpt-5.6-sol promo prices: input 4, cache_write 5, cache_read 0.4.
+	// OpenAI counts cache-read tokens inside the input total; the 1h column
+	// is absent so the 1h line falls back to the standard write rate. Token
+	// counts stay below the 272000 long-context threshold so standard rates
+	// bill.
 	got := billingBreakdown(t, "openai", "gpt-5.6-sol", CostInput{
 		ProviderCode:       "openai",
 		Model:              "gpt-5.6-sol",
@@ -300,19 +309,19 @@ func TestBuildCostBreakdownOpenAICacheSplit(t *testing.T) {
 		CacheWriteTokens:   f64p(60_000),
 		CacheWrite1hTokens: f64p(20_000),
 	})
-	wantFloat(t, "inputCostUsd", got.InputCostUsd, 0.75) // (250k - 100k) * 5/1M
-	wantFloat(t, "cacheReadCostUsd", got.CacheReadCostUsd, 0.05)
-	wantFloat(t, "cacheWriteCostUsd", got.CacheWriteCostUsd, 0.25)      // 40k * 6.25/1M
-	wantFloat(t, "cacheWrite1hCostUsd", got.CacheWrite1hCostUsd, 0.125) // 20k * 6.25/1M
-	wantFloat(t, "cacheWrite1hUsdPer1M", got.CacheWrite1hUsdPer1M, 6.25)
-	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 1.175)
+	wantFloat(t, "inputCostUsd", got.InputCostUsd, 0.6) // (250k - 100k) * 4/1M
+	wantFloat(t, "cacheReadCostUsd", got.CacheReadCostUsd, 0.04)
+	wantFloat(t, "cacheWriteCostUsd", got.CacheWriteCostUsd, 0.2)     // 40k * 5/1M
+	wantFloat(t, "cacheWrite1hCostUsd", got.CacheWrite1hCostUsd, 0.1) // 20k * 5/1M
+	wantFloat(t, "cacheWrite1hUsdPer1M", got.CacheWrite1hUsdPer1M, 5)
+	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 0.94)
 	if len(got.LineItems) != 4 {
 		t.Fatalf("line items = %d, want input/cache_read/cache_write/cache_write_1h", len(got.LineItems))
 	}
 	for _, line := range got.LineItems {
 		switch line.Key {
 		case "cache_read":
-			if line.Label != "缓存读 Token" || line.UnitPriceUsd != 0.5 || line.Quantity != 100_000 {
+			if line.Label != "缓存读 Token" || line.UnitPriceUsd != 0.4 || line.Quantity != 100_000 {
 				t.Fatalf("cache_read line = %+v", line)
 			}
 		case "cache_write":
@@ -334,9 +343,9 @@ func TestBuildCostBreakdownOpenAICacheSplit(t *testing.T) {
 		InputTokens:  f64p(1_000_000),
 		OutputTokens: f64p(100_000),
 	})
-	wantFloat(t, "long-context inputUsdPer1M", long.InputUsdPer1M, 10)
-	wantFloat(t, "long-context outputUsdPer1M", long.OutputUsdPer1M, 45)
-	wantFloat(t, "long-context accountChargeUsd", long.AccountChargeUsd, 14.5)
+	wantFloat(t, "long-context inputUsdPer1M", long.InputUsdPer1M, 8)
+	wantFloat(t, "long-context outputUsdPer1M", long.OutputUsdPer1M, 30)
+	wantFloat(t, "long-context accountChargeUsd", long.AccountChargeUsd, 11)
 }
 
 func TestBuildCostBreakdownServiceTierExactPrices(t *testing.T) {
@@ -634,15 +643,15 @@ func TestBuildCostBreakdownLongContextInclusiveThreshold(t *testing.T) {
 func TestEstimateProviderCostUsd(t *testing.T) {
 	// estimateProviderCostUsd resolves through the alias fallback: gpt-5.6
 	// bills at gpt-5.6-sol prices, and 1M/0.5M tokens sit past the 272000
-	// long-context threshold (input x2 = 10, output x1.5 = 45).
+	// long-context threshold (input x2 = 8, output x1.5 = 30).
 	got := EstimateProviderCostUsd(CostInput{
 		ProviderCode: "openai",
 		Model:        "gpt-5.6",
 		InputTokens:  f64p(1_000_000),
 		OutputTokens: f64p(500_000),
 	})
-	if got == nil || *got != 32.5 {
-		t.Fatalf("gpt-5.6 estimate = %v, want 32.5", got)
+	if got == nil || *got != 23 {
+		t.Fatalf("gpt-5.6 estimate = %v, want 23", got)
 	}
 	if got := EstimateProviderCostUsd(CostInput{
 		ProviderCode: "openai",

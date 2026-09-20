@@ -214,12 +214,15 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedTools:            gpt5ToolsGpt5Dot6,
 	},
 	{
+		// gpt-5.6-sol official promo prices (from 2026-08-21, re-check at
+		// least by 2026-11-21): $4/$0.4/$20 with priority 2x, flex 0.5x and
+		// cache write 1.25x ratios preserved.
 		Model: "gpt-5.6-sol", Mode: "chat", CatalogOrder: intp(0), ReleaseDate: "2026-06-26",
 		ContextWindowTokens: intp(1050000), MaxInputTokens: intp(922000), MaxOutputTokens: intp(128000),
-		InputCostPerToken: f64p(0.000005), InputCostPerTokenPriority: f64p(0.00001), InputCostPerTokenFlex: f64p(0.0000025),
-		OutputCostPerToken: f64p(0.00003), OutputCostPerTokenPriority: f64p(0.00006), OutputCostPerTokenFlex: f64p(0.000015),
-		CacheCreationInputTokenCost: f64p(0.00000625), CacheCreationInputTokenCostPriority: f64p(0.0000125), CacheCreationInputTokenCostFlex: f64p(0.000003125),
-		CacheReadInputTokenCost: f64p(5e-7), CacheReadInputTokenCostPriority: f64p(0.000001), CacheReadInputTokenCostFlex: f64p(2.5e-7),
+		InputCostPerToken: f64p(0.000004), InputCostPerTokenPriority: f64p(0.000008), InputCostPerTokenFlex: f64p(0.000002),
+		OutputCostPerToken: f64p(0.00002), OutputCostPerTokenPriority: f64p(0.00004), OutputCostPerTokenFlex: f64p(0.00001),
+		CacheCreationInputTokenCost: f64p(0.000005), CacheCreationInputTokenCostPriority: f64p(0.00001), CacheCreationInputTokenCostFlex: f64p(0.0000025),
+		CacheReadInputTokenCost: f64p(4e-7), CacheReadInputTokenCostPriority: f64p(8e-7), CacheReadInputTokenCostFlex: f64p(2e-7),
 		LongContextInputTokenThreshold: intp(272000),
 		LongContextInputCostMultiplier: f64p(2), LongContextOutputCostMultiplier: f64p(1.5),
 		SupportsPromptCaching:         true,
@@ -647,6 +650,34 @@ var openAIGPT5ModelPricingData = []rawModel{
 // openAIImageModelPricingData — image generation models, curated 2026-07-24.
 var openAIImageModelPricingData = []rawModel{
 	{
+		Model: "gpt-image-2.5-sunburst", Mode: "image_generation", ReleaseDate: "2026-09-08",
+		ContextWindowTokens:          intp(202_752),
+		MaxOutputTokens:              intp(65_536),
+		InputModalities:              []string{"text", "image"},
+		OutputModalities:             []string{"image"},
+		SupportedAPIProtocols:        []string{"images", "responses"},
+		InputCostPerToken:            f64p(0.000005),
+		CacheReadInputTokenCost:      f64p(0.00000125),
+		InputCostPerImageToken:       f64p(0.00001),
+		CacheReadInputImageTokenCost: f64p(0.0000025),
+		OutputCostPerImageToken:      f64p(0.00004),
+		SupportsPromptCaching:        true,
+	},
+	{
+		Model: "gpt-image-2.5-flare", Mode: "image_generation", ReleaseDate: "2026-09-08",
+		ContextWindowTokens:          intp(202_752),
+		MaxOutputTokens:              intp(65_536),
+		InputModalities:              []string{"text", "image"},
+		OutputModalities:             []string{"image"},
+		SupportedAPIProtocols:        []string{"images", "responses"},
+		InputCostPerToken:            f64p(0.000005),
+		CacheReadInputTokenCost:      f64p(0.00000125),
+		InputCostPerImageToken:       f64p(0.00001),
+		CacheReadInputImageTokenCost: f64p(0.0000025),
+		OutputCostPerImageToken:      f64p(0.00004),
+		SupportsPromptCaching:        true,
+	},
+	{
 		Model: "gpt-image-2", Mode: "image_generation",
 		InputModalities:              []string{"text", "image"},
 		OutputModalities:             []string{"image"},
@@ -708,7 +739,7 @@ var openAIImageModelPricingData = []rawModel{
 		CacheReadInputImageTokenCost: f64p(0.0000025),
 		OutputCostPerImageToken:      f64p(0.00004),
 		SupportsPromptCaching:        true,
-		ShutdownDate:                 "2026-10-23",
+		ShutdownDate:                 "2026-12-01",
 	},
 }
 
@@ -724,7 +755,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		InputCostPerToken:         f64p(0.000015),
 		OutputCostPerToken:        f64p(0.00006),
 		CacheReadInputTokenCost:   f64p(0.0000075),
-		ShutdownDate:              "2026-10-23",
+		ShutdownDate:              "2026-12-17",
 		SupportsPromptCaching:     true,
 		SupportedReasoningEfforts: []string{"low", "medium", "high"},
 	},
@@ -737,7 +768,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		SupportedTools:        []string{"function_calling", "file_search", "mcp"},
 		InputCostPerToken:     f64p(0.00015),
 		OutputCostPerToken:    f64p(0.0006),
-		ShutdownDate:          "2026-10-23",
+		ShutdownDate:          "2026-12-17",
 		SupportsPromptCaching: true,
 	},
 	{
@@ -775,7 +806,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		InputCostPerToken:         f64p(0.0000011),
 		OutputCostPerToken:        f64p(0.0000044),
 		CacheReadInputTokenCost:   f64p(5.5e-7),
-		ShutdownDate:              "2026-10-23",
+		ShutdownDate:              "2026-12-17",
 		SupportsPromptCaching:     true,
 		SupportedReasoningEfforts: []string{"low", "medium", "high"},
 	},

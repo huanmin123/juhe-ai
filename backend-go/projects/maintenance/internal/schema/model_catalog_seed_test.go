@@ -1,7 +1,8 @@
-// Tests for the generated Node pricing snapshot (model_catalog_data.go) and
-// the shared seed helpers. The row count pins the 2026-09-04 Node dump; when
-// the Node pricing data changes, regenerate with dump_model_catalog.mts and
-// update the pinned count in one change.
+// Tests for the pricing seed snapshot (model_catalog_data.go) and the shared
+// seed helpers. The row count pins the current snapshot; since 2026-09-20 the
+// snapshot is maintained by hand from the Go pricing catalog
+// (backend-go/projects/gateway/internal/pricing/data_*.go) — update the data
+// rows and the pinned count in one change.
 
 package schema
 
@@ -36,17 +37,16 @@ func nodeModelCatalogCompare(left, right modelCatalogSeedRow) int {
 }
 
 func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
-	// 106 rows for the 2026-09-04 dump (gpt 56, xai 9, deepseek 2,
-	// anthropic 13, gemini 12, glm 14). Regenerate + update together when the
-	// Node pricing data changes.
-	if len(modelCatalogSeedRows) != 106 {
-		t.Fatalf("model catalog seed rows = %d, want 106 (stale snapshot? regenerate with dump_model_catalog.mts)", len(modelCatalogSeedRows))
+	// 112 rows after the 2026-09-20 manual sync from the Go pricing catalog
+	// (gpt 58, xai 10, deepseek 2, anthropic 13, gemini 13, glm 16).
+	if len(modelCatalogSeedRows) != 112 {
+		t.Fatalf("model catalog seed rows = %d, want 112 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 56, "xai": 9, "deepseek": 2, "anthropic": 13, "gemini": 12, "glm": 14}
+	want := map[string]int{"gpt": 58, "xai": 10, "deepseek": 2, "anthropic": 13, "gemini": 13, "glm": 16}
 	if len(perProvider) != len(want) {
 		t.Fatalf("provider set = %v, want %v", perProvider, want)
 	}

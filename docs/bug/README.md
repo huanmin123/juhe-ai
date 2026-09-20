@@ -1,5 +1,6 @@
 # Bug 记录目录
 
+- [BUG-0180](问题-0180-proberepo脏时间戳panic崩溃循环.md)：proberepo reader 对库中非法 `account_expires_at`/`cooldown_until` 走 `panic(err)` 而非错误返回，probe worker 读到一条脏行即 panic→supervisor 重启→崩溃循环拖垮全部账户探针；已确认（reader.go:354/377），修复方案已提案（错误返回或降级跳过 + 脏行回归），待用户批准后实施；jobs cmd `worker_probe_jobs.go:288-290` 的不可达臂随修复自然可达。
 - [BUG-0179](问题-0179-CodexResponses画像无法选中Chat桥账户.md)：端点模式闸对 codex_responses 画像请求先于映射分支无条件要求 `responses_sse`，Codex CLI 客户端无法选中 chat-only 档案桥账户（GLM chat/DeepSeek/hybrid chat），BUG-0178 修复后的桥对主力客户端仍不可达；预存在限制，Node 语义优先顺序待取证；待取证。
 - [BUG-0178](问题-0178-Responses到Chat桥执行门控缺失端到端断裂.md)：`responses -> chat_completions` 桥在 Go 网关许可层放行但转换执行门控缺失，Responses 格式请求体原样发往 chat 上游、chat 响应原样回给 Responses 客户端；运行时裁决测试确认（2026-09-19）；已修复（矩阵补组合 + 双侧裁决测试转绿，独立复审通过，组合根全包回归见文档验证记录）。
 - [BUG-0177](问题-0177-PG组合根装配与手动测试仓储占位符缺陷.md)：PG 模式 accountbalance.OpenStore 无条件要求 PostgresURL 导致组合根恒失败，manualtestrepo 的 `?` 占位符经 pgx 原样下发致 PG 全部任务 SQL 报语法错误；已修复并以真实 dev PG 门禁化测试回归，待合并。

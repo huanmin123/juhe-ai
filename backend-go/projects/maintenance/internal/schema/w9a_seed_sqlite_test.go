@@ -24,7 +24,9 @@ func TestW9ASeedSQLiteDefaultsStatementFailures(t *testing.T) {
 	for failAfter := 1; failAfter <= total-1; failAfter++ {
 		rec := &wmSchemaRecorder{failExecAfter: failAfter}
 		db := openWMSchemaFakeDB(rec)
-		_, err := SeedSQLiteDefaults(context.Background(), db, SeedOptions{})
+		// 与上方计数闭包固定同一时钟：快照中 shutdown_date 早于当前日期的行
+		// 会随 real clock 变化，导致语句数与 total 不一致。
+		_, err := SeedSQLiteDefaults(context.Background(), db, SeedOptions{Now: func() time.Time { return time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC) }})
 		db.Close()
 		if err == nil || !strings.Contains(err.Error(), "sqlite seed statement") {
 			t.Fatalf("failExecAfter=%d 错误异常: %v", failAfter, err)

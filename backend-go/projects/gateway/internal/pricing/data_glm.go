@@ -17,6 +17,27 @@ var glmModelPricingData = []rawModel{
 		DefaultReasoningEffort:    "max",
 	},
 	{
+		// glm-5.3-flash / glm-5.3-flashx: thinking is a plain enabled switch
+		// (official docs recommend effort max but enumerate no discrete
+		// levels), so no reasoning effort columns are recorded.
+		Model: "glm-5.3-flash", Mode: "chat", CatalogOrder: intp(5), ReleaseDate: "2026-08-26",
+		InputCostPerToken: perToken(0.15), CacheReadInputTokenCost: perToken(0.03), OutputCostPerToken: perToken(0.5),
+		ContextWindowTokens: intp(1_000_000), MaxOutputTokens: intp(128_000),
+		SupportedAPIProtocols: []string{"chat_completions"},
+		SupportsPromptCaching: true,
+		InputModalities:       []string{"text", "image", "video", "file"},
+		OutputModalities:      []string{"text"},
+	},
+	{
+		Model: "glm-5.3-flashx", Mode: "chat", CatalogOrder: intp(6), ReleaseDate: "2026-09-18",
+		InputCostPerToken: perToken(0.37), CacheReadInputTokenCost: perToken(0.075), OutputCostPerToken: perToken(1.25),
+		ContextWindowTokens: intp(1_000_000), MaxOutputTokens: intp(128_000),
+		SupportedAPIProtocols: []string{"chat_completions"},
+		SupportsPromptCaching: true,
+		InputModalities:       []string{"text", "image", "video", "file"},
+		OutputModalities:      []string{"text"},
+	},
+	{
 		Model: "glm-5.2", Mode: "chat", CatalogOrder: intp(10), ReleaseDate: "2026-06-16",
 		InputCostPerToken: perToken(1.4), CacheReadInputTokenCost: perToken(0.26), OutputCostPerToken: perToken(4.4),
 		ContextWindowTokens: intp(1_000_000), MaxOutputTokens: intp(128_000),

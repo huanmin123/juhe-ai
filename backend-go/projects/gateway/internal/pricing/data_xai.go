@@ -55,6 +55,14 @@ var xAIModelPricingData = []rawModel{
 		supportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
 		defaultReasoningEffort:    "high",
 	}),
+	// grok-4.3: the official model page lists no release date; 2026-05-01 is
+	// an approximate anchor from the first press coverage. Effort set is the
+	// one both the model page and the reasoning docs agree on.
+	xaiTextModel("grok-4.3", 1_000_000, 1.25, 0.2, 2.5, xaiTextModelMetadata{
+		releaseDate:               "2026-05-01",
+		supportedReasoningEfforts: []string{"none", "low", "medium", "high"},
+		defaultReasoningEffort:    "low",
+	}),
 	xaiTextModel("grok-4.20-0309-reasoning", 1_000_000, 1.25, 0.2, 2.5, xaiTextModelMetadata{
 		releaseDate: "2026-03-10",
 	}),
@@ -87,6 +95,7 @@ var xAIModelPricingData = []rawModel{
 	{
 		Model: "grok-imagine-image-quality", Mode: "image",
 		ReleaseDate:           "2026-04-03",
+		ShutdownDate:          "2026-11-02",
 		OutputCostPerImage:    f64p(0.05),
 		SupportedAPIProtocols: []string{"images"},
 		InputModalities:       []string{"text", "image"},

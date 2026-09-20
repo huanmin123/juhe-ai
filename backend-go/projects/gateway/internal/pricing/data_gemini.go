@@ -126,6 +126,18 @@ var (
 // geminiModelPricingData — curated from the official Gemini docs.
 var geminiModelPricingData = []rawModel{
 	geminiTextModel(geminiModelInput{
+		model: "gemini-3.8-flash", catalogOrder: -1, releaseDate: "2026-09-02",
+		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 0.5,
+		flex:                      &geminiTierPrices{inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: f64p(0.0375), cacheStorageUsdPer1MPerHour: 0.5},
+		priority:                  &geminiTierPrices{inputUsdPer1M: 1.35, outputUsdPer1M: 6.75, cachedInputUsdPer1M: f64p(0.135), cacheStorageUsdPer1MPerHour: 0.5},
+		supportedAPIProtocols:     []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
+		inputModalities:           []string{"text", "image", "video", "audio", "file"},
+		outputModalities:          []string{"text"},
+		supportedTools:            []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context", "computer_use"},
+		supportedReasoningEfforts: []string{"low", "medium", "high"},
+		defaultReasoningEffort:    "medium",
+	}),
+	geminiTextModel(geminiModelInput{
 		model: "gemini-3.7-flash", catalogOrder: 0, releaseDate: "2026-08-13",
 		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 0.5,
 		flex:                      &geminiTierPrices{inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: f64p(0.0375), cacheStorageUsdPer1MPerHour: 0.5},
@@ -138,10 +150,11 @@ var geminiModelPricingData = []rawModel{
 		defaultReasoningEffort:    "high",
 	}),
 	geminiTextModel(geminiModelInput{
+		// Promotional prices through 2026-12-31, mirroring gemini-3.7-flash.
 		model: "gemini-3.6-flash", catalogOrder: 1, releaseDate: "2026-07-21",
-		inputUsdPer1M: 1.5, outputUsdPer1M: 7.5, cachedInputUsdPer1M: f64p(0.15), cacheStorageUsdPer1MPerHour: 1,
-		flex:                      &geminiTierPrices{inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 1},
-		priority:                  &geminiTierPrices{inputUsdPer1M: 2.7, outputUsdPer1M: 13.5, cachedInputUsdPer1M: f64p(0.27), cacheStorageUsdPer1MPerHour: 1.8},
+		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 0.5,
+		flex:                      &geminiTierPrices{inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: f64p(0.0375), cacheStorageUsdPer1MPerHour: 0.5},
+		priority:                  &geminiTierPrices{inputUsdPer1M: 1.35, outputUsdPer1M: 6.75, cachedInputUsdPer1M: f64p(0.135), cacheStorageUsdPer1MPerHour: 0.5},
 		supportedAPIProtocols:     []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
 		inputModalities:           []string{"text", "image", "video", "audio", "file"},
 		outputModalities:          []string{"text"},
@@ -227,7 +240,7 @@ var geminiModelPricingData = []rawModel{
 		supportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	}),
 	geminiTextModel(geminiModelInput{
-		model: "gemini-2.5-pro", catalogOrder: 60, releaseDate: "2025-06-17", shutdownDate: "2026-10-16",
+		model: "gemini-2.5-pro", catalogOrder: 60, releaseDate: "2025-06-17",
 		inputUsdPer1M: 1.25, outputUsdPer1M: 10, cachedInputUsdPer1M: f64p(0.125), cacheStorageUsdPer1MPerHour: 4.5,
 		flex:                            &geminiTierPrices{inputUsdPer1M: 0.625, outputUsdPer1M: 5, cachedInputUsdPer1M: f64p(0.125), cacheStorageUsdPer1MPerHour: 4.5},
 		priority:                        &geminiTierPrices{inputUsdPer1M: 2.25, outputUsdPer1M: 18, cachedInputUsdPer1M: f64p(0.225), cacheStorageUsdPer1MPerHour: 8.1},
@@ -241,7 +254,7 @@ var geminiModelPricingData = []rawModel{
 		supportedReasoningEfforts:       []string{"low", "medium", "high"},
 	}),
 	geminiTextModel(geminiModelInput{
-		model: "gemini-2.5-flash", catalogOrder: 70, releaseDate: "2025-06-17", shutdownDate: "2026-10-16",
+		model: "gemini-2.5-flash", catalogOrder: 70, releaseDate: "2025-06-17",
 		inputUsdPer1M: 0.3, outputUsdPer1M: 2.5, cachedInputUsdPer1M: f64p(0.03), cacheStorageUsdPer1MPerHour: 1, audioInputUsdPer1M: f64p(1),
 		flex:                      &geminiTierPrices{inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: f64p(0.03), audioInputUsdPer1M: f64p(0.5), cacheStorageUsdPer1MPerHour: 1},
 		priority:                  &geminiTierPrices{inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: f64p(0.054), audioInputUsdPer1M: f64p(1.8), cacheStorageUsdPer1MPerHour: 1.8},
@@ -252,7 +265,7 @@ var geminiModelPricingData = []rawModel{
 		supportedReasoningEfforts: []string{"low", "medium", "high"},
 	}),
 	geminiTextModel(geminiModelInput{
-		model: "gemini-2.5-flash-lite", catalogOrder: 80, releaseDate: "2025-07-22", shutdownDate: "2026-10-16",
+		model: "gemini-2.5-flash-lite", catalogOrder: 80, releaseDate: "2025-07-22",
 		inputUsdPer1M: 0.1, outputUsdPer1M: 0.4, cachedInputUsdPer1M: f64p(0.01), cacheStorageUsdPer1MPerHour: 1, audioInputUsdPer1M: f64p(0.3),
 		flex:                      &geminiTierPrices{inputUsdPer1M: 0.05, outputUsdPer1M: 0.2, cachedInputUsdPer1M: f64p(0.01), audioInputUsdPer1M: f64p(0.15), cacheStorageUsdPer1MPerHour: 1},
 		priority:                  &geminiTierPrices{inputUsdPer1M: 0.18, outputUsdPer1M: 0.72, cachedInputUsdPer1M: f64p(0.018), audioInputUsdPer1M: f64p(0.54), cacheStorageUsdPer1MPerHour: 1.8},

@@ -368,8 +368,8 @@ func TestW9EEstimateProviderCacheCosts(t *testing.T) {
 	}
 	// real model: gpt-5.6-sol has cache write/read prices (golden row)
 	write := EstimateProviderCacheWriteCostUsd(CostInput{ProviderCode: "openai", Model: "gpt-5.6-sol", CacheWriteTokens: fptr(1_000_000)})
-	if write == nil || *write != 6.25 {
-		t.Fatalf("gpt-5.6-sol cache write cost = %v, want 6.25", write)
+	if write == nil || *write != 5 {
+		t.Fatalf("gpt-5.6-sol cache write cost = %v, want 5", write)
 	}
 	read := EstimateProviderCacheReadCostUsd(CostInput{ProviderCode: "openai", Model: "gpt-5.5", CacheReadTokens: fptr(1_000_000)})
 	if read == nil || *read != 0.5 {

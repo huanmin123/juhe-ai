@@ -28,9 +28,9 @@ import (
 // SQLiteSeedResult summarizes SeedSQLiteDefaults.
 type SQLiteSeedResult struct {
 	StatementCount int
-	// ModelCatalogRows is the number of pricing rows upserted after the Node
-	// shutdown filter (106 for the 2026-09-04 snapshot when nothing is shut
-	// down).
+	// ModelCatalogRows is the number of pricing rows upserted after the
+	// shutdown filter (112 rows in the 2026-09-20 snapshot before any
+	// shutdown date is reached).
 	ModelCatalogRows int
 }
 

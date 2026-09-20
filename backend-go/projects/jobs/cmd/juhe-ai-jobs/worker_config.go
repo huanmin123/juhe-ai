@@ -150,12 +150,14 @@ func (c workerConfig) CircuitCapacity() int64 {
 
 func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	config := workerConfig{
-		Driver:               "sqlite",
-		InstanceID:           "juhe-ai-jobs",
-		WorkerRole:           "worker",
-		WorkerReplicaIdx:     0,
+		Driver:           "sqlite",
+		InstanceID:       "juhe-ai-jobs",
+		WorkerRole:       "worker",
+		WorkerReplicaIdx: 0,
+		// idle 上限受平台 pgpool 校验约束（idle <= min(open, 10)），默认值
+		// 必须落在合法区间内，否则 postgres 模式组装 worker pool 时直接失败。
 		PostgresMaxOpenConns: 50,
-		PostgresMaxIdleConns: 50,
+		PostgresMaxIdleConns: 10,
 		UsageShardCount:      16,
 		// CodexContextStateShardCount 对齐 Node runtime.ts:694
 		// （JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 默认 16，1..256）与 gateway
