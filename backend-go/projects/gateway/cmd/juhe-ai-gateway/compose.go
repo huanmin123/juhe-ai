@@ -969,6 +969,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// Postgres database (juhe_jobs); the SQLite path above stays the
 	// standalone-mode source. Mirrors Node readPostgresOutcomesForAccounts.
 	healthOutcomes.PostgresURL = cfg.AccountHealthOutcomePostgresURL
+	// health-snapshot 数据源：gateway 段进程内直读 owner readiness（与
+	// /__aisys__/health 同源）；jobs 段按 JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS
+	// 拉取 loopback /health（生产 compose 未注入地址时按不可用降级）。
 	(&statreads.Deps{
 		Business:                composed.db,
 		Stats:                   composed.statsDB,
@@ -981,6 +984,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		GoRuntimeMetricsService: cfg.GoRuntimeMetrics.Service,
 		HealthOutcomes:          healthOutcomes,
 		RuntimeMode:             cfg.RuntimeMode,
+		GatewayReadiness:        ownerHealth.readiness,
+		JobsHealthURL:           statreads.JobsHealthURL(os.Getenv("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS")),
 	}).Mount(kern)
 	// X04: the /__aisys__/help static help center, session-gated like the Node
 	// web layer (requireHelpSession + role redirects over dist/help).

@@ -517,8 +517,9 @@ func TestBuildCostBreakdownOpenAIImagePolicy(t *testing.T) {
 }
 
 func TestBuildCostBreakdownDeepSeekPolicy(t *testing.T) {
-	// deepseek-v4-flash: input 0.14, cached 0.0028, output 0.28; cache read
-	// is included in the input total like OpenAI/Gemini.
+	// deepseek-v4-flash at the confirmed peak-rate basis: input 0.3, cached
+	// 0.006, output 1.2; cache read is included in the input total like
+	// OpenAI/Gemini.
 	got := billingBreakdown(t, "deepseek", "deepseek-v4-flash", CostInput{
 		ProviderCode:    "deepseek",
 		Model:           "deepseek-v4-flash",
@@ -526,10 +527,10 @@ func TestBuildCostBreakdownDeepSeekPolicy(t *testing.T) {
 		CacheReadTokens: f64p(500_000),
 		OutputTokens:    f64p(100_000),
 	})
-	wantFloat(t, "inputCostUsd", got.InputCostUsd, 0.07) // 0.5M * 0.14/1M
-	wantFloat(t, "cacheReadCostUsd", got.CacheReadCostUsd, 0.0014)
-	wantFloat(t, "outputCostUsd", got.OutputCostUsd, 0.028)
-	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 0.0994)
+	wantFloat(t, "inputCostUsd", got.InputCostUsd, 0.15) // 0.5M * 0.3/1M
+	wantFloat(t, "cacheReadCostUsd", got.CacheReadCostUsd, 0.003)
+	wantFloat(t, "outputCostUsd", got.OutputCostUsd, 0.12)
+	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 0.273)
 	if got.BillingPolicy != "deepseek" {
 		t.Fatalf("billingPolicy = %q, want deepseek", got.BillingPolicy)
 	}

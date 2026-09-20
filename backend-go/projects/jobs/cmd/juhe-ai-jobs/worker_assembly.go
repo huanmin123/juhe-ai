@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -778,8 +779,20 @@ func (a *workerAssembly) runWiredJobOnce(ctx context.Context, name string) (jobs
 	return task(ctx, jobsched.TaskContext{})
 }
 
-// withLease 包裹 taskruns.RunWithScheduledLease；SQLite 模式与 Node 一致
-// （driver != postgres 时任务直跑，不获取 PG 租约）。
+// workerTaskRunRole 是 scheduled worker 运行记录的 worker_role：与
+// temporary-maintenance-worker 共享 background_task_runs 表，但运行记录
+// 对账（ReconcileStale）只收口临时维护任务，scheduled job 的陈旧行靠
+// 终态收口与索引（status, updated_at DESC, run_id DESC）消费。
+const workerTaskRunRole = "worker"
+
+// errTaskRunStartSkipped 表示运行记录启动 CAS 未命中（行已非 queued），
+// 本轮任务未执行；运行记录已由 RunWithTaskRun 收口为 skipped。
+var errTaskRunStartSkipped = errors.New("background_task_run 启动 CAS 未命中，本轮任务未执行")
+
+// withLease 包裹 taskruns.RunWithScheduledLease 与 taskruns.RunWithTaskRun：
+// PG 模式下每次 job 执行在持调度租约的同时登记 background_task_runs 运行
+// 历史（queued→running→终态）。SQLite 模式与 Node 一致（driver != postgres
+// 时任务直跑，不获取 PG 租约，也不写运行历史）。
 func (a *workerAssembly) withLease(jobName string, ttl time.Duration, task jobsched.Task) jobsched.Task {
 	if a.taskRunsStore == nil || ttl <= 0 || a.config.Driver != "postgres" {
 		return task
@@ -793,10 +806,19 @@ func (a *workerAssembly) withLease(jobName string, ttl time.Duration, task jobsc
 			RunID:   newRandomToken(),
 			TTL:     ttl,
 		}, func(runCtx context.Context, lease taskruns.LeaseIdentity) error {
-			_, taskErr := task(runCtx, taskCtx)
+			taskErr := a.runWithTaskRunHistory(store, jobName, ownerID, ttl, runCtx, taskCtx, task)
 			_ = lease
 			return taskErr
 		})
+		if errors.Is(err, errTaskRunStartSkipped) {
+			// 运行记录启动 CAS 未命中：任务本轮未执行，对调度器沿用租约
+			// busy 的 skipped 语义（不算失败），warning 保留启动原因。
+			return jobsched.TaskResult{
+				Outcome:    jobsched.OutcomeSkipped,
+				Warning:    errTaskRunStartSkipped.Error(),
+				LeaseState: jobsched.LeaseState(outcome.LeaseState),
+			}, nil
+		}
 		result := jobsched.TaskResult{LeaseState: jobsched.LeaseState(outcome.LeaseState)}
 		if outcome.Outcome == taskruns.OutcomePartial {
 			result.Outcome = jobsched.OutcomePartial
@@ -814,6 +836,35 @@ func (a *workerAssembly) withLease(jobName string, ttl time.Duration, task jobsc
 		}
 		return result, nil
 	}
+}
+
+// runWithTaskRunHistory 把一次已持调度租约的 job 执行登记进
+// background_task_runs：RunWithTaskRun 负责 queued→running→终态状态机与
+// started_at/finished_at/duration_ms 落列，任务错误在终态 failed +
+// error_message 中留痕并原样透传（partial/skipped outcome 语义由外层
+// withLease 保持）。
+func (a *workerAssembly) runWithTaskRunHistory(store *taskruns.Store, jobName, ownerID string, ttl time.Duration, runCtx context.Context, taskCtx jobsched.TaskContext, task jobsched.Task) error {
+	_, outcome, err := taskruns.RunWithTaskRun(runCtx, store, taskruns.TaskRunRunnerOptions{
+		JobName:    jobName,
+		JobType:    jobName,
+		WorkerRole: workerTaskRunRole,
+		LeaseKey:   taskruns.ScheduledLeaseKey(jobName, ""),
+		OwnerID:    ownerID,
+		LeaseTTL:   ttl,
+	}, func(taskRunCtx context.Context, _ taskruns.LeaseFence, _ taskruns.TaskRun) (taskruns.TaskRunResult, error) {
+		_, taskErr := task(taskRunCtx, taskCtx)
+		if taskErr != nil {
+			return taskruns.TaskRunResult{}, taskErr
+		}
+		return taskruns.TaskRunResult{Status: taskruns.StatusCompleted}, nil
+	})
+	if err != nil {
+		return err
+	}
+	if outcome.Outcome == taskruns.OutcomeSkipped {
+		return errTaskRunStartSkipped
+	}
+	return nil
 }
 
 // closeStores 逆向关闭全部家族存储。

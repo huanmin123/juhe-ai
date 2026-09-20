@@ -19,18 +19,20 @@ for (const field of [
 }
 
 assert.match(viewSource, /Go Runtime 指标趋势/, 'system metrics page must render an independent Go Runtime section')
-assert.match(viewSource, /api\.stats\.goRuntimeTrend\(selectedRangeParams\(\), \{ signal: controller\.signal \}\)/, 'Go runtime page must call the dedicated API with AbortSignal')
+assert.match(viewSource, /api\.stats\.goRuntimeTrend\(rangeParams, \{ signal: controller\.signal \}\)/, 'Go runtime page must call the dedicated API with AbortSignal')
 assert.match(viewSource, /goRuntimeAbortController\?\.abort\(\)/, 'Go runtime requests must be aborted during lifecycle transitions')
 assert.match(viewSource, /goRuntimeError[\s\S]*@click="loadGoRuntimeTrend"/, 'Go runtime failures must expose retry action')
 assert.match(viewSource, /:empty-description="goRuntimeEmptyDescription"/, 'Go runtime must expose a meaningful empty state')
 assert.match(viewSource, /buildGoRuntimeOption\(goRuntimeTrend\.value\.items, goRuntimeTrend\.value\.timezone, goRuntimeChartView\.value\)/, 'Go runtime chart must consume only the Go DTO, configured timezone, and selected low-density view')
 assert.match(viewSource, /a-segmented v-model:value="goRuntimeChartView"/, 'Go runtime chart must expose a low-density metric view switcher')
 assert.match(viewSource, /goRuntimeViewUnavailable/, 'Go runtime must explain when an older payload omits a selected metric group')
+assert.doesNotMatch(viewSource, /hasGoRuntimeHealthData|Prometheus histogram/, 'system metrics page must not keep the retired health view or its Prometheus hint')
 assert.match(chartSource, /hasGoRuntimeChartData/, 'Go runtime must detect unavailable optional metric groups without filling zeroes')
+assert.match(chartSource, /export type GoRuntimeChartView = 'concurrency' \| 'memory'/, 'Go runtime views must only expose concurrency and memory after the health view retirement')
 assert.match(viewSource, /disposeChart\(goRuntimeChart\)/, 'Go runtime chart must be disposed with the page lifecycle')
 
 const goChartStart = chartSource.indexOf('export function buildGoRuntimeOption')
-const goChartEnd = chartSource.indexOf('export function buildProcessEventLoopOption', goChartStart)
+const goChartEnd = chartSource.indexOf('function goRuntimeTooltip', goChartStart)
 assert.ok(goChartStart >= 0 && goChartEnd > goChartStart, 'Go runtime chart option must be present')
 const goChartSource = chartSource.slice(goChartStart, goChartEnd)
 const goMetricSource = chartSource.slice(chartSource.indexOf('function goRuntimeSeries'), goChartEnd)
@@ -38,9 +40,7 @@ assert.doesNotMatch(goChartSource, /eventLoopLagMs/, 'Go runtime chart must not 
 for (const field of ['goroutinesAvg', 'goroutinesMax', 'heapAllocBytesAvg', 'heapAllocBytesMax', 'heapLiveBytesAvg', 'heapLiveBytesMax', 'heapObjectsAvg', 'heapObjectsMax', 'threadsAvg', 'threadsMax']) {
   assert.match(goMetricSource, new RegExp(`item\\.${field}`), `Go runtime chart must display ${field}`)
 }
-for (const field of ['schedulerLatencyP95SecondsAvg', 'schedulerLatencyP99SecondsAvg', 'gcPauseP95SecondsAvg', 'gcPauseP99SecondsAvg']) {
-  assert.match(goMetricSource, new RegExp(`item\\.${field}`), `Go runtime chart must support optional ${field}`)
-}
+assert.doesNotMatch(goMetricSource, /schedulerLatency|gcPauseP9/, 'Go runtime chart must not keep Prometheus percentile views the trend library never provides')
 assert.doesNotMatch(goMetricSource, /item\.rssBytesAvg|item\.rssBytesMax/, 'Go runtime chart must not depend on host RSS semantics')
 assert.doesNotMatch(viewSource, /latest\.rssBytesAvg|latest\.fdCountAvg/, 'Go runtime summary must not depend on host RSS/FD semantics')
 for (const field of ['cpuPercentAvg', 'uptimeSecondsAvg']) {

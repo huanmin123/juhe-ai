@@ -177,7 +177,7 @@
             <div>
               <h3 class="section-title">
                 <span>后台接口限流</span>
-                <a-tooltip title="保护 /__aisys__/api 后台接口，避免同一来源或同一登录用户在短时间内压垮 DB service；健康检查不受影响，限流固定启用。">
+                <a-tooltip title="保护 /__aisys__/api 后台接口，避免同一来源或同一登录用户在短时间内压垮后端服务；健康检查不受影响，限流固定启用。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>

@@ -2,7 +2,7 @@
 
 ## 定位
 
-AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、CPA、one-api、new-api 或其他外部格式。外部数据需要由用户自行使用 AI、脚本或表格工具整理为本协议后再导入。
+AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JSON）、`sub2api`（Sub2API sub2api-data / sub2api-bundle v1）、`newapi`（NewAPI Channel JSON）、`oneapi`（One-API Channel JSON）和 `cpa`（CLIProxyAPI config.yaml / Codex auth JSON）。`native` 之外的来源模式只提取可确认的 OpenAI 账户，不支持的供应商和非核心字段会在预览中跳过或计数忽略；来源模型字段的映射方式和模型目录拦截语义见下文「来源模型映射与目录拦截」。无法直接映射的数据仍可先用 AI、脚本或表格工具整理为 `native` 协议后再导入。
 
 当前协议：
 
@@ -11,7 +11,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 单次请求受系统 API `256KB` JSON 请求体上限约束，当前接口按小批量导入设计。
 - 单次最多导入 50 个账户、20 个代理，避免 DB service 在一次请求内长时间同步解析和校验大数组。
 - 导入弹窗提供可复制 AI 提示词和“导出协议 Markdown”按钮；提示词配合本协议文件交给其他 AI 做格式转换。
-- 导入接口只接受合法 JSON，不接受 Markdown、JSONL、CSV、带注释 JSON 或外部系统原始格式。
+- `native` 模式的导入接口只接受合法 JSON，不接受 Markdown、JSONL、CSV、带注释 JSON 或外部系统原始格式；其他来源模式的解析约定见「来源模型映射与目录拦截」。
 
 ## 转换硬性规则
 
@@ -40,6 +40,24 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 自动创建缺失分组：默认开启；关闭后，未知 `groupName` 会阻止对应账户导入。
 - 自动创建缺失代理：默认开启；普通用户只能复用已存在的启用代理，不能新建代理；管理员可在管理侧导入时自动创建缺失代理。关闭后，未知 `proxyRef` 会阻止对应账户导入。
 - 导入时跳过重复账户：默认开启；同一用户下已存在同名账户，或导入批内出现同名账户时跳过对应账户。
+
+## 来源模型映射与目录拦截
+
+来源账户对象中的模型相关字段按来源模式映射：
+
+| 来源模式 | 来源模型字段 | 导入行为 |
+| --- | --- | --- |
+| `native` | 协议账户对象的 `supportedModels`、`healthCheckModel`、`healthCheckEndpointMode`、`modelMappings` | 按本协议字段直接导入。 |
+| `sub2api` | 来源账户对象的 `supportedModels`、`healthCheckModel`、`healthCheckEndpointMode`、`modelMappings` | 透传为账户的支持模型 / 健康检查 / 模型映射配置。 |
+| `newapi` / `oneapi` | Channel 的 `models` 字段（逗号 / 分号 / 换行分隔） | 映射为账户 `supportedModels`，去空白、去重、保序；`model_mapping` 字段仍不读取。 |
+| `cpa` | 来源模型列表 | 不映射模型，来源模型信息仍被忽略（计入忽略字段）。 |
+
+目录拦截语义（适用于 `native`、`sub2api`、`newapi`、`oneapi`）：
+
+- 账户支持模型必须已存在于平台模型目录（含价格）；目录外模型会导致该账户在预览中标记失败，且整次导入无法确认。
+- 失败提示原文：`账户支持模型不在供应商模型目录中：…。请先在模型目录创建这些模型并配置价格后再导入`。
+- 解决办法：先在「供应商」页（管理员，路由 `/providers`）或「我的模型」页（`/my-models`）的模型目录中创建这些自定义模型并配置价格，再重新导入。
+- 模型映射（`modelMappings`）的来源 / 目标模型同样按模型目录校验，失败时使用相同的引导提示。
 
 ## 导出流程
 
@@ -449,3 +467,5 @@ Grok OAuth 账户：
 - OAuth 账户同时缺少 `credentials.refresh_token` 和 `credentials.access_token`。
 - `proxyRef` 指向的代理不存在、未在 `proxies` 中声明，或普通用户尝试创建新代理。
 - 未知字段写入了错误层级，例如把外部系统字段直接放进 `credentials`。
+- 账户支持模型不在供应商模型目录中：先在「供应商」页或「我的模型」页的模型目录创建这些自定义模型并配置价格，再重新导入。
+- 账号模型别名（`modelMappings`）的来源 / 目标模型不在当前供应商模型目录中：处理方式与支持模型相同，先在模型目录创建并配置价格，再重新导入。

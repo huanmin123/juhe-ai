@@ -1,6 +1,10 @@
 package statreads
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -15,10 +19,11 @@ import (
 
 // System-metrics read family (Node system-metrics.repository.ts
 // getSystemMetricsTrend + stats.routes.ts runtime routes). The runtime
-// summary/jobs/queues routes read the Node db-service IPC runtime snapshot;
-// the Go gateway has no such IPC peer, so they serve the exact unavailable
-// degradation the Node code produces when requestServerSystemMetricsRuntime
-// Snapshot fails (runtimeSnapshotAvailable:false, empty rows).
+// summary/queues routes keep the unavailable degradation the Node code
+// produces when requestServerSystemMetricsRuntime Snapshot fails
+// (runtimeSnapshotAvailable:false, empty rows); the runtime jobs route reads
+// the background_task_runs history the Go jobs worker persists per scheduled
+// execution.
 const (
 	processEventLoopPeakWindowMS    = int64(24 * 60 * 60 * 1000)
 	processEventLoopLatestFreshness = int64(2 * 60 * 1000)
@@ -379,9 +384,11 @@ func (d *Deps) goRuntimeTrendHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime snapshot routes: the Go gateway has no Node db-service IPC peer, so
-// every route serves the documented unavailable degradation (Node's
-// loadSystemMetricsRuntimeSnapshot catch(() => undefined) path).
+// Runtime snapshot routes: summary and queues keep the documented unavailable
+// degradation (Node's loadSystemMetricsRuntimeSnapshot catch(() => undefined)
+// path — the Node db-service IPC peer is gone). The jobs route reads the
+// background_task_runs history the Go jobs worker persists per scheduled
+// execution.
 // ---------------------------------------------------------------------------
 
 func (d *Deps) runtimeSummaryHandler(w http.ResponseWriter, r *http.Request) {
@@ -397,13 +404,74 @@ func (d *Deps) runtimeSummaryHandler(w http.ResponseWriter, r *http.Request) {
 	}, "")
 }
 
+// backgroundTaskRunItem is the runtime/jobs row contract: one scheduled job
+// execution persisted by the Go jobs worker (RunWithTaskRun) into
+// background_task_runs.
+type backgroundTaskRunItem struct {
+	RunID        string  `json:"runId"`
+	JobName      string  `json:"jobName"`
+	JobType      string  `json:"jobType"`
+	WorkerRole   string  `json:"workerRole"`
+	Status       string  `json:"status"`
+	StartedAt    *string `json:"startedAt"`
+	FinishedAt   *string `json:"finishedAt"`
+	DurationMs   *int64  `json:"durationMs"`
+	ErrorMessage *string `json:"errorMessage"`
+}
+
+// isTaskRunsSchemaMissing maps the driver shapes of a missing
+// background_task_runs table/columns onto the empty-items degradation
+// (SQLite "no such table", PostgreSQL SQLSTATE 42P01/42703).
+func isTaskRunsSchemaMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "no such table") ||
+		strings.Contains(message, "no such column") ||
+		strings.Contains(message, "42P01") ||
+		strings.Contains(message, "42703") ||
+		strings.Contains(message, "does not exist")
+}
+
+// runtimeJobsHandler mirrors GET /system-metrics/runtime/jobs: rows come
+// from the worker-persisted background_task_runs history (newest first by
+// updated_at then run_id); a missing table (schema not migrated yet) or a
+// nil stats handle answers the empty-items 200 degradation, only a real
+// query failure surfaces as a read error.
 func (d *Deps) runtimeJobsHandler(w http.ResponseWriter, r *http.Request) {
 	page, pageSize, ok := parseRuntimePageQuery(r.URL.Query(), w)
 	if !ok {
 		return
 	}
+	items := []any{}
+	if d.Stats != nil {
+		rows, err := d.queryStats(r, `
+			SELECT run_id, job_name, job_type, worker_role, status, started_at, finished_at,
+				duration_ms, error_message
+			FROM `+d.statsTable("background_task_runs")+`
+			ORDER BY updated_at DESC, run_id DESC
+		`)
+		if err != nil && !isTaskRunsSchemaMissing(err) {
+			d.writeReadError(w, err)
+			return
+		}
+		for _, row := range rows {
+			items = append(items, backgroundTaskRunItem{
+				RunID:        row.text("run_id"),
+				JobName:      row.text("job_name"),
+				JobType:      row.text("job_type"),
+				WorkerRole:   row.text("worker_role"),
+				Status:       row.text("status"),
+				StartedAt:    row.nullText("started_at"),
+				FinishedAt:   row.nullText("finished_at"),
+				DurationMs:   row.nullNumber("duration_ms"),
+				ErrorMessage: row.nullText("error_message"),
+			})
+		}
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	kernel.WriteOK(w, paginateSystemMetricsRows([]any{}, page, pageSize), "")
+	kernel.WriteOK(w, paginateSystemMetricsRows(items, page, pageSize), "")
 }
 
 func (d *Deps) runtimeQueuesHandler(w http.ResponseWriter, r *http.Request) {
@@ -413,6 +481,89 @@ func (d *Deps) runtimeQueuesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	kernel.WriteOK(w, paginateSystemMetricsRows([]any{}, page, pageSize), "")
+}
+
+// healthSnapshotJobsTimeout bounds the per-request jobs /health fetch; the
+// jobs health listener is a loopback side channel, so a slow jobs process
+// must not hold the snapshot route open.
+const healthSnapshotJobsTimeout = 2 * time.Second
+
+// healthSnapshotJobsBodyLimit caps the jobs /health body read before JSON
+// decoding; the worker payload is a small readiness map, well below this.
+const healthSnapshotJobsBodyLimit = 1 << 20
+
+// healthSnapshotJobsReasonLimit keeps a non-JSON or error body excerpt inside
+// the reason field readable without echoing unbounded content.
+const healthSnapshotJobsReasonLimit = 200
+
+// healthSnapshotHandler mirrors GET /system-metrics/health-snapshot: it
+// aggregates the gateway owner readiness (in-process probe, payload passed
+// through verbatim) and the jobs process /health (loopback fetch, payload
+// passed through verbatim). Every degradation is available:false + reason —
+// the route never fails on a missing or unhealthy peer.
+func (d *Deps) healthSnapshotHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	kernel.WriteOK(w, map[string]any{
+		"checkedAt": d.Now().UTC().Format(time.RFC3339),
+		"gateway":   d.gatewayHealthSection(),
+		"jobs":      d.jobsHealthSection(r),
+	}, "")
+}
+
+// gatewayHealthSection embeds the owner readiness payload verbatim; an
+// unwired probe degrades instead of failing the snapshot.
+func (d *Deps) gatewayHealthSection() map[string]any {
+	if d.GatewayReadiness == nil {
+		return map[string]any{"available": false, "reason": "gateway readiness 探针未接线"}
+	}
+	_, payload := d.GatewayReadiness()
+	if payload == nil {
+		return map[string]any{"available": false, "reason": "gateway readiness 载荷为空"}
+	}
+	return payload
+}
+
+// jobsHealthSection fetches the jobs /health payload over the loopback side
+// channel. Missing address (compose never injected it), transport errors,
+// non-200 answers and non-JSON bodies all degrade to available:false +
+// reason; a 200 JSON object is passed through verbatim.
+func (d *Deps) jobsHealthSection(r *http.Request) map[string]any {
+	if d.JobsHealthURL == "" {
+		return map[string]any{"available": false, "reason": "JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS 未配置"}
+	}
+	fetchCtx, cancel := context.WithTimeout(r.Context(), healthSnapshotJobsTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, d.JobsHealthURL, nil)
+	if err != nil {
+		return map[string]any{"available": false, "reason": err.Error()}
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return map[string]any{"available": false, "reason": err.Error()}
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, healthSnapshotJobsBodyLimit))
+	if err != nil {
+		return map[string]any{"available": false, "reason": err.Error()}
+	}
+	if response.StatusCode != http.StatusOK {
+		return map[string]any{"available": false, "reason": fmt.Sprintf("jobs /health 状态码 %d：%s", response.StatusCode, truncateHealthReason(body))}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return map[string]any{"available": false, "reason": fmt.Sprintf("jobs /health 响应不是 JSON 对象：%s", truncateHealthReason(body))}
+	}
+	return map[string]any{"available": true, "payload": payload}
+}
+
+// truncateHealthReason renders a bounded excerpt of a raw response body for
+// the reason field.
+func truncateHealthReason(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if len(text) > healthSnapshotJobsReasonLimit {
+		return text[:healthSnapshotJobsReasonLimit]
+	}
+	return text
 }
 
 // parseRuntimePageQuery mirrors systemMetricsRuntimePageQuerySchema; writes

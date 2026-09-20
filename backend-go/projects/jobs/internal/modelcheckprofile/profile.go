@@ -45,8 +45,8 @@ const (
 var catalog = []ProtocolProfile{
 	{ID: "openai_responses_strong", Protocol: ProtocolOpenAIResponses, ProtocolLabel: "OpenAI Responses", ProviderCode: "gpt", ProviderProtocolProfileIDs: []string{"profile_gpt_openai_v1"}, Models: []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"}, DefaultModel: "gpt-5.6-sol"},
 	{ID: "openai_responses_strong", Protocol: ProtocolOpenAIResponses, ProtocolLabel: "OpenAI Responses", ProviderCode: "openai", ProviderProtocolProfileIDs: []string{"profile_openai_openai_v1"}, Models: []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"}, DefaultModel: "gpt-5.6-sol"},
-	{ID: "openai_chat_strong", Protocol: ProtocolOpenAIChat, ProtocolLabel: "OpenAI Chat Completions", ProviderCode: "deepseek", ProviderProtocolProfileIDs: []string{"profile_deepseek_openai_v1"}, Models: []string{"deepseek-v4-flash", "deepseek-v4-pro"}, DefaultModel: "deepseek-v4-flash"},
-	{ID: "anthropic_messages_strong", Protocol: ProtocolAnthropic, ProtocolLabel: "Anthropic Messages", ProviderCode: "deepseek", ProviderProtocolProfileIDs: []string{"profile_deepseek_anthropic_v1"}, Models: []string{"deepseek-v4-flash", "deepseek-v4-pro"}, DefaultModel: "deepseek-v4-flash"},
+	{ID: "openai_chat_strong", Protocol: ProtocolOpenAIChat, ProtocolLabel: "OpenAI Chat Completions", ProviderCode: "deepseek", ProviderProtocolProfileIDs: []string{"profile_deepseek_openai_v1"}, Models: []string{"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"}, DefaultModel: "deepseek-flash"},
+	{ID: "anthropic_messages_strong", Protocol: ProtocolAnthropic, ProtocolLabel: "Anthropic Messages", ProviderCode: "deepseek", ProviderProtocolProfileIDs: []string{"profile_deepseek_anthropic_v1"}, Models: []string{"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"}, DefaultModel: "deepseek-flash"},
 	{ID: "openai_chat_strong", Protocol: ProtocolOpenAIChat, ProtocolLabel: "OpenAI Chat Completions", ProviderCode: "glm", ProviderProtocolProfileIDs: []string{"profile_glm_general_openai_v1", "profile_glm_coding_openai_v1"}, Models: []string{"glm-5.2", "glm-5.1"}, DefaultModel: "glm-5.2"},
 	{ID: "anthropic_messages_strong", Protocol: ProtocolAnthropic, ProtocolLabel: "Anthropic Messages", ProviderCode: "glm", ProviderProtocolProfileIDs: []string{"profile_glm_coding_anthropic_v1"}, Models: []string{"glm-5.2", "glm-5.1"}, DefaultModel: "glm-5.2"},
 	{ID: "anthropic_messages_strong", Protocol: ProtocolAnthropic, ProtocolLabel: "Anthropic Messages", ProviderCode: "anthropic", ProviderProtocolProfileIDs: []string{"profile_anthropic_anthropic_v1"}, Models: []string{"claude-opus-5", "claude-opus-4-8"}, DefaultModel: "claude-opus-5"},
@@ -57,7 +57,7 @@ var catalog = []ProtocolProfile{
 var pairedModels = map[string]string{
 	"gpt-5.6-sol": "gpt-5.6-terra", "gpt-5.6-terra": "gpt-5.6-sol", "gpt-5.6-luna": "gpt-5.6-terra", "gpt-5.5": "gpt-5.4", "gpt-5.4": "gpt-5.5",
 	"claude-opus-5": "claude-opus-4-8", "claude-opus-4-8": "claude-opus-5", "glm-5.2": "glm-5.1", "glm-5.1": "glm-5.2",
-	"deepseek-v4-flash": "deepseek-v4-pro", "deepseek-v4-pro": "deepseek-v4-flash", "gemini-3.5-flash": "gemini-3.1-pro-preview", "gemini-3.1-pro-preview": "gemini-3.5-flash",
+	"deepseek-flash": "deepseek-v4-pro", "deepseek-v4-flash": "deepseek-v4-pro", "deepseek-v4-pro": "deepseek-v4-flash", "gemini-3.5-flash": "gemini-3.1-pro-preview", "gemini-3.1-pro-preview": "gemini-3.5-flash",
 }
 
 func Profiles() []ProtocolProfile {

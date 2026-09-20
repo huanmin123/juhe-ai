@@ -20,23 +20,26 @@ type nodeProfileOracle struct {
 	} `json:"profiles"`
 }
 
-func TestCatalogMatchesCurrentNodeGoldenFixture(t *testing.T) {
+func TestCatalogMatchesContractFixture(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("resolve test source path")
 	}
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "..", "..", ".."))
-	fixturePath := filepath.Join(repoRoot, "migration-backup", "node", "j3b-model-check", "backend", "src", "scripts", "regression", "testdata", "node-model-check-profile-contract.json")
+	// The contract fixture was carried over from the archived Node oracle
+	// (migration-backup/node/j3b-model-check, never modified) and is now the
+	// Go-owned baseline: update testdata/go-model-check-profile-contract.json
+	// together with the catalog when the check models change.
+	fixturePath := filepath.Join(filepath.Dir(file), "testdata", "go-model-check-profile-contract.json")
 	bytes, err := os.ReadFile(fixturePath)
 	if err != nil {
-		t.Fatalf("read archived Node profile oracle %s (comparison-only fixture; keep it under migration-backup): %v", fixturePath, err)
+		t.Fatalf("read model-check contract fixture %s: %v", fixturePath, err)
 	}
 	var oracle nodeProfileOracle
 	if err := json.Unmarshal(bytes, &oracle); err != nil {
-		t.Fatalf("decode Node profile oracle: %v", err)
+		t.Fatalf("decode model-check contract fixture: %v", err)
 	}
 	if oracle.DefaultModel != DefaultModel || oracle.DefaultProfile != DefaultProfile {
-		t.Fatalf("defaults Go=%q/%q Node=%q/%q", DefaultModel, DefaultProfile, oracle.DefaultModel, oracle.DefaultProfile)
+		t.Fatalf("defaults Go=%q/%q fixture=%q/%q", DefaultModel, DefaultProfile, oracle.DefaultModel, oracle.DefaultProfile)
 	}
 	profiles := Profiles()
 	if len(profiles) != len(oracle.Profiles) {
@@ -67,8 +70,8 @@ func TestCatalogMatchesFrozenNodeOracle(t *testing.T) {
 	}{
 		{"gpt", "profile_gpt_openai_v1", string(ProtocolOpenAIResponses), 5, EndpointResponses},
 		{"openai", "profile_openai_openai_v1", string(ProtocolOpenAIResponses), 5, EndpointResponses},
-		{"deepseek", "profile_deepseek_openai_v1", string(ProtocolOpenAIChat), 2, EndpointChatCompletions},
-		{"deepseek", "profile_deepseek_anthropic_v1", string(ProtocolAnthropic), 2, EndpointMessages},
+		{"deepseek", "profile_deepseek_openai_v1", string(ProtocolOpenAIChat), 3, EndpointChatCompletions},
+		{"deepseek", "profile_deepseek_anthropic_v1", string(ProtocolAnthropic), 3, EndpointMessages},
 		{"glm", "profile_glm_general_openai_v1", string(ProtocolOpenAIChat), 2, EndpointChatCompletions},
 		{"glm", "profile_glm_coding_anthropic_v1", string(ProtocolAnthropic), 2, EndpointMessages},
 		{"anthropic", "profile_anthropic_anthropic_v1", string(ProtocolAnthropic), 2, EndpointMessages},
@@ -98,7 +101,7 @@ func TestCatalogMatchesFrozenNodeOracle(t *testing.T) {
 	if _, ok := FindForModel("anthropic", "profile_anthropic_anthropic_v1", "claude-opus-4-7"); ok {
 		t.Fatal("retired Anthropic model must not remain in the Go catalog")
 	}
-	if got := SupportedModels(); len(got) != 13 || got[0] != "gpt-5.6-sol" {
+	if got := SupportedModels(); len(got) != 14 || got[0] != "gpt-5.6-sol" {
 		t.Fatalf("supported models=%v", got)
 	}
 }

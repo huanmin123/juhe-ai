@@ -291,7 +291,9 @@ func TestW2ChannelAdapterNewAPIAndOneAPI(t *testing.T) {
 		t.Fatalf("账户名称集合不一致：%v", names)
 	}
 	text := w2SourceText(result)
-	for _, expected := range []string{"Channel 不是该来源定义的 OpenAI 类型", "Channel 缺少 API Key", "Channel Base URL 不符合上游地址策略", "Channel 不是对象"} {
+	// 2026-09-19 决策：私网 base_url 默认放行后，原「Channel Base URL 不符合
+	// 上游地址策略」跳过臂不再触发（与上方 6/3 计数一致）。
+	for _, expected := range []string{"Channel 不是该来源定义的 OpenAI 类型", "Channel 缺少 API Key", "Channel 不是对象"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("来源消息缺少 %q：%s", expected, text)
 		}

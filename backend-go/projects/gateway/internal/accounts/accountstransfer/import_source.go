@@ -260,6 +260,8 @@ func AdaptSub2APIAccount(value any, index int, state *AdapterState) {
 	countIgnoredRecordKeys(record, map[string]bool{
 		"name": true, "notes": true, "platform": true, "type": true, "credentials": true,
 		"proxy_key": true, "concurrency": true, "priority": true, "expires_at": true,
+		"supportedModels": true, "healthCheckModel": true, "healthCheckEndpointMode": true,
+		"modelMappings": true,
 	}, state)
 	if !isOpenAISourcePlatform(record["platform"]) {
 		skipSourceRecord(state, index, "只支持 OpenAI 平台账户")
@@ -308,7 +310,36 @@ func AdaptSub2APIAccount(value any, index int, state *AdapterState) {
 		}
 		return
 	}
+	passthroughSub2APIModelFields(account, record)
 	acceptAccount(state, index, account)
+}
+
+// passthroughSub2APIModelFields 把 Sub2API 导出账户的模型字段透传到转换后的
+// native 导入文档记录（export.go ExportAccount 的同名键；键名与 JSON 形态
+// 保持原样，由 import.go 的 ImportOptionalStringArrayField /
+// ImportModelMappingsField 等解析器按 native 文档同一形态解析）。键缺失或
+// 值为空时不写入，保持回退供应商默认支持模型的现状路径。
+func passthroughSub2APIModelFields(account map[string]any, record map[string]any) {
+	for _, key := range []string{"supportedModels", "healthCheckModel", "healthCheckEndpointMode", "modelMappings"} {
+		if value, exists := record[key]; exists && sourceNonEmptyValue(value) {
+			account[key] = value
+		}
+	}
+}
+
+// sourceNonEmptyValue 判定透传值是否存在且非空：nil、空白字符串与空数组视
+// 为空；其余形态原样放行，非法形态交给导入计划层的字段解析器报错。
+func sourceNonEmptyValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case []any:
+		return len(typed) > 0
+	default:
+		return true
+	}
 }
 
 // resolveSub2APIProxyRef mirrors resolveSub2ApiProxyRef: (ref, true) when the
@@ -347,9 +378,14 @@ func AdaptChannelSource(input any, mode string, state *AdapterState) {
 			skipSourceRecord(state, index+1, "Channel 不是对象")
 			continue
 		}
+		// models 不进静态白名单：由手工逻辑映射为 supportedModels。形态合法
+		// （string 或 []any，含归一后为空）时豁免计数；形态非法（数字、布尔、
+		// 对象等）时保持不在白名单，恢复按非核心字段计入 ignoredFields 的既有
+		// 语义，同时避免手工逻辑与计数遍历双重计数。
 		countIgnoredRecordKeys(record, map[string]bool{
 			"id": true, "type": true, "key": true, "base_url": true, "name": true,
 			"group": true, "status": true,
+			"models": isSourceModelsShaped(record["models"]),
 		}, state)
 		if !isOpenAIChannel(record["type"], mode) {
 			skipSourceRecord(state, index+1, "Channel 不是该来源定义的 OpenAI 类型")
@@ -376,9 +412,19 @@ func AdaptChannelSource(input any, mode string, state *AdapterState) {
 		if name == "" {
 			name = fmt.Sprintf("%s Channel %d", SourceLabel(mode), index+1)
 		}
-		acceptAccount(state, index+1, buildSourceAPIKeyAccount(apiKeys, baseURL, name,
+		account := buildSourceAPIKeyAccount(apiKeys, baseURL, name,
 			sourceGroupName(record["group"], fmt.Sprintf("%s 导入", SourceLabel(mode))),
-			normalizeChannelStatus(record["status"]), "", 0, -1, "", ""))
+			normalizeChannelStatus(record["status"]), "", 0, -1, "", "")
+		// channel 的 models 列表映射为 native 文档的 supportedModels（TrimSpace、
+		// 丢空、首次出现顺序去重）；models 键缺失时不写入；空串、空数组等形态
+		// 合法但归一后为空的输入不写入也不计数，保持回退供应商默认支持模型。
+		// 数字、布尔、对象等非法形态不写入、不跳过记录，由白名单计数遍历按
+		// 非核心字段计入 ignoredFields（见上方 countIgnoredRecordKeys 的形态
+		// 豁免）。model_mapping 字段不在白名单内，维持计入 ignoredFields。
+		if models := sourceModelList(record["models"]); len(models) > 0 {
+			account["supportedModels"] = models
+		}
+		acceptAccount(state, index+1, account)
 	}
 }
 
@@ -904,6 +950,55 @@ func isMaskedAPIKey(value string) bool {
 		strings.Contains(normalized, "…") ||
 		strings.Contains(normalized, "...") ||
 		normalized == "<redacted>" || normalized == "[redacted]" || normalized == "masked"
+}
+
+// isSourceModelsShaped 判定 channel models 字段的形态是否合法：仅接受 string
+// （含空串）与 []any（含空数组、非字符串元素），两者归一为空时由调用方回退
+// 供应商默认支持模型；数字、布尔、对象等非法形态不写入 supportedModels、不
+// 跳过记录，由 countIgnoredRecordKeys 按非核心字段计入 ignoredFields。
+func isSourceModelsShaped(value any) bool {
+	switch value.(type) {
+	case string, []any:
+		return true
+	default:
+		return false
+	}
+}
+
+// sourceModelList 把 channel 的 models 字段归一为模型列表：字符串输入按 ASCII
+// 逗号、中文逗号、分号（含中文分号）与换行拆分，数组输入只取字符串元素；
+// 每项 TrimSpace、丢弃空串并按首次出现顺序去重，空结果返回 nil（调用方据此
+// 不写入 supportedModels）。
+func sourceModelList(value any) []any {
+	var items []string
+	switch typed := value.(type) {
+	case string:
+		items = strings.FieldsFunc(typed, func(r rune) bool {
+			return r == ',' || r == '，' || r == ';' || r == '；' || r == '\n' || r == '\r'
+		})
+	case []any:
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				items = append(items, text)
+			}
+		}
+	default:
+		return nil
+	}
+	out := []any{}
+	seen := map[string]bool{}
+	for _, item := range items {
+		model := strings.TrimSpace(item)
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		out = append(out, model)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // safeSourceBaseURL mirrors the safeBaseUrl adapter hook

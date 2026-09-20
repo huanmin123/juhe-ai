@@ -372,14 +372,15 @@ func TestW2UpstreamBaseURLValidation(t *testing.T) {
 	})
 	t.Run("安全策略", func(t *testing.T) {
 		// 2026-09-19 决策：默认放行私网上游；本子测试显式恢复限制模式，
-		// 验证 opt-in 拒绝路径仍然可用。
+		// 验证 opt-in 拒绝路径仍然可用（拒绝文案逐字对照
+		// upstream_base_url.go 的 unsafeUpstreamBaseURLMessage）。
 		t.Setenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS", "false")
 		upstreamSecurityOnce = sync.Once{}
 		t.Cleanup(func() { upstreamSecurityOnce = sync.Once{} })
 		for _, value := range []string{"http://127.0.0.1:8080/v1", "http://localhost/v1",
 			"http://10.0.0.1/v1", "http://192.168.1.1/v1", "http://169.254.1.1/v1"} {
 			err := assertSafeUpstreamBaseURL(value)
-			if err == nil || !strings.Contains(err.Error(), "上游 Base URL 不能指向本机、内网") {
+			if err == nil || !strings.Contains(err.Error(), "当前部署已启用私网上游限制") {
 				t.Fatalf("%q 应拒绝：%v", value, err)
 			}
 		}

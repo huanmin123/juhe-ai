@@ -115,7 +115,7 @@ func TestW7CDeriveAuthorizedBranchMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := w7cDeriveBase()
 			tc.mutate(&input)
-			available, status, hasStatus, _ := s.deriveEffectiveAvailability(input)
+			available, status, hasStatus, _, _ := s.deriveEffectiveAvailability(input)
 			if available || !hasStatus || status != tc.want {
 				t.Fatalf("got available=%t status=%q hasStatus=%t, want %q", available, status, hasStatus, tc.want)
 			}
@@ -124,14 +124,14 @@ func TestW7CDeriveAuthorizedBranchMatrix(t *testing.T) {
 
 	// Healthy owner account is available; the authorized access type keeps the
 	// quota-branch limitation flag.
-	available, status, hasStatus, limited := s.deriveEffectiveAvailability(w7cDeriveBase())
+	available, status, hasStatus, limited, _ := s.deriveEffectiveAvailability(w7cDeriveBase())
 	if !available || hasStatus || status != "" || limited {
 		t.Fatalf("healthy owner: %t %q %t %t", available, status, hasStatus, limited)
 	}
 	authorized := w7cDeriveBase()
 	authorized.accessType = "authorized"
 	authorized.authorizationStatus = "active"
-	available, status, hasStatus, limited = s.deriveEffectiveAvailability(authorized)
+	available, status, hasStatus, limited, _ = s.deriveEffectiveAvailability(authorized)
 	if !available || !limited {
 		t.Fatalf("healthy authorized: %t %t (%q)", available, limited, status)
 	}

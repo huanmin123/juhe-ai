@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
@@ -53,6 +54,29 @@ type Deps struct {
 	// 'performance'); empty keeps the standalone contract (fixed role list
 	// exports for the system-metrics trend statuses).
 	RuntimeMode string
+	// GatewayReadiness exposes this process' owner readiness probe (the
+	// gatewayOwnerHealth.readiness source the /health routes use). The
+	// health-snapshot route embeds its payload verbatim; nil degrades the
+	// gateway section to an unavailable marker.
+	GatewayReadiness func() (int, map[string]any)
+	// JobsHealthURL is the jobs process' loopback /health URL derived from
+	// JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS (JobsHealthURL helper). The
+	// health-snapshot route fetches it per request (2s timeout) and embeds
+	// the payload verbatim; empty or unreachable degrades the jobs section
+	// to available:false + reason.
+	JobsHealthURL string
+}
+
+// JobsHealthURL turns the jobs loopback health listen address
+// (JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS) into the /health URL; an empty or
+// blank address keeps the health-snapshot jobs section on the unconfigured
+// degradation.
+func JobsHealthURL(listenAddress string) string {
+	address := strings.TrimSpace(listenAddress)
+	if address == "" {
+		return ""
+	}
+	return "http://" + address + "/health"
 }
 
 // runtimeStandalone mirrors runtimeConfig.runtimeMode === 'standalone'.
@@ -106,6 +130,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 		k.Register("GET "+base+"/system-metrics/runtime/summary", surface.wrap(d.requireAdminInternal(d.runtimeSummaryHandler)))
 		k.Register("GET "+base+"/system-metrics/runtime/jobs", surface.wrap(d.requireAdminInternal(d.runtimeJobsHandler)))
 		k.Register("GET "+base+"/system-metrics/runtime/queues", surface.wrap(d.requireAdminInternal(d.runtimeQueuesHandler)))
+		k.Register("GET "+base+"/system-metrics/health-snapshot", surface.wrap(d.requireAdminInternal(d.healthSnapshotHandler)))
 	}
 
 	k.Register("GET "+prefix+"/usage-records", admin(http.HandlerFunc(d.usageRecordsListHandler(false))))

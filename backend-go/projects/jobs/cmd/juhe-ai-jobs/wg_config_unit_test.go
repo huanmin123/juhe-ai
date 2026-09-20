@@ -117,7 +117,7 @@ func TestLoadWorkerConfigDefaults(t *testing.T) {
 	if !strings.HasSuffix(config.UsageSpoolDirectory, expectedSpool) {
 		t.Fatalf("spool 目录必须从 stats 库目录派生: %s", config.UsageSpoolDirectory)
 	}
-	if config.PostgresMaxOpenConns != 50 || config.PostgresMaxIdleConns != 50 {
+	if config.PostgresMaxOpenConns != 50 || config.PostgresMaxIdleConns != 10 {
 		t.Fatalf("PG 池默认值漂移: %+v", config)
 	}
 }

@@ -16,7 +16,7 @@
 - 持久化表位于 PostgreSQL `juhe_stats` schema（SQLite 模式使用独立文件），由 maintenance 显式 `--apply-go-runtime-metrics` 创建；jobs 启动只读校验，不自动 DDL。
 - jobs loopback 管理端点 `GET /__aisys__/api/stats/go-runtime-trend` 只读小时预聚合，并显式返回 `runtimeKind=go`；不查询或写入 Node `system_metrics_*` / `process_event_loop_*`。
 - scheduler latency、GC pause 继续以 Prometheus histogram 暴露，不能从单次 scrape 直接解释为 P95/P99；Go SQL 趋势只做均值/最大值，绝不把每个采样的 P95/P99 再平均。页面只有在外部 Prometheus/实时适配器提供合法分位数时才显示健康视图。
-- 当前 Go 趋势页已接入现有系统指标页：前端通过 Node 同源管理员代理 `/__aisys__/api/stats/system-metrics/go-runtime-trend` 读取独立 Go 预聚合，并与 Node 原有图表并列展示；Go 卡片分为并发、内存和 runtime 摘要（Go CPU/uptime），不映射 `eventLoopLagMs` 或 Node RSS。PG/Redis、HTTP RED、业务任务状态仍未接入，缺失字段不以 0 或 Node 字段占位。
+- 系统监控页已完成 Go 语义减法（2026-09-20）：Node 原有图表（system_metrics 趋势、进程事件循环、Node RSS、后台队列）及其前端类型/组件已删除；页面收敛为 `go-runtime-trend` 趋势卡（并发、内存视图）、`health-snapshot` 运行状态卡（gateway readiness + jobs /health 代理）与 `runtime/jobs` worker 执行历史卡（jobs PG 模式经 `RunWithTaskRun` 落库 `background_task_runs`）。仍不映射 `eventLoopLagMs` 或 Node RSS；PG/Redis、HTTP RED 仍未接入，缺失字段不以 0 或 Node 字段占位；gateway 侧旧 `system-metrics/trend` 读路由暂保留为兼容面待减法收尾。
 
 ## 2. 迁移原则
 

@@ -34,7 +34,6 @@ export interface SystemSettings {
   statsAggregationMaxBatchesPerRun: number
   usageHotWindowRefreshIntervalSeconds: number
   groupAccountStatsRefreshIntervalSeconds: number
-  systemMetricsSampleIntervalSeconds: number
   tableMonitorMaxTablesPerRun: number
   accountQualityRefreshIntervalSeconds: number
   accountQualityWindowMinutes: number
@@ -58,8 +57,6 @@ export interface SystemSettings {
   usageStatsWeeklyRetentionWeeks: number
   usageStatsMonthlyRetentionMonths: number
   usageRankSnapshotRetentionDays: number
-  systemMetricsRetentionDays: number
-  systemMetricsHourlyRetentionDays: number
 }
 
 export type SystemSettingsPatch = Partial<SystemSettings>

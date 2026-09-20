@@ -1,4 +1,4 @@
-import type { AccountStatus, ProcessRole, ProviderCode, ResourceAccessType } from './base'
+import type { AccountStatus, ProviderCode, ResourceAccessType } from './base'
 
 export interface AccountUsageSummary {
   requestCount: number
@@ -215,41 +215,6 @@ export interface UsageStatsOverviewErrorsResult {
   errors: UsageStatsOverview['errors']
 }
 
-export interface SystemMetricsTrendOverview {
-  hourlyTrend: Array<{
-    statHour: string
-    cpuPercentAvg?: number
-    memoryUsedPercentAvg?: number
-    networkRxBytesPerSecondAvg?: number
-    networkTxBytesPerSecondAvg?: number
-  }>
-  processEventLoopLatestStatus: Array<{
-    processRole: ProcessRole
-    sampleAvailable: boolean
-    processPid: number | null
-    sampledAt: string | null
-    eventLoopLagMs: number | null
-    processRssBytes: number | null
-    processHeapUsedBytes: number | null
-    processHeapTotalBytes: number | null
-  }>
-  processEventLoopPeakStatus: Array<{
-    processRole: ProcessRole
-    sampleAvailable: boolean
-    processPid: number | null
-    sampledAt: string | null
-    eventLoopLagMs: number | null
-  }>
-  processEventLoopTrend: Array<{
-    statMinute: string
-    processRole: ProcessRole
-    eventLoopLagMsAvg?: number
-    eventLoopLagMsMax?: number
-    processRssBytesAvg?: number
-    processRssBytesMax?: number
-  }>
-}
-
 export interface GoRuntimeTrendItem {
   windowStart: string
   windowEnd: string
@@ -302,109 +267,16 @@ export interface GoRuntimeTrendOverview {
   items: GoRuntimeTrendItem[]
 }
 
-export interface SystemMetricsRuntimeSummary {
-  runtimeSnapshotAvailable: boolean
-  runtimeSnapshotStale?: boolean
-  ingestWorkerSnapshotAvailable?: boolean
-  statsWorkerSnapshotAvailable?: boolean
-  opsWorkerSnapshotAvailable?: boolean
-  jobsAvailable: boolean
-  queuesAvailable: boolean
-}
-
 export interface SystemMetricsRuntimeJob {
-  name: string
-  workerRole?: ProcessRole
-  intervalMs: number
-  resourceLane?: string
-  running: boolean
-  pending?: boolean
-  queuedForLane?: boolean
-  timedOut?: boolean
-  nextRunAt?: string
-  lastStartedAt?: string
-  lastFinishedAt?: string
-  lastSuccessAt?: string
-  lastErrorAt?: string
-  lastError?: string
-  lastWarningAt?: string
-  lastWarning?: string
-  lastOutcome?: 'success' | 'partial' | 'failure' | 'timeout' | 'skipped'
-  leaseState?: 'not_required' | 'acquired' | 'busy' | 'lost'
-  lastDurationMs?: number
-  maxDurationMs?: number
-  runCount: number
-  successCount: number
-  failureCount: number
-  partialCount: number
-  skippedCount: number
-  taskSkippedCount?: number
-  coalescedCount?: number
-  timedOutCount?: number
-  retryQueue?: {
-    name: string
-    pendingCount: number
-    runningCount: number
-    nextRunAt?: string
-  }
-  localQueue?: {
-    name: string
-    queueType?: string
-    queueLength?: number
-    queueBytes?: number
-    flushLastSuccessAt?: string
-    flushLastError?: string
-    completedCount?: number
-    droppedCount?: number
-    rejectedCount?: number
-    expiredCount?: number
-    timedOutCount?: number
-    failedCount?: number
-    flushFailureCount?: number
-    oldestQueuedMs?: number
-    writerPoolQueueLength?: number
-    writerPoolActiveJobs?: number
-    writerPoolFailedJobs?: number
-    writerPoolRejectedJobs?: number
-    writerPoolOldestQueuedMs?: number
-    pendingWriteRequestCount?: number
-    pendingWriteOldestQueuedMs?: number
-    runningCount?: number
-    consumers?: number
-    nextRunAt?: string
-  }
-}
-
-export type SystemMetricsRuntimeQueueType = 'retry' | 'local' | 'ipc' | 'request' | 'gateway' | 'concurrency' | 'redis' | 'writer'
-
-export interface SystemMetricsRuntimeQueue {
-  key: string
-  name: string
-  queueType: SystemMetricsRuntimeQueueType
-  workerRole?: ProcessRole
-  pendingCount?: number
-  runningCount?: number
-  consumers?: number
-  queueLength?: number
-  queueBytes?: number
-  completedCount?: number
-  droppedCount?: number
-  rejectedCount?: number
-  expiredCount?: number
-  timedOutCount?: number
-  failedCount?: number
-  flushFailureCount?: number
-  oldestQueuedMs?: number
-  writerPoolQueueLength?: number
-  writerPoolActiveJobs?: number
-  writerPoolFailedJobs?: number
-  writerPoolRejectedJobs?: number
-  writerPoolOldestQueuedMs?: number
-  pendingWriteRequestCount?: number
-  pendingWriteOldestQueuedMs?: number
-  nextRunAt?: string
-  flushLastSuccessAt?: string
-  lastError?: string
+  runId: string
+  jobName: string
+  jobType: string
+  workerRole: string
+  status: string
+  startedAt: string | null
+  finishedAt: string | null
+  durationMs: number | null
+  errorMessage: string | null
 }
 
 export interface SystemMetricsRuntimeJobsResult {
@@ -415,16 +287,12 @@ export interface SystemMetricsRuntimeJobsResult {
   hasMore: boolean
 }
 
-export interface SystemMetricsRuntimeQueuesResult {
-  items: SystemMetricsRuntimeQueue[]
-  total: number
-  page: number
-  pageSize: number
-  hasMore: boolean
-}
-
-// Compatibility for the runtime row formatter contracts. API consumers use the split DTOs above.
-export interface SystemMetricsRuntimeOverview extends Omit<SystemMetricsRuntimeSummary, 'jobsAvailable' | 'queuesAvailable'> {
-  backgroundJobsAvailable: boolean
-  backgroundJobs: SystemMetricsRuntimeJob[] | null
+export interface SystemMetricsHealthSnapshot {
+  checkedAt: string
+  gateway: Record<string, unknown>
+  jobs: {
+    available: boolean
+    reason?: string
+    payload?: Record<string, unknown>
+  }
 }

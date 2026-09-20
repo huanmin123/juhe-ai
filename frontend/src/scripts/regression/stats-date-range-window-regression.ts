@@ -73,8 +73,8 @@ assert.match(
 
 assert.match(
   systemMetricsViewSource,
-  /api\.stats\.systemMetricsTrend\(rangeParams,\s*\{\s*signal:\s*controller\.signal\s*\}\)/,
-  'system metrics must load the split trend endpoint with cancellation'
+  /api\.stats\.goRuntimeTrend\(rangeParams,\s*\{\s*signal:\s*controller\.signal\s*\}\)/,
+  'system metrics must load the Go runtime trend endpoint with cancellation'
 )
 
 assert.match(
@@ -85,7 +85,7 @@ assert.match(
 
 assert.match(
   systemMetricsViewSource,
-  /syncImplicitDateRangeToStatsWindow\(\)[\s\S]*systemMetrics\.value = metrics/,
+  /syncImplicitDateRangeToStatsWindow\(\)[\s\S]*goRuntimeTrend\.value = result/,
   'system metrics must align the displayed implicit range after the server window is available'
 )
 
@@ -150,7 +150,7 @@ assert.match(ipStatsViewSource, /didUsageStatsWindowLoadFail\('admin'\)/, 'IP st
 
 for (const [name, source, version] of [
   ['stats overview', statsViewSource, 6],
-  ['system metrics', systemMetricsViewSource, 3]
+  ['system metrics', systemMetricsViewSource, 4]
 ] as const) {
   assert.match(source, /type\s+RangeMode\s*=\s*'auto'\s*\|\s*QuickRange\s*\|\s*'custom'/, `${name} must persist the range semantic`)
   assert.match(source, /rangeMode:\s*RangeMode/, `${name} page-state cache must require range mode`)

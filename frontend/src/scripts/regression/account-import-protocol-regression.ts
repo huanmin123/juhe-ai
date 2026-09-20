@@ -86,6 +86,11 @@ const protocolSemanticRequirements: readonly ProtocolSemanticRequirement[] = [
     name: '混合供应商模型映射目标协议',
     exportedPattern: /混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝/,
     formalPattern: /混合供应商账户的 `modelMappings` 用于声明跨协议入口，`upstreamEndpointFamily` 直接表示真实上游目标协议，可选 `chat_completions`、`messages` 或 `generate_content`；未列出的转换方向会被拒绝/
+  },
+  {
+    name: '来源模型映射与模型目录拦截',
+    exportedPattern: /## 来源模型映射与目录拦截[\s\S]*?Channel 的 `models` 字段（逗号 \/ 分号 \/ 换行分隔）映射为账户 `supportedModels`[\s\S]*?账户支持模型必须已存在于平台模型目录（含价格）[\s\S]*?账户支持模型不在供应商模型目录中/,
+    formalPattern: /## 来源模型映射与目录拦截[\s\S]*?Channel 的 `models` 字段（逗号 \/ 分号 \/ 换行分隔）[\s\S]*?映射为账户 `supportedModels`，去空白、去重、保序[\s\S]*?账户支持模型必须已存在于平台模型目录（含价格）[\s\S]*?请先在模型目录创建这些模型并配置价格后再导入/
   }
 ]
 
@@ -197,6 +202,8 @@ assertMatch(accountImportProtocolMarkdown, /`credentials\.supported_endpoint_mod
 assertFalse(/接口能力限制/.test(accountImportProtocolMarkdown), '协议 Markdown 不应继续使用接口能力限制旧文案')
 assertMatch(accountImportProtocolMarkdown, /不接受 `credentials\.anthropic_version` 或 `credentials\.anthropic_beta`/, '协议 Markdown 应明确 Anthropic header 不属于账号凭据')
 assertMatch(accountImportProtocolMarkdown, /`proxyRef` 和 `proxyProfileId` 不能同时填写/, '协议 Markdown 应继续说明代理字段互斥')
+assertMatch(accountImportProtocolMarkdown, /账户支持模型不在供应商模型目录中/, '协议 Markdown 应说明模型目录拦截失败提示')
+assertMatch(formalProtocolMarkdown, /账户支持模型不在供应商模型目录中/, '正式协议文档应说明模型目录拦截失败提示')
 assertMatch(formalProtocolMarkdown, /# AI 账户导入协议/, '正式协议文档应可读取')
 
 for (const requirement of protocolSemanticRequirements) {

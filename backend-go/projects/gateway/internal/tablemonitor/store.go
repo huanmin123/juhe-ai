@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 )
 
 // ErrSchemaUnavailable is the W6 typed-unavailable outcome: the snapshot
@@ -552,7 +554,9 @@ func (s *Store) LoadDatabaseHistory(ctx context.Context, startAt, endAt string, 
 }
 
 func (s *Store) query(ctx context.Context, query string, args ...any) ([]row, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	// pgx 驱动不做 `?`→`$n` 改写：PG 模式必须先经平台方言改写（sqldialect
+	// 包文档约定），否则 overview 分页与 history 查询在 PG 上直接语法错误。
+	rows, err := s.db.QueryContext(ctx, sqldialect.BindSQL(s.pg, query), args...)
 	if err != nil {
 		if isSchemaMissing(err) {
 			return nil, ErrSchemaUnavailable

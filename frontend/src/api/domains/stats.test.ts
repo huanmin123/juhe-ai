@@ -109,24 +109,20 @@ describe('statsApi 请求形状', () => {
     expect(requests[0].params).toEqual({ systemAccountId: 'sa-1', startDate: '2026-01-01', endDate: '2026-01-02' })
   })
 
-  it('系统指标与运行时方法发出正确的 method 与 URL 并透传 signal', async () => {
+  it('系统指标运行态方法发出正确的 method 与 URL 并透传 signal', async () => {
     const controller = new AbortController()
-    await statsApi.systemMetricsTrend({ startDate: 's', endDate: 'e' }, { signal: controller.signal })
-    await statsApi.goRuntimeTrend(undefined, { signal: controller.signal })
-    await statsApi.systemMetricsRuntimeSummary({ signal: controller.signal })
+    await statsApi.goRuntimeTrend({ startDate: 's', endDate: 'e' }, { signal: controller.signal })
+    await statsApi.systemMetricsHealthSnapshot({ signal: controller.signal })
     await statsApi.systemMetricsRuntimeJobs({ page: 1, pageSize: 10 }, { signal: controller.signal })
-    await statsApi.systemMetricsRuntimeQueues({ page: 1, pageSize: 10 }, { signal: controller.signal })
     expect(requestShapes()).toEqual([
-      ['GET', '/stats/system-metrics/trend'],
       ['GET', '/stats/system-metrics/go-runtime-trend'],
-      ['GET', '/stats/system-metrics/runtime/summary'],
-      ['GET', '/stats/system-metrics/runtime/jobs'],
-      ['GET', '/stats/system-metrics/runtime/queues']
+      ['GET', '/stats/system-metrics/health-snapshot'],
+      ['GET', '/stats/system-metrics/runtime/jobs']
     ])
     expect(requests[0].params).toEqual({ startDate: 's', endDate: 'e' })
     expect(requests[0].signal).toBe(controller.signal)
-    expect(requests[3].params).toEqual({ page: 1, pageSize: 10 })
-    expect(requests[3].signal).toBe(controller.signal)
+    expect(requests[2].params).toEqual({ page: 1, pageSize: 10 })
+    expect(requests[2].signal).toBe(controller.signal)
   })
 
   it('健康监控方法透传 signal', async () => {

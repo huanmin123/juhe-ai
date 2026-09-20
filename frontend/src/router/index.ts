@@ -476,7 +476,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/stats/SystemMetricsStatsView.vue'),
     meta: {
       title: '系统指标统计',
-      description: '查看系统性能、网络吞吐、进程事件循环延迟、后台任务运行状态和进程 RSS 峰值趋势。',
+      description: '查看 Go Runtime 并发与内存趋势、gateway / jobs 双进程运行状态和后台任务执行历史。',
       menuGroup: 'system-operations',
       menuGroupTitle: '系统运维',
       viewScope: 'admin',

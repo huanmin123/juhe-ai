@@ -1251,16 +1251,23 @@ func (s *Service) validateImportModelCatalogFields(ctx context.Context, source *
 		ProtocolCode:    source.protocolCode,
 		ProtocolVersion: source.protocolVersion,
 	}); err != nil {
-		source.Push(err.Error())
+		source.Push(importCatalogGuidance(err))
 	}
 	if err := s.deps.AssertModelMappingsInProviderCatalog(ctx, s.store.DB(), source.providerCode, planCtx.targetOwner, accountscore.ProtocolPredicate{
 		ProviderCode:    source.providerCode,
 		ProtocolCode:    source.protocolCode,
 		ProtocolVersion: source.protocolVersion,
 	}, source.modelMappings, StoredEndpointModes(source.credentials["supported_endpoint_modes"])); err != nil {
-		source.Push(err.Error())
+		source.Push(importCatalogGuidance(err))
 	}
 	return nil
+}
+
+// importCatalogGuidance 在共享目录断言错误文本后追加导入链专属的修复指引：
+// 共享断言文案（model_mapping_protocol_matrix.go）与 create/patch/batch 链
+// 不携带该后缀，仅导入计划的 per-account message 生效。
+func importCatalogGuidance(err error) string {
+	return err.Error() + "。请先在模型目录创建这些模型并配置价格后再导入"
 }
 
 // validateImportGptRequestOverrides mirrors

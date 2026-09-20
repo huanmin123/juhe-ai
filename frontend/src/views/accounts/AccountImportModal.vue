@@ -216,10 +216,10 @@ const sourceDescription = computed(() => sourceMode.value === 'native'
   : `${sourceModeLabel(sourceMode.value)} 模式只提取可确认的 OpenAI 账户；不支持的供应商和非核心字段会在预览中跳过或计数忽略。`)
 const sourceGuide = computed(() => {
   if (sourceMode.value === 'native') return aiConversionPrompt
-  if (sourceMode.value === 'sub2api') return '支持 Sub2API sub2api-data / sub2api-bundle v1 的 accounts 与 proxies。仅导入 OpenAI API Key/OAuth。'
-  if (sourceMode.value === 'newapi') return '支持 NewAPI Channel JSON。仅识别来源定义中明确的 OpenAI Channel，key 映射为 API Key。'
-  if (sourceMode.value === 'oneapi') return '支持 One-API Channel JSON。仅识别 OpenAI Channel，数字 type 不做跨项目猜测。'
-  return '支持 CLIProxyAPI config.yaml 中 codex-api-key、openai-compatibility，以及 type=codex 的 auth JSON。'
+  if (sourceMode.value === 'sub2api') return '支持 Sub2API sub2api-data / sub2api-bundle v1 的 accounts 与 proxies。仅导入 OpenAI API Key/OAuth。来源账户的 supportedModels、healthCheckModel、healthCheckEndpointMode、modelMappings 会透传为账户的支持模型 / 健康检查 / 模型映射配置；账户支持模型必须已存在于平台模型目录（含价格），目录外模型将导致该账户导入失败。'
+  if (sourceMode.value === 'newapi') return '支持 NewAPI Channel JSON。仅识别来源定义中明确的 OpenAI Channel，key 映射为 API Key。Channel 的 models 字段映射为支持模型并按模型目录校验，目录外模型将导致该账户导入失败。'
+  if (sourceMode.value === 'oneapi') return '支持 One-API Channel JSON。仅识别 OpenAI Channel，数字 type 不做跨项目猜测。Channel 的 models 字段映射为支持模型并按模型目录校验，目录外模型将导致该账户导入失败。'
+  return '支持 CLIProxyAPI config.yaml 中 codex-api-key、openai-compatibility，以及 type=codex 的 auth JSON。不读取来源模型列表。'
 })
 
 const sourceExample = computed(() => {

@@ -186,7 +186,7 @@ func TestProbeFamilyConfigDefaults(t *testing.T) {
 	if config.ProbeConcurrency != 512 {
 		t.Fatalf("probe defaults: concurrency=%d", config.ProbeConcurrency)
 	}
-	if config.PostgresMaxOpenConns != 50 || config.PostgresMaxIdleConns != 50 {
+	if config.PostgresMaxOpenConns != 50 || config.PostgresMaxIdleConns != 10 {
 		t.Fatalf("postgres pool defaults: open=%d idle=%d", config.PostgresMaxOpenConns, config.PostgresMaxIdleConns)
 	}
 	if config.CodexContextStateShardCount != 16 {

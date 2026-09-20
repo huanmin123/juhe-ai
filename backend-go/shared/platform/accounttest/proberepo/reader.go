@@ -144,7 +144,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		return nil, err
 	}
 	nowMS := s.nowMS()
-	available, statusValue, hasStatus, limited := s.deriveEffectiveAvailability(deriveInput{
+	available, statusValue, hasStatus, limited, deriveErr := s.deriveEffectiveAvailability(deriveInput{
 		accessType:             ternary(authzID.String != "", "authorized", "owner"),
 		boundGroupID:           boundGroupID.String,
 		status:                 status.String,
@@ -166,6 +166,11 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		apiKeyRuntime:          apiKeyRuntime,
 		nowMS:                  nowMS,
 	})
+	if deriveErr != nil {
+		// BUG-0180：账户行时间戳脏数据按错误上抛（原 panic 会使长运行
+		// probe worker 进入崩溃循环），由调用方按候选缺失/读取失败处理。
+		return nil, deriveErr
+	}
 	view.AccountForTest = accountquality.AccountForTest{
 		ID:                   id.String,
 		Name:                 name.String,
@@ -284,112 +289,112 @@ type deriveInput struct {
 }
 
 // deriveEffectiveAvailability 移植 accountEffectiveAvailability 的 DB 分支，
-// 返回 (available, blockedStatus, hasStatus, limited)。
-func (s *Store) deriveEffectiveAvailability(input deriveInput) (bool, string, bool, bool) {
-	limited := false
+// 返回 (available, blockedStatus, hasStatus, limited, err)。脏时间戳返回
+// error 而非 panic（BUG-0180：长运行 worker 对脏行不得崩溃循环）。
+func (s *Store) deriveEffectiveAvailability(input deriveInput) (avail bool, statusValue string, hasStatus bool, limited bool, resultErr error) {
 	if input.accessType == "authorized" {
 		// authorizedBindingAvailability
 		if input.boundGroupID == "" {
-			return false, "binding_missing", true, limited
+			return false, "binding_missing", true, limited, nil
 		}
 		// authorizationAvailability（authorizationRuntimeBlockingStatus）
 		if input.authorizationStatus != "" && input.authorizationStatus != "active" {
-			return false, "authorization_unavailable", true, limited
+			return false, "authorization_unavailable", true, limited, nil
 		}
 		if input.authorizationExpiresAt != "" {
 			expired, err := isPastInstant(input.authorizationExpiresAt, input.nowMS)
 			if err != nil {
-				return false, "authorization_unavailable", true, limited
+				return false, "authorization_unavailable", true, limited, nil
 			}
 			if expired {
-				return false, "authorization_expired", true, limited
+				return false, "authorization_expired", true, limited, nil
 			}
 		}
 		// authorizationQuotaExceeded 分支未迁移（用量聚合读模型）。
 		limited = true
 		// sourceAccountAvailability
 		if input.sourceID == "" || input.sourceStatus == "" {
-			return false, "source_deleted", true, limited
+			return false, "source_deleted", true, limited, nil
 		}
 		if input.sourceErrorCode == "account_expired" {
-			return false, "source_expired", true, limited
+			return false, "source_expired", true, limited, nil
 		}
 		if input.sourceExpiresAt != "" {
 			expired, err := isPastInstant(input.sourceExpiresAt, input.nowMS)
 			if err == nil && expired {
-				return false, "source_expired", true, limited
+				return false, "source_expired", true, limited, nil
 			}
 		}
 		switch input.sourceStatus {
 		case "disabled":
-			return false, "source_disabled", true, limited
+			return false, "source_disabled", true, limited, nil
 		case "pending_test":
-			return false, "source_pending_test", true, limited
+			return false, "source_pending_test", true, limited, nil
 		case "error":
-			return false, "source_error", true, limited
+			return false, "source_error", true, limited, nil
 		case "rate_limited":
-			return false, "source_rate_limited", true, limited
+			return false, "source_rate_limited", true, limited, nil
 		case "temporary_unavailable":
-			return false, "source_temporary_unavailable", true, limited
+			return false, "source_temporary_unavailable", true, limited, nil
 		case "quality_isolated":
-			return false, "source_quality_isolated", true, limited
+			return false, "source_quality_isolated", true, limited, nil
 		}
 		if input.sourceCooldownUntil != "" {
 			future, err := isFutureInstant(input.sourceCooldownUntil, input.nowMS)
 			if err == nil && future {
-				return false, "source_cooldown", true, limited
+				return false, "source_cooldown", true, limited, nil
 			}
 		}
 		if !input.sourceSchedulable {
-			return false, "source_unschedulable", true, limited
+			return false, "source_unschedulable", true, limited, nil
 		}
 	}
 	// instanceAccountAvailability
 	if input.lastErrorCode == "account_expired" {
-		return false, "instance_expired", true, limited
+		return false, "instance_expired", true, limited, nil
 	}
 	if input.expiresAt != "" {
 		expired, err := isPastInstant(input.expiresAt, input.nowMS)
 		if err != nil {
-			panic(err)
+			return false, "", false, false, fmt.Errorf("解析 account_expires_at 失败: %w", err)
 		}
 		if expired {
-			return false, "instance_expired", true, limited
+			return false, "instance_expired", true, limited, nil
 		}
 	}
 	switch input.status {
 	case "disabled":
-		return false, "instance_disabled", true, limited
+		return false, "instance_disabled", true, limited, nil
 	case "pending_test":
-		return false, "instance_pending_test", true, limited
+		return false, "instance_pending_test", true, limited, nil
 	case "error":
-		return false, "instance_error", true, limited
+		return false, "instance_error", true, limited, nil
 	case "rate_limited":
-		return false, "instance_rate_limited", true, limited
+		return false, "instance_rate_limited", true, limited, nil
 	case "temporary_unavailable":
-		return false, "instance_temporary_unavailable", true, limited
+		return false, "instance_temporary_unavailable", true, limited, nil
 	case "quality_isolated":
-		return false, "instance_quality_isolated", true, limited
+		return false, "instance_quality_isolated", true, limited, nil
 	}
 	if input.cooldownUntil != "" {
 		future, err := isFutureInstant(input.cooldownUntil, input.nowMS)
 		if err != nil {
-			panic(err)
+			return false, "", false, false, fmt.Errorf("解析 cooldown_until 失败: %w", err)
 		}
 		if future {
-			return false, "instance_cooldown", true, limited
+			return false, "instance_cooldown", true, limited, nil
 		}
 	}
 	if !input.schedulable {
-		return false, "instance_unschedulable", true, limited
+		return false, "instance_unschedulable", true, limited, nil
 	}
 	// apiKeyPoolAvailability：全部 Key 不可用（runtime 状态缺省视为 active）。
 	if s.allKeysUnavailable(input.credentials, input.apiKeyRuntime) {
-		return false, "api_key_pool_unavailable", true, limited
+		return false, "api_key_pool_unavailable", true, limited, nil
 	}
 	// runtimeAvailability 分支（gateway 进程内运行态）未迁移。
 	limited = limited || input.accessType == "authorized"
-	return true, "", false, limited
+	return true, "", false, limited, nil
 }
 
 func (s *Store) allKeysUnavailable(credentials map[string]any, runtime map[string]string) bool {

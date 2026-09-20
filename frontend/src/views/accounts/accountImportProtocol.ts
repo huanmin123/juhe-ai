@@ -499,6 +499,17 @@ export const accountImportProtocolMarkdown = [
   importTemplate,
   '```',
   '',
+  '## 来源模型映射与目录拦截',
+  '',
+  '导入弹窗支持 5 种来源模式：`native`（本协议自定义 JSON）、`sub2api`、`newapi`、`oneapi` 和 `cpa`。来源模型字段按模式映射：',
+  '',
+  '- `native`：按本协议字段直接导入 `supportedModels`、`healthCheckModel`、`healthCheckEndpointMode`、`modelMappings`。',
+  '- `sub2api`：来源账户对象的 `supportedModels`、`healthCheckModel`、`healthCheckEndpointMode`、`modelMappings` 透传为账户的支持模型 / 健康检查 / 模型映射配置。',
+  '- `newapi` / `oneapi`：Channel 的 `models` 字段（逗号 / 分号 / 换行分隔）映射为账户 `supportedModels`，去空白、去重、保序；`model_mapping` 字段仍不读取。',
+  '- `cpa`：不映射模型，来源模型信息仍被忽略（计入忽略字段）。',
+  '',
+  '目录拦截：`native`、`sub2api`、`newapi`、`oneapi` 导入时，账户支持模型必须已存在于平台模型目录（含价格），否则该账户在预览中标记失败、整次导入无法确认，失败提示为「账户支持模型不在供应商模型目录中：…。请先在模型目录创建这些模型并配置价格后再导入」。解决办法：先在「供应商」页（管理员，路由 `/providers`）或「我的模型」页（`/my-models`）的模型目录中创建这些自定义模型并配置价格，再重新导入。模型映射（`modelMappings`）的来源 / 目标模型同样按模型目录校验，失败时使用相同的引导提示。',
+  '',
   '## 常见失败原因',
   '',
   '- 顶层不是 JSON 对象，或者带了 Markdown 代码块。',
@@ -508,5 +519,7 @@ export const accountImportProtocolMarkdown = [
   '- API Key 账户缺少 `credentials.api_key`。',
   '- OAuth 账户同时缺少 `credentials.refresh_token` 和 `credentials.access_token`，或 Google OAuth 缺少必填字段。',
   '- `proxyRef` 指向的代理不存在、未在 `proxies` 中声明，或普通用户尝试创建新代理。',
-  '- 未知字段写入了错误层级，例如把外部系统字段直接放进 `credentials`。'
+  '- 未知字段写入了错误层级，例如把外部系统字段直接放进 `credentials`。',
+  '- 账户支持模型不在供应商模型目录中：先在模型目录创建这些自定义模型并配置价格，再重新导入。',
+  '- 账号模型别名（`modelMappings`）的来源 / 目标模型不在当前供应商模型目录中：处理方式与支持模型相同，先在模型目录创建并配置价格，再重新导入。'
 ].join('\n')
