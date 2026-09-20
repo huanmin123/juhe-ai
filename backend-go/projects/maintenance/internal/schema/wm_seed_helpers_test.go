@@ -2,6 +2,7 @@ package schema
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -210,6 +211,58 @@ func TestWMSeedSQLiteRecoversStaleGeneratedModels(t *testing.T) {
 	}
 	if status != "disabled" || visible != 0 {
 		t.Fatalf("陈旧生成模型必须被停用: status=%s visible=%d", status, visible)
+	}
+}
+
+// TestWMSeedSQLiteStripsCodexAutoReviewFromGPTDefaults 锁定 SQLite seed 的
+// GPT 默认清单清洗步（sqSeedGPTVendorCodexAutoReviewRemoval）：老库残留的
+// codex-auto-review 必须在下一次 seed 时被剔除，其他供应商不受影响。
+func TestWMSeedSQLiteStripsCodexAutoReviewFromGPTDefaults(t *testing.T) {
+	ctx := context.Background()
+	db := openSeedTestDatabase(t)
+	options := SeedOptions{Now: func() time.Time { return sqliteSeedTestClock }, Secret: sqliteSeedTestSecret}
+	if _, err := SeedSQLiteDefaults(ctx, db, options); err != nil {
+		t.Fatalf("首次 seed: %v", err)
+	}
+	// 模拟老库残留：把 GPT 默认清单替换为含已退役模型的旧列表。
+	if _, err := db.ExecContext(ctx, `UPDATE providers SET default_supported_models_json = ? WHERE code = ?`,
+		`["codex-auto-review","gpt-5.5","gpt-5.4"]`, gptVendorCode); err != nil {
+		t.Fatalf("注入残留清单: %v", err)
+	}
+	var openaiList string
+	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM providers WHERE code = 'openai'`).Scan(&openaiList); err != nil {
+		t.Fatal(err)
+	}
+	// 清洗语句与共享常量必须指向同一退役模型，防止字面量漂移。
+	if !strings.Contains(sqSeedGPTVendorCodexAutoReviewRemoval, retiredCodexAutoReviewModel) {
+		t.Fatalf("SQLite 清洗语句必须包含退役模型字面量 %q", retiredCodexAutoReviewModel)
+	}
+	if _, err := SeedSQLiteDefaults(ctx, db, options); err != nil {
+		t.Fatalf("二次 seed（含残留清单）: %v", err)
+	}
+	var gptList string
+	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM providers WHERE code = ?`, gptVendorCode).Scan(&gptList); err != nil {
+		t.Fatal(err)
+	}
+	if gptList != `["gpt-5.5","gpt-5.4"]` {
+		t.Fatalf("残留 codex-auto-review 必须被剔除: %s", gptList)
+	}
+	var openaiAfter string
+	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM providers WHERE code = 'openai'`).Scan(&openaiAfter); err != nil {
+		t.Fatal(err)
+	}
+	if openaiAfter != openaiList {
+		t.Fatalf("清洗步只允许作用于 GPT 供应商行: %s -> %s", openaiList, openaiAfter)
+	}
+	// 幂等：清洗后的库再跑一次 seed，清单保持不变。
+	if _, err := SeedSQLiteDefaults(ctx, db, options); err != nil {
+		t.Fatalf("三次 seed（幂等）: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT default_supported_models_json FROM providers WHERE code = ?`, gptVendorCode).Scan(&gptList); err != nil {
+		t.Fatal(err)
+	}
+	if gptList != `["gpt-5.5","gpt-5.4"]` {
+		t.Fatalf("清洗后清单必须保持稳定: %s", gptList)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/timeclock"
 )
 
@@ -79,10 +80,10 @@ type Ctx = context.Context
 // UsageModelResolution mirrors ProviderUsageModelResolution
 // (providers/drivers/registry.ts).
 type UsageModelResolution struct {
-	UpstreamModel         string
-	ModelMappingApplied   bool
-	ModelMappingSource    string
-	SourceEndpointFamily  string
+	UpstreamModel          string
+	ModelMappingApplied    bool
+	ModelMappingSource     string
+	SourceEndpointFamily   string
 	UpstreamEndpointFamily string
 }
 
@@ -99,16 +100,23 @@ type UsageModelAccount struct {
 	// Profile mirrors the protocol profile pick the driver registry reads;
 	// nil means the default OpenAI profile.
 	Profile *ProviderProtocolProfile
+	// ModelMappings carries the account-level model mapping rows the usage
+	// model resolver needs（运行态映射形状，gatewayopenai.AccountModelMapping；
+	// nil/empty 表示无映射，请求模型按 Node registry 语义原样透传）。构造点
+	// （cmd/juhe-ai-gateway usageModelAccountOf）从派发候选的完整 secret 投影
+	// 填充，解析适配器据此调 gatewayopenai.ResolveAccountModelMapping——此前
+	// 端口投影丢字段导致映射后上游模型名丢失（记账把请求别名当上游模型）。
+	ModelMappings []gatewayopenai.AccountModelMapping
 }
 
 // ProviderProtocolProfile mirrors the consumed
 // ProviderProtocolProfileDefinition fields (providers/drivers/registry.ts):
 // the protocol identity the usage semantic resolver needs.
 type ProviderProtocolProfile struct {
-	ProviderCode     string
-	ProtocolCode     string
-	ProtocolVersion  string
-	ProfileID        string
+	ProviderCode    string
+	ProtocolCode    string
+	ProtocolVersion string
+	ProfileID       string
 }
 
 // UsageAccessFields mirrors UsageAccessFields (records.ts): the ten account
@@ -163,21 +171,21 @@ type PricingCatalog interface {
 
 // PricingCostInput mirrors the CostInput the catalog estimators take.
 type PricingCostInput struct {
-	ProviderCode        string
-	SystemAccountID     string
-	Model               string
-	ServiceTier         string
-	InputTokens         *int
-	OutputTokens        *int
-	CacheReadTokens     *int
-	CacheWriteTokens    *int
-	CacheWrite1hTokens  *int
-	ThinkingTokens      *int
-	InputImageTokens    *int
-	OutputImageTokens   *int
-	InputAudioTokens    *int
-	OutputAudioTokens   *int
-	OutputImageCount    *int
+	ProviderCode       string
+	SystemAccountID    string
+	Model              string
+	ServiceTier        string
+	InputTokens        *int
+	OutputTokens       *int
+	CacheReadTokens    *int
+	CacheWriteTokens   *int
+	CacheWrite1hTokens *int
+	ThinkingTokens     *int
+	InputImageTokens   *int
+	OutputImageTokens  *int
+	InputAudioTokens   *int
+	OutputAudioTokens  *int
+	OutputImageCount   *int
 }
 
 // UpstreamFailureMetricRecorder ports recordGatewayUpstreamFailureMetric

@@ -219,3 +219,111 @@ func TestWMHashSeedPasswordIsNodeVerifiableEnvelope(t *testing.T) {
 		}
 	}
 }
+
+// TestWMSeedPostgresDefaultsStripsCodexAutoReviewFromGPTDefaults 覆盖 PG 种子
+// 的 codex-auto-review 清洗步（SQLite sqSeedGPTVendorCodexAutoReviewRemoval
+// 的 PG 等价）：残留老库清单必须剔除该模型，其余守卫分支跳过修复。
+func TestWMSeedPostgresDefaultsStripsCodexAutoReviewFromGPTDefaults(t *testing.T) {
+	clock := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
+	// 清洗 UPDATE 与空列表修复 UPDATE（pgSeedProviderDefaultModelsRepair）的
+	// SET 子句和前缀完全重叠，包含匹配会误报；fake 捕获的是 ExecContext 收到
+	// 的原文，因此按清洗语句常量精确相等识别。
+	isRemovalUpdate := func(statement wmCapturedStatement) bool {
+		return statement.query == pgSeedGPTVendorCodexAutoReviewRemovalUpdate
+	}
+	findRemovalUpdate := func(rec *wmSchemaRecorder) (wmCapturedStatement, bool) {
+		for _, statement := range rec.execs {
+			if isRemovalUpdate(statement) {
+				return statement, true
+			}
+		}
+		return wmCapturedStatement{}, false
+	}
+
+	t.Run("residual model triggers update", func(t *testing.T) {
+		rec := &wmSchemaRecorder{}
+		db := openWMSchemaFakeDB(rec)
+		defer db.Close()
+		// 模拟老库残留：GPT 默认列表含已退役的 codex-auto-review。
+		rec.script(`FROM "juhe_business"."providers"`, []string{"c0"}, [][]driver.Value{{`["codex-auto-review","gpt-5.5","gpt-5.4"]`}})
+		client := &wmSeedCaptureClient{db: db, rec: rec}
+		result, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }})
+		if err != nil {
+			t.Fatalf("seedPostgresDefaults: %v", err)
+		}
+		if result.StatementCount <= 0 {
+			t.Fatalf("语句计数必须为正: %d", result.StatementCount)
+		}
+		statement, found := findRemovalUpdate(rec)
+		if !found {
+			t.Fatal("残留 codex-auto-review 时必须产生清洗 UPDATE")
+		}
+		if got, _ := statement.args[0].(string); got != `["gpt-5.5","gpt-5.4"]` {
+			t.Fatalf("清洗 UPDATE 必须写入剔除后的列表: %q", got)
+		}
+		if got, _ := statement.args[1].(string); got != "2026-09-04T08:00:00.000Z" {
+			t.Fatalf("清洗 UPDATE 必须使用注入时钟: %v", statement.args[1])
+		}
+		if got, _ := statement.args[2].(string); got != gptVendorCode {
+			t.Fatalf("清洗 UPDATE 必须定位 GPT 供应商行: %v", statement.args[2])
+		}
+	})
+
+	t.Run("clean list skips update", func(t *testing.T) {
+		rec := &wmSchemaRecorder{}
+		db := openWMSchemaFakeDB(rec)
+		defer db.Close()
+		rec.script(`FROM "juhe_business"."providers"`, []string{"c0"}, [][]driver.Value{{`["gpt-5.5","gpt-5.4"]`}})
+		client := &wmSeedCaptureClient{db: db, rec: rec}
+		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
+			t.Fatalf("seedPostgresDefaults: %v", err)
+		}
+		if _, found := findRemovalUpdate(rec); found {
+			t.Fatal("清单不含 codex-auto-review 时不应改写（幂等，无 updated_at 抖动）")
+		}
+	})
+
+	t.Run("malformed json skips update", func(t *testing.T) {
+		rec := &wmSchemaRecorder{}
+		db := openWMSchemaFakeDB(rec)
+		defer db.Close()
+		// json_valid=false 等价：非 JSON 文本跳过修复且不失败。
+		rec.script(`FROM "juhe_business"."providers"`, []string{"c0"}, [][]driver.Value{{"{bad"}})
+		client := &wmSeedCaptureClient{db: db, rec: rec}
+		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
+			t.Fatalf("坏 JSON 应镜像 SQLite 守卫的跳过语义而不是失败: %v", err)
+		}
+		if _, found := findRemovalUpdate(rec); found {
+			t.Fatal("非 JSON 老值不应被清洗改写")
+		}
+	})
+
+	t.Run("non-array json skips update", func(t *testing.T) {
+		rec := &wmSchemaRecorder{}
+		db := openWMSchemaFakeDB(rec)
+		defer db.Close()
+		// json_type<>'array' 等价：JSON 字符串标量不是模型清单。
+		rec.script(`FROM "juhe_business"."providers"`, []string{"c0"}, [][]driver.Value{{`"gpt-5.5"`}})
+		client := &wmSeedCaptureClient{db: db, rec: rec}
+		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
+			t.Fatalf("非数组 JSON 应镜像 SQLite 守卫的跳过语义而不是失败: %v", err)
+		}
+		if _, found := findRemovalUpdate(rec); found {
+			t.Fatal("非数组老值不应被清洗改写")
+		}
+	})
+
+	t.Run("missing provider row skips update", func(t *testing.T) {
+		rec := &wmSchemaRecorder{}
+		db := openWMSchemaFakeDB(rec)
+		defer db.Close()
+		// 不脚本化：默认零行（ErrNoRows）→ 新库无残留，无需清洗。
+		client := &wmSeedCaptureClient{db: db, rec: rec}
+		if _, err := seedPostgresDefaults(context.Background(), client, SeedOptions{Now: func() time.Time { return clock }}); err != nil {
+			t.Fatalf("seedPostgresDefaults: %v", err)
+		}
+		if _, found := findRemovalUpdate(rec); found {
+			t.Fatal("供应商行缺失时不应产生清洗 UPDATE")
+		}
+	})
+}

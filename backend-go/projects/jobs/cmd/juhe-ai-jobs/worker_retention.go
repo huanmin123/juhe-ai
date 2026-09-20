@@ -382,8 +382,8 @@ func (f *retentionFamily) retentionStats() *cleanuprepo.StatsRetentionStore {
 //     PG 读失败按驱动语义回落默认并告警）；数值边界交给 retention.LoadPolicy
 //     fail-closed 校验，这里只要求整数。
 //   - usageStatsTimezone（字符串）沿用同一组失败语义：缺行走
-//     DEFAULT_SYSTEM_SETTINGS 的 "UTC" 种子值；SQLite 缺表 / PG 读失败回落
-//     默认并告警（sqliteBackgroundJobSettingValue /
+//     DEFAULT_SYSTEM_SETTINGS 的 "Asia/Shanghai" 种子值；SQLite 缺表 / PG 读
+//     失败回落默认并告警（sqliteBackgroundJobSettingValue /
 //     postgresBackgroundJobSettingValue 等价）；非法 JSON / 非法时区任务
 //     失败。60s 缓存对齐 usageStatsTimezoneCacheTtlMs。
 type retentionSettingsRuntime struct {
@@ -474,13 +474,14 @@ func (r *retentionSettingsRuntime) timezoneName(ctx context.Context) (string, er
 const retentionTimezoneCacheTTL = 60 * time.Second
 
 // defaultRetentionTimezone 取 DEFAULT_SYSTEM_SETTINGS 里 usageStatsTimezone
-// 的种子值（Node 播种的是 host timezone；部署配置时区后总是携带显式行，
-// 静态回落 UTC 与 jobssettingsdefaults 同一约定）。
+// 的种子值（与 maintenance 种子 pgSeedSystemSettings 的 "Asia/Shanghai" 同一
+// 约定，seed_consistency_test.go 锁定；末位字面量仅在映射键被删时兜底，
+// 同样保持种子值，避免回退时区再次漂移）。
 func defaultRetentionTimezone() string {
 	if value, ok := jobssettings.DefaultSystemSettings["usageStatsTimezone"].(string); ok && value != "" {
 		return value
 	}
-	return "UTC"
+	return "Asia/Shanghai"
 }
 
 // readTimezoneSetting resolves the raw usageStatsTimezone setting with the

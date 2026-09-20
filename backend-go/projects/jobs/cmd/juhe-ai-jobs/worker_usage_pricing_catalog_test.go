@@ -8,6 +8,7 @@ import (
 	"context"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -497,6 +498,27 @@ func TestUsagePricingCatalogCacheTTL(t *testing.T) {
 	catalog.now = func() time.Time { return now.Add(usagePricingCatalogCacheTTL + time.Second) }
 	if got := catalog.ResolvePricingModel(ctx, "openai", "", "m2", ""); got != "m2" {
 		t.Fatalf("TTL 过期后必须重查: %q", got)
+	}
+}
+
+// TestUsagePricingCatalogCacheCap 锁定缓存上限语义：条目数触及
+// usagePricingCatalogCacheMaxEntries 时整体清空（键空间 provider+
+// systemAccountID 理论有界，超限属于异常放大，长驻进程不得无界增长），
+// 清空后仍可正常回源。
+func TestUsagePricingCatalogCacheCap(t *testing.T) {
+	catalog := pricingCatalogFixtureSQL(t, t.TempDir())
+	ctx := context.Background()
+	for i := 0; i <= usagePricingCatalogCacheMaxEntries; i++ {
+		accountID := "sys-cap-" + strconv.Itoa(i)
+		if got := catalog.ResolvePricingModel(ctx, "openai", accountID, "gpt-test", ""); got != "gpt-test" {
+			t.Fatalf("第 %d 次查询必须命中: %q", i, got)
+		}
+	}
+	if len(catalog.cache) > usagePricingCatalogCacheMaxEntries {
+		t.Fatalf("缓存必须保持有界: %d > %d", len(catalog.cache), usagePricingCatalogCacheMaxEntries)
+	}
+	if got := catalog.ResolvePricingModel(ctx, "openai", "sys_a", "gpt-test", ""); got != "gpt-test" {
+		t.Fatalf("超限清空后必须可正常回源: %q", got)
 	}
 }
 

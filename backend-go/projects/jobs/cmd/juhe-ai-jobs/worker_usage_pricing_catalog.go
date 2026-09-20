@@ -42,6 +42,12 @@ const usagePricingCatalogCacheTTL = 60 * time.Second
 // 限制逐记录重查压力；窗口过后自动重试）。
 const usagePricingCatalogErrorTTL = 10 * time.Second
 
+// usagePricingCatalogCacheMaxEntries 是目录缓存条目上限：键空间
+// （provider+systemAccountID）理论上有界，但脏数据或异常放大不可信，长驻
+// 进程不得无界增长。超限整体清空——jobs 消费为单线程串行，最坏代价只是
+// 一轮全量回源，不引入 LRU 复杂度。
+const usagePricingCatalogCacheMaxEntries = 1024
+
 // usagePricingCatalog 实现 usagewriter.CatalogPricing（组合根侧适配器）。
 type usagePricingCatalog struct {
 	db       *sql.DB
@@ -118,6 +124,11 @@ func (c *usagePricingCatalog) lookup(ctx context.Context, providerCode string, s
 		entry.expiresAt = now.Add(usagePricingCatalogCacheTTL)
 	}
 	c.mu.Lock()
+	// 超限整体清空（见 usagePricingCatalogCacheMaxEntries 注释）；已存在键
+	// 原地覆盖不触发清空。
+	if _, ok := c.cache[cacheKey]; !ok && len(c.cache) >= usagePricingCatalogCacheMaxEntries {
+		clear(c.cache)
+	}
 	c.cache[cacheKey] = entry
 	c.mu.Unlock()
 	return entry.rows, entry.err

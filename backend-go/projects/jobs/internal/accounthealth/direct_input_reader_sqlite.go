@@ -686,21 +686,36 @@ func sqliteDirectInputCandidatesQuery(suppressions []DirectInputSuppression) (st
 // sqliteDirectInputCandidatesSQL 以 directInputCandidatesSQL 为唯一语义基准，
 // 仅做方言翻译：
 //   - 去 juhe_business./juhe_stats. 前缀；时间参数绑定固定毫秒文本。
-//   - binding/mapping LATERAL → ranked_* 窗口 CTE（先例 gateway list.go 与
-//     tablemonitor store.go）。授权匹配从 CTE 挪到 join 条件，避免 NULL 授权
-//     行匹配不上 partition；mapping 的 source_endpoint_family 属于唯一键的一
-//     部分，进入 partition 才能保持「家族内取顶行」的 LATERAL 语义。
+//   - binding/mapping LATERAL → 窗口 CTE（先例 gateway list.go 与 tablemonitor
+//     store.go）。binding 用两层分区还原 PG LATERAL 的恒定单行语义：第一层
+//     ranked_group_bindings 按 (account, system_account, auth) 取各授权分区
+//     顶行（授权绑定臂：auth=X 账户取 X 分区内顶行）；第二层
+//     selected_group_bindings 对 rank=1 集合按 (account, system_account) 再取
+//     全局顶行（NULL 授权臂——全局顶必属其自身 auth 分区的 rank=1 集合），
+//     外层 join 二选一，杜绝 NULL 授权账户在多 auth 分区下 join 出多行的
+//     漂移。授权匹配挪到 join 条件避免 NULL 授权行匹配不上 partition；
+//     mapping 的 source_endpoint_family 属于唯一键的一部分，进入 partition
+//     才能保持「家族内取顶行」的 LATERAL 语义。
 //   - `$3::boolean` → int 0/1；`IS DISTINCT FROM` → `IS NOT`；窗口排序与
 //     NULLS FIRST 原样保留（内核 3.53.4 支持窗口函数与 NULLS FIRST）。
 const sqliteDirectInputCandidatesSQL = `
 WITH ranked_group_bindings AS (
-  SELECT ga.account_id, ga.system_account_id, ga.group_id, ga.account_authorization_id,
+  SELECT ga.account_id, ga.system_account_id, ga.group_id, ga.account_authorization_id, ga.updated_at,
     ROW_NUMBER() OVER (
       PARTITION BY ga.account_id, ga.system_account_id, ga.account_authorization_id
       ORDER BY ga.updated_at DESC, ga.group_id ASC, ga.account_id ASC
     ) AS binding_rank
   FROM group_accounts ga
   WHERE ga.enabled = 1
+),
+selected_group_bindings AS (
+  SELECT account_id, system_account_id, account_authorization_id, group_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY account_id, system_account_id
+      ORDER BY updated_at DESC, group_id ASC, account_id ASC
+    ) AS global_rank
+  FROM ranked_group_bindings
+  WHERE binding_rank = 1
 ),
 ranked_model_mappings AS (
   SELECT mm.account_id, mm.provider_code, mm.source_model, mm.source_endpoint_family, mm.upstream_model, mm.upstream_endpoint_family,
@@ -726,11 +741,14 @@ FROM accounts a
 JOIN account_health_jobs_input_versions iv ON iv.account_id = a.id
 LEFT JOIN resource_authorizations ra ON ra.id = a.authorization_instance_authorization_id
 LEFT JOIN accounts source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL
-LEFT JOIN ranked_group_bindings binding
+LEFT JOIN selected_group_bindings binding
   ON binding.account_id = a.id
   AND binding.system_account_id = a.system_account_id
-  AND (a.authorization_instance_authorization_id IS NULL OR binding.account_authorization_id = a.authorization_instance_authorization_id)
-  AND binding.binding_rank = 1
+  AND (
+    (a.authorization_instance_authorization_id IS NOT NULL AND binding.account_authorization_id = a.authorization_instance_authorization_id)
+    OR
+    (a.authorization_instance_authorization_id IS NULL AND binding.global_rank = 1)
+  )
 LEFT JOIN proxy_profiles proxy ON proxy.id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.proxy_profile_id ELSE source.proxy_profile_id END
 LEFT JOIN ranked_model_mappings mapping
   ON mapping.account_id = CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.id ELSE source.id END

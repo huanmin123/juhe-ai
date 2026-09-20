@@ -1347,8 +1347,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		captureDatasetDB = composed.db
 	} else if cfg.DatasetDatabasePath != "" {
 		if _, err := os.Stat(cfg.DatasetDatabasePath); err == nil {
-			handle, err := sql.Open("sqlite", "file:"+cfg.DatasetDatabasePath)
-			if err == nil {
+			if handle := openSQLiteCaptureDatasetHandle(cfg.DatasetDatabasePath); handle != nil {
 				captureDatasetDB = handle
 				composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
 			}
@@ -1639,6 +1638,26 @@ func openSQLiteReadOnly(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// openSQLiteCaptureDatasetHandle opens the writable aipublic capture dataset
+// handle with the same shape as the api-key cleanup dataset handle
+// (sqliteFileDSN busy_timeout + SetMaxOpenConns(1) + WAL pragmas): both
+// handles write the same dataset file, so the capture writer must share the
+// lock-wait semantics. 打开或配置失败时返回 nil，由调用方保持 capture 静默
+// 降级（等价原实现的 if err == nil 语义）；调用方先用 os.Stat 守卫文件存在，
+// 本函数不负责建库契约。
+func openSQLiteCaptureDatasetHandle(path string) *sql.DB {
+	handle, err := sql.Open("sqlite", sqliteFileDSN(path))
+	if err != nil {
+		return nil
+	}
+	handle.SetMaxOpenConns(1)
+	if err := configureSQLiteConnection(handle); err != nil {
+		_ = handle.Close()
+		return nil
+	}
+	return handle
+}
+
 // businessDialect converts the storage dialect for the business-owner stores.
 func businessDialect(pg bool) businesssettings.Mode {
 	if pg {
@@ -1649,8 +1668,14 @@ func businessDialect(pg bool) businesssettings.Mode {
 
 // sqliteFileDSN mirrors operationlog.sqliteDSN: absolute file URL with the
 // busy timeout pragma so concurrent readers never fail on lock contention.
+// _txlock=immediate 与 jobs 侧跨进程共写语义对齐（worker_assembly.go /
+// taskruns/store.go 等一律同款 DSN）：standalone 部署下 gateway 与 jobs 共写
+// business.sqlite3，BEGIN DEFERRED 事务升级为写锁时遇到的 SQLITE_BUSY 不受
+// busy_timeout 重试（SQLite 已知语义），会启动/写入即失败；BEGIN IMMEDIATE
+// 在事务起点取写锁，由 busy_timeout 统一等待。gateway 侧 SQLite 池均为
+// MaxOpenConns(1)，单进程内本就串行，立即锁只是把串行化窗口前移。
 func sqliteFileDSN(path string) string {
-	return "file:" + path + "?_pragma=busy_timeout(5000)"
+	return "file:" + path + "?_pragma=busy_timeout(5000)&_txlock=immediate"
 }
 
 // configureSQLiteConnection applies the Node-compatible SQLite pragmas

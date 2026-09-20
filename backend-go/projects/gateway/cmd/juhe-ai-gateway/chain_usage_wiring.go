@@ -1,14 +1,14 @@
 package main
 
 // gatewayusage.Service 组合根端口接线（审计缺口收口）。五个未接 With* 中
-// 三个存在 Go 侧真实组件，在此适配并接线（chain_compose.go usageService
-// 装配处）；两个保持 nil 的端口与原因：
+// 四个存在 Go 侧真实组件，在此适配并接线（chain_compose.go usageService
+// 装配处）；一个保持 nil 的端口与原因：
 //
-//   - WithModelResolver：端口入参 UsageModelAccount 是丢字段投影（不带
-//     ModelMappings），真实解析组件 gatewayopenai.ResolveAccountModelMapping
-//     必须读账户 modelMappings 才能工作；扩端口需改 internal/gatewayusage
-//     （越出本写入域）。接「空映射解析器」与现状完全等价，属空实现充数，
-//     不接。
+//   - WithModelResolver（2026-09-20 收口接线）：UsageModelAccount 增加
+//     ModelMappings 字段（构造点 usageModelAccountOf 从派发候选的完整
+//     secret 投影），usageModelResolverAdapter（chain_ports.go）据此调
+//     gatewayopenai.ResolveAccountModelMapping 完成真实解析——映射后上游
+//     模型名进记账，按模型取价不再吃到请求别名。
 //   - WithAccountAPIKeySuccess：消费点 Service.RecordCompletedUpstreamAttempt
 //     在当前 Go 运行链无调用方（完成尝试记账走 chainFinalizationUsage 直投
 //     recorder），接线不产生任何行为；且真实组件

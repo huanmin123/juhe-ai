@@ -3,9 +3,8 @@ package groups
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"strconv"
 	"strings"
-	"time"
 )
 
 // StatsReader is the interface for reading group_account_stats from the stats database.
@@ -16,21 +15,45 @@ type StatsReader interface {
 
 // GroupAccountStatsDBReader reads group_account_stats from juhe_stats database.
 type GroupAccountStatsDBReader struct {
-	db  *sql.DB
-	pg  bool
-	now func() time.Time
+	db *sql.DB
+	// pg 决定占位符方言（PG 句柄为 pgx stdlib，? 须重写为 $N，与 ipstats /
+	// groups Store.bind 同一惯例）。
+	pg bool
 }
 
 // NewGroupAccountStatsDBReader creates a stats reader from the stats database.
 func NewGroupAccountStatsDBReader(db *sql.DB, postgres bool) *GroupAccountStatsDBReader {
-	return &GroupAccountStatsDBReader{db: db, pg: postgres, now: timeNow}
+	return &GroupAccountStatsDBReader{db: db, pg: postgres}
 }
 
-// timeNow returns the current time for timestamp generation.
-var timeNow = func() time.Time { return time.Now() }
+// bind rewrites ? placeholders to $N for PostgreSQL.
+func (r *GroupAccountStatsDBReader) bind(query string) string {
+	if !r.pg {
+		return query
+	}
+	var out strings.Builder
+	index := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			out.WriteString("$" + strconv.Itoa(index))
+			index++
+			continue
+		}
+		out.WriteByte(query[i])
+	}
+	return out.String()
+}
 
 // ReadGroupAccountStats reads group_account_stats for the given group IDs from juhe_stats.
 // Returns a map keyed by group_id. Missing groups are not included in the result.
+//
+// 列集与过滤语义对齐 Node group-read-loaders.ts 的 groupAccountStatsSelectColumns
+// （10 个真实列，无时效过滤）：group_account_stats 只有这 11 列（含
+// system_account_id），此前 SELECT 的 today_usage/usage 两列不存在（恒
+// "no such column" → hydrate 整体丢弃），`updated_at > 读时刻` 也恒假，两者
+// 均为移植错误。TodayUsage/Usage 在 Node 由 usage-summary hydrate 单独供给
+// （group-summary.repository.ts 的 loadGroupUsageSummariesForScopes 后 merge），
+// 不属于本投影，这里保持零值。
 func (r *GroupAccountStatsDBReader) ReadGroupAccountStats(ctx context.Context, groupIDs []string) (map[string]AccountStats, error) {
 	if len(groupIDs) == 0 || r.db == nil {
 		return map[string]AccountStats{}, nil
@@ -38,21 +61,17 @@ func (r *GroupAccountStatsDBReader) ReadGroupAccountStats(ctx context.Context, g
 
 	result := make(map[string]AccountStats, len(groupIDs))
 	placeholders := make([]string, len(groupIDs))
-	args := make([]any, 0, len(groupIDs)+1)
-
+	args := make([]any, 0, len(groupIDs))
 	for i, id := range groupIDs {
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
-	// Add timestamp as last argument (for updated_at filter)
-	args = append(args, timeNow().UTC().Format("2006-01-02 15:04:05"))
 
 	query := "SELECT group_id, total, available, active, disabled, error, rate_limited, " +
-		"current_concurrency, concurrency_limit, today_usage, usage " +
-		"FROM group_account_stats WHERE group_id IN (" + strings.Join(placeholders, ",") + ") " +
-		"AND updated_at > ?"
+		"current_concurrency, concurrency_limit " +
+		"FROM group_account_stats WHERE group_id IN (" + strings.Join(placeholders, ",") + ")"
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, r.bind(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -70,8 +89,6 @@ func (r *GroupAccountStatsDBReader) ReadGroupAccountStats(ctx context.Context, g
 			&row.RateLimited,
 			&row.CurrentConcurrency,
 			&row.ConcurrencyLimit,
-			&row.TodayUsageJSON,
-			&row.UsageJSON,
 		); err != nil {
 			return nil, err
 		}
@@ -96,12 +113,12 @@ type groupAccountStatsRow struct {
 	RateLimited        int
 	CurrentConcurrency int
 	ConcurrencyLimit   int
-	TodayUsageJSON     []byte
-	UsageJSON          []byte
 }
 
 // accountStatsFromGroupRow mirrors the Node GroupAccountStats mapper:
 // reads the stats row and converts it to the AccountStats projection.
+// TodayUsage/Usage 由 usage-summary hydrate 单独供给（见
+// ReadGroupAccountStats 注释），保持零值。
 func accountStatsFromGroupRow(row groupAccountStatsRow) AccountStats {
 	return AccountStats{
 		Total:              row.Total,
@@ -112,19 +129,5 @@ func accountStatsFromGroupRow(row groupAccountStatsRow) AccountStats {
 		RateLimited:        row.RateLimited,
 		CurrentConcurrency: row.CurrentConcurrency,
 		ConcurrencyLimit:   row.ConcurrencyLimit,
-		TodayUsage:         parseJSONBytes(row.TodayUsageJSON),
-		Usage:              parseJSONBytes(row.UsageJSON),
 	}
-}
-
-// parseJSONBytes safely parses JSON bytes, returning nil on error or empty input.
-func parseJSONBytes(data []byte) any {
-	if len(data) == 0 {
-		return nil
-	}
-	var result any
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil
-	}
-	return result
 }

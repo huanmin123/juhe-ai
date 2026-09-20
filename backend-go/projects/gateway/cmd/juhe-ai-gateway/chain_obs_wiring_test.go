@@ -12,6 +12,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayobs"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 )
 
 // obsCaptureStore 捕获批量落账观测（内存版 Store mock）。
@@ -180,6 +181,10 @@ func TestWireGatewayObservabilityArms(t *testing.T) {
 	}
 	if chainRoutingObserver.Load() == nil {
 		t.Fatalf("进程级 Observer 槽未装配")
+	}
+	// G19 收尾：gatewaypreauth 预算构造点槽必须与本包槽同值置位。
+	if gatewaypreauth.RoutingWallBudgetObserverOf() == nil {
+		t.Fatalf("gatewaypreauth wall budget 观察槽未装配")
 	}
 	if services.HotQuality.Observer == nil {
 		t.Fatalf("热质量 Observer 未装配")

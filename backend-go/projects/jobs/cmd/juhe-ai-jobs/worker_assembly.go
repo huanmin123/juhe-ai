@@ -345,11 +345,12 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 		return fmt.Errorf("initialize stats-verify schema: %w", err)
 	}
 	postgres := a.config.Driver == "postgres"
-	if postgres {
-		// Node scheduler 首轮 PG 路径的一次性 mark_all_group_account_stats_dirty。
-		if err := store.MarkGroupAccountStatsStartupDirty(ctx, time.Now()); err != nil {
-			return fmt.Errorf("mark group account stats startup dirty: %w", err)
-		}
+	// Node scheduler 首轮 PG 路径的一次性 mark_all_group_account_stats_dirty；
+	// SQLite 同样需要启动兜底：存量脏行（如 J1 投影标脏后进程重启、导入期
+	// 遗留）只在 RefreshDirtyGroupAccountStats 消费脏行时刷新，不启动兜底就
+	// 会一直滞留到下一次 availability 变化，dev 重启后分组统计停在旧快照。
+	if err := store.MarkGroupAccountStatsStartupDirty(ctx, time.Now()); err != nil {
+		return fmt.Errorf("mark group account stats startup dirty: %w", err)
 	}
 
 	// statsagg 需要独立 SQL 句柄（SQLite WAL 双连接读写；PG 共享池）。

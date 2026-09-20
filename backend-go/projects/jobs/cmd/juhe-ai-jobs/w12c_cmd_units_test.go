@@ -270,16 +270,16 @@ func TestW12CRetentionSettingsRuntimeArms(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 时区：读取 JSON 值 → 缓存命中 → 表缺失回落默认 → 非法 JSON 失败 →
+	// 时区：读取 JSON 值 → 缓存命中 → 缺行回落种子默认 → 非法 JSON 失败 →
 	// 非法时区失败 → location。
 	if err := runtime.db.QueryRowContext(ctx, "SELECT 1").Err(); err != nil {
 		t.Fatal(err)
 	}
 	name, err := runtime.timezoneName(ctx)
-	if err != nil || name != "UTC" {
-		t.Fatalf("缺行应回落 UTC: %q %v", name, err)
+	if err != nil || name != "Asia/Shanghai" {
+		t.Fatalf("缺行应回落种子时区 Asia/Shanghai: %q %v", name, err)
 	}
-	if name, err = runtime.timezoneName(ctx); err != nil || name != "UTC" {
+	if name, err = runtime.timezoneName(ctx); err != nil || name != "Asia/Shanghai" {
 		t.Fatalf("缓存命中: %q %v", name, err)
 	}
 	if _, err := db.Exec(`INSERT INTO system_settings VALUES ('sys_admin', 'usageStatsTimezone', '"Asia/Shanghai"')`); err != nil {

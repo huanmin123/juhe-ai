@@ -88,6 +88,11 @@ CREATE TABLE group_accounts (
   updated_at TEXT NOT NULL DEFAULT '2026-09-01T00:00:00.000Z',
   PRIMARY KEY (group_id, account_id)
 );
+CREATE TABLE group_account_stats_dirty (
+  group_id TEXT PRIMARY KEY,
+  reason TEXT,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE resource_authorizations (
   id TEXT PRIMARY KEY,
   resource_type TEXT NOT NULL DEFAULT 'account',
@@ -816,5 +821,128 @@ func TestEnsureSQLiteDirectInputLayoutColdStart(t *testing.T) {
 	}
 	if interval != 5 {
 		t.Fatalf("幂等 ensure 不得覆盖既有设置: %d", interval)
+	}
+}
+
+// seedBinding 追加一条 enabled 分组绑定行（authID 为空串表示 NULL 授权绑定）。
+func (f *sqliteDirectFixture) seedBinding(t *testing.T, groupID, accountID, authID string, updatedAt time.Time) {
+	t.Helper()
+	var auth any
+	if authID != "" {
+		auth = authID
+	}
+	if _, err := f.business.Exec(`INSERT INTO group_accounts (group_id, account_id, account_authorization_id, enabled, updated_at) VALUES (?, ?, ?, 1, ?)`,
+		groupID, accountID, auth, sqliteDirectTimestamp(updatedAt)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// loadSQLiteDirectCandidates 以与 reader 相同的实参执行冻结候选 SQL，返回经
+// scanDirectCandidate 解码的候选行（可断言 binding.group_id /
+// account_authorization_id 的选中结果）。
+func loadSQLiteDirectCandidates(t *testing.T, reader *SQLiteDirectInputReader, limit int) []directCandidate {
+	t.Helper()
+	rows, err := reader.businessDB.QueryContext(context.Background(), sqliteDirectInputCandidatesSQL,
+		sqliteDirectTimestamp(sqliteDirectFixtureNow), limit, 0, "", 0)
+	if err != nil {
+		t.Fatalf("执行冻结候选 SQL: %v", err)
+	}
+	defer rows.Close()
+	var result []directCandidate
+	for rows.Next() {
+		candidate, err := scanDirectCandidate(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+// TestSQLiteDirectInputReaderBindingJoinSingleRow 验证 binding join 的两层分
+// 区与 PG LATERAL 恒定单行语义逐字等价：NULL 授权账户取全部 enabled 绑定的
+// 全局顶行（含 NULL 与非 NULL auth 混合），授权实例取其 auth 分区内顶行；
+// 任何跨 auth 分区的绑定组合都不得让同一账户在候选集出现多行（多行会导致
+// 同周期重复探活）。
+func TestSQLiteDirectInputReaderBindingJoinSingleRow(t *testing.T) {
+	fixture := newSQLiteDirectFixture(t)
+	reader := fixture.readOnlyReader(t, func() time.Time { return sqliteDirectFixtureNow })
+	t1 := sqliteDirectFixtureNow.Add(-3 * time.Hour)
+	t2 := sqliteDirectFixtureNow.Add(-2 * time.Hour)
+	t3 := sqliteDirectFixtureNow.Add(-time.Hour)
+
+	// 场景一：NULL 授权 + 两个非 NULL auth 分区 → 全局顶 grpY（updated DESC）；
+	// 变体补第三行（authA→grpZ updated 更新）：authA 分区顶变为 grpZ 且成为全
+	// 局顶，authB 分区的 grpY 仍占分区 rank=1，不得干扰选择。
+	fixture.seedCandidate(t, newSQLiteDirectCandidateSeed("wsql-bind1"))
+	fixture.seedBinding(t, "wsql-grpX", "wsql-bind1", "wsql-authA", t1)
+	fixture.seedBinding(t, "wsql-grpY", "wsql-bind1", "wsql-authB", t2)
+	fixture.seedBinding(t, "wsql-grpZ", "wsql-bind1", "wsql-authA", t3)
+
+	// 场景二：NULL 授权 + NULL auth 绑定与非 NULL auth 绑定混合 → 全局顶
+	// grpM（NULL 分区与非 NULL 分区共同参与全局排序）。
+	fixture.seedCandidate(t, newSQLiteDirectCandidateSeed("wsql-bind2"))
+	fixture.seedBinding(t, "wsql-grpN", "wsql-bind2", "wsql-authC", t1)
+	fixture.seedBinding(t, "wsql-grpM", "wsql-bind2", "", t2)
+
+	// 场景三：授权实例（auth=wsql-authX）+ 另一 auth=wsql-authY 的更新绑定 →
+	// 恰取 X 分区内顶行 grpP；authY 的新行既不干扰也不被选中（若被选中，
+	// ToInput 的授权绑定 fence 校验会把候选变成隔离 failure，计数断言即失败）。
+	source := newSQLiteDirectCandidateSeed("wsql-authsrc")
+	source.status = "active"
+	fixture.seedCandidate(t, source)
+	instance := newSQLiteDirectCandidateSeed("wsql-authacc")
+	instance.extraColumns["authorization_instance_source_account_id"] = "wsql-authsrc"
+	instance.extraColumns["authorization_instance_authorization_id"] = "wsql-authX"
+	fixture.seedCandidate(t, instance)
+	if _, err := fixture.business.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status) VALUES ('wsql-authX', 'account', 'wsql-authsrc', 'sys_admin', 'sys_admin', 'active')`); err != nil {
+		t.Fatal(err)
+	}
+	fixture.seedBinding(t, "wsql-grpP", "wsql-authacc", "wsql-authX", t1)
+	fixture.seedBinding(t, "wsql-grpQ", "wsql-authacc", "wsql-authY", t2)
+
+	// 候选行断言：每账户恰一行，且选中预期分组/授权绑定。
+	candidates := loadSQLiteDirectCandidates(t, reader, 50)
+	byAccount := map[string]directCandidate{}
+	for _, candidate := range candidates {
+		if _, duplicate := byAccount[candidate.account.ID]; duplicate {
+			t.Fatalf("账户 %s 在候选集出现多行（重复探活漂移）: %+v", candidate.account.ID, candidates)
+		}
+		byAccount[candidate.account.ID] = candidate
+	}
+	// wsql-authsrc 是源账户自身的活跃候选（默认分组绑定），与三个场景账户
+	// 共 4 行；关键不变量是每账户恰一行（重复行检查在上面）。
+	if len(candidates) != 4 {
+		t.Fatalf("候选行数必须为 4（含源账户自身候选）: %+v", candidates)
+	}
+	if got := byAccount["wsql-bind1"].binding; got.GroupID != "wsql-grpZ" || got.AuthorizationBindingID != "wsql-authA" {
+		t.Fatalf("场景一必须取全局顶 grpZ/authA: %+v", got)
+	}
+	if got := byAccount["wsql-bind2"].binding; got.GroupID != "wsql-grpM" || got.AuthorizationBindingID != "" {
+		t.Fatalf("场景二必须取全局顶 grpM/NULL: %+v", got)
+	}
+	if got := byAccount["wsql-authacc"].binding; got.GroupID != "wsql-grpP" || got.AuthorizationBindingID != "wsql-authX" {
+		t.Fatalf("场景三必须取 authX 分区内顶行 grpP: %+v", got)
+	}
+
+	// LoadDue 语义断言：3 个输入、0 隔离失败（授权实例经 ToInput 完整校验）。
+	result, err := reader.LoadDueWithFailures(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("LoadDueWithFailures: %v", err)
+	}
+	if len(result.Inputs) != 4 || len(result.Failures) != 0 {
+		t.Fatalf("inputs=%d failures=%+v", len(result.Inputs), result.Failures)
+	}
+	seen := map[string]int{}
+	for _, input := range result.Inputs {
+		seen[input.AccountID]++
+	}
+	for _, accountID := range []string{"wsql-bind1", "wsql-bind2", "wsql-authacc", "wsql-authsrc"} {
+		if seen[accountID] != 1 {
+			t.Fatalf("账户 %s 输入数必须为 1: %v", accountID, seen)
+		}
 	}
 }

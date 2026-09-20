@@ -59,6 +59,20 @@ CREATE TABLE account_health_jobs_input_versions (
   updated_at TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (account_id, input_version)
 );
+CREATE TABLE group_accounts (
+  system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+  group_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  account_authorization_id TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (group_id, account_id)
+);
+CREATE TABLE group_account_stats_dirty (
+  group_id TEXT PRIMARY KEY,
+  reason TEXT,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE account_health_projection_receipts (
   outcome_id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
@@ -1004,5 +1018,61 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run 未随 ctx 退出")
+	}
+}
+
+// TestProjectionAppliedMarksGroupAccountStatsDirty 锁定 applied 投影的分组统
+// 计标脏：activation_success 落账后同一事务向 group_account_stats_dirty
+// upsert 账户所在分组（reason=account_health_outcome），供
+// RefreshDirtyGroupAccountStats 刷新「我的分组」可用/总数快照（否则分组统计
+// 停在导入时刻）；ignored 处置（outcome_has_no_account_projection）不得产生
+// 脏行。
+func TestProjectionAppliedMarksGroupAccountStatsDirty(t *testing.T) {
+	fixture := newProjectionFixture(t)
+	credentials, err := EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
+	if err != nil {
+		t.Fatalf("加密测试凭据失败: %v", err)
+	}
+	fixture.seedAccount(t, map[string]any{
+		"status":                    "pending_test",
+		"schedulable":               0,
+		"type":                      "api_key",
+		"credentials_encrypted":     credentials,
+		"balance_query_enabled":     0,
+		"balance_query_config_json": "{}",
+	})
+	if _, err := fixture.business.Exec(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, updated_at) VALUES ('sys_admin', 'grp-default', 'acct-1', 1, '2026-09-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	fixture.insertOutcome(projectionFixtureNow, activationSuccessOutcome(projectionFixtureNow))
+	result := fixture.drain(t)
+	if result.Processed != 1 {
+		t.Fatalf("Processed = %d, 期望 1", result.Processed)
+	}
+	if disposition, _ := fixture.receipt(t, "outcome-activation-success"); disposition != "applied" {
+		t.Fatalf("disposition = %s, 期望 applied", disposition)
+	}
+	var groupID, reason string
+	if err := fixture.business.QueryRow(`SELECT group_id, reason FROM group_account_stats_dirty`).Scan(&groupID, &reason); err != nil {
+		t.Fatalf("applied 投影必须产生分组脏行: %v", err)
+	}
+	if groupID != "grp-default" || reason != "account_health_outcome" {
+		t.Fatalf("脏行 = %s/%s, 期望 grp-default/account_health_outcome", groupID, reason)
+	}
+	// ignored 处置（无 projection → outcome_has_no_account_projection）不标脏。
+	ignored := Outcome{
+		OutcomeID: "outcome-ignored-no-projection", RequestID: "request-ignored",
+		AccountID: "acct-1", Outcome: OutcomeSuccess,
+		InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, StatusCode: 200,
+		NextDueAt: ptrTime(projectionFixtureNow.Add(time.Hour)),
+	}
+	fixture.insertOutcome(projectionFixtureNow.Add(time.Minute), ignored)
+	fixture.drain(t)
+	var rows int
+	if err := fixture.business.QueryRow(`SELECT COUNT(*) FROM group_account_stats_dirty`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("ignored 处置不得新增脏行: rows=%d", rows)
 	}
 }

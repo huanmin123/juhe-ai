@@ -127,6 +127,40 @@ func (b *ProjectionBusinessDB) bind(query string) string {
 	return out.String()
 }
 
+// MarkGroupAccountStatsDirtyForAccount 在投影事务内把账户所在分组的
+// group_account_stats_dirty 行 upsert（reason/updated_at 覆盖，形状与 gateway
+// group_dirty_cursor 的 MarkAll 同款），供 stats 家族
+// RefreshDirtyGroupAccountStats 消费刷新。J1 outcome 改变账户健康/状态字段后
+// 不经业务侧写入标脏，分组统计（如列表的可用/总数）会停留在导入时刻的快照；
+// 未入组账户无 group_accounts 行，静默跳过。必须在调用方业务事务内执行。
+func (b *ProjectionBusinessDB) MarkGroupAccountStatsDirtyForAccount(ctx context.Context, tx *sql.Tx, accountID, reason, updatedAt string) error {
+	rows, err := tx.QueryContext(ctx, b.bind(`SELECT group_id FROM `+b.table("group_accounts")+` WHERE account_id = ?`), accountID)
+	if err != nil {
+		return fmt.Errorf("读取 J1 投影账户分组失败: %w", err)
+	}
+	groupIDs := make([]string, 0, 4)
+	for rows.Next() {
+		var groupID string
+		if err := rows.Scan(&groupID); err != nil {
+			rows.Close()
+			return fmt.Errorf("解码 J1 投影账户分组失败: %w", err)
+		}
+		groupIDs = append(groupIDs, groupID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("遍历 J1 投影账户分组失败: %w", err)
+	}
+	rows.Close()
+	for _, groupID := range groupIDs {
+		if _, err := tx.ExecContext(ctx, b.bind(`INSERT INTO `+b.table("group_account_stats_dirty")+` (group_id, reason, updated_at) VALUES (?, ?, ?)
+ON CONFLICT(group_id) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`), groupID, reason, updatedAt); err != nil {
+			return fmt.Errorf("标记 J1 投影分组统计脏行失败: %w", err)
+		}
+	}
+	return nil
+}
+
 // GroupStatsDirtyMarker 是 statsverify.Store 全量脏标记的窄 port（可 Mock）。
 // 归档对 availability 变化投影按 accountId 标脏
 // （markGroupAccountStatsDirtyByAccountIds）；Go jobs stats 家族当前只提供全量
@@ -587,6 +621,12 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 	}
 	if projectionChangesAvailability(record.Projection.TransitionKind) {
 		p.markGroupStatsDirty(ctx, record.AccountID)
+	}
+	// applied 即账户健康/状态字段已变更：同一事务内按账户实际分组标脏（先于
+	// receipt 写入，任一失败整体回滚、下一轮 drain 重试）。与上方全量 marker
+	// 互补——本路径不依赖 stats 家族装配，且精确到分组。
+	if err := p.business.MarkGroupAccountStatsDirtyForAccount(ctx, tx, record.AccountID, "account_health_outcome", p.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return base, err
 	}
 	if err := p.insertReceipt(ctx, tx, base, ProjectionApplied, ""); err != nil {
 		return base, err

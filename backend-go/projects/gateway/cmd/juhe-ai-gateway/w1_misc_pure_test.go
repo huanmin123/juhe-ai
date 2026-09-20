@@ -272,6 +272,79 @@ func TestW1UConfigureSQLiteConnectionPragmas(t *testing.T) {
 	}
 }
 
+// TestW1USQLiteFileDSNTxlockImmediate 守卫 sqliteFileDSN 的跨进程写语义：
+// busy_timeout 与 _txlock=immediate 必须同时在场。jobs 侧
+// （worker_assembly.go / taskruns/store.go 等）与 gateway standalone 共写
+// business.sqlite3 一律 BEGIN IMMEDIATE；DEFERRED 升级写锁的 SQLITE_BUSY
+// 不受 busy_timeout 重试，回退 deferred 会重新引入写入即失败风险。
+func TestW1USQLiteFileDSNTxlockImmediate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "w1u-dsn.sqlite3")
+	want := "file:" + path + "?_pragma=busy_timeout(5000)&_txlock=immediate"
+	if got := sqliteFileDSN(path); got != want {
+		t.Fatalf("sqliteFileDSN = %q，want %q", got, want)
+	}
+	// 功能冒烟：驱动在建连时解析 DSN 参数（未知 _txlock 值直接报错），
+	// 立即锁事务内写入走通即证明 DSN 合法且生效。
+	db, err := sql.Open("sqlite", sqliteFileDSN(path))
+	if err != nil {
+		t.Fatalf("open = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin（_txlock=immediate 事务起点取写锁）= %v", err)
+	}
+	if _, err := tx.Exec("CREATE TABLE w1u_dsn_probe (id INTEGER PRIMARY KEY, v TEXT)"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("事务内写入 = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit = %v", err)
+	}
+}
+
+// TestW1UCaptureDatasetHandleSQLiteConfig 守卫 aipublic capture dataset 写
+// 句柄与 api-key cleanup 句柄同款配置：busy_timeout DSN + 单连接池 + WAL
+// pragma。两句柄共写同一 dataset 文件，缺 busy_timeout/池上限时跨句柄锁
+// 竞争直接报 BUSY 或无界并发建连。
+func TestW1UCaptureDatasetHandleSQLiteConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "w1u-capture-dataset.sqlite3")
+	// 组合根用 os.Stat 守卫文件已存在，这里同样先落一个空库。
+	seed, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("seed open = %v", err)
+	}
+	if _, err := seed.Exec("SELECT 1"); err != nil {
+		t.Fatalf("seed exec = %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("seed close = %v", err)
+	}
+	handle := openSQLiteCaptureDatasetHandle(path)
+	if handle == nil {
+		t.Fatal("存在的 dataset 文件必须打开成功，want 非 nil 句柄")
+	}
+	t.Cleanup(func() { _ = handle.Close() })
+	if got := handle.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("MaxOpenConnections = %d，want 1", got)
+	}
+	var journalMode string
+	if err := handle.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatalf("读取 journal_mode: %v", err)
+	}
+	if journalMode != "wal" {
+		t.Errorf("journal_mode = %q，want wal（与 cleanup 句柄同款）", journalMode)
+	}
+	var busyTimeout int
+	if err := handle.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		t.Fatalf("读取 busy_timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Errorf("busy_timeout = %d，want 5000", busyTimeout)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // compose.go：aiAccountLimitSettingsAdapter.UserAiAccountLimit（真实 settings 仓）
 // ---------------------------------------------------------------------------

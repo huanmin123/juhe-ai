@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
@@ -180,5 +183,172 @@ func TestChainUsageWiringSmokeRecordGatewayFailure(t *testing.T) {
 	}
 	if !strings.Contains(record.ErrorMessage, "upstream boom") {
 		t.Fatalf("errorMessage 应取协议 payload 的 message，实际 %q", record.ErrorMessage)
+	}
+}
+
+// TestChainUsageModelResolver 钉住 usageModelResolverAdapter 的真实解析语义
+// （2026-09-20 接线，对齐 Node registry.ts resolveGatewayUsageModel）：命中
+// 账户映射→解析为上游模型（modelMappingSource = runtimeSource ?? 'account'）；
+// 无映射 / 禁用 / 未命中 / family 不在映射范围→回退请求模型原样透传。
+func TestChainUsageModelResolver(t *testing.T) {
+	resolver := usageModelResolverAdapter{}
+	enabled := true
+	disabled := false
+	mapping := func(enabled *bool, runtimeSource string) gatewayopenai.AccountModelMapping {
+		return gatewayopenai.AccountModelMapping{
+			SourceModel:            "gpt-5",
+			SourceEndpointFamily:   gatewayopenai.FamilyChatCompletions,
+			UpstreamModel:          "gpt-4.1-mini",
+			UpstreamEndpointFamily: gatewayopenai.FamilyChatCompletions,
+			Enabled:                enabled,
+			RuntimeSource:          runtimeSource,
+		}
+	}
+	accountWith := func(mappings []gatewayopenai.AccountModelMapping) gatewayusage.UsageModelAccount {
+		return gatewayusage.UsageModelAccount{
+			ProviderCode: "gpt",
+			Profile: &gatewayusage.ProviderProtocolProfile{
+				ProviderCode:    "gpt",
+				ProtocolCode:    gatewayopenai.ProtocolCode,
+				ProtocolVersion: gatewayopenai.ProtocolVersion,
+			},
+			ModelMappings: mappings,
+		}
+	}
+	cases := []struct {
+		name                 string
+		account              gatewayusage.UsageModelAccount
+		requestedModel       string
+		sourceEndpointFamily string
+		wantUpstream         string
+		wantApplied          bool
+		wantSource           string
+	}{
+		{
+			name:                 "命中映射解析为上游模型",
+			account:              accountWith([]gatewayopenai.AccountModelMapping{mapping(&enabled, "")}),
+			requestedModel:       "gpt-5",
+			sourceEndpointFamily: gatewayopenai.FamilyChatCompletions,
+			wantUpstream:         "gpt-4.1-mini",
+			wantApplied:          true,
+			wantSource:           "account",
+		},
+		{
+			name:                 "命中映射携带 runtimeSource",
+			account:              accountWith([]gatewayopenai.AccountModelMapping{mapping(&enabled, "route-rule")}),
+			requestedModel:       "gpt-5",
+			sourceEndpointFamily: gatewayopenai.FamilyChatCompletions,
+			wantUpstream:         "gpt-4.1-mini",
+			wantApplied:          true,
+			wantSource:           "route-rule",
+		},
+		{
+			name:                 "无映射回退请求模型",
+			account:              accountWith(nil),
+			requestedModel:       "gpt-5",
+			sourceEndpointFamily: gatewayopenai.FamilyChatCompletions,
+			wantUpstream:         "gpt-5",
+			wantApplied:          false,
+			wantSource:           "",
+		},
+		{
+			name:                 "映射禁用回退请求模型",
+			account:              accountWith([]gatewayopenai.AccountModelMapping{mapping(&disabled, "")}),
+			requestedModel:       "gpt-5",
+			sourceEndpointFamily: gatewayopenai.FamilyChatCompletions,
+			wantUpstream:         "gpt-5",
+			wantApplied:          false,
+			wantSource:           "",
+		},
+		{
+			name:                 "源模型未命中回退请求模型",
+			account:              accountWith([]gatewayopenai.AccountModelMapping{mapping(&enabled, "")}),
+			requestedModel:       "gpt-5-mini",
+			sourceEndpointFamily: gatewayopenai.FamilyChatCompletions,
+			wantUpstream:         "gpt-5-mini",
+			wantApplied:          false,
+			wantSource:           "",
+		},
+		{
+			name:                 "family 不在映射范围回退请求模型",
+			account:              accountWith([]gatewayopenai.AccountModelMapping{mapping(&enabled, "")}),
+			requestedModel:       "gpt-5",
+			sourceEndpointFamily: "embeddings",
+			wantUpstream:         "gpt-5",
+			wantApplied:          false,
+			wantSource:           "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolver.ResolveUsageModel(tc.account, tc.requestedModel, tc.sourceEndpointFamily)
+			if got.UpstreamModel != tc.wantUpstream {
+				t.Fatalf("upstreamModel 不符：期望 %q，实际 %q", tc.wantUpstream, got.UpstreamModel)
+			}
+			if got.ModelMappingApplied != tc.wantApplied {
+				t.Fatalf("modelMappingApplied 不符：期望 %v，实际 %v", tc.wantApplied, got.ModelMappingApplied)
+			}
+			if got.ModelMappingSource != tc.wantSource {
+				t.Fatalf("modelMappingSource 不符：期望 %q，实际 %q", tc.wantSource, got.ModelMappingSource)
+			}
+			if got.SourceEndpointFamily != tc.sourceEndpointFamily {
+				t.Fatalf("sourceEndpointFamily 不符：期望 %q，实际 %q", tc.sourceEndpointFamily, got.SourceEndpointFamily)
+			}
+			wantUpstreamFamily := tc.sourceEndpointFamily
+			if tc.wantApplied {
+				wantUpstreamFamily = gatewayopenai.FamilyChatCompletions
+			}
+			if got.UpstreamEndpointFamily != wantUpstreamFamily {
+				t.Fatalf("upstreamEndpointFamily 不符：期望 %q，实际 %q", wantUpstreamFamily, got.UpstreamEndpointFamily)
+			}
+		})
+	}
+}
+
+// TestUsageModelAccountOfCarriesMappings 钉住构造点投影：派发候选的映射行
+// 必须随 UsageModelAccount.ModelMappings 进入 usage 侧（2026-09-20 前该投影
+// 丢字段，解析适配器无数据可用）。
+func TestUsageModelAccountOfCarriesMappings(t *testing.T) {
+	runtimeSource := "route-rule"
+	candidate := gatewaydispatch.AccountCandidate{
+		ID:                        "acct-1",
+		Name:                      "acct",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "openai-default",
+		ProtocolCode:              gatewayopenai.ProtocolCode,
+		ProtocolVersion:           gatewayopenai.ProtocolVersion,
+		ModelMappings: []gatewayruntimecache.AccountModelMapping{{
+			SourceModel:            "gpt-5",
+			SourceEndpointFamily:   gatewayopenai.FamilyChatCompletions,
+			UpstreamModel:          "gpt-4.1-mini",
+			UpstreamEndpointFamily: gatewayopenai.FamilyChatCompletions,
+			Enabled:                true,
+			RuntimeSource:          &runtimeSource,
+		}},
+	}
+	projected := usageModelAccountOf(candidate)
+	if len(projected.ModelMappings) != 1 {
+		t.Fatalf("映射行必须随投影携带，实际 %d 行", len(projected.ModelMappings))
+	}
+	got := projected.ModelMappings[0]
+	if got.SourceModel != "gpt-5" || got.UpstreamModel != "gpt-4.1-mini" ||
+		got.SourceEndpointFamily != gatewayopenai.FamilyChatCompletions ||
+		got.UpstreamEndpointFamily != gatewayopenai.FamilyChatCompletions {
+		t.Fatalf("映射行投影字段不符：%+v", got)
+	}
+	if got.Enabled == nil || !*got.Enabled {
+		t.Fatalf("Enabled 必须投影为启用指针：%v", got.Enabled)
+	}
+	if got.RuntimeSource != "route-rule" {
+		t.Fatalf("runtimeSource 必须解引用携带，实际 %q", got.RuntimeSource)
+	}
+	// 端到端：投影账户经解析适配器必须解析出上游模型。
+	resolution := usageModelResolverAdapter{}.ResolveUsageModel(
+		projected, "gpt-5", gatewayopenai.FamilyChatCompletions)
+	if !resolution.ModelMappingApplied || resolution.UpstreamModel != "gpt-4.1-mini" {
+		t.Fatalf("投影账户解析不符：%+v", resolution)
+	}
+	if resolution.ModelMappingSource != "route-rule" {
+		t.Fatalf("modelMappingSource 不符：期望 route-rule，实际 %q", resolution.ModelMappingSource)
 	}
 }

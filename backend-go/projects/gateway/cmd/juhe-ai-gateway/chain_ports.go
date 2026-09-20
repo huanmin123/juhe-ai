@@ -1814,17 +1814,41 @@ func (a auditSettingsSourceAdapter) ReadAuditLogSettings() gatewayusage.AuditLog
 
 // usageModelResolverAdapter implements gatewayusage.UsageModelResolver: the
 // driver-owned upstream model resolution (registry.ts
-// resolveGatewayUsageModel). Without a mapping the requested model passes
-// through untouched.
+// resolveGatewayUsageModel) 落到真实协议解析组件
+// gatewayopenai.ResolveAccountModelMapping。账户映射行随
+// gatewayusage.UsageModelAccount.ModelMappings 投影而来（构造点
+// usageModelAccountOf）；无映射 / 未命中 / 转换不支持时按 Node 语义回退
+// 请求模型原样透传（ModelMappingApplied=false）。命中时 modelMappingSource
+// 取 runtimeSource ?? 'account'（Node drivers/* driver.ts 同词）。
+// 2026-09-20 接线：此前该适配器是纯透传 stub 且未接 WithModelResolver。
 type usageModelResolverAdapter struct{}
 
 func (usageModelResolverAdapter) ResolveUsageModel(account gatewayusage.UsageModelAccount, requestedModel, sourceEndpointFamily string) gatewayusage.UsageModelResolution {
-	return gatewayusage.UsageModelResolution{
+	resolution := gatewayusage.UsageModelResolution{
 		UpstreamModel:          requestedModel,
 		ModelMappingApplied:    false,
 		SourceEndpointFamily:   sourceEndpointFamily,
 		UpstreamEndpointFamily: sourceEndpointFamily,
 	}
+	runtimeAccount := &gatewayopenai.RuntimeAccount{
+		ModelMappings:             account.ModelMappings,
+		ProviderCode:              account.ProviderCode,
+		ProviderProtocolProfileID: account.ProviderProtocolProfileID,
+	}
+	if account.Profile != nil {
+		runtimeAccount.ProtocolCode = account.Profile.ProtocolCode
+		runtimeAccount.ProtocolVersion = account.Profile.ProtocolVersion
+	}
+	resolved := gatewayopenai.ResolveAccountModelMapping(runtimeAccount, requestedModel, sourceEndpointFamily)
+	if resolved == nil {
+		return resolution
+	}
+	resolution.UpstreamModel = resolved.UpstreamModel
+	resolution.ModelMappingApplied = true
+	resolution.ModelMappingSource = firstNonEmptyString(resolved.RuntimeSource, "account")
+	resolution.SourceEndpointFamily = resolved.SourceEndpointFamily
+	resolution.UpstreamEndpointFamily = resolved.UpstreamEndpointFamily
+	return resolution
 }
 
 // ---------------------------------------------------------------------------

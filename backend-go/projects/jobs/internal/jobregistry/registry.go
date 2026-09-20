@@ -148,7 +148,7 @@ func ScheduledEntries() []Entry {
 			Hotspot: true, SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"stats:usage_quota_hourly_windows", "stats:usage_quota_hourly_window_dirty_scopes"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunQuotaHourlyWindows（BUG-0175 D-48/D-75/D-86/D-229：配额小时窗生产者，移植 usage-stats.repository.ts:1783-1951。PG=refreshUsageQuotaHourlyWindowsCacheAsync 增量语义：usage_quota_hourly_windows_expiry 小时翻转打脏 + 脏 scope 分批消费（generation 匹配删除）+ hasMore 续跑；SQLite=refreshUsageQuotaHourlyWindowsCache + usage-stats-snapshot-helpers.ts:8-42 全量重建。绑定重建打脏标记属 gateway authz/apikeys 写路径（gateway 侧待接线），聚合后打脏已由 statsagg.markDerivedWindowDirtyScopes 承担",
+			GoBinding: "WindowRefresher.RunQuotaHourlyWindows（BUG-0175 D-48/D-75/D-86/D-229：配额小时窗生产者，移植 usage-stats.repository.ts:1783-1951。PG=refreshUsageQuotaHourlyWindowsCacheAsync 增量语义：usage_quota_hourly_windows_expiry 小时翻转打脏 + 脏 scope 分批消费（generation 匹配删除）+ hasMore 续跑；SQLite=refreshUsageQuotaHourlyWindowsCache + usage-stats-snapshot-helpers.ts:8-42 全量重建。绑定重建打脏标记已由 gateway 侧接线：authz 写路径 gateway/internal/authz/downstream.go markQuotaHourlyWindowDirtyScopes、apikeys 写路径 gateway/internal/apikeys/patch.go markQuotaHourlyWindowDirtyScopeAfterCommit + quota_hourly_dirty.go；聚合后打脏已由 statsagg.markDerivedWindowDirtyScopes 承担",
 		},
 		{
 			JobName: "usage-stats-consistency-check", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "stats-worker",
@@ -236,7 +236,7 @@ func ScheduledEntries() []Entry {
 			// 的换发窗口，Go 侧收敛为定时任务族）；登记为 Go 新增 GoWired 条目，
 			// 调度间隔取相邻 openai-oauth-access-token-refresh 同款节拍
 			// （OAuthTokenRefreshInterval=60s，schedule.go 注明无归档周期依据）。
-			GoBinding: "KeepaliveJob.RunOnce(KeepalivePlans) + HTTPTokenExchanger（仅 anthropic/gemini/grok 三族：anthropic oauth / gemini google_oauth / xai oauth+XAI OpenAI v1 profile；openai 族归 openai-oauth-access-token-refresh 互不重叠）。窗口语义=派发准备 lead（anthropic/gemini 60s、grok 5min），CAS 合并写回保留 base_url，失败不落终态仅日志+调度退避",
+			GoBinding: "KeepaliveJob.RunOnce(KeepalivePlans) + HTTPTokenExchanger（仅 anthropic/gemini/grok 三族：anthropic oauth / gemini google_oauth / xai oauth+XAI OpenAI v1 profile；openai 族归 openai-oauth-access-token-refresh 互不重叠）。窗口语义=派发准备 lead（anthropic/gemini 60s、grok 5min），CAS 合并写回保留 base_url；单账户失败仅 Failed 计数+Warn 日志、不落终态且批次继续，RunOnce 仅候选查询整体失败时返回错误交调度退避",
 		},
 		{
 			JobName: "account-api-key-cooldown-retest", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",

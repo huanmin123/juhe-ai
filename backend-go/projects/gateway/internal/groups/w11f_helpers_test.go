@@ -267,7 +267,7 @@ var w11fDDL = []string{
 	`ALTER TABLE accounts ADD COLUMN resource_owner_system_account_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE accounts ADD COLUMN authorization_instance_authorization_id TEXT`,
 	`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`,
-	`CREATE TABLE IF NOT EXISTS group_account_stats (group_id TEXT PRIMARY KEY, total INTEGER NOT NULL DEFAULT 0, available INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, error INTEGER NOT NULL DEFAULT 0, rate_limited INTEGER NOT NULL DEFAULT 0, current_concurrency INTEGER NOT NULL DEFAULT 0, concurrency_limit INTEGER NOT NULL DEFAULT 0, today_usage TEXT, usage TEXT, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS group_account_stats (system_account_id TEXT NOT NULL DEFAULT 'sys_admin', group_id TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, available INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, error INTEGER NOT NULL DEFAULT 0, rate_limited INTEGER NOT NULL DEFAULT 0, current_concurrency INTEGER NOT NULL DEFAULT 0, concurrency_limit INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, group_id))`,
 }
 
 type w11fEnv struct {
@@ -662,45 +662,41 @@ func TestW11FStatsReader(t *testing.T) {
 		t.Fatalf("nil db = %v/%v", got, err)
 	}
 
-	// 命中: 新鲜行 + 过期行（updated_at 过滤）+ JSON 解析。
+	// 命中：无时效过滤（对齐 Node groupAccountStatsSelectColumns——旧实现的
+	// updated_at > 读时刻恒假且 today_usage/usage 两列不存在，均移植错误），
+	// 旧行/新行都返回，total/available 等计数透传。
 	fresh := time.Now().UTC().Add(time.Minute).Format("2006-01-02 15:04:05")
 	stale := time.Now().UTC().Add(-time.Hour).Format("2006-01-02 15:04:05")
 	env.exec(t, `INSERT INTO group_account_stats
-		(group_id, total, available, active, disabled, error, rate_limited, current_concurrency, concurrency_limit, today_usage, usage, updated_at)
-		VALUES ('w11f-g1', 5, 4, 3, 1, 1, 0, 2, 9, '{"totalTokens":10}', 'null', ?)`, fresh)
+		(system_account_id, group_id, total, available, active, disabled, error, rate_limited, current_concurrency, concurrency_limit, updated_at)
+		VALUES ('sys_admin', 'w11f-g1', 5, 4, 3, 1, 1, 0, 2, 9, ?)`, fresh)
 	env.exec(t, `INSERT INTO group_account_stats
-		(group_id, total, available, active, disabled, error, rate_limited, current_concurrency, concurrency_limit, today_usage, usage, updated_at)
-		VALUES ('w11f-g2', 1, 1, 1, 0, 0, 0, 0, 1, NULL, NULL, ?)`, stale)
+		(system_account_id, group_id, total, available, active, disabled, error, rate_limited, current_concurrency, concurrency_limit, updated_at)
+		VALUES ('sys_admin', 'w11f-g2', 1, 1, 1, 0, 0, 0, 0, 1, ?)`, stale)
 
 	stats, err := reader.ReadGroupAccountStats(ctx, []string{"w11f-g1", "w11f-g2", "w11f-missing"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stats) != 1 {
+	if len(stats) != 2 {
 		t.Fatalf("stats = %v", stats)
 	}
 	g1 := stats["w11f-g1"]
-	if g1.Total != 5 || g1.Available != 4 || g1.Active != 3 || g1.Disabled != 1 || g1.Error != 1 || g1.CurrentConcurrency != 2 || g1.ConcurrencyLimit != 9 {
+	if g1.Total != 5 || g1.Available != 4 || g1.Active != 3 || g1.Disabled != 1 || g1.Error != 1 || g1.RateLimited != 0 || g1.CurrentConcurrency != 2 || g1.ConcurrencyLimit != 9 {
 		t.Fatalf("g1 = %+v", g1)
 	}
-	usage, ok := g1.TodayUsage.(map[string]any)
-	if !ok || usage["totalTokens"] != float64(10) {
-		t.Fatalf("today usage = %v", g1.TodayUsage)
+	g2 := stats["w11f-g2"]
+	if g2.Total != 1 || g2.Available != 1 || g2.ConcurrencyLimit != 1 {
+		t.Fatalf("g2 = %+v", g2)
 	}
-	if g1.Usage != nil {
-		t.Fatalf("usage json null = %v", g1.Usage)
-	}
-	// parseJSONBytes 分支。
-	if parseJSONBytes(nil) != nil || parseJSONBytes([]byte("{bad")) != nil {
-		t.Fatal("parseJSONBytes drift")
-	}
-	if value := parseJSONBytes([]byte(`[1]`)); value == nil {
-		t.Fatal("parseJSONBytes valid drift")
+	// TodayUsage/Usage 属 usage-summary hydrate 键，不在本投影，保持零值。
+	if g1.TodayUsage != nil || g1.Usage != nil || g2.TodayUsage != nil || g2.Usage != nil {
+		t.Fatalf("usage hydrate 键必须为零值: %+v %+v", g1, g2)
 	}
 	// accountStatsFromGroupRow 直连。
 	row := groupAccountStatsRow{GroupID: "g", Total: 1, Available: 2, Active: 3, Disabled: 4, Error: 5, RateLimited: 6, CurrentConcurrency: 7, ConcurrencyLimit: 8}
 	fromRow := accountStatsFromGroupRow(row)
-	if fromRow.RateLimited != 6 || fromRow.Total != 1 {
+	if fromRow.RateLimited != 6 || fromRow.Total != 1 || fromRow.TodayUsage != nil || fromRow.Usage != nil {
 		t.Fatalf("fromRow = %+v", fromRow)
 	}
 
@@ -710,14 +706,14 @@ func TestW11FStatsReader(t *testing.T) {
 		t.Fatal("stats query fault must fail")
 	}
 	env.script.canned("FROM group_account_stats",
-		[]string{"group_id", "total", "available", "active", "disabled", "error", "rate_limited", "current_concurrency", "concurrency_limit", "today_usage", "usage"},
-		[][]driver.Value{{nil, 1, 1, 1, 1, 1, 1, 1, 1, nil, nil}}, nil)
+		[]string{"group_id", "total", "available", "active", "disabled", "error", "rate_limited", "current_concurrency", "concurrency_limit"},
+		[][]driver.Value{{nil, 1, 1, 1, 1, 1, 1, 1, 1}}, nil)
 	if _, err := reader.ReadGroupAccountStats(ctx, []string{"w11f-g1"}); err == nil {
 		t.Fatal("stats scan fault must fail")
 	}
 	env.script.canned("FROM group_account_stats",
-		[]string{"group_id", "total", "available", "active", "disabled", "error", "rate_limited", "current_concurrency", "concurrency_limit", "today_usage", "usage"},
-		[][]driver.Value{{"g", 1, 1, 1, 1, 1, 1, 1, 1, nil, nil}}, w11fBoom)
+		[]string{"group_id", "total", "available", "active", "disabled", "error", "rate_limited", "current_concurrency", "concurrency_limit"},
+		[][]driver.Value{{"g", 1, 1, 1, 1, 1, 1, 1, 1}}, w11fBoom)
 	if _, err := reader.ReadGroupAccountStats(ctx, []string{"w11f-g1"}); err == nil {
 		t.Fatal("stats rows.Err fault must fail")
 	}

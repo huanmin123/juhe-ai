@@ -76,19 +76,14 @@ func TestW9HSpeedFirstCandidateSourceArms(t *testing.T) {
 	if err != nil || absentCandidate != nil {
 		t.Fatalf("absent candidate=%+v err=%v", absentCandidate, err)
 	}
-	// 到期列损坏（非 RFC3339）→ proberepo 以 panic 拒绝（上游库的时间戳
-	// 契约在 deriveEffectiveAvailability 内直接 fail loud）。
+	// 到期列损坏（非 RFC3339）→ proberepo 按错误上抛（BUG-0180：原 panic
+	// 会使长驻 probe worker 进入崩溃循环，由调用方按读取失败处理）。
 	if _, err := handle.db.Exec(`UPDATE accounts SET account_expires_at = 'not-a-time' WHERE id = 'acc-rt'`); err != nil {
 		t.Fatal(err)
 	}
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Fatal("损坏的到期时间必须被拒绝")
-			}
-		}()
-		_, _ = source.FindAccountForTest(ctx, "acc-rt", runtimeKey)
-	}()
+	if summary, err := source.FindAccountForTest(ctx, "acc-rt", runtimeKey); err == nil {
+		t.Fatalf("损坏的到期时间必须被拒绝: summary=%+v", summary)
+	}
 }
 
 func TestW9HSpeedFirstProbeFuncTaskFailureBranch(t *testing.T) {

@@ -88,6 +88,15 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 		}
 	}
 
+	// Node (SQLite seed-defaults.ts): strip codex-auto-review from the GPT
+	// vendor default model list. PG 老库同样可能残留该已退役模型：上面的
+	// pgSeedProviderInsert 是 ON CONFLICT DO NOTHING，老行原样保留，而
+	// pgSeedProviderDefaultModelsRepair 只修复空列表。清洗语句与执行顺序
+	// 对齐 SQLite 种子（provider 循环后、model catalog 之前）。
+	if err := seedPostgresGPTVendorCodexAutoReviewRemoval(ctx, client, exec, now); err != nil {
+		return PGSeedResult{}, err
+	}
+
 	// Node: the bulk provider_model_catalog upsert plus the guarded stale
 	// built-in model disable.
 	if err := seedPostgresModelCatalog(ctx, client, exec, options, now, &result); err != nil {
@@ -150,6 +159,68 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 		}
 	}
 	return result, nil
+}
+
+// pgSeedGPTVendorCodexAutoReviewRemovalSelect reads the GPT vendor default
+// model list for the codex-auto-review repair.
+const pgSeedGPTVendorCodexAutoReviewRemovalSelect = `
+        SELECT default_supported_models_json
+        FROM "juhe_business"."providers"
+        WHERE code = $1
+        LIMIT 1
+      `
+
+// pgSeedGPTVendorCodexAutoReviewRemovalUpdate writes the repaired default
+// model list back to the GPT vendor row.
+const pgSeedGPTVendorCodexAutoReviewRemovalUpdate = `
+        UPDATE "juhe_business"."providers"
+        SET default_supported_models_json = $1, updated_at = $2
+        WHERE code = $3
+      `
+
+// seedPostgresGPTVendorCodexAutoReviewRemoval ports the SQLite
+// sqSeedGPTVendorCodexAutoReviewRemoval repair (Node seed-defaults.ts) to the
+// PG seed path: old databases may carry the retired model because
+// pgSeedProviderInsert is ON CONFLICT DO NOTHING and
+// pgSeedProviderDefaultModelsRepair only refreshes empty lists.
+// default_supported_models_json is a text column, so the SQLite guards
+// (json_valid + json_type='array') translate into a read-parse-filter round
+// trip: a stored value that is not a JSON string array skips the repair
+// (parse error ⇔ json_valid=false / type mismatch) instead of risking an
+// unguarded JSON cast inside SQL. Unlike the SQLite statement (which rewrites
+// the row on every run), a list without the retired model is left untouched,
+// keeping repeated seeds value-stable without updated_at churn.
+func seedPostgresGPTVendorCodexAutoReviewRemoval(ctx context.Context, client postgresSeedClient, exec func(string, ...any) error, now string) error {
+	var rawList sql.NullString
+	err := client.QueryRowContext(ctx, pgSeedGPTVendorCodexAutoReviewRemovalSelect, gptVendorCode).Scan(&rawList)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("postgres seed select gpt default models: %w", err)
+	}
+	if !rawList.Valid {
+		return nil
+	}
+	models, err := parseSeedStringArray(rawList.String)
+	if err != nil {
+		// json_valid=false / json_type<>'array' 等价：无法解析成字符串数组的
+		// 老值不修，避免把未知内容改写成种子清单。
+		return nil
+	}
+	kept := make([]string, 0, len(models))
+	removed := false
+	for _, model := range models {
+		if model == retiredCodexAutoReviewModel {
+			removed = true
+			continue
+		}
+		kept = append(kept, model)
+	}
+	if !removed {
+		return nil
+	}
+	return exec(pgSeedGPTVendorCodexAutoReviewRemovalUpdate, seedStringify(kept), now, gptVendorCode)
 }
 
 // pgSeedModelCatalogColumns lists the 40 target columns of the Node bulk

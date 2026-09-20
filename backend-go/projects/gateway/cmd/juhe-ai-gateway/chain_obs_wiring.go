@@ -11,9 +11,8 @@ package main
 //   - gatewayrouting.NewGatewayRequestWallBudget 的 RoutingObserver：budget
 //     precommit_clipped 观察（此前两处显式 nil；本文件提供进程级 Observer
 //     槽，chain_v1.go newRequestBudgets 消费）。gatewaypreauth/preflight.go
-//     的构造点在 internal/gatewaypreauth（越出本写入域），其裁剪消费点只在
-//     dispatch 侧（dispatchsingle.go 读 chain 传入的预算对象），当前无观测
-//     损失，登记为残留。
+//     的构造点经 gatewaypreauth.SetRoutingWallBudgetObserver 同步置位
+//     （本文件 wireGatewayObservabilityArms），显式 nil 已全部消灭。
 //
 // panic-safe 契约：全部回调整体 recover（gatewayobs.Observe 本身无
 // recover），观测故障只告警、绝不影响主链路。
@@ -27,6 +26,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayobs"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 )
 
@@ -160,6 +160,10 @@ func wireGatewayObservabilityArms(services *chainRuntimeServices, cfg runtimeCon
 		return err
 	}
 	chainRoutingObserver.Store(observer)
+	// G19 收尾：gatewaypreauth 预算构造点（preflight.go 逐请求构造，读
+	// gatewaypreauth 进程级槽）与本包槽取同一 panic-safe 包装，装配前置位
+	// 与未装配路径保持 nil-observer 语义。
+	gatewaypreauth.SetRoutingWallBudgetObserver(routingWallBudgetObserverOf())
 	if services.AccountCircuits != nil {
 		services.AccountCircuits.SetObservabilitySink(newChainCircuitObservabilitySink(observer))
 	}

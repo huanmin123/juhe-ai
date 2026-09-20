@@ -39,6 +39,12 @@ const (
 	hybridProviderCode               = "hybrid"
 	externalIntegrationTestTokenID   = "exttok_builtin_test"
 	externalIntegrationTestTokenName = "内置测试 Token"
+
+	// retiredCodexAutoReviewModel is the retired GPT vendor default model the
+	// seed strips from providers.default_supported_models_json on old
+	// databases (sqSeedGPTVendorCodexAutoReviewRemoval carries the same
+	// literal inside its SQL).
+	retiredCodexAutoReviewModel = "codex-auto-review"
 )
 
 // seedEncryptJSONWithOptions encrypts one seed secret payload with the

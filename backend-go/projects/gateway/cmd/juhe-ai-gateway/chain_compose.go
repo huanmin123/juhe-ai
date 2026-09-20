@@ -314,12 +314,15 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// 审计缺口收口（chain_usage_wiring.go）：失败记录 providerCode 兜底
 		// （Node defaultGatewayUsageProviderCode = GPT_VENDOR_CODE）、语义
 		// 字段解析（usageSemanticForProfile 驱动回退）与协议错误 payload
-		// 解析（按账户协议档案分派响应驱动）。WithModelResolver /
-		// WithAccountAPIKeySuccess 保持 nil，原因见 chain_usage_wiring.go
-		// 文件头说明。
+		// 解析（按账户协议档案分派响应驱动）。WithModelResolver（2026-09-20
+		// 收口：UsageModelAccount 已携带 ModelMappings，真实解析组件
+		// gatewayopenai.ResolveAccountModelMapping 经 usageModelResolverAdapter
+		// 接线，映射后上游模型名进记账）接线；WithAccountAPIKeySuccess
+		// 保持 nil，原因见 chain_usage_wiring.go 文件头说明。
 		WithDefaultProviderCode(chainUsageDefaultProviderCode{}).
 		WithUsageSemantics(chainUsageSemanticResolver{}).
-		WithProtocolErrorParser(newChainUsageProtocolErrorParser())
+		WithProtocolErrorParser(newChainUsageProtocolErrorParser()).
+		WithModelResolver(usageModelResolverAdapter{})
 
 	// D-190 / D-191（BUG-0175）：kernel 边界的 HTTP 指标钩子与请求生命周期
 	// 事件汇。事件字段经 slog JSON handler 落成顶层键，运行日志检索

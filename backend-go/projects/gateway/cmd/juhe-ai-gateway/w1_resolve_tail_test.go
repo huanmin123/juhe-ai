@@ -1010,48 +1010,101 @@ func TestW1KCorsPolicyProjection(t *testing.T) {
 	}
 }
 
+// TestW1KUpstreamURLSecurityConfigArms 钉住 upstreamURLSecurityConfig 的
+// 配置臂。2026-09-19 决策（PLAN-20260919T000723744Z，开源项目优先易用性，
+// runtime.go 缺省 AllowPrivateBaseUrls: true）：未配置时缺省放行私网/本机
+// 上游（生产信号同样不再拒绝），JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS
+// 显式关闭（false/0）是恢复私网限制的 opt-out；与 internal/accounts
+// w2_pure_functions_test.go「安全策略」子测试同一决策语义。
 func TestW1KUpstreamURLSecurityConfigArms(t *testing.T) {
 	env := func(values map[string]string) func(string) string {
 		return func(key string) string { return values[key] }
 	}
 
-	config, err := upstreamURLSecurityConfig(false, env(nil))
-	if err != nil {
-		t.Fatalf("缺省配置必须成功: %v", err)
-	}
-	if config.AllowPrivateBaseUrls || len(config.PrivateOriginAllowlist) != 0 {
-		t.Fatalf("缺省配置必须全部关闭: %+v", config)
-	}
+	t.Run("缺省放行私网上游", func(t *testing.T) {
+		config, err := upstreamURLSecurityConfig(false, env(nil))
+		if err != nil {
+			t.Fatalf("缺省配置必须成功: %v", err)
+		}
+		if !config.AllowPrivateBaseUrls || len(config.PrivateOriginAllowlist) != 0 {
+			t.Fatalf("缺省必须放行私网且白名单为空: %+v", config)
+		}
+		// 生产信号不再翻转缺省（决策移除生产拒绝臂）。
+		config, err = upstreamURLSecurityConfig(true, env(nil))
+		if err != nil {
+			t.Fatalf("生产信号缺省配置必须成功: %v", err)
+		}
+		if !config.AllowPrivateBaseUrls {
+			t.Fatalf("生产信号缺省同样必须放行私网: %+v", config)
+		}
+	})
 
-	if _, err := upstreamURLSecurityConfig(false, env(map[string]string{
-		"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": "bogus",
-	})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS") {
-		t.Fatalf("非法布尔值必须报错: %v", err)
-	}
+	t.Run("显式关闭恢复私网限制", func(t *testing.T) {
+		for _, value := range []string{"false", "0", "no", "off"} {
+			config, err := upstreamURLSecurityConfig(false, env(map[string]string{
+				"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": value,
+			}))
+			if err != nil {
+				t.Fatalf("opt-out 值 %q 必须成功: %v", value, err)
+			}
+			if config.AllowPrivateBaseUrls {
+				t.Fatalf("opt-out 值 %q 后必须拒绝私网上游: %+v", value, config)
+			}
+		}
+		// 生产信号下显式关闭同样生效。
+		config, err := upstreamURLSecurityConfig(true, env(map[string]string{
+			"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": "false",
+		}))
+		if err != nil {
+			t.Fatalf("生产信号 opt-out 必须成功: %v", err)
+		}
+		if config.AllowPrivateBaseUrls {
+			t.Fatalf("生产信号 opt-out 后必须拒绝私网上游: %+v", config)
+		}
+	})
 
-	if _, err := upstreamURLSecurityConfig(true, env(map[string]string{
-		"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": "true",
-	})); err == nil || !strings.Contains(err.Error(), "生产环境不能启用") {
-		t.Fatalf("生产信号下必须拒绝私有上游开关: %v", err)
-	}
+	t.Run("生产信号显式开启不再拒绝", func(t *testing.T) {
+		// 决策移除「生产环境不能启用」臂；显式开启在任意信号下均接受。
+		config, err := upstreamURLSecurityConfig(true, env(map[string]string{
+			"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": "true",
+		}))
+		if err != nil {
+			t.Fatalf("生产信号显式开启必须成功: %v", err)
+		}
+		if !config.AllowPrivateBaseUrls {
+			t.Fatalf("显式开启后必须放行私网上游: %+v", config)
+		}
+	})
 
-	config, err = upstreamURLSecurityConfig(false, env(map[string]string{
-		"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS":    "true",
-		"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST": "http://10.0.0.5:8080 , https://192.168.1.5 , , ",
-	}))
-	if err != nil {
-		t.Fatalf("开发配置必须成功: %v", err)
-	}
-	if !config.AllowPrivateBaseUrls {
-		t.Fatal("开发环境必须允许开启私有上游")
-	}
-	if !config.PrivateOriginAllowlist["http://10.0.0.5:8080"] || !config.PrivateOriginAllowlist["https://192.168.1.5:443"] {
-		t.Fatalf("白名单键规范化错误: %v", config.PrivateOriginAllowlist)
-	}
+	t.Run("非法布尔值拒绝", func(t *testing.T) {
+		if _, err := upstreamURLSecurityConfig(false, env(map[string]string{
+			"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS": "bogus",
+		})); err == nil || !strings.Contains(err.Error(), "JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS") {
+			t.Fatalf("非法布尔值必须报错: %v", err)
+		}
+	})
 
-	if _, err := upstreamURLSecurityConfig(false, env(map[string]string{
-		"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST": "http://internal.example.com",
-	})); err == nil {
-		t.Fatal("域名白名单条目必须拒绝")
-	}
+	t.Run("白名单归一", func(t *testing.T) {
+		config, err := upstreamURLSecurityConfig(false, env(map[string]string{
+			"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS":    "true",
+			"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST": "http://10.0.0.5:8080 , https://192.168.1.5 , , ",
+		}))
+		if err != nil {
+			t.Fatalf("开发配置必须成功: %v", err)
+		}
+		if !config.AllowPrivateBaseUrls {
+			t.Fatal("显式开启后必须放行私有上游")
+		}
+		if !config.PrivateOriginAllowlist["http://10.0.0.5:8080"] || !config.PrivateOriginAllowlist["https://192.168.1.5:443"] {
+			t.Fatalf("白名单键规范化错误: %v", config.PrivateOriginAllowlist)
+		}
+	})
+
+	t.Run("域名白名单条目拒绝", func(t *testing.T) {
+		if _, err := upstreamURLSecurityConfig(false, env(map[string]string{
+			"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST": "http://internal.example.com",
+		})); err == nil {
+			t.Fatal("域名白名单条目必须拒绝")
+		}
+	})
 }

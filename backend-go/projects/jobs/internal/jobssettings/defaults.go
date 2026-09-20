@@ -2,9 +2,14 @@
 // (lines 585-655): the seeded system_settings key/value pairs the jobs read
 // model falls back to when a row is missing or the store is not initialized.
 // Numeric entries stay numbers (settingsNumber validates them as integers);
-// usageStatsTimezone keeps its string value — Node seeds the host timezone
-// (Intl.DateTimeFormat().resolvedOptions()) and deployments with a configured
-// timezone always carry an explicit row, so UTC is the safe static fallback.
+// usageStatsTimezone keeps its string value.
+//
+// 回退值=种子值原则：本表必须与 maintenance 种子逐键一致
+// （backend-go/projects/maintenance/internal/schema/pg_schema.go 的
+// pgSeedSystemSettings，SQLite/PG 种子共用该表）。缺行/读失败回落发生在
+// schema 未初始化或行损坏的部署上，回退值若偏离种子值，统计窗口等行为就
+// 与种子预期漂移。seed_consistency_test.go 以镜像表逐键对照锁死该约定，
+// 两侧任一改动都必须同步。
 package jobssettings
 
 // DefaultSystemSettings mirrors DEFAULT_SYSTEM_SETTINGS.
@@ -61,7 +66,7 @@ var DefaultSystemSettings = map[string]any{
 	"runtimeLogIndexRetentionDays":               float64(14),
 	"publicApiLogRetentionDays":                  float64(30),
 	"usageRecordRetentionDays":                   float64(30),
-	"usageStatsTimezone":                         "UTC",
+	"usageStatsTimezone":                         "Asia/Shanghai",
 	"usageStatsMinuteRetentionHours":             float64(48),
 	"usageStatsHourlyRetentionDays":              float64(60),
 	"usageStatsDailyRetentionDays":               float64(400),

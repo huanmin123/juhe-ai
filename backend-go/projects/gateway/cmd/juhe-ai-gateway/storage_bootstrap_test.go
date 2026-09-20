@@ -60,8 +60,10 @@ func TestEnsureGatewaySQLiteStoragePreflight(t *testing.T) {
 	if err := businessDB.QueryRow("SELECT count(*) FROM provider_model_catalog").Scan(&catalogRows); err != nil {
 		t.Fatalf("query model catalog: %v", err)
 	}
-	if catalogRows != 106 {
-		t.Fatalf("model catalog rows = %d, want 106", catalogRows)
+	// 行数跟随 model_catalog_data.go 演进（2026-09-20 实测种子 113 行，含
+	// gpt-image-2 等新增条目）；改种子必须同步此断言。
+	if catalogRows != 113 {
+		t.Fatalf("model catalog rows = %d, want 113", catalogRows)
 	}
 	var apiKeys int
 	if err := businessDB.QueryRow("SELECT count(*) FROM api_keys").Scan(&apiKeys); err != nil {

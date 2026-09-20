@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
@@ -457,7 +458,11 @@ func (u chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespons
 }
 
 // usageModelAccountOf projects the dispatch candidate into the usage account
-// view (identity + usage scope + protocol profile).
+// view (identity + usage scope + protocol profile + model mappings). The
+// mapping rows travel with the account so the usage model resolver
+// (usageModelResolverAdapter, chain_ports.go) can resolve the upstream model
+// through gatewayopenai.ResolveAccountModelMapping——2026-09-20 收口：此前
+// 投影丢 ModelMappings，映射后上游模型名在记账侧丢失。
 func usageModelAccountOf(account gatewaydispatch.AccountCandidate) gatewayusage.UsageModelAccount {
 	out := gatewayusage.UsageModelAccount{
 		ID:                        account.ID,
@@ -482,6 +487,29 @@ func usageModelAccountOf(account gatewaydispatch.AccountCandidate) gatewayusage.
 			ProtocolVersion: account.ProtocolVersion,
 			ProfileID:       account.ProviderProtocolProfileID,
 		},
+	}
+	// 缓存侧映射行（Enabled bool / RuntimeSource *string）投影为运行态形状
+	// （Enabled *bool，nil 视为启用；与 gatewaydispatch candfilters.go 的
+	// resolveAccountModelMapping 适配同形）。
+	if len(account.ModelMappings) > 0 {
+		out.ModelMappings = make([]gatewayopenai.AccountModelMapping, 0, len(account.ModelMappings))
+		for _, mapping := range account.ModelMappings {
+			enabled := mapping.Enabled
+			projected := gatewayopenai.AccountModelMapping{
+				SourceModel:            mapping.SourceModel,
+				SourceEndpointFamily:   mapping.SourceEndpointFamily,
+				UpstreamModel:          mapping.UpstreamModel,
+				UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
+				Enabled:                &enabled,
+			}
+			if mapping.RuntimeSource != nil {
+				projected.RuntimeSource = *mapping.RuntimeSource
+			}
+			if mapping.RuntimeRouteRuleID != nil {
+				projected.RuntimeRouteRuleID = *mapping.RuntimeRouteRuleID
+			}
+			out.ModelMappings = append(out.ModelMappings, projected)
+		}
 	}
 	if account.ProxyURL != nil {
 		out.ProxyURL = *account.ProxyURL

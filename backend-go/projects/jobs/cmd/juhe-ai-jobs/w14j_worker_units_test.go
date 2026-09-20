@@ -64,7 +64,8 @@ func TestW14JBalanceConfigJSONEqual(t *testing.T) {
 	}
 }
 
-// TestW14JDefaultRetentionTimezone 覆盖 settings 缺省与 UTC 回退分支。
+// TestW14JDefaultRetentionTimezone 覆盖 settings 缺省与映射缺键兜底分支
+// （兜底字面量与 maintenance 种子 "Asia/Shanghai" 一致，不得回退 UTC）。
 func TestW14JDefaultRetentionTimezone(t *testing.T) {
 	original, hadOriginal := jobssettings.DefaultSystemSettings["usageStatsTimezone"]
 	restore := func() {
@@ -80,8 +81,8 @@ func TestW14JDefaultRetentionTimezone(t *testing.T) {
 		t.Fatalf("settings 存在时必须返回: %s", got)
 	}
 	delete(jobssettings.DefaultSystemSettings, "usageStatsTimezone")
-	if got := defaultRetentionTimezone(); got != "UTC" {
-		t.Fatalf("缺省必须回退 UTC: %s", got)
+	if got := defaultRetentionTimezone(); got != "Asia/Shanghai" {
+		t.Fatalf("映射缺键兜底必须保持种子时区 Asia/Shanghai: %s", got)
 	}
 	restore()
 }

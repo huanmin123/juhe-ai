@@ -946,7 +946,8 @@ func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[st
 // buildGroupListItems loads loadGroupAccountStatsByGroupIds for every row,
 // owner and authorized alike). The D-38 FindDetail merge set the precedent:
 // a stats-reader failure keeps the empty projection instead of failing the
-// page, and the reader owns the TodayUsage/Usage payloads.
+// page, and the reader owns the numeric counts only; TodayUsage/Usage stay
+// zero here (Node supplies them via the usage-summary hydrate separately).
 func (s *Store) hydrateListAccountStats(ctx context.Context, items []ListItem) {
 	if len(items) == 0 || s.stats == nil {
 		return

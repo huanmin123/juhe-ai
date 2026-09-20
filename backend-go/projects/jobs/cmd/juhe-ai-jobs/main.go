@@ -207,7 +207,16 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return failWith(stderr, fmt.Errorf("ping J1 account-health direct-input database: %w", pingErr))
 		}
 		// 死臂已删（w16j 证据：reader secret/TTL 校验与 LoadConfig 完全重叠）
-		reader, _ := accounthealth.NewPostgresDirectInputReader(accountHealthInputDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
+		// 契约：NewPostgresDirectInputReader 仅在 db/secret/TTL 配置无效时
+		// 失败，这些条件已由 LoadConfig 与上方装配覆盖，当前路径不可达；但
+		// 该构造返回 nil reader + error，吞错会让下方 reader.CheckContract
+		// nil-deref。契约上必须显式失败（fail-fast），不允许忽略。
+		reader, readerErr := accounthealth.NewPostgresDirectInputReader(accountHealthInputDB, accountHealthConfig.CredentialSecret, accountHealthConfig.InputTTL, accountHealthConfig.Now)
+		if readerErr != nil {
+			_ = accountHealthInputPool.Close()
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("create J1 account-health direct-input reader: %w", readerErr))
+		}
 		contractContext, contractCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		contractErr := reader.CheckContract(contractContext)
 		contractCancel()

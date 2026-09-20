@@ -271,11 +271,15 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		if requestLane == gatewayproto.LaneImage {
 			budgetMs = int64Ptr(activeGatewaySettings.ImageRequestWallTimeoutSeconds * 1000)
 		}
+		// G19 观测接线收尾：budget precommit_clipped 裁剪观察（进程级槽，
+		// 由 cmd/juhe-ai-gateway wireGatewayObservabilityArms 在 chain 装配
+		// 时置位；见 wall_budget_observer.go 的时序说明——本构造点逐请求
+		// 执行，读槽即取当前装配值，未装配时 nil 保持无观察语义）。
 		gatewayRequestWallBudget, err = gatewayrouting.NewGatewayRequestWallBudget(gatewayrouting.GatewayRequestWallBudgetOptions{
 			RequestAcceptedAtMs: input.StartedAt,
 			Unbounded:           compactionTimeoutsDisabled,
 			BudgetMs:            budgetMs,
-		}, nil)
+		}, RoutingWallBudgetObserverOf())
 		if err != nil {
 			return PreflightResult{}, err
 		}

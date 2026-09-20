@@ -69,9 +69,10 @@ func TestW1TrustProxyCountAndTrim(t *testing.T) {
 }
 
 func TestW1SQLiteComposeHelpers(t *testing.T) {
-	// DSN：绝对 file URL + busy timeout。
+	// DSN：绝对 file URL + busy timeout + _txlock=immediate（与 jobs 侧
+	// 跨进程共写语义对齐，理由见 sqliteFileDSN 注释）。
 	path := filepath.Join(t.TempDir(), "w1.sqlite3")
-	if got := sqliteFileDSN(path); got != "file:"+path+"?_pragma=busy_timeout(5000)" {
+	if got := sqliteFileDSN(path); got != "file:"+path+"?_pragma=busy_timeout(5000)&_txlock=immediate" {
 		t.Fatalf("dsn = %q", got)
 	}
 	// 方言转换。

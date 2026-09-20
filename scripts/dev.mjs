@@ -169,10 +169,16 @@ function resolveGoProjectEnv() {
   // 启动器钉住了数据/日志根，就必须保证目录存在，删库冷启动才能自愈。
   mkdirSync(childEnv.JUHE_AI_DATA_DIR, { recursive: true })
   mkdirSync(childEnv.JUHE_AI_LOG_DIR, { recursive: true })
-  // gateway 进程被强杀（taskkill /f、关终端窗口）后 owner 租约要等 TTL 过期
-  // 才能接管；注入有界等待让停止后的立即重启自动接管而不是 fail-fast。默认
-  // 45s（租约 TTL 30s + 余量）；用户显式配置时不覆盖。
+  // gateway 进程被强杀（taskkill /f、关终端窗口、Windows 8s 宽限兜底强杀）
+  // 后 owner 租约要等 TTL 过期才能接管；注入有界等待让停止后的立即重启自动
+  // 接管而不是 fail-fast。默认 45s；用户显式配置时不覆盖。
   childEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT = firstConfiguredValue(childEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT, '45s')
+  // F3/F4 owner 租约 TTL 生产默认 30s：dev 重启后要等旧进程的残留租约过期
+  // 才能接管，这段等待的长度就是 TTL。dev 把 TTL 收紧到 10s（满足两个组件
+  // “不少于 5s”的配置下限），强杀后重启最长约 10s 即可接管；本地 SQLite 专
+  // 库下续租是每 TTL/3 一次的单行 UPDATE，压力可忽略。用户显式配置时不覆盖。
+  childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '10s')
+  childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE, '10s')
   for (const name of removedInputServerEnvNames) delete childEnv[name]
   return childEnv
 }
