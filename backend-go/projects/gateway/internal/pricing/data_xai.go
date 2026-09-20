@@ -72,9 +72,12 @@ var xAIModelPricingData = []rawModel{
 	xaiTextModel("grok-build-0.1", 256_000, 1, 0.2, 2, xaiTextModelMetadata{
 		releaseDate: "2026-05-19",
 	}),
+	// multi-agent 的 reasoning effort 官方语义是协作 agent 数量
+	// （low/medium=4，high/xhigh=16），不是推理深度；官方未标默认档。
 	xaiTextModel("grok-4.20-multi-agent-0309", 1_000_000, 1.25, 0.2, 2.5, xaiTextModelMetadata{
-		releaseDate:           "2026-03-10",
-		supportedAPIProtocols: []string{"responses"},
+		releaseDate:               "2026-03-10",
+		supportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
+		supportedAPIProtocols:     []string{"responses"},
 	}),
 	{
 		Model: "grok-imagine-image-2.0", Mode: "image",

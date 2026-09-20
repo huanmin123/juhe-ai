@@ -739,7 +739,7 @@ var openAIImageModelPricingData = []rawModel{
 		CacheReadInputImageTokenCost: f64p(0.0000025),
 		OutputCostPerImageToken:      f64p(0.00004),
 		SupportsPromptCaching:        true,
-		ShutdownDate:                 "2026-12-01",
+		ShutdownDate:                 "2026-10-23",
 	},
 }
 
@@ -755,7 +755,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		InputCostPerToken:         f64p(0.000015),
 		OutputCostPerToken:        f64p(0.00006),
 		CacheReadInputTokenCost:   f64p(0.0000075),
-		ShutdownDate:              "2026-12-17",
+		ShutdownDate:              "2026-10-23",
 		SupportsPromptCaching:     true,
 		SupportedReasoningEfforts: []string{"low", "medium", "high"},
 	},
@@ -768,7 +768,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		SupportedTools:        []string{"function_calling", "file_search", "mcp"},
 		InputCostPerToken:     f64p(0.00015),
 		OutputCostPerToken:    f64p(0.0006),
-		ShutdownDate:          "2026-12-17",
+		ShutdownDate:          "2026-10-23",
 		SupportsPromptCaching: true,
 	},
 	{
@@ -806,7 +806,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		InputCostPerToken:         f64p(0.0000011),
 		OutputCostPerToken:        f64p(0.0000044),
 		CacheReadInputTokenCost:   f64p(5.5e-7),
-		ShutdownDate:              "2026-12-17",
+		ShutdownDate:              "2026-10-23",
 		SupportsPromptCaching:     true,
 		SupportedReasoningEfforts: []string{"low", "medium", "high"},
 	},

@@ -499,7 +499,7 @@ var pgSeedProviders = []pgSeedProvider{
 		Description:                "DeepSeek 官方供应商，支持 OpenAI-compatible v1 Chat Completions 与 Responses 直连，也支持 Anthropic v1 Messages 档案兼容 Claude Code",
 		ParentCode:                 "",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"deepseek-flash\",\"deepseek-v4-pro\"]",
+		DefaultSupportedModelsJSON: "[\"deepseek-flash\",\"deepseek-v4.1-flash\",\"deepseek-v4-pro\"]",
 	},
 	{
 		ID:                         "anthropic",

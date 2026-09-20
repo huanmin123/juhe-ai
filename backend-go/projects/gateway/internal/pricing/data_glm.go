@@ -17,9 +17,10 @@ var glmModelPricingData = []rawModel{
 		DefaultReasoningEffort:    "max",
 	},
 	{
-		// glm-5.3-flash / glm-5.3-flashx: thinking is a plain enabled switch
-		// (official docs recommend effort max but enumerate no discrete
-		// levels), so no reasoning effort columns are recorded.
+		// glm-5.3-flash / glm-5.3-flashx: thinking.type is locked to
+		// "enabled" (compulsive thinking), while reasoning_effort accepts
+		// low/high/max with the official default max (bigmodel concept-param
+		// enumerates both models; z.ai API reference names GLM-5.3/FLASH).
 		Model: "glm-5.3-flash", Mode: "chat", CatalogOrder: intp(5), ReleaseDate: "2026-08-26",
 		InputCostPerToken: perToken(0.15), CacheReadInputTokenCost: perToken(0.03), OutputCostPerToken: perToken(0.5),
 		ContextWindowTokens: intp(1_000_000), MaxOutputTokens: intp(128_000),
@@ -27,6 +28,9 @@ var glmModelPricingData = []rawModel{
 		SupportsPromptCaching: true,
 		InputModalities:       []string{"text", "image", "video", "file"},
 		OutputModalities:      []string{"text"},
+
+		SupportedReasoningEfforts: []string{"low", "high", "max"},
+		DefaultReasoningEffort:    "max",
 	},
 	{
 		Model: "glm-5.3-flashx", Mode: "chat", CatalogOrder: intp(6), ReleaseDate: "2026-09-18",
@@ -36,6 +40,9 @@ var glmModelPricingData = []rawModel{
 		SupportsPromptCaching: true,
 		InputModalities:       []string{"text", "image", "video", "file"},
 		OutputModalities:      []string{"text"},
+
+		SupportedReasoningEfforts: []string{"low", "high", "max"},
+		DefaultReasoningEffort:    "max",
 	},
 	{
 		Model: "glm-5.2", Mode: "chat", CatalogOrder: intp(10), ReleaseDate: "2026-06-16",

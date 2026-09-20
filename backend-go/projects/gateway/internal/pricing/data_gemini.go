@@ -147,7 +147,7 @@ var geminiModelPricingData = []rawModel{
 		outputModalities:          []string{"text"},
 		supportedTools:            []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context", "computer_use"},
 		supportedReasoningEfforts: []string{"low", "medium", "high"},
-		defaultReasoningEffort:    "high",
+		defaultReasoningEffort:    "medium",
 	}),
 	geminiTextModel(geminiModelInput{
 		// Promotional prices through 2026-12-31, mirroring gemini-3.7-flash.
@@ -238,6 +238,7 @@ var geminiModelPricingData = []rawModel{
 		outputModalities:          []string{"text"},
 		supportedTools:            []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context"},
 		supportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
+		defaultReasoningEffort:    "minimal",
 	}),
 	geminiTextModel(geminiModelInput{
 		model: "gemini-2.5-pro", catalogOrder: 60, releaseDate: "2025-06-17",
@@ -251,29 +252,31 @@ var geminiModelPricingData = []rawModel{
 		inputModalities:                 []string{"text", "image", "video", "audio", "file"},
 		outputModalities:                []string{"text"},
 		supportedTools:                  []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context"},
-		supportedReasoningEfforts:       []string{"low", "medium", "high"},
+		// 2.5 系官方不支持 thinkingLevel（仅 thinkingBudget，128-32768 且不可关闭），
+		// 不记录 effort 档位。
 	}),
 	geminiTextModel(geminiModelInput{
 		model: "gemini-2.5-flash", catalogOrder: 70, releaseDate: "2025-06-17",
 		inputUsdPer1M: 0.3, outputUsdPer1M: 2.5, cachedInputUsdPer1M: f64p(0.03), cacheStorageUsdPer1MPerHour: 1, audioInputUsdPer1M: f64p(1),
-		flex:                      &geminiTierPrices{inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: f64p(0.03), audioInputUsdPer1M: f64p(0.5), cacheStorageUsdPer1MPerHour: 1},
-		priority:                  &geminiTierPrices{inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: f64p(0.054), audioInputUsdPer1M: f64p(1.8), cacheStorageUsdPer1MPerHour: 1.8},
-		supportedAPIProtocols:     []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
-		inputModalities:           []string{"text", "image", "video", "audio"},
-		outputModalities:          []string{"text"},
-		supportedTools:            []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context"},
-		supportedReasoningEfforts: []string{"low", "medium", "high"},
+		flex:                  &geminiTierPrices{inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: f64p(0.03), audioInputUsdPer1M: f64p(0.5), cacheStorageUsdPer1MPerHour: 1},
+		priority:              &geminiTierPrices{inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: f64p(0.054), audioInputUsdPer1M: f64p(1.8), cacheStorageUsdPer1MPerHour: 1.8},
+		supportedAPIProtocols: []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
+		inputModalities:       []string{"text", "image", "video", "audio"},
+		outputModalities:      []string{"text"},
+		supportedTools:        []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context"},
+		// 2.5 系官方不支持 thinkingLevel（仅 thinkingBudget，0-24576），不记录 effort 档位。
 	}),
 	geminiTextModel(geminiModelInput{
 		model: "gemini-2.5-flash-lite", catalogOrder: 80, releaseDate: "2025-07-22",
 		inputUsdPer1M: 0.1, outputUsdPer1M: 0.4, cachedInputUsdPer1M: f64p(0.01), cacheStorageUsdPer1MPerHour: 1, audioInputUsdPer1M: f64p(0.3),
-		flex:                      &geminiTierPrices{inputUsdPer1M: 0.05, outputUsdPer1M: 0.2, cachedInputUsdPer1M: f64p(0.01), audioInputUsdPer1M: f64p(0.15), cacheStorageUsdPer1MPerHour: 1},
-		priority:                  &geminiTierPrices{inputUsdPer1M: 0.18, outputUsdPer1M: 0.72, cachedInputUsdPer1M: f64p(0.018), audioInputUsdPer1M: f64p(0.54), cacheStorageUsdPer1MPerHour: 1.8},
-		supportedAPIProtocols:     []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
-		inputModalities:           []string{"text", "image", "video", "audio", "file"},
-		outputModalities:          []string{"text"},
-		supportedTools:            []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context"},
-		supportedReasoningEfforts: []string{"low", "medium", "high"},
+		flex:                  &geminiTierPrices{inputUsdPer1M: 0.05, outputUsdPer1M: 0.2, cachedInputUsdPer1M: f64p(0.01), audioInputUsdPer1M: f64p(0.15), cacheStorageUsdPer1MPerHour: 1},
+		priority:              &geminiTierPrices{inputUsdPer1M: 0.18, outputUsdPer1M: 0.72, cachedInputUsdPer1M: f64p(0.018), audioInputUsdPer1M: f64p(0.54), cacheStorageUsdPer1MPerHour: 1.8},
+		supportedAPIProtocols: []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
+		inputModalities:       []string{"text", "image", "video", "audio", "file"},
+		outputModalities:      []string{"text"},
+		supportedTools:        []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context"},
+		// 2.5 系官方不支持 thinkingLevel（仅 thinkingBudget，512-24576 且 =0 关闭），
+		// 不记录 effort 档位。
 	}),
 	geminiEmbeddingModel(geminiModelInput{
 		model: "gemini-embedding-2", catalogOrder: 100, releaseDate: "2026-04-22",

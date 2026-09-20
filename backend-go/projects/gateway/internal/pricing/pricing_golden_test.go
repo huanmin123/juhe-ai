@@ -517,12 +517,13 @@ func TestBuildCostBreakdownOpenAIImagePolicy(t *testing.T) {
 }
 
 func TestBuildCostBreakdownDeepSeekPolicy(t *testing.T) {
-	// deepseek-v4-flash at the confirmed peak-rate basis: input 0.3, cached
+	// deepseek-flash at the confirmed peak-rate basis: input 0.3, cached
 	// 0.006, output 1.2; cache read is included in the input total like
-	// OpenAI/Gemini.
-	got := billingBreakdown(t, "deepseek", "deepseek-v4-flash", CostInput{
+	// OpenAI/Gemini. (deepseek-v4-flash left the static snapshot on
+	// 2026-09-20; the retired row lives on the seed only.)
+	got := billingBreakdown(t, "deepseek", "deepseek-flash", CostInput{
 		ProviderCode:    "deepseek",
-		Model:           "deepseek-v4-flash",
+		Model:           "deepseek-flash",
 		InputTokens:     f64p(1_000_000),
 		CacheReadTokens: f64p(500_000),
 		OutputTokens:    f64p(100_000),
@@ -535,9 +536,9 @@ func TestBuildCostBreakdownDeepSeekPolicy(t *testing.T) {
 		t.Fatalf("billingPolicy = %q, want deepseek", got.BillingPolicy)
 	}
 	// deepseek/glm reject unsupported tiers up front.
-	if tiered := billingBreakdown(t, "deepseek", "deepseek-v4-flash", CostInput{
+	if tiered := billingBreakdown(t, "deepseek", "deepseek-flash", CostInput{
 		ProviderCode: "deepseek",
-		Model:        "deepseek-v4-flash",
+		Model:        "deepseek-flash",
 		ServiceTier:  "priority",
 		InputTokens:  f64p(1_000),
 	}); tiered != nil {

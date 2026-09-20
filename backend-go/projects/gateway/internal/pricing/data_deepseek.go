@@ -7,7 +7,9 @@ package pricing
 // 06:00-10:00; weekends and Chinese public holidays are off-peak all day at
 // half the peak rate). This snapshot is maintained at the user-confirmed
 // peak-rate basis until time-of-day billing support lands; the fixed prices
-// below therefore only match peak-window usage.
+// below therefore only match peak-window usage. Retired IDs
+// (deepseek-v4-flash, retired 2026-09-10) are no longer kept here; the
+// shutdown marker lives on the provider_model_catalog seed row only.
 var deepSeekModelPricingData = []rawModel{
 	{
 		// deepseek-flash (official version DeepSeek-V4.1-Flash) at peak
@@ -28,14 +30,11 @@ var deepSeekModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"low", "high", "max"},
 	},
 	{
-		// Officially retired 2026-09-10: requests are served by
-		// deepseek-flash at the Flash peak rate. Kept priced (no shutdown
-		// marker in this static snapshot) so in-process pricing lookups keep
-		// resolving; production /v1 billing reads the provider_model_catalog
-		// DB rows instead, where the seed marks this row shutdown and a
-		// re-seeded database disables it (reference guards permitting).
-		// Shutdown stays on the seed row only.
-		Model: "deepseek-v4-flash", Mode: "chat", CatalogOrder: intp(10), ReleaseDate: "2026-04-24",
+		// User-confirmed 2026-09-20 compatibility alias: many upstream
+		// providers expose this versioned ID for the same DeepSeek-V4.1-Flash
+		// model, so the catalog carries it alongside the official
+		// deepseek-flash ID at identical peak rates and capabilities.
+		Model: "deepseek-v4.1-flash", Mode: "chat", CatalogOrder: intp(1), ReleaseDate: "2026-09-10",
 		InputCostPerToken:         perToken(0.3),
 		CacheReadInputTokenCost:   perToken(0.006),
 		OutputCostPerToken:        perToken(1.2),
@@ -43,11 +42,10 @@ var deepSeekModelPricingData = []rawModel{
 		MaxOutputTokens:           intp(384_000),
 		SupportsPromptCaching:     true,
 		SupportedAPIProtocols:     []string{"chat_completions", "responses", "messages"},
-		InputModalities:           []string{"text"},
+		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
 		SupportedTools:            []string{"function_calling"},
-		SupportedReasoningEfforts: []string{"high", "max"},
-		DefaultReasoningEffort:    "high",
+		SupportedReasoningEfforts: []string{"low", "high", "max"},
 	},
 	{
 		// Officially kept on sale after a retracted deprecation (changelog
