@@ -34,9 +34,9 @@ func TestW11ERuntimeValidationArms(t *testing.T) {
 	target := w11eValidTarget()
 	runtime := &Runtime{Store: store, Resolve: func(context.Context, RunRequest) (Target, error) { return target, nil }}
 	for name, request := range map[string]RunRequest{
-		"scope":     {TargetType: "account", TargetID: "acct", Model: "m", Profile: "quick"},
-		"request":   {SystemAccountID: "sys", ActorSystemAccountID: "actor", Model: "m", Profile: "quick"},
-		"profile":   {SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "m", Profile: "medium"},
+		"scope":   {TargetType: "account", TargetID: "acct", Model: "m", Profile: "quick"},
+		"request": {SystemAccountID: "sys", ActorSystemAccountID: "actor", Model: "m", Profile: "quick"},
+		"profile": {SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "m", Profile: "medium"},
 	} {
 		if _, err := runtime.Run(context.Background(), request); err == nil {
 			t.Fatalf("%s 不完整必须拒绝", name)
@@ -49,9 +49,9 @@ func TestW11ERuntimeValidationArms(t *testing.T) {
 	}
 	// 目标契约不完整。
 	for name, mutate := range map[string]func(*Target){
-		"endpoint":  func(t *Target) { t.Endpoint = "" },
-		"prompt":    func(t *Target) { t.Prompt = "" },
-		"dispatch":  func(t *Target) { t.DispatchRevision = 0 },
+		"endpoint": func(t *Target) { t.Endpoint = "" },
+		"prompt":   func(t *Target) { t.Prompt = "" },
+		"dispatch": func(t *Target) { t.DispatchRevision = 0 },
 	} {
 		broken := w11eValidTarget()
 		mutate(&broken)
@@ -62,13 +62,13 @@ func TestW11ERuntimeValidationArms(t *testing.T) {
 	}
 	// 请求侧 CAS 失配。
 	for name, mutate := range map[string]func(*RunRequest){
-		"dispatch":       func(r *RunRequest) { r.DispatchRevision = 99 },
-		"source config":  func(r *RunRequest) { r.SourceConfigRevision = "stale" },
-		"source dispatch": func(r *RunRequest) { r.SourceDispatchRevision = 99 },
-		"source family":  func(r *RunRequest) { r.SourceEndpointFamily = "chat_completions" },
-		"upstream family": func(r *RunRequest) { r.UpstreamEndpointFamily = "chat_completions" },
+		"dispatch":          func(r *RunRequest) { r.DispatchRevision = 99 },
+		"source config":     func(r *RunRequest) { r.SourceConfigRevision = "stale" },
+		"source dispatch":   func(r *RunRequest) { r.SourceDispatchRevision = 99 },
+		"source family":     func(r *RunRequest) { r.SourceEndpointFamily = "chat_completions" },
+		"upstream family":   func(r *RunRequest) { r.UpstreamEndpointFamily = "chat_completions" },
 		"upstream protocol": func(r *RunRequest) { r.UpstreamProtocol = "openai_chat" },
-		"upstream mode":    func(r *RunRequest) { r.UpstreamEndpointMode = "chat_json" },
+		"upstream mode":     func(r *RunRequest) { r.UpstreamEndpointMode = "chat_json" },
 	} {
 		request := w11eValidRequest()
 		mutate(&request)
@@ -125,16 +125,18 @@ func TestW11ERuntimeComparisonAndPolicyArms(t *testing.T) {
 	// 比对目标契约不完整。
 	emptyComparison := &Runtime{
 		Store: store, Resolve: runtime.Resolve,
-		ResolveComparison: func(context.Context, RunRequest) (Target, error) { return Target{Endpoint: "https://w11e.invalid", Prompt: "p", DispatchRevision: 1}, nil },
+		ResolveComparison: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: "https://w11e.invalid", Prompt: "p", DispatchRevision: 1}, nil
+		},
 	}
 	if _, err := emptyComparison.Run(context.Background(), request); err == nil || !strings.Contains(err.Error(), "comparison target is incomplete") {
 		t.Fatalf("比对目标不完整必须拒绝: %v", err)
 	}
 	// 比对修订失配。
 	for name, mutate := range map[string]func(*RunRequest){
-		"config":        func(r *RunRequest) { r.TrustedComparisonConfigRevision = "stale" },
-		"dispatch":      func(r *RunRequest) { r.TrustedComparisonDispatchRevision = 99 },
-		"source config": func(r *RunRequest) { r.TrustedComparisonSourceConfigRevision = "stale" },
+		"config":          func(r *RunRequest) { r.TrustedComparisonConfigRevision = "stale" },
+		"dispatch":        func(r *RunRequest) { r.TrustedComparisonDispatchRevision = 99 },
+		"source config":   func(r *RunRequest) { r.TrustedComparisonSourceConfigRevision = "stale" },
 		"source dispatch": func(r *RunRequest) { r.TrustedComparisonSourceDispatchRevision = 99 },
 	} {
 		stale := request
@@ -516,4 +518,3 @@ func TestW11EEvaluationObservationStatusAndHelpers(t *testing.T) {
 		t.Fatal("自动化触发器必须允许强制")
 	}
 }
-

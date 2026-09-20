@@ -30,7 +30,8 @@ import { writeTextToClipboard } from '@/shared/clipboard'
 import { ChatCodeCopyLifecycle, ChatCodeCopyResetController } from './chatCodeCopyState'
 import { isCompleteMarkdownCodeFence } from './chatMarkdownFences'
 import { normalizeChatMarkdownMathDelimiters } from './chatMarkdownMath'
-import { isCompleteStaticSvg, resolveChatSvgPreviewSize } from './chatSvgPreview'
+import { buildChatSvgPreviewDocument, chatSvgHasViewBox, isCompleteStaticSvg, resolveChatSvgPreviewSize } from './chatSvgPreview'
+import { buildChatHtmlPreviewDocument } from './chatHtmlPreview'
 import 'highlight.js/styles/github.css'
 import 'katex/dist/katex.min.css'
 
@@ -103,14 +104,17 @@ const renderer: RendererObject = {
       : escapeHtml(text)
     const label = escapeHtml(language || 'text')
     const codeClass = escapeAttribute(language || 'text')
-    return `<div class="chat-code-block"><div class="chat-code-header"><span class="chat-code-language">${label}</span><button class="chat-code-copy" type="button" data-copy-code aria-label="复制代码">复制</button></div><pre><code class="hljs language-${codeClass}">${highlighted}</code></pre></div>`
+    const previewActions = (language === 'html' || language === 'htm') && fenceComplete
+      ? `<button class="chat-code-copy" type="button" data-preview-code aria-label="预览">预览</button><button class="chat-code-copy" type="button" data-open-preview aria-label="新窗口打开完整预览">打开</button>`
+      : ''
+    return `<div class="chat-code-block"><div class="chat-code-header"><span class="chat-code-language">${label}</span><span class="chat-code-actions">${previewActions}<button class="chat-code-copy" type="button" data-copy-code aria-label="复制代码">复制</button></span></div><pre><code class="hljs language-${codeClass}">${highlighted}</code></pre></div>`
   }
 }
 
 marked.use({ gfm: true, breaks: true, renderer })
 
 const html = computed(() => DOMPurify.sanitize(enforceSafeImages(renderMathInTextNodes(marked.parse(normalizeChatMarkdownMathDelimiters(props.content), { async: false }) as string)), {
-  ADD_ATTR: ['target', 'rel', 'loading', 'referrerpolicy', 'data-copy-code', 'aria-label'],
+  ADD_ATTR: ['target', 'rel', 'loading', 'referrerpolicy', 'data-copy-code', 'data-preview-code', 'data-open-preview', 'aria-label'],
   FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed']
 }))
 
@@ -153,11 +157,16 @@ watch(html, async () => {
       const frame = document.createElement('iframe')
       const size = resolveChatSvgPreviewSize(svg)
       frame.className = 'chat-svg-preview'
-      frame.setAttribute('sandbox', 'allow-scripts')
+      frame.setAttribute('sandbox', 'allow-scripts allow-popups')
       frame.setAttribute('title', 'SVG 预览')
       frame.width = String(size.width)
       frame.height = String(size.height)
-      frame.srcdoc = svg
+      frame.dataset.chatSvgSource = svg
+      if (chatSvgHasViewBox(svg)) {
+        frame.style.aspectRatio = `${size.width} / ${size.height}`
+        frame.style.height = 'auto'
+      }
+      frame.srcdoc = buildChatSvgPreviewDocument(svg)
       if (version !== renderVersion || !source.isConnected) return
       source.replaceWith(frame)
     } catch {
@@ -172,15 +181,65 @@ watch(html, async () => {
 onMounted(() => {
   codeCopyLifecycle.activate()
   root.value?.addEventListener('click', handleRootClick)
+  window.addEventListener('message', handlePreviewMessage)
 })
 onBeforeUnmount(() => {
   root.value?.removeEventListener('click', handleRootClick)
+  window.removeEventListener('message', handlePreviewMessage)
   codeCopyLifecycle.dispose()
 })
+
+function handlePreviewMessage(event: MessageEvent): void {
+  if (event.data?.type === 'juhe-ai-chat-svg-preview-open-window') {
+    const frames = root.value?.querySelectorAll<HTMLIFrameElement>('iframe.chat-svg-preview') ?? []
+    for (const frame of frames) {
+      if (frame.contentWindow === event.source) {
+        openChatPreviewWindow(frame.dataset.chatSvgSource ?? '', (source) => buildChatSvgPreviewDocument(source, false))
+        return
+      }
+    }
+    return
+  }
+  if (event.data?.type !== 'juhe-ai-chat-html-preview-height') return
+  const height = Number(event.data.height)
+  if (!Number.isFinite(height)) return
+  const clamped = Math.min(900, Math.max(240, Math.round(height)))
+  for (const frame of root.value?.querySelectorAll<HTMLIFrameElement>('iframe.chat-html-preview') ?? []) {
+    if (frame.contentWindow === event.source) {
+      frame.style.height = `${clamped}px`
+      return
+    }
+  }
+}
+
+// 新窗口 = 父页写入的包装页：自身不含生成内容，只有一屏 sandbox srcdoc iframe 承载完整预览，
+// 生成脚本仍只在不透明源沙箱内运行；iframe 内点击的激活会传递到父页，window.open 不会被弹窗拦截。
+function openChatPreviewWindow(source: string, buildDocument: (source: string) => string): void {
+  const win = window.open('', '_blank')
+  if (!win) {
+    antdMessage.error('新窗口被浏览器拦截，请允许本站弹窗后重试')
+    return
+  }
+  const doc = buildDocument(source)
+  win.document.open()
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>预览</title><style>html,body{margin:0;height:100%}iframe{display:block;width:100%;height:100%;border:0}</style></head><body><iframe sandbox="allow-scripts allow-popups" title="完整预览" srcdoc="${escapeAttribute(doc)}"></iframe></body></html>`)
+  win.document.close()
+}
 
 async function handleRootClick(event: MouseEvent): Promise<void> {
   const target = event.target
   if (!(target instanceof Element)) return
+  const previewButton = target.closest<HTMLButtonElement>('button.chat-code-copy[data-preview-code]')
+  if (previewButton && root.value?.contains(previewButton)) {
+    toggleChatHtmlPreview(previewButton)
+    return
+  }
+  const openButton = target.closest<HTMLButtonElement>('button.chat-code-copy[data-open-preview]')
+  if (openButton && root.value?.contains(openButton)) {
+    const code = openButton.closest<HTMLElement>('.chat-code-block')?.querySelector<HTMLElement>(':scope > pre > code')
+    if (code) openChatPreviewWindow(code.textContent ?? '', (source) => buildChatHtmlPreviewDocument(source, false))
+    return
+  }
   const button = target.closest<HTMLButtonElement>('button.chat-code-copy[data-copy-code]')
   if (!button || !root.value?.contains(button)) return
   const wrapper = button.closest<HTMLElement>('.chat-code-block')
@@ -194,6 +253,28 @@ async function handleRootClick(event: MouseEvent): Promise<void> {
     () => Boolean(root.value?.contains(button)),
     () => antdMessage.error('复制失败，请稍后重试')
   )
+}
+
+function toggleChatHtmlPreview(button: HTMLButtonElement): void {
+  const wrapper = button.closest<HTMLElement>('.chat-code-block')
+  const pre = wrapper?.querySelector<HTMLElement>(':scope > pre')
+  const code = pre?.querySelector<HTMLElement>('code')
+  if (!wrapper || !pre || !code) return
+  const existing = wrapper.querySelector<HTMLIFrameElement>('iframe.chat-html-preview')
+  if (existing) {
+    existing.remove()
+    pre.hidden = false
+    button.textContent = '预览'
+    return
+  }
+  const frame = document.createElement('iframe')
+  frame.className = 'chat-html-preview'
+  frame.setAttribute('sandbox', 'allow-scripts allow-popups')
+  frame.setAttribute('title', 'HTML 预览')
+  frame.srcdoc = buildChatHtmlPreviewDocument(code.textContent ?? '')
+  pre.hidden = true
+  button.textContent = '源码'
+  wrapper.appendChild(frame)
 }
 
 function renderMathInTextNodes(value: string): string {
@@ -261,6 +342,8 @@ function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c
 .chat-markdown :deep(.chat-code-language) { text-transform: lowercase; }
 .chat-markdown :deep(.chat-code-copy) { min-width: 48px; min-height: 28px; padding: 0 7px; color: #667085; background: transparent; border: 0; border-radius: 4px; cursor: pointer; font: inherit; }
 .chat-markdown :deep(.chat-code-copy:hover), .chat-markdown :deep(.chat-code-copy:focus-visible) { color: #182230; background: #eceff3; outline: none; }
+.chat-markdown :deep(.chat-code-actions) { display: flex; gap: 4px; }
+.chat-markdown :deep(.chat-code-block > iframe.chat-html-preview) { display: block; width: 100%; height: min(60vh, 520px); border: 0; background: #fff; }
 .chat-markdown :deep(.chat-code-block > pre) { max-width: 100%; margin: 0; padding: 12px 14px; overflow-x: auto; background: transparent; }
 .chat-markdown :deep(table) { display: block; max-width: 100%; margin: 10px 0; overflow-x: auto; border-collapse: collapse; }
 .chat-markdown :deep(th), .chat-markdown :deep(td) { padding: 6px 9px; border: 1px solid #dfe3e8; text-align: left; white-space: nowrap; }

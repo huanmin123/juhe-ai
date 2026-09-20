@@ -1,5 +1,7 @@
 # X04 前端 Go 模式收口与契约差异清单
 
+> **2026-09-20 复核状态更新**：本文 §5.2 所列"Node 挂载、Go 未挂载"前缀已在 Go 侧全部补挂载，清单不再描述当前现实——`compose.go` 挂载矩阵注释（`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go:90-108`）与"X04 404 项补齐"挂载点（`compose.go:936-949`：audit-logs / runtime-logs / public-api-logs、stats + usage-records（statreads）、ui-bootstrap、authorization-options（authz）、proxies（proxyprofiles）、table-monitor；`compose.go:1045-1046`：`/__aisys__/help` 静态帮助中心 helpweb）逐一覆盖原表各行，纯 go 模式不再有本表所列降级面。§2 所述 `VITE_JUHE_AI_J3B_ENABLED=false` 固定注入已改为显式 `true`（`scripts/package-release.sh:355`、`scripts/package-release.ps1:275`，2026-09-20 同日决策：模型检测菜单默认常驻，仅部署层确实不提供 model-checks 路由时才显式注入 `false` 隐藏，见 `frontend/src/router/index.ts:33-35`）。本文余下内容保留为当时（2026-09-04）的审计记录，差异细节以当前代码为准。
+
 > 状态：已完成（2026-09-04）。前端已具备显式的 Go 后端连接模式（`VITE_JUHE_AI_DEPLOY_MODE`），默认值保持 `node`，默认行为与历史版本零差异。
 > 本文是前端视角的收口文档：连接面盘点、go 模式切换方法、J3b UI gate 核对结论，以及前端指向 Go gateway 主入口时的契约差异（降级面）清单。
 > Go 侧挂载矩阵的权威事实来源：`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go` 顶部挂载矩阵注释与 `Mount` 调用、`main.go` 的 J3b 管理 listener；Node 侧对照 `backend/src/modules/system-api/system-api-app.ts`。

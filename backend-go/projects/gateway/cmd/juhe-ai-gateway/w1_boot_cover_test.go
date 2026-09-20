@@ -158,7 +158,13 @@ func w1bScenarioEnv(t *testing.T, coverageDir string, pairs ...string) []string 
 		env = append(env, entry)
 	}
 	env = append(env, pairs...)
-	env = append(env, "GOCOVERDIR="+coverageDir)
+	// 2026-09-21 起模型检测 owner 默认常驻：零配置自举的专属库与管理
+	// listener 需要隔离数据目录与随机端口，避免场景进程把 ./data 写进包
+	// 目录或抢占 3307 端口。
+	env = append(env,
+		"JUHE_AI_DATA_DIR="+t.TempDir(),
+		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS=127.0.0.1:0",
+		"GOCOVERDIR="+coverageDir)
 	return env
 }
 

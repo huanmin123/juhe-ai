@@ -521,7 +521,10 @@ func (s *Store) Update(ctx context.Context, input map[string]any) (map[string]an
 	if err := s.assertUsageStatsTimezoneUpdateAllowed(ctx, normalized); err != nil {
 		return nil, err
 	}
-	if err := s.upsertSystemSettings(ctx, normalized); err != nil {
+	// The legacy full-snapshot write mirrors Node updateSettingsAsync, which
+	// has no account-health reservation branch; the empty sectionKey keeps
+	// that arm settings-only.
+	if err := s.upsertSystemSettings(ctx, "", normalized); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -537,8 +540,10 @@ func (s *Store) Update(ctx context.Context, input map[string]any) (map[string]an
 
 // upsertSystemSettings persists normalized system settings in a single
 // transaction (the updateSettingsAsync / updateManagementSettingsSectionAsync
-// system branch upsert).
-func (s *Store) upsertSystemSettings(ctx context.Context, normalized map[string]any) error {
+// system branch upsert). sectionKey carries the management section identity:
+// only the account-health section additionally reserves the account health
+// jobs input epochs inside the same transaction (D7 gap registration).
+func (s *Store) upsertSystemSettings(ctx context.Context, sectionKey string, normalized map[string]any) error {
 	keys := sortedKeys(normalized)
 	nowISO := s.now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -560,7 +565,70 @@ func (s *Store) upsertSystemSettings(ctx context.Context, normalized map[string]
 			return execErr
 		}
 	}
+	if sectionKey == "account-health" {
+		if err := s.reserveAccountHealthInputVersions(ctx, tx, nowISO); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+// reserveAccountHealthInputVersions registers the D7 gap inside the caller's
+// transaction. The Node account-health settings branch
+// (settings.repository.ts:308-327) scans the eligible OpenAI accounts and
+// enqueues their health jobs input snapshots, writing BOTH
+// account_health_jobs_input_versions (epoch reservation) and
+// account_health_jobs_input_outbox (publish intent). This Go port reserves
+// the versions rows only: the Go topology has no outbox consumer — jobs
+// accounthealth discovers the direct input projection from an INNER JOIN on
+// account_health_jobs_input_versions (accounthealth/direct_input_reader.go) —
+// and the #7 ruling (juhe-ai-gateway/chain_error_policy_effects.go
+// markCooldown) already established "never write a dead surface without a
+// consumer" for this exact outbox family. The statement shape mirrors the
+// sibling reservation in accounts/write.go
+// (reserveAndEnqueueAccountHealthSnapshot) without the outbox insert, and the
+// PG row-lock suffix follows authz/downstream.go. Any failure returns into
+// the enclosing transaction and rolls the settings write back with it. No
+// version upper-bound guard is added, matching the sibling writers.
+func (s *Store) reserveAccountHealthInputVersions(ctx context.Context, tx *sql.Tx, now string) error {
+	lockSuffix := ""
+	if s.pg {
+		lockSuffix = " FOR UPDATE"
+	}
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id, config_revision, dispatch_revision FROM `+s.table("accounts")+`
+		WHERE deleted_at IS NULL AND provider_code = 'openai' AND type IN ('api_key','oauth')
+		ORDER BY id ASC`)+lockSuffix)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var accountID string
+		var configRevision, dispatchRevision int64
+		if err := rows.Scan(&accountID, &configRevision, &dispatchRevision); err != nil {
+			return err
+		}
+		var currentVersion sql.NullInt64
+		err := tx.QueryRowContext(ctx, s.bind(`SELECT current_version FROM `+s.table("account_health_jobs_input_versions")+`
+			WHERE account_id = ?`)+lockSuffix, accountID).Scan(&currentVersion)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		nextVersion := int64(1)
+		if err == nil && currentVersion.Valid {
+			nextVersion = currentVersion.Int64 + 1
+			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("account_health_jobs_input_versions")+`
+				SET current_version = ?, reserved_at = ? WHERE account_id = ?`), nextVersion, now, accountID); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("account_health_jobs_input_versions")+`
+				(account_id, current_version, reserved_at) VALUES (?, ?, ?)`), accountID, nextVersion, now); err != nil {
+				return err
+			}
+		}
+	}
+	return rows.Err()
 }
 
 // refreshSystemCache mirrors refreshSystemSettingsCacheAfterSectionWrite's
@@ -768,9 +836,13 @@ func (s *Store) LoadSection(ctx context.Context, sectionKey string) (map[string]
 // sections, a single upsert transaction persists the values and the write
 // refreshes the domain cache — system sections additionally fire the gateway
 // runtime invalidation (Node notifyGatewayRuntimeCacheInvalidation). The
-// Node account-health branch also enqueues account health jobs input
-// snapshots inside the transaction; that outbox family has no gateway-side
-// port yet, so the write stays settings-only (documented gap).
+// account-health section additionally reserves the account health jobs input
+// epochs inside the same transaction (D7 gap registration): the Node branch
+// writes versions + outbox, but the Go topology has no outbox consumer (jobs
+// accounthealth schedules from the versions INNER JOIN) and the #7 ruling
+// (chain_error_policy_effects.go markCooldown) established "never write a
+// dead surface without a consumer", so only the versions reservation is
+// ported (see reserveAccountHealthInputVersions).
 func (s *Store) UpdateSection(ctx context.Context, sectionKey string, input map[string]any) (map[string]any, error) {
 	ctx = ensureCtx(ctx)
 	section, err := resolveSettingsSection(sectionKey)
@@ -810,7 +882,7 @@ func (s *Store) UpdateSection(ctx context.Context, sectionKey string, input map[
 			return nil, err
 		}
 	} else {
-		if err := s.upsertSystemSettings(ctx, normalized); err != nil {
+		if err := s.upsertSystemSettings(ctx, sectionKey, normalized); err != nil {
 			return nil, err
 		}
 		s.mu.Lock()

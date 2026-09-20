@@ -4,9 +4,16 @@ import (
 	"net/http"
 )
 
-// Management security headers mirror shared/http-security.ts byte for byte.
+// Management security headers. The CSP started as a byte-for-byte port of the
+// archived Node http-security.ts contract; since 2026-09-21 script-src
+// deliberately deviates with 'unsafe-inline' (owner decision): the chat
+// SVG/HTML previews run model-generated prototypes inside sandboxed
+// ("allow-scripts", opaque origin) srcdoc iframes that inherit this management
+// CSP, so the preview contract requires inline scripts. Containment relies on
+// the iframe sandbox, HttpOnly session cookies and the 'self' defaults of
+// every other directive.
 var managementHeaders = map[string]string{
-	"Content-Security-Policy": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; worker-src 'self' blob:; media-src 'self' data: blob: https:; manifest-src 'self'",
+	"Content-Security-Policy": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; worker-src 'self' blob:; media-src 'self' data: blob: https:; manifest-src 'self'",
 	"X-Frame-Options":         "DENY",
 	"X-Content-Type-Options":  "nosniff",
 	"Referrer-Policy":         "strict-origin-when-cross-origin",

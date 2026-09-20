@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
@@ -26,8 +27,8 @@ type recordingSink struct {
 	entries []authsys.OperationLogEntry
 }
 
-
 var mustChangeFalse = false
+
 func (s *recordingSink) Record(entry authsys.OperationLogEntry, _ *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -974,5 +975,328 @@ func TestSettingsGlobalEndpoints(t *testing.T) {
 	}
 	if len(entries[1].Changes) != 0 {
 		t.Fatalf("no-op changes: %+v", entries[1].Changes)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// D7 gap registration: the account-health section reserves the account
+// health jobs input epochs inside the settings transaction (versions only,
+// no outbox — see reserveAccountHealthInputVersions).
+// ---------------------------------------------------------------------------
+
+// createAccountHealthFixtureTables builds the minimal account surface the
+// reservation touches. The versions DDL is verbatim from
+// maintenance/internal/schema/sqlite_schema_business.go:659-663.
+func createAccountHealthFixtureTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, type TEXT NOT NULL, config_revision INTEGER NOT NULL DEFAULT 0, dispatch_revision INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)`,
+		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
+      account_id TEXT PRIMARY KEY,
+      current_version INTEGER NOT NULL CHECK (current_version >= 1),
+      reserved_at TEXT NOT NULL
+    )`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func insertFixtureAccount(t *testing.T, db *sql.DB, id, providerCode, accountType, deletedAt string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO accounts (id, provider_code, type, config_revision, dispatch_revision, deleted_at) VALUES (?, ?, ?, 0, 0, ?)`,
+		id, providerCode, accountType, nullableFixtureText(deletedAt)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nullableFixtureText(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func accountHealthVersionRows(t *testing.T, db *sql.DB) map[string]int64 {
+	t.Helper()
+	rows, err := db.Query(`SELECT account_id, current_version FROM account_health_jobs_input_versions ORDER BY account_id ASC`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	values := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var version int64
+		if err := rows.Scan(&id, &version); err != nil {
+			t.Fatal(err)
+		}
+		values[id] = version
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return values
+}
+
+// TestSettingsSectionPatchAccountHealthReservesInputVersions covers the
+// account-health slice through the PATCH /settings/sections/:key route:
+// exactly the live openai api_key/oauth accounts get versions rows (first
+// save seeds 1, second save bumps to 2); deleted and non-openai accounts
+// never appear.
+func TestSettingsSectionPatchAccountHealthReservesInputVersions(t *testing.T) {
+	env := newTestEnv(t)
+	createAccountHealthFixtureTables(t, env.db)
+	insertFixtureAccount(t, env.db, "acc-openai-deleted", "openai", "api_key", "2024-01-01T00:00:00Z")
+	insertFixtureAccount(t, env.db, "acc-anthropic", "anthropic", "api_key", "")
+	insertFixtureAccount(t, env.db, "acc-openai-key", "openai", "api_key", "")
+	insertFixtureAccount(t, env.db, "acc-openai-oauth", "openai", "oauth", "")
+	env.login(t, "root", "root-pass", "super_admin")
+
+	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/settings/sections/account-health",
+		`{"accountHealthCheckIntervalHours":2}`)
+	if code != http.StatusOK {
+		t.Fatalf("patch: %d %v", code, payload)
+	}
+	values := dataMap(t, payload)["values"].(map[string]any)
+	if values["accountHealthCheckIntervalHours"] != float64(2) {
+		t.Fatalf("patch response values: %v", values)
+	}
+	versions := accountHealthVersionRows(t, env.db)
+	if len(versions) != 2 {
+		t.Fatalf("versions rows: %v", versions)
+	}
+	if versions["acc-openai-key"] != 1 || versions["acc-openai-oauth"] != 1 {
+		t.Fatalf("first reservation: %v", versions)
+	}
+
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings/sections/account-health",
+		`{"accountHealthCheckIntervalHours":3}`)
+	if code != http.StatusOK {
+		t.Fatalf("second patch: %d %v", code, payload)
+	}
+	versions = accountHealthVersionRows(t, env.db)
+	if versions["acc-openai-key"] != 2 || versions["acc-openai-oauth"] != 2 {
+		t.Fatalf("second reservation: %v", versions)
+	}
+}
+
+// TestSettingsAccountHealthReservationGatedArms covers the non-triggering
+// arms: no eligible accounts, another section, and the legacy full-snapshot
+// write (Node updateSettingsAsync has no account-health branch).
+func TestSettingsAccountHealthReservationGatedArms(t *testing.T) {
+	env := newTestEnv(t)
+	createAccountHealthFixtureTables(t, env.db)
+	env.login(t, "root", "root-pass", "super_admin")
+
+	// (b) No eligible accounts: the section write still succeeds with zero
+	// versions rows.
+	code, payload := env.do(t, http.MethodPatch, "/__aisys__/api/settings/sections/account-health",
+		`{"accountHealthCheckIntervalHours":2}`)
+	if code != http.StatusOK {
+		t.Fatalf("patch without accounts: %d %v", code, payload)
+	}
+	if rows := accountHealthVersionRows(t, env.db); len(rows) != 0 {
+		t.Fatalf("versions rows without accounts: %v", rows)
+	}
+
+	// (c) Another section never reserves, even with eligible accounts.
+	insertFixtureAccount(t, env.db, "acc-openai-key", "openai", "api_key", "")
+	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/settings/sections/api-rate-limit",
+		`{"systemApiRateLimitIpReadPerMinute":600}`)
+	if code != http.StatusOK {
+		t.Fatalf("api-rate-limit patch: %d %v", code, payload)
+	}
+	if rows := accountHealthVersionRows(t, env.db); len(rows) != 0 {
+		t.Fatalf("versions rows after api-rate-limit: %v", rows)
+	}
+
+	// (d) The full-snapshot write never reserves.
+	store, err := NewStore(env.db, false, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(context.Background(), map[string]any{"gatewayTextRawBodyLimitMegabytes": float64(32)}); err != nil {
+		t.Fatalf("full update: %v", err)
+	}
+	if rows := accountHealthVersionRows(t, env.db); len(rows) != 0 {
+		t.Fatalf("versions rows after full update: %v", rows)
+	}
+}
+
+// TestSettingsAccountHealthReservationFailureRollsBack injects a failure into
+// the versions reservation (w11f connection-layer fault script) and asserts
+// the atomicity contract: the settings write and the reservation share one
+// transaction, so the failure must leave neither settings nor versions rows
+// behind.
+func TestSettingsAccountHealthReservationFailureRollsBack(t *testing.T) {
+	env := newW11FEnv(t)
+	createAccountHealthFixtureTables(t, env.db)
+	insertFixtureAccount(t, env.db, "acc-openai-key", "openai", "api_key", "")
+	env.script.failQuery("FROM account_health_jobs_input_versions")
+
+	if _, err := env.store.UpdateSection(context.Background(), "account-health",
+		map[string]any{"accountHealthCheckIntervalHours": 2.0}); err == nil {
+		t.Fatal("versions reservation fault must fail the section write")
+	}
+	var value sql.NullString
+	if err := env.db.QueryRow(`SELECT value_json FROM system_settings WHERE system_account_id='sys_admin' AND key='accountHealthCheckIntervalHours'`).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value.String != "1" {
+		t.Fatalf("settings must roll back with the reservation: %v", value.String)
+	}
+	if rows := accountHealthVersionRows(t, env.db); len(rows) != 0 {
+		t.Fatalf("versions residue after rollback: %v", rows)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PG 方言臂：捕获生成的 SQL 文本（执行走 fake 结果，SQLite 引擎不校验
+// PostgreSQL 专有语法）。
+// ---------------------------------------------------------------------------
+
+type pgDialectRecorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (r *pgDialectRecorder) record(query string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, query)
+}
+
+func (r *pgDialectRecorder) queries() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.seen...)
+}
+
+func (r *pgDialectRecorder) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = nil
+}
+
+type pgDialectConnector struct {
+	base driver.Connector
+	rec  *pgDialectRecorder
+}
+
+func (c *pgDialectConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.base.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &pgDialectConn{base: conn, rec: c.rec}, nil
+}
+
+func (c *pgDialectConnector) Driver() driver.Driver { return c.base.Driver() }
+
+type pgDialectConn struct {
+	base driver.Conn
+	rec  *pgDialectRecorder
+}
+
+func (c *pgDialectConn) Prepare(query string) (driver.Stmt, error) { return c.base.Prepare(query) }
+func (c *pgDialectConn) Close() error                              { return c.base.Close() }
+func (c *pgDialectConn) Begin() (driver.Tx, error)                 { return c.base.Begin() }
+
+func (c *pgDialectConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.rec.record(query)
+	return driver.RowsAffected(1), nil
+}
+
+func (c *pgDialectConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.rec.record(query)
+	if strings.Contains(query, "FROM juhe_business.accounts") {
+		return &pgDialectRows{
+			cols: []string{"id", "config_revision", "dispatch_revision"},
+			rows: [][]driver.Value{{"acc-openai-key", int64(1), int64(1)}},
+		}, nil
+	}
+	// Empty rows surface as sql.ErrNoRows: the reservation takes the INSERT
+	// arm for every account.
+	return &pgDialectRows{cols: []string{"value"}}, nil
+}
+
+type pgDialectRows struct {
+	cols []string
+	rows [][]driver.Value
+	next int
+}
+
+func (r *pgDialectRows) Columns() []string { return r.cols }
+func (r *pgDialectRows) Close() error      { return nil }
+func (r *pgDialectRows) Next(dest []driver.Value) error {
+	if r.next >= len(r.rows) {
+		return io.EOF
+	}
+	copy(dest, r.rows[r.next])
+	r.next++
+	return nil
+}
+
+// TestSettingsAccountHealthReservationPostgresDialect asserts the generated
+// SQL in PostgreSQL mode: juhe_business. schema prefix, $n positional
+// bindings and the FOR UPDATE row locks, with no outbox statement.
+func TestSettingsAccountHealthReservationPostgresDialect(t *testing.T) {
+	base, err := sqlite.NewConnector("file:settings-pg-acchealth-" + strings.ReplaceAll(t.Name(), "/", "-") + "?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &pgDialectRecorder{}
+	db := sql.OpenDB(&pgDialectConnector{base: base, rec: recorder})
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+
+	store, err := NewStore(db, true, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.upsertSystemSettings(context.Background(), "account-health",
+		map[string]any{"accountHealthCheckIntervalHours": 2.0}); err != nil {
+		t.Fatalf("pg dialect account-health reservation: %v", err)
+	}
+	joined := strings.Join(recorder.queries(), "\n")
+	for _, expected := range []string{
+		"FROM juhe_business.accounts",
+		"provider_code = 'openai'",
+		"type IN ('api_key','oauth')",
+		"ORDER BY id ASC",
+		"FROM juhe_business.account_health_jobs_input_versions",
+		"FOR UPDATE",
+		"INSERT INTO juhe_business.system_settings",
+		"INSERT INTO juhe_business.account_health_jobs_input_versions",
+		"(account_id, current_version, reserved_at) VALUES ($1, $2, $3)",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("pg dialect missing %q in:\n%s", expected, joined)
+		}
+	}
+	// The captured SQL must be the PG dialect, not the sqlite fallback.
+	if !strings.Contains(joined, "WHERE account_id = $1 FOR UPDATE") {
+		t.Fatalf("pg dialect versions lock missing:\n%s", joined)
+	}
+	// #7 ruling: no consumer, no dead outbox surface.
+	if strings.Contains(joined, "account_health_jobs_input_outbox") {
+		t.Fatalf("pg dialect must not write the outbox:\n%s", joined)
+	}
+	// The fake reports no existing rows: only the INSERT arm may run.
+	if strings.Contains(joined, "UPDATE juhe_business.account_health_jobs_input_versions") {
+		t.Fatalf("unexpected versions update:\n%s", joined)
+	}
+
+	// Non account-health sections never emit reservation statements.
+	recorder.reset()
+	if err := store.upsertSystemSettings(context.Background(), "api-rate-limit",
+		map[string]any{"systemApiRateLimitIpReadPerMinute": 600.0}); err != nil {
+		t.Fatalf("pg dialect non account-health upsert: %v", err)
+	}
+	joined = strings.Join(recorder.queries(), "\n")
+	if strings.Contains(joined, "juhe_business.accounts") || strings.Contains(joined, "account_health_jobs_input_versions") {
+		t.Fatalf("non account-health section must not reserve:\n%s", joined)
 	}
 }

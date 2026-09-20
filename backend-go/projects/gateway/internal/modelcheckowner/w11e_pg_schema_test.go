@@ -133,7 +133,9 @@ func w11eNewPlan() w11eSchemaPlan {
 	}
 }
 
-func w11eQuoteIdentifier(value string) string { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
+func w11eQuoteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
 
 // w11eSchemaDDL 从 contracts.BusinessSQLiteSchema 生成结构等价的 PostgreSQL
 // DDL。类型全部使用 TEXT：本契约只校验结构（列名/主键/唯一/外键/索引），

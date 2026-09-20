@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { isCompleteStaticSvg, resolveChatSvgPreviewSize } from '../../views/chat/chatSvgPreview'
+import { buildChatSvgPreviewDocument, isCompleteStaticSvg, resolveChatSvgPreviewSize } from '../../views/chat/chatSvgPreview'
 
 const source = readFileSync('../frontend/src/views/chat/ChatMarkdown.vue', 'utf8')
 assert.equal(isCompleteStaticSvg('<svg viewBox="0 0 320 180"><rect width="320" height="180" /></svg>'), true)
@@ -8,8 +8,19 @@ assert.equal(isCompleteStaticSvg('<svg><foreignObject><div>原型</div></foreign
 assert.equal(isCompleteStaticSvg('<svg><rect /></svg'), false)
 assert.deepEqual(resolveChatSvgPreviewSize('<svg viewBox="0 0 320 180"></svg>'), { width: 320, height: 180 })
 assert.deepEqual(resolveChatSvgPreviewSize('<svg></svg>'), { width: 640, height: 360 })
-assert.match(source, /frame\.setAttribute\('sandbox', 'allow-scripts'\)/, 'SVG 必须放在隔离 iframe，同时允许原型脚本动效渲染')
-assert.match(source, /frame\.srcdoc = svg/, 'SVG 预览必须使用 srcdoc，不注入聊天主 DOM')
+assert.match(source, /frame\.setAttribute\('sandbox', 'allow-scripts allow-popups'\)/, 'SVG 必须放在隔离 iframe，允许原型脚本动效渲染；新窗口弹窗由沙箱打开并继承 sandbox')
+assert.match(source, /frame\.style\.aspectRatio = `\$\{size\.width\} \/ \$\{size\.height\}`/, '有 viewBox 的 SVG 预览必须按内容比例自适应容器宽度')
+assert.match(source, /frame\.dataset\.chatSvgSource = svg/, 'SVG 预览必须保留源数据，供父页新窗口开窗使用')
+assert.match(source, /frame\.srcdoc = buildChatSvgPreviewDocument\(svg\)/, 'SVG 预览必须使用 srcdoc，不注入聊天主 DOM')
+const previewDocument = buildChatSvgPreviewDocument('<svg viewBox="0 0 320 180"><rect width="320" height="180" /></svg>')
+assert.match(previewDocument, /^<!doctype html>/i, 'srcdoc 必须是完整 HTML 文档')
+assert.match(previewDocument, /<svg viewBox="0 0 320 180"><rect width="320" height="180" \/><\/svg>/, 'SVG 原文必须原样进入 srcdoc')
+assert.match(previewDocument, /scrollbar-width:thin/, 'srcdoc 必须内联统一滚动条样式')
+assert.match(previewDocument, /::-webkit-scrollbar-thumb/, 'srcdoc 必须内联统一滚动条样式')
+assert.match(previewDocument, /html,body\{margin:0;width:100%;height:100%\}/, 'SVG 预览必须撑满视口')
+assert.match(previewDocument, /svg\{width:100%;height:100%;display:block\}/, 'SVG 必须等比缩放到完整可见，不出现滚动条')
+assert.match(previewDocument, /新窗口打开完整预览/, 'SVG 预览必须内联新窗口打开入口')
+assert.match(previewDocument, /juhe-ai-chat-svg-preview-open-window/, 'SVG 预览打开按钮必须 postMessage 请求父页开窗，沙箱 iframe 不得直接写弹窗 document')
 assert.match(source, /version !== renderVersion/, '旧异步渲染不得覆盖新内容')
 assert.doesNotMatch(source, /if\s*\(!sources\.length\)\s*return/, '没有 Mermaid 时也必须继续处理 fenced SVG')
 console.log('AI 问答静态 SVG 预览回归通过')

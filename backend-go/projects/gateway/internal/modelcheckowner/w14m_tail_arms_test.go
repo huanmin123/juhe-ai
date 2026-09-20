@@ -683,7 +683,7 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 	t.Run("recoveryClaimScanError", func(t *testing.T) {
 		business, fp := w14mFailDB(t, w14mSchedulerBusinessDDL(t))
 		w14mSeedPlainAccount(t, business, "acct")
-		if _, err := business.Exec(`UPDATE accounts SET credentials_encrypted='`+envelope+`' WHERE id='acct'`); err != nil {
+		if _, err := business.Exec(`UPDATE accounts SET credentials_encrypted='` + envelope + `' WHERE id='acct'`); err != nil {
 			t.Fatal(err)
 		}
 		store := &Store{db: business, mode: "sqlite"}

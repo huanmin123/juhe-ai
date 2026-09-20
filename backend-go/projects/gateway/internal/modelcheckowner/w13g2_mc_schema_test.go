@@ -35,7 +35,7 @@ func strings_ReplaceAll(v string) string {
 }
 
 // TestW13g2McSchemaArms 覆盖 CheckBusinessSQLiteSchema 的查询失败分支
-//（business_schema.go 45-115）与 sqliteSchema* helper 的错误返回。
+// （business_schema.go 45-115）与 sqliteSchema* helper 的错误返回。
 func TestW13g2McSchemaArms(t *testing.T) {
 	s, fp := w13g2McSchemaFailStore(t)
 	ctx := context.Background()
@@ -189,7 +189,7 @@ func TestW13g2McQueryGuards(t *testing.T) {
 }
 
 // TestW13g2McCutoverEvidenceArms 覆盖 cutover_evidence 的错误分支
-//（verifyConfiguredBackupArtifact 68.8%）。
+// （verifyConfiguredBackupArtifact 68.8%）。
 func TestW13g2McCutoverEvidenceArms(t *testing.T) {
 	s, _ := w13g2McFailStore(t)
 	_ = s

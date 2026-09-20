@@ -48,13 +48,13 @@ import (
 // applyUsageAccountScope 对非 OpenAI 视图按缺失 scope 清空投影（Node 对齐）。
 type w16bPlainAccountView struct{ id string }
 
-func (v w16bPlainAccountView) GetID() string                       { return v.id }
-func (v w16bPlainAccountView) GetName() string                     { return "w16b-plain" }
-func (v w16bPlainAccountView) GetProviderCode() string             { return "openai" }
+func (v w16bPlainAccountView) GetID() string                        { return v.id }
+func (v w16bPlainAccountView) GetName() string                      { return "w16b-plain" }
+func (v w16bPlainAccountView) GetProviderCode() string              { return "openai" }
 func (v w16bPlainAccountView) GetProviderProtocolProfileID() string { return "" }
-func (v w16bPlainAccountView) GetProtocolCode() string             { return "openai" }
-func (v w16bPlainAccountView) GetProtocolVersion() string          { return "v1" }
-func (v w16bPlainAccountView) GetClientCompatibility() string      { return "" }
+func (v w16bPlainAccountView) GetProtocolCode() string              { return "openai" }
+func (v w16bPlainAccountView) GetProtocolVersion() string           { return "v1" }
+func (v w16bPlainAccountView) GetClientCompatibility() string       { return "" }
 
 func TestW16BUsageAccountScopeArms(t *testing.T) {
 	// 非 OpenAIAccountView：scope 投影早退，accountId 仍取 GetID，其余清空。

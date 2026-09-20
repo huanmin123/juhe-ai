@@ -336,8 +336,10 @@ func TestSSEFlushTimelinessWithoutCompression(t *testing.T) {
 	}
 }
 
-// TestManagementSecurityHeadersByteExact locks http-security.ts
-// managementHeaders byte for byte (script-src 'self' only).
+// TestManagementSecurityHeadersByteExact locks the management CSP byte for
+// byte. script-src carries 'unsafe-inline' by owner decision since 2026-09-21:
+// sandboxed chat preview iframes inherit this CSP and must run
+// model-generated prototypes; containment relies on the iframe sandbox.
 func TestManagementSecurityHeadersByteExact(t *testing.T) {
 	k := newTestKernel(t, nil)
 	k.RegisterFunc("GET /__aisys__/api/ping", func(w http.ResponseWriter, r *http.Request) {
@@ -351,12 +353,15 @@ func TestManagementSecurityHeadersByteExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	want := "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; worker-src 'self' blob:; media-src 'self' data: blob: https:; manifest-src 'self'"
+	want := "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https: wss:; worker-src 'self' blob:; media-src 'self' data: blob: https:; manifest-src 'self'"
 	if got := response.Header.Get("Content-Security-Policy"); got != want {
 		t.Fatalf("CSP mismatch:\n got  %q\n want %q", got, want)
 	}
-	if strings.Contains(want, "script-src 'self' 'unsafe-inline'") {
-		t.Fatal("script-src must not allow unsafe-inline")
+	if !strings.Contains(want, "script-src 'self' 'unsafe-inline'") {
+		t.Fatal("preview contract requires script-src 'unsafe-inline'")
+	}
+	if strings.Contains(want, "unsafe-eval") {
+		t.Fatal("script-src must not allow unsafe-eval")
 	}
 }
 

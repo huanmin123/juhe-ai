@@ -306,6 +306,20 @@ func writeCutoverEvidence(t *testing.T, root, ownerEpoch string) string {
 // ---------------------------------------------------------------------------
 
 // runMaintenanceEnsureSeed 调用 juhe-ai-maintenance --ensure-schema --seed。
+// runMaintenanceJ3bPostgresApply 应用 juhe_j3b schema（幂等）：模型检测
+// owner 默认常驻后，PG 模式的专属 schema 按契约由 maintenance 显式补齐。
+func runMaintenanceJ3bPostgresApply(t *testing.T, dsn string) {
+	t.Helper()
+	cmd := exec.Command(maintenanceBinary, "--apply-j3b-model-check-postgres")
+	cmd.Env = append(os.Environ(), "JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL="+dsn)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("maintenance j3b postgres apply failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
 func runMaintenanceEnsureSeed(t *testing.T, driver string, paths string, dsn string, secret string) map[string]any {
 	t.Helper()
 	args := []string{"--ensure-schema", "--seed", "--driver", driver, "--secret", secret}
@@ -343,11 +357,15 @@ type gatewayEnvOptions struct {
 	// PGDSN 非空时以 postgres 模式组装（其余路径仍指向隔离临时目录的
 	// 审计/操作日志等专用存储）。
 	PGDSN string
+	// J3bPinnedListener 固定模型检测管理 listener 地址并暴露到
+	// fixture.j3bURL（模型检测已默认常驻，此项只为断言提供已知端口）。
+	J3bPinnedListener bool
 }
 
 type gatewayFixture struct {
 	baseURL    string
 	healthURL  string
+	j3bURL     string
 	root       string
 	secret     string
 	spoolDir   string
@@ -405,9 +423,13 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	fixture.assetsRoot = filepath.Join(root, "chat-assets")
 
 	env := map[string]string{
-		"JUHE_AI_HOST":                             "127.0.0.1",
-		"JUHE_AI_PORT":                             fmt.Sprint(mainPort),
-		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS":    fmt.Sprintf("127.0.0.1:%d", healthPort),
+		"JUHE_AI_HOST":                          "127.0.0.1",
+		"JUHE_AI_PORT":                          fmt.Sprint(mainPort),
+		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS": fmt.Sprintf("127.0.0.1:%d", healthPort),
+		// 2026-09-21 起模型检测 owner 默认常驻：数据目录收敛进隔离 storage，
+		// 管理 listener 用随机端口避免并发场景抢占 3307。
+		"JUHE_AI_DATA_DIR":                         filepath.Join(root, "storage"),
+		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS":    "127.0.0.1:0",
 		"JUHE_AI_RUNTIME_MODE":                     "standalone",
 		"JUHE_AI_SECRET":                           secret,
 		"JUHE_AI_BUSINESS_OWNER":                   "gateway",
@@ -466,6 +488,11 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		env["JUHE_AI_OIDC_ISSUER"] = fixture.baseURL
 		env["JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET"] = randomHex(t, 16)
 	}
+	if opts.J3bPinnedListener {
+		j3bPort := freePort(t)
+		fixture.j3bURL = fmt.Sprintf("http://127.0.0.1:%d", j3bPort)
+		env["JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS"] = fmt.Sprintf("127.0.0.1:%d", j3bPort)
+	}
 	if pg {
 		env["JUHE_AI_DATABASE_DRIVER"] = "postgres"
 		env["JUHE_AI_POSTGRES_URL"] = opts.PGDSN
@@ -476,6 +503,9 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		env["JUHE_AI_OPERATION_LOG_POSTGRES_URL"] = opts.PGDSN
 		// PG 模式没有启动期 ensure：schema/seed 由外部 maintenance 执行。
 		runMaintenanceEnsureSeed(t, "postgres", "", opts.PGDSN, secret)
+		// 模型检测 owner 默认常驻（2026-09-21）：juhe_j3b schema 按契约由
+		// maintenance 显式应用，harness 与部署 runbook 保持一致。
+		runMaintenanceJ3bPostgresApply(t, opts.PGDSN)
 	} else {
 		env["JUHE_AI_DATABASE_DRIVER"] = "sqlite"
 		pathsValue := fmt.Sprintf(

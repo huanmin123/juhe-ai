@@ -44,9 +44,9 @@ func w11eQualityManager(t *testing.T) (*BusinessQualityManager, *sql.DB) {
 	return manager, db
 }
 
-func w11eInt(value int) *int    { return &value }
+func w11eInt(value int) *int          { return &value }
 func w11eString(value string) *string { return &value }
-func w11eBool(value bool) *bool { return &value }
+func w11eBool(value bool) *bool       { return &value }
 
 func TestW11EQualityManagerPolicyArms(t *testing.T) {
 	if _, err := NewBusinessQualityManager(nil, false); err == nil || !strings.Contains(err.Error(), "database is required") {
@@ -344,10 +344,11 @@ func TestW11EOutcomeCursorAndHealthTimeArms(t *testing.T) {
 }
 
 func TestW11ELoadConfigArms(t *testing.T) {
-	if _, err := LoadConfig(func(string) string { return "" }); err != nil {
-		t.Fatalf("未启用必须直接返回: %v", err)
+	// 2026-09-21 起无总开关：空 env 也返回 Enabled=true 的自动认领配置。
+	cfgEmpty, err := LoadConfig(func(string) string { return "" })
+	if err != nil || !cfgEmpty.Enabled || !cfgEmpty.AutoClaimed {
+		t.Fatalf("空 env 必须得到默认常驻配置: cfg=%+v err=%v", cfgEmpty, err)
 	}
-	enabled := map[string]string{"JUHE_AI_J3B_ENABLED": "true"}
 	getenv := func(overrides map[string]string) func(string) string {
 		return func(key string) string {
 			if value, ok := overrides[key]; ok {
@@ -356,21 +357,31 @@ func TestW11ELoadConfigArms(t *testing.T) {
 			return ""
 		}
 	}
-	if _, err := LoadConfig(getenv(enabled)); err == nil || !strings.Contains(err.Error(), "OWNER") {
+	// 2026-09-20 零配置自动认领：owner/instance/store/PG URL 都有默认或回退，
+	// 仅显式非法 owner 仍拒绝。
+	if _, err := LoadConfig(getenv(map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "jobs"})); err == nil || !strings.Contains(err.Error(), "OWNER") {
 		t.Fatalf("非法 owner 必须拒绝: %v", err)
 	}
-	base := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "i-1", "JUHE_AI_J3B_STORE": "postgres", "JUHE_AI_J3B_POSTGRES_URL": "postgres://w11e.invalid/db"}
-	postgres := map[string]string{}
-	for key, value := range base {
-		postgres[key] = value
+	zero := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_DATABASE_DRIVER": "postgres", "JUHE_AI_POSTGRES_URL": "postgres://w11e.invalid/main"}
+	cfg, err := LoadConfig(getenv(zero))
+	if err != nil || !cfg.AutoClaimed {
+		t.Fatalf("零配置 postgres 必须自动认领: cfg=%+v err=%v", cfg, err)
 	}
-	if _, err := LoadConfig(getenv(postgres)); err == nil || !strings.Contains(err.Error(), "BUSINESS_POSTGRES_URL") {
-		t.Fatalf("缺业务 PG URL 必须拒绝: %v", err)
+	if cfg.StoreMode != "postgres" || cfg.PostgresURL != "postgres://w11e.invalid/main" || cfg.BusinessPostgresURL != "postgres://w11e.invalid/main" {
+		t.Fatalf("postgres URL 回退=%+v", cfg)
 	}
-	postgres["JUHE_AI_J3B_BUSINESS_POSTGRES_URL"] = "postgres://w11e.invalid/business"
-	delete(postgres, "JUHE_AI_J3B_POSTGRES_URL")
-	if _, err := LoadConfig(getenv(postgres)); err == nil || !strings.Contains(err.Error(), "POSTGRES_URL") {
-		t.Fatalf("缺 J3b PG URL 必须拒绝: %v", err)
+	explicit := map[string]string{
+		"JUHE_AI_J3B_ENABLED":               "true",
+		"JUHE_AI_J3B_STORE":                 "postgres",
+		"JUHE_AI_J3B_POSTGRES_URL":          "postgres://w11e.invalid/db",
+		"JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://w11e.invalid/business",
+	}
+	cfgExplicit, err := LoadConfig(getenv(explicit))
+	if err != nil {
+		t.Fatalf("显式 PG URL 必须优先: %v", err)
+	}
+	if cfgExplicit.PostgresURL != "postgres://w11e.invalid/db" || cfgExplicit.BusinessPostgresURL != "postgres://w11e.invalid/business" {
+		t.Fatalf("显式 PG URL=%+v", cfgExplicit)
 	}
 }
 

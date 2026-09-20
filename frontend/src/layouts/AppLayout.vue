@@ -139,7 +139,7 @@ import {
   syncMenuModeWithUser,
   type AppMenuMode
 } from '@/composables/useMenuMode'
-import { isJ3bUiEnabled, menuRoutes, recoverRouteAssetLoadError } from '@/router'
+import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { PublishedAnnouncementListItem } from '@/types/domain'
@@ -319,7 +319,6 @@ const visibleMenuRoutes = computed(() =>
   menuRoutes.filter((item) => (
     canAccessRoute(item)
     && (item.meta?.viewScope ?? 'admin') === appMenuMode.value
-    && (!item.meta?.requiresJ3b || isJ3bUiEnabled)
   ))
 )
 

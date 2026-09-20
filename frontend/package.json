@@ -59,6 +59,7 @@
     "test:chat-message-process": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-message-process-regression.ts",
     "test:chat-markdown-code": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-markdown-code-regression.ts",
     "test:chat-svg-preview": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-svg-preview-regression.ts",
+    "test:chat-html-preview": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-html-preview-regression.ts",
     "test:account-basic-formatters": "tsx --tsconfig tsconfig.json src/scripts/regression/account-basic-formatters-regression.ts",
     "test:account-basic-edit-notes": "tsx --tsconfig tsconfig.json scripts/regression/account-basic-edit-notes-regression.ts",
     "test:account-import-protocol": "tsx --tsconfig tsconfig.json src/scripts/regression/account-import-protocol-regression.ts",

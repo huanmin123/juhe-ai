@@ -52,12 +52,10 @@ assert.match(viteConfigSource, /__JUHE_AI_FRONTEND_BUILD_ID__/, 'Vite 必须注�
 assert.match(viteConfigSource, /fileName:\s*['"]build-info\.json['"]/, 'Vite 必须输出静态 Build ID 清单')
 assert.match(powerShellReleaseSource, /VITE_JUHE_AI_BUILD_ID\s*=\s*\$releaseSourceCommit/, 'PowerShell 发布必须注入冻结提交')
 assert.match(shellReleaseSource, /VITE_JUHE_AI_BUILD_ID=["']?\$RELEASE_SOURCE_COMMIT/, 'POSIX 发布必须注入冻结提交')
-assert.match(powerShellReleaseSource, /VITE_JUHE_AI_J3B_ENABLED\s*=\s*'false'/, 'PowerShell 正式包必须显式关闭 J3b UI')
-assert.match(shellReleaseSource, /VITE_JUHE_AI_J3B_ENABLED=["']false["']/, 'POSIX 正式包必须显式关闭 J3b UI')
-// go-only 收口后 docker/Dockerfile.builder 已随 Node 后端归档删除（3f51156e0），
-// Jenkins 流水线也不再构建前端镜像（只校验 frontend/dist/index.html 存在）。
-// “正式前端构建必须显式关闭 J3b、不得继承宿主环境”的语义当前由
-// scripts/package-release.ps1 / package-release.sh 的显式注入承担（上方两条断言）。
+// 模型检测是常驻功能（2026-09-21 起前后端均无总开关），发布脚本不再注入
+// 任何 J3b 构建变量，也不得恢复按开关隐藏模型检测入口的行为。
+assert.doesNotMatch(powerShellReleaseSource, /VITE_JUHE_AI_J3B_ENABLED/, 'PowerShell 发布不得再注入 J3b 开关')
+assert.doesNotMatch(shellReleaseSource, /VITE_JUHE_AI_J3B_ENABLED/, 'POSIX 发布不得再注入 J3b 开关')
 assert.match(serverSource, /build-info\.json/, '后端静态服务必须显式设置 Build ID 清单缓存规则')
 
 let requestedUrl = ''

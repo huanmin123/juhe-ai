@@ -25,15 +25,15 @@ var errW14mInjected = errors.New("w14m: injected failure")
 
 // w14mFailpoint 记录各 pattern 的已匹配次数与生效阈值；threshold<=0 表示立即生效。
 type w14mFailpoint struct {
-	mu        sync.Mutex
-	threshold map[string]int
-	counts    map[string]int
-	armed     map[string]bool
-	mode      map[string]string // "query" | "scan" | "nexterr"
-	failCommitsFrom int // 从第 N 次 Commit 开始失败；0 表示不失败
-	commits   int
+	mu              sync.Mutex
+	threshold       map[string]int
+	counts          map[string]int
+	armed           map[string]bool
+	mode            map[string]string // "query" | "scan" | "nexterr"
+	failCommitsFrom int               // 从第 N 次 Commit 开始失败；0 表示不失败
+	commits         int
 	failBeginsFrom  int // 从第 N 次 BeginTx 开始失败；0 表示不失败
-	begins    int
+	begins          int
 }
 
 func (fp *w14mFailpoint) arm(pattern string) {
@@ -425,10 +425,10 @@ func TestW14MBuildRequestPolicyErrorArms(t *testing.T) {
 	ctx := context.Background()
 	command := RunCommand{TargetType: "account", TargetID: "acct-1", Model: "gpt-5.6-sol"}
 	cases := []struct {
-		name       string
-		commits    int
-		begins     int
-		need       string
+		name    string
+		commits int
+		begins  int
+		need    string
 	}{
 		{"fenceCommit", 2, 0, "commit J3b Business target fence"},
 		{"policyCommit", 3, 0, "commit J3b Business policy read"},

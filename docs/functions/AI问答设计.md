@@ -294,7 +294,8 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 助手按照 `content_blocks_json` 的首次观察顺序渲染思考、联网搜索 1、联网搜索 2、正文、其他工具和图片；同一工具 ID 的 updated/completed 只更新原位置。只有相邻工具块进入同一投影段，正文、思考或图片会切断聚合边界，禁止为去重而全局重排时间线。
 - 实际助手消息树必须挂载低噪工具投影；展开工具过程只显示去重后的查询摘要、重复次数和失败状态，不直接展示 call ID 或原始 JSON。未知工具没有可读摘要时只显示不可展开状态行，完整事实保存在有界结构化内容和审计链路中。
 - 流式工具和思考事件直接更新当前助手消息，不刷新整个消息列表；完成后保持折叠状态。
-- Markdown 普通 HTML 仍禁止 `javascript:`、`data:`、`file:`、表单和外部资源；fenced `svg` 使用隔离 iframe `srcdoc` 预览，按用户决策允许 SVG 原型脚本和事件在 iframe 沙箱内运行，不进入聊天主 DOM。
+- Markdown 普通 HTML 仍禁止 `javascript:`、`data:`、`file:`、表单和外部资源；fenced `svg` 使用隔离 iframe `srcdoc` 预览，按用户决策允许 SVG 原型脚本和事件在 iframe 沙箱内运行，不进入聊天主 DOM。`srcdoc` 是内联统一滚动条样式的最小 HTML 包装（`chatSvgPreview.ts` 的 `buildChatSvgPreviewDocument`）：滚动条与全项目一致；有 viewBox 时 SVG 等比缩放撑满视口（`svg{width:100%;height:100%}`）完整可见、无滚动条，无 viewBox 退回自然尺寸避免截断，iframe 按内容比例自适应容器宽度。预览右上角有小尺寸低透明度的"新窗口打开完整预览"悬浮按钮：点击经 `postMessage` 请求父页开窗（沙箱 iframe 不直接写弹窗 document，不透明源会被浏览器拒访），父页写入仅含全屏 sandbox srcdoc iframe 的包装页，生成内容仍只在沙箱内运行；iframe sandbox 为 `allow-scripts allow-popups`。
+- fenced `html`（含 `htm`）代码块在围栏闭合后于头部提供"预览"按钮：点击在代码块内切换为隔离 sandbox iframe 预览（仅 `allow-scripts`），再点"源码"切回；预览读取 `textContent` 源码并用 `srcdoc` 加载，不进入聊天主 DOM，流式重渲染会把预览态重置回源码。预览文档注入统一滚动条样式和 `html,body{height:auto!important;min-height:100%!important}`（中和生成页 `height:100%` 加居中布局在固定高度下的顶部裁剪），并在 body 结束前内联一次性测量脚本：沙箱内测量内容包围盒后 `postMessage` 通知父页，父页校验 `event.source` 后把 iframe 高度调整到 240–900px；内容超过 900px 高或超出视口宽时在沙箱内按比例 `zoom` 等比缩小到完整可见（无滚动条、不截断），`zoom` 不受支持或上报缺失时回落固定高度与预览内部滚动。"打开"按钮在代码块工具栏（预览/源码旁），点击由父页写入仅含全屏 sandbox srcdoc iframe 的包装页并在新窗口按自然尺寸渲染，包装页自身不含生成内容，iframe 内不叠加打开按钮。预览脚本可运行依赖管理面 CSP `script-src 'self' 'unsafe-inline'`（2026-09-21 用户决策，见 `docs/functions/安全与日志策略.md`），隔离边界仍是 iframe sandbox 不透明源与 HttpOnly 会话 Cookie。
 - Mermaid 使用安全模式并关闭 HTML 标签，输出原生 SVG 文本，避免 `foreignObject` 经严格清洗后丢失节点标签；fenced SVG 仅在围栏闭合后渲染，失败时显示转义源码和中文失败状态。
 - 表格、代码和长公式在窄屏横向滚动，不能撑破消息列。
 - 围栏代码块显示语言和复制按钮；复制操作不改变消息内容，也不触发重新渲染。

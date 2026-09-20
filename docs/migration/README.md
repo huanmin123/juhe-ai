@@ -185,6 +185,7 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 | `开发构建部署调整.md` | 开发环境、命令、包结构、部署脚本和平台差异 |
 | `迁移文档示例.md` | 后续新增单模块迁移记录时的参考格式 |
 | `精确路由Owner清单设计.md` | 路由级 owner 声明、严格匹配、回滚清单和生产 dispatch 接入门禁 |
+| `../../migration-backup-1/README.md` | `migration-backup-1/` 二次伪迁移墓地快照登记：landed / eliminated-by-design 文件的移入台账、自有 SHA256SUMS、与 `migration-backup/node/final-archive` 的区别，以及依赖它的契约测试（legacy-node-postgres-index-bridge 等）；只读封存，改动须同步重建校验清单 |
 
 ## 5. 维护规则
 

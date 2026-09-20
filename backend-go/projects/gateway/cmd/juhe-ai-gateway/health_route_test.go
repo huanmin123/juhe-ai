@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
 // composeTestOwnerHealth provides a ready-state owner health for compose

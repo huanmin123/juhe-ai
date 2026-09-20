@@ -5,10 +5,10 @@ package modelcheckowner
 // 凭据解密、代理客户端等纯函数的剩余分支。
 
 import (
-	"fmt"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -218,7 +218,7 @@ func w11eSeedVariant(t *testing.T, db *sql.DB, id, provider, profileID, mode, cr
 func w11eAccountField(t *testing.T, db *sql.DB, column string) any {
 	t.Helper()
 	var value any
-	if err := db.QueryRow(`SELECT `+column+` FROM accounts WHERE id='acct-1'`).Scan(&value); err != nil {
+	if err := db.QueryRow(`SELECT ` + column + ` FROM accounts WHERE id='acct-1'`).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
 	return value

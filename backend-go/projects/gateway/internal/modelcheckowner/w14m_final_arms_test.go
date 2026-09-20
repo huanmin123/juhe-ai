@@ -156,11 +156,11 @@ func TestW14MTokenBaselineActivationArms(t *testing.T) {
 	db, fp := w14mFailDB(t, runtimeTestDDL())
 	store := &Store{db: db, mode: "sqlite"}
 	input := TokenInterceptBaselineActivation{
-		CohortKeyHMAC:          "hmac-sha256-v1:" + strings.Repeat("a", 64),
-		RequestedModel:         "gpt-5.6-sol",
-		TokenizerVersion:       "tok-v1",
-		ProbeSetVersion:        "probe-v1",
-		BaselineVersion:        2,
+		CohortKeyHMAC:            "hmac-sha256-v1:" + strings.Repeat("a", 64),
+		RequestedModel:           "gpt-5.6-sol",
+		TokenizerVersion:         "tok-v1",
+		ProbeSetVersion:          "probe-v1",
+		BaselineVersion:          2,
 		StrongThresholdIntercept: 128,
 	}
 	fp.arm("SET version_status='active'")

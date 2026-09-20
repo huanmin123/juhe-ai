@@ -299,21 +299,16 @@ func TestWBLoadConfigEnforcesOwnerGates(t *testing.T) {
 		"JUHE_AI_J3B_CIRCUIT_REDIS_URL":          "redis://state:6379/9",
 		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE":    "juhe-ai:dev",
 	}
-	t.Run("disabled by default", func(t *testing.T) {
-		cfg, err := LoadConfig(func(string) string { return "" })
-		if err != nil || cfg.Enabled {
-			t.Fatalf("默认必须禁用: cfg=%+v err=%v", cfg, err)
-		}
-	})
 	for name, mutate := range map[string]func(map[string]string){
-		"wrong owner":         func(m map[string]string) { m["JUHE_AI_J3B_OWNER"] = "jobs" },
-		"missing instance":    func(m map[string]string) { delete(m, "JUHE_AI_J3B_INSTANCE_ID") },
-		"bad store":           func(m map[string]string) { m["JUHE_AI_J3B_STORE"] = "redis" },
-		"missing db path":     func(m map[string]string) { delete(m, "JUHE_AI_J3B_DATABASE_PATH") },
-		"missing business":    func(m map[string]string) { delete(m, "JUHE_AI_J3B_BUSINESS_DATABASE_PATH") },
-		"shared sqlite":       func(m map[string]string) { m["JUHE_AI_J3B_BUSINESS_DATABASE_PATH"] = "F:/tmp/j3b.db" },
-		"missing credential":  func(m map[string]string) { delete(m, "JUHE_AI_J3B_CREDENTIAL_SECRET") },
-		"missing identity":    func(m map[string]string) { delete(m, "JUHE_AI_J3B_IDENTITY_SECRET") },
+		"wrong owner":   func(m map[string]string) { m["JUHE_AI_J3B_OWNER"] = "jobs" },
+		"bad store":     func(m map[string]string) { m["JUHE_AI_J3B_STORE"] = "redis" },
+		"shared sqlite": func(m map[string]string) { m["JUHE_AI_J3B_BUSINESS_DATABASE_PATH"] = "F:/tmp/j3b.db" },
+		"secret fallback to JUHE_AI_SECRET still strict": func(m map[string]string) {
+			delete(m, "JUHE_AI_J3B_CREDENTIAL_SECRET")
+			delete(m, "JUHE_AI_J3B_IDENTITY_SECRET")
+			m["JUHE_AI_SECRET"] = "shared"
+			delete(m, "JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED")
+		},
 		"handoff unconfirmed": func(m map[string]string) { delete(m, "JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED") },
 		"node writer active":  func(m map[string]string) { m["JUHE_AI_J3B_NODE_WRITER_STOPPED"] = "false" },
 		"missing epoch":       func(m map[string]string) { delete(m, "JUHE_AI_J3B_OWNER_EPOCH") },
@@ -343,6 +338,17 @@ func TestWBLoadConfigEnforcesOwnerGates(t *testing.T) {
 			}
 		})
 	}
+	// 2026-09-20 零配置自动认领：家族未配置时 instance/store/路径/secrets
+	// 都有默认值，不再属于拒绝面。
+	t.Run("zero-config defaults auto-claim", func(t *testing.T) {
+		cfg, err := LoadConfig(enabled(map[string]string{"JUHE_AI_J3B_ENABLED": "true"}))
+		if err != nil || !cfg.AutoClaimed {
+			t.Fatalf("零配置必须自动认领: cfg=%+v err=%v", cfg, err)
+		}
+		if cfg.InstanceID == "" || cfg.StoreMode != "sqlite" || cfg.DatabasePath == "" || cfg.BusinessDatabasePath == "" {
+			t.Fatalf("默认值缺失: cfg=%+v", cfg)
+		}
+	})
 	t.Run("happy path with fallbacks", func(t *testing.T) {
 		pairs := map[string]string{}
 		for key, value := range full {

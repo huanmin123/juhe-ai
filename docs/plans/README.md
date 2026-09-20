@@ -341,6 +341,7 @@ docs/plans/
 
 | 计划 ID | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| PLAN-20260920T160000384Z | 模型检测题库自定义测试阶段 | 草稿（方案与决策点 D1-D6 待确认） | 2026-09-20 | 前端 / Go 网关 / 检测管线 / 定时调度 / 存储 / 文档 / 验证 | `docs/plans/计划-20260920T160000384Z-模型检测题库自定义测试阶段.md` |
 | PLAN-20260904T071852927Z | 已提交 Go 迁移功能审计与缺陷修复 | 进行中（M08 及以前历史迁移逐项复核；M09/M09b 与未提交迁移排除） | 2026-09-04 | Go 迁移 / Node 行为对照 / BUG 记录 / 定向测试 / 复审 | `docs/plans/计划-20260904T071852927Z-已提交Go迁移功能审计与缺陷修复.md` |
 | PLAN-20260821T004304961Z | J3a 代理延迟检测 L2 实现 | Go 独占执行/投影完成；生产未启用，schema/权限、Secret alias、容量、owner handoff 与回滚待验收 | 2026-08-21 | Go jobs / Go result projector / 代理 / SQLite / PostgreSQL | `docs/plans/计划-20260821T004304961Z-J3a代理延迟检测L2实现.md` |
 | PLAN-20260821T182741627Z | J3a 代理延迟检测 L3-PG smoke | required smoke 与 Node 子进程→Go handler manual 互操作已通过；独立 jobs 二进制、生产/active-path-zero 未完成 | 2026-08-21 | Go jobs / PostgreSQL / PgBouncer / 权限 / 事务 / 验证 | `docs/plans/计划-20260821T182741627Z-J3a代理延迟检测L3-PG smoke.md` |

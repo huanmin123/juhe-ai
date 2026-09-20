@@ -79,3 +79,21 @@ func ensureGatewaySQLiteStoragePreflight(ctx context.Context, cfg runtimeConfig,
 	}
 	return nil
 }
+
+// ensureJ3bDedicatedSQLiteBootstrap provisions the J3b owner's dedicated
+// SQLite file and schema for the 2026-09-20 zero-config auto-claim arm (same
+// controlled bootstrap export surface as the six-database preflight; the DDL
+// single source of truth stays in maintenance internal/j3bmodelcheck). The
+// strict cutover mode keeps requiring externally provisioned storage with the
+// SCHEMA_READY gate and never runs this path.
+func ensureJ3bDedicatedSQLiteBootstrap(ctx context.Context, databasePath string) error {
+	db, err := bootstrap.OpenSQLiteFile(databasePath)
+	if err != nil {
+		return fmt.Errorf("open J3b dedicated sqlite %q: %w", databasePath, err)
+	}
+	defer db.Close()
+	if err := bootstrap.EnsureSQLiteJ3bModelCheck(ctx, db); err != nil {
+		return fmt.Errorf("bootstrap J3b dedicated sqlite schema: %w", err)
+	}
+	return nil
+}

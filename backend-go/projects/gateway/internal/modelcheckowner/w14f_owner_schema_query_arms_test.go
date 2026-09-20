@@ -176,13 +176,13 @@ func TestW14fOwnerGetRunValidationArms(t *testing.T) {
 	}
 	// 汇总列损坏 → requiredJSONObject 各臂。
 	for _, column := range []string{"request_summary_json", "result_summary_json", "policy_snapshot_json", "quality_decision_json"} {
-		if _, err := store.db.Exec("UPDATE model_check_runs SET " + column + "='not-json' WHERE id=?", run.ID); err != nil {
+		if _, err := store.db.Exec("UPDATE model_check_runs SET "+column+"='not-json' WHERE id=?", run.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := runtime.GetRun(ctx, run.ID); err == nil {
 			t.Fatalf("%s 损坏应报错", column)
 		}
-		if _, err := store.db.Exec("UPDATE model_check_runs SET " + column + "='{}' WHERE id=?", run.ID); err != nil {
+		if _, err := store.db.Exec("UPDATE model_check_runs SET "+column+"='{}' WHERE id=?", run.ID); err != nil {
 			t.Fatal(err)
 		}
 	}

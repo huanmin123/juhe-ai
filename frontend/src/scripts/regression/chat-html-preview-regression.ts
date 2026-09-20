@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { buildChatHtmlPreviewDocument } from '../../views/chat/chatHtmlPreview'
+
+const source = readFileSync('../frontend/src/views/chat/ChatMarkdown.vue', 'utf8')
+
+const headDoc = buildChatHtmlPreviewDocument('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>预览</title></head><body><p>你好</p></body></html>')
+assert.match(headDoc, /<head><style>html\{scrollbar-color/, '有 head 的 HTML 必须把统一滚动条样式注入 head 开头')
+const htmlDoc = buildChatHtmlPreviewDocument('<html><body>没有 head 的文档</body></html>')
+assert.match(htmlDoc, /<style>[^<]*<\/style><body>/, '无 head 的 HTML 必须注入 html 标签后')
+const fragmentDoc = buildChatHtmlPreviewDocument('<p>片段</p>')
+assert.match(fragmentDoc, /^<style>/, 'HTML 片段必须把样式前置')
+assert.match(headDoc, /scrollbar-width:thin/, '预览文档必须内联统一滚动条样式')
+assert.match(headDoc, /::-webkit-scrollbar-thumb/, '预览文档必须内联统一滚动条样式')
+assert.match(headDoc, /<p>你好<\/p><script>[\s\S]*<\/script><\/body><\/html>$/, '注入不得改写原文档内容')
+assert.doesNotMatch(headDoc, /body\{margin:0\}|svg\{display:block\}/, 'HTML 预览不得套用 SVG 专属的包装样式')
+assert.match(headDoc, /html,body\{height:auto!important;min-height:100%!important\}/, '必须中和 height:100% 居中布局，保证溢出内容可滚动到达')
+const framedDoc = buildChatHtmlPreviewDocument('<!doctype html><html><head><title>预览</title></head><body><p>你好</p></body></html>')
+assert.match(framedDoc, /juhe-ai-chat-html-preview-height/, '预览文档必须内联高度上报脚本')
+assert.match(framedDoc, /<\/script><\/body><\/html>$/, '上报脚本必须注入在 body 结束前，且不改写原文档内容')
+assert.match(framedDoc, /getBoundingClientRect/, '高度测量必须基于内容包围盒，覆盖居中布局被裁掉的顶部溢出')
+assert.match(framedDoc, /documentElement\.style\.zoom/, '内容超高或超宽时必须等比 zoom 缩放到完整可见，不出现滚动条')
+assert.match(source, /data-open-preview aria-label="新窗口打开完整预览"/, 'HTML 预览的打开入口必须在代码块工具栏')
+assert.match(source, /openChatPreviewWindow\(code\.textContent \?\? '', \(source\) => buildChatHtmlPreviewDocument\(source, false\)\)/, '工具栏打开必须以自然尺寸构建新窗口文档')
+assert.match(source, /<iframe sandbox="allow-scripts allow-popups" title="完整预览" srcdoc=/, '新窗口必须是仅含全屏沙箱 iframe 的包装页，生成内容不得以应用源运行')
+assert.doesNotMatch(framedDoc, /新窗口打开完整预览/, 'HTML 预览 iframe 内不得再叠加打开按钮')
+assert.match(source, /window\.addEventListener\('message', handlePreviewMessage\)/, '父页必须监听预览高度上报')
+assert.match(source, /Math\.min\(900, Math\.max\(240, Math\.round\(height\)\)\)/, '预览高度必须截断在 240–900px')
+assert.match(source, /frame\.contentWindow === event\.source/, '高度上报必须校验来源 frame，防止任意 message 改高度')
+
+assert.match(source, /\(language === 'html' \|\| language === 'htm'\) && fenceComplete/, 'html fenced 代码块必须在围栏闭合后才提供预览能力')
+assert.match(source, /data-preview-code aria-label="预览"/, '代码块头部必须生成可委托的预览按钮')
+assert.match(source, /class="chat-code-actions"/, '头部操作按钮必须分组，不破坏语言标签与按钮布局')
+assert.match(source, /target\.closest<HTMLButtonElement>\('button\.chat-code-copy\[data-preview-code\]'\)/, '预览按钮必须走根节点 click 委托')
+assert.match(source, /frame\.setAttribute\('sandbox', 'allow-scripts allow-popups'\)/, 'HTML 预览必须放在隔离 iframe；新窗口弹窗由沙箱打开并继承 sandbox')
+assert.match(source, /frame\.srcdoc = buildChatHtmlPreviewDocument\(code\.textContent \?\? ''\)/, 'HTML 预览必须用 srcdoc 加载源码，不注入聊天主 DOM')
+assert.match(source, /pre\.hidden = true/, '预览时必须隐藏源码 pre')
+assert.match(source, /button\.textContent = '源码'/, '预览态按钮必须提供切回源码的入口')
+assert.match(source, /\.chat-code-block > iframe\.chat-html-preview/, '预览 iframe 必须限制在代码块内部并固定高度')
+assert.doesNotMatch(source, /allow-same-origin|allow-top-navigation|allow-forms/, '预览沙箱不得放宽 allow-scripts/allow-popups 之外的权限')
+
+console.log('AI 问答 HTML 代码块预览回归通过')

@@ -237,11 +237,11 @@ func TestW11EValidateBuiltRequestArms(t *testing.T) {
 		t.Fatalf("基线必须通过: %v", err)
 	}
 	for name, request := range map[string]RunRequest{
-		"scope invalid":      {SystemAccountID: "", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "m", Profile: "quick"},
-		"system mismatch":    {SystemAccountID: "sys-2", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "m", Profile: "quick"},
-		"actor mismatch":     {SystemAccountID: "sys-1", ActorSystemAccountID: "sys-2", TargetType: "account", TargetID: "acct-1", Model: "m", Profile: "quick"},
-		"target mismatch":    {SystemAccountID: "sys-1", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-2", Model: "m", Profile: "quick"},
-		"profile invalid":    {SystemAccountID: "sys-1", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "m", Profile: "medium"},
+		"scope invalid":   {SystemAccountID: "", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "m", Profile: "quick"},
+		"system mismatch": {SystemAccountID: "sys-2", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "m", Profile: "quick"},
+		"actor mismatch":  {SystemAccountID: "sys-1", ActorSystemAccountID: "sys-2", TargetType: "account", TargetID: "acct-1", Model: "m", Profile: "quick"},
+		"target mismatch": {SystemAccountID: "sys-1", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-2", Model: "m", Profile: "quick"},
+		"profile invalid": {SystemAccountID: "sys-1", ActorSystemAccountID: "sys-1", TargetType: "account", TargetID: "acct-1", Model: "m", Profile: "medium"},
 	} {
 		if err := validateBuiltRequest(scope, command, request); err == nil {
 			t.Fatalf("%s 必须拒绝", name)
@@ -321,7 +321,9 @@ func TestW11EHandlerDefaultsAndBuildScopeArms(t *testing.T) {
 	}
 	// 构建器返回普通错误必须 400；RequestError 保持状态码。
 	plain := newTestHTTPHandler()
-	plain.Build = func(context.Context, string, RunCommand) (RunRequest, error) { return RunRequest{}, errors.New("w11e-build-failed") }
+	plain.Build = func(context.Context, string, RunCommand) (RunRequest, error) {
+		return RunRequest{}, errors.New("w11e-build-failed")
+	}
 	response = httptest.NewRecorder()
 	plain.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/run", strings.NewReader(`{"targetType":"account","targetId":"acct-1","model":"gpt-5.6"}`)))
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "w11e-build-failed") {

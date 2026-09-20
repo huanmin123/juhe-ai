@@ -11,12 +11,105 @@ import (
 	"time"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/datadir"
 )
 
-func TestDisabledNeedsNoOwnerOrStorage(t *testing.T) {
-	cfg, err := LoadConfig(func(string) string { return "" })
-	if err != nil || cfg.Enabled {
-		t.Fatalf("cfg=%+v err=%v", cfg, err)
+// 2026-09-20 零配置自动认领：handoff/readiness 家族全部未配置时按新装
+// standalone 部署处理，sqlite 路径按 datadir 固定名表派生，无 Redis 允许。
+func TestAutoClaimsSQLiteZeroConfig(t *testing.T) {
+	cfg, err := LoadConfig(func(key string) string {
+		if key == "JUHE_AI_J3B_ENABLED" {
+			return "true"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("zero-config J3b must auto-claim: %v", err)
+	}
+	if !cfg.AutoClaimed || cfg.Owner != "gateway" || cfg.StoreMode != "sqlite" {
+		t.Fatalf("cfg=%+v", cfg)
+	}
+	if cfg.InstanceID != datadir.DefaultInstanceID() {
+		t.Fatalf("instance id default: %q", cfg.InstanceID)
+	}
+	if cfg.DatabasePath != filepath.Join(datadir.DefaultDirName, datadir.ModelCheckDatabase) {
+		t.Fatalf("j3b database path: %q", cfg.DatabasePath)
+	}
+	if cfg.BusinessDatabasePath != filepath.Join(datadir.DefaultDirName, datadir.BusinessDatabase) {
+		t.Fatalf("business database path: %q", cfg.BusinessDatabasePath)
+	}
+	if !cfg.BusinessHandoffConfirmed || !cfg.NodeWriterStopped || !cfg.SchemaReady || !cfg.HealthBoundaryReady || !cfg.RuntimeReady {
+		t.Fatalf("auto-claimed owner flags must be true: %+v", cfg)
+	}
+	if cfg.OwnerEpoch != "standalone" || cfg.CutoverEvidencePath != "" {
+		t.Fatalf("auto-claimed epoch/evidence: %+v", cfg)
+	}
+	if cfg.CredentialSecret != "" || cfg.IdentitySecret != "" {
+		t.Fatalf("secrets must defer to composition root fallback: %+v", cfg)
+	}
+	if cfg.CircuitRuntimeRedisURL != "" {
+		t.Fatalf("zero-config mode must allow missing Redis: %+v", cfg)
+	}
+}
+
+func TestAutoClaimFallsBackToSharedSecret(t *testing.T) {
+	values := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_SECRET": "shared-secret"}
+	cfg, err := LoadConfig(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if cfg.CredentialSecret != "shared-secret" || cfg.IdentitySecret != "shared-secret" {
+		t.Fatalf("cfg=%+v", cfg)
+	}
+}
+
+// 业务库路径未显式给 J3b 配置时必须跟随主网关的 Business 库 env。
+func TestAutoClaimFollowsMainBusinessDatabasePath(t *testing.T) {
+	values := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_BUSINESS_DATABASE_PATH": "F:/tmp/main-business.sqlite3"}
+	cfg, err := LoadConfig(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if cfg.BusinessDatabasePath != "F:/tmp/main-business.sqlite3" {
+		t.Fatalf("business path=%q", cfg.BusinessDatabasePath)
+	}
+	if cfg.DatabasePath == cfg.BusinessDatabasePath {
+		t.Fatalf("j3b path must differ: %q", cfg.DatabasePath)
+	}
+}
+
+func TestAutoClaimExplicitSecretWins(t *testing.T) {
+	values := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_SECRET": "shared", "JUHE_AI_J3B_CREDENTIAL_SECRET": "cred", "JUHE_AI_J3B_IDENTITY_SECRET": "identity"}
+	cfg, err := LoadConfig(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if cfg.CredentialSecret != "cred" || cfg.IdentitySecret != "identity" {
+		t.Fatalf("cfg=%+v", cfg)
+	}
+}
+
+// 家族内任一成员显式配置即回到严格模式：缺少其余成员必须 fail closed。
+func TestStrictModeRestoredWhenAnyFamilyMemberSet(t *testing.T) {
+	values := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_SCHEMA_READY": "false"}
+	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("explicit family member must restore strict fail-closed gates")
+	}
+}
+
+func TestPostgresStoreAndURLFallbacks(t *testing.T) {
+	values := map[string]string{
+		"JUHE_AI_J3B_ENABLED":           "true",
+		"JUHE_AI_DATABASE_DRIVER":       "postgres",
+		"JUHE_AI_POSTGRES_URL":          "postgres://main",
+		"JUHE_AI_BUSINESS_POSTGRES_URL": "postgres://business",
+	}
+	cfg, err := LoadConfig(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if cfg.StoreMode != "postgres" || cfg.PostgresURL != "postgres://main" || cfg.BusinessPostgresURL != "postgres://business" {
+		t.Fatalf("cfg=%+v", cfg)
 	}
 }
 
@@ -27,17 +120,46 @@ func TestRejectsNonGatewayOwner(t *testing.T) {
 	}
 }
 
+// 严格模式（家族显式配置）下，未确认的 handoff 仍然 fail closed。
 func TestRejectsSQLiteUntilHandoff(t *testing.T) {
-	values := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "gw-1", "JUHE_AI_J3B_STORE": "sqlite", "JUHE_AI_J3B_DATABASE_PATH": "j3b.db", "JUHE_AI_J3B_BUSINESS_DATABASE_PATH": "business.db", "JUHE_AI_J3B_CREDENTIAL_SECRET": "credential", "JUHE_AI_J3B_IDENTITY_SECRET": "identity"}
+	values := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "gw-1", "JUHE_AI_J3B_STORE": "sqlite", "JUHE_AI_J3B_DATABASE_PATH": "j3b.db", "JUHE_AI_J3B_BUSINESS_DATABASE_PATH": "business.db", "JUHE_AI_J3B_CREDENTIAL_SECRET": "credential", "JUHE_AI_J3B_IDENTITY_SECRET": "identity", "JUHE_AI_J3B_OWNER_EPOCH": "epoch-1"}
 	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
-		t.Fatal("SQLite must remain closed until owner handoff")
+		t.Fatal("SQLite must remain closed until owner handoff in strict mode")
 	}
 }
 
 func TestRejectsPostgresUntilRuntimeReadiness(t *testing.T) {
-	values := map[string]string{"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "gw-1", "JUHE_AI_J3B_STORE": "postgres", "JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b", "JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://business", "JUHE_AI_J3B_CREDENTIAL_SECRET": "credential", "JUHE_AI_J3B_IDENTITY_SECRET": "identity"}
+	values := map[string]string{
+		"JUHE_AI_J3B_ENABLED":                    "true",
+		"JUHE_AI_J3B_OWNER":                      "gateway",
+		"JUHE_AI_J3B_INSTANCE_ID":                "gw-1",
+		"JUHE_AI_J3B_STORE":                      "postgres",
+		"JUHE_AI_J3B_POSTGRES_URL":               "postgres://j3b",
+		"JUHE_AI_J3B_BUSINESS_POSTGRES_URL":      "postgres://business",
+		"JUHE_AI_J3B_CREDENTIAL_SECRET":          "credential",
+		"JUHE_AI_J3B_IDENTITY_SECRET":            "identity",
+		"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED": "true",
+		"JUHE_AI_J3B_NODE_WRITER_STOPPED":        "true",
+		"JUHE_AI_J3B_OWNER_EPOCH":                "epoch-1",
+		"JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH":      "evidence.json",
+		"JUHE_AI_J3B_SCHEMA_READY":               "true",
+		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY":      "true",
+	}
 	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
 		t.Fatal("Gateway J3b must remain closed until runtime readiness is wired")
+	}
+}
+
+// 严格模式下 Redis 仍是硬要求；自动认领模式才允许无 Redis。
+func TestRejectsCircuitRuntimeWithoutRedisOwnerConfig(t *testing.T) {
+	values := map[string]string{
+		"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "gw-1",
+		"JUHE_AI_J3B_STORE": "postgres", "JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b", "JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://business",
+		"JUHE_AI_J3B_CREDENTIAL_SECRET": "credential", "JUHE_AI_J3B_IDENTITY_SECRET": "identity", "JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED": "true",
+		"JUHE_AI_J3B_NODE_WRITER_STOPPED": "true", "JUHE_AI_J3B_SCHEMA_READY": "true", "JUHE_AI_J3B_HEALTH_BOUNDARY_READY": "true", "JUHE_AI_J3B_RUNTIME_READY": "true",
+	}
+	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("circuit runtime without Redis owner config must fail closed in strict mode")
 	}
 }
 
@@ -294,17 +416,5 @@ func TestVerifyConfiguredCutoverEvidenceRejectsManifestIdentityMismatch(t *testi
 	}
 	if report.Ready {
 		t.Fatalf("manifest identity mismatch unexpectedly ready: %+v", report)
-	}
-}
-
-func TestRejectsCircuitRuntimeWithoutRedisOwnerConfig(t *testing.T) {
-	values := map[string]string{
-		"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "gw-1",
-		"JUHE_AI_J3B_STORE": "postgres", "JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b", "JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://business",
-		"JUHE_AI_J3B_CREDENTIAL_SECRET": "credential", "JUHE_AI_J3B_IDENTITY_SECRET": "identity", "JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED": "true",
-		"JUHE_AI_J3B_NODE_WRITER_STOPPED": "true", "JUHE_AI_J3B_SCHEMA_READY": "true", "JUHE_AI_J3B_HEALTH_BOUNDARY_READY": "true", "JUHE_AI_J3B_RUNTIME_READY": "true",
-	}
-	if _, err := LoadConfig(func(key string) string { return values[key] }); err == nil {
-		t.Fatal("circuit runtime without Redis owner config must fail closed")
 	}
 }

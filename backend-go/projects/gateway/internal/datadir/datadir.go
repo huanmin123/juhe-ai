@@ -40,6 +40,10 @@ const (
 	AuditBlobDirectory         = "audit-blob"
 	OperationLogDatabase       = "operation-log.sqlite3"
 	ChatAssetsDirectory        = "chat-assets"
+	// ModelCheckDatabase is the J3b model-check owner's dedicated store
+	// (2026-09-20 zero-config arm). It must stay distinct from
+	// BusinessDatabase: the J3b owner contract requires a separate file.
+	ModelCheckDatabase = "model-check.sqlite3"
 )
 
 // Dir resolves the data root: JUHE_AI_DATA_DIR when configured (trimmed),

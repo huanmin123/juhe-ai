@@ -151,12 +151,24 @@ func main() {
 		fail(fmt.Errorf("load J3b gateway owner config: %w", err))
 	}
 	if j3bConfig.Enabled {
-		evidenceReport, evidenceErr := modelcheckowner.VerifyConfiguredCutoverEvidence(j3bConfig.CutoverEvidencePath, j3bConfig.OwnerEpoch, time.Now().UTC())
-		if evidenceErr != nil {
-			fail(fmt.Errorf("read J3b cutover evidence: %w", evidenceErr))
+		// 2026-09-20 零配置自动认领没有 cutover 证据文件可读（与上方
+		// BusinessOwnerAutoClaimed 同款）；只有显式配置证据路径时才校验。
+		if j3bConfig.CutoverEvidencePath != "" {
+			evidenceReport, evidenceErr := modelcheckowner.VerifyConfiguredCutoverEvidence(j3bConfig.CutoverEvidencePath, j3bConfig.OwnerEpoch, time.Now().UTC())
+			if evidenceErr != nil {
+				fail(fmt.Errorf("read J3b cutover evidence: %w", evidenceErr))
+			}
+			if !evidenceReport.Ready {
+				fail(fmt.Errorf("verify J3b cutover evidence: %s", strings.Join(evidenceReport.Errors, "; ")))
+			}
 		}
-		if !evidenceReport.Ready {
-			fail(fmt.Errorf("verify J3b cutover evidence: %s", strings.Join(evidenceReport.Errors, "; ")))
+		// secrets 未显式配置时按主配置同款零配置约定回落内置开发密钥；
+		// 生产环境主配置已强制 JUHE_AI_SECRET 强度，这里继承其值。
+		if j3bConfig.CredentialSecret == "" {
+			j3bConfig.CredentialSecret = defaultRuntimeSecret
+		}
+		if j3bConfig.IdentitySecret == "" {
+			j3bConfig.IdentitySecret = defaultRuntimeSecret
 		}
 	}
 	var j3bHostComponent supervisor.Component
@@ -204,69 +216,81 @@ func main() {
 		if retentionErr := retentionStore.CheckContract(context.Background()); retentionErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway session retention contract: %w", retentionErr))
 		}
-		circuitMode := circuitcontrolplane.SQLite
-		if businessMode == modelcheckauth.Postgres {
-			circuitMode = circuitcontrolplane.Postgres
-		}
-		circuitGate := circuitcontrolplane.OwnerGate{
-			Confirmed:         j3bConfig.BusinessHandoffConfirmed,
-			SchemaReady:       j3bConfig.SchemaReady,
-			NodeWriterStopped: j3bConfig.NodeWriterStopped,
-		}
-		circuitStore, circuitErr := circuitcontrolplane.New(businessConnection.DB, circuitMode, "juhe_business", circuitGate)
-		if circuitErr != nil {
-			fail(fmt.Errorf("create J3b Gateway circuit control-plane owner: %w", circuitErr))
-		}
-		if circuitErr := circuitStore.CheckContract(context.Background()); circuitErr != nil {
-			fail(fmt.Errorf("verify J3b Gateway circuit control-plane contract: %w", circuitErr))
-		}
-		runtimeStore, runtimeErr := circuitruntime.New(circuitruntime.Config{URL: j3bConfig.CircuitRuntimeRedisURL, Namespace: j3bConfig.CircuitRuntimeRedisNamespace, Capacity: j3bConfig.CircuitRuntimeCapacity, Retention: j3bConfig.CircuitRuntimeRetention}, circuitruntime.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped})
-		if runtimeErr != nil {
-			fail(fmt.Errorf("create J3b Gateway circuit runtime owner: %w", runtimeErr))
-		}
-		if pingErr := runtimeStore.Ping(context.Background()); pingErr != nil {
-			_ = runtimeStore.Close()
-			fail(fmt.Errorf("ping J3b Gateway circuit runtime Redis: %w", pingErr))
-		}
-		if readyErr := runtimeStore.CheckReady(context.Background()); readyErr != nil {
-			_ = runtimeStore.Close()
-			fail(fmt.Errorf("verify J3b Gateway circuit runtime owner fence: %w", readyErr))
-		}
-		keyModelStore, runtimeErr = keymodelruntime.NewRedisStore(j3bConfig.CircuitRuntimeRedisURL, j3bConfig.CircuitRuntimeRedisNamespace, keymodelruntime.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped})
-		if runtimeErr != nil {
-			_ = runtimeStore.Close()
-			fail(fmt.Errorf("create J3b Gateway key-model runtime owner: %w", runtimeErr))
-		}
-		if pingErr := keyModelStore.Ping(context.Background()); pingErr != nil {
-			_ = keyModelStore.Close()
-			_ = runtimeStore.Close()
-			fail(fmt.Errorf("ping J3b Gateway key-model runtime Redis: %w", pingErr))
-		}
-		projector, projectorErr := circuitprojector.New(circuitStore, runtimeStore, j3bConfig.InstanceID)
-		if projectorErr != nil {
-			_ = runtimeStore.Close()
-			fail(fmt.Errorf("create J3b Gateway circuit projector: %w", projectorErr))
-		}
-		circuitRuntimeEnabled = true
-		circuitRuntimeComponent = supervisor.Component{Name: "J3b account-circuit-runtime-owner", Run: func(runCtx context.Context) error {
-			circuitRuntimeRunning.Store(true)
-			defer circuitRuntimeRunning.Store(false)
-			ticker := time.NewTicker(time.Second)
-			defer ticker.Stop()
-			for {
-				if err := runtimeStore.CheckReady(runCtx); err != nil {
-					return err
-				}
-				if _, err := projector.RunOnce(runCtx, time.Now().UTC(), 500); err != nil {
-					return err
-				}
-				select {
-				case <-runCtx.Done():
-					return runCtx.Err()
-				case <-ticker.C:
-				}
+		// 2026-09-20 零配置自动认领：未配置 Redis 时 key-model 前台准入
+		// 回退进程内 memory store（单进程 owner，重启即重置，语义与主链路
+		// 准入可旁路一致），账户熔断 RuntimeGate 与 projector 组件不装配；
+		// 配置 Redis 后恢复完整链路。
+		var keyModelGate gatewaydispatch.KeyModelGate
+		var probeCircuit gatewaydispatch.AccountCircuitGate
+		if j3bConfig.CircuitRuntimeRedisURL != "" {
+			circuitMode := circuitcontrolplane.SQLite
+			if businessMode == modelcheckauth.Postgres {
+				circuitMode = circuitcontrolplane.Postgres
 			}
-		}, Close: runtimeStore.Close}
+			circuitGate := circuitcontrolplane.OwnerGate{
+				Confirmed:         j3bConfig.BusinessHandoffConfirmed,
+				SchemaReady:       j3bConfig.SchemaReady,
+				NodeWriterStopped: j3bConfig.NodeWriterStopped,
+			}
+			circuitStore, circuitErr := circuitcontrolplane.New(businessConnection.DB, circuitMode, "juhe_business", circuitGate)
+			if circuitErr != nil {
+				fail(fmt.Errorf("create J3b Gateway circuit control-plane owner: %w", circuitErr))
+			}
+			if circuitErr := circuitStore.CheckContract(context.Background()); circuitErr != nil {
+				fail(fmt.Errorf("verify J3b Gateway circuit control-plane contract: %w", circuitErr))
+			}
+			runtimeStore, runtimeErr := circuitruntime.New(circuitruntime.Config{URL: j3bConfig.CircuitRuntimeRedisURL, Namespace: j3bConfig.CircuitRuntimeRedisNamespace, Capacity: j3bConfig.CircuitRuntimeCapacity, Retention: j3bConfig.CircuitRuntimeRetention}, circuitruntime.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped})
+			if runtimeErr != nil {
+				fail(fmt.Errorf("create J3b Gateway circuit runtime owner: %w", runtimeErr))
+			}
+			if pingErr := runtimeStore.Ping(context.Background()); pingErr != nil {
+				_ = runtimeStore.Close()
+				fail(fmt.Errorf("ping J3b Gateway circuit runtime Redis: %w", pingErr))
+			}
+			if readyErr := runtimeStore.CheckReady(context.Background()); readyErr != nil {
+				_ = runtimeStore.Close()
+				fail(fmt.Errorf("verify J3b Gateway circuit runtime owner fence: %w", readyErr))
+			}
+			keyModelStore, runtimeErr = keymodelruntime.NewRedisStore(j3bConfig.CircuitRuntimeRedisURL, j3bConfig.CircuitRuntimeRedisNamespace, keymodelruntime.OwnerGate{Confirmed: j3bConfig.BusinessHandoffConfirmed, SchemaReady: j3bConfig.SchemaReady, NodeWriterStopped: j3bConfig.NodeWriterStopped})
+			if runtimeErr != nil {
+				_ = runtimeStore.Close()
+				fail(fmt.Errorf("create J3b Gateway key-model runtime owner: %w", runtimeErr))
+			}
+			if pingErr := keyModelStore.Ping(context.Background()); pingErr != nil {
+				_ = keyModelStore.Close()
+				_ = runtimeStore.Close()
+				fail(fmt.Errorf("ping J3b Gateway key-model runtime Redis: %w", pingErr))
+			}
+			projector, projectorErr := circuitprojector.New(circuitStore, runtimeStore, j3bConfig.InstanceID)
+			if projectorErr != nil {
+				_ = runtimeStore.Close()
+				fail(fmt.Errorf("create J3b Gateway circuit projector: %w", projectorErr))
+			}
+			circuitRuntimeEnabled = true
+			circuitRuntimeComponent = supervisor.Component{Name: "J3b account-circuit-runtime-owner", Run: func(runCtx context.Context) error {
+				circuitRuntimeRunning.Store(true)
+				defer circuitRuntimeRunning.Store(false)
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for {
+					if err := runtimeStore.CheckReady(runCtx); err != nil {
+						return err
+					}
+					if _, err := projector.RunOnce(runCtx, time.Now().UTC(), 500); err != nil {
+						return err
+					}
+					select {
+					case <-runCtx.Done():
+						return runCtx.Err()
+					case <-ticker.C:
+					}
+				}
+			}, Close: runtimeStore.Close}
+			keyModelGate = keyModelStore
+			probeCircuit = gatewaydispatch.RuntimeCircuitGate{Store: runtimeStore}
+		} else {
+			keyModelGate = newJ3bMemoryKeyModelGate()
+		}
 		retentionInterval, retentionLimit, retentionConfigErr := loadSessionRetentionConfig(os.Getenv)
 		if retentionConfigErr != nil {
 			fail(fmt.Errorf("load J3b Gateway session retention config: %w", retentionConfigErr))
@@ -306,6 +330,14 @@ func main() {
 		if healthStatHourErr != nil {
 			fail(fmt.Errorf("load J3b Gateway usage stats timezone: %w", healthStatHourErr))
 		}
+		if j3bConfig.StoreMode == "sqlite" && j3bConfig.AutoClaimed {
+			// 零配置自动认领：专属库文件与 schema 由组合根幂等自举（与六库
+			// preflight 同款语义）；严格切流模式仍要求外部预置并保持
+			// SCHEMA_READY 门禁。
+			if err := ensureJ3bDedicatedSQLiteBootstrap(context.Background(), j3bConfig.DatabasePath); err != nil {
+				fail(err)
+			}
+		}
 		j3bHost, hostErr := modelcheckowner.OpenHost(context.Background(), j3bConfig, modelcheckowner.HostDependencies{
 			Resolve:           businessSource.Resolver(),
 			ResolveComparison: businessSource.ComparisonResolver(),
@@ -313,7 +345,7 @@ func main() {
 			Authorize:         modelcheckowner.NewAdminAuthorize(authenticator),
 			Build:             businessSource.BuildRequest,
 			BuildScoped:       businessSource.BuildScopedRequest,
-			Dispatcher:        &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelStore, Circuit: gatewaydispatch.RuntimeCircuitGate{Store: runtimeStore}}},
+			Dispatcher:        &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelGate, Circuit: probeCircuit}},
 			Enforcement:       enforcement,
 			Quality:           quality,
 			Tokenizer:         tokenizer,
@@ -341,10 +373,14 @@ func main() {
 			},
 		})
 		if hostErr != nil {
-			_ = keyModelStore.Close()
+			if keyModelStore != nil {
+				_ = keyModelStore.Close()
+			}
 			fail(fmt.Errorf("open J3b Gateway owner host: %w", hostErr))
 		}
-		defer keyModelStore.Close()
+		if keyModelStore != nil {
+			defer keyModelStore.Close()
+		}
 		managementMux := http.NewServeMux()
 		var captchaService *modelcheckauth.CaptchaService
 		if !envBool("JUHE_AI_AUTH_CAPTCHA_DISABLED") {

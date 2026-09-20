@@ -21,18 +21,12 @@ declare module 'vue-router' {
     public?: boolean
     viewScope?: 'admin' | 'self'
     roles?: SystemAccountRole[]
-    /** 仅在 Go J3b 网关明确启用时可用的页面与接口。 */
-    requiresJ3b?: boolean
   }
 }
 
+// 模型检测是常驻功能（2026-09-21 起前端与后端均无总开关）：菜单与路由
+// 始终可用，访问控制由登录角色与后端管理面权限承担。
 const managementRoles: SystemAccountRole[] = ['super_admin', 'admin']
-
-/**
- * 模型检测已迁移到 Go J3b。默认关闭，避免在后端未挂载路由时展示必然 404 的入口。
- * 专用 J3b 发布必须在构建时显式注入 VITE_JUHE_AI_J3B_ENABLED=true。
- */
-export const isJ3bUiEnabled = import.meta.env.VITE_JUHE_AI_J3B_ENABLED === 'true'
 
 export const menuRoutes: RouteRecordRaw[] = [
   {
@@ -104,8 +98,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '模型检测',
       description: '对我的 AI 账户发起目标模型可信度检测，并查看历史检测结果。',
       viewScope: 'self',
-      heavy: true,
-      requiresJ3b: true
+      heavy: true
     }
   },
   {
@@ -349,8 +342,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: managementRoles,
-      heavy: true,
-      requiresJ3b: true
+      heavy: true
     }
   },
   {
@@ -695,9 +687,6 @@ router.beforeEach(async (to) => {
     return requiredPasswordProfileLocation(to.fullPath)
   }
   if (to.meta.roles?.length && !to.meta.roles.includes(user.role)) {
-    return getPreferredEntryPath(user)
-  }
-  if (to.meta.requiresJ3b && !isJ3bUiEnabled) {
     return getPreferredEntryPath(user)
   }
   return true
