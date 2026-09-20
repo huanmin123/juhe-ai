@@ -24,7 +24,9 @@ func newMockKeyModelStore() *mockKeyModelStore {
 	return &mockKeyModelStore{admissions: map[string]KeyModelAdmissionResult{}, j1Result: true}
 }
 
-func (m *mockKeyModelStore) Get(context.Context, CapabilityKey) (*KeyModelState, error) { return nil, nil }
+func (m *mockKeyModelStore) Get(context.Context, CapabilityKey) (*KeyModelState, error) {
+	return nil, nil
+}
 
 func (m *mockKeyModelStore) RecordFailure(_ context.Context, intent KeyModelFailureIntent) (KeyModelFailureResult, error) {
 	m.mu.Lock()
@@ -132,7 +134,7 @@ func TestGatewayKeyModelFailureBudgetClaim(t *testing.T) {
 		t.Fatal("duplicate claim must fail")
 	}
 	for index := 1; index < keyModelFailureIntentLimit; index++ {
-		if !budget.Claim(string(rune('a'+index))) {
+		if !budget.Claim(string(rune('a' + index))) {
 			t.Fatalf("claim %d should succeed", index)
 		}
 	}
@@ -263,19 +265,12 @@ func TestAttemptRenewalLoopAndPermitLoss(t *testing.T) {
 	store := newMockKeyModelStore()
 	store.renewLost = true
 	attempt, _, scheduler := prepareAttemptForTest(t, store, GatewayKeyModelCapability{AccountID: "acc-1", Capability: testCapability()}, NewGatewayKeyModelFailureBudget())
-	permitLost := make(chan struct{})
-	attempt.SetPermitLostCallback(func() { close(permitLost) })
 	attempt.SetObservability(scheduler, NopLogger{})
 
 	scheduler.Fire() // 续租定时器：renew 失败 → losePermit。
 	select {
-	case <-permitLost:
-	case <-time.After(time.Second):
-		t.Fatal("permit loss must fire the callback")
-	}
-	select {
 	case <-attempt.PermitLost():
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("PermitLost channel must be closed")
 	}
 	// 租约丢失后的失败观测按 unknown 结算（不写 failure intent）。

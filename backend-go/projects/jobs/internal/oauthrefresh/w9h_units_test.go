@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1019,48 +1018,10 @@ func TestW9HOptionIntAndSettingsReader(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Runner + clock arms
+// Clock + time-format arms
 // ---------------------------------------------------------------------------
 
-func TestW9HRunnerDefaultsAndBackoffClamps(t *testing.T) {
-	runner := NewRunner("w9h", RunnerConfig{Interval: time.Minute}, func(context.Context) error { return nil }, nil, nil)
-	if runner.clock == nil || runner.logger == nil {
-		t.Fatal("nil clock/logger must default")
-	}
-	if runner.cfg.FailureBackoffBase != 10*time.Second || runner.cfg.FailureBackoffMax != 5*time.Minute {
-		t.Fatalf("backoff defaults=%+v", runner.cfg)
-	}
-	// RunTimeout<=0 stays zero.
-	runner = NewRunner("w9h", RunnerConfig{Interval: time.Minute, RunTimeout: -1, FailureBackoffBase: time.Second, FailureBackoffMax: time.Millisecond}, func(context.Context) error { return nil }, SystemClock(), nil)
-	if runner.cfg.RunTimeout != 0 || runner.cfg.FailureBackoffMax != 5*time.Minute {
-		t.Fatalf("cfg=%+v", runner.cfg)
-	}
-	// fraction>=1 returns the raw ceiling.
-	runner.random = func() float64 { return 1 }
-	runner.consecFai = 3
-	if got := runner.failureBackoffDelay(); got != 4*time.Second {
-		t.Fatalf("ceiling delay=%v", got)
-	}
-	// exponent clamp at 30 keeps the ceiling at max.
-	runner.consecFai = 40
-	if got := runner.failureBackoffDelay(); got != 5*time.Minute {
-		t.Fatalf("clamped delay=%v", got)
-	}
-	// exponent<0 clamps to base.
-	runner.consecFai = 0
-	runner.random = func() float64 { return 0 }
-	if got := runner.failureBackoffDelay(); got != 0 {
-		t.Fatalf("zero-fraction delay=%v", got)
-	}
-	// nextDelay: failure path vs jittered/plain interval path.
-	runner.consecFai = 1
-	runner.random = func() float64 { return 0.5 }
-	if got := runner.nextDelay(true); got <= 0 {
-		t.Fatalf("failure delay=%v", got)
-	}
-	if got := runner.nextDelay(false); got != time.Minute {
-		t.Fatalf("interval delay=%v", got)
-	}
+func TestW9HClockAndTimeFormatArms(t *testing.T) {
 	// ClockFunc adapter.
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	if got := (ClockFunc(func() time.Time { return stamp })).Now(); !got.Equal(stamp) {
@@ -1083,37 +1044,6 @@ func TestW9HRunnerDefaultsAndBackoffClamps(t *testing.T) {
 	}
 	if _, ok := canonicalRFC3339("junk"); ok {
 		t.Fatal("junk canonical must fail")
-	}
-}
-
-func TestW9HRunnerRunContextCancelled(t *testing.T) {
-	runner := NewRunner("w9h", RunnerConfig{Interval: time.Hour, InitialDelay: time.Hour}, func(context.Context) error { return nil }, SystemClock(), nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := runner.Run(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("run err=%v", err)
-	}
-}
-
-func TestW9HRunnerRunLoopThenCancel(t *testing.T) {
-	var runs atomic.Int64
-	runner := NewRunner("w9h", RunnerConfig{Interval: 5 * time.Millisecond, InitialDelay: time.Millisecond, RunTimeout: time.Second, FailureBackoffBase: time.Millisecond, FailureBackoffMax: 2 * time.Millisecond},
-		func(context.Context) error {
-			if runs.Add(1) == 1 {
-				return errors.New("first run fails")
-			}
-			return nil
-		}, SystemClock(), slog.Default())
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	if err := runner.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("run err=%v", err)
-	}
-	if runs.Load() < 2 {
-		t.Fatalf("runs=%d", runs.Load())
-	}
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("runOnce err=%v", err)
 	}
 }
 

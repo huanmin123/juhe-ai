@@ -321,18 +321,9 @@ func TestW11BConvertGeminiFramesOptionalFields(t *testing.T) {
 	}
 }
 
-// ---- sink 失败域/协议 ----
+// ---- sink 协议 ----
 
-func TestW11BSinkFailureScopeAndWriteJSON(t *testing.T) {
-	if inferGatewayFailureScope("upstream_failed", "") != "upstream" {
-		t.Fatal("upstream_failed → upstream")
-	}
-	if inferGatewayFailureScope("gateway_failed", "account_upstream") != "upstream" {
-		t.Fatal("account_upstream → upstream")
-	}
-	if inferGatewayFailureScope("gateway_failed", "gateway_local") != "" {
-		t.Fatal("其余空")
-	}
+func TestW11BSinkWriteJSON(t *testing.T) {
 	// kernelWriteJSON marshal 失败 → 500。
 	recorder := httptest.NewRecorder()
 	kernelWriteJSON(gatewaypreauth.NewTrackingWriter(recorder), 200, w11bUnmarshalable{})

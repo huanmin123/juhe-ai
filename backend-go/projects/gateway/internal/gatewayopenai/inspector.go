@@ -17,8 +17,7 @@ const (
 
 // Oversize/skip reason strings mirror the Node observability texts.
 const (
-	reasonLineOverLimit  = "SSE 单行超过网关解析上限"
-	reasonEventOverLimit = "SSE event 超过完整协议检查上限"
+	reasonLineOverLimit = "SSE 单行超过网关解析上限"
 )
 
 // StreamEventSummary mirrors OpenAIStreamEventSummary.
@@ -27,9 +26,6 @@ type StreamEventSummary = gatewayproto.StreamEventSummary
 // StreamInspector mirrors OpenAIStreamInspector: an incremental SSE parser +
 // classifier that produces gatewayproto.StreamInspection snapshots.
 type StreamInspector struct {
-	parsedEventObserver    func(ParsedStreamEvent)
-	parserCoverageObserver func(string)
-
 	inspection gatewayproto.StreamInspection
 
 	eventName             string
@@ -55,16 +51,6 @@ func NewStreamInspector() *StreamInspector {
 		},
 		oversizedEventUsage: gatewayproto.EmptyUsage(),
 	}
-}
-
-// SetParsedEventObserver mirrors setParsedEventObserver.
-func (i *StreamInspector) SetParsedEventObserver(observer func(ParsedStreamEvent)) {
-	i.parsedEventObserver = observer
-}
-
-// SetParserCoverageObserver mirrors setParserCoverageObserver.
-func (i *StreamInspector) SetParserCoverageObserver(observer func(string)) {
-	i.parserCoverageObserver = observer
 }
 
 // PushChunk mirrors pushChunk for byte chunks.
@@ -210,9 +196,6 @@ func (i *StreamInspector) flushEvent() {
 }
 
 func (i *StreamInspector) inspectParsedEvent(event ParsedStreamEvent, dataBytes int) {
-	if i.parsedEventObserver != nil {
-		i.parsedEventObserver(event)
-	}
 	if event.DataParseError {
 		i.recordEventSummary(gatewayproto.StreamEventSummary{
 			Type:       orDefault(event.EventName, "message"),
@@ -260,9 +243,6 @@ func (i *StreamInspector) inspectParsedEvent(event ParsedStreamEvent, dataBytes 
 }
 
 func (i *StreamInspector) skipParsing(reason string) {
-	if i.parserCoverageObserver != nil {
-		i.parserCoverageObserver(reason)
-	}
 	i.pendingLine = ""
 	i.eventName = ""
 	i.dataLines = nil
@@ -386,9 +366,6 @@ func (i *StreamInspector) rememberOversizedEventUsage(textFragment string) {
 }
 
 func (i *StreamInspector) flushOversizedEvent() {
-	if i.parserCoverageObserver != nil {
-		i.parserCoverageObserver(reasonEventOverLimit)
-	}
 	eventType := orDefault(orDefault(i.oversizedEventType, i.eventName), "message")
 	classification := classifyOversizedStreamEvent(eventType, i.oversizedEventImage)
 	if classification.visibleOutput {

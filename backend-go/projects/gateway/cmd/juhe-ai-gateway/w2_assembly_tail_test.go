@@ -1388,8 +1388,11 @@ func w2cSeedChainRows(t *testing.T, db *sql.DB, upstreamBaseURL string) {
 	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, key_secret_encrypted, status, created_at, updated_at)
 		VALUES ('w2c_key', 'sys_admin', 'w2c_rs', 'W2C Key', ?, ?, ?, ?, 'active', ?, ?)`,
 		gatewayruntimecache.HashSecret(secret), secret[:8], secret[len(secret)-8:], secretEncrypted, now, now)
-	seed(`INSERT INTO provider_model_catalog (id, provider_code, model, status, catalog_order, supported_api_protocols_json, source, catalog_visible, created_at, updated_at)
-		VALUES ('w2c_cat', 'openai', 'gpt-test', 'active', 0, '["chat_completions"]', 'builtin', 1, ?, ?)`, now, now)
+	// openai 兼容目录源扩展后内置目录不含 openai 自身行；gpt-test 目录行
+	// 改种 custom_provider_models（global scope，带价格），与生产 openai
+	// 兼容目录的自定义模型来源一致。
+	seed(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, catalog_visible, supported_api_protocols_json, input_usd_per_1m, created_by, created_at, updated_at)
+		VALUES ('w2c_cat', 'openai', 'gpt-test', 'global', NULL, 'active', 1, '["chat_completions"]', 1.0, 'sys_admin', ?, ?)`, now, now)
 }
 
 func TestW2CComposeAccountLockInvalidationCallback(t *testing.T) {

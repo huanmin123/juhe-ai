@@ -610,14 +610,11 @@ func signalAborted(signal interface{ Done() <-chan struct{} }) bool {
 
 func prepareUpstreamResponseForDownstream(downstream StreamDownstream, upstreamResponse *GatewayUpstreamResponse, shouldHandleAsStream bool) {
 	// 对齐 downstream-headers.ts 的 prepareUpstreamResponseForDownstream：headers
-	// 已发送时跳过；转发上游响应头（copyResponseHeaders，D-116）；上游失败先
-	// 标注 http metric 失败域；流式补齐 content-type 与 no-cache 头。Go 的
-	// WriteHeader 立即提交响应头，全部头写入必须先于 WriteHeader。
+	// 已发送时跳过；转发上游响应头（copyResponseHeaders，D-116）；流式补齐
+	// content-type 与 no-cache 头。Go 的 WriteHeader 立即提交响应头，全部头
+	// 写入必须先于 WriteHeader。
 	if downstream.Res.HeadersSent() {
 		return
-	}
-	if !upstreamResponse.OK() {
-		markHTTPMetricFailureScope("upstream")
 	}
 	header := downstream.Res.Header()
 	if upstreamResponse.Header != nil {

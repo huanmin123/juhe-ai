@@ -317,8 +317,8 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// 解析（按账户协议档案分派响应驱动）。WithModelResolver（2026-09-20
 		// 收口：UsageModelAccount 已携带 ModelMappings，真实解析组件
 		// gatewayopenai.ResolveAccountModelMapping 经 usageModelResolverAdapter
-		// 接线，映射后上游模型名进记账）接线；WithAccountAPIKeySuccess
-		// 保持 nil，原因见 chain_usage_wiring.go 文件头说明。
+		// 接线，映射后上游模型名进记账）接线；WithAccountAPIKeySuccess 已随
+		// 死代码清理删除（原因见 chain_usage_wiring.go 文件头）。
 		WithDefaultProviderCode(chainUsageDefaultProviderCode{}).
 		WithUsageSemantics(chainUsageSemanticResolver{}).
 		WithProtocolErrorParser(newChainUsageProtocolErrorParser()).

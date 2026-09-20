@@ -52,33 +52,6 @@ func TestNormalizeUsageServiceTier(t *testing.T) {
 	}
 }
 
-func TestResolveUsageServiceTiers(t *testing.T) {
-	tests := []struct {
-		name      string
-		input     ResolveUsageServiceTiersInput
-		requested string
-		effective string
-		billed    string
-		hasReport bool
-	}{
-		{"all default", ResolveUsageServiceTiersInput{}, "default", "default", "default", false},
-		{"requested only", ResolveUsageServiceTiersInput{RequestedServiceTier: "flex"}, "flex", "flex", "flex", false},
-		{"effective overrides", ResolveUsageServiceTiersInput{RequestedServiceTier: "default", EffectiveServiceTier: "flex"}, "default", "flex", "flex", false},
-		{"reported wins billed", ResolveUsageServiceTiersInput{RequestedServiceTier: "default", ReportedServiceTier: "priority"}, "default", "default", "priority", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			facts := ResolveUsageServiceTiers(tt.input)
-			if facts.RequestedServiceTier != tt.requested || facts.EffectiveServiceTier != tt.effective || facts.BilledServiceTier != tt.billed {
-				t.Fatalf("got %+v want requested=%s effective=%s billed=%s", facts, tt.requested, tt.effective, tt.billed)
-			}
-			if facts.HasReportedTier != tt.hasReport {
-				t.Fatalf("HasReportedTier = %v want %v", facts.HasReportedTier, tt.hasReport)
-			}
-		})
-	}
-}
-
 func TestNormalizeOpenAIGatewayTrafficSource(t *testing.T) {
 	valid := []string{
 		"gateway", "manual_account_test", "account_health_check",

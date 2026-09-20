@@ -36,6 +36,11 @@ type Aggregator struct {
 	DB      *sql.DB
 	Dialect Dialect
 	Clock   StatsTimezoneProvider
+	// BusinessDB 是业务库句柄（resource_authorizations / accounts 授权链
+	// 查找所在）。PG 与 stats 同池时可留 nil（授权查找在聚合事务内经
+	// juhe_business. 前缀直查）；SQLite 必须由组合根注入独立业务库连接，
+	// stats 库没有这两张表（照 WindowRefresher.BusinessDB 先例）。
+	BusinessDB *sql.DB
 	// Now 注入当前时间（测试用）；nil 时取 time.Now。
 	Now                    func() time.Time
 	CacheReadCostEstimator CacheReadCostEstimator

@@ -2,18 +2,20 @@ package main
 
 // gatewayusage.Service 组合根端口接线（审计缺口收口）。五个未接 With* 中
 // 四个存在 Go 侧真实组件，在此适配并接线（chain_compose.go usageService
-// 装配处）；一个保持 nil 的端口与原因：
+// 装配处）；一个端口已随死代码清理删除：
 //
 //   - WithModelResolver（2026-09-20 收口接线）：UsageModelAccount 增加
 //     ModelMappings 字段（构造点 usageModelAccountOf 从派发候选的完整
 //     secret 投影），usageModelResolverAdapter（chain_ports.go）据此调
 //     gatewayopenai.ResolveAccountModelMapping 完成真实解析——映射后上游
 //     模型名进记账，按模型取价不再吃到请求别名。
-//   - WithAccountAPIKeySuccess：消费点 Service.RecordCompletedUpstreamAttempt
-//     在当前 Go 运行链无调用方（完成尝试记账走 chainFinalizationUsage 直投
-//     recorder），接线不产生任何行为；且真实组件
-//     gatewayaccounteffects.AccountAPIKeyEffects.RecordSuccess 依赖
-//     SelectedAPIKeyFingerprint 等运行态字段，端口投影同样不带。
+//   - WithAccountAPIKeySuccess（2026-09-20 删除）：消费点
+//     Service.RecordCompletedUpstreamAttempt 在当前 Go 运行链无调用方（完成
+//     尝试记账走 chainFinalizationUsage 直投 recorder），端口保持 nil 不产生
+//     任何行为；真实组件 gatewayaccounteffects.AccountAPIKeyEffects 的
+//     RecordSuccess 依赖 SelectedAPIKeyFingerprint 等运行态字段，端口投影
+//     同样不带。端口、字段与其消费块已从 gatewayusage 删除（删除前实现见
+//     git 历史）。
 //
 // 本文件只组合既有真实组件，不新增业务语义。
 
@@ -38,16 +40,34 @@ func (chainUsageDefaultProviderCode) DefaultUsageProviderCode() string {
 }
 
 // chainUsageSemanticResolver implements gatewayusage.UsageSemanticResolver:
-// Node usageSemanticForProfile（providers/drivers/registry.ts）的 Go 落地面。
-// 注册表 profile 级覆盖（hybrid driver 的 anthropic-messages / gemini-native
-// profile → anthropic/gemini）未随 Go 移植（当前项目仅启用 OpenAI 供应商，
-// Go 侧无 hybrid profile 常量），落 registry 的 providerCode 驱动回退——与
-// gatewayresponse 的 usageSemanticForProviderCode 同一词汇表（钉住测试对照）。
+// Node usageSemanticForProfile（providers/drivers/registry.ts）的 Go 落地面，
+// 与 gatewayresponse 的 usageSemanticForProviderCode 同一词汇表（钉住测试
+// 对照）。registry 的 providerCode 驱动回退与 hybrid profile 级覆盖均已落地：
+// anthropic/gemini 真实供应商按 providerCode 分派；hybrid（ProviderCode 归一
+// 后为 "hybrid"，Go 种子两个 hybrid 档案 maintenance pg_schema 均如此）按
+// 档案 ID 决定语义——anthropic-messages 档案 → anthropic、gemini-native
+// 档案 → gemini、其余（openai chat 等）→ openai。档案 ID 用小写包含判断，
+// 兼容 gemini-native 形态（profile_hybrid_gemini_native_v1beta，Node 存在、
+// Go 种子暂未种）及未来新增档案命名。
 type chainUsageSemanticResolver struct{}
 
 func (chainUsageSemanticResolver) UsageSemanticForProfile(profile *gatewayusage.ProviderProtocolProfile) string {
 	if profile != nil {
-		switch strings.ToLower(strings.TrimSpace(profile.ProviderCode)) {
+		provider := strings.ToLower(strings.TrimSpace(profile.ProviderCode))
+		if provider == "hybrid" {
+			// hybrid profile 级覆盖（Node registry hybrid driver 的档案分派）：
+			// 档案 ID 命名含目标语义词汇，包含判断即足够；未命中保持 openai
+			// 兜底（openai chat 档案与无法识别档案同路径）。
+			id := strings.ToLower(profile.ProfileID)
+			switch {
+			case strings.Contains(id, "anthropic"):
+				return "anthropic"
+			case strings.Contains(id, "gemini"):
+				return "gemini"
+			}
+			return "openai"
+		}
+		switch provider {
 		case "anthropic":
 			return "anthropic"
 		case "gemini":

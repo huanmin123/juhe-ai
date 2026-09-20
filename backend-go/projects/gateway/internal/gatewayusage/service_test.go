@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
 
 type stubModelResolver struct {
@@ -35,17 +33,13 @@ type stubPricing struct {
 	cost           float64
 	cacheReadCost  float64
 	cacheWriteCost float64
-	calls          int
-	lastTier       string
 }
 
 func (s *stubPricing) ResolvePricingModel(providerCode string, systemAccountID string, model string) string {
-	s.calls++
 	return s.model
 }
 
 func (s *stubPricing) EstimateCost(input PricingCostInput) *float64 {
-	s.lastTier = input.ServiceTier
 	value := s.cost
 	return &value
 }
@@ -72,20 +66,6 @@ func (s *stubMetrics) RecordUpstreamFailure(failureClass string, statusCode *int
 	s.failureClass = failureClass
 	s.statusCode = statusCode
 	s.reason = reasonClass
-}
-
-type stubAPIKeySuccess struct {
-	calls         int
-	accountID     string
-	source        string
-	trafficSource string
-}
-
-func (s *stubAPIKeySuccess) RecordAccountAPIKeySuccess(account UsageModelAccount, source string, trafficSource OpenAIGatewayTrafficSource) {
-	s.calls++
-	s.accountID = account.ID
-	s.source = source
-	s.trafficSource = trafficSource
 }
 
 type stubProtocolErrors struct {
@@ -126,7 +106,6 @@ type testHarness struct {
 	models    *stubModelResolver
 	pricing   *stubPricing
 	metrics   *stubMetrics
-	apiKey    *stubAPIKeySuccess
 	logger    *captureLogger
 	idFactory *countingIDFactory
 	protocol  *stubProtocolErrors
@@ -142,7 +121,6 @@ func newHarness(config ServiceConfig) *testHarness {
 		models:    &stubModelResolver{resolution: UsageModelResolution{UpstreamModel: "gpt-x", ModelMappingApplied: true, ModelMappingSource: "account_mapping", UpstreamEndpointFamily: "chat_completions"}},
 		pricing:   &stubPricing{model: "gpt-x-catalog", cost: 0.02, cacheReadCost: 0.001, cacheWriteCost: 0.002},
 		metrics:   &stubMetrics{},
-		apiKey:    &stubAPIKeySuccess{},
 		logger:    &captureLogger{},
 		idFactory: idFactory,
 		protocol:  &stubProtocolErrors{payload: protocolErrorPayload("insufficient_quota", "upstream boom")},
@@ -158,7 +136,6 @@ func newHarness(config ServiceConfig) *testHarness {
 	service.WithDefaultProviderCode(&stubDefaultProvider{code: "gpt"})
 	service.WithPricingCatalog(harness.pricing)
 	service.WithMetrics(harness.metrics)
-	service.WithAccountAPIKeySuccess(harness.apiKey)
 	service.WithProtocolErrorParser(harness.protocol)
 	harness.service = service
 	return harness
@@ -171,13 +148,6 @@ func protocolErrorPayload(code string, message string) *OrderedObject {
 	payload.Set("code", code)
 	payload.Set("message", message)
 	return payload
-}
-
-func requestSnapshotPointer() *UsageRequestSnapshot {
-	snapshot := BuildUsageRequestSnapshot(BuildUsageRequestSnapshotInput{
-		Method: "POST", Path: "/v1/chat/completions", OriginalURL: "/v1/chat/completions", TraceID: "trace-1",
-	})
-	return &snapshot
 }
 
 func testAccount() UsageModelAccount {
@@ -215,155 +185,6 @@ func usageContext() GatewayUsageContext {
 		EffectiveServiceTier:     "flex",
 		RequestedReasoningEffort: "high",
 		EffectiveReasoningEffort: "high",
-	}
-}
-
-func TestRecordCompletedUpstreamAttemptFieldParity(t *testing.T) {
-	harness := newHarness(ServiceConfig{SyncPricingAllowed: true, FinalizationMaxItems: 8, FinalizationMaxConcurrency: 2})
-	inputTokens := 100
-	outputTokens := 50
-	cacheRead := 10
-	cacheWrite := 5
-	cacheWrite1h := 2
-	thinking := 7
-	imageIn := 3
-	imageOut := 4
-	audioIn := 5
-	audioOut := 6
-	imageCount := 2
-	status := 200
-	firstToken := 120
-	err := harness.service.RecordCompletedUpstreamAttempt(context.Background(), RecordCompletedUpstreamAttemptInput{
-		TraceID:                  "trace-1",
-		TrafficSource:            TrafficSourceGateway,
-		ClientIP:                 "1.2.3.4",
-		SystemAccountID:          "sys-owner",
-		APIKeyID:                 "key-1",
-		GroupID:                  "group-1",
-		Account:                  testAccount(),
-		Endpoint:                 "POST /v1/chat/completions",
-		StatusCode:               &status,
-		Success:                  true,
-		ProtocolValidatedSuccess: true,
-		Stream:                   true,
-		FirstTokenMs:             &firstToken,
-		StartedAtMs:              1700000000000 - 500,
-		CompletedAtMs:            1700000000000,
-		Model:                    "gpt-requested",
-		SourceEndpointFamily:     "chat_completions",
-		Usage: gatewayproto.ParsedUsage{
-			InputTokens:        &inputTokens,
-			OutputTokens:       &outputTokens,
-			CacheReadTokens:    &cacheRead,
-			CacheWriteTokens:   &cacheWrite,
-			CacheWrite1hTokens: &cacheWrite1h,
-			ThinkingTokens:     &thinking,
-			InputImageTokens:   &imageIn,
-			OutputImageTokens:  &imageOut,
-			InputAudioTokens:   &audioIn,
-			OutputAudioTokens:  &audioOut,
-			OutputImageCount:   &imageCount,
-			ServiceTier:        "priority",
-		},
-		RequestedServiceTier:     "flex",
-		EffectiveServiceTier:     "flex",
-		RequestedReasoningEffort: "high",
-		EffectiveReasoningEffort: "high",
-		RequestSnapshot:          requestSnapshotPointer(),
-	})
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if !harness.service.dispatch.WaitForIdle(2000) {
-		t.Fatal("dispatch did not go idle")
-	}
-	records := harness.recorder.Records()
-	if len(records) != 1 {
-		t.Fatalf("records = %d", len(records))
-	}
-	record := records[0]
-	if record.TraceID != "trace-1" || record.TrafficSource != "gateway" || !record.Success {
-		t.Fatalf("base fields = %+v", record)
-	}
-	if record.AccountID != "acc-1" || record.AccountOwnerSystemAccountID != "sys-owner" || record.GroupOwnerSystemAccountID != "sys-group" {
-		t.Fatalf("account fields = %+v", record)
-	}
-	if record.AccountAuthorizationSourceTeamID != "team-1" || record.GroupAuthorizationID != "group-authz-1" {
-		t.Fatalf("authorization fields = %+v", record)
-	}
-	if record.Model != "gpt-requested" || record.UpstreamModel != "gpt-x" {
-		t.Fatalf("model fields = %q/%q", record.Model, record.UpstreamModel)
-	}
-	if record.PricingModel != "gpt-x-catalog" {
-		t.Fatalf("pricingModel = %q", record.PricingModel)
-	}
-	if record.ModelMappingApplied == nil || !*record.ModelMappingApplied {
-		t.Fatal("modelMappingApplied must be true")
-	}
-	if record.UsageSemantic != "openai" {
-		t.Fatalf("usageSemantic = %q", record.UsageSemantic)
-	}
-	if *record.StatusCode != 200 || !*record.Stream || *record.FirstTokenMs != 120 || *record.DurationMs != 500 {
-		t.Fatalf("status/stream/timing = %+v", record)
-	}
-	if *record.InputTokens != 100 || *record.OutputTokens != 50 || *record.CacheReadTokens != 10 ||
-		*record.CacheWriteTokens != 5 || *record.CacheWrite1hTokens != 2 || *record.ThinkingTokens != 7 {
-		t.Fatalf("tokens = %+v", record)
-	}
-	if record.RequestedServiceTier != "flex" || record.EffectiveServiceTier != "flex" ||
-		record.ReportedServiceTier != "priority" || record.BilledServiceTier != "priority" {
-		t.Fatalf("tiers = %+v", record)
-	}
-	if *record.CacheReadCostUsd != 0.001 || *record.CacheWriteCostUsd != 0.002 || *record.CostUsd != 0.02 {
-		t.Fatalf("costs = %v/%v/%v", record.CacheReadCostUsd, record.CacheWriteCostUsd, record.CostUsd)
-	}
-	if harness.pricing.lastTier != "priority" {
-		t.Fatalf("cost service tier = %q", harness.pricing.lastTier)
-	}
-	if harness.apiKey.calls != 1 || harness.apiKey.source != "upstream_attempt_completed" {
-		t.Fatalf("apiKey success = %+v", harness.apiKey)
-	}
-	if record.CreatedAt == "" || record.ID == "" {
-		t.Fatalf("normalized id/createdAt missing: %+v", record)
-	}
-	if record.RequestSnapshot == nil {
-		t.Fatal("request snapshot must survive for gateway traffic")
-	}
-}
-
-func TestRecordCompletedUpstreamAttemptRedisGateAndDefaults(t *testing.T) {
-	harness := newHarness(ServiceConfig{SyncPricingAllowed: false, FinalizationMaxItems: 8, FinalizationMaxConcurrency: 2})
-	status := 200
-	if err := harness.service.RecordCompletedUpstreamAttempt(context.Background(), RecordCompletedUpstreamAttemptInput{
-		TraceID:              "trace-1",
-		TrafficSource:        TrafficSourceGateway,
-		SystemAccountID:      "sys-owner",
-		Account:              testAccount(),
-		Endpoint:             "POST /v1/chat/completions",
-		StatusCode:           &status,
-		Success:              true,
-		StartedAtMs:          1000,
-		CompletedAtMs:        0,
-		Model:                "gpt-requested",
-		RequestedServiceTier: "flex",
-	}); err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if !harness.service.dispatch.WaitForIdle(2000) {
-		t.Fatal("not idle")
-	}
-	record, _ := harness.recorder.LastRecord()
-	if record.CacheReadCostUsd != nil || record.CacheWriteCostUsd != nil || record.CostUsd != nil || record.PricingModel != "" {
-		t.Fatalf("redis gate must omit pricing: %+v", record)
-	}
-	if harness.pricing.calls != 0 {
-		t.Fatal("pricing catalog must not be consulted")
-	}
-	if harness.apiKey.calls != 0 {
-		t.Fatal("protocolValidatedSuccess defaults false; no api key success expected")
-	}
-	if record.DurationMs == nil || *record.DurationMs < 0 {
-		t.Fatalf("duration = %v", record.DurationMs)
 	}
 }
 
@@ -448,33 +269,6 @@ func TestRecordFailedUpstreamAttemptProbeDropsSnapshotsAndDebugs(t *testing.T) {
 	}
 	if record.ErrorCode != "" || record.ErrorMessage != "" {
 		t.Fatalf("unexpected error fields: %+v", record)
-	}
-}
-
-func TestRecordDownstreamClosedUpstreamAttempt(t *testing.T) {
-	harness := newHarness(ServiceConfig{FinalizationMaxItems: 8, FinalizationMaxConcurrency: 2})
-	if err := harness.service.RecordDownstreamClosedUpstreamAttempt(context.Background(), RecordCompletedUpstreamAttemptInput{
-		TraceID:         "trace-1",
-		TrafficSource:   TrafficSourceGateway,
-		SystemAccountID: "sys-owner",
-		Account:         testAccount(),
-		Endpoint:        "POST /v1/chat/completions",
-		StartedAtMs:     1700000000000 - 100,
-		CompletedAtMs:   1700000000000,
-		Model:           "gpt-requested",
-	}); err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if !harness.service.dispatch.WaitForIdle(2000) {
-		t.Fatal("not idle")
-	}
-	record, _ := harness.recorder.LastRecord()
-	if record.Success || record.ErrorCode != "downstream_connection_closed" ||
-		record.ErrorMessage != "下游连接关闭" || record.FailureAttribution != FailureAttributionDownstreamClosed {
-		t.Fatalf("record = %+v", record)
-	}
-	if record.InputTokens != nil || record.OutputTokens != nil {
-		t.Fatal("downstream closed must carry empty usage")
 	}
 }
 
@@ -674,7 +468,13 @@ func TestRecorderPortFailureDoesNotBlockDispatch(t *testing.T) {
 	dispatch := NewFinalizationDispatch(recorder, nil, 4, 1)
 	service := NewService(dispatch, ServiceConfig{})
 	service.WithClock(fixedClock{ms: 1700000000000})
-	if err := service.RecordCompletedUpstreamAttempt(context.Background(), completedAttemptInput("trace-fail")); err != nil {
+	attempt := usageContext()
+	failedInput := RecordFailedUpstreamAttemptInput{
+		Model:       "gpt-requested",
+		UpstreamURL: "https://upstream.example.com/v1",
+		StartedAtMs: 1700000000000 - 10,
+	}
+	if err := service.RecordFailedUpstreamAttempt(context.Background(), attempt, testAccount(), failedInput); err != nil {
 		t.Fatalf("dispatch must not surface recorder failures: %v", err)
 	}
 	if !dispatch.WaitForIdle(2000) {
@@ -684,7 +484,7 @@ func TestRecorderPortFailureDoesNotBlockDispatch(t *testing.T) {
 		t.Fatal("failed record must not be retained")
 	}
 	// Recovery: next record goes through.
-	if err := service.RecordCompletedUpstreamAttempt(context.Background(), completedAttemptInput("trace-ok")); err != nil {
+	if err := service.RecordFailedUpstreamAttempt(context.Background(), attempt, testAccount(), failedInput); err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if !dispatch.WaitForIdle(2000) {
@@ -784,22 +584,6 @@ func (m *memoryOverflow) snapshot() []UsageRecordInput {
 	out := make([]UsageRecordInput, len(m.spooled))
 	copy(out, m.spooled)
 	return out
-}
-
-func completedAttemptInput(trace string) RecordCompletedUpstreamAttemptInput {
-	status := 200
-	return RecordCompletedUpstreamAttemptInput{
-		TraceID:         trace,
-		TrafficSource:   TrafficSourceGateway,
-		SystemAccountID: "sys-owner",
-		Account:         testAccount(),
-		Endpoint:        "POST /v1/chat/completions",
-		StatusCode:      &status,
-		Success:         true,
-		StartedAtMs:     1700000000000 - 10,
-		CompletedAtMs:   1700000000000,
-		Model:           "gpt-requested",
-	}
 }
 
 // TestFinalizationDefaultsMirrorNodeConcurrencyGlobalMax 验证收尾队列默认档位：

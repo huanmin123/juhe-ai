@@ -3,16 +3,11 @@ package oauthrefresh
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"testing"
 )
 
 func jsonUnmarshal(raw []byte, target any) error {
 	return json.Unmarshal(raw, target)
-}
-
-func discardLogger() *slog.Logger {
-	return slog.New(slog.DiscardHandler)
 }
 
 // scriptRecorder is a minimal in-memory Scripter capturing Eval payloads so

@@ -14,13 +14,8 @@ func TestWAOpenAIStreamInspectorFullStream(t *testing.T) {
 		"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}}\n\n" +
 		"data: [DONE]\n\n"
 	inspector := NewStreamInspector()
-	observed := 0
-	inspector.SetParsedEventObserver(func(ParsedStreamEvent) { observed++ })
 	inspector.PushText(stream)
 	snapshot := inspector.Finish()
-	if observed != 4 {
-		t.Fatalf("parsed observer 触发 %d 次，期望 4", observed)
-	}
 	if !snapshot.TerminalReceived {
 		t.Fatalf("[DONE] 应终止: %+v", snapshot)
 	}
@@ -69,25 +64,18 @@ func TestWAOpenAIStreamInspectorImageStream(t *testing.T) {
 
 // 超长单行：非 event/data 前缀触发整体跳过。
 func TestWAOpenAIStreamInspectorLineOverLimitSkip(t *testing.T) {
-	reasons := []string{}
 	inspector := NewStreamInspector()
-	inspector.SetParserCoverageObserver(func(reason string) { reasons = append(reasons, reason) })
 	inspector.PushText("id: " + strings.Repeat("a", 256*1024+1) + "\n\n")
 	snapshot := inspector.Finish()
 	if !snapshot.Skipped || snapshot.SkipReason != "SSE 单行超过网关解析上限" {
 		t.Fatalf("跳过 = %v/%q", snapshot.Skipped, snapshot.SkipReason)
-	}
-	if len(reasons) != 1 {
-		t.Fatalf("parser coverage observer = %v", reasons)
 	}
 }
 
 // 超大事件：多行 data 累计超过事件上限（单行仍低于 256KB 行限）时按
 // oversized 事件分类，类型取自首行前缀、usage 从尾部片段回捞。
 func TestWAOpenAIStreamInspectorOversizedEvent(t *testing.T) {
-	reasons := []string{}
 	inspector := NewStreamInspector()
-	inspector.SetParserCoverageObserver(func(reason string) { reasons = append(reasons, reason) })
 	pad1 := strings.Repeat("a", 200*1024)
 	pad2 := strings.Repeat("b", 205*1024)
 	pad3 := strings.Repeat("c", 120*1024)
@@ -101,9 +89,6 @@ func TestWAOpenAIStreamInspectorOversizedEvent(t *testing.T) {
 	snapshot := inspector.Finish()
 	if snapshot.Skipped {
 		t.Fatalf("可识别的 oversized 事件不应整体跳过: %+v", snapshot)
-	}
-	if len(reasons) != 1 || reasons[0] != "SSE event 超过完整协议检查上限" {
-		t.Fatalf("observer reasons = %v", reasons)
 	}
 	if !snapshot.TerminalReceived {
 		t.Fatalf("oversized completed 应终止: %+v", snapshot)

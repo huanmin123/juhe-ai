@@ -17,7 +17,7 @@ import (
 func newW1PricedFixture(t *testing.T) *chainFixture {
 	t.Helper()
 	fixture := newChainFixture(t)
-	if _, err := fixture.db.Exec(`UPDATE provider_model_catalog SET
+	if _, err := fixture.db.Exec(`UPDATE custom_provider_models SET
 		input_usd_per_1m = 1.5, output_usd_per_1m = 2.0, cached_input_usd_per_1m = 0.15,
 		cache_write_usd_per_1m = 0.5 WHERE model = 'gpt-test'`); err != nil {
 		t.Fatalf("price catalog: %v", err)

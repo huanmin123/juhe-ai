@@ -25,6 +25,10 @@ let shuttingDown = false
 
 let goProjectEnv
 
+// gateway 子进程日志里的 owner 租约等待是面向运维的英文 JSON；dev 会话把它
+// 翻译成"在等什么、等多久、要不要干预"，每个租约标签只提示一次。
+const leaseWaitNoticeLeases = new Set()
+
 // 去跨进程战役第四刀：即使残留在历史 .env 或父进程环境中，已删除的
 // F3/F4 loopback input env 也不得进入 Go 子进程（gateway 进程内 producer
 // 独占写入，监听器 3303/3304 已不存在）。声明必须先于顶层 try：下方
@@ -46,6 +50,7 @@ process.on('SIGHUP', () => shutdown(129))
 
 try {
   goProjectEnv = resolveGoProjectEnv()
+  await warnIfGatewayStillRunning()
   goGateway = startGoProject('gateway')
   // jobs 的 runtime-log-indexer 会以只读方式附加业务库；冷启动时业务库由
   // gateway 零配置自举创建，必须等 gateway 健康后才能启动 jobs，否则 jobs
@@ -114,10 +119,46 @@ function startGoProject(project) {
     shell: false,
     stdio: ['inherit', 'pipe', 'pipe']
   })
-  pipeChildOutput(child.stdout, process.stdout)
-  pipeChildOutput(child.stderr, process.stderr)
+  const outputTap = project === 'gateway' ? noteGatewayLeaseWait : undefined
+  pipeChildOutput(child.stdout, process.stdout, outputTap)
+  pipeChildOutput(child.stderr, process.stderr, outputTap)
   monitorChild(child, `Go ${project}`)
   return child
+}
+
+function noteGatewayLeaseWait(chunk) {
+  const notice = leaseWaitNotice(chunk)
+  if (!notice || leaseWaitNoticeLeases.has(notice.lease)) return
+  leaseWaitNoticeLeases.add(notice.lease)
+  console.log(`[dev] ${notice.note}`)
+}
+
+// leaseWaitNotice 识别 gateway 日志里的"owner 租约被他人持有，等待前任过期"
+// Info 行（注意 fail-fast 的 error 行不含 "waiting for predecessor lease
+// expiry"，不会误触发），返回带租约标签的用户提示；其余行返回 undefined。
+function leaseWaitNotice(chunk) {
+  const text = chunk.toString()
+  if (!text.includes('waiting for predecessor lease expiry')) return undefined
+  const lease = /"lease":"([^"]+)"/.exec(text)?.[1] ?? 'owner'
+  return {
+    lease,
+    note: `上一会话的 gateway 进程是被强制停止的（如 taskkill、关闭终端窗口），它持有的 ${lease} owner 租约还没过期。` +
+      '新 gateway 正在等租约过期后自动接管（等待预算 45s；dev 租约 TTL 默认 10s，通常 10 秒内），期间无需干预。'
+  }
+}
+
+// warnIfGatewayStillRunning 在拉起 gateway 前探测健康端口：有响应说明上一
+// dev 实例还活着（新 gateway 的租约等待不可能成功，45s 后会 fail-fast），
+// 提前给出一句可操作的提示；连接拒绝是正常冷启动路径，保持安静。
+async function warnIfGatewayStillRunning() {
+  const healthAddress = goProjectEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS || '127.0.0.1:3306'
+  try {
+    const response = await fetch(`http://${healthAddress}/health`, { signal: AbortSignal.timeout(2000) })
+    console.log(`[dev] 注意：${healthAddress} 上已有 dev gateway 在运行（health HTTP ${response.status}）。`)
+    console.log('[dev] 若这是上一次会话的旧实例，请先停止它；否则本次新 gateway 将等待 45s 后 fail-fast 退出。')
+  } catch {
+    // 连接拒绝/超时 = 没有可应答的旧实例，正常启动路径不打扰。
+  }
 }
 
 function monitorChild(child, label) {

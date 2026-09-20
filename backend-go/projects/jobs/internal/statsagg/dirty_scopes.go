@@ -129,6 +129,22 @@ func (a *Aggregator) markDerivedWindowDirtyScopes(ctx context.Context, tx *sql.T
 	return nil
 }
 
+// authorizationRowQuerier 统一 *sql.Tx / *sql.DB 的单行查询面。
+type authorizationRowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// authorizationQueryHandle 返回授权链查找的执行句柄：PG 沿用聚合事务
+// （与聚合读同快照，juhe_business. 前缀同池可查）；SQLite 用组合根注入的
+// 业务库句柄（stats 库没有 resource_authorizations / accounts）。SQLite 未
+// 注入时回退聚合事务，保留既有缺表报错信号，不静默吞。
+func (a *Aggregator) authorizationQueryHandle(tx *sql.Tx) authorizationRowQuerier {
+	if !a.Dialect.Postgres && a.BusinessDB != nil {
+		return a.BusinessDB
+	}
+	return tx
+}
+
 // createUsageStatsAuthorizationLookup mirrors createPostgresUsageStatsAuthorizationLookup：
 // account 授权 → resource_id / instance_account_id 查找表。
 func (a *Aggregator) createUsageStatsAuthorizationLookup(ctx context.Context, tx *sql.Tx, records []UsageStatsRecordRow) (*AuthorizationLookup, error) {
@@ -158,9 +174,10 @@ func (a *Aggregator) createUsageStatsAuthorizationLookup(ctx context.Context, tx
 		WHERE authorizations.resource_type = 'account'
 		  AND authorizations.id = ?
 	`)
+	queryHandle := a.authorizationQueryHandle(tx)
 	for _, id := range ids {
 		var authID, resourceID, instanceAccountID sql.NullString
-		err := tx.QueryRowContext(ctx, query, id).Scan(&authID, &resourceID, &instanceAccountID)
+		err := queryHandle.QueryRowContext(ctx, query, id).Scan(&authID, &resourceID, &instanceAccountID)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				continue

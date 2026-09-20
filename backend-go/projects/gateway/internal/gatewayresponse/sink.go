@@ -61,16 +61,6 @@ func (s *Sink) SendGatewayFailureResponse(input gatewaypreauth.FailureResponseIn
 	}
 	clientPayload := gatewaypreauth.GatewayErrorPayloadForProtocol(deliveredPayload, protocol)
 	clientPayloadJSON := marshalClientPayload(clientPayload)
-	// 对齐 failure-response.ts:71-74：failureScope 缺省按 outcome/attribution
-	// 推断，upstream 域标注给 http metric（D-116/D-122）。
-	failureScope := input.FailureScope
-	if failureScope == "" {
-		failureScope = inferGatewayFailureScope(input.Audit.Outcome, input.FailureAttribution)
-	}
-	if failureScope == "upstream" {
-		markHTTPMetricFailureScope("upstream")
-	}
-
 	sendGatewayErrorResponseForSink(input.Res, input.StatusCode, deliveredPayload, gatewaypreauth.SendGatewayErrorResponseOptions{
 		Protocol:                     protocol,
 		PreserveUpstreamErrorMessage: input.PreserveUpstreamErrorMessage,
@@ -402,17 +392,6 @@ func gatewayErrorProtocolForRequest(req *gatewaypreauth.GatewayRequest) gatewayp
 		}
 	}
 	return gatewaypreauth.GatewayErrorProtocolOpenAI
-}
-
-// inferGatewayFailureScope 对齐 inferGatewayFailureScope。
-func inferGatewayFailureScope(outcome string, attribution string) string {
-	if outcome == "upstream_failed" {
-		return "upstream"
-	}
-	if attribution == "account_upstream" || attribution == "account_dependency" || attribution == "opaque_upstream" {
-		return "upstream"
-	}
-	return ""
 }
 
 // sendGatewayErrorResponseForSink 转发 G05 的 sendGatewayErrorResponse。

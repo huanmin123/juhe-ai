@@ -211,6 +211,10 @@ type SqliteShardStoreConfig struct {
 	// accounts.last_used_at side effect (nil mirrors queryOnly mode: the
 	// side effect is skipped with a warning).
 	BusinessDB *sql.DB
+	// StatsDB 是 stats 库句柄（SQLite standalone 模式的聚合源镜像写目标）。
+	// 表由 statsverify EnsureSchema 建为聚合 41 列形状，本 store 只写不建。
+	// nil 时跳过镜像写（既有单测与只读场景保持原行为）。
+	StatsDB *sql.DB
 	// BusyTimeoutMs mirrors sqliteBusyTimeoutMs.
 	BusyTimeoutMs int
 	// Now substitutes nowIso(); nil = wall clock.
@@ -321,26 +325,149 @@ func ensureUpstreamResponseModelColumn(db *sql.DB) error {
 	return nil
 }
 
+// statsMirrorAggregateColumns 是 stats 库 usage_records 的镜像写入列（对齐
+// statsagg aggregate.go usageStatsRecordSelectColumns 的聚合 SELECT 全列；
+// PG 模式聚合直读 juhe_usage.usage_records 分区表，不走此镜像）。
+var statsMirrorAggregateColumns = []string{
+	"id",
+	"system_account_id",
+	"trace_id",
+	"traffic_source",
+	"client_ip",
+	"api_key_id",
+	"group_id",
+	"account_id",
+	"endpoint",
+	"provider_code",
+	"provider_protocol_profile_id",
+	"model",
+	"status_code",
+	"success",
+	"failure_attribution",
+	"first_token_ms",
+	"duration_ms",
+	"input_tokens",
+	"output_tokens",
+	"cache_read_tokens",
+	"cache_read_cost_usd",
+	"cache_write_tokens",
+	"cache_write_1h_tokens",
+	"cache_write_cost_usd",
+	"thinking_tokens",
+	"input_image_tokens",
+	"output_image_tokens",
+	"cost_usd",
+	"error_code",
+	"error_message",
+	"account_owner_system_account_id",
+	"group_owner_system_account_id",
+	"account_access_type",
+	"group_access_type",
+	"account_authorization_id",
+	"account_authorization_source_type",
+	"account_authorization_source_team_id",
+	"group_authorization_id",
+	"group_authorization_source_type",
+	"group_authorization_source_team_id",
+	"created_at",
+}
+
+// statsMirrorParamIndexes / errStatsMirrorColumns 把镜像列映射回行参数
+// （UsageRecordColumns 顺序）的下标；init 期解析，列名漂移在首次镜像写时
+// 报错而不是写错列。
+var (
+	statsMirrorParamIndexes []int
+	errStatsMirrorColumns   error
+)
+
+func init() {
+	index := make(map[string]int, len(UsageRecordColumns))
+	for position, name := range UsageRecordColumns {
+		index[name] = position
+	}
+	statsMirrorParamIndexes = make([]int, 0, len(statsMirrorAggregateColumns))
+	for _, name := range statsMirrorAggregateColumns {
+		position, ok := index[name]
+		if !ok {
+			errStatsMirrorColumns = fmt.Errorf("usagewriter 行模型缺少统计镜像列 %s", name)
+			return
+		}
+		statsMirrorParamIndexes = append(statsMirrorParamIndexes, position)
+	}
+}
+
 // WriteBatch implements ShardStore: shard rows (transactional insert with
-// ON CONFLICT(id) DO NOTHING), then the catalog entries transaction, then
-// the accounts.last_used_at side effect (warn-only like Node).
+// ON CONFLICT(id) DO NOTHING), the stats-library aggregation mirror (same
+// failure domain: 镜像写失败=本批失败，writer 按队头重试；两侧各自
+// ON CONFLICT(id) DO NOTHING，重复执行安全), then the catalog entries
+// transaction, then the accounts.last_used_at side effect (warn-only like
+// Node).
 func (s *SqliteShardStore) WriteBatch(ctx Ctx, plan WritePlan) (int, error) {
 	inserted := 0
 	lastUsedAt := map[string]string{}
 	healthSuccessAt := map[string]string{}
+	allRows := make([]ShardWriteRow, 0, len(plan.ShardEntries))
 	for _, shardRows := range plan.RowsByShard {
 		count, err := s.writeShardRows(shardRows.Location, shardRows.Rows)
 		if err != nil {
 			return inserted, err
 		}
 		inserted += count
+		allRows = append(allRows, shardRows.Rows...)
 		MergeShardWriteResult(lastUsedAt, healthSuccessAt, shardRows.Rows)
+	}
+	if err := s.mirrorStatsUsageRecords(allRows); err != nil {
+		return inserted, err
 	}
 	if err := s.recordShardEntries(ctx, plan.ShardEntries, plan.Locations); err != nil {
 		return inserted, err
 	}
 	s.flushBusinessSideEffects(lastUsedAt)
 	return inserted, nil
+}
+
+// mirrorStatsUsageRecords 把本批已写入分片的记录同批镜像进 stats 库
+// usage_records（SQLite standalone 模式下 statsagg 聚合器的唯一输入源；
+// 与分片写分属不同库文件、无法同事务，以"分片全成功后执行、失败随
+// WriteBatch 返回"划失败域）。幂等：ON CONFLICT(id) DO NOTHING，与分片
+// 侧语义一致，队头重试重复执行安全。
+func (s *SqliteShardStore) mirrorStatsUsageRecords(rows []ShardWriteRow) error {
+	if s.config.StatsDB == nil || len(rows) == 0 {
+		return nil
+	}
+	if errStatsMirrorColumns != nil {
+		return errStatsMirrorColumns
+	}
+	insertSQL := fmt.Sprintf(
+		"INSERT INTO usage_records (%s) VALUES (%s) ON CONFLICT(id) DO NOTHING",
+		strings.Join(statsMirrorAggregateColumns, ", "),
+		sqlitePlaceholders(len(statsMirrorAggregateColumns)),
+	)
+	tx, err := s.config.StatsDB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	statement, err := tx.Prepare(insertSQL)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer statement.Close()
+	for _, row := range rows {
+		params := make([]any, 0, len(statsMirrorParamIndexes))
+		for _, index := range statsMirrorParamIndexes {
+			if index >= len(row.Params) {
+				tx.Rollback()
+				return fmt.Errorf("usage record %s 行参数缺少统计镜像列下标 %d", row.ID, index)
+			}
+			params = append(params, row.Params[index])
+		}
+		if _, err := statement.Exec(params...); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // writeShardRows mirrors writeUsageRecordShardRows.

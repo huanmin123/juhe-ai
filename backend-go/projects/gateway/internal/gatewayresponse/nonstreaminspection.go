@@ -168,7 +168,6 @@ func (input *HandleUpstreamResponseInput) inspectBufferedGatewayJSONResponse(arg
 		}
 	}
 
-	markHTTPMetricFailureScope("upstream")
 	responsePayload := gatewaypreauth.GatewayErrorPayloadOf(message, "response_inspection_failed", errorCode)
 	clientErrorProtocol := gatewaypreauth.GatewayErrorProtocol(driver.ClientErrorProtocol())
 	clientPayload := gatewaypreauth.GatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)

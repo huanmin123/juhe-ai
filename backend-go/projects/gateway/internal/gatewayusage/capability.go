@@ -12,14 +12,9 @@ type UsageServiceTier = string
 // UsageReasoningEffort mirrors the Node UsageReasoningEffort type.
 type UsageReasoningEffort = string
 
-// UsageServiceTierFacts mirrors UsageServiceTierFacts (service-tier.ts).
-type UsageServiceTierFacts struct {
-	RequestedServiceTier  UsageServiceTier
-	EffectiveServiceTier  UsageServiceTier
-	ReportedServiceTier   UsageServiceTier // optional; empty = undefined
-	BilledServiceTier     UsageServiceTier
-	HasReportedTier       bool
-}
+// 2026-09-20 死代码清理：UsageServiceTierFacts / ResolveUsageServiceTiers /
+// ResolveUsageServiceTiersInput 已删除——全仓零生产调用，仅专属表驱动测试
+// TestResolveUsageServiceTiers（usage_test.go）引用，测试一并删除。
 
 // usageCapabilityTokenPattern mirrors /^[a-z0-9][a-z0-9._-]{0,63}$/i.
 var usageCapabilityTokenPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
@@ -59,37 +54,4 @@ func NormalizeUsageServiceTier(value any) UsageServiceTier {
 // NormalizeUsageReasoningEffort mirrors normalizeUsageReasoningEffort.
 func NormalizeUsageReasoningEffort(value any) UsageReasoningEffort {
 	return NormalizeUsageCapabilityToken(value)
-}
-
-// ResolveUsageServiceTiers mirrors resolveUsageServiceTiers: effective
-// defaults to requested, billed defaults to reported then effective.
-func ResolveUsageServiceTiers(input ResolveUsageServiceTiersInput) UsageServiceTierFacts {
-	requested := input.RequestedServiceTier
-	if requested == "" {
-		requested = "default"
-	}
-	effective := input.EffectiveServiceTier
-	if effective == "" {
-		effective = requested
-	}
-	reported := input.ReportedServiceTier
-	billed := reported
-	if billed == "" {
-		billed = effective
-	}
-	return UsageServiceTierFacts{
-		RequestedServiceTier: requested,
-		EffectiveServiceTier: effective,
-		ReportedServiceTier:  reported,
-		HasReportedTier:      reported != "",
-		BilledServiceTier:    billed,
-	}
-}
-
-// ResolveUsageServiceTiersInput mirrors the resolveUsageServiceTiers input
-// object; empty strings mean undefined.
-type ResolveUsageServiceTiersInput struct {
-	RequestedServiceTier UsageServiceTier
-	EffectiveServiceTier UsageServiceTier
-	ReportedServiceTier  UsageServiceTier
 }

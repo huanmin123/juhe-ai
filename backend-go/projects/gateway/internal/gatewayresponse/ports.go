@@ -229,36 +229,6 @@ type HTTPCompletion interface {
 	Wait() <-chan int64
 }
 
-// HTTPMetricFailureScopeMarker 对齐 markRequestHttpMetricFailureScope
-// （shared/request-context.ts）：把本次请求的 http metric 失败域标注给指标
-// 中间件。生产装配随 G12/G15 指标面接入；缺省（未 Set）为 no-op，与 Node
-// 无指标上下文时的行为一致。
-type HTTPMetricFailureScopeMarker interface {
-	// MarkFailureScope 对齐 markRequestHttpMetricFailureScope(scope)。
-	MarkFailureScope(scope string)
-}
-
-// httpMetricFailureScopeMarker 是进程级标注口（对齐 request-context 的
-// AsyncLocalStorage 形态在 Go 的最窄近似）：组合根在装配时 Set 一次，
-// 响应层在两处归档触发点调用（downstream-headers.ts:17-19 /
-// failure-response.ts:72-74 / non-stream-json-inspection.ts:287）。
-var httpMetricFailureScopeMarker HTTPMetricFailureScopeMarker
-
-// SetHTTPMetricFailureScopeMarker 装配 http metric 失败域标注口（nil 恢复
-// no-op；仅供组合根与测试使用）。
-func SetHTTPMetricFailureScopeMarker(marker HTTPMetricFailureScopeMarker) {
-	httpMetricFailureScopeMarker = marker
-}
-
-// markHTTPMetricFailureScope 对齐 markRequestHttpMetricFailureScope 的响应层
-// 触发面：未装配时静默跳过（不改变业务行为）。
-func markHTTPMetricFailureScope(scope string) {
-	if httpMetricFailureScopeMarker == nil {
-		return
-	}
-	httpMetricFailureScopeMarker.MarkFailureScope(scope)
-}
-
 // HTTPCompletionObserver 对齐 observeGatewayHttpCompletion。
 type HTTPCompletionObserver interface {
 	Observe(res gatewaypreauth.GatewayResponseWriter) HTTPCompletion

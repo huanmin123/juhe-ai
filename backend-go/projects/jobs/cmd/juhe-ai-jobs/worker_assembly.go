@@ -368,7 +368,6 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	}
 	dialect := statsagg.Dialect{Postgres: postgres}
 	timezone := statsTimezoneSource{store: store}
-	a.aggregator = &statsagg.Aggregator{DB: aggDB, Dialect: dialect, Clock: timezone}
 
 	// system_settings 读模型（background-jobs settingsNumber 移植）：PG 复用
 	// 共享池，SQLite 读 business 库；读取失败按 Node 语义降级默认（缺表/快照
@@ -379,6 +378,11 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			return err
 		}
 	}
+	// BusinessDB：授权链查找（resource_authorizations/accounts）在 SQLite 下
+	// 走业务库句柄，stats 库没有这两张表（与 settings/窗口刷新同一连接，
+	// D-48 生产者接线）；PG 与 stats 同池，聚合事务内 juhe_business. 前缀
+	// 直查，句柄仅作占位。
+	a.aggregator = &statsagg.Aggregator{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
 	// BusinessDB：配额小时窗读业务库绑定表（request_quota_hourly_window_scope_bindings）。
 	// PG 与 stats 同池共用 aggDB（juhe_business. 前缀）；SQLite 用业务库句柄
 	//（与 settings 同一连接，D-48 生产者接线）。
@@ -681,11 +685,19 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 		// SQLite 模式：定价目录读业务库（provider_model_catalog /
 		// custom_provider_models），与 shard store 的业务库副作用共用同一句柄。
 		pricingCatalog = newUsagePricingCatalog(business.db, false)
+		// stats 库镜像写句柄：SQLite standalone 模式下聚合器唯一输入源
+		//（usage_records 由 statsverify EnsureSchema 建为聚合形状；stats 家族
+		// 先于本家族装配，schema 已就绪）。句柄进入 openSQLite 的统一关闭链。
+		statsMirror, err := a.openSQLite(a.config.StatsSQLitePath, "usage-writer-stats-mirror")
+		if err != nil {
+			return err
+		}
 		sqliteStore := usagewriter.NewSqliteShardStore(usagewriter.SqliteShardStoreConfig{
 			CatalogDB:  catalogDB,
 			ShardRoot:  a.config.UsageShardRoot,
 			ShardCount: a.config.UsageShardCount,
 			BusinessDB: business.db,
+			StatsDB:    statsMirror,
 		})
 		if err := sqliteStore.EnsureCatalogSchema(); err != nil {
 			return fmt.Errorf("initialize usage-writer catalog schema: %w", err)

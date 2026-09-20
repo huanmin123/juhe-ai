@@ -2,8 +2,7 @@ package oauthrefresh
 
 // w12f_oauthrefresh_arms_test.go 覆盖刷新族的 SQL fail-closed 错误臂与
 // 组合分支：store/availability/keepalive/healthfanout 在句柄关闭或已回滚
-// 事务上的原始错误传播、account 锁 busy、Gemini fallback 链、runner 的
-// jitter 与失败计数臂。
+// 事务上的原始错误传播、account 锁 busy、Gemini fallback 链。
 
 import (
 	"context"
@@ -163,27 +162,5 @@ func TestW12fGeminiBuildCredentialsFallback(t *testing.T) {
 	}
 	if credentials["oauth_type"] != "ai_studio" {
 		t.Fatalf("oauth_type=%v", credentials["oauth_type"])
-	}
-}
-
-// --- runner jitter / 失败计数臂 ---
-
-func TestW12fRunnerPassiveJitterArm(t *testing.T) {
-	cfg := RunnerConfig{Interval: time.Millisecond, RunTimeout: 10 * time.Millisecond, PassiveJitter: true}
-	var runs int
-	runner := NewRunner("w12f-jitter", cfg, func(ctx context.Context) error {
-		runs++
-		return nil
-	}, ClockFunc(func() time.Time { return time.UnixMilli(1_700_000_000_000).UTC() }), nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- runner.Run(ctx) }()
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("取消后必须返回 ctx.Err: %v", err)
-	}
-	if runs == 0 {
-		t.Fatal("至少执行一次任务")
 	}
 }

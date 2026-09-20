@@ -3,12 +3,7 @@ package gatewayusage
 import (
 	"strings"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
-
-// gatewayprotoParsedUsage is the shared usage vocabulary (G-C wave).
-type gatewayprotoParsedUsage = gatewayproto.ParsedUsage
 
 // gatewayUsageFinalizationTaskMaxBytes mirrors
 // gatewayUsageFinalizationMaxBytes (failure-finalization.service.ts).
@@ -129,39 +124,6 @@ type RecordFailedUpstreamAttemptInput struct {
 	ErrorPayload any
 }
 
-// RecordCompletedUpstreamAttemptInput mirrors the
-// recordCompletedUpstreamAttempt input object.
-type RecordCompletedUpstreamAttemptInput struct {
-	TraceID                             string
-	TrafficSource                       OpenAIGatewayTrafficSource
-	ClientIP                            string
-	SystemAccountID                     string
-	APIKeyID                            string
-	GroupID                             string
-	Account                             UsageModelAccount
-	Endpoint                            string
-	StatusCode                          *int
-	Success                             bool
-	ProtocolValidatedSuccess            bool
-	AccountAPIKeySuccessAlreadyRecorded bool
-	Stream                              bool
-	FirstTokenMs                        *int
-	StartedAtMs                         int64
-	CompletedAtMs                       int64
-	Model                               string
-	SourceEndpointFamily                string
-	Usage                               gatewayprotoParsedUsage
-	RequestedServiceTier                UsageServiceTier
-	EffectiveServiceTier                UsageServiceTier
-	RequestedReasoningEffort            UsageReasoningEffort
-	EffectiveReasoningEffort            UsageReasoningEffort
-	ErrorCode                           string
-	ErrorMessage                        string
-	FailureAttribution                  UsageFailureAttribution
-	RequestSnapshot                     *UsageRequestSnapshot
-	ResponseSnapshot                    *UsageResponseSnapshot
-}
-
 // RecordGatewayFailureInput mirrors the recordGatewayFailure input object
 // plus the request-derived facts (model, stream).
 type RecordGatewayFailureInput struct {
@@ -175,13 +137,6 @@ type RecordGatewayFailureInput struct {
 	ErrorCode          string
 	FailureAttribution UsageFailureAttribution
 	ResponseSnapshot   *UsageResponseSnapshot
-}
-
-// AccountAPIKeySuccessRecorder ports
-// recordGatewayAccountApiKeySuccess (runtime/account-api-key-effects.service.ts):
-// fire-and-forget account api key success bookkeeping.
-type AccountAPIKeySuccessRecorder interface {
-	RecordAccountAPIKeySuccess(account UsageModelAccount, source string, trafficSource OpenAIGatewayTrafficSource)
 }
 
 // ProtocolErrorPayloadParser ports parseGatewayProtocolErrorPayload
@@ -204,17 +159,16 @@ type ServiceConfig struct {
 
 // Service assembles the usage record builders with their ports.
 type Service struct {
-	clock                Clock
-	logger               Logger
-	dispatch             *FinalizationDispatch
-	models               UsageModelResolver
-	semantics            UsageSemanticResolver
-	defaultProviderCode  DefaultUsageProviderCodeResolver
-	pricing              PricingCatalog
-	metrics              UpstreamFailureMetricRecorder
-	accountAPIKeySuccess AccountAPIKeySuccessRecorder
-	protocolErrors       ProtocolErrorPayloadParser
-	config               ServiceConfig
+	clock               Clock
+	logger              Logger
+	dispatch            *FinalizationDispatch
+	models              UsageModelResolver
+	semantics           UsageSemanticResolver
+	defaultProviderCode DefaultUsageProviderCodeResolver
+	pricing             PricingCatalog
+	metrics             UpstreamFailureMetricRecorder
+	protocolErrors      ProtocolErrorPayloadParser
+	config              ServiceConfig
 }
 
 // NewService wires the service with the finalization dispatch pipeline
@@ -277,12 +231,6 @@ func (s *Service) WithPricingCatalog(catalog PricingCatalog) *Service {
 // WithMetrics injects the upstream failure metric recorder.
 func (s *Service) WithMetrics(recorder UpstreamFailureMetricRecorder) *Service {
 	s.metrics = recorder
-	return s
-}
-
-// WithAccountAPIKeySuccess injects the account api key success recorder.
-func (s *Service) WithAccountAPIKeySuccess(recorder AccountAPIKeySuccessRecorder) *Service {
-	s.accountAPIKeySuccess = recorder
 	return s
 }
 
@@ -398,107 +346,6 @@ func (s *Service) RecordFailedUpstreamAttempt(ctx Ctx, usageContext GatewayUsage
 			ErrorMessage: errorMessage,
 		})),
 	})
-}
-
-// RecordCompletedUpstreamAttempt mirrors recordCompletedUpstreamAttempt.
-func (s *Service) RecordCompletedUpstreamAttempt(ctx Ctx, input RecordCompletedUpstreamAttemptInput) error {
-	if input.Success && input.ProtocolValidatedSuccess && !input.AccountAPIKeySuccessAlreadyRecorded && s.accountAPIKeySuccess != nil {
-		s.accountAPIKeySuccess.RecordAccountAPIKeySuccess(input.Account, "upstream_attempt_completed", input.TrafficSource)
-	}
-	model := input.Model
-	catalogSystemAccountID := firstNonEmpty(input.Account.UsageAccess.AccountOwnerSystemAccountID, input.SystemAccountID)
-	modelAccounting := s.accountUsageModelAccounting(input.Account, model, catalogSystemAccountID, input.SourceEndpointFamily)
-	costModel := usageCostCatalogModel(modelAccounting, model)
-	serviceTiers := ResolveUsageServiceTiers(ResolveUsageServiceTiersInput{
-		RequestedServiceTier: input.RequestedServiceTier,
-		EffectiveServiceTier: input.EffectiveServiceTier,
-		ReportedServiceTier:  input.Usage.ServiceTier,
-	})
-	completedAtMs := input.CompletedAtMs
-	if completedAtMs == 0 {
-		completedAtMs = s.clock.Now().UnixMilli()
-	}
-	durationMs := completedAtMs - input.StartedAtMs
-	if durationMs < 0 {
-		durationMs = 0
-	}
-	failureAttribution := ""
-	if !input.Success {
-		failureAttribution = firstNonEmpty(input.FailureAttribution, FailureAttributionAccountUpstream)
-	}
-	return s.dispatchUsageRecord(ctx, UsageRecordInput{
-		TraceID:                          input.TraceID,
-		TrafficSource:                    input.TrafficSource,
-		ClientIP:                         input.ClientIP,
-		SystemAccountID:                  input.SystemAccountID,
-		APIKeyID:                         input.APIKeyID,
-		GroupID:                          input.GroupID,
-		AccountID:                        input.Account.ID,
-		AccountOwnerSystemAccountID:      input.Account.UsageAccess.AccountOwnerSystemAccountID,
-		GroupOwnerSystemAccountID:        input.Account.UsageAccess.GroupOwnerSystemAccountID,
-		AccountAccessType:                input.Account.UsageAccess.AccountAccessType,
-		GroupAccessType:                  input.Account.UsageAccess.GroupAccessType,
-		AccountAuthorizationID:           input.Account.UsageAccess.AccountAuthorizationID,
-		AccountAuthorizationSourceType:   input.Account.UsageAccess.AccountAuthorizationSourceType,
-		AccountAuthorizationSourceTeamID: input.Account.UsageAccess.AccountAuthorizationSourceTeamID,
-		GroupAuthorizationID:             input.Account.UsageAccess.GroupAuthorizationID,
-		GroupAuthorizationSourceType:     input.Account.UsageAccess.GroupAuthorizationSourceType,
-		GroupAuthorizationSourceTeamID:   input.Account.UsageAccess.GroupAuthorizationSourceTeamID,
-		Endpoint:                         input.Endpoint,
-		ProviderCode:                     input.Account.ProviderCode,
-		ProviderProtocolProfileID:        input.Account.ProviderProtocolProfileID,
-		UsageSemantic:                    s.usageSemanticForAccount(input.Account),
-		Model:                            model,
-		UpstreamModel:                    modelAccounting.UpstreamModel,
-		UpstreamResponseModel:            input.Usage.UpstreamResponseModel,
-		PricingModel:                     modelAccounting.PricingModel,
-		ModelMappingApplied:              boolPointer(modelAccounting.ModelMappingApplied),
-		ModelMappingSource:               modelAccounting.ModelMappingSource,
-		SourceEndpointFamily:             modelAccounting.SourceEndpointFamily,
-		UpstreamEndpointFamily:           modelAccounting.UpstreamEndpointFamily,
-		Stream:                           boolPointer(input.Stream),
-		StatusCode:                       input.StatusCode,
-		Success:                          input.Success,
-		FailureAttribution:               failureAttribution,
-		FirstTokenMs:                     input.FirstTokenMs,
-		DurationMs:                       intPointer(int(durationMs)),
-		InputTokens:                      input.Usage.InputTokens,
-		OutputTokens:                     input.Usage.OutputTokens,
-		CacheReadTokens:                  input.Usage.CacheReadTokens,
-		CacheWriteTokens:                 input.Usage.CacheWriteTokens,
-		CacheWrite1hTokens:               input.Usage.CacheWrite1hTokens,
-		ThinkingTokens:                   input.Usage.ThinkingTokens,
-		RequestedServiceTier:             serviceTiers.RequestedServiceTier,
-		EffectiveServiceTier:             serviceTiers.EffectiveServiceTier,
-		ReportedServiceTier:              serviceTiers.ReportedServiceTier,
-		BilledServiceTier:                serviceTiers.BilledServiceTier,
-		RequestedReasoningEffort:         input.RequestedReasoningEffort,
-		EffectiveReasoningEffort:         input.EffectiveReasoningEffort,
-		InputImageTokens:                 input.Usage.InputImageTokens,
-		OutputImageTokens:                input.Usage.OutputImageTokens,
-		InputAudioTokens:                 input.Usage.InputAudioTokens,
-		OutputAudioTokens:                input.Usage.OutputAudioTokens,
-		OutputImageCount:                 input.Usage.OutputImageCount,
-		CacheReadCostUsd:                 s.estimateCacheReadCost(catalogSystemAccountID, input.Account.ProviderCode, costModel, serviceTiers.BilledServiceTier, input.Usage.CacheReadTokens),
-		CacheWriteCostUsd:                s.estimateCacheWriteCost(catalogSystemAccountID, input.Account.ProviderCode, costModel, serviceTiers.BilledServiceTier, input.Usage.CacheWriteTokens, input.Usage.CacheWrite1hTokens),
-		CostUsd:                          s.estimateCost(catalogSystemAccountID, input.Account.ProviderCode, costModel, serviceTiers.BilledServiceTier, input.Usage),
-		ErrorCode:                        input.ErrorCode,
-		ErrorMessage:                     input.ErrorMessage,
-		RequestSnapshot:                  usageRecordSnapshot(input.TrafficSource, snapshotOrNil(input.RequestSnapshot)),
-		ResponseSnapshot:                 usageRecordSnapshot(input.TrafficSource, responseSnapshotOrNil(input.ResponseSnapshot)),
-	})
-}
-
-// RecordDownstreamClosedUpstreamAttempt mirrors
-// recordDownstreamClosedUpstreamAttempt: delegate to the completed-attempt
-// recorder with the fixed downstream failure contract.
-func (s *Service) RecordDownstreamClosedUpstreamAttempt(ctx Ctx, input RecordCompletedUpstreamAttemptInput) error {
-	input.Success = false
-	input.Usage = gatewayprotoParsedUsage{}
-	input.ErrorCode = "downstream_connection_closed"
-	input.ErrorMessage = DownstreamConnectionClosedMessage
-	input.FailureAttribution = FailureAttributionDownstreamClosed
-	return s.RecordCompletedUpstreamAttempt(ctx, input)
 }
 
 // RecordGatewayFailure mirrors recordGatewayFailure.
@@ -650,63 +497,8 @@ func (s *Service) resolveUsagePricingModel(account UsageModelAccount, catalogSys
 	return s.pricing.ResolvePricingModel(account.ProviderCode, catalogSystemAccountID, upstreamModel)
 }
 
-func (s *Service) estimateCacheReadCost(catalogSystemAccountID string, providerCode string, costModel string, serviceTier string, cacheReadTokens *int) *float64 {
-	if !s.canUseSyncPricing() {
-		return nil
-	}
-	return s.pricing.EstimateCacheReadCost(PricingCostInput{
-		ProviderCode:    providerCode,
-		SystemAccountID: catalogSystemAccountID,
-		Model:           costModel,
-		ServiceTier:     serviceTier,
-		CacheReadTokens: cacheReadTokens,
-	})
-}
-
-func (s *Service) estimateCacheWriteCost(catalogSystemAccountID string, providerCode string, costModel string, serviceTier string, cacheWriteTokens *int, cacheWrite1hTokens *int) *float64 {
-	if !s.canUseSyncPricing() {
-		return nil
-	}
-	return s.pricing.EstimateCacheWriteCost(PricingCostInput{
-		ProviderCode:       providerCode,
-		SystemAccountID:    catalogSystemAccountID,
-		Model:              costModel,
-		ServiceTier:        serviceTier,
-		CacheWriteTokens:   cacheWriteTokens,
-		CacheWrite1hTokens: cacheWrite1hTokens,
-	})
-}
-
-func (s *Service) estimateCost(catalogSystemAccountID string, providerCode string, costModel string, serviceTier string, usage gatewayprotoParsedUsage) *float64 {
-	if !s.canUseSyncPricing() {
-		return nil
-	}
-	return s.pricing.EstimateCost(PricingCostInput{
-		ProviderCode:       providerCode,
-		SystemAccountID:    catalogSystemAccountID,
-		Model:              costModel,
-		ServiceTier:        serviceTier,
-		InputTokens:        usage.InputTokens,
-		OutputTokens:       usage.OutputTokens,
-		CacheReadTokens:    usage.CacheReadTokens,
-		CacheWriteTokens:   usage.CacheWriteTokens,
-		CacheWrite1hTokens: usage.CacheWrite1hTokens,
-		ThinkingTokens:     usage.ThinkingTokens,
-		InputImageTokens:   usage.InputImageTokens,
-		OutputImageTokens:  usage.OutputImageTokens,
-		InputAudioTokens:   usage.InputAudioTokens,
-		OutputAudioTokens:  usage.OutputAudioTokens,
-		OutputImageCount:   usage.OutputImageCount,
-	})
-}
-
 func (s *Service) canUseSyncPricing() bool {
 	return s.config.SyncPricingAllowed && s.pricing != nil
-}
-
-// usageCostCatalogModel mirrors usageCostCatalogModel.
-func usageCostCatalogModel(modelAccounting AccountUsageModelAccounting, requestedModel string) string {
-	return firstNonEmpty(modelAccounting.PricingModel, modelAccounting.UpstreamModel, requestedModel)
 }
 
 // usageRecordSnapshot mirrors usageRecordSnapshot: account probe traffic
@@ -716,20 +508,6 @@ func usageRecordSnapshot(trafficSource OpenAIGatewayTrafficSource, snapshot any)
 		return nil
 	}
 	return snapshot
-}
-
-func snapshotOrNil(snapshot *UsageRequestSnapshot) any {
-	if snapshot == nil {
-		return nil
-	}
-	return *snapshot
-}
-
-func responseSnapshotOrNil(snapshot *UsageResponseSnapshot) any {
-	if snapshot == nil {
-		return nil
-	}
-	return *snapshot
 }
 
 // failedUpstreamAttemptAttribution mirrors failedUpstreamAttemptAttribution.

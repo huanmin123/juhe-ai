@@ -22,25 +22,50 @@ func TestChainUsageDefaultProviderCode(t *testing.T) {
 func TestChainUsageSemanticResolver(t *testing.T) {
 	resolver := chainUsageSemanticResolver{}
 	cases := []struct {
-		name     string
-		provider string
-		protocol string
-		expect   string
+		name      string
+		provider  string
+		protocol  string
+		profileID string
+		expect    string
 	}{
 		{name: "anthropic", provider: "anthropic", protocol: "anthropic_v1", expect: "anthropic"},
 		{name: "gemini", provider: "gemini", protocol: "gemini_v1beta", expect: "gemini"},
 		{name: "gpt", provider: "gpt", protocol: "openai_v1", expect: "openai"},
 		{name: "openai-compatible", provider: "openai-compatible", protocol: "openai_v1", expect: "openai"},
 		{name: "空 provider", provider: "", protocol: "anthropic_v1", expect: "openai"},
+		// hybrid profile 级覆盖：语义按档案 ID 决定（对齐 Node registry hybrid
+		// driver 的 anthropic-messages / gemini-native / openai chat 分派）。
+		{
+			name:      "hybrid anthropic messages 档案",
+			provider:  "hybrid",
+			protocol:  "anthropic",
+			profileID: "profile_hybrid_anthropic_messages_v1",
+			expect:    "anthropic",
+		},
+		{
+			name:      "hybrid gemini native 档案",
+			provider:  "hybrid",
+			protocol:  "gemini",
+			profileID: "profile_hybrid_gemini_native_v1beta",
+			expect:    "gemini",
+		},
+		{
+			name:      "hybrid openai chat 档案",
+			provider:  "hybrid",
+			protocol:  "openai",
+			profileID: "profile_hybrid_openai_chat_v1",
+			expect:    "openai",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := resolver.UsageSemanticForProfile(&gatewayusage.ProviderProtocolProfile{
 				ProviderCode: tc.provider,
 				ProtocolCode: tc.protocol,
+				ProfileID:    tc.profileID,
 			})
 			if got != tc.expect {
-				t.Fatalf("profile(%s/%s) 语义不符：期望 %q，实际 %q", tc.provider, tc.protocol, tc.expect, got)
+				t.Fatalf("profile(%s/%s/%s) 语义不符：期望 %q，实际 %q", tc.provider, tc.protocol, tc.profileID, tc.expect, got)
 			}
 		})
 	}

@@ -91,6 +91,14 @@ try {
     + 'JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=20s\n')
   const explicitDotEnv = module.resolveGoProjectEnv()
   assert.equal(explicitDotEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT, '20s')
+
+  // 租约等待的人话提示：Info 等待行触发并携带租约标签；普通日志行与
+  // fail-fast error 行（不含 "waiting for predecessor lease expiry"）不触发。
+  const waitLine = '{"level":"INFO","msg":"owner lease held by another owner process, waiting for predecessor lease expiry","lease":"F3 audit","waitBudget":"45s"}'
+  const notice = module.leaseWaitNotice(waitLine)
+  assert.ok(notice?.note.includes('F3 audit'), 'the waiting log line must produce a user note naming the lease')
+  assert.equal(module.leaseWaitNotice('{"level":"INFO","msg":"juhe-ai-gateway started"}'), undefined)
+  assert.equal(module.leaseWaitNotice('F3 audit owner lease held by another owner process'), undefined, 'the fail-fast error line must not produce the waiting note')
 } finally {
   for (const [key, value] of previousEnvironment) {
     if (value === undefined) delete process.env[key]
@@ -109,5 +117,5 @@ function buildTestableModule(source, root) {
   const rootDeclaration = "const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')"
   assert.match(withoutStartup, new RegExp(rootDeclaration.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
   const fixtureSource = withoutStartup.replace(rootDeclaration, `const root = ${JSON.stringify(root)}`)
-  return `${fixtureSource}\nexport { resolveGoProjectEnv }\n`
+  return `${fixtureSource}\nexport { leaseWaitNotice, resolveGoProjectEnv }\n`
 }

@@ -203,12 +203,28 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			input_usd_per_1m REAL, output_usd_per_1m REAL, cached_input_usd_per_1m REAL,
 			cache_write_usd_per_1m REAL, cache_write_1h_usd_per_1m REAL,
 			cache_storage_usd_per_1m_per_hour REAL, service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+			long_context_input_token_threshold INTEGER, long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
+			long_context_input_cost_multiplier REAL, long_context_output_cost_multiplier REAL,
 			image_input_usd_per_1m REAL, image_output_usd_per_1m REAL, audio_input_usd_per_1m REAL,
 			audio_output_usd_per_1m REAL, output_usd_per_image REAL, currency TEXT,
 			pricing_notes TEXT, capability_notes TEXT, notes TEXT,
-			created_by TEXT, updated_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			created_by TEXT NOT NULL, updated_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
 			CHECK (scope IN ('personal', 'global')),
 			CHECK ((scope = 'personal' AND system_account_id IS NOT NULL) OR (scope = 'global' AND system_account_id IS NULL)))`,
+		// Real-DDL shape (maintenance sqlite_schema_business.go): the openai
+		// 兼容目录源扩展读取 providers + provider_protocol_profiles 判定
+		// openai 协议子供应商（Node modelCatalogSourceProviderCodesAsync）。
+		`CREATE TABLE providers (
+			id TEXT PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT,
+			parent_code TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+			default_supported_models_json TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE provider_protocol_profiles (
+			id TEXT PRIMARY KEY, provider_code TEXT NOT NULL, name TEXT NOT NULL, description TEXT,
+			enabled INTEGER NOT NULL DEFAULT 1, protocol_code TEXT NOT NULL, protocol_version TEXT NOT NULL,
+			base_url TEXT NOT NULL, default_health_check_model TEXT NOT NULL,
+			account_types_json TEXT NOT NULL, capabilities_json TEXT NOT NULL,
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -270,10 +286,14 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
 		VALUES ('key_1', ?, 'rs_1', '链路测试', ?, 'active', ?)`,
 		fixture.systemAccount, gatewayruntimecache.HashSecret(secret), now)
-	seed(`INSERT INTO provider_model_catalog (
-			id, status, provider_code, model, catalog_order, supported_api_protocols_json, source,
-			catalog_visible, supports_prompt_caching, created_at, updated_at)
-		VALUES ('cat_1', 'active', 'openai', 'gpt-test', 0, '["chat_completions"]', 'builtin', 1, 0, ?, ?)`, now, now)
+	// 2026-09-20 目录源扩展后，openai 兼容目标的内置目录不含自身（Node
+	// modelCatalogBuiltInSourceProviderCodes 剔除 openai 目标）；fixture 的
+	// gpt-test 目录行改种在 custom_provider_models（global scope，带价格以
+	// 通过 priced 过滤），与生产 openai 兼容目录的自定义模型来源一致。
+	seed(`INSERT INTO custom_provider_models (
+			id, provider_code, model, scope, system_account_id, status, catalog_visible,
+			supported_api_protocols_json, input_usd_per_1m, created_by, created_at, updated_at)
+		VALUES ('cat_1', 'openai', 'gpt-test', 'global', NULL, 'active', 1, '["chat_completions"]', 1.0, ?, ?, ?)`, fixture.systemAccount, now, now)
 	seedSettingsDefaults(t, db)
 	return secret
 }
@@ -385,15 +405,55 @@ func TestChainCatalogSourceListsProviderModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
+	now := "2026-09-04T00:00:00.000Z"
+	// openai 协议子供应商 gpt（enabled）+ 一条 gpt 内置目录行。
+	if _, err := fixture.db.Exec(`INSERT INTO providers (id, code, name, enabled, created_at, updated_at)
+		VALUES ('prov_gpt', 'gpt', 'GPT', 1, ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+	if _, err := fixture.db.Exec(`INSERT INTO provider_protocol_profiles (id, provider_code, name, enabled, protocol_code, protocol_version, base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at)
+		VALUES ('prof_gpt_openai_v1', 'gpt', 'GPT OpenAI v1', 1, 'openai', 'v1', 'https://gpt.invalid/v1', 'gpt-test', '[]', '{}', ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+	if _, err := fixture.db.Exec(`INSERT INTO provider_model_catalog (
+			id, status, provider_code, model, catalog_order, supported_api_protocols_json, source,
+			catalog_visible, supports_prompt_caching, input_usd_per_1m, created_at, updated_at)
+		VALUES ('cat_gpt_child', 'active', 'gpt', 'gpt-child-model', 0, '["chat_completions"]', 'builtin', 1, 0, 1.0, ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed child catalog: %v", err)
+	}
+	// openai 目标自身的内置行：必须被剔除（openai 兼容没有内置目录）。
+	if _, err := fixture.db.Exec(`INSERT INTO provider_model_catalog (
+			id, status, provider_code, model, catalog_order, supported_api_protocols_json, source,
+			catalog_visible, supports_prompt_caching, created_at, updated_at)
+		VALUES ('cat_openai_builtin', 'active', 'openai', 'openai-builtin-model', 0, '["chat_completions"]', 'builtin', 1, 0, ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed openai builtin catalog: %v", err)
+	}
 	items, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "openai"})
 	if err != nil {
 		t.Fatalf("list catalog: %v", err)
 	}
-	if len(items) != 1 || items[0].Model != "gpt-test" || items[0].ProviderCode != "openai" {
-		t.Fatalf("catalog items wrong: %#v", items)
+	byModel := map[string]gatewayruntimecache.ProviderModelCatalogItem{}
+	for _, item := range items {
+		byModel[item.Model] = item
 	}
-	if len(items[0].SupportedAPIProtocols) != 1 || items[0].SupportedAPIProtocols[0] != "chat_completions" {
-		t.Fatalf("protocols wrong: %#v", items[0].SupportedAPIProtocols)
+	// 子供应商内置行进入聚合目录（这是 openai 兼容“汇总”语义的回归锚点）。
+	child, ok := byModel["gpt-child-model"]
+	if !ok {
+		t.Fatalf("aggregated catalog missing child gpt row: %#v", items)
+	}
+	if child.ProviderCode != "gpt" {
+		t.Fatalf("child row provider = %q, want gpt", child.ProviderCode)
+	}
+	if len(child.SupportedAPIProtocols) != 1 || child.SupportedAPIProtocols[0] != "chat_completions" {
+		t.Fatalf("child protocols wrong: %#v", child.SupportedAPIProtocols)
+	}
+	// fixture seed 的 openai 自定义行（global scope，定价行）同样在场。
+	if _, ok := byModel["gpt-test"]; !ok {
+		t.Fatalf("aggregated catalog missing custom openai row: %#v", items)
+	}
+	// openai 自身的内置行必须被剔除。
+	if _, ok := byModel["openai-builtin-model"]; ok {
+		t.Fatalf("openai target must drop its own built-in rows: %#v", items)
 	}
 }
 

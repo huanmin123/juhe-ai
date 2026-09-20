@@ -185,12 +185,13 @@ func TestW1SettingsLimitAndCatalogs(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("seed 目录期望 1 条 = %d", len(items))
 	}
-	// 追加一条 inactive 目录：override 目录必须过滤非 active。
+	// 追加一条 inactive 目录：override 目录必须过滤非 active（openai 兼容
+	// 目录源扩展后自身目录走 custom_provider_models，种子同步改种）。
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := fixture.db.Exec(`INSERT INTO provider_model_catalog (
-			id, status, provider_code, model, catalog_order, supported_api_protocols_json, source,
-			catalog_visible, supports_prompt_caching, created_at, updated_at)
-		VALUES ('cat_2', 'inactive', 'openai', 'gpt-test-inactive', 1, '["chat_completions"]', 'builtin', 1, 0, ?, ?)`, now, now); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO custom_provider_models (
+			id, provider_code, model, scope, system_account_id, status, catalog_visible,
+			supported_api_protocols_json, created_by, created_at, updated_at)
+		VALUES ('cat_2', 'openai', 'gpt-test-inactive', 'global', NULL, 'inactive', 1, '["chat_completions"]', ?, ?, ?)`, fixture.systemAccount, now, now); err != nil {
 		t.Fatalf("insert inactive catalog = %v", err)
 	}
 	override := chainGptRequestOverrideModelCatalog{cache: fixture.cache}

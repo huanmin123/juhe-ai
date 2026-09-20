@@ -44,9 +44,9 @@ func (b *GatewayKeyModelFailureBudget) Claim(hash string) bool {
 // request resolution: the caller (G02/G15 model mapping) resolves the
 // capability from the request and hands it in.
 type GatewayKeyModelCapability struct {
-	AccountID    string
-	Capability   CapabilityKey
-	IsMainProbe  bool
+	AccountID   string
+	Capability  CapabilityKey
+	IsMainProbe bool
 }
 
 // AttemptPreparationStatus mirrors the preparation union tags.
@@ -115,7 +115,7 @@ func PrepareGatewayKeyModelAttempt(ctx context.Context, store KeyModelRuntimeSto
 	return GatewayKeyModelAttemptPreparation{
 		Status:         AttemptPreparationAdmitted,
 		CapabilityHash: hash,
-		Attempt: newGatewayKeyModelAttempt(store, input.Route, hash, *admission.Permit, input.RequestID, input.AttemptID, input.FailureBudget, input.RecoveryTarget, clock, scheduler, logger),
+		Attempt:        newGatewayKeyModelAttempt(store, input.Route, hash, *admission.Permit, input.RequestID, input.AttemptID, input.FailureBudget, input.RecoveryTarget, clock, scheduler, logger),
 	}, nil
 }
 
@@ -137,17 +137,16 @@ type GatewayKeyModelAttempt struct {
 	scheduler      Scheduler
 	logger         Logger
 	clock          Clock
-	onPermitLost   func()
 
-	mu             sync.Mutex
-	permit         KeyModelForegroundPermit
-	renewalTimer   SchedulerHandle
-	released       bool
-	permitLost     bool
-	lostSignal     chan struct{}
-	lostOnce       sync.Once
-	terminal       chan struct{}
-	terminalOnce   sync.Once
+	mu           sync.Mutex
+	permit       KeyModelForegroundPermit
+	renewalTimer SchedulerHandle
+	released     bool
+	permitLost   bool
+	lostSignal   chan struct{}
+	lostOnce     sync.Once
+	terminal     chan struct{}
+	terminalOnce sync.Once
 }
 
 func newGatewayKeyModelAttempt(store KeyModelRuntimeStore, route GatewayKeyModelCapability, capabilityHash string, admission KeyModelForegroundPermit, requestID string, attemptID string, failureBudget *GatewayKeyModelFailureBudget, recoveryTarget *KeyModelRecoveryTarget, clock Clock, scheduler Scheduler, logger Logger) *GatewayKeyModelAttempt {
@@ -177,20 +176,12 @@ func (a *GatewayKeyModelAttempt) SetDispatcher(dispatcher AccountHealthCheckDisp
 	a.dispatcher = dispatcher
 }
 
-// SetObservability wires scheduler/logger/permit-lost hook for tests.
+// SetObservability wires scheduler/logger for tests.
 func (a *GatewayKeyModelAttempt) SetObservability(scheduler Scheduler, logger Logger) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.scheduler = scheduler
 	a.logger = logger
-}
-
-// SetPermitLostCallback wires the abort hook: Node cancels the request signal
-// when the foreground permit is lost.
-func (a *GatewayKeyModelAttempt) SetPermitLostCallback(onPermitLost func()) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.onPermitLost = onPermitLost
 }
 
 // CapabilityHash mirrors the capabilityHash getter.
@@ -248,12 +239,8 @@ func (a *GatewayKeyModelAttempt) losePermit() {
 		a.renewalTimer.Cancel()
 		a.renewalTimer = nil
 	}
-	callback := a.onPermitLost
 	a.mu.Unlock()
 	a.lostOnce.Do(func() { close(a.lostSignal) })
-	if callback != nil {
-		callback()
-	}
 }
 
 func (a *GatewayKeyModelAttempt) stopRenewal() {
@@ -427,10 +414,10 @@ func (a *GatewayKeyModelAttempt) releaseSafely(ctx context.Context, outcome KeyM
 
 func (a *GatewayKeyModelAttempt) failureLogFields(event string, err error, outcome KeyModelOutcome) map[string]any {
 	fields := map[string]any{
-		"event":           event,
-		"requestId":       a.requestID,
-		"attemptId":       a.attemptID,
-		"capabilityHash":  a.capabilityHash,
+		"event":            event,
+		"requestId":        a.requestID,
+		"attemptId":        a.attemptID,
+		"capabilityHash":   a.capabilityHash,
 		"dispatchRevision": a.route.Capability.DispatchRevision,
 	}
 	if err != nil {

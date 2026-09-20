@@ -238,8 +238,11 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 	}
 
 	// ---- 模型目录：请求模型 gpt-test 的 active 目录行 ----
-	seed(`INSERT INTO provider_model_catalog (id, provider_code, model, status, catalog_order, supported_api_protocols_json, source, catalog_visible, created_at, updated_at)
-		VALUES ('w1l_cat_gpt_test', 'openai', 'gpt-test', 'active', 0, '["chat_completions"]', 'builtin', 1, ?, ?)`, now, now)
+	// openai 兼容目录源扩展后内置目录不含 openai 自身行；gpt-test 目录行
+	// 改种 custom_provider_models（global scope，带价格），与生产 openai
+	// 兼容目录的自定义模型来源一致。
+	seed(`INSERT INTO custom_provider_models (id, provider_code, model, scope, system_account_id, status, catalog_visible, supported_api_protocols_json, input_usd_per_1m, created_by, created_at, updated_at)
+		VALUES ('w1l_cat_gpt_test', 'openai', 'gpt-test', 'global', NULL, 'active', 1, '["chat_completions"]', 1.0, 'sys_admin', ?, ?)`, now, now)
 
 	// ---- 回读校验：关键行确实落库 ----
 	checks := []struct {
@@ -251,7 +254,7 @@ func w1lSeedChainBusinessRows(t *testing.T, path, upstreamBaseURL string) {
 		{"group_accounts", "group_id LIKE 'w1l_%'", 4},
 		{"api_keys", "id LIKE 'w1l_%'", 3},
 		{"route_strategies", "id LIKE 'w1l_%'", 3},
-		{"provider_model_catalog", "id = 'w1l_cat_gpt_test'", 1},
+		{"custom_provider_models", "id = 'w1l_cat_gpt_test'", 1},
 	}
 	for _, check := range checks {
 		var count int

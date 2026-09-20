@@ -172,8 +172,55 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, sqliteStatsSchema); err != nil {
 		return fmt.Errorf("初始化 statsverify stats sqlite schema 失败: %w", err)
 	}
+	if err := ensureAggregateColumnBackfills(ctx, s.db); err != nil {
+		return fmt.Errorf("迁移 statsverify stats sqlite 聚合列失败: %w", err)
+	}
 	if _, err := s.business.ExecContext(ctx, sqliteBusinessSchema); err != nil {
 		return fmt.Errorf("初始化 statsverify business sqlite schema 失败: %w", err)
+	}
+	return nil
+}
+
+// ensureAggregateColumnBackfills 为存量 stats 表幂等补齐聚合形状列
+// （早期窄形状布局升级）。先例：usagewriter ensureUpstreamResponseModelColumn
+// 的存在性检查迁移。
+func ensureAggregateColumnBackfills(ctx context.Context, db *sql.DB) error {
+	for _, backfill := range sqliteAggregateColumnBackfills {
+		rows, err := db.QueryContext(ctx, "PRAGMA table_info("+backfill.table+")")
+		if err != nil {
+			return err
+		}
+		existing := map[string]bool{}
+		for rows.Next() {
+			var cid int
+			var name string
+			var ctype sql.NullString
+			var notNull any
+			var dflt any
+			var pk any
+			if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+				rows.Close()
+				return err
+			}
+			existing[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, column := range backfill.columns {
+			name := strings.Fields(column)[0]
+			if existing[name] {
+				continue
+			}
+			if _, err := db.ExecContext(ctx, "ALTER TABLE "+backfill.table+" ADD COLUMN "+column); err != nil {
+				// 并发建库方可能已补列；重复列错误与 Node 存在性检查一样视为成功。
+				if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -416,6 +463,71 @@ var postgresRequiredTables = []string{
 // Column sets mirror the Node tables; the usage_records table here is the
 // Go-owned local aggregation source (Node's SQLite driver fans across
 // usage-record shard files, which do not exist in the Go layout).
+//
+// usage_records 列形状必须覆盖 statsagg 聚合器的 SELECT 全列
+// （statsagg aggregate.go usageStatsRecordSelectColumns）：usagewriter 在
+// SQLite standalone 模式把每批分片写镜像进本表（store.go mirrorStats…），
+// 缺任何聚合列都会让聚合查询以 "no such column" 失败。存量窄形状库文件由
+// ensureAggregateColumnBackfills 幂等补列。
+
+// sqliteAggregateColumnBackfills 是存量窄形状 stats 表的补列清单（列定义为
+// 完整 ADD COLUMN 子句）。usage_records 对齐 statsagg 聚合 SELECT 全列
+// （aggregate.go usageStatsRecordSelectColumns）；usage_stats_daily/hourly
+// 对齐聚合器写入的全累加器形状（maintenance EnsureSQLiteStats 同形 DDL，
+// gateway bootstrap 先建库时无感）。全部可空或带 DEFAULT，SQLite ADD COLUMN
+// 合法。
+var sqliteAggregateColumnBackfills = []struct {
+	table   string
+	columns []string
+}{
+	{
+		table: "usage_records",
+		columns: []string{
+			"endpoint TEXT",
+			"provider_code TEXT",
+			"provider_protocol_profile_id TEXT",
+			"failure_attribution TEXT",
+			"error_code TEXT",
+			"error_message TEXT",
+			"account_owner_system_account_id TEXT",
+			"group_owner_system_account_id TEXT",
+			"account_access_type TEXT",
+			"group_access_type TEXT",
+			"account_authorization_id TEXT",
+			"account_authorization_source_type TEXT",
+			"account_authorization_source_team_id TEXT",
+			"group_authorization_id TEXT",
+			"group_authorization_source_type TEXT",
+			"group_authorization_source_team_id TEXT",
+		},
+	},
+	{
+		table: "usage_stats_daily",
+		columns: []string{
+			"duration_ms_sum INTEGER NOT NULL DEFAULT 0",
+			"duration_ms_count INTEGER NOT NULL DEFAULT 0",
+			"duration_ms_max INTEGER NOT NULL DEFAULT 0",
+			"first_token_ms_sum INTEGER NOT NULL DEFAULT 0",
+			"first_token_ms_count INTEGER NOT NULL DEFAULT 0",
+			"first_token_ms_max INTEGER NOT NULL DEFAULT 0",
+			"last_used_at TEXT",
+			"last_error_at TEXT",
+		},
+	},
+	{
+		table: "usage_stats_hourly",
+		columns: []string{
+			"duration_ms_sum INTEGER NOT NULL DEFAULT 0",
+			"duration_ms_count INTEGER NOT NULL DEFAULT 0",
+			"duration_ms_max INTEGER NOT NULL DEFAULT 0",
+			"first_token_ms_sum INTEGER NOT NULL DEFAULT 0",
+			"first_token_ms_count INTEGER NOT NULL DEFAULT 0",
+			"first_token_ms_max INTEGER NOT NULL DEFAULT 0",
+			"last_used_at TEXT",
+			"last_error_at TEXT",
+		},
+	},
+}
 
 const sqliteStatsSchema = `
 CREATE TABLE IF NOT EXISTS usage_records (
@@ -442,6 +554,22 @@ CREATE TABLE IF NOT EXISTS usage_records (
 	thinking_tokens INTEGER,
 	input_image_tokens INTEGER,
 	output_image_tokens INTEGER,
+	endpoint TEXT,
+	provider_code TEXT,
+	provider_protocol_profile_id TEXT,
+	failure_attribution TEXT,
+	error_code TEXT,
+	error_message TEXT,
+	account_owner_system_account_id TEXT,
+	group_owner_system_account_id TEXT,
+	account_access_type TEXT,
+	group_access_type TEXT,
+	account_authorization_id TEXT,
+	account_authorization_source_type TEXT,
+	account_authorization_source_team_id TEXT,
+	group_authorization_id TEXT,
+	group_authorization_source_type TEXT,
+	group_authorization_source_team_id TEXT,
 	cost_usd REAL,
 	created_at TEXT NOT NULL
 );
@@ -617,20 +745,28 @@ CREATE TABLE IF NOT EXISTS usage_stats_daily (
 	scope_type TEXT NOT NULL,
 	scope_id TEXT NOT NULL,
 	stat_date TEXT NOT NULL,
-	request_count INTEGER NOT NULL,
-	success_count INTEGER NOT NULL,
-	error_count INTEGER NOT NULL,
-	input_tokens INTEGER NOT NULL,
-	output_tokens INTEGER NOT NULL,
-	cache_read_tokens INTEGER NOT NULL,
-	cache_read_cost_usd REAL NOT NULL,
-	cache_write_tokens INTEGER NOT NULL,
-	cache_write_1h_tokens INTEGER NOT NULL,
-	cache_write_cost_usd REAL NOT NULL,
-	thinking_tokens INTEGER NOT NULL,
-	input_image_tokens INTEGER NOT NULL,
-	output_image_tokens INTEGER NOT NULL,
-	total_cost_usd REAL NOT NULL,
+	request_count INTEGER NOT NULL DEFAULT 0,
+	success_count INTEGER NOT NULL DEFAULT 0,
+	error_count INTEGER NOT NULL DEFAULT 0,
+	input_tokens INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+	thinking_tokens INTEGER NOT NULL DEFAULT 0,
+	input_image_tokens INTEGER NOT NULL DEFAULT 0,
+	output_image_tokens INTEGER NOT NULL DEFAULT 0,
+	total_cost_usd REAL NOT NULL DEFAULT 0,
+	duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+	duration_ms_count INTEGER NOT NULL DEFAULT 0,
+	duration_ms_max INTEGER NOT NULL DEFAULT 0,
+	first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+	first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+	first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+	last_used_at TEXT,
+	last_error_at TEXT,
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (system_account_id, scope_type, scope_id, stat_date)
 );
@@ -639,20 +775,28 @@ CREATE TABLE IF NOT EXISTS usage_stats_hourly (
 	scope_type TEXT NOT NULL,
 	scope_id TEXT NOT NULL,
 	stat_hour TEXT NOT NULL,
-	request_count INTEGER NOT NULL,
-	success_count INTEGER NOT NULL,
-	error_count INTEGER NOT NULL,
-	input_tokens INTEGER NOT NULL,
-	output_tokens INTEGER NOT NULL,
-	cache_read_tokens INTEGER NOT NULL,
-	cache_read_cost_usd REAL NOT NULL,
-	cache_write_tokens INTEGER NOT NULL,
-	cache_write_1h_tokens INTEGER NOT NULL,
-	cache_write_cost_usd REAL NOT NULL,
-	thinking_tokens INTEGER NOT NULL,
-	input_image_tokens INTEGER NOT NULL,
-	output_image_tokens INTEGER NOT NULL,
-	total_cost_usd REAL NOT NULL,
+	request_count INTEGER NOT NULL DEFAULT 0,
+	success_count INTEGER NOT NULL DEFAULT 0,
+	error_count INTEGER NOT NULL DEFAULT 0,
+	input_tokens INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+	thinking_tokens INTEGER NOT NULL DEFAULT 0,
+	input_image_tokens INTEGER NOT NULL DEFAULT 0,
+	output_image_tokens INTEGER NOT NULL DEFAULT 0,
+	total_cost_usd REAL NOT NULL DEFAULT 0,
+	duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+	duration_ms_count INTEGER NOT NULL DEFAULT 0,
+	duration_ms_max INTEGER NOT NULL DEFAULT 0,
+	first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+	first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+	first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+	last_used_at TEXT,
+	last_error_at TEXT,
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour)
 );

@@ -13,35 +13,8 @@ import (
 )
 
 // W4-A（BUG-0175 波4 响应/流式层缺陷族）Mock 回归：
-// D-116 响应头转发 + http metric 失败域标注、D-122 失败响应审计/usage 快照、
+// D-116 响应头转发、D-122 失败响应审计/usage 快照、
 // D-125 models 审计首 token + usageSemantic、D-112 非流式 JSON 检查主链。
-
-// ---- D-116 / D-122：http metric 失败域标注口 ----
-
-type mockFailureScopeMarker struct {
-	mu     sync.Mutex
-	scopes []string
-}
-
-func (m *mockFailureScopeMarker) MarkFailureScope(scope string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.scopes = append(m.scopes, scope)
-}
-
-func (m *mockFailureScopeMarker) recorded() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]string(nil), m.scopes...)
-}
-
-func withFailureScopeMarker(t *testing.T) *mockFailureScopeMarker {
-	t.Helper()
-	marker := &mockFailureScopeMarker{}
-	SetHTTPMetricFailureScopeMarker(marker)
-	t.Cleanup(func() { SetHTTPMetricFailureScopeMarker(nil) })
-	return marker
-}
 
 // TestPrepareUpstreamResponseForDownstreamForwardsUpstreamHeaders 对齐
 // downstream-headers.ts copyResponseHeaders：上游响应头转发到客户端，逐跳头
@@ -96,28 +69,9 @@ func TestPrepareUpstreamResponseForDownstreamStreamHeaders(t *testing.T) {
 	}
 }
 
-// TestMarkHTTPMetricFailureScopeOnUpstreamFailure D-116：上游失败进入下游
-// 准备时标注 upstream 失败域（downstream-headers.ts:17-19）。
-func TestMarkHTTPMetricFailureScopeOnUpstreamFailure(t *testing.T) {
-	marker := withFailureScopeMarker(t)
-	upstream := &GatewayUpstreamResponse{Status: 502, Header: http.Header{}}
-	downstream := StreamDownstream{Res: gatewaypreauth.NewTrackingWriter(httptest.NewRecorder())}
-	prepareUpstreamResponseForDownstream(downstream, upstream, false)
-	scopes := marker.recorded()
-	if len(scopes) != 1 || scopes[0] != "upstream" {
-		t.Fatalf("scopes = %v", scopes)
-	}
-	// 成功响应不标注。
-	prepareUpstreamResponseForDownstream(StreamDownstream{Res: gatewaypreauth.NewTrackingWriter(httptest.NewRecorder())}, &GatewayUpstreamResponse{Status: 200, Header: http.Header{}}, false)
-	if scopes := marker.recorded(); len(scopes) != 1 {
-		t.Fatalf("成功响应不应标注，scopes = %v", scopes)
-	}
-}
-
 // ---- D-122：失败响应审计 ResponseHeaders + usage 快照 errorMessage ----
 
 func TestSinkFailureResponseAuditHeadersAndUsageSnapshot(t *testing.T) {
-	marker := withFailureScopeMarker(t)
 	sink, tracking, _, audit, usage, observer := newSinkFixture()
 	req := gatewaypreauth.NewGatewayRequest(httptest.NewRequest("POST", "/v1/chat/completions", nil))
 	recordUsage := true
@@ -138,10 +92,6 @@ func TestSinkFailureResponseAuditHeadersAndUsageSnapshot(t *testing.T) {
 		},
 		RecordUsage: &recordUsage,
 	})
-	// failureScope 缺省推断为 upstream（D-122 弃用面恢复）。
-	if scopes := marker.recorded(); len(scopes) != 1 || scopes[0] != "upstream" {
-		t.Fatalf("scopes = %v", scopes)
-	}
 	if len(audit.finalized) != 1 {
 		t.Fatalf("finalize = %+v", audit.finalized)
 	}
@@ -256,7 +206,6 @@ func inspectionPolicyFixture(id string, action string, match gatewayruntimecache
 }
 
 func TestInspectBufferedGatewayJSONResponseReplacesWithFailure(t *testing.T) {
-	marker := withFailureScopeMarker(t)
 	input, recorder := newInputFixture(nil, 200, map[string]string{"Content-Type": "application/json"})
 	input.Deps = &FinalizationDeps{UsageRecords: &mockUsageRecords{}, AccountEffects: &mockAccountEffects{}}
 	input.ClientStrategy = &ClientStrategyView{ClientProfile: "generic", InterpretSemantics: true}
@@ -292,9 +241,6 @@ func TestInspectBufferedGatewayJSONResponseReplacesWithFailure(t *testing.T) {
 	}
 	if len(completed.finalized) != 1 || completed.finalized[0].Outcome != "upstream_failed" || completed.finalized[0].StatusCode != 502 {
 		t.Fatalf("finalize = %+v", completed.finalized)
-	}
-	if scopes := marker.recorded(); len(scopes) != 1 || scopes[0] != "upstream" {
-		t.Fatalf("scopes = %v", scopes)
 	}
 }
 

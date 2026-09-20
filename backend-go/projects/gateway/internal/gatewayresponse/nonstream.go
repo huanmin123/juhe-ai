@@ -825,7 +825,6 @@ func (input *HandleUpstreamResponseInput) finalizeBufferedJSONProtocolFailure(
 	if input.Deps != nil && input.Deps.AccountEffects != nil {
 		input.Deps.AccountEffects.DispatchRequestFailureAccountHealthCheck(input.UsageContext.TrafficSource, input.Account.GetID())
 	}
-	markHTTPMetricFailureScope("upstream")
 	clientErrorProtocol := gatewaypreauth.GatewayErrorProtocol(driver.ClientErrorProtocol())
 	responsePayload := gatewaypreauth.GatewayErrorPayloadOf(failure.Message, "upstream_response_error", failure.ErrorCode)
 	clientPayload := gatewaypreauth.GatewayErrorPayloadForProtocol(responsePayload, clientErrorProtocol)

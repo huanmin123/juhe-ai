@@ -930,19 +930,20 @@ func TestW2BResetBridgeInstanceScanFault(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestW2BCatalogScanBadValueFault 覆盖目录行 JSON 编码错误臂（277）：首行
-// 首列被替换为 func() → json.Marshal(map) 必败。
+// 首列被替换为 func() → json.Marshal(map) 必败。供应商码用非 openai 兼容
+// 目标（openai 目标源扩展后剔除自身内置目录，内置查询不会执行）。
 func TestW2BCatalogScanBadValueFault(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "w2b-catalog.sqlite3")
 	plain := w2bOpenPlainSQLiteAt(t, dbPath)
 	seedChainBusinessSchema(t, plain)
 	if _, err := plain.Exec(`INSERT INTO provider_model_catalog (id, provider_code, model, status, source,
-			created_at, updated_at) VALUES ('w2b-cat', 'openai', 'w2b-model', 'active', 'built_in', '2026-09-04', '2026-09-04')`); err != nil {
+			created_at, updated_at) VALUES ('w2b-cat', 'gpt', 'w2b-model', 'active', 'built_in', '2026-09-04', '2026-09-04')`); err != nil {
 		t.Fatalf("seed catalog: %v", err)
 	}
 	wrapped := w2bOpenFaultySQLiteAt(t, dbPath,
 		&w2bFaultRule{match: func(query string) bool { return strings.Contains(query, "FROM provider_model_catalog") }, action: w2bFaultBadValue})
 	source := &chainCatalogSource{db: wrapped, postgres: false}
-	if _, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "openai"}); err == nil ||
+	if _, err := source.ListProviderModelCatalog(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"}); err == nil ||
 		!strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("不可序列化目录值必须报 JSON 编码错误: %v", err)
 	}
