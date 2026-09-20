@@ -22,8 +22,19 @@ Thumbs.db
 
 /backend/data/
 /backend/logs/
-# Go 网关本地开发/测试运行时写出的 SQLite 库（2026-09-20 清理误入库的
-# cmd/juhe-ai-gateway/data/*.sqlite3 及 -shm/-wal）
+# SQLite 数据库二进制及 WAL/SHM 伴生文件，任何目录一律不入库
+# （2026-09-20 清理 cmd/juhe-ai-gateway/data/，2026-09-21 清理
+# cmd/juhe-ai-gateway/acceptance/data/account-health.sqlite3）
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+# Go 网关本地开发/测试运行时写出的目录（含密钥等非 SQLite 文件）
 /backend-go/projects/gateway/cmd/juhe-ai-gateway/data/
 /backend-go/juhe-ai-runtime-log-indexer
 /backend-go/juhe-ai-runtime-log-indexer.exe
