@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-assistant-content">
+  <div ref="contentRoot" class="chat-assistant-content">
     <template v-for="entry in timelineEntries" :key="entry.key">
       <ChatMarkdown v-if="entry.kind === 'block' && entry.block.type === 'output_text'" :content="entry.block.text" />
       <details
@@ -9,9 +9,9 @@
       >
         <summary @click="rememberReasoningToggleIntent(entry.block, $event)">
           <span class="chat-process-status" :class="`is-${entry.block.status ?? 'started'}`" aria-hidden="true" />
-          <span>思考 · {{ statusLabel(entry.block.status ?? 'started') }}</span>
+          <span>{{ reasoningStatusLabel(entry.block.status ?? 'started') }}</span>
         </summary>
-        <div class="chat-process-details">{{ entry.block.text || '正在准备' }}</div>
+        <div class="chat-process-details" :class="{ 'is-streaming': isReasoningStreaming(entry.block) }">{{ entry.block.text || '正在思考…' }}</div>
       </details>
       <ChatToolEvent
         v-else-if="entry.kind === 'tools'"
@@ -27,13 +27,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { ChatMessage, ChatMessageContentBlock, ChatToolStatus } from '@/types/domain/chat'
 import ChatGeneratedImage from './ChatGeneratedImage.vue'
 import ChatMarkdown from './ChatMarkdown.vue'
 import ChatToolEvent from './ChatToolEvent.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
+const contentRoot = ref<HTMLElement>()
 const manuallyToggled = ref(new Map<string, boolean>())
 type ToolBlock = Extract<ChatMessageContentBlock, { type: 'tool_call' }>
 type TimelineEntry =
@@ -72,12 +73,24 @@ function isReasoningExpanded(block: Extract<ChatMessageContentBlock, { type: 're
   const manual = manuallyToggled.value.get(blockKey(block))
   return manual ?? block.status === 'started'
 }
+function isReasoningStreaming(block: Extract<ChatMessageContentBlock, { type: 'reasoning' }>): boolean {
+  return (block.status ?? 'started') === 'started'
+}
+function reasoningStatusLabel(status: ChatToolStatus | 'started'): string {
+  return ({ started: '思考中', updated: '思考中', completed: '已深度思考', failed: '思考失败', canceled: '已停止' }[status])
+}
+watch(() => props.message, async () => {
+  await nextTick()
+  const root = contentRoot.value
+  if (!root) return
+  for (const details of [...root.querySelectorAll<HTMLDetailsElement>('details.chat-process-block[open]')]) {
+    const body = details.querySelector<HTMLElement>('.chat-process-details.is-streaming')
+    if (body) body.scrollTop = body.scrollHeight
+  }
+}, { flush: 'post' })
 function rememberReasoningToggleIntent(block: Extract<ChatMessageContentBlock, { type: 'reasoning' }>, event: MouseEvent): void {
   const details = (event.currentTarget as HTMLElement).parentElement as HTMLDetailsElement | null
   if (details) manuallyToggled.value.set(blockKey(block), !details.open)
-}
-function statusLabel(status: ChatToolStatus | 'started'): string {
-  return ({ started: '执行中', updated: '执行中', completed: '已完成', failed: '失败', canceled: '已停止' }[status])
 }
 </script>
 

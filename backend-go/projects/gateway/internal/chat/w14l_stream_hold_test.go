@@ -19,13 +19,13 @@ package chat
 
 import (
 	"context"
-	"runtime"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -313,22 +313,22 @@ func TestW14LStreamDuplicateAccept(t *testing.T) {
 // TestW14LCollectOpenAIChatSseArms 覆盖网关 SSE 聚合的边界臂。
 func TestW14LCollectOpenAIChatSseArms(t *testing.T) {
 	// 无 data 行的事件被忽略。
-	if _, err := CollectOpenAIChatSse(strings.NewReader("event: ping\n\n"), 1024, nil, 8); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader("event: ping\n\n"), 1024, nil, nil, 8); err == nil {
 		t.Fatal("缺少 [DONE] 应报错")
 	}
 	// 内容超限。
 	stream := "data: " + `{"choices":[{"delta":{"content":"` + strings.Repeat("字", 700) + `"}}]}` + "\n\ndata: [DONE]\n\n"
-	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 10, nil, 8); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 10, nil, nil, 8); err == nil {
 		t.Fatal("内容超限应报错")
 	}
 	// 工具参数超限。
 	args := strings.Repeat("a", 70*1024)
 	toolStream := "data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"f","arguments":"` + args + `"}}]}}]}` + "\n\ndata: [DONE]\n\n"
-	if _, err := CollectOpenAIChatSse(strings.NewReader(toolStream), 1024, nil, 8); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(toolStream), 1024, nil, nil, 8); err == nil {
 		t.Fatal("工具参数超限应报错")
 	}
 	// 事件数超限。
-	if _, err := CollectOpenAIChatSse(strings.NewReader("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n"), 1024, nil, 1); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n"), 1024, nil, nil, 1); err == nil {
 		t.Fatal("事件数超限应报错")
 	}
 	// 尾部残留缓冲 + 工具乱序聚合。
@@ -336,7 +336,7 @@ func TestW14LCollectOpenAIChatSseArms(t *testing.T) {
 		"data: " + `{"choices":[{"delta":{"tool_calls":[{"index":2,"id":"c","function":{"name":"n","arguments":"{}"}}]}}]}` + "\n\n" +
 		"data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"m","arguments":"{}"}}]}}]}` + "\n\n" +
 		"trailing-garbage"
-	result, err := CollectOpenAIChatSse(strings.NewReader(messy), 1024, nil, 32)
+	result, err := CollectOpenAIChatSse(strings.NewReader(messy), 1024, nil, nil, 32)
 	if err == nil {
 		t.Fatal("坏 JSON 事件应报错")
 	}
@@ -344,7 +344,7 @@ func TestW14LCollectOpenAIChatSseArms(t *testing.T) {
 	ordered := "data: " + `{"choices":[{"delta":{"tool_calls":[{"index":2,"id":"c","function":{"name":"n","arguments":"{}"}}]}}]}` + "\n\n" +
 		"data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"m","arguments":"{}"}}]}}]}` + "\n\n" +
 		"data: [DONE]\n\n"
-	orderedResult, err := CollectOpenAIChatSse(strings.NewReader(ordered), 1024, nil, 32)
+	orderedResult, err := CollectOpenAIChatSse(strings.NewReader(ordered), 1024, nil, nil, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,8 +405,8 @@ func TestW14LCheckpointInstallValidation(t *testing.T) {
 		ClaimID: claim.ClaimID, ConversationID: conversationID, SystemAccountID: routeTestOwner,
 		SourceRevision: head.ContextRevision, SourceThroughSequence: 2,
 		ExpiresAt: "2026-03-11T08:00:00.000Z", PayloadDigest: digest64("cd"),
-		Entries:     []CheckpointEntryInput{{Kind: "task_state", Content: huge, Provenance: "assistant", TrustLevel: "assistant_derived"}},
-		Now:         fixture.nowISO,
+		Entries: []CheckpointEntryInput{{Kind: "task_state", Content: huge, Provenance: "assistant", TrustLevel: "assistant_derived"}},
+		Now:     fixture.nowISO,
 	})
 	if err == nil {
 		t.Fatal("巨型载荷应拒绝")

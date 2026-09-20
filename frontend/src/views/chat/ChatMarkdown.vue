@@ -190,23 +190,11 @@ onBeforeUnmount(() => {
 })
 
 function handlePreviewMessage(event: MessageEvent): void {
-  if (event.data?.type === 'juhe-ai-chat-svg-preview-open-window') {
-    const frames = root.value?.querySelectorAll<HTMLIFrameElement>('iframe.chat-svg-preview') ?? []
-    for (const frame of frames) {
-      if (frame.contentWindow === event.source) {
-        openChatPreviewWindow(frame.dataset.chatSvgSource ?? '', (source) => buildChatSvgPreviewDocument(source, false))
-        return
-      }
-    }
-    return
-  }
-  if (event.data?.type !== 'juhe-ai-chat-html-preview-height') return
-  const height = Number(event.data.height)
-  if (!Number.isFinite(height)) return
-  const clamped = Math.min(900, Math.max(240, Math.round(height)))
-  for (const frame of root.value?.querySelectorAll<HTMLIFrameElement>('iframe.chat-html-preview') ?? []) {
+  if (event.data?.type !== 'juhe-ai-chat-svg-preview-open-window') return
+  const frames = root.value?.querySelectorAll<HTMLIFrameElement>('iframe.chat-svg-preview') ?? []
+  for (const frame of frames) {
     if (frame.contentWindow === event.source) {
-      frame.style.height = `${clamped}px`
+      openChatPreviewWindow(frame.dataset.chatSvgSource ?? '', (source) => buildChatSvgPreviewDocument(source, false))
       return
     }
   }

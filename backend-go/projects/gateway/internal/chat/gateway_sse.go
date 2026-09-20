@@ -42,7 +42,10 @@ const (
 var defaultMaxSSEEvents = chatEnvIntOrDefault("JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS", 65536, 2_048, 262_144)
 
 // CollectOpenAIChatSse mirrors collectOpenAIChatSse over a byte stream.
-func CollectOpenAIChatSse(stream io.Reader, maxContentBytes int, onDelta func(delta string), maxEvents int) (OpenAIChatSseResult, error) {
+// onDelta carries answer content; onReasoningDelta carries thinking-model
+// reasoning_content deltas (streamed through without counting against
+// maxContentBytes; the runner caps persisted reasoning separately).
+func CollectOpenAIChatSse(stream io.Reader, maxContentBytes int, onDelta func(delta string), onReasoningDelta func(delta string), maxEvents int) (OpenAIChatSseResult, error) {
 	result := OpenAIChatSseResult{ToolCalls: []ChatToolCall{}, ContinuationItems: []any{}}
 	if maxEvents <= 0 {
 		maxEvents = defaultMaxSSEEvents
@@ -82,8 +85,9 @@ func CollectOpenAIChatSse(stream io.Reader, maxContentBytes int, onDelta func(de
 		var payload struct {
 			Choices []struct {
 				Delta struct {
-					Content   any `json:"content"`
-					ToolCalls []struct {
+					Content          any `json:"content"`
+					ReasoningContent any `json:"reasoning_content"`
+					ToolCalls        []struct {
 						Index    any `json:"index"`
 						ID       any `json:"id"`
 						Function *struct {
@@ -121,6 +125,9 @@ func CollectOpenAIChatSse(stream io.Reader, maxContentBytes int, onDelta func(de
 		}
 		if len(payload.Choices) > 0 {
 			choice := payload.Choices[0]
+			if reasoning, ok := choice.Delta.ReasoningContent.(string); ok && reasoning != "" && onReasoningDelta != nil {
+				onReasoningDelta(reasoning)
+			}
 			if delta, ok := choice.Delta.Content.(string); ok && delta != "" {
 				nextBytes := content.Len() + len(delta)
 				if nextBytes > maxContentBytes {

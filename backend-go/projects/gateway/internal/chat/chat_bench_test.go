@@ -57,7 +57,7 @@ func benchBuildChatSseStream() string {
 // 内容累计与增量回调 → 工具参数跨事件拼接 → usage 提取 → 工具调用收尾。
 func BenchmarkChatCollectOpenAIChatSseContentToolUsage(b *testing.B) {
 	stream := benchBuildChatSseStream()
-	result, err := CollectOpenAIChatSse(strings.NewReader(stream), 1<<20, benchChatOnDelta, 0)
+	result, err := CollectOpenAIChatSse(strings.NewReader(stream), 1<<20, benchChatOnDelta, nil, 0)
 	if err != nil {
 		b.Fatalf("sanity collect: %v", err)
 	}
@@ -76,7 +76,7 @@ func BenchmarkChatCollectOpenAIChatSseContentToolUsage(b *testing.B) {
 		b.StopTimer()
 		reader := strings.NewReader(stream)
 		b.StartTimer()
-		loopResult, err := CollectOpenAIChatSse(reader, 1<<20, benchChatOnDelta, 0)
+		loopResult, err := CollectOpenAIChatSse(reader, 1<<20, benchChatOnDelta, nil, 0)
 		if err != nil || !loopResult.Done {
 			b.Fatalf("collect: err=%v done=%v", err, loopResult.Done)
 		}
@@ -205,17 +205,17 @@ func benchBuildTransportInput() ChatTransportRequestInput {
 		history = append(history, ChatTransportMessage{Role: role, Content: fmt.Sprintf("历史消息 %02d：请继续基于上下文作答。", i)})
 	}
 	return ChatTransportRequestInput{
-		Protocol:          ProtocolChatCompletions,
-		Instructions:      "你是聚合网关的聊天助手，回答使用简体中文并保持要点先行。",
-		Model:             "gpt-4o",
-		History:           history,
-		CurrentContent:    "总结当前网关链路的性能基线结论。",
-		ToolContinuation:  []any{map[string]any{"role": "tool", "tool_call_id": "call_bench_alpha", "content": "{\"hits\":3}"}},
-		InternalTools:     []*toolDefinition{benchDiagnosticToolDef()},
-		ReasoningEffort:   "medium",
-		ServiceTier:       "auto",
+		Protocol:             ProtocolChatCompletions,
+		Instructions:         "你是聚合网关的聊天助手，回答使用简体中文并保持要点先行。",
+		Model:                "gpt-4o",
+		History:              history,
+		CurrentContent:       "总结当前网关链路的性能基线结论。",
+		ToolContinuation:     []any{map[string]any{"role": "tool", "tool_call_id": "call_bench_alpha", "content": "{\"hits\":3}"}},
+		InternalTools:        []*toolDefinition{benchDiagnosticToolDef()},
+		ReasoningEffort:      "medium",
+		ServiceTier:          "auto",
 		GenerationParameters: &ChatGenerationParameters{Temperature: &temperature, TopP: &topP, MaxOutputTokens: &maxOutputTokens, Seed: &seed},
-		PromptCacheKey:    "cache-key-bench",
+		PromptCacheKey:       "cache-key-bench",
 	}
 }
 

@@ -323,6 +323,25 @@ func buildChatToolContinuation(protocol ChatTransportProtocol, continuationItems
 	return out
 }
 
+// chatResponsesModelRequestsReasoningSummary reports whether the model name
+// looks like a reasoning model for the Responses wire. Used only to decide
+// whether the chat page may attach reasoning.summary="auto" when the user did
+// not pick an effort: summaries stream only when explicitly requested, while
+// non-reasoning models reject the reasoning parameter outright.
+func chatResponsesModelRequestsReasoningSummary(model string) bool {
+	name := strings.ToLower(strings.TrimSpace(model))
+	if name == "" {
+		return false
+	}
+	if strings.HasPrefix(name, "gpt-5") || strings.HasPrefix(name, "codex") {
+		return true
+	}
+	return regexpOpenAIOSeries.MatchString(name) || regexpReasoning.MatchString(name)
+}
+
+// /(?:^|[-_.])o[134](?:[-_.]|$)/ — the o1/o3/o4 series without swallowing gpt-4o.
+var regexpOpenAIOSeries = regexp.MustCompile(`(?:^|[-_.])o[134](?:[-_.]|$)`)
+
 // buildChatTransportRequest mirrors buildChatTransportRequest.
 func buildChatTransportRequest(input ChatTransportRequestInput) (string, map[string]any) {
 	if input.Protocol == ProtocolResponses {
@@ -357,6 +376,12 @@ func buildChatTransportRequest(input ChatTransportRequestInput) (string, map[str
 		}
 		if input.ReasoningEffort != "" {
 			body["reasoning"] = map[string]any{"effort": input.ReasoningEffort, "summary": "auto"}
+		} else if chatResponsesModelRequestsReasoningSummary(input.Model) {
+			// Reasoning summaries stream only when explicitly requested, and the
+			// reasoning parameter itself is rejected by non-reasoning models, so
+			// the no-effort path attaches summary="auto" for name-detected
+			// reasoning models only.
+			body["reasoning"] = map[string]any{"summary": "auto"}
 		}
 		if input.ServiceTier != "" {
 			body["service_tier"] = input.ServiceTier

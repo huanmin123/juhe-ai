@@ -194,6 +194,27 @@ func TestBuildChatTransportRequestW3(t *testing.T) {
 	}
 }
 
+// TestBuildChatTransportRequestReasoningSummaryW3 覆盖无显式 effort 时 Responses 思考摘要的按需注入。
+func TestBuildChatTransportRequestReasoningSummaryW3(t *testing.T) {
+	_, gpt5Body := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "gpt-5.6", CurrentContent: "问题"})
+	reasoning, ok := gpt5Body["reasoning"].(map[string]any)
+	if !ok || reasoning["summary"] != "auto" || hasKeyW3(reasoning, "effort") {
+		t.Fatalf("gpt-5 无 effort 时应只带 summary=auto: %v", gpt5Body["reasoning"])
+	}
+	_, o3Body := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "O3", CurrentContent: "问题"})
+	if reasoning, ok = o3Body["reasoning"].(map[string]any); !ok || reasoning["summary"] != "auto" {
+		t.Fatalf("o3 无 effort 时应带 summary=auto: %v", o3Body["reasoning"])
+	}
+	_, plainBody := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "gpt-4o", CurrentContent: "问题"})
+	if hasKeyW3(plainBody, "reasoning") {
+		t.Fatalf("非推理模型不得携带 reasoning 参数: %v", plainBody["reasoning"])
+	}
+	_, effortBody := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "gpt-4o", CurrentContent: "问题", ReasoningEffort: "low"})
+	if reasoning, ok = effortBody["reasoning"].(map[string]any); !ok || reasoning["effort"] != "low" || reasoning["summary"] != "auto" {
+		t.Fatalf("显式 effort 时应带 effort+summary: %v", effortBody["reasoning"])
+	}
+}
+
 // TestBuildChatModelOptionsW3 覆盖模型能力交集装配。
 func TestBuildChatModelOptionsW3(t *testing.T) {
 	yes := true

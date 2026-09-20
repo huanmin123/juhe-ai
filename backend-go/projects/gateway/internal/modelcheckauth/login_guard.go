@@ -19,7 +19,10 @@ type loginAttempt struct {
 
 // LoginGuard mirrors the Node memory guard. It is deliberately injectable so
 // a shared runtime-state implementation can replace it before multi-instance
-// production cutover without changing the HTTP contract.
+// production cutover without changing the HTTP contract. As a process-local
+// memory driver it never fails: Check/Failed always return a nil error (the
+// error-carrying fail-closed contract belongs to the Redis SharedLoginGuard,
+// D8 verdict 2026-09-20).
 type LoginGuard struct {
 	mu     sync.Mutex
 	now    func() time.Time
@@ -34,26 +37,26 @@ func NewLoginGuard(now func() time.Time) *LoginGuard {
 	return &LoginGuard{now: now, byIP: map[string]loginAttempt{}, byUser: map[string]loginAttempt{}}
 }
 
-func (g *LoginGuard) Check(ip, username string) (bool, int, string) {
+func (g *LoginGuard) Check(ip, username string) (bool, int, string, error) {
 	if g == nil {
-		return false, 0, ""
+		return false, 0, "", nil
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now().UTC()
 	if blocked, retry := activeLock(g.byIP[ip], now); blocked {
-		return true, retry, "尝试过于频繁，请稍后再试"
+		return true, retry, "尝试过于频繁，请稍后再试", nil
 	}
 	key := strings.ToLower(strings.TrimSpace(username))
 	if blocked, retry := activeLock(g.byUser[key], now); blocked {
-		return true, retry, "账号暂时锁定，请稍后再试"
+		return true, retry, "账号暂时锁定，请稍后再试", nil
 	}
-	return false, 0, ""
+	return false, 0, "", nil
 }
 
-func (g *LoginGuard) Failed(ip, username string) (bool, int, string) {
+func (g *LoginGuard) Failed(ip, username string) (bool, int, string, error) {
 	if g == nil {
-		return false, 0, ""
+		return false, 0, "", nil
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -64,12 +67,12 @@ func (g *LoginGuard) Failed(ip, username string) (bool, int, string) {
 	userRecord := recordFailure(g.byUser[key], now)
 	g.byUser[key] = userRecord
 	if blocked, retry := activeLock(ipRecord, now); blocked {
-		return true, retry, "尝试过于频繁，请稍后再试"
+		return true, retry, "尝试过于频繁，请稍后再试", nil
 	}
 	if blocked, retry := activeLock(userRecord, now); blocked {
-		return true, retry, "账号暂时锁定，请稍后再试"
+		return true, retry, "账号暂时锁定，请稍后再试", nil
 	}
-	return false, 0, ""
+	return false, 0, "", nil
 }
 
 func (g *LoginGuard) Success(ip, username string) {

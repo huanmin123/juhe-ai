@@ -107,11 +107,18 @@ type CaptchaIssuer interface {
 }
 
 // LoginGuardDriver is the login-throttle surface the auth routes consume.
-// *modelcheckauth.LoginGuard is the process-local memory driver;
-// SharedLoginGuard is the Redis runtime-state driver (BUG-0171.4).
+// *modelcheckauth.LoginGuard is the process-local memory driver (never
+// fails); SharedLoginGuard is the Redis runtime-state driver (BUG-0171.4).
+//
+// D8 verdict (2026-09-20): the login lock is fail-closed. The Redis driver
+// propagates state-store failures from Check/Failed and the login handlers
+// map them to 500, mirroring the Node async paths where
+// checkLoginAllowedAsync / recordFailedLoginAsync reject on a store failure
+// and land as next(error) -> 500. A state Redis outage must never read as
+// "not locked".
 type LoginGuardDriver interface {
-	Check(ip, username string) (blocked bool, retryAfter int, message string)
-	Failed(ip, username string) (blocked bool, retryAfter int, message string)
+	Check(ip, username string) (blocked bool, retryAfter int, message string, err error)
+	Failed(ip, username string) (blocked bool, retryAfter int, message string, err error)
 	Success(ip, username string)
 }
 

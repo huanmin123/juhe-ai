@@ -617,9 +617,11 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // w1mSystemAPIEnvPairs 返回 system api 组合根全量启动 env（业务 owner
-// 门槛 + 有效切换证据 + 主监听地址）。
+// 门槛 + 有效切换证据 + 主监听地址）。2026-09-21 起模型检测 owner 默认
+// 常驻且装配先于组合根，业务库在此预置完整 schema。
 func w1mSystemAPIEnvPairs(t *testing.T, root, evidencePath string, mainPort int) []string {
 	t.Helper()
+	w1v2PrepareBusinessSQLite(t, filepath.Join(root, "business.sqlite3"))
 	return []string{
 		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
 		"JUHE_AI_BUSINESS_OWNER=gateway",

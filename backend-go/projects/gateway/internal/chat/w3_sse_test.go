@@ -272,7 +272,7 @@ func TestCollectOpenAIChatSseW3(t *testing.T) {
 	happy := "data: " + `{"choices":[{"delta":{"content":"Hi"}}]}` + "\n\n" +
 		"data: " + `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}` + "\n\n" +
 		"data: [DONE]\n\n"
-	result, err := CollectOpenAIChatSse(strings.NewReader(happy), maxMessageBytes, nil, 0)
+	result, err := CollectOpenAIChatSse(strings.NewReader(happy), maxMessageBytes, nil, nil, 0)
 	if err != nil || result.Content != "Hi" || result.FinishReason != "stop" || !result.Done || result.InputTokens == nil {
 		t.Fatalf("happy path 失败: %+v err=%v", result, err)
 	}
@@ -292,7 +292,7 @@ func TestCollectOpenAIChatSseW3(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := CollectOpenAIChatSse(strings.NewReader(testCase.payload), maxMessageBytes, nil, 2)
+			_, err := CollectOpenAIChatSse(strings.NewReader(testCase.payload), maxMessageBytes, nil, nil, 2)
 			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
 				t.Fatalf("err = %v, 期望包含 %q", err, testCase.wantErr)
 			}
@@ -301,7 +301,7 @@ func TestCollectOpenAIChatSseW3(t *testing.T) {
 	t.Run("工具参数超限", func(t *testing.T) {
 		args := strings.Repeat("a", 70*1024)
 		payload := "data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"t","arguments":"` + args + `"}}]}}]}` + "\n\ndata: [DONE]\n\n"
-		_, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, nil, 0)
+		_, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, nil, nil, 0)
 		if err == nil || !strings.Contains(err.Error(), "64 KiB 上限") {
 			t.Fatalf("err = %v", err)
 		}
@@ -310,7 +310,7 @@ func TestCollectOpenAIChatSseW3(t *testing.T) {
 		payload := "data: " + `{"choices":[{"delta":{"content":"部分"},"finish_reason":"tool_calls"}]}` + "\n\n" +
 			"data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"toolA","arguments":"{\"x\":1}"}}]}}]}` + "\n\n" +
 			"data: [DONE]\n\n"
-		result, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, nil, 0)
+		result, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, nil, nil, 0)
 		if err != nil {
 			t.Fatalf("采集失败: %v", err)
 		}
@@ -327,7 +327,7 @@ func TestCollectOpenAIChatSseW3(t *testing.T) {
 	})
 	t.Run("无内容续答 content 为 null", func(t *testing.T) {
 		payload := "data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"t","arguments":"{}"}}]}}]}` + "\n\ndata: [DONE]\n\n"
-		result, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, nil, 0)
+		result, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, nil, nil, 0)
 		if err != nil {
 			t.Fatalf("采集失败: %v", err)
 		}
@@ -338,26 +338,49 @@ func TestCollectOpenAIChatSseW3(t *testing.T) {
 	})
 	t.Run("工具片段缺失字段", func(t *testing.T) {
 		payload := "data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1"}]}}]}` + "\n\ndata: [DONE]\n\n"
-		if _, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, nil, 0); err == nil || !strings.Contains(err.Error(), "缺少 id、name 或 arguments") {
+		if _, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, nil, nil, 0); err == nil || !strings.Contains(err.Error(), "缺少 id、name 或 arguments") {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("非法 UTF-8 与读取失败", func(t *testing.T) {
-		if _, err := CollectOpenAIChatSse(strings.NewReader("data: {\xff}\n\ndata: [DONE]\n\n"), maxMessageBytes, nil, 0); err == nil {
+		if _, err := CollectOpenAIChatSse(strings.NewReader("data: {\xff}\n\ndata: [DONE]\n\n"), maxMessageBytes, nil, nil, 0); err == nil {
 			t.Fatalf("非法 UTF-8 应报错")
 		}
-		if _, err := CollectOpenAIChatSse(errReaderW3(), maxMessageBytes, nil, 0); err == nil {
+		if _, err := CollectOpenAIChatSse(errReaderW3(), maxMessageBytes, nil, nil, 0); err == nil {
 			t.Fatalf("读取失败应透传")
 		}
 	})
 	t.Run("增量回调与 CRLF 分帧", func(t *testing.T) {
 		payload := "data: " + `{"choices":[{"delta":{"content":"A"}}]}` + "\r\n\r\n" + "data: " + `{"choices":[{"delta":{"content":"B"}}]}` + "\r\n\r\ndata: [DONE]\r\n\r\n"
 		var deltas []string
-		result, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, func(delta string) { deltas = append(deltas, delta) }, 0)
+		result, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes, func(delta string) { deltas = append(deltas, delta) }, nil, 0)
 		if err != nil || result.Content != "AB" || !equalStringsW3(deltas, []string{"A", "B"}) {
 			t.Fatalf("CRLF 分帧失败: %+v err=%v deltas=%v", result, err, deltas)
 		}
 	})
+}
+
+// TestCollectOpenAIChatSseReasoningDeltaW3 覆盖思考模型 reasoning_content 增量的分离回调。
+func TestCollectOpenAIChatSseReasoningDeltaW3(t *testing.T) {
+	payload := "data: " + `{"choices":[{"delta":{"reasoning_content":"先分析"}}]}` + "\n\n" +
+		"data: " + `{"choices":[{"delta":{"reasoning_content":"再画图"}}]}` + "\n\n" +
+		"data: " + `{"choices":[{"delta":{"content":"答案"}}]}` + "\n\n" +
+		"data: " + `{"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+	var reasoning []string
+	var content []string
+	result, err := CollectOpenAIChatSse(strings.NewReader(payload), maxMessageBytes,
+		func(delta string) { content = append(content, delta) },
+		func(delta string) { reasoning = append(reasoning, delta) }, 0)
+	if err != nil {
+		t.Fatalf("采集失败: %v", err)
+	}
+	if strings.Join(reasoning, "") != "先分析再画图" {
+		t.Fatalf("reasoning 增量不正确: %q", reasoning)
+	}
+	if strings.Join(content, "") != "答案" || result.Content != "答案" {
+		t.Fatalf("content 增量混入 reasoning: %q / %q", content, result.Content)
+	}
 }
 
 // TestStreamExecuteHelpersW3 覆盖执行闭包的零散 helper。

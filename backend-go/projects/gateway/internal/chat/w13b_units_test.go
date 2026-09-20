@@ -597,8 +597,10 @@ func TestW13BGenerationHubRegistry(t *testing.T) {
 	}
 	noopRunner := func() *ChatGenerationRunner {
 		return NewChatGenerationRunner(ChatGenerationRunnerOptions{
-			Identity:  ChatGenerationIdentity{OwnerID: "o", ConversationID: "c1", TurnID: "t"},
-			Execute:   func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) { return ChatGenerationTerminalResult{Status: "completed"}, nil },
+			Identity: ChatGenerationIdentity{OwnerID: "o", ConversationID: "c1", TurnID: "t"},
+			Execute: func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
+				return ChatGenerationTerminalResult{Status: "completed"}, nil
+			},
 		}, context.Background(), func() {}, func() bool { return false })
 	}
 	first := noopRunner()
@@ -716,9 +718,9 @@ func TestW13BChatSSEWriterFailures(t *testing.T) {
 
 type failingResponseWriterW13B struct{}
 
-func (f *failingResponseWriterW13B) Header() http.Header { return http.Header{} }
-func (f *failingResponseWriterW13B) Write([]byte) (int, error)   { return 0, errors.New("broken pipe") }
-func (f *failingResponseWriterW13B) WriteHeader(int)             {}
+func (f *failingResponseWriterW13B) Header() http.Header       { return http.Header{} }
+func (f *failingResponseWriterW13B) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+func (f *failingResponseWriterW13B) WriteHeader(int)           {}
 
 func TestW13BSSEHeartbeatOnUnwritable(t *testing.T) {
 	writer := newChatSSEWriter(&failingResponseWriterW13B{}, nil, nil)
@@ -1396,46 +1398,46 @@ func TestW13BStripImageResultStrings(t *testing.T) {
 }
 
 func TestW13BCollectOpenAIChatSseEdgeCases(t *testing.T) {
-	if _, err := CollectOpenAIChatSse(strings.NewReader("\xff\xfe"), 100, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader("\xff\xfe"), 100, nil, nil, 0); err == nil {
 		t.Fatalf("无效 UTF-8 应报错")
 	}
 	stream := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":-1}]}}]}\n\n" + "data: [DONE]\n\n"
-	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, nil, 0); err == nil {
 		t.Fatalf("非法工具 index 应报错")
 	}
 	stream = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]}}]}\n\ndata: [DONE]\n\n"
-	result, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, 0)
+	result, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, nil, 0)
 	if err != nil || len(result.ToolCalls) != 1 || result.ToolCalls[0].CallID != "a" {
 		t.Fatalf("工具调用收集失败: %v %+v", err, result)
 	}
 	stream = "data: {\"error\":{\"message\":null}}\n\ndata: [DONE]\n\n"
-	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, 0); err == nil || err.Error() != "上游流式请求失败" {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, nil, 0); err == nil || err.Error() != "上游流式请求失败" {
 		t.Fatalf("非字符串错误应回退: %v", err)
 	}
 	stream = "data: [DONE]\n\n"
-	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, 0); err != nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, nil, 0); err != nil {
 		t.Fatalf("DONE 应成功")
 	}
 	events := strings.Repeat("data: {}\n\n", 3)
-	if _, err := CollectOpenAIChatSse(strings.NewReader(events+"data: [DONE]\n\n"), 100, nil, 2); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(events+"data: [DONE]\n\n"), 100, nil, nil, 2); err == nil {
 		t.Fatalf("事件数超限应报错")
 	}
-	if _, err := CollectOpenAIChatSse(strings.NewReader("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n"), 100, nil, 1); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n"), 100, nil, nil, 1); err == nil {
 		t.Fatalf("事件数超限（尾部缓冲）应报错")
 	}
 	big := "data: " + strings.Repeat("x", 70*1024) + "\n\n"
-	if _, err := CollectOpenAIChatSse(strings.NewReader(big+"data: [DONE]\n\n"), 100, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(big+"data: [DONE]\n\n"), 100, nil, nil, 0); err == nil {
 		t.Fatalf("单事件超限应报错")
 	}
-	if _, err := CollectOpenAIChatSse(strings.NewReader(strings.Repeat("x", 70*1024)), 100, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(strings.Repeat("x", 70*1024)), 100, nil, nil, 0); err == nil {
 		t.Fatalf("尾部缓冲超限应报错")
 	}
 	stream = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"arguments\":\"" + strings.Repeat("x", 70*1024) + "\"\"}}]}}]}\n\n"
-	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, nil, 0); err == nil {
 		t.Fatalf("工具参数超限应报错")
 	}
 	stream = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0}]}}]}\n\ndata: [DONE]\n\n"
-	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader(stream), 100, nil, nil, 0); err == nil {
 		t.Fatalf("缺失 id/name/arguments 应报错")
 	}
 	boundary := findEventBoundary("a\r\n\r\nb")
@@ -1877,8 +1879,8 @@ func TestW13BIsAbortError(t *testing.T) {
 
 type abortLikeW13B struct{}
 
-func (abortLikeW13B) Error() string     { return "abort" }
-func (abortLikeW13B) AbortError() bool  { return false }
+func (abortLikeW13B) Error() string    { return "abort" }
+func (abortLikeW13B) AbortError() bool { return false }
 
 type abortTrueW13B struct{}
 
@@ -1966,4 +1968,3 @@ func TestW13BStoreGeneratedImageSinkGuards(t *testing.T) {
 		t.Fatalf("未配置存储应报错")
 	}
 }
-

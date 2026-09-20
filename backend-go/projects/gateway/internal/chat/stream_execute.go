@@ -108,6 +108,8 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			collected, collectErr := CollectOpenAIChatSse(upstream.Body, maxMessageBytes, func(delta string) {
 				partialContent.WriteString(delta)
 				runCtx.Publish("message.delta", map[string]any{"messageId": messageID, "delta": delta}, ChatGenerationProjectionUpdate{ContentTextDelta: &delta})
+			}, func(delta string) {
+				runCtx.Publish("reasoning.delta", map[string]any{"messageId": messageID, "delta": delta}, ChatGenerationProjectionUpdate{ReasoningTextDelta: &delta})
 			}, 0)
 			_ = upstream.Body.Close()
 			if collectErr != nil {

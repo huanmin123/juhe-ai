@@ -17,33 +17,33 @@ func TestW16CCollectOpenAIChatSseLimits(t *testing.T) {
 	}
 	// 事件数量超过 maxEvents。
 	stream := strings.NewReader(event(0, `{"content":"a"}`) + event(0, `{"content":"b"}`))
-	if _, err := CollectOpenAIChatSse(stream, 1<<20, nil, 1); err == nil {
+	if _, err := CollectOpenAIChatSse(stream, 1<<20, nil, nil, 1); err == nil {
 		t.Fatal("事件数超限应失败")
 	}
 	// 单事件超过 64 KiB。
 	huge := strings.NewReader(event(0, `{"content":"`+strings.Repeat("x", sseMaxEventBytes)+`"}`))
-	if _, err := CollectOpenAIChatSse(huge, 1<<20, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(huge, 1<<20, nil, nil, 0); err == nil {
 		t.Fatal("单事件超限应失败")
 	}
 	// 工具参数跨事件累计超过 64 KiB（单个事件保持在上限内）。
 	toolStream := strings.NewReader(
 		event(0, `{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"f","arguments":"`+strings.Repeat("a", 40*1024)+`"}}]}`) +
 			event(0, `{"tool_calls":[{"index":0,"function":{"arguments":"`+strings.Repeat("b", 40*1024)+`"}}]}`))
-	if _, err := CollectOpenAIChatSse(toolStream, 1<<20, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(toolStream, 1<<20, nil, nil, 0); err == nil {
 		t.Fatal("工具参数超限应失败")
 	}
 	// 非法 JSON 事件 → consumeEvent 错误臂。
-	if _, err := CollectOpenAIChatSse(strings.NewReader("data: {broken}\n\n"), 1<<20, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(strings.NewReader("data: {broken}\n\n"), 1<<20, nil, nil, 0); err == nil {
 		t.Fatal("非法事件应失败")
 	}
 	// 尾随缓冲（无结尾空行）：事件数超限臂。
 	trailing := strings.NewReader(event(0, `{"content":"a","finish_reason":"stop"}`) + `data: {broken}`)
-	if _, err := CollectOpenAIChatSse(trailing, 1<<20, nil, 1); err == nil {
+	if _, err := CollectOpenAIChatSse(trailing, 1<<20, nil, nil, 1); err == nil {
 		t.Fatal("尾随事件数超限应失败")
 	}
 	// 尾随缓冲：consumeEvent 错误传播臂。
 	trailing2 := strings.NewReader(event(0, `{"content":"a","finish_reason":"stop"}`) + `data: {broken}`)
-	if _, err := CollectOpenAIChatSse(trailing2, 1<<20, nil, 0); err == nil {
+	if _, err := CollectOpenAIChatSse(trailing2, 1<<20, nil, nil, 0); err == nil {
 		t.Fatal("尾随非法事件应失败")
 	}
 }

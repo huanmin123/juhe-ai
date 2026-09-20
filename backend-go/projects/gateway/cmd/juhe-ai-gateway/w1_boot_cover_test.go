@@ -158,14 +158,34 @@ func w1bScenarioEnv(t *testing.T, coverageDir string, pairs ...string) []string 
 		env = append(env, entry)
 	}
 	env = append(env, pairs...)
-	// 2026-09-21 起模型检测 owner 默认常驻：零配置自举的专属库与管理
-	// listener 需要隔离数据目录与随机端口，避免场景进程把 ./data 写进包
-	// 目录或抢占 3307 端口。
-	env = append(env,
-		"JUHE_AI_DATA_DIR="+t.TempDir(),
-		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS=127.0.0.1:0",
-		"GOCOVERDIR="+coverageDir)
+	// 2026-09-21 起模型检测 owner 默认常驻：J3b 装配先于多数目标组件，
+	// 场景未显式提供 DATA_DIR 时准备一个隔离数据目录，并把零配置回落
+	// 路径 <DATA_DIR>/business.sqlite3 预置成带 schema 的业务库（不得注
+	// 入 BUSINESS_DATABASE_PATH——那会触发切流家族的严格门禁）；管理
+	// listener 用随机端口，避免抢占 3307。显式给出同名键的 pairs（场景
+	// 自身契约）一律不覆盖。
+	if !w1bEnvHasKey(pairs, "JUHE_AI_DATA_DIR") {
+		dataDir := t.TempDir()
+		w1v2PrepareBusinessSQLite(t, filepath.Join(dataDir, "business.sqlite3"))
+		env = append(env, "JUHE_AI_DATA_DIR="+dataDir)
+	}
+	if !w1bEnvHasKey(pairs, "JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS") {
+		env = append(env, "JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS=127.0.0.1:0")
+	}
+	env = append(env, "GOCOVERDIR="+coverageDir)
 	return env
+}
+
+// w1bEnvHasKey 判断场景 pairs 是否显式给出某个 env（"K=V" 形态，按键全名
+// 前缀匹配）。
+func w1bEnvHasKey(pairs []string, key string) bool {
+	prefix := key + "="
+	for _, pair := range pairs {
+		if strings.HasPrefix(pair, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // w1bRunScenario 以子进程运行插桩二进制的单个场景：有界等待 30s，超时杀

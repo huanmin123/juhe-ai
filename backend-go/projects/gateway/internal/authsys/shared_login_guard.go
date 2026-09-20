@@ -26,10 +26,12 @@ const sharedLoginGuardStateStoreName = "auth_login_guard"
 // and successful login clears both (BUG-0171.4). The memory driver remains
 // modelcheckauth.LoginGuard.
 //
-// Degraded path: the LoginGuardDriver surface is error-free because the
-// process-local *modelcheckauth.LoginGuard must keep satisfying it, so a
-// Redis read/write failure degrades to "not locked" instead of the Node 500.
-// This only differs from Node while the state Redis is unreachable.
+// Failure semantics (D8 verdict, 2026-09-20): the Redis driver is fail-closed
+// like Node. Check/Failed propagate state-store read/write errors and the
+// login handlers map them to 500 (auth.routes.ts catch -> next(error) ->
+// 500); they never degrade to "not locked" while the state Redis is
+// unreachable. Success stays best-effort cleanup — the session has already
+// been issued when it runs.
 type SharedLoginGuard struct {
 	store RedisStateStore
 	now   func() time.Time
@@ -66,31 +68,48 @@ func (g *SharedLoginGuard) lockKey(scope, value string) string {
 }
 
 // Check mirrors checkLoginAllowedAsync: the IP lock wins over the username
-// lock; messages match the Node strings byte for byte.
-func (g *SharedLoginGuard) Check(ip, username string) (bool, int, string) {
+// lock; messages match the Node strings byte for byte. A state-store read
+// failure propagates instead of degrading to "not locked" (D8, 2026-09-20).
+func (g *SharedLoginGuard) Check(ip, username string) (bool, int, string, error) {
 	now := g.now()
-	if blocked, retry := g.lockBlock("ip", strings.TrimSpace(ip), now); blocked {
-		return blocked, retry, "尝试过于频繁，请稍后再试"
+	blocked, retry, err := g.lockBlock("ip", strings.TrimSpace(ip), now)
+	if err != nil {
+		return false, 0, "", err
 	}
-	if blocked, retry := g.lockBlock("username", normalizeSharedLoginUsername(username), now); blocked {
-		return blocked, retry, "账号暂时锁定，请稍后再试"
+	if blocked {
+		return true, retry, "尝试过于频繁，请稍后再试", nil
 	}
-	return false, 0, ""
+	blocked, retry, err = g.lockBlock("username", normalizeSharedLoginUsername(username), now)
+	if err != nil {
+		return false, 0, "", err
+	}
+	if blocked {
+		return true, retry, "账号暂时锁定，请稍后再试", nil
+	}
+	return false, 0, "", nil
 }
 
 // Failed mirrors recordFailedLoginAsync: the IP and username attempts are
-// recorded independently (Node Promise.all) and the IP result wins.
-func (g *SharedLoginGuard) Failed(ip, username string) (bool, int, string) {
+// recorded independently (Node Promise.all) and the IP result wins. A
+// state-store failure propagates after both attempts ran, like a rejected
+// Promise.all (D8, 2026-09-20).
+func (g *SharedLoginGuard) Failed(ip, username string) (bool, int, string, error) {
 	now := g.now()
-	ipBlocked, ipRetry := g.recordAttempt("ip", strings.TrimSpace(ip), now)
-	userBlocked, userRetry := g.recordAttempt("username", normalizeSharedLoginUsername(username), now)
+	ipBlocked, ipRetry, ipErr := g.recordAttempt("ip", strings.TrimSpace(ip), now)
+	userBlocked, userRetry, userErr := g.recordAttempt("username", normalizeSharedLoginUsername(username), now)
+	if ipErr != nil {
+		return false, 0, "", ipErr
+	}
+	if userErr != nil {
+		return false, 0, "", userErr
+	}
 	if ipBlocked {
-		return true, ipRetry, "尝试过于频繁，请稍后再试"
+		return true, ipRetry, "尝试过于频繁，请稍后再试", nil
 	}
 	if userBlocked {
-		return true, userRetry, "账号暂时锁定，请稍后再试"
+		return true, userRetry, "账号暂时锁定，请稍后再试", nil
 	}
-	return false, 0, ""
+	return false, 0, "", nil
 }
 
 // Success mirrors recordSuccessfulLoginAsync: both counters and both locks
@@ -110,35 +129,36 @@ func (g *SharedLoginGuard) Success(ip, username string) {
 
 // recordAttempt mirrors recordRedisAttempt: an already-active lock short
 // circuits, otherwise the window counter increments and reaching the
-// threshold stores the lock timestamp.
-func (g *SharedLoginGuard) recordAttempt(scope, value string, now time.Time) (bool, int) {
-	if blocked, retry := g.lockBlock(scope, value, now); blocked {
-		return blocked, retry
+// threshold stores the lock timestamp. Every store error propagates.
+func (g *SharedLoginGuard) recordAttempt(scope, value string, now time.Time) (bool, int, error) {
+	blocked, retry, err := g.lockBlock(scope, value, now)
+	if err != nil || blocked {
+		return blocked, retry, err
 	}
 	count, err := g.store.Incr(nil, g.counterKey(scope, value), sharedLoginWindowMs, -1)
 	if err != nil {
-		return false, 0
+		return false, 0, err
 	}
 	if count < sharedLoginLimit {
-		return false, 0
+		return false, 0, nil
 	}
 	lockedUntil := now.Add(sharedLoginLock)
 	if err := g.store.SetJSON(nil, g.lockKey(scope, value), lockedUntil.UnixMilli(), sharedLoginLock.Milliseconds()); err != nil {
-		return false, 0
+		return false, 0, err
 	}
-	return true, retryAfterSeconds(lockedUntil, now)
+	return true, retryAfterSeconds(lockedUntil, now), nil
 }
 
-func (g *SharedLoginGuard) lockBlock(scope, value string, now time.Time) (bool, int) {
+func (g *SharedLoginGuard) lockBlock(scope, value string, now time.Time) (bool, int, error) {
 	var lockedUntil int64
 	ok, err := g.store.GetJSON(nil, g.lockKey(scope, value), &lockedUntil)
-	if err != nil || !ok {
-		return false, 0
+	if err != nil {
+		return false, 0, err
 	}
-	if lockedUntil <= now.UnixMilli() {
-		return false, 0
+	if !ok || lockedUntil <= now.UnixMilli() {
+		return false, 0, nil
 	}
-	return true, retryAfterSeconds(time.UnixMilli(lockedUntil), now)
+	return true, retryAfterSeconds(time.UnixMilli(lockedUntil), now), nil
 }
 
 func retryAfterSeconds(lockedUntil, now time.Time) int {
