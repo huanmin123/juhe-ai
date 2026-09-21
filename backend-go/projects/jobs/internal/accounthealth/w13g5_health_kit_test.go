@@ -29,24 +29,64 @@ var (
 	w13g5HealthFailDrivers        = map[string]*w13g5HealthSpec{}
 )
 
+// w13g5HealthArmRecord 记一次装载的注入臂（match + 是否命中），供收尾断言。
+type w13g5HealthArmRecord struct {
+	match string
+	fired bool
+}
+
 // w13g5HealthSpec 描述一次注入：match 命中查询子串；once 只注入一次。
 type w13g5HealthSpec struct {
 	mu    sync.Mutex
 	match string
 	once  bool
 	fired bool
+	// records 由 enableAssert 开启记账后生效：每次 arm/armOnce 记录一条，
+	// 命中时回填 fired；测试收尾断言所有记录均已命中。
+	records []*w13g5HealthArmRecord
+	current *w13g5HealthArmRecord
 }
 
 func (spec *w13g5HealthSpec) arm(match string) {
 	spec.mu.Lock()
 	defer spec.mu.Unlock()
 	spec.match, spec.once, spec.fired = match, false, false
+	spec.record(match)
 }
 
 func (spec *w13g5HealthSpec) armOnce(match string) {
 	spec.mu.Lock()
 	defer spec.mu.Unlock()
 	spec.match, spec.once, spec.fired = match, true, false
+	spec.record(match)
+}
+
+// record 在记账开启时登记一次装载。
+func (spec *w13g5HealthSpec) record(match string) {
+	if spec.records == nil {
+		return
+	}
+	entry := &w13g5HealthArmRecord{match: match}
+	spec.records = append(spec.records, entry)
+	spec.current = entry
+}
+
+// enableAssert 开启装载记账并在测试收尾断言所有装载臂都真实命中（fired）：
+// match 与生产 SQL 漂移或语句从未执行导致的伪覆盖臂在此变红。
+func (spec *w13g5HealthSpec) enableAssert(t *testing.T) {
+	t.Helper()
+	spec.mu.Lock()
+	spec.records = []*w13g5HealthArmRecord{}
+	spec.mu.Unlock()
+	t.Cleanup(func() {
+		spec.mu.Lock()
+		defer spec.mu.Unlock()
+		for _, entry := range spec.records {
+			if !entry.fired {
+				t.Errorf("w13g5 注入规则未命中（伪覆盖）：match=%q", entry.match)
+			}
+		}
+	})
 }
 
 func (spec *w13g5HealthSpec) disarm() {
@@ -65,6 +105,9 @@ func (spec *w13g5HealthSpec) hit(key string) bool {
 		return false
 	}
 	spec.fired = true
+	if spec.current != nil {
+		spec.current.fired = true
+	}
 	return true
 }
 
@@ -191,6 +234,7 @@ func w13g5HealthInjectStore(t *testing.T) (*Store, *w13g5HealthSpec) {
 		sql.Register(w13g5HealthFailDriverName, &w13g5HealthFailDriver{inner: &sqlite.Driver{}})
 	})
 	spec := &w13g5HealthSpec{}
+	spec.enableAssert(t)
 	w13g5HealthFailDriversMu.Lock()
 	w13g5HealthFailDrivers[w13g5HealthFailDriverName] = spec
 	w13g5HealthFailDriversMu.Unlock()

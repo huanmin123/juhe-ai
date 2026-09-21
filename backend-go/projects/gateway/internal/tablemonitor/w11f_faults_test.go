@@ -42,11 +42,35 @@ type w11fRule struct {
 	hasAff   bool
 	limit    int
 	hits     int
+	// exempt 标记负对照臂：注册后故意不命中，豁免 assertRulesFired。
+	exempt bool
 }
 
 type w11fScript struct {
 	mu    sync.Mutex
+	t     *testing.T
 	rules []*w11fRule
+}
+
+// allowUnfired 把规则标记为负对照（故意不命中），Cleanup 断言跳过。
+func (r *w11fRule) allowUnfired() *w11fRule {
+	r.exempt = true
+	return r
+}
+
+// assertRulesFired 在测试收尾断言所有注入规则都被真实消费过（hits>0）：
+// 子串与生产 SQL 漂移导致规则永不命中的伪覆盖臂在此变红。
+func (s *w11fScript) assertRulesFired() {
+	if s.t == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.rules {
+		if r.hits == 0 && !r.exempt {
+			s.t.Errorf("w11f 注入规则未命中（伪覆盖）：substr=%q", r.substr)
+		}
+	}
 }
 
 func (s *w11fScript) rule(r *w11fRule) *w11fRule {
@@ -372,7 +396,8 @@ func TestW11FHelperBranches(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW11FDispatchFaults(t *testing.T) {
-	script := &w11fScript{}
+	script := &w11fScript{t: t}
+	t.Cleanup(script.assertRulesFired)
 	db := newW11FDB(t, script)
 	dispatch, err := NewDurableRecordMaintenanceDispatch(db, false, time.Now)
 	if err != nil {
@@ -439,7 +464,8 @@ func TestW11FDispatchFaults(t *testing.T) {
 
 // TestW11FDispatchPGColumns 用脚本化列结果覆盖 existingColumns 的 PG arm。
 func TestW11FDispatchPGColumns(t *testing.T) {
-	script := &w11fScript{}
+	script := &w11fScript{t: t}
+	t.Cleanup(script.assertRulesFired)
 	db := newW11FDB(t, script)
 	dispatch, err := NewDurableRecordMaintenanceDispatch(db, true, time.Now)
 	if err != nil {
@@ -447,7 +473,10 @@ func TestW11FDispatchPGColumns(t *testing.T) {
 	}
 	// CREATE 成功（脚本放行 affected），列查询走 information_schema 罐装行，ALTER 也放行。
 	script.execAffected("CREATE TABLE", 0)
-	for i := 0; i < 6; i++ {
+	// 罐装列清单已含 account_id，快照升级列剩 kind/source/snapshot_json/
+	// updated_at 四列缺失 → 恰好 4 条 ALTER；规则须与真实语句数对齐，
+	// 多注册的放行规则会被 fired 断言判为伪覆盖。
+	for i := 0; i < 4; i++ {
 		script.execAffected("ALTER TABLE", 0)
 	}
 	script.canned("information_schema.columns", []string{"column_name"},
@@ -502,7 +531,8 @@ func TestW11FDispatchPGColumns(t *testing.T) {
 }
 
 func TestW11FStoreReadFaults(t *testing.T) {
-	script := &w11fScript{}
+	script := &w11fScript{t: t}
+	t.Cleanup(script.assertRulesFired)
 	db := newW11FDB(t, script)
 	if _, err := db.Exec(monitorSchema); err != nil {
 		t.Fatal(err)
@@ -565,7 +595,8 @@ func TestW11FStoreReadFaults(t *testing.T) {
 
 // TestW11FStorePostgresOverview 用罐装行驱动 loadOverviewPostgres。
 func TestW11FStorePostgresOverview(t *testing.T) {
-	script := &w11fScript{}
+	script := &w11fScript{t: t}
+	t.Cleanup(script.assertRulesFired)
 	db := newW11FDB(t, script)
 	store, err := NewStore(db, true)
 	if err != nil {
@@ -713,7 +744,8 @@ func (s *w11fFailingStore) LoadDatabaseHistory(context.Context, string, string, 
 
 // TestW11FCleanupBlockedRecord 覆盖 cleanup 投递失败时的 blocked 回执与日志。
 func TestW11FCleanupBlockedRecord(t *testing.T) {
-	script := &w11fScript{}
+	script := &w11fScript{t: t}
+	t.Cleanup(script.assertRulesFired)
 	db := newW11FDB(t, script)
 	dispatch, err := NewDurableRecordMaintenanceDispatch(db, false, time.Now)
 	if err != nil {

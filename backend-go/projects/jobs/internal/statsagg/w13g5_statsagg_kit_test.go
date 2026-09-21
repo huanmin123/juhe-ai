@@ -36,42 +36,68 @@ var (
 	w13g5StatsFailDrivers        = map[string]*w13g5StatsSpec{}
 )
 
+// w13g5StatsArmRecord 记一次装载的注入臂（match + 是否命中），供收尾断言。
+type w13g5StatsArmRecord struct {
+	match string
+	fired bool
+}
+
 // w13g5StatsSpec 描述一次注入：match 命中查询子串；once 只注入一次；
 // afterN 从第 N+1 次命中起持续注入；zero=true 时静默返回 0 行影响，
 // 否则返回错误。
 type w13g5StatsSpec struct {
-	mu      sync.Mutex
-	match   string
-	once    bool
-	afterN  bool
-	fired   bool
-	skip    int
-	zero    bool
+	mu     sync.Mutex
+	match  string
+	once   bool
+	afterN bool
+	fired  bool
+	skip   int
+	zero   bool
+	// records 由 enableAssert 开启记账后生效：每次装载记录一条，注入真实
+	// 消费时回填；测试收尾断言所有记录均已命中。
+	records []*w13g5StatsArmRecord
+	current *w13g5StatsArmRecord
 }
 
-func (spec *w13g5StatsSpec) arm(match string) {
-	spec.mu.Lock()
-	defer spec.mu.Unlock()
-	spec.match, spec.once, spec.afterN, spec.fired, spec.skip, spec.zero = match, false, false, false, 0, false
-}
+func (spec *w13g5StatsSpec) arm(match string) { spec.armImpl(match, false, false, 0, false) }
 
-func (spec *w13g5StatsSpec) armOnce(match string) {
-	spec.mu.Lock()
-	defer spec.mu.Unlock()
-	spec.match, spec.once, spec.afterN, spec.fired, spec.skip, spec.zero = match, true, false, false, 0, false
-}
+func (spec *w13g5StatsSpec) armOnce(match string) { spec.armImpl(match, true, false, 0, false) }
 
 // armAfter 从第 skip+1 次命中开始持续注入（同一语句前 N 次放行）。
 func (spec *w13g5StatsSpec) armAfter(match string, skip int) {
-	spec.mu.Lock()
-	defer spec.mu.Unlock()
-	spec.match, spec.once, spec.afterN, spec.fired, spec.skip, spec.zero = match, true, true, false, skip, false
+	spec.armImpl(match, true, true, skip, false)
 }
 
-func (spec *w13g5StatsSpec) armZero(match string) {
+func (spec *w13g5StatsSpec) armZero(match string) { spec.armImpl(match, false, false, 0, true) }
+
+func (spec *w13g5StatsSpec) armImpl(match string, once, afterN bool, skip int, zero bool) {
 	spec.mu.Lock()
 	defer spec.mu.Unlock()
-	spec.match, spec.once, spec.afterN, spec.fired, spec.skip, spec.zero = match, false, false, false, 0, true
+	spec.match, spec.once, spec.afterN, spec.fired, spec.skip, spec.zero = match, once, afterN, false, skip, zero
+	if spec.records == nil {
+		return
+	}
+	entry := &w13g5StatsArmRecord{match: match}
+	spec.records = append(spec.records, entry)
+	spec.current = entry
+}
+
+// enableAssert 开启装载记账并在测试收尾断言所有装载臂都真实命中（注入被
+// 消费）：match 与生产 SQL 漂移或语句从未执行导致的伪覆盖臂在此变红。
+func (spec *w13g5StatsSpec) enableAssert(t *testing.T) {
+	t.Helper()
+	spec.mu.Lock()
+	spec.records = []*w13g5StatsArmRecord{}
+	spec.mu.Unlock()
+	t.Cleanup(func() {
+		spec.mu.Lock()
+		defer spec.mu.Unlock()
+		for _, entry := range spec.records {
+			if !entry.fired {
+				t.Errorf("w13g5 注入规则未命中（伪覆盖）：match=%q", entry.match)
+			}
+		}
+	})
 }
 
 func (spec *w13g5StatsSpec) disarm() {
@@ -95,6 +121,9 @@ func (spec *w13g5StatsSpec) hit(key string) (fail, zero bool) {
 			return false, false
 		}
 		spec.fired = true
+	}
+	if spec.current != nil {
+		spec.current.fired = true
 	}
 	return !spec.zero, spec.zero
 }
@@ -228,7 +257,7 @@ func w13g5StatsDriverValues(args []driver.NamedValue) []driver.Value {
 }
 
 // w13g5StatsOpenFailDB 用注入驱动打开一个绑定全局 spec 的裸 *sql.DB
-//（不建 schema），供业务库镜像等辅助句柄复用。
+// （不建 schema），供业务库镜像等辅助句柄复用。
 func w13g5StatsOpenFailDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	w13g5StatsFailDriverRegister.Do(func() {
@@ -254,6 +283,7 @@ func w13g5StatsOpenFailEnv(t *testing.T) (*testEnv, *w13g5StatsSpec) {
 		sql.Register(w13g5StatsFailDriverName, &w13g5StatsFailDriver{inner: &sqlite.Driver{}})
 	})
 	spec := &w13g5StatsSpec{}
+	spec.enableAssert(t)
 	w13g5StatsFailDriversMu.Lock()
 	w13g5StatsFailDrivers[w13g5StatsFailDriverName] = spec
 	w13g5StatsFailDriversMu.Unlock()

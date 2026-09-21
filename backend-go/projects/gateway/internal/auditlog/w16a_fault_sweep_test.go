@@ -36,13 +36,37 @@ type w16aRule struct {
 	override        driver.Value
 	limit           int
 	hits            int
+	// exempt 标记负对照臂：注册后故意不命中，豁免 assertRulesFired。
+	exempt bool
 }
 
 type w16aScript struct {
 	mu        sync.Mutex
+	t         *testing.T
 	rules     []*w16aRule
 	beginErr  error
 	commitErr error
+}
+
+// allowUnfired 把规则标记为负对照（故意不命中），Cleanup 断言跳过。
+func (r *w16aRule) allowUnfired() *w16aRule {
+	r.exempt = true
+	return r
+}
+
+// assertRulesFired 在测试收尾断言所有注册规则都被真实消费过（hits>0）：
+// 子串与生产 SQL 漂移导致规则永不命中的伪覆盖臂在此变红。
+func (s *w16aScript) assertRulesFired() {
+	if s.t == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.rules {
+		if r.hits == 0 && !r.exempt {
+			s.t.Errorf("w16a 注入规则未命中（伪覆盖）：substr=%q", r.substr)
+		}
+	}
 }
 
 func (s *w16aScript) add(rule *w16aRule) {
@@ -51,20 +75,53 @@ func (s *w16aScript) add(rule *w16aRule) {
 	s.rules = append(s.rules, rule)
 }
 
-func (s *w16aScript) failQuery(substr string) { s.add(&w16aRule{substr: substr, queryErr: w16aBoom}) }
-func (s *w16aScript) failExec(substr string)  { s.add(&w16aRule{substr: substr, execErr: w16aBoom}) }
-func (s *w16aScript) failScan(substr string)  { s.add(&w16aRule{substr: substr, scanNil: true}) }
-func (s *w16aScript) failRowsErr(substr string) {
-	s.add(&w16aRule{substr: substr, rowsErr: w16aBoom})
+func (s *w16aScript) failQuery(substr string) *w16aRule {
+	r := &w16aRule{substr: substr, queryErr: w16aBoom}
+	s.add(r)
+	return r
 }
-func (s *w16aScript) failClose(substr string) { s.add(&w16aRule{substr: substr, closeErr: w16aBoom}) }
-func (s *w16aScript) failRowsAffected(substr string) {
-	s.add(&w16aRule{substr: substr, rowsAffectedErr: w16aBoom})
+
+func (s *w16aScript) failExec(substr string) *w16aRule {
+	r := &w16aRule{substr: substr, execErr: w16aBoom}
+	s.add(r)
+	return r
 }
-func (s *w16aScript) overrideResult(substr string, value driver.Value) {
-	s.add(&w16aRule{substr: substr, override: value})
+
+func (s *w16aScript) failScan(substr string) *w16aRule {
+	r := &w16aRule{substr: substr, scanNil: true}
+	s.add(r)
+	return r
 }
-func (s *w16aScript) skipExec(substr string, n int) { s.add(&w16aRule{substr: substr, limit: n}) }
+
+func (s *w16aScript) failRowsErr(substr string) *w16aRule {
+	r := &w16aRule{substr: substr, rowsErr: w16aBoom}
+	s.add(r)
+	return r
+}
+
+func (s *w16aScript) failClose(substr string) *w16aRule {
+	r := &w16aRule{substr: substr, closeErr: w16aBoom}
+	s.add(r)
+	return r
+}
+
+func (s *w16aScript) failRowsAffected(substr string) *w16aRule {
+	r := &w16aRule{substr: substr, rowsAffectedErr: w16aBoom}
+	s.add(r)
+	return r
+}
+
+func (s *w16aScript) overrideResult(substr string, value driver.Value) *w16aRule {
+	r := &w16aRule{substr: substr, override: value}
+	s.add(r)
+	return r
+}
+
+func (s *w16aScript) skipExec(substr string, n int) *w16aRule {
+	r := &w16aRule{substr: substr, limit: n}
+	s.add(r)
+	return r
+}
 
 func (s *w16aScript) take(query string, applies func(*w16aRule) bool) *w16aRule {
 	s.mu.Lock()
@@ -244,7 +301,8 @@ func w16aFaultStore(t *testing.T) (*sqlStore, *w16aScript, OwnerLease) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := &w16aScript{}
+	script := &w16aScript{t: t}
+	t.Cleanup(script.assertRulesFired)
 	db := sql.OpenDB(w16aConnector{base: base, script: script})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })

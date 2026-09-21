@@ -3,7 +3,7 @@ package cleanuprepo
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -87,7 +87,10 @@ func TestW13eDeletedAccountSweepArms(t *testing.T) {
 			return err
 		}
 		if summary.Failed == 1 {
-			return fmt.Errorf("阶段 %s 经 summary.Failed 触发", stage.name)
+			// 候选级失败被吞进 summary.Failed；LastTargetError 保留注入器
+			// 原始文本（前缀 + oneLineSQL 语句），交回 runner 做前缀 + needle
+			// 双重断言，代替旧的哨兵文本。
+			return errors.New(store.LastTargetError)
 		}
 		return nil
 	})

@@ -107,8 +107,16 @@ func runSQLiteStages(t *testing.T, stages []pgStage, build func(t *testing.T, st
 	t.Helper()
 	for _, stage := range stages {
 		t.Run(stage.name, func(t *testing.T) {
-			if err := build(t, stage); err == nil {
+			err := build(t, stage)
+			if err == nil {
 				t.Fatalf("阶段 %s（failOn=%s）应产生错误", stage.name, stage.failOn)
+			}
+			// 错误必须来自注入器（kitFailingSQLiteConn 的「注入失败：」前缀）
+			// 且文本含本阶段 needle（oneLineSQL 会把命中语句全文带回，空白归
+			// 一化后比对）：否则「注入未命中、错误来自别处」的伪覆盖臂会假绿。
+			needle := strings.Join(strings.Fields(stage.failOn), " ")
+			if !strings.Contains(err.Error(), "注入失败：") || !strings.Contains(err.Error(), needle) {
+				t.Fatalf("阶段 %s（failOn=%s）错误应来自注入器命中的语句，实际：%v", stage.name, stage.failOn, err)
 			}
 		})
 	}
@@ -530,11 +538,18 @@ func TestChatRetentionSQLiteErrorStages(t *testing.T) {
 		{"asset select", "FROM chat_assets"},
 		{"asset claim", "cleanup_status = 'claimed'"},
 		{"claimed rows", "SELECT * FROM chat_assets WHERE cleanup_claim_id"},
+	}
+	// absorbedStages：completeAssetDeletion 内的失败计入 FailedAssets 而不中止
+	// 流程（错误文本不留存，生产以 release+retry 表达），注入命中由
+	// FailedAssets==1 佐证，不走 runSQLiteStages 的前缀+needle 断言（与
+	// TestChatPGErrorStages/assets 的 absorbed 臂同款）。
+	absorbedStages := []pgStage{
 		{"asset delete", "DELETE FROM chat_assets WHERE id = ?"},
 		{"usage update", "UPDATE chat_user_asset_usage"},
 		{"usage empty delete", "DELETE FROM chat_user_asset_usage WHERE system_account_id"},
 	}
-	runSQLiteStages(t, stages, func(t *testing.T, stage pgStage) error {
+	seedChatStore := func(t *testing.T, failOn string) *ChatStore {
+		t.Helper()
 		chatPath := filepath.Join(t.TempDir(), "chat_stages.sqlite3")
 		seedDB, err := sql.Open("sqlite", chatPath)
 		if err != nil {
@@ -558,15 +573,19 @@ func TestChatRetentionSQLiteErrorStages(t *testing.T) {
 		mustExecKit(t, &DB{DB: seedDB}, `INSERT INTO chat_user_storage_windows (system_account_id, bucket_date, content_bytes, reserved_bytes, updated_at)
       VALUES ('sys-1','2026-09-01',100,30,'2026-09-01T01:00:00.000Z')`)
 		// 压缩中的会话、检查点、资产与配额（供压缩/检查点/资产阶段注入）。
+		// conv-c 的 created_at 须晚于空会话清理 cutoff（now-1d），否则会先被
+		// 空会话删除，压缩恢复无行可选（注入臂不触达）。
 		seedKitConversation(t, &DB{DB: seedDB}, "conv-c", "", "")
 		mustExecKit(t, &DB{DB: seedDB}, `UPDATE chat_conversations SET context_state = 'compacting',
-      context_claimed_at = '2026-09-09T00:00:00.000Z' WHERE id = 'conv-c'`)
+      context_claimed_at = '2026-09-09T00:00:00.000Z', created_at = '2026-09-10T00:00:00.000Z' WHERE id = 'conv-c'`)
 		mustExecKit(t, &DB{DB: seedDB}, `INSERT INTO chat_context_checkpoints (id, conversation_id, status, expires_at)
       VALUES ('cp-1','conv-c','expired','2026-09-09T00:00:00.000Z')`)
+		// 资产须为 'active' 候选（cleanup_claimed_at 为 NULL 时 'claimed' 行
+		// 不满足认领候选三分支的任何一个，认领后的删除/配额链永不执行）。
 		mustExecKit(t, &DB{DB: seedDB}, `INSERT INTO chat_assets (
       id, system_account_id, storage_key, quota_bytes, expires_at, cleanup_status,
       cleanup_claim_id, cleanup_attempt_count, updated_at)
-      VALUES ('asset-1','sys-1','missing.bin',50,'2026-09-09T00:00:00.000Z','claimed','claim-1',1,'2026-09-01T00:00:00.000Z')`)
+      VALUES ('asset-1','sys-1','missing.bin',50,'2026-09-09T00:00:00.000Z','active',NULL,1,'2026-09-01T00:00:00.000Z')`)
 		mustExecKit(t, &DB{DB: seedDB}, `INSERT INTO chat_user_asset_usage (system_account_id, asset_bytes, asset_count, updated_at)
       VALUES ('sys-1',50,1,'2026-09-01T00:00:00.000Z')`)
 		// 标题回退会话。
@@ -574,13 +593,32 @@ func TestChatRetentionSQLiteErrorStages(t *testing.T) {
       VALUES ('conv-3','sys-1','旧标题','msg-gone','2026-09-09T00:00:00.000Z','2026-09-09T00:00:00.000Z')`)
 		seedKitMessage(t, &DB{DB: seedDB}, "msg-u1", "conv-3", "turn-2", "user", "completed",
 			"2026-09-09T01:00:00.000Z", "2026-09-30T00:00:00.000Z", 10, 0)
+		// detach 臂需要 active 检查点（挂在非压缩会话上）。
+		mustExecKit(t, &DB{DB: seedDB}, `UPDATE chat_conversations SET context_state = 'ready',
+      active_checkpoint_id = 'cp-active' WHERE id = 'conv-3'`)
+		mustExecKit(t, &DB{DB: seedDB}, `INSERT INTO chat_context_checkpoints (id, conversation_id, status, expires_at)
+      VALUES ('cp-active','conv-3','active','2026-09-09T00:00:00.000Z')`)
 
-		store := &ChatStore{DB: openKitFailingSQLiteDB(t, chatPath, stage.failOn), Now: kitNow}
-		_, err = store.CleanupRetention(context.Background(), retention.ChatRetentionInput{
+		return &ChatStore{DB: openKitFailingSQLiteDB(t, chatPath, failOn), Now: kitNow}
+	}
+	runSQLiteStages(t, stages, func(t *testing.T, stage pgStage) error {
+		store := seedChatStore(t, stage.failOn)
+		_, err := store.CleanupRetention(context.Background(), retention.ChatRetentionInput{
 			Now: kitUpdatedAt, InterruptedBefore: "2026-09-10T00:00:00.000Z", Limit: 8, RetentionDays: 30,
 		})
 		return err
 	})
+	for _, stage := range absorbedStages {
+		t.Run(stage.name, func(t *testing.T) {
+			store := seedChatStore(t, stage.failOn)
+			result, err := store.CleanupRetention(context.Background(), retention.ChatRetentionInput{
+				Now: kitUpdatedAt, InterruptedBefore: "2026-09-10T00:00:00.000Z", Limit: 8, RetentionDays: 30,
+			})
+			if err != nil || result == nil || result.FailedAssets != 1 {
+				t.Fatalf("阶段 %s 注入应计入 FailedAssets：%+v %v", stage.name, result, err)
+			}
+		})
+	}
 }
 
 // ---- deleteaccount.go：物理删除链 ----
@@ -645,8 +683,10 @@ func TestDeleteAccountSQLiteErrorStages(t *testing.T) {
 		if !strings.Contains(store.LastTargetError, stage.failOn) {
 			t.Fatalf("LastTargetError = %q", store.LastTargetError)
 		}
-		// 断言通过：注入已被观察（runner 以 nil 表示未覆盖）。
-		return errors.New("covered")
+		// 注入失败计入 Failed 与 LastTargetError，不中止整轮；LastTargetError
+		// 保留注入器原始文本（前缀 + oneLineSQL 语句），交回 runner 做前缀 +
+		// needle 双重断言，代替旧的 "covered" 哨兵。
+		return errors.New(store.LastTargetError)
 	})
 }
 

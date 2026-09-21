@@ -172,6 +172,38 @@ func main() {
 			j3bConfig.IdentitySecret = defaultRuntimeSecret
 		}
 	}
+	operationConfig, err := operationlog.LoadConfig(os.Getenv)
+	if err != nil {
+		fail(fmt.Errorf("load F4 operation-log config: %w", err))
+	}
+	// 零配置自动认领臂（2026-09-19 起；2026-09-21 扩展到 J3b）：业务库文件
+	// 在组合根 preflight 之前尚不存在，而两处打开都先于它——J3b owner 连接
+	// （2026-09-21 起常驻装配）用 mode=rw（不建文件）打开并强校验 schema；
+	// F4 sqlite 镜像与业务库同文件（同为 <DATA_DIR>/business.sqlite3 派生）
+	// 时只读镜像打开会失败。此处先对业务库执行一次 ensure+seed preflight
+	// （与组合根稍后的同一 preflight 幂等）。显式配置独立 settings 镜像
+	// （F4）或独立业务路径（J3b）的部署不满足同文件条件，维持外部供给契约，
+	// 不在此自举。
+	f4MirrorSharesBusinessFile := operationConfig.Enabled && operationConfig.Mode == operationlog.ModeSQLite &&
+		filepath.Clean(operationConfig.BusinessSettingsPath) == filepath.Clean(runtimeCfg.BusinessDatabasePath)
+	j3bSharesBusinessFile := j3bConfig.StoreMode == "sqlite" && j3bConfig.AutoClaimed &&
+		filepath.Clean(j3bConfig.BusinessDatabasePath) == filepath.Clean(runtimeCfg.BusinessDatabasePath)
+	if runtimeCfg.BusinessOwnerAutoClaimed && (f4MirrorSharesBusinessFile || j3bSharesBusinessFile) {
+		seedDB, seedErr := sql.Open("sqlite", sqliteFileDSN(runtimeCfg.BusinessDatabasePath))
+		if seedErr != nil {
+			fail(fmt.Errorf("open business sqlite database for zero-config seed: %w", seedErr))
+		}
+		seedDB.SetMaxOpenConns(1)
+		if configureErr := configureSQLiteConnection(seedDB); configureErr != nil {
+			_ = seedDB.Close()
+			fail(fmt.Errorf("configure business sqlite database for zero-config seed: %w", configureErr))
+		}
+		if preflightErr := ensureGatewaySQLiteStoragePreflight(context.Background(), runtimeCfg, seedDB); preflightErr != nil {
+			_ = seedDB.Close()
+			fail(fmt.Errorf("zero-config sqlite storage preflight: %w", preflightErr))
+		}
+		_ = seedDB.Close()
+	}
 	var j3bHostComponent supervisor.Component
 	var j3bManagementServer *http.Server
 	var j3bManagementListener net.Listener
@@ -493,32 +525,6 @@ func main() {
 	// Queue-saturation drops become a Prometheus gauge seam (before Serve, so
 	// the write happens before any scrape goroutine reads it).
 	gatewayusage.SetAuditCapturedDroppedTotal(auditProducer.DroppedTotal)
-	operationConfig, err := operationlog.LoadConfig(os.Getenv)
-	if err != nil {
-		fail(fmt.Errorf("load F4 operation-log config: %w", err))
-	}
-	// 2026-09-19 零配置自动认领臂：F4 sqlite 镜像与业务库同文件（同为
-	// <DATA_DIR>/business.sqlite3 派生）时，业务库文件在组合根 preflight 之前
-	// 尚不存在，F4 store 的只读镜像打开会失败。此处先对业务库执行一次
-	// ensure+seed preflight（与组合根稍后的同一 preflight 幂等）。F4 显式
-	// 配置了独立 settings 镜像的部署不满足同文件条件，维持原启动顺序。
-	if runtimeCfg.BusinessOwnerAutoClaimed && operationConfig.Enabled && operationConfig.Mode == operationlog.ModeSQLite &&
-		filepath.Clean(operationConfig.BusinessSettingsPath) == filepath.Clean(runtimeCfg.BusinessDatabasePath) {
-		seedDB, seedErr := sql.Open("sqlite", sqliteFileDSN(runtimeCfg.BusinessDatabasePath))
-		if seedErr != nil {
-			fail(fmt.Errorf("open business sqlite database for zero-config seed: %w", seedErr))
-		}
-		seedDB.SetMaxOpenConns(1)
-		if configureErr := configureSQLiteConnection(seedDB); configureErr != nil {
-			_ = seedDB.Close()
-			fail(fmt.Errorf("configure business sqlite database for zero-config seed: %w", configureErr))
-		}
-		if preflightErr := ensureGatewaySQLiteStoragePreflight(context.Background(), runtimeCfg, seedDB); preflightErr != nil {
-			_ = seedDB.Close()
-			fail(fmt.Errorf("zero-config sqlite storage preflight: %w", preflightErr))
-		}
-		_ = seedDB.Close()
-	}
 	var operationStore operationlog.Store
 	if operationConfig.Enabled {
 		if operationConfig.Mode == operationlog.ModePostgres {

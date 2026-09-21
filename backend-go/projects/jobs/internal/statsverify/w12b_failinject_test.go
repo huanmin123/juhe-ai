@@ -59,23 +59,60 @@ var (
 	w12bSvRegister  sync.Once
 )
 
+// w12bFailArmRecord 记一次装载的注入臂（match + 是否命中），供收尾断言。
+type w12bFailArmRecord struct {
+	match  string
+	fired  bool
+	exempt bool
+}
+
 type w12bFailSpec struct {
 	mu    sync.Mutex
 	match string
 	once  bool
 	fired bool
+	// records 由 enableAssert 开启记账后生效：每次装载记录一条，命中时回填；
+	// 测试收尾断言所有非豁免记录均已命中。
+	records []*w12bFailArmRecord
+	current *w12bFailArmRecord
 }
 
-func (spec *w12bFailSpec) arm(match string) {
+func (spec *w12bFailSpec) arm(match string) { spec.armImpl(match, false, false) }
+
+func (spec *w12bFailSpec) armOnce(match string) { spec.armImpl(match, true, false) }
+
+// armGuard 装载一条负对照守卫臂（故意永不命中，用于让另一句柄保持放行），
+// 豁免收尾断言。
+func (spec *w12bFailSpec) armGuard(match string) { spec.armImpl(match, false, true) }
+
+func (spec *w12bFailSpec) armImpl(match string, once, exempt bool) {
 	spec.mu.Lock()
 	defer spec.mu.Unlock()
-	spec.match, spec.once, spec.fired = match, false, false
+	spec.match, spec.once, spec.fired = match, once, false
+	if spec.records == nil {
+		return
+	}
+	entry := &w12bFailArmRecord{match: match, exempt: exempt}
+	spec.records = append(spec.records, entry)
+	spec.current = entry
 }
 
-func (spec *w12bFailSpec) armOnce(match string) {
+// enableAssert 开启装载记账并在测试收尾断言所有非豁免装载臂都真实命中：
+// match 与生产 SQL 漂移或语句从未执行导致的伪覆盖臂在此变红。
+func (spec *w12bFailSpec) enableAssert(t *testing.T) {
+	t.Helper()
 	spec.mu.Lock()
-	defer spec.mu.Unlock()
-	spec.match, spec.once, spec.fired = match, true, false
+	spec.records = []*w12bFailArmRecord{}
+	spec.mu.Unlock()
+	t.Cleanup(func() {
+		spec.mu.Lock()
+		defer spec.mu.Unlock()
+		for _, entry := range spec.records {
+			if !entry.fired && !entry.exempt {
+				t.Errorf("w12b 注入规则未命中（伪覆盖）：match=%q", entry.match)
+			}
+		}
+	})
 }
 
 func (spec *w12bFailSpec) disarm() {
@@ -95,14 +132,21 @@ func (spec *w12bFailSpec) hit(query string) bool {
 		return false
 	}
 	spec.fired = true
+	if spec.current != nil {
+		spec.current.fired = true
+	}
 	return true
 }
 
-// peek 非消费命中：BEGIN 阶段预判 COMMIT 注入。
-func (spec *w12bFailSpec) peek(match string) bool {
+// peek 非消费命中：BEGIN 阶段预判 COMMIT 注入，同时带回当前记账记录，
+// 供真实提交注入时回填 fired。
+func (spec *w12bFailSpec) peek(match string) (*w12bFailArmRecord, bool) {
 	spec.mu.Lock()
 	defer spec.mu.Unlock()
-	return spec.match == match
+	if spec.match != match {
+		return nil, false
+	}
+	return spec.current, true
 }
 
 func w12bInjectedErr() error { return errors.New("w12b 注入失败") }
@@ -150,13 +194,16 @@ func (c *w12bFailConn) Begin() (driver.Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &w12bFailTx{inner: tx, failCommit: c.spec.peek("COMMIT")}, nil
+	commitRecord, failCommit := c.spec.peek("COMMIT")
+	return &w12bFailTx{inner: tx, spec: c.spec, commitRecord: commitRecord, failCommit: failCommit}, nil
 }
 
 type w12bFailTx struct {
-	inner      driver.Tx
-	failCommit bool
-	rolledBack bool
+	inner        driver.Tx
+	spec         *w12bFailSpec
+	commitRecord *w12bFailArmRecord
+	failCommit   bool
+	rolledBack   bool
 }
 
 func (t *w12bFailTx) Commit() error {
@@ -164,6 +211,9 @@ func (t *w12bFailTx) Commit() error {
 		// 注入提交失败时先回滚底层事务，避免把仍处于事务态的连接归还连接池。
 		_ = t.inner.Rollback()
 		t.rolledBack = true
+		if t.commitRecord != nil {
+			t.commitRecord.fired = true
+		}
 		return w12bInjectedErr()
 	}
 	return t.inner.Commit()
@@ -241,6 +291,8 @@ func w12bSvOpenStore(t *testing.T) (*Store, *w12bFailSpec, *w12bFailSpec) {
 	t.Helper()
 	w12bSvRegisterDrivers()
 	statsSpec, businessSpec := &w12bFailSpec{}, &w12bFailSpec{}
+	statsSpec.enableAssert(t)
+	businessSpec.enableAssert(t)
 	w12bSvDriversMu.Lock()
 	w12bSvDrivers[w12bSvStatsDriverName] = statsSpec
 	w12bSvDrivers[w12bSvBusinessDriverName] = businessSpec
@@ -367,7 +419,8 @@ func TestW12bSvGroupStatsErrorArms(t *testing.T) {
 	if _, err := refresh(store); err == nil {
 		t.Fatal("business BEGIN 注入应报错")
 	}
-	businessSpec.arm("COMMIT")
+	// 先解除 business BEGIN，stats BEGIN 臂才会被真实消费。
+	businessSpec.disarm()
 	statsSpec.arm("BEGIN")
 	if _, err := refresh(store); err == nil {
 		t.Fatal("stats BEGIN 注入应报错")
@@ -380,7 +433,7 @@ func TestW12bSvGroupStatsErrorArms(t *testing.T) {
 	businessSpec.disarm()
 	// business COMMIT 注入。
 	businessSpec.arm("COMMIT")
-	statsSpec.arm("group_account_stats_dirty") // stats 侧不命中，保证流程到达提交
+	statsSpec.armGuard("group_account_stats_dirty") // stats 侧不命中，保证流程到达提交
 	if _, err := refresh(store); err == nil {
 		t.Fatal("business COMMIT 注入应报错")
 	}
@@ -388,7 +441,7 @@ func TestW12bSvGroupStatsErrorArms(t *testing.T) {
 	businessSpec.disarm()
 	// stats COMMIT 注入（business 侧不命中）。
 	statsSpec.arm("COMMIT")
-	businessSpec.arm("usage_stats_never_matches")
+	businessSpec.armGuard("usage_stats_never_matches")
 	if _, err := refresh(store); err == nil {
 		t.Fatal("stats COMMIT 注入应报错")
 	}
@@ -527,13 +580,15 @@ func TestW12bSvClientIPArms(t *testing.T) {
 	if _, err := aggregate(); err == nil {
 		t.Fatal("时区注入应报错")
 	}
-	// BEGIN/COMMIT 注入（stats 句柄事务）。
+	// BEGIN/COMMIT 注入（stats 句柄事务）。先解除 business 时区臂，
+	// stats BEGIN 臂才会被真实消费。
+	businessSpec.disarm()
 	statsSpec.arm("BEGIN")
 	if _, err := aggregate(); err == nil {
 		t.Fatal("BEGIN 注入应报错")
 	}
 	statsSpec.arm("COMMIT")
-	businessSpec.arm("system_settings_never")
+	businessSpec.armGuard("system_settings_never")
 	if _, err := aggregate(); err == nil {
 		t.Fatal("COMMIT 注入应报错")
 	}

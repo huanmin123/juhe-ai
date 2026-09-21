@@ -41,11 +41,35 @@ type w11fRule struct {
 	nextErr  error
 	limit    int
 	hits     int
+	// exempt 标记负对照臂：注册后故意不命中，豁免 assertRulesFired。
+	exempt bool
 }
 
 type w11fScript struct {
 	mu    sync.Mutex
+	t     *testing.T
 	rules []*w11fRule
+}
+
+// allowUnfired 把规则标记为负对照（故意不命中），Cleanup 断言跳过。
+func (r *w11fRule) allowUnfired() *w11fRule {
+	r.exempt = true
+	return r
+}
+
+// assertRulesFired 在测试收尾断言所有注入规则都被真实消费过（hits>0）：
+// 子串与生产 SQL 漂移导致规则永不命中的伪覆盖臂在此变红。
+func (s *w11fScript) assertRulesFired() {
+	if s.t == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.rules {
+		if r.hits == 0 && !r.exempt {
+			s.t.Errorf("w11f 注入规则未命中（伪覆盖）：substr=%q", r.substr)
+		}
+	}
 }
 
 func (s *w11fScript) failQuery(substr string) *w11fRule {
@@ -151,7 +175,8 @@ func w11fFaultEnv(t *testing.T, datasetDDL []string) (*readsTestEnv, *w11fScript
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := &w11fScript{}
+	script := &w11fScript{t: t}
+	t.Cleanup(script.assertRulesFired)
 	db := sql.OpenDB(w11fConnector{base: base, script: script})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })

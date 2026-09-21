@@ -39,38 +39,70 @@ type w14hAuditRule struct {
 	execErr  error
 	limit    int
 	hits     int
+	// exempt 标记负对照臂：注册后故意不命中，豁免 assertRulesFired。
+	exempt bool
 }
 
 type w14hAuditScript struct {
 	mu        sync.Mutex
+	t         *testing.T
 	rules     []*w14hAuditRule
 	beginErr  error
 	commitErr error
 }
 
-func (s *w14hAuditScript) failQuery(substr string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.rules = append(s.rules, &w14hAuditRule{substr: substr, queryErr: w14hAuditBoom})
+// allowUnfired 把规则标记为负对照（故意不命中），Cleanup 断言跳过。
+func (r *w14hAuditRule) allowUnfired() *w14hAuditRule {
+	r.exempt = true
+	return r
 }
 
-func (s *w14hAuditScript) failExec(substr string) {
+// assertRulesFired 在测试收尾断言所有注册规则都被真实消费过（hits>0）：
+// 子串与生产 SQL 漂移导致规则永不命中的伪覆盖臂在此变红。
+func (s *w14hAuditScript) assertRulesFired() {
+	if s.t == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rules = append(s.rules, &w14hAuditRule{substr: substr, execErr: w14hAuditBoom})
+	for _, r := range s.rules {
+		if r.hits == 0 && !r.exempt {
+			s.t.Errorf("w14h 注入规则未命中（伪覆盖）：substr=%q", r.substr)
+		}
+	}
+}
+
+func (s *w14hAuditScript) failQuery(substr string) *w14hAuditRule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := &w14hAuditRule{substr: substr, queryErr: w14hAuditBoom}
+	s.rules = append(s.rules, r)
+	return r
+}
+
+func (s *w14hAuditScript) failExec(substr string) *w14hAuditRule {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := &w14hAuditRule{substr: substr, execErr: w14hAuditBoom}
+	s.rules = append(s.rules, r)
+	return r
 }
 
 // skipQuery / skipExec 放过前 N 次匹配（不注入错误），用于命中"第二次校验"臂。
-func (s *w14hAuditScript) skipQuery(substr string, limit int) {
+func (s *w14hAuditScript) skipQuery(substr string, limit int) *w14hAuditRule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rules = append(s.rules, &w14hAuditRule{substr: substr, limit: limit})
+	r := &w14hAuditRule{substr: substr, limit: limit}
+	s.rules = append(s.rules, r)
+	return r
 }
 
-func (s *w14hAuditScript) skipExec(substr string, limit int) {
+func (s *w14hAuditScript) skipExec(substr string, limit int) *w14hAuditRule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rules = append(s.rules, &w14hAuditRule{substr: substr, limit: limit})
+	r := &w14hAuditRule{substr: substr, limit: limit}
+	s.rules = append(s.rules, r)
+	return r
 }
 
 func (s *w14hAuditScript) take(query string) *w14hAuditRule {
@@ -172,7 +204,8 @@ func w14hFaultStore(t *testing.T) (*sqlStore, *w14hAuditScript, OwnerLease) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := &w14hAuditScript{}
+	script := &w14hAuditScript{t: t}
+	t.Cleanup(script.assertRulesFired)
 	db := sql.OpenDB(w14hAuditConnector{base: base, script: script})
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })

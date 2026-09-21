@@ -68,8 +68,18 @@ func newKitChatStore(t *testing.T) (*ChatStore, *DB) {
 
 func seedKitConversation(t *testing.T, db *DB, id, activeTurnID, activeStartedAt string) {
 	t.Helper()
+	// 空值写 NULL（生产清空语义即 SET NULL）：SQLite 里 `'' IS NOT NULL`
+	// 成立，会把无活动轮次的会话误入 stale 候选并在 requiredChatTimestamp
+	// 处报错——注入臂在命中前就被无关错误截断（伪覆盖）。
+	var activeTurn, activeStarted any
+	if activeTurnID != "" {
+		activeTurn = activeTurnID
+	}
+	if activeStartedAt != "" {
+		activeStarted = activeStartedAt
+	}
 	mustExecKit(t, db, `INSERT INTO chat_conversations (id, system_account_id, active_turn_id, active_started_at, created_at, updated_at)
-    VALUES (?, 'sys-1', ?, ?, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`, id, activeTurnID, activeStartedAt)
+    VALUES (?, 'sys-1', ?, ?, '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z')`, id, activeTurn, activeStarted)
 }
 
 func seedKitMessage(t *testing.T, db *DB, id, conversationID, turnID, role, status, createdAt, expiresAt string,
