@@ -154,7 +154,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		return items, nil
 	}
 	if input.Profile == "quick" {
-		if input.supportsTokenIdentityProbes() {
+		if reason := input.tokenIdentitySkipReason(); reason == "" {
 			tokenIntegrity, tokenErr := runTokenIntegrity(ctx, input.UpstreamProtocol, input.Model, input.Tokenizer, func(runCtx context.Context, request Request) (Result, error) {
 				return input.execute(runCtx, request, timeout)
 			}, 1, upstreamMode)
@@ -163,7 +163,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 			}
 			items = append(items, scopeEvaluation(input.Prefix, tokenIntegrity))
 		} else {
-			items = append(items, scopeEvaluation(input.Prefix, protocolScopedSkip("token_integrity")))
+			items = append(items, scopeEvaluation(input.Prefix, catalogScopeSkip("token_integrity", reason)))
 		}
 		if results[0].Success {
 			crossModel, crossErr := RunSelfCrossModel(ctx, input, results[0], timeout)
@@ -242,7 +242,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		if stabilityTerminal {
 			return append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results))), nil
 		}
-		if input.supportsTokenIdentityProbes() {
+		if reason := input.tokenIdentitySkipReason(); reason == "" {
 			tokenIntegrity, tokenErr := runTokenIntegrity(ctx, input.UpstreamProtocol, input.Model, input.Tokenizer, func(runCtx context.Context, request Request) (Result, error) {
 				return input.execute(runCtx, request, timeout)
 			}, 3, upstreamMode)
@@ -251,7 +251,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 			}
 			items = append(items, scopeEvaluation(input.Prefix, tokenIntegrity))
 		} else {
-			items = append(items, scopeEvaluation(input.Prefix, protocolScopedSkip("token_integrity")))
+			items = append(items, scopeEvaluation(input.Prefix, catalogScopeSkip("token_integrity", reason)))
 		}
 		if input.supportsTokenIdentityProbes() {
 			identityRun, identityTerminal := input.familyRunner(timeout)
@@ -480,20 +480,43 @@ func (s Suite) identityModels() []string {
 	return allowedFamilyModels(s.Model, s.SupportedModels)
 }
 
-func (s Suite) supportsTokenIdentityProbes() bool {
+// tokenIdentitySkipReason decides whether the token-integrity family may run.
+// Its differential baseline is the versioned o200k GPT tokenizer snapshot, so
+// it is only meaningful for catalog models: a non-Responses protocol and a
+// catalog-external (account-supported) model both skip the family with
+// distinct reasons, and the skip evidence stays excludedFromScoring so the
+// brand tokenizer baseline can never enter a foreign model's score.
+func (s Suite) tokenIdentitySkipReason() string {
 	protocol := s.UpstreamProtocol
 	if protocol == "" {
 		protocol = s.Protocol
 	}
-	return protocol == modelcheckprofile.ProtocolOpenAIResponses
+	if protocol != modelcheckprofile.ProtocolOpenAIResponses {
+		return "protocol_scope_not_applicable"
+	}
+	if _, ok := modelcheckprofile.FindForModel(s.ProviderCode, s.ProviderProtocolProfileID, s.Model); !ok {
+		return "model_catalog_scope_not_applicable"
+	}
+	return ""
+}
+
+func (s Suite) supportsTokenIdentityProbes() bool {
+	return s.tokenIdentitySkipReason() == ""
 }
 
 func protocolScopedSkip(kind string) Evaluation {
+	return catalogScopeSkip(kind, "protocol_scope_not_applicable")
+}
+
+// catalogScopeSkip records a family that cannot produce comparable evidence
+// for this target. The item stays out of the score denominator, matching the
+// cross_model/long_context skip precedent.
+func catalogScopeSkip(kind, reason string) Evaluation {
 	return Evaluation{Kind: kind, Status: "skipped", Evidence: map[string]any{
 		"evidenceInsufficient": true,
 		"excludedFromScoring":  true,
 		"notApplicable":        true,
-		"reason":               "protocol_scope_not_applicable",
+		"reason":               reason,
 	}}
 }
 

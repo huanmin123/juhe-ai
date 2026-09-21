@@ -26,8 +26,8 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	redis "github.com/redis/go-redis/v9"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	redis "github.com/redis/go-redis/v9"
 )
 
 // ---------------------------------------------------------------------------
@@ -889,8 +889,25 @@ func TestW13DClientIPConcurrencyRedisAcquirePaths(t *testing.T) {
 		t.Fatalf("queue_full=%+v", decision)
 	}
 
-	// 排队后 signal 取消 → remove + aborted（Sleep 空转，循环等 signal）。
-	aborted := newW13DRedisAcquireFixture(t, nil)
+	// 排队后 signal 取消 → remove + aborted。
+	// 加固说明：不再"Sleep 空转 + ZCard 轮询"等入队。注入 Sleep 只推进
+	// manual clock、不耗真实时间，入队到 deadline 耗尽之间只有十次微秒级
+	// 迭代；全模块 -p 1 高负载扫描下主测试可能整窗错过队列条目（2.21s FAIL
+	// 的根因：轮询耗尽 400×5ms 时 goroutine 早已以 timeout 而非 aborted 返回）。
+	// 改为 channel 握手：acquireRedisClientIPSlot 先 enqueue 再进轮询循环，
+	// 首个 sleep 必然发生在入队之后，于是在首个 sleep 内通知主测试并阻塞到
+	// cancel 完成再放行，下一轮迭代的 signal 检查必然命中 aborted 分支。
+	enqueued := make(chan struct{})
+	resumeAborted := make(chan struct{})
+	abortedHandshaken := false
+	aborted := newW13DRedisAcquireFixture(t, func() {
+		if abortedHandshaken {
+			return
+		}
+		abortedHandshaken = true
+		close(enqueued)
+		<-resumeAborted
+	})
 	if err := aborted.concurrency.redis.ZAdd(ctx, concurrencyKey, redis.Z{
 		Score: float64(aborted.clock.Now().UnixMilli() + 100_000), Member: "occupied",
 	}).Err(); err != nil {
@@ -908,21 +925,29 @@ func TestW13DClientIPConcurrencyRedisAcquirePaths(t *testing.T) {
 		}
 		abortedWaiter <- decision
 	}()
-	for i := 0; i < 400; i++ {
-		size, _ := aborted.concurrency.redis.ZCard(ctx, queueKey).Result()
-		if size > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	// 等待窗取 30s：握手只需一次调度，量级上留足全包 -p 1 扫描的负载余量
+	// （对齐 jobs w16h_cmd_run_arms_test 的负载容忍窗先例）；超时必须带
+	// 当前 queue/slot 状态便于排查。
+	select {
+	case <-enqueued:
+	case decision := <-abortedWaiter:
+		t.Fatalf("acquire 在入队前就返回: %+v", decision)
+	case <-time.After(30 * time.Second):
+		queueSize, _ := aborted.concurrency.redis.ZCard(ctx, queueKey).Result()
+		slotSize, _ := aborted.concurrency.redis.ZCard(ctx, concurrencyKey).Result()
+		t.Fatalf("acquire goroutine 30s 内未入队: queue=%d slot=%d", queueSize, slotSize)
 	}
 	stop()
+	close(resumeAborted)
 	select {
 	case decision := <-abortedWaiter:
 		if decision.Acquired || decision.Reason != RejectAborted {
 			t.Fatalf("aborted=%+v", decision)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("aborted waiter not resolved")
+	case <-time.After(30 * time.Second):
+		queueSize, _ := aborted.concurrency.redis.ZCard(ctx, queueKey).Result()
+		slotSize, _ := aborted.concurrency.redis.ZCard(ctx, concurrencyKey).Result()
+		t.Fatalf("aborted waiter 30s 未返回: queue=%d slot=%d", queueSize, slotSize)
 	}
 	input.Signal = nil
 

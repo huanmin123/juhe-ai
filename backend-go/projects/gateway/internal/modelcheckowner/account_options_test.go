@@ -308,4 +308,120 @@ func TestListAccountOptionsMergesAccountSupportedModels(t *testing.T) {
 	if got := instance[0].ModelCheckModels; strings.Join(got, "|") != strings.Join(wantInstance, "|") {
 		t.Fatalf("a4 modelCheckModels=%v, want source-merged %v", got, wantInstance)
 	}
+	// mode 分歧：实例不兼容而 source 兼容时，options 门必须跟实例 mode 走
+	// （与 run 门 validateCredentialEndpointMode 同源），支持模型不得并入。
+	if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode='messages_json' WHERE id='a4'`); err != nil {
+		t.Fatal(err)
+	}
+	instanceIncompatible, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", AccountID: "a4", Limit: 1})
+	if err != nil || len(instanceIncompatible) != 1 {
+		t.Fatalf("a4 incompatible option=%+v err=%v", instanceIncompatible, err)
+	}
+	if got := instanceIncompatible[0].ModelCheckModels; len(got) != 0 {
+		t.Fatalf("a4 instance mode mismatch must keep catalog-only candidates: %v", got)
+	}
+	// 反向分歧：实例兼容而 source mode 为空时，仍按实例 mode 并入。
+	if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode='responses_json' WHERE id='a4'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode=NULL WHERE id='source-1'`); err != nil {
+		t.Fatal(err)
+	}
+	instanceSourceModeless, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", AccountID: "a4", Limit: 1})
+	if err != nil || len(instanceSourceModeless) != 1 {
+		t.Fatalf("a4 source-modeless option=%+v err=%v", instanceSourceModeless, err)
+	}
+	if got := instanceSourceModeless[0].ModelCheckModels; strings.Join(got, "|") != strings.Join(wantInstance, "|") {
+		t.Fatalf("a4 source mode must not gate the merge: %v", got)
+	}
+}
+
+// TestListAccountOptionsTieredProtocolGateForCatalogScope 验证候选合并协议门
+// 的两档语义：目录外的账户支持模型在账户 mode 属于协议一致性可检集合
+// （chat_json/chat_sse/responses_json/responses_sse）时并入（chat_json 的
+// openai 兼容账户可以看到自己的支持模型），images_json 等不可检形态仍排除；
+// 目录内条目维持原协议族比对，responses_json 账户行为不回归。
+func TestListAccountOptionsTieredProtocolGateForCatalogScope(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/tiered-options.db?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,status TEXT,schedulable INTEGER,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT,availability_schedule_json TEXT,health_check_endpoint_mode TEXT)`,
+		`CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY,enabled INTEGER)`,
+		`CREATE TABLE group_accounts (account_id TEXT,system_account_id TEXT,group_id TEXT,account_authorization_id TEXT,enabled INTEGER)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
+		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
+		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
+		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO groups VALUES ('g1','sys-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+	// chat 账户：mode=chat_json，支持模型含目录外条目与目录内 gpt-5.6-sol。
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('chat-acct','sys-1','Chat','openai','profile_openai_openai_v1','openai','1','api_key','active',1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'chat_json')`); err != nil {
+		t.Fatal(err)
+	}
+	// images 账户：mode=images_json，任何支持模型都不可检。
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('images-acct','sys-1','Images','openai','profile_openai_openai_v1','openai','1','api_key','active',1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'images_json')`); err != nil {
+		t.Fatal(err)
+	}
+	// sse 账户：mode=chat_sse，目录外条目同样并入。
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('sse-acct','sys-1','SSE','openai','profile_openai_openai_v1','openai','1','api_key','active',1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'chat_sse')`); err != nil {
+		t.Fatal(err)
+	}
+	// responses 账户：既有行为基线。
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('responses-acct','sys-1','Responses','openai','profile_openai_openai_v1','openai','1','api_key','active',1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'responses_json')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO group_accounts VALUES ('chat-acct','sys-1','g1',NULL,1),('images-acct','sys-1','g1',NULL,1),('sse-acct','sys-1','g1',NULL,1),('responses-acct','sys-1','g1',NULL,1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_supported_models VALUES ('chat-acct','gpt-5.6-sol'),('chat-acct','deepseek-v4.1-flash'),('images-acct','gpt-5.6-sol'),('images-acct','deepseek-v4.1-flash'),('sse-acct','grok-4.5'),('responses-acct','deepseek-v4.1-flash')`); err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewBusinessTargetSource(db, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	option := func(accountID string) AccountOption {
+		t.Helper()
+		result, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", AccountID: accountID, Limit: 1})
+		if err != nil || len(result) != 1 {
+			t.Fatalf("%s option=%+v err=%v", accountID, result, err)
+		}
+		return result[0]
+	}
+	// chat_json：目录外支持模型并入候选；目录内 gpt-5.6-sol 经目录前缀保留。
+	chat := option("chat-acct")
+	wantChat := []string{"gpt-5.6-sol", "deepseek-v4.1-flash"}
+	if got := chat.ModelCheckModels; strings.Join(got, "|") != strings.Join(wantChat, "|") {
+		t.Fatalf("chat-acct modelCheckModels=%v, want %v", got, wantChat)
+	}
+	// images_json：目录外不并入，目录前缀仅剩支持模型限制内的 gpt-5.6-sol。
+	images := option("images-acct")
+	wantImages := []string{"gpt-5.6-sol"}
+	if got := images.ModelCheckModels; strings.Join(got, "|") != strings.Join(wantImages, "|") {
+		t.Fatalf("images-acct modelCheckModels=%v, want %v", got, wantImages)
+	}
+	// chat_sse：目录外条目同样并入。
+	sse := option("sse-acct")
+	wantSSE := []string{"grok-4.5"}
+	if got := sse.ModelCheckModels; strings.Join(got, "|") != strings.Join(wantSSE, "|") {
+		t.Fatalf("sse-acct modelCheckModels=%v, want %v", got, wantSSE)
+	}
+	// responses_json：既有合并行为不回归。
+	responses := option("responses-acct")
+	wantResponses := []string{"deepseek-v4.1-flash"}
+	if got := responses.ModelCheckModels; strings.Join(got, "|") != strings.Join(wantResponses, "|") {
+		t.Fatalf("responses-acct modelCheckModels=%v, want %v", got, wantResponses)
+	}
 }

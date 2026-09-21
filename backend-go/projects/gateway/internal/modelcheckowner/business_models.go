@@ -30,9 +30,11 @@ type configuredModelResolution struct {
 // catalog profile for the account's provider/profile was found, so an admitted
 // model inherits that profile's protocol family; the account's
 // health_check_endpoint_mode is validated against the same protocol by the
-// business resolver before any probe is issued. Brand-specific hidden probes
-// and baselines skip catalog-external models inside modelcheckprobe, so an
-// admitted target runs the protocol-consistency subset only.
+// business resolver before any probe is issued. Such a target runs the
+// protocol-consistency subset only: brand-specific hidden probes (juice,
+// astra), the cross-model pair and the GPT-tokenizer token-integrity baseline
+// skip it inside modelcheckprobe with excludedFromScoring evidence. The
+// identity canaries remain generic capability probes and still apply.
 func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, postgres bool, accountID string, profile modelcheckprofile.ProtocolProfile, model string) (configuredModelResolution, error) {
 	if db == nil || strings.TrimSpace(accountID) == "" || strings.TrimSpace(model) == "" {
 		return configuredModelResolution{}, nil
@@ -141,4 +143,22 @@ func profileSupportsModel(profile modelcheckprofile.ProtocolProfile, model strin
 		}
 	}
 	return false
+}
+
+// catalogExternalEndpointModeCheckable reports whether an account endpoint
+// mode can execute the protocol-consistency subset for a catalog-external
+// supported model. A mode whose protocol already equals the profile protocol
+// keeps the historical admission for every family. A cross-protocol mode is
+// admitted only inside the OpenAI Responses/Chat pair, where the probe suite
+// natively implements both request families; images/interactions shapes have
+// no text probe at all and cross-family shapes (for example messages_json on
+// an OpenAI profile) would disagree with the profile-derived credential
+// headers, so both stay closed.
+func catalogExternalEndpointModeCheckable(profileProtocol, modeProtocol modelcheckprofile.Protocol) bool {
+	if profileProtocol == modeProtocol {
+		return true
+	}
+	profileOpenAI := profileProtocol == modelcheckprofile.ProtocolOpenAIResponses || profileProtocol == modelcheckprofile.ProtocolOpenAIChat
+	modeOpenAI := modeProtocol == modelcheckprofile.ProtocolOpenAIResponses || modeProtocol == modelcheckprofile.ProtocolOpenAIChat
+	return profileOpenAI && modeOpenAI
 }

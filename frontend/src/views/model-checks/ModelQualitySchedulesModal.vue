@@ -204,6 +204,7 @@ import { formatDateTime } from '@/shared/formatters'
 import type { ModelQualityPenaltyAction, ModelQualitySchedule, ModelQualityScheduleMutationInput } from '@/types/domain'
 import QuestionBankSelect from './QuestionBankSelect.vue'
 import { statusText } from './modelCheckFormatters'
+import { mergeModelCheckRunModelOptions } from './modelCheckProviderCapabilities'
 
 interface ScheduleAccountOption {
   label: string
@@ -293,7 +294,9 @@ const selectedModelOptions = computed(() => {
     : undefined
   const account = remoteAccount ?? pinnedAccount
   if (!account) return []
-  const options = props.modelOptions.filter((item) => account.modelCheckModels.includes(item.value))
+  // 检测目标候选 = 目录可检模型 ∪ 账户支持模型，与检测页发起下拉同源，
+  // 避免经 API 建立的目录外 schedule 在 UI 编辑时被单向过滤静默丢弃。
+  const options = mergeModelCheckRunModelOptions(props.modelOptions, account.modelCheckModels)
   const preserveUnresolvedEditModel = Boolean(pinnedAccount && !pinnedAccount.capabilitiesKnown && !remoteAccount)
   if (preserveUnresolvedEditModel && form.model && !options.some((item) => item.value === form.model)) {
     options.unshift({ label: form.model, value: form.model })

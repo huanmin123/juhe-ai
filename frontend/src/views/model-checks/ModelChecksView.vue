@@ -365,6 +365,7 @@ const {
   selectedComparisonAccount,
   selectedComparisonAccountProfile,
   selectedHistoryTargetAccount,
+  selectedHistoryTargetAccountProfile,
   selectedTargetAccount,
   selectedTargetAccountProfile,
   targetOptions,
@@ -398,7 +399,15 @@ const {
   ]))
 })
 selectedHistoryTargetAccount.value = initialPageState.historyTargetAccount
-const historyModelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))
+// 历史模型筛选与发起下拉同源合并：选中历史目标账户且其候选已缓存时，
+// 目录外模型也可作为筛选条件；未选中账户时保持目录全集。
+const historyModelOptions = computed(() => {
+  const historyProfile = selectedHistoryTargetAccountProfile.value
+  if (!historyProfile) {
+    return options.value.supportedModels.map((item) => ({ label: item.label, value: item.value }))
+  }
+  return mergeModelCheckRunModelOptions(options.value.supportedModels, modelCheckModelsForAccount(historyProfile))
+})
 const runModelOptions = computed(() => {
   const accountProfile = selectedTargetAccountProfile.value
   const accountModels = accountProfile?.modelCheckModels ?? modelCheckModelsForAccount(accountProfile)

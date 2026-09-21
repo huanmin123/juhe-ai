@@ -454,6 +454,10 @@ func TestW1TrafficMigrationBridge(t *testing.T) {
 func TestW1BodyRejectionUsageFailure(t *testing.T) {
 	spool := newUsageSpool(t.TempDir(), gatewaypreauth.SystemClock{}, newTestSlogLogger(), usageSpoolCapacity{})
 	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: newTestSlogLogger()}, spool)
+	// defer 在 t.TempDir 清理（LIFO 末位）前执行：等 drain 完缓冲再退出，
+	// 否则异步 flush 与 RemoveAll 在 Windows 上竞态（"directory is not empty"）。
+	defer recorder.Close()
+	t.Cleanup(spool.StopReplay)
 	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{spool: spool}, 0, 0)
 	dispatch.OverflowEnabled = spool != nil
 	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
@@ -471,6 +475,12 @@ func TestW1BodyRejectionUsageFailure(t *testing.T) {
 		StatusCode: 413, Reason: "payload_too_large", ErrorCode: "request_entity_too_large",
 		ErrorMessage: "请求体超限", RawBodyBytes: 4096, LimitBytes: 1024,
 	}, runtime)
+	// 等异步收尾 goroutine 落盘完成再返回：defer recorder.Close() 只排空
+	// recorder 自身缓冲，dispatch 的 track goroutine 仍可能在 TempDir 清理
+	// 时写 spool 文件（Windows RemoveAll 竞态）。
+	if !dispatch.WaitForIdle(30_000) {
+		t.Fatal("用量收尾 30s 未排空")
+	}
 	if runtime.APIKey.ID != "key_1" {
 		t.Fatal("runtime 快照不应被修改")
 	}

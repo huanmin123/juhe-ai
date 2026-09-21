@@ -1,7 +1,9 @@
 package j3bmodelcheck
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -113,4 +115,31 @@ func j3bReadbackRequiredTables() []string {
 		"model_trust_latest_dirty_accounts",
 		"model_trust_observation_receipts",
 	}
+}
+
+// WriteJ3bReadbackManifestFile converts an accepted PostgreSQL readback
+// verification report into the canonical v2 readback manifest and writes its
+// JSON form (the Marshal symmetric to contracts.DecodeJ3bReadbackManifest) to
+// outPath. The manifest is self-checked against contracts.ValidateJ3bReadbackManifest
+// before any byte is written, so an invalid manifest never reaches the
+// filesystem. It is the optional --j3b-readback-manifest-out output of the
+// --verify-j3b-model-check-postgres-backfill path; the verification itself is
+// unchanged.
+func WriteJ3bReadbackManifestFile(outPath string, report PostgresBackfillVerificationReport, options J3bReadbackManifestOptions) (string, error) {
+	manifest, err := NewPostgresJ3bReadbackManifest(report, options)
+	if err != nil {
+		return "", err
+	}
+	if errors := contracts.ValidateJ3bReadbackManifest(manifest, options.VerifiedAt.UTC(), 1); len(errors) > 0 {
+		return "", fmt.Errorf("J3b readback manifest self-check failed: %s", strings.Join(errors, "; "))
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(outPath, data, 0o600); err != nil {
+		return "", err
+	}
+	return outPath, nil
 }

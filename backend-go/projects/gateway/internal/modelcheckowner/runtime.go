@@ -242,10 +242,13 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		payloadSnapshot["trustedComparison"] = map[string]any{"accountId": request.TrustedComparisonAccountID, "systemAccountId": request.TrustedComparisonSystemAccountID, "configRevision": request.TrustedComparisonConfigRevision, "dispatchRevision": request.TrustedComparisonDispatchRevision, "sourceConfigRevision": request.TrustedComparisonSourceConfigRevision, "sourceDispatchRevision": request.TrustedComparisonSourceDispatchRevision, "upstreamModel": comparisonTarget.UpstreamModel, "protocol": comparisonTarget.Protocol, "providerProtocolProfileId": comparisonTarget.ProviderProtocolProfileID, "sourceEndpointFamily": comparisonTarget.SourceEndpointFamily, "upstreamProtocol": comparisonTarget.UpstreamProtocol, "upstreamEndpointFamily": comparisonTarget.UpstreamEndpointFamily, "upstreamAdapter": comparisonTarget.UpstreamAdapter, "endpointFingerprint": endpointFingerprint(comparisonTarget.Endpoint)}
 	}
 	// Catalog-external targets (account-supported models) run the
-	// protocol-consistency probe subset only: brand-specific hidden probes and
-	// baselines skip them inside modelcheckprobe. The durable request snapshot
-	// and report carry an explicit detectionScope so the report source stays
-	// honest; catalog models never gain the key and keep their byte shape.
+	// protocol-consistency probe subset only: brand-specific hidden probes
+	// (juice/astra), the cross-model pair and the GPT-tokenizer
+	// token-integrity baseline skip them with excludedFromScoring evidence
+	// inside modelcheckprobe; the identity canaries stay generic and still
+	// apply. The durable request snapshot and report carry an explicit
+	// detectionScope so the report source stays honest; catalog models never
+	// gain the key and keep their byte shape.
 	detectionScope := ""
 	if _, modelInCatalog := modelcheckprofile.FindForModel(target.ProviderCode, target.ProviderProtocolProfileID, request.Model); !modelInCatalog {
 		detectionScope = "protocol_consistency"

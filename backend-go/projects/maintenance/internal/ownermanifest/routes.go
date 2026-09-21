@@ -403,7 +403,12 @@ func verifyModelChecksGatewayBaseline(family GatewayRouteFamily, repositoryRoot 
 	if err != nil {
 		return fmt.Errorf("read model-checks Gateway mount source: %w", err)
 	}
-	if !strings.Contains(string(mainSource), `j3bHost.Mount(managementMux, "/model-checks/")`) {
+	// 2026-09-21 起（bdcc61226）Gateway 把 model-checks 管理面挂载重构为
+	// j3bManagementMount(mux) 闭包：同一份挂载（/model-checks/ 管理别名 +
+	// /__aisys__/api/{,my-}model-checks/ 作用域挂载）既应用到独立管理 listener，
+	// 也同权应用到主端口 rootMux。本证据随之钉住闭包体内的 Mount 调用，
+	// 不再绑定旧 managementMux 局部变量名。
+	if !strings.Contains(string(mainSource), `j3bHost.Mount(mux, "/model-checks/")`) {
 		return errors.New("model-checks partial Gateway mount evidence is missing")
 	}
 	return nil

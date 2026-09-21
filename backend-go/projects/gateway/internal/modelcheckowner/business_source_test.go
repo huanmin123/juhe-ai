@@ -731,8 +731,8 @@ func TestBusinessTargetSourceRoutesGPTOAuthThroughCodexAdapterIncludingAuthorize
 	if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode='chat_json' WHERE id='gpt-oauth'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gpt-oauth", Model: "gpt-5.6-sol"}); err == nil || !strings.Contains(err.Error(), "incompatible") {
-		t.Fatalf("OAuth chat mode must fail closed, err=%v", err)
+	if _, err := source.Resolve(context.Background(), RunRequest{SystemAccountID: "sys-1", TargetType: "account", TargetID: "gpt-oauth", Model: "gpt-5.6-sol"}); err == nil || !strings.Contains(err.Error(), "请将检查请求形态切换为 responses_json") {
+		t.Fatalf("OAuth chat mode must fail closed with the actionable hint, err=%v", err)
 	}
 	if _, err := db.Exec(`UPDATE accounts SET health_check_endpoint_mode='responses_sse' WHERE id='gpt-oauth'`); err != nil {
 		t.Fatal(err)

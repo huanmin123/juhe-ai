@@ -101,13 +101,15 @@ func TestSuiteOpenAIOAuthCodexSupportsResponsesJSONAndSSEOnly(t *testing.T) {
 func TestRunSuitePropagatesStreamingEndpointModeToCoreRequests(t *testing.T) {
 	transport := &streamModeTransport{}
 	items, err := RunSuite(context.Background(), Suite{
-		Endpoint:     "https://example.test",
-		Client:       &http.Client{Transport: transport},
-		Model:        "gpt-5.6-sol",
-		Profile:      "quick",
-		Protocol:     modelcheckprofile.ProtocolOpenAIResponses,
-		EndpointMode: modelcheckprofile.EndpointModeResponsesSSE,
-		Tokenizer:    deterministicTokenizer{},
+		Endpoint:                  "https://example.test",
+		Client:                    &http.Client{Transport: transport},
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Model:                     "gpt-5.6-sol",
+		Profile:                   "quick",
+		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+		EndpointMode:              modelcheckprofile.EndpointModeResponsesSSE,
+		Tokenizer:                 deterministicTokenizer{},
 	}, time.Second)
 	if err != nil || len(items) == 0 {
 		t.Fatalf("items=%#v err=%v", items, err)
@@ -206,14 +208,16 @@ func TestRunSuiteUsesMappedUpstreamProtocolAndEndpointMode(t *testing.T) {
 func TestRunSuiteQuickIncludesOneTokenIntegrityRound(t *testing.T) {
 	transport := &mappedEndpointTransport{}
 	items, err := RunSuite(context.Background(), Suite{
-		Endpoint:     "https://example.test",
-		Client:       &http.Client{Transport: transport},
-		Model:        "gpt-5.6-terra",
-		Profile:      "quick",
-		Protocol:     modelcheckprofile.ProtocolOpenAIResponses,
-		EndpointMode: modelcheckprofile.EndpointModeResponsesJSON,
-		Tokenizer:    deterministicTokenizer{},
-		Retry:        RetryOptions{AttemptTimeouts: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}, Delay: func(context.Context) error { return nil }},
+		Endpoint:                  "https://example.test",
+		Client:                    &http.Client{Transport: transport},
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Model:                     "gpt-5.6-terra",
+		Profile:                   "quick",
+		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+		EndpointMode:              modelcheckprofile.EndpointModeResponsesJSON,
+		Tokenizer:                 deterministicTokenizer{},
+		Retry:                     RetryOptions{AttemptTimeouts: []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}, Delay: func(context.Context) error { return nil }},
 	}, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -245,6 +249,7 @@ func TestRunSuiteQuickIncludesCrossModelAndTrustedAggregate(t *testing.T) {
 		Model:                     "gpt-5.6-sol",
 		Profile:                   "quick",
 		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+		ProviderCode:              "openai",
 		ProviderProtocolProfileID: "profile_openai_openai_v1",
 		Tokenizer:                 deterministicTokenizer{},
 		Comparison: &Suite{
@@ -254,6 +259,7 @@ func TestRunSuiteQuickIncludesCrossModelAndTrustedAggregate(t *testing.T) {
 			Model:                     "gpt-5.6-terra",
 			Profile:                   "quick",
 			Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+			ProviderCode:              "openai",
 			ProviderProtocolProfileID: "profile_openai_openai_v1",
 			Tokenizer:                 deterministicTokenizer{},
 		},

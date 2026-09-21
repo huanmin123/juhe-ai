@@ -158,7 +158,7 @@ func writeModelChecksFixture(t *testing.T) (string, GatewayRouteOwnerManifest) {
 	writeFixtureFile(t, root, "backend/src/modules/model-checks/model-checks.routes.ts", strings.Join(nodeRoutes, "\n"))
 	writeFixtureFile(t, root, "backend-go/projects/gateway/internal/modelcheckowner/http.go", strings.Join(modelChecksGatewayHandlerNeedles, "\n"))
 	writeFixtureFile(t, root, "backend-go/projects/gateway/internal/modelcheckowner/runtime.go", "package modelcheckowner\n")
-	writeFixtureFile(t, root, "backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go", `j3bHost.Mount(managementMux, "/model-checks/")`)
+	writeFixtureFile(t, root, "backend-go/projects/gateway/cmd/juhe-ai-gateway/main.go", `j3bHost.Mount(mux, "/model-checks/")`)
 	writeFixtureFile(t, root, "backend-go/projects/gateway/cmd/juhe-ai-gateway/system_mounts.go", `adminScope /__aisys__/api/model-checks selfScope /__aisys__/api/my-model-checks`)
 	manifest := GatewayRouteOwnerManifest{ManifestVersion: 1, SourceApp: "backend/src/modules/system-api/system-api-app.ts", Families: []GatewayRouteFamily{{
 		ID: "model-checks", NodeMount: "/model-checks and /my-model-checks", NodeRouterFile: "backend/src/modules/model-checks/model-checks.routes.ts", NodeRouterSymbol: "modelChecksRouter", MutationCount: 8,

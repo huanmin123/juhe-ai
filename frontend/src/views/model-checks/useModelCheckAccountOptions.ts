@@ -84,6 +84,10 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   }
   const selectedTargetAccountProfile = computed(() => accountProfilesById.value[input.form.targetId])
   const selectedComparisonAccountProfile = computed(() => accountProfilesById.value[input.form.trustedComparisonAccountId ?? ''])
+  const selectedHistoryTargetAccountProfile = computed(() => {
+    const id = selectedHistoryTargetAccount.value?.id
+    return id ? accountProfilesById.value[id] : undefined
+  })
 
   async function loadTargetOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
@@ -416,6 +420,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     selectedComparisonAccount,
     selectedComparisonAccountProfile,
     selectedHistoryTargetAccount,
+    selectedHistoryTargetAccountProfile,
     selectedTargetAccount,
     selectedTargetAccountProfile,
     targetOptions,

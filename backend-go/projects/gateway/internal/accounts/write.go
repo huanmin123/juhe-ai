@@ -261,7 +261,9 @@ func normalizeAccountTagNamesInput(value any) ([]string, error) {
 }
 
 // normalizeSupportedModelsInput trims, dedupes and drops blanks (mirror of the
-// supported-models normalization subset the slice keeps).
+// supported-models normalization subset the slice keeps). A single model is
+// bounded to 200 characters and an account to 64 models so a misbehaving
+// writer cannot balloon the candidate merge used by model-check options.
 func normalizeSupportedModelsInput(value any) ([]string, error) {
 	list, ok := value.([]any)
 	if !ok {
@@ -278,8 +280,14 @@ func normalizeSupportedModelsInput(value any) ([]string, error) {
 		if model == "" || seen[model] {
 			continue
 		}
+		if len(model) > 200 {
+			return nil, &ValidationError{Message: "单个支持模型长度不能超过 200 字符"}
+		}
 		seen[model] = true
 		output = append(output, model)
+	}
+	if len(output) > 64 {
+		return nil, &ValidationError{Message: "单个账户最多配置 64 个支持模型"}
 	}
 	return output, nil
 }

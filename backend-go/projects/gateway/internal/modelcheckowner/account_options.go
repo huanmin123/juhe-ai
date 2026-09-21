@@ -128,7 +128,7 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 			}
 		}
 		if options.AccountID != "" {
-			if models, err := s.configuredModelCheckModels(ctx, option.ID, option.ProviderCode, option.ProviderProtocolProfile); err != nil {
+			if models, err := s.configuredModelCheckModels(ctx, option.ID, option.ID, option.ProviderCode, option.ProviderProtocolProfile); err != nil {
 				return nil, err
 			} else {
 				option.ModelCheckModels = models
@@ -270,7 +270,10 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 			}
 		}
 		if options.AccountID != "" {
-			if models, err := s.configuredModelCheckModels(ctx, sourceID, option.ProviderCode, option.ProviderProtocolProfile); err != nil {
+			// 支持模型读物理 source 账户；协议兼容门读授权实例账户的
+			// health_check_endpoint_mode，与 run 门的 validateCredentialEndpointMode
+			// （business_source.go Resolve）同源，避免 options 与执行两侧判定分歧。
+			if models, err := s.configuredModelCheckModels(ctx, sourceID, option.ID, option.ProviderCode, option.ProviderProtocolProfile); err != nil {
 				return nil, err
 			} else {
 				option.ModelCheckModels = models
@@ -284,7 +287,7 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 	return result, nil
 }
 
-func (s *BusinessTargetSource) configuredModelCheckModels(ctx context.Context, accountID, providerCode, profileID string) ([]string, error) {
+func (s *BusinessTargetSource) configuredModelCheckModels(ctx context.Context, accountID, endpointModeAccountID, providerCode, profileID string) ([]string, error) {
 	profile, ok := modelcheckprofile.Find(providerCode, profileID)
 	if !ok {
 		return []string{}, nil
@@ -302,7 +305,7 @@ func (s *BusinessTargetSource) configuredModelCheckModels(ctx context.Context, a
 	// Merge the account's protocol-compatible supported models. The catalog
 	// prefix above keeps the historical order and resolution unchanged; only
 	// account rows outside the catalog are appended (deduplicated, sorted).
-	extra, err := s.accountSupportedCheckModels(ctx, accountID, profile)
+	extra, err := s.accountSupportedCheckModels(ctx, accountID, endpointModeAccountID, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -323,37 +326,52 @@ func (s *BusinessTargetSource) configuredModelCheckModels(ctx context.Context, a
 }
 
 // accountSupportedCheckModels returns the account's account_supported_models
-// rows that are protocol-compatible with the catalog profile. Compatibility
-// follows the same gate the runtime resolver applies before issuing a probe:
-// the account's health_check_endpoint_mode must resolve to the profile's
-// protocol family (openai chat_json/chat_sse count as the openai chat family).
-// An absent or incompatible mode keeps the catalog-only candidates unchanged.
-func (s *BusinessTargetSource) accountSupportedCheckModels(ctx context.Context, accountID string, profile modelcheckprofile.ProtocolProfile) ([]string, error) {
+// rows that can execute as model-check candidates. Compatibility reads
+// health_check_endpoint_mode from endpointModeAccountID — the account whose
+// mode the runtime resolver validates against the same protocol before
+// issuing a probe (owner accounts pass the same ID twice; authorized
+// instances read the mode from the instance while supported models stay
+// source-scoped). The protocol gate is tiered by catalog scope:
+// catalog-internal models keep the existing profile gate (a Responses-profile
+// model requires a responses-family mode), while catalog-external models are
+// admitted when the account's mode belongs to the protocol-consistency
+// checkable set — the subset executes on the protocol the account's own mode
+// speaks (chat shapes run the Chat Completions suite), and
+// images/interactions or cross-family shapes stay excluded. An absent mode
+// keeps the catalog-only candidates unchanged.
+func (s *BusinessTargetSource) accountSupportedCheckModels(ctx context.Context, accountID, endpointModeAccountID string, profile modelcheckprofile.ProtocolProfile) ([]string, error) {
 	var endpointMode string
-	err := s.db.QueryRowContext(ctx, "SELECT COALESCE(health_check_endpoint_mode,'') FROM "+s.table("accounts")+" WHERE id="+s.placeholder(1), accountID).Scan(&endpointMode)
+	err := s.db.QueryRowContext(ctx, "SELECT COALESCE(health_check_endpoint_mode,'') FROM "+s.table("accounts")+" WHERE id="+s.placeholder(1), endpointModeAccountID).Scan(&endpointMode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read J3b account options endpoint mode: %w", err)
 	}
-	if !modelcheckprofile.EndpointModeMatchesProtocol(profile.Protocol, strings.TrimSpace(endpointMode)) {
-		return nil, nil
-	}
 	rows, err := s.db.QueryContext(ctx, "SELECT model FROM "+s.table("account_supported_models")+" WHERE account_id="+s.placeholder(1)+" ORDER BY model", accountID)
 	if err != nil {
 		return nil, fmt.Errorf("read J3b account options supported models: %w", err)
 	}
 	defer rows.Close()
+	mode := strings.TrimSpace(endpointMode)
+	modeProtocol, modeCheckable := modelcheckprofile.ProtocolForEndpointMode(mode)
 	models := make([]string, 0)
 	for rows.Next() {
 		var model string
 		if err := rows.Scan(&model); err != nil {
 			return nil, fmt.Errorf("scan J3b account options supported model: %w", err)
 		}
-		if model = strings.TrimSpace(model); model != "" {
-			models = append(models, model)
+		if model = strings.TrimSpace(model); model == "" {
+			continue
 		}
+		if profileSupportsModel(profile, model) {
+			if !modelcheckprofile.EndpointModeMatchesProtocol(profile.Protocol, mode) {
+				continue
+			}
+		} else if !modeCheckable || !catalogExternalEndpointModeCheckable(profile.Protocol, modeProtocol) {
+			continue
+		}
+		models = append(models, model)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate J3b account options supported models: %w", err)

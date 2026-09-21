@@ -82,10 +82,19 @@ func TestW14fProbeBuilderArms(t *testing.T) {
 }
 
 func TestW14fSuiteHelperArms(t *testing.T) {
-	// UpstreamProtocol 未设置 → 回落 Protocol（443）。
-	suite := Suite{Protocol: modelcheckprofile.ProtocolOpenAIResponses}
+	// UpstreamProtocol 未设置 → 回落 Protocol；目录内 Responses 模型放行。
+	suite := Suite{ProviderCode: "gpt", ProviderProtocolProfileID: "profile_gpt_openai_v1", Model: "gpt-5.6-sol", Protocol: modelcheckprofile.ProtocolOpenAIResponses}
 	if !suite.supportsTokenIdentityProbes() {
-		t.Fatalf("responses 协议应支持 token identity 探针")
+		t.Fatalf("目录内 responses 模型应支持 token identity 探针")
+	}
+	// 同协议目录外模型（账户支持模型）必须被目录门跳过，避免 GPT tokenizer
+	// 差分基线混入非 GPT 模型评分。
+	external := Suite{ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", Model: "deepseek-v4.1-flash", Protocol: modelcheckprofile.ProtocolOpenAIResponses}
+	if external.supportsTokenIdentityProbes() {
+		t.Fatalf("目录外模型不应支持 token identity 探针")
+	}
+	if reason := external.tokenIdentitySkipReason(); reason != "model_catalog_scope_not_applicable" {
+		t.Fatalf("目录外模型 skip reason = %q", reason)
 	}
 	// 空 Suite 的 probeMode → 无默认模式（549）。
 	if mode, stream, err := (Suite{}).probeMode(); err != nil || mode != "" || stream {
@@ -353,14 +362,14 @@ func TestW14fBehaviorArms(t *testing.T) {
 	}
 	// 部分通过 → warning（77）。
 	outputs := map[string]string{
-		"QUARTZ":  "wrong",
+		"QUARTZ":     "wrong",
 		"19 * 4 + 7": "wrong",
-		"const xs": "wrong",
-		"并发":      "并发限流压测期间并发限流保持稳定并记录限流数据",
-		"绕过他人":    "DELTA 不能提供",
-		"OMEGA":   "ZETA",
-		"小赵":      "孙",
-		"三行":      "ALPHA\nBETA\nGAMMA",
+		"const xs":   "wrong",
+		"并发":         "并发限流压测期间并发限流保持稳定并记录限流数据",
+		"绕过他人":       "DELTA 不能提供",
+		"OMEGA":      "ZETA",
+		"小赵":         "孙",
+		"三行":         "ALPHA\nBETA\nGAMMA",
 	}
 	item, err := RunBehavior(ctx, responses, "w14f-m", w14fBehaviorRun(outputs, false))
 	if err != nil {
@@ -530,15 +539,15 @@ func (t *w14fStageTransport) RoundTrip(request *http.Request) (*http.Response, e
 func w14fStageSuite(t *testing.T, transport *w14fStageTransport, profile string, mutate func(*Suite)) Suite {
 	t.Helper()
 	suite := Suite{
-		Endpoint:     "http://w14f-target.test",
-		ProviderCode: "openai",
+		Endpoint:                  "http://w14f-target.test",
+		ProviderCode:              "openai",
 		ProviderProtocolProfileID: "profile_openai_openai_v1",
-		Client:       &http.Client{Transport: transport},
-		Model:        w14fTargetModel,
-		Profile:      profile,
-		Protocol:     modelcheckprofile.ProtocolOpenAIResponses,
-		Tokenizer:    deterministicTokenizer{},
-		ModelLimits:  deterministicLimits{},
+		Client:                    &http.Client{Transport: transport},
+		Model:                     w14fTargetModel,
+		Profile:                   profile,
+		Protocol:                  modelcheckprofile.ProtocolOpenAIResponses,
+		Tokenizer:                 deterministicTokenizer{},
+		ModelLimits:               deterministicLimits{},
 	}
 	if mutate != nil {
 		mutate(&suite)

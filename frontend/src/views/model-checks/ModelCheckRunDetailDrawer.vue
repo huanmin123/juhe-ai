@@ -22,6 +22,7 @@
           <a-tag :color="levelColor(run.level)">{{ levelText(run.level) }}</a-tag>
           <a-tag :color="profileColor(run.profile)">{{ profileText(run.profile) }}</a-tag>
           <a-tag v-if="runTrustedComparison(run)" color="blue">可信对比</a-tag>
+          <a-tag v-if="protocolConsistencyScope" color="purple">检测范围：协议一致性</a-tag>
           <a-tag>{{ run.score }} / {{ run.maxScore }}</a-tag>
         </a-space>
       </div>
@@ -153,6 +154,9 @@ const trustReport = computed(() => {
 })
 const visibleChecks = computed(() => visibleModelCheckChecks(props.run?.checks ?? []))
 const quizSummary = computed(() => modelCheckQuizSummary(props.run?.resultSummary))
+// detectionScope 由后端在目录外（账户支持）模型的检测报告与请求快照中写入；
+// protocol_consistency 表示该次检测只覆盖协议一致性探针子集。
+const protocolConsistencyScope = computed(() => props.run?.resultSummary?.detectionScope === 'protocol_consistency')
 
 const identityStatusText = (value: ModelCheckTrustReport['identityStatus']) => ({
   consistent: '当前受控探针一致', suspected_downgrade: '疑似降级', suspected_same_source: '疑似同源', population_outlier: '群体离群', insufficient_evidence: '证据不足'

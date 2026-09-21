@@ -271,11 +271,32 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if err != nil {
 		return Target{}, err
 	}
-	upstreamProtocol := profile.Protocol
+	// Catalog-internal targets keep the profile protocol byte-for-byte.
+	// Catalog-external supported models run the protocol-consistency subset on
+	// the protocol the account's own endpoint mode speaks (chat_json executes
+	// the Chat Completions suite), so their Target protocol chain follows the
+	// mode instead of the catalog profile.
+	targetProtocol := profile.Protocol
+	if !profileSupportsModel(profile, request.Model) {
+		modeProtocol, modeCheckable := modelcheckprofile.ProtocolForEndpointMode(endpointMode)
+		if !modeCheckable || !catalogExternalEndpointModeCheckable(profile.Protocol, modeProtocol) {
+			return Target{}, errors.New("J3b Business health_check_endpoint_mode is incompatible with provider protocol profile")
+		}
+		targetProtocol = modeProtocol
+	}
+	upstreamProtocol := targetProtocol
 	upstreamEndpointMode := endpointMode
 	if mapping.UpstreamEndpointFamily == modelcheckprofile.EndpointChatCompletions {
 		upstreamProtocol = modelcheckprofile.ProtocolOpenAIChat
 		upstreamEndpointMode = modelcheckprofile.EndpointModeForProtocol(upstreamProtocol, modelcheckprofile.EndpointModeIsStreaming(endpointMode))
+	}
+	if targetProtocol != profile.Protocol {
+		// Catalog-external target whose account mode speaks a different shape
+		// than the catalog profile: the whole protocol chain follows the
+		// account's actual request shape. endpointMode is canonical for
+		// targetProtocol because ProtocolForEndpointMode accepted it above.
+		upstreamProtocol = targetProtocol
+		upstreamEndpointMode = endpointMode
 	}
 	credentialType = strings.TrimSpace(credentialType)
 	if credentialType != "api_key" && credentialType != "oauth" && credentialType != "google_oauth" {
@@ -285,7 +306,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if err != nil {
 		return Target{}, err
 	}
-	if err := validateCredentialEndpointMode(endpointMode, profile.Protocol, material); err != nil {
+	if err := validateCredentialEndpointMode(endpointMode, targetProtocol, profile, material); err != nil {
 		return Target{}, err
 	}
 	adapter, err := openAIOAuthCodexAdapter(provider, profileID, credentialType, profile.Protocol, endpointMode)
@@ -317,7 +338,7 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 	if dispatchRevision < 1 {
 		return Target{}, errors.New("J3b Business account dispatch revision is invalid")
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, ProviderProtocolProfileID: profileID, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(revision, 10), CredentialSourceAccountID: request.TargetID, SourceDispatchRevision: dispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: true, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), SupportedModels: supportedModels, Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: request.SystemAccountID, GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, ProviderProtocolProfileID: profileID, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(revision, 10), CredentialSourceAccountID: request.TargetID, SourceDispatchRevision: dispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: true, Protocol: targetProtocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), SupportedModels: supportedModels, Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, request RunRequest) (Target, error) {
@@ -389,11 +410,29 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if err != nil {
 		return Target{}, err
 	}
-	upstreamProtocol := profile.Protocol
+	// 与 owner 分支同源：目录内模型维持档案协议，目录外账户支持模型的协议
+	// 链跟随实例账户自身的 endpoint mode（协议门与 options 侧同源）。
+	targetProtocol := profile.Protocol
+	if !profileSupportsModel(profile, request.Model) {
+		modeProtocol, modeCheckable := modelcheckprofile.ProtocolForEndpointMode(endpointMode)
+		if !modeCheckable || !catalogExternalEndpointModeCheckable(profile.Protocol, modeProtocol) {
+			return Target{}, errors.New("J3b Business health_check_endpoint_mode is incompatible with provider protocol profile")
+		}
+		targetProtocol = modeProtocol
+	}
+	upstreamProtocol := targetProtocol
 	upstreamEndpointMode := endpointMode
 	if mapping.UpstreamEndpointFamily == modelcheckprofile.EndpointChatCompletions {
 		upstreamProtocol = modelcheckprofile.ProtocolOpenAIChat
 		upstreamEndpointMode = modelcheckprofile.EndpointModeForProtocol(upstreamProtocol, modelcheckprofile.EndpointModeIsStreaming(endpointMode))
+	}
+	if targetProtocol != profile.Protocol {
+		// Catalog-external target whose account mode speaks a different shape
+		// than the catalog profile: the whole protocol chain follows the
+		// account's actual request shape. endpointMode is canonical for
+		// targetProtocol because ProtocolForEndpointMode accepted it above.
+		upstreamProtocol = targetProtocol
+		upstreamEndpointMode = endpointMode
 	}
 	credentialType = strings.TrimSpace(credentialType)
 	if credentialType != "api_key" && credentialType != "oauth" && credentialType != "google_oauth" {
@@ -403,7 +442,7 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if err != nil {
 		return Target{}, err
 	}
-	if err := validateCredentialEndpointMode(endpointMode, profile.Protocol, material); err != nil {
+	if err := validateCredentialEndpointMode(endpointMode, targetProtocol, profile, material); err != nil {
 		return Target{}, err
 	}
 	adapter, err := openAIOAuthCodexAdapter(provider, profileID, credentialType, profile.Protocol, endpointMode)
@@ -438,7 +477,7 @@ func (s *BusinessTargetSource) resolveAuthorizedTarget(ctx context.Context, requ
 	if sourceDispatchRevision < 1 {
 		return Target{}, errors.New("J3b Business source account dispatch revision is invalid")
 	}
-	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: strings.TrimSpace(targetOwnerSystemAccountID.String), GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, ProviderProtocolProfileID: profileID, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(sourceRevision, 10), CredentialSourceAccountID: sourceID, SourceDispatchRevision: sourceDispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: false, Protocol: profile.Protocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), SupportedModels: supportedModels, Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
+	return Target{Endpoint: strings.TrimRight(baseURL, "/"), TargetName: strings.TrimSpace(targetName.String), TargetOwnerSystemAccountID: strings.TrimSpace(targetOwnerSystemAccountID.String), GroupID: strings.TrimSpace(groupID.String), ProviderCode: provider, ProviderProtocolProfileID: profileID, CredentialType: credentialType, UpstreamAdapter: adapter, ConfigRevision: strconv.FormatInt(revision, 10), SourceConfigRevision: strconv.FormatInt(sourceRevision, 10), CredentialSourceAccountID: sourceID, SourceDispatchRevision: sourceDispatchRevision, DispatchRevision: dispatchRevision, OwnPhysicalAccount: false, Protocol: targetProtocol, SourceEndpointFamily: mapping.SourceEndpointFamily, UpstreamProtocol: upstreamProtocol, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily, EndpointMode: endpointMode, UpstreamEndpointMode: upstreamEndpointMode, SupportedEndpointModes: append([]string(nil), material.SupportedEndpointModes...), SupportedModels: supportedModels, Headers: headers, Client: client, UpstreamModel: mapping.UpstreamModel, Prompt: "Reply with exactly: OK-MODEL-CHECK"}, nil
 }
 
 func (s *BusinessTargetSource) supportedModels(ctx context.Context, accountID string) ([]string, error) {
@@ -1059,9 +1098,16 @@ func parseCredentialEndpointModes(raw any) ([]string, error) {
 	return modes, nil
 }
 
-func validateCredentialEndpointMode(endpointMode string, protocol modelcheckprofile.Protocol, material accountCredentialMaterial) error {
+// validateCredentialEndpointMode validates the Business-selected request
+// shape against the protocol the target will execute. Catalog-internal
+// targets validate against the profile protocol; catalog-external targets
+// validate against the mode-derived protocol, so a mismatch here means the
+// mode itself is not an executable request shape (images/interactions) or
+// carries stray whitespace. The catalog-model mismatch message names the two
+// supported remedies instead of a bare assertion.
+func validateCredentialEndpointMode(endpointMode string, protocol modelcheckprofile.Protocol, profile modelcheckprofile.ProtocolProfile, material accountCredentialMaterial) error {
 	if endpointMode == "" || endpointMode != strings.TrimSpace(endpointMode) || !modelcheckprofile.EndpointModeMatchesProtocol(protocol, endpointMode) {
-		return errors.New("J3b Business health_check_endpoint_mode is incompatible with provider protocol profile")
+		return catalogEndpointModeIncompatibleError(profile)
 	}
 	if !material.EndpointModesPresent {
 		return errors.New("J3b Business credential supported_endpoint_modes is missing")
@@ -1072,6 +1118,15 @@ func validateCredentialEndpointMode(endpointMode string, protocol modelcheckprof
 		}
 	}
 	return errors.New("J3b Business health_check_endpoint_mode is not enabled by credential supported_endpoint_modes")
+}
+
+// catalogEndpointModeIncompatibleError is the actionable rejection for a
+// catalog model whose profile protocol cannot run on the account's configured
+// request shape. The catalog subset is fixed to the profile protocol, so the
+// operator either switches the shape to the profile's canonical mode or picks
+// an account-supported model as the check target.
+func catalogEndpointModeIncompatibleError(profile modelcheckprofile.ProtocolProfile) error {
+	return fmt.Errorf("当前供应商协议档案的目录模型检测仅支持 %s 请求形态；请将检查请求形态切换为 %s，或选择账户支持模型作为检测目标", profile.ProtocolLabel, modelcheckprofile.EndpointModeForProtocol(profile.Protocol, false))
 }
 
 func decryptCredentialBaseURL(secret, envelope string) (string, error) {
