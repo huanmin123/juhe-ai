@@ -5,9 +5,9 @@ import "testing"
 func TestSanitizeRedisName(t *testing.T) {
 	cases := map[string]string{
 		"  prod-space ": "prod-space",
-		"abc_xyz-123":  "abc_xyz-123",
-		"a b/c":        "a_b_c",
-		"":             "",
+		"abc_xyz-123":   "abc_xyz-123",
+		"a b/c":         "a_b_c",
+		"":              "",
 	}
 	for in, want := range cases {
 		if got := SanitizeRedisName(in); got != want {
@@ -35,12 +35,31 @@ func TestSanitizeRedisNamespacePart(t *testing.T) {
 	}
 }
 
+func TestCanonicalRedisNamespace(t *testing.T) {
+	// 2026-09-22 加载层 canonical 化：剥除 `juhe-ai:` 根前缀，短名逐字节不变。
+	cases := map[string]string{
+		"juhe-ai:dev":         "dev",
+		"dev":                 "dev",
+		" juhe-ai:dev ":       "dev",
+		"juhe-ai:dev:":        "dev",
+		"juhe-ai:dev:e2e0919": "dev:e2e0919",
+		"":                    "",
+		"  ":                  "",
+		"juhe-ai:":            "",
+	}
+	for in, want := range cases {
+		if got := CanonicalRedisNamespace(in); got != want {
+			t.Fatalf("CanonicalRedisNamespace(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
 func TestNamespacedKey(t *testing.T) {
 	cases := map[[2]string]string{
-		{"probe:state:key", "dev"}:           "juhe-ai:dev:probe:state:key",
-		{"juhe-ai:probe:state:key", "dev"}:   "juhe-ai:dev:probe:state:key",
+		{"probe:state:key", "dev"}:             "juhe-ai:dev:probe:state:key",
+		{"juhe-ai:probe:state:key", "dev"}:     "juhe-ai:dev:probe:state:key",
 		{"juhe-ai:dev:probe:state:key", "dev"}: "juhe-ai:dev:probe:state:key",
-		{"probe:state:key", "  "}:            "probe:state:key",
+		{"probe:state:key", "  "}:              "probe:state:key",
 	}
 	for in, want := range cases {
 		if got := NamespacedKey(in[0], in[1]); got != want {

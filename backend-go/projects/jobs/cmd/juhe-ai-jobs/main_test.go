@@ -223,7 +223,6 @@ func TestJobsHTTPHandlerForwardsWorkerFieldsToHealth(t *testing.T) {
 		false, func() bool { return true },
 		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
 		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		false, func() bool { return true },
 		gometrics.New("juhe-ai", "jobs"), (*gometrics.Sampler)(nil),
 		true, func() bool { return false },
 		func() map[string]any { return map[string]any{"wiredJobs": []string{"account-balance-refresh"}} })

@@ -72,6 +72,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -264,12 +265,14 @@ func w1g2RedisClient(t *testing.T, redisURL string) *goredis.Client {
 // w1g2SeedCircuitRuntimeIndex 按 circuitruntime.Store.CheckReady 的契约向 dev
 // state Redis 写 runtime-index-meta（HSET version/status/ownerMode），键前缀
 // 与 accountCircuitRevisionRedisKeys 完全一致（namespace 允许冒号段）。
+// 2026-09-22 起 namespace 在加载层 canonical 化（剥除 `juhe-ai:` 根前缀），
+// seed 键位同步 canonical 短形式，与 boot 进程的实际键空间一致。
 func w1g2SeedCircuitRuntimeIndex(t *testing.T, redisURL, namespace string) {
 	t.Helper()
 	client := w1g2RedisClient(t, redisURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	key := fmt.Sprintf("juhe-ai:%s:account-circuit:gateway-account-circuit:runtime-index-meta", namespace)
+	key := fmt.Sprintf("juhe-ai:%s:account-circuit:gateway-account-circuit:runtime-index-meta", rediscfg.CanonicalRedisNamespace(namespace))
 	if err := client.HSet(ctx, key, "version", "1", "status", "ready", "ownerMode", "go-runtime-state-v1").Err(); err != nil {
 		t.Fatalf("写入 account-circuit runtime-index-meta 失败: %v", err)
 	}

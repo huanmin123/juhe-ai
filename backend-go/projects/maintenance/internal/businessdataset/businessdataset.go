@@ -280,11 +280,19 @@ func bdAttnumList(raw any) ([]int64, error) {
 }
 
 func bdParseAttnumText(text string) ([]int64, error) {
-	fields := strings.Fields(strings.TrimSpace(text))
+	// pgx stdlib 把 smallint[] 以 PostgreSQL 数组字面量文本交给 database/sql
+	// 的 any 目的地（如 "{1,2}"；空数组 "{}"）。同时容忍空格/逗号分隔的裸整
+	// 数形式（fake 驱动与其他驱动的潜在返回形态）。
+	trimmed := strings.TrimSpace(text)
+	trimmed = strings.TrimSuffix(strings.TrimPrefix(trimmed, "{"), "}")
+	if trimmed == "" {
+		return []int64{}, nil
+	}
+	fields := strings.FieldsFunc(trimmed, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' })
 	out := make([]int64, 0, len(fields))
 	for _, field := range fields {
 		var value int64
-		if _, err := fmt.Sscanf(field, "%d", &value); err != nil {
+		if _, err := fmt.Sscanf(strings.TrimSpace(field), "%d", &value); err != nil {
 			return nil, err
 		}
 		out = append(out, value)

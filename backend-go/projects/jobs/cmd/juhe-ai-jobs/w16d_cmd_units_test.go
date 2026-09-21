@@ -122,7 +122,7 @@ func TestW16DScanNullTimeArms(t *testing.T) {
 
 func TestW16DHealthHandlerSlotDefaultsInvoked(t *testing.T) {
 	// enabled=true 而对应 ready 槽位缺省/类型错误时，默认 ready 字面量必须被
-	// 调用（875/883/885 分支）且健康计算按禁用语义聚合。
+	// 调用（ab/proxyLatency/worker 禁用语义分支）且健康计算按禁用语义聚合。
 	runtimeRunning := &atomic.Bool{}
 	runtimeRunning.Store(true)
 	handler := healthHandler(ownermode.Active, runtimeRunning, func() bool { return true }, false, nil,
@@ -130,7 +130,6 @@ func TestW16DHealthHandlerSlotDefaultsInvoked(t *testing.T) {
 		true, "not-a-func",
 		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
 		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		true, "not-a-func",
 		true, "not-a-func",
 		"not-a-map",
 	)
@@ -140,7 +139,7 @@ func TestW16DHealthHandlerSlotDefaultsInvoked(t *testing.T) {
 		t.Fatalf("/health 必须 200: %d %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, fragment := range []string{`"accountBalanceEnabled":true`, `"proxyLatencyEnabled":true`, `"modelCheckEnabled":true`, `"workerEnabled":true`, `"ready":true`} {
+	for _, fragment := range []string{`"accountBalanceEnabled":true`, `"proxyLatencyEnabled":true`, `"workerEnabled":true`, `"ready":true`} {
 		if !strings.Contains(body, fragment) {
 			t.Fatalf("载荷缺少 %s: %s", fragment, body)
 		}

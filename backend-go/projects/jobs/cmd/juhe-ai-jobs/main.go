@@ -711,7 +711,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			},
 		})
 	}
-	j3bReady := func() bool { return true }
 	healthServer := &http.Server{
 		Handler: jobsHTTPHandler(ownerMode, &runtimeRunning, tableRunner.Ready, true, accountHealthReady, accountBalanceConfig.Enabled, accountBalanceReady, accountBalanceService, accountBalanceConfig.ManualHTTPSecret, j3Config.Enabled, j3Ready, func() proxylatency.RunnerStatus {
 			if j3Runner == nil {
@@ -723,7 +722,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return proxylatency.RunnerStatus{}, true
 			}
 			return j3Runner.Snapshot()
-		}, false, j3bReady, goMetricsCollector, goMetricsSampler,
+		}, goMetricsCollector, goMetricsSampler,
 			true, workerReady, workerStatus),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -731,7 +730,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	defer stop()
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- healthServer.Serve(listener) }()
-	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", true, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "modelCheckEnabled", false, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
+	logger.Info("juhe-ai-jobs started", "healthAddress", listener.Addr().String(), "job", "table-monitor", "accountHealthEnabled", true, "accountHealthInputSource", accountHealthConfig.InputSource, "modelRecoveryEnabled", modelRecoveryConfig.Enabled, "accountBalanceEnabled", accountBalanceConfig.Enabled, "proxyLatencyEnabled", j3Config.Enabled, "workerEnabled", true, "workerWiredJobs", worker.wiredJobs)
 	components = append(components, worker.components()...)
 	runErr := supervisor.Run(ctx, components, logger)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -831,8 +830,6 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 			"accountBalanceReady":   false,
 			"proxyLatencyEnabled":   false,
 			"proxyLatencyReady":     false,
-			"modelCheckEnabled":     false,
-			"modelCheckReady":       false,
 		})
 	})
 }
@@ -840,15 +837,15 @@ func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
 func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableMonitorReady func() bool, accountHealthEnabled bool, accountHealthReady func() bool, accountBalanceEnabled bool, accountBalanceReady func() bool, accountBalanceService *accountbalance.Service, accountBalanceManualSecret string, j3 ...any) http.Handler {
 	mux := http.NewServeMux()
 	goCollector := gometrics.New("juhe-ai", "jobs")
-	if len(j3) > 6 {
-		if collector, ok := j3[6].(*gometrics.Collector); ok && collector != nil {
+	if len(j3) > 4 {
+		if collector, ok := j3[4].(*gometrics.Collector); ok && collector != nil {
 			goCollector = collector
 		}
 	}
 	mux.Handle("/__aisys__/metrics", goCollector.Handler())
 	// 去跨进程战役第三刀：/__aisys__/api/stats/go-runtime-trend 路由已删除
 	// （TrendHandler 随 gometricsstore 包一起消失；trend 读取改由 gateway
-	// 进程内直查共享 Store）。j3[7] 的 *gometrics.Sampler 槽位保留占位，避免
+	// 进程内直查共享 Store）。j3[5] 的 *gometrics.Sampler 槽位保留占位，避免
 	// 后续 worker 槽位漂移。
 	// 去跨进程战役第四刀：/account-balance/manual 手动桥已删除（Node 时代
 	// 的手动触发入口，全仓无生产调用方；J2 余额刷新走周期调度与恢复扫描）。
@@ -860,15 +857,14 @@ func jobsHTTPHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tabl
 	// readinessArgs mirrors the healthHandler j2 layout:
 	// [accountBalanceEnabled, accountBalanceReady, proxyLatencyEnabled,
 	// proxyLatencyReady, proxyLatencyStatus, proxyLatencySnapshot,
-	// modelCheckEnabled, modelCheckReady, workerEnabled, workerReady,
-	// workerStatus]. The goMetrics slots (j3[6]/j3[7]) are jobsHTTPHandler-only
-	// surface and must NOT leak into the readiness args — a leaked
-	// *gometrics.Collector would shift the worker fields into the wrong slots
-	// and /health would always report workerEnabled=false with no worker
-	// snapshot (X05 defect).
-	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3[:min(len(j3), 6)]...)
-	if len(j3) > 8 {
-		readinessArgs = append(readinessArgs, j3[8:min(len(j3), 11)]...)
+	// workerEnabled, workerReady, workerStatus]. The goMetrics slots
+	// (j3[4]/j3[5]) are jobsHTTPHandler-only surface and must NOT leak into
+	// the readiness args — a leaked *gometrics.Collector would shift the
+	// worker fields into the wrong slots and /health would always report
+	// workerEnabled=false with no worker snapshot (X05 defect).
+	readinessArgs := append([]any{accountBalanceEnabled, accountBalanceReady}, j3[:min(len(j3), 4)]...)
+	if len(j3) > 6 {
+		readinessArgs = append(readinessArgs, j3[6:min(len(j3), 9)]...)
 	}
 	mux.Handle("/health", healthHandler(ownerMode, runtimeRunning, tableMonitorReady, accountHealthEnabled, accountHealthReady, readinessArgs...))
 	mux.HandleFunc("/account-balance/manual", func(response http.ResponseWriter, request *http.Request) {
@@ -973,8 +969,6 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 	proxyLatencySnapshot := func() (proxylatency.RunnerStatus, bool) {
 		return proxyLatencyStatus(), proxyLatencyReady()
 	}
-	modelCheckEnabled := false
-	modelCheckReady := func() bool { return true }
 	workerEnabled := false
 	workerReady := func() bool { return true }
 	workerStatus := func() map[string]any { return nil }
@@ -1010,26 +1004,16 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 	}
 	if len(j2) > 6 {
 		if value, ok := j2[6].(bool); ok {
-			modelCheckEnabled = value
+			workerEnabled = value
 		}
 	}
 	if len(j2) > 7 {
 		if value, ok := j2[7].(func() bool); ok {
-			modelCheckReady = value
-		}
-	}
-	if len(j2) > 8 {
-		if value, ok := j2[8].(bool); ok {
-			workerEnabled = value
-		}
-	}
-	if len(j2) > 9 {
-		if value, ok := j2[9].(func() bool); ok {
 			workerReady = value
 		}
 	}
-	if len(j2) > 10 {
-		if value, ok := j2[10].(func() map[string]any); ok {
+	if len(j2) > 8 {
+		if value, ok := j2[8].(func() map[string]any); ok {
 			workerStatus = value
 		}
 	}
@@ -1044,10 +1028,9 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 		accountBalanceIsReady := !accountBalanceEnabled || accountBalanceReady()
 		proxyStatus, proxyReady := proxyLatencySnapshot()
 		proxyLatencyIsReady := !proxyLatencyEnabled || proxyReady
-		modelCheckIsReady := !modelCheckEnabled || modelCheckReady()
 		workerIsReady := !workerEnabled || workerReady()
 		response.Header().Set("Content-Type", "application/json")
-		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && modelCheckIsReady && workerIsReady
+		ready := runtimeLogOwnerHeld && tableMonitorIsReady && accountHealthIsReady && accountBalanceIsReady && proxyLatencyIsReady && workerIsReady
 		payload := map[string]any{
 			"ready":                         ready,
 			"ownerReady":                    ready,
@@ -1060,8 +1043,6 @@ func healthHandler(ownerMode ownermode.Mode, runtimeRunning *atomic.Bool, tableM
 			"accountBalanceReady":           accountBalanceIsReady,
 			"proxyLatencyEnabled":           proxyLatencyEnabled,
 			"proxyLatencyReady":             proxyLatencyIsReady,
-			"modelCheckEnabled":             modelCheckEnabled,
-			"modelCheckReady":               modelCheckIsReady,
 			"workerEnabled":                 workerEnabled,
 			"workerReady":                   workerIsReady,
 			"proxyLatencyOwnerHeld":         proxyStatus.OwnerHeld,

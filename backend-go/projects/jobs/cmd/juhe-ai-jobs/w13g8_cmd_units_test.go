@@ -380,7 +380,7 @@ func TestW13G8JobsHTTPHandlerManualBridgeArms(t *testing.T) {
 }
 
 // TestW13G8HealthHandlerDefaultSlots 覆盖 healthHandler 无 j2 槽位时的
-// 默认值分支（J2/J3a/J3b/worker 全部未启用）。
+// 默认值分支（J2/J3a/worker 全部未启用）。
 func TestW13G8HealthHandlerDefaultSlots(t *testing.T) {
 	// healthHandler 的 ready 依赖 runtimeLogOwnerHeld（F1 owner lease 持有）。
 	runtimeRunning := &atomic.Bool{}
@@ -399,7 +399,6 @@ func TestW13G8HealthHandlerDefaultSlots(t *testing.T) {
 	for key, want := range map[string]any{
 		"accountBalanceEnabled": false,
 		"proxyLatencyEnabled":   false,
-		"modelCheckEnabled":     false,
 		"workerEnabled":         false,
 		"ready":                 true,
 	} {

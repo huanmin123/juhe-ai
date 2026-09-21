@@ -362,7 +362,8 @@ func TestWBLoadConfigEnforcesOwnerGates(t *testing.T) {
 		if err != nil {
 			t.Fatalf("合法配置加载失败: %v", err)
 		}
-		if cfg.CircuitRuntimeRedisURL != "redis://fallback:6379/9" || cfg.CircuitRuntimeRedisNamespace != "juhe-ai:fallback" {
+		// 2026-09-22 namespace canonical 化：共享回退值剥除 `juhe-ai:` 根前缀。
+		if cfg.CircuitRuntimeRedisURL != "redis://fallback:6379/9" || cfg.CircuitRuntimeRedisNamespace != "fallback" {
 			t.Fatalf("Redis 回退=%s/%s", cfg.CircuitRuntimeRedisURL, cfg.CircuitRuntimeRedisNamespace)
 		}
 		if cfg.CircuitRuntimeCapacity != 100000 || cfg.CircuitRuntimeRetention != 5*time.Minute {

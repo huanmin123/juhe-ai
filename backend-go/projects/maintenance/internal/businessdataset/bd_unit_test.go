@@ -132,6 +132,11 @@ func TestBDAttnumListVariants(t *testing.T) {
 		{"int64", []int64{4}, []int64{4}, false},
 		{"any", []any{int64(5)}, []int64{5}, false},
 		{"bytes", []byte("1 2"), []int64{1, 2}, false},
+		// pgx stdlib 对 any 目的地以 PostgreSQL 数组字面量文本返回 smallint[]。
+		{"pgarray", "{6,7}", []int64{6, 7}, false},
+		{"pgarray_bytes", []byte("{8}"), []int64{8}, false},
+		{"pgarray_empty", "{}", []int64{}, false},
+		{"pgarray_spaces", "{ 9 , 10 }", []int64{9, 10}, false},
 		{"string", "3 4", []int64{3, 4}, false},
 		{"nil", nil, nil, false},
 		{"junk", []any{"x"}, nil, true},
@@ -522,5 +527,54 @@ func TestBDLoadBusinessDatasetManifest(t *testing.T) {
 	manifest, path, err := LoadBusinessDatasetManifest(dir)
 	if err != nil || path != filepath.Join(dir, ManifestFileName) || manifest.FormatVersion != "" {
 		t.Fatalf("解码成功路径语义错误: %v %s %+v", err, path, manifest)
+	}
+}
+
+func TestBDForeignKeyCatalogRowFaults(t *testing.T) {
+	ctx := context.Background()
+	catalog := bdNewSource(t)
+	catalog.attrScanFault = true
+	broken := openBDFakePG(catalog)
+	defer broken.Close()
+	if _, err := bdLoadForeignKeys(ctx, broken); err == nil {
+		t.Fatal("pg_attribute 坏行必须导致扫描错误")
+	}
+	catalog2 := bdNewSource(t)
+	catalog2.attrRowsErr = true
+	broken2 := openBDFakePG(catalog2)
+	defer broken2.Close()
+	if _, err := bdLoadForeignKeys(ctx, broken2); err == nil {
+		t.Fatal("pg_attribute 行集错误必须上抛")
+	}
+	catalog3 := bdNewSource(t)
+	catalog3.conRowsErr = true
+	broken3 := openBDFakePG(catalog3)
+	defer broken3.Close()
+	if _, err := bdLoadForeignKeys(ctx, broken3); err == nil {
+		t.Fatal("pg_constraint 行集错误必须上抛")
+	}
+}
+
+func TestBDProjectedValueKeyNumericTolerance(t *testing.T) {
+	if bdProjectedValueKey(json.Number("5")) != bdProjectedValueKey(int64(5)) {
+		t.Fatal("json.Number(5) 必须与 int64(5) 视为相等")
+	}
+	if bdProjectedValueKey(json.Number("2.5")) != bdProjectedValueKey(2.5) {
+		t.Fatal("json.Number(2.5) 必须与 float64(2.5) 视为相等")
+	}
+	if bdProjectedValueKey(json.Number("5.0")) != bdProjectedValueKey(float64(5)) {
+		t.Fatal("json.Number(5.0) 必须与 float64(5) 视为相等（整数值归一）")
+	}
+	if bdProjectedValueKey(json.Number("5")) == bdProjectedValueKey("5") {
+		t.Fatal("数值 5 与文本 \"5\" 不得视为相等")
+	}
+	rows := func(v any) []map[string]any {
+		return []map[string]any{{"id": "a", "n": v}}
+	}
+	if !bdProjectedRowsEqual([]string{"id"}, []string{"id", "n"}, rows(json.Number("42")), rows(int64(42))) {
+		t.Fatal("数值类型差异不得阻断投影对比")
+	}
+	if bdProjectedRowsEqual([]string{"id"}, []string{"id", "n"}, rows(json.Number("42")), rows(int64(43))) {
+		t.Fatal("不同数值仍必须判不匹配")
 	}
 }

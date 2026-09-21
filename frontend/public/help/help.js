@@ -108,6 +108,33 @@
     searchResults.hidden = true;
     searchInput.parentElement.appendChild(searchResults);
     searchInput.addEventListener('input', applySearch);
+    searchInput.addEventListener('keydown', function (event) {
+      if (event.key !== 'ArrowDown' || searchResults.hidden) return;
+      var first = searchResults.querySelector('button');
+      if (first) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+    searchResults.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') {
+        searchInput.value = '';
+        applySearch();
+        searchInput.focus();
+        return;
+      }
+      var buttons = Array.prototype.slice.call(searchResults.querySelectorAll('button'));
+      if (!buttons.length) return;
+      var index = buttons.indexOf(document.activeElement);
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        buttons[(index + 1) % buttons.length].focus();
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        buttons[(index <= 0 ? buttons.length : index) - 1].focus();
+      }
+    });
     document.addEventListener('keydown', function (event) {
       if (event.key === 'Escape' && document.activeElement === searchInput) {
         searchInput.value = '';

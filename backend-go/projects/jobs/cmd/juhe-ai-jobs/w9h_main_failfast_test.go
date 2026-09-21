@@ -123,8 +123,8 @@ func TestW9HManualOutcomeAndHandover(t *testing.T) {
 	}
 }
 
-// jobsHTTPHandler 全量槽位装配的健康响应臂（worker/model-check 槽位此前只
-// 在部分组合下被覆盖）。
+// jobsHTTPHandler 全量槽位装配的健康响应臂（worker 槽位此前只在部分组合下
+// 被覆盖）。
 func TestW9HJobsHTTPHandlerFieldArms(t *testing.T) {
 	running := &atomic.Bool{}
 	running.Store(true)
@@ -133,13 +133,13 @@ func TestW9HJobsHTTPHandlerFieldArms(t *testing.T) {
 		func() bool { return true },        // tableMonitorReady
 		true, func() bool { return false }, // accountHealth enabled + not ready
 		true, func() bool { return true }, nil, "", // accountBalance enabled + ready, no service
-		// j3: proxyLatency / modelCheck / worker slots.
+		// j3: proxyLatency / goMetrics / worker slots.
 		true, func() bool { return false }, // [0][1] proxyLatency enabled + not ready
 		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },                // [2] status
 		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, false }, // [3] snapshot
-		true, func() bool { return false }, // [4][5] modelCheck enabled + not ready
-		true, func() bool { return false }, // [8][9] worker enabled + not ready
-		func() map[string]any { return map[string]any{"cycle": "w9h"} }, // [10] worker status
+		nil, nil, // [4][5] goMetrics collector/sampler slots (jobsHTTPHandler-only)
+		true, func() bool { return false }, // [6][7] worker enabled + not ready
+		func() map[string]any { return map[string]any{"cycle": "w9h"} }, // [8] worker status
 	)
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))

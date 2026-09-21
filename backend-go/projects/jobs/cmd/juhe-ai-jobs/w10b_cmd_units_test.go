@@ -2,7 +2,7 @@ package main
 
 // w10b in-process coverage for jobs cmd pure-Go surfaces that the existing
 // suite leaves uncovered: jobsHTTPHandler full j3 slot assembly (collector in
-// slot 6 + worker fields), healthHandler full typed slot population, the
+// slot 4 + worker fields), healthHandler full typed slot population, the
 // account-balance manual bridge 404 arms, manualHandoverResult/manualOutcome
 // helpers, and worker_assembly root helpers (ownerID, token, acquirePool
 // fail-closed arm, nil-logger default).
@@ -39,7 +39,6 @@ func TestW10BJobsHTTPHandlerFullSlotAssembly(t *testing.T) {
 		true, func() bool { return true },
 		func() proxylatency.RunnerStatus { return w10bRunnerStatus(true) },
 		func() (proxylatency.RunnerStatus, bool) { return w10bRunnerStatus(true), true },
-		true, func() bool { return true },
 		collector, nil,
 		true, func() bool { return true }, func() map[string]any { return workerPayload },
 	)
@@ -51,7 +50,7 @@ func TestW10BJobsHTTPHandlerFullSlotAssembly(t *testing.T) {
 	body := record.Body.String()
 	for _, want := range []string{
 		`"ownerMode":"active"`, `"accountHealthEnabled":true`, `"accountBalanceEnabled":true`,
-		`"proxyLatencyEnabled":true`, `"modelCheckEnabled":true`, `"workerEnabled":true`,
+		`"proxyLatencyEnabled":true`, `"workerEnabled":true`,
 		`"proxyLatencyOwnerHeld":true`, `"proxyLatencyLastCycleAt":"2026-09-10T12:00:00Z"`,
 		`"workerWiredJobs"`, `"task-a"`, `"ready":true`,
 	} {
@@ -77,7 +76,6 @@ func TestW10BHealthHandlerFullSlots(t *testing.T) {
 		true, func() bool { return false },
 		func() proxylatency.RunnerStatus { return w10bRunnerStatus(false) },
 		func() (proxylatency.RunnerStatus, bool) { return w10bRunnerStatus(false), false },
-		true, func() bool { return true },
 		true, func() bool { return true },
 		func() map[string]any { return map[string]any{"k": "v"} },
 	)

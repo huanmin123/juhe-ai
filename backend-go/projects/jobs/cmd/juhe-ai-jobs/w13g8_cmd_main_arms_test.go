@@ -247,7 +247,7 @@ func w13g8SpawnAndAssertExit(t *testing.T, env map[string]string, args []string)
 }
 
 // TestW13G8HealthHandlerPartialSlots 覆盖 healthHandler 仅前 6 个 j2 槽位时
-// 的 modelCheck/worker 默认值分支（main.go:883/885 一带）。
+// 的 worker 默认值分支。
 func TestW13G8HealthHandlerPartialSlots(t *testing.T) {
 	runtimeRunning := &atomic.Bool{}
 	runtimeRunning.Store(true)
@@ -267,11 +267,10 @@ func TestW13G8HealthHandlerPartialSlots(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	// modelCheck/worker 槽位缺失时必须回落禁用默认。
+	// worker 槽位缺失时必须回落禁用默认。
 	for key, want := range map[string]any{
-		"modelCheckEnabled": false,
-		"workerEnabled":     false,
-		"ready":             true,
+		"workerEnabled": false,
+		"ready":         true,
 	} {
 		if payload[key] != want {
 			t.Fatalf("%s 必须为 %v: %v", key, want, payload[key])

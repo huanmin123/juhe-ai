@@ -204,3 +204,28 @@ func TestW1iLoadRuntimeConfigPort(t *testing.T) {
 		t.Fatal("non-numeric port accepted")
 	}
 }
+
+// 2026-09-22 namespace canonical 化：加载层剥除 `juhe-ai:` 根前缀，全前缀
+// 配置与短名落同一短形式，避免下游直接拼接型实现产生
+// `juhe-ai:juhe-ai:dev:...` 键空间分裂；短名逐字节不变。
+func TestW1iLoadRuntimeConfigCanonicalizesRedisNamespace(t *testing.T) {
+	dir := t.TempDir()
+	cases := map[string]string{
+		"juhe-ai:dev":   "dev",
+		"dev":           "dev",
+		" juhe-ai:dev ": "dev",
+		"juhe-ai:dev:":  "dev",
+	}
+	for raw, want := range cases {
+		cfg, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
+			"JUHE_AI_DATABASE_PATH":   filepath.Join(dir, "db.sqlite3"),
+			"JUHE_AI_REDIS_NAMESPACE": raw,
+		}))
+		if err != nil {
+			t.Fatalf("namespace %q: %v", raw, err)
+		}
+		if cfg.RedisNamespace != want {
+			t.Fatalf("JUHE_AI_REDIS_NAMESPACE=%q canonical 化为 %q, 期望 %q", raw, cfg.RedisNamespace, want)
+		}
+	}
+}

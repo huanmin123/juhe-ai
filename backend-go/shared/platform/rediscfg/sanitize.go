@@ -45,6 +45,18 @@ func SanitizeRedisNamespacePart(value string) string {
 	return strings.Trim(out.String(), "_")
 }
 
+// CanonicalRedisNamespace 把 JUHE_AI_REDIS_NAMESPACE 配置值规范为剥除
+// `juhe-ai:` 根前缀的短形式（加载层单点收敛，2026-09-22）：全前缀配置
+// （`juhe-ai:dev`）与短名（`dev`）落同一短形式，避免下游直接拼接型实现
+// 产生 `juhe-ai:juhe-ai:...` 键空间分裂；短名输入逐字节不变。尾随冒号与
+// 空白一并清除，空值返回空串（沿用调用点的缺省/校验语义）。
+func CanonicalRedisNamespace(value string) string {
+	normalized := strings.TrimSpace(value)
+	normalized = strings.TrimPrefix(normalized, "juhe-ai:")
+	normalized = strings.TrimRight(normalized, ":")
+	return SanitizeRedisNamespacePart(normalized)
+}
+
 // NamespacedKey 把 namespace 插在 `juhe-ai:` 根之后（与部署键位一致；
 // 对齐 shared/redis-namespace.ts 语义）。key 为空 panic（调用方契约）。
 func NamespacedKey(key, namespace string) string {

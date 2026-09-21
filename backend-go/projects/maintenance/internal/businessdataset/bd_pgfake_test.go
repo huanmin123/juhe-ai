@@ -32,6 +32,11 @@ type bdPGCatalog struct {
 	tables        map[string]*bdFakeTable
 	sequences     map[string]bdFakeSequence
 	injectedFails []string
+	// 目录行级故障旋钮：attrScanFault 让 pg_attribute 结果含坏 attnum 行
+	// （Scan 进 int64 失败）；attrRowsErr/conRowsErr 让对应 Rows.Err 报错。
+	attrScanFault bool
+	attrRowsErr   bool
+	conRowsErr    bool
 	// forceReadOnly/ignoreReadOnly 复刻 wm_pgfake 的事务模式故障注入。
 	forceReadOnly  bool
 	ignoreReadOnly bool
@@ -120,6 +125,7 @@ func (c *bdPGCatalog) setSequence(table, sequenceName string, value int64) {
 
 var (
 	bdSelectRe    = regexp.MustCompile(`(?is)^SELECT (.+?) FROM juhe_business\."([A-Za-z_][A-Za-z0-9_]*)" ORDER BY (.+)$`)
+	bdCountRe     = regexp.MustCompile(`(?is)^SELECT COUNT\(\*\) FROM juhe_business\."([A-Za-z_][A-Za-z0-9_]*)"$`)
 	bdInsertRe    = regexp.MustCompile(`(?is)^INSERT INTO juhe_business\."([A-Za-z_][A-Za-z0-9_]*)" \((.+?)\) VALUES \((.+?)\)$`)
 	bdDeleteRe    = regexp.MustCompile(`^DELETE FROM juhe_business\."([A-Za-z_][A-Za-z0-9_]*)"$`)
 	bdMaxRe       = regexp.MustCompile(`(?is)^SELECT MAX\("([^"]+)"\) FROM juhe_business\."([A-Za-z_][A-Za-z0-9_]*)"$`)
@@ -172,7 +178,14 @@ func (c *bdPGCatalog) query(txReadOnly bool, txIsolation string, query string, a
 				rows = append(rows, []driver.Value{name, int64(index + 1), column.name})
 			}
 		}
-		return &bdFakeResult{columns: []string{"relname", "attnum", "attname"}, rows: rows}, nil
+		if c.attrScanFault {
+			rows = append(rows, []driver.Value{"bdrt_bad", "not-an-int", "col"})
+		}
+		res := &bdFakeResult{columns: []string{"relname", "attnum", "attname"}, rows: rows}
+		if c.attrRowsErr {
+			res.rowsErr = fmt.Errorf("bdPGCatalog: 注入 pg_attribute 行集错误")
+		}
+		return res, nil
 	case strings.Contains(query, "pg_constraint"):
 		var rows [][]driver.Value
 		for _, tableName := range bdSortedTableNames(c.tables) {
@@ -186,7 +199,11 @@ func (c *bdPGCatalog) query(txReadOnly bool, txIsolation string, query string, a
 			}
 		}
 		sort.Slice(rows, func(i, j int) bool { return bdArgText(rows[i][0]) < bdArgText(rows[j][0]) })
-		return &bdFakeResult{columns: []string{"conname", "src", "dst", "conkey", "confkey"}, rows: rows}, nil
+		res := &bdFakeResult{columns: []string{"conname", "src", "dst", "conkey", "confkey"}, rows: rows}
+		if c.conRowsErr {
+			res.rowsErr = fmt.Errorf("bdPGCatalog: 注入 pg_constraint 行集错误")
+		}
+		return res, nil
 	case strings.Contains(query, "pg_get_serial_sequence"):
 		match := bdQualifiedRe.FindStringSubmatch(bdArgText(args[0].Value))
 		table := &bdFakeTable{}
@@ -269,7 +286,17 @@ func bdAttnumInt16(columns []string, table *bdFakeTable) []int16 {
 
 // plainSelect 处理固定形状 SELECT "c", ... FROM juhe_business."t" ORDER BY "o", ...
 func (c *bdPGCatalog) plainSelect(query string) (*bdFakeResult, error) {
-	match := bdSelectRe.FindStringSubmatch(strings.TrimSpace(query))
+	trimmed := strings.TrimSpace(query)
+	// 结构-only 表的源行数统计：SELECT COUNT(*) FROM <schema>.<table>。
+	if m := bdCountRe.FindStringSubmatch(trimmed); m != nil {
+		table := c.tables[m[1]]
+		count := 0
+		if table != nil {
+			count = len(table.rows)
+		}
+		return &bdFakeResult{columns: []string{"count"}, rows: [][]driver.Value{{int64(count)}}}, nil
+	}
+	match := bdSelectRe.FindStringSubmatch(trimmed)
 	if match == nil {
 		return nil, fmt.Errorf("bdPGCatalog: 不支持的查询 %.160s", query)
 	}
@@ -417,6 +444,7 @@ func bdRenderCell(value driver.Value) string {
 type bdFakeResult struct {
 	columns []string
 	rows    [][]driver.Value
+	rowsErr error
 }
 
 type bdFakeRows struct {
@@ -426,8 +454,12 @@ type bdFakeRows struct {
 
 func (r *bdFakeRows) Columns() []string { return r.result.columns }
 func (r *bdFakeRows) Close() error      { return nil }
+func (r *bdFakeRows) Err() error        { return r.result.rowsErr }
 func (r *bdFakeRows) Next(dest []driver.Value) error {
 	if r.pos >= len(r.result.rows) {
+		if r.result.rowsErr != nil {
+			return r.result.rowsErr
+		}
 		return io.EOF
 	}
 	copy(dest, r.result.rows[r.pos])

@@ -113,7 +113,8 @@ assertContains(adminHelp, 'aria-controls="admin-flow-panel-key"', '管理员流�
 assertContains(adminHelp, 'role="tabpanel" aria-labelledby="admin-flow-tab-key"', '管理员流程说明必须具有 tabpanel 语义')
 assertNotMatch(`${userHelp}\n${adminHelp}\n${helpIndex}`, /brand-icon">\?/i, '帮助页不得继续使用问号品牌图标')
 assertNotMatch(helpCss, /linear-gradient|repeating-linear-gradient|background-size:\s*\d+px\s+\d+px/i, '帮助页不得保留大渐变或网格背景')
-assertContains(helpCss, '--bg: #ffffff', '帮助页必须使用纯白主背景')
+assertContains(helpCss, '--page: #f5f7fb', '帮助页必须以 #f5f7fb 为页面底色并对齐主应用')
+assertContains(helpCss, '--bg: #ffffff', '帮助页卡片表面必须保持纯白 --bg')
 assertNotMatch(helpCss, /--bg:\s*#f5f7fa/i, '帮助页不得恢复灰色主背景')
 assertContains(helpCss, '.document-title { padding: 0; background: transparent; border: 0; }', '帮助页不得恢复占用首屏的标题横幅')
 assertContains(helpCss, '.brand-badge', '帮助页必须为品牌图标加载失败提供视觉回退')
@@ -131,8 +132,8 @@ assertContains(adminHelp, '/__aisys__/brand-icon.svg', '管理员页必须复用
 assertContains(helpIndex, '跳到正文', '入口页必须有跳到正文链接')
 assertContains(userHelp, '跳到正文', '用户页必须有跳到正文链接')
 assertContains(adminHelp, '跳到正文', '管理员页必须有跳到正文链接')
-assertContains(userHelp, '更新于 2026-07-31', '用户页必须标明更新时间')
-assertContains(adminHelp, '更新于 2026-07-31', '管理员页必须标明更新时间')
+assertContains(userHelp, '更新于 2026-09-22', '用户页必须标明更新时间')
+assertContains(adminHelp, '更新于 2026-09-22', '管理员页必须标明更新时间')
 assertContains(userHelp, 'data-nav-mobile', '用户页必须提供移动目录')
 assertContains(adminHelp, 'data-nav-mobile', '管理员页必须提供移动目录')
 assertContains(helpCss, '.mobile-nav { display: none;', '样式必须在桌面隐藏移动目录')
@@ -151,7 +152,7 @@ assertContains(helpJs, "document.body.classList.contains('help-gate')", '入口�
 assertContains(userHelp, 'aria-live="polite"', '用户搜索状态必须向辅助技术播报')
 assertContains(adminHelp, 'aria-live="polite"', '管理员搜索状态必须向辅助技术播报')
 
-console.log('帮助页内容回归通过：17 个用户路由、28 个管理路由、字段级指南、SVG 流程、导入语义与可访问性契约保持一致')
+console.log('帮助页内容回归通过：17 个用户路由、28 个管理路由、字段级指南、SVG 流程、导入语义与可访问性契约保持一致（2026-09-22 视觉改版后复验）')
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

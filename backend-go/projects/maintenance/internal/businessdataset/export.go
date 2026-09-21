@@ -47,7 +47,10 @@ type ExportReport struct {
 	ManifestHash        string            `json:"manifestHash"`
 	CapturedAt          string            `json:"capturedAt"`
 	Tables              []ExportTableStat `json:"tables"`
-	Blockers            []string          `json:"blockers"`
+	// SkippedSourceRows 记录结构-only 表在源库的实际行数（不迁移、不阻断；
+	// 生产运行态表天然非空）。目标库零行断言由导入侧把关。
+	SkippedSourceRows []string `json:"skippedSourceRows,omitempty"`
+	Blockers          []string `json:"blockers"`
 }
 
 // Ready reports whether the export produced a complete, blocker-free dataset
@@ -72,9 +75,6 @@ func ExportBusinessDataset(ctx context.Context, db *sql.DB, outDir string, opts 
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return report, fmt.Errorf("创建导出目录: %w", err)
-	}
-	addBlocker := func(format string, args ...any) {
-		report.Blockers = append(report.Blockers, fmt.Sprintf(format, args...))
 	}
 
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
@@ -115,12 +115,14 @@ func ExportBusinessDataset(ctx context.Context, db *sql.DB, outDir string, opts 
 		if tableErr != nil {
 			return report, tableErr
 		}
-		report.Tables = append(report.Tables, stat)
-		if contracts.IsBusinessDatasetStructuralOnlyTable(table) {
-			if stat.Rows != 0 {
-				addBlocker("结构-only 表 %s 在源库非空（%d 行），拒绝导出", table, stat.Rows)
-			}
+		if contracts.IsBusinessDatasetStructuralOnlyTable(table) && stat.Rows != 0 {
+			// 结构-only 表不迁移数据；生产源库这类运行态表天然有在写行
+			// （如调度事件），只记录不阻断。目标库零行断言由导入侧把关。
+			report.SkippedSourceRows = append(report.SkippedSourceRows,
+				fmt.Sprintf("%s: %d 行（结构-only，不迁移）", table, stat.Rows))
+			stat.Rows = 0
 		}
+		report.Tables = append(report.Tables, stat)
 	}
 
 	if len(report.Blockers) > 0 {
@@ -170,6 +172,21 @@ func bdExportTable(ctx context.Context, tx *sql.Tx, table string, outDir string)
 	names := make([]string, 0, len(columns))
 	for _, column := range columns {
 		names = append(names, column.Name)
+	}
+	if stat.StructuralOnly {
+		// 结构-only 表不迁移数据：源行数仅作信息记录（生产运行态表天然
+		// 非空），manifest 以 0 行 + 空内容摘要表示，由调用方降级记录。
+		qualified, errQualify := bdQualifiedTable(table)
+		if errQualify != nil {
+			return stat, errQualify
+		}
+		var sourceRows int64
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+qualified).Scan(&sourceRows); err != nil {
+			return stat, fmt.Errorf("统计表 %s 源行数: %w", table, err)
+		}
+		stat.Rows = sourceRows
+		stat.Sha256 = hex.EncodeToString(sha256.New().Sum(nil))
+		return stat, nil
 	}
 	primaryKey, err := bdLoadPrimaryKey(ctx, tx, table)
 	if err != nil {

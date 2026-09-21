@@ -528,7 +528,7 @@ func TestHealthHandlerFallbackSlotsAndNotFound(t *testing.T) {
 		t.Fatalf("无附加槽位的 /health 必须 200: %d %s", record.Code, record.Body.String())
 	}
 	if payload["accountBalanceEnabled"] != false || payload["proxyLatencyEnabled"] != false ||
-		payload["modelCheckEnabled"] != false || payload["workerEnabled"] != false || payload["ready"] != true {
+		payload["workerEnabled"] != false || payload["ready"] != true {
 		t.Fatalf("未启用组件必须回落禁用默认: %v", payload)
 	}
 	notFound := httptest.NewRecorder()

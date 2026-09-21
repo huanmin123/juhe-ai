@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/datadir"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // Config is the Gateway-side owner contract for J3b. Loading it only validates
@@ -187,9 +188,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		// 自动认领零配置：无 Redis 时组合根回退进程内 memory 准入，
 		// namespace 不参与装配，不校验。
 	} else {
-		cfg.CircuitRuntimeRedisNamespace = strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"))
+		// 2026-09-22 namespace canonical 化：J3b 组合根把同一 namespace 喂给
+		// circuit_runtime（直接拼接型）与 key_model_runtime（双格式去重型），
+		// 加载层统一剥除 `juhe-ai:` 根前缀，短名输入逐字节不变，键空间不再
+		// 因全前缀配置分裂。
+		cfg.CircuitRuntimeRedisNamespace = rediscfg.CanonicalRedisNamespace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"))
 		if cfg.CircuitRuntimeRedisNamespace == "" {
-			cfg.CircuitRuntimeRedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
+			cfg.CircuitRuntimeRedisNamespace = rediscfg.CanonicalRedisNamespace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 		}
 		if cfg.CircuitRuntimeRedisNamespace == "" {
 			return Config{}, errors.New("J3b account circuit runtime 缺少 Redis namespace")

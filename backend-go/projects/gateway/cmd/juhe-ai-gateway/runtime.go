@@ -12,6 +12,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/datadir"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
@@ -403,7 +404,12 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	if cfg.Secret == "" {
 		cfg.Secret = defaultRuntimeSecret
 	}
-	cfg.RedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
+	// 2026-09-22 namespace canonical 化：加载层统一剥除 `juhe-ai:` 根前缀，
+	// 全前缀配置（如 `juhe-ai:dev`）与短名（`dev`）落同一短形式，避免下游
+	// 直接拼接型实现（circuit_runtime/revision.go 等）产生
+	// `juhe-ai:juhe-ai:dev:...` 键空间分裂，也与 key_model_runtime 的双格式
+	// 去重型输入收敛一致。短名输入逐字节不变。
+	cfg.RedisNamespace = rediscfg.CanonicalRedisNamespace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 
 	// 路径类 env 派生（2026-09-19 零配置约定，internal/datadir 固定名表）：
 	// 未配置时落 <JUHE_AI_DATA_DIR=./data>/<固定名>，显式配置优先。PG 模式下
@@ -754,17 +760,18 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.BusinessSchemaReady = envBoolTrue(getenv("JUHE_AI_BUSINESS_SCHEMA_READY"))
 	cfg.BusinessOwnerEpoch = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER_EPOCH"))
 	cfg.BusinessCutoverEvidencePath = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH"))
-	// 2026-09-19 零配置自动认领：sqlite/postgres 模式下 JUHE_AI_BUSINESS_* 家族
-	// 全部未配置时，按"新装部署、无 Node 切流历史"处理——组合根自动认领业务库
-	// owner（handoff 三证置真、epoch 用固定 standalone 值）。显式配置家族内
-	// 任一成员则保持原门禁（businessOwnerGate + cutover evidence 校验），
+	// 2026-09-19 零配置自动认领：sqlite/postgres 模式下切流语义家族全部未配
+	// 置时，按"新装部署、无 Node 切流历史"处理——组合根自动认领业务库 owner
+	// （handoff 三证置真、epoch 用固定 standalone 值）。2026-09-22 口径对齐
+	// J3b 家族（modelcheckowner/config.go 仅 handoff/readiness 语义变量）：
+	// 家族收窄为五个切流语义变量，纯运维变量（BUSINESS_OWNER、
+	// BUSINESS_DATABASE_PATH、BUSINESS_POSTGRES_URL）不再触发切流门禁——只
+	// 配置业务库路径或独立连接串（常见运维需求）不得导致启动失败。显式配置
+	// 五证任一成员仍保持原门禁（businessOwnerGate + cutover evidence 校验），
 	// 生产切流纪律不变。postgres 自动认领时业务连接回落共享
-	// JUHE_AI_POSTGRES_URL：家族未配置即不存在独立业务连接串，独立凭据仍可
-	// 通过显式配置 JUHE_AI_BUSINESS_POSTGRES_URL 走原门禁。
+	// JUHE_AI_POSTGRES_URL：五证未配置即不存在独立业务连接串的切流语义，
+	// 独立凭据仍可通过显式配置 JUHE_AI_BUSINESS_POSTGRES_URL 提供并被保留。
 	if (cfg.DatabaseDriver == "sqlite" || cfg.DatabaseDriver == "postgres") && !hasAnyRawConfig(getenv,
-		"JUHE_AI_BUSINESS_OWNER",
-		"JUHE_AI_BUSINESS_DATABASE_PATH",
-		"JUHE_AI_BUSINESS_POSTGRES_URL",
 		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED",
 		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED",
 		"JUHE_AI_BUSINESS_SCHEMA_READY",

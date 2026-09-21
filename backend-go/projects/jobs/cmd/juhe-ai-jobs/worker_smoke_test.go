@@ -197,7 +197,6 @@ func TestWorkerHealthExposesWorkerFields(t *testing.T) {
 		false, func() bool { return true },
 		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
 		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		false, func() bool { return true },
 		true, func() bool { return running.Load() }, assembly.statusPayload)
 	record := httptest.NewRecorder()
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/health", nil))

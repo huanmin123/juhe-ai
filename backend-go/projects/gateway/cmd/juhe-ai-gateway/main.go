@@ -255,8 +255,8 @@ func main() {
 		}
 		// 2026-09-20 零配置自动认领：未配置 Redis 时 key-model 前台准入
 		// 回退进程内 memory store（单进程 owner，重启即重置，语义与主链路
-		// 准入可旁路一致），账户熔断 RuntimeGate 与 projector 组件不装配；
-		// 配置 Redis 后恢复完整链路。
+		// 准入可旁路一致），账户熔断以进程内 memory gate 恒装配（2026-09-22
+		// 起，无 projector 循环）；配置 Redis 后恢复完整 Redis 链路。
 		var keyModelGate gatewaydispatch.KeyModelGate
 		var probeCircuit gatewaydispatch.AccountCircuitGate
 		if j3bConfig.CircuitRuntimeRedisURL != "" {
@@ -326,7 +326,21 @@ func main() {
 			keyModelGate = keyModelStore
 			probeCircuit = gatewaydispatch.RuntimeCircuitGate{Store: runtimeStore}
 		} else {
+			// 2026-09-22 单机零配置：账户熔断对齐 /v1 主链路
+			// newChainAccountCircuitService 的 redis/memory 双模先例，以进程内
+			// memory gate 恒装配（决策层语义与 RuntimeCircuitGate 同构，重启即
+			// 重置），健康字段 accountCircuitRuntimeReady 与 Redis 模式同语义
+			// 恒为 true。常驻组件只负责把 readiness 原子置真，无 projector
+			// 循环。
 			keyModelGate = newJ3bMemoryKeyModelGate()
+			probeCircuit = gatewaydispatch.NewMemoryCircuitGate()
+			circuitRuntimeEnabled = true
+			circuitRuntimeComponent = supervisor.Component{Name: "J3b account-circuit-memory-gate", Run: func(runCtx context.Context) error {
+				circuitRuntimeRunning.Store(true)
+				defer circuitRuntimeRunning.Store(false)
+				<-runCtx.Done()
+				return runCtx.Err()
+			}}
 		}
 		retentionInterval, retentionLimit, retentionConfigErr := loadSessionRetentionConfig(os.Getenv)
 		if retentionConfigErr != nil {

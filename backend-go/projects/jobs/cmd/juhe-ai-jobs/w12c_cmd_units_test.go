@@ -515,7 +515,6 @@ func TestW12CJobsHTTPHandlerSupplementalArms(t *testing.T) {
 		false, func() bool { return true },
 		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
 		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		false, func() bool { return true },
 		gometrics.New("juhe-ai", "jobs"), (*gometrics.Sampler)(nil),
 		true, func() bool { return true },
 		nil)

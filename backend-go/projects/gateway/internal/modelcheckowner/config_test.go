@@ -163,6 +163,46 @@ func TestRejectsCircuitRuntimeWithoutRedisOwnerConfig(t *testing.T) {
 	}
 }
 
+// 2026-09-22 namespace canonical 化：J3b 组合根把同一 namespace 喂给
+// circuit_runtime（直接拼接型）与 key_model_runtime（双格式去重型），加载层
+// 统一剥除 `juhe-ai:` 根前缀；短名逐字节不变；J3B 专属变量优先于共享变量。
+func TestCanonicalizesCircuitRuntimeRedisNamespace(t *testing.T) {
+	base := map[string]string{
+		"JUHE_AI_J3B_ENABLED": "true", "JUHE_AI_J3B_OWNER": "gateway", "JUHE_AI_J3B_INSTANCE_ID": "gw-1",
+		"JUHE_AI_J3B_STORE": "postgres", "JUHE_AI_J3B_POSTGRES_URL": "postgres://j3b", "JUHE_AI_J3B_BUSINESS_POSTGRES_URL": "postgres://business",
+		"JUHE_AI_J3B_CREDENTIAL_SECRET": "credential", "JUHE_AI_J3B_IDENTITY_SECRET": "identity", "JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED": "true",
+		"JUHE_AI_J3B_NODE_WRITER_STOPPED": "true", "JUHE_AI_J3B_SCHEMA_READY": "true", "JUHE_AI_J3B_HEALTH_BOUNDARY_READY": "true", "JUHE_AI_J3B_RUNTIME_READY": "true",
+		"JUHE_AI_J3B_OWNER_EPOCH": "epoch-ns", "JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH": "evidence.json",
+		"JUHE_AI_J3B_CIRCUIT_REDIS_URL": "redis://127.0.0.1:6379/9",
+	}
+	cases := []struct {
+		name     string
+		j3bNS    string
+		sharedNS string
+		want     string
+	}{
+		{name: "全前缀剥根", j3bNS: "juhe-ai:dev", want: "dev"},
+		{name: "短名不变", j3bNS: "dev", want: "dev"},
+		{name: "空白与全前缀", j3bNS: " juhe-ai:dev ", want: "dev"},
+		{name: "专属缺省回落共享全前缀", sharedNS: "juhe-ai:dev", want: "dev"},
+	}
+	for _, tc := range cases {
+		values := map[string]string{}
+		for key, value := range base {
+			values[key] = value
+		}
+		values["JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE"] = tc.j3bNS
+		values["JUHE_AI_REDIS_NAMESPACE"] = tc.sharedNS
+		cfg, err := LoadConfig(func(key string) string { return values[key] })
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if cfg.CircuitRuntimeRedisNamespace != tc.want {
+			t.Fatalf("%s: namespace=%q want %q", tc.name, cfg.CircuitRuntimeRedisNamespace, tc.want)
+		}
+	}
+}
+
 func TestRejectsConfirmedHandoffUntilNodeWriterStopped(t *testing.T) {
 	values := map[string]string{
 		"JUHE_AI_J3B_ENABLED":                    "true",

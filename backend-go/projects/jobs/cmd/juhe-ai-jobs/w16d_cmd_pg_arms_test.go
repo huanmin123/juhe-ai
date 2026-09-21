@@ -368,7 +368,6 @@ func TestW16DPGManualBridgeArms(t *testing.T) {
 		false, func() bool { return true },
 		func() proxylatency.RunnerStatus { return proxylatency.RunnerStatus{} },
 		func() (proxylatency.RunnerStatus, bool) { return proxylatency.RunnerStatus{}, true },
-		false, func() bool { return true },
 		nil, nil,
 		false, func() bool { return true }, func() map[string]any { return nil },
 	)

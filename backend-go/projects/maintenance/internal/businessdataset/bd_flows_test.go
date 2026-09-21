@@ -238,16 +238,26 @@ func TestBDExportStructuralTableNonEmpty(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "dataset")
 	report, err := ExportBusinessDataset(context.Background(), db, outDir, ExportOptions{})
 	if err != nil {
-		t.Fatalf("结构表非空属于 blocker 而非运行错误: %v", err)
+		t.Fatalf("结构表源库非空只记录不阻断: %v", err)
 	}
-	if report.Ready() {
-		t.Fatalf("结构表非空必须阻断: %+v", report)
+	if !report.Ready() {
+		t.Fatalf("结构表源库非空（生产运行态常态）不得阻断导出: %+v", report)
 	}
-	if len(report.Blockers) != 1 || !strings.Contains(report.Blockers[0], "group_account_stats_dirty") {
-		t.Fatalf("blocker 必须指明结构表: %+v", report.Blockers)
+	if len(report.SkippedSourceRows) != 1 || !strings.Contains(report.SkippedSourceRows[0], "group_account_stats_dirty") {
+		t.Fatalf("跳过记录必须指明结构表与行数: %+v", report.SkippedSourceRows)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, ManifestFileName)); !os.IsNotExist(err) {
-		t.Fatal("存在 blocker 时不得写出 manifest")
+	manifestBytes, err := os.ReadFile(filepath.Join(outDir, ManifestFileName))
+	if err != nil {
+		t.Fatalf("Ready 导出必须写出 manifest: %v", err)
+	}
+	var manifest contracts.BusinessDatasetManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("manifest 解码: %v", err)
+	}
+	for _, entry := range manifest.Tables {
+		if entry.Name == "group_account_stats_dirty" && entry.Rows != 0 {
+			t.Fatalf("结构表在 manifest 中必须以 0 行表示: %+v", entry)
+		}
 	}
 }
 

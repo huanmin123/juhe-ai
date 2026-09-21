@@ -6,9 +6,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
@@ -507,7 +510,12 @@ func ImportBusinessDataset(ctx context.Context, db *sql.DB, inDir string, opts I
 			data := dataset[table]
 			if readbackRows != entry.Rows || !bdProjectedRowsEqual(targetTable.PrimaryKey, stat.PublicColumns, data.Rows, readbackData) {
 				allMatch = false
-				addBlocker("表 %s 公共投影逐行读回校验不匹配（manifest 行=%d 读回 行=%d）", table, entry.Rows, readbackRows)
+				addBlocker("表 %s 公共投影逐行读回校验不匹配（manifest 行=%d 读回 行=%d）%s", table, entry.Rows, readbackRows, func() string {
+					if bdLastProjectionMismatch != "" {
+						return "；首个差异：" + bdLastProjectionMismatch
+					}
+					return ""
+				}())
 			} else {
 				stat.DigestMatch = true
 			}
@@ -693,6 +701,37 @@ func (d *bdDigest) hex() string {
 	return hex.EncodeToString(d.hash.Sum(nil))
 }
 
+// bdProjectedValueKey renders one value as a type-agnostic comparison key.
+// JSONL 解析使用 UseNumber：源侧数字是 json.Number，读回侧是 int64/float64，
+// 直接 bdValueKey 会把相等的数值误判为不同（"n:5" vs "j:5"）。此处统一为
+// 数值语义键：整数值 "i:<n>"、非整数值 "f:<最短表示>"，其余走 bdValueKey。
+func bdProjectedValueKey(value any) string {
+	// 所有数值统一走 float64 最短表示：源侧 json.Number("10") 与读回侧
+	// float64(10)/int64(10) 必须得到同一键。两侧对同一行同列做同一转换，
+	// bigint 超出 2^53 的精度损失在两侧对称，不影响相等性判断。
+	toFloat := func() (float64, bool) {
+		switch typed := value.(type) {
+		case json.Number:
+			if f, err := typed.Float64(); err == nil {
+				return f, true
+			}
+		case int:
+			return float64(typed), true
+		case int32:
+			return float64(typed), true
+		case int64:
+			return float64(typed), true
+		case float64:
+			return typed, true
+		}
+		return 0, false
+	}
+	if f, ok := toFloat(); ok {
+		return "f:" + strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	return bdValueKey(value)
+}
+
 // bdProjectedRowsEqual compares the allowed-missing projection: every source
 // row and every readback row must pair one-to-one by primary key with all
 // public columns equal. Ordering plays no role, so this stays correct across
@@ -713,9 +752,16 @@ func bdProjectedRowsEqual(primaryKeys []string, public []string, source, readbac
 			return false
 		}
 	}
+	projectedKeys := func(row map[string]any, columns []string) string {
+		values := make([]string, 0, len(columns))
+		for _, column := range columns {
+			values = append(values, bdProjectedValueKey(row[column]))
+		}
+		return strings.Join(values, "")
+	}
 	sourceByKey := map[string]map[string]any{}
 	for _, row := range source {
-		key := bdValueKeys(fkRowValues(row, primaryKeys))
+		key := projectedKeys(row, primaryKeys)
 		if _, duplicate := sourceByKey[key]; duplicate {
 			return false
 		}
@@ -725,16 +771,21 @@ func bdProjectedRowsEqual(primaryKeys []string, public []string, source, readbac
 		return false
 	}
 	for _, row := range readback {
-		key := bdValueKeys(fkRowValues(row, primaryKeys))
+		key := projectedKeys(row, primaryKeys)
 		sourceRow, ok := sourceByKey[key]
 		if !ok {
 			return false
 		}
 		for _, column := range public {
-			if bdValueKey(sourceRow[column]) != bdValueKey(row[column]) {
+			if bdProjectedValueKey(sourceRow[column]) != bdProjectedValueKey(row[column]) {
+				bdLastProjectionMismatch = fmt.Sprintf("行主键=%q 列=%q 源=%q(%T) 读回=%q(%T)",
+					key, column, sourceRow[column], sourceRow[column], row[column], row[column])
 				return false
 			}
 		}
 	}
 	return true
 }
+
+// bdLastProjectionMismatch 记录最近一次投影对比失败的首个差异（仅诊断用）。
+var bdLastProjectionMismatch string
