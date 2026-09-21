@@ -250,16 +250,16 @@ type quotaCosts struct {
 // parseQuotaLimits 对齐 parseRequestQuotaLimitsJson。
 func parseQuotaLimits(raw string) quotaLimits {
 	var parsed struct {
-		Hourly  *struct {
+		Hourly *struct {
 			Enabled bool    `json:"enabled"`
 			Limit   float64 `json:"limit"`
 			Hours   int     `json:"hours"`
 		} `json:"hourly"`
-		Daily   *struct {
+		Daily *struct {
 			Enabled bool    `json:"enabled"`
 			Limit   float64 `json:"limit"`
 		} `json:"daily"`
-		Weekly  *struct {
+		Weekly *struct {
 			Enabled bool    `json:"enabled"`
 			Limit   float64 `json:"limit"`
 		} `json:"weekly"`
@@ -837,13 +837,13 @@ func (l *ProjectionItemLoader) loadAPIKeyRuntimeSummaries(ctx context.Context, a
 }
 
 type apiKeyRuntimeStateRow struct {
-	status          string
-	nextProbeAt     string
-	lastFailureAt   string
-	lastErrorCode   string
+	status           string
+	nextProbeAt      string
+	lastFailureAt    string
+	lastErrorCode    string
 	lastErrorMessage string
-	lastTraceID     string
-	index           int
+	lastTraceID      string
+	index            int
 }
 
 func (l *ProjectionItemLoader) loadAPIKeyRuntimeStates(ctx context.Context, fingerprints []string) (map[string]apiKeyRuntimeStateRow, error) {
@@ -852,7 +852,7 @@ func (l *ProjectionItemLoader) loadAPIKeyRuntimeStates(ctx context.Context, fing
 		return states, nil
 	}
 	query := `
-      SELECT key_fingerprint, status, next_probe_at, last_failure_at, last_error_code, last_error_message, last_error_trace_id
+      SELECT key_fingerprint, status, next_probe_at, last_failure_at, last_error_code, last_error_message, last_trace_id
       FROM ` + l.table("account_api_key_runtime_states") + `
       WHERE key_fingerprint IN (` + placeholdersFor(len(fingerprints)) + `)`
 	args := make([]any, 0, len(fingerprints))
@@ -866,13 +866,13 @@ func (l *ProjectionItemLoader) loadAPIKeyRuntimeStates(ctx context.Context, fing
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			fingerprint    string
-			status         sql.NullString
-			nextProbe      sql.NullString
-			lastFailure    sql.NullString
-			lastErrorCode  sql.NullString
+			fingerprint      string
+			status           sql.NullString
+			nextProbe        sql.NullString
+			lastFailure      sql.NullString
+			lastErrorCode    sql.NullString
 			lastErrorMessage sql.NullString
-			lastTraceID    sql.NullString
+			lastTraceID      sql.NullString
 		)
 		if err := rows.Scan(&fingerprint, &status, &nextProbe, &lastFailure, &lastErrorCode, &lastErrorMessage, &lastTraceID); err != nil {
 			return nil, err

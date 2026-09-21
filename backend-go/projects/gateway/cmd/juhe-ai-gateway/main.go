@@ -34,6 +34,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
@@ -314,6 +315,19 @@ func main() {
 		if qualityErr != nil {
 			fail(fmt.Errorf("create J3b Gateway quality manager: %w", qualityErr))
 		}
+		// 题库域装配（计划阶段 2/3）：业务库句柄与 BusinessQualityManager
+		// 同源；postgres 布尔沿用 businessMode 取法。store 同时充当质量配置
+		// 写入侧的 approved 存在性校验端口与运行时题目解析端口。审计 sink：
+		// F4 operation-log producer 在本块之后的 system API 装配段才存在，
+		// J3b 管理面（含既有 model-checks 端点）没有进程内审计 sink 可注入，
+		// 题库写操作审计按 handlers 的 nil-sink 契约降级为 no-op。
+		questionBankStore, questionBankErr := modelcheckquestionbank.NewStore(businessConnection.DB, businessMode == modelcheckauth.Postgres)
+		if questionBankErr != nil {
+			fail(fmt.Errorf("create J3b Gateway question bank store: %w", questionBankErr))
+		}
+		questionBankAdmin := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, true)
+		questionBankSelf := modelcheckquestionbank.NewHTTPHandlers(questionBankStore, nil, time.Now, false)
+		quality.SetQuestionBankVerifier(questionBankStore)
 		schedulerSource := &modelcheckowner.BusinessSchedulerSource{Business: businessConnection.DB, Postgres: businessMode == modelcheckauth.Postgres, OwnerID: j3bConfig.InstanceID}
 		if schedulerErr := schedulerSource.CheckContract(context.Background()); schedulerErr != nil {
 			fail(fmt.Errorf("verify J3b Gateway scheduler contract: %w", schedulerErr))
@@ -351,6 +365,9 @@ func main() {
 			Tokenizer:         tokenizer,
 			ModelLimits:       modelLimits,
 			HealthStatHour:    healthStatHour,
+			QuestionBankAdmin: questionBankAdmin,
+			QuestionBankSelf:  questionBankSelf,
+			QuestionBank:      questionBankStore,
 			SchedulerFactory: func(store *modelcheckowner.Store, runtime *modelcheckowner.Runtime, projector *modelcheckowner.QualityProjector) (modelcheckowner.SchedulerSource, modelcheckowner.SchedulerExecutor) {
 				source := schedulerSource
 				source.Store = store

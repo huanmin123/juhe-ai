@@ -73,7 +73,7 @@ func TestW9ABusinessSQLiteSchemaContract(t *testing.T) {
 // TestW9ABusinessSQLiteSchemaFrozenEntries freezes the contract version and a
 // set of load-bearing table entries that Gateway owners depend on.
 func TestW9ABusinessSQLiteSchemaFrozenEntries(t *testing.T) {
-	if BusinessSQLiteSchemaVersion != "business-sqlite-gateway-v12" {
+	if BusinessSQLiteSchemaVersion != "business-sqlite-gateway-v13" {
 		t.Fatalf("schema version drifted: %q", BusinessSQLiteSchemaVersion)
 	}
 	for _, table := range []string{

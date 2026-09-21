@@ -22,7 +22,7 @@ func TestW11GUsageRecordKeywordOwnerPaths(t *testing.T) {
 		`UPDATE accounts SET authorization_instance_source_account_id = 'w11g-inst-src' WHERE id = 'w11g-inst-child'`,
 		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES
 			('w11g-group-acct', 'w11g-group-1', 'sys-other', 1)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
+		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
 			VALUES ('w11g-ra-1', 'account', 'w11g-ra-acct', 'sys-other', 'sys-user-1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
 			       ('w11g-ra-2', 'group', 'w11g-group-1', 'sys-other', 'sys-user-1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 	)

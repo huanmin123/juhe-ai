@@ -344,8 +344,8 @@ func TestW11AStrictBodyDecodeArms(t *testing.T) {
 func TestW11AExpiryForWriteArms(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "w11a-owner", "active")
-	f.exec(t, `INSERT INTO accounts (id, system_account_id, resource_owner_system_account_id, name, created_at, updated_at)
-		VALUES ('w11a-acct', 'w11a-owner', 'w11a-owner', 'acct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	f.exec(t, `INSERT INTO accounts (id, system_account_id, name, created_at, updated_at)
+		VALUES ('w11a-acct', 'w11a-owner', 'acct', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	ctx := context.Background()
 	tx, err := f.db.BeginTx(ctx, nil)
 	if err != nil {

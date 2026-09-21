@@ -16,7 +16,6 @@ const accountsFixtureDDL = `CREATE TABLE IF NOT EXISTS accounts (
 	system_account_id TEXT NOT NULL,
 	name TEXT NOT NULL,
 	status TEXT NOT NULL DEFAULT 'active',
-	resource_owner_system_account_id TEXT NOT NULL DEFAULT '',
 	deleted_at TEXT,
 	account_expires_at TEXT,
 	authorization_instance_authorization_id TEXT,
@@ -24,8 +23,8 @@ const accountsFixtureDDL = `CREATE TABLE IF NOT EXISTS accounts (
 
 func (f *fixture) seedSourceAccount(t *testing.T, id, ownerID string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name, resource_owner_system_account_id)
-		VALUES (?, ?, ?, ?)`, id, ownerID, "源账户 "+id, ownerID); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name)
+		VALUES (?, ?, ?)`, id, ownerID, "源账户 "+id); err != nil {
 		t.Fatal(err)
 	}
 }

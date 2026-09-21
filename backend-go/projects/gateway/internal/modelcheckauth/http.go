@@ -119,7 +119,7 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	ip := clientIP(r)
-	if blocked, retry, message := h.loginGuard().Check(ip, input.Username); blocked {
+	if blocked, retry, message, _ := h.loginGuard().Check(ip, input.Username); blocked {
 		if retry > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(retry))
 		}
@@ -132,7 +132,7 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !ok || (verified.Role != "admin" && verified.Role != "super_admin") {
-		if blocked, retry, message := h.loginGuard().Failed(ip, input.Username); blocked {
+		if blocked, retry, message, _ := h.loginGuard().Failed(ip, input.Username); blocked {
 			if retry > 0 {
 				w.Header().Set("Retry-After", strconv.Itoa(retry))
 			}
@@ -152,7 +152,7 @@ func (h *HTTPHandler) temporaryAccessToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !issuedOK {
-		if blocked, retry, message := h.loginGuard().Failed(ip, input.Username); blocked {
+		if blocked, retry, message, _ := h.loginGuard().Failed(ip, input.Username); blocked {
 			if retry > 0 {
 				w.Header().Set("Retry-After", strconv.Itoa(retry))
 			}
@@ -238,7 +238,7 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ip := clientIP(r)
-	if blocked, retry, message := h.loginGuard().Check(ip, input.Username); blocked {
+	if blocked, retry, message, _ := h.loginGuard().Check(ip, input.Username); blocked {
 		if retry > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(retry))
 		}
@@ -255,7 +255,7 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		if blocked, retry, message := h.loginGuard().Failed(ip, input.Username); blocked {
+		if blocked, retry, message, _ := h.loginGuard().Failed(ip, input.Username); blocked {
 			if retry > 0 {
 				w.Header().Set("Retry-After", strconv.Itoa(retry))
 			}

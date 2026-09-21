@@ -123,8 +123,10 @@ const (
 //     (X04: bearer-token auth + per-source penalty-window rate limiting +
 //     scope checks; the admin management family stays in policyreads).
 //   - /v1 + gateway protocol paths + openai-compatible files/vector-stores:
-//     gated behind JUHE_AI_GATEWAY_CHAIN_ENABLED, see gatewaychain.go (the
-//     compat families mount into the chain's non-protocol paths).
+//     mounted through the always-assembled serving chain (the former
+//     JUHE_AI_GATEWAY_CHAIN_ENABLED gate was removed on 2026-09-21), see
+//     gatewaychain.go (the compat families mount into the chain's
+//     non-protocol paths).
 const (
 	systemAPIPrefix = "/__aisys__/api"
 	publicAPIPrefix = "/__aipublic__"
@@ -134,9 +136,9 @@ const (
 type composition struct {
 	Kernel http.Handler
 	Bus    *inval.Bus
-	// chain is the assembled /v1 gateway chain (nil when
-	// JUHE_AI_GATEWAY_CHAIN_ENABLED is off; /v1 traffic then answers the
-	// kernel 404 JSON contract).
+	// chain is the assembled /v1 gateway chain; the old off-state (nil chain,
+	// kernel 404 JSON contract) no longer exists since the 2026-09-21
+	// JUHE_AI_GATEWAY_CHAIN_ENABLED switch removal.
 	chain *gatewayChain
 	// DB is the business database handle (SQLite file handle or the shared
 	// PostgreSQL pool connection). Exposed for seed/maintenance helpers.

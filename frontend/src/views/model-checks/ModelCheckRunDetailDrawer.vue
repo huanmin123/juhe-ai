@@ -51,6 +51,21 @@
         <a-descriptions-item label="处罚详情">{{ run.qualityDecision.message }}</a-descriptions-item>
       </a-descriptions>
 
+      <template v-if="quizSummary">
+        <a-descriptions bordered size="small" :column="descriptionColumns" class="run-descriptions" title="题库测试">
+          <a-descriptions-item label="环节小计">{{ quizSummary.score }} / {{ quizSummary.maxScore }}，扣 {{ quizSummary.deduction }} 分</a-descriptions-item>
+          <a-descriptions-item label="启用状态">{{ quizSummary.enabled ? '已启用题库测试' : '未启用题库测试' }}</a-descriptions-item>
+        </a-descriptions>
+        <a-collapse v-if="quizSummary.items.length" class="quiz-items-collapse">
+          <a-collapse-panel v-for="item in quizSummary.items" :key="item.questionId" :header="item.title || item.questionId">
+            <div class="quiz-item-verdict">
+              <a-tag :color="quizVerdictColor(item.verdict)">{{ quizVerdictText(item.verdict) }}</a-tag>
+            </div>
+            <div class="quiz-item-reason">{{ item.reason || '-' }}</div>
+          </a-collapse-panel>
+        </a-collapse>
+      </template>
+
       <a-descriptions v-if="trustReport" bordered size="small" :column="descriptionColumns" class="run-descriptions" title="可信度分项">
         <a-descriptions-item label="模型身份">{{ identityStatusText(trustReport.identityStatus) }}</a-descriptions-item>
         <a-descriptions-item label="模型映射">{{ mappingStatusText(trustReport.mappingStatus) }}</a-descriptions-item>
@@ -108,8 +123,11 @@ import {
   levelColor,
   levelText,
   modelCheckModelText,
+  modelCheckQuizSummary,
   profileColor,
   profileText,
+  quizVerdictColor,
+  quizVerdictText,
   runTrustedComparison,
   statusColor,
   statusText,
@@ -134,6 +152,7 @@ const trustReport = computed(() => {
   return value && typeof value === 'object' ? value as ModelCheckTrustReport : undefined
 })
 const visibleChecks = computed(() => visibleModelCheckChecks(props.run?.checks ?? []))
+const quizSummary = computed(() => modelCheckQuizSummary(props.run?.resultSummary))
 
 const identityStatusText = (value: ModelCheckTrustReport['identityStatus']) => ({
   consistent: '当前受控探针一致', suspected_downgrade: '疑似降级', suspected_same_source: '疑似同源', population_outlier: '群体离群', insufficient_evidence: '证据不足'
@@ -272,6 +291,24 @@ function modelText(value: string) {
   word-break: break-word;
   background: #0f172a;
   border-radius: 8px;
+}
+
+.quiz-items-collapse {
+  margin: -4px 0 0;
+  background: transparent;
+}
+
+.quiz-item-verdict {
+  display: flex;
+  margin-bottom: 6px;
+}
+
+.quiz-item-reason {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @media (max-width: 900px) {

@@ -43,11 +43,12 @@ func TestW9HMainFailFastArms(t *testing.T) {
 			"JUHE_AI_REDIS_STATE_URL":             "redis://127.0.0.1:6379/9",
 			"JUHE_AI_REDIS_NAMESPACE":             "w9h-failfast",
 		}},
-		// J2 开启但 store=sqlite → accountbalance.LoadRuntimeConfig 失败。
+		// J2 家族已激活（2026-09-21 起 ENABLED 开关移除，专属 PG URL 即激活），
+		// store=sqlite → accountbalance.LoadRuntimeConfig 加载期拒绝。
 		{"account-balance-sqlite-rejected", map[string]string{
-			"JUHE_AI_ACCOUNT_BALANCE_ENABLED":  "true",
-			"JUHE_AI_ACCOUNT_BALANCE_STORE":    "sqlite",
-			"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "w9h-j2",
+			"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://w9h:w9h@127.0.0.1:1/w9h",
+			"JUHE_AI_ACCOUNT_BALANCE_STORE":        "sqlite",
+			"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":     "w9h-j2",
 		}},
 		// J3b runtime 是 Gateway-owned：jobs 进程开启即失败。
 		{"model-check-jobs-rejected", map[string]string{"JUHE_AI_MODEL_CHECK_ENABLED": "true"}},

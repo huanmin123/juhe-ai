@@ -12,7 +12,7 @@ type SummaryResult struct {
 }
 
 func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string) SummaryResult {
-	maxScore, rawScore, failed, juicePenalty := 0, 0, 0, 0
+	maxScore, rawScore, failed, juicePenalty, quizDeduction := 0, 0, 0, 0, 0
 	for _, item := range checks {
 		originalKind := item.Kind
 		item.Kind = unscopedKind(item.Kind)
@@ -26,6 +26,18 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 			if value, ok := item.Evidence["scorePenalty"].(float64); ok {
 				juicePenalty += int(value)
 			}
+		}
+		if item.Kind == "custom_quiz" {
+			// Custom quiz items never enter the shared denominator. A graded
+			// failure deducts its full remaining weight from the normalized
+			// score instead; terminal/request-failure items stay excluded.
+			if item.Status == "failed" {
+				failed++
+				if item.MaxScore > 0 && !evidenceBool(item.Evidence, "excludedFromScoring") && !evidenceBool(item.Evidence, "requestFailure") {
+					quizDeduction += item.MaxScore - item.Score
+				}
+			}
+			continue
 		}
 		if item.MaxScore <= 0 || item.Status == "skipped" {
 			continue
@@ -41,6 +53,7 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 		score = (rawScore*100 + maxScore/2) / maxScore
 	}
 	score -= juicePenalty
+	score -= quizDeduction
 	if score < 0 {
 		score = 0
 	}

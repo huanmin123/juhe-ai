@@ -11,24 +11,26 @@ import (
 	"time"
 )
 
-func TestLoadRuntimeConfigDisabledIsFailClosed(t *testing.T) {
+// 2026-09-21 起无总开关：J3a 依赖 PostgreSQL——主连接串与专属连接串均未
+// 配置时家族合法缺席（依赖缺席=能力缺席，非开关）。
+func TestLoadRuntimeConfigAbsentWithoutPostgres(t *testing.T) {
 	cfg, err := LoadRuntimeConfig(func(string) string { return "" })
 	if err != nil || cfg.Enabled {
-		t.Fatalf("disabled config=%+v err=%v", cfg, err)
+		t.Fatalf("absent config=%+v err=%v", cfg, err)
 	}
 }
 
-func TestLoadRuntimeConfigEnabledRequiresCompletePostgresConfig(t *testing.T) {
-	env := map[string]string{"JUHE_AI_PROXY_LATENCY_ENABLED": "true", "JUHE_AI_PROXY_LATENCY_JOBS_OWNER": "go"}
-	cfg, err := LoadRuntimeConfig(func(name string) string { return env[name] })
-	if err == nil || cfg.Enabled || !strings.Contains(err.Error(), "INSTANCE_ID") {
-		t.Fatalf("expected fail-closed config, cfg=%+v err=%v", cfg, err)
+// 有 PG（回退主连接串）即恒开：任何残留错误 fail-closed（凭据密钥缺失）。
+func TestLoadRuntimeConfigRequiresCompletePostgresConfig(t *testing.T) {
+	env := map[string]string{"JUHE_AI_POSTGRES_URL": "postgres://main"}
+	_, err := LoadRuntimeConfig(func(name string) string { return env[name] })
+	if err == nil || !strings.Contains(err.Error(), "CREDENTIAL_SECRET") {
+		t.Fatalf("expected fail-closed credential secret, err=%v", err)
 	}
 }
 
 func TestLoadRuntimeConfigUsesGoHighThroughputDefaults(t *testing.T) {
 	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "jobs-test",
 		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
@@ -48,7 +50,6 @@ func TestLoadRuntimeConfigUsesGoHighThroughputDefaults(t *testing.T) {
 
 func TestLoadRuntimeConfigAcceptsLargeGoCapacity(t *testing.T) {
 	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":               "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":            "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":           "jobs-test",
 		"JUHE_AI_PROXY_LATENCY_STORE":                 "postgres",

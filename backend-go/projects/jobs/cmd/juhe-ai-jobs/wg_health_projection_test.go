@@ -62,13 +62,6 @@ func TestWireHealthOutcomeProjectorBranches(t *testing.T) {
 	if err != nil || projector != nil {
 		t.Fatalf("store 缺席必须合法缺席: %v %v", projector, err)
 	}
-	// env 显式关闭 → (nil, nil)。
-	disabledEnv := wgProjectionEnabledEnv(t)
-	disabledEnv[healthProjectionDisabledEnvVar] = "true"
-	projector, err = minimal.wireHealthOutcomeProjector(getenvFrom(disabledEnv), nil)
-	if err != nil || projector != nil {
-		t.Fatalf("env 关闭必须合法缺席: %v %v", projector, err)
-	}
 	// store 就绪但 J1 config 非法（签名键坏）→ 装配 fail loud。
 	store, storeErr := accounthealth.OpenStore(accounthealth.StoreConfig{
 		Mode:         accounthealth.StoreSQLite,

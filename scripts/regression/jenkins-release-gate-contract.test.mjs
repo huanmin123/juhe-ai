@@ -111,9 +111,15 @@ assert(
     && jenkinsfile.includes('mv "$temporary" "$RELEASE_FILE"'),
   '镜像 digest 写回必须使用临时文件原子替换，避免截断发布文件'
 )
-assert(jenkinsfile.includes('index($0, "JUHE_AI_PROXY_LATENCY_ENABLED=") == 1')
-  && jenkinsfile.includes('grep -Fq "JUHE_AI_PROXY_LATENCY_ENABLED=$J3A_ENABLED" "$runtime_config"'),
+// 2026-09-21 起 JUHE_AI_PROXY_LATENCY_ENABLED 功能开关在 Go 侧移除：发布
+// 管线不得再改写该死键（只允许删除历史残留），回读校验锚定仍在服役的
+// MANAGEMENT_ENABLED 部署面监听键。
+assert(jenkinsfile.includes('index($0, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=") == 1')
+  && jenkinsfile.includes('grep -Fq "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=$J3A_ENABLED" "$runtime_config"'),
   'J3a 换行规范化必须读取目标文件内容，不能把空 stdin 写回 release 文件')
+assert(!jenkinsfile.includes('s|^JUHE_AI_PROXY_LATENCY_ENABLED=')
+  && jenkinsfile.includes('/^JUHE_AI_PROXY_LATENCY_ENABLED=/d'),
+  '已移除的 JUHE_AI_PROXY_LATENCY_ENABLED 功能开关只能被删除收敛，不得再被改写或断言')
 assert.match(jenkinsfile, /def writeReleaseState\([\s\S]*?assert_metadata_value sourceCommit/,
   'release metadata 写入必须对关键字段做唯一命中数与目标值回读，避免静默漂移')
 assert.match(jenkinsfile, /assert_metadata_value releaseMode '\$\{releaseMode\}'[\s\S]*?assert_metadata_value schemaChangeClass '\$\{schemaChangeClass\}'/,

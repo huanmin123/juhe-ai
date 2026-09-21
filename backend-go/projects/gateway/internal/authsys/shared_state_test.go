@@ -155,40 +155,40 @@ func TestSharedLoginGuardLockLifecycle(t *testing.T) {
 	clock := now
 	guard := NewSharedLoginGuard(store, func() time.Time { return clock })
 
-	if blocked, _, _ := guard.Check("203.0.113.5", "Guard-User"); blocked {
-		t.Fatal("fresh guard must not block")
+	if blocked, _, _, err := guard.Check("203.0.113.5", "Guard-User"); blocked || err != nil {
+		t.Fatalf("fresh guard must not block: blocked=%v err=%v", blocked, err)
 	}
 	for i := 1; i <= 9; i++ {
-		if blocked, _, _ := guard.Failed("203.0.113.5", "Guard-User"); blocked {
-			t.Fatalf("failure %d must not lock yet", i)
+		if blocked, _, _, err := guard.Failed("203.0.113.5", "Guard-User"); blocked || err != nil {
+			t.Fatalf("failure %d must not lock yet: blocked=%v err=%v", i, blocked, err)
 		}
 	}
-	blocked, retry, message := guard.Failed("203.0.113.5", "guard-user")
-	if !blocked || message != "尝试过于频繁，请稍后再试" || retry < 899 || retry > 900 {
-		t.Fatalf("ip lock blocked=%v retry=%d message=%q", blocked, retry, message)
+	blocked, retry, message, err := guard.Failed("203.0.113.5", "guard-user")
+	if err != nil || !blocked || message != "尝试过于频繁，请稍后再试" || retry < 899 || retry > 900 {
+		t.Fatalf("ip lock err=%v blocked=%v retry=%d message=%q", err, blocked, retry, message)
 	}
 	// The username lock exists independently with its own message.
-	blocked, retry, message = guard.Check("198.51.100.0", "guard-user")
-	if !blocked || message != "账号暂时锁定，请稍后再试" || retry < 899 || retry > 900 {
-		t.Fatalf("username lock blocked=%v retry=%d message=%q", blocked, retry, message)
+	blocked, retry, message, err = guard.Check("198.51.100.0", "guard-user")
+	if err != nil || !blocked || message != "账号暂时锁定，请稍后再试" || retry < 899 || retry > 900 {
+		t.Fatalf("username lock err=%v blocked=%v retry=%d message=%q", err, blocked, retry, message)
 	}
 	// The IP lock wins over the username lock.
-	blocked, _, message = guard.Check("203.0.113.5", "other-user")
-	if !blocked || message != "尝试过于频繁，请稍后再试" {
-		t.Fatalf("ip priority blocked=%v message=%q", blocked, message)
+	blocked, _, message, err = guard.Check("203.0.113.5", "other-user")
+	if err != nil || !blocked || message != "尝试过于频繁，请稍后再试" {
+		t.Fatalf("ip priority err=%v blocked=%v message=%q", err, blocked, message)
 	}
 
 	// Success clears everything.
 	guard.Success("203.0.113.5", "guard-user")
-	if blocked, _, _ := guard.Check("203.0.113.5", "guard-user"); blocked {
-		t.Fatal("guard must be clear after Success")
+	if blocked, _, _, err := guard.Check("203.0.113.5", "guard-user"); blocked || err != nil {
+		t.Fatalf("guard must be clear after Success: blocked=%v err=%v", blocked, err)
 	}
 
 	// Time-based expiry: a lock older than now no longer blocks.
 	expiry := now.Add(15 * time.Minute)
 	clock = expiry
-	if blocked, _, _ := guard.Check("203.0.113.5", "guard-user"); blocked {
-		t.Fatal("expired lock must not block")
+	if blocked, _, _, err := guard.Check("203.0.113.5", "guard-user"); blocked || err != nil {
+		t.Fatalf("expired lock must not block: blocked=%v err=%v", blocked, err)
 	}
 	_ = expiry
 }
@@ -204,23 +204,24 @@ func TestSharedLoginGuardCountsExpireWithWindow(t *testing.T) {
 	guard := NewSharedLoginGuard(store, func() time.Time { return clock })
 
 	for i := 0; i < 9; i++ {
-		if blocked, _, _ := guard.Failed("203.0.113.8", "window-user"); blocked {
-			t.Fatalf("failure %d must not lock", i+1)
+		if blocked, _, _, err := guard.Failed("203.0.113.8", "window-user"); blocked || err != nil {
+			t.Fatalf("failure %d must not lock: blocked=%v err=%v", i+1, blocked, err)
 		}
 	}
 	// Advance real time past the counter TTL; miniredis expires keys on
 	// FastForward.
 	server.FastForward(11 * time.Minute)
-	blocked, _, _ := guard.Failed("203.0.113.8", "window-user")
-	if blocked {
-		t.Fatal("a fresh window must not lock on the first failure")
+	blocked, _, _, err := guard.Failed("203.0.113.8", "window-user")
+	if err != nil || blocked {
+		t.Fatalf("a fresh window must not lock on the first failure: blocked=%v err=%v", blocked, err)
 	}
 }
 
-// TestSharedDriversSurfaceStoreErrorsAsDegrade proves the documented degraded
-// path: a closed store fails the captcha Issue (500 path) while login-guard
-// checks degrade to "not blocked" instead of panicking.
-func TestSharedDriversSurfaceStoreErrorsAsDegrade(t *testing.T) {
+// TestSharedDriversSurfaceStoreErrorsAsFailClosed proves the D8 verdict
+// (2026-09-20): a closed store fails the captcha Issue (500 path) while a
+// login-guard Check returns the store error instead of degrading to "not
+// locked" — the login handler maps it to 500.
+func TestSharedDriversSurfaceStoreErrorsAsFailClosed(t *testing.T) {
 	serverClosed := miniredis.RunT(t)
 	store, closeFn, err := NewRedisNamespacedStateStore("redis://"+serverClosed.Addr(), "dev", "auth_captcha")
 	if err != nil {
@@ -234,7 +235,11 @@ func TestSharedDriversSurfaceStoreErrorsAsDegrade(t *testing.T) {
 		t.Fatal("captcha Issue must surface the store error")
 	}
 	guard := NewSharedLoginGuard(store, func() time.Time { return now })
-	if blocked, _, _ := guard.Check("203.0.113.20", "any-user"); blocked {
-		t.Fatal("degraded check must not claim a lock")
+	blocked, _, _, err := guard.Check("203.0.113.20", "any-user")
+	if err == nil {
+		t.Fatal("a closed store must fail the guard check (D8 fail-closed)")
+	}
+	if blocked {
+		t.Fatal("a failed check must not claim a lock either")
 	}
 }

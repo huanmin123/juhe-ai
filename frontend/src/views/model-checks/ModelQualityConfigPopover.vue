@@ -33,6 +33,11 @@
             <span>质量隔离恢复周期</span>
             <a-input-number v-model:value="form.recoveryIntervalMinutes" :min="10" :max="10080" :precision="0" :disabled="saving" addon-after="分钟" />
           </label>
+          <label class="quality-config-field">
+            <span>题库测试（选填，最多 3 题）</span>
+            <QuestionBankSelect v-model:value="form.customQuestionIds" :disabled="saving" :is-management-view="isManagementView" />
+            <span class="quality-config-help">选择已通过的题库题目，检测最后逐题作答并按 31 分池扣分。</span>
+          </label>
           <div class="quality-config-actions">
             <a-button :disabled="saving" @click="open = false">取消</a-button>
             <a-button type="primary" :loading="saving" @click="save">保存</a-button>
@@ -52,9 +57,11 @@
 import { reactive, ref, watch } from 'vue'
 import { SettingOutlined } from '@ant-design/icons-vue'
 import type { ModelQualityPenaltyAction, ModelQualityPolicy, ModelQualityPolicyUpdateInput } from '@/types/domain'
+import QuestionBankSelect from './QuestionBankSelect.vue'
 
 const props = defineProps<{
   disabled?: boolean
+  isManagementView: boolean
   loading: boolean
   policy: ModelQualityPolicy
   saving: boolean
@@ -69,7 +76,8 @@ const form = reactive({
   manualEnforcementEnabled: true,
   penaltyThreshold: 70,
   penaltyAction: 'fallback' as ModelQualityPenaltyAction,
-  recoveryIntervalMinutes: 10
+  recoveryIntervalMinutes: 10,
+  customQuestionIds: [] as string[]
 })
 const penaltyOptions = [
   { label: '降级备用', value: 'fallback' },
@@ -83,6 +91,7 @@ watch(() => props.policy, (policy) => {
   form.penaltyThreshold = policy.penaltyThreshold
   form.penaltyAction = policy.penaltyAction
   form.recoveryIntervalMinutes = policy.recoveryIntervalMinutes
+  form.customQuestionIds = [...(policy.customQuestionIds ?? [])]
 }, { immediate: true, deep: true })
 
 function save() {
@@ -92,7 +101,8 @@ function save() {
     manualEnforcementEnabled: form.manualEnforcementEnabled,
     penaltyThreshold: Math.trunc(form.penaltyThreshold),
     penaltyAction: form.penaltyAction,
-    recoveryIntervalMinutes: Math.trunc(form.recoveryIntervalMinutes)
+    recoveryIntervalMinutes: Math.trunc(form.recoveryIntervalMinutes),
+    customQuestionIds: [...form.customQuestionIds]
   })
 }
 </script>

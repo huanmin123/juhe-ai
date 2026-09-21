@@ -80,12 +80,17 @@
         <div class="model-checks-toolbar">
           <ModelQualityConfigPopover
             :disabled="qualityActionsDisabled"
+            :is-management-view="isManagementView"
             :loading="qualityPolicyLoading"
             :policy="qualityPolicy"
             :saving="qualityPolicySaving"
             @open="emit('quality-policy-open')"
             @save="emit('quality-policy-save', $event)"
           />
+          <a-button :disabled="qualityActionsDisabled" @click="emit('question-bank-open')">
+            <template #icon><BookOutlined /></template>
+            {{ isManagementView ? '题库管理' : '题库添加' }}
+          </a-button>
           <a-button type="primary" :loading="submitting" @click="emit('submit')">
             <template #icon>
               <ExperimentOutlined />
@@ -113,7 +118,7 @@
 </template>
 
 <script setup lang="ts">
-import { ClockCircleOutlined, ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { BookOutlined, ClockCircleOutlined, ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 
 import AccountSelect from '@/components/AccountSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
@@ -164,6 +169,7 @@ const emit = defineEmits<{
   (event: 'comparison-dropdown-visible-change', open: boolean): void
   (event: 'comparison-search', value: string): void
   (event: 'model-dropdown-visible-change', open: boolean): void
+  (event: 'question-bank-open'): void
   (event: 'refresh', force?: boolean): void
   (event: 'reset'): void
   (event: 'quality-policy-open'): void

@@ -14,12 +14,15 @@ import (
 // （fault-injection 接缝）、runner 释放钩子的 join 语义与投影事务失败传播。
 
 func TestWFLoadManualAdminConfig(t *testing.T) {
-	if _, err := LoadManualAdminConfig(nil); err != nil {
-		t.Fatalf("nil getenv 回退 os.Getenv: %v", err)
-	}
-	cfg, err := LoadManualAdminConfig(wfEnv(nil))
+	// 2026-09-21 起管理 listener 随 J3a 家族常驻：依赖缺席（无任何 PG 连接
+	// 串可回落）时合法缺席，nil getenv 仍回退 os.Getenv。
+	cfg, err := LoadManualAdminConfig(nil)
 	if err != nil || cfg.Enabled {
-		t.Fatalf("未启用 cfg=%+v err=%v", cfg, err)
+		t.Fatalf("nil getenv 必须回退 os.Getenv 且依赖缺席合法: cfg=%+v err=%v", cfg, err)
+	}
+	cfg, err = LoadManualAdminConfig(wfEnv(nil))
+	if err != nil || cfg.Enabled {
+		t.Fatalf("依赖缺席配置 cfg=%+v err=%v", cfg, err)
 	}
 	base := map[string]string{
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":        "true",
@@ -31,9 +34,8 @@ func TestWFLoadManualAdminConfig(t *testing.T) {
 		patch   map[string]string
 		wantErr string
 	}{
-		{name: "缺监听地址", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": ""}, wantErr: "host:port"},
+		{name: "监听地址缺端口", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1"}, wantErr: "host:port"},
 		{name: "监听端口越界", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1:70000"}, wantErr: "端口必须"},
-		{name: "缺业务 URL", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL": ""}, wantErr: "POSTGRES_URL"},
 		{name: "连接数非数字", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS": "x"}, wantErr: "正整数"},
 		{name: "deadline 非法", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE": "nope"}, wantErr: "duration"},
 	}

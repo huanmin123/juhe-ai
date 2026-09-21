@@ -434,26 +434,26 @@ func TestW11ECaptchaAndGuardArms(t *testing.T) {
 	// 登录守卫窗口。
 	guard := NewLoginGuard(func() time.Time { return now })
 	for index := 0; index < 10; index++ {
-		if blocked, _, _ := guard.Failed("127.0.0.8", "user"); blocked && index < 9 {
-			t.Fatalf("过早锁定 index=%d", index)
+		if blocked, _, _, err := guard.Failed("127.0.0.8", "user"); (blocked || err != nil) && index < 9 {
+			t.Fatalf("过早锁定 index=%d blocked=%v err=%v", index, blocked, err)
 		}
 	}
-	blocked, retry, message := guard.Check("127.0.0.8", "user")
-	if !blocked || retry <= 0 || message == "" {
-		t.Fatalf("锁定=%t retry=%d message=%q", blocked, retry, message)
+	blocked, retry, message, err := guard.Check("127.0.0.8", "user")
+	if err != nil || !blocked || retry <= 0 || message == "" {
+		t.Fatalf("锁定 err=%v blocked=%t retry=%d message=%q", err, blocked, retry, message)
 	}
 	// 成功清零。
 	guard.Success("127.0.0.8", "user")
-	if blocked, _, _ := guard.Check("127.0.0.8", "user"); blocked {
-		t.Fatal("成功后必须解锁")
+	if blocked, _, _, err := guard.Check("127.0.0.8", "user"); blocked || err != nil {
+		t.Fatalf("成功后必须解锁: blocked=%v err=%v", blocked, err)
 	}
 	// 窗口外失败清理。
 	stale := NewLoginGuard(func() time.Time { return now })
 	for index := 0; index < 10; index++ {
-		_, _, _ = stale.Failed("127.0.0.9", "user")
+		_, _, _, _ = stale.Failed("127.0.0.9", "user")
 	}
 	stale.now = func() time.Time { return now.Add(2 * time.Hour) }
-	if blocked, _, _ := stale.Check("127.0.0.9", "user"); blocked {
-		t.Fatal("窗口外失败必须清理")
+	if blocked, _, _, err := stale.Check("127.0.0.9", "user"); blocked || err != nil {
+		t.Fatalf("窗口外失败必须清理: blocked=%v err=%v", blocked, err)
 	}
 }

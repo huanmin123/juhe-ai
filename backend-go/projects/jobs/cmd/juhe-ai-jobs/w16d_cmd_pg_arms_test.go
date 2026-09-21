@@ -165,12 +165,12 @@ func TestW16DPGCodexSettleAndDrainArms(t *testing.T) {
 			t.Fatal(shardErr)
 		}
 		if _, shardErr := shard.Exec(`CREATE TABLE IF NOT EXISTS codex_context_responses (
-			id TEXT PRIMARY KEY, session_id TEXT NOT NULL, storage_key TEXT DEFAULT '',
+			response_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, storage_key TEXT DEFAULT '',
 			expires_at TEXT NOT NULL)`); shardErr != nil {
 			t.Fatal(shardErr)
 		}
 		if _, shardErr := shard.Exec(`CREATE TABLE IF NOT EXISTS codex_context_compacts (
-			id TEXT PRIMARY KEY, session_id TEXT NOT NULL, storage_key TEXT DEFAULT '',
+			compact_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, storage_key TEXT DEFAULT '',
 			expires_at TEXT NOT NULL)`); shardErr != nil {
 			t.Fatal(shardErr)
 		}

@@ -11,8 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 )
 
 // RunService is the narrow runtime dependency of the Gateway management
@@ -42,11 +44,15 @@ type RunRequest struct {
 	TrustedComparisonDispatchRevision                                                             int64
 	TrustedComparisonSourceConfigRevision                                                         string
 	TrustedComparisonSourceDispatchRevision                                                       int64
-	Endpoint, Prompt                                                                              string
-	Protocol                                                                                      string
-	SourceEndpointFamily, UpstreamEndpointFamily                                                  string
-	UpstreamProtocol, UpstreamEndpointMode                                                        string
-	Headers                                                                                       http.Header
+	// CustomQuestionIds 是本次运行配置的题库题目 id（≤3，写入时已校验为
+	// approved；定时/恢复路径在 claim 时从 schedule/policy 冻结进 payload）。
+	// 运行时经 QuestionBank 端口过滤失效 id 后组装题库家族。
+	CustomQuestionIds                            []string
+	Endpoint, Prompt                             string
+	Protocol                                     string
+	SourceEndpointFamily, UpstreamEndpointFamily string
+	UpstreamProtocol, UpstreamEndpointMode       string
+	Headers                                      http.Header
 }
 
 type RunResult struct {
@@ -224,6 +230,11 @@ type HTTPHandler struct {
 	BuildScoped    ScopedBuildRequest
 	MaxBody        int64
 	Heartbeat      time.Duration
+	// QuestionBankAdmin/QuestionBankSelf 承载题库端点（计划阶段 2）：admin
+	// 实例用于管理面前缀（全量 + 审核），self 实例用于自助面前缀
+	// （approved + 本人提交）。nil 时题库路由按 owner 未接线返回 503。
+	QuestionBankAdmin *modelcheckquestionbank.HTTPHandlers
+	QuestionBankSelf  *modelcheckquestionbank.HTTPHandlers
 	// AllowCrossAccount identifies the administrator public mount. It is the
 	// only mount permitted to construct a global or foreign-tenant scope.
 	AllowCrossAccount bool
@@ -292,9 +303,56 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.patchScopedQualitySchedule(w, r, scope, strings.TrimPrefix(path, "/quality-schedules/"))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/quality-schedules/"):
 		h.deleteScopedQualitySchedule(w, r, scope, strings.TrimPrefix(path, "/quality-schedules/"))
+	// 题库路由（计划阶段 2 挂载）。固定段（/question-bank、/options、
+	// /by-ids）必须先于 /{id} 前缀匹配——本 switch 按书写顺序求值，与
+	// quality-schedules 的精确段/前缀段排列同一语义。
+	case r.Method == http.MethodGet && path == "/question-bank":
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeList)
+	case r.Method == http.MethodPost && path == "/question-bank":
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeCreate)
+	case r.Method == http.MethodGet && path == "/question-bank/options":
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeOptions)
+	case r.Method == http.MethodGet && path == "/question-bank/by-ids":
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeByIds)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/question-bank/") && strings.HasSuffix(path, "/review"):
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeReview)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/question-bank/"):
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeDetail)
+	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/question-bank/"):
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeUpdate)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/question-bank/"):
+		h.serveQuestionBank(w, r, actorSystemAccountID, (*modelcheckquestionbank.HTTPHandlers).ServeDelete)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// serveQuestionBank 把题库端点委托给对应前缀的 modelcheckquestionbank
+// handlers：管理面挂载（含默认 /model-checks/ Mount）用 admin 实例，自助
+// 面挂载（ForceActorScope）用 self 实例。
+//
+// scope 豁免（计划 §5 / 决策 D3，Wave2 关键点）：检测链路的
+// ManagementScope 会把自助面 scope 钉到本人系统账户（ForceActorScope），
+// 但题库是跨系统账户的全局共享数据——题库路由不套 ManagementScope 的
+// 系统账户过滤，selected/actor scope 在此被有意丢弃，只把认证身份注入
+// authsys 上下文交给题库 handlers 按 actor 判定可见性（adminMode 实例
+// 全量 + 审核；self 实例 approved + 本人提交）。管理员经管理面前缀审核
+// 自助面提交读的是同一张全局表，无冲突。
+//
+// authsys.AuthContext 只注入 Authorize 契约暴露的 systemAccountId；
+// J3b 管理面的认证器（modelcheckauth）不产生 authsys 会话中间件上下文，
+// 注入最小上下文即满足题库 handlers 的 actor 判定契约。
+func (h *HTTPHandler) serveQuestionBank(w http.ResponseWriter, r *http.Request, actorSystemAccountID string, call func(*modelcheckquestionbank.HTTPHandlers, http.ResponseWriter, *http.Request)) {
+	handlers := h.QuestionBankAdmin
+	if h.ForceActorScope {
+		handlers = h.QuestionBankSelf
+	}
+	if handlers == nil {
+		writeOwnerError(w, http.StatusServiceUnavailable, "模型检测题库 owner 未完成接线")
+		return
+	}
+	auth := &authsys.AuthContext{SystemAccountID: strings.TrimSpace(actorSystemAccountID)}
+	call(handlers, w, r.WithContext(authsys.WithAuthContext(r.Context(), auth)))
 }
 
 func (h *HTTPHandler) activateTokenInterceptBaseline(w http.ResponseWriter, r *http.Request) {

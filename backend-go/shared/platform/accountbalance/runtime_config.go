@@ -55,22 +55,35 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	cfg := RuntimeConfig{Enabled: strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_ENABLED")), "true"), Now: time.Now}
-	if !cfg.Enabled {
-		return cfg, nil
+	// 2026-09-21 起无总开关：J2 依赖 PostgreSQL——主连接串与专属连接串均
+	// 未配置 = 依赖缺席，家族合法缺席（非开关）；一旦有 PG 即恒开，任何
+	// 错误 fail-closed。owner 缺省 go、OWNER_ID 缺省主机名、凭据缺省回落
+	// 主配置。
+	storeURL := firstNonEmptyString(getenv("JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
+	if storeURL == "" {
+		return RuntimeConfig{Enabled: false, Now: time.Now}, nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER")), "go") {
-		return RuntimeConfig{}, errors.New("J2 只有显式 JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER=go 才能启动")
+	cfg := RuntimeConfig{Enabled: true, Now: time.Now}
+	if owner := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER")); owner != "" && !strings.EqualFold(owner, "go") {
+		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER 必须为 go（或留空）")
 	}
 	cfg.OwnerID = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_OWNER_ID"))
 	if cfg.OwnerID == "" {
-		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_OWNER_ID 是必填配置")
+		if hostname, hostErr := os.Hostname(); hostErr == nil && strings.TrimSpace(hostname) != "" {
+			cfg.OwnerID = strings.TrimSpace(hostname)
+		} else {
+			return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_OWNER_ID 是必填配置")
+		}
 	}
 	mode := StoreMode(strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_STORE"))))
+	if mode == "" {
+		// 2026-09-21 零配置：唯一合法存储即 postgres，未配置时直接默认。
+		mode = StorePostgres
+	}
 	if mode != StorePostgres {
 		return RuntimeConfig{}, errors.New("J2 Go owner 只允许 JUHE_AI_ACCOUNT_BALANCE_STORE=postgres；SQLite outcome 不能由 Node projector 接管")
 	}
-	cfg.Store = StoreConfig{Mode: mode, DatabasePath: strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH")), PostgresURL: strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL"))}
+	cfg.Store = StoreConfig{Mode: mode, DatabasePath: strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH")), PostgresURL: storeURL}
 	if cfg.Store.PostgresURL == "" {
 		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL")
 	}
@@ -93,15 +106,16 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if err := sqlpool.ValidatePoolLimits(cfg.InputPostgresMaxOpenConns, cfg.InputPostgresMaxIdleConns); err != nil {
 		return RuntimeConfig{}, fmt.Errorf("J2 业务读取 PostgreSQL 连接池配置无效: %w", err)
 	}
-	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL"))
+	cfg.BusinessPostgresURL = firstNonEmptyString(getenv("JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL"), getenv("JUHE_AI_BUSINESS_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
 	if cfg.BusinessPostgresURL == "" {
-		return RuntimeConfig{}, errors.New("J2 direct input 缺少 JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL")
+		return RuntimeConfig{}, errors.New("J2 direct input 缺少 JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
 	}
-	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET"))
+	cfg.CredentialSecret = firstNonEmptyString(getenv("JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET"), getenv("JUHE_AI_SECRET"))
 	if cfg.CredentialSecret == "" {
 		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET 是必填配置")
 	}
-	cfg.ManualHTTPSecret = strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET"))
+	// 手工触发 API 密钥缺省回落凭据密钥（≥32 字节强度要求保留）。
+	cfg.ManualHTTPSecret = firstNonEmptyString(getenv("JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET"), cfg.CredentialSecret)
 	if len(cfg.ManualHTTPSecret) < 32 {
 		return RuntimeConfig{}, errors.New("JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET 至少需要 32 个字符")
 	}
@@ -204,4 +218,14 @@ func runtimePositiveInt(getenv func(string) string, name string, fallback int) (
 		return 0, fmt.Errorf("%s 必须是正整数", name)
 	}
 	return parsed, nil
+}
+
+// firstNonEmptyString 返回第一个 trim 后非空的值（2026-09-21 零配置回落链）。
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

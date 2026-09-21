@@ -211,7 +211,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: false, Shardable: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:accounts", "stats:account_usage_snapshots"},
 			GoStatus: GoEquivalent, GoPackage: "accountbalance",
-			GoBinding: "J2 Service 已由 jobs 组件装配（自有调度循环与账户租约）",
+			GoBinding: "J2 Service 已由 jobs 组件装配（自有调度循环与账户租约）。PG-only 组件，SQLite 部署由 account-balance-auto-detect-recovery 承担首探补偿",
 		},
 		{
 			JobName: "account-balance-auto-detect-recovery", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
@@ -264,7 +264,7 @@ func ScheduledEntries() []Entry {
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:account_list_availability_projections", "business:account_list_availability_projection_tags", "business:account_list_availability_dirty"},
 			GoStatus: GoWired, GoPackage: "opsjobs + circuitstore",
-			GoBinding: "RunListAvailabilityMaintenance 经组合根接线：ListAvailabilityRepo（17 方法 runtime dependency fail-closed 状态机/dirty claim 围栏/tombstone 删除/重放退避）、overlay Redis 对账（account-concurrency-v2 同键 Lua）与 LoadItems 物化载荷（circuitstore.ProjectionItemLoader：management list 同源 SQL 双模 + accountEffectiveAvailability 状态机/quota/usage/balance/apiKeyRuntime + Redis 运行态读 gateway-account-recovery/policy-avoidance 只读，payload 逐字段对照 Node AccountListItem）全部就绪。T6b 冻结依据已落代码（worker_config.go）：JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED env 默认 false 不注册（Node background-jobs.ts:334）、interval=accountListAvailabilityProjectionIntervalMs（env 1s..60s 默认 1s）、batchSize=100(1..100)/maxBatchesPerRun=200(1..400)/workerConcurrency=4(1..8)；非 PG driver 不注册（Node PG-only 物化器）。登记差异：payload 的 isAccountBalanceSnapshotSuppressed 依赖网关进程内清理协调器内存态，jobs 进程无该组件（等价 Node 空协调器恒 false）",
+			GoBinding: "RunListAvailabilityMaintenance 经组合根接线：ListAvailabilityRepo（17 方法 runtime dependency fail-closed 状态机/dirty claim 围栏/tombstone 删除/重放退避）、overlay Redis 对账（account-concurrency-v2 同键 Lua）与 LoadItems 物化载荷（circuitstore.ProjectionItemLoader：management list 同源 SQL 双模 + accountEffectiveAvailability 状态机/quota/usage/balance/apiKeyRuntime + Redis 运行态读 gateway-account-recovery/policy-avoidance 只读，payload 逐字段对照 Node AccountListItem）全部就绪。2026-09-21 起投影开关 JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED 移除、投影写入面恒开注册（worker_config.go），interval=accountListAvailabilityProjectionIntervalMs（env 1s..60s 默认 1s）、batchSize=100(1..100)/maxBatchesPerRun=200(1..400)/workerConcurrency=4(1..8)；非 PG driver 不注册（Node PG-only 物化器）。登记差异：payload 的 isAccountBalanceSnapshotSuppressed 依赖网关进程内清理协调器内存态，jobs 进程无该组件（等价 Node 空协调器恒 false）",
 		},
 		{
 			JobName: "account-circuit-recovery", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",

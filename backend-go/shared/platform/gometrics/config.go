@@ -35,16 +35,18 @@ type Config struct {
 // family. defaultRole is the calling process' role (gateway / jobs) applied
 // when JUHE_AI_GO_RUNTIME_METRICS_ROLE is unset; every env name, default and
 // bound is identical across processes. The store is disabled unless
-// JUHE_AI_GO_RUNTIME_METRICS_STORE selects sqlite or postgres (or
-// JUHE_AI_GO_RUNTIME_METRICS_ENABLED=false), so an unconfigured deployment
-// neither samples nor errors.
+// JUHE_AI_GO_RUNTIME_METRICS_STORE selects sqlite or postgres, so an
+// unconfigured deployment neither samples nor errors (the former
+// JUHE_AI_GO_RUNTIME_METRICS_ENABLED switch was removed on 2026-09-21).
 func LoadConfig(getenv func(string) string, defaultRole string) (Config, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
 	store := strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_GO_RUNTIME_METRICS_STORE")))
 	cfg := Config{Interval: defaultInterval, RetentionDays: defaultRetentionDays, Service: "juhe-ai", Role: defaultRole}
-	if store == "" || store == "disabled" || strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_GO_RUNTIME_METRICS_ENABLED")), "false") {
+	// 2026-09-21 起采样开关 JUHE_AI_GO_RUNTIME_METRICS_ENABLED 移除；采样
+	// 与否由存储参数决定（store 未配置/disabled 即不采样，部署参数保留）。
+	if store == "" || store == "disabled" {
 		return cfg, nil
 	}
 	if store != string(DialectSQLite) && store != string(DialectPostgres) {

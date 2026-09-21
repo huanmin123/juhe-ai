@@ -312,15 +312,13 @@ func TestW12HModelAndRuntimeArms(t *testing.T) {
 		t.Fatalf("interval=0 必须可校验: %v", err)
 	}
 
-	// 运行时配置环境矩阵。
-	disabled := map[string]string{"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "false"}
+	// 运行时配置环境矩阵。2026-09-21 起无总开关：空配置 = 依赖缺席
+	// （合法返回 Enabled=false），不再有禁用直接返回分支。
 	if cfg, err := LoadRuntimeConfig(func(string) string { return "" }); err != nil || cfg.Enabled {
-		t.Fatalf("禁用配置必须直接返回: %+v %v", cfg, err)
+		t.Fatalf("空配置必须依赖缺席: %+v %v", cfg, err)
 	}
-	_ = disabled
 	base := func() map[string]string {
 		return map[string]string{
-			"JUHE_AI_ACCOUNT_BALANCE_ENABLED":            "true",
 			"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":         "go",
 			"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":           "w12h-runtime",
 			"JUHE_AI_ACCOUNT_BALANCE_STORE":              "postgres",

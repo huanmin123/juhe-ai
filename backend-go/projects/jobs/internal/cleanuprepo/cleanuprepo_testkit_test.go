@@ -268,6 +268,11 @@ func createKitStatsChainSchema(t *testing.T, db *sql.DB) {
       scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, job_name TEXT NOT NULL,
       cursor_created_at TEXT, cursor_id TEXT, updated_at TEXT,
       PRIMARY KEY (scope_type, scope_id, job_name))`)
+	// stats 库 usage_records 镜像：SQLite standalone 模式下该表由
+	// statsverify EnsureSchema 建为聚合 41 列形状（镜像清理的对象），这里
+	// 同形装配保证镜像清理链（dataretention.go cleanupStatsMirrorBefore）
+	// 在真实形状上验证。
+	execKitSchema(t, db, kitUsageRecordsMirrorDDL)
 	execKitSchema(t, db, `CREATE TABLE IF NOT EXISTS account_usage_snapshots (
       system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, kind TEXT NOT NULL,
       source TEXT DEFAULT '', snapshot_json TEXT DEFAULT '', refresh_status TEXT DEFAULT '',
@@ -308,17 +313,11 @@ func createKitUsageCatalogSchema(t *testing.T, db *sql.DB) {
       PRIMARY KEY (account_id, shard_key))`)
 }
 
-// createKitUsageShardDB 建立一个分片库文件（usage_records 41 列，列序与
-// usageStatsRecordSelectColumns 一致）。
-func createKitUsageShardDB(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("open shard sqlite %s: %v", path, err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	db.SetMaxOpenConns(1)
-	execKitSchema(t, db, `CREATE TABLE IF NOT EXISTS usage_records (
+// kitUsageRecordsMirrorDDL 是 usage_records 的最小 41 列 DDL（列序与
+// usageStatsRecordSelectColumns 一致，PK=id）。分片库文件与 stats 库镜像表
+// （statsverify EnsureSchema 的 sqliteStatsSchema 同形；SQLite standalone 模式
+// 下 usagewriter mirrorStatsUsageRecords 的聚合输入源与清理对象）共用该形状。
+const kitUsageRecordsMirrorDDL = `CREATE TABLE IF NOT EXISTS usage_records (
       id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, trace_id TEXT DEFAULT '',
       traffic_source TEXT DEFAULT '', client_ip TEXT, api_key_id TEXT, group_id TEXT,
       account_id TEXT, endpoint TEXT, provider_code TEXT, provider_protocol_profile_id TEXT,
@@ -332,7 +331,19 @@ func createKitUsageShardDB(t *testing.T, path string) *sql.DB {
       account_authorization_id TEXT, account_authorization_source_type TEXT,
       account_authorization_source_team_id TEXT, group_authorization_id TEXT,
       group_authorization_source_type TEXT, group_authorization_source_team_id TEXT,
-      created_at TEXT NOT NULL)`)
+      created_at TEXT NOT NULL)`
+
+// createKitUsageShardDB 建立一个分片库文件（usage_records 41 列，列序与
+// usageStatsRecordSelectColumns 一致）。
+func createKitUsageShardDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open shard sqlite %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	execKitSchema(t, db, kitUsageRecordsMirrorDDL)
 	return db
 }
 

@@ -411,9 +411,8 @@ func TestW12CLoadWorkerConfigErrorMatrix(t *testing.T) {
 			}
 		})
 	}
-	// 合法 projection 边界值应通过。
+	// 合法 projection 边界值应通过（2026-09-21 起投影恒开，开关 env 已移除）。
 	env := base()
-	env["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED"] = "true"
 	env["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS"] = "1000"
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil || !config.ListProjectionEnabled {
@@ -433,16 +432,6 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 	// store 为 nil → 合法缺席（防御性分支；恒开终态下 store 恒非 nil）。
 	if projector, err := assembly.wireHealthOutcomeProjector(func(string) string { return "" }, nil); err != nil || projector != nil {
 		t.Fatalf("nil store 应缺席: %v %v", projector, err)
-	}
-	// env 显式关闭。
-	disabled, disabledErr := assembly.wireHealthOutcomeProjector(func(name string) string {
-		if name == healthProjectionDisabledEnvVar {
-			return "true"
-		}
-		return ""
-	}, &accounthealth.Store{})
-	if disabledErr != nil || disabled != nil {
-		t.Fatalf("env 关闭后投影面必须缺席: %v %v", disabled, disabledErr)
 	}
 	// production 下 J1 凭据密钥缺失 → 恒开语义下 LoadConfig 失败即装配失败
 	//（非生产空值回退开发密钥，装配成功是预期行为）。
@@ -464,7 +453,6 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
 			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
-			healthProjectionDisabledEnvVar:             "",
 			healthProjectionPollEnvVar:                 "1",
 			healthProjectionBatchEnvVar:                "",
 		}
@@ -481,7 +469,6 @@ func TestW12CWireHealthOutcomeProjectorArms(t *testing.T) {
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY":   t.TempDir(),
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0",
 			"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
-			healthProjectionDisabledEnvVar:             "",
 			healthProjectionPollEnvVar:                 "",
 			healthProjectionBatchEnvVar:                "1001",
 		}

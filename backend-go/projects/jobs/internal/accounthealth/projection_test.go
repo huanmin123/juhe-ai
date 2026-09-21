@@ -1076,3 +1076,52 @@ func TestProjectionAppliedMarksGroupAccountStatsDirty(t *testing.T) {
 		t.Fatalf("ignored 处置不得新增脏行: rows=%d", rows)
 	}
 }
+
+// TestProjectionStaleOutcomeSkipsGroupAccountStatsDirty 是
+// TestProjectionAppliedMarksGroupAccountStatsDirty 的反例臂：stale 处置
+// （fence 失配，如 input_version 不匹配）只落 receipt、不得向
+// group_account_stats_dirty 写脏行——脏标记是 applied 投影专属副作用，
+// stale 回放若也标脏会让分组统计在无状态变化时反复失效。
+func TestProjectionStaleOutcomeSkipsGroupAccountStatsDirty(t *testing.T) {
+	fixture := newProjectionFixture(t)
+	credentials, err := EncryptV1Envelope("projection-test-secret", []byte(`{"api_keys":["sk-test-1"]}`))
+	if err != nil {
+		t.Fatalf("加密测试凭据失败: %v", err)
+	}
+	fixture.seedAccount(t, map[string]any{
+		"status":                    "pending_test",
+		"schedulable":               0,
+		"type":                      "api_key",
+		"credentials_encrypted":     credentials,
+		"balance_query_enabled":     0,
+		"balance_query_config_json": "{}",
+	})
+	// 分组绑定存在：证明不标脏来自 stale 处置本身，而非分组缺失。
+	if _, err := fixture.business.Exec(`INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, updated_at) VALUES ('sys_admin', 'grp-default', 'acct-1', 1, '2026-09-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	// InputVersion=99 与 current_version=1 失配 → input_version_stale。
+	// Projection 内的同名字段需与顶层一致（validateProjection 的顶层 fence
+	// 校验先行），否则会在顶层被判 rejected 而到不了 stale 分支。
+	stale := activationSuccessOutcome(projectionFixtureNow)
+	stale.OutcomeID = "outcome-stale-version"
+	stale.RequestID = "request-stale-version"
+	stale.InputVersion = 99
+	stale.Projection.InputVersion = 99
+	fixture.insertOutcome(projectionFixtureNow, stale)
+	result := fixture.drain(t)
+	if result.Processed != 1 {
+		t.Fatalf("Processed = %d, 期望 1", result.Processed)
+	}
+	disposition, reason := fixture.receipt(t, "outcome-stale-version")
+	if disposition != "stale" || reason != "input_version_stale" {
+		t.Fatalf("receipt = %s/%s, 期望 stale/input_version_stale", disposition, reason)
+	}
+	var rows int
+	if err := fixture.business.QueryRow(`SELECT COUNT(*) FROM group_account_stats_dirty`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("stale 处置不得产生分组脏行: rows=%d", rows)
+	}
+}

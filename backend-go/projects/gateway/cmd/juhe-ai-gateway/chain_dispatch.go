@@ -879,15 +879,10 @@ func chainConfigIntOf(value any) int64 {
 // 开启时，把来源账号家族（本账号 + 授权实例）写进
 // account_list_availability_dirty（Node markAccountListAvailabilityDirtyFamily
 // 的 sourceAccountIds 分支；逐账号 upsert 与 jobs circuitstore markDirtySQL
-// 同表同列，jobs 是唯一消费者）。开关全关或非 postgres 返回 nil（Node 的
-// 直接 return 分支），写入面缺席。
-func newChainListAvailabilityDirtyMarker(composed *composition, getenv func(string) string) gatewayaccounteffects.ListAvailabilityDirtyMarker {
+// 同表同列，jobs 是唯一消费者）。非 postgres 返回 nil（Node 的直接 return
+// 分支），写入面缺席。2026-09-21 起投影开关移除，postgres 模式恒启用。
+func newChainListAvailabilityDirtyMarker(composed *composition) gatewayaccounteffects.ListAvailabilityDirtyMarker {
 	if composed == nil || composed.db == nil || !composed.pgDialect {
-		return nil
-	}
-	projectionEnabled := envBoolOf(getenv("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED"))
-	projectionReadEnabled := envBoolOf(getenv("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_READ_ENABLED"))
-	if !projectionEnabled && !projectionReadEnabled {
 		return nil
 	}
 	return func(ctx context.Context, sourceAccountID string, reason string, availableAtMs int64) error {

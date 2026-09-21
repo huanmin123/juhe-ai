@@ -170,7 +170,6 @@ func TestW16JJ3aInputContractFailArm(t *testing.T) {
 	env := w16hBaseEnv(t)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "w16j-j3a-contract",
 		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
@@ -195,7 +194,6 @@ func TestW16JJ3aResultContractFailArm(t *testing.T) {
 	env := w16hBaseEnv(t)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "w16j-j3a-result-contract",
 		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",

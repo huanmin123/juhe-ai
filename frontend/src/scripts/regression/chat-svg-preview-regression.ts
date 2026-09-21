@@ -20,6 +20,8 @@ assert.match(previewDocument, /::-webkit-scrollbar-thumb/, 'srcdoc 必须内联�
 assert.match(previewDocument, /html,body\{margin:0;width:100%;height:100%\}/, 'SVG 预览必须撑满视口')
 assert.match(previewDocument, /svg\{width:100%;height:100%;display:block\}/, 'SVG 必须等比缩放到完整可见，不出现滚动条')
 assert.match(previewDocument, /新窗口打开完整预览/, 'SVG 预览必须内联新窗口打开入口')
+assert.match(previewDocument, /pointer-events:none[^}]*\}body:hover \.chat-preview-open-window/, 'SVG 预览打开按钮必须悬浮预览时才显示，不遮挡画面')
+assert.match(previewDocument, /@media \(hover: none\)/, '触屏设备无 hover，打开按钮必须常显低透明度兜底')
 assert.match(previewDocument, /juhe-ai-chat-svg-preview-open-window/, 'SVG 预览打开按钮必须 postMessage 请求父页开窗，沙箱 iframe 不得直接写弹窗 document')
 assert.match(source, /version !== renderVersion/, '旧异步渲染不得覆盖新内容')
 assert.doesNotMatch(source, /if\s*\(!sources\.length\)\s*return/, '没有 Mermaid 时也必须继续处理 fenced SVG')

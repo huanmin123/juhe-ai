@@ -88,9 +88,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: logLevel}))
 	processlog.CatchPanic(logger)
 	processlog.KeepAliveOnBrokenOutputPipe()
-	// 废弃总开关检测（loadWorkerConfig / accounthealth.LoadConfig 之前）：
-	// J1 与 worker 机制强制常开，遗留开关值非 true 时提醒部署方清理配置。
-	warnDeprecatedSwitches(logger)
 	ownerMode, err := ownermode.Load(os.Getenv)
 	if err != nil {
 		return failWith(stderr, err)
@@ -728,21 +725,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return failWith(stderr, fmt.Errorf("jobs health endpoint stopped: %w", serveResult))
 	}
 	return 0
-}
-
-// warnDeprecatedSwitches 对已移除的 Node→Go 迁移过渡期总开关输出废弃告警：
-// J1 账户健康与 worker 任务族自 2026-09-19 起强制常开（原防双 owner 理由已随
-// Node 后端归档失效），两个变量不再被任何配置读取；值（trim + 大小写不敏感）
-// 恰为 true 时保持静默（向后兼容，存量部署的 true 配置不刷告警）。
-func warnDeprecatedSwitches(logger *slog.Logger) {
-	for _, switchEnv := range []struct{ name, event string }{
-		{"JUHE_AI_ACCOUNT_HEALTH_ENABLED", "account_health_enabled_deprecated"},
-		{"JUHE_AI_JOBS_WORKER_ENABLED", "jobs_worker_enabled_deprecated"},
-	} {
-		if value, ok := os.LookupEnv(switchEnv.name); ok && !strings.EqualFold(strings.TrimSpace(value), "true") {
-			logger.Warn(fmt.Sprintf("环境变量 %s 已废弃：核心机制强制常开，该值不再生效", switchEnv.name), "event", switchEnv.event)
-		}
-	}
 }
 
 // runPassiveJobs never initializes stores or leases. It exists only for a

@@ -200,7 +200,6 @@ func TestW16HIPGJ3aInputPingFailArm(t *testing.T) {
 	env := w16hBaseEnv(t)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "w16i-j3a-ping",
 		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
@@ -257,7 +256,6 @@ func TestW16HIPGJ3aManagementFailArms(t *testing.T) {
 	env := w16hBaseEnv(t)
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":                   "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":                "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":               "w16i-j3a-mgmt",
 		"JUHE_AI_PROXY_LATENCY_STORE":                     "postgres",

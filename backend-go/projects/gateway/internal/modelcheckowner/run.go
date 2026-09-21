@@ -16,7 +16,11 @@ const (
 	maxSummaryStringLength = 500
 	maxSummaryArrayLength  = 20
 	maxSummaryObjectKeys   = 32
-	maxSummaryDepth        = 4
+	// 题库环节小计（resultSummary.customQuiz.items[].{questionId,title,
+	// verdict,reason}）占据第 4 层，字段值在第 4 层被脱敏；深度预算 4 会让
+	// 这些字段整体变成 "[truncated]"，前端逐题展示契约失效。放宽到 5——
+	// 诊断内容仍受字符串 500 / 数组 20 / 键数 32 的界约束。
+	maxSummaryDepth = 5
 )
 
 var (

@@ -22,13 +22,16 @@ import (
 )
 
 // goldenPostgresSchemaStatementCount is the number of statements produced by
-// collectPostgresSchemaStatements() in backend/src/storage/postgres-schema.ts.
-const goldenPostgresSchemaStatementCount = 614
+// collectPostgresSchemaStatements() in backend/src/storage/postgres-schema.ts,
+// plus the Go-appended statements (model-check question bank table, its
+// indexes and the custom_question_ids ALTER columns). Regenerate them when
+// either source changes.
+const goldenPostgresSchemaStatementCount = 620
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      318,
+	"juhe_business":      324,
 	"juhe_chat":          36,
 	"juhe_dataset":       7,
 	"juhe_usage":         48,
@@ -122,8 +125,8 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			droppedTriggers += strings.Count(statement.SQL, "DROP TRIGGER IF EXISTS ")
 		}
 	}
-	if alterColumns != 3 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 3", alterColumns)
+	if alterColumns != 5 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 5", alterColumns)
 	}
 	if doBlocks != 1 {
 		t.Fatalf("DO block count = %d, want 1", doBlocks)

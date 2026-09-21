@@ -49,7 +49,7 @@ func w11eSeedAccount(t *testing.T, db *sql.DB, id string) string {
 	if _, err := db.Exec(`INSERT INTO accounts VALUES (?,'sys-1','openai','profile_openai_openai_v1','openai','api_key',3,7,'active',1,'responses_sse',NULL,NULL,NULL,?,NULL,NULL,NULL,NULL,NULL,?)`, id, envelope, "Account "+id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT OR IGNORE INTO model_quality_policies VALUES ('sys-1',4,'quick',1,82,'fallback',15)`); err != nil {
+	if _, err := db.Exec(`INSERT OR IGNORE INTO model_quality_policies VALUES ('sys-1',4,'quick',1,82,'fallback',15,NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	return envelope
@@ -439,18 +439,18 @@ func TestW11ESourcePolicyAndFenceArms(t *testing.T) {
 		`UPDATE model_quality_policies SET penalty_action='w11e-action' WHERE system_account_id='sys-1'`,
 	} {
 		w11eExec(t, db, update)
-		if _, _, _, _, _, _, err := source.readPolicy(context.Background(), "sys-1"); err == nil || !strings.Contains(err.Error(), "quality policy is invalid") {
+		if _, _, _, _, _, _, _, err := source.readPolicy(context.Background(), "sys-1"); err == nil || !strings.Contains(err.Error(), "quality policy is invalid") {
 			t.Fatalf("非法策略必须拒绝（%s）: %v", update, err)
 		}
 		w11eExec(t, db, `UPDATE model_quality_policies SET penalty_threshold=82,recovery_interval_minutes=15,profile='quick',penalty_action='fallback' WHERE system_account_id='sys-1'`)
 	}
 	// 缺省策略行时返回内置默认值。
-	if profile, revision, _, threshold, action, interval, err := source.readPolicy(context.Background(), "w11e-no-row"); err != nil || profile != "quick" || revision != "0" || threshold != 70 || action != "fallback" || interval != 10 {
+	if profile, revision, _, threshold, action, interval, _, err := source.readPolicy(context.Background(), "w11e-no-row"); err != nil || profile != "quick" || revision != "0" || threshold != 70 || action != "fallback" || interval != 10 {
 		t.Fatalf("默认策略=%+v err=%v", profile, err)
 	}
 	// 策略表读取失败。
 	w11eExec(t, db, `DROP TABLE model_quality_policies`)
-	if _, _, _, _, _, _, err := source.readPolicy(context.Background(), "sys-1"); err == nil || !strings.Contains(err.Error(), "quality policy") {
+	if _, _, _, _, _, _, _, err := source.readPolicy(context.Background(), "sys-1"); err == nil || !strings.Contains(err.Error(), "quality policy") {
 		t.Fatalf("策略读取失败必须传播: %v", err)
 	}
 	w11eExec(t, db, businessSourceContractDDL()[6])

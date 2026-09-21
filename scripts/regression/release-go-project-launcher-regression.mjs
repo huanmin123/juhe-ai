@@ -30,7 +30,7 @@ assert.match(launcherSource, /gateway\|jobs/u, 'launcher must accept only declar
 assertLauncherStartsWithoutProjectIdentity()
 assertLauncherRejectsJ1WithoutGoOwner()
 assertLauncherLeavesJ1IdentityToGoDefaults()
-assertLauncherRejectsSqliteJ2Store()
+assertLauncherForwardsJ2StoreVerbatimToGo()
 assertLauncherForwardsProjectScopedPaths()
 assertLauncherForwardsGatewayOwnershipGates()
 assertLauncherForwardsGatewayJobsOrigins()
@@ -222,6 +222,8 @@ function assertLauncherForwardsGatewayOwnershipGates() {
     'JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH=./data/cutover-evidence.json',
     'JUHE_AI_BUSINESS_DATABASE_PATH=./data/business.sqlite3',
     'JUHE_AI_BUSINESS_POSTGRES_URL=postgres://business-owner',
+    // 2026-09-21 起 SYSTEM_API/CHAIN 功能开关移除：显式残留值必须被剥离，
+    // 不进入子进程（开关清零后子进程恒开，不存在可开关假象）。
     'JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true',
     'JUHE_AI_GATEWAY_CHAIN_ENABLED=true'
   ].join('\n'))
@@ -235,8 +237,10 @@ function assertLauncherForwardsGatewayOwnershipGates() {
     assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH, './data/cutover-evidence.json')
     assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_DATABASE_PATH, './data/business.sqlite3')
     assert.equal(gateway.childEnvironment.JUHE_AI_BUSINESS_POSTGRES_URL, 'postgres://business-owner')
-    assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_SYSTEM_API_ENABLED, 'true')
-    assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_CHAIN_ENABLED, 'true')
+    assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_SYSTEM_API_ENABLED, undefined,
+      '已移除的 SYSTEM_API 开关残留值必须被 launcher 剥离')
+    assert.equal(gateway.childEnvironment.JUHE_AI_GATEWAY_CHAIN_ENABLED, undefined,
+      '已移除的 CHAIN 开关残留值必须被 launcher 剥离')
   } finally {
     gateway.cleanup()
   }
@@ -335,8 +339,8 @@ function assertReleaseScriptsCreateGoOnlyBackendRoot() {
 
 function assertLauncherForwardsJ2PathsAndOwner() {
   const jobs = runLauncher('jobs', {
-    // 2026-09-19 零配置收口：J1 必填项校验已删除，J2 显式配置原样透传。
-    JUHE_AI_ACCOUNT_BALANCE_ENABLED: 'true',
+    // 2026-09-19 零配置收口：J1 必填项校验已删除，J2 显式配置原样透传
+    //（2026-09-21 起 ENABLED 开关移除，家族由 PG 连接串激活）。
     JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',
     JUHE_AI_ACCOUNT_BALANCE_STORE: 'postgres',
@@ -397,18 +401,22 @@ function assertLauncherForwardsGoRuntimeMetricsConfig() {
   }
 }
 
-function assertLauncherRejectsSqliteJ2Store() {
+function assertLauncherForwardsJ2StoreVerbatimToGo() {
+  // 2026-09-21 起 launcher 层 J2 校验（含 STORE=postgres 强制）已移除：
+  // store 合法性由 Go 加载期 fail-closed 判定，launcher 对显式配置只做
+  // 原样透传，不再改写、不再拦截。
   const result = runLauncher('jobs', {
-    JUHE_AI_ACCOUNT_BALANCE_ENABLED: 'true',
     JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER: 'go',
     JUHE_AI_ACCOUNT_BALANCE_OWNER_ID: 'j2-owner',
     JUHE_AI_ACCOUNT_BALANCE_STORE: 'sqlite',
+    JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL: 'postgres://j2-store',
     JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL: 'postgres://j2-input',
     JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET: 'j2-credential-secret'
   })
   try {
-    assert.notEqual(result.status, 0, 'Go-owner J2 launcher must reject SQLite outcome store')
-    assert.match(result.output, /JUHE_AI_ACCOUNT_BALANCE_STORE=postgres/u)
+    assert.equal(result.status, 0, `launcher 必须放行 J2 配置由 Go 侧校验: ${result.output}`)
+    assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_STORE, 'sqlite')
+    assert.equal(result.childEnvironment.JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL, 'postgres://j2-store')
   } finally {
     result.cleanup()
   }

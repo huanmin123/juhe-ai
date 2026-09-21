@@ -53,20 +53,22 @@ func LoadManualAdminConfig(getenv func(string) string) (ManualAdminConfig, error
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	cfg := ManualAdminConfig{Enabled: strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED")), "true")}
-	if !cfg.Enabled {
-		return cfg, nil
+	// 2026-09-21 起管理 listener 随 J3a 家族常驻，
+	// JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED 开关移除；地址缺省绑定随机
+	// 回环端口（生产按 J3a 契约显式配置固定地址）。家族依赖缺席（无任何
+	// PG 连接串可回落）时管理面合法缺席。
+	familyStoreURL := firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
+	managementURL := firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL"), familyStoreURL)
+	if managementURL == "" {
+		return ManualAdminConfig{Enabled: false}, nil
 	}
-	cfg.ListenAddress = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS"))
+	cfg := ManualAdminConfig{Enabled: true, ListenAddress: firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS"), "127.0.0.1:0")}
 	if _, port, err := net.SplitHostPort(cfg.ListenAddress); err != nil || strings.TrimSpace(port) == "" {
 		return ManualAdminConfig{}, errors.New("JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS 必须是 host:port")
-	} else if portNumber, numberErr := strconv.Atoi(port); numberErr != nil || portNumber < 1 || portNumber > 65535 {
-		return ManualAdminConfig{}, errors.New("JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS 端口必须在 1..65535")
+	} else if portNumber, numberErr := strconv.Atoi(port); numberErr != nil || portNumber < 0 || portNumber > 65535 {
+		return ManualAdminConfig{}, errors.New("JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS 端口必须在 0..65535（0 为随机端口）")
 	}
-	cfg.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL"))
-	if cfg.PostgresURL == "" {
-		return ManualAdminConfig{}, errors.New("启用 J3a 管理接口时缺少 JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL")
-	}
+	cfg.PostgresURL = managementURL
 	var err error
 	if cfg.MaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
 		return ManualAdminConfig{}, err

@@ -21,9 +21,10 @@ import (
 // JSON 状态存储并支持错误注入，用于在不依赖 Redis 的情况下驱动
 // captcha/login-guard 及各 500 分支。
 type wlFakeStateStore struct {
-	mu      sync.Mutex
-	values  map[string]string
-	incrErr error
+	mu         sync.Mutex
+	values     map[string]string
+	incrErr    error
+	getJSONErr error
 }
 
 func newWlFakeStateStore() *wlFakeStateStore {
@@ -33,6 +34,9 @@ func newWlFakeStateStore() *wlFakeStateStore {
 func (s *wlFakeStateStore) GetJSON(_ context.Context, key string, dst any) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.getJSONErr != nil {
+		return false, s.getJSONErr
+	}
 	raw, ok := s.values[key]
 	if !ok {
 		return false, nil
@@ -240,6 +244,32 @@ func TestWlPostLoginLockoutAndServerErrors(t *testing.T) {
 			t.Fatalf("status=%d", response.StatusCode)
 		}
 		deps.Port = originalPort
+	})
+	t.Run("锁检查存储故障登录返回 500（D8 fail-closed）", func(t *testing.T) {
+		store := newWlFakeStateStore()
+		store.getJSONErr = errors.New("state down")
+		deps.LoginGuard = NewSharedLoginGuard(store, deps.Now)
+		response, _ := postJSON(t, server, "/__aisys__/api/auth/login", `{"username":"wllock","password":"pass-1234"}`, "")
+		if response.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("status=%d", response.StatusCode)
+		}
+		deps.LoginGuard = modelcheckauth.NewLoginGuard(deps.Now)
+	})
+	t.Run("失败计数存储故障登录返回 500（D8 fail-closed）", func(t *testing.T) {
+		store := newWlFakeStateStore()
+		store.incrErr = errors.New("state down")
+		deps.LoginGuard = NewSharedLoginGuard(store, deps.Now)
+		response, _ := postJSON(t, server, "/__aisys__/api/auth/login", `{"username":"wllock","password":"wrong-pass"}`, "")
+		if response.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("status=%d", response.StatusCode)
+		}
+		deps.LoginGuard = modelcheckauth.NewLoginGuard(deps.Now)
+	})
+	t.Run("恢复 memory 驱动后同请求回归 401", func(t *testing.T) {
+		response, _ := postJSON(t, server, "/__aisys__/api/auth/login", `{"username":"wllock","password":"wrong-pass"}`, "")
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status=%d", response.StatusCode)
+		}
 	})
 }
 

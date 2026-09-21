@@ -605,7 +605,6 @@ func TestLoadConfigAcceptsExplicitValues(t *testing.T) {
 		"JUHE_AI_RUNTIME_LOG_STORE":              "postgres",
 		"JUHE_AI_RUNTIME_LOG_POSTGRES_URL":       "postgres://jobs:secret@127.0.0.1:5432/db?sslmode=disable",
 		"JUHE_AI_RUNTIME_LOG_OWNER_LEASE":        "45s",
-		"JUHE_AI_LOG_FILE_ENABLED":               "true",
 		"JUHE_AI_RUNTIME_LOG_ONCE":               "false",
 		"JUHE_AI_RUNTIME_LOG_POLL_INTERVAL":      "2s",
 		"JUHE_AI_RUNTIME_LOG_RETENTION_DAYS":     "30",

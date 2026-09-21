@@ -89,7 +89,6 @@ func TestW12CPGWorkerAssemblyWiring(t *testing.T) {
 		"JUHE_AI_WORKER_ROLE":             "stats-worker",
 		"JUHE_AI_REDIS_STATE_URL":         "redis://" + redisServer.Addr(),
 		"JUHE_AI_REDIS_NAMESPACE":         "juhe-ai:w12c",
-		"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED": "true",
 	}
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil {

@@ -91,7 +91,7 @@ func TestWBBuildRequestComparisonCompatibilityMatrix(t *testing.T) {
 		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('acct-b','sys-1','openai','profile_gpt_openai_chat_v1','openai','api_key',1,1,'active',1,'chat_json','` + envelopeB + `')`,
 		`INSERT INTO accounts(id,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,credentials_encrypted) VALUES ('acct-c','sys-1','anthropic','profile_anthropic_anthropic_v1','anthropic','api_key',1,1,'active',1,'messages_json','` + envelopeC + `')`,
 		`INSERT INTO group_accounts(account_id,system_account_id,group_id,enabled) VALUES ('acct-c','sys-1','group-1',1)`,
-		`INSERT INTO model_quality_policies VALUES ('sys-1',1,'quick',1,70,'fallback',10)`,
+		`INSERT INTO model_quality_policies VALUES ('sys-1',1,'quick',1,70,'fallback',10,NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -196,14 +196,15 @@ func TestWBStoreProjectOutcomeItemDriftConflicts(t *testing.T) {
 func TestWBBusinessSchedulerSkipsBlankRecoveryModel(t *testing.T) {
 	db := wbOpenMemoryDB(t, []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,provider_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,status TEXT,health_check_model TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,custom_question_ids TEXT)`,
+		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`,
 	})
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,dispatch_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','openai',4,1,NULL,NULL,'quality_isolated','')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'','schedule')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	store := schedulerStoreFixture(t)

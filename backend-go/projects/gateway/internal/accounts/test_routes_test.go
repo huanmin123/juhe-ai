@@ -32,7 +32,6 @@ var testFamilySchema = []string{
 	)`,
 	`CREATE TABLE IF NOT EXISTS account_test_tasks (
 		id TEXT PRIMARY KEY,
-		session_id TEXT,
 		account_id TEXT NOT NULL,
 		account_name TEXT NOT NULL,
 		provider_code TEXT NOT NULL,

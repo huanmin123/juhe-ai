@@ -880,8 +880,8 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		{"信任代理非法", map[string]string{"JUHE_AI_TRUST_PROXY": "maybe"}, "JUHE_AI_TRUST_PROXY 只能配置为 true/false 或 0-16"},
 		{"临时访问白名单非法", map[string]string{"JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST": "example.com"}, "只能填写逗号分隔的单个 IPv4 或 IPv6 地址"},
 		{"OIDC缺加密密钥", map[string]string{"JUHE_AI_OIDC_ENABLED": "true", "JUHE_AI_OIDC_ISSUER": "https://issuer.example"}, "必须显式配置 JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET"},
-		// 2026-09-19 起 system-api 未配置默认开启，联动违规必须显式关闭。
-		{"链条缺系统API开关", map[string]string{"JUHE_AI_GATEWAY_CHAIN_ENABLED": "true", "JUHE_AI_GATEWAY_SYSTEM_API_ENABLED": "false"}, "必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED"},
+		// 2026-09-21 起 SYSTEM_API/CHAIN/AUDIT_LOG/LOG_FILE 开关全部移除（恒开），
+		// 原「链条缺系统API开关」联动校验臂与「显式关闭」断言随之消失。
 		{"候选上限非整数", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "abc"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须配置为整数"},
 		{"候选上限越界", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "0"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须在 1-50000 范围内"},
 		{"Go运行时指标store非法", map[string]string{"JUHE_AI_GO_RUNTIME_METRICS_STORE": "memory"}, "JUHE_AI_GO_RUNTIME_METRICS_STORE 必须为 sqlite 或 postgres"},
@@ -917,14 +917,14 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		if cfg.ChatRetentionDays != 30 {
 			t.Fatalf("ChatRetentionDays = %d，want 30", cfg.ChatRetentionDays)
 		}
-		if cfg.AuditLogEnabled {
-			t.Fatal("AuditLogEnabled = true，want false（显式关闭）")
+		if !cfg.AuditLogEnabled {
+			t.Fatal("AuditLogEnabled = false，want true（2026-09-21 起开关移除恒开，残留 false 被忽略）")
 		}
 		if cfg.DispatchAccountCandidateLimit != 12345 {
 			t.Fatalf("DispatchAccountCandidateLimit = %d，want 12345", cfg.DispatchAccountCandidateLimit)
 		}
-		if cfg.LogFileEnabled {
-			t.Fatal("LogFileEnabled = true，want false（显式关闭）")
+		if !cfg.LogFileEnabled {
+			t.Fatal("LogFileEnabled = false，want true（2026-09-21 起开关移除恒开，残留 false 被忽略）")
 		}
 	})
 }

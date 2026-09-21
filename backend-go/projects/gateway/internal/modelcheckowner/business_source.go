@@ -180,7 +180,7 @@ func (s *BusinessTargetSource) CheckContract(ctx context.Context) error {
 		return fmt.Errorf("open J3b Business source contract: %w", err)
 	}
 	defer tx.Rollback()
-	contracts := map[string]string{"accounts": "id,name,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at", "provider_protocol_profiles": "id,enabled,base_url", "proxy_profiles": "id,enabled,type,host,port,username,password_encrypted", "group_accounts": "account_id,system_account_id,group_id,account_authorization_id,enabled", "groups": "id,system_account_id,enabled", "resource_authorizations": "id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at", "model_quality_policies": "system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes", "account_supported_models": "account_id,model", "account_model_mappings": "account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled"}
+	contracts := map[string]string{"accounts": "id,name,system_account_id,provider_code,provider_protocol_profile_id,protocol_code,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at", "provider_protocol_profiles": "id,enabled,base_url", "proxy_profiles": "id,enabled,type,host,port,username,password_encrypted", "group_accounts": "account_id,system_account_id,group_id,account_authorization_id,enabled", "groups": "id,system_account_id,enabled", "resource_authorizations": "id,resource_type,resource_id,resource_owner_system_account_id,grantee_system_account_id,scope,status,expires_at", "model_quality_policies": "system_account_id,revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids", "account_supported_models": "account_id,model", "account_model_mappings": "account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled"}
 	for table, columns := range contracts {
 		if _, err := tx.ExecContext(ctx, "SELECT "+columns+" FROM "+s.table(table)+" LIMIT 0"); err != nil {
 			return fmt.Errorf("verify J3b Business source table %s: %w", table, err)
@@ -527,7 +527,7 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 	if err != nil {
 		return RunRequest{}, err
 	}
-	policyProfile, revision, manualEnforcementEnabled, threshold, action, recoveryInterval, err := s.readPolicy(ctx, targetSystemAccountID)
+	policyProfile, revision, manualEnforcementEnabled, threshold, action, recoveryInterval, policyCustomQuestionIds, err := s.readPolicy(ctx, targetSystemAccountID)
 	if err != nil {
 		return RunRequest{}, err
 	}
@@ -549,11 +549,11 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 		return RunRequest{}, errors.New("J3b Business target/source/mapping fence changed while freezing request")
 	}
 	target = recheckedTarget
-	currentPolicyProfile, currentRevision, currentManualEnforcementEnabled, currentThreshold, currentAction, currentRecoveryInterval, err := s.readPolicy(ctx, targetSystemAccountID)
+	currentPolicyProfile, currentRevision, currentManualEnforcementEnabled, currentThreshold, currentAction, currentRecoveryInterval, currentCustomQuestionIds, err := s.readPolicy(ctx, targetSystemAccountID)
 	if err != nil {
 		return RunRequest{}, fmt.Errorf("J3b Business policy changed while freezing request: %w", err)
 	}
-	if currentPolicyProfile != policyProfile || currentRevision != revision || currentManualEnforcementEnabled != manualEnforcementEnabled || currentThreshold != threshold || currentAction != action || currentRecoveryInterval != recoveryInterval {
+	if currentPolicyProfile != policyProfile || currentRevision != revision || currentManualEnforcementEnabled != manualEnforcementEnabled || currentThreshold != threshold || currentAction != action || currentRecoveryInterval != recoveryInterval || !sameQualityQuestionIds(currentCustomQuestionIds, policyCustomQuestionIds) {
 		return RunRequest{}, errors.New("J3b Business policy changed while freezing request")
 	}
 	selectedProfile := strings.TrimSpace(command.Profile)
@@ -567,7 +567,7 @@ func (s *BusinessTargetSource) buildRequest(ctx context.Context, actorSystemAcco
 	if selectedProfile != "quick" && selectedProfile != "full" {
 		return RunRequest{}, errors.New("J3b Business policy profile is invalid")
 	}
-	request := RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: targetSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, RecoveryIntervalMinutes: recoveryInterval, ManualEnforcementEnabled: manualEnforcementEnabled, OwnPhysicalAccount: target.OwnPhysicalAccount, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision, PolicyRevision: revision, ProbeSetVersion: probeSetForProfile(selectedProfile), IdentityKey: targetSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile + ":actor:" + actorSystemAccountID, SourceEndpointFamily: string(target.SourceEndpointFamily), UpstreamEndpointFamily: string(target.UpstreamEndpointFamily), UpstreamProtocol: string(target.UpstreamProtocol), UpstreamEndpointMode: target.UpstreamEndpointMode}
+	request := RunRequest{TargetType: command.TargetType, TargetID: command.TargetID, Model: command.Model, Profile: selectedProfile, SystemAccountID: targetSystemAccountID, ActorSystemAccountID: actorSystemAccountID, ProviderCode: target.ProviderCode, Threshold: threshold, PenaltyAction: action, RecoveryIntervalMinutes: recoveryInterval, ManualEnforcementEnabled: manualEnforcementEnabled, OwnPhysicalAccount: target.OwnPhysicalAccount, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision, PolicyRevision: revision, ProbeSetVersion: probeSetForProfile(selectedProfile), IdentityKey: targetSystemAccountID + ":" + command.TargetID + ":" + command.Model + ":" + selectedProfile + ":actor:" + actorSystemAccountID, SourceEndpointFamily: string(target.SourceEndpointFamily), UpstreamEndpointFamily: string(target.UpstreamEndpointFamily), UpstreamProtocol: string(target.UpstreamProtocol), UpstreamEndpointMode: target.UpstreamEndpointMode, CustomQuestionIds: policyCustomQuestionIds}
 	if !command.TrustedComparison {
 		return request, nil
 	}
@@ -775,24 +775,27 @@ func fenceValue(value any) string {
 	}
 }
 
-func (s *BusinessTargetSource) readPolicy(ctx context.Context, systemAccountID string) (profile, revision string, manualEnforcementEnabled bool, threshold int, action string, recoveryInterval int, err error) {
+func (s *BusinessTargetSource) readPolicy(ctx context.Context, systemAccountID string) (profile, revision string, manualEnforcementEnabled bool, threshold int, action string, recoveryInterval int, customQuestionIds []string, err error) {
 	profile, revision, manualEnforcementEnabled, threshold, action, recoveryInterval = "quick", "0", true, 70, "fallback", 10
+	customQuestionIds = []string{}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return "", "", false, 0, "", 0, fmt.Errorf("open J3b Business policy transaction: %w", err)
+		return "", "", false, 0, "", 0, nil, fmt.Errorf("open J3b Business policy transaction: %w", err)
 	}
 	defer tx.Rollback()
-	query := `SELECT revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes FROM ` + s.table("model_quality_policies") + ` WHERE system_account_id=` + s.placeholder(1) + ` LIMIT 1`
-	if scanErr := tx.QueryRowContext(ctx, query, systemAccountID).Scan(&revision, &profile, &manualEnforcementEnabled, &threshold, &action, &recoveryInterval); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
-		return "", "", false, 0, "", 0, fmt.Errorf("read J3b Business quality policy: %w", scanErr)
+	query := `SELECT revision,profile,manual_enforcement_enabled,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids FROM ` + s.table("model_quality_policies") + ` WHERE system_account_id=` + s.placeholder(1) + ` LIMIT 1`
+	var rawCustomQuestionIds sql.NullString
+	if scanErr := tx.QueryRowContext(ctx, query, systemAccountID).Scan(&revision, &profile, &manualEnforcementEnabled, &threshold, &action, &recoveryInterval, &rawCustomQuestionIds); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		return "", "", false, 0, "", 0, nil, fmt.Errorf("read J3b Business quality policy: %w", scanErr)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", "", false, 0, "", 0, fmt.Errorf("commit J3b Business policy read: %w", err)
+		return "", "", false, 0, "", 0, nil, fmt.Errorf("commit J3b Business policy read: %w", err)
 	}
 	if threshold < 40 || threshold > 100 || recoveryInterval < 10 || recoveryInterval > 10080 || (profile != "quick" && profile != "full") || (action != "disable" && action != "fallback" && action != "quality_isolate") {
-		return "", "", false, 0, "", 0, errors.New("J3b Business quality policy is invalid")
+		return "", "", false, 0, "", 0, nil, errors.New("J3b Business quality policy is invalid")
 	}
-	return profile, revision, manualEnforcementEnabled, threshold, action, recoveryInterval, nil
+	// 手动检测同样携带题库配置（policy 行 NULL/非法 JSON 归一为空 = 不启用）。
+	return profile, revision, manualEnforcementEnabled, threshold, action, recoveryInterval, qualityCustomQuestionIds(rawCustomQuestionIds), nil
 }
 
 func (s *BusinessTargetSource) table(name string) string {

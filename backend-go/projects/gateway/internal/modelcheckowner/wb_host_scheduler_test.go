@@ -219,11 +219,12 @@ func TestWBHostNilAndUnreadyContracts(t *testing.T) {
 }
 
 // BusinessSchedulerSource.CheckContract 契约：调度/恢复租约事务依赖的
-// 三张 Business 表与列必须存在，缺失任何一张都要失败关闭。
+// 四张 Business 表与列必须存在，缺失任何一张都要失败关闭。
 func TestWBBusinessSchedulerCheckContractVerifiesBusinessTables(t *testing.T) {
 	ddl := []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,config_revision INTEGER,dispatch_revision INTEGER,authorization_instance_source_account_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT,availability_schedule_json TEXT,schedulable INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,custom_question_ids TEXT,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,last_recovery_run_id TEXT,cleared_at TEXT,updated_at TEXT)`,
 	}
 	t.Run("contract satisfied", func(t *testing.T) {
@@ -233,7 +234,7 @@ func TestWBBusinessSchedulerCheckContractVerifiesBusinessTables(t *testing.T) {
 		}
 	})
 	t.Run("missing table", func(t *testing.T) {
-		db := wbOpenMemoryDB(t, ddl[:2])
+		db := wbOpenMemoryDB(t, ddl[:3])
 		source := &BusinessSchedulerSource{Business: db}
 		if err := source.CheckContract(context.Background()); err == nil || !strings.Contains(err.Error(), "account_quality_enforcements") {
 			t.Fatalf("缺表必须失败关闭: err=%v", err)

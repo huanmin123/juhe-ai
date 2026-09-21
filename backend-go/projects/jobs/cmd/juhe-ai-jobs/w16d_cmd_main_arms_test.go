@@ -34,14 +34,12 @@ func TestW16DMainFailFastArms(t *testing.T) {
 		t.Skip("w16d fail-fast 子进程计数需要 -test.gocoverdir（go test -coverprofile 时生效）")
 	}
 	j2Base := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED":           "true",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":        "go",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":          "w16d-j2",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":             "postgres",
 		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "0123456789abcdef0123456789abcdef",
 	}
 	j3aBase := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "w16d-j3a",
 		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
@@ -60,7 +58,6 @@ func TestW16DMainFailFastArms(t *testing.T) {
 			"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":        "true",
 			"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":   w16dClosedPortURL(),
 			"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1:0",
-			"JUHE_AI_PROXY_LATENCY_ENABLED":                   "",
 		}},
 		// model-recovery：Redis URL 合法但不可达 → Ping 失败（218-224）。
 		{"model-recovery-redis-closed-port", nil, w13g8FullOwnerEnv, map[string]string{

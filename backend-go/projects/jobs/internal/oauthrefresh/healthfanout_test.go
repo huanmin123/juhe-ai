@@ -119,7 +119,7 @@ func TestSweepRunsHealthFanoutInsideFinalizer(t *testing.T) {
 	store, db, clock := newSweepStore(t)
 	seedInstanceAccount(t, db, "inst-a", "openai", "oauth", "acc-src", "")
 	// 过期的 account 授权 grant。
-	if _, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, owner_system_account_id, grantee_type, grantee_id,
+	if _, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id,
 		status, revoked_at, revoked_by, created_by, expires_at, updated_at)
 		VALUES ('g-fan', 'account', 'acc-src', 'owner', 'system_account', 'grantee', 'active', NULL, '', 'creator', ?, ?)`,
 		isoMillis(clock.time().Add(-timeHour)), isoMillis(defaultNow())); err != nil {
@@ -140,7 +140,7 @@ func TestSweepRunsHealthFanoutInsideFinalizer(t *testing.T) {
 	}
 	// finalizer 写入失败（版本表缺失）必须使 sweep 本轮失败——Node in-tx
 	// 语义：下游副作用写入失败即整个 sweep 事务回滚。
-	if _, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, owner_system_account_id, grantee_type, grantee_id,
+	if _, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id,
 		status, revoked_at, revoked_by, created_by, expires_at, updated_at)
 		VALUES ('g-fan-2', 'account', 'acc-src', 'owner', 'system_account', 'grantee', 'active', NULL, '', 'creator', ?, ?)`,
 		isoMillis(clock.time().Add(-timeHour)), isoMillis(defaultNow())); err != nil {

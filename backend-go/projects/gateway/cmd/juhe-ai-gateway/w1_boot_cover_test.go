@@ -30,8 +30,9 @@ package main
 //	I  被动网关 + 非法 -health-listen-address → 非零，stderr 含 listen passive gateway health endpoint
 //	J  被动网关优雅关闭（CTRL_BREAK_EVENT，尽力而为；3 次尝试不可行则 Skip 并保留本注释记录）
 //	K1 owner + JUHE_AI_DATABASE_DRIVER=bogus  → stderr 含 load gateway runtime config
-//	K2 owner + 仅 JUHE_AI_GATEWAY_CHAIN_ENABLED → stderr 含 load gateway runtime config（system-api 门槛）
-//	K3 owner + 仅 SYSTEM_API_ENABLED（businessOwnerGate 首步失败）→ stderr 含 verify business owner gates
+//	K2（已删除）原「仅 CHAIN 无 SYSTEM_API」联动门槛臂：2026-09-21 起两开关
+//	     移除、组合根与网关链恒开，被测对象不复存在。
+//	K3 owner + 非 gateway BUSINESS_OWNER（businessOwnerGate 首步失败）→ stderr 含 verify business owner gates
 //	K4 K3 全量 handoff 证据文件缺失 → stderr 含 read business owner cutover evidence
 //	K5 K4 有效证据 + J3b enabled 证据缺失 → stderr 含 read J3b cutover evidence
 //	L  JUHE_AI_BLUE_GREEN_OWNER_MODE=bogus → stderr 含 must be active, standby, or drain
@@ -703,16 +704,10 @@ func TestW1BBootCoverOwnerFailFastArms(t *testing.T) {
 	w1bRequireExitCode(t, "K1-driver-bogus", code, 1)
 	w1bRequireContains(t, "K1-driver-bogus", stderr, "load gateway runtime config: JUHE_AI_DATABASE_DRIVER 必须为 sqlite 或 postgres")
 
-	// K2: 显式 chain=true + system-api=false → loadRuntimeConfig 的组合根
-	// 联动门槛快速失败（2026-09-19 起 system-api 未配置默认开启，“仅启用
-	// chain”不再构成联动违规，必须显式关闭 system-api 才触发该错误臂；
-	// gateGatewayChain phase-2 后恒通过，见文件头注释）。
-	coverageDir = w1bCoverageDir(t, "K2-chain-without-systemapi")
-	_, stderr, code = w1bRunScenario(t, "K2-chain-without-systemapi", w1bOwnerBaseEnv(t, coverageDir,
-		"JUHE_AI_GATEWAY_CHAIN_ENABLED=true",
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false"))
-	w1bRequireExitCode(t, "K2-chain-without-systemapi", code, 1)
-	w1bRequireContains(t, "K2-chain-without-systemapi", stderr, "load gateway runtime config: 启用 JUHE_AI_GATEWAY_CHAIN_ENABLED 时必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED")
+	// K2（已删除）：原「chain=true + system-api=false 联动门槛」臂依赖
+	// JUHE_AI_GATEWAY_CHAIN_ENABLED / JUHE_AI_GATEWAY_SYSTEM_API_ENABLED
+	// 开关。2026-09-21 起两开关移除、组合根与网关链恒开，联动门槛不复
+	// 存在，该臂失去被测对象。
 
 	// K3: businessOwnerGate 首步（JUHE_AI_BUSINESS_OWNER 非 gateway）→
 	// stderr 含 verify business owner gates。2026-09-19 起 sqlite +

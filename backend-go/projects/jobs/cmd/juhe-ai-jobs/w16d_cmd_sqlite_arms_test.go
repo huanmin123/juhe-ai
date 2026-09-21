@@ -319,15 +319,6 @@ func TestW16DWireHealthOutcomeProjectorArms(t *testing.T) {
 	if projector, err := emptyAssembly.wireHealthOutcomeProjector(nil, nil); err != nil || projector != nil {
 		t.Fatalf("store nil 必须合法缺席: %v %v", projector, err)
 	}
-	// env 显式关闭 → 合法缺席（47-50）。
-	if projector, err := emptyAssembly.wireHealthOutcomeProjector(func(name string) string {
-		if name == healthProjectionDisabledEnvVar {
-			return "true"
-		}
-		return ""
-	}, &accounthealth.Store{}); err != nil || projector != nil {
-		t.Fatalf("env 关闭必须合法缺席: %v %v", projector, err)
-	}
 	// openBusinessDB 失败（postgres 坏 URL；68-70）。
 	pgAssembly := newWorkerAssembly(workerConfig{Driver: "postgres", PostgresURL: "pgx://w16d-invalid"}, slog.Default())
 	if _, err := pgAssembly.wireHealthOutcomeProjector(func(name string) string {

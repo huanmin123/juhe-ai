@@ -532,7 +532,6 @@ var sqliteDirectInputBusinessContractDDL = []string{
   created_at TEXT NOT NULL,
   revoked_by TEXT,
   revoked_at TEXT,
-  revoked_reason TEXT,
   updated_at TEXT NOT NULL,
   CHECK (
     (grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)

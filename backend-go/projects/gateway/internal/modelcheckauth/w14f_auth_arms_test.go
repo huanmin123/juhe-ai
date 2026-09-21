@@ -350,22 +350,22 @@ func TestW14fLoginGuardUserLockArm(t *testing.T) {
 	guard := NewLoginGuard(func() time.Time { return now })
 	// 前 9 次不同来源 IP 对同一用户名失败：按用户名未达上限、按 IP 不锁定。
 	for i := 0; i < loginGuardLimit-1; i++ {
-		blocked, _, _ := guard.Failed("192.0.2."+strconv.Itoa(100+i), "w14f-user")
-		if blocked {
-			t.Fatalf("第 %d 次失败不应锁定", i+1)
+		blocked, _, _, err := guard.Failed("192.0.2."+strconv.Itoa(100+i), "w14f-user")
+		if blocked || err != nil {
+			t.Fatalf("第 %d 次失败不应锁定: blocked=%v err=%v", i+1, blocked, err)
 		}
 	}
 	// 第 10 次（最后一次）触达上限 → 按用户名锁定成立。
-	if blocked, _, _ := guard.Failed("192.0.2.109", "w14f-user"); !blocked {
-		t.Fatalf("第 10 次失败应触发锁定")
+	if blocked, _, _, err := guard.Failed("192.0.2.109", "w14f-user"); err != nil || !blocked {
+		t.Fatalf("第 10 次失败应触发锁定: err=%v blocked=%v", err, blocked)
 	}
-	blocked, retry, message := guard.Check("192.0.2.200", "w14f-user")
-	if !blocked || retry <= 0 || message != "账号暂时锁定，请稍后再试" {
-		t.Fatalf("user lock: %v %d %q", blocked, retry, message)
+	blocked, retry, message, err := guard.Check("192.0.2.200", "w14f-user")
+	if err != nil || !blocked || retry <= 0 || message != "账号暂时锁定，请稍后再试" {
+		t.Fatalf("user lock: err=%v %v %d %q", err, blocked, retry, message)
 	}
 	// 未触发用户 → 通过。
-	if blocked, _, _ := guard.Check("192.0.2.200", "w14f-other"); blocked {
-		t.Fatalf("其他用户不应被锁定")
+	if blocked, _, _, err := guard.Check("192.0.2.200", "w14f-other"); blocked || err != nil {
+		t.Fatalf("其他用户不应被锁定: blocked=%v err=%v", blocked, err)
 	}
 }
 

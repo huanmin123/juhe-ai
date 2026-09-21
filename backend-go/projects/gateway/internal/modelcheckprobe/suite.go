@@ -57,6 +57,14 @@ type Suite struct {
 	// never infers a subscription lane from a generic OpenAI protocol.
 	Adapter string
 	Retry   RetryOptions
+	// QuizRequested marks that the owner resolved a custom quiz configuration.
+	// It stays true even when every configured id was filtered out, so the
+	// family still emits its "quiz_questions_unavailable" skipped item.
+	QuizRequested bool
+	// QuizQuestions carries the approved bank questions resolved by the owner
+	// layer. Only the top-level suite (empty Prefix) may run the quiz family;
+	// trusted-comparison nested suites never see quiz requests.
+	QuizQuestions []QuizQuestion
 }
 
 func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evaluation, error) {
@@ -176,6 +184,13 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 			items = append(items, comparison...)
 		}
 		items = append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results)))
+		if input.Prefix == "" && input.QuizRequested {
+			quizItems, quizErr := RunQuizFamily(ctx, input, timeout)
+			if quizErr != nil {
+				return nil, quizErr
+			}
+			items = append(items, quizItems...)
+		}
 		return items, nil
 	}
 	if input.Profile == "full" {
@@ -296,6 +311,13 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		}
 	}
 	items = append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results)))
+	if input.Prefix == "" && input.QuizRequested {
+		quizItems, quizErr := RunQuizFamily(ctx, input, timeout)
+		if quizErr != nil {
+			return nil, quizErr
+		}
+		items = append(items, quizItems...)
+	}
 	return items, nil
 }
 

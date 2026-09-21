@@ -77,6 +77,9 @@ func TestWIMigrateLegacySQLiteRejectsBrokenReference(t *testing.T) {
 	}
 	defer db.Close()
 	// 建 legacy 表并写入孤儿 target（引用不存在的日志）。
+	// 刻意复刻旧 Node 操作日志 schema（迁移源形态，非 canonical Go schema；
+	// operation_log_targets 旧列集含 system_account_id，MigrateLegacySQLite
+	// 按该源结构校验与读取）。
 	for _, ddl := range []string{
 		`CREATE TABLE operation_logs (id TEXT PRIMARY KEY, summary TEXT, created_at TEXT)`,
 		`CREATE TABLE operation_log_targets (operation_log_id TEXT, system_account_id TEXT, PRIMARY KEY (operation_log_id, system_account_id))`,

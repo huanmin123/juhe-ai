@@ -52,6 +52,8 @@ assert.match(source, /FORBID_TAGS:\s*\['script',\s*'foreignObject'\]/, '纯 SVG 
 assert.doesNotMatch(source, /mermaid\.run\(/, '不能在已净化 DOM 上调用 mermaid.run 注入未净化 SVG')
 assert.match(source, /version !== renderVersion/, '异步 Mermaid 渲染必须保留版本竞态保护')
 assert.match(source, /\.chat-code-block[\s\S]{0,120}overflow/, '代码块必须局部横向滚动')
+assert.match(source, /\.chat-code-block > pre\) \{ max-width: 100%; max-height: 520px; margin: 0; padding: 12px 14px; overflow: auto;/, '代码块内容区必须限制最大高度 520px 并块内滚动')
+assert.match(source, /pre\.scrollTop = state\.pinned \? pre\.scrollHeight : state\.top/, '流式输出时贴底的代码块必须跟随最新输出，上滑阅读的保持原滚动位置')
 assert.match(source, /\.chat-markdown\s+:deep\(table\)[\s\S]{0,120}overflow-x:\s*auto/, '表格必须局部横向滚动')
 assert.match(source, /\.chat-markdown\s+:deep\(\.katex-display\)[\s\S]{0,100}overflow-x:\s*auto/, '公式必须局部横向滚动')
 

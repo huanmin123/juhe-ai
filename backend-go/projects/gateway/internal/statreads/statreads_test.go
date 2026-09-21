@@ -102,7 +102,7 @@ const testSchema = `
 		PRIMARY KEY (window_key, start_date, end_date, bucket_key, process_role));
 	CREATE TABLE resource_authorizations (
 		id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
-		owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL,
+		resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL,
 		status TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 	CREATE TABLE accounts (
 		id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL,

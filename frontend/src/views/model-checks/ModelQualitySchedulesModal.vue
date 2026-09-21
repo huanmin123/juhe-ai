@@ -68,6 +68,12 @@
                   {{ form.profile === 'full' ? '覆盖更多能力项，耗时更长且消耗更多 Token' : '适合高频巡检，优先验证核心能力' }}
                 </div>
               </a-form-item>
+              <a-form-item class="schedule-quiz-field" label="题库测试（选填）">
+                <QuestionBankSelect v-model:value="form.customQuestionIds" :disabled="saving" :is-management-view="isManagementView" />
+                <div class="schedule-field-help">
+                  选择最多 3 道已通过题目；检测最后逐题作答，答错按 31 分池扣分。
+                </div>
+              </a-form-item>
               <a-form-item class="schedule-state-field" label="计划状态">
                 <div class="schedule-switch-row">
                   <div>
@@ -196,6 +202,7 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { formatDateTime } from '@/shared/formatters'
 import type { ModelQualityPenaltyAction, ModelQualitySchedule, ModelQualityScheduleMutationInput } from '@/types/domain'
+import QuestionBankSelect from './QuestionBankSelect.vue'
 import { statusText } from './modelCheckFormatters'
 
 interface ScheduleAccountOption {
@@ -211,6 +218,7 @@ interface SelectedScheduleAccountOption extends ScheduleAccountOption {
 const props = defineProps<{
   accountOptions: ScheduleAccountOption[]
   accountOptionsLoading: boolean
+  isManagementView: boolean
   loading: boolean
   modelOptions: Array<{ label: string; value: string }>
   open: boolean
@@ -239,6 +247,7 @@ const form = reactive<ModelQualityScheduleMutationInput>({
   penaltyThreshold: 70,
   penaltyAction: 'fallback',
   recoveryIntervalMinutes: 10,
+  customQuestionIds: [],
   enabled: true
 })
 const scheduleEditorRef = ref<HTMLElement>()
@@ -319,6 +328,7 @@ function edit(item: ModelQualitySchedule) {
   form.penaltyThreshold = item.penaltyThreshold
   form.penaltyAction = item.penaltyAction
   form.recoveryIntervalMinutes = item.recoveryIntervalMinutes
+  form.customQuestionIds = [...(item.customQuestionIds ?? [])]
   form.enabled = item.enabled
   form.expectedRevision = item.revision
   void nextTick(() => scheduleEditorRef.value?.scrollIntoView({ block: 'start' }))
@@ -356,6 +366,7 @@ function resetForm() {
   form.penaltyThreshold = 70
   form.penaltyAction = 'fallback'
   form.recoveryIntervalMinutes = 10
+  form.customQuestionIds = []
   form.enabled = true
   delete form.expectedRevision
 }
@@ -505,6 +516,10 @@ function lastRunText(item: ModelQualitySchedule): string {
   width: 50%;
   padding-inline: 10px;
   text-align: center;
+}
+
+.schedule-quiz-field {
+  grid-column: 1 / -1;
 }
 
 .schedule-field-help,

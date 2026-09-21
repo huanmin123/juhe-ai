@@ -418,6 +418,26 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     );
     CREATE INDEX IF NOT EXISTS idx_account_lock_states_deadline ON account_lock_states(lock_state, deadline_at);
 
+    CREATE TABLE IF NOT EXISTS model_check_question_bank (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      title_norm TEXT NOT NULL,
+      question_text TEXT NOT NULL,
+      reference_answer TEXT NOT NULL,
+      key_points_json TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      reject_reason TEXT,
+      created_by TEXT NOT NULL,
+      created_scope TEXT NOT NULL,
+      reviewed_by TEXT,
+      reviewed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_status ON model_check_question_bank(status);
+    CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_created_by ON model_check_question_bank(created_by);
+    CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_title_norm ON model_check_question_bank(title_norm);
+
     CREATE TABLE IF NOT EXISTS model_quality_policies (
       system_account_id TEXT PRIMARY KEY,
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
@@ -428,6 +448,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      custom_question_ids TEXT,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     );
 
@@ -451,6 +472,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       lease_until TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      custom_question_ids TEXT,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
       UNIQUE (system_account_id, account_id)

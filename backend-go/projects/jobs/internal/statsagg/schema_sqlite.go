@@ -10,6 +10,10 @@ import (
 // SQLiteTestSchema 是 statsagg 测试库的最小 stats 库 schema，列定义对齐
 // backend-go/projects/maintenance/internal/schema/sqlite_schema.go（只读参考，
 // 仅保留被本包聚合/窗口链路读写的表）。禁止用于生产初始化。
+//
+// 仅测试使用（testkit）：本文件故意保持非 _test.go 的普通源文件，因为
+// cmd/juhe-ai-jobs 的测试跨包引用 SQLiteTestSchema（Go 语义下 _test.go 中
+// 的符号对其他包不可见）。任何生产初始化路径不得 import 本文件符号。
 var SQLiteTestSchema = []string{
 	// usage 记录源表（USAGE_STATS_RECORD_SELECT_COLUMNS 全列）
 	`CREATE TABLE IF NOT EXISTS usage_records (
@@ -101,7 +105,7 @@ var SQLiteTestSchema = []string{
 		scope_id TEXT NOT NULL,
 		metric_value REAL NOT NULL,
 		updated_at TEXT NOT NULL,
-		PRIMARY KEY (scope_type, window_key, metric, system_account_id, rank)
+		PRIMARY KEY (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id)
 	)`,
 	`CREATE TABLE IF NOT EXISTS ai_performance_summary_windows (
 		system_account_id TEXT NOT NULL,

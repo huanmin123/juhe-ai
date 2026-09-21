@@ -97,6 +97,7 @@ export interface ModelQualityPolicy {
   penaltyThreshold: number
   penaltyAction: ModelQualityPenaltyAction
   recoveryIntervalMinutes: number
+  customQuestionIds?: string[]
   createdAt?: string
   updatedAt?: string
 }
@@ -108,6 +109,7 @@ export interface ModelQualityPolicyUpdateInput {
   penaltyThreshold?: number
   penaltyAction?: ModelQualityPenaltyAction
   recoveryIntervalMinutes?: number
+  customQuestionIds?: string[]
 }
 
 export interface ModelQualitySchedule {
@@ -124,6 +126,7 @@ export interface ModelQualitySchedule {
   recoveryIntervalMinutes: number
   enabled: boolean
   revision: number
+  customQuestionIds?: string[]
   nextRunAt: string
   lastRunId?: string
   lastRunAt?: string
@@ -196,6 +199,7 @@ export interface ModelQualityScheduleMutationInput {
   penaltyThreshold: number
   penaltyAction: ModelQualityPenaltyAction
   recoveryIntervalMinutes: number
+  customQuestionIds?: string[]
   enabled?: boolean
   expectedRevision?: number
 }
@@ -203,7 +207,77 @@ export interface ModelQualityScheduleMutationInput {
 export type ModelQualitySchedulePatchInput = {
   expectedRevision: number
 } & Partial<Pick<ModelQualityScheduleMutationInput,
-  'model' | 'intervalMinutes' | 'profile' | 'penaltyThreshold' | 'penaltyAction' | 'recoveryIntervalMinutes' | 'enabled'>>
+  'model' | 'intervalMinutes' | 'profile' | 'penaltyThreshold' | 'penaltyAction' | 'recoveryIntervalMinutes' | 'customQuestionIds' | 'enabled'>>
+
+export type ModelCheckQuestionStatus = 'pending' | 'approved' | 'rejected'
+
+export interface ModelCheckQuestionBankItem {
+  id: string
+  title: string
+  questionText: string
+  /** 参考答案仅创建者与管理员可见，无权限时缺失 */
+  referenceAnswer?: string
+  /** 评分要点仅创建者与管理员可见，无权限时缺失 */
+  keyPoints?: string[]
+  status: ModelCheckQuestionStatus
+  rejectReason?: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+  reviewedAt?: string
+}
+
+export interface ModelCheckQuestionBankListParams {
+  status?: ModelCheckQuestionStatus
+  keyword?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface ModelCheckQuestionBankListResult {
+  items: ModelCheckQuestionBankItem[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface ModelCheckQuestionBankMutationInput {
+  title: string
+  questionText: string
+  referenceAnswer: string
+  keyPoints?: string[]
+}
+
+export interface ModelCheckQuestionBankReviewInput {
+  action: 'approve' | 'reject'
+  reason?: string
+}
+
+export interface ModelCheckQuestionBankOption {
+  id: string
+  title: string
+}
+
+export interface ModelCheckQuestionBankOptionsResult {
+  items: ModelCheckQuestionBankOption[]
+}
+
+export type ModelCheckQuizItemVerdict = 'passed' | 'failed' | 'unavailable'
+
+export interface ModelCheckQuizItem {
+  questionId: string
+  title: string
+  verdict: ModelCheckQuizItemVerdict
+  reason: string
+}
+
+export interface ModelCheckQuizSummary {
+  enabled: boolean
+  score: number
+  maxScore: number
+  deduction: number
+  items: ModelCheckQuizItem[]
+}
 
 export interface ModelCheckRunSummary {
   id: string

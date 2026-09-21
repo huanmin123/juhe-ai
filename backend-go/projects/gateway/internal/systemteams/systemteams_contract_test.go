@@ -285,7 +285,7 @@ func TestAddMembersFanoutAndSideEffects_C6_C9(t *testing.T) {
 
 	// One active team grant owned by a third account with a remark; the owner
 	// must NOT receive their own runtime row (write :1579).
-	mustExec(t, env, `INSERT INTO groups (id, name, system_account_id, status) VALUES ('grp_fan', 'Group grp_fan', ?, 'active')`, ownerID)
+	mustExec(t, env, `INSERT INTO groups (id, name, system_account_id) VALUES ('grp_fan', 'Group grp_fan', ?)`, ownerID)
 	insertTeamGrant(t, env, "grant_fan", "grp_fan", teamID, ownerID, revision)
 	env.stats.reasons = nil
 	env.inval.calls = nil
@@ -341,7 +341,7 @@ func TestPatchDisableEnableCascade_C7_C8(t *testing.T) {
 	env.as("admin")
 	teamID, revision := env.createTeamViaRoute(t, "级联组")
 
-	mustExec(t, env, `INSERT INTO groups (id, name, system_account_id, status) VALUES ('grp_cas', 'Group grp_cas', ?, 'active')`, ownerID)
+	mustExec(t, env, `INSERT INTO groups (id, name, system_account_id) VALUES ('grp_cas', 'Group grp_cas', ?)`, ownerID)
 	insertTeamGrant(t, env, "grant_cas", "grp_cas", teamID, ownerID, revision)
 	memberRowID := insertActiveMember(t, env, teamID, memberAccountID, revision)
 	insertRuntimeWithTeamSource(t, env, "auth_cas", "grp_cas", memberAccountID, ownerID, teamID, revision)

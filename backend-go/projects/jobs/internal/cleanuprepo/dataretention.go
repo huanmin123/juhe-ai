@@ -552,7 +552,8 @@ type cleanupCursor struct {
 	ID        string
 }
 
-// CleanupProcessedBefore 执行一个清理批次（安全游标 + 分区裁剪语义）。
+// CleanupProcessedBefore 执行一个清理批次（分片安全游标 + PG 分区裁剪语义；
+// SQLite 模式在分片半区后追加 stats 库 usage_records 镜像的保留清理）。
 func (s *UsageRecordsStore) CleanupProcessedBefore(ctx context.Context, cutoffCreatedAt string, limit int) (retention.UsageRecordsBatch, error) {
 	batch := batchLimit(limit)
 	if s.Catalog.Postgres {
@@ -566,6 +567,19 @@ func (s *UsageRecordsStore) missingCursorBlockedReason() string {
 }
 
 func (s *UsageRecordsStore) cleanupProcessedBeforeSQLite(ctx context.Context, cutoffCreatedAt string, batch int) (retention.UsageRecordsBatch, error) {
+	result, err := s.cleanupShardRowsBeforeSQLite(ctx, cutoffCreatedAt, batch)
+	if err != nil {
+		return retention.UsageRecordsBatch{}, err
+	}
+	// 分片半区完成后追加 stats 镜像半区：两半区各自幂等，镜像半区失败时本批
+	// 以错误收场（对齐既有阶段的错误处理风格），已完成的分片删除不回滚；
+	// 镜像删除谓词纯函数式，下一轮重跑继续收敛。
+	return s.applyStatsMirrorRetention(ctx, result, cutoffCreatedAt, batch)
+}
+
+// cleanupShardRowsBeforeSQLite 是 SQLite 清理的分片半区
+// （原 cleanupProcessedBeforeSQLite 正文，照 Node SQLite 驱动路径）。
+func (s *UsageRecordsStore) cleanupShardRowsBeforeSQLite(ctx context.Context, cutoffCreatedAt string, batch int) (retention.UsageRecordsBatch, error) {
 	cursor, err := s.sqliteFloorCursor(ctx)
 	if err != nil {
 		return retention.UsageRecordsBatch{}, err
@@ -611,6 +625,205 @@ func (s *UsageRecordsStore) cleanupProcessedBeforeSQLite(ctx context.Context, cu
 		DeletedRows:           deletedRows,
 		HasMore:               len(rows) > batch,
 	}, nil
+}
+
+// ---- stats 库 usage_records 镜像的保留清理（SQLite standalone）----
+//
+// usagewriter 的 mirrorStatsUsageRecords 把每批分片记录镜像进 stats 库
+// usage_records（SQLite standalone 模式下聚合器的唯一输入源），但该镜像表
+// 此前 insert-only、没有任何清理路径，会无限增长。本节在 SQLite 清理链里
+// 补齐其保留清理，删除语义对齐 PG 侧 juhe_usage.usage_records 的实现
+// （postgresFloorCursor / selectPostgresCleanupRows / dropEligiblePartitions
+// 的行级半区）：
+//   - 不变量「不能删掉未聚合数据」：usage_stats_aggregation 与
+//     client_ip_stats_aggregation 两个 global 游标都建立后取更早者作 floor，
+//     只删 (created_at, id) 严格落在 floor 之前（含 floor 时刻但 id 更小）
+//     且早于保留期 cutoff 的行；任一游标缺失时不删除（有候选行时以
+//     BlockedReason 显式上报，不静默）。
+//   - 幂等可重试：谓词只依赖游标与 cutoff，批次最旧优先、按批上限截断，
+//     失败整批回滚，下一轮清理继续。
+
+// applyStatsMirrorRetention 在分片半区结果上追加 stats 镜像半区：
+// DeletedRows/HasMore 合并；分片半区已有 BlockedReason 时保持不变
+// （分片游标是更早的放行门，镜像阻塞只在分片放行时可见）。
+func (s *UsageRecordsStore) applyStatsMirrorRetention(ctx context.Context, result retention.UsageRecordsBatch, cutoffCreatedAt string, batch int) (retention.UsageRecordsBatch, error) {
+	deletedRows, hasMore, blockedReason, err := s.cleanupStatsMirrorBefore(ctx, cutoffCreatedAt, batch)
+	if err != nil {
+		return retention.UsageRecordsBatch{}, err
+	}
+	result.DeletedRows += deletedRows
+	result.HasMore = result.HasMore || hasMore
+	if result.BlockedReason == "" {
+		result.BlockedReason = blockedReason
+	}
+	return result, nil
+}
+
+func (s *UsageRecordsStore) statsMirrorMissingCursorBlockedReason() string {
+	return "统计库使用记录镜像的聚合安全游标尚未建立，暂不清理镜像使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试"
+}
+
+// cleanupStatsMirrorBefore 执行一个 stats 镜像清理批次，返回
+// (删除行数, 是否还有剩余, 阻塞原因, 错误)。
+func (s *UsageRecordsStore) cleanupStatsMirrorBefore(ctx context.Context, cutoffCreatedAt string, batch int) (int64, bool, string, error) {
+	cursor, err := s.sqliteStatsMirrorFloorCursor(ctx)
+	if err != nil {
+		return 0, false, "", err
+	}
+	if cursor == nil {
+		exists, existsErr := s.statsMirrorHasRecordsBefore(ctx, cutoffCreatedAt)
+		if existsErr != nil {
+			return 0, false, "", existsErr
+		}
+		if !exists {
+			return 0, false, "", nil
+		}
+		return 0, false, s.statsMirrorMissingCursorBlockedReason(), nil
+	}
+	rows, err := s.selectStatsMirrorCleanupRows(ctx, cutoffCreatedAt, *cursor, batch+1)
+	if err != nil {
+		return 0, false, "", err
+	}
+	rowsToDelete := rows
+	if len(rowsToDelete) > batch {
+		rowsToDelete = rowsToDelete[:batch]
+	}
+	deletedRows, err := s.deleteStatsMirrorRows(ctx, rowsToDelete)
+	if err != nil {
+		return 0, false, "", err
+	}
+	return deletedRows, len(rows) > batch, "", nil
+}
+
+// sqliteStatsMirrorFloorCursor 照 postgresFloorCursor 的 global 游标半区
+// （SQLite 方言）：读双聚合 job 的 global 游标，任一缺失返回 nil，
+// 齐备时取 (cursor_created_at, cursor_id) 更早者。
+func (s *UsageRecordsStore) sqliteStatsMirrorFloorCursor(ctx context.Context) (*cleanupCursor, error) {
+	query := s.Stats.Bind(fmt.Sprintf(`
+      SELECT job_name, cursor_created_at, cursor_id
+      FROM stats_job_state
+      WHERE scope_type = 'global'
+        AND scope_id = ''
+        AND job_name IN (%s)
+        AND cursor_created_at IS NOT NULL
+        AND cursor_id IS NOT NULL
+      ORDER BY cursor_created_at ASC, cursor_id ASC
+	`, s.Stats.BindIn(len(usageRecordCleanupRequiredCursorJobNames))))
+	rows, err := s.Stats.QueryContext(ctx, query, stringSliceToAny(usageRecordCleanupRequiredCursorJobNames)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	jobNames := map[string]bool{}
+	firstCursor := (*cleanupCursor)(nil)
+	for rows.Next() {
+		var jobName, createdAt, id sql.NullString
+		if err := rows.Scan(&jobName, &createdAt, &id); err != nil {
+			return nil, err
+		}
+		if normalized := strings.TrimSpace(jobName.String); normalized != "" {
+			jobNames[normalized] = true
+		}
+		if firstCursor == nil {
+			cursorCreatedAt := strings.TrimSpace(createdAt.String)
+			cursorID := strings.TrimSpace(id.String)
+			if cursorCreatedAt != "" && cursorID != "" {
+				firstCursor = &cleanupCursor{CreatedAt: cursorCreatedAt, ID: cursorID}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, jobName := range usageRecordCleanupRequiredCursorJobNames {
+		if !jobNames[jobName] {
+			return nil, nil
+		}
+	}
+	return firstCursor, nil
+}
+
+func (s *UsageRecordsStore) statsMirrorHasRecordsBefore(ctx context.Context, cutoffCreatedAt string) (bool, error) {
+	rows, err := s.Stats.QueryContext(ctx, s.Stats.Bind(`
+      SELECT id
+      FROM usage_records
+      WHERE created_at < ?
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+	`), cutoffCreatedAt)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	return rows.Next(), rows.Err()
+}
+
+func (s *UsageRecordsStore) selectStatsMirrorCleanupRows(ctx context.Context, cutoffCreatedAt string, cursor cleanupCursor, limit int) ([]ShardCleanupRow, error) {
+	rows, err := s.Stats.QueryContext(ctx, s.Stats.Bind(`
+      SELECT id, created_at
+      FROM usage_records
+      WHERE created_at < ?
+        AND (created_at < ? OR (created_at = ? AND id <= ?))
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+	`), cutoffCreatedAt, cursor.CreatedAt, cursor.CreatedAt, cursor.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var output []ShardCleanupRow
+	for rows.Next() {
+		var id, createdAt sql.NullString
+		if err := rows.Scan(&id, &createdAt); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(id.String) == "" || strings.TrimSpace(createdAt.String) == "" {
+			continue
+		}
+		output = append(output, ShardCleanupRow{ID: strings.TrimSpace(id.String), CreatedAt: strings.TrimSpace(createdAt.String)})
+	}
+	return output, rows.Err()
+}
+
+// deleteStatsMirrorRows 照 deleteSQLiteShardRows 的按 id 分块事务删除
+// （单批最多 batchLimit 行，900 一块规避 SQLite 变量数上限）。
+func (s *UsageRecordsStore) deleteStatsMirrorRows(ctx context.Context, rows []ShardCleanupRow) (int64, error) {
+	ids := uniqueNonEmpty(func() []string {
+		out := make([]string, 0, len(rows))
+		for _, row := range rows {
+			if row.ID != "" {
+				out = append(out, row.ID)
+			}
+		}
+		return out
+	}())
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx, err := s.Stats.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	var deletedRows int64
+	for _, chunk := range chunkValues(ids, 900) {
+		result, err := tx.ExecContext(ctx, placeholderBind(fmt.Sprintf(
+			`DELETE FROM usage_records WHERE id IN (%s)`, placeholderList(len(chunk)))),
+			stringSliceToAny(chunk)...)
+		if err != nil {
+			_ = tx.Rollback()
+			return deletedRows, err
+		}
+		affected, err := changes(result)
+		if err != nil {
+			_ = tx.Rollback()
+			return deletedRows, err
+		}
+		deletedRows += affected
+	}
+	if err := tx.Commit(); err != nil {
+		return deletedRows, err
+	}
+	return deletedRows, nil
 }
 
 func (s *UsageRecordsStore) sqliteFloorCursor(ctx context.Context) (*cleanupCursor, error) {

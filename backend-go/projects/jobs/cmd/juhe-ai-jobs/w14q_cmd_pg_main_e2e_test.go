@@ -85,7 +85,6 @@ func w14qPGMainEnv(t *testing.T, root string, pgURL, redisURL string, management
 	env["JUHE_AI_REDIS_STATE_URL"] = redisURL
 	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:w14q"
 	// J2 account-balance：postgres store + postgres 直连输入。
-	env["JUHE_AI_ACCOUNT_BALANCE_ENABLED"] = "true"
 	env["JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER"] = "go"
 	env["JUHE_AI_ACCOUNT_BALANCE_OWNER_ID"] = "w14q-balance-owner"
 	env["JUHE_AI_ACCOUNT_BALANCE_STORE"] = "postgres"
@@ -94,7 +93,6 @@ func w14qPGMainEnv(t *testing.T, root string, pgURL, redisURL string, management
 	env["JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET"] = "0123456789abcdef0123456789abcdef"
 	env["JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET"] = "w14q-manual-secret-0123456789abcdef"
 	// J3a proxy-latency：postgres 三库同址 + management API。
-	env["JUHE_AI_PROXY_LATENCY_ENABLED"] = "true"
 	env["JUHE_AI_PROXY_LATENCY_JOBS_OWNER"] = "go"
 	env["JUHE_AI_PROXY_LATENCY_INSTANCE_ID"] = "w14q-j3a-main-e2e"
 	env["JUHE_AI_PROXY_LATENCY_STORE"] = "postgres"

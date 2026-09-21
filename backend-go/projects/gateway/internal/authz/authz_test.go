@@ -24,7 +24,7 @@ type fixture struct {
 }
 
 var ddl = []string{
-	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT, authorization_instance_authorization_id TEXT, account_expires_at TEXT)`,
+	`CREATE TABLE IF NOT EXISTS system_accounts (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', password_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_teams (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_team_members (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, system_account_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', joined_at TEXT NOT NULL, removed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, system_account_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', provider_code TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT '')`,
@@ -34,16 +34,15 @@ var ddl = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorizations_user_unique ON resource_authorizations(resource_type, resource_id, grantee_system_account_id)`,
 	// Downstream-sync fixtures (downstream.go): the quota scope bindings table
 	// plus the account-health input epoch/outbox pair. The accounts superset
-	// merges the authorized-read fixture columns (name, resource_owner_,
-	// account_expires_at) with the fanout whitelist columns (provider_code,
-	// type, revisions); the per-test accountsFixtureDDL executions stay
-	// compatible because they only INSERT named columns.
+	// merges the authorized-read fixture columns (name, account_expires_at)
+	// with the fanout whitelist columns (provider_code, type, revisions); the
+	// per-test accountsFixtureDDL executions stay compatible because they only
+	// INSERT named columns.
 	`CREATE TABLE IF NOT EXISTS accounts (
 		id TEXT PRIMARY KEY,
 		system_account_id TEXT NOT NULL,
 		name TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'active',
-		resource_owner_system_account_id TEXT NOT NULL DEFAULT '',
 		provider_code TEXT NOT NULL DEFAULT '',
 		provider_protocol_profile_id TEXT NOT NULL DEFAULT '',
 		protocol_code TEXT NOT NULL DEFAULT '',

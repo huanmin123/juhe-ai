@@ -4,6 +4,10 @@ import type {
   ModelCheckCheckResult,
   ModelCheckLevel,
   ModelCheckOption,
+  ModelCheckQuestionStatus,
+  ModelCheckQuizItem,
+  ModelCheckQuizItemVerdict,
+  ModelCheckQuizSummary,
   ModelCheckRunSummary,
   ModelCheckProfile,
   ModelCheckStatus
@@ -103,8 +107,63 @@ export function evidenceCompletenessText(run: Pick<ModelCheckRunSummary, 'result
   return `${scored} / ${total}（${score}%）`
 }
 
+export const modelCheckQuestionStatusOptions: Array<{ label: string; value: ModelCheckQuestionStatus }> = [
+  { label: '待审核', value: 'pending' },
+  { label: '已通过', value: 'approved' },
+  { label: '已驳回', value: 'rejected' }
+]
+
+export function questionStatusText(value: ModelCheckQuestionStatus): string {
+  return modelCheckQuestionStatusOptions.find((item) => item.value === value)?.label ?? value
+}
+
+export function questionStatusColor(value: ModelCheckQuestionStatus): string {
+  if (value === 'approved') return 'green'
+  if (value === 'rejected') return 'red'
+  return 'gold'
+}
+
+export function quizVerdictText(value: ModelCheckQuizItemVerdict): string {
+  if (value === 'passed') return '通过'
+  if (value === 'failed') return '未通过'
+  return '不可判定'
+}
+
+export function quizVerdictColor(value: ModelCheckQuizItemVerdict): string {
+  if (value === 'passed') return 'green'
+  if (value === 'failed') return 'red'
+  return 'default'
+}
+
+export function modelCheckQuizSummary(resultSummary: Record<string, unknown> | undefined): ModelCheckQuizSummary | undefined {
+  const value = recordValue(resultSummary?.customQuiz)
+  if (!value) return undefined
+  const items = Array.isArray(value.items)
+    ? value.items.flatMap((raw): ModelCheckQuizItem[] => {
+        const item = recordValue(raw)
+        const verdict = item?.verdict
+        if (!item || (verdict !== 'passed' && verdict !== 'failed' && verdict !== 'unavailable')) return []
+        return [{
+          questionId: typeof item.questionId === 'string' ? item.questionId : '',
+          title: typeof item.title === 'string' ? item.title : '',
+          verdict,
+          reason: typeof item.reason === 'string' ? item.reason : ''
+        }]
+      }).filter((item) => item.questionId)
+    : []
+  return {
+    enabled: value.enabled === true,
+    score: numberValue(value.score) ?? 0,
+    maxScore: numberValue(value.maxScore) ?? 31,
+    deduction: numberValue(value.deduction) ?? 0,
+    items
+  }
+}
+
 export function checkTitle(check: ModelCheckCheckResult): string {
-  return checkTitleByType(check.itemType, check.itemKey)
+  const base = checkTitleByType(check.itemType, check.itemKey)
+  const questionTitle = typeof check.evidenceSummary?.questionTitle === 'string' ? check.evidenceSummary.questionTitle.trim() : ''
+  return questionTitle ? `${base} · ${questionTitle}` : base
 }
 
 export function visibleModelCheckChecks(checks: ModelCheckCheckResult[]): ModelCheckCheckResult[] {
@@ -129,7 +188,8 @@ export function checkTitleByType(itemType: string, itemKey: string): string {
     stability: '稳定性探针',
     cross_model: '辅助模型对照',
     distribution_similarity: '分布相似度对照',
-    trusted_comparison: '可信对比'
+    trusted_comparison: '可信对比',
+    custom_quiz: '题库测试'
   }
   return labels[itemType] ?? itemKey
 }

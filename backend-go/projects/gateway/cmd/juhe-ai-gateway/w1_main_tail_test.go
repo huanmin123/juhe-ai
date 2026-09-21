@@ -506,7 +506,9 @@ func TestW1WOwnerJ3bFailFastArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // w1wJ3bPostgresContractEnv 组装 PG 业务模式 + J3b postgres 专属库的 J3b
-// 装配 env（系统 API 关闭，失败发生在 compose 之前）。
+// 装配 env。2026-09-21 起组合根恒开（SYSTEM_API/CHAIN 开关移除），业务
+// POSTGRES_URL 触发严格 owner 门禁：补全业务 owner 事实通过门禁，让失败
+// 仍发生在 J3b 契约校验（compose 之前的装配段）。
 func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePath, stateRedisAddr string) []string {
 	t.Helper()
 	return w1bScenarioEnv(t, coverageDir,
@@ -514,10 +516,12 @@ func w1wJ3bPostgresContractEnv(t *testing.T, coverageDir, tempAppURL, evidencePa
 		"JUHE_AI_DATABASE_DRIVER=postgres",
 		"JUHE_AI_POSTGRES_URL="+tempAppURL,
 		"JUHE_AI_BUSINESS_POSTGRES_URL="+tempAppURL,
-		// 2026-09-19 起 system api 默认开启；本臂只验证 J3b 契约，显式关闭
-		// 组合根与网关链。
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false",
-		"JUHE_AI_GATEWAY_CHAIN_ENABLED=false",
+		"JUHE_AI_BUSINESS_OWNER=gateway",
+		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
+		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
+		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
+		"JUHE_AI_BUSINESS_OWNER_EPOCH="+w1wOwnerEpoch,
+		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+evidencePath,
 		"JUHE_AI_CACHE_DRIVER=memory",
 		"JUHE_AI_RUNTIME_STATE_DRIVER=memory",
 		"JUHE_AI_SECRET=w1w-pg-contract-secret",

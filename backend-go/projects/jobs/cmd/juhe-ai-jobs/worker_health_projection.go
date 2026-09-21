@@ -12,9 +12,9 @@ package main
 //     accountHealthJobs.owner === 'go'）；
 //   - 业务库经 worker 的 openBusinessDB 约定开库（双模）；receipts/cursors
 //     表由 maintenance bootstrap 负责（schema 已有），进程不做 DDL；
-//   - 默认开启，可用 JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_DISABLED=true
-//     关闭（归档 JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_ENABLED 默认关闭的
-//     语义在本装配反转，见 BUG-0174 M-1 的默认恢复闭环要求）；
+//   - 恒开（原 JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_DISABLED 关闭臂已随
+//     2026-09-21 功能开关清零移除；归档默认关闭语义在本装配反转，见
+//     BUG-0174 M-1 的默认恢复闭环要求）；
 //   - 轮询/批量沿用归档 env 名与默认值：POLL_MS 默认 1000（100..60000）、
 //     BATCH_SIZE 默认 100（1..1000）。
 
@@ -29,24 +29,20 @@ import (
 )
 
 const (
-	healthProjectionDisabledEnvVar = "JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_DISABLED"
-	healthProjectionPollEnvVar     = "JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_POLL_MS"
-	healthProjectionBatchEnvVar    = "JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_BATCH_SIZE"
+	healthProjectionPollEnvVar  = "JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_POLL_MS"
+	healthProjectionBatchEnvVar = "JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_BATCH_SIZE"
 )
 
 // wireHealthOutcomeProjector 装配 J1 outcome 投影器。store 为 nil（调用方无
-// J1 store，恒开语义下仅为防御）或 env 显式关闭时返回 (nil, nil)（投影面合法
-// 缺席，非错误）；装配失败返回错误，由 main 降级 warn（outcome 仅停留
-// juhe_jobs 审计面，不阻塞启动）。
+// J1 store，恒开语义下仅为防御）时返回 (nil, nil)（投影面合法缺席，非错误）；
+// 装配失败返回错误，由 main 降级 warn（outcome 仅停留 juhe_jobs 审计面，
+// 不阻塞启动）。2026-09-21 起 JUHE_AI_ACCOUNT_HEALTH_JOBS_PROJECTION_DISABLED
+// 关闭开关移除，投影面恒开。
 func (a *workerAssembly) wireHealthOutcomeProjector(getenv func(string) string, store *accounthealth.Store) (*accounthealth.OutcomeProjector, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
 	if store == nil {
-		return nil, nil
-	}
-	if strings.EqualFold(strings.TrimSpace(getenv(healthProjectionDisabledEnvVar)), "true") {
-		a.logger.Info("J1 outcome 投影面已通过 env 关闭", "event", "account_health_projection_disabled", "env", healthProjectionDisabledEnvVar)
 		return nil, nil
 	}
 	config, err := accounthealth.LoadConfig(getenv)

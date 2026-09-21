@@ -306,9 +306,8 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 		)...,
 	)...)
 	env1 = append(env1, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr)
-	// 2026-09-19 起 system api 未配置默认开启；专有租约分支契约要求显式关闭
-	// 组合根与网关链。
-	env1 = append(env1, "JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false", "JUHE_AI_GATEWAY_CHAIN_ENABLED=false")
+	// 2026-09-21 起组合根恒开（SYSTEM_API/CHAIN 开关移除）；F4 专有租约
+	// 分支成为唯一路径，进程照常只暴露 gateway health 监听。
 	cmd1, done1, cancel1, _, _ := w1mStartOwnerProcess(t, coverageDir1, env1)
 	w1mWaitHealthReady(t, client, healthAddr)
 
@@ -353,20 +352,42 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 			filepath.Join(root2, "usage-shards"),
 		)...,
 	)...)
-	// 同进程 1：专有租约分支要求显式关闭 system api 与网关链（2026-09-19
-	// 默认开启）；health 监听用空闲端口，避免与本机开发实例默认端口冲突。
+	// 同进程 1：health 监听用空闲端口，避免与本机开发实例默认端口冲突。
 	env2 = append(env2,
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false",
-		"JUHE_AI_GATEWAY_CHAIN_ENABLED=false",
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
 	cmd2, done2, cancel2, stdout2, stderr2 := w1mStartOwnerProcess(t, coverageDir2, env2)
-	if !w1mWaitOutputContains(t, stdout2, "F4 operation log owner lease held by another owner process", 15*time.Second) {
+	// 2026-09-21 起组合根恒开后租约冲突文案进入 stderr（与 343 行契约描述
+	// 一致），等待目标从 stdout 改为 stderr。
+	if !w1mWaitOutputContains(t, stderr2, "F4 operation log owner lease held by another owner process", 15*time.Second) {
 		cancel2()
 		_ = cmd2.Process.Kill()
 		<-done2
 		t.Fatalf("进程 2 的 F4 专有租约冲突未在 15s 内出现，stdout: %s stderr: %s", stdout2.String(), stderr2.String())
 	}
-	w1mGracefulShutdownOwner(t, cmd2, done2, cancel2, coverageDir2, "M1-f4-lease-conflict")
+	// 2026-09-21 起组合根恒开：F4 组件租约冲突意味着组件不健康，优雅关闭
+	// 以非零码上报（原组合根关闭形态的 exit 0 契约不复存在）。
+	if err := w1bSendCtrlBreak(cmd2.Process.Pid); err != nil {
+		_ = cmd2.Process.Kill()
+		t.Fatalf("场景 M1-f4-lease-conflict CTRL_BREAK 发送失败: %v", err)
+	}
+	select {
+	case waitErr := <-done2:
+		cancel2()
+		exitCode := 0
+		if waitErr != nil {
+			exitErr, ok := waitErr.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("场景 M1-f4-lease-conflict 等待进程退出失败: %v", waitErr)
+			}
+			exitCode = exitErr.ExitCode()
+		}
+		w1bRequireExitCode(t, "M1-f4-lease-conflict", exitCode, 1)
+	case <-time.After(15 * time.Second):
+		_ = cmd2.Process.Kill()
+		cancel2()
+		t.Fatalf("场景 M1-f4-lease-conflict CTRL_BREAK 后 15s 内未退出，已强杀")
+	}
+	w1bAppendCoverageManifest(t, coverageDir2)
 
 	// 进程 3：复用进程 1 的 F3 审计库 → F3 租约被持有快速失败。
 	coverageDir3 := w1bCoverageDir(t, "M1-f3-lease-conflict")
@@ -533,10 +554,15 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 		env := w1bScenarioEnv(t, coverageDir, append(w1mJ3BEnvPairs(t, root,
 			filepath.Join(root, "j3b-business.sqlite"), notReadyJ3b),
 			"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+validBusiness,
-			// 2026-09-19 起 system api 默认开启会先触发业务 owner 门禁；
-			// 本臂只验证 J3b 证据，显式关闭组合根与网关链以保持测点隔离。
-			"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false",
-			"JUHE_AI_GATEWAY_CHAIN_ENABLED=false",
+			// 2026-09-21 起组合根恒开（SYSTEM_API/CHAIN 开关移除），业务 owner
+			// 门禁必然执行：本臂只验证 J3b 证据，补全业务 owner 事实让门禁通过，
+			// 使装配推进到 J3b 证据校验。
+			"JUHE_AI_BUSINESS_OWNER=gateway",
+			"JUHE_AI_BUSINESS_DATABASE_PATH="+filepath.Join(t.TempDir(), "w1m-j3b-evidence-business.sqlite"),
+			"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
+			"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
+			"JUHE_AI_BUSINESS_SCHEMA_READY=true",
+			"JUHE_AI_BUSINESS_OWNER_EPOCH="+w1mEvidenceEpoch,
 		)...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-evidence-not-ready", w1bOwnerBaseEnv(t, coverageDir, env...))
 		w1bRequireExitCode(t, "M3-j3b-evidence-not-ready", code, 1)

@@ -34,7 +34,7 @@ func seedGrantRow(t *testing.T, db *sql.DB, id, status, expiresAt, revokedAt, cr
 	if revokedAt != "" {
 		revokedArg = revokedAt
 	}
-	_, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, owner_system_account_id, grantee_type, grantee_id,
+	_, err := db.Exec(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id,
 		status, revoked_at, revoked_by, created_by, expires_at, updated_at)
 		VALUES (?, 'api_key', 'res', 'owner', 'system_account', 'grantee', ?, ?, '', ?, ?, ?)`,
 		id, status, revokedArg, createdBy, expiresArg, isoMillis(defaultNow()))

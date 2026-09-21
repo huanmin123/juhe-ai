@@ -22,19 +22,21 @@ func wfEnv(values map[string]string) func(string) string {
 }
 
 func TestWFLoadRuntimeConfig(t *testing.T) {
-	if _, err := LoadRuntimeConfig(nil); err != nil {
-		t.Fatalf("nil getenv 必须回退 os.Getenv: %v", err)
-	}
-	cfg, err := LoadRuntimeConfig(wfEnv(nil))
+	// 2026-09-21 起无总开关：J3a 依赖缺席（无任何 PG 连接串）时家族合法
+	// 缺席，nil getenv 仍回退 os.Getenv。
+	cfg, err := LoadRuntimeConfig(nil)
 	if err != nil || cfg.Enabled {
-		t.Fatalf("未启用配置 cfg=%+v err=%v", cfg, err)
+		t.Fatalf("nil getenv 必须回退 os.Getenv 且依赖缺席合法: cfg=%+v err=%v", cfg, err)
+	}
+	cfg, err = LoadRuntimeConfig(wfEnv(nil))
+	if err != nil || cfg.Enabled {
+		t.Fatalf("依赖缺席配置 cfg=%+v err=%v", cfg, err)
 	}
 	if cfg.Now == nil {
 		t.Fatal("Now 必须回填")
 	}
 
 	base := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "wf-i",
 		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
@@ -49,9 +51,9 @@ func TestWFLoadRuntimeConfig(t *testing.T) {
 		wantErr string
 	}{
 		{name: "owner 非 go", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_JOBS_OWNER": "node"}, wantErr: "JOBS_OWNER"},
-		{name: "缺实例 id", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_INSTANCE_ID": ""}, wantErr: "INSTANCE_ID"},
 		{name: "store 非 postgres", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_STORE": "sqlite"}, wantErr: "postgres jobs store"},
-		{name: "缺 jobs URL", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_POSTGRES_URL": ""}, wantErr: "POSTGRES_URL"},
+		// 缺 jobs URL 的失败臂已由零配置回退（JUHE_AI_POSTGRES_URL）取代，
+		// 依赖缺席语义见 TestWFLoadRuntimeConfig 头部断言。
 		{name: "连接池非数字", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS": "abc"}, wantErr: "正整数"},
 		{name: "缺业务 URL", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL": ""}, wantErr: "INPUT_POSTGRES_URL"},
 		{name: "缺结果 URL", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL": ""}, wantErr: "RESULT_POSTGRES_URL"},

@@ -38,7 +38,8 @@ func (s *BusinessSchedulerSource) CheckContract(ctx context.Context) error {
 	defer tx.Rollback()
 	contracts := []struct{ table, columns string }{
 		{"accounts", "id,system_account_id,provider_code,config_revision,dispatch_revision,authorization_instance_source_account_id,deleted_at,authorization_instance_authorization_id,status,health_check_model,availability_schedule_json,schedulable,fallback_enabled,super_priority_enabled,last_error_code,last_error_message,updated_at"},
-		{"model_quality_schedules", "id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,updated_at"},
+		{"model_quality_schedules", "id,revision,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,custom_question_ids,enabled,next_run_at,lease_owner,lease_until,last_run_id,last_run_at,last_run_status,updated_at"},
+		{"model_quality_policies", "system_account_id,custom_question_ids"},
 		{"account_quality_enforcements", "account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,config_source,config_source_id,policy_revision,profile,penalty_threshold,recovery_interval_minutes,recovery_model,account_config_revision,recovery_due_at,recovery_lease_owner,recovery_lease_until,last_recovery_run_id,cleared_at,updated_at"},
 	}
 	for _, contract := range contracts {
@@ -104,7 +105,7 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 	if s.Postgres {
 		lock = " FOR UPDATE OF mqs SKIP LOCKED"
 	}
-	rows, err := tx.QueryContext(ctx, q(`SELECT mqs.id,mqs.revision,mqs.system_account_id,mqs.account_id,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,a.config_revision,a.dispatch_revision,a.provider_code FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id WHERE mqs.enabled=1 AND mqs.next_run_at<=? AND (mqs.lease_until IS NULL OR mqs.lease_until<=?) AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.status='active' ORDER BY mqs.next_run_at,mqs.id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
+	rows, err := tx.QueryContext(ctx, q(`SELECT mqs.id,mqs.revision,mqs.system_account_id,mqs.account_id,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.custom_question_ids,a.config_revision,a.dispatch_revision,a.provider_code FROM `+s.table("model_quality_schedules")+` mqs JOIN `+s.table("accounts")+` a ON a.id=mqs.account_id WHERE mqs.enabled=1 AND mqs.next_run_at<=? AND (mqs.lease_until IS NULL OR mqs.lease_until<=?) AND a.deleted_at IS NULL AND a.authorization_instance_authorization_id IS NULL AND a.status='active' ORDER BY mqs.next_run_at,mqs.id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim J3b schedules: %w", err)
 	}
@@ -113,7 +114,8 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 	for rows.Next() {
 		var id, systemID, accountID, model, profile, action, provider string
 		var revision, interval, recoveryInterval, threshold, configRevision, dispatchRevision int
-		if err := rows.Scan(&id, &revision, &systemID, &accountID, &model, &interval, &profile, &threshold, &action, &recoveryInterval, &configRevision, &dispatchRevision, &provider); err != nil {
+		var customQuestionIds sql.NullString
+		if err := rows.Scan(&id, &revision, &systemID, &accountID, &model, &interval, &profile, &threshold, &action, &recoveryInterval, &customQuestionIds, &configRevision, &dispatchRevision, &provider); err != nil {
 			return nil, err
 		}
 		res, err := tx.ExecContext(ctx, q(`UPDATE `+s.table("model_quality_schedules")+` SET lease_owner=?,lease_until=?,updated_at=? WHERE id=? AND revision=? AND enabled=1 AND (lease_until IS NULL OR lease_until<=?)`), s.OwnerID, now.Add(lease).UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), id, revision, now.UTC().Format(time.RFC3339Nano))
@@ -123,7 +125,9 @@ func (s *BusinessSchedulerSource) claimSchedules(ctx context.Context, tx *sql.Tx
 		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
-		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: action, ConfigRevision: strconv.Itoa(configRevision), DispatchRevision: int64(dispatchRevision), SourceConfigRevision: strconv.Itoa(configRevision), SourceDispatchRevision: int64(dispatchRevision), PolicyRevision: strconv.Itoa(revision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: id, OwnerID: s.OwnerID, ScheduleRevision: revision, IntervalMinutes: interval, RecoveryIntervalMinutes: recoveryInterval})
+		// claim 时冻结：题库 id 取自 schedule 行并写入不可变 payload，运行中
+		// 的配置变更不影响本次执行。
+		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: action, ConfigRevision: strconv.Itoa(configRevision), DispatchRevision: int64(dispatchRevision), SourceConfigRevision: strconv.Itoa(configRevision), SourceDispatchRevision: int64(dispatchRevision), PolicyRevision: strconv.Itoa(revision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: id, OwnerID: s.OwnerID, ScheduleRevision: revision, IntervalMinutes: interval, RecoveryIntervalMinutes: recoveryInterval, CustomQuestionIds: qualityCustomQuestionIds(customQuestionIds)})
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +142,7 @@ func (s *BusinessSchedulerSource) claimRecoveries(ctx context.Context, tx *sql.T
 	if s.Postgres {
 		lock = " FOR UPDATE OF aqe SKIP LOCKED"
 	}
-	rows, err := tx.QueryContext(ctx, q(`SELECT aqe.account_id,aqe.system_account_id,aqe.enforcement_id,aqe.generation,COALESCE(NULLIF(aqe.recovery_model,''),a.health_check_model),a.config_revision,a.dispatch_revision,COALESCE(sa.config_revision,a.config_revision),COALESCE(sa.dispatch_revision,a.dispatch_revision),aqe.policy_revision,COALESCE(aqe.config_source_id,''),aqe.profile,aqe.penalty_threshold,aqe.recovery_interval_minutes,a.provider_code FROM `+s.table("account_quality_enforcements")+` aqe JOIN `+s.table("accounts")+` a ON a.id=aqe.account_id LEFT JOIN `+s.table("accounts")+` sa ON sa.id=a.authorization_instance_source_account_id WHERE aqe.state='active' AND aqe.action='quality_isolate' AND aqe.recovery_due_at IS NOT NULL AND aqe.recovery_due_at<=? AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until<=?) AND a.deleted_at IS NULL AND a.status='quality_isolated' ORDER BY aqe.recovery_due_at,aqe.account_id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
+	rows, err := tx.QueryContext(ctx, q(`SELECT aqe.account_id,aqe.system_account_id,aqe.enforcement_id,aqe.generation,COALESCE(NULLIF(aqe.recovery_model,''),a.health_check_model),a.config_revision,a.dispatch_revision,COALESCE(sa.config_revision,a.config_revision),COALESCE(sa.dispatch_revision,a.dispatch_revision),aqe.policy_revision,COALESCE(aqe.config_source_id,''),aqe.profile,aqe.penalty_threshold,aqe.recovery_interval_minutes,a.provider_code,COALESCE(CASE WHEN aqe.config_source='schedule' THEN mqs.custom_question_ids END,mqp.custom_question_ids) FROM `+s.table("account_quality_enforcements")+` aqe JOIN `+s.table("accounts")+` a ON a.id=aqe.account_id LEFT JOIN `+s.table("accounts")+` sa ON sa.id=a.authorization_instance_source_account_id LEFT JOIN `+s.table("model_quality_schedules")+` mqs ON aqe.config_source='schedule' AND mqs.id=aqe.config_source_id LEFT JOIN `+s.table("model_quality_policies")+` mqp ON mqp.system_account_id=aqe.system_account_id WHERE aqe.state='active' AND aqe.action='quality_isolate' AND aqe.recovery_due_at IS NOT NULL AND aqe.recovery_due_at<=? AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until<=?) AND a.deleted_at IS NULL AND a.status='quality_isolated' ORDER BY aqe.recovery_due_at,aqe.account_id LIMIT ?`+lock), now.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim J3b recoveries: %w", err)
 	}
@@ -147,7 +151,8 @@ func (s *BusinessSchedulerSource) claimRecoveries(ctx context.Context, tx *sql.T
 	for rows.Next() {
 		var accountID, systemID, enforcementID, model, scheduleID, profile, provider string
 		var generation, configRevision, dispatchRevision, sourceConfigRevision, sourceDispatchRevision, policyRevision, threshold, interval int
-		if err := rows.Scan(&accountID, &systemID, &enforcementID, &generation, &model, &configRevision, &dispatchRevision, &sourceConfigRevision, &sourceDispatchRevision, &policyRevision, &scheduleID, &profile, &threshold, &interval, &provider); err != nil {
+		var customQuestionIds sql.NullString
+		if err := rows.Scan(&accountID, &systemID, &enforcementID, &generation, &model, &configRevision, &dispatchRevision, &sourceConfigRevision, &sourceDispatchRevision, &policyRevision, &scheduleID, &profile, &threshold, &interval, &provider, &customQuestionIds); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(model) == "" {
@@ -160,7 +165,10 @@ func (s *BusinessSchedulerSource) claimRecoveries(ctx context.Context, tx *sql.T
 		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
-		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: "quality_isolate", ConfigRevision: strconv.Itoa(configRevision), DispatchRevision: int64(dispatchRevision), SourceConfigRevision: strconv.Itoa(sourceConfigRevision), SourceDispatchRevision: int64(sourceDispatchRevision), PolicyRevision: strconv.Itoa(policyRevision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: scheduleID, OwnerID: s.OwnerID, EnforcementID: enforcementID, Generation: generation, RecoveryIntervalMinutes: interval})
+		// 恢复路径的题库配置与 scheduled 同语义：触发源是 schedule 时冻结该
+		// schedule 行的配置，否则回落系统账户的 policy 行配置；NULL 一律归一
+		// 为空（不执行题库家族）。
+		payload, err := json.Marshal(ScheduledPayload{SystemAccountID: systemID, ActorSystemAccountID: systemID, TargetType: "account", TargetID: accountID, Model: model, Profile: profile, ProviderCode: provider, Threshold: threshold, PenaltyAction: "quality_isolate", ConfigRevision: strconv.Itoa(configRevision), DispatchRevision: int64(dispatchRevision), SourceConfigRevision: strconv.Itoa(sourceConfigRevision), SourceDispatchRevision: int64(sourceDispatchRevision), PolicyRevision: strconv.Itoa(policyRevision), ProbeSetVersion: probeSetForProfile(profile), IdentityKey: systemID + ":" + accountID + ":" + model, ScheduleID: scheduleID, OwnerID: s.OwnerID, EnforcementID: enforcementID, Generation: generation, RecoveryIntervalMinutes: interval, CustomQuestionIds: qualityCustomQuestionIds(customQuestionIds)})
 		if err != nil {
 			return nil, err
 		}

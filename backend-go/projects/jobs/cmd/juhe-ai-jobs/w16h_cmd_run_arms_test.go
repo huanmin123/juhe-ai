@@ -303,24 +303,26 @@ func TestW16HRunComponentConfigArms(t *testing.T) {
 	})
 	t.Run("J2 配置错误返回 1", func(t *testing.T) {
 		w16hApplyEnv(t, w16hBaseEnv(t))
+		// 2026-09-21 起无总开关：用 J2 专属连接串激活家族，再以显式非 go
+		// owner 触发 fail closed。
 		w16hApplyEnv(t, map[string]string{
-			"JUHE_AI_ACCOUNT_BALANCE_ENABLED":    "true",
-			"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "node",
+			"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://w16h:w16h@127.0.0.1:1/w16h",
+			"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":   "node",
 		})
 		w16hRunArms(t, nil, 1, "load J2 account-balance config")
 	})
 	t.Run("J3a 配置错误返回 1", func(t *testing.T) {
 		w16hApplyEnv(t, w16hBaseEnv(t))
+		// 同 J2：用 J3a 专属连接串激活家族，显式非 go owner 触发 fail closed。
 		w16hApplyEnv(t, map[string]string{
-			"JUHE_AI_PROXY_LATENCY_ENABLED":    "true",
-			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER": "node",
+			"JUHE_AI_PROXY_LATENCY_POSTGRES_URL": "postgres://w16h:w16h@127.0.0.1:1/w16h",
+			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":   "node",
 		})
 		w16hRunArms(t, nil, 1, "load J3a proxy-latency config")
 	})
-	t.Run("J3a 管理守卫（J3a 未启用）返回 1", func(t *testing.T) {
+	t.Run("J3a 管理接口连接串非法返回 1", func(t *testing.T) {
 		w16hApplyEnv(t, w16hBaseEnv(t))
 		w16hApplyEnv(t, map[string]string{
-			"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":        "true",
 			"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1:3311",
 			"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":   "postgres://w16h:w16h@127.0.0.1:1/w16h",
 		})
@@ -544,7 +546,6 @@ func TestW16HRunDeepFailArms(t *testing.T) {
 		env := w16hBaseEnv(t)
 		w16hApplyEnv(t, env)
 		w16hApplyEnv(t, map[string]string{
-			"JUHE_AI_ACCOUNT_BALANCE_ENABLED":            "true",
 			"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":         "go",
 			"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":           "w16h",
 			"JUHE_AI_ACCOUNT_BALANCE_STORE":              "postgres",
@@ -561,7 +562,6 @@ func TestW16HRunDeepFailArms(t *testing.T) {
 		env := w16hBaseEnv(t)
 		w16hApplyEnv(t, env)
 		w16hApplyEnv(t, map[string]string{
-			"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 			"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "w16h-j3a",
 			"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
@@ -587,7 +587,6 @@ func TestW16HRunDeepFailArms(t *testing.T) {
 		env := w16hBaseEnv(t)
 		w16hApplyEnv(t, env)
 		w16hApplyEnv(t, map[string]string{
-			"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 			"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "w16h-j3a",
 			"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
@@ -779,4 +778,62 @@ func TestW16HJ1SqliteLayoutEnsureFailArm(t *testing.T) {
 		"JUHE_AI_STATS_DATABASE_PATH":         statsDirectory,
 	})
 	w16hRunArms(t, nil, 1, "初始化 J1 sqlite 直读所需 SQLite 布局失败")
+}
+
+// TestW16HJ1SqliteContractInvalidTimezoneArm 锁定 main() sqlite 直读分支的
+// CheckContract 失败臂：基底业务库预置 3 列形 system_settings 与非法
+// usageStatsTimezone 值——布局 ensure 的 settings 播种是 INSERT OR IGNORE，
+// 不覆盖既有行；契约预检读到非法 JSON 必须 fail-fast（settings 解析为
+// fail closed）。断言退出码 1 与 CheckContract 错误文案。
+func TestW16HJ1SqliteContractInvalidTimezoneArm(t *testing.T) {
+	env := w16hBaseEnv(t)
+	businessPath := env["JUHE_AI_DATABASE_PATH"]
+	business, err := sql.Open("sqlite", businessPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := business.Exec(`CREATE TABLE IF NOT EXISTS system_settings (
+		system_account_id TEXT NOT NULL,
+		key TEXT NOT NULL,
+		value_json TEXT NOT NULL,
+		PRIMARY KEY (system_account_id, key))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := business.Exec(`INSERT INTO system_settings (system_account_id, key, value_json)
+		VALUES ('sys_admin', 'usageStatsTimezone', 'w16h-invalid-timezone-json')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := business.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w16hApplyEnv(t, env)
+	w16hApplyEnv(t, map[string]string{
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "sqlite",
+		"JUHE_AI_ACCOUNT_HEALTH_STORE":        "sqlite",
+	})
+	w16hRunArms(t, nil, 1, "verify J1 account-health direct-input contract")
+}
+
+// TestW16HJ1SqliteStatsPingFailArm 锁定 main() sqlite 直读分支的 stats 只读
+// ping 失败臂。布局 ensure 的写方 DSN（accounthealth sqliteDSN）经 url.URL
+// 转义，含 '#' 的路径按字面创建文件；只读 DSN（sqliteReadOnlyFileDSN）是裸
+// 拼接，'#' 起 URI fragment 吞掉后续 query（mode=ro 等全部失效），路径被
+// 截断为 '#' 前缀。据此把 JUHE_AI_STATS_DATABASE_PATH 指到
+// <root>/red#herring.sqlite3，并预置同名目录 <root>/red：ensure 落盘
+// red#herring.sqlite3 成功，stats 只读句柄实际打开目录 red → 打开失败必须
+// 在 ping 处 fail-fast（退出码 1 + stats ping 错误文案）。
+func TestW16HJ1SqliteStatsPingFailArm(t *testing.T) {
+	env := w16hBaseEnv(t)
+	root := filepath.Dir(env["JUHE_AI_DATABASE_PATH"])
+	redDirectory := filepath.Join(root, "red")
+	if err := os.MkdirAll(redDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w16hApplyEnv(t, env)
+	w16hApplyEnv(t, map[string]string{
+		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "sqlite",
+		"JUHE_AI_ACCOUNT_HEALTH_STORE":        "sqlite",
+		"JUHE_AI_STATS_DATABASE_PATH":         filepath.Join(root, "red#herring.sqlite3"),
+	})
+	w16hRunArms(t, nil, 1, "ping J1 account-health sqlite direct-input stats database")
 }

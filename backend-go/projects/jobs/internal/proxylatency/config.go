@@ -67,25 +67,34 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		getenv = os.Getenv
 	}
 	cfg := RuntimeConfig{Now: time.Now}
-	cfg.Enabled = strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_ENABLED")), "true")
-	if !cfg.Enabled {
-		return cfg, nil
+	// 2026-09-21 起无总开关：J3a 依赖 PostgreSQL——主连接串与专属连接串
+	// 均未配置 = 依赖缺席，家族合法缺席（非开关）；一旦有 PG 即恒开，
+	// 任何错误 fail-closed。owner 缺省 go、实例 ID 缺省主机名、业务/结果
+	// 连接串缺省回落主配置。
+	storeURL := firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
+	if storeURL == "" {
+		return RuntimeConfig{Enabled: false, Now: time.Now}, nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_JOBS_OWNER")), "go") {
-		return RuntimeConfig{}, errors.New("启用 J3a 时 JUHE_AI_PROXY_LATENCY_JOBS_OWNER 必须明确为 go")
+	cfg.Enabled = true
+	if owner := strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_JOBS_OWNER")); owner != "" && !strings.EqualFold(owner, "go") {
+		return RuntimeConfig{}, errors.New("JUHE_AI_PROXY_LATENCY_JOBS_OWNER 必须为 go（或留空）")
 	}
 	cfg.InstanceID = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_INSTANCE_ID"))
 	if cfg.InstanceID == "" {
-		return RuntimeConfig{}, errors.New("JUHE_AI_PROXY_LATENCY_INSTANCE_ID 是必填配置")
+		if hostname, hostErr := os.Hostname(); hostErr == nil && strings.TrimSpace(hostname) != "" {
+			cfg.InstanceID = strings.TrimSpace(hostname)
+		} else {
+			return RuntimeConfig{}, errors.New("JUHE_AI_PROXY_LATENCY_INSTANCE_ID 是必填配置")
+		}
 	}
 	mode := StoreMode(strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_STORE"))))
+	if mode == "" {
+		mode = StorePostgres
+	}
 	if mode != StorePostgres {
 		return RuntimeConfig{}, errors.New("J3a runtime 只允许 postgres jobs store")
 	}
-	cfg.Store = StoreConfig{Mode: mode, PostgresURL: strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_POSTGRES_URL"))}
-	if cfg.Store.PostgresURL == "" {
-		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_POSTGRES_URL")
-	}
+	cfg.Store = StoreConfig{Mode: mode, PostgresURL: storeURL}
 	var err error
 	if cfg.PostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
 		return RuntimeConfig{}, err
@@ -105,13 +114,13 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if err := sqlpool.ValidatePoolLimits(cfg.InputPostgresMaxOpenConns, cfg.InputPostgresMaxIdleConns); err != nil {
 		return RuntimeConfig{}, fmt.Errorf("J3a 业务读取 PostgreSQL 连接池配置无效: %w", err)
 	}
-	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL"))
+	cfg.BusinessPostgresURL = firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL"), getenv("JUHE_AI_BUSINESS_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
 	if cfg.BusinessPostgresURL == "" {
-		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL")
+		return RuntimeConfig{}, errors.New("J3a 缺少 JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
 	}
-	cfg.ResultPostgresURL = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL"))
+	cfg.ResultPostgresURL = firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
 	if cfg.ResultPostgresURL == "" {
-		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL")
+		return RuntimeConfig{}, errors.New("J3a 缺少 JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
 	}
 	if cfg.InputLimit, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_LIMIT", defaultProxyLatencyProbeLimit, 1, maxProxyLatencyWorkItems); err != nil {
 		return RuntimeConfig{}, err
@@ -149,11 +158,21 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.OwnerLease <= cfg.ProbeTimeout || cfg.OwnerLease <= cfg.ProxyLease {
 		return RuntimeConfig{}, errors.New("J3a owner lease 必须大于 probe/proxy lease")
 	}
-	cfg.CredentialSecret = strings.TrimSpace(getenv("JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET"))
+	cfg.CredentialSecret = firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET"), getenv("JUHE_AI_SECRET"))
 	if cfg.CredentialSecret == "" {
-		return RuntimeConfig{}, errors.New("启用 J3a 时缺少 JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET")
+		return RuntimeConfig{}, errors.New("J3a 缺少 JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET（或回退 JUHE_AI_SECRET）")
 	}
 	return cfg, nil
+}
+
+// firstNonEmptyString 返回第一个 trim 后非空的值（2026-09-21 零配置回落链）。
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func runtimeDuration(getenv func(string) string, name string, fallback, minimum, maximum time.Duration) (time.Duration, error) {

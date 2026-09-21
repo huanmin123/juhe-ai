@@ -3,9 +3,7 @@ package main
 // 2026-09-19 零配置默认（开源开箱即用）的单元覆盖：
 //   - 空 env（JUHE_AI_DATA_DIR 指向临时目录）下 loadRuntimeConfig 成功，
 //     路径族落 <DATA_DIR>/<固定名>；
-//   - JUHE_AI_GATEWAY_SYSTEM_API_ENABLED / JUHE_AI_GATEWAY_CHAIN_ENABLED
-//     未配置时均为 true，显式 false 才关闭，非法值启动即失败；
-//   - chain=true + system=false 仍被联动校验拒绝；
+//   - 组合根与网关链恒开（2026-09-21 起 SYSTEM_API/CHAIN 开关移除）；
 //   - sqlite / postgres + BUSINESS_* 家族全空时自动认领业务 owner（postgres
 //     业务连接回落共享 JUHE_AI_POSTGRES_URL），显式配置任一成员则 handoff
 //     门禁保持。
@@ -59,31 +57,10 @@ func TestZeroConfigLoadRuntimeConfigDerivesPaths(t *testing.T) {
 	}
 }
 
-func TestZeroConfigGateSwitchSemantics(t *testing.T) {
-	// 显式 false 仍可关闭。
-	off, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED": "false",
-		"JUHE_AI_GATEWAY_CHAIN_ENABLED":      "false",
-	}))
-	if err != nil {
-		t.Fatalf("显式 false: %v", err)
-	}
-	if off.SystemAPIEnabled || off.ChainEnabled {
-		t.Fatalf("显式 false 必须关闭: %+v", off)
-	}
-	// chain=true + system=false 仍被联动校验拒绝。
-	if _, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED": "false",
-		"JUHE_AI_GATEWAY_CHAIN_ENABLED":      "true",
-	})); err == nil || !strings.Contains(err.Error(), "必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED") {
-		t.Fatalf("chain=true+system=false 必须报错: %v", err)
-	}
-	// 非法值保持 strictEnvBool fail-fast。
-	for _, raw := range []string{"weird", "2"} {
-		if _, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{"JUHE_AI_GATEWAY_CHAIN_ENABLED": raw})); err == nil {
-			t.Fatalf("非法开关值 %q 必须报错", raw)
-		}
-	}
+func TestZeroConfigBusinessOwnerGateSemantics(t *testing.T) {
+	// 2026-09-21 起组合根/网关链开关移除（恒开），原「显式 false 关闭 /
+	// 联动校验 / 非法开关值 fail-fast」语义随之消失；本测试聚焦业务 owner
+	// 门禁与自动认领的边界。
 	// 显式配置 BUSINESS_* 家族任一成员 → 不自动认领，handoff 门禁保持。
 	explicit, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
 		"JUHE_AI_BUSINESS_OWNER": "gateway",
@@ -97,9 +74,16 @@ func TestZeroConfigGateSwitchSemantics(t *testing.T) {
 	if err := explicit.businessOwnerGate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_BUSINESS_HANDOFF_CONFIRMED") {
 		t.Fatalf("显式配置下 handoff 门禁必须保持: %v", err)
 	}
-	// system API 关闭时 owner 门禁短路放行（原语义）。
-	if err := off.businessOwnerGate(); err != nil {
-		t.Fatalf("system API 关闭时门禁必须短路: %v", err)
+	// 家族全空自动认领 + 恒开组合根下门禁放行。
+	autoClaimed, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{"JUHE_AI_DATA_DIR": t.TempDir()}))
+	if err != nil {
+		t.Fatalf("自动认领配置: %v", err)
+	}
+	if !autoClaimed.BusinessOwnerAutoClaimed {
+		t.Fatal("家族全空必须自动认领")
+	}
+	if err := autoClaimed.businessOwnerGate(); err != nil {
+		t.Fatalf("自动认领下 businessOwnerGate 必须放行: %v", err)
 	}
 }
 

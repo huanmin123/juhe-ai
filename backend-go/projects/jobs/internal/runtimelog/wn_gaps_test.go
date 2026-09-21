@@ -278,17 +278,15 @@ func TestLoadConfigPostgresModeAndRejects(t *testing.T) {
 		t.Fatalf("postgres 模式缺少 URL 必须拒绝: %v", err)
 	}
 
-	fileDisabled := map[string]string{}
+	// 2026-09-21 起文件日志恒开（JUHE_AI_LOG_FILE_ENABLED 开关移除），
+	// 关闭臂与非法布尔臂随之消失；同配置必须可加载。
+	fileAlwaysOn := map[string]string{}
 	for name, value := range base {
-		fileDisabled[name] = value
+		fileAlwaysOn[name] = value
 	}
-	fileDisabled["JUHE_AI_LOG_FILE_ENABLED"] = "false"
-	if _, err := LoadConfig(func(name string) string { return fileDisabled[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_LOG_FILE_ENABLED") {
-		t.Fatalf("文件索引关闭必须拒绝启动: %v", err)
-	}
-	fileDisabled["JUHE_AI_LOG_FILE_ENABLED"] = "not-bool"
-	if _, err := LoadConfig(func(name string) string { return fileDisabled[name] }); err == nil {
-		t.Fatalf("非法布尔值必须拒绝启动: %v", err)
+	fileAlwaysOn["JUHE_AI_LOG_FILE_ENABLED"] = "false"
+	if _, err := LoadConfig(func(name string) string { return fileAlwaysOn[name] }); err != nil {
+		t.Fatalf("残留开关值必须被忽略且配置可加载: %v", err)
 	}
 
 	onceInvalid := map[string]string{}

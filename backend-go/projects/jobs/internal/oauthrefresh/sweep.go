@@ -34,7 +34,6 @@ type ResourceAuthorizationGrant struct {
 	ResourceID           string
 	OwnerSystemAccountID string
 	GranteeType          string
-	GranteeID            string
 	Status               string
 	RevokedAt            string
 	RevokedBy            string
@@ -64,7 +63,7 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 	}
 	defer tx.Rollback()
 
-	query := `SELECT id, resource_type, resource_id, owner_system_account_id, grantee_type, grantee_id,
+	query := `SELECT id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
 		status, revoked_at, revoked_by, created_by, expires_at, updated_at
 	FROM ` + s.table("resource_authorization_grants") + `
 	WHERE status IN ('active', 'paused')
@@ -87,7 +86,7 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 			revokedAt sql.NullString
 			revokedBy sql.NullString
 		)
-		if err := rows.Scan(&grant.ID, &grant.ResourceType, &grant.ResourceID, &grant.OwnerSystemAccountID, &grant.GranteeType, &grant.GranteeID,
+		if err := rows.Scan(&grant.ID, &grant.ResourceType, &grant.ResourceID, &grant.OwnerSystemAccountID, &grant.GranteeType,
 			&grant.Status, &revokedAt, &revokedBy, &grant.CreatedBy, &grant.ExpiresAt, &grant.UpdatedAt); err != nil {
 			rows.Close()
 			return SweepResult{}, err

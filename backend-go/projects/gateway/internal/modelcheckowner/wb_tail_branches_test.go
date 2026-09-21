@@ -430,7 +430,7 @@ type buildProxyClientArgs struct {
 func TestWBBusinessSourceTargetOwnerAndPolicy(t *testing.T) {
 	db := wbOpenMemoryDB(t, []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT, deleted_at TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY, revision INTEGER, profile TEXT, manual_enforcement_enabled INTEGER, penalty_threshold INTEGER, penalty_action TEXT, recovery_interval_minutes INTEGER)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY, revision INTEGER, profile TEXT, manual_enforcement_enabled INTEGER, penalty_threshold INTEGER, penalty_action TEXT, recovery_interval_minutes INTEGER, custom_question_ids TEXT)`,
 	})
 	source, err := NewBusinessTargetSource(db, false, "secret")
 	if err != nil {
@@ -448,20 +448,20 @@ func TestWBBusinessSourceTargetOwnerAndPolicy(t *testing.T) {
 	if _, err := source.targetSystemAccountID(context.Background(), "acct"); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("空白租户必须报错: err=%v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',2,'full',1,80,'quality_isolate',20)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',2,'full',1,80,'quality_isolate',20,NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	profile, revision, manual, threshold, action, interval, err := source.readPolicy(context.Background(), "sys")
-	if err != nil || profile != "full" || revision != "2" || !manual || threshold != 80 || action != "quality_isolate" || interval != 20 {
-		t.Fatalf("策略读取=%s/%s/%v/%d/%s/%d err=%v", profile, revision, manual, threshold, action, interval, err)
+	profile, revision, manual, threshold, action, interval, ids, err := source.readPolicy(context.Background(), "sys")
+	if err != nil || profile != "full" || revision != "2" || !manual || threshold != 80 || action != "quality_isolate" || interval != 20 || len(ids) != 0 {
+		t.Fatalf("策略读取=%s/%s/%v/%d/%s/%d/%v err=%v", profile, revision, manual, threshold, action, interval, ids, err)
 	}
 	if _, err := db.Exec(`UPDATE model_quality_policies SET penalty_threshold=10 WHERE system_account_id='sys'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, _, _, err := source.readPolicy(context.Background(), "sys"); err == nil || !strings.Contains(err.Error(), "invalid") {
+	if _, _, _, _, _, _, _, err := source.readPolicy(context.Background(), "sys"); err == nil || !strings.Contains(err.Error(), "invalid") {
 		t.Fatalf("越界策略必须报错: err=%v", err)
 	}
-	if _, _, _, _, _, _, err := source.readPolicy(context.Background(), "ghost"); err != nil {
+	if _, _, _, _, _, _, _, err := source.readPolicy(context.Background(), "ghost"); err != nil {
 		t.Fatalf("缺失策略必须回退默认: err=%v", err)
 	}
 }

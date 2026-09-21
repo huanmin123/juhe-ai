@@ -231,19 +231,19 @@ func TestWlSharedLoginGuard(t *testing.T) {
 		var blocked bool
 		var retryAfter int
 		for i := 0; i < int(sharedLoginLimit); i++ {
-			blocked, retryAfter, _ = guard.Failed("10.1.1.1", "LockedUser")
+			blocked, retryAfter, _, _ = guard.Failed("10.1.1.1", "LockedUser")
 		}
 		if !blocked || retryAfter <= 0 {
 			t.Fatalf("达到阈值必须锁定: blocked=%v retry=%d", blocked, retryAfter)
 		}
-		if got, _, _ := guard.Check("10.1.1.1", "ignored"); !got {
+		if got, _, _, _ := guard.Check("10.1.1.1", "ignored"); !got {
 			t.Fatal("IP 锁必须优先生效")
 		}
-		if _, _, message := guard.Check("10.1.1.2", "lockeduser"); message != "账号暂时锁定，请稍后再试" {
+		if _, _, message, _ := guard.Check("10.1.1.2", "lockeduser"); message != "账号暂时锁定，请稍后再试" {
 			t.Fatalf("message=%q", message)
 		}
 		guard.Success("10.1.1.1", "LockedUser")
-		if got, _, _ := guard.Check("10.1.1.1", "lockeduser"); got {
+		if got, _, _, _ := guard.Check("10.1.1.1", "lockeduser"); got {
 			t.Fatal("Success 后必须解除锁定")
 		}
 	})
@@ -251,16 +251,17 @@ func TestWlSharedLoginGuard(t *testing.T) {
 		store := newWlFakeStateStore()
 		guard := NewSharedLoginGuard(store, func() time.Time { return time.Unix(1000, 0) })
 		store.preset("login:ip:10.9.9.9:lock", int64(999))
-		if blocked, _, _ := guard.Check("10.9.9.9", "u"); blocked {
+		if blocked, _, _, _ := guard.Check("10.9.9.9", "u"); blocked {
 			t.Fatal("过期锁不得拦截")
 		}
 	})
-	t.Run("计数失败降级为不封锁", func(t *testing.T) {
+	t.Run("计数失败上抛错误（D8 fail-closed）", func(t *testing.T) {
 		store := newWlFakeStateStore()
 		store.incrErr = errors.New("down")
 		guard := NewSharedLoginGuard(store, nil)
-		if blocked, _, _ := guard.Failed("10.8.8.8", "u"); blocked {
-			t.Fatal("状态存储失败必须按当前语义降级为不封锁")
+		blocked, _, _, err := guard.Failed("10.8.8.8", "u")
+		if blocked || err == nil {
+			t.Fatalf("状态存储失败必须 fail-closed 上抛: blocked=%v err=%v", blocked, err)
 		}
 	})
 	t.Run("retryAfter 边界", func(t *testing.T) {

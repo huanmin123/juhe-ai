@@ -20,8 +20,8 @@ func wbBusinessQualityDDL(t *testing.T) []string {
 	t.Helper()
 	return []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,name TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,state TEXT,action TEXT,recovery_due_at TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT)`,
 		`CREATE TABLE account_model_mappings (account_id TEXT, source_model TEXT, source_endpoint_family TEXT, upstream_model TEXT, upstream_endpoint_family TEXT, enabled INTEGER)`,
@@ -294,8 +294,8 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 	ddl := []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,deleted_at TEXT,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT UNIQUE,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,created_at TEXT,updated_at TEXT,cleared_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,model TEXT)`,
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,model TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,custom_question_ids TEXT)`,
 	}
 	open := func(t *testing.T) (*sql.DB, *BusinessEnforcementApplier) {
 		t.Helper()
@@ -342,7 +342,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 	})
 	t.Run("policy snapshot must match defaults", func(t *testing.T) {
 		db, applier := open(t)
-		if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',3,'full',1,80,'quality_isolate',20)`); err != nil {
+		if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',3,'full',1,80,'quality_isolate',20,NULL)`); err != nil {
 			t.Fatal(err)
 		}
 		input := QualityEnforcement{AccountID: "acct", SystemAccountID: "sys", RunID: "run-1", Action: "fallback", Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10, PolicyRevision: "0", AccountConfigRevision: "4", Profile: "quick"}
@@ -411,7 +411,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 				if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct','sys','active',4,0,1,NULL,1,NULL,NULL,NULL)`); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',0,'quick',1,70,?,10)`, action); err != nil {
+				if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',0,'quick',1,70,?,10,NULL)`, action); err != nil {
 					t.Fatal(err)
 				}
 				input := QualityEnforcement{AccountID: "acct", SystemAccountID: "sys", RunID: "run-1", Action: action, Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10, PolicyRevision: "0", AccountConfigRevision: "4", Profile: "quick"}

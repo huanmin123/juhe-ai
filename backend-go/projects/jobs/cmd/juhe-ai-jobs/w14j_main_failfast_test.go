@@ -30,12 +30,13 @@ func TestW14JMainPGFailFastArms(t *testing.T) {
 			"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres",
 		}},
 		// J2 store=postgres 但连接串缺失 → LoadRuntimeConfig fail closed。
-		{"j2-pg-missing-url", map[string]string{
-			"JUHE_AI_ACCOUNT_BALANCE_ENABLED":      "true",
+		// J2 store=sqlite（SQLite outcome 无投影消费者）→ LoadRuntimeConfig
+		// fail closed（2026-09-21 起无 ENABLED 开关，PG 缺席为合法缺席，
+		// 显式错误存储仍 fail-fast）。
+		{"j2-sqlite-store", map[string]string{
 			"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":   "go",
-			"JUHE_AI_ACCOUNT_BALANCE_STORE":        "postgres",
-			"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":     "w14j-j2",
-			"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "",
+			"JUHE_AI_ACCOUNT_BALANCE_STORE":        "sqlite",
+			"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "pgx://w14j-invalid-url",
 		}},
 		// J3a 管理接口开启而 J3a owner 未开启 → 守卫 fail。
 		{"j3a-management-without-j3a", map[string]string{
@@ -45,7 +46,6 @@ func TestW14JMainPGFailFastArms(t *testing.T) {
 		}},
 		// J3a 开启但 jobs 连接串非法 → Acquire 失败。
 		{"j3a-pg-bad-url", map[string]string{
-			"JUHE_AI_PROXY_LATENCY_ENABLED":           "true",
 			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":        "go",
 			"JUHE_AI_PROXY_LATENCY_STORE":             "postgres",
 			"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":      "pgx://w14j-invalid-url",

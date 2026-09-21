@@ -18,7 +18,7 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 	defer db.Close()
 	for _, ddl := range []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,provider_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
@@ -35,7 +35,7 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO accounts (id,provider_code,config_revision,deleted_at,authorization_instance_authorization_id,status,health_check_model) VALUES ('acct','openai',4,NULL,NULL,'active','gpt-5.6-sol')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,NULL,NULL,NULL,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,NULL,NULL,NULL,NULL,NULL,'','["mcq-q1"]')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	store := schedulerStoreFixture(t)
@@ -51,6 +51,9 @@ func TestBusinessSchedulerClaimsScheduleAndCompletesWithLease(t *testing.T) {
 	}
 	if payload.ScheduleID != "sch" || payload.ScheduleRevision != 3 || payload.OwnerID != "gateway-1" || payload.ConfigRevision != "4" || payload.DispatchRevision != 1 || payload.SourceConfigRevision != "4" || payload.SourceDispatchRevision != 1 {
 		t.Fatalf("payload=%+v", payload)
+	}
+	if len(payload.CustomQuestionIds) != 1 || payload.CustomQuestionIds[0] != "mcq-q1" {
+		t.Fatalf("claim must freeze custom question ids from the schedule row: %+v", payload)
 	}
 	if err := source.CompleteScheduled(context.Background(), payload, RunResult{RunID: "run-1", Status: string(RunCompleted)}); err != nil {
 		t.Fatal(err)
@@ -81,8 +84,9 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 	defer db.Close()
 	for _, ddl := range []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,provider_code TEXT,config_revision INTEGER,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT,health_check_model TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,custom_question_ids TEXT)`,
+		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
@@ -104,7 +108,12 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 	if _, err := db.Exec(`UPDATE accounts SET authorization_instance_source_account_id='source' WHERE id='acct'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+	// 恢复来源是 schedule（config_source='schedule' 且 config_source_id='sch'）：
+	// schedule 行没有配置时回落 system account 的 policy 行配置。
+	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys',7,'full',1,70,'quality_isolate',15,'["mcq-policy"]')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','',8,7,'sch','full',71,15,?,NULL,NULL,'','schedule')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	store := schedulerStoreFixture(t)
@@ -120,6 +129,9 @@ func TestBusinessSchedulerClaimsRecoveryWithImmutableLeasePayload(t *testing.T) 
 	}
 	if payload.EnforcementID != "enf" || payload.Generation != 2 || payload.RecoveryIntervalMinutes != 15 || payload.PolicyRevision != "7" || payload.ConfigRevision != "8" || payload.DispatchRevision != 1 || payload.SourceConfigRevision != "11" || payload.SourceDispatchRevision != 13 {
 		t.Fatalf("payload=%+v", payload)
+	}
+	if len(payload.CustomQuestionIds) != 1 || payload.CustomQuestionIds[0] != "mcq-policy" {
+		t.Fatalf("recovery must carry the source policy custom question ids: %+v", payload)
 	}
 }
 

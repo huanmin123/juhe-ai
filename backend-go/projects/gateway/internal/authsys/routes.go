@@ -89,7 +89,15 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 			}
 		}
 		clientIP := loginClientIP(r)
-		if blocked, retryAfter, message := d.LoginGuard.Check(clientIP, body.Username); blocked {
+		// D8 (2026-09-20): a login-guard store failure is fail-closed — the
+		// handler answers 500 like the Node next(error) path, never a silent
+		// pass through the throttle.
+		blocked, retryAfter, message, guardErr := d.LoginGuard.Check(clientIP, body.Username)
+		if guardErr != nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if blocked {
 			setRetryAfter(w, retryAfter)
 			kernel.WriteError(w, http.StatusTooManyRequests, message)
 			return
@@ -100,7 +108,12 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 			return
 		}
 		if !ok {
-			if blocked, retryAfter, message := d.LoginGuard.Failed(clientIP, body.Username); blocked {
+			blocked, retryAfter, message, guardErr := d.LoginGuard.Failed(clientIP, body.Username)
+			if guardErr != nil {
+				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			if blocked {
 				setRetryAfter(w, retryAfter)
 				kernel.WriteError(w, http.StatusTooManyRequests, message)
 				return
@@ -114,7 +127,12 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 			return
 		}
 		if !issuedOK {
-			if blocked, retryAfter, message := d.LoginGuard.Failed(clientIP, body.Username); blocked {
+			blocked, retryAfter, message, guardErr := d.LoginGuard.Failed(clientIP, body.Username)
+			if guardErr != nil {
+				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			if blocked {
 				setRetryAfter(w, retryAfter)
 				kernel.WriteError(w, http.StatusTooManyRequests, message)
 				return
@@ -329,7 +347,12 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 		kernel.WriteError(w, http.StatusForbidden, "当前来源不在临时访问令牌白名单中")
 		return
 	}
-	if blocked, retryAfter, message := d.LoginGuard.Check(clientIP, body.Username); blocked {
+	blocked, retryAfter, message, guardErr := d.LoginGuard.Check(clientIP, body.Username)
+	if guardErr != nil {
+		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		return
+	}
+	if blocked {
 		setRetryAfter(w, retryAfter)
 		kernel.WriteError(w, http.StatusTooManyRequests, message)
 		return
@@ -340,7 +363,13 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !ok || !IsAdminRole(verified.Role) {
-		d.LoginGuard.Failed(clientIP, body.Username)
+		// Node awaits recordFailedLoginAsync inside the same try block: a
+		// store failure lands as 500 (D8 fail-closed), the block result stays
+		// ignored exactly like auth.routes.ts.
+		if _, _, _, failedErr := d.LoginGuard.Failed(clientIP, body.Username); failedErr != nil {
+			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
 		kernel.WriteError(w, http.StatusUnauthorized, "账号或密码错误")
 		return
 	}

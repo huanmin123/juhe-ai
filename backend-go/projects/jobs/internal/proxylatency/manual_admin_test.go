@@ -213,8 +213,10 @@ func TestManualAdminProxyIDMatchesDecodedExpressPathParam(t *testing.T) {
 }
 
 func TestLoadManualAdminConfigIsExplicitAndBounded(t *testing.T) {
+	// 2026-09-21 起管理 listener 随家族常驻：依赖缺席（无任何 PG 连接串）
+	// 时合法缺席。
 	if cfg, err := LoadManualAdminConfig(func(string) string { return "" }); err != nil || cfg.Enabled {
-		t.Fatalf("disabled config=%#v err=%v", cfg, err)
+		t.Fatalf("absent config=%#v err=%v", cfg, err)
 	}
 	env := map[string]string{
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":                 "true",

@@ -12,7 +12,6 @@ import (
 
 func TestWFLoadRuntimeConfigRemainingGuards(t *testing.T) {
 	base := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "wf",
 		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",

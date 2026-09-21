@@ -27,8 +27,8 @@ type recordingSink struct {
 	entries []authsys.OperationLogEntry
 }
 
-
 var mustChangeFalse = false
+
 func (s *recordingSink) Record(entry authsys.OperationLogEntry, _ *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,8 +114,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		// input fanout joins accounts on the authorization-instance columns
 		// (mirrors authorized_reads_test.go accountsFixtureDDL shape).
 		`CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, source_type TEXT NOT NULL, source_id TEXT NOT NULL, window_hours INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
-		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (id TEXT PRIMARY KEY, version INTEGER NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (id TEXT PRIMARY KEY, kind TEXT NOT NULL, reason TEXT NOT NULL, account_id TEXT NOT NULL, source_authorization_id TEXT, payload TEXT NOT NULL, created_at TEXT NOT NULL, processed_at TEXT)`,
+		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (account_id TEXT PRIMARY KEY, current_version INTEGER NOT NULL, reserved_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (event_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, input_version INTEGER NOT NULL, event_kind TEXT NOT NULL, reason TEXT NOT NULL, config_revision INTEGER NOT NULL, dispatch_revision INTEGER NOT NULL, status TEXT NOT NULL, claim_token TEXT, claimed_until TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, available_at TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`ALTER TABLE accounts ADD COLUMN resource_owner_system_account_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE accounts ADD COLUMN authorization_instance_authorization_id TEXT`,
 		`ALTER TABLE accounts ADD COLUMN authorization_instance_source_account_id TEXT`,

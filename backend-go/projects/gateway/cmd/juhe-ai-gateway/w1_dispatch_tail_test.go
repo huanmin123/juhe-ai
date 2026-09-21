@@ -1374,22 +1374,18 @@ func TestW1XConfiguredPolicyResolveLocalArms(t *testing.T) {
 
 func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 	ctx := context.Background()
-	projectionEnv := "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED"
-	projectionReadEnv := "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_READ_ENABLED"
 
-	// 非 postgres 方言 / 开关全关：写面缺席。
+	// 非 postgres 方言：写面缺席。2026-09-21 起投影开关移除，postgres
+	// 方言恒装配脏标记。
 	db := w1xOpenBareSQLite(t, "w1x-marker.sqlite3")
 	composed := &composition{db: db}
-	if marker := newChainListAvailabilityDirtyMarker(composed, w1xEnvOf(map[string]string{projectionEnv: "1"})); marker != nil {
+	if marker := newChainListAvailabilityDirtyMarker(composed); marker != nil {
 		t.Fatal("sqlite 方言不得装配脏标记")
 	}
 	pgComposed := &composition{db: db, pgDialect: true}
-	if marker := newChainListAvailabilityDirtyMarker(pgComposed, w1xEnvOf(nil)); marker != nil {
-		t.Fatal("开关全关不得装配脏标记")
-	}
-	marker := newChainListAvailabilityDirtyMarker(pgComposed, w1xEnvOf(map[string]string{projectionReadEnv: "on"}))
+	marker := newChainListAvailabilityDirtyMarker(pgComposed)
 	if marker == nil {
-		t.Fatal("读开关开启也必须装配脏标记")
+		t.Fatal("postgres 方言必须装配脏标记")
 	}
 
 	// 空白 / 超长来源账户：直接 no-op。
@@ -1405,8 +1401,7 @@ func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open closed-case db: %v", err)
 	}
-	closedMarker := newChainListAvailabilityDirtyMarker(&composition{db: closedDB, pgDialect: true},
-		w1xEnvOf(map[string]string{projectionEnv: "true"}))
+	closedMarker := newChainListAvailabilityDirtyMarker(&composition{db: closedDB, pgDialect: true})
 	_ = closedDB.Close()
 	if err := closedMarker(ctx, "w1x-src", "reason", 1); err == nil {
 		t.Fatal("关闭句柄必须透传事务错误")
@@ -1439,7 +1434,7 @@ func TestW1XListAvailabilityDirtyMarkerArms(t *testing.T) {
 		}
 	}
 	fullComposed := &composition{db: attach, pgDialect: true}
-	fullMarker := newChainListAvailabilityDirtyMarker(fullComposed, w1xEnvOf(map[string]string{projectionEnv: "1"}))
+	fullMarker := newChainListAvailabilityDirtyMarker(fullComposed)
 	if err := fullMarker(ctx, "w1x-src", "w1x 失败", 1234); err != nil {
 		t.Fatalf("脏标记写入: %v", err)
 	}

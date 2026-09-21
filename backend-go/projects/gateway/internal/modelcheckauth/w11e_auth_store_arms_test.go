@@ -5,9 +5,9 @@ package modelcheckauth
 
 import (
 	"context"
-	"strconv"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -180,16 +180,16 @@ func TestW11ECaptchaRateLimitArms(t *testing.T) {
 
 func TestW11EGuardNilAndDefaultArms(t *testing.T) {
 	var nilGuard *LoginGuard
-	if blocked, retry, message := nilGuard.Check("127.0.0.1", "user"); blocked || retry != 0 || message != "" {
+	if blocked, retry, message, err := nilGuard.Check("127.0.0.1", "user"); blocked || retry != 0 || message != "" || err != nil {
 		t.Fatal("nil Check 必须放行")
 	}
-	if blocked, _, _ := nilGuard.Failed("127.0.0.1", "user"); blocked {
+	if blocked, _, _, err := nilGuard.Failed("127.0.0.1", "user"); blocked || err != nil {
 		t.Fatal("nil Failed 必须放行")
 	}
 	nilGuard.Success("127.0.0.1", "user")
 	// 默认时钟守卫。
 	guard := NewLoginGuard(nil)
-	if blocked, _, _ := guard.Check("127.0.0.1", "user"); blocked {
+	if blocked, _, _, err := guard.Check("127.0.0.1", "user"); blocked || err != nil {
 		t.Fatal("默认时钟必须可用")
 	}
 	// 用户名锁定跨 IP 生效。
@@ -197,12 +197,12 @@ func TestW11EGuardNilAndDefaultArms(t *testing.T) {
 	userLock := NewLoginGuard(func() time.Time { return now })
 	var message string
 	for index := 0; index < 10; index++ {
-		_, _, message = userLock.Failed("10.1.0."+strconv.Itoa(index), "SharedUser")
+		_, _, message, _ = userLock.Failed("10.1.0."+strconv.Itoa(index), "SharedUser")
 	}
 	if !strings.Contains(message, "账号暂时锁定") {
 		t.Fatalf("用户名锁定=%q", message)
 	}
-	if blocked, _, _ := userLock.Check("10.2.0.1", "shareduser"); !blocked {
+	if blocked, _, _, _ := userLock.Check("10.2.0.1", "shareduser"); !blocked {
 		t.Fatal("用户名锁必须跨 IP 且大小写不敏感")
 	}
 }

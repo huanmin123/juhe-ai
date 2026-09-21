@@ -18,7 +18,7 @@ import (
 func TestW14MBusinessQualityManagerArms(t *testing.T) {
 	ctx := context.Background()
 	enforcementDDL := `CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT)`
-	scheduleDDL := `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT)`
+	scheduleDDL := `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`
 	ddl := append(businessSourceContractDDL(), enforcementDDL, scheduleDDL)
 
 	t.Run("listSchedulesQueryError", func(t *testing.T) {
@@ -38,7 +38,7 @@ func TestW14MBusinessQualityManagerArms(t *testing.T) {
 	t.Run("listSchedulesIterateError", func(t *testing.T) {
 		db, fp := w14mFailDB(t, ddl)
 		w14mSeedPlainAccount(t, db, "acct")
-		if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',1,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,NULL,NULL,NULL,NULL,NULL,NULL,'','')`); err != nil {
+		if _, err := db.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',1,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,NULL,NULL,NULL,NULL,NULL,NULL,'','',NULL)`); err != nil {
 			t.Fatal(err)
 		}
 		manager, err := NewBusinessQualityManager(db, false)

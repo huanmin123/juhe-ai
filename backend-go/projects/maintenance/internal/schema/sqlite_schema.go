@@ -165,7 +165,68 @@ type SQLiteResult struct {
 
 // EnsureSQLiteBusiness applies the business schema (system accounts, providers, accounts, groups, routing, API keys, authorizations, OIDC, circuit control plane).
 func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
-	return sqliteBusinessScript.ensure(ctx, db)
+	counts, err := sqliteBusinessScript.ensure(ctx, db)
+	if err != nil {
+		return SchemaCounts{}, err
+	}
+	if err := ensureSQLiteBusinessCustomQuestionColumns(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite business custom_question_ids columns: %w", err)
+	}
+	return counts, nil
+}
+
+// ensureSQLiteBusinessCustomQuestionColumns is the Go port of the Node
+// conditional ALTER guard pattern documented at the top of this file
+// (business-schema.ts ensure*Schema): PRAGMA table_info decides whether the
+// two model-quality tables still need the custom_question_ids column. Fresh
+// databases declare the column inside the CREATE TABLE statements, so the
+// guard exits before writing there; legacy databases created before the
+// model-check question bank receive an in-place ADD COLUMN. The migration is
+// additive and never creates tables or indexes, so SchemaCounts is stable
+// across fresh, legacy and repeated runs.
+func ensureSQLiteBusinessCustomQuestionColumns(ctx context.Context, db *sql.DB) error {
+	for _, table := range []string{"model_quality_policies", "model_quality_schedules"} {
+		if err := ensureSQLiteTableColumn(ctx, db, table, "custom_question_ids", "TEXT"); err != nil {
+			return fmt.Errorf("ensure %s.custom_question_ids: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// ensureSQLiteTableColumn adds "<column> <decl>" to table when the table
+// exists without the column. A missing table is not an error: the CREATE
+// TABLE phase of the same ensure run creates it with the column already
+// declared. Table and column names are compile-time constants, so inline
+// interpolation is safe.
+func ensureSQLiteTableColumn(ctx context.Context, db *sql.DB, table, column, decl string) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return err
+	}
+	tableExists, columnExists := false, false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, declaredType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		tableExists = true
+		if name == column {
+			columnExists = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if !tableExists || columnExists {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+decl)
+	return err
 }
 
 // EnsureSQLiteStats applies the stats schema (quality/usage aggregations and process samples).

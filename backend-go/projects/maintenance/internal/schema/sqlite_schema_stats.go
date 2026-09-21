@@ -1246,6 +1246,7 @@ const sqliteStatsMainDDL = `    CREATE TABLE IF NOT EXISTS account_quality_minut
           tokenizer_version TEXT,
           probe_set_version TEXT,
           reason_codes_json TEXT NOT NULL DEFAULT '[]',
+          last_observed_id TEXT,
           last_observed_at TEXT,
           updated_at TEXT NOT NULL,
           PRIMARY KEY (system_account_id, account_id, requested_model)

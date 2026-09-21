@@ -614,8 +614,8 @@ func TestW14MTrustProjectionMoreArms(t *testing.T) {
 func w14mSchedulerBusinessDDL(t *testing.T) []string {
 	t.Helper()
 	ddl := businessSourceContractDDL()
-	ddl = append(ddl, `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT)`)
-	ddl = append(ddl, `CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT)`)
+	ddl = append(ddl, `CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,revision INTEGER,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,updated_at TEXT,custom_question_ids TEXT)`)
+	ddl = append(ddl, `CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT,generation INTEGER,state TEXT,action TEXT,recovery_model TEXT,account_config_revision INTEGER,policy_revision INTEGER,config_source_id TEXT,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_due_at TEXT,recovery_lease_owner TEXT,recovery_lease_until TEXT,updated_at TEXT,config_source TEXT)`)
 	return ddl
 }
 
@@ -640,7 +640,7 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 		w14mSeedPlainAccount(t, business, "acct")
 		store := &Store{db: business, mode: "sqlite"}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
-		if _, err := business.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,NULL,NULL,NULL,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+		if _, err := business.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,NULL,NULL,NULL,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		fp.arm("FROM model_quality_schedules")
@@ -655,7 +655,7 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 		w14mSeedPlainAccount(t, business, "acct")
 		store := &Store{db: business, mode: "sqlite"}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
-		if _, err := business.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,NULL,NULL,NULL,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+		if _, err := business.Exec(`INSERT INTO model_quality_schedules VALUES ('sch',3,'sys-1','acct','gpt-5.6-sol',60,'quick',70,'fallback',15,1,?,NULL,NULL,NULL,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		fp.armScan("FROM model_quality_schedules")
@@ -670,7 +670,7 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 		w14mSeedPlainAccount(t, business, "acct")
 		store := &Store{db: business, mode: "sqlite"}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
-		if _, err := business.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','gpt-5.6-sol',5,7,'','quick',70,10,?,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+		if _, err := business.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','gpt-5.6-sol',5,7,'','quick',70,10,?,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		fp.arm("aqe.state='active' AND aqe.action='quality_isolate'")
@@ -688,7 +688,7 @@ func TestW14MBusinessSchedulerArms(t *testing.T) {
 		}
 		store := &Store{db: business, mode: "sqlite"}
 		source := &BusinessSchedulerSource{Business: business, Store: store, OwnerID: "w14m-owner"}
-		if _, err := business.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','gpt-5.6-sol',5,7,'','quick',70,10,?,NULL,NULL,'')`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
+		if _, err := business.Exec(`INSERT INTO account_quality_enforcements VALUES ('acct','sys','enf',2,'active','quality_isolate','gpt-5.6-sol',5,7,'','quick',70,10,?,NULL,NULL,'',NULL)`, now.Add(-time.Minute).Format(time.RFC3339Nano)); err != nil {
 			t.Fatal(err)
 		}
 		fp.armScan("aqe.state='active' AND aqe.action='quality_isolate'")

@@ -24,12 +24,12 @@ func TestW12EParseTargetURLArms(t *testing.T) {
 		raw    string
 		needle string
 	}{
-		{"   ", "target URL invalid"},               // trim 后为空
+		{"   ", "target URL invalid"},                // trim 后为空
 		{"http://[fe80::1%25eth0]/", "host invalid"}, // host 含百分号（IPv6 zone）
-		{"http://ok.invalid/a/%2e%2e/b", "invalid"}, // dot 段
-		{"http://[::1", "invalid"},                  // 解析失败
-		{"http://ok.invalid:0/", "port invalid"},    // 端口 0
-		{"http://ok.invalid:/", "port invalid"},     // 空端口
+		{"http://ok.invalid/a/%2e%2e/b", "invalid"},  // dot 段
+		{"http://[::1", "invalid"},                   // 解析失败
+		{"http://ok.invalid:0/", "port invalid"},     // 端口 0
+		{"http://ok.invalid:/", "port invalid"},      // 空端口
 	}
 	for _, tc := range cases {
 		if _, err := parseTargetURL(tc.raw); err == nil || !strings.Contains(err.Error(), tc.needle) {
@@ -243,7 +243,6 @@ func TestW12EParseManualOutboundArms(t *testing.T) {
 func TestW12ELoadRuntimeConfigPoolArms(t *testing.T) {
 	base := func() map[string]string {
 		return map[string]string{
-			"JUHE_AI_PROXY_LATENCY_ENABLED":             "true",
 			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
 			"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "w12e",
 			"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
@@ -273,9 +272,9 @@ func TestW12ELoadRuntimeConfigPoolArms(t *testing.T) {
 // TestW12ELoadManualAdminConfigArms：管理端口配置的失败臂。
 func TestW12ELoadManualAdminConfigArms(t *testing.T) {
 	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":          "true",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS":   "127.0.0.1:18080",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":     "postgres://business",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":                 "true",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS":          "127.0.0.1:18080",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":            "postgres://business",
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS": "10",
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS": "0",
 	}

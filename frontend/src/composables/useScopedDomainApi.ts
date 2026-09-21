@@ -189,7 +189,31 @@ export function useScopedModelChecksApi(isManagementView: Ref<boolean>) {
       : api.myModelChecks.patchQualitySchedule(id, payload),
     deleteQualitySchedule: (id: string, params?: ModelCheckScopeParams) => isManagementView.value
       ? api.modelChecks.deleteQualitySchedule(id, params)
-      : api.myModelChecks.deleteQualitySchedule(id)
+      : api.myModelChecks.deleteQualitySchedule(id),
+    questionBankList: (params?: Parameters<typeof api.modelChecks.questionBankList>[0]) => isManagementView.value
+      ? api.modelChecks.questionBankList(params)
+      : api.myModelChecks.questionBankList(params),
+    questionBankCreate: (payload: Parameters<typeof api.modelChecks.questionBankCreate>[0], params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.questionBankCreate(payload, params)
+      : api.myModelChecks.questionBankCreate(payload),
+    questionBankDetail: (id: string, params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.questionBankDetail(id, params)
+      : api.myModelChecks.questionBankDetail(id),
+    questionBankUpdate: (id: string, payload: Parameters<typeof api.modelChecks.questionBankUpdate>[1], params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.questionBankUpdate(id, payload, params)
+      : api.myModelChecks.questionBankUpdate(id, payload),
+    questionBankDelete: (id: string, params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.questionBankDelete(id, params)
+      : api.myModelChecks.questionBankDelete(id),
+    questionBankReview: (id: string, payload: Parameters<typeof api.modelChecks.questionBankReview>[1], params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.questionBankReview(id, payload, params)
+      : api.myModelChecks.questionBankReview(id, payload),
+    questionBankOptions: (params?: Parameters<typeof api.modelChecks.questionBankOptions>[0], options?: { signal?: AbortSignal }) => isManagementView.value
+      ? api.modelChecks.questionBankOptions(params, options)
+      : api.myModelChecks.questionBankOptions(params, options),
+    questionBankByIds: (ids: string[], options?: { signal?: AbortSignal }) => isManagementView.value
+      ? api.modelChecks.questionBankByIds(ids, options)
+      : api.myModelChecks.questionBankByIds(ids, options)
   }
 }
 

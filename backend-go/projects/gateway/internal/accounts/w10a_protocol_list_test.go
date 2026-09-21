@@ -293,8 +293,8 @@ func TestW10AUsageScope(t *testing.T) {
 func TestW10AUsageStatsTodayKey(t *testing.T) {
 	env := newTestEnv(t)
 	if _, err := env.db.Exec(`CREATE TABLE IF NOT EXISTS system_settings (
-		system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT,
-		created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+		system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, key))`); err != nil {
 		t.Fatal(err)
 	}
@@ -303,8 +303,8 @@ func TestW10AUsageStatsTodayKey(t *testing.T) {
 		t.Fatal("缺失配置应回退 UTC 日期键")
 	}
 	// 合法时区配置生效（不会报错）。
-	env.exec(t, `INSERT INTO system_settings (system_account_id, key, value_json, created_at, updated_at)
-		VALUES ('sys_admin', 'usageStatsTimezone', '"Asia/Shanghai"', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	env.exec(t, `INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+		VALUES ('sys_admin', 'usageStatsTimezone', '"Asia/Shanghai"', '2026-01-01T00:00:00Z')`)
 	if k := env.store.usageStatsTodayKey(context.Background()); k == "" {
 		t.Fatal("合法时区应产出日期键")
 	}

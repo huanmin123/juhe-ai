@@ -48,10 +48,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	fileEnabled, err := parseBool("JUHE_AI_LOG_FILE_ENABLED", getenv("JUHE_AI_LOG_FILE_ENABLED"), true)
-	if err != nil {
-		return Config{}, err
-	}
+	// 2026-09-21 起文件日志为常驻能力，JUHE_AI_LOG_FILE_ENABLED 开关移除。
+	fileEnabled := true
 	once, err := parseBool("JUHE_AI_RUNTIME_LOG_ONCE", getenv("JUHE_AI_RUNTIME_LOG_ONCE"), false)
 	if err != nil {
 		return Config{}, err
@@ -124,9 +122,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("创建运行日志目录 %s 失败: %w", config.LogDirectory, err)
 		}
 	}
-	if !config.FileEnabled {
-		return Config{}, fmt.Errorf("运行日志索引进程要求 JUHE_AI_LOG_FILE_ENABLED=true")
-	}
+	// 2026-09-21 起文件日志恒开（JUHE_AI_LOG_FILE_ENABLED 开关移除），
+	// FileEnabled 恒为 true，原「索引进程要求开关为 true」守卫不可达已删除。
 	switch config.Mode {
 	case ModeSQLite:
 		if config.RuntimeLogDatabasePath == "" {

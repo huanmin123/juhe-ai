@@ -388,7 +388,7 @@ func TestW11ATemporaryTokenRejectedArm(t *testing.T) {
 
 type w11aFakeStateStore struct {
 	RedisStateStore
-	counters  map[string]int64
+	counters   map[string]int64
 	setJSONErr error
 }
 
@@ -402,7 +402,7 @@ func (s *w11aFakeStateStore) Incr(_ context.Context, key string, _ int64, _ int6
 func (s *w11aFakeStateStore) SetJSON(context.Context, string, any, int64) error {
 	return s.setJSONErr
 }
-func (s *w11aFakeStateStore) GetJSON(context.Context, string, any) (bool, error)  { return false, nil }
+func (s *w11aFakeStateStore) GetJSON(context.Context, string, any) (bool, error) { return false, nil }
 func (s *w11aFakeStateStore) GetDeleteJSON(context.Context, string, any) (bool, error) {
 	return false, nil
 }
@@ -418,27 +418,34 @@ func TestW11ASharedDriverArms(t *testing.T) {
 	// Login guard: username locked, fresh IP → the user-lock arm wins.
 	guard := NewSharedLoginGuard(&w11aFakeStateStore{}, time.Now)
 	for i := 0; i < 9; i++ {
-		if blocked, _, _ := guard.Failed("198.51.100.1", "w11a-user"); blocked {
-			t.Fatalf("locked too early at %d", i)
+		if blocked, _, _, err := guard.Failed("198.51.100.1", "w11a-user"); blocked || err != nil {
+			t.Fatalf("locked too early at %d: blocked=%v err=%v", i, blocked, err)
 		}
 	}
-	blocked, retry, message := guard.Failed("198.51.100.2", "w11a-user")
-	if !blocked || retry <= 0 || !strings.Contains(message, "账号暂时锁定") {
-		t.Fatalf("user lock arm = %v, %d, %q", blocked, retry, message)
+	blocked, retry, message, err := guard.Failed("198.51.100.2", "w11a-user")
+	if err != nil || !blocked || retry <= 0 || !strings.Contains(message, "账号暂时锁定") {
+		t.Fatalf("user lock arm err=%v blocked=%v retry=%d message=%q", err, blocked, retry, message)
 	}
 	// The 10th attempt on the original IP already locks it too: the IP lock
 	// arm now short-circuits the username arm.
-	blocked, _, message = guard.Failed("198.51.100.1", "w11a-user")
-	if !blocked || !strings.Contains(message, "尝试过于频繁") {
-		t.Fatalf("ip lock arm = %v, %q", blocked, message)
+	blocked, _, message, err = guard.Failed("198.51.100.1", "w11a-user")
+	if err != nil || !blocked || !strings.Contains(message, "尝试过于频繁") {
+		t.Fatalf("ip lock arm err=%v blocked=%v message=%q", err, blocked, message)
 	}
 
-	// SetJSON failure during the lock write keeps the guard permissive.
+	// SetJSON failure during the lock write fails closed (D8, 2026-09-20):
+	// the 10th attempt surfaces the store error instead of staying
+	// permissive.
 	fragile := NewSharedLoginGuard(&w11aFakeStateStore{setJSONErr: errors.New("w11a lock down")}, time.Now)
-	for i := 0; i < 10; i++ {
-		if blocked, _, _ := fragile.Failed("198.51.100.3", "w11a-user2"); blocked {
-			t.Fatalf("lock write failure must not block: attempt %d", i)
+	for i := 0; i < 9; i++ {
+		blocked, _, _, err := fragile.Failed("198.51.100.3", "w11a-user2")
+		if blocked || err != nil {
+			t.Fatalf("pre-threshold attempts must stay clean: attempt %d blocked=%v err=%v", i, blocked, err)
 		}
+	}
+	blocked, _, _, err = fragile.Failed("198.51.100.3", "w11a-user2")
+	if blocked || err == nil {
+		t.Fatalf("lock-write failure must fail closed: blocked=%v err=%v", blocked, err)
 	}
 }
 
@@ -480,8 +487,8 @@ func TestW11AOperationLogSinkArms(t *testing.T) {
 	invalid := &OperationLogProducerSink{MaxChanges: -1, Producer: operationlog.NewProducer(dropping, operationlog.OwnerLease{}, operationlog.Config{InstanceID: "w11a"}, nil)}
 	invalid.Record(OperationLogEntry{
 		Module: "w11a", Action: "update",
-		Changes:  []OperationLogChange{{Field: "f"}},
-		Viewers:  []OperationLogViewer{{SystemAccountID: "w11a-v", Reason: "w11a-reason"}},
+		Changes: []OperationLogChange{{Field: "f"}},
+		Viewers: []OperationLogViewer{{SystemAccountID: "w11a-v", Reason: "w11a-reason"}},
 	}, httptest.NewRequest(http.MethodGet, "/", nil))
 	if len(dropping.inputs) != 0 {
 		t.Fatal("invalid max changes must drop the entry")

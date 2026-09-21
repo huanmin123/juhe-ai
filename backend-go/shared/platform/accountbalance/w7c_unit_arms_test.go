@@ -613,13 +613,12 @@ func TestW7COutcomeJSONRoundTripArms(t *testing.T) {
 }
 
 func TestW7CLoadRuntimeConfigArms(t *testing.T) {
-	disabled, err := LoadRuntimeConfig(w7cEnvGetter(map[string]string{}))
-	if err != nil || disabled.Enabled {
-		t.Fatalf("unset env must stay disabled: %#v %v", disabled, err)
+	// 2026-09-21 起无总开关：未配置环境 = 依赖缺席（合法 Enabled=false）。
+	if _, err := LoadRuntimeConfig(w7cEnvGetter(map[string]string{})); err != nil {
+		t.Fatalf("unset env must be absent without Postgres: %v", err)
 	}
 
 	valid := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED":                       "true",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":                    "go",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":                      "w7c",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":                         "postgres",
@@ -659,9 +658,8 @@ func TestW7CLoadRuntimeConfigArms(t *testing.T) {
 		want string
 	}{
 		{"owner not go", "JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER", "JOBS_OWNER=go"},
-		{"missing owner id", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID", "OWNER_ID"},
+		// owner id 缺省回落主机名（2026-09-21 零配置），不再有缺失失败臂。
 		{"wrong store", "JUHE_AI_ACCOUNT_BALANCE_STORE", "postgres"},
-		{"missing store url", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL", "POSTGRES_URL"},
 		{"bad pool open", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", "正整数"},
 		{"bad input pool idle", "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", "连接池配置无效"},
 		{"missing business url", "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL", "INPUT_POSTGRES_URL"},

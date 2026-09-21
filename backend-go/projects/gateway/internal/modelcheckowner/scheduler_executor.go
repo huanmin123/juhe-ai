@@ -36,6 +36,10 @@ type ScheduledPayload struct {
 	EnforcementID           string `json:"enforcementId,omitempty"`
 	Generation              int    `json:"generation,omitempty"`
 	RecoveryIntervalMinutes int    `json:"recoveryIntervalMinutes,omitempty"`
+	// CustomQuestionIds 在 claim 时从 schedule（或恢复来源的 schedule/policy）
+	// 行冻结进 payload，运行中题目被删/被驳回只影响后续运行；本份 payload
+	// 的解析结果不受影响（不可变契约）。空 = 不执行题库家族。
+	CustomQuestionIds []string `json:"customQuestionIds,omitempty"`
 }
 
 // SchedulerRunBuilder resolves a durable scheduled payload to a complete
@@ -119,6 +123,8 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	request.PolicyRevision = payload.PolicyRevision
 	request.ProbeSetVersion = payload.ProbeSetVersion
 	request.IdentityKey = payload.IdentityKey
+	// 题库配置随 payload 冻结传递（scheduled 与 quality_recovery 同源同语义）。
+	request.CustomQuestionIds = payload.CustomQuestionIds
 	result, runErr := e.Runtime.Run(ctx, request)
 	if task.Kind == SchedulerScheduled {
 		completion := result

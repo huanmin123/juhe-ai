@@ -16,12 +16,12 @@ import (
 
 func w11eQualityDDL() []string {
 	return []string{
-		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
 		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,action TEXT,state TEXT,recovery_due_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 	}
 }
 
@@ -61,7 +61,7 @@ func TestW11EQualityManagerPolicyArms(t *testing.T) {
 	if _, err := manager.Policy(canceled, "sys-1"); err == nil {
 		t.Fatal("canceled 查询必须失败")
 	}
-	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-1',3,'quick',1,82,'fallback',15,'2026-09-16T10:00:00Z','2026-09-16T10:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_quality_policies VALUES ('sys-1',3,'quick',1,82,'fallback',15,'2026-09-16T10:00:00Z','2026-09-16T10:00:00Z',NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	view, err := manager.Policy(context.Background(), "sys-1")

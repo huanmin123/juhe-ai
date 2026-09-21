@@ -12,7 +12,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// goldenBusinessTables is the golden table list extracted from the Node business-schema.ts (80 tables).
+// goldenBusinessTables is the golden table list extracted from the Node
+// business-schema.ts (80 tables) plus the Go-appended
+// model_check_question_bank table (model-check question bank feature).
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
 	"account_api_key_runtime_states",
@@ -56,6 +58,7 @@ var goldenBusinessTables = []string{
 	"group_accounts",
 	"group_authorization_settings",
 	"groups",
+	"model_check_question_bank",
 	"model_quality_policies",
 	"model_quality_schedules",
 	"oauth_access_tokens",
@@ -205,7 +208,7 @@ var goldenUsageCatalogTables = []string{
 // statement counts; goldenTotalTables/goldenTotalIndexes below count distinct
 // objects.
 var goldenSchemaCounts = SQLiteResult{
-	Business:     SchemaCounts{Tables: 80, Indexes: 218},
+	Business:     SchemaCounts{Tables: 81, Indexes: 221},
 	Stats:        SchemaCounts{Tables: 64, Indexes: 124},
 	Chat:         SchemaCounts{Tables: 10, Indexes: 26},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
@@ -216,12 +219,12 @@ var goldenSchemaCounts = SQLiteResult{
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
 // verify every schema exactly).
-const goldenTotalTables = 163
+const goldenTotalTables = 164
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
 // schema (IF NOT EXISTS no-ops on a fresh database) are not counted twice.
-const goldenTotalIndexes = 391
+const goldenTotalIndexes = 394
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {
@@ -368,6 +371,107 @@ func TestEnsureAllSQLiteIsIdempotent(t *testing.T) {
 	if len(indexesAfterSecond) != len(indexesAfterFirst) {
 		t.Fatalf("index count changed on rerun: %d -> %d", len(indexesAfterFirst), len(indexesAfterSecond))
 	}
+}
+
+// TestEnsureSQLiteBusinessAddsCustomQuestionIDsColumns covers both custom_question_ids
+// delivery paths: fresh databases declare the column inside the CREATE TABLE
+// statements, while legacy databases (tables created before the model-check
+// question bank feature) receive it through the guarded PRAGMA table_info /
+// ALTER TABLE ADD COLUMN migration.
+func TestEnsureSQLiteBusinessAddsCustomQuestionIDsColumns(t *testing.T) {
+	legacyPoliciesDDL := `CREATE TABLE model_quality_policies (
+      system_account_id TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      profile TEXT NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
+      manual_enforcement_enabled INTEGER NOT NULL DEFAULT 1 CHECK (manual_enforcement_enabled IN (0, 1)),
+      penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
+      penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
+      recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    )`
+	legacySchedulesDDL := `CREATE TABLE model_quality_schedules (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      interval_minutes INTEGER NOT NULL DEFAULT 60 CHECK (interval_minutes BETWEEN 10 AND 10080),
+      profile TEXT NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
+      penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
+      penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
+      recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      next_run_at TEXT NOT NULL,
+      last_run_id TEXT,
+      last_run_at TEXT,
+      last_run_status TEXT CHECK (last_run_status IS NULL OR last_run_status IN ('completed', 'failed', 'canceled')),
+      lease_owner TEXT,
+      lease_until TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      UNIQUE (system_account_id, account_id)
+    )`
+
+	t.Run("fresh database declares the column", func(t *testing.T) {
+		db := openSharedMemorySQLite(t, "authsys-schema-test-custom-question-fresh")
+		if _, err := EnsureSQLiteBusiness(context.Background(), db); err != nil {
+			t.Fatalf("EnsureSQLiteBusiness: %v", err)
+		}
+		for _, table := range []string{"model_quality_policies", "model_quality_schedules"} {
+			if !sqliteTableHasColumn(t, db, table, "custom_question_ids") {
+				t.Errorf("fresh database table %s lacks custom_question_ids", table)
+			}
+		}
+	})
+
+	t.Run("legacy database receives the guarded ALTER", func(t *testing.T) {
+		db := openSharedMemorySQLite(t, "authsys-schema-test-custom-question-legacy")
+		for _, ddl := range []string{legacyPoliciesDDL, legacySchedulesDDL} {
+			if _, err := db.Exec(ddl); err != nil {
+				t.Fatalf("seed legacy DDL: %v", err)
+			}
+		}
+		if sqliteTableHasColumn(t, db, "model_quality_policies", "custom_question_ids") {
+			t.Fatal("legacy precondition violated: model_quality_policies already has custom_question_ids")
+		}
+		if _, err := EnsureSQLiteBusiness(context.Background(), db); err != nil {
+			t.Fatalf("EnsureSQLiteBusiness over legacy tables: %v", err)
+		}
+		for _, table := range []string{"model_quality_policies", "model_quality_schedules"} {
+			if !sqliteTableHasColumn(t, db, table, "custom_question_ids") {
+				t.Errorf("legacy table %s lacks custom_question_ids after ensure", table)
+			}
+		}
+	})
+}
+
+// sqliteTableHasColumn reports whether PRAGMA table_info lists the column.
+func sqliteTableHasColumn(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		t.Fatalf("pragma table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, declaredType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan pragma table_info(%s): %v", table, err)
+		}
+		if name == column {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate pragma table_info(%s): %v", table, err)
+	}
+	return false
 }
 
 // TestEnsureFunctionsCreateExactTableSets applies each Ensure* function to its

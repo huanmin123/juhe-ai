@@ -112,11 +112,13 @@ type runtimeConfig struct {
 	// startup assembles the full serving chain; when disabled /v1 traffic
 	// answers the kernel 404 JSON contract (X01: the legacy bridge proxy was
 	// deleted together with the archived Node origin). 2026-09-19 起默认开启，
-	// 语义同 SystemAPIEnabled；两者联动校验（chain 开须 system 开）保留。
+	// 2026-09-21 起 chain 与 system API 均恒开（开关移除），原两者联动
+	// 校验随之消失。
 	ChainEnabled bool
 
-	// Chain collaborator config: the audit capture switch (Node
-	// runtimeConfig.auditLog.enabled, JUHE_AI_AUDIT_LOG_ENABLED default true)
+	// Chain collaborator config: the audit capture fact (Node
+	// runtimeConfig.auditLog.enabled；2026-09-21 起 JUHE_AI_AUDIT_LOG_ENABLED
+	// 开关移除，捕获恒开)
 	// and the durable usage-record spool directory
 	// (JUHE_AI_USAGE_SPOOL_DIRECTORY；兼容旧名 JUHE_AI_USAGE_SPOOL_DIR，
 	// DIRECTORY 优先). The F3 loopback audit input URL
@@ -212,10 +214,10 @@ type runtimeConfig struct {
 	UpstreamRetryBackoffDelaysMs []int64
 
 	// Runtime-logs grep surface (X04 404 项补齐): Node runtimeConfig.log
-	// fields the grep family reads (JUHE_AI_LOG_DIR / JUHE_AI_LOG_FILE_ENABLED
-	// / JUHE_AI_LOG_MAX_FILES / JUHE_AI_LOG_RETENTION_DAYS). The gateway only
-	// scans these files; an empty directory keeps the family on the
-	// file-logging-disabled contract.
+	// fields the grep family reads (JUHE_AI_LOG_DIR / JUHE_AI_LOG_MAX_FILES /
+	// JUHE_AI_LOG_RETENTION_DAYS；JUHE_AI_LOG_FILE_ENABLED 开关已于 2026-09-21
+	// 移除，文件日志恒开). The gateway only scans these files; an empty
+	// directory simply yields no matches.
 	LogDir           string
 	LogFileEnabled   bool
 	LogMaxFiles      int
@@ -447,7 +449,8 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		}
 		cfg.ChatRetentionDays = retentionDays
 	}
-	cfg.ChatDiagnosticToolEnabled = envBoolTrue(getenv("JUHE_AI_CHAT_DIAGNOSTIC_TOOL_ENABLED"))
+	// 2026-09-21 起对话内诊断工具为常驻能力，JUHE_AI_CHAT_DIAGNOSTIC_TOOL_ENABLED 开关移除。
+	cfg.ChatDiagnosticToolEnabled = true
 	// ChatToolEnvironment was normalized at the top of this function
 	// (JUHE_AI_NODE_ENV with the NODE_ENV fallback); only the value validation
 	// stays here.
@@ -580,26 +583,16 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// 启动；生产切流用显式配置控制）。strictEnvBool 保留非法值 fail-fast 与
 	// 显式 false/0/no/off 关闭语义；联动校验（chain 开须 system 开）保留，
 	// 默认双 true 自洽，显式 chain=true+system=false 仍被拒。
-	systemAPIEnabled, systemAPIErr := strictEnvBool("JUHE_AI_GATEWAY_SYSTEM_API_ENABLED", getenv("JUHE_AI_GATEWAY_SYSTEM_API_ENABLED"), true)
-	if systemAPIErr != nil {
-		return runtimeConfig{}, systemAPIErr
-	}
-	chainEnabled, chainEnabledErr := strictEnvBool("JUHE_AI_GATEWAY_CHAIN_ENABLED", getenv("JUHE_AI_GATEWAY_CHAIN_ENABLED"), true)
-	if chainEnabledErr != nil {
-		return runtimeConfig{}, chainEnabledErr
-	}
-	cfg.SystemAPIEnabled = systemAPIEnabled
-	cfg.ChainEnabled = chainEnabled
-	if cfg.ChainEnabled && !cfg.SystemAPIEnabled {
-		return runtimeConfig{}, fmt.Errorf("启用 JUHE_AI_GATEWAY_CHAIN_ENABLED 时必须同时启用 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED")
-	}
+	// 2026-09-21 起系统 API 与 /v1 网关链为常驻能力，JUHE_AI_GATEWAY_SYSTEM_API_ENABLED
+	// 与 JUHE_AI_GATEWAY_CHAIN_ENABLED 开关移除（原 strictEnvBool 非法值
+	// fail-fast 与联动校验随之失效）。
+	cfg.SystemAPIEnabled = true
+	cfg.ChainEnabled = true
 
 	// Chain collaborator config (mirrors the Node runtime.ts audit + spool
-	// fields the gateway chain reads).
+	// fields the gateway chain reads). 2026-09-21 起链路审计为常驻能力，
+	// JUHE_AI_AUDIT_LOG_ENABLED 开关移除。
 	cfg.AuditLogEnabled = true
-	if raw := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_ENABLED")); raw != "" {
-		cfg.AuditLogEnabled = envBoolTrue(raw)
-	}
 	// D-209：JUHE_AI_USAGE_SPOOL_DIRECTORY 是现行名；高性能部署指南与
 	// install-performance-topology.sh 仍使用旧名 JUHE_AI_USAGE_SPOOL_DIR，
 	// DIRECTORY 未配置时回落旧名（DIRECTORY 优先，两处都配置时旧名静默失效
@@ -734,10 +727,8 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// (Math.trunc, runtime.ts:1391), so "10.5" passes as 10. Defaults stay
 	// 500/30.
 	cfg.LogDir = strings.TrimSpace(getenv("JUHE_AI_LOG_DIR"))
+	// 2026-09-21 起文件日志为常驻能力，JUHE_AI_LOG_FILE_ENABLED 开关移除。
 	cfg.LogFileEnabled = true
-	if raw := strings.TrimSpace(getenv("JUHE_AI_LOG_FILE_ENABLED")); raw != "" {
-		cfg.LogFileEnabled = envBoolTrue(raw)
-	}
 	cfg.LogMaxFiles = 500
 	if raw := strings.TrimSpace(getenv("JUHE_AI_LOG_MAX_FILES")); raw != "" {
 		parsed, parsedErr := parseTruncatedInt("JUHE_AI_LOG_MAX_FILES", raw, 1, 500)

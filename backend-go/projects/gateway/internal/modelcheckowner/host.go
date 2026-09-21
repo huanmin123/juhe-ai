@@ -10,6 +10,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -33,6 +34,15 @@ type HostDependencies struct {
 	SchedulerFactory  func(*Store, *Runtime, *QualityProjector) (SchedulerSource, SchedulerExecutor)
 	Dispatcher        modelcheckprobe.DispatcherPort
 	HealthStatHour    HealthStatHourFunc
+	// QuestionBankAdmin/QuestionBankSelf 是题库端点的双前缀 handlers
+	// （admin 实例挂管理面，self 实例挂自助面）。两者同持一个全局共享的
+	// modelcheckquestionbank.Store；nil 时题库路由按 owner 未接线返回 503，
+	// 与 AccountOptions 的降级契约一致。
+	QuestionBankAdmin *modelcheckquestionbank.HTTPHandlers
+	QuestionBankSelf  *modelcheckquestionbank.HTTPHandlers
+	// QuestionBank 是运行时解析题库题目的端口（approved 过滤），供
+	// Runtime 在题库家族执行前把 customQuestionIds 组装为 QuizQuestion。
+	QuestionBank QuestionBankReader
 }
 
 type Host struct {
@@ -78,8 +88,8 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	}
 	store.HealthStatHour = deps.HealthStatHour
 	projector := &QualityProjector{Store: store, Enforcement: deps.Enforcement}
-	runtime := &Runtime{Store: store, Resolve: deps.Resolve, ResolveComparison: deps.ResolveComparison, Tokenizer: deps.Tokenizer, ModelLimits: deps.ModelLimits, Projector: projector, OwnerID: cfg.InstanceID, Dispatcher: deps.Dispatcher}
-	handler := &HTTPHandler{Service: runtime, Quality: deps.Quality, AccountOptions: deps.AccountOptions, Baseline: store, Active: modelcheckactive.NewRegistry(), Authorize: deps.Authorize, Build: deps.Build, BuildScoped: deps.BuildScoped}
+	runtime := &Runtime{Store: store, Resolve: deps.Resolve, ResolveComparison: deps.ResolveComparison, Tokenizer: deps.Tokenizer, ModelLimits: deps.ModelLimits, Projector: projector, OwnerID: cfg.InstanceID, Dispatcher: deps.Dispatcher, QuestionBank: deps.QuestionBank}
+	handler := &HTTPHandler{Service: runtime, Quality: deps.Quality, AccountOptions: deps.AccountOptions, Baseline: store, Active: modelcheckactive.NewRegistry(), Authorize: deps.Authorize, Build: deps.Build, BuildScoped: deps.BuildScoped, QuestionBankAdmin: deps.QuestionBankAdmin, QuestionBankSelf: deps.QuestionBankSelf}
 	// HTTP and scheduler share the same Runtime/Store but never call across
 	// processes. A Gateway owner is not ready until all durable scheduler
 	// dependencies are present; serving only the HTTP half would create a

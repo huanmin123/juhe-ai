@@ -552,28 +552,26 @@ def configureJ3aManagementRelease(overlay, enabled) {
       sed -i '/^  - j3a-management-ingressroute.yaml$/d' "$file"
     fi
     if [ -f "$runtime_config" ]; then
+      # 2026-09-21 起 JUHE_AI_PROXY_LATENCY_ENABLED 功能开关在 Go 侧移除
+      # （J3a 依赖 PG 连接串即激活），发布时直接删除历史残留键；
+      # MANAGEMENT_ENABLED 是仍在服役的部署面监听门，继续显式启停。
       sed -i \
-        -e "s|^JUHE_AI_PROXY_LATENCY_ENABLED=.*|JUHE_AI_PROXY_LATENCY_ENABLED=$J3A_ENABLED|" \
+        -e "/^JUHE_AI_PROXY_LATENCY_ENABLED=/d" \
         -e "s|^JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=.*|JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=$J3A_ENABLED|" \
         "$runtime_config"
       # Busybox/GNU grep on different Jenkins agents handles CRLF and -E
       # slightly differently. Count by the key prefix with awk so a source
       # file's line ending cannot make a valid key look absent.
-      enabled_count=$(awk 'index($0, "JUHE_AI_PROXY_LATENCY_ENABLED=") == 1 { count++ } END { print count + 0 }' "$runtime_config")
       management_enabled_count=$(awk 'index($0, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=") == 1 { count++ } END { print count + 0 }' "$runtime_config")
-      echo "J3a runtime config keys: enabled=$enabled_count management=$management_enabled_count file=$runtime_config"
+      echo "J3a runtime config keys: management=$management_enabled_count file=$runtime_config"
       grep -n 'JUHE_AI_PROXY_LATENCY_.*ENABLED' "$runtime_config" || true
-      [ "$enabled_count" -eq 1 ] || { echo 'J3a enabled key replacement count must be 1' >&2; exit 1; }
       [ "$management_enabled_count" -eq 1 ] || { echo 'J3a management enabled key replacement count must be 1' >&2; exit 1; }
-      grep -Fq "JUHE_AI_PROXY_LATENCY_ENABLED=$J3A_ENABLED" "$runtime_config"
       grep -Fq "JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=$J3A_ENABLED" "$runtime_config"
     elif [ "$J3A_ENABLED" = 'true' ]; then
       echo 'J3a 启用时 runtime-config.env 不存在' >&2
       exit 1
     else
-      legacy_enabled_count=$(grep -Fxc '      - JUHE_AI_PROXY_LATENCY_ENABLED=false' "$file" || true)
       legacy_management_enabled_count=$(grep -Fxc '      - JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED=false' "$file" || true)
-      [ "$legacy_enabled_count" -eq 1 ] || { echo 'J3a 关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
       [ "$legacy_management_enabled_count" -eq 1 ] || { echo 'J3a 管理关闭态缺少唯一 false 开关（旧 literals 配置）' >&2; exit 1; }
     fi
     # Use grep for the exact-line fast path required by the release contract,

@@ -226,8 +226,9 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	config.UsageCatalogSQLitePath = datadir.Path(getenv, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "usage-catalog.sqlite3")
 	config.UsageShardRoot = datadir.Path(getenv, "JUHE_AI_USAGE_SHARD_ROOT", "usage-shards")
 	// usage spool 交接表目录：与 gateway 组合根（compose.go spoolDirectory）
-	// 同名 env、同派生规则；sqlite 模式从 stats 库目录派生，PG 模式保持为空
-	// （drain 未接线并告警），部署须显式配置 JUHE_AI_USAGE_SPOOL_DIRECTORY。
+	// 同名 env、同派生规则；未配置 env 时从 stats 库目录派生（stats 库路径按
+	// datadir 约定派生恒非空，PG 模式同样生效），因此本字段恒非空；
+	// wireUsageSpoolDrain 常驻按该目录接线 drain。
 	config.UsageSpoolDirectory = strings.TrimSpace(getenv("JUHE_AI_USAGE_SPOOL_DIRECTORY"))
 	if config.UsageSpoolDirectory == "" && config.StatsSQLitePath != "" {
 		config.UsageSpoolDirectory = filepath.Join(filepath.Dir(config.StatsSQLitePath), "usage-record-spool")
@@ -288,10 +289,10 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	// 手动账号测试队列 env（JUHE_AI_BACKGROUND_ACCOUNT_TEST_*）已随队列
 	// 执行权移交 gateway 组合根，jobs 不再读取。
-	config.ListProjectionEnabled, err = workerEnvBool(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED", false)
-	if err != nil {
-		return config, err
-	}
+	// 2026-09-21 起账号列表可用性投影为常驻能力，
+	// JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED 开关
+	// 移除（投影写入面恒开；gateway 读面同批移除开关）。
+	config.ListProjectionEnabled = true
 	config.ListProjectionIntervalMS, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS", config.ListProjectionIntervalMS)
 	if err != nil {
 		return config, err

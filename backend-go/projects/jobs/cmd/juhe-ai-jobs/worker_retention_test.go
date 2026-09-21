@@ -191,7 +191,7 @@ func statsCleanupTables(t *testing.T, path string) *sql.DB {
 		"DROP TABLE IF EXISTS account_health_hourly",
 		"CREATE TABLE account_health_hourly (account_id TEXT, stat_hour TEXT, last_record_id TEXT, updated_at TEXT)",
 		"DROP TABLE IF EXISTS authorization_team_usage_summary_daily",
-		"CREATE TABLE authorization_team_usage_summary_daily (system_account_id TEXT, stat_date TEXT, resource_filter_type TEXT, resource_filter_id TEXT, team_filter_id TEXT, grantee_filter_system_account_id TEXT, updated_at TEXT)",
+		"CREATE TABLE authorization_team_usage_summary_daily (system_account_id TEXT, stat_date TEXT, resource_filter_type TEXT, resource_filter_id TEXT, team_filter_id TEXT, updated_at TEXT)",
 		"DROP TABLE IF EXISTS authorization_team_usage_range_windows",
 		"CREATE TABLE authorization_team_usage_range_windows (resource_filter_type TEXT, resource_filter_id TEXT, updated_at TEXT)",
 		"DROP TABLE IF EXISTS authorization_user_usage_summary_daily",
@@ -259,11 +259,11 @@ func seedDataRetention(t *testing.T, dir string) {
 	codex := openTestSQLite(t, filepath.Join(codexDir, "state-000.sqlite3"))
 	mustExec(t, codex,
 		"CREATE TABLE IF NOT EXISTS codex_context_sessions (id TEXT PRIMARY KEY, expires_at TEXT, updated_at TEXT)",
-		"CREATE TABLE IF NOT EXISTS codex_context_responses (id TEXT PRIMARY KEY, session_id TEXT, expires_at TEXT, storage_key TEXT)",
-		"CREATE TABLE IF NOT EXISTS codex_context_compacts (id TEXT PRIMARY KEY, session_id TEXT, expires_at TEXT, storage_key TEXT)",
+		"CREATE TABLE IF NOT EXISTS codex_context_responses (response_id TEXT PRIMARY KEY, session_id TEXT, expires_at TEXT, storage_key TEXT)",
+		"CREATE TABLE IF NOT EXISTS codex_context_compacts (compact_id TEXT PRIMARY KEY, session_id TEXT, expires_at TEXT, storage_key TEXT)",
 		"CREATE TABLE IF NOT EXISTS codex_context_storage_cleanup_queue (storage_key TEXT PRIMARY KEY, enqueued_at TEXT, updated_at TEXT, next_attempt_at TEXT, attempt_count INTEGER DEFAULT 0, last_error TEXT)",
 		`INSERT INTO codex_context_sessions (id, expires_at) VALUES ('s-old', '2020-01-01T00:00:00.000Z')`,
-		`INSERT INTO codex_context_responses (id, session_id, expires_at, storage_key) VALUES ('r-old', 's-old', '2020-01-01T00:00:00.000Z', 'resp/old.bin')`)
+		`INSERT INTO codex_context_responses (response_id, session_id, expires_at, storage_key) VALUES ('r-old', 's-old', '2020-01-01T00:00:00.000Z', 'resp/old.bin')`)
 }
 
 func TestWorkerRetentionDataRetentionRound(t *testing.T) {
@@ -439,7 +439,7 @@ func seedDeletedAccount(t *testing.T, dir string) {
 			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, resource_owner_system_account_id TEXT,
 			grantee_type TEXT, grantee_system_account_id TEXT, grantee_team_id TEXT, status TEXT DEFAULT 'active',
 			created_at TEXT, revoked_by TEXT, revoked_at TEXT, updated_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS group_accounts (id TEXT PRIMARY KEY, account_id TEXT, account_authorization_id TEXT)`,
+		`CREATE TABLE IF NOT EXISTS group_accounts (group_id TEXT, account_id TEXT, account_authorization_id TEXT)`,
 		"CREATE TABLE IF NOT EXISTS account_supported_models (account_id TEXT)",
 		"CREATE TABLE IF NOT EXISTS account_model_mappings (account_id TEXT)",
 		"CREATE TABLE IF NOT EXISTS account_tag_bindings (account_id TEXT)",
@@ -454,7 +454,7 @@ func seedDeletedAccount(t *testing.T, dir string) {
 		`INSERT INTO accounts (id, system_account_id, deleted_at, updated_at) VALUES ('acc-del', 'sys_a', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`,
 		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id) VALUES ('auth1', 'account', 'acc-del', 'sys_owner', 'sys_b')`,
 		`INSERT INTO resource_authorization_sources (id, authorization_id, source_type) VALUES ('src1', 'auth1', 'manual')`,
-		`INSERT INTO group_accounts (id, account_id) VALUES ('ga1', 'acc-del')`,
+		`INSERT INTO group_accounts (group_id, account_id) VALUES ('grp-1', 'acc-del')`,
 		// 未过期删除：保留
 		`INSERT INTO accounts (id, system_account_id, deleted_at, updated_at) VALUES ('acc-keep', 'sys_a', '2100-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z')`)
 

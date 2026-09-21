@@ -946,3 +946,49 @@ func TestSQLiteDirectInputReaderBindingJoinSingleRow(t *testing.T) {
 		}
 	}
 }
+
+// TestSQLiteDirectInputReaderAuthorizationBindingPartitionMissingFilters
+// 锁定授权实例账户的 binding 分区过滤：authorization_instance_authorization_id
+// 非 NULL 且该 auth 分区在 group_accounts 中没有 enabled 行（唯一绑定行
+// enabled=0）时，两层 binding CTE 选不出行 → binding.group_id 全 NULL →
+// 外层 `binding.group_id IS NOT NULL` 把账户过滤出候选集。授权本身存在且
+// active，过滤只能来自 binding 分区缺失，不得与授权资格谓词混淆。
+func TestSQLiteDirectInputReaderAuthorizationBindingPartitionMissingFilters(t *testing.T) {
+	fixture := newSQLiteDirectFixture(t)
+	// 对照候选：NULL 授权 + 默认 enabled 绑定 → 必须出现在候选。
+	due := newSQLiteDirectCandidateSeed("wsql-bindok")
+	due.status = "active"
+	fixture.seedCandidate(t, due)
+	// 授权实例源账户（合格 source：active 且 schedulable=1）。
+	source := newSQLiteDirectCandidateSeed("wsql-bindsrc")
+	source.status = "active"
+	fixture.seedCandidate(t, source)
+	// 实验候选：授权非 NULL 指向 active 授权 wsql-bindAuth。
+	instance := newSQLiteDirectCandidateSeed("wsql-bindmiss")
+	instance.status = "active"
+	instance.extraColumns["authorization_instance_source_account_id"] = "wsql-bindsrc"
+	instance.extraColumns["authorization_instance_authorization_id"] = "wsql-bindAuth"
+	fixture.seedCandidate(t, instance)
+	if _, err := fixture.business.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status) VALUES ('wsql-bindAuth', 'account', 'wsql-bindsrc', 'sys_admin', 'sys_admin', 'active')`); err != nil {
+		t.Fatal(err)
+	}
+	// 唯一绑定行 auth=wsql-bindAuth 但 enabled=0：该 auth 分区无 enabled 行。
+	if _, err := fixture.business.Exec(`INSERT INTO group_accounts (group_id, account_id, account_authorization_id, enabled, updated_at) VALUES ('wsql-grpMiss', 'wsql-bindmiss', 'wsql-bindAuth', 0, '2026-09-01T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+	reader := fixture.readOnlyReader(t, func() time.Time { return sqliteDirectFixtureNow })
+	result, err := reader.LoadDueWithFailures(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("LoadDueWithFailures: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, input := range result.Inputs {
+		ids[input.AccountID] = true
+	}
+	if ids["wsql-bindmiss"] {
+		t.Fatalf("auth 分区无 enabled 绑定的实例账户必须被 binding.group_id IS NOT NULL 过滤: %v", ids)
+	}
+	if !ids["wsql-bindok"] || !ids["wsql-bindsrc"] {
+		t.Fatalf("对照候选必须保留: %v", ids)
+	}
+}

@@ -80,6 +80,10 @@ type Runtime struct {
 	Lease             time.Duration
 	OnEvent           func(ProgressEvent)
 	Dispatcher        modelcheckprobe.DispatcherPort
+	// QuestionBank 解析题库题目（approved 过滤）。nil 且请求配置了
+	// customQuestionIds 时，题库家族仍按 QuizRequested=true 执行并产出
+	// quiz_questions_unavailable 的 skipped 项（不进分母、不扣分）。
+	QuestionBank QuestionBankReader
 }
 
 func (s *Runtime) Run(ctx context.Context, request RunRequest) (RunResult, error) {
@@ -238,7 +242,13 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		payloadSnapshot["trustedComparison"] = map[string]any{"accountId": request.TrustedComparisonAccountID, "systemAccountId": request.TrustedComparisonSystemAccountID, "configRevision": request.TrustedComparisonConfigRevision, "dispatchRevision": request.TrustedComparisonDispatchRevision, "sourceConfigRevision": request.TrustedComparisonSourceConfigRevision, "sourceDispatchRevision": request.TrustedComparisonSourceDispatchRevision, "upstreamModel": comparisonTarget.UpstreamModel, "protocol": comparisonTarget.Protocol, "providerProtocolProfileId": comparisonTarget.ProviderProtocolProfileID, "sourceEndpointFamily": comparisonTarget.SourceEndpointFamily, "upstreamProtocol": comparisonTarget.UpstreamProtocol, "upstreamEndpointFamily": comparisonTarget.UpstreamEndpointFamily, "upstreamAdapter": comparisonTarget.UpstreamAdapter, "endpointFingerprint": endpointFingerprint(comparisonTarget.Endpoint)}
 	}
 	payload, _ := json.Marshal(payloadSnapshot)
-	policySnapshot, _ := json.Marshal(map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction, "recoveryIntervalMinutes": recoveryInterval, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible})
+	policySnapshotMap := map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction, "recoveryIntervalMinutes": recoveryInterval, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible}
+	// 题库配置随 policy_snapshot_json 自然快照：历史记录可读出当次实际引用
+	// 的题目 id（题目删除不回写历史，标题/判定从 items 证据读取）。
+	if len(request.CustomQuestionIds) > 0 {
+		policySnapshotMap["customQuestionIds"] = request.CustomQuestionIds
+	}
+	policySnapshot, _ := json.Marshal(policySnapshotMap)
 	input, err := s.Store.IssueInput(ctx, InputRecord{InputID: inputID, IdentityKey: identity, TargetID: request.TargetID, ConfigRevision: request.ConfigRevision, PolicyRevision: request.PolicyRevision, Trigger: triggerKind, IssuedAt: now, ExpiresAt: now.Add(time.Minute), Payload: payload})
 	if err != nil {
 		return RunResult{}, err
@@ -326,8 +336,17 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		}
 	}
 	emit(ProgressEvent{Kind: "run_started", Data: map[string]any{"runId": runID}})
+	// 题库解析（计划阶段 4）：配置的 customQuestionIds 过滤为 approved 题目。
+	// 解析放在 claim 之后、RunSuite 之前，随心跳上下文可取消；题库读取失败
+	// 按运行失败收尾（fail-closed），不得把配置了题库的检测静默降级为无题库。
+	quizRequested, quizQuestions, quizErr := resolveQuizQuestions(heartbeatCtx, s.QuestionBank, request.CustomQuestionIds)
+	if quizErr != nil {
+		heartbeatCancel()
+		<-heartbeatDone
+		return s.finishFailure(ctx, runID, input, claim, now, fmt.Errorf("resolve J3b custom quiz questions: %w", quizErr))
+	}
 	probeModel := upstreamModel
-	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, ProviderProtocolProfileID: target.ProviderProtocolProfileID, Headers: target.Headers, Model: probeModel, RequestModel: request.Model, ModelMappingApplied: probeModel != request.Model, Profile: request.Profile, Protocol: target.Protocol, UpstreamProtocol: target.UpstreamProtocol, EndpointMode: target.EndpointMode, UpstreamEndpointMode: target.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), SupportedModels: append([]string(nil), target.SupportedModels...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Adapter: target.UpstreamAdapter, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile)}
+	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, ProviderProtocolProfileID: target.ProviderProtocolProfileID, Headers: target.Headers, Model: probeModel, RequestModel: request.Model, ModelMappingApplied: probeModel != request.Model, Profile: request.Profile, Protocol: target.Protocol, UpstreamProtocol: target.UpstreamProtocol, EndpointMode: target.EndpointMode, UpstreamEndpointMode: target.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), SupportedModels: append([]string(nil), target.SupportedModels...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Adapter: target.UpstreamAdapter, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile), QuizRequested: quizRequested, QuizQuestions: quizQuestions}
 	probeSuite.Dispatcher = s.Dispatcher
 	probeSuite.Client = target.Client
 	credentialSourceID := target.CredentialSourceAccountID
@@ -383,7 +402,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			status = ItemSkipped
 		}
 		evidence, _ := json.Marshal(evaluation.Evidence)
-		itemRecords = append(itemRecords, ItemRecord{ID: fmt.Sprintf("%s-item-%04d", runID, index+1), RunID: runID, ItemKey: evaluation.Kind, ItemType: evaluation.Kind, Status: status, Score: evaluation.Score, MaxScore: evaluation.MaxScore, EvidenceSummary: string(evidence)})
+		itemRecords = append(itemRecords, ItemRecord{ID: fmt.Sprintf("%s-item-%04d", runID, index+1), RunID: runID, ItemKey: customQuizAwareItemKey(evaluation), ItemType: evaluation.Kind, Status: status, Score: evaluation.Score, MaxScore: evaluation.MaxScore, EvidenceSummary: string(evidence)})
 	}
 	score := levelSummary.Score
 	status := RunCompleted
@@ -430,6 +449,11 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	modelCheckUnverified := hasTerminalEvidence(evidenceItems)
 	resultSummary := map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified}
+	// 题库环节小计（前端 resultSummary.customQuiz 契约）：仅在配置了题库
+	// （QuizRequested=true）时出现；未配置不写键，与前端容错一致。
+	if quizSummary, quizPresent := buildCustomQuizSummary(items, quizRequested); quizPresent {
+		resultSummary["customQuiz"] = quizSummary
+	}
 	if modelCheckUnverified {
 		resultSummary["qualityDecisionSuppressedReason"] = "未形成质量判定证据"
 	}

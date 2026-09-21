@@ -23,15 +23,14 @@ import (
 )
 
 // wdExtraSchema 是共享 testSchema 之外、被测 SQL 需要的业务表（providers、
-// 分组关系、账户名检索索引），并把共享精简 schema 省略的
-// resource_owner_system_account_id 列补回 resource_authorizations（与
-// maintenance 真实 schema 对齐，读路径 owner 名水合依赖该列）。
+// 分组关系、账户名检索索引）。共享 testSchema 的 resource_authorizations
+// 已含 resource_owner_system_account_id（与 maintenance 真实 schema 对齐，
+// 读路径 owner 名水合依赖该列）。
 const wdExtraSchema = `
 	CREATE TABLE providers (code TEXT PRIMARY KEY, name TEXT NOT NULL);
 	CREATE TABLE group_accounts (account_id TEXT NOT NULL, group_id TEXT NOT NULL, system_account_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
 	CREATE TABLE account_name_search_terms (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, term TEXT NOT NULL, PRIMARY KEY (system_account_id, account_id, term));
 	CREATE TABLE account_name_search_documents (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, normalized_name TEXT NOT NULL, PRIMARY KEY (system_account_id, account_id));
-	ALTER TABLE resource_authorizations ADD COLUMN resource_owner_system_account_id TEXT;
 `
 
 type wdFixture struct {
@@ -287,7 +286,7 @@ func TestWdAccountUsageKeywordCallerAccountScope(t *testing.T) {
 			VALUES ('acct-src', 'AlphaSource', 'sys-other', 'openai', 'api_key', 'active')`,
 		`INSERT INTO groups (id, name, system_account_id) VALUES ('g-1', 'AlphaGroup', 'sys-f')`,
 		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES ('acct-foreign', 'g-1', 'sys-f', 1)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
+		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
 			VALUES ('ra-3', 'group', 'g-1', 'sys-other', 'sys-f', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 		// caller_account 视角的页面行来自 usage_stats_daily；关键字只负责收窄。
 		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
@@ -479,7 +478,7 @@ func TestWdAiPerformanceScopedKeywordGroupVisibility(t *testing.T) {
 			VALUES ('acct-vis', 'VisibleAccount', 'sys-other', 'openai', 'api_key', 'active')`,
 		`INSERT INTO groups (id, name, system_account_id) VALUES ('g-v', 'VGroup', 'sys-f')`,
 		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES ('acct-vis', 'g-v', 'sys-f', 1)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, owner_system_account_id, grantee_system_account_id, status, expires_at, created_at, updated_at)
+		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, expires_at, created_at, updated_at)
 			VALUES ('ra-v', 'group', 'g-v', 'sys-other', 'sys-f', 'active', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 	)
 	handler := fixture.deps.aiPerformanceAccountsHandler(false)
@@ -776,7 +775,7 @@ func TestWdUsageRecordsKeywordResolvesScopedAccountIds(t *testing.T) {
 			VALUES ('acct-w2', 'WidgetGrouped', 'sys-other', 'openai', 'api_key', 'active')`,
 		`INSERT INTO groups (id, name, system_account_id) VALUES ('g-w', 'WidgetGroup', 'sys-user-1')`,
 		`INSERT INTO group_accounts (account_id, group_id, system_account_id, enabled) VALUES ('acct-w2', 'g-w', 'sys-user-1', 1)`,
-		`INSERT INTO resource_authorizations (id, resource_type, resource_id, owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
+		`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, status, created_at, updated_at)
 			VALUES ('ra-w', 'group', 'g-w', 'sys-other', 'sys-user-1', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
 	)
 	wdShardExec(t, shardPath,

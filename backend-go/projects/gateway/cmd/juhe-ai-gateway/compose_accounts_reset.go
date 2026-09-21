@@ -43,9 +43,9 @@ package main
 //	                                       处理，与原 nil port 行为一致)
 //
 // The bridge is wired through accounts.Store.SetRuntimeResetEffects after the
-// chain runtime services compose; with JUHE_AI_GATEWAY_CHAIN_ENABLED off the
-// port stays nil and the endpoint keeps its self-contained (degraded) test
-// contract.
+// chain runtime services compose; the chain is always assembled since the
+// 2026-09-21 JUHE_AI_GATEWAY_CHAIN_ENABLED switch removal, so the port is
+// never nil in production.
 
 import (
 	"context"

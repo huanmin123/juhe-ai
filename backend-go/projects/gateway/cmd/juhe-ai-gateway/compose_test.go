@@ -159,7 +159,7 @@ func createRuntimeLogDataset(t *testing.T, path string) *sql.DB {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS runtime_logs (id TEXT PRIMARY KEY, time TEXT NOT NULL, level TEXT NOT NULL, trace_id TEXT, event TEXT, message TEXT, error_message TEXT, raw_json TEXT NOT NULL, created_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runtime_log_facet_summary (bucket_key TEXT PRIMARY KEY, earliest_time TEXT, latest_time TEXT, total_count INTEGER NOT NULL DEFAULT 0)`,
-		`CREATE TABLE IF NOT EXISTS runtime_log_level_facets (bucket_key TEXT NOT NULL, level TEXT NOT NULL, count INTEGER NOT NULL, latest_time TEXT, PRIMARY KEY (bucket_key, level))`,
+		`CREATE TABLE IF NOT EXISTS runtime_log_level_facets (bucket_key TEXT NOT NULL, level TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (bucket_key, level))`,
 		`CREATE TABLE IF NOT EXISTS runtime_log_event_facets (bucket_key TEXT NOT NULL, event TEXT NOT NULL, count INTEGER NOT NULL, latest_time TEXT, PRIMARY KEY (bucket_key, event))`,
 	}
 	for _, statement := range statements {

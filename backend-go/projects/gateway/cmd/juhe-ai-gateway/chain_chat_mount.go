@@ -34,7 +34,7 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		return nil, fmt.Errorf("my-chat 组合缺少网关链 runtime cache")
 	}
 	if chain == nil {
-		return nil, fmt.Errorf("my-chat 组合缺少网关链（JUHE_AI_GATEWAY_CHAIN_ENABLED）")
+		return nil, fmt.Errorf("my-chat 组合缺少网关链 runtime")
 	}
 	chatNow := func() string { return time.Now().UTC().Format(chainTimeLayout) }
 	store, err := chat.NewStore(chatDB, composed.pgDialect, time.Now, nil)

@@ -56,11 +56,13 @@ func TestLoadConfigRejectsInvalidIntervalAndRetention(t *testing.T) {
 	}
 }
 
-func TestLoadConfigEnabledFalseDisables(t *testing.T) {
+// 2026-09-21 起 JUHE_AI_GO_RUNTIME_METRICS_ENABLED 开关移除：采样与否由
+// 存储参数决定，残留开关值必须被忽略。
+func TestLoadConfigEnabledEnvRemoved(t *testing.T) {
 	values := map[string]string{"JUHE_AI_GO_RUNTIME_METRICS_STORE": "sqlite", "JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH": "m.sqlite3", "JUHE_AI_GO_RUNTIME_METRICS_ENABLED": "false"}
 	cfg, err := LoadConfig(func(key string) string { return values[key] }, "jobs")
-	if err != nil || cfg.Enabled {
-		t.Fatalf("enabled=false must disable the store: cfg=%+v err=%v", cfg, err)
+	if err != nil || !cfg.Enabled {
+		t.Fatalf("ENABLED env must be ignored (always-on by store): cfg=%+v err=%v", cfg, err)
 	}
 }
 

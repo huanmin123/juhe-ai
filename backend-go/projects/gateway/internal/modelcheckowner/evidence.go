@@ -31,12 +31,19 @@ func AggregateEvidence(items []map[string]any) EvidenceAggregate {
 	for _, item := range items {
 		kind, _ := item["kind"].(string)
 		kind = canonicalEvidenceFamily(kind)
-		if strings.TrimSpace(kind) != "" {
-			if _, exists := byKind[kind]; exists {
-				duplicates[kind] = true
-			}
-			byKind[kind] = item
+		if strings.TrimSpace(kind) == "" {
+			continue
 		}
+		// 题库项不是必需证据族且每题一个 item（同 Kind 天然多条）：与
+		// SummarizeChecks 的 custom_quiz 排除口径一致，不进入聚合，也不得
+		// 作为重复 Kind 破坏 Formed 判定。
+		if kind == "custom_quiz" {
+			continue
+		}
+		if _, exists := byKind[kind]; exists {
+			duplicates[kind] = true
+		}
+		byKind[kind] = item
 	}
 	result := EvidenceAggregate{}
 	formedCount := 0

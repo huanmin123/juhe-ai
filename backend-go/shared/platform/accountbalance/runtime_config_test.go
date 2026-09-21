@@ -2,16 +2,18 @@ package accountbalance
 
 import "testing"
 
-func TestRuntimeConfigDisabledByDefault(t *testing.T) {
+// 2026-09-21 起 JUHE_AI_ACCOUNT_BALANCE_ENABLED 开关移除：无 PG 连接串时
+// J2 依赖缺席（合法返回 Enabled=false，非错误）。
+func TestRuntimeConfigAbsentWithoutPostgres(t *testing.T) {
 	cfg, err := LoadRuntimeConfig(func(string) string { return "" })
 	if err != nil || cfg.Enabled {
-		t.Fatalf("J2 must be disabled by default: %#v %v", cfg, err)
+		t.Fatalf("J2 must be absent without Postgres: %#v %v", cfg, err)
 	}
 }
 
 func TestRuntimeConfigRejectsShortOwnerLease(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":   "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE": "20s", "JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT": "15s",
@@ -21,19 +23,22 @@ func TestRuntimeConfigRejectsShortOwnerLease(t *testing.T) {
 	}
 }
 
-func TestRuntimeConfigRejectsImplicitNodeOwner(t *testing.T) {
+// 2026-09-21 起 JOBS_OWNER 缺省 go（Node owner 时代结束）：显式非 go 仍拒绝。
+func TestRuntimeConfigAllowsImplicitGoOwner(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED":  "true",
-		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_STORE": "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
+		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://j2-business",
+		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":  "j2-credential-secret-0123456789abcdef",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE":        "20m", "JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT": "15s",
 	}
-	if _, err := LoadRuntimeConfig(func(name string) string { return values[name] }); err == nil {
-		t.Fatal("J2 must reject an implicit Node owner")
+	if _, err := LoadRuntimeConfig(func(name string) string { return values[name] }); err != nil {
+		t.Fatalf("J2 must default JOBS_OWNER to go: %v", err)
 	}
 }
 
 func TestRuntimeConfigRejectsShortAccountLease(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":   "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_ACCOUNT_LEASE": "1s", "JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT": "15s",
@@ -45,7 +50,7 @@ func TestRuntimeConfigRejectsShortAccountLease(t *testing.T) {
 
 func TestRuntimeConfigBoundsRecoveryBatchWithinPeriodicBatch(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":   "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE": "4", "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE": "5",
@@ -57,7 +62,7 @@ func TestRuntimeConfigBoundsRecoveryBatchWithinPeriodicBatch(t *testing.T) {
 
 func TestRuntimeConfigRejectsOwnerLeaseShorterThanCycleBudget(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":   "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE": "30s", "JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET": "45s",
@@ -69,7 +74,7 @@ func TestRuntimeConfigRejectsOwnerLeaseShorterThanCycleBudget(t *testing.T) {
 
 func TestRuntimeConfigRejectsMissingManualBridgeSecret(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":   "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":      "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret",
@@ -81,7 +86,6 @@ func TestRuntimeConfigRejectsMissingManualBridgeSecret(t *testing.T) {
 
 func TestRuntimeConfigUsesHighPerformanceConcurrencyAndPoolDefaults(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED":            "true",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":           "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":         "go",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":              "postgres",
@@ -101,7 +105,6 @@ func TestRuntimeConfigUsesHighPerformanceConcurrencyAndPoolDefaults(t *testing.T
 
 func TestRuntimeConfigAcceptsExternalPoolAndConcurrency(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED":                       "true",
 		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":                      "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":                    "go",
 		"JUHE_AI_ACCOUNT_BALANCE_STORE":                         "postgres",
@@ -129,7 +132,7 @@ func TestRuntimeConfigAcceptsExternalPoolAndConcurrency(t *testing.T) {
 
 func TestRuntimeConfigAcceptsLargeGoConcurrencyAndBatch(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":   "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go", "JUHE_AI_ACCOUNT_BALANCE_STORE": "postgres", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET": "secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET": "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY": "5096", "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE": "5096", "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE": "5095",
@@ -146,8 +149,9 @@ func TestRuntimeConfigAcceptsLargeGoConcurrencyAndBatch(t *testing.T) {
 
 func TestRuntimeConfigRejectsSQLiteGoOwnerStore(t *testing.T) {
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_ENABLED": "true", "JUHE_AI_ACCOUNT_BALANCE_OWNER_ID": "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":   "j2-test",
 		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER": "go", "JUHE_AI_ACCOUNT_BALANCE_STORE": "sqlite",
+		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL": "postgres://j2-store",
 	}
 	if _, err := LoadRuntimeConfig(func(name string) string { return values[name] }); err == nil {
 		t.Fatal("J2 Go owner must reject SQLite jobs store because Node projects PG outcomes only")

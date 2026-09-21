@@ -71,13 +71,13 @@ func newLoaderTestDB(t *testing.T) *sql.DB {
 		`CREATE TABLE account_api_key_runtime_states (
 			id TEXT PRIMARY KEY, account_id TEXT, key_fingerprint TEXT, status TEXT,
 			next_probe_at TEXT, last_failure_at TEXT, last_error_code TEXT,
-			last_error_message TEXT, last_error_trace_id TEXT, key_index INTEGER)`,
+			last_error_message TEXT, last_trace_id TEXT, key_index INTEGER)`,
 		`CREATE TABLE account_circuit_incidents (
 			circuit_scope_key TEXT, account_id TEXT, account_runtime_key TEXT, scope_kind TEXT,
 			incident_id TEXT, state TEXT, generation INTEGER, dispatch_revision INTEGER,
 			transition_id TEXT, cooldown_observation_generation INTEGER,
 			next_transition_at_ms INTEGER, last_failure_class TEXT, retained_until_ms INTEGER,
-			created_at_ms INTEGER, updated_at_ms INTEGER, circuit_incident_revision INTEGER)`,
+			created_at_ms INTEGER, updated_at_ms INTEGER)`,
 		// stats 库表（测试中 stats 句柄与 business 同库）。
 		`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT,
 			request_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_cost_usd REAL, last_used_at TEXT)`,
@@ -152,14 +152,14 @@ func (stubTimezone) StatsTimezone(ctx context.Context) (*time.Location, error) {
 
 func newTestLoader(business *sql.DB, concurrency ConcurrencySource, runtime RuntimeAvailabilitySource) *ProjectionItemLoader {
 	loader, err := NewProjectionItemLoader(ProjectionLoadConfig{
-		Business:             business,
-		Stats:                business,
-		Secret:               "test-secret",
-		Credentials:          stubCredentials{},
-		Concurrency:          concurrency,
-		RuntimeAvailability:  runtime,
-		Timezone:             stubTimezone{},
-		Now:                  func() time.Time { return time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC) },
+		Business:            business,
+		Stats:               business,
+		Secret:              "test-secret",
+		Credentials:         stubCredentials{},
+		Concurrency:         concurrency,
+		RuntimeAvailability: runtime,
+		Timezone:            stubTimezone{},
+		Now:                 func() time.Time { return time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
 		panic(err)
@@ -396,5 +396,3 @@ func payloadValue[T any](t *testing.T, payload map[string]any, key string) T {
 	}
 	return value
 }
-
-

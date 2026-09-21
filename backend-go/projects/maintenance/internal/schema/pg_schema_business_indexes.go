@@ -1379,4 +1379,19 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		Source:     "system-teams-pg-prefix-indexes",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_teams_name_c_lookup ON system_teams((name COLLATE "C"), id)`,
 	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-bank-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_status ON model_check_question_bank(status)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-bank-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_created_by ON model_check_question_bank(created_by)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-bank-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_title_norm ON model_check_question_bank(title_norm)`,
+	},
 }

@@ -36,8 +36,8 @@ export const CHAT_PREVIEW_SCROLLBAR_STYLE = [
   '::-webkit-scrollbar-button{width:0;height:0;display:none}'
 ].join('')
 
-// 预览内悬浮"新窗口打开"按钮样式：小尺寸、低透明度，hover 时变清晰。仅 SVG 预览使用（HTML 入口在代码块工具栏）。
-const CHAT_PREVIEW_OPEN_WINDOW_STYLE = '.chat-preview-open-window{position:fixed;top:6px;right:6px;z-index:2147483647;width:20px;height:20px;padding:0;border:1px solid rgba(15,23,42,.12);border-radius:5px;background:rgba(255,255,255,.6);color:#334155;cursor:pointer;line-height:0;opacity:.3;box-shadow:0 1px 3px rgba(15,23,42,.08)}.chat-preview-open-window:hover{opacity:.9}'
+// 预览内悬浮"新窗口打开"按钮：默认隐藏，悬浮预览时才显示（不遮挡画面）；触屏设备无 hover，常显低透明度兜底。
+const CHAT_PREVIEW_OPEN_WINDOW_STYLE = '.chat-preview-open-window{position:fixed;top:6px;right:6px;z-index:2147483647;width:20px;height:20px;padding:0;border:1px solid rgba(15,23,42,.12);border-radius:5px;background:rgba(255,255,255,.6);color:#334155;cursor:pointer;line-height:0;opacity:0;pointer-events:none;box-shadow:0 1px 3px rgba(15,23,42,.08)}body:hover .chat-preview-open-window{opacity:.55;pointer-events:auto}.chat-preview-open-window:hover{opacity:.9;pointer-events:auto}@media (hover: none){.chat-preview-open-window{opacity:.35;pointer-events:auto}}'
 
 // SVG 预览内悬浮按钮由脚本注入，仅在新窗口里（parent === window）不显示。沙箱 iframe 不能直接写弹窗 document
 // （不透明源会被浏览器拒访，得到空 about:blank），因此点击只 postMessage 请求父页开窗，由父页写入

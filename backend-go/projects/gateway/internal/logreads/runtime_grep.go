@@ -60,8 +60,9 @@ const (
 )
 
 // RuntimeLogGrepConfig mirrors the runtimeConfig.log.* surface the grep
-// family reads (JUHE_AI_LOG_FILE_ENABLED / JUHE_AI_LOG_DIR /
-// JUHE_AI_LOG_MAX_FILES / JUHE_AI_LOG_RETENTION_DAYS).
+// family reads (JUHE_AI_LOG_DIR / JUHE_AI_LOG_MAX_FILES /
+// JUHE_AI_LOG_RETENTION_DAYS；JUHE_AI_LOG_FILE_ENABLED 开关已于 2026-09-21
+// 移除，FileEnabled 恒为 true).
 type RuntimeLogGrepConfig struct {
 	FileEnabled   bool
 	Directory     string

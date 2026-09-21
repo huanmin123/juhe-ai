@@ -120,8 +120,10 @@ const html = computed(() => DOMPurify.sanitize(enforceSafeImages(renderMathInTex
 
 watch(html, async () => {
   const version = ++renderVersion
+  const scrollStates = captureChatCodeScrollStates()
   await nextTick()
   if (version !== renderVersion || !root.value) return
+  restoreChatCodeScrollStates(scrollStates)
   const sources = [...root.value.querySelectorAll<HTMLElement>('pre.mermaid-source')]
   if (sources.length) {
     const mermaid = (await import('mermaid')).default
@@ -243,6 +245,25 @@ async function handleRootClick(event: MouseEvent): Promise<void> {
   )
 }
 
+interface ChatCodeScrollState { top: number; pinned: boolean }
+
+const CHAT_CODE_SCROLL_SELECTORS = '.chat-code-block > pre, .chat-svg-pending pre, .chat-svg-source pre'
+
+// 流式重渲染会整体重建 DOM：输出期间底部贴底的代码块继续贴底跟随最新输出，用户上滑阅读的保持原滚动位置。
+function captureChatCodeScrollStates(): ChatCodeScrollState[] {
+  const pres = root.value?.querySelectorAll<HTMLElement>(CHAT_CODE_SCROLL_SELECTORS) ?? []
+  return [...pres].map((pre) => ({ top: pre.scrollTop, pinned: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8 }))
+}
+
+function restoreChatCodeScrollStates(states: ChatCodeScrollState[]): void {
+  const pres = root.value?.querySelectorAll<HTMLElement>(CHAT_CODE_SCROLL_SELECTORS) ?? []
+  pres.forEach((pre, index) => {
+    const state = states[index]
+    if (!state) return
+    pre.scrollTop = state.pinned ? pre.scrollHeight : state.top
+  })
+}
+
 function toggleChatHtmlPreview(button: HTMLButtonElement): void {
   const wrapper = button.closest<HTMLElement>('.chat-code-block')
   const pre = wrapper?.querySelector<HTMLElement>(':scope > pre')
@@ -332,7 +353,8 @@ function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c
 .chat-markdown :deep(.chat-code-copy:hover), .chat-markdown :deep(.chat-code-copy:focus-visible) { color: #182230; background: #eceff3; outline: none; }
 .chat-markdown :deep(.chat-code-actions) { display: flex; gap: 4px; }
 .chat-markdown :deep(.chat-code-block > iframe.chat-html-preview) { display: block; width: 100%; height: min(60vh, 520px); border: 0; background: #fff; }
-.chat-markdown :deep(.chat-code-block > pre) { max-width: 100%; margin: 0; padding: 12px 14px; overflow-x: auto; background: transparent; }
+.chat-markdown :deep(.chat-code-block > pre) { max-width: 100%; max-height: 520px; margin: 0; padding: 12px 14px; overflow: auto; background: transparent; }
+.chat-markdown :deep(.chat-svg-pending pre), .chat-markdown :deep(.chat-svg-source pre), .chat-markdown :deep(pre.mermaid-pending), .chat-markdown :deep(pre.mermaid-source) { max-height: 520px; overflow: auto; }
 .chat-markdown :deep(table) { display: block; max-width: 100%; margin: 10px 0; overflow-x: auto; border-collapse: collapse; }
 .chat-markdown :deep(th), .chat-markdown :deep(td) { padding: 6px 9px; border: 1px solid #dfe3e8; text-align: left; white-space: nowrap; }
 .chat-markdown :deep(th) { background: #f7f8fa; font-weight: 600; }

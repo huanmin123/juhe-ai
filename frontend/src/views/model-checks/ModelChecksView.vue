@@ -36,6 +36,7 @@
       @comparison-dropdown-visible-change="handleComparisonDropdownVisibleChange"
       @comparison-search="handleComparisonSearch"
       @model-dropdown-visible-change="handleRunModelOptionsDropdown"
+      @question-bank-open="openQuestionBank"
       @refresh="loadOptions"
       @quality-policy-open="loadQualityPolicy"
       @quality-policy-save="saveQualityPolicy"
@@ -110,6 +111,7 @@
       v-model:open="schedulesOpen"
       :account-options="scheduleAccountOptions"
       :account-options-loading="scheduleAccountOptionsLoading"
+      :is-management-view="isManagementView"
       :loading="schedulesLoading"
       :model-options="historyModelOptions"
       :page="schedulesPage"
@@ -126,6 +128,8 @@
       @page-change="handleSchedulePageChange"
       @save="saveSchedule"
     />
+
+    <QuestionBankModal v-model:open="questionBankOpen" :is-management-view="isManagementView" />
   </div>
 </template>
 
@@ -194,6 +198,7 @@ import ModelCheckRunPanel from './ModelCheckRunPanel.vue'
 import ModelCheckRunHistoryList from './ModelCheckRunHistoryList.vue'
 import ModelCheckRunDetailDrawer from './ModelCheckRunDetailDrawer.vue'
 import ModelQualitySchedulesModal from './ModelQualitySchedulesModal.vue'
+import QuestionBankModal from './QuestionBankModal.vue'
 import { useModelCheckAccountOptions } from './useModelCheckAccountOptions'
 import { createModelCheckDemandRequestCoordinator } from './modelCheckDemandRequestCoordinator'
 
@@ -244,6 +249,7 @@ const {
 const optionsLoading = ref(false)
 const qualityPolicyLoading = ref(false)
 const qualityPolicySaving = ref(false)
+const questionBankOpen = ref(false)
 const schedulesOpen = ref(false)
 const schedulesLoading = ref(false)
 const scheduleSaving = ref(false)
@@ -482,6 +488,11 @@ async function openSchedules() {
   resetScheduleAccountOptionsState()
   schedulesOpen.value = true
   await loadSchedules()
+}
+
+function openQuestionBank() {
+  if (qualityActionsDisabled.value) return
+  questionBankOpen.value = true
 }
 
 async function loadSchedules() {
@@ -881,6 +892,7 @@ function resetModelCheckScopedState() {
   currentRun.value = undefined
   detailOpen.value = false
   schedulesOpen.value = false
+  questionBankOpen.value = false
   schedules.value = []
   schedulesTotal.value = 0
   qualityPolicy.value = defaultQualityPolicy()
@@ -905,6 +917,7 @@ function qualityPolicyPatch(policy: ModelQualityPolicy, input: ModelQualityPolic
   if (input.penaltyThreshold !== undefined && policy.penaltyThreshold !== input.penaltyThreshold) patch.penaltyThreshold = input.penaltyThreshold
   if (input.penaltyAction !== undefined && policy.penaltyAction !== input.penaltyAction) patch.penaltyAction = input.penaltyAction
   if (input.recoveryIntervalMinutes !== undefined && policy.recoveryIntervalMinutes !== input.recoveryIntervalMinutes) patch.recoveryIntervalMinutes = input.recoveryIntervalMinutes
+  if (input.customQuestionIds !== undefined && !sameStringArray(policy.customQuestionIds, input.customQuestionIds)) patch.customQuestionIds = input.customQuestionIds
   return patch
 }
 
@@ -917,7 +930,14 @@ function qualitySchedulePatch(schedule: ModelQualitySchedule, input: ModelQualit
   if (schedule.penaltyAction !== input.penaltyAction) patch.penaltyAction = input.penaltyAction
   if (schedule.recoveryIntervalMinutes !== input.recoveryIntervalMinutes) patch.recoveryIntervalMinutes = input.recoveryIntervalMinutes
   if (schedule.enabled !== (input.enabled !== false)) patch.enabled = input.enabled !== false
+  if (input.customQuestionIds !== undefined && !sameStringArray(schedule.customQuestionIds, input.customQuestionIds)) patch.customQuestionIds = input.customQuestionIds
   return patch
+}
+
+function sameStringArray(left: string[] | undefined, right: string[] | undefined): boolean {
+  const leftItems = left ?? []
+  const rightItems = right ?? []
+  return leftItems.length === rightItems.length && leftItems.every((item, index) => item === rightItems[index])
 }
 
 function resetRunForm() {
@@ -1159,6 +1179,7 @@ onDeactivated(() => {
   pageActive = false
   invalidateSchedulesRequest()
   schedulesOpen.value = false
+  questionBankOpen.value = false
   resetScheduleAccountOptionsState()
 })
 
@@ -1167,6 +1188,7 @@ onBeforeUnmount(() => {
   runDetailRequestId += 1
   invalidateSchedulesRequest()
   resetScheduleAccountOptionsState()
+  questionBankOpen.value = false
   window.removeEventListener('resize', updateViewportWidth)
 })
 </script>

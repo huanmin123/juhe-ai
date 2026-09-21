@@ -47,7 +47,6 @@ func w1sEnsureBusinessSchema(t *testing.T, db *sql.DB) {
 			id TEXT PRIMARY KEY, system_account_id TEXT, account_id TEXT,
 			key_fingerprint TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unverified',
 			cooldown_until TEXT, next_probe_at TEXT,
-			generation INTEGER DEFAULT 0,
 			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {

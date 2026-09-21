@@ -1191,10 +1191,11 @@ func TestW2CSuppressionRefreshRecoversAfterExpiry(t *testing.T) {
 		waiter: gatewaycircuit.NewPreAuthRecoverableWait(nil, nil),
 	}
 	accounts := []gatewaydispatch.AccountCandidate{{ID: "w2c-acc-a"}, {ID: "w2c-acc-b"}}
-	// 两个候选都屏蔽 350ms → 全屏蔽 → 进入恢复等待窗口；过期后的 Refresh
-	// 命中 343 行（NextRetryAfterMs == nil → 继续派发）。
+	// 两个候选都屏蔽 1000ms → 全屏蔽 → 进入恢复等待窗口；过期后的 Refresh
+	// 命中 343 行（NextRetryAfterMs == nil → 继续派发）。窗口远大于调度抖动，
+	// 避免全量负载下的墙钟边界偶发（350ms 时代出现过一次提前恢复）。
 	for _, account := range accounts {
-		store.Suppress(account.ID, 350, "w2c test failure", gatewaycircuit.AvailabilityStatusLocalSuppressed, nil)
+		store.Suppress(account.ID, 1000, "w2c test failure", gatewaycircuit.AvailabilityStatusLocalSuppressed, nil)
 	}
 	startedAt := time.Now()
 	startedAtMs := startedAt.UnixMilli()
@@ -1680,11 +1681,12 @@ func TestW2CMainBootFailFastArms(t *testing.T) {
 
 }
 
-// TestW2CMainPrivateF4LeaseErrorRetries covers main.go 514（F4 组件私有租约
-// keeperErr）：SystemAPIEnabled=false 时组件自带租约；触发器让
-// StartLeaseKeeper 首次执行即报错（514-516 行被实际执行），supervisor 记录
-// 失败并重试；观察到失败日志后 CTRL_BREAK 优雅退出。
-func TestW2CMainPrivateF4LeaseErrorRetries(t *testing.T) {
+// TestW2CMainPrivateF4LeaseErrorFailsFast covers main.go F4 组件私有租约
+// keeperErr。2026-09-21 起组合根恒开（SYSTEM_API/CHAIN 开关移除），F4 组件
+// 租约获取失败在装配段即暴露：进程 exit 1 fail-closed，stderr 携带租约
+// 获取错误（原「supervisor 记录失败并重试 + 优雅退出 exit 0」契约属于
+// 组合根关闭形态，该形态已不存在）。
+func TestW2CMainPrivateF4LeaseErrorFailsFast(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short 模式跳过插桩二进制场景")
 	}
@@ -1694,12 +1696,7 @@ func TestW2CMainPrivateF4LeaseErrorRetries(t *testing.T) {
 	w2cSabotageLeaseInsert(t, boot.operationPath, "operation_log_owner_leases")
 
 	coverageDir := w1bCoverageDir(t, "W2C-f4-private-lease")
-	// 复用基础 env，但把 SYSTEM_API_ENABLED 与 CHAIN_ENABLED 关掉（其余 F4
-	// 配置不变），使 F4 组件走私有租约分支（main 513-521）。2026-09-19 起
-	// 两者未配置默认开启，必须显式关闭才能进入私有租约分支。
-	env := w2cBootEnv(t, coverageDir, boot,
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=false",
-		"JUHE_AI_GATEWAY_CHAIN_ENABLED=false")
+	env := w2cBootEnv(t, coverageDir, boot)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -1715,32 +1712,6 @@ func TestW2CMainPrivateF4LeaseErrorRetries(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-
-	// 等待 F4 组件的租约失败进入 supervisor 重试日志（首次 Run 即命中 514）。
-	sawFailure := false
-	for !sawFailure {
-		select {
-		case waitErr := <-done:
-			cancel()
-			t.Fatalf("F4 私有租约场景提前退出: %v\nstdout=%s\nstderr=%s", waitErr, stdout.String(), stderr.String())
-		case <-time.After(300 * time.Millisecond):
-		}
-		if strings.Contains(stdout.String(), `"component":"F4 operation-log-owner"`) && strings.Contains(stdout.String(), "acquire F4 operation-log owner lease") {
-			sawFailure = true
-		}
-		if ctx.Err() != nil {
-			_ = cmd.Process.Kill()
-			<-done
-			cancel()
-			t.Fatalf("等待 F4 组件失败日志超时\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
-		}
-	}
-	if err := w1bSendCtrlBreak(cmd.Process.Pid); err != nil {
-		_ = cmd.Process.Kill()
-		<-done
-		cancel()
-		t.Fatalf("CTRL_BREAK 失败: %v", err)
-	}
 	select {
 	case waitErr := <-done:
 		cancel()
@@ -1748,18 +1719,21 @@ func TestW2CMainPrivateF4LeaseErrorRetries(t *testing.T) {
 		if waitErr != nil {
 			exitErr, ok := waitErr.(*exec.ExitError)
 			if !ok {
-				t.Fatalf("等待退出失败: %v", waitErr)
+				t.Fatalf("等待退出失败: %v\nstdout=%s\nstderr=%s", waitErr, stdout.String(), stderr.String())
 			}
 			exitCode = exitErr.ExitCode()
 		}
-		if exitCode != 0 {
-			t.Fatalf("期望优雅退出 exit 0，实际 %d\nstdout=%s\nstderr=%s", exitCode, stdout.String(), stderr.String())
+		if exitCode != 1 {
+			t.Fatalf("F4 租约破坏必须 exit 1 fail-closed，实际 %d\nstdout=%s\nstderr=%s", exitCode, stdout.String(), stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "acquire F4 operation-log owner lease") {
+			t.Fatalf("stderr 必须含 F4 租约获取错误\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
 		}
 	case <-time.After(30 * time.Second):
 		_ = cmd.Process.Kill()
 		<-done
 		cancel()
-		t.Fatalf("CTRL_BREAK 后 30s 未退出\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
+		t.Fatalf("F4 租约破坏后 30s 内未快速退出\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
 	}
 	w1bAppendCoverageManifest(t, coverageDir)
 }

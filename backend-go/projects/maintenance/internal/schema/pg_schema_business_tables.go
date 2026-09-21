@@ -2301,4 +2301,34 @@ AFTER DELETE ON account_list_availability_projections
 FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health_trigger();
 `,
 	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-check-question-bank-table",
+		SQL: `CREATE TABLE IF NOT EXISTS model_check_question_bank (
+      id text PRIMARY KEY,
+      title text NOT NULL,
+      title_norm text NOT NULL,
+      question_text text NOT NULL,
+      reference_answer text NOT NULL,
+      key_points_json text,
+      status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      reject_reason text,
+      created_by text NOT NULL,
+      created_scope text NOT NULL,
+      reviewed_by text,
+      reviewed_at text,
+      created_at text NOT NULL,
+      updated_at text NOT NULL
+    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-quality-custom-question-ids-pg-column",
+		SQL:        `ALTER TABLE model_quality_policies ADD COLUMN IF NOT EXISTS custom_question_ids text`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "model-quality-custom-question-ids-pg-column",
+		SQL:        `ALTER TABLE model_quality_schedules ADD COLUMN IF NOT EXISTS custom_question_ids text`,
+	},
 }

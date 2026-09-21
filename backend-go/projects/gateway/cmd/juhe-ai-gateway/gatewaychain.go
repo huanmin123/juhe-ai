@@ -2,8 +2,9 @@ package main
 
 // gatewaychain.go is the G20 AI gateway /v1 chain composition map (Node
 // server.ts gateway section + openAIGatewayRouter). Phase 1 gated startup
-// behind six unauthored composition adapters; phase 2 authored them, so
-// JUHE_AI_GATEWAY_CHAIN_ENABLED=true now assembles the serving chain.
+// behind six unauthored composition adapters; phase 2 authored them. Since
+// the 2026-09-21 switch removal, chain assembly is unconditional (the old
+// JUHE_AI_GATEWAY_CHAIN_ENABLED gate no longer exists).
 //
 // The frozen orchestration ports and their composition-root owners:
 //

@@ -278,7 +278,7 @@ func TestLoadAPIKeyRuntimeSummariesSQLite(t *testing.T) {
 	}
 	seed(`INSERT INTO accounts (id, config_revision, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, created_at, updated_at)
 		VALUES ('acct-1', 1, 'sys-1', 'openai', 'p', 'openai', 'v1', '双key账户', 'api_key', 'active', '{"keys":["fp-1","fp-2"]}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
-	seed(`INSERT INTO account_api_key_runtime_states (id, account_id, key_fingerprint, status, next_probe_at, last_failure_at, last_error_code, last_error_message, last_error_trace_id, key_index)
+	seed(`INSERT INTO account_api_key_runtime_states (id, account_id, key_fingerprint, status, next_probe_at, last_failure_at, last_error_code, last_error_message, last_trace_id, key_index)
 		VALUES ('st-1', 'acct-1', 'fp-1', 'active', NULL, NULL, NULL, NULL, NULL, 0),
 			('st-2', 'acct-1', 'fp-2', 'rate_limited', '2030-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', 'http_429', '限流', 'trace-9', 1)`)
 

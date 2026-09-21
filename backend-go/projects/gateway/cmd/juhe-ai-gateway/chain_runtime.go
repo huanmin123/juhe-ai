@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -705,7 +704,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	}
 	services.ConfiguredPolicyAvoidance = gatewayaccounteffects.NewConfiguredPolicyAvoidanceService(
 		avoidanceStore,
-		newChainListAvailabilityDirtyMarker(composed, os.Getenv),
+		newChainListAvailabilityDirtyMarker(composed),
 		func() {
 			if composed.Bus != nil {
 				composed.Bus.Invalidate(inval.TopicGatewayRuntime, "gateway_configured_policy_avoidance")

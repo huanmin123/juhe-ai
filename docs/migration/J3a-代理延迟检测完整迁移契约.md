@@ -1,5 +1,6 @@
 # J3a 代理延迟检测完整迁移契约
 
+> 2026-09-21 常驻修订（维护者决定）：`JUHE_AI_PROXY_LATENCY_ENABLED` 与 `JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED` 总开关已移除——jobs 进程在有可回落 PostgreSQL 连接串（专属或 `JUHE_AI_POSTGRES_URL`）时恒开周期探测与管理 listener；连接串完全缺席 = 依赖缺席，家族合法缺席（非开关）。owner 缺省 go（显式非 go 仍拒绝）、实例 ID 缺省主机名、凭据密钥缺省回落 `JUHE_AI_SECRET`。下方部署示例中的 `ENABLED=true` 等开关行自此不再必需（显式配置仍优先，生产按原契约显式给全连接串与地址）。
 > 状态：J3a 的周期执行、手动管理、结果投影、receipt/cursor 与 `proxy_profiles` CAS 写回均由 `jobs` 进程内 Go 实现独占；Node J3a scheduler、旧 executor、outcome reader/projector、business writer、手动 adapter、Node→Go 健康观测及其 Node 回归入口均已删除并归档至 `migration-backup/node/j3a-proxy-latency-manual-control-cutover-20260826/`。Go 管理入口保持原 `POST /__aisys__/api/proxies/:id/test` 资源路径、管理员鉴权、`404`/`503 + Retry-After`/`200`/`502` 响应契约，并直接追加 F4 兼容审计记录；不存在 Node fallback、双 owner、双写或 Go→Node/Go→Go HTTP。当前 Go/Node 定向测试与隔离 PostgreSQL schema/projector smoke 已通过，但本轮独立 Go jobs 管理 listener 的 dev 进程闭环尚未通过：Node 业务 schema 初始化成功，随后临时最小权限角色预检未完成，因此不能把 listener/F4 handoff 写成已通过。GitOps 已预置端口与精确 Go 入口定义，但默认关闭，Jenkins 只会在同一 release-state commit 写入 direct-Go 三镜像 digest 时同时启用。尚未 Argo 同步。生产部署、真实进程 handoff、active-path-zero、重启演练和生产/L4 仍需单独执行，未在本契约中伪称完成。
 
 ## 1. Owner 与范围

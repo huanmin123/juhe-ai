@@ -1065,7 +1065,6 @@ func TestW2ALatencyDegradationOrderError(t *testing.T) {
 }
 
 func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
-	getenv := func(string) string { return "1" }
 	source := "acc_w2a_marker"
 
 	// 909-911：家族 SELECT 直接报错。
@@ -1073,7 +1072,7 @@ func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
 		{contains: "BEGIN"},
 		{contains: "SELECT id FROM juhe_business.accounts", rowsErr: errors.New("w2a: family query refused")},
 	}
-	marker := newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true}, getenv)
+	marker := newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true})
 	if err := marker(context.Background(), source, "w2a", 1000); err == nil {
 		t.Fatalf("family query failure must surface")
 	}
@@ -1083,7 +1082,7 @@ func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
 		{contains: "BEGIN"},
 		{contains: "SELECT id FROM juhe_business.accounts", cols: []string{"id"}, scanAsNil: true},
 	}
-	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true}, getenv)
+	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true})
 	if err := marker(context.Background(), source, "w2a", 1000); err == nil {
 		t.Fatalf("null id scan failure must surface")
 	}
@@ -1093,7 +1092,7 @@ func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
 		{contains: "BEGIN"},
 		{contains: "SELECT id FROM juhe_business.accounts", cols: []string{"id"}, rowsEOFErr: errors.New("w2a: rows corrupted")},
 	}
-	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true}, getenv)
+	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true})
 	if err := marker(context.Background(), source, "w2a", 1000); err == nil {
 		t.Fatalf("rows.Err failure must surface")
 	}
@@ -1104,7 +1103,7 @@ func TestW2AListAvailabilityDirtyMarkerArms(t *testing.T) {
 		{contains: "SELECT id FROM juhe_business.accounts", cols: []string{"id"}, row: []driver.Value{"acc_w2a_marker"}},
 		{contains: "INSERT INTO juhe_business.account_list_availability_dirty", execErr: errors.New("w2a: upsert refused")},
 	}
-	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true}, getenv)
+	marker = newChainListAvailabilityDirtyMarker(&composition{db: w2aOpenScriptedDB(t, steps), pgDialect: true})
 	if err := marker(context.Background(), source, "w2a", 1000); err == nil {
 		t.Fatalf("upsert failure must surface")
 	}

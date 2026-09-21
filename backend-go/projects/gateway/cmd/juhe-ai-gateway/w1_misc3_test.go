@@ -242,7 +242,7 @@ func TestW1AuthzAdapters(t *testing.T) {
 		t.Fatalf("authz store = %v", err)
 	}
 	// 资源授权统计读面所需的 sources 表（fixture 未建）。
-	_, err = fixture.db.Exec(`CREATE TABLE IF NOT EXISTS resource_authorization_sources (id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL, resource_type TEXT NOT NULL DEFAULT 'api_key', resource_id TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL, source_team_id TEXT, status TEXT NOT NULL DEFAULT 'active', activated_at TEXT, ended_at TEXT, ended_reason TEXT, created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL DEFAULT '')`)
+	_, err = fixture.db.Exec(`CREATE TABLE IF NOT EXISTS resource_authorization_sources (id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL, source_type TEXT NOT NULL, source_team_id TEXT, status TEXT NOT NULL DEFAULT 'active', activated_at TEXT, ended_at TEXT, ended_reason TEXT, created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL DEFAULT '')`)
 	if err != nil {
 		t.Fatalf("create sources table = %v", err)
 	}

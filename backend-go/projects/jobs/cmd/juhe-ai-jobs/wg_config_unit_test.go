@@ -192,9 +192,7 @@ func TestLoadWorkerConfigRejectsInvalidEnv(t *testing.T) {
 			delete(e, "JUHE_AI_SECRET")
 			e["NODE_ENV"] = "production"
 		}, "必须配置 JUHE_AI_SECRET"},
-		{"列表投影开关非法", func(e map[string]string) {
-			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED"] = "yes-please"
-		}, "必须是布尔值"},
+		// 2026-09-21 起投影开关移除，「列表投影开关非法」失败臂随之消失。
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
