@@ -63,6 +63,29 @@ export function modelCheckModelsForAccount(account: ModelCheckAccountProfile | u
   return [...(modelCheckRuleForAccount(account)?.models ?? [])]
 }
 
+export interface ModelCheckRunModelOption {
+  label: string
+  value: string
+}
+
+/**
+ * 合并检测目标候选 = 目录可检模型 ∪ 账户支持模型。
+ * 目录内候选保持 options.supportedModels 的顺序与 label；目录外的账户支持
+ * 模型按账户返回顺序追加，label 直接使用模型 ID。历史筛选下拉不走此合并。
+ */
+export function mergeModelCheckRunModelOptions(
+  supportedModels: ReadonlyArray<{ label: string; value: string }>,
+  accountModels: readonly string[]
+): ModelCheckRunModelOption[] {
+  const catalog = supportedModels.filter((item) => accountModels.includes(item.value))
+  const catalogValues = new Set(catalog.map((item) => item.value))
+  const extra = accountModels.filter((model) => !catalogValues.has(model))
+  return [
+    ...catalog.map((item) => ({ label: item.label, value: item.value })),
+    ...extra.map((model) => ({ label: model, value: model }))
+  ]
+}
+
 export function canUseModelCheckModelForAccount(account: ModelCheckAccountProfile | undefined, model: string | undefined): boolean {
   const normalizedModel = model?.trim()
   if (!normalizedModel) return false

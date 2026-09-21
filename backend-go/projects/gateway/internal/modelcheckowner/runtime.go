@@ -241,6 +241,18 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if request.TrustedComparison {
 		payloadSnapshot["trustedComparison"] = map[string]any{"accountId": request.TrustedComparisonAccountID, "systemAccountId": request.TrustedComparisonSystemAccountID, "configRevision": request.TrustedComparisonConfigRevision, "dispatchRevision": request.TrustedComparisonDispatchRevision, "sourceConfigRevision": request.TrustedComparisonSourceConfigRevision, "sourceDispatchRevision": request.TrustedComparisonSourceDispatchRevision, "upstreamModel": comparisonTarget.UpstreamModel, "protocol": comparisonTarget.Protocol, "providerProtocolProfileId": comparisonTarget.ProviderProtocolProfileID, "sourceEndpointFamily": comparisonTarget.SourceEndpointFamily, "upstreamProtocol": comparisonTarget.UpstreamProtocol, "upstreamEndpointFamily": comparisonTarget.UpstreamEndpointFamily, "upstreamAdapter": comparisonTarget.UpstreamAdapter, "endpointFingerprint": endpointFingerprint(comparisonTarget.Endpoint)}
 	}
+	// Catalog-external targets (account-supported models) run the
+	// protocol-consistency probe subset only: brand-specific hidden probes and
+	// baselines skip them inside modelcheckprobe. The durable request snapshot
+	// and report carry an explicit detectionScope so the report source stays
+	// honest; catalog models never gain the key and keep their byte shape.
+	detectionScope := ""
+	if _, modelInCatalog := modelcheckprofile.FindForModel(target.ProviderCode, target.ProviderProtocolProfileID, request.Model); !modelInCatalog {
+		detectionScope = "protocol_consistency"
+	}
+	if detectionScope != "" {
+		payloadSnapshot["detectionScope"] = detectionScope
+	}
 	payload, _ := json.Marshal(payloadSnapshot)
 	policySnapshotMap := map[string]any{"revision": request.PolicyRevision, "threshold": request.Threshold, "action": penaltyAction, "recoveryIntervalMinutes": recoveryInterval, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "manualEnforcementEligible": manualEnforcementEligible}
 	// 题库配置随 policy_snapshot_json 自然快照：历史记录可读出当次实际引用
@@ -449,6 +461,9 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	modelCheckUnverified := hasTerminalEvidence(evidenceItems)
 	resultSummary := map[string]any{"evaluations": items, "score": score, "maxScore": 100, "level": level, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified}
+	if detectionScope != "" {
+		resultSummary["detectionScope"] = detectionScope
+	}
 	// 题库环节小计（前端 resultSummary.customQuiz 契约）：仅在配置了题库
 	// （QuizRequested=true）时出现；未配置不写键，与前端容错一致。
 	if quizSummary, quizPresent := buildCustomQuizSummary(items, quizRequested); quizPresent {

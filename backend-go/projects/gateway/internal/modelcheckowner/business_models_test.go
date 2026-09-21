@@ -114,6 +114,77 @@ func TestResolveConfiguredUpstreamModelMappingMappingPrecedesDirectMatch(t *test
 	}
 }
 
+func TestResolveConfiguredUpstreamModelMappingAdmitsAccountSupportedCatalogExternalModel(t *testing.T) {
+	db := newModelMappingDatabase(t)
+	defer db.Close()
+	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	if !ok {
+		t.Fatal("OpenAI Responses profile is required")
+	}
+	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','deepseek-v4.1-flash')`); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "deepseek-v4.1-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.UpstreamModel != "deepseek-v4.1-flash" || resolved.SourceEndpointFamily != modelcheckprofile.EndpointResponses || resolved.UpstreamEndpointFamily != modelcheckprofile.EndpointResponses {
+		t.Fatalf("account-supported catalog-external model must resolve directly: %+v", resolved)
+	}
+}
+
+func TestResolveConfiguredUpstreamModelMappingStillRejectsUnsupportedCatalogExternalModel(t *testing.T) {
+	db := newModelMappingDatabase(t)
+	defer db.Close()
+	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	if !ok {
+		t.Fatal("OpenAI Responses profile is required")
+	}
+	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','gpt-5.6-terra')`); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "deepseek-v4.1-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.UpstreamModel != "" {
+		t.Fatalf("catalog-external model outside account restriction must stay rejected: %+v", resolved)
+	}
+}
+
+func TestResolveConfiguredUpstreamModelMappingAppliesMappingForCatalogExternalModel(t *testing.T) {
+	db := newModelMappingDatabase(t)
+	defer db.Close()
+	profile, ok := modelcheckprofile.Find("openai", "profile_openai_openai_v1")
+	if !ok {
+		t.Fatal("OpenAI Responses profile is required")
+	}
+	if _, err := db.Exec(`INSERT INTO account_supported_models(account_id,model) VALUES ('acct-1','glm-5.2'),('acct-1','gpt-5.6-terra')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO account_model_mappings(account_id,source_model,source_endpoint_family,upstream_model,upstream_endpoint_family,enabled) VALUES ('acct-1','glm-5.2','responses','gpt-5.6-terra','responses',1)`); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "glm-5.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.UpstreamModel != "gpt-5.6-terra" || resolved.UpstreamEndpointFamily != modelcheckprofile.EndpointResponses {
+		t.Fatalf("configured mapping must apply to catalog-external source model: %+v", resolved)
+	}
+	// The mapped upstream must still be covered by the account restriction.
+	if _, err := db.Exec(`DELETE FROM account_supported_models WHERE account_id='acct-1' AND model='gpt-5.6-terra'`); err != nil {
+		t.Fatal(err)
+	}
+	restricted, err := resolveConfiguredUpstreamModelMapping(context.Background(), db, false, "acct-1", profile, "glm-5.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restricted.UpstreamModel != "" {
+		t.Fatalf("mapping upstream outside account restriction must stay rejected: %+v", restricted)
+	}
+}
+
 func newModelMappingDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/model-mapping.db?mode=rwc")

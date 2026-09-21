@@ -183,6 +183,7 @@ import { modelCheckFallbackOptions, modelCheckPageSize } from './modelCheckPageC
 import {
   canUseModelCheckModelForAccount,
   modelCheckModelsForAccount,
+  mergeModelCheckRunModelOptions,
   sameModelCheckAccountProfile
 } from './modelCheckProviderCapabilities'
 import {
@@ -401,10 +402,10 @@ const historyModelOptions = computed(() => options.value.supportedModels.map((it
 const runModelOptions = computed(() => {
   const accountProfile = selectedTargetAccountProfile.value
   const accountModels = accountProfile?.modelCheckModels ?? modelCheckModelsForAccount(accountProfile)
-  const supportedModels = accountProfile
-    ? options.value.supportedModels.filter((item) => accountModels.includes(item.value))
-    : options.value.supportedModels
-  return supportedModels.map((item) => ({ label: item.label, value: item.value }))
+  if (!accountProfile) {
+    return options.value.supportedModels.map((item) => ({ label: item.label, value: item.value }))
+  }
+  return mergeModelCheckRunModelOptions(options.value.supportedModels, accountModels)
 })
 const viewportWidth = ref(window.innerWidth)
 const detailDescriptionColumns = computed(() => (viewportWidth.value < 900 ? 1 : 2))

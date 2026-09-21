@@ -24,8 +24,17 @@ type configuredModelResolution struct {
 // It intentionally reads upstream_endpoint_family and fails closed for every
 // conversion that the Node model-mapping oracle does not prove for probes.
 // All model-check owner callers consume this resolution atomically.
+//
+// Catalog-external models are admitted only through the account's own
+// account_supported_models rows. Callers reach this resolver only after the
+// catalog profile for the account's provider/profile was found, so an admitted
+// model inherits that profile's protocol family; the account's
+// health_check_endpoint_mode is validated against the same protocol by the
+// business resolver before any probe is issued. Brand-specific hidden probes
+// and baselines skip catalog-external models inside modelcheckprobe, so an
+// admitted target runs the protocol-consistency subset only.
 func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, postgres bool, accountID string, profile modelcheckprofile.ProtocolProfile, model string) (configuredModelResolution, error) {
-	if db == nil || strings.TrimSpace(accountID) == "" || strings.TrimSpace(model) == "" || !profileSupportsModel(profile, model) {
+	if db == nil || strings.TrimSpace(accountID) == "" || strings.TrimSpace(model) == "" {
 		return configuredModelResolution{}, nil
 	}
 	table := func(name string) string {
@@ -55,6 +64,13 @@ func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, post
 	}
 	if err := rows.Err(); err != nil {
 		return configuredModelResolution{}, fmt.Errorf("iterate J3b account supported models: %w", err)
+	}
+	if !profileSupportsModel(profile, model) {
+		// Catalog-external target: the account must explicitly support it, and
+		// its resolution follows the identical mapping/default semantics below.
+		if _, ok := supported[model]; !ok {
+			return configuredModelResolution{}, nil
+		}
 	}
 	sourceFamilies := modelcheckprofile.SourceEndpointFamilies(profile)
 	defaultResolution := configuredModelResolution{UpstreamModel: model}

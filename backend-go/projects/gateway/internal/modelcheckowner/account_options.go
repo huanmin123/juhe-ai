@@ -2,6 +2,8 @@ package modelcheckowner
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -296,6 +298,65 @@ func (s *BusinessTargetSource) configuredModelCheckModels(ctx context.Context, a
 		if resolved.UpstreamModel != "" {
 			models = append(models, model)
 		}
+	}
+	// Merge the account's protocol-compatible supported models. The catalog
+	// prefix above keeps the historical order and resolution unchanged; only
+	// account rows outside the catalog are appended (deduplicated, sorted).
+	extra, err := s.accountSupportedCheckModels(ctx, accountID, profile)
+	if err != nil {
+		return nil, err
+	}
+	if len(extra) > 0 {
+		seen := make(map[string]struct{}, len(models)+len(extra))
+		for _, model := range models {
+			seen[model] = struct{}{}
+		}
+		for _, model := range extra {
+			if _, ok := seen[model]; ok {
+				continue
+			}
+			seen[model] = struct{}{}
+			models = append(models, model)
+		}
+	}
+	return models, nil
+}
+
+// accountSupportedCheckModels returns the account's account_supported_models
+// rows that are protocol-compatible with the catalog profile. Compatibility
+// follows the same gate the runtime resolver applies before issuing a probe:
+// the account's health_check_endpoint_mode must resolve to the profile's
+// protocol family (openai chat_json/chat_sse count as the openai chat family).
+// An absent or incompatible mode keeps the catalog-only candidates unchanged.
+func (s *BusinessTargetSource) accountSupportedCheckModels(ctx context.Context, accountID string, profile modelcheckprofile.ProtocolProfile) ([]string, error) {
+	var endpointMode string
+	err := s.db.QueryRowContext(ctx, "SELECT COALESCE(health_check_endpoint_mode,'') FROM "+s.table("accounts")+" WHERE id="+s.placeholder(1), accountID).Scan(&endpointMode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read J3b account options endpoint mode: %w", err)
+	}
+	if !modelcheckprofile.EndpointModeMatchesProtocol(profile.Protocol, strings.TrimSpace(endpointMode)) {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT model FROM "+s.table("account_supported_models")+" WHERE account_id="+s.placeholder(1)+" ORDER BY model", accountID)
+	if err != nil {
+		return nil, fmt.Errorf("read J3b account options supported models: %w", err)
+	}
+	defer rows.Close()
+	models := make([]string, 0)
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, fmt.Errorf("scan J3b account options supported model: %w", err)
+		}
+		if model = strings.TrimSpace(model); model != "" {
+			models = append(models, model)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate J3b account options supported models: %w", err)
 	}
 	return models, nil
 }
