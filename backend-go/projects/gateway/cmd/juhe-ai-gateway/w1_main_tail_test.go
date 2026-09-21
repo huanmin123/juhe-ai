@@ -471,18 +471,9 @@ func TestW1WOwnerJ3bFailFastArms(t *testing.T) {
 			mutate:     func(t *testing.T, f *w1wOwnerFixture) []string { return nil },
 			wantStderr: "open J3b Gateway owner host",
 		},
-		{
-			name: "management-port-occupied", prepareJ3b: true, seedMeta: true,
-			mutate: func(t *testing.T, f *w1wOwnerFixture) []string {
-				listener, err := net.Listen("tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatalf("占用端口失败: %v", err)
-				}
-				t.Cleanup(func() { _ = listener.Close() })
-				return []string{"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS=" + listener.Addr().String()}
-			},
-			wantStderr: "listen J3b Gateway management endpoint",
-		},
+		// management-port-occupied 臂已删除（2026-09-21 起管理面同权挂主端口，
+		// 别名端口被占只告警不阻断启动）——降级语义由下方的
+		// TestW1WManagementAliasDemotesWhenPortTaken 承载。
 	}
 
 	for _, scenario := range scenarios {
@@ -618,6 +609,52 @@ func TestW1WOwnerJ3bPostgresContractArms(t *testing.T) {
 			w1bRequireContains(t, scenario.name, stderr, scenario.wantStderr)
 		})
 	}
+}
+
+// TestW1WManagementAliasDemotesWhenPortTaken 覆盖 2026-09-21 起的别名降级
+// 语义：模型检测管理面同权挂主端口后，3307 兼容别名端口被占只告警不阻断
+// 启动。断言：别名告警出现在 stdout（slog）、进程保持存活、主端口实际服务
+// 模型检测管理面（未认证 /model-checks/run/active 得 401/403 而非 404）。
+func TestW1WManagementAliasDemotesWhenPortTaken(t *testing.T) {
+	w1bBuildCoverBinary(t)
+	alias, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("占用别名端口失败: %v", err)
+	}
+	defer alias.Close()
+	mainPort := w1bFreePort(t)
+	healthPort := w1bFreePort(t)
+	coverageDir := w1bCoverageDir(t, "W1W-alias-demoted")
+	env := w1bScenarioEnv(t, coverageDir,
+		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS="+alias.Addr().String(),
+		"JUHE_AI_HOST=127.0.0.1",
+		fmt.Sprintf("JUHE_AI_PORT=%d", mainPort),
+		fmt.Sprintf("JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:%d", healthPort))
+	cmd, done, cancel, stdout, stderr := w1mStartOwnerProcess(t, coverageDir, env)
+	if !w1mWaitOutputContains(t, stdout, "J3b management alias endpoint", 30*time.Second) {
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("别名降级告警未在 30s 内出现，stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		response, probeErr := client.Get(fmt.Sprintf("http://127.0.0.1:%d/model-checks/run/active", mainPort))
+		if probeErr == nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			<-done
+			t.Fatalf("主端口未在 30s 内服务模型检测管理面（最后一次探测 err=%v，stdout=%s stderr=%s）", probeErr, stdout.String(), stderr.String())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	w1mGracefulShutdownOwner(t, cmd, done, cancel, coverageDir, "W1W-alias-demoted")
 }
 
 // ---------------------------------------------------------------------------
@@ -958,11 +995,22 @@ func TestW1WOwnerF4LeaseHeldPostgres(t *testing.T) {
 		t.Fatalf("关闭 F4 fixture store 失败: %v", err)
 	}
 	db := w1g2OpenApp(t, tempAppURL)
+	// 持久子库的 juhe_j3b schema 会因漂移重灌而缺表（本测试的子进程走零配置
+	// PG J3b，OpenHost 处 CheckSchema 只校验不自建），显式补建保证场景自洽。
+	w1g2EnsureJ3bSchema(t, db)
 	if _, err := db.Exec(`INSERT INTO juhe_dataset.operation_log_owner_leases (lease_key,owner_id,fence_token,lease_until,updated_at)
 		VALUES ('f4-operation-log-persistence','w1w-other-owner',1, clock_timestamp() + INTERVAL '1 hour', clock_timestamp())
 		ON CONFLICT (lease_key) DO UPDATE SET owner_id='w1w-other-owner', lease_until = clock_timestamp() + INTERVAL '1 hour', updated_at = clock_timestamp()`); err != nil {
 		t.Fatalf("预插 F4 他者租约失败: %v", err)
 	}
+	// 预插租约带 1 小时有效期：不清理会污染同一持久子库上后续运行的
+	// TestW1G2ComposeSystemAPIPostgresSuccess（同键租约在有效期内不可获取）。
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM juhe_dataset.operation_log_owner_leases WHERE lease_key = 'f4-operation-log-persistence'`); err != nil {
+			t.Errorf("清理预插 F4 租约失败: %v", err)
+		}
+		_ = db.Close()
+	})
 
 	w1bBuildCoverBinary(t)
 	root := t.TempDir()

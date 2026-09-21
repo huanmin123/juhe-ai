@@ -37,9 +37,12 @@ func TestW13ePGRecordCleanupPostgresArms(t *testing.T) {
 		{"api key targets list", "FROM juhe_dataset.api_key_record_cleanup_targets"},
 	}, func(t *testing.T, stage pgStage) error {
 		rec := newPGRecorder()
+		// Stats/Dataset 共享同一 opts：fired 记账合并，needle 命中任一句柄即可。
+		// fired 必须显式创建——open 助手按值收参，惰性初始化对调用者不可见。
+		opts := w13ePGOptions{failOn: []string{stage.failOn}, fired: &w13eFiredArms{}}
 		store := &RecordCleanupStore{
-			Stats:    w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{stage.failOn}}),
-			Dataset:  w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{stage.failOn}}),
+			Stats:    w13eOpenDecoratedPG(t, rec, opts),
+			Dataset:  w13eOpenDecoratedPG(t, rec, opts),
 			Business: openRecorderPG(rec),
 			Now:      kitNow,
 		}
@@ -123,15 +126,19 @@ func TestW13ePGRecordCleanupPostgresArms(t *testing.T) {
 			t.Fatalf("空 id 行不应报错: %v", err)
 		}
 	}
-	// mark deleted 失败。
+	// mark deleted 失败（针文本对齐 markPostgresUsageCleanupRowsDeleted 的
+	// UPDATE SET 列，避免命中更早的 deduction INSERT 列清单）。
 	runPGStages(t, []pgStage{
-		{"mark deleted", "shard_deleted_at"},
+		{"mark deleted", "SET shard_deleted_at = COALESCE"},
 	}, func(t *testing.T, stage pgStage) error {
 		rec := newPGRecorder()
 		seed(t, rec, false)
+		// Stats/Dataset 共享同一 opts：fired 记账合并，needle 命中任一句柄即可。
+		// fired 必须显式创建——open 助手按值收参，惰性初始化对调用者不可见。
+		opts := w13ePGOptions{failOn: []string{stage.failOn}, fired: &w13eFiredArms{}}
 		store := &RecordCleanupStore{
-			Stats:    w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{stage.failOn}}),
-			Dataset:  w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{stage.failOn}}),
+			Stats:    w13eOpenDecoratedPG(t, rec, opts),
+			Dataset:  w13eOpenDecoratedPG(t, rec, opts),
 			Business: openRecorderPG(rec),
 			Now:      kitNow,
 			Timezone: func(context.Context) (*time.Location, error) { return pgTestZone, nil },
@@ -197,7 +204,7 @@ func TestW13ePGRecordCleanupPostgresArms(t *testing.T) {
 		}, func(t *testing.T, stage pgStage) error {
 			rec := newPGRecorder()
 			store := &RecordCleanupStore{
-				Stats:    w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{stage.failOn}}),
+				Stats:    w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{stage.failOn}}),
 				Dataset:  openRecorderPG(rec),
 				Business: openRecorderPG(rec),
 				Now:      kitNow,
@@ -246,7 +253,7 @@ func TestW13ePGRecordCleanupPostgresArms(t *testing.T) {
 		runPGStages(t, stages, func(t *testing.T, stage pgStage) error {
 			rec := newPGRecorder()
 			store := &RecordCleanupStore{
-				Stats:    w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{stage.failOn}}),
+				Stats:    w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{stage.failOn}}),
 				Dataset:  openRecorderPG(rec),
 				Business: openRecorderPG(rec),
 				Now:      kitNow,
@@ -257,7 +264,7 @@ func TestW13ePGRecordCleanupPostgresArms(t *testing.T) {
 		{
 			rec := newPGRecorder()
 			store := &RecordCleanupStore{
-				Stats:    w13eOpenDecoratedPG(rec, w13ePGOptions{failBegin: true}),
+				Stats:    w13eOpenDecoratedPG(t, rec, w13ePGOptions{failBegin: true}),
 				Dataset:  openRecorderPG(rec),
 				Business: openRecorderPG(rec),
 				Now:      kitNow,
@@ -272,7 +279,7 @@ func TestW13ePGRecordCleanupPostgresArms(t *testing.T) {
 		{
 			rec := newPGRecorder()
 			store := &RecordCleanupStore{
-				Stats:    w13eOpenDecoratedPG(rec, w13ePGOptions{failCommit: true}),
+				Stats:    w13eOpenDecoratedPG(t, rec, w13ePGOptions{failCommit: true}),
 				Dataset:  openRecorderPG(rec),
 				Business: openRecorderPG(rec),
 				Now:      kitNow,
@@ -301,7 +308,7 @@ func TestW13ePGRecordCleanupPostgresArms(t *testing.T) {
 		{
 			rec := newPGRecorder()
 			store := &RecordCleanupStore{
-				Stats: w13eOpenDecoratedPG(rec, w13ePGOptions{failBegin: true}),
+				Stats: w13eOpenDecoratedPG(t, rec, w13ePGOptions{failBegin: true}),
 				Now:   kitNow,
 			}
 			if _, err := store.runPostgresBatchInTx(ctx, func(_ *sql.Tx) (int64, error) { return 0, nil }); err == nil {

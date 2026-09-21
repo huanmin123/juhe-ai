@@ -289,6 +289,26 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		} else {
 			items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "juice", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "notApplicable": true, "reason": "juice_scope_not_applicable"}}))
 		}
+		if ShouldRunAstraConstants(input.Model, input.Profile, string(input.UpstreamProtocol)) {
+			astraResults := make([]Result, 0, 4)
+			astraRequests, astraCoverage, astraErr := AstraConstantsRequestsForStream(input.Model, stream)
+			if astraErr != nil {
+				return nil, astraErr
+			}
+			for _, request := range astraRequests {
+				result, executeErr := input.execute(ctx, request, timeout)
+				if executeErr != nil {
+					return nil, executeErr
+				}
+				astraResults = append(astraResults, result)
+				if isTerminalProbeFailure(result) {
+					break
+				}
+			}
+			items = append(items, scopeEvaluation(input.Prefix, EvaluateAstraConstants(input.Model, astraResults, astraCoverage)))
+		} else {
+			items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "astra_constants", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "notApplicable": true, "reason": "astra_constants_scope_not_applicable"}}))
+		}
 		if input.Comparison == nil {
 			if results[0].Success {
 				crossModel, crossErr := RunSelfCrossModel(ctx, input, results[0], timeout)
@@ -854,7 +874,7 @@ func comparisonEvidenceState(items []Evaluation) (formed, incomplete, negative b
 			// A trusted family that stopped at its retry boundary is incomplete
 			// even when earlier requests gave it a warning/partial status. Do not
 			// let that partial account form a comparable aggregate.
-			if kind == "juice" && evidenceBool(item.Evidence, "notApplicable") {
+			if (kind == "juice" || kind == "astra_constants") && evidenceBool(item.Evidence, "notApplicable") {
 				continue
 			}
 			if item.Status == "failed" {

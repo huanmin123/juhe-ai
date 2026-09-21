@@ -189,7 +189,8 @@ export function checkTitleByType(itemType: string, itemKey: string): string {
     cross_model: '辅助模型对照',
     distribution_similarity: '分布相似度对照',
     trusted_comparison: '可信对比',
-    custom_quiz: '题库测试'
+    custom_quiz: '题库测试',
+    astra_constants: 'Astra 专项探针'
   }
   return labels[itemType] ?? itemKey
 }

@@ -33,9 +33,11 @@ func seedRecordMaintenanceDrain(t *testing.T, dir string) {
 	_ = dataset.Close()
 
 	stats := statsCleanupTables(t, filepath.Join(dir, "stats.sqlite3"))
-	// 使用记录清理的安全游标（global + usage_shard 两个必需 job）。
+	// 使用记录清理的安全游标：两个必需 job 的 global 游标（分片半区与镜像
+	// 半区共用放行门）；usage_shard 行是 Node 时代产物存量，Go 清理链不读取。
 	mustExec(t, stats,
-		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'global', 'usage_stats_aggregation')`,
+		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'global', '', 'usage_stats_aggregation')`,
+		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'global', '', 'client_ip_stats_aggregation')`,
 		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'usage_shard', '20200101:s01', 'usage_stats_aggregation')`,
 		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'usage_shard', '20200101:s01', 'client_ip_stats_aggregation')`)
 	_ = stats.Close()

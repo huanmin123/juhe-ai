@@ -191,7 +191,8 @@ var w1v2OwnerFailMarkers = []string{
 	"J3b Gateway usage stats timezone",
 	"open J3b Gateway owner host",
 	"mount J3b Gateway",
-	"listen J3b Gateway management endpoint",
+	// "listen J3b Gateway management endpoint" 已随 2026-09-21 别名降级移除：
+	// 管理面同权挂主端口后别名端口被占只告警，不再构成 fail() 输出。
 	"load F3 audit-log config",
 	"open F3 audit-log store",
 	"initialize F3 audit-log schema",

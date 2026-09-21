@@ -1,8 +1,9 @@
 // 波次 w16h：run() 抽取后的进程内臂覆盖。main() 收敛为 os.Exit(run(...)) 后，
 // 原 fail() 出口改为返回码，boot/停机序列在测试进程内可直接驱动：错误臂用
 // 坏 env/垃圾 SQLite 文件/非法监听地址注入，优雅停机臂用 hooksSignalNotifyContext
-// 注入可编程 ctx（等价 SIGTERM，无需真实信号）。stderr 错误文案断言锁定
-// 原 fail() 逐字节行为。
+// 注入可编程 ctx（等价 SIGTERM，无需真实信号），J1 sqlite 直读的「布局前置
+// 成功 → 只读 ping 失败」臂用 hooksSQLiteDirectInputLayoutEnsured 在窗口内
+// 破坏文件。stderr 错误文案断言锁定原 fail() 逐字节行为。
 package main
 
 import (
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +46,15 @@ func w16hInjectCancelSignal(t *testing.T) context.CancelFunc {
 		cancel()
 	})
 	return cancel
+}
+
+// w16hInjectLayoutEnsuredHook 覆写 hooksSQLiteDirectInputLayoutEnsured 并在
+// 测试结束时恢复原值；hook 在布局前置成功后、只读直读句柄打开前被调用。
+func w16hInjectLayoutEnsuredHook(t *testing.T, hook func()) {
+	t.Helper()
+	original := hooksSQLiteDirectInputLayoutEnsured
+	hooksSQLiteDirectInputLayoutEnsured = hook
+	t.Cleanup(func() { hooksSQLiteDirectInputLayoutEnsured = original })
 }
 
 // w16hSeedSQLite 物理建一个空 SQLite 文件（sql.Open 惰性连接，Ping 落盘）。
@@ -815,25 +826,82 @@ func TestW16HJ1SqliteContractInvalidTimezoneArm(t *testing.T) {
 }
 
 // TestW16HJ1SqliteStatsPingFailArm 锁定 main() sqlite 直读分支的 stats 只读
-// ping 失败臂。布局 ensure 的写方 DSN（accounthealth sqliteDSN）经 url.URL
-// 转义，含 '#' 的路径按字面创建文件；只读 DSN（sqliteReadOnlyFileDSN）是裸
-// 拼接，'#' 起 URI fragment 吞掉后续 query（mode=ro 等全部失效），路径被
-// 截断为 '#' 前缀。据此把 JUHE_AI_STATS_DATABASE_PATH 指到
-// <root>/red#herring.sqlite3，并预置同名目录 <root>/red：ensure 落盘
-// red#herring.sqlite3 成功，stats 只读句柄实际打开目录 red → 打开失败必须
-// 在 ping 处 fail-fast（退出码 1 + stats ping 错误文案）。
+// ping 失败臂。历史实现借写方/只读 DSN 的 '#' 转义分叉（红#鲱鱼路径：ensure
+// 落盘字面文件、只读句柄截断到同名目录）命中本臂；转义统一（sqliteReadOnly-
+// FileDSN 与布局前置同用 url.URL 转义）后两侧解析同一物理路径，env 级注入
+// 无法只作用于只读一侧。改用 hooksSQLiteDirectInputLayoutEnsured：stats 库
+// 用正常路径经布局 ensure 成功落盘后、只读打开之前删除该文件——mode=ro 只
+// 读句柄打开缺失文件必 CANTOPEN 且不会重建文件，确定性命中「布局 ensure
+// 成功 → 只读 ping 失败」（退出码 1 + stats ping 错误文案）。
 func TestW16HJ1SqliteStatsPingFailArm(t *testing.T) {
 	env := w16hBaseEnv(t)
-	root := filepath.Dir(env["JUHE_AI_DATABASE_PATH"])
-	redDirectory := filepath.Join(root, "red")
-	if err := os.MkdirAll(redDirectory, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	statsPath := env["JUHE_AI_STATS_DATABASE_PATH"]
+	w16hInjectLayoutEnsuredHook(t, func() {
+		// ensure 的写方句柄已建库并关闭；只删主文件即可：mode=ro 打开缺失
+		// 文件在文件名解析层失败，与 -wal/-shm 是否残留无关。
+		if err := os.Remove(statsPath); err != nil {
+			t.Errorf("删除 stats 库文件失败: %v", err)
+		}
+	})
 	w16hApplyEnv(t, env)
 	w16hApplyEnv(t, map[string]string{
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "sqlite",
 		"JUHE_AI_ACCOUNT_HEALTH_STORE":        "sqlite",
-		"JUHE_AI_STATS_DATABASE_PATH":         filepath.Join(root, "red#herring.sqlite3"),
 	})
 	w16hRunArms(t, nil, 1, "ping J1 account-health sqlite direct-input stats database")
+}
+
+// TestW16HSqliteReadOnlyDSNParityArm 直接锁定转义统一契约：对含 '#' 的特殊
+// 字符路径，sqliteReadOnlyFileDSN 产出与布局前置（accounthealth/statsverify
+// sqliteDSN 的 url.URL 转义同款）等价可解析的只读句柄——路径按字面命中同
+// 一物理文件，且 mode=ro + query_only 拒绝写入、busy_timeout 参数保持在场。
+// 历史裸拼接在 '#' 处截断路径（mode=ro 失效、截断路径被静默新建），本测试
+// 的标记表断言在旧实现下必失败，是本次统一的回归锚点。
+func TestW16HSqliteReadOnlyDSNParityArm(t *testing.T) {
+	root := t.TempDir()
+	herring := filepath.Join(root, "red#herring.sqlite3")
+	// 裸路径 DSN 无 URI 解析，'#' 原样落盘为字面文件名；写入标记表供只读
+	// 句柄读回——若只读 DSN 截断到别的路径，SELECT 必报 no such table。
+	w16hSeedSQLite(t, herring)
+	marker, err := sql.Open("sqlite", herring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := marker.Exec("CREATE TABLE w16h_parity_marker (id TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := marker.Exec("INSERT INTO w16h_parity_marker (id) VALUES ('hit')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := marker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := sqliteReadOnlyFileDSN(herring)
+	if err != nil {
+		t.Fatalf("构造只读 DSN: %v", err)
+	}
+	if !strings.Contains(dsn, "red%23herring.sqlite3") {
+		t.Fatalf("'#' 必须经 url.URL 转义为 %%23（与布局前置同款），得到 %q", dsn)
+	}
+	if !strings.Contains(dsn, "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)") {
+		t.Fatalf("只读 query 语义必须原样保留，得到 %q", dsn)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		t.Fatalf("转义后的只读 DSN 必须命中 '#' 字面文件: %v", err)
+	}
+	var hit string
+	if err := db.QueryRow("SELECT id FROM w16h_parity_marker").Scan(&hit); err != nil {
+		t.Fatalf("只读句柄必须读回同一物理文件的标记表（截断路径会 no such table）: %v", err)
+	}
+	if hit != "hit" {
+		t.Fatalf("标记内容必须一致，得到 %q", hit)
+	}
+	if _, err := db.Exec("CREATE TABLE w16h_parity_probe (id TEXT)"); err == nil {
+		t.Fatal("mode=ro + query_only 句柄必须拒绝写入")
+	}
 }

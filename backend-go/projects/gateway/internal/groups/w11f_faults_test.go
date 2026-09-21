@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -257,9 +258,10 @@ func TestW11FRouteStrategyGuards(t *testing.T) {
 	if _, err := store.Patch(context.Background(), "w11f-rg", MutationInput{Enabled: &disable}, revision, owner); err == nil {
 		t.Fatal("candidates rows.Err fault must fail")
 	}
-	// 绑定计数查询错误。
-	env.script.failQuery("FROM route_strategy_groups route_strategy_groups2")
-	if _, err := store.Patch(context.Background(), "w11f-rg", MutationInput{Enabled: &disable}, revision, owner); err == nil && !strings.Contains(err.Error(), "唯一可用") {
+	// 绑定计数查询错误（activeBindingCountsExcludingGroup 的 COUNT(*) 查询，
+	// 子串对齐 store.go 该语句真实文本）。
+	env.script.failQuery("SELECT route_strategy_groups.route_strategy_id, COUNT(*)")
+	if _, err := store.Patch(context.Background(), "w11f-rg", MutationInput{Enabled: &disable}, revision, owner); !errors.Is(err, w11fBoom) {
 		t.Fatalf("binding counts fault = %v", err)
 	}
 	// 解除绑定后停用成功（无候选 → nil 变更）。

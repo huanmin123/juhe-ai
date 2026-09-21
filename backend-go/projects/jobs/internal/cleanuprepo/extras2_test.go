@@ -114,9 +114,12 @@ func TestRecordCleanupSQLiteAccountErrorStages(t *testing.T) {
 	}
 	runSQLiteStages(t, stages, func(t *testing.T, stage pgStage) error {
 		f := newKitSQLiteStageFixture(t, stage.failOn)
+		// sk-1 在 global floor 内（有记录可删）；"target mark" 阶段把 floor
+		// 回拨到记录之前 → 行未覆盖 → deferred 路径走到 mark（带阻塞原因）。
 		f.addKitStageShard(t, "sk-1", "20260105", true)
 		if stage.name == "target mark" {
-			f.addKitStageShardWithID(t, "sk-2", "20260106", false, "rec-2")
+			mustExecKit(t, f.seedStats, `UPDATE stats_job_state
+        SET cursor_created_at = '2026-01-05T00:00:00.000Z' WHERE scope_type = 'global'`)
 		}
 		store := kitStageStore(t, f)
 		store.Shards.SetOpener(func(path string) (*sql.DB, error) {

@@ -72,12 +72,15 @@ func TestW13eDeletedAccountSweepArms(t *testing.T) {
 			mustExecKit(t, &DB{DB: seed}, `INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id)
         VALUES ('g-1', 'account', 'acc-1', 'sys-1', 'sys-2')`)
 		}
-		store.Business = w13eOpenDecoratedSQLite(t, path, w13eSQLiteOptions{failOn: stage.failOn})
 		if stage.name == "targets self check" {
-			// 目标表自检走 Records.Dataset；空 failOn 的 fixture 句柄不注入，
-			// 这里单独构造失败句柄。
+			// 目标表自检走 Records.Dataset：needle 注册到 Dataset 失败句柄。
+			// Business 不携带本阶段 needle——其语句不含该文本，注册必然
+			// 不命中（w13e fired 断言会判为伪覆盖）。
+			store.Business = w13eOpenDecoratedSQLite(t, path, w13eSQLiteOptions{})
 			store.Records.Dataset = w13eOpenDecoratedSQLite(t, filepath.Join(f.dir, "dataset.sqlite3"),
 				w13eSQLiteOptions{failOn: stage.failOn})
+		} else {
+			store.Business = w13eOpenDecoratedSQLite(t, path, w13eSQLiteOptions{failOn: stage.failOn})
 		}
 		summary, err := store.CleanupExpired(context.Background())
 		if err != nil {

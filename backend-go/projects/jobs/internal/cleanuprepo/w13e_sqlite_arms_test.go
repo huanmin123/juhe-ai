@@ -680,37 +680,40 @@ func TestW13eUsageRecordsSQLiteArms(t *testing.T) {
 			t.Fatalf("无记录应直通: %+v %v", batch, err)
 		}
 	}
-	// 有游标 + sqliteBlockedReasonForRows 覆盖缺失 → 阻塞 + hasMore 批次。
+	// global 双游标齐备 → 分片半区放行：无 per-shard 游标覆盖的分片行同样
+	// 可删（新放行门只看双聚合 global floor），SafetyCursor 回显 global floor。
 	{
 		f := w13eFixture(t, "")
-		f.addKitStageShard(t, "sk-a", "20260105", true)
+		f.addKitStageShard(t, "sk-a", "20260105", false)
 		f.addKitStageShard(t, "sk-b", "20260106", false)
+		seedStatsMirrorGlobalCursor(t, f.seedStats, "usage_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-000")
+		seedStatsMirrorGlobalCursor(t, f.seedStats, "client_ip_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-000")
 		store := &UsageRecordsStore{Catalog: f.catalog, Stats: f.stats, Shards: NewShardStore(f.root)}
 		t.Cleanup(func() { _ = store.Shards.Close() })
 		batch, err := store.CleanupProcessedBefore(ctx, "2026-09-10T00:00:00.000Z", 5)
-		if err != nil || batch.BlockedReason == "" || batch.SafetyCursorCreatedAt == "" {
-			t.Fatalf("部分游标覆盖应阻塞并携带游标: %+v %v", batch, err)
+		if err != nil || batch.BlockedReason != "" || batch.DeletedRows != 2 || batch.SafetyCursorCreatedAt != "2026-01-05T03:00:00.000Z" {
+			t.Fatalf("global floor 齐备应放行两分片: %+v %v", batch, err)
 		}
 	}
-	// floor cursor：scan 失败、迭代错误与空游标行（脚本化行集）。
+	// 共享 global floor cursor：scan 失败、迭代错误与空游标行（脚本化行集）。
 	for _, tc := range []struct {
 		name    string
 		script  w13eRowsScript
 		wantErr bool
 	}{
-		{"scan 失败", w13eRowsScript{match: "cursor_created_at, cursor_id", columns: []string{"cursor_created_at", "cursor_id"},
-			values: [][]driver.Value{{struct{}{}, "id"}}}, true},
-		{"迭代错误", w13eRowsScript{match: "cursor_created_at, cursor_id", columns: []string{"cursor_created_at", "cursor_id"},
-			values: [][]driver.Value{{"2026-01-05T03:00:00.000Z", "rec-0"}}, errAfterRows: 0}, true},
-		{"空游标行", w13eRowsScript{match: "cursor_created_at, cursor_id", columns: []string{"cursor_created_at", "cursor_id"},
-			values: [][]driver.Value{{"", ""}}, errAfterRows: -1}, false},
+		{"scan 失败", w13eRowsScript{match: "cursor_created_at, cursor_id", columns: []string{"job_name", "cursor_created_at", "cursor_id"},
+			values: [][]driver.Value{{struct{}{}, struct{}{}, "id"}}}, true},
+		{"迭代错误", w13eRowsScript{match: "cursor_created_at, cursor_id", columns: []string{"job_name", "cursor_created_at", "cursor_id"},
+			values: [][]driver.Value{{"usage_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-0"}}, errAfterRows: 0}, true},
+		{"空游标行", w13eRowsScript{match: "cursor_created_at, cursor_id", columns: []string{"job_name", "cursor_created_at", "cursor_id"},
+			values: [][]driver.Value{{"", "", ""}}, errAfterRows: -1}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := w13eFixture(t, "")
 			stats := w13eOpenDecoratedSQLite(t, f.dir+"/stats.sqlite3", w13eSQLiteOptions{rowsScripts: []w13eRowsScript{tc.script}})
 			store := &UsageRecordsStore{Catalog: f.catalog, Stats: stats, Shards: NewShardStore(f.root)}
 			t.Cleanup(func() { _ = store.Shards.Close() })
-			cursor, err := store.sqliteFloorCursor(ctx)
+			cursor, err := store.sqliteAggregationFloorCursor(ctx)
 			if tc.wantErr && err == nil {
 				t.Fatalf("脚本注入应产生错误")
 			}
@@ -722,6 +725,8 @@ func TestW13eUsageRecordsSQLiteArms(t *testing.T) {
 	// selectSQLiteCleanupRows：scan 失败 / 空 usage_id 跳过。
 	{
 		f := w13eFixture(t, "")
+		// addKitStageShard(true) 已种双聚合 global floor（放行门），齐备后
+		// 才会走到行选择注入点。
 		f.addKitStageShard(t, "sk-1", "20260105", true)
 		scripts := []w13eRowsScript{{
 			match:   "ue.created_at < ?",
@@ -836,47 +841,6 @@ func TestW13eUsageRecordsSQLiteArms(t *testing.T) {
 			}
 		})
 	}
-	// cursor 覆盖查询 scan/rows.Err（脚本化行集）。
-	for _, tc := range []struct {
-		name   string
-		script w13eRowsScript
-	}{
-		{"scan 失败", w13eRowsScript{match: "GROUP BY scope_id", columns: []string{"scope_id"},
-			values: [][]driver.Value{{struct{}{}}}, errAfterRows: -1}},
-		{"迭代错误", w13eRowsScript{match: "GROUP BY scope_id", columns: []string{"scope_id"},
-			values: [][]driver.Value{{"sk-1"}}, errAfterRows: 1}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := w13eFixture(t, "")
-			f.addKitStageShard(t, "sk-1", "20260105", true)
-			stats := w13eOpenDecoratedSQLite(t, f.dir+"/stats.sqlite3", w13eSQLiteOptions{rowsScripts: []w13eRowsScript{tc.script}})
-			store := &UsageRecordsStore{Catalog: f.catalog, Stats: stats, Shards: NewShardStore(f.root)}
-			t.Cleanup(func() { _ = store.Shards.Close() })
-			rows := []ShardCleanupRow{{
-				ID: "rec-1", CreatedAt: "2026-01-05T01:00:00.000Z", Location: w13eShardLocation(f.root, "20260105"),
-			}}
-			if _, err := store.deleteSQLiteShardRows(ctx, rows); err == nil {
-				t.Fatalf("脚本注入应产生错误")
-			}
-		})
-	}
-	// blocked reason 行过滤的空键 / 覆盖缺失（直调）。
-	{
-		f := w13eFixture(t, "")
-		store := &UsageRecordsStore{Catalog: f.catalog, Stats: f.stats, Shards: NewShardStore(f.root)}
-		t.Cleanup(func() { _ = store.Shards.Close() })
-		reason, err := store.sqliteBlockedReasonForRows(ctx, []ShardCleanupRow{
-			{ID: "a", Location: ShardLocation{ShardKey: "  "}},
-			{ID: "b", Location: ShardLocation{ShardKey: ""}},
-		})
-		if err != nil || reason != "" {
-			t.Fatalf("空键行不应阻塞: %q %v", reason, err)
-		}
-		reason, err = store.sqliteBlockedReasonForRows(ctx, nil)
-		if err != nil || reason != "" {
-			t.Fatalf("空行集不应阻塞: %q %v", reason, err)
-		}
-	}
 }
 
 // TestW13eNonBusinessDatasetArms：NonBusinessDatasetStore.CleanupBefore 剩余臂。
@@ -939,20 +903,23 @@ func TestW13eNonBusinessDatasetArms(t *testing.T) {
 			t.Fatalf("dataset 表删除失败应透传")
 		}
 	}
-	// usage-catalog 表删除失败。
+	// usage-catalog 表删除失败（scope-shrink 的 account/api key 维度 DELETE）。
 	{
 		f := w13eFixture(t, "")
-		failingCatalog := w13eOpenDecoratedSQLite(t, f.dir+"/catalog.sqlite3", w13eSQLiteOptions{failOn: "DELETE FROM usage_record_account_shards"})
+		// scope-shrink DELETE 由 DeleteShardEntries 发起，走 UsageRecords.Catalog；
+		// 需全局游标放行 + 目录条目在册，语句才会执行（fired 断言依赖真实命中）。
+		f.addKitStageShard(t, "sk-1", "20260105", true)
+		failingRecords := w13eOpenDecoratedSQLite(t, f.dir+"/catalog.sqlite3", w13eSQLiteOptions{failOn: "DELETE FROM usage_record_account_shards"})
 		shards := NewShardStore(f.root)
 		t.Cleanup(func() { _ = shards.Close() })
 		store := &NonBusinessDatasetStore{
-			Dataset: f.dataset, UsageCatalog: failingCatalog, Stats: f.stats, Shards: shards,
-			UsageRecords: &UsageRecordsStore{Catalog: f.catalog, Stats: f.stats, Shards: shards},
+			Dataset: f.dataset, UsageCatalog: f.catalog, Stats: f.stats, Shards: shards,
+			UsageRecords: &UsageRecordsStore{Catalog: failingRecords, Stats: f.stats, Shards: shards},
 			Timezone:     func(context.Context) (*time.Location, error) { return kitZone(), nil },
 		}
-		// usage records 已被 cursor 覆盖并清空 → 走 catalog 半区。
-		if _, err := store.CleanupBefore(ctx, cutoff, 5); err == nil {
-			t.Fatalf("usage-catalog 表删除失败应透传")
+		if _, err := store.CleanupBefore(ctx, cutoff, 5); err == nil ||
+			!strings.Contains(err.Error(), "DELETE FROM usage_record_account_shards") {
+			t.Fatalf("usage-catalog 表删除失败应透传: %v", err)
 		}
 	}
 	// 空分片文件清理失败（bucket_date 查询失败）与文件删除计数。
@@ -985,16 +952,34 @@ func TestW13eNonBusinessDatasetArms(t *testing.T) {
 	// 空分片清理失败臂（bucket_date 查询注入）。
 	{
 		f := w13eFixture(t, "")
+		// 空分片 SELECT 走 UsageCatalog；需 public_api_logs 建表与空分片场景
+		// 前置，流程才会到达该语句（fired 断言依赖真实命中）。
+		execKitSchema(t, f.seedDataset.DB, `CREATE TABLE IF NOT EXISTS public_api_logs (
+      id TEXT PRIMARY KEY, created_at TEXT NOT NULL)`)
+		path := shardFilePathForTest(f.root, "20260105", 1)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		seedDB := createKitUsageShardDB(t, path)
+		seedKitUsageRecord(t, seedDB, "rec-1", "sys-1", "key-1", "acc-1", "2026-01-05T01:00:00.000Z")
+		if err := seedDB.Close(); err != nil {
+			t.Fatalf("close seed shard: %v", err)
+		}
+		seedKitShard(t, f.seedCatalog, "sk-empty", "2026-01-05", 1, path)
+		mustExecKit(t, f.seedCatalog, `DELETE FROM usage_record_shard_entries`)
+		mustExecKit(t, f.seedCatalog, `DELETE FROM usage_record_api_key_shards`)
+		mustExecKit(t, f.seedCatalog, `DELETE FROM usage_record_account_shards`)
 		failingCatalog := w13eOpenDecoratedSQLite(t, f.dir+"/catalog.sqlite3", w13eSQLiteOptions{failOn: "s.bucket_date <= ?"})
 		shards := NewShardStore(f.root)
 		t.Cleanup(func() { _ = shards.Close() })
 		store := &NonBusinessDatasetStore{
-			Dataset: f.dataset, UsageCatalog: f.catalog, Stats: f.stats, Shards: shards,
-			UsageRecords: &UsageRecordsStore{Catalog: failingCatalog, Stats: f.stats, Shards: shards},
+			Dataset: f.dataset, UsageCatalog: failingCatalog, Stats: f.stats, Shards: shards,
+			UsageRecords: &UsageRecordsStore{Catalog: f.catalog, Stats: f.stats, Shards: shards},
 			Timezone:     func(context.Context) (*time.Location, error) { return kitZone(), nil },
 		}
-		if _, err := store.CleanupBefore(ctx, cutoff, 5); err == nil {
-			t.Fatalf("空分片查询失败应透传")
+		if _, err := store.CleanupBefore(ctx, cutoff, 5); err == nil ||
+			!strings.Contains(err.Error(), "s.bucket_date <= ?") {
+			t.Fatalf("空分片查询失败应透传: %v", err)
 		}
 	}
 	// Shards == nil → 跳过分片清理分支。
@@ -1075,7 +1060,7 @@ func TestW13eStatsRetentionArms(t *testing.T) {
 	// PG 模式 schema 前缀 + deleteRowsBefore 错误。
 	{
 		rec := newPGRecorder()
-		failing := w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_stats"}})
+		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_stats"}})
 		store := &StatsRetentionStore{DB: failing}
 		if _, err := store.CleanupUsageStatsRetention(ctx, retention.UsageStatsRetentionInput{MinuteCutoffMinute: "x"}); err == nil {
 			t.Fatalf("PG 清理失败应透传")

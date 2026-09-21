@@ -173,10 +173,13 @@ func (f *kitSQLiteStageFixture) addKitStageShardWithID(t *testing.T, shardKey, f
     (usage_id, shard_key, system_account_id, api_key_id, account_id, created_at)
     VALUES (?, ?, 'sys-1', 'key-1', 'acc-1', '2026-01-05T01:00:00.000Z')`, recordID, shardKey)
 	if withCursor {
+		// withCursor 现指双聚合 global floor（usage_shard 逐分片游标已废，
+		// 两条清理链的放行门都只读 global 游标）；OR REPLACE 幂等，与测试内
+		// 显式 global 种子共存安全。
 		for _, jobName := range usageRecordCleanupRequiredCursorJobNames {
-			mustExecKit(t, f.seedStats, `INSERT INTO stats_job_state
+			mustExecKit(t, f.seedStats, `INSERT OR REPLACE INTO stats_job_state
         (scope_type, scope_id, job_name, cursor_created_at, cursor_id)
-        VALUES ('usage_shard', ?, ?, '2026-01-05T03:00:00.000Z', 'rec-000')`, shardKey, jobName)
+        VALUES ('global', '', ?, '2026-01-05T03:00:00.000Z', 'rec-000')`, jobName)
 		}
 	}
 }
@@ -301,7 +304,7 @@ func TestRecordCleanupSQLiteErrorStages(t *testing.T) {
 	stages := []pgStage{
 		{"target upsert", "INSERT INTO api_key_record_cleanup_targets"},
 		{"shard locations", "usage_record_api_key_shards c"},
-		{"shard cursor", "FROM stats_job_state"},
+		{"floor cursor", "FROM stats_job_state"},
 		{"uncovered check", "SELECT id FROM usage_records"},
 		{"rows select", "AND id <= ?))"},
 		{"rows delete", "DELETE FROM usage_records WHERE id = ?"},
@@ -311,11 +314,12 @@ func TestRecordCleanupSQLiteErrorStages(t *testing.T) {
 	}
 	runSQLiteStages(t, stages, func(t *testing.T, stage pgStage) error {
 		f := newKitSQLiteStageFixture(t, stage.failOn)
-		// sk-1 覆盖（有游标、有记录）；deferred 阶段另有 sk-2（无游标、不同
-		// usage id）阻塞，避免同 id 目录条目被连带删除。
+		// sk-1 在 global floor 内（有记录可删）；"target mark" 阶段把 floor
+		// 回拨到记录之前 → 行未覆盖 → deferred 路径走到 mark（带阻塞原因）。
 		f.addKitStageShard(t, "sk-1", "20260105", true)
 		if stage.name == "target mark" {
-			f.addKitStageShardWithID(t, "sk-2", "20260106", false, "rec-2")
+			mustExecKit(t, f.seedStats, `UPDATE stats_job_state
+        SET cursor_created_at = '2026-01-05T00:00:00.000Z' WHERE scope_type = 'global'`)
 		}
 		store := kitStageStore(t, f)
 		store.Shards.SetOpener(func(path string) (*sql.DB, error) {
@@ -452,6 +456,7 @@ func TestDataRetentionSQLiteErrorStages(t *testing.T) {
 			f := newKitSQLiteStageFixture(t, stage.failOn)
 			createKitMinimalTable(t, f.seedDataset.DB, "public_api_logs", "created_at")
 			mustExecKit(t, f.seedDataset, `INSERT INTO public_api_logs (created_at) VALUES ('2026-01-01T00:00:00.000Z')`)
+			// addKitStageShard(true) 已种双聚合 global 游标（分片半区放行门）。
 			f.addKitStageShard(t, "sk-nb", "20260105", true)
 			shards := NewShardStore(f.root)
 			t.Cleanup(func() { _ = shards.Close() })
@@ -473,13 +478,14 @@ func TestDataRetentionSQLiteErrorStages(t *testing.T) {
 		stages := []pgStage{
 			{"cursor", "FROM stats_job_state"},
 			{"rows select", "JOIN usage_record_shards s"},
-			{"covered check", "HAVING COUNT(DISTINCT job_name)"},
 			{"existing ids", "SELECT id FROM usage_records WHERE id IN"},
 			{"rows delete", "DELETE FROM usage_records WHERE id IN"},
 			{"entries delete", "DELETE FROM usage_record_shard_entries WHERE usage_id"},
 		}
 		runSQLiteStages(t, stages, func(t *testing.T, stage pgStage) error {
 			f := newKitSQLiteStageFixture(t, stage.failOn)
+			// addKitStageShard(true) 已种双聚合 global 游标（分片半区放行门；
+			// 镜像半区共用）。
 			f.addKitStageShard(t, "sk-1", "20260105", true)
 			shards := NewShardStore(f.root)
 			t.Cleanup(func() { _ = shards.Close() })

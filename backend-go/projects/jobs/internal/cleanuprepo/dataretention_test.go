@@ -243,7 +243,8 @@ func TestIsoDatePrefix(t *testing.T) {
 	}
 }
 
-// TestUsageRecordsCleanupProcessedBeforeSQLite：安全游标门控 + 分片行删除。
+// TestUsageRecordsCleanupProcessedBeforeSQLite：双聚合 global 游标放行门
+// （分片半区与镜像半区共用同一 floor）+ 分片行删除。
 func TestUsageRecordsCleanupProcessedBeforeSQLite(t *testing.T) {
 	f := newKitRecordFixture(t)
 	store := &UsageRecordsStore{Catalog: f.catalog, Stats: f.stats, Shards: f.shards}
@@ -262,12 +263,25 @@ func TestUsageRecordsCleanupProcessedBeforeSQLite(t *testing.T) {
 	if err != nil || batch.DeletedRows != 0 || !strings.Contains(batch.BlockedReason, "游标尚未建立") {
 		t.Fatalf("阻塞批次 = %+v, %v", batch, err)
 	}
-	// 移除阻塞分片后：双游标齐备 → 批删 + 目录收缩 + 安全游标回显。
+	// 移除阻塞分片后：仅一个 global 游标 → 任一缺失仍阻塞、零删除。
 	mustExecKit(t, f.catalog, `DELETE FROM usage_record_shard_entries WHERE shard_key = 'sk-blocked'`)
 	mustExecKit(t, f.catalog, `DELETE FROM usage_record_shards WHERE shard_key = 'sk-blocked'`)
-	f.addKitShard(t, "sk-2", "2026-01-06", 2, "key-1", "sys-1", "acc-1", true, []statsagg.UsageStatsRecordRow{
+	f.addKitShard(t, "sk-2", "2026-01-06", 2, "key-1", "sys-1", "acc-1", false, []statsagg.UsageStatsRecordRow{
 		kitUsageRecord("rec-2", "sys-1", "key-1", "acc-1", "2026-01-05T01:00:00.000Z"),
 		kitUsageRecord("rec-3", "sys-1", "key-1", "acc-1", "2026-01-05T02:00:00.000Z"),
+	})
+	mustExecKit(t, f.stats, `INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id)
+      VALUES ('global', '', 'usage_stats_aggregation', '2026-01-05T03:00:00.000Z', 'rec-000')`)
+	batch, err = store.CleanupProcessedBefore(ctx, kitUpdatedAt, 5)
+	if err != nil || batch.DeletedRows != 0 || !strings.Contains(batch.BlockedReason, "游标尚未建立") {
+		t.Fatalf("单游标应阻塞 = %+v, %v", batch, err)
+	}
+	// 补齐另一 global 游标 → 放行：批删 + 目录收缩 + 安全游标回显；
+	// 越过 floor 的未聚合行保留。
+	mustExecKit(t, f.stats, `INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id)
+      VALUES ('global', '', 'client_ip_stats_aggregation', '2026-01-05T03:00:00.000Z', 'rec-000')`)
+	f.addKitShard(t, "sk-2-future", "2026-01-06", 3, "key-1", "sys-1", "acc-1", false, []statsagg.UsageStatsRecordRow{
+		kitUsageRecord("rec-future", "sys-1", "key-1", "acc-1", "2026-01-05T03:30:00.000Z"),
 	})
 	batch, err = store.CleanupProcessedBefore(ctx, "2026-09-10T00:00:00.000Z", 1)
 	if err != nil {
@@ -281,6 +295,14 @@ func TestUsageRecordsCleanupProcessedBeforeSQLite(t *testing.T) {
 	}
 	if got := mustQueryCountKit(t, f.catalog, `SELECT COUNT(*) FROM usage_record_shard_entries WHERE shard_key = 'sk-2'`); got != 1 {
 		t.Fatalf("已删行的目录条目应收缩，残余 = %d", got)
+	}
+	// 下一批删除 floor 之前的剩余行；floor 之后的 rec-future 永不入选。
+	batch, err = store.CleanupProcessedBefore(ctx, "2026-09-10T00:00:00.000Z", 1)
+	if err != nil || batch.DeletedRows != 1 || batch.HasMore || batch.BlockedReason != "" {
+		t.Fatalf("收尾批次 = %+v, %v", batch, err)
+	}
+	if got := mustQueryCountKit(t, f.catalog, `SELECT COUNT(*) FROM usage_record_shard_entries`); got != 1 {
+		t.Fatalf("未聚合行必须保留，残余条目 = %d", got)
 	}
 }
 

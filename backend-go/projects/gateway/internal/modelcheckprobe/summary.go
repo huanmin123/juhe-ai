@@ -65,6 +65,12 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 		if item.Kind == "juice" && item.Evidence != nil && evidenceBool(item.Evidence, "hardAnomaly") {
 			return SummaryResult{"suspicious", score, 100, "GPT-5.6 Juice 专项探针发现疑似混用或响应替换，建议结合其他证据复核"}
 		}
+		// astra_constants 的罚分不需要额外处理：上方 scorePenalty 累加对所有
+		// 证据项通用（juicePenalty 变量承载的是全部专项罚分），这里只补齐与
+		// Juice 同型的硬异常短路。仅 trace/覆盖轮弱异常不进入该分支。
+		if item.Kind == "astra_constants" && item.Evidence != nil && evidenceBool(item.Evidence, "hardAnomaly") {
+			return SummaryResult{"suspicious", score, 100, "Astra 专项探针发现疑似响应替换或混用，建议结合其他证据复核"}
+		}
 	}
 	checks = unscopedEvaluations(checks)
 	basic := findEvaluation(checks, "protocol_basic")

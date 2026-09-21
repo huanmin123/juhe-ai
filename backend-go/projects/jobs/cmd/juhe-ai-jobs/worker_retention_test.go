@@ -239,9 +239,13 @@ func seedDataRetention(t *testing.T, dir string) {
 		"INSERT INTO usage_record_shards (shard_key, bucket_date, shard_id, file_path, status, first_seen_at, created_at, updated_at) VALUES ('20200101:s01', '2020-01-01', 1, '"+filepath.Join(dir, "usage-shards", "shard.sqlite3")+"', 'active', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')",
 		`INSERT INTO usage_record_shard_entries (usage_id, shard_key, created_at, system_account_id, trace_id, traffic_source, indexed_at)
 		 VALUES ('usage-old', '20200101:s01', '2020-01-01T00:00:00.000Z', 'sys_a', '', '', '1970-01-01T00:00:00.000Z')`)
-	// 安全游标：两个必需 job 都建立 global 游标（PG 语义）与 shard 游标（SQLite 语义）。
+	// 安全游标：两个必需 job 都建立 global 游标（SQLite 清理链分片半区与
+	// 镜像半区共用的放行门，scope_id 必须为空串）；scope_type='usage_shard'
+	// 行是 Node 时代 client-ip 逐分片聚合产物的存量模拟，Go 清理链不再读取
+	// （游标表与存量行保留）。
 	mustExec(t, stats,
-		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'global', 'usage_stats_aggregation')`,
+		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'global', '', 'usage_stats_aggregation')`,
+		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'global', '', 'client_ip_stats_aggregation')`,
 		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'usage_shard', '20200101:s01', 'usage_stats_aggregation')`,
 		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name) VALUES ('2099-01-01T00:00:00.000Z', 'usage-x', 'usage_shard', '20200101:s01', 'client_ip_stats_aggregation')`)
 	shardPath := filepath.Join(dir, "usage-shards", "shard.sqlite3")

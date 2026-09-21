@@ -68,9 +68,12 @@ func TestW13ePGStatsSubtractDeleteEmptyArms(t *testing.T) {
 		rec.script("SELECT usage_id, shard_key", []string{
 			"usage_id", "shard_key", "system_account_id", "api_key_id", "account_id",
 		}, [][]driver.Value{{"rec-1", "sk-1", "sys-1", "key-1", "acc-1"}})
+		// Stats/Dataset 共享同一 opts：fired 记账合并，needle 命中任一句柄即可。
+		// fired 必须显式创建——open 助手按值收参，惰性初始化对调用者不可见。
+		opts := w13ePGOptions{failOn: []string{stage.failOn}, fired: &w13eFiredArms{}}
 		store := &RecordCleanupStore{
-			Stats:    w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{stage.failOn}}),
-			Dataset:  w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{stage.failOn}}),
+			Stats:    w13eOpenDecoratedPG(t, rec, opts),
+			Dataset:  w13eOpenDecoratedPG(t, rec, opts),
 			Business: openRecorderPG(rec),
 			Now:      kitNow,
 			Timezone: w13ePGZone(),
@@ -124,21 +127,21 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 	// StatsRetentionStore：PG 删除失败 / HasMore / 非法 cutoff。
 	{
 		rec := newPGRecorder()
-		store := &StatsRetentionStore{DB: w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_stats"}})}
+		store := &StatsRetentionStore{DB: w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_stats"}})}
 		if _, err := store.CleanupUsageStatsRetention(ctx, retention.UsageStatsRetentionInput{MinuteCutoffMinute: "2026091000"}); err == nil {
 			t.Fatalf("PG usage stats 清理失败应透传")
 		}
 	}
 	{
 		rec := newPGRecorder()
-		store := &StatsRetentionStore{DB: w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_stats.system_metrics_samples"}})}
+		store := &StatsRetentionStore{DB: w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_stats.system_metrics_samples"}})}
 		if _, err := store.CleanupSystemMetricsRetention(ctx, retention.SystemMetricsRetentionInput{SamplesCutoffIso: kitUpdatedAt}); err == nil {
 			t.Fatalf("PG system metrics 清理失败应透传")
 		}
 	}
 	{
 		rec := newPGRecorder()
-		store := &StatsRetentionStore{DB: w13eOpenDecoratedPG(rec, w13ePGOptions{})}
+		store := &StatsRetentionStore{DB: w13eOpenDecoratedPG(t, rec, w13ePGOptions{})}
 		counts, err := store.CleanupNonBusinessStatsData(ctx, kitUpdatedAt, 1, pgTestZone)
 		if err != nil || !counts.HasMore {
 			t.Fatalf("PG 批量上限应 HasMore: %+v %v", counts, err)
@@ -157,7 +160,7 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 	// 无游标 + 存在性查询失败。
 	{
 		rec := newPGRecorder()
-		failing := w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{"SELECT 1 AS found"}})
+		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"SELECT 1 AS found"}})
 		store := &UsageRecordsStore{Catalog: failing, Stats: failing}
 		if _, err := store.CleanupProcessedBefore(ctx, kitUpdatedAt, 5); err == nil {
 			t.Fatalf("PG 存在性查询失败应透传")
@@ -205,7 +208,7 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 		})
 		partitionScript(rec)
 		rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(7)}})
-		failing := w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{"DETACH PARTITION"}})
+		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DETACH PARTITION"}})
 		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 5); err == nil {
 			t.Fatalf("DETACH 失败应透传")
@@ -219,7 +222,7 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 		})
 		partitionScript(rec)
 		rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(7)}})
-		failing := w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{"DROP TABLE IF EXISTS"}})
+		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DROP TABLE IF EXISTS"}})
 		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 5); err == nil {
 			t.Fatalf("DROP TABLE 失败应透传")
@@ -233,7 +236,7 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 		})
 		partitionScript(rec)
 		rec.script("SELECT COUNT(*) AS total", []string{"total"}, [][]driver.Value{{int64(7)}})
-		failing := w13eOpenDecoratedPG(rec, w13ePGOptions{failCommit: true})
+		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failCommit: true})
 		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 5); err == nil {
 			t.Fatalf("分区裁剪 Commit 失败应透传")
@@ -295,7 +298,7 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 		rec := newPGRecorder()
 		seedJobState(rec)
 		pgIDs(rec, "rec-1")
-		failing := w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_usage.usage_record_shard_entries"}})
+		failing := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: []string{"DELETE FROM juhe_usage.usage_record_shard_entries"}})
 		store := &UsageRecordsStore{Catalog: failing, Stats: openRecorderPG(rec)}
 		if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 2); err == nil {
 			t.Fatalf("目录条目删除失败应透传")
@@ -321,7 +324,7 @@ func TestW13ePGDataRetentionArms(t *testing.T) {
 					"usage_id", "shard_key", "system_account_id", "api_key_id", "account_id",
 				}, [][]driver.Value{{"rec-1", "sk-1", "sys-1", "key-1", "acc-1"}})
 			}
-			failing := w13eOpenDecoratedPG(rec, tc.opts)
+			failing := w13eOpenDecoratedPG(t, rec, tc.opts)
 			plain := openRecorderPG(rec)
 			store := &UsageRecordsStore{Catalog: failing, Stats: plain}
 			if _, err := store.CleanupProcessedBefore(ctx, "2026-02-01T00:00:00.000Z", 2); err == nil {
@@ -337,7 +340,7 @@ func TestW13ePGCodexArms(t *testing.T) {
 	newStore := func(t *testing.T, rec *pgRecorder, failOn ...string) *CodexContextStore {
 		return &CodexContextStore{
 			Postgres:    true,
-			PG:          w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: failOn}),
+			PG:          w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: failOn}),
 			Now:         kitNow,
 			RetryJitter: func(int64) int64 { return 0 },
 		}
@@ -409,7 +412,7 @@ func TestW13ePGCodexArms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newPGRecorder()
 			pgCodexSeed(rec)
-			store := &CodexContextStore{Postgres: true, PG: w13eOpenDecoratedPG(rec, tc.opts), Now: kitNow}
+			store := &CodexContextStore{Postgres: true, PG: w13eOpenDecoratedPG(t, rec, tc.opts), Now: kitNow}
 			if _, err := store.CleanupExpiredStates(ctx, "2026-09-10T00:00:00.000Z", 10); err == nil {
 				t.Fatalf("%s 应透传错误", tc.name)
 			}
@@ -433,7 +436,7 @@ func TestW13ePGDeletedAccountArms(t *testing.T) {
 	ctx := ctx0()
 	newStore := func(t *testing.T, rec *pgRecorder, failOn ...string) *DeletedAccountStore {
 		// 所有句柄共享同一注入配置（failOn 作用于装饰句柄）。
-		decorated := w13eOpenDecoratedPG(rec, w13ePGOptions{failOn: failOn})
+		decorated := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: failOn})
 		return &DeletedAccountStore{
 			Business:           decorated,
 			Dataset:            decorated,

@@ -16,8 +16,8 @@ import (
 )
 
 // recordcleanup.go（SQLite 关联数据清理主链）的真实库语义测试：dataset
-// targets 表生命周期、分片安全游标门控、分批删除、statsWriter 结算时序与
-// pending targets 汇总。
+// targets 表生命周期、双聚合 global 游标放行门、分批删除、statsWriter 结算
+// 时序与 pending targets 汇总。
 
 type kitRecordFixture struct {
 	store   *RecordCleanupStore
@@ -55,9 +55,10 @@ func newKitRecordFixture(t *testing.T) *kitRecordFixture {
 }
 
 // addKitShard 建立一个分片：注册目录行 + scope catalog 行 + 记录行 +
-// （可选）双统计安全游标。
+// （可选）双聚合 global floor 游标（放行门是 fixture 级 global 游标而非
+// 逐分片游标；多分片同置 true 以 OR REPLACE 幂等去重）。
 func (f *kitRecordFixture) addKitShard(t *testing.T, shardKey, bucketDate string, shardID int64,
-	apiKeyID, systemAccountID, accountID string, withCursor bool, records []statsagg.UsageStatsRecordRow) string {
+	apiKeyID, systemAccountID, accountID string, withFloor bool, records []statsagg.UsageStatsRecordRow) string {
 	t.Helper()
 	filePath := shardFilePathForTest(f.root, strings.ReplaceAll(bucketDate, "-", ""), shardID)
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
@@ -84,14 +85,21 @@ func (f *kitRecordFixture) addKitShard(t *testing.T, shardKey, bucketDate string
       VALUES (?, ?, ?, ?, ?, ?)`, record.ID, shardKey, record.SystemAccountID,
 			record.APIKeyID, record.AccountID, record.CreatedAt)
 	}
-	if withCursor {
-		for _, jobName := range usageRecordCleanupRequiredCursorJobNames {
-			mustExecKit(t, f.stats, `INSERT INTO stats_job_state
-        (scope_type, scope_id, job_name, cursor_created_at, cursor_id)
-        VALUES ('usage_shard', ?, ?, '2026-01-05T03:00:00.000Z', 'rec-000')`, shardKey, jobName)
-		}
+	if withFloor {
+		f.seedKitGlobalFloor(t, "2026-01-05T03:00:00.000Z", "rec-000")
 	}
 	return filePath
+}
+
+// seedKitGlobalFloor 种双聚合 global 游标（OR REPLACE 幂等；语义同
+// seedStatsMirrorGlobalCursor，允许同一 fixture 内多次调用与覆盖）。
+func (f *kitRecordFixture) seedKitGlobalFloor(t *testing.T, createdAt, id string) {
+	t.Helper()
+	for _, jobName := range usageRecordCleanupRequiredCursorJobNames {
+		mustExecKit(t, f.stats, `INSERT OR REPLACE INTO stats_job_state
+      (scope_type, scope_id, job_name, cursor_created_at, cursor_id)
+      VALUES ('global', '', ?, ?, ?)`, jobName, createdAt, id)
+	}
 }
 
 func kitUsageRecord(id, systemAccountID, apiKeyID, accountID, createdAt string) statsagg.UsageStatsRecordRow {
@@ -99,10 +107,6 @@ func kitUsageRecord(id, systemAccountID, apiKeyID, accountID, createdAt string) 
 		ID: id, SystemAccountID: systemAccountID, APIKeyID: kitText(apiKeyID),
 		AccountID: kitText(accountID), CreatedAt: createdAt,
 	}
-}
-
-func kitCursorRows() *cleanupCursor {
-	return &cleanupCursor{CreatedAt: "2026-01-05T03:00:00.000Z", ID: "rec-000"}
 }
 
 // TestRecordCleanupTargetsLifecycle：api-key/account targets 的 upsert、
@@ -189,23 +193,25 @@ func TestRecordCleanupTargetsLifecycle(t *testing.T) {
 	}
 }
 
-// TestRecordCleanupShardCursorRequiresAllJobs：双游标齐备才放行，缺一返回 nil。
-func TestRecordCleanupShardCursorRequiresAllJobs(t *testing.T) {
+// TestRecordCleanupAggregationFloorRequiresAllJobs：双聚合 global 游标齐备才
+// 放行（floor 取更早者），缺一返回 nil。
+func TestRecordCleanupAggregationFloorRequiresAllJobs(t *testing.T) {
 	f := newKitRecordFixture(t)
 	ctx := context.Background()
 	f.addKitShard(t, "sk-1", "2026-01-05", 1, "key-1", "sys-1", "acc-1", false, nil)
-	cursor, err := f.store.shardCursor(ctx, "sk-1")
+	cursor, err := f.store.sqliteAggregationFloorCursor(ctx)
+	if err != nil || cursor != nil {
+		t.Fatalf("无游标应返回 nil：%+v, %v", cursor, err)
+	}
+	seedStatsMirrorGlobalCursor(t, f.stats, "usage_stats_aggregation", "2026-01-05T03:00:00.000Z", "rec-000")
+	cursor, err = f.store.sqliteAggregationFloorCursor(ctx)
 	if err != nil || cursor != nil {
 		t.Fatalf("单游标应返回 nil：%+v, %v", cursor, err)
 	}
-	for _, jobName := range usageRecordCleanupRequiredCursorJobNames {
-		mustExecKit(t, f.stats, `INSERT INTO stats_job_state
-      (scope_type, scope_id, job_name, cursor_created_at, cursor_id)
-      VALUES ('usage_shard','sk-1',?, '2026-01-05T03:00:00.000Z','rec-000')`, jobName)
-	}
-	cursor, err = f.store.shardCursor(ctx, "sk-1")
-	if err != nil || cursor == nil || cursor.ID != "rec-000" {
-		t.Fatalf("双游标应返回最早游标：%+v, %v", cursor, err)
+	seedStatsMirrorGlobalCursor(t, f.stats, "client_ip_stats_aggregation", "2026-01-04T00:00:00.000Z", "rec-pre")
+	cursor, err = f.store.sqliteAggregationFloorCursor(ctx)
+	if err != nil || cursor == nil || cursor.CreatedAt != "2026-01-04T00:00:00.000Z" || cursor.ID != "rec-pre" {
+		t.Fatalf("双游标应返回更早者：%+v, %v", cursor, err)
 	}
 }
 
@@ -256,8 +262,8 @@ func TestCleanupAPIKeyRelatedSQLiteCompletes(t *testing.T) {
 	}
 }
 
-// TestCleanupAPIKeyRelatedSQLiteDefersOnUncoveredShard：另一分片缺安全游标 →
-// 阻塞原因 + 目标保留。
+// TestCleanupAPIKeyRelatedSQLiteDefersOnUncoveredShard：另一分片存在 floor
+// 之外的记录（未聚合）→ 阻塞原因 + 目标保留；floor 内记录正常删除。
 func TestCleanupAPIKeyRelatedSQLiteDefersOnUncoveredShard(t *testing.T) {
 	f := newKitRecordFixture(t)
 	ctx := context.Background()
@@ -272,7 +278,7 @@ func TestCleanupAPIKeyRelatedSQLiteDefersOnUncoveredShard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CleanupAPIKeyRelatedSQLite: %v", err)
 	}
-	if !result.HasMore || !strings.Contains(result.BlockedReason, "尚未被对应分片统计安全游标覆盖") {
+	if !result.HasMore || !strings.Contains(result.BlockedReason, "尚未被统计聚合安全游标覆盖") {
 		t.Fatalf("result = %+v", result)
 	}
 	// sk-1 行完成 扣减 + 分片删除 两次结算；HasMore 时不再触发 final stats。
@@ -400,19 +406,21 @@ func TestCleanupAccountRelatedSQLiteCompletes(t *testing.T) {
 func TestCleanupPendingSummaries(t *testing.T) {
 	f := newKitRecordFixture(t)
 	ctx := context.Background()
+	// fixture 级双聚合 global floor：rec-f 在 floor 内、rec-b 在 floor 外。
+	f.seedKitGlobalFloor(t, "2026-01-05T03:00:00.000Z", "rec-000")
 	// key-done：无任何分片 → 完成并清除。
 	if err := f.store.upsertAPIKeyTarget(ctx, "key-done", "sys-1", kitUpdatedAt); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// key-blocked：分片缺游标 → 阻塞。
-	f.addKitShard(t, "sk-blocked", "2026-01-05", 3, "key-blocked", "sys-1", "acc-b", false, []statsagg.UsageStatsRecordRow{
-		kitUsageRecord("rec-b", "sys-1", "key-blocked", "acc-b", "2026-01-05T01:00:00.000Z"),
+	// key-blocked：记录在 global floor 之外（未聚合）→ 阻塞。
+	f.addKitShard(t, "sk-blocked", "2026-01-06", 3, "key-blocked", "sys-1", "acc-b", false, []statsagg.UsageStatsRecordRow{
+		kitUsageRecord("rec-b", "sys-1", "key-blocked", "acc-b", "2026-01-06T01:00:00.000Z"),
 	})
 	if err := f.store.upsertAPIKeyTarget(ctx, "key-blocked", "sys-1", kitUpdatedAt); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// key-fail：statsWriter 报错 → failed。
-	f.addKitShard(t, "sk-fail", "2026-01-05", 4, "key-fail", "sys-1", "acc-f", true, []statsagg.UsageStatsRecordRow{
+	f.addKitShard(t, "sk-fail", "2026-01-05", 4, "key-fail", "sys-1", "acc-f", false, []statsagg.UsageStatsRecordRow{
 		kitUsageRecord("rec-f", "sys-1", "key-fail", "acc-f", "2026-01-05T01:00:00.000Z"),
 	})
 	if err := f.store.upsertAPIKeyTarget(ctx, "key-fail", "sys-1", kitUpdatedAt); err != nil {

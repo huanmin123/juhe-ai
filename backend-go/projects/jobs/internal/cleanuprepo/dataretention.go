@@ -563,7 +563,7 @@ func (s *UsageRecordsStore) CleanupProcessedBefore(ctx context.Context, cutoffCr
 }
 
 func (s *UsageRecordsStore) missingCursorBlockedReason() string {
-	return "部分使用记录分片的统计安全游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试"
+	return "使用记录清理的统计聚合安全游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试"
 }
 
 func (s *UsageRecordsStore) cleanupProcessedBeforeSQLite(ctx context.Context, cutoffCreatedAt string, batch int) (retention.UsageRecordsBatch, error) {
@@ -578,9 +578,20 @@ func (s *UsageRecordsStore) cleanupProcessedBeforeSQLite(ctx context.Context, cu
 }
 
 // cleanupShardRowsBeforeSQLite 是 SQLite 清理的分片半区
-// （原 cleanupProcessedBeforeSQLite 正文，照 Node SQLite 驱动路径）。
+// （照 Node SQLite 驱动路径的行选择/删除；放行门为方案三改造后的双聚合
+// global 游标 floor，与镜像半区共用同一把尺子）：
+//   - 分片行可删条件 = (created_at, id) 落在双聚合 global 游标 floor 之前
+//     （含 floor 时刻但 id 更小）且 created_at 早于保留期 cutoff，删除谓词与
+//     PG 侧 selectPostgresCleanupRows / 镜像半区 selectStatsMirrorCleanupRows 同形；
+//   - 任一 global 游标缺失且有候选行 → BlockedReason 上报、零删除。
+//
+// scope_type='usage_shard' 游标是 Node 时代 client-ip 逐分片聚合的产物：
+// Go 聚合器（statsagg）只写 global 游标、聚合输入已改读 stats 库镜像表，
+// 本链不再以 usage_shard 游标为放行前提（recordcleanup 关联清理链同样已改
+// 用本文件的双聚合 global floor，usage_shard 游标全仓无消费方）；游标表与
+// 存量行保留不动。
 func (s *UsageRecordsStore) cleanupShardRowsBeforeSQLite(ctx context.Context, cutoffCreatedAt string, batch int) (retention.UsageRecordsBatch, error) {
-	cursor, err := s.sqliteFloorCursor(ctx)
+	cursor, err := s.sqliteAggregationFloorCursor(ctx)
 	if err != nil {
 		return retention.UsageRecordsBatch{}, err
 	}
@@ -601,18 +612,6 @@ func (s *UsageRecordsStore) cleanupShardRowsBeforeSQLite(ctx context.Context, cu
 	rowsToDelete := rows
 	if len(rowsToDelete) > batch {
 		rowsToDelete = rowsToDelete[:batch]
-	}
-	blockedReason, err := s.sqliteBlockedReasonForRows(ctx, rowsToDelete)
-	if err != nil {
-		return retention.UsageRecordsBatch{}, err
-	}
-	if blockedReason != "" {
-		return retention.UsageRecordsBatch{
-			CutoffCreatedAt:       cutoffCreatedAt,
-			SafetyCursorCreatedAt: cursor.CreatedAt,
-			SafetyCursorID:        cursor.ID,
-			BlockedReason:         blockedReason,
-		}, nil
 	}
 	deletedRows, err := s.deleteSQLiteShardRows(ctx, rowsToDelete)
 	if err != nil {
@@ -644,8 +643,9 @@ func (s *UsageRecordsStore) cleanupShardRowsBeforeSQLite(ctx context.Context, cu
 //     失败整批回滚，下一轮清理继续。
 
 // applyStatsMirrorRetention 在分片半区结果上追加 stats 镜像半区：
-// DeletedRows/HasMore 合并；分片半区已有 BlockedReason 时保持不变
-// （分片游标是更早的放行门，镜像阻塞只在分片放行时可见）。
+// DeletedRows/HasMore 合并；两半区共用同一双聚合 global floor 放行门
+// （sqliteAggregationFloorCursor），分片半区已有 BlockedReason 时保持不变
+// （BlockedReason 分片优先，镜像阻塞只在分片放行时可见）。
 func (s *UsageRecordsStore) applyStatsMirrorRetention(ctx context.Context, result retention.UsageRecordsBatch, cutoffCreatedAt string, batch int) (retention.UsageRecordsBatch, error) {
 	deletedRows, hasMore, blockedReason, err := s.cleanupStatsMirrorBefore(ctx, cutoffCreatedAt, batch)
 	if err != nil {
@@ -666,7 +666,7 @@ func (s *UsageRecordsStore) statsMirrorMissingCursorBlockedReason() string {
 // cleanupStatsMirrorBefore 执行一个 stats 镜像清理批次，返回
 // (删除行数, 是否还有剩余, 阻塞原因, 错误)。
 func (s *UsageRecordsStore) cleanupStatsMirrorBefore(ctx context.Context, cutoffCreatedAt string, batch int) (int64, bool, string, error) {
-	cursor, err := s.sqliteStatsMirrorFloorCursor(ctx)
+	cursor, err := s.sqliteAggregationFloorCursor(ctx)
 	if err != nil {
 		return 0, false, "", err
 	}
@@ -695,11 +695,13 @@ func (s *UsageRecordsStore) cleanupStatsMirrorBefore(ctx context.Context, cutoff
 	return deletedRows, len(rows) > batch, "", nil
 }
 
-// sqliteStatsMirrorFloorCursor 照 postgresFloorCursor 的 global 游标半区
-// （SQLite 方言）：读双聚合 job 的 global 游标，任一缺失返回 nil，
-// 齐备时取 (cursor_created_at, cursor_id) 更早者。
-func (s *UsageRecordsStore) sqliteStatsMirrorFloorCursor(ctx context.Context) (*cleanupCursor, error) {
-	query := s.Stats.Bind(fmt.Sprintf(`
+// sqliteAggregationFloorCursorAt 是双聚合 global 游标 floor 的共享读取实现
+// （照 postgresFloorCursor 的 global 游标半区，SQLite 方言）：读双聚合 job
+// 的 global 游标，任一缺失返回 nil，齐备时取 (cursor_created_at, cursor_id)
+// 更早者。UsageRecordsStore（dataretention 分片/镜像半区）与
+// RecordCleanupStore（recordcleanup 关联清理链）共用同一把尺子。
+func sqliteAggregationFloorCursorAt(ctx context.Context, stats *DB) (*cleanupCursor, error) {
+	query := stats.Bind(fmt.Sprintf(`
       SELECT job_name, cursor_created_at, cursor_id
       FROM stats_job_state
       WHERE scope_type = 'global'
@@ -708,8 +710,8 @@ func (s *UsageRecordsStore) sqliteStatsMirrorFloorCursor(ctx context.Context) (*
         AND cursor_created_at IS NOT NULL
         AND cursor_id IS NOT NULL
       ORDER BY cursor_created_at ASC, cursor_id ASC
-	`, s.Stats.BindIn(len(usageRecordCleanupRequiredCursorJobNames))))
-	rows, err := s.Stats.QueryContext(ctx, query, stringSliceToAny(usageRecordCleanupRequiredCursorJobNames)...)
+	`, stats.BindIn(len(usageRecordCleanupRequiredCursorJobNames))))
+	rows, err := stats.QueryContext(ctx, query, stringSliceToAny(usageRecordCleanupRequiredCursorJobNames)...)
 	if err != nil {
 		return nil, err
 	}
@@ -741,6 +743,12 @@ func (s *UsageRecordsStore) sqliteStatsMirrorFloorCursor(ctx context.Context) (*
 		}
 	}
 	return firstCursor, nil
+}
+
+// sqliteAggregationFloorCursor 是分片半区与镜像半区共享的放行门读取入口
+// （dataretention 侧；语义见 sqliteAggregationFloorCursorAt）。
+func (s *UsageRecordsStore) sqliteAggregationFloorCursor(ctx context.Context) (*cleanupCursor, error) {
+	return sqliteAggregationFloorCursorAt(ctx, s.Stats)
 }
 
 func (s *UsageRecordsStore) statsMirrorHasRecordsBefore(ctx context.Context, cutoffCreatedAt string) (bool, error) {
@@ -826,37 +834,6 @@ func (s *UsageRecordsStore) deleteStatsMirrorRows(ctx context.Context, rows []Sh
 	return deletedRows, nil
 }
 
-func (s *UsageRecordsStore) sqliteFloorCursor(ctx context.Context) (*cleanupCursor, error) {
-	query := s.Stats.Bind(fmt.Sprintf(`
-      SELECT cursor_created_at, cursor_id
-      FROM stats_job_state
-      WHERE scope_type = 'usage_shard'
-        AND job_name IN (%s)
-        AND cursor_created_at IS NOT NULL
-        AND cursor_id IS NOT NULL
-      ORDER BY cursor_created_at ASC, cursor_id ASC
-      LIMIT 1
-	`, s.Stats.BindIn(len(usageRecordCleanupRequiredCursorJobNames))))
-	rows, err := s.Stats.QueryContext(ctx, query, stringSliceToAny(usageRecordCleanupRequiredCursorJobNames)...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var createdAt, id sql.NullString
-		if err := rows.Scan(&createdAt, &id); err != nil {
-			return nil, err
-		}
-		cursorCreatedAt := strings.TrimSpace(createdAt.String)
-		cursorID := strings.TrimSpace(id.String)
-		if cursorCreatedAt != "" && cursorID != "" {
-			return &cleanupCursor{CreatedAt: cursorCreatedAt, ID: cursorID}, nil
-		}
-		return nil, rows.Err()
-	}
-	return nil, rows.Err()
-}
-
 func (s *UsageRecordsStore) sqliteHasRecordsBefore(ctx context.Context, cutoffCreatedAt string) (bool, error) {
 	query := s.Catalog.Bind(`
       SELECT ue.usage_id
@@ -923,73 +900,6 @@ type ShardCleanupRow struct {
 	ID        string
 	CreatedAt string
 	Location  ShardLocation
-}
-
-func (s *UsageRecordsStore) sqliteBlockedReasonForRows(ctx context.Context, rows []ShardCleanupRow) (string, error) {
-	seen := map[string]bool{}
-	shardKeys := []string{}
-	for _, row := range rows {
-		key := strings.TrimSpace(row.Location.ShardKey)
-		if key == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		shardKeys = append(shardKeys, key)
-	}
-	if len(shardKeys) == 0 {
-		return "", nil
-	}
-	covered, err := s.sqliteCursorShardKeysForShards(ctx, shardKeys)
-	if err != nil {
-		return "", err
-	}
-	for _, key := range shardKeys {
-		if !covered[key] {
-			return s.missingCursorBlockedReason(), nil
-		}
-	}
-	return "", nil
-}
-
-func (s *UsageRecordsStore) sqliteCursorShardKeysForShards(ctx context.Context, shardKeys []string) (map[string]bool, error) {
-	covered := map[string]bool{}
-	for _, chunk := range chunkValues(uniqueNonEmpty(shardKeys), 900) {
-		// chunkValues 不产出空块，空块守卫已按 w13e 收尾授权删除。
-		query := s.Stats.Bind(fmt.Sprintf(`
-        SELECT scope_id
-        FROM stats_job_state
-        WHERE scope_type = 'usage_shard'
-          AND scope_id IN (%s)
-          AND job_name IN (%s)
-          AND cursor_created_at IS NOT NULL
-          AND cursor_id IS NOT NULL
-        GROUP BY scope_id
-        HAVING COUNT(DISTINCT job_name) = ?
-			`, s.Stats.BindIn(len(chunk)), s.Stats.BindIn(len(usageRecordCleanupRequiredCursorJobNames))))
-		args := stringSliceToAny(chunk)
-		args = append(args, stringSliceToAny(usageRecordCleanupRequiredCursorJobNames)...)
-		args = append(args, len(usageRecordCleanupRequiredCursorJobNames))
-		rows, err := s.Stats.QueryContext(ctx, query, args...)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var scopeID sql.NullString
-			if err := rows.Scan(&scopeID); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			if normalized := strings.TrimSpace(scopeID.String); normalized != "" {
-				covered[normalized] = true
-			}
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		rows.Close()
-	}
-	return covered, nil
 }
 
 // deleteSQLiteShardRows 照 deleteUsageRecordShardRows：按分片删行，再删目录条目。

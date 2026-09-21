@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -395,13 +396,14 @@ func TestMergeRouteAuditAttemptGroupIdentity(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && len(dispatcher.logs) == 0 {
+	for time.Now().Before(deadline) && len(dispatcher.snapshot()) == 0 {
 		time.Sleep(25 * time.Millisecond)
 	}
-	if len(dispatcher.logs) == 0 {
+	capturedLogs := dispatcher.snapshot()
+	if len(capturedLogs) == 0 {
 		t.Fatal("audit log 未派发")
 	}
-	log := dispatcher.logs[len(dispatcher.logs)-1]
+	log := capturedLogs[len(capturedLogs)-1]
 	// 请求级审计身份 = 窗口组（首片段组 group_main）。
 	if log.GroupID != fixture.groupID {
 		t.Errorf("request-level audit GroupID = %q, want %s", log.GroupID, fixture.groupID)
@@ -605,13 +607,25 @@ func (q *mergeStubQuota) CheckBatchAsync(_ context.Context, _ gatewayruntimecach
 	return decisions, nil
 }
 
-// mergeCapturingAuditDispatcher 捕获最终化审计日志。
+// mergeCapturingAuditDispatcher 捕获最终化审计日志。审计派发发生在响应
+// 返回之后的异步 finalize goroutine，与测试轮询读取并发：logs 必须由互斥
+// 锁保护，否则读者可能观察到 len 已更新而元素字段尚未可见的撕裂状态
+// （GroupID 读成空串），全量负载下偶发断言失败。
 type mergeCapturingAuditDispatcher struct {
+	mu   sync.Mutex
 	logs []gatewayusage.AuditLogInput
 }
 
 func (d *mergeCapturingAuditDispatcher) DispatchAuditLog(_ gatewayusage.Ctx, input gatewayusage.AuditLogInput) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.logs = append(d.logs, input)
+}
+
+func (d *mergeCapturingAuditDispatcher) snapshot() []gatewayusage.AuditLogInput {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]gatewayusage.AuditLogInput(nil), d.logs...)
 }
 
 func mergeRouteRequest(model string) *gatewaypreauth.GatewayRequest {

@@ -416,7 +416,23 @@ func startFullchainFixture(t *testing.T) *fullchainFixture {
 	jobs := startFullchainJobsWorker(t, gw)
 	f := &fullchainFixture{t: t, gw: gw, admin: admin, mock: mock, jobs: jobs}
 	f.raiseSystemAPIRateLimits()
+	f.ensureProbeModelInCatalog()
 	return f
+}
+
+// ensureProbeModelInCatalog 把验收专用健康检查探针模型注册进 gpt 供应商
+// 目录：账户创建契约收紧为「支持模型必须在供应商模型目录内」（2026-09 模型
+// 目录复查）后，夹具的探针模型也必须先入目录。隔离实例每次空库启动，单次
+// 注册即可；零价自定义模型只承载探针流量隔离，不参与计费断言。
+func (f *fullchainFixture) ensureProbeModelInCatalog() {
+	f.t.Helper()
+	f.admin.do(http.MethodPost, "/__aisys__/api/providers/gpt/models", map[string]any{
+		"model":          fullchainProbeModel,
+		"scope":          "global",
+		"status":         "active",
+		"inputUsdPer1M":  0,
+		"outputUsdPer1M": 0,
+	}, wantStatus(http.StatusCreated))
 }
 
 // raiseSystemAPIRateLimits 解除管理面限流对全矩阵的干扰：15 个场景共享

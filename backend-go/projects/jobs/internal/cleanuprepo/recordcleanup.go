@@ -13,9 +13,10 @@ import (
 )
 
 // api-key-record-cleanup.ts / account-record-cleanup.ts 的关联数据清理链移植：
-// dataset targets 表、分片游标覆盖检查、分批删除、统计扣减结算
-// （CleanupDeletedApiKeyRecordStats / CleanupDeletedAccountRecordStats）与
-// 派生窗口刷新挂钩。
+// dataset targets 表、双聚合 global 游标放行门（usage_shard 逐分片游标已废，
+// 与 dataretention 半区共用 sqliteAggregationFloorCursorAt）、分批删除、统计
+// 扣减结算（CleanupDeletedApiKeyRecordStats / CleanupDeletedAccountRecordStats）
+// 与派生窗口刷新挂钩。
 
 const (
 	recordCleanupBatchLimit = 100
@@ -69,7 +70,7 @@ func cleanupPendingReason(hasMoreCoveredRows, hasUncoveredRows bool) string {
 		return "仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试"
 	}
 	if hasUncoveredRows {
-		return "仍有使用记录尚未被对应分片统计安全游标覆盖，已保留待后台重试清理"
+		return "仍有使用记录尚未被统计聚合安全游标覆盖，已保留待后台重试清理"
 	}
 	return "仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理"
 }
@@ -242,43 +243,17 @@ func parseStringArrayJSON(value string) []string {
 	return uniqueNonEmpty(parsed)
 }
 
-// ---- 分片游标 ----
+// ---- 统计安全游标 ----
 
-func (s *RecordCleanupStore) shardCursor(ctx context.Context, shardKey string) (*cleanupCursor, error) {
-	rows, err := queryRows(ctx, s.Stats, s.Stats.Bind(fmt.Sprintf(`
-    SELECT job_name, cursor_created_at, cursor_id
-    FROM stats_job_state
-    WHERE scope_type = 'usage_shard'
-      AND scope_id = ?
-      AND job_name IN (%s)
-      AND cursor_created_at IS NOT NULL
-      AND cursor_id IS NOT NULL
-    ORDER BY cursor_created_at ASC, cursor_id ASC
-	`, s.Stats.BindIn(len(usageRecordCleanupRequiredCursorJobNames)))),
-		append([]any{shardKey}, stringSliceToAny(usageRecordCleanupRequiredCursorJobNames)...)...)
-	if err != nil {
-		return nil, err
-	}
-	jobNames := map[string]bool{}
-	var first *cleanupCursor
-	for _, row := range rows {
-		if name := strings.TrimSpace(textOf(row["job_name"])); name != "" {
-			jobNames[name] = true
-		}
-		if first == nil {
-			createdAt := strings.TrimSpace(textOf(row["cursor_created_at"]))
-			id := strings.TrimSpace(textOf(row["cursor_id"]))
-			if createdAt != "" && id != "" {
-				first = &cleanupCursor{CreatedAt: createdAt, ID: id}
-			}
-		}
-	}
-	for _, jobName := range usageRecordCleanupRequiredCursorJobNames {
-		if !jobNames[jobName] {
-			return nil, nil
-		}
-	}
-	return first, nil
+// sqliteAggregationFloorCursor 是关联清理链的放行门：与 dataretention 的
+// 分片/镜像半区共用 sqliteAggregationFloorCursorAt（双聚合 global 游标
+// floor，语义对齐 PG 侧 postgresUsageRecordCleanupFloorCursor）。原
+// scope_type='usage_shard' 逐分片游标是 Node 时代 client-ip 逐分片聚合的
+// 产物，Go 聚合器只写 global 游标（SQLite standalone 下聚合输入为 stats 库
+// usage_records 镜像表），usage_shard 游标已无生产写入方、会把未覆盖分片
+// 永久卡在 pending，故本链不再读取。
+func (s *RecordCleanupStore) sqliteAggregationFloorCursor(ctx context.Context) (*cleanupCursor, error) {
+	return sqliteAggregationFloorCursorAt(ctx, s.Stats)
 }
 
 // ---- 分片使用记录选择（SQLite）----
@@ -308,14 +283,16 @@ func (s *RecordCleanupStore) selectAccountUsageRows(ctx context.Context, account
 func (s *RecordCleanupStore) selectUsageRows(ctx context.Context, window ShardLocationWindow, limit int, scopeColumn string, scopeArgs ...string) ([]shardUsageRow, bool, bool, error) {
 	batchLimitValue := batchLimit(limit)
 	queryLimitValue := batchLimitValue + 1
+	// 放行门：双聚合 global 游标 floor（每批读一次，齐备时所有分片共用同一
+	// 把尺子；缺失时不删任何行，未覆盖分片以 pending 上报）。
+	cursor, err := s.sqliteAggregationFloorCursor(ctx)
+	if err != nil {
+		return nil, false, false, err
+	}
 	var rows []shardUsageRow
 	hasUncoveredRows := false
 	for _, location := range window.Locations {
 		shardDB, err := s.Shards.Open(location.FilePath)
-		if err != nil {
-			return nil, false, false, err
-		}
-		cursor, err := s.shardCursor(ctx, location.ShardKey)
 		if err != nil {
 			return nil, false, false, err
 		}

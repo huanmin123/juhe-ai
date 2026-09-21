@@ -24,8 +24,16 @@ func runPGStages(t *testing.T, stages []pgStage, build func(t *testing.T, stage 
 	t.Helper()
 	for _, stage := range stages {
 		t.Run(stage.name, func(t *testing.T) {
-			if err := build(t, stage); err == nil {
+			err := build(t, stage)
+			if err == nil {
 				t.Fatalf("阶段 %s（failOn=%s）应产生错误", stage.name, stage.failOn)
+			}
+			// 错误必须来自注入器（kitFailingPGConn 的「注入失败：」前缀）且
+			// 文本含本阶段 needle（oneLineSQL 会把命中语句全文带回）：否则
+			// 「注入未命中、错误来自别处」的伪覆盖臂会假绿。
+			needle := strings.Join(strings.Fields(stage.failOn), " ")
+			if !strings.Contains(err.Error(), "注入失败：") || !strings.Contains(err.Error(), needle) {
+				t.Fatalf("阶段 %s（failOn=%s）错误应来自注入器命中的语句，实际：%v", stage.name, stage.failOn, err)
 			}
 		})
 	}
@@ -60,7 +68,7 @@ func TestPGAPIKeyFlowErrorStages(t *testing.T) {
 		{"catalog entries", "usage_record_shard_entries"},
 		{"api key scope shrink", "usage_record_api_key_shards"},
 		{"partition delete", "DELETE FROM juhe_usage.usage_records"},
-		{"mark deleted", "shard_deleted_at"},
+		{"mark deleted", "SET shard_deleted_at = COALESCE"},
 		{"usage exists", "SELECT 1 AS found"},
 		{"final stats", "scope_type = 'api_key'"},
 		{"deductions clear", "usage_record_cleanup_deductions WHERE api_key_id"},
@@ -125,7 +133,7 @@ func TestPGAccountFlowErrorStages(t *testing.T) {
 		{"catalog entries", "usage_record_shard_entries"},
 		{"account scope shrink", "usage_record_account_shards"},
 		{"partition delete", "DELETE FROM juhe_usage.usage_records"},
-		{"mark deleted", "shard_deleted_at"},
+		{"mark deleted", "SET shard_deleted_at = COALESCE"},
 		{"usage exists", "SELECT 1 AS found"},
 		{"final stats", "scope_type IN ('account', 'caller_account')"},
 		{"stats exists", "FROM juhe_stats.usage_rank_snapshots"},
@@ -306,31 +314,45 @@ func TestChatPGErrorStages(t *testing.T) {
 		})
 	})
 	t.Run("assets", func(t *testing.T) {
-		stages := []pgStage{
-			{"select", "FROM juhe_chat.chat_assets"},
-			{"claim", "cleanup_status = 'claimed'"},
-			{"claimed select", "SELECT * FROM juhe_chat.chat_assets"},
-			{"advisory lock", "pg_advisory_xact_lock"},
-			{"asset delete", "DELETE FROM juhe_chat.chat_assets"},
-			{"usage update", "UPDATE juhe_chat.chat_user_asset_usage"},
-			{"usage delete", "DELETE FROM juhe_chat.chat_user_asset_usage"},
+		// absorbed=true 的阶段位于 completeAssetDeletion 内：失败计入
+		// FailedAssets 而不中止流程，断言以 FailedAssets==1 为准；其余阶段
+		// 错误外传（须含注入器前缀，防止「错误来自别处」假绿）。
+		stages := []struct {
+			name     string
+			failOn   string
+			absorbed bool
+		}{
+			{"select", "FROM juhe_chat.chat_assets", false},
+			{"claim", "cleanup_status = 'claimed'", false},
+			{"claimed select", "SELECT * FROM juhe_chat.chat_assets", false},
+			{"advisory lock", "pg_advisory_xact_lock", true},
+			{"asset delete", "DELETE FROM juhe_chat.chat_assets", true},
+			{"usage update", "UPDATE juhe_chat.chat_user_asset_usage", true},
+			{"usage delete", "DELETE FROM juhe_chat.chat_user_asset_usage", true},
 		}
-		runPGStages(t, stages, func(t *testing.T, stage pgStage) error {
-			rec := newPGRecorder()
-			store := &ChatStore{DB: openKitFailingRecorderPG(rec, stage.failOn), Now: kitNow}
-			rec.script("FROM juhe_chat.chat_assets", []string{"id", "system_account_id", "storage_key",
-				"preview_storage_key", "quota_bytes", "cleanup_attempt_count"},
-				[][]driver.Value{{"asset-1", "sys-1", "missing.bin", nil, int64(100), int64(1)}})
-			outcome, err := store.cleanupExpiredAssets(context.Background(), kitUpdatedAt, 5)
-			if err != nil {
-				return err
-			}
-			// 结算/配额阶段的失败被计入 FailedAssets 而不中止流程。
-			if outcome.FailedAssets > 0 {
-				return nil
-			}
-			return context.Canceled
-		})
+		for _, stage := range stages {
+			t.Run(stage.name, func(t *testing.T) {
+				rec := newPGRecorder()
+				store := &ChatStore{DB: openKitFailingRecorderPG(rec, stage.failOn), Now: kitNow}
+				// 认领链按 FIFO 消费三次同前缀行集（候选 SELECT / 认领后
+				// SELECT / 删除前复核 SELECT）；少登记一次则后续语句不执行。
+				for i := 0; i < 3; i++ {
+					rec.script("FROM juhe_chat.chat_assets", []string{"id", "system_account_id", "storage_key",
+						"preview_storage_key", "quota_bytes", "cleanup_attempt_count"},
+						[][]driver.Value{{"asset-1", "sys-1", "missing.bin", nil, int64(100), int64(1)}})
+				}
+				outcome, err := store.cleanupExpiredAssets(context.Background(), kitUpdatedAt, 5)
+				if stage.absorbed {
+					if err != nil || outcome.FailedAssets != 1 {
+						t.Fatalf("阶段 %s 注入应计入 FailedAssets：%+v %v", stage.name, outcome, err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), "注入失败：") {
+					t.Fatalf("阶段 %s 注入应外传错误：%+v %v", stage.name, outcome, err)
+				}
+			})
+		}
 	})
 }
 

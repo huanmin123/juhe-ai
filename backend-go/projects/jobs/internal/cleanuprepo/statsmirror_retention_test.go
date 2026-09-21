@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
 )
 
 // stats 库 usage_records 镜像（usagewriter mirrorStatsUsageRecords 的写入侧）
@@ -172,5 +174,41 @@ func TestStatsMirrorRetentionBatchHasMore(t *testing.T) {
 	}
 	if got := len(statsMirrorRemainingIDs(t, stats)); got != 0 {
 		t.Fatalf("多批后应清空，残余 = %d", got)
+	}
+}
+
+// TestUsageRecordsCleanupSQLiteMergesShardAndMirrorHalves：global 双游标齐备
+// 时分片半区与镜像半区同一批各自删除，DeletedRows 相加、HasMore 取或。
+func TestUsageRecordsCleanupSQLiteMergesShardAndMirrorHalves(t *testing.T) {
+	f := newKitRecordFixture(t)
+	store := &UsageRecordsStore{Catalog: f.catalog, Stats: f.stats, Shards: f.shards}
+	ctx := context.Background()
+	seedStatsMirrorGlobalCursor(t, f.stats, "usage_stats_aggregation", "2026-02-01T00:00:00.000Z", "zz")
+	seedStatsMirrorGlobalCursor(t, f.stats, "client_ip_stats_aggregation", "2026-02-01T00:00:00.000Z", "zz")
+	// 分片半区候选：一条超期分片行；镜像半区候选：两条超期镜像行。
+	f.addKitShard(t, "sk-merge", "2026-01-05", 1, "key-1", "sys-1", "acc-1", false, []statsagg.UsageStatsRecordRow{
+		kitUsageRecord("rec-shard", "sys-1", "key-1", "acc-1", "2026-01-01T00:00:00.000Z"),
+	})
+	seedStatsMirrorRecord(t, f.stats, "m-1", "2026-01-01T00:00:00.000Z")
+	seedStatsMirrorRecord(t, f.stats, "m-2", "2026-01-02T00:00:00.000Z")
+
+	// batch=1：分片半区删 1（HasMore=false），镜像半区删 1（HasMore=true）。
+	batch, err := store.CleanupProcessedBefore(ctx, "2026-09-10T00:00:00.000Z", 1)
+	if err != nil {
+		t.Fatalf("CleanupProcessedBefore: %v", err)
+	}
+	if batch.DeletedRows != 2 || !batch.HasMore || batch.BlockedReason != "" {
+		t.Fatalf("合并批次 = %+v", batch)
+	}
+	// 第二批清空镜像剩余行，HasMore 归零。
+	batch, err = store.CleanupProcessedBefore(ctx, "2026-09-10T00:00:00.000Z", 1)
+	if err != nil || batch.DeletedRows != 1 || batch.HasMore || batch.BlockedReason != "" {
+		t.Fatalf("收尾批次 = %+v, %v", batch, err)
+	}
+	if got := mustQueryCountKit(t, f.stats, `SELECT COUNT(*) FROM usage_records`); got != 0 {
+		t.Fatalf("镜像应清空，残余 = %d", got)
+	}
+	if got := mustQueryCountKit(t, f.catalog, `SELECT COUNT(*) FROM usage_record_shard_entries`); got != 0 {
+		t.Fatalf("分片目录条目应清空，残余 = %d", got)
 	}
 }

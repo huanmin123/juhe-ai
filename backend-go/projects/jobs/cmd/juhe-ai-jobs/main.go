@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -45,6 +46,13 @@ func main() {
 // 直接转发真实现；进程内测试覆写为可编程取消的 ctx，以驱动优雅停机序列
 // （真实 SIGTERM 在测试进程内无法安全投递）。
 var hooksSignalNotifyContext = signal.NotifyContext
+
+// hooksSQLiteDirectInputLayoutEnsured 是 J1 sqlite 直读布局前置成功之后、只
+// 读直读句柄打开之前的测试注入点：生产路径恒为 nil 不介入。布局前置与只读
+// 句柄的 DSN 路径转义统一后两者解析同一物理路径，env 级注入无法只命中后
+// 一侧；进程内测试用它在该窗口对 ensure 刚落盘的库文件做确定性破坏，驱动
+// 「布局 ensure 成功 → 只读 ping 失败」臂。
+var hooksSQLiteDirectInputLayoutEnsured func()
 
 // run 承载原 main() 的全部线性流程并返回进程退出码。原 fail()（stderr 错误
 // 行 + os.Exit(1)）与 flag 用法错误（os.Exit(2)）收敛为返回值；stderr 错误
@@ -238,11 +246,20 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			_ = accountHealthStore.Close()
 			return failWith(stderr, fmt.Errorf("初始化 J1 sqlite 直读所需 SQLite 布局失败: %w", layoutErr))
 		}
+		if hooksSQLiteDirectInputLayoutEnsured != nil {
+			hooksSQLiteDirectInputLayoutEnsured()
+		}
 		// sqlite 直读：业务库/统计库两个只读句柄（query_only 强制只读，
 		// busy_timeout 与 gateway 写侧短事务错峰；禁止 WAL/txlock=immediate 的
-		// 写方 DSN——业务库写入由 gateway 单进程持有）。经上方布局前置后文件
-		// 必已存在，Ping 失败只剩真实打开故障（损坏/锁死），仍 fail-fast。
-		businessDB, businessErr := sql.Open("sqlite", sqliteReadOnlyFileDSN(accountHealthConfig.BusinessSQLitePath))
+		// 写方 DSN——业务库写入由 gateway 单进程持有）。路径转义与布局前置
+		// 同款（url.URL），ensure 落盘文件与只读句柄解析必然同一；经布局前置
+		// 后文件必已存在，Ping 失败只剩真实打开故障（损坏/锁死），仍 fail-fast。
+		businessDSN, businessDSNErr := sqliteReadOnlyFileDSN(accountHealthConfig.BusinessSQLitePath)
+		if businessDSNErr != nil {
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input business database: %w", businessDSNErr))
+		}
+		businessDB, businessErr := sql.Open("sqlite", businessDSN)
 		if businessErr != nil {
 			_ = accountHealthStore.Close()
 			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input business database: %w", businessErr))
@@ -258,7 +275,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			// 类真实故障：提示指向路径与磁盘排查，不再误导为「gateway 未自举」。
 			return failWith(stderr, fmt.Errorf("ping J1 account-health sqlite direct-input business database: %w（%s 已由布局前置创建；请检查路径、进程权限与文件是否被其他进程锁死或损坏）", businessPingErr, accountHealthConfig.BusinessSQLitePath))
 		}
-		statsDB, statsErr := sql.Open("sqlite", sqliteReadOnlyFileDSN(accountHealthConfig.StatsSQLitePath))
+		statsDSN, statsDSNErr := sqliteReadOnlyFileDSN(accountHealthConfig.StatsSQLitePath)
+		if statsDSNErr != nil {
+			_ = businessDB.Close()
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("open J1 account-health sqlite direct-input stats database: %w", statsDSNErr))
+		}
+		statsDB, statsErr := sql.Open("sqlite", statsDSN)
 		if statsErr != nil {
 			_ = businessDB.Close()
 			_ = accountHealthStore.Close()
@@ -1103,16 +1126,25 @@ func envOrDefault(name, fallback string) string {
 	return fallback
 }
 
-// sqliteReadOnlyFileDSN 构造只读打开业务/统计 SQLite 的 file URI：路径转
-// POSIX 斜杠并补齐根斜杠（Windows 盘符，与 accounthealth sqliteDSN 同款形
-// 状）；mode=ro + query_only 双保险只读，busy_timeout=5000 与 gateway 写侧
-// 短事务错峰。禁止照抄写方 openSQLite 的 WAL/txlock=immediate。
-func sqliteReadOnlyFileDSN(path string) string {
-	uriPath := filepath.ToSlash(filepath.Clean(path))
+// sqliteReadOnlyFileDSN 构造只读打开业务/统计 SQLite 的 file URI。路径处理
+// 与布局前置（EnsureSQLiteDirectInputLayout 的 accounthealth/statsverify
+// sqliteDSN）同款：filepath.Abs → POSIX 斜杠 → 补根斜杠 → url.URL 转义，
+// 含 '#' 等特殊字符的路径两侧解析到同一物理文件。裸拼接已废弃：SQLite 内核
+// URI 解析在首个 '#' 处截断文件名并丢弃其后内容（mode=ro 失效，截断路径不
+// 存在时还会被 READWRITE|CREATE 静默新建），modernc Go 侧虽按首个 '?' 应用
+// _pragma 参数，路径也已错。mode=ro + query_only 双保险只读，busy_timeout=
+// 5000 与 gateway 写侧短事务错峰。禁止照抄写方 openSQLite 的
+// WAL/txlock=immediate。
+func sqliteReadOnlyFileDSN(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("解析 J1 sqlite 直读只读句柄路径失败: %w", err)
+	}
+	uriPath := filepath.ToSlash(absolute)
 	if !strings.HasPrefix(uriPath, "/") {
 		uriPath = "/" + uriPath
 	}
-	return "file:" + uriPath + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	return (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"}).String(), nil
 }
 
 // failWith 保持原 fail() 的错误输出行为（单行错误到 stderr，逐字节一致），

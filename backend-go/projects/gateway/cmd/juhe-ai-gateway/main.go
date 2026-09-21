@@ -176,6 +176,10 @@ func main() {
 	var j3bManagementServer *http.Server
 	var j3bManagementListener net.Listener
 	var j3bManagementServeErr chan error
+	// 2026-09-21 起模型检测管理面同权挂上主端口：该闭包把 /auth/、
+	// /model-checks/ 与 /__aisys__/api/{,my-}model-checks/ 四族路由装到任意
+	// mux（3307 兼容别名与主端口根 mux 各装一份）；nil 表示 J3b owner 未装配。
+	var j3bManagementMount func(*http.ServeMux)
 	var retentionComponent supervisor.Component
 	var retentionEnabled bool
 	var retentionRunning atomic.Bool
@@ -398,35 +402,44 @@ func main() {
 		if keyModelStore != nil {
 			defer keyModelStore.Close()
 		}
-		managementMux := http.NewServeMux()
 		var captchaService *modelcheckauth.CaptchaService
 		if !envBool("JUHE_AI_AUTH_CAPTCHA_DISABLED") {
 			captchaService = modelcheckauth.NewCaptchaService(time.Now)
 		}
-		managementMux.Handle("/auth/", http.StripPrefix("/auth", &modelcheckauth.HTTPHandler{Auth: authenticator, Captcha: captchaService, TemporaryAccessIPAllowlist: commaList(os.Getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))}))
-		if err := j3bHost.MountScoped(managementMux, "/__aisys__/api/model-checks/", modelcheckowner.NewAdminAuthorize(authenticator), true); err != nil {
-			fail(fmt.Errorf("mount J3b Gateway administrator routes: %w", err))
+		j3bManagementMount = func(mux *http.ServeMux) {
+			mux.Handle("/auth/", http.StripPrefix("/auth", &modelcheckauth.HTTPHandler{Auth: authenticator, Captcha: captchaService, TemporaryAccessIPAllowlist: commaList(os.Getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))}))
+			if err := j3bHost.MountScoped(mux, "/__aisys__/api/model-checks/", modelcheckowner.NewAdminAuthorize(authenticator), true); err != nil {
+				fail(fmt.Errorf("mount J3b Gateway administrator routes: %w", err))
+			}
+			if err := j3bHost.MountScoped(mux, "/__aisys__/api/my-model-checks/", modelcheckowner.NewSelfAuthorize(authenticator), false); err != nil {
+				fail(fmt.Errorf("mount J3b Gateway self routes: %w", err))
+			}
+			if err := j3bHost.Mount(mux, "/model-checks/"); err != nil {
+				fail(fmt.Errorf("mount J3b Gateway management routes: %w", err))
+			}
 		}
-		if err := j3bHost.MountScoped(managementMux, "/__aisys__/api/my-model-checks/", modelcheckowner.NewSelfAuthorize(authenticator), false); err != nil {
-			fail(fmt.Errorf("mount J3b Gateway self routes: %w", err))
-		}
-		if err := j3bHost.Mount(managementMux, "/model-checks/"); err != nil {
-			fail(fmt.Errorf("mount J3b Gateway management routes: %w", err))
-		}
+		managementMux := http.NewServeMux()
+		j3bManagementMount(managementMux)
 		managementAddress := envOrDefault("JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS", "127.0.0.1:3307")
 		var listenErr error
 		j3bManagementListener, listenErr = net.Listen("tcp", managementAddress)
 		if listenErr != nil {
-			fail(fmt.Errorf("listen J3b Gateway management endpoint %q: %w", managementAddress, listenErr))
+			// 2026-09-21 起管理面同权挂主端口，本 listener 降级为兼容别名：
+			// 端口被占（同机第二实例/残留进程）只告警不阻断启动——主端口仍
+			// 完整服务模型检测管理面，能力无缺失，多实例同机零配置。
+			logger.Warn("J3b management alias endpoint unavailable; model-checks management is served on the main listener", "address", managementAddress, "error", listenErr.Error())
+			j3bManagementListener = nil
 		}
-		defer j3bManagementListener.Close()
-		// 注意：该 server 先于 gatewayusage.SetAuditCapturedDroppedTotal 注入
-		// （main 下方）启动，但其 mux 只挂 /auth/ 与 model-checks 族，不含
-		// /__aisys__/metrics——若未来把 metrics 挂上该 mux，注入顺序即成为
-		// 真竞争，必须把注入移到本 Serve 之前。
-		j3bManagementServer = &http.Server{Handler: managementMux, ReadHeaderTimeout: 5 * time.Second}
-		j3bManagementServeErr = make(chan error, 1)
-		go func() { j3bManagementServeErr <- j3bManagementServer.Serve(j3bManagementListener) }()
+		if j3bManagementListener != nil {
+			defer j3bManagementListener.Close()
+			// 注意：该 server 先于 gatewayusage.SetAuditCapturedDroppedTotal 注入
+			// （main 下方）启动，但其 mux 只挂 /auth/ 与 model-checks 族，不含
+			// /__aisys__/metrics——若未来把 metrics 挂上该 mux，注入顺序即成为
+			// 真竞争，必须把注入移到本 Serve 之前。
+			j3bManagementServer = &http.Server{Handler: managementMux, ReadHeaderTimeout: 5 * time.Second}
+			j3bManagementServeErr = make(chan error, 1)
+			go func() { j3bManagementServeErr <- j3bManagementServer.Serve(j3bManagementListener) }()
+		}
 		j3bHostComponent = j3bHost.Component()
 	}
 	postgresPools := pgpool.NewRegistry()
@@ -710,8 +723,20 @@ func main() {
 		// from-scratch review report §7-D12). Requests without an Origin
 		// header and the whole /v1 gateway chain stay byte-for-byte unchanged;
 		// the middleware itself never rejects a request.
+		// 2026-09-21 起模型检测管理面同权挂上主端口（/auth/、/model-checks/、
+		// /__aisys__/api/{,my-}model-checks/ 四族前缀在根 mux 命中更长模式，
+		// 优先于 "/" 的 kernel 分发）：handler、authorize 与 3307 兼容别名
+		// 完全同份同语义，不经 CORS/kernel api 中间件；多实例同机不再需要
+		// 任何端口配置。
+		mainHandler := kernel.CORSMiddleware(runtimeCfg.corsPolicy(), corsSurfacePrefixes...)(composed.Kernel)
+		if j3bManagementMount != nil {
+			rootMux := http.NewServeMux()
+			j3bManagementMount(rootMux)
+			rootMux.Handle("/", mainHandler)
+			mainHandler = rootMux
+		}
 		mainServer = &http.Server{
-			Handler:           kernel.CORSMiddleware(runtimeCfg.corsPolicy(), corsSurfacePrefixes...)(composed.Kernel),
+			Handler:           mainHandler,
 			ReadHeaderTimeout: 30 * time.Second,
 		}
 		mainServeErr = make(chan error, 1)
