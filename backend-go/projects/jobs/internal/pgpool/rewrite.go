@@ -140,6 +140,15 @@ func (c rewriteConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver
 	return c.Conn.Begin()
 }
 
+func (c rewriteConn) CheckNamedValue(nv *driver.NamedValue) error {
+	if inner, ok := c.Conn.(driver.NamedValueChecker); ok {
+		return inner.CheckNamedValue(nv)
+	}
+	// 与 database/sql 对无 NamedValueChecker 驱动的默认行为一致：
+	// ErrSkip 触发 DefaultParameterConverter 回落。
+	return driver.ErrSkip
+}
+
 func (c rewriteConn) IsValid() bool {
 	if inner, ok := c.Conn.(driver.Validator); ok {
 		return inner.IsValid()
@@ -158,6 +167,13 @@ func (c rewriteConn) ResetSession(ctx context.Context) error {
 
 type rewriteStmt struct {
 	driver.Stmt
+}
+
+func (s rewriteStmt) CheckNamedValue(nv *driver.NamedValue) error {
+	if inner, ok := s.Stmt.(driver.NamedValueChecker); ok {
+		return inner.CheckNamedValue(nv)
+	}
+	return driver.ErrSkip
 }
 
 func (s rewriteStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {

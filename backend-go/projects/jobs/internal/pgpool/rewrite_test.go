@@ -138,6 +138,13 @@ func (c *connAll) ResetSession(ctx context.Context) error {
 	return nil
 }
 
+func (c *connAll) CheckNamedValue(nv *driver.NamedValue) error {
+	if _, ok := nv.Value.([]string); ok {
+		return nil
+	}
+	return driver.ErrSkip
+}
+
 // connBasic 只实现 driver.Conn：包装任意 conn 收窄方法集，模拟能力缺失。
 type connBasic struct{ driver.Conn }
 
@@ -437,6 +444,49 @@ func TestW20cConnPrepareErrorAndBeginFallback(t *testing.T) {
 	if coreOK.beginCount != 1 {
 		t.Fatalf("降级 Begin 应触达底层：beginCount=%d", coreOK.beginCount)
 	}
+}
+
+// TestW20cNamedValueCheckerForwarding 复现 go-jobs J2 启动崩溃
+// （`sql: converting argument $1 type: unsupported type []string`）：
+// rewriteConn 必须透传 driver.NamedValueChecker，否则 database/sql
+// 对 []string 参数走 DefaultParameterConverter 直接拒绝。
+func TestW20cNamedValueCheckerForwarding(t *testing.T) {
+	ctx := context.Background()
+	full := &connAll{core: &coreConn{}}
+	rc := rewriteConn{Conn: full}
+	if err := rc.CheckNamedValue(&driver.NamedValue{Ordinal: 1, Value: []string{"a", "b"}}); err != nil {
+		t.Fatalf("NamedValueChecker 应透传接受 []string：%v", err)
+	}
+	// 内层无 checker：ErrSkip 触发 DefaultParameterConverter 回落
+	basic := rewriteConn{Conn: wrapBasic(&connAll{core: &coreConn{}})}
+	if err := basic.CheckNamedValue(&driver.NamedValue{Ordinal: 1, Value: "plain"}); !errors.Is(err, driver.ErrSkip) {
+		t.Fatalf("无内层 checker 应返回 ErrSkip：got %v", err)
+	}
+	// stmt 层透传与回落
+	fullStmtVal := rewriteStmt{Stmt: &checkerStmt{}}
+	if err := fullStmtVal.CheckNamedValue(&driver.NamedValue{Ordinal: 1, Value: []string{"a"}}); err != nil {
+		t.Fatalf("stmt NamedValueChecker 应透传：%v", err)
+	}
+	basicStmt := rewriteStmt{Stmt: &stmtBasic{inner: &fullStmt{conn: &coreConn{}}}}
+	if err := basicStmt.CheckNamedValue(&driver.NamedValue{Ordinal: 1, Value: "plain"}); !errors.Is(err, driver.ErrSkip) {
+		t.Fatalf("stmt 无内层 checker 应返回 ErrSkip：got %v", err)
+	}
+	// database/sql 端到端：[]string 参数经 checker 放行（崩溃复现）
+	db := sql.OpenDB(&dsnConnector{name: "", driver: &rewriteDriver{inner: &fakeDriver{conn: &connAll{core: &coreConn{}}}}})
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "UPDATE t SET tags = $1 WHERE id = $2", []string{"a", "b"}, "id1"); err != nil {
+		t.Fatalf("[]string 参数应经 NamedValueChecker 放行：%v", err)
+	}
+}
+
+// checkerStmt 模拟 pgx 的语句级参数检查（接受 []string）。
+type checkerStmt struct{ fullStmt }
+
+func (s *checkerStmt) CheckNamedValue(nv *driver.NamedValue) error {
+	if _, ok := nv.Value.([]string); ok {
+		return nil
+	}
+	return driver.ErrSkip
 }
 
 func TestW20cConnectorConnectAndInjectableDriver(t *testing.T) {
