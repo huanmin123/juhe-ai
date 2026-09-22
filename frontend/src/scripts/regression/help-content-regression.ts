@@ -3,8 +3,6 @@ type DynamicImport = (specifier: string) => Promise<unknown>
 const dynamicImport = new Function('specifier', 'return import(specifier)') as DynamicImport
 const nodeFs = await dynamicImport('node:fs') as {
   readFileSync: (path: string, encoding: 'utf8') => string
-  existsSync: (path: string) => boolean
-  statSync: (path: string) => { size: number }
 }
 const nodePath = await dynamicImport('node:path') as {
   dirname: (path: string) => string
@@ -15,6 +13,7 @@ const repoRoot = nodePath.resolve(nodePath.dirname(nodeUrl.fileURLToPath(import.
 const readRepoFile = (...segments: string[]) => nodeFs.readFileSync(nodePath.resolve(repoRoot, ...segments), 'utf8')
 
 const routerSource = readRepoFile('frontend', 'src', 'router', 'index.ts')
+const viteConfigSource = readRepoFile('frontend', 'vite.config.ts')
 const userHelp = readRepoFile('frontend', 'public', 'help', 'user', 'index.html')
 const adminHelp = readRepoFile('frontend', 'public', 'help', 'admin', 'index.html')
 const helpIndex = readRepoFile('frontend', 'public', 'help', 'index.html')
@@ -33,12 +32,12 @@ const adminRoutes = [
   '/authorization-team-usage', '/authorization-user-usage', '/authorization-teams', '/api-keys',
   '/model-checks', '/usage-stats', '/ai-performance', '/ai-health', '/usage-records', '/operation-logs',
   '/public-api-logs', '/audit-logs', '/runtime-logs', '/table-monitor', '/system-metrics-stats', '/ip-stats',
-  '/response-inspection-policies', '/route-strategies', '/external-integration-sources', '/announcements',
-  '/system-accounts', '/settings'
+  '/response-inspection-policies', '/route-strategies', '/external-integration-sources', '/oauth-applications',
+  '/announcements', '/system-accounts', '/settings'
 ] as const
 
 assertEqual(userRoutes.length, 17, '用户手册路由清单必须维护 17 项')
-assertEqual(adminRoutes.length, 28, '管理员手册路由清单必须维护 28 项')
+assertEqual(adminRoutes.length, 29, '管理员手册路由清单必须维护 29 项')
 
 for (const route of [...userRoutes, ...adminRoutes]) {
   assertMatch(routerSource, new RegExp(`path:\\s*['\"]${escapeRegExp(route)}['\"]`), `路由源必须保留 ${route}`)
@@ -84,29 +83,6 @@ for (const status of ['temporary_unavailable', 'rate_limited', 'quality_isolated
 assertContains(adminHelp, '四种状态是分叉，不是依次迁移', '管理员生命周期图不得把运行状态画成线性顺序')
 assertContains(adminHelp, '<code>active</code> 是进入候选的必要条件，不保证当前可调度', '管理员手册不得把 active 写成充分条件')
 assertContains(userHelp, '<code>active</code> 是进入候选的必要条件，不保证当前一定可调度', '用户手册不得把 active 写成充分条件')
-for (const [helpSource, imageName, audience] of [
-  [adminHelp, 'group-create-form.png', '管理员'],
-  [adminHelp, 'route-strategy-create-form.png', '管理员'],
-  [adminHelp, 'api-key-create-form.png', '管理员'],
-  [userHelp, 'user-group-list.png', '用户'],
-  [userHelp, 'user-accounts-list.png', '用户'],
-  [userHelp, 'user-api-key-list.png', '用户']
-] as const) {
-  assertContains(helpSource, `../assets/${imageName}`, `${audience}手册必须引用真实界面截图：${imageName}`)
-  const imagePath = nodePath.resolve(repoRoot, 'frontend', 'public', 'help', 'assets', imageName)
-  if (!nodeFs.existsSync(imagePath) || nodeFs.statSync(imagePath).size < 1024) {
-    throw new Error(`${audience}手册的截图资产不存在或异常小：${imageName}`)
-  }
-}
-assertContains(helpCss, '.guide-shot-frame', '帮助页必须提供截图容器样式')
-assertContains(helpCss, '.shot-marker', '帮助页必须提供截图字段标注样式')
-assertContains(helpCss, '.guide-shot--group-list .marker-1', '分组截图必须使用独立的刷新标注坐标')
-assertContains(helpCss, '.guide-shot--key-list .marker-1', 'API Key 截图必须使用独立的筛选标注坐标')
-assertContains(helpCss, '.guide-shot-frame { min-width: 900px; }', '手机端截图必须保留可横向查看的清晰画布')
-assertContains(userHelp, '刷新</b>重新读取当前账户可管理的分组', '用户分组截图必须说明真实存在的刷新操作')
-assertNotMatch(userHelp, /筛选区.*供应商、状态或名称/, '用户分组截图不得虚构用户模式不存在的筛选区')
-assertContains(userHelp, '所有 <code>sk-...</code> 均为不可用的演示值', '用户 API Key 截图必须明确掩码值不可用')
-assertNotMatch(`${userHelp}\n${adminHelp}`, /loading="lazy"/, '帮助页截图不得因延迟加载而出现零高度空白')
 assertContains(userHelp, 'aria-controls="user-flow-panel-key"', '用户流程步骤必须关联说明面板')
 assertContains(userHelp, 'role="tabpanel" aria-labelledby="user-flow-tab-key"', '用户流程说明必须具有 tabpanel 语义')
 assertContains(adminHelp, 'aria-controls="admin-flow-panel-key"', '管理员流程步骤必须关联说明面板')
@@ -149,10 +125,12 @@ assertContains(helpJs, 'setFlowStep', '脚本必须支持 SVG 流程节点与步
 assertContains(helpJs, "event.key === 'ArrowRight'", '流程步骤必须支持键盘方向键')
 assertContains(helpJs, "button.setAttribute('tabindex', selected ? '0' : '-1')", '流程步骤必须使用 roving tabindex')
 assertContains(helpJs, "document.body.classList.contains('help-gate')", '入口页角色分流必须由外部脚本执行')
+assertNotContains(viteConfigSource, "devProxy['^/__aisys__/help", 'dev 代理不得把帮助页转发给 gateway：未配置 JUHE_AI_FRONTEND_DIST_PATH 时 help 面不挂载会 404')
+assertContains(viteConfigSource, 'helpPageDirectoryIndexPlugin', 'dev 下必须保留帮助页目录索引插件，否则目录形 URL 会落入 SPA fallback 返回主应用页面')
 assertContains(userHelp, 'aria-live="polite"', '用户搜索状态必须向辅助技术播报')
 assertContains(adminHelp, 'aria-live="polite"', '管理员搜索状态必须向辅助技术播报')
 
-console.log('帮助页内容回归通过：17 个用户路由、28 个管理路由、字段级指南、SVG 流程、导入语义与可访问性契约保持一致（2026-09-22 视觉改版后复验）')
+console.log('帮助页内容回归通过：17 个用户路由、29 个管理路由、字段级指南、SVG 流程、导入语义与可访问性契约保持一致（2026-09-22 两本手册白皮书改版后复验，全部截图断言与截图样式断言已随截图移除）')
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -168,6 +146,10 @@ function assertContains(value: string, expected: string, message: string): void 
 
 function assertMatch(value: string, pattern: RegExp, message: string): void {
   if (!pattern.test(value)) throw new Error(message)
+}
+
+function assertNotContains(value: string, forbidden: string, message: string): void {
+  if (value.includes(forbidden)) throw new Error(`${message}：不应出现 ${forbidden}`)
 }
 
 function assertNotMatch(value: string, pattern: RegExp, message: string): void {

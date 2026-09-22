@@ -147,12 +147,15 @@ func RunWithLogger(ctx context.Context, options Options, logger *slog.Logger) (R
 	return runWithLogger(ctx, options, logger)
 }
 
-func runWithLogger(ctx context.Context, options Options, logger *slog.Logger) (Report, error) {
+// runWithLogger 用命名返回值：句柄关闭发生在所有 return 之后，只有命名返回
+// 值才能把关闭失败追记进报告（普通局部变量的改动不会被调用方看到）。关闭失败
+// 不改变退出码——数据已经写完，句柄泄漏是警告而不是失败。
+func runWithLogger(ctx context.Context, options Options, logger *slog.Logger) (report Report, err error) {
 	started := options.clock()
 	// 耗时用真实墙钟测量：options.Now 是数据时间基准（可被测试固定），
 	// 拿它算耗时会恒为 0。
 	wallStart := time.Now()
-	report := Report{
+	report = Report{
 		Driver:        "sqlite",
 		DataDir:       options.Paths.DataDir,
 		Days:          options.Days,

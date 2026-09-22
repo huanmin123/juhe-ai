@@ -47,23 +47,39 @@ func TestCompleteSuccessKeepsReleaseError(t *testing.T) {
 	}
 }
 
-func TestProbeAdapterLegacyDispatchPanics(t *testing.T) {
-	// 行为存疑：旧版 Dispatch 方法把字面 nil 的 *http.Client 装入非 nil 的
-	// Client 接口（typed nil），绕过了 Dispatcher.Dispatch 的 client 判空，
-	// 实际执行到上游调用时会触发 nil 指针 panic。生产链路只使用
-	// DispatchWithClient（见 cmd/juhe-ai-gateway/main.go 与
-	// internal/modelcheckprobe/probe.go），因此该缺陷处于休眠状态；
-	// 按当前实际行为断言，不修改生产代码。
+func TestProbeAdapterLegacyDispatchFallsBackToDefault(t *testing.T) {
+	// 历史缺陷：旧版 Dispatch 把字面 nil 的 *http.Client 装入非 nil 的
+	// Client 接口（typed nil），绕过 Dispatcher.Dispatch 的 client 判空，
+	// 在 Do 上触发 nil 指针 panic。dispatch 现在只在 client 非 nil 时装入
+	// 接口，字面 nil 保持 nil 接口并回退到 Dispatcher 的默认 client。
 	gate := &fakeGate{admitted: true}
-	adapter := ProbeAdapter{Dispatcher: &Dispatcher{Client: fakeClient{response: &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("ok"))}}, KeyModel: gate}}
+	defaultClient := &countingClient{response: &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("default"))}}
+	adapter := ProbeAdapter{Dispatcher: &Dispatcher{Client: defaultClient, KeyModel: gate}}
 	req, _ := http.NewRequest(http.MethodGet, "https://example.test", nil)
-	defer func() {
-		recovered := recover()
-		if recovered == nil {
-			t.Fatal("旧版 Dispatch 的 typed-nil client 隐患未触发（行为已变化，请复核本测试）")
-		}
-	}()
-	_, _, _ = adapter.Dispatch(context.Background(), req, dispatchCapability(), "probe-attempt-1")
+	response, _, err := adapter.Dispatch(context.Background(), req, dispatchCapability(), "probe-attempt-1")
+	if err != nil || response == nil {
+		t.Fatalf("字面 nil client 必须回退默认 client: %v", err)
+	}
+	if defaultClient.calls != 1 {
+		t.Fatalf("默认 client 未被使用: %d", defaultClient.calls)
+	}
+}
+
+func TestProbeAdapterNilTargetClientFallsBackToDefault(t *testing.T) {
+	// 生产回归（2026-09-22 快速测试进程崩溃）：模型测试目标无 scoped proxy
+	// 时 target.Client 为 nil，DispatchWithClient 收到 nil *http.Client；
+	// 装入接口会形成 typed nil panic，必须回退 Dispatcher 的默认 client。
+	gate := &fakeGate{admitted: true}
+	defaultClient := &countingClient{response: &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("default"))}}
+	adapter := ProbeAdapter{Dispatcher: &Dispatcher{Client: defaultClient, KeyModel: gate}}
+	req, _ := http.NewRequest(http.MethodGet, "https://example.test", nil)
+	response, _, err := adapter.DispatchWithClient(context.Background(), req, dispatchCapability(), "probe-attempt-4", nil)
+	if err != nil || response == nil {
+		t.Fatalf("nil target client 必须回退默认 client: %v", err)
+	}
+	if defaultClient.calls != 1 {
+		t.Fatalf("默认 client 未被使用: %d", defaultClient.calls)
+	}
 }
 
 func TestProbeAdapterSettleSuccessWithCircuit(t *testing.T) {

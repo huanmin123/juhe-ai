@@ -38,7 +38,15 @@ func (a ProbeAdapter) dispatch(ctx context.Context, request *http.Request, capab
 		ConfirmationEligible:      true,
 		FailureEvidenceKey:        attemptID,
 	}
-	result, err := a.Dispatcher.Dispatch(ctx, Request{HTTP: request, Client: client, Capability: capability, AttemptID: attemptID, AccountCircuit: circuitInput})
+	// A nil *http.Client must stay a nil interface here: wrapping it would
+	// create a typed-nil Client that passes Dispatcher.Dispatch's nil check
+	// and panics on Do. The nil check below is what lets Dispatch fall back
+	// to its configured default client.
+	input := Request{HTTP: request, Capability: capability, AttemptID: attemptID, AccountCircuit: circuitInput}
+	if client != nil {
+		input.Client = client
+	}
+	result, err := a.Dispatcher.Dispatch(ctx, input)
 	if err != nil {
 		return result.Response, func(bool) {}, err
 	}

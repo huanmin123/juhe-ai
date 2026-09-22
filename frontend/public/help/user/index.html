@@ -10,17 +10,38 @@
   <a class="skip-link" href="#content">跳到正文</a>
   <header class="manual-header"><div class="header-inner">
     <a class="brand-mark" href="/__aisys__/"><span class="brand-badge" aria-hidden="true">J</span><img class="brand-icon" src="/__aisys__/brand-icon.svg" alt="" width="30" height="30" hidden><span>用户使用手册</span></a>
-    <label class="search-control"><span class="visually-hidden">搜索手册</span><input data-help-search type="search" placeholder="搜字段、状态或页面名称" autocomplete="off"><kbd>Enter</kbd></label>
+    <label class="search-control"><span class="visually-hidden">搜索手册</span><input data-help-search type="search" placeholder="搜概念、字段、状态或页面名称" autocomplete="off"><kbd>Enter</kbd></label>
     <div class="header-actions"><a class="home-link" href="/__aisys__/">控制台</a><span class="updated-at">更新于 2026-09-22</span></div>
   </div></header>
-  <section class="document-title"><div class="header-inner"><div class="title-block"><h1>普通用户手册</h1><p>把配置做对，再让客户端稳定调用。</p><p class="document-meta"><span class="title-badge">更新于 2026-09-22</span></p></div><details class="mobile-nav"><summary>章节目录</summary><nav aria-label="移动章节目录" data-nav-mobile></nav></details></div></section>
+  <section class="document-title"><div class="header-inner"><div class="title-block"><h1>普通用户手册</h1><p>从机制到操作：先理解统一入口、池化调度与额度控制是怎么工作的，再把配置做对。</p><p class="document-meta"><span class="title-badge">更新于 2026-09-22</span></p></div><details class="mobile-nav"><summary>章节目录</summary><nav aria-label="移动章节目录" data-nav-mobile></nav></details></div></section>
   <div class="layout">
     <nav class="side-nav" aria-label="章节目录" data-nav><strong>目录</strong>
-      <a data-nav-link href="#quick">请求怎么走</a><a data-nav-link href="#configuration">配置字典</a><a data-nav-link href="#import">导入账户</a><a data-nav-link href="#chat">对话与模型</a><a data-nav-link href="#authorization">授权与团队</a><a data-nav-link href="#observe">数据与观测</a><a data-nav-link href="#troubleshooting">按证据排障</a>
+      <a data-nav-link href="#overview">产品概述</a><a data-nav-link href="#quick">核心概念：五层链路</a><a data-nav-link href="#journey">一次请求的旅程</a><a data-nav-link href="#account-lifecycle">账户生命周期</a><a data-nav-link href="#models">模型与协议边界</a><a data-nav-link href="#tasks">任务指南</a><a data-nav-link href="#configuration">配置参考</a><a data-nav-link href="#pages">页面导航</a>
     </nav>
     <main id="content" class="content"><p class="search-empty" data-search-status aria-live="polite"></p>
-      <section id="quick" class="section section-opening">
-        <div class="section-heading-row"><div><p class="section-kicker">先理解影响范围</p><h2>一次请求经过五层</h2></div><p class="lead">每一层只决定一件事。不要为了“快点能用”把 API Key 直接理解成账户，也不要把模型或凭据写进策略。</p></div>
+
+      <section id="overview" class="section section-opening">
+        <div class="section-heading-row"><div><p class="section-kicker">先建立整体认知</p><h2>产品概述：一个可控的 OpenAI 兼容入口</h2></div><p class="lead">这一章回答三个问题：juhe-ai 是什么、它解决什么问题、边界在哪里。后面每一章都在展开这个图景的某一部分。</p></div>
+        <p><strong>juhe-ai</strong> 是一个 OpenAI 兼容的中转与账号调度系统。它把手中的 AI 账号（OpenAI OAuth 账号或 OpenAI API Key 账号）收敛成一个统一入口：客户端只需要配置一次本系统的地址和一把本地 API Key，此后长期不再改动；后台账号的新增、下线、故障切换和额度控制全部在系统内完成，对客户端透明。</p>
+        <p>把账号交给 juhe-ai 之后，你得到三件事：</p>
+        <ol class="flow-list">
+          <li><strong>统一入口。</strong>客户端只面对一个 OpenAI 兼容端点（支持根路径或 <code>/v1</code>）。上游账号怎么换、分组怎么调，客户端配置不变；客户端持有的本地 API Key 也不携带任何上游凭据。</li>
+          <li><strong>池化与调度。</strong>多个账号组成分组的账户池。系统在池内按优先级、并发硬上限、排队与等待规则自动选号；某个账号限流或异常时，同池其他账号自动接住请求，客户端不需要更换地址重试。</li>
+          <li><strong>控制与观测。</strong>每把 API Key 都有运行状态、过期时间、美元额度（“n 小时美元额度”）和时间计划；每次调用产生使用记录，并沉淀为统计、用量、AI 健康、AI 性能等记录页，任何一个请求都能回答“用了什么、花了多少、为什么失败”。</li>
+        </ol>
+        <h3>适合谁</h3>
+        <p>手里有多个 OpenAI 账号、需要给一个或多个客户端（SDK、IDE 插件、自动化脚本）长期稳定提供 OpenAI 兼容服务，并希望额度可控、使用可审计的个人或小团队。</p>
+        <h3>产品边界</h3>
+        <ul class="plain-list">
+          <li>它不是训练或微调平台，也不承载非生成类服务；它只做中转、调度、控制与记录。</li>
+          <li>配置不能虚构上游能力：账户声明的模型与协议能力必须与真实上游一致，系统不会把上游不支持的能力“配置”出来。</li>
+          <li>跨协议转换受真实协议档案约束：普通账户只表达自身真实上游协议（OpenAI v1 档案可显式声明 <code>responses -&gt; chat_completions</code> 别名）；其余跨协议转换属于混合供应商账户能力，不是 API Key 或路由策略上的开关。</li>
+        </ul>
+      </section>
+
+      <section id="quick" class="section">
+        <div class="section-heading-row"><div><p class="section-kicker">为什么是这五层</p><h2>核心概念：一次请求经过五层</h2></div><p class="lead">每一层只决定一件事。分层不是为了复杂，而是把“谁在调用、怎么选池、拿什么账号调上游”解耦开，改任何一层都不牵动其他层。</p></div>
+        <p>从客户端到真实上游，请求依次经过五层。点选下方步骤查看每层决定的单件事；前四层也可以直接打开对应配置页。</p>
         <div class="flow-explorer" data-flow-explorer data-default-flow-step="key">
           <div class="flow-controls" role="tablist" aria-label="请求链路步骤">
             <button type="button" id="user-flow-tab-key" data-flow-step="key" role="tab" aria-controls="user-flow-panel-key" aria-selected="true" tabindex="0">1 API Key</button><button type="button" id="user-flow-tab-strategy" data-flow-step="strategy" role="tab" aria-controls="user-flow-panel-strategy" aria-selected="false" tabindex="-1">2 策略路由</button><button type="button" id="user-flow-tab-group" data-flow-step="group" role="tab" aria-controls="user-flow-panel-group" aria-selected="false" tabindex="-1">3 分组</button><button type="button" id="user-flow-tab-account" data-flow-step="account" role="tab" aria-controls="user-flow-panel-account" aria-selected="false" tabindex="-1">4 AI 账户</button><button type="button" id="user-flow-tab-upstream" data-flow-step="upstream" role="tab" aria-controls="user-flow-panel-upstream" aria-selected="false" tabindex="-1">5 上游</button>
@@ -44,36 +65,99 @@
           <div class="flow-explainer" id="user-flow-panel-account" data-flow-detail="account" role="tabpanel" aria-labelledby="user-flow-tab-account" hidden><strong>AI 账户决定“实际拿什么凭据、协议和模型去调上游”。</strong><span>检查通过、<code>active</code>、<code>schedulable</code>、未到期且运行态可用的账户才会进入候选。下一步：核对状态、模型、Base URL 和账户并发。</span></div>
           <div class="flow-explainer" id="user-flow-panel-upstream" data-flow-detail="upstream" role="tabpanel" aria-labelledby="user-flow-tab-upstream" hidden><strong>上游才是最终处理请求的一方。</strong><span>模型名、协议能力和错误语义必须以这里的真实能力为准；配置页不能把上游不支持的能力变出来。</span></div>
         </div>
-        <ol class="flow-list compact-flow"><li><a href="/__aisys__/my-groups">新建分组</a>，先固定供应商边界。</li><li><a href="/__aisys__/my-accounts">新增或导入 AI 账户</a>，完成检查并设为可调度。</li><li><a href="/__aisys__/my-route-strategies">建立策略路由</a>，选择一个明确的分组选择规则。</li><li><a href="/__aisys__/my-api-keys">建立 API Key</a>，绑定策略并设置额度/时间边界。</li><li>把网关地址、完整 API Key 和模型名写入实际客户端；<a href="/__aisys__/my-chat">AI 问答</a>使用系统维护的专属对话 Key，不替代客户端 API Key。</li></ol>
-      </section>
-
-      <section id="configuration" class="section">
-        <div class="section-heading-row"><div><p class="section-kicker">字段级参考</p><h2>配置字典：填什么，为什么</h2></div><p class="lead">每个条目都写清楚作用、实际影响和常见误用。展开后可查看设置前的判断规则。</p></div>
-        <div class="reference-stack">
-          <details class="reference-entry" open><summary><span><b>AI 分组</b><small>建立账户池与供应商边界</small></span><span class="reference-summary">先选供应商，再定个人/高并发</span></summary><div class="reference-body">
-            <dl class="field-grid"><div><dt>分组名称</dt><dd>给人识别用途，不参与调度。名称应写清使用方或场景，例如“研发共享 OpenAI”。</dd></div><div><dt>所属供应商</dt><dd>决定可加入的账户范围。分组保存 <code>providerCode</code>；换供应商不是改个标签，会改变账户候选边界。</dd></div><div><dt>个人分组</dt><dd>适合个人或稳定低并发调用。按账户并发直接调度，没有额外短队列策略。</dd></div><div><dt>高并发分组</dt><dd>适合共享程序流量；会启用短队列、单账户软阈值和可选的单 IP 并发限制。</dd></div><div><dt>最大单账户排队阈值</dt><dd>高并发模式才出现。到达阈值后优先选择其他账户，实际值不会高于该账户的硬并发上限。</dd></div><div><dt>最大等待时间</dt><dd>所有账户硬并发都满时允许在分组内等多久；超时返回 <code>429</code>。它不是上游响应超时。</dd></div><div><dt>限制单 IP 并发</dt><dd>关闭时不限制。开启后按“当前分组 + API Key + IP”限制同时占用数；超过时可立即拒绝或进入等待。</dd></div><div><dt>启用状态</dt><dd>停用分组后，绑定它的策略不会继续将请求调度到这个账户池。</dd></div></dl>
-            <p class="reference-note">先建分组再建账户的原因：账户的“加入分组”下拉只显示同一供应商的分组，避免把协议边界配乱。</p>
-          </div></details>
-          <figure class="guide-shot guide-shot--group-list"><div class="guide-shot-frame"><img src="../assets/user-group-list.png" alt="真实用户界面的我的分组页面，标注刷新、新建分组入口和分组列表"><span class="shot-marker marker-1" aria-hidden="true">1</span><span class="shot-marker marker-2" aria-hidden="true">2</span><span class="shot-marker marker-3" aria-hidden="true">3</span></div><figcaption class="guide-shot-caption"><strong>真实页面：我的分组</strong><ol><li><b>刷新</b>重新读取当前账户可管理的分组。</li><li><b>新建分组</b>从这里进入与管理员一致的字段表单。</li><li><b>列表</b>核对供应商、类型和启用状态，再回看是否被策略引用。</li></ol></figcaption></figure>
-          <details class="reference-entry"><summary><span><b>AI 账户</b><small>声明真实上游与可调度条件</small></span><span class="reference-summary">凭据、模型、并发和状态都在此层</span></summary><div class="reference-body">
-            <dl class="field-grid"><div><dt>账户名称 / 加入分组</dt><dd>名称用于定位；分组决定它能被哪一个账户池选择。账户的供应商必须和分组一致。</dd></div><div><dt>并发上限</dt><dd>这个账户同时承接请求的硬上限。达到后调度器会等待或尝试其他可用账户。</dd></div><div><dt>优先级</dt><dd>同一分组内小值优先，<code>0</code> 比 <code>1</code> 更靠前。它不替代策略层的分组顺序。</dd></div><div><dt>特权</dt><dd><code>super_priority</code> 表示超级优先，<code>fallback</code> 表示降级备用；只在确实需要固定调度角色时使用。</dd></div><div><dt>状态</dt><dd><code>active</code> 是进入候选的必要条件，不保证当前一定可调度；还要满足 <code>schedulable</code>、未到期、时间计划、授权来源和运行态均可用。<code>pending_test</code> 等待检查，<code>disabled</code> 人工停用。</dd></div><div><dt>API Key / 多 Key</dt><dd>多个 Key 可轮询或按 1-100 权重轮询；多 Key 账户不支持余额查询，保存后会自动关闭余额查询。</dd></div><div><dt>Base URL</dt><dd>填写服务根或版本根，例如 <code>https://api.openai.com/v1</code>；不要填 <code>/responses</code>、<code>/chat/completions</code>、<code>/messages</code> 这类具体接口。</dd></div><div><dt>支持模型</dt><dd>声明此 Base URL 真正可用的模型，既用于候选过滤，也是别名右侧可选模型的边界。至少选择一个。</dd></div><div><dt>检查模型</dt><dd>用来验证账户链路；先选择确实被支持模型覆盖的模型，再把检查结果当作激活依据。</dd></div><div><dt>上游接口能力</dt><dd>声明真实上游能接收的请求形态。没有勾选的协议请求不会把此账户加入候选；不能用它虚构上游能力。</dd></div><div><dt>账号模型别名</dt><dd>把“客户端协议/模型”映射到“上游协议/模型”。右侧目标必须同时满足账户支持模型和上游接口能力；普通账户的跨协议映射受实际档案限制。</dd></div><div><dt>代理</dt><dd>只影响该账户访问上游的网络路径；不会改变客户端访问本系统的地址。</dd></div><div><dt>服务等级 / 思考级别</dt><dd>只在已选模型声明支持时可用；不支持时应清空或改选模型，不能强制覆盖。</dd></div></dl>
-            <p class="reference-note">新建或导入后，先在 <a href="/__aisys__/my-model-checks">模型检测</a> / 账户检查确认“模型可用、凭据正确、协议匹配”，再将账户用于真实流量。</p>
-          </div></details>
-          <figure class="guide-shot guide-shot--accounts"><div class="guide-shot-frame"><img src="../assets/user-accounts-list.png" alt="真实用户界面的我的 AI 账户页面，标注导入、添加账户和空状态提示"><span class="shot-marker marker-1" aria-hidden="true">1</span><span class="shot-marker marker-2" aria-hidden="true">2</span><span class="shot-marker marker-3" aria-hidden="true">3</span></div><figcaption class="guide-shot-caption"><strong>真实页面：我的 AI 账户</strong><ol><li><b>导入</b>用于结构化迁移，必须先解析预览。</li><li><b>添加账户</b>用于逐个填写凭据、协议档案和模型。</li><li><b>空状态</b>说明还没有可维护的账户，不表示 API Key 已能调用上游。</li></ol></figcaption></figure>
-          <details class="reference-entry"><summary><span><b>策略路由</b><small>定义 API Key 选择分组的规则</small></span><span class="reference-summary">API Key 只认识策略，不直接认识账户</span></summary><div class="reference-body">
-            <div class="mode-reference"><div><strong>普通</strong><span>只能绑定一个启用分组，请求直接进入这个分组的账号池。</span></div><div><strong>权重</strong><span>至少两个启用分组，按分组权重比例分流；总权重不能超过 100。</span></div><div><strong>故障回退</strong><span>第一行是主用分组，后续是备用分组；主用恢复后仍会优先主用。</span></div><div><strong>轮询</strong><span>至少两个启用分组，按当前排列顺序依次调度；拖动顺序会改变下一个选择次序。</span></div><div><strong>合并</strong><span>至少两个启用分组，把所有绑定分组的账号合并成一个大池统一调度，不区分分组；拖动顺序仅决定调度平局时的基础先后。</span></div><div><strong>调度偏好</strong><span>普通、权重、故障回退、轮询和合并五种模式共享，作用于请求所落分组内的账号调度。选“成本优先”时保留当前账户缓存和会话粘黏；“速度优先”只对可重放文本观察首字慢样本，图像和副作用请求不使用这套切换。</span></div></div>
-            <dl class="field-grid"><div><dt>名称 / 说明</dt><dd>只用于后台识别。名称建议带用途，避免在多个 API Key 之间误选共享策略。</dd></div><div><dt>状态</dt><dd>停用后，绑定该策略的 API Key 不再通过它进入分组调度。</dd></div><div><dt>首字截止与慢速参数</dt><dd>只在速度优先出现。首字截止、慢速触发次数、窗口期、恢复次数、探针间隔和降级租约一起决定“何时确认慢、何时恢复”。</dd></div><div><dt>分组绑定</dt><dd>分组是策略的唯一调度目标。修改共享策略会影响所有绑定它的 API Key；需要复制配置时，应新建同配置策略再绑定新 API Key。</dd></div></dl>
-          </div></details>
-          <details class="reference-entry"><summary><span><b>API Key</b><small>把调用身份接到一套策略</small></span><span class="reference-summary">完整密钥只在创建/刷新时展示</span></summary><div class="reference-body">
-            <dl class="field-grid"><div><dt>名称</dt><dd>只用于人识别；默认 API Key 和 AI 对话 API Key 的名称不可修改。</dd></div><div><dt>策略路由</dt><dd>API Key 只绑定策略路由。分组、模型和供应商选择逻辑都在策略中维护。</dd></div><div><dt>运行状态</dt><dd>只有 <code>active</code> 会接受调用。设置时间计划后，保存与计划边界都会直接更新这个状态。</dd></div><div><dt>过期时间</dt><dd>到达时间后不再可用；它是绝对时间边界，不受时间计划替代。</dd></div><div><dt>美元额度</dt><dd>“n 小时美元额度”可按 n 小时、每日、每周、每月设置美元上限；未开启的项目不限制。它约束的是该 Key 的调用额度。</dd></div><div><dt>时间计划</dt><dd>开启后，只在选定星期与开始/结束时间内参与调度；未命中窗口会被暂时跳过。多个窗口用于工作日/时段组合。</dd></div><div><dt>说明</dt><dd>仅作后台标记，不参与路由、额度或权限判断。</dd></div></dl>
-            <p class="reference-note">创建完成立即复制完整密钥到客户端安全配置；之后列表和日志不会再次给出完整明文。</p>
-          </div></details>
-          <figure class="guide-shot guide-shot--key-list"><div class="guide-shot-frame"><img src="../assets/user-api-key-list.png" alt="真实用户界面的我的 API Key 页面，标注筛选区、新建 API Key 入口和密钥列表"><span class="shot-marker marker-1" aria-hidden="true">1</span><span class="shot-marker marker-2" aria-hidden="true">2</span><span class="shot-marker marker-3" aria-hidden="true">3</span></div><figcaption class="guide-shot-caption"><strong>真实页面：我的 API Key</strong><ol><li><b>筛选区</b>按状态、策略或名称排查一把 Key 的边界。</li><li><b>新建 API Key</b>创建时选择策略、额度、到期时间和时间计划。</li><li><b>列表</b>只显示掩码值；这张图来自隔离实例，所有 <code>sk-...</code> 均为不可用的演示值。</li></ol></figcaption></figure>
+        <h3>分层带来了什么</h3>
+        <div class="mode-reference">
+          <div><strong>身份与凭据分离</strong><span>客户端只持有本地 API Key，上游凭据永远不会离开系统。Key 泄露时停用这一把 Key 即可，上游账号本身不受影响。</span></div>
+          <div><strong>规则复用</strong><span>多把 API Key 可以共享同一套策略路由；调整策略一次，所有绑定它的 Key 同时生效。也因为这个原因，改共享策略前要想清楚影响面。</span></div>
+          <div><strong>供应商边界</strong><span>分组固定所属供应商，账户池不会混入协议不同的账户。排队、并发和故障语义都在同一协议边界内讨论，不存在隐式跨协议混排。</span></div>
+          <div><strong>故障隔离</strong><span>账号故障在分组池内消化：候选筛选排除不可用账户，调度切到其他账号。身份层（API Key）和规则层（策略）不因单个账号异常而改变。</span></div>
+        </div>
+        <h3>常见误解</h3>
+        <div class="mode-reference">
+          <div><strong>API Key 不是账号</strong><span>Key 不保存凭据，也不直接指向某个 AI 账户；它只绑定一套策略路由。停用一把 Key 不会动到账号，删除账号也不会让 Key 失效。</span></div>
+          <div><strong>策略里不存模型与凭据</strong><span>策略只保存“怎么选分组”的规则；模型映射和上游凭据都在账户层维护。想让某些 Key 只用特定模型，应通过分组与账户的支持模型控制，而不是在策略里配模型。</span></div>
+          <div><strong>分组有供应商边界</strong><span>一个分组只接纳同一供应商的账户。跨供应商共享一个池不是配置技巧问题，而是架构上不存在的边界。</span></div>
+          <div><strong>AI 问答不替代客户端 API Key</strong><span>站内 AI 问答使用系统维护的专属对话 Key，走与客户端相同的网关链路；它用于站内对话，不是客户端 Key 的验证入口。</span></div>
         </div>
       </section>
 
-      <section id="import" class="section"><div class="section-heading-row"><div><p class="section-kicker">批量录入前先预览</p><h2>账户导入与迁移</h2></div><p class="lead">导入只帮你把结构化资料变成待检查账户，不会替你确认凭据真实可用。</p></div>
-        <ol class="flow-list"><li>在<a href="/__aisys__/my-accounts">我的 AI 账户</a>打开导入。普通用户只导入到自己名下；管理员可在管理账户页选择目标系统账户导入。</li><li>只粘贴 <code>juhe-ai-account-import v1</code> JSON，不要粘贴 Markdown 代码块或 CSV。</li><li>先做“解析预览”，逐项处理协议档案、分组、代理引用和重复项提示。</li><li>确认导入后，不存在的分组可以按选项自动创建；同名账户可跳过。</li></ol>
+      <section id="journey" class="section">
+        <div class="section-heading-row"><div><p class="section-kicker">机制视角</p><h2>一次请求的完整旅程</h2></div><p class="lead">从客户端发出请求到收到响应，网关按固定顺序经过八个阶段。理解这个顺序，排障时才能回答“请求到底停在哪一步”。</p></div>
+        <figure class="journey-diagram" aria-labelledby="user-journey-caption">
+          <svg viewBox="0 0 1254 190" role="img" aria-labelledby="user-journey-svg-title user-journey-svg-desc" xmlns="http://www.w3.org/2000/svg">
+            <title id="user-journey-svg-title">一次请求经过的八个阶段</title><desc id="user-journey-svg-desc">客户端发起请求；网关鉴权 API Key；策略路由选择分组；候选筛选排除不可承接的账户；组内调度选出账户并调用上游；结果写入使用记录；响应返回客户端。</desc>
+            <defs><marker id="user-journey-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="currentColor"/></marker></defs>
+            <path class="diagram-line" d="M154 92H174M308 92H328M462 92H482M616 92H636M770 92H790M924 92H944M1078 92H1098" marker-end="url(#user-journey-arrow)"/>
+            <g class="diagram-node"><rect x="22" y="36" width="132" height="112" rx="10"/><text x="88" y="72" text-anchor="middle" class="diagram-index">01</text><text x="88" y="102" text-anchor="middle" class="diagram-label">客户端发起</text><text x="88" y="126" text-anchor="middle" class="diagram-note">兼容请求</text></g>
+            <g class="diagram-node"><rect x="176" y="36" width="132" height="112" rx="10"/><text x="242" y="72" text-anchor="middle" class="diagram-index">02</text><text x="242" y="102" text-anchor="middle" class="diagram-label">网关鉴权</text><text x="242" y="126" text-anchor="middle" class="diagram-note">Key 边界</text></g>
+            <g class="diagram-node"><rect x="330" y="36" width="132" height="112" rx="10"/><text x="396" y="72" text-anchor="middle" class="diagram-index">03</text><text x="396" y="102" text-anchor="middle" class="diagram-label">策略选组</text><text x="396" y="126" text-anchor="middle" class="diagram-note">路由模式</text></g>
+            <g class="diagram-node"><rect x="484" y="36" width="132" height="112" rx="10"/><text x="550" y="72" text-anchor="middle" class="diagram-index">04</text><text x="550" y="102" text-anchor="middle" class="diagram-label">候选筛选</text><text x="550" y="126" text-anchor="middle" class="diagram-note">可承接账户</text></g>
+            <g class="diagram-node"><rect x="638" y="36" width="132" height="112" rx="10"/><text x="704" y="72" text-anchor="middle" class="diagram-index">05</text><text x="704" y="102" text-anchor="middle" class="diagram-label">组内调度</text><text x="704" y="126" text-anchor="middle" class="diagram-note">并发与排队</text></g>
+            <g class="diagram-node"><rect x="792" y="36" width="132" height="112" rx="10"/><text x="858" y="72" text-anchor="middle" class="diagram-index">06</text><text x="858" y="102" text-anchor="middle" class="diagram-label">上游调用</text><text x="858" y="126" text-anchor="middle" class="diagram-note">协议与别名</text></g>
+            <g class="diagram-node"><rect x="946" y="36" width="132" height="112" rx="10"/><text x="1012" y="72" text-anchor="middle" class="diagram-index">07</text><text x="1012" y="102" text-anchor="middle" class="diagram-label">结果计量</text><text x="1012" y="126" text-anchor="middle" class="diagram-note">记录与健康</text></g>
+            <g class="diagram-node"><rect x="1100" y="36" width="132" height="112" rx="10"/><text x="1166" y="72" text-anchor="middle" class="diagram-index">08</text><text x="1166" y="102" text-anchor="middle" class="diagram-label">响应返回</text><text x="1166" y="126" text-anchor="middle" class="diagram-note">回到客户端</text></g>
+          </svg>
+          <figcaption id="user-journey-caption">八个阶段按顺序执行；前一个阶段未通过时，请求不会进入下一个阶段。</figcaption>
+        </figure>
+        <ol class="flow-list">
+          <li><strong>阶段 1 · 客户端发起。</strong>客户端（SDK、IDE 插件或脚本）按 OpenAI 兼容格式向本系统端点（根路径或 <code>/v1</code>）发起请求，请求头携带本地 API Key。从这一刻起，客户端不再关心、也无法指定实际使用哪个上游账号。证据：这次调用最终会出现在<a href="/__aisys__/my-usage-records">使用记录</a>。</li>
+          <li><strong>阶段 2 · 网关鉴权。</strong>网关先验证这把 API Key：运行状态必须是 <code>active</code>、未过过期时间、未超出美元额度、当前时间命中时间计划，同时还受用户级请求限制（同一用户跨所有 Key 的每分钟/日/周/月请求数）约束。任何一项不满足，请求在此终止：无效或停用的 Key 返回 <code>401</code>，额度用尽返回 <code>429</code>。证据：API Key 页面的运行状态、过期时间与美元额度。</li>
+          <li><strong>阶段 3 · 策略选组。</strong>通过鉴权后，网关读取 Key 绑定的策略路由，按模式决定请求进入哪个分组：普通进入唯一启用分组；权重按比例分流；故障回退主用优先、备用兜底；轮询按排列顺序轮换；合并把所有绑定分组的账号合成一个池统一调度。证据：策略路由页面的模式与分组绑定。</li>
+          <li><strong>阶段 4 · 候选筛选。</strong>进入分组后，不是所有账户都能承接这次请求。账户必须同时满足：配置状态 <code>active</code>、调度开关 <code>schedulable</code> 开启、未到期、命中账户时间计划（如有）、支持请求的模型（直接支持或命中账号模型别名）、上游接口能力覆盖本次请求形态、授权来源可用。任何一项不满足，该账户在本轮被排除。证据：<a href="/__aisys__/my-ai-health">AI 健康</a>的检查结果与可调度状态。</li>
+          <li><strong>阶段 5 · 组内调度。</strong>在候选账户中选出一个承接者：优先级小值优先；<code>super_priority</code> 超级优先账户排前，<code>fallback</code> 降级备用垫后；并发硬上限决定账户是否还有余量。高并发分组还会启用短队列与最大单账户排队阈值：所有账户占满时按最大等待时间排队，超时返回 <code>429</code>。证据：分组页面的并发与排队配置，以及使用记录中实际命中的账户。</li>
+          <li><strong>阶段 6 · 上游调用。</strong>网关按账户的协议档案准备真实上游请求：账号模型别名改写上游模型名与允许的端点形态，必要时执行协议适配（如 <code>responses -&gt; chat_completions</code>）；代理只影响账户到上游的网络路径；流式请求按 SSE 增量转发。证据：使用记录中的模型、耗时与状态。</li>
+          <li><strong>阶段 7 · 结果计量。</strong>上游返回后，网关解析 usage 与计费并写入使用记录；这次结果同时成为健康与性能信号：失败进入最近错误与质量信号（账户状态变更仍由后台检查与恢复机制维护），耗时与首字样本进入性能统计。证据：<a href="/__aisys__/my-usage-records">使用记录</a>、<a href="/__aisys__/my-ai-health">AI 健康</a>、<a href="/__aisys__/my-ai-performance">AI 性能</a>。</li>
+          <li><strong>阶段 8 · 响应返回。</strong>网关把响应按 OpenAI 兼容结构返回客户端；上游错误保留实际状态码与错误码，不做静默改写。客户端发起的重试是一条新请求，会重新经过全部八个阶段。证据：使用记录中该次调用的最终状态与成本。</li>
+        </ol>
+      </section>
+
+      <section id="account-lifecycle" class="section">
+        <div class="section-heading-row"><div><p class="section-kicker">从创建到承载流量</p><h2>AI 账户的生命周期</h2></div><p class="lead">账户状态不是“好/坏”两个值，而是一组有明确进入与离开条件的事实。理解状态，才能回答“为什么这个账户没有被调度”。</p></div>
+        <p>新建或导入的可启用账户一律先以 <code>pending_test</code> 创建，由后台激活检查确认“模型可用、凭据正确、协议匹配”后进入 <code>active</code>；人工测试结果不作为激活凭证。运行中的账户可能因故障、限流、质量问题或异常处置进入对应的运行状态；停用是人工动作，与运行状态无关。</p>
+        <ol class="flow-list">
+          <li><code>pending_test</code>（待检查）：新建、导入或刚修改关键连接配置的账户等待后台检查；检查通过进入 <code>active</code>。明确接受上游可用性风险时，也可以通过“恢复正常”入口强确认放行（不适用于授权实例或已过期账户）。</li>
+          <li><code>active</code>（正常）：检查通过后的常态。<code>active</code> 是进入候选的必要条件，不保证当前一定可调度；还要同时满足 <code>schedulable</code>、未到期、时间计划、授权来源和运行态可用。</li>
+          <li><code>temporary_unavailable</code>（临时不可调用）：后台健康检测确认临时故障后进入；它是有界暂停而不是停用，恢复探针成功后回到 <code>active</code>。</li>
+          <li><code>rate_limited</code>（限流中）：真实上游账号触发限流策略后进入；复测成功后恢复。</li>
+          <li><code>quality_isolated</code>（质量隔离）：质量问题触发隔离后进入；复测通过后恢复。</li>
+          <li><code>error</code>（异常）：异常处置后的硬状态，不参与调度；排除原因后重新检查或恢复。</li>
+          <li><code>disabled</code>（停用）：人工停用，可以从任意状态进入；重新启用后按当前事实重新检查。</li>
+        </ol>
+        <div class="callout info">四种运行状态（<code>temporary_unavailable</code>、<code>rate_limited</code>、<code>quality_isolated</code>、<code>error</code>）是分叉，不是依次迁移：它们各自从 <code>active</code> 直接进入，也各自通过恢复或复测成功直接回到 <code>active</code>，不存在“先限流、再隔离、最后异常”的固定顺序。</div>
+        <h3>检查机制：状态变化的依据</h3>
+        <p>后台检查执行真实协议请求，用账户配置的<strong>检查模型</strong>验证链路。检查模型的选择原则：先选择确实被支持模型覆盖的模型，再把检查结果当作激活依据。凭据、Base URL、协议档案或关键代理等连接配置变更保存后，账户会重新交给后台复检。人工测试与<a href="/__aisys__/my-model-checks">模型检测</a>是证据来源——它们区分模型不支持、上游拒绝、凭据或协议问题，但不直接改写状态；状态只由后台检查与恢复机制维护。</p>
+      </section>
+
+      <section id="models" class="section">
+        <div class="section-heading-row"><div><p class="section-kicker">能力从事实中来</p><h2>模型与协议的真实边界</h2></div><p class="lead">客户端看到哪些模型、一次请求能否被承接，由“目录 + 账户支持模型 + 上游接口能力”共同决定。配置只能声明事实，不能发明能力。</p></div>
+        <h3>可用模型从哪来</h3>
+        <p>客户端请求模型列表（<code>/models</code> 或 <code>/v1/models</code>）时，网关按这把 API Key 绑定策略的启用分组合集聚合本地模型目录；站内<a href="/__aisys__/my-chat">AI 问答</a>的模型列表也来自同一目录。而一次生成请求能否落到某个账户，取决于该账户的<strong>支持模型</strong>：请求模型被账户支持模型覆盖，或命中该账户的<strong>账号模型别名</strong>映射，这个账户才会进入候选。</p>
+        <h3>账号模型别名：映射的边界</h3>
+        <p>账号模型别名把“客户端协议与模型”映射到“上游协议与模型”。映射的右侧目标必须同时满足两个条件：在账户支持模型范围内，且被上游接口能力覆盖。普通账户的跨协议映射受实际协议档案限制：OpenAI v1 档案允许显式声明 <code>responses -&gt; chat_completions</code>，让 Chat-only 上游承接 Responses 请求；其余跨协议、跨供应商的转换属于混合供应商账户能力，不在普通账户或路由策略里配置。</p>
+        <h3>一条原则：配置不虚构上游</h3>
+        <p>上游接口能力声明的是真实上游能接收的请求形态（JSON 或流式）；没有勾选的协议请求不会把该账户加入候选。支持模型、检查模型与别名目标都必须来自账户真实可用的范围——配置页不能把上游不支持的协议或模型“变出来”，检查会如实失败，而不是被绕过。</p>
+        <div class="route-catalog"><a href="/__aisys__/my-models"><strong>我的模型</strong><span>查看当前可用模型与映射；看不到预期模型时，先回到账户支持模型与分组配置检查。</span></a><a href="/__aisys__/my-accounts"><strong>我的 AI 账户</strong><span>维护账户的支持模型、上游接口能力与账号模型别名。</span></a></div>
+      </section>
+
+      <section id="tasks" class="section">
+        <div class="section-heading-row"><div><p class="section-kicker">按目标找操作</p><h2>任务指南</h2></div><p class="lead">四个常见任务：从零接入、批量迁移、日常使用、按症状排障。每个操作都回到前面章节的机制，知道为什么再做。</p></div>
+        <h3>5.1 从零到第一次调用</h3>
+        <ol class="task-steps">
+          <li><strong>新建分组。</strong>在<a href="/__aisys__/my-groups">我的分组</a>确定供应商边界并选择分组类型：个人分组适合稳定低并发调用，高并发分组面向共享程序流量。先建分组，账户的“加入分组”下拉才会显示正确的候选。</li>
+          <li><strong>添加或导入 AI 账户。</strong>在<a href="/__aisys__/my-accounts">我的 AI 账户</a>逐个填写凭据、Base URL、支持模型与上游接口能力，或按 5.2 批量导入。新账户以 <code>pending_test</code> 创建，此时还不能承接流量。</li>
+          <li><strong>完成检查并设为可调度。</strong>在<a href="/__aisys__/my-model-checks">模型检测</a>或账户检查确认“模型可用、凭据正确、协议匹配”，等待后台激活检查通过，并确认账户的调度开关已开启。</li>
+          <li><strong>建立策略路由。</strong>在<a href="/__aisys__/my-route-strategies">我的策略路由</a>选择分组选择规则：只有一个分组时用普通模式；确实需要多分组分流或容错时，再使用权重、故障回退、轮询或合并。</li>
+          <li><strong>建立 API Key。</strong>在<a href="/__aisys__/my-api-keys">我的 API Key</a>绑定策略，按需设置美元额度、过期时间和时间计划；创建完成立即复制完整密钥，之后列表与日志不再展示明文。</li>
+          <li><strong>客户端接入。</strong>把网关地址（根路径或 <code>/v1</code>）、完整 API Key 和模型名写入实际客户端；发出第一次真实调用后，到使用记录确认该次调用成功，再逐步放量。</li>
+        </ol>
+        <h3>5.2 批量导入存量账号</h3>
+        <p>导入只帮你把结构化资料变成待检查账户，不会替你确认凭据真实可用。</p>
+        <ol class="flow-list">
+          <li>在<a href="/__aisys__/my-accounts">我的 AI 账户</a>打开导入。普通用户只导入到自己名下；管理员可在管理账户页选择目标系统账户导入。</li>
+          <li>只粘贴 <code>juhe-ai-account-import v1</code> JSON，不要粘贴 Markdown 代码块或 CSV。</li>
+          <li>先做“解析预览”，逐项处理协议档案、分组、代理引用和重复项提示。</li>
+          <li>确认导入后，不存在的分组可以按选项自动创建；同名账户可跳过。</li>
+        </ol>
         <div class="callout info">单次请求上限约 <code>256KB</code>，最多 50 个账户，最多 20 个代理。普通用户不能创建新代理。即使来源写了 <code>active</code>，导入账户仍会以 <code>pending_test</code> 创建，检查通过后才可参与调度。</div>
         <details class="prompt-reference"><summary>给 AI 整理来源数据时，如何避免编造字段</summary><pre class="ai-prompt">请根据我附上的《juhe-ai AI 账户导入协议 v1》Markdown，把下面账号数据转换为 juhe-ai-account-import v1 JSON。
 
@@ -85,22 +169,47 @@
 5. providerProtocolProfileId 是协议档案唯一入口；不要从 base_url 或旧字段猜测档案。
 6. 不要编造来源里没有的 token、API Key、邮箱、账号 ID、代理密码或模型列表。
 7. 不确定信息放到 notes；不能判断立即可调度时 status 填 pending_test 或 disabled。</pre></details>
+        <h3>5.3 日常使用：对话、对账与授权</h3>
+        <p><strong>站内对话。</strong><a href="/__aisys__/my-chat">AI 问答</a>是登录用户的站内对话入口，使用系统维护的专属对话 Key，走与客户端相同的网关链路；它不替代客户端 API Key，客户端接入是否正常，以真实客户端的调用与使用记录为准。</p>
+        <p><strong>用量对账。</strong><a href="/__aisys__/my-stats">我的统计</a>看自己的请求、令牌和费用总体趋势；<a href="/__aisys__/my-usage-stats">用量统计</a>按时间、账户与模型汇总令牌和费用，适合周期对账；<a href="/__aisys__/my-usage-records">使用记录</a>定位单笔调用的账户、状态与成本。</p>
+        <p><strong>授权与团队。</strong>授权只传递使用权，不改变资源归属。<a href="/__aisys__/my-authorizations">我的授权</a>查看或管理自己可用、已发放的授权资源及其状态；<a href="/__aisys__/my-teams">我的团队</a>查看团队成员和协作范围；<a href="/__aisys__/my-authorization-team-usage">团队消耗</a>按授权团队汇总用量，<a href="/__aisys__/my-authorization-user-usage">用户消耗</a>按用户核对授权用量，两者合起来覆盖团队配额对账与分配归属核对。</p>
+        <h3>5.4 按症状排障</h3>
+        <p>排障从证据开始：先确认请求停在第 2 章的哪个阶段，再只修改能解释当前证据的配置。</p>
+        <div class="symptom-grid">
+          <div class="symptom-card"><strong>401 / 额度 / 时间边界</strong><p><b>先看证据</b>：API Key 的运行状态、过期时间、美元额度与时间计划。</p><p><b>可能原因</b>：Key 已停用或过期；<code>n 小时美元额度</code>已用完（返回 <code>429</code>）；当前时间未命中时间计划窗口；用户级请求限制达到上限。</p><p><b>处置</b>：调整额度或时间计划，或等待额度周期与时间窗口刷新后重试。</p></div>
+          <div class="symptom-card"><strong>模型不存在或不支持</strong><p><b>先看证据</b>：客户端请求的模型名；<a href="/__aisys__/my-models">我的模型</a>中的可用列表。</p><p><b>可能原因</b>：模型名拼写或版本不符；候选账户的支持模型未覆盖该模型；别名映射目标失效；上游接口能力未覆盖该请求形态。</p><p><b>处置</b>：改用目录中可见的模型，或回到账户支持模型与账号模型别名配置修正。</p></div>
+          <div class="symptom-card"><strong>没有可调度账户</strong><p><b>先看证据</b>：<a href="/__aisys__/my-ai-health">AI 健康</a>的检查结果与可调度状态；策略绑定的分组是否启用。</p><p><b>可能原因</b>：分组停用或池内没有账户；账户不满足 <code>active</code>、<code>schedulable</code>、未到期、时间计划、授权来源或运行态中的某一项。</p><p><b>处置</b>：按候选条件逐项核对恢复；新账户先完成检查再承接流量。</p></div>
+          <div class="symptom-card"><strong>分流结果不符</strong><p><b>先看证据</b>：使用记录中实际命中的分组与账户；策略路由的模式、顺序与权重。</p><p><b>可能原因</b>：Key 绑定了非预期策略；对回退、轮询或权重语义的理解偏差；账户优先级影响组内选择顺序。</p><p><b>处置</b>：先核对 Key 绑定；调整共享策略前确认所有绑定它的 Key 都能接受这次变化。</p></div>
+          <div class="symptom-card"><strong>慢或偶发失败</strong><p><b>先看证据</b>：使用记录的耗时与状态；<a href="/__aisys__/my-ai-performance">AI 性能</a>按账户/模型看趋势。</p><p><b>可能原因</b>：单次上游波动；个别账户持续变慢；高并发分组的排队等待。</p><p><b>处置</b>：不要用一条慢记录调整全局配置；先缩小范围确认是普遍现象还是个别账户，再针对性处理。</p></div>
+          <div class="symptom-card"><strong>配置被改</strong><p><b>先看证据</b>：<a href="/__aisys__/my-operation-logs">操作日志</a>中谁、何时、对哪类资源执行了写入。</p><p><b>可能原因</b>：自己或协作成员的变更；共享策略被修改，影响所有绑定它的 Key。</p><p><b>处置</b>：按日志恢复原值；需要不同规则时新建同配置策略，再绑定新的 API Key。</p></div>
+        </div>
       </section>
 
-      <section id="chat" class="section"><div class="section-heading-row"><div><p class="section-kicker">调用前核对模型</p><h2>AI 问答、模型与策略验证</h2></div><p class="lead">站内对话和客户端中转是两条不同入口，诊断也应从实际症状开始。</p></div>
-        <div class="route-catalog"><a href="/__aisys__/my-chat"><strong>AI 问答</strong><span>使用当前账户的专属对话 Key；用于站内对话，不作为客户端 API Key 验证入口。</span></a><a href="/__aisys__/my-models"><strong>我的模型</strong><span>查看当前可用模型与映射。看不到模型时，先回到账户支持模型和策略分组检查。</span></a><a href="/__aisys__/my-model-checks"><strong>模型检测</strong><span>区分模型不支持、上游拒绝、凭据/协议问题；它比一次聊天失败更适合作为账户检查证据。</span></a><a href="/__aisys__/my-route-strategies"><strong>我的策略路由</strong><span>核对 API Key 实际绑定的策略，以及策略中的分组顺序、权重或回退关系。</span></a></div>
+      <section id="configuration" class="section">
+        <div class="section-heading-row"><div><p class="section-kicker">字段级参考</p><h2>配置参考：填什么，为什么</h2></div><p class="lead">这一章是参考层：每个条目写清楚作用、实际影响和常见误用。机制背景见前面章节。</p></div>
+        <div class="reference-stack">
+          <details class="reference-entry" open><summary><span><b>AI 分组</b><small>建立账户池与供应商边界</small></span><span class="reference-summary">先选供应商，再定个人/高并发</span></summary><div class="reference-body">
+            <dl class="field-grid"><div><dt>分组名称</dt><dd>给人识别用途，不参与调度。名称应写清使用方或场景，例如“研发共享 OpenAI”。</dd></div><div><dt>所属供应商</dt><dd>决定可加入的账户范围。分组保存 <code>providerCode</code>；换供应商不是改个标签，会改变账户候选边界。</dd></div><div><dt>个人分组</dt><dd>适合个人或稳定低并发调用。按账户并发直接调度，没有额外短队列策略。</dd></div><div><dt>高并发分组</dt><dd>适合共享程序流量；会启用短队列、单账户软阈值和可选的单 IP 并发限制。</dd></div><div><dt>最大单账户排队阈值</dt><dd>高并发模式才出现。到达阈值后优先选择其他账户，实际值不会高于该账户的硬并发上限。</dd></div><div><dt>最大等待时间</dt><dd>所有账户硬并发都满时允许在分组内等多久；超时返回 <code>429</code>。它不是上游响应超时。</dd></div><div><dt>限制单 IP 并发</dt><dd>关闭时不限制。开启后按“当前分组 + API Key + IP”限制同时占用数；超过时可立即拒绝或进入等待。</dd></div><div><dt>启用状态</dt><dd>停用分组后，绑定它的策略不会继续将请求调度到这个账户池。</dd></div></dl>
+            <p class="reference-note">先建分组再建账户的原因：账户的“加入分组”下拉只显示同一供应商的分组，避免把协议边界配乱。</p>
+          </div></details>
+          <details class="reference-entry"><summary><span><b>AI 账户</b><small>声明真实上游与可调度条件</small></span><span class="reference-summary">凭据、模型、并发和状态都在此层</span></summary><div class="reference-body">
+            <dl class="field-grid"><div><dt>账户名称 / 加入分组</dt><dd>名称用于定位；分组决定它能被哪一个账户池选择。账户的供应商必须和分组一致。</dd></div><div><dt>并发上限</dt><dd>这个账户同时承接请求的硬上限。达到后调度器会等待或尝试其他可用账户。</dd></div><div><dt>优先级</dt><dd>同一分组内小值优先，<code>0</code> 比 <code>1</code> 更靠前。它不替代策略层的分组顺序。</dd></div><div><dt>特权</dt><dd><code>super_priority</code> 表示超级优先，<code>fallback</code> 表示降级备用；只在确实需要固定调度角色时使用。</dd></div><div><dt>状态</dt><dd><code>active</code> 是进入候选的必要条件，不保证当前一定可调度；还要满足 <code>schedulable</code>、未到期、时间计划、授权来源和运行态均可用。<code>pending_test</code> 等待检查，<code>disabled</code> 人工停用。</dd></div><div><dt>API Key / 多 Key</dt><dd>多个 Key 可轮询或按 1-100 权重轮询；多 Key 账户不支持余额查询，保存后会自动关闭余额查询。</dd></div><div><dt>Base URL</dt><dd>填写服务根或版本根，例如 <code>https://api.openai.com/v1</code>；不要填 <code>/responses</code>、<code>/chat/completions</code>、<code>/messages</code> 这类具体接口。</dd></div><div><dt>支持模型</dt><dd>声明此 Base URL 真正可用的模型，既用于候选过滤，也是别名右侧可选模型的边界。至少选择一个。</dd></div><div><dt>检查模型</dt><dd>用来验证账户链路；先选择确实被支持模型覆盖的模型，再把检查结果当作激活依据。</dd></div><div><dt>上游接口能力</dt><dd>声明真实上游能接收的请求形态。没有勾选的协议请求不会把此账户加入候选；不能用它虚构上游能力。</dd></div><div><dt>账号模型别名</dt><dd>把“客户端协议/模型”映射到“上游协议/模型”。右侧目标必须同时满足账户支持模型和上游接口能力；普通账户的跨协议映射受实际档案限制。</dd></div><div><dt>代理</dt><dd>只影响该账户访问上游的网络路径；不会改变客户端访问本系统的地址。</dd></div><div><dt>服务等级 / 思考级别</dt><dd>只在已选模型声明支持时可用；不支持时应清空或改选模型，不能强制覆盖。</dd></div></dl>
+            <p class="reference-note">新建或导入后，先在 <a href="/__aisys__/my-model-checks">模型检测</a> / 账户检查确认“模型可用、凭据正确、协议匹配”，再将账户用于真实流量。</p>
+          </div></details>
+          <details class="reference-entry"><summary><span><b>策略路由</b><small>定义 API Key 选择分组的规则</small></span><span class="reference-summary">API Key 只认识策略，不直接认识账户</span></summary><div class="reference-body">
+            <div class="mode-reference"><div><strong>普通</strong><span>只能绑定一个启用分组，请求直接进入这个分组的账号池。</span></div><div><strong>权重</strong><span>至少两个启用分组，按分组权重比例分流；总权重不能超过 100。</span></div><div><strong>故障回退</strong><span>第一行是主用分组，后续是备用分组；主用恢复后仍会优先主用。</span></div><div><strong>轮询</strong><span>至少两个启用分组，按当前排列顺序依次调度；拖动顺序会改变下一个选择次序。</span></div><div><strong>合并</strong><span>至少两个启用分组，把所有绑定分组的账号合并成一个大池统一调度，不区分分组；拖动顺序仅决定调度平局时的基础先后。</span></div><div><strong>调度偏好</strong><span>普通、权重、故障回退、轮询和合并五种模式共享，作用于请求所落分组内的账号调度。选“成本优先”时尽量保留当前账户缓存和会话粘黏；“速度优先”只对可重放文本观察首字慢样本，图像和副作用请求不使用这套切换。</span></div></div>
+            <dl class="field-grid"><div><dt>名称 / 说明</dt><dd>只用于后台识别。名称建议带用途，避免在多个 API Key 之间误选共享策略。</dd></div><div><dt>状态</dt><dd>停用后，绑定该策略的 API Key 不再通过它进入分组调度。</dd></div><div><dt>首字截止与慢速参数</dt><dd>只在速度优先出现。首字截止、慢速触发次数、窗口期、恢复次数、探针间隔和降级租约一起决定“何时确认慢、何时恢复”。</dd></div><div><dt>分组绑定</dt><dd>分组是策略的唯一调度目标。修改共享策略会影响所有绑定它的 API Key；需要复制配置时，应新建同配置策略再绑定新 API Key。</dd></div></dl>
+          </div></details>
+          <details class="reference-entry"><summary><span><b>API Key</b><small>把调用身份接到一套策略</small></span><span class="reference-summary">完整密钥只在创建/刷新时展示</span></summary><div class="reference-body">
+            <dl class="field-grid"><div><dt>名称</dt><dd>只用于人识别；默认 API Key 和 AI 对话 API Key 的名称不可修改。</dd></div><div><dt>策略路由</dt><dd>API Key 只绑定策略路由。分组、模型和供应商选择逻辑都在策略中维护。</dd></div><div><dt>运行状态</dt><dd>只有 <code>active</code> 会接受调用。设置时间计划后，保存与计划边界都会直接更新这个状态。</dd></div><div><dt>过期时间</dt><dd>到达时间后不再可用；它是绝对时间边界，不受时间计划替代。</dd></div><div><dt>美元额度</dt><dd>“n 小时美元额度”可按 n 小时、每日、每周、每月设置美元上限；未开启的项目不限制。它约束的是该 Key 的调用额度。</dd></div><div><dt>时间计划</dt><dd>开启后，只在选定星期与开始/结束时间内参与调度；未命中窗口会被暂时跳过。多个窗口用于工作日/时段组合。</dd></div><div><dt>说明</dt><dd>仅作后台标记，不参与路由、额度或权限判断。</dd></div></dl>
+            <p class="reference-note">创建完成立即复制完整密钥到客户端安全配置；之后列表和日志不会再次给出完整明文。</p>
+          </div></details>
+        </div>
       </section>
 
-      <section id="authorization" class="section"><div class="section-heading-row"><div><p class="section-kicker">资源归属与协作</p><h2>授权、团队与消耗</h2></div><p class="lead">这里解释“谁能用什么”和“使用后算到哪里”，不改变 API Key 的路由规则。</p></div>
-        <div class="route-catalog"><a href="/__aisys__/my-authorizations"><strong>我的授权</strong><span>查看或管理自己可用、已发放的授权资源及其状态。</span></a><a href="/__aisys__/my-teams"><strong>我的团队</strong><span>查看团队成员和协作范围；资源可见性仍以页面实际权限为准。</span></a><a href="/__aisys__/my-authorization-team-usage"><strong>团队消耗</strong><span>按授权团队汇总用量，适合对账团队配额与实际使用。</span></a><a href="/__aisys__/my-authorization-user-usage"><strong>用户消耗</strong><span>按用户核对授权用量，适合查分配后的归属。</span></a></div>
-      </section>
-
-      <section id="observe" class="section"><div class="section-heading-row"><div><p class="section-kicker">用事实而非猜测判断</p><h2>统计、性能、健康和记录</h2></div><p class="lead">这五类页面回答的是不同问题：用了多少、慢不慢、能不能调度、某一笔是否成功、谁改过配置。</p></div>
+      <section id="pages" class="section">
+        <div class="section-heading-row"><div><p class="section-kicker">附录</p><h2>页面导航：六类记录回答六类问题</h2></div><p class="lead">这些页面回答的是不同问题：用了多少、慢不慢、能不能调度、某一笔是否成功、谁改过配置。</p></div>
         <div class="route-catalog"><a href="/__aisys__/my-stats"><strong>我的统计</strong><span>自己的请求、令牌和费用概览；用于总体趋势，不定位单个失败。</span></a><a href="/__aisys__/my-usage-stats"><strong>用量统计</strong><span>按时间、账户与模型汇总令牌和费用，用于对账。</span></a><a href="/__aisys__/my-ai-performance"><strong>AI 性能</strong><span>查看耗时和成功情况。先按账户/模型缩小范围，再判断是否为普遍变慢。</span></a><a href="/__aisys__/my-ai-health"><strong>AI 健康</strong><span>查看账户检查和可调度状态；待检查、失败和停用各有不同处理路径。</span></a><a href="/__aisys__/my-usage-records"><strong>使用记录</strong><span>按请求、模型和状态追踪真实调用，是“这次为什么失败”的第一证据。</span></a><a href="/__aisys__/my-operation-logs"><strong>操作日志</strong><span>回看自己的资源变更、时间和结果；配置意外变化时先查这里。</span></a></div>
-      </section>
-
-      <section id="troubleshooting" class="section"><div class="section-heading-row"><div><p class="section-kicker">从上到下定位</p><h2>排障顺序</h2></div><p class="lead">不要先改参数。先确认请求走到哪一层，再只改能解释当前证据的配置。</p></div>
-        <div class="troubleshooting-grid"><div><strong>401 / 额度 / 时间边界</strong><span>先看 API Key 是否启用、未过期、未超过额度且命中时间计划。</span></div><div><strong>模型不存在或不支持</strong><span>核对客户端模型名、别名映射、账户支持模型和上游接口能力。</span></div><div><strong>没有可调度账户</strong><span>核对策略绑定分组、分组启用、账户分组，以及 <code>active</code>、<code>schedulable</code>、到期/时间计划、授权来源和运行态。</span></div><div><strong>分流结果不对</strong><span>先确认 Key 绑定哪套策略，再查策略模式、分组顺序/权重和账户优先级。</span></div><div><strong>慢或偶发失败</strong><span>先查使用记录，再结合 AI 健康与 AI 性能；不要用一条慢记录就调整全局超时。</span></div><div><strong>配置被改过</strong><span>在操作日志确认谁、何时、对哪类资源执行了写入，然后决定恢复还是继续排查。</span></div></div>
       </section>
     </main>
   </div>

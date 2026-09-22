@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -866,7 +867,11 @@ func TestOpenBusinessTargetConnectionRejectsUnprovenSQLiteSchemaReady(t *testing
 	}
 }
 
-func TestOpenBusinessTargetConnectionSharesValidatedHandle(t *testing.T) {
+// TestOpenBusinessTargetConnectionSplitsReadWritePins 验证 SQLite 读/写双池
+// 契约：写池单连接归 auth/session 与保留任务所有，Source（纯读端口）绑定
+// 独立只读池（默认 4），同一文件、同一关闭链；显式 JUHE_AI_SQLITE_READ_POOL
+// 覆盖默认值。PostgreSQL 模式不拆池，Source 与连接共享句柄。
+func TestOpenBusinessTargetConnectionSplitsReadWritePins(t *testing.T) {
 	path := t.TempDir() + "/business.db"
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
 	if err != nil {
@@ -884,8 +889,14 @@ func TestOpenBusinessTargetConnectionSharesValidatedHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if connection.DB == nil || connection.Source == nil || connection.Source.db != connection.DB {
-		t.Fatal("source and connection must share DB handle")
+	if connection.DB == nil || connection.Source == nil || connection.ReadDB == nil {
+		t.Fatal("sqlite mode must expose write pool, read pool and source")
+	}
+	if connection.Source.db != connection.ReadDB {
+		t.Fatal("source must run on the dedicated read pool")
+	}
+	if got := connection.ReadDB.Stats().MaxOpenConnections; got != 4 {
+		t.Fatalf("read pool default size = %d, want 4", got)
 	}
 	if err := connection.Close(); err != nil {
 		t.Fatal(err)
@@ -929,4 +940,85 @@ func testCredentialEnvelope(t *testing.T, secret, plaintext string) string {
 func sha256Bytes(value string) []byte {
 	sum := sha256.Sum256([]byte(value))
 	return sum[:]
+}
+
+// TestBusinessSQLiteReadPoolReadWriteSemantics 验证 Business 读/写双池约定：
+// 只读池（默认 4 连接）物理拒绝写入、并发读可同时持有多条连接，且纯读的
+// BusinessTargetSource（含 AccountID 富化与 ReadOnly 事务）在只读池上完整工作。
+// 这是个人部署读并发加固（JUHE_AI_SQLITE_READ_POOL）的行为契约。
+func TestBusinessSQLiteReadPoolReadWriteSemantics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "business.db")
+	writer, err := sql.Open("sqlite", "file:"+path+"?mode=rwc&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	writer.SetMaxOpenConns(1)
+	for _, ddl := range []string{
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,config_revision INTEGER,dispatch_revision INTEGER,status TEXT,schedulable INTEGER,health_check_endpoint_mode TEXT,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,credentials_encrypted TEXT,proxy_profile_id TEXT,availability_schedule_json TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT)`,
+		`CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY,enabled INTEGER,base_url TEXT)`,
+		`CREATE TABLE proxy_profiles (id TEXT PRIMARY KEY,enabled INTEGER,type TEXT,host TEXT,port INTEGER,username TEXT,password_encrypted TEXT)`,
+		`CREATE TABLE model_quality_policies (system_account_id TEXT,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold TEXT,penalty_action TEXT,recovery_interval_minutes INTEGER,custom_question_ids TEXT)`,
+		`CREATE TABLE group_accounts (account_id TEXT,group_id TEXT,enabled INTEGER,system_account_id TEXT,account_authorization_id TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
+		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
+		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
+		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
+		`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1,'https://api.openai.test/v1')`,
+		`INSERT INTO groups VALUES ('g1','sys-1',1)`,
+		`INSERT INTO accounts (id,system_account_id,name,provider_code,provider_protocol_profile_id,protocol_code,protocol_version,type,config_revision,dispatch_revision,status,schedulable,health_check_endpoint_mode,account_expires_at,cooldown_until,last_error_code,credentials_encrypted,proxy_profile_id,availability_schedule_json,authorization_instance_authorization_id,authorization_instance_source_account_id,deleted_at) VALUES ('a1','sys-1','Alpha','openai','profile_openai_openai_v1','openai','1','api_key',1,1,'active',1,'',NULL,NULL,NULL,'','',NULL,NULL,NULL,NULL)`,
+		`INSERT INTO group_accounts VALUES ('a1','g1',1,'sys-1',NULL)`,
+		`INSERT INTO account_supported_models VALUES ('a1','gpt-5.6-sol')`,
+	} {
+		if _, err := writer.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	readPool, err := openBusinessSQLiteReadPool(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readPool.Close()
+	if got := readPool.Stats().MaxOpenConnections; got != 4 {
+		t.Fatalf("read pool max open connections = %d, want 4", got)
+	}
+	if _, err := readPool.Exec(`INSERT INTO provider_protocol_profiles VALUES ('profile_write',1)`); err == nil {
+		t.Fatal("read pool must physically reject writes via query_only")
+	}
+
+	source, err := NewBusinessTargetSource(readPool, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.now = func() time.Time { return time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC) }
+	if err := source.CheckContract(context.Background()); err != nil {
+		t.Fatalf("source contract must pass on the read pool: %v", err)
+	}
+	direct, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", AccountID: "a1", Limit: 1})
+	if err != nil || len(direct) != 1 || direct[0].ID != "a1" || len(direct[0].ModelCheckModels) == 0 {
+		t.Fatalf("accountId enrichment must work on the read pool: %+v err=%v", direct, err)
+	}
+
+	const concurrency = 16
+	results := make(chan error, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			items, err := source.ListAccountOptions(context.Background(), AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", Limit: 50})
+			if err != nil {
+				results <- err
+				return
+			}
+			if len(items) != 1 {
+				results <- errors.New("unexpected option count")
+				return
+			}
+			results <- nil
+		}()
+	}
+	for i := 0; i < concurrency; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent reads on the pool failed: %v", err)
+		}
+	}
 }

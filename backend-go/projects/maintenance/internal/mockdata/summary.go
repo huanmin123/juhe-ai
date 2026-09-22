@@ -99,14 +99,13 @@ func (e *env) setOwner(owner mockOwner) {
 	e.owner = owner
 }
 
-// summarySnapshot 取一份摘要输入的浅拷贝，保证写文件时不再持锁。
+// summarySnapshot 取一份摘要输入的浅拷贝，保证写文件时不再持锁。空集合保持
+// nil（不预先补成空切片）：nil 的统一兜底只留在 writeSummary 一处。
 func (e *env) summarySnapshot() (mockOwner, []mockUser, []mockAPIKey) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	users := make([]mockUser, len(e.users))
-	copy(users, e.users)
-	keys := make([]mockAPIKey, len(e.apiKeys))
-	copy(keys, e.apiKeys)
+	users := append([]mockUser(nil), e.users...)
+	keys := append([]mockAPIKey(nil), e.apiKeys...)
 	sort.SliceStable(keys, func(i, j int) bool { return keys[i].Name < keys[j].Name })
 	return e.owner, users, keys
 }

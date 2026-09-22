@@ -246,28 +246,60 @@ func TestEnvUsageShardDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shardDir := filepath.Join(paths.UsageShardRoot, "20260101")
-	if err := os.MkdirAll(shardDir, 0o755); err != nil {
+	// 权威布局：jobs usagewriter 的 <root>/YYYY/MM/DD/usage-YYYYMMDD-sNN.sqlite3。
+	authoritativeDir := filepath.Join(paths.UsageShardRoot, "2026", "09", "21")
+	if err := os.MkdirAll(authoritativeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"s00.sqlite3", "s01.sqlite3", "notes.txt"} {
-		if err := os.WriteFile(filepath.Join(shardDir, name), []byte{}, 0o600); err != nil {
+	// 兼容布局：骨架期遗留的 <root>/<bucketDateKey>/<shard> 两级形态。
+	legacyDir := filepath.Join(paths.UsageShardRoot, "20260101")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 更深层级：权威布局之下再嵌一层目录也必须被递归收进来（分片布局演进时
+	// 枚举不应写死层数）。
+	nestedDir := filepath.Join(authoritativeDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	authoritative := []string{"usage-20260921-s00.sqlite3", "usage-20260921-s05.sqlite3", "notes.txt", "usage-20260921-s00.sqlite3-wal"}
+	for _, name := range authoritative {
+		if err := os.WriteFile(filepath.Join(authoritativeDir, name), []byte{}, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// 非目录条目与无扩展名的文件都不算分片。
+	if err := os.WriteFile(filepath.Join(nestedDir, "usage-20260921-nested.sqlite3"), []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "s01.sqlite3"), []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 分片根下的散落 .sqlite3 不是分片（它不在任何 bucket 目录里）。
 	if err := os.WriteFile(filepath.Join(paths.UsageShardRoot, "stray.sqlite3"), []byte{}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stores := paths.usageShardStores()
-	if len(stores) != 2 {
-		t.Fatalf("usage shards = %v, want 2", stores)
+	if len(stores) != 4 {
+		t.Fatalf("usage shards = %v, want 4", stores)
 	}
-	if stores[0].Name != StoreUsageShardPrefix+"[20260101/s00]" {
-		t.Fatalf("shard name = %q", stores[0].Name)
+	// 枚举顺序按 bucket 日期升序（同一天再按相对路径），不是目录遍历顺序：
+	// 20260101 先于 2026/09/21，权威布局内更深的 nested/ 先于同目录文件。
+	names := []string{
+		StoreUsageShardPrefix + "[20260101/s01]",
+		StoreUsageShardPrefix + "[2026/09/21/nested/usage-20260921-nested]",
+		StoreUsageShardPrefix + "[2026/09/21/usage-20260921-s00]",
+		StoreUsageShardPrefix + "[2026/09/21/usage-20260921-s05]",
 	}
-	if stores[0].Domain != DomainUsage {
-		t.Fatalf("shard domain = %q", stores[0].Domain)
+	for index, want := range names {
+		if stores[index].Name != want {
+			t.Fatalf("shard[%d] name = %q, want %q", index, stores[index].Name, want)
+		}
+		if stores[index].Domain != DomainUsage {
+			t.Fatalf("shard[%d] domain = %q", index, stores[index].Domain)
+		}
+	}
+	if stores[2].Path != filepath.Join(authoritativeDir, "usage-20260921-s00.sqlite3") {
+		t.Fatalf("shard path = %q", stores[2].Path)
 	}
 	// 根目录不存在时安全返回空。
 	missing, err := ResolvePaths(filepath.Join(root, "nowhere"), "", envMap(nil))

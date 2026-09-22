@@ -26,6 +26,14 @@ func sqliteDSN(path string) string {
 	return fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_txlock=immediate", filepath.ToSlash(path), sqliteBusyTimeoutMs)
 }
 
+// openSQLiteDatabase 是打开 SQLite 句柄的注入点：默认走 modernc.org/sqlite，
+// 测试替换它来驱动「打开失败 / 语句失败 / 行集迭代失败」等真实文件系统无法
+// 触发的错误分支（与 maintenance 其他包的错误注入测试同一手法，例如
+// internal/schema/wm_pg_fake_test.go）。
+var openSQLiteDatabase = func(dsn string) (*sql.DB, error) {
+	return sql.Open("sqlite", dsn)
+}
+
 // env 是一次造数运行的存储上下文：按存储名懒打开的 SQLite 句柄、日志器、
 // 选项与时钟，以及域已产出数据的记账（覆盖报告与摘要都要用）。
 //
@@ -81,38 +89,93 @@ func (p Paths) allStores() []store {
 	return stores
 }
 
-// usageShardStores 枚举已存在的 usage 分片文件（<root>/<bucketDateKey>/<分片>.sqlite3）。
+// usageShardStores 递归枚举已存在的 usage 分片文件。
+//
+// 权威路径布局是 jobs usagewriter 的
+// <root>/YYYY/MM/DD/usage-YYYYMMDD-sNN.sqlite3（dev 数据目录实测的
+// usage_record_shards.file_path 就是这一形态）。这里按「相对分片根至少一层
+// 子目录、文件名以 .sqlite3 结尾」递归收集：既覆盖权威布局，也容忍骨架期
+// 遗留的 <root>/<bucketDateKey>/<shard>.sqlite3 两级形态（更深的目录层级同样
+// 接受，布局演进不需要再改这里）。分片根下的散落 .sqlite3 不算分片——它不是
+// 任何 bucket 下的分片文件；非 .sqlite3 后缀与 -wal/-shm 伴生文件同理排除。
 //
 // 为什么不查 usage-catalog 的分片登记表：清理与覆盖检查必须能处理「文件已存在
 // 但登记表尚未写入」的半成品状态，目录枚举没有这个前置依赖；真正写分片的域
 // 再按登记表语义补登。
+//
+// 返回顺序按分片所属 bucket 日期升序（无法识别 bucket 时按相对路径排序）：
+// 目录遍历顺序取决于目录树形状（WalkDir 会先递归进 <root>/2026 再回到
+// <root>/20260101），拿它当报告 / 清理顺序既不稳定也不符合「按日期看分片」的
+// 直觉，因此显式排序。
 func (p Paths) usageShardStores() []store {
-	buckets, err := os.ReadDir(p.UsageShardRoot)
-	if err != nil {
-		return nil
+	type shardFile struct {
+		key  string
+		path string
 	}
+	var files []shardFile
+	_ = filepath.WalkDir(p.UsageShardRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			// 单个子目录读失败不放弃其余分片：清理/覆盖检查在部分损坏的
+			// 数据目录上仍要能收敛可用部分。
+			return nil
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sqlite3") {
+			return nil
+		}
+		relative, relErr := filepath.Rel(p.UsageShardRoot, path)
+		if relErr != nil || !strings.Contains(relative, string(os.PathSeparator)) {
+			return nil
+		}
+		files = append(files, shardFile{
+			key:  filepath.ToSlash(strings.TrimSuffix(relative, ".sqlite3")),
+			path: path,
+		})
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool {
+		left, right := usageShardBucketKey(files[i].key), usageShardBucketKey(files[j].key)
+		if left != right {
+			return left < right
+		}
+		return files[i].key < files[j].key
+	})
 	var stores []store
-	for _, bucket := range buckets {
-		if !bucket.IsDir() {
-			continue
-		}
-		shards, readErr := os.ReadDir(filepath.Join(p.UsageShardRoot, bucket.Name()))
-		if readErr != nil {
-			continue
-		}
-		for _, shard := range shards {
-			if shard.IsDir() || filepath.Ext(shard.Name()) != ".sqlite3" {
-				continue
-			}
-			key := bucket.Name() + "/" + strings.TrimSuffix(shard.Name(), ".sqlite3")
-			stores = append(stores, store{
-				Name:   StoreUsageShardPrefix + "[" + key + "]",
-				Path:   filepath.Join(p.UsageShardRoot, bucket.Name(), shard.Name()),
-				Domain: DomainUsage,
-			})
-		}
+	for _, file := range files {
+		stores = append(stores, store{
+			Name:   StoreUsageShardPrefix + "[" + file.key + "]",
+			Path:   file.path,
+			Domain: DomainUsage,
+		})
 	}
 	return stores
+}
+
+// usageShardBucketKey 从分片的相对路径键（斜杠分隔、已去掉 .sqlite3）取 bucket
+// 日期键：权威布局 <YYYY>/<MM>/<DD>/<file> 拼成 YYYYMMDD，两级兼容布局
+// <YYYYMMDD>/<file> 直接取首段；两种都认不出时回落到相对键本身（排序仍然稳定）。
+func usageShardBucketKey(key string) string {
+	parts := strings.Split(key, "/")
+	if len(parts) >= 1 && isDigits(parts[0]) && len(parts[0]) == 8 {
+		return parts[0]
+	}
+	if len(parts) >= 3 && isDigits(parts[0]) && isDigits(parts[1]) && isDigits(parts[2]) &&
+		len(parts[0]) == 4 && len(parts[1]) == 2 && len(parts[2]) == 2 {
+		return parts[0] + parts[1] + parts[2]
+	}
+	return key
+}
+
+// isDigits 判断整段都是 ASCII 数字（bucket 日期段判定用；非数字段直接回落）。
+func isDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // stores 返回按稳定顺序排列的存储清单（含懒打开之后才被发现的用法分片不参与，
@@ -148,7 +211,7 @@ func (e *env) open(name string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(item.Path), 0o755); err != nil {
 		return nil, fmt.Errorf("创建 %s 目录 %s: %w", name, filepath.Dir(item.Path), err)
 	}
-	db, err := sql.Open("sqlite", sqliteDSN(item.Path))
+	db, err := openSQLiteDatabase(sqliteDSN(item.Path))
 	if err != nil {
 		return nil, fmt.Errorf("打开 %s (%s): %w", name, item.Path, err)
 	}
@@ -186,19 +249,25 @@ func (e *env) openExisting(name string) (*sql.DB, error) {
 }
 
 // Close 关闭所有已打开的句柄；错误只用于诊断，不改变调用方已经得到的结论。
+// 每个存储的错误用 %w 包装后 errors.Join 聚合：调用方既能读完整文本，也能用
+// errors.Is 追到驱动错误（否则关闭失败在测试与排障里只能靠字符串匹配）。
 func (e *env) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	var failures []string
-	for name, db := range e.opened {
-		if err := db.Close(); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", name, err))
+	names := make([]string, 0, len(e.opened))
+	for name := range e.opened {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var failures []error
+	for _, name := range names {
+		if err := e.opened[name].Close(); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", name, err))
 		}
 	}
 	e.opened = map[string]*sql.DB{}
 	if len(failures) > 0 {
-		sort.Strings(failures)
-		return errors.New("关闭 mockdata 存储失败: " + strings.Join(failures, "; "))
+		return fmt.Errorf("关闭 mockdata 存储失败: %w", errors.Join(failures...))
 	}
 	return nil
 }

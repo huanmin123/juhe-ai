@@ -458,3 +458,35 @@ func TestVerifyConfiguredCutoverEvidenceRejectsManifestIdentityMismatch(t *testi
 		t.Fatalf("manifest identity mismatch unexpectedly ready: %+v", report)
 	}
 }
+
+func TestSQLiteReadPoolSizeDefaultsAndValidation(t *testing.T) {
+	cfg, err := LoadConfig(func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("zero-config load: %v", err)
+	}
+	if cfg.SQLiteReadPoolSize != 4 {
+		t.Fatalf("read pool default must be 4, got %d", cfg.SQLiteReadPoolSize)
+	}
+	cfg, err = LoadConfig(func(key string) string {
+		if key == "JUHE_AI_SQLITE_READ_POOL" {
+			return "8"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("explicit read pool load: %v", err)
+	}
+	if cfg.SQLiteReadPoolSize != 8 {
+		t.Fatalf("explicit read pool must win, got %d", cfg.SQLiteReadPoolSize)
+	}
+	for _, invalid := range []string{"0", "17", "abc", "-2"} {
+		if _, err := LoadConfig(func(key string) string {
+			if key == "JUHE_AI_SQLITE_READ_POOL" {
+				return invalid
+			}
+			return ""
+		}); err == nil {
+			t.Fatalf("read pool %q must fail closed", invalid)
+		}
+	}
+}

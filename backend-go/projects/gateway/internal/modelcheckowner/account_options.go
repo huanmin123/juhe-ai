@@ -111,15 +111,30 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 		return nil, fmt.Errorf("read J3b account options: %w", err)
 	}
 	defer rows.Close()
-	result := make([]AccountOption, 0, limit)
+	// 连接池是 MaxOpenConns(1) 的 SQLite 物理文件所有者：外层 rows 未释放时，
+	// AccountID 路径的每账户嵌套查询会永远等不到连接（自死锁）。先读完收集
+	// 行，显式关闭 rows 后再做富化。
+	type accountOptionRow struct {
+		option   AccountOption
+		schedule string
+	}
+	candidates := make([]accountOptionRow, 0, limit)
 	for rows.Next() {
-		var option AccountOption
-		var schedule string
-		if err := rows.Scan(&option.ID, &option.Name, &option.ProviderCode, &option.ProviderProtocolProfile, &option.ProtocolCode, &option.ProtocolVersion, &schedule); err != nil {
+		var candidate accountOptionRow
+		if err := rows.Scan(&candidate.option.ID, &candidate.option.Name, &candidate.option.ProviderCode, &candidate.option.ProviderProtocolProfile, &candidate.option.ProtocolCode, &candidate.option.ProtocolVersion, &candidate.schedule); err != nil {
 			return nil, fmt.Errorf("scan J3b account option: %w", err)
 		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate J3b account options: %w", err)
+	}
+	rows.Close()
+	result := make([]AccountOption, 0, limit)
+	for _, candidate := range candidates {
+		option := candidate.option
 		if options.Purpose == "run" || options.Purpose == "schedule" {
-			allowed, err := availabilityAllowedGateway(schedule, s.nowUTC())
+			allowed, err := availabilityAllowedGateway(candidate.schedule, s.nowUTC())
 			if err != nil {
 				return nil, fmt.Errorf("evaluate J3b account option availability schedule: %w", err)
 			}
@@ -128,16 +143,13 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 			}
 		}
 		if options.AccountID != "" {
-			if models, err := s.configuredModelCheckModels(ctx, option.ID, option.ID, option.ProviderCode, option.ProviderProtocolProfile); err != nil {
+			models, err := s.configuredModelCheckModels(ctx, option.ID, option.ID, option.ProviderCode, option.ProviderProtocolProfile)
+			if err != nil {
 				return nil, err
-			} else {
-				option.ModelCheckModels = models
 			}
+			option.ModelCheckModels = models
 		}
 		result = append(result, option)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate J3b account options: %w", err)
 	}
 	if !options.AllSystemAccounts && (options.Purpose == "run" || options.Purpose == "history") {
 		authorizedOptions := options
@@ -247,15 +259,31 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 		return nil, fmt.Errorf("read J3b authorized account options: %w", err)
 	}
 	defer rows.Close()
-	result := make([]AccountOption, 0, options.Limit)
+	// 与 ListAccountOptions 同因：单连接所有者池上必须先释放外层 rows，再做
+	// AccountID 路径的每账户嵌套查询。
+	type authorizedOptionRow struct {
+		option           AccountOption
+		sourceID         string
+		instanceSchedule string
+		sourceSchedule   string
+	}
+	candidates := make([]authorizedOptionRow, 0, options.Limit)
 	for rows.Next() {
-		var option AccountOption
-		var sourceID, instanceSchedule, sourceSchedule string
-		if err := rows.Scan(&option.ID, &option.Name, &option.ProviderCode, &option.ProviderProtocolProfile, &option.ProtocolCode, &option.ProtocolVersion, &instanceSchedule, &sourceSchedule, &sourceID); err != nil {
+		var candidate authorizedOptionRow
+		if err := rows.Scan(&candidate.option.ID, &candidate.option.Name, &candidate.option.ProviderCode, &candidate.option.ProviderProtocolProfile, &candidate.option.ProtocolCode, &candidate.option.ProtocolVersion, &candidate.instanceSchedule, &candidate.sourceSchedule, &candidate.sourceID); err != nil {
 			return nil, fmt.Errorf("scan J3b authorized account option: %w", err)
 		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate J3b authorized account options: %w", err)
+	}
+	rows.Close()
+	result := make([]AccountOption, 0, options.Limit)
+	for _, candidate := range candidates {
+		option := candidate.option
 		if options.Purpose == "run" {
-			for label, raw := range map[string]string{"instance": instanceSchedule, "source": sourceSchedule} {
+			for label, raw := range map[string]string{"instance": candidate.instanceSchedule, "source": candidate.sourceSchedule} {
 				allowed, err := availabilityAllowedGateway(raw, s.nowUTC())
 				if err != nil {
 					return nil, fmt.Errorf("evaluate J3b authorized %s account option availability schedule: %w", label, err)
@@ -273,16 +301,13 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 			// 支持模型读物理 source 账户；协议兼容门读授权实例账户的
 			// health_check_endpoint_mode，与 run 门的 validateCredentialEndpointMode
 			// （business_source.go Resolve）同源，避免 options 与执行两侧判定分歧。
-			if models, err := s.configuredModelCheckModels(ctx, sourceID, option.ID, option.ProviderCode, option.ProviderProtocolProfile); err != nil {
+			models, err := s.configuredModelCheckModels(ctx, candidate.sourceID, option.ID, option.ProviderCode, option.ProviderProtocolProfile)
+			if err != nil {
 				return nil, err
-			} else {
-				option.ModelCheckModels = models
 			}
+			option.ModelCheckModels = models
 		}
 		result = append(result, option)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate J3b authorized account options: %w", err)
 	}
 	return result, nil
 }

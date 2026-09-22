@@ -153,7 +153,9 @@ func VerifyPathsCoverage(ctx context.Context, options Options) (CoverageReport, 
 func VerifyCoverage(ctx context.Context, e *env) (CoverageReport, error) {
 	report := CoverageReport{}
 	for _, target := range e.stores() {
-		storeCoverage := StoreCoverage{Name: target.Name, Path: target.Path}
+		// Tables 预置成空切片：缺库时也必须序列化成 []，工具侧不用区分 null
+		// 与空集合。
+		storeCoverage := StoreCoverage{Name: target.Name, Path: target.Path, Tables: []TableCoverage{}}
 		exists, err := e.storeExists(target)
 		if err != nil {
 			return report, err
@@ -194,7 +196,24 @@ func VerifyCoverage(ctx context.Context, e *env) (CoverageReport, error) {
 	report.NotCovered = notCovered
 	report.Errors = append(report.Errors, assertErrors...)
 	report.Ready = len(report.Empty) == 0 && len(report.Errors) == 0
+	normaliseCoverageReport(&report)
 	return report, nil
+}
+
+// normaliseCoverageReport 把 nil 集合补成空切片，保证 JSON 形状稳定。
+func normaliseCoverageReport(report *CoverageReport) {
+	if report.Stores == nil {
+		report.Stores = []StoreCoverage{}
+	}
+	if report.Empty == nil {
+		report.Empty = []string{}
+	}
+	if report.Errors == nil {
+		report.Errors = []string{}
+	}
+	if report.NotCovered == nil {
+		report.NotCovered = []string{}
+	}
 }
 
 // storeExists 判断存储文件是否已经在磁盘上。

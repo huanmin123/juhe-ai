@@ -177,16 +177,6 @@ func TestCleanupRuleHelpers(t *testing.T) {
 		t.Fatal("a broken cleanup statement should fail")
 	}
 
-	// storeTableCount 区分 0 行与缺表。
-	if count, err := storeTableCount(context.Background(), e, StoreCodexContextShardPrefix+"[0]", "codex_context_sessions"); err != nil || count != 0 {
-		t.Fatalf("storeTableCount = %d/%v", count, err)
-	}
-	if count, err := storeTableCount(context.Background(), e, StoreCodexContextShardPrefix+"[0]", "ghost"); err != nil || count != -1 {
-		t.Fatalf("storeTableCount(missing table) = %d/%v", count, err)
-	}
-	if count, err := storeTableCount(context.Background(), e, StoreStats, "ghost"); err != nil || count != -1 {
-		t.Fatalf("storeTableCount(missing store) = %d/%v", count, err)
-	}
 }
 
 func TestSweepColumnHeuristics(t *testing.T) {

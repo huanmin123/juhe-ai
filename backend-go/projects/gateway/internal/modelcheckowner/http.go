@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // RunService is the narrow runtime dependency of the Gateway management
@@ -767,6 +769,12 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope 
 	events := make(chan ProgressEvent, 32)
 	results := make(chan streamResult, 1)
 	go func() {
+		// Panic here must reach the SSE stream as a terminal error frame:
+		// without the results send the select below would wait on a dead
+		// goroutine until the client disconnects.
+		defer safego.Handle("modelcheckowner.serveStream.run", func(recovered any) {
+			results <- streamResult{err: fmt.Errorf("模型测试执行异常终止: %v", recovered)}
+		})
 		result, err := h.Service.RunStream(handle.Context(), runRequest, func(event ProgressEvent) {
 			if event.Kind == "run_started" {
 				if data, ok := event.Data.(map[string]any); ok {

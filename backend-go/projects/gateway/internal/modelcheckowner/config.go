@@ -2,6 +2,7 @@ package modelcheckowner
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -51,6 +52,13 @@ type Config struct {
 	CircuitRuntimeRedisNamespace string
 	CircuitRuntimeCapacity       int
 	CircuitRuntimeRetention      time.Duration
+	// SQLiteReadPoolSize is the Business SQLite read pool connection limit
+	// (JUHE_AI_SQLITE_READ_POOL). The pure-read Source port (account options,
+	// target resolution, contract checks) runs on this pool while the write
+	// pool stays single-connection with in-process queuing; WAL carries the
+	// one-writer/many-readers contract. Zero means the 4-connection default;
+	// PostgreSQL mode shares one multi-connection pool and ignores it.
+	SQLiteReadPoolSize int
 }
 
 // j3bHandoffFamilyEnv lists the migration-era handoff/readiness family. The
@@ -76,6 +84,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	// gateway 进程始终装配 J3b owner；访问控制走管理面权限（Admin/Self
 	// 会话鉴权），部署依赖只有存储与可选 Redis。
 	cfg := Config{Enabled: true}
+	// 2026-09-22 读/写双池：读池默认 4 连接，吸收个人部署的真实读并发
+	// （多窗口多 agent 的管理面查询与缓存回源）；写池维持单连接的进程内
+	// 排队语义。未配置取默认，显式配置必须落在 1..16。
+	cfg.SQLiteReadPoolSize = 4
+	if raw := strings.TrimSpace(getenv("JUHE_AI_SQLITE_READ_POOL")); raw != "" {
+		size, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || size < 1 || size > 16 {
+			return Config{}, fmt.Errorf("JUHE_AI_SQLITE_READ_POOL 必须为 1..16 的整数: %q", raw)
+		}
+		cfg.SQLiteReadPoolSize = size
+	}
 	cfg.Owner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_J3B_OWNER")))
 	if cfg.Owner == "" {
 		cfg.Owner = "gateway"

@@ -95,11 +95,15 @@ func cleanupRules() []cleanupRule {
 		// usage 分片：使用记录。
 		{ShardPrefix: StoreUsageShardPrefix, Table: "usage_records", Query: "DELETE FROM usage_records WHERE id LIKE ? OR trace_id LIKE ?", Args: []any{id, trace}},
 		// dataset：记录清理目标（引用账户/API Key）→ 公开接口日志。
-		{Store: StoreDataset, Table: "account_record_cleanup_targets", Query: "DELETE FROM account_record_cleanup_targets WHERE account_id LIKE ? OR id LIKE ?", Args: []any{id, id}},
-		{Store: StoreDataset, Table: "api_key_record_cleanup_targets", Query: "DELETE FROM api_key_record_cleanup_targets WHERE api_key_id LIKE ? OR id LIKE ?", Args: []any{id, id}},
+		// 这两张表没有 id 列（主键就是 account_id / api_key_id），清理标识落在
+		// 外键列与阻塞原因列上。
+		{Store: StoreDataset, Table: "account_record_cleanup_targets", Query: "DELETE FROM account_record_cleanup_targets WHERE account_id LIKE ? OR system_account_id LIKE ? OR last_blocked_reason LIKE ? OR last_error_message LIKE ?", Args: []any{id, id, name, name}},
+		{Store: StoreDataset, Table: "api_key_record_cleanup_targets", Query: "DELETE FROM api_key_record_cleanup_targets WHERE api_key_id LIKE ? OR system_account_id LIKE ? OR last_blocked_reason LIKE ? OR last_error_message LIKE ?", Args: []any{id, id, name, name}},
 		{Store: StoreDataset, Table: "public_api_logs", Query: "DELETE FROM public_api_logs WHERE id LIKE ? OR trace_id LIKE ? OR source_name LIKE ?", Args: []any{id, trace, name}},
 		// stats：策略命中 → 策略；脏队列；后台任务。
-		{Store: StoreStats, Table: "client_ip_policy_hits", Query: "DELETE FROM client_ip_policy_hits WHERE policy_id IN (SELECT id FROM client_ip_policies WHERE id LIKE ? OR reason LIKE ? OR disabled_reason LIKE ?) OR id LIKE ?", Args: []any{id, name, name, id}},
+		// client_ip_policy_hits 的主键是 (ip_hash, stat_date)，没有 id 列：
+		// 命中记录只能靠 policy_id 关联到造数策略。
+		{Store: StoreStats, Table: "client_ip_policy_hits", Query: "DELETE FROM client_ip_policy_hits WHERE policy_id IN (SELECT id FROM client_ip_policies WHERE id LIKE ? OR reason LIKE ? OR disabled_reason LIKE ?)", Args: []any{id, name, name}},
 		{Store: StoreStats, Table: "account_quality_dirty_accounts", Query: "DELETE FROM account_quality_dirty_accounts WHERE account_id LIKE ?", Args: []any{id}},
 		{Store: StoreStats, Table: "client_ip_range_window_dirty_ips", Query: "DELETE FROM client_ip_range_window_dirty_ips WHERE ip_hash LIKE ?", Args: []any{id}},
 		{Store: StoreStats, Table: "client_ip_account_range_window_dirty_ips", Query: "DELETE FROM client_ip_account_range_window_dirty_ips WHERE ip_hash LIKE ?", Args: []any{id}},
@@ -293,28 +297,4 @@ func sweepDeleteQuery(table string, columns []tableColumn) string {
 		return ""
 	}
 	return "DELETE FROM " + table + " WHERE " + strings.Join(conditions, " OR ")
-}
-
-// storeTableCount 便于测试与覆盖断言读取某张表的当前行数；存储或表缺失时
-// 返回 -1，让调用方能区分「0 行」与「表还不存在」。
-func storeTableCount(ctx context.Context, e *env, storeName, table string) (int, error) {
-	db, err := e.openExisting(storeName)
-	if err != nil {
-		return 0, err
-	}
-	if db == nil {
-		return -1, nil
-	}
-	exists, err := queryExistsTable(ctx, db, table)
-	if err != nil {
-		return 0, err
-	}
-	if !exists {
-		return -1, nil
-	}
-	var count int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
-		return 0, err
-	}
-	return count, nil
 }

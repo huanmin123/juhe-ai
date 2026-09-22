@@ -16,6 +16,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/idgen"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 type Target struct {
@@ -290,7 +291,10 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	heartbeatErrCh := make(chan error, 1)
 	heartbeatDone := make(chan struct{})
 	go func() {
+		// Recover registers after close(heartbeatDone), so LIFO unwinding
+		// still signals the probing flow before the goroutine exits.
 		defer close(heartbeatDone)
+		defer safego.Recover("modelcheckowner.run.heartbeat")
 		// lease > 0 已由 ClaimInput 入参校验保证，interval 恒为正；小于 3ns 的
 		// lease 会让探针先行超时，秒级兜底分支不可达（w14m 甄别：不可达防御臂）。
 		interval := lease / 3

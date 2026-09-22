@@ -42,6 +42,29 @@ function frontendBuildInfoPlugin(buildId: string): Plugin {
   }
 }
 
+// 帮助页是 public/help 下的纯静态目录，dev 下需要显式目录索引：
+// 否则 /__aisys__/help/<面>/ 会绕过 public 直服、落入 SPA fallback，
+// 返回主应用 index.html。语义对齐 gateway helpweb 的 express.static。
+function helpPageDirectoryIndexPlugin(): Plugin {
+  return {
+    name: 'juhe-ai-help-page-directory-index',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const raw = req.url || ''
+        const queryIndex = raw.indexOf('?')
+        const pathname = queryIndex === -1 ? raw : raw.slice(0, queryIndex)
+        const search = queryIndex === -1 ? '' : raw.slice(queryIndex)
+        if (pathname === '/__aisys__/help') {
+          req.url = '/__aisys__/help/' + search
+        } else if (pathname.startsWith('/__aisys__/help/') && pathname.endsWith('/')) {
+          req.url = pathname + 'index.html' + search
+        }
+        next()
+      })
+    }
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), '')
   const backendTarget = env.VITE_JUHE_AI_BACKEND_TARGET || 'http://127.0.0.1:3000'
@@ -56,7 +79,9 @@ export default defineConfig(({ mode }) => {
   if (j3bBackendTarget) {
     devProxy['^/__aisys__/api/(my-)?model-checks(/|$)'] = j3bBackendTarget
   }
-  devProxy['^/__aisys__/help(/|$)'] = backendTarget
+  // 帮助页（/__aisys__/help/**）不走 gateway 代理：dev 下由 Vite 从 public/help
+  // 按 base 前缀直服，改完即生效；转发 gateway 时若未配置
+  // JUHE_AI_FRONTEND_DIST_PATH，help 面不挂载，会得到 404（资源不存在）。
   devProxy['^/__aisys__/api(/|$)'] = backendTarget
   devProxy['/v1'] = backendTarget
 
@@ -72,6 +97,7 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       vue(),
+      helpPageDirectoryIndexPlugin(),
       frontendBuildInfoPlugin(buildId),
       Components({
         dts: false,

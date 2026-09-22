@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 type SchedulerKind string
@@ -162,6 +164,11 @@ func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, sour
 		}
 		wg.Add(1)
 		go func() {
+			// A panicking task must neither kill the process nor skip its
+			// failure fence: recover first (LIFO), then release the batch.
+			defer safego.Handle("modelcheckowner.executeSchedulerBatch.task", func(recovered any) {
+				recordErr(SchedulerErrorExecute, task, fmt.Errorf("任务执行异常终止: %v", recovered))
+			})
 			defer wg.Done()
 			execErr := executor.Execute(ctx, task)
 			if hasLifecycle {

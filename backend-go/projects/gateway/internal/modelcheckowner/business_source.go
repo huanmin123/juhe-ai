@@ -37,7 +37,13 @@ type BusinessTargetSource struct {
 }
 
 type BusinessTargetConnection struct {
-	DB     *sql.DB
+	DB *sql.DB
+	// ReadDB is the read-only pool over the same Business SQLite file
+	// (JUHE_AI_SQLITE_READ_POOL, default 4). Source runs on it while DB stays
+	// the single-connection write owner for auth/session and retention; WAL
+	// carries the one-writer/many-readers contract between the two pools.
+	// Nil on PostgreSQL mode, where one multi-connection pool serves both.
+	ReadDB *sql.DB
 	Source *BusinessTargetSource
 	Close  func() error
 }
@@ -125,7 +131,24 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 			return nil, err
 		}
 	}
-	source, err := NewBusinessTargetSource(db, postgres, cfg.CredentialSecret)
+	// 2026-09-22 读/写双池：Source 是纯读端口（见类型注释），账户选项、运行时
+	// 目标解析、契约检查与缓存回源都走只读池，吸收个人部署的真实读并发；写池
+	// 维持单连接的进程内排队语义。PostgreSQL 池本就是多连接，不另拆。
+	sourceDB := db
+	var readDB *sql.DB
+	if !postgres {
+		readDB, err = openBusinessSQLiteReadPool(cfg.BusinessDatabasePath, cfg.SQLiteReadPoolSize)
+		if err != nil {
+			_ = closeDB()
+			return nil, err
+		}
+		sourceDB = readDB
+		closeDB = func() error {
+			_ = readDB.Close()
+			return db.Close()
+		}
+	}
+	source, err := NewBusinessTargetSource(sourceDB, postgres, cfg.CredentialSecret)
 	if err != nil {
 		_ = closeDB()
 		return nil, err
@@ -134,7 +157,30 @@ func OpenBusinessTargetConnection(ctx context.Context, cfg Config) (*BusinessTar
 		_ = closeDB()
 		return nil, err
 	}
-	return &BusinessTargetConnection{DB: db, Source: source, Close: closeDB}, nil
+	return &BusinessTargetConnection{DB: db, ReadDB: readDB, Source: source, Close: closeDB}, nil
+}
+
+// openBusinessSQLiteReadPool opens the read-only pool over the same Business
+// SQLite file: mode=ro plus query_only keeps the connection fail-closed even
+// if a future caller misroutes a write, and busy_timeout covers waits against
+// the write pool and WAL checkpointing. size 0 means the 4-connection default;
+// explicit values must stay within 1..16 so a misconfigured deployment fails
+// loudly instead of silently serializing on one connection or exhausting the
+// file with unbounded readers.
+func openBusinessSQLiteReadPool(path string, size int) (*sql.DB, error) {
+	if size == 0 {
+		size = 4
+	}
+	if size < 1 || size > 16 {
+		return nil, fmt.Errorf("JUHE_AI_SQLITE_READ_POOL 必须为 1..16 的整数: %d", size)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("open J3b Business read pool: %w", err)
+	}
+	db.SetMaxOpenConns(size)
+	db.SetMaxIdleConns(size)
+	return db, nil
 }
 
 // Resolver returns the narrow in-process function expected by Runtime. It is

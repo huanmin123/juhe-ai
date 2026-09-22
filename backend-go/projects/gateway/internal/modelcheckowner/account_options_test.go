@@ -425,3 +425,66 @@ func TestListAccountOptionsTieredProtocolGateForCatalogScope(t *testing.T) {
 		t.Fatalf("responses-acct modelCheckModels=%v, want %v", got, wantResponses)
 	}
 }
+
+// TestListAccountOptionsSingleConnectionPoolRegressions 复刻生产 Source 的
+// MaxOpenConns(1) 物理文件所有者池：AccountID 路径在嵌套查询期间必须已释放
+// 外层 rows，否则嵌套查询永远等不到连接，请求在池信号量上自死锁（2026-09-22
+// 模型检测页 15s 超时的根因）。池上限一旦放开，本测试对死锁回归不再敏感。
+func TestListAccountOptionsSingleConnectionPoolRegressions(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	for _, ddl := range []string{
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,protocol_code TEXT,protocol_version TEXT,type TEXT,status TEXT,schedulable INTEGER,account_expires_at TEXT,cooldown_until TEXT,last_error_code TEXT,authorization_instance_authorization_id TEXT,authorization_instance_source_account_id TEXT,deleted_at TEXT,health_check_endpoint_mode TEXT,availability_schedule_json TEXT)`,
+		`CREATE TABLE provider_protocol_profiles (id TEXT PRIMARY KEY,enabled INTEGER)`,
+		`CREATE TABLE group_accounts (account_id TEXT,group_id TEXT,enabled INTEGER,system_account_id TEXT,account_authorization_id TEXT)`,
+		`CREATE TABLE groups (id TEXT PRIMARY KEY,system_account_id TEXT,enabled INTEGER)`,
+		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_system_account_id TEXT,scope TEXT,status TEXT,expires_at TEXT)`,
+		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
+		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, statement := range []string{
+		`INSERT INTO provider_protocol_profiles VALUES ('profile_openai_openai_v1',1)`,
+		`INSERT INTO groups VALUES ('g1','sys-1',1),('g2','sys-2',1)`,
+		`INSERT INTO accounts VALUES ('a1','sys-1','Alpha','openai','profile_openai_openai_v1','openai','1','api_key','active',1,NULL,NULL,NULL,NULL,NULL,NULL,'',NULL)`,
+		`INSERT INTO group_accounts VALUES ('a1','g1',1,'sys-1',NULL)`,
+		`INSERT INTO accounts VALUES ('instance-1','sys-1','Shared','openai','profile_openai_openai_v1','openai','1','api_key','active',1,NULL,NULL,NULL,'authz-1','source-1',NULL,'',NULL)`,
+		`INSERT INTO accounts VALUES ('source-1','sys-2','Source','openai','profile_openai_openai_v1','openai','1','api_key','active',1,NULL,NULL,NULL,NULL,NULL,NULL,'',NULL)`,
+		`INSERT INTO resource_authorizations VALUES ('authz-1','account','source-1','sys-2','sys-1','use','active',NULL)`,
+		`INSERT INTO group_accounts VALUES ('instance-1','g1',1,'sys-1','authz-1')`,
+		`INSERT INTO account_supported_models VALUES ('a1','gpt-5.6-sol'),('source-1','gpt-5.6-sol')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := NewBusinessTargetSource(db, false, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.now = func() time.Time { return time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC) }
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	direct, err := source.ListAccountOptions(ctx, AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", AccountID: "a1", Limit: 1})
+	if err != nil {
+		t.Fatalf("accountId option must not deadlock the single-connection pool: %v", err)
+	}
+	if len(direct) != 1 || direct[0].ID != "a1" || len(direct[0].ModelCheckModels) == 0 {
+		t.Fatalf("direct account option must keep modelCheckModels: %+v", direct)
+	}
+	authorized, err := source.ListAccountOptions(ctx, AccountOptionsQuery{SystemAccountID: "sys-1", Purpose: "run", AccountID: "instance-1", Limit: 1})
+	if err != nil {
+		t.Fatalf("authorized accountId option must not deadlock the single-connection pool: %v", err)
+	}
+	if len(authorized) != 1 || authorized[0].ID != "instance-1" || len(authorized[0].ModelCheckModels) == 0 {
+		t.Fatalf("authorized account option must keep modelCheckModels: %+v", authorized)
+	}
+}

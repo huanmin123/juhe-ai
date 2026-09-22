@@ -103,7 +103,6 @@ code { padding: 2px 6px; color: var(--brand-active); font: 0.88em/1.5 var(--font
 .flow-list, .plain-list { margin: 16px 0; padding-left: 22px; }
 .flow-list li, .plain-list li { margin: 8px 0; padding-left: 3px; }
 .flow-list li::marker { color: var(--brand); font-weight: 700; }
-.compact-flow { margin-bottom: 0; }
 
 /* 流程探索器：分段控件 + 链路图 + 说明面板 */
 .flow-explorer { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
@@ -163,40 +162,25 @@ code { padding: 2px 6px; color: var(--brand-active); font: 0.88em/1.5 var(--font
 .prompt-reference[open] summary { border-bottom: 1px solid var(--line); }
 .ai-prompt { max-height: 380px; margin: 14px 16px 16px; padding: 14px 16px; overflow: auto; color: #1f3a5f; font: 13px/1.7 var(--font-code); white-space: pre-wrap; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 
-/* 截图容器与红色系标注（坐标按现有截图校准，不可调整） */
-.guide-shot { margin: 20px 0 24px; }
-.guide-shot-frame { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: #eef2f7; box-shadow: var(--shadow); }
-.guide-shot-frame > img { display: block; width: 100%; height: auto; }
-.shot-marker { position: absolute; display: grid; width: 29px; height: 29px; place-items: center; color: #fff; border: 2px solid #fff; border-radius: 50%; background: var(--danger); box-shadow: 0 2px 8px rgba(15, 23, 42, .28); font: 800 13px/1 "Segoe UI", Arial, sans-serif; }
-.shot-marker::after { position: absolute; width: 37px; height: 37px; border: 1px solid rgba(220, 38, 38, .5); border-radius: 50%; content: ""; }
-.guide-shot-caption { display: grid; gap: 7px; padding: 12px 4px 0; color: var(--text-2); font-size: 14px; }
-.guide-shot-caption strong { color: var(--text); font-size: 15px; }
-.guide-shot-caption ol { margin: 0; padding-left: 22px; }
-.guide-shot-caption li { margin: 3px 0; padding-left: 3px; }
-.guide-shot-caption li::marker { color: var(--danger); font-weight: 800; }
-.guide-shot--group .marker-1 { left: 49%; top: 20%; }
-.guide-shot--group .marker-2 { left: 49%; top: 28%; }
-.guide-shot--group .marker-3 { left: 49%; top: 36.5%; }
-.guide-shot--group .marker-4 { left: 49%; top: 47%; }
-.guide-shot--group .marker-5 { left: 49%; top: 57.5%; }
-.guide-shot--key .marker-1 { left: 49.3%; top: 19%; }
-.guide-shot--key .marker-2 { left: 49.3%; top: 27.5%; }
-.guide-shot--key .marker-3 { left: 60%; top: 35.5%; }
-.guide-shot--key .marker-4 { left: 49%; top: 55%; }
-.guide-shot--key .marker-5 { left: 71.2%; top: 63.6%; }
-.guide-shot--strategy .marker-1 { left: 49%; top: 19%; }
-.guide-shot--strategy .marker-2 { left: 49%; top: 37.8%; }
-.guide-shot--strategy .marker-3 { left: 37%; top: 50.8%; }
-.guide-shot--strategy .marker-4 { left: 49%; top: 63.7%; }
-.guide-shot--group-list .marker-1 { left: 22%; top: 16%; }
-.guide-shot--group-list .marker-2 { left: 94%; top: 16%; }
-.guide-shot--group-list .marker-3 { left: 55%; top: 33%; }
-.guide-shot--key-list .marker-1 { left: 26.5%; top: 16%; }
-.guide-shot--key-list .marker-2 { left: 93.5%; top: 16%; }
-.guide-shot--key-list .marker-3 { left: 41%; top: 27%; }
-.guide-shot--accounts .marker-1 { left: 86%; top: 16%; }
-.guide-shot--accounts .marker-2 { left: 94%; top: 16%; }
-.guide-shot--accounts .marker-3 { left: 51%; top: 47%; }
+/* 白皮书组件：小节标题 / 编号任务步骤 / 症状层级卡 / 请求旅程图 */
+.section h3 { margin: 24px 0 10px; color: var(--text); font-size: 17px; line-height: 1.4; font-weight: 700; }
+.task-steps { counter-reset: task-step; display: grid; gap: 10px; margin: 16px 0; padding: 0; list-style: none; }
+.task-steps > li { position: relative; counter-increment: task-step; padding: 12px 16px 12px 54px; border: 1px solid var(--line); border-radius: var(--radius-item); background: var(--surface-soft); transition: border-color .16s ease; }
+.task-steps > li:hover { border-color: #b9d5ff; }
+.task-steps > li::before { position: absolute; top: 13px; left: 14px; display: grid; width: 26px; height: 26px; place-items: center; color: #fff; border-radius: 50%; background: var(--brand); content: counter(task-step); font: 700 13px/1 "Segoe UI", Arial, sans-serif; }
+.task-steps strong { color: var(--text); }
+.symptom-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 4px; }
+.symptom-card { display: grid; gap: 7px; align-content: start; padding: 15px 17px; border: 1px solid var(--line); border-radius: var(--radius-item); background: var(--surface-soft); transition: border-color .16s ease, background .16s ease; }
+.symptom-card:hover { border-color: var(--brand-hover); background: var(--surface); }
+.symptom-card > strong { color: var(--danger); font-size: 15px; }
+.symptom-card p { margin: 0; color: var(--text-2); font-size: 13.5px; }
+.symptom-card p b { color: var(--brand-active); font-weight: 700; }
+.journey-diagram { overflow-x: auto; margin: 18px 0 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.journey-diagram svg { display: block; width: 100%; min-width: 980px; height: auto; color: #a8bcd9; }
+.journey-diagram figcaption { padding: 10px 16px 12px; color: var(--muted); font-size: 13px; }
+.journey-diagram .diagram-node { cursor: default; }
+.journey-diagram .diagram-node rect { transition: none; }
+.journey-diagram .diagram-node:hover rect { fill: var(--surface); stroke: #cfdcf3; transform: none; }
 
 /* 入口/排障卡片网格 */
 .route-catalog { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 4px; }
@@ -205,12 +189,11 @@ code { padding: 2px 6px; color: var(--brand-active); font: 0.88em/1.5 var(--font
 .route-catalog > a:hover strong { color: var(--brand); }
 .route-catalog strong { color: var(--brand-active); font-size: 15px; }
 .route-catalog span { color: var(--muted); font-size: 14px; }
-.troubleshooting-grid, .trace-map { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 4px; }
-.troubleshooting-grid > div, .trace-map > div { display: grid; gap: 5px; align-content: start; min-height: 96px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-item); background: var(--surface-soft); transition: border-color .16s ease, background .16s ease, transform .16s ease, box-shadow .16s ease; }
-.troubleshooting-grid > div:hover, .trace-map > div:hover { border-color: var(--brand-hover); background: var(--surface); transform: translateY(-2px); box-shadow: var(--shadow-soft); }
-.troubleshooting-grid strong { color: var(--danger); }
+.trace-map { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 4px; }
+.trace-map > div { display: grid; gap: 5px; align-content: start; min-height: 96px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-item); background: var(--surface-soft); transition: border-color .16s ease, background .16s ease, transform .16s ease, box-shadow .16s ease; }
+.trace-map > div:hover { border-color: var(--brand-hover); background: var(--surface); transform: translateY(-2px); box-shadow: var(--shadow-soft); }
 .trace-map strong { color: var(--brand-active); }
-.troubleshooting-grid span, .trace-map span { color: var(--muted); font-size: 14px; }
+.trace-map span { color: var(--muted); font-size: 14px; }
 
 /* 生命周期图：柔和现代状态色板（结构坐标不变） */
 .lifecycle-diagram { margin: 16px 0 22px; overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
@@ -266,13 +249,9 @@ tr:last-child td { border-bottom: 0; }
   .reference-entry summary { grid-template-columns: minmax(0, 1fr) 24px; padding: 13px 14px; }
   .reference-summary { display: none; }
   .reference-body { padding: 2px 14px 14px; }
-  .field-grid, .mode-reference, .route-catalog, .troubleshooting-grid, .trace-map { grid-template-columns: 1fr; }
+  .field-grid, .mode-reference, .route-catalog, .trace-map, .symptom-grid { grid-template-columns: 1fr; }
   .mode-reference > div:last-child { grid-column: auto; }
   .mode-reference > div { grid-template-columns: 80px minmax(0, 1fr); }
-  .guide-shot { overflow-x: auto; padding-bottom: 8px; }
-  .guide-shot-frame { min-width: 900px; }
-  .guide-shot-caption { padding-right: 0; padding-left: 0; }
-  .shot-marker { width: 25px; height: 25px; font-size: 12px; }
 }
 
 @media (max-width: 460px) {
@@ -282,6 +261,7 @@ tr:last-child td { border-bottom: 0; }
   .document-title h1 { font-size: 23px; }
   .section h2 { font-size: 20px; }
   .route-diagram svg, .lifecycle-diagram svg { min-width: 700px; }
+  .journey-diagram svg { min-width: 880px; }
   .gate-content { margin-top: 10vh; padding: 30px 22px; }
 }
 
