@@ -17,6 +17,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/goruntimemetrics"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/mockdata"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/ownermanifest"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/routestrategymigration"
 )
@@ -109,6 +110,12 @@ func runMaintenance(argv []string) int {
 	fs.Var(&businessDatasetAllowMissingFlag{values: &businessDatasetAllowMissing}, "business-dataset-allow-missing-column", "table.column source column allowed to be missing in the target schema for --import-business-dataset (repeatable)")
 	businessDatasetExpectedTargetDB := fs.String("business-dataset-expected-target-db", "", "expected target database name (current_database()) for --import-business-dataset; strict fail-closed comparison, mismatch or unverifiable identity aborts as a usage error; PRODUCTION CUTOVER REQUIRES this flag together with --business-dataset-expected-source-db")
 	businessDatasetExpectedSourceDB := fs.String("business-dataset-expected-source-db", "", "expected manifest sourceIdentity (source current_database() recorded at export) for --import-business-dataset; placeholder or mismatch aborts as a usage error; PRODUCTION CUTOVER REQUIRES this flag together with --business-dataset-expected-target-db")
+	mockdataRun := fs.Bool("mockdata", false, "idempotently rebuild the local development mockdata set in the SQLite data root (cleanup by the documented mockdata markers, then seed every domain, then autofill uncovered tables)")
+	mockdataVerifyCoverage := fs.Bool("verify-mockdata-coverage", false, "read-only verify that every mockdata store table is non-empty (allowlisted runtime-state tables excepted) and that the key coverage assertions hold")
+	mockdataDataDir := fs.String("mockdata-data-dir", "", "mockdata data root (or JUHE_AI_DATA_DIR); every store path derives from it unless the matching explicit path env is set")
+	mockdataLogDir := fs.String("mockdata-log-dir", "", "mockdata log-file directory (or JUHE_AI_LOG_DIR; default <data root>/logs)")
+	mockdataDays := fs.Int("mockdata-days", mockdata.DefaultDays, "mockdata history span in days for detail and monitoring samples (1..90)")
+	mockdataDailyRequests := fs.Int("mockdata-daily-requests", mockdata.DefaultDailyRequests, "mockdata usage records generated per day (1..500)")
 	businessDatasetReplaceExisting := fs.Bool("business-dataset-replace-existing", false, "with --import-business-dataset, empty every whitelist data table in reverse foreign-key order (children before parents) inside the import transaction before INSERT so authoritative production rows replace built-in seed rows; REQUIRED when the target database is already seeded (production cutover section 6 step 3 imports after --seed); the three structural-only tables are never deleted; default false keeps insert-only behavior where any pre-existing row fails the import")
 	if err := fs.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -117,21 +124,21 @@ func runMaintenance(argv []string) int {
 		return 2
 	}
 	if *migrateHybridSmart {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "hybrid_smart strategy migration flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return hybridSmartStrategyMigrationResult(*bootstrapDSN, *migrateConfirm)
 	}
 	if *postgresSchemaSnapshot {
-		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence {
+		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return postgresSchemaSnapshotResult()
 	}
 	if *businessDatasetExport || *businessDatasetImport {
-		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *migrateHybridSmart || *assembleCutoverEvidence {
+		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *migrateHybridSmart || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "business dataset export/import flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -141,7 +148,7 @@ func runMaintenance(argv []string) int {
 		return businessDatasetImportResultWithReplace(*businessDatasetURL, *businessDatasetDir, businessDatasetAllowMissing, *businessDatasetExpectedTargetDB, *businessDatasetExpectedSourceDB, *businessDatasetReplaceExisting)
 	}
 	if *ensureSchema || *seedDefaults {
-		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence {
+		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -152,18 +159,38 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "Go runtime metrics check and apply flags are mutually exclusive")
 			return 2
 		}
-		if *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bCutoverEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence {
+		if *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bCutoverEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "Go runtime metrics flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return goRuntimeMetricsBootstrapResult(*goRuntimeMetricsApply, *goRuntimeMetricsURL, *nodeStopped, *goStopped, *backupConfirmed)
 	}
 	if strings.TrimSpace(*j3bCutoverEvidence) != "" {
-		if strings.TrimSpace(*j3bBackfillEvidence) != "" || *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence {
+		if strings.TrimSpace(*j3bBackfillEvidence) != "" || *version || *check || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "J3b cutover evidence verification is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return j3bCutoverEvidenceCheckResult(*j3bCutoverEvidence)
+	}
+	if *mockdataRun || *mockdataVerifyCoverage {
+		if *mockdataRun && *mockdataVerifyCoverage {
+			fmt.Fprintln(os.Stderr, "mockdata seeding and mockdata coverage verification flags are mutually exclusive")
+			return 2
+		}
+		if *version || *check || *migrateHybridSmart || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || strings.TrimSpace(*j3bInventoryEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence {
+			fmt.Fprintln(os.Stderr, "mockdata flags are mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return runMockdataCommand(mockdataCommandFlags{
+			VerifyCoverage: *mockdataVerifyCoverage,
+			DataDir:        *mockdataDataDir,
+			LogDir:         *mockdataLogDir,
+			Days:           *mockdataDays,
+			DailyRequests:  *mockdataDailyRequests,
+			Driver:         *bootstrapDriver,
+			DSN:            *bootstrapDSN,
+			Secret:         *seedSecret,
+		})
 	}
 	if *assembleCutoverEvidence {
 		if *version || *check || *migrateHybridSmart || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || strings.TrimSpace(*j3bInventoryEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting {
@@ -217,14 +244,14 @@ func runMaintenance(argv []string) int {
 		return j3cReadOnlyBoundaryResult(resolveRepositoryRoot())
 	}
 	if *j3bInventoryCheck {
-		if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence {
+		if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "J3b inventory verification flag is mutually exclusive with bootstrap, backfill and readback flags")
 			return 2
 		}
 		return j3bModelCheckInventoryResult(*j3bInventoryEvidence)
 	}
 	if *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback {
-		if (*j3bPostgresReadback || *j3bPostgresBackfill) && (*j3Check || *j3Apply || *j3bCheck || *j3bApply || (*j3bPostgresReadback && *j3bPostgresBackfill) || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence) {
+		if (*j3bPostgresReadback || *j3bPostgresBackfill) && (*j3Check || *j3Apply || *j3bCheck || *j3bApply || (*j3bPostgresReadback && *j3bPostgresBackfill) || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage) {
 			fmt.Fprintln(os.Stderr, "J3b PostgreSQL backfill/readback flags are mutually exclusive with bootstrap, SQLite and other backfill flags")
 			return 2
 		}
