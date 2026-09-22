@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Bounded in-process JSON parsing, mirroring request/json-parser.ts plus
@@ -298,6 +300,7 @@ func (p *JSONParser) jobBytes(payloadBytes int) int {
 }
 
 func (p *JSONParser) worker() {
+	defer safego.Recover("gatewaybody.jsonparser.worker")
 	for {
 		p.mu.Lock()
 		var job *jsonWorkerJob

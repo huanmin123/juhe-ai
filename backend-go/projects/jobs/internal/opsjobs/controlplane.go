@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // 账户电路控制面维护，逐语义对齐 Node
@@ -709,6 +711,7 @@ func withinRebuildTimeout(ctx context.Context, op func() (RebuildPage, error), t
 	}
 	done := make(chan pageResult, 1)
 	go func() {
+		defer safego.Recover("opsjobs.controlplane.rebuildPage")
 		page, err := op()
 		done <- pageResult{page: page, err: err}
 	}()

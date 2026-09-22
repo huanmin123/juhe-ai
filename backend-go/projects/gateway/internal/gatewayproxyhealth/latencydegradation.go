@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Ports runtime/normal-route-latency-degradation.service.ts: normal-route
@@ -1785,6 +1786,7 @@ func (s *LatencyDegradationService) clearCurrentGenerationLatencyStateKeys(
 	for worker := 0; worker < workers; worker++ {
 		wg.Add(1)
 		go func() {
+			defer safego.Recover("gatewayproxyhealth.latencydegradation.background_clear_worker")
 			defer wg.Done()
 			for {
 				index := nextIndex.Add(1) - 1

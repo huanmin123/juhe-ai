@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // keyModelFailureIntentLimit mirrors keyModelFailureIntentLimit.
@@ -256,6 +258,7 @@ func (a *GatewayKeyModelAttempt) stopRenewal() {
 func (a *GatewayKeyModelAttempt) MarkPrecommit() {
 	a.stopRenewal()
 	go func() {
+		defer safego.Recover("gatewayaccounteffects.keymodelattempt.precommit_release")
 		if err := a.release(); err != nil {
 			a.mu.Lock()
 			a.logger.Warn(a.failureLogFields("foreground_precommit_release_failed", err, ""), "Key-model state 操作失败")

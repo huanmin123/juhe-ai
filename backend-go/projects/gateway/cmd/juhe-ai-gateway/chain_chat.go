@@ -43,6 +43,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // chatGatewayExecutor implements chat.GenerationExecutor by serving the
@@ -126,6 +127,7 @@ func (e *chatGatewayExecutor) Dispatch(ctx context.Context, req chat.GenerationD
 	}
 	done := make(chan struct{})
 	go func() {
+		defer safego.Recover("juheai.chain_chat.serve")
 		defer close(done)
 		defer target.finish()
 		e.chain.ServeHTTP(target, httpReq)

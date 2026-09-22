@@ -9,6 +9,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/cleanuprepo"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/recordmaintenance"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // record_maintenance_jobs 交接表 drain 接线。
@@ -76,6 +77,6 @@ func (a *workerAssembly) wireRecordMaintenanceTableDrain(family *retentionFamily
 		drainer.DrainShutdown(a.config.RecordMaintenanceShutdownFlushMaxBatches)
 		return nil
 	})
-	go drainer.Run(stopDrain)
+	safego.Go("juheaijobs.recordMaintenanceDrain", func() { drainer.Run(stopDrain) })
 	return nil
 }

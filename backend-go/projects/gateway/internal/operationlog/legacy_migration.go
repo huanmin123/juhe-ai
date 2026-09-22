@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlitepath"
 
 	_ "modernc.org/sqlite"
@@ -54,6 +55,7 @@ func startLegacyLeaseRenewer(ctx context.Context, store Store, lease OwnerLease,
 		interval = 10 * time.Millisecond
 	}
 	go func() {
+		defer safego.Recover("operationlog.legacy_migration.lease_renew")
 		defer close(r.done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

@@ -33,6 +33,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ---------------------------------------------------------------------------
@@ -726,6 +727,7 @@ func (d *chainFailureDispatcher) scheduleClientSourceAvoidanceFailure(ctx contex
 	account := input.Account
 	probe := d.avoidanceProbe
 	go func() {
+		defer safego.Recover("juheai.chain_ports.avoidance_probe")
 		probeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if _, err := probe.RunGatewayClientSourceAvoidanceAvailabilityProbe(probeCtx, gatewaycodex.CodexTurnAvoidanceProbeInput{

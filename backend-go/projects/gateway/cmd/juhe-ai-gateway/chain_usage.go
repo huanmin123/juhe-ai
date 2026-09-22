@@ -34,6 +34,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // usageBridgeConfig carries the bridge budgets (Node record-queue.service.ts
@@ -164,6 +165,7 @@ func (r *spooledUsageRecorder) persistOverflow(ctx gatewayusage.Ctx, input gatew
 
 // drain is the delivery worker.
 func (r *spooledUsageRecorder) drain() {
+	defer safego.Recover("juheai.chain_usage.drain")
 	defer r.wg.Done()
 	for input := range r.buffered {
 		r.deliver(input)

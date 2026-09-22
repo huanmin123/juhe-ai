@@ -3,6 +3,8 @@ package gatewayruntimecache
 import (
 	"context"
 	"errors"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ---------------------------------------------------------------------------
@@ -84,7 +86,9 @@ func (s *Service) ensureRuntimeLoad(ctx context.Context, apiKey, cacheKey string
 	pending := &runtimeLoad{generation: generation, done: make(chan struct{})}
 	s.pendingRuntimeLoads[cacheKey] = pending
 	s.mu.Unlock()
-	go s.runGatewayRuntimeLoad(ctx, apiKey, cacheKey, generation, pending)
+	safego.Go("gatewayruntimecache.runtime.run_load", func() {
+		s.runGatewayRuntimeLoad(ctx, apiKey, cacheKey, generation, pending)
+	})
 	return pending
 }
 
@@ -225,6 +229,7 @@ func (s *Service) refreshGatewayRuntimeInBackground(apiKey, cacheKey string) {
 	s.pendingRuntimeLoads[cacheKey] = pending
 	s.mu.Unlock()
 	go func() {
+		defer safego.Recover("gatewayruntimecache.runtime.background_refresh")
 		ctx, cancel := context.WithTimeout(context.Background(), GatewayRuntimeLoadTimeout)
 		defer cancel()
 		s.runGatewayRuntimeLoad(ctx, apiKey, cacheKey, generation, pending)

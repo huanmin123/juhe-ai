@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // 普通路由速度优先恢复探针，逐语义对齐 Node
@@ -223,6 +225,7 @@ func (r *SpeedFirstProbeRunner) Run(ctx context.Context, candidate ProbeCandidat
 			close(stopped)
 		}
 		go func() {
+			defer safego.Recover("opsjobs.speedfirstprobe.claimHeartbeat")
 			for {
 				select {
 				case <-stopped:

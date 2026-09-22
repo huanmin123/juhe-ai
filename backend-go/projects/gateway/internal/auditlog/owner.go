@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
@@ -85,6 +86,7 @@ func (k *LeaseKeeper) LostError() error {
 }
 
 func (k *LeaseKeeper) renewLoop() {
+	defer safego.Recover("auditlog.owner.renew_loop")
 	interval := k.ttl / 3
 	if interval < time.Second {
 		interval = time.Second

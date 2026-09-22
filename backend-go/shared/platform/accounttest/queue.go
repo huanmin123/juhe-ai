@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ManualTestMaintenanceInput 对齐 account_test_task_maintenance 请求参数。
@@ -187,6 +189,7 @@ func (q *ManualTestQueue) Stopped() bool {
 
 func (q *ManualTestQueue) startSweepLoop() {
 	go func() {
+		defer safego.Recover("accounttest.queue.sweepLoop")
 		defer close(q.sweepDone)
 		for {
 			delay := PassiveScheduleDelayMS(q.cfg.SweepInterval.Milliseconds(), nil)

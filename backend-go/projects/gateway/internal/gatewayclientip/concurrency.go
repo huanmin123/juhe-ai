@@ -12,18 +12,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	redis "github.com/redis/go-redis/v9"
 )
 
 // Reject reasons mirror ClientIpConcurrencyRejectReason.
 const (
-	RejectLimitReached   = "limit_reached"
-	RejectQueueDisabled  = "queue_disabled"
-	RejectQueueFull      = "queue_full"
-	RejectTimeout        = "timeout"
-	RejectAborted        = "aborted"
-	OverflowModeQueue    = "queue"
-	OverflowModeReject   = "reject"
+	RejectLimitReached  = "limit_reached"
+	RejectQueueDisabled = "queue_disabled"
+	RejectQueueFull     = "queue_full"
+	RejectTimeout       = "timeout"
+	RejectAborted       = "aborted"
+	OverflowModeQueue   = "queue"
+	OverflowModeReject  = "reject"
 )
 
 // Constants mirror client-ip-concurrency.service.ts.
@@ -568,7 +569,10 @@ func (c *ClientIPConcurrency) tryAcquireRedisClientIPSlot(ctx context.Context, k
 		redisClientIPQueueKey(key),
 	}, strconvItoa(limit), strconvItoa(redisClientIPConcurrencyTTL), requireEmptyQueueBool(requireEmptyQueue), strconvIota64(c.clock.Now().UnixMilli()), slotToken).Result()
 	if err != nil {
-		return struct{ acquired bool; current int }{}, err
+		return struct {
+			acquired bool
+			current  int
+		}{}, err
 	}
 	values := numericRedisArray(result)
 	out := struct {
@@ -616,6 +620,7 @@ func (c *ClientIPConcurrency) startRedisClientIPSlotRenewal(key string, slotToke
 	var stopOnce sync.Once
 	ticker := time.NewTicker(redisClientIPConcurrencyRenewInterval)
 	go func() {
+		defer safego.Recover("gatewayclientip.concurrency.slot_renewal")
 		defer ticker.Stop()
 		for {
 			select {
@@ -811,10 +816,15 @@ func numericRedisArray(value any) []int64 {
 	return output
 }
 
-func strconvItoa(value int) string { return fmt.Sprintf("%d", value) }
-func strconvIota64(value int64) string { return fmt.Sprintf("%d", value) }
+func strconvItoa(value int) string       { return fmt.Sprintf("%d", value) }
+func strconvIota64(value int64) string   { return fmt.Sprintf("%d", value) }
 func clampNonNegative(value int64) int64 { return maxInt64(0, value) }
-func maxInt(a, b int) int { if a > b { return a }; return b }
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 const redisAcquireClientIPConcurrencyScript = `
 local limit = tonumber(ARGV[1])

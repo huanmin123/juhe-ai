@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
@@ -241,6 +242,7 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 	for index := 0; index < dbWorkers; index++ {
 		dbWG.Add(1)
 		go func() {
+			defer safego.Recover("accountbalance.runner.dbWorker")
 			defer dbWG.Done()
 			for task := range dbQueue {
 				started := time.Now()
@@ -265,6 +267,7 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 	for index := 0; index < ioWorkers; index++ {
 		ioWG.Add(1)
 		go func() {
+			defer safego.Recover("accountbalance.runner.ioWorker")
 			defer ioWG.Done()
 			for input := range ioJobs {
 				state, account, query, itemErr := r.prepareInput(ctx, owner, input)

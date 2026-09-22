@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Session affinity service core: key resolution, claim / remember / forget /
@@ -263,6 +265,7 @@ func (s *AffinityService) RememberOpenAIAccountForSession(sessionAffinityKey str
 	}
 	if s.shouldUseRedisSessionAffinity() {
 		go func() {
+			defer safego.Recover("gatewaysession.affinity.remember")
 			_, _ = s.ClaimOpenAIAccountForSessionAsync(context.Background(), sessionAffinityKey, accountID, scope)
 		}()
 		return
@@ -367,6 +370,7 @@ func (s *AffinityService) RememberOpenAIAccountTrafficMigrationPreference(source
 	}
 	if s.shouldUseRedisSessionAffinity() {
 		go func() {
+			defer safego.Recover("gatewaysession.affinity.traffic_migration")
 			_ = s.RememberOpenAIAccountTrafficMigrationPreferenceAsync(context.Background(), source, target, scope, TrafficMigrationPreferenceWriteOptions{})
 		}()
 		return

@@ -16,6 +16,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/retention"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsagg"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // wireRetentionFamily 把 retention/cleanup 家族的四个任务翻转为 GoWired：
@@ -297,7 +298,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		}
 		return shards.Close()
 	})
-	go family.flushLoop(stopFlush, queue)
+	safego.Go("juheaijobs.retentionFlushLoop", func() { family.flushLoop(stopFlush, queue) })
 
 	// ---- record_maintenance_jobs 交接表 drain（gateway cleanup POST 持久通道） ----
 	if err := a.wireRecordMaintenanceTableDrain(family, business, dataset); err != nil {

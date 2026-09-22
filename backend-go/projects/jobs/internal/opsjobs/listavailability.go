@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // 账户列表可用性读模型维护，逐语义对齐 Node
@@ -347,6 +349,7 @@ func RunListAvailabilityMaintenance(ctx context.Context, opts ListAvailabilityOp
 		for i := 0; i < batchCount; i++ {
 			wg.Add(1)
 			go func() {
+				defer safego.Recover("opsjobs.listavailability.batchWorker")
 				defer wg.Done()
 				batch, batchErr := runListAvailabilityMaintenanceBatch(ctx, opts)
 				batchMu.Lock()

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // 账户电路后台恢复扫描，逐语义对齐 Node
@@ -156,6 +158,7 @@ loop:
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(state CircuitState) {
+			defer safego.Recover("opsjobs.circuitrecovery.sweepWorker")
 			defer func() {
 				<-sem
 				wg.Done()
@@ -382,6 +385,7 @@ func (s *CircuitRecoveryService) observeMutation(operation CircuitRecoveryOperat
 func runProbeWithinLease(ctx context.Context, target CircuitRecoveryProbeTarget, leaseDurationMS int64) (TransportProbeOutcome, error) {
 	probeDone := make(chan probeResult, 1)
 	go func() {
+		defer safego.Recover("opsjobs.circuitrecovery.probe")
 		outcome, err := target.Probe(ctx)
 		probeDone <- probeResult{outcome: outcome, err: err}
 	}()

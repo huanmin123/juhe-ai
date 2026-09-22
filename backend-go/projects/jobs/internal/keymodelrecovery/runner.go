@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 const recoveryBatchLimit int64 = 128
@@ -115,6 +116,7 @@ func (r *Runner) RunCycle(ctx context.Context) error {
 }
 
 func (r *Runner) runCandidate(parent context.Context, candidate State, leaseID string, continuationWaiting bool, sourceContinuationWaiting bool) {
+	defer safego.Recover("keymodelrecovery.runner.runCandidate")
 	defer func() {
 		r.mu.Lock()
 		delete(r.running, leaseID)
@@ -131,7 +133,7 @@ func (r *Runner) runCandidate(parent context.Context, candidate State, leaseID s
 	defer cancelProbe()
 	lostLease := make(chan struct{}, 1)
 	doneRenew := make(chan struct{})
-	go r.renewLease(probeCtx, state, leaseID, cancelProbe, lostLease, doneRenew)
+	safego.Go("keymodelrecovery.runner.renewLease", func() { r.renewLease(probeCtx, state, leaseID, cancelProbe, lostLease, doneRenew) })
 	outcome := r.executeProbe(probeCtx, state)
 	close(doneRenew)
 	select {

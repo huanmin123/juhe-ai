@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // SSE response plumbing ported from chat-sse-subscriber.ts. Byte layout is
@@ -171,6 +173,7 @@ func startChatSSEHeartbeat(writer *chatSSEWriter, intervalMs int, onUnwritable f
 	ticker := time.NewTicker(time.Duration(intervalMs) * time.Millisecond)
 	done := make(chan struct{})
 	go func() {
+		defer safego.Recover("chat.sse_write.heartbeat")
 		defer ticker.Stop()
 		for {
 			select {

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Managed error codes and copy mirror openai-oauth-access-token-refresh.service.ts
@@ -283,6 +285,7 @@ func (j *RefreshJob) RunOnce(ctx context.Context, options RefreshOptions) (Refre
 	for worker := 0; worker < workerCount; worker++ {
 		wg.Add(1)
 		go func() {
+			defer safego.Recover("oauthrefresh.refresh.worker")
 			defer wg.Done()
 			for {
 				mu.Lock()

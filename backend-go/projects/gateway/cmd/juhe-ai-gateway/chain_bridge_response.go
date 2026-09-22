@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/openaicompat/openaicompatbridge"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // B-4 cross-protocol bridge response face (audit batch ah group A). Port of
@@ -140,6 +142,10 @@ func bridgeStreamPipedResponse(
 ) *gatewaydispatch.GatewayUpstreamResponse {
 	reader, writer := io.Pipe()
 	go func() {
+		defer safego.Handle("juheai.chain_bridge_response.stream_pump", func(recovered any) {
+			// panic 兜底：以错误关闭管道写端，避免下游读取永久阻塞。
+			_ = writer.CloseWithError(fmt.Errorf("桥接流式泵异常终止: %v", recovered))
+		})
 		// goroutine 独占上游体的消费责任：EOF 或任一错误都关闭上游体
 		// （slotReleasingBody 的 release/cancel 幂等）。
 		defer response.Body.Close()

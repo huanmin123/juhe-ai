@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -25,14 +26,14 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	registryEntryVersion     = 1
-	registryEntryTTLSeconds  = 20
-	registryHeartbeatEvery   = 5 * time.Second
-	registryCommandTimeout   = 800 * time.Millisecond
-	registryEntryLimit       = 64
-	registryIndexTTLSeconds  = registryEntryTTLSeconds * 3
-	registryEntryKeyPrefix   = "runtime:internal-gateway:v1:"
-	registryIndexKeySuffix   = "runtime:internal-gateway-index:v1"
+	registryEntryVersion    = 1
+	registryEntryTTLSeconds = 20
+	registryHeartbeatEvery  = 5 * time.Second
+	registryCommandTimeout  = 800 * time.Millisecond
+	registryEntryLimit      = 64
+	registryIndexTTLSeconds = registryEntryTTLSeconds * 3
+	registryEntryKeyPrefix  = "runtime:internal-gateway:v1:"
+	registryIndexKeySuffix  = "runtime:internal-gateway-index:v1"
 )
 
 const registryPublishScript = `
@@ -76,11 +77,11 @@ type InternalGatewayEndpoint struct {
 
 // registryEntry mirrors RegistryEntry.
 type registryEntry struct {
-	Version   int    `json:"version"`
+	Version    int    `json:"version"`
 	InstanceID string `json:"instanceId"`
-	Origin    string `json:"origin"`
-	BootID    string `json:"bootId"`
-	Signature string `json:"signature"`
+	Origin     string `json:"origin"`
+	BootID     string `json:"bootId"`
+	Signature  string `json:"signature"`
 }
 
 // RegistryConfig carries the runtime gates Node reads from runtimeConfig.
@@ -101,22 +102,22 @@ type RegistryConfig struct {
 // Registry is the lifecycle owner for one process: Start publishes heartbeats,
 // Stop unregisters the boot id, ListEndpoints reads live peers.
 type Registry struct {
-	config RegistryConfig
-	client *redis.Client
-	prefix string
+	config   RegistryConfig
+	client   *redis.Client
+	prefix   string
 	indexKey string
 
-	mu        sync.Mutex
+	mu               sync.Mutex
 	publishRequested bool
-	session   *registrySession
-	stopPromiseErr error
-	stopDone  chan struct{}
+	session          *registrySession
+	stopPromiseErr   error
+	stopDone         chan struct{}
 }
 
 type registrySession struct {
-	bootID    string
-	stopping  bool
-	stopCh    chan struct{}
+	bootID   string
+	stopping bool
+	stopCh   chan struct{}
 }
 
 // NewRegistry builds the registry (client connected lazily by go-redis).
@@ -184,6 +185,7 @@ func (r *Registry) Stop(ctx context.Context) error {
 		session.stopping = true
 		close(session.stopCh)
 		go func() {
+			defer safego.Recover("gatewayruntimecache.registry.unregister")
 			r.unregister(ctx, session.bootID)
 			r.mu.Lock()
 			r.stopDone = nil
@@ -282,6 +284,7 @@ func toAnySlice(values []string) []any {
 // finishPublishAndScheduleHeartbeat: publish, then re-arm after the interval
 // unless the session stopped.
 func (r *Registry) publishAndScheduleHeartbeat(session *registrySession) {
+	defer safego.Recover("gatewayruntimecache.registry.publish_heartbeat")
 	for {
 		r.publish(session)
 		timer := time.NewTimer(registryHeartbeatEvery)

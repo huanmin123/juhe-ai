@@ -155,12 +155,12 @@
           <a-skeleton v-if="!sectionReady['account-health']" active :paragraph="{ rows: 2 }" />
           <div v-else class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="检测间隔（小时）" tooltip="默认 12 小时；账号近期已有真实成功请求时不再额外探测。">
+              <a-form-item label="检测间隔（小时）" tooltip="默认 1 小时；账号近期已有真实成功请求时不再额外探测。">
                 <a-input-number v-model:value="systemForm.accountHealthCheckIntervalHours" :min="1" :max="168" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="错峰窗口（分钟）" tooltip="默认 120 分钟；按账号 ID 稳定错峰，避免大量账号同时探测。">
+              <a-form-item label="错峰窗口（分钟）" tooltip="默认 10 分钟；按账号 ID 稳定错峰，避免大量账号同时探测。">
                 <a-input-number v-model:value="systemForm.accountHealthCheckJitterMinutes" :min="0" :max="1440" style="width: 100%" />
               </a-form-item>
             </div>

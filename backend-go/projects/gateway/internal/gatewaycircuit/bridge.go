@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Durable incident state names mirror AccountCircuitIncidentState.
@@ -1281,6 +1282,7 @@ func (b *Bridge) startScopeWorker(scopeKey string) {
 	b.mu.Unlock()
 
 	go func() {
+		defer safego.Recover("gatewaycircuit.bridge.scope_worker")
 		defer close(worker.done)
 		b.drainScope(scopeKey)
 		b.mu.Lock()
@@ -1394,6 +1396,7 @@ func (b *Bridge) retryPendingImmediately(ctx context.Context, remainingMs int64)
 		b.workers[scopeKey] = worker
 		waits = append(waits, workerWait{done: worker.done})
 		go func(key string, w *scopeWorker) {
+			defer safego.Recover("gatewaycircuit.bridge.rebuild_scope_worker")
 			defer close(w.done)
 			b.drainScope(key)
 			b.mu.Lock()

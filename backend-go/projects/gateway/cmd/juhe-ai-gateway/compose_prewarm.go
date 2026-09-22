@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // gatewayAPIKeyCachePrewarmTimeout bounds the whole startup pass; the natural
@@ -29,6 +30,7 @@ func startGatewayAPIKeyCachePrewarm(cache *gatewayruntimecache.Service, logger *
 		return
 	}
 	go func() {
+		defer safego.Recover("juheai.compose_prewarm.api_key_cache")
 		ctx, cancel := context.WithTimeout(context.Background(), gatewayAPIKeyCachePrewarmTimeout)
 		defer cancel()
 		apiKeyCount, err := cache.PrewarmGatewayAPIKeyValidationCache(ctx)

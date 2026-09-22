@@ -25,6 +25,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 var validDatabaseRoles = map[string]bool{
@@ -276,6 +277,7 @@ func (d *Deps) cachedOverview(r *http.Request) (Overview, error) {
 				// moment the handler returns, so detach with WithoutCancel.
 				refreshCtx := context.WithoutCancel(r.Context())
 				go func() {
+					defer safego.Recover("tablemonitor.routes.cached_overview_refresh")
 					overview, err := d.Store.LoadOverview(refreshCtx, 1, 10, "")
 					cache.mu.Lock()
 					defer cache.mu.Unlock()
@@ -327,6 +329,7 @@ func (errCacheBackoffError) Error() string {
 // leaves no failure-backoff entry (Node rememberFailure:false semantics), so
 // the first real request retries immediately. A nil cache keeps the no-op.
 func (d *Deps) Prewarm(ctx context.Context) {
+	defer safego.Recover("tablemonitor.routes.prewarm")
 	if d == nil || d.Cache == nil || d.Store == nil {
 		return
 	}

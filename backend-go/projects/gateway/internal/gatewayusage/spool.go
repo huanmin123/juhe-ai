@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Usage record spool mirroring backend/src/modules/gateway/usage/
@@ -25,15 +27,15 @@ const (
 
 // UsageRecordSpoolRuntime mirrors UsageRecordSpoolRuntime.
 type UsageRecordSpoolRuntime struct {
-	PendingItems       int
-	PendingBytes       int
-	PersistedCount     int
-	ReplayedCount      int
+	PendingItems        int
+	PendingBytes        int
+	PersistedCount      int
+	ReplayedCount       int
 	PersistFailureCount int
-	ReplayFailureCount int
-	LastPersistedAt    string
-	LastReplayedAt     string
-	LastError          string
+	ReplayFailureCount  int
+	LastPersistedAt     string
+	LastReplayedAt      string
+	LastError           string
 }
 
 // SpoolReplay ports the replay consumer: enqueue one spooled record back
@@ -61,8 +63,8 @@ type UsageRecordSpool struct {
 	clock  Clock
 	logger Logger
 
-	mu      sync.Mutex
-	runtime UsageRecordSpoolRuntime
+	mu       sync.Mutex
+	runtime  UsageRecordSpoolRuntime
 	capacity *spoolCapacity
 
 	replayMu     sync.Mutex
@@ -83,9 +85,9 @@ func NewUsageRecordSpool(config SpoolConfig, clock Clock, logger Logger) *UsageR
 		clock = SystemClock{}
 	}
 	return &UsageRecordSpool{
-		config: config,
-		clock:  clock,
-		logger: logger,
+		config:     config,
+		clock:      clock,
+		logger:     logger,
 		replayWake: make(chan struct{}, 1),
 	}
 }
@@ -372,6 +374,7 @@ func (s *UsageRecordSpool) StartReplay(replay SpoolReplay) {
 	s.replayStop = false
 	s.replayMu.Unlock()
 	go func() {
+		defer safego.Recover("gatewayusage.spool.replay_loop")
 		for {
 			s.replayMu.Lock()
 			stopped := s.replayStop

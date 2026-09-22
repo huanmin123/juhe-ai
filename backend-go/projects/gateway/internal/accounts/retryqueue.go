@@ -3,6 +3,8 @@ package accounts
 import (
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // 键控有界重试队列（Node→Go 迁移缺口登记项：shared/retry-queue.ts 的
@@ -257,6 +259,7 @@ func (q *retryQueue[T]) armTimerLocked(delayMs int64) {
 // runItem mirrors runItem: execute, then settle the attempt (followUp
 // replacement, success delete, retry schedule or exhaustion).
 func (q *retryQueue[T]) runItem(queueItem *retryQueueItem[T]) {
+	defer safego.Recover("accounts.retryqueue.run_item")
 	q.runningWait.Add(1)
 	defer q.runningWait.Done()
 	err := q.run(queueItem.item, queueItem.attemptIndex)

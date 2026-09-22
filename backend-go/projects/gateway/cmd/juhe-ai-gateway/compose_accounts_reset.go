@@ -64,6 +64,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // newAccountsRuntimeResetBridge builds the RuntimeResetEffects port over the
@@ -236,6 +237,7 @@ func (b *accountsRuntimeResetBridge) DispatchAccountHealthCheck(accountID, reaso
 	// returns to the account write/reset path immediately. Keep that boundary:
 	// the outbox insert must not add latency to a committed request.
 	go func() {
+		defer safego.Recover("juheai.compose_accounts_reset.health_dispatch")
 		outcome := b.health.EnqueueProbeRequest(context.Background(), accountID, reason, "", nil)
 		if outcome.Outcome == gatewaycodex.HealthDispatchRejected {
 			slog.Warn("runtime-reset 健康检查派发未受理",

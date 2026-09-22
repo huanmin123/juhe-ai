@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ResponseSink 实现，对齐 failure-response.ts + fixed-responses.ts，满足
@@ -92,6 +93,7 @@ func (s *Sink) SendGatewayFailureResponse(input gatewaypreauth.FailureResponseIn
 	clientPayloadSnapshot := clientPayloadJSON
 	completion := s.observeCompletion(input.Res)
 	go func() {
+		defer safego.Recover("gatewayresponse.sink.failure_usage")
 		var completedAtMs int64
 		if completion != nil {
 			select {

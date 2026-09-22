@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Context compaction service loop ported from chat-context-compaction.ts.
@@ -114,7 +116,13 @@ func (s *CompactionService) CompactOnce(ctx context.Context, input CompactionInp
 	}
 	entry := s.createActive(key)
 	s.mu.Unlock()
-	go func() { s.drive(entry, input, ctx) }()
+	go func() {
+		defer safego.Handle("chat.compaction_service.compact_once", func(recovered any) {
+			reason := fmt.Sprintf("上下文压缩异常终止: %v", recovered)
+			s.settle(key, entry, CompactionStartResult{Status: "failed", Reason: reason}, CompactionResult{Status: "failed", Reason: reason})
+		})
+		s.drive(entry, input, ctx)
+	}()
 	return <-entry.completion
 }
 
@@ -129,6 +137,10 @@ func (s *CompactionService) Start(ctx context.Context, input CompactionInput) Co
 	entry := s.createActive(key)
 	s.mu.Unlock()
 	go func() {
+		defer safego.Handle("chat.compaction_service.start", func(recovered any) {
+			reason := fmt.Sprintf("上下文压缩异常终止: %v", recovered)
+			s.settle(key, entry, CompactionStartResult{Status: "failed", Reason: reason}, CompactionResult{Status: "failed", Reason: reason})
+		})
 		s.drive(entry, input, ctx)
 	}()
 	return <-entry.acceptance

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Runner is the only J1 scheduler.  Its inputs come from the configured
@@ -182,7 +183,12 @@ func (r *Runner) runOwned(parent context.Context, lease OwnerLease) error {
 	cycleRunning := false
 	startCycle := func() {
 		cycleRunning = true
-		go func() { cycleDone <- r.runCycle(ctx, lease) }()
+		go func() {
+			defer safego.Handle("accounthealth.scheduler.cycle", func(recovered any) {
+				cycleDone <- fmt.Errorf("账户健康扫描周期异常终止: %v", recovered)
+			})
+			cycleDone <- r.runCycle(ctx, lease)
+		}()
 	}
 	waitCycle := func() {
 		if !cycleRunning {
@@ -338,6 +344,7 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	for range maxInt(1, minInt(dbConcurrency, len(inputs))) {
 		dbWorkers.Add(1)
 		go func() {
+			defer safego.Recover("accounthealth.scheduler.dbWorker")
 			defer dbWorkers.Done()
 			for task := range dbQueue {
 				if !task.ready {
@@ -363,6 +370,7 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	for range maxInt(1, minInt(ioConcurrency, len(inputs))) {
 		ioWorkers.Add(1)
 		go func() {
+			defer safego.Recover("accounthealth.scheduler.ioWorker")
 			defer ioWorkers.Done()
 			for input := range ioJobs {
 				task, err := r.prepareScheduledInput(ctx, lease, input, now)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // RetryQueue 是 Node createRetryQueue 在本任务族使用的子集移植：
@@ -234,6 +236,7 @@ func (q *RetryQueue[T]) pumpWithCtx(ctx context.Context) {
 }
 
 func (q *RetryQueue[T]) runItem(ctx context.Context, item *retryQueueItem[T]) {
+	defer safego.Recover("accountquality.queue.runItem")
 	defer q.drainWg.Done()
 	handled, runErr := q.run(ctx, QueueRunContext{AttemptIndex: item.attemptIndex, RetryNumber: item.attemptIndex + 1}, item.item)
 

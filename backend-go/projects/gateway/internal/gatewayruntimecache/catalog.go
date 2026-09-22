@@ -3,6 +3,8 @@ package gatewayruntimecache
 import (
 	"context"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ func (s *Service) ListCachedProviderModelCatalogAsync(ctx context.Context, input
 	s.mu.Unlock()
 
 	go func() {
+		defer safego.Recover("gatewayruntimecache.catalog.background_load")
 		defer func() {
 			s.mu.Lock()
 			if s.pendingCatalogLoads[cacheKey] == load {

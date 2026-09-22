@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 const RecoveryBatchLimit = 100000
@@ -105,6 +107,7 @@ func (r *Runner) RunCycle(ctx context.Context) error {
 }
 
 func (r *Runner) runCandidate(parent context.Context, candidate State, leaseID string, continuation, sourceContinuation bool) {
+	defer safego.Recover("keymodelruntime.runner.run_candidate")
 	defer func() { r.mu.Lock(); delete(r.running, candidate.CapabilityHash); r.mu.Unlock() }()
 	state, status, err := r.store.AcquireRecovery(parent, candidate, leaseID, continuation, sourceContinuation)
 	if err != nil || status != StatusApplied {
@@ -161,6 +164,7 @@ func (r *Runner) settleUnknown(ctx context.Context, state State, leaseID string)
 }
 
 func (r *Runner) renewLease(ctx context.Context, state State, leaseID string, cancel context.CancelFunc, lost chan<- struct{}, done <-chan struct{}) {
+	defer safego.Recover("keymodelruntime.runner.renew_lease")
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {

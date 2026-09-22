@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // account_health_probe_request_outbox 的消费面（去跨进程战役第二刀）：gateway
@@ -173,6 +175,7 @@ func (r *Runner) consumeProbeOutboxRows(ctx context.Context, lease OwnerLease, r
 	for range concurrency {
 		wg.Add(1)
 		go func() {
+			defer safego.Recover("accounthealth.outboxDrain.worker")
 			defer wg.Done()
 			for row := range rowsCh {
 				recordError(r.consumeOneProbeOutboxRow(ctx, lease, row, now))

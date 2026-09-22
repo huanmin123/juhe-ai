@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // SSE 等待心跳，对齐 sse-wait-heartbeat.ts。create/start 分离：构造不写出
@@ -25,8 +26,8 @@ var (
 // GatewaySseWaitHeartbeat 对齐 GatewaySseWaitHeartbeat：Start/Stop 可重复
 // 配对（Node 等待预算的 pause/resume 边沿），Stop 幂等。
 type GatewaySseWaitHeartbeat struct {
-	mu   sync.Mutex
-	run  *heartbeatRun
+	mu  sync.Mutex
+	run *heartbeatRun
 	// lastDone 是最近一轮循环的退出通知：Stop 在无运行轮次时等待它，
 	// 保证多次/并发 Stop 返回后该轮 goroutine 均已退出（W3）。
 	lastDone chan struct{}
@@ -59,6 +60,7 @@ func (h *GatewaySseWaitHeartbeat) Start() {
 	// defer 顺序（LIFO）：先清 run 归属，再 close(done)；Stop 等 done 返回时
 	// h.run 已清理完毕，随后 Start 可正常启动新一轮。
 	go func() {
+		defer safego.Recover("gatewayresponse.heartbeat.loop")
 		defer close(done)
 		defer func() {
 			h.mu.Lock()

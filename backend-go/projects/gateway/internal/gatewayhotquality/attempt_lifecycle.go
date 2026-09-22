@@ -7,6 +7,8 @@ import (
 	"math"
 	"strings"
 	"sync"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Gateway hot quality attempt lifecycle mirroring
@@ -94,6 +96,10 @@ func NewGatewayHotQualityAttemptLifecycle(input GatewayHotQualityAttemptLifecycl
 }
 
 func (lifecycle *GatewayHotQualityAttemptLifecycle) recordAttemptSafely() {
+	// panic 兜底：补发 attemptReady 关闭信号，避免 RecordTerminal 的无超时等待永久阻塞。
+	defer safego.Handle("gatewayhotquality.attempt_lifecycle.record", func(recovered any) {
+		lifecycle.attemptReadyOnce.Do(func() { close(lifecycle.attemptReady) })
+	})
 	runtime := lifecycle.runtime
 	observeRouting(runtime, RoutingObservation{Kind: "attempt", Outcome: "started"})
 	result, err := runtime.HotQualityStore.RecordAttempt(context.Background(), HotQualityRecordAttemptInput{

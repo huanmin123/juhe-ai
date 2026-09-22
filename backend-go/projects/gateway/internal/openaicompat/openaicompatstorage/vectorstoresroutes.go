@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Vector store routes port openai-compatible-vector-stores/vector-stores.routes.ts.
@@ -396,7 +398,10 @@ func (d *Deps) queueVectorStoreFileIndexing(vectorStoreID string, file FileRecor
 		d.IndexAsync(task)
 		return
 	}
-	go task()
+	go func() {
+		defer safego.Recover("openaicompatstorage.vectorstoresroutes.file_indexing")
+		task()
+	}()
 }
 
 // indexVectorStoreFile mirrors indexOpenAICompatibleVectorStoreFile: build

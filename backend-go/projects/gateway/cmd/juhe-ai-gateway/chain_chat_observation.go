@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // chat image observation constants (Node chat-image-observation.ts).
@@ -104,6 +105,7 @@ func (o *chatImageObservations) Schedule(input chat.ScheduleObservationInput) {
 		done := make(chan struct{})
 		o.track(target.AssetID, done)
 		go func(target chat.ObservationTarget, done chan struct{}) {
+			defer safego.Recover("juheai.chain_chat_observation.schedule")
 			defer close(done)
 			// Node runs the observation with a 90s abort signal.
 			ctx, cancel := context.WithTimeout(context.Background(), chatImageObservationTimeoutMs*time.Millisecond)

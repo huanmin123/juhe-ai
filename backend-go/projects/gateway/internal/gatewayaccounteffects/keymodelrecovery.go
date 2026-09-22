@@ -4,15 +4,17 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Key-model memory recovery runner constants (key-model-memory-recovery.ts).
 const (
-	KeyModelRecoveryScanIntervalMs  = int64(1_000)
-	keyModelRecoveryBatchSize       = 128
-	keyModelRecoveryConcurrency     = 32
-	keyModelRecoveryContinuationSlots = 8
-	keyModelRecoverySourceLimit     = 2
+	KeyModelRecoveryScanIntervalMs            = int64(1_000)
+	keyModelRecoveryBatchSize                 = 128
+	keyModelRecoveryConcurrency               = 32
+	keyModelRecoveryContinuationSlots         = 8
+	keyModelRecoverySourceLimit               = 2
 	keyModelRecoveryContinuationSourceReserve = 1
 )
 
@@ -201,6 +203,7 @@ selectionDone:
 
 		wg.Add(1)
 		go func(state KeyModelState) {
+			defer safego.Recover("gatewayaccounteffects.keymodelrecovery.worker")
 			defer wg.Done()
 			defer func() {
 				r.mu.Lock()

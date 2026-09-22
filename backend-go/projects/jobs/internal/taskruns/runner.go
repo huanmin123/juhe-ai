@@ -7,6 +7,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // LeaseState 与 Node WorkerScheduledJobTaskResult.leaseState 一致。
@@ -96,6 +98,7 @@ func RunWithScheduledLease(
 		renewDone   = make(chan struct{})
 	)
 	go func() {
+		defer safego.Recover("taskruns.leaseRenewer")
 		defer close(renewDone)
 		ticker := time.NewTicker(renewInterval)
 		defer ticker.Stop()
@@ -264,6 +267,7 @@ func RunWithTaskRun(
 		done      = make(chan struct{})
 	)
 	go func() {
+		defer safego.Recover("taskruns.heartbeatLoop")
 		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

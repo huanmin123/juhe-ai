@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // 路由观测服务，逐行为对齐
@@ -187,6 +189,7 @@ func defaultFlushSchedule(observer *Observer, generation uint64) {
 // FlushPending mirrors flushPendingObservations: guarded by the generation so
 // a reset aborts stale flushes.
 func (observer *Observer) FlushPending(generation uint64) {
+	defer safego.Recover("gatewayobs.service.flush_pending")
 	observer.mu.Lock()
 	if generation != observer.observationGeneration {
 		observer.mu.Unlock()

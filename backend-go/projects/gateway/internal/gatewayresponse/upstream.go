@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"sync"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // UpstreamBody 对齐 AsyncIterable<Uint8Array>：上游响应正文的拉式迭代。
@@ -89,6 +91,7 @@ func NewReaderUpstreamBody(ctx context.Context, reader io.Reader) *ReaderUpstrea
 }
 
 func (b *ReaderUpstreamBody) pump() {
+	defer safego.Recover("gatewayresponse.upstream.pump")
 	defer close(b.ch)
 	buffer := make([]byte, 32*1024)
 	for {

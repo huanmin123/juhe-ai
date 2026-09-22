@@ -7,6 +7,8 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 type ownerLeaseContextKey struct{}
@@ -58,7 +60,8 @@ func RunWithOwnerLease(ctx context.Context, cfg Config, store *Store, run func(c
 	}()
 	go func() {
 		// 原 goroutine 级 panic recover 已删除（w12f）：续租循环内仅调用
-		// store.RenewOwnerLease 与 channel 操作，当前实现不存在 panic 源。
+		// store.RenewOwnerLease 与 channel 操作，统一兜底由 safego 屏障承担（进程防崩溃加固）。
+		defer safego.Recover("tablemonitor.ownerLease.renewer")
 		defer close(renewalDone)
 		interval := cfg.OwnerLease / 3
 		if interval < time.Second {

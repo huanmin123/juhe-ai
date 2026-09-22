@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Per-request body state, mirroring the GatewayRawBodyRequest fields the
@@ -137,6 +139,12 @@ func (p *JSONParser) ParseRequestJSONBody(ctx context.Context, req *Request, tim
 func (p *JSONParser) startMaterialization(requestCtx context.Context, raw []byte) *materialization {
 	mat := &materialization{raw: raw, wait: make(chan struct{})}
 	go func() {
+		defer safego.Handle("gatewaybody.request.materialize", func(recovered any) {
+			mat.mu.Lock()
+			mat.result = jsonWorkerResult{err: fmt.Errorf("请求体 JSON 物化异常终止: %v", recovered)}
+			mat.mu.Unlock()
+			close(mat.wait)
+		})
 		value, err := p.ParseJSONBody(requestCtx, raw, GatewayRequestJSONMaterializationTimeout)
 		mat.mu.Lock()
 		mat.result = jsonWorkerResult{value: value, err: err}

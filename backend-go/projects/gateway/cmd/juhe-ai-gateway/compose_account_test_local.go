@@ -15,6 +15,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/manualtest"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/manualtestrepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // gatewayAccountTestExecutor 是手动账号测试执行链的进程内装配（去跨进程战役：
@@ -208,7 +209,10 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		slog.Info("账号测试队列恢复中断任务", "event", "account_test_queue_resumed", "count", len(resumed))
 	}
 	queueCtx, stopQueue := context.WithCancel(context.Background())
-	go func() { _ = queue.Run(queueCtx) }()
+	go func() {
+		defer safego.Recover("juheai.compose_account_test_local.queue_run")
+		_ = queue.Run(queueCtx)
+	}()
 	composed.shutdowns = append(composed.shutdowns, func() {
 		stopQueue()
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

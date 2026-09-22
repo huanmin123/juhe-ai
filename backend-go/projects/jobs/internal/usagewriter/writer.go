@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // 直接异步写 + 分片 + 失败终态，对照 backend/src/modules/gateway/usage/
@@ -396,6 +398,7 @@ func (w *Writer) Start() {
 }
 
 func (w *Writer) run() {
+	defer safego.Recover("usagewriter.writer.run")
 	defer close(w.done)
 	ticker := time.NewTicker(time.Duration(w.config.FlushIntervalMs) * time.Millisecond)
 	defer ticker.Stop()

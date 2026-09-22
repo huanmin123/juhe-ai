@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	platformjitter "github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
 )
 
@@ -405,6 +406,7 @@ func earlierTime(left, right *time.Time) *time.Time {
 // 任务主循环
 
 func (s *Scheduler) jobLoop(job *jobState) {
+	defer safego.Recover("jobsched.scheduler.jobLoop")
 	spec := job.spec
 	now := s.clock.Now()
 

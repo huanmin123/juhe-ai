@@ -3,6 +3,8 @@ package gatewayruntimecache
 import (
 	"context"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ---------------------------------------------------------------------------
@@ -172,6 +174,7 @@ func (s *Service) refreshActiveResponseInspectionPoliciesInBackground(protocolCo
 	s.mu.Unlock()
 
 	go func() {
+		defer safego.Recover("gatewayruntimecache.inspection.background_refresh")
 		defer func() {
 			s.mu.Lock()
 			delete(s.pendingInspectRefreshes, cacheKey)

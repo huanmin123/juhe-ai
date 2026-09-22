@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Ports runtime/user-request-limit-coordinator.ts: the background single-flight
@@ -125,6 +127,7 @@ func (c *UserRequestLimitCoordinator) StartCoordinator() {
 }
 
 func (c *UserRequestLimitCoordinator) loop(stopCh, done chan struct{}) {
+	defer safego.Recover("gatewayproxyhealth.userrequestlimitcoordinator.loop")
 	defer close(done)
 	for {
 		delayMs := PassiveScheduleDelayMs(userRequestLimitSyncIntervalMs, c.opts.Random)
@@ -143,7 +146,10 @@ func (c *UserRequestLimitCoordinator) runScheduledTick() {
 	c.counter.CleanupExpired(nil, nil)
 	c.logCapacityPressure()
 	if c.opts.RedisEnabled {
-		go func() { _ = c.SynchronizeDirtyCounters(false) }()
+		go func() {
+			defer safego.Recover("gatewayproxyhealth.userrequestlimitcoordinator.synchronize_dirty_async")
+			_ = c.SynchronizeDirtyCounters(false)
+		}()
 	}
 }
 
@@ -305,6 +311,9 @@ func (c *UserRequestLimitCoordinator) evalWithTimeout(ctx context.Context, clien
 	}
 	done := make(chan evalResult, 1)
 	go func() {
+		defer safego.Handle("gatewayproxyhealth.userrequestlimitcoordinator.eval", func(recovered any) {
+			done <- evalResult{err: fmt.Errorf("用户请求限制 Redis Eval 异常终止: %v", recovered)}
+		})
 		value, err := client.Eval(ctx, UserRequestLimitRedisSyncScript, keys, args...)
 		done <- evalResult{value: value, err: err}
 	}()
@@ -354,7 +363,10 @@ func (c *UserRequestLimitCoordinator) handleSyncError(nowMs int64, client UserRe
 
 func (c *UserRequestLimitCoordinator) synchronizeWithTimeout(timeoutMs int64, message string) error {
 	done := make(chan error, 1)
-	go func() { done <- c.SynchronizeDirtyCounters(true) }()
+	go func() {
+		defer safego.Recover("gatewayproxyhealth.userrequestlimitcoordinator.synchronize_with_timeout")
+		done <- c.SynchronizeDirtyCounters(true)
+	}()
 	timer := time.NewTimer(time.Duration(maxInt64(1, timeoutMs)) * time.Millisecond)
 	defer timer.Stop()
 	select {

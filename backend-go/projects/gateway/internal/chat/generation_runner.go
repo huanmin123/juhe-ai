@@ -7,6 +7,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Assistant timeline + generation runner ported from chat-assistant-timeline.ts
@@ -433,7 +435,7 @@ type runnerSubscription struct {
 type ChatGenerationRunner struct {
 	Identity ChatGenerationIdentity
 
-	ctx          context.Context
+	ctx               context.Context
 	mu                sync.Mutex
 	cancel            contextCancelFunc
 	cancelled         contextCancelledFunc
@@ -617,6 +619,7 @@ func (r *ChatGenerationRunner) Abort() bool {
 func (r *ChatGenerationRunner) aborted() bool { return r.cancelled() }
 
 func (r *ChatGenerationRunner) run(onSettled func()) {
+	defer safego.Recover("chat.generation_runner.execute")
 	result, err := r.execute(&ChatGenerationExecutionContext{
 		Context:        r.ctx,
 		Aborted:        r.aborted,

@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // LeaseKeeper holds the single-row F4 persistence owner lease
@@ -85,6 +87,7 @@ func (k *LeaseKeeper) LostError() error {
 }
 
 func (k *LeaseKeeper) renewLoop() {
+	defer safego.Recover("operationlog.lease_keeper.renew_loop")
 	ticker := time.NewTicker(k.ttl / 3)
 	defer ticker.Stop()
 	for {

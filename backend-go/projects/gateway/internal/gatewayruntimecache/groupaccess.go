@@ -3,6 +3,8 @@ package gatewayruntimecache
 import (
 	"context"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ---------------------------------------------------------------------------
@@ -184,6 +186,7 @@ func (s *Service) refreshGroupUsageAccessMetadataInBackground(groupID, systemAcc
 	s.mu.Unlock()
 
 	go func() {
+		defer safego.Recover("gatewayruntimecache.groupaccess.background_refresh")
 		defer func() {
 			s.mu.Lock()
 			delete(s.pendingGroupRefreshes, cacheKey)

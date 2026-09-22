@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 var (
@@ -429,6 +430,7 @@ func (r *Runner) runOwned(ctx context.Context, lease OwnerLease) error {
 	defer cancel()
 	renewErr := make(chan error, 1)
 	go func() {
+		defer safego.Recover("proxylatency.runner.leaseRenewer")
 		ticker := time.NewTicker(minRuntime(r.cfg.OwnerLease/3, time.Second*30))
 		defer ticker.Stop()
 		for {
@@ -662,7 +664,11 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 	var wg sync.WaitGroup
 	for index := 0; index < workers; index++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); worker() }()
+		go func() {
+			defer safego.Recover("proxylatency.runner.worker")
+			defer wg.Done()
+			worker()
+		}()
 	}
 	wg.Wait()
 	counts.deferred = maxInt(0, counts.target-counts.started)

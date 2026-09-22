@@ -2,8 +2,11 @@ package gatewayupstream
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // First-byte deadline decision machinery, migrated from
@@ -55,6 +58,9 @@ type ReadOutcome[T any] struct {
 func ObserveFirstBytePendingRead[T any](pendingRead func() (T, error)) *ObservedFirstBytePendingRead[T] {
 	observed := &ObservedFirstBytePendingRead[T]{Outcome: make(chan ReadOutcome[T], 1)}
 	go func() {
+		defer safego.Handle("gatewayupstream.firstbytedeadline.pending_read", func(recovered any) {
+			observed.Outcome <- ReadOutcome[T]{err: fmt.Errorf("pending read异常终止: %v", recovered)}
+		})
 		result, err := pendingRead()
 		now := NowMs()
 		observed.mu.Lock()

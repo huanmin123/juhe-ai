@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
@@ -944,6 +946,9 @@ func readStreamChunkWithTimeout(ctx context.Context, reader io.Reader, buffer []
 	}
 	readDone := make(chan readResult, 1)
 	go func() {
+		defer safego.Handle("gatewayupstream.transport.read_chunk", func(recovered any) {
+			readDone <- readResult{err: fmt.Errorf("上游流读取异常终止: %v", recovered)}
+		})
 		n, err := reader.Read(buffer)
 		readDone <- readResult{n: n, err: err}
 	}()

@@ -22,6 +22,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ConflictError maps to Node GroupPatchConflictError and the duplicate group
@@ -1832,6 +1834,7 @@ func (s *Store) refreshStatsAfterWrite(ctx context.Context, groupIDs []string, r
 		return s.markStatsDirty(ctx, groupIDs, reason)
 	}
 	go func() {
+		defer safego.Recover("groups.store.refresh_stats")
 		if err := s.markStatsDirty(context.Background(), groupIDs, reason); err != nil {
 			slog.Error("PostgreSQL 分组账户统计脏标记写入失败",
 				"event", "postgres_group_account_stats_dirty_mark_failed",

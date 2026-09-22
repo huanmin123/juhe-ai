@@ -19,6 +19,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/operationlogappend"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
 )
 
@@ -550,6 +551,7 @@ func manualAdminRequestMetadata(request *http.Request) manualAdminRequestInfo {
 }
 
 func appendManualAdminOperationLog(audit ManualAdminAuditAppender, logger *slog.Logger, actor ManualAdminActor, snapshot manualAdminSnapshot, report ProxyTestReport, request manualAdminRequestInfo) {
+	defer safego.Recover("proxylatency.manualAdmin.auditLog")
 	id, err := operationlogappend.NewID("oplog")
 	if err != nil {
 		logger.Warn("generate J3a management operation log id failed", "error", err, "proxyID", report.ProxyID)

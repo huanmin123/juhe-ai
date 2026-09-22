@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // accountApiKeySuccessWriteCoalesceMs mirrors the Node constant.
@@ -13,42 +14,42 @@ const accountAPIKeySuccessWriteCoalesceMs = int64(250)
 // AccountAPIKeyFailureWrite mirrors the record_account_api_key_failure
 // db-service operation.
 type AccountAPIKeyFailureWrite struct {
-	Account        gatewayruntimecache.OpenAIAccountSecret
-	TrafficSource  string
+	Account         gatewayruntimecache.OpenAIAccountSecret
+	TrafficSource   string
 	MutationContext AccountApiKeyPersistentMutationContext
-	Input          AccountAPIKeyFailureWriteInput
+	Input           AccountAPIKeyFailureWriteInput
 }
 
 // AccountAPIKeyFailureWriteInput mirrors the operation input.
 type AccountAPIKeyFailureWriteInput struct {
-	Status                       AccountApiKeyFailureStatus
-	StatusCode                   *int64
-	ErrorCode                    *string
-	ErrorMessage                 *string
-	TraceID                      *string
-	CooldownUntil                *string
-	QuotaRecoveryMode            QuotaRecoveryMode
-	BreakQuotaRecoveryWindow     *bool
-	ObservedAt                   string
-	ExpectedStatus               *AccountApiKeyFailureStatus
-	ExpectedNextProbeAt          *string
-	ExpectedStateUpdatedAt       *string
+	Status                        AccountApiKeyFailureStatus
+	StatusCode                    *int64
+	ErrorCode                     *string
+	ErrorMessage                  *string
+	TraceID                       *string
+	CooldownUntil                 *string
+	QuotaRecoveryMode             QuotaRecoveryMode
+	BreakQuotaRecoveryWindow      *bool
+	ObservedAt                    string
+	ExpectedStatus                *AccountApiKeyFailureStatus
+	ExpectedNextProbeAt           *string
+	ExpectedStateUpdatedAt        *string
 	ExpectedAccountConfigRevision *int64
-	ExpectedProbeClaimToken      *string
+	ExpectedProbeClaimToken       *string
 }
 
 // AccountAPIKeySuccessWrite mirrors the record_account_api_key_success
 // db-service operation.
 type AccountAPIKeySuccessWrite struct {
-	Account         gatewayruntimecache.OpenAIAccountSecret
-	TrafficSource   string
-	MutationContext AccountApiKeyPersistentMutationContext
-	ObservedAt      string
-	ExpectedStatus             *AccountApiKeyFailureStatus
-	ExpectedNextProbeAt        *string
-	ExpectedStateUpdatedAt     *string
+	Account                       gatewayruntimecache.OpenAIAccountSecret
+	TrafficSource                 string
+	MutationContext               AccountApiKeyPersistentMutationContext
+	ObservedAt                    string
+	ExpectedStatus                *AccountApiKeyFailureStatus
+	ExpectedNextProbeAt           *string
+	ExpectedStateUpdatedAt        *string
 	ExpectedAccountConfigRevision *int64
-	ExpectedProbeClaimToken    *string
+	ExpectedProbeClaimToken       *string
 }
 
 // APIKeyWriteResult mirrors { changed, skippedReason }.
@@ -65,31 +66,31 @@ type AccountAPIKeyWriter interface {
 
 // RecordFailureInput mirrors recordGatewayAccountApiKeyFailure's input.
 type RecordFailureInput struct {
-	Status             AccountApiKeyFailureStatus
-	StatusCode         *int64
-	ErrorCode          *string
-	ErrorMessage       *string
-	TraceID            *string
-	CooldownUntil      *string
-	QuotaRecoveryMode  QuotaRecoveryMode
-	TrafficSource      string
-	MutationContext    *AccountApiKeyPersistentMutationContext
-	ClientIP           string
-	APIKeyID           string
-	ObservationEpoch   *int64
-	AttemptStartedAt   *string
-	Source             string
+	Status            AccountApiKeyFailureStatus
+	StatusCode        *int64
+	ErrorCode         *string
+	ErrorMessage      *string
+	TraceID           *string
+	CooldownUntil     *string
+	QuotaRecoveryMode QuotaRecoveryMode
+	TrafficSource     string
+	MutationContext   *AccountApiKeyPersistentMutationContext
+	ClientIP          string
+	APIKeyID          string
+	ObservationEpoch  *int64
+	AttemptStartedAt  *string
+	Source            string
 }
 
 // AccountAPIKeyEffects mirrors account-api-key-effects.service.ts.
 type AccountAPIKeyEffects struct {
-	clock   Clock
-	config  SideEffectsConfig
-	logger  Logger
-	guard   *AccountAPIKeyFailureGuard
-	writer  AccountAPIKeyWriter
+	clock      Clock
+	config     SideEffectsConfig
+	logger     Logger
+	guard      *AccountAPIKeyFailureGuard
+	writer     AccountAPIKeyWriter
 	invalidate func()
-	sched   Scheduler
+	sched      Scheduler
 
 	mu      sync.Mutex
 	pending map[string]*pendingAPIKeySuccessWrite
@@ -186,8 +187,8 @@ func (e *AccountAPIKeyEffects) RecordFailure(ctx context.Context, account gatewa
 		return
 	}
 	write := AccountAPIKeyFailureWrite{
-		Account:        account,
-		TrafficSource:  input.TrafficSource,
+		Account:         account,
+		TrafficSource:   input.TrafficSource,
 		MutationContext: *input.MutationContext,
 		Input: AccountAPIKeyFailureWriteInput{
 			Status:                        input.Status,
@@ -203,6 +204,7 @@ func (e *AccountAPIKeyEffects) RecordFailure(ctx context.Context, account gatewa
 	}
 	if e.config.IsRedisDriver() {
 		go func() {
+			defer safego.Recover("gatewayaccounteffects.apikeyeffects.record_failure_async")
 			result, err := e.writer.RecordFailure(context.WithoutCancel(ctx), write)
 			if err != nil {
 				e.logger.Warn(map[string]any{
@@ -378,6 +380,9 @@ func (e *AccountAPIKeyEffects) FlushSuccessWritesForTest(ctx context.Context) {
 		done := make(chan struct{}, len(entries))
 		for index, entry := range entries {
 			go func(k string, item *pendingAPIKeySuccessWrite) {
+				defer safego.Handle("gatewayaccounteffects.apikeyeffects.flush_success", func(recovered any) {
+					done <- struct{}{}
+				})
 				e.flushSuccessWrite(k, item)
 				done <- struct{}{}
 			}(keys[index], entry)

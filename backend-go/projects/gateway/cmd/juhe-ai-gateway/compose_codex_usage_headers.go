@@ -26,6 +26,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/tablemonitor"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // codexUsageHeadersChannelDispatcher 实现 gatewaycodex.CodexUsageHeadersDispatcher：
@@ -56,6 +57,7 @@ func (d codexUsageHeadersChannelDispatcher) PersistOpenAICodexUsageHeaders(ctx c
 	// 队列同样跨请求存活）。
 	dispatchCtx := context.WithoutCancel(ctx)
 	go func() {
+		defer safego.Recover("juheai.compose_codex_usage_headers.persist")
 		result := d.dispatch.EnqueueAccountUsageSnapshotUpsert(dispatchCtx, tablemonitor.RecordMaintenanceSnapshotJob{
 			AccountID: job.AccountID,
 			Kind:      job.Kind,
