@@ -198,6 +198,7 @@ func (s *Service) runCycle(ctx context.Context) error {
 		if len(periodic) > 0 {
 			report, runErr := s.runner.RunPeriodic(ctx, periodic)
 			s.logger.Info("J2 周期余额刷新完成", "seen", report.Seen, "executed", report.Executed, "skipped", report.Skipped, "stale", report.Stale, "errors", len(report.Errors))
+			s.logSampleError("J2 周期余额刷新样本失败", report)
 			if runErr != nil {
 				return runErr
 			}
@@ -210,9 +211,28 @@ func (s *Service) runCycle(ctx context.Context) error {
 	if len(first) > 0 {
 		report, runErr := s.runner.RunFirstProbe(ctx, first)
 		s.logger.Info("J2 首次余额探测完成", "seen", report.Seen, "executed", report.Executed, "skipped", report.Skipped, "errors", len(report.Errors))
+		s.logSampleError("J2 首次余额探测样本失败", report)
 		if runErr != nil {
 			return runErr
 		}
 	}
 	return nil
+}
+
+// logSampleError 在批跑存在失败时输出一条样本失败（账户 ID + 截断错误文本），
+// 供运行态定位余额链路故障；此前失败明细只在内存 Errors map 中，运行日志
+// 仅有计数，测试环境无法定位 errors>0 的原因。错误文本可能携带上游地址，
+// 按 rune 截断到 300 字符防日志洪水。
+func (s *Service) logSampleError(message string, report RunReport) {
+	if len(report.Errors) == 0 {
+		return
+	}
+	for accountID, itemErr := range report.Errors {
+		text := itemErr.Error()
+		if runes := []rune(text); len(runes) > 300 {
+			text = string(runes[:300])
+		}
+		s.logger.Warn(message, "account_id", accountID, "error", text)
+		return
+	}
 }
