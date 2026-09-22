@@ -35,22 +35,22 @@ const policyAvoidanceStoreName = "gateway-configured-account-policy-avoidance"
 // distributedRecoveryProbeState 是 DistributedRecoveryProbeState 的读取投影
 // （camelCase 与 Node 存储一致）。
 type distributedRecoveryProbeState struct {
-	RuntimeKey             string         `json:"runtimeKey"`
-	Phase                  string         `json:"phase"`
-	Generation             int64          `json:"generation"`
-	StartedAtMs            int64          `json:"startedAtMs"`
-	LastObservedAtMs       int64          `json:"lastObservedAtMs"`
-	NextProbeAtMs          int64          `json:"nextProbeAtMs"`
-	AttemptCount           int            `json:"attemptCount"`
-	FailureCount           int            `json:"failureCount"`
-	Reason                 string         `json:"reason"`
-	DistinctClientIpCount  int            `json:"distinctClientIpCount"`
-	DistinctApiKeyCount    int            `json:"distinctApiKeyCount"`
-	ProbeRunID             *string        `json:"probeRunId,omitempty"`
-	ProbeRunUntilMs        *int64         `json:"probeRunUntilMs,omitempty"`
-	HalfOpenLeaseID        *string        `json:"halfOpenLeaseId,omitempty"`
-	HalfOpenLeaseUntilMs   *int64         `json:"halfOpenLeaseUntilMs,omitempty"`
-	ProbePresentation      map[string]any `json:"probePresentation,omitempty"`
+	RuntimeKey            string         `json:"runtimeKey"`
+	Phase                 string         `json:"phase"`
+	Generation            int64          `json:"generation"`
+	StartedAtMs           int64          `json:"startedAtMs"`
+	LastObservedAtMs      int64          `json:"lastObservedAtMs"`
+	NextProbeAtMs         int64          `json:"nextProbeAtMs"`
+	AttemptCount          int            `json:"attemptCount"`
+	FailureCount          int            `json:"failureCount"`
+	Reason                string         `json:"reason"`
+	DistinctClientIpCount int            `json:"distinctClientIpCount"`
+	DistinctApiKeyCount   int            `json:"distinctApiKeyCount"`
+	ProbeRunID            *string        `json:"probeRunId,omitempty"`
+	ProbeRunUntilMs       *int64         `json:"probeRunUntilMs,omitempty"`
+	HalfOpenLeaseID       *string        `json:"halfOpenLeaseId,omitempty"`
+	HalfOpenLeaseUntilMs  *int64         `json:"halfOpenLeaseUntilMs,omitempty"`
+	ProbePresentation     map[string]any `json:"probePresentation,omitempty"`
 }
 
 // configuredPolicyAvoidanceState 是 ConfiguredPolicyAvoidanceState 的读取投影。
@@ -73,6 +73,9 @@ type RuntimeStateReader struct {
 
 // NewRuntimeStateReader 建立 Redis 连接（Client 注入供测试）。
 func NewRuntimeStateReader(url, namespace string, client redis.Cmdable) (*RuntimeStateReader, error) {
+	// 命名空间入口 canonical 化（2026-09-22 对齐 gateway 加载层）：剥除
+	// `juhe-ai:` 全前缀配置，避免键空间双根前缀；短名输入逐字节不变。
+	namespace = canonicalRedisNamespace(namespace)
 	var cmdable redis.Cmdable = client
 	if cmdable == nil {
 		if strings.TrimSpace(url) == "" {

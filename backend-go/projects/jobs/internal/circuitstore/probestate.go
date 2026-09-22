@@ -63,6 +63,9 @@ type ProbeStateStore struct {
 
 // NewProbeStateStore 建立 Redis 连接（Client 注入供测试）。
 func NewProbeStateStore(url, namespace string, client redis.Cmdable) (*ProbeStateStore, error) {
+	// 命名空间入口 canonical 化（2026-09-22 对齐 gateway 加载层）：剥除
+	// `juhe-ai:` 全前缀配置，避免键空间双根前缀；短名输入逐字节不变。
+	namespace = canonicalRedisNamespace(namespace)
 	var cmdable redis.Cmdable = client
 	if cmdable == nil {
 		if strings.TrimSpace(url) == "" {

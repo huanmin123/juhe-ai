@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 )
 
 // randomInt63 提供 [0, 2^63) 的非负随机数（crypto/rand 驱动）。
@@ -75,6 +76,14 @@ func LoadSpeedFirstRedisConfig(getenv func(string) string) (SpeedFirstRedisConfi
 	if !speedFirstNamespacePattern.MatchString(config.Namespace) {
 		return config, errors.New("启用速度优先恢复探针必须配置合法 JUHE_AI_REDIS_NAMESPACE")
 	}
+	// 命名空间入口 canonical 化（2026-09-22 对齐 gateway 加载层）：剥除
+	// `juhe-ai:` 全前缀配置（如 juhe-ai:dev），避免直接拼接产生
+	// `juhe-ai:juhe-ai:...` 键空间分裂；短名输入逐字节不变。原始值校验先行
+	// 保留 fail closed 语义，canonical 结果复检同一规则（canonical 为空同样拒绝）。
+	config.Namespace = rediscfg.CanonicalRedisNamespace(config.Namespace)
+	if !speedFirstNamespacePattern.MatchString(config.Namespace) {
+		return config, errors.New("启用速度优先恢复探针必须配置合法 JUHE_AI_REDIS_NAMESPACE")
+	}
 	return config, nil
 }
 
@@ -119,6 +128,11 @@ func OpenSpeedFirstStore(config SpeedFirstRedisConfig, now func() time.Time) (*S
 	if !config.Enabled {
 		return nil, errors.New("速度优先恢复探针 Redis 未启用")
 	}
+	// 命名空间入口 canonical 化（2026-09-22 对齐 gateway 加载层）：装配层可能
+	// 绕过 Load 手工构造 config（worker_probe_jobs.go），此处剥除 `juhe-ai:`
+	// 全前缀配置，避免键空间双根前缀；短名输入逐字节不变。形状校验仍由装配层
+	// 对原始值 fail closed，此处不做二次校验。
+	config.Namespace = rediscfg.CanonicalRedisNamespace(config.Namespace)
 	options, err := redis.ParseURL(config.URL)
 	if err != nil {
 		return nil, fmt.Errorf("解析速度优先降级运行态 Redis URL: %w", err)

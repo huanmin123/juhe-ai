@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/rediscfg"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -37,6 +38,14 @@ func LoadRedisConfig(getenv func(string) string) (RedisConfig, error) {
 	}
 	// 说明：此处曾有一个 `if cfg.URL == ""` 守卫，但该分支内 cfg.Enabled 为真
 	// 已确保 URL 非空，属永假死代码，按覆盖率清理授权删除。
+	if !namespacePartPattern.MatchString(cfg.Namespace) {
+		return RedisConfig{}, errors.New("启用 model-recovery 必须配置合法 JUHE_AI_REDIS_NAMESPACE")
+	}
+	// 命名空间入口 canonical 化（2026-09-22 对齐 gateway 加载层）：剥除
+	// `juhe-ai:` 全前缀配置（如 juhe-ai:dev），避免 NewRedisKeys 直接拼接产生
+	// `juhe-ai:juhe-ai:...` 键空间分裂；短名输入逐字节不变。原始值校验先行
+	// 保留 fail closed 语义，canonical 结果复检同一规则（canonical 为空同样拒绝）。
+	cfg.Namespace = rediscfg.CanonicalRedisNamespace(cfg.Namespace)
 	if !namespacePartPattern.MatchString(cfg.Namespace) {
 		return RedisConfig{}, errors.New("启用 model-recovery 必须配置合法 JUHE_AI_REDIS_NAMESPACE")
 	}

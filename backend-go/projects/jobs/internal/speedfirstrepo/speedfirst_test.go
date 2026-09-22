@@ -142,6 +142,41 @@ func TestSpeedFirstConfigLoading(t *testing.T) {
 	if !ValidSpeedFirstNamespace("test-space") || ValidSpeedFirstNamespace("bad space!") {
 		t.Fatal("命名空间校验错误")
 	}
+	// namespace 入口 canonical 化（2026-09-22 对齐 gateway 加载层）：全前缀
+	// 配置剥除 `juhe-ai:` 根前缀；短名逐字节不变；canonical 为空沿用拒绝。
+	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:dev"
+	config, err = LoadSpeedFirstRedisConfig(func(name string) string { return env[name] })
+	if err != nil || config.Namespace != "dev" {
+		t.Fatalf("全前缀 namespace 未 canonical 化: cfg=%#v err=%v", config, err)
+	}
+	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:"
+	if _, err := LoadSpeedFirstRedisConfig(func(name string) string { return env[name] }); err == nil {
+		t.Fatal("canonical 化为空的 namespace 必须 fail closed")
+	}
+}
+
+// TestOpenSpeedFirstStoreCanonicalizesNamespacePrefix 锁定构造函数入口的
+// canonical 化（装配层绕过 Load 手工构造 config 的路径）：全前缀 namespace
+// 与短名落同一键前缀，短名逐字节不变。
+func TestOpenSpeedFirstStoreCanonicalizesNamespacePrefix(t *testing.T) {
+	open := func(namespace string) *SpeedFirstStore {
+		t.Helper()
+		store, err := OpenSpeedFirstStore(SpeedFirstRedisConfig{
+			Enabled: true, URL: "redis://127.0.0.1:6379/9", Namespace: namespace,
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
+	}
+	full := open("juhe-ai:dev-space")
+	defer full.Close()
+	short := open("dev-space")
+	defer short.Close()
+	want := "juhe-ai:dev-space:" + speedFirstRedisGroup + ":"
+	if full.prefix != want || short.prefix != want {
+		t.Fatalf("prefix 全前缀=%q 短名=%q want %q", full.prefix, short.prefix, want)
+	}
 }
 
 // TestPassiveOffsetApplyBounds 验证恢复探针顺延延迟保持正值且有界。

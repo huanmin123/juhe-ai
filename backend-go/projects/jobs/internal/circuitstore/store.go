@@ -234,6 +234,11 @@ type RedisStore struct {
 
 // NewRedisStore mirrors new RedisAccountCircuitStore.
 func NewRedisStore(options RedisStoreOptions) (*RedisStore, error) {
+	// 命名空间入口 canonical 化（2026-09-22 对齐 gateway 加载层）：剥除
+	// `juhe-ai:` 全前缀配置，避免 NamespacedKey 再插一根产生
+	// `juhe-ai:juhe-ai:...` 键空间分裂；短名输入逐字节不变。形状校验仍由
+	// 装配层对原始值 fail closed，此处不做二次校验。
+	options.Namespace = canonicalRedisNamespace(options.Namespace)
 	client := options.Client
 	if client == nil {
 		if strings.TrimSpace(options.RedisURL) == "" {
@@ -728,6 +733,13 @@ func sanitizeRedisName(name string) string { return rediscfg.SanitizeRedisName(n
 // 实现收敛到 shared/platform/rediscfg（panic 语义等价）。
 func redisNamespacedKey(key, namespace string) string {
 	return rediscfg.NamespacedKey(key, namespace)
+}
+
+// canonicalRedisNamespace 收敛到 shared/platform/rediscfg：把 JUHE_AI_REDIS_NAMESPACE
+// 配置值规范为剥除 `juhe-ai:` 根前缀的短形式（namespace 入口单点 canonical 化，
+// 对齐 gateway 加载层），短名输入逐字节不变。
+func canonicalRedisNamespace(value string) string {
+	return rediscfg.CanonicalRedisNamespace(value)
 }
 
 // 实现收敛到 shared/platform/rediscfg（行为逐字节等价）。
