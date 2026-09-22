@@ -2,11 +2,12 @@ package pgpool
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"sync"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Registry keeps the jobs-specific driver opener and delegates pool
@@ -25,8 +26,25 @@ func NewRegistry() *Registry {
 	return &Registry{}
 }
 
-func (r *Registry) Acquire(driver, url, role string, maxOpen, maxIdle int) (*Handle, error) {
-	return r.AcquireWith(func() (*sql.DB, error) { return sql.Open(driver, url) }, url, role, maxOpen, maxIdle)
+func (r *Registry) Acquire(driverName, url, role string, maxOpen, maxIdle int) (*Handle, error) {
+	return r.AcquireWith(func() (*sql.DB, error) { return openDriver(driverName, url) }, url, role, maxOpen, maxIdle)
+}
+
+// defaultPGXDriver 可注入点：测试用 fake driver 覆盖 OpenConnector 错误分支。
+var defaultPGXDriver driver.Driver = stdlib.GetDefaultDriver()
+
+// openDriver 打开数据库句柄：pgx 池统一套方言改写 driver（rewrite.go），
+// 其余 driver（SQLite）原样打开。pgx 的 OpenConnector 是惰性包装（DSN
+// 解析延迟到 Connect），与 sql.Open 惰性语义一致。
+func openDriver(driverName, url string) (*sql.DB, error) {
+	if driverName != "pgx" {
+		return sql.Open(driverName, url)
+	}
+	connector, err := (&rewriteDriver{inner: defaultPGXDriver}).OpenConnector(url)
+	if err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(connector), nil
 }
 
 func (r *Registry) AcquireWith(open func() (*sql.DB, error), url, role string, maxOpen, maxIdle int) (*Handle, error) {

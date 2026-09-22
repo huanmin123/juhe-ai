@@ -400,7 +400,7 @@ ON CONFLICT(account_id) DO UPDATE SET
 `
 
 func (s *StatsStore) upsertQualityRow(ctx context.Context, tx *sql.Tx, input QualityUpsertInput) error {
-	query := fmt.Sprintf(qualityUpsertSQL, s.scoresTable())
+	query := s.dollarize(fmt.Sprintf(qualityUpsertSQL, s.scoresTable()))
 	_, err := tx.ExecContext(ctx, query,
 		input.AccountID, input.SystemAccountID, input.ProviderCode,
 		clampNonNegative(input.QualityScore), string(input.QualityState),
@@ -1064,7 +1064,7 @@ func (s *StatsStore) cleanupInactiveQualityMinuteRows(ctx context.Context, tx *s
 }
 
 func (s *StatsStore) cleanupOldQualityMinuteRows(ctx context.Context, tx *sql.Tx, cutoffMinute string, limit int) error {
-	query := fmt.Sprintf(`DELETE FROM %s WHERE stat_minute < ?`, s.minuteTable())
+	query := s.dollarize(fmt.Sprintf(`DELETE FROM %s WHERE stat_minute < ?`, s.minuteTable()))
 	if _, err := tx.ExecContext(ctx, query, cutoffMinute); err != nil {
 		return fmt.Errorf("清理过期质量分钟行失败: %w", err)
 	}
@@ -1074,7 +1074,7 @@ func (s *StatsStore) cleanupOldQualityMinuteRows(ctx context.Context, tx *sql.Tx
 func (s *StatsStore) deleteDirtyAccountRows(ctx context.Context, tx *sql.Tx, accountIds []string) error {
 	for _, chunk := range chunkStrings(accountIds, QualityLookupChunkSize) {
 		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(chunk)), ", ")
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.dirtyTable(), placeholders), toAnySlice(chunk)...); err != nil {
+		if _, err := tx.ExecContext(ctx, s.dollarize(fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.dirtyTable(), placeholders)), toAnySlice(chunk)...); err != nil {
 			return fmt.Errorf("删除质量脏账户失败: %w", err)
 		}
 	}
@@ -1084,10 +1084,10 @@ func (s *StatsStore) deleteDirtyAccountRows(ctx context.Context, tx *sql.Tx, acc
 // MarkQualityDirty 供测试与运行时标脏使用（等价网关侧的 dirty 写入）。
 func (s *StatsStore) MarkQualityDirty(ctx context.Context, accountID string) error {
 	now := FormatMillis(s.now())
-	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`
+	_, err := s.db.ExecContext(ctx, s.dollarize(fmt.Sprintf(`
 	INSERT INTO %s (account_id, first_dirty_at, updated_at) VALUES (?, ?, ?)
 	ON CONFLICT(account_id) DO NOTHING
-	`, s.dirtyTable()), accountID, now, now)
+	`, s.dirtyTable())), accountID, now, now)
 	return err
 }
 
