@@ -1444,7 +1444,10 @@ func (s *chainAccountsSelector) resolveProxyURLsForProfiles(ctx context.Context,
 		port              int
 		username          sql.NullString
 		passwordEncrypted sql.NullString
-		enabled           sql.NullInt64
+		// proxy_profiles.enabled 在权威 PG DDL 中是 boolean（sqlite 为
+		// INTEGER 0/1）：NullBool 经 database/sql 双方言可扫（int64 0/1 经
+		// driver.Bool 转换），NullInt64 会在 PG 上 bool→int64 扫描失败。
+		enabled sql.NullBool
 	}
 	rowsByID := map[string]*proxyRow{}
 	for rows.Next() {
@@ -1462,7 +1465,7 @@ func (s *chainAccountsSelector) resolveProxyURLsForProfiles(ctx context.Context,
 	rows.Close()
 	for _, id := range ids {
 		proxy := rowsByID[id]
-		if proxy == nil || !proxy.enabled.Valid || proxy.enabled.Int64 != 1 {
+		if proxy == nil || !proxy.enabled.Valid || !proxy.enabled.Bool {
 			output[id] = chainProxyUnavailable("代理不存在或已停用，请选择一个已启用的代理")
 			continue
 		}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -500,7 +501,7 @@ func (s *StatsStore) ListFailurePrecheckCandidates(ctx context.Context, limit, o
 	  account_id ASC
 	LIMIT ? OFFSET ?
 	`, s.scoresTable(), PrecheckMinRequests, PrecheckMinErrors, PrecheckFrequentErrors, PrecheckMaxSuccessRate)
-	rows, err := s.db.QueryContext(ctx, query, limit, offset)
+	rows, err := s.db.QueryContext(ctx, s.dollarize(query), limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("读取质量失败前置确认候选失败: %w", err)
 	}
@@ -566,7 +567,7 @@ func (s *StatsStore) loadQualityRowsByAccountIds(ctx context.Context, accountIds
 	for _, chunk := range chunkStrings(accountIds, QualityLookupChunkSize) {
 		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(chunk)), ", ")
 		query := fmt.Sprintf(`SELECT %s FROM %s WHERE account_id IN (%s)`, qualitySelectColumns, s.scoresTable(), placeholders)
-		rows, err := s.db.QueryContext(ctx, query, toAnySlice(chunk)...)
+		rows, err := s.db.QueryContext(ctx, s.dollarize(query), toAnySlice(chunk)...)
 		if err != nil {
 			return nil, fmt.Errorf("读取账户质量行失败: %w", err)
 		}
@@ -600,6 +601,26 @@ func normalizeDirtyLimit(limit int) int {
 	return limit
 }
 
+// dollarize 把顺序 ? 占位符改写为 PostgreSQL $n 形式；SQLite 模式原样返回。
+// PG 上 ? 不是合法占位符（pgx stdlib 不做改写，直发即 42601 syntax error），
+// 该 store 的 PG 模式此前从未被真库覆盖（w20a 测试环境演练发现）。
+func (s *StatsStore) dollarize(query string) string {
+	if s.mode != StatsPostgres {
+		return query
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range query {
+		if r == '?' {
+			n++
+			b.WriteString("$" + strconv.Itoa(n))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func (s *StatsStore) loadDirtyAccountIds(ctx context.Context, limit int) ([]string, error) {
 	query := fmt.Sprintf(`
 	SELECT account_id
@@ -607,7 +628,7 @@ func (s *StatsStore) loadDirtyAccountIds(ctx context.Context, limit int) ([]stri
 	ORDER BY first_dirty_at ASC, account_id ASC
 	LIMIT ?
 	`, s.dirtyTable())
-	rows, err := s.db.QueryContext(ctx, query, limit)
+	rows, err := s.db.QueryContext(ctx, s.dollarize(query), limit)
 	if err != nil {
 		return nil, fmt.Errorf("读取质量脏账户失败: %w", err)
 	}
@@ -688,7 +709,7 @@ func (s *StatsStore) loadAggregates(ctx context.Context, accountIds []string, wi
 			args = append(args, id)
 		}
 		args = append(args, windowStartedMinute)
-		rows, err := s.db.QueryContext(ctx, query, args...)
+		rows, err := s.db.QueryContext(ctx, s.dollarize(query), args...)
 		if err != nil {
 			return nil, fmt.Errorf("聚合账户质量分钟统计失败: %w", err)
 		}
@@ -759,7 +780,7 @@ func (s *StatsStore) loadStaleQualityRows(ctx context.Context, tx *sql.Tx, refre
 	ORDER BY updated_at ASC, account_id ASC
 	LIMIT ?
 	`, qualitySelectColumns, s.scoresTable())
-	rows, err := tx.QueryContext(ctx, query, fetchLimit)
+	rows, err := tx.QueryContext(ctx, s.dollarize(query), fetchLimit)
 	if err != nil {
 		return nil, fmt.Errorf("读取待降级质量行失败: %w", err)
 	}
@@ -802,7 +823,7 @@ func (s *StatsStore) loadStaleQualityRows(ctx context.Context, tx *sql.Tx, refre
 }
 
 func (s *StatsStore) loadAllDirtyIds(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT account_id FROM %s ORDER BY first_dirty_at ASC, account_id ASC LIMIT 10000`, s.dirtyTable()))
+	rows, err := tx.QueryContext(ctx, s.dollarize(fmt.Sprintf(`SELECT account_id FROM %s ORDER BY first_dirty_at ASC, account_id ASC LIMIT 10000`, s.dirtyTable())))
 	if err != nil {
 		return nil, err
 	}
@@ -950,7 +971,7 @@ func normalizeQualityState(value string) QualityState {
 // 元数据过滤，仅删除业务库已不存在的账户。
 func (s *StatsStore) cleanupInactiveQualityRows(ctx context.Context, tx *sql.Tx, limit int) (int64, error) {
 	query := fmt.Sprintf(`SELECT account_id FROM %s ORDER BY updated_at ASC, account_id ASC LIMIT ?`, s.scoresTable())
-	rows, err := tx.QueryContext(ctx, query, clampLimit(limit))
+	rows, err := tx.QueryContext(ctx, s.dollarize(query), clampLimit(limit))
 	if err != nil {
 		return 0, fmt.Errorf("读取质量行候选失败: %w", err)
 	}
@@ -987,7 +1008,7 @@ func (s *StatsStore) cleanupInactiveQualityRows(ctx context.Context, tx *sql.Tx,
 			continue
 		}
 		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(inactive)), ", ")
-		result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.scoresTable(), placeholders), toAnySlice(inactive)...)
+		result, err := tx.ExecContext(ctx, s.dollarize(fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.scoresTable(), placeholders)), toAnySlice(inactive)...)
 		if err != nil {
 			return changes, fmt.Errorf("清理失效账户质量行失败: %w", err)
 		}
@@ -999,7 +1020,7 @@ func (s *StatsStore) cleanupInactiveQualityRows(ctx context.Context, tx *sql.Tx,
 
 func (s *StatsStore) cleanupInactiveQualityMinuteRows(ctx context.Context, tx *sql.Tx, limit int) error {
 	query := fmt.Sprintf(`SELECT DISTINCT account_id FROM %s ORDER BY account_id ASC LIMIT ?`, s.minuteTable())
-	rows, err := tx.QueryContext(ctx, query, clampLimit(limit))
+	rows, err := tx.QueryContext(ctx, s.dollarize(query), clampLimit(limit))
 	if err != nil {
 		return fmt.Errorf("读取质量分钟行候选失败: %w", err)
 	}
@@ -1035,7 +1056,7 @@ func (s *StatsStore) cleanupInactiveQualityMinuteRows(ctx context.Context, tx *s
 			continue
 		}
 		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(inactive)), ", ")
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.minuteTable(), placeholders), toAnySlice(inactive)...); err != nil {
+		if _, err := tx.ExecContext(ctx, s.dollarize(fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.minuteTable(), placeholders)), toAnySlice(inactive)...); err != nil {
 			return fmt.Errorf("清理失效账户质量分钟行失败: %w", err)
 		}
 	}
@@ -1072,7 +1093,7 @@ func (s *StatsStore) MarkQualityDirty(ctx context.Context, accountID string) err
 
 // LoadQualityRow 供测试与运行态读取单行。
 func (s *StatsStore) LoadQualityRow(ctx context.Context, accountID string) (*QualityRow, error) {
-	query := fmt.Sprintf(`SELECT %s FROM %s WHERE account_id = ? LIMIT 1`, qualitySelectColumns, s.scoresTable())
+	query := s.dollarize(fmt.Sprintf(`SELECT %s FROM %s WHERE account_id = ? LIMIT 1`, qualitySelectColumns, s.scoresTable()))
 	rows, err := s.db.QueryContext(ctx, query, accountID)
 	if err != nil {
 		return nil, err

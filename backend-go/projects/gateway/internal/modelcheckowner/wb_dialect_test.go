@@ -116,22 +116,16 @@ func TestWBParseDBTimeAcceptsDriverRepresentations(t *testing.T) {
 func TestWBBusinessDialectFragmentsFollowDatabase(t *testing.T) {
 	t.Run("target source literals", func(t *testing.T) {
 		postgres := &BusinessTargetSource{postgres: true}
-		if got := postgres.boolLiteral(true); got != "TRUE" || postgres.boolLiteral(false) != "FALSE" {
-			t.Fatalf("PostgreSQL 布尔字面量 true=%q false=%q", postgres.boolLiteral(true), postgres.boolLiteral(false))
-		}
 		if got := postgres.placeholder(2); got != "$2" {
 			t.Fatalf("PostgreSQL 占位符=%q", got)
 		}
 		if got := postgres.expiryAfterNow("a.account_expires_at"); !strings.Contains(got, "::timestamptz") {
 			t.Fatalf("PostgreSQL 过期比较=%q", got)
 		}
+		// boolLiteral 已删（w20a：调用点全部面向 integer 列，双方言统一 0/1
+		// 整数字面量），SQLite/PG 布尔字面量断言随之移除。
 		sqlite := &BusinessTargetSource{}
-		if got := sqlite.boolLiteral(false); got != "0" {
-			t.Fatalf("SQLite 布尔 false=%q", got)
-		}
-		if got := sqlite.boolLiteral(true); got != "1" {
-			t.Fatalf("SQLite 布尔 true=%q", got)
-		}
+		_ = sqlite
 		if got := sqlite.cooldownClear("a.cooldown_until"); !strings.Contains(got, "datetime(") {
 			t.Fatalf("SQLite 冷却比较=%q", got)
 		}

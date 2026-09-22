@@ -71,7 +71,7 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 		"a.authorization_instance_authorization_id IS NULL",
 		"a.authorization_instance_source_account_id IS NULL",
 		"a.type IN ('api_key','oauth','google_oauth')",
-		"p.enabled = " + s.boolLiteral(true),
+		"p.enabled = " + "1",
 		modelCheckProfilePredicate("a", "p.id"),
 	}
 	if !options.AllSystemAccounts {
@@ -79,9 +79,9 @@ func (s *BusinessTargetSource) ListAccountOptions(ctx context.Context, options A
 		args = append(args, scope)
 	}
 	if options.Purpose == "run" || options.Purpose == "schedule" {
-		where = append(where, "a.status = 'active'", "a.schedulable = "+s.boolLiteral(true), s.accountAvailable("a"))
+		where = append(where, "a.status = 'active'", "a.schedulable = "+"1", s.accountAvailable("a"))
 	}
-	where = append(where, "EXISTS (SELECT 1 FROM "+s.table("group_accounts")+" ga JOIN "+s.table("groups")+" g ON g.id=ga.group_id WHERE ga.account_id=a.id AND ga.system_account_id=a.system_account_id AND ga.enabled="+s.boolLiteral(true)+" AND g.enabled="+s.boolLiteral(true)+" AND (g.system_account_id=a.system_account_id OR EXISTS (SELECT 1 FROM "+s.table("resource_authorizations")+" group_auth WHERE group_auth.resource_type='group' AND group_auth.resource_id=g.id AND group_auth.resource_owner_system_account_id=g.system_account_id AND group_auth.grantee_system_account_id=a.system_account_id AND group_auth.scope='use' AND group_auth.status='active' AND "+s.expiryAfterNow("group_auth.expires_at")+")))")
+	where = append(where, "EXISTS (SELECT 1 FROM "+s.table("group_accounts")+" ga JOIN "+s.table("groups")+" g ON g.id=ga.group_id WHERE ga.account_id=a.id AND ga.system_account_id=a.system_account_id AND ga.enabled="+"1"+" AND g.enabled="+"1"+" AND (g.system_account_id=a.system_account_id OR EXISTS (SELECT 1 FROM "+s.table("resource_authorizations")+" group_auth WHERE group_auth.resource_type='group' AND group_auth.resource_id=g.id AND group_auth.resource_owner_system_account_id=g.system_account_id AND group_auth.grantee_system_account_id=a.system_account_id AND group_auth.scope='use' AND group_auth.status='active' AND "+s.expiryAfterNow("group_auth.expires_at")+")))")
 	if options.AccountID != "" {
 		where = append(where, "a.id="+s.placeholder(len(args)+1))
 		args = append(args, options.AccountID)
@@ -193,9 +193,9 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 		"source_accounts.type IN ('api_key','oauth','google_oauth')",
 		modelCheckProfilePredicate("source_accounts", "source_accounts.provider_protocol_profile_id"),
 		"bindings.group_id IS NOT NULL",
-		"bindings.enabled=" + s.boolLiteral(true),
+		"bindings.enabled=" + "1",
 		"bindings.account_authorization_id=ra.id",
-		"groups.enabled=" + s.boolLiteral(true),
+		"groups.enabled=" + "1",
 		"(groups.system_account_id=bindings.system_account_id OR EXISTS (SELECT 1 FROM " + s.table("resource_authorizations") + " group_auth WHERE group_auth.resource_type='group' AND group_auth.resource_id=groups.id AND group_auth.resource_owner_system_account_id=groups.system_account_id AND group_auth.grantee_system_account_id=bindings.system_account_id AND group_auth.scope='use' AND group_auth.status='active' AND " + s.expiryAfterNow("group_auth.expires_at") + "))",
 	}
 	args := make([]any, 0, 8)
@@ -211,8 +211,8 @@ func (s *BusinessTargetSource) listAuthorizedAccountOptions(ctx context.Context,
 	}
 	if options.Purpose == "run" {
 		where = append(where,
-			"a.status='active'", "a.schedulable="+s.boolLiteral(true),
-			"source_accounts.status='active'", "source_accounts.schedulable="+s.boolLiteral(true),
+			"a.status='active'", "a.schedulable="+"1",
+			"source_accounts.status='active'", "source_accounts.schedulable="+"1",
 			s.accountAvailable("a"), s.accountAvailable("source_accounts"),
 			s.expiryAfterNow("ra.expires_at"),
 		)
@@ -377,19 +377,6 @@ func (s *BusinessTargetSource) accountSupportedCheckModels(ctx context.Context, 
 		return nil, fmt.Errorf("iterate J3b account options supported models: %w", err)
 	}
 	return models, nil
-}
-
-func (s *BusinessTargetSource) boolLiteral(value bool) string {
-	if s.postgres {
-		if value {
-			return "TRUE"
-		}
-		return "FALSE"
-	}
-	if value {
-		return "1"
-	}
-	return "0"
 }
 
 func (s *BusinessTargetSource) expiryAfterNow(column string) string {
