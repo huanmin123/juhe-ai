@@ -45,6 +45,14 @@ func xaiTextModel(model string, contextWindowTokens int, inputUsdPer1M, cachedIn
 
 // xAIModelPricingData — curated from the official xAI docs.
 var xAIModelPricingData = []rawModel{
+	// grok-4.7: the official model page lists no release date; 2026-09-21 is
+	// the x.ai news announcement date, kept as a secondary-source anchor
+	// (same rule as grok-4.3). Batch API is officially not supported.
+	xaiTextModel("grok-4.7", 500_000, 2, 0.5, 6, xaiTextModelMetadata{
+		releaseDate:               "2026-09-21",
+		supportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
+		defaultReasoningEffort:    "high",
+	}),
 	xaiTextModel("grok-4.6", 500_000, 2, 0.5, 6, xaiTextModelMetadata{
 		releaseDate:               "2026-08-12",
 		supportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},

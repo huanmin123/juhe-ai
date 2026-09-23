@@ -115,6 +115,58 @@ func TestFindProviderModelPricingVendorToken(t *testing.T) {
 	}
 }
 
+// TestFindProviderModelPricingCacheReadMultipliers pins the 2026-09-23
+// official pricing sync: Anthropic Fable 5.1 bills cache reads at 0.025x and
+// Opus 5.5 at 0.05x of the base input price (both deviate from the shared
+// 0.1x factory multiplier), legacy Fable 5 keeps the standard 0.1x, and
+// grok-4.7 mirrors the grok-4.6 price structure with the inclusive 200k
+// long-context threshold.
+func TestFindProviderModelPricingCacheReadMultipliers(t *testing.T) {
+	fable := FindProviderModelPricing("anthropic", "claude-fable-5-1")
+	if fable == nil {
+		t.Fatal("claude-fable-5-1 must resolve")
+	}
+	if fable.CachedInputUsdPer1M == nil || *fable.CachedInputUsdPer1M != 0.25 {
+		t.Fatalf("fable-5-1 cachedInputUsdPer1M = %v, want 0.25 (official 0.025x)", fable.CachedInputUsdPer1M)
+	}
+	if fable.CacheWriteUsdPer1M == nil || *fable.CacheWriteUsdPer1M != 12.5 || fable.CacheWrite1hUsdPer1M == nil || *fable.CacheWrite1hUsdPer1M != 20 {
+		t.Fatalf("fable-5-1 cache writes = %v/%v, want 12.5/20", fable.CacheWriteUsdPer1M, fable.CacheWrite1hUsdPer1M)
+	}
+
+	opus := FindProviderModelPricing("anthropic", "claude-opus-5-5")
+	if opus == nil {
+		t.Fatal("claude-opus-5-5 must resolve")
+	}
+	if opus.InputUsdPer1M == nil || *opus.InputUsdPer1M != 4 || opus.OutputUsdPer1M == nil || *opus.OutputUsdPer1M != 20 {
+		t.Fatalf("opus-5-5 prices = %v/%v, want 4/20", opus.InputUsdPer1M, opus.OutputUsdPer1M)
+	}
+	if opus.CachedInputUsdPer1M == nil || *opus.CachedInputUsdPer1M != 0.2 {
+		t.Fatalf("opus-5-5 cachedInputUsdPer1M = %v, want 0.2 (official 0.05x)", opus.CachedInputUsdPer1M)
+	}
+	if opus.DefaultReasoningEffort != "medium" {
+		t.Fatalf("opus-5-5 default effort = %q, want medium", opus.DefaultReasoningEffort)
+	}
+
+	fable5 := FindProviderModelPricing("anthropic", "claude-fable-5")
+	if fable5 == nil {
+		t.Fatal("claude-fable-5 must resolve")
+	}
+	if fable5.CachedInputUsdPer1M == nil || *fable5.CachedInputUsdPer1M != 1 {
+		t.Fatalf("fable-5 cachedInputUsdPer1M = %v, want 1 (standard 0.1x)", fable5.CachedInputUsdPer1M)
+	}
+
+	grok := FindProviderModelPricing("xai", "grok-4.7")
+	if grok == nil {
+		t.Fatal("grok-4.7 must resolve")
+	}
+	if grok.InputUsdPer1M == nil || *grok.InputUsdPer1M != 2 || grok.CachedInputUsdPer1M == nil || *grok.CachedInputUsdPer1M != 0.5 || grok.OutputUsdPer1M == nil || *grok.OutputUsdPer1M != 6 {
+		t.Fatalf("grok-4.7 prices = %v/%v/%v, want 2/0.5/6", grok.InputUsdPer1M, grok.CachedInputUsdPer1M, grok.OutputUsdPer1M)
+	}
+	if grok.LongContextInputTokenThreshold == nil || *grok.LongContextInputTokenThreshold != 200000 || !grok.LongContextInputTokenThresholdInclusive {
+		t.Fatalf("grok-4.7 long context = %v inclusive=%v, want 200000 inclusive", grok.LongContextInputTokenThreshold, grok.LongContextInputTokenThresholdInclusive)
+	}
+}
+
 // TestFindRawProviderModelPricingDuplicateNameShutdownGivesUpLayer pins the
 // 审查 #7 semantics: each lookup layer is models.find(byName) FIRST and the
 // shutdown check applies to that first same-named row only (model-pricing

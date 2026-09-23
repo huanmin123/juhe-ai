@@ -92,11 +92,21 @@ func TestW12CHealthProbeOutboxClaimCompletePrune(t *testing.T) {
 		t.Fatalf("重复删除应幂等 false: %v %v", again, err)
 	}
 
-	// 非法 fence 拒绝认领（返回错误）。
+	// 确定性损坏行（非法 fence）按已处理收敛出队：claim 不报错、损坏行被删、
+	// 其余行正常返回（毒丸隔离；2026-09-23 mockdata 占位行曾卡死 J1）。
 	badFence, db2 := w12cOutboxFixture(t)
-	w12cInsertOutboxRow(t, db2, "req-bad", now.Add(-time.Minute), now, "{not-json")
-	if _, err := (healthProbeOutboxStore{business: badFence}).ClaimPendingProbeRequests(context.Background(), 10, now); err == nil {
-		t.Fatal("非法 fence 必须拒绝")
+	w12cInsertOutboxRow(t, db2, "req-good", now.Add(-time.Minute), now.Add(-3*time.Minute), fence)
+	w12cInsertOutboxRow(t, db2, "req-bad", now.Add(-time.Minute), now.Add(-2*time.Minute), "{not-json")
+	isolated, err := (healthProbeOutboxStore{business: badFence}).ClaimPendingProbeRequests(context.Background(), 10, now)
+	if err != nil {
+		t.Fatalf("损坏 fence 行不应让 claim 报错: %v", err)
+	}
+	if len(isolated) != 1 || isolated[0].RequestID != "req-good" {
+		t.Fatalf("损坏行应被隔离，只返回合法行: %+v", isolated)
+	}
+	var badLeft int
+	if err := db2.QueryRow(`SELECT COUNT(*) FROM account_health_probe_request_outbox WHERE request_id = 'req-bad'`).Scan(&badLeft); err != nil || badLeft != 0 {
+		t.Fatalf("损坏行应被幂等出队: count=%d err=%v", badLeft, err)
 	}
 
 	// prune：保留期外行删除（含 consumed 无关）。
@@ -110,6 +120,31 @@ func TestW12CHealthProbeOutboxClaimCompletePrune(t *testing.T) {
 		t.Fatal(err)
 	}
 	pruner.pruneCycle(context.Background())
+}
+
+// TestW12CHealthProbeOutboxClaimIsolatesCorruptDeadline：deadline_at 文本级
+// 损坏与非法 fence 同类（重试永不成功），claim 必须隔离出队而不是整体报错。
+func TestW12CHealthProbeOutboxClaimIsolatesCorruptDeadline(t *testing.T) {
+	business, db := w12cOutboxFixture(t)
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	stamp := now.Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO account_health_probe_request_outbox
+		(request_id, account_id, reason, source_fence, deadline_at, status, available_at, created_at, updated_at)
+		VALUES ('req-bad-deadline', 'acc-w12c', 'probe', '', 'not-a-time', 'pending', ?, ?, ?)`,
+		stamp, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := (healthProbeOutboxStore{business: business}).ClaimPendingProbeRequests(context.Background(), 10, now)
+	if err != nil {
+		t.Fatalf("损坏 deadline 行不应让 claim 报错: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("损坏行应被隔离: %+v", rows)
+	}
+	var badLeft int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM account_health_probe_request_outbox WHERE request_id = 'req-bad-deadline'`).Scan(&badLeft); err != nil || badLeft != 0 {
+		t.Fatalf("损坏行应被出队: %d %v", badLeft, err)
+	}
 }
 
 func TestW12CHealthProbeOutboxBoundaryAndRetentionParse(t *testing.T) {

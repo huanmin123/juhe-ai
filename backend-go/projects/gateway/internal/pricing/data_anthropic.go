@@ -33,17 +33,32 @@ func anthropicModel(model string, catalogOrder int, releaseDate string, inPer1M,
 	}
 }
 
+// anthropicModelCacheRead — variant for the rows whose official cache-read
+// multiplier deviates from the standard 0.1x (0.025x on Claude Fable 5.1,
+// 0.05x on Claude Opus 5.5; official pricing page, checked 2026-09-23).
+// Cache writes keep the shared 1.25x/2x derivation.
+func anthropicModelCacheRead(cacheReadMultiplier float64, model string, catalogOrder int, releaseDate string, inPer1M, outPer1M float64, contextWindow, maxInput, maxOutput int, efforts []string, defaultEffort string) rawModel {
+	row := anthropicModel(model, catalogOrder, releaseDate, inPer1M, outPer1M, contextWindow, maxInput, maxOutput, efforts, defaultEffort)
+	row.CacheReadInputTokenCost = f64p(inPer1M * cacheReadMultiplier / 1_000_000)
+	return row
+}
+
 // anthropicModelPricingData — curated from Anthropic's official docs.
 // Official deprecations (checked 2026-09-20) show the current dated rows as
 // Active with tentative floors only ("not sooner than"), no confirmed
 // shutdown dates, so no row carries ShutdownDate here.
 var anthropicModelPricingData = []rawModel{
-	// Claude Sonnet 5 remains at its $2/$10 introductory price through
-	// 2026-08-31; update the snapshot after that date instead of adding a
-	// runtime date branch.
+	// Claude Sonnet 5: the officially scheduled 2026-09-01 increase to
+	// $3/$15 was cancelled; the launch intro price $2/$10 (through
+	// 2026-08-31) is now the standard price (official pricing page,
+	// checked 2026-09-23).
+	anthropicModelCacheRead(0.05, "claude-opus-5-5", 2, "2026-09-22", 4, 20, 1_000_000, 1_000_000, 128_000,
+		[]string{"low", "medium", "high", "xhigh", "max"}, "medium"),
 	anthropicModel("claude-opus-5", 5, "2026-07-24", 5, 25, 1_000_000, 1_000_000, 128_000,
 		[]string{"low", "medium", "high", "xhigh", "max"}, "high"),
-	anthropicModel("claude-fable-5-1", 10, "2026-09-01", 10, 50, 1_000_000, 1_000_000, 128_000,
+	anthropicModelCacheRead(0.025, "claude-fable-5-1", 10, "2026-09-01", 10, 50, 1_000_000, 1_000_000, 128_000,
+		[]string{"low", "medium", "high", "xhigh", "max"}, "high"),
+	anthropicModel("claude-fable-5", 20, "2026-06-09", 10, 50, 1_000_000, 1_000_000, 128_000,
 		[]string{"low", "medium", "high", "xhigh", "max"}, "high"),
 	anthropicModel("claude-sonnet-5", 25, "2026-06-30", 2, 10, 1_000_000, 1_000_000, 128_000,
 		[]string{"low", "medium", "high", "xhigh", "max"}, "high"),

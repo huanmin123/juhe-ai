@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import {
   resolveDevelopmentBackendTarget
 } from './dev-config.mjs'
+import { clearStaleGoDevListeners } from './dev-stale-listener-cleanup.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = resolve(root, 'frontend')
@@ -50,6 +51,7 @@ process.on('SIGHUP', () => shutdown(129))
 
 try {
   goProjectEnv = resolveGoProjectEnv()
+  clearStaleGoDevListeners(goProjectEnv)
   await warnIfGatewayStillRunning()
   goGateway = startGoProject('gateway')
   // jobs 的 runtime-log-indexer 会以只读方式附加业务库；冷启动时业务库由
@@ -150,8 +152,7 @@ function leaseWaitNotice(chunk) {
 // warnIfGatewayStillRunning 在拉起 gateway 前探测健康端口：有响应说明上一
 // dev 实例还活着（新 gateway 的租约等待不可能成功，45s 后会 fail-fast），
 // 提前给出一句可操作的提示；连接拒绝是正常冷启动路径，保持安静。
-async function warnIfGatewayStillRunning() {
-  const healthAddress = goProjectEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS || '127.0.0.1:3306'
+async function warnIfGatewayStillRunning() {  const healthAddress = goProjectEnv.JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS || '127.0.0.1:3306'
   try {
     const response = await fetch(`http://${healthAddress}/health`, { signal: AbortSignal.timeout(2000) })
     console.log(`[dev] 注意：${healthAddress} 上已有 dev gateway 在运行（health HTTP ${response.status}）。`)

@@ -126,6 +126,10 @@ var (
 // geminiModelPricingData — curated from the official Gemini docs.
 var geminiModelPricingData = []rawModel{
 	geminiTextModel(geminiModelInput{
+		// Promotional prices through 2026-12-31; everything doubles on
+		// 2027-01-01 (input/output $1.50/$7.50, cache read $0.15, storage
+		// $1.00/hr, priority $2.70/$13.50, flex $0.75/$3.75). Official
+		// pricing page, checked 2026-09-23; re-check by 2027-01-01.
 		model: "gemini-3.8-flash", catalogOrder: -1, releaseDate: "2026-09-02",
 		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 0.5,
 		flex:                      &geminiTierPrices{inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: f64p(0.0375), cacheStorageUsdPer1MPerHour: 0.5},
@@ -138,6 +142,8 @@ var geminiModelPricingData = []rawModel{
 		defaultReasoningEffort:    "medium",
 	}),
 	geminiTextModel(geminiModelInput{
+		// Promotional prices through 2026-12-31, doubling on 2027-01-01 like
+		// gemini-3.8-flash above.
 		model: "gemini-3.7-flash", catalogOrder: 0, releaseDate: "2026-08-13",
 		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 0.5,
 		flex:                      &geminiTierPrices{inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: f64p(0.0375), cacheStorageUsdPer1MPerHour: 0.5},
@@ -150,7 +156,8 @@ var geminiModelPricingData = []rawModel{
 		defaultReasoningEffort:    "medium",
 	}),
 	geminiTextModel(geminiModelInput{
-		// Promotional prices through 2026-12-31, mirroring gemini-3.7-flash.
+		// Promotional prices through 2026-12-31, mirroring gemini-3.7-flash
+		// (doubles on 2027-01-01).
 		model: "gemini-3.6-flash", catalogOrder: 1, releaseDate: "2026-07-21",
 		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 0.5,
 		flex:                      &geminiTierPrices{inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: f64p(0.0375), cacheStorageUsdPer1MPerHour: 0.5},

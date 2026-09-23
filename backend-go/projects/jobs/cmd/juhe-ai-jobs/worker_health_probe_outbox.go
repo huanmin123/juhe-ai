@@ -9,9 +9,11 @@ package main
 // outbox_drain.go）。
 //
 // 本文件提供四件消费/清理依赖：
-//   - store：pending 行 claim（普通 SELECT，不改状态；jobs owner lease 是
+//   - store：pending 行 claim（普通 SELECT，不加锁；jobs owner lease 是
 //     唯一防双跑机制）+ 处理成功即删行（幂等 DELETE，record_maintenance_jobs
-//     先例；幂等键在 juhe_jobs.account_health_outcomes）；
+//     先例；幂等键在 juhe_jobs.account_health_outcomes）。确定性损坏行
+//     （source_fence/deadline_at 文本无法解析）在 claim 内按已处理收敛出队，
+//     不让毒丸行卡死整个 J1 drain；
 //   - boundary：迁移自被删 healthDispatchBoundary 的账户 J1 冻结事实读取
 //     （accounts.config_revision/dispatch_revision +
 //     account_health_jobs_input_versions.current_version）；
@@ -91,12 +93,17 @@ func EnsureHealthProbeOutboxSchema(ctx context.Context, business *businessDB) er
 // 双模）。
 type healthProbeOutboxStore struct {
 	business *businessDB
+	// logger 用于确定性损坏行的隔离出队告警；nil（测试手工构造 store）时静默。
+	logger *slog.Logger
 }
 
 // ClaimPendingProbeRequests 读取 pending 且 available_at 已到的行。普通
 // SELECT 不加锁：单 owner lease 防双跑，行状态只被 CompleteProbeRequest
 // 幂等推进，进程崩溃后未消费行自然回到下一周期（HasRequest 幂等防重复
-// outcome）。
+// outcome）。确定性损坏行（source_fence 非 JSON、deadline_at 非 RFC3339）
+// 重试永远不会成功，保持 pending 会让每次 claim 整体失败、owner lease 反复
+// 释放（2026-09-23 实测 mockdata 占位行毒丸）：这里按已处理收敛——记 warn
+// 后幂等出队，不阻塞其余行；SQL/扫描级错误仍整体上抛（下一周期重试）。
 func (s healthProbeOutboxStore) ClaimPendingProbeRequests(ctx context.Context, limit int, now time.Time) ([]accounthealth.ProbeOutboxRow, error) {
 	rows, err := s.business.db.QueryContext(ctx, s.business.bind(`SELECT request_id, account_id, reason, source_fence, deadline_at
 		FROM `+s.business.table("account_health_probe_request_outbox")+`
@@ -108,6 +115,8 @@ func (s healthProbeOutboxStore) ClaimPendingProbeRequests(ctx context.Context, l
 	}
 	defer rows.Close()
 	out := make([]accounthealth.ProbeOutboxRow, 0, limit)
+	// 损坏行在行游标关闭后统一出队，不与同一张表的读游标交叠写入。
+	var corruptRequestIDs []string
 	for rows.Next() {
 		var (
 			requestID   string
@@ -120,21 +129,43 @@ func (s healthProbeOutboxStore) ClaimPendingProbeRequests(ctx context.Context, l
 			return nil, err
 		}
 		row := accounthealth.ProbeOutboxRow{RequestID: requestID, AccountID: accountID, Reason: reason}
-		fence, err := accounthealth.ParseProbeOutboxSourceFence(sourceFence.String)
-		if err != nil {
-			return nil, err
+		fence, fenceErr := accounthealth.ParseProbeOutboxSourceFence(sourceFence.String)
+		if fenceErr != nil {
+			corruptRequestIDs = append(corruptRequestIDs, requestID)
+			s.warnCorruptRow(requestID, accountID, "source_fence", fenceErr)
+			continue
 		}
 		row.SourceFence = fence
 		if deadlineAt != "" {
-			parsed, err := time.Parse(time.RFC3339Nano, deadlineAt)
-			if err != nil {
-				return nil, err
+			parsed, parseErr := time.Parse(time.RFC3339Nano, deadlineAt)
+			if parseErr != nil {
+				corruptRequestIDs = append(corruptRequestIDs, requestID)
+				s.warnCorruptRow(requestID, accountID, "deadline_at", parseErr)
+				continue
 			}
 			row.Deadline = parsed
 		}
 		out = append(out, row)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, corruptID := range corruptRequestIDs {
+		if _, err := s.CompleteProbeRequest(ctx, corruptID, now); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// warnCorruptRow 输出确定性损坏行的隔离出队告警（logger 缺席时静默）。
+func (s healthProbeOutboxStore) warnCorruptRow(requestID, accountID, column string, cause error) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Warn("probe_request outbox 行字段损坏，按已处理收敛出队",
+		"event", "account_health_probe_outbox_row_corrupt",
+		"requestId", requestID, "accountId", accountID, "column", column, "error", cause.Error())
 }
 
 // CompleteProbeRequest 以单条幂等 DELETE 表达「处理成功即出队」（保持既有
@@ -264,7 +295,7 @@ func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (
 		a.logger.Warn(message, "event", "account_health_probe_outbox_env_invalid")
 	}
 	face.drain = &accounthealth.ProbeRequestDrain{
-		Store:                healthProbeOutboxStore{business: business},
+		Store:                healthProbeOutboxStore{business: business, logger: a.logger},
 		Boundary:             healthProbeBoundary{business: business},
 		SettleFence:          settler,
 		Limit:                parseProbeOutboxBoundedInt(getenv, probeOutboxDrainLimitEnvVar, defaultProbeOutboxDrainLimit, minProbeOutboxDrainLimit, maxProbeOutboxDrainLimit, warnInvalidEnv),

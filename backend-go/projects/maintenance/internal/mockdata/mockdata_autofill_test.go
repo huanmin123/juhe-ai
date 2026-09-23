@@ -199,6 +199,8 @@ func TestAutofillSkipReasonCategories(t *testing.T) {
 		{StoreAccountHealth, "account_health_outcomes", "owner 运行态"},
 		{StoreAccountHealth, "account_health_jobs_input_versions", "owner 运行态"},
 		{StoreAccountHealth, "account_health_jobs_input_outbox", "owner 运行态"},
+		// probe_request_outbox 占位行曾以非 JSON source_fence 毒丸卡死 J1 drain。
+		{StoreBusiness, "account_health_probe_request_outbox", "运行时 outbox"},
 	}
 	for _, testCase := range cases {
 		reason, skip := autofillSkipReason(testCase.store, testCase.table)

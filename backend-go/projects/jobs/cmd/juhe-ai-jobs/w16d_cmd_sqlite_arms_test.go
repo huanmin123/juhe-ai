@@ -116,24 +116,25 @@ func TestW16DProbeOutboxStoreArms(t *testing.T) {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	insert("w16d-ok-1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano))
 	insert("w16d-bad-deadline", "not-a-time")
-	// 整数型 deadline_at 触发 rows.Scan 类型错误分支。
+	// 整数经 SQLite TEXT affinity 存成文本 '12345'：与 not-a-time 同为文本级
+	// 损坏，claim 必须按已处理收敛出队，不阻塞合法行。
 	if _, err := db.Exec(`INSERT INTO account_health_probe_request_outbox
 		(request_id, account_id, reason, deadline_at, status, available_at, created_at, updated_at)
 		VALUES ('w16d-scan-bad', 'w16d-acc', 'w16d-test', 12345, 'pending', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ClaimPendingProbeRequests(ctx, 10, now); err == nil {
-		t.Fatal("坏 deadline 行必须使 claim 报错")
-	}
-	if _, err := db.Exec(`DELETE FROM account_health_probe_request_outbox WHERE request_id IN ('w16d-bad-deadline','w16d-scan-bad')`); err != nil {
-		t.Fatal(err)
-	}
 	rows, err := store.ClaimPendingProbeRequests(ctx, 10, now)
 	if err != nil {
-		t.Fatalf("正常 claim: %v", err)
+		t.Fatalf("文本级损坏行不应让 claim 整体报错: %v", err)
 	}
 	if len(rows) != 1 || rows[0].RequestID != "w16d-ok-1" {
-		t.Fatalf("claim 结果错误: %v", rows)
+		t.Fatalf("损坏行应被隔离，只返回合法行: %v", rows)
+	}
+	for _, corrupt := range []string{"w16d-bad-deadline", "w16d-scan-bad"} {
+		var left int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM account_health_probe_request_outbox WHERE request_id = ?`, corrupt).Scan(&left); err != nil || left != 0 {
+			t.Fatalf("损坏行 %s 应被出队: %d %v", corrupt, left, err)
+		}
 	}
 	if _, err := (healthProbeOutboxStore{business: &businessDB{db: closed}}).ClaimPendingProbeRequests(ctx, 10, now); err == nil {
 		t.Fatal("关闭句柄 claim 必须报错")

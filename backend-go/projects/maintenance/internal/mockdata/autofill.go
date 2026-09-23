@@ -351,13 +351,17 @@ var autofillSkipExactTables = map[string]string{
 	"model_check_observations":        "域业务表：seedChatCodexModelCheck 写入受控 observation",
 	"model_check_scheduler_tasks":     "域业务表：seedChatCodexModelCheck 写入 J3b 调度任务",
 	"account_quality_health_hourly":   "域业务表：seedChatCodexModelCheck 写入质量健康小时",
-	// 以下四张是 J1（账户健康）owner 运行态表，由 jobs 健康owner/业务变更运行时
+	// 以下是 J1（账户健康）owner 运行态表，由 jobs 健康owner/业务变更运行时
 	// 维护；域按裁决不伪造，登记在这里把「为什么是空的」写清楚而不是误标为域表。
 	"account_health_outcomes":                  "owner 运行态：J1 探针结果由 jobs 健康owner 写入，域不伪造",
 	"account_health_direct_input_suppressions": "owner 运行态：直连输入抑制由 jobs 健康owner 维护",
 	"account_health_jobs_input_versions":       "owner 运行态：J1 输入版本由业务变更运行时预留快照 epoch",
 	"account_health_jobs_input_outbox":         "owner 运行态：J1 输入 intent outbox 由运行时发布器消费",
 	"account_health_projection_cursors":        "owner 游标族：账户健康投影游标",
+	// probe_request_outbox 是 gateway 写入、jobs J1 drain 消费的交接 outbox。
+	// 占位行的 source_fence 是非 JSON 文本，会让 J1 每周期 claim 整体失败、
+	// owner lease 反复释放（2026-09-23 实测毒丸），绝不能补占位行。
+	"account_health_probe_request_outbox": "运行时 outbox：探针请求由 gateway 写入、jobs J1 drain 消费，域不伪造",
 	// —— 2026-09 收尾盘点新增（各域实现者报告后逐条核实）：
 	// 域显式写入的业务表不补占位行，否则占位行会叠加在域数据之上。
 	"chat_user_asset_usage":                                  "域业务表：seedChatCodexModelCheck 写入用户资产用量汇总",

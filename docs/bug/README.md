@@ -1,5 +1,6 @@
 # Bug 记录目录
 
+- [BUG-0183](问题-0183-mockdata占位行毒丸卡死J1调度器.md)：mockdata autofill 向 `account_health_probe_request_outbox` 插入 `source_fence` 非 JSON 的占位行，J1 drain 的 `ClaimPendingProbeRequests` 在 claim 阶段逐行解析裸返回 `*json.SyntaxError`，一行毒丸使整个 claim 中止、owner lease 反复释放、J1 无限失败循环；已修复（autofill 跳过清单登记 + claim 确定性损坏行按行隔离出队并加测试锁定，本地 dev 数据已恢复、租约续约验证通过；重启 dev 后隔离代码生效）。
 - [BUG-0182](问题-0182-统计缓存离线重建CLI缺失.md)：统计缓存离线重建 CLI 缺失——Node `rebuild-usage-stats.js` 已随 Node 后端归档删除，Go maintenance 无等价命令，SQLite standalone 与 PG performance 两种模式下统计缓存损坏后无离线重建入口（Node 原语义与建议方案见文档，D5 登记）；待修复。
 - [BUG-0181](问题-0181-网关目录源丢失openai兼容供应商聚合语义.md)：网关运行时缓存目录源只按单码查询，丢失 Node 的 openai 兼容供应商源扩展聚合语义（openai/v1 子供应商 + 自己），AI 对话与 `/v1/models` 对 openai/hybrid 分组稳定返回空目录而管理面正常；已修复（补回源扩展/合并/过滤/排序并重写聚合回归锚点，真实库只读验证聚合出 100 个含 glm-5.3 的模型）。
 - [BUG-0180](问题-0180-proberepo脏时间戳panic崩溃循环.md)：proberepo reader 对库中非法 `account_expires_at`/`cooldown_until` 曾走 `panic(err)` 而非错误返回，probe worker 读到一条脏行即 panic→supervisor 重启→崩溃循环拖垮全部账户探针；已修复（2026-09-20 提交 `46c367e18`：两处 panic 改错误返回 reader.go:359/382，新增脏时间戳回归 w18_dirty_timestamp_test.go；jobs cmd `worker_probe_jobs.go` 错误传导臂已自然可达；2026-09-20 复核附证据）。

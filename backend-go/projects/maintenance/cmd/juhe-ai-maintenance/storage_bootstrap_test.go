@@ -87,11 +87,11 @@ func TestRunStorageBootstrapSQLiteEndToEnd(t *testing.T) {
 	}
 	// 本测试使用真实时钟：seed 只 upsert ShutdownDate 仍在未来的活跃行
 	// （internal/schema/seed_shared.go activeModelCatalogSeedRows）。
-	// 2026-09-23 GPT-6 Sol/Luna 同步后总量为 116；deepseek-v4-flash
-	// 已于 2026-09-10 退役，故当日预期为 115。目录数据再次同步或行跨过
+	// 2026-09-23 全厂商同步后总量为 119；deepseek-v4-flash
+	// 已于 2026-09-10 退役，故当日预期为 118。目录数据再次同步或行跨过
 	// 退役日（下一批 2026-09-28 / 2026-10-23）时需同步更新此值。
-	if catalogRows != 115 {
-		t.Fatalf("catalog rows = %d, want 115", catalogRows)
+	if catalogRows != 118 {
+		t.Fatalf("catalog rows = %d, want 118", catalogRows)
 	}
 	var apiKeys int
 	if err := db.QueryRow("SELECT count(*) FROM api_keys").Scan(&apiKeys); err != nil {

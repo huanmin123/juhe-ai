@@ -42,7 +42,10 @@ type ProbeOutboxRow struct {
 // gateway cmd 侧 writer 的 DDL 与之逐字一致）。
 type ProbeRequestOutboxStore interface {
 	// ClaimPendingProbeRequests 返回 pending 且 available_at 已到的行（最多
-	// limit 行，按 created_at、request_id 稳定排序）。不改行状态。
+	// limit 行，按 created_at、request_id 稳定排序）。合法行状态不变；实现
+	// 可以把确定性损坏行（无法解析的列文本，重试永不成功）按已处理收敛出队
+	// ——真实业务库实现如此，防单行毒丸卡死整个 claim——测试 fake 不必复制
+	// 该行为。
 	ClaimPendingProbeRequests(ctx context.Context, limit int, now time.Time) ([]ProbeOutboxRow, error)
 	// CompleteProbeRequest 把行幂等出队（处理成功即删行；业务库实现沿用
 	// record_maintenance_jobs 先例）；返回是否发生了本次删除（行已被并发/
