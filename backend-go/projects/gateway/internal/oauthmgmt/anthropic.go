@@ -129,7 +129,8 @@ func extractAnthropicCodeAndState(callbackURL string) (*anthropicAuthorization, 
 }
 
 // exchangeAnthropicAuthorizationCode mirrors exchangeAnthropicAuthCode.
-func (s *Store) exchangeAnthropicAuthorizationCode(ctx context.Context, sessionID, callbackURL, ownerID string) (*anthropicTokenInfo, error) {
+// proxyURL 是账户绑定代理的出站 URL（空 = 直连），透传给 token 请求。
+func (s *Store) exchangeAnthropicAuthorizationCode(ctx context.Context, sessionID, callbackURL, ownerID, proxyURL string) (*anthropicTokenInfo, error) {
 	authorization, err := extractAnthropicCodeAndState(callbackURL)
 	if err != nil {
 		return nil, err
@@ -158,7 +159,7 @@ func (s *Store) exchangeAnthropicAuthorizationCode(ctx context.Context, sessionI
 		"grant_type":    "authorization_code",
 		"code_verifier": session.CodeVerifier,
 		"state":         authorization.state,
-	})
+	}, proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +173,7 @@ func (s *Store) exchangeAnthropicAuthorizationCode(ctx context.Context, sessionI
 }
 
 // refreshAnthropicToken mirrors refreshAnthropicAuthToken.
-func (s *Store) refreshAnthropicToken(ctx context.Context, refreshToken, clientID string) (*anthropicTokenInfo, error) {
+func (s *Store) refreshAnthropicToken(ctx context.Context, refreshToken, clientID, proxyURL string) (*anthropicTokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
 	if refreshToken == "" {
 		return nil, errors.New("Anthropic Refresh Token 不能为空")
@@ -184,14 +185,16 @@ func (s *Store) refreshAnthropicToken(ctx context.Context, refreshToken, clientI
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 		"client_id":     clientID,
-	})
+	}, proxyURL)
 }
 
 // requestAnthropicToken mirrors requestAnthropicToken: JSON body POST with the
 // axios user-agent, upstream error envelope, account/organization claim
 // extraction.
-func (s *Store) requestAnthropicToken(ctx context.Context, form map[string]string) (*anthropicTokenInfo, error) {
-	response, err := s.exchange(ctx, jsonRequest(AnthropicOAuthTokenURL, form))
+func (s *Store) requestAnthropicToken(ctx context.Context, form map[string]string, proxyURL string) (*anthropicTokenInfo, error) {
+	request := jsonRequest(AnthropicOAuthTokenURL, form)
+	request.ProxyURL = proxyURL
+	response, err := s.exchange(ctx, request)
 	if err != nil {
 		return nil, err
 	}

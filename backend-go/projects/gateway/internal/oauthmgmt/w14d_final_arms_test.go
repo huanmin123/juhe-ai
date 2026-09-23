@@ -19,7 +19,7 @@ func TestW14dAnthropicSessionRequiresStateArms(t *testing.T) {
 		value:     mustJSON(t, anthropicOAuthSession{State: "expected", OwnerSystemAccountID: "owner"}),
 		expiresAt: time.Now().Add(oauthSessionTTL),
 	}
-	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, "w14d-owner", "https://cb?code=c&state=expected", "other"); err == nil ||
+	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, "w14d-owner", "https://cb?code=c&state=expected", "other", ""); err == nil ||
 		err.Error() != "Anthropic OAuth session owner 归属无效" {
 		t.Fatalf("owner mismatch: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestW14dAnthropicSessionRequiresStateArms(t *testing.T) {
 		value:     mustJSON(t, anthropicOAuthSession{State: "expected"}),
 		expiresAt: time.Now().Add(oauthSessionTTL),
 	}
-	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, "w14d-raw", "https://cb?code=c&state=expected", "owner"); err == nil ||
+	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, "w14d-raw", "https://cb?code=c&state=expected", "owner", ""); err == nil ||
 		!strings.Contains(err.Error(), "access_token") {
 		t.Fatalf("raw body detail: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestW14dGrokSessionGuardsArms(t *testing.T) {
 		value:     mustJSON(t, grokOAuthSession{State: "expected"}),
 		expiresAt: time.Now().Add(oauthSessionTTL),
 	}
-	if _, err := env.store.exchangeGrokAuthorizationCode(ctx, "w14d-nostate", "https://cb?code=c", "owner"); err == nil ||
+	if _, err := env.store.exchangeGrokAuthorizationCode(ctx, "w14d-nostate", "https://cb?code=c", "owner", ""); err == nil ||
 		err.Error() != "Grok OAuth 回调缺少 state" {
 		t.Fatalf("missing grok state: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestW14dGrokSessionGuardsArms(t *testing.T) {
 		value:     mustJSON(t, grokOAuthSession{State: "expected", OwnerSystemAccountID: "owner"}),
 		expiresAt: time.Now().Add(oauthSessionTTL),
 	}
-	if _, err := env.store.exchangeGrokAuthorizationCode(ctx, "w14d-owner", "https://cb?code=c&state=expected", "other"); err == nil ||
+	if _, err := env.store.exchangeGrokAuthorizationCode(ctx, "w14d-owner", "https://cb?code=c&state=expected", "other", ""); err == nil ||
 		err.Error() != "Grok OAuth session owner 归属无效" {
 		t.Fatalf("grok owner mismatch: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestW14dGrokSessionGuardsArms(t *testing.T) {
 		value:     mustJSON(t, grokOAuthSession{State: "expected"}),
 		expiresAt: time.Now().Add(oauthSessionTTL),
 	}
-	if _, err := env.store.exchangeGrokAuthorizationCode(ctx, "w14d-tok", "https://cb?code=c&state=expected", "owner"); err == nil ||
+	if _, err := env.store.exchangeGrokAuthorizationCode(ctx, "w14d-tok", "https://cb?code=c&state=expected", "owner", ""); err == nil ||
 		!strings.Contains(err.Error(), "access_token") {
 		t.Fatalf("missing grok access token: %v", err)
 	}

@@ -23,7 +23,7 @@ func TestW14dPlansExchangeAndRefreshSuccessArms(t *testing.T) {
 		env.exchanger.respond = func(_ int, call exchangeCall) (int, string) {
 			return http.StatusOK, tokenBody
 		}
-		outcome, err := plan.exchangeRefresh(ctx, env.store, map[string]any{"refreshToken": "rt"})
+		outcome, err := plan.exchangeRefresh(ctx, env.store, map[string]any{"refreshToken": "rt"}, "")
 		if err != nil || outcome == nil || outcome.Credentials == nil {
 			t.Fatalf("%s exchangeRefresh: %v %+v", plan.slug, err, outcome)
 		}
@@ -32,7 +32,7 @@ func TestW14dPlansExchangeAndRefreshSuccessArms(t *testing.T) {
 		env.exchanger.respond = func(_ int, call exchangeCall) (int, string) {
 			return http.StatusInternalServerError, `{"error":"boom"}`
 		}
-		if _, err := plan.exchangeRefresh(ctx, env.store, map[string]any{"refreshToken": "rt"}); err == nil {
+		if _, err := plan.exchangeRefresh(ctx, env.store, map[string]any{"refreshToken": "rt"}, ""); err == nil {
 			t.Fatalf("%s exchangeRefresh upstream failure must surface", plan.slug)
 		}
 	}
@@ -46,13 +46,13 @@ func TestW14dPlansRefreshStoredGuards(t *testing.T) {
 		if plan.slug == "openai" {
 			continue
 		}
-		if _, err := plan.refreshStored(ctx, env.store, empty); err == nil {
+		if _, err := plan.refreshStored(ctx, env.store, empty, ""); err == nil {
 			t.Fatalf("%s refreshStored must demand a refresh token", plan.slug)
 		}
 	}
 	// The openai refresh with a stored token reaches the upstream.
 	env.exchanger.respond = staticToken(`{"access_token":"a2","refresh_token":"r2","expires_in":60,"token_type":"Bearer"}`)
-	outcome, err := openAIPlan().refreshStored(ctx, env.store, &rotationAccount{Credentials: map[string]any{"refresh_token": "r"}})
+	outcome, err := openAIPlan().refreshStored(ctx, env.store, &rotationAccount{Credentials: map[string]any{"refresh_token": "r"}}, "")
 	if err != nil || outcome == nil {
 		t.Fatalf("openai refreshStored: %v %+v", err, outcome)
 	}

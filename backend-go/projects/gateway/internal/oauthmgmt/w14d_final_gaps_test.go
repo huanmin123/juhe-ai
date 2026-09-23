@@ -21,13 +21,13 @@ func TestW14dPlansRefreshStoredTokenGuard(t *testing.T) {
 	empty := &rotationAccount{Credentials: map[string]any{"access_token": "a"}}
 
 	for _, plan := range providerPlans() {
-		if _, err := plan.refreshStored(ctx, store, empty); err == nil {
+		if _, err := plan.refreshStored(ctx, store, empty, ""); err == nil {
 			t.Fatalf("%s refreshStored must demand a refresh token", plan.slug)
 		}
 	}
 	// The openai stored refresh surfaces upstream failures verbatim.
 	openai := openAIPlan()
-	if _, err := openai.refreshStored(ctx, store, &rotationAccount{Credentials: map[string]any{"refresh_token": "rt"}}); err == nil {
+	if _, err := openai.refreshStored(ctx, store, &rotationAccount{Credentials: map[string]any{"refresh_token": "rt"}}, ""); err == nil {
 		t.Fatal("openai stored refresh without upstream success must fail")
 	}
 }

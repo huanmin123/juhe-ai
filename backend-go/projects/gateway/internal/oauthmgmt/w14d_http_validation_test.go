@@ -131,32 +131,32 @@ func TestW14dPlansRequiredFieldValidation(t *testing.T) {
 		// (gemini resolves the code+state from the callback URL instead, so
 		// its closure carries no sessionId/callbackUrl required checks.)
 		if plan.slug != "gemini" {
-			if _, err := plan.exchangeCode(ctx, store, map[string]any{"callbackUrl": "https://cb"}, "owner"); err == nil ||
+			if _, err := plan.exchangeCode(ctx, store, map[string]any{"callbackUrl": "https://cb"}, "owner", ""); err == nil ||
 				err.Error() != "sessionId 不能为空" {
 				t.Fatalf("%s exchangeCode sessionId: %v", plan.slug, err)
 			}
-			if _, err := plan.exchangeCode(ctx, store, map[string]any{"sessionId": "s"}, "owner"); err == nil ||
+			if _, err := plan.exchangeCode(ctx, store, map[string]any{"sessionId": "s"}, "owner", ""); err == nil ||
 				err.Error() != "callbackUrl 不能为空" {
 				t.Fatalf("%s exchangeCode callbackUrl: %v", plan.slug, err)
 			}
 		}
 		if _, err := plan.exchangeCode(ctx, store, map[string]any{
 			"sessionId": "s", "callbackUrl": "https://cb", "credentialsPatch": "x",
-		}, "owner"); err == nil || err.Error() != "credentialsPatch 无效" {
+		}, "owner", ""); err == nil || err.Error() != "credentialsPatch 无效" {
 			t.Fatalf("%s exchangeCode patch: %v", plan.slug, err)
 		}
 		// exchangeRefresh: missing refreshToken / bad patch.
-		if _, err := plan.exchangeRefresh(ctx, store, map[string]any{}); err == nil ||
+		if _, err := plan.exchangeRefresh(ctx, store, map[string]any{}, ""); err == nil ||
 			err.Error() != "refreshToken 不能为空" {
 			t.Fatalf("%s exchangeRefresh refreshToken: %v", plan.slug, err)
 		}
 		if _, err := plan.exchangeRefresh(ctx, store, map[string]any{
 			"refreshToken": "rt", "credentialsPatch": 7,
-		}); err == nil || err.Error() != "credentialsPatch 无效" {
+		}, ""); err == nil || err.Error() != "credentialsPatch 无效" {
 			t.Fatalf("%s exchangeRefresh patch: %v", plan.slug, err)
 		}
 		// refreshInput: missing refreshToken.
-		if _, err := plan.refreshInput(ctx, store, map[string]any{}, &rotationAccount{Credentials: map[string]any{}}); err == nil ||
+		if _, err := plan.refreshInput(ctx, store, map[string]any{}, &rotationAccount{Credentials: map[string]any{}}, ""); err == nil ||
 			err.Error() != "refreshToken 不能为空" {
 			t.Fatalf("%s refreshInput refreshToken: %v", plan.slug, err)
 		}
@@ -174,7 +174,7 @@ func TestW14dPlansRequiredFieldValidation(t *testing.T) {
 		err.Error() != "oauthType 无效" {
 		t.Fatalf("gemini authURL validation: %v", err)
 	}
-	if _, err := gemini.exchangeCode(ctx, store, map[string]any{"oauthType": "nope"}, "owner"); err == nil ||
+	if _, err := gemini.exchangeCode(ctx, store, map[string]any{"oauthType": "nope"}, "owner", ""); err == nil ||
 		err.Error() != "oauthType 无效" {
 		t.Fatalf("gemini exchangeCode validation: %v", err)
 	}

@@ -23,7 +23,7 @@ func TestW14dCorruptedSessionEntries(t *testing.T) {
 	env.store.sessions.entries["anthropic-oauth:sessions:w14d-bad"] = sessionEntry{
 		value: broken, expiresAt: time.Now().Add(oauthSessionTTL),
 	}
-	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, "w14d-bad", "https://cb?code=c&state=s", "owner"); err == nil ||
+	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, "w14d-bad", "https://cb?code=c&state=s", "owner", ""); err == nil ||
 		err.Error() != "Anthropic OAuth 会话不存在或已过期" {
 		t.Fatalf("anthropic broken entry: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestW14dCorruptedSessionEntries(t *testing.T) {
 	}
 	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: "w14d-bad", CallbackURL: "https://cb?code=c&state=s", OwnerID: "owner",
-	}); err == nil || err.Error() != "Gemini OAuth 会话不存在或已过期" {
+	}, ""); err == nil || err.Error() != "Gemini OAuth 会话不存在或已过期" {
 		t.Fatalf("gemini broken entry: %v", err)
 	}
 

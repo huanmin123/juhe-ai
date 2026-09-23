@@ -106,7 +106,8 @@ type openAITokenInfo struct {
 
 // exchangeOpenAIAuthorizationCode mirrors exchangeOpenAIAuthCode: session read
 // (state + owner), code exchange and single-consumption session delete.
-func (s *Store) exchangeOpenAIAuthorizationCode(ctx context.Context, sessionID, callbackURL, ownerID string) (*openAITokenInfo, error) {
+// proxyURL 是账户绑定代理的出站 URL（空 = 直连），透传给 token 请求。
+func (s *Store) exchangeOpenAIAuthorizationCode(ctx context.Context, sessionID, callbackURL, ownerID, proxyURL string) (*openAITokenInfo, error) {
 	code, state, err := extractOpenAICodeAndState(callbackURL)
 	if err != nil {
 		return nil, err
@@ -131,7 +132,7 @@ func (s *Store) exchangeOpenAIAuthorizationCode(ctx context.Context, sessionID, 
 		"code":          code,
 		"redirect_uri":  session.RedirectURI,
 		"code_verifier": session.CodeVerifier,
-	})
+	}, proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +143,7 @@ func (s *Store) exchangeOpenAIAuthorizationCode(ctx context.Context, sessionID, 
 }
 
 // refreshOpenAIToken mirrors refreshOpenAIOAuthToken.
-func (s *Store) refreshOpenAIToken(ctx context.Context, refreshToken, clientID string) (*openAITokenInfo, error) {
+func (s *Store) refreshOpenAIToken(ctx context.Context, refreshToken, clientID, proxyURL string) (*openAITokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
 	if refreshToken == "" {
 		return nil, errors.New("刷新令牌不能为空")
@@ -155,13 +156,15 @@ func (s *Store) refreshOpenAIToken(ctx context.Context, refreshToken, clientID s
 		"refresh_token": refreshToken,
 		"client_id":     clientID,
 		"scope":         OpenAIOAuthRefreshScopes,
-	})
+	}, proxyURL)
 }
 
 // requestOpenAIToken mirrors requestOpenAIToken: form POST, upstream error
 // envelope, required access_token/expires_in, JWT claim enrichment.
-func (s *Store) requestOpenAIToken(ctx context.Context, form map[string]string) (*openAITokenInfo, error) {
-	response, err := s.exchange(ctx, formRequest(OpenAIOAuthTokenURL, form))
+func (s *Store) requestOpenAIToken(ctx context.Context, form map[string]string, proxyURL string) (*openAITokenInfo, error) {
+	request := formRequest(OpenAIOAuthTokenURL, form)
+	request.ProxyURL = proxyURL
+	response, err := s.exchange(ctx, request)
 	if err != nil {
 		return nil, err
 	}

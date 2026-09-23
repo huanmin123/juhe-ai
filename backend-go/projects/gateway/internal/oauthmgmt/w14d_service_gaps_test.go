@@ -18,17 +18,17 @@ func TestW14dSessionCorruptionArms(t *testing.T) {
 
 	// Corrupted session payloads surface as absent sessions.
 	env.store.sessions.set("anthropic-oauth:sessions", "w14d-broken", make(chan int), oauthSessionTTL)
-	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, "w14d-broken", "https://cb?code=c&state=s", "owner"); err == nil ||
+	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, "w14d-broken", "https://cb?code=c&state=s", "owner", ""); err == nil ||
 		err.Error() != "Anthropic OAuth 会话不存在或已过期" {
 		t.Fatalf("anthropic broken session: %v", err)
 	}
 	env.store.sessions.set("gemini-oauth:sessions", "w14d-broken", make(chan int), oauthSessionTTL)
-	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{SessionID: "w14d-broken", CallbackURL: "https://cb?code=c&state=s", OwnerID: "owner"}); err == nil ||
+	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{SessionID: "w14d-broken", CallbackURL: "https://cb?code=c&state=s", OwnerID: "owner"}, ""); err == nil ||
 		err.Error() != "Gemini OAuth 会话不存在或已过期" {
 		t.Fatalf("gemini broken session: %v", err)
 	}
 	env.store.sessions.set("openai-oauth:sessions", "w14d-broken", make(chan int), oauthSessionTTL)
-	if _, err := env.store.exchangeOpenAIAuthorizationCode(ctx, "w14d-broken", "https://cb?code=c&state=s", "owner"); err == nil ||
+	if _, err := env.store.exchangeOpenAIAuthorizationCode(ctx, "w14d-broken", "https://cb?code=c&state=s", "owner", ""); err == nil ||
 		err.Error() != "OAuth 会话不存在或已过期" {
 		t.Fatalf("openai broken session: %v", err)
 	}
@@ -38,18 +38,18 @@ func TestW14dSessionCorruptionArms(t *testing.T) {
 		State: "expected", CodeVerifier: "v", RedirectURI: "https://cb", ClientID: "cid",
 		OwnerSystemAccountID: "owner",
 	}, oauthSessionTTL)
-	if _, err := env.store.exchangeOpenAIAuthorizationCode(ctx, "w14d-state", "https://cb?code=c&state=wrong", "owner"); err == nil ||
+	if _, err := env.store.exchangeOpenAIAuthorizationCode(ctx, "w14d-state", "https://cb?code=c&state=wrong", "owner", ""); err == nil ||
 		err.Error() != "OAuth state 无效" {
 		t.Fatalf("openai state mismatch: %v", err)
 	}
 	// An owner mismatch is rejected as well.
-	if _, err := env.store.exchangeOpenAIAuthorizationCode(ctx, "w14d-state", "https://cb?code=c&state=expected", "other"); err == nil ||
+	if _, err := env.store.exchangeOpenAIAuthorizationCode(ctx, "w14d-state", "https://cb?code=c&state=expected", "other", ""); err == nil ||
 		err.Error() != "OAuth session owner 归属无效" {
 		t.Fatalf("openai owner mismatch: %v", err)
 	}
 	// Gemini state mismatch.
 	env.store.sessions.set("gemini-oauth:sessions", "w14d-gstate", geminiOAuthSession{State: "expected"}, oauthSessionTTL)
-	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{SessionID: "w14d-gstate", CallbackURL: "https://cb?code=c&state=wrong", OwnerID: "owner"}); err == nil ||
+	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{SessionID: "w14d-gstate", CallbackURL: "https://cb?code=c&state=wrong", OwnerID: "owner"}, ""); err == nil ||
 		err.Error() != "Gemini OAuth state 无效" {
 		t.Fatalf("gemini state mismatch: %v", err)
 	}

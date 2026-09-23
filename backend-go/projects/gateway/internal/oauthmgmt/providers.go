@@ -33,11 +33,13 @@ type providerPlan struct {
 
 	parseCredentialsPatch func(body map[string]any) (map[string]any, bool)
 
+	// proxyURL 是路由层经 Store.proxyProfileRequestURL 解析出的账户绑定代理
+	// 出站 URL（空 = 未绑定，保持既有直连行为）；四个 token 闭包对称透传。
 	authURL         func(ctx context.Context, s *Store, body map[string]any, ownerID string) (map[string]any, error)
-	exchangeCode    func(ctx context.Context, s *Store, body map[string]any, ownerID string) (*tokenOutcome, error)
-	exchangeRefresh func(ctx context.Context, s *Store, body map[string]any) (*tokenOutcome, error)
-	refreshStored   func(ctx context.Context, s *Store, current *rotationAccount) (map[string]any, error)
-	refreshInput    func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount) (map[string]any, error)
+	exchangeCode    func(ctx context.Context, s *Store, body map[string]any, ownerID string, proxyURL string) (*tokenOutcome, error)
+	exchangeRefresh func(ctx context.Context, s *Store, body map[string]any, proxyURL string) (*tokenOutcome, error)
+	refreshStored   func(ctx context.Context, s *Store, current *rotationAccount, proxyURL string) (map[string]any, error)
+	refreshInput    func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount, proxyURL string) (map[string]any, error)
 }
 
 // rotatable mirrors findRotatableXxxOAuthAccount: provider code, protocol

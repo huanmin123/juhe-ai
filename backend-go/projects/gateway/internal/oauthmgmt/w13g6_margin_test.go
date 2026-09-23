@@ -288,17 +288,17 @@ func TestW13g6ExchangeArms(t *testing.T) {
 	// --- anthropic：URL 回调缺 state 在 extract 即报错；裸 code 走通兑换 -----
 	plain := w13g6NewStore(t, env, staticExchanger(`{"access_token":"at","expires_in":100,"refresh_token":"rt"}`))
 	plain.sessions.set(anthropicSessionNamespace, "w13g6-anthropic", anthropicOAuthSession{State: "st"}, time.Minute)
-	if _, err := plain.exchangeAnthropicAuthorizationCode(ctx, "w13g6-anthropic", "https://a.example/cb?code=cd&state=", ""); err == nil ||
+	if _, err := plain.exchangeAnthropicAuthorizationCode(ctx, "w13g6-anthropic", "https://a.example/cb?code=cd&state=", "", ""); err == nil ||
 		err.Error() != "Anthropic 授权结果必须包含 code，URL 或查询形式还必须包含 state" {
 		t.Fatalf("anthropic missing state: %v", err)
 	}
-	info, err := plain.exchangeAnthropicAuthorizationCode(ctx, "w13g6-anthropic", "cd", "")
+	info, err := plain.exchangeAnthropicAuthorizationCode(ctx, "w13g6-anthropic", "cd", "", "")
 	if err != nil || info == nil || info.AccessToken != "at" {
 		t.Fatalf("anthropic bare-code exchange: %+v %v", info, err)
 	}
 	textBody := w13g6NewStore(t, env, statusExchanger(500, "plain-upstream-body"))
 	textBody.sessions.set(anthropicSessionNamespace, "w13g6-anthropic", anthropicOAuthSession{State: "st"}, time.Minute)
-	if _, err := textBody.exchangeAnthropicAuthorizationCode(ctx, "w13g6-anthropic", "cd", ""); err == nil ||
+	if _, err := textBody.exchangeAnthropicAuthorizationCode(ctx, "w13g6-anthropic", "cd", "", ""); err == nil ||
 		!strings.Contains(err.Error(), "plain-upstream-body") {
 		t.Fatalf("anthropic plain detail: %v", err)
 	}
@@ -319,40 +319,40 @@ func TestW13g6ExchangeArms(t *testing.T) {
 	storeRef = mutating
 
 	mutating.sessions.set(anthropicSessionNamespace, "w13g6-a2", anthropicOAuthSession{State: "st"}, time.Minute)
-	if _, err := mutating.exchangeAnthropicAuthorizationCode(ctx, "w13g6-a2", "cd", ""); err == nil ||
+	if _, err := mutating.exchangeAnthropicAuthorizationCode(ctx, "w13g6-a2", "cd", "", ""); err == nil ||
 		err.Error() != "Anthropic OAuth 会话已消费，请重新发起授权" {
 		t.Fatalf("anthropic consumed: %v", err)
 	}
 	mutating.sessions.set(openAIOAuthSessionNamespace, "w13g6-o2", openAIOAuthSession{State: "st"}, time.Minute)
-	if _, err := mutating.exchangeOpenAIAuthorizationCode(ctx, "w13g6-o2", "https://o.example/?code=c&state=st", ""); err == nil ||
+	if _, err := mutating.exchangeOpenAIAuthorizationCode(ctx, "w13g6-o2", "https://o.example/?code=c&state=st", "", ""); err == nil ||
 		err.Error() != "OAuth 会话已消费，请重新发起授权" {
 		t.Fatalf("openai consumed: %v", err)
 	}
 	mutating.sessions.set(grokSessionNamespace, "w13g6-g2", grokOAuthSession{State: "st"}, time.Minute)
-	if _, err := mutating.exchangeGrokAuthorizationCode(ctx, "w13g6-g2", "cd", ""); err == nil ||
+	if _, err := mutating.exchangeGrokAuthorizationCode(ctx, "w13g6-g2", "cd", "", ""); err == nil ||
 		!strings.Contains(err.Error(), "会话已消费") {
 		t.Fatalf("grok consumed: %v", err)
 	}
 	mutating.sessions.set(geminiSessionNamespace, "w13g6-gm2", geminiOAuthSession{State: "st"}, time.Minute)
 	if _, err := mutating.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: "w13g6-gm2", CallbackURL: "https://g.example/?code=c&state=st",
-	}); err == nil || err.Error() != "Gemini OAuth 会话已消费，请重新发起授权" {
+	}, ""); err == nil || err.Error() != "Gemini OAuth 会话已消费，请重新发起授权" {
 		t.Fatalf("gemini consumed: %v", err)
 	}
 
 	// --- grok：空授权码（空回调解析为零值 authorization）/ 会话损坏 / 上游纯文本 ---
-	if _, err := plain.exchangeGrokAuthorizationCode(ctx, "w13g6-none", "", ""); err == nil ||
+	if _, err := plain.exchangeGrokAuthorizationCode(ctx, "w13g6-none", "", "", ""); err == nil ||
 		err.Error() != "Grok OAuth 授权码不能为空" {
 		t.Fatalf("grok empty code: %v", err)
 	}
 	plain.sessions.set(grokSessionNamespace, "w13g6-g3", "just-a-string", time.Minute)
-	if _, err := plain.exchangeGrokAuthorizationCode(ctx, "w13g6-g3", "cd", ""); err == nil ||
+	if _, err := plain.exchangeGrokAuthorizationCode(ctx, "w13g6-g3", "cd", "", ""); err == nil ||
 		!strings.Contains(err.Error(), "会话不存在或已过期") {
 		t.Fatalf("grok corrupt session: %v", err)
 	}
 	grokText := w13g6NewStore(t, env, statusExchanger(500, "grok-plain-body"))
 	grokText.sessions.set(grokSessionNamespace, "w13g6-g5", grokOAuthSession{State: "st"}, time.Minute)
-	if _, err := grokText.exchangeGrokAuthorizationCode(ctx, "w13g6-g5", "cd", ""); err == nil ||
+	if _, err := grokText.exchangeGrokAuthorizationCode(ctx, "w13g6-g5", "cd", "", ""); err == nil ||
 		!strings.Contains(err.Error(), "grok-plain-body") {
 		t.Fatalf("grok plain detail: %v", err)
 	}
@@ -362,65 +362,65 @@ func TestW13g6ExchangeArms(t *testing.T) {
 	geminiCallback := w13g6NewStore(t, env, staticExchanger("unused"))
 	if _, err := geminiCallback.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: "w13g6-gm3", CallbackURL: "https://g.example/?error=e1&error_description=d1",
-	}); err == nil || !strings.Contains(err.Error(), "d1") {
+	}, ""); err == nil || !strings.Contains(err.Error(), "d1") {
 		t.Fatalf("gemini callback description detail: %v", err)
 	}
 	if _, err := geminiCallback.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: "w13g6-gm3", CallbackURL: "https://g.example/?error=e1",
-	}); err == nil || !strings.Contains(err.Error(), "e1") {
+	}, ""); err == nil || !strings.Contains(err.Error(), "e1") {
 		t.Fatalf("gemini callback code fallback detail: %v", err)
 	}
 	geminiBoth := w13g6NewStore(t, env, statusExchanger(500, `{"error":"e1","error_description":"d1"}`))
 	geminiBoth.sessions.set(geminiSessionNamespace, "w13g6-gm4", geminiOAuthSession{State: "st"}, time.Minute)
 	if _, err := geminiBoth.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: "w13g6-gm4", CallbackURL: "https://g.example/?code=c&state=st",
-	}); err == nil || !strings.Contains(err.Error(), "e1: d1") {
+	}, ""); err == nil || !strings.Contains(err.Error(), "e1: d1") {
 		t.Fatalf("gemini error+description detail: %v", err)
 	}
 	geminiRaw := w13g6NewStore(t, env, statusExchanger(500, "gemini-raw-body"))
 	geminiRaw.sessions.set(geminiSessionNamespace, "w13g6-gm5", geminiOAuthSession{State: "st"}, time.Minute)
 	if _, err := geminiRaw.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: "w13g6-gm5", CallbackURL: "https://g.example/?code=c&state=st",
-	}); err == nil || !strings.Contains(err.Error(), "gemini-raw-body") {
+	}, ""); err == nil || !strings.Contains(err.Error(), "gemini-raw-body") {
 		t.Fatalf("gemini raw body detail: %v", err)
 	}
 	geminiClamp := w13g6NewStore(t, env, staticExchanger(`{"access_token":"at","expires_in":5}`))
 	geminiClamp.sessions.set(geminiSessionNamespace, "w13g6-gm6", geminiOAuthSession{State: "st"}, time.Minute)
 	clamped, err := geminiClamp.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: "w13g6-gm6", CallbackURL: "https://g.example/?code=c&state=st",
-	})
+	}, "")
 	if err != nil || clamped == nil || clamped.ExpiresIn != 5 {
 		t.Fatalf("gemini clamp exchange: %+v %v", clamped, err)
 	}
 
 	// --- openai：client_id 兜底 --------------------------------------------
 	openaiForm := w13g6NewStore(t, env, staticExchanger(`{"access_token":"at","expires_in":100,"id_token":"a.b.c"}`))
-	openaiInfo, err := openaiForm.requestOpenAIToken(ctx, map[string]string{"grant_type": "refresh_token", "refresh_token": "r"})
+	openaiInfo, err := openaiForm.requestOpenAIToken(ctx, map[string]string{"grant_type": "refresh_token", "refresh_token": "r"}, "")
 	if err != nil || openaiInfo == nil || openaiInfo.ClientID != OpenAIOAuthClientID {
 		t.Fatalf("openai default client id: %+v %v", openaiInfo, err)
 	}
-	if _, err := openaiForm.refreshOpenAIToken(ctx, "rt", " "); err != nil {
+	if _, err := openaiForm.refreshOpenAIToken(ctx, "rt", " ", ""); err != nil {
 		t.Fatalf("openai refresh with blank client id: %v", err)
 	}
 
 	// --- 上游传输错误臂（四家 request*Token 的 exchange err） ----------------
 	failing := w13g6NewStore(t, env, nil)
 	failing.sessions.set(anthropicSessionNamespace, "w13g6-fa", anthropicOAuthSession{State: "st"}, time.Minute)
-	if _, err := failing.exchangeAnthropicAuthorizationCode(ctx, "w13g6-fa", "cd", ""); err == nil {
+	if _, err := failing.exchangeAnthropicAuthorizationCode(ctx, "w13g6-fa", "cd", "", ""); err == nil {
 		t.Fatal("anthropic transport error arm")
 	}
 	failing.sessions.set(openAIOAuthSessionNamespace, "w13g6-fo", openAIOAuthSession{State: "st"}, time.Minute)
-	if _, err := failing.exchangeOpenAIAuthorizationCode(ctx, "w13g6-fo", "https://o.example/?code=c&state=st", ""); err == nil {
+	if _, err := failing.exchangeOpenAIAuthorizationCode(ctx, "w13g6-fo", "https://o.example/?code=c&state=st", "", ""); err == nil {
 		t.Fatal("openai transport error arm")
 	}
 	failing.sessions.set(grokSessionNamespace, "w13g6-fg", grokOAuthSession{State: "st"}, time.Minute)
-	if _, err := failing.exchangeGrokAuthorizationCode(ctx, "w13g6-fg", "cd", ""); err == nil {
+	if _, err := failing.exchangeGrokAuthorizationCode(ctx, "w13g6-fg", "cd", "", ""); err == nil {
 		t.Fatal("grok transport error arm")
 	}
 	failing.sessions.set(geminiSessionNamespace, "w13g6-fgm", geminiOAuthSession{State: "st"}, time.Minute)
 	if _, err := failing.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: "w13g6-fgm", CallbackURL: "https://g.example/?code=c&state=st",
-	}); err == nil {
+	}, ""); err == nil {
 		t.Fatal("gemini transport error arm")
 	}
 }

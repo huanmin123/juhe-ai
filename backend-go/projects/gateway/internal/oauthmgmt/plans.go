@@ -33,7 +33,7 @@ func openAIPlan() providerPlan {
 	plan.authURL = func(ctx context.Context, s *Store, _ map[string]any, ownerID string) (map[string]any, error) {
 		return s.generateOpenAIAuthURL(ownerID)
 	}
-	plan.exchangeCode = func(ctx context.Context, s *Store, body map[string]any, ownerID string) (*tokenOutcome, error) {
+	plan.exchangeCode = func(ctx context.Context, s *Store, body map[string]any, ownerID string, proxyURL string) (*tokenOutcome, error) {
 		sessionID, ok := requiredTrimmedString(body, "sessionId")
 		if !ok {
 			return nil, &ValidationError{Message: "sessionId 不能为空"}
@@ -46,7 +46,7 @@ func openAIPlan() providerPlan {
 		if !patchOK {
 			return nil, &ValidationError{Message: "credentialsPatch 无效"}
 		}
-		info, err := s.exchangeOpenAIAuthorizationCode(ctx, sessionID, callbackURL, ownerID)
+		info, err := s.exchangeOpenAIAuthorizationCode(ctx, sessionID, callbackURL, ownerID, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -55,7 +55,7 @@ func openAIPlan() providerPlan {
 			Name:        info.Email,
 		}, nil
 	}
-	plan.exchangeRefresh = func(ctx context.Context, s *Store, body map[string]any) (*tokenOutcome, error) {
+	plan.exchangeRefresh = func(ctx context.Context, s *Store, body map[string]any, proxyURL string) (*tokenOutcome, error) {
 		refreshToken, ok := requiredTrimmedString(body, "refreshToken")
 		if !ok {
 			return nil, &ValidationError{Message: "refreshToken 不能为空"}
@@ -65,7 +65,7 @@ func openAIPlan() providerPlan {
 		if !patchOK {
 			return nil, &ValidationError{Message: "credentialsPatch 无效"}
 		}
-		info, err := s.refreshOpenAIToken(ctx, refreshToken, clientID)
+		info, err := s.refreshOpenAIToken(ctx, refreshToken, clientID, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -74,15 +74,15 @@ func openAIPlan() providerPlan {
 			Name:        info.Email,
 		}, nil
 	}
-	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount) (map[string]any, error) {
+	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		info, err := s.refreshOpenAIToken(ctx, stringCredential(current.Credentials, "refresh_token"),
-			stringCredential(current.Credentials, "client_id"))
+			stringCredential(current.Credentials, "client_id"), proxyURL)
 		if err != nil {
 			return nil, err
 		}
 		return buildOpenAIOAuthCredentials(info, ""), nil
 	}
-	plan.refreshInput = func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount) (map[string]any, error) {
+	plan.refreshInput = func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		refreshToken, ok := requiredTrimmedString(body, "refreshToken")
 		if !ok {
 			return nil, &ValidationError{Message: "refreshToken 不能为空"}
@@ -91,7 +91,7 @@ func openAIPlan() providerPlan {
 		if !present || trim(clientID) == "" {
 			clientID = stringCredential(current.Credentials, "client_id")
 		}
-		info, err := s.refreshOpenAIToken(ctx, refreshToken, clientID)
+		info, err := s.refreshOpenAIToken(ctx, refreshToken, clientID, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +123,7 @@ func anthropicPlan() providerPlan {
 	plan.authURL = func(ctx context.Context, s *Store, _ map[string]any, ownerID string) (map[string]any, error) {
 		return s.generateAnthropicAuthURL(ownerID)
 	}
-	plan.exchangeCode = func(ctx context.Context, s *Store, body map[string]any, ownerID string) (*tokenOutcome, error) {
+	plan.exchangeCode = func(ctx context.Context, s *Store, body map[string]any, ownerID string, proxyURL string) (*tokenOutcome, error) {
 		sessionID, ok := requiredTrimmedString(body, "sessionId")
 		if !ok {
 			return nil, &ValidationError{Message: "sessionId 不能为空"}
@@ -136,7 +136,7 @@ func anthropicPlan() providerPlan {
 		if !patchOK {
 			return nil, &ValidationError{Message: "credentialsPatch 无效"}
 		}
-		info, err := s.exchangeAnthropicAuthorizationCode(ctx, sessionID, callbackURL, ownerID)
+		info, err := s.exchangeAnthropicAuthorizationCode(ctx, sessionID, callbackURL, ownerID, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -145,7 +145,7 @@ func anthropicPlan() providerPlan {
 			Name:        info.Email,
 		}, nil
 	}
-	plan.exchangeRefresh = func(ctx context.Context, s *Store, body map[string]any) (*tokenOutcome, error) {
+	plan.exchangeRefresh = func(ctx context.Context, s *Store, body map[string]any, proxyURL string) (*tokenOutcome, error) {
 		refreshToken, ok := requiredTrimmedString(body, "refreshToken")
 		if !ok {
 			return nil, &ValidationError{Message: "refreshToken 不能为空"}
@@ -154,7 +154,7 @@ func anthropicPlan() providerPlan {
 		if !patchOK {
 			return nil, &ValidationError{Message: "credentialsPatch 无效"}
 		}
-		info, err := s.refreshAnthropicToken(ctx, refreshToken, "")
+		info, err := s.refreshAnthropicToken(ctx, refreshToken, "", proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -163,20 +163,20 @@ func anthropicPlan() providerPlan {
 			Name:        info.Email,
 		}, nil
 	}
-	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount) (map[string]any, error) {
+	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		info, err := s.refreshAnthropicToken(ctx, stringCredential(current.Credentials, "refresh_token"),
-			stringCredential(current.Credentials, "client_id"))
+			stringCredential(current.Credentials, "client_id"), proxyURL)
 		if err != nil {
 			return nil, err
 		}
 		return buildAnthropicOAuthCredentials(info, ""), nil
 	}
-	plan.refreshInput = func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount) (map[string]any, error) {
+	plan.refreshInput = func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		refreshToken, ok := requiredTrimmedString(body, "refreshToken")
 		if !ok {
 			return nil, &ValidationError{Message: "refreshToken 不能为空"}
 		}
-		info, err := s.refreshAnthropicToken(ctx, refreshToken, stringCredential(current.Credentials, "client_id"))
+		info, err := s.refreshAnthropicToken(ctx, refreshToken, stringCredential(current.Credentials, "client_id"), proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -226,7 +226,7 @@ func geminiPlan() providerPlan {
 			OwnerID:        ownerID,
 		})
 	}
-	plan.exchangeCode = func(ctx context.Context, s *Store, body map[string]any, ownerID string) (*tokenOutcome, error) {
+	plan.exchangeCode = func(ctx context.Context, s *Store, body map[string]any, ownerID string, proxyURL string) (*tokenOutcome, error) {
 		if err := validateGeminiBodyFields(body); err != nil {
 			return nil, err
 		}
@@ -245,7 +245,7 @@ func geminiPlan() providerPlan {
 			QuotaProjectID: optionalTrimmedText(body, "quotaProjectId"),
 			BaseURL:        optionalTrimmedText(body, "baseUrl"),
 			OwnerID:        ownerID,
-		})
+		}, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -253,7 +253,7 @@ func geminiPlan() providerPlan {
 			Credentials: mergePatchLast(buildGeminiOAuthCredentials(info, nil), safePatch),
 		}, nil
 	}
-	plan.exchangeRefresh = func(ctx context.Context, s *Store, body map[string]any) (*tokenOutcome, error) {
+	plan.exchangeRefresh = func(ctx context.Context, s *Store, body map[string]any, proxyURL string) (*tokenOutcome, error) {
 		refreshToken, ok := requiredTrimmedString(body, "refreshToken")
 		if !ok {
 			return nil, &ValidationError{Message: "refreshToken 不能为空"}
@@ -281,7 +281,7 @@ func geminiPlan() providerPlan {
 			TierID:         optionalTrimmedText(body, "tierId"),
 			QuotaProjectID: quotaProjectID,
 			BaseURL:        baseURL,
-		})
+		}, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -293,7 +293,7 @@ func geminiPlan() providerPlan {
 			}), safePatch),
 		}, nil
 	}
-	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount) (map[string]any, error) {
+	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		credentials := current.Credentials
 		info, err := s.refreshGeminiToken(ctx, stringCredential(credentials, "refresh_token"), geminiAuthURLOptions{
 			OAuthType:      geminiAccountOAuthType(credentials),
@@ -304,7 +304,7 @@ func geminiPlan() providerPlan {
 			QuotaProjectID: stringCredential(credentials, "quota_project_id"),
 			BaseURL:        stringCredential(credentials, "base_url"),
 			Scope:          stringCredential(credentials, "scope"),
-		})
+		}, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -317,7 +317,7 @@ func geminiPlan() providerPlan {
 			Scope:        stringCredential(credentials, "scope"),
 		}), nil
 	}
-	plan.refreshInput = func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount) (map[string]any, error) {
+	plan.refreshInput = func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		refreshToken, ok := requiredTrimmedString(body, "refreshToken")
 		if !ok {
 			return nil, &ValidationError{Message: "refreshToken 不能为空"}
@@ -342,7 +342,7 @@ func geminiPlan() providerPlan {
 			QuotaProjectID: pick("quota_project_id", optionalTrimmedText(body, "quotaProjectId")),
 			BaseURL:        pick("base_url", optionalTrimmedText(body, "baseUrl")),
 			Scope:          stringCredential(credentials, "scope"),
-		})
+		}, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -382,7 +382,7 @@ func grokPlan() providerPlan {
 	plan.authURL = func(ctx context.Context, s *Store, _ map[string]any, ownerID string) (map[string]any, error) {
 		return s.generateGrokAuthURL(ownerID)
 	}
-	plan.exchangeCode = func(ctx context.Context, s *Store, body map[string]any, ownerID string) (*tokenOutcome, error) {
+	plan.exchangeCode = func(ctx context.Context, s *Store, body map[string]any, ownerID string, proxyURL string) (*tokenOutcome, error) {
 		sessionID, ok := requiredTrimmedString(body, "sessionId")
 		if !ok {
 			return nil, &grokOAuthError{Message: "sessionId 不能为空", StatusCode: 400}
@@ -395,7 +395,7 @@ func grokPlan() providerPlan {
 		if !patchOK {
 			return nil, &ValidationError{Message: "credentialsPatch 无效"}
 		}
-		info, err := s.exchangeGrokAuthorizationCode(ctx, sessionID, callbackURL, ownerID)
+		info, err := s.exchangeGrokAuthorizationCode(ctx, sessionID, callbackURL, ownerID, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -404,7 +404,7 @@ func grokPlan() providerPlan {
 			Name:        info.Email,
 		}, nil
 	}
-	plan.exchangeRefresh = func(ctx context.Context, s *Store, body map[string]any) (*tokenOutcome, error) {
+	plan.exchangeRefresh = func(ctx context.Context, s *Store, body map[string]any, proxyURL string) (*tokenOutcome, error) {
 		refreshToken, ok := requiredTrimmedString(body, "refreshToken")
 		if !ok {
 			return nil, &grokOAuthError{Message: "refreshToken 不能为空", StatusCode: 400}
@@ -413,7 +413,7 @@ func grokPlan() providerPlan {
 		if !patchOK {
 			return nil, &ValidationError{Message: "credentialsPatch 无效"}
 		}
-		info, err := s.refreshGrokToken(ctx, refreshToken, "")
+		info, err := s.refreshGrokToken(ctx, refreshToken, "", proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -422,23 +422,23 @@ func grokPlan() providerPlan {
 			Name:        info.Email,
 		}, nil
 	}
-	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount) (map[string]any, error) {
+	plan.refreshStored = func(ctx context.Context, s *Store, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		refreshToken := stringCredential(current.Credentials, "refresh_token")
 		if refreshToken == "" {
 			return nil, &grokOAuthError{Message: "Grok OAuth 账户缺少 Refresh Token", StatusCode: 400}
 		}
-		info, err := s.refreshGrokToken(ctx, refreshToken, stringCredential(current.Credentials, "client_id"))
+		info, err := s.refreshGrokToken(ctx, refreshToken, stringCredential(current.Credentials, "client_id"), proxyURL)
 		if err != nil {
 			return nil, err
 		}
 		return buildGrokOAuthCredentials(info, ""), nil
 	}
-	plan.refreshInput = func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount) (map[string]any, error) {
+	plan.refreshInput = func(ctx context.Context, s *Store, body map[string]any, current *rotationAccount, proxyURL string) (map[string]any, error) {
 		refreshToken, ok := requiredTrimmedString(body, "refreshToken")
 		if !ok {
 			return nil, &grokOAuthError{Message: "refreshToken 不能为空", StatusCode: 400}
 		}
-		info, err := s.refreshGrokToken(ctx, refreshToken, stringCredential(current.Credentials, "client_id"))
+		info, err := s.refreshGrokToken(ctx, refreshToken, stringCredential(current.Credentials, "client_id"), proxyURL)
 		if err != nil {
 			return nil, err
 		}

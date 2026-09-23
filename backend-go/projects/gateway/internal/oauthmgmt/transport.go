@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
 // TokenHTTPRequest mirrors the provider-oauth-token-transport call input the
@@ -22,6 +24,9 @@ type TokenHTTPRequest struct {
 	// Timeout bounds a single upstream call (25s for openai/anthropic/gemini,
 	// 60s for grok in Node). Zero falls back to the exchanger default.
 	Timeout time.Duration
+	// ProxyURL 是账户绑定代理的出站 URL（resolveRefreshProxyUrlOrThrow 的
+	// Go 对应物）；空 = 走默认 transport/环境变量，行为与不绑定代理时一致。
+	ProxyURL string
 }
 
 // TokenHTTPResponse is the upstream token response subset the services parse.
@@ -49,10 +54,10 @@ func (f ExchangerFunc) Do(ctx context.Context, request TokenHTTPRequest) (TokenH
 // per-provider overrides of the same magnitude.
 const defaultTokenTimeout = 25 * time.Second
 
-// httpTokenExchanger is the production transport: form/JSON POST without
-// proxying. The OAuth proxy-profile resolution rides the proxy slice (see the
-// M17 deferral notes); tests never construct this type, so no test traffic
-// leaves the process.
+// httpTokenExchanger is the production transport: form/JSON POST. A request
+// carrying ProxyURL egresses through that proxy (shared pooled client); the
+// empty path keeps the direct &http.Client{} behavior. Tests never construct
+// this type, so no test traffic leaves the process.
 type httpTokenExchanger struct {
 	client *http.Client
 }
@@ -76,7 +81,17 @@ func (e *httpTokenExchanger) Do(ctx context.Context, request TokenHTTPRequest) (
 	for key, value := range request.Headers {
 		req.Header.Set(key, value)
 	}
-	response, err := e.client.Do(req)
+	client := e.client
+	if strings.TrimSpace(request.ProxyURL) != "" {
+		// 账户绑定代理：与 modelcheckowner buildProxyClient 相同的共享 client
+		// 池（http/https/socks5h），由 upstreamhttp 校验 URL 并拒绝直连回退。
+		proxied, err := upstreamhttp.SharedClient(request.ProxyURL, upstreamhttp.TransportOptions{})
+		if err != nil {
+			return TokenHTTPResponse{}, err
+		}
+		client = proxied
+	}
+	response, err := client.Do(req)
 	if err != nil {
 		return TokenHTTPResponse{}, err
 	}

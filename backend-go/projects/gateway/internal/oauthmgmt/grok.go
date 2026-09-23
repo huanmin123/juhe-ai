@@ -156,8 +156,9 @@ func parseGrokAuthorizationInput(raw string) (*grokAuthorization, error) {
 	return &grokAuthorization{code: trimmed}, nil
 }
 
-// exchangeGrokAuthorizationCode mirrors exchangeGrokAuthCode.
-func (s *Store) exchangeGrokAuthorizationCode(ctx context.Context, sessionID, callbackURL, ownerID string) (*grokTokenInfo, error) {
+// exchangeGrokAuthorizationCode mirrors exchangeGrokAuthCode. proxyURL 是账户
+// 绑定代理的出站 URL（空 = 直连），透传给 token 请求。
+func (s *Store) exchangeGrokAuthorizationCode(ctx context.Context, sessionID, callbackURL, ownerID, proxyURL string) (*grokTokenInfo, error) {
 	authorization, err := parseGrokAuthorizationInput(callbackURL)
 	if err != nil {
 		return nil, err
@@ -188,7 +189,7 @@ func (s *Store) exchangeGrokAuthorizationCode(ctx context.Context, sessionID, ca
 		"code":          authorization.code,
 		"redirect_uri":  session.RedirectURI,
 		"code_verifier": session.CodeVerifier,
-	}, session.ClientID)
+	}, session.ClientID, proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +201,7 @@ func (s *Store) exchangeGrokAuthorizationCode(ctx context.Context, sessionID, ca
 
 // refreshGrokToken mirrors refreshGrokAuthToken: a missing rotated refresh
 // token keeps the input one.
-func (s *Store) refreshGrokToken(ctx context.Context, refreshToken, clientID string) (*grokTokenInfo, error) {
+func (s *Store) refreshGrokToken(ctx context.Context, refreshToken, clientID, proxyURL string) (*grokTokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
 	if refreshToken == "" {
 		return nil, &grokOAuthError{Message: "Grok Refresh Token 不能为空", StatusCode: 400}
@@ -212,7 +213,7 @@ func (s *Store) refreshGrokToken(ctx context.Context, refreshToken, clientID str
 		"grant_type":    "refresh_token",
 		"client_id":     clientID,
 		"refresh_token": refreshToken,
-	}, clientID)
+	}, clientID, proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -223,9 +224,10 @@ func (s *Store) refreshGrokToken(ctx context.Context, refreshToken, clientID str
 }
 
 // requestGrokToken mirrors requestGrokToken.
-func (s *Store) requestGrokToken(ctx context.Context, form map[string]string, clientID string) (*grokTokenInfo, error) {
+func (s *Store) requestGrokToken(ctx context.Context, form map[string]string, clientID, proxyURL string) (*grokTokenInfo, error) {
 	request := formRequest(GrokOAuthTokenURL, form)
 	request.Headers["user-agent"] = "sub2api-grok-oauth/1.0"
+	request.ProxyURL = proxyURL
 	response, err := s.exchange(ctx, request)
 	if err != nil {
 		return nil, err

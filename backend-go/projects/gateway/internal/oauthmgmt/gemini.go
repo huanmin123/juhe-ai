@@ -332,8 +332,8 @@ func assertGeminiSessionField(label, provided, sessionValue string) error {
 // exchangeGeminiAuthorizationCode mirrors exchangeGeminiAuthCode minus the
 // upstream code-assist/drive enrichment probes (M17 deferral: project/tier
 // detection rides the probe slice; request-supplied project/tier inputs are
-// carried through instead).
-func (s *Store) exchangeGeminiAuthorizationCode(ctx context.Context, input geminiExchangeOptions) (*geminiTokenInfo, error) {
+// carried through instead). proxyURL 是账户绑定代理的出站 URL（空 = 直连）。
+func (s *Store) exchangeGeminiAuthorizationCode(ctx context.Context, input geminiExchangeOptions, proxyURL string) (*geminiTokenInfo, error) {
 	code, state, err := extractGeminiCodeAndState(input.CallbackURL)
 	if err != nil {
 		return nil, err
@@ -385,7 +385,7 @@ func (s *Store) exchangeGeminiAuthorizationCode(ctx context.Context, input gemin
 		QuotaProjectID: session.QuotaProjectID,
 		BaseURL:        session.BaseURL,
 		Scope:          session.Scope,
-	})
+	}, proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +409,7 @@ type geminiRequestOptions struct {
 
 // refreshGeminiToken mirrors refreshGeminiAuthToken minus the retry/backoff and
 // legacy-client fallback loops (M17 deferral); the token request runs once.
-func (s *Store) refreshGeminiToken(ctx context.Context, refreshToken string, input geminiAuthURLOptions) (*geminiTokenInfo, error) {
+func (s *Store) refreshGeminiToken(ctx context.Context, refreshToken string, input geminiAuthURLOptions, proxyURL string) (*geminiTokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
 	if refreshToken == "" {
 		return nil, errors.New("Gemini Refresh Token 不能为空")
@@ -438,7 +438,7 @@ func (s *Store) refreshGeminiToken(ctx context.Context, refreshToken string, inp
 		QuotaProjectID: normalizeText(input.QuotaProjectID),
 		BaseURL:        baseURL,
 		Scope:          normalizeText(input.Scope),
-	})
+	}, proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -447,8 +447,10 @@ func (s *Store) refreshGeminiToken(ctx context.Context, refreshToken string, inp
 
 // requestGeminiToken mirrors requestGeminiToken: form POST with client secret,
 // upstream error envelope, 5-minute clock skew safety on expires_at.
-func (s *Store) requestGeminiToken(ctx context.Context, form map[string]string, options geminiRequestOptions) (*geminiTokenInfo, error) {
-	response, err := s.exchange(ctx, formRequest(GeminiOAuthTokenURL, form))
+func (s *Store) requestGeminiToken(ctx context.Context, form map[string]string, options geminiRequestOptions, proxyURL string) (*geminiTokenInfo, error) {
+	request := formRequest(GeminiOAuthTokenURL, form)
+	request.ProxyURL = proxyURL
+	response, err := s.exchange(ctx, request)
 	if err != nil {
 		return nil, err
 	}

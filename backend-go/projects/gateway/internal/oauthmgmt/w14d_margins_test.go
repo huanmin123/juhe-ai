@@ -20,7 +20,7 @@ func TestW14dAnthropicRefreshStoredSuccess(t *testing.T) {
 		return http.StatusOK, `{"access_token":"a2","refresh_token":"r2","expires_in":3600,"token_type":"Bearer"}`
 	}
 	outcome, err := anthropicPlan().refreshStored(context.Background(), env.store,
-		&rotationAccount{Credentials: map[string]any{"refresh_token": "stored", "client_id": "cid"}})
+		&rotationAccount{Credentials: map[string]any{"refresh_token": "stored", "client_id": "cid"}}, "")
 	if err != nil || outcome == nil {
 		t.Fatalf("anthropic refreshStored: %v %+v", err, outcome)
 	}

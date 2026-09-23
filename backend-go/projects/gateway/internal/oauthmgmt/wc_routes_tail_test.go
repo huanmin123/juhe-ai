@@ -125,23 +125,23 @@ func TestWCProviderPlanGuardsDirect(t *testing.T) {
 	for _, plan := range providerPlans() {
 		t.Run(plan.slug, func(t *testing.T) {
 			// exchangeCode：缺 sessionId/callbackUrl。
-			if _, err := plan.exchangeCode(ctx, env.store, map[string]any{}, "owner"); err == nil {
+			if _, err := plan.exchangeCode(ctx, env.store, map[string]any{}, "owner", ""); err == nil {
 				t.Fatalf("exchangeCode 空参必须报错")
 			}
 			// exchangeRefresh：缺 refreshToken。
-			if _, err := plan.exchangeRefresh(ctx, env.store, map[string]any{}); err == nil {
+			if _, err := plan.exchangeRefresh(ctx, env.store, map[string]any{}, ""); err == nil {
 				t.Fatalf("exchangeRefresh 空参必须报错")
 			}
 			// refreshInput：缺 refreshToken。
-			if _, err := plan.refreshInput(ctx, env.store, map[string]any{}, &rotationAccount{Credentials: map[string]any{}}); err == nil {
+			if _, err := plan.refreshInput(ctx, env.store, map[string]any{}, &rotationAccount{Credentials: map[string]any{}}, ""); err == nil {
 				t.Fatalf("refreshInput 空参必须报错")
 			}
 			// refreshStored：缺凭据（grok/openai/anthropic/gemini 各自语义）。
-			if _, err := plan.refreshStored(ctx, env.store, &rotationAccount{Credentials: map[string]any{}}); err == nil {
+			if _, err := plan.refreshStored(ctx, env.store, &rotationAccount{Credentials: map[string]any{}}, ""); err == nil {
 				t.Fatalf("refreshStored 空凭据必须报错")
 			}
 			// safePatch 非法 patch → credentialsPatch 无效。
-			if _, err := plan.exchangeRefresh(ctx, env.store, map[string]any{"refreshToken": "rt", "credentialsPatch": []any{1}}); err == nil {
+			if _, err := plan.exchangeRefresh(ctx, env.store, map[string]any{"refreshToken": "rt", "credentialsPatch": []any{1}}, ""); err == nil {
 				t.Fatalf("非法 patch 必须报错")
 			}
 		})

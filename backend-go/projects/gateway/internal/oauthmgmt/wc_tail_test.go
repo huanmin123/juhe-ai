@@ -38,7 +38,7 @@ func TestWCSessionGuardsMatrix(t *testing.T) {
 	ctx := context.Background()
 
 	// gemini：会话缺失 / state 为空 / 类型不符 / 属主不符。
-	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{SessionID: "none"}); err == nil {
+	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{SessionID: "none"}, ""); err == nil {
 		t.Fatalf("gemini 缺失会话必须报错")
 	}
 	_, authPayload := env.do(t, http.MethodPost, "/__aisys__/api/gemini-oauth/auth-url", `{"oauthType":"ai_studio","clientId":"c","clientSecret":"s"}`)
@@ -47,25 +47,25 @@ func TestWCSessionGuardsMatrix(t *testing.T) {
 	// state 为空：URL 形式缺 state 在解析层即被拒。
 	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: geminiSession, CallbackURL: "https://cb?code=c",
-	}); err == nil || !strings.Contains(err.Error(), "必须包含 code 和 state") {
+	}, ""); err == nil || !strings.Contains(err.Error(), "必须包含 code 和 state") {
 		t.Fatalf("gemini 空 state: %v", err)
 	}
 	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: geminiSession, CallbackURL: "https://cb?code=c&state=" + geminiState,
 		OwnerID: "other",
-	}); err == nil || !strings.Contains(err.Error(), "owner 归属无效") {
+	}, ""); err == nil || !strings.Contains(err.Error(), "owner 归属无效") {
 		t.Fatalf("gemini 属主不符: %v", err)
 	}
 	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: geminiSession, CallbackURL: "https://cb?code=c&state=" + geminiState,
 		OwnerID: adminID, OAuthType: "google_one",
-	}); err == nil || !strings.Contains(err.Error(), "类型与授权会话不一致") {
+	}, ""); err == nil || !strings.Contains(err.Error(), "类型与授权会话不一致") {
 		t.Fatalf("gemini 类型不符: %v", err)
 	}
 	if _, err := env.store.exchangeGeminiAuthorizationCode(ctx, geminiExchangeOptions{
 		SessionID: geminiSession, CallbackURL: "https://cb?code=c&state=" + geminiState,
 		OwnerID: adminID, ClientID: "mismatch",
-	}); err == nil || !strings.Contains(err.Error(), "Client ID 与授权会话不一致") {
+	}, ""); err == nil || !strings.Contains(err.Error(), "Client ID 与授权会话不一致") {
 		t.Fatalf("gemini clientId 不符: %v", err)
 	}
 
@@ -73,18 +73,18 @@ func TestWCSessionGuardsMatrix(t *testing.T) {
 	_, authPayload = env.do(t, http.MethodPost, "/__aisys__/api/anthropic-oauth/auth-url", `{}`)
 	anthropicSession := dataMap(t, authPayload)["sessionId"].(string)
 	anthropicState := authStateFromURL(t, dataMap(t, authPayload)["authUrl"].(string))
-	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, anthropicSession, "https://cb?code=c", adminID); err == nil {
+	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, anthropicSession, "https://cb?code=c", adminID, ""); err == nil {
 		t.Fatalf("anthropic 缺 state 必须报错")
 	}
 	if _, err := env.store.exchangeAnthropicAuthorizationCode(ctx, anthropicSession,
-		"https://cb?code=c&state="+urlQueryEscape(anthropicState), "other"); err == nil {
+		"https://cb?code=c&state="+urlQueryEscape(anthropicState), "other", ""); err == nil {
 		t.Fatalf("anthropic 属主不符必须报错")
 	}
 
 	// grok：URL 形式缺 state。
 	_, authPayload = env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/auth-url", `{}`)
 	grokSession := dataMap(t, authPayload)["sessionId"].(string)
-	if _, err := env.store.exchangeGrokAuthorizationCode(ctx, grokSession, "https://cb?code=c", adminID); err == nil ||
+	if _, err := env.store.exchangeGrokAuthorizationCode(ctx, grokSession, "https://cb?code=c", adminID, ""); err == nil ||
 		!strings.Contains(err.Error(), "缺少 state") {
 		t.Fatalf("grok 缺 state: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestWCSessionGuardsMatrix(t *testing.T) {
 	// openai：state 不符。
 	_, authPayload = env.do(t, http.MethodPost, "/__aisys__/api/openai-oauth/auth-url", `{}`)
 	openaiSession := dataMap(t, authPayload)["sessionId"].(string)
-	if _, err := env.store.exchangeOpenAIAuthorizationCode(ctx, openaiSession, "https://cb?code=c&state=wrong", adminID); err == nil ||
+	if _, err := env.store.exchangeOpenAIAuthorizationCode(ctx, openaiSession, "https://cb?code=c&state=wrong", adminID, ""); err == nil ||
 		!strings.Contains(err.Error(), "state 无效") {
 		t.Fatalf("openai state 不符: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestWCRequestTokenNon2xx(t *testing.T) {
 	env := newTestEnv(t)
 	// 2xx 但缺 access_token → 普通错误（非 UpstreamError）。
 	env.exchanger.respond = staticToken(`{"expires_in":60}`)
-	if _, err := env.store.requestOpenAIToken(context.Background(), map[string]string{"grant_type": "refresh_token"}); err == nil ||
+	if _, err := env.store.requestOpenAIToken(context.Background(), map[string]string{"grant_type": "refresh_token"}, ""); err == nil ||
 		err.Error() != "OpenAI OAuth 令牌响应缺少访问令牌" {
 		t.Fatalf("openai 缺 access_token: %v", err)
 	}
@@ -115,25 +115,25 @@ func TestWCRequestTokenNon2xx(t *testing.T) {
 	env.exchanger.respond = func(_ int, _ exchangeCall) (int, string) {
 		return http.StatusInternalServerError, `{"error":"boom"}`
 	}
-	if _, err := env.store.requestOpenAIToken(context.Background(), map[string]string{}); err == nil ||
+	if _, err := env.store.requestOpenAIToken(context.Background(), map[string]string{}, ""); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("openai 500: %v", err)
 	}
-	if _, err := env.store.requestAnthropicToken(context.Background(), map[string]string{}); err == nil ||
+	if _, err := env.store.requestAnthropicToken(context.Background(), map[string]string{}, ""); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("anthropic 500: %v", err)
 	}
-	if _, err := env.store.requestGrokToken(context.Background(), map[string]string{}, GrokOAuthClientID); err == nil ||
+	if _, err := env.store.requestGrokToken(context.Background(), map[string]string{}, GrokOAuthClientID, ""); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("grok 500: %v", err)
 	}
-	if _, err := env.store.requestGeminiToken(context.Background(), map[string]string{}, geminiRequestOptions{}); err == nil ||
+	if _, err := env.store.requestGeminiToken(context.Background(), map[string]string{}, geminiRequestOptions{}, ""); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("gemini 500: %v", err)
 	}
 	// gemini 缺 access_token（2xx）。
 	env.exchanger.respond = staticToken(`{"expires_in":60}`)
-	if _, err := env.store.requestGeminiToken(context.Background(), map[string]string{}, geminiRequestOptions{Scope: "fb"}); err == nil ||
+	if _, err := env.store.requestGeminiToken(context.Background(), map[string]string{}, geminiRequestOptions{Scope: "fb"}, ""); err == nil ||
 		!strings.Contains(err.Error(), "缺少 access_token") {
 		t.Fatalf("gemini 缺 access_token: %v", err)
 	}

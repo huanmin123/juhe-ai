@@ -498,6 +498,19 @@ type tokenOutcome struct {
 	Name        string
 }
 
+// requestProxyProfileID mirrors resolveRefreshProxyUrlOrThrow 的取值规则：请求
+// body 的 proxyProfileId 优先，空（或该路由不接受该字段的 strict body）时回落
+// 到存量账户绑定的 ProxyProfileID；两者皆无返回 ""（未绑定代理）。
+func requestProxyProfileID(body map[string]any, current *rotationAccount) string {
+	if id := optionalTrimmedText(body, "proxyProfileId"); id != "" {
+		return id
+	}
+	if current != nil {
+		return current.ProxyProfileID
+	}
+	return ""
+}
+
 // --- route handlers ---------------------------------------------------------
 
 func (d *Deps) authURL(plan providerPlan, selfOnly bool) http.HandlerFunc {
@@ -540,24 +553,24 @@ func (d *Deps) capabilities() http.HandlerFunc {
 
 func (d *Deps) createFromCode(plan providerPlan) func(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	return func(w http.ResponseWriter, r *http.Request, access AccessScope) {
-		d.handleCreate(w, r, plan, access, plan.createCodeKeys, "授权码", func(body map[string]any) (*tokenOutcome, error) {
-			return plan.exchangeCode(r.Context(), d.Store, body, access.ViewerID)
+		d.handleCreate(w, r, plan, access, plan.createCodeKeys, "授权码", func(body map[string]any, proxyURL string) (*tokenOutcome, error) {
+			return plan.exchangeCode(r.Context(), d.Store, body, access.ViewerID, proxyURL)
 		})
 	}
 }
 
 func (d *Deps) createFromRefreshToken(plan providerPlan) func(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	return func(w http.ResponseWriter, r *http.Request, access AccessScope) {
-		d.handleCreate(w, r, plan, access, plan.createRefreshKeys, "刷新令牌", func(body map[string]any) (*tokenOutcome, error) {
-			return plan.exchangeRefresh(r.Context(), d.Store, body)
+		d.handleCreate(w, r, plan, access, plan.createRefreshKeys, "刷新令牌", func(body map[string]any, proxyURL string) (*tokenOutcome, error) {
+			return plan.exchangeRefresh(r.Context(), d.Store, body, proxyURL)
 		})
 	}
 }
 
 // handleCreate implements the shared create-from-* flow: strict body,
-// provider/profile resolution, group binding check, token exchange
-// (mock-injected), M08 account creation and the create operation log.
-func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan providerPlan, access AccessScope, allowedKeys []string, kind string, exchange func(map[string]any) (*tokenOutcome, error)) {
+// provider/profile resolution, group binding check, proxy resolution, token
+// exchange (mock-injected), M08 account creation and the create operation log.
+func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan providerPlan, access AccessScope, allowedKeys []string, kind string, exchange func(map[string]any, string) (*tokenOutcome, error)) {
 	var body map[string]any
 	if !kernel.DecodeJSON(w, r, &body) {
 		return
@@ -596,7 +609,14 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 	if kind == "刷新令牌" {
 		fallback = plan.label + " 刷新令牌授权失败"
 	}
-	outcome, err := exchange(body)
+	// 建户 token 请求走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应物）：
+	// 配置不可用直接 400，不做直连回退。
+	proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, nil))
+	if err != nil {
+		d.writeProfileError(w, err)
+		return
+	}
+	outcome, err := exchange(body, proxyURL)
 	if err != nil {
 		d.writeOAuthError(w, err, fallback, "")
 		return
@@ -704,7 +724,14 @@ func (d *Deps) refreshToken(plan providerPlan, selfOnly bool) http.HandlerFunc {
 			kernel.WriteError(w, http.StatusConflict, plan.label+" OAuth 账户已被其他操作更新，请刷新页面后重试")
 			return
 		}
-		tokenCredentials, err := plan.refreshStored(r.Context(), d.Store, current)
+		// 存量刷新走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应物）：
+		// 配置不可用直接 400，不做直连回退。
+		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), current.ProxyProfileID)
+		if err != nil {
+			d.writeProfileError(w, err)
+			return
+		}
+		tokenCredentials, err := plan.refreshStored(r.Context(), d.Store, current, proxyURL)
 		if err != nil {
 			d.writeOAuthError(w, err, plan.label+" 访问令牌刷新失败", plan.revisionConflictMessage)
 			return
@@ -770,7 +797,14 @@ func (d *Deps) reauthorizeFromCode(plan providerPlan, selfOnly bool) http.Handle
 			kernel.WriteError(w, http.StatusConflict, plan.revisionMessage(plan.label+" OAuth 重新授权失败"))
 			return
 		}
-		tokenCredentials, err := plan.exchangeCode(r.Context(), d.Store, body, access.ViewerID)
+		// 重新授权 token 请求走账户绑定代理；该路由 strict body 不收
+		// proxyProfileId，requestProxyProfileID 回落到存量绑定。
+		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, current))
+		if err != nil {
+			d.writeProfileError(w, err)
+			return
+		}
+		tokenCredentials, err := plan.exchangeCode(r.Context(), d.Store, body, access.ViewerID, proxyURL)
 		if err != nil {
 			d.writeOAuthError(w, err, plan.label+" OAuth 重新授权失败", plan.revisionConflictMessage)
 			return
@@ -834,7 +868,15 @@ func (d *Deps) reauthorizeFromRefreshToken(plan providerPlan, selfOnly bool) htt
 			kernel.WriteError(w, http.StatusConflict, plan.revisionMessage(plan.label+" 刷新令牌重新授权失败"))
 			return
 		}
-		tokenCredentials, err := plan.refreshInput(r.Context(), d.Store, body, current)
+		// 刷新令牌重新授权走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应
+		// 物）：请求 proxyProfileId 优先（该路由 strict body 不收该字段，实际
+		// 回落存量绑定），配置不可用直接 400，不做直连回退。
+		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, current))
+		if err != nil {
+			d.writeProfileError(w, err)
+			return
+		}
+		tokenCredentials, err := plan.refreshInput(r.Context(), d.Store, body, current, proxyURL)
 		if err != nil {
 			d.writeOAuthError(w, err, plan.label+" 刷新令牌重新授权失败", plan.revisionConflictMessage)
 			return

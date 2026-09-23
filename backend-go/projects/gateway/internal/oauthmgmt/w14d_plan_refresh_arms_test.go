@@ -23,7 +23,7 @@ func TestW14dPlanRefreshInputUpstreamFailureArms(t *testing.T) {
 			"project_id": "proj", "tier_id": "tier", "quota_project_id": "quota",
 			"base_url": "https://custom", "scope": "s", "oauth_type": "code_assist",
 		}}
-		if _, err := plan.refreshInput(ctx, env.store, map[string]any{"refreshToken": "rt"}, current); err == nil {
+		if _, err := plan.refreshInput(ctx, env.store, map[string]any{"refreshToken": "rt"}, current, ""); err == nil {
 			t.Fatalf("%s refreshInput upstream failure must surface", plan.slug)
 		}
 	}
@@ -31,13 +31,13 @@ func TestW14dPlanRefreshInputUpstreamFailureArms(t *testing.T) {
 	env.exchanger.respond = staticToken(`{"access_token":"a","refresh_token":"r","expires_in":60,"token_type":"Bearer"}`)
 	outcome, err := openAIPlan().refreshInput(ctx, env.store,
 		map[string]any{"refreshToken": "rt", "clientId": "body-cid"},
-		&rotationAccount{Credentials: map[string]any{"client_id": "cred-cid"}})
+		&rotationAccount{Credentials: map[string]any{"client_id": "cred-cid"}}, "")
 	if err != nil || outcome == nil {
 		t.Fatalf("openai refreshInput success: %v %+v", err, outcome)
 	}
 	// The grok refreshStored builds credentials without a refresh token echo.
 	grokOutcome, err := grokPlan().refreshStored(ctx, env.store,
-		&rotationAccount{Credentials: map[string]any{"refresh_token": "stored", "client_id": "cid"}})
+		&rotationAccount{Credentials: map[string]any{"refresh_token": "stored", "client_id": "cid"}}, "")
 	if err != nil || grokOutcome == nil {
 		t.Fatalf("grok refreshStored: %v %+v", err, grokOutcome)
 	}
@@ -50,7 +50,7 @@ func TestW14dGeminiRefreshInputFallbackArms(t *testing.T) {
 	// The gemini exchangeRefresh validates the body fields first.
 	if _, err := geminiPlan().exchangeRefresh(ctx, env.store, map[string]any{
 		"refreshToken": "rt", "oauthType": "bogus",
-	}); err == nil || err.Error() != "oauthType 无效" {
+	}, ""); err == nil || err.Error() != "oauthType 无效" {
 		t.Fatalf("gemini exchangeRefresh validation: %v", err)
 	}
 	// refreshInput falls back to the stored credentials for missing fields
@@ -61,7 +61,7 @@ func TestW14dGeminiRefreshInputFallbackArms(t *testing.T) {
 		"project_id": "proj", "tier_id": "pro", "quota_project_id": "quota",
 		"base_url": "https://g.example", "scope": "s",
 	}}
-	credentials, err := geminiPlan().refreshInput(ctx, env.store, map[string]any{"refreshToken": "rt"}, current)
+	credentials, err := geminiPlan().refreshInput(ctx, env.store, map[string]any{"refreshToken": "rt"}, current, "")
 	if err != nil || credentials == nil {
 		t.Fatalf("gemini refreshInput fallback: %v %v", credentials, err)
 	}

@@ -134,7 +134,7 @@ func TestWCGeminiCreateFromCode(t *testing.T) {
 		SessionID:   sessionID,
 		CallbackURL: "https://cb?code=gem-code&state=" + state,
 		OwnerID:     adminID,
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("store 层交换: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestWCGeminiCreateFromCode(t *testing.T) {
 	_, err = env.store.exchangeGeminiAuthorizationCode(context.Background(), geminiExchangeOptions{
 		SessionID:   sessionID,
 		CallbackURL: "https://cb?code=gem-code&state=" + state,
-	})
+	}, "")
 	if err == nil || !strings.Contains(err.Error(), "会话不存在或已过期") {
 		t.Fatalf("会话单次消费: %v", err)
 	}

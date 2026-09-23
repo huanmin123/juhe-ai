@@ -222,20 +222,20 @@ func TestWCGeminiGrokPatchKeys(t *testing.T) {
 // TestWCRefreshTokenEmptyGuards：四家 refresh 的空令牌前置（直连 store）。
 func TestWCRefreshTokenEmptyGuards(t *testing.T) {
 	env := newTestEnv(t)
-	if _, err := env.store.refreshOpenAIToken(context.Background(), "  ", ""); err == nil {
+	if _, err := env.store.refreshOpenAIToken(context.Background(), "  ", "", ""); err == nil {
 		t.Fatalf("openai 空 refresh 必须报错")
 	}
-	if _, err := env.store.refreshAnthropicToken(context.Background(), "  ", ""); err == nil {
+	if _, err := env.store.refreshAnthropicToken(context.Background(), "  ", "", ""); err == nil {
 		t.Fatalf("anthropic 空 refresh 必须报错")
 	}
-	if _, err := env.store.refreshGeminiToken(context.Background(), "  ", geminiAuthURLOptions{}); err == nil {
+	if _, err := env.store.refreshGeminiToken(context.Background(), "  ", geminiAuthURLOptions{}, ""); err == nil {
 		t.Fatalf("gemini 空 refresh 必须报错")
 	}
-	if _, err := env.store.refreshGrokToken(context.Background(), "  ", ""); err == nil {
+	if _, err := env.store.refreshGrokToken(context.Background(), "  ", "", ""); err == nil {
 		t.Fatalf("grok 空 refresh 必须报错")
 	}
 	// gemini ai_studio 缺 client 凭据。
-	if _, err := env.store.refreshGeminiToken(context.Background(), "rt", geminiAuthURLOptions{OAuthType: "ai_studio"}); err == nil {
+	if _, err := env.store.refreshGeminiToken(context.Background(), "rt", geminiAuthURLOptions{OAuthType: "ai_studio"}, ""); err == nil {
 		t.Fatalf("ai_studio 缺凭据必须报错")
 	}
 }
@@ -247,19 +247,19 @@ func TestWCSessionGuardsViaStore(t *testing.T) {
 	env.exchanger.respond = staticToken(openAITokenPayload("guard"))
 
 	// 未知会话。
-	if _, err := env.store.exchangeOpenAIAuthorizationCode(context.Background(), "no-session", "https://cb?code=c&state=s", adminID); err == nil {
+	if _, err := env.store.exchangeOpenAIAuthorizationCode(context.Background(), "no-session", "https://cb?code=c&state=s", adminID, ""); err == nil {
 		t.Fatalf("未知 openai 会话必须报错")
 	}
-	if _, err := env.store.exchangeAnthropicAuthorizationCode(context.Background(), "no-session", "https://cb?code=c&state=s", adminID); err == nil {
+	if _, err := env.store.exchangeAnthropicAuthorizationCode(context.Background(), "no-session", "https://cb?code=c&state=s", adminID, ""); err == nil {
 		t.Fatalf("未知 anthropic 会话必须报错")
 	}
-	if _, err := env.store.exchangeGrokAuthorizationCode(context.Background(), "no-session", "https://cb?code=c&state=s", adminID); err == nil {
+	if _, err := env.store.exchangeGrokAuthorizationCode(context.Background(), "no-session", "https://cb?code=c&state=s", adminID, ""); err == nil {
 		t.Fatalf("未知 grok 会话必须报错")
 	}
 	// grok 属主不符。
 	_, authPayload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/auth-url", `{}`)
 	sessionID := dataMap(t, authPayload)["sessionId"].(string)
-	if _, err := env.store.exchangeGrokAuthorizationCode(context.Background(), sessionID, "bare-code", "other-owner"); err == nil {
+	if _, err := env.store.exchangeGrokAuthorizationCode(context.Background(), sessionID, "bare-code", "other-owner", ""); err == nil {
 		t.Fatalf("grok 属主不符必须报错")
 	}
 	// openai 属主不符。
@@ -267,11 +267,11 @@ func TestWCSessionGuardsViaStore(t *testing.T) {
 	openaiSession := dataMap(t, authPayload)["sessionId"].(string)
 	openaiState := authStateFromURL(t, dataMap(t, authPayload)["authUrl"].(string))
 	if _, err := env.store.exchangeOpenAIAuthorizationCode(context.Background(), openaiSession,
-		"https://cb?code=c&state="+url.QueryEscape(openaiState), "other-owner"); err == nil {
+		"https://cb?code=c&state="+url.QueryEscape(openaiState), "other-owner", ""); err == nil {
 		t.Fatalf("openai 属主不符必须报错")
 	}
 	// openai 空回调。
-	if _, err := env.store.exchangeOpenAIAuthorizationCode(context.Background(), openaiSession, "", adminID); err == nil {
+	if _, err := env.store.exchangeOpenAIAuthorizationCode(context.Background(), openaiSession, "", adminID, ""); err == nil {
 		t.Fatalf("空回调必须报错")
 	}
 }
