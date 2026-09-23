@@ -223,9 +223,14 @@ var usageCatalogCustomPricingColumns = strings.Join([]string{
 func (c *usagePricingCatalog) loadBuiltin(ctx context.Context, providerCode string, today string) ([]usageCatalogPricingRow, error) {
 	// 镜像 chain_catalog.go builtinCatalogQuery / Node listBuiltInProviderModels：
 	// active + 目录可见 + 未下线；顺序 catalog_order, model, id。
+	// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，谓词按方言生成。
+	visible := "CAST(catalog_visible AS integer) = 1"
+	if c.postgres {
+		visible = "catalog_visible = TRUE"
+	}
 	query := c.bind(`SELECT ` + usageCatalogPricingColumns + `, '' AS scope FROM ` + c.table("provider_model_catalog") + `
 		WHERE provider_code = ? AND status = 'active'
-		  AND CAST(catalog_visible AS integer) = 1
+		  AND ` + visible + `
 		  AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?)
 		ORDER BY catalog_order, model, id`)
 	return c.scanRows(ctx, query, true, providerCode, today)

@@ -724,8 +724,13 @@ func (s *Service) ProtocolProviderCodes(ctx context.Context, protocolCode, proto
 // testCatalogAvailability mirrors the availability filter shared by the
 // test-catalog reads (active + visible + not shutdown).
 func (s *Service) testCatalogAvailability() string {
+	// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，谓词按方言生成。
+	visible := "CAST(catalog_visible AS integer) = 1"
+	if s.store.PG() {
+		visible = "catalog_visible = TRUE"
+	}
 	return ` AND status = 'active'
-		AND CAST(catalog_visible AS integer) = 1
+		AND ` + visible + `
 		AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ` + s.TestTodayText() + `)`
 }
 

@@ -66,8 +66,13 @@ func finiteNumber(text string) (float64, bool) {
 	return parsed, true
 }
 
-// booleanValue 对齐 Node booleanValue（numberValue(v) === 1）。
+// booleanValue 对齐 Node booleanValue：原生 bool（PostgreSQL boolean 列经
+// driver 返回，如 proxy_profiles.enabled）直接取值；其余走 numberValue 数值化
+// 后判 ==1（SQLite INTEGER 0/1 与字符串形态）。
 func booleanValue(value any) bool {
+	if typed, ok := value.(bool); ok {
+		return typed
+	}
 	return numberValue(value) == 1
 }
 

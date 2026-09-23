@@ -281,10 +281,12 @@ type listRow struct {
 	proxyProfileID            sql.NullString
 	proxyProfileName          sql.NullString
 	proxyProfileType          sql.NullString
-	proxyProfileEnabled       sql.NullInt64
-	bindingSystemAccountID    sql.NullString
-	boundGroupID              sql.NullString
-	boundGroupName            sql.NullString
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
+	// 扫描目标必须用 NullBool 才能同时兼容两种驱动。
+	proxyProfileEnabled    sql.NullBool
+	bindingSystemAccountID sql.NullString
+	boundGroupID           sql.NullString
+	boundGroupName         sql.NullString
 	// M10 authorized-instance projection columns: the runtime authorization
 	// stamp plus the source account's live values and the bound group's local
 	// scheduling overrides (Node account-management-list.repository.ts:290-322,
@@ -304,7 +306,7 @@ type listRow struct {
 	resolvedSourceProxyProfileID        sql.NullString
 	sourceProxyProfileName              sql.NullString
 	sourceProxyProfileType              sql.NullString
-	sourceProxyProfileEnabled           sql.NullInt64
+	sourceProxyProfileEnabled           sql.NullBool
 	boundGroupLocalPriority             sql.NullInt64
 	boundGroupLocalSuperPriorityEnabled sql.NullInt64
 	boundGroupLocalFallbackEnabled      sql.NullInt64
@@ -822,11 +824,11 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 					item.ProxyProfileType = proxyType
 				}
 				if row.sourceProxyProfileEnabled.Valid {
-					enabled := row.sourceProxyProfileEnabled.Int64 == 1
+					enabled := row.sourceProxyProfileEnabled.Bool
 					item.ProxyProfileEnabled = &enabled
 				}
 			}
-			unavailable := !resolved || !row.sourceProxyProfileEnabled.Valid || row.sourceProxyProfileEnabled.Int64 != 1
+			unavailable := !resolved || !row.sourceProxyProfileEnabled.Valid || !row.sourceProxyProfileEnabled.Bool
 			if unavailable {
 				item.ProxyProfileUnavailable = &unavailable
 				if access.CanAccessAll() {
@@ -840,7 +842,7 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 				item.ProxyProfileType = proxyType
 			}
 			if row.proxyProfileEnabled.Valid {
-				enabled := row.proxyProfileEnabled.Int64 == 1
+				enabled := row.proxyProfileEnabled.Bool
 				item.ProxyProfileEnabled = &enabled
 			}
 		}
@@ -850,9 +852,9 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 		if proxyType := normalizedProxyType(row.proxyProfileType); proxyType != nil {
 			item.ProxyProfileType = proxyType
 		}
-		enabled := row.proxyProfileEnabled.Int64 == 1 && row.proxyProfileEnabled.Valid
+		enabled := row.proxyProfileEnabled.Bool && row.proxyProfileEnabled.Valid
 		item.ProxyProfileEnabled = &enabled
-		unavailable := !row.proxyProfileEnabled.Valid || row.proxyProfileEnabled.Int64 != 1
+		unavailable := !row.proxyProfileEnabled.Valid || !row.proxyProfileEnabled.Bool
 		if unavailable {
 			item.ProxyProfileUnavailable = &unavailable
 			if access.CanAccessAll() {

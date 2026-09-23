@@ -321,25 +321,28 @@ func (s *Store) listBuiltInCatalogModels(ctx context.Context, providerCodes []st
 
 func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	var (
-		item                             ModelCatalogItem
-		mode, releaseDate, shutdownDate  sql.NullString
-		catalogOrder                     sql.NullInt64
-		protocols, tiers, efforts        sql.NullString
-		codexLevels                      sql.NullString
-		codexDefaultLevel                sql.NullString
-		codexMultiAgent                  sql.NullString
-		contextWindow, maxInput, maxOut  sql.NullInt64
-		maxTokens                        sql.NullInt64
-		inputUsd, outputUsd              sql.NullFloat64
-		cachedInput, cacheWrite          sql.NullFloat64
-		cacheWrite1h, cacheStorage       sql.NullFloat64
-		tierPrices                       sql.NullString
-		longThreshold                    sql.NullInt64
-		longInclusive                    sql.NullInt64
+		item                            ModelCatalogItem
+		mode, releaseDate, shutdownDate sql.NullString
+		catalogOrder                    sql.NullInt64
+		protocols, tiers, efforts       sql.NullString
+		codexLevels                     sql.NullString
+		codexDefaultLevel               sql.NullString
+		codexMultiAgent                 sql.NullString
+		contextWindow, maxInput, maxOut sql.NullInt64
+		maxTokens                       sql.NullInt64
+		inputUsd, outputUsd             sql.NullFloat64
+		cachedInput, cacheWrite         sql.NullFloat64
+		cacheWrite1h, cacheStorage      sql.NullFloat64
+		tierPrices                      sql.NullString
+		longThreshold                   sql.NullInt64
+		// PG booleans scan only into NullBool (NullInt64 fails with
+		// "converting driver.Value type bool"); SQLite INTEGER 0/1 still
+		// converts through driver.Bool.
+		longInclusive                    sql.NullBool
 		longInputMultiplier, longOutMult sql.NullFloat64
 		imageIn, imageOut, audioIn       sql.NullFloat64
 		audioOut, outputPerImage         sql.NullFloat64
-		promptCaching, catalogVisible    sql.NullInt64
+		promptCaching, catalogVisible    sql.NullBool
 	)
 	var defaultEffort sql.NullString
 	if err := scan(&item.ID, &item.ProviderCode, &item.Model, &item.Status, &mode, &catalogOrder,
@@ -377,7 +380,7 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.ServiceTierPrices = normalizeServiceTierPrices(tierPrices)
 	item.LongContextInputTokenThreshold = nullInt64Ptr(longThreshold)
 	if longInclusive.Valid {
-		inclusive := longInclusive.Int64 == 1
+		inclusive := longInclusive.Bool
 		item.LongContextInputTokenThresholdInclusive = &inclusive
 	}
 	item.LongContextInputCostMultiplier = nullFloat64Ptr(longInputMultiplier)
@@ -387,8 +390,8 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.AudioInputUsdPer1M = nullFloat64Ptr(audioIn)
 	item.AudioOutputUsdPer1M = nullFloat64Ptr(audioOut)
 	item.OutputUsdPerImage = nullFloat64Ptr(outputPerImage)
-	item.SupportsPromptCaching = promptCaching.Int64 == 1 && promptCaching.Valid
-	visible := catalogVisible.Int64 == 1 && catalogVisible.Valid
+	item.SupportsPromptCaching = promptCaching.Bool && promptCaching.Valid
+	visible := catalogVisible.Bool && catalogVisible.Valid
 	item.CatalogVisible = &visible
 	applyBuiltInStaticDerivedFields(&item)
 	item.SupportsServiceTier = len(item.SupportedServiceTiers) > 0

@@ -187,9 +187,11 @@ func (s *Store) findCustomProviderModelByScope(ctx context.Context, providerCode
 
 func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderModelRecord, error) {
 	var (
-		record                          customProviderModelRecord
-		systemAccountID                 sql.NullString
-		catalogVisible                  sql.NullInt64
+		record          customProviderModelRecord
+		systemAccountID sql.NullString
+		// custom_provider_models.catalog_visible 在 PostgreSQL 为 boolean、
+		// SQLite 为 integer，扫描目标用 NullBool 同时兼容两种驱动。
+		catalogVisible                  sql.NullBool
 		mode, releaseDate, shutdownDate sql.NullString
 		protocols, tiers, efforts       sql.NullString
 		defaultEffort                   sql.NullString
@@ -216,7 +218,7 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 		return nil, err
 	}
 	record.SystemAccountID = nullPtrString(systemAccountID)
-	record.CatalogVisible = catalogVisible.Int64 == 1 && catalogVisible.Valid
+	record.CatalogVisible = catalogVisible.Bool && catalogVisible.Valid
 	record.Mode = textPtr(mode)
 	record.SupportedAPIProtocols = parseCustomModelProtocols(protocols)
 	record.SupportedServiceTiers = parseCapabilityTokenArray(tiers)

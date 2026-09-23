@@ -310,7 +310,12 @@ func chainCatalogBuiltInSourceProviderCodes(providerCode string, sourceProviderC
 func (s *chainCatalogSource) builtinCatalogQuery(input gatewayruntimecache.ModelCatalogListOptions, now string, codes []string) (string, []any) {
 	availability := ""
 	if !input.IncludeInactive {
-		availability = " AND status = 'active' AND CAST(catalog_visible AS integer) = 1 AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?) "
+		// catalog_visible 在 PostgreSQL 为 boolean、SQLite 为 integer，谓词按方言生成。
+		visible := "CAST(catalog_visible AS integer) = 1"
+		if s.postgres {
+			visible = "catalog_visible = TRUE"
+		}
+		availability = " AND status = 'active' AND " + visible + " AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > ?) "
 	}
 	base := fmt.Sprintf(`SELECT %s FROM %s`, catalogColumnList(chainBuiltinCatalogColumns), s.table("provider_model_catalog"))
 	query := base + " WHERE provider_code IN (" + chainCatalogPlaceholders(len(codes)) + ") " + availability + " ORDER BY provider_code, catalog_order, model, id"
