@@ -41,6 +41,11 @@
 
 - `go test ./projects/jobs/cmd/juhe-ai-jobs/ -run '…Outbox…'`（7 个靶向测试）全部 PASS；`go test ./projects/maintenance/internal/mockdata/` 全量 PASS（171s）；jobs / maintenance 两模块 `go build ./...` 通过；改动文件 gofmt / go vet 干净（`w14j_cmd_pgseed_test.go` 为既有未格式化文件，不属本次改动）。
 - 运行实例恢复证据（毒丸行消失后，旧二进制即可恢复正常）：`account-health.sqlite3` 的 `account_health_owner_leases` 显示租约被同一 owner 持续持有并续约（`updated_at` 15:45:01 → 15:46:01，`fence_token` 恒 1，无释放/重建），15:30 以来写入 5 条 `account_health_outcomes`——WARN 死循环消失。
+- **真实执行验证（2026-09-23 19:29~19:36，新代码）**：
+  - `node scripts/mockdata.mjs` 全编排（ensure-schema/--seed → --mockdata days=31 dailyRequests=120 → jobs -run-jobs-once 排空 → verify-mockdata-coverage）四步退出码全 0；生成后 `account_health_probe_request_outbox` 保持 0 行——autofill 跳过修复在真实链路生效，全程无 outbox 相关异常（仅 SQLite 零配置下 fence settler 降级等既有已知 WARN）。
+  - dev 重启（新二进制）后网关 health HTTP 200，J1 租约正常获取并续约（19:33~19:35 两次采样 `updated_at` 持续推进、token 恒 1）。
+  - **毒丸演练**：向运行中的库插入一行复刻旧 autofill 形态的损坏行（`source_fence` 非 JSON），3 秒内被新 claim 代码隔离出队（一条 `account_health_probe_outbox_row_corrupt` 结构化 warn，带 requestId/column/error），行删除，`owner lease released` 全程 0 次——J1 不再被单行毒丸拖垮，加固在真实运行链路生效。
+- 补充澄清：cleanup 侧无需显式登记——`cleanup.go` 的通用标识扫描 `sweepCleanupMarkers` 枚举全部库表的 `*_id/_key/_name` TEXT 列，outbox 的 `request_id` 命中 `mockdata_%` 前缀即被清理（本次排查中 15:20~15:41 之间毒丸行的消失即该机制所致：期间的一次 mockdata 清理/重生成把行扫掉了）。
 
 ## 遗留与注意
 
@@ -51,5 +56,5 @@
 ## 完成总结
 
 - 完成时间：2026-09-23
-- 结论：autofill 漏登记 + claim 无逐行隔离两层缺陷均已修复并有测试锁定；本地 dev 数据已恢复，J1 调度已验证恢复续约与探针写入。
-- 后续建议：重启本地 dev 使新代码生效后，可再跑一次 mockdata 做真实验证（新代码应只输出一条 `account_health_probe_outbox_row_corrupt` warn 且 J1 不再中断，autofill 修复生效后则根本不会插入该表）。
+- 结论：autofill 漏登记 + claim 无逐行隔离两层缺陷均已修复并有测试锁定；真实执行 mockdata 全编排与毒丸注入演练均通过（见验证记录），J1 对单行脏数据已免疫。
+- 后续建议：无阻塞遗留。cleanup 通用扫描已覆盖该表（见验证记录补充澄清），无需显式规则。
