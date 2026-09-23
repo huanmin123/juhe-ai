@@ -599,7 +599,15 @@ func (j *RefreshJob) refreshWithRaceRetry(ctx context.Context, account *Rotation
 		// Once a refresh starts, the provider may rotate the refresh token
 		// before persistence completes; every downstream error goes through
 		// the race recovery check exactly like the Node catch block.
-		tokenInfo, refreshErr := RefreshOpenAIToken(ctx, j.exchanger, refreshToken, stringCredential(credentials, "client_id"), j.now())
+		// Resolve the account-bound proxy per attempt from the latest row so a
+		// race-retry uses the rebinding too; a resolution failure surfaces as
+		// this account's local-configuration refresh failure and never falls
+		// back to a direct dial.
+		proxyURL, proxyErr := j.store.proxyProfileRequestURL(ctx, current.ProxyProfileID)
+		if proxyErr != nil {
+			return nil, proxyErr
+		}
+		tokenInfo, refreshErr := RefreshOpenAIToken(ctx, j.exchanger, refreshToken, stringCredential(credentials, "client_id"), j.now(), proxyURL)
 		cause := refreshErr
 		if cause == nil {
 			nextCredentials := mergeCredentials(credentials, BuildOpenAIOAuthCredentials(tokenInfo, refreshToken))

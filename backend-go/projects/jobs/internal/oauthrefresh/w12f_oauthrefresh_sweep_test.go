@@ -41,14 +41,14 @@ func TestW12fSweepPGDialectAndClosedArms(t *testing.T) {
 func TestW12fProviderRefreshTransportErrors(t *testing.T) {
 	ex := &w12fErrExchanger{message: "w12f-transport-down"}
 	ctx := context.Background()
-	if _, err := RefreshAnthropicToken(ctx, ex, "w12f-rt", "", time.Now()); err == nil {
+	if _, err := RefreshAnthropicToken(ctx, ex, "w12f-rt", "", time.Now(), ""); err == nil {
 		t.Fatal("anthropic 传输错误必须传播")
 	}
 	fallback := GeminiCredentialFallback{OAuthType: "ai_studio", ClientID: "w12f-cid", ClientSecret: "w12f-secret"}
 	if _, err := RefreshGeminiToken(ctx, ex, "w12f-rt", fallback, time.Now()); err == nil {
 		t.Fatal("gemini 传输错误必须传播")
 	}
-	if _, err := RefreshGrokToken(ctx, ex, "w12f-rt", "", time.Now()); err == nil {
+	if _, err := RefreshGrokToken(ctx, ex, "w12f-rt", "", time.Now(), ""); err == nil {
 		t.Fatal("grok 传输错误必须传播")
 	}
 }

@@ -320,7 +320,7 @@ func TestW9HRefreshGeminiTokenClientValidation(t *testing.T) {
 func TestW9HRequestAnthropicTokenArms(t *testing.T) {
 	refresh := func(body string, status int) (*AnthropicTokenInfo, error) {
 		ex := &w9hFakeExchanger{response: TokenHTTPResponse{StatusCode: status, Body: body}}
-		return requestAnthropicToken(context.Background(), ex, map[string]string{}, defaultNow())
+		return requestAnthropicToken(context.Background(), ex, map[string]string{}, defaultNow(), "")
 	}
 	if _, err := refresh(`{"error_description":"expired"}`, 400); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("description detail err=%v", err)
@@ -356,7 +356,7 @@ func TestW9HRequestAnthropicTokenArms(t *testing.T) {
 	}
 	// JSON body + axios user-agent on the wire.
 	ex := &w9hFakeExchanger{response: TokenHTTPResponse{StatusCode: 200, Body: `{"access_token":"at"}`}}
-	if _, err := RefreshAnthropicToken(context.Background(), ex, "rt", "", defaultNow()); err != nil {
+	if _, err := RefreshAnthropicToken(context.Background(), ex, "rt", "", defaultNow(), ""); err != nil {
 		t.Fatalf("refresh err=%v", err)
 	}
 	if got := ex.request.Headers["user-agent"]; got != "axios/1.13.6" {
@@ -366,7 +366,7 @@ func TestW9HRequestAnthropicTokenArms(t *testing.T) {
 		t.Fatalf("json body=%q", ex.request.Body)
 	}
 	if err := func() error {
-		_, err := RefreshAnthropicToken(context.Background(), &w9hFakeExchanger{}, "", "", defaultNow())
+		_, err := RefreshAnthropicToken(context.Background(), &w9hFakeExchanger{}, "", "", defaultNow(), "")
 		return err
 	}(); err == nil || !strings.Contains(err.Error(), "Anthropic Refresh Token 不能为空") {
 		t.Fatalf("empty refresh err=%v", err)
@@ -408,7 +408,7 @@ func TestW9HBuildAnthropicOAuthCredentialsVariants(t *testing.T) {
 func TestW9HRequestGrokTokenEntitlementAndDefaults(t *testing.T) {
 	refresh := func(body string, status int) (*GrokTokenInfo, error) {
 		ex := &w9hFakeExchanger{response: TokenHTTPResponse{StatusCode: status, Body: body}}
-		return requestGrokToken(context.Background(), ex, map[string]string{}, "cid", defaultNow())
+		return requestGrokToken(context.Background(), ex, map[string]string{}, "cid", defaultNow(), "")
 	}
 	// 403 with explicit denial keeps 403.
 	_, err := refresh(`{"error":"access_denied"}`, 403)
@@ -467,13 +467,13 @@ func TestW9HToGrokTokenInfoDefaults(t *testing.T) {
 }
 
 func TestW9HRefreshGrokTokenArms(t *testing.T) {
-	if _, err := RefreshGrokToken(context.Background(), &w9hFakeExchanger{}, "", "", defaultNow()); err == nil || !strings.Contains(err.Error(), "Grok Refresh Token 不能为空") {
+	if _, err := RefreshGrokToken(context.Background(), &w9hFakeExchanger{}, "", "", defaultNow(), ""); err == nil || !strings.Contains(err.Error(), "Grok Refresh Token 不能为空") {
 		t.Fatalf("empty refresh err=%v", err)
 	}
 	// Missing rotated refresh token keeps the input one; empty client id falls
 	// back to the builtin.
 	ex := &w9hFakeExchanger{response: TokenHTTPResponse{StatusCode: 200, Body: `{"access_token":"at"}`}}
-	info, err := RefreshGrokToken(context.Background(), ex, "rt-in", "", defaultNow())
+	info, err := RefreshGrokToken(context.Background(), ex, "rt-in", "", defaultNow(), "")
 	if err != nil {
 		t.Fatalf("refresh err=%v", err)
 	}
@@ -516,7 +516,7 @@ func TestW9HBuildGrokOAuthCredentialsVariants(t *testing.T) {
 func TestW9HRequestOpenAITokenDetailFallbacks(t *testing.T) {
 	request := func(body string, status int) (*OpenAITokenInfo, error) {
 		ex := &w9hFakeExchanger{response: TokenHTTPResponse{StatusCode: status, Body: body}}
-		return requestOpenAIToken(context.Background(), ex, map[string]string{"client_id": "cid"}, defaultNow())
+		return requestOpenAIToken(context.Background(), ex, map[string]string{"client_id": "cid"}, defaultNow(), "")
 	}
 	if _, err := request("raw down", 503); err == nil || !strings.Contains(err.Error(), "raw down") {
 		t.Fatalf("raw body detail err=%v", err)
@@ -554,17 +554,17 @@ func TestW9HRequestOpenAITokenDetailFallbacks(t *testing.T) {
 	// Transport error propagates unwrapped.
 	boom := errors.New("socket closed")
 	ex := &w9hFakeExchanger{err: boom}
-	if _, err := requestOpenAIToken(context.Background(), ex, nil, defaultNow()); !errors.Is(err, boom) {
+	if _, err := requestOpenAIToken(context.Background(), ex, nil, defaultNow(), ""); !errors.Is(err, boom) {
 		t.Fatalf("transport err=%v", err)
 	}
 }
 
 func TestW9HRefreshOpenAITokenValidation(t *testing.T) {
-	if _, err := RefreshOpenAIToken(context.Background(), &w9hFakeExchanger{}, " ", "", defaultNow()); err == nil || !strings.Contains(err.Error(), "刷新令牌不能为空") {
+	if _, err := RefreshOpenAIToken(context.Background(), &w9hFakeExchanger{}, " ", "", defaultNow(), ""); err == nil || !strings.Contains(err.Error(), "刷新令牌不能为空") {
 		t.Fatalf("empty refresh err=%v", err)
 	}
 	ex := &w9hFakeExchanger{response: TokenHTTPResponse{StatusCode: 200, Body: `{"access_token":"at","expires_in":60}`}}
-	info, err := RefreshOpenAIToken(context.Background(), ex, "rt", "", defaultNow())
+	info, err := RefreshOpenAIToken(context.Background(), ex, "rt", "", defaultNow(), "")
 	if err != nil {
 		t.Fatalf("refresh err=%v", err)
 	}

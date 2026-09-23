@@ -17,7 +17,7 @@ import (
 func TestOpenAIRefreshRequestGolden(t *testing.T) {
 	exchanger := &recordingExchanger{}
 	now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
-	info, err := RefreshOpenAIToken(context.Background(), exchanger, "rt-old", "client-custom", now)
+	info, err := RefreshOpenAIToken(context.Background(), exchanger, "rt-old", "client-custom", now, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestOpenAIRefreshRequestGolden(t *testing.T) {
 		t.Fatalf("form=%v", values)
 	}
 	// Missing client id falls back to the Codex CLI constant.
-	_, err = RefreshOpenAIToken(context.Background(), exchanger, "rt-old", "", now)
+	_, err = RefreshOpenAIToken(context.Background(), exchanger, "rt-old", "", now, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestOpenAIRefreshRequestGolden(t *testing.T) {
 		t.Fatalf("fallback client_id=%q", values.Get("client_id"))
 	}
 	// Empty refresh token errors before the call.
-	if _, err := RefreshOpenAIToken(context.Background(), exchanger, "  ", "", now); err == nil || err.Error() != "刷新令牌不能为空" {
+	if _, err := RefreshOpenAIToken(context.Background(), exchanger, "  ", "", now, ""); err == nil || err.Error() != "刷新令牌不能为空" {
 		t.Fatalf("empty refresh token err=%v", err)
 	}
 	if info.ClientID != "client-custom" {
@@ -68,7 +68,7 @@ func TestOpenAIRefreshResponseGolden(t *testing.T) {
 		return TokenHTTPResponse{StatusCode: 200, Body: body}, nil
 	}}
 	now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
-	info, err := RefreshOpenAIToken(context.Background(), exchanger, "rt-old", "", now)
+	info, err := RefreshOpenAIToken(context.Background(), exchanger, "rt-old", "", now, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestOpenAIRefreshUpstreamErrorGolden(t *testing.T) {
 	exchanger := &recordingExchanger{respond: func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{StatusCode: 401, Body: `{"error":"invalid_grant","error_description":"token expired"}`}, nil
 	}}
-	_, err := RefreshOpenAIToken(context.Background(), exchanger, "rt-old", "", time.Now())
+	_, err := RefreshOpenAIToken(context.Background(), exchanger, "rt-old", "", time.Now(), "")
 	upstream, ok := AsUpstreamError(err)
 	if !ok {
 		t.Fatalf("err=%v want UpstreamError", err)
@@ -120,7 +120,7 @@ func TestOpenAIRefreshUpstreamErrorGolden(t *testing.T) {
 func TestAnthropicRefreshGolden(t *testing.T) {
 	exchanger := &recordingExchanger{}
 	now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
-	if _, err := RefreshAnthropicToken(context.Background(), exchanger, "rt-a", "client-a", now); err != nil {
+	if _, err := RefreshAnthropicToken(context.Background(), exchanger, "rt-a", "client-a", now, ""); err != nil {
 		t.Fatal(err)
 	}
 	request := exchanger.lastRequest()
@@ -146,7 +146,7 @@ func TestAnthropicRefreshGolden(t *testing.T) {
 			"account":{"email_address":"a@b.c","uuid":"acc-uuid"},
 			"organization":{"uuid":"org-uuid"}}`}, nil
 	}}
-	info, err := RefreshAnthropicToken(context.Background(), exchanger, "rt-a", "", now)
+	info, err := RefreshAnthropicToken(context.Background(), exchanger, "rt-a", "", now, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestAnthropicRefreshGolden(t *testing.T) {
 	}
 	assertCredentialsEqual(t, credentials, expect)
 
-	if _, err := RefreshAnthropicToken(context.Background(), exchanger, "", "", now); err == nil || err.Error() != "Anthropic Refresh Token 不能为空" {
+	if _, err := RefreshAnthropicToken(context.Background(), exchanger, "", "", now, ""); err == nil || err.Error() != "Anthropic Refresh Token 不能为空" {
 		t.Fatalf("empty err=%v", err)
 	}
 }
@@ -236,7 +236,7 @@ func TestGeminiRefreshGolden(t *testing.T) {
 func TestGrokRefreshGolden(t *testing.T) {
 	exchanger := &recordingExchanger{}
 	now := time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)
-	if _, err := RefreshGrokToken(context.Background(), exchanger, "rt-x", "client-x", now); err != nil {
+	if _, err := RefreshGrokToken(context.Background(), exchanger, "rt-x", "client-x", now, ""); err != nil {
 		t.Fatal(err)
 	}
 	request := exchanger.lastRequest()
@@ -259,7 +259,7 @@ func TestGrokRefreshGolden(t *testing.T) {
 	exchanger = &recordingExchanger{respond: func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{StatusCode: 200, Body: `{"access_token":"at-x","token_type":"Bearer","scope":"openid"}`}, nil
 	}}
-	info, err := RefreshGrokToken(context.Background(), exchanger, "rt-x", "", now)
+	info, err := RefreshGrokToken(context.Background(), exchanger, "rt-x", "", now, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestGrokRefreshGolden(t *testing.T) {
 	exchanger = &recordingExchanger{respond: func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{StatusCode: 403, Body: `{"error":"entitlement_denied"}`}, nil
 	}}
-	_, err = RefreshGrokToken(context.Background(), exchanger, "rt-x", "", now)
+	_, err = RefreshGrokToken(context.Background(), exchanger, "rt-x", "", now, "")
 	upstream, ok := AsUpstreamError(err)
 	if !ok || upstream.StatusCode != 403 {
 		t.Fatalf("entitlement err=%v", err)
@@ -287,7 +287,7 @@ func TestGrokRefreshGolden(t *testing.T) {
 	exchanger = &recordingExchanger{respond: func(int, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{StatusCode: 403, Body: `{"error":"other"}`}, nil
 	}}
-	_, err = RefreshGrokToken(context.Background(), exchanger, "rt-x", "", now)
+	_, err = RefreshGrokToken(context.Background(), exchanger, "rt-x", "", now, "")
 	upstream, ok = AsUpstreamError(err)
 	if !ok || upstream.StatusCode != 502 {
 		t.Fatalf("non-entitlement err=%v", err)
@@ -301,7 +301,7 @@ func TestNetworkFailureSurfacesTransportError(t *testing.T) {
 	exchanger := ExchangerFunc(func(context.Context, TokenHTTPRequest) (TokenHTTPResponse, error) {
 		return TokenHTTPResponse{}, errors.New("dial tcp: connection refused")
 	})
-	_, err := RefreshOpenAIToken(context.Background(), exchanger, "rt", "", time.Now())
+	_, err := RefreshOpenAIToken(context.Background(), exchanger, "rt", "", time.Now(), "")
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("transport err=%v", err)
 	}

@@ -68,8 +68,9 @@ type OpenAITokenInfo struct {
 }
 
 // RefreshOpenAIToken mirrors refreshOpenAIOAuthToken: refresh grant with the
-// narrowed scope and the default client id fallback.
-func RefreshOpenAIToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time) (*OpenAITokenInfo, error) {
+// narrowed scope and the default client id fallback. proxyURL ('' = direct)
+// rides the request the way the Node TokenExchangeTransport proxyUrl did.
+func RefreshOpenAIToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time, proxyURL string) (*OpenAITokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
 	if refreshToken == "" {
 		return nil, errors.New("刷新令牌不能为空")
@@ -82,13 +83,15 @@ func RefreshOpenAIToken(ctx context.Context, ex TokenExchanger, refreshToken, cl
 		"refresh_token": refreshToken,
 		"client_id":     clientID,
 		"scope":         OpenAIOAuthRefreshScopes,
-	}, now)
+	}, now, proxyURL)
 }
 
 // requestOpenAIToken mirrors requestOpenAIToken: form POST, upstream error
 // envelope, required access_token/expires_in, JWT claim enrichment.
-func requestOpenAIToken(ctx context.Context, ex TokenExchanger, form map[string]string, now time.Time) (*OpenAITokenInfo, error) {
-	response, err := exchange(ctx, ex, formRequest(OpenAIOAuthTokenURL, form))
+func requestOpenAIToken(ctx context.Context, ex TokenExchanger, form map[string]string, now time.Time, proxyURL string) (*OpenAITokenInfo, error) {
+	request := formRequest(OpenAIOAuthTokenURL, form)
+	request.ProxyURL = normalizeText(proxyURL)
+	response, err := exchange(ctx, ex, request)
 	if err != nil {
 		return nil, err
 	}
@@ -194,8 +197,10 @@ type AnthropicTokenInfo struct {
 	ClientID       string
 }
 
-// RefreshAnthropicToken mirrors refreshAnthropicAuthToken.
-func RefreshAnthropicToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time) (*AnthropicTokenInfo, error) {
+// RefreshAnthropicToken mirrors refreshAnthropicAuthToken. proxyURL
+// ('' = direct) rides the request the way the Node TokenExchangeTransport
+// proxyUrl did.
+func RefreshAnthropicToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time, proxyURL string) (*AnthropicTokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
 	if refreshToken == "" {
 		return nil, errors.New("Anthropic Refresh Token 不能为空")
@@ -207,14 +212,16 @@ func RefreshAnthropicToken(ctx context.Context, ex TokenExchanger, refreshToken,
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 		"client_id":     clientID,
-	}, now)
+	}, now, proxyURL)
 }
 
 // requestAnthropicToken mirrors requestAnthropicToken: JSON body POST with the
 // axios user-agent, upstream error envelope, account/organization claim
 // extraction.
-func requestAnthropicToken(ctx context.Context, ex TokenExchanger, form map[string]string, now time.Time) (*AnthropicTokenInfo, error) {
-	response, err := exchange(ctx, ex, jsonRequest(AnthropicOAuthTokenURL, form))
+func requestAnthropicToken(ctx context.Context, ex TokenExchanger, form map[string]string, now time.Time, proxyURL string) (*AnthropicTokenInfo, error) {
+	request := jsonRequest(AnthropicOAuthTokenURL, form)
+	request.ProxyURL = normalizeText(proxyURL)
+	response, err := exchange(ctx, ex, request)
 	if err != nil {
 		return nil, err
 	}
@@ -877,8 +884,9 @@ type GrokTokenInfo struct {
 }
 
 // RefreshGrokToken mirrors refreshGrokAuthToken: a missing rotated refresh
-// token keeps the input one.
-func RefreshGrokToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time) (*GrokTokenInfo, error) {
+// token keeps the input one. proxyURL ('' = direct) rides the request the way
+// the Node TokenExchangeTransport proxyUrl did.
+func RefreshGrokToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time, proxyURL string) (*GrokTokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
 	if refreshToken == "" {
 		return nil, errors.New("Grok Refresh Token 不能为空")
@@ -890,7 +898,7 @@ func RefreshGrokToken(ctx context.Context, ex TokenExchanger, refreshToken, clie
 		"grant_type":    "refresh_token",
 		"client_id":     clientID,
 		"refresh_token": refreshToken,
-	}, clientID, now)
+	}, clientID, now, proxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -903,9 +911,10 @@ func RefreshGrokToken(ctx context.Context, ex TokenExchanger, refreshToken, clie
 // requestGrokToken mirrors requestGrokToken: form POST with the grok
 // user-agent, upstream error envelope, default 6h TTL and 403 entitlement
 // branch.
-func requestGrokToken(ctx context.Context, ex TokenExchanger, form map[string]string, clientID string, now time.Time) (*GrokTokenInfo, error) {
+func requestGrokToken(ctx context.Context, ex TokenExchanger, form map[string]string, clientID string, now time.Time, proxyURL string) (*GrokTokenInfo, error) {
 	request := formRequest(GrokOAuthTokenURL, form)
 	request.Headers["user-agent"] = "sub2api-grok-oauth/1.0"
+	request.ProxyURL = normalizeText(proxyURL)
 	response, err := exchange(ctx, ex, request)
 	if err != nil {
 		return nil, err

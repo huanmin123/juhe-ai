@@ -166,24 +166,32 @@ func (j *KeepaliveJob) refreshOne(ctx context.Context, plan KeepalivePlan, accou
 	if refreshToken == "" {
 		return false, &LocalConfigurationError{Message: providerMissingRefreshTokenMessage(plan.Provider), ExpectedConfigRevision: source.ConfigRevision}
 	}
+	// Resolve the account-bound proxy before any token request. A resolution
+	// failure surfaces as this account's refresh failure (local configuration
+	// kind); it never falls back to a direct dial.
+	proxyURL, proxyErr := j.store.proxyProfileRequestURL(ctx, source.ProxyProfileID)
+	if proxyErr != nil {
+		return false, proxyErr
+	}
 
 	var tokenCredentials map[string]any
 	switch plan.Provider {
 	case ProviderAnthropic:
-		info, refreshErr := RefreshAnthropicToken(ctx, j.exchanger, refreshToken, stringCredential(source.Credentials, "client_id"), j.now())
+		info, refreshErr := RefreshAnthropicToken(ctx, j.exchanger, refreshToken, stringCredential(source.Credentials, "client_id"), j.now(), proxyURL)
 		if refreshErr != nil {
 			return false, refreshErr
 		}
 		tokenCredentials = BuildAnthropicOAuthCredentials(info, refreshToken)
 	case ProviderGemini:
 		fallback := geminiFallbackFromCredentials(source.Credentials)
+		fallback.ProxyURL = proxyURL
 		info, refreshErr := RefreshGeminiToken(ctx, j.exchanger, refreshToken, fallback, j.now())
 		if refreshErr != nil {
 			return false, refreshErr
 		}
 		tokenCredentials = BuildGeminiOAuthCredentials(info, &fallback)
 	case ProviderXAI:
-		info, refreshErr := RefreshGrokToken(ctx, j.exchanger, refreshToken, stringCredential(source.Credentials, "client_id"), j.now())
+		info, refreshErr := RefreshGrokToken(ctx, j.exchanger, refreshToken, stringCredential(source.Credentials, "client_id"), j.now(), proxyURL)
 		if refreshErr != nil {
 			return false, refreshErr
 		}
