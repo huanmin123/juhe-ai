@@ -63,6 +63,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	check := flags.Bool("check-boundary", false, "verify the scaffold boundary")
 	once := flags.Bool("once", false, "run one F2 table-monitor sampling cycle and exit")
 	runtimeLegacyMigration := flags.Bool("migrate-runtime-log-legacy-sqlite", false, "offline F1 legacy SQLite migration")
+	runJobsOnce := flags.String("run-jobs-once", "", "run wired worker jobs once (comma-separated task names), print a JSON result array and exit")
 	healthAddress := flags.String("health-listen-address", envOrDefault("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3305"), "loopback health listen address")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -84,6 +85,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if *once && *runtimeLegacyMigration {
 		fmt.Fprintln(stderr, "--once and --migrate-runtime-log-legacy-sqlite are mutually exclusive")
+		return 2
+	}
+	if *runJobsOnce != "" && (*once || *runtimeLegacyMigration) {
+		fmt.Fprintln(stderr, "--run-jobs-once is mutually exclusive with --once and --migrate-runtime-log-legacy-sqlite")
 		return 2
 	}
 
@@ -478,6 +483,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if err != nil {
 		return failWith(stderr, fmt.Errorf("assemble jobs worker: %w", err))
 	}
+	// --run-jobs-once 与后续任何 error 提前返回都不进 supervisor（组件 Close
+	// 链不会执行）：装配成功后立即登记 closeStores。defer LIFO 使家族 store
+	// 在 listener/F2/F1 store 与 PG 池的既有 defer 之前关闭；closeStores 幂
+	// 等，常驻路径由 supervisor Close 首调、本 defer 二次空转。
+	defer worker.closeStores()
 	workerReady := worker.ready
 	workerStatus := worker.statusPayload
 	// 健康检查派发 outbox 消费与清理面（去跨进程战役第二刀）：J1 runner 是
@@ -508,6 +518,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		} else {
 			healthOutcomeProjector = projector
 		}
+	}
+
+	// --run-jobs-once 分发点：worker 装配（wireFamilies、wiredTasks）完成后、
+	// health server 创建/监听之前逐个执行请求任务并退出，不启动任何常驻面。
+	if *runJobsOnce != "" {
+		return runJobsOnceExit(worker, *runJobsOnce, stdout, stderr)
 	}
 
 	listener, err := listenLoopback(*healthAddress)

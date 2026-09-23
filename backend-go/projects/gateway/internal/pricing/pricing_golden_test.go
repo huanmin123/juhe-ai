@@ -210,20 +210,27 @@ func TestListProviderModelPricingOrderAndVendor(t *testing.T) {
 		t.Fatal("openai list must not be empty")
 	}
 	// compareProviderModels: catalog order first, but the release-date rule
-	// outranks it when only one side defines catalog_order: the
-	// 2026-09-08 gpt-image-2.5 rows (no catalog order) sort ahead of
+	// outranks it when only one side defines catalog_order: the 2026-09-22
+	// gpt-6-sol/luna rows (no catalog order) sort first, then the
+	// 2026-09-08 gpt-image-2.5 rows (also no catalog order) sort ahead of
 	// gpt-6-astra (catalog_order -1, 2026-09-03), then gpt-5.6-sol (order 0).
-	if openai[0].Model != "gpt-image-2.5-flare" {
-		t.Fatalf("first model = %q, want gpt-image-2.5-flare (release 2026-09-08)", openai[0].Model)
+	if openai[0].Model != "gpt-6-luna" {
+		t.Fatalf("first model = %q, want gpt-6-luna (release 2026-09-22)", openai[0].Model)
 	}
-	if openai[1].Model != "gpt-image-2.5-sunburst" {
-		t.Fatalf("second model = %q, want gpt-image-2.5-sunburst (release 2026-09-08)", openai[1].Model)
+	if openai[1].Model != "gpt-6-sol" {
+		t.Fatalf("second model = %q, want gpt-6-sol (release 2026-09-22)", openai[1].Model)
 	}
-	if openai[2].Model != "gpt-6-astra" {
-		t.Fatalf("third model = %q, want gpt-6-astra (catalog_order -1)", openai[2].Model)
+	if openai[2].Model != "gpt-image-2.5-flare" {
+		t.Fatalf("third model = %q, want gpt-image-2.5-flare (release 2026-09-08)", openai[2].Model)
 	}
-	if openai[3].Model != "gpt-5.6-sol" {
-		t.Fatalf("fourth model = %q, want gpt-5.6-sol (catalog_order 0)", openai[3].Model)
+	if openai[3].Model != "gpt-image-2.5-sunburst" {
+		t.Fatalf("fourth model = %q, want gpt-image-2.5-sunburst (release 2026-09-08)", openai[3].Model)
+	}
+	if openai[4].Model != "gpt-6-astra" {
+		t.Fatalf("fifth model = %q, want gpt-6-astra (catalog_order -1)", openai[4].Model)
+	}
+	if openai[5].Model != "gpt-5.6-sol" {
+		t.Fatalf("sixth model = %q, want gpt-5.6-sol (catalog_order 0)", openai[5].Model)
 	}
 	for _, item := range openai {
 		if item.ShutdownDate != "" && item.ShutdownDate <= currentUTCDate() {

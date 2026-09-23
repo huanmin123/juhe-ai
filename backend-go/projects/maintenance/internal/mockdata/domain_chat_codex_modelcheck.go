@@ -9,8 +9,8 @@ package mockdata
 //   - chat：置顶会话、达轮次上限会话、reasoning / 工具调用 / 图片输出消息、
 //     图片生成与编辑、上下文检查点与条目；
 //   - codex context state：分片按运行时哈希落盘，每个分片库自带会话 / 响应 /
-//     摘要三表；除自然分布样本外另按目标分片挑选 ID（分片对齐组），保证前
-//     min(2, 分片数) 个分片各有一整套会话 / 响应 / 摘要；
+//     摘要三表；除自然分布样本外另按目标分片挑选 ID（分片对齐组），保证
+//     Paths.CodexContextShardCount 的每一个分片各有一整套会话 / 响应 / 摘要；
 //   - 模型检测：快速 / 深度 × 运行中 / 已完成 / 失败 / 已取消，受控 observation
 //     只绑定深度样本，并通过与真实游标投影同形的行生成账户最新可信结果、
 //     回执游标与 Token 拦截基线。
@@ -1287,13 +1287,11 @@ func chatCodexNaturalSessions(account chatCodexAccount, resources chatCodexResou
 	}
 }
 
-// chatCodexAlignedSessions 为前 min(2, 分片数) 个分片各生成一组会话 / 响应 / 摘要，
-// 三种 ID 都选成哈希命中该分片。
+// chatCodexAlignedSessions 为每一个分片（0..shardCount-1）各生成一组会话 / 响应 /
+// 摘要，三种 ID 都选成哈希命中该分片：覆盖校验要求全部 codex 分片非空，而自然
+// 分布样本只落在哈希算出的少数分片里，靠哈希散布无法保证。
 func chatCodexAlignedSessions(account chatCodexAccount, resources chatCodexResources, now time.Time, shardCount int) []chatCodexSessionSeed {
-	groups := 2
-	if shardCount < groups {
-		groups = shardCount
-	}
+	groups := shardCount
 	if groups < 1 {
 		groups = 1
 	}
@@ -1362,7 +1360,7 @@ func seedCodexContextSection(w *chatCodexWriter, resources chatCodexResources) e
 
 	// 样本分两类：
 	//   - 自然分布组：ID 直接写好，落在哈希算出的分片上（运行时真实写入形态）；
-	//   - 分片对齐组：为了让「至少两个分片各有一整套会话 / 响应 / 摘要」（设计
+	//   - 分片对齐组：为了让「每个分片各有一整套会话 / 响应 / 摘要」（设计
 	//     文档验证点），按目标分片挑选哈希命中的 ID——分片位置仍然由运行时的
 	//     哈希决定，造数只是选 ID，不绕过写入语义。
 	sessions := chatCodexNaturalSessions(account, resources, now)

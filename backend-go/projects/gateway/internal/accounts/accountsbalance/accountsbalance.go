@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"time"
 
@@ -30,6 +31,11 @@ import (
 // the facade (each adapter closes over the live Store, so composition-root
 // tests that clone a Store and swap fields keep observing the clone).
 type Deps struct {
+	// StatsDatabase is the dedicated juhe_stats handle behind the
+	// account_usage_snapshots reads. Production SQLite opens the stats
+	// database as a separate file; PostgreSQL and the single-file tests leave
+	// it nil and the service falls back to the shared store handle.
+	StatsDatabase *sql.DB
 	// AuthorizedReadableIDs mirrors Store.authorizedReadableIDs: the
 	// authorized-instance account id set for the scope viewer (authorized.go).
 	AuthorizedReadableIDs func(ctx context.Context, access accountscore.AccessScope) map[string]bool
@@ -70,6 +76,15 @@ func (s *Service) StatsTable(name string) string {
 		return "juhe_stats." + name
 	}
 	return name
+}
+
+// statsDB resolves the handle stats-table statements must run on: the
+// attached stats database when present, else the shared store handle.
+func (s *Service) statsDB() *sql.DB {
+	if s.deps.StatsDatabase != nil {
+		return s.deps.StatsDatabase
+	}
+	return s.store.DB()
 }
 
 // BalanceAPIKeyFingerprint mirrors accountBalanceApiKeyFingerprint: a stable

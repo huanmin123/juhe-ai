@@ -95,6 +95,9 @@ type ForceActivateResult struct {
 // balanceService builds the subdomain service over this store's live fields.
 func (s *Store) balanceService() *accountsbalance.Service {
 	return accountsbalance.New(storeBaseAdapter{s}, accountsbalance.Deps{
+		// account_usage_snapshots 读写落在 stats 库句柄上（生产 SQLite 双文件；
+		// nil 回退共享句柄，PG 同池、单文件测试不受影响）。
+		StatsDatabase:                s.statsQueryDB(),
 		AuthorizedReadableIDs:        s.authorizedReadableIDs,
 		AdvanceBatchDispatchRevision: s.advanceBatchDispatchRevision,
 		FindAccountSummary: func(ctx context.Context, accountID, ownerID string) (any, error) {

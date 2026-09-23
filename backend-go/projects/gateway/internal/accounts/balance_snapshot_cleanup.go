@@ -270,7 +270,7 @@ func cleanupLogFields(item cleanupQueueItem) []any {
 // snapshot rows last refreshed at or before the save instant.
 func (c *StoreBalanceSnapshotCleaner) deleteSupersededSnapshot(ctx context.Context, request BalanceSnapshotCleanupRequest) error {
 	updatedBefore := isoMillis(c.now())
-	_, err := c.store.db.ExecContext(ctx, c.store.bind(`DELETE FROM `+c.store.statsTable("account_usage_snapshots")+`
+	_, err := c.store.statsQueryDB().ExecContext(ctx, c.store.bind(`DELETE FROM `+c.store.statsTable("account_usage_snapshots")+`
 		WHERE account_id = ?
 			AND kind = 'relay_balance'
 			AND updated_at <= ?`), request.AccountID, updatedBefore)

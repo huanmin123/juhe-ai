@@ -658,6 +658,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		return nil, fmt.Errorf("create account stats usage source: %w", err)
 	}
 	accountStore.SetUsageSource(accountUsageSource)
+	// account_usage_snapshots（openai_codex 快照读、relay_balance 快照读与旧
+	// 快照清理 DELETE）必须落在 stats 库句柄上：生产 SQLite 打开独立的
+	// stats 文件，裸表名在业务句柄上解析不到（同 authzStore.AttachStatsDatabase
+	// 先例）；PG 共享业务池，此处注入的即是同一池，行为不变。
+	accountStore.AttachStatsDatabase(composed.statsDB)
 	// BUG-0174 M-8：创建上限的 settings 兜底端口（Node repositories.ts:2493
 	// effectiveAiAccountCreationLimit 的 settingsRepository.getSettings 回退）。
 	accountStore.SetAiAccountLimitSettings(aiAccountLimitSettingsAdapter{settings: settingsStore})
@@ -669,7 +674,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 余额快照旧代次清理装配（缺口 5，归档 accounts.routes.ts:355-364 +
 	// account-balance-snapshot-cleanup.service.ts:220-224）：PATCH 均衡身份
 	// 变化后的旧 relay_balance 快照删除经本 store 句柄执行（PG 走 juhe_stats
-	// schema 限定，SQLite 共享文件直名，同 M11 快照读取面）。
+	// schema 限定，SQLite 经 AttachStatsDatabase 落独立 stats 文件句柄，
+	// 同 M11 快照读取面）。
 	balanceSnapshotCleaner := accounts.NewStoreBalanceSnapshotCleaner(accountStore)
 	accountStore.SetBalanceSnapshotCleaner(balanceSnapshotCleaner)
 	// 关停生命周期（Node stopAndDrain 语义）：shutdowns 链先于 stats/business

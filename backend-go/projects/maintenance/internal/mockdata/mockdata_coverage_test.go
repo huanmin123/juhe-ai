@@ -101,7 +101,8 @@ func TestVerifyCoverageFlagsEmptyTablesAndMissingStores(t *testing.T) {
 func TestVerifyCoverageAllowlistKeepsReady(t *testing.T) {
 	e := testEnv(t)
 	ctx := context.Background()
-	// 白名单表可以为空：owner 租约 / 游标族与设计文档明确允许为空的瞬时队列。
+	// 白名单表可以为空：owner 租约 / 游标族与设计文档明确允许为空的瞬时队列，
+	// 以及「消费后为空才是正确状态」的运行时队列。
 	for _, ddl := range []string{
 		`CREATE TABLE background_job_leases (lease_key TEXT PRIMARY KEY)`,
 		`CREATE TABLE audit_log_owner_leases (lease_key TEXT PRIMARY KEY)`,
@@ -111,6 +112,8 @@ func TestVerifyCoverageAllowlistKeepsReady(t *testing.T) {
 		`CREATE TABLE codex_context_storage_cleanup_queue (id TEXT PRIMARY KEY)`,
 		`CREATE TABLE account_health_current_state (account_id TEXT PRIMARY KEY)`,
 		`CREATE TABLE stats_job_state (job_name TEXT PRIMARY KEY)`,
+		`CREATE TABLE record_maintenance_jobs (id TEXT PRIMARY KEY)`,
+		`CREATE TABLE account_health_probe_request_outbox (id TEXT PRIMARY KEY)`,
 	} {
 		createTestTable(t, e, StoreBusiness, ddl)
 	}
@@ -139,8 +142,8 @@ func TestVerifyCoverageAllowlistKeepsReady(t *testing.T) {
 			}
 		}
 	}
-	if allowlisted != 8 {
-		t.Fatalf("allowlisted tables = %d, want 8", allowlisted)
+	if allowlisted != 10 {
+		t.Fatalf("allowlisted tables = %d, want 10", allowlisted)
 	}
 }
 
@@ -154,11 +157,34 @@ func TestCoverageAllowEmptyRules(t *testing.T) {
 		{"stats_job_state", true},
 		{"background_job_leases", true},
 		{"account_health_current_state", true},
+		{"account_health_outcomes", true},
+		{"audit_payload_blob_gc", true},
+		{"account_health_jobs_input_versions", true},
+		{"account_health_jobs_input_outbox", true},
+		{"account_api_key_pool_probe_cursors", true},
+		{"account_health_projection_receipts", true},
+		{"account_list_availability_projections", true},
+		{"account_list_availability_projection_index", true},
+		{"account_list_availability_projection_tags", true},
+		{"account_list_availability_projection_search_terms", true},
+		{"account_list_availability_runtime_overlays", true},
+		{"account_quality_dirty_accounts", true},
+		{"usage_record_cleanup_deductions", true},
+		{"record_maintenance_jobs", true},
+		{"account_health_probe_request_outbox", true},
+		{"account_health_direct_input_suppressions", true},
+		{"system_metrics_hourly", true},
+		{"process_event_loop_hourly", true},
+		{"system_metrics_trend_windows", true},
+		{"process_event_loop_trend_windows", true},
 		{"anything_owner_leases", true},
 		{"anything_key_cursors", true},
 		{"anything_projection_cursors", true},
 		{"accounts", false},
 		{"usage_records", false},
+		{"oauth_access_tokens", false},
+		{"account_lock_states", false},
+		{"account_list_availability_projection_dependency_health", false},
 	}
 	for _, testCase := range cases {
 		reason, allowed := coverageAllowEmpty(testCase.table)

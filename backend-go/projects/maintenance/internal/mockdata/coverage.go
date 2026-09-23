@@ -53,6 +53,34 @@ var coverageAllowEmptyExactTables = map[string]string{
 	"account_health_current_state":        "owner 状态族：账户健康当前态由探针 owner 维护",
 	"usage_range_window_requests":         "设计文档明确允许为空：瞬时自定义范围请求队列",
 	"codex_context_storage_cleanup_queue": "瞬时清理队列：由 storage 清理任务消费",
+	// —— 2026-09 收尾盘点新增：以下全部是 owner 运行态/运行时建表，造数按裁决
+	// 不伪造，行由常驻进程写入；域断言与业务表的非空硬门槛不受影响。
+	"account_health_outcomes":                           "J1 owner 运行态：探针结果由 jobs 健康owner 运行时建表写入",
+	"audit_payload_blob_gc":                             "F3 运行时建表：audit payload blob 回收队列由 gateway 运行时维护",
+	"account_health_jobs_input_versions":                "J1 输入版本：业务变更运行时预留快照 epoch（DDL 证实为纯运行态）",
+	"account_health_jobs_input_outbox":                  "J1 intent outbox：输入快照由运行时发布器消费（DDL 证实为纯运行态）",
+	"account_api_key_pool_probe_cursors":                "运行时游标族：账户 Key 池探测游标由常驻进程推进",
+	"account_health_projection_receipts":                "J1 投影回执：由常驻投影写者消费，造数不伪造",
+	"account_list_availability_projections":             "运行时投影族：管理列表可用性投影由 jobs circuitstore 重建",
+	"account_list_availability_projection_index":        "运行时投影族：可用性投影索引由 jobs circuitstore 重建",
+	"account_list_availability_projection_tags":         "运行时投影族：可用性投影标签由 jobs circuitstore 重建",
+	"account_list_availability_projection_search_terms": "运行时投影族：可用性投影搜索词条由 jobs circuitstore 重建",
+	"account_list_availability_runtime_overlays":        "运行时对账族：可用性并发 overlay 由常驻对账写回",
+	// —— 2026-09 端到端验证收尾：以下空表全部是「重建完成后为空才是正确状态」的
+	// 运行时队列 / 无生产写入方的遗留聚合面，白名单只豁免空表断言，不放宽任何
+	// 域断言与业务表的非空硬门槛。
+	"account_quality_dirty_accounts":           "stats 脏账户队列：被 account-quality-refresh 消费后即空，重建完成后为空是正确状态",
+	"group_account_stats_dirty":                "business 分组账户统计脏标记队列：被 group-account-stats-refresh 消费后即空，重建完成后为空是正确状态",
+	"api_key_record_cleanup_targets":           "dataset 清理目标队列：被 api-key-record-cleanup-retry 消费后即空，重建完成后为空是正确状态",
+	"account_record_cleanup_targets":           "dataset 清理目标队列：被 account-record-cleanup-retry 消费后即空，重建完成后为空是正确状态",
+	"usage_record_cleanup_deductions":          "stats 清理扣减账本：造数清理会整表重置它，仅当发生真实记录清理时才有行",
+	"record_maintenance_jobs":                  "business 运行时队列：记录维护任务由 jobs 消费后为空",
+	"account_health_probe_request_outbox":      "business 运行时 outbox：探针请求由 jobs 消费后为空",
+	"account_health_direct_input_suppressions": "J1 运行态：直接输入抑制窗口由账户健康运行时维护",
+	"system_metrics_hourly":                    "采样→小时聚合管线无生产写入方（InsertSystemMetricsSampleBatch 无调用方），Node 遗留读取面，造数只能写 samples 层",
+	"process_event_loop_hourly":                "采样→小时聚合管线无生产写入方（InsertSystemMetricsSampleBatch 无调用方），Node 遗留读取面，造数只能写 samples 层",
+	"system_metrics_trend_windows":             "依赖 system_metrics_hourly 的趋势窗口，聚合管线无生产写入方，造数不能伪造派生面",
+	"process_event_loop_trend_windows":         "依赖 process_event_loop_hourly 的趋势窗口，聚合管线无生产写入方，造数不能伪造派生面",
 }
 
 // coverageAllowEmptySuffixes 是同上规则里以族后缀表达的部分。
@@ -136,12 +164,28 @@ func coverageAssertions() []coverageAssertion {
 
 // VerifyPathsCoverage 是覆盖校验的库级入口：按 Options 构建存储上下文
 // （只读，不创建缺失文件），校验后关闭句柄。
+//
+// 覆盖命令在独立进程运行，内存里没有本次造数运行的域记账；这里把数据根下
+// mockdata-summary.json 的域接线快照注入记账，让「快照中已接线的域」的断言
+// 真正被评估。快照缺失时维持全部 NotCovered 的向后兼容行为。
 func VerifyPathsCoverage(ctx context.Context, options Options) (CoverageReport, error) {
 	if err := options.validate(); err != nil {
 		return CoverageReport{}, err
 	}
 	e := newEnv(options, nil)
-	report, err := VerifyCoverage(ctx, e)
+	var (
+		report CoverageReport
+		err    error
+	)
+	wired, snapshotErr := loadWiredDomainSnapshot(options.Paths)
+	if snapshotErr != nil {
+		err = snapshotErr
+	} else {
+		for _, result := range wired {
+			e.recordDomainResult(result)
+		}
+		report, err = VerifyCoverage(ctx, e)
+	}
 	if closeErr := e.Close(); closeErr != nil && err == nil {
 		err = closeErr
 	}

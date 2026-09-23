@@ -173,6 +173,32 @@ func TestAutofillSkipReasonCategories(t *testing.T) {
 		{StoreTableMonitor, "unregistered_snapshot_table", "可观测域"},
 		{StoreChat, "chat_conversations", "域业务表"},
 		{StoreUsageCatalog, "usage_record_shards", "域业务表"},
+		// 2026-09 收尾盘点新增：域写入表与运行时投影/游标族。
+		{StoreChat, "chat_user_asset_usage", "域业务表"},
+		{StoreBusiness, "group_account_stats_dirty", "派生队列"},
+		{StoreBusiness, "oauth_signing_keys", "域业务表"},
+		{StoreBusiness, "oauth_grants", "域业务表"},
+		{StoreBusiness, "oauth_authorization_transactions", "域业务表"},
+		{StoreBusiness, "oauth_authorization_codes", "域业务表"},
+		{StoreBusiness, "oauth_authorization_code_oidc_contexts", "域业务表"},
+		{StoreBusiness, "oauth_access_tokens", "域业务表"},
+		{StoreBusiness, "oauth_device_authorizations", "域业务表"},
+		{StoreBusiness, "account_name_search_documents", "域业务表"},
+		{StoreBusiness, "account_name_search_terms", "域业务表"},
+		{StoreBusiness, "account_circuit_outbox", "域业务表"},
+		{StoreBusiness, "account_lock_states", "域业务表"},
+		{StoreBusiness, "account_list_availability_projection_dependency_health", "域业务表"},
+		{StoreBusiness, "account_api_key_pool_probe_cursors", "运行时游标族"},
+		{StoreBusiness, "account_health_projection_receipts", "运行时投影族"},
+		{StoreBusiness, "account_list_availability_projections", "运行时投影族"},
+		{StoreBusiness, "account_list_availability_projection_index", "运行时投影族"},
+		{StoreBusiness, "account_list_availability_projection_tags", "运行时投影族"},
+		{StoreBusiness, "account_list_availability_projection_search_terms", "运行时投影族"},
+		{StoreBusiness, "account_list_availability_runtime_overlays", "运行时对账族"},
+		// J1 owner 运行态表的理由必须是 owner 语义而不是「域写入」。
+		{StoreAccountHealth, "account_health_outcomes", "owner 运行态"},
+		{StoreAccountHealth, "account_health_jobs_input_versions", "owner 运行态"},
+		{StoreAccountHealth, "account_health_jobs_input_outbox", "owner 运行态"},
 	}
 	for _, testCase := range cases {
 		reason, skip := autofillSkipReason(testCase.store, testCase.table)

@@ -2,6 +2,7 @@ package mockdata
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,6 +61,16 @@ type summaryOptions struct {
 	DailyRequests int `json:"dailyRequests"`
 }
 
+// summaryDomain 是摘要里的域接线快照条目。wired 的定义与 env.domainWired 一致：
+// Counts 非空即视为已接线。--verify-mockdata-coverage 在独立进程运行，内存里
+// 没有本次造数的域记账，这份落盘快照是「该域本次是否产出过数据」的唯一证据；
+// 没有它，覆盖命令只能把全部域断言标成 NotCovered。
+type summaryDomain struct {
+	Name   string         `json:"name"`
+	Wired  bool           `json:"wired"`
+	Counts map[string]int `json:"counts"`
+}
+
 // summaryDocument 是 mockdata-summary.json 的结构。
 //
 // 字段结构参照 Node 归档实现
@@ -76,6 +87,10 @@ type summaryDocument struct {
 	MockUsers        []mockUser     `json:"mockUsers"`
 	APIKeys          []mockAPIKey   `json:"apiKeys"`
 	Counts           map[string]int `json:"counts"`
+	// Domains 是域接线快照（Go 实现新增，Node 归档实现没有）：覆盖校验命令
+	// 读取后把快照中的域视为已接线；缺文件或缺该字段时维持全部 NotCovered，
+	// 对旧摘要向后兼容。
+	Domains []summaryDomain `json:"domains"`
 }
 
 // addMockUser 登记一个配套用户（域实现者在创建 system_accounts 行后调用）。
@@ -122,6 +137,14 @@ func mockdataSummaryPath(paths Paths) string {
 // 链路依赖这个固定路径。
 func writeSummary(e *env, report Report) (string, error) {
 	owner, users, keys := e.summarySnapshot()
+	domains := make([]summaryDomain, 0, len(report.Domains))
+	for _, result := range report.Domains {
+		counts := result.Counts
+		if counts == nil {
+			counts = map[string]int{}
+		}
+		domains = append(domains, summaryDomain{Name: result.Name, Wired: len(counts) > 0, Counts: counts})
+	}
 	document := summaryDocument{
 		GeneratedAt:      report.FinishedAt,
 		Options:          summaryOptions{Days: report.Days, DailyRequests: report.DailyRequests},
@@ -130,6 +153,7 @@ func writeSummary(e *env, report Report) (string, error) {
 		MockUsers:        users,
 		APIKeys:          keys,
 		Counts:           report.Counts,
+		Domains:          domains,
 	}
 	if document.MockUsers == nil {
 		document.MockUsers = []mockUser{}
@@ -153,4 +177,34 @@ func writeSummary(e *env, report Report) (string, error) {
 		return "", fmt.Errorf("写 mockdata 摘要 %s: %w", path, err)
 	}
 	return path, nil
+}
+
+// loadWiredDomainSnapshot 读取数据根下摘要里的域接线快照，返回已接线域的结果。
+//
+// 兼容性：文件缺失（独立覆盖校验跑在造数之前 / 旧版实现没写快照）或摘要里
+// 没有 domains 字段时返回 (nil, nil)，覆盖校验维持「全部 NotCovered」的现状。
+// 注入判定只认 Counts 非空（wired 的定义即 Counts 非空），手写快照里 wired 与
+// 空计数矛盾的条目按未接线处理。文件存在但解析失败是前一次造数异常的证据，
+// 静默忽略会让覆盖门槛悄悄退化成全部 NotCovered，因此作为错误返回而不是跳过。
+func loadWiredDomainSnapshot(paths Paths) ([]DomainResult, error) {
+	path := mockdataSummaryPath(paths)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("读 mockdata 摘要 %s: %w", path, err)
+	}
+	var document summaryDocument
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return nil, fmt.Errorf("解析 mockdata 摘要 %s: %w", path, err)
+	}
+	var wired []DomainResult
+	for _, domain := range document.Domains {
+		if !domain.Wired || len(domain.Counts) == 0 {
+			continue
+		}
+		wired = append(wired, DomainResult{Name: domain.Name, Counts: domain.Counts})
+	}
+	return wired, nil
 }

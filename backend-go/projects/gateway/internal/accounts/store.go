@@ -66,6 +66,12 @@ type Store struct {
 	secret string
 	now    func() time.Time
 	newI   func(prefix string) string
+	// statsDB is the dedicated juhe_stats handle behind the
+	// account_usage_snapshots reads/writes (oauth_usage_snapshot,
+	// balance snapshot record, superseded-snapshot cleanup). Nil until
+	// AttachStatsDatabase wires it; nil keeps those statements on the
+	// business handle (PostgreSQL shares the pool; single-file tests).
+	statsDB *sql.DB
 	// authorized is the M10 authorized-instance reader (authz slice, narrow
 	// interface). Nil until SetAuthorizedReader / Deps.Mount wires it.
 	authorized AuthorizedAccountReader
@@ -148,6 +154,23 @@ func newRandomID(prefix string) string {
 	buf := make([]byte, 4)
 	_, _ = rand.Read(buf)
 	return prefix + "_" + itoa64(time.Now().UnixMilli()) + "_" + hex.EncodeToString(buf)[:8]
+}
+
+// AttachStatsDatabase injects the dedicated juhe_stats handle for the
+// account_usage_snapshots reads/writes. Production SQLite opens the stats
+// database as a separate file, so the bare statsTable name is unresolvable on
+// the business handle; PostgreSQL shares the business pool (juhe_stats
+// schema-qualified) and the single-file tests never need this call — both
+// keep the nil fallback on the business handle.
+func (s *Store) AttachStatsDatabase(db *sql.DB) { s.statsDB = db }
+
+// statsQueryDB resolves the handle stats-table statements must run on: the
+// attached stats database when present, else the shared handle.
+func (s *Store) statsQueryDB() *sql.DB {
+	if s.statsDB != nil {
+		return s.statsDB
+	}
+	return s.db
 }
 
 func (s *Store) table(name string) string {

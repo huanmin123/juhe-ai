@@ -77,7 +77,7 @@ func (s *Service) LoadBalanceSnapshotRecord(ctx context.Context, accountID strin
 		nextRefreshAfter sql.NullString
 		updatedAt        string
 	)
-	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT account_id, snapshot_json, next_refresh_after, updated_at
+	err := s.statsDB().QueryRowContext(ctx, s.store.Bind(`SELECT account_id, snapshot_json, next_refresh_after, updated_at
 		FROM `+s.StatsTable("account_usage_snapshots")+`
 		WHERE kind = 'relay_balance' AND account_id = ?
 		LIMIT 1`), accountID).Scan(&accountID, &snapshotJSON, &nextRefreshAfter, &updatedAt)

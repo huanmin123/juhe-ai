@@ -412,15 +412,17 @@ func TestSeedChatCodexModelCheckCodexShardsAndReferences(t *testing.T) {
 		if sessions+responses+compacts > 0 {
 			populated[item.Name] = true
 		}
-		// 「≥2 个分片各 ≥1 组会话 / 响应 / 摘要」：分片对齐组按目标分片挑 ID，
-		// 三种行都落在运行时哈希算出的分片上。
+		// 「每个分片各 ≥1 组会话 / 响应 / 摘要」：分片对齐组按目标分片挑 ID，
+		// 三种行都落在运行时哈希算出的分片上；不能依赖自然哈希散布。
 		if sessions > 0 && responses > 0 && compacts > 0 {
 			fullSet[item.Name] = true
 		}
 	}
-	wantShards := 2
-	if shardCount < wantShards {
-		wantShards = shardCount
+	// 每一个分片（0..shardCount-1）都必须有数据且三表齐全：分片对齐组按
+	// Paths.CodexContextShardCount 的每个索引各写一整套。
+	wantShards := shardCount
+	if wantShards < 1 {
+		wantShards = 1
 	}
 	if len(populated) < wantShards {
 		t.Fatalf("有数据的 codex 分片 = %v，要求至少 %d 个", populated, wantShards)

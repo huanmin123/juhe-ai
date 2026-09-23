@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "mockdata": "node scripts/mockdata.mjs",
     "test:dev-go-project-env": "node scripts/regression/dev-go-project-env-regression.mjs",
     "test:docker-go-project-isolation": "node scripts/regression/docker-go-project-isolation-regression.mjs",
     "test:platform-time-contract": "node scripts/regression/platform-time-contract.test.mjs",

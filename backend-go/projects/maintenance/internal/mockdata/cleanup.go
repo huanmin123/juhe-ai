@@ -94,6 +94,10 @@ func cleanupRules() []cleanupRule {
 		{ShardPrefix: StoreCodexContextShardPrefix, Table: "codex_context_sessions", Query: "DELETE FROM codex_context_sessions WHERE id LIKE ? OR source_response_id LIKE ? OR latest_response_id LIKE ? OR latest_compact_id LIKE ?", Args: []any{id, id, id, id}},
 		// usage 分片：使用记录。
 		{ShardPrefix: StoreUsageShardPrefix, Table: "usage_records", Query: "DELETE FROM usage_records WHERE id LIKE ? OR trace_id LIKE ?", Args: []any{id, trace}},
+		// usage catalog：登记行不带任何造数标识（shard_key 是日期+分片号），
+		// 只能按「分片内已无任何条目」回收；entries/account/api_key 关联表对
+		// shards 有 ON DELETE CASCADE，随登记行级联清理。
+		{Store: StoreUsageCatalog, Table: "usage_record_shards", Query: "DELETE FROM usage_record_shards WHERE shard_key NOT IN (SELECT DISTINCT shard_key FROM usage_record_shard_entries)", Args: nil},
 		// dataset：记录清理目标（引用账户/API Key）→ 公开接口日志。
 		// 这两张表没有 id 列（主键就是 account_id / api_key_id），清理标识落在
 		// 外键列与阻塞原因列上。
@@ -153,7 +157,75 @@ func cleanupAll(ctx context.Context, e *env) (map[string]int, []string, error) {
 			deleted[table] += rows
 		}
 	}
+	resetDeleted, resetSkipped, err := resetAggregationState(ctx, e)
+	if err != nil {
+		return deleted, skipped, err
+	}
+	for table, rows := range resetDeleted {
+		if rows > 0 {
+			deleted[table] += rows
+		}
+	}
+	skipped = append(skipped, resetSkipped...)
 	sort.Strings(skipped)
+	return deleted, skipped, nil
+}
+
+// aggregationResetTables 列出 stats 库中由 jobs 聚合 / 窗口任务从使用记录重建
+// 的全部派生表。造数在删除上一批使用记录后必须整表重置它们：游标型聚合
+// （usage-stats-aggregation 等按 stats_job_state 游标增量累加）无法回退被删
+// 明细的历史贡献，mockdata 也不写 usage_record_cleanup_deductions 扣减账；
+// 不重置就改 --days/--daily-requests 重跑，派生数值会与明细永久漂移。重置后
+// 由脚本第 4 步 jobs -run-jobs-once 或常驻 jobs 从镜像全量重建，口径与真实
+// 写入路径一致。开发数据一律是 mock 数据（开发数据库生命周期），整表重置
+// 不区分造数/非造数行是安全且确定性的选择。
+var aggregationResetTables = []string{
+	// 增量累加族（游标消费 stats 库 usage_records 镜像）。
+	"usage_stats_totals",
+	"usage_stats_minute", "usage_stats_hourly", "usage_stats_daily", "usage_stats_weekly", "usage_stats_monthly",
+	"usage_model_minute", "usage_model_hourly", "usage_model_daily", "usage_model_weekly", "usage_model_monthly",
+	"usage_error_minute", "usage_error_hourly", "usage_error_daily", "usage_error_weekly", "usage_error_monthly",
+	"usage_latency_minute", "usage_latency_hourly", "usage_latency_daily", "usage_latency_weekly", "usage_latency_monthly",
+	"authorization_team_usage_summary_daily", "authorization_user_usage_summary_daily",
+	"account_quality_minute_stats", "account_quality_scores",
+	"account_health_hourly",
+	"client_ip_registry", "client_ip_stats_daily", "client_ip_account_stats_daily",
+	// 窗口 / 快照族（按源表水位全量重算，重置只为让「重跑后立即一致」，
+	// 不依赖窗口任务的下次调度）。
+	"usage_rank_snapshots",
+	"usage_overview_summary_windows", "usage_overview_trend_windows",
+	"usage_model_rank_windows", "usage_error_rank_windows",
+	"ai_performance_summary_windows",
+	"usage_quota_hourly_windows", "usage_scope_range_windows",
+	"authorization_team_usage_range_windows", "authorization_user_usage_range_windows",
+	"system_metrics_trend_windows", "process_event_loop_trend_windows",
+	"group_account_stats",
+	// 队列与账本：脏队列由域重写；扣减账指向的桶已被重置，残留会让 jobs
+	// 清理重试扣减新桶。
+	"usage_overview_dirty_scopes", "ai_performance_summary_dirty_system_accounts", "usage_quota_hourly_window_dirty_scopes",
+	"usage_record_cleanup_deductions",
+}
+
+// resetAggregationState 整表清空 aggregationResetTables 与 stats_job_state
+// 游标。游标必须一并清零：只清桶不清游标会让聚合器从旧游标继续，重置前
+// 已消费的明细不会回填；只清游标不清桶则会把全部明细重复累加一遍。
+func resetAggregationState(ctx context.Context, e *env) (map[string]int, []string, error) {
+	deleted := map[string]int{}
+	var skipped []string
+	tables := append([]string{"stats_job_state"}, aggregationResetTables...)
+	for _, table := range tables {
+		rows, err := deleteIfTableExists(ctx, e, store{Name: StoreStats}, table, "DELETE FROM "+table, nil)
+		if err != nil {
+			return deleted, skipped, fmt.Errorf("重置统计聚合状态 %s.%s: %w", StoreStats, table, err)
+		}
+		if rows < 0 {
+			skipped = append(skipped, StoreStats+"."+table+"（表不存在）")
+			continue
+		}
+		if rows > 0 {
+			deleted[StoreStats+"."+table] += rows
+		}
+	}
 	return deleted, skipped, nil
 }
 

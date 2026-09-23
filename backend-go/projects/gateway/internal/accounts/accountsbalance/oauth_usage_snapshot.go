@@ -64,7 +64,7 @@ func (s *Service) LoadOpenAICodexUsageSnapshots(ctx context.Context, accountIDs 
 			end = len(ids)
 		}
 		chunk := ids[start:end]
-		rows, err := s.store.DB().QueryContext(ctx, s.store.Bind(`SELECT account_id, source, snapshot_json, refresh_status,
+		rows, err := s.statsDB().QueryContext(ctx, s.store.Bind(`SELECT account_id, source, snapshot_json, refresh_status,
 				last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at
 			FROM `+s.StatsTable("account_usage_snapshots")+`
 			WHERE kind = 'openai_codex' AND account_id IN (`+accountscore.Placeholders(len(chunk))+`)`), accountscore.AnySlice(chunk)...)

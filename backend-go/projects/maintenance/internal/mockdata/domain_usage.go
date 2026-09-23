@@ -25,7 +25,9 @@ import (
 // token、缓存读取、模型映射命中、上游响应模型一致 / 映射后不一致 / 未映射不一致
 // 三连样本、流式与非流式、服务档位与思考强度样本，时间跨度由 Options.Days 决定；
 // 另按 business 域的真实账户逐小时生成 account_health_check 记录（含缺口与失败
-// 小时），供 jobs 聚合出 account_health_hourly。
+// 小时），供 jobs 聚合出 account_health_hourly；并对授权实例账户（调用者=被授权人）
+// 与团队授权分组的记录回填授权归属列（account/group_authorization_*），供
+// statsagg 聚合出 authorization_{user,team}_usage_summary_daily。
 //
 // 边界（见 docs/functions/Mockdata造数设计.md 与域骨架注释）：
 //   - 只写原始事实与采样：派生表（usage_stats_*、usage_model_*、account_health_hourly、
@@ -353,6 +355,17 @@ var usageFailureSamples = []usageFailureSample{
 const (
 	usageAccessTypeOwner      = "owner"
 	usageAccessTypeAuthorized = "authorized"
+	// usageAccessTypeAccountAuthorized 与 jobs usagewriter 的
+	// AccountAccessTypeAccountAuthorized 同词汇：账户级授权调用（实例账户）。
+	usageAccessTypeAccountAuthorized = "account_authorized"
+	// usageAccessTypeGroupAuthorized 与 jobs usagewriter 的
+	// AccountAccessTypeGroupAuthorized 同词汇：经授权分组访问分组归属人的账户。
+	// statsagg 的 ShouldAggregateUsageStatsRecord 只认 owner / account_authorized /
+	// group_authorized 三个值，其他取值的记录会被整条丢弃。
+	usageAccessTypeGroupAuthorized = "group_authorized"
+	// usageAuthorizationSourceTypeTeam 与 jobs usagewriter 的
+	// AuthorizationSourceTypeTeam 同词汇：statsagg 授权日报按它展开 team 维度。
+	usageAuthorizationSourceTypeTeam = "team"
 )
 
 // usageResources 是 usage 域从 business 库运行时解析出的真实外键集合。
@@ -364,6 +377,10 @@ type usageResources struct {
 	mappings []usageMappingRow
 	models   []string
 	images   []string
+	// 授权归属（statsagg 授权日报的输入，见 usageAuthInstanceRow / usageGroupAuthRow）。
+	authInstances         []usageAuthInstanceRow
+	authInstanceByAccount map[string]usageAuthInstanceRow
+	groupAuths            []usageGroupAuthRow
 }
 
 type usageAccountRow struct {
@@ -395,11 +412,37 @@ type usageMappingRow struct {
 	upstreamFamily string
 }
 
+// usageAuthInstanceRow 是一条授权实例账户的归属信息：business 域为每条活跃的
+// 「账户级授权给系统账户」在被授权人命名空间建一个克隆账户，accounts 表上的
+// authorization_instance_* 三列标识「该账户是某条授权的实例」。调用实例账户的
+// 使用记录按它回填授权归属列，statsagg 的授权日报才能按
+// 「账户归属人 != 调用者」分支聚出 authorization_user_usage_summary_daily。
+type usageAuthInstanceRow struct {
+	accountID       string // 实例账户 ID（usage_records.account_id）
+	grantee         string // 实例账户归属 = 被授权人（调用者）
+	authorizationID string // 授权运行时行 ID（resource_authorizations.id）
+	sourceOwner     string // 原资源归属人（usage_records.account_owner_system_account_id）
+	sourceType      string // 授权来源（resource_authorizations.effective_source_type）
+	sourceTeamID    string // 授权来源团队（effective_source_team_id，manual 时为空）
+}
+
+// usageGroupAuthRow 是一条团队来源的分组授权运行时行（resource_authorizations
+// 按成员扇出，每个在册成员一行）。造数用它构造「成员 Key 调用授权分组」场景，
+// 回填 group_authorization_* 三列后，statsagg 的 group 分支带 team 来源命中
+// authorization_team_usage_summary_daily。
+type usageGroupAuthRow struct {
+	authorizationID string
+	groupID         string
+	groupOwner      string
+	sourceTeamID    string
+	grantee         string // 该运行时行的被授权成员
+}
+
 // loadUsageResources 读取 business 库的 mock 资源；缺 schema / seed 时返回 skip
 // 原因而不是报错（mockdata 必须能在空数据根上跑完）。
 func loadUsageResources(ctx context.Context, e *env) (usageResources, error) {
 	resources := usageResources{}
-	for _, table := range []string{"accounts", "groups", "api_keys"} {
+	for _, table := range []string{"accounts", "groups", "api_keys", "resource_authorizations"} {
 		exists, err := e.existsTable(ctx, StoreBusiness, table)
 		if err != nil {
 			return resources, err
@@ -500,6 +543,71 @@ func loadUsageResources(ctx context.Context, e *env) (usageResources, error) {
 		return resources, err
 	}
 	mappingRows.Close()
+
+	// 授权实例账户：accounts.authorization_instance_* 标记「该账户是某条账户级
+	// 授权的实例」，LEFT JOIN resource_authorizations 取授权来源（与 statsagg
+	// 的授权链查找同形：instance.authorization_instance_authorization_id =
+	// authorizations.id，instance.system_account_id = authorizations.grantee）。
+	resources.authInstanceByAccount = map[string]usageAuthInstanceRow{}
+	instanceRows, err := db.QueryContext(ctx, `SELECT a.id, a.system_account_id,
+		COALESCE(a.authorization_instance_authorization_id,''),
+		COALESCE(a.authorization_instance_owner_system_account_id,''),
+		COALESCE(ra.effective_source_type,''), COALESCE(ra.effective_source_team_id,'')
+	FROM accounts a
+	LEFT JOIN resource_authorizations ra ON ra.id = a.authorization_instance_authorization_id
+	WHERE a.id LIKE ? AND a.authorization_instance_authorization_id IS NOT NULL
+	ORDER BY a.id`, CleanupIDPrefix+"%")
+	if err != nil {
+		return resources, fmt.Errorf("读取授权实例账户: %w", err)
+	}
+	for instanceRows.Next() {
+		var row usageAuthInstanceRow
+		if err := instanceRows.Scan(&row.accountID, &row.grantee, &row.authorizationID,
+			&row.sourceOwner, &row.sourceType, &row.sourceTeamID); err != nil {
+			instanceRows.Close()
+			return resources, err
+		}
+		if row.accountID == "" || row.authorizationID == "" || row.sourceOwner == "" || row.grantee == "" {
+			// 缺任一归属字段就无法满足聚合器的分支条件，跳过该实例并计数留痕。
+			continue
+		}
+		resources.authInstances = append(resources.authInstances, row)
+		resources.authInstanceByAccount[row.accountID] = row
+	}
+	if err := instanceRows.Err(); err != nil {
+		instanceRows.Close()
+		return resources, err
+	}
+	instanceRows.Close()
+
+	// 团队来源的分组授权运行时行：resource_authorizations 按成员扇出，每个在册
+	// 成员各一行，status='active' 才代表当前可调用。
+	groupAuthRows, err := db.QueryContext(ctx, `SELECT id, resource_id, resource_owner_system_account_id,
+		COALESCE(effective_source_team_id,''), grantee_system_account_id
+	FROM resource_authorizations
+	WHERE resource_type = 'group' AND status = 'active' AND effective_source_type = 'team' AND id LIKE ?
+	ORDER BY id`, CleanupIDPrefix+"%")
+	if err != nil {
+		return resources, fmt.Errorf("读取团队分组授权: %w", err)
+	}
+	for groupAuthRows.Next() {
+		var row usageGroupAuthRow
+		if err := groupAuthRows.Scan(&row.authorizationID, &row.groupID, &row.groupOwner,
+			&row.sourceTeamID, &row.grantee); err != nil {
+			groupAuthRows.Close()
+			return resources, err
+		}
+		if row.authorizationID == "" || row.groupID == "" || row.groupOwner == "" ||
+			row.sourceTeamID == "" || row.grantee == "" {
+			continue
+		}
+		resources.groupAuths = append(resources.groupAuths, row)
+	}
+	if err := groupAuthRows.Err(); err != nil {
+		groupAuthRows.Close()
+		return resources, err
+	}
+	groupAuthRows.Close()
 
 	modelRows, err := db.QueryContext(ctx, `SELECT model, COALESCE(mode,'') FROM provider_model_catalog
 		WHERE status = 'active' ORDER BY catalog_order, model`)
@@ -615,6 +723,30 @@ func (r usageResources) mappingAny(accountID string) (usageMappingRow, bool) {
 	return usageMappingRow{}, false
 }
 
+// keyForOwner 取该用户名下的一条 Key（授权场景用它把调用者绑定到被授权成员）。
+func (r usageResources) keyForOwner(owner string) (usageAPIKeyRow, bool) {
+	if owner == "" {
+		return usageAPIKeyRow{}, false
+	}
+	for _, key := range r.apiKeys {
+		if key.owner == owner {
+			return key, true
+		}
+	}
+	return usageAPIKeyRow{}, false
+}
+
+// accountForOwner 取该用户名下的第一条账户（团队授权场景用它挑分组归属人的
+// 真实账户）；没有时回落第一个 mock 账户。
+func (r usageResources) accountForOwner(owner string) usageAccountRow {
+	for _, account := range r.accounts {
+		if account.owner == owner {
+			return account
+		}
+	}
+	return r.accountAt(0)
+}
+
 // usageScenario 是一条造数场景：某个 API Key 在某个分组下调用某个账户。
 type usageScenario struct {
 	apiKeyID      string
@@ -624,6 +756,14 @@ type usageScenario struct {
 	account       usageAccountRow
 	clientIPBase  string
 	trafficSource string
+	// caller 是记录的调用者（usage_records.system_account_id）：缺省等于账户
+	// 归属人（自调语义）；团队授权分组场景里是被授权成员，与分组归属人错开，
+	// statsagg 的 group 分支（group_owner != caller）才能命中。
+	caller string
+	// 团队授权分组归属：非空时记录回填 group_authorization_* 三列（来源恒为
+	// team），来源取值以 resource_authorizations.effective_source_* 为准。
+	groupAuthID     string
+	groupAuthTeamID string
 }
 
 // usageRecordSpec 是一条记录的取值规格：buildRecord 按它填 61 列。
@@ -736,6 +876,51 @@ func (w *usageWriter) buildScenarios() []usageScenario {
 				trafficSource: usageTrafficSourceForOrdinal(len(scenarios)),
 			})
 		}
+	}
+	scenarios = append(scenarios, w.buildGroupAuthScenarios(scenarios)...)
+	return scenarios
+}
+
+// buildGroupAuthScenarios 为每条团队来源的分组授权运行时行构造「被授权成员的
+// Key 调用授权分组」场景：caller=成员、分组归属人=资源 owner，两者错开才能
+// 命中 statsagg group 分支（authorization.go 要求 group_owner != caller），
+// group_authorization_source_type='team' + team id 让
+// authorization_team_usage_summary_daily 出数。账户取分组归属人的真实账户
+// （记录的账户列保持 owner 语义，授权归属只由 group 列承载）。
+func (w *usageWriter) buildGroupAuthScenarios(existing []usageScenario) []usageScenario {
+	scenarios := make([]usageScenario, 0, len(w.resources.groupAuths))
+	for _, auth := range w.resources.groupAuths {
+		key, ok := w.resources.keyForOwner(auth.grantee)
+		if !ok {
+			// 该成员没有 mock Key：无法构造可信的调用者，跳过并计数。
+			w.counts["usageAuthScenariosWithoutGranteeKey"]++
+			continue
+		}
+		duplicate := false
+		for _, scenario := range existing {
+			if scenario.groupID == auth.groupID && scenario.apiKeyID == key.id {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			w.counts["usageAuthScenariosDeduplicated"]++
+			continue
+		}
+		scenario := usageScenario{
+			apiKeyID:        key.id,
+			apiKeyOwner:     key.owner,
+			caller:          auth.grantee,
+			groupID:         auth.groupID,
+			groupOwner:      auth.groupOwner,
+			account:         w.resources.accountForOwner(auth.groupOwner),
+			clientIPBase:    fmt.Sprintf("10.20.%d.", (len(existing)+len(scenarios))%250),
+			trafficSource:   usageTrafficSourceForOrdinal(len(existing) + len(scenarios)),
+			groupAuthID:     auth.authorizationID,
+			groupAuthTeamID: auth.sourceTeamID,
+		}
+		w.counts["usageAuthGroupScenarios"]++
+		scenarios = append(scenarios, scenario)
 	}
 	return scenarios
 }
@@ -1122,9 +1307,24 @@ func (w *usageWriter) newRecord(spec usageRecordSpec) usageRecordEntry {
 	id := fmt.Sprintf("usage_%s_s%02d_%d_%s", bucketDateKey, shardID, spec.createdAt.UnixMilli(), entropy)
 	location := usageShardLocationForBucket(bucketDateKey, shardID, w.e.options.Paths.UsageShardRoot)
 
+	// 调用者：显式给出时（团队授权分组场景）是被授权成员；缺省是账户归属人
+	// （自调语义，与既有记录一致）。
+	caller := spec.scenario.caller
+	if caller == "" {
+		caller = spec.scenario.account.owner
+	}
+	accountOwner := spec.scenario.account.owner
+	accountAccessType := usageAccessType(spec.scenario.account.owner, spec.scenario.apiKeyOwner)
+	if spec.scenario.groupAuthID != "" {
+		// 团队授权分组场景：调用者是被授权成员，账户是分组归属人的账户，经授权
+		// 分组访问——account_access_type 必须用 group_authorized 词汇（跨归属人
+		// 的 "authorized" 不是合法账户访问类型，聚合器会丢弃整条记录，team 汇总
+		// 因此无法出数）。
+		accountAccessType = usageAccessTypeGroupAuthorized
+	}
 	columns := map[string]any{
 		"id":                              id,
-		"system_account_id":               spec.scenario.account.owner,
+		"system_account_id":               caller,
 		"trace_id":                        spec.traceID,
 		"traffic_source":                  spec.scenario.trafficSource,
 		"endpoint":                        spec.variant.method + " " + spec.variant.path,
@@ -1154,13 +1354,35 @@ func (w *usageWriter) newRecord(spec usageRecordSpec) usageRecordEntry {
 		"error_message":                   nullString(spec.errorMessage),
 		"client_ip":                       spec.scenario.clientIPBase + strconv.Itoa(1+spec.ordinal%250),
 		"created_at":                      spec.createdAt.UTC().Format(isoMillisLayout),
-		"account_owner_system_account_id": nullString(spec.scenario.account.owner),
-		"account_access_type":             usageAccessType(spec.scenario.account.owner, spec.scenario.apiKeyOwner),
+		"account_owner_system_account_id": nullString(accountOwner),
+		"account_access_type":             accountAccessType,
+	}
+	// 授权实例账户归属：调用者是被授权人（实例账户 namespace 的归属者）时，账户
+	// 归属改写为原资源归属人并回填授权三列。statsagg 授权日报的 account 分支
+	// （authorization.go：AccountAuthorizationID/AccountID 非空且
+	// account_owner != caller）据此聚出 authorization_user_usage_summary_daily；
+	// source_type/team 取 resource_authorizations.effective_source_*（经
+	// loadUsageResources 的 LEFT JOIN，与 statsagg 的授权链查找同形）。
+	if instance, ok := w.resources.authInstanceByAccount[spec.scenario.account.id]; ok && caller == instance.grantee {
+		columns["account_owner_system_account_id"] = nullString(instance.sourceOwner)
+		columns["account_access_type"] = usageAccessTypeAccountAuthorized
+		columns["account_authorization_id"] = instance.authorizationID
+		columns["account_authorization_source_type"] = nullString(instance.sourceType)
+		columns["account_authorization_source_team_id"] = nullString(instance.sourceTeamID)
+		w.counts["usageAuthAccountRecords"]++
 	}
 	if spec.scenario.groupID != "" {
 		columns["group_id"] = spec.scenario.groupID
 		columns["group_owner_system_account_id"] = nullString(spec.scenario.groupOwner)
 		columns["group_access_type"] = usageAccessType(spec.scenario.groupOwner, spec.scenario.apiKeyOwner)
+		// 团队授权分组：group 分支（GroupAuthorizationID/GroupID 非空且
+		// group_owner != caller）带 team 来源展开，两条授权汇总都能出数。
+		if spec.scenario.groupAuthID != "" {
+			columns["group_authorization_id"] = spec.scenario.groupAuthID
+			columns["group_authorization_source_type"] = usageAuthorizationSourceTypeTeam
+			columns["group_authorization_source_team_id"] = nullString(spec.scenario.groupAuthTeamID)
+			w.counts["usageAuthGroupRecords"]++
+		}
 	}
 	if spec.scenario.apiKeyID != "" {
 		columns["api_key_id"] = spec.scenario.apiKeyID
