@@ -919,7 +919,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// routestrategies 的挂载移到链条装配之后（见下方 M06 speed-first 注释）：
 	// speed-first-runtime 端点只在 facade 存在时注册，而 facade 数据源是
 	// composeChainRuntimeServices 里的 LatencyDegradationService。
-	(&apikeys.Deps{Store: apiKeyStore, Auth: authDeps, Sink: sink}).Mount(kern)
+	(&apikeys.Deps{Store: apiKeyStore, Auth: authDeps, Sink: sink, Log: slog.Default()}).Mount(kern)
 	// M10 authorized-instance read hookup: the authz slice's store IS the
 	// AuthorizedAccountReader port (authorized.go 注释的窄接口即
 	// authz.Store.AuthorizedReadableAccountIDs 的别名，签名逐参一致，

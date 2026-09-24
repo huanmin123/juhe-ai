@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,6 +37,32 @@ func ResponseWriterFromContext(ctx context.Context) *localizeWriter {
 	return nil
 }
 
+// RequestStageSummary mirrors the Node RequestStageSummary entry shape
+// (request-context.ts:251-258): the minimal per-stage facts the
+// gateway.request.timing_summary consumer reads.
+type RequestStageSummary struct {
+	Sequence        int64  `json:"sequence"`
+	Stage           string `json:"stage"`
+	Outcome         string `json:"outcome"`
+	DurationMs      int64  `json:"durationMs"`
+	StartedOffsetMs int64  `json:"startedOffsetMs"`
+	EndedOffsetMs   int64  `json:"endedOffsetMs"`
+}
+
+// RequestStageAccumulation is the immutable snapshot the timing summary
+// reads at request end.
+type RequestStageAccumulation struct {
+	Stages                []RequestStageSummary
+	StageCount            int64
+	DroppedStageSummaries int64
+	AttemptCount          int64
+}
+
+// requestStageSummaryCapacity mirrors the Node stageSummaries bound
+// (request-context.ts:250): at most 64 entries ride the summary; the excess
+// only increments the dropped counter.
+const requestStageSummaryCapacity = 64
+
 type RequestContext struct {
 	TraceID     string
 	RequestID   string
@@ -51,6 +78,118 @@ type RequestContext struct {
 	mu            sync.Mutex
 	metricHandle  any
 	summaryLogged bool
+
+	// 请求级阶段/尝试累积（对齐 Node request-context 的 stageSummaries /
+	// stageSequence / stageSummaryDropped / attemptCount）：stage 记录经
+	// cmd 侧 gateway.request.stage 观测面写入，emission 点在请求结束后
+	// 读取快照。mu 同时守护本组字段与上方生命周期字段。
+	stageSummaries []RequestStageSummary
+	stageTotal     int64
+	stageDropped   int64
+	attemptCount   int64
+
+	// gatewayAttempts 是 /v1 链的网关派发尝试计数（RecordGatewayAttempt
+	// 每次 +1）。与上方 max 语义的 attemptCount（RecordUpstreamAttempt 的
+	// 绝对索引折算）分开累计：同一观测点两者并存，混合 max/+1 会互相污染
+	// （每个观测点 max 到 1 再逐次 +1 会双计）。经 sync/atomic 访问，不
+	// 参与 mu 守护；timing_summary 取两个累积器的较大值。
+	gatewayAttempts int64
+}
+
+// RecordRequestStage accumulates one gateway.request.stage observation
+// (mirrors logRequestStage's context bookkeeping, request-context.ts:248-266):
+// entries ride the summary until requestStageSummaryCapacity, the excess only
+// bumps the dropped counter, and the total sequence counts every stage.
+func (ctx *RequestContext) RecordRequestStage(stage string, outcome string, durationMs int64, startedAt time.Time) {
+	if ctx == nil {
+		return
+	}
+	startedOffsetMs := int64(0)
+	if ctx.StartedAt.After(time.Time{}) {
+		if offset := startedAt.Sub(ctx.StartedAt).Milliseconds(); offset > 0 {
+			startedOffsetMs = offset
+		}
+	}
+	summary := RequestStageSummary{
+		Stage:           stage,
+		Outcome:         outcome,
+		DurationMs:      durationMs,
+		StartedOffsetMs: startedOffsetMs,
+		EndedOffsetMs:   startedOffsetMs + durationMs,
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	ctx.stageTotal++
+	summary.Sequence = ctx.stageTotal
+	if len(ctx.stageSummaries) < requestStageSummaryCapacity {
+		ctx.stageSummaries = append(ctx.stageSummaries, summary)
+	} else {
+		ctx.stageDropped++
+	}
+}
+
+// RecordUpstreamAttempt accumulates one upstream attempt observation
+// (mirrors captureRequestTimingFields, request-context.ts:624-636):
+// attemptCount = max(attemptIndex+1, auditAttemptIndex) over the observed
+// values. A nil index means that index shape is unavailable at the
+// observation point; with both absent only the bare attempt fact registers
+// (attemptCount at least 1) — no count is invented beyond that.
+func (ctx *RequestContext) RecordUpstreamAttempt(attemptIndex, auditAttemptIndex *int) {
+	if ctx == nil {
+		return
+	}
+	observed := int64(0)
+	if attemptIndex != nil && *attemptIndex >= 0 {
+		observed = int64(*attemptIndex) + 1
+	}
+	if auditAttemptIndex != nil && int64(*auditAttemptIndex) > observed {
+		observed = int64(*auditAttemptIndex)
+	}
+	if observed == 0 {
+		observed = 1
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	if observed > ctx.attemptCount {
+		ctx.attemptCount = observed
+	}
+}
+
+// RecordGatewayAttempt accumulates one gateway dispatch attempt (+1) at the
+// chain-level observation point (cmd 侧每次拿到上游响应头的 upstream
+// attempt)。它按发生次数累计，与 RecordUpstreamAttempt 的 max-索引语义互
+// 不覆盖：索引字段缺席的重复观测（引擎内部计数不外露）也能加出真实尝试
+// 次数。W1b 并行面依赖本方法与 GatewayAttemptCount。
+func (ctx *RequestContext) RecordGatewayAttempt() {
+	if ctx == nil {
+		return
+	}
+	atomic.AddInt64(&ctx.gatewayAttempts, 1)
+}
+
+// GatewayAttemptCount returns the accumulated gateway dispatch attempt count.
+func (ctx *RequestContext) GatewayAttemptCount() int {
+	if ctx == nil {
+		return 0
+	}
+	return int(atomic.LoadInt64(&ctx.gatewayAttempts))
+}
+
+// RequestStageAccumulation snapshots the accumulated stage/attempt facts.
+func (ctx *RequestContext) RequestStageAccumulation() RequestStageAccumulation {
+	if ctx == nil {
+		return RequestStageAccumulation{}
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	stages := make([]RequestStageSummary, len(ctx.stageSummaries))
+	copy(stages, ctx.stageSummaries)
+	return RequestStageAccumulation{
+		Stages:                stages,
+		StageCount:            ctx.stageTotal,
+		DroppedStageSummaries: ctx.stageDropped,
+		AttemptCount:          ctx.attemptCount,
+	}
 }
 
 // Context returns the request context attached by RequestContextMiddleware.

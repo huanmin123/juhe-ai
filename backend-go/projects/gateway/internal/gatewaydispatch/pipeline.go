@@ -62,6 +62,14 @@ func (p *CandidatePipeline) FilterCandidates(ctx context.Context, input gatewayp
 	case gatewaypreauth.CandidateOutcomeAccounts:
 		result.Accounts = output.Accounts
 		result.ModelPriority = output.ModelPriority
+		// W1b 续：预过滤跳过明细跨端口投影（gatewaypreauth.AccountSkipDetail
+		// 与引擎侧 AccountSkip 同形 id/reason JSON 键）。
+		if len(output.PreFilterSkipped) > 0 {
+			result.PreFilterSkipped = make([]gatewaypreauth.AccountSkipDetail, 0, len(output.PreFilterSkipped))
+			for _, skip := range output.PreFilterSkipped {
+				result.PreFilterSkipped = append(result.PreFilterSkipped, gatewaypreauth.AccountSkipDetail{AccountID: skip.AccountID, Reason: skip.Reason})
+			}
+		}
 	case gatewaypreauth.CandidateOutcomeFallback:
 		result.Reason = output.Reason
 	}

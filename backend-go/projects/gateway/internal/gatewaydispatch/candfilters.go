@@ -15,11 +15,63 @@ import (
 // gatewayopenai.ResolveAccountModelMapping (protocol model-mapping.ts); the
 // filter bookkeeping mirrors dispatch/model-filter.ts exactly.
 
+// AccountSkip 是候选过滤器带出的单账户跳过明细（W1b 调度可解释性）：
+// 被跳账户 ID + 稳定机器原因（常量字符串，JSON 形状即审计/日志形状）。
+type AccountSkip struct {
+	AccountID string `json:"id"`
+	Reason    string `json:"reason"`
+}
+
+// 候选过滤跳过原因的稳定常量。模型过滤三个 continue 分支一一对应
+// （dispatch/model-filter.ts 语义）；能力过滤的 driver 端口
+// （AccountSupportsGatewayRequest）只有布尔粒度，拿不到单账户细分，
+// 统一记 capability_mismatch。
+const (
+	// CapabilitySkipReasonMismatch：driver 判定该账户不支持本次请求能力。
+	CapabilitySkipReasonMismatch = "capability_mismatch"
+	// ModelSkipReasonUnsupportedConstraint：账户未配置支持模型约束
+	// （SupportedModels 为空，invalidModelConstraint 分支）。
+	ModelSkipReasonUnsupportedConstraint = "unsupported_model_constraint"
+	// ModelSkipReasonUnsupportedMapping：模型映射已解析，但映射后的上游模型
+	// 不在该账户支持模型内（isMappingAllowedBySupportedModels 为 false）。
+	ModelSkipReasonUnsupportedMapping = "unsupported_model_mapping"
+	// ModelSkipReasonModelNotMatched：无映射且请求模型不在账户支持模型内
+	//（直接匹配失败分支）。
+	ModelSkipReasonModelNotMatched = "model_not_matched"
+)
+
+// dispatchCandidateSkipMetadataCap 限制随审计标签出站的逐账户明细条数：
+// 大分组不得爆炸审计记录；截断由 skippedTruncated 布尔键表达。
+const dispatchCandidateSkipMetadataCap = 20
+
+// AccountSkipsAuditMetadata 把过滤器跳过明细投影为审计 metadata 值
+// （[{id, reason}...]，最多 dispatchCandidateSkipMetadataCap 条），并返回
+// 是否发生截断。
+func AccountSkipsAuditMetadata(skips []AccountSkip) ([]map[string]any, bool) {
+	if len(skips) == 0 {
+		return nil, false
+	}
+	capped := skips
+	truncated := false
+	if len(skips) > dispatchCandidateSkipMetadataCap {
+		capped = skips[:dispatchCandidateSkipMetadataCap]
+		truncated = true
+	}
+	out := make([]map[string]any, 0, len(capped))
+	for _, skip := range capped {
+		out = append(out, map[string]any{"id": skip.AccountID, "reason": skip.Reason})
+	}
+	return out, truncated
+}
+
 // CapabilityFilterResult mirrors GatewayAccountCapabilityFilterResult.
 type CapabilityFilterResult struct {
 	Accounts     []AccountCandidate
 	SkippedCount int
 	Reason       string
+	// Skipped 是逐账户跳过明细（与 SkippedCount 同一事实的展开；W1b 追加
+	// 字段，零值（nil）不改变既有调用方与 JSON/metadata 形状）。
+	Skipped []AccountSkip
 }
 
 // FilterGatewayAccountsByRequestCapability mirrors
@@ -36,13 +88,16 @@ func FilterGatewayAccountsByRequestCapability(
 		capabilityReq = gatewayRequestWithModelOverride(req, requestModelOverride)
 	}
 	filtered := make([]AccountCandidate, 0, len(accounts))
+	var skipped []AccountSkip
 	for _, account := range accounts {
 		if driver.AccountSupportsGatewayRequest(capabilityReq, account, requestClientCompatibility) {
 			filtered = append(filtered, account)
+			continue
 		}
+		skipped = append(skipped, AccountSkip{AccountID: account.ID, Reason: CapabilitySkipReasonMismatch})
 	}
 	skippedCount := len(accounts) - len(filtered)
-	result := CapabilityFilterResult{Accounts: filtered, SkippedCount: skippedCount}
+	result := CapabilityFilterResult{Accounts: filtered, SkippedCount: skippedCount, Skipped: skipped}
 	if len(accounts) > 0 && len(filtered) == 0 {
 		result.Reason = driver.GatewayRequestCapabilityMismatchReason(capabilityReq, accounts)
 	}
@@ -117,6 +172,9 @@ type ModelFilterResult struct {
 	SourceEndpointFamily        string
 	ModelPriority               *gatewayrouting.GatewayAccountModelPriority
 	Reason                      string
+	// Skipped 是逐账户跳过明细，reason 取 ModelSkipReason* 稳定常量（W1b
+	// 追加字段，零值（nil）不改变既有调用方与 JSON/metadata 形状）。
+	Skipped []AccountSkip
 }
 
 // FilterGatewayAccountsByRequestedModel mirrors
@@ -129,6 +187,7 @@ func FilterGatewayAccountsByRequestedModel(
 	model := trimString(requestedModel)
 	var skippedCount, limitedAccountCount, invalidModelConstraintCount int
 	var directMatchedCount, mappingMatchedCount int
+	var skipped []AccountSkip
 	directMatchedAccounts := make([]AccountCandidate, 0, len(accounts))
 	mappingMatchedAccounts := make([]AccountCandidate, 0, len(accounts))
 	rankByAccountID := make(map[string]int, len(accounts))
@@ -139,6 +198,7 @@ func FilterGatewayAccountsByRequestedModel(
 			invalidModelConstraintCount++
 			skippedCount++
 			rankByAccountID[account.ID] = ModelPriorityRankUnsupported
+			skipped = append(skipped, AccountSkip{AccountID: account.ID, Reason: ModelSkipReasonUnsupportedConstraint})
 			continue
 		}
 		limitedAccountCount++
@@ -151,6 +211,7 @@ func FilterGatewayAccountsByRequestedModel(
 			} else {
 				skippedCount++
 				rankByAccountID[account.ID] = ModelPriorityRankUnsupported
+				skipped = append(skipped, AccountSkip{AccountID: account.ID, Reason: ModelSkipReasonUnsupportedMapping})
 			}
 			continue
 		}
@@ -162,6 +223,7 @@ func FilterGatewayAccountsByRequestedModel(
 		}
 		skippedCount++
 		rankByAccountID[account.ID] = ModelPriorityRankUnsupported
+		skipped = append(skipped, AccountSkip{AccountID: account.ID, Reason: ModelSkipReasonModelNotMatched})
 	}
 	filtered := append(append([]AccountCandidate{}, directMatchedAccounts...), mappingMatchedAccounts...)
 
@@ -172,6 +234,7 @@ func FilterGatewayAccountsByRequestedModel(
 	result := ModelFilterResult{
 		Accounts:                    filtered,
 		SkippedCount:                skippedCount,
+		Skipped:                     skipped,
 		LimitedAccountCount:         limitedAccountCount,
 		InvalidModelConstraintCount: invalidModelConstraintCount,
 		DirectMatchedCount:          directMatchedCount,

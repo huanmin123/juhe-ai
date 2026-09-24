@@ -710,13 +710,18 @@ func TestW1BBootCoverOwnerFailFastArms(t *testing.T) {
 	// 存在，该臂失去被测对象。
 
 	// K3: businessOwnerGate 首步（JUHE_AI_BUSINESS_OWNER 非 gateway）→
-	// stderr 含 verify business owner gates。2026-09-19 起 sqlite +
-	// BUSINESS_* 家族全空会零配置自动认领（新装部署直通），错误臂改用显式
-	// 非 gateway owner 保持门禁覆盖。
+	// stderr 含 verify business owner gates。2026-09-22 起门禁家族收窄为
+	// 五个切流语义变量：纯运维变量（BUSINESS_OWNER、BUSINESS_DATABASE_PATH、
+	// BUSINESS_POSTGRES_URL）不触发切流门禁、也不阻止零配置自动认领，只配
+	// BUSINESS_OWNER=legacy 会被 runtime.go 自动认领改写为 gateway 而直通。
+	// 错误臂显式配置五证任一成员（JUHE_AI_BUSINESS_OWNER_EPOCH）阻止自动
+	// 认领，businessOwnerGate 对非 gateway owner 的 fail-fast 才重新可达；
+	// 原携带的 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED 已不解析（2026-09-21 起
+	// 组合根与网关链恒开），删除。
 	coverageDir = w1bCoverageDir(t, "K3-business-owner-gate")
 	_, stderr, code = w1bRunScenario(t, "K3-business-owner-gate", w1bOwnerBaseEnv(t, coverageDir,
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
-		"JUHE_AI_BUSINESS_OWNER=legacy"))
+		"JUHE_AI_BUSINESS_OWNER=legacy",
+		"JUHE_AI_BUSINESS_OWNER_EPOCH=epoch-legacy"))
 	w1bRequireExitCode(t, "K3-business-owner-gate", code, 1)
 	w1bRequireContains(t, "K3-business-owner-gate", stderr, "verify business owner gates: 启用系统 API 组合根时 JUHE_AI_BUSINESS_OWNER 必须为 gateway")
 

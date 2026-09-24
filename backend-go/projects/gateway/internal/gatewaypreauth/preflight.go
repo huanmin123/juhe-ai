@@ -895,7 +895,9 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		Req: req, Res: res, AuditCapture: auditCapture, UsageContext: usageContext,
 		StartedAt: input.StartedAt, CandidateAccounts: candidateFilter.Accounts,
 		ModelPriority: candidateFilter.ModelPriority, SessionAffinityKey: sessionAffinityKey,
-		GroupAccess: *groupAccess, SystemAccountID: systemAccountID,
+		// W1b 续：预过滤（能力/模型）跳过明细透传给决策摘要。
+		PreFilterSkipped: candidateFilter.PreFilterSkipped,
+		GroupAccess:      *groupAccess, SystemAccountID: systemAccountID,
 		APIKeyID: apiKeyID, GroupID: groupID,
 		RouteStrategyID:             recordRouteStrategyID(apiKeyRecord),
 		NormalRouteSpeedFirstConfig: normalRouteSpeedFirstConfig,

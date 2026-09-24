@@ -16,6 +16,9 @@ type CandidateFilterOutput struct {
 	Outcome       string
 	Accounts      []AccountCandidate
 	ModelPriority *gatewayrouting.GatewayAccountModelPriority
+	// PreFilterSkipped 是能力 + 模型两层过滤的逐账户跳过明细（最终窗口
+	// 之前的过滤层；W1b 续带出，见最终出口组装）。
+	PreFilterSkipped []AccountSkip
 	// Fallback variant
 	Reason  string
 	Context any
@@ -99,11 +102,16 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 		input.ClientStrategy.RequestClientCompatibility, "",
 	)
 	if capabilityFilter.SkippedCount > 0 {
+		// W1b：逐账户跳过明细带出（加法键；截断保护见
+		// AccountSkipsAuditMetadata）。
+		skippedDetail, skippedTruncated := AccountSkipsAuditMetadata(capabilityFilter.Skipped)
 		input.AuditCapture.AddGatewayMetadata("account_request_capability_filter", map[string]any{
 			"skippedCount":               capabilityFilter.SkippedCount,
 			"remainingCount":             len(capabilityFilter.Accounts),
 			"reason":                     capabilityFilter.Reason,
 			"requestClientCompatibility": input.ClientStrategy.RequestClientCompatibility,
+			"skipped":                    skippedDetail,
+			"skippedTruncated":           skippedTruncated,
 		})
 	}
 	if len(rawCandidateAccounts) > 0 && len(capabilityFilter.Accounts) == 0 {
@@ -202,7 +210,7 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 		if reasonAttribute == "" {
 			reasonAttribute = nil
 		}
-		input.AuditCapture.AddGatewayMetadata("account_model_filter", map[string]any{
+		modelFilterMetadata := map[string]any{
 			"requestedModel":              requestedModelAttribute,
 			"sourceEndpointFamily":        familyAttribute,
 			"skippedCount":                modelFilter.SkippedCount,
@@ -212,7 +220,15 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 			"mappingMatchedCount":         modelFilter.MappingMatchedCount,
 			"remainingCount":              len(modelFilter.Accounts),
 			"reason":                      reasonAttribute,
-		})
+		}
+		// W1b：逐账户跳过明细带出（reason 为 ModelSkipReason* 三分支稳定
+		// 常量；加法键，截断保护见 AccountSkipsAuditMetadata）。
+		if len(modelFilter.Skipped) > 0 {
+			skippedDetail, skippedTruncated := AccountSkipsAuditMetadata(modelFilter.Skipped)
+			modelFilterMetadata["skipped"] = skippedDetail
+			modelFilterMetadata["skippedTruncated"] = skippedTruncated
+		}
+		input.AuditCapture.AddGatewayMetadata("account_model_filter", modelFilterMetadata)
 	}
 	if len(capabilityFilter.Accounts) > 0 && len(modelFilter.Accounts) == 0 {
 		reason := modelFilter.Reason
@@ -243,5 +259,9 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 		Outcome:       gatewaypreauth.CandidateOutcomeAccounts,
 		Accounts:      modelFilter.Accounts,
 		ModelPriority: modelFilter.ModelPriority,
+		// W1b 续：能力 + 模型两层过滤的逐账户跳过明细随出口带出（reload
+		// 分支覆盖 capabilityFilter/modelFilter 后此处取最终值），经端口透
+		// 传给决策摘要；只读投影，不改变过滤行为。
+		PreFilterSkipped: append(append([]AccountSkip{}, capabilityFilter.Skipped...), modelFilter.Skipped...),
 	}, nil
 }

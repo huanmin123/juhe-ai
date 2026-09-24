@@ -233,13 +233,33 @@ func emitHTTPRequestClosed(context *RequestContext, statusCode *int, durationMs 
 }
 
 // emitHTTPRequestTimingSummary mirrors logRequestTimingSummary
-// (request-context.ts:568-622) over the kernel-observed fields. Stage
-// summaries stay a response-layer concept (the /v1 chain logs stages through
-// its own observability port), so stages render as the empty list — the same
-// shape Node emits when timing detail is not sampled. Only gateway-route
-// requests carry Node stage summaries, so the summary is gated to that route
-// group exactly like the Node early-return for stage-less requests.
+// (request-context.ts:568-622) over the kernel-observed fields. The stage
+// summaries and attempt count come from the RequestContext accumulator the
+// /v1 chain feeds (RecordRequestStage / RecordUpstreamAttempt); every request
+// still emits exactly one summary. Failure, interruption and problem stages
+// are unaffected by detail sampling (运行日志降噪与终态语义设计 §2.2), so
+// failed/aborted summaries carry the real bounded stages list while
+// unsampled normal successes keep the scalar counts and durations with an
+// empty stages list and stageDetailsSampled=false (安全与日志策略:121).
+// timingLogDroppedCount stays the honest zero: the Go runtime-log drop
+// accounting lives in the bounded slog handler, not in a per-request seam.
 func emitHTTPRequestTimingSummary(context *RequestContext, statusCode *int, outcome string, totalDurationMs int64) {
+	accumulation := context.RequestStageAccumulation()
+	// attemptCount 取两个累积器的较大值：RecordUpstreamAttempt 折算的绝对
+	// 索引观测与 RecordGatewayAttempt 的逐次 +1 计数，谁更接近真实尝试次数
+	// 用谁（索引缺席的观测加不出高值，逐次计数兜底；nil/零值安全，字段名
+	// 保持 attemptCount）。
+	attemptCount := accumulation.AttemptCount
+	if gateway := int64(context.GatewayAttemptCount()); gateway > attemptCount {
+		attemptCount = gateway
+	}
+	stages := []any{}
+	if outcome != "success" && len(accumulation.Stages) > 0 {
+		stages = make([]any, 0, len(accumulation.Stages))
+		for index := range accumulation.Stages {
+			stages = append(stages, accumulation.Stages[index])
+		}
+	}
 	fields := map[string]any{
 		"event":                 "gateway.request.timing_summary",
 		"version":               1, // LOG_EVENT_VERSION
@@ -250,14 +270,14 @@ func emitHTTPRequestTimingSummary(context *RequestContext, statusCode *int, outc
 		"method":                context.Method,
 		"path":                  context.Path,
 		"outcome":               outcome,
-		"attemptCount":          0,
+		"attemptCount":          attemptCount,
 		"totalDurationMs":       totalDurationMs,
 		"durationMs":            totalDurationMs,
-		"stageCount":            0,
+		"stageCount":            accumulation.StageCount,
 		"timingLogDroppedCount": 0,
-		"droppedStageSummaries": 0,
+		"droppedStageSummaries": accumulation.DroppedStageSummaries,
 		"stageDetailsSampled":   false,
-		"stages":                []any{},
+		"stages":                stages,
 	}
 	if context.ClientIP != "" {
 		fields["clientIp"] = context.ClientIP
@@ -266,5 +286,6 @@ func emitHTTPRequestTimingSummary(context *RequestContext, statusCode *int, outc
 		fields["statusCode"] = *statusCode
 	}
 	emitRequestEvent("info", fields, "网关请求耗时汇总："+
-		strconv.FormatInt(totalDurationMs, 10)+"ms，0 次上游尝试，"+outcome)
+		strconv.FormatInt(totalDurationMs, 10)+"ms，"+
+		strconv.FormatInt(attemptCount, 10)+" 次上游尝试，"+outcome)
 }

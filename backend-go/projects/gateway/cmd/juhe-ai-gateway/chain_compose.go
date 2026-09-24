@@ -533,6 +533,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	if deps.WakeRecoverableWaiter != nil {
 		gatewaydispatch.SetRecoverableUnavailableRuntimeWaiterNotifier(deps.WakeRecoverableWaiter)
 	}
+	// W1b 接线：候选准备完成 → gateway_dispatch_decision 结构化日志
+	//（进程级观察槽，观察回调 panic-safe；引擎侧默认 no-op，本组合根必装）。
+	gatewaydispatch.SetDispatchDecisionObserver(newChainDispatchDecisionObserver(logger))
 	if chainTurnRetry != nil {
 		engine.ClientSourceAvoidance = &chainClientSourceAvoidance{turnRetry: chainTurnRetry}
 	} else {

@@ -534,8 +534,12 @@ func TestWorkerRetentionRecordCleanupRetryRound(t *testing.T) {
 	mustExec(t, stats,
 		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, updated_at) VALUES ('sys_a', 'api_key', 'key1', 1, '2020-01-01T00:00:00.000Z')`,
 		`INSERT INTO account_quality_dirty_accounts (account_id, first_dirty_at, updated_at) VALUES ('acc-1', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`,
-		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name, updated_at) VALUES ('2099-01-01T00:00:00.000Z', 'u-x', 'usage_shard', '20200101:s01', 'usage_stats_aggregation', '2020-01-01T00:00:00.000Z')`,
-		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name, updated_at) VALUES ('2099-01-01T00:00:00.000Z', 'u-x', 'usage_shard', '20200101:s01', 'client_ip_stats_aggregation', '2020-01-01T00:00:00.000Z')`)
+		// 关联清理放行门（sqliteAggregationFloorCursorAt）只认双聚合 job 的
+		// global 游标（scope_type='global', scope_id=''；生产写入侧
+		// statsagg.aggregate / statsverify.clientipagg 同款）：游标缺失时
+		// 门禁关闭，清理轮只 deferred 不删行。
+		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name, updated_at) VALUES ('2099-01-01T00:00:00.000Z', 'u-x', 'global', '', 'usage_stats_aggregation', '2020-01-01T00:00:00.000Z')`,
+		`INSERT INTO stats_job_state (cursor_created_at, cursor_id, scope_type, scope_id, job_name, updated_at) VALUES ('2099-01-01T00:00:00.000Z', 'u-x', 'global', '', 'client_ip_stats_aggregation', '2020-01-01T00:00:00.000Z')`)
 	// 重建带主键的 deductions 表（前面仅建了 updated_at 列）。
 	mustExec(t, stats,
 		"DROP TABLE usage_record_cleanup_deductions",

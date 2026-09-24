@@ -304,6 +304,10 @@ type FailedUpstreamResponseResult struct {
 	TryNextApiKeyForRequest bool
 	KeyScopedFailure        bool
 	PendingApiKeyFailure    *PendingAccountApiKeyFailure
+	// UpstreamStageRecorded 标记失败派发器已为本尝试写入 upstream.fetch_headers
+	// 阶段（gateway 流量分支）；经引擎带入 UpstreamDispatchResult 后，链面对
+	// 同一 attempt 不再重复发射该 stage。
+	UpstreamStageRecorded bool
 }
 
 // CompatibilityRecovery mirrors recovery.

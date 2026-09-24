@@ -22,6 +22,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
 // chainAPIKeyValidator implements gatewaypreauth.GatewayAPIKeyValidator. The
@@ -247,10 +248,17 @@ func (g *chainSpeedFirstBodyAdmissionGate) AdmitBody(
 	if g == nil || g.preauth == nil {
 		return chainSpeedFirstBodyAdmissionOutcome{}, nil
 	}
+	// traceId 函数入口取一次 kernel 请求上下文（与 stage 累积入库键同源）；
+	// req.HTTP 为 nil 时置空串，不生成随机值污染日志。
+	traceID := ""
+	if req.HTTP != nil {
+		traceID = kernel.Context(req.HTTP).TraceID
+	}
 	stageStartedAt := g.preauth.StartedAt()
 	runtime := req.Runtime
 	if !chainSpeedFirstBodyAdmissionApplies(runtime, requestLane) {
 		g.preauth.Observability.LogRequestStage("body.speed_first_admission", map[string]any{
+			"traceId":       traceID,
 			"admissionMode": "speed_first_high_concurrency",
 			"applicable":    false,
 			"requestLane":   string(requestLane),
@@ -279,6 +287,7 @@ func (g *chainSpeedFirstBodyAdmissionGate) AdmitBody(
 	if !decision.Acquired {
 		if decision.Reason == gatewayhotquality.BodyAdmissionRejectAborted || (ctx != nil && ctx.Err() != nil) {
 			g.preauth.Observability.LogRequestStage("body.speed_first_admission", map[string]any{
+				"traceId":       traceID,
 				"admissionMode": "speed_first_high_concurrency",
 				"reason":        string(decision.Reason),
 			}, "aborted", stageStartedAt)
@@ -301,6 +310,7 @@ func (g *chainSpeedFirstBodyAdmissionGate) AdmitBody(
 			gatewaypreauth.GatewayErrorPayloadOf(message, "rate_limit_error"),
 			gatewaypreauth.SendGatewayErrorOptions{})
 		g.preauth.Observability.LogRequestStage("body.speed_first_admission", map[string]any{
+			"traceId":       traceID,
 			"admissionMode": "speed_first_high_concurrency",
 			"failureReason": failureReason,
 			"decisionInputs": map[string]any{
@@ -321,11 +331,13 @@ func (g *chainSpeedFirstBodyAdmissionGate) AdmitBody(
 	if ctx != nil && ctx.Err() != nil {
 		release()
 		g.preauth.Observability.LogRequestStage("body.speed_first_admission", map[string]any{
+			"traceId":       traceID,
 			"admissionMode": "speed_first_high_concurrency",
 		}, "aborted", stageStartedAt)
 		return chainSpeedFirstBodyAdmissionOutcome{Handled: true}, nil
 	}
 	g.preauth.Observability.LogRequestStage("body.speed_first_admission", map[string]any{
+		"traceId":       traceID,
 		"admissionMode": "speed_first_high_concurrency",
 		"acquired":      true,
 		"capacity":      capacity,

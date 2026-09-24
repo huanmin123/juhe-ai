@@ -58,8 +58,12 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			AttemptStartedAt:     c.attemptStartedAt,
 			EffectiveServiceTier: c.loop.effectiveServiceTier,
 			TimeoutProfile:       in.timeoutProfile,
-			ReleaseConcurrency:   onceFunc(c.loop.concurrencySlot.Release),
-			MarkFirstOutput:      c.markFirstOutput,
+			// 观测面带出本尝试的真实索引（与失败派发器输入同值域：
+			// auditAttemptIndex 在每次真实尝试前自增，是该尝试的 1-based 序数）。
+			AttemptIndex:       *c.attemptIndex,
+			AuditAttemptIndex:  *in.auditAttemptIndex,
+			ReleaseConcurrency: onceFunc(c.loop.concurrencySlot.Release),
+			MarkFirstOutput:    c.markFirstOutput,
 			ConfirmSameAccountApiKeyFailures: func() error {
 				return e.recordConfirmedSameAccountApiKeyFailures(ctx, confirmFailures, c.account, usageContext)
 			},
@@ -170,6 +174,9 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			AttemptStartedAt:                 c.attemptStartedAt,
 			EffectiveServiceTier:             c.loop.effectiveServiceTier,
 			TimeoutProfile:                   in.timeoutProfile,
+			AttemptIndex:                     *c.attemptIndex,
+			AuditAttemptIndex:                *in.auditAttemptIndex,
+			UpstreamStageRecorded:            failedResponseResult.UpstreamStageRecorded,
 			ReleaseConcurrency:               onceFunc(c.loop.concurrencySlot.Release),
 			MarkFirstOutput:                  c.markFirstOutput,
 			ConfirmSameAccountApiKeyFailures: func() error { return nil },

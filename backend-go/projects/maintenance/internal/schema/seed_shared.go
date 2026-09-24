@@ -263,6 +263,18 @@ func activeModelCatalogSeedRows(asOfUTCDate string) []modelCatalogSeedRow {
 	return active
 }
 
+// ActiveModelCatalogSeedRowCount exports the shutdown filter of
+// activeModelCatalogSeedRows as a row count: the rows the SQLite/PostgreSQL
+// seeds upsert into provider_model_catalog must equal this count for the same
+// UTC date. The maintenance-internal test
+// TestActiveModelCatalogSeedRowCountMatchesSeed locks that equality against a
+// real seed run; external same-source consumers (the gateway storage bootstrap
+// test) read the same count through bootstrap.SQLiteSeedResult.ModelCatalogRows
+// because maintenance internal is not importable across modules.
+func ActiveModelCatalogSeedRowCount(asOfUTCDate string) int {
+	return len(activeModelCatalogSeedRows(asOfUTCDate))
+}
+
 // defaultRouteStrategyIDForGroup mirrors defaultRouteStrategyIdForGroup.
 func defaultRouteStrategyIDForGroup(groupID string) string {
 	return seedReplacePrefix(groupID, "grp_", "route_strategy_")

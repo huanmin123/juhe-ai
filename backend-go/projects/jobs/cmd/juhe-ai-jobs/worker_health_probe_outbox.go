@@ -443,11 +443,20 @@ func (p healthProbeOutboxPruner) pruneCycle(ctx context.Context) {
 
 // wireHealthProbeFenceSettler 迁移自被删 healthDispatchSourceFenceSettler：
 // 复用账户电路运行态的 Redis 键空间（与 worker_circuit_jobs.go 同
-// URL/namespace 约定）。Redis 未配置或 namespace 非法时返回 nil settler
-// （fence 不结算，被删桥中该失败亦为 warn 语义），closer 为 nil。
+// URL/namespace 约定）。两种"无 settler"分支语义不同（2026-09-23 模式平等
+// 修正）：未配置 JUHE_AI_REDIS_STATE_URL 是 standalone 的正常 shape——source
+// fence 运行态在 standalone 属于 gateway 进程内 gatewaycircuit memory store
+// （generation 过期兜底），账号健康事实仍写业务库，jobs 侧没有需要结算的
+// Redis 键空间，因此只记 Info 说明而非 Warn 降级；已配置 URL 但 namespace
+// 非法才是真配置错误，保留 Warn。两种分支都返回 nil settler / nil closer。
 func (a *workerAssembly) wireHealthProbeFenceSettler() (accounthealth.ProbeSourceFenceSettler, func() error, error) {
-	if strings.TrimSpace(a.config.RedisStateURL) == "" || !speedfirstrepo.ValidSpeedFirstNamespace(a.config.RedisNamespace) {
-		a.logger.Warn("账户健康探针 outbox 的 source fence 结算不可用（缺 JUHE_AI_REDIS_STATE_URL 或 namespace 非法）",
+	if strings.TrimSpace(a.config.RedisStateURL) == "" {
+		a.logger.Info("未配置 JUHE_AI_REDIS_STATE_URL：source fence 结算属 Redis 电路运行态（performance 模式），standalone 下该运行态由 gateway 进程内协调器管理，无需 jobs 结算",
+			"event", "account_health_probe_outbox_fence_settler_standalone")
+		return nil, nil, nil
+	}
+	if !speedfirstrepo.ValidSpeedFirstNamespace(a.config.RedisNamespace) {
+		a.logger.Warn("账户健康探针 outbox 的 source fence 结算不可用（已配置 JUHE_AI_REDIS_STATE_URL 但 namespace 非法）",
 			"event", "account_health_probe_outbox_fence_settler_unavailable")
 		return nil, nil, nil
 	}

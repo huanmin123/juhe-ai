@@ -15,6 +15,7 @@ package jobsched
 
 import (
 	"context"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -175,6 +176,9 @@ type Options struct {
 	StableSeed string
 	Clock      Clock
 	Random     func() float64
+	// Logger 为可选的逐轮 outcome 日志（W2）；nil（零值）时全部日志调用
+	// 为 no-op，调度行为与内存记账不变。
+	Logger *slog.Logger
 }
 
 // laneState 对齐 Node WorkerScheduledJobLaneState。
@@ -188,6 +192,7 @@ type Scheduler struct {
 	clock      Clock
 	random     func() float64
 	stableSeed string
+	logger     *slog.Logger
 
 	mu      sync.Mutex
 	jobs    map[string]*jobState
@@ -261,6 +266,7 @@ func NewScheduler(options Options) *Scheduler {
 		clock:      options.Clock,
 		random:     options.Random,
 		stableSeed: options.StableSeed,
+		logger:     options.Logger,
 		jobs:       map[string]*jobState{},
 		lanes:      map[string]*laneState{},
 		stopCh:     make(chan struct{}),
@@ -546,6 +552,10 @@ func (s *Scheduler) fire(job *jobState, kind fireKind, scheduledAt time.Time) {
 		return
 	}
 	if !s.acquireLane(job) {
+		// W2：lane 忙此前静默 return，Debug 留痕补齐行级定位。
+		if s.logger != nil {
+			s.logger.Debug("jobsched_lane_busy", "job", job.spec.Name, "lane", job.spec.Lane)
+		}
 		return
 	}
 	s.runOnce(job, scheduledAt)
@@ -669,6 +679,14 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	timedOut := spec.Timeout > 0 && ctxErr == context.DeadlineExceeded
 	stoppedRun := !timedOut && (ctxErr == context.Canceled || s.isStopped())
 
+	// W2 逐轮 outcome 日志的锁内快照：日志在记账完成后锁外输出，避免持锁
+	// 调用 handler；nil logger 时提前返回，不构造任何日志参数。
+	var (
+		logConsecFail   int64
+		logBackoffUntil *time.Time
+		logWarning      string
+		logSkipReason   string
+	)
 	s.mu.Lock()
 	job.running = false
 	job.runningSince = nil
@@ -693,6 +711,8 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 		job.lastErrorAt = &finishedAt
 		job.lastError = "后台任务执行超时"
 		job.backoffUntil = s.backoffTargetLocked(job, job.consecFail, finishedAt)
+		logConsecFail = job.consecFail
+		logBackoffUntil = job.backoffUntil
 	case runErr != nil:
 		job.failure++
 		job.consecFail++
@@ -700,6 +720,8 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 		job.lastErrorAt = &finishedAt
 		job.lastError = runErr.Error()
 		job.backoffUntil = s.backoffTargetLocked(job, job.consecFail, finishedAt)
+		logConsecFail = job.consecFail
+		logBackoffUntil = job.backoffUntil
 	default:
 		switch result.Outcome {
 		case OutcomePartial:
@@ -714,6 +736,7 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 				job.lastWarning = result.Warning
 			}
 			job.lastError = ""
+			logWarning = job.lastWarning
 		case OutcomeSkipped:
 			job.taskSkip++
 			job.consecFail = 0
@@ -726,6 +749,7 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 				job.lastSkipReason = result.Warning
 			}
 			job.lastError = ""
+			logSkipReason = job.lastSkipReason
 		default:
 			job.success++
 			job.consecFail = 0
@@ -740,6 +764,35 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 		}
 	}
 	s.mu.Unlock()
+
+	if s.logger == nil {
+		return
+	}
+	// W2：逐轮 outcome 日志（锁外、每轮恰好一条）。级别策略：timeout /
+	// runErr / partial 失败本体打 Warn 保证可归因；task skipped、停机与成功
+	// 打 Debug，防止高频任务的正常轮刷屏。
+	switch {
+	case stoppedRun:
+		s.logger.Debug("jobsched_run_stopped", "job", spec.Name, "skipReason", "scheduler_stopped")
+	case timedOut:
+		attrs := []any{"job", spec.Name, "durationMs", duration, "consecFail", logConsecFail}
+		if logBackoffUntil != nil {
+			attrs = append(attrs, "nextRetryAt", *logBackoffUntil)
+		}
+		s.logger.Warn("jobsched_run_timeout", attrs...)
+	case runErr != nil:
+		attrs := []any{"job", spec.Name, "error", runErr.Error(), "durationMs", duration, "consecFail", logConsecFail}
+		if logBackoffUntil != nil {
+			attrs = append(attrs, "backoffMs", logBackoffUntil.Sub(finishedAt).Milliseconds())
+		}
+		s.logger.Warn("jobsched_run_failed", attrs...)
+	case result.Outcome == OutcomePartial:
+		s.logger.Warn("jobsched_run_partial", "job", spec.Name, "warning", logWarning)
+	case result.Outcome == OutcomeSkipped:
+		s.logger.Debug("jobsched_run_skipped", "job", spec.Name, "skipReason", logSkipReason)
+	default:
+		s.logger.Debug("jobsched_run_success", "job", spec.Name, "durationMs", duration)
+	}
 }
 
 // armPostRun 在一轮结束后收尾重排（对齐 Node runJob finally）：失败退避安排
@@ -811,12 +864,18 @@ func (s *Scheduler) inBackoff(job *jobState, now time.Time) bool {
 
 func (s *Scheduler) recordSkip(job *jobState, now time.Time, reason string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	job.skipped++
 	stamp := now
 	job.lastSkipAt = &stamp
 	job.lastSkipReason = reason
 	job.lastOutcome = OutcomeSkipped
+	s.mu.Unlock()
+	// W2：退避期跳过只打 Debug（失败本体已有 Warn，退避期每轮 Warn 会刷屏，
+	// 如 3s 任务 × 5min 退避 = 100 条）；"running" overlap 策略属正常路径，
+	// 只靠既有 skipped 计数。
+	if reason == "failure_backoff" && s.logger != nil {
+		s.logger.Debug("jobsched_run_backoff_skip", "job", job.spec.Name)
+	}
 }
 
 func (s *Scheduler) markCoalesced(job *jobState, now time.Time) {

@@ -351,6 +351,24 @@ func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresp
 		GroupAuthorizationSourceTeamID: input.UsageContext.GroupAuthorizationSourceTeamID,
 		Model:                          input.RequestedModel,
 	}
+	// ParsedUsage 的 token 字段、响应模型名与上报服务层级全量透传（*int
+	// 直接赋值，缺失保持 nil→NULL、0 保持零值；string 空串 = 缺失，rows.go
+	// reportedServiceTier 走 nilableString 落 NULL。Node records.ts
+	// recordCompletedUpstreamAttempt 同款字段直传）。
+	// 定价面未在完成尝试输入中提供，保持 NULL。
+	record.InputTokens = input.Usage.InputTokens
+	record.OutputTokens = input.Usage.OutputTokens
+	record.CacheReadTokens = input.Usage.CacheReadTokens
+	record.CacheWriteTokens = input.Usage.CacheWriteTokens
+	record.CacheWrite1hTokens = input.Usage.CacheWrite1hTokens
+	record.ThinkingTokens = input.Usage.ThinkingTokens
+	record.InputImageTokens = input.Usage.InputImageTokens
+	record.OutputImageTokens = input.Usage.OutputImageTokens
+	record.InputAudioTokens = input.Usage.InputAudioTokens
+	record.OutputAudioTokens = input.Usage.OutputAudioTokens
+	record.OutputImageCount = input.Usage.OutputImageCount
+	record.UpstreamResponseModel = input.Usage.UpstreamResponseModel
+	record.ReportedServiceTier = input.Usage.ServiceTier
 	applyUsageAccountScope(&record, input.Account)
 	stream := input.Stream
 	record.Stream = &stream

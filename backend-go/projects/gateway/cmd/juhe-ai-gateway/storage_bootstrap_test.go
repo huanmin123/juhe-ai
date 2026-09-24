@@ -17,6 +17,30 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
 
+// seedActiveModelCatalogRowCount 在临时库上重放与
+// ensureGatewaySQLiteStoragePreflight 完全相同的 ensure+seed（同一个
+// bootstrap 出口、同一默认墙钟），返回种子自身的 ModelCatalogRows——
+// 即按当前 UTC 日期过滤 shutdown 到期行后的活跃种子行数。expected 断言
+// 与被测种子同源计算，种子快照演进或 shutdown 到期漂移时不再失真；
+// maintenance 的 internal/schema 因 Go internal 可见性规则不可跨模块
+// import，bootstrap.SQLiteSeedResult 是既有的受控同源出口。
+func seedActiveModelCatalogRowCount(t *testing.T, secret string) int {
+	t.Helper()
+	db, err := bootstrap.OpenSQLiteFile(filepath.Join(t.TempDir(), "catalog-count-source.sqlite3"))
+	if err != nil {
+		t.Fatalf("open catalog count source db: %v", err)
+	}
+	defer db.Close()
+	if _, err := bootstrap.EnsureSQLiteSchema(context.Background(), bootstrap.SQLiteSchemaBusiness, db); err != nil {
+		t.Fatalf("ensure catalog count source schema: %v", err)
+	}
+	result, err := bootstrap.SeedSQLiteBusiness(context.Background(), db, bootstrap.SeedOptions{Secret: secret})
+	if err != nil {
+		t.Fatalf("seed catalog count source: %v", err)
+	}
+	return result.ModelCatalogRows
+}
+
 func gatewayPreflightTestConfig(t *testing.T) (runtimeConfig, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -60,10 +84,13 @@ func TestEnsureGatewaySQLiteStoragePreflight(t *testing.T) {
 	if err := businessDB.QueryRow("SELECT count(*) FROM provider_model_catalog").Scan(&catalogRows); err != nil {
 		t.Fatalf("query model catalog: %v", err)
 	}
-	// 行数跟随 model_catalog_data.go 演进（2026-09-20 实测种子 113 行，含
-	// gpt-image-2 等新增条目）；改种子必须同步此断言。
-	if catalogRows != 113 {
-		t.Fatalf("model catalog rows = %d, want 113", catalogRows)
+	// 行数与被测种子同源计算：期望值取自同一 bootstrap 种子在临时库上写出的
+	// 活跃行数（按当前 UTC 日期过滤 shutdown 到期行），替换原硬编码 113——
+	// 种子快照演进或 shutdown 到期漂移时断言不再失真。期望库与被测库的两次
+	// 种子间隔若跨 UTC 午夜存在理论竞态，概率可忽略，不做防御。
+	wantCatalogRows := seedActiveModelCatalogRowCount(t, cfg.Secret)
+	if catalogRows != wantCatalogRows {
+		t.Fatalf("model catalog rows = %d, want %d (同源活跃种子行数)", catalogRows, wantCatalogRows)
 	}
 	var apiKeys int
 	if err := businessDB.QueryRow("SELECT count(*) FROM api_keys").Scan(&apiKeys); err != nil {

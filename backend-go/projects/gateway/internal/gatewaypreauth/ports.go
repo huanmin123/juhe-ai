@@ -252,6 +252,15 @@ type CandidateFilterInput struct {
 	RouteCoordinator gatewayrouting.GatewayRouteCoordinatorOwner
 }
 
+// AccountSkipDetail 是候选管道预过滤层（能力/模型过滤）的一条逐账户跳过
+// 明细。定义在端口层（gatewaydispatch.AccountSkip 的跨包投影；JSON 键名
+// id/reason 与决策摘要形状一致），使 FilterCandidates → PrepareDispatch
+// Accounts 的衔接无需引擎包反向依赖。
+type AccountSkipDetail struct {
+	AccountID string `json:"id"`
+	Reason    string `json:"reason"`
+}
+
 // CandidateFilterResult mirrors the filter outcome union.
 type CandidateFilterResult struct {
 	// Outcome is 'accounts' | 'fallback' | 'completed'.
@@ -259,6 +268,11 @@ type CandidateFilterResult struct {
 	// accounts variant
 	Accounts      []AccountCandidate
 	ModelPriority *gatewayrouting.GatewayAccountModelPriority
+	// PreFilterSkipped 是本窗口被能力/模型过滤跳过的逐账户明细（W1b 续：
+	// 使 gateway_dispatch_decision 日志自含"为什么不在窗口里"的答案；既有
+	// 审计标签 account_request_capability_filter / account_model_filter 不
+	// 变）。只读数据带出，不影响过滤行为。
+	PreFilterSkipped []AccountSkipDetail
 	// fallback variant
 	Reason string
 }
@@ -285,13 +299,17 @@ type CandidatePipeline interface {
 
 // DispatchPreparationInput mirrors the preparation input.
 type DispatchPreparationInput struct {
-	Req                             *GatewayRequest
-	Res                             GatewayResponseWriter
-	AuditCapture                    AuditCaptureContext
-	UsageContext                    GatewayFailureUsageContext
-	StartedAt                       int64
-	CandidateAccounts               []AccountCandidate
-	ModelPriority                   *gatewayrouting.GatewayAccountModelPriority
+	Req               *GatewayRequest
+	Res               GatewayResponseWriter
+	AuditCapture      AuditCaptureContext
+	UsageContext      GatewayFailureUsageContext
+	StartedAt         int64
+	CandidateAccounts []AccountCandidate
+	ModelPriority     *gatewayrouting.GatewayAccountModelPriority
+	// PreFilterSkipped 透传 CandidateFilterResult.PreFilterSkipped：候选
+	// 准备完成的决策摘要（gateway_dispatch_candidates /
+	// gateway_dispatch_decision）借此把预过滤层跳过明细并入同一条日志。
+	PreFilterSkipped                []AccountSkipDetail
 	SessionAffinityKey              string
 	GroupAccess                     gatewayruntimecache.GroupUsageAccessMetadata
 	SystemAccountID                 string

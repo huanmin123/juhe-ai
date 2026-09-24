@@ -7,9 +7,11 @@
 package schema
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // nodeModelCatalogCompare mirrors compareProviderModels in Node
@@ -148,4 +150,31 @@ func TestActiveModelCatalogSeedRowsShutdownFilter(t *testing.T) {
 
 func jsonValidString(value string) bool {
 	return json.Valid([]byte(value))
+}
+
+// TestActiveModelCatalogSeedRowCountMatchesSeed locks the exported helper to
+// the seed's own output: the rows SeedSQLiteDefaults upserts into
+// provider_model_catalog (reported as ModelCatalogRows) must equal
+// ActiveModelCatalogSeedRowCount of the same pinned UTC date, so same-source
+// row-count consumers never drift from the shutdown filter (the gateway
+// storage bootstrap test routes the same count through
+// bootstrap.SQLiteSeedResult.ModelCatalogRows; maintenance internal is not
+// importable across modules).
+func TestActiveModelCatalogSeedRowCountMatchesSeed(t *testing.T) {
+	db := openSeedTestDatabase(t)
+	result, err := SeedSQLiteDefaults(context.Background(), db, SeedOptions{Now: func() time.Time { return sqliteSeedTestClock }})
+	if err != nil {
+		t.Fatalf("seed sqlite defaults: %v", err)
+	}
+	asOf := sqliteSeedTestClock.UTC().Format("2006-01-02")
+	if got := ActiveModelCatalogSeedRowCount(asOf); got != result.ModelCatalogRows {
+		t.Fatalf("ActiveModelCatalogSeedRowCount(%q) = %d, seed ModelCatalogRows = %d", asOf, got, result.ModelCatalogRows)
+	}
+	var tableRows int
+	if err := db.QueryRowContext(context.Background(), "SELECT count(*) FROM provider_model_catalog").Scan(&tableRows); err != nil {
+		t.Fatalf("query provider_model_catalog: %v", err)
+	}
+	if tableRows != result.ModelCatalogRows {
+		t.Fatalf("provider_model_catalog rows = %d, want %d (fresh seed, upsert only)", tableRows, result.ModelCatalogRows)
+	}
 }

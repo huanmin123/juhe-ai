@@ -108,10 +108,24 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	startedAt := c.preauth.NowMs()
 	res := gatewaypreauth.NewTrackingWriter(w)
 	req.ClientIP = requestClientIP(req)
-	traceID := c.observability.TraceID()
+	// W1a 链级 traceID 与 kernel 对齐：kernel RequestContextMiddleware 已为
+	// 每请求解析 TraceID（Traceparent/X-Trace-Id/X-Correlation-Id 头优先，
+	// 否则 UUID）并回写响应头 X-Trace-Id，这里改用同一来源，使
+	// request.accepted/preflight 日志、审计 capture、usage 与客户端拿到的
+	// X-Trace-Id 同源可查。kernel.Context 兜底恒非空；CreateTraceID 回落
+	// 保留以防 kernel.Context 未来行为变化。
+	traceID := kernel.Context(r).TraceID
 	if traceID == "" {
 		traceID = c.observability.CreateTraceID()
 	}
+	// 阶段/尝试累积器接线：kernel RequestContext 挂在本请求上下文上，经
+	// 进程级 traceId 槽回写（gatewaypreauth.Observability.LogRequestStage
+	// 签名无 ctx/req，既有调用点零改动入库的唯一通道）；注销与注册在同一
+	// 请求生命周期内成对，timing_summary 在链返回后的 kernel finish 点
+	// 读取快照。
+	requestStageCtx := kernel.Context(r)
+	chainRegisterRequestStageRecorder(traceID, requestStageCtx)
+	defer chainUnregisterRequestStageRecorder(traceID, requestStageCtx)
 	endpoint := gatewaypreauth.RequestEndpoint(req)
 	requestLane := gatewaypreauth.ResolveOpenAIGatewayRequestLane(req)
 
@@ -313,6 +327,36 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	loop.run(ctx)
 }
 
+// recordUpstreamFetchHeadersStage 是 handleUpstreamResponse 的
+// upstream.fetch_headers 阶段埋点（对齐 Node upstream-attempts.ts:138）：
+// 每次拿到上游响应头入库一条带引擎真实 AttemptIndex / AuditAttemptIndex 的
+// stage。同一 attempt 恰一条 stage：失败派发器已入库的尝试（gateway 流量
+// 非 2xx 终态标记 UpstreamStageRecorded）在此不再重复发射；索引字段的入库
+// 折算（max(attemptIndex+1, auditAttemptIndex)）由共享记录路径
+// chainRecordRequestStageToKernel 承担。
+func (c *gatewayChain) recordUpstreamFetchHeadersStage(context *gatewaypreauth.DispatchContext, dispatched gatewaydispatch.UpstreamDispatchResult) {
+	if dispatched.UpstreamStageRecorded {
+		return
+	}
+	upstream := dispatched.Response
+	if upstream == nil {
+		return
+	}
+	c.observability.LogRequestStage("upstream.fetch_headers", map[string]any{
+		"traceId":           context.UsageContext.TraceID,
+		"accountId":         dispatched.Account.ID,
+		"attemptIndex":      dispatched.AttemptIndex,
+		"auditAttemptIndex": dispatched.AuditAttemptIndex,
+		"statusCode":        upstream.Status(),
+		"ok":                upstream.Status() >= http.StatusOK && upstream.Status() < http.StatusMultipleChoices,
+	}, "success", time.UnixMilli(dispatched.AttemptStartedAt))
+	if recorder := chainRequestStageRecorderOf(context.UsageContext.TraceID); recorder != nil {
+		// W1a：按发生次数累计真实尝试数（RecordUpstreamAttempt 的索引折算
+		// 已由上方 fields 驱动；此处计数兜底引擎未带出索引的旧构造路径）。
+		recorder.RecordGatewayAttempt()
+	}
+}
+
 // handleUpstreamResponse mirrors handleStreamUpstreamResponse /
 // handleNonStreamUpstreamResponse + finalizeHandledUpstreamResponse. It
 // returns the handling result so the dispatch loop can consume a
@@ -334,6 +378,7 @@ func (c *gatewayChain) handleUpstreamResponse(
 		commitState = &gatewayresponse.DownstreamCommitState{}
 	}
 	upstream := dispatched.Response
+	c.recordUpstreamFetchHeadersStage(context, dispatched)
 	streamRequest := gatewaypreauth.IsOpenAIStreamRequest(req)
 	// Node routes.ts:1550-1553: shouldHandleAsStream = upstreamResponse.ok &&
 	// shouldHandle... . A complete non-2xx is already the terminal upstream

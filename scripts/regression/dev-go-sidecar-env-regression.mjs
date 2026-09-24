@@ -20,6 +20,8 @@ const environmentKeys = [
   'JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT',
   'JUHE_AI_AUDIT_LOG_OWNER_LEASE',
   'JUHE_AI_OPERATION_LOG_OWNER_LEASE',
+  'JUHE_AI_RUNTIME_LOG_OWNER_LEASE',
+  'JUHE_AI_TABLE_MONITOR_OWNER_LEASE',
   'JUHE_AI_AUDIT_LOG_INPUT_SECRET',
   'JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS',
   'JUHE_AI_AUDIT_LOG_INPUT_URL',
@@ -60,12 +62,16 @@ try {
   assert.equal(sidecarEnv.JUHE_AI_LOG_DIR, join(fixtureRoot, '.local', 'dev', 'logs'))
   assert.ok(existsSync(sidecarEnv.JUHE_AI_DATA_DIR), 'dev data root must exist before gateway cold start')
   assert.ok(existsSync(sidecarEnv.JUHE_AI_LOG_DIR), 'dev log root must exist before gateway cold start')
-  // owner 租约启动参数默认注入：旧 gateway 被强杀（taskkill /f、关终端窗口、
-  // Windows 8s 宽限兜底）后租约未释放，注入有界等待让立即重启自动接管而不是
-  // fail-fast；dev TTL 收紧到 10s（生产默认 30s）让接管等待以秒计。
+  // owner 租约启动参数默认注入：旧进程被强杀（taskkill /f、关终端窗口、
+  // Windows 8s 宽限兜底）后租约未释放；gateway F3/F4 注入有界等待让立即重
+  // 启自动接管而不是 fail-fast，jobs F1/F2 靠 supervisor 重试。dev TTL 统一
+  // 收紧到 10s（F3/F4 与 F1 生产默认 30s、F2 生产默认 5 分钟）让接管等待以
+  // 秒计。
   assert.equal(sidecarEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT, '45s')
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '10s')
   assert.equal(sidecarEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE, '10s')
+  assert.equal(sidecarEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE, '10s')
+  assert.equal(sidecarEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE, '10s')
   // 去跨进程战役第四刀：F3/F4 loopback input env 必须显式 drop（不得转发）。
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_INPUT_LISTEN_ADDRESS, undefined, 'the removed audit input listen address must not be forwarded')
   assert.equal(sidecarEnv.JUHE_AI_AUDIT_LOG_INPUT_SECRET, undefined, 'the removed audit input secret must not be forwarded')
@@ -86,7 +92,11 @@ try {
   process.env.JUHE_AI_AUDIT_LOG_OWNER_LEASE = '7s'
   const explicitProcessEnv = module.resolveGoProjectEnv()
   assert.equal(explicitProcessEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '7s')
+  process.env.JUHE_AI_TABLE_MONITOR_OWNER_LEASE = '15s'
+  const explicitJobsLeaseEnv = module.resolveGoProjectEnv()
+  assert.equal(explicitJobsLeaseEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE, '15s')
   delete process.env.JUHE_AI_AUDIT_LOG_OWNER_LEASE
+  delete process.env.JUHE_AI_TABLE_MONITOR_OWNER_LEASE
   writeFileSync(join(fixtureRoot, '.env'), readFileSync(join(fixtureRoot, '.env'), 'utf8')
     + 'JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=20s\n')
   const explicitDotEnv = module.resolveGoProjectEnv()
@@ -99,6 +109,17 @@ try {
   assert.ok(notice?.note.includes('F3 audit'), 'the waiting log line must produce a user note naming the lease')
   assert.equal(module.leaseWaitNotice('{"level":"INFO","msg":"juhe-ai-gateway started"}'), undefined)
   assert.equal(module.leaseWaitNotice('F3 audit owner lease held by another owner process'), undefined, 'the fail-fast error line must not produce the waiting note')
+
+  // jobs 租约重试的人话提示：supervisor 的 ERROR 重试行触发并携带组件名；
+  // 普通日志行与"获取…失败"的真实 DB 错误行（不含"已由另一个 Go 实例持有"）
+  // 不触发。
+  const retryLine = '{"time":"2026-09-23T21:21:41.7498865+08:00","level":"ERROR","msg":"sidecar component failed; retrying","component":"F2 table-monitor","cause":"表监控 owner lease 已由另一个 Go 实例持有","consecutiveFailures":1,"retryDelay":"1s"}'
+  const jobsNotice = module.jobsLeaseRetryNotice(retryLine)
+  assert.ok(jobsNotice?.note.includes('F2 table-monitor'), 'the retry log line must produce a user note naming the component')
+  const f1RetryLine = '{"level":"ERROR","msg":"sidecar component failed; retrying","component":"F1 runtime-log-indexer","cause":"运行日志 owner lease 已由另一个 Go 实例持有","consecutiveFailures":2,"retryDelay":"2s"}'
+  assert.ok(module.jobsLeaseRetryNotice(f1RetryLine)?.note.includes('F1 runtime-log-indexer'))
+  assert.equal(module.jobsLeaseRetryNotice('{"level":"INFO","msg":"F2 table-monitor sample complete"}'), undefined)
+  assert.equal(module.jobsLeaseRetryNotice('{"level":"ERROR","msg":"sidecar component failed; retrying","component":"F2 table-monitor","cause":"获取表监控 owner lease 失败: open db"}'), undefined, 'the db failure line must not produce the lease retry note')
 } finally {
   for (const [key, value] of previousEnvironment) {
     if (value === undefined) delete process.env[key]
@@ -117,5 +138,5 @@ function buildTestableModule(source, root) {
   const rootDeclaration = "const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')"
   assert.match(withoutStartup, new RegExp(rootDeclaration.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
   const fixtureSource = withoutStartup.replace(rootDeclaration, `const root = ${JSON.stringify(root)}`)
-  return `${fixtureSource}\nexport { leaseWaitNotice, resolveGoProjectEnv }\n`
+  return `${fixtureSource}\nexport { leaseWaitNotice, jobsLeaseRetryNotice, resolveGoProjectEnv }\n`
 }

@@ -10,8 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -84,6 +86,10 @@ type v1DispatchLoop struct {
 	// 心跳写出的 transport-commit 标记必须与响应处理看到的是同一个实例。
 	waitCommitState *gatewayresponse.DownstreamCommitState
 	waitHeartbeat   *gatewayresponse.GatewaySseWaitHeartbeat
+	// roundStartedAtMs 是本轮上游派发的起点毫秒（每轮 FetchFirstAvailableUpstream
+	// 调用前刷新）：upstream.dispatch.failed 耗尽埋点的阶段起点口径仍含引擎内
+	// 候选/排队，但远小于整请求 startedAt 口径；0 表示未记录（回落 startedAt）。
+	roundStartedAtMs int64
 }
 
 // v1FallbackSwitch mirrors the switchToFallbackGroup return union
@@ -151,6 +157,9 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		// 重派窗口（流式重试、速度优先切换、调度错误重派、分组回退）在推进前
 		// 按冻结目标后置过滤；首个候选选择（无冻结目标）不受影响。
 		dispatchAccounts = l.filterAccountsForFrozenSwitchTarget(ctx, dispatchAccounts)
+		// 本轮上游派发起点：引擎调用单点在循环体内，每轮刷新（含回退分组
+		// 切换后的下一轮），供耗尽埋点的阶段起点口径使用。
+		l.roundStartedAtMs = time.Now().UnixMilli()
 		dispatched, dispatchErr := l.c.engine.FetchFirstAvailableUpstream(ctx, gatewaydispatch.FetchFirstAvailableUpstreamArgs{
 			Req:                             l.req,
 			Accounts:                        dispatchAccounts,
@@ -500,6 +509,22 @@ func (l *v1DispatchLoop) renderDispatchExhausted(ctx context.Context, attempt *g
 	}
 	fields["failedAccountIds"] = attempt.FailedAccountIDs
 	l.c.observability.Logger().Warn("gateway_dispatch_exhausted", fields, "网关上游调度已耗尽")
+	// upstream.dispatch.failed 耗尽点埋点（对齐 Node routes.ts:1383）：调度
+	// 错误确认为 UpstreamAttemptError 终态时登记一条。阶段起点口径：本轮
+	// 上游派发起点 roundStartedAtMs（每轮 FetchFirstAvailableUpstream 前刷新，
+	// 仍含引擎内候选/排队耗时，但远小于整请求 startedAt 口径）；
+	// roundStartedAtMs 未记录（0）时回落请求开始时刻（旧行为）。Go 派发循环
+	// 没有 Node 每轮的 upstreamDispatchStartedAt 计时；expected_failure 恒为
+	// warn 级，不受该时长影响。
+	stageStartedAt := time.UnixMilli(l.startedAt)
+	if l.roundStartedAtMs > 0 {
+		stageStartedAt = time.UnixMilli(l.roundStartedAtMs)
+	}
+	chainEmitGatewayRequestStage(slog.Default(), "upstream.dispatch.failed", map[string]any{
+		"traceId":         l.traceID,
+		"failureReason":   failureReason,
+		"expectedFailure": true,
+	}, "expected_failure", stageStartedAt)
 
 	payloadMessage := "上游暂时不可用，请重试"
 	payloadCode := gatewaypreauth.GatewayStreamClientRetryErrorCode

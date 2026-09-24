@@ -30,6 +30,10 @@ let goProjectEnv
 // 翻译成"在等什么、等多久、要不要干预"，每个租约标签只提示一次。
 const leaseWaitNoticeLeases = new Set()
 
+// jobs 侧 F1/F2 租约重试的人话提示同样每个组件只提示一次；声明必须先于顶
+// 层 try：startGoProject 的 output tap 在启动阶段就可能被调用。
+const jobsLeaseRetryNoticeComponents = new Set()
+
 // 去跨进程战役第四刀：即使残留在历史 .env 或父进程环境中，已删除的
 // F3/F4 loopback input env 也不得进入 Go 子进程（gateway 进程内 producer
 // 独占写入，监听器 3303/3304 已不存在）。声明必须先于顶层 try：下方
@@ -121,7 +125,7 @@ function startGoProject(project) {
     shell: false,
     stdio: ['inherit', 'pipe', 'pipe']
   })
-  const outputTap = project === 'gateway' ? noteGatewayLeaseWait : undefined
+  const outputTap = project === 'gateway' ? noteGatewayLeaseWait : noteJobsLeaseRetry
   pipeChildOutput(child.stdout, process.stdout, outputTap)
   pipeChildOutput(child.stderr, process.stderr, outputTap)
   monitorChild(child, `Go ${project}`)
@@ -147,6 +151,27 @@ function leaseWaitNotice(chunk) {
     note: `上一会话的 gateway 进程是被强制停止的（如 taskkill、关闭终端窗口），它持有的 ${lease} owner 租约还没过期。` +
       '新 gateway 正在等租约过期后自动接管（等待预算 45s；dev 租约 TTL 默认 10s，通常 10 秒内），期间无需干预。'
   }
+}
+
+// jobsLeaseRetryNotice 识别 jobs 日志里 supervisor 对 F1/F2 的"租约被他人
+// 持有"ERROR 重试行（"获取…失败"等真实 DB 错误行不含该短语，不会误触发），
+// 返回带组件名的用户提示；其余行返回 undefined。
+function jobsLeaseRetryNotice(chunk) {
+  const text = chunk.toString()
+  if (!text.includes('owner lease 已由另一个 Go 实例持有')) return undefined
+  const component = /"component":"([^"]+)"/.exec(text)?.[1] ?? 'jobs sidecar'
+  return {
+    component,
+    note: `${component} 的 owner 租约被上一会话的 jobs 进程残留持有（它是被强制停止的，如 taskkill、关闭终端窗口），` +
+      '本会话正在等租约过期后自动接管（dev 租约 TTL 默认 10s，通常 10 秒内），期间的 ERROR 重试无需干预。'
+  }
+}
+
+function noteJobsLeaseRetry(chunk) {
+  const notice = jobsLeaseRetryNotice(chunk)
+  if (!notice || jobsLeaseRetryNoticeComponents.has(notice.component)) return
+  jobsLeaseRetryNoticeComponents.add(notice.component)
+  console.log(`[dev] ${notice.note}`)
 }
 
 // warnIfGatewayStillRunning 在拉起 gateway 前探测健康端口：有响应说明上一
@@ -216,11 +241,17 @@ function resolveGoProjectEnv() {
   // 接管而不是 fail-fast。默认 45s；用户显式配置时不覆盖。
   childEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT = firstConfiguredValue(childEnv.JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT, '45s')
   // F3/F4 owner 租约 TTL 生产默认 30s：dev 重启后要等旧进程的残留租约过期
-  // 才能接管，这段等待的长度就是 TTL。dev 把 TTL 收紧到 10s（满足两个组件
-  // “不少于 5s”的配置下限），强杀后重启最长约 10s 即可接管；本地 SQLite 专
-  // 库下续租是每 TTL/3 一次的单行 UPDATE，压力可忽略。用户显式配置时不覆盖。
+  // 才能接管，这段等待的长度就是 TTL。dev 把 TTL 收紧到 10s（满足“不少于
+  // 5s”的配置下限），强杀后重启最长约 10s 即可接管；本地 SQLite 专库下续
+  // 租是每 TTL/3 一次的单行 UPDATE，压力可忽略。用户显式配置时不覆盖。
   childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_AUDIT_LOG_OWNER_LEASE, '10s')
   childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_OPERATION_LOG_OWNER_LEASE, '10s')
+  // jobs 侧 F1/F2 同样会被强杀残留租约卡住：F1 runtime-log 生产默认 30s、
+  // F2 table-monitor 生产默认 5 分钟，且没有 F3/F4 的有界等待——supervisor
+  // 直接按 1s~30s 退避重试并逐次打 ERROR，F2 最长持续 5 分钟才接管。dev
+  // 统一收紧到 10s，让重试窗口以秒计。用户显式配置时不覆盖。
+  childEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_RUNTIME_LOG_OWNER_LEASE, '10s')
+  childEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE = firstConfiguredValue(childEnv.JUHE_AI_TABLE_MONITOR_OWNER_LEASE, '10s')
   for (const name of removedInputServerEnvNames) delete childEnv[name]
   return childEnv
 }

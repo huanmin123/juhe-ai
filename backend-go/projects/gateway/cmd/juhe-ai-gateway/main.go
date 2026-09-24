@@ -56,6 +56,7 @@ func main() {
 	auditLegacyMigration := flag.Bool("migrate-audit-log-legacy-sqlite", false, "offline F3 legacy SQLite migration")
 	operationLegacySQLiteMigration := flag.Bool("migrate-operation-log-legacy-sqlite", false, "offline F4 legacy SQLite migration")
 	operationLegacyPostgresMigration := flag.Bool("migrate-operation-log-legacy-postgres", false, "offline F4 legacy PostgreSQL schema migration")
+	initCircuitRuntimeIndex := flag.Bool("init-account-circuit-runtime-index", false, "one-shot backfill of the J3b account circuit Redis runtime index from the authoritative business dispatch revisions (performance-mode bootstrap; exits after completion)")
 	nodeStopped := flag.Bool("node-stopped", false, "confirm Node is stopped for the offline migration")
 	goStopped := flag.Bool("go-stopped", false, "confirm all Go owners are stopped for the offline migration")
 	backupConfirmed := flag.Bool("backup-confirmed", false, "confirm a recoverable backup was verified for the offline migration")
@@ -98,6 +99,10 @@ func main() {
 	}
 	if *operationLegacySQLiteMigration || *operationLegacyPostgresMigration {
 		runOperationLogLegacyMigration(operationMigration, *operationLegacyPostgresMigration)
+		return
+	}
+	if *initCircuitRuntimeIndex {
+		runAccountCircuitRuntimeIndexInit()
 		return
 	}
 

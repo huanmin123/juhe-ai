@@ -65,6 +65,20 @@ func autofillTable(ctx context.Context, e *env, target store, table string, now 
 	if err != nil {
 		return 0, err
 	}
+	// 外键感知：占位行的引用列必须取父表真实行，不能自己编值——SQLite 不强制
+	// 外键，编出来的悬挂引用会在切到 PostgreSQL（外键强制执行）后变成毒丸
+	//（2026-09-23：protocol_endpoint_families 占位行引用不存在的 protocols
+	// 行，business dataset 导入被 FK 23503 拒绝）。
+	foreignKeys, err := queryTableForeignKeys(ctx, db, table)
+	if err != nil {
+		return 0, err
+	}
+	resolved, unresolved := resolveAutofillForeignKeys(ctx, db, table, columns, foreignKeys)
+	for _, fk := range unresolved {
+		if !fk.AllFromColumnsNullable {
+			return 0, fmt.Errorf("外键父表 %s 没有可引用行，跳过 %s 占位行以免产生悬挂引用", fk.ParentTable, table)
+		}
+	}
 	rowCount := autofillRowCount(table)
 	for rowIndex := 0; rowIndex < rowCount; rowIndex++ {
 		values := map[string]any{}
@@ -84,6 +98,33 @@ func autofillTable(ctx context.Context, e *env, target store, table string, now 
 		}
 		if len(values) == 0 {
 			return 0, fmt.Errorf("表 %s 没有必填列，跳过以免插入无意义空行", table)
+		}
+		// 引用列覆盖：FK 取值优先级高于 CHECK/类型启发（真实父行天然满足外键）。
+		for _, fk := range resolved {
+			if fk.SelfReference {
+				// 自引用：父行随插入增长，逐行即时查（只取一行循环复用即可）。
+				rows, err := fetchForeignKeyParentRows(ctx, db, table, fk.ToColumns, 1)
+				if err != nil {
+					return 0, fmt.Errorf("查询自引用父行失败: %w", err)
+				}
+				if len(rows) == 0 {
+					if !fk.AllFromColumnsNullable {
+						return 0, fmt.Errorf("自引用表 %s 没有可引用行，跳过占位行以免悬挂引用", table)
+					}
+					continue
+				}
+				for i, column := range fk.FromColumns {
+					values[column] = rows[0][i]
+				}
+				continue
+			}
+			if len(fk.ParentRows) == 0 {
+				continue
+			}
+			picked := fk.ParentRows[rowIndex%len(fk.ParentRows)]
+			for i, column := range fk.FromColumns {
+				values[column] = picked[i]
+			}
 		}
 		if err := e.insertMap(ctx, target.Name, table, values); err != nil {
 			return 0, fmt.Errorf("插入占位行失败: %w", err)
@@ -199,6 +240,177 @@ func queryCheckInValues(ctx context.Context, db *sql.DB, table string) (map[stri
 		}
 	}
 	return values, nil
+}
+
+// tableForeignKey 是 PRAGMA foreign_key_list 的一条边（组合外键按 id 聚合，
+// from/to 列按 seq 对齐）。
+type tableForeignKey struct {
+	ParentTable string
+	FromColumns []string
+	ToColumns   []string
+}
+
+// resolvedAutofillForeignKey 是一条可引用的外键：ParentRows 是从父表取到的
+// 真实行（按 to 列序对齐 from 列序）。SelfReference（父表 = 本表）在逐行插
+// 入时即时查询，因为可用父行随插入而增长。
+type resolvedAutofillForeignKey struct {
+	ParentTable            string
+	FromColumns            []string
+	ToColumns              []string
+	ParentRows             [][]any
+	SelfReference          bool
+	AllFromColumnsNullable bool
+}
+
+// unresolvedAutofillForeignKey 记录父表暂无可引用行的外键：列全部可空时占位
+// 行留空即可；否则必须整表跳过，绝不能编值。
+type unresolvedAutofillForeignKey struct {
+	ParentTable            string
+	AllFromColumnsNullable bool
+}
+
+// queryTableForeignKeys 解析表的外键边。解析失败按无外键处理（与 CHECK 解析
+// 同一降级策略），失败原因可由调用方在跳过原因里看到。
+func queryTableForeignKeys(ctx context.Context, db *sql.DB, table string) ([]tableForeignKey, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA foreign_key_list("+table+")")
+	if err != nil {
+		return nil, nil
+	}
+	defer rows.Close()
+	order := []int64{}
+	byID := map[int64]*tableForeignKey{}
+	for rows.Next() {
+		var (
+			id, seq                   int64
+			parent                    string
+			from                      string
+			to                        sql.NullString
+			onUpdate, onDelete, match sql.NullString
+		)
+		if err := rows.Scan(&id, &seq, &parent, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			return nil, err
+		}
+		fk := byID[id]
+		if fk == nil {
+			fk = &tableForeignKey{ParentTable: parent}
+			byID[id] = fk
+			order = append(order, id)
+		}
+		fk.FromColumns = append(fk.FromColumns, from)
+		if to.Valid && strings.TrimSpace(to.String) != "" {
+			fk.ToColumns = append(fk.ToColumns, to.String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]tableForeignKey, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	return out, nil
+}
+
+// resolveAutofillForeignKeys 把外键边分成「可引用」（父表有真实行，或自引用
+// 交由逐行查询）与「父表暂无行」两组。to 列缺失（隐式指向父表主键）时回退父
+// 表单主键列；无法解析且列不可空的外键按不可引用处理（触发整表跳过）。
+func resolveAutofillForeignKeys(ctx context.Context, db *sql.DB, table string, columns []tableColumn, foreignKeys []tableForeignKey) ([]resolvedAutofillForeignKey, []unresolvedAutofillForeignKey) {
+	nullable := map[string]bool{}
+	for _, column := range columns {
+		nullable[column.Name] = !column.NotNull && column.PrimaryKey == 0
+	}
+	pkCache := map[string][]string{}
+	parentPK := func(parent string) []string {
+		if pk, ok := pkCache[parent]; ok {
+			return pk
+		}
+		parentColumns, err := queryTableColumns(ctx, db, parent)
+		if err != nil {
+			pkCache[parent] = nil
+			return nil
+		}
+		var single []string
+		for _, column := range parentColumns {
+			if column.PrimaryKey > 0 {
+				single = append(single, column.Name)
+			}
+		}
+		if len(single) == 1 {
+			pkCache[parent] = single
+		} else {
+			pkCache[parent] = nil
+		}
+		return pkCache[parent]
+	}
+	var resolved []resolvedAutofillForeignKey
+	var unresolved []unresolvedAutofillForeignKey
+	for _, fk := range foreignKeys {
+		allNullable := true
+		for _, column := range fk.FromColumns {
+			if !nullable[column] {
+				allNullable = false
+				break
+			}
+		}
+		toColumns := fk.ToColumns
+		if len(toColumns) < len(fk.FromColumns) {
+			pk := parentPK(fk.ParentTable)
+			if len(pk) == 0 {
+				// 隐式引用且父表主键无法解析：无法构造引用查询，按不可引用
+				// 处理（可空留空 / 不可空整表跳过）。
+				unresolved = append(unresolved, unresolvedAutofillForeignKey{ParentTable: fk.ParentTable, AllFromColumnsNullable: allNullable})
+				continue
+			}
+			toColumns = pk
+		}
+		item := resolvedAutofillForeignKey{
+			ParentTable:            fk.ParentTable,
+			FromColumns:            fk.FromColumns,
+			ToColumns:              toColumns,
+			SelfReference:          strings.EqualFold(fk.ParentTable, table),
+			AllFromColumnsNullable: allNullable,
+		}
+		if !item.SelfReference {
+			parentRows, err := fetchForeignKeyParentRows(ctx, db, fk.ParentTable, toColumns, 64)
+			if err != nil {
+				unresolved = append(unresolved, unresolvedAutofillForeignKey{ParentTable: fk.ParentTable, AllFromColumnsNullable: allNullable})
+				continue
+			}
+			item.ParentRows = parentRows
+		}
+		if len(item.ParentRows) == 0 && !item.SelfReference {
+			unresolved = append(unresolved, unresolvedAutofillForeignKey{ParentTable: fk.ParentTable, AllFromColumnsNullable: allNullable})
+			continue
+		}
+		resolved = append(resolved, item)
+	}
+	return resolved, unresolved
+}
+
+// fetchForeignKeyParentRows 取父表 to 列的前 limit 行真实值。
+func fetchForeignKeyParentRows(ctx context.Context, db *sql.DB, parent string, toColumns []string, limit int) ([][]any, error) {
+	quoted := make([]string, 0, len(toColumns))
+	for _, column := range toColumns {
+		quoted = append(quoted, `"`+column+`"`)
+	}
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT %s FROM "%s" LIMIT %d`, strings.Join(quoted, ", "), parent, limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][]any
+	for rows.Next() {
+		dest := make([]any, len(toColumns))
+		raw := make([]any, len(toColumns))
+		for i := range dest {
+			dest[i] = &raw[i]
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		out = append(out, raw)
+	}
+	return out, rows.Err()
 }
 
 // autofillSkipPrefixes 是「派生聚合族」前缀：这些表的行由既有聚合器从明细

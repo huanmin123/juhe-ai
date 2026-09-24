@@ -141,6 +141,8 @@ func newWorkerAssembly(config workerConfig, logger *slog.Logger) *workerAssembly
 	}
 	assembly.scheduler = jobsched.NewScheduler(jobsched.Options{
 		StableSeed: fmt.Sprintf("%s:%s:%d", config.InstanceID, config.WorkerRole, config.WorkerReplicaIdx),
+		// W2：调度器逐轮 outcome 日志复用进程 logger（JSON stdout）。
+		Logger: logger,
 	})
 	// 先登记原始句柄关闭器（closeStores 逆向执行 → 家族 store 先关，原始
 	// SQLite 连接与 PG 池最后关）。

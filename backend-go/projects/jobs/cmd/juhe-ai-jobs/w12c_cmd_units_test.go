@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -536,6 +537,36 @@ func TestW12CMinimalAssemblyFenceSettlerArms(t *testing.T) {
 	}
 	if err := closer(); err != nil {
 		t.Fatal(err)
+	}
+	// 已配置 RedisStateURL 但 namespace 非法 → 真配置错误：仍 nil settler，
+	// 但保留 WARN 语义（fence_settler_unavailable）。
+	assembly.config.RedisNamespace = "invalid namespace"
+	settler, closer, err = assembly.wireHealthProbeFenceSettler()
+	if err != nil || settler != nil || closer != nil {
+		t.Fatalf("namespace 非法应返回 nil settler: %v %v %v", settler, closer != nil, err)
+	}
+}
+
+// TestW12CMinimalAssemblyFenceSettlerStandaloneNotWarn 验证模式平等语义：
+// standalone（未配置 JUHE_AI_REDIS_STATE_URL）只记 Info 说明，不产生
+// fence_settler_unavailable 的 WARN——缺 Redis 是该模式正常 shape，不是
+// 能力缺失；只有已配置 URL 但 namespace 非法才允许 WARN。
+func TestW12CMinimalAssemblyFenceSettlerStandaloneNotWarn(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	config := workerConfig{Driver: "sqlite", BusinessSQLitePath: filepath.Join(t.TempDir(), "business.sqlite3")}
+	assembly := newWorkerAssembly(config, logger)
+	defer assembly.closeStores()
+	settler, closer, err := assembly.wireHealthProbeFenceSettler()
+	if err != nil || settler != nil || closer != nil {
+		t.Fatalf("standalone 应返回 nil settler: %v %v %v", settler, closer != nil, err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "level=INFO") || !strings.Contains(logs, "account_health_probe_outbox_fence_settler_standalone") {
+		t.Fatalf("standalone 分支必须记 Info 说明: %s", logs)
+	}
+	if strings.Contains(logs, "fence_settler_unavailable") || strings.Contains(logs, "level=WARN") {
+		t.Fatalf("standalone 分支不得产生 WARN: %s", logs)
 	}
 }
 

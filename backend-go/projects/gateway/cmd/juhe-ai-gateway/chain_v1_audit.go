@@ -8,6 +8,7 @@ package main
 import (
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -45,8 +46,21 @@ func (c *gatewayChain) newAuditCapture(
 		Dispatcher:     c.auditDispatcher,
 		Models:         c.usageModelResolver,
 		Logger:         slogLogger{inner: slog.Default()},
+		StageLogger:    chainAuditStageLogger{},
 	})
 	return preauthAuditCapture{inner: concrete}
+}
+
+// chainAuditStageLogger 把 gatewayusage.AuditStageLogger（三参
+// logRequestStage 契约）接进 package main 既有共享发射面
+// chainEmitGatewayRequestStage：audit.finalize 与其他 gateway.request.stage
+// 一样先入 kernel 请求累积器，再按 gatewayRequestStageLogLevel 策略写出
+// 同形独立日志行，不旁路观测管线。阶段起点取发射时刻（finalize 的
+// fields 已自带 traceId）。
+type chainAuditStageLogger struct{}
+
+func (chainAuditStageLogger) LogRequestStage(stage string, fields map[string]any, outcome string) {
+	chainEmitGatewayRequestStage(slog.Default(), stage, fields, outcome, time.Now())
 }
 
 // engineAuditCapture adapts the frozen capture context into the dispatch

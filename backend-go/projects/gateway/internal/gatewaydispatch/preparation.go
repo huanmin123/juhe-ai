@@ -2,6 +2,8 @@ package gatewaydispatch
 
 import (
 	"context"
+	"encoding/json"
+	"sort"
 	"sync"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
@@ -34,6 +36,12 @@ type PreparationResult struct {
 	PrecheckHalfOpenEligible                 bool
 	HotQualityExplorationReservation         *HotQualityReservation
 	SettleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
+	// W1b 决策摘要带出：窗口级授权配额批查否决的账户 ID 与 lane 容量快照
+	// 中繁忙的候选 ID（busy 候选仍留在窗口内，仅排序降位）。仅 ready 出口
+	// 携带；fallback/completed 出口不汇总（原因已在既有审计标签与终局
+	// 响应上）。
+	QuotaDeniedAccountIDs  []string
+	CapacityBusyAccountIDs []string
 	// fallback variant
 	Reason  string
 	Context any
@@ -48,6 +56,221 @@ func localSuppressionBypassResult(accounts []AccountCandidate) SuppressionFilter
 		SuppressedAccountIDs:   []string{},
 		AcquiredHalfOpenLeases: []HalfOpenLease{},
 	}
+}
+
+// ---------------------------------------------------------------------------
+// W1b：网关调度决策摘要（candidate-window explainability）
+//
+// 目标是把一次候选准备窗口的既有决策数据（总量/入选/首选账户、跳过明细、
+// busy 候选、被抑制/降级/回避 ID）汇成一个可序列化结构，经审计 metadata
+// 标签 gateway_dispatch_candidates 与进程级观察槽（组合根装配的
+// gateway_dispatch_decision slog 日志）带出。只读既有决策数据，不改变任何
+// 过滤/排序行为；纯内存切片组装，O(n)，无锁无 IO；引擎包保持零 slog 依赖。
+// ---------------------------------------------------------------------------
+
+// 摘要跳过原因稳定常量（准备阶段可判定的粒度；模型过滤三分支细分原因在
+// candfilters 的 ModelSkipReason* 常量与 account_model_filter 审计标签上）。
+const (
+	// DispatchSkipReasonModelUnsupported：模型秩判定为 unsupported 的被跳
+	// 账户（从未进入候选准备窗口）。
+	DispatchSkipReasonModelUnsupported = "model_unsupported"
+	// DispatchSkipReasonQuotaDenied：窗口级授权配额批查否决的候选。
+	DispatchSkipReasonQuotaDenied = "quota_denied"
+)
+
+// dispatchDecisionSummaryListCap 是摘要各列表字段的截断上限：大分组不得
+// 爆炸审计记录与决策日志；被截断时对应 Truncated 字段置位。
+const dispatchDecisionSummaryListCap = 20
+
+// DispatchDecisionSkip 是摘要里的一条跳过明细（与 candfilters.AccountSkip
+// 同形；JSON 键名即日志/审计形状）。
+type DispatchDecisionSkip struct {
+	AccountID string `json:"id"`
+	Reason    string `json:"reason"`
+}
+
+// DispatchDecisionSummary 汇总一次候选准备窗口的调度决策。JSON 形状即
+// gateway_dispatch_candidates 审计标签值与 gateway_dispatch_decision 日志
+// 的摘要形状；空列表/零值字段经 omitempty 保持紧凑。
+type DispatchDecisionSummary struct {
+	// CandidateTotal 是进入候选准备的窗口总量。能力/模型过滤发生在窗口
+	// 之前：其逐账户明细现随 PreFilterSkipped/PreFilterSkippedCount 进本
+	// 摘要（既有审计标签 account_request_capability_filter /
+	// account_model_filter 保持不变）；模型过滤被跳账户同时以
+	// reason=model_unsupported 汇入本摘要 skipped。
+	CandidateTotal        int                    `json:"candidateTotal"`
+	EligibleCount         int                    `json:"eligibleCount"`
+	SelectedAccountID     string                 `json:"selectedAccountId,omitempty"`
+	ModelRankAvailable    bool                   `json:"modelRankAvailable"`
+	PreFilterSkippedCount int                    `json:"preFilterSkippedCount,omitempty"`
+	PreFilterSkipped      []DispatchDecisionSkip `json:"preFilterSkipped,omitempty"`
+	PreFilterSkippedTrunc bool                   `json:"preFilterSkippedTruncated,omitempty"`
+	Skipped               []DispatchDecisionSkip `json:"skipped,omitempty"`
+	SkippedTruncated      bool                   `json:"skippedTruncated,omitempty"`
+	Busy                  []string               `json:"busy,omitempty"`
+	BusyTruncated         bool                   `json:"busyTruncated,omitempty"`
+	Suppressed            []string               `json:"suppressedAccountIds,omitempty"`
+	SuppressedTruncated   bool                   `json:"suppressedTruncated,omitempty"`
+	Degraded              []string               `json:"degradedAccountIds,omitempty"`
+	DegradedTruncated     bool                   `json:"degradedTruncated,omitempty"`
+	Avoided               []string               `json:"avoidedAccountIds,omitempty"`
+	AvoidedTruncated      bool                   `json:"avoidedTruncated,omitempty"`
+}
+
+// DispatchDecisionSummaryInput 是汇总组装输入：全部为既有决策数据的只读
+// 投影（与 PrepareOpenAIGatewayDispatchAccounts 内现成变量一一对应）。
+type DispatchDecisionSummaryInput struct {
+	CandidateTotal int
+	// Eligible 是准备完成的可派发账户（含 busy 降位候选）；首选账户取
+	// 首位（session affinity claim 之后的最终次序）。
+	Eligible      []AccountCandidate
+	ModelPriority *gatewayrouting.GatewayAccountModelPriority
+	// PreFilterSkipped 是窗口之前能力/模型过滤的逐账户跳过明细（W1b 续：
+	// 使决策日志自含"为什么不在窗口里"的完整答案）。
+	PreFilterSkipped []AccountSkip
+	QuotaDenied      []string
+	Busy             []string
+	Suppressed       []string
+	Degraded         []string
+	Avoided          []string
+}
+
+// BuildDispatchDecisionSummary 把候选窗口既有决策数据汇成可序列化摘要。
+// skipped 顺序：配额否决在前、模型秩 unsupported 在后，各自按账户 ID 稳定
+// 排序——截断窗口对同一输入确定可回放（Mock/回归可回放约束）。
+func BuildDispatchDecisionSummary(input DispatchDecisionSummaryInput) DispatchDecisionSummary {
+	summary := DispatchDecisionSummary{
+		CandidateTotal:     input.CandidateTotal,
+		EligibleCount:      len(input.Eligible),
+		ModelRankAvailable: input.ModelPriority != nil,
+	}
+	if len(input.Eligible) > 0 {
+		summary.SelectedAccountID = input.Eligible[0].ID
+	}
+	// W1b 续：预过滤层（能力/模型）跳过明细保持输入顺序（能力在前、模型
+	// 在后；candfilters 的产出顺序即过滤执行顺序），截断保护同其余列表。
+	if len(input.PreFilterSkipped) > 0 {
+		preFilterSkipped := make([]DispatchDecisionSkip, 0, len(input.PreFilterSkipped))
+		for _, skip := range input.PreFilterSkipped {
+			preFilterSkipped = append(preFilterSkipped, DispatchDecisionSkip{AccountID: skip.AccountID, Reason: skip.Reason})
+		}
+		summary.PreFilterSkippedCount = len(preFilterSkipped)
+		summary.PreFilterSkipped, summary.PreFilterSkippedTrunc = cappedSlice(preFilterSkipped)
+	}
+	quotaDenied := sortedStringsCopy(input.QuotaDenied)
+	modelSkipped := modelRankSkippedIDs(input.ModelPriority)
+	skipped := make([]DispatchDecisionSkip, 0, len(quotaDenied)+len(modelSkipped))
+	for _, accountID := range quotaDenied {
+		skipped = append(skipped, DispatchDecisionSkip{AccountID: accountID, Reason: DispatchSkipReasonQuotaDenied})
+	}
+	for _, accountID := range modelSkipped {
+		skipped = append(skipped, DispatchDecisionSkip{AccountID: accountID, Reason: DispatchSkipReasonModelUnsupported})
+	}
+	summary.Skipped, summary.SkippedTruncated = cappedSlice(skipped)
+	summary.Busy, summary.BusyTruncated = cappedCopy(input.Busy)
+	summary.Suppressed, summary.SuppressedTruncated = cappedSortedUniqueIDs(input.Suppressed)
+	summary.Degraded, summary.DegradedTruncated = cappedSortedUniqueIDs(input.Degraded)
+	summary.Avoided, summary.AvoidedTruncated = cappedSortedUniqueIDs(input.Avoided)
+	return summary
+}
+
+// AuditMetadata 把摘要投影为 AddGatewayMetadata 的 map 值形状（JSON 往返，
+// 保证与决策日志序列化形状一致）。结构只含 string/int/bool/切片，
+// json.Marshal 不可能失败；错误分支仅兜底空 map，不影响审计主流程。
+func (s DispatchDecisionSummary) AuditMetadata() map[string]any {
+	encoded, _ := json.Marshal(s)
+	metadata := map[string]any{}
+	_ = json.Unmarshal(encoded, &metadata)
+	return metadata
+}
+
+// modelRankSkippedIDs 投影模型秩为 unsupported 的账户 ID（稳定排序）。
+func modelRankSkippedIDs(priority *gatewayrouting.GatewayAccountModelPriority) []string {
+	if priority == nil || len(priority.RankByAccountID) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(priority.RankByAccountID))
+	for accountID, rank := range priority.RankByAccountID {
+		if rank == ModelPriorityRankUnsupported {
+			ids = append(ids, accountID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func sortedStringsCopy(ids []string) []string {
+	out := append([]string(nil), ids...)
+	sort.Strings(out)
+	return out
+}
+
+// cappedSortedUniqueIDs 去重、稳定排序并截断保护。
+func cappedSortedUniqueIDs(ids []string) ([]string, bool) {
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, accountID := range ids {
+		if accountID == "" {
+			continue
+		}
+		if _, dup := seen[accountID]; dup {
+			continue
+		}
+		seen[accountID] = struct{}{}
+		unique = append(unique, accountID)
+	}
+	sort.Strings(unique)
+	return cappedCopy(unique)
+}
+
+// cappedCopy 截断保护：最多 dispatchDecisionSummaryListCap 条 + truncated
+// 标记；保持给定顺序（busy 的输入顺序即并发快照扫描顺序，确定可回放）。
+func cappedCopy(ids []string) ([]string, bool) {
+	if len(ids) == 0 {
+		return nil, false
+	}
+	if len(ids) > dispatchDecisionSummaryListCap {
+		return append([]string(nil), ids[:dispatchDecisionSummaryListCap]...), true
+	}
+	return append([]string(nil), ids...), false
+}
+
+func cappedSlice[T any](items []T) ([]T, bool) {
+	if len(items) == 0 {
+		return nil, false
+	}
+	if len(items) > dispatchDecisionSummaryListCap {
+		return items[:dispatchDecisionSummaryListCap], true
+	}
+	return items, false
+}
+
+// DispatchDecisionEvent 是候选准备决策事件的链侧投影：引擎在候选准备完成
+// （ready 出口）时发出，组合根据此输出一条 gateway_dispatch_decision
+// slog 结构化日志（每请求含每次重派至多一条）。
+type DispatchDecisionEvent struct {
+	TraceID         string
+	SystemAccountID string
+	APIKeyID        string
+	GroupID         string
+	TrafficSource   string
+	DurationMs      int64
+	Summary         DispatchDecisionSummary
+}
+
+// notifyDispatchDecisionObserver 是进程级决策观察槽（与
+// notifyOneRecoverableUnavailableRuntimeWaiter 同模式）：默认 no-op；
+// 组合根经 SetDispatchDecisionObserver 装配 slog 投影。panic-safe 契约由
+// 观察者实现方承担（cmd 侧 adapter 整体 recover，观测故障绝不影响主链路）。
+var notifyDispatchDecisionObserver = func(DispatchDecisionEvent) {}
+
+// SetDispatchDecisionObserver 装配候选准备决策观察者（组合根启动期调用；
+// nil 显式降级为 no-op）。
+func SetDispatchDecisionObserver(observer func(DispatchDecisionEvent)) {
+	if observer == nil {
+		observer = func(DispatchDecisionEvent) {}
+	}
+	notifyDispatchDecisionObserver = observer
 }
 
 // releaseHalfOpenLease mirrors releaseHalfOpenLease.
@@ -124,6 +347,8 @@ func (p *CandidatePipeline) requestRouteFallback(
 // prepareOpenAIGatewayDispatchAccounts.
 func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Context, input gatewaypreauth.DispatchPreparationInput) (PreparationResult, error) {
 	e := p.engine
+	// W1b：决策摘要的 stage 时长起点（gateway_dispatch_decision.durationMs）。
+	prepareStartedAtMs := gatewayupstream.NowMs()
 	dispatchOrderingOptions := AffinityOrderingOptions{
 		GroupType:        groupTypeOf(input.GroupAccess),
 		SchedulingPolicy: input.GroupAccess.SchedulingPolicy,
@@ -367,6 +592,38 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 	readyPreparation.NormalRouteLatencyDegradationApplied = latencyDegradationOrder.Applied
 	readyPreparation.CodexTurnAccountAvoidanceApplied = clientSourceAvoidance.ThresholdReached
 	readyPreparation.CodexTurnAvoidedAccountIDs = clientSourceAvoidance.AvoidedAccountIDs
+
+	// W1b：候选准备完成——把窗口既有决策数据汇成可序列化摘要。写入审计
+	// metadata 标签（门控沿用现有审计开关，不绕过），并经进程级观察槽发出
+	//（组合根装配 gateway_dispatch_decision slog 日志；每请求含每次重派
+	// 至多一条）。fallback/completed 出口不在此汇总：原因已在既有审计标签
+	//（local_account_suppression 等）与终局响应上。
+	decisionSummary := BuildDispatchDecisionSummary(DispatchDecisionSummaryInput{
+		CandidateTotal: len(input.CandidateAccounts),
+		Eligible:       readyAccounts,
+		ModelPriority:  input.ModelPriority,
+		// W1b 续：预过滤跳过明细从端口类型投影回引擎侧同形结构。
+		PreFilterSkipped: accountSkipsOfPreFilter(input.PreFilterSkipped),
+		QuotaDenied:      readyPreparation.QuotaDeniedAccountIDs,
+		Busy:             readyPreparation.CapacityBusyAccountIDs,
+		Suppressed:       localSuppressionFilter.SuppressedAccountIDs,
+		Degraded: append(append([]string{}, runtimeDegradationOrder.DegradedAccountIDs...),
+			latencyDegradationOrder.DegradedAccountIDs...),
+		Avoided: append(append(append([]string{},
+			proxyHealthOrder.AvoidedAccountIDs...),
+			clientIpAccountAvoidance.AvoidedAccountIDs...),
+			clientSourceAvoidance.AvoidedAccountIDs...),
+	})
+	input.AuditCapture.AddGatewayMetadata("gateway_dispatch_candidates", decisionSummary.AuditMetadata())
+	notifyDispatchDecisionObserver(DispatchDecisionEvent{
+		TraceID:         input.UsageContext.TraceID,
+		SystemAccountID: input.SystemAccountID,
+		APIKeyID:        input.APIKeyID,
+		GroupID:         input.GroupID,
+		TrafficSource:   input.UsageContext.TrafficSource,
+		DurationMs:      gatewayupstream.NowMs() - prepareStartedAtMs,
+		Summary:         decisionSummary,
+	})
 	return readyPreparation, nil
 }
 
@@ -380,6 +637,20 @@ type quotaCapacityInput struct {
 	eligibleFirstPrimaryDispatch bool
 }
 
+// accountSkipsOfPreFilter 把端口层的预过滤跳过明细投影回引擎侧同形结构
+// （gatewaypreauth.AccountSkipDetail 与 AccountSkip 的 id/reason 键一致）。
+func accountSkipsOfPreFilter(details []gatewaypreauth.AccountSkipDetail) []AccountSkip {
+	if len(details) == 0 {
+		return nil
+	}
+	out := make([]AccountSkip, 0, len(details))
+	for _, detail := range details {
+		out = append(out, AccountSkip{AccountID: detail.AccountID, Reason: detail.Reason})
+	}
+	return out
+}
+
+// hotQualityModeFor mirrors hotQualityModeFor.
 func hotQualityModeFor(config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) string {
 	if config != nil {
 		return HotQualityModeSpeedFirst
@@ -405,6 +676,8 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 	e := p.engine
 	req := input.input
 	var authorizationQuotaDeniedAccountCount int
+	var quotaDeniedAccountIDs []string
+	var capacityBusyAccountIDs []string
 	accounts := []AccountCandidate{}
 	var hotQualityExplorationReservation *HotQualityReservation
 	var settleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
@@ -426,6 +699,8 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			decision, ok := accountQuotaDecisions[account.ID]
 			if ok && !decision.Allowed {
 				authorizationQuotaDeniedAccountCount++
+				// W1b：被否决账户 ID 随 ready 出口汇入决策摘要。
+				quotaDeniedAccountIDs = append(quotaDeniedAccountIDs, account.ID)
 				continue
 			}
 			accounts = append(accounts, account)
@@ -568,7 +843,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 				return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "group_capacity_busy", Context: fallbackContext}, nil
 			}
 		}
-		accounts, err = OrderGatewayAccountsByLaneCapacityAvailabilityAsync(ctx, e.Concurrency, accounts, gatewayprotoLane(req.RequestLane), req.GroupAccess.SchedulingPolicy, req.ModelPriority)
+		// W1b：lane 容量排序同时带出排序前快照中的 busy 候选 ID（busy 候选
+		// 仍留在窗口内，仅排序降位）。
+		accounts, capacityBusyAccountIDs, err = OrderGatewayAccountsByLaneCapacityAvailabilityWithBusyAsync(ctx, e.Concurrency, accounts, gatewayprotoLane(req.RequestLane), req.GroupAccess.SchedulingPolicy, req.ModelPriority)
 		if err != nil {
 			return PreparationResult{}, err
 		}
@@ -718,6 +995,8 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		ReleaseClientIPConcurrency:               releaseClientIPConcurrencyOnce,
 		HotQualityExplorationReservation:         hotQualityExplorationReservation,
 		SettleHotQualityExplorationAfterDispatch: settleHotQualityExplorationAfterDispatch,
+		QuotaDeniedAccountIDs:                    quotaDeniedAccountIDs,
+		CapacityBusyAccountIDs:                   capacityBusyAccountIDs,
 	}, nil
 }
 

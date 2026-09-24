@@ -26,14 +26,24 @@ import (
 
 // UpstreamDispatchResult mirrors OpenAIUpstreamDispatchResult.
 type UpstreamDispatchResult struct {
-	Account                          AccountCandidate
-	Response                         *GatewayUpstreamResponse
-	RequestBody                      []byte
-	UpstreamURL                      string
-	AuditAttemptID                   string
-	AttemptStartedAt                 int64
-	EffectiveServiceTier             string
-	TimeoutProfile                   gatewayrouting.GatewayTimeoutProfile
+	Account              AccountCandidate
+	Response             *GatewayUpstreamResponse
+	RequestBody          []byte
+	UpstreamURL          string
+	AuditAttemptID       string
+	AttemptStartedAt     int64
+	EffectiveServiceTier string
+	TimeoutProfile       gatewayrouting.GatewayTimeoutProfile
+	// AttemptIndex / AuditAttemptIndex 带出本尝试的引擎索引（构造点
+	// attemptoutcomes.go 的 c.attemptIndex 与 in.auditAttemptIndex 作用域，
+	// 与失败派发器输入同值域：auditAttemptIndex 是该尝试的 1-based 序数）。
+	// 零值 = 引擎未带出（构造点之外的旧路径），链面观测不得据此编造计数。
+	AttemptIndex      int
+	AuditAttemptIndex int
+	// UpstreamStageRecorded 标记该上游响应的 upstream.fetch_headers 阶段已由
+	// 失败派发器入库（gateway 流量非 2xx 终态交回链面的情形），链面不得对
+	// 同一 attempt 重复发射 stage。零值 = 未记录，链面照常发射。
+	UpstreamStageRecorded            bool
 	ReleaseConcurrency               func()
 	MarkFirstOutput                  func()
 	ConfirmSameAccountApiKeyFailures func() error

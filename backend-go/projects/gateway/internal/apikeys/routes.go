@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -18,6 +19,11 @@ type Deps struct {
 	Store *Store
 	Auth  *authsys.Deps
 	Sink  authsys.OperationLogSink
+	// Log 可选（nil 时跳过日志）：patch 校验失败与 writeMutationError 以
+	// 400/500 响应，非中文文本会被 localize 中间件改写为「请求参数无效」，
+	// 原始错误从此只存在于服务端日志——这里提供落点（对齐 routestrategies
+	// 先例），未接线时静默。
+	Log *slog.Logger
 }
 
 // Mount wires the api-keys route family: admin surface on /api-keys
@@ -254,7 +260,7 @@ func (d *Deps) mountGuardedCreate(selfOnly bool) http.Handler {
 		}
 		result, meta, err := d.Store.Create(r.Context(), input, access)
 		if err != nil {
-			d.writeMutationError(w, err)
+			d.writeMutationError(w, r, err)
 			return
 		}
 		if d.Sink != nil {
@@ -327,7 +333,7 @@ func (d *Deps) mountGuardedRefresh(selfOnly bool) http.Handler {
 		}
 		outcome, err := d.Store.RefreshSecret(r.Context(), r.PathValue("id"), access)
 		if err != nil {
-			d.writeMutationError(w, err)
+			d.writeMutationError(w, r, err)
 			return
 		}
 		if outcome == nil {
@@ -468,6 +474,9 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 	}
 	input, message := parsePatchBody(body)
 	if message != "" {
+		if d.Log != nil {
+			d.Log.Warn("api_key_mutation_rejected", "error", message, "path", r.URL.Path, "id", r.PathValue("id"))
+		}
 		kernel.WriteBadRequest(w, message)
 		return
 	}
@@ -481,7 +490,7 @@ func (d *Deps) patch(w http.ResponseWriter, r *http.Request, access AccessScope)
 			}{Message: revisionConflict.Error(), CurrentRevision: revisionConflict.CurrentRevision})
 			return
 		}
-		d.writeMutationError(w, err)
+		d.writeMutationError(w, r, err)
 		return
 	}
 	if outcome == nil {
@@ -536,7 +545,7 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 	}
 	result, err := d.Store.Delete(r.Context(), r.PathValue("id"), access)
 	if err != nil {
-		d.writeMutationError(w, err)
+		d.writeMutationError(w, r, err)
 		return
 	}
 	if !result.Deleted {
@@ -592,7 +601,13 @@ func (d *Deps) remove(w http.ResponseWriter, r *http.Request, access AccessScope
 // name duplicates and delete guards → 409; the known bad-request message set
 // (strategy binding, expiry, quota/schedule normalization) → 400; the rest →
 // 500.
-func (d *Deps) writeMutationError(w http.ResponseWriter, err error) {
+func (d *Deps) writeMutationError(w http.ResponseWriter, r *http.Request, err error) {
+	// 400/500 消息写向前先落原始错误（localize 会把非中文文本改写为
+	// 「请求参数无效」，响应侧从此不可归因；validation 分支同样可能携带
+	// patchTypeIssue 的英文文本）。字段面与 patch parse 分支一致。
+	if d.Log != nil {
+		d.Log.Warn("api_key_mutation_rejected", "error", err.Error(), "path", r.URL.Path, "id", r.PathValue("id"))
+	}
 	var conflict *ConflictError
 	var validation *ValidationError
 	if errors.As(err, &conflict) {

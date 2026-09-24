@@ -129,6 +129,11 @@ func (r row) text(key string) string {
 			return typed
 		case []byte:
 			return string(typed)
+		case time.Time:
+			// PG 模式 timestamptz 经 database/sql 回读为 time.Time；统一渲染
+			// 成与 SQLite TEXT 快照同款的 UTC 毫秒格式，否则 PG 概览的
+			// sampledAt 会静默变成空串（2026-09-23 性能模式联调实测）。
+			return typed.UTC().Format("2006-01-02T15:04:05.000Z")
 		}
 	}
 	return ""

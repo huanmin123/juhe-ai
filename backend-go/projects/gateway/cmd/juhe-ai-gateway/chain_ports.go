@@ -33,6 +33,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
@@ -52,6 +53,7 @@ func (a usageAttemptRecorderAdapter) RecordFailedUpstreamAttempt(ctx context.Con
 	}
 	return a.service.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(usageContext, account)), usageModelAccountOf(account), gatewayusage.RecordFailedUpstreamAttemptInput{
 		Model:                      requestModelHintOf(req),
+		Stream:                     gatewaypreauth.IsOpenAIStreamRequest(req),
 		UpstreamURL:                record.UpstreamURL,
 		StartedAtMs:                record.StartedAt,
 		StatusCode:                 attemptStatusCodeOf(record),
@@ -366,6 +368,18 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		"metricReasonClass", failureObservation.MetricReasonClass,
 		"classificationReason", failureObservation.ClassificationReason,
 		"trafficSource", trafficSource)
+	// upstream.fetch_headers 阶段埋点：非 2xx 上游响应的请求头已收到，
+	// 按 Node upstream-attempts.ts:138 的形态以 success/ok:false 登记
+	// （带引擎真实 attemptIndex / auditAttemptIndex）；下游耗时汇总据此
+	// 计数失败尝试。
+	chainEmitGatewayRequestStage(slog.Default(), "upstream.fetch_headers", map[string]any{
+		"traceId":           input.UsageContext.TraceID,
+		"accountId":         input.Account.ID,
+		"attemptIndex":      input.AttemptIndex,
+		"auditAttemptIndex": input.AuditAttemptIndex,
+		"statusCode":        statusCode,
+		"ok":                false,
+	}, "success", time.UnixMilli(input.AttemptStartedAt))
 
 	// failure-dispatch.ts:219-227: parseFailureBodyFacts + decideAccountErrorPolicy
 	// run right after the bounded capture — the explicit account error policy
@@ -408,6 +422,8 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	}
 	if d.usage != nil {
 		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
+			Model:        requestModelHintOf(input.Req),
+			Stream:       gatewaypreauth.IsOpenAIStreamRequest(input.Req),
 			UpstreamURL:  input.UpstreamURL,
 			StartedAtMs:  input.AttemptStartedAt,
 			StatusCode:   statusPointer(hasStatus, statusCode),
@@ -437,7 +453,10 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		return gatewaydispatch.FailedUpstreamResponseResult{
 			Action:      gatewaydispatch.FailedResponseActionRetryWithCompatibilityRecovery,
 			FailureKind: chainFailureKindCompatibilityRecovery,
-			LastAttempt: lastAttempt,
+			// 该分支在上方发射点已为本尝试入库 stage；当前动作不携带响应
+			// 回链，标记是防御性的：未来携带响应回链时链面不得二次发射。
+			UpstreamStageRecorded: true,
+			LastAttempt:           lastAttempt,
 			Recovery: gatewaydispatch.CompatibilityRecovery{
 				Body:            recovery.Body,
 				SemanticRetryID: recovery.SemanticRetryID,
@@ -562,6 +581,9 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		FailureKind:      failureKind,
 		LastAttempt:      lastAttempt,
 		KeyScopedFailure: sameAccountKeyRotation,
+		// 本分支在上方已为该尝试写入 upstream.fetch_headers 阶段；若结果
+		// 携带的响应未来经 ReturnResponse 交回链面，链面不得重复发射。
+		UpstreamStageRecorded: true,
 	}
 	// failure-dispatch.ts:419-435: a completed failure alone stays neutral —
 	// the pending Key failure becomes shared evidence only after a sibling Key
@@ -592,6 +614,15 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 	// this port once shouldRecordAbortedUpstreamAttempt(err) held, which is
 	// the Node recording condition, so the branch is unconditional here.
 	if gatewaydispatch.IsUpstreamRequestAbortedError(input.Error) {
+		// upstream.fetch_headers 中断尝试埋点（对齐 Node
+		// upstream-attempts.ts:147-158 的 request_aborted 分支）。
+		chainEmitGatewayRequestStage(slog.Default(), "upstream.fetch_headers", map[string]any{
+			"traceId":           input.UsageContext.TraceID,
+			"accountId":         input.Account.ID,
+			"attemptIndex":      input.AttemptIndex,
+			"auditAttemptIndex": input.AuditAttemptIndex,
+			"failureReason":     "request_aborted",
+		}, "aborted", time.UnixMilli(input.AttemptStartedAt))
 		if err := d.recordDownstreamClosedRequestError(ctx, input); err != nil {
 			return gatewaydispatch.UpstreamRequestErrorResult{}, err
 		}
@@ -630,6 +661,18 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 		"metricReasonClass", requestFailureObservation.MetricReasonClass,
 		"classificationReason", requestFailureObservation.ClassificationReason,
 		"trafficSource", input.UsageContext.TrafficSource)
+	// upstream.fetch_headers 传输失败尝试埋点（对齐 Node
+	// upstream-attempts.ts:150-158 的 upstream_request_error 分支，带引擎
+	// 真实 attemptIndex / auditAttemptIndex）。
+	chainEmitGatewayRequestStage(slog.Default(), "upstream.fetch_headers", map[string]any{
+		"traceId":           input.UsageContext.TraceID,
+		"accountId":         input.Account.ID,
+		"attemptIndex":      input.AttemptIndex,
+		"auditAttemptIndex": input.AuditAttemptIndex,
+		"failureReason":     "upstream_request_error",
+		"errorName":         upstreamRequestErrorName(input.Error),
+		"errorCode":         upstreamRequestErrorCode(input.Error),
+	}, "expected_failure", time.UnixMilli(input.AttemptStartedAt))
 	if input.AuditAttemptID != "" {
 		input.AuditCapture.CompleteAttempt(input.AuditAttemptID, gatewaydispatch.CompleteAttemptInput{
 			Success:      false,
@@ -650,6 +693,8 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 	}
 	if d.usage != nil {
 		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
+			Model:        requestModelHintOf(input.Req),
+			Stream:       gatewaypreauth.IsOpenAIStreamRequest(input.Req),
 			UpstreamURL:  input.UpstreamURL,
 			StartedAtMs:  input.AttemptStartedAt,
 			ErrorMessage: message,
@@ -862,6 +907,8 @@ func (d *chainFailureDispatcher) recordDownstreamClosedRequestError(ctx context.
 	}
 	if d.usage != nil {
 		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
+			Model:              requestModelHintOf(input.Req),
+			Stream:             gatewaypreauth.IsOpenAIStreamRequest(input.Req),
 			UpstreamURL:        input.UpstreamURL,
 			StartedAtMs:        input.AttemptStartedAt,
 			StatusCode:         statusPointer(hasStatus, statusCode),
@@ -1617,8 +1664,110 @@ func gatewayRequestStageLogLevel(outcome string, durationMs int64) string {
 	return "debug"
 }
 
-func (o *slogObservability) LogRequestStage(stage string, fields map[string]any, outcome string, startedAt time.Time) {
+// chainRequestStageRecorderRegistry 把链入口创建的 traceId 映射到 kernel
+// RequestContext（阶段/尝试累积器）：gatewaypreauth.Observability 端口是
+// 进程级单例且 LogRequestStage 签名没有 ctx/req，既有 8 类调用点零改动
+// 入库只能经 traceId 反查。注册/注销都在链入口的请求生命周期内成对发生。
+// traceId 可来自客户端头，同进程并发请求可能复用同一 traceId，因此值侧
+// 按请求指针成组；注销只移除自己的成员，不碰其他并发请求的映射。同一
+// traceId 多请求并发时 LogRequestStage 无法区分归属，任选一个入库（观测
+// 退化为该场景的既定代价，不丢注册表条目）。
+type chainRequestStageRecorderRegistry struct {
+	mu        sync.Mutex
+	recorders map[string]map[*kernel.RequestContext]struct{}
+}
+
+var chainRequestStageRecorders = &chainRequestStageRecorderRegistry{
+	recorders: map[string]map[*kernel.RequestContext]struct{}{},
+}
+
+func chainRegisterRequestStageRecorder(traceID string, ctx *kernel.RequestContext) {
+	if traceID == "" || ctx == nil {
+		return
+	}
+	chainRequestStageRecorders.mu.Lock()
+	defer chainRequestStageRecorders.mu.Unlock()
+	set := chainRequestStageRecorders.recorders[traceID]
+	if set == nil {
+		set = map[*kernel.RequestContext]struct{}{}
+		chainRequestStageRecorders.recorders[traceID] = set
+	}
+	set[ctx] = struct{}{}
+}
+
+func chainUnregisterRequestStageRecorder(traceID string, ctx *kernel.RequestContext) {
+	if traceID == "" || ctx == nil {
+		return
+	}
+	chainRequestStageRecorders.mu.Lock()
+	defer chainRequestStageRecorders.mu.Unlock()
+	set := chainRequestStageRecorders.recorders[traceID]
+	if set == nil {
+		return
+	}
+	delete(set, ctx)
+	if len(set) == 0 {
+		delete(chainRequestStageRecorders.recorders, traceID)
+	}
+}
+
+func chainRequestStageRecorderOf(traceID string) *kernel.RequestContext {
+	if traceID == "" {
+		return nil
+	}
+	chainRequestStageRecorders.mu.Lock()
+	defer chainRequestStageRecorders.mu.Unlock()
+	for ctx := range chainRequestStageRecorders.recorders[traceID] {
+		return ctx
+	}
+	return nil
+}
+
+// chainRecordRequestStageToKernel 把一条 gateway.request.stage 观测写入
+// traceId 对应的请求累积器；attemptIndex / auditAttemptIndex 字段按 Node
+// captureRequestTimingFields（request-context.ts:624-636）的语义折算
+// attemptCount。字段缺席时不触碰 attemptCount，不编造计数。
+func chainRecordRequestStageToKernel(fields map[string]any, stage string, outcome string, durationMs int64, startedAt time.Time) {
+	traceID, _ := fields["traceId"].(string)
+	recorder := chainRequestStageRecorderOf(traceID)
+	if recorder == nil {
+		return
+	}
+	recorder.RecordRequestStage(stage, outcome, durationMs, startedAt)
+	var attemptIndex, auditAttemptIndex *int
+	if value, ok := chainIntFieldOf(fields, "attemptIndex"); ok {
+		attemptIndex = &value
+	}
+	if value, ok := chainIntFieldOf(fields, "auditAttemptIndex"); ok {
+		auditAttemptIndex = &value
+	}
+	if attemptIndex != nil || auditAttemptIndex != nil {
+		recorder.RecordUpstreamAttempt(attemptIndex, auditAttemptIndex)
+	}
+}
+
+// chainIntFieldOf projects a finite int field out of a stage fields map
+// (mirrors finiteNonNegativeInteger's presence contract; negative values stay
+// present so RecordUpstreamAttempt can keep its own clamping semantics).
+func chainIntFieldOf(fields map[string]any, key string) (int, bool) {
+	switch value := fields[key].(type) {
+	case int:
+		return value, true
+	case int64:
+		return int(value), true
+	case float64:
+		return int(value), true
+	}
+	return 0, false
+}
+
+// chainEmitGatewayRequestStage 是 slogObservability.LogRequestStage 与
+// upstream.* 新增埋点共用的阶段发射面：先把观测写入请求累积器，再按
+// gatewayRequestStageLogLevel 策略写出同形的 gateway.request.stage 独立
+// 日志行（消息文案与 slogObservability.LogRequestStage 保持逐字节一致）。
+func chainEmitGatewayRequestStage(logger *slog.Logger, stage string, fields map[string]any, outcome string, startedAt time.Time) {
 	durationMs := time.Since(startedAt).Milliseconds()
+	chainRecordRequestStageToKernel(fields, stage, outcome, durationMs, startedAt)
 	args := []any{"event", "gateway.request.stage", "stage", stage, "outcome", outcome, "durationMs", durationMs}
 	for key, value := range fields {
 		args = append(args, key, value)
@@ -1626,19 +1775,23 @@ func (o *slogObservability) LogRequestStage(stage string, fields map[string]any,
 	message := "请求阶段完成：" + stage
 	switch level := gatewayRequestStageLogLevel(outcome, durationMs); level {
 	case "error":
-		o.logger.Error("请求阶段未预期失败："+stage, args...)
+		logger.Error("请求阶段未预期失败："+stage, args...)
 	case "warn":
 		if outcome == "expected_failure" {
 			message = "请求阶段预期失败：" + stage
 		} else {
 			message = "请求阶段中断：" + stage
 		}
-		o.logger.Warn(message, args...)
+		logger.Warn(message, args...)
 	case "info":
-		o.logger.Info("请求慢阶段完成："+stage, args...)
+		logger.Info("请求慢阶段完成："+stage, args...)
 	default:
-		o.logger.Debug(message, args...)
+		logger.Debug(message, args...)
 	}
+}
+
+func (o *slogObservability) LogRequestStage(stage string, fields map[string]any, outcome string, startedAt time.Time) {
+	chainEmitGatewayRequestStage(o.logger, stage, fields, outcome, startedAt)
 }
 
 // slogWarnLogger adapts slog to the preauth Logger (logger.warn contract).

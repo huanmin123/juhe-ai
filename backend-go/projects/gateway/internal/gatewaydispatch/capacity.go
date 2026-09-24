@@ -54,22 +54,49 @@ func OrderGatewayAccountsByLaneCapacityAvailabilityAsync(
 	schedulingPolicy *gatewayruntimecache.GroupSchedulingPolicy,
 	modelPriority *gatewayrouting.GatewayAccountModelPriority,
 ) ([]AccountCandidate, error) {
+	ordered, _, err := OrderGatewayAccountsByLaneCapacityAvailabilityWithBusyAsync(
+		ctx, store, accounts, requestLane, schedulingPolicy, modelPriority)
+	return ordered, err
+}
+
+// OrderGatewayAccountsByLaneCapacityAvailabilityWithBusyAsync 与
+// OrderGatewayAccountsByLaneCapacityAvailabilityAsync 同一排序行为，额外把
+// 排序前快照中 lane 容量繁忙的账户 ID 带出（W1b 决策摘要：busy 候选仍留在
+// 窗口内、仅排序降位——Node parity 注释，上游派发器负责有界容量等待）。
+// busy 列表按输入顺序排列（并发快照的扫描顺序，确定可回放）。
+func OrderGatewayAccountsByLaneCapacityAvailabilityWithBusyAsync(
+	ctx context.Context,
+	store AccountConcurrencyStore,
+	accounts []AccountCandidate,
+	requestLane gatewayproto.RequestLane,
+	schedulingPolicy *gatewayruntimecache.GroupSchedulingPolicy,
+	modelPriority *gatewayrouting.GatewayAccountModelPriority,
+) ([]AccountCandidate, []string, error) {
 	if len(accounts) < 2 {
-		return accounts, nil
+		return accounts, nil, nil
 	}
 	ids := gatewaySessionConcurrencyIDs(accounts)
 	currentConcurrency, err := store.LoadCurrentAsync(ctx, ids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var imageLaneConcurrency map[string]int
 	if requestLane == gatewayproto.LaneImage {
 		imageLaneConcurrency, err = store.LoadCurrentByLaneAsync(ctx, ids, "image")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return orderAccountsByLaneCapacityBusyState(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy, modelPriority), nil
+	busyAccountIDs := make([]string, 0)
+	for _, account := range accounts {
+		if isAccountCapacityBusyForLane(account, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy) {
+			busyAccountIDs = append(busyAccountIDs, account.ID)
+		}
+	}
+	// orderAccountsByLaneCapacityBusyState 内部已做 preserveDispatchPriority
+	// Tiers，此处直接返回其结果，保证与原函数排序逐位一致。
+	ordered := orderAccountsByLaneCapacityBusyState(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy, modelPriority)
+	return ordered, busyAccountIDs, nil
 }
 
 // AreGatewayAccountsCapacityBusyForLaneAsync mirrors

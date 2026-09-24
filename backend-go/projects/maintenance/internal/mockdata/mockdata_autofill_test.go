@@ -92,6 +92,93 @@ func TestAutofillFillsStructureValidPlaceholderRows(t *testing.T) {
 	}
 }
 
+// TestAutofillResolvesForeignKeyValuesFromParentRows 验证外键感知：引用列取
+// 父表真实行而不是编造占位值——悬挂引用在 SQLite 不强制外键时潜伏，切到
+// PostgreSQL（外键强制执行）会以 23503 拒绝（2026-09-23 实测）。
+func TestAutofillResolvesForeignKeyValuesFromParentRows(t *testing.T) {
+	e := testEnv(t)
+	createTestTable(t, e, StoreBusiness, `CREATE TABLE fk_parents (
+		code TEXT NOT NULL,
+		version TEXT NOT NULL,
+		name TEXT NOT NULL,
+		PRIMARY KEY (code, version)
+	)`)
+	if _, err := e.opened[StoreBusiness].Exec(`INSERT INTO fk_parents VALUES ('openai', 'v1', 'OpenAI')`); err != nil {
+		t.Fatal(err)
+	}
+	createTestTable(t, e, StoreBusiness, `CREATE TABLE fk_children (
+		id TEXT PRIMARY KEY,
+		parent_code TEXT NOT NULL,
+		parent_version TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		FOREIGN KEY (parent_code, parent_version) REFERENCES fk_parents(code, version)
+	)`)
+	inserted, skipped, err := autofillTables(context.Background(), e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted[StoreBusiness+".fk_children"] < 1 {
+		t.Fatalf("fk_children not filled: %v (skipped %v)", inserted, skipped)
+	}
+	rows, err := e.opened[StoreBusiness].Query(`SELECT parent_code, parent_version FROM fk_children`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var code, version string
+		if err := rows.Scan(&code, &version); err != nil {
+			t.Fatal(err)
+		}
+		if code != "openai" || version != "v1" {
+			t.Fatalf("child row references (%q, %q), want the real parent row", code, version)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count < 1 {
+		t.Fatal("no child rows inserted")
+	}
+}
+
+// TestAutofillSkipsChildWhenForeignKeyParentEmpty 验证父表无可引用行且引用列
+// 不可空时整表跳过（记录原因），而不是插入悬挂引用占位行。父表用派生聚合族
+// 前缀命名（usage_stats_）以落在 autofill skip 名单里，保证它保持空表。
+func TestAutofillSkipsChildWhenForeignKeyParentEmpty(t *testing.T) {
+	e := testEnv(t)
+	createTestTable(t, e, StoreBusiness, `CREATE TABLE usage_stats_fk_parents (
+		code TEXT NOT NULL,
+		version TEXT NOT NULL,
+		PRIMARY KEY (code, version)
+	)`)
+	createTestTable(t, e, StoreBusiness, `CREATE TABLE orphan_children (
+		id TEXT PRIMARY KEY,
+		parent_code TEXT NOT NULL,
+		parent_version TEXT NOT NULL,
+		FOREIGN KEY (parent_code, parent_version) REFERENCES usage_stats_fk_parents(code, version)
+	)`)
+	inserted, skipped, err := autofillTables(context.Background(), e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := inserted[StoreBusiness+".orphan_children"]; ok {
+		t.Fatalf("orphan_children must not be autofilled: %v", inserted)
+	}
+	if reason := skipped[StoreBusiness+".orphan_children"]; !strings.Contains(reason, "悬挂引用") {
+		t.Fatalf("orphan_children skip reason must mention dangling reference: %q", reason)
+	}
+	count, err := e.queryCount(context.Background(), StoreBusiness, "orphan_children")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("orphan_children rows = %d, want 0", count)
+	}
+}
+
 func TestAutofillHonoursAutoIncrementPrimaryKey(t *testing.T) {
 	e := testEnv(t)
 	createTestTable(t, e, StoreBusiness, `CREATE TABLE counters (

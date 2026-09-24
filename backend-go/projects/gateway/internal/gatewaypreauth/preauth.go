@@ -37,8 +37,15 @@ func (s *Service) PreResolveGatewayRuntime(ctx context.Context, res GatewayRespo
 	resolutionOutcome := "success"
 	var resolutionError error
 	defer func() {
+		// traceId 走 kernel-first 既有 helper（kernel.Context(req.HTTP).TraceID
+		// -> Observability.TraceID() -> CreateTraceID()）；req 为 nil 时置空串，
+		// 与下方 resolved 的 nil 判断先例一致。
+		traceID := ""
+		if req != nil {
+			traceID = s.observedTraceID(req)
+		}
 		fields := map[string]any{
-			"traceId":  s.Observability.TraceID(),
+			"traceId":  traceID,
 			"resolved": req != nil && req.Runtime != nil && req.Runtime.APIKey != nil,
 			"reason":   resolutionReason,
 		}
