@@ -663,7 +663,15 @@ func writableEndedOf(res gatewaypreauth.GatewayResponseWriter) bool {
 }
 
 // requestClientIP mirrors extractClientIp over the kernel-resolved context.
+// 2026-09-25：优先取内核 RequestContext 的 ClientIP（trust-proxy XFF 解析，
+// 与审计/管理面同源）；preauth.ExtractClientIP 兜底只看套接字地址，在
+// Edge/Caddy/Traefik 之后是内部跳板地址而非客户端（生产用量/审计实证）。
 func requestClientIP(req *gatewaypreauth.GatewayRequest) string {
+	if req.HTTP != nil {
+		if ctx := kernel.Context(req.HTTP); ctx != nil && ctx.ClientIP != "" {
+			return ctx.ClientIP
+		}
+	}
 	if ip, ok := gatewaypreauth.ExtractClientIP(req); ok {
 		return ip
 	}
