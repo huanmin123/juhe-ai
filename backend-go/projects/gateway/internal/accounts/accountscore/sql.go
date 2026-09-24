@@ -12,9 +12,15 @@ func SQLTable(postgres bool, name string) string {
 }
 
 // SQLBind mirrors Store.bind: rewrites ? placeholders into $N for PostgreSQL.
+// PG 分支同时把 SQLite 专有的 instr(X, Y) 改写为 strpos(X, Y)（语义等价：
+// 1 起始下标、缺失返回 0）——2026-09-25 生产 my-accounts keyword 搜索 500
+// 修复（function instr(text, unknown) does not exist）。
 func SQLBind(postgres bool, query string) string {
 	if !postgres {
 		return query
+	}
+	if strings.Contains(query, "instr(") {
+		query = strings.ReplaceAll(query, "instr(", "strpos(")
 	}
 	var out strings.Builder
 	index := 1

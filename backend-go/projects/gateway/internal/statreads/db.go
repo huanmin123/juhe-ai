@@ -106,6 +106,10 @@ func (d *Deps) bind(query string) string {
 	if !d.PGDialect {
 		return query
 	}
+	if strings.Contains(query, "instr(") {
+		// SQLite 专有 instr(X, Y) → PG strpos(X, Y)（语义等价）。
+		query = strings.ReplaceAll(query, "instr(", "strpos(")
+	}
 	var out strings.Builder
 	index := 1
 	for i := 0; i < len(query); i++ {
