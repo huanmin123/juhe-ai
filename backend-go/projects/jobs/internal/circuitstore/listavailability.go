@@ -1019,7 +1019,7 @@ func (r *ListAvailabilityRepo) upsertProjectionTx(ctx context.Context, tx txLike
 		value.providerCode, value.providerProtocolProfileID, value.accountType, value.boundGroupID,
 		value.nameSortKey, value.prioritySortKey, value.superPrioritySortKey, value.fallbackSortKey,
 		value.concurrencySortKey, value.accountExpiresAtSortKey, value.lastUsedAtSortKey,
-		value.createdAtSortKey, accessType, boolLit(r.postgres, value.searchIndexComplete), boolLit(r.postgres, quotaExceeded)); err != nil {
+		value.createdAtSortKey, accessType, boolParam(value.searchIndexComplete), boolParam(quotaExceeded)); err != nil {
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1286,17 +1286,16 @@ func instantParam(postgres bool, value string, now func() time.Time) any {
 	return value
 }
 
-func boolLit(postgres bool, value bool) string {
-	if postgres {
-		if value {
-			return "TRUE"
-		}
-		return "FALSE"
-	}
+// boolParam 把布尔绑定为整数 1/0 参数：投影索引列在两种方言里都是
+// integer CHECK(0,1)。boolLit 风格的 "TRUE"/"FALSE" 字符串只能用于 SQL
+// 字面量插值——作为绑定参数时 pgx 会把字符串交给 integer 列，PostgreSQL
+// 拒绝 invalid input syntax for type integer: "TRUE"（2026-09-25 生产
+// my-accounts keyword 搜索 500 修复：$18=search_index_complete）。
+func boolParam(value bool) int {
 	if value {
-		return "1"
+		return 1
 	}
-	return "0"
+	return 0
 }
 
 // normalizeAccountNameSearchText 对齐 Node 同名函数（NFKC + trim）。

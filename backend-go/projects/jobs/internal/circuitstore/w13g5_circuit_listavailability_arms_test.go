@@ -542,11 +542,11 @@ func TestW13g5ListSmallHelpers(t *testing.T) {
 	if _, err := normalizedIDList([]string{"ok", "", strings.Repeat("x", 257)}); err == nil {
 		t.Fatal("非法 id 必须报错")
 	}
-	if got := boolLit(true, true); got != "TRUE" {
-		t.Fatalf("PG bool 字面量: %s", got)
+	if got := boolParam(true); got != 1 {
+		t.Fatalf("布尔参数 true: %v", got)
 	}
-	if got := boolLit(false, false); got != "0" {
-		t.Fatalf("SQLite bool 字面量: %s", got)
+	if got := boolParam(false); got != 0 {
+		t.Fatalf("布尔参数 false: %v", got)
 	}
 	if got := instantParam(true, "w13g5-not-time", w13g5FixedNow); got != "w13g5-not-time" {
 		t.Fatalf("不可解析时间必须原样返回: %v", got)

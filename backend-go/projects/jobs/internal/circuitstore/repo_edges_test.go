@@ -685,14 +685,11 @@ func TestListAvailabilityRepoSmallHelpers(t *testing.T) {
 	if got := instantParam(true, "bad-time", nil); got != "bad-time" {
 		t.Fatalf("解析失败回退文本: %v", got)
 	}
-	if got := boolLit(true, true); got != "TRUE" {
-		t.Fatalf("PG true 字面量: %s", got)
+	if got := boolParam(true); got != 1 {
+		t.Fatalf("布尔参数 true: %v", got)
 	}
-	if got := boolLit(true, false); got != "FALSE" {
-		t.Fatalf("PG false 字面量: %s", got)
-	}
-	if got := boolLit(false, true); got != "1" {
-		t.Fatalf("SQLite true 字面量: %s", got)
+	if got := boolParam(false); got != 0 {
+		t.Fatalf("布尔参数 false: %v", got)
 	}
 	if got := normalizeAccountNameSearchText("  Ａｃｃ "); got != "Acc" {
 		t.Fatalf("NFKC 兼容折叠全角 + trim: %q", got)
