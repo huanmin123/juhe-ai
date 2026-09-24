@@ -111,9 +111,12 @@ func (c RefreshCandidate) IsDecryptFailure() bool { return c.Account == nil }
 // openAIProfileIDs mirrors openAIProtocolProfileIdsForQuery: enabled OpenAI
 // protocol profiles, falling back to the pinned GPT profile constant.
 func (s *Store) openAIProfileIDs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT provider_protocol_profiles.id
-		FROM provider_protocol_profiles
-		INNER JOIN providers ON providers.code = provider_protocol_profiles.provider_code
+	// 表名必须走 s.table 限定（PG 下 juhe_business 前缀），裸表名在 PG
+	// search_path 里找不到会报 relation does not exist
+	// （2026-09-25 生产 oauth 刷新候选查询修复）。
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT `+s.table("provider_protocol_profiles")+`.id
+		FROM `+s.table("provider_protocol_profiles")+`
+		INNER JOIN `+s.table("providers")+` ON providers.code = provider_protocol_profiles.provider_code
 		WHERE providers.enabled = 1
 			AND provider_protocol_profiles.enabled = 1
 			AND protocol_code = ?

@@ -412,7 +412,9 @@ func TestBusinessDBDialectHelpers(t *testing.T) {
 		value    bool
 		expected string
 	}{
-		{true, true, "TRUE"}, {true, false, "FALSE"}, {false, true, "1"}, {false, false, "0"},
+		// accounts 布尔标志列在 PG 里也是 integer(0/1)，两个方言统一输出数字，
+		// PG 输出 TRUE/FALSE 会报 operator does not exist: integer = boolean。
+		{true, true, "1"}, {true, false, "0"}, {false, true, "1"}, {false, false, "0"},
 	}
 	for _, item := range cases {
 		if got := boolLit(item.postgres, item.value); got != item.expected {

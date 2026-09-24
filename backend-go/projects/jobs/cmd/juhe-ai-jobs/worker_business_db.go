@@ -92,14 +92,11 @@ func timeParam(postgres bool, t time.Time) any {
 // textParam 返回与方言匹配的文本绑定值。
 func textParam(v string) any { return v }
 
-// boolLit 返回布尔字面量（PG boolean / SQLite integer）。
+// boolLit 返回布尔标志字面量。accounts 的布尔标志列（schedulable、
+// balance_query_enabled 等）在 PG 与 SQLite 里都是 integer(0/1)——PG 分支
+// 不得输出 TRUE/FALSE，否则报 operator does not exist: integer = boolean
+// （2026-09-25 生产余额自动探测候选扫描修复）。
 func boolLit(postgres bool, value bool) string {
-	if postgres {
-		if value {
-			return "TRUE"
-		}
-		return "FALSE"
-	}
 	if value {
 		return "1"
 	}
