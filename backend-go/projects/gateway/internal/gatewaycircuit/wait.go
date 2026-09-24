@@ -79,8 +79,13 @@ type WaitCoordinator struct {
 type WaitCoordinatorOptions struct {
 	MaxWaitersPerScope int
 	MaxWaitersGlobal   int
-	NewTimer           func(delay time.Duration) (<-chan struct{}, func())
-	Now                func() int64
+	// NewTimer 的注入契约：返回的 stop 闭包必须幂等，且无论 timer 是否已
+	// fire 都必须最终令 done 变为可读——coordinator 的 timer goroutine 退出
+	// 唯一依赖 done 可读（stopped() 恒返回 nil，不提供第二条退路），违反该
+	// 契约（例如 stop 只调 timer.Stop 而不关 done）会让被抢跑结算废弃的
+	// goroutine 永久泄漏。
+	NewTimer func(delay time.Duration) (<-chan struct{}, func())
+	Now      func() int64
 }
 
 // NewWaitCoordinator mirrors the coordinator constructor.
@@ -92,8 +97,21 @@ func NewWaitCoordinator(options WaitCoordinatorOptions) *WaitCoordinator {
 	if newTimer == nil {
 		newTimer = func(delay time.Duration) (<-chan struct{}, func()) {
 			done := make(chan struct{})
-			timer := time.AfterFunc(delay, func() { close(done) })
-			return done, func() { timer.Stop() }
+			// closeDone 幂等：timer 自然 fire 的回调与 stop 闭包两条路径都会
+			// close(done)，sync.Once 保证只关一次。
+			var once sync.Once
+			closeDone := func() { once.Do(func() { close(done) }) }
+			timer := time.AfterFunc(delay, closeDone)
+			return done, func() {
+				// R3 修复：抢跑结算（settleWaiter 对 wasHead 调 timerStop）停掉
+				// 尚未 fire 的 timer 后，close(done) 原本永远不会发生，监听该
+				// timer 的 goroutine 会永久阻塞在 select <-done 上。这里无条件
+				// Stop 后幂等 close(done)（sync.Once 与自然 fire 的回调共享）：
+				// timer 未 fire 时由本闭包关闭，已 fire 时由回调关闭（或正在关
+				// 闭），被抢跑废弃的 goroutine 必然从 <-done 醒来退出。
+				timer.Stop()
+				closeDone()
+			}
 		}
 	}
 	now := options.Now
@@ -279,7 +297,10 @@ func (c *WaitCoordinator) scheduleScopeLocked(key string, scope *coordinatorScop
 		}
 		c.mu.Lock()
 		scope := c.scopes[key]
-		if scope != nil {
+		// 只清理自己这枚 timer 的句柄：抢跑结算后 settleWaiter 可能已为剩余
+		// 等待者调度了新 timer，此时 scope.timerDone 已换成新 channel，误清会
+		// 丢失新 timer 的 stop 句柄。
+		if scope != nil && scope.timerDone == done {
 			scope.timerDone = nil
 			scope.timerStop = nil
 		}

@@ -42,6 +42,14 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		})
 		*c.loop.keepConcurrencySlotRef = true
 		in.setAccountCircuitAttemptTransferred()
+		// R2 修复（成功侧结算）：真成功拿到完整 2xx 响应即结算 confirmation
+		//（framing_complete → RECOVERING，原 store API 语义在此位置正确），
+		// 不再把租约挂到 30s leaseUntil 过期。失败/错误分支的结算见各分支的
+		// ReportUnknown / ReportTransportFailure；nil 句柄（未参与熔断的尝试
+		// 或已被置 nil）自然跳过。
+		if in.accountCircuitAttempt != nil {
+			_, _ = in.accountCircuitAttempt.ReportFramingComplete(ctx)
+		}
 		var responsePrecommitDeadlineAtMs *int64
 		if in.requestLane != "image" && !in.coordination.GatewayRequestWallBudget.Unbounded {
 			value := in.coordination.GatewayRequestWallBudget.DeadlineAtMs - gatewayrouting.DefaultGatewayFinalResponseReserveMs
@@ -159,6 +167,15 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 	if failedResponseResult.Action == FailedResponseActionReturnResponse {
 		*c.loop.keepConcurrencySlotRef = true
 		in.setAccountCircuitAttemptTransferred()
+		// R2 修复（透传侧结算）：失败响应直接透传给客户端的分支（真实触发面：
+		// 账号诊断流量 chain_ports.go:305 与非网关流量 :314 的 ReturnResponse
+		// 配置）原先不结算 confirmation，租约悬挂至 30s leaseUntil 过期。该
+		// 分支只可能在非 2xx 失败响应时到达（成功早已走 response.OK() 分支），
+		// 故与失败分支同构调 ReportUnknown：立即释放租约、保持 SUSPECT、不新
+		// 增失败证据；observer 尝试为 no-op。nil 句柄自然跳过。
+		if in.accountCircuitAttempt != nil {
+			_, _ = in.accountCircuitAttempt.ReportUnknown(ctx)
+		}
 		var responsePrecommitDeadlineAtMs *int64
 		if in.requestLane != "image" && !in.coordination.GatewayRequestWallBudget.Unbounded {
 			value := in.coordination.GatewayRequestWallBudget.DeadlineAtMs - gatewayrouting.DefaultGatewayFinalResponseReserveMs
@@ -207,8 +224,13 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		in.semanticRetryID = failedResponseResult.Recovery.SemanticRetryID
 		return responseKindContinue, responseStopSemanticRetry, nil
 	}
+	// R2 修复（失败侧结算）：返回 429/500 的失败响应不再走
+	// ReportFramingComplete（原调用把 SUSPECT 推进 RECOVERING、失败证据清零，
+	// observer 尝试还会被失败响应直接关成 CLOSED——失败上游反向治愈熔断），
+	// 改为 ReportUnknown：租约立即释放、保持 SUSPECT、不新增失败证据、退避
+	// 后允许下一次 confirmation 认领（memory 与 redis/Lua 行为一致）。
 	if in.accountCircuitAttempt != nil {
-		_, _ = in.accountCircuitAttempt.ReportFramingComplete(ctx)
+		_, _ = in.accountCircuitAttempt.ReportUnknown(ctx)
 	}
 	*in.lastAttempt = failedResponseResult.LastAttempt
 	in.failedAccountIDs[c.account.ID] = struct{}{}
