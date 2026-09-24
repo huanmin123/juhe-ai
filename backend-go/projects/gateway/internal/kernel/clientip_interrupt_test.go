@@ -2,7 +2,7 @@ package kernel
 
 // 第三轮常驻审查 #4/#5 对齐测试：
 //   - ExtractClientIP 对照归档 shared/request-context.ts:456/716：
-//     IPv4-only（IPv6 → 空串，携带 Node undefined 语义）、XFF 条目数少于
+//     IPv4/IPv6 均保留（2026-09-25 分叉：修复 IPv6 客户端归空回落内网缺陷）、XFF 条目数少于
 //     受信代理数时回落 socket 地址（防伪造短链）。
 //   - MutationGuardMiddleware 对照归档 mutation-guard.middleware.ts:70-74 的
 //     res.once('close') 臂：响应未写出前客户端断开 → 定性 failed。
@@ -58,9 +58,9 @@ func TestExtractClientIPDialectAlignment(t *testing.T) {
 		{"emptyChainFallsBackToSocket", "10.0.0.5:1234", "", 1, "10.0.0.5"},
 		// 不信任代理：XFF 完全忽略。
 		{"zeroTrustIgnoresXFF", "10.0.0.5:1234", "6.6.6.6", 0, "10.0.0.5"},
-		// IPv4-only 归一化：IPv6 socket/XFF/非法值都归空并回落。
-		{"ipv6RemoteIsUndefined", "[2001:db8::1]:443", "", 1, ""},
-		{"ipv6CandidateFallsBackToSocket", "10.0.0.5:1234", "2001:db8::1, 10.10.10.1", 2, "10.0.0.5"},
+		// IPv6 归一化（2026-09-25 起保留，规范压缩形式）。
+		{"ipv6RemoteKept", "[2001:db8::1]:443", "", 1, "2001:db8::1"},
+		{"ipv6CandidateKept", "10.0.0.5:1234", "2001:db8::1, 10.10.10.1", 2, "2001:db8::1"},
 		{"mappedIPv4Stripped", "10.0.0.1:1000", "::ffff:203.0.113.7", 1, "203.0.113.7"},
 		{"dottedQuadWithPortStripped", "10.0.0.1:1000", "203.0.113.7:9877", 1, "203.0.113.7"},
 		{"bracketedIPv6PortStripped", "[2001:db8::1]:443", "::ffff:203.0.113.7", 1, "203.0.113.7"},

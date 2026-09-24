@@ -19,9 +19,9 @@ func TestW11GNormalizeClientIPVariants(t *testing.T) {
 		"   ":         "",
 		"1.2.3.4":     "1.2.3.4",
 		"1.2.3.4:80":  "1.2.3.4",
-		"[::1]":       "",
+		"[::1]":       "::1",
 		"::ffff:1.2.3.4": "1.2.3.4",
-		"::1":         "",
+		"::1":         "::1",
 	}
 	for input, want := range cases {
 		if got := normalizeClientIP(input); got != want {

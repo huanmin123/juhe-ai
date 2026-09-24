@@ -367,14 +367,14 @@ func TestWhRequestMetadata(t *testing.T) {
 		t.Fatal("缺失键必须失败")
 	}
 	// 客户端 IP 归一化链。
-	// IPv6 的 ClientIP 被拒后回退到 RemoteAddr 的 IPv4。
+	// 2026-09-25 起 IPv6 保留（修复生产 CF 链路 IPv6 客户端归空缺陷）。
 	ipReq := &GatewayRequest{ClientIP: "[2001:db8::1]:443", RemoteAddr: "192.168.1.7:5000"}
-	if ip, ok := ExtractClientIP(ipReq); !ok || ip != "192.168.1.7" {
-		t.Fatalf("IPv6 回退 = %q ok=%v", ip, ok)
+	if ip, ok := ExtractClientIP(ipReq); !ok || ip != "2001:db8::1" {
+		t.Fatalf("IPv6 保留 = %q ok=%v", ip, ok)
 	}
 	ipv6Only := &GatewayRequest{ClientIP: "[2001:db8::1]:443", RemoteAddr: "[2001:db8::2]:1"}
-	if ip, ok := ExtractClientIP(ipv6Only); ok {
-		t.Fatalf("全 IPv6 必须失败: %q ok=%v", ip, ok)
+	if ip, ok := ExtractClientIP(ipv6Only); !ok || ip != "2001:db8::1" {
+		t.Fatalf("全 IPv6 保留 = %q ok=%v", ip, ok)
 	}
 	v4Req := &GatewayRequest{RemoteAddr: "192.168.1.7:5000"}
 	if ip, ok := ExtractClientIP(v4Req); !ok || ip != "192.168.1.7" {

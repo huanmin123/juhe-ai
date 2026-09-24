@@ -38,9 +38,8 @@ func ExtractClientIP(req *GatewayRequest) (string, bool) {
 	return normalizeClientIP(req.RemoteAddr)
 }
 
-// normalizeClientIP mirrors the Node helper: trim, strip [..] brackets,
-// strip a ":port" suffix from dotted-quad addresses, strip the "::ffff:"
-// mapped-address prefix, and keep only IPv4 results.
+// normalizeClientIP 源自 Node helper，2026-09-25 有意分叉（与 kernel.normalizeClientIP
+// 同步）：IPv6 客户端不再归空——IPv4/映射地址返回点分四段，纯 IPv6 返回规范压缩形式。
 func normalizeClientIP(value string) (string, bool) {
 	if value == "" {
 		return "", false
@@ -61,16 +60,17 @@ func normalizeClientIP(value string) (string, bool) {
 	if strings.HasPrefix(ip, "::ffff:") {
 		ip = ip[len("::ffff:"):]
 	}
-	return ip, isIPv4Text(ip)
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return "", false
+	}
+	if with4 := parsed.To4(); with4 != nil {
+		return with4.String(), true
+	}
+	return parsed.String(), true
 }
 
 var ipv4WithPortPattern = regexp.MustCompile(`^\d{1,3}(?:\.\d{1,3}){3}:\d+$`)
-
-// isIPv4Text mirrors isIP(ip) === 4: dotted-quad only.
-func isIPv4Text(value string) bool {
-	parsed := net.ParseIP(value)
-	return parsed != nil && parsed.To4() != nil && !strings.Contains(value, ":")
-}
 
 // RequestModel mirrors requestModel: Gemini path model, then the captured
 // body state model, then the raw parsed body model string.

@@ -390,11 +390,12 @@ func ExtractClientIP(r *http.Request, trustProxyCount int) string {
 // ipv4WithPortPattern mirrors the Node /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/ check.
 var ipv4WithPortPattern = regexp.MustCompile(`^\d{1,3}(?:\.\d{1,3}){3}:\d+$`)
 
-// normalizeClientIP mirrors the Node helper (shared/request-context.ts:716):
-// trim, strip [..] brackets, strip a ":port" suffix from dotted-quad text,
-// strip the "::ffff:" mapped-address prefix, and keep only IPv4 results
-// (isIP(ip) === 4); everything else — including IPv6 — normalizes to "",
-// exactly like the Node undefined.
+// normalizeClientIP 源自 Node helper（shared/request-context.ts:716），2026-09-25
+// 有意分叉：生产链路（CF→Edge→Caddy→Traefik）透传后 IPv6 客户端（如 2408::/中国
+// 联通 6）曾被"仅保留 IPv4"的旧语义归空、回落到内网 RemoteAddr，导致全部 IP 机制
+// 拿不到真实客户端。现行为：trim、剥 [..] 括号、剥点分四段的 ":port"、剥
+// "::ffff:" 映射前缀后，IPv4/映射地址返回点分四段，纯 IPv6 返回规范压缩形式；
+// 无法解析的输入仍归空。
 func normalizeClientIP(value string) string {
 	if value == "" {
 		return ""
@@ -415,16 +416,14 @@ func normalizeClientIP(value string) string {
 	if strings.HasPrefix(ip, "::ffff:") {
 		ip = ip[len("::ffff:"):]
 	}
-	if !isIPv4Text(ip) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
 		return ""
 	}
-	return ip
-}
-
-// isIPv4Text mirrors isIP(ip) === 4: dotted-quad only.
-func isIPv4Text(value string) bool {
-	parsed := net.ParseIP(value)
-	return parsed != nil && parsed.To4() != nil && !strings.Contains(value, ":")
+	if with4 := parsed.To4(); with4 != nil {
+		return with4.String()
+	}
+	return parsed.String()
 }
 
 func newUUID() string {
