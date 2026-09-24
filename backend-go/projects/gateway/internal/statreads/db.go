@@ -90,22 +90,43 @@ func toText(value any) string {
 
 // queryStats runs a read against the stats database.
 func (d *Deps) queryStats(r *http.Request, query string, args ...any) ([]Row, error) {
-	return queryRowsContext(r.Context(), d.Stats, query, args...)
+	return queryRowsContext(r.Context(), d.Stats, d.bind(query), args...)
 }
 
 // queryBusiness runs a read against the business database.
 func (d *Deps) queryBusiness(r *http.Request, query string, args ...any) ([]Row, error) {
-	return queryRowsContext(r.Context(), d.Business, query, args...)
+	return queryRowsContext(r.Context(), d.Business, d.bind(query), args...)
+}
+
+// bind rewrites `?` placeholders to `$n` for PostgreSQL. statreads ports the
+// Node SQL with `?` placeholders; SQLite takes them natively while pgx does
+// not (ISSUE-005 同类：未绑定占位符直达 pgx 触发 500)。2026-09-25 E2E 发现
+// usage-records / usage-overview 在生产 PG 500 后收敛到本包统一出口绑定。
+func (d *Deps) bind(query string) string {
+	if !d.PGDialect {
+		return query
+	}
+	var out strings.Builder
+	index := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			out.WriteString("$" + strconv.Itoa(index))
+			index++
+		} else {
+			out.WriteByte(query[i])
+		}
+	}
+	return out.String()
 }
 
 // queryStatsCtx / queryBusinessCtx accept an explicit context (background
 // callers such as preload helpers).
 func (d *Deps) queryStatsCtx(ctx context.Context, query string, args ...any) ([]Row, error) {
-	return queryRowsContext(ctx, d.Stats, query, args...)
+	return queryRowsContext(ctx, d.Stats, d.bind(query), args...)
 }
 
 func (d *Deps) queryBusinessCtx(ctx context.Context, query string, args ...any) ([]Row, error) {
-	return queryRowsContext(ctx, d.Business, query, args...)
+	return queryRowsContext(ctx, d.Business, d.bind(query), args...)
 }
 
 func queryRowsContext(ctx context.Context, db DB, query string, args ...any) ([]Row, error) {

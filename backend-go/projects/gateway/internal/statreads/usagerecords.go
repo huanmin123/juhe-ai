@@ -434,14 +434,14 @@ func (d *Deps) usageRecordRowsPG(r *http.Request, filters usageRecordFilterSet, 
 	if sortOrder == "asc" {
 		direction = "ASC"
 	}
-	return queryRowsContext(r.Context(), d.Stats, `
+	return queryRowsContext(r.Context(), d.Stats, d.bind(`
 		SELECT
 			`+usageRecordListSelectColumns+`
 		FROM juhe_usage.usage_records ur
 		`+filters.clause+`
 		ORDER BY ur.created_at `+direction+`, ur.id `+direction+`
 		LIMIT ?
-	`, append(append([]any{}, filters.params...), limit)...)
+	`), append(append([]any{}, filters.params...), limit)...)
 }
 
 type usageShardLocation struct {
