@@ -355,7 +355,7 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 	}
 	rows, err := d.queryBusiness(r, `
 		SELECT accounts.id
-		FROM accounts
+		FROM `+d.businessTable("accounts")+`
 		WHERE accounts.deleted_at IS NULL
 			AND accounts.name >= ? AND accounts.name < ?`+ownerClause+`
 		ORDER BY accounts.name ASC, accounts.id ASC
@@ -367,8 +367,8 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 	appendIDs(rows)
 	rows, err = d.queryBusiness(r, `
 		SELECT instance_accounts.id
-		FROM accounts source_accounts
-		INNER JOIN accounts instance_accounts
+		FROM `+d.businessTable("accounts")+` source_accounts
+		INNER JOIN `+d.businessTable("accounts")+` instance_accounts
 			ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
 		WHERE source_accounts.deleted_at IS NULL
 			AND instance_accounts.deleted_at IS NULL
@@ -383,8 +383,8 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 	if ownerID != "" {
 		rows, err = d.queryBusiness(r, `
 			SELECT accounts.id
-			FROM accounts
-			INNER JOIN resource_authorizations ra
+			FROM `+d.businessTable("accounts")+`
+			INNER JOIN `+d.businessTable("resource_authorizations")+` ra
 				ON ra.resource_type = 'account'
 				AND ra.resource_id = accounts.id
 				AND ra.grantee_system_account_id = ?
@@ -399,11 +399,11 @@ func (d *Deps) usageRecordKeywordAccountIds(r *http.Request, scope AccessScope, 
 		appendIDs(rows)
 		rows, err = d.queryBusiness(r, `
 			SELECT accounts.id
-			FROM accounts
-			INNER JOIN group_accounts ga
+			FROM `+d.businessTable("accounts")+`
+			INNER JOIN `+d.businessTable("group_accounts")+` ga
 				ON ga.account_id = accounts.id
 				AND ga.enabled = 1
-			INNER JOIN resource_authorizations ra
+			INNER JOIN `+d.businessTable("resource_authorizations")+` ra
 				ON ra.resource_type = 'group'
 				AND ra.resource_id = ga.group_id
 				AND ra.grantee_system_account_id = ?
