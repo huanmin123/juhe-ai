@@ -298,7 +298,7 @@ const {
   ],
   onError: (error) => {
     console.error(error)
-    message.error('加载授权团队数据失败')
+    message.error(extractApiErrorMessage(error, '加载授权团队数据失败'))
   }
 })
 

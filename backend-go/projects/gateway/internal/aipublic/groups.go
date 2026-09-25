@@ -103,7 +103,7 @@ func (d *Deps) listGroups(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := d.paging(query.HasPage, query.Page, query.HasPageSize, query.PageSize)
 	result, err := d.listGroupRows(r.Context(), target.SystemAccountID, page, pageSize, query.Keyword, query.ProviderCode)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	d.writeStatsEnvelope(w, map[string]any{
@@ -300,13 +300,13 @@ func (d *Deps) addGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, err := d.findExistingTargetGroup(r.Context(), target.Account.ID, parsed.ProviderCode, parsed.Name)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if existing != nil {
 		summary, err := d.Groups.FindDetail(r.Context(), existing.ID, groups.AccessScope{ViewerID: target.Account.ID})
 		if err != nil || summary == nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		d.writeStatsEnvelope(w, map[string]any{
@@ -326,7 +326,7 @@ func (d *Deps) addGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := d.Groups.FindDetail(r.Context(), created.ID, groups.AccessScope{ViewerID: target.Account.ID})
 	if err != nil || summary == nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	d.writeStatsCreated(w, map[string]any{
@@ -432,7 +432,7 @@ func (d *Deps) updateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := d.findGroupOwnerByID(r.Context(), parsed.GroupID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	target, targetErr := d.resolveOwnedTarget(r.Context(), parsed.TargetUsername, parsed.HasTarget, owner)
@@ -447,7 +447,7 @@ func (d *Deps) updateGroup(w http.ResponseWriter, r *http.Request) {
 	access := groups.AccessScope{ViewerID: target.Account.ID}
 	group, err := d.Groups.FindDetail(r.Context(), parsed.GroupID, access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if group == nil {
@@ -486,7 +486,7 @@ func (d *Deps) updateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := d.Groups.FindDetail(r.Context(), parsed.GroupID, access)
 	if err != nil || summary == nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	d.writeStatsEnvelope(w, map[string]any{
@@ -526,7 +526,7 @@ func (d *Deps) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := d.findGroupOwnerByID(r.Context(), parsed.GroupID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	target, targetErr := d.resolveOwnedTarget(r.Context(), parsed.TargetUsername, parsed.HasTarget, owner)
@@ -541,7 +541,7 @@ func (d *Deps) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	access := groups.AccessScope{ViewerID: target.Account.ID}
 	group, err := d.Groups.FindDetail(r.Context(), parsed.GroupID, access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if group == nil {

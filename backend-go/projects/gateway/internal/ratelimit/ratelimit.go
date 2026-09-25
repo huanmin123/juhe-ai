@@ -243,7 +243,7 @@ func (l *Limiter) load(w http.ResponseWriter, r *http.Request) (Settings, bool) 
 	if err != nil {
 		// Node respondRateLimitFailure (system-api-rate-limit.middleware.ts
 		// :335-343): JSON 500 {"message":"服务器内部错误"} — never text/plain.
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return Settings{}, false
 	}
 	return settings, true
@@ -264,7 +264,7 @@ func (l *Limiter) check(w http.ResponseWriter, r *http.Request, buckets []Bucket
 		// (system-api-rate-limit.middleware.ts:213, handleSystemApiError
 		// system-api-app.ts:315): 500 {"message":"服务器内部错误"} without
 		// Retry-After. A storage failure is never a rate-limit denial.
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", backendErr)
 		return false
 	}
 	if !allowed {

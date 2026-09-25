@@ -109,7 +109,7 @@ func (d *Deps) listRouteStrategies(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := d.Strategies.ListPage(r.Context(), routestrategies.AccessScope{ViewerID: target.SystemAccountID}, options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	ids := make([]string, 0, len(result.Items))
@@ -118,7 +118,7 @@ func (d *Deps) listRouteStrategies(w http.ResponseWriter, r *http.Request) {
 	}
 	bindings, err := d.loadStrategyBindings(r.Context(), ids)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	items := make([]PublicStrategySummary, 0, len(result.Items))
@@ -410,7 +410,7 @@ func (d *Deps) addRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := d.Strategies.FindDetail(r.Context(), created.ID, routestrategies.AccessScope{ViewerID: target.SystemAccountID})
 	if err != nil || detail == nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	d.writeStatsCreated(w, map[string]any{
@@ -568,7 +568,7 @@ func (d *Deps) updateRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := d.findStrategyOwnerByID(r.Context(), parsed.RouteStrategyID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	target, targetErr := d.resolveOwnedTarget(r.Context(), parsed.TargetUsername, parsed.HasTarget, &ownerLookup{ID: ownerID(owner), SystemAccountID: ownerAccountID(owner)})
@@ -583,7 +583,7 @@ func (d *Deps) updateRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	access := routestrategies.AccessScope{ViewerID: target.SystemAccountID}
 	current, err := d.Strategies.FindDetail(r.Context(), parsed.RouteStrategyID, access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if current == nil {
@@ -641,7 +641,7 @@ func (d *Deps) updateRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := d.Strategies.FindDetail(r.Context(), parsed.RouteStrategyID, access)
 	if err != nil || detail == nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	d.writeStatsEnvelope(w, map[string]any{
@@ -681,7 +681,7 @@ func (d *Deps) deleteRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := d.findStrategyOwnerByID(r.Context(), parsed.RouteStrategyID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	target, targetErr := d.resolveOwnedTarget(r.Context(), parsed.TargetUsername, parsed.HasTarget, &ownerLookup{ID: ownerID(owner), SystemAccountID: ownerAccountID(owner)})
@@ -696,7 +696,7 @@ func (d *Deps) deleteRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	access := routestrategies.AccessScope{ViewerID: target.SystemAccountID}
 	current, err := d.Strategies.FindDetail(r.Context(), parsed.RouteStrategyID, access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if current == nil {

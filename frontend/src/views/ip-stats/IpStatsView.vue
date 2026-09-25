@@ -139,7 +139,6 @@
         row-key="accountId"
         :loading="detailLoading"
         :pagination="detailTablePagination"
-        :pagination-summary="false"
         :scroll-x="1220"
         size="small"
         :lock-body-scroll="false"
@@ -319,6 +318,7 @@ const statusFilter = ref<ClientIpStatus>(initialPageState.statusFilter)
 const usageWindow = ref<UsageWindow>(initialPageState.usageWindow)
 const rows = ref<ClientIpStatsRow[]>([])
 const paginationUpperBound = ref(0)
+const listHasMore = ref(false)
 const rangeReady = ref(true)
 const pagination = reactive({ ...initialPageState.pagination })
 const sortState = ref<{ field: ClientIpStatsSortField; order: TableSortOrder }>({ ...initialPageState.sortState })
@@ -331,10 +331,12 @@ const policyForm = reactive<{ reason?: string; durationMode: PolicyDurationMode;
 })
 const detailDrawerOpen = ref(false)
 const detailLoading = ref(false)
+let detailRequestSeq = 0
 const detailTarget = ref<ClientIpStatsRow>()
 const detailRows = ref<ClientIpAccountUsageRow[]>([])
 const detailRangeReady = ref(true)
 const detailPaginationUpperBound = ref(0)
+const detailHasMore = ref(false)
 const detailPagination = reactive({ current: 1, pageSize: 20 })
 const detailSortState = ref<{ field: ClientIpStatsSortField; order: TableSortOrder }>({ field: 'requestCount', order: 'descend' })
 
@@ -350,14 +352,16 @@ const tablePagination = computed(() => ({
   current: pagination.current,
   pageSize: pagination.pageSize,
   total: paginationUpperBound.value,
-  showSizeChanger: true
+  showSizeChanger: true,
+  showTotal: ipStatsShowTotal(listHasMore.value, 'IP')
 }))
 
 const detailTablePagination = computed(() => ({
   current: detailPagination.current,
   pageSize: detailPagination.pageSize,
   total: detailPaginationUpperBound.value,
-  showSizeChanger: true
+  showSizeChanger: true,
+  showTotal: ipStatsShowTotal(detailHasMore.value, '关联账号')
 }))
 
 const currentUsageWindowLabel = computed(() => usageWindowOptions.find((option) => option.value === usageWindow.value)?.label ?? '当前范围')
@@ -388,6 +392,7 @@ async function loadData(options: { force?: boolean } = {}): Promise<void> {
     pagination.current = result.page
     pagination.pageSize = result.pageSize
     paginationUpperBound.value = result.pageUpperBound
+    listHasMore.value = result.hasMore
     rangeReady.value = result.rangeReady
   } catch (error) {
     if (requestSeq !== listRequestSeq) return
@@ -480,6 +485,7 @@ function openDetailDrawer(record: ClientIpStatsRow): void {
   detailRows.value = []
   detailRangeReady.value = true
   detailPaginationUpperBound.value = 0
+  detailHasMore.value = false
   detailPagination.current = 1
   detailSortState.value = { field: 'requestCount', order: 'descend' }
   detailDrawerOpen.value = true
@@ -489,23 +495,32 @@ function openDetailDrawer(record: ClientIpStatsRow): void {
 async function loadDetailData(): Promise<void> {
   const target = detailTarget.value
   if (!target) return
+  const requestSeq = ++detailRequestSeq
   const targetIpHash = target.ipHash
   detailLoading.value = true
   try {
     const result = await api.ipStats.detail(targetIpHash, buildDetailParams())
-    if (detailTarget.value?.ipHash !== targetIpHash) return
+    if (detailTarget.value?.ipHash !== targetIpHash || requestSeq !== detailRequestSeq) return
     detailRows.value = result.items
     detailPagination.current = result.page
     detailPagination.pageSize = result.pageSize
     detailPaginationUpperBound.value = result.pageUpperBound
+    detailHasMore.value = result.hasMore
     detailRangeReady.value = result.rangeReady
   } catch (error) {
+    if (detailTarget.value?.ipHash !== targetIpHash || requestSeq !== detailRequestSeq) return
     message.error(extractApiErrorMessage(error, '加载 IP 详情失败'))
   } finally {
-    if (detailTarget.value?.ipHash === targetIpHash) {
+    if (detailTarget.value?.ipHash === targetIpHash && requestSeq === detailRequestSeq) {
       detailLoading.value = false
     }
   }
+}
+
+function ipStatsShowTotal(hasMore: boolean, unit: string): (total: number, range?: [number, number]) => string {
+  return (total, range) => hasMore
+    ? `已加载到第 ${range?.[1] ?? total} 个${unit}，还有更多`
+    : `共 ${total} 个${unit}`
 }
 
 function buildDetailParams(): ClientIpStatsDetailParams {

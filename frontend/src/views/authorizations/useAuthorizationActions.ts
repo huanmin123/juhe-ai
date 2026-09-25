@@ -1,4 +1,5 @@
 import type { ComputedRef, Ref } from 'vue'
+import { Modal } from 'ant-design-vue'
 import dayjs from 'dayjs'
 
 import { api } from '@/api/client'
@@ -222,6 +223,9 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
           return
         }
         if (expiresAtTimestamp <= Date.now()) {
+          if (!(await confirmExpiredAuthorizationRestore())) {
+            return
+          }
           payload.expiresAt = null
         }
       }
@@ -235,6 +239,20 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
       console.error(error)
       message.error(extractApiErrorMessage(error, status === 'active' ? '恢复授权失败' : '暂停授权失败'))
     }
+  }
+
+  /** 恢复已过期授权会携带显式 null 清除到期时间（后端契约：无到期时间即长期有效），需用户确认。 */
+  function confirmExpiredAuthorizationRestore(): Promise<boolean> {
+    return new Promise((resolve) => {
+      Modal.confirm({
+        title: '确认恢复已过期授权？',
+        content: '该授权已过期，恢复后将清除到期时间，授权变为长期有效（不再自动过期）。',
+        okText: '确认恢复',
+        cancelText: '取消',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false)
+      })
+    })
   }
 
   function openExpireModal(item: ResourceAuthorizationListItem) {

@@ -30,7 +30,7 @@ func (d *Deps) patchModel(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(modelID, "custom_model_") {
 		builtIn, err := d.Store.findBuiltInModelPatchState(ctx, modelID)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if builtIn != nil {
@@ -44,7 +44,7 @@ func (d *Deps) patchModel(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, err := d.Store.findCustomProviderModelByID(ctx, modelID, owner)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if existing == nil || existing.ProviderCode != r.PathValue("code") {
@@ -88,7 +88,7 @@ func (d *Deps) patchModel(w http.ResponseWriter, r *http.Request) {
 		}
 		input, err := d.Store.defaultReferenceCleanupTargets(ctx, existing.ProviderCode, ownerScope, existing.Model, clearSystemDefault)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		cleanup = input
@@ -157,14 +157,14 @@ func (d *Deps) patchBuiltInModel(w http.ResponseWriter, r *http.Request, auth *a
 	if builtinDefaultUsabilityTransitioned(builtIn, next) {
 		input, err := d.Store.defaultReferenceCleanupTargets(r.Context(), builtIn.ProviderCode, "", builtIn.Model, true)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		cleanup = input
 	}
 	saved, err := d.Store.patchBuiltInModelConfiguration(r.Context(), builtIn, patch, parsed.expectedUpdatedAt, cleanup)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if saved == nil {
@@ -495,7 +495,7 @@ func (d *Deps) deleteModel(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, err := d.Store.findCustomProviderModelByID(ctx, r.PathValue("modelId"), owner)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if existing == nil || existing.ProviderCode != r.PathValue("code") {
@@ -508,7 +508,7 @@ func (d *Deps) deleteModel(w http.ResponseWriter, r *http.Request) {
 	}
 	bindings, err := d.Store.customProviderModelBindings(ctx, existing.ProviderCode, existing.Model, existing.Scope, stringValueOrEmpty(existing.SystemAccountID))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if bindings.TotalAccountCount > 0 {
@@ -522,12 +522,12 @@ func (d *Deps) deleteModel(w http.ResponseWriter, r *http.Request) {
 	}
 	cleanup, err := d.Store.defaultReferenceCleanupTargets(ctx, existing.ProviderCode, ownerScope, existing.Model, clearSystemDefault)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	deleted, err := d.Store.deleteCustomProviderModel(ctx, existing.ID, owner, cleanup)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	// Node deleteCustomProviderModelAsync notifies only when the delete
@@ -545,7 +545,7 @@ func (d *Deps) putDefaultHealthCheckModel(w http.ResponseWriter, r *http.Request
 	ctx := r.Context()
 	provider, err := d.Store.FindDefinition(ctx, r.PathValue("code"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if provider == nil {
@@ -572,7 +572,7 @@ func (d *Deps) putDefaultHealthCheckModel(w http.ResponseWriter, r *http.Request
 	}
 	validatedModel, message, err := d.validateDefaultHealthCheckModelSelection(ctx, provider.Code, target, model)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if message != "" {
@@ -581,12 +581,12 @@ func (d *Deps) putDefaultHealthCheckModel(w http.ResponseWriter, r *http.Request
 	}
 	if saveAsSystemDefault {
 		if err := d.Store.UpsertSystemDefaultHealthCheckModel(ctx, provider.Code, validatedModel); err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 	} else {
 		if err := d.Store.UpsertDefaultHealthCheckModelPreference(ctx, target, provider.Code, validatedModel); err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 	}

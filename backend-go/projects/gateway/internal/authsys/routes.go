@@ -94,7 +94,7 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 		// pass through the throttle.
 		blocked, retryAfter, message, guardErr := d.LoginGuard.Check(clientIP, body.Username)
 		if guardErr != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", guardErr)
 			return
 		}
 		if blocked {
@@ -104,13 +104,13 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 		}
 		verified, ok, err := d.Port.VerifyCredentials(r.Context(), body.Username, body.Password)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if !ok {
 			blocked, retryAfter, message, guardErr := d.LoginGuard.Failed(clientIP, body.Username)
 			if guardErr != nil {
-				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 				return
 			}
 			if blocked {
@@ -123,13 +123,13 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 		}
 		issued, issuedOK, err := d.Port.CreateSession(r.Context(), verified.SystemAccountID, verified.CredentialRevision, 14)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if !issuedOK {
 			blocked, retryAfter, message, guardErr := d.LoginGuard.Failed(clientIP, body.Username)
 			if guardErr != nil {
-				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 				return
 			}
 			if blocked {
@@ -154,7 +154,7 @@ func (d *Deps) postLogout(cookieSameSite string, cookieSecure bool) http.Handler
 		cookies := ParseCookie(r.Header.Get("Cookie"))
 		if token := cookies[SessionCookieName]; token != "" {
 			if err := d.Port.RevokeToken(r.Context(), token); err != nil {
-				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 				return
 			}
 		}
@@ -180,13 +180,13 @@ func (d *Deps) getProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := d.Accounts.FindByID(r.Context(), auth.SystemAccountID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	summary.RequestLimits = normalizedProfileRequestLimitOverrides(summary.RequestLimits)
 	effective, err := d.effectiveUserRequestLimits(r.Context(), summary.RequestLimits)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if summary.ID == "" {
@@ -223,7 +223,7 @@ func (d *Deps) patchMe(w http.ResponseWriter, r *http.Request) {
 	displayName := strings.TrimSpace(*body.DisplayName)
 	before, err := d.Accounts.FindByID(r.Context(), auth.SystemAccountID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if before.ID == "" {
@@ -249,7 +249,7 @@ func (d *Deps) patchMe(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := d.Accounts.FindByID(r.Context(), auth.SystemAccountID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	d.recordOperationLog(r, OperationLogEntry{
@@ -296,7 +296,7 @@ func (d *Deps) postChangePassword(w http.ResponseWriter, r *http.Request) {
 		}
 		verified, ok, err := d.Port.VerifyCredentials(r.Context(), auth.Username, *body.OldPassword)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if !ok || verified.SystemAccountID != auth.SystemAccountID {
@@ -349,7 +349,7 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 	}
 	blocked, retryAfter, message, guardErr := d.LoginGuard.Check(clientIP, body.Username)
 	if guardErr != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", guardErr)
 		return
 	}
 	if blocked {
@@ -359,7 +359,7 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 	}
 	verified, ok, err := d.Port.VerifyCredentials(r.Context(), body.Username, body.Password)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !ok || !IsAdminRole(verified.Role) {
@@ -367,7 +367,7 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 		// store failure lands as 500 (D8 fail-closed), the block result stays
 		// ignored exactly like auth.routes.ts.
 		if _, _, _, failedErr := d.LoginGuard.Failed(clientIP, body.Username); failedErr != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteError(w, http.StatusUnauthorized, "账号或密码错误")
@@ -379,7 +379,7 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 	}
 	temporary, temporaryOK, err := d.Port.CreateTemporaryToken(r.Context(), verified.SystemAccountID, verified.CredentialRevision, ttlSeconds)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !temporaryOK {

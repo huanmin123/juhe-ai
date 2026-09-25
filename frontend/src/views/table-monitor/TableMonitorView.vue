@@ -367,7 +367,7 @@ const {
   },
   onError: (error) => {
     console.error(error)
-    message.error('表监控加载失败')
+    message.error(extractApiErrorMessage(error, '表监控加载失败'))
   },
   requestSignature: () => keyword.value.trim().toLowerCase()
 })

@@ -169,7 +169,7 @@ func (d *Deps) listAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := d.AiAccounts.ListPage(r.Context(), accounts.AccessScope{ViewerID: target.SystemAccountID}, options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	ids := make([]string, 0, len(result.Items))
@@ -178,7 +178,7 @@ func (d *Deps) listAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	models, err := d.loadAccountSupportedModels(r.Context(), ids)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	items := make([]PublicAccountListItem, 0, len(result.Items))
@@ -779,7 +779,7 @@ func (d *Deps) updateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := d.findAccountOwnerByID(r.Context(), parsed.AccountID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if owner == nil {
@@ -1097,7 +1097,7 @@ func (d *Deps) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := d.findAccountOwnerByID(r.Context(), parsed.AccountID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if owner == nil {

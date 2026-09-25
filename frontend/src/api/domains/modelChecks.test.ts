@@ -58,7 +58,9 @@ function completeStreamResponse(detail: unknown): Response {
           if (served) return { done: true, value: undefined }
           served = true
           return { done: false, value: chunk }
-        }
+        },
+        cancel: async () => undefined,
+        releaseLock: () => undefined
       })
     }
   } as unknown as Response

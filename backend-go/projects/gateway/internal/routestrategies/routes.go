@@ -184,7 +184,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	}
 	result, err := d.Store.ListPage(r.Context(), access, options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	// summarizeRouteStrategySpeedFirstLatencyRuntimeAsync: one batched runtime
@@ -296,7 +296,7 @@ func optionsQuery(r *http.Request) OptionsQuery {
 func (d *Deps) options(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	result, err := d.Store.ListOptionsPage(r.Context(), access, optionsQuery(r))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, result, "")
@@ -305,7 +305,7 @@ func (d *Deps) options(w http.ResponseWriter, r *http.Request, access AccessScop
 func (d *Deps) editBasic(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	detail, err := d.Store.FindEditBasic(r.Context(), r.PathValue("id"), access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {
@@ -320,7 +320,7 @@ func (d *Deps) editBasic(w http.ResponseWriter, r *http.Request, access AccessSc
 func (d *Deps) speedFirstRuntime(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	detail, err := d.Store.FindDetail(r.Context(), r.PathValue("id"), access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {
@@ -379,7 +379,7 @@ func dedupeSpeedFirstItemsByAccount(items []SpeedFirstRuntimeItem) []SpeedFirstR
 func (d *Deps) find(w http.ResponseWriter, r *http.Request, access AccessScope) {
 	detail, err := d.Store.FindDetail(r.Context(), r.PathValue("id"), access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {

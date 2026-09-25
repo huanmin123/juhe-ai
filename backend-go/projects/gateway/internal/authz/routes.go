@@ -313,7 +313,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	}
 	items, total, hasMore, err := d.Store.ListItemsPage(r.Context(), filters, page, pageSize, access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, map[string]any{
@@ -330,7 +330,7 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	access := d.accessFor(r, selfOnly)
 	summary, err := d.Store.Find(r.Context(), r.PathValue("id"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if summary == nil {

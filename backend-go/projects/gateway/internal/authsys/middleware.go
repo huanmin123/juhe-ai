@@ -209,7 +209,7 @@ func (d *Deps) sessionMiddleware(touch, gateMustChangePassword bool) func(http.H
 					kernel.WriteError(w, http.StatusUnauthorized, "登录会话已过期")
 					return
 				}
-				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 				return
 			}
 			// Node checks mustChangePassword inside requireAuth after the

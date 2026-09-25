@@ -210,6 +210,11 @@ func emitHTTPRequestCompleted(context *RequestContext, statusCode *int, failureS
 		fields["statusCode"] = *statusCode
 		fields["responseCommitted"] = true
 	}
+	// 5xx 必须自带根因：WriteErrorCause 记录的处理错误随完成日志输出，
+	// 否则线上只有 statusCode=500 无法定位（2026-09-25 my-accounts 事故）。
+	if reason := context.FailureReason(); reason != "" {
+		fields["failureReason"] = reason
+	}
 	emitRequestEvent(level, fields, "HTTP 请求已结束")
 }
 

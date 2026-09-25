@@ -3,6 +3,7 @@ import type { Ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import type { RuntimeLogLevel, RuntimeLogSummary } from '@/types/domain'
 import { normalizeOptionalTimeRange, type RuntimeLogTimeRangeValue } from './runtimeLogTimeRanges'
 
@@ -39,7 +40,7 @@ export function useRuntimeLogIndexSearchState(options: UseRuntimeLogIndexSearchS
     requestSignature: (_loadOptions, pageState) => runtimeLogRequestParams(pageState),
     onError: (error) => {
       console.error(error)
-      message.error('加载运行日志失败')
+      message.error(extractApiErrorMessage(error, '加载运行日志失败'))
     }
   })
 

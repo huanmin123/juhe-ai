@@ -7,7 +7,6 @@
     row-key="ipHash"
     :loading="loading"
     :pagination="tablePagination"
-    :pagination-summary="false"
     :scroll-x="1790"
     @change="emitTableChange"
   >

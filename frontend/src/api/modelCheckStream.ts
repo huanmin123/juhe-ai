@@ -27,6 +27,7 @@ export async function runModelCheckStream(path: string, payload: ModelCheckRunPa
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let completed = false
   let completedDetail: ModelCheckRunDetail | undefined
   const handleMessage = (raw: string): void => {
     const event = parseServerSentEvent(raw)
@@ -48,14 +49,22 @@ export async function runModelCheckStream(path: string, payload: ModelCheckRunPa
     }
   }
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    buffer = flushServerSentEvents(buffer, handleMessage)
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        completed = true
+        break
+      }
+      buffer += decoder.decode(value, { stream: true })
+      buffer = flushServerSentEvents(buffer, handleMessage)
+    }
+    buffer += decoder.decode()
+    flushServerSentEvents(buffer, handleMessage, true)
+  } finally {
+    if (!completed) await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
   }
-  buffer += decoder.decode()
-  flushServerSentEvents(buffer, handleMessage, true)
   if (!completedDetail) {
     throw new Error('模型检测进度流未返回完成结果')
   }

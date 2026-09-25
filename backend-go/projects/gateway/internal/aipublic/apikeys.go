@@ -99,7 +99,7 @@ func (d *Deps) listApiKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := d.ApiKeys.ListPage(r.Context(), apikeys.AccessScope{ViewerID: target.SystemAccountID}, options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	items := make([]PublicApiKeySummary, 0, len(result.Items))
@@ -245,7 +245,7 @@ func (d *Deps) addApiKey(w http.ResponseWriter, r *http.Request) {
 	// strategy fields come from the created row read-back.
 	item, err := d.ApiKeys.FindDetail(r.Context(), created.ID, access)
 	if err != nil || item == nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	summary := sanitizeApiKeyItem(item)
@@ -361,7 +361,7 @@ func (d *Deps) updateApiKey(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := d.findApiKeyOwnerByID(r.Context(), parsed.ApiKeyID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	target, targetErr := d.resolveOwnedTarget(r.Context(), parsed.TargetUsername, parsed.HasTarget, owner)
@@ -378,7 +378,7 @@ func (d *Deps) updateApiKey(w http.ResponseWriter, r *http.Request) {
 	// takes the expected revision explicitly, so read it from the current row.
 	current, err := d.ApiKeys.FindDetail(r.Context(), parsed.ApiKeyID, access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if current == nil {
@@ -429,7 +429,7 @@ func (d *Deps) updateApiKey(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := d.ApiKeys.FindDetail(r.Context(), parsed.ApiKeyID, access)
 	if err != nil || item == nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	d.writeStatsEnvelope(w, map[string]any{
@@ -469,7 +469,7 @@ func (d *Deps) deleteApiKey(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, err := d.findApiKeyOwnerByID(r.Context(), parsed.ApiKeyID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	target, targetErr := d.resolveOwnedTarget(r.Context(), parsed.TargetUsername, parsed.HasTarget, owner)
@@ -485,7 +485,7 @@ func (d *Deps) deleteApiKey(w http.ResponseWriter, r *http.Request) {
 	access := apikeys.AccessScope{ViewerID: target.SystemAccountID}
 	current, err := d.ApiKeys.FindDetail(r.Context(), parsed.ApiKeyID, access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if current == nil {

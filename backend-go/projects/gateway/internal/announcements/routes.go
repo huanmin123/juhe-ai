@@ -46,7 +46,7 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 		}
 		items, err := store.ListPublic(r.Context(), auth.SystemAccountID, intValue(limit, publicLimit))
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteOK(w, items, "")
@@ -59,7 +59,7 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 		}
 		result, err := store.MarkRead(r.Context(), auth.SystemAccountID, ids)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteOK(w, result, "")
@@ -67,7 +67,7 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 	k.Register("GET "+prefix+"/announcements/public/{id}", deps.RequireSession(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		detail, err := store.FindPublic(r.Context(), r.PathValue("id"))
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if detail == nil {
@@ -88,7 +88,7 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 		limit := parseIntOr(r.URL.Query().Get("limit"), 0)
 		items, err := store.ListPublic(r.Context(), auth.SystemAccountID, limit)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteOK(w, items, "")
@@ -107,7 +107,7 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 		}
 		result, err := store.MarkRead(r.Context(), auth.SystemAccountID, body.AnnouncementIDs)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteOK(w, result, "")
@@ -133,7 +133,7 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 		}
 		result, err := store.ListPage(r.Context(), page, pageSize)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteOK(w, result, "")
@@ -141,7 +141,7 @@ func Mount(k *kernel.Kernel, deps *authsys.Deps, store *Store, sink authsys.Oper
 	k.Register("GET "+prefix+"/announcements/{id}", deps.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		detail, err := store.FindEditDetail(r.Context(), r.PathValue("id"))
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if detail == nil {
@@ -711,7 +711,7 @@ func mountGuardedCreate(d *authsys.Deps, store *Store, sink authsys.OperationLog
 				kernel.WriteError(w, http.StatusConflict, validation.Message)
 				return
 			}
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if sink != nil {

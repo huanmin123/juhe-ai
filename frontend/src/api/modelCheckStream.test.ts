@@ -7,29 +7,36 @@ import { runModelCheckStream } from './modelCheckStream'
 
 const runPayload: ModelCheckRunPayload = { targetType: 'account', targetId: 'a-1', model: 'gpt-4o' }
 
-/** 构造可控的 SSE Response：chunks 逐段产出，text() 返回错误响应体。 */
+/** 构造可控的 SSE Response：chunks 逐段产出，text() 返回错误响应体；getReader 复用同一 reader 便于断言。 */
 function sseResponse(chunks: string[], options?: { status?: number; ok?: boolean; bodyText?: string }): Response {
   const encoder = new TextEncoder()
   let index = 0
   const status = options?.status ?? 200
+  const reader = {
+    read: async () => {
+      if (index < chunks.length) {
+        const value = encoder.encode(chunks[index])
+        index += 1
+        return { done: false, value }
+      }
+      return { done: true, value: undefined }
+    },
+    cancel: vi.fn(async () => undefined),
+    releaseLock: vi.fn(() => undefined)
+  }
   return {
     ok: options?.ok ?? (status >= 200 && status < 300),
     status,
     text: async () => options?.bodyText ?? '',
     clone: () => sseResponse(chunks, options),
     body: {
-      getReader: () => ({
-        read: async () => {
-          if (index < chunks.length) {
-            const value = encoder.encode(chunks[index])
-            index += 1
-            return { done: false, value }
-          }
-          return { done: true, value: undefined }
-        }
-      })
+      getReader: () => reader
     }
   } as unknown as Response
+}
+
+function sseReader(response: Response): { cancel: ReturnType<typeof vi.fn>; releaseLock: ReturnType<typeof vi.fn> } {
+  return (response.body as unknown as { getReader: () => { cancel: ReturnType<typeof vi.fn>; releaseLock: ReturnType<typeof vi.fn> } }).getReader()
 }
 
 const fetchMock = vi.fn()
@@ -133,6 +140,28 @@ describe('runModelCheckStream 异常路径', () => {
     const onError = vi.fn()
     await expect(runModelCheckStream('/model-checks/run/stream', runPayload, { onError })).rejects.toThrow('上游不可用')
     expect(onError).toHaveBeenCalledWith({ message: '上游不可用', statusCode: 502 })
+  })
+
+  it('error 事件中断时释放 reader（cancel 后 releaseLock）', async () => {
+    const response = sseResponse([
+      'event: progress\ndata: {"percent":10}\n\n',
+      'event: error\ndata: {"message":"上游不可用"}\n\n',
+      'event: complete\ndata: {"id":"run-x"}\n\n'
+    ])
+    fetchMock.mockResolvedValue(response)
+    await expect(runModelCheckStream('/model-checks/run/stream', runPayload)).rejects.toThrow('上游不可用')
+    const reader = sseReader(response)
+    expect(reader.cancel).toHaveBeenCalledTimes(1)
+    expect(reader.releaseLock).toHaveBeenCalledTimes(1)
+  })
+
+  it('流正常读完后不 cancel 但仍释放锁', async () => {
+    const response = sseResponse(['event: complete\ndata: {"id":"run-y"}\n\n'])
+    fetchMock.mockResolvedValue(response)
+    await runModelCheckStream('/model-checks/run/stream', runPayload)
+    const reader = sseReader(response)
+    expect(reader.cancel).not.toHaveBeenCalled()
+    expect(reader.releaseLock).toHaveBeenCalledTimes(1)
   })
 
   it('error 事件无 message 时使用默认错误文案', async () => {

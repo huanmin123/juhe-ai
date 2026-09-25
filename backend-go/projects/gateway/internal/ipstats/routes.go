@@ -141,7 +141,7 @@ func (d *Deps) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := d.Store.List(r.Context(), options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, result, "")
@@ -208,7 +208,7 @@ func (d *Deps) handleDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := d.Store.Detail(r.Context(), options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {

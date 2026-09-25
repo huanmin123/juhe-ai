@@ -231,7 +231,7 @@ const {
   }),
   onError: (error) => {
     console.error(error)
-    message.error('加载代理失败')
+    message.error(extractApiErrorMessage(error, '加载代理失败'))
   }
 })
 

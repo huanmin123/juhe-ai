@@ -94,7 +94,7 @@ func optionsHandler(w http.ResponseWriter, r *http.Request, store *Store) {
 	limit := optionLimitValue(limitValue, hasLimit)
 	options, err := store.ListOptions(r.Context(), strings.TrimSpace(values.Get("keyword")), limit, selectedIds)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, options, "")
@@ -296,7 +296,7 @@ func listHandler(store *Store) http.HandlerFunc {
 		pageSize, hasPageSize := integerQueryValue(values.Get("pageSize"))
 		result, err := store.ListPage(r.Context(), intFromQuery(page, hasPage, 1), intFromQuery(pageSize, hasPageSize, 20), strings.TrimSpace(values.Get("keyword")))
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteOK(w, result, "")
@@ -514,7 +514,7 @@ func testHandler(w http.ResponseWriter, r *http.Request, store *Store, sink auth
 	defer cancel()
 	snapshot, err := store.LoadProxyTestSnapshot(ctx, r.PathValue("id"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if snapshot == nil {
@@ -528,7 +528,7 @@ func testHandler(w http.ResponseWriter, r *http.Request, store *Store, sink auth
 	}
 	exists, err := store.ProxyTestExists(ctx, snapshot.ProxyID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !exists {

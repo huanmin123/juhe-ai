@@ -95,6 +95,17 @@ func WriteError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"message": message}, upstreamMarked(w))
 }
 
+// WriteErrorCause writes the same {"message": ...} envelope as WriteError and
+// additionally records the underlying cause so the request-completion log
+// carries a failureReason field. 5xx responses must explain themselves in
+// logs; the client still only sees the generic localized message.
+func WriteErrorCause(r *http.Request, w http.ResponseWriter, status int, message string, cause error) {
+	if cause != nil && status >= 500 {
+		Context(r).RecordFailureReason(cause.Error())
+	}
+	WriteError(w, status, message)
+}
+
 // WriteBadRequest mirrors sendBadRequest: 400 + {"message"}.
 func WriteBadRequest(w http.ResponseWriter, message string) {
 	WriteError(w, http.StatusBadRequest, message)

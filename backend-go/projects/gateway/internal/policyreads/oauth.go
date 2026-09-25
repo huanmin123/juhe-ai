@@ -445,7 +445,7 @@ func (d *OAuthDeps) Mount(k *kernel.Kernel) {
 func (d *OAuthDeps) listClients(w http.ResponseWriter, r *http.Request) {
 	clients, err := d.Store.ListClients(r.Context())
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, clients, "")
@@ -459,7 +459,7 @@ func (d *OAuthDeps) integrationPackage(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("clientId")
 	client, err := d.Store.FindClient(r.Context(), clientID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if client == nil {
@@ -475,7 +475,7 @@ func (d *OAuthDeps) integrationPackage(w http.ResponseWriter, r *http.Request) {
 				kernel.WriteError(w, http.StatusConflict, "该 Client 的当前 Client Secret 无法读取，请重新签发后再下载对接文档")
 				return
 			}
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		clientSecret = secret
@@ -534,7 +534,7 @@ func (d *OAuthDeps) createClient(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := d.Store.CreateClient(r.Context(), input)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	writeCreatedOK(w, created)
@@ -553,7 +553,7 @@ func (d *OAuthDeps) patchClient(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := d.Store.UpdateClientStatus(r.Context(), r.PathValue("clientId"), status)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if updated == nil {
@@ -571,7 +571,7 @@ func (d *OAuthDeps) reissueSecret(w http.ResponseWriter, r *http.Request) {
 	clientID := r.PathValue("clientId")
 	client, err := d.Store.FindClient(r.Context(), clientID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if client == nil {
@@ -584,7 +584,7 @@ func (d *OAuthDeps) reissueSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	reissued, err := d.Store.ReissueClientSecret(r.Context(), clientID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if reissued == nil {

@@ -34,7 +34,7 @@ func (d *InspectionDeps) Mount(k *kernel.Kernel) {
 func (d *InspectionDeps) list(w http.ResponseWriter, r *http.Request) {
 	result, err := d.Store.ListPage(r.Context())
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, result, "")
@@ -48,7 +48,7 @@ func (d *InspectionDeps) providerOptions(w http.ResponseWriter, r *http.Request)
 	}
 	options, err := d.Store.ProviderOptions(r.Context(), protocolCode, scopeType, keyword)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, options, "")
@@ -57,7 +57,7 @@ func (d *InspectionDeps) providerOptions(w http.ResponseWriter, r *http.Request)
 func (d *InspectionDeps) detail(w http.ResponseWriter, r *http.Request) {
 	detail, err := d.Store.FindDetail(r.Context(), r.PathValue("id"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {
@@ -155,7 +155,7 @@ func (d *InspectionDeps) guardedDelete() http.Handler {
 		id := r.PathValue("id")
 		deleted, err := d.Store.Delete(r.Context(), id)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if !deleted {

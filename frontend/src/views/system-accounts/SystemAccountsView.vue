@@ -130,6 +130,7 @@
 </template>
 
 <script setup lang="ts">
+import { Modal } from 'ant-design-vue'
 import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
@@ -260,7 +261,7 @@ const {
   mergeItems: mergeSystemAccountPageItems,
   onError: (error) => {
     console.error(error)
-    message.error('加载系统账户失败')
+    message.error(extractApiErrorMessage(error, '加载系统账户失败'))
   }
 })
 
@@ -367,6 +368,9 @@ const handleSave = submitAction('system_accounts.save', async () => {
         modalOpen.value = false
         return
       }
+      if (isSuperAdminDemotionChange() && !(await confirmSuperAdminDemotionChange())) {
+        return
+      }
       const updated = await api.systemAccounts.update(editingId.value, {
         expectedUpdatedAt: editingVersion.value,
         ...patch
@@ -387,7 +391,6 @@ const handleSave = submitAction('system_accounts.save', async () => {
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存系统账户失败'))
-  } finally {
   }
 })
 
@@ -418,13 +421,36 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '重置密码失败'))
-  } finally {
   }
 })
 
 function searchAccounts() {
   resetPagination()
   void loadData()
+}
+
+/** 编辑超级管理员账户时，role 改出 super_admin 或 status 改为停用视为降级变更。 */
+function isSuperAdminDemotionChange(): boolean {
+  const baseline = editingBaseline.value
+  if (!baseline || baseline.role !== 'super_admin') return false
+  return form.role !== 'super_admin' || (baseline.status !== 'disabled' && form.status === 'disabled')
+}
+
+function confirmSuperAdminDemotionChange(): Promise<boolean> {
+  const consequences = [
+    form.role !== 'super_admin' ? '将移除该账户的超级管理员权限' : '',
+    form.status === 'disabled' ? '该账户将被停用，无法再登录' : ''
+  ].filter(Boolean).join('；')
+  return new Promise((resolve) => {
+    Modal.confirm({
+      title: '确认对超级管理员账户保存降级变更？',
+      content: `保存后${consequences}。`,
+      okText: '确认保存',
+      cancelText: '取消',
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false)
+    })
+  })
 }
 
 async function applyCreatedSystemAccount(created: SystemAccountListItem): Promise<void> {

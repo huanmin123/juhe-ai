@@ -49,9 +49,15 @@ assert.match(source, /preventDefault\(\)/, '命中旧 chunk 后必须阻止 Vite
 assert.match(source, /classifyFrontendBuild/, '首次资源失败必须读取清单并比较真实 Build ID')
 assert.match(source, /loadRemoteFrontendBuildId/, '首次资源失败必须读取静态 Build ID 清单')
 assert.match(source, /页面资源加载失败/, '同版本或未知版本必须使用中性标题')
-assert.match(source, /正在重新加载页面，请稍候。/, '首次普通资源失败必须说明正在自动恢复')
+assert.match(source, /页面资源暂时加载失败，正在自动重试。/, '首次普通资源失败必须说明正在自动恢复')
 assert.match(source, /自动恢复未成功，请手动刷新页面后重试。/, '短时间重复失败必须停止自动恢复')
 assert.doesNotMatch(source, /message\.warning\(['"]检测到系统前端已更新/, '资源失败不得在版本确认前直接声称系统更新')
 assert.match(source, /couldn.*resolve component/i, 'Vue Router 的组件解析包装错误必须归入同一次资源恢复')
 
-console.log('前端资源加载恢复回归通过：异步组件旧 chunk 失败会进入统一刷新恢复流程')
+const watchSource = readFileSync(new URL('../../router/frontendVersionWatch.ts', import.meta.url), 'utf8')
+assert.match(watchSource, /loadRemoteFrontendBuildId/, '版本监视必须复用同一 build-info 清单读取')
+assert.match(watchSource, /visibilitychange/, '标签页重新可见时必须检查新版本')
+assert.match(watchSource, /beforeEach/, '新版本必须在下一次路由切换时整页加载，不打断当前操作')
+assert.match(source, /startFrontendVersionWatch\(/, '资源恢复安装时必须挂载主动版本监视')
+
+console.log('前端资源加载恢复回归通过：主动版本监视 + 异步组件旧 chunk 统一刷新恢复流程')

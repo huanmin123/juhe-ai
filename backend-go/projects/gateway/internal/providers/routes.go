@@ -128,7 +128,7 @@ func booleanQueryValue(r *http.Request, key string) *bool {
 func (d *Deps) listItems(w http.ResponseWriter, r *http.Request) {
 	items, err := d.Store.ListCatalogListItems(r.Context())
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !isManagementProviderRequest(r) {
@@ -168,7 +168,7 @@ func (d *Deps) overlayListItems(r *http.Request, items []ProviderListItem) {
 func (d *Deps) listDefinitions(w http.ResponseWriter, r *http.Request) {
 	definitions, err := d.Store.ListDefinitions(r.Context())
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	d.overlayDefinitions(r, definitions)
@@ -180,7 +180,7 @@ func (d *Deps) listDefinitions(w http.ResponseWriter, r *http.Request) {
 func (d *Deps) definitions(w http.ResponseWriter, r *http.Request) {
 	definitions, err := d.Store.ListDefinitions(r.Context())
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	enabled := definitions[:0]
@@ -217,7 +217,7 @@ func (d *Deps) overlayDefinitions(r *http.Request, definitions []ProviderDefinit
 func (d *Deps) options(w http.ResponseWriter, r *http.Request) {
 	providerOptions, err := d.Store.ListProviderOptions(r.Context())
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, providerOptions, "")
@@ -235,7 +235,7 @@ func (d *Deps) modelOptions(w http.ResponseWriter, r *http.Request) {
 	if query.ProviderCode != "" {
 		provider, err := d.Store.FindProviderOption(r.Context(), query.ProviderCode)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if provider == nil || !provider.Enabled {
@@ -246,7 +246,7 @@ func (d *Deps) modelOptions(w http.ResponseWriter, r *http.Request) {
 	query.SystemAccountID = requestSystemAccountID(r)
 	providerModelOptions, err := d.Store.ListProviderModelSelectionOptions(r.Context(), query)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, providerModelOptions, "")
@@ -301,7 +301,7 @@ func normalizeSelectedIDs(r *http.Request) []string {
 func (d *Deps) find(w http.ResponseWriter, r *http.Request) {
 	definition, err := d.Store.FindDefinition(r.Context(), r.PathValue("code"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if definition == nil || (!definition.Enabled && !isManagementProviderRequest(r)) {
@@ -318,7 +318,7 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request) {
 func (d *Deps) models(w http.ResponseWriter, r *http.Request) {
 	provider, err := d.Store.FindProviderOption(r.Context(), r.PathValue("code"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if provider == nil || (!provider.Enabled && !isManagementProviderRequest(r)) {
@@ -329,7 +329,7 @@ func (d *Deps) models(w http.ResponseWriter, r *http.Request) {
 		booleanOrFalse(booleanQueryValue(r, "includeInactive")),
 		booleanOrFalse(booleanQueryValue(r, "includeUnpriced")))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, items, "")
@@ -345,7 +345,7 @@ func booleanOrFalse(value *bool) bool {
 func (d *Deps) modelCapabilities(w http.ResponseWriter, r *http.Request) {
 	definitions, err := d.Store.ListDefinitions(r.Context())
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	code := r.PathValue("code")
@@ -362,7 +362,7 @@ func (d *Deps) modelCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 	capability, err := d.Store.FindProviderModelCapabilities(r.Context(), code, requestSystemAccountID(r), r.PathValue("modelId"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if capability == nil {

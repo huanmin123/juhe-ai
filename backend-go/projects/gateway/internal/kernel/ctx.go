@@ -94,6 +94,44 @@ type RequestContext struct {
 	// （每个观测点 max 到 1 再逐次 +1 会双计）。经 sync/atomic 访问，不
 	// 参与 mu 守护；timing_summary 取两个累积器的较大值。
 	gatewayAttempts int64
+
+	// failureReason 是 5xx 响应的处理根因（如底层 SQL 错误原文），由
+	// WriteErrorCause 在响应写入前记录，随 http_request_completed 事件以
+	// failureReason 字段输出。mu 守护；只保留首次记录（首个根因即最早
+	// 失败点），后续覆盖不生效。
+	failureReason string
+}
+
+// RecordFailureReason records the root cause behind a 5xx response so the
+// http_request_completed log line can explain itself. Only the first reason
+// wins (the earliest failure point is the primary one); the value is
+// truncated and stripped of control characters for safe single-line logging.
+func (ctx *RequestContext) RecordFailureReason(reason string) {
+	if ctx == nil {
+		return
+	}
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" {
+		return
+	}
+	if len(reason) > 400 {
+		reason = reason[:400]
+	}
+	ctx.mu.Lock()
+	if ctx.failureReason == "" {
+		ctx.failureReason = reason
+	}
+	ctx.mu.Unlock()
+}
+
+// FailureReason returns the recorded 5xx root cause, if any.
+func (ctx *RequestContext) FailureReason() string {
+	if ctx == nil {
+		return ""
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	return ctx.failureReason
 }
 
 // RecordRequestStage accumulates one gateway.request.stage observation

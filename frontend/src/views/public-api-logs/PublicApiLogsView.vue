@@ -135,7 +135,7 @@ const {
   },
   onError: (error) => {
     console.error(error)
-    message.error('加载公开接口日志失败')
+    message.error(extractApiErrorMessage(error, '加载公开接口日志失败'))
   }
 })
 

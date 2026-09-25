@@ -3,6 +3,7 @@ import type { Router } from 'vue-router'
 import { message } from '@/lib/antd'
 import { classifyFrontendBuild, loadRemoteFrontendBuildId } from './frontendBuildInfo'
 import { markRouteAssetReload, shouldReloadRouteAsset } from './routeAssetReloadState'
+import { startFrontendVersionWatch } from './frontendVersionWatch'
 
 const routeAssetReloadDelayMs = 900
 const routeAssetOverlayId = 'juhe-ai-route-asset-reload-overlay'
@@ -20,6 +21,7 @@ const routeAssetLoadErrorPatterns = [
 ]
 
 export function installRouteLoadRecovery(router: Router): void {
+  startFrontendVersionWatch(router)
   window.addEventListener('vite:preloadError', (event) => {
     const preloadEvent = event as Event & { payload?: unknown }
     if (recoverRouteAssetLoadError(preloadEvent.payload, router)) {
@@ -72,13 +74,17 @@ async function showRouteAssetRecoveryAndReload(reloadHref: string, originalError
   )
   const updated = status === 'changed'
 
+  // 版本变化 → 新版本已上线，刷新即恢复；版本相同/未知 → 网络或服务波动。
+  // assets 缺失现在返回真 404，两类原因都能被可靠区分，文案不再误导。
   console.warn('页面资源加载失败，正在刷新前端入口。', originalError)
-  message.warning(updated ? '系统前端已更新，正在刷新页面' : '页面资源加载失败，正在重新加载页面')
+  message.warning(
+    updated ? '系统已更新，正在为你加载新版本' : '页面资源加载失败，正在重新加载页面'
+  )
   showRouteAssetLoadOverlay({
-    title: updated ? '系统已更新' : '页面资源加载失败',
+    title: updated ? '正在加载新版本' : '页面资源加载失败',
     description: updated
-      ? '正在刷新页面以加载最新版本，请稍候。'
-      : '正在重新加载页面，请稍候。',
+      ? '检测到系统已发布新版本，正在刷新页面。'
+      : '页面资源暂时加载失败，正在自动重试。',
     actionLabel: updated ? '立即刷新' : '立即重新加载',
     onAction: () => window.location.assign(reloadHref)
   })

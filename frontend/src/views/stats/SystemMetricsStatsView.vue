@@ -134,6 +134,7 @@ import { authState } from '@/composables/useAuth'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
 import type {
@@ -351,7 +352,7 @@ async function loadGoRuntimeTrend() {
     if (controller.signal.aborted || currentRequestSeq !== goRuntimeRequestSeq) return
     console.error(error)
     goRuntimeError.value = 'Go runtime 指标加载失败'
-    message.error('Go runtime 指标加载失败')
+    message.error(extractApiErrorMessage(error, 'Go runtime 指标加载失败'))
   } finally {
     if (goRuntimeAbortController === controller) goRuntimeAbortController = undefined
     if (currentRequestSeq === goRuntimeRequestSeq) {
@@ -457,7 +458,7 @@ async function loadBackgroundJobs() {
     if (currentRequestSeq !== backgroundJobsRequestSeq) return
     console.error(error)
     backgroundJobsError.value = '后台任务状态加载失败'
-    message.error('后台任务状态加载失败')
+    message.error(extractApiErrorMessage(error, '后台任务状态加载失败'))
   } finally {
     if (backgroundJobsAbortController === controller) backgroundJobsAbortController = undefined
     if (currentRequestSeq === backgroundJobsRequestSeq) backgroundJobsLoading.value = false

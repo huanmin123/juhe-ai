@@ -85,6 +85,7 @@ import { useScopedOperationLogsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import type { OperationLogListItem, OperationLogRenderedDetail } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import OperationLogDetailDrawer from './OperationLogDetailDrawer.vue'
@@ -200,7 +201,7 @@ const {
   ],
   onError: (error) => {
     console.error(error)
-    message.error('加载操作日志失败')
+    message.error(extractApiErrorMessage(error, '加载操作日志失败'))
   }
 })
 

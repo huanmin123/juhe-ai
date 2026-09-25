@@ -975,7 +975,7 @@ function fillEditForm(record: RouteStrategyEditBasicDetail, fallbackSystemAccoun
   resetGroupOptions()
   resetRouteModelOptions()
   groupOptionsRaw.value = selectedGroupOptionsFromBindings(record.groupBindings)
-  const baseline = buildRouteStrategyFormPayload(false)
+  const baseline = buildRouteStrategyFormPayload()
   editingBaseline = baseline === false ? undefined : baseline
   modalOpen.value = true
 }
@@ -1083,7 +1083,7 @@ function routeStrategyMatchesCurrentFilters(record: RouteStrategyListItem): bool
     && (statusFilter.value === 'all' || record.status === statusFilter.value)
 }
 
-function buildRouteStrategyFormPayload(reportValidation = true): RouteStrategyMutationPayload | false {
+function buildRouteStrategyFormPayload(): RouteStrategyMutationPayload | false {
   const payload: RouteStrategyMutationPayload = {
     name: form.name.trim(),
     description: form.description.trim() || null,
@@ -1467,7 +1467,9 @@ function routeStrategyActions(record: RouteStrategyListItem): RowActionItem[] {
       label: '删除',
       icon: 'delete',
       tone: 'danger',
-      confirmTitle: `确认删除策略路由「${record.name}」？`,
+      confirmTitle: record.apiKeyCount > 0
+        ? `确认删除策略路由「${record.name}」？该策略正被 ${record.apiKeyCount} 个 API Key 引用。`
+        : `确认删除策略路由「${record.name}」？`,
       confirmOkText: '删除'
     })
   }

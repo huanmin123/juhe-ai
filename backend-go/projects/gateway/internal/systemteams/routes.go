@@ -175,7 +175,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	page, pageSize = normalizeListWindow(page, pageSize)
 	items, hasMore, err := d.Store.ListPage(r.Context(), access, page, pageSize, strings.TrimSpace(r.URL.Query().Get("keyword")))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	total := (page-1)*pageSize + len(items)
@@ -195,7 +195,7 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	}
 	detail, err := d.Store.FindDetail(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {
@@ -215,7 +215,7 @@ func (d *Deps) members(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 20)
 	result, err := d.Store.ListMembers(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly), page, pageSize)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if result == nil {
@@ -235,7 +235,7 @@ func (d *Deps) history(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 20)
 	result, err := d.Store.ListHistory(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly), page, pageSize)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if result == nil {

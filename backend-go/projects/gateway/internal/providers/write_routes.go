@@ -576,7 +576,7 @@ func (d *Deps) createModel(w http.ResponseWriter, r *http.Request) {
 	auth := authsys.AuthContextFrom(r)
 	provider, err := d.Store.FindDefinition(ctx, r.PathValue("code"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if provider == nil {
@@ -615,7 +615,7 @@ func (d *Deps) createModel(w http.ResponseWriter, r *http.Request) {
 	if parsed.configurationTemplateID != "" {
 		catalog, err := d.Store.listProviderModelCatalog(ctx, provider.Code, owner, true, true)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		var template *ModelCatalogItem

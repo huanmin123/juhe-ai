@@ -52,7 +52,7 @@ func (d *ExternalDeps) list(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := d.Store.ListPage(r.Context(), page, pageSize, keyword, status)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, result, "")
@@ -66,7 +66,7 @@ func (d *ExternalDeps) detail(w http.ResponseWriter, r *http.Request) {
 	}
 	source, err := d.Store.FindSource(r.Context(), id)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if source == nil {
@@ -89,7 +89,7 @@ func (d *ExternalDeps) tokenSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := d.Store.FindTokenSecret(r.Context(), id, tokenID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if token == nil {

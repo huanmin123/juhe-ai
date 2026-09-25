@@ -148,7 +148,7 @@ func (d *Deps) listAccounts(w http.ResponseWriter, r *http.Request) {
 	pageSize := parseIntOrDefault(query.Get("pageSize"), 20)
 	items, total, hasMore, err := d.Accounts.ListPage(r.Context(), query.Get("keyword"), page, pageSize)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, map[string]any{
@@ -169,7 +169,7 @@ func (d *Deps) listAccountOptions(w http.ResponseWriter, r *http.Request) {
 	limit := parseIntOrDefault(query.Get("limit"), 50)
 	options, err := d.Accounts.ListOptions(r.Context(), ids, query.Get("keyword"), limit)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, options, "")
@@ -273,7 +273,7 @@ func (d *Deps) patchAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	before, err := d.Accounts.FindByID(r.Context(), id)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if before.ID == "" {

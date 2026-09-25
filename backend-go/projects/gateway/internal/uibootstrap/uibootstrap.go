@@ -60,7 +60,7 @@ func (d *Deps) options(selfOnly bool) http.HandlerFunc {
 		}
 		reference, err := d.findUserReferenceData(r.Context(), systemAccountID)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if reference == nil {

@@ -137,7 +137,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	}
 	result, err := d.Store.ListPage(r.Context(), access, options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, result, "")
@@ -150,7 +150,7 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	}
 	detail, err := d.Store.FindDetail(r.Context(), r.PathValue("id"), access)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {
@@ -173,7 +173,7 @@ func (d *Deps) reveal(w http.ResponseWriter, r *http.Request, access AccessScope
 			// Seal failures never leak key material.
 			kernel.WriteError(w, http.StatusInternalServerError, "API Key 密钥读取失败")
 		} else {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		}
 		return
 	}
@@ -618,7 +618,7 @@ func (d *Deps) writeMutationError(w http.ResponseWriter, r *http.Request, err er
 		kernel.WriteBadRequest(w, validation.Message)
 		return
 	}
-	kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+	kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 }
 
 func actorResolver(r *http.Request) string {

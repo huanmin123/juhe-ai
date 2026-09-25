@@ -242,7 +242,7 @@ func (d *Deps) balanceRefresh(selfOnly bool) http.HandlerFunc {
 		refresher := d.Store.wiredBalanceRefresher()
 		if refresher == nil {
 			println("accounts slice balance refresher port not wired")
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		result, err := refresher.RefreshManual(r.Context(), *candidate)

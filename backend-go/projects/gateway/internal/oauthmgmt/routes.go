@@ -595,7 +595,7 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 	if managed.GroupID != nil {
 		groupOK, groupErr := d.Store.findGroupForProvider(r.Context(), *managed.GroupID, access, plan.providerCode)
 		if groupErr != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if !groupOK {
@@ -965,7 +965,7 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 		if managed.GroupID != nil {
 			groupOK, groupErr := d.Store.findGroupForProvider(r.Context(), *managed.GroupID, access, plan.providerCode)
 			if groupErr != nil {
-				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 				return
 			}
 			if !groupOK {

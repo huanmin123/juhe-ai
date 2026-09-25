@@ -112,7 +112,7 @@ func (d *Deps) cloneContext(w http.ResponseWriter, r *http.Request) {
 			kernel.WriteError(w, http.StatusConflict, conflict.Error())
 			return
 		}
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if context == nil {
@@ -222,7 +222,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, access AccessScope) 
 	}
 	result, err := d.Store.ListPage(r.Context(), access, options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	setNoStoreHeaders(w)

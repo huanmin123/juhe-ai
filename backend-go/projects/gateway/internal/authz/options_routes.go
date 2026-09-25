@@ -42,7 +42,7 @@ func (d *Deps) granteeAccounts(w http.ResponseWriter, r *http.Request) {
 	options := parseAuthorizationOptionListOptions(r.URL.Query())
 	rows, err := d.Store.ListAuthorizationGranteeAccounts(r.Context(), options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, rows, "")
@@ -52,7 +52,7 @@ func (d *Deps) granteeTeams(w http.ResponseWriter, r *http.Request) {
 	options := parseAuthorizationOptionListOptions(r.URL.Query())
 	rows, err := d.Store.ListAuthorizationGranteeTeams(r.Context(), options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, rows, "")
@@ -66,7 +66,7 @@ func (d *Deps) granteeGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := d.Store.ListAuthorizationGranteeGroups(r.Context(), options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, rows, "")

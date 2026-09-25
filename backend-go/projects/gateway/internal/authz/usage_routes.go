@@ -231,7 +231,7 @@ func (d *Deps) usageRows(w http.ResponseWriter, r *http.Request, dimension strin
 	}
 	rng, err := d.resolveUsageRange(parser.query.Get("startDate"), parser.query.Get("endDate"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	page, pageSize = normalizeUsagePageOptions(page, pageSize)
@@ -239,7 +239,7 @@ func (d *Deps) usageRows(w http.ResponseWriter, r *http.Request, dimension strin
 	if dimension == "team" {
 		result, err := d.Store.teamUsageRows(r.Context(), filters, access, rng, page, pageSize)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteOK(w, result, "")
@@ -247,7 +247,7 @@ func (d *Deps) usageRows(w http.ResponseWriter, r *http.Request, dimension strin
 	}
 	result, err := d.Store.userUsageRows(r.Context(), filters, access, rng, page, pageSize)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, result, "")
@@ -286,14 +286,14 @@ func (d *Deps) usageSummary(w http.ResponseWriter, r *http.Request, dimension st
 	}
 	rng, err := d.resolveUsageRange(parser.query.Get("startDate"), parser.query.Get("endDate"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	access := d.accessFor(r, selfOnly)
 	if dimension == "team" {
 		result, err := d.Store.teamUsageSummary(r.Context(), filters, access, rng)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		kernel.WriteOK(w, result, "")
@@ -301,7 +301,7 @@ func (d *Deps) usageSummary(w http.ResponseWriter, r *http.Request, dimension st
 	}
 	result, err := d.Store.userUsageSummary(r.Context(), filters, access, rng)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, result, "")
@@ -343,19 +343,19 @@ func (d *Deps) usageDetail(w http.ResponseWriter, r *http.Request, selfOnly bool
 	}
 	rng, err := d.resolveUsageRange(startDate, endDate)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	// Node reads run the expiry sweep before the summary lookup
 	// (getResourceAuthorizationUsageAsync :94).
 	if _, err := d.Store.ExpireSweep(r.Context(), 0); err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	access := d.accessFor(r, selfOnly)
 	summary, err := d.Store.usageDetailSummary(r.Context(), id, access, rng, page, pageSize)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if summary == nil {

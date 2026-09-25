@@ -136,6 +136,7 @@ import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { didUsageStatsWindowLoadFail, useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
@@ -357,7 +358,7 @@ async function loadData(options: { force?: boolean; forceUsageWindow?: boolean }
     if (requestSeq !== statsRequestSeq) return
     console.error(error)
     summaryError.value = '统计摘要加载失败，请重试'
-    message.error('统计数据加载失败')
+    message.error(extractApiErrorMessage(error, '统计数据加载失败'))
   } finally {
     if (requestSeq === statsRequestSeq) {
       loading.value = false

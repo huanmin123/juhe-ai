@@ -69,6 +69,16 @@ func TestMountSPA(t *testing.T) {
 			wantCache:  "no-cache",
 		},
 		{
+			name:       "missing hashed asset returns real 404 not SPA fallback",
+			path:       systemPrefix + "/assets/nonexist-abc123.js",
+			wantStatus: 404,
+		},
+		{
+			name:       "missing root-level static file returns real 404",
+			path:       systemPrefix + "/logo.png",
+			wantStatus: 404,
+		},
+		{
 			name:       "API path falls through with 404",
 			path:       systemAPIPrefix + "/groups",
 			wantStatus: 404,

@@ -39,7 +39,7 @@ export const proxyActions: RowActionItem[] = [
     label: '删除',
     icon: 'delete',
     tone: 'danger',
-    confirmTitle: '确认删除这个代理？',
+    confirmTitle: '确认删除这个代理？若代理仍被账号绑定，删除会被拒绝，需先解绑或改绑。',
     confirmOkText: '删除'
   }
 ]

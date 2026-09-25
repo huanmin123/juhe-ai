@@ -128,7 +128,7 @@ func (d *Deps) runAPIKeyRuntimeRevalidate(w http.ResponseWriter, r *http.Request
 	effects := d.Store.runtimeResetEffectsOrNil()
 	if effects == nil {
 		println("accounts slice runtime-reset effects port not wired for revalidate")
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	revalidated, err := effects.RevalidateAccountAPIKeyRuntimePool(r.Context(), account.ID, int64(revision))

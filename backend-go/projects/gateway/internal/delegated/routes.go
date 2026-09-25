@@ -184,7 +184,7 @@ func (d *Deps) requireDelegatedAccess(next http.Handler) http.Handler {
 		if token != "" {
 			context, err = d.Tokens.FindAccessTokenContext(r.Context(), token)
 			if err != nil {
-				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 				return
 			}
 		}
@@ -265,7 +265,7 @@ func (d *Deps) getProfile(w http.ResponseWriter, r *http.Request) {
 	systemAccountID, _ := access(r)
 	account, err := d.findProfileByID(r.Context(), systemAccountID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if account == nil {
@@ -389,7 +389,7 @@ func (d *Deps) listGroups(w http.ResponseWriter, r *http.Request) {
 	pageSize, _ := positiveQueryInteger(r.URL.Query(), "pageSize")
 	result, err := d.Groups.ListPage(r.Context(), groups.AccessScope{ViewerID: systemAccountID}, page, pageSize, "")
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	items := make([]map[string]any, 0, len(result.Items))
@@ -418,7 +418,7 @@ func (d *Deps) ownGroup(r *http.Request, id string) (*groups.Detail, error) {
 func (d *Deps) getGroup(w http.ResponseWriter, r *http.Request) {
 	detail, err := d.ownGroup(r, r.PathValue("id"))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {
@@ -564,7 +564,7 @@ func (d *Deps) createGroup(w http.ResponseWriter, r *http.Request) {
 	// merged copy for both unknown and disabled codes.
 	enabled, err := d.providerEnabled(r.Context(), input.ProviderCode)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if !enabled {
@@ -638,7 +638,7 @@ func (d *Deps) patchGroup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	existing, err := d.ownGroup(r, id)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if existing == nil {
@@ -656,7 +656,7 @@ func (d *Deps) patchGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := d.ownGroup(r, id)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail != nil {
@@ -747,7 +747,7 @@ func (d *Deps) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	existing, err := d.ownGroup(r, id)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if existing == nil {
@@ -758,7 +758,7 @@ func (d *Deps) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	if !hasScope(r, "route_strategies.write") {
 		bound, err := d.hasRouteStrategyBinding(r, systemAccountID, id)
 		if err != nil {
-			kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 			return
 		}
 		if bound {
@@ -882,7 +882,7 @@ func routeStrategyStatusQuery(text string) string {
 func (d *Deps) listRouteStrategies(w http.ResponseWriter, r *http.Request) {
 	result, err := d.Strategies.ListPage(r.Context(), strategyAccess(r), d.routeStrategyListOptions(r.URL.Query()))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	items := make([]map[string]any, 0, len(result.Items))
@@ -927,7 +927,7 @@ func strategyDTO(detail *routestrategies.Detail) map[string]any {
 func (d *Deps) getRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	detail, err := d.Strategies.FindDetail(r.Context(), r.PathValue("id"), strategyAccess(r))
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail == nil {
@@ -1212,7 +1212,7 @@ func (d *Deps) patchRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	strategyAccess := strategyAccess(r)
 	current, err := d.Strategies.FindDetail(r.Context(), id, strategyAccess)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if current == nil {
@@ -1234,7 +1234,7 @@ func (d *Deps) patchRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := d.Strategies.FindDetail(r.Context(), id, strategyAccess)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if detail != nil {
@@ -1294,7 +1294,7 @@ func (d *Deps) listApiKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := d.ApiKeys.ListPage(r.Context(), apikeys.AccessScope{ViewerID: systemAccountID}, options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	items := make([]map[string]any, 0, len(result.Items))
@@ -1446,7 +1446,7 @@ func (d *Deps) listAiAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := d.AiAccounts.ListPage(r.Context(), accounts.AccessScope{ViewerID: systemAccountID}, options)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	ids := make([]string, 0, len(result.Items))
@@ -1455,7 +1455,7 @@ func (d *Deps) listAiAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	inherited, err := d.inheritedSourceAccountIDs(r.Context(), ids)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	items := []map[string]any{}
@@ -1472,7 +1472,7 @@ func (d *Deps) listAiAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	facts, err := d.loadAccountModelFacts(r.Context(), ownedIDs)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	for _, item := range owned {
@@ -1533,12 +1533,12 @@ func (d *Deps) patchAiAccount(w http.ResponseWriter, r *http.Request) {
 	scope := accounts.AccessScope{ViewerID: systemAccountID}
 	page, err := d.AiAccounts.ListPage(r.Context(), scope, accounts.ListOptions{IDs: []string{id}})
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	inherited, err := d.inheritedSourceAccountIDs(r.Context(), []string{id})
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	owned := false
@@ -1580,14 +1580,14 @@ func (d *Deps) patchAiAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	after, err := d.AiAccounts.ListPage(r.Context(), scope, accounts.ListOptions{IDs: []string{id}})
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	for _, item := range after.Items {
 		if item.ID == id && isOwnedPhysicalAccount(item, inherited[item.ID]) {
 			facts, err := d.loadAccountModelFacts(r.Context(), []string{id})
 			if err != nil {
-				kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 				return
 			}
 			kernel.WriteOK(w, aiAccountDTO(item, facts[item.ID]), "")

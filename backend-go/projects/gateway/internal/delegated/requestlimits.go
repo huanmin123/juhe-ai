@@ -97,7 +97,7 @@ func (d *Deps) getRequestLimitsSnapshot(w http.ResponseWriter, r *http.Request) 
 	systemAccountID, _ := access(r)
 	account, err := d.findProfileByID(r.Context(), systemAccountID)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	if account == nil {
@@ -106,7 +106,7 @@ func (d *Deps) getRequestLimitsSnapshot(w http.ResponseWriter, r *http.Request) 
 	}
 	snapshot, err := d.requestLimitSnapshot(r.Context(), account)
 	if err != nil {
-		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
 	kernel.WriteOK(w, snapshot, "")

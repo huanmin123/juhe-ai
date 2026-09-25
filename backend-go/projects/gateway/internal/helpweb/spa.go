@@ -98,11 +98,36 @@ func (h *spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		// 静态资源缺失必须返回真 404（对齐 express.static）：SPA 回退只服务
+		// 导航类路径。旧版本标签页请求已不存在的 hash chunk 时，浏览器拿到
+		// 明确的 404/加载失败，前端恢复逻辑才能可靠分类（新版本 vs 网络故障）；
+		// 回退成 index.html 会以 200 + text/html 喂给 module loader，
+		// 产生难以归类的 MIME 解析错误。
+		if isStaticAssetPath(clean) {
+			http.NotFound(w, r)
+			return
+		}
 		// SPA catch-all: unknown paths serve index.html (server.ts:297-305).
 		h.serveIndex(w, r)
 		return
 	}
 	h.serveFile(w, r, target)
+}
+
+// isStaticAssetPath reports whether a dist-relative path looks like a hashed
+// build asset rather than a navigable SPA route. Missing files under these
+// shapes answer 404 instead of the index.html fallback.
+func isStaticAssetPath(clean string) bool {
+	if clean == "/index.html" || strings.HasPrefix(clean, "/assets/") {
+		return true
+	}
+	switch strings.ToLower(path.Ext(clean)) {
+	case ".js", ".mjs", ".css", ".map", ".woff", ".woff2", ".ttf", ".otf",
+		".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".ico",
+		".mp4", ".webm", ".wasm":
+		return true
+	}
+	return false
 }
 
 // serveFile streams one dist file with the express.static setHeaders
