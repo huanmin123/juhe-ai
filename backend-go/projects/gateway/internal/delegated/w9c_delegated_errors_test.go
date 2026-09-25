@@ -14,64 +14,92 @@ import (
 
 func TestW9CWriteGroupMutationErrorArms(t *testing.T) {
 	f := newFixture(t, "juhe:groups.write")
-	write := func(err error, fallback string) *httptest.ResponseRecorder {
+	write := func(err error) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		f.env.deps.writeGroupMutationError(rec, err, fallback)
+		f.env.deps.writeGroupMutationError(rec, err)
 		return rec
 	}
-	if got := write(&groups.ConflictError{Message: "冲突"}, "fb"); got.Code != http.StatusConflict || !strings.Contains(got.Body.String(), "冲突") {
+	if got := write(&groups.ConflictError{Message: "冲突"}); got.Code != http.StatusConflict || !strings.Contains(got.Body.String(), "冲突") {
 		t.Fatalf("conflict = %d %s", got.Code, got.Body.String())
 	}
-	if got := write(&groups.ValidationError{Message: "校验失败"}, "fb"); got.Code != http.StatusBadRequest {
+	if got := write(&groups.ValidationError{Message: "校验失败"}); got.Code != http.StatusBadRequest {
 		t.Fatalf("validation = %d %s", got.Code, got.Body.String())
 	}
-	if got := write(&groups.ValidationError{Message: "分组名称已存在"}, "fb"); got.Code != http.StatusConflict {
+	if got := write(&groups.ValidationError{Message: "分组名称已存在"}); got.Code != http.StatusConflict {
 		t.Fatalf("validation duplicate = %d %s", got.Code, got.Body.String())
 	}
-	if got := write(errors.New("分组名称已存在"), "fb"); got.Code != http.StatusConflict {
-		t.Fatalf("plain duplicate = %d %s", got.Code, got.Body.String())
+	// Unknown store faults render the fixed copy: status 500 and no echo of
+	// the raw driver/schema text.
+	for _, unknown := range []error{errors.New("分组名称已存在"), errors.New(`pq: duplicate key value violates unique constraint "idx_groups_owner_provider_name_unique"`), nil} {
+		got := write(unknown)
+		if got.Code != http.StatusInternalServerError || !strings.Contains(got.Body.String(), "操作失败，请稍后重试") {
+			t.Fatalf("unknown %v = %d %s", unknown, got.Code, got.Body.String())
+		}
+		if strings.Contains(got.Body.String(), "boom") || strings.Contains(got.Body.String(), "pq:") || strings.Contains(got.Body.String(), "SQLSTATE") {
+			t.Fatalf("unknown %v leaked raw text: %s", unknown, got.Body.String())
+		}
 	}
-	// Non-CJK copy localizes to the 400 default (no echo of the raw text).
-	if got := write(errors.New("boom"), "fb"); got.Code != http.StatusBadRequest {
-		t.Fatalf("plain = %d %s", got.Code, got.Body.String())
-	}
-	if got := write(nil, "fallback 文案"); got.Code != http.StatusBadRequest || !strings.Contains(got.Body.String(), "fallback 文案") {
-		t.Fatalf("nil error falls back = %d %s", got.Code, got.Body.String())
+	if got := write(errors.New("boom")); strings.Contains(got.Body.String(), "boom") {
+		t.Fatalf("raw text leaked: %s", got.Body.String())
 	}
 }
 
 func TestW9CWriteStrategyMutationErrorArms(t *testing.T) {
 	f := newFixture(t, "juhe:route_strategies.write")
-	write := func(err error, fallback string) *httptest.ResponseRecorder {
+	write := func(err error) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		f.env.deps.writeStrategyMutationError(rec, err, fallback)
+		f.env.deps.writeStrategyMutationError(rec, err)
 		return rec
 	}
-	version := write(&routestrategies.VersionConflictError{Message: "版本冲突", CurrentUpdatedAt: "2026-01-10T08:30:00.000Z"}, "fb")
+	version := write(&routestrategies.VersionConflictError{Message: "版本冲突", CurrentUpdatedAt: "2026-01-10T08:30:00.000Z"})
 	if version.Code != http.StatusConflict || !strings.Contains(version.Body.String(), "currentUpdatedAt") {
 		t.Fatalf("version conflict = %d %s", version.Code, version.Body.String())
 	}
-	if got := write(&routestrategies.ConflictError{Message: "冲突"}, "fb"); got.Code != http.StatusConflict {
+	if got := write(&routestrategies.ConflictError{Message: "冲突"}); got.Code != http.StatusConflict {
 		t.Fatalf("conflict = %d %s", got.Code, got.Body.String())
 	}
-	if got := write(&routestrategies.ValidationError{Message: "校验失败"}, "fb"); got.Code != http.StatusBadRequest {
+	if got := write(&routestrategies.ValidationError{Message: "校验失败"}); got.Code != http.StatusBadRequest {
 		t.Fatalf("validation = %d %s", got.Code, got.Body.String())
 	}
-	if got := write(&routestrategies.ValidationError{Message: "策略路由名称已存在"}, "fb"); got.Code != http.StatusConflict {
+	if got := write(&routestrategies.ValidationError{Message: "策略路由名称已存在"}); got.Code != http.StatusConflict {
 		t.Fatalf("validation duplicate = %d %s", got.Code, got.Body.String())
 	}
-	if got := write(nil, "fallback 文案"); got.Code != http.StatusBadRequest || !strings.Contains(got.Body.String(), "fallback 文案") {
-		t.Fatalf("nil error falls back = %d %s", got.Code, got.Body.String())
+	// Unknown store faults render the fixed non-leaking copy (no fallback
+	// echo, no 400 with raw text).
+	got := write(errors.New("no such table: route_strategies"))
+	if got.Code != http.StatusInternalServerError || !strings.Contains(got.Body.String(), "操作失败，请稍后重试") || strings.Contains(got.Body.String(), "route_strategies") {
+		t.Fatalf("unknown = %d %s", got.Code, got.Body.String())
 	}
 }
 
-func TestW9CErrorTextAndSchedulingPolicyHelpers(t *testing.T) {
-	if got := errorText(errors.New("real"), "fb"); got != "real" {
-		t.Fatalf("errorText = %q", got)
+func TestW9CBusinessMutationErrorArms(t *testing.T) {
+	writeProfile := func(err error) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		writeProfileMutationError(rec, err)
+		return rec
 	}
-	if got := errorText(nil, "fb"); got != "fb" {
-		t.Fatalf("errorText nil = %q", got)
+	// Known profile business copy stays 409 with its message.
+	if got := writeProfile(&businessError{message: "用户名称已存在"}); got.Code != http.StatusConflict || !strings.Contains(got.Body.String(), "用户名称已存在") {
+		t.Fatalf("profile duplicate = %d %s", got.Code, got.Body.String())
 	}
+	// Unknown profile faults render the fixed copy without leaking.
+	if got := writeProfile(errors.New("SQLSTATE 42P01")); got.Code != http.StatusInternalServerError || !strings.Contains(got.Body.String(), "操作失败，请稍后重试") || strings.Contains(got.Body.String(), "42P01") {
+		t.Fatalf("profile unknown = %d %s", got.Code, got.Body.String())
+	}
+	// API Key business copy: duplicate → 409, guard copy → 400.
+	rec := httptest.NewRecorder()
+	writeBusinessMutationError(rec, "API Key 名称已存在：taken")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "名称已存在") {
+		t.Fatalf("apikey duplicate = %d %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	writeBusinessMutationError(rec, "AI 对话 API Key 不允许修改名称")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "不允许修改名称") {
+		t.Fatalf("apikey guard = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestW9CSchedulingAndRevisionHelpers(t *testing.T) {
 	if got := schedulingPolicyValue(&groupMutationInput{}); got != nil {
 		t.Fatalf("no scheduling = %v", got)
 	}

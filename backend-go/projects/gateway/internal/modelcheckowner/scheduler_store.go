@@ -2,10 +2,28 @@ package modelcheckowner
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+)
+
+const (
+	// HealthRetryMaxAttempts caps how often one health-sync retry task may be
+	// claimed and failed before it is dead-lettered. A permanently broken run
+	// row (for example, truncated legacy JSON) must not stay claimable every
+	// minute forever.
+	HealthRetryMaxAttempts = 10
+	// HealthRetryDeadLetterDueIn pushes an exhausted task's due_at beyond any
+	// practical horizon. The scheduler task schema has no terminal dead state
+	// (the Postgres DDL constrains state to pending/failed/completed), so
+	// exhaustion is modeled as a failed task that is never due again; the
+	// final cause stays readable in last_error and the stable task id blocks
+	// EnsureHealthRetryTasks from re-materializing it (ON CONFLICT DO
+	// NOTHING).
+	HealthRetryDeadLetterDueIn = 100 * 365 * 24 * time.Hour
 )
 
 // SQLSchedulerSource claims durable scheduler tasks from the Gateway-owned
@@ -117,7 +135,26 @@ func (s *SQLSchedulerSource) Fail(ctx context.Context, task ScheduleTask, cause 
 		message = message[:1000]
 	}
 	now := time.Now().UTC()
-	result, err := s.Store.db.ExecContext(ctx, s.Store.bind(fmt.Sprintf(`UPDATE %s SET state='failed',last_error=?,due_at=?,claim_owner=NULL,claim_until=NULL,updated_at=? WHERE id=? AND claim_owner=? AND fence_token=?`, s.schedulerTable())), message, now.Add(time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), task.ID, task.OwnerID, task.FenceToken)
+	attempts, payload, counted := healthRetryAttemptPayload(task)
+	dueAt := now.Add(time.Minute)
+	if counted && attempts >= HealthRetryMaxAttempts {
+		// Dead letter: the task keeps its failed state but is never due
+		// again, so neither this owner nor a takeover re-claims it. The
+		// terminal cause is prefixed so operators can distinguish exhaustion
+		// from an ordinary retryable failure.
+		dueAt = now.Add(HealthRetryDeadLetterDueIn)
+		message = fmt.Sprintf("health retry attempts exhausted after %d: %s", attempts, message)
+		if len(message) > 1000 {
+			message = message[:1000]
+		}
+	}
+	var result sql.Result
+	var err error
+	if counted {
+		result, err = s.Store.db.ExecContext(ctx, s.Store.bind(fmt.Sprintf(`UPDATE %s SET state='failed',last_error=?,due_at=?,claim_owner=NULL,claim_until=NULL,payload=?,updated_at=? WHERE id=? AND claim_owner=? AND fence_token=?`, s.schedulerTable())), message, dueAt.Format(time.RFC3339Nano), payload, now.Format(time.RFC3339Nano), task.ID, task.OwnerID, task.FenceToken)
+	} else {
+		result, err = s.Store.db.ExecContext(ctx, s.Store.bind(fmt.Sprintf(`UPDATE %s SET state='failed',last_error=?,due_at=?,claim_owner=NULL,claim_until=NULL,updated_at=? WHERE id=? AND claim_owner=? AND fence_token=?`, s.schedulerTable())), message, dueAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), task.ID, task.OwnerID, task.FenceToken)
+	}
 	if err != nil {
 		return fmt.Errorf("fail J3b task %s: %w", task.ID, err)
 	}
@@ -125,6 +162,35 @@ func (s *SQLSchedulerSource) Fail(ctx context.Context, task ScheduleTask, cause 
 		return fmt.Errorf("fail J3b task %s rejected by owner/fence", task.ID)
 	}
 	return nil
+}
+
+// healthRetryTaskPayload is the mutable projection stored inside a health
+// retry task's otherwise stable run-derived payload. Attempts is the retry
+// counter consumed by SQLSchedulerSource.Fail.
+type healthRetryTaskPayload struct {
+	RunID    string `json:"runId"`
+	Attempts int    `json:"attempts,omitempty"`
+}
+
+// healthRetryAttemptPayload reads the attempt counter from a health retry
+// task's payload and returns it incremented together with the re-encoded
+// payload. counted is false for tasks that are not health sync retries (for
+// example scheduled payloads claimed through a direct SQLSchedulerSource in
+// tests); their frozen payload shape is never rewritten by Fail.
+func healthRetryAttemptPayload(task ScheduleTask) (attempts int, payload []byte, counted bool) {
+	if task.Kind != SchedulerHealthRetry || len(task.Payload) == 0 {
+		return 0, nil, false
+	}
+	var parsed healthRetryTaskPayload
+	if err := json.Unmarshal(task.Payload, &parsed); err != nil || parsed.RunID == "" {
+		return 0, nil, false
+	}
+	parsed.Attempts++
+	encoded, err := json.Marshal(parsed)
+	if err != nil {
+		return parsed.Attempts, nil, false
+	}
+	return parsed.Attempts, encoded, true
 }
 
 var _ SchedulerSource = (*SQLSchedulerSource)(nil)

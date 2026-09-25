@@ -57,9 +57,14 @@ type RuntimeConfig struct {
 	OwnerLease                time.Duration
 	ProxyLease                time.Duration
 	ProbeTimeout              time.Duration
-	CredentialSecret          string
-	ManualDeadline            time.Duration
-	Now                       func() time.Time
+	// Retention 是 outcomes/inputs 运行态记录的保留窗口，
+	// CleanupInterval 是 owner 循环内过期行清理的执行频率（W5 杂项修复：
+	// J3a 运行态表此前只增不清）。
+	Retention        time.Duration
+	CleanupInterval  time.Duration
+	CredentialSecret string
+	ManualDeadline   time.Duration
+	Now              func() time.Time
 }
 
 func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
@@ -153,6 +158,12 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, err
 	}
 	if cfg.ProbeTimeout, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_PROBE_TIMEOUT", defaultProxyLatencyProbeTimeout, time.Second, 15*time.Minute); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.Retention, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_RETENTION", DefaultProxyLatencyRetention, 24*time.Hour, 365*24*time.Hour); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if cfg.CleanupInterval, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_CLEANUP_INTERVAL", DefaultProxyLatencyCleanupInterval, time.Minute, 7*24*time.Hour); err != nil {
 		return RuntimeConfig{}, err
 	}
 	if cfg.OwnerLease <= cfg.ProbeTimeout || cfg.OwnerLease <= cfg.ProxyLease {

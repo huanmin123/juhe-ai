@@ -145,7 +145,7 @@ func TestW11AStrategyDTOAndBrokenSchemaArms(t *testing.T) {
 	if r := f.env.do(http.MethodGet, Prefix+"/route-strategies/w11a-st", "", f.token); r.status != http.StatusInternalServerError {
 		t.Fatalf("getRouteStrategy broken schema = %d (%s)", r.status, r.raw)
 	}
-	if r := f.env.do(http.MethodDelete, Prefix+"/route-strategies/w11a-st", "", f.token); r.status != http.StatusBadRequest {
+	if r := f.env.do(http.MethodDelete, Prefix+"/route-strategies/w11a-st", "", f.token); r.status != http.StatusInternalServerError {
 		t.Fatalf("deleteRouteStrategy broken schema = %d (%s)", r.status, r.raw)
 	}
 }
@@ -174,7 +174,7 @@ func TestW11AStrategyCreatePatchArms(t *testing.T) {
 	// Broken strategy table surfaces through create and through the patch
 	// pre-read (FindDetail).
 	f.env.exec(`DROP TABLE route_strategies`)
-	if r := f.env.do(http.MethodPost, Prefix+"/route-strategies", create, f.token); r.status != http.StatusBadRequest {
+	if r := f.env.do(http.MethodPost, Prefix+"/route-strategies", create, f.token); r.status != http.StatusInternalServerError {
 		t.Fatalf("createRouteStrategy broken schema = %d (%s)", r.status, r.raw)
 	}
 	if r := f.env.do(http.MethodPatch, Prefix+"/route-strategies/w11a-st",
@@ -270,7 +270,7 @@ func TestW11APatchApiKeyFailureArms(t *testing.T) {
 		// Unparsable stored revision fails nextApiKeyRevision.
 		f.env.exec(`UPDATE api_keys SET updated_at = 'not-a-time' WHERE id = 'w11a-ak'`)
 		if r := f.env.do(http.MethodPatch, Prefix+"/api-keys/w11a-ak",
-			`{"expectedRevision":"not-a-time","status":"disabled"}`, f.token); r.status != http.StatusBadRequest {
+			`{"expectedRevision":"not-a-time","status":"disabled"}`, f.token); r.status != http.StatusInternalServerError {
 			t.Fatalf("patchApiKey bad stored revision = %d (%s)", r.status, r.raw)
 		}
 		f.env.exec(`UPDATE api_keys SET updated_at = ? WHERE id = 'w11a-ak'`, revision)
@@ -279,7 +279,7 @@ func TestW11APatchApiKeyFailureArms(t *testing.T) {
 		f.env.exec(`CREATE TRIGGER w11a_block_key_update BEFORE UPDATE ON api_keys
 			BEGIN SELECT RAISE(FAIL, 'w11a blocked'); END`)
 		if r := f.env.do(http.MethodPatch, Prefix+"/api-keys/w11a-ak",
-			fmt.Sprintf(`{"expectedRevision":%q,"status":"disabled"}`, revision), f.token); r.status != http.StatusBadRequest {
+			fmt.Sprintf(`{"expectedRevision":%q,"status":"disabled"}`, revision), f.token); r.status != http.StatusInternalServerError {
 			t.Fatalf("patchApiKey update failure = %d (%s)", r.status, r.raw)
 		}
 		f.env.exec(`DROP TRIGGER w11a_block_key_update`)
@@ -287,7 +287,7 @@ func TestW11APatchApiKeyFailureArms(t *testing.T) {
 		// Quota-scope binding DELETE failure (missing table).
 		f.env.exec(`DROP TABLE request_quota_hourly_window_scope_bindings`)
 		if r := f.env.do(http.MethodPatch, Prefix+"/api-keys/w11a-ak",
-			fmt.Sprintf(`{"expectedRevision":%q,"status":"disabled"}`, revision), f.token); r.status != http.StatusBadRequest {
+			fmt.Sprintf(`{"expectedRevision":%q,"status":"disabled"}`, revision), f.token); r.status != http.StatusInternalServerError {
 			t.Fatalf("patchApiKey binding delete failure = %d (%s)", r.status, r.raw)
 		}
 	})
@@ -317,7 +317,7 @@ func TestW11APatchApiKeyBindingInsertFailure(t *testing.T) {
 
 	r := f.env.do(http.MethodPatch, Prefix+"/api-keys/w11a-ak",
 		`{"expectedRevision":"2026-01-10T08:30:00.000Z","status":"active"}`, f.token)
-	if r.status != http.StatusBadRequest {
+	if r.status != http.StatusInternalServerError {
 		t.Fatalf("binding insert failure = %d (%s)", r.status, r.raw)
 	}
 }
@@ -340,7 +340,7 @@ func TestW11APGDialectLockArms(t *testing.T) {
 		f.env.seedApiKey("w11a-ak", f.accountID, "key1", "w11a-st", "active")
 		f.env.deps.PGDialect = true
 		if r := f.env.do(http.MethodPatch, Prefix+"/api-keys/w11a-ak",
-			`{"expectedRevision":"2026-01-10T08:30:00.000Z","status":"disabled"}`, f.token); r.status != http.StatusBadRequest {
+			`{"expectedRevision":"2026-01-10T08:30:00.000Z","status":"disabled"}`, f.token); r.status != http.StatusInternalServerError {
 			t.Fatalf("patchApiKey PG lock arm = %d (%s)", r.status, r.raw)
 		}
 	})

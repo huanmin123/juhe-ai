@@ -73,6 +73,43 @@ type SchedulerRunExecutor struct {
 	Build     SchedulerRunBuilder
 	Recovery  RecoveryCompletion
 	Scheduled ScheduledCompletion
+	// RunBudget bounds one leased run's probe execution. The Business
+	// scheduler claims schedule/recovery rows with a finite lease
+	// (BusinessSchedulerSource.EffectiveLease, default six minutes) and never
+	// renews it during execution; without a budget a slow full-profile run
+	// could outlive the lease, letting another owner re-claim the same
+	// schedule while the first run is still probing and permanently rejecting
+	// its completion (stale lease). When positive, Runtime.Run executes under
+	// this deadline and a timeout ends through the same durable failure path
+	// as any probe error, so the completion write lands inside the remaining
+	// lease window. Zero disables the budget: manual HTTP runs run without a
+	// Business lease and executors assembled without one must not inherit a
+	// deadline they cannot justify.
+	RunBudget time.Duration
+}
+
+// BusinessLeaseExecutionMargin is the safety margin kept between a leased
+// run's execution budget and its Business lease expiry. The margin covers the
+// durable terminal writes (CompleteScheduled / recovery CAS) that must land
+// while lease_until is still in the future.
+const BusinessLeaseExecutionMargin = 30 * time.Second
+
+// ScheduleRunBudget derives the bounded execution budget for one leased
+// schedule/recovery run from the Business lease. A run must always end inside
+// its lease window: exceeding the lease lets another owner re-claim the same
+// schedule/recovery row and makes the first run's terminal write permanently
+// stale. A lease that does not exceed the completion margin keeps half of
+// itself as the budget so small leases remain usable in tests. Zero or
+// negative leases produce a zero budget (disabled), matching the field
+// contract above.
+func ScheduleRunBudget(lease time.Duration) time.Duration {
+	if lease <= 0 {
+		return 0
+	}
+	if lease <= BusinessLeaseExecutionMargin {
+		return lease / 2
+	}
+	return lease - BusinessLeaseExecutionMargin
 }
 
 func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) error {
@@ -125,7 +162,17 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	request.IdentityKey = payload.IdentityKey
 	// 题库配置随 payload 冻结传递（scheduled 与 quality_recovery 同源同语义）。
 	request.CustomQuestionIds = payload.CustomQuestionIds
-	result, runErr := e.Runtime.Run(ctx, request)
+	// The budget deliberately wraps only the probe run. The terminal CAS
+	// writes below must keep the scheduler's undeadlined context: an expired
+	// budget context would otherwise prevent the very completion/failure
+	// fence that records the timeout inside the remaining lease window.
+	runCtx := ctx
+	if e.RunBudget > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, e.RunBudget)
+		defer cancel()
+	}
+	result, runErr := e.Runtime.Run(runCtx, request)
 	if task.Kind == SchedulerScheduled {
 		completion := result
 		if runErr != nil {

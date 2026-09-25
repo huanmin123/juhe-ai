@@ -15,6 +15,7 @@ package jobsched
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"sync"
@@ -470,6 +471,10 @@ func (s *Scheduler) jobLoop(job *jobState) {
 					s.markCoalesced(job, now)
 				} else {
 					s.recordSkip(job, now, "running")
+					// 缺陷修复：skip 直接 continue 会跳过收尾的 armPostRun；
+					// fixedDelay 的触发目标已在 fire 时一次性清空，不重建会让
+					// nextTarget 双空、jobLoop return（任务静默死亡）。
+					s.rearmAfterRegularSkip(job, now)
 					continue
 				}
 			}
@@ -658,7 +663,19 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	s.runWG.Add(1)
 	s.runActive.Add(1)
 	var ctxErr error
+	// panicked 非 nil 表示本轮以 panic 收场（缺陷修复：任务级 recover 隔离）。
+	var panicked any
 	result, runErr := func() (result TaskResult, err error) {
+		// 任务级 panic 隔离：panic 转为 err（走既有 fail 记账路径——job.running
+		// 复位、失败终态、退避重排、runWG/租约经 defer 正常释放），不再外溢到
+		// jobLoop 的进程级屏障（那里只会让 jobLoop 带着卡死的 job.running 与
+		// 空白终态静默退出，任务直至重启都不再调度）。Handle 直接作为 defer
+		// 调用（recover 在其自身帧内，见 safego 包注释）；注册在首位使其最后
+		// 执行，err 赋值为最终值。
+		defer safego.Handle("jobsched.scheduler.task", func(recovered any) {
+			panicked = recovered
+			err = fmt.Errorf("后台任务 panic：%v", recovered)
+		})
 		defer s.runWG.Done()
 		defer s.runActive.Add(-1)
 		// 先取样 ctx 状态再 cancel：cancel 本身会把 Err 变成 Canceled，
@@ -774,6 +791,14 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	switch {
 	case stoppedRun:
 		s.logger.Debug("jobsched_run_stopped", "job", spec.Name, "skipReason", "scheduler_stopped")
+	case panicked != nil:
+		// 缺陷修复：panic 单列 Error 日志（event 含任务名与 panic 值），级别
+		// 高于普通失败的 Warn——panic 是任务代码缺陷，需要被巡检直接发现。
+		attrs := []any{"job", spec.Name, "panic", fmt.Sprintf("%v", panicked), "durationMs", duration, "consecFail", logConsecFail}
+		if logBackoffUntil != nil {
+			attrs = append(attrs, "nextRetryAt", *logBackoffUntil)
+		}
+		s.logger.Error("jobsched_run_panicked", attrs...)
 	case timedOut:
 		attrs := []any{"job", spec.Name, "durationMs", duration, "consecFail", logConsecFail}
 		if logBackoffUntil != nil {
@@ -793,6 +818,24 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	default:
 		s.logger.Debug("jobsched_run_success", "job", spec.Name, "durationMs", duration)
 	}
+}
+
+// rearmAfterRegularSkip 在错过间隔的 skip-continue 路径上保证下一轮触发目标
+// 仍存在（skip 不经过 armPostRun 的收尾重排）。只对 fixedDelay 生效：其触发
+// 目标一次性（fire 即清空、由收尾重排重建），skip 路径必须补上等价重建；
+// fixedRate 的锚点在 fire 时已推进，重建反而会多挪一个间隔，故不动。目标或
+// 退避重试仍存在时不覆盖。保证任何策略组合下 nextTarget 不双空。
+func (s *Scheduler) rearmAfterRegularSkip(job *jobState, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job.spec.ScheduleMode != ScheduleModeFixedDelay {
+		return
+	}
+	if job.fixedRateNext != nil || job.deferredAt != nil {
+		return
+	}
+	next := now.Add(passiveIntervalDelay(job.spec.Interval, job.spec.PassiveJitter, s.random))
+	job.fixedRateNext = &next
 }
 
 // armPostRun 在一轮结束后收尾重排（对齐 Node runJob finally）：失败退避安排

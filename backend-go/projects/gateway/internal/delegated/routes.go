@@ -313,7 +313,7 @@ func (d *Deps) patchProfile(w http.ResponseWriter, r *http.Request) {
 	systemAccountID, _ := access(r)
 	account, err := d.updateProfileDisplayName(r.Context(), systemAccountID, trimmed)
 	if err != nil {
-		kernel.WriteError(w, http.StatusConflict, errorText(err, "修改显示名称失败"))
+		writeProfileMutationError(w, err)
 		return
 	}
 	if account == nil {
@@ -327,11 +327,44 @@ var whitespacePattern = regexp.MustCompile(`\s`)
 
 func hasWhitespace(value string) bool { return whitespacePattern.MatchString(value) }
 
-func errorText(err error, fallback string) string {
-	if err != nil && err.Error() != "" {
-		return err.Error()
+// delegatedUnknownMutationErrorMessage is the fixed client-facing copy for
+// delegated store faults that carry no business type (driver/schema/infra
+// errors whose text can contain index names, table names or SQLSTATE). Their
+// raw text never reaches the client, mirroring groups writeMutationError's
+// non-leaking fallback.
+const delegatedUnknownMutationErrorMessage = "操作失败，请稍后重试"
+
+// businessError marks delegated business faults whose fixed Chinese copy is
+// defined in this module (profile display-name guards, api-key mutation
+// guards) and is therefore safe to render verbatim. Only store
+// conflict/validation types and businessError keep their own copy; every
+// other error renders delegatedUnknownMutationErrorMessage.
+type businessError struct{ message string }
+
+func (e *businessError) Error() string { return e.message }
+
+// writeBusinessMutationError renders known business copy onto the delegated
+// mutation contract: duplicate-name ("已存在") copy is a 409, every other
+// business message a 400.
+func writeBusinessMutationError(w http.ResponseWriter, message string) {
+	if strings.Contains(message, "已存在") {
+		kernel.WriteError(w, http.StatusConflict, message)
+		return
 	}
-	return fallback
+	kernel.WriteBadRequest(w, message)
+}
+
+// writeProfileMutationError maps updateProfileDisplayName errors: every Node
+// profile catch arm (normalizeRequiredText + uniqueness) renders 409 with the
+// store copy (system-accounts.routes.ts patchProfile); unknown store faults
+// render the fixed non-leaking copy.
+func writeProfileMutationError(w http.ResponseWriter, err error) {
+	var business *businessError
+	if errors.As(err, &business) {
+		kernel.WriteError(w, http.StatusConflict, business.message)
+		return
+	}
+	kernel.WriteError(w, http.StatusInternalServerError, delegatedUnknownMutationErrorMessage)
 }
 
 // ---------------------------------------------------------------------------
@@ -547,7 +580,7 @@ func (d *Deps) createGroup(w http.ResponseWriter, r *http.Request) {
 		SchedulingPolicy: schedulingPolicyValue(input),
 	}, d.groupAccess(r))
 	if err != nil {
-		d.writeGroupMutationError(w, err, "创建分组失败")
+		d.writeGroupMutationError(w, err)
 		return
 	}
 	createdItem := *created
@@ -614,7 +647,7 @@ func (d *Deps) patchGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	changed, err := d.Groups.Patch(r.Context(), id, mutation, expectedUpdatedAt, d.groupAccess(r))
 	if err != nil {
-		d.writeGroupMutationError(w, err, "更新分组失败")
+		d.writeGroupMutationError(w, err)
 		return
 	}
 	if changed == nil {
@@ -692,27 +725,22 @@ func isRFC3339Instant(value string) bool {
 	return err == nil
 }
 
-func (d *Deps) writeGroupMutationError(w http.ResponseWriter, err error, fallback string) {
+// writeGroupMutationError maps groups store errors onto the Node route family
+// contract: typed conflicts → 409; typed validation (duplicate-name copy →
+// 409, otherwise 400) keeps its copy; any other fault is unknown and renders
+// the fixed non-leaking copy (groups writeMutationError pattern).
+func (d *Deps) writeGroupMutationError(w http.ResponseWriter, err error) {
 	var conflict *groups.ConflictError
 	var validation *groups.ValidationError
-	message := errorText(err, fallback)
 	if errors.As(err, &conflict) {
 		kernel.WriteError(w, http.StatusConflict, conflict.Message)
 		return
 	}
 	if errors.As(err, &validation) {
-		if strings.Contains(message, "已存在") {
-			kernel.WriteError(w, http.StatusConflict, message)
-			return
-		}
-		kernel.WriteBadRequest(w, message)
+		writeBusinessMutationError(w, validation.Message)
 		return
 	}
-	if strings.Contains(message, "已存在") {
-		kernel.WriteError(w, http.StatusConflict, message)
-		return
-	}
-	kernel.WriteBadRequest(w, message)
+	kernel.WriteError(w, http.StatusInternalServerError, delegatedUnknownMutationErrorMessage)
 }
 
 func (d *Deps) deleteGroup(w http.ResponseWriter, r *http.Request) {
@@ -741,7 +769,7 @@ func (d *Deps) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := d.Groups.Delete(r.Context(), id, groups.AccessScope{ViewerID: systemAccountID})
 	if err != nil {
-		d.writeGroupMutationError(w, err, "删除分组失败")
+		d.writeGroupMutationError(w, err)
 		return
 	}
 	if !result.Deleted {
@@ -1117,17 +1145,21 @@ func (d *Deps) createRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := d.Strategies.Create(r.Context(), strategyMutation(input), strategyAccess(r))
 	if err != nil {
-		d.writeStrategyMutationError(w, err, "创建策略路由失败")
+		d.writeStrategyMutationError(w, err)
 		return
 	}
 	writeCreatedWithEnvelope(w, routeStrategyListDTO(*created), created.UpdatedAt)
 }
 
-func (d *Deps) writeStrategyMutationError(w http.ResponseWriter, err error, fallback string) {
+// writeStrategyMutationError maps routestrategies store errors onto the Node
+// route family contract: typed version conflicts → 409 + currentUpdatedAt;
+// typed conflicts → 409; typed validation (duplicate-name copy → 409,
+// otherwise 400) keeps its copy; any other fault is unknown and renders the
+// fixed non-leaking copy.
+func (d *Deps) writeStrategyMutationError(w http.ResponseWriter, err error) {
 	var conflict *routestrategies.ConflictError
 	var versionConflict *routestrategies.VersionConflictError
 	var validation *routestrategies.ValidationError
-	message := errorText(err, fallback)
 	if errors.As(err, &versionConflict) {
 		// Node: 409 {message, currentUpdatedAt} (RouteStrategyVersionConflictError).
 		kernel.WriteJSON(w, http.StatusConflict, struct {
@@ -1141,18 +1173,10 @@ func (d *Deps) writeStrategyMutationError(w http.ResponseWriter, err error, fall
 		return
 	}
 	if errors.As(err, &validation) {
-		if strings.Contains(message, "已存在") {
-			kernel.WriteError(w, http.StatusConflict, message)
-			return
-		}
-		kernel.WriteBadRequest(w, message)
+		writeBusinessMutationError(w, validation.Message)
 		return
 	}
-	if strings.Contains(message, "已存在") {
-		kernel.WriteError(w, http.StatusConflict, message)
-		return
-	}
-	kernel.WriteBadRequest(w, message)
+	kernel.WriteError(w, http.StatusInternalServerError, delegatedUnknownMutationErrorMessage)
 }
 
 func (d *Deps) patchRouteStrategy(w http.ResponseWriter, r *http.Request) {
@@ -1201,7 +1225,7 @@ func (d *Deps) patchRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome, err := d.Strategies.Patch(r.Context(), id, strategyMutation(input), expectedUpdatedAt, strategyAccess)
 	if err != nil {
-		d.writeStrategyMutationError(w, err, "更新策略路由失败")
+		d.writeStrategyMutationError(w, err)
 		return
 	}
 	if outcome == nil {
@@ -1223,7 +1247,7 @@ func (d *Deps) patchRouteStrategy(w http.ResponseWriter, r *http.Request) {
 func (d *Deps) deleteRouteStrategy(w http.ResponseWriter, r *http.Request) {
 	deleted, err := d.Strategies.Delete(r.Context(), r.PathValue("id"), strategyAccess(r))
 	if err != nil {
-		d.writeStrategyMutationError(w, err, "删除策略路由失败")
+		d.writeStrategyMutationError(w, err)
 		return
 	}
 	if deleted == nil || !deleted.Deleted {
@@ -1541,12 +1565,13 @@ func (d *Deps) patchAiAccount(w http.ResponseWriter, r *http.Request) {
 			kernel.WriteError(w, http.StatusConflict, conflict.Message)
 			return
 		}
-		message := errorText(err, "更新 AI 账户失败")
-		if strings.Contains(message, "已存在") {
-			kernel.WriteError(w, http.StatusConflict, message)
+		var validation *accounts.ValidationError
+		if errors.As(err, &validation) {
+			kernel.WriteBadRequest(w, validation.Message)
 			return
 		}
-		kernel.WriteBadRequest(w, message)
+		// Unknown store fault: never echo driver/schema text.
+		kernel.WriteError(w, http.StatusInternalServerError, delegatedUnknownMutationErrorMessage)
 		return
 	}
 	if changed == nil {

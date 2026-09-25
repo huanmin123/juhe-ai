@@ -692,6 +692,46 @@ func writeQualityError(w http.ResponseWriter, err error) {
 	writeOwnerError(w, http.StatusBadRequest, err.Error())
 }
 
+// manualRunActiveKey is the target-scoped registry key for one manual run.
+// The actor-scoped key (scope.activeKey) keeps the /run/active and /run/stop
+// contract, but it cannot exclude two different actors from probing the same
+// account concurrently, which would run two identical probe suites against
+// one upstream credential. Manual runs therefore hold two registry slots: the
+// actor slot (existing visibility/stop semantics) and this GLOBAL target slot
+// (cross-actor and cross-scope mutual exclusion). Account ids are globally
+// unique, so the target slot also covers runs issued from different
+// system-account scopes against the same physical account.
+func manualRunActiveKey(scope ManagementScope, request RunRequest) string {
+	targetType := strings.TrimSpace(request.TargetType)
+	if targetType == "" {
+		targetType = "account"
+	}
+	return "model-check-target:" + targetType + ":" + strings.TrimSpace(request.TargetID)
+}
+
+// tryStartManualRun reserves both manual-run slots. The actor slot is
+// attempted first: its conflict carries the actor's current run for the
+// existing active-conflict contract. When the target slot conflicts (another
+// actor is probing the same account), the actor slot is released again before
+// the conflict is reported. On success the caller receives the actor handle
+// (run context and /run/active visibility) plus a release function that must
+// finish both slots exactly once.
+func tryStartManualRun(ctx context.Context, active *modelcheckactive.Registry, scope ManagementScope, request RunRequest, summary modelcheckactive.Summary) (modelcheckactive.Handle, func(), bool, modelcheckactive.Summary) {
+	actorHandle, actorAcquired, current := active.TryStart(ctx, scope.activeKey(), summary)
+	if !actorAcquired {
+		return modelcheckactive.Handle{}, nil, false, current
+	}
+	targetHandle, targetAcquired, targetCurrent := active.TryStart(ctx, manualRunActiveKey(scope, request), summary)
+	if !targetAcquired {
+		actorHandle.Finish()
+		return modelcheckactive.Handle{}, nil, false, targetCurrent
+	}
+	return actorHandle, func() {
+		targetHandle.Finish()
+		actorHandle.Finish()
+	}, true, summary
+}
+
 func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
 	command, err := decodeRunCommand(r, h.maxBody())
 	if err != nil {
@@ -707,14 +747,14 @@ func (h *HTTPHandler) serveRun(w http.ResponseWriter, r *http.Request, scope Man
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	key := scope.activeKey()
-	handle, acquired, current := h.Active.TryStart(r.Context(), key, modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()})
+	summary := modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()}
+	handle, release, acquired, current := tryStartManualRun(r.Context(), h.Active, scope, runRequest, summary)
 	if !acquired {
 		w.Header().Set("Retry-After", "1")
 		writeOwnerActiveConflict(w, current)
 		return
 	}
-	defer handle.Finish()
+	defer release()
 	result, err := h.Service.Run(handle.Context(), runRequest)
 	if result.RunID != "" {
 		handle.Update(modelcheckactive.Summary{RunID: result.RunID})
@@ -741,14 +781,14 @@ func (h *HTTPHandler) serveStream(w http.ResponseWriter, r *http.Request, scope 
 		writeOwnerError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	key := scope.activeKey()
-	handle, acquired, current := h.Active.TryStart(r.Context(), key, modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()})
+	summary := modelcheckactive.Summary{TargetID: runRequest.TargetID, Model: runRequest.Model, Profile: runRequest.Profile, StartedAt: time.Now().UTC()}
+	handle, release, acquired, current := tryStartManualRun(r.Context(), h.Active, scope, runRequest, summary)
 	if !acquired {
 		w.Header().Set("Retry-After", "1")
 		writeOwnerActiveConflict(w, current)
 		return
 	}
-	defer handle.Finish()
+	defer release()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeOwnerError(w, http.StatusInternalServerError, "J3b SSE 不受当前 HTTP 服务器支持")

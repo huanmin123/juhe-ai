@@ -86,6 +86,17 @@ func (s *BusinessSchedulerSource) Claim(ctx context.Context, kind SchedulerKind,
 	return tasks, tx.Commit()
 }
 
+// EffectiveLease returns the Business lease duration Claim actually writes
+// (claimSchedules and claimRecoveries share this default). Assembly sites
+// derive the run execution budget from it via ScheduleRunBudget so the lease
+// window and the in-run deadline cannot drift apart.
+func (s *BusinessSchedulerSource) EffectiveLease() time.Duration {
+	if s == nil || s.Lease <= 0 {
+		return 6 * time.Minute
+	}
+	return s.Lease
+}
+
 func (s *BusinessSchedulerSource) Complete(ctx context.Context, task ScheduleTask) error {
 	if task.Kind != SchedulerHealthRetry {
 		return nil

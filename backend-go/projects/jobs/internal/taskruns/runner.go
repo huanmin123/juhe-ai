@@ -194,6 +194,20 @@ type TaskRunResult struct {
 	ExitCode     *int64
 }
 
+// runFinishTimeout 与本文件 ReleaseScheduledLease 的既有 bound 同值：终态收
+// 口是有限 IO，不随任务时长放大。
+const runFinishTimeout = 5 * time.Second
+
+// boundedFinishContext 是终态收口专用的停机无关有限 ctx。RunWithTaskRun 的
+// 入参 ctx 绑定调度器停机（Stop 即取消），停机窗口内直接用它写终态会以
+// context.Canceled 失败，background_task_runs 行永久停留 running（scheduled
+// job 的 worker_role 不在对账收口范围，无人兜底）。WithoutCancel 保留 ctx
+// 值（追踪/取消传播面）但剥离取消信号；上限对照 runner.go 释放租约的既有
+// 5s bound（缺陷3修复，模式同 proxylatency 的 boundedReleaseContext）。
+func boundedFinishContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), runFinishTimeout)
+}
+
 // RunWithTaskRun 串起 J-INF 运行记录状态机：
 // queued（CreateTaskRun）→ running（TryStartTaskRun CAS + 租约获取）→
 // completed/failed/skipped（FinishTaskRun + 释放租约）。
@@ -229,13 +243,17 @@ func RunWithTaskRun(
 	}
 	if !started {
 		finished := store.now()
-		_, _ = store.FinishTaskRun(ctx, TaskRunFinishInput{
+		// 启动 CAS 未命中同样落 skipped 终态：收口不依赖调用方 ctx 存活
+		// （缺陷3修复，与下方最终收口同规则）。
+		finishCtx, finishCancel := boundedFinishContext(ctx)
+		_, _ = store.FinishTaskRun(finishCtx, TaskRunFinishInput{
 			RunID:        run.RunID,
 			Status:       StatusSkipped,
 			ErrorMessage: "任务启动 CAS 未命中，运行记录已非 queued",
 			FinishedAt:   &finished,
 		})
-		updated, _ := store.GetTaskRun(ctx, run.RunID)
+		updated, _ := store.GetTaskRun(finishCtx, run.RunID)
+		finishCancel()
 		return derefRun(updated), ScheduledLeaseOutcome{
 			Outcome:    OutcomeSkipped,
 			Warning:    "lease_busy:run_not_queued",
@@ -317,7 +335,10 @@ func RunWithTaskRun(
 		result.Status = StatusCompleted
 	}
 	finished := store.now()
-	_, finishErr := store.FinishTaskRun(ctx, TaskRunFinishInput{
+	// 终态收口改用停机无关的有限 ctx（缺陷3修复）：停机取消入参 ctx 不得
+	// 阻止终态落库，否则 failed/completed 收口失败、行永久停留 running。
+	finishCtx, finishCancel := boundedFinishContext(ctx)
+	_, finishErr := store.FinishTaskRun(finishCtx, TaskRunFinishInput{
 		RunID:        run.RunID,
 		Status:       result.Status,
 		Result:       result.Result,
@@ -325,7 +346,8 @@ func RunWithTaskRun(
 		ExitCode:     result.ExitCode,
 		FinishedAt:   &finished,
 	})
-	updated, getErr := store.GetTaskRun(ctx, run.RunID)
+	updated, getErr := store.GetTaskRun(finishCtx, run.RunID)
+	finishCancel()
 	finalRun := derefRun(updated)
 	if getErr != nil {
 		return finalRun, ScheduledLeaseOutcome{LeaseState: LeaseStateAcquired}, getErr

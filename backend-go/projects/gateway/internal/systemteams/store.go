@@ -601,14 +601,23 @@ func (s *Store) keywordPredicate(keyword string) (string, []any) {
 	return "(t.name >= ? AND t.name < ?)", []any{keyword, keywordUpperBound(keyword)}
 }
 
-// keywordUpperBound mirrors systemTeamTextPrefixUpperBound (:1496-1504).
+// keywordUpperBound mirrors systemTeamTextPrefixUpperBound (:1496-1504) with
+// the groups textPrefixUpperBound overflow guard: incrementing a trailing
+// U+10FFFF wraps it to 0, shrinking the bound below the prefix and hiding
+// matches, so the increment walks back to the last incrementable rune and a
+// fully-saturated prefix falls back to a literal \uffff suffix.
 func keywordUpperBound(prefix string) string {
 	if prefix == "" {
 		return prefix
 	}
 	runes := []rune(prefix)
-	runes[len(runes)-1]++
-	return string(runes)
+	for index := len(runes) - 1; index >= 0; index-- {
+		if runes[index] < 0x10ffff {
+			runes[index]++
+			return string(runes[:index+1])
+		}
+	}
+	return prefix + "\uffff"
 }
 
 func nullableString(value *string) any {

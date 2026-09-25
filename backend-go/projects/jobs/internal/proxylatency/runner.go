@@ -59,6 +59,9 @@ type Runner struct {
 	mu         sync.RWMutex
 	status     RunnerStatus
 	ownerLease *OwnerLease
+	// nextPruneAt 只在 owner 循环（Run -> runOwned）内串行访问；W5 杂项
+	// 修复：outcomes/inputs 运行态表按时间窗低频清理的调度点。
+	nextPruneAt time.Time
 	// These hooks keep lifecycle failure paths executable in unit tests while
 	// production defaults remain the Store methods.
 	acquireOwnerLease  func(context.Context, string, time.Duration) (OwnerLease, bool, error)
@@ -69,6 +72,7 @@ type Runner struct {
 	issueInput         func(context.Context, InputDraft) (IssuedInput, error)
 	executeIssuedInput func(context.Context, *Store, OwnerLease, ProxyLease, IssuedInput, ExecutorOptions) (Outcome, bool, error)
 	runOwnedFn         func(context.Context, OwnerLease) error
+	pruneExpiredFn     func(context.Context, time.Time, time.Duration) (PruneStats, error)
 }
 
 func NewRunner(cfg RuntimeConfig, store *Store, reader inputLoader, logger *slog.Logger) *Runner {
@@ -472,6 +476,9 @@ func (r *Runner) runOwned(ctx context.Context, lease OwnerLease) error {
 				}
 				return err
 			}
+			// 清理只在持锁 owner 的成功周期之后执行：单实例串行、失败
+			// 不影响周期状态（见 pruneExpiredIfDue）。
+			r.pruneExpiredIfDue(ownedCtx)
 			timer.Reset(schedulejitter.Delay(r.cfg.Interval))
 		}
 	}
@@ -691,6 +698,42 @@ func (r *Runner) runCycle(ctx context.Context, owner OwnerLease) error {
 
 func fatalLeaseError(err error) bool {
 	return errors.Is(err, ErrOwnerLeaseLost) || errors.Is(err, ErrProxyLeaseLost)
+}
+
+// pruneExpiredIfDue 到期时清理 outcomes/inputs 的过期行。清理失败只记
+// warn 并把下一次执行推到下个清理周期：它不改变周期成败，也不得把
+// LastError/Ready 拖入清理抖动。
+func (r *Runner) pruneExpiredIfDue(ctx context.Context) {
+	if r == nil || r.store == nil {
+		return
+	}
+	now := r.now()
+	if !r.nextPruneAt.IsZero() && now.Before(r.nextPruneAt) {
+		return
+	}
+	interval := r.cfg.CleanupInterval
+	if interval <= 0 {
+		interval = DefaultProxyLatencyCleanupInterval
+	}
+	r.nextPruneAt = now.Add(interval)
+	retain := r.cfg.Retention
+	if retain <= 0 {
+		retain = DefaultProxyLatencyRetention
+	}
+	prune := r.pruneExpiredFn
+	if prune == nil {
+		prune = r.store.PruneExpiredRecords
+	}
+	stats, err := prune(ctx, now, retain)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("J3a runtime records prune failed", "error", err)
+		}
+		return
+	}
+	if (stats.Outcomes+stats.Inputs) > 0 && r.logger != nil {
+		r.logger.Info("J3a runtime records pruned", "outcomes", stats.Outcomes, "inputs", stats.Inputs, "retention", retain.String())
+	}
 }
 
 func (r *Runner) recordCycle(attempt time.Time, inputs, executed, failures int, cycleErr error) {

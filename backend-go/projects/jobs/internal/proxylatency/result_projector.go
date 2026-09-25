@@ -52,9 +52,10 @@ type ResultProjector struct {
 	cfg      ResultProjectorConfig
 	logger   *slog.Logger
 
-	mu          sync.RWMutex
-	lastSuccess time.Time
-	lastError   string
+	mu              sync.RWMutex
+	lastSuccess     time.Time
+	lastError       string
+	rejectedSkipped int64
 }
 
 func NewResultProjector(store *Store, business *sql.DB, cfg ResultProjectorConfig, logger *slog.Logger) (*ResultProjector, error) {
@@ -167,8 +168,16 @@ func (p *ResultProjector) Run(ctx context.Context) error {
 }
 
 // Drain advances the Go-owned cursor in the same business transaction as the
-// receipt and CAS result. A rejected payload deliberately remains unadvanced
-// and causes fail-closed retry rather than being silently discarded.
+// receipt and CAS result.
+//
+// 毒丸边界（W5 杂项修复）：确定性 rejected（validateProjectionOutcome 的
+// 内容拒绝：payload 契约无效 / trigger 不允许 / items 缺失 / overall 状态
+// 不一致）由行内容决定，重放永远同结果；receipt 已在同一事务落库，此时
+// fail-closed 重试只会让该行永久阻塞游标。因此 Drain 在 receipt 已落的前提
+// 下推进游标越过该行，并记 warn 日志 + RejectedSkippedCount 计数；rejected
+// receipt 本身就是持久审计留痕（outcome_id/proxy_id/input_version/reason）。
+// 不确定性错误（网络/DB 失败）仍走 error 通道：不落 receipt、不推游标、
+// 下轮重试。
 func (p *ResultProjector) Drain(ctx context.Context) (int, error) {
 	if p == nil || p.store == nil {
 		return 0, errors.New("J3a Go result projector 未初始化")
@@ -182,15 +191,60 @@ func (p *ResultProjector) Drain(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for index := range stored {
-		result, err := p.projectStored(ctx, stored[index], true)
+		result, err := p.drainProjectRow(ctx, stored[index])
 		if err != nil {
 			return index, err
 		}
 		if result.Disposition == ProjectionRejected {
-			return index, fmt.Errorf("J3a Go result projector rejected outcome %s: %s", result.OutcomeID, result.Reason)
+			p.recordRejectedSkip(result)
 		}
 	}
 	return len(stored), nil
+}
+
+// RejectedSkippedCount 返回 Drain 已越过的确定性 rejected 行数（观测用）。
+func (p *ResultProjector) RejectedSkippedCount() int64 {
+	if p == nil {
+		return 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.rejectedSkipped
+}
+
+func (p *ResultProjector) recordRejectedSkip(result ProjectionResult) {
+	p.mu.Lock()
+	p.rejectedSkipped++
+	p.mu.Unlock()
+	if p.logger != nil {
+		p.logger.Warn("J3a Go result projector skipped deterministically rejected outcome",
+			"outcome_id", result.OutcomeID, "proxy_id", result.ProxyID, "input_version", result.InputVersion, "reason", result.Reason)
+	}
+}
+
+// drainProjectRow 投影一行并推进游标，包括确定性 rejected 行（receipt 与
+// 游标同一事务推进）。同步手动路径（ProjectOutcome）不受影响，仍对
+// rejected fail-closed。
+func (p *ResultProjector) drainProjectRow(ctx context.Context, stored StoredOutcome) (ProjectionResult, error) {
+	if err := validateOutcome(stored.Outcome); err != nil {
+		return ProjectionResult{}, err
+	}
+	tx, err := p.business.BeginTx(ctx, nil)
+	if err != nil {
+		return ProjectionResult{}, fmt.Errorf("开始 J3a Go result projection 事务失败: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := p.projectStoredTx(ctx, tx, stored)
+	if err != nil {
+		return ProjectionResult{}, err
+	}
+	if err := p.advanceCursorTx(ctx, tx, OutcomeCursor{StoredAt: stored.StoredAt, OutcomeID: stored.OutcomeID}); err != nil {
+		return ProjectionResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ProjectionResult{}, fmt.Errorf("提交 J3a Go result projection 事务失败: %w", err)
+	}
+	return result, nil
 }
 
 // ProjectOutcome is used by the synchronous Go manual and periodic executor

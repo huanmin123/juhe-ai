@@ -441,11 +441,24 @@ type HealthSyncRetry struct {
 // publications from durable completed run facts. Invalid rows intentionally
 // remain in their durable failed state, but are skipped so one malformed row
 // cannot prevent a later valid retry from being scheduled.
+//
+// The SQL LIMIT is a scan window, not the result cap: the query reads at most
+// 4*limit rows (bounded to 10000) in stable updated_at,id order and the loop
+// below still stops after limit valid rows. Rows truncated by the window keep
+// their failed state and are re-discovered on the next scan; rows whose retry
+// fails again rotate to the end of the order because MarkHealthSync bumps
+// updated_at. The window bounds what used to be an unbounded full scan on
+// every scheduler cycle while still tolerating invalid rows ahead of valid
+// ones (the multiplier keeps the existing malformed-row contract intact).
 func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthSyncRetry, error) {
 	if s == nil || s.db == nil || limit <= 0 || limit > 10000 {
 		return nil, errors.New("J3b health retry scan input is invalid")
 	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE status='completed' AND quality_health_sync_status='failed' AND account_id IS NOT NULL AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC`))
+	window := limit * 4
+	if window > 10000 {
+		window = 10000
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,account_id,system_account_id,provider_code,model,profile,level,score,schedule_id,policy_snapshot_json,quality_decision_json,request_summary_json,finished_at FROM `+s.table("model_check_runs")+` WHERE status='completed' AND quality_health_sync_status='failed' AND account_id IS NOT NULL AND finished_at IS NOT NULL ORDER BY updated_at ASC,id ASC LIMIT ?`), window)
 	if err != nil {
 		return nil, fmt.Errorf("list J3b health sync retries: %w", err)
 	}

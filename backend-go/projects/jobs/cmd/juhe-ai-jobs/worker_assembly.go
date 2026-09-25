@@ -26,6 +26,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -78,6 +79,10 @@ type workerAssembly struct {
 	closers      []func() error
 
 	wiredJobs []string
+	// wiringErr 是装配期第一条结构性错误（当前仅重名注册，缺陷4修复）：
+	// scheduleWiredJob* 记录后不再调度/记账，buildWorkerAssembly 收口为启动
+	// 失败（fail-fast），避免重名注册被调度器静默忽略的同时组装记账失真。
+	wiringErr error
 	// retention 是 J6 保留清理家族（worker_retention.go 装配）。
 	retention *retentionFamily
 	// probeRepoStore / circuitProbeService 由 wireProbeFamily 装配后供账户
@@ -201,8 +206,16 @@ func buildWorkerAssembly(config workerConfig, logger *slog.Logger) (*workerAssem
 		assembly.closeStores()
 		return nil, err
 	}
+	// 缺陷4修复：重名注册等装配期结构性错误的收口点——启动失败并指名任务。
+	if err := assembly.wiringError(); err != nil {
+		assembly.closeStores()
+		return nil, err
+	}
 	return assembly, nil
 }
+
+// wiringError 返回装配期记录的第一条结构性错误（无则 nil）。
+func (a *workerAssembly) wiringError() error { return a.wiringErr }
 
 // wireFamilies 打开各家族 store 并登记 GoWired 任务。启动顺序：
 // store 打开 → schema 校验/初始化 → 启动恢复（taskruns）→ 一次性脏标记
@@ -879,6 +892,17 @@ func (a *workerAssembly) scheduleWiredJob(name string, task jobsched.Task) {
 // 生效；两个源对同一 job 不会同时命中（设置驱动 job 不用显式覆盖注册），
 // 显式覆盖优先经 ResolveScheduleForDriver 的既有语义保持。
 func (a *workerAssembly) scheduleWiredJobWithSettings(name string, settings jobregistry.SettingsInterval, task jobsched.Task) {
+	// 缺陷4修复：重名注册此前被 scheduler.Schedule 静默忽略，但本层仍会
+	// append wiredJobs 并覆盖 wiredTasks——组装记账失真（重复条目 + 后注册
+	// 的闭包顶替先注册者）。这里在调度前自查 fail-fast：启动即报错并指名
+	// 重复任务，首次注册保持原状。
+	if _, exists := a.wiredTasks[name]; exists {
+		if a.wiringErr == nil {
+			a.wiringErr = fmt.Errorf("后台任务重复注册：%s 已在装配中登记（同名任务拒绝二次装配，避免 wiredJobs/wiredTasks 记账失真）", name)
+		}
+		a.logger.Warn("拒绝重复注册后台任务", "job", name)
+		return
+	}
 	entry, ok := jobregistry.Find(name)
 	if !ok || entry.GoStatus != jobregistry.GoWired {
 		a.logger.Warn("拒绝注册非 GoWired 任务", "job", name)
@@ -1004,7 +1028,18 @@ func (a *workerAssembly) runWithTaskRunHistory(store *taskruns.Store, jobName, o
 		OwnerID:    ownerID,
 		LeaseTTL:   ttl,
 	}, func(taskRunCtx context.Context, _ taskruns.LeaseFence, _ taskruns.TaskRun) (taskruns.TaskRunResult, error) {
-		_, taskErr := task(taskRunCtx, taskCtx)
+		var taskErr error
+		func() {
+			// 缺陷2修复：panic 在运行记录状态机内转为任务错误，RunWithTaskRun
+			// 的终态写（failed + panic 值留痕）与临时租约释放照常收口；否则行
+			// 永久停留 running（scheduled job 的 worker_role 不在
+			// ReconcileStale 对账范围，无人兜底收口）。调度器侧另有任务级
+			// recover 兜底（SQLite 直跑与非包裹路径），两层互为纵深。
+			defer safego.Handle("juheaijobs.wiredTask", func(recovered any) {
+				taskErr = fmt.Errorf("后台任务 panic：%v", recovered)
+			})
+			_, taskErr = task(taskRunCtx, taskCtx)
+		}()
 		if taskErr != nil {
 			return taskruns.TaskRunResult{}, taskErr
 		}
@@ -1029,6 +1064,12 @@ func (a *workerAssembly) closeStores() {
 	a.closers = nil
 }
 
+// taskRunFinishGrace 是停机排空超时后的终态收口宽限：RunWithTaskRun 的终态
+// 写/租约释放已改用不受停机取消影响的有限 ctx（taskruns 内 5s bound），这里
+// 给同量级宽限让被截断任务的收口先落库，随后才由 Close → closeStores 关闭
+// 存储，避免「排空放弃 → 关库」截断收口本身。
+const taskRunFinishGrace = 5 * time.Second
+
 // components 返回 supervisor 组件：调度循环（含停机排空）与 usagewriter
 // flush 循环；Close 在全部组件停止后关闭家族存储。
 func (a *workerAssembly) components() []supervisor.Component {
@@ -1040,6 +1081,21 @@ func (a *workerAssembly) components() []supervisor.Component {
 				defer a.running.Store(false)
 				<-runCtx.Done()
 				drained, active := a.scheduler.StopAndDrain(a.config.DrainTimeout)
+				if !drained {
+					// 缺陷3修复：排空超时（Node stopBackgroundJobs 10s 上限）
+					// 放弃在飞任务时显式披露截断，并等待终态收口宽限后再返回
+					// （Close 才会关库）；宽限后仍未结束的任务由 warn 留痕。
+					a.logger.Warn("worker scheduler 停机排空超时，在飞任务被截断；等待终态收口宽限",
+						"event", "worker_scheduler_drain_truncated",
+						"active", active,
+						"drainTimeoutMs", a.config.DrainTimeout.Milliseconds(),
+						"finishGraceMs", taskRunFinishGrace.Milliseconds())
+					_, active = a.scheduler.StopAndDrain(taskRunFinishGrace)
+					if active > 0 {
+						a.logger.Warn("worker scheduler 终态收口宽限耗尽，仍有在飞任务未结束，其终态可能无法落库",
+							"event", "worker_scheduler_finish_grace_exhausted", "active", active)
+					}
+				}
 				a.logger.Info("worker scheduler 停机排空完成", "drained", drained, "active", active)
 				return nil
 			},

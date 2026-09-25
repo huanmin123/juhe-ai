@@ -10,6 +10,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -503,6 +504,48 @@ func TestChainHotQualityPortOrdersAndDrivesLifecycle(t *testing.T) {
 	// An incomplete input keeps the engine's neutral no-op (nil product).
 	if factory(gatewaydispatch.HotQualityLifecycleInput{AccountID: "a1"}) != nil {
 		t.Fatal("an input without attempt id must fall back to the no-op lifecycle")
+	}
+}
+
+// W5（杂项修复）：hotquality port 输出必须是输入候选元素的直接重排（透传），
+// 不得经由 account.ID 查表重建——同 ID 双变体会被该查表坍缩成同一变体。
+// 当前 dispatch 管道同 ID 双变体不可达（group_accounts 主键
+// (group_id, account_id) 单组单行），此测试锁定透传语义防回归。
+func TestChainHotQualityPortPreservesCandidateIdentityThroughOrder(t *testing.T) {
+	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
+	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
+	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
+		RuntimeMode:        "standalone",
+		RuntimeStateDriver: "memory",
+	})
+	if err != nil {
+		t.Fatalf("create hot quality runtime: %v", err)
+	}
+	port := chainHotQualityPort{runtime: runtime}
+	accounts := []gatewaydispatch.AccountCandidate{
+		{ID: "low-tier", ProviderProtocolProfileID: "profile", Priority: 9},
+		{ID: "high-tier", ProviderProtocolProfileID: "profile", Priority: 1},
+		{ID: "mid-tier", ProviderProtocolProfileID: "profile", Priority: 5},
+	}
+	order, err := port.OrderAsync(context.Background(), gatewaydispatch.HotQualityOrderInput{
+		Accounts:        accounts,
+		Mode:            gatewaydispatch.HotQualityModeCostFirst,
+		SystemAccountID: "sys",
+		GroupID:         "grp",
+		RequestLane:     "text",
+		Model:           "gpt-4o",
+		RequestID:       "req-identity-1",
+	})
+	if err != nil {
+		t.Fatalf("OrderAsync: %v", err)
+	}
+	if len(order.Accounts) != len(accounts) {
+		t.Fatalf("ordered accounts = %d, want %d (数量必须守恒)", len(order.Accounts), len(accounts))
+	}
+	for index, ordered := range order.Accounts {
+		if !reflect.DeepEqual(ordered, accounts[index]) {
+			t.Fatalf("ordered[%d] = %+v, want 原输入元素 %+v（元素身份必须透传）", index, ordered, accounts[index])
+		}
 	}
 }
 

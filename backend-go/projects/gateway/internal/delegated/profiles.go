@@ -97,10 +97,10 @@ func (d *Deps) findProfileByID(ctx context.Context, id string) (*profile, error)
 // input is rejected by the route schema, only interior whitespace survives.
 func profileDisplayNameError(displayName string) error {
 	if displayName == "" {
-		return errors.New("用户名称不能为空")
+		return &businessError{message: "用户名称不能为空"}
 	}
 	if hasWhitespace(displayName) {
-		return errors.New("用户名称不能包含空格")
+		return &businessError{message: "用户名称不能包含空格"}
 	}
 	return nil
 }
@@ -147,7 +147,7 @@ func (d *Deps) updateProfileDisplayName(ctx context.Context, id, displayName str
 		return nil, err
 	}
 	if existing != "" {
-		return nil, errors.New("用户名称已存在")
+		return nil, &businessError{message: "用户名称已存在"}
 	}
 	now := d.nowISO()
 	if _, err := tx.ExecContext(ctx, d.bind(`UPDATE `+d.table("system_accounts")+`

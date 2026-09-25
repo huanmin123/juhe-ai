@@ -642,16 +642,14 @@ func (p chainHotQualityPort) OrderAsync(ctx context.Context, input gatewaydispat
 	if err != nil {
 		return gatewaydispatch.HotQualityOrder{}, err
 	}
-	byID := make(map[string]gatewaydispatch.AccountCandidate, len(input.Accounts))
-	for _, account := range input.Accounts {
-		byID[account.ID] = account
-	}
-	ordered := make([]gatewaydispatch.AccountCandidate, 0, len(result.Accounts))
-	for _, account := range result.Accounts {
-		if candidate, ok := byID[account.ID]; ok {
-			ordered = append(ordered, candidate)
-		}
-	}
+	// hotquality 的泛型结果元素就是输入 AccountCandidate 的重排（候选按
+	// runtime key 区分并去重），直接透传即可保持一一对应。历史上这里的
+	// byID[account.ID] 查表会把同 ID 双变体坍缩成同一变体；当前 dispatch
+	// 管道中同 ID 双变体不可达（group_accounts 主键 (group_id, account_id)
+	// 保证单组单行，模型过滤每账户至多一条），但透传写法天然消除该坍缩面，
+	// 未来引入 runtime key 变体时也无需再改。
+	ordered := make([]gatewaydispatch.AccountCandidate, len(result.Accounts))
+	copy(ordered, result.Accounts)
 	order := gatewaydispatch.HotQualityOrder{
 		Accounts:                       ordered,
 		DispatchIntent:                 result.DispatchIntent,

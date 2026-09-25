@@ -223,12 +223,13 @@ func (d *Deps) patchApiKey(w http.ResponseWriter, r *http.Request) {
 			}{apiKeyRevisionConflictMessage, revisionConflict.CurrentRevision})
 			return
 		}
-		message := errorText(err, "更新 API Key 失败")
-		if strings.Contains(message, "已存在") {
-			kernel.WriteError(w, http.StatusConflict, message)
+		var business *businessError
+		if errors.As(err, &business) {
+			writeBusinessMutationError(w, business.message)
 			return
 		}
-		kernel.WriteBadRequest(w, message)
+		// Unknown store fault: never echo driver/schema text.
+		kernel.WriteError(w, http.StatusInternalServerError, delegatedUnknownMutationErrorMessage)
 		return
 	}
 	if outcome == nil {
@@ -285,10 +286,10 @@ func (d *Deps) patchApiKeyTx(ctx context.Context, id, systemAccountID string, in
 	if input.HasName {
 		if input.Name != current.Name {
 			if current.Purpose == "chat" {
-				return nil, errors.New("AI 对话 API Key 不允许修改名称")
+				return nil, &businessError{message: "AI 对话 API Key 不允许修改名称"}
 			}
 			if current.IsDefault {
-				return nil, errors.New("默认 API Key 不允许修改名称")
+				return nil, &businessError{message: "默认 API Key 不允许修改名称"}
 			}
 			nextName = input.Name
 			outcome.ChangedFields = append(outcome.ChangedFields, "name")
@@ -299,7 +300,7 @@ func (d *Deps) patchApiKeyTx(ctx context.Context, id, systemAccountID string, in
 	}
 	if input.HasRouteStrategyID && input.RouteStrategyID != current.RouteStrategyID {
 		if current.IsDefault && current.Purpose != "chat" {
-			return nil, errors.New("默认 API Key 不允许更换策略路由")
+			return nil, &businessError{message: "默认 API Key 不允许更换策略路由"}
 		}
 		reference, err := d.selectableRouteStrategy(ctx, tx, current.SystemAccountID, input.RouteStrategyID)
 		if err != nil {
@@ -334,7 +335,7 @@ func (d *Deps) patchApiKeyTx(ctx context.Context, id, systemAccountID string, in
 	if _, err := tx.ExecContext(ctx, d.bind(`UPDATE `+d.table("api_keys")+` SET `+strings.Join(setClauses, ", ")+`
 		WHERE id = ? AND system_account_id = ? AND updated_at = ?`), args...); err != nil {
 		if isDuplicateKeyNameError(err) {
-			return nil, fmt.Errorf("API Key 名称已存在：%s", input.Name)
+			return nil, &businessError{message: "API Key 名称已存在：" + input.Name}
 		}
 		return nil, err
 	}
@@ -419,13 +420,13 @@ func (d *Deps) selectableRouteStrategy(ctx context.Context, tx *sql.Tx, systemAc
 		WHERE id = ? AND system_account_id = ? LIMIT 1`), strategyID, systemAccountID).
 		Scan(&row.id, &row.name, &row.mode, &row.status)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errors.New("API Key 绑定的策略路由不存在或不属于当前用户")
+		return nil, &businessError{message: "API Key 绑定的策略路由不存在或不属于当前用户"}
 	}
 	if err != nil {
 		return nil, err
 	}
 	if row.status != "active" {
-		return nil, errors.New("API Key 只能绑定启用状态的策略路由")
+		return nil, &businessError{message: "API Key 只能绑定启用状态的策略路由"}
 	}
 	return &row, nil
 }

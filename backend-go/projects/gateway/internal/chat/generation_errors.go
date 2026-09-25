@@ -62,10 +62,28 @@ func ClassifyChatGenerationErrorByCode(rawCode string) PublicChatGenerationError
 	return PublicChatGenerationError{Code: code, Message: publicChatGenerationMessages[code]}
 }
 
+// chatStorageFaultPattern fingerprints storage-layer faults inside an
+// already-sanitized diagnostic detail: driver/SQL prefixes (database/sql's
+// "sql: ...", modernc sqlite's "SQL logic error ...", "SQLITE_CONSTRAINT"),
+// SQLSTATE markers, constraint violations and missing-schema errors.
+//
+// Difference from the Node sanitization design (deliberate): Node's
+// sanitizeChatDiagnosticMessage only redacts secrets because Node routes
+// append failure copy they authored themselves, never raw driver values. The
+// Go pipeline classifies arbitrary error values that include store faults,
+// so a driver-type assertion (pgconn.PgError / sqlite.Error) is deliberately
+// replaced by these text fingerprints: both drivers always carry them in
+// Error(), wrapped or not, and importing driver packages into chat for a
+// type switch would add coupling without closing any gap the text misses.
+// When a fingerprint matches, the public message keeps only the generic copy.
+var chatStorageFaultPattern = regexp.MustCompile(`(?i)(\bsql\b|sqlstate|sqlite|constraint|no such table|no such column|duplicate key|syntax error|database is locked)`)
+
 // ClassifyUnknownChatGenerationError mirrors classifyChatGenerationError for
 // Go errors: network-style sentinel messages map to upstream_stream_failed,
 // everything else falls back to internal_generation_failed; the sanitized
-// diagnostic detail rides along in both cases.
+// diagnostic detail rides along in both cases, except storage-layer faults
+// whose sanitized text still fingerprints SQL/driver internals — those keep
+// only the generic copy.
 func ClassifyUnknownChatGenerationError(err error) PublicChatGenerationError {
 	raw := ""
 	if err != nil {
@@ -77,6 +95,9 @@ func ClassifyUnknownChatGenerationError(err error) PublicChatGenerationError {
 	fallback := publicChatGenerationMessages[GenErrInternal]
 	detail := sanitizeChatDiagnosticMessage(raw)
 	if detail == "" || detail == fallback {
+		return PublicChatGenerationError{Code: GenErrInternal, Message: fallback}
+	}
+	if chatStorageFaultPattern.MatchString(detail) {
 		return PublicChatGenerationError{Code: GenErrInternal, Message: fallback}
 	}
 	return PublicChatGenerationError{Code: GenErrInternal, Message: fallback + "；详情：" + detail}

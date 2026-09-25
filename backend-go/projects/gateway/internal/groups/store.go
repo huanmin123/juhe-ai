@@ -1633,6 +1633,13 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	if err != nil {
 		return nil, err
 	}
+	// Cascade the group's dependent rows inside the delete transaction. The
+	// resource_authorizations arm removes the group's grantee authorization
+	// rows (resource_type='group'); the sources arm removes their
+	// resource_authorization_sources children first (authorization_id →
+	// resource_authorizations.id) because the FK ON DELETE CASCADE is not
+	// reliably enforced on every SQLite connection (foreign_keys pragma).
+	// Without them the deleted group accumulates dangling authorization rows.
 	for _, statement := range []struct {
 		sql  string
 		args []any
@@ -1640,6 +1647,8 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 		{s.bind(`DELETE FROM ` + s.table("route_strategy_groups") + ` WHERE group_id = ?`), []any{id}},
 		{s.bind(`DELETE FROM ` + s.table("group_accounts") + ` WHERE group_id = ?`), []any{id}},
 		{s.bind(`DELETE FROM ` + s.table("group_authorization_settings") + ` WHERE group_id = ?`), []any{id}},
+		{s.bind(`DELETE FROM ` + s.table("resource_authorization_sources") + ` WHERE authorization_id IN (SELECT id FROM ` + s.table("resource_authorizations") + ` WHERE resource_type = 'group' AND resource_id = ?)`), []any{id}},
+		{s.bind(`DELETE FROM ` + s.table("resource_authorizations") + ` WHERE resource_type = 'group' AND resource_id = ?`), []any{id}},
 	} {
 		if _, err := tx.ExecContext(ctx, statement.sql, statement.args...); err != nil {
 			return nil, err

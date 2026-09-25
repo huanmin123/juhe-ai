@@ -10,6 +10,13 @@ const (
 	loginGuardWindow = 10 * time.Minute
 	loginGuardLock   = 15 * time.Minute
 	loginGuardLimit  = 10
+	// Capacity caps mirror the same package's CaptchaService eviction pattern
+	// (captchaMaxChallenges/captchaMaxIssueKeys): keys are client-controlled
+	// inputs, so Failed must not grow its maps without bound. A capped guard
+	// can only under-count failures for evicted obscure sources, never lock
+	// out a legitimate user whose entry is the one being kept.
+	loginGuardMaxIPKeys   = 1000
+	loginGuardMaxUserKeys = 1000
 )
 
 type loginAttempt struct {
@@ -66,6 +73,8 @@ func (g *LoginGuard) Failed(ip, username string) (bool, int, string, error) {
 	key := strings.ToLower(strings.TrimSpace(username))
 	userRecord := recordFailure(g.byUser[key], now)
 	g.byUser[key] = userRecord
+	evictLoginGuardKeys(g.byIP, ip, now, loginGuardMaxIPKeys)
+	evictLoginGuardKeys(g.byUser, key, now, loginGuardMaxUserKeys)
 	if blocked, retry := activeLock(ipRecord, now); blocked {
 		return true, retry, "尝试过于频繁，请稍后再试", nil
 	}
@@ -109,6 +118,50 @@ func activeLock(record loginAttempt, now time.Time) (bool, int) {
 		return false, 0
 	}
 	return true, maxIntCeilSeconds(record.lockedUntil.Sub(now))
+}
+
+// evictLoginGuardKeys bounds one guard map at max entries. Called after the
+// caller inserted/updated keep, which is never an eviction candidate. Entries
+// whose failure window fully expired and that hold no active lock are dropped
+// first; while the map is over capacity, the entry with the oldest most
+// recent failure is evicted (oldest-activity first, mirroring the deliberate
+// eviction order of CaptchaService).
+func evictLoginGuardKeys(records map[string]loginAttempt, keep string, now time.Time, max int) {
+	if len(records) <= max {
+		return
+	}
+	cutoff := now.Add(-loginGuardWindow)
+	expired := func(record loginAttempt) bool {
+		return !record.lockedUntil.After(now) &&
+			(len(record.timestamps) == 0 || record.timestamps[len(record.timestamps)-1].Before(cutoff))
+	}
+	for key, record := range records {
+		if key != keep && expired(record) {
+			delete(records, key)
+		}
+	}
+	for len(records) > max {
+		oldestKey := ""
+		var oldestActivity time.Time
+		for key, record := range records {
+			if key == keep {
+				continue
+			}
+			activity := time.Time{}
+			if len(record.timestamps) > 0 {
+				activity = record.timestamps[len(record.timestamps)-1]
+			}
+			if oldestKey == "" || activity.Before(oldestActivity) {
+				oldestKey, oldestActivity = key, activity
+			}
+		}
+		if oldestKey == "" {
+			// Only keep itself remains; deleting it would discard the one
+			// active attacker record, so leave the map one entry over cap.
+			return
+		}
+		delete(records, oldestKey)
+	}
 }
 
 func maxIntCeilSeconds(value time.Duration) int {

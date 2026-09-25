@@ -66,18 +66,33 @@ type SchedulerError struct {
 }
 
 type Scheduler struct {
-	Source    SchedulerSource
-	Executor  SchedulerExecutor
-	Interval  time.Duration
-	Batch     int
-	Kinds     []SchedulerKind
-	Now       func() time.Time
-	ErrorSink func(SchedulerError)
+	Source   SchedulerSource
+	Executor SchedulerExecutor
+	Interval time.Duration
+	Batch    int
+	// MaxConcurrency bounds how many claimed tasks execute at the same time
+	// inside one claimed batch (default 4). The claim implementations own
+	// lease and concurrency policy at the store level; this cap only stops
+	// one oversized batch from spawning unbounded probe goroutines. Claimed
+	// tasks beyond the cap wait for a slot instead of being re-claimed later,
+	// which keeps every task inside the lease it was claimed under.
+	MaxConcurrency int
+	Kinds          []SchedulerKind
+	Now            func() time.Time
+	ErrorSink      func(SchedulerError)
 }
 
+// schedulerMaxConcurrencyDefault is the process-wide default bound for one
+// owner's concurrent probe executions. Four concurrent full-profile probes
+// stay well inside a personal deployment's upstream and connection budget
+// while still letting unrelated accounts progress in parallel.
+const schedulerMaxConcurrencyDefault = 4
+
 // Run executes all configured scheduler kinds in one Gateway owner process.
-// It does not impose a low worker limit; claim implementations own lease and
-// concurrency policy. A failed task remains claimable for the next retry scan.
+// Concurrent task execution inside a claimed batch is bounded by
+// MaxConcurrency (default 4); claim implementations own the store-level lease
+// and concurrency policy. A failed task remains claimable for the next retry
+// scan.
 func (s *Scheduler) Run(ctx context.Context) error {
 	if s == nil || s.Source == nil || s.Executor == nil {
 		return errors.New("J3b scheduler is not initialized")
@@ -89,6 +104,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	batch := s.Batch
 	if batch <= 0 {
 		batch = 1000
+	}
+	maxConcurrency := s.MaxConcurrency
+	if maxConcurrency <= 0 {
+		maxConcurrency = schedulerMaxConcurrencyDefault
 	}
 	kinds := s.Kinds
 	if len(kinds) == 0 {
@@ -121,7 +140,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				report(SchedulerError{Operation: SchedulerErrorClaim, Kind: kind, Err: err})
 				continue
 			}
-			executeSchedulerBatch(ctx, s.Executor, s.Source, kind, tasks, report)
+			executeSchedulerBatch(ctx, s.Executor, s.Source, kind, tasks, report, maxConcurrency)
 		}
 	}
 	runCycle()
@@ -137,18 +156,25 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// executeSchedulerBatch runs independently leased tasks concurrently. Each
-// task owns its own completion/failure fence; one slow or failed probe does
-// not serialize unrelated work in the same claimed batch. Execution errors
-// are persisted through lifecycle.Fail for retry. Every error is emitted to
-// report, but no single leased task is allowed to terminate the owner loop.
-// report may be called concurrently because sibling tasks run concurrently.
-func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, source SchedulerSource, kind SchedulerKind, tasks []ScheduleTask, report func(SchedulerError)) {
+// executeSchedulerBatch runs independently leased tasks concurrently, bounded
+// by maxConcurrency. Each task owns its own completion/failure fence; one slow
+// or failed probe does not serialize unrelated work until the cap is reached,
+// and tasks beyond the cap wait for a slot inside the lease they were claimed
+// under (scheduled runs are additionally bounded by RunBudget, health retries
+// are pure durable projections). Execution errors are persisted through
+// lifecycle.Fail for retry. Every error is emitted to report, but no single
+// leased task is allowed to terminate the owner loop. report may be called
+// concurrently because sibling tasks run concurrently.
+func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, source SchedulerSource, kind SchedulerKind, tasks []ScheduleTask, report func(SchedulerError), maxConcurrency int) {
 	if len(tasks) == 0 {
 		return
 	}
+	if maxConcurrency <= 0 {
+		maxConcurrency = schedulerMaxConcurrencyDefault
+	}
 	lifecycle, hasLifecycle := source.(SchedulerLifecycle)
 	var wg sync.WaitGroup
+	slots := make(chan struct{}, maxConcurrency)
 	recordErr := func(operation SchedulerErrorOperation, task ScheduleTask, err error) {
 		if err == nil {
 			return
@@ -164,12 +190,27 @@ func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, sour
 		}
 		wg.Add(1)
 		go func() {
-			// A panicking task must neither kill the process nor skip its
-			// failure fence: recover first (LIFO), then release the batch.
-			defer safego.Handle("modelcheckowner.executeSchedulerBatch.task", func(recovered any) {
-				recordErr(SchedulerErrorExecute, task, fmt.Errorf("任务执行异常终止: %v", recovered))
-			})
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			defer wg.Done()
+			// Registered last so LIFO unwinding recovers (and writes the
+			// durable failure fence below) before the batch WaitGroup and
+			// slot are released: callers of wg.Wait never observe a task
+			// whose terminal state is still pending.
+			defer safego.Handle("modelcheckowner.executeSchedulerBatch.task", func(recovered any) {
+				panicErr := fmt.Errorf("任务执行异常终止: %v", recovered)
+				recordErr(SchedulerErrorExecute, task, panicErr)
+				// The panic unwound before the normal settlement below could
+				// run, so the durable failure fence is written here.
+				// lifecycle.Fail is fenced by owner and fence token and the
+				// normal path never runs after a panic, so the terminal state
+				// cannot be written twice.
+				if hasLifecycle {
+					if releaseErr := lifecycle.Fail(ctx, task, panicErr); releaseErr != nil {
+						recordErr(SchedulerErrorFail, task, errors.Join(panicErr, releaseErr))
+					}
+				}
+			})
 			execErr := executor.Execute(ctx, task)
 			if hasLifecycle {
 				if execErr != nil {

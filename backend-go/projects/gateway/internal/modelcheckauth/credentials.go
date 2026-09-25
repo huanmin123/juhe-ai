@@ -25,6 +25,17 @@ type VerifiedCredentials struct {
 	CredentialRevision string
 }
 
+// verifySystemAccountPassword is the PBKDF2 checker used for both the real
+// row and the missing-user dummy arm below. Package-level so tests can count
+// calls without touching the Authenticator wiring.
+var verifySystemAccountPassword = verifyNodePBKDF2Password
+
+// dummySystemAccountPasswordHash is a well-formed Node-format hash carrying
+// the production iteration count (120000, sha512), generated the same way as
+// the stored hashes. The missing-user arm runs the checker against it so both
+// arms cost the same PBKDF2 work.
+const dummySystemAccountPasswordHash = "pbkdf2$sha512$120000$MDEyMzQ1Njc4OWFiY2RlZg$MB16ie0MUIkgM1Xio7iCM8x9uCDqJJf5rkQ297w84fg"
+
 // VerifySystemAccountCredentials directly verifies the existing Node PBKDF2
 // representation. Node passes the base64url salt text itself to PBKDF2, so it
 // must be treated as UTF-8 bytes rather than decoded before derivation.
@@ -37,11 +48,17 @@ func (a *Authenticator) VerifySystemAccountCredentials(ctx context.Context, user
 	query := `SELECT id,username,COALESCE(display_name,''),role,status,password_hash,must_change_password FROM ` + a.table("system_accounts") + ` WHERE lower(username)=lower(?) LIMIT 1`
 	if err := a.db.QueryRowContext(ctx, a.bind(query), username).Scan(&verified.SystemAccountID, &verified.Username, &verified.DisplayName, &verified.Role, &status, &passwordHash, &verified.MustChangePassword); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			// Timing-enumeration guard: the existing-user arm runs a full
+			// PBKDF2 verification, so a missing username must cost the same
+			// work or response latency reveals which usernames exist. Run the
+			// checker once against the fixed dummy hash and discard the
+			// result; the response stays unverified either way.
+			verifySystemAccountPassword(password, dummySystemAccountPasswordHash)
 			return VerifiedCredentials{}, false, nil
 		}
 		return VerifiedCredentials{}, false, err
 	}
-	if status != "active" || !verifyNodePBKDF2Password(password, passwordHash) {
+	if status != "active" || !verifySystemAccountPassword(password, passwordHash) {
 		return VerifiedCredentials{}, false, nil
 	}
 	verified.CredentialRevision = hashString(passwordHash)

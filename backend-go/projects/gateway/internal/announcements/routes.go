@@ -742,8 +742,12 @@ func mountGuardedCreate(d *authsys.Deps, store *Store, sink authsys.OperationLog
 				},
 			}, r)
 		}
+		// mirrors res.status(201).json(ok(...)): headers must be set before
+		// WriteHeader, or the 201 loses its Content-Type (WriteOK would set
+		// it too late).
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusCreated)
-		kernel.WriteOK(w, receipt, "")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": receipt})
 	})))
 }
 

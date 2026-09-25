@@ -297,30 +297,40 @@ func TestWFProjectorDrainLifecycle(t *testing.T) {
 	}
 }
 
-func TestWFProjectorDrainRejectionFailsClosed(t *testing.T) {
+func TestWFProjectorDrainRejectionSkipsPoisonRow(t *testing.T) {
 	store := wfOpenJobsStore(t)
 	business := wfOpenBusinessDB(t)
 	projector := wfNewProjector(t, store, business)
 	ctx := context.Background()
 
-	// items 为空的 committed outcome 必须被投影层拒绝且不推进 cursor。
+	// W5 毒丸修复：items 为空的 committed outcome 是确定性 rejected——
+	// receipt 落库后同事务越过游标，Drain 不再永久 fail-closed 重放。
 	committer := newWFCommitter(t, store)
 	outcome := committer.commitFunc("p-1", wfProjRevision, func(value *Outcome) {
 		value.Items = nil
 		value.OverallStatus = OverallUnknown
 	})
 	count, err := projector.Drain(ctx)
-	if err == nil || !strings.Contains(err.Error(), "rejected outcome") {
-		t.Fatalf("拒绝必须 fail closed count=%d err=%v", count, err)
+	if err != nil || count != 1 {
+		t.Fatalf("确定性拒绝必须越过毒丸行 count=%d err=%v", count, err)
 	}
 	var disposition, reason string
 	if err := business.QueryRow(`SELECT disposition, reason FROM proxy_latency_projection_receipts WHERE outcome_id=?`, outcome.OutcomeID).
 		Scan(&disposition, &reason); err != nil || disposition != string(ProjectionRejected) || reason != "outcome_items_missing" {
 		t.Fatalf("拒绝 receipt=%s/%s err=%v", disposition, reason, err)
 	}
-	var cursorCount int
-	if err := business.QueryRow(`SELECT COUNT(*) FROM proxy_latency_projection_cursors`).Scan(&cursorCount); err != nil || cursorCount != 0 {
-		t.Fatalf("拒绝时不得推进 cursor count=%d err=%v", cursorCount, err)
+	var storedAt, outcomeID sql.NullString
+	if err := business.QueryRow(`SELECT stored_at, outcome_id FROM proxy_latency_projection_cursors WHERE consumer_key='wf-consumer'`).
+		Scan(&storedAt, &outcomeID); err != nil || !outcomeID.Valid || outcomeID.String != outcome.OutcomeID {
+		t.Fatalf("rejected 行必须推进 cursor=%v/%v err=%v", storedAt, outcomeID, err)
+	}
+	if got := projector.RejectedSkippedCount(); got != 1 {
+		t.Fatalf("RejectedSkippedCount=%d want 1", got)
+	}
+	// 游标已越过：再次 Drain 不再重放毒丸行。
+	count, err = projector.Drain(ctx)
+	if err != nil || count != 0 {
+		t.Fatalf("越过后重放 Drain count=%d err=%v", count, err)
 	}
 }
 

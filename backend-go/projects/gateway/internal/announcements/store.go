@@ -32,6 +32,15 @@ var statuses = map[string]bool{"draft": true, "published": true, "archived": tru
 
 const publicLimit = 30
 
+// announcementInstantLayout renders instants the way Node toISOString() does:
+// fixed-width UTC milliseconds (the systemteams canonicalInstantLayout form).
+// It replaces time.RFC3339Nano for every written timestamp: RFC3339Nano drops
+// trailing zeros, so '...000Z' rows shrink to '...Z' and misorder against
+// millisecond rows under the lexicographic ORDER BY updated_at DESC key.
+// time.RFC3339Nano stays as the PARSE layout so legacy variable-width rows
+// still load; new writes converge the column onto the fixed width.
+const announcementInstantLayout = "2006-01-02T15:04:05.000Z"
+
 // Store is the dual-mode announcement persistence.
 type Store struct {
 	db   *sql.DB
@@ -191,7 +200,7 @@ func (s *Store) MarkRead(ctx context.Context, systemAccountID string, announceme
 			break
 		}
 	}
-	readAt := s.now().UTC().Format(time.RFC3339Nano)
+	readAt := s.now().UTC().Truncate(time.Millisecond).Format(announcementInstantLayout)
 	if len(ids) == 0 {
 		return ReadResult{ReadAt: readAt}, nil
 	}
@@ -436,15 +445,18 @@ func normalizeStatus(value *string, fallback string) (string, error) {
 }
 
 func nextRevision(current string, now time.Time) string {
+	// Parse keeps time.RFC3339Nano so legacy variable-width revisions still
+	// produce a strictly later fixed-width revision (the +1ms floor survives
+	// the fixed-width truncation: a legacy sub-ms fraction never rounds up).
 	parsed, err := time.Parse(time.RFC3339Nano, current)
 	if err != nil {
-		return now.UTC().Format(time.RFC3339Nano)
+		return now.UTC().Truncate(time.Millisecond).Format(announcementInstantLayout)
 	}
 	floor := parsed.Add(time.Millisecond)
 	if now.Before(floor) {
-		return floor.UTC().Format(time.RFC3339Nano)
+		return floor.UTC().Format(announcementInstantLayout)
 	}
-	return now.UTC().Format(time.RFC3339Nano)
+	return now.UTC().Truncate(time.Millisecond).Format(announcementInstantLayout)
 }
 
 // MutationReceipt mirrors AnnouncementMutationReceipt.
@@ -478,7 +490,7 @@ func (s *Store) Create(ctx context.Context, input MutationInput, actorSystemAcco
 	if err != nil {
 		return MutationReceipt{}, err
 	}
-	revision := s.now().UTC().Format(time.RFC3339Nano)
+	revision := s.now().UTC().Truncate(time.Millisecond).Format(announcementInstantLayout)
 	id := s.newI("ann")
 	// announcement-management-write.repository.ts writes published_at =
 	// revision only for published creates and never puts booleans into the

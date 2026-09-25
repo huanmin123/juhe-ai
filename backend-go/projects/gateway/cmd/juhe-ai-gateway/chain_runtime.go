@@ -496,7 +496,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 			services.Close()
 			return nil, fmt.Errorf("create gemini interaction affinity state: %w", affinityErr)
 		}
-		services.Affinity = gatewaygemini.NewInteractionAffinity(quotaRuntimeStateBridge{store: affinityState, storeName: "gateway-gemini-interaction-affinity"})
+		services.Affinity = gatewaygemini.NewInteractionAffinity(quotaRuntimeStateBridge{store: affinityState, storeName: "gateway-gemini-interaction-affinity"}).WithLogger(slog.Default())
 	} else {
 		// Node runtimeStateDriver !== 'redis' fallback: the affinity service
 		// keeps an in-process TTL cache (documented NewInteractionAffinity

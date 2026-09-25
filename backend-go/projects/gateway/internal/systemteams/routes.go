@@ -1,6 +1,7 @@
 package systemteams
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -169,6 +170,9 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	access := scopeFor(r, auth, selfOnly)
 	page := parseIntOr(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 20)
+	// Metadata mirrors the store-normalized values (groups ListPage pattern):
+	// echoing the raw query let pageSize=1000 report itself verbatim.
+	page, pageSize = normalizeListWindow(page, pageSize)
 	items, hasMore, err := d.Store.ListPage(r.Context(), access, page, pageSize, strings.TrimSpace(r.URL.Query().Get("keyword")))
 	if err != nil {
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
@@ -279,8 +283,16 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 			},
 		}, r)
 	}
+	writeCreatedWithEnvelope(w, item)
+}
+
+// writeCreatedWithEnvelope mirrors res.status(201).json(ok({...})) and the
+// delegated route family helper: headers must be set before WriteHeader, or
+// the 201 loses its Content-Type (WriteOK would set it too late).
+func writeCreatedWithEnvelope(w http.ResponseWriter, data any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusCreated)
-	kernel.WriteOK(w, item, "")
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 }
 
 // writeMutationError surfaces Node's route-catch contract

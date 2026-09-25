@@ -69,6 +69,14 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// 缺陷1修复：background_task_runs / background_job_leases 的保留清理句柄。
+	// PG 模式两表在 juhe_stats schema（与 stats 同池）；SQLite 模式在独立的
+	// task-runs 库（stats 库没有这两张表，不能并入 stats 清单）。句柄进
+	// openDual 统一关闭链。
+	taskRunsRetentionDB, err := openDual("JUHE_AI_POSTGRES_URL", a.config.TaskRunsSQLitePath, "retention-task-runs", "juhe_stats")
+	if err != nil {
+		return err
+	}
 
 	shards := cleanuprepo.NewShardStore(a.config.UsageShardRoot)
 
@@ -89,6 +97,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	family.retentionSettings = retentionSettings
 
 	family.retentionStatsStore = statsRetention
+	family.taskRunsRetention = &cleanuprepo.TaskRunsRetentionStore{DB: taskRunsRetentionDB}
 	recordCleanup := &cleanuprepo.RecordCleanupStore{
 		Dataset:        dataset,
 		Stats:          stats,
@@ -229,6 +238,12 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	}
 
 	a.scheduleWiredJob("data-retention-cleanup", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		// 缺陷1修复：先执行 jobs 运行历史/租约保留清理，再跑既有数据保留任务；
+		// 两半共用同一调度节拍（fixedDelay 10min、storage-maintenance lane、
+		// 5min 超时与失败退避）。
+		if err := family.cleanupTaskRunsRetention(taskCtx); err != nil {
+			return jobsched.TaskResult{}, err
+		}
 		if _, err := dataRetentionJob.Run(taskCtx); err != nil {
 			return jobsched.TaskResult{}, err
 		}
@@ -337,6 +352,9 @@ type retentionFamily struct {
 	usageTimezone       retention.TimezoneSource
 	retentionSettings   *retentionSettingsRuntime
 	retentionStatsStore *cleanuprepo.StatsRetentionStore
+	// taskRunsRetention 是 background_task_runs / background_job_leases 的
+	// 保留清理仓储（缺陷1修复；随 data-retention-cleanup 节拍执行）。
+	taskRunsRetention *cleanuprepo.TaskRunsRetentionStore
 
 	recordCleanup *cleanuprepo.RecordCleanupStore
 	codex         *cleanuprepo.CodexContextStore
@@ -373,6 +391,70 @@ func (f *retentionFamily) runMaintenanceSnapshotUpserts(ctx context.Context, job
 
 func (f *retentionFamily) retentionStats() *cleanuprepo.StatsRetentionStore {
 	return f.retentionStatsStore
+}
+
+// taskRunsRetentionDays 是 background_task_runs / background_job_leases 的
+// 滚动保留窗口。此前两表全仓无删除路径（PG 模式 GoWired 任务每轮写运行
+// 历史，1s 投影任务日增 8 万+ 行，表无限膨胀）。两表无聚合游标依赖，不挂
+// 游标放行门；gateway 侧 systemmetrics 只读近期样本，30 天窗口远超其消费面。
+const taskRunsRetentionDays = 30
+
+// taskRunsRetentionBatchSize / taskRunsRetentionMaxPasses 是单轮清理的批次
+// 上限：每批 5000 行、最多 200 批（单轮上限 100 万行），受任务 5min 超时与
+// ctx 取消约束；未清完的行由下一轮 data-retention-cleanup 继续收敛。
+const (
+	taskRunsRetentionBatchSize = 5000
+	taskRunsRetentionMaxPasses = 200
+)
+
+// cleanupTaskRunsRetention 执行一轮 jobs 运行历史/租约保留清理：
+// background_task_runs 按 created_at、background_job_leases 按 lease_until，
+// 共用同一 30 天滚动窗口，最旧优先、受批次上限约束。失败让本轮任务以错误
+// 收场（走既有失败退避），不静默降级。
+func (f *retentionFamily) cleanupTaskRunsRetention(ctx context.Context) error {
+	store := f.taskRunsRetention
+	if store == nil {
+		return nil
+	}
+	// RFC3339 毫秒 UTC 文本，与 taskruns.FormatInstant 的列格式一致
+	// （TEXT 列按字典序比较，同格式字符串与时间序等价）。
+	cutoff := time.Now().UTC().AddDate(0, 0, -taskRunsRetentionDays).Format("2006-01-02T15:04:05.000Z07:00")
+	var deletedRuns, deletedLeases int64
+	for pass := 0; pass < taskRunsRetentionMaxPasses; pass++ {
+		if ctx.Err() != nil {
+			break
+		}
+		deleted, err := store.CleanupRunsBefore(ctx, cutoff, taskRunsRetentionBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 background_task_runs 失败: %w", err)
+		}
+		deletedRuns += deleted
+		if deleted < taskRunsRetentionBatchSize {
+			break
+		}
+	}
+	for pass := 0; pass < taskRunsRetentionMaxPasses; pass++ {
+		if ctx.Err() != nil {
+			break
+		}
+		deleted, err := store.CleanupExpiredLeasesBefore(ctx, cutoff, taskRunsRetentionBatchSize)
+		if err != nil {
+			return fmt.Errorf("清理 background_job_leases 失败: %w", err)
+		}
+		deletedLeases += deleted
+		if deleted < taskRunsRetentionBatchSize {
+			break
+		}
+	}
+	if deletedRuns > 0 || deletedLeases > 0 {
+		f.assembly.logger.Info("后台任务运行历史保留清理完成",
+			"event", "background_task_runs_retention_cleanup",
+			"deletedTaskRuns", deletedRuns,
+			"deletedLeases", deletedLeases,
+			"retentionDays", taskRunsRetentionDays,
+			"cutoff", cutoff)
+	}
+	return nil
 }
 
 // retentionSettingsRuntime 是数据保留组合根的 system_settings 读模型

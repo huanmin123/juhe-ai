@@ -529,9 +529,13 @@ func TestW11FHelperBranches(t *testing.T) {
 	if stateFieldValue(state, "content") != "c" || stateFieldValue(state, "publishedAt") != "p" {
 		t.Fatal("stateFieldValue values drift")
 	}
-	// nextRevision 非法当前版本 → 以 now 为准。
-	if got := nextRevision("not-a-time", time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)); got != "2024-01-02T03:04:05Z" {
+	// nextRevision 非法当前版本 → 以 now 为准（定宽毫秒，非 RFC3339Nano 变长）。
+	if got := nextRevision("not-a-time", time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)); got != "2024-01-02T03:04:05.000Z" {
 		t.Fatalf("nextRevision bad = %q", got)
+	}
+	// 旧变长 revision + now 落在同毫秒 → floor 兜底仍产出定宽更晚值。
+	if got := nextRevision("2024-01-02T03:04:05.123456789Z", time.Date(2024, 1, 2, 3, 4, 5, 123000000, time.UTC)); got != "2024-01-02T03:04:05.124Z" {
+		t.Fatalf("nextRevision legacy floor = %q", got)
 	}
 	// normalizeLevel / normalizeStatus 非法值。
 	bad := "bogus"

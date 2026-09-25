@@ -264,19 +264,6 @@ func requireRole(allowedRole, message string) func(http.Handler) http.Handler {
 	}
 }
 
-// ForceSelfAccessScope mirrors forceSelfAccessScope: self routes pin the
-// access scope to the caller.
-func ForceSelfAccessScope(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func (d *Deps) developmentAutoLogin() *AuthContext {
 	if d.DevAutoLoginUsername == "" {
 		return nil

@@ -812,19 +812,6 @@ func TestWlAppPureHelpers(t *testing.T) {
 			t.Fatal("secretHash 必须是 sha256 hex")
 		}
 	})
-	t.Run("ForceSelfAccessScope", func(t *testing.T) {
-		recorder := newWlRecorder()
-		ForceSelfAccessScope(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-		if recorder.Code != http.StatusUnauthorized {
-			t.Fatalf("未登录 code=%d", recorder.Code)
-		}
-		passed := false
-		request := withWlAuth(httptest.NewRequest(http.MethodGet, "/", nil), "a", "u", "admin", false)
-		ForceSelfAccessScope(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { passed = true })).ServeHTTP(newWlRecorder(), request)
-		if !passed {
-			t.Fatal("已登录必须放行")
-		}
-	})
 	t.Run("sameSiteMode", func(t *testing.T) {
 		if sameSiteMode("strict") != http.SameSiteStrictMode || sameSiteMode("NONE") != http.SameSiteNoneMode || sameSiteMode("other") != http.SameSiteLaxMode {
 			t.Fatal("sameSiteMode 映射错误")

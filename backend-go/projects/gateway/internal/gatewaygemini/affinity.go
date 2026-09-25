@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -90,6 +91,9 @@ type InteractionAffinity struct {
 	store  AffinityStateStore
 	now    func() time.Time
 	memory *affinityMemoryCache
+	// logger 只用于读失败的可观测性：读面保持"降级为未命中"的行为
+	// （对齐 gatewaysession 亲和读失败 warn + 跳过排序），不改变契约。
+	logger *slog.Logger
 }
 
 // NewInteractionAffinity 构造亲和服务：store 为 nil 时退化为进程内
@@ -105,6 +109,12 @@ func NewInteractionAffinity(store AffinityStateStore) *InteractionAffinity {
 // WithNowFunc 覆盖时钟（测试用）。
 func (a *InteractionAffinity) WithNowFunc(now func() time.Time) *InteractionAffinity {
 	a.now = now
+	return a
+}
+
+// WithLogger 注入读失败 warn 日志器（nil 恢复静默）。行为仍为降级未命中。
+func (a *InteractionAffinity) WithLogger(logger *slog.Logger) *InteractionAffinity {
+	a.logger = logger
 	return a
 }
 
@@ -198,6 +208,8 @@ func IsInteractionCreateRequest(r *http.Request) bool {
 }
 
 // Resolve 对齐 resolveGeminiInteractionAffinityAsync：命中即续期。
+// 存储读失败时降级为未命中（读面降级方向与 gatewaysession 一致），
+// 但保留 warn 日志以便观测存储异常。
 func (a *InteractionAffinity) Resolve(ctx context.Context, r *http.Request, scope AffinityScope) (AffinityBinding, bool, error) {
 	interactionID := ResourceIDFromRequest(r)
 	if interactionID == "" {
@@ -206,6 +218,7 @@ func (a *InteractionAffinity) Resolve(ctx context.Context, r *http.Request, scop
 	key := affinityKey(scope, interactionID)
 	binding, found, err := a.getBinding(ctx, key)
 	if err != nil {
+		a.warnReadFailure(err, key)
 		return AffinityBinding{}, false, nil
 	}
 	if !isValidBinding(binding, found, interactionID) {
@@ -217,6 +230,16 @@ func (a *InteractionAffinity) Resolve(ctx context.Context, r *http.Request, scop
 	// 对齐 resolve 内的 await setBinding(...)：命中续期；续期失败不改变命中结果。
 	_ = a.setBinding(ctx, key, binding)
 	return binding, true, nil
+}
+
+// warnReadFailure 记录亲和读失败的 warn 日志；key 是 scope+interactionID 的
+// sha256 摘要，不含原始标识。UpdateAfterSuccess 的 refresh 路径经由 Resolve，
+// 因此同样获得该日志。
+func (a *InteractionAffinity) warnReadFailure(err error, key string) {
+	if a.logger == nil {
+		return
+	}
+	a.logger.Warn("gemini_interaction_affinity_read_failed", "error", err, "key", key)
 }
 
 // UpdateAfterSuccessInput 对齐 updateGeminiInteractionAffinityAfterSuccessAsync 的入参。
@@ -247,6 +270,8 @@ func (a *InteractionAffinity) UpdateAfterSuccess(ctx context.Context, input Upda
 	if strings.ToUpper(input.Request.Method) == "DELETE" {
 		return a.Delete(ctx, interactionID, input.Scope)
 	}
+	// Resolve 自身把读失败降级为未命中并记 warn 日志；这里的 err 分支是
+	// 防御性兜底（当前 Resolve 恒返回 nil err）。
 	_, found, err := a.Resolve(ctx, input.Request, input.Scope)
 	if err != nil {
 		return AffinityMutationResult{Action: AffinityActionNone}, nil
