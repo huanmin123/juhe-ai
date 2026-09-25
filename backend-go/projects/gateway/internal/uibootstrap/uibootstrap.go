@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
@@ -141,6 +142,26 @@ func (d *Deps) table(name string) string {
 	return name
 }
 
+// bind 把 `?` 占位符改写为 PG 的 $n（ISSUE-005 同类）：本包查询按 Node
+// 语义使用 `?`，SQLite 原生支持，直达 pgx 则触发 42601 语法错误
+// （2026-09-25 生产 my-ui-bootstrap 500，failureReason 定位）。
+func (d *Deps) bind(query string) string {
+	if !d.PGDialect {
+		return query
+	}
+	var out strings.Builder
+	index := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			out.WriteString("$" + strconv.Itoa(index))
+			index++
+		} else {
+			out.WriteByte(query[i])
+		}
+	}
+	return out.String()
+}
+
 // findUserReferenceData mirrors findUserReferenceDataForSystemAccountAsync.
 func (d *Deps) findUserReferenceData(ctx context.Context, systemAccountID string) (*userReferenceData, error) {
 	owner := strings.TrimSpace(systemAccountID)
@@ -188,7 +209,7 @@ func (d *Deps) findUserReferenceData(ctx context.Context, systemAccountID string
 			CASE WHEN default_routes.route_strategy_status = 'active' THEN 0 ELSE 1 END ASC,
 			default_routes.route_strategy_created_at ASC,
 			default_routes.route_strategy_id ASC`
-	rows, err := d.DB.QueryContext(ctx, query, owner)
+	rows, err := d.DB.QueryContext(ctx, d.bind(query), owner)
 	if err != nil {
 		return nil, err
 	}
