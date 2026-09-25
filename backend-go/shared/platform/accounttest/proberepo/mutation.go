@@ -104,7 +104,7 @@ func (s *Store) MarkPrecheckTemporaryUnavailable(ctx context.Context, input acco
       AND dispatch_revision = ?
       AND status = ?
   `, s.table("accounts"))
-	result, err := s.db.ExecContext(ctx, query,
+	result, err := s.db.ExecContext(ctx, s.bind(query),
 		input.Reason, s.timeParam(s.now()),
 		input.AccountID, input.ExpectedDispatchRevision, input.ExpectedStatus)
 	if err != nil {
@@ -140,7 +140,7 @@ func (s *Store) loadPrecheckState(ctx context.Context, accountID string) (*prech
 		updatedAt           sql.NullString
 		lastUsedAt          sql.NullString
 	)
-	if err := s.db.QueryRowContext(ctx, query, accountID).
+	if err := s.db.QueryRowContext(ctx, s.bind(query), accountID).
 		Scan(&status, &dispatchRevision, &lastHealthSuccessAt, &updatedAt, &lastUsedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -188,7 +188,7 @@ func (s *Store) ListDueForProbe(ctx context.Context, limit int) ([]accountqualit
     ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
     LIMIT ?
   `, s.table("account_api_key_runtime_states"), s.table("accounts"))
-	rows, err := s.db.QueryContext(ctx, query, s.instantParam(now), s.instantParam(now), s.instantParam(now), probeCandidateScanLimit)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), s.instantParam(now), s.instantParam(now), s.instantParam(now), probeCandidateScanLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +283,7 @@ func (s *Store) claimProbeCandidates(ctx context.Context, candidates []accountqu
         AND next_probe_at = ?
         AND (probe_claimed_until IS NULL OR probe_claimed_until <= ?)
     `, s.table("account_api_key_runtime_states"))
-		result, err := s.db.ExecContext(ctx, query,
+		result, err := s.db.ExecContext(ctx, s.bind(query),
 			token, claimedUntil,
 			candidate.AccountID, candidate.KeyFingerprint, candidate.Status, candidate.NextProbeAt, now)
 		if err != nil {
@@ -349,7 +349,7 @@ func (s *Store) RecordKeySuccess(ctx context.Context, input accountquality.KeySu
 		}
 		params = append(params, fence.params...)
 		params = append(params, s.configFenceParams(input.Expected.AccountConfigRevision)...)
-		result, err := s.db.ExecContext(ctx, query, params...)
+		result, err := s.db.ExecContext(ctx, s.bind(query), params...)
 		if err != nil {
 			return accountquality.KeyMutationResult{}, err
 		}
@@ -385,7 +385,7 @@ func (s *Store) RecordKeySuccess(ctx context.Context, input accountquality.KeySu
     WHERE account_api_key_runtime_states.status NOT IN ('disabled', 'error')
       AND (account_api_key_runtime_states.last_attempt_at IS NULL OR account_api_key_runtime_states.last_attempt_at <= excluded.last_attempt_at)
   `, s.table("account_api_key_runtime_states"))
-	result, err := s.db.ExecContext(ctx, query,
+	result, err := s.db.ExecContext(ctx, s.bind(query),
 		"account_api_key_runtime_state_"+randomToken(16), target.systemAccountID, target.accountID, target.keyFingerprint, target.keyIndex,
 		observedAt, observedAt, now, now)
 	if err != nil {
@@ -501,7 +501,7 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 		params = append(params, genericParams...)
 		params = append(params, fence.params...)
 		params = append(params, s.configFenceParams(input.Expected.AccountConfigRevision)...)
-		result, err := s.db.ExecContext(ctx, query, params...)
+		result, err := s.db.ExecContext(ctx, s.bind(query), params...)
 		if err != nil {
 			return accountquality.KeyMutationResult{}, err
 		}
@@ -517,7 +517,7 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
     )
     VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, s.table("account_api_key_runtime_states"))
-	result, err := s.db.ExecContext(ctx, query,
+	result, err := s.db.ExecContext(ctx, s.bind(query),
 		"account_api_key_runtime_state_"+randomToken(16), target.systemAccountID, target.accountID, target.keyFingerprint, target.keyIndex,
 		status, persistedCooldownUntil, nextProbeAt, nextBackoff, recoveryStartedAt,
 		observedAt, observedAt, errorCode, errorMessage, normalizeTraceID(input.TraceID), now, now)
@@ -560,7 +560,7 @@ func (s *Store) DeferKeyProbe(ctx context.Context, input accountquality.KeyDefer
 	params := []any{nextProbeAt, observedAt, now, target.accountID, target.keyFingerprint, observedAt}
 	params = append(params, fence.params...)
 	params = append(params, s.configFenceParams(input.Expected.AccountConfigRevision)...)
-	result, err := s.db.ExecContext(ctx, query, params...)
+	result, err := s.db.ExecContext(ctx, s.bind(query), params...)
 	if err != nil {
 		return accountquality.KeyMutationResult{}, err
 	}
@@ -703,7 +703,7 @@ func (s *Store) loadRuntimeRow(ctx context.Context, accountID, keyFingerprint st
 		lastErrorCode     sql.NullString
 		probeBackoff      sql.NullInt64
 	)
-	if err := s.db.QueryRowContext(ctx, query, accountID, keyFingerprint).
+	if err := s.db.QueryRowContext(ctx, s.bind(query), accountID, keyFingerprint).
 		Scan(&status, &recoveryStartedAt, &lastErrorCode, &probeBackoff); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil

@@ -47,7 +47,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
     )`,
 	}
 	for _, statement := range statements {
-		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+		if _, err := s.db.ExecContext(ctx, s.bind(statement)); err != nil {
 			return fmt.Errorf("初始化探针族 schema 失败: %w", err)
 		}
 	}
@@ -60,7 +60,7 @@ func (s *Store) ValidateCoreTables(ctx context.Context) error {
 	for _, table := range tables {
 		query := "SELECT COUNT(*) FROM " + s.table(table) + " WHERE 1 = 0"
 		var count int
-		if err := s.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		if err := s.db.QueryRowContext(ctx, s.bind(query)).Scan(&count); err != nil {
 			return fmt.Errorf("业务库缺少核心表 %s: %w", table, err)
 		}
 	}

@@ -115,7 +115,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		authzResourceOwner                   sql.NullString
 		boundGroupID                         sql.NullString
 	)
-	row := s.db.QueryRowContext(ctx, query, accountID)
+	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &schedulable,
 		&providerCode, &protocolProfile, &protocolCode, &protocolVersion, &clientCompatibility,
 		&healthModel, &healthMode, &expiresAt, &cooldownUntil,
@@ -221,7 +221,7 @@ func ternary(condition bool, whenTrue, whenFalse string) string {
 
 func (s *Store) loadSupportedModels(ctx context.Context, accountID string) ([]string, error) {
 	query := fmt.Sprintf(`SELECT model FROM %s WHERE account_id = ? ORDER BY created_at ASC, model ASC`, s.table("account_supported_models"))
-	rows, err := s.db.QueryContext(ctx, query, accountID)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +245,7 @@ func (s *Store) loadSupportedModels(ctx context.Context, accountID string) ([]st
 
 func (s *Store) loadAPIKeyRuntimeStatuses(ctx context.Context, accountID string) (map[string]string, error) {
 	query := fmt.Sprintf(`SELECT key_fingerprint, status FROM %s WHERE account_id = ?`, s.table("account_api_key_runtime_states"))
-	rows, err := s.db.QueryContext(ctx, query, accountID)
+	rows, err := s.db.QueryContext(ctx, s.bind(query), accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +489,7 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
     LIMIT 1
   `, s.table("group_accounts"))
 	var one int
-	if err := s.db.QueryRowContext(ctx, bindingQuery, groupID, groupOwner, accountID).Scan(&one); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.bind(bindingQuery), groupID, groupOwner, accountID).Scan(&one); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -526,7 +526,7 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 		resourceProxyProfileID                                 sql.NullString
 		configRevision, dispatchRevision                       sql.NullInt64
 	)
-	row := s.db.QueryRowContext(ctx, query, accountID, providerCode)
+	row := s.db.QueryRowContext(ctx, s.bind(query), accountID, providerCode)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &provider,
 		&profileID, &protocolCode, &protocolVersion, &clientCompatibility,
 		&configRevision, &dispatchRevision, &credentials, &proxyProfileID,
@@ -668,12 +668,13 @@ func (s *Store) LoadAccountForGroup(ctx context.Context, groupID, accountID, sys
 // model/mode override; loading the complete enabled set prevents the manual
 // path from silently reusing the account default mapping.
 func (s *Store) loadHybridProbeMappings(ctx context.Context, accountID, providerCode string) ([]accountprobe.ModelMapping, error) {
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+	q := fmt.Sprintf(`
     SELECT source_model, source_endpoint_family, upstream_model, upstream_endpoint_family
     FROM %s
     WHERE account_id = ? AND provider_code = ? AND enabled = 1
     ORDER BY updated_at DESC, source_model ASC, source_endpoint_family ASC
-  `, s.table("account_model_mappings")), accountID, providerCode)
+  `, s.table("account_model_mappings"))
+	rows, err := s.db.QueryContext(ctx, s.bind(q), accountID, providerCode)
 	if err != nil {
 		return nil, fmt.Errorf("读取 hybrid 账户模型映射失败: %w", err)
 	}
@@ -710,7 +711,7 @@ func (s *Store) resolveGroupAccess(ctx context.Context, groupID, systemAccountID
   `, s.table("groups"))
 	var owner, providerCode sql.NullString
 	var enabled any
-	if err := s.db.QueryRowContext(ctx, query, groupID).Scan(&owner, &providerCode, &enabled); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.bind(query), groupID).Scan(&owner, &providerCode, &enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", false, nil
 		}
@@ -733,7 +734,7 @@ func (s *Store) resolveGroupAccess(ctx context.Context, groupID, systemAccountID
     WHERE authorization_id = ? AND system_account_id = ? AND group_id = ?
     LIMIT 1
   `, s.table("group_authorization_settings"))
-	row := s.db.QueryRowContext(ctx, localQuery, authOwner.authorizationID, systemAccountID, groupID)
+	row := s.db.QueryRowContext(ctx, s.bind(localQuery), authOwner.authorizationID, systemAccountID, groupID)
 	if err := row.Scan(&localEnabled); err == nil && !truthy(localEnabled) {
 		return "", "", false, nil
 	}
@@ -753,7 +754,7 @@ func (s *Store) activeGroupAuthorizationOwner(ctx context.Context, groupID, gran
     LIMIT 1
   `, s.table("resource_authorizations"))
 	var id, resourceOwner sql.NullString
-	if err := s.db.QueryRowContext(ctx, query, groupID, granteeSystemAccountID, s.timeParam(s.now())).Scan(&id, &resourceOwner); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.bind(query), groupID, granteeSystemAccountID, s.timeParam(s.now())).Scan(&id, &resourceOwner); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, nil
 		}
@@ -769,7 +770,7 @@ func (s *Store) activeAuthorizationOwnerByID(ctx context.Context, authorizationI
     LIMIT 1
   `, s.table("resource_authorizations"))
 	var owner sql.NullString
-	if err := s.db.QueryRowContext(ctx, query, authorizationID, granteeSystemAccountID, s.timeParam(s.now())).Scan(&owner); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.bind(query), authorizationID, granteeSystemAccountID, s.timeParam(s.now())).Scan(&owner); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, nil
 		}
@@ -814,7 +815,7 @@ func (s *Store) LoadAccountForGroupFull(ctx context.Context, accountID string) (
 		credentials, systemID                   sql.NullString
 		configRevision, dispatchRevision        sql.NullInt64
 	)
-	if err := s.db.QueryRowContext(ctx, query, accountID).Scan(&id, &name, &accountType, &status,
+	if err := s.db.QueryRowContext(ctx, s.bind(query), accountID).Scan(&id, &name, &accountType, &status,
 		&provider, &protocolCode, &protocolVersion,
 		&configRevision, &dispatchRevision, &credentials, &systemID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -958,7 +959,7 @@ func (s *Store) loadProxyURL(ctx context.Context, profileID string) (string, err
 	var proxyType, host, username, passwordEnvelope sql.NullString
 	var port sql.NullInt64
 	var enabled sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, query, profileID).Scan(&proxyType, &host, &port, &username, &passwordEnvelope, &enabled); err != nil {
+	if err := s.db.QueryRowContext(ctx, s.bind(query), profileID).Scan(&proxyType, &host, &port, &username, &passwordEnvelope, &enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("代理 profile %s 不存在", profileID)
 		}
@@ -1020,7 +1021,7 @@ func (s *Store) LoadAccountMetadataByIds(ctx context.Context, ids []string) (map
 		}
 		query := "SELECT id, system_account_id, provider_code FROM " + s.table("accounts") +
 			" WHERE id IN (" + strings.Join(placeholders, ", ") + ") AND deleted_at IS NULL"
-		rows, err := s.db.QueryContext(ctx, query, args...)
+		rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 		if err != nil {
 			return nil, err
 		}

@@ -45,10 +45,10 @@ func (s *Store) markRuntimeStateChanged(ctx context.Context, sourceAccountID str
 // affectedAccountIdsBySourceAccount 等价 accountIdsAffectedBySourceAccount(Async)：
 // 来源账户 + 以其为授权实例源的全部账户（与 Node 一致不过滤 deleted_at）。
 func (s *Store) affectedAccountIdsBySourceAccount(ctx context.Context, sourceAccountID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := s.db.QueryContext(ctx, s.bind(fmt.Sprintf(`
     SELECT id FROM %s
     WHERE id = ? OR authorization_instance_source_account_id = ?
-  `, s.table("accounts")), sourceAccountID, sourceAccountID)
+  `, s.table("accounts"))), sourceAccountID, sourceAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("读取 key 运行态标脏受影响账户失败: %w", err)
 	}
@@ -90,7 +90,7 @@ func (s *Store) markGroupAccountStatsDirtyByAccountIds(ctx context.Context, acco
 		}
 		query := fmt.Sprintf(`SELECT DISTINCT group_id FROM %s WHERE account_id IN (%s)`,
 			s.table("group_accounts"), strings.Join(placeholders, ", "))
-		rows, err := s.db.QueryContext(ctx, query, args...)
+		rows, err := s.db.QueryContext(ctx, s.bind(query), args...)
 		if err != nil {
 			return fmt.Errorf("读取 key 运行态标脏分组失败: %w", err)
 		}
@@ -123,7 +123,7 @@ func (s *Store) markGroupAccountStatsDirtyByAccountIds(ctx context.Context, acco
       updated_at = excluded.updated_at
   `, s.table("group_account_stats_dirty"))
 	for _, groupID := range groupIds {
-		if _, err := s.db.ExecContext(ctx, upsert, groupID, accountKeyRuntimeStatsDirtyReason, updatedAt); err != nil {
+		if _, err := s.db.ExecContext(ctx, s.bind(upsert), groupID, accountKeyRuntimeStatsDirtyReason, updatedAt); err != nil {
 			return fmt.Errorf("标记 key 运行态分组统计脏行失败: %w", err)
 		}
 	}

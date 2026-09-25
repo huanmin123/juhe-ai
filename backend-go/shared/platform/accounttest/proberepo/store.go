@@ -17,6 +17,7 @@ package proberepo
 
 import (
 	"database/sql"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -64,6 +65,26 @@ func (s *Store) table(name string) string {
 		return "juhe_business." + name
 	}
 	return name
+}
+
+// bind 把 `?` 占位符改写为 PG 的 $n（ISSUE-005 同类）：本包查询按 Node
+// 语义使用 `?`，SQLite 原生支持，直达 pgx 触发 42601/参数错位
+// （2026-09-25 测试环境「测试账号连接」1:1 数据复现定位）。
+func (s *Store) bind(query string) string {
+	if !s.postgres {
+		return query
+	}
+	var out strings.Builder
+	index := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			out.WriteString("$" + strconv.Itoa(index))
+			index++
+		} else {
+			out.WriteByte(query[i])
+		}
+	}
+	return out.String()
 }
 
 // rfc3339Milli 与 Node toISOString() 输出一致（UTC + 毫秒 + Z）。
