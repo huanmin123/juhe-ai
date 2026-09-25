@@ -63,6 +63,32 @@ func TestListenLoopbackRejectsPublicAddress(t *testing.T) {
 	}
 }
 
+func TestListenLoopbackPrivateBindRequiresOptIn(t *testing.T) {
+	t.Setenv("JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK", "")
+	for _, host := range []string{"0.0.0.0", "10.42.0.5", "192.0.2.10"} {
+		if err := validateHealthListenHost(host); err == nil {
+			t.Fatalf("未开启放行开关时非回环地址必须拒绝: %s", host)
+		}
+	}
+	if err := validateHealthListenHost("127.0.0.1"); err != nil {
+		t.Fatalf("回环地址始终允许: %v", err)
+	}
+	t.Setenv("JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK", "true")
+	for _, host := range []string{"0.0.0.0", "10.42.0.5"} {
+		if err := validateHealthListenHost(host); err != nil {
+			t.Fatalf("放行开关下私网/未指定地址 %q 必须允许: %v", host, err)
+		}
+	}
+	if err := validateHealthListenHost("192.0.2.10"); err == nil {
+		t.Fatal("放行开关下公网地址仍必须拒绝")
+	}
+	if listener, err := listenLoopback("127.0.0.1:13306"); err != nil {
+		t.Fatalf("listenLoopback 回环冒烟: %v", err)
+	} else {
+		_ = listener.Close()
+	}
+}
+
 func TestGatewayGoRuntimeCollectorExposesRuntimeKind(t *testing.T) {
 	collector := gometrics.New("juhe-ai", "gateway")
 	var output strings.Builder

@@ -460,8 +460,11 @@ func main() {
 		if keyModelStore != nil {
 			defer keyModelStore.Close()
 		}
+		// 验证码开关只读已加载的 runtimeCfg.CaptchaDisabled（loadRuntimeConfig
+		// 内 strictEnvBool 统一解析），与管理面同判；此处不得再直接解析 env，
+		// 否则两装配面对同一变量各自解析会产生布尔语法漂移（如 `1` 只在一面生效）。
 		var captchaService *modelcheckauth.CaptchaService
-		if !envBool("JUHE_AI_AUTH_CAPTCHA_DISABLED") {
+		if !runtimeCfg.CaptchaDisabled {
 			captchaService = modelcheckauth.NewCaptchaService(time.Now)
 		}
 		j3bManagementMount = func(mux *http.ServeMux) {
@@ -923,6 +926,28 @@ func runPassiveGateway(healthAddress string, ownerMode ownermode.Mode, logger *s
 	}
 }
 
+// listenLoopback 默认强制 health/metrics 只绑回环地址（fail-closed：防止
+// 未鉴权的 metrics 端点意外暴露）。容器内 Prometheus 抓取需要集群内可达时，
+// 显式设置 JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK=true 放行私网/未指定
+// 地址（RFC1918 与 0.0.0.0）；公网地址任何情况下拒绝。
+// validateHealthListenHost 实现 health 监听地址的 fail-closed 校验：默认只允许
+// localhost/回环；JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK=true 时放行私网与
+// 未指定地址（容器内 Prometheus 集群内抓取场景）；公网地址任何情况下拒绝。
+func validateHealthListenHost(host string) error {
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	allowNonLoopback := strings.EqualFold(os.Getenv("JUHE_AI_GATEWAY_HEALTH_ALLOW_NON_LOOPBACK"), "true")
+	if allowNonLoopback && ip != nil && (ip.IsPrivate() || ip.IsUnspecified()) {
+		return nil
+	}
+	return fmt.Errorf("host must be localhost or a loopback IP")
+}
+
 func listenLoopback(address string) (net.Listener, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -932,11 +957,8 @@ func listenLoopback(address string) (net.Listener, error) {
 	if err != nil || portNumber < 1 || portNumber > 65535 {
 		return nil, fmt.Errorf("invalid loopback listen address %q: port must be between 1 and 65535", address)
 	}
-	if !strings.EqualFold(host, "localhost") {
-		ip := net.ParseIP(host)
-		if ip == nil || !(ip.IsLoopback()) {
-			return nil, fmt.Errorf("invalid loopback listen address %q: host must be localhost or a loopback IP", address)
-		}
+	if err := validateHealthListenHost(host); err != nil {
+		return nil, fmt.Errorf("invalid loopback listen address %q: %w", address, err)
 	}
 	return net.Listen("tcp", address)
 }
