@@ -264,6 +264,15 @@ func TestParseListDuePagePaths(t *testing.T) {
 		page.NextOffset != 4 || !page.Exhausted {
 		t.Fatalf("page = %#v", page)
 	}
+	// Lua cjson 把空数组编码为 `{}`：空 due 页必须等价于空列表（2026-09-25
+	// 生产 account-circuit-recovery 连续失败根因）。
+	emptyObject, err := ParseListDuePage(`{"exhausted":true,"scanned":0,"scopeKeys":{},"nextOffset":0}`)
+	if err != nil {
+		t.Fatalf("lua empty-object page must parse: %v", err)
+	}
+	if len(emptyObject.ScopeKeys) != 0 || !emptyObject.Exhausted || emptyObject.Scanned != 0 {
+		t.Fatalf("empty-object page = %#v", emptyObject)
+	}
 }
 
 func TestEncodeSourceFenceShape(t *testing.T) {

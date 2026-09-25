@@ -1159,7 +1159,26 @@ type accountCircuitRuntimeEscalationResponseWire struct {
 }
 
 type accountCircuitRuntimeDueResponseWire struct {
-	States []accountCircuitRuntimeStateWire `json:"states"`
+	States accountCircuitRuntimeDueStateList `json:"states"`
+}
+
+// accountCircuitRuntimeDueStateList 容忍 Lua cjson 对空数组的 `{}` 编码：
+// due 集合为空时 states 会编码为 JSON 对象，必须等价于空列表
+// （与 shared/platform/circuitstate StringList/StateList 同一语义）。
+type accountCircuitRuntimeDueStateList []accountCircuitRuntimeStateWire
+
+func (l *accountCircuitRuntimeDueStateList) UnmarshalJSON(raw []byte) error {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" || trimmed == "{}" || trimmed == "[]" {
+		*l = nil
+		return nil
+	}
+	var values []accountCircuitRuntimeStateWire
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return err
+	}
+	*l = values
+	return nil
 }
 
 type accountCircuitRuntimeAccountRevisionResponseWire struct {
