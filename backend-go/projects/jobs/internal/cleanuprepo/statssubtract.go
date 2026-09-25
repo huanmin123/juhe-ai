@@ -305,6 +305,7 @@ func (s *RecordCleanupStore) subtractStatsTotalsAndBuckets(ctx context.Context, 
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
       AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+      AND success_cost_usd = 0
 	`, where), entry.SystemAccountID, entry.ScopeType, entry.ScopeID); err != nil {
 		return err
 	}
@@ -335,6 +336,7 @@ func (s *RecordCleanupStore) subtractStatsTotalsAndBuckets(ctx context.Context, 
         AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
         AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
         AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+        AND success_cost_usd = 0
 		`, bucket.TableName, column),
 			entry.SystemAccountID, entry.ScopeType, entry.ScopeID, timeKeyValue(timeKeys, bucket.ValueKey)); err != nil {
 			return err
@@ -344,12 +346,16 @@ func (s *RecordCleanupStore) subtractStatsTotalsAndBuckets(ctx context.Context, 
 }
 
 // statsSubtractSetExpr 照 subtractUsageStatsTotal 的 MAX(0, col - ?) 列清单。
+// success_cost_usd 紧随 total_cost_usd（列序对齐 statsagg upsert 的
+// usageStatsMetricColumns）：回减量取累加器的成功口径成本（按记录 success
+// 标志计算——成功记录回减其 cost、失败记录回减 0），与聚合写入口径对称，
+// 已删记录的成功成本不再滞留新列。
 func statsSubtractSetExpr(prefix string) string {
 	columns := []string{
 		"request_count", "success_count", "error_count", "input_tokens", "output_tokens",
 		"cache_read_tokens", "cache_read_cost_usd", "cache_write_tokens", "cache_write_1h_tokens",
 		"cache_write_cost_usd", "thinking_tokens", "input_image_tokens", "output_image_tokens",
-		"total_cost_usd", "duration_ms_sum", "duration_ms_count",
+		"total_cost_usd", "success_cost_usd", "duration_ms_sum", "duration_ms_count",
 	}
 	assignments := make([]string, 0, len(columns)+4)
 	for _, column := range columns {
@@ -361,13 +367,15 @@ func statsSubtractSetExpr(prefix string) string {
 	return strings.Join(assignments, ", ")
 }
 
-// statsSubtractParams 照 statsSubtractParams（列序与 set 表达式一致）。
+// statsSubtractParams 照 statsSubtractParams（列序与 set 表达式一致；
+// SuccessCostUsd 由 statsagg.UsageStatsAccumulatorFromRecord / UsageStatsEntries
+// 按记录 success 标志给出：成功记录 = cost，失败记录 = 0）。
 func statsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
 	return []any{
 		stats.RequestCount, stats.SuccessCount, stats.ErrorCount,
 		stats.InputTokens, stats.OutputTokens, stats.CacheReadTokens, stats.CacheReadCostUsd,
 		stats.CacheWriteTokens, stats.CacheWrite1hTokens, stats.CacheWriteCostUsd, stats.ThinkingTokens,
-		stats.InputImageTokens, stats.OutputImageTokens, stats.TotalCostUsd,
+		stats.InputImageTokens, stats.OutputImageTokens, stats.TotalCostUsd, stats.SuccessCostUsd,
 		stats.DurationMsSum, stats.DurationMsCount,
 		stats.FirstTokenMsSum, stats.FirstTokenMsCount,
 	}

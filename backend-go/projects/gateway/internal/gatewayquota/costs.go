@@ -142,6 +142,11 @@ func bindPlaceholders(pg bool, query string) string {
 
 // LoadCosts mirrors loadRequestQuotaCosts: five single-scope reads (hourly
 // only when the window is configured).
+//
+// 配额口径（业务拍板：客户端配额与账单只计成功交付的尝试）：usage_stats 表族
+// 读成功口径列 success_cost_usd（失败尝试的成本只留在 total_cost_usd 供账号
+// 成本观测）；usage_quota_hourly_windows.total_cost_usd 单列即配额口径成本，
+// 由 statsagg 窗口刷新按 success_cost_usd 汇总写入。
 func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *time.Location) (RequestQuotaCosts, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -149,7 +154,7 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 	costs := EmptyRequestQuotaCosts()
 	var totalCost sql.NullFloat64
 	err := s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
-		SELECT COALESCE(total_cost_usd, 0) AS total_cost
+		SELECT COALESCE(success_cost_usd, 0) AS total_cost
 		FROM `+statsTable(s.pg, "usage_stats_totals")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?`),
 		input.SystemAccountID, input.ScopeType, input.ScopeID).Scan(&totalCost)
@@ -175,7 +180,7 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 	}
 	var dailyCost sql.NullFloat64
 	err = s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
-		SELECT COALESCE(total_cost_usd, 0) AS total_cost
+		SELECT COALESCE(success_cost_usd, 0) AS total_cost
 		FROM `+statsTable(s.pg, "usage_stats_daily")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_date = ?`),
 		input.SystemAccountID, input.ScopeType, input.ScopeID, dateKey(input.Now, location)).Scan(&dailyCost)
@@ -187,7 +192,7 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 	}
 	var weeklyCost sql.NullFloat64
 	err = s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
-		SELECT COALESCE(total_cost_usd, 0) AS total_cost
+		SELECT COALESCE(success_cost_usd, 0) AS total_cost
 		FROM `+statsTable(s.pg, "usage_stats_weekly")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_week = ?`),
 		input.SystemAccountID, input.ScopeType, input.ScopeID, weekKey(input.Now, location)).Scan(&weeklyCost)
@@ -199,7 +204,7 @@ func (s *StatsStore) LoadCosts(ctx context.Context, input CostInput, location *t
 	}
 	var monthlyCost sql.NullFloat64
 	err = s.db.QueryRowContext(ctx, bindPlaceholders(s.pg, `
-		SELECT COALESCE(total_cost_usd, 0) AS total_cost
+		SELECT COALESCE(success_cost_usd, 0) AS total_cost
 		FROM `+statsTable(s.pg, "usage_stats_monthly")+`
 		WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_month = ?`),
 		input.SystemAccountID, input.ScopeType, input.ScopeID, monthKey(input.Now, location)).Scan(&monthlyCost)
@@ -274,40 +279,49 @@ func (s *StatsStore) LoadCostsBatch(ctx context.Context, inputs []CostInput, loc
 	tuple := func(values ...string) string { return strings.Join(values, "\x00") }
 	base := func(r costLookup) []string { return []string{r.systemAccountID, r.scopeType, r.scopeID} }
 
+	// costColumn 是配额口径列：usage_stats 表族读成功口径 success_cost_usd；
+	// usage_quota_hourly_windows.total_cost_usd 单列即配额口径成本（statsagg
+	// 窗口刷新按 success_cost_usd 汇总写入），与 LoadCosts 保持一致。
 	type costTable struct {
-		name    string
-		columns []string
-		extra   func(r costLookup) []string
-		apply   func(costs *RequestQuotaCosts, value float64)
+		name       string
+		columns    []string
+		costColumn string
+		extra      func(r costLookup) []string
+		apply      func(costs *RequestQuotaCosts, value float64)
 	}
 	tables := []costTable{
 		{
-			name:    "usage_stats_totals",
-			columns: []string{"system_account_id", "scope_type", "scope_id"},
-			extra:   func(costLookup) []string { return nil },
-			apply:   func(costs *RequestQuotaCosts, value float64) { costs.Total = value },
+			name:       "usage_stats_totals",
+			columns:    []string{"system_account_id", "scope_type", "scope_id"},
+			costColumn: "success_cost_usd",
+			extra:      func(costLookup) []string { return nil },
+			apply:      func(costs *RequestQuotaCosts, value float64) { costs.Total = value },
 		},
 		{
-			name:    "usage_stats_daily",
-			columns: []string{"system_account_id", "scope_type", "scope_id", "stat_date"},
-			extra:   func(r costLookup) []string { return []string{r.statDate} },
-			apply:   func(costs *RequestQuotaCosts, value float64) { costs.Daily = value },
+			name:       "usage_stats_daily",
+			columns:    []string{"system_account_id", "scope_type", "scope_id", "stat_date"},
+			costColumn: "success_cost_usd",
+			extra:      func(r costLookup) []string { return []string{r.statDate} },
+			apply:      func(costs *RequestQuotaCosts, value float64) { costs.Daily = value },
 		},
 		{
-			name:    "usage_stats_weekly",
-			columns: []string{"system_account_id", "scope_type", "scope_id", "stat_week"},
-			extra:   func(r costLookup) []string { return []string{r.statWeek} },
-			apply:   func(costs *RequestQuotaCosts, value float64) { costs.Weekly = value },
+			name:       "usage_stats_weekly",
+			columns:    []string{"system_account_id", "scope_type", "scope_id", "stat_week"},
+			costColumn: "success_cost_usd",
+			extra:      func(r costLookup) []string { return []string{r.statWeek} },
+			apply:      func(costs *RequestQuotaCosts, value float64) { costs.Weekly = value },
 		},
 		{
-			name:    "usage_stats_monthly",
-			columns: []string{"system_account_id", "scope_type", "scope_id", "stat_month"},
-			extra:   func(r costLookup) []string { return []string{r.statMonth} },
-			apply:   func(costs *RequestQuotaCosts, value float64) { costs.Monthly = value },
+			name:       "usage_stats_monthly",
+			columns:    []string{"system_account_id", "scope_type", "scope_id", "stat_month"},
+			costColumn: "success_cost_usd",
+			extra:      func(r costLookup) []string { return []string{r.statMonth} },
+			apply:      func(costs *RequestQuotaCosts, value float64) { costs.Monthly = value },
 		},
 		{
-			name:    "usage_quota_hourly_windows",
-			columns: []string{"system_account_id", "scope_type", "scope_id", "window_hours"},
+			name:       "usage_quota_hourly_windows",
+			columns:    []string{"system_account_id", "scope_type", "scope_id", "window_hours"},
+			costColumn: "total_cost_usd",
 			extra: func(r costLookup) []string {
 				if !r.hasHourlyWindow {
 					return nil
@@ -363,7 +377,7 @@ func (s *StatsStore) LoadCostsBatch(ctx context.Context, inputs []CostInput, loc
 			for _, column := range tableDef.columns[3:] {
 				selectColumns = append(selectColumns, column)
 			}
-			query := "SELECT " + strings.Join(selectColumns, ", ") + ", COALESCE(total_cost_usd, 0) AS total_cost FROM " +
+			query := "SELECT " + strings.Join(selectColumns, ", ") + ", COALESCE(" + tableDef.costColumn + ", 0) AS total_cost FROM " +
 				statsTable(s.pg, tableDef.name) + " WHERE " + strings.Join(clauses, " OR ")
 			rows, err := s.db.QueryContext(ctx, bindPlaceholders(s.pg, query), args...)
 			if err != nil {

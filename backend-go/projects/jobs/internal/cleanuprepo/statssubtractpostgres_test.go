@@ -291,16 +291,17 @@ var pgTotalsSubtractSQL = bindTestPG(`
           input_image_tokens = GREATEST(0, input_image_tokens - $12),
           output_image_tokens = GREATEST(0, output_image_tokens - $13),
           total_cost_usd = GREATEST(0, total_cost_usd - $14),
-          duration_ms_sum = GREATEST(0, duration_ms_sum - $15),
-          duration_ms_count = GREATEST(0, duration_ms_count - $16),
-          duration_ms_max = CASE WHEN duration_ms_count <= $17 THEN 0 ELSE duration_ms_max END,
-          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $18),
-          first_token_ms_count = GREATEST(0, first_token_ms_count - $19),
-          first_token_ms_max = CASE WHEN first_token_ms_count <= $20 THEN 0 ELSE first_token_ms_max END,
-          last_used_at = CASE WHEN request_count <= $21 THEN NULL ELSE last_used_at END,
-          last_error_at = CASE WHEN error_count <= $22 THEN NULL ELSE last_error_at END,
-          updated_at = $23
-      WHERE system_account_id = $24 AND scope_type = $25 AND scope_id = $26
+          success_cost_usd = GREATEST(0, success_cost_usd - $15),
+          duration_ms_sum = GREATEST(0, duration_ms_sum - $16),
+          duration_ms_count = GREATEST(0, duration_ms_count - $17),
+          duration_ms_max = CASE WHEN duration_ms_count <= $18 THEN 0 ELSE duration_ms_max END,
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $19),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - $20),
+          first_token_ms_max = CASE WHEN first_token_ms_count <= $21 THEN 0 ELSE first_token_ms_max END,
+          last_used_at = CASE WHEN request_count <= $22 THEN NULL ELSE last_used_at END,
+          last_error_at = CASE WHEN error_count <= $23 THEN NULL ELSE last_error_at END,
+          updated_at = $24
+      WHERE system_account_id = $25 AND scope_type = $26 AND scope_id = $27
     `)
 
 func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
@@ -330,10 +331,11 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
 		}
 	}
 
-	// totals UPDATE：文本逐字符 + 首个 scope 的 26 参逐项。
+	// totals UPDATE：文本逐字符 + 首 scope 的 27 参逐项（含成功口径成本
+	// success_cost_usd，紧随 total_cost_usd）。
 	totalUpdateArgs := statements[0].args
-	if len(totalUpdateArgs) != 26 {
-		t.Fatalf("totals UPDATE 参数数 = %d, 期望 26", len(totalUpdateArgs))
+	if len(totalUpdateArgs) != 27 {
+		t.Fatalf("totals UPDATE 参数数 = %d, 期望 27", len(totalUpdateArgs))
 	}
 	accumulator := statsagg.UsageStatsAccumulatorFromRecord(row)
 	// 同一行的 4 个 scope 条目共享同一 accumulator；首 scope 为 (sys-1, system_account, sys-1)。
@@ -343,7 +345,7 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
 		accumulator.CacheReadTokens, accumulator.CacheReadCostUsd,
 		accumulator.CacheWriteTokens, accumulator.CacheWrite1hTokens, accumulator.CacheWriteCostUsd,
 		accumulator.ThinkingTokens, accumulator.InputImageTokens, accumulator.OutputImageTokens,
-		accumulator.TotalCostUsd,
+		accumulator.TotalCostUsd, accumulator.SuccessCostUsd,
 		accumulator.DurationMsSum, accumulator.DurationMsCount,
 		accumulator.DurationMsCount,
 		accumulator.FirstTokenMsSum, accumulator.FirstTokenMsCount,
@@ -370,7 +372,7 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
 		if update.query != pgTotalsSubtractSQL {
 			t.Fatalf("totals UPDATE[%d] 文本不匹配：\n%s", scopeIndex, update.query)
 		}
-		got := []string{fmt.Sprintf("%v", update.args[23]), fmt.Sprintf("%v", update.args[24]), fmt.Sprintf("%v", update.args[25])}
+		got := []string{fmt.Sprintf("%v", update.args[24]), fmt.Sprintf("%v", update.args[25]), fmt.Sprintf("%v", update.args[26])}
 		want := []string{scope[0], scope[1], scope[2]}
 		for i := range want {
 			if got[i] != want[i] {
@@ -385,6 +387,7 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
       AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+      AND success_cost_usd = 0
   `)
 		if delete.query != wantDelete {
 			t.Fatalf("totals DELETE[%d] 文本不匹配：\n%s", scopeIndex, delete.query)
@@ -413,25 +416,26 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
           input_image_tokens = GREATEST(0, input_image_tokens - $12),
           output_image_tokens = GREATEST(0, output_image_tokens - $13),
           total_cost_usd = GREATEST(0, total_cost_usd - $14),
-          duration_ms_sum = GREATEST(0, duration_ms_sum - $15),
-          duration_ms_count = GREATEST(0, duration_ms_count - $16),
-          duration_ms_max = CASE WHEN duration_ms_count <= $17 THEN 0 ELSE duration_ms_max END,
-          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $18),
-          first_token_ms_count = GREATEST(0, first_token_ms_count - $19),
-          first_token_ms_max = CASE WHEN first_token_ms_count <= $20 THEN 0 ELSE first_token_ms_max END,
-          last_used_at = CASE WHEN request_count <= $21 THEN NULL ELSE last_used_at END,
-          last_error_at = CASE WHEN error_count <= $22 THEN NULL ELSE last_error_at END,
-          updated_at = $23
-      WHERE system_account_id = $24 AND scope_type = $25 AND scope_id = $26 AND %s = $27
+          success_cost_usd = GREATEST(0, success_cost_usd - $15),
+          duration_ms_sum = GREATEST(0, duration_ms_sum - $16),
+          duration_ms_count = GREATEST(0, duration_ms_count - $17),
+          duration_ms_max = CASE WHEN duration_ms_count <= $18 THEN 0 ELSE duration_ms_max END,
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $19),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - $20),
+          first_token_ms_max = CASE WHEN first_token_ms_count <= $21 THEN 0 ELSE first_token_ms_max END,
+          last_used_at = CASE WHEN request_count <= $22 THEN NULL ELSE last_used_at END,
+          last_error_at = CASE WHEN error_count <= $23 THEN NULL ELSE last_error_at END,
+          updated_at = $24
+      WHERE system_account_id = $25 AND scope_type = $26 AND scope_id = $27 AND %s = $28
     `, "usage_stats_minute", "stat_minute"))
 	if bucketUpdate.query != wantBucketUpdate {
 		t.Fatalf("minute 桶 UPDATE 文本不匹配：\n%s", bucketUpdate.query)
 	}
-	if len(bucketUpdate.args) != 27 {
-		t.Fatalf("minute 桶 UPDATE 参数数 = %d, 期望 27", len(bucketUpdate.args))
+	if len(bucketUpdate.args) != 28 {
+		t.Fatalf("minute 桶 UPDATE 参数数 = %d, 期望 28", len(bucketUpdate.args))
 	}
-	if fmt.Sprintf("%v", bucketUpdate.args[26]) != "2026-01-05T11:04" {
-		t.Fatalf("minute 桶 timeValue = %v", bucketUpdate.args[26])
+	if fmt.Sprintf("%v", bucketUpdate.args[27]) != "2026-01-05T11:04" {
+		t.Fatalf("minute 桶 timeValue = %v", bucketUpdate.args[27])
 	}
 	wantBucketDelete := bindTestPG(fmt.Sprintf(`
     DELETE FROM juhe_stats.%s
@@ -440,6 +444,7 @@ func TestSubtractPostgresUsageStatsRowsRendersNodeSQL(t *testing.T) {
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
       AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+      AND success_cost_usd = 0
   `, "usage_stats_minute", "stat_minute"))
 	if statements[9].query != wantBucketDelete {
 		t.Fatalf("minute 桶 DELETE 文本不匹配：\n%s", statements[9].query)
@@ -610,16 +615,17 @@ func TestSubtractPostgresUsageStatsRowsFullFamily(t *testing.T) {
           input_image_tokens = GREATEST(0, input_image_tokens - $12),
           output_image_tokens = GREATEST(0, output_image_tokens - $13),
           total_cost_usd = GREATEST(0, total_cost_usd - $14),
-          duration_ms_sum = GREATEST(0, duration_ms_sum - $15),
-          duration_ms_count = GREATEST(0, duration_ms_count - $16),
-          duration_ms_max = CASE WHEN duration_ms_count <= $17 THEN 0 ELSE duration_ms_max END,
-          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $18),
-          first_token_ms_count = GREATEST(0, first_token_ms_count - $19),
-          first_token_ms_max = CASE WHEN first_token_ms_count <= $20 THEN 0 ELSE first_token_ms_max END,
-          last_used_at = CASE WHEN request_count <= $21 THEN NULL ELSE last_used_at END,
-          last_error_at = CASE WHEN error_count <= $22 THEN NULL ELSE last_error_at END,
-          updated_at = $23
-      WHERE system_account_id = $24 AND scope_type = $25 AND scope_id = $26 AND stat_minute = $27
+          success_cost_usd = GREATEST(0, success_cost_usd - $15),
+          duration_ms_sum = GREATEST(0, duration_ms_sum - $16),
+          duration_ms_count = GREATEST(0, duration_ms_count - $17),
+          duration_ms_max = CASE WHEN duration_ms_count <= $18 THEN 0 ELSE duration_ms_max END,
+          first_token_ms_sum = GREATEST(0, first_token_ms_sum - $19),
+          first_token_ms_count = GREATEST(0, first_token_ms_count - $20),
+          first_token_ms_max = CASE WHEN first_token_ms_count <= $21 THEN 0 ELSE first_token_ms_max END,
+          last_used_at = CASE WHEN request_count <= $22 THEN NULL ELSE last_used_at END,
+          last_error_at = CASE WHEN error_count <= $23 THEN NULL ELSE last_error_at END,
+          updated_at = $24
+      WHERE system_account_id = $25 AND scope_type = $26 AND scope_id = $27 AND stat_minute = $28
     `),
 		bindTestPG(`
       UPDATE juhe_stats.usage_latency_minute
@@ -1129,7 +1135,7 @@ CREATE TABLE usage_stats_totals (
   cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0,
   cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0,
   input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0,
-  total_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
+  total_cost_usd REAL DEFAULT 0, success_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
   duration_ms_count REAL DEFAULT 0, duration_ms_max REAL DEFAULT 0,
   first_token_ms_sum REAL DEFAULT 0, first_token_ms_count REAL DEFAULT 0,
   first_token_ms_max REAL DEFAULT 0, last_used_at TEXT, last_error_at TEXT, updated_at TEXT,
@@ -1142,7 +1148,7 @@ CREATE TABLE usage_stats_minute (stat_minute TEXT NOT NULL, system_account_id TE
   cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0,
   cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0,
   input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0,
-  total_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
+  total_cost_usd REAL DEFAULT 0, success_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
   duration_ms_count REAL DEFAULT 0, duration_ms_max REAL DEFAULT 0,
   first_token_ms_sum REAL DEFAULT 0, first_token_ms_count REAL DEFAULT 0,
   first_token_ms_max REAL DEFAULT 0, last_used_at TEXT, last_error_at TEXT, updated_at TEXT,
@@ -1154,7 +1160,7 @@ CREATE TABLE usage_stats_hourly (stat_hour TEXT NOT NULL, system_account_id TEXT
   cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0,
   cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0,
   input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0,
-  total_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
+  total_cost_usd REAL DEFAULT 0, success_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
   duration_ms_count REAL DEFAULT 0, duration_ms_max REAL DEFAULT 0,
   first_token_ms_sum REAL DEFAULT 0, first_token_ms_count REAL DEFAULT 0,
   first_token_ms_max REAL DEFAULT 0, last_used_at TEXT, last_error_at TEXT, updated_at TEXT,
@@ -1166,7 +1172,7 @@ CREATE TABLE usage_stats_daily (stat_date TEXT NOT NULL, system_account_id TEXT 
   cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0,
   cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0,
   input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0,
-  total_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
+  total_cost_usd REAL DEFAULT 0, success_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
   duration_ms_count REAL DEFAULT 0, duration_ms_max REAL DEFAULT 0,
   first_token_ms_sum REAL DEFAULT 0, first_token_ms_count REAL DEFAULT 0,
   first_token_ms_max REAL DEFAULT 0, last_used_at TEXT, last_error_at TEXT, updated_at TEXT,
@@ -1178,7 +1184,7 @@ CREATE TABLE usage_stats_weekly (stat_week TEXT NOT NULL, system_account_id TEXT
   cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0,
   cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0,
   input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0,
-  total_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
+  total_cost_usd REAL DEFAULT 0, success_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
   duration_ms_count REAL DEFAULT 0, duration_ms_max REAL DEFAULT 0,
   first_token_ms_sum REAL DEFAULT 0, first_token_ms_count REAL DEFAULT 0,
   first_token_ms_max REAL DEFAULT 0, last_used_at TEXT, last_error_at TEXT, updated_at TEXT,
@@ -1190,7 +1196,7 @@ CREATE TABLE usage_stats_monthly (stat_month TEXT NOT NULL, system_account_id TE
   cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0,
   cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0,
   input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0,
-  total_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
+  total_cost_usd REAL DEFAULT 0, success_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
   duration_ms_count REAL DEFAULT 0, duration_ms_max REAL DEFAULT 0,
   first_token_ms_sum REAL DEFAULT 0, first_token_ms_count REAL DEFAULT 0,
   first_token_ms_max REAL DEFAULT 0, last_used_at TEXT, last_error_at TEXT, updated_at TEXT,
@@ -1332,7 +1338,7 @@ func TestSQLiteInterlockSubtractSemantics(t *testing.T) {
 	var totalsUpdate *recordedStatement
 	for i, statement := range rec.all() {
 		if strings.Contains(statement.query, "UPDATE juhe_stats.usage_stats_totals") {
-			if statement.args[24] == "system_account" && statement.args[25] == "sys-1" {
+			if statement.args[25] == "system_account" && statement.args[26] == "sys-1" {
 				totalsUpdate = &rec.all()[i]
 				break
 			}

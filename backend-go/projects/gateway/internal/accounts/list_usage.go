@@ -187,7 +187,9 @@ func (s *StatsUsageSource) bind(query string) string {
 // AccountListUsageSummaries renders the requested rows through the
 // COALESCE'd three-field projection: request_count, input+output tokens and
 // total cost. Missing rows still join (LEFT JOIN) so the caller's zero
-// fallback equals Node's usageMap with zeroed COALESCE values.
+// fallback equals Node's usageMap with zeroed COALESCE values. 成本列读
+// success_cost_usd：展示面与配额执法口径（quota/hourly 窗口的成功交付成本）
+// 一致，失败尝试成本只留在 total_cost_usd 供账号成本观测。
 func (s *StatsUsageSource) AccountListUsageSummaries(ctx context.Context, scopes []UsageScope, statDate string) (map[string]UsageSummary, error) {
 	normalized := uniqueUsageScopes(scopes)
 	if len(normalized) == 0 {
@@ -214,7 +216,7 @@ func (s *StatsUsageSource) AccountListUsageSummaries(ctx context.Context, scopes
       requested.row_key,
       COALESCE(usage_rows.request_count, 0) AS request_count,
       COALESCE(usage_rows.input_tokens, 0) + COALESCE(usage_rows.output_tokens, 0) AS total_tokens,
-      COALESCE(usage_rows.total_cost_usd, 0) AS total_cost
+      COALESCE(usage_rows.success_cost_usd, 0) AS total_cost
     FROM requested
     LEFT JOIN ` + tableName + ` usage_rows
       ON usage_rows.system_account_id = requested.system_account_id

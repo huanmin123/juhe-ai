@@ -305,7 +305,7 @@ func TestW14CCostsWeeklyAndScanErrors(t *testing.T) {
 	}
 	now := clock.Now()
 	input := CostInput{SystemAccountID: "w14c-sys", ScopeType: ScopeTypeAPIKey, ScopeID: "w14c-ak", Now: now}
-	seedCost(t, db, "usage_stats_weekly", []string{"system_account_id", "scope_type", "scope_id", "stat_week", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_weekly", []string{"system_account_id", "scope_type", "scope_id", "stat_week", "success_cost_usd"},
 		[]any{"w14c-sys", ScopeTypeAPIKey, "w14c-ak", weekKey(now, location), 7.5})
 	output, err := stats.LoadCostsBatch(context.Background(), []CostInput{input}, location)
 	if err != nil {
@@ -316,14 +316,14 @@ func TestW14CCostsWeeklyAndScanErrors(t *testing.T) {
 		t.Fatalf("weekly 行必须生效: (%+v, %v)", costs, err)
 	}
 
-	// total_cost_usd 为不可解析文本 → Scan 错误。
+	// success_cost_usd 为不可解析文本 → Scan 错误。
 	dbBad := newTestDB(t, "w14c-costs-bad")
 	statsSchema(t, dbBad)
 	statsBad, err := NewStatsStore(dbBad, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedCost(t, dbBad, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "total_cost_usd"},
+	seedCost(t, dbBad, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
 		[]any{"w14c-sys", ScopeTypeAPIKey, "w14c-ak", "not-a-number"})
 	if _, err := statsBad.LoadCostsBatch(context.Background(), []CostInput{input}, location); err == nil {
 		t.Fatal("非数值成本必须报 Scan 错误")

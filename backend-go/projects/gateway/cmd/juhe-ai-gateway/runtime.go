@@ -555,7 +555,16 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	}
 	cfg.TrustProxy = trustProxy
 
-	cfg.CaptchaDisabled = envBoolTrue(getenv("JUHE_AI_AUTH_CAPTCHA_DISABLED"))
+	// Node strictBooleanConfig('JUHE_AI_AUTH_CAPTCHA_DISABLED')：true/1/yes/on
+	// 关闭验证码、false/0/no/off 保持开启（大小写不敏感），其他非空值启动即
+	// 失败。管理面（compose.go authDeps）与 J3b 面（main.go 装配 captcha
+	// 服务）都必须只消费本字段，不得各自解析同一 env——否则 `1` 这类布尔
+	// 语法只在其中一面生效（布尔语法漂移）。
+	captchaDisabled, captchaDisabledErr := strictEnvBool("JUHE_AI_AUTH_CAPTCHA_DISABLED", getenv("JUHE_AI_AUTH_CAPTCHA_DISABLED"), false)
+	if captchaDisabledErr != nil {
+		return runtimeConfig{}, captchaDisabledErr
+	}
+	cfg.CaptchaDisabled = captchaDisabled
 	cfg.DevAutoLoginUsername = strings.TrimSpace(getenv("JUHE_AI_DEV_AUTO_LOGIN_USERNAME"))
 	// Node development.ts assertDevelopmentAutoLoginConfig: the development
 	// auto-login must never be enabled under the production signal; the

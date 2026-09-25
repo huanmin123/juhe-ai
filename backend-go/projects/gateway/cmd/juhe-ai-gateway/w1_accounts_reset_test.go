@@ -57,19 +57,21 @@ func w1sEnsureBusinessSchema(t *testing.T, db *sql.DB) {
 
 func w1sEnsureStatsSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
+	// usage_stats 四表带 success_cost_usd：quota 读点已切成功口径列；
+	// usage_quota_hourly_windows 的 total_cost_usd 本身承载成功口径成本。
 	for _, ddl := range []string{
 		`CREATE TABLE IF NOT EXISTS usage_stats_totals (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			total_cost_usd REAL, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
+			total_cost_usd REAL, success_cost_usd REAL, PRIMARY KEY (system_account_id, scope_type, scope_id))`,
 		`CREATE TABLE IF NOT EXISTS usage_stats_daily (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			stat_date TEXT, total_cost_usd REAL)`,
+			stat_date TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
 		`CREATE TABLE IF NOT EXISTS usage_stats_weekly (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			stat_week TEXT, total_cost_usd REAL)`,
+			stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
 		`CREATE TABLE IF NOT EXISTS usage_stats_monthly (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			stat_month TEXT, total_cost_usd REAL)`,
+			stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
 		`CREATE TABLE IF NOT EXISTS usage_quota_hourly_windows (
 			system_account_id TEXT, scope_type TEXT, scope_id TEXT,
 			window_hours INTEGER, total_cost_usd REAL)`,
@@ -476,10 +478,10 @@ func TestW1SAuthorizationQuotaExceededExceeded(t *testing.T) {
 		t.Fatalf("seed auth: %v", err)
 	}
 	// scope_type = account_authorization, scope_id = ex-auth, daily cost=50 >= daily limit 10。
-	// 需要写入 usage_stats_daily 表（日成本由该表读取）。
+	// 需要写入 usage_stats_daily 表（日成本由该表读 success_cost_usd 成功口径列）。
 	if _, err := fixture.db.Exec(
-		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, total_cost_usd)
-		VALUES (?, ?, ?, ?, ?)`, "g1", gatewayquota.ScopeTypeAccountAuthorization, "ex-auth", "2026-09-10", 50.0); err != nil {
+		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, total_cost_usd, success_cost_usd)
+		VALUES (?, ?, ?, ?, ?, ?)`, "g1", gatewayquota.ScopeTypeAccountAuthorization, "ex-auth", "2026-09-10", 50.0, 50.0); err != nil {
 		t.Fatalf("seed stats: %v", err)
 	}
 	exceeded, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{
@@ -499,10 +501,10 @@ func TestW1SAuthorizationQuotaExceededUnderLimit(t *testing.T) {
 		`{"daily":{"enabled":true,"limit":100}}`); err != nil {
 		t.Fatalf("seed auth: %v", err)
 	}
-	// cost=1 < limit 100 → 未超限。写入 usage_stats_daily 表。
+	// cost=1 < limit 100 → 未超限。写入 usage_stats_daily 表（读 success_cost_usd）。
 	if _, err := fixture.db.Exec(
-		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, total_cost_usd)
-		VALUES (?, ?, ?, ?, ?)`, "g1", gatewayquota.ScopeTypeAccountAuthorization, "under-auth", "2026-09-10", 1.0); err != nil {
+		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, total_cost_usd, success_cost_usd)
+		VALUES (?, ?, ?, ?, ?, ?)`, "g1", gatewayquota.ScopeTypeAccountAuthorization, "under-auth", "2026-09-10", 1.0, 1.0); err != nil {
 		t.Fatalf("seed stats: %v", err)
 	}
 	exceeded, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{
@@ -538,10 +540,10 @@ func TestW1SAuthorizationQuotaExceededTeamGrant(t *testing.T) {
 			t.Fatalf("seed instance %s: %v", inst, err)
 		}
 	}
-	// team bucket key = <instanceId>:<teamId>；给 inst-b 超限成本。
+	// team bucket key = <instanceId>:<teamId>；给 inst-b 超限成本（读 success_cost_usd）。
 	if _, err := fixture.db.Exec(
-		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, total_cost_usd)
-		VALUES (?, ?, ?, ?)`, "g1", gatewayquota.ScopeTypeAccountAuthorizationTeam, "inst-b:tm-1", 9.0); err != nil {
+		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, total_cost_usd, success_cost_usd)
+		VALUES (?, ?, ?, ?, ?)`, "g1", gatewayquota.ScopeTypeAccountAuthorizationTeam, "inst-b:tm-1", 9.0, 9.0); err != nil {
 		t.Fatalf("seed team stats: %v", err)
 	}
 	exceeded, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{

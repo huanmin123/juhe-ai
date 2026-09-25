@@ -1121,7 +1121,11 @@ func TestW1PSlogObservability(t *testing.T) {
 		t.Fatalf("TraceID = %q，want 空串（trace 由 /v1 编排器创建）", got)
 	}
 	if got := obs.SanitizeURLForLog(" http://x/y?a=b "); got != " http://x/y?a=b " {
-		t.Fatalf("SanitizeURLForLog = %q，want 原样透传", got)
+		t.Fatalf("SanitizeURLForLog = %q，want 无凭据参数原样透传", got)
+	}
+	// 凭据 query 掩码（委托 gatewayusage 真实现，非恒等透传）。
+	if got := obs.SanitizeURLForLog("http://x/y?key=k"); got != "http://x/y?key=[redacted]" {
+		t.Fatalf("SanitizeURLForLog 凭据 query = %q，want 掩码", got)
 	}
 
 	obs.Logger().Warn("w1p_event", map[string]any{"k1": "v1"}, "w1p警告消息")

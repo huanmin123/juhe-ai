@@ -19,13 +19,13 @@ func TestStatsStoreLoadCosts(t *testing.T) {
 	location := time.UTC
 	now := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
 
-	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", 12.5})
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", "2026-09-04", 3.25})
-	seedCost(t, db, "usage_stats_weekly", []string{"system_account_id", "scope_type", "scope_id", "stat_week", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_weekly", []string{"system_account_id", "scope_type", "scope_id", "stat_week", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", "2026-08-31", 7})
-	seedCost(t, db, "usage_stats_monthly", []string{"system_account_id", "scope_type", "scope_id", "stat_month", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_monthly", []string{"system_account_id", "scope_type", "scope_id", "stat_month", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", "2026-09", 9.75})
 	seedCost(t, db, "usage_quota_hourly_windows", []string{"system_account_id", "scope_type", "scope_id", "window_hours", "total_cost_usd"},
 		[]any{"sys", "api_key", "ak", 3, 1.5})
@@ -60,6 +60,59 @@ func TestStatsStoreLoadCosts(t *testing.T) {
 	}
 }
 
+// TestLoadCostsIgnoresFailedAttemptCost 钉住配额口径（业务拍板：客户端配额
+// 与账单只计成功交付的尝试）：失败尝试的成本只落在 total_cost_usd（账号上游
+// 成本观测），配额读侧只认 success_cost_usd——切号重试的部分流失败尝试与
+// 最终成功尝试不再对同一 api_key/授权双计配额。小时窗列
+// usage_quota_hourly_windows.total_cost_usd 单列即配额口径成本（statsagg
+// 窗口刷新按 success_cost_usd 汇总写入），照常计费。
+func TestLoadCostsIgnoresFailedAttemptCost(t *testing.T) {
+	db := newTestDB(t, "failed-attempt-cost")
+	statsSchema(t, db)
+	stats, err := NewStatsStore(db, false)
+	if err != nil {
+		t.Fatalf("NewStatsStore: %v", err)
+	}
+	location := time.UTC
+	now := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
+
+	// 单行混合场景：total=12（成功 2 + 失败尝试 10），配额只能看到 2。
+	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "total_cost_usd", "success_cost_usd"},
+		[]any{"sys", "api_key", "ak", 12.0, 2.0})
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd", "success_cost_usd"},
+		[]any{"sys", "api_key", "ak", "2026-09-04", 12.0, 2.0})
+	seedCost(t, db, "usage_stats_weekly", []string{"system_account_id", "scope_type", "scope_id", "stat_week", "total_cost_usd", "success_cost_usd"},
+		[]any{"sys", "api_key", "ak", "2026-08-31", 12.0, 2.0})
+	seedCost(t, db, "usage_stats_monthly", []string{"system_account_id", "scope_type", "scope_id", "stat_month", "total_cost_usd", "success_cost_usd"},
+		[]any{"sys", "api_key", "ak", "2026-09", 12.0, 2.0})
+	seedCost(t, db, "usage_quota_hourly_windows", []string{"system_account_id", "scope_type", "scope_id", "window_hours", "total_cost_usd"},
+		[]any{"sys", "api_key", "ak", 3, 1.0})
+
+	costs, err := stats.LoadCosts(context.Background(), CostInput{
+		SystemAccountID: "sys", ScopeType: "api_key", ScopeID: "ak", Now: now, HourlyWindowHours: 3, HasHourlyWindow: true,
+	}, location)
+	if err != nil {
+		t.Fatalf("LoadCosts: %v", err)
+	}
+	want := RequestQuotaCosts{Hourly: 1, Daily: 2, Weekly: 2, Monthly: 2, Total: 2}
+	if costs != want {
+		t.Fatalf("LoadCosts = %+v, want %+v（失败尝试成本必须不计配额）", costs, want)
+	}
+
+	batch, err := stats.LoadCostsBatch(context.Background(), []CostInput{{
+		SystemAccountID: "sys", ScopeType: "api_key", ScopeID: "ak", Now: now, HourlyWindowHours: 3, HasHourlyWindow: true,
+	}}, location)
+	if err != nil {
+		t.Fatalf("LoadCostsBatch: %v", err)
+	}
+	batched := batch[CostKey(CostInput{
+		SystemAccountID: "sys", ScopeType: "api_key", ScopeID: "ak", Now: now, HourlyWindowHours: 3, HasHourlyWindow: true,
+	}, location)]
+	if batched != want {
+		t.Fatalf("LoadCostsBatch = %+v, want %+v（批量装载同口径）", batched, want)
+	}
+}
+
 func TestStatsStoreLoadCostsBatch(t *testing.T) {
 	db := newTestDB(t, "batch")
 	statsSchema(t, db)
@@ -70,11 +123,11 @@ func TestStatsStoreLoadCostsBatch(t *testing.T) {
 	location := time.UTC
 	now := time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC)
 
-	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", 1})
-	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak2", 2})
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", "2026-09-04", 4})
 	seedCost(t, db, "usage_quota_hourly_windows", []string{"system_account_id", "scope_type", "scope_id", "window_hours", "total_cost_usd"},
 		[]any{"sys", "api_key", "ak2", 6, 0.5})
@@ -136,7 +189,7 @@ func TestWindowResetSemantics(t *testing.T) {
 	}
 	location := time.UTC
 	// A daily row for 2026-09-03 must not count at 2026-09-04 00:00 UTC.
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", "2026-09-03", 100})
 
 	before, err := stats.LoadCosts(context.Background(), CostInput{SystemAccountID: "sys", ScopeType: "api_key", ScopeID: "ak", Now: time.Date(2026, 9, 3, 23, 59, 59, 0, time.UTC)}, location)

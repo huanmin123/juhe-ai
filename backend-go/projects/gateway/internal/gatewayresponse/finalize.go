@@ -10,6 +10,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 // 上游响应处理编排，对齐 finalization.ts。usage 记录与账号副作用经 ports
@@ -671,9 +672,12 @@ func headerView(header http.Header) map[string]string {
 
 func usageRequestSnapshotView(context gatewaypreauth.GatewayFailureUsageContext) *UsageRequestSnapshotView {
 	return &UsageRequestSnapshotView{
-		Method:                   context.RequestSnapshot.Method,
-		Path:                     context.RequestSnapshot.Path,
-		OriginalURL:              context.RequestSnapshot.OriginalURL,
+		Method: context.RequestSnapshot.Method,
+		Path:   context.RequestSnapshot.Path,
+		// originalUrl 统一经凭据脱敏落 usage 快照（2026-09-25）：Gemini native
+		// `?key=` 载体会随 PathAndQuery 明文进入快照；本视图是失败/终止链路
+		// 唯一的 originalUrl 落库投影点。
+		OriginalURL:              gatewayusage.SanitizeURLForLog(context.RequestSnapshot.OriginalURL),
 		ClientIP:                 context.RequestSnapshot.ClientIP,
 		TraceID:                  context.RequestSnapshot.TraceID,
 		RequestedServiceTier:     context.RequestSnapshot.RequestedServiceTier,

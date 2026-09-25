@@ -1056,9 +1056,12 @@ func (r *chainBodyRejectionRecorder) recordUsageFailure(requestCtx *kernel.Reque
 			GroupID:         apiKey.SelectedGroupID,
 			Endpoint:        endpoint,
 			RequestSnapshot: gatewayusage.UsageRequestSnapshot{
-				Method:      strings.ToUpper(req.Method),
-				Path:        req.URL.Path,
-				OriginalURL: req.URL.RequestURI(),
+				Method: strings.ToUpper(req.Method),
+				Path:   req.URL.Path,
+				// originalUrl 经凭据 query 掩码（Gemini `?key=` 等）：
+				// RecordGatewayFailure 的 usageRecordSnapshot 直通透传，不经过
+				// BuildUsageRequestSnapshot 的统一脱敏，必须在组合根先脱敏。
+				OriginalURL: gatewayusage.SanitizeURLForLog(req.URL.RequestURI()),
 				ClientIP:    requestCtx.ClientIP,
 				TraceID:     traceID,
 				Headers:     map[string]any{},

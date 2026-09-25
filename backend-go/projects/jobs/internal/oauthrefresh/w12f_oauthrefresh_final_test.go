@@ -20,8 +20,15 @@ func TestW12fSelectBatchFailureStoreReadError(t *testing.T) {
 	job, _, db, clock, _ := newRefreshJobForTest(t)
 	seedOpenAIOAuthAccount(t, db, "w12f-due2", openAICredentials(expiresInMillis(60_000)), clock.Now())
 	job.failures = &w12fErrFailureStore{}
-	if _, err := job.selectBatchCandidates(context.Background(), 300, 10, nil, clock.Now(), 300_000, clock.Now().Add(time.Minute), &RefreshResult{}); err == nil {
-		t.Fatal("failure store 读取失败必须传播")
+	// P0 修复后的契约：失败状态读取错误不再中止整轮（也不把账户当“无退避”
+	// 放行），而是保守跳过该账户——返回空候选集、无错误（宁可不刷新）。
+	result := RefreshResult{}
+	candidates, err := job.selectBatchCandidates(context.Background(), 300, 10, nil, clock.Now(), 300_000, clock.Now().Add(time.Minute), &result)
+	if err != nil {
+		t.Fatalf("failure store 读取失败必须退化为保守跳过，不得中止整轮: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("candidates=%d, 读失败的账户不得进入候选", len(candidates))
 	}
 }
 
@@ -50,12 +57,12 @@ func TestW12fSelectBatchListDueError(t *testing.T) {
 func TestW12fRotateBeginTxError(t *testing.T) {
 	closed := w12fClosedStore(t)
 	if _, err := closed.RotateCredentials(context.Background(), RotateCredentialsInput{
-		AccountID:                        "w12f-x",
-		ExpectedConfigRevision:           1,
-		ExpectedProviderCode:             "gpt",
-		ExpectedAccountType:              "oauth",
+		AccountID:                         "w12f-x",
+		ExpectedConfigRevision:            1,
+		ExpectedProviderCode:              "gpt",
+		ExpectedAccountType:               "oauth",
 		ExpectedProviderProtocolProfileID: "p",
-		Credentials:                      map[string]any{"refresh_token": "w12f-rt"},
+		Credentials:                       map[string]any{"refresh_token": "w12f-rt"},
 	}); err == nil {
 		t.Fatal("句柄关闭后 BeginTx 必须报错")
 	}

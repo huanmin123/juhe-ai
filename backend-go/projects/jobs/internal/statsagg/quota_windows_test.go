@@ -94,10 +94,17 @@ func (e *testEnv) seedBindingBoth(t *testing.T, business *sql.DB, systemAccountI
 
 func (e *testEnv) seedQuotaHourly(systemAccountID, scopeType, scopeID, statHour string, totalCostUsd float64) {
 	e.t.Helper()
+	e.seedQuotaHourlySplit(systemAccountID, scopeType, scopeID, statHour, totalCostUsd, totalCostUsd)
+}
+
+// seedQuotaHourlySplit 分别种入全量成本与成功口径成本（成功口径切换后窗口
+// 刷新按 usage_stats_hourly.success_cost_usd 汇总）。
+func (e *testEnv) seedQuotaHourlySplit(systemAccountID, scopeType, scopeID, statHour string, totalCostUsd, successCostUsd float64) {
+	e.t.Helper()
 	e.exec(`INSERT INTO usage_stats_hourly (
-		system_account_id, scope_type, scope_id, stat_hour, total_cost_usd, updated_at
-	) VALUES (?, ?, ?, ?, ?, '2026-04-18T00:00:00.000Z')`,
-		systemAccountID, scopeType, scopeID, statHour, totalCostUsd)
+		system_account_id, scope_type, scope_id, stat_hour, total_cost_usd, success_cost_usd, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, '2026-04-18T00:00:00.000Z')`,
+		systemAccountID, scopeType, scopeID, statHour, totalCostUsd, successCostUsd)
 }
 
 type quotaWindowRow struct {
@@ -193,6 +200,37 @@ func TestQuotaHourlyWindowsRebuildSQLite(t *testing.T) {
 	assertQuotaWindowRows(t, e.quotaWindowRows(t),
 		quotaWindowRow{"sa1", "api_key", "keyA", 1, 3},
 		quotaWindowRow{"sa1", "api_key", "keyA2", 12, 7},
+	)
+}
+
+// TestQuotaHourlyWindowsRebuildSuccessCostOnly 钉住配额口径（业务拍板：客户端
+// 配额与账单只计成功交付的尝试）：窗口刷新只汇总 usage_stats_hourly 的
+// success_cost_usd，失败尝试携带的成本（只在 total_cost_usd）不进配额窗口。
+func TestQuotaHourlyWindowsRebuildSuccessCostOnly(t *testing.T) {
+	e := newTestEnv(t)
+	business := quotaTestBusinessDB(t)
+	refresher := e.quotaRefresher(business)
+
+	if err := seedBinding(business, "sa1", "api_key", "keyA", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedBinding(business, "sa1", "api_key", "keyFailOnly", 1); err != nil {
+		t.Fatal(err)
+	}
+	// keyA：total=8（含失败尝试 5）但成功口径只有 3 → 窗口记 3。
+	e.seedQuotaHourlySplit("sa1", "api_key", "keyA", "2026-04-18T11", 8, 3)
+	// keyFailOnly：只有失败尝试（success=0）→ 零配额成本不落行。
+	e.seedQuotaHourlySplit("sa1", "api_key", "keyFailOnly", "2026-04-18T11", 5, 0)
+
+	result, err := refresher.RunQuotaHourlyWindows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || result.HasMore {
+		t.Fatalf("result = %+v, want changed=true hasMore=false", result)
+	}
+	assertQuotaWindowRows(t, e.quotaWindowRows(t),
+		quotaWindowRow{"sa1", "api_key", "keyA", 1, 3},
 	)
 }
 

@@ -67,14 +67,14 @@ func TestLoadUsageSummariesSQLite(t *testing.T) {
 			t.Fatalf("seed: %v\n%s", err, query)
 		}
 	}
-	// owner 行：today 走 account scope。
-	seed(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd, last_used_at)
-		VALUES ('sys-1', 'account', 'acc-1', '2026-09-04', 5, 100, 200, 0.5, '2026-09-04T09:00:00.000Z')`)
+	// owner 行：today 走 account scope（成本读 success_cost_usd 新口径列）。
+	seed(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd, success_cost_usd, last_used_at)
+		VALUES ('sys-1', 'account', 'acc-1', '2026-09-04', 5, 100, 200, 0.5, 0.5, '2026-09-04T09:00:00.000Z')`)
 	// authorized 行：today/total 都走 account_authorization scope。
-	seed(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd, last_used_at)
-		VALUES ('sys-1', 'account_authorization', 'auth-acc-2', '2026-09-04', 7, 1, 2, 0.7, '2026-09-04T08:00:00.000Z')`)
-	seed(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd, last_used_at)
-		VALUES ('sys-1', 'account_authorization', 'auth-acc-2', 70, 10, 20, 7.0, '2026-09-04T08:00:00.000Z')`)
+	seed(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd, success_cost_usd, last_used_at)
+		VALUES ('sys-1', 'account_authorization', 'auth-acc-2', '2026-09-04', 7, 1, 2, 0.7, 0.7, '2026-09-04T08:00:00.000Z')`)
+	seed(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd, success_cost_usd, last_used_at)
+		VALUES ('sys-1', 'account_authorization', 'auth-acc-2', 70, 10, 20, 7.0, 7.0, '2026-09-04T08:00:00.000Z')`)
 
 	owner := newSourcesRow("acc-1")
 	authorized := authorizedSourcesRow("acc-2")
@@ -131,9 +131,9 @@ func TestLoadAuthorizationQuotaStatusSQLite(t *testing.T) {
 			('auth-acc-team', 'active', NULL, '{}', 'manual', 'team-1', 'account', 'acc-team')`)
 	seed(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id, grantee_type, grantee_team_id, status, expires_at, limits_json)
 		VALUES ('grant-1', 'account', 'acc-team', 'team', 'team-1', 'active', NULL, '{"daily":{"enabled":true,"limit":1}}')`)
-	seed(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, total_cost_usd)
-		VALUES ('sys-1', 'account_authorization', 'auth-acc-dir', '2026-09-04', 150),
-			('sys-1', 'account_authorization_team', 'acc-team:team-1', '2026-09-04', 5)`)
+	seed(`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, total_cost_usd, success_cost_usd)
+		VALUES ('sys-1', 'account_authorization', 'auth-acc-dir', '2026-09-04', 150, 150),
+			('sys-1', 'account_authorization_team', 'acc-team:team-1', '2026-09-04', 5, 5)`)
 
 	exceeded, resetAt, err := loader.loadAuthorizationQuotaStatus(ctx, []managementRow{direct, team}, now, timezone)
 	if err != nil {

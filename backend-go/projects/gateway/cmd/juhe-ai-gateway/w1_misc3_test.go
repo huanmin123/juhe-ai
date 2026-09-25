@@ -486,6 +486,58 @@ func TestW1BodyRejectionUsageFailure(t *testing.T) {
 	}
 }
 
+// captureUsageRecorder 捕获 EnqueueUsageRecord 入参的 UsageRecorder fake
+// （body 拒绝快照脱敏断言用）。
+type captureUsageRecorder struct {
+	records []gatewayusage.UsageRecordInput
+}
+
+func (c *captureUsageRecorder) EnqueueUsageRecord(_ gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
+	c.records = append(c.records, input)
+	return nil
+}
+
+// TestW1BodyRejectionUsageSnapshotURLMasked：body 拒绝快照的 OriginalURL 带
+// 凭据 query（Gemini `?key=`）时必须经 SanitizeURLForLog 掩码后落库
+// （RecordGatewayFailure 直通透传快照，不经过 BuildUsageRequestSnapshot）。
+func TestW1BodyRejectionUsageSnapshotURLMasked(t *testing.T) {
+	spool := newUsageSpool(t.TempDir(), gatewaypreauth.SystemClock{}, newTestSlogLogger(), usageSpoolCapacity{})
+	recorder := newSpooledUsageRecorder(usageBridgeConfig{BufferCapacity: 4096, Logger: newTestSlogLogger()}, spool)
+	defer recorder.Close()
+	t.Cleanup(spool.StopReplay)
+	capture := &captureUsageRecorder{}
+	dispatch := gatewayusage.NewFinalizationDispatch(capture, spoolOverflow{spool: spool}, 0, 0)
+	dispatch.OverflowEnabled = true
+	service := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
+		WithClock(gatewaypreauth.SystemClock{})
+	rec := &chainBodyRejectionRecorder{usage: service}
+	requestCtx := &kernel.RequestContext{TraceID: "trace_mask", ClientIP: "203.0.113.20", Method: "POST", Path: "/v1/chat/completions"}
+	request := httptest.NewRequest("POST", "/v1/chat/completions?key=secret-token&foo=bar", nil)
+	runtime := &gatewayruntimecache.GatewayRuntime{
+		APIKey: &gatewayruntimecache.GatewayAPIKeyRow{ID: "key_1", SystemAccountID: "sys_owner", SelectedGroupID: "group_main"},
+	}
+	rec.recordUsageFailure(requestCtx, request, "trace_mask", "请求体超限", gatewaybody.RejectionInput{
+		StatusCode: 413, Reason: "payload_too_large", ErrorCode: "request_entity_too_large",
+		ErrorMessage: "请求体超限", RawBodyBytes: 4096, LimitBytes: 1024,
+	}, runtime)
+	if !dispatch.WaitForIdle(30_000) {
+		t.Fatal("用量收尾 30s 未排空")
+	}
+	if len(capture.records) != 1 {
+		t.Fatalf("应落一条失败用量，实际 %d", len(capture.records))
+	}
+	snapshot, ok := capture.records[0].RequestSnapshot.(gatewayusage.UsageRequestSnapshot)
+	if !ok {
+		t.Fatalf("请求快照类型不符：%T", capture.records[0].RequestSnapshot)
+	}
+	if snapshot.OriginalURL != "/v1/chat/completions?key=[redacted]&foo=bar" {
+		t.Fatalf("OriginalURL 未掩码：%q", snapshot.OriginalURL)
+	}
+	if strings.Contains(snapshot.OriginalURL, "secret-token") {
+		t.Fatalf("OriginalURL 泄漏凭据：%q", snapshot.OriginalURL)
+	}
+}
+
 func TestW1ChainAccountLocksReadStateOnce(t *testing.T) {
 	fixture := newChainFixture(t)
 	locks := &chainAccountLocks{db: fixture.db, now: func() time.Time { return time.UnixMilli(1728000000000) }}
@@ -537,12 +589,14 @@ func TestW1AuthorizationQuotaExceededArms(t *testing.T) {
 	if _, err := fixture.db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth-1', 'group', 'group_main', 'user-1', 'active', '{"hourly":{"enabled":true,"hours":24,"limit":1}}')`); err != nil {
 		t.Fatalf("insert authorization = %v", err)
 	}
-	// juhe_stats 成本投影表（SQLite 无前缀）。
+	// juhe_stats 成本投影表（SQLite 无前缀）。usage_stats 四表带
+	// success_cost_usd（quota 读点已切成功口径列）；小时窗口表的
+	// total_cost_usd 本身承载成功口径成本。
 	for _, ddl := range []string{
-		`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT, total_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
 		`CREATE TABLE usage_quota_hourly_windows (system_account_id TEXT, scope_type TEXT, scope_id TEXT, window_hours INTEGER, total_cost_usd REAL)`,
 	} {
 		if _, err := fixture.statsDB.Exec(ddl); err != nil {

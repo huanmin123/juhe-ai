@@ -721,6 +721,9 @@ func (m *Middleware) rejectMetadataWorkerBusy(w http.ResponseWriter, r *http.Req
 		"originalUrl":  sanitizeURLForLog(r.URL.RequestURI()),
 		"rawBodyBytes": rawBodyBytes,
 	})
+	req.RawBody = nil
+	req.Body = nil
+	req.ReleaseInFlight()
 	payload := GatewayErrorPayload("网关请求解析繁忙，请稍后重试", "server_overloaded", "gateway_json_parser_busy")
 	m.recordRejection(r, req, RejectionInput{
 		StatusCode:      http.StatusServiceUnavailable,
@@ -741,6 +744,9 @@ func (m *Middleware) rejectMetadataWorkerFailed(w http.ResponseWriter, r *http.R
 		"originalUrl":  sanitizeURLForLog(r.URL.RequestURI()),
 		"rawBodyBytes": rawBodyBytes,
 	})
+	req.RawBody = nil
+	req.Body = nil
+	req.ReleaseInFlight()
 	payload := GatewayErrorPayload("网关请求解析暂时不可用，请稍后重试", "server_overloaded", "gateway_json_parser_failed")
 	m.recordRejection(r, req, RejectionInput{
 		StatusCode:      http.StatusServiceUnavailable,

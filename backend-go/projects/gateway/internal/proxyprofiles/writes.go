@@ -373,17 +373,26 @@ func (s *Store) Patch(ctx context.Context, id string, input proxyInput) (*patchO
 	}, nil
 }
 
-// Delete mirrors deleteProxyForManagementAsync: usage guard inside the same
-// critical section, then the delete.
+// Delete mirrors deleteProxyForManagementAsync: profile load, usage guard and
+// the delete run in ONE transaction (Node SQLite beginImmediateDatabaseTransaction
+// / PG client.transaction with SELECT ... FOR UPDATE). The previous Go port ran
+// the guard and the DELETE as two autocommit statements, so a concurrent
+// account patch could bind the profile inside the race window and the delete
+// succeeded, leaving the account on a dangling proxy reference.
 func (s *Store) Delete(ctx context.Context, id string) (string, error) {
-	current, err := s.loadProfileRow(ctx, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	current, err := s.loadProfileRowQuerier(ctx, tx, id, s.rowLockClause())
 	if err != nil {
 		return "", err
 	}
 	if current == nil {
 		return "", nil
 	}
-	usageRows, err := s.db.QueryContext(ctx, s.bind(`
+	usageRows, err := tx.QueryContext(ctx, s.bind(`
 		SELECT id, name
 		FROM `+s.table("accounts")+`
 		WHERE proxy_profile_id = ? AND deleted_at IS NULL
@@ -427,7 +436,7 @@ func (s *Store) Delete(ctx context.Context, id string) (string, error) {
 			AccountCountIsLowerBound: len(usage) >= proxyUsageWindowLimit,
 		}
 	}
-	result, err := s.db.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("proxy_profiles")+` WHERE id = ?`), id)
+	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("proxy_profiles")+` WHERE id = ?`), id)
 	if err != nil {
 		return "", err
 	}
@@ -437,6 +446,9 @@ func (s *Store) Delete(ctx context.Context, id string) (string, error) {
 	}
 	if affected != 1 {
 		return "", nil
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
 	}
 	return current.name, nil
 }
@@ -459,7 +471,27 @@ type profileRow struct {
 	updatedAt         string
 }
 
+// rowQuerier abstracts the single-row query entry shared by *sql.DB and
+// *sql.Tx (both satisfy it).
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// rowLockClause is the PG row lock appended to the delete-critical-section
+// profile load (Node SELECT ... FOR UPDATE); SQLite relies on its single
+// writer, so no suffix there.
+func (s *Store) rowLockClause() string {
+	if s.pg {
+		return " FOR UPDATE"
+	}
+	return ""
+}
+
 func (s *Store) loadProfileRow(ctx context.Context, id string) (*profileRow, error) {
+	return s.loadProfileRowQuerier(ctx, s.db, id, "")
+}
+
+func (s *Store) loadProfileRowQuerier(ctx context.Context, querier rowQuerier, id string, lockClause string) (*profileRow, error) {
 	var row profileRow
 	var description, username sql.NullString
 	var updatedAt any
@@ -470,8 +502,8 @@ func (s *Store) loadProfileRow(ctx context.Context, id string) (*profileRow, err
 		SELECT id, name, description, type, host, port, username, password_encrypted, enabled, test_status, ` +
 		s.revisionSelectExpression() + `
 		FROM ` + s.table("proxy_profiles") + `
-		WHERE id = ?`
-	err := s.db.QueryRowContext(ctx, s.bind(query), id).Scan(
+		WHERE id = ?` + lockClause
+	err := querier.QueryRowContext(ctx, s.bind(query), id).Scan(
 		&row.id, &row.name, &description, &row.typeCode, &row.host, &port, &username,
 		&passwordEncrypted, &enabled, &row.testStatus, &updatedAt)
 	if err == sql.ErrNoRows {

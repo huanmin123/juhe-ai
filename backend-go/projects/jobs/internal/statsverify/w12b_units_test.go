@@ -332,8 +332,8 @@ func TestW12bSvConsistencyAndJobsArms(t *testing.T) {
 	mustExec(t, ctx, store.db, `INSERT INTO usage_stats_daily (
 		system_account_id, scope_type, scope_id, stat_date, request_count, success_count, error_count,
 		input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
-		cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, updated_at
-	) VALUES ('sys', 'system', '', '2026-09-16', 'abc', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '2026-09-16T00:00:00.000Z')`)
+		cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, success_cost_usd, updated_at
+	) VALUES ('sys', 'system', '', '2026-09-16', 'abc', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '2026-09-16T00:00:00.000Z')`)
 	if _, err := store.CheckUsageStatsConsistency(ctx, UsageStatsConsistencyOptions{Now: now}); err == nil {
 		t.Fatal("样本坏类型应报错")
 	}

@@ -194,6 +194,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	// 装配事实由下方 wireHealthProbeOutboxFace + SetProbeRequestDrain 承担。
 	if accountHealthConfig.Store.Mode == accounthealth.StorePostgres {
 		accountHealthConfig.Store.PostgresPool, err = postgresPools.Acquire("pgx", accountHealthConfig.Store.PostgresURL, "jobs-store", accountHealthConfig.Store.PostgresMaxOpenConns, accountHealthConfig.Store.PostgresMaxIdleConns)
+		// 池获取失败必须显式 fail-fast：不检查会被下方 OpenStore 覆盖 err，
+		// 带着 nil pool 进入 J1 装配（对齐 :388 J3a 同型检查）。
+		if err != nil {
+			return failWith(stderr, fmt.Errorf("open J1 account-health jobs-store PostgreSQL pool: %w", err))
+		}
 		// 死臂已删（w16j 证据：pgx 惰性 Open）
 	}
 	accountHealthStore, err = accounthealth.OpenStore(accountHealthConfig.Store)
@@ -206,7 +211,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if accountHealthConfig.InputSource == "postgres" {
 		accountHealthInputPool, err = postgresPools.Acquire("pgx", accountHealthConfig.BusinessPostgresURL, "business-input", accountHealthConfig.DirectInputPostgresMaxOpenConns, accountHealthConfig.DirectInputPostgresMaxIdleConns)
-		// 死臂已删（w16j 证据：pgx 惰性 Open）
+		if err != nil {
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("open J1 account-health direct-input PostgreSQL pool: %w", err))
+		}
 		accountHealthInputDB = accountHealthInputPool.DB()
 		pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pingErr := accountHealthInputDB.PingContext(pingContext)
@@ -383,15 +391,24 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		j3Config.Store.PostgresMaxOpenConns = j3Config.PostgresMaxOpenConns
 		j3Config.Store.PostgresMaxIdleConns = j3Config.PostgresMaxIdleConns
 		j3Config.Store.PostgresPool, err = postgresPools.Acquire("pgx", j3Config.Store.PostgresURL, "jobs-store", j3Config.Store.PostgresMaxOpenConns, j3Config.Store.PostgresMaxIdleConns)
-		// 死臂已删（w16j 证据：pgx 惰性 Open）
+		if err != nil {
+			return failWith(stderr, fmt.Errorf("open J3a proxy-latency jobs-store PostgreSQL pool: %w", err))
+		}
 		j3Store, err = proxylatency.OpenStore(j3Config.Store)
-		// 死臂已删（w16j 证据：pool 前置注入 + URL/limits LoadConfig 已校验）
+		// OpenStore 在 pool 前置注入后仍校验 mode/limits，可返回 (nil, err)；
+		// 吞错会让 nil store 进入下方 CheckSchema（nil-deref），必须 fail-fast。
+		if err != nil {
+			return failWith(stderr, fmt.Errorf("open J3a proxy-latency store: %w", err))
+		}
 		if err := j3Store.CheckSchema(context.Background()); err != nil {
 			_ = j3Store.Close()
 			return failWith(stderr, fmt.Errorf("verify pre-provisioned J3a proxy-latency jobs schema: %w", err))
 		}
 		j3InputPool, err = postgresPools.Acquire("pgx", j3Config.BusinessPostgresURL, "business-input", j3Config.InputPostgresMaxOpenConns, j3Config.InputPostgresMaxIdleConns)
-		// 死臂已删（w16j 证据：pgx 惰性 Open）
+		if err != nil {
+			_ = j3Store.Close()
+			return failWith(stderr, fmt.Errorf("open J3a proxy-latency direct-input PostgreSQL pool: %w", err))
+		}
 		j3InputDB = j3InputPool.DB()
 		pingContext, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pingErr := j3InputDB.PingContext(pingContext)
@@ -412,7 +429,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return failWith(stderr, fmt.Errorf("verify J3a proxy-latency direct-input contract: %w", contractErr))
 		}
 		j3ResultPool, err = postgresPools.Acquire("pgx", j3Config.ResultPostgresURL, "business-result", j3Config.InputPostgresMaxOpenConns, j3Config.InputPostgresMaxIdleConns)
-		// 死臂已删（w16j 证据：pgx 惰性 Open）
+		if err != nil {
+			_ = j3InputPool.Close()
+			_ = j3Store.Close()
+			return failWith(stderr, fmt.Errorf("open J3a proxy-latency business-result PostgreSQL pool: %w", err))
+		}
 		j3ResultDB = j3ResultPool.DB()
 		resultProjector, projectorErr := proxylatency.NewResultProjector(j3Store, j3ResultDB, proxylatency.ResultProjectorConfig{PollInterval: time.Second, BatchSize: j3Config.BatchSize, Now: j3Config.Now}, logger)
 		if projectorErr != nil {
@@ -478,6 +499,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	workerCfg, err := loadWorkerConfig(os.Getenv)
 	if err != nil {
 		return failWith(stderr, fmt.Errorf("load jobs worker config: %w", err))
+	}
+	// 旧名兼容路径披露：只配 JUHE_AI_USAGE_SPOOL_DIR 时 drain 仍与 gateway
+	// 写侧同目录交接，但该名已废弃，提示部署改配新名。
+	if workerCfg.usageSpoolDirectoryLegacyName {
+		logger.Warn("usage spool 目录来自旧名 JUHE_AI_USAGE_SPOOL_DIR 回退（兼容路径，建议改配 JUHE_AI_USAGE_SPOOL_DIRECTORY）",
+			"event", "usage_spool_directory_legacy_fallback", "directory", workerCfg.UsageSpoolDirectory)
 	}
 	worker, err := buildWorkerAssembly(workerCfg, logger)
 	if err != nil {

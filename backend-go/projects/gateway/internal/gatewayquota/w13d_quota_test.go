@@ -454,7 +454,7 @@ func TestW13DAuthorizationByIDsReadOnlyAndExact(t *testing.T) {
 		t.Fatalf("zero now decision=%+v err=%v", decision, err)
 	}
 	// 超额后 ReadOnly 拒绝。
-	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 99})
 	decision, err = service.CheckAuthorizationQuotaByIDsReadOnly(ctx, "ga1", "", clock.Now())
 	if err != nil || decision.Allowed {
@@ -774,7 +774,7 @@ func TestW13DAuthorizationHelpers(t *testing.T) {
 		t.Fatal("group scope 必须取 owner")
 	}
 	teamRow := TeamAuthorizationQuotaRow{
-		ResourceOwnerSystemAccountID:       "owner",
+		ResourceOwnerSystemAccountID:        "owner",
 		AuthorizationGranteeSystemAccountID: mustNullString("team-grantee", true),
 	}
 	if teamAuthorizationQuotaStatsSystemAccountID(teamRow, scopeAccountAuthorization) != "team-grantee" {

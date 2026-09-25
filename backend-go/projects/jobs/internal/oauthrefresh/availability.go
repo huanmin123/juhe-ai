@@ -37,17 +37,21 @@ type ScheduleStatusSyncResult struct {
 // ActivationHook runs the activation side effects of an account schedule sync
 // (Node advanceAccountCircuitDispatchRevisionFamily*): the gateway circuit
 // control plane lives in the gateway module, so the jobs wiring supplies the
-// implementation; nil keeps the status flip only.
+// implementation; nil keeps the status flip only. The hook receives the sync's
+// own transaction exactly like the Node archive (the side effect runs inside
+// the same tx as the status flip); opening a second transaction inside the
+// hook would self-deadlock on the uncommitted flip (SQLite single writer / PG
+// row lock), so implementations must use the given tx.
 type ActivationHook interface {
-	OnAccountActivated(ctx context.Context, accountID string, nowIso string) error
+	OnAccountActivated(ctx context.Context, tx *sql.Tx, accountID string, nowIso string) error
 }
 
 // ActivationHookFunc adapts a function to ActivationHook.
-type ActivationHookFunc func(ctx context.Context, accountID string, nowIso string) error
+type ActivationHookFunc func(ctx context.Context, tx *sql.Tx, accountID string, nowIso string) error
 
 // OnAccountActivated implements ActivationHook.
-func (f ActivationHookFunc) OnAccountActivated(ctx context.Context, accountID, nowIso string) error {
-	return f(ctx, accountID, nowIso)
+func (f ActivationHookFunc) OnAccountActivated(ctx context.Context, tx *sql.Tx, accountID, nowIso string) error {
+	return f(ctx, tx, accountID, nowIso)
 }
 
 // scheduleSyncUpdate carries one evaluated row (Node
@@ -87,11 +91,11 @@ func (s *Store) SyncAccountScheduleStatuses(ctx context.Context, now time.Time, 
 	if err != nil {
 		return ScheduleStatusSyncResult{}, err
 	}
-	activation := func(update scheduleSyncUpdate) func() error {
+	activation := func(tx *sql.Tx, update scheduleSyncUpdate) func() error {
 		if hook == nil || update.status != "active" {
 			return nil
 		}
-		return func() error { return hook.OnAccountActivated(ctx, update.id, isoMillis(now)) }
+		return func() error { return hook.OnAccountActivated(ctx, tx, update.id, isoMillis(now)) }
 	}
 	if err := s.applyScheduleUpdates(ctx, s.table("accounts"), s.table("account_schedule_status_events"), "account_id", true, updates, isoMillis(now), &result, activation); err != nil {
 		return ScheduleStatusSyncResult{}, err
@@ -199,7 +203,7 @@ func (s *Store) applyScheduleUpdates(
 	updates []scheduleSyncUpdate,
 	updatedAt string,
 	result *ScheduleStatusSyncResult,
-	activation func(scheduleSyncUpdate) func() error,
+	activation func(tx *sql.Tx, update scheduleSyncUpdate) func() error,
 ) error {
 	if len(updates) == 0 {
 		return nil
@@ -243,7 +247,7 @@ func (s *Store) applyScheduleUpdates(
 		result.ChangedIDs = append(result.ChangedIDs, update.id)
 		if update.status == "active" {
 			if activation != nil {
-				if apply := activation(update); apply != nil {
+				if apply := activation(tx, update); apply != nil {
 					if err := apply(); err != nil {
 						return err
 					}

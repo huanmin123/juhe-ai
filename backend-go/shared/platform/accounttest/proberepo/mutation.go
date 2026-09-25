@@ -353,7 +353,7 @@ func (s *Store) RecordKeySuccess(ctx context.Context, input accountquality.KeySu
 		if err != nil {
 			return accountquality.KeyMutationResult{}, err
 		}
-		return rowsToResult(result, fence.provided)
+		return s.keyMutationResultWithDirty(ctx, result, target.accountID, fence.provided)
 	}
 	query := fmt.Sprintf(`
     INSERT INTO %s (
@@ -391,11 +391,7 @@ func (s *Store) RecordKeySuccess(ctx context.Context, input accountquality.KeySu
 	if err != nil {
 		return accountquality.KeyMutationResult{}, err
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return accountquality.KeyMutationResult{}, err
-	}
-	return accountquality.KeyMutationResult{Changed: changed > 0}, nil
+	return s.keyMutationResultWithDirty(ctx, result, target.accountID, fence.provided)
 }
 
 // RecordKeyFailure 实现 accountquality.CooldownMutation（record_account_api_key_failure）。
@@ -509,7 +505,7 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 		if err != nil {
 			return accountquality.KeyMutationResult{}, err
 		}
-		return rowsToResult(result, true)
+		return s.keyMutationResultWithDirty(ctx, result, target.accountID, true)
 	}
 	query := fmt.Sprintf(`
     INSERT INTO %s (
@@ -528,11 +524,7 @@ func (s *Store) RecordKeyFailure(ctx context.Context, input accountquality.KeyFa
 	if err != nil {
 		return accountquality.KeyMutationResult{}, err
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return accountquality.KeyMutationResult{}, err
-	}
-	return accountquality.KeyMutationResult{Changed: changed > 0}, nil
+	return s.keyMutationResultWithDirty(ctx, result, target.accountID, false)
 }
 
 // DeferKeyProbe 实现 accountquality.CooldownMutation（defer_account_api_key_probe）。
@@ -797,7 +789,7 @@ func normalizeProbeDeferSeconds(value int) int {
 // 实现收敛到 shared/platform/schedulejitter（全输入域等价，含 interval<1
 // 钳制与 ms 整除语义）。
 func passiveJitterWindowMS(intervalMS int64) int64 {
-	return int64(schedulejitter.Window(time.Duration(intervalMS) * time.Millisecond) / time.Millisecond)
+	return int64(schedulejitter.Window(time.Duration(intervalMS)*time.Millisecond) / time.Millisecond)
 }
 
 // passiveScheduleDelayMS 等价 passiveScheduleDelayMs（对称抖动，零偏移取 1）。

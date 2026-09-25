@@ -6,6 +6,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // Port of request/authorization-preflight.ts: the API key availability,
@@ -132,10 +133,12 @@ func (s *Service) RejectGatewayAPIKeyQuotaIfExceeded(ctx context.Context, input 
 		if input.Req.HTTP != nil {
 			requestCtx := input.Req.HTTP.Context()
 			if requestCtx != nil {
-				go func() {
+				// 请求退出时释放在途预留；自启 goroutine 走 safego 屏障，
+				// 防止单次 panic 打进程（与 gatewayruntimecache 等并发点同约定）。
+				safego.Go("gatewaypreauth.authorizationpreflight.inflight_reservation_release", func() {
 					<-requestCtx.Done()
 					reservation.Complete()
-				}()
+				})
 			}
 		}
 	}

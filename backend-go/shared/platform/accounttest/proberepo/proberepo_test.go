@@ -176,6 +176,14 @@ func (h *testDB) seedSchema(t *testing.T) {
       effective_source_type TEXT,
       effective_source_team_id TEXT
     )`)
+	// group_account_stats_dirty 与生产 schema（maintenance）同形状：key 运行态
+	// 翻转标脏（账号#F8）与 stats 家族 RefreshDirtyGroupAccountStats 的消费表。
+	h.exec(t, `
+    CREATE TABLE group_account_stats_dirty (
+      group_id TEXT PRIMARY KEY,
+      reason TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`)
 }
 
 func (h *testDB) sealCredentials(t *testing.T, credentials map[string]any) string {

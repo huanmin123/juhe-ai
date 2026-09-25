@@ -103,9 +103,9 @@ func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
 	seedAuthzRow(t, fixture.business, "ga2", "sysA", "sysB", "group", "g2", "", `{"daily":{"enabled":true,"limit":0.01}}`, "paused")
 
 	// Costs: group scope exceeded, account scope fine.
-	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 10})
-	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysB", "account_authorization", "aa1", "2026-09-04", 1})
 
 	decisions, err := fixture.service.CheckAuthorizationQuotaBatchByIDs(ctx, "ga1", []AccountRef{
@@ -131,7 +131,7 @@ func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
 	}
 
 	// Drop the group cost below the limit: everything allows.
-	if _, err := fixture.statsDB.Exec(`UPDATE usage_stats_daily SET total_cost_usd = 9 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := fixture.statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 9 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	decisions, err = fixture.service.CheckAuthorizationQuotaBatchByIDsReadOnly(ctx, "ga1", []AccountRef{
@@ -145,7 +145,7 @@ func TestCheckAuthorizationQuotaBatchByIDs(t *testing.T) {
 	}
 
 	// Account-scope boundary: exactly at the account limit denies.
-	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysB", "account_authorization", "aa1", "2026-09-04", 5})
 	decisions, err = fixture.service.CheckAuthorizationQuotaBatchByIDs(ctx, "ga1", []AccountRef{
 		{AccountID: "u1", AccountAuthorizationID: "aa1"},
@@ -178,7 +178,7 @@ func TestTeamGrantQuota(t *testing.T) {
 	seedAuthzRow(t, fixture.business, "ga1", "sysA", "sysB", "group", "g1", "team1", "", "active")
 	seedGrantRow(t, fixture.business, "grant1", "group", "g1", "team1", "sysA", `{"daily":{"enabled":true,"limit":3}}`)
 	// Team scope stats are recorded as resource_id:teamId on the owner.
-	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization_team", "g1:team1", "2026-09-04", 5})
 
 	decisions, err := fixture.service.CheckAuthorizationQuotaBatchByIDs(ctx, "ga1", []AccountRef{{AccountID: "u1"}}, fixture.clock.Now())
@@ -198,7 +198,7 @@ func TestTeamGrantAccountScopeUsesInstanceAccount(t *testing.T) {
 	seedGrantRow(t, fixture.business, "grant1", "account", "acc1", "team1", "sysA", `{"daily":{"enabled":true,"limit":2}}`)
 	// Account-scope team stats key on the instance account id and fall back to
 	// the grant owner when the authorization grantee is absent from the row.
-	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysB", "account_authorization_team", "inst1:team1", "2026-09-04", 2})
 
 	decisions, err := fixture.service.CheckAuthorizationQuotaBatchByIDs(ctx, "", []AccountRef{{AccountID: "u1", AccountAuthorizationID: "aa1"}}, fixture.clock.Now())
@@ -214,7 +214,7 @@ func TestCheckAuthorizationQuotaRuntimeCache(t *testing.T) {
 	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 1})
 
 	first, err := fixture.service.CheckAuthorizationQuotaByIDs(ctx, "ga1", "", fixture.clock.Now())
@@ -222,7 +222,7 @@ func TestCheckAuthorizationQuotaRuntimeCache(t *testing.T) {
 		t.Fatalf("first check: (%+v, %v)", first, err)
 	}
 	// Exceed the scope; the 5s runtime cache must keep allowing.
-	if _, err := fixture.statsDB.Exec(`UPDATE usage_stats_daily SET total_cost_usd = 50 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := fixture.statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 50 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	second, err := fixture.service.CheckAuthorizationQuotaByIDs(ctx, "ga1", "", fixture.clock.Now())
@@ -302,7 +302,7 @@ func TestCheckAuthorizationQuotaBatchAsyncWorkerRole(t *testing.T) {
 	fixture := newAuthzFixture(t, Modes{}, newFakeClock(time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC)))
 	ctx := context.Background()
 	seedAuthzRow(t, fixture.business, "aa1", "sysA", "sysB", "account", "acc1", "", `{"daily":{"enabled":true,"limit":5}}`, "active")
-	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, fixture.statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysB", "account_authorization", "aa1", "2026-09-04", 100})
 
 	output, err := fixture.service.CheckAuthorizationQuotaBatchAsync(ctx, GroupAccessMetadata{}, []AccountAuthorizationSummary{

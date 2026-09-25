@@ -176,7 +176,7 @@ func (s *StatsUsageSource) ApiKeyListUsageSummaries(ctx context.Context, scopes 
       requested.row_key,
       COALESCE(usage_totals.request_count, 0) AS request_count,
       COALESCE(usage_totals.input_tokens, 0) + COALESCE(usage_totals.output_tokens, 0) AS total_tokens,
-      COALESCE(usage_totals.total_cost_usd, 0) AS total_cost
+      COALESCE(usage_totals.success_cost_usd, 0) AS total_cost
     FROM requested
     LEFT JOIN ` + s.table("usage_stats_totals") + ` usage_totals
       ON usage_totals.system_account_id = requested.system_account_id
@@ -254,7 +254,7 @@ func (s *StatsUsageSource) ApiKeyUsageSummaries(ctx context.Context, scopes []Us
       COALESCE(thinking_tokens, 0) AS thinking_tokens,
       COALESCE(input_image_tokens, 0) AS input_image_tokens,
       COALESCE(output_image_tokens, 0) AS output_image_tokens,
-      COALESCE(total_cost_usd, 0) AS total_cost,
+      COALESCE(success_cost_usd, 0) AS total_cost,
       last_used_at
     FROM ` + s.table("usage_stats_totals") + `
     WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id IN (` + strings.Join(placeholders, ", ") + `)

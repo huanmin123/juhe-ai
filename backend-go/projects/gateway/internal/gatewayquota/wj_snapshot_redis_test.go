@@ -287,7 +287,7 @@ func TestWJAuthzBatchAsyncAllCached(t *testing.T) {
 	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "allcached")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 1})
 	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1"}
 	accounts := []AccountAuthorizationSummary{{ID: "u1"}, {ID: "u2"}}
@@ -297,7 +297,7 @@ func TestWJAuthzBatchAsyncAllCached(t *testing.T) {
 		t.Fatalf("first batch: %v", err)
 	}
 	// 第二次调用全部命中内存缓存；超库后仍保持放行以证明未重新装载。
-	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET total_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	second, err := service.CheckAuthorizationQuotaBatchAsync(ctx, groupAccess, accounts)

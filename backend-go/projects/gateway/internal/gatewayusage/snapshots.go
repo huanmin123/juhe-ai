@@ -17,7 +17,7 @@ import (
 const DownstreamConnectionClosedMessage = "下游连接关闭"
 
 // GeneratedByGateway mirrors the generatedBy: 'gateway' marker.
-const GeneratedByGateway = "gateway"// UsageRequestSnapshot mirrors UsageRequestSnapshot.
+const GeneratedByGateway = "gateway" // UsageRequestSnapshot mirrors UsageRequestSnapshot.
 type UsageRequestSnapshot struct {
 	Method                   string         `json:"method"`
 	Path                     string         `json:"path"`
@@ -34,46 +34,46 @@ type UsageRequestSnapshot struct {
 
 // UsageResponseSnapshot mirrors UsageResponseSnapshot.
 type UsageResponseSnapshot struct {
-	UpstreamURL  string           `json:"upstreamUrl,omitempty"`
-	StatusCode   *int             `json:"statusCode,omitempty"`
-	Headers      map[string]any   `json:"headers,omitempty"`
-	BodyText     string           `json:"bodyText,omitempty"`
-	BodyOmission any              `json:"bodyOmission,omitempty"`
-	ErrorMessage string           `json:"errorMessage,omitempty"`
-	GeneratedBy  string           `json:"generatedBy,omitempty"`
+	UpstreamURL  string                       `json:"upstreamUrl,omitempty"`
+	StatusCode   *int                         `json:"statusCode,omitempty"`
+	Headers      map[string]any               `json:"headers,omitempty"`
+	BodyText     string                       `json:"bodyText,omitempty"`
+	BodyOmission any                          `json:"bodyOmission,omitempty"`
+	ErrorMessage string                       `json:"errorMessage,omitempty"`
+	GeneratedBy  string                       `json:"generatedBy,omitempty"`
 	LastUpstream *LastUpstreamAttemptSnapshot `json:"lastUpstreamAttempt,omitempty"`
 }
 
 // LastUpstreamAttemptSnapshot mirrors the lastUpstreamAttempt shape.
 type LastUpstreamAttemptSnapshot struct {
-	AccountID    string           `json:"accountId"`
-	AccountName  string           `json:"accountName"`
-	UpstreamURL  string           `json:"upstreamUrl"`
-	StatusCode   *int             `json:"statusCode,omitempty"`
-	Headers      map[string]any   `json:"headers,omitempty"`
-	BodyText     string           `json:"bodyText,omitempty"`
-	ErrorMessage string           `json:"errorMessage,omitempty"`
+	AccountID    string         `json:"accountId"`
+	AccountName  string         `json:"accountName"`
+	UpstreamURL  string         `json:"upstreamUrl"`
+	StatusCode   *int           `json:"statusCode,omitempty"`
+	Headers      map[string]any `json:"headers,omitempty"`
+	BodyText     string         `json:"bodyText,omitempty"`
+	ErrorMessage string         `json:"errorMessage,omitempty"`
 }
 
 // UpstreamAttempt mirrors the consumed UpstreamAttempt
 // (upstream/attempt.ts) fields the error snapshot builder reads.
 type UpstreamAttempt struct {
-	AccountID             string
-	AccountName           string
-	UpstreamURL           string
-	Status                *int
-	ResponseHeaders       map[string]any
-	ResponseBodyText      string
-	Message               string
+	AccountID        string
+	AccountName      string
+	UpstreamURL      string
+	Status           *int
+	ResponseHeaders  map[string]any
+	ResponseBodyText string
+	Message          string
 }
 
 // RequestSnapshotBodyState mirrors the consumed GatewayRequestBodyState
 // fields (request/body.ts) for snapshot tier/effort extraction.
 type RequestSnapshotBodyState struct {
-	ServiceTier    any
+	ServiceTier     any
 	ReasoningEffort any
-	Model          any
-	Stream         any
+	Model           any
+	Stream          any
 }
 
 // BuildUsageRequestSnapshotInput mirrors the inputs buildUsageRequestSnapshot
@@ -110,9 +110,11 @@ func BuildUsageRequestSnapshot(input BuildUsageRequestSnapshotInput) UsageReques
 		bodyStateEffort = requestedReasoningEffortFromBody(input.RawBody)
 	}
 	snapshot := UsageRequestSnapshot{
-		Method:                   input.Method,
+		Method: input.Method,
+		// originalUrl 统一经凭据脱敏落快照（2026-09-25）：Gemini `?key=` 等
+		// 凭据 query 不得明文持久化；历史已落库行不回填，只约束新写入。
 		Path:                     input.Path,
-		OriginalURL:              input.OriginalURL,
+		OriginalURL:              SanitizeURLForLog(input.OriginalURL),
 		ClientIP:                 input.ClientIP,
 		TraceID:                  input.TraceID,
 		RequestedServiceTier:     NormalizeUsageServiceTier(bodyStateTier),
@@ -286,31 +288,84 @@ func SanitizeURLCredentialsForLog(value string) string {
 
 // sanitizeURLForLogSensitiveNames mirrors the oauth sensitive query names.
 var sanitizeURLForLogSensitiveNames = map[string]bool{
-	"state":           true,
-	"nonce":           true,
-	"code_challenge":  true,
-	"transaction_id":  true,
-	"user_code":       true,
+	"state":          true,
+	"nonce":          true,
+	"code_challenge": true,
+	"transaction_id": true,
+	"user_code":      true,
 }
 
-// SanitizeURLForLog mirrors sanitizeUrlForLog: only /oauth/authorize and
-// /oauth/device paths are rewritten; sensitive query names are redacted and
-// only path+query survive.
+// sanitizeURLForLogCredentialNames 是凭据类 query 名（小写比对），值一律掩码。
+// Gemini native 的 `?key=` 载体与 OAuth token 类 query 会随 originalUrl 明文
+// 进入 usage 快照/日志面；掩码后 path 与其余 query 参数仍保留诊断价值。
+// Go 侧加固（2026-09-25）：Node 原实现（usage/snapshots.ts:49
+// `originalUrl: req.originalUrl`）不做该脱敏，本批经用户授权收敛。
+var sanitizeURLForLogCredentialNames = map[string]bool{
+	"key":           true,
+	"token":         true,
+	"access_token":  true,
+	"refresh_token": true,
+	"id_token":      true,
+	"api_key":       true,
+	"apikey":        true,
+	"api-key":       true,
+}
+
+// SanitizeURLForLog mirrors sanitizeUrlForLog with a Go-side hardening
+// (2026-09-25): /oauth/authorize 与 /oauth/device 维持原有敏感名重写语义；
+// 其余 path 上凭据类 query 名的值替换为 [redacted]，path、query 顺序与其余
+// 参数字节原样保留，无凭据参数时原文返回。日志面与 usage 快照面共用本函数。
 func SanitizeURLForLog(value string) string {
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return value
 	}
 	if parsed.Path != "/oauth/authorize" && parsed.Path != "/oauth/device" {
-		return value
+		return maskCredentialQueryValues(parsed, value)
 	}
 	query := parsed.Query()
 	for name := range query {
-		if sanitizeURLForLogSensitiveNames[name] {
+		if sanitizeURLForLogSensitiveNames[name] || sanitizeURLForLogCredentialNames[strings.ToLower(name)] {
 			query.Set(name, "[redacted]")
 		}
 	}
 	return parsed.Path + "?" + query.Encode()
+}
+
+// maskCredentialQueryValues 重写 RawQuery 中凭据类参数的值为 [redacted]；
+// 未命中时原文返回，避免 url 重建带来的排序/编码规范化漂移。命中时仅替换
+// RawQuery 段，scheme/host/path/fragment 等其余成分原样保留。
+func maskCredentialQueryValues(parsed *url.URL, original string) string {
+	if parsed.RawQuery == "" {
+		return original
+	}
+	segments := strings.Split(parsed.RawQuery, "&")
+	masked := false
+	for index, segment := range segments {
+		eq := strings.IndexByte(segment, '=')
+		if eq < 0 {
+			continue
+		}
+		if !sanitizeURLForLogCredentialNames[queryParamCredentialName(segment[:eq])] {
+			continue
+		}
+		segments[index] = segment[:eq] + "=[redacted]"
+		masked = true
+	}
+	if !masked {
+		return original
+	}
+	rewritten := *parsed
+	rewritten.RawQuery = strings.Join(segments, "&")
+	return rewritten.String()
+}
+
+// queryParamCredentialName 解码并小写化 query 参数名后比对凭据名单。
+func queryParamCredentialName(name string) string {
+	if decoded, err := url.QueryUnescape(name); err == nil {
+		name = decoded
+	}
+	return strings.ToLower(name)
 }
 
 // gatewayLogErrorMessageMaxBytes mirrors gatewayLogErrorMessageMaxBytes.
@@ -318,8 +373,8 @@ const gatewayLogErrorMessageMaxBytes = 4 * 1024
 
 // GatewayLogErrorMessage mirrors GatewayLogErrorMessage.
 type GatewayLogErrorMessage struct {
-	ErrorMessage         string
-	ErrorMessageBytes    int
+	ErrorMessage          string
+	ErrorMessageBytes     int
 	ErrorMessageTruncated bool
 }
 
@@ -332,8 +387,8 @@ func BuildGatewayLogErrorMessage(value string) GatewayLogErrorMessage {
 	errorMessageBytes := len(value)
 	if errorMessageBytes <= gatewayLogErrorMessageMaxBytes {
 		return GatewayLogErrorMessage{
-			ErrorMessage:      value,
-			ErrorMessageBytes: errorMessageBytes,
+			ErrorMessage:          value,
+			ErrorMessageBytes:     errorMessageBytes,
 			ErrorMessageTruncated: false,
 		}
 	}
@@ -347,8 +402,8 @@ func BuildGatewayLogErrorMessage(value string) GatewayLogErrorMessage {
 	prefixBytes := len(prefix)
 	truncatedSuffix := "...[truncated " + itoa(errorMessageBytes-prefixBytes) + " bytes]"
 	return GatewayLogErrorMessage{
-		ErrorMessage:      prefix + truncatedSuffix,
-		ErrorMessageBytes: errorMessageBytes,
+		ErrorMessage:          prefix + truncatedSuffix,
+		ErrorMessageBytes:     errorMessageBytes,
 		ErrorMessageTruncated: true,
 	}
 }

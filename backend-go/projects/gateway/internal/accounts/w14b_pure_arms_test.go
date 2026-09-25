@@ -785,17 +785,17 @@ func TestW14BStatsUsageSourceHelpers(t *testing.T) {
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("空 scope 汇总应为空：%v %v", empty, err)
 	}
-	// sqlite 下建出 stats 总量表并命中查询。
-	env.exec(t, `CREATE TABLE IF NOT EXISTS usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, request_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_cost_usd REAL)`)
-	env.exec(t, `INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd)
-		VALUES ('owner-w14b', 'account', 'acc-w14b-usage', 2, 10, 20, 0.5)`)
+	// sqlite 下建出 stats 总量表并命中查询（成本读 success_cost_usd 新口径）。
+	env.exec(t, `CREATE TABLE IF NOT EXISTS usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, request_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_cost_usd REAL, success_cost_usd REAL)`)
+	env.exec(t, `INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd, success_cost_usd)
+		VALUES ('owner-w14b', 'account', 'acc-w14b-usage', 2, 10, 20, 0.5, 0.4)`)
 	scope := UsageScope{RowKey: "acc-w14b-usage", SystemAccountID: "owner-w14b", ScopeType: usageScopeTypeAccount, ScopeID: "acc-w14b-usage"}
 	summaries, err := source.AccountListUsageSummaries(context.Background(), []UsageScope{scope, scope}, "")
 	if err != nil {
 		t.Fatalf("用量汇总查询应成功：%v", err)
 	}
-	if summary := summaries["acc-w14b-usage"]; summary.TotalTokens != 30 || summary.RequestCount != 2 {
-		t.Fatalf("用量汇总不符：%+v", summaries)
+	if summary := summaries["acc-w14b-usage"]; summary.TotalTokens != 30 || summary.RequestCount != 2 || summary.TotalCost != 0.4 {
+		t.Fatalf("用量汇总不符（成本应为 success_cost_usd=0.4）：%+v", summaries)
 	}
 	// statDate 分支换 daily 表：sqlite 缺表应返回错误臂。
 	if _, err := source.AccountListUsageSummaries(context.Background(), []UsageScope{scope}, "2026-09-17"); err == nil {

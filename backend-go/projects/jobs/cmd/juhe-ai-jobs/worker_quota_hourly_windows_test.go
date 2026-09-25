@@ -111,10 +111,13 @@ func seedQuotaHourlyWindowTables(t *testing.T, dir string) {
 			scope_id TEXT NOT NULL DEFAULT '',
 			stat_hour TEXT NOT NULL,
 			total_cost_usd REAL NOT NULL DEFAULT 0,
+			success_cost_usd REAL NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour))`,
-		`INSERT INTO usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, total_cost_usd, updated_at)
-		 VALUES ('sys_a', 'api_key', 'key_wired', '`+currentHour+`', 3, '2026-04-18T11:00:00.000Z')`)
+		// fixture 行无失败语义（对齐 schema 守卫：error_count = 0 行的
+		// success_cost_usd = total_cost_usd），窗口断言 total = SUM(success) = 3。
+		`INSERT INTO usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, total_cost_usd, success_cost_usd, updated_at)
+		 VALUES ('sys_a', 'api_key', 'key_wired', '`+currentHour+`', 3, 3, '2026-04-18T11:00:00.000Z')`)
 
 	business := openTestSQLite(t, filepath.Join(dir, "business.sqlite3"))
 	mustExec(t, business,

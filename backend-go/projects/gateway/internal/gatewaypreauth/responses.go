@@ -248,7 +248,10 @@ func (w *TrackingWriter) Write(body []byte) (int, error) {
 	return w.ResponseWriter.Write(body)
 }
 
-// End mirrors res.end(): later body writes are dropped.
+// End mirrors res.end(): it only flips the writableEnded flag. Writes and
+// WriteHeader calls after End still pass through to the wrapped writer —
+// callers must gate their own writes with WritableEnded() (the heartbeat
+// loop and the error paths do exactly that).
 func (w *TrackingWriter) End() { w.ended = true }
 
 // SetDestroyed mirrors res.destroyed for the early-return check.

@@ -110,6 +110,11 @@ func TestUsageStatsMirrorChainSQLite(t *testing.T) {
 			t.Fatalf("建聚合投影表失败: %v", err)
 		}
 	}
+	// 生产 dev 拓扑里 gateway bootstrap 会跑 maintenance EnsureSQLiteStats，
+	// 为遗留库补 success_cost_usd 列（配额成功口径）。statsverify 的建库 DDL
+	// 尚未同步该列（另一写域），这里在测试内等价复刻该加法迁移，保证聚合
+	// INSERT 与生产 schema 一致。
+	ensureSuccessCostUsdColumns(t, statsDB)
 
 	// usagewriter：真实分片写 + stats 镜像写。
 	catalogDB := chainOpenSQLite(t, filepath.Join(dir, "usage-catalog.sqlite3"))
@@ -287,5 +292,49 @@ func TestUsageStatsMirrorChainSQLite(t *testing.T) {
 	}
 	if userSummaryRequestCount != 1 {
 		t.Fatalf("authorization_user_usage_summary_daily request_count = %d, 期望 1", userSummaryRequestCount)
+	}
+}
+
+// ensureSuccessCostUsdColumns 对已存在的 stats 投影表补 success_cost_usd 列，
+// 与 maintenance EnsureSQLiteStats 的遗留库守卫同款（PRAGMA table_info 判定 +
+// ADD COLUMN + rerun-safe 回填：error_count = 0 的行 total 即成功成本）。
+func ensureSuccessCostUsdColumns(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, table := range []string{
+		"usage_stats_totals",
+		"usage_stats_minute",
+		"usage_stats_hourly",
+		"usage_stats_daily",
+		"usage_stats_weekly",
+		"usage_stats_monthly",
+	} {
+		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			t.Fatalf("读取 %s 列失败: %v", table, err)
+		}
+		columnExists := false
+		for rows.Next() {
+			var cid, notNull, pk int
+			var name, declaredType string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+				rows.Close()
+				t.Fatalf("扫描 %s 列失败: %v", table, err)
+			}
+			if name == "success_cost_usd" {
+				columnExists = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatalf("遍历 %s 列失败: %v", table, err)
+		}
+		rows.Close()
+		if columnExists {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN success_cost_usd REAL NOT NULL DEFAULT 0"); err != nil {
+			t.Fatalf("补 %s.success_cost_usd 失败: %v", table, err)
+		}
 	}
 }

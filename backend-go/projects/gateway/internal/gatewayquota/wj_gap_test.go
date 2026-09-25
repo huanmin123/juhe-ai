@@ -156,7 +156,7 @@ func TestWJAuthzTeamRowLimitShapes(t *testing.T) {
 	// 账户维度授权 + team grant + 实例账户缺失 → resourceID 不可得 → 跳过。
 	seedAuthzRow(t, business, "aa2", "sysA", "sysB", "account", "acc2", "team1", "", "active")
 	seedGrantRow(t, business, "grant-acc2", "account", "acc2", "team1", "sysA", `{"daily":{"enabled":true,"limit":1}}`)
-	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "account_authorization_team", "acc2:team1", "2026-09-04", 5})
 	decision, err = service.CheckAuthorizationQuotaByIDsReadOnly(ctx, "", "aa2", clock.Now())
 	if err != nil || !decision.Allowed {

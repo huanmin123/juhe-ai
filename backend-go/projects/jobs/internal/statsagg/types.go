@@ -72,14 +72,18 @@ type UsageStatsAccumulator struct {
 	InputImageTokens   float64
 	OutputImageTokens  float64
 	TotalCostUsd       float64
-	DurationMsSum      float64
-	DurationMsCount    float64
-	DurationMsMax      float64
-	FirstTokenMsSum    float64
-	FirstTokenMsCount  float64
-	FirstTokenMsMax    float64
-	LastUsedAt         string // '' 表示 Node undefined
-	LastErrorAt        string // '' 表示 Node undefined
+	// SuccessCostUsd 是成功交付尝试（success=1）的成本口径（配额/账单读侧
+	// gatewayquota 消费）：失败尝试的成本只进 TotalCostUsd，保证账号上游
+	// 成本观测完整，同时避免切号重试的部分流失败与最终成功尝试双计配额。
+	SuccessCostUsd    float64
+	DurationMsSum     float64
+	DurationMsCount   float64
+	DurationMsMax     float64
+	FirstTokenMsSum   float64
+	FirstTokenMsCount float64
+	FirstTokenMsMax   float64
+	LastUsedAt        string // '' 表示 Node undefined
+	LastErrorAt       string // '' 表示 Node undefined
 }
 
 // UsageStatsEntry mirrors usage-stats-types.ts UsageStatsEntry。

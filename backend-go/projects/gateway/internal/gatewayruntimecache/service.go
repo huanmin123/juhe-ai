@@ -218,6 +218,10 @@ type Service struct {
 	pendingGroupRefreshes   map[string]*refreshCall
 	pendingCatalogLoads     map[string]*catalogLoad
 	pendingInspectRefreshes map[string]*refreshCall
+	// pendingAccountRefreshes dedupes the openai-accounts stale-while-revalidate
+	// background refresh per cache key (same primitive as the group/inspect
+	// refreshes).
+	pendingAccountRefreshes map[string]*refreshCall
 
 	sharedFailureMu       sync.Mutex
 	sharedFailureLoggedAt map[string]time.Time
@@ -297,6 +301,7 @@ func New(models ReadModels, opts Options) (*Service, error) {
 		pendingGroupRefreshes:   map[string]*refreshCall{},
 		pendingCatalogLoads:     map[string]*catalogLoad{},
 		pendingInspectRefreshes: map[string]*refreshCall{},
+		pendingAccountRefreshes: map[string]*refreshCall{},
 		sharedFailureLoggedAt:   map[string]time.Time{},
 		lastSeenVer:             map[string]int64{},
 	}

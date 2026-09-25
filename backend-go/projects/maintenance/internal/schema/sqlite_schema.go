@@ -231,7 +231,49 @@ func ensureSQLiteTableColumn(ctx context.Context, db *sql.DB, table, column, dec
 
 // EnsureSQLiteStats applies the stats schema (quality/usage aggregations and process samples).
 func EnsureSQLiteStats(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
-	return sqliteStatsScript.ensure(ctx, db)
+	counts, err := sqliteStatsScript.ensure(ctx, db)
+	if err != nil {
+		return SchemaCounts{}, err
+	}
+	if err := ensureSQLiteStatsSuccessCostColumns(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite stats success_cost_usd columns: %w", err)
+	}
+	return counts, nil
+}
+
+// sqliteStatsSuccessCostGuardTables 列出需要补 success_cost_usd 列的 stats
+// usage 投影表（守卫与 w9a 错误注入偏移共用，改动时测试自动跟随）。
+var sqliteStatsSuccessCostGuardTables = []string{
+	"usage_stats_totals",
+	"usage_stats_minute",
+	"usage_stats_hourly",
+	"usage_stats_daily",
+	"usage_stats_weekly",
+	"usage_stats_monthly",
+}
+
+// ensureSQLiteStatsSuccessCostColumns delivers the stats usage projection
+// success_cost_usd column (quota/billing counts only successfully delivered
+// attempts) to legacy databases through the same guarded PRAGMA table_info /
+// ALTER TABLE ADD COLUMN pattern as the business schema: fresh databases
+// declare it inside the CREATE TABLE statements, legacy databases receive the
+// in-place ADD COLUMN. The follow-up backfill copies total_cost_usd into
+// success_cost_usd only for rows with error_count = 0 (failure-free rows, so
+// total is exactly the success cost); mixed rows cannot be decomposed from the
+// aggregate and start at 0 per the business rule that failed attempts do not
+// count toward quota. The WHERE guards keep the backfill idempotent across
+// repeated ensure runs and no-ops for post-cutover accumulations.
+func ensureSQLiteStatsSuccessCostColumns(ctx context.Context, db *sql.DB) error {
+	for _, table := range sqliteStatsSuccessCostGuardTables {
+		if err := ensureSQLiteTableColumn(ctx, db, table, "success_cost_usd", "REAL NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("ensure %s.success_cost_usd: %w", table, err)
+		}
+		backfill := "UPDATE " + table + " SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd"
+		if _, err := db.ExecContext(ctx, backfill); err != nil {
+			return fmt.Errorf("backfill %s.success_cost_usd: %w", table, err)
+		}
+	}
+	return nil
 }
 
 // EnsureSQLiteChat applies the chat schema (conversations, messages, assets, context checkpoints).

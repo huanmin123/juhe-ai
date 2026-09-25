@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobregistry"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
@@ -42,10 +44,18 @@ type workerAssembly struct {
 	aggregator    *statsagg.Aggregator
 	windows       *statsagg.WindowRefresher
 	oauthStore    *oauthrefresh.Store
+	// oauthFailures 是 OAuth 刷新失败状态存储的装配分支记录：nil = refresh
+	// job 内存版默认（无 redis-state 的部署）；redis-state 部署为 Redis 版
+	//（worker_oauth_failurestate.go），供装配分支测试断言。
+	oauthFailures oauthrefresh.FailureStateStore
 	writer        *usagewriter.Writer
 	// usageSpoolDrain 是 gateway usage spool 交接表 drain（BUG-0175 D-72，
 	// wireUsageWriterFamily 尾部接线；supervisor 组件在 components 注册）。
 	usageSpoolDrain *usagespooldrain.Drainer
+	// usageOverflowReplay 是 writer 溢出 spool 的回放 drain（统计链路排查
+	// B②：队列满时记录先落盘溢出 spool，再由本 drain 幂等回放入队；未消费
+	// 文件的队头水位并入 ingestgate 多源积压）。
+	usageOverflowReplay *usagespooldrain.Drainer
 
 	settings workerSettingsSource
 
@@ -54,9 +64,18 @@ type workerAssembly struct {
 	// 间隔调度。测试可直接注入 mock 源。
 	scheduleIntervals jobregistry.SettingsInterval
 
-	pools     []*pgpool.Handle
-	sqliteDBs []*sql.DB
-	closers   []func() error
+	pools []*pgpool.Handle
+	// poolRegistry 是 worker 侧全部任务族共享的 PG 池注册表（构造一次，
+	// acquirePool 统一经它取池）。pgpool/sqlpool 的去重键是 {URL, role}，
+	// 同 URL + 同 role 的多次 Acquire 自动复用同一池并按 refs 引用计数；
+	// 历史实现每次 acquirePool 都 NewRegistry()，去重彻底失效，同库被按
+	// 任务族打开 12+ 个独立池（每池 MaxOpenConns 默认 50）。统一 role 后
+	// 全部任务族命中同一个池条目，句柄仍逐个登记进 a.pools 由既有 closer
+	// 链关闭（Handle.Close 引用计数归零时才真正关库，即"registry 的关闭
+	// 挂在既有 closer 链"）。
+	poolRegistry *pgpool.Registry
+	sqliteDBs    []*sql.DB
+	closers      []func() error
 
 	wiredJobs []string
 	// retention 是 J6 保留清理家族（worker_retention.go 装配）。
@@ -112,9 +131,13 @@ func (a *workerAssembly) openSQLite(path string, label string) (*sql.DB, error) 
 	return db, nil
 }
 
+// workerPoolRole 是 worker 侧共享 PG 池的统一 role。历史实现按任务族拼
+// "worker-<label>"，role 进入 pgpool 去重键导致同库每族一池；统一为常量后
+// 同 URL 全部复用同一池。label 仍保留在错误文案中用于定位获取点。
+const workerPoolRole = "worker"
+
 func (a *workerAssembly) acquirePool(url string, label string) (*pgpool.Handle, error) {
-	registry := pgpool.NewRegistry()
-	handle, err := registry.Acquire("pgx", url, "worker-"+label, a.config.PostgresMaxOpenConns, a.config.PostgresMaxIdleConns)
+	handle, err := a.poolRegistry.Acquire("pgx", url, workerPoolRole, a.config.PostgresMaxOpenConns, a.config.PostgresMaxIdleConns)
 	if err != nil {
 		return nil, fmt.Errorf("open worker %s postgres pool 失败: %w", label, err)
 	}
@@ -134,10 +157,11 @@ func newWorkerAssembly(config workerConfig, logger *slog.Logger) *workerAssembly
 		logger = slog.Default()
 	}
 	assembly := &workerAssembly{
-		config:     config,
-		logger:     logger,
-		settings:   staticSettings{},
-		wiredTasks: map[string]jobsched.Task{},
+		config:       config,
+		logger:       logger,
+		settings:     staticSettings{},
+		poolRegistry: pgpool.NewRegistry(),
+		wiredTasks:   map[string]jobsched.Task{},
 	}
 	assembly.scheduler = jobsched.NewScheduler(jobsched.Options{
 		StableSeed: fmt.Sprintf("%s:%s:%d", config.InstanceID, config.WorkerRole, config.WorkerReplicaIdx),
@@ -574,7 +598,26 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	}
 	a.oauthStore = store
 
-	refreshJob := oauthrefresh.NewRefreshJob(store, oauthrefresh.NewHTTPTokenExchanger(), oauthrefresh.WithLogger(a.logger))
+	// P0 修复：OAuth 刷新失败状态存储按运行态部署注入。缺省（无
+	// JUHE_AI_REDIS_STATE_URL）保持 NewRefreshJob 的内存版；redis-state 部署
+	// 注入 Redis 版，退避状态跨重启与多副本共享（refresh.go 注释声明的装配
+	// 约定）。Redis 读取失败由 refresh 任务保守跳过该账户，不静默当“无退避”。
+	failures, closeFailures, failureStoreErr := a.oauthFailureStateStore()
+	if failureStoreErr != nil {
+		return failureStoreErr
+	}
+	if closeFailures != nil {
+		a.addCloser(closeFailures)
+	}
+	a.oauthFailures = failures
+	var refreshOptions []func(*oauthrefresh.RefreshJob)
+	if failures != nil {
+		refreshOptions = append(refreshOptions, oauthrefresh.WithFailureStateStore(failures))
+		a.logger.Info("OAuth 刷新失败状态存储已接入 Redis 运行态",
+			"event", "oauth_refresh_failure_state_store_redis")
+	}
+	refreshOptions = append(refreshOptions, oauthrefresh.WithLogger(a.logger))
+	refreshJob := oauthrefresh.NewRefreshJob(store, oauthrefresh.NewHTTPTokenExchanger(), refreshOptions...)
 	a.scheduleWiredJob("openai-oauth-access-token-refresh", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		if _, err := refreshJob.RunOnce(taskCtx, oauthrefresh.RefreshOptions{}); err != nil {
 			return jobsched.TaskResult{}, err
@@ -615,8 +658,18 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 		}
 		return jobsched.TaskResult{}, nil
 	})
+	// P0 修复：排期激活 hook 装配。此前以 nil hook 调用，定时窗口启用的账号
+	// 只翻状态、不推进 circuit dispatch revision 家族，网关 dispatch revision
+	// 门控不解除。hook 复用本族已获取的业务库句柄做方言渲染（同步事务本身
+	// 经 hook 传入，不新建连接池）；推进失败 best-effort 只记 warn（见
+	// worker_oauth_activation.go）。
+	activationBusiness, activationBusinessErr := accounthealth.NewProjectionBusinessDB(db, postgres)
+	if activationBusinessErr != nil {
+		return activationBusinessErr
+	}
+	activationHook := newAccountScheduleActivationHook(activationBusiness, a.logger)
 	a.scheduleWiredJob("account-availability-schedule-status-sync", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		if _, err := store.SyncAccountScheduleStatuses(taskCtx, time.Now(), 0, nil); err != nil {
+		if _, err := store.SyncAccountScheduleStatuses(taskCtx, time.Now(), 0, activationHook); err != nil {
 			return jobsched.TaskResult{}, err
 		}
 		return jobsched.TaskResult{}, nil
@@ -643,6 +696,25 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	return nil
 }
 
+// usageWriterMaxWriteAttempts 是生产装配的写入重试上限（统计链路排查
+// B③/poison-pill：默认 0 = 无限重试，任一坏记录会让队头批次无限占用队列
+// 并让统计门控持续失败）。取 120 ≈ 固定 1s 重试下 2 分钟：容忍常规 PG 重
+// 启/抖动，坏记录批次在约 2 分钟后转死信终态（error 日志 +
+// deadLetterCount 计数），后续批次继续推进不阻塞。代价权衡：PG 中断超过
+// 2 分钟时队头批次记录转死信丢弃（error 留痕），优于无限堆积。
+const usageWriterMaxWriteAttempts = 120
+
+// usageOverflowSpoolDirName 是 writer 溢出 spool 目录名（与 gateway
+// usage-record-spool 同级、同派生规则：stats 库目录下）。
+const usageOverflowSpoolDirName = "usage-record-overflow-spool"
+
+// workerUsageOverflowSpoolDirectory 派生 writer 溢出 spool 目录：stats 库
+// 目录下固定名（datadir 约定保证 StatsSQLitePath 恒非空，PG 模式同样生
+// 效；溢出 spool 是 jobs 进程私有目录，无需与 gateway 对齐）。
+func workerUsageOverflowSpoolDirectory(config workerConfig) string {
+	return filepath.Join(filepath.Dir(config.StatsSQLitePath), usageOverflowSpoolDirName)
+}
+
 // wireUsageWriterFamily：usagewriter 直接异步写分片（Node Redis Stream /
 // ingest-worker IPC 路径按总设计消灭后的 Go 单路径），启动 flush 循环、
 // 停机排空。BUG-0175 D-72 补齐注入缺口：
@@ -655,7 +727,9 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 //   - BusinessDB（仅 SQLite；PG 路径的 last_used_at 副作用在主事务内随
 //     juhe_business schema 同池完成，无需单独句柄）：openBusinessDB 打开
 //     业务库句柄，usagewriter SqliteShardStore 由此回写 accounts.last_used_at
-//     与账户健康副作用（此前 nil = queryOnly 静默跳过，业务库副作用断供）。
+//     与账户健康副作用（此前 nil = queryOnly 静默跳过，业务库副作用断供）；
+//   - OverflowSpool + MaxWriteAttempts + Postgres（统计链路排查 B①/B②/B③，
+//     见 NewWriter 调用处注释）与溢出 spool 回放 drain。
 func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	postgres := a.config.Driver == "postgres"
 	var catalogDB *sql.DB
@@ -706,12 +780,24 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 		}
 		store = sqliteStore
 	}
+	// 统计链路排查 B②/B③：
+	//   - OverflowSpool：队列满时记录先落盘溢出 spool（历史装配缺省该选项，
+	//     溢出记录直接丢弃且无处恢复），再由本进程的回放 drain 幂等重投；
+	//   - MaxWriteAttempts：有限重试上限，坏记录批次转死信终态不阻塞后续；
+	//   - Postgres：镜像 ShardStore 驱动，恢复写计划期"PG 必须有
+	//     systemAccountId"的快速失败（空值此前到 INSERT 才撞 NOT NULL）。
+	overflowSpool := usagewriter.NewFileOverflowSpool(workerUsageOverflowSpoolDirectory(a.config))
 	writer := usagewriter.NewWriter(usagewriter.Config{
-		ShardCount:      a.config.UsageShardCount,
-		ShardRoot:       a.config.UsageShardRoot,
-		FreezePricing:   true,
-		CatalogSnapshot: !postgres,
-	}, store, nil, usagewriter.WithLogger(slogWriterLogger{logger: a.logger}), usagewriter.WithCatalog(pricingCatalog))
+		ShardCount:       a.config.UsageShardCount,
+		ShardRoot:        a.config.UsageShardRoot,
+		FreezePricing:    true,
+		CatalogSnapshot:  !postgres,
+		MaxWriteAttempts: usageWriterMaxWriteAttempts,
+		Postgres:         postgres,
+	}, store, nil,
+		usagewriter.WithLogger(slogWriterLogger{logger: a.logger}),
+		usagewriter.WithCatalog(pricingCatalog),
+		usagewriter.WithOverflowSpool(overflowSpool))
 	a.writer = writer
 	a.addCloser(func() error {
 		if catalogDB != nil {
@@ -721,7 +807,22 @@ func (a *workerAssembly) wireUsageWriterFamily(ctx context.Context) error {
 	})
 	// BUG-0175 D-72：gateway 把 /v1 用量记录写入文件 spool 交接表，jobs 侧
 	// 在此接线唯一的消费方（drain → Enqueue → 分片落库）。
-	return a.wireUsageSpoolDrain()
+	if err := a.wireUsageSpoolDrain(); err != nil {
+		return err
+	}
+	// 溢出 spool 回放 drain：溢出文件的格式/目录布局与 gateway 交接表同构，
+	// 复用 usagespooldrain.Drainer 的解析、幂等入队（ON CONFLICT DO
+	// NOTHING）、删除与待删水位语义。目录恒非空（stats 库目录派生），恒接
+	// 线；未消费文件的队头水位并入 ingestgate 多源积压（B①）。
+	a.usageOverflowReplay = &usagespooldrain.Drainer{
+		Directory: workerUsageOverflowSpoolDirectory(a.config),
+		Enqueuer:  writer,
+		Logger:    a.logger,
+	}
+	a.logger.Info("usage 溢出 spool 回放已接线",
+		"event", "usage_record_overflow_spool_replay_wired",
+		"directory", a.usageOverflowReplay.Directory)
+	return nil
 }
 
 // wireUsageSpoolDrain 接线 gateway usage spool 交接表 drain（supervisor
@@ -968,6 +1069,18 @@ func (a *workerAssembly) components() []supervisor.Component {
 			},
 		})
 	}
+	if a.usageOverflowReplay != nil {
+		replay := a.usageOverflowReplay
+		components = append(components, supervisor.Component{
+			// writer 溢出 spool 回放 drain（统计链路排查 B②）：溢出落盘
+			// 记录的幂等重投循环；Run 内含停机排空，未消费文件留待下次启动。
+			Name: "usage-record overflow replay",
+			Run: func(runCtx context.Context) error {
+				replay.Run(runCtx)
+				return nil
+			},
+		})
+	}
 	return components
 }
 
@@ -986,7 +1099,7 @@ func (a *workerAssembly) statusPayload() map[string]any {
 	if a.scheduler != nil {
 		snapshots = a.scheduler.Snapshots()
 	}
-	return map[string]any{
+	statusPayload := map[string]any{
 		"workerEnabled":         true, // 机制强制常开（2026-09-19 决策），字段保留以稳定 /health 载荷契约
 		"workerDriver":          a.config.Driver,
 		"workerWiredJobs":       a.wiredJobs,
@@ -996,4 +1109,13 @@ func (a *workerAssembly) statusPayload() map[string]any {
 		"workerUsageSpoolDrain": a.usageSpoolDrain != nil,
 		"workerJobs":            snapshots,
 	}
+	// 统计链路排查 B②/B③ 观测面：writer 运行态快照（含
+	// deadLetterCount / droppedOverflowCount / droppedDispatchCount 等丢弃
+	// 计数与队列积压、最旧入队时间）进 /health 载荷，丢弃与积压可被外部
+	// 巡检发现；空 assembly 键缺省（与 writer 布尔位一致）。
+	if a.writer != nil {
+		statusPayload["workerUsageWriterRuntime"] = a.writer.Runtime()
+		statusPayload["workerUsageOverflowReplay"] = a.usageOverflowReplay != nil
+	}
+	return statusPayload
 }

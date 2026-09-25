@@ -42,8 +42,11 @@ type DrainStatus struct {
 	// status.snapshot.usageRecordQueue.flushFailureCount（缺失按 0）。
 	SnapshotUsageRecordQueueFlushFailureCount int
 	// PendingUsageRecordsOldestCreatedAt mirrors
-	// status.pendingQueues.usageRecords.oldestCreatedAt（Go 单进程无 IPC
-	// envelope，通常为空）。
+	// status.pendingQueues.usageRecords.oldestCreatedAt。Go 单进程承载为
+	// spool 文件段：宿主注入 drain（gateway 交接表 / writer 溢出 spool）仍
+	// 持有的未确认文件队头记录 created_at，覆盖"记录滞留超过安全水位后才
+	// 入表"的积压——该段此前不进水位，游标会越过其 created_at 造成永久
+	// 不聚合。无积压时为空。
 	PendingUsageRecordsOldestCreatedAt string
 	// RedisStreamOldestCreatedAt mirrors
 	// getUsageRecordRedisStreamOldestCreatedAt()（queueDriver != redis_stream

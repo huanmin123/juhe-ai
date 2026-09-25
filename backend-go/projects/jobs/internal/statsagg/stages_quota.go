@@ -14,7 +14,7 @@ import (
 //     usage-stats-snapshot-helpers.ts:8-42 refreshUsageQuotaHourlyWindowSnapshots：
 //     读业务库 request_quota_hourly_window_scope_bindings 全量绑定，DELETE 全表后
 //     按 200 一批重算 usage_quota_hourly_windows（usage_stats_hourly 按
-//     stat_hour >= now-windowHours 汇总 total_cost_usd，零成本不落行）；
+//     stat_hour >= now-windowHours 汇总成功口径成本 success_cost_usd，零成本不落行）；
 //   - refreshUsageQuotaHourlyWindowsCacheAsync（PG 分支，:1795-1951）：单事务内
 //     先做小时翻转的 expiry 打脏（usage_quota_hourly_windows_expiry 游标，滑动
 //     窗口推进后给仍有时数据的 scope 打脏标记），再按
@@ -134,6 +134,11 @@ func (w *WindowRefresher) refreshQuotaHourlyWindowsRebuild(ctx context.Context, 
 		}
 		chunk := bindings[offset:end]
 		values := strings.TrimSuffix(strings.Repeat("(?, ?, ?, CAST(? AS INTEGER), ?), ", len(chunk)), ", ")
+		// 窗口成本是配额口径（usage_quota_hourly_windows.total_cost_usd 单列
+		// 承载配额成本，唯一消费方 gatewayquota/costs.go），按业务口径只汇总
+		// usage_stats_hourly 的成功交付成本 success_cost_usd：切号重试的部分流
+		// 失败尝试（Success=false 但带 usage）不再与最终成功尝试双计配额；
+		// 失败成本仍保留在 hourly.total_cost_usd 供账号成本观测。
 		query := w.Dialect.bind(`
 			WITH claimed(system_account_id, scope_type, scope_id, window_hours, cutoff_hour) AS (
 				VALUES ` + values + `
@@ -142,7 +147,7 @@ func (w *WindowRefresher) refreshQuotaHourlyWindowsRebuild(ctx context.Context, 
 				system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
 			)
 			SELECT claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours,
-				COALESCE(SUM(hourly.total_cost_usd), 0), ?
+				COALESCE(SUM(hourly.success_cost_usd), 0), ?
 			FROM claimed
 			LEFT JOIN ` + w.Dialect.StatsTable("usage_stats_hourly") + ` hourly
 				ON hourly.system_account_id = claimed.system_account_id
@@ -150,7 +155,7 @@ func (w *WindowRefresher) refreshQuotaHourlyWindowsRebuild(ctx context.Context, 
 				AND hourly.scope_id = claimed.scope_id
 				AND hourly.stat_hour >= claimed.cutoff_hour
 			GROUP BY claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours
-			HAVING COALESCE(SUM(hourly.total_cost_usd), 0) > 0
+			HAVING COALESCE(SUM(hourly.success_cost_usd), 0) > 0
 		`)
 		updatedAt := FormatRFC3339Millis(w.now())
 		args := make([]any, 0, len(chunk)*5+1)
@@ -463,13 +468,14 @@ func (w *WindowRefresher) rebuildQuotaHourlyWindowsForScopes(ctx context.Context
 		return nil
 	}
 	values := strings.TrimSuffix(strings.Repeat("(?, ?, ?, CAST(? AS INTEGER), ?), ", len(active)), ", ")
+	// 与 SQLite 全量重建同口径：窗口列存成功交付成本（见 refreshQuotaHourlyWindowsRebuild 注释）。
 	query := w.Dialect.bind(`
 		WITH claimed(system_account_id, scope_type, scope_id, window_hours, cutoff_hour) AS (VALUES ` + values + `)
 		INSERT INTO ` + w.Dialect.StatsTable("usage_quota_hourly_windows") + ` (
 			system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
 		)
 		SELECT claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours,
-			COALESCE(SUM(hourly.total_cost_usd), 0), ?
+			COALESCE(SUM(hourly.success_cost_usd), 0), ?
 		FROM claimed
 		LEFT JOIN ` + w.Dialect.StatsTable("usage_stats_hourly") + ` hourly
 			ON hourly.system_account_id = claimed.system_account_id
@@ -477,7 +483,7 @@ func (w *WindowRefresher) rebuildQuotaHourlyWindowsForScopes(ctx context.Context
 			AND hourly.scope_id = claimed.scope_id
 			AND hourly.stat_hour >= claimed.cutoff_hour
 		GROUP BY claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours
-		HAVING COALESCE(SUM(hourly.total_cost_usd), 0) > 0
+		HAVING COALESCE(SUM(hourly.success_cost_usd), 0) > 0
 		ON CONFLICT(system_account_id, scope_type, scope_id, window_hours) DO UPDATE SET
 			total_cost_usd = excluded.total_cost_usd,
 			updated_at = excluded.updated_at

@@ -286,6 +286,9 @@ func UsageStatsAccumulatorFromRecord(row UsageStatsRecordRow) UsageStatsAccumula
 	}
 	if success {
 		accumulator.SuccessCount = 1
+		// 成功口径成本只计成功交付的尝试（业务口径：客户端配额与账单只计
+		// 成功交付）；失败尝试保留 TotalCostUsd 全量观测。
+		accumulator.SuccessCostUsd = accumulator.TotalCostUsd
 	} else {
 		accumulator.ErrorCount = 1
 		accumulator.LastErrorAt = row.CreatedAt
@@ -319,6 +322,7 @@ func MergeAccumulator(target *UsageStatsAccumulator, source UsageStatsAccumulato
 	target.InputImageTokens += source.InputImageTokens
 	target.OutputImageTokens += source.OutputImageTokens
 	target.TotalCostUsd += source.TotalCostUsd
+	target.SuccessCostUsd += source.SuccessCostUsd
 	target.DurationMsSum += source.DurationMsSum
 	target.DurationMsCount += source.DurationMsCount
 	target.DurationMsMax = math.Max(target.DurationMsMax, source.DurationMsMax)

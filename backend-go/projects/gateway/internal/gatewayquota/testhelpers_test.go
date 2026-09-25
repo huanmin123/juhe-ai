@@ -25,14 +25,18 @@ func newTestDB(t *testing.T, label string) *sql.DB {
 	return db
 }
 
-// statsSchema creates the five usage projections the quota reads.
+// statsSchema creates the five usage projections the quota reads. The
+// usage_stats tables expose both cost columns: quota reads success_cost_usd
+// (成功交付口径；total_cost_usd 只留给账号成本观测，fixture 可用来断言失败
+// 尝试成本不计入配额)。usage_quota_hourly_windows.total_cost_usd 单列即配额
+// 口径成本（statsagg 窗口刷新按 success_cost_usd 汇总写入）。
 func statsSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	statements := []string{
-		`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT, total_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
 		`CREATE TABLE usage_quota_hourly_windows (system_account_id TEXT, scope_type TEXT, scope_id TEXT, window_hours INTEGER, total_cost_usd REAL)`,
 	}
 	for _, statement := range statements {

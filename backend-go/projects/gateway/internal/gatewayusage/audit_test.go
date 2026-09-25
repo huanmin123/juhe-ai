@@ -212,7 +212,9 @@ func TestAuditCaptureMetadataOnlyMode(t *testing.T) {
 	if !strings.Contains(auditLog.Path, "/v1/chat/completions") {
 		t.Fatalf("path = %q", auditLog.Path)
 	}
-	if auditLog.QueryString != "api_key=secret" {
+	// 2026-09-25：审计面 queryString 与快照/日志共用 SanitizeURLForLog，
+	// 凭据类 query 值落审计前掩码，不再明文保留 api_key=secret。
+	if auditLog.QueryString != "api_key=[redacted]" {
 		t.Fatalf("queryString = %q", auditLog.QueryString)
 	}
 }

@@ -1642,7 +1642,10 @@ func (o *slogObservability) CreateTraceID() string {
 	return "trace_" + fmtInt64(o.clock.Now().UnixNano())
 }
 
-func (o *slogObservability) SanitizeURLForLog(value string) string { return value }
+// SanitizeURLForLog 委托 gatewayusage 真实现（凭据 query 掩码 + oauth 敏感名
+// 重写）：恒等透传会让 preauth 日志面（slog fail-closed/error 线）明文输出
+// Gemini `?key=` 等凭据 query，与 usage 快照面口径不一致。
+func (o *slogObservability) SanitizeURLForLog(value string) string { return gatewayusage.SanitizeURLForLog(value) }
 
 // gatewayRequestStageLogLevel mirrors gatewayRequestStageLogLevel
 // (shared/logging/runtime-log-policy.ts): unexpected_failure → error,

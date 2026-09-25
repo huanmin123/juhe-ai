@@ -262,12 +262,15 @@ func TestW9AEnsureAllSQLiteStatementFailures(t *testing.T) {
 	}
 
 	// 逐 schema 注入失败：前面 schema 的语句全部成功后，目标 schema 首条失败。
+	// stats 守卫（success_cost_usd 回填）在 stats DDL 之后追加
+	// len(sqliteStatsSuccessCostGuardTables) 条 UPDATE，后续 schema 偏移随之平移。
+	guardExecs := len(sqliteStatsSuccessCostGuardTables)
 	offsets := map[string]int{
 		"stats":   len(sqliteBusinessScript),
-		"chat":    len(sqliteBusinessScript) + len(sqliteStatsScript),
-		"codex":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript),
-		"dataset": len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript),
-		"usage":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + len(sqliteDatasetScript),
+		"chat":    len(sqliteBusinessScript) + len(sqliteStatsScript) + guardExecs,
+		"codex":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + guardExecs,
+		"dataset": len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + guardExecs,
+		"usage":   len(sqliteBusinessScript) + len(sqliteStatsScript) + len(sqliteChatScript) + len(sqliteCodexContextScript) + len(sqliteDatasetScript) + guardExecs,
 	}
 	needles := map[string]string{
 		"stats": "ensure sqlite stats schema", "chat": "ensure sqlite chat schema",

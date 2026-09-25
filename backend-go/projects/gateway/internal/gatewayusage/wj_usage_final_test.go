@@ -10,11 +10,16 @@ import (
 	"time"
 )
 
-// TestWJSanitizeURLForLog 固定日志 URL 脱敏契约：只有 oauth 授权/设备路径
-// 被重写，敏感 query 名替换为 [redacted]。
+// TestWJSanitizeURLForLog 固定日志 URL 脱敏契约：oauth 授权/设备路径维持
+// 原有敏感名重写；普通路径上凭据类 query 值掩码（2026-09-25 Go 侧加固，
+// 原契约「普通路径原样」会让 Gemini `?key=` 明文落 usage 快照），其余
+// query 与顺序字节原样保留。
 func TestWJSanitizeURLForLog(t *testing.T) {
-	if got := SanitizeURLForLog("/v1/chat/completions?api_key=secret"); got != "/v1/chat/completions?api_key=secret" {
-		t.Fatalf("普通路径必须原样: %q", got)
+	if got := SanitizeURLForLog("/v1/chat/completions?api_key=secret"); got != "/v1/chat/completions?api_key=[redacted]" {
+		t.Fatalf("凭据类 query 必须掩码: %q", got)
+	}
+	if got := SanitizeURLForLog("/v1/chat/completions?a=1&b=2"); got != "/v1/chat/completions?a=1&b=2" {
+		t.Fatalf("无凭据普通路径必须原样: %q", got)
 	}
 	sanitized := SanitizeURLForLog("/oauth/authorize?client_id=abc&code_challenge=secret&state=xyz")
 	if !strings.HasPrefix(sanitized, "/oauth/authorize?") {

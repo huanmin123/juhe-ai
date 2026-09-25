@@ -383,8 +383,10 @@ var SQLiteTestSchema = []string{
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, scope_type, scope_id)
 	)`,
-	// 配额小时窗（表结构对齐 maintenance sqlite_schema.go:2675 的 juhe_stats 表；
-	// 消费方 gateway gatewayquota/costs.go 按四列主键读）。
+	// 配额小时窗（表结构对齐 maintenance sqlite_schema.go 的 juhe_stats 表；
+	// 消费方 gateway gatewayquota/costs.go 按四列主键读）。total_cost_usd 单列
+	// 承载配额口径成本：自成功口径切换起存 success_cost_usd 汇总（成功交付
+	// 尝试），失败尝试不再计入配额。
 	`CREATE TABLE IF NOT EXISTS usage_quota_hourly_windows (
 		system_account_id TEXT NOT NULL,
 		scope_type TEXT NOT NULL,
@@ -598,6 +600,7 @@ const usageStatsAccumulatorColumns = `
 		input_image_tokens INTEGER NOT NULL DEFAULT 0,
 		output_image_tokens INTEGER NOT NULL DEFAULT 0,
 		total_cost_usd REAL NOT NULL DEFAULT 0,
+		success_cost_usd REAL NOT NULL DEFAULT 0,
 		duration_ms_sum INTEGER NOT NULL DEFAULT 0,
 		duration_ms_count INTEGER NOT NULL DEFAULT 0,
 		duration_ms_max INTEGER NOT NULL DEFAULT 0,

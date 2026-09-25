@@ -66,6 +66,12 @@ type Config struct {
 	// CatalogSnapshot mirrors databaseDriver !== 'postgres' for
 	// usageRecordPricingSnapshotForWrite's catalog attempt.
 	CatalogSnapshot bool
+	// Postgres mirrors databaseDriver == 'postgres' for the write plan: PG
+	// rows must carry systemAccountId, and BuildWritePlan fails the batch at
+	// plan time instead of letting an empty value hit the INSERT's NOT NULL
+	// only to retry forever. Must match the ShardStore driver wired by the
+	// assembly (NewPostgresShardStore ⇔ true, NewSqliteShardStore ⇔ false).
+	Postgres bool
 }
 
 // OverflowSpool ports the performance-mode disk compensation
@@ -301,9 +307,13 @@ func (w *Writer) Enqueue(ctx Ctx, input UsageRecordInput) error {
 
 // spoolOverflow mirrors persistUsageRecordForQueueOverflow: the
 // performance-mode compensation for records that could not be admitted.
-// Returns true when the record was persisted. A failed spool drops the
-// record with the dispatch failure counter, mirroring
-// recordUsageRecordDispatchFailure.
+// Returns whether the overflow path consumed the record (terminal either
+// way): true after a successful persist, and also true after a FAILED
+// persist — the failure path books the drop with droppedDispatchCount and
+// the sampled dispatch-failure log (mirroring recordUsageRecordDispatchFailure),
+// so the caller must not double-book it as a queue-overflow drop. false only
+// when no spool is configured, letting the caller apply the Node
+// local-queue overflow drop.
 func (w *Writer) spoolOverflow(ctx Ctx, input UsageRecordInput) bool {
 	if w.spool == nil {
 		return false
@@ -497,7 +507,7 @@ func (w *Writer) writeBatch(batch []queuedRecord) (int, error) {
 	}
 	ctx := context.Background()
 	plan, err := BuildWritePlan(ctx, inputs, WritePlanOptions{
-		Postgres:               false,
+		Postgres:               w.config.Postgres,
 		CatalogSnapshotEnabled: w.config.CatalogSnapshot,
 		Catalog:                w.catalog,
 		ShardCount:             w.config.ShardCount,

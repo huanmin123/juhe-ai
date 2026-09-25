@@ -130,18 +130,21 @@ func TestStatsUsageSourceAccountListLocksIn(t *testing.T) {
 		`CREATE TABLE usage_stats_totals (
 			system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL,
 			request_count INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
-			output_tokens INTEGER NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0, last_used_at TEXT)`,
+			output_tokens INTEGER NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0,
+			success_cost_usd REAL NOT NULL DEFAULT 0, last_used_at TEXT)`,
 		`CREATE TABLE usage_stats_daily (
 			system_account_id TEXT NOT NULL, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL,
 			stat_date TEXT NOT NULL,
 			request_count INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
-			output_tokens INTEGER NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0, last_used_at TEXT)`,
-		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd)
-			VALUES ('owner-1', 'account', 'acc-1', 90, 400, 500, 12.5)`,
-		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd)
-			VALUES ('owner-1', 'account_authorization', 'auth-9', 7, 70, 35, 1.25)`,
-		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd)
-			VALUES ('owner-1', 'account', 'acc-1', '2026-09-06', 5, 40, 80, 0.25)`,
+			output_tokens INTEGER NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0,
+			success_cost_usd REAL NOT NULL DEFAULT 0, last_used_at TEXT)`,
+		// total_cost_usd 与 success_cost_usd 刻意不同：断言读的是成功口径列。
+		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd, success_cost_usd)
+			VALUES ('owner-1', 'account', 'acc-1', 90, 400, 500, 12.5, 10)`,
+		`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, total_cost_usd, success_cost_usd)
+			VALUES ('owner-1', 'account_authorization', 'auth-9', 7, 70, 35, 1.25, 1)`,
+		`INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, input_tokens, output_tokens, total_cost_usd, success_cost_usd)
+			VALUES ('owner-1', 'account', 'acc-1', '2026-09-06', 5, 40, 80, 0.25, 0.2)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -163,7 +166,7 @@ func TestStatsUsageSourceAccountListLocksIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := totals["acc-1"]; got != (UsageSummary{RequestCount: 90, TotalTokens: 900, TotalCost: 12.5}) {
+	if got := totals["acc-1"]; got != (UsageSummary{RequestCount: 90, TotalTokens: 900, TotalCost: 10}) {
 		t.Fatalf("acc-1 totals mismatch: %+v", got)
 	}
 	if got, ok := totals["acc-2"]; !ok || got != (UsageSummary{}) {
@@ -177,7 +180,7 @@ func TestStatsUsageSourceAccountListLocksIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := daily["acc-1"]; got != (UsageSummary{RequestCount: 5, TotalTokens: 120, TotalCost: 0.25}) {
+	if got := daily["acc-1"]; got != (UsageSummary{RequestCount: 5, TotalTokens: 120, TotalCost: 0.2}) {
 		t.Fatalf("acc-1 daily mismatch: %+v", got)
 	}
 	// A different stat date bucket is empty.
@@ -196,7 +199,7 @@ func TestStatsUsageSourceAccountListLocksIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := authorized["acc-3"]; got != (UsageSummary{RequestCount: 7, TotalTokens: 105, TotalCost: 1.25}) {
+	if got := authorized["acc-3"]; got != (UsageSummary{RequestCount: 7, TotalTokens: 105, TotalCost: 1}) {
 		t.Fatalf("authorized scope mismatch: %+v", got)
 	}
 }

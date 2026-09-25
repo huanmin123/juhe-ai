@@ -3,6 +3,8 @@ package gatewayruntimecache
 import (
 	"context"
 	"errors"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // ---------------------------------------------------------------------------
@@ -12,10 +14,18 @@ import (
 // ---------------------------------------------------------------------------
 
 // ListCachedOpenAIAccountsForGroup mirrors the sync read. The process cache is
-// never shared: the snapshots carry decrypted upstream credentials.
+// never shared: the snapshots carry decrypted upstream credentials. Stale
+// entries (revalidateAtMs elapsed) serve as last-good while the background
+// refresh runs — the same stale-while-revalidate contract as the runtime,
+// group-access and inspection reads — so a jobs-side token rotation that only
+// lands in the DB is picked up within the 60 s revalidate window instead of
+// the full 10 min retain TTL.
 func (s *Service) ListCachedOpenAIAccountsForGroup(ctx context.Context, groupID, systemAccountID string, opts CachedOpenAIAccountsForGroupOptions) ([]OpenAIAccountSecret, error) {
 	cacheKey := gatewayOpenAIAccountsCacheKey(groupID, systemAccountID, opts.RequestedModel, opts.RequestedEndpointFamily)
 	if cached, ok := s.accountsCache.get(cacheKey); ok {
+		if !isEntryFresh(cached.revalidateAtMs, s.nowMs()) {
+			s.refreshOpenAIAccountsInBackground(groupID, systemAccountID, cacheKey, opts.RequestedModel, opts.RequestedEndpointFamily)
+		}
 		return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, cached.accounts)
 	}
 	result, err := s.models.ListOpenAIAccountsForGroupResult(ctx, groupID, systemAccountID, OpenAIAccountsForGroupOptions{
@@ -246,6 +256,57 @@ func (s *Service) loadOpenAIAccountsForGroupAndPopulateCache(ctx context.Context
 		s.accountsCache.set(cacheKey, entry, openAIAccountsRetainTTL)
 	}
 	return s.cloneOpenAIAccountsWithCurrentConcurrency(ctx, result.Accounts)
+}
+
+// refreshOpenAIAccountsInBackground mirrors the Node stale-fallback background
+// refresh with per-key dedupe (same primitive as the group-access and
+// inspection refreshes): one in-flight loader call per cache key, guarded by
+// the runtime generation so an invalidation mid-flight cannot repopulate.
+// Failure keeps the bounded last-good snapshot and warns once per occurrence.
+func (s *Service) refreshOpenAIAccountsInBackground(groupID, systemAccountID, cacheKey, requestedModel, requestedEndpointFamily string) {
+	s.mu.Lock()
+	if _, pending := s.pendingAccountRefreshes[cacheKey]; pending {
+		s.mu.Unlock()
+		return
+	}
+	// s.mu 已持有：直接读世代字段，禁止重入 currentRuntimeGeneration。
+	generation := s.runtimeGeneration
+	call := newRefreshCall()
+	s.pendingAccountRefreshes[cacheKey] = call
+	s.mu.Unlock()
+
+	go func() {
+		defer safego.Recover("gatewayruntimecache.accounts.background_refresh")
+		defer func() {
+			s.mu.Lock()
+			delete(s.pendingAccountRefreshes, cacheKey)
+			s.mu.Unlock()
+			call.finish()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), GatewayRuntimeLoadTimeout)
+		defer cancel()
+		result, err := s.models.ListOpenAIAccountsForGroupResult(ctx, groupID, systemAccountID, OpenAIAccountsForGroupOptions{
+			RequestedModel:          requestedModel,
+			RequestedEndpointFamily: requestedEndpointFamily,
+		})
+		if err != nil {
+			s.warnEvent("gateway_openai_accounts_stale_refresh_failed", map[string]any{
+				"groupID": groupID, "systemAccountID": systemAccountID, "err": err.Error(),
+			}, "网关 OpenAI 账号后台刷新失败，保留当前有界缓存快照")
+			return
+		}
+		if !s.isRuntimeGenerationCurrent(generation) {
+			return
+		}
+		entry, entryErr := newOpenAIAccountsCacheEntry(cloneStaticOpenAIAccounts(result.Accounts), s.nowMs())
+		if entryErr != nil {
+			s.warnEvent("gateway_openai_accounts_stale_refresh_failed", map[string]any{
+				"groupID": groupID, "systemAccountID": systemAccountID, "err": entryErr.Error(),
+			}, "网关 OpenAI 账号后台刷新构建缓存条目失败，保留当前有界缓存快照")
+			return
+		}
+		s.accountsCache.set(cacheKey, entry, openAIAccountsRetainTTL)
+	}()
 }
 
 // ---------------------------------------------------------------------------

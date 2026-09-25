@@ -78,13 +78,14 @@ func newLoaderTestDB(t *testing.T) *sql.DB {
 			transition_id TEXT, cooldown_observation_generation INTEGER,
 			next_transition_at_ms INTEGER, last_failure_class TEXT, retained_until_ms INTEGER,
 			created_at_ms INTEGER, updated_at_ms INTEGER)`,
-		// stats 库表（测试中 stats 句柄与 business 同库）。
+		// stats 库表（测试中 stats 句柄与 business 同库）。usage_stats 四表带
+		// success_cost_usd（展示/配额读点已切成功口径列）。
 		`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT,
-			request_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_cost_usd REAL, last_used_at TEXT)`,
+			request_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_cost_usd REAL, success_cost_usd REAL, last_used_at TEXT)`,
 		`CREATE TABLE usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT,
-			request_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_cost_usd REAL, last_used_at TEXT)`,
-		`CREATE TABLE usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL)`,
-		`CREATE TABLE usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL)`,
+			request_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_cost_usd REAL, success_cost_usd REAL, last_used_at TEXT)`,
+		`CREATE TABLE usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
+		`CREATE TABLE usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
 		`CREATE TABLE usage_quota_hourly_windows (system_account_id TEXT, scope_type TEXT, scope_id TEXT, window_hours INTEGER, total_cost_usd REAL)`,
 		`CREATE TABLE account_usage_snapshots (account_id TEXT, kind TEXT, snapshot_json TEXT, next_refresh_after TEXT, updated_at TEXT)`,
 	}

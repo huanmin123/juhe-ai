@@ -190,7 +190,7 @@ func TestWJCheckAuthorizationQuotaSyncWrapper(t *testing.T) {
 	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "sync")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 10})
 
 	// nil account：只看 group scope，已超额 → 拒绝。
@@ -201,7 +201,7 @@ func TestWJCheckAuthorizationQuotaSyncWrapper(t *testing.T) {
 
 	// 非 nil account 且 group 未超额 → 允许。先清缓存：首次判定已写入 5s
 	// 运行时缓存，不清会继续返回缓存的拒绝决策。
-	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET total_cost_usd = 1 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 1 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update cost: %v", err)
 	}
 	service.ClearCache(ctx)
@@ -218,7 +218,7 @@ func TestWJAuthorizationQuotaAsyncMemoryAndSyncer(t *testing.T) {
 	base, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "mem")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 1})
 
 	groupAccess := GroupAccessMetadata{GroupAuthorizationID: "ga1", GroupAuthorizationQuotaLimited: true}
@@ -227,7 +227,7 @@ func TestWJAuthorizationQuotaAsyncMemoryAndSyncer(t *testing.T) {
 		t.Fatalf("首次检查必须允许: (%+v, %v)", first, err)
 	}
 	// 超额后 5s 运行时缓存必须继续放行（memory 命中分支）。
-	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET total_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 99 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update cost: %v", err)
 	}
 	second, err := base.CheckAuthorizationQuotaAsync(ctx, groupAccess, nil)
@@ -546,7 +546,7 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 	service, business, statsDB := wjNewAuthzService(t, Modes{}, clock, "roex")
 	ctx := context.Background()
 	seedAuthzRow(t, business, "ga1", "sysA", "sysB", "group", "g1", "", `{"daily":{"enabled":true,"limit":10}}`, "active")
-	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, statsDB, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sysA", "group_authorization", "ga1", "2026-09-04", 3})
 
 	// 只读单数入口：未超额 → 允许。
@@ -555,7 +555,7 @@ func TestWJAuthorizationQuotaReadOnlyAndExact(t *testing.T) {
 		t.Fatalf("只读未超额必须允许: (%+v, %v)", decision, err)
 	}
 	// 只读批量入口：超额 → 拒绝（不读缓存，直接查库）。
-	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET total_cost_usd = 10 WHERE scope_id = 'ga1'`); err != nil {
+	if _, err := statsDB.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 10 WHERE scope_id = 'ga1'`); err != nil {
 		t.Fatalf("update cost: %v", err)
 	}
 	decision, err = service.CheckAuthorizationQuotaByIDsReadOnly(ctx, "ga1", "", clock.Now())
@@ -704,7 +704,7 @@ func TestWJAPIKeyQuotaAsyncWorkerAndShared(t *testing.T) {
 	}
 	ctx := context.Background()
 	apiKey := APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", "2026-09-04", 5})
 
 	// worker 同步路径允许，二次调用命中内存缓存。

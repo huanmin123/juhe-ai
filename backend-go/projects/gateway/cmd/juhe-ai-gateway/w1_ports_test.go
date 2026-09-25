@@ -332,7 +332,11 @@ func TestW1SlogObservabilityAdapter(t *testing.T) {
 		t.Fatalf("trace id = %q", observability.CreateTraceID())
 	}
 	if observability.SanitizeURLForLog("https://u/v1") != "https://u/v1" {
-		t.Fatal("日志 URL 不改写")
+		t.Fatal("无凭据参数的日志 URL 不改写")
+	}
+	// 凭据 query 掩码（委托 gatewayusage 真实现，非恒等透传）。
+	if got := observability.SanitizeURLForLog("/v1/models?key=secret&x=1"); got != "/v1/models?key=[redacted]&x=1" {
+		t.Fatalf("凭据 query 未掩码：%q", got)
 	}
 	// 阶段日志级别策略：unexpected→error / expected→warn / aborted→warn /
 	// 慢阶段→info / 常规→debug。

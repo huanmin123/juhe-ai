@@ -548,3 +548,56 @@ func deepEqualAny(a, b any) bool {
 		return false
 	}
 }
+
+// TestJSONParserWorkerPanicReleasesCapacityAndKeepsServing 固定 2026-09-25
+// 修复契约：解析钩子 panic 不得让 worker goroutine 终止导致 activeBytes/
+// busyWorkers 永久泄漏；panic 转为失败结果后，worker 必须继续处理后续任务。
+func TestJSONParserWorkerPanicReleasesCapacityAndKeepsServing(t *testing.T) {
+	parser := NewJSONParser(JSONParserOptions{PoolSize: 1, MaxQueuedJobs: 4})
+	defer parser.Stop()
+
+	parser.parseFunc = func(ctx context.Context, raw []byte) (any, error) {
+		panic("json worker boom")
+	}
+	job, err := parser.enqueue(context.Background(), jsonWorkerJobKindParse, []byte(`{"panic":true}`))
+	if err != nil {
+		t.Fatalf("enqueue panic job: %v", err)
+	}
+	select {
+	case <-job.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("panic job 未在屏障内完成（done 未关闭）")
+	}
+	if !job.resultSet.Load() {
+		t.Fatal("panic job 必须以失败结果收尾")
+	}
+	if job.result.err == nil || !strings.Contains(job.result.err.Error(), "panic") {
+		t.Fatalf("panic 必须转为错误结果: %v", job.result.err)
+	}
+	parser.mu.Lock()
+	activeBytes, busyWorkers := parser.activeBytes, parser.busyWorkers
+	parser.mu.Unlock()
+	if activeBytes != 0 || busyWorkers != 0 {
+		t.Fatalf("panic 后计数必须回收: activeBytes=%d busyWorkers=%d", activeBytes, busyWorkers)
+	}
+
+	// panic 后 worker 仍可用：后续 job 正常处理。
+	parser.parseFunc = func(ctx context.Context, raw []byte) (any, error) {
+		return map[string]any{"ok": true}, nil
+	}
+	second, err := parser.enqueue(context.Background(), jsonWorkerJobKindParse, []byte(`{"ok":true}`))
+	if err != nil {
+		t.Fatalf("enqueue second job: %v", err)
+	}
+	select {
+	case <-second.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("panic 后续 job 未被处理")
+	}
+	if second.result.err != nil {
+		t.Fatalf("second job err = %v", second.result.err)
+	}
+	if value, ok := second.result.value.(map[string]any); !ok || value["ok"] != true {
+		t.Fatalf("second job value = %#v", second.result.value)
+	}
+}

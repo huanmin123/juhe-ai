@@ -1467,6 +1467,9 @@ DROP TRIGGER IF EXISTS account_list_availability_quota_total ON usage_stats_tota
 CREATE TRIGGER account_list_availability_quota_total
 AFTER INSERT OR UPDATE OR DELETE ON usage_stats_totals
 FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('total');
+-- 注（2026-09-25）：触发器仍监听 total_cost_usd。展示/执法读点已切到
+-- success_cost_usd（成功口径成本），失败尝试只改 total_cost_usd 时这里会
+-- 多发通知、不会漏发（保守无害），故保持旧列监听不动。
 DROP TRIGGER IF EXISTS account_list_availability_quota_daily ON usage_stats_daily;
 CREATE TRIGGER account_list_availability_quota_daily
 AFTER INSERT OR UPDATE OR DELETE ON usage_stats_daily
@@ -2132,5 +2135,75 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
 		Source:     "stats",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_account
       ON usage_record_cleanup_deductions(account_id, shard_deleted_at)`,
+	},
+	// 成功口径成本列（配额/账单只计成功交付的尝试）：usage_stats 表族追加
+	// success_cost_usd，失败尝试的成本只留在 total_cost_usd 供账号成本观测；
+	// 消费方 gateway gatewayquota/costs.go 的配额读改读新列。usage_quota_hourly_windows
+	// 不加列：其 total_cost_usd 单列即配额口径成本，由 statsagg 窗口刷新按
+	// success_cost_usd 汇总重建，历史窗口行在下一次刷新自然收敛。
+	// 回填策略（rerun-safe，可随 ensure 重复执行）：error_count = 0 的行
+	// （无失败尝试，total 即成功成本）置为 total_cost_usd；error_count > 0 的
+	// 混合历史行无法从聚合还原成功部分，保持 0 起算（业务口径：失败尝试不计
+	// 配额），新聚合随后自然精确累积。WHERE 守卫保证对已回填/已切换后聚合的
+	// 行为幂等（error_count = 0 且成功口径已累积时 success = total 恒成立）。
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_totals ADD COLUMN IF NOT EXISTS success_cost_usd double precision NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_minute ADD COLUMN IF NOT EXISTS success_cost_usd double precision NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_hourly ADD COLUMN IF NOT EXISTS success_cost_usd double precision NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_daily ADD COLUMN IF NOT EXISTS success_cost_usd double precision NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_weekly ADD COLUMN IF NOT EXISTS success_cost_usd double precision NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_monthly ADD COLUMN IF NOT EXISTS success_cost_usd double precision NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-backfill",
+		SQL:        `UPDATE usage_stats_totals SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-backfill",
+		SQL:        `UPDATE usage_stats_minute SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-backfill",
+		SQL:        `UPDATE usage_stats_hourly SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-backfill",
+		SQL:        `UPDATE usage_stats_daily SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-backfill",
+		SQL:        `UPDATE usage_stats_weekly SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "success-cost-usd-backfill",
+		SQL:        `UPDATE usage_stats_monthly SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
 	},
 }

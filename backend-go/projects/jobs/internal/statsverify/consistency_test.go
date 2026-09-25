@@ -22,8 +22,8 @@ func seedConsistencyDaily(t *testing.T, ctx context.Context, store *Store, syste
 		  request_count, success_count, error_count, input_tokens, output_tokens,
 		  cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
 		  cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
-		  total_cost_usd, updated_at
-		) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, '2026-03-01T00:00:00.000Z')
+		  total_cost_usd, success_cost_usd, updated_at
+		) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, '2026-03-01T00:00:00.000Z')
 	`, systemAccountID, scopeType, scopeID, statDate, requestCount, totalCost)
 }
 
@@ -35,8 +35,8 @@ func seedConsistencyHourly(t *testing.T, ctx context.Context, store *Store, syst
 		  request_count, success_count, error_count, input_tokens, output_tokens,
 		  cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
 		  cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
-		  total_cost_usd, updated_at
-		) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, '2026-03-01T00:00:00.000Z')
+		  total_cost_usd, success_cost_usd, updated_at
+		) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, '2026-03-01T00:00:00.000Z')
 	`, systemAccountID, scopeType, scopeID, statHour, requestCount, totalCost)
 }
 

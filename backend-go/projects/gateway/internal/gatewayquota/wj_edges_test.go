@@ -556,7 +556,7 @@ func TestWJRedisStoreConstructionErrors(t *testing.T) {
 func TestWJStatsStoreQueryErrors(t *testing.T) {
 	db := newTestDB(t, "wj-missing-tables")
 	// 只建 totals 表，其余投影缺失。
-	if _, err := db.Exec(`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL, success_cost_usd REAL)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	stats, err := NewStatsStore(db, false)
@@ -579,7 +579,7 @@ func TestWJStatsStoreQueryErrors(t *testing.T) {
 func TestWJConcurrentLoadCostsBatch(t *testing.T) {
 	db := newTestDB(t, "wj-batch-conc")
 	statsSchema(t, db)
-	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
 		[]any{"s", "api_key", "k", 3})
 	stats, err := NewStatsStore(db, false)
 	if err != nil {

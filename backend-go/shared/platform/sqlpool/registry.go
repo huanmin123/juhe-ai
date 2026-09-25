@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -232,9 +233,25 @@ func (r *Registry) Close() error {
 	var first error
 	for key, current := range r.entries {
 		if err := current.db.Close(); err != nil && first == nil {
-			first = fmt.Errorf("关闭 sql pool %s/%s: %w", key.Role, key.URL, err)
+			// 2026-09-25：错误消息只保留 role + host[:port]，URL 可能内嵌
+			// user:password，不得随错误落日志（与 PoolEvent/Snapshot 同一口径）。
+			first = fmt.Errorf("关闭 sql pool %s/%s: %w", key.Role, sanitizedURLForError(key.URL), err)
 		}
 		delete(r.entries, key)
 	}
 	return first
+}
+
+// sanitizedURLForError 只返回 DSN 的 host[:port]（url.Host，定义上不含
+// userinfo，IPv6 保留方括号）供错误/日志面使用；解析失败或无 host 时退回
+// 固定占位符，绝不返回原文。
+func sanitizedURLForError(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "[unparsed]"
+	}
+	if parsed.Host == "" {
+		return "[no-host]"
+	}
+	return parsed.Host
 }

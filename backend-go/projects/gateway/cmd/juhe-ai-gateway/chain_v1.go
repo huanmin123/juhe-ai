@@ -186,6 +186,14 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 			return
 		}
 		req.Body = bodyReq
+		// 请求终态释放 in-flight 预算（Node releaseGatewayRequestBodyInFlightBytes
+		// 挂 res 'finish'/'close'；Go 的等价终态是 handler 返回）：正常返回、
+		// 提前 return 与 panic 展开（kernel recover 中间件兜底）都经过本 defer，
+		// 通过 Capture 进入主链的请求不再泄漏预算。ReleaseInFlight 幂等
+		// （InFlightLease.Release 自带 released 标志；已释放后 Lease 置 nil），
+		// 413（chain_preflight rejectOversizedAutoDowngrade）等中途已释放的路径
+		// 这里是 no-op，不会双重退还预算。
+		defer bodyReq.ReleaseInFlight()
 	}
 
 	// ---- request acceptance + audit capture (routes.ts:287 / :296 / :297) ----

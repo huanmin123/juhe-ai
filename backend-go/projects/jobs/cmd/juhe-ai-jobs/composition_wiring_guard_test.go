@@ -78,6 +78,18 @@ var jobsCompositionWiringGuardEntries = []jobsCompositionWiringGuardEntry{
 		Purpose:       "usage 写入器必须注入定价目录（usagewriter.WithCatalog，worker_assembly.go / worker_usage_pricing_catalog.go）",
 		MissingImpact: "用量记录缺少定价目录，计费统计退化为无价格或零价格数据，账单与成本报表失真",
 	},
+	{
+		Identifier:    "WithFailureStateStore(",
+		Name:          "OAuth 刷新失败状态 Redis 装配",
+		Purpose:       "redis-state 部署必须经 WithFailureStateStore 注入 Redis 版失败状态存储（worker_oauth_failurestate.go），否则保持内存版",
+		MissingImpact: "OAuth 刷新退避状态只在进程内存：重启清零、多副本不共享，故障账号被重复刷新打上游",
+	},
+	{
+		Identifier:    "newAccountScheduleActivationHook(",
+		Name:          "排期激活 dispatch revision 推进 hook",
+		Purpose:       "account-availability-schedule-status-sync 必须注入激活 hook（worker_oauth_activation.go），在激活翻转时推进 circuit dispatch revision 家族",
+		MissingImpact: "定时窗口启用的账号只翻状态、不解除网关 dispatch revision 门控，账号启用后请求持续被拒",
+	},
 }
 
 // jobsReadGoSourcePool 拼接目录 dir 下所有非 _test.go 的 .go 文件为源码池。

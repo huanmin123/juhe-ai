@@ -221,7 +221,7 @@ func TestSyncAccountScheduleSemantics(t *testing.T) {
 	seedAccountWithSchedule(t, db, "acc-deleted", availabilityScheduleJSON, "", "disabled", true)
 
 	activations := []string{}
-	hook := ActivationHookFunc(func(_ context.Context, accountID, _ string) error {
+	hook := ActivationHookFunc(func(_ context.Context, _ *sql.Tx, accountID, _ string) error {
 		activations = append(activations, accountID)
 		return nil
 	})
@@ -289,7 +289,7 @@ func TestSyncActivationHookErrorAborts(t *testing.T) {
 	atStart := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)
 	seedApiKeyWithSchedule(t, db, "key-hook", availabilityScheduleJSON, "", "disabled")
 	seedAccountWithSchedule(t, db, "acc-hook", availabilityScheduleJSON, "", "disabled", false)
-	failing := ActivationHookFunc(func(context.Context, string, string) error {
+	failing := ActivationHookFunc(func(context.Context, *sql.Tx, string, string) error {
 		return context.DeadlineExceeded
 	})
 	if _, err := store.SyncAccountScheduleStatuses(context.Background(), atStart, 0, failing); err == nil {

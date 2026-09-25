@@ -74,7 +74,7 @@ func TestW13DAPIKeyQuotaExactAsyncFallbacks(t *testing.T) {
 	}
 	ctx := context.Background()
 	now := clock.Now()
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", "2026-09-04", 20})
 
 	// 非postgres 模式回退同步检查。
@@ -218,12 +218,12 @@ func TestW13DAPIKeyQuotaAsyncRedisSnapshotErrors(t *testing.T) {
 	server, shared, snapshot, _ := newRedisQuotaStack(t, clock)
 	logs := &logRecorder{}
 	service, err := NewAPIKeyQuotaService(APIKeyQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Timezone:  mustTZ(t, time.UTC),
-		Snapshot:  snapshot,
-		Shared:    shared,
-		Now:       clock.Now,
-		Log:       logs.hook,
+		Modes:    Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
+		Timezone: mustTZ(t, time.UTC),
+		Snapshot: snapshot,
+		Shared:   shared,
+		Now:      clock.Now,
+		Log:      logs.hook,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -980,11 +980,11 @@ func TestW13DCostsBatchTableCoverage(t *testing.T) {
 	}
 	location := time.UTC
 	// daily/weekly/monthly + hourly on/off 的批量读取。
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", "2026-09-04", 3})
-	seedCost(t, db, "usage_stats_weekly", []string{"system_account_id", "scope_type", "scope_id", "stat_week", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_weekly", []string{"system_account_id", "scope_type", "scope_id", "stat_week", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", "2026-W36", 5})
-	seedCost(t, db, "usage_stats_monthly", []string{"system_account_id", "scope_type", "scope_id", "stat_month", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_monthly", []string{"system_account_id", "scope_type", "scope_id", "stat_month", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak1", "2026-09", 7})
 	seedCost(t, db, "usage_quota_hourly_windows", []string{"system_account_id", "scope_type", "scope_id", "window_hours", "total_cost_usd"},
 		[]any{"sys", "api_key", "ak1", 3, 1})
@@ -1348,8 +1348,8 @@ func TestW13DAuthorizationWorkerBatchCacheWriteError(t *testing.T) {
 	badDoc := snapshotFixture("not-a-time", true, true)
 	_, _, badSnapshot, badState := newRedisQuotaStack(t, clock)
 	badService, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:     Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
-		Business:  business, Stats: stats, Timezone: mustTZ(t, time.UTC),
+		Modes:    Modes{RedisCache: true, RedisRuntimeState: true, ServerRole: true},
+		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: badSnapshot, Shared: shared, Now: clock.Now,
 	})
 	if err != nil {
@@ -1386,8 +1386,8 @@ func TestW13DAuthorizationMemoryServerRoleBatch(t *testing.T) {
 	}
 	dbService := &mockDBService{}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:     Modes{ServerRole: true},
-		Business:  business, Stats: stats, Timezone: mustTZ(t, time.UTC),
+		Modes:    Modes{ServerRole: true},
+		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: snapshot, DBService: dbService, Now: clock.Now,
 	})
 	if err != nil {
@@ -1443,8 +1443,8 @@ func TestW13DAuthorizationSnapshotFallbackAccountDimension(t *testing.T) {
 	}
 	dbService := &mockDBService{}
 	service, err := NewAuthorizationQuotaService(AuthorizationQuotaConfig{
-		Modes:     Modes{ServerRole: true},
-		Business:  business, Stats: stats, Timezone: mustTZ(t, time.UTC),
+		Modes:    Modes{ServerRole: true},
+		Business: business, Stats: stats, Timezone: mustTZ(t, time.UTC),
 		Snapshot: snapshot, DBService: dbService, Now: clock.Now,
 	})
 	if err != nil {

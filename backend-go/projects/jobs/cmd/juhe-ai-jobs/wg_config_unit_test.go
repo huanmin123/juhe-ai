@@ -237,22 +237,12 @@ func TestCircuitCapacityFallback(t *testing.T) {
 	}
 }
 
-// TestWorkerEnvHelpers 覆盖 workerEnvBool/workerEnvInt 的空值回退与错误分支。
+// TestWorkerEnvHelpers 覆盖 workerEnvInt 的空值回退与错误分支。
+// （workerEnvBool 已随 2026-09-25 死代码清理删除：无生产调用点。）
 func TestWorkerEnvHelpers(t *testing.T) {
 	getenv := func(name string) string {
-		values := map[string]string{"JUHE_AI_BOOL": " true ", "JUHE_AI_INT": "42", "JUHE_AI_BAD_BOOL": "x", "JUHE_AI_BAD_INT": "1.5"}
+		values := map[string]string{"JUHE_AI_INT": "42", "JUHE_AI_BAD_INT": "1.5"}
 		return values[name]
-	}
-	value, err := workerEnvBool(getenv, "JUHE_AI_BOOL", false)
-	if err != nil || value != true {
-		t.Fatalf("TrimSpace 后的布尔必须可解析: %v %v", value, err)
-	}
-	value, err = workerEnvBool(getenv, "JUHE_AI_MISSING", true)
-	if err != nil || value != true {
-		t.Fatalf("缺省必须回落: %v %v", value, err)
-	}
-	if _, err := workerEnvBool(getenv, "JUHE_AI_BAD_BOOL", false); err == nil {
-		t.Fatal("非法布尔必须报错")
 	}
 	number, err := workerEnvInt(getenv, "JUHE_AI_INT", 0)
 	if err != nil || number != 42 {

@@ -133,13 +133,14 @@ func newStatsDB(t *testing.T) *sql.DB {
 		input_image_tokens INTEGER,
 		output_image_tokens INTEGER,
 		total_cost_usd REAL NOT NULL DEFAULT 0,
+		success_cost_usd REAL NOT NULL DEFAULT 0,
 		last_used_at TEXT
 	)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, thinking_tokens, total_cost_usd, last_used_at)
-		VALUES ('sysacc_1', 'api_key', 'key_1', 3, 10, 20, 4, 0.25, 5, 1.5, '2026-09-01T08:30:00.000Z')`)
+	_, err = db.Exec(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, thinking_tokens, total_cost_usd, success_cost_usd, last_used_at)
+		VALUES ('sysacc_1', 'api_key', 'key_1', 3, 10, 20, 4, 0.25, 5, 1.5, 1.5, '2026-09-01T08:30:00.000Z')`)
 	if err != nil {
 		t.Fatal(err)
 	}

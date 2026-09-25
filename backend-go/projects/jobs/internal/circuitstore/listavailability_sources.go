@@ -151,7 +151,8 @@ func (l *ProjectionItemLoader) statsTable(name string) string {
 }
 
 // loadUsage 对齐 loadAccountManagementListUsageAsync（VALUES joined 查询，
-// statDate 空串读 usage_stats_totals）。
+// statDate 空串读 usage_stats_totals）。成本列读 success_cost_usd：与配额
+// 执法口径一致（失败尝试成本只留在 total_cost_usd 供账号成本观测）。
 func (l *ProjectionItemLoader) loadUsage(ctx context.Context, scopes []usageScope, statDate string) (map[string]usageValue, error) {
 	output := map[string]usageValue{}
 	unique := make([]usageScope, 0, len(scopes))
@@ -188,7 +189,7 @@ func (l *ProjectionItemLoader) loadUsage(ctx context.Context, scopes []usageScop
       requested.row_key,
       COALESCE(usage_rows.request_count, 0) AS request_count,
       COALESCE(usage_rows.input_tokens, 0) + COALESCE(usage_rows.output_tokens, 0) AS total_tokens,
-      COALESCE(usage_rows.total_cost_usd, 0) AS total_cost,
+      COALESCE(usage_rows.success_cost_usd, 0) AS total_cost,
       usage_rows.last_used_at
     FROM requested
     LEFT JOIN ` + table + ` usage_rows
@@ -444,25 +445,31 @@ func (l *ProjectionItemLoader) loadQuotaCosts(ctx context.Context, checks []quot
 			continue
 		}
 		costs := quotaCosts{}
+		// 成本列与配额执法口径对齐：usage_stats 四表读成功交付成本
+		// success_cost_usd（失败尝试不计配额）；usage_quota_hourly_windows 的
+		// total_cost_usd 单列本身就是窗口刷新写入的成功口径成本（statsagg
+		// stages_quota.go），保持读原列。
 		lookups := []struct {
-			table  string
-			column string
-			value  string
+			table      string
+			column     string
+			value      string
+			costColumn string
 		}{
-			{l.statsTable("usage_stats_totals"), "", ""},
-			{l.statsTable("usage_stats_daily"), "stat_date", statDate},
-			{l.statsTable("usage_stats_weekly"), "stat_week", statWeek},
-			{l.statsTable("usage_stats_monthly"), "stat_month", statMonth},
+			{l.statsTable("usage_stats_totals"), "", "", "success_cost_usd"},
+			{l.statsTable("usage_stats_daily"), "stat_date", statDate, "success_cost_usd"},
+			{l.statsTable("usage_stats_weekly"), "stat_week", statWeek, "success_cost_usd"},
+			{l.statsTable("usage_stats_monthly"), "stat_month", statMonth, "success_cost_usd"},
 		}
 		if input.hourlyHours != nil {
 			lookups = append(lookups, struct {
-				table  string
-				column string
-				value  string
-			}{l.statsTable("usage_quota_hourly_windows"), "window_hours", fmt.Sprintf("%d", maxInt(1, *input.hourlyHours))})
+				table      string
+				column     string
+				value      string
+				costColumn string
+			}{l.statsTable("usage_quota_hourly_windows"), "window_hours", fmt.Sprintf("%d", maxInt(1, *input.hourlyHours)), "total_cost_usd"})
 		}
 		for _, lookup := range lookups {
-			query := `SELECT COALESCE(total_cost_usd, 0) AS total_cost FROM ` + lookup.table + `
+			query := `SELECT COALESCE(` + lookup.costColumn + `, 0) AS total_cost FROM ` + lookup.table + `
           WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?`
 			args := []any{input.systemAccountID, input.scopeType, input.scopeID}
 			if lookup.column != "" {

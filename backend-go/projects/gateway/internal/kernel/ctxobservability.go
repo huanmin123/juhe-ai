@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"sync/atomic"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 // Request lifecycle observability for the kernel boundary (BUG-0175 D-190 /
@@ -175,7 +177,7 @@ func emitHTTPRequestStarted(context *RequestContext) {
 		"requestId":   context.RequestID,
 		"method":      context.Method,
 		"path":        context.Path,
-		"originalUrl": context.OriginalURL,
+		"originalUrl": gatewayusage.SanitizeURLForLog(context.OriginalURL),
 		"clientIp":    context.ClientIP,
 	}, "HTTP 请求开始")
 }
@@ -199,7 +201,7 @@ func emitHTTPRequestCompleted(context *RequestContext, statusCode *int, failureS
 		"requestId":    context.RequestID,
 		"method":       context.Method,
 		"path":         context.Path,
-		"originalUrl":  context.OriginalURL,
+		"originalUrl":  gatewayusage.SanitizeURLForLog(context.OriginalURL),
 		"failureScope": failureScope,
 		"durationMs":   durationMs,
 		"clientIp":     context.ClientIP,
@@ -221,7 +223,7 @@ func emitHTTPRequestClosed(context *RequestContext, statusCode *int, durationMs 
 		"requestId":       context.RequestID,
 		"method":          context.Method,
 		"path":            context.Path,
-		"originalUrl":     context.OriginalURL,
+		"originalUrl":     gatewayusage.SanitizeURLForLog(context.OriginalURL),
 		"downstreamClose": true,
 		"durationMs":      durationMs,
 		"clientIp":        context.ClientIP,

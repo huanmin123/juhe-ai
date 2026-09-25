@@ -394,7 +394,14 @@ func (j *RefreshJob) selectBatchCandidates(ctx context.Context, leadSeconds, bat
 			}
 			state, err := j.failures.Read(ctx, candidateID(candidate), j.now().UnixMilli(), candidateConfigRevision(candidate))
 			if err != nil {
-				return nil, err
+				// 保守跳过：读不到失败退避状态时不能当成“无退避”继续刷新
+				//（Redis 故障会把全部账号的退避读空、无退避猛打上游），本轮
+				// 跳过该账户并留 warn，其余账户与后续轮次不受影响。
+				j.logger.Warn("OAuth 刷新失败状态读取失败，本轮跳过该账户",
+					"event", "openai_oauth_refresh_failure_state_read_failed",
+					"error", err,
+					"accountId", candidateID(candidate))
+				continue
 			}
 			if state != nil && state.BackoffUntil > j.now().UnixMilli() {
 				result.SkippedBackoff++

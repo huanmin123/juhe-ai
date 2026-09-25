@@ -13,9 +13,20 @@
 //     归一化校验失败的文件对齐 gateway spool.go 自身语义隔离为
 //     <原路径>.corrupt（保留现场，不阻塞后续文件）；
 //   - 校验通过经 usagewriter.Writer.Enqueue 入队；Enqueue 返回 nil 即视为
-//     接受（分片写 ON CONFLICT DO NOTHING，重复投递天然幂等），删除文件；
-//     Enqueue 失败（writer 已停等瞬态）保留文件、终止本轮并按固定退避重试
+//     接受并删除文件。接受语义 = 记录已进入 writer 内存队列，或（队列满
+//     时）已同步溢出落盘到 overflow spool 文件（落盘成功 Enqueue 才返回，
+//     可回放不丢）。删除后、writer 批量落库（默认 500ms flush）前进程崩
+//     溃的内存窗口是已知取舍（Node 本地队列同款边界）；Enqueue 失败
+//     （writer 已停等瞬态）保留文件、终止本轮并按固定退避重试
 //     （at-least-once，head-of-line 与 Node 本地队列 flush 语义一致）；
+//   - 每轮结束时刷新待删水位（OldestPendingCreatedAt）：取队头 spool 文件
+//     内记录的 created_at 反馈给 ingestgate 游标安全门，使统计游标在
+//     drain 仍持有未确认文件时不得越过其中最旧记录（否则记录滞留超过安
+//     全水位后入表，statsagg 严格单调游标已越过其 created_at，永久不聚
+//     合）。队头选取复用 listSpoolFiles 的排序假设：文件名以 UnixMilli 开
+//     头，gateway 侧每记录落盘即写、互斥串行（FIFO），队头即最旧记录；
+//     跨实例时钟偏斜与 gateway 进程内 buffer 的残余窗口同源（进程边界外，
+//     Node 同款边界）。
 //   - 停机时有界排空后返回，未消费文件持久留待下次启动。
 //
 // 节拍对齐 record_maintenance_jobs drain 族：100ms 轮询、失败固定 1s 退避、
@@ -32,6 +43,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/usagewriter"
@@ -82,6 +94,10 @@ type Drainer struct {
 	FlushInterval           time.Duration
 	RetryDelay              time.Duration
 	ShutdownFlushMaxBatches int
+
+	// oldestMu 保护待删水位；drain goroutine 写、ingestgate probe 读。
+	oldestMu               sync.Mutex
+	oldestPendingCreatedAt string
 }
 
 func (d *Drainer) batchSize() int {
@@ -175,8 +191,10 @@ func parseSpoolRecord(content []byte, filePath string) (usagewriter.UsageRecordI
 
 // DrainOnce 处理至多一个批次的 spool 文件：解析 → 校验 → 入队 → 删除。
 // 损坏文件隔离 .corrupt 后继续；入队或删除失败保留现场并终止本轮（该文件
-// 与后续文件由调用方按固定退避重试）。返回本轮接受并删除的文件数。
+// 与后续文件由调用方按固定退避重试）。返回本轮接受并删除的文件数。退出
+// 时（含失败早退）刷新待删水位。
 func (d *Drainer) DrainOnce(ctx context.Context) (int, error) {
+	defer d.refreshPendingWatermark()
 	files, err := d.listSpoolFiles(d.batchSize())
 	if err != nil {
 		return 0, err
@@ -221,6 +239,82 @@ func (d *Drainer) DrainOnce(ctx context.Context) (int, error) {
 		processed++
 	}
 	return processed, nil
+}
+
+// OldestPendingCreatedAt 返回 drain 仍未确认删除的 spool 文件中，队头
+// 文件内记录的 created_at（RFC3339 毫秒）；无积压或本轮尚未扫描时返回空
+// 串。读取瞬态失败与损坏队头保留上次水位（偏保守：游标多等一轮），队头
+// 在下一轮被隔离/删除后自然前进。
+func (d *Drainer) OldestPendingCreatedAt() string {
+	d.oldestMu.Lock()
+	defer d.oldestMu.Unlock()
+	return d.oldestPendingCreatedAt
+}
+
+// refreshPendingWatermark 刷新待删水位：定位队头 spool 文件并读取其记录
+// 的 created_at；目录为空时清空水位。
+func (d *Drainer) refreshPendingWatermark() {
+	head, err := d.oldestSpoolFilePath()
+	if err != nil {
+		// 列目录失败（权限等）：保留上次水位，下一轮重试。
+		return
+	}
+	if head == "" {
+		d.setOldestPendingCreatedAt("")
+		return
+	}
+	content, err := os.ReadFile(head)
+	if err != nil {
+		// 并发删除（gateway 容量扫描等）：保留上次水位。
+		return
+	}
+	record, err := parseSpoolRecord(content, head)
+	if err != nil {
+		// 损坏队头：下一轮隔离 .corrupt 后队头前进；保留上次水位。
+		return
+	}
+	d.setOldestPendingCreatedAt(record.CreatedAt)
+}
+
+func (d *Drainer) setOldestPendingCreatedAt(value string) {
+	d.oldestMu.Lock()
+	d.oldestPendingCreatedAt = value
+	d.oldestMu.Unlock()
+}
+
+// oldestSpoolFilePath 返回队头 spool 文件路径（全部实例子目录中文件名最
+// 小的 .json；os.ReadDir 按文件名排序，逐实例取首个再按名比较，无需全量
+// 排序）。无待消费文件返回空串。
+func (d *Drainer) oldestSpoolFilePath() (string, error) {
+	entries, err := os.ReadDir(d.Directory)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	var oldestName string
+	var oldestPath string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		instanceEntries, err := os.ReadDir(filepath.Join(d.Directory, entry.Name()))
+		if err != nil {
+			return "", err
+		}
+		for _, instanceEntry := range instanceEntries {
+			if instanceEntry.IsDir() || !strings.HasSuffix(instanceEntry.Name(), ".json") {
+				continue
+			}
+			if oldestPath == "" || instanceEntry.Name() < oldestName {
+				oldestName = instanceEntry.Name()
+				oldestPath = filepath.Join(d.Directory, entry.Name(), instanceEntry.Name())
+			}
+			break
+		}
+	}
+	return oldestPath, nil
 }
 
 // DrainShutdown 停机排空：最多 maxBatches 个批次、失败即停，剩余文件持久

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/circuitstore"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
@@ -103,6 +104,16 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 	if err != nil {
 		return err
 	}
+	// P0 修复：投影认领前的排期同步与 account-availability-schedule-status-sync
+	// 同缺陷——此前以空 hook 调用，定时窗口启用的账号只翻状态、不推进 circuit
+	// dispatch revision 家族，认领后仍被网关 dispatch revision 门控拒绝。复用
+	// 本族入参的既有业务库句柄做方言渲染（同步事务本身经 hook 传入，不新建
+	// 连接池）；推进失败 best-effort 只记 warn（见 worker_oauth_activation.go）。
+	activationBusiness, activationBusinessErr := accounthealth.NewProjectionBusinessDB(business.db, business.postgres)
+	if activationBusinessErr != nil {
+		return activationBusinessErr
+	}
+	activationHook := newAccountScheduleActivationHook(activationBusiness, a.logger)
 	maintenance := opsjobs.ListAvailabilityOptions{
 		OwnerID:           fmt.Sprintf("list-projection:%s:%d", a.config.InstanceID, a.config.WorkerReplicaIdx),
 		BatchSize:         a.config.ListProjectionBatchSize,
@@ -116,7 +127,7 @@ func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business 
 		SyncSchedules: func(syncCtx context.Context, nowMS int64) error {
 			// Node syncAccountAvailabilityScheduleStatusesAsync(now)：
 			// 投影认领前应用全部到期调度边界转移。
-			_, syncErr := a.oauthStore.SyncAccountScheduleStatuses(syncCtx, time.UnixMilli(nowMS).UTC(), 0, nil)
+			_, syncErr := a.oauthStore.SyncAccountScheduleStatuses(syncCtx, time.UnixMilli(nowMS).UTC(), 0, activationHook)
 			return syncErr
 		},
 	}

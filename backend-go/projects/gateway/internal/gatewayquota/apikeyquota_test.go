@@ -111,7 +111,7 @@ func TestCheckAPIKeyQuotaBoundaries(t *testing.T) {
 	apiKey := APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}
 	now := clock.Now()
 
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", "2026-09-04", 5})
 
 	decision, err := service.CheckAPIKeyQuota(ctx, apiKey, now)
@@ -120,7 +120,7 @@ func TestCheckAPIKeyQuotaBoundaries(t *testing.T) {
 	}
 
 	// Exactly at the limit denies (>=).
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak2", "2026-09-04", 10})
 	exactKey := APIKeyRow{ID: "ak2", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}
 	decision, err = service.CheckAPIKeyQuota(ctx, exactKey, now)
@@ -132,7 +132,7 @@ func TestCheckAPIKeyQuotaBoundaries(t *testing.T) {
 	}
 
 	// Over the limit denies.
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak3", "2026-09-04", 11})
 	decision, err = service.CheckAPIKeyQuota(ctx, APIKeyRow{ID: "ak3", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}, now)
 	if err != nil || decision.Allowed {
@@ -174,14 +174,14 @@ func TestCheckAPIKeyQuotaCacheAndInvalidation(t *testing.T) {
 	ctx := context.Background()
 	apiKey := APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}
 
-	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_daily", []string{"system_account_id", "scope_type", "scope_id", "stat_date", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", "2026-09-04", 1})
 	if decision, err := service.CheckAPIKeyQuota(ctx, apiKey, clock.Now()); err != nil || !decision.Allowed {
 		t.Fatalf("first check: (%+v, %v)", decision, err)
 	}
 
 	// Push the scope over the limit; the 5s runtime cache must still allow.
-	if _, err := db.Exec(`UPDATE usage_stats_daily SET total_cost_usd = 51 WHERE system_account_id = 'sys' AND scope_type = 'api_key' AND scope_id = 'ak'`); err != nil {
+	if _, err := db.Exec(`UPDATE usage_stats_daily SET success_cost_usd = 51 WHERE system_account_id = 'sys' AND scope_type = 'api_key' AND scope_id = 'ak'`); err != nil {
 		t.Fatalf("update cost: %v", err)
 	}
 	if decision, err := service.CheckAPIKeyQuota(ctx, apiKey, clock.Now()); err != nil || !decision.Allowed {
@@ -247,7 +247,7 @@ func TestReadAPIKeyQuotaCostsExactAsyncSQLiteFallback(t *testing.T) {
 	service, _ := NewAPIKeyQuotaService(APIKeyQuotaConfig{
 		Modes: Modes{}, Stats: stats, Timezone: mustTZ(t, time.UTC), Snapshot: mustSnapshotCache(t, Modes{}, clock), Now: clock.Now,
 	})
-	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "total_cost_usd"},
+	seedCost(t, db, "usage_stats_totals", []string{"system_account_id", "scope_type", "scope_id", "success_cost_usd"},
 		[]any{"sys", "api_key", "ak", 7})
 	costs, err := service.ReadAPIKeyQuotaCostsExactAsync(context.Background(), APIKeyRow{ID: "ak", SystemAccountID: "sys", QuotaLimitsJSON: testQuotaLimits}, clock.Now())
 	if err != nil || costs.Total != 7 {

@@ -50,6 +50,20 @@ func postgresStatsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
 	}
 }
 
+// postgresUsageStatsSubtractParams 在 postgresStatsSubtractParams 基础上于
+// total_cost_usd 之后插入成功口径成本 success_cost_usd（回减量按记录 success
+// 标志：成功记录 = cost、失败记录 = 0），仅用于 usage_stats_totals 与五个
+// 时间桶的扣减——这六张表有该列；authorization 日报与 usage_model 桶无该列，
+// 继续用 postgresStatsSubtractParams 原参集。
+func postgresUsageStatsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
+	params := postgresStatsSubtractParams(stats)
+	result := make([]any, 0, len(params)+1)
+	result = append(result, params[:14]...)
+	result = append(result, stats.SuccessCostUsd)
+	result = append(result, params[14:]...)
+	return result
+}
+
 // postgresMultiRowPlaceholders 照 postgresMultiRowPlaceholders：生成
 // `(?, ?), (?, ?)` 形态的多行 VALUES 占位符（经 Bind 改写为 $n）。
 func postgresMultiRowPlaceholders(rowCount, columnCount int) string {
@@ -678,6 +692,7 @@ func (s *RecordCleanupStore) subtractPostgresUsageStatsTotals(ctx context.Contex
           input_image_tokens = GREATEST(0, input_image_tokens - ?),
           output_image_tokens = GREATEST(0, output_image_tokens - ?),
           total_cost_usd = GREATEST(0, total_cost_usd - ?),
+          success_cost_usd = GREATEST(0, success_cost_usd - ?),
           duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
           duration_ms_count = GREATEST(0, duration_ms_count - ?),
           duration_ms_max = CASE WHEN duration_ms_count <= ? THEN 0 ELSE duration_ms_max END,
@@ -688,7 +703,7 @@ func (s *RecordCleanupStore) subtractPostgresUsageStatsTotals(ctx context.Contex
           last_error_at = CASE WHEN error_count <= ? THEN NULL ELSE last_error_at END,
           updated_at = ?
       WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
-    `), append(postgresStatsSubtractParams(entry.accumulator), updatedAt,
+    `), append(postgresUsageStatsSubtractParams(entry.accumulator), updatedAt,
 			entry.systemAccountID, entry.scopeType, entry.scopeID)...)
 		if err != nil {
 			return err
@@ -708,6 +723,7 @@ func (s *RecordCleanupStore) deleteEmptyPostgresUsageStatsTotal(ctx context.Cont
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
       AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+      AND success_cost_usd = 0
   `), systemAccountID, scopeType, scopeID)
 	return err
 }
@@ -730,6 +746,7 @@ func (s *RecordCleanupStore) subtractPostgresUsageStatsTimeBucket(ctx context.Co
           input_image_tokens = GREATEST(0, input_image_tokens - ?),
           output_image_tokens = GREATEST(0, output_image_tokens - ?),
           total_cost_usd = GREATEST(0, total_cost_usd - ?),
+          success_cost_usd = GREATEST(0, success_cost_usd - ?),
           duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
           duration_ms_count = GREATEST(0, duration_ms_count - ?),
           duration_ms_max = CASE WHEN duration_ms_count <= ? THEN 0 ELSE duration_ms_max END,
@@ -741,7 +758,7 @@ func (s *RecordCleanupStore) subtractPostgresUsageStatsTimeBucket(ctx context.Co
           updated_at = ?
       WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND %s = ?
     `, bucket.TableName, bucket.ColumnName)),
-			append(postgresStatsSubtractParams(entry.accumulator), updatedAt,
+			append(postgresUsageStatsSubtractParams(entry.accumulator), updatedAt,
 				entry.systemAccountID, entry.scopeType, entry.scopeID, entry.timeValue)...)
 		if err != nil {
 			return err
@@ -761,6 +778,7 @@ func (s *RecordCleanupStore) deleteEmptyPostgresUsageStatsTimeBucket(ctx context
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
       AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+      AND success_cost_usd = 0
   `, bucket.TableName, bucket.ColumnName)), systemAccountID, scopeType, scopeID, timeValue)
 	return err
 }

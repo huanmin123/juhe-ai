@@ -8,7 +8,9 @@ import (
 )
 
 // statsParamsTail mirrors usage-stats.repository.ts statsParamsTail：accumulator
-// 按列顺序展开为参数，时间戳列以 ” 表示 NULL。
+// 按列顺序展开为参数，时间戳列以 ” 表示 NULL。授权摘要 writer
+// （authorization.go）复用该 23 参数尾；usage_stats 表族走
+// usageStatsParamsTail（多一列成功口径成本）。
 func statsParamsTail(stats UsageStatsAccumulator, updatedAt string) []any {
 	var lastUsedAt any
 	if stats.LastUsedAt != "" {
@@ -31,6 +33,18 @@ func statsParamsTail(stats UsageStatsAccumulator, updatedAt string) []any {
 	}
 }
 
+// usageStatsParamsTail 是 usage_stats 表族（totals + 时间桶）的参数尾：
+// 在 statsParamsTail 基础上于 total_cost_usd 之后插入成功口径成本列
+// success_cost_usd（配额/账单读侧 gatewayquota 消费，失败尝试不计入）。
+func usageStatsParamsTail(stats UsageStatsAccumulator, updatedAt string) []any {
+	tail := statsParamsTail(stats, updatedAt)
+	result := make([]any, 0, len(tail)+1)
+	result = append(result, tail[:14]...)
+	result = append(result, stats.SuccessCostUsd)
+	result = append(result, tail[14:]...)
+	return result
+}
+
 const usageStatsMetricColumns = `
 	request_count, success_count, error_count,
 	input_tokens, output_tokens,
@@ -38,6 +52,7 @@ const usageStatsMetricColumns = `
 	cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
 	thinking_tokens, input_image_tokens, output_image_tokens,
 	total_cost_usd,
+	success_cost_usd,
 	duration_ms_sum, duration_ms_count, duration_ms_max,
 	first_token_ms_sum, first_token_ms_count, first_token_ms_max,
 	last_used_at, last_error_at, updated_at
@@ -53,6 +68,7 @@ func upsertDeltaExpr(target string) []string {
 		"cache_write_tokens", "cache_write_1h_tokens", "cache_write_cost_usd",
 		"thinking_tokens", "input_image_tokens", "output_image_tokens",
 		"total_cost_usd",
+		"success_cost_usd",
 		"duration_ms_sum", "duration_ms_count",
 		"first_token_ms_sum", "first_token_ms_count",
 	}
@@ -95,12 +111,12 @@ func (a *Aggregator) upsertUsageStatsTotals(ctx context.Context, tx *sql.Tx, ent
 		query := a.Dialect.bind(`
 			INSERT INTO ` + a.Dialect.StatsTable("usage_stats_totals") + ` (
 			  system_account_id, scope_type, scope_id, ` + usageStatsMetricColumns + `)
-			VALUES (?, ?, ?, ` + placeholders(23) + `)
+			VALUES (?, ?, ?, ` + placeholders(24) + `)
 			ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
 			  ` + joinExprs(upsertDeltaExpr(a.Dialect.qualifiedTarget("usage_stats_totals"))) + `
 		`)
 		args := []any{key.SystemAccountID, key.ScopeType, key.ScopeID}
-		args = append(args, statsParamsTail(accumulator, updatedAt)...)
+		args = append(args, usageStatsParamsTail(accumulator, updatedAt)...)
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return err
 		}
@@ -126,12 +142,12 @@ func (a *Aggregator) upsertUsageStatsTimeBucket(ctx context.Context, tx *sql.Tx,
 		query := a.Dialect.bind(`
 			INSERT INTO ` + a.Dialect.StatsTable(bucket.TableName) + ` (
 			  system_account_id, scope_type, scope_id, ` + conflictColumn + `, ` + usageStatsMetricColumns + `)
-			VALUES (?, ?, ?, ?, ` + placeholders(23) + `)
+			VALUES (?, ?, ?, ?, ` + placeholders(24) + `)
 			ON CONFLICT(system_account_id, scope_type, scope_id, ` + conflictColumn + `) DO UPDATE SET
 			  ` + joinExprs(upsertDeltaExpr(target)) + `
 		`)
 		args := []any{entry.SystemAccountID, entry.ScopeType, entry.ScopeID, entry.TimeValue}
-		args = append(args, statsParamsTail(entry.Accumulator, updatedAt)...)
+		args = append(args, usageStatsParamsTail(entry.Accumulator, updatedAt)...)
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 			return err
 		}

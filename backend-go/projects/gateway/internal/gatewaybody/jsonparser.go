@@ -322,7 +322,7 @@ func (p *JSONParser) worker() {
 		p.mu.Unlock()
 
 		job.startedAt = time.Now()
-		result := p.run(job)
+		result := p.runJobGuarded(job)
 
 		p.mu.Lock()
 		jobBytes := p.jobBytes(job.payloadBytes)
@@ -357,6 +357,18 @@ func (p *JSONParser) findStartableLocked() int {
 		}
 	}
 	return -1
+}
+
+// runJobGuarded 在 panic 屏障内执行单个任务（2026-09-25 修复）：解析钩子或
+// JSON 解析 panic 时转为失败结果返回，activeBytes/busyWorkers 由 worker 循环
+// 的统一回收路径释放，该 job 照常 close(done)，worker 继续处理后续任务。
+// 直接跑 p.run 的话，worker 顶层的 safego.Recover 只保进程不死，goroutine
+// 终止会让在途任务的容量记账永久泄漏（队列容量与忙碌计数失真）。
+func (p *JSONParser) runJobGuarded(job *jsonWorkerJob) (result jsonWorkerResult) {
+	defer safego.Handle("gatewaybody.jsonparser.worker", func(recovered any) {
+		result = jsonWorkerResult{err: fmt.Errorf("json worker 任务 panic: %v", recovered)}
+	})
+	return p.run(job)
 }
 
 func (p *JSONParser) run(job *jsonWorkerJob) jsonWorkerResult {

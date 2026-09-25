@@ -311,11 +311,13 @@ func (r *RedisFailureStateStore) Record(ctx context.Context, accountID string, b
 }
 
 // Read implements FailureStateStore through GET + JSON decode with the same
-// revision guards and clearing behaviour as Node.
+// revision guards and clearing behaviour as Node. Redis errors propagate: the
+// caller must not treat an unreadable state as "no backoff" and hammer the
+// upstream (selectBatchCandidates skips such accounts for the round).
 func (r *RedisFailureStateStore) Read(ctx context.Context, accountID string, now int64, configRevision int64) (*RefreshFailureState, error) {
 	raw, err := r.redis.Get(ctx, failureStateKey(accountID))
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	if raw == "" {
 		return nil, nil
