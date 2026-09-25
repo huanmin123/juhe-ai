@@ -244,7 +244,15 @@ func (c *chainHighConcurrencyQueue) WaitForCapacity(ctx context.Context, input g
 // newChainAccountCircuitService mirrors the Node GatewayAccountCircuitService
 // singleton fork: the redis driver persists the circuit store through
 // JUHE_AI_REDIS_STATE_URL, memory keeps the process-local store.
-func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNamespace string) (*gatewaycircuit.CircuitService, func(), error) {
+//
+// 缺陷 E（熔断观测断链）：persist 配置齐备（业务库句柄 + business owner
+// gate 三证）时，把 OnMutation 接到既有 control-plane 持久化管道
+// （Bridge.Observe → circuitcontrolplane.CompareAndSetIncident 落
+// juhe_business.account_circuit_incidents + outbox，jobs 投影/管理页
+// circuitSummary 复用同一事实源）；配置不齐或契约校验失败时保持既有
+// ServiceOptions{} 行为（无持久观测），绝不 fail-fast 网关启动，也绝不向
+// 请求热路径传播持久化错误（见 chain_circuit_controlplane.go）。
+func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNamespace string, persist chainAccountCircuitPersistConfig) (*gatewaycircuit.CircuitService, func(), error) {
 	var store gatewaycircuit.Store
 	if runtimeStateDriver == "redis" {
 		redisStore, storeErr := gatewaycircuit.NewRedisStore(gatewaycircuit.RedisStoreOptions{
@@ -267,11 +275,25 @@ func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNames
 		}
 		store = memoryStore
 	}
-	service, serviceErr := gatewaycircuit.NewCircuitService(store, gatewaycircuit.ServiceOptions{})
+	options := gatewaycircuit.ServiceOptions{}
+	closes := []func(){}
+	mutationHook, closePersist, hookErr := newChainAccountCircuitPersistHook(store, persist)
+	if hookErr != nil {
+		return nil, nil, hookErr
+	}
+	if mutationHook != nil {
+		options.OnMutation = mutationHook
+		closes = append(closes, closePersist)
+	}
+	service, serviceErr := gatewaycircuit.NewCircuitService(store, options)
 	if serviceErr != nil {
 		return nil, nil, fmt.Errorf("create gateway account circuit service: %w", serviceErr)
 	}
-	return service, func() {}, nil
+	return service, func() {
+		for _, close := range closes {
+			close()
+		}
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

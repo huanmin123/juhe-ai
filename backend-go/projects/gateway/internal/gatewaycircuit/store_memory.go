@@ -697,7 +697,9 @@ func (s *MemoryStore) Restore(_ context.Context, rawState State, nowMs *int64) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.resolveNow(nowMs)
-	state, err := normalizeConfirmationState(CloneState(rawState))
+	// F2+F5（状态机专项 2026-09-25）：restore 入口统一走遗留数据清洗，
+	// 见 normalizeRestoreConfirmationState。
+	state, err := normalizeRestoreConfirmationState(CloneState(rawState))
 	if err != nil {
 		return MutationResult{}, err
 	}
@@ -1418,6 +1420,54 @@ func normalizeConfirmationState(state State) (State, error) {
 		next.RetryAtMs = &retryAt
 	}
 	return next, nil
+}
+
+// normalizeRestoreConfirmationState 在 normalizeConfirmationState 之上追加
+// restore 专用的遗留业务库数据清洗（F2+F5，状态机专项 2026-09-25）。业务库
+// incident 行可能早于现行不变式，未清洗直接写入 Redis 会撞上
+// shared/platform/circuitstate/lua.go 的硬校验：
+//   - F5：遗留行 OPEN/RECOVERING 相的 RetryAtMs 可为 NULL（业务库
+//     NextTransitionAtMs 为空，IncidentToRuntimeState 原样透传）。Lua normalize
+//     只给 SUSPECT 补 retryAt（lua.go:106-109），acquire_canary 对
+//     OPEN/RECOVERING 缺 retryAt 判 not_due（lua.go:508），且缺 retryAt 不进
+//     due 索引（lua.go:56-58；listdue 脚本 lua.go:926-928 直接 error）——Redis
+//     驱动下该账号恢复流程永久卡死（memory Get 对 nil 视为到期，两驱动分叉）。
+//   - F2：遗留行 confirmationFailureCount 可能 > required（Go 侧
+//     ConfirmationFailureCountOf 只约束 0..Max5；Lua normalize 要求 ≤ required
+//     否则 error，lua.go:87-91）——该条目进 Redis 后所有操作永久报错。非法
+//     failureEvidenceKeys 的静默过滤已由 normalizeConfirmationState →
+//     FailureEvidenceKeysOf 覆盖（含 escalation 证据无关：escalation 是独立
+//     Redis 结构，restore 脚本不触达）。
+//
+// 两个 Restore 实现（MemoryStore.Restore / RedisStore.Restore）共用本函数，
+// 保证写入 Redis 的数据必然满足 Lua 不变式；不改 Lua。memory 驱动同步走此
+// 清洗以保持两驱动语义一致（正常数据逐字段不变）。
+func normalizeRestoreConfirmationState(state State) (State, error) {
+	normalized, err := normalizeConfirmationState(state)
+	if err != nil {
+		return State{}, err
+	}
+	if normalized.Phase == PhaseClosed {
+		return normalized, nil
+	}
+	// F2：count > required 钳制到 required。确认完成判定（count>=required
+	// 视为可关闭）语义不变，仅消除 Redis 驱动下的永久 error。
+	if normalized.ConfirmationFailureCount != nil && normalized.ConfirmationFailuresRequired != nil &&
+		*normalized.ConfirmationFailureCount > *normalized.ConfirmationFailuresRequired {
+		clamped := *normalized.ConfirmationFailuresRequired
+		normalized.ConfirmationFailureCount = &clamped
+	}
+	// F5：OPEN/RECOVERING 缺 retryAt 时补值，补法与 SUSPECT 分支一致（Go 侧
+	// normalizeConfirmationState 与 Lua lua.go:106-109 同构）：有租约取租约
+	// 截止，否则取 UpdatedAtMs（已过期，恢复流程随即到期推进）。
+	if (normalized.Phase == PhaseOpen || normalized.Phase == PhaseRecovering) && normalized.RetryAtMs == nil {
+		retryAt := normalized.UpdatedAtMs
+		if normalized.Lease != nil {
+			retryAt = normalized.Lease.LeaseUntilMs
+		}
+		normalized.RetryAtMs = &retryAt
+	}
+	return normalized, nil
 }
 
 func memoryLease(kind, leaseID string, leaseUntilMs, now int64) (*Lease, error) {

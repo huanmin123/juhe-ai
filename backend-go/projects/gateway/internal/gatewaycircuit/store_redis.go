@@ -17,6 +17,15 @@ import (
 // RedisStoreOptions mirrors RedisAccountCircuitStoreOptions. Either RedisURL
 // (a client is created like Node getRedisClient) or Client (injected, tests)
 // must be set.
+//
+// F1（状态机专项 2026-09-25，配置面漂移标注）：redis 驱动下以下运行数值由
+// shared/platform/circuitstate/lua.go 脚本硬编码，不是可配置项——suspect 确认
+// 间隔 3000ms（lua.go:490）、恢复 canary 间隔 3000ms（lua.go:339/390）、恢复
+// 成功阈值 3（lua.go:561）、退避阶梯 3s..900s（lua.go:279）。gatewaycircuit
+// 的 Settings（types.go）仅 memory store（MemoryStore.settings）生效；本结构
+// 及 RedisStore 不读取 Settings。生产装配对 memory store 传空 Settings（默认
+// 值 DefaultSettings 与 Lua 硬编码一致）。调整任一数值必须同步修改 Lua 脚本，
+// 否则 memory/redis 两驱动语义分叉。
 type RedisStoreOptions struct {
 	RedisURL            string
 	Client              redis.Cmdable
@@ -461,7 +470,10 @@ func (s *RedisStore) Size(ctx context.Context) (int64, error) {
 
 // Restore mirrors store.restore.
 func (s *RedisStore) Restore(ctx context.Context, rawState State, nowMs *int64) (MutationResult, error) {
-	state, err := normalizeConfirmationState(CloneState(rawState))
+	// F2+F5（状态机专项 2026-09-25）：restore 入口统一走遗留数据清洗，保证
+	// 写入 Redis 的数据必然满足 Lua 不变式（不改 Lua），见
+	// normalizeRestoreConfirmationState。
+	state, err := normalizeRestoreConfirmationState(CloneState(rawState))
 	if err != nil {
 		return MutationResult{}, err
 	}

@@ -47,6 +47,13 @@ func runAccountCircuitRuntimeIndexInit() {
 	if j3bConfig.CircuitRuntimeRedisURL == "" || j3bConfig.CircuitRuntimeRedisNamespace == "" {
 		fail(errors.New("账户电路运行态索引初始化缺少 Redis URL/namespace 配置"))
 	}
+	// A（状态机专项 2026-09-25）与 serve 路径（main.go gate 构造处）同款
+	// fail-fast：circuit runtime 的 Redis URL 来自主链 JUHE_AI_REDIS_STATE_URL
+	// 回退时，两套 Lua 状态机会并发写同一 states hash，语义不兼容；显式设置
+	// 同值（运维显式决定）不受影响。
+	if isolationErr := j3bConfig.ValidateCircuitRuntimeRedisIsolation(); isolationErr != nil {
+		fail(isolationErr)
+	}
 	businessMode := circuitcontrolplane.SQLite
 	if j3bConfig.StoreMode == "postgres" {
 		businessMode = circuitcontrolplane.Postgres

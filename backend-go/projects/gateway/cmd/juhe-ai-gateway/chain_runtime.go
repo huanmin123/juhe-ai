@@ -547,7 +547,19 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 
 	// D-131：账户电路服务（Node GatewayAccountCircuitService 单例 fork；
 	// SUSPECT/confirmation/父升级/恢复状态机的存储随 runtimeStateDriver 分叉）。
-	accountCircuits, closeAccountCircuits, circuitsErr := newChainAccountCircuitService(cfg.RuntimeStateDriver, cfg.RedisStateURL, cfg.RedisNamespace)
+	// 缺陷 E（熔断观测断链）：persist 配置把主链熔断状态转换接到既有
+	// control-plane 持久化管道（juhe_business.account_circuit_incidents CAS
+	// + outbox；jobs 投影与管理页 circuitSummary 复用同一业务库事实源），
+	// owner gate 与 businesssettings/businessauth/groupdirtycursor 同源
+	// （cfg.Business*，零配置自动认领时已置真）；gate 未就绪/契约缺失时
+	// 保持既有无持久观测行为（见 chain_circuit_controlplane.go）。
+	accountCircuits, closeAccountCircuits, circuitsErr := newChainAccountCircuitService(cfg.RuntimeStateDriver, cfg.RedisStateURL, cfg.RedisNamespace, chainAccountCircuitPersistConfig{
+		DB:                composed.db,
+		Postgres:          composed.pgDialect,
+		Confirmed:         cfg.BusinessHandoffConfirmed,
+		SchemaReady:       cfg.BusinessSchemaReady,
+		NodeWriterStopped: cfg.BusinessNodeWriterStopped,
+	})
 	if circuitsErr != nil {
 		return nil, circuitsErr
 	}

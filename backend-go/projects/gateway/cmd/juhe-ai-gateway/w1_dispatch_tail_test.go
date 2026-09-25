@@ -1505,13 +1505,13 @@ func TestW1XCacheBindingRowOfAndConcurrencyError(t *testing.T) {
 
 func TestW1XAccountCircuitServiceForkArms(t *testing.T) {
 	// redis 驱动缺 URL：fail-fast。
-	if _, _, err := newChainAccountCircuitService("redis", "", "w1x"); err == nil {
+	if _, _, err := newChainAccountCircuitService("redis", "", "w1x", chainAccountCircuitPersistConfig{}); err == nil {
 		t.Fatal("redis 驱动缺状态 URL 必须报错")
 	}
 
 	// redis 驱动 + miniredis：服务可用且关闭句柄安全。
 	server := miniredis.RunT(t)
-	service, closeRedis, err := newChainAccountCircuitService("redis", "redis://"+server.Addr(), "w1x")
+	service, closeRedis, err := newChainAccountCircuitService("redis", "redis://"+server.Addr(), "w1x", chainAccountCircuitPersistConfig{})
 	if err != nil {
 		t.Fatalf("create redis circuit service: %v", err)
 	}
@@ -1521,7 +1521,7 @@ func TestW1XAccountCircuitServiceForkArms(t *testing.T) {
 	closeRedis()
 
 	// memory 驱动：进程内存储。
-	service, closeMemory, err := newChainAccountCircuitService("memory", "", "")
+	service, closeMemory, err := newChainAccountCircuitService("memory", "", "", chainAccountCircuitPersistConfig{})
 	if err != nil {
 		t.Fatalf("create memory circuit service: %v", err)
 	}

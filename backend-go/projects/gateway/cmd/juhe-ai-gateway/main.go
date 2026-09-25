@@ -265,6 +265,13 @@ func main() {
 		var keyModelGate gatewaydispatch.KeyModelGate
 		var probeCircuit gatewaydispatch.AccountCircuitGate
 		if j3bConfig.CircuitRuntimeRedisURL != "" {
+			// A（状态机专项 2026-09-25）gate 构造处 fail-fast：circuit runtime
+			// 的 Redis URL 来自主链 JUHE_AI_REDIS_STATE_URL 回退时，两套 Lua
+			// 状态机会并发写同一 states hash（键布局同名），语义不兼容。显式
+			// 设置同值（运维显式决定）不受影响；J3b memory 装配路径零影响。
+			if isolationErr := j3bConfig.ValidateCircuitRuntimeRedisIsolation(); isolationErr != nil {
+				fail(isolationErr)
+			}
 			circuitMode := circuitcontrolplane.SQLite
 			if businessMode == modelcheckauth.Postgres {
 				circuitMode = circuitcontrolplane.Postgres

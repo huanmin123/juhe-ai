@@ -309,6 +309,12 @@ type BridgeOptions struct {
 	// account readiness cannot be reconstructed. The callback is deliberately
 	// optional so existing callers keep the fail-closed behavior.
 	OnReadinessFailure func(ReadinessFailure)
+	// OnPersistFailure receives a bounded, secret-free diagnostic whenever a
+	// scope's durable incident persistence exhausts its in-worker retry
+	// budget（缺陷 E 观测接线用：持久化失败只报日志，绝不回传请求路径）.
+	// The callback is deliberately optional: nil keeps the silent
+	// in-memory retry/backoff behavior.
+	OnPersistFailure func(PersistFailure)
 	// Sleep replaces the retry backoff sleep in tests.
 	Sleep func(ctx context.Context, delay time.Duration) error
 	// NewTimer overrides retry timer creation (Node setTimeout). The done
@@ -325,6 +331,16 @@ type ReadinessFailure struct {
 	Reason              string
 	RetryAtMs           int64
 	ConsecutiveFailures int64
+}
+
+// PersistFailure is the structured diagnostic for a scope whose durable
+// incident persistence failed after the in-worker retry budget. It carries
+// stable identifiers only — never provider responses or credentials. The
+// scope stays pending and keeps retrying through the scope backoff timer.
+type PersistFailure struct {
+	ScopeKey          string
+	AccountRuntimeKey string
+	Err               error
 }
 
 type observeInput struct {
@@ -360,6 +376,7 @@ type Bridge struct {
 	loadRebuildPage       func(ctx context.Context, input RebuildPageInput) (RebuildPage, error)
 	loadAccountIncidents  func(ctx context.Context, accountRuntimeKey string) ([]IncidentRecord, error)
 	onReadinessFailure    func(ReadinessFailure)
+	onPersistFailure      func(PersistFailure)
 	sleep                 func(ctx context.Context, delay time.Duration) error
 	newTimer              func(delay time.Duration) (done <-chan struct{}, stop func())
 
@@ -498,6 +515,10 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 	if onReadinessFailure == nil {
 		onReadinessFailure = func(ReadinessFailure) {}
 	}
+	onPersistFailure := options.OnPersistFailure
+	if onPersistFailure == nil {
+		onPersistFailure = func(PersistFailure) {}
+	}
 	return &Bridge{
 		store:                   options.Store,
 		db:                      options.DB,
@@ -515,6 +536,7 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 		loadRebuildPage:         loadRebuildPage,
 		loadAccountIncidents:    loadAccountIncidents,
 		onReadinessFailure:      onReadinessFailure,
+		onPersistFailure:        onPersistFailure,
 		sleep:                   sleep,
 		newTimer:                newTimer,
 		pending:                 map[string]observeInput{},
@@ -1061,13 +1083,13 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 		}
 		b.mu.Lock()
 		b.dispatchRevisions[accountID] = dispatchRevision
-		expectedLedger := b.ledgerRevisions[desiredState.ScopeKey]
+		expectedLedger, hasLedgerRevision := b.ledgerRevisions[desiredState.ScopeKey]
 		b.mu.Unlock()
 		transitionID := desiredState.TransitionID
 		if transitionID == "" {
 			transitionID = fmt.Sprintf("rebuild:%s:%d", desiredState.ScopeKey, desiredState.Generation)
 		}
-		persistInput, err := buildPersistIncidentInput(b, scope, desiredState, accountID, dispatchRevision, expectedLedger, transitionID)
+		persistInput, err := buildPersistIncidentInput(b, scope, desiredState, accountID, dispatchRevision, expectedLedger, hasLedgerRevision, transitionID)
 		if err != nil {
 			return err
 		}
@@ -1164,6 +1186,7 @@ func buildPersistIncidentInput(
 	accountID string,
 	dispatchRevision int64,
 	expectedLedger int64,
+	hasLedgerRevision bool,
 	transitionID string,
 ) (CompareAndSetIncidentInput, error) {
 	confirmationFailuresRequired, err := NormalizeConfirmationFailuresRequired(desiredState.ConfirmationFailuresRequired, LegacyConfirmationFailuresRequired)
@@ -1177,8 +1200,17 @@ func buildPersistIncidentInput(
 	if err != nil {
 		return CompareAndSetIncidentInput{}, err
 	}
+	// Node 归档对齐（account-circuit-control-plane-bridge.ts:430
+	// expectedLedgerRevision: this.ledgerRevisions.get(...) ?? null）：
+	// ledger revision 未命中时必须传 nil（= store 契约的"新行插入围栏"，
+	// CompareAndSetIncidentInput.ExpectedLedgerRevision 注释同键）。恒非
+	// nil 会让首插永远 cas_conflict → 重试耗尽（缺陷 E 接线实测发现，
+	// w11c mock 不覆盖该 store 契约）。lookup 由调用方在 b.mu 临界区内
+	// 完成（hasLedgerRevision），此处不得无锁重读 map。
 	var expectedLedgerRevision *int64
-	expectedLedgerRevision = &expectedLedger
+	if hasLedgerRevision {
+		expectedLedgerRevision = &expectedLedger
+	}
 	input := CompareAndSetIncidentInput{
 		AccountID:                       accountID,
 		AccountRuntimeKey:               scope.AccountRuntimeKey,
@@ -1323,7 +1355,15 @@ func (b *Bridge) drainScope(scopeKey string) {
 			b.pending[scopeKey] = current
 		}
 		b.persistenceFailures[scopeKey] = current.scope.AccountRuntimeKey
+		failure := PersistFailure{
+			ScopeKey:          scopeKey,
+			AccountRuntimeKey: current.scope.AccountRuntimeKey,
+			Err:               err,
+		}
 		b.mu.Unlock()
+		// 缺陷 E 观测接线契约：持久化失败只在 worker goroutine 上报诊断，
+		// 不向 Observe 调用方（请求热路径）传播，也不阻塞其他 scope。
+		b.onPersistFailure(failure)
 		return
 	}
 }

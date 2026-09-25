@@ -50,8 +50,17 @@ type Config struct {
 	HealthBoundaryReady          bool
 	CircuitRuntimeRedisURL       string
 	CircuitRuntimeRedisNamespace string
-	CircuitRuntimeCapacity       int
-	CircuitRuntimeRetention      time.Duration
+	// CircuitRuntimeRedisURLFellBack（A，状态机专项 2026-09-25）marks that
+	// JUHE_AI_J3B_CIRCUIT_REDIS_URL was explicitly unset and the URL value
+	// came from the main-chain JUHE_AI_REDIS_STATE_URL fallback. The fallback
+	// itself is unchanged (an explicit same-value opt-in stays allowed); the
+	// flag only lets the assembly site fail fast on the enabled+fallback
+	// combination via ValidateCircuitRuntimeRedisIsolation, because the
+	// circuit_runtime Lua dialect shares the main chain's states hash key
+	// layout and the two state machines are not compatible on one hash.
+	CircuitRuntimeRedisURLFellBack bool
+	CircuitRuntimeCapacity         int
+	CircuitRuntimeRetention        time.Duration
 	// SQLiteReadPoolSize is the Business SQLite read pool connection limit
 	// (JUHE_AI_SQLITE_READ_POOL). The pure-read Source port (account options,
 	// target resolution, contract checks) runs on this pool while the write
@@ -198,7 +207,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_URL"))
 	if cfg.CircuitRuntimeRedisURL == "" {
+		// A（状态机专项 2026-09-25）：回退行为本身不变（显式设置同值仍允许），
+		// 仅记录"值来自回退"事实，供装配处 ValidateCircuitRuntimeRedisIsolation
+		// 对启用+回退组合 fail-fast。
 		cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
+		cfg.CircuitRuntimeRedisURLFellBack = cfg.CircuitRuntimeRedisURL != ""
 	}
 	if cfg.CircuitRuntimeRedisURL == "" {
 		if !cfg.AutoClaimed {
@@ -236,6 +249,32 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		cfg.CircuitRuntimeRetention = value
 	}
 	return cfg, nil
+}
+
+// ValidateCircuitRuntimeRedisIsolation（A，状态机专项 2026-09-25）fails fast
+// when the J3b circuit runtime is assembled against a Redis URL that came from
+// the main-chain fallback. internal/business/circuit_runtime 携带独立 Lua 副本，
+// 但与主链 gatewaycircuit 共用同名 states hash（键布局同为
+// `juhe-ai:<namespace>:account-circuit:gateway-account-circuit:*`，见
+// circuit_runtime/revision.go accountCircuitRevisionRedisKeys 与
+// gatewaycircuit/store_redis.go redisAccountCircuitStoreKeys），两套状态机的
+// 状态字段语义/校验不变式不保证兼容，并发写同一 hash 会互相毒化。必须在
+// gate 构造处显式拒绝：要么为 circuit runtime 配置独立 Redis URL，要么经评估
+// 确认共享后显式设置同值（那是运维的显式决定，回退不算）。
+//
+// J3b 关闭路径（CircuitRuntimeRedisURL 为空，memory 回退装配）零影响；本方法
+// 不改变 LoadConfig 的回退解析结果（wb_scheduler_config_test 的
+// "happy path with fallbacks" 契约保持）。
+func (c Config) ValidateCircuitRuntimeRedisIsolation() error {
+	// URL 为空说明 circuit runtime 走进程内 memory 装配，与主链无共享面；
+	// 即使标志被误置也不报错（防御臂，保持关闭路径零影响）。
+	if c.CircuitRuntimeRedisURL == "" || !c.CircuitRuntimeRedisURLFellBack {
+		return nil
+	}
+	return errors.New("J3b account circuit runtime 与主链熔断共享状态语义不兼容: " +
+		"JUHE_AI_J3B_CIRCUIT_REDIS_URL 未显式配置，当前值回退自主链 JUHE_AI_REDIS_STATE_URL，" +
+		"两套 Lua 状态机并发写同一 states hash 会互相毒化；" +
+		"必须显式配置独立的 JUHE_AI_J3B_CIRCUIT_REDIS_URL（或经评估确认共享后，显式设置同值并知晓风险）")
 }
 
 func hasAnyRawConfig(getenv func(string) string, keys ...string) bool {

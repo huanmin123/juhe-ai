@@ -216,7 +216,7 @@ func TestGatewayAccountProtocolModelScopeIsolatesAuthorizedBindings(t *testing.T
 func TestComposeWiresAccountCircuits(t *testing.T) {
 	fixture := newChainFixture(t)
 	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, "")
-	circuits, closeCircuits, err := newChainAccountCircuitService("memory", "", "")
+	circuits, closeCircuits, err := newChainAccountCircuitService("memory", "", "", chainAccountCircuitPersistConfig{})
 	if err != nil {
 		t.Fatalf("create circuit service: %v", err)
 	}
