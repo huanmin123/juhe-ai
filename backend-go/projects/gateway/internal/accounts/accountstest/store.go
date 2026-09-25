@@ -782,10 +782,15 @@ func SessionCancelReason(row *TestSessionRow) string {
 	return ""
 }
 
-const testTaskRowSelect = `SELECT ` + testTaskSelectColumns + `
-	FROM account_test_tasks t
-	LEFT JOIN account_test_session_tasks st ON st.task_id = t.id
+// testTaskRowSelect 必须经方法构造：表名要走 Table() 方言前缀（PG 为
+// juhe_business.*），const 表达式无法调用方法曾导致裸表名在 PG 42P01
+// （2026-09-25 生产/测试「测试账号连接」500 根因）。
+func (s *Service) testTaskRowSelect() string {
+	return `SELECT ` + testTaskSelectColumns + `
+	FROM ` + s.store.Table("account_test_tasks") + ` t
+	LEFT JOIN ` + s.store.Table("account_test_session_tasks") + ` st ON st.task_id = t.id
 	WHERE t.id = ? LIMIT 1`
+}
 
 func (s *Service) getTestTaskRow(ctx context.Context, q accountscore.Queryer, taskID string) (*TestTaskRow, error) {
 	normalized := strings.TrimSpace(taskID)
@@ -793,7 +798,7 @@ func (s *Service) getTestTaskRow(ctx context.Context, q accountscore.Queryer, ta
 		return nil, nil
 	}
 	row, err := s.scanTestTaskRow(func(target ...any) error {
-		return q.QueryRowContext(ctx, s.store.Bind(testTaskRowSelect), normalized).Scan(target...)
+		return q.QueryRowContext(ctx, s.store.Bind(s.testTaskRowSelect()), normalized).Scan(target...)
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
