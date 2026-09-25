@@ -355,6 +355,10 @@ func circuitDueAtMS(state CircuitState) int64 {
 }
 
 // circuitOutcome 对齐 recovery 的 circuitOutcome 映射。
+// credential_rejected（探测 401/403，相对 Node 的刻意偏离，用户 2026-09-25
+// 拍板）落到现有 transport_failure 臂：complete_canary 重新 OPEN + 退避，
+// complete_confirmation 记一次确认失败。不新增 Lua outcome 值，运行态
+// 状态机（shared/platform/circuitstate 与 Redis store 的三值校验）不动。
 func CircuitOutcome(outcome TransportProbeOutcome) CircuitProbeVerdict {
 	if outcome.Kind == ProbeOutcomeFramingComplete && (outcome.SemanticSuccess == nil || *outcome.SemanticSuccess) {
 		return CircuitVerdictFramingComplete
@@ -362,20 +366,29 @@ func CircuitOutcome(outcome TransportProbeOutcome) CircuitProbeVerdict {
 	if outcome.Kind == ProbeOutcomeTransportIncomplete {
 		return CircuitVerdictTransportFailure
 	}
+	if outcome.Kind == ProbeOutcomeCredentialRejected {
+		return CircuitVerdictTransportFailure
+	}
 	return CircuitVerdictUnknown
 }
 
 // CircuitFailureReason 对齐 recovery 的 circuitFailureReason：
-// background_probe:<failureKind>[:http_<status>]。
+// background_probe:<failureKind>[:http_<status>]。credential_rejected 用
+// 独立原因段（不冒充 transport_incomplete），保证 OPEN 后 failureReason
+// 的排查日志不被误导。
 func CircuitFailureReason(outcome TransportProbeOutcome) string {
-	if outcome.Kind != ProbeOutcomeTransportIncomplete {
-		return ""
-	}
 	status := ""
 	if outcome.StatusCode != nil {
 		status = fmt.Sprintf(":http_%d", *outcome.StatusCode)
 	}
-	return fmt.Sprintf("background_probe:%s%s", outcome.FailureKind, status)
+	switch outcome.Kind {
+	case ProbeOutcomeTransportIncomplete:
+		return fmt.Sprintf("background_probe:%s%s", outcome.FailureKind, status)
+	case ProbeOutcomeCredentialRejected:
+		return fmt.Sprintf("background_probe:credential_rejected%s", status)
+	default:
+		return ""
+	}
 }
 
 // BackgroundConfirmationEvidenceKey 对齐 recovery 的 backgroundConfirmationEvidenceKey。

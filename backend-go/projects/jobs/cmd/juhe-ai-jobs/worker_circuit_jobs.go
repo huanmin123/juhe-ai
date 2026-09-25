@@ -104,8 +104,8 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 	a.scheduleWiredJob("account-circuit-recovery", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		result, err := recovery.Sweep(taskCtx)
 		if err != nil {
-			return jobsched.TaskResult{Outcome: jobsched.OutcomePartial, Warning: fmt.Sprintf("due=%d framingComplete=%d transportIncomplete=%d unknown=%d fenced=%d skipped=%d",
-				result.DueCount, result.FramingCompleteCount, result.TransportIncompleteCount, result.UnknownCount, result.FencedCount, result.SkippedCount)}, err
+			return jobsched.TaskResult{Outcome: jobsched.OutcomePartial, Warning: fmt.Sprintf("due=%d framingComplete=%d transportIncomplete=%d unknown=%d fenced=%d skipped=%d credentialRejected=%d",
+				result.DueCount, result.FramingCompleteCount, result.TransportIncompleteCount, result.UnknownCount, result.FencedCount, result.SkippedCount, result.CredentialRejectedCount)}, err
 		}
 		return jobsched.TaskResult{}, nil
 	})
@@ -123,8 +123,10 @@ func (a *workerAssembly) wireCircuitFamily(ctx context.Context, business *busine
 //     proberepo.CandidateAccount 未暴露 accessType/绑定上下文，无法重建授权键，
 //     该复核退化为查询参数一致性（identity 派生自同一 runtime key），配合
 //     store 侧 dispatch revision CAS 围栏兜底；
-//  2. Node 探针针对 protocol_model scope 的 modelBucket 指定模型；
-//     accountquality.ProbeRequest 无模型钉住参数，走账户健康检查模型。
+//  2. Node 探针针对 protocol_model scope 的 modelBucket 指定模型。Go 侧
+//     ProbeRequest.ProbeModel（相对 Node 的补齐，用户 2026-09-25 拍板）已
+//     钉住同一 modelBucket（circuitRecoveryProbeRequest）；modelBucket 解析
+//     不到（account/key scope 或异常空值）时回退账户健康检查模型。
 type circuitRecoveryTargetResolver struct {
 	store *proberepo.Store
 	probe *accountprobe.Service
@@ -171,22 +173,38 @@ func (r circuitRecoveryTargetResolver) Resolve(ctx context.Context, state opsjob
 		if probeCtx.Err() != nil {
 			return opsjobs.TransportProbeOutcome{Kind: opsjobs.ProbeOutcomeUnknown, FailureKind: opsjobs.ProbeFailureCanceled}, nil
 		}
-		return circuitRecoveryTransportProbe(probeCtx, r.probe, identity, state, groupID, systemAccountID), nil
+		return circuitRecoveryTransportProbe(probeCtx, r.probe, circuitRecoveryProbeRequest(identity, state, groupID, systemAccountID)), nil
 	}
 	return target, true, nil
 }
 
-// circuitRecoveryTransportProbe 对齐 Node runAccountCircuitRecoveryTransportProbe：
-// limited 诊断 + transportProbeOutcomeFromAccountTestResult 分类；任务失败
-// 返回 unknown/task_failure（不计入账户失败证据）。
-func circuitRecoveryTransportProbe(ctx context.Context, service *accountprobe.Service, identity opsjobs.RecoveryRuntimeIdentity, state opsjobs.CircuitState, groupID, systemAccountID string) opsjobs.TransportProbeOutcome {
-	observation, err := service.ProbeAccountView(ctx, accountquality.ProbeRequest{
+// circuitRecoveryProbeRequest 构造恢复探测请求。protocol_model scope 钉住
+// modelBucket（真实流量触发熔断时的模型，对齐 Node 的 model 钉住探测），
+// 保证“探测模型 == 熔断模型”：探测健康检查模型成功而熔断模型仍坏时按旧
+// 逻辑会误治愈；健康检查模型未配置/不在支持列表导致的永久 unknown 退避
+// 路径对该链路自然消失。modelBucket 解析不到（account/key scope，或
+// protocol_model scope 的 bucket 为空白/异常值）时回退现状：不钉住，走
+// 账户健康检查模型默认逻辑。
+func circuitRecoveryProbeRequest(identity opsjobs.RecoveryRuntimeIdentity, state opsjobs.CircuitState, groupID, systemAccountID string) accountquality.ProbeRequest {
+	pinnedModel := ""
+	if state.Scope.Kind == opsjobs.CircuitScopeProtocolModel {
+		pinnedModel = strings.TrimSpace(state.Scope.ModelBucket)
+	}
+	return accountquality.ProbeRequest{
 		AccountID:       identity.AccountID,
 		SystemAccountID: systemAccountID,
 		GroupID:         groupID,
 		TrafficSource:   "runtime_recovery_probe",
 		Full:            false,
-	})
+		ProbeModel:      pinnedModel,
+	}
+}
+
+// circuitRecoveryTransportProbe 对齐 Node runAccountCircuitRecoveryTransportProbe：
+// limited 诊断 + transportProbeOutcomeFromAccountTestResult 分类；任务失败
+// 返回 unknown/task_failure（不计入账户失败证据）。
+func circuitRecoveryTransportProbe(ctx context.Context, service *accountprobe.Service, req accountquality.ProbeRequest) opsjobs.TransportProbeOutcome {
+	observation, err := service.ProbeAccountView(ctx, req)
 	if err != nil || observation == nil {
 		return opsjobs.TransportProbeOutcome{Kind: opsjobs.ProbeOutcomeUnknown, FailureKind: opsjobs.ProbeFailureTaskFailure}
 	}

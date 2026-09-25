@@ -45,7 +45,10 @@ const (
 	CircuitRecoveryReplaceRevision      CircuitRecoveryOperation = "replace_revision"
 )
 
-// CircuitRecoverySweepResult 计数字段与 Node AccountCircuitRecoverySweepResult 一致。
+// CircuitRecoverySweepResult 计数字段与 Node AccountCircuitRecoverySweepResult
+// 一致，另加 CredentialRejectedCount：credential_rejected 是相对 Node 的
+// 刻意偏离类别（探测 401/403 不推进恢复，用户 2026-09-25 拍板），Node
+// 结构体没有对应计数，独立成字段以保证排查口径不混淆。
 type CircuitRecoverySweepResult struct {
 	DueCount                 int `json:"dueCount"`
 	LeasedCount              int `json:"leasedCount"`
@@ -54,6 +57,7 @@ type CircuitRecoverySweepResult struct {
 	UnknownCount             int `json:"unknownCount"`
 	FencedCount              int `json:"fencedCount"`
 	SkippedCount             int `json:"skippedCount"`
+	CredentialRejectedCount  int `json:"credentialRejectedCount"`
 }
 
 // CircuitRecoveryDefaults 对齐 Node 默认配置
@@ -194,6 +198,9 @@ const (
 	circuitRecoveryUnknown             circuitRecoveryItemOutcome = "unknown"
 	circuitRecoveryFenced              circuitRecoveryItemOutcome = "fenced"
 	circuitRecoverySkipped             circuitRecoveryItemOutcome = "skipped"
+	// credential_rejected：探测 401/403（凭据失效），相对 Node 的刻意偏离
+	// 类别；结算走 transport_failure 臂（重新 OPEN + 退避），不推进恢复。
+	circuitRecoveryCredentialRejected circuitRecoveryItemOutcome = "credential_rejected"
 )
 
 func (s *CircuitRecoveryService) recover(ctx context.Context, dueState CircuitState) (circuitRecoveryItemOutcome, bool, error) {
@@ -282,7 +289,11 @@ func (s *CircuitRecoveryService) recover(ctx context.Context, dueState CircuitSt
 		Outcome: CircuitOutcome(outcome),
 		Reason:  CircuitFailureReason(outcome),
 	}
-	if outcome.Kind == ProbeOutcomeTransportIncomplete {
+	// 失败证据：transport_incomplete 与 credential_rejected 都记一条独立
+	// evidence key。后者必须携带——complete_confirmation 的 transport_failure
+	// 臂要求 failureEvidenceKey（Redis store 校验必填）；401/403 作为独立
+	// 确认失败证据语义也成立（凭据失效是真实的账号失败）。
+	if outcome.Kind == ProbeOutcomeTransportIncomplete || outcome.Kind == ProbeOutcomeCredentialRejected {
 		completion.FailureEvidenceKey = BackgroundConfirmationEvidenceKey(dueState, leaseID)
 	}
 	if isConfirmation {
@@ -327,6 +338,9 @@ func (s *CircuitRecoveryService) recover(ctx context.Context, dueState CircuitSt
 	}
 	if outcome.Kind == ProbeOutcomeTransportIncomplete {
 		return circuitRecoveryTransportIncomplete, leased, nil
+	}
+	if outcome.Kind == ProbeOutcomeCredentialRejected {
+		return circuitRecoveryCredentialRejected, leased, nil
 	}
 	return circuitRecoveryUnknown, leased, nil
 }
@@ -416,6 +430,8 @@ func incrementSweepOutcome(result *CircuitRecoverySweepResult, outcome circuitRe
 		result.UnknownCount++
 	case circuitRecoveryFenced:
 		result.FencedCount++
+	case circuitRecoveryCredentialRejected:
+		result.CredentialRejectedCount++
 	default:
 		result.SkippedCount++
 	}

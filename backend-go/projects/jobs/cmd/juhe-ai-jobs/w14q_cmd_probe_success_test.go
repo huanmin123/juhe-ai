@@ -100,9 +100,11 @@ func TestW14QCircuitRecoveryTransportProbeSuccess(t *testing.T) {
 	defer server.Close()
 	handle, service := w14qProbeStoreFixture(t)
 	w14qSeedProbeHTTPAccount(t, handle, server.URL)
+	// 零值 scope 无 modelBucket → 不钉住（回退健康检查模型，既有行为）。
 	outcome := circuitRecoveryTransportProbe(context.Background(), service,
-		opsjobs.RecoveryRuntimeIdentity{Kind: "owner", AccountID: "acc-w14q", SystemAccountID: "sys-w14q"},
-		opsjobs.CircuitState{}, "g-w14q", "sys-w14q")
+		circuitRecoveryProbeRequest(
+			opsjobs.RecoveryRuntimeIdentity{Kind: "owner", AccountID: "acc-w14q", SystemAccountID: "sys-w14q"},
+			opsjobs.CircuitState{}, "g-w14q", "sys-w14q"))
 	if outcome.Kind == opsjobs.ProbeOutcomeUnknown && outcome.FailureKind == opsjobs.ProbeFailureTaskFailure {
 		t.Fatalf("成功上游不得分类为任务失败: %+v", outcome)
 	}
@@ -114,8 +116,9 @@ func TestW14QCircuitRecoveryTransportProbeSuccess(t *testing.T) {
 	handle2, service2 := w14qProbeStoreFixture(t)
 	w14qSeedProbeHTTPAccount(t, handle2, broken.URL)
 	failureOutcome := circuitRecoveryTransportProbe(context.Background(), service2,
-		opsjobs.RecoveryRuntimeIdentity{Kind: "owner", AccountID: "acc-w14q", SystemAccountID: "sys-w14q"},
-		opsjobs.CircuitState{}, "g-w14q", "sys-w14q")
+		circuitRecoveryProbeRequest(
+			opsjobs.RecoveryRuntimeIdentity{Kind: "owner", AccountID: "acc-w14q", SystemAccountID: "sys-w14q"},
+			opsjobs.CircuitState{}, "g-w14q", "sys-w14q"))
 	if failureOutcome.Kind == opsjobs.ProbeOutcomeUnknown && failureOutcome.FailureKind == opsjobs.ProbeFailureTaskFailure {
 		t.Fatalf("502 上游是真实失败证据，不得分类为任务失败: %+v", failureOutcome)
 	}

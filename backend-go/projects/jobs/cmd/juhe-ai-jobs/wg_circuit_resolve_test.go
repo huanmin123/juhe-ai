@@ -103,6 +103,66 @@ func TestCircuitRecoveryResolverPositivePath(t *testing.T) {
 	}
 }
 
+// TestCircuitRecoveryProbeRequestPinsScopeModel 覆盖缺陷 D（用户 2026-09-25
+// 拍板）：恢复探测请求钉住熔断 scope 的 modelBucket，探测模型与熔断模型
+// 一致；解析不到 modelBucket（account/key scope、空白 bucket）时回退现状
+// （不钉住，走账户健康检查模型）。
+func TestCircuitRecoveryProbeRequestPinsScopeModel(t *testing.T) {
+	identity := opsjobs.RecoveryRuntimeIdentity{Kind: "owner", AccountID: "acc-1"}
+	cases := []struct {
+		name      string
+		scope     opsjobs.CircuitScope
+		wantModel string
+		wantNoPin bool
+	}{
+		{
+			name:      "protocol_model 钉住 modelBucket",
+			scope:     opsjobs.CircuitScope{Kind: opsjobs.CircuitScopeProtocolModel, AccountRuntimeKey: "acc-1", ProtocolProfile: "prof", RequestLane: "text", ModelBucket: "gpt-5"},
+			wantModel: "gpt-5",
+		},
+		{
+			name:      "modelBucket 带空白时归一化",
+			scope:     opsjobs.CircuitScope{Kind: opsjobs.CircuitScopeProtocolModel, AccountRuntimeKey: "acc-1", ProtocolProfile: "prof", RequestLane: "text", ModelBucket: "  gpt-5  "},
+			wantModel: "gpt-5",
+		},
+		{
+			name:      "空白 modelBucket 回退健康检查模型",
+			scope:     opsjobs.CircuitScope{Kind: opsjobs.CircuitScopeProtocolModel, AccountRuntimeKey: "acc-1", ProtocolProfile: "prof", RequestLane: "text", ModelBucket: "   "},
+			wantNoPin: true,
+		},
+		{
+			name:      "account scope 无 modelBucket 回退健康检查模型",
+			scope:     opsjobs.CircuitScope{Kind: opsjobs.CircuitScopeAccount, AccountRuntimeKey: "acc-1"},
+			wantNoPin: true,
+		},
+		{
+			name:      "key scope 无 modelBucket 回退健康检查模型",
+			scope:     opsjobs.CircuitScope{Kind: opsjobs.CircuitScopeKey, AccountRuntimeKey: "acc-1", KeyFingerprint: "fp"},
+			wantNoPin: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := circuitRecoveryProbeRequest(identity, opsjobs.CircuitState{Scope: tc.scope}, "group-1", "sys-1")
+			if req.AccountID != "acc-1" || req.SystemAccountID != "sys-1" || req.GroupID != "group-1" {
+				t.Fatalf("目标字段不符: %+v", req)
+			}
+			if req.TrafficSource != "runtime_recovery_probe" || req.Full {
+				t.Fatalf("恢复探测必须是 limited: %+v", req)
+			}
+			if tc.wantNoPin {
+				if req.ProbeModel != "" {
+					t.Fatalf("解析不到 modelBucket 必须回退（ProbeModel 应为空）: %q", req.ProbeModel)
+				}
+				return
+			}
+			if req.ProbeModel != tc.wantModel {
+				t.Fatalf("ProbeModel = %q, want %q", req.ProbeModel, tc.wantModel)
+			}
+		})
+	}
+}
+
 // TestWireListProjectionFamilyDisabledChain 覆盖列表投影族在 PG 语义下的
 // 逐项 fail closed 登记（登记分支不需要真实 PG 连接）。
 func TestWireListProjectionFamilyDisabledChain(t *testing.T) {

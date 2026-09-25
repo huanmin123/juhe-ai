@@ -81,6 +81,13 @@ type View struct {
 	// 支持集合（由仓储层按协议归一化注入）。
 	NormalizeEndpointModes map[EndpointMode]bool
 	ProxyURL               string
+	// ProbeModelOverride 是按请求钉住的探针模型（来自 ProbeRequest.ProbeModel，
+	// 由 Service 在 LoadProbeView 之后注入）。非空时探针直接使用该模型，跳过
+	// 账户健康检查模型及其 SupportedModels 校验——钉住模型来自熔断 scope 的
+	// modelBucket（真实流量使用过的模型），上游对它的裁决就是真实探针结果；
+	// 上游返回 404 model_not_found 时按普通 framing_complete 分类（服务活着），
+	// 不视为探测配置错误。为空时保持健康检查模型默认逻辑。
+	ProbeModelOverride string
 }
 
 // Options 组装探针服务。
@@ -143,6 +150,17 @@ func (s *Service) FingerprintAPIKey(key string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// applyProbeModelOverride 把请求级模型钉住注入探针视图（空值保持视图原样，
+// 既有调用方行为不变）。
+func applyProbeModelOverride(view *View, req accountquality.ProbeRequest) {
+	if view == nil {
+		return
+	}
+	if pinned := strings.TrimSpace(req.ProbeModel); pinned != "" {
+		view.ProbeModelOverride = pinned
+	}
+}
+
 // Probe 实现 accountquality.Prober。
 //   - Full=true：precheck 的 Key 池诊断（Node runAccountApiKeyPoolDiagnostic，
 //     allowSingleEntry）——对全部未禁用 Key 做分级尝试，任一成功即胜出；
@@ -156,6 +174,7 @@ func (s *Service) Probe(ctx context.Context, req accountquality.ProbeRequest) (*
 		// Node：候选缺失抛 AccountTestConfigurationError → 队列按异常处理。
 		return nil, fmt.Errorf("账户 %s 不在当前分组或凭据不可用，无法执行网关测试", req.AccountID)
 	}
+	applyProbeModelOverride(view, req)
 	limited := !req.Full
 	if req.Full {
 		return s.probePool(ctx, view, false)
@@ -172,6 +191,7 @@ func (s *Service) ProbeAccountView(ctx context.Context, req accountquality.Probe
 	if view == nil {
 		return nil, fmt.Errorf("账户 %s 不在当前分组或凭据不可用，无法执行网关测试", req.AccountID)
 	}
+	applyProbeModelOverride(view, req)
 	return s.probePool(ctx, view, false)
 }
 
@@ -954,7 +974,11 @@ func resolveProbeView(view *View) (*View, EndpointMode, string, error) {
 	if err != nil {
 		return nil, "", "", err
 	}
-	sourceModel, err := resolveTestModel(view, "")
+	// 钉住模型（熔断 scope modelBucket）走 resolveTestModel 的显式模型分支，
+	// 跳过健康检查模型解析与 SupportedModels 校验：健康检查模型未配置/不在
+	// 支持列表时旧路径会永远报错（探针 unknown 退避、账号无法恢复），钉住
+	// 后该路径对恢复探测自然消失。
+	sourceModel, err := resolveTestModel(view, view.ProbeModelOverride)
 	if err != nil {
 		return nil, "", "", err
 	}

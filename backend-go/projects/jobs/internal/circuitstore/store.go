@@ -198,6 +198,55 @@ func normalizeConfirmationState(state State) (State, error) {
 	return next, nil
 }
 
+// normalizeRestoreConfirmationState 在 normalizeConfirmationState 之上追加
+// restore 专用的遗留业务库数据清洗（F2+F5，状态机专项 2026-09-25；与
+// gateway/internal/gatewaycircuit/store_memory.go 的同名函数语义一致，跨
+// module 不可 import，按两仓惯例注释互指、成对修改）。业务库 incident 行可能
+// 早于现行不变式，未清洗直接写入 Redis（与 gateway 共享同一键空间、同一
+// circuitstate.ScriptRestore）会撞上 shared/platform/circuitstate/lua.go 的
+// 硬校验：
+//   - F5：遗留行 OPEN/RECOVERING 相的 RetryAtMs 可为 NULL（业务库
+//     NextTransitionAtMs 为空）。Lua normalize 只给 SUSPECT 补 retryAt
+//     （lua.go:106-109），acquire_canary 对 OPEN/RECOVERING 缺 retryAt 判
+//     not_due（lua.go:508），且缺 retryAt 不进 due 索引（lua.go:56-58；
+//     listdue 脚本 lua.go:926-928 直接 error）——jobs 的
+//     account-circuit-recovery 正是该恢复流程的执行者，Redis 下永久卡死。
+//   - F2：遗留行 confirmationFailureCount 可能 > required（Lua normalize 要求
+//     ≤ required 否则 error，lua.go:87-91）——该条目所有操作永久报错。非法
+//     failureEvidenceKeys 的静默过滤已由 normalizeConfirmationState 覆盖
+//     （escalation 证据是独立 Redis 结构，restore 脚本不触达）。
+//
+// 本包唯一 Restore 入口 RedisStore.Restore（opsjobs 适配器经
+// OpsJobsStore.Restore 委托同函数）走此清洗，保证写入共享 Redis 键空间的
+// 数据必然满足 Lua 不变式；不改 Lua。正常数据逐字段不变。
+func normalizeRestoreConfirmationState(state State) (State, error) {
+	normalized, err := normalizeConfirmationState(state)
+	if err != nil {
+		return State{}, err
+	}
+	if normalized.Phase == "CLOSED" {
+		return normalized, nil
+	}
+	// F2：count > required 钳制到 required。确认完成判定（count>=required
+	// 视为可关闭）语义不变，仅消除 Redis 驱动下的永久 error。
+	if normalized.ConfirmationFailureCount != nil && normalized.ConfirmationFailuresRequired != nil &&
+		*normalized.ConfirmationFailureCount > *normalized.ConfirmationFailuresRequired {
+		clamped := *normalized.ConfirmationFailuresRequired
+		normalized.ConfirmationFailureCount = &clamped
+	}
+	// F5：OPEN/RECOVERING 缺 retryAt 时补值，补法与 SUSPECT 分支一致（与
+	// Lua lua.go:106-109 同构）：有租约取租约截止，否则取 UpdatedAtMs（已
+	// 过期，恢复流程随即到期推进）。
+	if (normalized.Phase == "OPEN" || normalized.Phase == "RECOVERING") && normalized.RetryAtMs == nil {
+		retryAt := normalized.UpdatedAtMs
+		if normalized.Lease != nil {
+			retryAt = normalized.Lease.LeaseUntilMs
+		}
+		normalized.RetryAtMs = &retryAt
+	}
+	return normalized, nil
+}
+
 // ---- Redis store ----
 
 // RedisStoreOptions mirrors RedisAccountCircuitStoreOptions。RedisURL 建连
@@ -540,7 +589,10 @@ func (s *RedisStore) ListDue(ctx context.Context, nowMs int64, limit int) ([]Sta
 
 // Restore mirrors store.restore.
 func (s *RedisStore) Restore(ctx context.Context, rawState State, nowMs *int64) (MutationResult, error) {
-	state, err := normalizeConfirmationState(CloneState(rawState))
+	// F2+F5（状态机专项 2026-09-25）：restore 入口统一走遗留数据清洗，保证
+	// 写入共享 Redis 的数据必然满足 Lua 不变式（不改 Lua），见
+	// normalizeRestoreConfirmationState。
+	state, err := normalizeRestoreConfirmationState(CloneState(rawState))
 	if err != nil {
 		return MutationResult{}, err
 	}

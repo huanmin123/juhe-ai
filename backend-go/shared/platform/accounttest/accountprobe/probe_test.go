@@ -57,6 +57,69 @@ func newTestService(t *testing.T, source CandidateSource) *Service {
 	return service
 }
 
+// TestProbeAccountViewPinsRequestModel 验证请求级模型钉住（账户电路恢复
+// 探测缺陷 D 修复，用户 2026-09-25 拍板）：ProbeModel 非空时探针使用钉住
+// 模型并跳过健康检查模型的 SupportedModels 校验；空/空白时保持健康检查
+// 模型默认逻辑，既有调用方行为不变。
+func TestProbeAccountViewPinsRequestModel(t *testing.T) {
+	var seenModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("请求体必须是 JSON: %v", err)
+		}
+		seenModel, _ = payload["model"].(string)
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"juhe"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	cases := []struct {
+		name       string
+		probeModel string
+		wantModel  string
+	}{
+		{
+			// 钉住模型不在 SupportedModels 中也必须照常探测（上游裁决是
+			// 真实结果；旧路径会报“不在支持模型列表”并永远 unknown 退避）。
+			name:       "钉住模型绕过支持列表校验",
+			probeModel: "gpt-pinned",
+			wantModel:  "gpt-pinned",
+		},
+		{
+			name:       "空 ProbeModel 保持健康检查模型",
+			probeModel: "",
+			wantModel:  "gpt-test",
+		},
+		{
+			name:       "空白 ProbeModel 视同未钉住",
+			probeModel: "   ",
+			wantModel:  "gpt-test",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seenModel = ""
+			source := &fakeSource{view: probeView(server.URL)}
+			observation, err := newTestService(t, source).ProbeAccountView(context.Background(), accountquality.ProbeRequest{
+				AccountID: "acc-1", GroupID: "group-1", SystemAccountID: "sys-1",
+				TrafficSource: "runtime_recovery_probe", Full: false,
+				ProbeModel: tc.probeModel,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !observation.Result.Success {
+				t.Fatalf("success=%v message=%q", observation.Result.Success, observation.Result.Message)
+			}
+			if seenModel != tc.wantModel {
+				t.Fatalf("上游请求 model = %q, want %q", seenModel, tc.wantModel)
+			}
+		})
+	}
+}
+
 // TestProbeChatJSONSuccess 验证 OpenAI chat_json 完整成功路径：
 // finish_reason + 输出包含预期令牌 → success；证据 framing_complete。
 func TestProbeChatJSONSuccess(t *testing.T) {

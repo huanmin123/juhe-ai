@@ -63,6 +63,13 @@ type ProbeRequest struct {
 	FixedAPIKey         string
 	FixedKeyFingerprint string
 	FixedKeyIndex       int
+	// ProbeModel 钉住本次探针使用的上游模型（可空）。账户电路恢复探测传入
+	// 熔断 scope 的 modelBucket，使探测模型与熔断作用域一致（真实流量用的
+	// 就是这个模型）；钉住模型不走健康检查模型的 SupportedModels 校验——
+	// 上游对该模型的裁决（含 404 model_not_found）就是真实探针结果。为空时
+	// 保持账户健康检查模型默认逻辑，既有调用方（quality-refresh、
+	// cooldown-retest、speed-first、手动测试）行为不变。
+	ProbeModel string
 }
 
 // AccountForTest 是 loadAccountForTest 的最小视图

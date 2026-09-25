@@ -25,6 +25,11 @@ import (
 func TestW7DTransportProbeOutcomeMatrix(t *testing.T) {
 	status200 := 200
 	status529 := 529
+	status401 := 401
+	status403 := 403
+	status404 := 404
+	status429 := 429
+	status500 := 500
 	var nilStatus *int
 	canceled := true
 
@@ -69,6 +74,38 @@ func TestW7DTransportProbeOutcomeMatrix(t *testing.T) {
 			name:     "完成真实尝试进入 framing_complete",
 			attempt:  &UpstreamAttemptSnapshot{Status: &status200, IsReal: true, IsCompletedReal: true},
 			wantKind: ProbeOutcomeFramingComplete, wantStatus: &status200,
+		},
+		// ---- 缺陷 C（用户 2026-09-25 拍板）：探测 401/403 是凭据/授权失效，
+		// 不得按 framing_complete 推进恢复；其余状态码维持 Node 判定。----
+		{
+			name:     "探测 401 判 credential_rejected 不推进恢复",
+			attempt:  &UpstreamAttemptSnapshot{Status: &status401, IsReal: true, IsCompletedReal: true},
+			wantKind: ProbeOutcomeCredentialRejected, wantStatus: &status401,
+		},
+		{
+			name:     "探测 403 判 credential_rejected 不推进恢复",
+			attempt:  &UpstreamAttemptSnapshot{Status: &status403, IsReal: true, IsCompletedReal: true},
+			wantKind: ProbeOutcomeCredentialRejected, wantStatus: &status403,
+		},
+		{
+			name:     "探测 429 说明服务活着维持 framing_complete",
+			attempt:  &UpstreamAttemptSnapshot{Status: &status429, IsReal: true, IsCompletedReal: true},
+			wantKind: ProbeOutcomeFramingComplete, wantStatus: &status429,
+		},
+		{
+			name:     "探测 500 维持 framing_complete",
+			attempt:  &UpstreamAttemptSnapshot{Status: &status500, IsReal: true, IsCompletedReal: true},
+			wantKind: ProbeOutcomeFramingComplete, wantStatus: &status500,
+		},
+		{
+			name:     "探测 404 是配置问题不误伤账号维持 framing_complete",
+			attempt:  &UpstreamAttemptSnapshot{Status: &status404, IsReal: true, IsCompletedReal: true},
+			wantKind: ProbeOutcomeFramingComplete, wantStatus: &status404,
+		},
+		{
+			name:     "401 带本地传输失败仍归 transport_incomplete（优先级不变）",
+			attempt:  &UpstreamAttemptSnapshot{Status: &status401, TransportFailureKind: "connection", IsReal: true, IsCompletedReal: true},
+			wantKind: ProbeOutcomeTransportIncomplete, wantFail: ProbeFailureConnection, wantStatus: &status401,
 		},
 		{
 			name:     "invalid_probe_output 语义失败",

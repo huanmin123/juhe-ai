@@ -1,5 +1,9 @@
 package opsjobs
 
+import (
+	"net/http"
+)
+
 // TransportProbeOutcome 逐字段对齐 Node modules/accounts/automatic-account-probe-outcome.ts
 // 的 TransportProbeOutcome。三态:
 //   - framing_complete: HTTP framing 完成；StatusCode 必有；
@@ -19,6 +23,15 @@ const (
 	ProbeOutcomeFramingComplete     ProbeOutcomeKind = "framing_complete"
 	ProbeOutcomeTransportIncomplete ProbeOutcomeKind = "transport_incomplete"
 	ProbeOutcomeUnknown             ProbeOutcomeKind = "unknown"
+	// ProbeOutcomeCredentialRejected 是相对 Node 探测行为的刻意偏离（用户
+	// 2026-09-25 拍板）：上游对探测请求返回 401/403（凭据/授权失效，账号
+	// 确定坏）。Node 侧任意 HTTP 状态码都判 framing_complete 并推进恢复，
+	// 导致 key 失效账号被自己的 401“治愈”（恢复后真实流量再次熔断，振荡）。
+	// 该类别不推进恢复：结算映射（CircuitOutcome）落到 complete_canary/
+	// complete_confirmation 的 transport_failure 臂（重新 OPEN + 退避）。
+	// 其余状态码（2xx/404/429/5xx）维持 Node 判定不变：429/5xx 说明服务
+	// 活着，推进恢复符合分层设计；404 是探测配置问题，不误伤账号。
+	ProbeOutcomeCredentialRejected ProbeOutcomeKind = "credential_rejected"
 )
 
 type ProbeFailureKind string
@@ -77,6 +90,12 @@ func TransportProbeOutcomeFromResult(result ProbeResultSnapshot, upstreamAttempt
 		return outcome
 	}
 	if statusCode != nil {
+		// 401/403 是真实上游 HTTP 响应（framing 完成），不是本地传输失败，
+		// 但凭据/授权已确定失效：不得按 framing_complete 推进恢复（Node
+		// 行为的刻意偏离，见 ProbeOutcomeCredentialRejected 注释）。
+		if *statusCode == http.StatusUnauthorized || *statusCode == http.StatusForbidden {
+			return TransportProbeOutcome{Kind: ProbeOutcomeCredentialRejected, StatusCode: statusCode}
+		}
 		outcome := TransportProbeOutcome{Kind: ProbeOutcomeFramingComplete, StatusCode: statusCode}
 		if result.ErrorCode == "invalid_probe_output" {
 			success := false

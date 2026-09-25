@@ -109,9 +109,11 @@ func TestW9HCircuitRecoveryTransportProbeTaskFailureBranch(t *testing.T) {
 	runtimeKey := wgSeedRecoveryAccount(t, handle)
 	_ = runtimeKey
 	service := w9hProbeService(t, store)
+	// 零值 scope 无 modelBucket → 不钉住（回退健康检查模型，既有行为）。
 	outcome := circuitRecoveryTransportProbe(context.Background(), service,
-		opsjobs.RecoveryRuntimeIdentity{Kind: "owner", AccountID: "acc-absent", SystemAccountID: "sys-rt"},
-		opsjobs.CircuitState{}, "g-rt", "sys-rt")
+		circuitRecoveryProbeRequest(
+			opsjobs.RecoveryRuntimeIdentity{Kind: "owner", AccountID: "acc-absent", SystemAccountID: "sys-rt"},
+			opsjobs.CircuitState{}, "g-rt", "sys-rt"))
 	if outcome.Kind != opsjobs.ProbeOutcomeUnknown || outcome.FailureKind != opsjobs.ProbeFailureTaskFailure {
 		t.Fatalf("outcome=%+v", outcome)
 	}

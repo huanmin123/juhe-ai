@@ -70,6 +70,12 @@ func transportIncompleteOutcome(failureKind ProbeFailureKind, statusCode *int) T
 	return TransportProbeOutcome{Kind: ProbeOutcomeTransportIncomplete, FailureKind: failureKind, StatusCode: statusCode}
 }
 
+// credentialRejectedOutcome 构造缺陷 C（用户 2026-09-25 拍板）的探测
+// 401/403 结算输入：真实上游 HTTP 响应，凭据/授权确定失效。
+func credentialRejectedOutcome(statusCode *int) TransportProbeOutcome {
+	return TransportProbeOutcome{Kind: ProbeOutcomeCredentialRejected, StatusCode: statusCode}
+}
+
 func staticResolver(target CircuitRecoveryProbeTarget, found bool) CircuitRecoveryTargetResolver {
 	return func(context.Context, CircuitState) (CircuitRecoveryProbeTarget, bool, error) {
 		return target, found, nil
@@ -182,6 +188,105 @@ func TestCircuitRecoveryTransportIncompleteRecordsEvidence(t *testing.T) {
 	wantKey := BackgroundConfirmationEvidenceKey(seed, leaseID)
 	if state.FailureEvidenceKeys[0] != wantKey {
 		t.Fatalf("failureEvidenceKey = %s, want %s", state.FailureEvidenceKeys[0], wantKey)
+	}
+	advance(nowMS() + 1)
+}
+
+// 缺陷 C（用户 2026-09-25 拍板）：探测 401/403 不推进恢复。OPEN 账号探测
+// 返回 401 后必须重新 OPEN 进退避（等价 complete_canary 的 transport_failure
+// 臂），不得进入 RECOVERING/CLOSED。
+func TestCircuitRecoveryCredentialRejectedReopensCanary(t *testing.T) {
+	nowMS, _ := testClock(t)
+	store, err := NewMemoryCircuitStore(10, nowMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := openState(t, accountScope("acc-cred-open"), 1, "5", nowMS())
+	if _, err := store.Restore(context.Background(), seed, nowMS()); err != nil {
+		t.Fatal(err)
+	}
+	status := 401
+	service := newTestRecoveryService(t, store, nowMS, staticResolver(CircuitRecoveryProbeTarget{
+		DispatchRevision: "5",
+		Probe: func(context.Context) (TransportProbeOutcome, error) {
+			return credentialRejectedOutcome(&status), nil
+		},
+	}, true))
+
+	result, err := service.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep 失败: %v", err)
+	}
+	if result.CredentialRejectedCount != 1 {
+		t.Fatalf("credentialRejectedCount = %d: %+v", result.CredentialRejectedCount, result)
+	}
+	if result.FramingCompleteCount != 0 {
+		t.Fatalf("401 不得计入 framingComplete: %+v", result)
+	}
+	state, _ := store.Get(context.Background(), accountScope("acc-cred-open"), nowMS())
+	if state.Phase != CircuitPhaseOpen {
+		t.Fatalf("401 后必须重新 OPEN，got %s", state.Phase)
+	}
+	if state.Phase == CircuitPhaseRecovering || state.Phase == CircuitPhaseClosed {
+		t.Fatalf("401 不得推进恢复: %s", state.Phase)
+	}
+	if state.BackoffAttempt != 2 {
+		t.Fatalf("退避尝试应从 1 递增到 2: %d", state.BackoffAttempt)
+	}
+	if state.RetryAtMS == nil || *state.RetryAtMS <= nowMS() {
+		t.Fatalf("必须带未来退避 deadline: %+v", state.RetryAtMS)
+	}
+	if state.Lease != nil {
+		t.Fatal("重新 OPEN 后不应残留租约")
+	}
+	wantReason := "background_probe:credential_rejected:http_401"
+	if state.FailureReason != wantReason {
+		t.Fatalf("failureReason = %q, want %q", state.FailureReason, wantReason)
+	}
+}
+
+// 缺陷 C：SUSPECT 确认探测返回 401 按确认失败计（transport_failure 臂），
+// 写入独立 evidence key，未达阈值保持 SUSPECT。
+func TestCircuitRecoveryCredentialRejectedCountsConfirmationFailure(t *testing.T) {
+	nowMS, advance := testClock(t)
+	store, err := NewMemoryCircuitStore(10, nowMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := suspectState(t, accountScope("acc-cred-suspect"), 1, "5", nowMS())
+	if _, err := store.Restore(context.Background(), seed, nowMS()); err != nil {
+		t.Fatal(err)
+	}
+	status := 403
+	service := newTestRecoveryService(t, store, nowMS, staticResolver(CircuitRecoveryProbeTarget{
+		DispatchRevision: "5",
+		Probe: func(context.Context) (TransportProbeOutcome, error) {
+			return credentialRejectedOutcome(&status), nil
+		},
+	}, true))
+
+	result, err := service.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep 失败: %v", err)
+	}
+	if result.CredentialRejectedCount != 1 {
+		t.Fatalf("credentialRejectedCount = %d: %+v", result.CredentialRejectedCount, result)
+	}
+	state, _ := store.Get(context.Background(), accountScope("acc-cred-suspect"), nowMS())
+	if state.Phase != CircuitPhaseSuspect {
+		t.Fatalf("确认失败(1/2)应保持 SUSPECT，got %s", state.Phase)
+	}
+	if state.ConfirmationFailureCount == nil || *state.ConfirmationFailureCount != 1 {
+		t.Fatalf("confirmationFailureCount 应为 1: %+v", state.ConfirmationFailureCount)
+	}
+	// 首个 createID 消耗在 leaseId（id-1）。
+	wantKey := BackgroundConfirmationEvidenceKey(seed, "id-1")
+	if len(state.FailureEvidenceKeys) != 1 || state.FailureEvidenceKeys[0] != wantKey {
+		t.Fatalf("应写入 401 的独立失败证据: %v", state.FailureEvidenceKeys)
+	}
+	wantReason := "background_probe:credential_rejected:http_403"
+	if state.FailureReason != wantReason {
+		t.Fatalf("failureReason = %q, want %q", state.FailureReason, wantReason)
 	}
 	advance(nowMS() + 1)
 }
@@ -399,6 +504,8 @@ func TestCircuitRecoveryResumesAfterKillRestart(t *testing.T) {
 
 func TestCircuitOutcomeAndFailureReasonMatrix(t *testing.T) {
 	status := 503
+	status401 := 401
+	status403 := 403
 	cases := []struct {
 		name        string
 		outcome     TransportProbeOutcome
@@ -415,6 +522,10 @@ func TestCircuitOutcomeAndFailureReasonMatrix(t *testing.T) {
 		{"transport timeout", transportIncompleteOutcome(ProbeFailureTimeout, &status), CircuitVerdictTransportFailure, "background_probe:timeout:http_503"},
 		{"transport read 无状态码", transportIncompleteOutcome(ProbeFailureRead, nil), CircuitVerdictTransportFailure, "background_probe:read"},
 		{"unknown canceled", TransportProbeOutcome{Kind: ProbeOutcomeUnknown, FailureKind: ProbeFailureCanceled}, CircuitVerdictUnknown, ""},
+		// 缺陷 C：credential_rejected 落现有 transport_failure 臂（重新 OPEN +
+		// 退避），原因段独立命名，排查日志不与 transport_incomplete 混淆。
+		{"credential 401", credentialRejectedOutcome(&status401), CircuitVerdictTransportFailure, "background_probe:credential_rejected:http_401"},
+		{"credential 403", credentialRejectedOutcome(&status403), CircuitVerdictTransportFailure, "background_probe:credential_rejected:http_403"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

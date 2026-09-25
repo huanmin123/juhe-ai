@@ -72,7 +72,9 @@ func TestCircuitRecoveryTransportProbeTaskFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	identity := opsjobs.RecoveryRuntimeIdentity{Kind: "owner", AccountID: "wg-missing"}
-	outcome := circuitRecoveryTransportProbe(context.Background(), service, identity, opsjobs.CircuitState{}, "g1", "sys1")
+	// 零值 scope 无 modelBucket → 不钉住，回退健康检查模型（既有行为）。
+	req := circuitRecoveryProbeRequest(identity, opsjobs.CircuitState{}, "g1", "sys1")
+	outcome := circuitRecoveryTransportProbe(context.Background(), service, req)
 	if outcome.Kind != opsjobs.ProbeOutcomeUnknown || outcome.FailureKind != opsjobs.ProbeFailureTaskFailure {
 		t.Fatalf("任务失败必须分类为 unknown/task_failure: %+v", outcome)
 	}
