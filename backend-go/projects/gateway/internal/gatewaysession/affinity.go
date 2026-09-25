@@ -197,6 +197,13 @@ func (s *AffinityService) shouldUseRedisSessionAffinity() bool {
 	return s.cfg.CacheDriver == CacheDriverRedis
 }
 
+// UsesRedisSessionAffinity 是 shouldUseRedisSessionAffinity 的导出只读镜像：
+// 组合根据此分叉 dispatch 侧会话亲和端口（Redis cacheDriver → 与 preauth
+// 共用本服务；memory → 进程内 localSessionAffinity 显式降级）。
+func (s *AffinityService) UsesRedisSessionAffinity() bool {
+	return s.shouldUseRedisSessionAffinity()
+}
+
 // canUseProcessLocalSessionAffinity mirrors canUseProcessLocalSessionAffinity.
 func (s *AffinityService) canUseProcessLocalSessionAffinity() bool {
 	if s.cfg.CacheDriver != CacheDriverRedis {

@@ -47,10 +47,16 @@ type chainRuntimeServices struct {
 	Avoidance       gatewaypreauth.ClientIPAccountAvoidanceFactory
 	Affinity        *gatewaygemini.InteractionAffinity
 	Recoverable     gatewaypreauth.RecoverableWait
-	APIKeyQuota     *gatewayquota.APIKeyQuotaService
-	AuthzQuota      *gatewayquota.AuthorizationQuotaService
-	InflightQuota   *gatewayquota.InflightQuotaService
-	Accounts        *chainAccountsSelector
+	// DispatchRecoverableWait 是同一 G11 等待引擎的 dispatch 侧句柄
+	//（chain_dispatch_recoverable_wait.go 适配成
+	// gatewaydispatch.RecoverableSuppressionWaiter 挂 engine.RecoverableWait；
+	// 与 Recoverable 共用实例——引擎无状态，唤醒面同为
+	// DefaultRecoverableWaitCoordinator）。
+	DispatchRecoverableWait *gatewaycircuit.PreAuthRecoverableWait
+	APIKeyQuota             *gatewayquota.APIKeyQuotaService
+	AuthzQuota              *gatewayquota.AuthorizationQuotaService
+	InflightQuota           *gatewayquota.InflightQuotaService
+	Accounts                *chainAccountsSelector
 	// Identity carries the G14 session identity + affinity services (nil is
 	// rejected by the chain assembly: the preflight dereferences them).
 	Identity *sessionIdentityServices
@@ -633,10 +639,15 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 	services.KeyModelStore = keyModelStore
 
 	// ---- recoverable wait (G11 circuit wait engine) ----
-	services.Recoverable = gatewaycircuit.NewPreAuthRecoverableWait(
+	// preauth 与 dispatch 共用同一等待引擎实例（无状态；dispatch 侧经
+	// chainDispatchRecoverableWait 适配挂 engine.RecoverableWait——此前生产
+	// 未装配，本地抑制耗尽路径直接快速退出，等待恢复能力缺失）。
+	chainRecoverableWait := gatewaycircuit.NewPreAuthRecoverableWait(
 		gatewaycircuit.NewWaitCoordinator(gatewaycircuit.WaitCoordinatorOptions{}),
 		chainCircuitWaitLogger{inner: slog.Default()},
 	)
+	services.Recoverable = chainRecoverableWait
+	services.DispatchRecoverableWait = chainRecoverableWait
 
 	// ---- normal-route latency degradation (runtimeStateDriver fork) ----
 	// Node createRuntimeStateStore('gateway-normal-route-latency-degradation');

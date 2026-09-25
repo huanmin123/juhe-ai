@@ -1204,6 +1204,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			Avoidance:                    chainServices.Avoidance,
 			Affinity:                     chainServices.Affinity,
 			Recoverable:                  chainServices.Recoverable,
+			// dispatch 引擎恢复等待（G11 同一实例；engine.RecoverableWait
+			// 此前生产缺席——抑制耗尽路径快速退出、无等待恢复能力）。
+			DispatchRecoverableWait: chainServices.DispatchRecoverableWait,
 			// G14 session identity services (degrade by driver axes, never nil).
 			Identity: chainServices.Identity,
 			// 显式账户错误策略：failureKind / 换 Key 授权 / cooldown-disable

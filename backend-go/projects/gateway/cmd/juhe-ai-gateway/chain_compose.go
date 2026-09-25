@@ -134,6 +134,9 @@ type chainRuntimeDeps struct {
 	Identity    *sessionIdentityServices
 	CodexBridge gatewaypreauth.CodexBridgePreflight
 	Recoverable gatewaypreauth.RecoverableWait
+	// DispatchRecoverableWait 是 G11 等待引擎的 dispatch 侧句柄（nil 仅组合
+	// 测试——engine.RecoverableWait 保持缺席语义，抑制耗尽路径快速退出）。
+	DispatchRecoverableWait *gatewaycircuit.PreAuthRecoverableWait
 
 	// Suppression / degradation / locks (optional; disabled implementations
 	// below keep the attempt loop defined). AccountLocks 生产装配为
@@ -390,6 +393,18 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// Node dispatcher forgets the account's session affinity on its failure
 	// branches (failure-dispatch.ts:208/346/570).
 	sessionAffinity := newLocalSessionAffinity()
+	// 会话亲和读写面合流：Redis cacheDriver 下 dispatch 侧三个消费面
+	//（engine.Affinity / chainFailureDispatcher.affinity /
+	// chainResponseAccountEffects.affinity）与 preauth（sessionAffinityAdapter）
+	// 共用同一 G14 AffinityService——绑定读写落 Redis，多实例/重启下两侧
+	// 同一数据面（此前 dispatch 全走进程内存，读写割裂）。memory
+	// cacheDriver（含组合测试 deps.Identity == nil）保持
+	// localSessionAffinity，「网关链端口显式降级」warn 只在该真实降级路径
+	// 触发（localSessionAffinity.ClaimAsync 的 once warn）。
+	var dispatchSessionAffinity gatewaydispatch.SessionAffinityPort = sessionAffinity
+	if redisBacked := newChainSessionAffinityDispatchPort(sessionAffinity, deps.Identity); redisBacked != nil {
+		dispatchSessionAffinity = redisBacked
+	}
 	// G18 client-source avoidance collaborators: the source-identity resolver
 	// plugs into the shared client-strategy deps (preauth resolution and the
 	// failure-time re-resolution use the same scope), and the turn-retry
@@ -429,7 +444,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// gpt 请求覆盖能力解析（Nil cache 保持能力解析为空，覆盖保持惰性）。
 	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache, chainBodyParser), &chainFailureDispatcher{
 		usage:             usageService,
-		affinity:          sessionAffinity,
+		affinity:          dispatchSessionAffinity,
 		clientStrategy:    codexClientStrategy,
 		turnRetry:         chainTurnRetry,
 		avoidanceProbe:    chainTurnAvoidanceProbe,
@@ -480,7 +495,10 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// B-3（BUG-0174）波1遗留接线：Redis 轮转计数器（nil 保持进程内回退）。
 	engine.KeyRotation = deps.KeyRotation
 	engine.Clock = clock
-	engine.Affinity = sessionAffinity
+	// 会话亲和读写面合流：Redis cacheDriver 下与 preauth 共用 AffinityService
+	//（见上方 dispatchSessionAffinity 装配注释）；本地降级保持
+	// localSessionAffinity。
+	engine.Affinity = dispatchSessionAffinity
 	// W4-B（BUG-0175）D-114 接线：普通路由速度优先时延降级排序端口
 	//（nil 保持 degradedLatency 显式降级——组合测试专用）。
 	if deps.LatencyService != nil {
@@ -532,6 +550,12 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// D-134（BUG-0175）接线：半开租约释放 → 恢复等待者唤醒。
 	if deps.WakeRecoverableWaiter != nil {
 		gatewaydispatch.SetRecoverableUnavailableRuntimeWaiterNotifier(deps.WakeRecoverableWaiter)
+	}
+	// dispatch 引擎 RecoverableWait 接线（G11 等待引擎，与 preauth
+	// Recoverable 共用实例）：全部候选被本地抑制时等待恢复而非快速耗尽。
+	// nil 仅组合测试——引擎保持缺席语义（抑制耗尽直接退出）。
+	if deps.DispatchRecoverableWait != nil {
+		engine.RecoverableWait = &chainDispatchRecoverableWait{wait: deps.DispatchRecoverableWait}
 	}
 	// W1b 接线：候选准备完成 → gateway_dispatch_decision 结构化日志
 	//（进程级观察槽，观察回调 panic-safe；引擎侧默认 no-op，本组合根必装）。
@@ -654,7 +678,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 			avoidance:   deps.ConfiguredPolicyAvoidance,
 			proxyHealth: deps.ProxyHealthService,
 			cache:       deps.Cache,
-			affinity:    sessionAffinity,
+			affinity:    dispatchSessionAffinity,
 		}
 	}
 
