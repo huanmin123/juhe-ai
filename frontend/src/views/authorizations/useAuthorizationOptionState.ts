@@ -2,6 +2,7 @@ import { computed, ref, type ComputedRef, type Ref } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { rememberAccountLabels, rememberAccountSelection } from '@/shared/accountLabelCache'
 import { rememberGroupLabels } from '@/shared/groupLabelCache'
 import type { AccountOptionSummary, AuthorizationGranteeGroupOptionSummary, GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
@@ -134,7 +135,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     } catch (error) {
       if (!isCurrent()) return
       console.error(error)
-      message.error('加载授权人列表失败')
+      message.error(extractApiErrorMessage(error, '加载授权人列表失败'))
     } finally {
       if (isCurrent()) {
         createOwnerUsersLoading.value = false
@@ -213,7 +214,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     } catch (error) {
       if (!isCurrent()) return
       console.error(error)
-      message.error('加载授权资源失败')
+      message.error(extractApiErrorMessage(error, '加载授权资源失败'))
     } finally {
       if (isCurrent()) {
         createResourceOptionsLoading.value = false
@@ -281,7 +282,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     } catch (error) {
       if (!isCurrent()) return
       console.error(error)
-      message.error('加载授权对象失败')
+      message.error(extractApiErrorMessage(error, '加载授权对象失败'))
     } finally {
       if (isCurrent()) {
         createGranteeOptionsLoading.value = false
@@ -345,7 +346,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     } catch (error) {
       if (!isCurrent()) return
       console.error(error)
-      message.error('加载目标分组失败')
+      message.error(extractApiErrorMessage(error, '加载目标分组失败'))
     } finally {
       if (isCurrent()) {
         createTargetGroupOptionsLoading.value = false
@@ -411,7 +412,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     } catch (error) {
       if (requestId !== filterResourceRequestId) return
       console.error(error)
-      message.error(filters.resourceType === 'account' ? '加载可授权账户失败' : '加载可授权分组失败')
+      message.error(extractApiErrorMessage(error, filters.resourceType === 'account' ? '加载可授权账户失败' : '加载可授权分组失败'))
     } finally {
       if (requestId === filterResourceRequestId) {
         filterResourceOptionsLoading.value = false
@@ -446,7 +447,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     } catch (error) {
       if (requestId !== filterTeamRequestId) return
       console.error(error)
-      message.error('加载团队列表失败')
+      message.error(extractApiErrorMessage(error, '加载团队列表失败'))
     } finally {
       if (requestId === filterTeamRequestId) {
         filterTeamOptionsLoading.value = false
@@ -481,7 +482,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     } catch (error) {
       if (requestId !== filterUserRequestId) return
       console.error(error)
-      message.error('加载系统账户列表失败')
+      message.error(extractApiErrorMessage(error, '加载系统账户列表失败'))
     } finally {
       if (requestId === filterUserRequestId) {
         filterUserOptionsLoading.value = false

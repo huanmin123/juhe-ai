@@ -713,12 +713,14 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 		job.maxDurationMS = duration
 	}
 	switch {
-	case stoppedRun:
+	// panic 轮（含停机/超时窗口内的 panic）按失败记账（落入 runErr 分支，
+	// 对齐非停机 panic）：panic 是任务代码缺陷，不得因停机被记成 skipped。
+	case stoppedRun && panicked == nil:
 		job.taskSkip++
 		job.lastOutcome = OutcomeSkipped
 		job.lastSkipAt = &finishedAt
 		job.lastSkipReason = "scheduler_stopped"
-	case timedOut:
+	case timedOut && panicked == nil:
 		job.failure++
 		job.timedOut++
 		job.consecFail++
@@ -789,7 +791,7 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	// runErr / partial 失败本体打 Warn 保证可归因；task skipped、停机与成功
 	// 打 Debug，防止高频任务的正常轮刷屏。
 	switch {
-	case stoppedRun:
+	case stoppedRun && panicked == nil:
 		s.logger.Debug("jobsched_run_stopped", "job", spec.Name, "skipReason", "scheduler_stopped")
 	case panicked != nil:
 		// 缺陷修复：panic 单列 Error 日志（event 含任务名与 panic 值），级别

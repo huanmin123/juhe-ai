@@ -177,13 +177,18 @@ type healthRetryTaskPayload struct {
 // payload. counted is false for tasks that are not health sync retries (for
 // example scheduled payloads claimed through a direct SQLSchedulerSource in
 // tests); their frozen payload shape is never rewritten by Fail.
+// 手工损坏的 payload（空、截断或缺 runId）按首次失败处理：attempt 从 0 起
+// 计数并重建 payload（语法损坏经 encoding/json 整体校验失败，runId 不可
+// 恢复、投影器必然继续失败），保证损坏行也走 MaxAttempts 死信路径，不再
+// 每分钟被无限重认领。
 func healthRetryAttemptPayload(task ScheduleTask) (attempts int, payload []byte, counted bool) {
-	if task.Kind != SchedulerHealthRetry || len(task.Payload) == 0 {
+	if task.Kind != SchedulerHealthRetry {
 		return 0, nil, false
 	}
 	var parsed healthRetryTaskPayload
-	if err := json.Unmarshal(task.Payload, &parsed); err != nil || parsed.RunID == "" {
-		return 0, nil, false
+	if len(task.Payload) > 0 {
+		// 损坏 payload 解析失败时按首次失败处理（attempts 保持 0 起步）。
+		_ = json.Unmarshal(task.Payload, &parsed)
 	}
 	parsed.Attempts++
 	encoded, err := json.Marshal(parsed)

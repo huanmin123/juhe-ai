@@ -116,10 +116,12 @@ func TestCleanupAPIKeyRecordStatsDataFullFamily(t *testing.T) {
 	mustExecKit(t, stats, `INSERT INTO account_health_hourly (account_id, stat_hour, last_record_id, updated_at)
       VALUES ('acc-1', ?, 'rec-kit-1', '2026-01-01T00:00:00.000Z')`, timeKeys.StatHour)
 	// 授权日报（team source）：owner + global 双 scope 的 user 汇总行。
+	// owner-2 行带 duration/first_token 聚合种子，验证回减列与占位符一一对应。
 	mustExecKit(t, stats, `INSERT INTO authorization_user_usage_summary_daily (
       system_account_id, stat_date, resource_filter_type, resource_filter_id, team_filter_id,
-      grantee_filter_system_account_id, request_count, updated_at)
-      VALUES ('owner-2', ?, 'account', 'acc-1', 'team-9', 'sys-1', 4, '2026-01-01T00:00:00.000Z')`, timeKeys.StatDate)
+      grantee_filter_system_account_id, request_count, duration_ms_sum, duration_ms_count,
+      first_token_ms_sum, first_token_ms_count, updated_at)
+      VALUES ('owner-2', ?, 'account', 'acc-1', 'team-9', 'sys-1', 4, 1000, 2, 240, 2, '2026-01-01T00:00:00.000Z')`, timeKeys.StatDate)
 	mustExecKit(t, stats, `INSERT INTO authorization_user_usage_summary_daily (
       system_account_id, stat_date, resource_filter_type, resource_filter_id, team_filter_id,
       grantee_filter_system_account_id, request_count, updated_at)
@@ -203,11 +205,11 @@ func TestCleanupAPIKeyRecordStatsDataFullFamily(t *testing.T) {
 		t.Fatalf("account health 行应被删除")
 	}
 	// -- 授权日报：owner + global 双 scope --
-	// 行为存疑：Go 的 subtractAuthorizationSummaryRows（SQLite）SET 子句缺
-	// duration_ms/first_token_ms/last_* 列（21 个占位符 vs 25 个参数），真库
-	// 执行时 WHERE 参数错位、语句不命中任何行；Node 归档的同一 UPDATE 为
-	// 23 个 SET 占位符 + 6 个 WHERE 占位符（29 参，逐列对齐）。按当前实际
-	// 行为断言：汇总行保持原值，扣减不生效。
+	// 修正后语义（w 终审登记项）：SET 占位符与列一一对应，删除行后摘要按
+	// accumulator 等量回减（14 基础指标 + duration/first_token 的 sum/count，
+	// 与累加侧 upsertAuthorization*UsageSummaryRow DO UPDATE 的加法列镜像）。
+	// 此前实现 21 占位符 vs 26 参数错位，语句不命中任何行，曾按"保持原值"
+	// 钉住现状。
 	for _, owner := range []string{"owner-2", "global"} {
 		var authRequest float64
 		if err := stats.QueryRowContext(context.Background(), `SELECT request_count FROM authorization_user_usage_summary_daily
@@ -216,9 +218,23 @@ func TestCleanupAPIKeyRecordStatsDataFullFamily(t *testing.T) {
 			owner, timeKeys.StatDate).Scan(&authRequest); err != nil {
 			t.Fatalf("read auth user %s: %v", owner, err)
 		}
-		if authRequest != 4 {
-			t.Fatalf("授权 user 汇总 (%s) = %v（当前实现占位符错位不命中行）", owner, authRequest)
+		if authRequest != 4-accumulator.RequestCount {
+			t.Fatalf("授权 user 汇总 (%s) = %v, 期望 %v", owner, authRequest, 4-accumulator.RequestCount)
 		}
+	}
+	var authDurationSum, authDurationCount, authFirstTokenSum, authFirstTokenCount float64
+	if err := stats.QueryRowContext(context.Background(), `SELECT duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count
+      FROM authorization_user_usage_summary_daily
+      WHERE system_account_id = 'owner-2' AND stat_date = ? AND resource_filter_type = 'account' AND resource_filter_id = 'acc-1'
+      AND team_filter_id = 'team-9' AND grantee_filter_system_account_id = 'sys-1'`, timeKeys.StatDate).
+		Scan(&authDurationSum, &authDurationCount, &authFirstTokenSum, &authFirstTokenCount); err != nil {
+		t.Fatalf("read auth user aggregates: %v", err)
+	}
+	if authDurationSum != 1000-accumulator.DurationMsSum || authDurationCount != 2-accumulator.DurationMsCount ||
+		authFirstTokenSum != 240-accumulator.FirstTokenMsSum || authFirstTokenCount != 2-accumulator.FirstTokenMsCount {
+		t.Fatalf("授权 user 聚合回减不符：duration=(%v,%v) first_token=(%v,%v), 期望 duration=(%v,%v) first_token=(%v,%v)",
+			authDurationSum, authDurationCount, authFirstTokenSum, authFirstTokenCount,
+			1000-accumulator.DurationMsSum, 2-accumulator.DurationMsCount, 240-accumulator.FirstTokenMsSum, 2-accumulator.FirstTokenMsCount)
 	}
 	var teamRequest float64
 	if err := stats.QueryRowContext(context.Background(), `SELECT request_count FROM authorization_team_usage_summary_daily
@@ -226,8 +242,8 @@ func TestCleanupAPIKeyRecordStatsDataFullFamily(t *testing.T) {
       AND grantee_filter_system_account_id = 'sys-1'`, timeKeys.StatDate).Scan(&teamRequest); err != nil {
 		t.Fatalf("read auth team: %v", err)
 	}
-	if teamRequest != 4 {
-		t.Fatalf("授权 team 汇总 = %v（当前实现占位符错位不命中行）", teamRequest)
+	if teamRequest != 4-accumulator.RequestCount {
+		t.Fatalf("授权 team 汇总 = %v, 期望 %v", teamRequest, 4-accumulator.RequestCount)
 	}
 	// -- 台账：stats_subtracted_at + shard_deleted_at 双标记 --
 	var subtractedAt, shardDeletedAt sql.NullString
@@ -399,11 +415,11 @@ func TestSubtractAuthorizationReportRowsGlobalOwner(t *testing.T) {
 	if err := stats.QueryRowContext(context.Background(), `SELECT request_count FROM authorization_user_usage_summary_daily`).Scan(&request); err != nil {
 		t.Fatalf("read summary: %v", err)
 	}
-	// 行为存疑：同 TestCleanupAPIKeyRecordStatsDataFullFamily——SQLite 授权
-	// 日报扣减 UPDATE 占位符与参数数不匹配，语句不命中任何行。按当前实际
-	// 行为断言（Node 语义应扣为 1）。
-	if request != 2 {
-		t.Fatalf("global owner 扣减 = %v（当前实现占位符错位不命中行）", request)
+	// 授权日报占位符错位修复后与 Node 语义对齐：失败行按 accumulator 等量
+	// 回减（2 - RequestCount = 1），不再钉住"不命中行"的旧现状。
+	accumulator := statsagg.UsageStatsAccumulatorFromRecord(row)
+	if request != 2-accumulator.RequestCount {
+		t.Fatalf("global owner 扣减 = %v, 期望 %v", request, 2-accumulator.RequestCount)
 	}
 }
 

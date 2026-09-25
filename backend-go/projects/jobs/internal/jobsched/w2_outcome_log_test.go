@@ -321,3 +321,40 @@ func TestW2SchedulerStoppedEmitsDebug(t *testing.T) {
 		t.Fatalf("停机轮不得输出 jobsched_run_success:\n%s", logs)
 	}
 }
+
+// TestW2StopWindowPanicCountsAsFailure：停机窗口内 panic 的轮次按失败记账，
+// 并保留 panicked Error 日志。此前 panic 落入 stoppedRun 分支被记成
+// skipped、日志只有 jobsched_run_stopped，panic 缺陷被停机掩盖。
+// consecFail 只在失败会计分支赋值（stoppedRun 分支恒 0），作为分类的
+// 日志侧证据（Stop 清空 jobs map 后 Snapshots 不可用）。
+func TestW2StopWindowPanicCountsAsFailure(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
+	scheduler, buffer := newW2LoggedScheduler(clock, slog.LevelDebug)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	scheduler.Schedule(Spec{
+		Name:         "stop-panic-job",
+		Interval:     time.Hour,
+		InitialDelay: time.Millisecond,
+		Task: func(ctx context.Context, taskCtx TaskContext) (TaskResult, error) {
+			close(started)
+			<-release
+			panic("boom-on-stop")
+		},
+	})
+	settle()
+	clock.Advance(time.Millisecond)
+	<-started
+	// Stop 同步置停机态后任务仍阻塞在 release 上，构成停机窗口内的 panic。
+	scheduler.Stop()
+	close(release)
+	if drained, active := scheduler.StopAndDrain(time.Second); !drained || active != 0 {
+		t.Fatalf("expected drained shutdown, got drained=%v active=%d", drained, active)
+	}
+	waitForLog(t, buffer, "msg=jobsched_run_panicked")
+	logs := buffer.String()
+	assertLogContains(t, logs, "job=stop-panic-job", "panic=boom-on-stop", "consecFail=1")
+	if strings.Contains(logs, "jobsched_run_stopped") {
+		t.Fatalf("停机窗口 panic 不得再输出 jobsched_run_stopped:\n%s", logs)
+	}
+}

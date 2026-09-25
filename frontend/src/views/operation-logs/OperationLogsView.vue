@@ -303,7 +303,7 @@ async function openDetail(record: OperationLogListItem): Promise<void> {
   } catch (error) {
     if (requestId !== detailRequestId) return
     console.error(error)
-    message.error('加载操作日志详情失败')
+    message.error(extractApiErrorMessage(error, '加载操作日志详情失败'))
   } finally {
     if (requestId === detailRequestId) {
       detailLoading.value = false

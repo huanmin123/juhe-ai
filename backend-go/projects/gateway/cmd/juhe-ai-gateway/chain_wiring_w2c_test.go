@@ -402,7 +402,8 @@ func TestChainSuppressionLeaseCompletesAndReleases(t *testing.T) {
 }
 
 func TestChainDispatchSuppressionWaiterReturnsRefreshedState(t *testing.T) {
-	waiter := chainDispatchSuppressionWaiter{wait: gatewaycircuit.NewPreAuthRecoverableWait(nil, nil)}
+	waiter := &chainDispatchRecoverableWait{wait: gatewaycircuit.NewPreAuthRecoverableWait(nil, nil)}
+	// 换算闭包与生产消费面一致（upstreamdispatch.go）。
 	state, err := waiter.WaitForState(context.Background(), gatewaydispatch.SuppressionWaitInput{
 		ScopeKey:  "sys::grp",
 		Reason:    gatewaycircuit.LocalAccountSuppressionWaitReason,
@@ -410,6 +411,8 @@ func TestChainDispatchSuppressionWaiterReturnsRefreshedState(t *testing.T) {
 		Refresh: func(ctx context.Context) (gatewaydispatch.SuppressionFilterResult, error) {
 			return gatewaydispatch.SuppressionFilterResult{Accounts: []gatewaydispatch.AccountCandidate{{ID: "a"}}}, nil
 		},
+		IsReady:          func(state gatewaydispatch.SuppressionFilterResult) bool { return !state.AllSuppressed },
+		NextRetryAfterMs: func(state gatewaydispatch.SuppressionFilterResult) *int64 { return state.NextRetryAfterMs },
 	})
 	if err != nil {
 		t.Fatalf("WaitForState: %v", err)

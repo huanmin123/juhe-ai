@@ -129,14 +129,21 @@ func TestBusinessSchedulerRunBudgetCompletesInsideLeaseWindow(t *testing.T) {
 		},
 		Scheduled: source.CompleteScheduled,
 	}
+	// Execute 必须并发进行：runner.started 只能由 Execute → Runtime.Run 进入
+	// 时关闭（budget 包裹在 Run 之前），同步先等 started 再调 Execute 是等一个
+	// 只有后续调用才能产生的信号，结构性超时（"run never started"，批次 B
+	// 3dd1bb310 落地即红）。Execute 在 goroutine 内运行，错误经 channel 回收。
+	done := make(chan error, 1)
+	go func() { done <- executor.Execute(context.Background(), tasks[0]) }()
 	select {
 	case <-runner.started:
 	case <-time.After(time.Second):
 		t.Fatal("run never started")
 	}
-	if err := executor.Execute(context.Background(), tasks[0]); err != nil {
+	if err := <-done; err != nil {
 		t.Fatalf("budget-bounded run must complete inside the lease window: %v", err)
 	}
+	failedAt := time.Now().UTC()
 	if !time.Now().UTC().Before(parsedLeaseUntil) {
 		t.Fatalf("completion landed after lease_until=%s, second claim window opened", parsedLeaseUntil)
 	}
@@ -151,7 +158,9 @@ func TestBusinessSchedulerRunBudgetCompletesInsideLeaseWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !parsedNext.After(now.Add(30 * time.Minute)) {
+	// CompleteScheduled 以真实完成时刻推进 next_run（now+interval=60m），
+	// 断言锚点取真实时钟（fixture 的 2030 锚点上永假）。
+	if !parsedNext.After(failedAt.Add(30 * time.Minute)) {
 		t.Fatalf("next_run_at=%s was not advanced by the failed completion", nextRun)
 	}
 	// The second-claim window stayed closed: an immediate re-claim finds
@@ -299,9 +308,13 @@ func TestSQLSchedulerSourceCountsHealthRetryAttempts(t *testing.T) {
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
 	}
+	// Fail 以真实时钟写 due_at=now+1m：窗口对真实 Fail 时刻取，不与固定
+	// fixture 时刻耦合（否则只在 fixture 当天的特定两分钟内可绿）。
+	failStartedAt := time.Now().UTC()
 	if err := source.Fail(context.Background(), tasks[0], errors.New("probe still failing")); err != nil {
 		t.Fatal(err)
 	}
+	failEndedAt := time.Now().UTC()
 	var state, payload, lastError, dueAtText string
 	if err := db.QueryRow(`SELECT state,payload,due_at,COALESCE(last_error,'') FROM model_check_scheduler_tasks WHERE id='health:run-1'`).Scan(&state, &payload, &dueAtText, &lastError); err != nil {
 		t.Fatal(err)
@@ -319,12 +332,12 @@ func TestSQLSchedulerSourceCountsHealthRetryAttempts(t *testing.T) {
 	if !strings.Contains(lastError, "probe still failing") {
 		t.Fatalf("last_error=%q", lastError)
 	}
-	if dueAt.Before(now.Add(time.Minute)) || dueAt.After(now.Add(2*time.Minute)) {
+	if dueAt.Before(failStartedAt.Add(time.Minute)) || dueAt.After(failEndedAt.Add(2*time.Minute)) {
 		t.Fatalf("due_at=%s, want about one minute retry delay", dueAt)
 	}
 	// Still claimable after the retry delay: attempts are only exhausted at
 	// the cap.
-	retried, err := source.Claim(context.Background(), SchedulerHealthRetry, now.Add(2*time.Minute), 10)
+	retried, err := source.Claim(context.Background(), SchedulerHealthRetry, failEndedAt.Add(2*time.Minute), 10)
 	if err != nil || len(retried) != 1 {
 		t.Fatalf("reclaim=%+v err=%v", retried, err)
 	}
@@ -367,6 +380,52 @@ func TestSQLSchedulerSourceDeadLettersExhaustedHealthTask(t *testing.T) {
 	}
 	// Dead letters are never claimed again by any scan, including takeovers.
 	dead, err := source.Claim(context.Background(), SchedulerHealthRetry, now.Add(2*time.Minute), 10)
+	if err != nil || len(dead) != 0 {
+		t.Fatalf("dead letter reclaimed=%+v err=%v", dead, err)
+	}
+}
+
+// TestSQLSchedulerSourceDeadLettersCorruptPayloadHealthTask: 手工损坏的
+// payload（截断 JSON）按首次失败处理，连续 Fail 达到 MaxAttempts 后同样进
+// 死信，不再每分钟无限重认领。
+func TestSQLSchedulerSourceDeadLettersCorruptPayloadHealthTask(t *testing.T) {
+	db, source, now := schedulerTasksFixture(t)
+	if _, err := db.Exec(`INSERT INTO model_check_scheduler_tasks(id,kind,due_at,payload,updated_at) VALUES ('health:run-broken','health_sync_retry','2026-09-25T11:00:00Z','{"runId":"run-broken","att','2026-09-25T11:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	current := now
+	for attempt := 1; attempt <= HealthRetryMaxAttempts; attempt++ {
+		tasks, err := source.Claim(context.Background(), SchedulerHealthRetry, current, 10)
+		if err != nil || len(tasks) != 1 {
+			t.Fatalf("attempt %d claim=%+v err=%v, corrupt task must stay claimable until exhaustion", attempt, tasks, err)
+		}
+		if err := source.Fail(context.Background(), tasks[0], errors.New("payload unreadable")); err != nil {
+			t.Fatal(err)
+		}
+		// Fail 以真实时钟推进 due_at，重认领时刻同步按真实时钟走。
+		current = time.Now().UTC().Add(2 * time.Minute)
+	}
+	var state, payload, lastError, dueAtText string
+	if err := db.QueryRow(`SELECT state,payload,due_at,COALESCE(last_error,'') FROM model_check_scheduler_tasks WHERE id='health:run-broken'`).Scan(&state, &payload, &dueAtText, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	dueAt, err := time.Parse(time.RFC3339Nano, dueAtText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" {
+		t.Fatalf("state=%q", state)
+	}
+	if payload != `{"runId":"","attempts":10}` {
+		t.Fatalf("payload=%s, corrupt payload must count from zero with a rebuilt payload", payload)
+	}
+	if !strings.HasPrefix(lastError, "health retry attempts exhausted after 10") || !strings.Contains(lastError, "payload unreadable") {
+		t.Fatalf("last_error=%q, want terminal exhaustion cause", lastError)
+	}
+	if deadline := now.Add(90 * 365 * 24 * time.Hour); !dueAt.After(deadline) {
+		t.Fatalf("due_at=%s, want dead-letter horizon beyond %s", dueAt, deadline)
+	}
+	dead, err := source.Claim(context.Background(), SchedulerHealthRetry, time.Now().UTC().Add(2*time.Minute), 10)
 	if err != nil || len(dead) != 0 {
 		t.Fatalf("dead letter reclaimed=%+v err=%v", dead, err)
 	}

@@ -694,12 +694,18 @@ func authorizationReportRowsOf(row statsagg.UsageStatsRecordRow) []authorization
 }
 
 func (s *RecordCleanupStore) subtractAuthorizationSummaryRows(ctx context.Context, tx *sql.Tx, reportRow authorizationReportRowData, scope authorizationReportScope, stats statsagg.UsageStatsAccumulator, statDate, updatedAt string) error {
+	// 授权摘要表无 success_cost_usd 列（usage_stats 表族专有），跳过
+	// statsSubtractParams[14]；SET 占位符与列一一对应：14 基础指标 +
+	// duration_ms_sum/count + first_token_ms_sum/count，与累加侧
+	// upsertAuthorization*UsageSummaryRow DO UPDATE 的加法列镜像。
+	// duration/first_token 的 max 与 last_* 非可逆聚合，不回减。
+	full := statsSubtractParams(stats)
+	params := append(append([]any{}, full[:14]...), full[15], full[16], full[17], full[18])
 	filters := [][2]string{
 		{"all", ""},
 		{reportRow.resourceType, ""},
 		{reportRow.resourceType, reportRow.resourceID},
 	}
-	params := statsSubtractParams(stats)
 	for _, filter := range filters {
 		teamFilters := [][2]string{{"", ""}}
 		if reportRow.sourceType != nil && *reportRow.sourceType == "team" && reportRow.sourceTeamID != nil {
@@ -722,6 +728,10 @@ func (s *RecordCleanupStore) subtractAuthorizationSummaryRows(ctx context.Contex
             input_image_tokens = MAX(0, input_image_tokens - ?),
             output_image_tokens = MAX(0, output_image_tokens - ?),
             total_cost_usd = MAX(0, total_cost_usd - ?),
+            duration_ms_sum = MAX(0, duration_ms_sum - ?),
+            duration_ms_count = MAX(0, duration_ms_count - ?),
+            first_token_ms_sum = MAX(0, first_token_ms_sum - ?),
+            first_token_ms_count = MAX(0, first_token_ms_count - ?),
             updated_at = ?
         WHERE system_account_id = ? AND stat_date = ?
           AND resource_filter_type = ? AND resource_filter_id = ?
@@ -753,6 +763,10 @@ func (s *RecordCleanupStore) subtractAuthorizationSummaryRows(ctx context.Contex
             input_image_tokens = MAX(0, input_image_tokens - ?),
             output_image_tokens = MAX(0, output_image_tokens - ?),
             total_cost_usd = MAX(0, total_cost_usd - ?),
+            duration_ms_sum = MAX(0, duration_ms_sum - ?),
+            duration_ms_count = MAX(0, duration_ms_count - ?),
+            first_token_ms_sum = MAX(0, first_token_ms_sum - ?),
+            first_token_ms_count = MAX(0, first_token_ms_count - ?),
             updated_at = ?
         WHERE system_account_id = ? AND stat_date = ?
           AND resource_filter_type = ? AND resource_filter_id = ?

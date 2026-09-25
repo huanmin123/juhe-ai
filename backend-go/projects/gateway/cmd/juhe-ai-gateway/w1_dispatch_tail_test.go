@@ -1694,7 +1694,11 @@ func TestW1XSuppressionResolveExhausted503Arms(t *testing.T) {
 
 func TestW1XDispatchSuppressionWaiterArms(t *testing.T) {
 	ctx := context.Background()
-	waiter := chainDispatchSuppressionWaiter{wait: gatewaycircuit.NewPreAuthRecoverableWait(nil, nil)}
+	waiter := &chainDispatchRecoverableWait{wait: gatewaycircuit.NewPreAuthRecoverableWait(nil, nil)}
+
+	// 换算闭包与生产消费面一致（upstreamdispatch.go）。
+	ready := func(state gatewaydispatch.SuppressionFilterResult) bool { return !state.AllSuppressed }
+	retryAfterOf := func(state gatewaydispatch.SuppressionFilterResult) *int64 { return state.NextRetryAfterMs }
 
 	// 刷新样本带 retryAfter 且未全部屏蔽：就绪退出并返回样本。
 	retryAfter := int64(1_500)
@@ -1708,6 +1712,8 @@ func TestW1XDispatchSuppressionWaiterArms(t *testing.T) {
 				NextRetryAfterMs: &retryAfter,
 			}, nil
 		},
+		IsReady:          ready,
+		NextRetryAfterMs: retryAfterOf,
 	})
 	if err != nil {
 		t.Fatalf("WaitForState(retry 样本): %v", err)
@@ -1725,6 +1731,8 @@ func TestW1XDispatchSuppressionWaiterArms(t *testing.T) {
 		Refresh: func(context.Context) (gatewaydispatch.SuppressionFilterResult, error) {
 			return gatewaydispatch.SuppressionFilterResult{}, sentinel
 		},
+		IsReady:          ready,
+		NextRetryAfterMs: retryAfterOf,
 	}); !errors.Is(err, sentinel) {
 		t.Fatalf("刷新错误必须透传: %v", err)
 	}

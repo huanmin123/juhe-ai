@@ -543,42 +543,11 @@ func chainSuppressionResultOf(result gatewaycircuit.SuppressionFilterResult, acc
 	}
 }
 
-// chainDispatchSuppressionWaiter implements the dispatch
-// RecoverableSuppressionWaiter over the shared wait engine (Node
-// waitForRecoverableUnavailableState behind the suppression preflight).
-type chainDispatchSuppressionWaiter struct {
-	wait *gatewaycircuit.PreAuthRecoverableWait
-}
-
-func (w chainDispatchSuppressionWaiter) WaitForState(ctx context.Context, input gatewaydispatch.SuppressionWaitInput) (gatewaydispatch.SuppressionFilterResult, error) {
-	var state gatewaydispatch.SuppressionFilterResult
-	_, _, err := w.wait.WaitForStateLoop(ctx, gatewaycircuit.StateWaitInput{
-		ScopeKey:                 input.ScopeKey,
-		Reason:                   input.Reason,
-		AuditCapture:             input.AuditCapture,
-		MaxWaitMs:                input.MaxWaitMs,
-		RequestStartedAtMs:       input.RequestStartedAtMs,
-		DeadlineAtMs:             input.DeadlineAtMs,
-		RouteCoordinationBudget:  input.RouteCoordinationBudget,
-		GatewayRequestWallBudget: input.GatewayRequestWallBudget,
-		Signal:                   input.Signal,
-		Refresh: func(ctx context.Context) (bool, bool, int64, error) {
-			sample, refreshErr := input.Refresh(ctx)
-			if refreshErr != nil {
-				return false, false, 0, refreshErr
-			}
-			state = sample
-			if sample.NextRetryAfterMs != nil {
-				return !sample.AllSuppressed, true, *sample.NextRetryAfterMs, nil
-			}
-			return !sample.AllSuppressed, false, 0, nil
-		},
-	})
-	if err != nil {
-		return gatewaydispatch.SuppressionFilterResult{}, err
-	}
-	return state, nil
-}
+// dispatch RecoverableSuppressionWaiter 适配收敛到
+// chainDispatchRecoverableWait（chain_dispatch_recoverable_wait.go，生产装配
+// 的单一实现：换算消费端口闭包 input.IsReady / input.NextRetryAfterMs，
+// 与此前的 chainDispatchSuppressionWaiter 硬编码 !AllSuppressed /
+// NextRetryAfterMs 逐分支等价）。
 
 // ---------------------------------------------------------------------------
 // D-136: proxy health (upstream bucket health ordering + failure records)
@@ -844,7 +813,7 @@ var (
 	_ gatewaydispatch.HighConcurrencyWaiter        = (*chainHighConcurrencyQueue)(nil)
 	_ gatewaydispatch.KeyModelAdmission            = chainKeyModelAdmission{}
 	_ gatewaydispatch.SuppressionPort              = chainSuppressionPort{}
-	_ gatewaydispatch.RecoverableSuppressionWaiter = chainDispatchSuppressionWaiter{}
+	_ gatewaydispatch.RecoverableSuppressionWaiter = &chainDispatchRecoverableWait{}
 	_ gatewaydispatch.ProxyHealthPort              = chainProxyHealthPort{}
 	_ gatewaydispatch.HotQualityPort               = chainHotQualityPort{}
 	_ gatewayquota.DBServiceClient                 = (*chainQuotaDBService)(nil)

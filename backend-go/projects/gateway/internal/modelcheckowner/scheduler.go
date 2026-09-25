@@ -74,8 +74,10 @@ type Scheduler struct {
 	// inside one claimed batch (default 4). The claim implementations own
 	// lease and concurrency policy at the store level; this cap only stops
 	// one oversized batch from spawning unbounded probe goroutines. Claimed
-	// tasks beyond the cap wait for a slot instead of being re-claimed later,
-	// which keeps every task inside the lease it was claimed under.
+	// tasks beyond the cap wait for a slot instead of being re-claimed later;
+	// a queued task may therefore start after its lease has already expired,
+	// and the store's stale-lease owner/fence CAS fail-safes its final
+	// lifecycle write in that case.
 	MaxConcurrency int
 	Kinds          []SchedulerKind
 	Now            func() time.Time
