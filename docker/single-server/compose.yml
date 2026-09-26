@@ -1,0 +1,209 @@
+# 单机 Docker 部署拓扑（国内单服务器，2026-09 起，替代 K3s 混合形态的 go-only 目标形态）。
+#
+# 与 docker/compose.yml（Harbor/K3s 用）的差异：
+# - Postgres/Redis 直接作为 Compose 服务，单库 juhe_ai + 6 schema（maintenance --ensure-schema 建）。
+# - gateway 以本机 80 端口经 Caddy 对外，管理 SPA 挂 /__aisys__/，/v1 为 OpenAI 兼容入口。
+# - 镜像来自本地交叉编译二进制（Dockerfile.runtime），服务器上不做源码构建。
+# - 密钥与连接串全部在 .env（同目录，不入库）；.env 生成方式见 README.md。
+name: juhe-ai
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: juhe-ai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: juhe_ai
+      POSTGRES_USER: juhe_ai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      TZ: Asia/Shanghai
+    volumes:
+      # PG 18+ 镜像要求挂载 /var/lib/postgresql（数据落在大版本子目录），不支持旧式 .../data 挂载
+      - ./data/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U juhe_ai -d juhe_ai"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: juhe-ai-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 1gb
+      # state 存储承载熔断/并发等运行态，逐出会破坏正确性，必须 noeviction
+      - --maxmemory-policy
+      - noeviction
+      - --save
+      - "900 1"
+      - --save
+      - "300 10"
+    environment:
+      TZ: Asia/Shanghai
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+      args:
+        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
+        TARGET_BINARY: juhe-ai-gateway
+    image: juhe-ai-single-server:gateway
+    container_name: juhe-ai-go-gateway
+    restart: unless-stopped
+    # datadir/日志等相对路径约定以进程 cwd 为基准（缺省 ./data 相对 cwd）；
+    # 镜像未设 WORKDIR，必须显式锚定到 /app/backend，相对 data/logs 才落在
+    # 下方挂载的宿主机持久目录（usage spool 交接、chat-assets、文件日志等）。
+    working_dir: /app/backend
+    # 固定容器 IP：Caddy 直连 IP，不经 Docker DNS（偶发 lookup 失败会导致 502）
+    networks:
+      default:
+        ipv4_address: 172.18.0.10
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      NODE_ENV: production
+      JUHE_AI_HOST: 0.0.0.0
+      JUHE_AI_PORT: 3000
+      # 不显式指向 dist 就不挂管理 SPA（代码默认空）
+      JUHE_AI_FRONTEND_DIST_PATH: /app/frontend/dist
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "data.aijh.huanmin.top:59.110.140.235"
+      - "data.aijh.huanmin.top:39.107.67.243"
+      - "egress.aijh.huanmin.top:59.110.140.235"
+      - "egress.aijh.huanmin.top:39.107.67.243"
+    env_file: .env
+    volumes:
+      # PG 模式下该目录仍承载 usage spool / codex context shard 等文件数据
+      - ./data/app/data:/app/backend/data
+      - ./data/app/logs:/app/backend/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3306/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  jobs:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+      args:
+        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
+        TARGET_BINARY: juhe-ai-jobs
+    image: juhe-ai-single-server:jobs
+    container_name: juhe-ai-go-jobs
+    restart: unless-stopped
+    # 与 gateway 同理：spool drain 目录按相对路径派生，必须锚定 /app/backend
+    # 才能与网关共享宿主机挂载的 data 目录（两侧同源才能完成用量交接）。
+    working_dir: /app/backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      NODE_ENV: production
+      JUHE_AI_INSTANCE_ID: juhe-ai-jobs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "data.aijh.huanmin.top:59.110.140.235"
+      - "data.aijh.huanmin.top:39.107.67.243"
+      - "egress.aijh.huanmin.top:59.110.140.235"
+      - "egress.aijh.huanmin.top:39.107.67.243"
+    env_file: .env
+    volumes:
+      - ./data/app/data:/app/backend/data
+      - ./data/app/logs:/app/backend/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3305/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # 一次性工具：docker compose run --rm maintenance --ensure-schema --seed
+  # （--driver/--dsn/--secret 已由 env_file 提供，也可显式传参覆盖）
+  maintenance:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+      args:
+        BASE_IMAGE: docker.m.daocloud.io/library/alpine:3.20
+        TARGET_BINARY: juhe-ai-maintenance
+    image: juhe-ai-single-server:maintenance
+    container_name: juhe-ai-maintenance
+    profiles: ["tool"]
+    # 与 gateway/jobs 同理：datadir 相对路径按 cwd 解析，一次性容器同样锚定
+    # /app/backend，保证维护产物（若有）落在与常驻进程一致的挂载目录。
+    working_dir: /app/backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "data.aijh.huanmin.top:59.110.140.235"
+      - "data.aijh.huanmin.top:39.107.67.243"
+      - "egress.aijh.huanmin.top:59.110.140.235"
+      - "egress.aijh.huanmin.top:39.107.67.243"
+    env_file: .env
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: juhe-ai-caddy
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      # HTTP/3 (QUIC over UDP)：握手更快且绕开 TCP 层 DPI，浏览器自动协商
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      # 经域名 hairpin 走完整链路（TLS 终止 + 路由 + 上游）；
+      # 127.0.0.1 无站点证书（TLS 必报 internal error），8080 是宿主机侧映射（容器内不存在）
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://aijh.huanmin.top/__aisys__/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
+
+volumes:
+  caddy_data:
+  caddy_config:

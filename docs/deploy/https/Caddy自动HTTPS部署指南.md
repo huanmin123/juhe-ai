@@ -52,7 +52,7 @@ winget install CaddyServer.Caddy
 
 Windows 如果不用 `winget`，也可以下载官方 release 包，把 `caddy.exe` 放到固定目录后用 NSSM 或任务计划程序守护。
 
-以上标准安装方式适合 Caddy 直接终止 HTTPS 的 HTTP 反向代理。公网 Edge 做 L4 TLS 透传、或回源 listener 接收 PROXY protocol 时，需要对应的 layer4 / proxy_protocol 模块；标准包不保证包含。必须用实际运行的同一个 binary 执行 `caddy list-modules`、`adapt` 和 `validate`。完整边界见 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)。
+以上为 Caddy 直接终止 HTTPS 的标准反向代理用法；Edge L4 透传 / PROXY protocol 等旧形态已于 2026-09-26 废弃。
 
 ## 4. 配置 juhe-ai 环境变量
 
@@ -238,8 +238,6 @@ Certbot 通常会安装 systemd timer 或 cron 来自动续期；上线前必须
 公网 Edge Caddy layer4 -> WireGuard -> 家里主机 Caddy 终止 TLS -> Nginx/juhe-ai
 ```
 
-Edge 不写 HTTP `reverse_proxy`，否则 TLS 会在 Edge 终止并与回源 TLS + PROXY v2 模式冲突。回源 Caddy 的 listener 只绑定精确 WireGuard 地址；wrapper 顺序固定为 `proxy_protocol` 再 `tls`，`allow` 只放 Edge peer `/32`，并使用 `fallback_policy require`。WireGuard、Caddy layer4、五 Edge 正式拓扑、完整示例、系统参数、切换和回滚统一见 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)。
-
 ## 10. 真实客户端 IP
 
 juhe-ai 后台展示和调度使用的 `clientIp` 来自 Express `req.ip`。只有 `JUHE_AI_TRUST_PROXY=true` 或配置具体代理跳数时，Express 才会从受信任的反向代理头里计算客户端 IP。否则后端只会看到直接连接它的地址，例如 `127.0.0.1`、Caddy 地址、隧道地址或公网 edge 地址。
@@ -288,8 +286,6 @@ ai.example.com {
 ```
 
 把 `203.0.113.10/32`、`100.64.0.0/10` 换成真实可信的前置代理、隧道或内网回源地址段。不要为了省事信任 `0.0.0.0/0`。
-
-如果前置入口通过 PROXY v2 把真实来源传给家庭 Mac 或内网 Caddy，按 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md) 配置精确 WireGuard listener。不要同时让普通公网请求绕过 PROXY protocol 入口直连 Caddy。
 
 验证方式：
 

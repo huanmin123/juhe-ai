@@ -48,7 +48,7 @@
 
 - `backend/.env` 只保留通用和 standalone 默认配置，例如监听端口、密钥、Cookie、日志、SQLite 路径和 smoke 参数。
 - 非 Docker 高性能节点复制 `backend/.env.performance.example` 为 `backend/.env.performance`，再通过 `JUHE_AI_ENV_FILE=./.env.performance` 从主配置加载覆盖项。
-- Docker 高性能部署只使用 `docker/.env.performance` 和 `docker/compose.performance.yml` 管理中间件、容器内连接串和高并发参数。
+- （历史）早期经 （已删除的）`docker/compose.performance.yml` 历史文件 管理中间件，该文件已随 K8s/Harbor 形态于 2026-09-26 废弃删除；当前生产为国内单机 Docker（`docker/single-server/`）。
 - 加载优先级为进程环境变量 > `JUHE_AI_ENV_FILE` 指向的覆盖文件 > `backend/.env`。
 
 新增运行模式配置：

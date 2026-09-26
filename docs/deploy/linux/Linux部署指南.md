@@ -4,11 +4,9 @@
 
 | 场景 | 推荐方式 | 入口 |
 | --- | --- | --- |
-| 单机轻量部署 | 发布包 + `systemd` | [部署指南](../部署指南.md) |
-| 单机容器部署 | Docker Compose 单容器 | [Docker 部署指南](../Docker部署指南.md) |
-| 高并发部署 | Docker Compose + PostgreSQL + Redis | [高性能模式部署指南](../高性能模式部署指南.md) |
+| 单机轻量部署（发布包 + systemd，备用） | [部署指南](../部署指南.md) |
+| 生产形态（国内单机 Docker Compose） | [部署指南](../部署指南.md) |
 | 公网 HTTPS | Caddy 自动 HTTPS | [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md) |
-| 公网 Edge / 高并发隧道 | Caddy layer4 + WireGuard | [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md) |
 | 常驻恢复 | systemd；外部探针默认只告警 | 本文第 8 节 |
 | 上游需要代理 | sing-box 本机代理 + 后台代理管理 | [sing-box 网络代理部署指南](../proxy/sing-box网络代理部署指南.md) |
 
@@ -195,8 +193,6 @@ JUHE_AI_TRUST_PROXY=true
 ```
 
 只有 Caddy、Nginx 或可信负载均衡能访问 `127.0.0.1:3000` 时才开启 `JUHE_AI_TRUST_PROXY=true`。如果后端端口直接对公网开放，必须保持 `false`。
-
-Linux 作为公网 Edge、通过 WireGuard 回源时，不使用本节的标准 HTTP 反代模式；改看 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)，确认 layer4 / proxy_protocol 模块、精确 peer、PROXY v2 和五 Edge 正式切换门禁。
 
 高并发长连接的保守系统起步值是 `net.core.somaxconn=4096`、`net.ipv4.tcp_max_syn_backlog=4096`。Caddy 建议使用 `LimitNOFILE=1048576`，并在受控重启后从 `/proc/<PID>/limits` 验证实际值。UDP buffer、netdev backlog、conntrack、softnet/IRQ 和 BBR 只在当前内核能力与区间指标证明需要时调整，不作为无条件部署项。
 

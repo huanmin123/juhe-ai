@@ -328,7 +328,7 @@ func TestW7COutputChallengeRandomization(t *testing.T) {
 	if challenge.ExpectedOutput != "juhe" {
 		t.Fatalf("expected output: %q", challenge.ExpectedOutput)
 	}
-	promptRe := regexp.MustCompile(`^只能回复：juhe\d{3,6}$`)
+	promptRe := regexp.MustCompile(`^接口连通性自动测试：请原样输出 juhe\d{3,6}$`)
 	if !promptRe.MatchString(challenge.Prompt) {
 		t.Fatalf("challenge prompt: %q", challenge.Prompt)
 	}

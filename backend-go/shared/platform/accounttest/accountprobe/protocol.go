@@ -63,15 +63,21 @@ const (
 	ProtocolGemini    DiagnosticProtocol = "gemini"
 )
 
-// 账户探针常量（Node account-test-request.ts）。
+// 账户探针常量（Node account-test-request.ts；outputChallengePrompt 与
+// outputTokenLimit 为有意偏离，见各自注释）。
 const (
 	outputChallengeExpected = "juhe"
-	outputChallengePrompt   = "只能回复：" + outputChallengeExpected
-	outputTokenLimit        = 256
-	anthropicVersion        = "2.1.201"
-	anthropicBuildID        = "eb7"
-	anthropicDeviceID       = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
-	clientProfileHeader     = "x-juhe-client-profile"
+	// 说明测试用途并要求原样输出：推理模型（GLM 思考模式、o 系列等）遇到无
+	// 解释的"只能回复：juhe00649"会在思考阶段纠结内容用途与安全疑虑，明确
+	// 用途可显著缩短思考。
+	outputChallengePrompt = "接口连通性自动测试：请原样输出 " + outputChallengeExpected
+	// 1024 而非 Node 的 256：推理模型的思考 token 计入输出上限，256 会被思考
+	// 耗尽（finish_reason=length）导致 content 为空，探针误判 invalid_probe_output。
+	outputTokenLimit    = 1024
+	anthropicVersion    = "2.1.201"
+	anthropicBuildID    = "eb7"
+	anthropicDeviceID   = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
+	clientProfileHeader = "x-juhe-client-profile"
 )
 
 // probeInstructionsPool 是 responses 形态 system 指令的轮换池，用于消除固

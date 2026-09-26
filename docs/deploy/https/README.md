@@ -7,7 +7,6 @@
 
 - [Caddy 自动 HTTPS 部署指南](Caddy自动HTTPS部署指南.md)：推荐方案，使用 Caddy 为 juhe-ai 域名自动申请和续期免费证书。
 - [HTTPS 部署示例](HTTPS部署示例.md)：一次从域名解析、Caddyfile、环境变量到验证的完整示例。
-- [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)：公网 Edge L4 TLS 透传、PROXY v2、WireGuard 回源和高并发系统基线。
 
 ## 适用边界
 

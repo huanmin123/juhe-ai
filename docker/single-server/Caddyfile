@@ -1,0 +1,23 @@
+# 生产入口（唯一权威配置）：HTTPS 自动签发续期，80 强制升级。
+# DNS aijh.huanmin.top -> 103.36.63.105；上游为固定容器 IP（见 compose.yml），
+# 直连 IP 绕过 Docker DNS（偶发 lookup 失败曾导致 502）。
+# 无域名备用：IP 版配置备份在服务器 /opt/juhe-ai/Caddyfile.ip-http-only.bak（仅 :80）。
+# 本文件为同机两栈共享：同机公益站（juhe-pw 栈，/opt/juhe-ai-public-welfare）经下方
+# gyai.huanmin.top 块接入；修改/同步不得遗漏该块，改前备份 → caddy validate → caddy reload。
+aijh.huanmin.top {
+	encode zstd gzip
+
+	redir / /__aisys__/ permanent
+
+	# OpenAI 兼容入口：SSE 流式响应必须关闭缓冲
+	reverse_proxy /v1/* 172.18.0.10:3000 {
+		flush_interval -1
+	}
+
+	reverse_proxy 172.18.0.10:3000
+}
+
+# 聚合AI公益站（juhe-pw 栈，独立项目；容器固定 IP 由其自身 compose 分配）
+gyai.huanmin.top {
+	reverse_proxy 172.18.0.20:8080
+}

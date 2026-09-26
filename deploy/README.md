@@ -1,6 +1,6 @@
 # 发布包快速运行说明
 
-> 这是发布包根目录内置的快速说明。构建发布包见 `docs/deploy/构建指南.md`。完整部署先按场景选择：服务器看 `docs/deploy/scenarios/服务器部署方案.md`，家庭宽带反代看 `docs/deploy/scenarios/家庭宽带反向代理方案.md`；通用启动、HTTPS 证书、状态检测、常驻运行、反向代理、备份迁移和排障再看 `docs/deploy/部署指南.md`。
+> 这是发布包根目录内置的快速说明。构建发布包见 `docs/deploy/构建指南.md`。生产部署唯一形态是国内单机 Docker，见 `docs/deploy/部署指南.md` 与 `docker/single-server/README.md`；发布包直跑（本文件）仅作为无 Docker 环境的备用方式。
 
 ## 启动脚本
 
@@ -96,7 +96,7 @@ F3/F4 的 ingest HTTP 监听器已随去跨进程战役删除：审计与操作�
 JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true JUHE_AI_GO_MAINTENANCE_SEED=true bash ./start.sh
 ```
 
-它写入当前 schema 与默认种子数据，F1/F2/F3/F4 依赖的 `juhe_business.system_settings` 也在其中；命令幂等，可重复执行。只适用于空库或明确可重建的测试库。已有业务库先完成项目/业务备份和临时预演，只按 [高性能模式部署指南](../docs/deploy/高性能模式部署指南.md) 的既有库流程做 `schema-only` 校验或受控迁移，禁止把完整初始化当作普通升级命令。
+它写入当前 schema 与默认种子数据，F1/F2/F3/F4 依赖的 `juhe_business.system_settings` 也在其中；命令幂等，可重复执行。只适用于空库或明确可重建的测试库。已有业务库先完成项目/业务备份和临时预演，既有库一律先备份并做 `schema-only` 校验或受控迁移，禁止把完整初始化当作普通升级命令。
 
 ## 启动与验证
 
@@ -131,9 +131,9 @@ tail -n 100 ./backend/logs/juhe-ai-go-jobs.log
 - `project-*`：升级前当前运行 release 的干净可部署压缩包、清单和校验值；目标迁移脚本只能作为附加证据。它必须与同一时间戳的业务备份组成恢复点，不得用待上线新包替代当前代码快照；不含真实 env、`data/`、日志、数据库、`node_modules` 或链接。源码历史由 Git 保存，项目备份保存的是可部署产物。
 - `business-*`：核心业务库、恢复加密凭据所需的有效 `JUHE_AI_SECRET` / `backend.env`、schema / 清单和校验值。
 
-不得备份数据集目录库、使用记录目录库、usage shard、统计结果库、Codex context、审计 payload、日志或 Redis。同一时间戳的项目备份与业务备份都完成完整性校验并原子发布后，立即分别删除同类第 4 份及更早目录。完整规则见 `docs/deploy/部署指南.md`。
+不得备份数据集目录库、使用记录目录库、usage shard、统计结果库、Codex context、审计 payload、日志或 Redis。同一时间戳的项目备份与业务备份都完成完整性校验并原子发布后，立即分别删除同类第 4 份及更早目录。完整规则见 `docs/deploy/部署指南.md` 与 `docker/single-server/README.md`。
 
-部署方式先看 `docs/deploy/scenarios/`。状态检测和自动恢复看 `docs/deploy/watchdog/README.md`。HTTPS 证书、常驻运行、反向代理、端口开放、数据迁移和常见排障请继续查看 `docs/deploy/部署指南.md`。
+部署方式唯一形态见 `docs/deploy/部署指南.md`（国内单机 Docker）。HTTPS 证书见 `docs/deploy/https/`，出站代理见 `docs/deploy/proxy/`。
 
 ## 统计重建
 

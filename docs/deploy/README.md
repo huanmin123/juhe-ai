@@ -1,53 +1,20 @@
 # 部署文档目录
 
-> 面向 AI 与维护者。
-> 这里集中放发布包构建、部署场景、三端部署差异、Docker、高性能模式、网络代理、HTTPS 证书、状态检测、常驻运行、反向代理、项目/业务备份、迁移和排障相关文档。
+> 面向 AI 与维护者。**当前唯一生产部署形态：国内单台云服务器 + Docker Compose（go-only）**。家庭宽带/内网回源反向代理、公网 Edge 隧道、macOS/Windows 本机部署、K8s/K3s 等形态已于 2026-09-26 全部废弃并删除文档，不要再按旧方式部署。
 
-## 先选部署场景
+## 权威入口
 
-部署时不要先通读所有文档。先按入口环境选择场景：
+| 内容 | 位置 |
+| --- | --- |
+| 生产部署（唯一形态） | [部署指南](部署指南.md) |
+| 部署配置源文件（compose / Caddyfile / 运行时镜像） | 仓库 `docker/single-server/`（含 README，构建与更新流程以它为准） |
+| Linux 服务器差异（防火墙、systemd、发布包直跑） | [linux/](linux/README.md) |
+| HTTPS 证书（Caddy 自动 ACME + 续期） | [https/](https/README.md) |
+| 出站网络代理（sing-box，AI 上游出海） | [proxy/](proxy/README.md) |
+| 跨平台构建发布包 | [构建指南](构建指南.md) |
 
-| 场景 | 入口文档 | 后续只看 |
-| --- | --- | --- |
-| 云服务器、VPS、独立服务器、公司内网服务器 | [服务器部署方案](scenarios/服务器部署方案.md) | 对应平台文档、HTTPS、代理 |
-| 家里电脑、家用小主机、NAS、家庭宽带入口 | [家庭宽带反向代理方案](scenarios/家庭宽带反向代理方案.md) | 对应平台文档、HTTPS、代理 |
-| 公网 Edge 回源、多人高并发、SSE 长连接 | [反向代理与高并发隧道部署指南](反向代理与高并发隧道部署指南.md) | WireGuard、Caddy/Nginx、系统参数、切换回滚 |
-| 不确定怎么选 | [部署场景选择示例](scenarios/部署场景选择示例.md) | 按示例跳转 |
+## 已废弃（2026-09-26 清理，文档已删除）
 
-`部署指南.md` 只保留发布包启动、环境变量、验证、常驻以及项目备份和业务备份这些通用基线，不再作为部署方式选择入口。两类备份分别只保留最近 3 次，日志、审计、usage、统计和 Redis 不备份。
-
-## 文档索引
-
-- [跨平台构建文档](构建指南.md)：构建环境检测、构建命令、产物说明、构建参数和构建后检查。
-- [生产发布快速流程](生产发布快速流程.md)：默认使用候选启动、少量真实请求、启动日志和一次原子 route 切换完成生产升级；深度 handover 只用于故障调查与人工回切。
-- [AI 部署执行清单](AI部署执行清单.md)：给自动化执行者的发布包、Docker、验证记录与停止条件；先读此文，再进入具体平台手册。
-- [部署场景目录](scenarios/README.md)：服务器部署、家庭宽带反代和场景选择示例。
-- [跨平台部署基线](部署指南.md)：发布包兼容矩阵、解压配置、启动验证、常驻运行、项目/业务备份、迁移和常见排障。
-- [部署流程示例](部署流程示例.md)：一次从选择场景、构建、选择平台文档、配置 HTTPS / 代理到验证的完整示例。
-- [Docker 部署指南](Docker部署指南.md)：单容器镜像构建、默认配置、启动、验证和清理。
-- [高性能模式部署指南](高性能模式部署指南.md)：当前 Node 主流程的 PostgreSQL、PgBouncer、Redis cache/state/queue、同机多网关与独立 worker、初始化、设置、验证和备份；F1-F3 已运行于 Go，F4 为切换前实现，均可使用 PostgreSQL，但这不代表整体 Node 后端或生产拓扑已迁移。
-- [反向代理与高并发隧道部署指南](反向代理与高并发隧道部署指南.md)：公网 Edge L4、WireGuard、PROXY v2、Caddy/Nginx、Linux/macOS 参数、受控切换、回滚和容量门禁。
-- [Go 渐进减法迁移开发构建部署调整](../migration/开发构建部署调整.md)：后端迁移到 Go 期间的构建、发布包、Docker、服务化和回滚目标。
-- [Linux 部署目录](linux/README.md)：Linux 发布包、Docker、systemd、防火墙和代理访问差异。
-- [Windows 部署目录](windows/README.md)：Windows 发布包、PowerShell、服务化、Docker Desktop 和代理访问差异。
-- [macOS 部署目录](macos/README.md)：macOS 发布包、launchd、Docker Desktop 和代理访问差异。
-- [网络代理部署目录](proxy/README.md)：sing-box 安装、本机 mixed 代理端口和 juhe-ai 后台代理绑定。
-- [HTTPS 证书部署目录](https/README.md)：Caddy 自动 HTTPS、免费证书自动续期、Docker / 裸机入口和 Nginx + Certbot 备选。
-- [状态检测与自动恢复目录](watchdog/README.md)：可选的外部 health 探针和自动恢复策略；默认常驻由服务管理器负责，外部探针只告警。
-
-## 适用边界
-
-- 构建指南回答“如何从源码生成可部署发布包，以及构建后如何检查产物”。
-- 跨平台部署基线回答“发布包在目标机器上如何启动、配置、验证、常驻和迁移”，不负责选择服务器或家庭宽带入口方案。
-- Docker 部署指南回答“如何直接用 Docker 镜像和 Compose 运行项目”。
-- 高性能模式部署指南当前回答“如何用 Docker 或非 Docker 方式部署 PostgreSQL + Redis 中间件、初始化 PostgreSQL schema / 默认数据、记录生产凭据，以及如何配置 performance 模式”。当前仍同时支持 SQLite 与 PostgreSQL；F1-F3 已由 Go 接管，F4 仍待独立发布切流，不能由此推导整体退出 Node、SQLite 或 standalone / performance 任一模式。
-- 部署场景目录回答“这次部署到底是服务器入口还是家庭宽带反代入口，以及该读哪些后续文档”。
-- 反向代理与高并发隧道指南回答“公网 Edge 如何通过 WireGuard 安全、高并发地回源，以及系统参数、切换和容量如何验收”。
-- 三端子目录回答“Windows、macOS、Linux 在启动脚本、服务化、Docker 访问宿主机代理、防火墙和反向代理上有什么差异”。
-- 网络代理目录回答“服务器无法直连上游 API 时，如何部署 sing-box 并把本地代理绑定到 AI 账户”。
-- HTTPS 证书目录回答“公网域名如何用免费证书提供 HTTPS 入口，并让证书自动续期”。
-- 状态检测与自动恢复目录回答“确有无人值守需求时如何增加外部探针”；它不是默认部署项，也不能与发布流程并发重启应用。
-- 压测、性能分析和容量结论统一放入 `docs/reports/`，不要混入部署操作手册。
-- 影响本地开发启动或测试验证的内容应优先更新 `docs/develop/`，不要混入部署文档。
-- 影响环境变量、数据目录、加密密钥或发布包结构时，需要同时确认构建指南和部署指南。
-- F1（运行日志索引与保留）与 F2（表监控采样、快照与保留）由 Go `jobs` 唯一写入；F3（原始审计日志持久化、payload/blob、hot-search 与保留）与 F4（操作日志）由 Go `gateway` 唯一写入；`maintenance` 仅执行一次性维护命令。Node 拥有网关、账户、主 API、usage、公开接口日志、stats 和 ops；模型检测属于独立 J3b 迁移边界，当前 J3b 未启用时相关 API 不作为可用能力，需按 404 兼容边界验收。操作日志仅保留 producer/read adapter。F1-F4 均为直接异步任务，不使用 Node 队列。
+- 家庭宽带反向代理 / 公网 Edge / WireGuard 回源隧道（`scenarios/家庭宽带反向代理方案`、`反向代理与高并发隧道部署指南`）——家庭部署不稳定，生产已全部上云。
+- K3s/K8s 混合拓扑（`高性能模式部署指南`、`docker/compose.performance.yml`、Harbor/Jenkins 发布链）——不再使用。
+- macOS / Windows / watchdog 等本机部署形态与旧单容器 Docker 指南。

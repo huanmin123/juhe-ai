@@ -35,7 +35,7 @@ func TestProbeOpenAIChatUsesDirectNativeRequest(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body["model"] != "gpt-test" || body["stream"] != false || body["max_tokens"] != float64(256) {
+		if body["model"] != "gpt-test" || body["stream"] != false || body["max_tokens"] != float64(probeOutputTokenLimit) {
 			t.Fatalf("unexpected direct request body: %#v", body)
 		}
 		writer.Header().Set("Content-Type", "application/json")
@@ -62,7 +62,7 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body["model"] != "gpt-test" || body["stream"] != true || body["max_output_tokens"] != float64(256) {
+		if body["model"] != "gpt-test" || body["stream"] != true || body["max_output_tokens"] != float64(probeOutputTokenLimit) {
 			t.Fatalf("unexpected SSE request body: %#v", body)
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -215,7 +215,7 @@ func TestProbeOpenAIImagesUsesGenerationEndpointAndRequiresImageResult(t *testin
 // 以下正则锁定请求侧报文形态；验证侧仍宽松匹配挑战词，不要求包含后缀。
 var (
 	challengeDigitsPattern  = regexp.MustCompile(`^\d{3,6}$`)
-	challengeMessagePattern = regexp.MustCompile(`^只能回复：juhe\d{3,6}$`)
+	challengeMessagePattern = regexp.MustCompile(`^接口连通性自动测试：请原样输出 juhe\d{3,6}$`)
 )
 
 func TestProbeOpenAIChatSendsRandomizedChallengeMessage(t *testing.T) {

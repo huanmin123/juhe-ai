@@ -1,0 +1,24 @@
+# 单机 Docker 运行时镜像：只装载本地交叉编译好的 linux/amd64 二进制，
+# 不在服务器上做 Go/前端构建（构建步骤见 docker/single-server/README.md）。
+# TARGET_BINARY 取 build/bin/ 下三个二进制之一：juhe-ai-gateway / juhe-ai-jobs / juhe-ai-maintenance。
+ARG BASE_IMAGE=alpine:3.20
+
+FROM ${BASE_IMAGE}
+ARG ALPINE_MIRROR=mirrors.ustc.edu.cn
+ARG TARGET_BINARY
+
+# 国内服务器直连 dl-cdn.alpinelinux.org 不稳定，统一改走 USTC 镜像；
+# ca-certificates 供 gateway/jobs 出站 HTTPS（OpenAI 上游探针）使用，
+# tzdata 供 TZ=Asia/Shanghai 生效。
+RUN set -eux; \
+    sed -i "s#https\?://dl-cdn.alpinelinux.org#https://${ALPINE_MIRROR}#g" /etc/apk/repositories; \
+    apk add --no-cache ca-certificates tzdata
+
+COPY build/bin/${TARGET_BINARY} /usr/local/bin/juhe-ai-go-project
+COPY build/frontend-dist /app/frontend/dist
+
+RUN chmod 0755 /usr/local/bin/juhe-ai-go-project \
+    && test -f /app/frontend/dist/index.html \
+    && mkdir -p /app/backend/data /app/backend/logs
+
+ENTRYPOINT ["/usr/local/bin/juhe-ai-go-project"]

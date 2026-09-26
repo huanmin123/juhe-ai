@@ -23,8 +23,12 @@ import (
 )
 
 const (
-	probeChallenge      = "juhe"
-	defaultMaxBodyBytes = int64(256 * 1024)
+	probeChallenge = "juhe"
+	// 1024 而非 256：推理模型的思考 token 计入输出上限，256 会被思考耗尽
+	// （finish_reason=length）导致 content 为空，探针误判 invalid_probe_output。
+	// 与 platform 包 accounttest/accountprobe 的 outputTokenLimit 保持同值。
+	probeOutputTokenLimit = 1024
+	defaultMaxBodyBytes   = int64(256 * 1024)
 )
 
 // probeInstructionsPool 是 responses 形态 system instructions 的轮换池：
@@ -234,7 +238,10 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 	// system 指令从轮换池随机选取。验证侧只宽松匹配挑战词，不回读请求，
 	// 也不要求包含随机后缀。
 	challengeSuffix := challengeDigits()
-	challengePrompt := "只能回复：" + probeChallenge + challengeSuffix
+	// 说明测试用途并要求原样输出：推理模型遇到无解释的"只能回复：juhe00649"
+	// 会在思考阶段纠结内容用途与安全疑虑，明确用途可显著缩短思考。与
+	// accountprobe 的 outputChallengePrompt 保持同义。
+	challengePrompt := "接口连通性自动测试：请原样输出 " + probeChallenge + challengeSuffix
 	instructions := pickProbeInstructions()
 	var body any
 	switch input.EndpointMode {
@@ -243,7 +250,7 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		body = map[string]any{
 			"model":      input.HealthModel,
 			"messages":   []map[string]any{{"role": "user", "content": challengePrompt}},
-			"max_tokens": 256,
+			"max_tokens": probeOutputTokenLimit,
 			"stream":     input.EndpointMode == "chat_sse",
 		}
 	case "responses_json":
@@ -255,7 +262,7 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			"model":             input.HealthModel,
 			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
 			"instructions":      instructions,
-			"max_output_tokens": 256,
+			"max_output_tokens": probeOutputTokenLimit,
 			"stream":            false,
 		}
 		if input.Type == "oauth" && (input.ProtocolProfileID == "" || input.ProtocolProfileID == "profile_gpt_openai_v1") {
@@ -270,7 +277,7 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 			"model":             input.HealthModel,
 			"input":             []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": challengePrompt}}}},
 			"instructions":      instructions,
-			"max_output_tokens": 256,
+			"max_output_tokens": probeOutputTokenLimit,
 			"stream":            true,
 		}
 	case "images_json":
@@ -288,7 +295,7 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		path = "/v1/messages"
 		body = map[string]any{
 			"model":      input.HealthModel,
-			"max_tokens": 256,
+			"max_tokens": probeOutputTokenLimit,
 			"messages":   []map[string]any{{"role": "user", "content": challengePrompt}},
 			"stream":     input.EndpointMode == "messages_sse",
 		}
@@ -300,7 +307,7 @@ func buildProbeRequest(ctx context.Context, base *url.URL, input Input, token st
 		}
 		body = map[string]any{
 			"contents":         []map[string]any{{"role": "user", "parts": []map[string]any{{"text": challengePrompt}}}},
-			"generationConfig": map[string]any{"maxOutputTokens": 256},
+			"generationConfig": map[string]any{"maxOutputTokens": probeOutputTokenLimit},
 		}
 	case "interactions_json", "interactions_sse":
 		path = "/v1beta/interactions"
