@@ -79,7 +79,8 @@ export interface AccountOAuthUsageWindow {
   windowMinutes?: number
 }
 
-export interface AccountOAuthUsageSnapshot {
+/** OpenAI Codex OAuth 窗口用量快照（被动响应头采集）。 */
+export interface AccountOpenAICodexUsageSnapshot {
   kind: 'openai_codex'
   source?: string
   updatedAt?: string
@@ -91,6 +92,20 @@ export interface AccountOAuthUsageSnapshot {
   fiveHour?: AccountOAuthUsageWindow
   sevenDay?: AccountOAuthUsageWindow
 }
+
+/** xAI Grok OAuth 订阅周期用量快照（billing/settings 主动查询）。 */
+export interface AccountXAIGrokUsageSnapshot {
+  kind: 'xai_grok'
+  usedPercent?: number
+  periodType?: string
+  periodStart?: string
+  periodEnd?: string
+  subscriptionTier?: string
+  /** productUsage[] 原样 JSON 字符串，可选展示分产品明细。 */
+  productUsage?: string
+}
+
+export type AccountOAuthUsageSnapshot = AccountOpenAICodexUsageSnapshot | AccountXAIGrokUsageSnapshot
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'degraded' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
@@ -506,6 +521,8 @@ export interface AccountListItem {
   balanceSnapshot?: AccountBalanceSnapshot
   lastUsedAt?: string
   todayUsage: AccountUsageListSummary
+  /** 网关列表投影按 provider 注入的 OAuth 用量只读快照（gpt→openai_codex，xai→xai_grok）。 */
+  oauthUsage?: AccountOAuthUsageSnapshot
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
   authorizationInstanceSourceAccountId?: string

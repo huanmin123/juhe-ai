@@ -36,7 +36,6 @@ describe('api 客户端 barrel', () => {
       'myTeams',
       'myUsageRecords',
       'myUiBootstrap',
-      'oauthApplications',
       'openaiOAuth',
       'operationLogs',
       'providers',

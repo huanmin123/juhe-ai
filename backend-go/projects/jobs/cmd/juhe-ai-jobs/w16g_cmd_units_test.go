@@ -70,10 +70,14 @@ func TestW16GRetentionOpenDualAndCodexArms(t *testing.T) {
 	root := t.TempDir()
 	retentionConfig := func(mutate func(config *workerConfig)) workerConfig {
 		config := workerConfig{
-			Driver:                      "sqlite",
-			InstanceID:                  "w16g-retention",
-			BusinessSQLitePath:          filepath.Join(root, "business.sqlite3"),
-			StatsSQLitePath:             filepath.Join(root, "stats.sqlite3"),
+			Driver:             "sqlite",
+			InstanceID:         "w16g-retention",
+			BusinessSQLitePath: filepath.Join(root, "business.sqlite3"),
+			StatsSQLitePath:    filepath.Join(root, "stats.sqlite3"),
+			// 3dd1bb310 起 wireRetentionFamily 对 task-runs 库走 openDual
+			// 硬依赖（background_task_runs/background_job_leases 保留清理），
+			// fixture 必须与共享 retentionTestConfig 一样提供该路径。
+			TaskRunsSQLitePath:          filepath.Join(root, "task-runs.sqlite3"),
 			DatasetSQLitePath:           filepath.Join(root, "dataset.sqlite3"),
 			ChatSQLitePath:              filepath.Join(root, "chat.sqlite3"),
 			UsageCatalogSQLitePath:      filepath.Join(root, "usage-catalog.sqlite3"),
@@ -173,6 +177,7 @@ func TestW16GRetentionRecordMaintenanceViewConflictArm(t *testing.T) {
 		InstanceID:                  "w16g-retention-view",
 		BusinessSQLitePath:          businessPath,
 		StatsSQLitePath:             filepath.Join(root, "stats.sqlite3"),
+		TaskRunsSQLitePath:          filepath.Join(root, "task-runs.sqlite3"),
 		DatasetSQLitePath:           filepath.Join(root, "dataset.sqlite3"),
 		ChatSQLitePath:              filepath.Join(root, "chat.sqlite3"),
 		UsageCatalogSQLitePath:      filepath.Join(root, "usage-catalog.sqlite3"),

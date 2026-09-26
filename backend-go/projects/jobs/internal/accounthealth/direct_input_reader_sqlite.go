@@ -341,7 +341,15 @@ func EnsureSQLiteDirectInputLayout(ctx context.Context, businessPath, statsPath 
 	if err := ensureSQLiteDirectInputColumns(ctx, business); err != nil {
 		return err
 	}
-	return seedSQLiteDirectSettings(ctx, business)
+	if err := seedSQLiteDirectSettings(ctx, business); err != nil {
+		return err
+	}
+	// 基线播种（BUG-0194）：直读候选对 versions 表 INNER JOIN，全新/迁移
+	// 环境该表无行即候选恒空；幂等补齐白名单账户基线版本行。
+	if _, err := seedDirectInputBaseline(ctx, business, "", "?"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // sqliteDirectInputNarrowTableColumns 列出 statsverify 窄表缺少、而 J1 候选

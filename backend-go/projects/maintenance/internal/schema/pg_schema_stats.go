@@ -127,7 +127,7 @@ var postgresSchemaStats = []PGStatement{
 		SQL: `CREATE TABLE IF NOT EXISTS account_usage_snapshots (
           system_account_id text NOT NULL,
           account_id text NOT NULL,
-          kind text NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance')),
+          kind text NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance', 'xai_grok')),
           source text,
           snapshot_json text NOT NULL,
           refresh_status text,

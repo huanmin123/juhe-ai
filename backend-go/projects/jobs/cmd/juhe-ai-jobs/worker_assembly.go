@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -239,6 +240,9 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 		return err
 	}
 	if err := a.wireBalanceDetectFamily(ctx); err != nil {
+		return err
+	}
+	if err := a.wireXAIGrokUsageFamily(ctx); err != nil {
 		return err
 	}
 	if err := a.wireRetentionFamily(ctx); err != nil {
@@ -856,12 +860,45 @@ func (a *workerAssembly) wireUsageSpoolDrain() error {
 		Enqueuer:  a.writer,
 		Logger:    a.logger,
 	}
+	// BUG-0193 防复发诊断：与 gateway 写侧同款——打印解析后的绝对路径并探测
+	// 可写性；两侧绝对路径不一致即交接静默断裂（相对路径按各自 cwd 解析）。
+	logUsageSpoolDirectoryDiagnostics(a.logger, "usage spool drain", a.config.UsageSpoolDirectory)
 	a.logger.Info("usage spool drain 已接线",
 		"event", "usage_record_spool_drain_wired",
 		"directory", a.config.UsageSpoolDirectory,
 		"batchSize", usagespooldrain.DefaultBatchSize,
 		"flushIntervalMs", usagespooldrain.DefaultFlushIntervalMs)
 	return nil
+}
+
+// logUsageSpoolDirectoryDiagnostics 打印交接目录的绝对路径并探测可写性
+// （ERROR 级不阻断启动；写入失败另有逐条错误面）。
+func logUsageSpoolDirectoryDiagnostics(logger *slog.Logger, label, directory string) {
+	resolved := directory
+	if abs, err := filepath.Abs(directory); err == nil {
+		resolved = abs
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		logger.Error("用量交接目录不可创建（用量记录将无人投递，检查挂载与 working_dir）",
+			"event", "usage_spool_directory_unavailable",
+			"label", label, "directory", resolved, "error", err.Error())
+		return
+	}
+	probe, err := os.CreateTemp(directory, ".writability-probe-*")
+	if err == nil {
+		name := probe.Name()
+		_ = probe.Close()
+		_ = os.Remove(name)
+	}
+	if err != nil {
+		logger.Error("用量交接目录不可写（用量记录将无人投递，检查挂载与 working_dir）",
+			"event", "usage_spool_directory_unwritable",
+			"label", label, "directory", resolved, "error", err.Error())
+		return
+	}
+	logger.Info("用量交接目录就绪（须与 gateway 写侧解析到同一路径）",
+		"event", "usage_spool_directory_ready",
+		"label", label, "directory", resolved)
 }
 
 type slogWriterLogger struct{ logger *slog.Logger }

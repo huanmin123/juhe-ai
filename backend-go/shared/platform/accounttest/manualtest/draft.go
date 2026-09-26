@@ -25,12 +25,15 @@ type DraftSnapshot struct {
 	ProtocolVersion           string                      `json:"protocolVersion,omitempty"`
 	Name                      string                      `json:"name"`
 	Type                      string                      `json:"type"`
-	Credentials               map[string]any              `json:"credentials"`
-	ClientCompatibility       string                      `json:"clientCompatibility"`
-	SupportedModels           []string                    `json:"supportedModels,omitempty"`
-	HealthCheckModel          string                      `json:"healthCheckModel"`
-	HealthCheckEndpointMode   string                      `json:"healthCheckEndpointMode"`
-	ModelMappings             []accountprobe.ModelMapping `json:"modelMappings,omitempty"`
+	// ProxyProfileID 是表单草稿绑定的代理档案：执行侧解析为出站 ProxyURL，
+	// 缺失时海外上游直连不可达（历史卡死根因）。
+	ProxyProfileID          string                      `json:"proxyProfileId,omitempty"`
+	Credentials             map[string]any              `json:"credentials"`
+	ClientCompatibility     string                      `json:"clientCompatibility"`
+	SupportedModels         []string                    `json:"supportedModels,omitempty"`
+	HealthCheckModel        string                      `json:"healthCheckModel"`
+	HealthCheckEndpointMode string                      `json:"healthCheckEndpointMode"`
+	ModelMappings           []accountprobe.ModelMapping `json:"modelMappings,omitempty"`
 }
 
 // DecryptDraft 等价 Node accountTestDraftSnapshot：v1 信封解密 + 规范化；
@@ -98,6 +101,7 @@ func normalizeDraftSnapshot(value any) *DraftSnapshot {
 		ProtocolVersion:           text("protocolVersion"),
 		Name:                      text("name"),
 		Type:                      text("type"),
+		ProxyProfileID:            text("proxyProfileId"),
 		ClientCompatibility:       text("clientCompatibility"),
 		SupportedModels:           stringListValue(record["supportedModels"]),
 		HealthCheckModel:          text("healthCheckModel"),

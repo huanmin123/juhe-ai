@@ -25,7 +25,7 @@
           <span>3</span>
           <div>
             <strong>粘贴授权结果</strong>
-            <small>保留 code 与 state</small>
+            <small>{{ pasteStepText }}</small>
           </div>
         </div>
       </div>
@@ -38,7 +38,7 @@
     <a-form-item v-if="authResult" class="oauth-url-field" label="授权链接">
       <a-textarea :value="authResult.authUrl" :rows="3" readonly />
     </a-form-item>
-    <a-form-item class="oauth-callback-field" label="授权结果" required :tooltip="callbackTooltip">
+    <a-form-item class="oauth-callback-field" label="授权结果" required :tooltip="callbackTooltipText">
       <a-textarea v-model:value="form.callbackUrl" :rows="3" :placeholder="callbackPlaceholder" />
     </a-form-item>
   </template>
@@ -90,6 +90,8 @@ const props = withDefaults(defineProps<{
   optionalRefreshTokenPlaceholder?: string
   manualAuthorizeStepText?: string
   callbackPlaceholder?: string
+  pasteStepText?: string
+  callbackTooltip?: string
 }>(), {
   manualAlertMessage: '浏览器最终跳转到本地回调地址；如果页面显示连接失败，复制地址栏完整 URL 粘贴回来即可。',
   refreshTokenAlertMessage: '已有 Refresh Token 时可跳过浏览器授权，后端会换取 Access Token 后创建账户。',
@@ -98,9 +100,11 @@ const props = withDefaults(defineProps<{
   accessTokenPlaceholder: '粘贴 OAuth Access Token',
   optionalRefreshTokenPlaceholder: '可选：粘贴 Refresh Token',
   manualAuthorizeStepText: '登录供应商并允许跳转',
-  callbackPlaceholder: '粘贴完整回调 URL、code=...&state=...，或供应商返回的 code#state'
+  callbackPlaceholder: '粘贴完整回调 URL、code=...&state=...，或供应商返回的 code#state',
+  pasteStepText: '保留 code 与 state',
+  callbackTooltip: ''
 })
-const callbackTooltip = computed(() => `${props.manualAlertMessage} 可粘贴完整 URL、查询参数或 code#state；必须同时包含 code 与 state。`)
+const callbackTooltipText = computed(() => props.callbackTooltip || `${props.manualAlertMessage} 可粘贴完整 URL、查询参数或 code#state；必须同时包含 code 与 state。`)
 
 defineEmits<{
   (event: 'copy-auth-url', value: string): void

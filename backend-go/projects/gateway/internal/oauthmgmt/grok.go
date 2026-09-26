@@ -3,7 +3,6 @@ package oauthmgmt
 import (
 	"context"
 	"crypto/subtle"
-	"errors"
 	"net/url"
 	"strings"
 )
@@ -84,6 +83,17 @@ func buildGrokAuthorizeURL(state, nonce, codeChallenge string) string {
 	return GrokOAuthAuthorizeURL + "?" + encodeForm(params)
 }
 
+// isXAIOAuthPageURL reports whether the URL is an x.ai authorize/consent page
+// address（授权过程的中间页，不含 code，不是可提交的授权结果）。
+func isXAIOAuthPageURL(parsed *url.URL) bool {
+	host := strings.ToLower(parsed.Hostname())
+	if host != "auth.x.ai" && host != "accounts.x.ai" {
+		return false
+	}
+	path := strings.TrimSuffix(parsed.Path, "/")
+	return path == "/oauth2/authorize" || path == "/oauth2/consent"
+}
+
 // grokTokenInfo mirrors GrokOAuthTokenInfo.
 type grokTokenInfo struct {
 	AccessToken       string
@@ -110,7 +120,9 @@ type grokAuthorization struct {
 
 // parseGrokAuthorizationInput mirrors parseGrokAuthorizationInput: URL form,
 // then "?..."/"a=b" query form, then the bare code accepted by the xAI CLI
-// flow.
+// flow. x.ai 授权页链接（consent/authorize，含 state 无 code）是用户最常见
+// 的误粘贴对象：裸 code 兜底会把整条 URL 当授权码发给上游，必须先拦下并给
+// 出可操作的提示。
 func parseGrokAuthorizationInput(raw string) (*grokAuthorization, error) {
 	trimmed := normalizeText(raw)
 	if trimmed == "" {
@@ -131,6 +143,12 @@ func parseGrokAuthorizationInput(raw string) (*grokAuthorization, error) {
 				state:         normalizeText(query.Get("state")),
 				requiresState: true,
 			}, nil
+		}
+		if isXAIOAuthPageURL(parsed) {
+			return nil, &grokOAuthError{
+				Message:    "粘贴的是 x.ai 授权页面链接，不是授权结果：请复制授权页面上显示的那串代码（一串字母数字），粘贴到这里提交",
+				StatusCode: 400,
+			}
 		}
 	}
 	queryCandidate := strings.TrimPrefix(trimmed, "?")
@@ -230,7 +248,8 @@ func (s *Store) requestGrokToken(ctx context.Context, form map[string]string, cl
 	request.ProxyURL = proxyURL
 	response, err := s.exchange(ctx, request)
 	if err != nil {
-		return nil, err
+		// 传输层失败（超时/代理/连接）也透传原始原因，避免落进路由兜底文案。
+		return nil, &UpstreamError{Message: "Grok OAuth 令牌请求失败：" + err.Error(), StatusCode: 502}
 	}
 	payload := parseTokenPayload(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -252,7 +271,16 @@ func (s *Store) requestGrokToken(ctx context.Context, form map[string]string, cl
 	}
 	accessToken := normalizeText(payload["access_token"])
 	if accessToken == "" {
-		return nil, errors.New("Grok OAuth 令牌响应缺少 access_token")
+		// 200 但无 access_token：x.ai 返回了意料之外的结构（如未确认的
+		// user code），必须带出原始响应才能定位流程差异。
+		body := response.Body
+		if len(body) > 500 {
+			body = body[:500] + "…"
+		}
+		return nil, &UpstreamError{
+			Message:    "Grok OAuth 令牌响应缺少 access_token：HTTP " + itoa(response.StatusCode) + "，" + body,
+			StatusCode: 502,
+		}
 	}
 	expiresIn := grokDefaultTokenTTL
 	if value, ok := finitePositiveInt(payload["expires_in"]); ok {

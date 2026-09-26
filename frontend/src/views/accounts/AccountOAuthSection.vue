@@ -46,9 +46,9 @@
         :form="form"
         :oauth-mode-options="oauthModeOptions"
         :manual-alert-message="geminiRequiresClientCredentials
-          ? '使用自己的 Google OAuth 客户端授权；完成后粘贴完整回调 URL，或包含 code/state 的授权结果。'
-          : '使用内置 Gemini CLI OAuth 客户端授权；完成后粘贴完整回调 URL，或包含 code/state 的授权结果。'"
-        manual-authorize-step-text="登录 Google 并允许访问"
+          ? '使用自己的 Google OAuth 客户端授权；浏览器会跳转到本地回调地址（页面打不开是正常的），复制地址栏完整 URL，或包含 code/state 的授权结果粘贴。'
+          : '使用内置 Gemini CLI OAuth 客户端授权；Google 授权完成后页面会直接显示一串授权代码，复制它粘贴到下方即可；若浏览器跳转到本地回调地址，也可以粘贴地址栏完整 URL。'"
+        manual-authorize-step-text="登录 Google 并完成授权"
         :refresh-token-alert-message="geminiRequiresClientCredentials
           ? '已有 Google Refresh Token 时可直接换取 Access Token；Client ID 与 Client Secret 必须和签发该令牌的客户端一致。'
           : '已有 Gemini CLI Refresh Token 时可直接换取 Access Token。'"
@@ -90,6 +90,9 @@
         :auth-result="authResult"
         :form="form"
         :oauth-mode-options="oauthModeOptions"
+        manual-alert-message="浏览器授权后会跳转到本地回调地址（页面打不开是正常的）：复制地址栏完整 URL 粘贴回来；也支持 code#state 形态。"
+        manual-authorize-step-text="登录 OpenAI 并复制跳转地址"
+        callback-placeholder="粘贴跳转后的完整回调 URL（需含 code 与 state），或 code#state"
         @copy-auth-url="$emit('copy-auth-url', $event)"
         @generate-auth-url="$emit('generate-auth-url')"
         @open-auth-url="$emit('open-auth-url')"
@@ -108,8 +111,9 @@
         :auth-result="authResult"
         :form="form"
         :oauth-mode-options="oauthModeOptions"
-        manual-alert-message="浏览器授权完成后粘贴完整回调 URL、code#state，或仅粘贴授权码。"
-        manual-authorize-step-text="登录 Claude 并允许跳转"
+        manual-alert-message="Claude 授权完成后页面会直接显示一串授权代码：复制它粘贴到下方（code#state 或纯 code 均可）；若浏览器跳转到回调地址，也可以粘贴地址栏完整 URL。"
+        manual-authorize-step-text="登录 Claude 并复制页面显示的授权代码"
+        callback-placeholder="粘贴 Claude 页面显示的授权代码（code#state 或纯 code），或完整回调 URL"
         refresh-token-alert-message="已有 Anthropic Refresh Token 时可直接粘贴，后端会重新换取 Access Token。"
         access-token-alert-message="也可以直接录入已有的 Anthropic OAuth / Claude Code Access Token。"
         access-token-placeholder="粘贴 CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN"
@@ -126,8 +130,11 @@
         :auth-result="authResult"
         :form="form"
         :oauth-mode-options="oauthModeOptions"
-        manual-alert-message="浏览器授权完成后粘贴完整回调 URL，或包含 code/state 的授权结果；Grok OAuth 会使用本次 PKCE 会话交换令牌。"
-        manual-authorize-step-text="登录 xAI 并允许访问"
+        manual-alert-message="打开授权链接后，xAI 授权页面会直接显示一串授权代码：复制这串代码粘贴到下方提交（不是网址）。若浏览器自动跳转到本地回调地址，也可以粘贴地址栏完整 URL。"
+        manual-authorize-step-text="登录 xAI 并复制页面显示的授权代码"
+        callback-placeholder="粘贴 xAI 授权页面显示的授权代码，或跳转后的完整回调 URL"
+        paste-step-text="直接粘贴授权代码"
+        callback-tooltip="推荐直接粘贴授权页面显示的那串授权代码；也兼容跳转后的完整回调 URL（含 code 与 state）。代码短时效且一次性，生成链接后请尽快完成。"
         refresh-token-alert-message="已有 Grok Refresh Token 时可直接换取新的 Access Token。"
         access-token-alert-message="也可以直接录入当前可用的 Grok OAuth Access Token。"
         refresh-token-placeholder="粘贴 Grok OAuth Refresh Token"

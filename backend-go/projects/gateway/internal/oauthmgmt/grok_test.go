@@ -120,7 +120,7 @@ func TestGrokSSOToDeviceFlow(t *testing.T) {
 		FROM accounts WHERE id = ?`, accountID).Scan(&providerCode, &profileID, &accountType, &name); err != nil {
 		t.Fatal(err)
 	}
-	if providerCode != "xai" || profileID != "profile_xai_openai_v1" || accountType != "oauth" || name != "grok@example.com" {
+	if providerCode != "xai" || profileID != "profile_xai_openai_v1" || accountType != "oauth" || !strings.HasPrefix(name, "cli-chat-proxy.grok.com-") {
 		t.Fatalf("grok account row: %s %s %s %s", providerCode, profileID, accountType, name)
 	}
 	credentials := env.accountCredentials(t, accountID)
@@ -193,13 +193,21 @@ func TestGrokCodeAndRefreshFamily(t *testing.T) {
 		t.Fatalf("grok create credentials: %v", credentials)
 	}
 
-	// Wrong state on the URL form → 400 (grokOAuthError renders the fallback).
+	// Wrong state on the URL form → 400 (grokOAuthError renders its own message).
 	code, fresh := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/auth-url", `{}`)
 	freshSession := dataMap(t, fresh)["sessionId"].(string)
 	code, badState := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-code",
 		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"http://127.0.0.1:56121/callback?code=c1&state=nope","providerProtocolProfileId":"profile_xai_openai_v1"}`, freshSession))
-	if code != http.StatusBadRequest || badState["message"] != "Grok 授权码交换失败" {
+	if code != http.StatusBadRequest || badState["message"] != "Grok OAuth state 无效" {
 		t.Fatalf("grok wrong state: %d %v", code, badState)
+	}
+
+	// Pasting the x.ai consent page address (state but no code) → explicit
+	// 400 guidance instead of sending the whole URL upstream as a bare code.
+	code, consentPaste := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/create-from-code",
+		fmt.Sprintf(`{"sessionId":%q,"callbackUrl":"https://accounts.x.ai/oauth2/consent?response_type=code&client_id=b1a00492-073a-47ea-816f-4c329264a828&state=abc&code_challenge=x&code_challenge_method=S256","providerProtocolProfileId":"profile_xai_openai_v1"}`, freshSession))
+	if code != http.StatusBadRequest || !strings.Contains(consentPaste["message"].(string), "不是授权结果") {
+		t.Fatalf("grok consent paste: %d %v", code, consentPaste)
 	}
 
 	// create-from-refresh-token + manual refresh + reauthorize.

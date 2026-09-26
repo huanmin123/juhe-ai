@@ -221,6 +221,18 @@ func ScheduledEntries() []Entry {
 			GoBinding: "RunBalanceAutoDetectionRecovery 经组合根适配器接线（探测意图仓储直查业务库 + background_job_leases 候选租约 + J2 ExecuteBalanceQuery builtin 探测）",
 		},
 		{
+			// Go 新增条目：归档 Node 无对应 scheduled job（AI 账户 Grok 用量
+			// 快照设计 §4，registry_test.go 的 goAddedAfterBalanceDetectJobNames
+			// 锁定登记位置）。xai oauth 账户无响应头被动采集通道，由本任务族
+			// 周期主动查询上游 billing/settings 落快照；单持有者（每轮全量
+			// 扫描，无候选级租约），PG 调度租约/运行历史由组合根 withLease 承担。
+			JobName: "xai-grok-usage-refresh", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
+			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
+			Writes:   []string{"stats:account_usage_snapshots"},
+			GoStatus: GoWired, GoPackage: "cmd/juhe-ai-jobs（worker_xai_grok_usage.go 组合根适配器）",
+			GoBinding: "wireXAIGrokUsageFamily 经组合根接线：全量扫描 xai oauth 账户（无游标/候选租约，并发≤4）→ 解密凭据 access_token → 上游 billing?format=credits + settings（账户代理或直连，15s/端点）→ stats 库 account_usage_snapshots kind='xai_grok' UPSERT（成功 ok+last_success_at 全量替换并清错，失败 failed+截断 last_error_message 且保留上次成功 payload；两种情况均写 last_attempt_at/next_refresh_after=now+10min/updated_at，created_at 不更新）",
+		},
+		{
 			JobName: "openai-oauth-access-token-refresh", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:accounts"},

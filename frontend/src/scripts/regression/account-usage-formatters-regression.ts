@@ -3,8 +3,12 @@ import { formatRequestCountTag } from '@/shared/formatters'
 import {
   formatAccountUsageSummary,
   formatCost,
+  formatGrokPeriodReset,
   formatRelativeReset,
   formatUsageAmount,
+  grokOAuthUsageBar,
+  grokPeriodLabel,
+  grokProductUsageSummary,
   oauthUsageBars
 } from '../../views/accounts/accountUsageFormatters'
 
@@ -66,11 +70,88 @@ try {
   assertEqual(oauthUsageBars(accountFixture({ providerCode: 'openai', type: 'oauth' })).length, 0, '没有 OAuth 用量快照时不应展示 OAuth 用量条')
   assertEqual(oauthUsageBars(accountFixture({ type: 'api_key' })).length, 0, 'API Key 账户不应展示 OAuth 用量条')
   assertEqual(oauthUsageBars(accountFixture({ type: 'oauth', protocolVersion: 'v2' })).length, 0, '非 OpenAI v1 协议不应展示 OAuth 用量条')
+
+  const grokBar = grokOAuthUsageBar(accountFixture({
+    providerCode: 'xai',
+    type: 'oauth',
+    oauthUsage: {
+      kind: 'xai_grok',
+      usedPercent: 14,
+      periodType: 'USAGE_PERIOD_TYPE_WEEKLY',
+      periodStart: '2026-06-11T01:00:00.000Z',
+      periodEnd: '2026-06-18T01:00:00.000Z',
+      subscriptionTier: 'SuperGrok Heavy',
+      productUsage: JSON.stringify([
+        { product: 'GrokBuild', usagePercent: 13 },
+        { product: 'GrokChat', usagePercent: 1 },
+        { product: 'GrokImagine' }
+      ])
+    }
+  }))
+  assertTrue(Boolean(grokBar), 'Grok OAuth 快照应产生用量条')
+  assertEqual(grokBar?.key, 'grok', 'Grok 用量条 key 应为 grok')
+  assertEqual(grokBar?.label, '周', 'WEEKLY 周期徽章应为周')
+  assertEqual(grokBar?.percent, 14, 'Grok 百分比应四舍五入')
+  assertEqual(grokBar?.displayPercent, '14%', 'Grok 百分比文案应保持原格式')
+  assertEqual(grokBar?.tone, 'normal', 'Grok 未超阈值应为 normal')
+  assertTrue(Boolean(grokBar?.resetText && grokBar.resetText !== '—'), 'Grok 应展示相对重置时间')
+  assertTrue(Boolean(grokBar?.tooltip?.startsWith('SuperGrok Heavy · 本周已用 14% · ')), 'Grok tooltip 应以套餐与规范化的本周用量开头')
+  assertTrue(Boolean(grokBar?.tooltip?.includes(' 重置')), 'Grok tooltip 应含本地化重置时间')
+  assertEqual(grokBar?.tooltip?.endsWith('GrokBuild 13% / GrokChat 1% / GrokImagine'), true, '分产品明细应展示产品名与百分比')
+
+  const grokMonthlyBar = grokOAuthUsageBar(accountFixture({
+    type: 'oauth',
+    oauthUsage: {
+      kind: 'xai_grok',
+      usedPercent: 7.4,
+      periodType: 'USAGE_PERIOD_TYPE_MONTHLY',
+      periodEnd: '2026-07-01T00:00:00.000Z'
+    }
+  }))
+  assertTrue(Boolean(grokMonthlyBar), '无套餐名时 Grok 条仍应渲染')
+  assertEqual(grokMonthlyBar?.label, '月', 'Grok 周期类型 MONTHLY 徽章应为月')
+  assertEqual(grokMonthlyBar?.displayPercent, '7%', 'Grok 百分比应四舍五入')
+  assertTrue(Boolean(grokMonthlyBar?.tooltip?.includes('本月已用 7%')), 'MONTHLY tooltip 应规范化为本月')
+  assertEqual(grokMonthlyBar?.tooltip?.includes('GrokBuild'), false, '没有分产品明细时 tooltip 不应含产品段')
+
+  assertEqual(
+    grokOAuthUsageBar(accountFixture({
+      type: 'oauth',
+      oauthUsage: { kind: 'xai_grok', usedPercent: 3, periodType: 'USAGE_PERIOD_TYPE_DAILY' }
+    }))?.label,
+    '期',
+    '未知周期类型徽章应回退期'
+  )
+  assertTrue(
+    Boolean(grokOAuthUsageBar(accountFixture({ type: 'oauth', oauthUsage: { kind: 'xai_grok', usedPercent: 3 } }))?.tooltip?.includes('本周期已用 3%')),
+    '缺失周期类型应回退本周期文案'
+  )
+  assertEqual(grokOAuthUsageBar(accountFixture({ type: 'oauth', oauthUsage: { kind: 'xai_grok' } })), undefined, '快照没有已用百分比时不应渲染 Grok 条')
+  assertEqual(grokOAuthUsageBar(accountFixture({ type: 'api_key', oauthUsage: { kind: 'xai_grok', usedPercent: 3 } })), undefined, 'API Key 账户不应渲染 Grok 条')
+  assertEqual(grokOAuthUsageBar(accountFixture({ providerCode: 'xai', type: 'oauth', oauthUsage: { kind: 'openai_codex' } })), undefined, 'openai_codex 快照不应渲染 Grok 条')
+
+  const grokBarsViaAggregation = oauthUsageBars(accountFixture({
+    providerCode: 'xai',
+    type: 'oauth',
+    oauthUsage: { kind: 'xai_grok', usedPercent: 14, periodType: 'USAGE_PERIOD_TYPE_WEEKLY' }
+  }))
+  assertEqual(grokBarsViaAggregation.length, 1, 'xai oauth 账户应经聚合入口产出 Grok 条')
+  assertEqual(grokBarsViaAggregation[0]?.key, 'grok', '聚合入口应返回 Grok 条')
+
+  assertEqual(grokPeriodLabel('USAGE_PERIOD_TYPE_WEEKLY'), '本周', '周期类型 WEEKLY 应规范化为本周')
+  assertEqual(grokPeriodLabel('USAGE_PERIOD_TYPE_MONTHLY'), '本月', '周期类型 MONTHLY 应规范化为本月')
+  assertEqual(grokPeriodLabel('USAGE_PERIOD_TYPE_DAILY'), 'USAGE_PERIOD_TYPE_DAILY', '其他周期类型应显示原文')
+  assertEqual(grokPeriodLabel(undefined), '本周期', '缺失周期类型应回退本周期')
+  assertEqual(grokProductUsageSummary('not-json'), undefined, '非法分产品 JSON 不应产生明细')
+  assertEqual(grokProductUsageSummary('{"product":"GrokBuild"}'), undefined, '非数组分产品 JSON 不应产生明细')
+  assertEqual(grokProductUsageSummary(undefined), undefined, '缺失分产品 JSON 不应产生明细')
 } finally {
   Date.now = originalNow
 }
 
-console.log('账户用量 formatter 回归通过：摘要格式、OAuth 用量条、百分比封顶和重置时间均符合预期')
+assertEqual(formatGrokPeriodReset('bad-date'), '时间格式异常', '非法重置时间应展示格式异常')
+
+console.log('账户用量 formatter 回归通过：摘要格式、OAuth 用量条、Grok 用量行、百分比封顶和重置时间均符合预期')
 
 function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary {
   return {
@@ -116,5 +197,11 @@ function emptyUsage(): AccountUsageSummary {
 function assertEqual<T>(actual: T, expected: T, message: string): void {
   if (actual !== expected) {
     throw new Error(`${message}，实际 ${String(actual)}`)
+  }
+}
+
+function assertTrue(condition: boolean, message: string): void {
+  if (!condition) {
+    throw new Error(message)
   }
 }

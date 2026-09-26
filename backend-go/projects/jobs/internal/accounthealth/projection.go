@@ -180,8 +180,11 @@ type OutcomeProjectorConfig struct {
 	BatchSize   int
 	ConsumerKey string
 	Stats       GroupStatsDirtyMarker
-	Logger      *slog.Logger
-	Now         func() time.Time
+	// Hourly 是 account_health_hourly 小时条带写入窄口（BUG-0194 第二层，
+	// 组合根装配 stats 库双模句柄；nil 时跳过条带写入）。
+	Hourly AccountHealthHourlySink
+	Logger *slog.Logger
+	Now    func() time.Time
 }
 
 const (
@@ -206,6 +209,7 @@ type OutcomeProjector struct {
 	batch       int
 	consumerKey string
 	stats       GroupStatsDirtyMarker
+	hourly      AccountHealthHourlySink
 	logger      *slog.Logger
 	now         func() time.Time
 }
@@ -249,7 +253,7 @@ func NewOutcomeProjector(store *Store, config OutcomeProjectorConfig) (*OutcomeP
 	if now == nil {
 		now = time.Now
 	}
-	return &OutcomeProjector{store: store, business: config.Business, secret: config.CredentialSecret, poll: poll, batch: batch, consumerKey: consumerKey, stats: config.Stats, logger: logger, now: now}, nil
+	return &OutcomeProjector{store: store, business: config.Business, secret: config.CredentialSecret, poll: poll, batch: batch, consumerKey: consumerKey, stats: config.Stats, hourly: config.Hourly, logger: logger, now: now}, nil
 }
 
 // Run 是持续轮询投影循环（归档 runProjectionLoop 的 Go 等价；passive jitter
@@ -298,6 +302,9 @@ func (p *OutcomeProjector) DrainOnce(ctx context.Context) (ProjectionDrainResult
 			if _, err := p.projectOutcome(ctx, item.Outcome); err != nil {
 				return result, err
 			}
+			// 小时条带直写（BUG-0194 第二层）：在游标推进前落库；失败 warn
+			// 不阻塞（派生数据由同账户下轮观测覆盖），游标语义与投影一致。
+			p.recordHourly(ctx, item.Outcome)
 			advanced, err := p.advanceCursor(ctx, next)
 			if err != nil {
 				return result, err

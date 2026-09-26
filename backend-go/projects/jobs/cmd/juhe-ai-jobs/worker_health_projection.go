@@ -77,20 +77,31 @@ func (a *workerAssembly) wireHealthOutcomeProjector(getenv func(string) string, 
 		_ = business.close()
 		return nil, batchErr
 	}
+	// 小时条带直写（BUG-0194 第二层）：stats 家族缺席时 Hourly 为 nil，投影
+	// 面跳过条带写入（AI 健康监控退化，主投影职责不受影响）。
+	hourly, hourlyErr := openHealthHourlyWriter(a, "health-hourly")
+	if hourlyErr != nil {
+		_ = business.close()
+		return nil, hourlyErr
+	}
 	projector, projectorErr := accounthealth.NewOutcomeProjector(store, accounthealth.OutcomeProjectorConfig{
 		Business:         handle,
 		CredentialSecret: config.CredentialSecret,
 		PollInterval:     poll,
 		BatchSize:        batch,
 		Stats:            stats,
+		Hourly:           hourly,
 		Logger:           a.logger,
 		Now:              config.Now,
 	})
 	if projectorErr != nil {
 		_ = business.close()
+		_ = hourly.close()
 		return nil, projectorErr
 	}
-	// 投影器持有业务库句柄；关闭统一由 worker 组件 Close（closeStores）承担。
+	// 投影器持有业务库/统计库句柄；关闭统一由 worker 组件 Close（closeStores）
+	// 与上方 addCloser 承担。
+	a.addCloser(hourly.close)
 	a.addCloser(business.close)
 	return projector, nil
 }

@@ -801,10 +801,12 @@ func (s *Service) prepareBatchUpdates(ctx context.Context, q accountscore.Querye
 				return nil, &accountscore.ValidationError{Message: "账户归属不能为空"}
 			}
 			var id string
-			var enabled int64
+			// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为
+			// integer，扫描目标必须用 bool 才能同时兼容两种驱动。
+			var enabled bool
 			err := q.QueryRowContext(ctx, s.store.Bind(`SELECT id, enabled FROM `+s.store.Table("proxy_profiles")+`
 				WHERE id = ? AND system_account_id = ? LIMIT 1`), text, owner).Scan(&id, &enabled)
-			if errors.Is(err, sql.ErrNoRows) || (err == nil && enabled != 1) {
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && !enabled) {
 				return nil, &accountscore.ValidationError{Message: "代理不存在或已停用，请选择一个已启用的代理"}
 			}
 			if err != nil {

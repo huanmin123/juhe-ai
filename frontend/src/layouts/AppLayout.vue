@@ -284,7 +284,6 @@ const menuIconMap = {
   '/ip-stats': GlobalOutlined,
   '/response-inspection-policies': FilterOutlined,
   '/external-integration-sources': LinkOutlined,
-  '/oauth-applications': AppstoreOutlined,
   '/announcements': BellOutlined,
   '/settings': SettingOutlined,
   '/system-accounts': TeamOutlined

@@ -243,6 +243,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			_ = accountHealthStore.Close()
 			return failWith(stderr, fmt.Errorf("verify J1 account-health direct-input contract: %w", contractErr))
 		}
+		// 基线播种（BUG-0194）：versions 表只被事件路径惰性创建，迁移/导入
+		// 账户无事件即恒空，直读候选 INNER JOIN 筛空导致 J1 无探针可发。
+		// 幂等 INSERT...ON CONFLICT DO NOTHING，已播种账户零写入。
+		baselineContext, baselineCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		seeded, baselineErr := accounthealth.EnsurePostgresDirectInputBaseline(baselineContext, accountHealthInputDB)
+		baselineCancel()
+		if baselineErr != nil {
+			_ = accountHealthInputPool.Close()
+			_ = accountHealthStore.Close()
+			return failWith(stderr, fmt.Errorf("seed J1 account-health direct-input baseline: %w", baselineErr))
+		}
+		logger.Info("J1 直读输入基线播种完成", "seeded", seeded)
 		accountHealthReader = reader
 		accountHealthRunner = accounthealth.NewRunnerWithDirectInputReader(accountHealthConfig, accountHealthStore, logger, reader)
 	} else if accountHealthConfig.InputSource == "sqlite" {

@@ -97,6 +97,7 @@
 - [AI 账户上游接口能力设计](AI账户上游接口能力设计.md)
 - [AI 账户批量编辑设计](AI账户批量编辑设计.md)
 - [AI 账户上游余额查询设计](AI账户上游余额查询设计.md)
+- [AI 账户 Grok 用量快照设计](AI账户Grok用量快照设计.md)
 - [OpenAI 账号接入](OpenAI账号接入.md)
 - [官方可落地 OAuth 账户接入设计](官方可落地OAuth账户接入设计.md)
 - [CLIProxyAPI 本地 Sidecar 接入](CLIProxyAPI本地Sidecar接入.md)

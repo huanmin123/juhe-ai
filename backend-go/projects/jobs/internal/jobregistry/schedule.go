@@ -258,6 +258,19 @@ func schedules() map[string]Schedule {
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "external-account-maintenance", Timeout: 45 * second,
 			BackoffBase: 10 * second, BackoffMax: 5 * minute,
 		},
+		// xai-grok-usage-refresh：Go 新增任务（AI 账户 Grok 用量快照设计 §4，
+		// 归档 Node 无对应 scheduled job 可对照）。每轮全量扫描 provider_code='xai'
+		// 且 type='oauth' 的账户（数量少，无租约/游标），调上游 billing/settings
+		// 落 stats 库 account_usage_snapshots kind='xai_grok' 快照；interval
+		// 10 分钟（用量百分比变化粒度低）、timeout 60s、OverlapCoalesce 同
+		// account-balance-refresh 惯例，lane 对齐 external-account-maintenance；
+		// initial delay 30s 与余额族（20s/25s）错峰，LeaseTTL 2 分钟同 OAuth
+		// 家族（PG 调度租约 + 运行历史）。
+		"xai-grok-usage-refresh": {
+			Interval: 10 * minute, InitialDelay: 30 * second, StablePhaseWindow: 5 * second,
+			PassiveJitter: true, OverlapCoalesce: true, Lane: "external-account-maintenance", Timeout: 60 * second,
+			BackoffBase: 10 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
+		},
 		"account-api-key-cooldown-retest": {
 			Interval: CooldownRetestInterval, InitialDelay: 60 * second, PassiveJitter: true,
 		},

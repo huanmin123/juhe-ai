@@ -16,11 +16,14 @@ type providerPlan struct {
 	accountType        string // oauth / google_oauth
 	label              string // route copy label
 	defaultAccountName string
-	emailNameFallback  bool
 	requiredProfileID  string // grok pins profile_xai_openai_v1
 	preserveBaseURL    bool   // anthropic/gemini/grok keep the stored base_url
 	capabilities       bool   // gemini GET /capabilities
 	sso                bool   // grok POST /sso-to-oauth
+	// requiresProxy 标记上游（auth.openai.com / claude.ai / Google / x.ai）
+	// 必须经代理可达的供应商：建户、刷新、重授权时未绑定代理直接 400，
+	// 不允许直连尝试。
+	requiresProxy bool
 	// revisionConflictMessage overrides the 409 copy when a provider renders a
 	// specific message (openai/gemini); empty falls back to the route message.
 	revisionConflictMessage string

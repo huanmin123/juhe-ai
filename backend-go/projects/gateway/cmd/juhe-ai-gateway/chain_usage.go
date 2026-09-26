@@ -378,10 +378,19 @@ func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresp
 		firstTokenMs := int(*input.FirstTokenMs)
 		record.FirstTokenMs = &firstTokenMs
 	}
-	if input.CompletedAtMs != nil {
-		durationMs := int(*input.CompletedAtMs - input.StartedAtMs)
-		record.DurationMs = &durationMs
+	// DurationMs 口径：显式传 CompletedAtMs 时精确透传（completedAt -
+	// startedAt）；未传时兜底取完成收尾观测时刻——本函数只在 finalize（流/
+	// 响应转发完成或终止后）被调用，收尾时刻 ≈ 同一次 HTTP 完成时刻，对齐
+	// Node httpCompletion.wait 的 completedAtMs 语义与架构总览"总耗时截止到
+	// 同一次 HTTP 完成"契约；gatewayresponse 生产构造点不传 CompletedAtMs，
+	// StartedAtMs 均由 chain 层注入（UnixMilli，时钟同源）。
+	completedAtMs := input.CompletedAtMs
+	if completedAtMs == nil {
+		now := time.Now().UnixMilli()
+		completedAtMs = &now
 	}
+	durationMs := int(*completedAtMs - input.StartedAtMs)
+	record.DurationMs = &durationMs
 	_ = u.recorder.EnqueueUsageRecord(context.Background(), record)
 }
 

@@ -165,6 +165,15 @@ export function validateAccountSaveForm(input: {
     && (form.type === 'oauth' || form.type === 'google_oauth')
     && Boolean(managedOAuthProvider)
     && form.oauthMode !== 'access_token'
+  // 国外 OAuth 供应商（Grok/GPT/Anthropic/Gemini）的上游必须经代理可达：
+  // 创建与 OAuth 授权录入（refresh/SSO 模式）强制绑定代理，与后端拦截一致。
+  if (
+    (managedOAuthCreation || form.oauthMode === 'refresh_token' || form.oauthMode === 'sso_cookie')
+    && ['gpt', 'anthropic', 'gemini', 'xai'].includes(form.providerCode)
+    && !form.proxyProfileId?.trim()
+  ) {
+    return '该供应商的 OAuth 账户必须绑定出海代理：请在下方“代理”中选择后再提交'
+  }
   if (managedOAuthCreation && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (managedOAuthCreation && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (managedOAuthCreation && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
@@ -175,10 +184,16 @@ export function validateAccountSaveForm(input: {
     return form.providerCode === 'anthropic' ? '请填写 Claude Code OAuth Token' : '请填写 Access Token'
   }
   const supportedModels = normalizeSupportedModels(form.supportedModels)
-  if (!supportedModels.length) return '请选择支持模型'
+  // 国外 OAuth 供应商创建时支持模型/检查模型允许留空：后端自动取模型目录
+  // 最新的对话模型并默认检查模型（留空项由系统兜底，见 oauthmgmt
+  // CreateOAuthAccount）。其余场景保持必填。
+  const oauthDefaultsAllowed = !editingId
+    && (form.type === 'oauth' || form.type === 'google_oauth')
+    && ['gpt', 'anthropic', 'gemini', 'xai'].includes(form.providerCode)
+  if (!supportedModels.length && !oauthDefaultsAllowed) return '请选择支持模型'
   const healthCheckModel = form.healthCheckModel.trim()
-  if (!healthCheckModel) return '请选择检查模型'
-  if (!supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
+  if (!healthCheckModel && !oauthDefaultsAllowed) return '请选择检查模型'
+  if (healthCheckModel && !supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
   if (
     form.healthCheckEndpointMode !== 'images_json'
     && !accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)

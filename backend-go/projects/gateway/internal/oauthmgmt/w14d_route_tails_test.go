@@ -41,16 +41,15 @@ func TestW14dReauthorizeExchangeFailureCopy(t *testing.T) {
 	env.w14dSeedRotatableAccount(t, "w14d-reauth-g", "xai", "profile_xai_openai_v1", "openai", "v1", true)
 	env.w14dLoginAdmin(t)
 
-	// The grok code exchange fails (the scripted SSO device answers 500): the
-	// route renders the reauthorize fallback copy at 502.
+	// The grok code exchange fails with a missing state: the grok error
+	// renders its own 400 status and message verbatim.
 	env.sso.steps = []SSODeviceResponse{ssoStep(http.StatusInternalServerError, nil, "boom")}
 	_, authPayload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/auth-url", `{}`)
 	authData := dataMap(t, authPayload)
 	sessionID := authData["sessionId"].(string)
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/grok-oauth/accounts/w14d-reauth-g/reauthorize-from-code",
 		`{"sessionId":"`+sessionID+`","callbackUrl":"https://cb?code=c","expectedConfigRevision":1}`)
-	// The grok error renders its 400 status with the route fallback copy.
-	if code != http.StatusBadRequest || payload["message"] != "Grok OAuth 重新授权失败" {
+	if code != http.StatusBadRequest || payload["message"] != "Grok OAuth 回调缺少 state" {
 		t.Fatalf("grok reauth exchange failure: %d %v", code, payload)
 	}
 }

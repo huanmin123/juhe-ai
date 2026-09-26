@@ -1,5 +1,10 @@
 # Bug 记录目录
 
+- [BUG-0195](问题-0195-运行日志文件写侧缺失读面恒空.md)：go-only 网关 slog 仅挂 stdout，运行日志 JSONL 文件写侧未移植（grep 扫描面/jobs 索引器/保留参数三个消费面齐全但无生产者），运行日志页与 `juhe_dataset.runtime_logs` 恒空；待修复（方案已登记：slog 多路文件 sink 对齐索引器契约）。
+- [BUG-0194](问题-0194-J1直读输入基线缺失与健康监控小时表断源.md)：两层断裂——① J1 直读候选 INNER JOIN 输入版本表，该表只被事件路径惰性创建，迁移/全新部署恒空致探针零执行；② go-only 形态探针直连上游不产生 `account_health_check` 使用记录，statsagg 聚合源不存在，`account_health_hourly` 恒空。①已修复（生产幂等回填 1517 行 + jobs 启动自动播种）；②已修复（J1 投影面直写小时条带，newest-wins 对齐 statsagg 口径，探针结果实时落条带，页面数据自部署起累积）。
+- [BUG-0193](问题-0193-容器缺WORKDIR用量spool交接断裂统计全空.md)：单机容器镜像未设 WORKDIR 且未配 spool 目录，gateway/jobs 各自把用量 spool 解析到容器私有 `/data`，交接断裂致 `usage_records` 恒 0 行、生产全部统计为空，且积压记录随容器重建静默丢失；已修复（compose 为 gateway/jobs 加 `working_dir: /app/backend` 并同步服务器重建，45 个积压文件抢救补写入库，记录/聚合/文件日志均验证恢复）。
+- [BUG-0192](问题-0192-可用性维护事务与逐claim事务跨表死锁.md)：jobs 进程内部两并发任务跨表互锁（`EnqueueAllForRuntimeRecovery` 批量重置 dirty + viewer_health 全量置 stale vs 逐 claim 短事务），复检又实锤第三环（`proxy_profiles` 测试写回经库端触发器隐式写 dirty，应用锁覆盖不到）；四轮修复（拆双短事务、应用侧 dirty 写事务 advisory 锁、触发器汇聚函数 `mark_dirty_accounts` 热修取同一锁键、应用侧锁部署补齐）已闭环，预期 40P01 归零，待晚间高峰后观察确认；修复中（观察期）。
+- [BUG-0184](问题-0184-可用性投影维护与网关脏标记路径死锁.md)：`account_list_availability` 投影维护与网关脏标记路径加锁顺序成环，`account-list-availability-projection-maintenance` 反复 40P01 失败（consecFail 18，2h 94 条死锁）；首轮 ApplyClaims 排序+逐 claim 短事务当晚复发，已转入 BUG-0192 续修并完成 advisory 锁闭环；已修复（随 0192 观察期确认归零）。
 - [BUG-0183](问题-0183-mockdata占位行毒丸卡死J1调度器.md)：mockdata autofill 向 `account_health_probe_request_outbox` 插入 `source_fence` 非 JSON 的占位行，J1 drain 的 `ClaimPendingProbeRequests` 在 claim 阶段逐行解析裸返回 `*json.SyntaxError`，一行毒丸使整个 claim 中止、owner lease 反复释放、J1 无限失败循环；已修复（autofill 跳过清单登记 + claim 确定性损坏行按行隔离出队并加测试锁定，本地 dev 数据已恢复、租约续约验证通过；重启 dev 后隔离代码生效）。
 - [BUG-0182](问题-0182-统计缓存离线重建CLI缺失.md)：统计缓存离线重建 CLI 缺失——Node `rebuild-usage-stats.js` 已随 Node 后端归档删除，Go maintenance 无等价命令，SQLite standalone 与 PG performance 两种模式下统计缓存损坏后无离线重建入口（Node 原语义与建议方案见文档，D5 登记）；待修复。
 - [BUG-0181](问题-0181-网关目录源丢失openai兼容供应商聚合语义.md)：网关运行时缓存目录源只按单码查询，丢失 Node 的 openai 兼容供应商源扩展聚合语义（openai/v1 子供应商 + 自己），AI 对话与 `/v1/models` 对 openai/hybrid 分组稳定返回空目录而管理面正常；已修复（补回源扩展/合并/过滤/排序并重写聚合回归锚点，真实库只读验证聚合出 100 个含 glm-5.3 的模型）。

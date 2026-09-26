@@ -440,7 +440,9 @@ func (s *Service) exportProxyRef(ctx context.Context, proxyProfileID string, pro
 		username    sql.NullString
 		password    sql.NullString
 		description sql.NullString
-		enabled     int64
+		// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
+		// 扫描目标必须用 bool 才能同时兼容两种驱动。
+		enabled bool
 	}
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT name, type, host, port, username, password_encrypted,
 			description, enabled FROM `+s.store.Table("proxy_profiles")+` WHERE id = ? LIMIT 1`), proxyProfileID).
@@ -452,7 +454,7 @@ func (s *Service) exportProxyRef(ctx context.Context, proxyProfileID string, pro
 	if err != nil {
 		return nil, err
 	}
-	if row.enabled != 1 {
+	if !row.enabled {
 		return nil, nil
 	}
 	ref := "proxy-" + proxyProfileID

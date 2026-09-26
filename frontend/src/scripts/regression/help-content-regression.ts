@@ -32,12 +32,12 @@ const adminRoutes = [
   '/authorization-team-usage', '/authorization-user-usage', '/authorization-teams', '/api-keys',
   '/model-checks', '/usage-stats', '/ai-performance', '/ai-health', '/usage-records', '/operation-logs',
   '/public-api-logs', '/audit-logs', '/runtime-logs', '/table-monitor', '/system-metrics-stats', '/ip-stats',
-  '/response-inspection-policies', '/route-strategies', '/external-integration-sources', '/oauth-applications',
+  '/response-inspection-policies', '/route-strategies', '/external-integration-sources',
   '/announcements', '/system-accounts', '/settings'
 ] as const
 
 assertEqual(userRoutes.length, 17, '用户手册路由清单必须维护 17 项')
-assertEqual(adminRoutes.length, 29, '管理员手册路由清单必须维护 29 项')
+assertEqual(adminRoutes.length, 28, '管理员手册路由清单必须维护 28 项')
 
 for (const route of [...userRoutes, ...adminRoutes]) {
   assertMatch(routerSource, new RegExp(`path:\\s*['\"]${escapeRegExp(route)}['\"]`), `路由源必须保留 ${route}`)
@@ -130,7 +130,7 @@ assertContains(viteConfigSource, 'helpPageDirectoryIndexPlugin', 'dev 下必须�
 assertContains(userHelp, 'aria-live="polite"', '用户搜索状态必须向辅助技术播报')
 assertContains(adminHelp, 'aria-live="polite"', '管理员搜索状态必须向辅助技术播报')
 
-console.log('帮助页内容回归通过：17 个用户路由、29 个管理路由、字段级指南、SVG 流程、导入语义与可访问性契约保持一致（2026-09-22 两本手册白皮书改版后复验，全部截图断言与截图样式断言已随截图移除）')
+console.log('帮助页内容回归通过：17 个用户路由、28 个管理路由、字段级指南、SVG 流程、导入语义与可访问性契约保持一致（2026-09-22 两本手册白皮书改版后复验，全部截图断言与截图样式断言已随截图移除）')
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

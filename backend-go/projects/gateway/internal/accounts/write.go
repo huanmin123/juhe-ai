@@ -980,8 +980,10 @@ func (s *Store) defaultGroupForWrite(ctx context.Context, q queryer, systemAccou
 }
 
 func (s *Store) resolveEnabledProxyProfile(ctx context.Context, q queryer, proxyProfileID string) (bool, error) {
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
+	// 扫描目标必须用 bool 才能同时兼容两种驱动（同 list.go 的 NullBool 先例）。
 	var id string
-	var enabled int64
+	var enabled bool
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id, enabled FROM `+s.table("proxy_profiles")+`
 		WHERE id = ?`), proxyProfileID).Scan(&id, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -990,7 +992,7 @@ func (s *Store) resolveEnabledProxyProfile(ctx context.Context, q queryer, proxy
 	if err != nil {
 		return false, err
 	}
-	return enabled == 1, nil
+	return enabled, nil
 }
 
 // replaceAccountSupportedModels mirrors replaceAccountSupportedModels.

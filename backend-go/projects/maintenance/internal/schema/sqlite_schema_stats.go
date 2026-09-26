@@ -99,7 +99,7 @@ const sqliteStatsMainDDL = `    CREATE TABLE IF NOT EXISTS account_quality_minut
     CREATE TABLE IF NOT EXISTS account_usage_snapshots (
           system_account_id TEXT NOT NULL,
           account_id TEXT NOT NULL,
-          kind TEXT NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance')),
+          kind TEXT NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance', 'xai_grok')),
           source TEXT,
           snapshot_json TEXT NOT NULL,
           refresh_status TEXT,

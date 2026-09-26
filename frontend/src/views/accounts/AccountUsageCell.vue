@@ -1,6 +1,18 @@
 <template>
   <div class="usage-cell">
     <UsageSummaryTags :usage="account.todayUsage" />
+    <div v-if="bars.length" class="oauth-usage-bars">
+      <template v-for="bar in bars" :key="bar.key">
+        <a-tooltip :title="bar.tooltip">
+          <div class="oauth-usage-row">
+            <span class="oauth-usage-label">{{ bar.label }}</span>
+            <a-progress class="oauth-usage-progress" size="small" :percent="bar.percent" :stroke-color="bar.color" :show-info="false" />
+            <span class="oauth-usage-percent" :class="bar.tone">{{ bar.displayPercent }}</span>
+            <span class="oauth-usage-reset">{{ bar.resetText }}</span>
+          </div>
+        </a-tooltip>
+      </template>
+    </div>
     <div v-if="account.balanceQueryEnabled" class="balance-row">
       <a-popover
         v-if="isMultiKey && balanceDisplay.visible"
@@ -70,6 +82,7 @@ import { computed, ref, watch } from 'vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import type { AccountBalanceDetails, AccountBalanceKeySnapshot, AccountListItem } from '@/types/domain'
 import { canManuallyRefreshAccountBalance, formatAccountBalance } from './accountBalanceQuery'
+import { oauthUsageBars } from './accountUsageFormatters'
 
 const props = defineProps<{
   account: AccountListItem
@@ -87,6 +100,7 @@ const emit = defineEmits<{
 
 const balanceDisplay = computed(() => formatAccountBalance(props.account.balanceSnapshot, props.account))
 const canRefresh = computed(() => canManuallyRefreshAccountBalance(props.account))
+const bars = computed(() => oauthUsageBars(props.account))
 const isMultiKey = computed(() => (
   (props.account.balanceSnapshot?.keyCount ?? 0) > 1
   || (props.account.apiKeyRuntime?.total ?? 0) > 1
@@ -145,6 +159,60 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
   align-items: center;
   gap: 6px;
   min-height: 20px;
+}
+
+.oauth-usage-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: min(220px, 100%);
+  min-width: 150px;
+}
+
+.oauth-usage-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 36px 44px;
+  align-items: center;
+  column-gap: 4px;
+}
+
+.oauth-usage-label {
+  display: inline-flex;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.oauth-usage-progress {
+  line-height: 1;
+  min-width: 0;
+}
+
+.oauth-usage-percent {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  text-align: right;
+}
+
+.oauth-usage-percent.normal {
+  color: #475569;
+}
+
+.oauth-usage-percent.warning {
+  color: #d97706;
+}
+
+.oauth-usage-percent.danger {
+  color: #dc2626;
+}
+
+.oauth-usage-reset {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .balance-text {

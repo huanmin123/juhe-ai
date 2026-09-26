@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -220,11 +221,14 @@ func (f *grokSSODeviceFlow) storeCookie(cookie grokSSOCookie) {
 // convert mirrors GrokSSODeviceFlow.convert: accounts check → device code →
 // verification page → verify → approve → poll token.
 func (f *grokSSODeviceFlow) convert(ctx context.Context) (*grokRawToken, error) {
+	log.Printf("INFO Grok SSO device flow 开始：校验 accounts.x.ai 会话")
 	response, err := f.request(ctx, http.MethodGet, GrokSSOAccountsURL, nil)
 	if err != nil {
+		log.Printf("ERROR Grok SSO device flow accounts 会话校验请求失败 err=%v", err)
 		return nil, err
 	}
 	if response.StatusCode == 401 || strings.Contains(response.FinalURL, "sign-in") || strings.Contains(response.FinalURL, "sign-up") {
+		log.Printf("ERROR Grok SSO device flow SSO 未授权 finalURL=%s status=%d", response.FinalURL, response.StatusCode)
 		return nil, &grokSSODeviceError{Message: "xAI SSO 未授权", StatusCode: 400}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
@@ -236,6 +240,7 @@ func (f *grokSSODeviceFlow) convert(ctx context.Context) (*grokRawToken, error) 
 		"scope":     GrokSSOBuildScope,
 	})
 	if err != nil {
+		log.Printf("ERROR Grok SSO device flow device code 请求失败 err=%v", err)
 		return nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -248,6 +253,7 @@ func (f *grokSSODeviceFlow) convert(ctx context.Context) (*grokRawToken, error) 
 	if deviceCode == "" || userCode == "" || !isTrustedXAIAuthURL(verificationURL) {
 		return nil, &grokSSODeviceError{Message: "xAI device flow 响应不完整", StatusCode: 502}
 	}
+	log.Printf("INFO Grok SSO device flow device code 已获取 verificationURL=%s", verificationURL)
 	interval := grokSSODefaultPollInterval
 	if value, ok := finitePositiveInt(device["interval"]); ok {
 		interval = time.Duration(value) * time.Second
@@ -273,6 +279,7 @@ func (f *grokSSODeviceFlow) convert(ctx context.Context) (*grokRawToken, error) 
 		return nil, grokSSOHTTPError("校验 xAI device code 失败", response.StatusCode)
 	}
 	if !strings.Contains(response.FinalURL, "consent") {
+		log.Printf("ERROR Grok SSO device flow 验证未进入 consent 页 finalURL=%s", response.FinalURL)
 		return nil, &grokSSODeviceError{Message: "xAI device 验证未进入 consent 页面", StatusCode: 502}
 	}
 
@@ -283,15 +290,18 @@ func (f *grokSSODeviceFlow) convert(ctx context.Context) (*grokRawToken, error) 
 		"principal_id":   "",
 	})
 	if err != nil {
+		log.Printf("ERROR Grok SSO device flow approve 请求失败 err=%v", err)
 		return nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 400 {
 		return nil, grokSSOHTTPError("批准 xAI device code 失败", response.StatusCode)
 	}
 	if !strings.Contains(response.FinalURL, "done") {
+		log.Printf("ERROR Grok SSO device flow 批准未进入 done 页 finalURL=%s", response.FinalURL)
 		return nil, &grokSSODeviceError{Message: "xAI device 授权未进入 done 页面", StatusCode: 502}
 	}
 
+	log.Printf("INFO Grok SSO device flow 授权批准完成，进入 token 轮询 interval=%s expires=%s", interval, expiresIn)
 	return f.pollToken(ctx, deviceCode, interval, expiresIn)
 }
 

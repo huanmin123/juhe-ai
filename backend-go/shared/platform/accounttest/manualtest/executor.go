@@ -26,8 +26,9 @@ import (
 //     fail + 信封，配置错误走 fail 无信封，取消走 cancel）。
 //
 // 已知边界（与 Node worker 的差异，均不产生错误状态写入）：
-//   - 不复刻 OAuth token 刷新与代理档案解析（jobs 探针窄路径约定，凭据按
-//     快照原样使用）；
+//   - 不复刻 OAuth token 刷新（jobs 探针窄路径约定，凭据按快照原样使用）；
+//     代理档案已支持：draft 快照带 proxyProfileId 时经 ProxyResolver 解析出
+//     站 URL 并注入 View.ProxyURL（探针按其构造共享 client）；
 //   - 保存账户路径不重放 gateway 的可用性文案门（任务创建时已门禁；创建到
 //     执行之间的状态漂移窗口不再拦截）；
 //   - stateTargetAccountId 仅用于定位表单草稿归属，执行一律使用快照凭据，
@@ -56,6 +57,9 @@ type ExecutorOptions struct {
 	Secret string
 	// Now 供总耗时测量；nil 使用 time.Now。
 	Now func() time.Time
+	// ProxyResolver 把草稿/任务绑定的代理档案解析为出站 URL；nil 时草稿
+	// 路径保持直连（海外上游直连不可达，装配侧必须注入）。
+	ProxyResolver func(ctx context.Context, proxyProfileID string) (string, error)
 }
 
 // Executor 实现 accounttest.ManualTestExecutor 语义（经 Adapter 注入队列）。
@@ -64,6 +68,7 @@ type Executor struct {
 	savedAccounts SavedAccountSource
 	secret        string
 	now           func() time.Time
+	proxyResolver func(ctx context.Context, proxyProfileID string) (string, error)
 }
 
 // NewExecutor 构建执行器；依赖缺失返回错误。
@@ -78,7 +83,7 @@ func NewExecutor(options ExecutorOptions) (*Executor, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Executor{probe: options.Probe, savedAccounts: options.SavedAccounts, secret: options.Secret, now: now}, nil
+	return &Executor{probe: options.Probe, savedAccounts: options.SavedAccounts, secret: options.Secret, now: now, proxyResolver: options.ProxyResolver}, nil
 }
 
 // Execute 执行单条测试任务（队列在 mark_running 之后调用）。
@@ -129,7 +134,17 @@ func (e *Executor) resolveView(ctx context.Context, task accounttest.ManualTestT
 			if !isGatewaySupportedDraftProtocol(draft.ProtocolCode, draft.ProtocolVersion) {
 				return nil, unsupportedGatewayProtocolTestMessage, nil
 			}
-			return draftView(e.secret, draft, task.Model, task.TestEndpointMode), "", nil
+			view := draftView(e.secret, draft, task.Model, task.TestEndpointMode)
+			// 草稿绑定的代理档案解析为出站 URL：海外上游直连不可达，解析
+			// 失败按配置错误 fail（不再静默直连卡满 60s 超时窗口）。
+			if draft.ProxyProfileID != "" && e.proxyResolver != nil {
+				proxyURL, proxyErr := e.proxyResolver(ctx, draft.ProxyProfileID)
+				if proxyErr != nil {
+					return nil, fmt.Sprintf("代理档案不可用（%s）：%v", draft.ProxyProfileID, proxyErr), nil
+				}
+				view.ProxyURL = proxyURL
+			}
+			return view, "", nil
 		}
 	}
 	if e.savedAccounts == nil {

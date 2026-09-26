@@ -202,7 +202,7 @@ async function handleLogin() {
     })
     if (user.mustChangePassword) showToast('当前账户使用初始密码，请先完成修改')
     const redirect = resolveRedirect(user)
-    if (isHelp(redirect) || isOAuth(redirect)) {
+    if (isHelp(redirect)) {
       window.location.assign(redirect)
       return
     }
@@ -234,7 +234,7 @@ async function refreshCaptcha() {
 
 function resolveRedirect(user: Awaited<ReturnType<typeof login>>) {
   const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : ''
-  if (isHelp(redirect) || isOAuth(redirect)) return redirect
+  if (isHelp(redirect)) return redirect
   if (redirect.startsWith('/') && !redirect.startsWith('//')) {
     const resolved = router.resolve(redirect)
     if (resolved.name !== 'not-found' && resolved.path !== '/login') return resolved.fullPath
@@ -244,15 +244,6 @@ function resolveRedirect(user: Awaited<ReturnType<typeof login>>) {
 
 function isHelp(value: string) {
   return value === '/__aisys__/help' || value === '/__aisys__/help/' || value === '/__aisys__/help/user' || value === '/__aisys__/help/admin' || value.startsWith('/__aisys__/help/user/') || value.startsWith('/__aisys__/help/admin/')
-}
-
-function isOAuth(value: string) {
-  try {
-    const parsed = new URL(value, window.location.origin)
-    return parsed.origin === window.location.origin && (parsed.pathname === '/oauth/authorize' || parsed.pathname === '/oauth/device')
-  } catch {
-    return false
-  }
 }
 
 function startTypewriter() {

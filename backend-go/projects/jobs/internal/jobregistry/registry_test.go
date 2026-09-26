@@ -46,10 +46,8 @@ var nodeScheduledJobNames = []string{
 // goAddedScheduledJobNames 是 Go 侧在 Node 31 项之外新增接线的 scheduled
 // 任务。配额小时窗刷新在 Node 不走 backgroundScheduledJobs 注册表（SQLite
 // 由 stats-writer 聚合后内联调用、PG 由 worker 后台循环驱动 refresh...Async），
-// BUG-0175 D-48 修复把它显式登记为 Go 调度任务；oauth-keepalive-token-refresh
-// 是 anthropic/gemini/grok keepalive 生产驱动接线（归档无对应 scheduled job，
-// 语义源自 dispatch-preparation 换发窗口）的 Go 新增条目。除两份名单外不
-// 允许任何其他 Go 附加条目。
+// BUG-0175 D-48 修复把它显式登记为 Go 调度任务。除下列名单外不允许任何其他
+// Go 附加条目。
 var goAddedScheduledJobNames = []string{
 	"usage-quota-hourly-windows-refresh",
 }
@@ -60,15 +58,27 @@ var goAddedAfterOAuthRefreshJobNames = []string{
 	"oauth-keepalive-token-refresh",
 }
 
+// goAddedAfterBalanceDetectJobNames 是插在 account-balance-auto-detect-recovery
+// 登记位置之后的 Go 附加条目（与余额任务族同 lane：external-account-maintenance
+// 的账户快照维护；AI 账户 Grok 用量快照设计 §4，归档无对应 scheduled job）。
+var goAddedAfterBalanceDetectJobNames = []string{
+	"xai-grok-usage-refresh",
+}
+
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在
 // authorization-usage-range-windows-refresh 之后，keepalive 刷新插在
-// openai-oauth-access-token-refresh 之后，与 ScheduledEntries 的登记位置一致。
+// openai-oauth-access-token-refresh 之后，grok 用量快照刷新插在
+// account-balance-auto-detect-recovery 之后，与 ScheduledEntries 的登记位置
+// 一致。
 func expectedScheduledOrder() []string {
-	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames))
+	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames))
 	for _, name := range nodeScheduledJobNames {
 		result = append(result, name)
 		if name == "authorization-usage-range-windows-refresh" {
 			result = append(result, goAddedScheduledJobNames...)
+		}
+		if name == "account-balance-auto-detect-recovery" {
+			result = append(result, goAddedAfterBalanceDetectJobNames...)
 		}
 		if name == "openai-oauth-access-token-refresh" {
 			result = append(result, goAddedAfterOAuthRefreshJobNames...)
@@ -82,7 +92,8 @@ func TestScheduledRegistryCoversAllNodeJobs(t *testing.T) {
 	want := expectedScheduledOrder()
 	if len(entries) != len(want) {
 		t.Fatalf("scheduled entries=%d want=%d（Node %d 项 + Go 附加 %d 项）",
-			len(entries), len(want), len(nodeScheduledJobNames), len(goAddedScheduledJobNames))
+			len(entries), len(want), len(nodeScheduledJobNames),
+			len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames))
 	}
 	for index, name := range want {
 		if entries[index].JobName != name {

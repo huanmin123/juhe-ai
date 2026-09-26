@@ -936,14 +936,19 @@ func (s *Service) findImportProxyOptionByName(ctx context.Context, name string, 
 		}
 	}
 	var id string
-	var enabled int64
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer：
+	// 扫描用 bool，enabled 过滤放到 Go 侧（SQL 里 `enabled = 1` 在 PG 会
+	// 因 boolean 与 integer 比较直接报错）。
+	var enabled bool
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id, enabled FROM `+s.store.Table("proxy_profiles")+`
-		WHERE name = ? AND enabled = 1
+		WHERE name = ?
 		ORDER BY updated_at DESC, id ASC
 		LIMIT 1`), key).Scan(&id, &enabled)
 	var option *ImportProxyOption
 	if err == nil {
-		option = &ImportProxyOption{id: id, name: key, enabled: enabled == 1}
+		if enabled {
+			option = &ImportProxyOption{id: id, name: key, enabled: true}
+		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		option = nil
 	}
@@ -960,10 +965,12 @@ func (s *Service) findImportProxyOptionByName(ctx context.Context, name string, 
 // FindImportProxyByID mirrors findProxy: global id lookup, enabled is checked
 // by the caller.
 func (s *Service) FindImportProxyByID(ctx context.Context, id string) (*ImportProxyOption, error) {
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
+	// 扫描目标必须用 bool 才能同时兼容两种驱动。
 	var row struct {
 		id      string
 		name    string
-		enabled int64
+		enabled bool
 	}
 	err := s.store.DB().QueryRowContext(ctx, s.store.Bind(`SELECT id, name, enabled FROM `+s.store.Table("proxy_profiles")+`
 		WHERE id = ? LIMIT 1`), id).Scan(&row.id, &row.name, &row.enabled)
@@ -973,7 +980,7 @@ func (s *Service) FindImportProxyByID(ctx context.Context, id string) (*ImportPr
 	if err != nil {
 		return nil, err
 	}
-	return &ImportProxyOption{id: row.id, name: row.name, enabled: row.enabled == 1}, nil
+	return &ImportProxyOption{id: row.id, name: row.name, enabled: row.enabled}, nil
 }
 
 // ---- account planning (account-import-account-plan.ts) ----
@@ -1744,7 +1751,9 @@ func (s *Service) createImportProxy(ctx context.Context, proxy *importProxyPlan,
 		proxyID, ownerID, proxy.source.name, nullableText(proxy.source.description),
 		proxy.source.proxyType, proxy.source.host, proxy.source.port,
 		nullableText(proxy.source.username), sealedPassword,
-		accountscore.BoolInt(proxy.source.enabled), nowISO, nowISO)
+		// proxy_profiles.enabled 在 PG 为 boolean，直接绑 bool（BoolInt 的
+		// 0/1 整数在 PG 驱动下无法写入 boolean 列）。
+		proxy.source.enabled, nowISO, nowISO)
 	if err == nil {
 		return proxyID, false, nil
 	}

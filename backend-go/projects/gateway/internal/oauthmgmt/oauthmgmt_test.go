@@ -365,7 +365,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		// T2 audit: the rotation post-commit channels + the in-transaction
 		// circuit dispatch revision family advance (same accounts store).
 		WithCacheInvalidator(rotation),
-		WithDispatchRevisionAdvancer(accountStore))
+		WithDispatchRevisionAdvancer(accountStore),
+		// 既有夹具大量依赖无代理建户/刷新路径：默认关拦截，requiresProxy
+		// 的强制行为由 proxy_required_test.go 单独覆盖。
+		WithProxyRequired(false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +617,7 @@ func TestOpenAIOAuthFamily(t *testing.T) {
 		t.Fatal(err)
 	}
 	if providerCode != "gpt" || profileID != "profile_gpt_openai_v1" || accountType != "oauth" ||
-		name != "dev@example.com" || ownerID != adminID || configRevision != 1 {
+		!strings.HasPrefix(name, "api.openai.com-") || ownerID != adminID || configRevision != 1 {
 		t.Fatalf("account row: %s %s %s %s %s %d", providerCode, profileID, accountType, name, ownerID, configRevision)
 	}
 	if env.count(t, `SELECT COUNT(*) FROM group_accounts WHERE account_id = ? AND enabled = 1`, accountID) != 1 {
@@ -828,7 +831,8 @@ func TestAnthropicOAuthFamily(t *testing.T) {
 	if err := env.db.QueryRow(`SELECT name FROM accounts WHERE id = ?`, accountID).Scan(&accountName); err != nil {
 		t.Fatal(err)
 	}
-	if accountName != "claude@example.com" {
+	// 未显式命名时按“上游域名-毫秒时间戳后 6 位”自动命名（四家 OAuth 统一）。
+	if !strings.HasPrefix(accountName, "api.anthropic.com-") {
 		t.Fatalf("anthropic account name: %s", accountName)
 	}
 
@@ -945,7 +949,7 @@ func TestGeminiOAuthCapabilitiesAndFamily(t *testing.T) {
 	if err := env.db.QueryRow(`SELECT name FROM accounts WHERE id = ?`, accountID).Scan(&accountName); err != nil {
 		t.Fatal(err)
 	}
-	if accountName != "Gemini OAuth Account" {
+	if !strings.HasPrefix(accountName, "cloudcode-pa.googleapis.com-") {
 		t.Fatalf("gemini account name: %s", accountName)
 	}
 	credentials := env.accountCredentials(t, accountID)

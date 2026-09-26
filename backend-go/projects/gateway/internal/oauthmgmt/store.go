@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
@@ -77,6 +78,10 @@ type Store struct {
 	// self-contained (out-of-package fixtures).
 	invalidator      CacheInvalidator
 	revisionAdvancer DispatchRevisionAdvancer
+	// proxyRequired 强制 requiresProxy 供应商（openai/anthropic/gemini/xai）
+	// 的建户/刷新/重授权绑定代理：未绑定直接 400。生产默认开启；测试可通过
+	// WithProxyRequired(false) 关闭以保持既有无代理夹具可用。
+	proxyRequired bool
 }
 
 // Option configures optional collaborators.
@@ -98,6 +103,14 @@ func WithSSOSleep(sleep func(ctx context.Context, delay time.Duration) error) Op
 		if sleep != nil {
 			s.ssoSleep = sleep
 		}
+	}
+}
+
+// WithProxyRequired toggles the requiresProxy enforcement（默认开启）；测试
+// 夹具大量依赖无代理建户/刷新路径，显式关闭以保持其可用。
+func WithProxyRequired(enabled bool) Option {
+	return func(s *Store) {
+		s.proxyRequired = enabled
 	}
 }
 
@@ -125,6 +138,7 @@ func NewStore(db *sql.DB, postgres bool, secret string, accountsStore *accounts.
 	store := &Store{
 		db: db, pg: postgres, secret: secret, now: now, newI: newID,
 		sessions: newSessionStore(now), Accounts: accountsStore, exchanger: exchanger,
+		proxyRequired: true,
 	}
 	for _, opt := range opts {
 		opt(store)
@@ -206,8 +220,27 @@ func isoMillis(t time.Time) string {
 func (s *Store) nowISO() string { return isoMillis(s.now()) }
 
 // exchange performs one upstream token call through the injected exchanger.
+// 所有供应商（openai/anthropic/gemini/grok）的 token 出站都经过这里：统一落
+// 日志（URL/状态码/耗时/响应体长度），失败时附截断后的响应体，避免上游侧
+// 问题需要反复发版才能定位。日志不打印响应体原文（含 access_token）。
 func (s *Store) exchange(ctx context.Context, request TokenHTTPRequest) (TokenHTTPResponse, error) {
-	return s.exchanger.Do(ensureContext(ctx), request)
+	started := time.Now()
+	response, err := s.exchanger.Do(ensureContext(ctx), request)
+	elapsed := time.Since(started)
+	if err != nil {
+		log.Printf("ERROR OAuth token 请求失败 url=%s elapsed=%s err=%v", request.URL, elapsed, err)
+		return response, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body := response.Body
+		if len(body) > 300 {
+			body = body[:300] + "…"
+		}
+		log.Printf("ERROR OAuth token 请求被上游拒绝 url=%s status=%d elapsed=%dms body=%s", request.URL, response.StatusCode, elapsed.Milliseconds(), body)
+		return response, nil
+	}
+	log.Printf("INFO OAuth token 请求完成 url=%s status=%d elapsed=%dms bodyLen=%d", request.URL, response.StatusCode, elapsed.Milliseconds(), len(response.Body))
+	return response, nil
 }
 
 // unmarshalSession decodes a stored session envelope.
@@ -422,7 +455,14 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 		if err != nil {
 			return nil, err
 		}
-		supportedModels = profile.DefaultSupportedModels
+		// OAuth 建户无法即时枚举上游模型：默认取模型目录里该供应商最新的
+		// 5 个对话模型（目录带 release_date，随目录刷新自动跟进）；目录不可
+		// 用（表缺失/无数据）时回落供应商档案的默认支持模型。
+		if latest, latestErr := s.latestCatalogModels(ctx, input.ProviderCode, 5); latestErr == nil && len(latest) > 0 {
+			supportedModels = latest
+		} else {
+			supportedModels = profile.DefaultSupportedModels
+		}
 	}
 	creationStatus := accounts.AccountCreationStatusInput(input.Status)
 	result, err := s.Accounts.Create(ensureContext(ctx), accounts.CreateInput{
@@ -467,6 +507,32 @@ func requiredProfileForProvider(providerCode string) string {
 		return ProfileXAIOpenAIV1
 	}
 	return ""
+}
+
+// latestCatalogModels returns the provider's newest conversational models from
+// the built-in model catalog（provider_model_catalog，release_date 降序）。排除
+// 图像/向量模式；release_date 为空的行排最后。CASE 排序写法对 SQLite 与 PG
+// 同时成立（PG 的 DESC 默认 NULLS FIRST，必须显式压后）。
+func (s *Store) latestCatalogModels(ctx context.Context, providerCode string, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ensureContext(ctx), s.bind(`SELECT model FROM `+s.table("provider_model_catalog")+`
+		WHERE provider_code = ? AND (mode IS NULL OR mode = '' OR (mode != 'image_generation' AND mode != 'embedding'))
+		ORDER BY CASE WHEN release_date IS NULL THEN 1 ELSE 0 END, release_date DESC, model ASC
+		LIMIT `+itoa(limit)), providerCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	models := []string{}
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(model) != "" {
+			models = append(models, model)
+		}
+	}
+	return models, rows.Err()
 }
 
 // rotationAccount mirrors OAuthCredentialRotationAccount.

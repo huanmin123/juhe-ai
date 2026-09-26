@@ -950,6 +950,12 @@ func candidateKeyEntries(candidate *CandidateAccount) []accountprobe.KeyEntry {
 	return entries
 }
 
+// LoadProxyURL 把代理档案解析为出站 URL（socks5 升级 socks5h、启停/host/port
+// 校验与 oauthmgmt 同一范式）；供手动测试执行链注入 ProxyResolver。
+func (s *Store) LoadProxyURL(ctx context.Context, profileID string) (string, error) {
+	return s.loadProxyURL(ctx, profileID)
+}
+
 func (s *Store) loadProxyURL(ctx context.Context, profileID string) (string, error) {
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
@@ -958,14 +964,16 @@ func (s *Store) loadProxyURL(ctx context.Context, profileID string) (string, err
 	query := fmt.Sprintf(`SELECT type, host, port, username, password_encrypted, enabled FROM %s WHERE id = ? LIMIT 1`, s.table("proxy_profiles"))
 	var proxyType, host, username, passwordEnvelope sql.NullString
 	var port sql.NullInt64
-	var enabled sql.NullInt64
+	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
+	// 扫描目标必须用 NullBool 才能同时兼容两种驱动。
+	var enabled sql.NullBool
 	if err := s.db.QueryRowContext(ctx, s.bind(query), profileID).Scan(&proxyType, &host, &port, &username, &passwordEnvelope, &enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("代理 profile %s 不存在", profileID)
 		}
 		return "", err
 	}
-	if enabled.Int64 != 1 || strings.TrimSpace(host.String) == "" || port.Int64 < 1 || port.Int64 > 65535 {
+	if !enabled.Bool || strings.TrimSpace(host.String) == "" || port.Int64 < 1 || port.Int64 > 65535 {
 		return "", fmt.Errorf("代理 profile %s 不可用", profileID)
 	}
 	scheme := strings.ToLower(strings.TrimSpace(proxyType.String))

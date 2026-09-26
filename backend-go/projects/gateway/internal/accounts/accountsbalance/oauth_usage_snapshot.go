@@ -11,13 +11,16 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
-// OpenAI Codex OAuth usage snapshot read projection (BUG-0175 D-206), the
-// port of backend/src/storage/oauth-usage-loaders.ts +
-// account-summary.repository.ts:1452,1575: the account summary hydrates the
-// oauthUsage field for gpt-provider oauth accounts from the stats-side
-// account_usage_snapshots rows (kind='openai_codex'). The ListItem-shaped
-// hydration loop stays in the accounts facade (list.go); this package exposes
-// the snapshot load keyed by account id.
+// OAuth usage snapshot read projections over the stats-side
+// account_usage_snapshots rows: kind='openai_codex' (BUG-0175 D-206, the port
+// of backend/src/storage/oauth-usage-loaders.ts +
+// account-summary.repository.ts:1452,1575) and kind='xai_grok' (AI账户Grok用量
+// 快照设计 §5, the jobs xai-grok-usage-refresh family's billing snapshots).
+// The account summary hydrates the oauthUsage field for gpt-provider oauth
+// accounts from the Codex rows and for xai-provider oauth accounts from the
+// Grok rows. The ListItem-shaped hydration loop stays in the accounts facade
+// (balance_subdomain_bridge.go); this package exposes the snapshot load keyed
+// by account id.
 
 // OAuthUsageWindow mirrors AccountOAuthUsageWindow.
 type OAuthUsageWindow struct {
@@ -27,7 +30,9 @@ type OAuthUsageWindow struct {
 	WindowMinutes    *float64 `json:"windowMinutes,omitempty"`
 }
 
-// OAuthUsageSnapshot mirrors AccountOAuthUsageSnapshot.
+// OAuthUsageSnapshot mirrors AccountOAuthUsageSnapshot: the openai_codex form
+// uses FiveHour/SevenDay; the xai_grok form (AI账户Grok用量快照设计 §3/§5)
+// uses the flat Grok fields below.
 type OAuthUsageSnapshot struct {
 	Kind             string            `json:"kind"`
 	Source           *string           `json:"source,omitempty"`
@@ -39,11 +44,33 @@ type OAuthUsageSnapshot struct {
 	LastErrorMessage *string           `json:"lastErrorMessage,omitempty"`
 	FiveHour         *OAuthUsageWindow `json:"fiveHour,omitempty"`
 	SevenDay         *OAuthUsageWindow `json:"sevenDay,omitempty"`
+	// xai_grok 形态：额度已用百分比、订阅周期与套餐；ProductUsage 保留
+	// grok_product_usage_json 的原样 JSON，解析失败或缺失时整体省略。
+	UsedPercent         *float64        `json:"usedPercent,omitempty"`
+	PeriodType          *string         `json:"periodType,omitempty"`
+	PeriodStart         *string         `json:"periodStart,omitempty"`
+	PeriodEnd           *string         `json:"periodEnd,omitempty"`
+	SubscriptionTier    *string         `json:"subscriptionTier,omitempty"`
+	ProductUsage        json.RawMessage `json:"productUsage,omitempty"`
+	OnDemandUsedPercent *float64        `json:"onDemandUsedPercent,omitempty"`
 }
 
 // LoadOpenAICodexUsageSnapshots mirrors loadOpenAICodexUsageSnapshotsByAccountIds:
 // the kind='openai_codex' snapshot rows keyed by account id (chunked IN).
 func (s *Service) LoadOpenAICodexUsageSnapshots(ctx context.Context, accountIDs []string) (map[string]*OAuthUsageSnapshot, error) {
+	return s.loadOAuthUsageSnapshots(ctx, "openai_codex", accountIDs)
+}
+
+// LoadXAIGrokUsageSnapshots mirrors LoadOpenAICodexUsageSnapshots for the
+// kind='xai_grok' rows the jobs xai-grok-usage-refresh family upserts
+// (AI账户Grok用量快照设计 §4-§5).
+func (s *Service) LoadXAIGrokUsageSnapshots(ctx context.Context, accountIDs []string) (map[string]*OAuthUsageSnapshot, error) {
+	return s.loadOAuthUsageSnapshots(ctx, "xai_grok", accountIDs)
+}
+
+// loadOAuthUsageSnapshots is the shared chunked-IN reader behind both kind
+// projections; kind is a compile-site literal, never caller input.
+func (s *Service) loadOAuthUsageSnapshots(ctx context.Context, kind string, accountIDs []string) (map[string]*OAuthUsageSnapshot, error) {
 	ids := []string{}
 	seen := map[string]bool{}
 	for _, id := range accountIDs {
@@ -67,7 +94,7 @@ func (s *Service) LoadOpenAICodexUsageSnapshots(ctx context.Context, accountIDs 
 		rows, err := s.statsDB().QueryContext(ctx, s.store.Bind(`SELECT account_id, source, snapshot_json, refresh_status,
 				last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at
 			FROM `+s.StatsTable("account_usage_snapshots")+`
-			WHERE kind = 'openai_codex' AND account_id IN (`+accountscore.Placeholders(len(chunk))+`)`), accountscore.AnySlice(chunk)...)
+			WHERE kind = '`+kind+`' AND account_id IN (`+accountscore.Placeholders(len(chunk))+`)`), accountscore.AnySlice(chunk)...)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +114,7 @@ func (s *Service) LoadOpenAICodexUsageSnapshots(ctx context.Context, accountIDs 
 				rows.Close()
 				return nil, err
 			}
-			snapshot, err := OAuthUsageSnapshotFromRow(source.String, snapshotJSON, refresh.String,
+			snapshot, err := parseOAuthUsageSnapshotRow(kind, source.String, snapshotJSON, refresh.String,
 				lastAttempt.String, lastSuccess.String, nextRefresh.String, lastError.String, updatedAt)
 			if err != nil {
 				rows.Close()
@@ -107,21 +134,101 @@ func (s *Service) LoadOpenAICodexUsageSnapshots(ctx context.Context, accountIDs 
 	return result, nil
 }
 
+// parseOAuthUsageSnapshotRow dispatches the row to the kind projection; an
+// unparseable snapshot_json skips the row for both kinds.
+func parseOAuthUsageSnapshotRow(kind, source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, error) {
+	if kind == "xai_grok" {
+		return XAIGrokUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt,
+			lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
+	}
+	return OAuthUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt,
+		lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
+}
+
 // OAuthUsageSnapshotFromRow mirrors oauthUsageSnapshotsFromRows: an
 // unparseable snapshot_json skips the row; timestamps render as RFC3339
 // instants (Node optionalInstant / requiredRfc3339Instant).
 func OAuthUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, error) {
-	updatedText, err := RequiredRFC3339Instant(updatedAt, "account_usage_snapshots.updated_at")
+	out, snapshot, err := oauthUsageSnapshotHeader("openai_codex", source, snapshotJSON, refreshStatus,
+		lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
+	if err != nil || out == nil {
+		return out, err
+	}
+	fiveHour, err := OAuthUsageWindowFromSnapshot(snapshot, "5h", out.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	out.FiveHour = fiveHour
+	sevenDay, err := OAuthUsageWindowFromSnapshot(snapshot, "7d", out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	out.SevenDay = sevenDay
+	return out, nil
+}
+
+// XAIGrokUsageSnapshotFromRow mirrors OAuthUsageSnapshotFromRow for the
+// kind='xai_grok' rows (AI账户Grok用量快照设计 §3/§5): the grok_* snapshot
+// fields are individually optional — a missing field or an unparseable
+// grok_period_start/end skips just that field.
+func XAIGrokUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, error) {
+	out, snapshot, err := oauthUsageSnapshotHeader("xai_grok", source, snapshotJSON, refreshStatus,
+		lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
+	if err != nil || out == nil {
+		return out, err
+	}
+	if percent, ok := NumberFromSnapshot(snapshot["grok_credit_used_percent"]); ok {
+		out.UsedPercent = percent
+	}
+	if text := OptionalSnapshotString(snapshot["grok_period_type"]); text != "" {
+		out.PeriodType = &text
+	}
+	for _, pair := range []struct {
+		key  string
+		dest **string
+	}{
+		{"grok_period_start", &out.PeriodStart},
+		{"grok_period_end", &out.PeriodEnd},
+	} {
+		text := OptionalSnapshotString(snapshot[pair.key])
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(text)); err != nil {
+			// 时间字段解析失败只跳过该字段（缺字段不致命的容错对齐）。
+			continue
+		}
+		*pair.dest = &text
+	}
+	if text := OptionalSnapshotString(snapshot["grok_subscription_tier"]); text != "" {
+		out.SubscriptionTier = &text
+	}
+	// productUsage 原样透传；无法校验为合法 JSON 时整体省略，避免污染外层
+	// 响应序列化。
+	if text := OptionalSnapshotString(snapshot["grok_product_usage_json"]); json.Valid([]byte(text)) {
+		out.ProductUsage = json.RawMessage(text)
+	}
+	if percent, ok := NumberFromSnapshot(snapshot["grok_on_demand_used_percent"]); ok {
+		out.OnDemandUsedPercent = percent
+	}
+	return out, nil
+}
+
+// oauthUsageSnapshotHeader parses the row-level header shared by both kind
+// projections: updated_at, source, the refresh-state timestamps and the last
+// error; an unparseable snapshot_json returns (nil, nil, nil) to skip the row.
+func oauthUsageSnapshotHeader(kind, source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, map[string]any, error) {
+	updatedText, err := RequiredRFC3339Instant(updatedAt, "account_usage_snapshots.updated_at")
+	if err != nil {
+		return nil, nil, err
 	}
 	snapshot := map[string]any{}
 	if strings.TrimSpace(snapshotJSON) != "" {
 		if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
-			return nil, nil
+			return nil, nil, nil
 		}
 	}
-	out := &OAuthUsageSnapshot{Kind: "openai_codex", UpdatedAt: updatedText}
+	out := &OAuthUsageSnapshot{Kind: kind, UpdatedAt: updatedText}
 	if source != "" {
 		text := source
 		out.Source = &text
@@ -146,7 +253,7 @@ func OAuthUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptA
 		}
 		text, err := RequiredRFC3339Instant(pair.value, pair.key)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		*pair.dest = &text
 	}
@@ -154,17 +261,7 @@ func OAuthUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptA
 		text := lastErrorMessage
 		out.LastErrorMessage = &text
 	}
-	fiveHour, err := OAuthUsageWindowFromSnapshot(snapshot, "5h", updatedText)
-	if err != nil {
-		return nil, err
-	}
-	out.FiveHour = fiveHour
-	sevenDay, err := OAuthUsageWindowFromSnapshot(snapshot, "7d", updatedText)
-	if err != nil {
-		return nil, err
-	}
-	out.SevenDay = sevenDay
-	return out, nil
+	return out, snapshot, nil
 }
 
 // OAuthUsageWindowFromSnapshot mirrors oauthUsageWindowFromSnapshot: the

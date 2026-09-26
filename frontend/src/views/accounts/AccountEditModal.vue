@@ -250,7 +250,7 @@
 
     <template #footer>
       <div class="account-modal-footer">
-        <a-button :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
+        <a-button v-if="!oauthCreateTestHidden" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
         <a-space>
           <a-button @click="$emit('cancel')">取消</a-button>
           <a-button v-bind="confirmButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>
@@ -361,6 +361,9 @@ const props = withDefaults(defineProps<{
   testLoading: false
 })
 
+// OAuth 账户新建态没有可测凭据（授权码/token 一次性，落库后才能测）：
+// 隐藏底部测试按钮，编辑态（accountDetail 已加载）保留。
+const oauthCreateTestHidden = computed(() => props.isOAuthForm && !props.accountDetail?.id)
 const publicCredentialItems = computed(() => {
   const credentials = props.accountDetail?.credentials ?? {}
   const items = [

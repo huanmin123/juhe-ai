@@ -529,18 +529,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/oauth-applications',
-    component: () => import('@/views/oauth-applications/OAuthApplicationsView.vue'),
-    meta: {
-      title: '第三方应用',
-      description: '登记 OAuth/OIDC Client、回调地址和可申请的个人委托权限。',
-      menuGroup: 'system-operations',
-      menuGroupTitle: '系统运维',
-      viewScope: 'admin',
-      roles: managementRoles
-    }
-  },
-  {
     path: '/announcements',
     component: () => import('@/views/announcements/AnnouncementsView.vue'),
     meta: {

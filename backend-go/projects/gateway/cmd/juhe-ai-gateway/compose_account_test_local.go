@@ -185,6 +185,9 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		Probe:         probeService,
 		SavedAccounts: savedStore,
 		Secret:        cfg.Secret,
+		// 草稿测试的出站代理解析：海外上游直连不可达，必须经账户绑定的
+		// 代理档案出站（与保存账户路径的 loadProxyURL 同一解析器）。
+		ProxyResolver: savedStore.LoadProxyURL,
 	})
 	if err != nil {
 		return err

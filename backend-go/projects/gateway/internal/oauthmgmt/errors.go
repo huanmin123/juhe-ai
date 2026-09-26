@@ -3,6 +3,7 @@ package oauthmgmt
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -55,13 +56,16 @@ func (d *Deps) writeCreateError(w http.ResponseWriter, err error, fallback strin
 		kernel.WriteError(w, http.StatusConflict, conflict.Message)
 		return
 	}
+	// 兜底文案会掩盖建户真实失败原因（此时上游 code 已消费），必须落日志。
+	log.Printf("ERROR OAuth 建户失败 fallback=%s err=%v", fallback, err)
 	d.writeOAuthError(w, err, fallback, "")
 }
 
 // writeOAuthError mirrors handleOAuthCreateError / handleOAuthAccountUpdateError:
 //   - upstream token failures render the upstream message verbatim at 502
 //     (403 for the grok entitlement denials) and mark the response upstream,
-//   - grokOAuthError renders its status with the route fallback copy,
+//   - grokOAuthError renders its own status and message（本地会话校验失败的
+//     具体原因，如 state 无效/会话过期，必须透传给前端用于排查）,
 //   - business conflicts (revision CAS, duplicate names) render 409,
 //   - everything else renders 502 with the fallback.
 func (d *Deps) writeOAuthError(w http.ResponseWriter, err error, fallback, revisionMessage string) {
@@ -77,7 +81,7 @@ func (d *Deps) writeOAuthError(w http.ResponseWriter, err error, fallback, revis
 	}
 	var grokErr *grokOAuthError
 	if errors.As(err, &grokErr) {
-		kernel.WriteError(w, grokErr.StatusCode, fallback)
+		kernel.WriteError(w, grokErr.StatusCode, grokErr.Message)
 		return
 	}
 	var conflict *ConflictError
@@ -94,6 +98,8 @@ func (d *Deps) writeOAuthError(w http.ResponseWriter, err error, fallback, revis
 		kernel.WriteError(w, http.StatusConflict, message)
 		return
 	}
+	// 未分类错误：把原始错误落日志，否则前端只见兜底文案无法排障。
+	log.Printf("ERROR OAuth 未分类错误 fallback=%s err=%v", fallback, err)
 	kernel.WriteError(w, http.StatusBadGateway, fallback)
 }
 

@@ -1112,6 +1112,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if spoolDirectory == "" {
 			return nil, fmt.Errorf("AI 网关链缺少用量 spool 目录（gateway→jobs 用量交接表，用量记录将无处投递）：设置 JUHE_AI_USAGE_SPOOL_DIRECTORY，或配置 JUHE_AI_STATS_DATABASE_PATH 以派生 <目录>/usage-record-spool")
 		}
+		// BUG-0193 防复发诊断：相对路径按进程 cwd 解析（镜像无 WORKDIR 时为
+		// /），两侧解析到各自容器私有目录即静默断链。启动期打印解析后的绝对
+		// 路径并探测可写性，ERROR 级不阻断启动（写入失败另有逐条错误面）。
+		logUsageSpoolDirectoryDiagnostics(spoolDirectory)
 		// 健康检查派发的进程内 DB outbox writer（account_health_probe_request_outbox，
 		// chain_request_failure_health.go）：请求失败链与 runtime-reset/激活面的
 		// 探针派发都落这张常驻交接表，jobs J1 Runner 每周期 drain。deadline env

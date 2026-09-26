@@ -284,9 +284,12 @@ func w16jWireRetentionAssembly(t *testing.T, root string) *workerAssembly {
 	}
 	t.Setenv("JUHE_AI_POSTGRES_URL", "")
 	assembly := w16jNewSilentAssembly(t, workerConfig{
-		Driver:                      "sqlite",
-		BusinessSQLitePath:          paths["JUHE_AI_DATABASE_PATH"],
-		StatsSQLitePath:             paths["JUHE_AI_STATS_DATABASE_PATH"],
+		Driver:             "sqlite",
+		BusinessSQLitePath: paths["JUHE_AI_DATABASE_PATH"],
+		StatsSQLitePath:    paths["JUHE_AI_STATS_DATABASE_PATH"],
+		// 3dd1bb310 起 wireRetentionFamily 对 task-runs 库走 openDual 硬依赖，
+		// fixture 必须与共享 retentionTestConfig 一样提供该路径。
+		TaskRunsSQLitePath:          filepath.Join(root, "task-runs.sqlite3"),
 		DatasetSQLitePath:           paths["JUHE_AI_DATASET_DATABASE_PATH"],
 		ChatSQLitePath:              paths["JUHE_AI_CHAT_ASSETS_ROOT"],
 		UsageCatalogSQLitePath:      paths["JUHE_AI_USAGE_CATALOG_DATABASE_PATH"],
@@ -327,6 +330,7 @@ func TestW16JRetentionSettingsBadTimezone(t *testing.T) {
 		Driver:                      "sqlite",
 		BusinessSQLitePath:          businessPath,
 		StatsSQLitePath:             filepath.Join(root, "stats.sqlite3"),
+		TaskRunsSQLitePath:          filepath.Join(root, "task-runs.sqlite3"),
 		DatasetSQLitePath:           filepath.Join(root, "dataset.sqlite3"),
 		ChatSQLitePath:              filepath.Join(root, "chat-assets"),
 		UsageCatalogSQLitePath:      filepath.Join(root, "usage-catalog.sqlite3"),

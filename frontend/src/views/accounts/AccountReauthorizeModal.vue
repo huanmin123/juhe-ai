@@ -91,10 +91,15 @@ const providerName = computed(() => {
 const manualAuthorizeStepText = computed(() => {
   if (providerKind.value === 'anthropic') return '登录 Claude 并允许跳转'
   if (providerKind.value === 'gemini') return '登录 Google 并允许访问'
-  if (providerKind.value === 'grok') return '登录 xAI 并允许访问'
+  if (providerKind.value === 'grok') return '登录 xAI 并复制页面显示的授权代码'
   return '登录 OpenAI 并允许跳转'
 })
-const manualAlertMessage = computed(() => `授权完成后复制浏览器地址栏完整回调 URL，提交后会覆盖当前账户的 ${providerName.value} OAuth Token。`)
+const manualAlertMessage = computed(() => {
+  if (providerKind.value === 'grok') {
+    return 'xAI 授权页面会直接显示一串授权代码：复制这串代码粘贴提交（不是网址），即可覆盖当前账户的 Grok OAuth Token；若浏览器跳转到本地回调地址，也可粘贴地址栏完整 URL。'
+  }
+  return `授权完成后复制浏览器地址栏完整回调 URL，提交后会覆盖当前账户的 ${providerName.value} OAuth Token。`
+})
 const refreshTokenAlertMessage = computed(() => `已有新的 ${providerName.value} Refresh Token 时可直接粘贴，后端会换取 Access Token 并覆盖当前账户的 OAuth Token。`)
 
 const oauthModeOptions = computed(() => {

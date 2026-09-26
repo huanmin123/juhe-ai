@@ -8,7 +8,6 @@
     "build": "vue-tsc -b && vite build",
     "typecheck": "vue-tsc --noEmit",
     "lint": "vue-tsc --noEmit",
-    "test:oauth-integration-guide": "tsx --tsconfig tsconfig.json src/scripts/regression/oauth-integration-guide-regression.ts",
     "test:help-content": "tsx --tsconfig tsconfig.json src/scripts/regression/help-content-regression.ts",
     "test:dynamic-data-cache-boundary": "tsx --tsconfig tsconfig.json src/scripts/regression/dynamic-data-cache-boundary-regression.ts",
     "test:no-auto-data-refresh": "tsx --tsconfig tsconfig.json src/scripts/regression/no-auto-data-refresh-regression.ts",

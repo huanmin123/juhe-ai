@@ -200,7 +200,7 @@ func TestWCTestErrorWriters(t *testing.T) {
 	}{
 		{"upstream 502", &UpstreamError{Message: "上游失败", StatusCode: 502}, "fb", "", http.StatusBadGateway, "上游失败"},
 		{"upstream 403", &UpstreamError{Message: "拒绝", StatusCode: 403}, "fb", "", http.StatusForbidden, "拒绝"},
-		{"grok 400", &grokOAuthError{Message: "Grok 失败", StatusCode: 400}, "Grok 授权失败", "", http.StatusBadRequest, "Grok 授权失败"},
+		{"grok 400", &grokOAuthError{Message: "Grok 失败", StatusCode: 400}, "Grok 授权失败", "", http.StatusBadRequest, "Grok 失败"},
 		{"conflict", &ConflictError{Message: "重复"}, "fb", "", http.StatusConflict, "重复"},
 		{"revision 专用文案", &RevisionConflictError{Message: "冲突"}, "fb", "专用文案", http.StatusConflict, "专用文案"},
 		{"revision 回退", &RevisionConflictError{Message: "冲突"}, "路由冲突回退", "", http.StatusConflict, "路由冲突回退"},
@@ -586,17 +586,22 @@ func TestWCParseManagedFields(t *testing.T) {
 
 // TestWCRoutesMisc：accountName/createLogContext/actorResolver。
 func TestWCRoutesMisc(t *testing.T) {
-	if got := accountName(wcStrPtr(" 自定义 "), &tokenOutcome{Name: "a@b.c"}, openAIPlan()); got != "自定义" {
+	now := time.Date(2026, 9, 26, 12, 30, 45, 678000000, time.UTC)
+	if got := accountName(wcStrPtr(" 自定义 "), &tokenOutcome{Name: "a@b.c"}, openAIPlan(), now); got != "自定义" {
 		t.Fatalf("显式名优先: %q", got)
 	}
-	if got := accountName(nil, &tokenOutcome{Name: " a@b.c "}, openAIPlan()); got != "a@b.c" {
-		t.Fatalf("email 回退: %q", got)
+	// 未命名时按“上游域名-毫秒时间戳后 6 位”生成（openAIPlan 的 outcome 无
+	// base_url 时回落 plan.defaultAccountName）。
+	if got := accountName(nil, &tokenOutcome{
+		Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
+	}, openAIPlan(), now); got != "api.openai.com-845678" {
+		t.Fatalf("域名+时间戳命名: %q", got)
 	}
-	if got := accountName(nil, nil, openAIPlan()); got != "OpenAI OAuth Account" {
+	if got := accountName(nil, nil, openAIPlan(), now); got != "OpenAI OAuth Account" {
 		t.Fatalf("默认名: %q", got)
 	}
-	if got := accountName(nil, &tokenOutcome{Name: "x"}, geminiPlan()); got != "Gemini OAuth Account" {
-		t.Fatalf("gemini 不走 email 回退: %q", got)
+	if got := accountName(nil, &tokenOutcome{Name: "x"}, geminiPlan(), now); got != "Gemini OAuth Account" {
+		t.Fatalf("gemini 无 base_url 回落默认名: %q", got)
 	}
 	operationKey, summaryPrefix := openAIPlan().createLogContext("授权码")
 	if operationKey != "openai_oauth.create_from_code" || summaryPrefix != "通过授权码创建 OpenAI OAuth 账户" {
@@ -645,16 +650,19 @@ func TestWCRoutesMisc(t *testing.T) {
 
 // TestWCGrokSSOImportHelpers：SSO 导入名称/到期分支。
 func TestWCGrokSSOImportHelpers(t *testing.T) {
-	if got := grokSSOImportAccountName(nil, &tokenOutcome{Name: " a@x "}, 1, 1); got != "a@x" {
-		t.Fatalf("email 回退: %q", got)
+	now := time.Date(2026, 9, 26, 12, 30, 45, 678000000, time.UTC)
+	if got := grokSSOImportAccountName(nil, &tokenOutcome{
+		Credentials: map[string]any{"base_url": "https://cli-chat-proxy.grok.com/v1"},
+	}, 1, 1, now); got != "cli-chat-proxy.grok.com-845678" {
+		t.Fatalf("域名+时间戳命名: %q", got)
 	}
-	if got := grokSSOImportAccountName(wcStrPtr(" 名 "), nil, 1, 1); got != "名" {
+	if got := grokSSOImportAccountName(wcStrPtr(" 名 "), nil, 1, 1, now); got != "名" {
 		t.Fatalf("显式名: %q", got)
 	}
-	if got := grokSSOImportAccountName(nil, nil, 1, 1); got != "Grok OAuth Account" {
+	if got := grokSSOImportAccountName(nil, nil, 1, 1, now); got != "Grok OAuth Account" {
 		t.Fatalf("默认名: %q", got)
 	}
-	if got := grokSSOImportAccountName(wcStrPtr("名"), nil, 2, 3); got != "名 #2" {
+	if got := grokSSOImportAccountName(wcStrPtr("名"), nil, 2, 3, now); got != "名 #2" {
 		t.Fatalf("多 token 后缀: %q", got)
 	}
 	// 无 refresh_token：到期钳制到 access token expires_at。

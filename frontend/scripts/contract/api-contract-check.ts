@@ -1188,8 +1188,6 @@ function classifySurface(template: string): string {
   if (template === SYSTEM_API_PREFIX || template.startsWith(SYSTEM_API_PREFIX + '/')) return 'aisys'
   if (template === '/v1' || template.startsWith('/v1/')) return 'v1'
   if (template.startsWith('/__aipublic__')) return 'aipublic'
-  if (template.startsWith('/__aidelegated__')) return 'delegated'
-  if (template.startsWith('/.well-known') || template === '/oauth' || template.startsWith('/oauth/')) return 'oidc'
   if (template === '/__aisys__' || template.startsWith('/__aisys__/')) return 'management-static'
   return 'other'
 }

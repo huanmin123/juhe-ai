@@ -35,10 +35,15 @@ export {
 export {
   formatAccountUsageSummary,
   formatCost,
+  formatGrokPeriodReset,
   formatRelativeReset,
   formatUsageAmount,
+  grokOAuthUsageBar,
+  grokPeriodLabel,
+  grokProductUsageSummary,
   oauthUsageBars,
-  type OAuthUsageBar
+  type OAuthUsageBar,
+  type OAuthUsageDisplayAccount
 } from './accountUsageFormatters'
 
 export interface AccountStatusTagInfo {

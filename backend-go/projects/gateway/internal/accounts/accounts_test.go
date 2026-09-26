@@ -284,11 +284,13 @@ var schemaStatements = []string{
 	)`,
 	// D-206 oauthUsage read projection: ListPage hydrates the Codex usage
 	// snapshots from the stats-side table (statsTable renders the bare name on
-	// SQLite; column set mirrors maintenance/internal/schema/sqlite_schema.go).
+	// SQLite; column set and kind CHECK mirror
+	// maintenance/internal/schema/sqlite_schema_stats.go — xai_grok per
+	// AI账户Grok用量快照设计 §3).
 	`CREATE TABLE IF NOT EXISTS account_usage_snapshots (
 		system_account_id TEXT NOT NULL,
 		account_id TEXT NOT NULL,
-		kind TEXT NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance')),
+		kind TEXT NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance', 'xai_grok')),
 		source TEXT,
 		snapshot_json TEXT NOT NULL,
 		refresh_status TEXT,

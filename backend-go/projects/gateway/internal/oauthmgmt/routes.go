@@ -3,7 +3,9 @@ package oauthmgmt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -587,6 +589,13 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		kernel.WriteBadRequest(w, plan.label+" "+kind+"参数无效")
 		return
 	}
+	// 建户 token 请求走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应物）：
+	// requiresProxy 供应商未绑定代理直接 400（fail-fast，先于 profile 解析
+	// 与上游兑换），不做直连回退。
+	if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(requestProxyProfileID(body, nil)) == "" {
+		kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理：请在表单中选择出海代理后再提交（上游需要经代理访问）")
+		return
+	}
 	profile, err := d.Store.resolveProviderProfile(r.Context(), plan.providerCode, managed.ProviderProtocolProfileID, plan.accountType, plan.requiredProfileID)
 	if err != nil {
 		d.writeProfileError(w, err)
@@ -609,8 +618,6 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 	if kind == "刷新令牌" {
 		fallback = plan.label + " 刷新令牌授权失败"
 	}
-	// 建户 token 请求走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应物）：
-	// 配置不可用直接 400，不做直连回退。
 	proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, nil))
 	if err != nil {
 		d.writeProfileError(w, err)
@@ -621,7 +628,7 @@ func (d *Deps) handleCreate(w http.ResponseWriter, r *http.Request, plan provide
 		d.writeOAuthError(w, err, fallback, "")
 		return
 	}
-	name := accountName(managed.Name, outcome, plan)
+	name := accountName(managed.Name, outcome, plan, time.Now())
 	result, err := d.Store.CreateOAuthAccount(r.Context(), CreateAccountInput{
 		ProviderCode:              plan.providerCode,
 		ProviderProtocolProfileID: profile.ID,
@@ -665,16 +672,32 @@ func (p providerPlan) createLogContext(kind string) (operationKey, summaryPrefix
 
 // accountName mirrors `input.name ?? tokenInfo.email ?? 'X OAuth Account'`
 // (gemini skips the email fallback).
-func accountName(requested *string, outcome *tokenOutcome, plan providerPlan) string {
+// accountName renders the OAuth account display name: an explicitly requested
+// name wins; otherwise 上游 API 域名-毫秒时间戳后 6 位（四家 OAuth 的 Base URL
+// 固定，域名标识供应商，时间戳避免同供应商重复命名）。域名取不到时回落到
+// plan.defaultAccountName。
+func accountName(requested *string, outcome *tokenOutcome, plan providerPlan, now time.Time) string {
 	if requested != nil && strings.TrimSpace(*requested) != "" {
 		return strings.TrimSpace(*requested)
 	}
-	if plan.emailNameFallback && outcome != nil {
-		if email := strings.TrimSpace(outcome.Name); email != "" {
-			return email
-		}
+	if host := oauthUpstreamHost(outcome); host != "" {
+		return fmt.Sprintf("%s-%06d", host, now.UnixMilli()%1000000)
 	}
 	return plan.defaultAccountName
+}
+
+// oauthUpstreamHost extracts the upstream API host from the token-built
+// credentials base_url（四家 OAuth 均写入）。
+func oauthUpstreamHost(outcome *tokenOutcome) string {
+	if outcome == nil {
+		return ""
+	}
+	base, _ := outcome.Credentials["base_url"].(string)
+	parsed, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	return parsed.Host
 }
 
 // --- refresh / reauthorize --------------------------------------------------
@@ -726,6 +749,10 @@ func (d *Deps) refreshToken(plan providerPlan, selfOnly bool) http.HandlerFunc {
 		}
 		// 存量刷新走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应物）：
 		// 配置不可用直接 400，不做直连回退。
+		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(current.ProxyProfileID) == "" {
+			kernel.WriteBadRequest(w, plan.label+" OAuth 账户未绑定代理，无法刷新：请先为账户配置出海代理")
+			return
+		}
 		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), current.ProxyProfileID)
 		if err != nil {
 			d.writeProfileError(w, err)
@@ -799,6 +826,10 @@ func (d *Deps) reauthorizeFromCode(plan providerPlan, selfOnly bool) http.Handle
 		}
 		// 重新授权 token 请求走账户绑定代理；该路由 strict body 不收
 		// proxyProfileId，requestProxyProfileID 回落到存量绑定。
+		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(requestProxyProfileID(body, current)) == "" {
+			kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理才能重新授权：请先为账户配置出海代理")
+			return
+		}
 		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, current))
 		if err != nil {
 			d.writeProfileError(w, err)
@@ -871,6 +902,10 @@ func (d *Deps) reauthorizeFromRefreshToken(plan providerPlan, selfOnly bool) htt
 		// 刷新令牌重新授权走账户绑定代理（resolveRefreshProxyUrlOrThrow 对应
 		// 物）：请求 proxyProfileId 优先（该路由 strict body 不收该字段，实际
 		// 回落存量绑定），配置不可用直接 400，不做直连回退。
+		if plan.requiresProxy && d.Store.proxyRequired && strings.TrimSpace(requestProxyProfileID(body, current)) == "" {
+			kernel.WriteBadRequest(w, plan.label+" OAuth 账户必须绑定代理才能重新授权：请先为账户配置出海代理")
+			return
+		}
 		proxyURL, err := d.Store.proxyProfileRequestURL(r.Context(), requestProxyProfileID(body, current))
 		if err != nil {
 			d.writeProfileError(w, err)
@@ -957,6 +992,10 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 			kernel.WriteBadRequest(w, "Grok SSO 导入参数无效")
 			return
 		}
+		if plan.requiresProxy && d.Store.proxyRequired && (managed.ProxyProfileID == nil || strings.TrimSpace(*managed.ProxyProfileID) == "") {
+			kernel.WriteBadRequest(w, "Grok SSO 导入必须绑定代理：请在表单中选择出海代理后再提交")
+			return
+		}
 		profile, err := d.Store.resolveProviderProfile(r.Context(), plan.providerCode, managed.ProviderProtocolProfileID, plan.accountType, plan.requiredProfileID)
 		if err != nil {
 			d.writeProfileError(w, err)
@@ -985,7 +1024,7 @@ func (d *Deps) ssoToOAuth(plan providerPlan) func(w http.ResponseWriter, r *http
 				})
 				continue
 			}
-			name := grokSSOImportAccountName(managed.Name, outcome, position, len(tokens))
+			name := grokSSOImportAccountName(managed.Name, outcome, position, len(tokens), time.Now())
 			accountExpiresAt, expiresErr := grokSSOImportAccountExpiresAt(managed.AccountExpiresAt, outcome)
 			if expiresErr != nil {
 				failed = append(failed, map[string]any{
@@ -1050,16 +1089,20 @@ func (s *Store) exchangeGrokSSOToken(ctx context.Context, ssoToken string) (*tok
 }
 
 // grokSSOImportAccountName mirrors grokSSOImportAccountName.
-func grokSSOImportAccountName(requested *string, outcome *tokenOutcome, index, total int) string {
+// grokSSOImportAccountName mirrors the SSO import naming: an explicitly
+// requested name wins; otherwise 上游域名-毫秒时间戳后 6 位（与 accountName 的
+// 统一规则一致），批量导入追加 #序号 区分。
+func grokSSOImportAccountName(requested *string, outcome *tokenOutcome, index, total int, now time.Time) string {
 	baseName := ""
 	if requested != nil {
 		baseName = strings.TrimSpace(*requested)
 	}
-	if baseName == "" && outcome != nil {
-		baseName = strings.TrimSpace(outcome.Name)
-	}
 	if baseName == "" {
-		baseName = "Grok OAuth Account"
+		if host := oauthUpstreamHost(outcome); host != "" {
+			baseName = fmt.Sprintf("%s-%06d", host, now.UnixMilli()%1000000)
+		} else {
+			baseName = "Grok OAuth Account"
+		}
 	}
 	if total > 1 {
 		return baseName + " #" + itoa(index)

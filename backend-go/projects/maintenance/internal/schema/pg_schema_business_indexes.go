@@ -1169,48 +1169,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_oauth_grants_user_client_active
-      ON oauth_grants(system_account_id, client_id, expires_at, revoked_at)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_expiry
-      ON oauth_authorization_codes(expires_at, consumed_at)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_oauth_authorization_transactions_expiry
-      ON oauth_authorization_transactions(expires_at, completed_at)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_grant_expiry
-      ON oauth_access_tokens(grant_id, expires_at, revoked_at, replaced_at)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_signing_keys_one_active
-      ON oauth_signing_keys(status) WHERE status = 'active'`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_oauth_device_authorizations_poll
-      ON oauth_device_authorizations(device_code_hash, client_id, expires_at, status)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_oauth_device_authorizations_user_code
-      ON oauth_device_authorizations(user_code, expires_at, status)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_authorization ON accounts(authorization_instance_authorization_id)`,
 	},
 	{

@@ -633,8 +633,8 @@ func TestW1ZChainFinalizationUsageRecordCompletedUpstreamAttempt(t *testing.T) {
 		t.Fatalf("DurationMs 投影 = %v，want 1300-1000=300", record.DurationMs)
 	}
 
-	// 最小输入：无账户 → AccountID 空串；无完成时间 → DurationMs 缺省；Stream
-	// 值语义仍落地（false 指针）。
+	// 最小输入：无账户 → AccountID 空串；无完成时间 → DurationMs 按兜底口径
+	// 落完成收尾观测时刻（非空指针）；Stream 值语义仍落地（false 指针）。
 	recorder.records = nil
 	usage.RecordCompletedUpstreamAttempt(gatewayresponse.CompletedAttemptInput{
 		UsageContext: gatewaypreauth.GatewayFailureUsageContext{TraceID: "trace_w1z_min"},
@@ -649,8 +649,8 @@ func TestW1ZChainFinalizationUsageRecordCompletedUpstreamAttempt(t *testing.T) {
 	if record.Stream == nil || *record.Stream {
 		t.Fatalf("最小输入 Stream = %v，want false 指针", record.Stream)
 	}
-	if record.DurationMs != nil || record.FirstTokenMs != nil {
-		t.Fatalf("最小输入时间指针必须缺省: %+v", record)
+	if record.DurationMs == nil || record.FirstTokenMs != nil {
+		t.Fatalf("最小输入 DurationMs 必须按兜底口径非空、FirstTokenMs 缺省: %+v", record)
 	}
 }
 
