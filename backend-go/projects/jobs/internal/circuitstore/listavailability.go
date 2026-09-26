@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 )
 
@@ -259,6 +261,18 @@ func (r *ListAvailabilityRepo) markDirtyTx(ctx context.Context, tx txLike, accou
 	return nil
 }
 
+// lockDirtyWritesInTx 取 dirty 写序列化 advisory 锁（问题-0184）：dirty 的
+// 写入方包括并行 batch worker 的 Enqueue*/Claim/Apply/Release、gateway 脏
+// 标记、以及 proxy_profiles UPDATE 触发器的隐式写入，行序互异，交叉持锁
+// 形成 40P01 死锁环。必须在事务首条语句调用；非 PG 方言 no-op。
+func (r *ListAvailabilityRepo) lockDirtyWritesInTx(ctx context.Context, tx txLike) error {
+	if !r.postgres {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, advisorylock.AccountListDirty)
+	return err
+}
+
 // EnqueueMissing 对齐 enqueueMissing...InClient（worker 专属 bootstrap 扫描）。
 func (r *ListAvailabilityRepo) EnqueueMissing(ctx context.Context, limit int, nowMS int64) (int, error) {
 	if limit < 1 || limit > maximumDirtyClaimLimit {
@@ -269,6 +283,9 @@ func (r *ListAvailabilityRepo) EnqueueMissing(ctx context.Context, limit int, no
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
+		return 0, err
+	}
 	rows, err := tx.QueryContext(ctx, `
     SELECT accounts.id
     FROM `+r.table("accounts")+` accounts
@@ -324,6 +341,9 @@ func (r *ListAvailabilityRepo) EnqueueDue(ctx context.Context, limit int, nowMS 
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
+		return 0, err
+	}
 	rows, err := tx.QueryContext(ctx, `
     SELECT projections.account_id
     FROM `+r.table("account_list_availability_projections")+` projections
@@ -371,6 +391,9 @@ func (r *ListAvailabilityRepo) EnqueueAllForRuntimeRecovery(ctx context.Context,
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
+		return 0, err
+	}
 	result, err := tx.ExecContext(ctx, `
     INSERT INTO `+dirty+` (
       account_id, viewer_system_account_id, generation, applied_generation, reason,
@@ -410,7 +433,19 @@ func (r *ListAvailabilityRepo) EnqueueAllForRuntimeRecovery(ctx context.Context,
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `
+	// 问题-0192：不能在持有整批 dirty 行锁的事务里再扫描 viewer_health——
+	// 与 ApplyClaims 逐 claim 事务（claim dirty → 写 viewer → 删 dirty）会形成
+	// 跨表 hold-and-wait 死锁（40P01）。这里拆成两个短事务：先提交 dirty 重置，
+	// 再单独置 stale viewer_health；两段都幂等，调用方重试即可补齐。
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	tx2, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx2.Rollback() }()
+	if _, err := tx2.ExecContext(ctx, `
     UPDATE `+viewerHealth+`
     SET is_current = 0, updated_at = ?
     WHERE viewer_system_account_id IN (
@@ -423,10 +458,11 @@ func (r *ListAvailabilityRepo) EnqueueAllForRuntimeRecovery(ctx context.Context,
           accounts.authorization_instance_authorization_id IS NULL
           OR authorizations.status IN ('active', 'paused', 'expired')
         )
+      ORDER BY accounts.system_account_id
     )`, r.now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return 0, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx2.Commit(); err != nil {
 		return 0, err
 	}
 	return int(changed), nil
@@ -573,6 +609,8 @@ func (r *ListAvailabilityRepo) ClaimDirty(ctx context.Context, ownerID string, l
 	dirty := r.table("account_list_availability_dirty")
 	if r.postgres {
 		// Node PG 分支：数据库时钟 + 单条 CTE 批量 claim。
+		// 问题-0184：CTE 按自身扫描序锁多行 dirty，与其他 dirty 写事务交叉
+		// 会成死锁环，故纳入 advisory 锁事务统一串行化。
 		claimToken := newRandomUUID()
 		query := `
       WITH candidates AS (
@@ -594,20 +632,36 @@ func (r *ListAvailabilityRepo) ClaimDirty(ctx context.Context, ownerID string, l
       WHERE dirty_accounts.account_id = candidates.account_id
       RETURNING dirty_accounts.account_id, dirty_accounts.viewer_system_account_id,
         dirty_accounts.generation, dirty_accounts.attempt_count`
-		rows, err := r.db.QueryContext(ctx, query, limit, claimToken, ownerID, leaseMS)
+		tx, err := r.db.BeginTx(ctx, nil)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
+		defer func() { _ = tx.Rollback() }()
+		if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
+			return nil, err
+		}
+		rows, err := tx.QueryContext(ctx, query, limit, claimToken, ownerID, leaseMS)
+		if err != nil {
+			return nil, err
+		}
 		claims := []opsjobs.DirtyClaim{}
 		for rows.Next() {
 			claim := opsjobs.DirtyClaim{ClaimToken: claimToken}
 			if err := rows.Scan(&claim.AccountID, &claim.ViewerSystemAccountID, &claim.Generation, &claim.AttemptCount); err != nil {
+				rows.Close()
 				return nil, err
 			}
 			claims = append(claims, claim)
 		}
-		return claims, rows.Err()
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return claims, nil
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1085,9 +1139,6 @@ func (r *ListAvailabilityRepo) markViewerHealthStaleTx(ctx context.Context, tx t
 // （单事务批量提交，每行保留自己的 generation/claim 围栏；SQLite 串行逐行，
 // 与 Node 非 PG 分支一致）。
 func (r *ListAvailabilityRepo) ApplyClaims(ctx context.Context, writes []opsjobs.ProjectionWrite) (map[string]bool, error) {
-	// Node apply 入口校验 sourceGeneration === claim.generation；Go 形状下
-	// sourceGeneration 由 claim.Generation 派生（normalizeProjectionWrite），
-	// 此处校验 claim 围栏本身有效。
 	for _, write := range writes {
 		if write.Claim.Generation < 1 || strings.TrimSpace(write.Claim.ClaimToken) == "" {
 			return nil, errors.New("账户列表投影 dirty claim 围栏无效")
@@ -1097,58 +1148,77 @@ func (r *ListAvailabilityRepo) ApplyClaims(ctx context.Context, writes []opsjobs
 	if len(writes) == 0 {
 		return result, nil
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	dirty := r.table("account_list_availability_dirty")
-	for _, write := range writes {
-		normalized, err := normalizeProjectionWrite(write)
+	// 问题-0184 修复：原实现把全部 writes 放进一个长事务按 claim 到达顺序依次锁
+	// viewer_health/projection/dirty 行，与 gateway 侧脏标记事务（按 accounts 扫描
+	// 顺序持有多把 dirty 行锁）和 viewer 健康批量更新（按 accounts 顺序持有多把
+	// viewer_health 行锁）交叉时形成锁序死锁（SQLSTATE 40P01）。改为单 claim 独立
+	// 短事务并按 account_id 排序，单次最多持有一行锁，消除环；每个 claim 自带
+	// generation/claim_token 围栏，独立应用不改变正确性。
+	sorted := make([]opsjobs.ProjectionWrite, len(writes))
+	copy(sorted, writes)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Claim.AccountID < sorted[j].Claim.AccountID })
+	for _, write := range sorted {
+		applied, err := r.applyOneClaim(ctx, write)
 		if err != nil {
 			return nil, err
 		}
-		claim := write.Claim
-		var current string
-		err = tx.QueryRowContext(ctx, `
+		result[write.Claim.ClaimToken] = applied
+	}
+	return result, nil
+}
+
+func (r *ListAvailabilityRepo) applyOneClaim(ctx context.Context, write opsjobs.ProjectionWrite) (bool, error) {
+	normalized, err := normalizeProjectionWrite(write)
+	if err != nil {
+		return false, err
+	}
+	claim := write.Claim
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
+		return false, err
+	}
+	dirty := r.table("account_list_availability_dirty")
+	var current string
+	err = tx.QueryRowContext(ctx, `
       SELECT account_id
       FROM `+dirty+`
       WHERE account_id = ? AND generation = ? AND claim_token = ?
       LIMIT 1`, claim.AccountID, claim.Generation, claim.ClaimToken).Scan(&current)
-		if errors.Is(err, sql.ErrNoRows) {
-			result[claim.ClaimToken] = false
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		written, err := r.upsertProjectionTx(ctx, tx, normalized)
-		if err != nil {
-			return nil, err
-		}
-		if !written {
-			return nil, fmt.Errorf("账户列表投影 %s generation %d 被更高版本覆盖", claim.AccountID, claim.Generation)
-		}
-		acknowledged, err := tx.ExecContext(ctx, `
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	written, err := r.upsertProjectionTx(ctx, tx, normalized)
+	if err != nil {
+		return false, err
+	}
+	if !written {
+		return false, fmt.Errorf("账户列表投影 %s generation %d 被更高版本覆盖", claim.AccountID, claim.Generation)
+	}
+	acknowledged, err := tx.ExecContext(ctx, `
       DELETE FROM `+dirty+`
       WHERE account_id = ? AND generation = ? AND claim_token = ?`,
-			claim.AccountID, claim.Generation, claim.ClaimToken)
-		if err != nil {
-			return nil, err
-		}
-		deleted, err := acknowledged.RowsAffected()
-		if err != nil {
-			return nil, err
-		}
-		if deleted != 1 {
-			return nil, fmt.Errorf("账户列表投影 %s generation %d 无法确认 dirty claim", claim.AccountID, claim.Generation)
-		}
-		result[claim.ClaimToken] = true
+		claim.AccountID, claim.Generation, claim.ClaimToken)
+	if err != nil {
+		return false, err
+	}
+	deleted, err := acknowledged.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if deleted != 1 {
+		return false, fmt.Errorf("账户列表投影 %s generation %d 无法确认 dirty claim", claim.AccountID, claim.Generation)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return false, err
 	}
-	return result, nil
+	return true, nil
 }
 
 // ApplyDeletionClaim 对齐 applyAccountListAvailabilityProjectionDeletionDirtyClaimInClient。
@@ -1158,6 +1228,9 @@ func (r *ListAvailabilityRepo) ApplyDeletionClaim(ctx context.Context, claim ops
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := r.lockDirtyWritesInTx(ctx, tx); err != nil {
+		return false, err
+	}
 	dirty := r.table("account_list_availability_dirty")
 	var current string
 	err = tx.QueryRowContext(ctx, `
@@ -1230,12 +1303,28 @@ func (r *ListAvailabilityRepo) ReleaseForReplay(ctx context.Context, input opsjo
 	var result sql.Result
 	var err error
 	if r.postgres {
-		result, err = r.db.ExecContext(ctx, `
+		// 问题-0184：单行 UPDATE 也纳入 dirty 写 advisory 锁事务，与并行
+		// worker/网关标记/proxy 触发路径互斥，避免锁序交叉。
+		tx, txErr := r.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return false, txErr
+		}
+		defer func() { _ = tx.Rollback() }()
+		if lockErr := r.lockDirtyWritesInTx(ctx, tx); lockErr != nil {
+			return false, lockErr
+		}
+		result, err = tx.ExecContext(ctx, `
       UPDATE `+dirty+`
       SET reason = ?, available_at_ms = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint + ?, claim_token = NULL,
           claimed_by = NULL, claim_until_ms = NULL, updated_at_ms = FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint
       WHERE account_id = ? AND generation = ? AND claim_token = ?`,
 			reason, input.RetryDelayMS, accountID, input.Generation, claimToken)
+		if err != nil {
+			return false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
 	} else {
 		result, err = r.db.ExecContext(ctx, `
       UPDATE `+dirty+`

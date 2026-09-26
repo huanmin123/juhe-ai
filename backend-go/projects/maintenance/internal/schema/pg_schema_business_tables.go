@@ -1652,6 +1652,11 @@ BEGIN
   IF COALESCE(array_length(p_account_ids, 1), 0) = 0 THEN
     RETURN;
   END IF;
+  -- 问题-0192：本函数是全部触发器隐式 dirty 写入的公共汇聚点，与所有应用侧
+  -- dirty 写事务（Go advisorylock.AccountListDirty = 7001001）共用 advisory 锁，
+  -- 使触发器路径也纳入 dirty 写串行化，消除与批量写事务的锁序死锁（40P01）。
+  -- pg_advisory_xact_lock 事务级可重入：已持锁事务经触发器再次取锁无阻塞。
+  PERFORM pg_advisory_xact_lock(7001001);
   v_now_ms := FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint;
   WITH requested_accounts AS (
     SELECT DISTINCT requested.account_id

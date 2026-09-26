@@ -22,6 +22,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
@@ -896,6 +897,11 @@ func newChainListAvailabilityDirtyMarker(composed *composition) gatewayaccountef
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
+		// 问题-0184：与 jobs 侧全部 dirty 写事务共用 advisory 锁串行化，
+		// 消除多路径异序持锁的死锁环；必须是本事务首条语句。
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, advisorylock.AccountListDirty); err != nil {
+			return err
+		}
 		// 家族展开：id IN (source) OR authorization_instance_source_account_id
 		// IN (source)（repository.ts:665-681）。
 		rows, err := tx.QueryContext(ctx, `SELECT id FROM juhe_business.accounts
