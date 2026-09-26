@@ -46,9 +46,6 @@
 //         COLUMN guards that run only when account_circuit_incidents exists
 //         without the confirmation columns (the DDL below creates them);
 //         its unconditional CREATE UNIQUE INDEX is ported below.
-//       * ensureOidcProviderSchema: conditional
-//         ALTER TABLE oauth_clients ADD COLUMN client_secret_ciphertext guard
-//         (the column already exists in the CREATE TABLE statement).
 
 package schema
 
@@ -71,7 +68,6 @@ var sqliteBusinessScript = sqliteScript{
 	sqliteBusinessCircuitControlPlaneIndexDDL,
 	sqliteBusinessResponseInspectionPolicyIndexesDDL,
 	sqliteBusinessExternalIntegrationSourceIndexesDDL,
-	sqliteBusinessOIDCProviderDDL,
 	sqliteBusinessAuthorizationInstanceIndexesDDL,
 }
 
@@ -163,7 +159,7 @@ type SQLiteResult struct {
 	UsageCatalog SchemaCounts
 }
 
-// EnsureSQLiteBusiness applies the business schema (system accounts, providers, accounts, groups, routing, API keys, authorizations, OIDC, circuit control plane).
+// EnsureSQLiteBusiness applies the business schema (system accounts, providers, accounts, groups, routing, API keys, authorizations, circuit control plane).
 func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
 	counts, err := sqliteBusinessScript.ensure(ctx, db)
 	if err != nil {

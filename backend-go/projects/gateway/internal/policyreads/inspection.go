@@ -1,4 +1,4 @@
-// Package policyreads owns the M16 vertical slice: three admin-surface
+// Package policyreads owns the M16 vertical slice: two admin-surface
 // management domains ported from the Node system API —
 //
 //   - M16a response inspection policies (backend/src/modules/response-inspection-policies
@@ -7,18 +7,14 @@
 //   - M16b external integration sources (backend/src/modules/external-integrations
 //     /external-integration-sources.routes.ts + backend/src/storage/
 //     external-integration-source*.ts; business tables external_integration_sources
-//     and external_integration_source_tokens),
-//   - M16c OAuth client management (backend/src/modules/oidc-provider
-//     /oidc-provider.routes.ts oauthManagementRouter; business table
-//     oauth_clients).
+//     and external_integration_source_tokens).
 //
-// All three families mount behind requireAdmin on /__aisys__/api. The public
-// OAuth protocol surface, the external public API itself and the gateway
-// runtime consumers are companion slices; this package mirrors the management
-// contracts only, including mutation guards, optimistic locking, conflicts and
-// operation logs. The three domains share one package (file prefix split:
-// inspection / external / oauth) because they reuse the same dual-mode
-// persistence helpers and zod-message shims.
+// Both families mount behind requireAdmin on /__aisys__/api. The external
+// public API itself and the gateway runtime consumers are companion slices;
+// this package mirrors the management contracts only, including mutation
+// guards, optimistic locking, conflicts and operation logs. The two domains
+// share one package (file prefix split: inspection / external) because they
+// reuse the same dual-mode persistence helpers and zod-message shims.
 package policyreads
 
 import (

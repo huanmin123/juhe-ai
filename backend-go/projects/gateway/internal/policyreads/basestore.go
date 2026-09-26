@@ -28,11 +28,6 @@ type ValidationError struct{ Message string }
 
 func (e *ValidationError) Error() string { return e.Message }
 
-// OidcCiphertextError maps to Node OidcCiphertextError (oauth.go).
-type OidcCiphertextError struct{ Message string }
-
-func (e *OidcCiphertextError) Error() string { return e.Message }
-
 // RuntimeInvalidator is the K5 gateway runtime cache invalidation port
 // (Node notifyGatewayRuntimeCacheInvalidation). *inval.Bus satisfies it; nil
 // keeps the slice self-contained with no-op invalidation.
