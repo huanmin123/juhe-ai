@@ -272,6 +272,10 @@ type chainFailureDispatcher struct {
 	// （gatewaycodex 包契约：不合格账户与无 codex 头静默跳过）；生产装配为
 	// compose_codex_usage_headers.go 的 record_maintenance_jobs 快照通道。
 	codexUsageHeaders gatewaycodex.CodexUsageHeadersDispatcher
+	// anthropicUsageHeaders 是 anthropic（Claude OAuth）unified rate limit
+	// 响应头的失败面持久化窄口（AI账户Grok用量快照设计 §8.2）；nil 派发器
+	// 在 gatewaycodex 资格门后静默跳过，生产装配与 codex 同一通道适配器。
+	anthropicUsageHeaders gatewaycodex.AnthropicUsageHeadersDispatcher
 }
 
 // chainAPIKeyObservationPort 是 AccountAPIKeyFailureGuard.CaptureFailureObservation
@@ -480,6 +484,9 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	// failure face too — an eligible OAuth codex account with codex headers
 	// dispatches the side effect with the gateway_error source rewrite. nil
 	// dispatcher stays silent inside the helper (gatewaycodex contract).
+	// AI账户Grok用量快照设计 §8.2：anthropic OAuth 账户的 unified rate limit
+	// 头在同一位置对称挂载；source 按规格固定为 anthropic_unified_headers
+	// （不做 codex 的 gateway_error 失败面重写）。
 	if input.AccountStateMutationEnabled {
 		codexHeadersSource := trafficSource
 		if trafficSource == gatewayTrafficSource {
@@ -487,6 +494,8 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		}
 		gatewaycodex.PersistOpenAICodexHeadersIfNeeded(ctx, input.Account, policyHeader,
 			codexHeadersSource, gatewaycodex.SystemClock{}, d.codexUsageHeaders)
+		gatewaycodex.PersistAnthropicUsageHeadersIfNeeded(ctx, input.Account, policyHeader,
+			gatewaycodex.AnthropicUsageSnapshotSource, d.anthropicUsageHeaders)
 	}
 
 	// failure-dispatch.ts:346: forget the session affinity before the policy
@@ -1642,10 +1651,12 @@ func (o *slogObservability) CreateTraceID() string {
 	return "trace_" + fmtInt64(o.clock.Now().UnixNano())
 }
 
-// SanitizeURLForLog 委托 gatewayusage 真实现（凭据 query 掩码 + oauth 敏感名
-// 重写）：恒等透传会让 preauth 日志面（slog fail-closed/error 线）明文输出
-// Gemini `?key=` 等凭据 query，与 usage 快照面口径不一致。
-func (o *slogObservability) SanitizeURLForLog(value string) string { return gatewayusage.SanitizeURLForLog(value) }
+// SanitizeURLForLog 委托 gatewayusage 真实现（凭据 query 掩码）：恒等透传会
+// 让 preauth 日志面（slog fail-closed/error 线）明文输出 Gemini `?key=` 等凭据
+// query，与 usage 快照面口径不一致。
+func (o *slogObservability) SanitizeURLForLog(value string) string {
+	return gatewayusage.SanitizeURLForLog(value)
+}
 
 // gatewayRequestStageLogLevel mirrors gatewayRequestStageLogLevel
 // (shared/logging/runtime-log-policy.ts): unexpected_failure → error,

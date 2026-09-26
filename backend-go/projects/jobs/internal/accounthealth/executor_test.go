@@ -124,3 +124,94 @@ func TestExecuteInputProbePersistsCursorAfterProbeContextExpires(t *testing.T) {
 		t.Fatalf("cursor next=%d found=%t err=%v, want persisted next index 1", next, found, err)
 	}
 }
+
+// staleLeaseFor presents a well-formed owner lease whose fence no longer
+// matches the stored lease, so Store.SaveKeyCursor fails deterministically
+// inside its lease verification (ErrOwnerLeaseLost). That stands in for any
+// cursor persistence error (for example the production PG write timeout)
+// without adding a test seam to the production store.
+func staleLeaseFor(t *testing.T, store *Store, ownerID string) OwnerLease {
+	t.Helper()
+	if _, acquired, err := store.AcquireOwnerLease(context.Background(), ownerID, time.Minute); err != nil || !acquired {
+		t.Fatalf("acquire lease acquired=%t err=%v", acquired, err)
+	}
+	return OwnerLease{OwnerID: ownerID, FenceToken: 999999}
+}
+
+func TestExecuteInputProbeKeepsSuccessOutcomeWhenCursorSaveFails(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer sk-good" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			_, _ = writer.Write([]byte(`{"error":{"message":"bad key"}}`))
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"juhe"}}]}`))
+	}))
+	defer server.Close()
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease := staleLeaseFor(t, store, "owner-cursor-success")
+	ctx := context.Background()
+	input := testInput(server.URL, "chat_json")
+	input.KeySetFingerprint = "set-cursor-success"
+	input.APIKeys = []APIKeyInput{
+		{Index: 0, Fingerprint: "bad", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-bad")}},
+		{Index: 1, Fingerprint: "good", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-good")}},
+	}
+	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-cursor-success", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("cursor save failure must not fail ExecuteInputProbe: %v", err)
+	}
+	if outcome.Outcome != OutcomeSuccess || outcome.WinnerIndex == nil || *outcome.WinnerIndex != 1 || outcome.WinnerKeyFingerprint != "good" {
+		t.Fatalf("outcome=%#v, want intact success outcome with winner index 1", outcome)
+	}
+	if outcome.RequestID != "request-cursor-success" || outcome.AccountID != input.AccountID || outcome.OutcomeID == "" || outcome.ObservedAt.IsZero() {
+		t.Fatalf("outcome=%#v, want complete idempotency fields", outcome)
+	}
+	if _, found, err := store.LoadKeyCursor(ctx, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint); err != nil || found {
+		t.Fatalf("cursor found=%t err=%v, want the failed save to leave no cursor row", found, err)
+	}
+}
+
+func TestExecuteInputProbeKeepsAllKeysFailedOutcomeWhenCursorSaveFails(t *testing.T) {
+	secret := "test-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusUnauthorized)
+		_, _ = writer.Write([]byte(`{"error":{"message":"bad key"}}`))
+	}))
+	defer server.Close()
+	store, err := OpenStore(StoreConfig{Mode: StoreSQLite, DatabasePath: filepath.Join(t.TempDir(), "account-health.sqlite3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease := staleLeaseFor(t, store, "owner-cursor-allfail")
+	ctx := context.Background()
+	input := testInput(server.URL, "chat_json")
+	input.KeySetFingerprint = "set-cursor-allfail"
+	input.APIKeys = []APIKeyInput{
+		{Index: 0, Fingerprint: "first", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-first")}},
+		{Index: 1, Fingerprint: "second", Credential: CredentialEnvelope{Kind: "api_key", Ciphertext: testEnvelope(t, secret, "sk-second")}},
+	}
+	outcome, err := ExecuteInputProbe(ctx, store, lease, input, ProbeRequest{RequestID: "request-cursor-allfail", AccountID: input.AccountID, InputVersion: input.InputVersion, ConfigRevision: input.ConfigRevision, DispatchRevision: input.DispatchRevision, Deadline: time.Now().Add(time.Minute)}, ProbeOptions{Secret: secret, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("cursor save failure must not replace the failed-probe outcome: %v", err)
+	}
+	// Per the probe contract a non-2xx HTTP status classifies as neutral
+	// ("upstream_http_status"); that business outcome — not a cursor error —
+	// must reach the caller, without a winner.
+	if outcome.Outcome != OutcomeNeutral || outcome.ErrorCode != "upstream_http_status" || outcome.WinnerIndex != nil {
+		t.Fatalf("outcome=%#v, want all-keys-failed business outcome", outcome)
+	}
+	if outcome.RequestID != "request-cursor-allfail" || outcome.AccountID != input.AccountID || outcome.OutcomeID == "" || outcome.ObservedAt.IsZero() {
+		t.Fatalf("outcome=%#v, want complete idempotency fields", outcome)
+	}
+	if _, found, err := store.LoadKeyCursor(ctx, input.AccountID, healthKeyCursorPurpose, input.KeySetFingerprint); err != nil || found {
+		t.Fatalf("cursor found=%t err=%v, want the failed save to leave no cursor row", found, err)
+	}
+}

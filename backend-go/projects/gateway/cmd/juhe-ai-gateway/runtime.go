@@ -27,10 +27,10 @@ const (
 // (backend/src/config/runtime.ts) for the scope the Go gateway composition
 // consumes: runtime mode, storage drivers (sqlite/postgres, memory/redis),
 // dual-mode database paths, Redis URLs + namespace, secret, cookie/cors/
-// oidc/trust-proxy HTTP security and the composition gates.
+// trust-proxy HTTP security and the composition gates.
 //
 // Validation mirrors the Node fail-fast contract: an enabled redis driver
-// without its URL, an enabled OIDC without issuer/secret, a none-cookie
+// without its URL, a none-cookie
 // without secure, a production process without a strong secret or an explicit
 // CORS origin allowlist, or an enabled composition without the business owner
 // handoff gates exits at startup instead of serving a partial owner.
@@ -100,12 +100,8 @@ type runtimeConfig struct {
 	DevAutoLoginUsername       string
 	TemporaryAccessIPAllowlist []string
 
-	OIDCEnabled             bool
-	OIDCIssuer              string
-	OIDCKeyEncryptionSecret string
-
 	// SystemAPIEnabled gates the Go system-api composition
-	// (/__aisys__/api + /__aipublic__ + /__aidelegated__/v1). 2026-09-19 起
+	// (/__aisys__/api + /__aipublic__). 2026-09-19 起
 	// 默认开启（开源零配置可启动）：未配置时视为 true，显式 false 才关闭；
 	// 非法值启动即失败（strictEnvBool）。
 	SystemAPIEnabled bool
@@ -581,18 +577,6 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 		return runtimeConfig{}, allowlistErr
 	}
 	cfg.TemporaryAccessIPAllowlist = allowlist
-
-	cfg.OIDCEnabled = envBoolTrue(getenv("JUHE_AI_OIDC_ENABLED"))
-	cfg.OIDCIssuer = strings.TrimSpace(getenv("JUHE_AI_OIDC_ISSUER"))
-	cfg.OIDCKeyEncryptionSecret = strings.TrimSpace(getenv("JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET"))
-	if cfg.OIDCEnabled {
-		if cfg.OIDCIssuer == "" {
-			return runtimeConfig{}, fmt.Errorf("启用 JUHE_AI_OIDC_ENABLED 时必须显式配置 JUHE_AI_OIDC_ISSUER")
-		}
-		if cfg.OIDCKeyEncryptionSecret == "" {
-			return runtimeConfig{}, fmt.Errorf("启用 JUHE_AI_OIDC_ENABLED 时必须显式配置 JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET")
-		}
-	}
 
 	// 2026-09-19 产品决策：system-api 与 /v1 网关链默认开启（开源零配置可
 	// 启动；生产切流用显式配置控制）。strictEnvBool 保留非法值 fail-fast 与

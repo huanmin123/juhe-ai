@@ -352,8 +352,6 @@ func runMaintenanceEnsureSeed(t *testing.T, driver string, paths string, dsn str
 type gatewayEnvOptions struct {
 	// ChainEnabled 打开 /v1 网关链 + my-chat 家族。
 	ChainEnabled bool
-	// OIDC 启用公开协议面（issuer 指向本实例）。
-	OIDC bool
 	// PGDSN 非空时以 postgres 模式组装（其余路径仍指向隔离临时目录的
 	// 审计/操作日志等专用存储）。
 	PGDSN string
@@ -482,11 +480,6 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	}
 	if opts.ChainEnabled {
 		env["JUHE_AI_GATEWAY_CHAIN_ENABLED"] = "true"
-	}
-	if opts.OIDC {
-		env["JUHE_AI_OIDC_ENABLED"] = "true"
-		env["JUHE_AI_OIDC_ISSUER"] = fixture.baseURL
-		env["JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET"] = randomHex(t, 16)
 	}
 	if opts.J3bPinnedListener {
 		j3bPort := freePort(t)

@@ -1,10 +1,10 @@
 // Capture ported from public-api-log-capture.middleware.ts: builds the exact
 // PublicApiLogInput the Node middleware assembles on request finish / client
-// close, including the 32 KiB bounded request/response snapshots, the OAuth
-// URL redaction, the 499 client-closed mapping and the body-rejection
-// (parse-failed / too-large) markers. The HTTP lifecycle wiring (which event
-// records the log) belongs to the gateway pipeline; this package exposes the
-// exactly-once Capture recorder so double signalling stays impossible.
+// close, including the 32 KiB bounded request/response snapshots, the 499
+// client-closed mapping and the body-rejection (parse-failed / too-large)
+// markers. The HTTP lifecycle wiring (which event records the log) belongs to
+// the gateway pipeline; this package exposes the exactly-once Capture recorder
+// so double signalling stays impossible.
 package publicapilogs
 
 import (
@@ -67,8 +67,7 @@ type capturedSnapshot struct {
 
 // BuildInput mirrors buildPublicApiLogInput.
 func BuildInput(spec CaptureSpec) Input {
-	sanitizedURL := sanitizeURLForLog(spec.OriginalURL)
-	path, queryString := splitPathAndQuery(sanitizedURL)
+	path, queryString := splitPathAndQuery(spec.OriginalURL)
 	statusCode := spec.StatusCode
 	if spec.Closed {
 		statusCode = 499

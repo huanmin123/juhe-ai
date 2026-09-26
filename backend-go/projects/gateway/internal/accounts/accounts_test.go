@@ -286,11 +286,11 @@ var schemaStatements = []string{
 	// snapshots from the stats-side table (statsTable renders the bare name on
 	// SQLite; column set and kind CHECK mirror
 	// maintenance/internal/schema/sqlite_schema_stats.go — xai_grok per
-	// AI账户Grok用量快照设计 §3).
+	// AI账户Grok用量快照设计 §3, anthropic_claude per §8).
 	`CREATE TABLE IF NOT EXISTS account_usage_snapshots (
 		system_account_id TEXT NOT NULL,
 		account_id TEXT NOT NULL,
-		kind TEXT NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance', 'xai_grok')),
+		kind TEXT NOT NULL CHECK (kind IN ('openai_codex', 'relay_balance', 'xai_grok', 'anthropic_claude')),
 		source TEXT,
 		snapshot_json TEXT NOT NULL,
 		refresh_status TEXT,

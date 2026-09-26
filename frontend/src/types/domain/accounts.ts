@@ -105,7 +105,22 @@ export interface AccountXAIGrokUsageSnapshot {
   productUsage?: string
 }
 
-export type AccountOAuthUsageSnapshot = AccountOpenAICodexUsageSnapshot | AccountXAIGrokUsageSnapshot
+/** Anthropic Claude unified 窗口用量（unified rate limit 响应头被动采集，resetAt 为 RFC3339）。 */
+export interface AccountAnthropicUsageWindow {
+  usedPercent?: number
+  resetAt?: string
+}
+
+/** Anthropic（Claude OAuth）窗口用量快照（unified rate limit 响应头被动采集）。 */
+export interface AccountAnthropicUsageSnapshot {
+  kind: 'anthropic_claude'
+  /** 上游 unified rate limit 整体状态（allowed / allowed_warning / rejected）。 */
+  unifiedStatus?: string
+  fiveHour?: AccountAnthropicUsageWindow
+  sevenDay?: AccountAnthropicUsageWindow
+}
+
+export type AccountOAuthUsageSnapshot = AccountOpenAICodexUsageSnapshot | AccountXAIGrokUsageSnapshot | AccountAnthropicUsageSnapshot
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'degraded' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
@@ -521,7 +536,7 @@ export interface AccountListItem {
   balanceSnapshot?: AccountBalanceSnapshot
   lastUsedAt?: string
   todayUsage: AccountUsageListSummary
-  /** 网关列表投影按 provider 注入的 OAuth 用量只读快照（gpt→openai_codex，xai→xai_grok）。 */
+  /** 网关列表投影按 provider 注入的 OAuth 用量只读快照（gpt→openai_codex，xai→xai_grok，anthropic→anthropic_claude）。 */
   oauthUsage?: AccountOAuthUsageSnapshot
   accessType?: ResourceAccessType
   accountAuthorizationId?: string

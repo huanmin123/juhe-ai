@@ -19,6 +19,7 @@ import (
 
 var aipublicScopeValues = []string{
 	scopeGroupListRead, scopeStrategyListRead, scopeApiKeyListRead, scopeAccountListRead,
+	scopeProviderListRead, scopeProviderDetailRead,
 	scopeGroupAddWrite, scopeGroupUpdateWrite, scopeGroupDeleteWrite,
 	scopeStrategyAddWrite, scopeStrategyUpdateWrite, scopeStrategyDeleteWrite,
 	scopeApiKeyAddWrite, scopeApiKeyUpdateWrite, scopeApiKeyDeleteWrite,

@@ -86,7 +86,7 @@
 
       <section id="routing" class="section"><div class="section-heading-row"><div><p class="section-kicker">共享策略有共享风险</p><h2>策略路由与流量变更</h2></div><p class="lead">策略决定 API Key 如何选择分组。它不保存凭据，也不替代分组内的账户并发与优先级。</p></div>
         <p>策略是调控维度，账户是资源维度：策略只决定请求进入哪个分组池，池内怎么选号由账户优先级、并发硬上限与分组类型决定。每把 API Key 只绑定一条策略；策略的每一种模式都与分组绑定配合工作，点透下面的模式语义再动手。</p>
-        <div class="mode-reference"><div><strong>普通</strong><span>恰好一个启用分组，请求直接进入该分组的账号池。</span></div><div><strong>权重</strong><span>至少两个启用分组，按权重比例分流，所有权重总和不超过 100。</span></div><div><strong>故障回退</strong><span>第一行主用，后续备用；主用恢复后继续优先主用。变更顺序会改变故障时的落点。</span></div><div><strong>轮询</strong><span>至少两个启用分组，按当前排列顺序轮换。拖动顺序就是调度顺序。</span></div><div><strong>合并</strong><span>至少两个启用分组，把所有绑定分组的账号合并成一个大池统一调度，不区分分组；拖动顺序仅决定调度平局时的基础先后。</span></div><div><strong>调度偏好</strong><span>普通、权重、故障回退、轮询和合并五种模式共享，作用于请求所落分组内的账号调度。成本优先保留账号缓存/会话亲和；速度优先只在可重放文本的首字慢样本确认后切换。</span></div></div>
+        <div class="mode-reference"><div><strong>普通</strong><span>恰好一个启用分组，请求直接进入该分组的账号池。</span></div><div><strong>权重</strong><span>至少两个启用分组，按权重比例分流，所有权重总和不超过 100。</span></div><div><strong>故障回退</strong><span>第一行主用，后续备用；主用恢复后继续优先主用。变更顺序会改变故障时的落点。</span></div><div><strong>轮询</strong><span>至少两个启用分组，按当前排列顺序轮换。拖动顺序就是调度顺序。</span></div><div><strong>合并</strong><span>至少两个启用分组；每次请求时把各绑定分组中能服务当前请求模型的账号合并成一个候选池统一调度（直连支持，或经该账号的模型映射 / 跨协议转换承接），因此不要求各分组上游模型或协议一致；不区分分组、全池平级，分组顺序按添加顺序仅作为调度平局与跨组重复账号归属的基础先后。</span></div><div><strong>调度偏好</strong><span>普通、权重、故障回退、轮询和合并五种模式共享，作用于请求所落分组内的账号调度。成本优先保留账号缓存/会话亲和；速度优先只在可重放文本的首字慢样本确认后切换。</span></div></div>
         <h3>模式选型与变更风险</h3>
         <ol class="flow-list">
           <li><strong>普通——默认起点。</strong>规则最简单、行为最可预期，只有一个分组时是唯一选择；排障时链路也最短。</li>

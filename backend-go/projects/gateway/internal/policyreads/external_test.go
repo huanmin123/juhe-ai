@@ -28,7 +28,7 @@ func TestExternalScopesAndAPIDocs(t *testing.T) {
 		t.Fatalf("catalog head: %v", catalog)
 	}
 	items, ok := catalog["items"].([]any)
-	if !ok || len(items) != 16 {
+	if !ok || len(items) != 18 {
 		t.Fatalf("catalog items: %v", catalog)
 	}
 	for _, entry := range items {
@@ -42,6 +42,38 @@ func TestExternalScopesAndAPIDocs(t *testing.T) {
 			}
 			if item["method"] != "GET" || item["path"] != "/__aipublic__/group/list" {
 				t.Fatalf("group-list head: %v", item)
+			}
+		}
+		if item["id"] == "provider-list" {
+			if item["scope"] != "juhe_ai_public:provider_list:read" {
+				t.Fatalf("provider-list scope: %v", item)
+			}
+			if item["method"] != "GET" || item["path"] != "/__aipublic__/provider/list" {
+				t.Fatalf("provider-list head: %v", item)
+			}
+			if _, hasBody := item["requestBody"]; hasBody {
+				t.Fatalf("provider-list must omit requestBody: %v", item)
+			}
+			if fields, ok := item["responseFields"].([]any); !ok || len(fields) == 0 {
+				t.Fatalf("provider-list responseFields: %v", item)
+			}
+		}
+		if item["id"] == "provider-detail" {
+			if item["scope"] != "juhe_ai_public:provider_detail:read" {
+				t.Fatalf("provider-detail scope: %v", item)
+			}
+			if item["method"] != "GET" || item["path"] != "/__aipublic__/provider/detail" {
+				t.Fatalf("provider-detail head: %v", item)
+			}
+			if _, hasBody := item["requestBody"]; hasBody {
+				t.Fatalf("provider-detail must omit requestBody: %v", item)
+			}
+			query, ok := item["query"].([]any)
+			if !ok || len(query) == 0 || query[0].(map[string]any)["name"] != "code" {
+				t.Fatalf("provider-detail query: %v", item["query"])
+			}
+			if fields, ok := item["responseFields"].([]any); !ok || len(fields) == 0 {
+				t.Fatalf("provider-detail responseFields: %v", item)
 			}
 		}
 		if item["id"] == "api-key-add" {

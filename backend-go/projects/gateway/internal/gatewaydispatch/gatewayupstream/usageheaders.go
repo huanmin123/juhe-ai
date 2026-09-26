@@ -1,6 +1,7 @@
 package gatewayupstream
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +55,145 @@ type RecordMaintenanceJob struct {
 // record-maintenance/record-maintenance-queue.service.ts.
 type RecordMaintenanceQueue interface {
 	EnqueueRecordMaintenanceJob(job RecordMaintenanceJob)
+}
+
+// Anthropic unified rate limit usage headers (AI账户Grok用量快照设计 §8,
+// 证据背书：CLIProxyAPI claude_ratelimit.go)：每个上游响应（不只 429）携带
+// 的 5h/7d 双窗利用率与重置时间，被动采集侧与 codex 的 x-codex-* 头同构。
+// Job kind 固定 anthropic_claude、source 由调用方传入（成功面为流量来源，
+// 失败面重写为 gateway_error）。
+const (
+	// AccountUsageSnapshotKindAnthropicClaude 是 anthropic OAuth 快照行 kind。
+	AccountUsageSnapshotKindAnthropicClaude = "anthropic_claude"
+
+	anthropicUnifiedStatusHeader  = "Anthropic-Ratelimit-Unified-Status"
+	anthropic5hUtilizationHeader  = "Anthropic-Ratelimit-Unified-5h-Utilization"
+	anthropic5hResetHeader        = "Anthropic-Ratelimit-Unified-5h-Reset"
+	anthropic7dUtilizationHeader  = "Anthropic-Ratelimit-Unified-7d-Utilization"
+	anthropic7dResetHeader        = "Anthropic-Ratelimit-Unified-7d-Reset"
+	anthropicUsageTimestampLayout = "2006-01-02T15:04:05.000Z"
+)
+
+// AnthropicUsageSnapshot 是解析后的 unified rate limit 头快照：利用率以
+// 百分比承载（0-1 浮点 ×100），重置时间统一为 UTC 毫秒精度的 RFC3339 文本；
+// 指针/空串字段表示上游未上报（缺字段不致命）。
+type AnthropicUsageSnapshot struct {
+	UnifiedStatus string
+	Used5hPercent *float64
+	Reset5hAt     string
+	Used7dPercent *float64
+	Reset7dAt     string
+	UpdatedAt     string
+}
+
+// ParseAnthropicUsageHeaders parses the anthropic unified rate limit headers
+// (AI账户Grok用量快照设计 §8.1)。nil headers 与五个头全部缺失都返回 nil；
+// utilization 的 NaN/Inf 与重置时间的不可解析格式只跳过该字段。
+func ParseAnthropicUsageHeaders(headers http.Header) *AnthropicUsageSnapshot {
+	if headers == nil {
+		return nil
+	}
+	// Node Date#toISOString() 惯例与 codex 侧一致：UTC + 固定毫秒三位。
+	snapshot := &AnthropicUsageSnapshot{UpdatedAt: time.Now().UTC().Format(anthropicUsageTimestampLayout)}
+	snapshot.UnifiedStatus = HeaderValueOf(headers, anthropicUnifiedStatusHeader)
+	snapshot.Used5hPercent = anthropicUtilizationPercent(headers, anthropic5hUtilizationHeader)
+	snapshot.Reset5hAt = anthropicResetAt(headers, anthropic5hResetHeader)
+	snapshot.Used7dPercent = anthropicUtilizationPercent(headers, anthropic7dUtilizationHeader)
+	snapshot.Reset7dAt = anthropicResetAt(headers, anthropic7dResetHeader)
+	if snapshot.UnifiedStatus == "" && snapshot.Used5hPercent == nil && snapshot.Reset5hAt == "" &&
+		snapshot.Used7dPercent == nil && snapshot.Reset7dAt == "" {
+		return nil
+	}
+	return snapshot
+}
+
+// anthropicUtilizationPercent 读取 0-1 浮点利用率并换算为百分比
+// （0.14 → 14）；非有限数值视为缺失。乘法结果按百分比两位小数取整，
+// 吸收 0.14*100 的二进制浮点毛刺（14.000000000000002 → 14）。
+func anthropicUtilizationPercent(headers http.Header, key string) *float64 {
+	value := HeaderValueOf(headers, key)
+	if value == "" {
+		return nil
+	}
+	utilization := NumberValueOf(value)
+	if utilization == nil || math.IsNaN(*utilization) || math.IsInf(*utilization, 0) {
+		return nil
+	}
+	percent := math.Round(*utilization*100*100) / 100
+	return &percent
+}
+
+// anthropicResetAt 归一重置时间为 UTC 毫秒 RFC3339 文本。兼容三种上游格式
+// （CLIProxyAPI parseUnixOrTimestamp 同序）：unix 秒浮点、RFC3339、HTTP 时间
+// （RFC1123 GMT）；解析失败跳过该字段（缺字段不致命）。
+func anthropicResetAt(headers http.Header, key string) string {
+	value := HeaderValueOf(headers, key)
+	if value == "" {
+		return ""
+	}
+	text := strings.TrimSpace(value)
+	if seconds, err := strconv.ParseFloat(text, 64); err == nil && !math.IsNaN(seconds) && !math.IsInf(seconds, 0) && seconds > 0 {
+		return time.UnixMilli(int64(seconds * 1000)).UTC().Format(anthropicUsageTimestampLayout)
+	}
+	if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+		return parsed.UTC().Format(anthropicUsageTimestampLayout)
+	}
+	if parsed, err := http.ParseTime(text); err == nil {
+		return parsed.UTC().Format(anthropicUsageTimestampLayout)
+	}
+	return ""
+}
+
+// PersistAnthropicUsageHeaders 镜像 PersistOpenAICodexUsageHeaders 的入队
+// 契约：构造维护 job 并经端口入队；无 anthropic 头数据时返回 false。
+func PersistAnthropicUsageHeaders(queue RecordMaintenanceQueue, accountID string, headers http.Header, source string) bool {
+	job := BuildAnthropicUsageRecordMaintenanceJob(accountID, headers, source)
+	if job == nil {
+		return false
+	}
+	queue.EnqueueRecordMaintenanceJob(*job)
+	return true
+}
+
+// BuildAnthropicUsageRecordMaintenanceJob projects the anthropic unified
+// rate limit headers onto the account_usage_snapshot_upsert job envelope
+// (AI账户Grok用量快照设计 §8.2)。payload 字段按 claude_ 前缀全部可选缺失
+// 不写；nil 表示头里没有任何 anthropic 用量数据。
+func BuildAnthropicUsageRecordMaintenanceJob(accountID string, headers http.Header, source string) *RecordMaintenanceJob {
+	snapshot := ParseAnthropicUsageHeaders(headers)
+	if snapshot == nil {
+		return nil
+	}
+	payload := map[string]any{
+		// 与 codex_usage_updated_at 同形：Node toISOString 毫秒三位。
+		"claude_usage_updated_at": snapshot.UpdatedAt,
+	}
+	if source != "" {
+		payload["source"] = source
+	}
+	if snapshot.Used5hPercent != nil {
+		payload["claude_5h_used_percent"] = *snapshot.Used5hPercent
+	}
+	if snapshot.Reset5hAt != "" {
+		payload["claude_5h_reset_at"] = snapshot.Reset5hAt
+	}
+	if snapshot.Used7dPercent != nil {
+		payload["claude_7d_used_percent"] = *snapshot.Used7dPercent
+	}
+	if snapshot.Reset7dAt != "" {
+		payload["claude_7d_reset_at"] = snapshot.Reset7dAt
+	}
+	if snapshot.UnifiedStatus != "" {
+		payload["claude_unified_status"] = snapshot.UnifiedStatus
+	}
+	return &RecordMaintenanceJob{
+		Type:      "account_usage_snapshot_upsert",
+		AccountID: accountID,
+		Kind:      AccountUsageSnapshotKindAnthropicClaude,
+		Source:    source,
+		Snapshot:  payload,
+		UpdatedAt: snapshot.UpdatedAt,
+	}
 }
 
 // ParseOpenAICodexUsageHeaders mirrors parseOpenAICodexUsageHeaders.

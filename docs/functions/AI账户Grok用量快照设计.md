@@ -94,3 +94,39 @@ xAI/Grok OAuth 账户（SuperGrok 订阅，上游 `https://cli-chat-proxy.grok.c
 2. maintenance：全新库 `--ensure-schema` 后 CHECK 含 `xai_grok`。
 3. 生产验收（acc_f6a60b47564ab148）：任务族跑一轮后 `account_usage_snapshots` 出现 kind=`xai_grok` 行，`snapshot_json.grok_credit_used_percent=14`、`grok_subscription_tier='SuperGrok Heavy'`；前端账户视图显示用量与套餐。
 4. 文档：本文件随实现同交付；`docs/functions/README.md` 索引更新。
+
+## 8. Anthropic（Claude OAuth）窗口用量接入（2026-09-27 追加）
+
+### 8.1 证据与数据源
+
+Anthropic OAuth（Claude Pro/Max 订阅，上游 claude.ai）在**每个响应**（不只 429）携带 unified rate limit 响应头。证据：CLIProxyAPI 生产级实现 `internal/runtime/executor/helps/claude_ratelimit.go`（本机 `F:\temp-project\中转\CLIProxyAPI`），头清单：
+
+| 响应头 | 含义 |
+| --- | --- |
+| `Anthropic-Ratelimit-Unified-Status` | 整体状态：allowed / allowed_warning / rejected |
+| `Anthropic-Ratelimit-Unified-5h-Status` / `-5h-Utilization` / `-5h-Reset` | 5 小时窗：状态 / 利用率（0-1 浮点）/ 重置时间（unix 秒、RFC3339 或 HTTP 时间） |
+| `Anthropic-Ratelimit-Unified-7d-Status` / `-7d-Utilization` / `-7d-Reset` | 7 天窗，同上 |
+| `Anthropic-Ratelimit-Unified-7d_oi-Status` / `-Reset`、`-Overage-Status` 等 | Fable 专属窗与超额（本期不采集） |
+
+与 Codex 的 `x-codex-*` 头完全同构（5h+7d 双窗）。CLIProxyAPI 仅用 rejected 态做冷却；本设计采集 Utilization 做用量显示。
+
+### 8.2 采集链路（被动，对齐 codex 模式）
+
+- `gatewayupstream/usageheaders.go` 新增 `ParseAnthropicUsageHeaders`/`BuildAnthropicUsageRecordMaintenanceJob`（utilization×100 → 百分比；Reset 兼容 unix 秒/RFC3339/HTTP 时间 → RFC3339）；
+- job 类型沿用 `account_usage_snapshot_upsert`，payload 字段（`claude_` 前缀）：`claude_5h_used_percent`、`claude_5h_reset_at`、`claude_7d_used_percent`、`claude_7d_reset_at`、`claude_unified_status`；
+- 挂载点（2026-09-27 实现落位）：失败面 `cmd/juhe-ai-gateway/chain_ports.go` `HandleFailedUpstreamResponse`（与 codex 的 `PersistOpenAICodexHeadersIfNeeded` 调用同位紧邻），成功面 `chain_v1.go` `handleUpstreamResponse`（Node routes.ts:1554-1556 的 Go 对称位；Go codex 链当前仅有失败面挂载，anthropic 成功面为按 §8.1「每个响应采集」新增）；两处均仅 `provider_code='anthropic' AND type='oauth'` 触发，nil 派发器静默；
+- kind=`anthropic_claude`，source=`anthropic_unified_headers`；schema CHECK 与生产约束同 §3 流程追加。
+
+### 8.3 投影与前端
+
+- gateway 投影：`LoadAnthropicUsageSnapshots`（镜像 xai_grok 加载器），hydrate 按 `provider_code='anthropic' AND type='oauth'` 注入；
+- 前端：`AccountAnthropicUsageSnapshot` kind（fiveHour/sevenDay 双窗：usedPercent/resetAt），`oauthUsageBars` 加 claude 分支——渲染 **5h/7d 双条**（徽章 `5h`/`7d`，与 GPT 完全同构，配色阈值一致）。
+
+### 8.4 验收（特殊说明）
+
+生产当前**无 anthropic OAuth 账户**（全部 api_key），无法端到端实测。验收以单测为准：头解析表驱动（utilization 换算、三种时间格式、缺头、status 缺失）、job 构建、drain 消费、投影注入、前端条形。真实头格式已由 CLIProxyAPI 生产实现背书；账户导入后首个响应即产生快照。
+
+### 8.5 明确不做
+
+- Gemini OAuth（Code Assist）：无已知用量端点/标准化响应头（CLIProxyAPI 亦无），仅 429 冷却机制（已有）；
+- Anthropic 7d_oi/Overage/Fable 窗与重置券：无真实账户验证字段语义，暂不采集。

@@ -473,14 +473,10 @@ func TestLoadRuntimeConfigDriverTriState(t *testing.T) {
 		t.Fatalf("redis state driver without URL must fail, got %v", err)
 	}
 
-	// none-cookie requires secure; OIDC requires issuer + secret.
+	// none-cookie requires secure.
 	cookieEnv := map[string]string{"JUHE_AI_DATABASE_PATH": databasePath, "JUHE_AI_COOKIE_SAME_SITE": "none"}
 	if _, err := loadRuntimeConfig(func(key string) string { return cookieEnv[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_COOKIE_SECURE") {
 		t.Fatalf("none cookie without secure must fail, got %v", err)
-	}
-	oidcEnv := map[string]string{"JUHE_AI_DATABASE_PATH": databasePath, "JUHE_AI_OIDC_ENABLED": "true"}
-	if _, err := loadRuntimeConfig(func(key string) string { return oidcEnv[key] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_OIDC_ISSUER") {
-		t.Fatalf("oidc without issuer must fail, got %v", err)
 	}
 }
 

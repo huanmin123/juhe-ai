@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -107,25 +106,6 @@ func TestW1DevAutoLoginAndDegradedReaders(t *testing.T) {
 	// 未配置用户名 / 无账户存储：不解析。
 	if devAutoLoginResolver(nil, "") != nil {
 		t.Fatal("空用户名必须 nil")
-	}
-	// 不可用用量读取器：固定降级错误。
-	if _, err := (unavailableUsageReader{}).RequestLimitTotal(context.Background(), "sys_1"); err == nil {
-		t.Fatal("必须返回降级错误")
-	}
-	// 委托设置适配器：直通。
-	reads := 0
-	adapter := delegatedSettingsAdapter{read: func(key string) (string, error) {
-		reads++
-		if key == "bad" {
-			return "", errors.New("读取失败")
-		}
-		return "值", nil
-	}}
-	if got, err := adapter.SettingValue("k"); err != nil || got != "值" || reads != 1 {
-		t.Fatalf("delegate = %q, %v, %d", got, err, reads)
-	}
-	if _, err := adapter.SettingValue("bad"); err == nil {
-		t.Fatal("错误必须透传")
 	}
 	// 设置时区源：键固定 usageStatsTimezone。
 	timezone := settingsTimezone(func(key string) (string, error) {

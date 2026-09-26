@@ -160,6 +160,10 @@ func (s *Store) loadXAIGrokUsageSnapshots(ctx context.Context, accountIDs []stri
 	return s.balanceService().LoadXAIGrokUsageSnapshots(ctx, accountIDs)
 }
 
+func (s *Store) loadAnthropicUsageSnapshots(ctx context.Context, accountIDs []string) (map[string]*OAuthUsageSnapshot, error) {
+	return s.balanceService().LoadAnthropicUsageSnapshots(ctx, accountIDs)
+}
+
 func (s *Store) FindBalanceDetails(ctx context.Context, accountID string, access AccessScope) (*BalanceDetails, error) {
 	return s.balanceService().FindBalanceDetails(ctx, accountID, access)
 }
@@ -325,9 +329,11 @@ func (s *Store) prepareBalanceDraft(ctx context.Context, accountInput map[string
 // (account-summary.repository.ts:1452 + :1575): gpt-provider oauth rows carry
 // the Codex usage snapshot of the fact (credential-source) account id and
 // xai-provider oauth rows carry the Grok billing usage snapshot (AI账户Grok
-// 用量快照设计 §5); everything else stays undefined.
+// 用量快照设计 §5) and anthropic-provider oauth rows carry the Claude
+// unified-rate-limit usage snapshot (§8.3); everything else stays undefined.
 func (s *Store) hydrateOAuthUsageSnapshots(ctx context.Context, items []ListItem) error {
-	// 快照 kind 按 provider 注入：gpt → openai_codex，xai → xai_grok。
+	// 快照 kind 按 provider 注入：gpt → openai_codex，xai → xai_grok，
+	// anthropic → anthropic_claude（AI账户Grok用量快照设计 §8.3）。
 	snapshotKind := func(item ListItem) string {
 		if item.Type != "oauth" {
 			return ""
@@ -337,6 +343,9 @@ func (s *Store) hydrateOAuthUsageSnapshots(ctx context.Context, items []ListItem
 		}
 		if item.ProviderCode == "xai" {
 			return "xai_grok"
+		}
+		if item.ProviderCode == "anthropic" {
+			return "anthropic_claude"
 		}
 		return ""
 	}
@@ -348,6 +357,7 @@ func (s *Store) hydrateOAuthUsageSnapshots(ctx context.Context, items []ListItem
 	}
 	codexIDs := []string{}
 	grokIDs := []string{}
+	claudeIDs := []string{}
 	seen := map[string]bool{}
 	for _, item := range items {
 		kind := snapshotKind(item)
@@ -359,13 +369,16 @@ func (s *Store) hydrateOAuthUsageSnapshots(ctx context.Context, items []ListItem
 			continue
 		}
 		seen[kind+"\x00"+factID] = true
-		if kind == "openai_codex" {
+		switch kind {
+		case "openai_codex":
 			codexIDs = append(codexIDs, factID)
-		} else {
+		case "xai_grok":
 			grokIDs = append(grokIDs, factID)
+		default:
+			claudeIDs = append(claudeIDs, factID)
 		}
 	}
-	if len(codexIDs) == 0 && len(grokIDs) == 0 {
+	if len(codexIDs) == 0 && len(grokIDs) == 0 && len(claudeIDs) == 0 {
 		return nil
 	}
 	codexSnapshots := map[string]*OAuthUsageSnapshot{}
@@ -384,18 +397,33 @@ func (s *Store) hydrateOAuthUsageSnapshots(ctx context.Context, items []ListItem
 		}
 		grokSnapshots = snapshots
 	}
+	claudeSnapshots := map[string]*OAuthUsageSnapshot{}
+	if len(claudeIDs) > 0 {
+		snapshots, err := s.loadAnthropicUsageSnapshots(ctx, claudeIDs)
+		if err != nil {
+			return err
+		}
+		claudeSnapshots = snapshots
+	}
 	for index := range items {
 		kind := snapshotKind(items[index])
 		if kind == "" {
 			continue
 		}
 		factID := factIDOf(items[index])
-		if kind == "openai_codex" {
+		switch kind {
+		case "openai_codex":
 			if snapshot, ok := codexSnapshots[factID]; ok {
 				items[index].OAuthUsage = snapshot
 			}
-		} else if snapshot, ok := grokSnapshots[factID]; ok {
-			items[index].OAuthUsage = snapshot
+		case "xai_grok":
+			if snapshot, ok := grokSnapshots[factID]; ok {
+				items[index].OAuthUsage = snapshot
+			}
+		default:
+			if snapshot, ok := claudeSnapshots[factID]; ok {
+				items[index].OAuthUsage = snapshot
+			}
 		}
 	}
 	return nil
@@ -485,6 +513,10 @@ func oauthUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptA
 
 func xaiGrokUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, error) {
 	return accountsbalance.XAIGrokUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
+}
+
+func anthropicUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, error) {
+	return accountsbalance.AnthropicUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
 }
 
 func oauthUsageWindowFromSnapshot(snapshot map[string]any, window, updatedAt string) (*OAuthUsageWindow, error) {

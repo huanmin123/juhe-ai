@@ -30,23 +30,6 @@ func TestSanitizeURLForLogCredentialQueryMasked(t *testing.T) {
 	}
 }
 
-// TestSanitizeURLForLogOAuthSemanticsUnchanged 固定 /oauth 分支原有语义不回归：
-// 非敏感名保留、敏感名 [redacted]、仅 path+query 输出。
-func TestSanitizeURLForLogOAuthSemanticsUnchanged(t *testing.T) {
-	sanitized := SanitizeURLForLog("/oauth/authorize?client_id=abc&state=xyz&nonce=n-1")
-	if sanitized != "/oauth/authorize?client_id=abc&nonce=%5Bredacted%5D&state=%5Bredacted%5D" {
-		t.Fatalf("oauth authorize 语义变化: %q", sanitized)
-	}
-	device := SanitizeURLForLog("/oauth/device?user_code=top-secret")
-	if device != "/oauth/device?user_code=%5Bredacted%5D" {
-		t.Fatalf("oauth device 语义变化: %q", device)
-	}
-	oauthKey := SanitizeURLForLog("/oauth/authorize?key=sk-xxx&state=xyz")
-	if oauthKey != "/oauth/authorize?key=%5Bredacted%5D&state=%5Bredacted%5D" {
-		t.Fatalf("oauth 路径凭据名未掩码: %q", oauthKey)
-	}
-}
-
 // TestBuildUsageRequestSnapshotMaskedOriginalURL 固定 usage 请求快照面的
 // originalUrl 落库契约：凭据 query 落快照前掩码（新写入；历史行不回填）。
 func TestBuildUsageRequestSnapshotMaskedOriginalURL(t *testing.T) {

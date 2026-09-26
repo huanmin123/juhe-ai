@@ -286,15 +286,6 @@ func SanitizeURLCredentialsForLog(value string) string {
 	return strings.TrimSpace(value)
 }
 
-// sanitizeURLForLogSensitiveNames mirrors the oauth sensitive query names.
-var sanitizeURLForLogSensitiveNames = map[string]bool{
-	"state":          true,
-	"nonce":          true,
-	"code_challenge": true,
-	"transaction_id": true,
-	"user_code":      true,
-}
-
 // sanitizeURLForLogCredentialNames 是凭据类 query 名（小写比对），值一律掩码。
 // Gemini native 的 `?key=` 载体与 OAuth token 类 query 会随 originalUrl 明文
 // 进入 usage 快照/日志面；掩码后 path 与其余 query 参数仍保留诊断价值。
@@ -311,25 +302,15 @@ var sanitizeURLForLogCredentialNames = map[string]bool{
 	"api-key":       true,
 }
 
-// SanitizeURLForLog mirrors sanitizeUrlForLog with a Go-side hardening
-// (2026-09-25): /oauth/authorize 与 /oauth/device 维持原有敏感名重写语义；
-// 其余 path 上凭据类 query 名的值替换为 [redacted]，path、query 顺序与其余
-// 参数字节原样保留，无凭据参数时原文返回。日志面与 usage 快照面共用本函数。
+// SanitizeURLForLog（Go 侧加固 2026-09-25）：凭据类 query 名的值替换为
+// [redacted]，path、query 顺序与其余参数字节原样保留，无凭据参数时原文
+// 返回。日志面与 usage 快照面共用本函数。
 func SanitizeURLForLog(value string) string {
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return value
 	}
-	if parsed.Path != "/oauth/authorize" && parsed.Path != "/oauth/device" {
-		return maskCredentialQueryValues(parsed, value)
-	}
-	query := parsed.Query()
-	for name := range query {
-		if sanitizeURLForLogSensitiveNames[name] || sanitizeURLForLogCredentialNames[strings.ToLower(name)] {
-			query.Set(name, "[redacted]")
-		}
-	}
-	return parsed.Path + "?" + query.Encode()
+	return maskCredentialQueryValues(parsed, value)
 }
 
 // maskCredentialQueryValues 重写 RawQuery 中凭据类参数的值为 [redacted]；

@@ -33,6 +33,7 @@ export {
 } from './accountBasicFormatters'
 
 export {
+  claudeOAuthUsageBars,
   formatAccountUsageSummary,
   formatCost,
   formatGrokPeriodReset,

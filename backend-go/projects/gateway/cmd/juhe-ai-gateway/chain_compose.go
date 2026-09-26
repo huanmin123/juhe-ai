@@ -183,6 +183,12 @@ type chainRuntimeDeps struct {
 	// v2 快照行；gatewaycodex 对 nil 派发器仍静默跳过，仅测试/降级装配传 nil）。
 	CodexUsageHeadersDispatcher gatewaycodex.CodexUsageHeadersDispatcher
 
+	// anthropic（Claude OAuth）unified rate limit 响应头派发（AI账户Grok用量
+	// 快照设计 §8.2；optional：nil 派发器在 gatewaycodex 资格门后静默跳过）。
+	// 与 codex 同一通道适配器（compose_codex_usage_headers.go 的
+	// record_maintenance_jobs 快照行，kind anthropic_claude）。
+	AnthropicUsageHeadersDispatcher gatewaycodex.AnthropicUsageHeadersDispatcher
+
 	// 失败派发链装配（chain_request_failure_health.go / chain_turn_probe_store.go /
 	// chain_turn_retry_redis.go）：健康检查派发的进程内 outbox writer（常驻，
 	// 无 HTTP 目标）+ Redis 驱动的 turn-retry 状态存储（nil → memory 驱动，
@@ -303,14 +309,22 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// 使两个 env 对队列失效，只能吃到包级默认。
 	dispatch := gatewayusage.NewFinalizationDispatch(recorder, spoolOverflow{spool: spool}, deps.UsageFinalizationMaxItems, deps.ConcurrencyGlobalMax)
 	dispatch.OverflowEnabled = spool != nil
-	usageService := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: true}).
+	// chainSyncPricingAllowed 是同步定价目录 gate 的组合根字面量（Node
+	// canUseSynchronousCatalogPricingInGatewayRequest：cacheDriver !== 'redis'
+	// ⇒ true）：usageService 的 ServiceConfig.SyncPricingAllowed 与完成尝试
+	// 记录（chainFinalizationUsage.syncPricingAllowed）同源共用，不另设配置项。
+	const chainSyncPricingAllowed = true
+	// 同步定价目录（chain_pricing.go）单实例共享：usageService 与完成尝试
+	// 记录（gatewayChain.finalizationPricing）走同一 catalog 实例。
+	chainPricingCatalog := newChainUsagePricingCatalog(deps.Cache)
+	usageService := gatewayusage.NewService(dispatch, gatewayusage.ServiceConfig{SyncPricingAllowed: chainSyncPricingAllowed}).
 		WithClock(clock).
 		WithLogger(slogLogger{inner: logger}).
 		// Synchronous catalog pricing (chain_pricing.go): the cacheDriver!=='redis'
-		// gate is ServiceConfig.SyncPricingAllowed above; the adapter resolves
+		// gate is chainSyncPricingAllowed above; the adapter resolves
 		// the catalog row through the same runtime cache and bills through the
 		// shared internal/pricing engine (Node model-catalog.service.ts).
-		WithPricingCatalog(newChainUsagePricingCatalog(deps.Cache)).
+		WithPricingCatalog(chainPricingCatalog).
 		// D-190（BUG-0175）：上游失败 prometheus 指标族生产装配——
 		// recordGatewayUpstreamFailureMetric 从此有进程内注册表可写。
 		WithMetrics(gatewayusage.HTTPMetrics{}).
@@ -443,16 +457,17 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// D-151（BUG-0175）接线：把 runtime cache 的 provider model catalog 适配进
 	// gpt 请求覆盖能力解析（Nil cache 保持能力解析为空，覆盖保持惰性）。
 	engine := gatewaydispatch.NewEngine(newChainProviderDriverWithCache(deps.Cache, chainBodyParser), &chainFailureDispatcher{
-		usage:             usageService,
-		affinity:          dispatchSessionAffinity,
-		clientStrategy:    codexClientStrategy,
-		turnRetry:         chainTurnRetry,
-		avoidanceProbe:    chainTurnAvoidanceProbe,
-		healthDispatch:    chainHealthDispatch,
-		policy:            deps.AccountErrorPolicy,
-		effects:           deps.AccountErrorPolicyEffects,
-		apiKeyObservation: deps.AccountAPIKeyObservation,
-		codexUsageHeaders: deps.CodexUsageHeadersDispatcher,
+		usage:                 usageService,
+		affinity:              dispatchSessionAffinity,
+		clientStrategy:        codexClientStrategy,
+		turnRetry:             chainTurnRetry,
+		avoidanceProbe:        chainTurnAvoidanceProbe,
+		healthDispatch:        chainHealthDispatch,
+		policy:                deps.AccountErrorPolicy,
+		effects:               deps.AccountErrorPolicyEffects,
+		apiKeyObservation:     deps.AccountAPIKeyObservation,
+		codexUsageHeaders:     deps.CodexUsageHeadersDispatcher,
+		anthropicUsageHeaders: deps.AnthropicUsageHeadersDispatcher,
 	})
 	// B-1（BUG-0174）波1遗留接线：dispatch 的 Key 指纹密钥与水合层同源
 	//（chain_runtime.go newChainAccountsSelectorWithStats 的 cfg.Secret）。
@@ -662,6 +677,10 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 			Recorder: rejectionRecorder,
 		},
 		finalizationUsage: recorder,
+		// 完成尝试记录的同步定价面：catalog 与上方 usageService 共享同一实例，
+		// gate 与 ServiceConfig.SyncPricingAllowed 同源（chainSyncPricingAllowed）。
+		finalizationPricing:            chainPricingCatalog,
+		finalizationSyncPricingAllowed: chainSyncPricingAllowed,
 		auditSettings: auditSettingsSourceAdapter{
 			enabled:                  deps.AuditLogEnabled,
 			successSampleRate:        deps.AuditLogSuccessSampleRate,
@@ -669,6 +688,9 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		},
 		auditDispatcher:    deps.AuditUsageDispatch,
 		usageModelResolver: usageModelResolverAdapter{},
+		// anthropic unified rate limit 头成功面派发（AI账户Grok用量快照设计
+		// §8.2；失败面对称口在 chainFailureDispatcher.anthropicUsageHeaders）。
+		anthropicUsageHeaders: deps.AnthropicUsageHeadersDispatcher,
 	}
 	// W4-B（BUG-0175）D-132 接线：响应层账户副作用面（配置策略避让 +
 	// 上游桶避让写侧）。nil 服务（组合测试）保持 nil——finalization 对 nil

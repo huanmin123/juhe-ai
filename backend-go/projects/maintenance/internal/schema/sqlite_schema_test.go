@@ -13,7 +13,7 @@ import (
 )
 
 // goldenBusinessTables is the golden table list extracted from the Node
-// business-schema.ts (80 tables) plus the Go-appended
+// business-schema.ts (72 tables) plus the Go-appended
 // model_check_question_bank table (model-check question bank feature).
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
@@ -61,14 +61,6 @@ var goldenBusinessTables = []string{
 	"model_check_question_bank",
 	"model_quality_policies",
 	"model_quality_schedules",
-	"oauth_access_tokens",
-	"oauth_authorization_code_oidc_contexts",
-	"oauth_authorization_codes",
-	"oauth_authorization_transactions",
-	"oauth_clients",
-	"oauth_device_authorizations",
-	"oauth_grants",
-	"oauth_signing_keys",
 	"openai_compatible_files",
 	"openai_compatible_vector_store_chunks",
 	"openai_compatible_vector_store_files",
@@ -208,7 +200,7 @@ var goldenUsageCatalogTables = []string{
 // statement counts; goldenTotalTables/goldenTotalIndexes below count distinct
 // objects.
 var goldenSchemaCounts = SQLiteResult{
-	Business:     SchemaCounts{Tables: 81, Indexes: 221},
+	Business:     SchemaCounts{Tables: 73, Indexes: 214},
 	Stats:        SchemaCounts{Tables: 64, Indexes: 124},
 	Chat:         SchemaCounts{Tables: 10, Indexes: 26},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
@@ -219,12 +211,12 @@ var goldenSchemaCounts = SQLiteResult{
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
 // verify every schema exactly).
-const goldenTotalTables = 164
+const goldenTotalTables = 156
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
 // schema (IF NOT EXISTS no-ops on a fresh database) are not counted twice.
-const goldenTotalIndexes = 394
+const goldenTotalIndexes = 387
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {

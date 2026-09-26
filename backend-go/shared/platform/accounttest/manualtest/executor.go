@@ -122,6 +122,30 @@ func (e *Executor) Execute(ctx context.Context, task accounttest.ManualTestTaskR
 	}, nil
 }
 
+// overlayRotatedCredentials 用保存账户行的实时 access/refresh token 覆盖草稿
+// 快照里的同名值（仅 oauth/google_oauth、task 绑定保存账户时生效）。显式要
+// 测全新 token 的场景走重新授权路由，不经过草稿测试。
+func (e *Executor) overlayRotatedCredentials(ctx context.Context, task accounttest.ManualTestTaskRecord, draft *DraftSnapshot) {
+	if e.savedAccounts == nil || strings.TrimSpace(task.AccountID) == "" {
+		return
+	}
+	if draft.Type != "oauth" && draft.Type != "google_oauth" {
+		return
+	}
+	if draft.Credentials == nil {
+		draft.Credentials = map[string]any{}
+	}
+	account, err := e.savedAccounts.LoadAccountForTest(ctx, task.AccountID)
+	if err != nil || account == nil || len(account.Credentials) == 0 {
+		return
+	}
+	for _, key := range []string{"access_token", "refresh_token"} {
+		if value := credentialText(account.Credentials, key); value != "" {
+			draft.Credentials[key] = value
+		}
+	}
+}
+
 // resolveView 组装探针视图。failMessage 非空表示配置/定位类失败（fail 无信封）。
 func (e *Executor) resolveView(ctx context.Context, task accounttest.ManualTestTaskRecord) (*accountprobe.View, string, error) {
 	if task.DraftAccountEncrypted != "" {
@@ -134,6 +158,10 @@ func (e *Executor) resolveView(ctx context.Context, task accounttest.ManualTestT
 			if !isGatewaySupportedDraftProtocol(draft.ProtocolCode, draft.ProtocolVersion) {
 				return nil, unsupportedGatewayProtocolTestMessage, nil
 			}
+			// OAuth token 轮换兜底：编辑表单加载的是历史凭据快照，账户后台
+			// 轮换（真实流量触发 refresh）后快照里的 access_token 已失效，
+			// 上游报 no auth context——组装视图前用账户行实时 token 覆盖。
+			e.overlayRotatedCredentials(ctx, task, draft)
 			view := draftView(e.secret, draft, task.Model, task.TestEndpointMode)
 			// 草稿绑定的代理档案解析为出站 URL：海外上游直连不可达，解析
 			// 失败按配置错误 fail（不再静默直连卡满 60s 超时窗口）。

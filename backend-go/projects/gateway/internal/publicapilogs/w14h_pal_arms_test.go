@@ -341,21 +341,6 @@ func (s *w14hCountingCleanupStore) CleanupBefore(context.Context, string, int) (
 	return RetentionBatchSize, nil
 }
 
-func TestW14HSanitizeArms(t *testing.T) {
-	// 不可解析 URL 原样返回。
-	if got := sanitizeURLForLog("://w14h-invalid"); got != "://w14h-invalid" {
-		t.Fatalf("不可解析=%q", got)
-	}
-	// 空路径按 "/" 处理后不命中 OAuth 路径。
-	if got := sanitizeURLForLog("plain-value"); got != "plain-value" {
-		t.Fatalf("纯文本=%q", got)
-	}
-	// 解析后路径为空按 "/" 处理。
-	if got := sanitizeURLForLog("http://w14h.example"); got != "http://w14h.example" {
-		t.Fatalf("空路径=%q", got)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // store 事务错误臂：脚本化 driver
 // ---------------------------------------------------------------------------

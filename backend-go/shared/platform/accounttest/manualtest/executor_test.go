@@ -473,3 +473,42 @@ func TestExecutorSavedAccountPath(t *testing.T) {
 		t.Fatalf("accountId = %v", envelope["accountId"])
 	}
 }
+
+// TestOverlayRotatedCredentials：OAuth 草稿快照的 token 在账户后台轮换后
+// 失效（上游报 no auth context）——组装视图前必须用账户行实时 token 覆盖；
+// api_key 类型不受影响。
+func TestOverlayRotatedCredentials(t *testing.T) {
+	executor, err := NewExecutor(ExecutorOptions{
+		Probe: &accountprobe.Service{},
+		SavedAccounts: &fakeSavedSource{account: &proberepo.AccountForTestView{
+			Credentials: map[string]any{"access_token": "token-new", "refresh_token": "refresh-new"},
+		}},
+		Secret: testSecret,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := &DraftSnapshot{
+		ID:          "acct-draft-1",
+		Type:        "oauth",
+		Credentials: map[string]any{"access_token": "token-old", "refresh_token": "refresh-old", "base_url": "https://cli-chat-proxy.grok.com/v1"},
+	}
+	executor.overlayRotatedCredentials(context.Background(), accounttest.ManualTestTaskRecord{AccountID: "acct-draft-1"}, draft)
+	if draft.Credentials["access_token"] != "token-new" || draft.Credentials["refresh_token"] != "refresh-new" {
+		t.Fatalf("oauth token 覆盖: %v", draft.Credentials)
+	}
+	if draft.Credentials["base_url"] != "https://cli-chat-proxy.grok.com/v1" {
+		t.Fatalf("base_url 不应被覆盖: %v", draft.Credentials)
+	}
+
+	// api_key 草稿不覆盖（凭据即 Key，无轮换语义）。
+	apiKeyDraft := &DraftSnapshot{
+		ID:          "acct-draft-1",
+		Type:        "api_key",
+		Credentials: map[string]any{"api_key": "key-old"},
+	}
+	executor.overlayRotatedCredentials(context.Background(), accounttest.ManualTestTaskRecord{AccountID: "acct-draft-1"}, apiKeyDraft)
+	if apiKeyDraft.Credentials["api_key"] != "key-old" {
+		t.Fatalf("api_key 不应被覆盖: %v", apiKeyDraft.Credentials)
+	}
+}

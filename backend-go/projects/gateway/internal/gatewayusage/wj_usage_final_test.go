@@ -10,10 +10,9 @@ import (
 	"time"
 )
 
-// TestWJSanitizeURLForLog 固定日志 URL 脱敏契约：oauth 授权/设备路径维持
-// 原有敏感名重写；普通路径上凭据类 query 值掩码（2026-09-25 Go 侧加固，
-// 原契约「普通路径原样」会让 Gemini `?key=` 明文落 usage 快照），其余
-// query 与顺序字节原样保留。
+// TestWJSanitizeURLForLog 固定日志 URL 脱敏契约：凭据类 query 值掩码
+// （2026-09-25 Go 侧加固），其余 query 与顺序字节原样保留；oauth 路径不再
+// 特判，与普通路径遵循同一凭据掩码规则。
 func TestWJSanitizeURLForLog(t *testing.T) {
 	if got := SanitizeURLForLog("/v1/chat/completions?api_key=secret"); got != "/v1/chat/completions?api_key=[redacted]" {
 		t.Fatalf("凭据类 query 必须掩码: %q", got)
@@ -21,19 +20,12 @@ func TestWJSanitizeURLForLog(t *testing.T) {
 	if got := SanitizeURLForLog("/v1/chat/completions?a=1&b=2"); got != "/v1/chat/completions?a=1&b=2" {
 		t.Fatalf("无凭据普通路径必须原样: %q", got)
 	}
-	sanitized := SanitizeURLForLog("/oauth/authorize?client_id=abc&code_challenge=secret&state=xyz")
-	if !strings.HasPrefix(sanitized, "/oauth/authorize?") {
-		t.Fatalf("oauth 路径必须保留: %q", sanitized)
+	// oauth 路径按通用凭据掩码语义处理：凭据名掩码、非凭据参数字节原样。
+	if got := SanitizeURLForLog("/oauth/authorize?key=sk-xxx&client_id=abc"); got != "/oauth/authorize?key=[redacted]&client_id=abc" {
+		t.Fatalf("oauth 路径须遵循通用凭据掩码语义: %q", got)
 	}
-	if strings.Contains(sanitized, "secret") || strings.Contains(sanitized, "xyz") {
-		t.Fatalf("敏感 query 必须脱敏: %q", sanitized)
-	}
-	if !strings.Contains(sanitized, "client_id=abc") {
-		t.Fatalf("非敏感 query 必须保留: %q", sanitized)
-	}
-	device := SanitizeURLForLog("/oauth/device?user_code=top-secret")
-	if strings.Contains(device, "top-secret") || !strings.HasPrefix(device, "/oauth/device?") {
-		t.Fatalf("device 路径脱敏不符: %q", device)
+	if got := SanitizeURLForLog("/oauth/device?user_code=top-secret"); got != "/oauth/device?user_code=top-secret" {
+		t.Fatalf("oauth 路径非凭据参数必须原样: %q", got)
 	}
 }
 

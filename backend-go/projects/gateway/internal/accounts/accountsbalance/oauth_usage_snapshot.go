@@ -14,11 +14,13 @@ import (
 // OAuth usage snapshot read projections over the stats-side
 // account_usage_snapshots rows: kind='openai_codex' (BUG-0175 D-206, the port
 // of backend/src/storage/oauth-usage-loaders.ts +
-// account-summary.repository.ts:1452,1575) and kind='xai_grok' (AI账户Grok用量
-// 快照设计 §5, the jobs xai-grok-usage-refresh family's billing snapshots).
-// The account summary hydrates the oauthUsage field for gpt-provider oauth
-// accounts from the Codex rows and for xai-provider oauth accounts from the
-// Grok rows. The ListItem-shaped hydration loop stays in the accounts facade
+// account-summary.repository.ts:1452,1575), kind='xai_grok' (AI账户Grok用量
+// 快照设计 §5, the jobs xai-grok-usage-refresh family's billing snapshots) and
+// kind='anthropic_claude' (§8, the gateway passive unified rate limit header
+// capture). The account summary hydrates the oauthUsage field for gpt-provider
+// oauth accounts from the Codex rows, for xai-provider oauth accounts from the
+// Grok rows and for anthropic-provider oauth accounts from the Claude rows.
+// The ListItem-shaped hydration loop stays in the accounts facade
 // (balance_subdomain_bridge.go); this package exposes the snapshot load keyed
 // by account id.
 
@@ -66,6 +68,13 @@ func (s *Service) LoadOpenAICodexUsageSnapshots(ctx context.Context, accountIDs 
 // (AI账户Grok用量快照设计 §4-§5).
 func (s *Service) LoadXAIGrokUsageSnapshots(ctx context.Context, accountIDs []string) (map[string]*OAuthUsageSnapshot, error) {
 	return s.loadOAuthUsageSnapshots(ctx, "xai_grok", accountIDs)
+}
+
+// LoadAnthropicUsageSnapshots mirrors LoadOpenAICodexUsageSnapshots for the
+// kind='anthropic_claude' rows the gateway passive unified rate limit header
+// capture upserts (AI账户Grok用量快照设计 §8).
+func (s *Service) LoadAnthropicUsageSnapshots(ctx context.Context, accountIDs []string) (map[string]*OAuthUsageSnapshot, error) {
+	return s.loadOAuthUsageSnapshots(ctx, "anthropic_claude", accountIDs)
 }
 
 // loadOAuthUsageSnapshots is the shared chunked-IN reader behind both kind
@@ -135,10 +144,14 @@ func (s *Service) loadOAuthUsageSnapshots(ctx context.Context, kind string, acco
 }
 
 // parseOAuthUsageSnapshotRow dispatches the row to the kind projection; an
-// unparseable snapshot_json skips the row for both kinds.
+// unparseable snapshot_json skips the row for every kind.
 func parseOAuthUsageSnapshotRow(kind, source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, error) {
 	if kind == "xai_grok" {
 		return XAIGrokUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt,
+			lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
+	}
+	if kind == "anthropic_claude" {
+		return AnthropicUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt,
 			lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
 	}
 	return OAuthUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt,
@@ -214,8 +227,32 @@ func XAIGrokUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemp
 	return out, nil
 }
 
-// oauthUsageSnapshotHeader parses the row-level header shared by both kind
-// projections: updated_at, source, the refresh-state timestamps and the last
+// AnthropicUsageSnapshotFromRow mirrors OAuthUsageSnapshotFromRow for the
+// kind='anthropic_claude' rows (AI账户Grok用量快照设计 §8)：the gateway 被动
+// 采集的 claude_5h/7d 双窗（used_percent + reset_at）。reset_at 非法时只跳过
+// 该字段（与采集侧缺字段不致命的容错对齐）；claude_unified_status 留在
+// snapshot_json，不进投影（前端只渲染双窗进度条）。
+func AnthropicUsageSnapshotFromRow(source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, error) {
+	out, snapshot, err := oauthUsageSnapshotHeader("anthropic_claude", source, snapshotJSON, refreshStatus,
+		lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt)
+	if err != nil || out == nil {
+		return out, err
+	}
+	fiveHour, err := anthropicUsageWindowFromSnapshot(snapshot, "5h", out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	out.FiveHour = fiveHour
+	sevenDay, err := anthropicUsageWindowFromSnapshot(snapshot, "7d", out.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	out.SevenDay = sevenDay
+	return out, nil
+}
+
+// oauthUsageSnapshotHeader parses the row-level header shared by every kind
+// projection: updated_at, source, the refresh-state timestamps and the last
 // error; an unparseable snapshot_json returns (nil, nil, nil) to skip the row.
 func oauthUsageSnapshotHeader(kind, source, snapshotJSON, refreshStatus, lastAttemptAt, lastSuccessAt, nextRefreshAfter, lastErrorMessage, updatedAt string) (*OAuthUsageSnapshot, map[string]any, error) {
 	updatedText, err := RequiredRFC3339Instant(updatedAt, "account_usage_snapshots.updated_at")
@@ -268,22 +305,40 @@ func oauthUsageSnapshotHeader(kind, source, snapshotJSON, refreshStatus, lastAtt
 // utilization presence gates the window; an elapsed reset collapses the
 // utilization to 0 with remainingSeconds 0.
 func OAuthUsageWindowFromSnapshot(snapshot map[string]any, window, updatedAt string) (*OAuthUsageWindow, error) {
-	utilization, hasUtilization := NumberFromSnapshot(snapshot["codex_"+window+"_used_percent"])
+	return prefixedUsageWindowFromSnapshot(snapshot, "codex_"+window, window, updatedAt, true)
+}
+
+// anthropicUsageWindowFromSnapshot is the claude_* window reader
+// (AI账户Grok用量快照设计 §8)：字段形状与 codex 双窗同构，但没有
+// reset_after_seconds / window_minutes 附属字段。
+func anthropicUsageWindowFromSnapshot(snapshot map[string]any, window, updatedAt string) (*OAuthUsageWindow, error) {
+	return prefixedUsageWindowFromSnapshot(snapshot, "claude_"+window, window, updatedAt, false)
+}
+
+// prefixedUsageWindowFromSnapshot is the shared window reader behind the
+// codex / anthropic projections: the utilization presence gates the window,
+// an elapsed reset collapses the utilization to 0 with remainingSeconds 0 and
+// codexExtras toggles the reset_after_seconds fallback + window_minutes field
+// only the codex payload carries.
+func prefixedUsageWindowFromSnapshot(snapshot map[string]any, prefix, window, updatedAt string, codexExtras bool) (*OAuthUsageWindow, error) {
+	utilization, hasUtilization := NumberFromSnapshot(snapshot[prefix+"_used_percent"])
 	if !hasUtilization {
 		return nil, nil
 	}
 	var resetAt *string
-	rawReset, hasReset := snapshot["codex_"+window+"_reset_at"]
+	rawReset, hasReset := snapshot[prefix+"_reset_at"]
 	if !hasReset || rawReset == nil {
 		// resetAtFromSeconds: a missing/non-positive offset leaves the reset
 		// instant undefined.
-		if seconds, ok := NumberFromSnapshot(snapshot["codex_"+window+"_reset_after_seconds"]); ok && *seconds > 0 {
-			base, err := RFC3339InstantMilliseconds(updatedAt)
-			if err != nil {
-				return nil, &accountscore.ValidationError{Message: "account_usage_snapshots.updated_at 必须是带 Z 或数值 offset 的 RFC3339 时间"}
+		if codexExtras {
+			if seconds, ok := NumberFromSnapshot(snapshot[prefix+"_reset_after_seconds"]); ok && *seconds > 0 {
+				base, err := RFC3339InstantMilliseconds(updatedAt)
+				if err != nil {
+					return nil, &accountscore.ValidationError{Message: "account_usage_snapshots.updated_at 必须是带 Z 或数值 offset 的 RFC3339 时间"}
+				}
+				reset := accountscore.IsoMillis(time.UnixMilli(base + int64(*seconds*1000)).UTC())
+				resetAt = &reset
 			}
-			reset := accountscore.IsoMillis(time.UnixMilli(base + int64(*seconds*1000)).UTC())
-			resetAt = &reset
 		}
 	} else {
 		text, ok := rawReset.(string)
@@ -314,8 +369,10 @@ func OAuthUsageWindowFromSnapshot(snapshot map[string]any, window, updatedAt str
 		}
 	}
 	out := &OAuthUsageWindow{Utilization: utilizationValue, ResetsAt: resetAt, RemainingSeconds: remainingSeconds}
-	if minutes, ok := NumberFromSnapshot(snapshot["codex_"+window+"_window_minutes"]); ok {
-		out.WindowMinutes = minutes
+	if codexExtras {
+		if minutes, ok := NumberFromSnapshot(snapshot[prefix+"_window_minutes"]); ok {
+			out.WindowMinutes = minutes
+		}
 	}
 	return out, nil
 }

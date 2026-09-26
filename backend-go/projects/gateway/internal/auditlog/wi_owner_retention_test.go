@@ -108,24 +108,29 @@ func TestWILeaseKeeperRenewsAndReleases(t *testing.T) {
 	}
 }
 
-func TestWILeaseKeeperTerminalOnRenewFailure(t *testing.T) {
-	// 契约：续租传输错误对进程是终态（不是 retry-until-ttl）。
+func TestWILeaseKeeperRetriesTransportErrorsUntilGraceWindow(t *testing.T) {
+	// 修订后契约（2026-09-27）：续租传输错误不立即终态——租约仍可能未过期，
+	// keeper 在 2×TTL 放宽窗口内按周期重试；超过窗口才放弃所有权。
 	store := openSQLiteStore(t, sqliteConfig(t, t.TempDir()))
 	ctx := context.Background()
 	keeper, ok, err := StartLeaseKeeper(ctx, store, "wi-doomed", 3*time.Second, slog.Default())
 	if err != nil || !ok {
 		t.Fatalf("启动 keeper=%v err=%v", ok, err)
 	}
-	// 关闭底层库使下一次续租传输失败。
+	// 关闭底层库使后续每次续租传输失败（interval=1s、放宽窗口=2×3s=6s）。
 	_ = store.Close()
+	time.Sleep(2 * time.Second)
+	if err := keeper.LostError(); err != nil {
+		t.Fatalf("放宽窗口内的传输失败不得立即终态: %v", err)
+	}
 	select {
 	case <-keeper.Lost():
 		lostErr := keeper.LostError()
-		if lostErr == nil || !strings.Contains(lostErr.Error(), "续租 F3 audit owner lease 失败") {
-			t.Fatalf("LostError=%v", lostErr)
+		if lostErr == nil || !strings.Contains(lostErr.Error(), "放宽窗口") {
+			t.Fatalf("超过放宽窗口必须以窗口原因终态: %v", lostErr)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("续租失败后 Lost 未关闭")
+	case <-time.After(15 * time.Second):
+		t.Fatal("超过放宽窗口后 Lost 未关闭")
 	}
 	// 已丢失的 keeper Close 只停循环，不尝试释放。
 	keeper.Close()

@@ -263,13 +263,6 @@ func TestAutofillSkipReasonCategories(t *testing.T) {
 		// 2026-09 收尾盘点新增：域写入表与运行时投影/游标族。
 		{StoreChat, "chat_user_asset_usage", "域业务表"},
 		{StoreBusiness, "group_account_stats_dirty", "派生队列"},
-		{StoreBusiness, "oauth_signing_keys", "域业务表"},
-		{StoreBusiness, "oauth_grants", "域业务表"},
-		{StoreBusiness, "oauth_authorization_transactions", "域业务表"},
-		{StoreBusiness, "oauth_authorization_codes", "域业务表"},
-		{StoreBusiness, "oauth_authorization_code_oidc_contexts", "域业务表"},
-		{StoreBusiness, "oauth_access_tokens", "域业务表"},
-		{StoreBusiness, "oauth_device_authorizations", "域业务表"},
 		{StoreBusiness, "account_name_search_documents", "域业务表"},
 		{StoreBusiness, "account_name_search_terms", "域业务表"},
 		{StoreBusiness, "account_circuit_outbox", "域业务表"},

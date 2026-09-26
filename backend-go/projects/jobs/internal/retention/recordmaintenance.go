@@ -19,12 +19,18 @@ import (
 
 // Record maintenance job type discriminators (Node job.type strings).
 const (
-	JobTypeAPIKeyRelatedCleanup         = "api_key_related_cleanup"
-	JobTypeAccountRelatedCleanup        = "account_related_cleanup"
-	JobTypeUsageRecordsCleanup          = "usage_records_cleanup"
-	JobTypeNonBusinessDataCleanup       = "non_business_data_cleanup"
+	JobTypeAPIKeyRelatedCleanup  = "api_key_related_cleanup"
+	JobTypeAccountRelatedCleanup = "account_related_cleanup"
+	JobTypeUsageRecordsCleanup   = "usage_records_cleanup"
+	// JobTypeNonBusinessDataCleanup mirrors non_business_data_cleanup.
+	JobTypeNonBusinessDataCleanup = "non_business_data_cleanup"
+	// JobTypeAccountUsageSnapshotUpsert mirrors account_usage_snapshot_upsert.
 	JobTypeAccountUsageSnapshotUpsert   = "account_usage_snapshot_upsert"
 	AccountUsageSnapshotKindOpenAICodex = "openai_codex"
+	// AccountUsageSnapshotKindAnthropicClaude 是 anthropic（Claude OAuth）
+	// unified rate limit 头快照行 kind（AI账户Grok用量快照设计 §8.2，
+	// gateway 失败面/成功面被动采集 → record_maintenance_jobs → 本执行器）。
+	AccountUsageSnapshotKindAnthropicClaude = "anthropic_claude"
 )
 
 // RecordMaintenanceJob mirrors the Node RecordMaintenanceJob union as one
@@ -148,7 +154,9 @@ func ValidateRecordMaintenanceJob(job RecordMaintenanceJob) error {
 			return errors.New("Redis Stream 数据维护消息格式无效")
 		}
 	case JobTypeAccountUsageSnapshotUpsert:
-		if job.AccountID == "" || job.Kind != AccountUsageSnapshotKindOpenAICodex || job.Snapshot == nil {
+		// kind 是采集侧的快照族判别（openai_codex / anthropic_claude）；
+		// 执行器按 kind 透传 upsert，未知 kind 拒绝以防脏行进队头。
+		if job.AccountID == "" || job.Snapshot == nil || !isValidAccountUsageSnapshotKind(job.Kind) {
 			return errors.New("Redis Stream 数据维护消息格式无效")
 		}
 		if _, ok := parseRfc3339Instant(job.UpdatedAt); !ok {
@@ -158,6 +166,16 @@ func ValidateRecordMaintenanceJob(job RecordMaintenanceJob) error {
 		return errors.New("Redis Stream 数据维护消息格式无效")
 	}
 	return nil
+}
+
+// isValidAccountUsageSnapshotKind 收敛快照行的合法 kind 集合：新采集族
+// （anthropic_claude，AI账户Grok用量快照设计 §8.2）与既有 openai_codex。
+func isValidAccountUsageSnapshotKind(kind string) bool {
+	switch kind {
+	case AccountUsageSnapshotKindOpenAICodex, AccountUsageSnapshotKindAnthropicClaude:
+		return true
+	}
+	return false
 }
 
 // UsageRecordsCleanupJob builds a normalized usage_records_cleanup job (the

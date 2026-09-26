@@ -171,6 +171,50 @@ func catalogAccountFields(prefix string) []catalogField {
 	}
 }
 
+func catalogProviderFields(prefix string) []catalogField {
+	return []catalogField{
+		catalogFieldEx(prefix+".code", "string", false, "供应商编码。", vendorCodeGPT),
+		catalogFieldEx(prefix+".name", "string", false, "供应商名称。", "GPT"),
+		catalogFieldEx(prefix+".parentCode", "string", false, "父供应商编码；顶层供应商缺省。"),
+		catalogFieldEx(prefix+".description", "string", false, "供应商说明；未填写时缺省。"),
+		catalogFieldEx(prefix+".enabled", "boolean", false, "供应商是否启用。", true),
+	}
+}
+
+func catalogProviderProfileFields(prefix string) []catalogField {
+	return []catalogField{
+		catalogFieldEx(prefix+".id", "string", false, "供应商协议档案 ID。", "profile_gpt_openai_v1"),
+		catalogFieldEx(prefix+".name", "string", false, "供应商协议档案名称。", "默认 OpenAI 协议档案"),
+		catalogFieldEx(prefix+".description", "string", false, "供应商协议档案说明；未填写时缺省。"),
+		catalogFieldEx(prefix+".enabled", "boolean", false, "供应商协议档案是否启用。", true),
+		catalogFieldEx(prefix+".protocolCode", "string", false, "协议编码。", "openai"),
+		catalogFieldEx(prefix+".protocolVersion", "string", false, "协议版本。", "v1"),
+		catalogFieldEx(prefix+".baseUrl", "string", false, "协议档案 Base URL。", "https://api.openai.com/v1"),
+		catalogFieldEx(prefix+".defaultHealthCheckModel", "string", false, "默认健康检查模型。", "gpt-4o-mini"),
+		catalogFieldEx(prefix+".accountTypes", "string[]", false, "支持的账号类型。", []string{"api_key"}),
+		catalogFieldEx(prefix+".capabilities", "string[]", false, "协议能力列表。", []string{"chat_completions", "responses"}),
+		catalogFieldEx(prefix+".endpointFamilies", "array", false, "协议端点族列表。"),
+		catalogFieldEx(prefix+".endpointFamilies[].code", "string", false, "端点族编码。", "chat_completions"),
+		catalogFieldEx(prefix+".endpointFamilies[].name", "string", false, "端点族名称。", "Chat Completions"),
+	}
+}
+
+func catalogProviderModelFields(prefix string) []catalogField {
+	return []catalogField{
+		catalogFieldEx(prefix+".model", "string", false, "模型名称。", "gpt-4o"),
+		catalogFieldEx(prefix+".category", "string", false, "展示分类：text 或 image，由模型名规则推导。", "text"),
+		catalogFieldEx(prefix+".status", "string", false, "模型状态。", "active"),
+		catalogFieldEx(prefix+".contextWindowTokens", "number", false, "上下文窗口 token 数；未配置时缺省。", 128000),
+		catalogFieldEx(prefix+".maxInputTokens", "number", false, "最大输入 token 数；未配置时缺省。"),
+		catalogFieldEx(prefix+".maxOutputTokens", "number", false, "最大输出 token 数；未配置时缺省。"),
+		catalogFieldEx(prefix+".inputUsdPer1M", "number", false, "每百万输入 token 单价（美元）；未配置时缺省。", 2.5),
+		catalogFieldEx(prefix+".outputUsdPer1M", "number", false, "每百万输出 token 单价（美元）；未配置时缺省。", 10),
+		catalogFieldEx(prefix+".cachedInputUsdPer1M", "number", false, "每百万缓存输入 token 单价（美元）；未配置时缺省。"),
+		catalogFieldEx(prefix+".supportsPromptCaching", "boolean", false, "是否支持提示词缓存。", false),
+		catalogFieldEx(prefix+".sourcePricingCurrency", "string", false, "定价来源币种；非美元定价时缺省返回来源币种。"),
+	}
+}
+
 // responseFieldsForCatalogItem mirrors responseFieldsForPublicApiDocItem.
 func responseFieldsForCatalogItem(id string) []catalogField {
 	fields := []catalogField{}
@@ -228,6 +272,25 @@ func responseFieldsForCatalogItem(id string) []catalogField {
 			catalogTargetWithGroupFields("data.target"),
 			[]catalogField{catalogFieldEx("data.account", "object|null", true, "已删除账户的脱敏摘要；not_found 时为 null。")},
 			catalogAccountFields("data.account"))
+	case "provider-list":
+		appendFields(catalogGeneratedFields(), catalogPageFields(),
+			[]catalogField{catalogFieldEx("data.items", "array", true, "当前页供应商列表（仅启用供应商，按名称 + 编码稳定排序）。")},
+			catalogProviderFields("data.items[]"))
+	case "provider-detail":
+		appendFields(catalogGeneratedFields(),
+			[]catalogField{catalogFieldEx("data.provider", "object", true, "供应商摘要；供应商不存在或已停用时正式调用返回 404 错误响应。")},
+			catalogProviderFields("data.provider"),
+			[]catalogField{
+				catalogFieldEx("data.defaultSupportedModels", "string[]", true, "供应商默认支持模型列表；tab=basic 时返回。", []string{"gpt-4o", "gpt-4o-mini"}),
+				catalogFieldEx("data.protocolProfiles", "array", true, "供应商协议档案列表（直读定义，不叠加健康检查偏好）；tab=basic 时返回。"),
+			},
+			catalogProviderProfileFields("data.protocolProfiles[]"),
+			[]catalogField{
+				catalogFieldEx("data.category", "string", false, "回显的 category 过滤值；tab=models 且提供 category 入参时返回。", "text"),
+				catalogFieldEx("data.items", "array", true, "当前页模型列表；tab=models 时返回。"),
+			},
+			catalogProviderModelFields("data.items[]"),
+			catalogPageFields())
 	default:
 		return []catalogField{}
 	}
@@ -253,6 +316,8 @@ func scopeForCatalogItem(id string) string {
 		"account-add":           "juhe_ai_public:account_add:write",
 		"account-update":        "juhe_ai_public:account_update:write",
 		"account-delete":        "juhe_ai_public:account_delete:write",
+		"provider-list":         "juhe_ai_public:provider_list:read",
+		"provider-detail":       "juhe_ai_public:provider_detail:read",
 	}
 	return scopesByID[id]
 }
@@ -351,6 +416,14 @@ func externalPublicAPICatalog() externalAPICatalog {
 		apiKeyWithKey[key] = value
 	}
 	apiKeyWithKey["key"] = "juis_xxx_plain_once"
+	providerSummary := map[string]any{"code": vendorCodeGPT, "name": "GPT", "enabled": true}
+	providerProfile := map[string]any{
+		"id": "profile_gpt_openai_v1", "name": "默认 OpenAI 协议档案", "enabled": true,
+		"protocolCode": "openai", "protocolVersion": "v1", "baseUrl": "https://api.openai.com/v1",
+		"defaultHealthCheckModel": "gpt-4o-mini", "accountTypes": []any{"api_key"},
+		"capabilities":     []any{"chat_completions", "responses"},
+		"endpointFamilies": []any{map[string]any{"code": "chat_completions", "name": "Chat Completions"}},
+	}
 
 	items := []catalogItem{
 		{
@@ -649,6 +722,32 @@ func externalPublicAPICatalog() externalAPICatalog {
 				Example: map[string]any{"accountId": "acc_xxx"},
 			},
 			ResponseExample: responseEnvelope(map[string]any{"action": "deleted", "target": targetWithGroup, "account": account}),
+		},
+		{
+			ID: "provider-list", Name: "供应商列表",
+			Summary: "分页读取启用的供应商定义（按名称 + 编码稳定排序），用于来源系统展示可选供应商。",
+			Status:  "available", Method: "GET", Path: "/__aipublic__/provider/list",
+			Headers:         []catalogHeader{catalogAuthHeader},
+			Query:           catalogPageQuery(),
+			ResponseExample: responseEnvelope(map[string]any{"page": 1, "pageSize": 20, "pageUpperBound": 1, "hasMore": false, "items": []any{providerSummary}}),
+		},
+		{
+			ID: "provider-detail", Name: "供应商详情",
+			Summary: "按供应商编码读取详情；tab=basic 返回供应商摘要与协议档案，tab=models 返回模型目录（服务端按模型名推导分类，支持分类过滤与分页）。",
+			Status:  "available", Method: "GET", Path: "/__aipublic__/provider/detail",
+			Headers: []catalogHeader{catalogAuthHeader},
+			Query: []catalogField{
+				catalogFieldEx("code", "string", true, "供应商编码。", vendorCodeGPT),
+				catalogFieldEx("tab", "string", true, "详情页签：basic 或 models。", "basic"),
+				catalogFieldEx("category", "string", false, "模型分类过滤：text 或 image；仅 tab=models 时可用。", "text"),
+				catalogFieldEx("page", "number", false, "分页页码，默认 1；仅 tab=models 时可用。", 1),
+				catalogFieldEx("pageSize", "number", false, "每页数量，范围 1 到 100，默认 20；仅 tab=models 时可用。", 20),
+			},
+			ResponseExample: responseEnvelope(map[string]any{
+				"provider":               providerSummary,
+				"defaultSupportedModels": []any{"gpt-4o", "gpt-4o-mini", "gpt-image-1"},
+				"protocolProfiles":       []any{providerProfile},
+			}),
 		},
 	}
 	for index := range items {

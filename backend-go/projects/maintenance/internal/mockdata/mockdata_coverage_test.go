@@ -182,7 +182,6 @@ func TestCoverageAllowEmptyRules(t *testing.T) {
 		{"anything_projection_cursors", true},
 		{"accounts", false},
 		{"usage_records", false},
-		{"oauth_access_tokens", false},
 		{"account_lock_states", false},
 		{"account_list_availability_projection_dependency_health", false},
 	}

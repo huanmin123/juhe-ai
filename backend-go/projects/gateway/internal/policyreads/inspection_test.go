@@ -104,7 +104,6 @@ func newPolicyTestEnv(t *testing.T) *policyTestEnv {
 		`CREATE TABLE IF NOT EXISTS response_inspection_policies (id TEXT PRIMARY KEY, name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL, scope_type TEXT NOT NULL, protocol_code TEXT NOT NULL, provider_code TEXT, match_json TEXT NOT NULL, action TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS external_integration_sources (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, scopes_json TEXT NOT NULL, rate_limits_json TEXT, expires_at TEXT, notes TEXT, last_used_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS external_integration_source_tokens (id TEXT PRIMARY KEY, source_ref_id TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, token_secret_encrypted TEXT, token_prefix TEXT NOT NULL, token_suffix TEXT NOT NULL, status TEXT NOT NULL, scopes_json TEXT NOT NULL, expires_at TEXT, last_used_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revoked_at TEXT)`,
-		`CREATE TABLE IF NOT EXISTS oauth_clients (id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, client_type TEXT NOT NULL, client_secret_hash TEXT, client_secret_ciphertext TEXT, redirect_uris_json TEXT NOT NULL, allowed_scopes_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -147,15 +146,6 @@ func (e *policyTestEnv) mountExternal(t *testing.T) *ExternalStore {
 		t.Fatal(err)
 	}
 	(&ExternalDeps{Store: store, Auth: e.deps, Sink: e.sink}).Mount(e.k)
-	return store
-}
-
-func (e *policyTestEnv) mountOAuth(t *testing.T, enabled bool, issuer string) *OAuthStore {
-	store, err := NewOAuthStore(e.db, false, nil, nil, e.inval, "test-oidc-secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	(&OAuthDeps{Store: store, Auth: e.deps, OIDCEnabled: enabled, OIDCIssuer: issuer}).Mount(e.k)
 	return store
 }
 

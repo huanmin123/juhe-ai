@@ -8,8 +8,7 @@ package main
 //     错误臂、表监控 configure 失败臂、redis 认证驱动失败臂、memory 验证码
 //     臂、Go runtime metrics 打开失败臂、health outcome 路径变体、链条组装
 //     失败臂与 redis 缓存+状态驱动全链条成功变体。
-//   - compose.go 小适配器（delegatedSettingsAdapter / unavailableUsageReader /
-//     producerLogger）此前零覆盖，这里直接驱动。
+//   - compose.go 小适配器（producerLogger）此前零覆盖，这里直接驱动。
 //   - compose_accounts_reset.go 的 quota 成功路径与 guard 记忆由
 //     w1_accounts_reset_test.go 覆盖（复用其 w1sEnsure*Schema fixture）；这里补
 //     bridge 构造错误臂、运行态清理分支臂、时延降级两臂、池重验证两臂、
@@ -62,35 +61,6 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestW1QComposeSmallAdapterArms(t *testing.T) {
-	t.Run("delegated设置读取适配器透传", func(t *testing.T) {
-		adapter := delegatedSettingsAdapter{read: func(key string) (string, error) {
-			if key == "usageStatsTimezone" {
-				return "UTC", nil
-			}
-			return "", errors.New("w1q 设置键读取失败")
-		}}
-		value, err := adapter.SettingValue("usageStatsTimezone")
-		if err != nil || value != "UTC" {
-			t.Fatalf("SettingValue = (%q, %v)，want (UTC, nil)", value, err)
-		}
-		if _, err := adapter.SettingValue("missing"); err == nil || !strings.Contains(err.Error(), "w1q 设置键读取失败") {
-			t.Fatalf("读取失败必须透传原始错误，实际 %v", err)
-		}
-	})
-
-	t.Run("网关运行态用量读取器恒为不可用契约", func(t *testing.T) {
-		value, err := (unavailableUsageReader{}).RequestLimitTotal(context.Background(), "acc-w1q")
-		if err == nil {
-			t.Fatal("unavailableUsageReader 必须恒报错（降级契约）")
-		}
-		if value != "" {
-			t.Fatalf("错误路径值 = %q，want 空串", value)
-		}
-		if !strings.Contains(err.Error(), "chain slice") {
-			t.Fatalf("错误 = %v，want 包含 chain slice", err)
-		}
-	})
-
 	t.Run("producer日志器走slog默认句柄", func(t *testing.T) {
 		var buf bytes.Buffer
 		previous := slog.Default()
@@ -879,7 +849,6 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		{"cookie同站非法", map[string]string{"JUHE_AI_COOKIE_SAME_SITE": "auto"}, "JUHE_AI_COOKIE_SAME_SITE 必须为 lax、strict 或 none"},
 		{"信任代理非法", map[string]string{"JUHE_AI_TRUST_PROXY": "maybe"}, "JUHE_AI_TRUST_PROXY 只能配置为 true/false 或 0-16"},
 		{"临时访问白名单非法", map[string]string{"JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST": "example.com"}, "只能填写逗号分隔的单个 IPv4 或 IPv6 地址"},
-		{"OIDC缺加密密钥", map[string]string{"JUHE_AI_OIDC_ENABLED": "true", "JUHE_AI_OIDC_ISSUER": "https://issuer.example"}, "必须显式配置 JUHE_AI_OIDC_KEY_ENCRYPTION_SECRET"},
 		// 2026-09-21 起 SYSTEM_API/CHAIN/AUDIT_LOG/LOG_FILE 开关全部移除（恒开），
 		// 原「链条缺系统API开关」联动校验臂与「显式关闭」断言随之消失。
 		{"候选上限非整数", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "abc"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须配置为整数"},

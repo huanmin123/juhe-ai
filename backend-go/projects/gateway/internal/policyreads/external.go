@@ -55,6 +55,8 @@ var externalIntegrationScopeOptions = []ExternalScopeOption{
 	{Value: "juhe_ai_public:account_add:write", Label: "POST 账号新增"},
 	{Value: "juhe_ai_public:account_update:write", Label: "POST 账号修改"},
 	{Value: "juhe_ai_public:account_delete:write", Label: "POST 账号删除"},
+	{Value: "juhe_ai_public:provider_list:read", Label: "GET 供应商列表"},
+	{Value: "juhe_ai_public:provider_detail:read", Label: "GET 供应商详情"},
 }
 
 // ExternalRateLimitRule mirrors ExternalIntegrationRateLimitRule.

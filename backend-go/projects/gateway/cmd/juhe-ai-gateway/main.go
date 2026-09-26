@@ -45,10 +45,10 @@ import (
 
 // corsSurfacePrefixes scopes the CORS middleware to the Node system-api app
 // mount prefixes (system-api-app.ts): the management face /__aisys__ (the SPA
-// plus /__aisys__/api), the public /__aipublic__ family and the delegated
-// /__aidelegated__/v1 surface. The /v1 gateway chain (browser-less API-key
-// clients) is intentionally outside the CORS surface.
-var corsSurfacePrefixes = []string{"/__aisys__", "/__aipublic__", "/__aidelegated__/v1"}
+// plus /__aisys__/api) and the public /__aipublic__ family. The /v1 gateway
+// chain (browser-less API-key clients) is intentionally outside the CORS
+// surface.
+var corsSurfacePrefixes = []string{"/__aisys__", "/__aipublic__"}
 
 func main() {
 	version := flag.Bool("version", false, "print the gateway project contract version")

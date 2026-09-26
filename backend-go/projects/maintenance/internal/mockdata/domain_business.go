@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"database/sql"
@@ -30,7 +29,7 @@ import (
 //
 // 样本清单移植自 Node 归档实现
 // migration-backup-1/node/final-archive/backend/src/scripts/maintenance/mockdata/
-// （business/{foundation,extras,oidc-provider}.ts 与 core/{accounts,api-keys,
+// （business/{foundation,extras}.ts 与 core/{accounts,api-keys,
 // authorizations,teams,group-writes,availability-schedules,quota-limits}.ts）
 // 的语义，不逐行翻译：Node 通过仓储写入的行这里按同一批列直接落库。
 //
@@ -547,9 +546,6 @@ func (w *businessWriter) seed(tx *sql.Tx, guard businessGuard) error {
 		return err
 	}
 	if err := w.seedQuestionBank(tx, guard, users); err != nil {
-		return err
-	}
-	if err := w.seedOidcProvider(tx, guard); err != nil {
 		return err
 	}
 	return nil
@@ -2890,6 +2886,8 @@ var externalIntegrationScopes = []string{
 	"juhe_ai_public:account_add:write",
 	"juhe_ai_public:account_update:write",
 	"juhe_ai_public:account_delete:write",
+	"juhe_ai_public:provider_list:read",
+	"juhe_ai_public:provider_detail:read",
 }
 
 // seedExternalIntegration 写入外部来源系统与 Token（全 scope 来源 + 只读来源
@@ -3151,175 +3149,6 @@ func mockQuestionTitleNorm(title string) string {
 		builder.WriteRune(unicode.ToLower(item))
 	}
 	return builder.String()
-}
-
-// seedOidcProvider 写入 OAuth/OIDC 样本：客户端、授权、授权码、访问令牌、
-// 授权事务、设备授权与会话；签名密钥只写"结构合法但不可解密"的占位。
-func (w *businessWriter) seedOidcProvider(tx *sql.Tx, guard businessGuard) error {
-	const (
-		browserClientID = CleanupIDPrefix + "oidc_browser_client"
-		serviceClientID = CleanupIDPrefix + "oidc_service_client"
-	)
-	browserRedirect := "http://127.0.0.1:43817/callback"
-	serviceRedirect := "https://mock-client.example.test/oauth/callback"
-	browserScopes := []string{
-		"openid", "profile", "juhe:profile.read", "juhe:groups.read",
-		"juhe:route_strategies.read", "juhe:api_keys.read", "juhe:ai_accounts.read",
-		"juhe:request_limits.read",
-	}
-	serviceScopes := []string{"juhe:profile.read", "juhe:request_limits.read"}
-	browserScopesJSON, err := w.putJSON(browserScopes)
-	if err != nil {
-		return err
-	}
-	serviceScopesJSON, err := w.putJSON(serviceScopes)
-	if err != nil {
-		return err
-	}
-	redirectsJSON, err := w.putJSON([]string{browserRedirect})
-	if err != nil {
-		return err
-	}
-	serviceRedirectsJSON, err := w.putJSON([]string{serviceRedirect})
-	if err != nil {
-		return err
-	}
-	now := w.stamp()
-	serviceSecretHash := secretHash(CleanupTracePrefix + "oidc-service-secret")
-	if err := w.put(tx, "oauth_clients", map[string]any{
-		"id": CleanupIDPrefix + "oauth_client_browser", "client_id": browserClientID,
-		"display_name": CleanupNamePrefix + "浏览器授权演示应用", "client_type": "public",
-		"redirect_uris_json": redirectsJSON, "allowed_scopes_json": browserScopesJSON,
-		"status": "active", "created_at": now, "updated_at": now,
-	}); err != nil {
-		return err
-	}
-	if err := w.put(tx, "oauth_clients", map[string]any{
-		"id": CleanupIDPrefix + "oauth_client_service", "client_id": serviceClientID,
-		"display_name": CleanupNamePrefix + "服务端集成演示应用", "client_type": "confidential",
-		"client_secret_hash": serviceSecretHash,
-		// OIDC 客户端的密钥用 OIDC 专用信封（密钥来自
-		// OIDC_KEY_ENCRYPTION_SECRET），造数拿不到该密钥，因此这里写结构合法的
-		// 占位密文：客户端列表与哈希校验可读，解密接口会返回 OIDC 密文错误。
-		"client_secret_ciphertext": "AA.AA.AA",
-		"redirect_uris_json":       serviceRedirectsJSON,
-		"allowed_scopes_json":      serviceScopesJSON,
-		"status":                   "active",
-		"created_at":               now, "updated_at": now,
-	}); err != nil {
-		return err
-	}
-	grantID := CleanupIDPrefix + "oauth_grant_browser"
-	if err := w.put(tx, "oauth_grants", map[string]any{
-		"id": grantID, "client_id": browserClientID, "system_account_id": guard.adminID,
-		"scopes_json": browserScopesJSON, "expires_at": w.at(30 * 24 * time.Hour),
-		"created_at": w.at(-2 * time.Hour),
-	}); err != nil {
-		return err
-	}
-	codeID := CleanupIDPrefix + "oauth_code_browser"
-	codeChallenge := base64.RawURLEncoding.EncodeToString([]byte(secretHash(CleanupTracePrefix + "oidc-code-verifier")))
-	if err := w.put(tx, "oauth_authorization_codes", map[string]any{
-		"id": codeID, "code_hash": secretHash(CleanupTracePrefix + "oidc-authorization-code"),
-		"client_id": browserClientID, "grant_id": grantID, "redirect_uri": browserRedirect,
-		"code_challenge": codeChallenge, "expires_at": w.at(30 * time.Minute),
-		"consumed_at": w.at(-90 * time.Minute), "created_at": w.at(-2 * time.Hour),
-	}); err != nil {
-		return err
-	}
-	if err := w.put(tx, "oauth_authorization_code_oidc_contexts", map[string]any{
-		"code_id": codeID, "nonce_ciphertext": "AA.AA.AA", "created_at": w.at(-2 * time.Hour),
-	}); err != nil {
-		return err
-	}
-	if err := w.put(tx, "oauth_access_tokens", map[string]any{
-		"id": CleanupIDPrefix + "oauth_token_previous", "token_hash": secretHash(CleanupTracePrefix + "oidc-access-token"),
-		"client_id": browserClientID, "grant_id": grantID,
-		"issued_at": w.at(-2 * time.Hour), "expires_at": w.at(30 * time.Minute),
-		"revoked_at": w.at(-95 * time.Minute), "replaced_at": w.at(-95 * time.Minute),
-		"successor_token_id": CleanupIDPrefix + "oauth_token_current",
-		"created_at":         w.at(-2 * time.Hour),
-	}); err != nil {
-		return err
-	}
-	if err := w.put(tx, "oauth_access_tokens", map[string]any{
-		"id":         CleanupIDPrefix + "oauth_token_current",
-		"token_hash": secretHash(CleanupTracePrefix + "oidc-access-token-current"),
-		"client_id":  browserClientID, "grant_id": grantID,
-		"issued_at": w.at(-95 * time.Minute), "expires_at": w.at(6 * time.Hour),
-		"created_at": w.at(-95 * time.Minute),
-	}); err != nil {
-		return err
-	}
-	if err := w.put(tx, "oauth_authorization_transactions", map[string]any{
-		"id": CleanupIDPrefix + "oauth_transaction_service", "client_id": serviceClientID,
-		"redirect_uri": serviceRedirect, "scopes_json": serviceScopesJSON,
-		"state_ciphertext": "AA.AA.AA", "code_challenge": codeChallenge,
-		"csrf_hash":  secretHash(CleanupTracePrefix + "oidc-csrf"),
-		"expires_at": w.at(15 * time.Minute), "created_at": w.at(-5 * time.Minute),
-	}); err != nil {
-		return err
-	}
-	if err := w.put(tx, "oauth_device_authorizations", map[string]any{
-		"id": CleanupIDPrefix + "oauth_device_approved", "client_id": browserClientID,
-		"device_code_hash": secretHash(CleanupTracePrefix + "oidc-device-code"),
-		"user_code":        "MOCK-DATA-0001",
-		"verification_uri": "http://127.0.0.1:59752/oauth/device",
-		"scopes_json":      browserScopesJSON, "nonce_ciphertext": "AA.AA.AA",
-		"expires_at": w.at(20 * time.Minute), "interval_seconds": 5,
-		"last_polled_at": w.at(-4 * time.Minute), "csrf_hash": secretHash(CleanupTracePrefix + "oidc-device-csrf"),
-		"status": "approved", "system_account_id": guard.adminID,
-		"approved_at": w.at(-3 * time.Minute), "created_at": w.at(-6 * time.Minute),
-	}); err != nil {
-		return err
-	}
-	if err := w.put(tx, "oauth_device_authorizations", map[string]any{
-		"id": CleanupIDPrefix + "oauth_device_pending", "client_id": serviceClientID,
-		"device_code_hash": secretHash(CleanupTracePrefix + "oidc-device-code-pending"),
-		"user_code":        "MOCK-DATA-0002",
-		"verification_uri": "http://127.0.0.1:59752/oauth/device",
-		"scopes_json":      serviceScopesJSON, "expires_at": w.at(25 * time.Minute),
-		"interval_seconds": 5, "status": "pending", "created_at": w.at(-2 * time.Minute),
-	}); err != nil {
-		return err
-	}
-	if err := w.seedSigningKeyPlaceholder(tx, now); err != nil {
-		return err
-	}
-	return nil
-}
-
-// seedSigningKeyPlaceholder 写入一条 retired 状态的签名密钥样本。
-//
-// 为什么是 retired + 占位密文：私钥必须用 OIDC 专用信封（密钥来自运行时
-// OIDC_KEY_ENCRYPTION_SECRET）加密，造数拿不到该密钥；写成 active 会让
-// EnsureSigningKey 认下这把解不开的密钥并让 OIDC 端点 503。retired 行只作为
-// 密钥管理页的样本，运行时仍会自己生成一把可用的 active 密钥。
-// 公钥 JWK 是真实生成的 RSA 公钥，JWKS 形状可读。
-func (w *businessWriter) seedSigningKeyPlaceholder(tx *sql.Tx, now string) error {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return err
-	}
-	modulus := base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes())
-	exponentBytes := privateKey.PublicKey.E
-	exponent := base64.RawURLEncoding.EncodeToString([]byte{byte(exponentBytes >> 16), byte(exponentBytes >> 8), byte(exponentBytes)})
-	jwk, err := w.putJSON(map[string]any{
-		"kty": "RSA", "use": "sig", "alg": "RS256",
-		"kid": CleanupIDPrefix + "oidc_retired_key", "n": modulus, "e": exponent,
-	})
-	if err != nil {
-		return err
-	}
-	return w.put(tx, "oauth_signing_keys", map[string]any{
-		"id":  CleanupIDPrefix + "oauth_signing_key_retired",
-		"kid": CleanupIDPrefix + "oidc_retired_key",
-		// OIDC 信封（iv.tag.ciphertext）形状的占位密文，不可解密；见函数注释。
-		"private_key_ciphertext": "AA.AA.AA",
-		"public_jwk_json":        jwk,
-		"status":                 "retired",
-		"created_at":             w.at(-48 * time.Hour), "retired_at": w.at(-24 * time.Hour),
-	})
 }
 
 // seedGroupAuthorizationSettings 为活跃的分组授权写入被授权方的分组设置样本

@@ -1,5 +1,5 @@
 // 内置测试 token（builtInTestSourceID/exttok_builtin_test）的 mock 家族补测：
-// 16 条路由在 IsTestToken 会话下全部走 mock 载荷，不触碰资源表。断言锁定
+// 18 条路由在 IsTestToken 会话下全部走 mock 载荷，不触碰资源表。断言锁定
 // Node external-public-*.mock.ts 的默认值回退（用户名/分组名/供应商等）、
 // 入参投影与 mock 信封（source=mock + generatedAt）。
 package aipublic
@@ -24,6 +24,7 @@ func newWCMockEnv(t *testing.T) *aipublicEnv {
 func allWCMockScopes() []string {
 	return []string{
 		scopeGroupListRead, scopeStrategyListRead, scopeApiKeyListRead, scopeAccountListRead,
+		scopeProviderListRead, scopeProviderDetailRead,
 		scopeGroupAddWrite, scopeGroupUpdateWrite, scopeGroupDeleteWrite,
 		scopeStrategyAddWrite, scopeStrategyUpdateWrite, scopeStrategyDeleteWrite,
 		scopeApiKeyAddWrite, scopeApiKeyUpdateWrite, scopeApiKeyDeleteWrite,

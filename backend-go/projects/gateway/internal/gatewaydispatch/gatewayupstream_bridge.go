@@ -179,6 +179,7 @@ func waitForDelayMs(ctx context.Context, delayMs int64) error {
 
 var (
 	ApplyOpenAICodexHeaders                    = gatewayupstream.ApplyOpenAICodexHeaders
+	BuildAnthropicUsageRecordMaintenanceJob    = gatewayupstream.BuildAnthropicUsageRecordMaintenanceJob
 	BuildOpenAICodexUsageRecordMaintenanceJob  = gatewayupstream.BuildOpenAICodexUsageRecordMaintenanceJob
 	BuildUpstreamHeaders                       = gatewayupstream.BuildUpstreamHeaders
 	CopyOfficialOAuthClientRequestHeaders      = gatewayupstream.CopyOfficialOAuthClientRequestHeaders
@@ -196,7 +197,9 @@ var (
 	NewResolvedUpstreamURLPolicy               = gatewayupstream.NewResolvedUpstreamURLPolicy
 	NormalizeOpenAICodexClientHeaders          = gatewayupstream.NormalizeOpenAICodexClientHeaders
 	NormalizeOpenAICodexResponsesLiteBody      = gatewayupstream.NormalizeOpenAICodexResponsesLiteBody
+	ParseAnthropicUsageHeaders                 = gatewayupstream.ParseAnthropicUsageHeaders
 	ParseOpenAICodexUsageHeaders               = gatewayupstream.ParseOpenAICodexUsageHeaders
+	PersistAnthropicUsageHeaders               = gatewayupstream.PersistAnthropicUsageHeaders
 	PersistOpenAICodexUsageHeaders             = gatewayupstream.PersistOpenAICodexUsageHeaders
 	PipeNonStreamUpstreamResponse              = gatewayupstream.PipeNonStreamUpstreamResponse
 	PipeNonStreamUpstreamResponseForInspection = gatewayupstream.PipeNonStreamUpstreamResponseForInspection

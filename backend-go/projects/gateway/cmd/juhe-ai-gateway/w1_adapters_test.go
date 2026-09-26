@@ -28,15 +28,6 @@ func TestW1SettingsAndUsageAdapters(t *testing.T) {
 	if err != nil || zone != "Asia/Shanghai" {
 		t.Fatalf("timezone = %q, %v", zone, err)
 	}
-	// delegatedSettingsAdapter。
-	adapter := delegatedSettingsAdapter{read: read}
-	if value, err := adapter.SettingValue("usageStatsTimezone"); err != nil || value != "Asia/Shanghai" {
-		t.Fatalf("adapter = %q, %v", value, err)
-	}
-	// unavailableUsageReader：降级契约。
-	if value, err := (unavailableUsageReader{}).RequestLimitTotal(context.Background(), "k"); err == nil || value != "" {
-		t.Fatalf("degraded = %q, %v", value, err)
-	}
 	// producerLogger：不 panic 即可。
 	(producerLogger{}).Warn("w", "k", "v")
 	(producerLogger{}).Error("e", "k", "v")

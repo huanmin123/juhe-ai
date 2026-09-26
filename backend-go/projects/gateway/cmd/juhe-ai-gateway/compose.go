@@ -25,7 +25,6 @@ import (
 	groupdirtycursor "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/group_dirty_cursor"
 	businesssettings "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/settings"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/delegated"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -38,7 +37,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/logreads"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/oauthmgmt"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/oidc"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/policyreads"
@@ -93,10 +91,7 @@ const (
 //	  Node mounts no my-* variants for these three families)
 //	/__aisys__/api/ip-stats                        -> ipstats.Deps.Mount
 //	/__aisys__/api/external-integration-sources    -> policyreads.ExternalDeps
-//	/__aisys__/api/oauth (admin management)        -> policyreads.OAuthDeps
 //	/__aisys__/api/health                          -> kernel health (rate-limit bypass)
-//	/.well-known + /oauth (public protocol)        -> oidc.Deps.Mount
-//	/__aidelegated__/v1                            -> delegated.Deps.Mount
 //	/__aisys__/api/stats + /my-stats               -> statreads.Deps.Mount (X04)
 //	/__aisys__/api/usage-records + /my-*           -> statreads.Deps.Mount (X04)
 //	/__aisys__/api/authorization-options + /my-*   -> authz.Deps.MountAuthorizationOptions (X04)
@@ -221,8 +216,9 @@ func newCompositionID(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(buf[:])
 }
 
-// SettingValueFunc mirrors delegated.SettingReader; the delegated route family
-// and the timezone sources read global settings through it.
+// SettingValueFunc is the shared global-settings read port: the timezone
+// sources (ip-stats, chain runtime) and other composition consumers read
+// global settings through it.
 type SettingValueFunc func(key string) (string, error)
 
 func settingsValueReader(store *settings.Store) SettingValueFunc {
@@ -711,10 +707,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	if err != nil {
 		return nil, fmt.Errorf("create announcement store: %w", err)
 	}
-	oidcStore, err := oidc.NewStore(composed.db, composed.pgDialect, time.Now, cfg.OIDCKeyEncryptionSecret)
-	if err != nil {
-		return nil, fmt.Errorf("create oidc store: %w", err)
-	}
 	providerStore, err := providers.NewStore(composed.db, composed.pgDialect, time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("create provider store: %w", err)
@@ -777,10 +769,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	externalStore, err := policyreads.NewExternalStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus, cfg.Secret)
 	if err != nil {
 		return nil, fmt.Errorf("create external-integration store: %w", err)
-	}
-	oauthPolicyStore, err := policyreads.NewOAuthStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus, cfg.OIDCKeyEncryptionSecret)
-	if err != nil {
-		return nil, fmt.Errorf("create oauth policy store: %w", err)
 	}
 	oauthStore, err := oauthmgmt.NewStore(composed.db, composed.pgDialect, cfg.Secret, accountStore, oauthmgmt.NewHTTPTokenExchanger(), time.Now, newCompositionID,
 		// T2 audit wiring: the rotation post-commit invalidation channels ride
@@ -934,12 +922,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// handover).
 	// 模型 CRUD 提交后的目录缓存失效（custom_provider_model_saved 等）通过 K5 bus
 	// 发布；*inval.Bus 的 Invalidate(topic, reason) 结构性满足 providers.RuntimeInvalidator，
-	// 无需适配器（对照下方 delegated 的 apikeys.BusInvalidator 接法）。
+	// 无需适配器（与 apikeys.NewStore 的 apikeys.BusInvalidator 接法同理）。
 	(&providers.Deps{Store: providerStore, Auth: authDeps, Sink: sink, Inval: bus}).Mount(kern)
 	(&oauthmgmt.Deps{Store: oauthStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&policyreads.InspectionDeps{Store: inspectionStore, Auth: authDeps, Sink: sink}).Mount(kern)
 	(&policyreads.ExternalDeps{Store: externalStore, Auth: authDeps, Sink: sink}).Mount(kern)
-	(&policyreads.OAuthDeps{Store: oauthPolicyStore, Auth: authDeps, OIDCEnabled: cfg.OIDCEnabled, OIDCIssuer: cfg.OIDCIssuer}).Mount(kern)
 	(&logreads.Deps{Reader: operationStore, Auth: authDeps}).Mount(kern)
 	// X04 404 项补齐: the audit-logs / runtime-logs / public-api-logs read
 	// families (Node system-api-app.ts lines: /audit-logs, /runtime-logs,
@@ -1061,34 +1048,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 存在 index.html 时在 /__aisys__/ 挂载 express.static 等价面 + SPA
 	// catch-all（/__aisys__/api/* 与 /__aisys__/health 由更具体的路由优先承接）。
 	helpweb.MountSPA(kern, cfg.FrontendDistPath)
-
-	// Public protocol surface (root-level paths, mirroring oauthPublicRouter)
-	// and the delegated API share the protocol rate limiter instance.
-	protocolLimiter := oidc.NewProtocolRateLimiter(time.Now)
-	(&oidc.Deps{
-		Store:       oidcStore,
-		Limiter:     protocolLimiter,
-		OIDCEnabled: cfg.OIDCEnabled,
-		OIDCIssuer:  cfg.OIDCIssuer,
-		Now:         time.Now,
-	}).Mount(kern)
-	(&delegated.Deps{
-		Tokens:     oidcStore,
-		Limiter:    protocolLimiter,
-		Groups:     groupsStore,
-		Strategies: routeStrategyStore,
-		ApiKeys:    apiKeyStore,
-		AiAccounts: accountStore,
-		// T2 audit wiring: committed api-key patches invalidate through the
-		// same bus (delegated.Deps.Inval carries the apikeys.CacheInvalidator).
-		Inval:          apikeys.BusInvalidator{Bus: bus},
-		DB:             composed.db,
-		PGDialect:      composed.pgDialect,
-		Settings:       delegatedSettingsAdapter{read: settingValue},
-		Usage:          unavailableUsageReader{},
-		RedisNamespace: cfg.RedisNamespace,
-		Now:            time.Now,
-	}).Mount(kern)
 
 	// G20 phase-2 AI gateway /v1 chain: assembles the concrete runtime
 	// services (chain_runtime.go) plus the composition adapters
@@ -1243,9 +1202,11 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// B-3（BUG-0174）：账户 API Key 轮转 Redis 计数器（StateClient 为
 			// nil 时返回 nil，引擎保持进程内计数器回退）。
 			KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient),
-			// Codex 用量响应头持久化（compose_codex_usage_headers.go）：
-			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道。
-			CodexUsageHeadersDispatcher: newCodexUsageHeadersChannelDispatcher(recordMaintenanceDispatch),
+			// Codex / Anthropic 用量响应头持久化（compose_codex_usage_headers.go）：
+			// fire-and-forget 派发到 record_maintenance_jobs 快照行通道
+			// （同一适配器实例同时实现 codex / anthropic 两个派发窄口）。
+			CodexUsageHeadersDispatcher:     newCodexUsageHeadersChannelDispatcher(recordMaintenanceDispatch),
+			AnthropicUsageHeadersDispatcher: newAnthropicUsageHeadersChannelDispatcher(recordMaintenanceDispatch),
 			// W2-C（BUG-0175）生产接线：D-109 client-IP 并发槽、D-131 账户
 			// 电路、D-133 key-model 前台准入存储、D-134 本地屏蔽端口 +
 			// 半开租约唤醒、D-136 上游桶健康、D-137 热质量排序与 attempt
@@ -1343,6 +1304,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		Strategies:     routeStrategyStore,
 		ApiKeys:        apiKeyStore,
 		AiAccounts:     accountStore,
+		Providers:      providerStore,
 		Sink:           sink,
 	}
 	// Penalty-window limiter shares the runtime-state redis keyspace with the
@@ -1459,20 +1421,6 @@ func devAutoLoginResolver(authDeps *authsys.Deps, username string) func(*http.Re
 			SessionID:       "development-auto-login",
 		}
 	}
-}
-
-type delegatedSettingsAdapter struct{ read SettingValueFunc }
-
-func (a delegatedSettingsAdapter) SettingValue(key string) (string, error) { return a.read(key) }
-
-// unavailableUsageReader mirrors the Node request-limits snapshot degradation:
-// any runtime-state read failure renders usageStatus "unavailable" instead of
-// failing the endpoint. The Go runtime-state consumer lands with the chain
-// slice; until then the snapshot reports the documented degraded contract.
-type unavailableUsageReader struct{}
-
-func (unavailableUsageReader) RequestLimitTotal(context.Context, string) (string, error) {
-	return "", errors.New("gateway runtime state reader lands with the chain slice")
 }
 
 type producerLogger struct{}

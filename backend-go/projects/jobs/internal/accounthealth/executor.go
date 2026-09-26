@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -55,9 +56,9 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 			result := ProbeOpenAI(ctx, input, key.Credential, attemptOptions)
 			if result.Outcome == OutcomeSuccess {
 				next := (index + 1) % len(input.APIKeys)
-				if err := saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next); err != nil {
-					return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
-				}
+				// Cursor 轮询记账是 best-effort：保存失败只降级为 warn 日志，
+				// 不否决探针业务结果（J1 迁移契约 §5）。
+				_ = saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next)
 				return newOutcome(input, request, result, &index, now(options)), nil
 			}
 			last = result
@@ -67,9 +68,9 @@ func ExecuteInputProbe(ctx context.Context, store *Store, lease OwnerLease, inpu
 		}
 	}
 	next := (start + 1) % len(input.APIKeys)
-	if err := saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next); err != nil {
-		return Outcome{}, fmt.Errorf("保存 API Key probe cursor 失败: %w", err)
-	}
+	// 全部 Key 失败时同样先尽力保存 cursor：失败降级为日志，业务 Outcome
+	// （而非 cursor 错误）照常返回给调用方落库。
+	_ = saveProbeKeyCursor(ctx, store, lease, input.AccountID, input.KeySetFingerprint, next)
 	return newOutcome(input, request, last, nil, now(options)), nil
 }
 
@@ -98,7 +99,20 @@ func saveProbeKeyCursor(ctx context.Context, store *Store, lease OwnerLease, acc
 	// fail-closed fence for this detached, bounded persistence context.
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keyCursorPersistenceTimeout)
 	defer cancel()
-	return store.SaveKeyCursor(persistCtx, lease, accountID, healthKeyCursorPurpose, fingerprint, nextIndex)
+	if err := store.SaveKeyCursor(persistCtx, lease, accountID, healthKeyCursorPurpose, fingerprint, nextIndex); err != nil {
+		// The cursor is round-robin bookkeeping ("which key to try first next
+		// round"), never business evidence.  Losing it only restarts rotation
+		// at key 0, so a save failure is downgraded to a warn log and must not
+		// veto the probe outcome returned to the caller.
+		slog.Warn("保存 API Key probe cursor 失败；cursor 仅为轮询记账，降级为日志，不影响本轮探针结果",
+			"event", "account_health_key_cursor_save_failed",
+			"account_id", accountID,
+			"purpose", healthKeyCursorPurpose,
+			"next_index", nextIndex,
+			"error", err)
+		return err
+	}
+	return nil
 }
 
 func newOutcome(input Input, request ProbeRequest, result ProbeResult, winner *int, observedAt time.Time) Outcome {

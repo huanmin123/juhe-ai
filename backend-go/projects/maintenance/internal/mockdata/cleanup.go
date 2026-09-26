@@ -53,8 +53,7 @@ func cleanupRules() []cleanupRule {
 	trace := CleanupTracePrefix + "%"
 	model := CleanupTracePrefix + "%"
 	return []cleanupRule{
-		// business：先清 OAuth 客户端与公告子表。
-		{Store: StoreBusiness, Table: "oauth_clients", Query: "DELETE FROM oauth_clients WHERE client_id LIKE ? OR display_name LIKE ?", Args: []any{id, name}},
+		// business：先清公告子表。
 		{Store: StoreBusiness, Table: "announcement_reads", Query: "DELETE FROM announcement_reads WHERE announcement_id IN (SELECT id FROM announcements WHERE id LIKE ? OR title LIKE ?)", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "announcements", Query: "DELETE FROM announcements WHERE id LIKE ? OR title LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "external_integration_source_tokens", Query: "DELETE FROM external_integration_source_tokens WHERE source_ref_id IN (SELECT id FROM external_integration_sources WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name}},

@@ -144,7 +144,7 @@ func TestCORSMiddlewareHeaderContract(t *testing.T) {
 func TestCORSMiddlewarePrefixScope(t *testing.T) {
 	policy := CORSPolicy{AllowedOrigins: []string{"https://admin.example.com"}}
 	called := false
-	handler := CORSMiddleware(policy, "/__aisys__", "/__aipublic__", "/__aidelegated__/v1")(corsTestHandler(&called))
+	handler := CORSMiddleware(policy, "/__aisys__", "/__aipublic__")(corsTestHandler(&called))
 
 	// /v1 网关链在 CORS 作用域之外：即使 Origin 在白名单也不写头。
 	request := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
@@ -170,7 +170,7 @@ func TestCORSMiddlewarePrefixScope(t *testing.T) {
 
 	// 相邻前缀不命中（Express app.use 语义）。
 	called = false
-	request = httptest.NewRequest(http.MethodGet, "/__aidelegated__/v1x", nil)
+	request = httptest.NewRequest(http.MethodGet, "/__aipublic__x", nil)
 	request.Header.Set("Origin", "https://admin.example.com")
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)

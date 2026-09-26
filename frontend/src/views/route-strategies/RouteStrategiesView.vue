@@ -606,13 +606,8 @@ const bindingAddDisabled = computed(() => {
   return false
 })
 const bindingRemoveDisabled = computed(() => form.groupBindings.length <= minimumBindingRowsForMode(form.mode))
-const bindingShowsDragHandle = computed(() => form.mode === 'failover' || form.mode === 'round_robin' || form.mode === 'merge')
-const bindingShowsDragColumn = computed(() => {
-  if (!bindingShowsDragHandle.value) return false
-  if (form.mode === 'round_robin' || form.mode === 'merge') return form.groupBindings.length > 1
-  if (form.mode === 'failover') return form.groupBindings.length > 1
-  return false
-})
+const bindingShowsDragHandle = computed(() => form.mode === 'failover' || form.mode === 'round_robin')
+const bindingShowsDragColumn = computed(() => bindingShowsDragHandle.value && form.groupBindings.length > 1)
 const bindingShowsRole = computed(() => form.mode === 'failover')
 const bindingOrderUsesPosition = computed(() => form.mode === 'failover' || form.mode === 'round_robin' || form.mode === 'merge')
 const bindingShowsWeight = computed(() => form.mode === 'weighted')
@@ -623,7 +618,7 @@ const bindingSectionTooltip = computed(() => {
   if (form.mode === 'weighted') return '权重调度按分组权重比例分配流量，所有分组权重总和不能超过 100。'
   if (form.mode === 'failover') return '故障回退按当前顺序将第一行作为主用分组，后续为备用分组；所有行都可拖拽，备用拖到第一行即可晋升主用。主用恢复后继续优先使用主用。'
   if (form.mode === 'round_robin') return '轮询路由按当前分组顺序依次调度，可通过拖拽改变轮询顺序。'
-  if (form.mode === 'merge') return '合并路由把所有绑定分组的账号合并成一个大池统一调度，不区分分组；拖拽顺序仅决定调度平局时的基础先后。'
+  if (form.mode === 'merge') return '合并路由按请求合并：每次请求把所有绑定分组里能服务当前请求模型的账号合成一个候选池统一调度——直连支持，或经该账号的模型映射 / 跨协议转换承接即可，因此不要求各分组上游模型或协议一致；不区分分组、全池平级，分组顺序按添加顺序记录，仅作为调度平局与跨组重复账号归属的基础先后。'
   return ''
 })
 const bindingColumns = computed<BindingColumn[]>(() => [
@@ -1168,7 +1163,7 @@ function moveBindingForMode(fromIndex: number, toIndex: number) {
 }
 
 function bindingRowDragEnabled(index: number): boolean {
-  if (form.mode === 'round_robin' || form.mode === 'merge') return form.groupBindings.length > 1
+  if (form.mode === 'round_robin') return form.groupBindings.length > 1
   if (form.mode === 'failover') return index >= 0 && index < form.groupBindings.length && form.groupBindings.length > 1
   return false
 }

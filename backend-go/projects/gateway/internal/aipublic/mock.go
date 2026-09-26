@@ -559,3 +559,74 @@ func (d *Deps) mockAccountList(w http.ResponseWriter, query map[string]string, p
 		"items":          []PublicAccountListItem{item},
 	})
 }
+
+// mockProviderList mirrors the provider list mock: one deterministic enabled
+// provider, no paging beyond the fixed single upper bound.
+func (d *Deps) mockProviderList(w http.ResponseWriter, page, pageSize int) {
+	d.writeMockEnvelope(w, http.StatusOK, map[string]any{
+		"page":           page,
+		"pageSize":       pageSize,
+		"pageUpperBound": 1,
+		"hasMore":        false,
+		"items":          []PublicProviderSummary{{Code: "gpt", Name: "GPT", Enabled: true}},
+	})
+}
+
+// mockProviderDetail mirrors the detail mock: the gpt provider with one OpenAI
+// protocol profile (basic) or the two-model catalog (models).
+func (d *Deps) mockProviderDetail(w http.ResponseWriter, query *providerDetailQuery) {
+	if query.Tab == "models" {
+		page, pageSize := d.mockPaging(query.HasPage, query.Page, query.HasPageSize, query.PageSize)
+		catalog := []PublicProviderModelItem{
+			{
+				Model: "gpt-4o", Category: publicModelCategory("gpt-4o"), Status: "active",
+				ContextWindowTokens: valuePtr(int64(128000)),
+				InputUsdPer1M:       valuePtr(2.5), OutputUsdPer1M: valuePtr(10.0),
+			},
+			{
+				Model: "gpt-image-1", Category: publicModelCategory("gpt-image-1"), Status: "active",
+				InputUsdPer1M: valuePtr(5.0), OutputUsdPer1M: valuePtr(40.0),
+			},
+		}
+		items := make([]PublicProviderModelItem, 0, len(catalog))
+		for _, item := range catalog {
+			if query.HasCategory && query.Category != item.Category {
+				continue
+			}
+			items = append(items, item)
+		}
+		payload := map[string]any{
+			"provider":       map[string]any{"code": "gpt", "name": "GPT"},
+			"page":           page,
+			"pageSize":       pageSize,
+			"pageUpperBound": 1,
+			"hasMore":        false,
+			"items":          items,
+		}
+		if query.HasCategory {
+			payload["category"] = query.Category
+		}
+		d.writeMockEnvelope(w, http.StatusOK, payload)
+		return
+	}
+	profile := PublicProviderProtocolProfile{
+		ID:                      "profile_gpt_openai_v1",
+		Name:                    "默认 OpenAI 协议档案",
+		Enabled:                 true,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.openai.com/v1",
+		DefaultHealthCheckModel: "gpt-4o-mini",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"chat_completions", "responses"},
+		EndpointFamilies:        []PublicProviderEndpointFamily{{Code: "chat_completions", Name: "Chat Completions"}},
+	}
+	d.writeMockEnvelope(w, http.StatusOK, map[string]any{
+		"provider":               PublicProviderSummary{Code: "gpt", Name: "GPT", Enabled: true},
+		"defaultSupportedModels": []string{"gpt-4o", "gpt-4o-mini", "gpt-image-1"},
+		"protocolProfiles":       []PublicProviderProtocolProfile{profile},
+	})
+}
+
+// valuePtr is the mock/payload pointer helper for numeric literals.
+func valuePtr[T any](value T) *T { return &value }

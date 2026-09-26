@@ -27,7 +27,9 @@ export const DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS: ExternalIntegrationScop
   { value: 'juhe_ai_public:group_delete:write', label: 'POST 分组删除' },
   { value: 'juhe_ai_public:account_add:write', label: 'POST 账号新增' },
   { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
-  { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' }
+  { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' },
+  { value: 'juhe_ai_public:provider_list:read', label: 'GET 供应商列表' },
+  { value: 'juhe_ai_public:provider_detail:read', label: 'GET 供应商详情' }
 ]
 
 export const DEFAULT_EXTERNAL_INTEGRATION_SELECTED_SCOPES = [defaultPublicScope] as const

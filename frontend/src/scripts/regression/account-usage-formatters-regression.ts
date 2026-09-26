@@ -1,6 +1,7 @@
 import type { AccountSummary, AccountUsageSummary } from '@/types/domain'
 import { formatRequestCountTag } from '@/shared/formatters'
 import {
+  claudeOAuthUsageBars,
   formatAccountUsageSummary,
   formatCost,
   formatGrokPeriodReset,
@@ -138,6 +139,88 @@ try {
   assertEqual(grokBarsViaAggregation.length, 1, 'xai oauth 账户应经聚合入口产出 Grok 条')
   assertEqual(grokBarsViaAggregation[0]?.key, 'grok', '聚合入口应返回 Grok 条')
 
+  const claudeBars = claudeOAuthUsageBars(accountFixture({
+    providerCode: 'anthropic',
+    protocolCode: 'anthropic',
+    type: 'oauth',
+    oauthUsage: {
+      kind: 'anthropic_claude',
+      unifiedStatus: 'allowed_warning',
+      fiveHour: { usedPercent: 82.4, resetAt: '2026-06-16T01:30:00.000Z' },
+      sevenDay: { usedPercent: 1005, resetAt: '2026-06-18T01:00:00.000Z' }
+    }
+  }))
+  assertEqual(claudeBars.length, 2, 'Claude OAuth 快照应展示 5h/7d 两条用量条')
+  assertEqual(claudeBars[0]?.key, '5h', 'Claude 第一条应为 5h 窗口')
+  assertEqual(claudeBars[0]?.percent, 82, 'Claude 5h 百分比应四舍五入')
+  assertEqual(claudeBars[0]?.displayPercent, '82%', 'Claude 5h 百分比文案应保持原格式')
+  assertEqual(claudeBars[0]?.tone, 'warning', 'Claude 5h 超过 80% 应显示警告')
+  assertEqual(claudeBars[0]?.resetText, '1h 30m', 'Claude 5h 重置文案应展示相对时间')
+  assertEqual(claudeBars[1]?.percent, 100, 'Claude 7d 进度条应封顶到 100')
+  assertEqual(claudeBars[1]?.displayPercent, '>999%', 'Claude 7d 超高占用应展示 >999%')
+  assertEqual(claudeBars[1]?.tone, 'danger', 'Claude 7d 超过 100% 应显示危险状态')
+  assertEqual(claudeBars[1]?.resetText, '2d 1h', 'Claude 7d 重置文案应展示天数')
+
+  assertEqual(
+    claudeOAuthUsageBars(accountFixture({
+      providerCode: 'anthropic',
+      protocolCode: 'anthropic',
+      type: 'oauth',
+      oauthUsage: {
+        kind: 'anthropic_claude',
+        fiveHour: { usedPercent: 14, resetAt: '2026-06-16T01:30:00.000Z' },
+        sevenDay: { usedPercent: 3.6 }
+      }
+    }))[1]?.tone,
+    'normal',
+    'Claude 未超阈值应为 normal'
+  )
+  assertEqual(
+    claudeOAuthUsageBars(accountFixture({
+      providerCode: 'anthropic',
+      protocolCode: 'anthropic',
+      type: 'oauth',
+      oauthUsage: { kind: 'anthropic_claude', sevenDay: { usedPercent: 14, resetAt: '2026-06-18T01:00:00.000Z' } }
+    })).length,
+    1,
+    '只有 7d 窗口时应只渲染一条'
+  )
+  assertEqual(
+    claudeOAuthUsageBars(accountFixture({
+      providerCode: 'anthropic',
+      protocolCode: 'anthropic',
+      type: 'oauth',
+      oauthUsage: { kind: 'anthropic_claude', fiveHour: { resetAt: '2026-06-16T01:30:00.000Z' } }
+    })).length,
+    0,
+    '窗口缺已用百分比时不应渲染该条'
+  )
+  assertEqual(
+    claudeOAuthUsageBars(accountFixture({
+      providerCode: 'anthropic',
+      protocolCode: 'anthropic',
+      type: 'oauth',
+      oauthUsage: { kind: 'anthropic_claude' }
+    })).length,
+    0,
+    '两窗都缺时不应渲染 Claude 条'
+  )
+  assertEqual(
+    claudeOAuthUsageBars(accountFixture({ type: 'api_key', oauthUsage: { kind: 'anthropic_claude', fiveHour: { usedPercent: 14 } } })).length,
+    0,
+    'API Key 账户不应渲染 Claude 条'
+  )
+
+  const claudeBarsViaAggregation = oauthUsageBars(accountFixture({
+    providerCode: 'anthropic',
+    protocolCode: 'anthropic',
+    type: 'oauth',
+    oauthUsage: { kind: 'anthropic_claude', fiveHour: { usedPercent: 42, resetAt: '2026-06-16T01:30:00.000Z' } }
+  }))
+  assertEqual(claudeBarsViaAggregation.length, 1, 'anthropic oauth 账户应经聚合入口产出 Claude 条')
+  assertEqual(claudeBarsViaAggregation[0]?.key, '5h', '聚合入口应返回 Claude 5h 条')
+  assertEqual(claudeBarsViaAggregation[0]?.resetText, '1h 30m', 'Claude 重置文案应复用相对时间格式')
+
   assertEqual(grokPeriodLabel('USAGE_PERIOD_TYPE_WEEKLY'), '本周', '周期类型 WEEKLY 应规范化为本周')
   assertEqual(grokPeriodLabel('USAGE_PERIOD_TYPE_MONTHLY'), '本月', '周期类型 MONTHLY 应规范化为本月')
   assertEqual(grokPeriodLabel('USAGE_PERIOD_TYPE_DAILY'), 'USAGE_PERIOD_TYPE_DAILY', '其他周期类型应显示原文')
@@ -151,7 +234,7 @@ try {
 
 assertEqual(formatGrokPeriodReset('bad-date'), '时间格式异常', '非法重置时间应展示格式异常')
 
-console.log('账户用量 formatter 回归通过：摘要格式、OAuth 用量条、Grok 用量行、百分比封顶和重置时间均符合预期')
+console.log('账户用量 formatter 回归通过：摘要格式、OAuth 用量条、Grok 用量行、Claude 双窗用量条、百分比封顶和重置时间均符合预期')
 
 function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary {
   return {

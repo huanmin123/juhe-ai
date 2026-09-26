@@ -1,63 +1,111 @@
-# AI 问答专用 API Key 与动态模型目录设计
+# AI 问答会话绑定模式与动态模型目录设计
 
-## 1. 目标
+> 2026-09-27 修订：AI 问答定位为号池与账户测试工具。新建会话必须显式选择绑定模式与对象（API Key / 分组 / 账户），取消"默认专用 Key 自动绑定"与"默认会话自动选中"；分组、账户模式经网关进程内调度覆盖直达测试目标。本文取代旧的"AI 问答专用 API Key"单 Key 契约。
 
-- AI 问答使用每个系统账户唯一的专用 API Key，不再借用某条 GPT 默认路由下的默认 API Key。
-- 专用 Key 首次创建时绑定当前用户的 GPT 默认普通路由，之后允许用户在 API Key 页面切换到自己的任意启用策略路由。
-- AI 问答模型列表与公开 `/v1/models` 使用同一动态目录事实：按 Key 的路由策略全部 active 分组绑定汇总供应商，再聚合当前用户可见、启用、目录可见且可计价的模型。
-- 新会话默认选择动态模型列表第一项；后续会话恢复用户最近一次实际使用的模型。
+## 1. 目标与非目标
 
-## 2. Key 身份与生命周期
+目标：
 
-- `api_keys.purpose` 表达 Key 的产品用途，当前取值为 `general | chat`，默认 `general`。
-- 每个 `system_account_id` 最多存在一个 `purpose = chat` 的 Key；唯一性由数据库部分唯一索引保证，不能用名称、描述或路由反推。
-- 新系统账户创建默认资源时同时创建 AI 问答专用 Key。
-- 已有系统账户在首次创建 AI 问答会话时幂等补齐专用 Key；补齐只创建缺失资源，不覆盖已有专用 Key 的路由、状态、名称、额度或时间计划。
-- 专用 Key 默认名称为“AI 对话 API Key”，默认绑定 GPT 默认普通路由，`is_default = 0`。它不是某条路由的默认 Key，因此允许更换策略路由。
-- 专用 Key 在 API Key 列表显示“AI 对话”用途标签，并禁止删除或修改名称；允许切换策略路由、编辑说明、启停、刷新密钥、调整额度和时间计划。名称保护只认 `purpose = chat`，不依赖当前名称文本。停用或过期后，历史会话仍可读，但新建会话和继续发送应明确失败。
+- 新建会话必须显式选择一种绑定模式：按 API Key、按分组、按账户；不再存在默认绑定。
+- 进入 AI 问答不自动选中任何会话；没有会话时只显示"新建对话"引导，必须显式新建。
+- 分组、账户模式让用户直接测试号池中的指定分组或指定账户，不被路由策略和调度间接化。
+- 模型列表三种模式复用同一动态目录事实与缓存，成本不随账户数增长。
+- 所有模式仍以真实 API Key 走现有 `/v1` 网关入口，鉴权、额度、限流、计费、使用记录、审计、trace 不绕过、不弱化。
 
-## 3. 会话绑定
+非目标：
 
-- `POST /my-chat/conversations` 未显式传入 `apiKeyId` 时，只使用当前用户的 `purpose = chat` Key。
-- 兼容已有会话：会话继续固定使用创建时保存的 `api_key_id`，不因专用 Key 后续切换路由而改绑其他 Key；专用 Key 自身修改路由后，绑定该 Key 的会话自然使用新路由。
-- 不再通过“默认 Key + GPT 分组”查询决定 AI 问答身份。
+- 不新增对外 header、查询参数或请求体字段承载调度目标；调度覆盖只存在于进程内。
+- 不把探针类直连上游的通道引入聊天；聊天永远不直接请求供应商。
+- 不提供会话创建后更换绑定对象的接口；需要更换时新建会话。
+- 不迁移历史会话：存量会话一律视为 `api_key` 模式，行为不变。
 
-## 4. 动态模型目录
+## 2. 三种绑定模式
 
-模型列表链路固定为：
+| 模式 | `bind_mode` | 绑定对象 | 鉴权主体（Bearer Key） | 调度语义 |
+| --- | --- | --- | --- | --- |
+| API Key | `api_key` | 当前用户的一个已启用、未过期 API Key | 所选 Key | 现状：Key -> 路由策略 -> 分组 -> 账户 |
+| 分组 | `group` | 一个启用中的分组 | 用户专用对话 Key（见第 3 节） | 候选组收敛为指定分组，组内正常调度 |
+| 账户 | `account` | 一个启用中的账户 | 用户专用对话 Key（见第 3 节） | 候选账户收敛为指定账户，分组记账按该账户所属分组 |
 
-```text
-会话 api_key_id
-  -> 校验 Key 与路由策略
-  -> 收集全部 active 分组绑定的 provider_code
-  -> listClientModelCatalogAsync(systemAccountId, providerCodes)
-  -> ChatModelListOption[]
+- 分组模式校验：分组存在且 `enabled`；模型与账户候选来自该分组的可派发账户。
+- 账户模式校验：账户存在且启用，并与网关账户候选解析的可用口径一致（不可调度或已禁用的账户不在可选范围）。
+- 分组、账户模式下专用对话 Key 只是鉴权与计费主体：其额度、限流、使用记录归属照常生效；会话的绑定展示、模型作用域、调度目标都来自绑定对象，与该 Key 的路由策略无关。
+
+## 3. 专用对话 Key 的新语义
+
+- `api_keys.purpose = 'chat'` 的唯一专用 Key 保留，但不再是新建会话的默认绑定。
+- 仅当新建 `group` / `account` 模式会话时，服务端幂等确保专用 Key 存在并作为该会话的鉴权主体（`EnsureChatAPIKey` 既有实现：补齐默认路由、名称"AI 对话 API Key"、唯一索引去重）。
+- `api_key` 模式不触碰专用 Key，直接使用用户所选 Key。
+- 专用 Key 仍禁止删除、禁止改名；停用或过期后 `group` / `account` 模式会话不能继续发送（与现状 Key 失效语义一致）。
+- API Key 页面的专用 Key 标签、路由切换能力不变。
+
+## 4. 会话创建契约
+
+```http
+POST /__aisys__/api/my-chat/conversations
+{
+  "bindMode": "api_key" | "group" | "account",
+  "apiKeyId": "...",   // bindMode=api_key 时必填，其余模式不得传
+  "groupId": "...",    // bindMode=group 时必填，其余模式不得传
+  "accountId": "..."   // bindMode=account 时必填，其余模式不得传
+}
 ```
 
-- 列表排序完全复用客户端动态模型目录；第一项就是新会话默认模型。
-- 空 provider 绑定必须返回空列表，不回退公开全量目录。
-- 模型能力详情按相同 provider 集合读取当前供应商目录，并对同名模型取保守交集；不读取 `chat_list:*` 或 `chat_model:*` 发布快照。
-- Chat 模块不通过 loopback HTTP 再请求 `/v1/models`，避免重复鉴权、限流和网络往返；只复用同一目录服务。
+- `bindMode` 必填；省略或非法值返回 400。旧"省略 `apiKeyId` 自动绑定专用 Key"的路径删除，不再兼容空请求体。
+- 创建成功保存：`bind_mode`、对应绑定对象 ID 与名称快照、`api_key_id`（鉴权主体）。`api_key_name_snapshot` 继续保存鉴权 Key 名称。
+- 响应仍返回 `defaultModel`（按新模式模型作用域取排序第一项）与完整会话 payload（含绑定模式与对象快照）。
+- 会话创建后所有绑定字段不可更换；PATCH 仍只接受 `title`、`isPinned`、`defaultImageModel`。
 
-## 5. 前端规则
+## 5. 动态模型目录：三种模式的取数链路
 
-- 创建接口返回 `defaultModel`，新会话无需先展开下拉即可显示模型。
-- 如果创建响应因并发目录变化没有默认模型，首次展开下拉后仍用返回列表第一项回填。
-- 下拉为空时保留明确空态，不伪造模型；接口错误使用现有中文错误提示。
-- `lastModel` 优先于 `defaultModel`，只要它仍存在于本次动态列表；失效时回落到列表第一项。
-- 当前模型支持思考级别或服务等级时，对应控件默认选择能力列表第一项；不支持时不显示该控件。
+```text
+bind_mode = api_key : 会话 api_key_id -> Key 视图 active 分组绑定 -> ListAccountsForGroup 聚合 provider_codes
+bind_mode = group   : 指定分组 -> ListAccountsForGroup(分组) 聚合 provider_codes
+bind_mode = account : 指定账户 -> 该账户 provider_code（单值）-> 与 account_supported_models 取交集
+        （三种模式） -> ListCachedProviderModelCatalogAsync（进程内有界 TTL/LRU 缓存）
+```
 
-## 6. 数据与迁移
+- 列表排序完全复用客户端动态模型目录；第一项即新会话默认模型。
+- 目录数据按 provider 缓存，列表响应成本只与 provider 数量相关：`api_key` 模式与现状相同，`group` 模式通常 1 个 provider，`account` 模式恒为 1 个。
+- `account_supported_models` 为空集合时表示该账户未配置模型限制，不额外收窄目录；非空时目录与该集合取交集。
+- 能力详情接口（同名模型多候选取保守交集）按相同作用域收敛。
+- 不通过内部 `/v1/models` 重走网关预检，不读取发布快照；空 provider 作用域返回空列表。
 
-- SQLite 当前 schema 增加 `purpose TEXT NOT NULL DEFAULT 'general'` 和合法值约束。
-- PostgreSQL 使用新的 Goose 前向迁移增加字段、约束和 `purpose = 'chat'` 的账户级唯一索引。
-- 历史 Key 全部保持 `general`；不在 SQL migration 中生成密钥，也不根据名称猜测历史 Key。
-- 旧发布快照表可暂留给其他未迁移调用方，但 AI 问答运行路径必须移除对其读取依赖。
+## 6. 网关调度覆盖（进程内）
 
-## 7. 验收
+- 聊天执行器本就进程内直驱 `/v1` chain（无 loopback HTTP hop）；分组、账户模式经未导出的 `context` 键注入调度目标，外部 HTTP 请求无法构造该 context，不存在伪造通道。
+- 应用点在鉴权与运行时装配之后、派发循环之前：
+  - `group`：候选组收敛为指定分组（校验启用），账户候选按该分组解析；指定分组不可用返回明确错误。
+  - `account`：候选账户收敛为指定账户，分组按账户所属分组（`BoundGroupID`）记账，与现有 `applyUsageAccountScope` 语义一致。
+- 协议选择（Chat Completions / Responses）按目标作用域内账户的实际端点模式收敛，不再读 Key 视图的全体账户。
+- 使用记录天然记录真实命中的 `api_key_id` / `group_id` / `account_id`；审计与 trace 与普通客户端完全一致。
 
-- 新用户和已有用户都能得到唯一 AI 对话专用 Key，重复补齐不产生第二条。
-- 专用 Key 默认绑定 GPT 路由，API Key 页面可改到其他启用路由，并显示“AI 对话”标签。
-- 新建会话的模型列表等于该专用 Key 对外 `/v1/models` 的动态作用域，列表非空时默认选第一项。
-- 用户发送过其他模型后重新进入会话，恢复 `lastModel`；该模型失效时回落首项。
-- 删除接口和名称更新都拒绝专用 Key，普通 Key 行为不变。
+## 7. 前端规则
+
+- 进入页面不自动选中会话；空状态提供"新建对话"。仅待确认提交（页面刷新后的进行中轮次）允许自动回到对应会话。
+- 删除当前会话后回到空状态，不自动选中下一项。
+- 新建对话打开弹窗：绑定模式（API Key / 分组 / 账户）+ 对应对象下拉；对象未选择时创建按钮禁用；不记忆上次选择。
+  - Key 下拉：当前用户可用 Key 列表（`/my-api-keys` self 域）。
+  - 分组下拉：管理面分组选项（`/groups/options`）。
+  - 账户下拉：管理面账户选项（`/accounts/options`，仅启用账户）。
+- 模型下拉保持按需加载：首次展开才请求会话模型列表，并发去重、切会话取消，不引入前端 TTL 缓存或首屏预取。
+- 会话详情显示绑定模式与对象名（对象删除后回退名称快照）。
+
+## 8. 数据与迁移
+
+- `chat_conversations` 新增列（PostgreSQL 与 SQLite 同契约）：
+  - `bind_mode TEXT NOT NULL DEFAULT 'api_key'`（`api_key | group | account`）
+  - `bind_group_id TEXT NULL`、`bind_group_name_snapshot TEXT NULL`
+  - `bind_account_id TEXT NULL`、`bind_account_name_snapshot TEXT NULL`
+- `api_key_id` 语义扩展：所有模式非空（鉴权主体）；`api_key` 模式为用户所选 Key，`group` / `account` 模式为专用对话 Key。
+- 存量数据不加迁移回填：默认 `bind_mode='api_key'` 即表达历史行为。
+- `--ensure-schema` 幂等加列（列存在性检查后 `ALTER TABLE ADD COLUMN`），不删除、不改写任何既有列。
+
+## 9. 验收
+
+- 新建会话省略 `bindMode` 返回 400；三种模式各自携带错误对象返回 400；`api_key` 模式选择他人的或已停用 Key 返回明确错误。
+- `group` 模式会话的模型列表等于该分组可派发账户聚合的动态目录；`account` 模式等于该账户 provider 目录（与 `account_supported_models` 交集）。
+- `account` 模式发送命中指定账户，使用记录的 account/group 归属正确；`group` 模式发送始终落在指定分组内。
+- 外部 HTTP 请求无法指定调度目标：不带内部 context 的请求调度行为与现状完全一致。
+- 进入页面与删除会话后不再自动选中任何会话；待确认提交恢复不受影响。
+- 存量会话（`bind_mode='api_key'`）的发送、模型列表、详情展示行为与升级前一致。

@@ -24,10 +24,6 @@ func TestWeErrorTypesMessages(t *testing.T) {
 	if conflict.Error() != "版本冲突" {
 		t.Fatalf("ConflictError.Error() = %s", conflict.Error())
 	}
-	oidc := &OidcCiphertextError{Message: "密文无效"}
-	if oidc.Error() != "密文无效" {
-		t.Fatalf("OidcCiphertextError.Error() = %s", oidc.Error())
-	}
 	var asValidation *ValidationError
 	if !errors.As(validation, &asValidation) {
 		t.Fatal("errors.As 应识别 ValidationError")

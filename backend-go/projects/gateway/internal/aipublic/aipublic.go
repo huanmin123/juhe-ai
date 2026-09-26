@@ -4,7 +4,7 @@
 // plus the external-public-*.ts service/mock/sanitize/payload files and the
 // external-source-auth.middleware.ts guard).
 //
-// Route matrix (16 routes, each behind bearer-token auth + per-source
+// Route matrix (18 routes, each behind bearer-token auth + per-source
 // penalty-window rate limiting + scope checks):
 //
 //	GET  /__aipublic__/group/list            scope juhe_ai_public:group_list:read
@@ -23,13 +23,17 @@
 //	POST /__aipublic__/account/add           scope juhe_ai_public:account_add:write
 //	POST /__aipublic__/account/update        scope juhe_ai_public:account_update:write
 //	POST /__aipublic__/account/del           scope juhe_ai_public:account_delete:write
+//	GET  /__aipublic__/provider/list         scope juhe_ai_public:provider_list:read
+//	GET  /__aipublic__/provider/detail       scope juhe_ai_public:provider_detail:read
 //
 // The admin management family (/external-integration-sources) and the static
 // API catalog already live in internal/policyreads (M16b); this package only
 // owns the public caller-facing surface. Resource families reuse the migrated
-// stores (groups M05, route-strategies M06, api-keys M07, accounts M08-M10)
-// exactly like the delegated slice (P03); the target "public user" identity
-// is resolved/auto-created through the authsys system-account store. The
+// stores (groups M05, route-strategies M06, api-keys M07, accounts M08-M10,
+// providers T5 read family) exactly like the delegated slice (P03); the
+// target "public user" identity is resolved/auto-created through the authsys
+// system-account store. The provider family is read-only (list + detail with
+// the basic/models tabs) and projects the providers.Store definitions; the
 // built-in test token returns deterministic mock payloads without touching
 // the resource tables (Node external-public-*.mock.ts).
 package aipublic
@@ -48,6 +52,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
@@ -60,6 +65,8 @@ const (
 	scopeStrategyListRead    = "juhe_ai_public:route_strategy_list:read"
 	scopeApiKeyListRead      = "juhe_ai_public:api_key_list:read"
 	scopeAccountListRead     = "juhe_ai_public:account_list:read"
+	scopeProviderListRead    = "juhe_ai_public:provider_list:read"
+	scopeProviderDetailRead  = "juhe_ai_public:provider_detail:read"
 	scopeGroupAddWrite       = "juhe_ai_public:group_add:write"
 	scopeGroupUpdateWrite    = "juhe_ai_public:group_update:write"
 	scopeGroupDeleteWrite    = "juhe_ai_public:group_delete:write"
@@ -89,6 +96,9 @@ type Deps struct {
 	Strategies     *routestrategies.Store
 	ApiKeys        *apikeys.Store
 	AiAccounts     *accounts.Store
+	// Providers serves the read-only provider list/detail family (the same
+	// *providers.Store instance the management providers family mounts).
+	Providers *providers.Store
 	// Sink receives the account add/update/delete operation logs (Node
 	// recordOperationLogAsync with actor `external:<sourceRefId>`). Nil keeps
 	// the routes functional without the log.
@@ -114,7 +124,7 @@ type Deps struct {
 	redisShared *redisPenaltyDriver
 }
 
-// Mount wires the 16 public routes (Node app.use(publicApiPrefix,
+// Mount wires the 18 public routes (Node app.use(publicApiPrefix,
 // externalIntegrationsRouter)).
 func (d *Deps) Mount(k *kernel.Kernel) {
 	register := func(method, path, scope string, handler http.HandlerFunc) {
@@ -136,6 +146,8 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	register(http.MethodPost, "/account/add", scopeAccountAddWrite, d.addAccount)
 	register(http.MethodPost, "/account/update", scopeAccountUpdateWrite, d.updateAccount)
 	register(http.MethodPost, "/account/del", scopeAccountDeleteWrite, d.deleteAccount)
+	register(http.MethodGet, "/provider/list", scopeProviderListRead, d.listProviders)
+	register(http.MethodGet, "/provider/detail", scopeProviderDetailRead, d.providerDetail)
 }
 
 var bearerPattern = regexp.MustCompile(`(?i)^Bearer\s+(.+)$`)

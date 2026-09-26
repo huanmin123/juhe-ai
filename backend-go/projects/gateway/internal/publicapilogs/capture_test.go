@@ -483,31 +483,6 @@ func TestCaptureClosedBeforeFinish(t *testing.T) {
 	}
 }
 
-// TestSanitizeURLForLog mirrors sanitizeUrlForLog.
-func TestSanitizeURLForLog(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"non oauth path untouched", "/v1/chat?state=abc&nonce=x", "/v1/chat?state=abc&nonce=x"},
-		{"authorize redacts state", "/oauth/authorize?client_id=c&state=s",
-			"/oauth/authorize?client_id=c&state=%5Bredacted%5D"},
-		{"authorize redacts all sensitive names", "/oauth/authorize?state=s&nonce=n&code_challenge=c&transaction_id=t&user_code=u",
-			"/oauth/authorize?code_challenge=%5Bredacted%5D&nonce=%5Bredacted%5D&state=%5Bredacted%5D&transaction_id=%5Bredacted%5D&user_code=%5Bredacted%5D"},
-		{"device redacts user_code", "/oauth/device?user_code=ABC-DEF", "/oauth/device?user_code=%5Bredacted%5D"},
-		{"authorize without sensitive params keeps query", "/oauth/authorize?client_id=c", "/oauth/authorize?client_id=c"},
-		{"authorize without query", "/oauth/authorize", "/oauth/authorize"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := sanitizeURLForLog(tt.in); got != tt.want {
-				t.Fatalf("sanitizeURLForLog(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestExtractErrorInfoEdgeCases covers firstString semantics.
 func TestExtractErrorInfoEdgeCases(t *testing.T) {
 	if code, message := extractPublicAPIErrorInfo(map[string]any{"code": "  ", "message": "ok"}, 400); code != "" || message != "ok" {

@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -54,12 +55,22 @@ type gatewayChain struct {
 	bodyPipeline        *gatewaybody.Middleware
 	speedFirstAdmission *chainSpeedFirstBodyAdmissionGate
 	finalizationUsage   gatewayusage.UsageRecorder
-	auditSettings       gatewayusage.AuditLogSettingsSource
-	auditDispatcher     gatewayusage.AuditDispatcher
-	usageModelResolver  gatewayusage.UsageModelResolver
+	// finalizationPricing / finalizationSyncPricingAllowed 是完成尝试记录
+	// （chainFinalizationUsage）的同步定价面注入：catalog 与 usageService 共
+	// 享同一实例，gate 与 ServiceConfig.SyncPricingAllowed 同源
+	// （chain_compose.go 的 chainSyncPricingAllowed）。
+	finalizationPricing            gatewayusage.PricingCatalog
+	finalizationSyncPricingAllowed bool
+	auditSettings                  gatewayusage.AuditLogSettingsSource
+	auditDispatcher                gatewayusage.AuditDispatcher
+	usageModelResolver             gatewayusage.UsageModelResolver
 	// responseAccountEffects 是 W4-B（BUG-0175 D-132）的响应层账户副作用
 	// 面（配置策略避让 / 桶避让写侧）；nil 保持 finalization 的缺席守卫。
 	responseAccountEffects gatewayresponse.AccountFailureEffects
+	// anthropicUsageHeaders 是 anthropic（Claude OAuth）unified rate limit
+	// 响应头的成功面持久化窄口（AI账户Grok用量快照设计 §8.2；失败面在
+	// chainFailureDispatcher.anthropicUsageHeaders）；nil 保持静默。
+	anthropicUsageHeaders gatewaycodex.AnthropicUsageHeadersDispatcher
 	// speed-first（D-114，routes.ts:542-546）的 per-request 状态在
 	// v1DispatchLoop 上；组合级字段到此为止。
 	// compat answers the openai-compatible files / vector-stores families.
@@ -395,6 +406,14 @@ func (c *gatewayChain) handleUpstreamResponse(
 	// text/event-stream content type) with a gateway event.
 	handleAsStream := shouldHandleOpenAIUpstreamResponseAsStreamWithStatus(
 		upstream.Status(), upstream.ContentType(), streamRequest)
+	// Node routes.ts:1554-1556 的 Go 成功面对称位（到达响应管道的 2xx 终态）：
+	// anthropic OAuth 账户的 unified rate limit 头在此 fire-and-forget 持久化
+	// （AI账户Grok用量快照设计 §8.2；非 2xx 终态走 chain_ports.go 失败面，
+	// source 重写为 gateway_error）。nil 派发器与不合格账户在 helper 内静默。
+	if context.UsageContext.TrafficSource == gatewayTrafficSource {
+		gatewaycodex.PersistAnthropicUsageHeadersIfNeeded(ctx, dispatched.Account,
+			responseHTTPHeaderOf(upstream), gatewaycodex.AnthropicUsageSnapshotSource, c.anthropicUsageHeaders)
+	}
 	// D-97（BUG-0175）+ P2：上游响应模型归因。观察器已在 dispatch attempt 内、
 	// 桥转换之前挂到原始上游流（engine.ObserveUpstreamResponseModel 钩子，
 	// Node upstream-attempts.ts:180-210 观察先于 transform），归因的是上游
@@ -429,9 +448,13 @@ func (c *gatewayChain) handleUpstreamResponse(
 		MarkFirstOutput:            firstOutputMetricMarkOf(dispatched.MarkFirstOutput, startedAt, req.MethodUpper()),
 		DownstreamCommitState:      commitState,
 		Deps: &gatewayresponse.FinalizationDeps{
-			UsageRecords: chainFinalizationUsage{recorder: c.finalizationUsage},
-			Logger:       gatewayResponseLogger{inner: slog.Default()},
-			NowMs:        func() int64 { return c.preauth.NowMs() },
+			UsageRecords: chainFinalizationUsage{
+				recorder:           c.finalizationUsage,
+				pricing:            c.finalizationPricing,
+				syncPricingAllowed: c.finalizationSyncPricingAllowed,
+			},
+			Logger: gatewayResponseLogger{inner: slog.Default()},
+			NowMs:  func() int64 { return c.preauth.NowMs() },
 			// W4-B（BUG-0175）D-132 接线：响应检查的运行态副作用写侧
 			//（avoid_account_ttl / avoid_upstream_bucket_ttl 跨请求落地）。
 			AccountEffects: c.responseAccountEffects,

@@ -198,14 +198,6 @@ func TestSeedBusinessRequiredTables(t *testing.T) {
 		{name: "题库三态", query: "SELECT COUNT(DISTINCT status) FROM model_check_question_bank", min: 3},
 		{name: "题库已通过", query: "SELECT COUNT(*) FROM model_check_question_bank WHERE status = 'approved' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reference_answer <> '' AND key_points_json IS NOT NULL", min: 3},
 		{name: "题库已驳回", query: "SELECT COUNT(*) FROM model_check_question_bank WHERE status = 'rejected' AND reject_reason IS NOT NULL", min: 1},
-		{name: "OAuth 客户端", query: "SELECT COUNT(*) FROM oauth_clients", min: 2},
-		{name: "OAuth 授权", query: "SELECT COUNT(*) FROM oauth_grants", min: 1},
-		{name: "OAuth 授权码", query: "SELECT COUNT(*) FROM oauth_authorization_codes", min: 1},
-		{name: "OAuth 访问令牌", query: "SELECT COUNT(*) FROM oauth_access_tokens", min: 1},
-		{name: "OAuth 事务", query: "SELECT COUNT(*) FROM oauth_authorization_transactions", min: 1},
-		{name: "OAuth 设备授权", query: "SELECT COUNT(*) FROM oauth_device_authorizations", min: 1},
-		{name: "OAuth 签名密钥", query: "SELECT COUNT(*) FROM oauth_signing_keys", min: 1},
-		{name: "OAuth 授权码 OIDC 上下文", query: "SELECT COUNT(*) FROM oauth_authorization_code_oidc_contexts", min: 1},
 		{name: "授权账户实例", query: "SELECT COUNT(*) FROM accounts WHERE authorization_instance_source_account_id IS NOT NULL", min: 1},
 	}
 	for _, testCase := range cases {
@@ -340,7 +332,6 @@ func TestSeedBusinessJSONColumnsValid(t *testing.T) {
 		{name: "来源 scopes", query: "SELECT scopes_json FROM external_integration_sources"},
 		{name: "来源限频", query: "SELECT rate_limits_json FROM external_integration_sources"},
 		{name: "题库要点", query: "SELECT key_points_json FROM model_check_question_bank WHERE key_points_json IS NOT NULL"},
-		{name: "签名密钥 JWK", query: "SELECT public_jwk_json FROM oauth_signing_keys"},
 		{name: "向量库元数据", query: "SELECT metadata_json FROM openai_compatible_vector_stores"},
 	}
 	for _, testCase := range cases {
@@ -393,7 +384,7 @@ func TestSeedBusinessIdempotent(t *testing.T) {
 		"resource_authorizations", "resource_authorization_sources",
 		"resource_authorization_grants", "system_teams", "system_team_members",
 		"announcements", "announcement_reads", "custom_provider_models",
-		"model_check_question_bank", "oauth_clients", "account_name_search_documents",
+		"model_check_question_bank", "account_name_search_documents",
 	}
 	before := map[string]int{}
 	for _, table := range tables {

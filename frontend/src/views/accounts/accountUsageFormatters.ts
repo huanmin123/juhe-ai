@@ -39,6 +39,8 @@ export function formatCost(value?: number): string {
 export function oauthUsageBars(account: OAuthUsageDisplayAccount): OAuthUsageBar[] {
   const grok = grokOAuthUsageBar(account)
   if (grok) return [grok]
+  const claude = claudeOAuthUsageBars(account)
+  if (claude.length) return claude
   if (account.type !== 'oauth' || !canCreateOAuthAccount({ profile: account })) return []
   const usage = account.oauthUsage
   if (!usage || usage.kind !== 'openai_codex') return []
@@ -46,6 +48,32 @@ export function oauthUsageBars(account: OAuthUsageDisplayAccount): OAuthUsageBar
     oauthUsageBar('5h', '5h', usage.fiveHour),
     oauthUsageBar('7d', '7d', usage.sevenDay)
   ].filter((bar): bar is OAuthUsageBar => Boolean(bar))
+}
+
+/** Claude（Anthropic OAuth）窗口用量条：与 GPT 窗口条同构（徽章=窗口、条=已用百分比、尾部=重置倒计时）。 */
+export function claudeOAuthUsageBars(account: OAuthUsageDisplayAccount): OAuthUsageBar[] {
+  if (account.type !== 'oauth') return []
+  const usage = account.oauthUsage
+  if (!usage || usage.kind !== 'anthropic_claude') return []
+  return [
+    claudeUsageBar('5h', '5h', usage.fiveHour),
+    claudeUsageBar('7d', '7d', usage.sevenDay)
+  ].filter((bar): bar is OAuthUsageBar => Boolean(bar))
+}
+
+function claudeUsageBar(key: string, label: string, window?: { usedPercent?: number; resetAt?: string }): OAuthUsageBar | undefined {
+  if (!window || window.usedPercent === undefined) return undefined
+  const rawPercent = Math.max(0, window.usedPercent)
+  const percent = Math.min(Math.round(rawPercent), 100)
+  return {
+    key,
+    label,
+    percent,
+    displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
+    resetText: window.resetAt ? formatRelativeReset(window.resetAt) : '—',
+    color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
+    tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
+  }
 }
 
 /** Grok 订阅周期用量条：与 GPT 窗口条同构（徽章=周期、条=已用百分比、尾部=重置倒计时）。 */

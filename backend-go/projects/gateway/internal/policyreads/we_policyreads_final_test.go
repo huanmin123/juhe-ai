@@ -140,7 +140,6 @@ func TestWeHandlersSurfaceErrorsWhenDatabaseClosed(t *testing.T) {
 	env := newPolicyTestEnv(t)
 	inspectionStore := env.mountInspection(t)
 	externalStore := env.mountExternal(t)
-	oauthStore := env.mountOAuth(t, true, "https://id.example.com")
 	env.login(t, "root", "root-pass", "super_admin")
 
 	// 先关闭底层库：此后所有仓库调用立即失败。
@@ -150,7 +149,6 @@ func TestWeHandlersSurfaceErrorsWhenDatabaseClosed(t *testing.T) {
 
 	inspectionDeps := &InspectionDeps{Store: inspectionStore, Auth: env.deps, Sink: env.sink}
 	externalDeps := &ExternalDeps{Store: externalStore, Auth: env.deps, Sink: env.sink}
-	oauthDeps := &OAuthDeps{Store: oauthStore, Auth: env.deps, OIDCEnabled: true, OIDCIssuer: "https://id.example.com"}
 
 	get := func(handler http.Handler, pathValues map[string]string) int {
 		t.Helper()
@@ -190,13 +188,5 @@ func TestWeHandlersSurfaceErrorsWhenDatabaseClosed(t *testing.T) {
 	}
 	if code := get(http.HandlerFunc(externalDeps.tokenSecret), map[string]string{"id": "extsrc_x", "tokenId": "exttok_x"}); code != http.StatusInternalServerError {
 		t.Fatalf("token secret = %d", code)
-	}
-
-	// OAuth：列表 / 对接文档（含 FindClient 与 FindClientSecret 错误分支）。
-	if code := get(http.HandlerFunc(oauthDeps.listClients), nil); code != http.StatusInternalServerError {
-		t.Fatalf("oauth list = %d", code)
-	}
-	if code := get(http.HandlerFunc(oauthDeps.integrationPackage), map[string]string{"clientId": "juhe_x"}); code != http.StatusInternalServerError {
-		t.Fatalf("oauth package = %d", code)
 	}
 }

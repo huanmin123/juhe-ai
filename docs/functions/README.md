@@ -1,6 +1,6 @@
 # 功能文档目录
 
-> **实现归属（2026-09-05 起）。** Node 后端已完成全量清零迁移并归档至 `migration-backup/node/final-archive/`；本文全部功能文档描述的能力，其实现在 `backend-go/projects/*`：管理域与公开面、`/v1` 网关链（gatewaypreauth/gatewaybody/gatewayquota/gatewayrouting/gatewaydispatch/gatewayresponse/gatewayusage/gatewayobs 及 openai/anthropic/gemini/codex 协议包）、chat、模型检测、OIDC/delegated/aipublic 等在 `backend-go/projects/gateway/internal/`；后台任务与探针/统计/retention/usage writer 等 jobregistry 注册表（条数以 `backend-go/projects/jobs/internal/jobregistry/registry.go` 实际注册为准）在 `backend-go/projects/jobs/internal/`；schema/seed/owner manifest CLI 在 `backend-go/projects/maintenance/`。各文档内的历史 Node 路径（`backend/src/...`）只作为当时的对照证据保留，不是当前实现位置。挂载矩阵权威事实源：`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go`。
+> **实现归属（2026-09-05 起）。** Node 后端已完成全量清零迁移并归档至 `migration-backup/node/final-archive/`；本文全部功能文档描述的能力，其实现在 `backend-go/projects/*`：管理域与公开面、`/v1` 网关链（gatewaypreauth/gatewaybody/gatewayquota/gatewayrouting/gatewaydispatch/gatewayresponse/gatewayusage/gatewayobs 及 openai/anthropic/gemini/codex 协议包）、chat、模型检测、aipublic 等在 `backend-go/projects/gateway/internal/`；后台任务与探针/统计/retention/usage writer 等 jobregistry 注册表（条数以 `backend-go/projects/jobs/internal/jobregistry/registry.go` 实际注册为准）在 `backend-go/projects/jobs/internal/`；schema/seed/owner manifest CLI 在 `backend-go/projects/maintenance/`。各文档内的历史 Node 路径（`backend/src/...`）只作为当时的对照证据保留，不是当前实现位置。挂载矩阵权威事实源：`backend-go/projects/gateway/cmd/juhe-ai-gateway/compose.go`。
 
 - [Codex Reasoning 完整性检测设计](CodexReasoning完整性检测设计.md)：记录 reasoning 可见性诊断边界，以及不在响应热路径实施质量拦截的当前决定。
 - [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md)：记录当前账户级健康机制的代码事实，以及多模型按实际 Route / Key 精确探测和隔离的目标设计。
@@ -10,8 +10,6 @@
 - [用户请求限制设计](用户请求限制设计.md)：定义全局与用户级每分钟 / 日 / 周 / 月请求限制、进程内零 I/O 快速判断、Redis 后台延迟协调、快速失败和个人信息展示。
 - [Node 后台任务统一调度与错峰设计](Node后台任务统一调度与错峰设计.md)（历史设计）：Node 时代任务调度契约，语义已由 jobs `jobsched`/`jobregistry` 承接；该 Node 调度入口已随迁移归档。
 - [用户个人信息页面设计](用户个人信息页面设计.md)：头像菜单统一进入个人信息页面，集中展示账号、角色、状态、生图权限和时间，并维护用户名称与登录密码。
-- [第三方登录与个人委托授权设计](第三方登录与个人委托授权设计.md)：记录 juhe-ai OAuth 2.1 / OIDC Provider 的浏览器、本地客户端与 Device Flow、7 天硬到期的本人资源委托边界、每 7 天自动轮换的签名密钥和生产启用门禁。
-- [第三方 OAuth OIDC 对接指南](第三方OAuthOIDC对接指南.md)：供外部应用接入 Authorization Code + PKCE、Device Flow、JWKS 验签和个人委托 API；管理员从每个第三方应用的操作列下载绑定该 Client 的动态 Markdown，不需要再单独整理地址、Client ID、回调地址或 Scope。
 - [供应商独立计费与模型目录展示设计](供应商独立计费与模型目录展示设计.md)：统一美元结算结果，各供应商独立解释 usage、价格档位、缓存、长上下文与展示分组；当前实现为 gateway `internal/pricing` 与网关链计费消费方。
 - [运行日志降噪与终态语义设计](运行日志降噪与终态语义设计.md)：正常快速 DB / 网关阶段不进入默认 info，保留慢请求、失败和单次耗时汇总，并修正成功协议终态被 close 覆盖。
 - [使用记录详情退场设计](使用记录详情退场设计.md)：使用记录管理与我的使用记录统一收敛为列表-only，删除操作列、详情接口、请求 / 响应快照展示和日志跳转。
@@ -28,8 +26,6 @@
 - [统一会话身份与审计串联设计](统一会话身份与审计串联设计.md)
 - [用户请求限制设计](用户请求限制设计.md)
 - [用户个人信息页面设计](用户个人信息页面设计.md)
-- [第三方登录与个人委托授权设计](第三方登录与个人委托授权设计.md)
-- [第三方 OAuth OIDC 对接指南](第三方OAuthOIDC对接指南.md)
 - [列表手动刷新完整响应设计](列表手动刷新完整响应设计.md)
 - [动态管理数据刷新与缓存边界设计](动态管理数据刷新与缓存边界设计.md)
 - [上游响应模型不一致审计](上游响应模型不一致审计.md)
@@ -184,7 +180,6 @@
 - 页面请求默认直连业务接口。已退场的通用 page-data confirm/revision、IndexedDB 响应缓存和写端变更发布不得恢复；未来页面性能优化必须针对具体业务数据和变化频率单独设计。
 - 新增或调整前端 Build ID、`build-info.json`、动态资源失败提示、自动刷新或防循环行为时，优先更新 [前端版本识别与资源恢复](前端版本识别与资源恢复.md)，再同步前端架构、构建指南和测试验证说明。
 - 新增或调整面向第三方后端调用的受保护来源系统鉴权、来源 token、外部接口前缀或 demo 接口时，优先更新 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)，再同步 [接口契约与权限矩阵](接口契约与权限矩阵.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [安全与日志策略](安全与日志策略.md)。
-- 新增或调整 juhe-ai 作为 OAuth/OIDC Provider 的 Client、授权码、用户同意、个人委托 token、公开发现端点或 Device Flow 时，优先更新 [第三方登录与个人委托授权设计](第三方登录与个人委托授权设计.md)，再同步接口权限矩阵、安全与日志策略、存储说明、后端/前端架构和第三方接入文档；不得复用外部来源系统 token。
 - 新增或调整公开接口进程、公开接口端口、公开接口部署拓扑、公开接口限流预算或主进程公开入口隔离时，优先更新 [公开接口独立进程设计](公开接口独立进程设计.md)，再同步 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)、[部署指南](../deploy/部署指南.md) 和 [后端架构设计](../architecture/backend/README.md)。
 - 新增或调整 `/__aipublic__` 面向外部来源系统的 API Key、路由策略、分组或 AI 账户公开维护接口时，优先更新 [公开资源维护接口设计](公开资源维护接口设计.md)，再同步 [外部来源系统鉴权设计](外部来源系统鉴权设计.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[安全与日志策略](安全与日志策略.md) 和 [SQLite 存储说明](SQLite存储说明.md)。统计聚合、公益展示、IP 归属和排行榜不再作为公开接口能力。
 - 新增或调整多节点部署、控制面选主、用户 home node、API Key 跨节点路由、节点内部通信、集群 worker 归属或分布式故障语义时，优先更新 [分布式部署与用户分片设计](分布式部署与用户分片设计.md)，再同步 [架构总览](../architecture/架构总览.md)、[SQLite 存储说明](SQLite存储说明.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[安全与日志策略](安全与日志策略.md) 和部署 / 验证文档。

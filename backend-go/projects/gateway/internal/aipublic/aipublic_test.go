@@ -23,6 +23,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 	_ "modernc.org/sqlite"
 )
@@ -71,6 +72,10 @@ func newAIPublicEnv(t *testing.T) *aipublicEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	providerStore, err := providers.NewStore(db, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = service
 	k := kernelForTest()
 	aipublicDeps := &Deps{
@@ -78,7 +83,8 @@ func newAIPublicEnv(t *testing.T) *aipublicEnv {
 		SystemAccounts: systemAccounts,
 		Groups:         groupsStore, Strategies: strategyStore,
 		ApiKeys: apiKeyStore, AiAccounts: accountStore,
-		Sink: &recordingAIPublicSink{},
+		Providers: providerStore,
+		Sink:      &recordingAIPublicSink{},
 	}
 	aipublicDeps.Mount(k)
 	env := &aipublicEnv{t: t, db: db, server: httptest.NewServer(k.Handler())}

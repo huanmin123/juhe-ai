@@ -18,7 +18,7 @@ import (
 )
 
 // ConflictError maps to Node conflict outcomes rendered as 409 (patch conflicts
-// and guarded duplicates across the three domains).
+// and guarded duplicates across the two domains).
 type ConflictError struct{ Message string }
 
 func (e *ConflictError) Error() string { return e.Message }
@@ -39,7 +39,7 @@ type RuntimeInvalidator interface {
 const TopicGatewayRuntime = "topic:gateway_runtime_cache"
 
 // baseStore is the dual-mode (SQLite + PostgreSQL) persistence core shared by
-// the three domains.
+// the two domains.
 type baseStore struct {
 	db    *sql.DB
 	pg    bool

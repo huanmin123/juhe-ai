@@ -7,8 +7,7 @@ package apikeys
 // (ApiKeyRevisionConflictError → 409 + currentRevision), the default/chat
 // name guards, the selectable route-strategy probe, quota/schedule
 // normalization with the schedule-driven status override and the
-// changedFields/rowPatch outcome the route renders verbatim. Unlike the
-// delegated PATCH slice (internal/delegated/apikeypatch.go) this covers the
+// changedFields/rowPatch outcome the route renders verbatim. This covers the
 // full mutable field set and the dual-mode store lives here.
 
 import (
