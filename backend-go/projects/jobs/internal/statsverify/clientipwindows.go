@@ -573,9 +573,14 @@ func (s *Store) refreshRangeWindow(ctx context.Context, tx *sql.Tx, windowTable,
 		return nil
 	}
 	for _, chunk := range chunkStrings(ipHashes, clientIpRangeWindowChunkSize) {
-		ipFilter := fmt.Sprintf("AND ip_hash IN (%s)", s.placeholders(len(chunk)))
+		// PG 方言 $n 占位符是按序号绑定参数的：DELETE 主体已占 $1/$2，
+		// IN 列表必须从 $3 续号；INSERT（buildInsert firstParam=1）主体
+		// 占 $1..$5，IN 列表必须从 $6 续号。placeholders() 固定从 $1
+		// 起编，嵌进这两条语句会与主体序号重叠（pgx 按最大序号解析参数
+		// 总数）→ mismatched param and argument count，且 $1 语义错绑。
+		deleteFilter := fmt.Sprintf("AND ip_hash IN (%s)", s.placeholdersFrom(3, len(chunk)))
 		deleteQuery := fmt.Sprintf(`DELETE FROM %s WHERE start_date = %s AND end_date = %s %s`,
-			windowTable, s.placeholder(1), s.placeholder(2), ipFilter)
+			windowTable, s.placeholder(1), s.placeholder(2), deleteFilter)
 		deleteArgs := []any{window.StartDate, window.EndDate}
 		for _, ipHash := range chunk {
 			deleteArgs = append(deleteArgs, ipHash)
@@ -583,7 +588,8 @@ func (s *Store) refreshRangeWindow(ctx context.Context, tx *sql.Tx, windowTable,
 		if _, err := tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
 			return fmt.Errorf("清理 %s 失败: %w", windowTable, err)
 		}
-		insert := buildInsert(ipFilter, 1)
+		insertFilter := fmt.Sprintf("AND ip_hash IN (%s)", s.placeholdersFrom(6, len(chunk)))
+		insert := buildInsert(insertFilter, 1)
 		insertArgs := []any{window.StartDate, window.EndDate, updatedAt, window.StartDate, window.EndDate}
 		for _, ipHash := range chunk {
 			insertArgs = append(insertArgs, ipHash)
