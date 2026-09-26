@@ -18,6 +18,11 @@ var postgresSchemaChat = []PGStatement{
       system_account_id text NOT NULL,
       api_key_id text,
       api_key_name_snapshot text NOT NULL,
+      bind_mode text NOT NULL DEFAULT 'api_key',
+      bind_group_id text,
+      bind_group_name_snapshot text,
+      bind_account_id text,
+      bind_account_name_snapshot text,
       title text NOT NULL DEFAULT '新对话',
       title_source_message_id text,
       is_pinned integer NOT NULL DEFAULT 0,
@@ -51,6 +56,7 @@ var postgresSchemaChat = []PGStatement{
       CHECK (user_turn_count >= 0),
       CHECK (message_revision >= 0),
       CHECK (is_pinned IN (0, 1)),
+      CHECK (bind_mode IN ('api_key', 'group', 'account')),
       CHECK (context_revision >= 0),
       CHECK (compacted_through_sequence >= 0 AND compacted_through_sequence < next_sequence_no),
       CHECK (context_state IN ('ready', 'compact_pending', 'compacting', 'compact_failed')),
@@ -542,5 +548,34 @@ var postgresSchemaChat = []PGStatement{
 		Source:     "chat",
 		SQL: `CREATE INDEX IF NOT EXISTS idx_chat_image_generations_expiry
       ON chat_image_generations(expires_at, asset_id)`,
+	},
+	// 会话绑定模式列（AI 问答三种绑定模式）：新库由上方 CREATE TABLE 直接
+	// 声明；既有库经下列幂等 ALTER 补齐（列存在即 no-op），不回填存量数据
+	// （DEFAULT 'api_key' 即表达历史行为）。bind_mode 带值域 CHECK，存量行
+	// 取默认值恒满足约束。
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-conversation-bind-mode-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS bind_mode text NOT NULL DEFAULT 'api_key' CHECK (bind_mode IN ('api_key', 'group', 'account'))`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-conversation-bind-mode-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS bind_group_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-conversation-bind-mode-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS bind_group_name_snapshot text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-conversation-bind-mode-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS bind_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-conversation-bind-mode-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS bind_account_name_snapshot text`,
 	},
 }

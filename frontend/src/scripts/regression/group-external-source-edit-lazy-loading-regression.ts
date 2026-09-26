@@ -60,8 +60,8 @@ assert.match(externalSourceModalSource, /@dropdown-visible-change="emit\('scope-
 assert.match(externalSourceModalSource, /:loading="scopeOptionsLoading"/, 'scope 下拉必须显示按需请求状态')
 assert.match(externalSourcesViewSource, /availableScopeOptions[\s\S]*sourceForm\.scopes[\s\S]*label: value/, '编辑外部来源必须在远程 scope 候选未加载时保留已选值')
 assert.match(externalSourceFormSource, /DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS/, '公开接口 scope 常量必须提供本地默认值')
-assert.equal(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.length, 16, '本地 scope 标签字典必须覆盖 Node 的 16 个公开接口 scope')
-assert.equal(new Set(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.map((item) => item.value)).size, 16, '本地 scope 标签字典不得包含重复值')
+assert.equal(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.length, 18, '本地 scope 标签字典必须覆盖后端的 18 个公开接口 scope')
+assert.equal(new Set(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.map((item) => item.value)).size, 18, '本地 scope 标签字典不得包含重复值')
 assert.deepEqual(DEFAULT_EXTERNAL_INTEGRATION_SELECTED_SCOPES, ['juhe_ai_public:group_list:read'], '新增来源默认 scope 必须与完整标签字典独立维护')
 const externalSourceRecord = {
   id: 'extsrc_1',

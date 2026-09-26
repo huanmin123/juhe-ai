@@ -321,6 +321,13 @@ func usageAccountGroupIDOverride(account gatewaydispatch.AccountCandidate) strin
 // engine-side failure record.
 type chainFinalizationUsage struct {
 	recorder gatewayusage.UsageRecorder
+	// pricing / syncPricingAllowed 承载完成尝试记录的同步定价面（Node
+	// recordCompletedUpstreamAttempt 记录时同步估算成本语义）。gate 语义对齐
+	// gatewayusage.Service.canUseSyncPricing：开关开启且 catalog 非 nil 才估
+	// 算；开关由组合根表达（cacheDriver !== 'redis' ⇒ true，与
+	// ServiceConfig.SyncPricingAllowed 同一字面量，chain_compose.go）。
+	pricing            gatewayusage.PricingCatalog
+	syncPricingAllowed bool
 }
 
 func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresponse.CompletedAttemptInput) {
@@ -355,7 +362,6 @@ func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresp
 	// 直接赋值，缺失保持 nil→NULL、0 保持零值；string 空串 = 缺失，rows.go
 	// reportedServiceTier 走 nilableString 落 NULL。Node records.ts
 	// recordCompletedUpstreamAttempt 同款字段直传）。
-	// 定价面未在完成尝试输入中提供，保持 NULL。
 	record.InputTokens = input.Usage.InputTokens
 	record.OutputTokens = input.Usage.OutputTokens
 	record.CacheReadTokens = input.Usage.CacheReadTokens
@@ -370,6 +376,37 @@ func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresp
 	record.UpstreamResponseModel = input.Usage.UpstreamResponseModel
 	record.ReportedServiceTier = input.Usage.ServiceTier
 	applyUsageAccountScope(&record, input.Account)
+	// 成本估算对齐 Node recordCompletedUpstreamAttempt 的“记录时同步估算”
+	// 语义：gate 由组合根表达（cacheDriver !== 'redis' ⇒
+	// SyncPricingAllowed=true，chain_compose.go 与 usageService 同源），gate
+	// 开启且定价模型名非空时按同步定价目录估算三成本字段；估算器对空模型/
+	// 无维度/目录未命中已内置守卫，返回 nil 一律保持 NULL（不写 0）。
+	// cost_breakdown_snapshot_json 快照列链路不在本步骤范围。
+	if u.syncPricingAllowed && u.pricing != nil {
+		pricingModel := firstNonEmptyChainUsage(input.Usage.UpstreamResponseModel, input.RequestedModel)
+		if pricingModel != "" {
+			costInput := gatewayusage.PricingCostInput{
+				ProviderCode:       input.UsageContext.ProviderCode,
+				SystemAccountID:    chainCatalogSystemAccountID(input.Account, input.UsageContext.SystemAccountID),
+				Model:              pricingModel,
+				ServiceTier:        input.Usage.ServiceTier,
+				InputTokens:        input.Usage.InputTokens,
+				OutputTokens:       input.Usage.OutputTokens,
+				CacheReadTokens:    input.Usage.CacheReadTokens,
+				CacheWriteTokens:   input.Usage.CacheWriteTokens,
+				CacheWrite1hTokens: input.Usage.CacheWrite1hTokens,
+				ThinkingTokens:     input.Usage.ThinkingTokens,
+				InputImageTokens:   input.Usage.InputImageTokens,
+				OutputImageTokens:  input.Usage.OutputImageTokens,
+				InputAudioTokens:   input.Usage.InputAudioTokens,
+				OutputAudioTokens:  input.Usage.OutputAudioTokens,
+				OutputImageCount:   input.Usage.OutputImageCount,
+			}
+			record.CostUsd = u.pricing.EstimateCost(costInput)
+			record.CacheReadCostUsd = u.pricing.EstimateCacheReadCost(costInput)
+			record.CacheWriteCostUsd = u.pricing.EstimateCacheWriteCost(costInput)
+		}
+	}
 	stream := input.Stream
 	record.Stream = &stream
 	statusCode := input.StatusCode
@@ -434,6 +471,21 @@ func applyUsageAccountScope(record *gatewayusage.UsageRecordInput, account gatew
 	record.GroupAuthorizationID = firstNonEmptyChainUsage(record.GroupAuthorizationID, derefString(secret.GroupAuthorizationID))
 	record.GroupAuthorizationSourceType = firstNonEmptyChainUsage(record.GroupAuthorizationSourceType, derefString(secret.GroupAuthorizationSourceType))
 	record.GroupAuthorizationSourceTeamID = firstNonEmptyChainUsage(record.GroupAuthorizationSourceTeamID, derefString(secret.GroupAuthorizationSourceTeamID))
+}
+
+// chainCatalogSystemAccountID 对齐 internal/gatewayusage/audit_capture.go
+// auditModelAccounting 的 catalogSystemAccountID 取法：定价目录定位优先取账
+// 号视图（OpenAIAccountView）的 AccountOwnerSystemAccountID，为空或非该视图
+// 实现时回退 usage context 的 SystemAccountID。
+func chainCatalogSystemAccountID(account gatewayresponse.AccountView, fallback string) string {
+	if account == nil {
+		return fallback
+	}
+	view, ok := account.(gatewayresponse.OpenAIAccountView)
+	if !ok {
+		return fallback
+	}
+	return firstNonEmptyChainUsage(view.Account.AccountOwnerSystemAccountID, fallback)
 }
 
 func derefString(value *string) string {

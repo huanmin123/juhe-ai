@@ -1,11 +1,18 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationBindMode, ChatConversationSyncHead, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
+
+export interface ChatConversationCreatePayload {
+  bindMode: ChatConversationBindMode
+  apiKeyId?: string
+  groupId?: string
+  accountId?: string
+}
 
 export const chatApi = {
   getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
-  createConversation: (apiKeyId?: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', apiKeyId ? { apiKeyId } : {})),
+  createConversation: (payload: ChatConversationCreatePayload) => unwrap<ChatConversation>(http.post('/my-chat/conversations', payload)),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),
   listMessages: (conversationId: string, params?: ChatMessageListParams) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/messages`, { params })),
   getConversationSync: (conversationId: string, knownRevision?: number) => unwrap<ChatConversationSyncHead>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/sync`, { params: { knownRevision: knownRevision ?? 0 } })),

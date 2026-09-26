@@ -45,7 +45,7 @@
           </div>
           <div v-else-if="turnLimitReached" class="turn-limit-bar">
             <span>{{ turnLimitMessage }}</span>
-            <a-button type="link" size="small" :loading="creating" @click="createConversation">新建对话</a-button>
+            <a-button type="link" size="small" @click="openCreateConversationModal">新建对话</a-button>
           </div>
           <div v-if="conversationActionLoading" class="conversation-action-bar" role="status" aria-live="polite">
             <a-spin size="small" />
@@ -81,7 +81,7 @@
       <div v-else class="chat-start-state">
         <MessageOutlined />
         <strong>新建对话后开始提问</strong>
-        <a-button type="primary" :loading="creating" @click="createConversation"><PlusOutlined />新建对话</a-button>
+        <a-button type="primary" @click="openCreateConversationModal"><PlusOutlined />新建对话</a-button>
       </div>
     </main>
 
@@ -108,6 +108,7 @@
           </span>
         </a-descriptions-item>
         <a-descriptions-item label="标题">{{ detailConversation.title }}</a-descriptions-item>
+        <a-descriptions-item label="绑定">{{ conversationBindLabel(detailConversation) }}</a-descriptions-item>
         <a-descriptions-item label="API Key">{{ detailConversation.apiKeyNameSnapshot }}</a-descriptions-item>
         <a-descriptions-item label="最近模型">{{ detailConversation.lastModel || '未使用' }}</a-descriptions-item>
         <a-descriptions-item label="默认图像模型">{{ imageModelLabel(detailConversation.defaultImageModel) }}</a-descriptions-item>
@@ -138,6 +139,7 @@
     <a-modal v-model:open="deleteDialogOpen" title="删除会话" ok-text="删除" cancel-text="取消" ok-type="danger" :confirm-loading="conversationUpdating" @ok="confirmDeleteConversation">
       删除后聊天记录无法恢复，确定删除“{{ pendingConversation?.title }}”吗？
     </a-modal>
+    <ChatCreateConversationModal v-model:open="createModalOpen" @created="handleConversationCreated" />
   </section>
 </template>
 
@@ -171,6 +173,7 @@ import {
   type ChatPendingSubmission
 } from './chatPendingSubmissionStorage'
 import ChatMessageList from './ChatMessageList.vue'
+import ChatCreateConversationModal from './ChatCreateConversationModal.vue'
 import AIComposer from './composer/AIComposer.vue'
 import type { ChatInputBlock } from './composer/chatComposerDocument'
 import { defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls } from './composer/chatModelControls'
@@ -238,7 +241,6 @@ const olderMessagesLoading = ref(false)
 const hasOlderMessages = ref(false)
 const modelsLoading = ref(false)
 const modelCapabilitiesLoading = ref(false)
-const creating = ref(false)
 const conversationActionLoading = ref(false)
 const generating = ref(false)
 const activeRuntimeTurn = ref<RunningTurn>()
@@ -256,6 +258,7 @@ const renameDialogOpen = ref(false)
 const detailsDialogOpen = ref(false)
 const detailLoading = ref(false)
 const deleteDialogOpen = ref(false)
+const createModalOpen = ref(false)
 const imageModelDialogOpen = ref(false)
 const imageModelUpdating = ref(false)
 const pendingImageModel = ref<ChatImageModel>('gpt-image-2')
@@ -333,7 +336,7 @@ const ConversationPane = defineComponent({
   emits: ['selected'],
   setup(_props, { emit }) {
     return () => h('div', { class: 'conversation-pane-inner' }, [
-      h('div', { class: 'conversation-pane-toolbar' }, [h('strong', '对话'), h('button', { class: 'conversation-new-button', type: 'button', disabled: creating.value, onClick: createConversationFromPane }, [h(PlusOutlined), ' 新建'])]),
+      h('div', { class: 'conversation-pane-toolbar' }, [h('strong', '对话'), h('button', { class: 'conversation-new-button', type: 'button', onClick: createConversationFromPane }, [h(PlusOutlined), ' 新建'])]),
       conversations.value.length
         ? h('div', { class: 'conversation-list' }, [
             ...conversations.value.map((item) => h('div', {
@@ -377,14 +380,11 @@ async function loadInitial(): Promise<void> {
       if (availability === 'not_found') {
         clearPendingConfirmation(storedPending.request.systemAccountId)
         message.warning('原会话已不可用，未确认草稿无法恢复')
-        if (!disposed && conversationItems[0]) await selectConversation(conversationItems[0].id)
       } else if (!disposed) {
         if (availability === 'ready') message.info('正在继续确认上一条消息的提交状态')
         else message.error('暂时无法加载待确认会话，将继续后台重试')
         schedulePendingConfirmation()
       }
-    } else if (conversationItems[0]) {
-      await selectConversation(conversationItems[0].id)
     }
   } catch (error) { message.error(extractApiErrorMessage(error, '加载 AI 问答失败')) }
 }
@@ -419,8 +419,9 @@ async function selectConversation(id: string, options: {
   if (selectedConversationId.value === id && !options.forceReload) return true
   const previousConversation = selectedConversation.value
   const nextConversation = conversations.value.find((item) => item.id === id)
-  const previousModelCacheKey = previousConversation ? previousConversation.apiKeyId ?? previousConversation.id : undefined
-  const nextModelCacheKey = nextConversation ? nextConversation.apiKeyId ?? nextConversation.id : undefined
+  // 模型目录作用域由会话绑定对象决定（group/account 模式共享同一鉴权 Key），缓存键必须按会话。
+  const previousModelCacheKey = previousConversation?.id
+  const nextModelCacheKey = nextConversation?.id
   if (previousModelCacheKey !== nextModelCacheKey) modelLoadCoordinator.cancel(previousModelCacheKey)
   modelCapabilitiesLoadCoordinator.cancel()
   // cancelTurnEdit 在 phase === 'submitting' 时静默拒绝，若不处理，编辑态会跨会话卡死。
@@ -574,30 +575,22 @@ function createConversationFromPane(): void {
     return
   }
   pendingCreateAfterDrawerClose.value = false
-  void createConversation()
+  openCreateConversationModal()
 }
 function handleConversationDrawerAfterOpenChange(open: boolean): void {
   if (open || !pendingCreateAfterDrawerClose.value) return
   pendingCreateAfterDrawerClose.value = false
-  void createConversation()
+  openCreateConversationModal()
 }
-async function createConversation(): Promise<void> {
-  if (creating.value) return
-  const selectionEpochAtStart = conversationLoadEpoch
-  const selectedConversationIdAtStart = selectedConversationId.value
-  creating.value = true
-  try {
-    const item = await chatApi.createConversation()
-    conversations.value.unshift(item)
-    if (
-      pageActive
-      && conversationLoadEpoch === selectionEpochAtStart
-      && selectedConversationId.value === selectedConversationIdAtStart
-      && await selectConversation(item.id)
-    ) conversationDrawerOpen.value = false
-  }
-  catch (error) { message.error(extractApiErrorMessage(error, '创建对话失败')) }
-  finally { creating.value = false }
+function openCreateConversationModal(): void {
+  createModalOpen.value = true
+}
+function handleConversationCreated(item: ChatConversation): void {
+  createModalOpen.value = false
+  conversations.value.unshift(item)
+  void selectConversation(item.id).then((selected) => {
+    if (selected) conversationDrawerOpen.value = false
+  })
 }
 async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatInputBlock[]): Promise<void> {
   const conversation = selectedConversation.value
@@ -1021,12 +1014,11 @@ async function removeConversation(id: string): Promise<void> {
     contextStatus.value = undefined
   }
   if (conversation) void localCache.deleteConversation(conversation.systemAccountId, id).catch(() => undefined)
-  if (deleted.nextConversationId) void selectConversation(deleted.nextConversationId)
 }
 async function loadModelsOnOpen(): Promise<void> {
   const conversation = selectedConversation.value
   if (!conversation || modelsLoading.value) return
-  const request = { apiKeyId: conversation.apiKeyId ?? conversation.id, conversationId: conversation.id }
+  const request = { conversationId: conversation.id }
   modelsLoading.value = true
   try {
     const items = [...await modelLoadCoordinator.load(request)]
@@ -1153,6 +1145,11 @@ async function saveDefaultImageModel(): Promise<void> {
 
 function imageModelLabel(model: ChatImageModel): string {
   return imageModelOptions.find((option) => option.value === model)?.label ?? model
+}
+function conversationBindLabel(item: ChatConversation): string {
+  if (item.bindMode === 'group') return `分组：${item.bindGroupName || '已删除'}`
+  if (item.bindMode === 'account') return `账户：${item.bindAccountName || '已删除'}`
+  return `API Key：${item.apiKeyNameSnapshot || '已删除'}`
 }
 async function retryLatestTurn(messageItem: ChatMessage): Promise<void> {
   if (generating.value || submissionBlocked.value || editingTurn.value) return

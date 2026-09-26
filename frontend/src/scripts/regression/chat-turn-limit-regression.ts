@@ -58,7 +58,7 @@ assert.ok(turnLimitGuardIndex < submitSource.indexOf('replaceEditorContentWithou
 assert.ok(turnLimitGuardIndex < submitSource.indexOf("emit('submit'"), '达到上限的键盘提交不得 emit submit')
 
 assert.match(viewSource, /const turnLimitReached = computed\([\s\S]{0,300}isChatTurnLimitReached/, 'ChatView 必须从当前会话权威字段计算 reached')
-assert.match(viewSource, /class="turn-limit-bar"[\s\S]{0,300}turnLimitMessage[\s\S]{0,300}@click="createConversation"[\s\S]{0,120}新建对话/, 'Composer 上方必须显示低噪提示和现有新建入口')
+assert.match(viewSource, /class="turn-limit-bar"[\s\S]{0,300}turnLimitMessage[\s\S]{0,300}@click="openCreateConversationModal"[\s\S]{0,120}新建对话/, 'Composer 上方必须显示低噪提示并通过绑定模式弹窗新建')
 assert.match(viewSource, /:turn-limit-reached="turnLimitReached && !editingTurn"/, '编辑最近一轮时 Composer 必须放开 replace 提交')
 assert.match(viewSource, /const activeEdit =[\s\S]{0,300}canSubmitChatTurn\(\{[\s\S]{0,300}replaceTurnId: activeEdit\?\.replaceTurnId/, '发送前必须用权威 count 再检查；仅服务端已接受轮次的 activeEdit 才使用替换例外')
 const handleFailureSource = viewSource.slice(viewSource.indexOf('async function handleSubmitFailure'), viewSource.indexOf('async function applySubmissionOutcome'))

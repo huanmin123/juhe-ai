@@ -104,7 +104,9 @@ assert.match(chatViewSource, /async function loadModelsOnOpen[\s\S]{0,500}modelL
 assert.match(chatViewSource, /readConversation[\s\S]{0,900}messages\.value = cached\.value\.messages[\s\S]{0,1200}synchronizeChatConversation/, '页面必须先渲染 IndexedDB 可见历史，再请求轻量 sync head')
 assert.match(selectSource, /const messageItems = await[\s\S]{0,4200}messages\.value = messageItems/, '页面必须独立完成消息同步，不等待模型列表')
 assert.match(chatViewSource, /hasOlderChatMessages\(messages\.value,\s*older\.length\)/, '向前分页必须把服务端空页结果写入可继续加载状态，避免保留断档无限请求')
-assert.match(chatViewSource, /availability === 'not_found'[\s\S]{0,360}conversationItems\[0\][\s\S]{0,180}selectConversation\(conversationItems\[0\]\.id\)/, '待确认会话已删除时必须清理 pending 并回退首个可用会话')
+assert.doesNotMatch(chatViewSource, /conversationItems\[0\]/, '进入页面与待确认会话失效后都不得自动选中首个会话，必须停留空状态')
+assert.match(chatViewSource, /availability === 'not_found'[\s\S]{0,300}clearPendingConfirmation\(storedPending\.request\.systemAccountId\)/, '待确认会话已删除时必须清理 pending 并停留空状态')
+assert.doesNotMatch(chatViewSource, /nextConversationId/, '删除当前会话后必须回到空状态，不得自动选中下一项')
 assert.match(chatViewSource, /async function stopGeneration[\s\S]{0,1800}catch \(error\)[\s\S]{0,180}停止生成失败/, '停止请求失败必须提供明确中文反馈，不能产生未处理 Promise rejection')
 
 console.log('AI 问答会话与历史加载 epoch 回归通过')

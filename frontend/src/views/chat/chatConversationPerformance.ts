@@ -1,5 +1,4 @@
 export interface ChatModelLoadRequest {
-  apiKeyId: string
   conversationId: string
 }
 
@@ -20,7 +19,6 @@ export interface ChatModelCapabilitiesLoadCoordinatorOptions<T> {
 export interface DeletedChatConversationState<T extends { id: string }> {
   conversations: T[]
   selectedConversationId?: string
-  nextConversationId?: string
 }
 
 export class ChatModelLoadCoordinator<T> {
@@ -32,20 +30,20 @@ export class ChatModelLoadCoordinator<T> {
   }
 
   load(request: ChatModelLoadRequest): Promise<readonly T[]> {
-    const running = this.inFlight.get(request.apiKeyId)
+    const running = this.inFlight.get(request.conversationId)
     if (running) return running.promise
 
     const controller = new AbortController()
     const promise = this.loadWithSingleRetry(request, controller.signal)
       .finally(() => {
-        if (this.inFlight.get(request.apiKeyId)?.controller === controller) this.inFlight.delete(request.apiKeyId)
+        if (this.inFlight.get(request.conversationId)?.controller === controller) this.inFlight.delete(request.conversationId)
       })
-    this.inFlight.set(request.apiKeyId, { controller, promise })
+    this.inFlight.set(request.conversationId, { controller, promise })
     return promise
   }
 
-  cancel(apiKeyId: string | undefined): void {
-    if (apiKeyId) this.inFlight.get(apiKeyId)?.controller.abort()
+  cancel(conversationId: string | undefined): void {
+    if (conversationId) this.inFlight.get(conversationId)?.controller.abort()
   }
 
   private async loadWithSingleRetry(request: ChatModelLoadRequest, signal: AbortSignal): Promise<readonly T[]> {
@@ -109,8 +107,7 @@ export function applyDeletedChatConversation<T extends { id: string }>(input: {
   const conversations = input.conversations.filter((item) => item.id !== input.deletedConversationId)
   return {
     conversations,
-    selectedConversationId: input.selectedConversationId === input.deletedConversationId ? undefined : input.selectedConversationId,
-    nextConversationId: input.selectedConversationId === input.deletedConversationId ? conversations[0]?.id : undefined
+    selectedConversationId: input.selectedConversationId === input.deletedConversationId ? undefined : input.selectedConversationId
   }
 }
 

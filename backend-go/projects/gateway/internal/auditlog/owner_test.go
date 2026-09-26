@@ -50,28 +50,84 @@ func TestRunOwnerStopsWithContextAndReleasesLease(t *testing.T) {
 	}
 }
 
-// TestRunOwnerSurfacesLostLeaseAsComponentError pins the supervisor-boundary
-// semantics: when the shared keeper loses the fence (keeper renewed by a
-// rival after forced release), RunOwner returns the terminal lease error
-// instead of serving fenced retention.
-func TestRunOwnerSurfacesLostLeaseAsComponentError(t *testing.T) {
+// TestRunOwnerReacquiresAfterRealLeaseLoss pins the revised lease-loss
+// lifecycle (2026-09-27): after a genuine loss (row expired and taken by a
+// rival) the component surfaces a terminal lease error instead of serving
+// fenced retention, and a supervisor restart re-enters RunOwner, whose entry
+// re-acquires the row fresh once it is free again — instead of replaying the
+// stored error without touching the database.
+func TestRunOwnerReacquiresAfterRealLeaseLoss(t *testing.T) {
 	cfg := sqliteConfig(t, t.TempDir())
 	cfg.RetentionInterval = time.Hour
 	store := openSQLiteStore(t, cfg)
 	defer store.Close()
 
-	keeper, ok, err := StartLeaseKeeper(context.Background(), store, cfg.InstanceID, time.Minute, nil)
+	keeper, ok, err := StartLeaseKeeper(context.Background(), store, cfg.InstanceID, 2*time.Second, nil)
 	if err != nil || !ok {
 		t.Fatalf("start keeper: ok=%v err=%v", ok, err)
 	}
 	defer keeper.Close()
 
-	// A second acquisition by a rival is refused while we hold the row, so
-	// force the loss through the keeper's own terminal path instead.
-	keeper.fatal(ErrOwnerLeaseLost)
-	err = RunOwner(context.Background(), store, keeper, cfg, nil)
-	if !errors.Is(err, ErrOwnerLeaseLost) {
-		t.Fatalf("lost lease must surface as component error, got %v", err)
+	// 真实失租：把租约行置为过期，再由 rival 接管（fence 递增）；keeper 的
+	// 下一次续租 0 行更新 → 按既有语义终态 ErrOwnerLeaseLost。
+	implementation := store.(*sqlStore)
+	expired := dbTime(ModeSQLite, time.Now().UTC().Add(-time.Minute))
+	if _, err := implementation.db.Exec(
+		`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence' AND owner_id=?`,
+		expired, cfg.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.AcquireOwnerLease(context.Background(), "rival-owner", time.Minute); err != nil || !ok {
+		t.Fatalf("rival takeover: ok=%v err=%v", ok, err)
+	}
+	select {
+	case <-keeper.Lost():
+		if !errors.Is(keeper.LostError(), ErrOwnerLeaseLost) {
+			t.Fatalf("真实失租必须以 ErrOwnerLeaseLost 终态: %v", keeper.LostError())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("租约被接管后 Lost 未关闭")
+	}
+
+	// supervisor 第一次重启：rival 仍持有行，入口重取必须被拒并作为组件错误
+	// 返回（fail-closed），而不是继续服务。
+	if err := RunOwner(context.Background(), store, keeper, cfg, nil); err == nil {
+		t.Fatal("rival 持有行时入口重取必须失败")
+	}
+
+	// rival 释放（行重新过期）后的下一次重启：入口重新 AcquireOwnerLease 成功，
+	// keeper 清空终态并以新 fence 恢复运行；取消上下文应优雅 nil 返回。
+	if _, err := implementation.db.Exec(
+		`UPDATE `+implementation.leaseTable()+` SET lease_until=? WHERE lease_key='f3-audit-log-persistence'`,
+		expired); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- RunOwner(ctx, store, keeper, cfg, nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if keeper.LostError() == nil {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("行空闲后重启不得返回错误: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if keeper.LostError() != nil {
+		t.Fatalf("行空闲后入口重取必须成功并清空终态: %v", keeper.LostError())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("恢复后取消应 nil 返回: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("恢复后的 RunOwner 未随取消退出")
 	}
 }
 

@@ -274,7 +274,42 @@ func ensureSQLiteStatsSuccessCostColumns(ctx context.Context, db *sql.DB) error 
 
 // EnsureSQLiteChat applies the chat schema (conversations, messages, assets, context checkpoints).
 func EnsureSQLiteChat(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
-	return sqliteChatScript.ensure(ctx, db)
+	counts, err := sqliteChatScript.ensure(ctx, db)
+	if err != nil {
+		return SchemaCounts{}, err
+	}
+	if err := ensureSQLiteChatBindModeColumns(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat bind-mode columns: %w", err)
+	}
+	return counts, nil
+}
+
+// sqliteChatBindModeColumns 列出 chat_conversations 会话绑定模式列（AI 问答
+// 三种绑定模式）在既有库上的幂等补齐声明。新库由 sqliteChatDDL 直接声明这
+// 些列，守卫先查列存在再 ALTER；既有行 bind_mode 取 DEFAULT 'api_key'，即
+// 表达历史行为，不做数据回填。SQLite 允许 ADD COLUMN 携带列级常量 CHECK，
+// 存量行默认值恒满足约束。
+var sqliteChatBindModeColumns = []struct {
+	column string
+	decl   string
+}{
+	{"bind_mode", "TEXT NOT NULL DEFAULT 'api_key' CHECK (bind_mode IN ('api_key', 'group', 'account'))"},
+	{"bind_group_id", "TEXT"},
+	{"bind_group_name_snapshot", "TEXT"},
+	{"bind_account_id", "TEXT"},
+	{"bind_account_name_snapshot", "TEXT"},
+}
+
+// ensureSQLiteChatBindModeColumns delivers the conversation bind-mode columns
+// to legacy databases through the same guarded PRAGMA table_info /
+// ALTER TABLE ADD COLUMN pattern as the business and stats schemas.
+func ensureSQLiteChatBindModeColumns(ctx context.Context, db *sql.DB) error {
+	for _, target := range sqliteChatBindModeColumns {
+		if err := ensureSQLiteTableColumn(ctx, db, "chat_conversations", target.column, target.decl); err != nil {
+			return fmt.Errorf("ensure chat_conversations.%s: %w", target.column, err)
+		}
+	}
+	return nil
 }
 
 // EnsureSQLiteCodexContext applies the codex context state schema.

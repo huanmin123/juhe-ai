@@ -78,7 +78,15 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: config.OwnerID, OwnerLeaseTTL: config.OwnerLease, AccountLeaseTTL: config.AccountLease, InputTTL: config.InputTTL, MaxConcurrent: config.MaxConcurrency, IOConcurrency: config.IOConcurrency, DBConcurrency: config.DBConcurrency, DBQueueSize: config.DBQueueSize, CredentialSecret: config.CredentialSecret, ProbeTimeout: config.ProbeTimeout, MaxResponseBytes: config.MaxResponseBytes, Now: config.Now, Logger: logger})
+	// 周期刷新成功后由该边界推进 juhe_business.accounts 的 due 游标；必须
+	// 复用 direct input 的业务库连接，juhe_jobs Store 连接不保证可达该 schema。
+	dueStore, err := NewBusinessDueStore(db, config.Now)
+	if err != nil {
+		_ = inputPool.Close()
+		_ = store.Close()
+		return nil, err
+	}
+	runner, err := NewRunner(RunnerConfig{Store: store, OwnerID: config.OwnerID, OwnerLeaseTTL: config.OwnerLease, AccountLeaseTTL: config.AccountLease, InputTTL: config.InputTTL, MaxConcurrent: config.MaxConcurrency, IOConcurrency: config.IOConcurrency, DBConcurrency: config.DBConcurrency, DBQueueSize: config.DBQueueSize, CredentialSecret: config.CredentialSecret, ProbeTimeout: config.ProbeTimeout, MaxResponseBytes: config.MaxResponseBytes, Now: config.Now, DueAdvancer: dueStore, Logger: logger})
 	if err != nil {
 		_ = inputPool.Close()
 		_ = store.Close()

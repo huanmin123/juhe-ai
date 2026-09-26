@@ -52,10 +52,10 @@ const coordinator = new ChatModelLoadCoordinator<string>({
   },
   retryDelayMilliseconds: 0
 })
-const request = { apiKeyId: 'key_a', conversationId: 'conv_a' }
+const request = { conversationId: 'conv_a' }
 const concurrentFirst = coordinator.load(request)
-const concurrentSecond = coordinator.load({ ...request, conversationId: 'conv_b' })
-assert.equal(calls, 1, '同一 API Key 的模型列表请求必须 single-flight 合并')
+const concurrentSecond = coordinator.load(request)
+assert.equal(calls, 1, '同一会话的模型列表请求必须 single-flight 合并（group/account 模式共享鉴权 Key，目录作用域按会话绑定对象收敛，缓存键必须按会话）')
 resolveLoad(['model_a'])
 assert.deepEqual(await concurrentFirst, ['model_a'])
 assert.deepEqual(await concurrentSecond, ['model_a'])
@@ -66,7 +66,7 @@ let freshCalls = 0
 const freshCoordinator = new ChatModelLoadCoordinator<string>({
   load: async () => [`model_${++freshCalls}`]
 })
-const freshRequest = { apiKeyId: 'key_fresh', conversationId: 'conv_fresh' }
+const freshRequest = { conversationId: 'conv_fresh' }
 assert.deepEqual(await freshCoordinator.load(freshRequest), ['model_1'])
 assert.deepEqual(await freshCoordinator.load(freshRequest), ['model_2'], '再次展开模型列表必须重新加载当前事实')
 assert.equal(freshCalls, 2, '模型列表不得保留 TTL 结果缓存')
@@ -80,7 +80,7 @@ const retryCoordinator = new ChatModelLoadCoordinator<string>({
   },
   retryDelayMilliseconds: 0
 })
-assert.deepEqual(await retryCoordinator.load({ apiKeyId: 'key_timeout', conversationId: 'conv_timeout' }), ['model_retried'], '首次超时必须有限重试后恢复可用')
+assert.deepEqual(await retryCoordinator.load({ conversationId: 'conv_timeout' }), ['model_retried'], '首次超时必须有限重试后恢复可用')
 assert.equal(timeoutAttempts, 2, '模型列表超时只允许一次补偿重试')
 
 let aborted = false
@@ -93,17 +93,17 @@ const cancellationCoordinator = new ChatModelLoadCoordinator<string>({
   }),
   retryDelayMilliseconds: 0
 })
-const cancelled = cancellationCoordinator.load({ apiKeyId: 'key_old', conversationId: 'conv_old' })
+const cancelled = cancellationCoordinator.load({ conversationId: 'conv_old' })
 await flush()
-cancellationCoordinator.cancel('key_old')
+cancellationCoordinator.cancel('conv_old')
 await assert.rejects(cancelled, /aborted/)
-assert.equal(aborted, true, '切换到其他 API Key 时必须取消旧模型列表请求')
+assert.equal(aborted, true, '切换到其他会话时必须取消旧模型列表请求')
 
 const conversations = [{ id: 'conv_a' }, { id: 'conv_b' }]
 const deleted = applyDeletedChatConversation({ conversations, selectedConversationId: 'conv_a', deletedConversationId: 'conv_a' })
 assert.deepEqual(deleted.conversations, [{ id: 'conv_b' }], '服务端删除成功后必须立刻从列表移除')
 assert.equal(deleted.selectedConversationId, undefined, '删除当前会话时必须立即解除选择，不得等待本地缓存')
-assert.equal(deleted.nextConversationId, 'conv_b', '下一会话加载应在 UI 已完成删除后异步触发')
+assert.equal('nextConversationId' in deleted, false, '删除当前会话后必须停留空状态，不得再返回自动选中的下一项')
 
 let contextCalls = 0
 let resolveContext!: (value: number) => void
@@ -123,10 +123,17 @@ assert.equal(await contextFirst, 42)
 assert.equal(await contextSecond, 42)
 
 const chatViewSource = readFileSync('../frontend/src/views/chat/ChatView.vue', 'utf8')
+const createModalSource = readFileSync('../frontend/src/views/chat/ChatCreateConversationModal.vue', 'utf8')
+const chatApiSource = readFileSync('../frontend/src/api/domains/chat.ts', 'utf8')
 assert.match(chatViewSource, /ChatSingleFlightCoordinator/, '上下文状态请求必须通过可测试的 single-flight 协调器去重')
-assert.doesNotMatch(chatViewSource, /listApiKeys|newApiKeyId|选择自己的 API Key/, '新建对话不得再加载或要求用户选择 API Key')
-assert.match(chatViewSource, /chatApi\.createConversation\(\)/, '新建对话必须由后端自动绑定默认 GPT API Key')
-assert.match(chatViewSource, /selectionEpochAtStart[\s\S]{0,500}conversationLoadEpoch === selectionEpochAtStart/, '创建请求返回时不得覆盖用户等待期间的新会话选择')
+assert.doesNotMatch(chatViewSource, /chatApi\.createConversation/, '页面容器不得再直接调用无参创建接口自动绑定默认 Key')
+assert.match(chatViewSource, /ChatCreateConversationModal/, '新建对话必须通过绑定模式弹窗组件完成')
+assert.match(chatViewSource, /openCreateConversationModal/, '三处新建入口必须统一打开绑定模式弹窗')
+assert.match(createModalSource, /bindMode/, '新建弹窗必须显式传递绑定模式')
+assert.match(createModalSource, /'api_key'[\s\S]{0,400}'group'[\s\S]{0,400}'account'/, '新建弹窗必须提供 API Key、分组、账户三种绑定模式')
+assert.match(chatApiSource, /createConversation: \(payload: ChatConversationCreatePayload\)/, '创建会话必须携带绑定模式请求体，不得保留无参自动绑定')
+assert.match(chatApiSource, /bindMode: ChatConversationBindMode/, '创建请求体契约必须包含必填 bindMode')
+assert.match(chatViewSource, /handleConversationCreated[\s\S]{0,400}selectConversation\(item\.id\)/, '弹窗创建成功后必须沿用 unshift 加选中并关闭抽屉的既有路径')
 assert.match(chatViewSource, /@models-open=/, '模型下拉展开必须显式触发按需刷新')
 assert.match(chatViewSource, /normalizeChatModelControls/, '同模型能力刷新后必须规范化思考和服务选项')
 

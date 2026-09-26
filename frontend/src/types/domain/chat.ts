@@ -2,6 +2,7 @@ export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
 export type ChatImageModel = 'gpt-image-2' | 'grok-imagine-image' | 'grok-imagine-image-quality'
 export type ChatConversationToolId = 'web_search' | 'generate_image'
+export type ChatConversationBindMode = 'api_key' | 'group' | 'account'
 
 export interface ChatConversationToolCapability {
   id: ChatConversationToolId
@@ -20,6 +21,11 @@ export interface ChatConversation {
   systemAccountId: string
   apiKeyId?: string
   apiKeyNameSnapshot: string
+  bindMode: ChatConversationBindMode
+  bindGroupId?: string
+  bindGroupName?: string
+  bindAccountId?: string
+  bindAccountName?: string
   defaultModel?: ChatModelListOption
   title: string
   isPinned: boolean

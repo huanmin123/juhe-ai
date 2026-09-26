@@ -39,6 +39,9 @@ type RunnerConfig struct {
 	ProbeTimeout     time.Duration
 	MaxResponseBytes int64
 	Now              func() time.Time
+	// DueAdvancer 在周期刷新成功取得余额结果后推进业务库 due 游标；
+	// nil 表示不推进（网关手动 bridge runner 与既有隔离测试）。
+	DueAdvancer BusinessDueAdvancer
 }
 
 type Runner struct {
@@ -57,6 +60,7 @@ type Runner struct {
 	probeTimeout     time.Duration
 	maxResponseBytes int64
 	now              func() time.Time
+	dueAdvancer      BusinessDueAdvancer
 }
 
 func NewRunner(config RunnerConfig) (*Runner, error) {
@@ -108,7 +112,7 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return &Runner{store: config.Store, ownerID: config.OwnerID, ownerLeaseTTL: config.OwnerLeaseTTL, accountLeaseTTL: config.AccountLeaseTTL, inputTTL: config.InputTTL, maxConcurrent: config.IOConcurrency, ioConcurrency: config.IOConcurrency, dbConcurrency: config.DBConcurrency, dbQueueSize: config.DBQueueSize, credentialSecret: config.CredentialSecret, httpClient: config.HTTPClient, probeTimeout: config.ProbeTimeout, maxResponseBytes: config.MaxResponseBytes, now: config.Now, logger: config.Logger}, nil
+	return &Runner{store: config.Store, ownerID: config.OwnerID, ownerLeaseTTL: config.OwnerLeaseTTL, accountLeaseTTL: config.AccountLeaseTTL, inputTTL: config.InputTTL, maxConcurrent: config.IOConcurrency, ioConcurrency: config.IOConcurrency, dbConcurrency: config.DBConcurrency, dbQueueSize: config.DBQueueSize, credentialSecret: config.CredentialSecret, httpClient: config.HTTPClient, probeTimeout: config.ProbeTimeout, maxResponseBytes: config.MaxResponseBytes, now: config.Now, dueAdvancer: config.DueAdvancer, logger: config.Logger}, nil
 }
 
 // RunPeriodic executes a bounded batch of already-frozen due candidates.
@@ -382,12 +386,22 @@ func (r *Runner) persistInput(ctx context.Context, owner OwnerLease, input Input
 		outcome.ExpectedNextRefreshAt = cloneTime(input.NextRefreshAt)
 		outcome.ExpectedNextRefreshSet = true
 	}
-	_, err = r.store.AppendOutcome(ctx, owner, accountLease, outcome)
+	accepted, err := r.store.AppendOutcome(ctx, owner, accountLease, outcome)
 	if errors.Is(err, ErrOutcomeStale) {
 		return runStateExecutedStale, nil
 	}
 	if err != nil {
 		return runStateExecuted, err
+	}
+	// 周期刷新成功取得余额结果（fresh/unlimited）后，把业务库 due 游标推进到
+	// 与 jobs 快照一致的下一轮时间（同一 runner 间隔+jitter 计算）；失败或
+	// unsupported outcome 不推进，保持账户仍在到期集合中快速重试的现有语义。
+	// 首探（first_probe）due 由既有 worker_balance_detect 使能链推进，manual
+	// 由网关侧负责，两个触发器都不进入本路径，不会双重写。
+	if r.dueAdvancer != nil && accepted && input.Trigger == TriggerPeriodic && (snapshot.Status == StatusFresh || snapshot.Status == StatusUnlimited) {
+		if _, advErr := r.dueAdvancer.AdvancePeriodicDue(ctx, input.AccountID, input.ConfigRevision, input.NextRefreshAt, outcome.NextRefreshAt); advErr != nil {
+			return runStateExecuted, advErr
+		}
 	}
 	return runStateExecuted, nil
 }
