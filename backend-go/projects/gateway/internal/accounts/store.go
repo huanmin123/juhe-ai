@@ -115,6 +115,10 @@ type Store struct {
 	// (patch_runtime_state.go). Nil until SetRuntimeCooldownSettings wires
 	// it; a nil port falls back to the Node schema default (2 minutes).
 	runtimeCooldownSettings RuntimeCooldownSettings
+	// concurrencyReader is the runtime concurrency read port behind the list
+	// currentConcurrency overlay (list.go). Nil until SetConcurrencyReader
+	// wires it; nil keeps every row at 0.
+	concurrencyReader AccountConcurrencyReader
 	// aiAccountLimitSettings is the narrow settings port behind the creation
 	// limit assertion (write.go, BUG-0174 M-8). Nil until
 	// SetAiAccountLimitSettings wires it; a nil port falls back to the Node

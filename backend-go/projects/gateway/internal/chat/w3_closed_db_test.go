@@ -37,7 +37,8 @@ func TestClosedDatabaseRouteSweepW3(t *testing.T) {
 	prefix := "/__aisys__/api/my-chat"
 
 	expectInternalW3(t, "GET /conversations", env.do("GET", prefix+"/conversations", routeTestOwner, ""))
-	expectInternalW3(t, "POST /conversations", env.do("POST", prefix+"/conversations", routeTestOwner, "{}"))
+	// bindMode=api_key 携带合法请求形态，请求体校验通过后到达断连的存储层。
+	expectInternalW3(t, "POST /conversations", env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`))
 	expectInternalW3(t, "GET /conversations/{id}", env.do("GET", prefix+"/conversations/chat_conv_closed", routeTestOwner, ""))
 	expectInternalW3(t, "PATCH /conversations/{id}", env.do("PATCH", prefix+"/conversations/chat_conv_closed", routeTestOwner, `{"title":"x"}`))
 	expectInternalW3(t, "DELETE /conversations/{id}", env.do("DELETE", prefix+"/conversations/chat_conv_closed", routeTestOwner, ""))

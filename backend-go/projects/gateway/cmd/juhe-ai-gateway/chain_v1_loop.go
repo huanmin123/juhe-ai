@@ -86,6 +86,10 @@ type v1DispatchLoop struct {
 	// 心跳写出的 transport-commit 标记必须与响应处理看到的是同一个实例。
 	waitCommitState *gatewayresponse.DownstreamCommitState
 	waitHeartbeat   *gatewayresponse.GatewaySseWaitHeartbeat
+	// chatTarget 是 AI 问答会话绑定模式的调度覆盖目标（设计 §6；仅聊天进程内
+	// 执行器注入）。非零时禁用 API Key 分组回退切换，绑定会话永不逃逸出绑定
+	// 作用域，耗尽走既有"无可用账户"终态；外部请求恒为零值，行为不变。
+	chatTarget chatDispatchTarget
 	// roundStartedAtMs 是本轮上游派发的起点毫秒（每轮 FetchFirstAvailableUpstream
 	// 调用前刷新）：upstream.dispatch.failed 耗尽埋点的阶段起点口径仍含引擎内
 	// 候选/排队，但远小于整请求 startedAt 口径；0 表示未记录（回落 startedAt）。
@@ -602,7 +606,11 @@ func (l *v1DispatchLoop) resolveRouteAction(ctx context.Context, initial gateway
 	for result.IsRouteAction() {
 		action := result.RouteAction
 		groupID := action.UsageContext.GroupID
-		mayTryFallback := action.Coordination.Outcome != gatewaypreauth.RouteOutcomeClientHandoff &&
+		// 绑定目标会话（group/account 模式）不做 API Key 分组回退：候选窗口已
+		// 收敛到绑定作用域，回退切换会逃逸出绑定分组；route action 直接走既有
+		// 终态渲染（无候选 = "当前路由没有可用的上游账户"语义）。
+		mayTryFallback := !l.chatTarget.pinned() &&
+			action.Coordination.Outcome != gatewaypreauth.RouteOutcomeClientHandoff &&
 			action.InteractionResourceAffinity == nil &&
 			!l.actionVisitedGroups[groupID]
 		l.actionVisitedGroups[groupID] = true
@@ -695,6 +703,17 @@ func (l *v1DispatchLoop) exhaustDispatchFailedAccounts(attempt *gatewaydispatch.
 func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason string) (v1FallbackSwitch, error) {
 	current := l.current
 	if current.InteractionResourceAffinity != nil {
+		return v1FallbackNone, nil
+	}
+	// 绑定目标会话（group/account 模式）禁止跨分组回退：候选窗口已收敛到绑定
+	// 作用域，切组会让绑定会话落到 Key 路由的其他分组。返回 none 后调用方走
+	// 既有耗尽终态（"无可用账户"语义），不新造错误分支。
+	if l.chatTarget.pinned() {
+		l.auditCapture.AddGatewayMetadata("api_key_group_route_fallback_skipped", map[string]any{
+			"reason":        reason,
+			"skippedReason": "chat_dispatch_target_pinned",
+			"groupId":       current.UsageContext.GroupID,
+		})
 		return v1FallbackNone, nil
 	}
 	// Node 576-578 + 624: the agent-guidance reason may elevate to the

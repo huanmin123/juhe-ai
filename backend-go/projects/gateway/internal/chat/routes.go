@@ -113,6 +113,12 @@ type Deps struct {
 	ChatKeys ChatAPIKeyProvider
 	// GatewayKeys validates gateway API keys (group bindings + image flag).
 	GatewayKeys GatewayKeyValidator
+	// GroupLookup resolves group binding objects (会话 group 模式校验，
+	// internal/groups 实现). Optional; nil 让 group 模式返回显式错误。
+	GroupLookup ChatGroupLookup
+	// AccountLookup resolves account binding objects (会话 account 模式校验，
+	// internal/accounts 实现). Optional; nil 让 account 模式返回显式错误。
+	AccountLookup ChatAccountLookup
 	// ObjectStore persists chat asset objects (local chat assets root).
 	ObjectStore ObjectStore
 	// ImageProcessor decodes/encodes uploads and previews (sharp port).

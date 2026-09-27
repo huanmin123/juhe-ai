@@ -39,8 +39,8 @@ type RunnerConfig struct {
 	ProbeTimeout     time.Duration
 	MaxResponseBytes int64
 	Now              func() time.Time
-	// DueAdvancer 在周期刷新成功取得余额结果后推进业务库 due 游标；
-	// nil 表示不推进（网关手动 bridge runner 与既有隔离测试）。
+	// DueAdvancer 在周期刷新已结算 outcome（成功、失败、unsupported）后推进
+	// 业务库 due 游标；nil 表示不推进（网关手动 bridge runner 与既有隔离测试）。
 	DueAdvancer BusinessDueAdvancer
 }
 
@@ -393,12 +393,16 @@ func (r *Runner) persistInput(ctx context.Context, owner OwnerLease, input Input
 	if err != nil {
 		return runStateExecuted, err
 	}
-	// 周期刷新成功取得余额结果（fresh/unlimited）后，把业务库 due 游标推进到
-	// 与 jobs 快照一致的下一轮时间（同一 runner 间隔+jitter 计算）；失败或
-	// unsupported outcome 不推进，保持账户仍在到期集合中快速重试的现有语义。
-	// 首探（first_probe）due 由既有 worker_balance_detect 使能链推进，manual
-	// 由网关侧负责，两个触发器都不进入本路径，不会双重写。
-	if r.dueAdvancer != nil && accepted && input.Trigger == TriggerPeriodic && (snapshot.Status == StatusFresh || snapshot.Status == StatusUnlimited) {
+	// 周期刷新的已结算 outcome（成功 fresh/unlimited、临时失败/failed、
+	// unsupported）都把业务库 due 游标推进到与 jobs 快照一致的下一轮时间
+	// （同一 runner 间隔+jitter 计算，与 outcome.NextRefreshAt 同源同值），
+	// 对齐 J2 契约"周期、失败写回带 config revision、expected due 和 CAS"
+	// 的语义，失败账户按用户配置周期等待下一轮而不是高频重试。幂等 replay
+	//（accepted=false）与 stale outcome 不推进；上游未返回（transport 失败
+	// 转为临时诊断）同样已结算为 outcome 一并推进，本地输入/解密错误不产生
+	// outcome，自然不推进。首探（first_probe）due 由既有 worker_balance_detect
+	// 使能链推进，manual 由网关侧负责，两个触发器都不进入本路径，不会双重写。
+	if r.dueAdvancer != nil && accepted && input.Trigger == TriggerPeriodic {
 		if _, advErr := r.dueAdvancer.AdvancePeriodicDue(ctx, input.AccountID, input.ConfigRevision, input.NextRefreshAt, outcome.NextRefreshAt); advErr != nil {
 			return runStateExecuted, advErr
 		}

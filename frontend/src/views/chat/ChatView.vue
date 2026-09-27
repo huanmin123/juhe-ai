@@ -1034,7 +1034,7 @@ async function loadModelsOnOpen(): Promise<void> {
     }
     normalizeCurrentModelControls()
   } catch (error) {
-    if (selectedConversationId.value === conversation.id) message.error(extractApiErrorMessage(error, '刷新可用模型失败'))
+    if (!isAbortError(error) && selectedConversationId.value === conversation.id) message.error(extractApiErrorMessage(error, '刷新可用模型失败'))
   } finally {
     if (selectedConversationId.value === conversation.id) modelsLoading.value = false
   }

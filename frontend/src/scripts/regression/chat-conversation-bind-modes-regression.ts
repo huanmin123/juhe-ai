@@ -51,6 +51,12 @@ assert.match(
   '创建请求体必须按模式携带对应绑定对象且互斥'
 )
 assert.match(createModalSource, /:ok-button-props="\{ disabled: !selectedObjectId \}"/, '对象未选择时创建按钮必须禁用')
+// 创建在途封死全部关闭通道：结果不得在弹窗关闭后仍在途 emit，也不得借关闭
+// 重开重置 creating 造成叠发。
+assert.match(createModalSource, /:closable="!creating"/, '创建在途时右上角关闭必须禁用')
+assert.match(createModalSource, /:mask-closable="!creating"/, '创建在途时点击遮罩不得关闭')
+assert.match(createModalSource, /:keyboard="!creating"/, '创建在途时 Esc 不得关闭')
+assert.match(createModalSource, /:cancel-button-props="\{ disabled: creating \}"/, '创建在途时取消按钮必须禁用')
 assert.match(createModalSource, /function handleBindModeChange[\s\S]{0,300}selectedObjectId\.value = undefined/, '切换绑定模式必须清空已选对象')
 assert.match(createModalSource, /watch\(\(\) => props\.open[\s\S]{0,600}bindMode\.value = 'api_key'[\s\S]{0,300}selectedObjectId\.value = undefined/, '每次打开弹窗不得记忆上次选择')
 assert.match(createModalSource, /emit\('created', conversation\)/, '创建成功必须向父组件投递新会话')

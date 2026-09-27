@@ -547,6 +547,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			}
 			probeOutboxPruner = face.pruner
 		}
+		// 探针观测补记使用记录（BUG-0194 方案 B）：usagewriter 已在装配内就绪，
+		// runner 回绑后探针流量进入使用记录页与全部用量统计（Node 语义对齐）。
+		// 装配失败降级 warn（探针观测仅停留 juhe_jobs 审计面），不阻塞启动。
+		if accountHealthRunner != nil {
+			probeUsage, probeUsageErr := worker.wireProbeUsageRecorder()
+			if probeUsageErr != nil {
+				logger.Warn("探针使用记录写入面装配失败；探针观测不进入使用记录",
+					"event", "account_health_probe_usage_assembly_failed", "error", probeUsageErr.Error())
+			} else {
+				accountHealthRunner.SetProbeUsageRecorder(probeUsage)
+			}
+		}
 		// J1 outcome → 业务账户投影面（BUG-0174 M-1）：独立组件恢复
 		// 「探活成功→账户回归轮换」闭环；env 显式关闭时缺席，装配
 		// 失败降级 warn（outcome 仅停留 juhe_jobs 审计面），不阻塞启动。

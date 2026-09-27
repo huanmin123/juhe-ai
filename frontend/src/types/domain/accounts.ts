@@ -105,17 +105,15 @@ export interface AccountXAIGrokUsageSnapshot {
   productUsage?: string
 }
 
-/** Anthropic Claude unified 窗口用量（unified rate limit 响应头被动采集，resetAt 为 RFC3339）。 */
+/** Anthropic Claude unified 窗口用量（unified rate limit 响应头被动采集）。窗口形状与 codex 共享投影结构：utilization 为已用百分比（0-100），resetsAt 为 RFC3339。 */
 export interface AccountAnthropicUsageWindow {
-  usedPercent?: number
-  resetAt?: string
+  utilization?: number
+  resetsAt?: string
 }
 
 /** Anthropic（Claude OAuth）窗口用量快照（unified rate limit 响应头被动采集）。 */
 export interface AccountAnthropicUsageSnapshot {
   kind: 'anthropic_claude'
-  /** 上游 unified rate limit 整体状态（allowed / allowed_warning / rejected）。 */
-  unifiedStatus?: string
   fiveHour?: AccountAnthropicUsageWindow
   sevenDay?: AccountAnthropicUsageWindow
 }

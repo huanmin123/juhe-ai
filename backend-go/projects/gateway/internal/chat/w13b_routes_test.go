@@ -65,26 +65,38 @@ func TestW13BCreateConversationMatrix(t *testing.T) {
 	if recorder := post(`{"other":1}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unknown key = %d %s", recorder.Code, recorder.Body.String())
 	}
+	// 缺 bindMode。
+	if recorder := post(`{}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("missing bindMode = %d %s", recorder.Code, recorder.Body.String())
+	}
+	// 非法 bindMode 值。
+	if recorder := post(`{"bindMode":"pool"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid bindMode = %d %s", recorder.Code, recorder.Body.String())
+	}
 	// apiKeyId 非字符串。
-	if recorder := post(`{"apiKeyId":5}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
+	if recorder := post(`{"bindMode":"api_key","apiKeyId":5}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("bad apiKeyId = %d %s", recorder.Code, recorder.Body.String())
 	}
 	// apiKeyId 空白。
-	if recorder := post(`{"apiKeyId":"  "}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
+	if recorder := post(`{"bindMode":"api_key","apiKeyId":"  "}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("blank apiKeyId = %d %s", recorder.Code, recorder.Body.String())
 	}
+	// 携带与模式不符的键。
+	if recorder := post(`{"bindMode":"api_key","apiKeyId":"k1","groupId":"group-a"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched key = %d %s", recorder.Code, recorder.Body.String())
+	}
 	// 未认证。
-	if recorder := post(`{}`, ""); recorder.Code != http.StatusInternalServerError {
+	if recorder := post(`{"bindMode":"api_key","apiKeyId":"k1"}`, ""); recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("unauth = %d %s", recorder.Code, recorder.Body.String())
 	}
 	// apiKeyId 指向不存在的 key。
 	rt.deps.ChatKeys = &failingChatKeysW13B{findErr: errors.New("key boom")}
-	if recorder := post(`{"apiKeyId":"k1"}`, routeTestOwner); recorder.Code != http.StatusInternalServerError {
+	if recorder := post(`{"bindMode":"api_key","apiKeyId":"k1"}`, routeTestOwner); recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("find error = %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 默认创建（Ensure + 默认模型）。
+	// api_key 模式创建（显式选择用户 Key，返回绑定模式与默认模型）。
 	rt.deps.ChatKeys = &mockChatKeys{}
-	recorder := post(`{}`, routeTestOwner)
+	recorder := post(`{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`, routeTestOwner)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -93,9 +105,29 @@ func TestW13BCreateConversationMatrix(t *testing.T) {
 	if data["defaultModel"] == nil {
 		t.Fatalf("默认模型缺失: %s", recorder.Body.String())
 	}
-	// ChatKeys nil → 默认创建失败。
+	if data["bindMode"] != "api_key" {
+		t.Fatalf("bindMode = %v", data["bindMode"])
+	}
+	// group 模式：EnsureChatAPIKey 幂等补齐鉴权 Key。
+	rt.deps.GroupLookup = mockGroupLookup{}
+	groupRecorder := post(`{"bindMode":"group","groupId":"group-a"}`, routeTestOwner)
+	if groupRecorder.Code != http.StatusCreated {
+		t.Fatalf("group create = %d %s", groupRecorder.Code, groupRecorder.Body.String())
+	}
+	groupData := w13bDecode(t, groupRecorder)["data"].(map[string]any)
+	if groupData["apiKeyId"] != "chat_key_provisioned" || groupData["bindGroupId"] != "group-a" {
+		t.Fatalf("group bind payload = %v", groupData)
+	}
+	// group 模式分组不存在 / 已停用（用户引用错误 → 400）。
+	if recorder := post(`{"bindMode":"group","groupId":"missing"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("missing group = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := post(`{"bindMode":"group","groupId":"disabled"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("disabled group = %d %s", recorder.Code, recorder.Body.String())
+	}
+	// group 模式 ChatKeys nil → 专用 Key ensure 失败。
 	rt.deps.ChatKeys = nil
-	if recorder := post(`{}`, routeTestOwner); recorder.Code != http.StatusInternalServerError {
+	if recorder := post(`{"bindMode":"group","groupId":"group-a"}`, routeTestOwner); recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("nil chat keys = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
@@ -216,7 +248,7 @@ func TestW13BCompactionTriggerMatrix(t *testing.T) {
 	if recorder := post(`{"model":"  "}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("blank model = %d", recorder.Code)
 	}
-	if recorder := post(`{"model":"` + strings.Repeat("m", 201) + `"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
+	if recorder := post(`{"model":"`+strings.Repeat("m", 201)+`"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("long model = %d", recorder.Code)
 	}
 	if recorder := post(`{}`, ""); recorder.Code != http.StatusBadRequest {
@@ -508,7 +540,9 @@ func TestW13BAttachStreamMatrix(t *testing.T) {
 	env.deps.Generations = env.hub
 	runner := NewChatGenerationRunner(ChatGenerationRunnerOptions{
 		Identity: ChatGenerationIdentity{OwnerID: routeTestOwner, ConversationID: conversationID, TurnID: live.TurnID},
-		Execute:  func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) { return ChatGenerationTerminalResult{Status: "completed"}, nil },
+		Execute: func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
+			return ChatGenerationTerminalResult{Status: "completed"}, nil
+		},
 	}, context.Background(), func() {}, func() bool { return false })
 	env.hub.Register(runner)
 	if recorder := get(live.TurnID, routeTestOwner); !attached || recorder.Code != http.StatusOK {
@@ -768,8 +802,10 @@ func TestW13BStreamTurnValidationArms(t *testing.T) {
 	}
 	// 正常流式完成（mock 执行器）。
 	env.executor.steps = append(env.executor.steps, scriptStep{
-		match:   func(call dispatchCall) bool { return strings.HasPrefix(call.Path, "/v1/chat/completions") },
-		respond: func(call dispatchCall) *GenerationDispatchResponse { return sseResponse(chatCompletionsSSE("你好", true)) },
+		match: func(call dispatchCall) bool { return strings.HasPrefix(call.Path, "/v1/chat/completions") },
+		respond: func(call dispatchCall) *GenerationDispatchResponse {
+			return sseResponse(chatCompletionsSSE("你好", true))
+		},
 	})
 	response = stream(streamPayloadW13B("c-ok", "你好", "gpt-5"), routeTestOwner)
 	if response.status != http.StatusOK {
@@ -832,7 +868,9 @@ func TestW13BStreamTurnConflictArms(t *testing.T) {
 	// Hub Register 失败：预占会话槽位。
 	blockingRunner := NewChatGenerationRunner(ChatGenerationRunnerOptions{
 		Identity: ChatGenerationIdentity{OwnerID: routeTestOwner, ConversationID: conversationID, TurnID: "ghost"},
-		Execute:  func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) { return ChatGenerationTerminalResult{Status: "completed"}, nil },
+		Execute: func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
+			return ChatGenerationTerminalResult{Status: "completed"}, nil
+		},
 	}, context.Background(), func() {}, func() bool { return false })
 	env.deps.Hub.Register(blockingRunner)
 	response = env.streamPost(conversationID, routeTestOwner, streamPayloadW13B("c5", "hi", "gpt-5"))
@@ -856,8 +894,10 @@ func TestW13BStreamTurnHistoryArms(t *testing.T) {
 	// 多轮历史 + mock 执行器：正常流式完成（覆盖历史渲染与 token 估算路径）。
 	env.fixture.seedTurns(routeTestOwner, conversationID, 3)
 	env.executor.steps = append(env.executor.steps, scriptStep{
-		match:   func(call dispatchCall) bool { return strings.HasPrefix(call.Path, "/v1/chat/completions") },
-		respond: func(call dispatchCall) *GenerationDispatchResponse { return sseResponse(chatCompletionsSSE("回答", true)) },
+		match: func(call dispatchCall) bool { return strings.HasPrefix(call.Path, "/v1/chat/completions") },
+		respond: func(call dispatchCall) *GenerationDispatchResponse {
+			return sseResponse(chatCompletionsSSE("回答", true))
+		},
 	})
 	response := env.streamPost(conversationID, routeTestOwner, streamPayloadW13B("c-big", "继续", "gpt-5"))
 	if response.status != http.StatusOK {
@@ -980,8 +1020,10 @@ func TestW13BStreamBodyTooLargeArms(t *testing.T) {
 	env.fixture.seedTurns(routeTestOwner, conversationID, 1)
 	// buildChatTransportRequest 的 reasoningEffort/serviceTier 分支 + 正常完成。
 	env.executor.steps = append(env.executor.steps, scriptStep{
-		match:   func(call dispatchCall) bool { return strings.HasPrefix(call.Path, "/v1/chat/completions") },
-		respond: func(call dispatchCall) *GenerationDispatchResponse { return sseResponse(chatCompletionsSSE("ok", false)) },
+		match: func(call dispatchCall) bool { return strings.HasPrefix(call.Path, "/v1/chat/completions") },
+		respond: func(call dispatchCall) *GenerationDispatchResponse {
+			return sseResponse(chatCompletionsSSE("ok", false))
+		},
 	})
 	payload := `{"clientMessageId":"c-tier","content":"hi","model":"gpt-5","reasoningEffort":"low","serviceTier":"priority"}`
 	response := env.streamPost(conversationID, routeTestOwner, payload)

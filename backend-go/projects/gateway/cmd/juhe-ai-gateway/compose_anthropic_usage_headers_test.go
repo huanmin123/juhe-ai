@@ -186,3 +186,56 @@ func (d *fakeChainAnthropicHeadersDispatcher) PersistAnthropicUsageHeaders(_ con
 	d.accountIDs = append(d.accountIDs, accountID)
 	d.sources = append(d.sources, source)
 }
+
+// TestPersistAnthropicUsageHeadersOnGatewayTraffic：成功面挂载门（chain_v1
+// handleUpstreamResponse 的提取）——仅网关流量派发，其余流量、nil 派发器与
+// 不合格账户静默（资格门在 gatewaycodex helper 内，此处验证流量门与透传）。
+func TestPersistAnthropicUsageHeadersOnGatewayTraffic(t *testing.T) {
+	anthropicHeaders := http.Header{
+		"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.14"},
+	}
+	account := gatewaydispatch.AccountCandidate{
+		ID: "acc_claude", Name: "claude 账户",
+		Type: "oauth", ProviderCode: "anthropic",
+	}
+
+	dispatcher := &fakeChainAnthropicHeadersDispatcher{}
+	persistAnthropicUsageHeadersOnGatewayTraffic(context.Background(), gatewayTrafficSource,
+		account, anthropicHeaders, dispatcher)
+	dispatcher.mu.Lock()
+	gatewayCalls := len(dispatcher.accountIDs)
+	sources := append([]string{}, dispatcher.sources...)
+	dispatcher.mu.Unlock()
+	if gatewayCalls != 1 {
+		t.Fatalf("gateway traffic must dispatch anthropic headers, got %d", gatewayCalls)
+	}
+	if sources[0] != gatewaycodex.AnthropicUsageSnapshotSource {
+		t.Fatalf("source = %q want %q", sources[0], gatewaycodex.AnthropicUsageSnapshotSource)
+	}
+
+	nonGatewayDispatcher := &fakeChainAnthropicHeadersDispatcher{}
+	persistAnthropicUsageHeadersOnGatewayTraffic(context.Background(), "diagnostic",
+		account, anthropicHeaders, nonGatewayDispatcher)
+	nonGatewayDispatcher.mu.Lock()
+	nonGatewayCalls := len(nonGatewayDispatcher.accountIDs)
+	nonGatewayDispatcher.mu.Unlock()
+	if nonGatewayCalls != 0 {
+		t.Fatalf("non-gateway traffic must not dispatch, got %d", nonGatewayCalls)
+	}
+
+	// nil 派发器不 panic（gatewaycodex helper 内静默）。
+	persistAnthropicUsageHeadersOnGatewayTraffic(context.Background(), gatewayTrafficSource,
+		account, anthropicHeaders, nil)
+
+	// 非 anthropic 账户不派发（gatewaycodex 资格门）。
+	codexDispatcher := &fakeChainAnthropicHeadersDispatcher{}
+	persistAnthropicUsageHeadersOnGatewayTraffic(context.Background(), gatewayTrafficSource,
+		gatewaydispatch.AccountCandidate{ID: "acc_codex", Type: "oauth", ProviderCode: "openai"},
+		anthropicHeaders, codexDispatcher)
+	codexDispatcher.mu.Lock()
+	codexCalls := len(codexDispatcher.accountIDs)
+	codexDispatcher.mu.Unlock()
+	if codexCalls != 0 {
+		t.Fatalf("codex account must not dispatch anthropic headers, got %d", codexCalls)
+	}
+}

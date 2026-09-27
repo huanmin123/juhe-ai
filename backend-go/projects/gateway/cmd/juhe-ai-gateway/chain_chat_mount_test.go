@@ -89,9 +89,16 @@ func TestComposeSystemAPIMountsChatFamily(t *testing.T) {
 		t.Fatalf("image policy = %+v", policy.Data.Input)
 	}
 
-	// POST /conversations provisions the purpose='chat' API key.
+	// POST /conversations 必填 bindMode（三种绑定模式契约）：group 模式携带
+	// 已启用的绑定分组，鉴权主体为 EnsureChatAPIKey 幂等补齐的专用 Key。
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	if _, err := composed.DB.Exec(`INSERT INTO groups (id, system_account_id, name, provider_code, enabled, group_type, created_at, updated_at)
+		VALUES ('mount_group', 'sys_admin', '挂载测试分组', 'openai', 1, 'personal', ?, ?)`, now, now); err != nil {
+		t.Fatalf("seed mount group: %v", err)
+	}
+	const provisionBody = `{"bindMode":"group","groupId":"mount_group"}`
 	provision, err := client.Post(server.URL+"/__aisys__/api/my-chat/conversations", "application/json",
-		strings.NewReader(`{}`))
+		strings.NewReader(provisionBody))
 	if err != nil {
 		t.Fatalf("POST conversations: %v", err)
 	}
@@ -130,7 +137,7 @@ func TestComposeSystemAPIMountsChatFamily(t *testing.T) {
 	}
 
 	// Second provision reuses the same key (Node chatApiKeyIdForSystemAccount).
-	second, err := client.Post(server.URL+"/__aisys__/api/my-chat/conversations", "application/json", strings.NewReader(`{}`))
+	second, err := client.Post(server.URL+"/__aisys__/api/my-chat/conversations", "application/json", strings.NewReader(provisionBody))
 	if err != nil {
 		t.Fatalf("second provision: %v", err)
 	}

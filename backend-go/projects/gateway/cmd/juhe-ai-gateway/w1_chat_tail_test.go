@@ -1082,7 +1082,7 @@ func TestW1YComposeChatFamilyRequiresChatAssetsRoot(t *testing.T) {
 	db := w1hNewChatFamilyDB(t)
 	composed := &composition{db: db, kernel: kernel.New(kernel.Options{}), authDeps: &authsys.Deps{}}
 	services := &chainRuntimeServices{Cache: w1hNewRuntimeCache(t, &w1hReadModels{})}
-	if _, err := composeChatFamily(composed, runtimeConfig{ChatAssetsRoot: "   "}, db, services, &gatewayChain{}); err == nil ||
+	if _, err := composeChatFamily(composed, runtimeConfig{ChatAssetsRoot: "   "}, db, services, &gatewayChain{}, nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "JUHE_AI_CHAT_ASSETS_ROOT") {
 		t.Fatalf("空 ChatAssetsRoot composeChatFamily = %v, want JUHE_AI_CHAT_ASSETS_ROOT 提示", err)
 	}

@@ -114,22 +114,34 @@ func chatImageModelProfileFor(model string) chatImageModelProfile {
 	return chatImageModelProfile{SupportsAutoQuality: true}
 }
 
+// Conversation bind modes (AI 问答三种会话绑定模式；api_key 即存量行为)。
+const (
+	BindModeAPIKey  = "api_key"
+	BindModeGroup   = "group"
+	BindModeAccount = "account"
+)
+
 // Conversation mirrors ChatConversation (route response shape).
 type Conversation struct {
-	ID                 string         `json:"id"`
-	SystemAccountID    string         `json:"systemAccountId"`
-	APIKeyID           *string        `json:"apiKeyId,omitempty"`
-	APIKeyNameSnapshot string         `json:"apiKeyNameSnapshot"`
-	Title              string         `json:"title"`
-	IsPinned           bool           `json:"isPinned"`
-	LastModel          *string        `json:"lastModel,omitempty"`
-	DefaultImageModel  ChatImageModel `json:"defaultImageModel"`
-	ActiveTurnID       *string        `json:"activeTurnId,omitempty"`
-	UserTurnCount      int64          `json:"userTurnCount"`
-	MessageRevision    int64          `json:"messageRevision"`
-	LastMessageAt      string         `json:"lastMessageAt"`
-	CreatedAt          string         `json:"createdAt"`
-	UpdatedAt          string         `json:"updatedAt"`
+	ID                      string         `json:"id"`
+	SystemAccountID         string         `json:"systemAccountId"`
+	APIKeyID                *string        `json:"apiKeyId,omitempty"`
+	APIKeyNameSnapshot      string         `json:"apiKeyNameSnapshot"`
+	BindMode                string         `json:"bindMode"`
+	BindGroupID             *string        `json:"bindGroupId,omitempty"`
+	BindGroupNameSnapshot   string         `json:"bindGroupName,omitempty"`
+	BindAccountID           *string        `json:"bindAccountId,omitempty"`
+	BindAccountNameSnapshot string         `json:"bindAccountName,omitempty"`
+	Title                   string         `json:"title"`
+	IsPinned                bool           `json:"isPinned"`
+	LastModel               *string        `json:"lastModel,omitempty"`
+	DefaultImageModel       ChatImageModel `json:"defaultImageModel"`
+	ActiveTurnID            *string        `json:"activeTurnId,omitempty"`
+	UserTurnCount           int64          `json:"userTurnCount"`
+	MessageRevision         int64          `json:"messageRevision"`
+	LastMessageAt           string         `json:"lastMessageAt"`
+	CreatedAt               string         `json:"createdAt"`
+	UpdatedAt               string         `json:"updatedAt"`
 }
 
 // ContentBlock is the union of ChatMessageContentBlock variants. Stored and
@@ -178,6 +190,11 @@ type conversationRow struct {
 	systemAccountID             string
 	apiKeyID                    sql.NullString
 	apiKeyNameSnapshot          string
+	bindMode                    string
+	bindGroupID                 sql.NullString
+	bindGroupNameSnapshot       string
+	bindAccountID               sql.NullString
+	bindAccountNameSnapshot     string
 	title                       string
 	titleSourceMessageID        sql.NullString
 	isPinned                    int64
@@ -209,7 +226,9 @@ type conversationRow struct {
 	updatedAt                   string
 }
 
-const conversationColumns = `id, system_account_id, api_key_id, api_key_name_snapshot, title, title_source_message_id,
+const conversationColumns = `id, system_account_id, api_key_id, api_key_name_snapshot,
+	bind_mode, bind_group_id, bind_group_name_snapshot, bind_account_id, bind_account_name_snapshot,
+	title, title_source_message_id,
 	is_pinned, last_model, default_image_model, next_sequence_no, user_turn_count, message_revision,
 	active_turn_id, active_started_at, context_revision, active_checkpoint_id, compacted_through_sequence,
 	context_state, active_context_tokens, effective_context_limit_tokens, context_usage_estimated,
@@ -219,7 +238,9 @@ const conversationColumns = `id, system_account_id, api_key_id, api_key_name_sna
 
 func scanConversationRow(scan func(...any) error) (conversationRow, error) {
 	var row conversationRow
-	err := scan(&row.id, &row.systemAccountID, &row.apiKeyID, &row.apiKeyNameSnapshot, &row.title,
+	err := scan(&row.id, &row.systemAccountID, &row.apiKeyID, &row.apiKeyNameSnapshot,
+		&row.bindMode, &row.bindGroupID, &row.bindGroupNameSnapshot, &row.bindAccountID,
+		&row.bindAccountNameSnapshot, &row.title,
 		&row.titleSourceMessageID, &row.isPinned, &row.lastModel, &row.defaultImageModel,
 		&row.nextSequenceNo, &row.userTurnCount, &row.messageRevision, &row.activeTurnID,
 		&row.activeStartedAt, &row.contextRevision, &row.activeCheckpointID,
@@ -260,29 +281,41 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 		return nil, &DomainError{Message: "聊天会话消息 revision 无效"}
 	}
 	return &Conversation{
-		ID:                 row.id,
-		SystemAccountID:    row.systemAccountID,
-		APIKeyID:           nullText(row.apiKeyID),
-		APIKeyNameSnapshot: row.apiKeyNameSnapshot,
-		Title:              row.title,
-		IsPinned:           row.isPinned == 1,
-		LastModel:          nullText(row.lastModel),
-		DefaultImageModel:  model,
-		ActiveTurnID:       nullText(row.activeTurnID),
-		UserTurnCount:      row.userTurnCount,
-		MessageRevision:    row.messageRevision,
-		LastMessageAt:      row.lastMessageAt,
-		CreatedAt:          row.createdAt,
-		UpdatedAt:          row.updatedAt,
+		ID:                      row.id,
+		SystemAccountID:         row.systemAccountID,
+		APIKeyID:                nullText(row.apiKeyID),
+		APIKeyNameSnapshot:      row.apiKeyNameSnapshot,
+		BindMode:                row.bindMode,
+		BindGroupID:             nullText(row.bindGroupID),
+		BindGroupNameSnapshot:   row.bindGroupNameSnapshot,
+		BindAccountID:           nullText(row.bindAccountID),
+		BindAccountNameSnapshot: row.bindAccountNameSnapshot,
+		Title:                   row.title,
+		IsPinned:                row.isPinned == 1,
+		LastModel:               nullText(row.lastModel),
+		DefaultImageModel:       model,
+		ActiveTurnID:            nullText(row.activeTurnID),
+		UserTurnCount:           row.userTurnCount,
+		MessageRevision:         row.messageRevision,
+		LastMessageAt:           row.lastMessageAt,
+		CreatedAt:               row.createdAt,
+		UpdatedAt:               row.updatedAt,
 	}, nil
 }
 
 // CreateConversationInput mirrors the createChatConversation input object.
+// Bind fields carry the resolved binding (handler 已完成校验与名称快照)；
+// BindMode 为空时按 'api_key' 落库（存量直调方的历史行为）。
 type CreateConversationInput struct {
 	ID                      string
 	SystemAccountID         string
 	APIKeyID                string
 	APIKeyNameSnapshot      string
+	BindMode                string
+	BindGroupID             string
+	BindGroupNameSnapshot   string
+	BindAccountID           string
+	BindAccountNameSnapshot string
 	DefaultModel            string
 	Now                     string
 	MaxConversationsPerUser int
@@ -318,11 +351,20 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 		return nil, &ConflictError{Code: ConflictConversationLimit}
 	}
 	defaultModel := sqlText(optString(input.DefaultModel))
+	bindMode := input.BindMode
+	if bindMode == "" {
+		bindMode = BindModeAPIKey
+	}
 	_, err = tx.Exec(s.bind(`INSERT INTO `+s.table("chat_conversations")+` (
-		id, system_account_id, api_key_id, api_key_name_snapshot, title, last_model, default_image_model,
+		id, system_account_id, api_key_id, api_key_name_snapshot,
+		bind_mode, bind_group_id, bind_group_name_snapshot, bind_account_id, bind_account_name_snapshot,
+		title, last_model, default_image_model,
 		next_sequence_no, user_turn_count, last_message_at, created_at, updated_at
-	) VALUES (?, ?, ?, ?, '新对话', ?, 'gpt-image-2', 1, 0, ?, ?, ?)`),
-		id, input.SystemAccountID, input.APIKeyID, input.APIKeyNameSnapshot, defaultModel, now, now, now)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '新对话', ?, 'gpt-image-2', 1, 0, ?, ?, ?)`),
+		id, input.SystemAccountID, input.APIKeyID, input.APIKeyNameSnapshot,
+		bindMode, sqlText(optString(input.BindGroupID)), input.BindGroupNameSnapshot,
+		sqlText(optString(input.BindAccountID)), input.BindAccountNameSnapshot,
+		defaultModel, now, now, now)
 	if err != nil {
 		return nil, err
 	}

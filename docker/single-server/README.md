@@ -88,6 +88,7 @@ bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / ma
 - `JUHE_AI_RUNTIME_LOG_POSTGRES_URL` / `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`：**必须显式**（F1/F2 无主 URL 回退）。
 - `JUHE_AI_J3B_CIRCUIT_REDIS_URL`：**必须显式且不得与 `JUHE_AI_REDIS_STATE_URL` 相同键空间**（gateway 启动强校验；现用同实例 DB2）。
 - `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE=postgres`（+ INPUT_POSTGRES_URL）：PG 模式按运维手册显式化。
+- `JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`（默认 0.1）与 `JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS`（默认 1）：成功请求正文长期采样率与热保留窗口（失败/问题请求恒全量保留 7 天，成功正文长期保留 3 天）。当前生产显式配 `1`——审计开启即全量可见正文（BUG-0198）。
 - `JUHE_AI_MAINTENANCE_J3A/J3B_POSTGRES_URL`：`--apply-*` 预置命令的 maintenance 专用 URL。
 - `JUHE_AI_ALLOWED_ORIGINS`：生产必填、逗号分隔、拒绝 `*`；当前 `https://aijh.huanmin.top,http://103.36.63.105`。
 - `JUHE_AI_COOKIE_SECURE=true`（HTTPS 已启用）；`JUHE_AI_TRUST_PROXY=true`（经 Caddy）。

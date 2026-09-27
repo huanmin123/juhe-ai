@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -172,6 +173,10 @@ type LockStatePublic struct {
 // (owner mode). Runtime overlays (runtimeAvailability, circuitSummary,
 // balanceSnapshot, apiKeyRuntime) belong to the runtime/circuit/balance
 // companion slices and stay omitted, exactly like the usage zero value.
+// CurrentConcurrency is the exception: the gateway process-local live counter
+// is hydrated at list time (Node standalone semantics — the list request reads
+// the runtime tracker, not a stats column), always rendered as a number (0
+// when the port is nil or the account is missing from the read).
 type ListItem struct {
 	ID                        string                `json:"id"`
 	ConfigRevision            int64                 `json:"configRevision"`
@@ -189,6 +194,7 @@ type ListItem struct {
 	Type                      string                `json:"type"`
 	Status                    string                `json:"status"`
 	ConcurrencyLimit          int                   `json:"concurrencyLimit"`
+	CurrentConcurrency        int                   `json:"currentConcurrency"`
 	Priority                  int                   `json:"priority"`
 	SuperPriorityEnabled      bool                  `json:"superPriorityEnabled"`
 	FallbackEnabled           bool                  `json:"fallbackEnabled"`
@@ -246,6 +252,46 @@ type ListPageResult struct {
 	Page        int        `json:"page"`
 	PageSize    int        `json:"pageSize"`
 	GeneratedAt string     `json:"generatedAt"`
+}
+
+// AccountConcurrencyReader is the runtime concurrency read port behind the
+// list currentConcurrency overlay: the gateway process-local tracker (Node
+// standalone semantics — the list request reads the live counter at response
+// time). Nil keeps every row at 0.
+type AccountConcurrencyReader interface {
+	LoadCurrentConcurrencyByID(ctx context.Context, accountIDs []string) (map[string]int, error)
+}
+
+// SetConcurrencyReader wires the runtime concurrency read port
+// post-construction (the gateway composition builds the process-local tracker
+// after this store; setter parity with the sibling ports). A nil reader keeps
+// the zero value.
+func (s *Store) SetConcurrencyReader(reader AccountConcurrencyReader) {
+	s.concurrencyReader = reader
+}
+
+// hydrateCurrentConcurrency overlays the gateway process-local live counters
+// onto the list rows (Node listAccountManagementItems read-time concurrency).
+// A read failure degrades to 0 for every row and never fails the page — but
+// logs a warn once instead of vanishing silently. Missing ids read as 0.
+func (s *Store) hydrateCurrentConcurrency(ctx context.Context, items []ListItem) {
+	if len(items) == 0 || s.concurrencyReader == nil {
+		return
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	currents, err := s.concurrencyReader.LoadCurrentConcurrencyByID(ctx, ids)
+	if err != nil {
+		slog.Warn("账户运行时并发 hydrate 失败，列表回退 0",
+			"event", "account_runtime_concurrency_hydrate_failed",
+			"error", err)
+		return
+	}
+	for index := range items {
+		items[index].CurrentConcurrency = currents[items[index].ID]
+	}
 }
 
 // listRow is the shared scan target for the management list rows.
@@ -665,6 +711,9 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	if err := s.hydrateAuthorizationStats(ctx, access, items, records); err != nil {
 		return nil, err
 	}
+	// 运行时并发注入（Node standalone 语义：列表请求实时读进程内计数）；
+	// 端口 nil 或读数缺失时保持 0，失败降级不阻断。
+	s.hydrateCurrentConcurrency(ctx, items)
 	total := (normalized.Page-1)*normalized.PageSize + len(items)
 	if hasMore {
 		total++

@@ -26,6 +26,17 @@ func NewGroupAccountStatsDBReader(db *sql.DB, postgres bool) *GroupAccountStatsD
 	return &GroupAccountStatsDBReader{db: db, pg: postgres}
 }
 
+// table qualifies stats-schema tables for PostgreSQL（生产 PG 无 search_path，
+// 裸表名 42P01 → hydrate 整体丢弃 → 列表账户数/并发/状态三列恒 0；与
+// apikeys StatsUsageSource.table / gatewayclientip SQLPolicySource.table 同一
+// 方言惯例：SQLite 保持裸表名）。
+func (r *GroupAccountStatsDBReader) table(name string) string {
+	if r.pg {
+		return "juhe_stats." + name
+	}
+	return name
+}
+
 // bind rewrites ? placeholders to $N for PostgreSQL.
 func (r *GroupAccountStatsDBReader) bind(query string) string {
 	if !r.pg {
@@ -69,7 +80,7 @@ func (r *GroupAccountStatsDBReader) ReadGroupAccountStats(ctx context.Context, g
 
 	query := "SELECT group_id, total, available, active, disabled, error, rate_limited, " +
 		"current_concurrency, concurrency_limit " +
-		"FROM group_account_stats WHERE group_id IN (" + strings.Join(placeholders, ",") + ")"
+		"FROM " + r.table("group_account_stats") + " WHERE group_id IN (" + strings.Join(placeholders, ",") + ")"
 
 	rows, err := r.db.QueryContext(ctx, r.bind(query), args...)
 	if err != nil {

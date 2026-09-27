@@ -324,7 +324,9 @@ func TestWCProviderDetailEmptyCatalog(t *testing.T) {
 	}
 }
 
-// TestWCProviderScopeForbidden：无 provider scope 的 token 403。
+// TestWCProviderScopeForbidden：scope 不匹配一律 403——正向缺失（group
+// scope 调 provider）与反向交叉（仅有 detail scope 调 list、仅有 list
+// scope 调 detail）。
 func TestWCProviderScopeForbidden(t *testing.T) {
 	env := newAIPublicEnv(t)
 	token := wcProviderToken(t, env, []string{scopeGroupListRead})
@@ -335,6 +337,19 @@ func TestWCProviderScopeForbidden(t *testing.T) {
 	status, payload, _ = env.doAuth(http.MethodGet, Prefix+"/provider/detail?code=gpt&tab=basic", "", token)
 	if status != http.StatusForbidden || payload["code"] != "external_source_scope_forbidden" {
 		t.Fatalf("detail 无 scope: %d %v", status, payload)
+	}
+
+	detailOnly := env.seedSource("extsrc_provd", "exttok_provd", "juis_token_provdddddddd",
+		"active", "active", []string{scopeProviderDetailRead}, "[]", "", "")
+	status, payload, _ = env.doAuth(http.MethodGet, Prefix+"/provider/list", "", detailOnly)
+	if status != http.StatusForbidden || payload["code"] != "external_source_scope_forbidden" {
+		t.Fatalf("list 反向交叉 scope: %d %v", status, payload)
+	}
+	listOnly := env.seedSource("extsrc_provl", "exttok_provl", "juis_token_provllllllll",
+		"active", "active", []string{scopeProviderListRead}, "[]", "", "")
+	status, payload, _ = env.doAuth(http.MethodGet, Prefix+"/provider/detail?code=gpt&tab=models", "", listOnly)
+	if status != http.StatusForbidden || payload["code"] != "external_source_scope_forbidden" {
+		t.Fatalf("detail 反向交叉 scope: %d %v", status, payload)
 	}
 }
 

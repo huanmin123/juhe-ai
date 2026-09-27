@@ -1,8 +1,9 @@
 package accountbalance
 
 // business_due tests: the periodic runner must advance the business due cursor
-// (juhe_business.accounts.balance_query_next_refresh_at) only after a committed
-// successful balance result, with the frozen candidate due as the write fence.
+// (juhe_business.accounts.balance_query_next_refresh_at) after every settled
+// periodic outcome (success, failure, unsupported), with the frozen candidate
+// due as the write fence; replays and other triggers must not advance.
 
 import (
 	"context"
@@ -99,11 +100,12 @@ func TestBusinessDuePeriodicSuccessAdvancesDueCursor(t *testing.T) {
 	}
 }
 
-func TestBusinessDueUnsupportedOutcomeDoesNotAdvance(t *testing.T) {
+func TestBusinessDueUnsupportedOutcomeAdvancesDue(t *testing.T) {
 	store := w7cNewSQLiteStore(t)
 	advancer := &bdueFakeAdvancer{result: true}
 	// Non-JSON upstream body: the outcome is committed as an unsupported
-	// diagnostic, which is not a balance result and must not advance due.
+	// diagnostic, which is a settled periodic outcome and must advance due by
+	// the configured interval instead of retrying at scan cadence.
 	client := &w7cScriptedHTTP{behavior: func(*http.Request) (int, string) { return http.StatusNotFound, "nope" }}
 	runner := bdueRunner(t, store, client, advancer, nil)
 
@@ -111,17 +113,28 @@ func TestBusinessDueUnsupportedOutcomeDoesNotAdvance(t *testing.T) {
 	if err != nil || report.Executed != 1 || len(report.Errors) != 0 {
 		t.Fatalf("unsupported report: %#v %v", report, err)
 	}
-	if calls := advancer.recorded(); len(calls) != 0 {
-		t.Fatalf("unsupported outcome must not advance due: %#v", calls)
+	snapshot, found, err := store.LoadSnapshot(context.Background(), "bdue-unsupported")
+	if err != nil || !found || snapshot.Snapshot.Status != StatusUnsupported {
+		t.Fatalf("unsupported snapshot: %#v %t %v", snapshot, found, err)
+	}
+	calls := advancer.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("unsupported outcome must advance due exactly once, got %d calls", len(calls))
+	}
+	if calls[0].accountID != "bdue-unsupported" || calls[0].expected == nil || calls[0].next == nil || calls[0].next.Before(calls[0].expected.Add(4*time.Minute)) {
+		t.Fatalf("unsupported advance identity/interval: %#v", calls[0])
 	}
 }
 
-func TestBusinessDueUpstreamErrorDoesNotAdvance(t *testing.T) {
+func TestBusinessDueTransientFailureOutcomeAdvancesDue(t *testing.T) {
 	store := w7cNewSQLiteStore(t)
 	advancer := &bdueFakeAdvancer{result: true}
 	client := &balanceTestHTTP{err: errors.New("dial upstream failed")}
 	runner := bdueRunner(t, store, client, advancer, nil)
 
+	// Transport failures stay transient diagnostics: the runner commits a
+	// pending/failed outcome, which is settled and must advance due the same
+	// way a success does (J2 contract: 周期、失败写回带 fence).
 	report, err := runner.RunPeriodic(context.Background(), []Candidate{w7cBalanceCandidate(t, store, "bdue-transport", nil)})
 	if err != nil || report.Executed != 1 || len(report.Errors) != 0 {
 		t.Fatalf("transport error report: %#v %v", report, err)
@@ -130,8 +143,12 @@ func TestBusinessDueUpstreamErrorDoesNotAdvance(t *testing.T) {
 	if err != nil || !found || snapshot.Snapshot.Status == StatusFresh || snapshot.Snapshot.Status == StatusUnlimited {
 		t.Fatalf("transport error must commit a non-success snapshot: %#v %t %v", snapshot, found, err)
 	}
-	if calls := advancer.recorded(); len(calls) != 0 {
-		t.Fatalf("failed upstream query must not advance due: %#v", calls)
+	calls := advancer.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("failed outcome must advance due exactly once, got %d calls", len(calls))
+	}
+	if calls[0].accountID != "bdue-transport" || calls[0].expected == nil || calls[0].next == nil || calls[0].next.Before(calls[0].expected.Add(4*time.Minute)) {
+		t.Fatalf("failure advance identity/interval: %#v", calls[0])
 	}
 }
 

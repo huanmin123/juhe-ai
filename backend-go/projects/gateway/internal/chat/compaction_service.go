@@ -106,6 +106,40 @@ func (s *CompactionService) key(input CompactionInput) string {
 	return input.SystemAccountID + ":" + input.ConversationID
 }
 
+// errChatContextTargetUnavailable 标记绑定会话读失败或缺失：压缩无法确认派发
+// 作用域，按 fail-closed 放弃本轮（走既有压缩失败路径：自动压缩下轮水位重试、
+// 手动压缩返回失败），绝不回落未 pin 执行器逃逸绑定作用域。
+var errChatContextTargetUnavailable = errors.New("chat_context_target_unavailable")
+
+// dispatchExecutor 解析本轮压缩的上游派发执行器（内部二次调用统一，设计 §6）：
+// 会话为 group/account 绑定模式且执行器支持调度覆盖通道
+// （chatDispatchTargetAware，组合根实现）时，返回绑定目标的执行器视图，保证
+// 压缩摘要调用与发送链落在同一绑定作用域——压缩模型必须不在绑定作用域之外。
+// api_key/legacy 会话不触碰端口，返回原执行器；执行器未实现端口（测试 mock）
+// 或装配缺失时同样返回原执行器。会话读失败或会话缺失时返回
+// errChatContextTargetUnavailable（fail-closed），由消费方终止本轮压缩。
+func (s *CompactionService) dispatchExecutor(input CompactionInput) (GenerationExecutor, error) {
+	executor := s.Executor
+	if executor == nil || s.Store == nil {
+		return executor, nil
+	}
+	aware, ok := executor.(chatDispatchTargetAware)
+	if !ok {
+		return executor, nil
+	}
+	conversation, err := s.Store.GetConversation(input.ConversationID, input.SystemAccountID)
+	if err != nil {
+		return nil, errChatContextTargetUnavailable
+	}
+	if conversation == nil {
+		return nil, errChatContextTargetUnavailable
+	}
+	if conversation.BindMode != BindModeGroup && conversation.BindMode != BindModeAccount {
+		return executor, nil
+	}
+	return aware.WithChatDispatchTarget(conversation.BindMode, derefString(conversation.BindGroupID), derefString(conversation.BindAccountID)), nil
+}
+
 // CompactOnce mirrors compactChatContextOnce.
 func (s *CompactionService) CompactOnce(ctx context.Context, input CompactionInput) CompactionResult {
 	key := s.key(input)
@@ -546,7 +580,13 @@ func (s *CompactionService) summarizePage(ctx context.Context, input CompactionI
 		"content-type":      "application/json",
 		"x-juhe-ai-purpose": "chat_context_compaction",
 	}
-	response, err := s.Executor.Dispatch(timeoutCtx, GenerationDispatchRequest{
+	executor, executorErr := s.dispatchExecutor(input)
+	if executorErr != nil {
+		// 绑定会话读失败/缺失：不派发上游，走既有压缩失败路径（failClaim 记录
+		// 重试水位；手动压缩返回失败，自动压缩下轮水位重试）。
+		return memorySnapshot{}, errors.New("chat_context_target_unavailable")
+	}
+	response, err := executor.Dispatch(timeoutCtx, GenerationDispatchRequest{
 		Path: path, Method: "POST", Headers: headers, Body: bodyJSON,
 	})
 	if err != nil {

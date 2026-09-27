@@ -399,7 +399,16 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(err)
 		return
 	}
+	// 发送前置校验按绑定模式收敛（三种模式同一入口）：归属 Key 校验保持会话
+	// api_key_id（鉴权主体明文来源，域 A 保证三种模式均非空）；绑定对象可用
+	// 性与模型作用域经 resolveChatBindingScope（api_key 内部含 Key 校验与 Key
+	// 视图分组；group 校验分组存在且 enabled；account 校验账户存在且启用）。
 	apiKey, err := rt.requireOwnedApiKey(derefString(conversation.APIKeyID), ownerID)
+	if err != nil {
+		failWith(err)
+		return
+	}
+	scope, err := rt.resolveChatBindingScope(conversation, ownerID)
 	if err != nil {
 		failWith(err)
 		return
@@ -409,17 +418,13 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(err)
 		return
 	}
-	groupIDs := []string{}
-	for _, binding := range gatewayKey.GroupBindings {
-		groupIDs = append(groupIDs, binding.GroupID)
-	}
 	imageCount := 0
 	for _, block := range body.ContentBlocks {
 		if block.Type == "input_image" {
 			imageCount++
 		}
 	}
-	catalog := rt.chatModelCatalog(groupIDs, ownerID, body.Model)
+	_, catalog := rt.loadChatModelCatalogForScope(scope, ownerID, body.Model)
 	if err := assertActive(); err != nil {
 		failWith(err)
 		return
@@ -433,9 +438,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(&ModelCapabilityError{Message: "当前模型能力信息不可用，请刷新模型列表"})
 		return
 	}
-	accountSupportedProtocols := resolveChatSupportedProtocols(groupIDs, body.Model, func(groupID, model, endpointFamily string) []ChatTransportAccount {
-		return rt.accountsForGroups([]string{groupID}, ownerID, model, endpointFamily)
-	})
+	accountSupportedProtocols := rt.scopeSupportedProtocols(scope, ownerID, body.Model)
 	if err := assertActive(); err != nil {
 		failWith(err)
 		return
@@ -446,7 +449,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	supportsWebSearch := containsString(modelOption.SupportedTools, "web_search")
 	protocol := selectChatTransport(accountSupportedProtocols, supportsWebSearch || imageCount > 0)
-	routeAccounts := rt.accountsForGroups(groupIDs, ownerID, body.Model, string(protocol))
+	routeAccounts := rt.scopeRouteAccounts(scope, ownerID, body.Model, string(protocol))
 	filteredAccounts := []ChatTransportAccount{}
 	for _, account := range routeAccounts {
 		if chatTransportAccountSupportsProtocol(account, body.Model, protocol) {
@@ -462,7 +465,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	if protocol == ProtocolResponses && supportsWebSearch {
 		effectiveTools = append(effectiveTools, HostedToolWebSearch)
 	}
-	imageGenerationEnabled := gatewayKey.ImageGenerationEnabled && rt.hasChatImageGenerationRoute(groupIDs, ownerID)
+	imageGenerationEnabled := gatewayKey.ImageGenerationEnabled && rt.scopeHasImageGenerationRoute(scope, ownerID)
 	environment := rt.deps.ToolEnvironment
 	if environment == "" {
 		environment = "development"
@@ -668,6 +671,10 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	runnerContext, runnerCancel := context.WithCancel(r.Context())
 	defer runnerCancel()
+	// 调度覆盖通道：group/account 会话把绑定目标绑定到执行器视图，模型轮次、
+	// 图片生成等 /v1 派发统一落在绑定作用域（cmd 侧注入进程内 context；外部
+	// 请求无法构造）。api_key/legacy 返回原执行器，行为与现状一致。
+	dispatchExecutor := bindConversationDispatchTarget(rt.deps.Executor, conversation)
 	options := ChatGenerationRunnerOptions{
 		Identity: identity,
 		Execute: rt.buildGenerationExecute(generationExecuteInput{
@@ -677,6 +684,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			userMessageID:               accepted.UserMessage.ID,
 			protocol:                    protocol,
 			apiKey:                      apiKey,
+			executor:                    dispatchExecutor,
 			traceID:                     traceID,
 			defaultImageModel:           string(conversation.DefaultImageModel),
 			internalToolRegistry:        internalToolRegistry,
@@ -853,8 +861,30 @@ func (d *Deps) gatewayKeyOrError(secret string) (*GatewayKeyView, error) {
 	return d.GatewayKeys.ValidateGatewayKey(secret)
 }
 
-// chatModelCatalog lists the provider catalog items for the groups.
-func (rt *chatRoutes) chatModelCatalog(groupIDs []string, systemAccountID, requestedModel string) []ProviderModelCatalogItem {
-	_, catalog := rt.loadChatModelCatalogSnapshot(groupIDs, systemAccountID, requestedModel)
-	return catalog
+// scopeRouteAccounts 按绑定作用域解析指定协议的候选账户：account 模式直接
+// 使用收敛后的单账户视图（协议过滤由调用方的
+// chatTransportAccountSupportsProtocol 循环承担）；api_key/group 沿分组账户
+// 快照路径（ListAccountsForGroup 按 requestedModel + endpointFamily 过滤）。
+func (rt *chatRoutes) scopeRouteAccounts(scope *chatBindingScope, systemAccountID, model, endpointFamily string) []ChatTransportAccount {
+	if scope.bindMode == BindModeAccount {
+		return scope.accounts
+	}
+	return rt.accountsForGroups(scope.groupIDs, systemAccountID, model, endpointFamily)
+}
+
+// scopeHasImageGenerationRoute 按绑定作用域判断图像生成路由：api_key/group
+// 沿分组路径；account 模式在收敛后的单账户视图上判断（任一注册图像模型存在
+// api_key 类型账户即视为有生图路由，与 hasChatImageGenerationRoute 同口径）。
+func (rt *chatRoutes) scopeHasImageGenerationRoute(scope *chatBindingScope, systemAccountID string) bool {
+	if scope.bindMode != BindModeAccount {
+		return rt.hasChatImageGenerationRoute(scope.groupIDs, systemAccountID)
+	}
+	for range SupportedChatImageModels() {
+		for _, account := range scope.accounts {
+			if account.Type == "api_key" {
+				return true
+			}
+		}
+	}
+	return false
 }

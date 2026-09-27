@@ -103,7 +103,7 @@ bind_mode = account : 指定账户 -> 该账户 provider_code（单值）-> 与 
 
 ## 9. 验收
 
-- 新建会话省略 `bindMode` 返回 400；三种模式各自携带错误对象返回 400；`api_key` 模式选择他人的或已停用 Key 返回明确错误。
+- 新建会话省略 `bindMode` 返回 400；三种模式各自携带错误对象返回 400；引用的绑定对象（API Key / 分组 / 账户）不存在、已删除或已停用时，创建与发送统一返回 400（`chat_invalid_request`）——这是用户可恢复的输入/状态错误；服务端端口未装配、专用 Key 服务异常等真正的服务端问题保持 5xx，不与用户错误混算。
 - `group` 模式会话的模型列表等于该分组可派发账户聚合的动态目录；`account` 模式等于该账户 provider 目录（与 `account_supported_models` 交集）。
 - `account` 模式发送命中指定账户，使用记录的 account/group 归属正确；`group` 模式发送始终落在指定分组内。
 - 外部 HTTP 请求无法指定调度目标：不带内部 context 的请求调度行为与现状完全一致。

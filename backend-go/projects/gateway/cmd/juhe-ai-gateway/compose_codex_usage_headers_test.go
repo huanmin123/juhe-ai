@@ -23,6 +23,11 @@ func newCodexUsageHeadersTestChannel(t *testing.T) (*sql.DB, *tablemonitor.Durab
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	// 单连接串行化：fire-and-forget 派发 goroutine 的一次性 ensureSchema/INSERT
+	// 与测试的轮询读共享同一 SQLite 锁空间，多连接下写者撞上读锁会立即
+	// SQLITE_BUSY 丢行（生产连接串自带 busy_timeout，测试以单连接达成同一
+	// 串行化语义）。
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	dispatch, err := tablemonitor.NewDurableRecordMaintenanceDispatch(db, false, time.Now)
 	if err != nil {

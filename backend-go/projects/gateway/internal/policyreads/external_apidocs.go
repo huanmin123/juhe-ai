@@ -733,7 +733,7 @@ func externalPublicAPICatalog() externalAPICatalog {
 		},
 		{
 			ID: "provider-detail", Name: "供应商详情",
-			Summary: "按供应商编码读取详情；tab=basic 返回供应商摘要与协议档案，tab=models 返回模型目录（服务端按模型名推导分类，支持分类过滤与分页）。",
+			Summary: "按供应商编码读取详情；tab=basic 返回供应商摘要与协议档案，tab=models 返回模型目录（服务端按模型名推导分类，支持分类过滤与分页），models 页签下 provider 仅返回 code 与 name。",
 			Status:  "available", Method: "GET", Path: "/__aipublic__/provider/detail",
 			Headers: []catalogHeader{catalogAuthHeader},
 			Query: []catalogField{

@@ -145,9 +145,8 @@ try {
     type: 'oauth',
     oauthUsage: {
       kind: 'anthropic_claude',
-      unifiedStatus: 'allowed_warning',
-      fiveHour: { usedPercent: 82.4, resetAt: '2026-06-16T01:30:00.000Z' },
-      sevenDay: { usedPercent: 1005, resetAt: '2026-06-18T01:00:00.000Z' }
+      fiveHour: { utilization: 82.4, resetsAt: '2026-06-16T01:30:00.000Z' },
+      sevenDay: { utilization: 1005, resetsAt: '2026-06-18T01:00:00.000Z' }
     }
   }))
   assertEqual(claudeBars.length, 2, 'Claude OAuth 快照应展示 5h/7d 两条用量条')
@@ -168,8 +167,8 @@ try {
       type: 'oauth',
       oauthUsage: {
         kind: 'anthropic_claude',
-        fiveHour: { usedPercent: 14, resetAt: '2026-06-16T01:30:00.000Z' },
-        sevenDay: { usedPercent: 3.6 }
+        fiveHour: { utilization: 14, resetsAt: '2026-06-16T01:30:00.000Z' },
+        sevenDay: { utilization: 3.6 }
       }
     }))[1]?.tone,
     'normal',
@@ -180,7 +179,7 @@ try {
       providerCode: 'anthropic',
       protocolCode: 'anthropic',
       type: 'oauth',
-      oauthUsage: { kind: 'anthropic_claude', sevenDay: { usedPercent: 14, resetAt: '2026-06-18T01:00:00.000Z' } }
+      oauthUsage: { kind: 'anthropic_claude', sevenDay: { utilization: 14, resetsAt: '2026-06-18T01:00:00.000Z' } }
     })).length,
     1,
     '只有 7d 窗口时应只渲染一条'
@@ -190,7 +189,7 @@ try {
       providerCode: 'anthropic',
       protocolCode: 'anthropic',
       type: 'oauth',
-      oauthUsage: { kind: 'anthropic_claude', fiveHour: { resetAt: '2026-06-16T01:30:00.000Z' } }
+      oauthUsage: { kind: 'anthropic_claude', fiveHour: { resetsAt: '2026-06-16T01:30:00.000Z' } }
     })).length,
     0,
     '窗口缺已用百分比时不应渲染该条'
@@ -206,7 +205,7 @@ try {
     '两窗都缺时不应渲染 Claude 条'
   )
   assertEqual(
-    claudeOAuthUsageBars(accountFixture({ type: 'api_key', oauthUsage: { kind: 'anthropic_claude', fiveHour: { usedPercent: 14 } } })).length,
+    claudeOAuthUsageBars(accountFixture({ type: 'api_key', oauthUsage: { kind: 'anthropic_claude', fiveHour: { utilization: 14 } } })).length,
     0,
     'API Key 账户不应渲染 Claude 条'
   )
@@ -215,7 +214,7 @@ try {
     providerCode: 'anthropic',
     protocolCode: 'anthropic',
     type: 'oauth',
-    oauthUsage: { kind: 'anthropic_claude', fiveHour: { usedPercent: 42, resetAt: '2026-06-16T01:30:00.000Z' } }
+    oauthUsage: { kind: 'anthropic_claude', fiveHour: { utilization: 42, resetsAt: '2026-06-16T01:30:00.000Z' } }
   }))
   assertEqual(claudeBarsViaAggregation.length, 1, 'anthropic oauth 账户应经聚合入口产出 Claude 条')
   assertEqual(claudeBarsViaAggregation[0]?.key, '5h', '聚合入口应返回 Claude 5h 条')

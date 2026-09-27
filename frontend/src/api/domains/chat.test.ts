@@ -88,7 +88,7 @@ describe('chatApi 请求形状', () => {
   it('会话与消息方法发出正确的 method 与 URL', async () => {
     await chatApi.getImagePolicy()
     await chatApi.listConversations()
-    await chatApi.createConversation()
+    await chatApi.createConversation({ bindMode: 'group', groupId: 'group-1' })
     await chatApi.getConversation('conv-1')
     await chatApi.listMessages('conv-1')
     await chatApi.getConversationSync('conv-1')
@@ -132,11 +132,13 @@ describe('chatApi 请求形状', () => {
     expect(requests[2].url).toBe('/my-chat/conversations/conv-1/assets/asset%2F1')
   })
 
-  it('createConversation 无 apiKeyId 时发送空 body，有则携带', async () => {
-    await chatApi.createConversation()
-    expect(payloadOf(requests[0])).toEqual({})
-    await chatApi.createConversation('key-1')
-    expect(payloadOf(requests[1])).toEqual({ apiKeyId: 'key-1' })
+  it('createConversation 总是发送 JSON 体并按绑定模式携带互斥字段', async () => {
+    await chatApi.createConversation({ bindMode: 'api_key', apiKeyId: 'key-1' })
+    expect(payloadOf(requests[0])).toEqual({ bindMode: 'api_key', apiKeyId: 'key-1' })
+    await chatApi.createConversation({ bindMode: 'group', groupId: 'group-1' })
+    expect(payloadOf(requests[1])).toEqual({ bindMode: 'group', groupId: 'group-1' })
+    await chatApi.createConversation({ bindMode: 'account', accountId: 'account-1' })
+    expect(payloadOf(requests[2])).toEqual({ bindMode: 'account', accountId: 'account-1' })
   })
 
   it('getConversationSync 默认 knownRevision=0，传入时使用实际值', async () => {

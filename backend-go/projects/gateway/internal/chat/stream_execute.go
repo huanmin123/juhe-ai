@@ -15,13 +15,52 @@ import (
 // usage recording, observation/compaction scheduling and the failure
 // finalize/recover paths.
 
+// chatDispatchTargetAware 是进程内调度覆盖通道在 chat 侧的可选扩展端口：
+// 组合根（cmd/juhe-ai-gateway）的 chatGatewayExecutor 实现它，把会话绑定
+// 目标（group/account 模式）绑定到执行器视图并在派发时注入请求 context；
+// api_key/legacy 模式返回原执行器（行为与现状一致）。internal/chat 不引用
+// cmd 包，经类型断言探测；未实现该端口的执行器（测试 mock）保持现状语义。
+type chatDispatchTargetAware interface {
+	WithChatDispatchTarget(bindMode, groupID, accountID string) GenerationExecutor
+}
+
+// dispatchExecutorOf 解析执行器视图：input.executor 优先（stream_route 已按
+// 会话绑定模式解析），为空回落 fallback（rt.deps.Executor）。
+func dispatchExecutorOf(input generationExecuteInput, fallback GenerationExecutor) GenerationExecutor {
+	if input.executor != nil {
+		return input.executor
+	}
+	return fallback
+}
+
+// bindConversationDispatchTarget 按会话绑定模式解析执行器视图：会话为
+// group/account 模式且执行器实现 chatDispatchTargetAware 时返回绑定目标的
+// 视图；api_key/legacy 模式原样返回（不触碰端口，行为逐字节一致）。
+func bindConversationDispatchTarget(executor GenerationExecutor, conversation *Conversation) GenerationExecutor {
+	if executor == nil || conversation == nil {
+		return executor
+	}
+	if conversation.BindMode != BindModeGroup && conversation.BindMode != BindModeAccount {
+		return executor
+	}
+	aware, ok := executor.(chatDispatchTargetAware)
+	if !ok {
+		return executor
+	}
+	return aware.WithChatDispatchTarget(conversation.BindMode, derefString(conversation.BindGroupID), derefString(conversation.BindAccountID))
+}
+
 type generationExecuteInput struct {
-	body                        *streamMessageBody
-	conversation                *Conversation
-	ownerID                     string
-	userMessageID               string
-	protocol                    ChatTransportProtocol
-	apiKey                      *ChatAPIKeyRecord
+	body          *streamMessageBody
+	conversation  *Conversation
+	ownerID       string
+	userMessageID string
+	protocol      ChatTransportProtocol
+	apiKey        *ChatAPIKeyRecord
+	// executor 是本轮生成的上游派发执行器：会话为 group/account 绑定模式时，
+	// 由 stream_route 经 chatDispatchTargetAware 端口解析为绑定目标的执行器
+	// 视图（调度覆盖通道）；nil 回落 rt.deps.Executor（api_key 模式与现状一致）。
+	executor                    GenerationExecutor
 	traceID                     string
 	defaultImageModel           string
 	internalToolRegistry        *chatInternalToolRegistry
@@ -70,7 +109,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			if runCtx.Context != nil {
 				ctx = runCtx.Context
 			}
-			upstream, err := rt.deps.Executor.Dispatch(ctx, GenerationDispatchRequest{
+			upstream, err := dispatchExecutorOf(input, rt.deps.Executor).Dispatch(ctx, GenerationDispatchRequest{
 				Path: path, Method: "POST", Headers: headers, Body: payload,
 			})
 			if err != nil {
@@ -146,7 +185,7 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				if runCtx.Context != nil {
 					ctx = runCtx.Context
 				}
-				generated, err := GenerateChatImage(ctx, rt.deps.Executor, request, input.apiKey.Secret, input.traceID)
+				generated, err := GenerateChatImage(ctx, dispatchExecutorOf(input, rt.deps.Executor), request, input.apiKey.Secret, input.traceID)
 				if err != nil {
 					return ChatImageGenerationToolResult{}, err
 				}

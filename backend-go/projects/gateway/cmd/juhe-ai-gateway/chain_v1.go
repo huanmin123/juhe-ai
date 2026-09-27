@@ -111,6 +111,10 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		return
 	}
 	ctx := r.Context()
+	// AI 问答会话绑定模式的调度覆盖目标（设计 §6）：仅聊天进程内执行器注入
+	// 的 group/account 目标生效；外部 HTTP 请求（含 api_key 模式会话）恒为空，
+	// 后续候选覆盖、分组上下文对齐与回退禁用全部短路，调度行为与现状一致。
+	chatTarget, hasChatTarget := chatDispatchTargetFromContext(ctx)
 	// SwitchTarget（切号冻结目标）请求级载体：派发链内第一个完成上游请求构造
 	// 的账户在此冻结有效上游目标，此后跨账户切换 / 分组回退 / 重派窗口一律
 	// 按冻结目标后置过滤（切号时有效上游目标设计 §3.1/§4）。初始 preflight
@@ -233,11 +237,25 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	defer gatewaypreauth.CancelAuditCapture(auditCapture)
 
 	// ---- preflight (request/preflight.ts) ----
+	preflightOptions := c.preflightOptions(requestLane)
+	var chatScope chatDispatchTargetScope
+	if hasChatTarget {
+		// 派发候选装配前收敛到绑定作用域（group 固定候选组 / account 按启用
+		// 分组解析承载分组后收敛单账户）；解析失败按 preflight 缓存读失败同一
+		// 处理面退出，不脱离绑定作用域派发。
+		scope, scopeErr := c.resolveChatDispatchTargetScope(ctx, req, chatTarget)
+		if scopeErr != nil {
+			c.handleOrchestratorError(scopeErr, req, res, startedAt, endpoint)
+			return
+		}
+		chatScope = scope
+		preflightOptions.CandidateAccounts = chatScope.accounts
+	}
 	preflight, err := c.preauth.PrepareOpenAIGatewayDispatchContext(ctx, gatewaypreauth.PreflightInput{
 		Req:             req,
 		Res:             res,
 		AuditCapture:    auditCapture,
-		Options:         c.preflightOptions(requestLane),
+		Options:         preflightOptions,
 		StartedAt:       startedAt,
 		TraceID:         traceID,
 		ClientIP:        req.ClientIP,
@@ -292,6 +310,7 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		endpoint:            endpoint,
 		traceID:             traceID,
 		releases:            releases,
+		chatTarget:          chatTarget,
 		actionVisitedGroups: map[string]bool{},
 		enteredGroups:       map[string]bool{},
 	}
@@ -313,6 +332,15 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		return
 	}
 	releases.Add(context.ReleaseClientIPConcurrency)
+	if hasChatTarget {
+		// 窗口级分组上下文对齐到生效分组（group=绑定分组；account=承载分组，
+		// 即候选解析的命中组）：调度策略 + usage/审计窗口组；绑定目标请求的
+		// 既有 preflight.completed 埋点随之反映真实窗口组。
+		if err := c.applyChatDispatchGroupContext(ctx, chatDispatchSystemAccountID(req), chatScope.groupID, context); err != nil {
+			c.handleOrchestratorError(err, req, res, startedAt, endpoint)
+			return
+		}
+	}
 	// D-120（BUG-0175）SSE 等待心跳装配（preflight.ts:855-860）：等待预算在
 	// BeginNoAvailableWait/PauseNoAvailableWait 边沿起停心跳，长等待期间向
 	// 下游写 SSE 保活块，防止空闲超时断连。非 SSE 下游协议心跳为 nil
@@ -376,6 +404,23 @@ func (c *gatewayChain) recordUpstreamFetchHeadersStage(context *gatewaypreauth.D
 	}
 }
 
+// persistAnthropicUsageHeadersOnGatewayTraffic 是 anthropic 用量头成功面挂载
+// 的可测门：仅网关流量持久化 unified rate limit 头，其余流量静默；账户资格
+// 与头存在性门在 gatewaycodex.PersistAnthropicUsageHeadersIfNeeded 内。
+func persistAnthropicUsageHeadersOnGatewayTraffic(
+	ctx context.Context,
+	trafficSource string,
+	account gatewaydispatch.AccountCandidate,
+	headers http.Header,
+	dispatcher gatewaycodex.AnthropicUsageHeadersDispatcher,
+) {
+	if trafficSource != gatewayTrafficSource {
+		return
+	}
+	gatewaycodex.PersistAnthropicUsageHeadersIfNeeded(ctx, account, headers,
+		gatewaycodex.AnthropicUsageSnapshotSource, dispatcher)
+}
+
 // handleUpstreamResponse mirrors handleStreamUpstreamResponse /
 // handleNonStreamUpstreamResponse + finalizeHandledUpstreamResponse. It
 // returns the handling result so the dispatch loop can consume a
@@ -408,12 +453,11 @@ func (c *gatewayChain) handleUpstreamResponse(
 		upstream.Status(), upstream.ContentType(), streamRequest)
 	// Node routes.ts:1554-1556 的 Go 成功面对称位（到达响应管道的 2xx 终态）：
 	// anthropic OAuth 账户的 unified rate limit 头在此 fire-and-forget 持久化
-	// （AI账户Grok用量快照设计 §8.2；非 2xx 终态走 chain_ports.go 失败面，
-	// source 重写为 gateway_error）。nil 派发器与不合格账户在 helper 内静默。
-	if context.UsageContext.TrafficSource == gatewayTrafficSource {
-		gatewaycodex.PersistAnthropicUsageHeadersIfNeeded(ctx, dispatched.Account,
-			responseHTTPHeaderOf(upstream), gatewaycodex.AnthropicUsageSnapshotSource, c.anthropicUsageHeaders)
-	}
+	// （AI账户Grok用量快照设计 §8.2；非 2xx 终态走 chain_ports.go 失败面；
+	// source 按规格固定 anthropic_unified_headers，不分成功/失败来源）。
+	// nil 派发器与不合格账户在 helper 内静默。
+	persistAnthropicUsageHeadersOnGatewayTraffic(ctx, context.UsageContext.TrafficSource,
+		dispatched.Account, responseHTTPHeaderOf(upstream), c.anthropicUsageHeaders)
 	// D-97（BUG-0175）+ P2：上游响应模型归因。观察器已在 dispatch attempt 内、
 	// 桥转换之前挂到原始上游流（engine.ObserveUpstreamResponseModel 钩子，
 	// Node upstream-attempts.ts:180-210 观察先于 transform），归因的是上游

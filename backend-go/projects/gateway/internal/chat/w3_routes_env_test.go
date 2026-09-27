@@ -254,7 +254,7 @@ func TestGenerationDepsRoutesW3(t *testing.T) {
 	prefix := "/__aisys__/api/my-chat"
 
 	t.Run("创建会话默认模型", func(t *testing.T) {
-		response := env.do("POST", prefix+"/conversations", routeTestOwner, "{}")
+		response := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`)
 		if response.status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", response.status, response.rawString())
 		}
@@ -263,8 +263,14 @@ func TestGenerationDepsRoutesW3(t *testing.T) {
 			t.Fatalf("应返回默认模型: %v", data)
 		}
 	})
+	t.Run("创建会话缺 bindMode", func(t *testing.T) {
+		response := env.do("POST", prefix+"/conversations", routeTestOwner, "{}")
+		if response.status != http.StatusBadRequest || response.code() != "chat_invalid_request" {
+			t.Fatalf("status=%d body=%s", response.status, response.rawString())
+		}
+	})
 	t.Run("创建会话带 apiKeyId", func(t *testing.T) {
-		response := env.do("POST", prefix+"/conversations", routeTestOwner, `{"apiKeyId":"chat_key_provisioned"}`)
+		response := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`)
 		if response.status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", response.status, response.rawString())
 		}
@@ -585,6 +591,7 @@ func TestStreamTurnErrorBranchesW3(t *testing.T) {
 		env.deps.GatewayKeys = nil
 		response := env.streamPost("chat_conv_stream", routeTestOwner, streamPayload("cmid-nokey", "内容", "gpt-5"))
 		env.deps.GatewayKeys = previous
+		// GatewayKeys 未接线是服务端装配缺失（500），与 ChatKeys/GroupLookup nil 同口径。
 		if response.status != http.StatusInternalServerError {
 			t.Fatalf("网关密钥缺失 = %d %s", response.status, response.rawString())
 		}

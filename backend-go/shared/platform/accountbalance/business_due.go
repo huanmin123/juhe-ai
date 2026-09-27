@@ -8,8 +8,9 @@ import (
 	"time"
 )
 
-// BusinessDueAdvancer 是周期余额刷新成功后推进业务库 due 游标的持久化边界。
-// Runner 只依赖该接口，不直接触碰 juhe_business；测试以 fake 记录断言。
+// BusinessDueAdvancer 是周期余额刷新已结算 outcome（成功、失败、unsupported）
+// 后推进业务库 due 游标的持久化边界。Runner 只依赖该接口，不直接触碰
+// juhe_business；测试以 fake 记录断言。
 type BusinessDueAdvancer interface {
 	// AdvancePeriodicDue 把账户的 balance_query_next_refresh_at 从 expected
 	// 推进到 next。expected 是候选冻结时读到的 due 值（recovery 候选为 nil，

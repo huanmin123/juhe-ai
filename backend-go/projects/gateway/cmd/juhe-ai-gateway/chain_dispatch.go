@@ -22,7 +22,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
@@ -33,6 +32,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 )
 
 // degradedPortWarns dedupes the once-per-port degradation logs.
@@ -220,6 +220,19 @@ type chainConcurrencyStore struct {
 
 func newChainConcurrencyStore(tracker *gatewayclientip.MemoryAccountConcurrency) *chainConcurrencyStore {
 	return &chainConcurrencyStore{tracker: tracker}
+}
+
+// chainAccountConcurrencyReader adapts the same process-local tracker onto the
+// management-list concurrency read ports (groups AccountConcurrencyReader /
+// accounts AccountConcurrencyReader): 分组与账户列表的“当前并发”在列表请求时
+// 按运行时实时计数 hydrate（Node standalone 语义），与 dispatch 引擎共用同一
+// 进程内事实源。
+type chainAccountConcurrencyReader struct {
+	tracker *gatewayclientip.MemoryAccountConcurrency
+}
+
+func (r chainAccountConcurrencyReader) LoadCurrentConcurrencyByID(ctx context.Context, accountIDs []string) (map[string]int, error) {
+	return r.tracker.LoadAccountCurrentConcurrencyByID(ctx, accountIDs)
 }
 
 func (s *chainConcurrencyStore) LoadCurrentAsync(ctx context.Context, accountIDs []string) (map[string]int, error) {

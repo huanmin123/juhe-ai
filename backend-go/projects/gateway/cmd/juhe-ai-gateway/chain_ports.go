@@ -1975,7 +1975,12 @@ type auditSettingsSourceAdapter struct {
 func (a auditSettingsSourceAdapter) ReadAuditLogSettings() gatewayusage.AuditLogSettings {
 	enabled := a.enabled != nil && a.enabled()
 	return gatewayusage.AuditLogSettings{
-		Enabled:                  enabled,
+		Enabled: enabled,
+		// BUG-0198：审计主开关与正文捕获必须一致——审计开启即捕获请求/响应
+		// 正文（独立 FullBodyCapture 开关不存在，生产此前恒 false 导致审计
+		// 只落元数据、详情页正文恒"未抓取"）。成功流量的分层保留仍由
+		// SuccessSampleRate / SuccessHotRetentionHours 承载。
+		FullBodyCaptureEnabled:   enabled,
 		SuccessSampleRate:        a.successSampleRate,
 		SuccessHotRetentionHours: a.successHotRetentionHours,
 	}

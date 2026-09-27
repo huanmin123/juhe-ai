@@ -1326,6 +1326,15 @@ func TestW1PAuditSettingsAndUsageModelResolver(t *testing.T) {
 	if settings := (auditSettingsSourceAdapter{successSampleRate: 0.1, successHotRetentionHours: 1}).ReadAuditLogSettings(); settings.SuccessSampleRate != 0.1 || settings.SuccessHotRetentionHours != 1 {
 		t.Fatalf("ReadAuditLogSettings = %+v，want 采样字段透传 0.1/1", settings)
 	}
+	// BUG-0198：审计开关与正文捕获一致——enabled=true 必须携带
+	// FullBodyCaptureEnabled=true（此前恒 false，审计只落元数据）；
+	// enabled=false 时正文捕获同样关闭。
+	if settings := (auditSettingsSourceAdapter{enabled: func() bool { return true }}).ReadAuditLogSettings(); !settings.FullBodyCaptureEnabled {
+		t.Fatalf("ReadAuditLogSettings = %+v，want FullBodyCaptureEnabled=true", settings)
+	}
+	if settings := (auditSettingsSourceAdapter{}).ReadAuditLogSettings(); settings.FullBodyCaptureEnabled {
+		t.Fatalf("nil enabled ReadAuditLogSettings = %+v，want FullBodyCaptureEnabled=false", settings)
+	}
 
 	resolution := (usageModelResolverAdapter{}).ResolveUsageModel(
 		gatewayusage.UsageModelAccount{ID: "acc-1"}, "gpt-w1p", "chat_completions")

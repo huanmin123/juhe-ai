@@ -441,6 +441,95 @@ func TestEnsureSQLiteBusinessAddsCustomQuestionIDsColumns(t *testing.T) {
 	})
 }
 
+// TestEnsureSQLiteChatAddsBindModeColumns covers the conversation bind-mode
+// column delivery (AI 问答三种绑定模式): fresh databases declare the five
+// columns inside sqliteChatDDL, while legacy chat databases (created before
+// the feature) receive them through the guarded PRAGMA table_info /
+// ALTER TABLE ADD COLUMN migration; legacy rows take the DEFAULT 'api_key',
+// which expresses the historical behavior without any data backfill.
+func TestEnsureSQLiteChatAddsBindModeColumns(t *testing.T) {
+	legacyConversationDDL := `CREATE TABLE chat_conversations (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      api_key_id TEXT,
+      api_key_name_snapshot TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '新对话',
+      title_source_message_id TEXT,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
+      last_model TEXT,
+      default_image_model TEXT NOT NULL DEFAULT 'gpt-image-2',
+      next_sequence_no INTEGER NOT NULL DEFAULT 1,
+      user_turn_count INTEGER NOT NULL DEFAULT 0,
+      message_revision INTEGER NOT NULL DEFAULT 0,
+      active_turn_id TEXT,
+      active_started_at TEXT,
+      context_revision INTEGER NOT NULL DEFAULT 0,
+      active_checkpoint_id TEXT,
+      compacted_through_sequence INTEGER NOT NULL DEFAULT 0,
+      context_state TEXT NOT NULL DEFAULT 'ready',
+      active_context_tokens INTEGER,
+      effective_context_limit_tokens INTEGER,
+      context_usage_estimated INTEGER NOT NULL DEFAULT 1,
+      context_claim_id TEXT,
+      context_claim_revision INTEGER,
+      context_claim_through_sequence INTEGER,
+      context_claimed_at TEXT,
+      context_retry_at TEXT,
+      context_attempt_count INTEGER NOT NULL DEFAULT 0,
+      context_error_code TEXT,
+      context_progress_sequence INTEGER NOT NULL DEFAULT 0,
+      context_progress_earliest_expires_at TEXT,
+      last_message_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+
+	t.Run("fresh database declares the columns", func(t *testing.T) {
+		db := openSharedMemorySQLite(t, "authsys-schema-test-chat-bind-fresh")
+		if _, err := EnsureSQLiteChat(context.Background(), db); err != nil {
+			t.Fatalf("EnsureSQLiteChat: %v", err)
+		}
+		for _, column := range []string{"bind_mode", "bind_group_id", "bind_group_name_snapshot", "bind_account_id", "bind_account_name_snapshot"} {
+			if !sqliteTableHasColumn(t, db, "chat_conversations", column) {
+				t.Errorf("fresh chat_conversations lacks %s", column)
+			}
+		}
+	})
+
+	t.Run("legacy database receives the guarded ALTER", func(t *testing.T) {
+		db := openSharedMemorySQLite(t, "authsys-schema-test-chat-bind-legacy")
+		if _, err := db.Exec(legacyConversationDDL); err != nil {
+			t.Fatalf("seed legacy DDL: %v", err)
+		}
+		if _, err := db.Exec(`INSERT INTO chat_conversations (id, system_account_id, api_key_name_snapshot, last_message_at, created_at, updated_at)
+			VALUES ('conv_legacy', 'owner-1', '历史密钥', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+			t.Fatalf("seed legacy row: %v", err)
+		}
+		if sqliteTableHasColumn(t, db, "chat_conversations", "bind_mode") {
+			t.Fatal("legacy precondition violated: chat_conversations already has bind_mode")
+		}
+		if _, err := EnsureSQLiteChat(context.Background(), db); err != nil {
+			t.Fatalf("EnsureSQLiteChat over legacy table: %v", err)
+		}
+		for _, column := range []string{"bind_mode", "bind_group_id", "bind_group_name_snapshot", "bind_account_id", "bind_account_name_snapshot"} {
+			if !sqliteTableHasColumn(t, db, "chat_conversations", column) {
+				t.Errorf("legacy chat_conversations lacks %s after ensure", column)
+			}
+		}
+		var bindMode string
+		if err := db.QueryRow(`SELECT bind_mode FROM chat_conversations WHERE id = 'conv_legacy'`).Scan(&bindMode); err != nil {
+			t.Fatalf("read legacy bind_mode: %v", err)
+		}
+		if bindMode != "api_key" {
+			t.Fatalf("legacy row bind_mode = %q, want default api_key", bindMode)
+		}
+		// ADD COLUMN 携带的列级 CHECK 对新增行同样生效。
+		if _, err := db.Exec(`UPDATE chat_conversations SET bind_mode = 'pool' WHERE id = 'conv_legacy'`); err == nil {
+			t.Fatal("expected CHECK violation for invalid bind_mode, got nil")
+		}
+	})
+}
+
 // sqliteTableHasColumn reports whether PRAGMA table_info lists the column.
 func sqliteTableHasColumn(t *testing.T, db *sql.DB, table, column string) bool {
 	t.Helper()

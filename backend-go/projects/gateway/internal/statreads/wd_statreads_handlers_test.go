@@ -309,14 +309,12 @@ func TestWdAccountUsageKeywordCallerAccountScope(t *testing.T) {
 	if !ids["acct-foreign"] {
 		t.Fatalf("分组授权可见账户应在结果中: %#v", ids)
 	}
-	// 行为存疑：source 名命中的授权实例 acct-inst 会进入关键字 ID 集合（已单独
-	// 验证），但 scoped 元数据水合 query 的 headParams 多传一个 viewerID
-	// （accountusage.go loadAccountUsageMetadataRows），SQL 文本里 SELECT 列的
-	// CASE 占位符位于 JOIN 占位符之前，chunk 的 IN 绑定整体后移一位——SQLite
-	// 下每个 chunk 的最后一个账户 ID 被静默丢弃（PG 方言参数数量不匹配会直接
-	// 报错）。按当前实际行为断言：acct-inst 不出现在页面行中。
-	if ids["acct-inst"] {
-		t.Fatalf("当前实现下 chunk 末位账户（acct-inst）被元数据水合丢弃: %#v", ids)
+	// source 名命中的授权实例 acct-inst 会进入关键字 ID 集合（已单独验证），
+	// 元数据水合必须把它带进页面行。历史缺陷（BUG-0197）：headParams 多传一个
+	// viewerID 时 chunk 的 IN 绑定整体后移一位，SQLite 下 chunk 末位账户被静默
+	// 丢弃、PG 下参数计数不匹配直接报错——修复后 acct-inst 必须出现。
+	if !ids["acct-inst"] {
+		t.Fatalf("授权实例账户（acct-inst）应出现在页面行中: %#v", ids)
 	}
 	if ids["acct-src"] {
 		t.Fatalf("source 本身不是实例，不应直接入选: %#v", ids)

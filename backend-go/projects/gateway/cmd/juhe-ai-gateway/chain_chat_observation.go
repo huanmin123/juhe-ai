@@ -276,7 +276,21 @@ func (o *chatImageObservations) runObservation(ctx context.Context, input chat.S
 		}},
 		"stream": false,
 	})
-	response, err := o.executor.Dispatch(ctx, chat.GenerationDispatchRequest{
+	// 调度覆盖通道（设计 §6）：group/account 绑定会话的图片语义观察与发送链
+	// 落在同一绑定作用域（执行器视图注入进程内 context）；api_key/legacy 会话
+	// 返回原执行器，行为与现状一致。会话读失败或会话缺失时无法确认绑定作用域，
+	// 按 fail-closed 跳过本次观察（fire-and-forget 增强观察，不派发上游）；
+	// 此处 claim 已持有，按本函数既有失败处理经 fail(...) 释放认领，不新造
+	// 状态分支。
+	executor := o.executor
+	if aware, ok := executor.(chatDispatchTargetAwareExecutor); ok {
+		target, found, targetErr := chatConversationDispatchTarget(o.db, o.table("chat_conversations"), o.bind, input.ConversationID, input.SystemAccountID)
+		if targetErr != nil || !found {
+			return fail(errors.New("chat_image_observation_target_unavailable"))
+		}
+		executor = aware.WithChatDispatchTarget(target.Mode, target.GroupID, target.AccountID)
+	}
+	response, err := executor.Dispatch(ctx, chat.GenerationDispatchRequest{
 		Path:   "/v1/responses",
 		Method: "POST",
 		Headers: map[string]string{

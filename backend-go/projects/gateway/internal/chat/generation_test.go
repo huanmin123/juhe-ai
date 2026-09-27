@@ -10,9 +10,9 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"net/textproto"
 	"path/filepath"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -105,7 +105,6 @@ func responsesFunctionCallSSE(callID, name, args string) string {
 		"event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"usage":{"input_tokens":30,"output_tokens":6},"output":[{"type":"reasoning"},{"type":"function_call","id":"item_1","call_id":"` + callID + `","name":"` + name + `","arguments":"` + escaped + `","status":"completed"}]}}` + "\n\n"
 }
-
 
 func chatCompletionsToolSSE(callID, name, args string) string {
 	escaped := strings.ReplaceAll(args, `"`, `\"`)
@@ -248,22 +247,22 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 	hub := NewGenerationHub(func() string { return fixture.nowISO })
 	compactions := NewCompactionService(fixture.store, executor, func(text string) int { return len(text) / 4 }, func() string { return fixture.nowISO })
 	deps := &Deps{
-		Store:                   fixture.store,
-		MaxTurnsPerConversation: 100,
-		Now:                     clock,
-		Generations:             hub,
-		Hub:                     hub,
-		Executor:                executor,
-		ModelCatalog:            mockModelCatalog{},
-		ChatKeys:                chatKeys,
-		GatewayKeys:             mockGatewayKeys{},
-		ObjectStore:             objectStore,
-		ImageProcessor:          stubImageProcessor{},
-		Compactions:             compactions,
-		TokenCount:              func(text string) int { return len(text) / 4 },
-		RetentionDays:           30,
-		DiagnosticToolEnabled:   true,
-		ToolEnvironment:         "test",
+		Store:                      fixture.store,
+		MaxTurnsPerConversation:    100,
+		Now:                        clock,
+		Generations:                hub,
+		Hub:                        hub,
+		Executor:                   executor,
+		ModelCatalog:               mockModelCatalog{},
+		ChatKeys:                   chatKeys,
+		GatewayKeys:                mockGatewayKeys{},
+		ObjectStore:                objectStore,
+		ImageProcessor:             stubImageProcessor{},
+		Compactions:                compactions,
+		TokenCount:                 func(text string) int { return len(text) / 4 },
+		RetentionDays:              30,
+		DiagnosticToolEnabled:      true,
+		ToolEnvironment:            "test",
 		MaxConversationsPerUserInt: func() int { return 30 },
 	}
 	deps.RequireSession = func(next http.Handler) http.Handler {
@@ -347,8 +346,10 @@ func TestStreamLifecycleMatrix(t *testing.T) {
 			setup: func(env *generationEnv) string {
 				env.fixture.createConversation("chat_conv_dup", routeTestOwner)
 				env.executor.steps = []scriptStep{{
-					match:   func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
-					respond: func(call dispatchCall) *GenerationDispatchResponse { return sseResponse(chatCompletionsSSE("第一次", false)) },
+					match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
+					respond: func(call dispatchCall) *GenerationDispatchResponse {
+						return sseResponse(chatCompletionsSSE("第一次", false))
+					},
 				}}
 				first := env.streamPost("chat_conv_dup", routeTestOwner, streamPayload("cmid-dup", "第一次", "gpt-5"))
 				if first.status != http.StatusOK {
@@ -411,8 +412,10 @@ func TestStreamHappyPathChatCompletions(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_s", routeTestOwner)
 	env.executor.steps = []scriptStep{{
-		match:   func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
-		respond: func(call dispatchCall) *GenerationDispatchResponse { return sseResponse(chatCompletionsSSE("你好，世界", true)) },
+		match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
+		respond: func(call dispatchCall) *GenerationDispatchResponse {
+			return sseResponse(chatCompletionsSSE("你好，世界", true))
+		},
 	}}
 	response := env.streamPost("chat_conv_s", routeTestOwner, streamPayload("cmid-1", "问题", "gpt-5"))
 	if response.status != http.StatusOK {
@@ -560,7 +563,7 @@ func TestStreamImageGenerationPipeline(t *testing.T) {
 			},
 		},
 		{
-			match:   func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
+			match: func(call dispatchCall) bool { return call.Path == "/v1/images/generations" },
 			respond: func(call dispatchCall) *GenerationDispatchResponse {
 				return jsonStatusResponse(200, `{"data":[{"b64_json":"`+testTinyPNGBase64+`","revised_prompt":"a cat"}]}`)
 			},
@@ -653,8 +656,10 @@ func TestStreamUpstreamHTTPFailureClassified(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_f", routeTestOwner)
 	env.executor.steps = []scriptStep{{
-		match:   func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
-		respond: func(call dispatchCall) *GenerationDispatchResponse { return jsonStatusResponse(502, `{"error":{"message":"bad gateway"}}`) },
+		match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
+		respond: func(call dispatchCall) *GenerationDispatchResponse {
+			return jsonStatusResponse(502, `{"error":{"message":"bad gateway"}}`)
+		},
 	}}
 	response := env.streamPost("chat_conv_f", routeTestOwner, streamPayload("cmid-fail", "问题", "gpt-5"))
 	if response.status != http.StatusOK {
@@ -672,13 +677,23 @@ func TestStreamUpstreamHTTPFailureClassified(t *testing.T) {
 
 func TestProvisionConversationsIdempotent(t *testing.T) {
 	env := newGenerationEnv(t)
-	first := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, "{}")
+	// 缺 bindMode → 400（旧"空请求体自动绑定专用 Key"路径已删除）。
+	missing := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, "{}")
+	if missing.status != http.StatusBadRequest || missing.code() != "chat_invalid_request" {
+		t.Fatalf("missing bindMode = %d %s", missing.status, missing.rawString())
+	}
+	// group 模式：鉴权主体由 EnsureChatAPIKey 幂等确保，两次创建同一 Key。
+	env.deps.GroupLookup = mockGroupLookup{}
+	first := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"bindMode":"group","groupId":"group-a"}`)
 	if first.status != http.StatusCreated {
 		t.Fatalf("create = %d %s", first.status, first.rawString())
 	}
 	data := first.dataMap()
 	if data["apiKeyId"] != "chat_key_provisioned" {
 		t.Fatalf("apiKeyId = %v", data["apiKeyId"])
+	}
+	if data["bindMode"] != "group" || data["bindGroupId"] != "group-a" || data["bindGroupName"] != "分组 A" {
+		t.Fatalf("bind payload = %v", data)
 	}
 	defaultModel, _ := data["defaultModel"].(map[string]any)
 	if defaultModel == nil || defaultModel["id"] != "gpt-5" {
@@ -687,15 +702,29 @@ func TestProvisionConversationsIdempotent(t *testing.T) {
 	if data["userTurnLimit"] != float64(100) {
 		t.Fatalf("userTurnLimit = %v", data["userTurnLimit"])
 	}
-	second := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, "{}")
+	second := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"bindMode":"group","groupId":"group-a"}`)
 	if second.status != http.StatusCreated {
 		t.Fatalf("second create = %d %s", second.status, second.rawString())
 	}
 	env.chatKeys.mu.Lock()
 	ensureCount := env.chatKeys.ensureCount
 	env.chatKeys.mu.Unlock()
-	if ensureCount == 0 {
-		t.Fatal("chat key ensure was never called")
+	if ensureCount != 2 {
+		t.Fatalf("chat key ensure count = %d, want 2", ensureCount)
+	}
+	// api_key 模式不触碰专用 Key。
+	env.chatKeys.mu.Lock()
+	env.chatKeys.ensureCount = 0
+	env.chatKeys.mu.Unlock()
+	byKey := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`)
+	if byKey.status != http.StatusCreated {
+		t.Fatalf("api_key create = %d %s", byKey.status, byKey.rawString())
+	}
+	env.chatKeys.mu.Lock()
+	ensureCount = env.chatKeys.ensureCount
+	env.chatKeys.mu.Unlock()
+	if ensureCount != 0 {
+		t.Fatalf("api_key mode must not ensure chat key, ensure count = %d", ensureCount)
 	}
 	invalid := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"nope":1}`)
 	if invalid.status != http.StatusBadRequest || invalid.code() != "chat_invalid_request" {
@@ -749,7 +778,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 			},
 			respond: func(call dispatchCall) *GenerationDispatchResponse {
 				summary := `{"durableMemory":["喜欢简洁"],"currentGoal":"配置服务","constraints":[],"decisions":[],"completed":["阅读文档"],"pending":["部署"],"importantToolResults":[],"imageMemories":[],"recentUserIntent":"配置服务","uncertainties":[]}`
-				return jsonStatusResponse(200, `{"choices":[{"message":{"content":` + jsonQuote(summary) + `}}]}`)
+				return jsonStatusResponse(200, `{"choices":[{"message":{"content":`+jsonQuote(summary)+`}}]}`)
 			},
 		}}
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{

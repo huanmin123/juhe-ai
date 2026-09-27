@@ -60,8 +60,9 @@ type RecordMaintenanceQueue interface {
 // Anthropic unified rate limit usage headers (AI账户Grok用量快照设计 §8,
 // 证据背书：CLIProxyAPI claude_ratelimit.go)：每个上游响应（不只 429）携带
 // 的 5h/7d 双窗利用率与重置时间，被动采集侧与 codex 的 x-codex-* 头同构。
-// Job kind 固定 anthropic_claude、source 由调用方传入（成功面为流量来源，
-// 失败面重写为 gateway_error）。
+// Job kind 固定 anthropic_claude；source 语义由规格固定为
+// anthropic_unified_headers（gatewaycodex.AnthropicUsageSnapshotSource），
+// 不随成功/失败面变化。
 const (
 	// AccountUsageSnapshotKindAnthropicClaude 是 anthropic OAuth 快照行 kind。
 	AccountUsageSnapshotKindAnthropicClaude = "anthropic_claude"

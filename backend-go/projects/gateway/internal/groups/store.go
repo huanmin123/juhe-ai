@@ -49,6 +49,16 @@ type RuntimeInvalidator interface {
 // TopicGatewayRuntime mirrors the Node gateway runtime cache topic constant.
 const TopicGatewayRuntime = "topic:gateway_runtime_cache"
 
+// AccountConcurrencyReader is the runtime concurrency read port behind the
+// list accountStats.CurrentConcurrency overlay: the gateway process-local
+// tracker (Node standalone semantics — the list request sums live member
+// concurrency at read time instead of trusting the jobs-written stats column,
+// which is currently hard-coded to 0 on the write side). Nil keeps the
+// stats-table value untouched.
+type AccountConcurrencyReader interface {
+	LoadCurrentConcurrencyByID(ctx context.Context, accountIDs []string) (map[string]int, error)
+}
+
 // maxRouteStrategyAvailabilityLossCandidates mirrors
 // route-strategy-group-binding-limits.ts.
 const maxRouteStrategyAvailabilityLossCandidates = 100
@@ -94,6 +104,10 @@ type Store struct {
 	inval     RuntimeInvalidator
 	globalMax int
 	stats     StatsReader
+	// concurrency is the optional runtime concurrency read port. Nil until
+	// SetAccountConcurrencyReader wires it (the gateway composition builds the
+	// tracker after this store); nil keeps the stats-table concurrency value.
+	concurrency AccountConcurrencyReader
 }
 
 // WithStatsReader injects the stats reader for group_account_stats reads.
@@ -104,6 +118,14 @@ func WithStatsReader(stats StatsReader) StoreOption {
 	return func(s *Store) {
 		s.stats = stats
 	}
+}
+
+// SetAccountConcurrencyReader wires the runtime concurrency read port
+// post-construction (the gateway composition builds the process-local tracker
+// after this store; setter parity with the accounts slice). A nil reader keeps
+// the stats-table concurrency value.
+func (s *Store) SetAccountConcurrencyReader(reader AccountConcurrencyReader) {
+	s.concurrency = reader
 }
 
 // WithGlobalConcurrencyMax injects runtimeConfig.concurrency.globalMax
@@ -620,6 +642,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 		items = append(items, listItem)
 	}
 	s.hydrateListAccountStats(ctx, items)
+	s.hydrateListRuntimeConcurrency(ctx, items)
 	total := (page-1)*pageSize + len(items)
 	if hasMore {
 		total++
@@ -950,6 +973,7 @@ func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[st
 // a stats-reader failure keeps the empty projection instead of failing the
 // page, and the reader owns the numeric counts only; TodayUsage/Usage stay
 // zero here (Node supplies them via the usage-summary hydrate separately).
+// 失败不再纯静默：slog warn 留痕一次（生产 PG 42P01 裸表名事故的排查入口）。
 func (s *Store) hydrateListAccountStats(ctx context.Context, items []ListItem) {
 	if len(items) == 0 || s.stats == nil {
 		return
@@ -960,12 +984,67 @@ func (s *Store) hydrateListAccountStats(ctx context.Context, items []ListItem) {
 	}
 	stats, err := s.stats.ReadGroupAccountStats(ctx, groupIDs)
 	if err != nil {
+		slog.Warn("分组账户统计 hydrate 失败，列表回退空投影",
+			"event", "group_account_stats_hydrate_failed",
+			"error", err)
 		return
 	}
 	for index := range items {
 		if groupStats, ok := stats[items[index].ID]; ok {
 			items[index].AccountStats = groupStats
 		}
+	}
+}
+
+// hydrateListRuntimeConcurrency overlays the gateway process-local runtime
+// concurrency onto the list projection's accountStats.CurrentConcurrency.
+// Node semantics: the list request sums the live per-member concurrency at
+// read time (group-read-loaders → shared/account-concurrency). The stats-table
+// current_concurrency column is maintained by jobs but currently hard-coded to
+// 0 on the write side, so this overlay replaces (not adds to) the merged
+// stats value. Failures degrade to the stats-table value and never fail the
+// page — but they log a warn once instead of vanishing silently.
+func (s *Store) hydrateListRuntimeConcurrency(ctx context.Context, items []ListItem) {
+	if len(items) == 0 || s.concurrency == nil {
+		return
+	}
+	groupIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		groupIDs = append(groupIDs, item.ID)
+	}
+	members, err := s.groupAccountIDsByGroupIDs(ctx, groupIDs)
+	if err != nil {
+		slog.Warn("分组运行时并发 hydrate 成员查询失败，列表保留 stats 表值",
+			"event", "group_runtime_concurrency_hydrate_failed",
+			"stage", "members",
+			"error", err)
+		return
+	}
+	accountIDSet := map[string]bool{}
+	for _, ids := range members {
+		for _, id := range ids {
+			accountIDSet[id] = true
+		}
+	}
+	accountIDs := make([]string, 0, len(accountIDSet))
+	for id := range accountIDSet {
+		accountIDs = append(accountIDs, id)
+	}
+	currents, err := s.concurrency.LoadCurrentConcurrencyByID(ctx, accountIDs)
+	if err != nil {
+		slog.Warn("分组运行时并发 hydrate 读数失败，列表保留 stats 表值",
+			"event", "group_runtime_concurrency_hydrate_failed",
+			"stage", "load",
+			"error", err)
+		return
+	}
+	for index := range items {
+		sum := 0
+		for _, id := range members[items[index].ID] {
+			// Missing ids read as 0 (the tracker only knows live accounts).
+			sum += currents[id]
+		}
+		items[index].AccountStats.CurrentConcurrency = sum
 	}
 }
 

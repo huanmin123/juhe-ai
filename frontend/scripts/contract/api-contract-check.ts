@@ -1361,18 +1361,25 @@ function collectJ3bRoutes(): { routes: GoRoute[]; failures: GoExtractError[] } {
   const serveBodyOpen = httpStripped.indexOf('{', serveMatch.index)
   const serveBodyClose = matchBracket(httpStripped, httpMask, serveBodyOpen)
   const serveBody = httpStripped.slice(serveBodyOpen, serveBodyClose)
-  interface J3bCase { method: string; paths: Array<{ path: string; prefix: boolean }> }
+  interface J3bCase { method: string; paths: Array<{ path: string; prefix: boolean; suffix?: string }> }
   const cases: J3bCase[] = []
   for (const caseMatch of serveBody.matchAll(/case\s+([^:]+):/g)) {
     const condition = caseMatch[1].trim()
     const methodMatches = [...condition.matchAll(/r\.Method\s*==\s*http\.Method(\w+)/g)].map((m) => m[1].toUpperCase())
     if (methodMatches.length !== 1) continue
-    const paths: Array<{ path: string; prefix: boolean }> = []
+    const paths: Array<{ path: string; prefix: boolean; suffix?: string }> = []
     for (const eq of condition.matchAll(/path\s*==\s*"([^"]+)"/g)) {
       paths.push({ path: eq[1], prefix: false })
     }
-    for (const hp of condition.matchAll(/strings\.HasPrefix\(\s*path\s*,\s*"([^"]+)"/g)) {
-      paths.push({ path: hp[1], prefix: true })
+    const hasPrefixes = [...condition.matchAll(/strings\.HasPrefix\(\s*path\s*,\s*"([^"]+)"/g)].map((m) => m[1])
+    const hasSuffixes = [...condition.matchAll(/strings\.HasSuffix\(\s*path\s*,\s*"([^"]+)"/g)].map((m) => m[1])
+    if (hasPrefixes.length > 0) {
+      const suffixList = hasSuffixes.length > 0 ? hasSuffixes : [undefined]
+      for (const hp of hasPrefixes) {
+        for (const suffix of suffixList) {
+          paths.push({ path: hp, prefix: true, suffix })
+        }
+      }
     }
     if (paths.length === 0) continue
     cases.push({ method: methodMatches[0], paths })
@@ -1387,7 +1394,7 @@ function collectJ3bRoutes(): { routes: GoRoute[]; failures: GoExtractError[] } {
       for (const pathInfo of j3bCase.paths) {
         routes.push({
           method: j3bCase.method,
-          template: pathInfo.prefix ? `${base}${pathInfo.path}{p}` : `${base}${pathInfo.path}`,
+          template: pathInfo.prefix ? `${base}${pathInfo.path}{p}${pathInfo.suffix ?? ''}` : `${base}${pathInfo.path}`,
           surface: 'j3b',
           origins: [`${location} + ${rel(httpPath)} ServeHTTP`]
         })
@@ -1401,7 +1408,7 @@ function collectJ3bRoutes(): { routes: GoRoute[]; failures: GoExtractError[] } {
       for (const pathInfo of j3bCase.paths) {
         routes.push({
           method: j3bCase.method,
-          template: pathInfo.prefix ? `${base}${pathInfo.path}{p}` : `${base}${pathInfo.path}`,
+          template: pathInfo.prefix ? `${base}${pathInfo.path}{p}${pathInfo.suffix ?? ''}` : `${base}${pathInfo.path}`,
           surface: 'j3b-management',
           origins: [`${rel(mainPath)} j3bHost.Mount(${prefix})`]
         })

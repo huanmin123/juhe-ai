@@ -31,6 +31,10 @@ type Runner struct {
 	// probeDrain 是 account_health_probe_request_outbox 的消费面（去跨进程
 	// 战役第二刀接入；nil 表示通道未装配，runCycle 跳过 drain）。
 	probeDrain *ProbeRequestDrain
+	// usageRecorder 把真实执行的探针观测补记为使用记录（BUG-0194 方案 B：
+	// go-only 形态探针直连上游，Node 时代经 /v1 派发链天然产生的
+	// account_health_check 等使用记录在此补齐；nil 表示未装配，跳过）。
+	usageRecorder ProbeUsageRecorder
 	// backlogWarnedAt 是 outbox 堆积告警的上次触发时刻（drain 频控用；
 	// mu 保护：告警窗口 10 分钟内不重复）。
 	backlogWarnedAt time.Time
@@ -358,6 +362,7 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 					// This is a scan-attempt metric; durable outcome count remains in
 					// the store and is never inferred from this in-memory value.
 					executed.Add(1)
+					r.recordProbeUsage(ctx, task.outcome, task.input, probeTrafficSourceForKind(task.kind))
 				}
 				r.logger.Debug("account-health DB worker 完成", "phase", "db_write", "account_id", task.input.AccountID, "latency_ms", time.Since(started).Milliseconds(), "queue_depth", len(dbQueue))
 			}
@@ -500,8 +505,11 @@ func (r *Runner) runExplicitRequest(ctx context.Context, lease OwnerLease, input
 		return err
 	}
 	applyExplicitRequestDecision(&outcome, input, request, prior, found, mutationKind)
-	_, err = r.store.AppendOutcome(ctx, lease, outcome)
-	return err
+	if _, err := r.store.AppendOutcome(ctx, lease, outcome); err != nil {
+		return err
+	}
+	r.recordProbeUsage(ctx, outcome, input, probeTrafficSourceForReason(request.Reason))
+	return nil
 }
 
 func (r *Runner) persistExplicitTerminal(ctx context.Context, lease OwnerLease, request ProbeRequest, kind string, observed time.Time, code, message string) error {
@@ -646,8 +654,11 @@ func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, no
 		return nil
 	}
 	r.applyScheduledOutcome(&task.outcome, task.input, task.state, task.found, task.kind)
-	_, err = r.store.AppendOutcome(ctx, lease, task.outcome)
-	return err
+	if _, err := r.store.AppendOutcome(ctx, lease, task.outcome); err != nil {
+		return err
+	}
+	r.recordProbeUsage(ctx, task.outcome, task.input, probeTrafficSourceForKind(task.kind))
+	return nil
 }
 
 func (r *Runner) persistTaskFailure(ctx context.Context, lease OwnerLease, input Input, observed time.Time, code, message string) error {

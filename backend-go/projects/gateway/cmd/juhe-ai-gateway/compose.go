@@ -1085,6 +1085,15 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			return nil, fmt.Errorf("compose gateway chain runtime services: %w", chainErr)
 		}
 		chainServices = services
+		// 列表运行时并发 hydrate 装配（单机 go-only 进程内事实源）：分组列表
+		// accountStats.CurrentConcurrency 与账户列表 currentConcurrency 在列表
+		// 请求时按网关进程内 tracker 实时计数供給（jobs 写侧的 stats
+		// current_concurrency 列当前恒 0；Node standalone 原语义即列表实时求
+		// 和）。两个列表面与 dispatch 引擎共用同一 tracker 实例（E2E-FINDING
+		// #13 同源原则）。链条关闭时端口保持 nil，列表回退 stats 表值/0。
+		listConcurrencyReader := chainAccountConcurrencyReader{tracker: services.ConcurrencyTracker}
+		groupsStore.SetAccountConcurrencyReader(listConcurrencyReader)
+		accountStore.SetConcurrencyReader(listConcurrencyReader)
 		// Runtime-reset port assembly (compose_accounts_reset.go): the
 		// maintenance reset endpoint reaches the gateway runtime surfaces
 		// through this bridge, and reset/activation health-check dispatches
@@ -1264,7 +1273,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		composed.chatDB = chatDB
 		composed.ownChatDB = ownChatDB
-		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain); chatErr != nil {
+		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, groupsStore, accountStore); chatErr != nil {
 			return nil, fmt.Errorf("compose my-chat family: %w", chatErr)
 		}
 		// cacheDriver==='redis': the system-api limiter switches onto the

@@ -355,7 +355,7 @@ func TestW1HComposeChatFamilyGuards(t *testing.T) {
 		if testCase.nilChain {
 			chain = nil
 		}
-		_, err := composeChatFamily(composed, runtimeConfig{ChatAssetsRoot: t.TempDir()}, testCase.chatDB, services, chain)
+		_, err := composeChatFamily(composed, runtimeConfig{ChatAssetsRoot: t.TempDir()}, testCase.chatDB, services, chain, nil, nil)
 		if err == nil {
 			t.Fatalf("%s: composeChatFamily 未报错", testCase.name)
 		}
@@ -363,6 +363,20 @@ func TestW1HComposeChatFamilyGuards(t *testing.T) {
 			t.Fatalf("%s: 错误 %v 不含 %q", testCase.name, err, testCase.wantErr)
 		}
 	}
+}
+
+// w1hGroupLookup / w1hAccountLookup 是组合根接线断言用的最小绑定对象端口
+// fake（仅证明 deps.GroupLookup / deps.AccountLookup 接到传入实例）。
+type w1hGroupLookup struct{}
+
+func (w1hGroupLookup) FindChatGroup(groupID string) (*chat.ChatGroupRef, error) {
+	return &chat.ChatGroupRef{ID: groupID, Name: "分组", Enabled: true}, nil
+}
+
+type w1hAccountLookup struct{}
+
+func (w1hAccountLookup) FindChatAccount(accountID string) (*chat.ChatAccountRef, error) {
+	return &chat.ChatAccountRef{ID: accountID, Name: "账户", Enabled: true}, nil
 }
 
 func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
@@ -377,12 +391,15 @@ func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
 		ChatDiagnosticToolEnabled:   true,
 		ChatToolEnvironment:         "w1h-env",
 	}
-	deps, err := composeChatFamily(composed, cfg, db, services, &gatewayChain{})
+	deps, err := composeChatFamily(composed, cfg, db, services, &gatewayChain{}, w1hGroupLookup{}, w1hAccountLookup{})
 	if err != nil {
 		t.Fatalf("composeChatFamily = %v, want nil", err)
 	}
 	if deps == nil {
 		t.Fatalf("deps = nil")
+	}
+	if deps.GroupLookup == nil || deps.AccountLookup == nil {
+		t.Fatalf("GroupLookup / AccountLookup 未接线（三种绑定模式端口）")
 	}
 	if deps.Store == nil || deps.Store.Postgres() {
 		t.Fatalf("chat Store 缺失或方言错误（want sqlite）")

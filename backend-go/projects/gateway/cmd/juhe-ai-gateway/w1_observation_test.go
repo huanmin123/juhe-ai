@@ -425,6 +425,96 @@ func TestW1BuildAssetDataURL(t *testing.T) {
 	}
 }
 
+// w1TargetAwareExecutor 在 w1FakeExecutor 上实现调度覆盖端口（记录
+// WithChatDispatchTarget 调用并透传 Dispatch），模拟组合根执行器。
+type w1TargetAwareExecutor struct {
+	w1FakeExecutor
+	withCalls int
+	mode      string
+	groupID   string
+	accountID string
+}
+
+func (e *w1TargetAwareExecutor) WithChatDispatchTarget(bindMode, groupID, accountID string) chat.GenerationExecutor {
+	e.withCalls++
+	e.mode, e.groupID, e.accountID = bindMode, groupID, accountID
+	return e
+}
+
+// TestW1RunObservationDispatchTargetAware：观察调度覆盖通道 fail-closed——
+// 会话读失败/缺失时无法确认绑定作用域，不派发上游并按既有失败风格释放认领；
+// 会话存在时派发前绑定目标，观察照常完成。
+func TestW1RunObservationDispatchTargetAware(t *testing.T) {
+	ctx := context.Background()
+	input := w1ScheduleInput()
+	target := chat.ObservationTarget{AssetID: "asset_pin", ExpectedTurnID: "turn_1", ExpectedMessageID: "msg_1"}
+
+	// 会话读失败（缺 chat_conversations 表）：不派发，观察落 failed。
+	readFail := newW1ObservationFixture(t)
+	readFail.seedReadyAsset(t, "asset_pin")
+	aware := &w1TargetAwareExecutor{}
+	readFail.obs.executor = aware
+	if err := readFail.obs.runObservation(ctx, input, target); err == nil {
+		t.Fatal("会话读失败必须失败")
+	}
+	if aware.got != nil {
+		t.Fatal("会话读失败不得派发上游")
+	}
+	if status, _, _ := readFail.assetRow(t, "asset_pin"); status != "failed" {
+		t.Fatalf("读失败后状态 = %q，want failed", status)
+	}
+
+	// 会话缺失（表存在但无行）：同样 fail-closed。
+	missing := newW1ObservationFixture(t)
+	missing.seedReadyAsset(t, "asset_pin")
+	if _, err := missing.db.Exec(`CREATE TABLE chat_conversations (
+		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL,
+		bind_mode TEXT NOT NULL DEFAULT 'api_key',
+		bind_group_id TEXT, bind_account_id TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	missingAware := &w1TargetAwareExecutor{}
+	missing.obs.executor = missingAware
+	if err := missing.obs.runObservation(ctx, input, target); err == nil {
+		t.Fatal("会话缺失必须失败")
+	}
+	if missingAware.got != nil {
+		t.Fatal("会话缺失不得派发上游")
+	}
+	if status, _, _ := missing.assetRow(t, "asset_pin"); status != "failed" {
+		t.Fatalf("缺失后状态 = %q，want failed", status)
+	}
+
+	// 会话存在（group 模式）：派发前绑定目标，观察正常完成。
+	bound := newW1ObservationFixture(t)
+	bound.seedReadyAsset(t, "asset_pin")
+	if _, err := bound.db.Exec(`CREATE TABLE chat_conversations (
+		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL,
+		bind_mode TEXT NOT NULL DEFAULT 'api_key',
+		bind_group_id TEXT, bind_account_id TEXT)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := bound.db.Exec(`INSERT INTO chat_conversations (id, system_account_id, bind_mode, bind_group_id, bind_account_id)
+		VALUES ('conv_1', 'sys_1', 'group', 'group_pin', NULL)`); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	boundAware := &w1TargetAwareExecutor{w1FakeExecutor: w1FakeExecutor{status: 200}}
+	boundAware.body = `{"output_text":"{\"summary\":\"猫\"}"}`
+	bound.obs.executor = boundAware
+	if err := bound.obs.runObservation(ctx, input, target); err != nil {
+		t.Fatalf("runObservation: %v", err)
+	}
+	if boundAware.withCalls != 1 || boundAware.mode != "group" || boundAware.groupID != "group_pin" {
+		t.Fatalf("WithChatDispatchTarget = calls:%d %s/%s", boundAware.withCalls, boundAware.mode, boundAware.groupID)
+	}
+	if boundAware.got == nil || boundAware.got.Path != "/v1/responses" {
+		t.Fatalf("dispatch = %v", boundAware.got)
+	}
+	if status, observationJSON, _ := bound.assetRow(t, "asset_pin"); status != "ready" || !strings.Contains(observationJSON.String, "猫") {
+		t.Fatalf("settled = %q %q", status, observationJSON.String)
+	}
+}
+
 func TestW1ObservationScheduleAndWait(t *testing.T) {
 	f := newW1ObservationFixture(t)
 	f.seedReadyAsset(t, "asset_s1")

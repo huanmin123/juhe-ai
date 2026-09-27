@@ -975,7 +975,12 @@ func (d *Deps) loadAccountUsageMetadataRows(r *http.Request, scope AccessScope, 
 			)`
 		accessTypeExpr = "CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' WHEN accounts.system_account_id = ? THEN 'owner' ELSE 'authorized' END"
 		authorizationIDExpr = "COALESCE(accounts.authorization_instance_authorization_id, usage_authorization.id)"
-		headParams = []any{viewerID, viewerID, rfc3339Millis(d.Now()), viewerID}
+		// 占位符按 SQL 文本顺序绑定：SELECT 列的 CASE 占位符在最前（system_account_id
+		// = viewerID），随后是 JOIN 的 grantee（= viewerID）与 expires_at（> now）；
+		// chunk 的 IN 参数跟在其后。参数数必须恰为 3——多传一位会把 chunk 首位
+		// 账户 ID 顶出绑定序列，SQLite 下静默丢弃末位账户，PG 下参数计数不匹配
+		// 直接报错（BUG-0197）。
+		headParams = []any{viewerID, viewerID, rfc3339Millis(d.Now())}
 	}
 	rows := []Row{}
 	for _, chunk := range chunkStrings(ids, 900) {

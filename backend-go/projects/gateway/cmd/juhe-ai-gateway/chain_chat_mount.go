@@ -23,7 +23,9 @@ import (
 // composeChatFamily builds the chat Deps over the chat database handle and
 // the assembled /v1 chain, and registers the my-chat route family on the
 // kernel. It fails fast naming the missing chat database handle.
-func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB, services *chainRuntimeServices, chain *gatewayChain) (*chat.Deps, error) {
+// groupLookup / accountLookup 是三种绑定模式的绑定对象解析端口（生产组合根传
+// groups.Store / accounts.Store；nil 让对应模式返回显式错误）。
+func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB, services *chainRuntimeServices, chain *gatewayChain, groupLookup chat.ChatGroupLookup, accountLookup chat.ChatAccountLookup) (*chat.Deps, error) {
 	if composed == nil {
 		return nil, fmt.Errorf("my-chat 组合缺少 composition")
 	}
@@ -53,15 +55,20 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 	}
 	compactions := chat.NewCompactionService(store, executor, tokenCount, chatNow)
 	deps := &chat.Deps{
-		Store:                   store,
-		RequireSession:          composed.authDeps.RequireSession(true),
-		Hub:                     hub,
-		Generations:             hub,
-		AttachStream:            chatAttachStreamHandler(hub),
-		Executor:                executor,
-		ModelCatalog:            chatModelCatalog{cache: services.Cache},
-		ChatKeys:                newChatAPIKeyProvider(composed.db, composed.pgDialect, cfg.Secret),
-		GatewayKeys:             chatGatewayKeyValidator{cache: services.Cache},
+		Store:          store,
+		RequireSession: composed.authDeps.RequireSession(true),
+		Hub:            hub,
+		Generations:    hub,
+		AttachStream:   chatAttachStreamHandler(hub),
+		Executor:       executor,
+		ModelCatalog:   chatModelCatalog{cache: services.Cache},
+		ChatKeys:       newChatAPIKeyProvider(composed.db, composed.pgDialect, cfg.Secret),
+		GatewayKeys:    chatGatewayKeyValidator{cache: services.Cache},
+		// AI 问答三种绑定模式的绑定对象解析端口（groups/accounts Store 只读
+		// 查询，FindChatGroup/FindChatAccount）：创建与发送前置校验的分组/账户
+		// 存在性 + 启用口径。
+		GroupLookup:             groupLookup,
+		AccountLookup:           accountLookup,
 		ObjectStore:             objectStore,
 		ImageProcessor:          newChatImageProcessor(),
 		ImageObservation:        newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),
@@ -75,6 +82,19 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 	// BUG-0175 D-201: wire the GET conversations toolCapabilities resolver over
 	// the assembled ports (Node loadChatConversationToolCapabilities). Left nil
 	// the route renders the Node catch-branch fallback for every conversation.
+	// AI 问答调度覆盖通道（设计 §6）：account 模式承载分组解析端口，域 A 同
+	// 口径（FindChatAccount 的 EnabledGroupIDs，enabled=1 分组绑定）。生产组合
+	// 根装配期置位一次，此后只读（进程级槽，chain_obs_wiring.go 同模式）。
+	setChainChatDispatchAccountGroups(func(accountID string) ([]string, bool) {
+		if accountLookup == nil {
+			return nil, false
+		}
+		ref, err := accountLookup.FindChatAccount(accountID)
+		if err != nil || ref == nil {
+			return nil, false
+		}
+		return ref.EnabledGroupIDs, true
+	})
 	deps.ToolCapabilit = newChatToolCapabilitiesResolver(deps)
 	deps.Register(composed.kernel, systemAPIPrefix+"/my-chat")
 	return deps, nil

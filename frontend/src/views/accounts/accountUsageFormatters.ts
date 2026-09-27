@@ -61,16 +61,19 @@ export function claudeOAuthUsageBars(account: OAuthUsageDisplayAccount): OAuthUs
   ].filter((bar): bar is OAuthUsageBar => Boolean(bar))
 }
 
-function claudeUsageBar(key: string, label: string, window?: { usedPercent?: number; resetAt?: string }): OAuthUsageBar | undefined {
-  if (!window || window.usedPercent === undefined) return undefined
-  const rawPercent = Math.max(0, window.usedPercent)
+/** 窗口形状与后端投影共享（codex OAuthUsageWindow）：utilization 为已用百分比（0-100）、resetsAt 为 RFC3339；remainingSeconds 等字段省略。 */
+type ClaudeUsageWindow = { utilization?: number; resetsAt?: string }
+
+function claudeUsageBar(key: string, label: string, window?: ClaudeUsageWindow): OAuthUsageBar | undefined {
+  if (!window || window.utilization === undefined) return undefined
+  const rawPercent = Math.max(0, window.utilization)
   const percent = Math.min(Math.round(rawPercent), 100)
   return {
     key,
     label,
     percent,
     displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
-    resetText: window.resetAt ? formatRelativeReset(window.resetAt) : '—',
+    resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '—',
     color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
     tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
   }

@@ -249,7 +249,7 @@ One API、New API、OneHub、DoneHub 和 Veloera 的当前源码将 API Key 不�
 
 账户停用或时间计划当前不可用时不领取。重新启用后，若账户表中的 `balance_query_next_refresh_at` 已到期则下一轮立即刷新。worker 重启不丢任务，因为到期时间持久化在账户表中；快照只记录展示状态与最近结果。
 
-go-only 形态下，J2 周期余额刷新（jobs 进程 `shared/platform/accountbalance` 服务）在账户成功取得余额结果（快照进入 `fresh` 或 `unlimited`）后，把该账户的 `balance_query_next_refresh_at` 推进为下一轮刷新时间：间隔取自账户余额配置的刷新周期（缺省 5 分钟）并按统一的逐轮随机偏移窗口加 jitter，与 `juhe_jobs.account_balance_snapshots.next_refresh_at` 同源同值。写回以 `config_revision` 加候选冻结时的到期值作 fence（自愈账户到期值为 `NULL`，对应 `IS NULL` fence），fence 未命中（期间被手动刷新或配置修改抢先调度）只跳过本次推进，不算失败。非 `fresh`/`unlimited` 的结果（临时失败、连续失败达到阈值后的 `failed`、`unsupported`）不推进到期时间，账户保持到期状态并在下一轮扫描中快速重试。更新该列会命中 `accounts` 上的语句级触发器并置可用性 dirty 标记，这是依赖该列做失效检测的设计内行为。首次自动探测的到期推进仍由自动探测使能链负责，手动刷新的到期调度仍由管理端刷新接口负责，两者不走该推进路径。
+go-only 形态下，J2 周期余额刷新（jobs 进程 `shared/platform/accountbalance` 服务）在每轮已结算 outcome 后都把该账户的 `balance_query_next_refresh_at` 推进为下一轮刷新时间，与上文第 5 条“成功、临时失败、确定性失败和 `unsupported` 都写当前快照并按用户配置周期安排下次刷新”一致：成功（`fresh`/`unlimited`）与失败（临时失败、连续失败达到阈值后的 `failed`、`unsupported`）结果均按账户余额配置的刷新周期（缺省 5 分钟）加统一的逐轮随机偏移窗口推进，与 `juhe_jobs.account_balance_snapshots.next_refresh_at` 同源同值，失败账户按配置周期等待下一轮而不是按扫描节奏高频重试；上游未返回（transport 失败转为临时诊断）同样结算为 outcome 并推进，仅本地输入/解密错误未产生 outcome 时不推进。写回以 `config_revision` 加候选冻结时的到期值作 fence（自愈账户到期值为 `NULL`，对应 `IS NULL` fence），fence 未命中（期间被手动刷新或配置修改抢先调度）只跳过本次推进，不算失败。更新该列会命中 `accounts` 上的语句级触发器并置可用性 dirty 标记，这是依赖该列做失效检测的设计内行为。首次自动探测的到期推进仍由自动探测使能链负责，手动刷新的到期调度仍由管理端刷新接口负责，两者不走该推进路径。已知排除类：读侧候选扫描只接受 RFC3339 文本（毫秒截断 UTC），历史使能链在 PG 分支曾以原生时间绑定写入 PG 渲染文本，此类非 RFC3339 存量值会被读侧永久跳过——账户不进入"探针→推进"闭环，需按问题-0196 遗留 #4 做格式核查/回填后方可享受周期推进。
 
 首期不引入 Redis 队列、独立任务表、余额专用租约表或余额历史表，只复用现有后台任务租约。多实例部署不在本计划范围；后续真正启用多节点 worker 时再接入现有用户分片方案。
 

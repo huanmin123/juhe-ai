@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   system_account_id TEXT NOT NULL,
   api_key_id TEXT,
   api_key_name_snapshot TEXT NOT NULL,
+  bind_mode TEXT NOT NULL DEFAULT 'api_key',
+  bind_group_id TEXT,
+  bind_group_name_snapshot TEXT,
+  bind_account_id TEXT,
+  bind_account_name_snapshot TEXT,
   title TEXT NOT NULL DEFAULT '新对话',
   title_source_message_id TEXT,
   is_pinned INTEGER NOT NULL DEFAULT 0,
@@ -59,6 +64,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   CHECK (user_turn_count >= 0),
   CHECK (message_revision >= 0),
   CHECK (is_pinned IN (0, 1)),
+  CHECK (bind_mode IN ('api_key', 'group', 'account')),
   CHECK (context_revision >= 0),
   CHECK (compacted_through_sequence >= 0 AND compacted_through_sequence < next_sequence_no),
   CHECK (context_state IN ('ready', 'compact_pending', 'compacting', 'compact_failed')),
@@ -314,8 +320,8 @@ CREATE TABLE IF NOT EXISTS chat_image_generations (
 
 // chatFixture bundles one store test environment.
 type chatFixture struct {
-	t    *testing.T
-	db   *sql.DB
+	t     *testing.T
+	db    *sql.DB
 	store *Store
 	// nowISO is the fixed clock value in canonical ISO form.
 	nowISO string
