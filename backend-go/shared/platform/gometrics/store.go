@@ -130,31 +130,53 @@ func (s *Store) ensureMetricColumns(ctx context.Context, prefix, integerType, re
 			}
 			continue
 		}
-		rows, e := s.db.QueryContext(ctx, "PRAGMA table_info("+a.table+")")
+		// sqlite 没有 ADD COLUMN IF NOT EXISTS，只能先查 PRAGMA table_info
+		// 再 ALTER（检查-后-行动，非原子）。gateway/jobs 双进程并发对同一
+		// fresh sqlite 文件首启时，busy_timeout 只消除 SQLITE_BUSY 等锁等待，
+		// 不消除检查-后-行动的逻辑冲突：双方可能同时判定列缺失，先者 ALTER
+		// 提交后，后者等到写锁再执行 ALTER 会报 duplicate column name，拖垮
+		// EnsureSchema → 进程启动失败。因此 ALTER 报错时复查 PRAGMA——目标列
+		// 已存在则对齐 postgres 的 ADD COLUMN IF NOT EXISTS 语义视为成功，
+		// 仍缺失才上抛原错误（双进程并发首启的幂等容错）。
+		found, e := sqliteColumnExists(ctx, s.db, a.table, a.name)
 		if e != nil {
 			return e
 		}
-		found := false
-		for rows.Next() {
-			var cid, nn, pk int
-			var n, t string
-			var d any
-			if e = rows.Scan(&cid, &n, &t, &nn, &d, &pk); e != nil {
-				rows.Close()
-				return e
-			}
-			if n == a.name {
-				found = true
-			}
+		if found {
+			continue
 		}
-		rows.Close()
-		if !found {
-			if _, e = s.db.ExecContext(ctx, "ALTER TABLE "+a.table+" ADD COLUMN "+a.name+" "+a.definition); e != nil {
+		if _, e = s.db.ExecContext(ctx, "ALTER TABLE "+a.table+" ADD COLUMN "+a.name+" "+a.definition); e != nil {
+			exists, recheckErr := sqliteColumnExists(ctx, s.db, a.table, a.name)
+			if recheckErr != nil {
+				return fmt.Errorf("gometrics add column %s.%s: %w (复查列存在性失败: %v)", a.table, a.name, e, recheckErr)
+			}
+			if !exists {
 				return fmt.Errorf("gometrics add column %s.%s: %w", a.table, a.name, e)
 			}
 		}
 	}
 	return nil
+}
+
+// sqliteColumnExists 查询 sqlite 表中目标列是否已存在。
+func sqliteColumnExists(ctx context.Context, db *sql.DB, table, name string) (bool, error) {
+	rows, e := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if e != nil {
+		return false, e
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, nn, pk int
+		var n, t string
+		var d any
+		if e = rows.Scan(&cid, &n, &t, &nn, &d, &pk); e != nil {
+			return false, e
+		}
+		if n == name {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 func (s *Store) CheckSchema(ctx context.Context) error {
 	for _, t := range []string{"go_runtime_metrics_samples", "go_runtime_metrics_hourly", "go_runtime_metrics_trend_windows"} {

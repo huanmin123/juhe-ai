@@ -319,14 +319,9 @@ func (d *Deps) buildProcessEventLoopTrendPeakStatus(rows []Row) []processEventLo
 
 // goRuntimeTrendRoles is the role family the trend exports. Every Go process
 // self-samples into the shared store (去跨进程战役第三刀), so the read side
-// merges the fixed gateway+jobs role list; each item keeps its own
-// service/role fields and the outer envelope carries the aggregate marker.
+// queries the fixed gateway+jobs role list in order and answers one
+// {role, items} group per role; each item keeps its own service/role fields.
 var goRuntimeTrendRoles = []string{"gateway", "jobs"}
-
-// goRuntimeTrendAggregateRole marks the merged two-role envelope. The
-// frontend never consumes the outer role field (it renders items directly),
-// so the aggregate keeps the shape honest without a per-role split.
-const goRuntimeTrendAggregateRole = "gateway+jobs"
 
 // goRuntimeTrendMaxRange clamps the query window to the store's 90-day
 // hourly-trend bound instead of failing the request.
@@ -334,8 +329,10 @@ const goRuntimeTrendMaxRange = 90 * 24 * time.Hour
 
 // goRuntimeTrendHandler mirrors GET /system-metrics/go-runtime-trend: an
 // in-process Store.QueryTrend over the shared go_runtime_metrics_hourly
-// windows (gateway + jobs roles). Store disabled or no data answers 200 with
-// empty items; only a real query failure surfaces as a read error.
+// windows (gateway + jobs roles). The envelope groups items per role
+// (samplingEnabled = the read-side Store is wired); with the store disabled
+// the roles stay listed with empty items. Store disabled or no data answers
+// 200 with empty items; only a real query failure surfaces as a read error.
 func (d *Deps) goRuntimeTrendHandler(w http.ResponseWriter, r *http.Request) {
 	startDate, endDate, badRequest := parseUsageOverviewQuery(r.URL.Query())
 	if badRequest != "" {
@@ -361,25 +358,28 @@ func (d *Deps) goRuntimeTrendHandler(w http.ResponseWriter, r *http.Request) {
 	if to.Sub(from) > goRuntimeTrendMaxRange {
 		from = to.Add(-goRuntimeTrendMaxRange)
 	}
-	items := []gometrics.WindowAggregate{}
-	if d.GoRuntimeMetrics != nil {
-		for _, role := range goRuntimeTrendRoles {
+	samplingEnabled := d.GoRuntimeMetrics != nil
+	roles := make([]map[string]any, 0, len(goRuntimeTrendRoles))
+	for _, role := range goRuntimeTrendRoles {
+		items := []gometrics.WindowAggregate{}
+		if samplingEnabled {
 			rows, queryErr := d.GoRuntimeMetrics.QueryTrend(r.Context(), d.GoRuntimeMetricsService, role, from, to)
 			if queryErr != nil {
 				d.writeReadError(w, queryErr)
 				return
 			}
-			items = append(items, rows...)
+			items = rows
 		}
+		roles = append(roles, map[string]any{"role": role, "items": items})
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	kernel.WriteOK(w, map[string]any{
-		"runtimeKind": "go",
-		"service":     d.GoRuntimeMetricsService,
-		"role":        goRuntimeTrendAggregateRole,
-		"timezone":    location.String(),
-		"range":       rng,
-		"items":       items,
+		"runtimeKind":     "go",
+		"service":         d.GoRuntimeMetricsService,
+		"timezone":        location.String(),
+		"range":           rng,
+		"samplingEnabled": samplingEnabled,
+		"roles":           roles,
 	}, "")
 }
 
@@ -434,13 +434,41 @@ func isTaskRunsSchemaMissing(err error) bool {
 		strings.Contains(message, "does not exist")
 }
 
+// runtimeJobsStatusFilters mirrors the TaskRunStatus vocabulary the Go jobs
+// worker persists into background_task_runs (taskruns.Status* constants:
+// queued | running | completed | failed | skipped).
+var runtimeJobsStatusFilters = map[string]bool{
+	"queued": true, "running": true, "completed": true, "failed": true, "skipped": true,
+}
+
+// parseRuntimeStatusFilter validates the optional runtime/jobs status query
+// parameter; writes the 400 and returns ok=false when the value is not part
+// of the persisted TaskRunStatus vocabulary. Empty/absent = no filtering.
+func parseRuntimeStatusFilter(values url.Values, w http.ResponseWriter) (status string, ok bool) {
+	status = strings.TrimSpace(values.Get("status"))
+	if status == "" {
+		return "", true
+	}
+	if !runtimeJobsStatusFilters[status] {
+		kernel.WriteBadRequest(w, "后台任务状态筛选不合法")
+		return "", false
+	}
+	return status, true
+}
+
 // runtimeJobsHandler mirrors GET /system-metrics/runtime/jobs: rows come
 // from the worker-persisted background_task_runs history (newest first by
-// updated_at then run_id); a missing table (schema not migrated yet) or a
-// nil stats handle answers the empty-items 200 degradation, only a real
-// query failure surfaces as a read error.
+// updated_at then run_id); the optional status query filters the in-memory
+// rows before pagination (total/hasMore reflect the filtered set); a missing
+// table (schema not migrated yet) or a nil stats handle answers the
+// empty-items 200 degradation, only a real query failure surfaces as a read
+// error.
 func (d *Deps) runtimeJobsHandler(w http.ResponseWriter, r *http.Request) {
 	page, pageSize, ok := parseRuntimePageQuery(r.URL.Query(), w)
+	if !ok {
+		return
+	}
+	statusFilter, ok := parseRuntimeStatusFilter(r.URL.Query(), w)
 	if !ok {
 		return
 	}
@@ -457,7 +485,7 @@ func (d *Deps) runtimeJobsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, row := range rows {
-			items = append(items, backgroundTaskRunItem{
+			item := backgroundTaskRunItem{
 				RunID:        row.text("run_id"),
 				JobName:      row.text("job_name"),
 				JobType:      row.text("job_type"),
@@ -467,7 +495,11 @@ func (d *Deps) runtimeJobsHandler(w http.ResponseWriter, r *http.Request) {
 				FinishedAt:   row.nullText("finished_at"),
 				DurationMs:   row.nullNumber("duration_ms"),
 				ErrorMessage: row.nullText("error_message"),
-			})
+			}
+			if statusFilter != "" && item.Status != statusFilter {
+				continue
+			}
+			items = append(items, item)
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")

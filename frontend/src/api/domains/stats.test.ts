@@ -125,6 +125,16 @@ describe('statsApi 请求形状', () => {
     expect(requests[2].signal).toBe(controller.signal)
   })
 
+  it('systemMetricsRuntimeJobs 透传可选 status 过滤参数', async () => {
+    const controller = new AbortController()
+    await statsApi.systemMetricsRuntimeJobs({ page: 2, pageSize: 10, status: 'failed' }, { signal: controller.signal })
+    expect(requests[0].url).toBe('/stats/system-metrics/runtime/jobs')
+    expect(requests[0].params).toEqual({ page: 2, pageSize: 10, status: 'failed' })
+    expect(requests[0].signal).toBe(controller.signal)
+    await statsApi.systemMetricsRuntimeJobs({ page: 1, pageSize: 10 })
+    expect(requests[1].params).toEqual({ page: 1, pageSize: 10 })
+  })
+
   it('健康监控方法透传 signal', async () => {
     const controller = new AbortController()
     await statsApi.aiHealth(undefined, { signal: controller.signal })

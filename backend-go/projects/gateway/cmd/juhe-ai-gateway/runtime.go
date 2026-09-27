@@ -667,7 +667,9 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 
 	// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标并直接查库提供
 	// go-runtime-trend（同名 JUHE_AI_GO_RUNTIME_METRICS_* env 家族，role 默认
-	// gateway；原跨进程 metrics 代理 env 已删除）。默认关闭，关闭时采样器不
+	// gateway；原跨进程 metrics 代理 env 已删除）。2026-09-27 起默认跟随主库
+	// 驱动（JUHE_AI_GO_RUNTIME_METRICS_STORE 未配置时派生自
+	// JUHE_AI_DATABASE_DRIVER），仅 store=disabled 显式关闭；关闭时采样器不
 	// 装配、路由回空 items。
 	goRuntimeMetrics, err := gometrics.LoadConfig(getenv, "gateway")
 	if err != nil {

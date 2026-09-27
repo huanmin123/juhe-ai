@@ -987,14 +987,25 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	go tableMonitorDeps.Prewarm(context.Background())
 	// 去跨进程战役第三刀：gateway 进程内自采样 Go 运行时指标，并把共享 Store
 	// 直接交给 statreads 的 go-runtime-trend 读侧（不再代理 jobs 的 trend
-	// HTTP 面）。store 未启用（默认）时既不打开句柄也不装配采样器。
+	// HTTP 面）。store=disabled 显式关闭时既不打开句柄也不装配采样器。
 	var goRuntimeStore *gometrics.Store
 	if cfg.GoRuntimeMetrics.Enabled {
 		openedStore, goRuntimeDB, openErr := gometrics.OpenStore(cfg.GoRuntimeMetrics)
 		if openErr != nil {
 			return nil, fmt.Errorf("open Go runtime metrics store: %w", openErr)
 		}
-		if err := gometrics.EnsureReady(context.Background(), openedStore); err != nil {
+		// 建表语义按 dialect 分派：sqlite 模式启动自举建表（CREATE TABLE IF
+		// NOT EXISTS 幂等 + busy_timeout/WAL；ADD COLUMN 检查-后-行动竞态已做
+		// 幂等容错；唯 dual-process 同时建首连的 WAL 翻转可能一次性 SQLITE_BUSY，
+		// 顺序拉起或容器重启自愈，见系统指标统计设计.md 已知边界），零配置
+		// standalone 新库开箱即用；postgres 模式 DDL 仍由 maintenance 显式
+		// 执行，启动只读校验、缺表 fail-fast（项目契约不变）。
+		if cfg.GoRuntimeMetrics.Store == gometrics.DialectSQLite {
+			if err := openedStore.EnsureSchema(context.Background()); err != nil {
+				_ = goRuntimeDB.Close()
+				return nil, fmt.Errorf("bootstrap Go runtime metrics schema: %w", err)
+			}
+		} else if err := gometrics.EnsureReady(context.Background(), openedStore); err != nil {
 			_ = goRuntimeDB.Close()
 			return nil, fmt.Errorf("verify Go runtime metrics schema: %w", err)
 		}
@@ -1273,7 +1284,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		composed.chatDB = chatDB
 		composed.ownChatDB = ownChatDB
-		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, groupsStore, accountStore); chatErr != nil {
+		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, groupsStore, accountStore, groupsStore, accountStore); chatErr != nil {
 			return nil, fmt.Errorf("compose my-chat family: %w", chatErr)
 		}
 		// cacheDriver==='redis': the system-api limiter switches onto the

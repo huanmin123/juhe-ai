@@ -378,8 +378,9 @@ function assertLauncherForwardsGoRuntimeMetricsConfig() {
     JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH: './data/go-runtime-metrics.sqlite3',
     JUHE_AI_GO_RUNTIME_METRICS_INTERVAL: '15s',
     JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS: '30',
-    JUHE_AI_GO_RUNTIME_METRICS_SERVICE: 'juhe-ai',
-    JUHE_AI_GO_RUNTIME_METRICS_ROLE: 'jobs'
+    JUHE_AI_GO_RUNTIME_METRICS_SERVICE: 'juhe-ai'
+    // 2026-09-27 起 JUHE_AI_GO_RUNTIME_METRICS_ROLE 删除：role 由进程身份固定
+    // （gateway/gateway、jobs/jobs），launcher 不注入、不转发该 env。
   }, [
     'JUHE_AI_DATABASE_DRIVER=postgres',
     'JUHE_AI_RUNTIME_LOG_STORE=postgres',
@@ -395,7 +396,8 @@ function assertLauncherForwardsGoRuntimeMetricsConfig() {
     assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_INTERVAL, '15s')
     assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS, '30')
     assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_SERVICE, 'juhe-ai')
-    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_ROLE, 'jobs')
+    assert.equal(jobs.childEnvironment.JUHE_AI_GO_RUNTIME_METRICS_ROLE, undefined,
+      'the removed JUHE_AI_GO_RUNTIME_METRICS_ROLE must not be forwarded to the jobs child')
   } finally {
     jobs.cleanup()
   }

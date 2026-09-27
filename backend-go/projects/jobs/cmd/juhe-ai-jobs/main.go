@@ -599,7 +599,15 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if err != nil {
 			return failWith(stderr, fmt.Errorf("open Go runtime metrics store: %w", err))
 		}
-		if err := gometrics.EnsureReady(context.Background(), goMetricsStore); err != nil {
+		// 建表语义按 dialect 分派（与 gateway 组合根一致）：sqlite 模式启动
+		// 自举建表（CREATE TABLE IF NOT EXISTS 幂等，双进程并发安全）；postgres
+		// 模式保持 EnsureReady 只读校验，DDL 仍由 maintenance 显式执行。
+		if goMetricsConfig.Store == gometrics.DialectSQLite {
+			if err := goMetricsStore.EnsureSchema(context.Background()); err != nil {
+				_ = goMetricsDB.Close()
+				return failWith(stderr, fmt.Errorf("bootstrap Go runtime metrics schema: %w", err))
+			}
+		} else if err := gometrics.EnsureReady(context.Background(), goMetricsStore); err != nil {
 			_ = goMetricsDB.Close()
 			return failWith(stderr, fmt.Errorf("verify Go runtime metrics schema: %w", err))
 		}

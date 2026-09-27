@@ -70,24 +70,28 @@ func TestW12HCollectorFacade(t *testing.T) {
 }
 
 func TestW12HLoadConfigArms(t *testing.T) {
-	// getenv 为 nil 时回落 os.Getenv。
+	// getenv 为 nil 时回落 os.Getenv；STORE=disabled 显式关闭（2026-09-27 起
+	// 唯一关闭路径，未配置时默认跟随主存储驱动开启）。
 	t.Setenv("JUHE_AI_GO_RUNTIME_METRICS_STORE", "disabled")
-	if _, err := LoadConfig(nil, "jobs"); err != nil {
-		t.Fatalf("os.Getenv 回落失败: %v", err)
+	if cfg, err := LoadConfig(nil, "jobs"); err != nil || cfg.Enabled {
+		t.Fatalf("os.Getenv 回落失败或 disabled 未关闭采样: %+v %v", cfg, err)
 	}
 
-	// sqlite 缺少路径。
+	// 显式 STORE=sqlite 未配置路径时按数据根派生默认文件（2026-09-27 起不再
+	// 报错；派生语义与 jobs datadir.Root 一致）。
 	getenvStore := func(key string) string {
 		if key == "JUHE_AI_GO_RUNTIME_METRICS_STORE" {
 			return "sqlite"
 		}
 		return ""
 	}
-	if _, err := LoadConfig(getenvStore, "jobs"); err == nil || !strings.Contains(err.Error(), "DATABASE_PATH") {
-		t.Fatalf("sqlite 缺路径必须报错: %v", err)
+	derived, err := LoadConfig(getenvStore, "jobs")
+	if err != nil || !derived.Enabled || derived.Store != DialectSQLite || derived.DatabasePath != filepath.Join("./data", "go-runtime-metrics.sqlite3") {
+		t.Fatalf("sqlite 缺省路径必须派生数据根文件: %+v %v", derived, err)
 	}
 
-	// service/role 环境覆盖。
+	// service 环境覆盖；ROLE env 已于 2026-09-27 移除，设置后 role 仍为
+	// 调用方 defaultRole。
 	overrides := func(key string) string {
 		switch key {
 		case "JUHE_AI_GO_RUNTIME_METRICS_STORE":
@@ -105,7 +109,7 @@ func TestW12HLoadConfigArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Service != "w12h-service" || config.Role != "w12h-role" {
+	if config.Service != "w12h-service" || config.Role != "fallback-role" {
 		t.Fatalf("env 覆盖不符: %+v", config)
 	}
 }
@@ -242,7 +246,7 @@ func TestW12HWindowAggregatorArms(t *testing.T) {
 	agg3 := NewWindowAggregator(2 * time.Hour)
 	agg3.Add(RuntimeSnapshot{SampledAt: base, Goroutines: 1})
 	agg3.Add(RuntimeSnapshot{SampledAt: base.Add(5 * time.Hour), Goroutines: 1})
-	if got := agg3.Windows(); len(got) != 1 || !got[0].WindowStart.Equal(base.Add(5 * time.Hour).Truncate(time.Hour)) {
+	if got := agg3.Windows(); len(got) != 1 || !got[0].WindowStart.Equal(base.Add(5*time.Hour).Truncate(time.Hour)) {
 		t.Fatalf("保留期清退不符: %+v", got)
 	}
 }

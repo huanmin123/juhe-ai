@@ -32,8 +32,9 @@ func TestComposeKeepsGoRuntimeSamplerUnassembledByDefault(t *testing.T) {
 func TestComposeAssemblesGoRuntimeSamplerWithConfiguredLifecycle(t *testing.T) {
 	cfg := composeTestConfig(t)
 	dbPath := filepath.Join(filepath.Dir(cfg.BusinessDatabasePath), "go-runtime-metrics.sqlite3")
-	// The sampler checks (never creates) the pre-provisioned schema, mirroring
-	// the maintenance-owned provisioning the deployed flow performs.
+	// SQLite mode bootstraps its schema at startup (idempotent CREATE TABLE
+	// IF NOT EXISTS); pre-provisioning here exercises the same idempotent
+	// re-run path a fresh zero-config database would take.
 	provisionGoRuntimeSchema(t, dbPath)
 	cfg.GoRuntimeMetrics = gometrics.Config{
 		Enabled:       true,

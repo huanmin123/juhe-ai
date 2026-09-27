@@ -153,3 +153,112 @@ func TestRuntimeJobsPageBoundaryFollowsExistingEnvelope(t *testing.T) {
 func padTaskRunMinute(index int) string {
 	return string(rune('0'+index/10)) + string(rune('0'+index%10))
 }
+
+// seedRuntimeJobsStatusRows 落入 completed/failed/queued 三种状态各一行
+// （updated_at 递增：run-old < run-new < run-a），供 status 筛选 arm 复用。
+func seedRuntimeJobsStatusRows(t *testing.T, fixture *testFixture) {
+	t.Helper()
+	seedTaskRunRow(t, fixture, `INSERT INTO background_task_runs
+		(run_id, job_name, job_type, worker_role, status, lease_key, error_message, submitted_at, started_at, finished_at, duration_ms, created_at, updated_at)
+		VALUES ('run-old', 'usage-stats-aggregation', 'usage-stats-aggregation', 'worker', 'completed', 'scheduled:usage-stats-aggregation:',
+		NULL, '2026-09-04T10:00:00.000Z', '2026-09-04T10:00:00.000Z', '2026-09-04T10:00:02.500Z', 2500,
+		'2026-09-04T10:00:00.000Z', '2026-09-04T10:00:02.500Z')`)
+	seedTaskRunRow(t, fixture, `INSERT INTO background_task_runs
+		(run_id, job_name, job_type, worker_role, status, lease_key, error_message, submitted_at, started_at, finished_at, duration_ms, created_at, updated_at)
+		VALUES ('run-new', 'group-account-stats-refresh', 'group-account-stats-refresh', 'worker', 'failed', 'scheduled:group-account-stats-refresh:',
+		'聚合批次失败', '2026-09-04T11:00:00.000Z', '2026-09-04T11:00:00.000Z', '2026-09-04T11:00:01.000Z', 1000,
+		'2026-09-04T11:00:00.000Z', '2026-09-04T11:00:01.000Z')`)
+	seedTaskRunRow(t, fixture, `INSERT INTO background_task_runs
+		(run_id, job_name, job_type, worker_role, status, lease_key, submitted_at, created_at, updated_at)
+		VALUES ('run-a', 'usage-overview-windows-refresh', 'usage-overview-windows-refresh', 'worker', 'queued', 'scheduled:usage-overview-windows-refresh:',
+		'2026-09-04T09:00:00.000Z', '2026-09-04T09:00:00.000Z', '2026-09-04T09:00:00.000Z')`)
+}
+
+func TestRuntimeJobsStatusFilterSelectsMatchingRows(t *testing.T) {
+	fixture := newTaskRunsFixture(t, true)
+	seedRuntimeJobsStatusRows(t, fixture)
+	// status=failed 只返回 failed 行，total 反映筛选后集合。
+	recorder := invoke(t, fixture.deps.runtimeJobsHandler, http.MethodGet, "/?page=1&pageSize=10&status=failed", adminAuth(""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status filter not 200: %d %s", recorder.Code, recorder.Body.String())
+	}
+	payload := dataMap(t, decodeBody(t, recorder))
+	if payload["total"] != float64(1) || payload["hasMore"] != false {
+		t.Fatalf("failed filter envelope wrong: %#v", payload)
+	}
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("failed filter items wrong: %#v", payload["items"])
+	}
+	if items[0].(map[string]any)["runId"] != "run-new" {
+		t.Fatalf("failed filter must keep run-new: %#v", items)
+	}
+	// 状态词表覆盖：completed / queued / running / skipped（后两者空集）。
+	for _, status := range []string{"completed", "queued"} {
+		recorder = invoke(t, fixture.deps.runtimeJobsHandler, http.MethodGet, "/?page=1&pageSize=10&status="+status, adminAuth(""))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s filter not 200: %d %s", status, recorder.Code, recorder.Body.String())
+		}
+		payload = dataMap(t, decodeBody(t, recorder))
+		if payload["total"] != float64(1) {
+			t.Fatalf("%s filter total wrong: %#v", status, payload)
+		}
+	}
+	for _, status := range []string{"running", "skipped"} {
+		recorder = invoke(t, fixture.deps.runtimeJobsHandler, http.MethodGet, "/?page=1&pageSize=10&status="+status, adminAuth(""))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s filter not 200: %d %s", status, recorder.Code, recorder.Body.String())
+		}
+		payload = dataMap(t, decodeBody(t, recorder))
+		if payload["total"] != float64(0) {
+			t.Fatalf("%s filter must answer empty set: %#v", status, payload)
+		}
+	}
+}
+
+func TestRuntimeJobsStatusFilterPaginationReflectsFilteredSet(t *testing.T) {
+	fixture := newTaskRunsFixture(t, true)
+	// 12 行中 5 行 failed：pageSize=10 下 status=failed 的 total=5、hasMore=false。
+	for index := 1; index <= 12; index++ {
+		status := "completed"
+		if index <= 5 {
+			status = "failed"
+		}
+		seedTaskRunRow(t, fixture, `INSERT INTO background_task_runs
+			(run_id, job_name, job_type, worker_role, status, lease_key, submitted_at, created_at, updated_at)
+			VALUES ('run-`+string(rune('0'+index/10))+string(rune('0'+index%10))+`', 'job', 'job', 'worker', '`+status+`', 'scheduled:job:',
+			'2026-09-04T00:`+padTaskRunMinute(index)+`:00.000Z', '2026-09-04T00:`+padTaskRunMinute(index)+`:00.000Z', '2026-09-04T00:`+padTaskRunMinute(index)+`:00.000Z')`)
+	}
+	recorder := invoke(t, fixture.deps.runtimeJobsHandler, http.MethodGet, "/?page=1&pageSize=10&status=failed", adminAuth(""))
+	payload := dataMap(t, decodeBody(t, recorder))
+	if payload["total"] != float64(5) || payload["hasMore"] != false || len(payload["items"].([]any)) != 5 {
+		t.Fatalf("filtered set must drive total/hasMore: %#v", payload)
+	}
+	// 无筛选对照：total=12、hasMore=true。
+	recorder = invoke(t, fixture.deps.runtimeJobsHandler, http.MethodGet, "/?page=1&pageSize=10", adminAuth(""))
+	payload = dataMap(t, decodeBody(t, recorder))
+	if payload["total"] != float64(12) || payload["hasMore"] != true {
+		t.Fatalf("unfiltered baseline wrong: %#v", payload)
+	}
+}
+
+func TestRuntimeJobsStatusFilterInvalidAnswer400(t *testing.T) {
+	fixture := newTaskRunsFixture(t, true)
+	seedRuntimeJobsStatusRows(t, fixture)
+	// 非法值 400；空白值视同缺省（全部）。
+	recorder := invoke(t, fixture.deps.runtimeJobsHandler, http.MethodGet, "/?page=1&pageSize=10&status=purged", adminAuth(""))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid status must answer 400: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if got := decodeBody(t, recorder)["message"]; got != "后台任务状态筛选不合法" {
+		t.Fatalf("400 message wrong: %#v", got)
+	}
+	recorder = invoke(t, fixture.deps.runtimeJobsHandler, http.MethodGet, "/?page=1&pageSize=10&status=", adminAuth(""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("blank status must degrade to unfiltered 200: %d %s", recorder.Code, recorder.Body.String())
+	}
+	payload := dataMap(t, decodeBody(t, recorder))
+	if payload["total"] != float64(3) {
+		t.Fatalf("blank status must keep all rows: %#v", payload)
+	}
+}

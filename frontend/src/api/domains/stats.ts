@@ -57,7 +57,7 @@ export const statsApi = {
   aiHealthHourDetail: (params: AiHealthHourDetailParams, options?: { signal?: AbortSignal }) => unwrap<AiHealthHourDetail>(http.get('/stats/ai-health/hour-detail', { params, signal: options?.signal })),
   goRuntimeTrend: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>, options?: { signal?: AbortSignal }) => unwrap<GoRuntimeTrendOverview>(http.get('/stats/system-metrics/go-runtime-trend', { params, signal: options?.signal })),
   systemMetricsHealthSnapshot: (options?: { signal?: AbortSignal }) => unwrap<SystemMetricsHealthSnapshot>(http.get('/stats/system-metrics/health-snapshot', { signal: options?.signal })),
-  systemMetricsRuntimeJobs: (params: { page: number; pageSize: number }, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeJobsResult>(http.get('/stats/system-metrics/runtime/jobs', { params, signal: options?.signal }))
+  systemMetricsRuntimeJobs: (params: { page: number; pageSize: number; status?: string }, options?: { signal?: AbortSignal }) => unwrap<SystemMetricsRuntimeJobsResult>(http.get('/stats/system-metrics/runtime/jobs', { params, signal: options?.signal }))
 }
 
 export const tableMonitorApi = {

@@ -38,8 +38,9 @@ package main
 //     错误臂（accountkeystates 与 apikeys 的空白 secret 校验更早失败）、
 //     newChainAccountLocks 错误臂（db 恒非 nil）、spool 缺失错误臂
 //     （SQLite 模式由 StatsDatabasePath 派生，preflight 先行必填）、
-//     gometrics EnsureReady/NewSampler 错误臂（合法库 + 非 nil 依赖下
-//     不报错）、logreads 三个读取器构造错误臂（仅 nil db / 非法 mode）。
+//     gometrics EnsureSchema（sqlite 自举）/EnsureReady/NewSampler 错误臂
+//     （合法库 + 非 nil 依赖下不报错）、logreads 三个读取器构造错误臂
+//     （仅 nil db / 非法 mode）。
 
 import (
 	"context"

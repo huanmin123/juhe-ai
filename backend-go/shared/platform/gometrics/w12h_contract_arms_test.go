@@ -460,6 +460,99 @@ func TestW12HOpenStoreArmsExtended(t *testing.T) {
 	}
 }
 
+// TestW12HSQLiteBootstrapArm 覆盖零配置 sqlite 自举语义（gateway/jobs 启动
+// 链路的等价步骤）：fresh 临时目录文件 → OpenStore → EnsureSchema 建表且
+// 重复执行幂等 → CheckSchema 通过 → InsertSnapshot / QueryTrend 各一次成功。
+func TestW12HSQLiteBootstrapArm(t *testing.T) {
+	store, db, err := OpenStore(Config{
+		Enabled:      true,
+		Store:        DialectSQLite,
+		DatabasePath: filepath.Join(t.TempDir(), "w12h-bootstrap.sqlite3"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatalf("重复 EnsureSchema 必须幂等: %v", err)
+	}
+	if err := store.CheckSchema(ctx); err != nil {
+		t.Fatalf("自举后 CheckSchema 必须通过: %v", err)
+	}
+	sampledAt := time.Date(2026, 9, 27, 6, 0, 0, 0, time.UTC)
+	if _, err := store.InsertSnapshot(ctx, RuntimeSnapshot{
+		SampledAt: sampledAt, ProcessPID: 1, Service: "w12h-boot", Role: "w12h-r",
+		Goroutines: 3, UptimeSeconds: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	trend, err := store.QueryTrend(ctx, "w12h-boot", "w12h-r", sampledAt.Add(-time.Hour), sampledAt.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trend) != 1 {
+		t.Fatalf("趋势窗口数 = %d，want 1", len(trend))
+	}
+}
+
+// TestW12HSQLiteConcurrentBootstrap 验收 gateway/jobs 双进程并发对同一
+// fresh sqlite 文件首启的契约：两个独立 sql.DB 句柄（等价两个进程）由
+// start barrier 同时放行，各跑一次 EnsureSchema 后 join，双方都必须成功，
+// 且自举后 CheckSchema 通过。ensureMetricColumns 的 sqlite 分支按
+// ADD COLUMN IF NOT EXISTS 语义幂等（ALTER 报 duplicate column 时复查
+// PRAGMA，列已存在视为成功），配合 busy_timeout 承载该并发语义。
+//
+// 边界说明：该用例是修复后语义的确定性验收，不宣称复现修复前的
+// duplicate column 失败——预热建连后两条语句流被写锁串行化，过期
+// "判定缺失"窗口窄到无法在无生产注入点的情况下稳定命中；barrier 前
+// 的顺序 Ping 用于让两个连接池的连接初始化（DSN _pragma
+// journal_mode=WAL 翻转需排他锁、不走 busy handler 重试）串行完成，
+// 避免把该范围外的建连竞争混入本用例，此时文件 schema 仍为空，
+// EnsureSchema 仍从同一 fresh 状态并发起跑。
+func TestW12HSQLiteConcurrentBootstrap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "w12h-concurrent-bootstrap.sqlite3")
+	open := func() (*Store, *sql.DB) {
+		store, db, err := OpenStore(Config{Enabled: true, Store: DialectSQLite, DatabasePath: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store, db
+	}
+	storeA, dbA := open()
+	defer dbA.Close()
+	storeB, dbB := open()
+	defer dbB.Close()
+	// 顺序预热建连（非并发），确保 WAL 翻转已在 barrier 前完成。
+	if err := dbA.Ping(); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbB.Ping(); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, s := range []*Store{storeA, storeB} {
+		go func(s *Store) {
+			<-start
+			errs <- s.EnsureSchema(context.Background())
+		}(s)
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("并发 EnsureSchema 第 %d 方失败: %v", i+1, err)
+		}
+	}
+	if err := storeA.CheckSchema(context.Background()); err != nil {
+		t.Fatalf("并发自举后 CheckSchema 必须通过: %v", err)
+	}
+}
+
 // ---- w12h 专属一次性 PostgreSQL 库上的契约破坏注入（用后即删库）----
 
 func TestW12HPostgresCheckSchemaDriftArms(t *testing.T) {

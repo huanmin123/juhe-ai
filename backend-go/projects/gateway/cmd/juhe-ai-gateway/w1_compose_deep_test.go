@@ -853,7 +853,7 @@ func TestW1QLoadRuntimeConfigDeepArms(t *testing.T) {
 		// 原「链条缺系统API开关」联动校验臂与「显式关闭」断言随之消失。
 		{"候选上限非整数", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "abc"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须配置为整数"},
 		{"候选上限越界", map[string]string{"JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT": "0"}, "JUHE_AI_GATEWAY_DISPATCH_ACCOUNT_CANDIDATE_LIMIT 必须在 1-50000 范围内"},
-		{"Go运行时指标store非法", map[string]string{"JUHE_AI_GO_RUNTIME_METRICS_STORE": "memory"}, "JUHE_AI_GO_RUNTIME_METRICS_STORE 必须为 sqlite 或 postgres"},
+		{"Go运行时指标store非法", map[string]string{"JUHE_AI_GO_RUNTIME_METRICS_STORE": "memory"}, "JUHE_AI_GO_RUNTIME_METRICS_STORE 必须为 sqlite、postgres 或 disabled"},
 	}
 	for _, tc := range errorCases {
 		t.Run("错误_"+tc.name, func(t *testing.T) {

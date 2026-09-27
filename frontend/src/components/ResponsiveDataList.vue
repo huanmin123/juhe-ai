@@ -21,6 +21,7 @@
         :table-layout="tableLayout"
         :row-selection="rowSelection"
         :expandable="expandable"
+        :row-class-name="rowClassName"
         :custom-row="tableCustomRow"
         @change="handleTableChange"
       >
@@ -145,6 +146,7 @@ const props = withDefaults(defineProps<{
   paginationSummary?: boolean
   rowSelection?: Record<string, any>
   expandable?: Record<string, any>
+  rowClassName?: (record: T, index: number) => string
   mobileDataSource?: T[]
   mobilePagination?: boolean
   mobileHasMore?: boolean

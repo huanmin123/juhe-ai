@@ -57,10 +57,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// compose.go:899 —— GoRuntimeMetrics 开启且 EnsureReady schema 校验失败
+// compose.go —— GoRuntimeMetrics 开启且 sqlite 建表自举（EnsureSchema）失败
 // ---------------------------------------------------------------------------
 
-func TestW1UComposeFinalGoMetricsEnsureReadyArm(t *testing.T) {
+func TestW1UComposeFinalGoMetricsBootstrapArm(t *testing.T) {
 	stack := w1oNewComposeStack(t)
 	// 失败臂不回收已打开的 SQLite 句柄（Windows 句柄锁会破坏 t.TempDir
 	// 清理），与其他失败臂用例一致改走手管目录 + 尽力清理。
@@ -88,8 +88,8 @@ func TestW1UComposeFinalGoMetricsEnsureReadyArm(t *testing.T) {
 	if composed != nil {
 		t.Fatalf("失败臂不得返回组合根")
 	}
-	if !strings.Contains(err.Error(), "verify Go runtime metrics schema") {
-		t.Fatalf("错误 = %v，want 包含 %q", err, "verify Go runtime metrics schema")
+	if !strings.Contains(err.Error(), "bootstrap Go runtime metrics schema") {
+		t.Fatalf("错误 = %v，want 包含 %q", err, "bootstrap Go runtime metrics schema")
 	}
 }
 

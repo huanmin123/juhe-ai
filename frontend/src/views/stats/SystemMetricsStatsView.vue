@@ -37,7 +37,7 @@
     <a-row :gutter="[16, 16]" class="system-metrics-section">
       <a-col :xs="24">
         <StatsChartCard
-          title="运行状态"
+          title="进程状态"
           :loading="healthSnapshotLoading && !healthSnapshot"
           :has-data="Boolean(healthSnapshot) || Boolean(healthSnapshotError)"
           :empty-description="healthSnapshotEmptyDescription"
@@ -49,26 +49,36 @@
           </a-alert>
           <template v-if="healthSnapshot">
             <div class="health-meta">检查时间：{{ formatDateTime(healthSnapshot.checkedAt) }}</div>
-            <div v-for="group in healthStatusGroups" :key="group.key" class="health-group">
-              <div class="health-group-title">{{ group.title }}</div>
-              <a-alert
-                v-if="group.unavailable"
-                type="warning"
-                show-icon
-                :message="`jobs 健康面不可达：${group.reason || '原因未知'}`"
-              />
-              <div v-else-if="group.entries.length" class="health-kv-grid">
-                <div v-for="[key, value] in group.entries" :key="key" class="health-kv-item">
-                  <span class="health-kv-key">{{ key }}</span>
-                  <span v-if="typeof value === 'boolean'" class="health-kv-value">
-                    <span class="health-status-dot" :class="value ? 'health-status-ok' : 'health-status-off'" />
-                    {{ value ? '正常' : '未启用' }}
-                  </span>
-                  <span v-else class="health-kv-value">{{ healthValueText(value) }}</span>
-                </div>
-              </div>
-              <a-empty v-else class="health-group-empty" description="暂无状态明细" />
-            </div>
+            <a-row :gutter="[16, 16]">
+              <a-col v-for="process in healthProcessSections" :key="process.key" :xs="24" :md="12">
+                <section class="health-process-card">
+                  <header class="health-process-head">
+                    <span class="health-process-title">{{ process.title }}</span>
+                    <a-tag :color="healthConclusionColor(process.section.conclusion)">
+                      {{ healthConclusionText(process.section.conclusion) }}
+                    </a-tag>
+                  </header>
+                  <a-alert
+                    v-if="process.section.conclusion === 'unreachable'"
+                    class="health-process-alert"
+                    type="warning"
+                    show-icon
+                    :message="`jobs 健康面不可达：${process.section.reason || '原因未知'}`"
+                  />
+                  <div v-else-if="process.section.entries.length" class="health-kv-grid">
+                    <div v-for="[key, value] in process.section.entries" :key="key" class="health-kv-item">
+                      <span class="health-kv-key">{{ healthStatusLabel(key) }}</span>
+                      <span v-if="typeof value === 'boolean'" class="health-kv-value">
+                        <span class="health-status-dot" :class="value ? 'health-status-ok' : 'health-status-off'" />
+                        {{ value ? '正常' : '未启用' }}
+                      </span>
+                      <span v-else class="health-kv-value">{{ healthValueText(key, value) }}</span>
+                    </div>
+                  </div>
+                  <a-empty v-else class="health-group-empty" description="暂无状态明细" />
+                </section>
+              </a-col>
+            </a-row>
           </template>
         </StatsChartCard>
       </a-col>
@@ -88,18 +98,37 @@
               <a-button type="link" size="small" @click="loadGoRuntimeTrend">重试</a-button>
             </template>
           </a-alert>
-          <div v-if="hasGoRuntimeTrend" class="go-runtime-view-toolbar">
-            <a-segmented v-model:value="goRuntimeChartView" size="small" :options="goRuntimeChartViewOptions" />
-            <span v-if="goRuntimeViewUnavailable" class="go-runtime-view-hint">当前 Go 数据未提供该组指标</span>
-          </div>
-          <div v-if="goRuntimeSummaryItems.length" class="go-runtime-summary" aria-label="Go Runtime 最新摘要">
-            <div v-for="metric in goRuntimeSummaryItems" :key="metric.label" class="go-runtime-summary-item">
-              <span>{{ metric.label }}</span>
-              <strong>{{ metric.value }}</strong>
-            </div>
-          </div>
-          <div v-if="hasGoRuntimeChartDataForView" ref="goRuntimeChartRef" class="chart-panel chart-panel-large" />
-          <a-empty v-else-if="hasGoRuntimeTrend && !goRuntimeError" class="go-runtime-view-empty" description="该组指标暂无可用采样" />
+          <a-result
+            v-if="goRuntimeSamplingDisabled"
+            class="go-runtime-sampling-disabled"
+            status="info"
+            title="Go Runtime 指标采样未启用"
+          >
+            <template #extra>
+              <div class="go-runtime-sampling-guide">
+                <p>监控默认跟随主存储开启；当前被显式关闭（JUHE_AI_GO_RUNTIME_METRICS_STORE=disabled）。</p>
+                <p>移除该配置或改为 sqlite/postgres 并重启 gateway/jobs 即可恢复；详见 docs/develop/运行说明.md。</p>
+              </div>
+            </template>
+          </a-result>
+          <template v-else>
+            <a-tabs v-if="goRuntimeRoles.length" v-model:active-key="goRuntimeActiveRole" class="go-runtime-role-tabs">
+              <a-tab-pane v-for="roleTrend in goRuntimeRoles" :key="roleTrend.role" :tab="goRuntimeRoleLabel(roleTrend.role)">
+                <div v-if="goRuntimeSummaryItems.length" class="go-runtime-summary" aria-label="Go Runtime 最新摘要">
+                  <div v-for="metric in goRuntimeSummaryItems" :key="metric.label" class="go-runtime-summary-item">
+                    <span>{{ metric.label }}</span>
+                    <strong>{{ metric.value }}</strong>
+                  </div>
+                </div>
+                <div class="go-runtime-view-toolbar">
+                  <a-segmented v-model:value="goRuntimeChartView" size="small" :options="goRuntimeChartViewOptions" />
+                  <span v-if="goRuntimeViewUnavailable" class="go-runtime-view-hint">当前 Go 数据未提供该组指标</span>
+                </div>
+              </a-tab-pane>
+            </a-tabs>
+            <div v-if="hasGoRuntimeChartDataForView" ref="goRuntimeChartRef" class="chart-panel chart-panel-large" />
+            <a-empty v-else-if="hasGoRuntimeTrend && !goRuntimeError" class="go-runtime-view-empty" description="该组指标暂无可用采样" />
+          </template>
         </StatsChartCard>
       </a-col>
     </a-row>
@@ -113,9 +142,12 @@
             :loading="backgroundJobsInitialLoading"
             :pagination="backgroundJobPagination"
             :rows="backgroundJobRows"
+            :status="backgroundJobStatus"
             :error="backgroundJobsError"
             :on-retry="loadBackgroundJobs"
             @change="handleBackgroundJobTableChange"
+            @status-change="handleBackgroundJobStatusChange"
+            @refresh="handleBackgroundJobsRefresh"
           />
         </a-col>
       </a-row>
@@ -140,10 +172,20 @@ import { formatDateTime } from '@/shared/formatters'
 import type {
   SystemMetricsHealthSnapshot,
   SystemMetricsRuntimeJobsResult,
-  GoRuntimeTrendOverview
+  GoRuntimeTrendOverview,
+  GoRuntimeTrendRole
 } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import { buildGoRuntimeOption, hasGoRuntimeChartData, type GoRuntimeChartView } from './statsChartOptions'
+import { bytesToMiB, formatInteger } from './statsFormatters'
+import {
+  gatewayHealthSection,
+  healthConclusionColor,
+  healthConclusionText,
+  healthStatusLabel,
+  healthValueText,
+  jobsHealthSection
+} from './systemMetricsHealth'
 
 const MAX_RANGE_DAYS = 31
 type QuickRange = 'today' | 'recent7d' | 'recent1m'
@@ -154,14 +196,6 @@ const quickRangeOptions: Array<{ label: string; value: QuickRange }> = [
   { label: '近1月', value: 'recent1m' }
 ]
 const StatsBackgroundJobsCard = defineAsyncComponent(() => import('./StatsBackgroundJobsCard.vue'))
-
-interface HealthStatusGroup {
-  key: string
-  title: string
-  unavailable: boolean
-  reason?: string
-  entries: Array<[string, unknown]>
-}
 
 type SystemMetricsPageState = {
   rangeMode: RangeMode
@@ -192,8 +226,10 @@ const dateRangeExplicit = ref(rangeMode.value !== 'auto')
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const goRuntimeTrend = ref<GoRuntimeTrendOverview>()
 const goRuntimeChartView = ref<GoRuntimeChartView>('concurrency')
+const goRuntimeActiveRole = ref<GoRuntimeTrendRole>('gateway')
 const healthSnapshot = ref<SystemMetricsHealthSnapshot>()
 const backgroundJobsResult = ref<SystemMetricsRuntimeJobsResult>()
+const backgroundJobStatus = ref('')
 const { usageStatsWindow, usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 
 const goRuntimeChartRef = ref<HTMLDivElement>()
@@ -263,46 +299,46 @@ const healthSnapshotLoading = ref(false)
 const healthSnapshotError = ref('')
 const backgroundJobsError = ref('')
 const backgroundJobsInitialLoading = computed(() => backgroundJobsLoading.value && !backgroundJobsResult.value)
-const hasGoRuntimeTrend = computed(() => (goRuntimeTrend.value?.items.length ?? 0) > 0)
-const hasGoRuntimeChartDataForView = computed(() => hasGoRuntimeChartData(goRuntimeTrend.value?.items ?? [], goRuntimeChartView.value))
+const hasGoRuntimeTrend = computed(() => Boolean(goRuntimeTrend.value))
+const goRuntimeRoles = computed(() => goRuntimeTrend.value?.roles ?? [])
+const goRuntimeSamplingDisabled = computed(() => goRuntimeTrend.value?.samplingEnabled === false)
+const goRuntimeActiveRoleTrend = computed(() => {
+  const roles = goRuntimeRoles.value
+  return roles.find((roleTrend) => roleTrend.role === goRuntimeActiveRole.value) ?? roles[0]
+})
+const activeGoRuntimeRoleItems = computed(() => goRuntimeActiveRoleTrend.value?.items ?? [])
+const hasGoRuntimeChartDataForView = computed(() => hasGoRuntimeChartData(activeGoRuntimeRoleItems.value, goRuntimeChartView.value))
 const goRuntimeSummaryItems = computed(() => {
-  const items = goRuntimeTrend.value?.items ?? []
+  const items = activeGoRuntimeRoleItems.value
   const latest = [...items].reverse().find((item) => item.sampleCount > 0)
   if (!latest) return []
   const result: Array<{ label: string; value: string }> = []
-  if (isFiniteMetric(latest.cpuPercentAvg)) result.push({ label: 'Go CPU（单核）', value: `${latest.cpuPercentAvg!.toFixed(1)}%` })
+  if (isFiniteMetric(latest.cpuPercentAvg)) result.push({ label: 'CPU（单核）', value: `${latest.cpuPercentAvg!.toFixed(1)}%` })
+  if (isFiniteMetric(latest.heapAllocBytesAvg)) result.push({ label: 'Heap Alloc（MiB）', value: `${bytesToMiB(latest.heapAllocBytesAvg)!.toFixed(1)} MiB` })
+  if (isFiniteMetric(latest.goroutinesAvg)) result.push({ label: 'Goroutines（个）', value: formatInteger(latest.goroutinesAvg) })
+  if (isFiniteMetric(latest.threadsAvg)) result.push({ label: '线程（个）', value: formatInteger(latest.threadsAvg) })
+  if (isFiniteMetric(latest.fdCountAvg)) result.push({ label: 'FD（个）', value: formatInteger(latest.fdCountAvg) })
   if (isFiniteMetric(latest.uptimeSecondsAvg)) result.push({ label: '运行时长', value: formatUptime(latest.uptimeSecondsAvg!) })
-  if (isFiniteMetric(latest.gomaxprocsAvg)) result.push({ label: 'GOMAXPROCS', value: Math.round(latest.gomaxprocsAvg!).toLocaleString('zh-CN') })
   return result
 })
 const goRuntimeChartViewOptions = computed(() => [
   { label: '并发（个）', value: 'concurrency' },
-  { label: '内存（MiB / 个）', value: 'memory' }
+  { label: '内存（MiB / 个）', value: 'memory' },
+  { label: 'CPU（%）', value: 'resource' }
 ])
-const goRuntimeViewUnavailable = computed(() => hasGoRuntimeTrend.value && !hasGoRuntimeChartDataForView.value)
+const goRuntimeViewUnavailable = computed(() => activeGoRuntimeRoleItems.value.length > 0 && !hasGoRuntimeChartDataForView.value)
 const goRuntimeDescription = computed(() => {
   const trend = goRuntimeTrend.value
-  return trend ? `${trend.service} / ${trend.role} · runtimeKind=${trend.runtimeKind}` : undefined
+  return trend ? `${trend.service} · runtimeKind=${trend.runtimeKind}` : undefined
 })
 const goRuntimeEmptyDescription = computed(() => `${currentWindowLabel.value}暂无 Go runtime 采样`)
-const healthSnapshotEmptyDescription = computed(() => '暂无运行状态快照')
-const healthStatusGroups = computed<HealthStatusGroup[]>(() => {
+const healthSnapshotEmptyDescription = computed(() => '暂无进程状态快照')
+const healthProcessSections = computed(() => {
   const snapshot = healthSnapshot.value
   if (!snapshot) return []
   return [
-    {
-      key: 'gateway',
-      title: 'Gateway 就绪状态',
-      unavailable: false,
-      entries: Object.entries(snapshot.gateway ?? {})
-    },
-    {
-      key: 'jobs',
-      title: '后台任务健康（jobs）',
-      unavailable: snapshot.jobs.available === false,
-      reason: snapshot.jobs.reason,
-      entries: snapshot.jobs.available ? Object.entries(snapshot.jobs.payload ?? {}) : []
-    }
+    { key: 'gateway', title: 'Gateway', section: gatewayHealthSection(snapshot.gateway) },
+    { key: 'jobs', title: 'Jobs', section: jobsHealthSection(snapshot.jobs) }
   ]
 })
 const backgroundJobRows = computed(() => backgroundJobsResult.value?.items ?? [])
@@ -328,10 +364,10 @@ function formatUptime(seconds: number): string {
   return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`
 }
 
-function healthValueText(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '-'
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
+function goRuntimeRoleLabel(role: GoRuntimeTrendRole): string {
+  if (role === 'gateway') return 'Gateway'
+  if (role === 'jobs') return 'Jobs'
+  return role
 }
 
 async function loadGoRuntimeTrend() {
@@ -450,7 +486,7 @@ async function loadBackgroundJobs() {
   backgroundJobsLoading.value = true
   backgroundJobsError.value = ''
   try {
-    const result = await api.stats.systemMetricsRuntimeJobs({ page: backgroundJobPage.value, pageSize: backgroundJobPageSize }, { signal: controller.signal })
+    const result = await api.stats.systemMetricsRuntimeJobs({ page: backgroundJobPage.value, pageSize: backgroundJobPageSize, status: backgroundJobStatus.value || undefined }, { signal: controller.signal })
     if (currentRequestSeq !== backgroundJobsRequestSeq) return
     backgroundJobsResult.value = result
   } catch (error) {
@@ -519,6 +555,17 @@ function handleBackgroundJobTableChange(paginationInfo: unknown) {
   void loadBackgroundJobs()
 }
 
+function handleBackgroundJobStatusChange(status: string) {
+  if (status === backgroundJobStatus.value) return
+  backgroundJobStatus.value = status
+  backgroundJobPage.value = 1
+  void loadBackgroundJobs()
+}
+
+function handleBackgroundJobsRefresh() {
+  void loadBackgroundJobs()
+}
+
 async function renderSystemCharts() {
   await renderGoRuntimeChart()
 }
@@ -530,7 +577,7 @@ async function renderGoRuntimeChart() {
   }
   const chart = await ensureChart(goRuntimeChartRef, goRuntimeChart, () => pageActive.value)
   if (!chart || !goRuntimeTrend.value || !pageActive.value) return
-  chart.setOption(buildGoRuntimeOption(goRuntimeTrend.value.items, goRuntimeTrend.value.timezone, goRuntimeChartView.value), { notMerge: true })
+  chart.setOption(buildGoRuntimeOption(activeGoRuntimeRoleItems.value, goRuntimeTrend.value.timezone, goRuntimeChartView.value), { notMerge: true })
 }
 
 function resizeCharts() {
@@ -538,6 +585,7 @@ function resizeCharts() {
 }
 
 watch(goRuntimeChartView, () => renderCharts())
+watch(goRuntimeActiveRole, () => renderCharts())
 
 function disposeCharts() {
   disposeChart(goRuntimeChart)
@@ -700,19 +748,29 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.health-group {
-  margin-bottom: 12px;
+.health-process-card {
+  height: 100%;
+  padding: 12px 14px;
+  border: 1px solid #edf2f7;
+  border-radius: 8px;
 }
 
-.health-group:last-child {
-  margin-bottom: 0;
+.health-process-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
-.health-group-title {
-  margin-bottom: 8px;
+.health-process-title {
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+}
+
+.health-process-alert {
+  margin-bottom: 0;
 }
 
 .health-kv-grid {
@@ -770,6 +828,27 @@ onBeforeUnmount(() => {
 
 .go-runtime-error {
   margin-bottom: 12px;
+}
+
+.go-runtime-sampling-disabled {
+  padding: 32px 0;
+}
+
+.go-runtime-sampling-guide {
+  max-width: 560px;
+  margin: 0 auto;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.8;
+  text-align: left;
+}
+
+.go-runtime-sampling-guide p {
+  margin: 0 0 6px;
+}
+
+.go-runtime-role-tabs {
+  margin-bottom: 8px;
 }
 
 .go-runtime-view-toolbar {

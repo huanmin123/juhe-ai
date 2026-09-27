@@ -617,7 +617,7 @@ func TestW16HRunDeepFailArms(t *testing.T) {
 			t.Fatalf("stderr 必须含 J3a store/schema 失败文案，得到 %q", stderr.String())
 		}
 	})
-	t.Run("goMetrics schema 校验失败返回 1", func(t *testing.T) {
+	t.Run("goMetrics 自举建表失败返回 1", func(t *testing.T) {
 		env := w16hBaseEnv(t)
 		garbage := filepath.Join(t.TempDir(), "w16h-garbage-metrics.sqlite3")
 		if err := os.WriteFile(garbage, []byte("w16h not a sqlite database"), 0o644); err != nil {
@@ -630,9 +630,9 @@ func TestW16HRunDeepFailArms(t *testing.T) {
 			"JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH": garbage,
 		})
 		port := wgFreePort(t)
-		// sql.Open 惰性：垃圾文件由 EnsureReady（schema 校验）暴露。
+		// sql.Open 惰性：垃圾文件由 EnsureSchema（sqlite 启动自举建表）暴露。
 		w16hRunArms(t, []string{"-health-listen-address=127.0.0.1:" + itoa(port)}, 1,
-			"verify Go runtime metrics schema")
+			"bootstrap Go runtime metrics schema")
 	})
 }
 
@@ -705,8 +705,9 @@ func TestW16HRunOwnerShutdownWithMetrics(t *testing.T) {
 	env["JUHE_AI_GO_RUNTIME_METRICS_STORE"] = "sqlite"
 	metricsPath := filepath.Join(t.TempDir(), "go-metrics.sqlite3")
 	env["JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH"] = metricsPath
-	// gometrics.OpenStore 不做 DDL：表由 maintenance/运维预 provision（生产
-	// 契约）。fixture 按同一 DDL 形态预建，EnsureReady 才能通过。
+	// sqlite 模式启动自举建表（EnsureSchema 幂等，postgres 的 DDL 仍由
+	// maintenance 维护 owned）。fixture 预建同一 DDL 形态，覆盖"已有表再
+	// 启动"的幂等重跑路径。
 	if db, err := sql.Open("sqlite", metricsPath); err != nil {
 		t.Fatal(err)
 	} else {

@@ -223,7 +223,7 @@ export function buildErrorOption(errors: UsageStatsOverview['errors']): EChartsO
   }
 }
 
-export type GoRuntimeChartView = 'concurrency' | 'memory'
+export type GoRuntimeChartView = 'concurrency' | 'memory' | 'resource'
 
 type GoRuntimeSeries = {
   name: string
@@ -235,9 +235,9 @@ function finiteMetric(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function goRuntimeSeries(trend: GoRuntimeTrendItem[], view: GoRuntimeChartView): GoRuntimeSeries[] {
+function goRuntimeSeries(items: GoRuntimeTrendItem[], view: GoRuntimeChartView): GoRuntimeSeries[] {
   const series = (definitions: Array<{ name: string; yAxisIndex?: number; read: (item: GoRuntimeTrendItem) => number | null | undefined }>) => definitions
-    .map(({ name, yAxisIndex, read }) => ({ name, yAxisIndex, data: trend.map((item) => finiteMetric(read(item))) }))
+    .map(({ name, yAxisIndex, read }) => ({ name, yAxisIndex, data: items.map((item) => finiteMetric(read(item))) }))
     .filter((item) => item.data.some((value) => value !== null))
 
   if (view === 'memory') {
@@ -246,8 +246,16 @@ function goRuntimeSeries(trend: GoRuntimeTrendItem[], view: GoRuntimeChartView):
       { name: 'Heap Alloc 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapAllocBytesMax) },
       { name: 'Heap Live 平均 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapLiveBytesAvg) },
       { name: 'Heap Live 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.heapLiveBytesMax) },
+      { name: 'RSS 平均 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.rssBytesAvg) },
+      { name: 'RSS 峰值 (MiB)', yAxisIndex: 0, read: (item) => bytesToMiB(item.rssBytesMax) },
       { name: 'Heap Objects 平均（个）', yAxisIndex: 1, read: (item) => item.heapObjectsAvg },
       { name: 'Heap Objects 峰值（个）', yAxisIndex: 1, read: (item) => item.heapObjectsMax }
+    ])
+  }
+  if (view === 'resource') {
+    return series([
+      { name: 'CPU 平均（%）', read: (item) => item.cpuPercentAvg },
+      { name: 'CPU 峰值（%）', read: (item) => item.cpuPercentMax }
     ])
   }
   return series([
@@ -259,42 +267,49 @@ function goRuntimeSeries(trend: GoRuntimeTrendItem[], view: GoRuntimeChartView):
     { name: 'Waiting 峰值（个）', read: (item) => item.goroutinesWaitingMax },
     { name: '线程平均（个）', read: (item) => item.threadsAvg },
     { name: '线程峰值（个）', read: (item) => item.threadsMax },
-    { name: 'GOMAXPROCS（个）', read: (item) => item.gomaxprocsAvg }
+    { name: 'GOMAXPROCS（个）', read: (item) => item.gomaxprocsAvg },
+    { name: 'FD 平均（个）', read: (item) => item.fdCountAvg },
+    { name: 'FD 峰值（个）', read: (item) => item.fdCountMax }
   ])
 }
 
-export function hasGoRuntimeChartData(trend: GoRuntimeTrendItem[], view: GoRuntimeChartView): boolean {
-  return goRuntimeSeries(trend, view).length > 0
+export function hasGoRuntimeChartData(items: GoRuntimeTrendItem[], view: GoRuntimeChartView): boolean {
+  return goRuntimeSeries(items, view).length > 0
 }
 
-export function buildGoRuntimeOption(trend: GoRuntimeTrendItem[], timezone = 'Asia/Shanghai', view: GoRuntimeChartView = 'concurrency'): EChartsOption {
-  const series = goRuntimeSeries(trend, view)
+export function buildGoRuntimeOption(items: GoRuntimeTrendItem[], timezone = 'Asia/Shanghai', view: GoRuntimeChartView = 'concurrency'): EChartsOption {
+  const series = goRuntimeSeries(items, view)
   const isMemoryView = view === 'memory'
+  const isResourceView = view === 'resource'
   return {
     color: isMemoryView
       ? ['#52c41a', '#95de64', '#13c2c2', '#87e8de', '#1677ff', '#69b1ff', '#fa8c16', '#ffc069']
-      : ['#1677ff', '#69b1ff', '#52c41a', '#95de64', '#fa8c16', '#ffc069', '#722ed1', '#b37feb'],
-    tooltip: { trigger: 'axis', formatter: (params: unknown) => goRuntimeTooltip(params, trend) },
+      : isResourceView
+        ? ['#1677ff', '#ff4d4f']
+        : ['#1677ff', '#69b1ff', '#52c41a', '#95de64', '#fa8c16', '#ffc069', '#722ed1', '#b37feb', '#13c2c2', '#5cdbd3', '#eb2f96'],
+    tooltip: { trigger: 'axis', formatter: (params: unknown) => goRuntimeTooltip(params, items) },
     legend: { type: 'scroll', bottom: 0, data: series.map((item) => item.name) },
     grid: { left: 56, right: 64, top: 28, bottom: 72 },
-    xAxis: { type: 'category', data: trend.map((item) => goRuntimeWindowLabel(item.windowStart, timezone)), axisLabel: { color: '#64748b' }, axisLine: { lineStyle: { color: '#d9e2ef' } } },
+    xAxis: { type: 'category', data: items.map((item) => goRuntimeWindowLabel(item.windowStart, timezone)), axisLabel: { color: '#64748b' }, axisLine: { lineStyle: { color: '#d9e2ef' } } },
     yAxis: isMemoryView
       ? [
         { type: 'value', name: 'MiB', axisLabel: { formatter: (value: number) => `${value}`, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
         { type: 'value', name: '对象数（个）', axisLabel: { formatter: axisNumberLabel, color: '#64748b' }, splitLine: { show: false } }
       ]
-      : { type: 'value', name: '数量（个）', axisLabel: { formatter: formatInteger, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
+      : isResourceView
+        ? { type: 'value', name: 'CPU（%）', axisLabel: { formatter: (value: number) => `${value}`, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } }
+        : { type: 'value', name: '数量（个）', axisLabel: { formatter: formatInteger, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
     series: [
       ...series.map((item) => ({ ...item, type: 'line' as const, smooth: true, symbolSize: 6 }))
     ]
   }
 }
 
-function goRuntimeTooltip(params: unknown, trend: GoRuntimeTrendItem[]): string {
+function goRuntimeTooltip(params: unknown, items: GoRuntimeTrendItem[]): string {
   const rows = Array.isArray(params) ? params as Array<{ axisValue?: unknown; seriesName?: unknown; value?: unknown; dataIndex?: unknown }> : []
   const axis = rows[0]?.axisValue == null ? '' : String(rows[0].axisValue)
   const dataIndex = typeof rows[0]?.dataIndex === 'number' ? rows[0].dataIndex : -1
-  const sampleCount = dataIndex >= 0 ? trend[dataIndex]?.sampleCount : undefined
+  const sampleCount = dataIndex >= 0 ? items[dataIndex]?.sampleCount : undefined
   const body = rows.map((item) => {
     const value = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value.toFixed(2) : '暂无'
     return `${String(item.seriesName ?? '')}: ${value}`

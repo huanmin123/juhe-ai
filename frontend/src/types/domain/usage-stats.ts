@@ -258,13 +258,20 @@ export interface GoRuntimeTrendItem {
   schedulerLatencyP99SecondsMax?: number | null
 }
 
+export type GoRuntimeTrendRole = 'gateway' | 'jobs'
+
+export interface GoRuntimeTrendRoleTrend {
+  role: GoRuntimeTrendRole
+  items: GoRuntimeTrendItem[]
+}
+
 export interface GoRuntimeTrendOverview {
   runtimeKind: 'go'
   service: string
-  role: string
   timezone: string
   range: AccountUsageStatsRange
-  items: GoRuntimeTrendItem[]
+  samplingEnabled: boolean
+  roles: GoRuntimeTrendRoleTrend[]
 }
 
 export interface SystemMetricsRuntimeJob {

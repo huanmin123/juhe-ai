@@ -13,7 +13,7 @@
 ## 当前已落地（2026-09-02）
 
 - `backend-go/shared/platform/gometrics` 已提供低基数、跨平台 Go runtime Prometheus collector，输出 Go version、uptime、heap、GC、goroutine、scheduler latency、GC pause、threads、`GOMAXPROCS` 和 Go runtime CPU。采集只依赖 Go 标准库，在 Windows 开发与 Linux 部署之间保持同一语义；RSS/FD 等主机指标不属于该 collector。
-- `juhe-ai-jobs` 在显式启用 `JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite|postgres` 后，以 15 秒（可调）周期将 scalar snapshot 写入独立 `go_runtime_metrics_samples`，并同步更新小时与日趋势预聚合；默认保留 30 天并由 sampler 定期清理；jobs 启动只做 schema 只读检查，DDL 由 maintenance 显式执行。
+- `juhe-ai-jobs` 在显式启用 `JUHE_AI_GO_RUNTIME_METRICS_STORE=sqlite|postgres` 后，以 15 秒（可调）周期将 scalar snapshot 写入独立 `go_runtime_metrics_samples`，并同步更新小时与日趋势预聚合；默认保留 30 天并由 sampler 定期清理；jobs 启动只做 schema 只读检查，DDL 由 maintenance 显式执行。（注：2026-09-27 起采样默认跟随主存储驱动开启，显式 STORE 仅用于覆盖或关闭，现行契约见 `docs/functions/系统指标统计设计.md`，本条为历史 opt-in 语义。）
 - `juhe-ai-gateway` 与 active `juhe-ai-jobs` 的 loopback health listener 已提供 `GET /__aisys__/metrics`；passive/standby 进程不暴露该端点。
 - jobs loopback listener 在启用持久化后提供 `GET /__aisys__/api/stats/go-runtime-trend`，响应显式带 `runtimeKind=go`；不写入 Node `system_metrics_*` / `process_event_loop_*` 表，也不把 Go runtime 指标伪装成 `eventLoopLagMs`。
 - `juhe-ai-maintenance --check-go-runtime-metrics` / `--apply-go-runtime-metrics` 负责 `juhe_stats` 下三张独立表的预检与显式加法式创建；apply 要求 Node/Go 停止和备份确认。现有系统指标页已通过 Node 同源管理员代理 `/__aisys__/api/stats/system-metrics/go-runtime-trend` 展示独立 Go runtime 趋势，Node 原有图表仍保留用于迁移对照；这不是 Node 指标存储迁移，也不代表 Go owner 已接管全部系统指标。

@@ -39,12 +39,15 @@ type Deps struct {
 	// GoRuntimeMetrics is the in-process Go runtime metrics store (the shared
 	// platform gometrics Store over the same go_runtime_metrics_* tables the
 	// gateway and jobs samplers persist into). Nil keeps the go-runtime-trend
-	// route on the empty-items 200 degradation (store disabled by default) —
-	// the former jobs trend HTTP proxy is gone (去跨进程战役第三刀).
+	// route on the samplingEnabled:false empty-items 200 degradation (sampling
+	// is enabled by default since 2026-09-27; nil is the explicitly-disabled
+	// or assembly-degraded path) — the former jobs trend HTTP proxy is gone
+	// (去跨进程战役第三刀).
 	GoRuntimeMetrics *gometrics.Store
 	// GoRuntimeMetricsService is the service label the trend query filters on
-	// (the samplers' configured service, default juhe-ai). Roles are the fixed
-	// gateway+jobs family; every item keeps its own service/role fields.
+	// (the samplers' configured service, default juhe-ai). The trend envelope
+	// answers one {role, items} group per fixed gateway+jobs role; every item
+	// keeps its own service/role fields.
 	GoRuntimeMetricsService string
 	// HealthOutcomes optionally points at the J1 account-health outcome
 	// store (Node runtimeConfig.accountHealthJobs.outcomeSqlitePath); nil
