@@ -38,6 +38,36 @@ func (s *Store) FindChatAccount(accountID string) (*chat.ChatAccountRef, error) 
 	return ref, nil
 }
 
+// ListChatAccountOptions 列出 AI 问答新建会话绑定下拉的账户最小摘要，与
+// FindChatAccount 完全同口径：deleted_at IS NULL、非授权实例戳行
+// （authorization_instance_authorization_id IS NULL）且 ownerEffectiveStatusSQL
+// = 'active'（status=active、可调度、未冷却、未过期、无 account_expired 错误）。
+// 只投影 id/name，不暴露归属、provider、授权状态等管理面字段；排序
+// name ASC, id ASC 与下拉展示一致。
+func (s *Store) ListChatAccountOptions() ([]chat.ChatBindOption, error) {
+	now := sqlQuoteISO(isoMillis(s.now()))
+	effective := ownerEffectiveStatusSQL("accounts", now)
+	rows, err := s.db.Query(s.bind(`SELECT accounts.id, accounts.name
+		FROM ` + s.table("accounts") + ` accounts
+		WHERE accounts.deleted_at IS NULL
+			AND accounts.authorization_instance_authorization_id IS NULL
+			AND ` + effective + ` = 'active'
+		ORDER BY accounts.name ASC, accounts.id ASC`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	options := []chat.ChatBindOption{}
+	for rows.Next() {
+		var option chat.ChatBindOption
+		if err := rows.Scan(&option.ID, &option.Name); err != nil {
+			return nil, err
+		}
+		options = append(options, option)
+	}
+	return options, rows.Err()
+}
+
 // chatEnabledGroupIDs lists the account's enabled group bindings (模型作用域
 // 经运行时账户快照按 ID 收敛时使用). Deterministic order by group_id.
 func (s *Store) chatEnabledGroupIDs(accountID string) ([]string, error) {

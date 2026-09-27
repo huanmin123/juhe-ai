@@ -9,9 +9,14 @@ export interface ChatConversationCreatePayload {
   accountId?: string
 }
 
+export interface ChatConversationBindOption { id: string; name: string }
+
+export interface ChatConversationBindOptions { groups: ChatConversationBindOption[]; accounts: ChatConversationBindOption[] }
+
 export const chatApi = {
   getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
+  getConversationBindOptions: () => unwrap<ChatConversationBindOptions>(http.get('/my-chat/conversation-bind-options')),
   createConversation: (payload: ChatConversationCreatePayload) => unwrap<ChatConversation>(http.post('/my-chat/conversations', payload)),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),
   listMessages: (conversationId: string, params?: ChatMessageListParams) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/messages`, { params })),

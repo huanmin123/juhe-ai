@@ -25,7 +25,10 @@ import (
 // kernel. It fails fast naming the missing chat database handle.
 // groupLookup / accountLookup 是三种绑定模式的绑定对象解析端口（生产组合根传
 // groups.Store / accounts.Store；nil 让对应模式返回显式错误）。
-func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB, services *chainRuntimeServices, chain *gatewayChain, groupLookup chat.ChatGroupLookup, accountLookup chat.ChatAccountLookup) (*chat.Deps, error) {
+// groupOptionsLookup / accountOptionsLookup 是新建会话绑定下拉的最小摘要
+// 查询端口（生产组合根同样传 groups.Store / accounts.Store；nil 让绑定下拉
+// 端点返回显式错误）。
+func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB, services *chainRuntimeServices, chain *gatewayChain, groupLookup chat.ChatGroupLookup, accountLookup chat.ChatAccountLookup, groupOptionsLookup chat.ChatGroupOptionsLookup, accountOptionsLookup chat.ChatAccountOptionsLookup) (*chat.Deps, error) {
 	if composed == nil {
 		return nil, fmt.Errorf("my-chat 组合缺少 composition")
 	}
@@ -67,8 +70,12 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		// AI 问答三种绑定模式的绑定对象解析端口（groups/accounts Store 只读
 		// 查询，FindChatGroup/FindChatAccount）：创建与发送前置校验的分组/账户
 		// 存在性 + 启用口径。
-		GroupLookup:             groupLookup,
-		AccountLookup:           accountLookup,
+		GroupLookup:   groupLookup,
+		AccountLookup: accountLookup,
+		// 新建会话绑定下拉的最小摘要查询端口（同一 groups/accounts Store 的
+		// ListChatGroupOptions/ListChatAccountOptions）。
+		GroupOptionsLookup:      groupOptionsLookup,
+		AccountOptionsLookup:    accountOptionsLookup,
 		ObjectStore:             objectStore,
 		ImageProcessor:          newChatImageProcessor(),
 		ImageObservation:        newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),

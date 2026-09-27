@@ -88,6 +88,7 @@ describe('chatApi 请求形状', () => {
   it('会话与消息方法发出正确的 method 与 URL', async () => {
     await chatApi.getImagePolicy()
     await chatApi.listConversations()
+    await chatApi.getConversationBindOptions()
     await chatApi.createConversation({ bindMode: 'group', groupId: 'group-1' })
     await chatApi.getConversation('conv-1')
     await chatApi.listMessages('conv-1')
@@ -105,6 +106,7 @@ describe('chatApi 请求形状', () => {
     expect(requestShapes()).toEqual([
       ['GET', '/my-chat/image-policy'],
       ['GET', '/my-chat/conversations'],
+      ['GET', '/my-chat/conversation-bind-options'],
       ['POST', '/my-chat/conversations'],
       ['GET', '/my-chat/conversations/conv-1'],
       ['GET', '/my-chat/conversations/conv-1/messages'],

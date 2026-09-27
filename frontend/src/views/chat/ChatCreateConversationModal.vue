@@ -117,27 +117,31 @@ function handleDropdownVisibleChange(open: boolean): void {
 }
 async function ensureOptionsLoaded(kind: ChatConversationBindMode): Promise<void> {
   if (loadedKinds.has(kind)) return
-  loadedKinds.add(kind)
-  optionsLoading.value[kind] = true
+  // 分组与账户下拉来自同一次登录用户可用的绑定选项请求（仅启用对象）：任一首次展开即请求一次并同时填充两种模式。
+  const kinds: ChatConversationBindMode[] = kind === 'api_key' ? ['api_key'] : ['group', 'account']
+  kinds.forEach((item) => {
+    loadedKinds.add(item)
+    optionsLoading.value[item] = true
+  })
   try {
     if (kind === 'api_key') {
       const result = await api.myApiKeys.list({ status: 'active' })
       apiKeyOptions.value = result.items
         .filter((item) => !item.expiresAt || new Date(item.expiresAt).getTime() > Date.now())
         .map((item) => ({ label: item.name, value: item.id }))
-    } else if (kind === 'group') {
-      const items = await api.groups.options({ purpose: 'select', limit: 50 })
-      groupOptions.value = items.map((item) => ({ label: item.name, value: item.id }))
     } else {
-      const items = await api.accounts.options({ status: 'active', limit: 50 })
-      accountOptions.value = items.map((item) => ({ label: item.name, value: item.id }))
+      const options = await chatApi.getConversationBindOptions()
+      groupOptions.value = options.groups.map((item) => ({ label: item.name, value: item.id }))
+      accountOptions.value = options.accounts.map((item) => ({ label: item.name, value: item.id }))
     }
   } catch (error) {
-    // 失败后允许下次展开重试。
-    loadedKinds.delete(kind)
-    message.error(extractApiErrorMessage(error, kind === 'api_key' ? '加载 API Key 列表失败' : kind === 'group' ? '加载分组列表失败' : '加载账户列表失败'))
+    // 失败后重置两种模式的已加载标记，允许下次展开重试。
+    kinds.forEach((item) => loadedKinds.delete(item))
+    message.error(extractApiErrorMessage(error, kind === 'api_key' ? '加载 API Key 列表失败' : '加载分组与账户列表失败'))
   } finally {
-    optionsLoading.value[kind] = false
+    kinds.forEach((item) => {
+      optionsLoading.value[item] = false
+    })
   }
 }
 async function createConversation(): Promise<void> {

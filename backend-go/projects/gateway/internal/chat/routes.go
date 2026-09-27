@@ -119,6 +119,13 @@ type Deps struct {
 	// AccountLookup resolves account binding objects (会话 account 模式校验，
 	// internal/accounts 实现). Optional; nil 让 account 模式返回显式错误。
 	AccountLookup ChatAccountLookup
+	// GroupOptionsLookup 列出新建会话绑定下拉的启用分组最小摘要（只读，
+	// internal/groups 实现）。Optional; nil 让绑定下拉端点返回显式错误。
+	GroupOptionsLookup ChatGroupOptionsLookup
+	// AccountOptionsLookup 列出新建会话绑定下拉的可绑定账户最小摘要（口径
+	// 同 AccountLookup，internal/accounts 实现）。Optional; nil 让绑定下拉
+	// 端点返回显式错误。
+	AccountOptionsLookup ChatAccountOptionsLookup
 	// ObjectStore persists chat asset objects (local chat assets root).
 	ObjectStore ObjectStore
 	// ImageProcessor decodes/encodes uploads and previews (sharp port).
@@ -312,6 +319,7 @@ func (d *Deps) Register(k *kernel.Kernel, prefix string) {
 		k.Register(method+" "+prefix+pattern, rt.wrap(handler))
 	}
 	mount("GET", "/image-policy", rt.imagePolicy)
+	mount("GET", "/conversation-bind-options", rt.conversationBindOptions)
 	mount("GET", "/conversations", rt.listConversations)
 	mount("POST", "/conversations", rt.createConversationHandler)
 	mount("GET", "/conversations/{conversationId}", rt.getConversation)
@@ -568,6 +576,46 @@ func (rt *chatRoutes) imagePolicy(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, struct {
 		Input chatImageInputPolicy `json:"input"`
 	}{Input: defaultChatImageInputPolicy})
+}
+
+// conversationBindOptionsResponse 仅服务新建会话绑定下拉（AI 问答新建对话
+// 弹窗）：分组/账户的最小 id/name 投影，避免放开管理面 groups/accounts
+// options 端点。
+type conversationBindOptionsResponse struct {
+	Groups   []ChatBindOption `json:"groups"`
+	Accounts []ChatBindOption `json:"accounts"`
+}
+
+// conversationBindOptions mirrors GET /conversation-bind-options：登录用户
+// 一次取回可绑定分组与账户的最小摘要（分组仅 enabled = 1；账户与
+// FindChatAccount 同口径）。查询端口未接线或查询失败沿用既有 500 语义。
+func (rt *chatRoutes) conversationBindOptions(w http.ResponseWriter, r *http.Request) {
+	if _, err := rt.requireChatAuth(r); err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	if rt.deps.GroupOptionsLookup == nil || rt.deps.AccountOptionsLookup == nil {
+		writeChatRouteError(w, &DomainError{Message: "绑定选项列表暂不可用，请稍后重试"})
+		return
+	}
+	groups, err := rt.deps.GroupOptionsLookup.ListChatGroupOptions()
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	accounts, err := rt.deps.AccountOptionsLookup.ListChatAccountOptions()
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	// 信封恒为数组：空列表渲染 [] 而非 null。
+	if groups == nil {
+		groups = []ChatBindOption{}
+	}
+	if accounts == nil {
+		accounts = []ChatBindOption{}
+	}
+	writeOK(w, conversationBindOptionsResponse{Groups: groups, Accounts: accounts})
 }
 
 func (rt *chatRoutes) listConversations(w http.ResponseWriter, r *http.Request) {

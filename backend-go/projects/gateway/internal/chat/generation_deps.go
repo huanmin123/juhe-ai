@@ -38,6 +38,28 @@ type ChatAccountLookup interface {
 	FindChatAccount(accountID string) (*ChatAccountRef, error)
 }
 
+// ChatBindOption 是新建会话绑定下拉的最小 id/name 投影：不含归属、供应商、
+// 协议、授权状态等任何管理面字段，避免为登录用户放开管理面 options 端点。
+type ChatBindOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// ChatGroupOptionsLookup 列出新建会话绑定下拉的启用分组最小摘要（仅
+// enabled = 1）。Port satisfied at the composition root by the groups store;
+// nil 让绑定下拉端点返回显式错误。
+type ChatGroupOptionsLookup interface {
+	ListChatGroupOptions() ([]ChatBindOption, error)
+}
+
+// ChatAccountOptionsLookup 列出新建会话绑定下拉的可绑定账户最小摘要（口径
+// 与 FindChatAccount 完全一致：未删、非授权实例戳行、生效状态 active）。
+// Port satisfied at the composition root by the accounts store; nil 让绑定
+// 下拉端点返回显式错误。
+type ChatAccountOptionsLookup interface {
+	ListChatAccountOptions() ([]ChatBindOption, error)
+}
+
 // ChatGroupRef is the read-only group view the bind modes rely on. Enabled
 // mirrors groups.enabled.
 type ChatGroupRef struct {

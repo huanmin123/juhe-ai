@@ -22,3 +22,23 @@ func (s *Store) FindChatGroup(groupID string) (*chat.ChatGroupRef, error) {
 	}
 	return &chat.ChatGroupRef{ID: groupID, Name: name, Enabled: enabled == 1}, nil
 }
+
+// ListChatGroupOptions 列出 AI 问答新建会话绑定下拉的分组最小摘要（仅
+// enabled = 1；groups 表无软删列，物理删即不可绑定）。只投影 id/name，不
+// 暴露归属、供应商等管理面字段；排序 name ASC, id ASC 与下拉展示一致。
+func (s *Store) ListChatGroupOptions() ([]chat.ChatBindOption, error) {
+	rows, err := s.db.Query(s.bind(`SELECT id, name FROM ` + s.table("groups") + ` WHERE enabled = 1 ORDER BY name ASC, id ASC`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	options := []chat.ChatBindOption{}
+	for rows.Next() {
+		var option chat.ChatBindOption
+		if err := rows.Scan(&option.ID, &option.Name); err != nil {
+			return nil, err
+		}
+		options = append(options, option)
+	}
+	return options, rows.Err()
+}

@@ -43,8 +43,15 @@ assert.match(createModalSource, /bindMode === 'group'[\s\S]{0,600}:options="grou
 assert.match(createModalSource, /:options="accountOptions"/, '账户模式必须渲染账户下拉')
 assert.equal((createModalSource.match(/show-search/g) ?? []).length, 3, '三个下拉都必须支持前端搜索过滤')
 assert.match(createModalSource, /api\.myApiKeys\.list\(\{ status: 'active' \}\)/, 'Key 下拉必须来自 self 域可用 Key 列表')
-assert.match(createModalSource, /api\.groups\.options\(\{ purpose: 'select', limit: 50 \}\)/, '分组下拉必须来自管理面分组选项（purpose=select）')
-assert.match(createModalSource, /api\.accounts\.options\(\{ status: 'active', limit: 50 \}\)/, '账户下拉必须只列启用账户')
+// 分组与账户下拉来自登录用户可用的绑定选项端点（仅启用对象），不再依赖管理员专用的分组/账户 options 接口。
+assert.match(
+  chatApiSource,
+  /getConversationBindOptions: \(\) => unwrap<ChatConversationBindOptions>\(http\.get\('\/my-chat\/conversation-bind-options'\)\)/,
+  'chatApi 必须提供登录用户可用的绑定选项方法（GET /my-chat/conversation-bind-options）'
+)
+assert.match(createModalSource, /chatApi\.getConversationBindOptions\(\)/, '分组与账户下拉必须来自登录用户可用的绑定选项端点（仅启用对象）')
+assert.doesNotMatch(createModalSource, /api\.groups\.options/, '弹窗不得再调用管理员专用的分组选项端点')
+assert.doesNotMatch(createModalSource, /api\.accounts\.options/, '弹窗不得再调用管理员专用的账户选项端点')
 assert.match(
   createModalSource,
   /const payload: ChatConversationCreatePayload = \{ bindMode: bindMode\.value \}[\s\S]{0,200}bindMode\.value === 'api_key'[\s\S]{0,120}payload\.apiKeyId = selectedObjectId\.value[\s\S]{0,200}payload\.groupId = selectedObjectId\.value[\s\S]{0,200}payload\.accountId = selectedObjectId\.value/,
