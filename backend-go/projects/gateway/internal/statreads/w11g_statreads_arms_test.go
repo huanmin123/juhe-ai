@@ -35,6 +35,12 @@ func TestW11GDateRangeDefaultArms(t *testing.T) {
 	if err != nil || rng.StartDate != "2026-09-01" || rng.EndDate != "2026-09-01" {
 		t.Fatalf("stats start-only = %+v err=%v", rng, err)
 	}
+	// ai-performance：全空回退默认 3 天窗口 [today-2, today]（BUG-0207，
+	// fixture now=2026-09-04 UTC：endDate 不得被 defaultStart 传染）。
+	rng, err = fixture.deps.normalizeStatsDateRange(ctx, "", "")
+	if err != nil || rng.StartDate != "2026-09-02" || rng.EndDate != "2026-09-04" {
+		t.Fatalf("stats both-empty = %+v err=%v", rng, err)
+	}
 	// system-metrics：同形默认填充。
 	rng, err = fixture.deps.normalizeSystemMetricsDateRange(ctx, "", "2026-09-04")
 	if err != nil || rng.StartDate != "2026-09-04" || rng.EndDate != "2026-09-04" {

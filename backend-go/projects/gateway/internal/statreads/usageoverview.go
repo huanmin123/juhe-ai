@@ -55,7 +55,7 @@ func (d *Deps) normalizeUsageOverviewDateRange(ctx context.Context, startDate, e
 }
 
 // normalizeStatsDateRange mirrors normalizeStatsDateRangeAsync (ai-performance
-// default window: yesterday..today).
+// default window: today-2..today).
 func (d *Deps) normalizeStatsDateRange(ctx context.Context, startDate, endDate string) (Range, error) {
 	location, err := d.timezoneLocation(ctx)
 	if err != nil {
@@ -65,17 +65,23 @@ func (d *Deps) normalizeStatsDateRange(ctx context.Context, startDate, endDate s
 	todayKey := dateKeyIn(now, location)
 	defaultStart := dateKeyIn(now.Add(-time.Duration(2*dayMS)*time.Millisecond), location)
 	defaultEnd := todayKey
+	// Node 回退链 startDate ?? endDate ?? defaultStart / endDate ?? startDate
+	// ?? defaultEnd 只引用原始入参；若回退引用已填充的 startDate，全空请求会把
+	// defaultStart 传染给 endDate，默认窗口塌缩成 [today-2, today-2]（BUG-0207）。
+	origStart, origEnd := startDate, endDate
 	if startDate == "" {
-		startDate = endDate
-	}
-	if startDate == "" {
-		startDate = defaultStart
+		if origEnd != "" {
+			startDate = origEnd
+		} else {
+			startDate = defaultStart
+		}
 	}
 	if endDate == "" {
-		endDate = startDate
-	}
-	if endDate == "" {
-		endDate = defaultEnd
+		if origStart != "" {
+			endDate = origStart
+		} else {
+			endDate = defaultEnd
+		}
 	}
 	return normalizeRange(startDate, endDate, todayKey), nil
 }
