@@ -71,8 +71,10 @@ func TestFetchOpenAIModelsPathAndBearerHeader(t *testing.T) {
 	if gotAccept != "application/json" {
 		t.Fatalf("Accept = %q", gotAccept)
 	}
-	if gotUserAgent != "opencode/1.18.5" {
-		t.Fatalf("User-Agent = %q, want OpenCode fallback", gotUserAgent)
+	// 泛化 OpenAI 兼容上游（无 provider/档案家族依据）不注入任何伪造身份，
+	// User-Agent 由传输层补 Go 默认值（BUG-0201）。
+	if !strings.HasPrefix(gotUserAgent, "Go-http-client/") {
+		t.Fatalf("User-Agent = %q, want Go default", gotUserAgent)
 	}
 	if len(ids) != 2 || ids[0] != "gpt-4o" || ids[1] != "gpt-4o-mini" {
 		t.Fatalf("ids = %v (must dedupe and keep order)", ids)
@@ -117,8 +119,9 @@ func TestFetchAnthropicModelsUsesXAPIKeyHeader(t *testing.T) {
 	if gotAPIKey != "ak-key" || gotVersion == "" {
 		t.Fatalf("x-api-key=%q anthropic-version=%q", gotAPIKey, gotVersion)
 	}
-	if gotUserAgent != "opencode/1.18.5" {
-		t.Fatalf("User-Agent = %q, want OpenCode fallback", gotUserAgent)
+	// 无 provider 家族依据的 anthropic 目录请求同样保持中性 UA（BUG-0201）。
+	if !strings.HasPrefix(gotUserAgent, "Go-http-client/") {
+		t.Fatalf("User-Agent = %q, want Go default", gotUserAgent)
 	}
 	if len(ids) != 1 || ids[0] != "claude-sonnet-4" {
 		t.Fatalf("ids = %v", ids)
@@ -151,8 +154,9 @@ func TestFetchGeminiModelsUsesV1BetaAndGoogKeyHeader(t *testing.T) {
 	if gotKey != "g-key" {
 		t.Fatalf("x-goog-api-key = %q", gotKey)
 	}
-	if gotUserAgent != "opencode/1.18.5" {
-		t.Fatalf("User-Agent = %q, want OpenCode fallback", gotUserAgent)
+	// 无 provider 家族依据的 gemini 目录请求同样保持中性 UA（BUG-0201）。
+	if !strings.HasPrefix(gotUserAgent, "Go-http-client/") {
+		t.Fatalf("User-Agent = %q, want Go default", gotUserAgent)
 	}
 	if len(ids) != 2 || ids[0] != "gemini-2.0-flash" {
 		t.Fatalf("ids = %v", ids)
@@ -214,13 +218,15 @@ func TestFetchGLMCodingModelsUsesProfileAuthAndZCodeIdentity(t *testing.T) {
 	}
 }
 
-func TestFetchGLMGeneralModelsDoesNotImpersonateZCode(t *testing.T) {
+// BUG-0201：GLM 家族（provider glm，含 general 档案）统一走 ZCode 全套身份，
+// 不再使用 OpenCode 兜底。
+func TestFetchGLMGeneralModelsUsesZCodeFamilyIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") == "ZCode/3.11.2" || r.Header.Get("X-ZCode-App-Version") != "" {
-			t.Errorf("GLM General must remain protocol-neutral: %v", r.Header)
+		if r.Header.Get("User-Agent") != "ZCode/3.11.2" || r.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || r.Header.Get("X-ZCode-App-Version") != "3.11.2" || r.Header.Get("X-Title") != "Z Code@electron" {
+			t.Errorf("GLM General system request must use the ZCode family identity: %v", r.Header)
 		}
-		if r.Header.Get("User-Agent") != "opencode/1.18.5" {
-			t.Errorf("GLM General system request should use OpenCode fallback UA: %v", r.Header)
+		if r.Header.Get("User-Agent") == "opencode/1.18.5" {
+			t.Errorf("OpenCode fallback must stay retired: %v", r.Header)
 		}
 		_, _ = w.Write([]byte(`{"data":[]}`))
 	}))

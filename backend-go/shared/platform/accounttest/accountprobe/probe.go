@@ -491,7 +491,9 @@ func (s *Service) executeAttempt(ctx context.Context, view *View, entry *KeyEntr
 		turnID := newUUID()
 		windowID := threadID + ":0"
 		httpReq.Header.Set("originator", "Codex Desktop")
-		httpReq.Header.Set("user-agent", "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)")
+		// UA 与 upstreamidentity 的 GPT/Codex 家族身份共用同一常量，避免两处
+		// 硬编码漂移（BUG-0201）。
+		httpReq.Header.Set("user-agent", upstreamidentity.CodexDesktopUserAgent)
 		httpReq.Header.Set("session-id", sessionID)
 		httpReq.Header.Set("thread-id", threadID)
 		httpReq.Header.Set("x-client-request-id", sessionID)

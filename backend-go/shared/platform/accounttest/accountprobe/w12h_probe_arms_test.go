@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 var w12hErrReader = errors.New("w12h 注入读取错误")
@@ -139,6 +140,10 @@ func TestW12HProbeHeaderArms(t *testing.T) {
 	}
 	if seen["originator"] != "Codex Desktop" || seen["session-id"] == "" || seen["x-codex-window-id"] == "" {
 		t.Fatalf("codex 头未携带: %v (path=%s)", seen, seenPath)
+	}
+	// codex UA 与 upstreamidentity 的 GPT/Codex 家族身份共用同一常量（BUG-0201）。
+	if seen["user-agent"] != upstreamidentity.CodexDesktopUserAgent {
+		t.Fatalf("codex User-Agent=%q, want CodexDesktopUserAgent", seen["user-agent"])
 	}
 
 	// oauth 流式 accept 头。

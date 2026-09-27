@@ -596,10 +596,12 @@ func TestCredentialHeadersFollowProtocolAndType(t *testing.T) {
 	if err != nil || glmOpenAIHeaders.Get("Authorization") != "Bearer key" || glmOpenAIHeaders.Get("user-agent") != "ZCode/3.11.2" {
 		t.Fatalf("GLM Coding OpenAI headers=%v err=%v", glmOpenAIHeaders, err)
 	}
-	genericHeaders, err := credentialHeaders("hybrid", "profile_hybrid_openai_chat_v1", modelcheckprofile.ProtocolOpenAIChat, "openai", "api_key", "key")
-	applySystemIdentity(genericHeaders, "hybrid", "profile_hybrid_openai_chat_v1", "api_key", "", "https://upstream.test/v1")
-	if err != nil || genericHeaders.Get("Authorization") != "Bearer key" || genericHeaders.Get("User-Agent") != "opencode/1.18.5" {
-		t.Fatalf("hybrid system API-key headers=%v err=%v", genericHeaders, err)
+	// BUG-0201：hybrid 桥接档案归 GLM 家族，系统请求使用 ZCode 身份，
+	// OpenCode 兜底删除。
+	hybridHeaders, err := credentialHeaders("hybrid", "profile_hybrid_openai_chat_v1", modelcheckprofile.ProtocolOpenAIChat, "openai", "api_key", "key")
+	applySystemIdentity(hybridHeaders, "hybrid", "profile_hybrid_openai_chat_v1", "api_key", "", "https://upstream.test/v1")
+	if err != nil || hybridHeaders.Get("Authorization") != "Bearer key" || hybridHeaders.Get("User-Agent") != "ZCode/3.11.2" || hybridHeaders.Get("HTTP-Referer") != "https://zcode.z.ai" {
+		t.Fatalf("hybrid system API-key headers=%v err=%v", hybridHeaders, err)
 	}
 }
 

@@ -155,8 +155,10 @@ func TestProbeChatJSONSuccess(t *testing.T) {
 	if seenAuth != "Bearer sk-test" {
 		t.Fatalf("authorization=%q", seenAuth)
 	}
-	if seenUserAgent != "opencode/1.18.5" {
-		t.Fatalf("generic system probe User-Agent=%q", seenUserAgent)
+	// 泛化上游（provider openai，无家族档案）的系统探针不得携带任何伪造身份
+	// （BUG-0201），User-Agent 头留空，由传输层补 Go 默认值。
+	if !strings.HasPrefix(seenUserAgent, "Go-http-client/") {
+		t.Fatalf("generic system probe User-Agent=%q, want Go default", seenUserAgent)
 	}
 	if !observation.Result.Success {
 		t.Fatalf("success=%v message=%q", observation.Result.Success, observation.Result.Message)

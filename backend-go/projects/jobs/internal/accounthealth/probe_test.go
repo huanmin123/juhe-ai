@@ -606,8 +606,10 @@ func TestBuildProbeRequestOAuthAcceptHeader(t *testing.T) {
 	if got := request.Header.Get("Accept"); got != "application/json, text/event-stream" {
 		t.Fatalf("api-key responses accept = %q, want dual accept", got)
 	}
-	if got := request.Header.Get("User-Agent"); got != "opencode/1.18.5" {
-		t.Fatalf("generic API-key probe User-Agent = %q, want OpenCode fallback", got)
+	// 泛化上游（provider openai，无家族档案）的探针请求不注入任何伪造身份
+	// （BUG-0201），User-Agent 头留空，由传输层补 Go 默认值。
+	if got := request.Header.Get("User-Agent"); got != "" {
+		t.Fatalf("generic API-key probe User-Agent = %q, want empty", got)
 	}
 }
 

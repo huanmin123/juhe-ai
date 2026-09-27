@@ -14,12 +14,20 @@ const (
 	ProfileGLMCodingAnthropicV1 = "profile_glm_coding_anthropic_v1"
 	ProfileGLMCodingOpenAIV1    = "profile_glm_coding_openai_v1"
 	ProfileXAIOpenAIV1          = "profile_xai_openai_v1"
+	// 两个 hybrid 档案当前桥接的目标上游都是 GLM（BUG-0176 时代的兼容事实），
+	// 因此归入 GLM 家族选择 ZCode 身份。
+	ProfileHybridOpenAIChatV1        = "profile_hybrid_openai_chat_v1"
+	ProfileHybridAnthropicMessagesV1 = "profile_hybrid_anthropic_messages_v1"
 	// OpenCodeUserAgent is the static identity observed in OpenCode 1.18.5.
-	// It is only a fallback for system-generated API-key requests; this is not
-	// the complete OpenCode session identity.
+	// BUG-0201 之后本包不再把它注入任何系统请求；常量仅为兼容既有引用保留。
 	OpenCodeUserAgent = "opencode/1.18.5"
-	zcodeVersion      = "3.11.2"
-	claudeCodeBeta    = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+	// CodexDesktopUserAgent is the static Codex Desktop identity. GPT/Codex
+	// 家族的系统请求在本包与 accountprobe 的 codex_responses 动态头分支共用
+	// 该常量，避免两处硬编码漂移。
+	CodexDesktopUserAgent = "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)"
+	zcodeVersion          = "3.11.2"
+	claudeCodeUserAgent   = "claude-cli/2.1.161 (external, cli)"
+	claudeCodeBeta        = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
 )
 
 // Input identifies one system-generated upstream request. ProviderCode is
@@ -33,46 +41,78 @@ type Input struct {
 	UpstreamHostname          string
 }
 
-// ApplySystemClientHeaders applies identities backed by an exact account
-// profile and credential type. For system-generated API-key requests without
-// a more precise identity, it adds only OpenCode's observed static User-Agent
-// as a compatibility fallback. Dynamic OpenCode/session/security headers are
-// intentionally never fabricated here.
+// ApplySystemClientHeaders 按「上游家族 -> 官方客户端身份」为系统生成的上游
+// 请求选择静态身份（BUG-0201）：GLM 家族（provider glm、profile_glm_ 前缀、
+// 两个 hybrid 桥接档案）应用 ZCode 全套；GPT/Codex 家族（provider gpt/codex、
+// profile_gpt_/profile_codex_ 前缀）仅应用 Codex Desktop 静态 UA；Anthropic
+// 家族 OAuth 应用完整 Claude Code 身份，API Key 不注入任何身份；Gemini/xai
+// 保持既有精确分支。provider openai 承载「通用 OpenAI-compatible 供应商」
+// 泛化档案（supeai 类第三方上游），不构成任何家族依据。
+//
+// 无法识别的上游与 Anthropic API Key 一律不注入身份、保持传输层默认 Go UA：
+// 实测 supeai.cc 会对已知代理客户端 UA（opencode/claude-cli）乃至空 UA 的
+// POST 请求做无响应挂起，仅默认 Go UA 稳定放行（BUG-0201）。
+// 调用方已设置的显式 User-Agent 一律不覆盖；动态会话/签名/nonce 等字段本包
+// 从不伪造。
 func ApplySystemClientHeaders(headers http.Header, input Input) {
 	if headers == nil {
+		return
+	}
+	// 调用方自带身份（例如 accountprobe 的 codex_responses 分支）时保持沉默，
+	// 不得部分覆盖或补充成混合身份。
+	if strings.TrimSpace(headers.Get("User-Agent")) != "" {
 		return
 	}
 	provider := normalized(input.ProviderCode)
 	profileID := normalized(input.ProviderProtocolProfileID)
 	credentialType := normalized(input.CredentialType)
-	appliedExactIdentity := false
 
 	switch {
-	case providerMatches(provider, "glm") && credentialType == "api_key" &&
-		(profileID == ProfileGLMCodingOpenAIV1 || profileID == ProfileGLMCodingAnthropicV1):
+	case credentialType == "api_key" && matchesGLMFamily(provider, profileID):
 		applyZCode(headers)
-		appliedExactIdentity = true
-	case providerMatches(provider, "anthropic") && profileID == ProfileAnthropicAnthropicV1 && credentialType == "oauth":
+	case credentialType == "api_key" && matchesGPTFamily(provider, profileID):
+		headers.Set("User-Agent", CodexDesktopUserAgent)
+	case matchesAnthropicFamily(provider, profileID) && credentialType == "oauth":
 		applyClaudeCode(headers)
-		appliedExactIdentity = true
+	// Anthropic 家族 API Key 不注入任何身份：实测 supeai.cc 等上游对已知
+	// 客户端 UA（claude-cli/opencode）的 POST 做无响应挂起，而传输层默认
+	// Go UA 稳定放行（BUG-0201）。
 	case providerMatches(provider, "gemini") && profileID == ProfileGeminiNativeV1Beta && credentialType == "google_oauth" &&
 		(normalized(input.OAuthType) == "code_assist" || normalized(input.OAuthType) == "google_one"):
 		headers.Set("User-Agent", "GeminiCLI/0.1.5 (Windows; AMD64)")
-		appliedExactIdentity = true
 	case providerMatches(provider, "xai") && profileID == ProfileXAIOpenAIV1 && credentialType == "oauth" &&
 		strings.EqualFold(strings.TrimSpace(input.UpstreamHostname), "cli-chat-proxy.grok.com"):
 		headers.Set("User-Agent", "xai-grok-workspace/0.2.93")
 		headers.Set("x-xai-token-auth", "xai-grok-cli")
 		headers.Set("x-grok-client-version", "0.2.93")
-		appliedExactIdentity = true
 	}
+}
 
-	// All current callers are system-generated request paths. Keep this
-	// fallback conservative: only API keys with no existing User-Agent get the
-	// static OpenCode marker, and exact identities above always win.
-	if !appliedExactIdentity && credentialType == "api_key" && strings.TrimSpace(headers.Get("User-Agent")) == "" {
-		headers.Set("User-Agent", OpenCodeUserAgent)
+// matchesGLMFamily 判定 GLM 家族。家族判断要求 provider 非空命中或协议档案
+// 明确归属，空 provider 不得凭空命中任何家族（BUG-0201）。
+func matchesGLMFamily(provider, profileID string) bool {
+	if provider == "glm" {
+		return true
 	}
+	return strings.HasPrefix(profileID, "profile_glm_") ||
+		profileID == ProfileHybridOpenAIChatV1 ||
+		profileID == ProfileHybridAnthropicMessagesV1
+}
+
+// matchesGPTFamily 判定 GPT/Codex 家族。provider openai 是泛化 OpenAI-compatible
+// 供应商边界，不代表上游是 GPT，因此不在此列（BUG-0201）。
+func matchesGPTFamily(provider, profileID string) bool {
+	switch provider {
+	case "gpt", "codex":
+		return true
+	}
+	return strings.HasPrefix(profileID, "profile_gpt_") || strings.HasPrefix(profileID, "profile_codex_")
+}
+
+// matchesAnthropicFamily 判定 Anthropic 家族；OAuth 与 API Key 分别应用不同
+// 的身份子集。
+func matchesAnthropicFamily(provider, profileID string) bool {
+	return provider == "anthropic" || profileID == ProfileAnthropicAnthropicV1
 }
 
 func applyZCode(headers http.Header) {
@@ -86,7 +126,7 @@ func applyZCode(headers http.Header) {
 
 func applyClaudeCode(headers http.Header) {
 	headers.Set("anthropic-beta", claudeCodeBeta)
-	headers.Set("User-Agent", "claude-cli/2.1.161 (external, cli)")
+	headers.Set("User-Agent", claudeCodeUserAgent)
 	headers.Set("x-stainless-lang", "js")
 	headers.Set("x-stainless-package-version", "0.94.0")
 	headers.Set("x-stainless-os", "Linux")
@@ -98,6 +138,10 @@ func applyClaudeCode(headers http.Header) {
 	headers.Set("x-app", "cli")
 	headers.Set("anthropic-dangerous-direct-browser-access", "true")
 }
+
+// applyClaudeCodeAPIKey 已删除：Anthropic 家族 API Key 系统请求不注入任何
+// Claude 客户端身份——实测 supeai.cc 对 claude-cli UA 的 POST 与 opencode UA
+// 一样做无响应挂起，仅传输层默认 Go UA 稳定放行（BUG-0201）。
 
 func providerMatches(actual, expected string) bool {
 	return actual == "" || actual == expected

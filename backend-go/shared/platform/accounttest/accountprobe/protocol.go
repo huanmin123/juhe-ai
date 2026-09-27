@@ -346,9 +346,10 @@ func buildAnthropicMessagesPayload(model, prompt string, stream bool, sessionID 
 		rawField("messages", marshalValue(messages)),
 		rawField("system", marshalValue(system)),
 		{key: "tools", marshal: func() ([]byte, error) { return marshalValue([]any{}), nil }},
-		{key: "max_tokens", marshal: func() ([]byte, error) { return rawInt(32000), nil }},
-		{key: "thinking", marshal: func() ([]byte, error) { return marshalValue(map[string]any{"type": "adaptive"}), nil }},
-		{key: "output_config", marshal: func() ([]byte, error) { return marshalValue(map[string]any{"effort": "high"}), nil }},
+		// 探测请求必须轻量（max_tokens 1024、不带 thinking/effort）：非流式
+		// 探测要等完整响应，推理增强会让首字节超过 Cloudflare 类代理的 100s
+		// 上限（上游回 524），也远超手动测试 60s 诊断预算（BUG-0201）。
+		{key: "max_tokens", marshal: func() ([]byte, error) { return rawInt(1024), nil }},
 		{key: "metadata", marshal: func() ([]byte, error) {
 			return orderedJSON([]orderedField{
 				{key: "user_id", marshal: func() ([]byte, error) { return metadataUser, nil }},
