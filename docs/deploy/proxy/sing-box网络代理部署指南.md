@@ -258,9 +258,10 @@ JUHE_AI_OAUTH_PROXY_URL=socks5h://host.docker.internal:7890
 
 | 位置 | 文件 | 作用 |
 | --- | --- | --- |
-| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.py` | 择优控制器（仅标准库） |
-| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.service` | oneshot 服务单元 |
-| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.timer` | 2 分钟定时器 |
+| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.py` | 择优控制器（多组模式，仅标准库） |
+| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.service` | 云端 oneshot 服务单元（单组 auto） |
+| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch-home.service` | 家庭形态服务单元（四组分流，各组自有测试 URL） |
+| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.timer` | 2 分钟定时器（两形态共用） |
 | 服务器 | `/usr/local/bin/juhe-proxy-switch.py` | 运行副本（从仓库上传） |
 | 服务器 | `/etc/systemd/system/juhe-proxy-switch.{service,timer}` | systemd 单元 |
 | 服务器 | `/var/lib/juhe-proxy-switch/state.json` | 状态：延迟记录、失败计数、拉黑、切换历史 |
@@ -326,6 +327,60 @@ systemctl start juhe-proxy-switch.timer                         # 恢复
 
 ### 10.6 边界说明
 
-- 控制器只解决"选哪个节点"；节点自身的每连接级丢包/抖动不在本层解决，由网关跨账户重试兜底。
+- 控制器只解决"节点池里选哪个"；**若整池分钟级漂移劣化（几乎所有节点反复通/断），任何选节点机制都救不了**，此时应切换到其他代理链路（如常驻隧道）。节点自身的每连接级丢包由网关跨账户重试兜底。
 - 后台"代理管理"的 test_status 是展示态（jobs 周期探测回写），其中 IP 回显类目标在部分节点上必失败，可能显示 failed/warning；**派单只看代理是否启用，不受 test_status 影响**。
 - 测试 URL 选定 `api.openai.com` 是因为它是主要业务上游；若主要流量切换到其他供应商，应同步调整 `TEST_URL`。
+
+### 10.7 多组部署（按服务分流形态）
+
+控制器支持管理多个 selector 组（环境变量 `JUHE_SB_GROUPS` 逗号分隔），并为每组指定独立的测试 URL（`JUHE_SB_GROUP_URLS`，格式 `组=URL,组=URL`）——用于"按服务分流"的部署：如 claude/openai/github/google 各一个组，分别用 anthropic.com / status.openai.com / github.com / google 204 测速，路由规则按域名把各服务导到对应组。
+
+- 策略完全一致（先测通再切、10 分钟防抖、100ms 容差、坏节点拉黑），但**按"组 × 节点"独立记账**：同一节点对不同服务目的地可用性不同，A 组拉黑的节点不影响 B 组。
+- 所有组必须引用同一节点池（控制器以同一份全池扫描服务所有组，扫描预算均摊）。
+- 原 urltest 组迁移为 selector 时，必须**删除 urltest 特有字段**（`url`/`interval`/`tolerance`/`idle_timeout`），否则 `sing-box check` 失败——这正是 check 门禁要拦的情况。各组转换前的 urltest 当前选择可通过 clash_api 读取并设为 selector `default`，语义无损迁移。
+- 家庭形态（sing-box 系统服务 + 四组分流）的 unit 样例见 `controller/juhe-proxy-switch-home.service`。
+- 后台"代理管理"的 test_status 是展示态（jobs 周期探测回写），其中 IP 回显类目标在部分节点上必失败，可能显示 failed/warning；**派单只看代理是否启用，不受 test_status 影响**。
+- 测试 URL 选定 `api.openai.com` 是因为它是主要业务上游；若主要流量切换到其他供应商，应同步调整 `TEST_URL`。
+
+## 11. 订阅定时更新器（juhe-sub-update）
+
+订阅服务商可能随时轮换节点，静态节点列表会静默失效。更新器每小时拉取订阅并做变更检测，与第 10 节的择优控制器组成完整自动化：
+
+- **抓取链**：直连 → 家里隧道 socks5（`127.0.0.1:17890`）→ 云端 sing-box socks5（`172.18.0.1:17892`），第一个成功者生效（订阅面板国内直连常超时，走代理兜底）。
+- **变更检测**：解析结果与线上节点做无序集合比较（过滤"剩余流量/套餐到期"等数值型信息条目，保证比较稳定）；一致则零动作、不打断在途连接，有变化才进入应用流程。
+- **应用流程**：备份（保留最近 5 份）→ `sing-box check` 门禁（不过则放弃，线上配置分毫不动）→ 重启 → 校验 Clash API → 重置择优控制器状态 → 抽样实测（默认 10 个）并预选健康节点。
+- **失败安全**：解析 0 节点 / check 不过 / 重启后 API 不健康，均保持线上配置不变或自动回滚到最近备份。
+- **互斥**：与择优控制器共用 `/var/lib/juhe-proxy-switch/lock`，不会并发操作 Clash API。
+
+文件清单与部署：
+
+```sh
+# 仓库权威副本：docs/deploy/proxy/controller/juhe-sub-update.{py,service,timer}
+scp docs/deploy/proxy/controller/juhe-sub-update.* root@<服务器>:/tmp/
+ssh root@<服务器>
+sed -i 's/\r$//' /tmp/juhe-sub-update.*
+install -m 755 /tmp/juhe-sub-update.py /usr/local/bin/
+install -m 644 /tmp/juhe-sub-update.service /tmp/juhe-sub-update.timer /etc/systemd/system/
+printf 'https://<订阅链接>\n' > /etc/sing-box/subscription-url   # 600，用户资产不入仓库
+touch /var/log/juhe-sub-update.log
+systemctl daemon-reload && systemctl enable --now juhe-sub-update.timer
+```
+
+运维：日志 `/var/log/juhe-sub-update.log`；手动立即更新 `systemctl start juhe-sub-update.service`；暂停 `systemctl stop juhe-sub-update.timer`。
+
+### 11.1 部署差异参数与环境变量
+
+同一份脚本适配不同 sing-box 部署（云端主用形态 / 家庭出口形态等），差异全部经 systemd unit 的 `Environment=` 注入：
+
+| 环境变量 | 云端缺省 | 家庭形态 | 含义 |
+| --- | --- | --- | --- |
+| `JUHE_SB_BIN` | `/usr/local/bin/sing-box` | `/usr/bin/sing-box` | sing-box 二进制（check 门禁用） |
+| `JUHE_SB_UNIT` | `juhe-pw-proxy` | `sing-box` | 重启的 systemd 服务名 |
+| `JUHE_SB_API` | `http://127.0.0.1:19090` | 空 | clash_api 地址；空 = 无 API，健康门禁走 socks 实测，跳过预选 |
+| `JUHE_SB_SOCKS_TEST` | `socks5h://172.18.0.1:17892` | `socks5h://127.0.0.1:7890` | 重启后本地 socks 实测探针 |
+| `JUHE_SB_FETCH_VIA` | `direct,socks5h://127.0.0.1:17890,socks5h://172.18.0.1:17892` | `direct,socks5h://127.0.0.1:7890` | 抓取链，按序取第一个成功者 |
+| `JUHE_SB_CONTROLLER_STATE` | `/var/lib/juhe-proxy-switch/state.json` | （无需） | 存在才重置，家庭无控制器天然跳过 |
+
+多分组配置（如按 claude/openai/github/google 分流的多个 urltest 组引用同一节点池）会一并重写，各组保持原有分流语义。家庭版 unit 见仓库 `controller/juhe-sub-update-home.service`。
+
+**面板限频**：订阅面板对同 token 高频抓取会返回 403 限频页（如"你订阅更新那么着急干嘛？"，约数十秒解封）。更新器对返回体做订阅形态校验，非订阅内容自动换下一条抓取链路、整链 30 秒后重试一轮；多台部署共用同一订阅时依靠 `RandomizedDelaySec=300` 错峰。

@@ -1,0 +1,14 @@
+[Unit]
+Description=juhe sing-box selector optimizer (multi-group, per-service test URLs)
+After=sing-box.service
+Wants=sing-box.service
+
+[Service]
+Type=oneshot
+# 家庭形态：四个按服务分流的 selector 组，各组用自己的服务 URL 测速
+Environment=JUHE_SB_GROUPS=claude-auto,openai-auto,github-auto,google-auto
+Environment=JUHE_SB_GROUP_URLS=claude-auto=https://www.anthropic.com/,openai-auto=https://status.openai.com/,github-auto=https://github.com/,google-auto=https://www.google.com/generate_204
+ExecStart=/usr/bin/python3 /usr/local/bin/juhe-proxy-switch.py
+TimeoutStartSec=300
+StandardOutput=append:/var/log/juhe-proxy-switch.log
+StandardError=inherit

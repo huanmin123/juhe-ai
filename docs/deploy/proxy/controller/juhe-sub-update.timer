@@ -1,0 +1,12 @@
+[Unit]
+Description=Run juhe-sub-update hourly
+
+[Timer]
+OnBootSec=10min
+OnCalendar=hourly
+# 多台部署共用同一订阅时错开抓取时刻，避免触发面板限频
+RandomizedDelaySec=300
+Unit=juhe-sub-update.service
+
+[Install]
+WantedBy=timers.target
