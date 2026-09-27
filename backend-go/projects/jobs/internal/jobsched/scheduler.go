@@ -253,7 +253,27 @@ type jobState struct {
 	lastDurationMS  int64
 	maxDurationMS   int64
 	runningSince    *time.Time
+
+	// 超时强制回收后仍在运行的泄漏 handler 观测（mu 保护）：leakStartedAt
+	// 是该泄漏 run 的开始时间，handler 迟到返回时清除；stuckLogNext 与
+	// stuckLogInterval 驱动 jobsched_run_stuck 的指数重复间隔。
+	leakStartedAt    *time.Time
+	stuckLogNext     *time.Time
+	stuckLogInterval time.Duration
 }
+
+// 超时泄漏观测的节奏参数（包级 var 便于测试注入小值验证触发与间隔）。
+var (
+	// stuckGrace 是超时回收后 handler 仍在跑的宽限：超过 Timeout + grace
+	// 才开始打 jobsched_run_stuck。
+	stuckGrace = 5 * time.Minute
+	// stuckLogRepeat 是 stuck 日志的起始重复间隔，之后按 ×2 指数增长，
+	// 封顶 stuckLogRepeatMax，防止日志洪水。
+	stuckLogRepeat    = 5 * time.Minute
+	stuckLogRepeatMax = 20 * time.Minute
+	// stuckWatchInterval 是泄漏 run 的扫描周期。
+	stuckWatchInterval = time.Minute
+)
 
 // NewScheduler 构建调度器。
 func NewScheduler(options Options) *Scheduler {
@@ -263,7 +283,7 @@ func NewScheduler(options Options) *Scheduler {
 	if options.Random == nil {
 		options.Random = rand.Float64
 	}
-	return &Scheduler{
+	scheduler := &Scheduler{
 		clock:      options.Clock,
 		random:     options.Random,
 		stableSeed: options.StableSeed,
@@ -272,6 +292,8 @@ func NewScheduler(options Options) *Scheduler {
 		lanes:      map[string]*laneState{},
 		stopCh:     make(chan struct{}),
 	}
+	go scheduler.stuckWatchLoop()
+	return scheduler
 }
 
 // Schedule 注册一个任务；停止后或重名注册被忽略（对齐 Node schedule）。
@@ -637,7 +659,22 @@ func (s *Scheduler) releaseLane(job *jobState) {
 	s.mu.Unlock()
 }
 
-// runOnce 同步执行一轮任务（对应 Node runJob）。
+// runCompletion 承载一轮任务执行的终态样本：handler goroutine 经 buffered
+// channel 恰好投递一次；超时强制回收后主路径不再读取，迟到结果天然只被
+// 丢弃一次（不二次记账/二次释放/二次日志）。
+type runCompletion struct {
+	result   TaskResult
+	runErr   error
+	panicked any
+	ctxErr   error
+}
+
+// runOnce 执行一轮任务：handler 放入独立 goroutine，主路径等待其完成或
+// ctx 到期。超时是强制回收而非建议性提示——Timeout 只是 taskCtx 取消，
+// handler 忽略 ctx 卡死时本函数按 timeout 记账并立即返回（fire 随后释放
+// lane、job.running 复位，下一轮可正常调度），泄漏的 handler goroutine
+// 迟到结果静默丢弃。否则 handler 永不返回 = lane 永久占死（生产
+// 2026-09-27 external-account-maintenance 停摆 9 小时的根因）。
 func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	spec := job.spec
 	startedAt := s.clock.Now()
@@ -662,39 +699,62 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 
 	s.runWG.Add(1)
 	s.runActive.Add(1)
-	var ctxErr error
-	// panicked 非 nil 表示本轮以 panic 收场（缺陷修复：任务级 recover 隔离）。
-	var panicked any
-	result, runErr := func() (result TaskResult, err error) {
-		// 任务级 panic 隔离：panic 转为 err（走既有 fail 记账路径——job.running
-		// 复位、失败终态、退避重排、runWG/租约经 defer 正常释放），不再外溢到
-		// jobLoop 的进程级屏障（那里只会让 jobLoop 带着卡死的 job.running 与
-		// 空白终态静默退出，任务直至重启都不再调度）。Handle 直接作为 defer
-		// 调用（recover 在其自身帧内，见 safego 包注释）；注册在首位使其最后
-		// 执行，err 赋值为最终值。
+	completions := make(chan runCompletion, 1)
+	go func() {
+		var completion runCompletion
+		// panicked 非 nil 表示本轮以 panic 收场（缺陷修复：任务级 recover
+		// 隔离）。Handle 直接作为 defer 调用（recover 在其自身帧内，见
+		// safego 包注释）；注册在首位使其最后执行，err 赋值为最终值。
 		defer safego.Handle("jobsched.scheduler.task", func(recovered any) {
-			panicked = recovered
-			err = fmt.Errorf("后台任务 panic：%v", recovered)
+			completion.panicked = recovered
+			completion.runErr = fmt.Errorf("后台任务 panic：%v", recovered)
+			completions <- completion
 		})
 		defer s.runWG.Done()
 		defer s.runActive.Add(-1)
 		// 先取样 ctx 状态再 cancel：cancel 本身会把 Err 变成 Canceled，
 		// 不能作为停机/超时的判定依据。
-		defer func() { ctxErr = taskCtx.Err(); cancel() }()
-		return spec.Task(taskCtx, TaskContext{
+		defer func() { completion.ctxErr = taskCtx.Err(); cancel() }()
+		completion.result, completion.runErr = spec.Task(taskCtx, TaskContext{
 			ScheduledAt: scheduledAt,
 			StartedAt:   startedAt,
 			DeadlineAt:  deadline,
 		})
+		completions <- completion
 	}()
 
+	select {
+	case completion := <-completions:
+		// handler 先完成：走既有成功/失败/partial/timeout 记账与日志路径，
+		// 语义不变。
+		s.finishRun(job, completion, startedAt, spec.Timeout > 0 && completion.ctxErr == context.DeadlineExceeded)
+	case <-taskCtx.Done():
+		if spec.Timeout > 0 && taskCtx.Err() == context.DeadlineExceeded {
+			// 超时先到：立即按 timeout 记账并交还调度循环（lane 由 fire 的
+			// releaseLane 释放），handler 迟到结果交由泄漏 watcher 丢弃。
+			s.finishRun(job, runCompletion{}, startedAt, true)
+			s.trackLeakedHandler(job, startedAt, completions)
+			return
+		}
+		// 调度器停机（parent ctx 取消）：保持既有行为——等待 handler 返回
+		// 后按 scheduler_stopped 记账，不强记 timeout。handler 卡死时 job
+		// 已被 Stop 移出调度、快照与 lane 表，不再占用资源。
+		completion := <-completions
+		s.finishRun(job, completion, startedAt, spec.Timeout > 0 && completion.ctxErr == context.DeadlineExceeded)
+	}
+}
+
+// finishRun 落一轮的终态记账与逐轮日志。timedOut 为 true 表示超时：或为
+// ctx 到期后的强制回收（completion 为零值），或为 handler 返回时其 ctx 已
+// 因 deadline 结束（completion.ctxErr == DeadlineExceeded）。
+func (s *Scheduler) finishRun(job *jobState, completion runCompletion, startedAt time.Time, timedOut bool) {
+	spec := job.spec
 	finishedAt := s.clock.Now()
 	duration := finishedAt.Sub(startedAt).Milliseconds()
 	if duration < 0 {
 		duration = 0
 	}
-	timedOut := spec.Timeout > 0 && ctxErr == context.DeadlineExceeded
-	stoppedRun := !timedOut && (ctxErr == context.Canceled || s.isStopped())
+	stoppedRun := !timedOut && (completion.ctxErr == context.Canceled || s.isStopped())
 
 	// W2 逐轮 outcome 日志的锁内快照：日志在记账完成后锁外输出，避免持锁
 	// 调用 handler；nil logger 时提前返回，不构造任何日志参数。
@@ -715,12 +775,12 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	switch {
 	// panic 轮（含停机/超时窗口内的 panic）按失败记账（落入 runErr 分支，
 	// 对齐非停机 panic）：panic 是任务代码缺陷，不得因停机被记成 skipped。
-	case stoppedRun && panicked == nil:
+	case stoppedRun && completion.panicked == nil:
 		job.taskSkip++
 		job.lastOutcome = OutcomeSkipped
 		job.lastSkipAt = &finishedAt
 		job.lastSkipReason = "scheduler_stopped"
-	case timedOut && panicked == nil:
+	case timedOut && completion.panicked == nil:
 		job.failure++
 		job.timedOut++
 		job.consecFail++
@@ -732,16 +792,17 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 		job.backoffUntil = s.backoffTargetLocked(job, job.consecFail, finishedAt)
 		logConsecFail = job.consecFail
 		logBackoffUntil = job.backoffUntil
-	case runErr != nil:
+	case completion.runErr != nil:
 		job.failure++
 		job.consecFail++
 		job.lastOutcome = OutcomeSkipped
 		job.lastErrorAt = &finishedAt
-		job.lastError = runErr.Error()
+		job.lastError = completion.runErr.Error()
 		job.backoffUntil = s.backoffTargetLocked(job, job.consecFail, finishedAt)
 		logConsecFail = job.consecFail
 		logBackoffUntil = job.backoffUntil
 	default:
+		result := completion.result
 		switch result.Outcome {
 		case OutcomePartial:
 			job.partial++
@@ -791,12 +852,12 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	// runErr / partial 失败本体打 Warn 保证可归因；task skipped、停机与成功
 	// 打 Debug，防止高频任务的正常轮刷屏。
 	switch {
-	case stoppedRun && panicked == nil:
+	case stoppedRun && completion.panicked == nil:
 		s.logger.Debug("jobsched_run_stopped", "job", spec.Name, "skipReason", "scheduler_stopped")
-	case panicked != nil:
+	case completion.panicked != nil:
 		// 缺陷修复：panic 单列 Error 日志（event 含任务名与 panic 值），级别
 		// 高于普通失败的 Warn——panic 是任务代码缺陷，需要被巡检直接发现。
-		attrs := []any{"job", spec.Name, "panic", fmt.Sprintf("%v", panicked), "durationMs", duration, "consecFail", logConsecFail}
+		attrs := []any{"job", spec.Name, "panic", fmt.Sprintf("%v", completion.panicked), "durationMs", duration, "consecFail", logConsecFail}
 		if logBackoffUntil != nil {
 			attrs = append(attrs, "nextRetryAt", *logBackoffUntil)
 		}
@@ -807,18 +868,107 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 			attrs = append(attrs, "nextRetryAt", *logBackoffUntil)
 		}
 		s.logger.Warn("jobsched_run_timeout", attrs...)
-	case runErr != nil:
-		attrs := []any{"job", spec.Name, "error", runErr.Error(), "durationMs", duration, "consecFail", logConsecFail}
+	case completion.runErr != nil:
+		attrs := []any{"job", spec.Name, "error", completion.runErr.Error(), "durationMs", duration, "consecFail", logConsecFail}
 		if logBackoffUntil != nil {
 			attrs = append(attrs, "backoffMs", logBackoffUntil.Sub(finishedAt).Milliseconds())
 		}
 		s.logger.Warn("jobsched_run_failed", attrs...)
-	case result.Outcome == OutcomePartial:
+	case completion.result.Outcome == OutcomePartial:
 		s.logger.Warn("jobsched_run_partial", "job", spec.Name, "warning", logWarning)
-	case result.Outcome == OutcomeSkipped:
+	case completion.result.Outcome == OutcomeSkipped:
 		s.logger.Debug("jobsched_run_skipped", "job", spec.Name, "skipReason", logSkipReason)
 	default:
 		s.logger.Debug("jobsched_run_success", "job", spec.Name, "durationMs", duration)
+	}
+}
+
+// trackLeakedHandler 登记超时后仍在跑的泄漏 run（供 jobsched_run_stuck
+// 周期观测），并起一个轻量 watcher：handler 迟到返回时清理登记、打一条
+// Info（含 job 与迟到时长）便于观测。watcher 不进入 runWG——StopAndDrain
+// 的等待语义仍由 handler 自身的计数承载。
+func (s *Scheduler) trackLeakedHandler(job *jobState, startedAt time.Time, completions <-chan runCompletion) {
+	s.mu.Lock()
+	leakStartedAt := startedAt
+	job.leakStartedAt = &leakStartedAt
+	s.mu.Unlock()
+	leakedAt := s.clock.Now()
+	go func() {
+		<-completions
+		delay := s.clock.Now().Sub(leakedAt)
+		s.mu.Lock()
+		job.leakStartedAt = nil
+		job.stuckLogNext = nil
+		job.stuckLogInterval = 0
+		s.mu.Unlock()
+		if s.logger != nil {
+			s.logger.Info("jobsched_run_leaked_finished", "job", job.spec.Name, "delayMs", delay.Milliseconds())
+		}
+	}()
+}
+
+// stuckWatchLoop 周期扫描超时后仍在跑的泄漏 run：对超过 Timeout +
+// stuckGrace 仍未返回的打 Error jobsched_run_stuck（job、runningSince、
+// 超时时长），之后按指数间隔重复，防止日志洪水。停机退出。
+func (s *Scheduler) stuckWatchLoop() {
+	for {
+		timer := s.clock.NewTimer(stuckWatchInterval)
+		select {
+		case <-s.stopCh:
+			timer.Stop()
+			return
+		case <-timer.C():
+		}
+		s.logStuckRuns()
+	}
+}
+
+// logStuckRuns 扫描全部 job 并对越限的泄漏 run 打 stuck 日志（锁内记账、
+// 锁外输出）。首次触发在 startedAt + Timeout + stuckGrace 之后，重复间隔
+// 自 stuckLogRepeat 起 ×2 指数增长、封顶 stuckLogRepeatMax。
+func (s *Scheduler) logStuckRuns() {
+	if s.logger == nil {
+		return
+	}
+	now := s.clock.Now()
+	type stuckRun struct {
+		name         string
+		runningSince time.Time
+		overdueMS    int64
+	}
+	var stuck []stuckRun
+	s.mu.Lock()
+	for _, job := range s.jobs {
+		if job.leakStartedAt == nil {
+			continue
+		}
+		overdue := now.Sub(job.leakStartedAt.Add(job.spec.Timeout + stuckGrace))
+		if overdue <= 0 {
+			continue
+		}
+		if job.stuckLogNext != nil && now.Before(*job.stuckLogNext) {
+			continue
+		}
+		stuck = append(stuck, stuckRun{
+			name:         job.spec.Name,
+			runningSince: *job.leakStartedAt,
+			overdueMS:    overdue.Milliseconds(),
+		})
+		interval := job.stuckLogInterval * 2
+		if interval < stuckLogRepeat {
+			interval = stuckLogRepeat
+		}
+		if interval > stuckLogRepeatMax {
+			interval = stuckLogRepeatMax
+		}
+		next := now.Add(interval)
+		job.stuckLogInterval = interval
+		job.stuckLogNext = &next
+	}
+	s.mu.Unlock()
+	for _, run := range stuck {
+		s.logger.Error("jobsched_run_stuck",
+			"job", run.name, "runningSince", run.runningSince, "overdueMs", run.overdueMS)
 	}
 }
 
