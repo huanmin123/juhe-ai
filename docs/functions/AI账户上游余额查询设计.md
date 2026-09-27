@@ -176,7 +176,7 @@ WHERE status = 'active'
 1. 先完成凭据合并、空值清理、重复 Key 校验和最终有效 Key 列表归一化。
 2. 最终有效 Key 数量为 1 时沿用单 Key 查询；大于 1 时在共享 deadline 内按有界并发逐 Key 查询。
 3. 只有全部 Key 返回明确的独立 `scope=key` 且单位、basis 一致时才由服务端精确求和；`scope=account` 只展示共享值，`unknown` 或混合口径禁止合计。
-4. 部分失败必须保留 `queriedKeyCount/keyCount` 和逐 Key 错误，不把成功子集当作权威总额。
+4. 部分失败必须保留 `queriedKeyCount/keyCount` 和逐 Key 错误，不把成功子集当作权威总额；部分失败文案 `多 Key 余额查询部分失败（x/y）` 的 x 为失败 Key 数、y 为总 Key 数。部分失败与口径不一致都是确定性余额诊断，按原样落快照（保留逐 Key 明细），不进入单 Key 临时失败三振序列。
 5. 查询期间账户配置或 Key 集合变化时，复用配置版本与条件写保护丢弃旧结果；旧请求不能重新写回快照、下次刷新时间或启用状态。
 
 前端提示用于解释自动收敛，后端最终状态是唯一事实来源。普通编辑、管理端编辑、直接管理 API 和导入创建都必须遵守同一规则，不能只修一个页面入口。
@@ -251,6 +251,8 @@ One API、New API、OneHub、DoneHub 和 Veloera 的当前源码将 API Key 不�
 
 go-only 形态下，J2 周期余额刷新（jobs 进程 `shared/platform/accountbalance` 服务）在每轮已结算 outcome 后都把该账户的 `balance_query_next_refresh_at` 推进为下一轮刷新时间，与上文第 5 条“成功、临时失败、确定性失败和 `unsupported` 都写当前快照并按用户配置周期安排下次刷新”一致：成功（`fresh`/`unlimited`）与失败（临时失败、连续失败达到阈值后的 `failed`、`unsupported`）结果均按账户余额配置的刷新周期（缺省 5 分钟）加统一的逐轮随机偏移窗口推进，与 `juhe_jobs.account_balance_snapshots.next_refresh_at` 同源同值，失败账户按配置周期等待下一轮而不是按扫描节奏高频重试；上游未返回（transport 失败转为临时诊断）同样结算为 outcome 并推进，仅本地输入/解密错误未产生 outcome 时不推进。写回以 `config_revision` 加候选冻结时的到期值作 fence（自愈账户到期值为 `NULL`，对应 `IS NULL` fence），fence 未命中（期间被手动刷新或配置修改抢先调度）只跳过本次推进，不算失败。更新该列会命中 `accounts` 上的语句级触发器并置可用性 dirty 标记，这是依赖该列做失效检测的设计内行为。首次自动探测的到期推进仍由自动探测使能链负责，手动刷新的到期调度仍由管理端刷新接口负责，两者不走该推进路径。已知排除类：读侧候选扫描只接受 RFC3339 文本（毫秒截断 UTC），历史使能链在 PG 分支曾以原生时间绑定写入 PG 渲染文本，此类非 RFC3339 存量值会被读侧永久跳过——账户不进入"探针→推进"闭环，需按问题-0196 遗留 #4 做格式核查/回填后方可享受周期推进。
 
+go-only 投影与多 Key 执行落点（2026-09-27）：J2 每轮已结算快照落在 `juhe_jobs.account_balance_snapshots`，由 jobs wired job `account-balance-stats-projection`（每分钟、独立 lane、全量 UPSERT、幂等）投影到 `juhe_stats.account_usage_snapshots`（kind='relay_balance'），列集合与冲突键对齐既有 stats 契约，`configRevision` 取 J2 行 `config_revision` 列——第 6 节"账户列表接口按当前页账户 ID 批量加载 relay_balance 快照"与余额明细接口都以该表为读端；gateway 列表投影在 `ListPage` 水合阶段按页批量读取并按 `BalanceSnapshotMatchesConfiguration`（启用 + configRevision 匹配 + `next_refresh_after` 与账户配置到期值毫秒相等或双空）决定是否携带 `balanceSnapshot`，owner 视图输出 `balanceQueryEnabled/balanceQueryNextRefreshAt/balanceSnapshot`，授权视图不返回，列表投影按白名单剥离 `keyBalances`（逐 Key 明细只走明细接口）。多 Key 执行面按第 3.4 节语义落地在共享核心 `ExecuteAccountBalanceQuery`（逐 Key 有界并发 + 共享 deadline + 精确合计），周期刷新、首次探测、手动刷新与草稿测试统一经该入口，单 Key 输入原样委托单 Key 路径零变化。
+
 首期不引入 Redis 队列、独立任务表、余额专用租约表或余额历史表，只复用现有后台任务租约。多实例部署不在本计划范围；后续真正启用多节点 worker 时再接入现有用户分片方案。
 
 ## 6. 手动刷新
@@ -302,6 +304,8 @@ POST /__aisys__/api/accounts/balance/test-draft
 SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：业务配置和调度时间通过 DB service 条件提交，租约与余额快照通过 stats-writer 写入；手动刷新所在的 DB service 也通过 server IPC 把统计写操作转交 stats-writer。查询结束时先按 `configRevision + balanceQueryConfig` 提交业务状态，stats-writer 写快照前再次核对当前配置。配置在请求期间发生变化时丢弃旧结果，不恢复旧快照和旧调度时间。
 
 自动探测意图只由新账户首次激活创建一次；它允许因 worker 重启或临时失败进行受控补偿尝试。周期健康检查、旧账户和普通编辑不创建新意图，避免持续增加上游请求。导入创建账户沿用同一首次激活流程。
+
+go-only 补偿路径（jobs `worker_balance_detect`）的意图推进与清除与第 5 节 due 写回同语义同格式：`balance_query_next_refresh_at` 为 TEXT 列，写入值统一为 RFC3339Nano UTC 毫秒截断文本，围栏以 `::timestamptz` 等值比较（SQLite 分支为同格式文本等值）；围栏未命中（期间被用户编辑或手动刷新抢先）只跳过本次推进/清除，不算失败。命中 `unsupported` 时清除意图（收口），临时失败按固定短周期延后，命中 `fresh/unlimited` 时开启配置并安排下次刷新。围栏格式失配会让意图永不收口、候选被 J2 探测循环按扫描节奏反复执行（见问题-0204），该格式家族回归由毫秒截断往返测试锁定。
 
 本功能首次上线后在 release 根目录执行一次维护命令 `pnpm --filter juhe-ai-backend maintenance:backfill-account-balance`，覆盖所有系统账户作用域下尚未开启余额查询的合格物理账户。发布包保留该命令和编译脚本。PostgreSQL 可在主服务运行时后台执行；SQLite 必须先停止主服务并设置 `JUHE_AI_SQLITE_OFFLINE_MAINTENANCE_CONFIRMED=1`，由专用离线维护启动器独占 business/stats 写入，禁止与在线 DB service/worker 并行。命令按账户 ID 游标每页 50 条读取、并发 2 探测，逐页输出 `scanned/enabled/unsupported/stale` 进度；不把全部账户载入内存，也不阻塞 PostgreSQL 主服务。上线后的常态只保留新账户首次激活探测，不把全量扫描注册为周期任务。
 

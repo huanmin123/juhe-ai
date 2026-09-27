@@ -80,9 +80,11 @@ type Input struct {
 	Recovery        bool                `json:"-"`
 }
 
-// ToInput converts a candidate into a bounded input.  It deliberately does
-// not choose a key from a pool: callers must provide an already-normalized
-// single-key envelope and an explicit APIKeyCount.
+// ToInput converts a candidate into a bounded input. It deliberately does not
+// choose a key from a pool: callers provide an already-normalized credential
+// envelope (single Key or an api_keys pool) plus an explicit APIKeyCount; the
+// envelope is carried as-is and the executor counts the effective keys after
+// unsealing.
 func (c Candidate) ToInput(trigger Trigger, now time.Time, ttl time.Duration) (Input, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -106,8 +108,12 @@ func (c Candidate) ToInput(trigger Trigger, now time.Time, ttl time.Duration) (I
 	if keyCount == 0 && (strings.TrimSpace(c.APIKey.Ciphertext) != "" || strings.TrimSpace(c.Credential.Ciphertext) != "") {
 		keyCount = 1
 	}
-	if keyCount != 1 {
-		return Input{}, errors.New("account-balance candidate 必须恰好包含一个 API Key")
+	// 多 Key 放宽（设计 docs/functions/AI账户上游余额查询设计.md §3.4）：不再
+	// 强制恰好 1 Key，凭据封套原样携带（单 Key 或 api_keys 池都接受），实际
+	// Key 数由执行核心在解封后按 EffectiveAPIKeys 统计。这里只拒绝明确没有
+	// 任何 Key 的候选。
+	if keyCount < 1 {
+		return Input{}, errors.New("account-balance candidate 必须至少包含一个 API Key")
 	}
 	credential := c.APIKey
 	if strings.TrimSpace(credential.Ciphertext) == "" {

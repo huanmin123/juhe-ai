@@ -59,10 +59,12 @@ var goAddedAfterOAuthRefreshJobNames = []string{
 }
 
 // goAddedAfterBalanceDetectJobNames 是插在 account-balance-auto-detect-recovery
-// 登记位置之后的 Go 附加条目（与余额任务族同 lane：external-account-maintenance
-// 的账户快照维护；AI 账户 Grok 用量快照设计 §4，归档无对应 scheduled job）。
+// 登记位置之后的 Go 附加条目（与该余额任务族同族登记：external-account-maintenance
+// 侧账户快照维护与 jobs→stats 余额投影；AI 账户 Grok 用量快照设计 §4 与归档
+// account-balance-jobs-projector 的 Go 等价任务，归档无对应 scheduled job）。
 var goAddedAfterBalanceDetectJobNames = []string{
 	"xai-grok-usage-refresh",
+	"account-balance-stats-projection",
 }
 
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在

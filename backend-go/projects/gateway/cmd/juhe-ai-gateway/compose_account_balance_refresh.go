@@ -206,15 +206,19 @@ func resolveProxyURLEnvelope(ctx context.Context, db *sql.DB, pg bool, secret, p
 // buildManualInput 把候选行映射成共享执行核心的冻结输入（对齐归档 Node
 // prepareAccountBalanceHandoverInput account-balance-handover.ts:220-269 +
 // balanceCandidatesFromRows account-balance.repository.ts:938-971：
-// InputVersion=dispatch_revision、Provider 缺省 openai、单 Key 信封直用
-// credentials_encrypted 列密文（同 JUHE_AI_SECRET v1 信封））。
+// InputVersion=dispatch_revision、Provider 缺省 openai、凭据信封直用
+// credentials_encrypted 列密文（同 JUHE_AI_SECRET v1 信封）。单 Key 与多 Key
+// 池（api_keys 数组）封套都原样直传：单 Key 输入由共享执行核心原样委托既有
+// 单 Key 路径（行为零变化），多 Key 输入逐 Key 查询并合并快照；0 Key 仍拒绝。
 func (r *gatewayManualBalanceRefresher) buildManualInput(ctx context.Context, candidate accounts.BalanceRefreshCandidate) (accountbalance.Input, error) {
 	var credentials accounts.Credentials
 	if err := accounts.DecryptJSON(r.secret, candidate.CredentialsEnvelope, &credentials); err != nil {
 		return accountbalance.Input{}, fmt.Errorf("余额手动刷新候选凭据无法解封: %w", err)
 	}
-	apiKeys := accounts.EffectiveAccountApiKeys(credentials)
-	if len(apiKeys) != 1 {
+	// 多 Key 门禁解除：≥1 个有效 Key 的凭据封套原样放行（不拆包），多 Key
+	// 池由共享执行核心按 EffectiveAPIKeys 分派逐 Key 查询；0 Key 仍拒绝
+	// （保留既有错误文案）。
+	if len(accounts.EffectiveAccountApiKeys(credentials)) == 0 {
 		return accountbalance.Input{}, errors.New("余额手动刷新输入必须包含一个有效的 API Key")
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(textFromCredentials(credentials["base_url"])), "/")
@@ -307,11 +311,14 @@ func (r *gatewayManualBalanceRefresher) RefreshManual(ctx context.Context, candi
 
 // TestDraft 执行非持久化草稿探测（Node testAccountBalanceCandidate 契约：
 // 失败也解析成 status=failed 的快照，错误只用于路由渲染失败快照文案）。
-// 草稿没有持久账户身份，执行信封使用占位身份并保持 20s 窗口。
+// 草稿没有持久账户身份，执行信封使用占位身份并保持 20s 窗口。多 Key 池封进
+// api_keys 封套走共享多 Key 执行核心（逐 Key 查询 + 合并快照）；单 Key 封套
+// 形状保持不变（共享入口内部原样委托既有单 Key 路径，行为零变化）；0 Key
+// 仍拒绝。
 func (r *gatewayManualBalanceRefresher) TestDraft(ctx context.Context, input accounts.BalanceDraftProbeInput) (map[string]any, error) {
 	apiKeys := accounts.EffectiveAccountApiKeys(input.Credentials)
-	if len(apiKeys) != 1 {
-		return nil, errors.New(accountbalance.MultiKeyMessage)
+	if len(apiKeys) == 0 {
+		return nil, errors.New("余额查询测试缺少 API Key")
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(textFromCredentials(input.Credentials["base_url"])), "/")
 	if baseURL == "" {
@@ -326,7 +333,13 @@ func (r *gatewayManualBalanceRefresher) TestDraft(ctx context.Context, input acc
 		accountID = "draft"
 	}
 	now := r.now().UTC()
-	keyEnvelope, err := accountbalance.NewCredentialEnvelope(r.secret, "api_key", map[string]any{"api_key": apiKeys[0]})
+	// 单 Key 保持既有 {"api_key": ...} 封面字节不变；多 Key 改用
+	// {"api_keys": [...]} 池封套（共享核心 EffectiveAPIKeys 语义）。
+	var keyPayload any = map[string]any{"api_key": apiKeys[0]}
+	if len(apiKeys) > 1 {
+		keyPayload = map[string]any{"api_keys": apiKeys}
+	}
+	keyEnvelope, err := accountbalance.NewCredentialEnvelope(r.secret, "api_key", keyPayload)
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +364,9 @@ func (r *gatewayManualBalanceRefresher) TestDraft(ctx context.Context, input acc
 		return nil, err
 	}
 	probeInput.Proxy = proxy
-	result, err := accountbalance.ExecuteBalanceQuery(ctx, probeInput, accountbalance.QueryOptions{
+	// 多 Key 感知执行入口：单 Key 输入内部原样委托 ExecuteBalanceQuery
+	// （行为零变化），多 Key 输入逐 Key 查询并合并为一份快照。
+	result, err := accountbalance.ExecuteAccountBalanceQuery(ctx, probeInput, accountbalance.QueryOptions{
 		Secret: r.secret,
 		Now:    r.now,
 	})

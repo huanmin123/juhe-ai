@@ -155,6 +155,26 @@ func (r *PostgresDirectInputReader) load(ctx context.Context, limit int, kind ca
 	return result, nil
 }
 
+// decodeCandidateCredential unseals a candidate's credential envelope and
+// returns the plaintext map plus the effective Key pool. 多 Key 放宽（设计
+// docs/functions/AI账户上游余额查询设计.md §3.4）：多 Key 账户照常成为候选，
+// 只有零 Key（无法执行）才拒绝；APIKeyCount 由调用方取 len(keys)。
+func (r *PostgresDirectInputReader) decodeCandidateCredential(accountID, credentialsText string) (map[string]any, []string, error) {
+	plain, err := DecryptV1Envelope(r.secret, credentialsText)
+	if err != nil {
+		return nil, nil, fmt.Errorf("J2 account=%s 凭据解封失败: %w", accountID, err)
+	}
+	var credential map[string]any
+	if err := json.Unmarshal(plain, &credential); err != nil {
+		return nil, nil, fmt.Errorf("J2 account=%s 凭据 JSON 无效: %w", accountID, err)
+	}
+	keys := EffectiveAPIKeys(credential)
+	if len(keys) == 0 {
+		return nil, nil, fmt.Errorf("J2 account=%s 缺少有效 API Key", accountID)
+	}
+	return credential, keys, nil
+}
+
 func (r *PostgresDirectInputReader) scanCandidate(rows *sql.Rows, now time.Time) (Candidate, error) {
 	var id, systemID, provider, typ, status, credentials, configJSON sql.NullString
 	var revision, dispatch int64
@@ -169,17 +189,9 @@ func (r *PostgresDirectInputReader) scanCandidate(rows *sql.Rows, now time.Time)
 	if !id.Valid || !systemID.Valid || !credentials.Valid {
 		return Candidate{}, errors.New("J2 PG 候选缺少账户、system account 或凭据")
 	}
-	var credential map[string]any
-	plain, err := DecryptV1Envelope(r.secret, credentials.String)
+	credential, keys, err := r.decodeCandidateCredential(id.String, credentials.String)
 	if err != nil {
-		return Candidate{}, fmt.Errorf("J2 account=%s 凭据解封失败: %w", id.String, err)
-	}
-	if err := json.Unmarshal(plain, &credential); err != nil {
-		return Candidate{}, fmt.Errorf("J2 account=%s 凭据 JSON 无效: %w", id.String, err)
-	}
-	keys := EffectiveAPIKeys(credential)
-	if len(keys) != 1 {
-		return Candidate{}, fmt.Errorf("J2 account=%s 必须恰好一个 API Key", id.String)
+		return Candidate{}, err
 	}
 	baseURL, ok := credential["base_url"].(string)
 	if !ok || strings.TrimSpace(baseURL) == "" {

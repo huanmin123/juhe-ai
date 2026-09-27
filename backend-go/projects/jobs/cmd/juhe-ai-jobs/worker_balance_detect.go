@@ -31,8 +31,9 @@ import (
 //     由 J2 直读 reader 与 Node 网关消费，键名不得改变）；
 //   - 每候选互斥租约复用 background_job_leases（Node
 //     runWithAccountBalanceLease：leaseKey=account-balance:{id}、30s）；
-//   - builtin 余额查询委托同模块 J2 迁移实现 accountbalance.ExecuteBalanceQuery
-//     （registry 已登记 J2 为 account-balance-refresh 的 Go 等价接管）。
+//   - builtin 余额查询委托同模块 J2 迁移实现 accountbalance.ExecuteAccountBalanceQuery
+//     （多 Key 封套逐 Key 执行+合计，单 Key 原样委托既有路径；registry 已登记
+//     J2 为 account-balance-refresh 的 Go 等价接管）。
 //
 // 中文文案逐字节对齐 Node 日志事件。
 
@@ -131,6 +132,29 @@ func parseBalanceInstant(value string) (time.Time, error) {
 	return parsed, nil
 }
 
+// balanceDueText 把 balance_query_next_refresh_at / updated_at 的写入值规范
+// 为毫秒截断的 UTC RFC3339Nano 文本。两列在 PG 与 SQLite 里都是 text 列，
+// 必须写预格式化文本——把 time.Time 参数直接绑给 text 列会让比较落入驱动
+// 的文本语义、围栏永不相等（2026-09-26 生产事故根因：CommitDetectionDue
+// 恒 0 行，探测意图永不收口）。毫秒截断保证写回值下轮读回后仍能与
+// ::timestamptz fence 精确相等（亚微秒在 PG 舍入与驱动截断间可能差 1μs），
+// 范式对齐 shared platform/accountbalance 的 AdvancePeriodicDue
+// （balanceDueText 未导出，此处本地实现）。
+func balanceDueText(value time.Time) string {
+	return value.UTC().Truncate(time.Millisecond).Format(time.RFC3339Nano)
+}
+
+// balanceDueColumn 返回 due 围栏/比较使用的列表达式。该列在 PG 是 text：
+// 与 time.Time 参数做等值/大小比较必须先 cast 到 timestamptz（直接
+// text = $n 是文本比较、恒不命中）；SQLite 无 cast，参数经 timeParam 得到
+// 规范 RFC3339Nano 文本，与列内同规范文本直接比较。
+func balanceDueColumn(postgres bool) string {
+	if postgres {
+		return "balance_query_next_refresh_at::timestamptz"
+	}
+	return "balance_query_next_refresh_at"
+}
+
 // balanceDetectRuntime 承载探测意图仓储、互斥租约与 builtin 探测器共享的
 // 句柄与状态（对齐 Node 仓储的模块级游标/凭据解密语境）。
 type balanceDetectRuntime struct {
@@ -224,17 +248,22 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 	selectedIDs := map[string]struct{}{}
 	cursor := r.cursor
 	wrapped := false
+	// due 比较统一走 balanceDueColumn：PG 分支 cast 到 timestamptz 后与
+	// time.Time 参数比较（text 列直接比较是文本语义、恒不命中）；SQLite
+	// 分支保持文本比较，timeParam 的规范 RFC3339Nano 文本与列内同规范文本
+	// 逐字节可比。
+	dueExpr := balanceDueColumn(postgres)
 	for page := 0; page < 4 && len(selected) < limit; page++ {
 		query := fmt.Sprintf(`
       SELECT id, system_account_id, dispatch_revision, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
       FROM %s
       WHERE balance_query_next_refresh_at IS NOT NULL
-        AND balance_query_next_refresh_at <= ?
-        AND (? = '' OR balance_query_next_refresh_at > ? OR (balance_query_next_refresh_at = ? AND id > ?))
+        AND %s <= ?
+        AND (? = '' OR %s > ? OR (%s = ? AND id > ?))
         AND %s
       ORDER BY balance_query_next_refresh_at ASC, id ASC
       LIMIT ?
-    `, r.business.table("accounts"), balanceDetectionCandidateWhere(postgres))
+    `, r.business.table("accounts"), dueExpr, dueExpr, dueExpr, balanceDetectionCandidateWhere(postgres))
 		cursorText := ""
 		var cursorTime any = timeParam(postgres, time.Time{})
 		cursorID := ""
@@ -358,7 +387,8 @@ func (r *balanceDetectRuntime) CommitDetectionDue(ctx context.Context, input ops
 		if parseErr != nil {
 			return false, parseErr
 		}
-		next = timeParam(postgres, parsed)
+		// text 列写预格式化文本；next 为 nil 时保持传 NULL（清空意图语义）。
+		next = balanceDueText(parsed)
 	}
 	query := fmt.Sprintf(`
     UPDATE %s
@@ -366,11 +396,11 @@ func (r *balanceDetectRuntime) CommitDetectionDue(ctx context.Context, input ops
         updated_at = ?
     WHERE id = ?
       AND config_revision = ?
-      AND balance_query_next_refresh_at = ?
+      AND %s = ?
       AND %s
-  `, r.business.table("accounts"), balanceDetectionCandidateWhere(postgres))
+  `, r.business.table("accounts"), balanceDueColumn(postgres), balanceDetectionCandidateWhere(postgres))
 	result, err := r.business.db.ExecContext(ctx, query,
-		next, timeParam(postgres, r.nowFunc()), textParam(input.AccountID),
+		next, balanceDueText(r.nowFunc()), textParam(input.AccountID),
 		input.ExpectedConfigRevision, timeParam(postgres, expected))
 	if err != nil {
 		return false, err
@@ -396,7 +426,7 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 	}
 	fence := ""
 	args := []any{
-		textParam(configText), timeParam(postgres, next), timeParam(postgres, r.nowFunc()),
+		textParam(configText), balanceDueText(next), balanceDueText(r.nowFunc()),
 		textParam(input.AccountID), input.ExpectedConfigRevision,
 	}
 	if input.ExpectedNextRefreshAt != nil && *input.ExpectedNextRefreshAt != "" {
@@ -404,7 +434,9 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 		if parseErr != nil {
 			return false, parseErr
 		}
-		fence = " AND balance_query_next_refresh_at = ?"
+		// 围栏与 CommitDetectionDue 同范式：PG cast 到 timestamptz 后与
+		// time.Time 参数比较；SQLite 保持规范文本等值。
+		fence = " AND " + balanceDueColumn(postgres) + " = ?"
 		args = append(args, timeParam(postgres, parsed))
 	}
 	query := fmt.Sprintf(`
@@ -429,7 +461,11 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 }
 
 // balanceSnapshotPersist 是 account_usage_snapshots.snapshot_json 的持久化
-// 形状（Node AccountBalanceSnapshot 的被写字段，camelCase 键）。
+// 形状（Node AccountBalanceSnapshot 的被写字段，camelCase 键）。多 Key 合并
+// 结果（keyCount/queriedKeyCount/scope/aggregation/keyBalances）按 shared
+// accountbalance.Snapshot 的 json tag 原样透传：单 Key 快照全部为零值省略
+// （不改变既有 JSON 形状），多 Key 快照携带逐 Key 明细——gateway 列表端剥
+// keyBalances、明细端按 keyFingerprint join（stats 行保留是明细端契约）。
 type balanceSnapshotPersist struct {
 	Status         string  `json:"status"`
 	ConfigRevision int64   `json:"configRevision"`
@@ -440,6 +476,14 @@ type balanceSnapshotPersist struct {
 	ErrorMessage   *string `json:"errorMessage,omitempty"`
 	LastAttemptAt  string  `json:"lastAttemptAt,omitempty"`
 	LastSuccessAt  string  `json:"lastSuccessAt,omitempty"`
+	// 多 Key 合并结果专用字段（对齐 shared accountbalance.Snapshot 的
+	// keyCount/queriedKeyCount/scope/aggregation/keyBalances；KeyBalances
+	// 元素键名即 shared KeyBalance 的 camelCase tag）。
+	KeyCount        int                         `json:"keyCount,omitempty"`
+	QueriedKeyCount int                         `json:"queriedKeyCount,omitempty"`
+	Scope           string                      `json:"scope,omitempty"`
+	Aggregation     string                      `json:"aggregation,omitempty"`
+	KeyBalances     []accountbalance.KeyBalance `json:"keyBalances,omitempty"`
 }
 
 // ReplaceSnapshotIfCurrent 对齐 replaceAccountBalanceSnapshotIfCurrentAsync：
@@ -554,6 +598,15 @@ func (r *balanceDetectRuntime) buildSnapshotJSON(input opsjobs.BalanceSnapshotIn
 				message := full.ErrorMessage
 				view.ErrorMessage = &message
 			}
+			// 多 Key 合并结果透传：仅多 Key 执行路径产出非零字段，单 Key 快照
+			// 保持零值省略（JSON 形状零变化）。
+			view.KeyCount = full.KeyCount
+			view.QueriedKeyCount = full.QueriedKeyCount
+			view.Scope = full.Scope
+			view.Aggregation = full.Aggregation
+			if len(full.KeyBalances) > 0 {
+				view.KeyBalances = full.KeyBalances
+			}
 			return view, nil
 		}
 	}
@@ -604,7 +657,10 @@ func (r *balanceDetectRuntime) RunWithLease(ctx context.Context, candidate opsjo
 }
 
 // QueryBuiltin 对齐 Node queryBuiltinAccountBalance 的 detection 调用面：
-// 候选 → J2 Input → ExecuteBalanceQuery（adapter=builtin 路径）。
+// 候选 → J2 Input → ExecuteAccountBalanceQuery（adapter=builtin 路径）。
+// 执行入口用多 Key 感知的 ExecuteAccountBalanceQuery：api_keys 数组封套按
+// shared 语义逐 Key 查询并合并（scope 口径安全合计）；单 Key 封套由 shared
+// 原样委托 ExecuteBalanceQuery，行为零变化。
 func (r *balanceDetectRuntime) QueryBuiltin(ctx context.Context, candidate opsjobs.BalanceDetectionCandidate, config opsjobs.BalanceQueryConfig) (opsjobs.BalanceBuiltinQueryResult, error) {
 	input, err := r.buildQueryInput(ctx, candidate, config)
 	if err != nil {
@@ -614,14 +670,14 @@ func (r *balanceDetectRuntime) QueryBuiltin(ctx context.Context, candidate opsjo
 		// 仅在注入了客户端时传 Client；nil 接口值会被 J2 视为“测试自有传输”
 		// 而绕过共享客户端构造。
 		if r.client != nil {
-			return accountbalance.ExecuteBalanceQuery(ctx, input, accountbalance.QueryOptions{
+			return accountbalance.ExecuteAccountBalanceQuery(ctx, input, accountbalance.QueryOptions{
 				Secret:  r.secret,
 				Client:  r.client,
 				Timeout: 15 * time.Second,
 				Now:     r.nowFunc,
 			})
 		}
-		return accountbalance.ExecuteBalanceQuery(ctx, input, accountbalance.QueryOptions{
+		return accountbalance.ExecuteAccountBalanceQuery(ctx, input, accountbalance.QueryOptions{
 			Secret:  r.secret,
 			Timeout: 15 * time.Second,
 			Now:     r.nowFunc,

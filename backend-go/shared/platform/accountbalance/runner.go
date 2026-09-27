@@ -179,8 +179,11 @@ func candidateEligible(candidate Candidate, trigger Trigger) error {
 	if keyCount == 0 && (strings.TrimSpace(candidate.APIKey.Ciphertext) != "" || strings.TrimSpace(candidate.Credential.Ciphertext) != "") {
 		keyCount = 1
 	}
-	if candidate.Type != "api_key" || keyCount != 1 {
-		return errors.New("account-balance candidate 必须是单 API Key 物理账户")
+	// 资格放宽（设计 docs/functions/AI账户上游余额查询设计.md §3.4）：多 Key
+	// 账户不再被单 Key 硬门禁拒绝，逐 Key 执行与安全合计由执行核心承担；
+	// 这里只要求至少一个有效 Key。
+	if candidate.Type != "api_key" || keyCount < 1 {
+		return errors.New("account-balance candidate 必须至少包含一个 API Key 物理账户")
 	}
 	switch trigger {
 	case TriggerPeriodic:
@@ -348,7 +351,11 @@ func (r *Runner) prepareInput(ctx context.Context, owner OwnerLease, input Input
 	if !acquired {
 		return runStateSkipped, AccountLease{}, nil, nil
 	}
-	query, queryErr := ExecuteBalanceQuery(ctx, input, QueryOptions{Secret: r.credentialSecret, Client: r.httpClient, Timeout: r.probeTimeout, MaxResponseBytes: r.maxResponseBytes, Now: r.now})
+	// 执行分派：单 Key 输入在 ExecuteAccountBalanceQuery 内部原样委托既有
+	// ExecuteBalanceQuery（行为零变化）；多 Key 输入逐 Key 查询并把合并结果
+	// （含 keyCount/queriedKeyCount/keyBalances 等多 Key 字段）作为 Snapshot
+	// 走同一条 persistInput 写入链。
+	query, queryErr := ExecuteAccountBalanceQuery(ctx, input, QueryOptions{Secret: r.credentialSecret, Client: r.httpClient, Timeout: r.probeTimeout, MaxResponseBytes: r.maxResponseBytes, Now: r.now})
 	if queryErr != nil {
 		// Local setup/decryption errors are not upstream balance diagnostics.
 		// Keep the original error visible and do not fabricate a snapshot.
@@ -435,6 +442,15 @@ func applyQueryResult(query QueryResult, prior SnapshotRecord, found bool, trigg
 		query.Snapshot.ConsecutiveTransientFails = 0
 		query.Snapshot.LastTransientErrorMessage = ""
 		query.Snapshot.LastTransientFailureAt = ""
+		return query.Snapshot
+	}
+	// 多 Key 聚合结果是确定性余额诊断（设计 AI账户上游余额查询设计.md §3.4
+	// 第 4 条）：部分失败与口径不一致都按原样落快照——保留 keyCount /
+	// queriedKeyCount / scope / aggregation / keyBalances / ErrorMessage——
+	// 不进入单 Key 临时失败三振序列（下次刷新仍按 persistInput 的账户配置
+	// 周期安排）。单 Key 快照不携带 KeyCount（恒 0），不会进入本分支。
+	if query.Snapshot.KeyCount > 0 && (query.Snapshot.Status == StatusFailed || query.Snapshot.Status == StatusUnsupported) {
+		query.Snapshot.LastAttemptAt = now.Format(time.RFC3339Nano)
 		return query.Snapshot
 	}
 	if query.Snapshot.Status == StatusUnsupported && !query.Temporary {

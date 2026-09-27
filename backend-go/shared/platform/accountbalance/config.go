@@ -6,7 +6,11 @@ import (
 	"strings"
 )
 
-const MultiKeyMessage = "多 Key 账户不支持余额查询，保存后将自动关闭余额查询"
+// MultiKeyMessage 是多 Key 账户余额能力的用户文案（设计
+// docs/functions/AI账户上游余额查询设计.md §3.4）：多 Key 账户不再自动关闭
+// 余额查询，改为逐 Key 查询并在口径明确时合计。gateway 侧另有同文案常量，
+// 属批次 2 接线，本批次只改 shared。
+const MultiKeyMessage = "多 Key 账户余额将按 Key 查询并在口径明确时合计"
 
 type CustomConfig struct {
 	Path             string `json:"path"`

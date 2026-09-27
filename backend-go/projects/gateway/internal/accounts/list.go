@@ -241,6 +241,15 @@ type ListItem struct {
 	GroupBindStatus             *string     `json:"groupBindStatus,omitempty"`
 	BindingSystemAccountID      *string     `json:"bindingSystemAccountId,omitempty"`
 	Permissions                 Permissions `json:"permissions"`
+	// 余额三字段对齐 Node account-status-snapshot.service.ts:256-265 的列表
+	// 投影：owner 行才输出（authorized 行省略）；balanceQueryEnabled 仅在
+	// true 时输出（Node `balanceQueryEnabled || undefined`），owner 行 false
+	// 同样省略；balanceQueryNextRefreshAt 是 owner 行的列值原样投影（可空
+	// 省略）；balanceSnapshot 由 hydrateBalanceSnapshots 叠加（启用且快照与
+	// 当前配置匹配才带，形状剥 keyBalances）。
+	BalanceQueryEnabled       *bool                         `json:"balanceQueryEnabled,omitempty"`
+	BalanceQueryNextRefreshAt *string                       `json:"balanceQueryNextRefreshAt,omitempty"`
+	BalanceSnapshot           *AccountBalanceSnapshotPublic `json:"balanceSnapshot,omitempty"`
 	LockStatePublic
 }
 
@@ -291,6 +300,55 @@ func (s *Store) hydrateCurrentConcurrency(ctx context.Context, items []ListItem)
 	}
 	for index := range items {
 		items[index].CurrentConcurrency = currents[items[index].ID]
+	}
+}
+
+// hydrateBalanceSnapshots overlays the relay_balance stats snapshots onto the
+// list rows（对齐 Node account-status-snapshot.service.ts:172 + :256-265）：
+// 仅 owner 视图且 balanceQueryEnabled 的行按本页 id 批量读
+// juhe_stats.account_usage_snapshots kind='relay_balance'（900 分块），
+// balanceSnapshot 只在快照与当前配置匹配（configRevision 相等 +
+// nextRefreshAt/next_refresh_after 毫秒相等或双空，Node
+// accountBalanceSnapshotMatchesConfiguration 语义）时写入，形状剥
+// keyBalances。stats 读失败降级为不带 balanceSnapshot、不失败页面（与
+// hydrateCurrentConcurrency 的降级先例一致），warn 留痕。
+func (s *Store) hydrateBalanceSnapshots(ctx context.Context, items []ListItem) {
+	if len(items) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(items))
+	eligible := map[string]bool{}
+	for _, item := range items {
+		if item.AccessType == "authorized" || item.BalanceQueryEnabled == nil || !*item.BalanceQueryEnabled {
+			continue
+		}
+		eligible[item.ID] = true
+		ids = append(ids, item.ID)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	records, err := s.loadRelayBalanceSnapshotRecords(ctx, ids)
+	if err != nil {
+		slog.Warn("账户余额快照 hydrate 失败，列表回退无余额快照",
+			"event", "account_balance_snapshot_hydrate_failed",
+			"error", err)
+		return
+	}
+	for index := range items {
+		item := &items[index]
+		if !eligible[item.ID] {
+			continue
+		}
+		record := records[item.ID]
+		nextRefreshAt := ""
+		if item.BalanceQueryNextRefreshAt != nil {
+			nextRefreshAt = *item.BalanceQueryNextRefreshAt
+		}
+		if !balanceSnapshotMatchesConfiguration(nextRefreshAt, item.ConfigRevision, record) {
+			continue
+		}
+		item.BalanceSnapshot = balanceSnapshotPublicFromSnapshot(record.Snapshot)
 	}
 }
 
@@ -356,6 +414,10 @@ type listRow struct {
 	boundGroupLocalPriority             sql.NullInt64
 	boundGroupLocalSuperPriorityEnabled sql.NullInt64
 	boundGroupLocalFallbackEnabled      sql.NullInt64
+	// 余额列表投影列（account-status-snapshot 列表叠加）：enabled 恒有值
+	// （0/1），next_refresh_at 可空。
+	balanceQueryEnabled       int
+	balanceQueryNextRefreshAt sql.NullString
 }
 
 func listItemColumns(alias string) []string {
@@ -422,6 +484,10 @@ func listItemColumns(alias string) []string {
 		"group_bindings.local_priority AS bound_group_local_priority",
 		"group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled",
 		"group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled",
+		// 余额列表投影列（对齐 Node account-management-list.repository.ts:262-263
+		// 的 balance_query_enabled / balance_query_next_refresh_at 选取）。
+		alias + ".balance_query_enabled",
+		alias + ".balance_query_next_refresh_at",
 	}
 }
 
@@ -505,6 +571,7 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.sourceProxyProfileType, &row.sourceProxyProfileEnabled,
 		&row.boundGroupLocalPriority, &row.boundGroupLocalSuperPriorityEnabled,
 		&row.boundGroupLocalFallbackEnabled,
+		&row.balanceQueryEnabled, &row.balanceQueryNextRefreshAt,
 	)
 	return row, err
 }
@@ -701,6 +768,10 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	if err := s.hydrateOAuthUsageSnapshots(ctx, items); err != nil {
 		return nil, err
 	}
+	// 余额快照叠加（Node account-status-snapshot.service.ts 列表余额投影）：
+	// owner 且启用余额查询的行读 kind='relay_balance' stats 快照；读失败
+	// 降级为不带 balanceSnapshot、不阻断。
+	s.hydrateBalanceSnapshots(ctx, items)
 	// BUG-0175 D-126 账户面: hydrate todayUsage (daily) / usage (totals) from
 	// the stats source; a nil source keeps the zero summaries.
 	if err := s.hydrateListUsage(ctx, items, records); err != nil {
@@ -911,6 +982,19 @@ func (s *Store) newListItem(row listRow, access AccessScope, authorized bool) (L
 				item.ProxyProfileErrorMessage = &message
 			}
 		}
+	}
+	// 余额列表投影基础字段（Node account-status-snapshot.repository.ts:290-291、
+	// :580-581：isAuthorized 时两字段均 undefined）：authorized 行不投影；
+	// owner 行 balanceQueryEnabled 仅 true 时输出（Node service 层
+	// `balanceQueryEnabled || undefined`，false 同样省略），nextRefreshAt 是
+	// 列值原样投影。balanceSnapshot 由 ListPage 的 hydrateBalanceSnapshots
+	// 叠加。authorized 分支（上方）不会走到这里。
+	if !authorized {
+		if row.balanceQueryEnabled == 1 {
+			enabled := true
+			item.BalanceQueryEnabled = &enabled
+		}
+		item.BalanceQueryNextRefreshAt = nullPtrString(row.balanceQueryNextRefreshAt)
 	}
 	item.EffectiveAvailability = ownerEffectiveAvailability(item, now)
 	return item, nil

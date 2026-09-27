@@ -233,6 +233,17 @@ func ScheduledEntries() []Entry {
 			GoBinding: "wireXAIGrokUsageFamily 经组合根接线：全量扫描 xai oauth 账户（无游标/候选租约，并发≤4）→ 解密凭据 access_token → 上游 billing?format=credits + settings（账户代理或直连，15s/端点）→ stats 库 account_usage_snapshots kind='xai_grok' UPSERT（成功 ok+last_success_at 全量替换并清错，失败 failed+截断 last_error_message 且保留上次成功 payload；两种情况均写 last_attempt_at/next_refresh_after=now+10min/updated_at，created_at 不更新）",
 		},
 		{
+			// Go 新增条目：对齐归档 Node account-balance-jobs-projector（jobs→
+			// stats 投影）的 Go 等价任务（归档无对应 scheduled job，Go 侧收敛为
+			// 周期全量投影）。生产事实：gateway 列表/明细读端全部读 juhe_stats
+			// relay_balance 行，而周期快照只落 juhe_jobs——本任务补上投影链。
+			JobName: "account-balance-stats-projection", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "ops-worker",
+			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
+			Writes:   []string{"stats:account_usage_snapshots"},
+			GoStatus: GoWired, GoPackage: "cmd/juhe-ai-jobs（worker_balance_projection.go 组合根适配器）",
+			GoBinding: "wireBalanceStatsProjectionFamily 经组合根接线：全量读 juhe_jobs.account_balance_snapshots（J2 余额服务每周期写入，无游标/幂等 UPSERT）→ join 业务账户取 system_account_id → snapshot_json 映射为 balanceSnapshotPersist camelCase 形状（configRevision 取 juhe_jobs 行 config_revision 列，多 Key 字段 keyCount/queriedKeyCount/scope/aggregation/keyBalances 透传）→ UPSERT juhe_stats.account_usage_snapshots kind='relay_balance'（列集合/冲突目标/next_refresh_after 语义与 ReplaceSnapshotIfCurrent 一致）。仅 PG 分支注册（J2 Go owner 只允许 postgres，SQLite 部署无 juhe_jobs 快照表，登记 disabled）",
+		},
+		{
 			JobName: "openai-oauth-access-token-refresh", Category: CategoryScheduled, Kind: "probe", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
 			Writes:   []string{"business:accounts"},

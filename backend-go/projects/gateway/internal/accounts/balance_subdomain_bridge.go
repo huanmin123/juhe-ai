@@ -50,6 +50,9 @@ type (
 	OAuthUsageWindow = accountsbalance.OAuthUsageWindow
 	// OAuthUsageSnapshot mirrors AccountOAuthUsageSnapshot.
 	OAuthUsageSnapshot = accountsbalance.OAuthUsageSnapshot
+	// AccountBalanceSnapshotPublic mirrors AccountBalanceSnapshot（列表公共
+	// 形状，剥 keyBalances；list.go ListItem 余额投影字段）.
+	AccountBalanceSnapshotPublic = accountsbalance.AccountBalanceSnapshotPublic
 	// BalanceSnapshotCleanupRequest mirrors AccountBalanceSnapshotCleanupRequest.
 	BalanceSnapshotCleanupRequest = accountsbalance.BalanceSnapshotCleanupRequest
 	// BalanceSnapshotCleaner is the nil-safe post-commit cleanup port.
@@ -162,6 +165,12 @@ func (s *Store) loadXAIGrokUsageSnapshots(ctx context.Context, accountIDs []stri
 
 func (s *Store) loadAnthropicUsageSnapshots(ctx context.Context, accountIDs []string) (map[string]*OAuthUsageSnapshot, error) {
 	return s.balanceService().LoadAnthropicUsageSnapshots(ctx, accountIDs)
+}
+
+// loadRelayBalanceSnapshotRecords forwards the kind='relay_balance' batch
+// reader（list.go 的余额快照列表叠加用）.
+func (s *Store) loadRelayBalanceSnapshotRecords(ctx context.Context, accountIDs []string) (map[string]*balanceSnapshotRecord, error) {
+	return s.balanceService().LoadRelayBalanceSnapshotRecords(ctx, accountIDs)
 }
 
 func (s *Store) FindBalanceDetails(ctx context.Context, accountID string, access AccessScope) (*BalanceDetails, error) {
@@ -465,6 +474,10 @@ func balanceSnapshotTimestampMs(value string) (int64, bool) {
 
 func balanceSnapshotMatchesConfiguration(nextRefreshAt string, configRevision int64, record *balanceSnapshotRecord) bool {
 	return accountsbalance.BalanceSnapshotMatchesConfiguration(nextRefreshAt, configRevision, record)
+}
+
+func balanceSnapshotPublicFromSnapshot(snapshot map[string]any) *AccountBalanceSnapshotPublic {
+	return accountsbalance.BalanceSnapshotPublicFromSnapshot(snapshot)
 }
 
 func maskBalanceAPIKey(value string) string {

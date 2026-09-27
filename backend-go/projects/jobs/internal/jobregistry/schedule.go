@@ -271,6 +271,20 @@ func schedules() map[string]Schedule {
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "external-account-maintenance", Timeout: 60 * second,
 			BackoffBase: 10 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
 		},
+		// account-balance-stats-projection：Go 新增任务（归档 Node
+		// account-balance-jobs-projector 的 Go 等价，归档无 scheduler.schedule
+		// 实参可对照，按注册表约定取保守值并注明来源）。每轮全量投影
+		// juhe_jobs.account_balance_snapshots → juhe_stats relay_balance（98 行
+		// 级别，无游标）；interval 1 分钟对齐 J2 快照的秒级新鲜度足够传递；
+		// 独立 lane=balance-projection，不与 external-account-maintenance 的
+		// 余额族互相争抢 lane 并发槽；initial delay 47s 与余额族
+		// （20s/25s/30s/35s/40s）错峰；timeout 45s、OverlapCoalesce 同余额族
+		// 惯例；LeaseTTL 2 分钟同 OAuth/xai 家族（PG 调度租约 + 运行历史）。
+		"account-balance-stats-projection": {
+			Interval: minute, InitialDelay: 47 * second, StablePhaseWindow: 5 * second,
+			PassiveJitter: true, OverlapCoalesce: true, Lane: "balance-projection", Timeout: 45 * second,
+			BackoffBase: 10 * second, BackoffMax: 5 * minute, LeaseTTL: 2 * minute,
+		},
 		"account-api-key-cooldown-retest": {
 			Interval: CooldownRetestInterval, InitialDelay: 60 * second, PassiveJitter: true,
 		},

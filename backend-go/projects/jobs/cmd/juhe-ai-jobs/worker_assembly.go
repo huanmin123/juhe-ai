@@ -242,6 +242,9 @@ func (a *workerAssembly) wireFamilies(ctx context.Context) error {
 	if err := a.wireBalanceDetectFamily(ctx); err != nil {
 		return err
 	}
+	if err := a.wireBalanceStatsProjectionFamily(ctx); err != nil {
+		return err
+	}
 	if err := a.wireXAIGrokUsageFamily(ctx); err != nil {
 		return err
 	}

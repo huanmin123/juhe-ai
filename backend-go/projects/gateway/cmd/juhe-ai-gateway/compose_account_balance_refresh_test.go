@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -321,7 +322,8 @@ func adapterCandidate(t *testing.T, secret, baseURL string, dispatchRevision int
 // adapter over the shared execution core:
 // committed → Persisted snapshot; held owner lease → lease_busy（路由 409
 // 余额查询正在进行）；older input vs newer snapshot → stale（路由 409 配置已
-// 变化）。测试辅助的第二个测试覆盖 draft 探测与多 Key 拒绝。
+// 变化）。后续测试覆盖单 Key 输入形状钉死、多 Key 手动刷新合并快照与 draft
+// 探测。
 func TestGatewayManualBalanceRefresherOutcomeMapping(t *testing.T) {
 	if testing.Short() {
 		t.Skip("adapter mapping test skipped in -short mode")
@@ -372,8 +374,10 @@ func TestGatewayManualBalanceRefresherOutcomeMapping(t *testing.T) {
 }
 
 // TestGatewayManualBalanceRefresherTestDraft covers the non-persisted draft
-// probe against the mock upstream (status fresh) and the multi-Key rejection
-// (the route renders the failed-snapshot 200 shape from the error).
+// probe against the mock upstream: single-Key stays on the unchanged single-Key
+// path (status fresh), a multi-Key pool returns the merged snapshot
+// （sub2api 订阅口径 → scope=account，值相同 → aggregation=shared），0 Key
+// 仍拒绝。
 func TestGatewayManualBalanceRefresherTestDraft(t *testing.T) {
 	if testing.Short() {
 		t.Skip("draft probe test skipped in -short mode")
@@ -395,12 +399,156 @@ func TestGatewayManualBalanceRefresherTestDraft(t *testing.T) {
 	if snapshot["status"] != "fresh" || snapshot["remainingUsd"] != "7.250000" {
 		t.Fatalf("draft snapshot: %v", snapshot)
 	}
+	// 单 Key 快照不携带多 Key 合并字段（既有 JSON 形状零变化）。
+	if _, present := snapshot["keyCount"]; present {
+		t.Fatalf("single-key draft snapshot must not grow keyCount: %v", snapshot)
+	}
 
-	if _, err := refresher.TestDraft(context.Background(), accounts.BalanceDraftProbeInput{
+	// 多 Key 草稿：api_keys 池逐 Key 查询 + 合并快照（mock 上游同值 →
+	// scope=account / aggregation=shared / keyCount=2）。
+	merged, err := refresher.TestDraft(context.Background(), accounts.BalanceDraftProbeInput{
 		Credentials: accounts.Credentials{"api_keys": []any{"sk-1", "sk-2"}, "base_url": upstream.URL},
 		Config:      map[string]any{"adapter": "builtin", "intervalMinutes": 5},
-	}); err == nil || err.Error() != platformaccountbalance.MultiKeyMessage {
-		t.Fatalf("multi-key draft must reject with the shared message, got %v", err)
+	})
+	if err != nil {
+		t.Fatalf("multi-key draft must execute through the shared multi-key entry: %v", err)
+	}
+	if merged["status"] != "fresh" || merged["remainingUsd"] != "7.250000" {
+		t.Fatalf("multi-key merged snapshot: %v", merged)
+	}
+	if merged["scope"] != "account" || merged["aggregation"] != "shared" {
+		t.Fatalf("multi-key merged scope/aggregation: %v", merged)
+	}
+	if merged["keyCount"] != float64(2) || merged["queriedKeyCount"] != float64(2) {
+		t.Fatalf("multi-key merged keyCount: %v", merged)
+	}
+	if balances, ok := merged["keyBalances"].([]any); !ok || len(balances) != 2 {
+		t.Fatalf("multi-key merged keyBalances: %v", merged["keyBalances"])
+	}
+
+	// 0 Key 草稿仍拒绝。
+	if _, err := refresher.TestDraft(context.Background(), accounts.BalanceDraftProbeInput{
+		Credentials: accounts.Credentials{"base_url": upstream.URL},
+		Config:      map[string]any{"adapter": "builtin", "intervalMinutes": 5},
+	}); err == nil || err.Error() != "余额查询测试缺少 API Key" {
+		t.Fatalf("zero-key draft must still reject, got %v", err)
+	}
+}
+
+// multiKeyCandidate builds one manual-refresh candidate whose credentials
+// envelope carries an api_keys pool（多 Key 门禁解除后的候选形状：完整凭据
+// 封套原样直传共享执行核心）.
+func multiKeyCandidate(t *testing.T, secret, baseURL string, keys ...string) accounts.BalanceRefreshCandidate {
+	t.Helper()
+	pool := make([]any, 0, len(keys))
+	for _, key := range keys {
+		pool = append(pool, key)
+	}
+	envelope, err := accounts.EncryptJSON(secret, accounts.Credentials{
+		"api_keys": pool, "base_url": baseURL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return accounts.BalanceRefreshCandidate{
+		ID: "acct-adapter", SystemAccountID: "sys-adapter", ProviderCode: "openai", Type: "api_key",
+		Status: "active", Schedulable: true, ConfigRevision: 1, DispatchRevision: 1,
+		CredentialsEnvelope: envelope, ConfigJSON: `{"adapter":"builtin","intervalMinutes":5}`,
+	}
+}
+
+// zeroKeyCandidate builds one manual-refresh candidate without any API Key
+// （门禁改写后 0 Key 仍拒绝的候选形状）.
+func zeroKeyCandidate(t *testing.T, secret, baseURL string) accounts.BalanceRefreshCandidate {
+	t.Helper()
+	envelope, err := accounts.EncryptJSON(secret, accounts.Credentials{"base_url": baseURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return accounts.BalanceRefreshCandidate{
+		ID: "acct-zero", SystemAccountID: "sys-zero", ProviderCode: "openai", Type: "api_key",
+		Status: "active", Schedulable: true, ConfigRevision: 1, DispatchRevision: 1,
+		CredentialsEnvelope: envelope, ConfigJSON: `{"adapter":"builtin","intervalMinutes":5}`,
+	}
+}
+
+// TestGatewayManualBalanceRefresherSingleKeyInputShapePinned pins the exact
+// Input produced for a single-Key candidate: the effective-Key count check
+// never participates in Input construction and the credentials envelope is
+// forwarded verbatim, so the rewritten gate must not perturb the single-Key
+// shape（改动前后逐字段一致，钉死）.
+func TestGatewayManualBalanceRefresherSingleKeyInputShapePinned(t *testing.T) {
+	refresher, _ := newAdapterBalanceRefresher(t, "input-shape-owner", "", false)
+	fixedNow := time.Date(2026, 9, 27, 8, 0, 0, 0, time.UTC)
+	refresher.now = func() time.Time { return fixedNow }
+	candidate := adapterCandidate(t, "gateway-adapter-secret", "https://upstream.example/v1", 1)
+	input, err := refresher.buildManualInput(context.Background(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := platformaccountbalance.Input{
+		AccountID:       "acct-adapter",
+		SystemAccountID: "sys-adapter",
+		InputVersion:    1,
+		ConfigRevision:  1,
+		Provider:        "openai",
+		Type:            "api_key",
+		Status:          "active",
+		Schedulable:     true,
+		BaseURL:         "https://upstream.example/v1",
+		Config:          platformaccountbalance.QueryConfig{Adapter: "builtin", IntervalMinutes: 5},
+		// credentials_encrypted 列密文原样直传（不拆包、不重复加密）。
+		APIKey:    platformaccountbalance.CredentialEnvelope{Kind: "api_key", Ciphertext: candidate.CredentialsEnvelope},
+		Trigger:   platformaccountbalance.TriggerManual,
+		IssuedAt:  fixedNow.UTC(),
+		ExpiresAt: fixedNow.UTC().Add(manualBalanceInputTTL),
+	}
+	if !reflect.DeepEqual(input, expected) {
+		t.Fatalf("single-key manual input shape changed:\n got %#v\nwant %#v", input, expected)
+	}
+}
+
+// TestGatewayManualBalanceRefresherMultiKeyManualRefresh drives the manual
+// refresh end to end over the shared runner with an api_keys pool candidate:
+// both Keys hit the mock upstream（sub2api quota_limited → scope=key）and the
+// merged snapshot is committed（decimal sum 3.25+3.25=6.5）；0 Key 候选仍被
+// 门禁以既有文案拒绝.
+func TestGatewayManualBalanceRefresherMultiKeyManualRefresh(t *testing.T) {
+	if testing.Short() {
+		t.Skip("adapter mapping test skipped in -short mode")
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"unit":"USD","remaining":"3.25","mode":"quota_limited"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	// runner 注入 canned doer（Mock 优先：逐 Key 子查询都回放同一响应）。
+	refresher, _ := newAdapterBalanceRefresher(t, "multi-key-owner", `{"unit":"USD","remaining":"3.25","mode":"quota_limited"}`, false)
+	outcome, err := refresher.RefreshManual(context.Background(), multiKeyCandidate(t, "gateway-adapter-secret", upstream.URL, "sk-multi-1", "sk-multi-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Persisted || outcome.Outcome != "committed" {
+		t.Fatalf("multi-key committed outcome: %+v err=%v", outcome, err)
+	}
+	snapshot := outcome.Snapshot
+	if snapshot["status"] != "fresh" || snapshot["remainingUsd"] != "6.5" {
+		t.Fatalf("multi-key merged snapshot: %v", snapshot)
+	}
+	if snapshot["scope"] != "key" || snapshot["aggregation"] != "sum" {
+		t.Fatalf("multi-key merged scope/aggregation: %v", snapshot)
+	}
+	if snapshot["keyCount"] != float64(2) || snapshot["queriedKeyCount"] != float64(2) {
+		t.Fatalf("multi-key merged keyCount: %v", snapshot)
+	}
+	if balances, ok := snapshot["keyBalances"].([]any); !ok || len(balances) != 2 {
+		t.Fatalf("multi-key merged keyBalances: %v", snapshot["keyBalances"])
+	}
+
+	// 0 Key 候选仍拒绝（保留既有错误文案）。
+	if _, err := refresher.RefreshManual(context.Background(), zeroKeyCandidate(t, "gateway-adapter-secret", upstream.URL)); err == nil || err.Error() != "余额手动刷新输入必须包含一个有效的 API Key" {
+		t.Fatalf("zero-key manual refresh must still reject with the existing message, got %v", err)
 	}
 }
 

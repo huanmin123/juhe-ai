@@ -87,7 +87,6 @@ func TestW7CCandidateEligibilityMatrix(t *testing.T) {
 		w7cBalanceCandidate(t, store, "w7c-del", func(c *Candidate) { c.Deleted = true }),              // deleted
 		w7cBalanceCandidate(t, store, "w7c-auth", func(c *Candidate) { c.Authorized = true }),          // authorized
 		w7cBalanceCandidate(t, store, "w7c-type", func(c *Candidate) { c.Type = "oauth" }),             // wrong type
-		w7cBalanceCandidate(t, store, "w7c-keys", func(c *Candidate) { c.APIKeyCount = 2 }),            // multi key
 		w7cBalanceCandidate(t, store, "w7c-off", func(c *Candidate) { c.BalanceEnabled = false }),      // periodic disabled
 		w7cBalanceCandidate(t, store, "w7c-pending", func(c *Candidate) { c.Status = "pending_test" }), // not active
 		w7cBalanceCandidate(t, store, "w7c-unsched", func(c *Candidate) { c.Schedulable = false }),     // not schedulable
@@ -95,8 +94,16 @@ func TestW7CCandidateEligibilityMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Seen != 8 || report.Executed != 0 || len(report.Errors) != 8 {
+	if report.Seen != 7 || report.Executed != 0 || len(report.Errors) != 7 {
 		t.Fatalf("eligibility report: %#v", report)
+	}
+
+	// 多 Key 放宽（设计 AI账户上游余额查询设计.md §3.4）：keyCount>=1 的候选
+	// 不再被单 Key 硬门禁拒绝，照常进入执行链（逐 Key 执行由执行核心承担）。
+	multiKey := w7cBalanceCandidate(t, store, "w7c-keys", func(c *Candidate) { c.APIKeyCount = 2 })
+	report, err = runner.RunPeriodic(context.Background(), []Candidate{multiKey})
+	if err != nil || report.Executed != 1 || len(report.Errors) != 0 {
+		t.Fatalf("multi-key candidate must stay eligible: %#v %v", report, err)
 	}
 
 	first := w7cBalanceCandidate(t, store, "w7c-first", func(c *Candidate) { c.FirstProbe = false; c.BalanceEnabled = false })

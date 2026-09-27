@@ -267,14 +267,15 @@ func TestW1ZResolveProxyURLEnvelopeArms(t *testing.T) {
 }
 
 // TestW1ZRefreshManualInputValidationArms 经 RefreshManual 驱动 buildManualInput
-// 的全部拒绝臂（错误臂在触达 runner 前返回，无需执行 store）。
+// 的全部拒绝臂（错误臂在触达 runner 前返回，无需执行 store）。多 Key 池不再是
+// 拒绝臂（门禁已解除，≥1 个有效 Key 即放行），其放行路径由
+// TestGatewayManualBalanceRefresherMultiKeyManualRefresh 以真实 store + canned
+// runner 覆盖。
 func TestW1ZRefreshManualInputValidationArms(t *testing.T) {
 	refresher := &gatewayManualBalanceRefresher{db: nil, pg: false, secret: w1zRefreshSecret, now: time.Now}
 
 	brokenEnvelopeCandidate := w1zSealedCandidate(t, accounts.Credentials{"api_key": "sk-w1z", "base_url": "http://127.0.0.1:9"})
 	brokenEnvelopeCandidate.CredentialsEnvelope = "w1z-not-a-v1-envelope"
-
-	multiKeyCandidate := w1zSealedCandidate(t, accounts.Credentials{"api_keys": []any{"sk-1", "sk-2"}, "base_url": "http://127.0.0.1:9"})
 
 	missingBaseURLCandidate := w1zSealedCandidate(t, accounts.Credentials{"api_key": "sk-w1z"})
 
@@ -293,7 +294,6 @@ func TestW1ZRefreshManualInputValidationArms(t *testing.T) {
 		wantErr   string
 	}{
 		{name: "凭据信封无法解封", candidate: brokenEnvelopeCandidate, wantErr: "无法解封"},
-		{name: "多 Key 池拒绝", candidate: multiKeyCandidate, wantErr: "必须包含一个有效的 API Key"},
 		{name: "缺少 base_url", candidate: missingBaseURLCandidate, wantErr: "缺少 base_url"},
 		{name: "配置 JSON 损坏", candidate: brokenConfigCandidate, wantErr: "查询配置无效"},
 		{name: "配置未知字段", candidate: unknownConfigFieldCandidate, wantErr: "查询配置无效"},
