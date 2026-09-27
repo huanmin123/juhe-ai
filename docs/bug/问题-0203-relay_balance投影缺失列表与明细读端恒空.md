@@ -27,4 +27,4 @@
 
 ## 状态
 
-已修复，待发布。
+已修复，2026-09-27 23:19 发布；发布后投影任务 `scannedCount:98 projectedCount:97 skippedCount:1`（孤儿跳过），relay_balance 行数持续增长，符合预期。

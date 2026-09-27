@@ -29,6 +29,7 @@
 - 包测试全绿：`upstreamidentity`（家族选择/未知上游无 UA/已有 UA 不覆盖/anthropic api_key 无 beta）、`accountprobe`（泛化探针 Go 默认 UA、codex UA 锁定常量）、`upstreamcatalog`（泛化目录请求中性 UA、GLM General 改 ZCode）、`accounthealth`（泛化探针空 UA、GLM Coding 双协议 ZCode）、`modelcheckowner`（hybrid 改 ZCode）；四模块 `go build` 通过；改动文件 `gofmt -l` 干净。
 - `modelcheckowner` 全包另有 5 个 PG 门禁用例失败，原因为 dev PG 实例缺 `juhe_ai_sub2api_dev_app` 角色（与 BUG-0196 复查记录的同源环境问题，失败点在临时子库创建，与本次改动无关），dev bootstrap 后自愈。
 - 真实集成待生产发布后观察：supeai 账户手动测试与 J1 探针不再必死（见遗留 1）。
+- 2026-09-27 23:19 已发布，观察期开始。
 
 ## 遗留（定级均不阻塞）
 
