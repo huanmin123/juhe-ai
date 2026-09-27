@@ -556,6 +556,33 @@ func TestListConversationsKeysetPagination(t *testing.T) {
 	}
 }
 
+// 遗留行兼容：bind 快照五列是加列交付的，存量行只有 bind_mode 有
+// NOT NULL DEFAULT，bind_group_name_snapshot / bind_account_name_snapshot
+// 为 NULL。读取面必须容忍 NULL，否则存量用户的会话列表/详情整体 500。
+func TestListAndGetTolerateLegacyNullBindNameSnapshots(t *testing.T) {
+	f := newChatFixture(t)
+	f.createConversation("chat_conv_legacy", "owner-1")
+	if _, err := f.db.Exec(`UPDATE chat_conversations
+		SET bind_group_name_snapshot = NULL, bind_account_name_snapshot = NULL
+		WHERE id = 'chat_conv_legacy'`); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := f.store.GetConversation("chat_conv_legacy", "owner-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation == nil || conversation.BindGroupNameSnapshot != "" || conversation.BindAccountNameSnapshot != "" {
+		t.Fatalf("legacy row must read back with empty bind name snapshots: %+v", conversation)
+	}
+	page, err := f.store.ListConversations(ListConversationsInput{SystemAccountID: "owner-1", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 1 || page[0].ID != "chat_conv_legacy" || page[0].BindGroupNameSnapshot != "" || page[0].BindAccountNameSnapshot != "" {
+		t.Fatalf("legacy row must not break listing: %+v", page)
+	}
+}
+
 func TestUpdateConversationPartialAnd404(t *testing.T) {
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_a", "owner-1")

@@ -1,5 +1,6 @@
 # Bug 记录目录
 
+- [BUG-0199](问题-0199-会话bind名快照列NULL扫描导致存量会话列表详情500.md)：会话绑定模式五列加列交付后，存量会话行的 `bind_group_name_snapshot`/`bind_account_name_snapshot` 为 NULL，扫描结构体声明为普通 `string`——PG 扫描 NULL 直接报错，存量用户的会话列表/详情整体 500；已修复（快照列改 `sql.NullString`，NULL 归一空串、JSON 形状不变）+ 存量 NULL 行回归测试（未修复 FAIL 已验证），生产验收恢复 200。
 - [BUG-0198](问题-0198-审计正文捕获装配缺失详情恒未抓取.md)：审计设置适配器从不赋值 `FullBodyCaptureEnabled`（恒 false），审计主开关无法传导到正文捕获——refs 599 条仅 28 个正文 blob，详情页恒"未抓取"；已修复（适配器开关一致 `FullBodyCaptureEnabled=enabled` + 生产采样率显式配 1，成功正文全量长期保留）。
 - [BUG-0197](问题-0197-用量统计元数据水合占位符参数多传.md)：用量统计 caller_account 视角（系统账户筛选 / my-stats）元数据水合查询 headParams 多传一个参数——SQLite 静默丢弃 chunk 末位账户（数据悄悄缺失），PG 参数计数不匹配直达 500（「用量统计加载失败」）；已修复（参数收敛为 3 + 测试断言反转为正确契约），statreads 全量方言审计与三方表契约核对无同族残留，待发布。
 - [BUG-0196](问题-0196-PG写超时三缺陷J1转正瘫痪F3永久失租J2due不推进.md)：PG 阵发写超时引爆三缺陷——J1 cursor 保存失败丢弃整个探针 outcome 致新账户永久卡 `pending_test`；F3 owner lease 一次续租超时永久 terminal 致审计丢弃+健康 503；J2 周期余额刷新从不回写 due 游标致 475 账户每 5s 重复探测。三修复（cursor 降级 best-effort / 2×TTL 放宽窗口+reacquire / `BusinessDueStore` 按契约写回 due）已完成待发布，终审无 blocker；遗留 producer 旧 fence 快照缺口等 5 项已登记；dev PG 容器缺位致 PG smoke 未跑待补。

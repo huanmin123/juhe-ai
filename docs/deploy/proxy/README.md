@@ -5,8 +5,9 @@
 
 ## 文档索引
 
-- [sing-box 网络代理部署指南](sing-box网络代理部署指南.md)：Linux、Windows、macOS 下安装 sing-box、配置本机 mixed 代理和接入 juhe-ai。
+- [sing-box 网络代理部署指南](sing-box网络代理部署指南.md)：Linux、Windows、macOS 下安装 sing-box、配置本机 mixed 代理和接入 juhe-ai；第 10 节为多节点订阅池的择优控制器（selector + juhe-proxy-switch）。
 - [代理部署示例](代理部署示例.md)：一次本机 sing-box + juhe-ai 账号代理绑定示例。
+- [controller/](controller/)：择优控制器权威文件（`juhe-proxy-switch.py` 与 systemd service/timer 单元）。
 
 ## 适用边界
 

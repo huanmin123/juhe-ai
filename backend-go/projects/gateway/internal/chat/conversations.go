@@ -192,9 +192,9 @@ type conversationRow struct {
 	apiKeyNameSnapshot          string
 	bindMode                    string
 	bindGroupID                 sql.NullString
-	bindGroupNameSnapshot       string
+	bindGroupNameSnapshot       sql.NullString
 	bindAccountID               sql.NullString
-	bindAccountNameSnapshot     string
+	bindAccountNameSnapshot     sql.NullString
 	title                       string
 	titleSourceMessageID        sql.NullString
 	isPinned                    int64
@@ -287,9 +287,9 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 		APIKeyNameSnapshot:      row.apiKeyNameSnapshot,
 		BindMode:                row.bindMode,
 		BindGroupID:             nullText(row.bindGroupID),
-		BindGroupNameSnapshot:   row.bindGroupNameSnapshot,
+		BindGroupNameSnapshot:   row.bindGroupNameSnapshot.String,
 		BindAccountID:           nullText(row.bindAccountID),
-		BindAccountNameSnapshot: row.bindAccountNameSnapshot,
+		BindAccountNameSnapshot: row.bindAccountNameSnapshot.String,
 		Title:                   row.title,
 		IsPinned:                row.isPinned == 1,
 		LastModel:               nullText(row.lastModel),
