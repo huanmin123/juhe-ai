@@ -82,7 +82,10 @@ func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, post
 	}
 	mappingQuery := "SELECT upstream_model,upstream_endpoint_family FROM " + table("account_model_mappings") + " WHERE account_id=? AND source_model=? AND source_endpoint_family=? AND enabled=1"
 	if postgres {
-		mappingQuery = "SELECT upstream_model,upstream_endpoint_family FROM " + table("account_model_mappings") + " WHERE account_id=$1 AND source_model=$2 AND source_endpoint_family=$3 AND enabled=TRUE"
+		// enabled is an integer column in both dialect schemas (maintenance
+		// pg_schema_business_tables / sqlite_schema_business); a TRUE literal
+		// fails on PostgreSQL with 42883 integer = boolean (BUG-0205).
+		mappingQuery = "SELECT upstream_model,upstream_endpoint_family FROM " + table("account_model_mappings") + " WHERE account_id=$1 AND source_model=$2 AND source_endpoint_family=$3 AND enabled=1"
 	}
 	for _, family := range sourceFamilies {
 		var upstream, upstreamFamily string
