@@ -601,7 +601,12 @@ func (s *Scheduler) acquireLane(job *jobState) bool {
 		lane = &laneState{}
 		s.lanes[laneName] = lane
 	}
-	if lane.runningJob == "" {
+	// 交接再入：releaseLane 交接时已把 runningJob 置为队首任务名再唤醒它，
+	// 被唤醒任务的 fire 必须认领自己的名字，否则会把自身重新排队且永不
+	// 释放——lane 自死锁，同 lane 全部任务永久 resource_lane_busy
+	// （2026-09-28 生产：external-account-maintenance 与 stats-online 双双
+	// 在重启后首轮交接即冻结）。
+	if lane.runningJob == "" || lane.runningJob == job.spec.Name {
 		lane.runningJob = job.spec.Name
 		s.mu.Unlock()
 		return true
