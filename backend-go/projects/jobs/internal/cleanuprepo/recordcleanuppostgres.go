@@ -871,24 +871,40 @@ func (s *RecordCleanupStore) CleanupAPIKeyRelatedPostgres(ctx context.Context, a
 		return s.deletePostgresAPIKeyUsageDataBatch(ctx, tx, apiKeyID, systemAccountID, recordCleanupBatchLimit, updatedAt)
 	})
 	if err != nil {
-		_ = s.markPostgresAPIKeyCleanupTargetError(ctx, apiKeyID, systemAccountID, err.Error(), s.nowIso())
+		if markErr := s.markPostgresAPIKeyCleanupTargetError(ctx, apiKeyID, systemAccountID, err.Error(), s.nowIso()); markErr != nil {
+			s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+				"event", "record_cleanup_mark_target_failed",
+				"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+		}
 		return retention.RelatedCleanupResult{}, err
 	}
 	hasUsageMore, err := s.hasPostgresAPIKeyUsageRecords(ctx, apiKeyID, systemAccountID)
 	if err != nil {
-		_ = s.markPostgresAPIKeyCleanupTargetError(ctx, apiKeyID, systemAccountID, err.Error(), s.nowIso())
+		if markErr := s.markPostgresAPIKeyCleanupTargetError(ctx, apiKeyID, systemAccountID, err.Error(), s.nowIso()); markErr != nil {
+			s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+				"event", "record_cleanup_mark_target_failed",
+				"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+		}
 		return retention.RelatedCleanupResult{}, err
 	}
 	hasMore := hasUsageMore
 	if !hasMore {
 		if err := s.cleanupPostgresAPIKeyFinalStats(ctx, apiKeyID, systemAccountID); err != nil {
-			_ = s.markPostgresAPIKeyCleanupTargetError(ctx, apiKeyID, systemAccountID, err.Error(), s.nowIso())
+			if markErr := s.markPostgresAPIKeyCleanupTargetError(ctx, apiKeyID, systemAccountID, err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}
 	statsRows, err := s.hasPostgresAPIKeyStatsRows(ctx, apiKeyID, systemAccountID)
 	if err != nil {
-		_ = s.markPostgresAPIKeyCleanupTargetError(ctx, apiKeyID, systemAccountID, err.Error(), s.nowIso())
+		if markErr := s.markPostgresAPIKeyCleanupTargetError(ctx, apiKeyID, systemAccountID, err.Error(), s.nowIso()); markErr != nil {
+			s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+				"event", "record_cleanup_mark_target_failed",
+				"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+		}
 		return retention.RelatedCleanupResult{}, err
 	}
 	hasMore = hasMore || statsRows
@@ -946,24 +962,40 @@ func (s *RecordCleanupStore) CleanupAccountRelatedPostgres(ctx context.Context, 
 		return s.deletePostgresAccountUsageDataBatch(ctx, tx, target, recordCleanupBatchLimit, updatedAt)
 	})
 	if err != nil {
-		_ = s.markPostgresAccountCleanupTargetError(ctx, target, err.Error(), s.nowIso())
+		if markErr := s.markPostgresAccountCleanupTargetError(ctx, target, err.Error(), s.nowIso()); markErr != nil {
+			s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+				"event", "record_cleanup_mark_target_failed",
+				"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+		}
 		return retention.RelatedCleanupResult{}, err
 	}
 	hasUsageMore, err := s.hasPostgresAccountUsageRecords(ctx, target)
 	if err != nil {
-		_ = s.markPostgresAccountCleanupTargetError(ctx, target, err.Error(), s.nowIso())
+		if markErr := s.markPostgresAccountCleanupTargetError(ctx, target, err.Error(), s.nowIso()); markErr != nil {
+			s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+				"event", "record_cleanup_mark_target_failed",
+				"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+		}
 		return retention.RelatedCleanupResult{}, err
 	}
 	hasMore := hasUsageMore
 	if !hasMore {
 		if err := s.cleanupPostgresAccountFinalStats(ctx, target); err != nil {
-			_ = s.markPostgresAccountCleanupTargetError(ctx, target, err.Error(), s.nowIso())
+			if markErr := s.markPostgresAccountCleanupTargetError(ctx, target, err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}
 	statsRows, err := s.hasPostgresAccountStatsRows(ctx, target)
 	if err != nil {
-		_ = s.markPostgresAccountCleanupTargetError(ctx, target, err.Error(), s.nowIso())
+		if markErr := s.markPostgresAccountCleanupTargetError(ctx, target, err.Error(), s.nowIso()); markErr != nil {
+			s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+				"event", "record_cleanup_mark_target_failed",
+				"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+		}
 		return retention.RelatedCleanupResult{}, err
 	}
 	hasMore = hasMore || statsRows

@@ -145,7 +145,8 @@ function cloneContentBlock(value: unknown): ChatMessageContentBlock | undefined 
       type: 'tool_call',
       ...(optionalSafeString(value.blockId) ? { blockId: value.blockId as string } : {}),
       ...(integerValue(value.order) !== undefined ? { order: value.order as number } : {}),
-      ...(id ? { id } : {}), ...(callId ? { callId } : {}), toolType: value.toolType, status: value.status
+      ...(id ? { id } : {}), ...(callId ? { callId } : {}), toolType: value.toolType, status: value.status,
+      ...(isPlainRecord(value.item) ? { item: value.item } : {})
     }
   }
   if (value.type === 'output_image' && typeof value.assetId === 'string' && integerValue(value.order) !== undefined && isProcessStatus(value.status)) {
@@ -182,7 +183,7 @@ export function cloneVisibleChatMessage(value: unknown): ChatMessage | undefined
     for (const key of ['clientMessageId', 'traceId', 'finishReason', 'errorCode', 'errorMessage', 'reasoningText'] as const) if (value[key] !== undefined) { if (!safeString(value[key])) return undefined; result[key] = value[key] }
     if (value.completedAt !== undefined) { const completedAt = canonicalServerDateTime(value.completedAt); if (!completedAt) return undefined; result.completedAt = completedAt }
     if (Array.isArray(value.contentBlocks)) result.contentBlocks = value.contentBlocks.map(cloneContentBlock).filter((item): item is ChatMessageContentBlock => Boolean(item))
-    if (Array.isArray(value.toolEvents)) result.toolEvents = value.toolEvents.flatMap((event) => isPlainRecord(event) && typeof event.id === 'string' && typeof event.type === 'string' && isToolStatus(event.status) ? [{ id: event.id, type: event.type, status: event.status }] : [])
+    if (Array.isArray(value.toolEvents)) result.toolEvents = value.toolEvents.flatMap((event) => isPlainRecord(event) && typeof event.id === 'string' && typeof event.type === 'string' && isToolStatus(event.status) ? [{ id: event.id, type: event.type, status: event.status, ...(isPlainRecord(event.item) ? { item: event.item } : {}) }] : [])
     for (const key of ['eventVersion', 'renderRevision'] as const) if (value[key] !== undefined) { const version = integerValue(value[key]); if (version === undefined || version < 0) return undefined; result[key] = version }
     if (!validatePersistentPayload(result)) return undefined
     return JSON.parse(JSON.stringify(result)) as ChatMessage

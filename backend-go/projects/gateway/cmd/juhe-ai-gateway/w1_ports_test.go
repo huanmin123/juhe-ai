@@ -378,8 +378,8 @@ func TestW1SlogObservabilityAdapter(t *testing.T) {
 
 func TestW1AdapterGuardsAndIdentity(t *testing.T) {
 	// usage 适配器：recorder / service 缺席直接返回。
-	usageDispatchAdapter{}.DispatchUsageRecord(gatewayresponse.ModelsUsageDispatchInput{})
-	usageDispatchAdapter{}.RecordGatewayFailure(gatewayresponse.FailureUsageRecordInput{})
+	(&usageDispatchAdapter{}).DispatchUsageRecord(gatewayresponse.ModelsUsageDispatchInput{})
+	(&usageDispatchAdapter{}).RecordGatewayFailure(gatewayresponse.FailureUsageRecordInput{})
 	// 用量失败上下文投影：字段逐一映射。
 	source := gatewaypreauth.GatewayFailureUsageContext{TraceID: "t1", TrafficSource: "gateway", SystemAccountID: "sys_1", GroupID: "grp_1", ProviderCode: "openai"}
 	projected := usageFailureContextOf(source)

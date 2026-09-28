@@ -99,6 +99,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return failWith(stderr, err)
 	}
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: logLevel}))
+	// 2026-09-28 日志治理：safego 等以 slog.Default() 兜底的组件统一走进程
+	// JSON logger。SetDefault 不在此处安装：--once 与 --run-jobs-once 分支的
+	// 契约是向 stdout 输出单个 JSON 结果，SetDefault 会安装 std log → slog
+	// 桥接，任何后台组件经 std log 的输出都会混入结果流；这两个分支的全部
+	// 出口都在下方守护路径之前提前 return，slog.Default() 保持 std 默认
+	// （stderr 文本），与改造前 log.Printf 走 stderr 的行为一致——有意保持
+	// once 契约。SetDefault 延后到守护路径安装（run-jobs-once 分支之后）。
 	processlog.CatchPanic(logger)
 	processlog.KeepAliveOnBrokenOutputPipe()
 	ownerMode, err := ownermode.Load(os.Getenv)
@@ -576,6 +583,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if *runJobsOnce != "" {
 		return runJobsOnceExit(worker, *runJobsOnce, stdout, stderr)
 	}
+
+	// 守护路径（唯一到达点：--once / --run-jobs-once / 迁移 / passive 等全部
+	// 提前 return 分支的出口都在上方）：此处安装 std log → slog 桥接的默认
+	// logger，safego 等以 slog.Default() 兜底的组件统一走进程 JSON logger。
+	// once 语义分支不经过本行，其 stdout 单 JSON 结果契约不受后台日志污染。
+	slog.SetDefault(logger)
 
 	listener, err := listenLoopback(*healthAddress)
 	if err != nil {

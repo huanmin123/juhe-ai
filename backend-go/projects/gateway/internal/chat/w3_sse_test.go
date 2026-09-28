@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -358,6 +359,116 @@ func TestCollectOpenAIChatSseW3(t *testing.T) {
 			t.Fatalf("CRLF 分帧失败: %+v err=%v deltas=%v", result, err, deltas)
 		}
 	})
+}
+
+// chunkedReaderW3 按预设切片逐段返回数据，模拟上游把一个 SSE 事件拆在多次
+// Read 之间送达（含多字节字符在 Read 边界截断）。
+type chunkedReaderW3 struct {
+	chunks [][]byte
+	index  int
+}
+
+func (r *chunkedReaderW3) Read(p []byte) (int, error) {
+	if r.index >= len(r.chunks) {
+		return 0, io.EOF
+	}
+	chunk := r.chunks[r.index]
+	n := copy(p, chunk)
+	if n < len(chunk) {
+		r.chunks[r.index] = chunk[n:]
+	} else {
+		r.index++
+	}
+	return n, nil
+}
+
+// TestCollectOpenAIChatSseSlowUpstreamW3 证明采集器增量消费：上游每写一个事件
+// 就等待 onDelta 到达后才继续写后续事件；若实现退化为全量缓冲，第一步等待会
+// 超时失败（打字机/自动滚动契约）。
+func TestCollectOpenAIChatSseSlowUpstreamW3(t *testing.T) {
+	reader, writer := io.Pipe()
+	deltas := make(chan string, 8)
+	outcome := make(chan error, 1)
+	go func() {
+		_, err := CollectOpenAIChatSse(reader, maxMessageBytes, func(delta string) { deltas <- delta }, nil, 0)
+		outcome <- err
+	}()
+	write := func(payload string) {
+		if _, err := writer.Write([]byte(payload)); err != nil {
+			t.Fatalf("写入上游事件失败: %v", err)
+		}
+	}
+	waitDelta := func(want string) {
+		t.Helper()
+		select {
+		case got := <-deltas:
+			if got != want {
+				t.Fatalf("delta = %q, 期望 %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("上游尚未结束时 onDelta(%q) 未即时送达", want)
+		}
+	}
+	write(`data: {"choices":[{"delta":{"content":"A"}}]}` + "\n\n")
+	waitDelta("A")
+	write(`data: {"choices":[{"delta":{"content":"B"}}]}` + "\n\n")
+	waitDelta("B")
+	write("data: [DONE]\n\n")
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭上游失败: %v", err)
+	}
+	if err := <-outcome; err != nil {
+		t.Fatalf("采集失败: %v", err)
+	}
+	select {
+	case extra := <-deltas:
+		t.Fatalf("不应有多余增量: %q", extra)
+	default:
+	}
+}
+
+// TestCollectOpenAIChatSseSplitRuneW3 覆盖多字节字符拆在两次 Read 之间：增量
+// UTF-8 校验必须暂存未凑齐的尾部字节，解析结果与一次性读入完全一致。
+func TestCollectOpenAIChatSseSplitRuneW3(t *testing.T) {
+	full := `data: {"choices":[{"delta":{"content":"你好"}}]}` + "\n\n" +
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+	// “你”(E4 BD A0) 拆在第一块尾，“好”(E5 A5 BD) 完整落在第二块；[DONE]
+	// 也拆成两段，覆盖事件负载与哨兵两种跨块形态。
+	split := [][]byte{
+		[]byte(`data: {"choices":[{"delta":{"content":"` + "\xe4\xbd"),
+		[]byte("\xa0\xe5\xa5\xbd" + `"}}]}` + "\n\n"),
+		[]byte(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"),
+		[]byte("data: [DO"),
+		[]byte("NE]\n\n"),
+	}
+	var streamedDeltas []string
+	streamed, streamErr := CollectOpenAIChatSse(&chunkedReaderW3{chunks: split}, maxMessageBytes, func(delta string) {
+		streamedDeltas = append(streamedDeltas, delta)
+	}, nil, 0)
+	var wholeDeltas []string
+	whole, wholeErr := CollectOpenAIChatSse(strings.NewReader(full), maxMessageBytes, func(delta string) {
+		wholeDeltas = append(wholeDeltas, delta)
+	}, nil, 0)
+	if streamErr != nil || wholeErr != nil {
+		t.Fatalf("采集失败: streamed=%v whole=%v", streamErr, wholeErr)
+	}
+	if streamed.Content != whole.Content || whole.Content != "你好" {
+		t.Fatalf("Content 不一致: streamed=%q whole=%q", streamed.Content, whole.Content)
+	}
+	if !equalStringsW3(streamedDeltas, wholeDeltas) || !equalStringsW3(wholeDeltas, []string{"你好"}) {
+		t.Fatalf("增量回调不一致: streamed=%v whole=%v", streamedDeltas, wholeDeltas)
+	}
+	if streamed.Done != whole.Done || streamed.FinishReason != whole.FinishReason || streamed.OutputTokens != nil {
+		t.Fatalf("终态不一致: streamed=%+v whole=%+v", streamed, whole)
+	}
+	// 跨块合并后出现非法字节：必须判定整体无效，错误文案不变。
+	if _, err := CollectOpenAIChatSse(&chunkedReaderW3{chunks: [][]byte{
+		[]byte(`data: {"choices":[{"delta":{"content":"` + "\xe4\xbd"),
+		[]byte("\xff\"}}]}\n\ndata: [DONE]\n\n"),
+	}}, maxMessageBytes, nil, nil, 0); err == nil || !strings.Contains(err.Error(), "上游返回了无效的 SSE JSON") {
+		t.Fatalf("跨块非法 UTF-8 应报错: %v", err)
+	}
 }
 
 // TestCollectOpenAIChatSseReasoningDeltaW3 覆盖思考模型 reasoning_content 增量的分离回调。

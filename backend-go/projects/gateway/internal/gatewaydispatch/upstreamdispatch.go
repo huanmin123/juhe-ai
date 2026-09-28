@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -838,6 +839,15 @@ codexTurnReversalPass:
 					return UpstreamDispatchResult{}, err
 				}
 				if preparation.Outcome == gatewaycircuit.PrepareBlocked {
+					// 熔断拦截是候选跳过的独立原因（区别于请求失败路径的
+					// gateway_upstream_response_failed 家族）。Warn 按
+					// (accountId, phase) 30s 节流（引擎循环对被拦候选逐次
+					// 触发，不节流会随 RPS 线性刷屏）；被拦的每次尝试仍由
+					// lastAttempt/audit metadata 完整承载。waitToken 无对应
+					// 出参，线索以 accountId + phase 承载（phase 取值
+					// CLOSED/SUSPECT/OPEN/HALF_OPEN，罕见 confirmation 不合格
+					// 分支可为 CLOSED）。
+					e.warnCircuitBlocked(originalAccount.ID, preparation.State.Phase)
 					lastAttempt = accountCircuitBlockedAttempt(originalAccount, preparation.State.Phase)
 					failedAccountIDs[originalAccount.ID] = struct{}{}
 					continue
@@ -1243,11 +1253,19 @@ func (e *Engine) waitForAccountLockDelay(
 	}
 	defer func() {
 		pauseNow := gatewayupstream.NowMs()
-		_, _ = routeCoordinationBudget.PauseWait(gatewayrouting.RouteCoordinationBudgetTransitionInput{
+		// 版本冲突等 outcome 属预期业务态（等待预算语义），维持既有静默；
+		// 真实 error 路径不允许静默——等待时长未被登记，告警留痕。
+		if _, err := routeCoordinationBudget.PauseWait(gatewayrouting.RouteCoordinationBudgetTransitionInput{
 			WaitToken:       waitToken,
 			ExpectedVersion: started.Snapshot.Version,
 			NowMs:           &pauseNow,
-		})
+		}); err != nil {
+			slog.Warn("账户锁等待的路由协调预算暂停失败，等待时长未被登记",
+				"event", "gateway_route_coordination_pause_wait_failed",
+				"waitToken", waitToken,
+				"version", started.Snapshot.Version,
+				"error", err.Error())
+		}
 	}()
 	if err := waitForDelayMs(signal, delayMs); err != nil {
 		return accountLockWaitAborted, nil

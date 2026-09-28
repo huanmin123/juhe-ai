@@ -64,6 +64,12 @@ type CompactionInput struct {
 type activeCompaction struct {
 	acceptance chan CompactionStartResult
 	completion chan CompactionResult
+
+	// settle 防重状态：acceptance 在 claim 成功后立即结算（Node onAccepted
+	// 语义），压缩主体仍在后台执行；panic 恢复路径据此补结算而不重复发送。
+	mu             sync.Mutex
+	acceptanceSent bool
+	completionSent bool
 }
 
 // CompactionService mirrors the module-level activeCompactions map plus
@@ -196,8 +202,23 @@ func (s *CompactionService) createActive(key string) *activeCompaction {
 	return entry
 }
 
-func (s *CompactionService) settle(key string, entry *activeCompaction, accepted CompactionStartResult, done CompactionResult) {
+func (s *CompactionService) settleAcceptance(entry *activeCompaction, accepted CompactionStartResult) {
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.acceptanceSent {
+		return
+	}
+	entry.acceptanceSent = true
 	entry.acceptance <- accepted
+}
+
+func (s *CompactionService) settleCompletion(key string, entry *activeCompaction, done CompactionResult) {
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.completionSent {
+		return
+	}
+	entry.completionSent = true
 	entry.completion <- done
 	s.mu.Lock()
 	if s.active[key] == entry {
@@ -206,27 +227,41 @@ func (s *CompactionService) settle(key string, entry *activeCompaction, accepted
 	s.mu.Unlock()
 }
 
-func (s *CompactionService) drive(entry *activeCompaction, input CompactionInput, ctx context.Context) {
-	key := s.key(input)
-	result, accepted := s.runCompaction(input, ctx)
-	s.settle(key, entry, accepted, result)
+// settle 同批结算受理与完成两条通道（claim 前终止的 failed/skipped 与 panic
+// 恢复路径）；单通道已结算时防重跳过。
+func (s *CompactionService) settle(key string, entry *activeCompaction, accepted CompactionStartResult, done CompactionResult) {
+	s.settleAcceptance(entry, accepted)
+	s.settleCompletion(key, entry, done)
 }
 
-func (s *CompactionService) runCompaction(input CompactionInput, ctx context.Context) (CompactionResult, CompactionStartResult) {
+// compactionBeginOutcome 是压缩受理判定阶段（加载上下文、登记 pending、抢
+// claim）的结果：claim 成功时 terminal 为 nil 并携带后续执行载荷与受理结果；
+// claim 之前终止时 terminal 非 nil（failed/skipped，受理与完成同值结算）。
+type compactionBeginOutcome struct {
+	loaded                *ModelContextLoadResult
+	claim                 *ContextCompactionClaim
+	sourceThroughSequence int64
+	accepted              CompactionStartResult
+	terminal              *CompactionResult
+}
+
+// beginCompaction 运行 runCompaction 的受理判定前半段（Node
+// compactChatContextOnce 在 claim 成功前同步执行的部分）。
+func (s *CompactionService) beginCompaction(input CompactionInput) compactionBeginOutcome {
 	now := s.Now()
 	loaded, err := s.Store.LoadModelContext(input.ConversationID, input.SystemAccountID, now, 512, 16*1024*1024)
 	if err != nil {
 		failure := CompactionResult{Status: "failed", Reason: err.Error()}
-		return failure, CompactionStartResult{Status: "failed", Reason: err.Error()}
+		return compactionBeginOutcome{terminal: &failure}
 	}
 	if loaded == nil {
 		skipped := CompactionResult{Status: "skipped", Reason: "conversation_missing"}
-		return skipped, CompactionStartResult{Status: "skipped", Reason: "conversation_missing"}
+		return compactionBeginOutcome{terminal: &skipped}
 	}
 	sourceThroughSequence := loaded.Head.NextSequenceNo - 3
 	if sourceThroughSequence <= loaded.Head.CompactedThroughSequence {
 		skipped := CompactionResult{Status: "skipped", Reason: "no_compactable_turn"}
-		return skipped, CompactionStartResult{Status: "skipped", Reason: "no_compactable_turn"}
+		return compactionBeginOutcome{terminal: &skipped}
 	}
 	resumesPersistedCompaction := loaded.Head.ContextState == StateCompactPending || loaded.Head.ContextState == StateCompacting
 	if !resumesPersistedCompaction {
@@ -239,11 +274,11 @@ func (s *CompactionService) runCompaction(input CompactionInput, ctx context.Con
 		})
 		if err != nil {
 			failure := CompactionResult{Status: "failed", Reason: err.Error()}
-			return failure, CompactionStartResult{Status: "failed", Reason: err.Error()}
+			return compactionBeginOutcome{terminal: &failure}
 		}
 		if !requested {
 			skipped := CompactionResult{Status: "skipped", Reason: "compaction_conflict"}
-			return skipped, CompactionStartResult{Status: "skipped", Reason: "compaction_conflict"}
+			return compactionBeginOutcome{terminal: &skipped}
 		}
 	}
 	acceptedStatus := "accepted"
@@ -270,15 +305,34 @@ func (s *CompactionService) runCompaction(input CompactionInput, ctx context.Con
 			Now:              s.Now(),
 		})
 		failure := CompactionResult{Status: "failed", Reason: errorReason(err)}
-		return failure, CompactionStartResult{Status: "failed", Reason: errorReason(err)}
+		return compactionBeginOutcome{terminal: &failure}
 	}
 	if claim == nil {
 		skipped := CompactionResult{Status: "skipped", Reason: "claim_conflict"}
-		return skipped, CompactionStartResult{Status: "skipped", Reason: "claim_conflict"}
+		return compactionBeginOutcome{terminal: &skipped}
 	}
-	accepted := CompactionStartResult{Status: acceptedStatus}
-	result := s.runClaimedCompaction(input, ctx, loaded, claim, sourceThroughSequence)
-	return result, accepted
+	return compactionBeginOutcome{
+		loaded:                loaded,
+		claim:                 claim,
+		sourceThroughSequence: sourceThroughSequence,
+		accepted:              CompactionStartResult{Status: acceptedStatus},
+	}
+}
+
+// drive 运行一轮压缩：受理判定阶段结束后，claim 成功（获得压缩权）就立即
+// 结算受理通道——手动压缩请求此时即拿到 202 accepted/already_running，压缩
+// 主体继续在后台执行（对齐 Node startChatContextCompaction 的 onAccepted
+// 回调时序），完成后结算 completion。
+func (s *CompactionService) drive(entry *activeCompaction, input CompactionInput, ctx context.Context) {
+	key := s.key(input)
+	outcome := s.beginCompaction(input)
+	if outcome.terminal != nil {
+		s.settle(key, entry, CompactionStartResult{Status: outcome.terminal.Status, Reason: outcome.terminal.Reason}, *outcome.terminal)
+		return
+	}
+	s.settleAcceptance(entry, outcome.accepted)
+	result := s.runClaimedCompaction(input, ctx, outcome.loaded, outcome.claim, outcome.sourceThroughSequence)
+	s.settleCompletion(key, entry, result)
 }
 
 func (s *CompactionService) runClaimedCompaction(input CompactionInput, ctx context.Context, loaded *ModelContextLoadResult, claim *ContextCompactionClaim, sourceThroughSequence int64) CompactionResult {

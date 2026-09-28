@@ -59,6 +59,9 @@ type Runner struct {
 	mu         sync.RWMutex
 	status     RunnerStatus
 	ownerLease *OwnerLease
+	// consecutiveErrors 是连续失败计数（recordError 递增、成功周期清零），
+	// 仅用于失败日志定位，不参与 RunnerStatus/Ready 健康判定。
+	consecutiveErrors int
 	// nextPruneAt 只在 owner 循环（Run -> runOwned）内串行访问；W5 杂项
 	// 修复：outcomes/inputs 运行态表按时间窗低频清理的调度点。
 	nextPruneAt time.Time
@@ -799,7 +802,6 @@ func (r *Runner) releaseProxyLeaseGated(ctx context.Context, gate *DBConcurrency
 
 func (r *Runner) recordCycleSummary(attempt time.Time, counts *cycleCounts, cycleErr error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.status.LastCycleAt = attempt
 	r.status.Inputs = counts.inputs
 	r.status.Executed += counts.executed
@@ -817,9 +819,42 @@ func (r *Runner) recordCycleSummary(attempt time.Time, counts *cycleCounts, cycl
 	if cycleErr == nil {
 		r.status.LastSuccess = r.now()
 		r.status.LastError = ""
+		r.consecutiveErrors = 0
 	} else {
 		r.status.LastError = cycleErr.Error()
 	}
+	r.mu.Unlock()
+	// 周期结果汇总（日志在锁外；有活动 Info / 全零 Debug / 失败 Warn，字段
+	// 全为计数与 durationMs）。周期失败每轮一条：失败计数递增可定位。
+	if r.logger == nil {
+		return
+	}
+	fields := []any{
+		"event", "proxy_latency_cycle_summary",
+		"instanceID", r.cfg.InstanceID,
+		"selected", counts.selected,
+		"target", counts.target,
+		"claimed", counts.claimed,
+		"started", counts.started,
+		"inputs", counts.inputs,
+		"processed", counts.processed,
+		"executed", counts.executed,
+		"skippedLeases", counts.skippedLeases,
+		"deferred", counts.deferred,
+		"executionFailures", counts.executionFailures,
+		"releaseFailures", counts.releaseFailures,
+		"durationMs", r.now().Sub(attempt).Milliseconds(),
+	}
+	if cycleErr != nil {
+		fields = append(fields, "error", cycleErr.Error())
+		r.logger.Warn("J3a cycle failed", fields...)
+		return
+	}
+	if counts.processed+counts.executed+counts.inputs+counts.selected > 0 {
+		r.logger.Info("J3a cycle completed", fields...)
+		return
+	}
+	r.logger.Debug("J3a cycle idle", fields...)
 }
 
 func (r *Runner) batchSize() int {
@@ -921,7 +956,18 @@ func (r *Runner) recordError(err error) {
 	}
 	r.mu.Lock()
 	r.status.LastError = err.Error()
+	r.consecutiveErrors++
+	count := r.consecutiveErrors
 	r.mu.Unlock()
+	// Run 的 owner-lease 失败、续租失败与 manual 路径的 release 失败都汇聚
+	// 到本方法；此处一条 Warn 覆盖全部错误入口（内存状态写入语义不变）。
+	if r.logger != nil {
+		r.logger.Warn("J3a runner error",
+			"event", "proxy_latency_runner_error",
+			"instanceID", r.cfg.InstanceID,
+			"lastError", err.Error(),
+			"consecutiveErrors", count)
+	}
 }
 func (r *Runner) now() time.Time {
 	if r.cfg.Now != nil {

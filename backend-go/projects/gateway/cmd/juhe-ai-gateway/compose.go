@@ -198,13 +198,19 @@ func (c *composition) Shutdown() {
 		c.shutdowns[i]()
 	}
 	if c.ownStatsDB && c.statsDB != nil {
-		_ = c.statsDB.Close()
+		if err := c.statsDB.Close(); err != nil {
+			slog.Debug("停机关闭 stats 库句柄失败", "event", "gateway_shutdown_close_failed", "component", "stats_db", "error", err)
+		}
 	}
 	if c.ownChatDB && c.chatDB != nil {
-		_ = c.chatDB.Close()
+		if err := c.chatDB.Close(); err != nil {
+			slog.Debug("停机关闭 chat 库句柄失败", "event", "gateway_shutdown_close_failed", "component", "chat_db", "error", err)
+		}
 	}
 	if c.ownDB && c.db != nil {
-		_ = c.db.Close()
+		if err := c.db.Close(); err != nil {
+			slog.Debug("停机关闭业务库句柄失败", "event", "gateway_shutdown_close_failed", "component", "business_db", "error", err)
+		}
 	}
 }
 
@@ -482,6 +488,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 
 	// K5 invalidation bus: every cache-backed store subscribes through it.
 	bus := inval.New(time.Now)
+	// 2026-09-28 日志治理：PublishVersion 失败的 30s 节流告警经进程默认
+	// logger（main 在组合前已 slog.SetDefault(logger)）。
+	bus.SetLogger(slog.Default())
 	composed.Bus = bus
 
 	businessSettings, err := businesssettings.New(composed.db, businessDialect(composed.pgDialect), businessSchema, ownerGate)
@@ -632,7 +641,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		apiKeyDatasetDB.SetMaxOpenConns(1)
 		if err := configureSQLiteConnection(apiKeyDatasetDB); err != nil {
-			_ = apiKeyDatasetDB.Close()
+			if closeErr := apiKeyDatasetDB.Close(); closeErr != nil {
+				slog.Debug("关闭 api-key dataset sqlite 句柄失败", "event", "gateway_handle_close_failed", "component", "api_key_dataset_db", "error", closeErr)
+			}
 			closeOwnedBusiness()
 			return nil, fmt.Errorf("configure api-key cleanup dataset sqlite database: %w", err)
 		}
@@ -733,13 +744,17 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		modelCatalogReaderDB.SetMaxOpenConns(1)
 		if err := configureSQLiteConnection(modelCatalogReaderDB); err != nil {
-			_ = modelCatalogReaderDB.Close()
+			if closeErr := modelCatalogReaderDB.Close(); closeErr != nil {
+				slog.Debug("关闭账户模型目录读取 sqlite 句柄失败", "event", "gateway_handle_close_failed", "component", "model_catalog_reader_db", "error", closeErr)
+			}
 			closeOwnedBusiness()
 			return nil, fmt.Errorf("configure account model catalog reader sqlite database: %w", err)
 		}
 		modelCatalogReaderStore, err = providers.NewStore(modelCatalogReaderDB, composed.pgDialect, time.Now)
 		if err != nil {
-			_ = modelCatalogReaderDB.Close()
+			if closeErr := modelCatalogReaderDB.Close(); closeErr != nil {
+				slog.Debug("关闭账户模型目录读取 sqlite 句柄失败", "event", "gateway_handle_close_failed", "component", "model_catalog_reader_db", "error", closeErr)
+			}
 			closeOwnedBusiness()
 			return nil, fmt.Errorf("create account model catalog reader provider store: %w", err)
 		}

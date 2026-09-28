@@ -1,6 +1,10 @@
 package gatewaydispatch
 
 import (
+	"log/slog"
+	"sync"
+	"time"
+
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -140,16 +144,48 @@ type Engine struct {
 
 	// Transport carries the shared upstreamhttp collaborators.
 	Transport TransportDeps
+
+	// circuitBlockedWarnMu/circuitBlockedWarnedAt 支撑熔断拦截告警按
+	// (accountId, phase) 30s 节流（镜像 gatewayruntimecache 的节流模式）：
+	// 单一 OPEN 账户在持续流量下每次派发尝试都会被拦，逐条 Warn 会随 RPS
+	// 线性刷屏；被拦的每次尝试仍由 lastAttempt/audit metadata 完整承载。
+	circuitBlockedWarnMu   sync.Mutex
+	circuitBlockedWarnedAt map[string]time.Time
 }
 
 // NewEngine wires the engine with defaults.
 func NewEngine(driver ProviderDriver, failureDispatcher FailureDispatcher) *Engine {
 	return &Engine{
-		Config:            DefaultEngineConfig(),
-		Clock:             gatewaypreauth.SystemClock{},
-		Driver:            driver,
-		FailureDispatcher: failureDispatcher,
+		Config:                 DefaultEngineConfig(),
+		Clock:                  gatewaypreauth.SystemClock{},
+		Driver:                 driver,
+		FailureDispatcher:      failureDispatcher,
+		circuitBlockedWarnedAt: map[string]time.Time{},
 	}
+}
+
+// warnCircuitBlocked 按 (accountId, phase) 30s 节流输出熔断拦截告警：
+// 引擎主循环对被拦候选逐次尝试触发，节流防止持续流量 + OPEN 冷却窗口期间
+// 随 RPS 线性刷屏（日志治理终审建议）。零值构造（map 为 nil）时按首条
+// 计入后正常节流，不依赖 NewEngine。
+func (e *Engine) warnCircuitBlocked(accountID, phase string) {
+	const warnInterval = 30 * time.Second
+	key := accountID + "|" + phase
+	now := time.Now()
+	e.circuitBlockedWarnMu.Lock()
+	if e.circuitBlockedWarnedAt == nil {
+		e.circuitBlockedWarnedAt = map[string]time.Time{}
+	}
+	if last, ok := e.circuitBlockedWarnedAt[key]; ok && now.Sub(last) < warnInterval {
+		e.circuitBlockedWarnMu.Unlock()
+		return
+	}
+	e.circuitBlockedWarnedAt[key] = now
+	e.circuitBlockedWarnMu.Unlock()
+	slog.Warn("账户熔断拦截本次派发尝试",
+		"event", "gateway_account_circuit_blocked",
+		"accountId", accountID,
+		"phase", phase)
 }
 
 // CandidatePipelineOf returns the pipeline facade for this engine.

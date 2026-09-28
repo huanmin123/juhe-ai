@@ -14,14 +14,14 @@ import (
 
 // Recoverable wait skip reasons mirror RecoverableUnavailableWaitSkippedReason.
 const (
-	WaitSkippedNoRetryTime                = "no_retry_time"
-	WaitSkippedRetryAfterExceedsWindow    = "retry_after_exceeds_window"
-	WaitSkippedAborted                    = "aborted"
-	WaitSkippedDeadlineExceeded           = "deadline_exceeded"
-	WaitSkippedScopeLimit                 = "scope_limit"
-	WaitSkippedGlobalLimit                = "global_limit"
-	WaitSkippedBudgetExhausted            = "temporarily_blocked_coordination_budget_exhausted"
-	WaitSkippedBudgetConflict             = "temporarily_blocked_coordination_budget_conflict"
+	WaitSkippedNoRetryTime             = "no_retry_time"
+	WaitSkippedRetryAfterExceedsWindow = "retry_after_exceeds_window"
+	WaitSkippedAborted                 = "aborted"
+	WaitSkippedDeadlineExceeded        = "deadline_exceeded"
+	WaitSkippedScopeLimit              = "scope_limit"
+	WaitSkippedGlobalLimit             = "global_limit"
+	WaitSkippedBudgetExhausted         = "temporarily_blocked_coordination_budget_exhausted"
+	WaitSkippedBudgetConflict          = "temporarily_blocked_coordination_budget_conflict"
 )
 
 // Coordinator turn outcomes mirror RecoverableUnavailableCoordinatorWaitResult.
@@ -47,19 +47,19 @@ func coordinatorScopeKey(reason, scopeKey string) string {
 }
 
 type coordinatorWaiter struct {
-	id          int64
-	notBeforeMs int64
+	id           int64
+	notBeforeMs  int64
 	deadlineAtMs int64
-	signal      context.Context
-	abortWatch  chan struct{} // closed when the waiter is settled
-	resolve     chan string   // buffered size 1
+	signal       context.Context
+	abortWatch   chan struct{} // closed when the waiter is settled
+	resolve      chan string   // buffered size 1
 }
 
 type coordinatorScope struct {
-	waiters    []*coordinatorWaiter
+	waiters     []*coordinatorWaiter
 	runtimeKeys map[string]struct{}
-	timerDone  <-chan struct{}
-	timerStop  func()
+	timerDone   <-chan struct{}
+	timerStop   func()
 }
 
 // WaitCoordinator mirrors RecoverableUnavailableWaitCoordinator: shared,
@@ -130,12 +130,12 @@ func NewWaitCoordinator(options WaitCoordinatorOptions) *WaitCoordinator {
 
 // WaitTurnInput mirrors RecoverableUnavailableCoordinatorWaitInput.
 type WaitTurnInput struct {
-	ScopeKey    string
-	Reason      string
-	DelayMs     int64
+	ScopeKey     string
+	Reason       string
+	DelayMs      int64
 	DeadlineAtMs int64
-	Signal      context.Context
-	RuntimeKeys []string
+	Signal       context.Context
+	RuntimeKeys  []string
 }
 
 // WaitForTurn mirrors waitForTurn; it blocks until the waiter is settled.
@@ -402,11 +402,11 @@ func normalizeDeadlineAtMs(value, now int64) int64 {
 // Wait result reasons are the strings above; WaitResult mirrors
 // RecoverableUnavailableWaitResult for the Go engine.
 type WaitResult struct {
-	State        any
-	WaitedMs     int64
-	CheckCount   int
-	Ready        bool
-	TimedOut     bool
+	State         any
+	WaitedMs      int64
+	CheckCount    int
+	Ready         bool
+	TimedOut      bool
 	SkippedReason string
 }
 
@@ -423,25 +423,25 @@ type WaitEngineOptions struct {
 }
 
 type waitInput struct {
-	scopeKey                string
-	reason                  string
-	refresh                 func(ctx context.Context) error
-	isReady                 func() bool
-	nextRetryAfterMs        func() (int64, bool)
-	auditCapture            GatewayMetadataCapture
-	signal                  context.Context
-	waitWithoutRetryAfter   bool
-	maxWaitMs               int64
-	checkIntervalMs         int64
-	requestStartedAtMs      *int64
-	deadlineAtMs            *int64
-	coordinator             *WaitCoordinator
-	runtimeKeys             []string
-	routeCoordinationBudget *gatewayrouting.RouteCoordinationBudget
+	scopeKey                 string
+	reason                   string
+	refresh                  func(ctx context.Context) error
+	isReady                  func() bool
+	nextRetryAfterMs         func() (int64, bool)
+	auditCapture             GatewayMetadataCapture
+	signal                   context.Context
+	waitWithoutRetryAfter    bool
+	maxWaitMs                int64
+	checkIntervalMs          int64
+	requestStartedAtMs       *int64
+	deadlineAtMs             *int64
+	coordinator              *WaitCoordinator
+	runtimeKeys              []string
+	routeCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
 	gatewayRequestWallBudget *gatewayrouting.GatewayRequestWallBudget
-	finalResponseReserveMs  *int64
-	now                     func() int64
-	logger                  Logger
+	finalResponseReserveMs   *int64
+	now                      func() int64
+	logger                   Logger
 }
 
 type waitOutcome struct {
@@ -562,10 +562,10 @@ func waitForRecoverableUnavailableState(ctx context.Context, input waitInput) (w
 		}
 		if input.logger != nil {
 			input.logger.Info(map[string]any{
-				"event":    "gateway_recoverable_unavailable_wait_scheduled",
-				"reason":   input.reason,
-				"scopeKey": input.scopeKey,
-				"delayMs":  delay,
+				"event":       "gateway_recoverable_unavailable_wait_scheduled",
+				"reason":      input.reason,
+				"scopeKey":    input.scopeKey,
+				"delayMs":     delay,
 				"remainingMs": remainingMs,
 			}, "本地可恢复阻塞短等后重新检查调度候选")
 		}
@@ -590,6 +590,17 @@ func waitForRecoverableUnavailableState(ctx context.Context, input waitInput) (w
 				ExpectedVersion: coordinationWait.Snapshot.Version,
 				NowMs:           int64Ptr(now()),
 			})
+			if err != nil && input.logger != nil {
+				// 版本冲突等 outcome 属预期业务态（下方 conflict 分支处理）；
+				// 真实 error 路径不允许静默——等待时长未被登记，告警留痕。
+				input.logger.Warn(map[string]any{
+					"event":     "gateway_route_coordination_pause_wait_failed",
+					"scopeKey":  input.scopeKey,
+					"waitToken": waitToken,
+					"version":   coordinationWait.Snapshot.Version,
+					"error":     err.Error(),
+				}, "可恢复阻塞短等的路由协调预算暂停失败，等待时长未被登记")
+			}
 			if err == nil &&
 				(pauseResult.Outcome == gatewayrouting.BudgetTransitionVersionConflict ||
 					pauseResult.Outcome == gatewayrouting.BudgetTransitionInvalid) {

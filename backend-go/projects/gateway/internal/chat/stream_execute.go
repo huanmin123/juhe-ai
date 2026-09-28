@@ -239,7 +239,24 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				ContentBlocksRaw: persisted,
 				Now:              rt.now(),
 			}); err != nil {
-				return ChatGenerationTerminalResult{}, err
+				// 成功路径落库失败（如 jobs 中断清理已清 active_turn_id）：与失败
+				// 路径同型走恢复收口，按权威侧状态收敛轮次并发终止事件，不再
+				// 裸 return err 丢弃已生成内容与终止事件。
+				recovered := rt.recoverChatTurnFinalization(input.conversation.ID, identity.OwnerID, turnID, input.body.ClientMessageID, err)
+				switch recovered {
+				case "completed":
+					// 权威侧已并发收口为 completed：继续成功收尾，保证 usage
+					// 记账与 message.completed 终止事件不缺失。
+				case "canceled":
+					return ChatGenerationTerminalResult{Status: "canceled", Data: map[string]any{"messageId": messageID}}, nil
+				default:
+					publicError := classifyGenerationError(err, GenErrInternal)
+					data := map[string]any{"messageId": messageID, "code": string(publicError.Code), "message": publicError.Message}
+					if input.traceID != "" {
+						data["traceId"] = input.traceID
+					}
+					return ChatGenerationTerminalResult{Status: "failed", Data: data}, nil
+				}
 			}
 			upstreamUsageAvailable := result.InputTokens != nil
 			var activeContextTokens int64

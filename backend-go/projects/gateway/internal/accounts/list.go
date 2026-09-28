@@ -1336,8 +1336,10 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 	return summaries, rows.Err()
 }
 
-// EditBasicDetail mirrors AccountEditBasicDetail. Credential secret fields are
-// masked on this surface: the Go gateway never returns clear-text credentials.
+// EditBasicDetail mirrors AccountEditBasicDetail. Credential fields follow the
+// management contract (docs/architecture/backend/README.md): editing reads the
+// full credentials so the edit form shows and saves real key material; masking
+// stays on the list surface and the stored credential_mask column.
 type EditBasicDetail struct {
 	ID                        string       `json:"id"`
 	ConfigRevision            int64        `json:"configRevision"`
@@ -1578,38 +1580,16 @@ var editableCredentialKeysByAccountType = map[string][]string{
 	"google_oauth": {"access_token", "refresh_token", "client_id", "client_secret", "quota_project_id", "oauth_type", "project_id", "tier_id"},
 }
 
-// projectEditableCredentials mirrors projectEditableCredentials with the Go
-// slice hardening: secret values are masked (MaskSecret) so no clear-text
-// credential material leaves the server.
+// projectEditableCredentials mirrors projectEditableCredentials: the
+// whitelisted editable credential keys surface unmasked on the edit-basic
+// detail, matching the management contract that editing reads full
+// credentials. Masking is a list/storage concern only (credential_mask).
 func projectEditableCredentials(accountType string, credentials Credentials) Credentials {
 	output := Credentials{}
 	for _, key := range append(append([]string{}, basicEditableCredentialKeys...), editableCredentialKeysByAccountType[accountType]...) {
-		value, ok := credentials[key]
-		if !ok {
-			continue
+		if value, ok := credentials[key]; ok {
+			output[key] = value
 		}
-		output[key] = maskCredentialValue(key, value)
 	}
 	return output
-}
-
-var credentialSecretKeys = map[string]bool{
-	"api_key": true, "access_token": true, "refresh_token": true,
-	"client_secret": true, "identity_token": true, "id_token": true,
-}
-
-func maskCredentialValue(key string, value any) any {
-	if key == "api_keys" {
-		if list, ok := value.([]any); ok {
-			masked := make([]any, 0, len(list))
-			for _, item := range list {
-				masked = append(masked, MaskSecret(item))
-			}
-			return masked
-		}
-	}
-	if credentialSecretKeys[key] {
-		return MaskSecret(value)
-	}
-	return value
 }

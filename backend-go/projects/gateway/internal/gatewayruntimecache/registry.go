@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -34,6 +35,10 @@ const (
 	registryIndexTTLSeconds = registryEntryTTLSeconds * 3
 	registryEntryKeyPrefix  = "runtime:internal-gateway:v1:"
 	registryIndexKeySuffix  = "runtime:internal-gateway-index:v1"
+
+	// registryFailureLogInterval 是注册表失败日志的 30s 节流窗口（镜像
+	// service.go logSharedFailure）：publish 心跳每 5s 一次，失败日志不得刷屏。
+	registryFailureLogInterval = 30 * time.Second
 )
 
 const registryPublishScript = `
@@ -106,6 +111,13 @@ type Registry struct {
 	client   *redis.Client
 	prefix   string
 	indexKey string
+	// logger 由组合根经 SetLogger 注入（须在 Start 前调用）；nil 回落
+	// slog.Default()。
+	logger *slog.Logger
+	// warnMu/warnLoggedAt 支撑失败日志按 event 30s 节流（镜像 service.go
+	// logSharedFailure 模式）。
+	warnMu       sync.Mutex
+	warnLoggedAt map[string]time.Time
 
 	mu               sync.Mutex
 	publishRequested bool
@@ -140,11 +152,43 @@ func NewRegistry(config RegistryConfig) (*Registry, error) {
 		namespace = "juhe-ai"
 	}
 	return &Registry{
-		config:   config,
-		client:   redis.NewClient(options),
-		prefix:   namespace + ":" + registryEntryKeyPrefix,
-		indexKey: namespace + ":" + registryIndexKeySuffix,
+		config:       config,
+		client:       redis.NewClient(options),
+		prefix:       namespace + ":" + registryEntryKeyPrefix,
+		indexKey:     namespace + ":" + registryIndexKeySuffix,
+		warnLoggedAt: map[string]time.Time{},
 	}, nil
+}
+
+// SetLogger 注入进程 logger；须在 Start 前调用（心跳 goroutine 尚未启动，
+// 无并发写入）。nil 回落 slog.Default()。
+func (r *Registry) SetLogger(logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	r.logger = logger
+}
+
+// logThrottledWarn 按 event 30s 节流输出注册表失败告警（publish 心跳是热
+// 路径；镜像 gatewayruntimecache service 的 logSharedFailure 模式）。
+func (r *Registry) logThrottledWarn(event, bootID string, err error) {
+	logger := r.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	now := time.Now()
+	r.warnMu.Lock()
+	if last, ok := r.warnLoggedAt[event]; ok && now.Sub(last) < registryFailureLogInterval {
+		r.warnMu.Unlock()
+		return
+	}
+	r.warnLoggedAt[event] = now
+	r.warnMu.Unlock()
+	logger.Warn("内部 Gateway 注册表操作失败",
+		"event", event,
+		"instanceID", r.config.InstanceID,
+		"bootID", bootID,
+		"error", err.Error())
 }
 
 // Close releases the Redis client.
@@ -320,16 +364,19 @@ func (r *Registry) publish(session *registrySession) {
 	entry.Signature = registrySignature(entry.Version, entry.InstanceID, entry.Origin, entry.BootID, r.config.Secret)
 	encoded, err := json.Marshal(entry)
 	if err != nil {
+		r.logThrottledWarn("registry_entry_marshal_failed", entry.BootID, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), registryCommandTimeout)
 	defer cancel()
-	_, _ = r.runScript(ctx, registryPublishScript,
+	if _, publishErr := r.runScript(ctx, registryPublishScript,
 		[]string{r.EntryKey(entry.InstanceID), r.indexKey},
 		string(encoded),
 		strconv.Itoa(registryEntryTTLSeconds),
 		strconv.Itoa(registryEntryLimit),
-		strconv.Itoa(registryIndexTTLSeconds))
+		strconv.Itoa(registryIndexTTLSeconds)); publishErr != nil {
+		r.logThrottledWarn("registry_publish_failed", entry.BootID, publishErr)
+	}
 }
 
 func (r *Registry) unregister(ctx context.Context, bootID string) {
@@ -338,8 +385,10 @@ func (r *Registry) unregister(ctx context.Context, bootID string) {
 	}
 	unregisterCtx, cancel := context.WithTimeout(ctx, registryCommandTimeout)
 	defer cancel()
-	_, _ = r.runScript(unregisterCtx, registryUnregisterScript,
-		[]string{r.EntryKey(r.config.InstanceID), r.indexKey}, bootID)
+	if _, err := r.runScript(unregisterCtx, registryUnregisterScript,
+		[]string{r.EntryKey(r.config.InstanceID), r.indexKey}, bootID); err != nil {
+		r.logThrottledWarn("registry_unregister_failed", bootID, err)
+	}
 }
 
 // parseRegistryEntry mirrors parseRegistryEntry: strict shape, loopback-only

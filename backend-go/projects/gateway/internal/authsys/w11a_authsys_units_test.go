@@ -484,7 +484,7 @@ func TestW11AOperationLogSinkArms(t *testing.T) {
 
 	// Invalid MaxChanges with a nil Logger falls back to slog.Default().
 	dropping := &sinkFakeStore{}
-	invalid := &OperationLogProducerSink{MaxChanges: -1, Producer: operationlog.NewProducer(dropping, operationlog.OwnerLease{}, operationlog.Config{InstanceID: "w11a"}, nil)}
+	invalid := &OperationLogProducerSink{MaxChanges: -1, Producer: operationlog.NewProducer(dropping, operationlog.StaticLease(operationlog.OwnerLease{}), operationlog.Config{InstanceID: "w11a"}, nil)}
 	invalid.Record(OperationLogEntry{
 		Module: "w11a", Action: "update",
 		Changes: []OperationLogChange{{Field: "f"}},
@@ -496,7 +496,7 @@ func TestW11AOperationLogSinkArms(t *testing.T) {
 
 	// User-Agent + viewers reach the producer on the happy path.
 	recording := &sinkFakeStore{}
-	sink := &OperationLogProducerSink{Producer: operationlog.NewProducer(recording, operationlog.OwnerLease{}, operationlog.Config{InstanceID: "w11a"}, nil)}
+	sink := &OperationLogProducerSink{Producer: operationlog.NewProducer(recording, operationlog.StaticLease(operationlog.OwnerLease{}), operationlog.Config{InstanceID: "w11a"}, nil)}
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Header.Set("User-Agent", "w11a-agent/1.0")
 	sink.Record(OperationLogEntry{

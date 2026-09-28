@@ -69,6 +69,9 @@ const (
 	// shutdownRoundTimeout 是停机排空每批上限（对照组合根 queue.drainShutdown
 	// 每批 30s 的既有约定）。
 	shutdownRoundTimeout = 30 * time.Second
+	// drainSummaryInterval 是 Run 循环 Info 级排空汇总的最小窗口：排空节拍
+	// 默认 100ms，逐轮 Info 在持续流量下会刷屏，Info 只按此窗口输出累计值。
+	drainSummaryInterval = time.Minute
 )
 
 // Enqueuer 是 usagewriter.Writer.Enqueue 的窄口（接口化供测试 Mock）。
@@ -332,26 +335,53 @@ func (d *Drainer) DrainShutdown() int {
 			return processed
 		}
 		if settled == 0 {
+			d.logger().Debug("usage spool 停机排空完成",
+				"event", "usage_record_spool_shutdown_done", "processedFiles", processed)
 			return processed
 		}
 	}
+	d.logger().Debug("usage spool 停机排空完成",
+		"event", "usage_record_spool_shutdown_done", "processedFiles", processed)
 	return processed
 }
 
 // Run 是 drain 循环（supervisor 组件关闭面）：flushInterval 节拍排空；失败
-// 按固定退避后进入下一轮；ctx 取消后做一次有界停机排空再返回。
+// 按固定退避后进入下一轮；ctx 取消后做一次有界停机排空再返回。排空节拍默认
+// 100ms，持续流量下"本轮结果"走 Debug（默认级别不输出），Info 只按
+// drainSummaryInterval 窗口输出一条累计汇总，避免常规遥测刷屏。
 func (d *Drainer) Run(ctx context.Context) {
 	ticker := time.NewTicker(d.flushInterval())
 	defer ticker.Stop()
+	var (
+		windowFiles  int64
+		windowRounds int
+		windowStart  = time.Now()
+	)
 	for {
 		select {
 		case <-ctx.Done():
 			d.DrainShutdown()
 			return
 		case <-ticker.C:
+			roundStart := time.Now()
 			runCtx, cancel := context.WithTimeout(context.Background(), runRoundTimeout)
-			_, err := d.DrainOnce(runCtx)
+			processed, err := d.DrainOnce(runCtx)
 			cancel()
+			if processed > 0 {
+				windowFiles += int64(processed)
+				windowRounds++
+				d.logger().Debug("usage spool 本轮排空完成",
+					"event", "usage_record_spool_drain_round",
+					"processedFiles", processed, "elapsedMs", time.Since(roundStart).Milliseconds())
+				if time.Since(windowStart) >= drainSummaryInterval {
+					d.logger().Info("usage spool 排空窗口汇总",
+						"event", "usage_record_spool_drain_summary",
+						"windowFiles", windowFiles, "windowRounds", windowRounds,
+						"windowMs", time.Since(windowStart).Milliseconds())
+					windowFiles, windowRounds = 0, 0
+					windowStart = time.Now()
+				}
+			}
 			if err != nil {
 				timer := time.NewTimer(d.retryDelay())
 				select {

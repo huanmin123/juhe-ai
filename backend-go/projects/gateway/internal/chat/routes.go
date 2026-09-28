@@ -598,6 +598,13 @@ type conversationBindOptionsResponse struct {
 	Accounts []ChatBindOption `json:"accounts"`
 }
 
+// setNoStoreHeaders 与 accounts 包惯例一致：绑定下拉内容随数据范围实时
+// 变化，成功响应禁缓存。
+func setNoStoreHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+}
+
 // conversationBindOptions mirrors GET /conversation-bind-options：登录用户
 // 一次取回其数据范围（ChatBindScope）内可绑定分组与账户的最小摘要（分组仅
 // 有效 enabled 行；账户与 FindChatAccount 同口径）。查询端口未接线或查询
@@ -629,6 +636,7 @@ func (rt *chatRoutes) conversationBindOptions(w http.ResponseWriter, r *http.Req
 	if accounts == nil {
 		accounts = []ChatBindOption{}
 	}
+	setNoStoreHeaders(w)
 	writeOK(w, conversationBindOptionsResponse{Groups: groups, Accounts: accounts})
 }
 

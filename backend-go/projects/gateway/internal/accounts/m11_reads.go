@@ -19,8 +19,7 @@ import (
 
 // advancedEditableCredentialKeys mirrors advancedEditableCredentialKeys
 // (account-advanced-detail.repository.ts): the credential subset the advanced
-// editor owns. The Go gateway masks secret material through
-// maskCredentialValue exactly like the edit-basic surface.
+// editor owns. The subset holds policy fields only, surfaced as stored.
 var advancedEditableCredentialKeys = []string{
 	"service_tier_override",
 	"reasoning_effort_override",
@@ -453,16 +452,14 @@ func valueOrSource(owner, source sql.NullString, authorized bool) string {
 	return ""
 }
 
-// projectAdvancedEditableCredentials mirrors projectAdvancedEditableCredentials
-// with the Go slice hardening: secret material stays masked.
+// projectAdvancedEditableCredentials mirrors projectAdvancedEditableCredentials:
+// the whitelisted advanced policy keys surface as stored.
 func projectAdvancedEditableCredentials(credentials Credentials) Credentials {
 	output := Credentials{}
 	for _, key := range advancedEditableCredentialKeys {
-		value, ok := credentials[key]
-		if !ok {
-			continue
+		if value, ok := credentials[key]; ok {
+			output[key] = value
 		}
-		output[key] = maskCredentialValue(key, value)
 	}
 	return output
 }

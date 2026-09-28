@@ -3,7 +3,7 @@ package oauthmgmt
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -57,7 +57,9 @@ func (d *Deps) writeCreateError(w http.ResponseWriter, err error, fallback strin
 		return
 	}
 	// 兜底文案会掩盖建户真实失败原因（此时上游 code 已消费），必须落日志。
-	log.Printf("ERROR OAuth 建户失败 fallback=%s err=%v", fallback, err)
+	slog.Error("OAuth 建户失败",
+		"event", "oauth_provision_failed",
+		"fallback", fallback, "error", err)
 	d.writeOAuthError(w, err, fallback, "")
 }
 
@@ -99,7 +101,9 @@ func (d *Deps) writeOAuthError(w http.ResponseWriter, err error, fallback, revis
 		return
 	}
 	// 未分类错误：把原始错误落日志，否则前端只见兜底文案无法排障。
-	log.Printf("ERROR OAuth 未分类错误 fallback=%s err=%v", fallback, err)
+	slog.Error("OAuth 未分类错误",
+		"event", "oauth_unclassified_error",
+		"fallback", fallback, "error", err)
 	kernel.WriteError(w, http.StatusBadGateway, fallback)
 }
 

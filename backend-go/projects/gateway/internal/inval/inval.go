@@ -74,7 +74,16 @@ type Bus struct {
 	now       func() time.Time
 	shared    SharedStore
 	bgContext context.Context
+	// logger 是可选的发布失败告警 logger（SetLogger 注入；nil 回落
+	// slog.Default()），经 publishWarnMu/publishWarnedAt 按 topic 30s 节流。
+	logger          *slog.Logger
+	publishWarnMu   sync.Mutex
+	publishWarnedAt map[string]time.Time
 }
+
+// publishFailureLogInterval 是 PublishVersion 失败告警的 30s 节流窗口：
+// Invalidate 在管理面写操作突发期高频触发，Redis 故障时失败日志不得刷屏。
+const publishFailureLogInterval = 30 * time.Second
 
 // subscription pins one handler registration so Unsubscribe can remove it by
 // identity (Go funcs are not comparable; the archive keeps invalidators in a
@@ -94,11 +103,48 @@ func New(now func() time.Time) *Bus {
 		now = time.Now
 	}
 	return &Bus{
-		versions:  map[string]int64{},
-		handlers:  map[string][]*subscription{},
-		now:       now,
-		bgContext: context.Background(),
+		versions:        map[string]int64{},
+		handlers:        map[string][]*subscription{},
+		now:             now,
+		bgContext:       context.Background(),
+		publishWarnedAt: map[string]time.Time{},
 	}
+}
+
+// SetLogger wires the optional publish-failure warn logger. Nil falls back to
+// slog.Default(). Expected to run once during composition, before traffic.
+func (b *Bus) SetLogger(logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	b.mu.Lock()
+	b.logger = logger
+	b.mu.Unlock()
+}
+
+// logPublishFailure emits the throttled warn for a failed PublishVersion: the
+// local invalidation already took effect (handlers run regardless), only the
+// cross-instance propagation is unavailable.
+func (b *Bus) logPublishFailure(topic string, version int64, err error) {
+	b.mu.RLock()
+	logger := b.logger
+	b.mu.RUnlock()
+	if logger == nil {
+		logger = slog.Default()
+	}
+	now := b.now()
+	b.publishWarnMu.Lock()
+	if last, ok := b.publishWarnedAt[topic]; ok && now.Sub(last) < publishFailureLogInterval {
+		b.publishWarnMu.Unlock()
+		return
+	}
+	b.publishWarnedAt[topic] = now
+	b.publishWarnMu.Unlock()
+	logger.Warn("inval 共享版本发布失败（本地失效已生效，跨实例传播暂不可用）",
+		"event", "inval_publish_version_failed",
+		"topic", topic,
+		"version", version,
+		"error", err.Error())
 }
 
 // SetSharedStore wires the optional Redis shared-version persistence.
@@ -156,12 +202,15 @@ func (b *Bus) Invalidate(topic, reason string) {
 		ctx, cancel := context.WithTimeout(b.bgContext, 3*time.Second)
 		effective, err := b.shared.PublishVersion(ctx, topic, version)
 		cancel()
-		if err == nil && effective > version {
+		switch {
+		case err == nil && effective > version:
 			b.mu.Lock()
 			if b.versions[topic] < effective {
 				b.versions[topic] = effective
 			}
 			b.mu.Unlock()
+		case err != nil:
+			b.logPublishFailure(topic, version, err)
 		}
 	}
 	for _, handler := range handlers {

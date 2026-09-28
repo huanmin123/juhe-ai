@@ -81,6 +81,11 @@ func newStreamPipe(input PipeUpstreamStreamInput) *streamPipe {
 	if logger == nil {
 		logger = nopStreamLogger{}
 	}
+	// 请求身份线索（第二批日志补齐 1）：TraceID/AccountID 经 logger 适配器
+	// 统一注入全部管道日志 fields（空值省略键），pipefinal 等日志点零改动。
+	if options.TraceID != "" || options.AccountID != "" {
+		logger = identityStreamLogger{inner: logger, traceID: options.TraceID, accountID: options.AccountID}
+	}
 	nowMs := options.NowMs
 	if nowMs == nil {
 		nowMs = defaultNowMs

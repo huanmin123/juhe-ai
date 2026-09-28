@@ -46,6 +46,10 @@ type Observation struct {
 	From      string // circuit_transition
 	To        string // circuit_transition
 	Source    string // circuit_transition: 'transport' | 'explicit_policy' | 'recovery' | 'configuration'
+	// AccountRuntimeKey 是 circuit 系观察的可选账户线索（第二批日志补齐 4）：
+	// 仅进入日志 fields（空值省略），不参与 GatewayRoutingObservationMetricKey
+	// 与 store 记账，保持计数聚合维度不变。
+	AccountRuntimeKey string
 }
 
 // RoutingObservation mirrors gatewayhotquality.RoutingObservation (the

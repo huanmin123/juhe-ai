@@ -454,7 +454,11 @@ func (j *RefreshJob) processCandidate(ctx context.Context, candidate RefreshCand
 		// Success: clear the observed failure state and restore a previously
 		// stopped account (restoreOpenAIOAuthTokenRefreshFailureIfRecovered).
 		if candidate.ObservedFailure != nil {
-			_ = j.failures.Clear(ctx, accountID, *candidate.ObservedFailure)
+			if clearErr := j.failures.Clear(ctx, accountID, *candidate.ObservedFailure); clearErr != nil {
+				j.logger.Warn("OAuth 刷新成功后清理失败退避状态失败，退避残留至到期自然失效",
+					"event", "openai_oauth_backoff_clear_failed",
+					"accountId", accountID, "error", clearErr)
+			}
 		}
 		if !candidate.IsDecryptFailure() {
 			j.restoreIfRecovered(ctx, candidate.Account, result, mu)
@@ -522,7 +526,11 @@ func (j *RefreshJob) processCandidate(ctx context.Context, candidate RefreshCand
 			return
 		}
 		if updated {
-			_ = j.failures.Clear(ctx, accountID, failureState)
+			if clearErr := j.failures.Clear(ctx, accountID, failureState); clearErr != nil {
+				j.logger.Warn("OAuth 本地配置异常停用后清理失败退避状态失败",
+					"event", "openai_oauth_backoff_clear_failed",
+					"accountId", accountID, "error", clearErr)
+			}
 			mu.Lock()
 			result.Exceptioned++
 			mu.Unlock()

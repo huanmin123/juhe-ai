@@ -274,6 +274,9 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 		},
 		Signal: input.Signal,
 		Options: StreamPipeOptions{
+			// 请求身份线索：管道日志归属用（第二批日志补齐 1）。
+			TraceID:                               input.UsageContext.TraceID,
+			AccountID:                             input.Account.GetID(),
 			ClientRetryEnabled:                    clientStrategy != nil && clientStrategy.RetryPreCommitProtocolError,
 			InterpretProtocolFailures:             clientStrategy == nil || clientStrategy.InterpretSemantics,
 			InterpretProtocolFailuresSet:          true,
@@ -366,13 +369,26 @@ func HandleStreamUpstreamResponse(input HandleUpstreamResponseInput) (UpstreamRe
 		for index := range pipeResult.ResponseInspectionObservations {
 			observation := &pipeResult.ResponseInspectionObservations[index]
 			if err := input.Deps.AccountEffects.ApplyInspectionPolicySideEffects(observation, input.Account, true); err != nil {
-				logger.Warn("gateway_upstream_inspection_side_effect_failed", nil, "响应检查策略运行时副作用失败已隔离")
+				logger.Warn("gateway_upstream_inspection_side_effect_failed", map[string]any{
+					"traceId":   input.UsageContext.TraceID,
+					"accountId": input.Account.GetID(),
+					"policyId":  observation.PolicyID,
+					"error":     err.Error(),
+				}, "响应检查策略运行时副作用失败已隔离")
 			}
 		}
 	}
 	if pipeResult.ResponseInspection != nil {
 		if input.Deps != nil && input.Deps.AccountEffects != nil {
-			_ = input.Deps.AccountEffects.ApplyInspectionPolicySideEffects(pipeResult.ResponseInspection, input.Account, true)
+			// 副作用写失败不允许静默丢弃（与上方逐观察路径同一告警面）。
+			if err := input.Deps.AccountEffects.ApplyInspectionPolicySideEffects(pipeResult.ResponseInspection, input.Account, true); err != nil {
+				logger.Warn("gateway_upstream_inspection_side_effect_failed", map[string]any{
+					"traceId":   input.UsageContext.TraceID,
+					"accountId": input.Account.GetID(),
+					"policyId":  pipeResult.ResponseInspection.PolicyID,
+					"error":     err.Error(),
+				}, "响应检查策略运行时副作用失败已隔离")
+			}
 		}
 		input.AuditCapture.AddGatewayMetadata("response_inspection", inspectionAuditMetadata(pipeResult.ResponseInspection))
 	}

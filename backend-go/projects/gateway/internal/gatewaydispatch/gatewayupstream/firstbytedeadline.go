@@ -3,6 +3,8 @@ package gatewayupstream
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -220,7 +222,18 @@ func NotifyResponsePrecommitDeadline(callback func()) {
 	if callback == nil {
 		return
 	}
-	defer func() { _ = recover() }()
+	// 回调 panic 不允许无声吞掉（字段风格对齐 shared/platform/safego 的
+	// panic 恢复日志）：带 component、panic 值与堆栈告警后按回调缺席处理，
+	// 决策主流程不受影响。
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Warn("响应预提交截止回调 panic 已恢复，本次通知被跳过",
+				"event", "gateway_response_precommit_deadline_notify_recovered",
+				"component", "gatewayupstream.NotifyResponsePrecommitDeadline",
+				"panic", recovered,
+				"stack", string(debug.Stack()))
+		}
+	}()
 	callback()
 }
 

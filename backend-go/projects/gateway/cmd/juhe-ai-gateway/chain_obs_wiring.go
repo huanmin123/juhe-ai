@@ -81,6 +81,8 @@ func newChainCircuitObservabilitySink(observer *gatewayobs.Observer) func(event 
 			From:      event.From,
 			To:        event.To,
 			Source:    event.Source,
+			// 账户线索（第二批日志补齐 4）：空值不伪造键，不参与记账聚合。
+			AccountRuntimeKey: event.AccountRuntimeKey,
 		}, time.Now().UnixMilli())
 	}
 }

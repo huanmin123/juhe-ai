@@ -83,6 +83,13 @@ type fixedLeaseSource OwnerLease
 
 func (s fixedLeaseSource) Lease() OwnerLease { return OwnerLease(s) }
 
+// StaticLease pins one lease value behind the LeaseSource interface for
+// callers without a keeper (tests, static compositions).
+//
+// 预留导出 API：F4 侧当前仅 authsys 并行测试通过 operationlog 间接使用，
+// gateway 生产组合根无调用方；保留供静态组合场景，与 F3 侧同名构造对称。
+func StaticLease(lease OwnerLease) LeaseSource { return fixedLeaseSource(lease) }
+
 // Record persists one entry asynchronously (fire-and-forget). Errors are
 // logged and swallowed: operation logs never fail the business transaction
 // (Node recordOperationLogAsync contract). When the bounded queue is full the
@@ -104,6 +111,16 @@ func (p *Producer) startWorkers() {
 	for i := 0; i < producerWorkers; i++ {
 		go p.workerLoop()
 	}
+}
+
+// DroppedTotal exposes the running count of records dropped because the
+// bounded queue was full (Prometheus scrape seam; mirror of the F3 auditlog
+// producer accessor — dropped is an atomic.Int64, so the read is race-free).
+func (p *Producer) DroppedTotal() int64 {
+	if p == nil {
+		return 0
+	}
+	return p.dropped.Load()
 }
 
 func (p *Producer) workerLoop() {
@@ -139,7 +156,7 @@ func (p *Producer) persistOne(entry Input) {
 		}
 	}
 	if _, err := p.store.Persist(ctx, lease, entry); err != nil {
-		p.warn("F4 Go 操作日志提交失败", "error", err)
+		p.warn("F4 Go 操作日志提交失败", "error", err, "traceID", entry.TraceID, "operationLogID", entry.ID)
 	}
 }
 

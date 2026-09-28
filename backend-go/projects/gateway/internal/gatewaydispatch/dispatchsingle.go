@@ -252,6 +252,13 @@ rotationLoop:
 			return dispatchResultContinue, nil, urlErr
 		}
 		if len(upstreamUrls) == 0 {
+			// 上游 URL 构造为空是静默跳过候选的独立原因（对齐 :pool_unavailable
+			// 的审计 metadata 写法），无痕迹会导致该账户看起来凭空消失。
+			auditCapture.AddGatewayMetadata("account_upstream_urls_empty_dispatch_skip", map[string]any{
+				"accountId":   account.ID,
+				"accountName": account.Name,
+				"reason":      "upstream_urls_empty",
+			})
 			skipAccount = true
 			break rotationLoop
 		}

@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
@@ -328,9 +329,42 @@ type chainFinalizationUsage struct {
 	// ServiceConfig.SyncPricingAllowed 同一字面量，chain_compose.go）。
 	pricing            gatewayusage.PricingCatalog
 	syncPricingAllowed bool
+	// enqueueFailures 统计 EnqueueUsageRecord 失败次数并驱动采样告警（前 10
+	// 条逐条、之后每 100 条一条，对齐本文件 spooledUsageRecorder 既有采样
+	// 模式）。方法为指针接收者：值接收者会在每次接口调用时复制接收者，计数
+	// 从 0 加到 1 即随副本丢弃，采样永不生效。本结构体由 chain_v1.go 每请求
+	// 构造，计数本体因此上移为 gatewayChain 的长生命周期字段
+	// （finalizationEnqueueFailures），构造点以指针挂载共享计数，采样跨请求
+	// 累计而非每请求归零。nil（零值测试构造，无计数本体）降级为不采样——
+	// 每条失败都打 Warn——保证零值构造不 panic。
+	enqueueFailures *int64
 }
 
-func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresponse.CompletedAttemptInput) {
+// recordEnqueueFailureSampled 统计一次 EnqueueUsageRecord 失败并按采样阈值
+// 决定是否告警（前 10 条逐条、之后每 100 条一条）。enqueueFailures 为 nil
+// （零值测试构造，无共享计数本体）时不累计、不采样，逐条告警，不触碰 nil
+// 指针。
+func (u *chainFinalizationUsage) recordEnqueueFailureSampled(traceID, accountID, errText string) {
+	if u.enqueueFailures == nil {
+		slog.Error("usage 记录入队失败，无法持久投递，已丢弃",
+			"event", "gateway_usage_enqueue_failed",
+			"traceId", traceID,
+			"accountId", accountID,
+			"error", errText)
+		return
+	}
+	failed := atomic.AddInt64(u.enqueueFailures, 1)
+	if failed <= 10 || failed%100 == 0 {
+		slog.Error("usage 记录入队失败，无法持久投递，已丢弃",
+			"event", "gateway_usage_enqueue_failed",
+			"traceId", traceID,
+			"accountId", accountID,
+			"enqueueFailureCount", failed,
+			"error", errText)
+	}
+}
+
+func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresponse.CompletedAttemptInput) {
 	if u.recorder == nil {
 		return
 	}
@@ -428,7 +462,11 @@ func (u chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresp
 	}
 	durationMs := int(*completedAtMs - input.StartedAtMs)
 	record.DurationMs = &durationMs
-	_ = u.recorder.EnqueueUsageRecord(context.Background(), record)
+	if err := u.recorder.EnqueueUsageRecord(context.Background(), record); err != nil {
+		// 计费用量记录入队失败 = 整条丢失（缓冲满 + spool 写盘失败路径），
+		// 不允许静默：按采样告警（前 10 条逐条、之后每 100 条一条）。
+		u.recordEnqueueFailureSampled(record.TraceID, record.AccountID, err.Error())
+	}
 }
 
 // applyUsageAccountScope 把账户视图携带的 usage scope 投影到记录（对齐
@@ -504,7 +542,7 @@ func firstNonEmptyChainUsage(values ...string) string {
 	return ""
 }
 
-func (u chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayresponse.FailedAttemptInput) {
+func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayresponse.FailedAttemptInput) {
 	if u.recorder == nil {
 		return
 	}
@@ -535,7 +573,10 @@ func (u chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespons
 		statusCode := *input.StatusCode
 		record.StatusCode = &statusCode
 	}
-	_ = u.recorder.EnqueueUsageRecord(context.Background(), record)
+	if err := u.recorder.EnqueueUsageRecord(context.Background(), record); err != nil {
+		// 失败尝试记账入队失败同样是整条丢失，采样告警对齐成功路径。
+		u.recordEnqueueFailureSampled(record.TraceID, record.AccountID, err.Error())
+	}
 }
 
 // usageModelAccountOf projects the dispatch candidate into the usage account

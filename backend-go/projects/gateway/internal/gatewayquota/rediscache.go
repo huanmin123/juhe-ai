@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -119,7 +120,13 @@ func (s *RedisRuntimeState) GetJSON(ctx context.Context, storeName, key string, 
 		return false, err
 	}
 	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		_ = s.client.Del(ctx, location).Err()
+		// 损坏文档清理吞错补 Debug（第二批日志补齐 5）：条目有 TTL 兜底自愈。
+		if delErr := s.client.Del(ctx, location).Err(); delErr != nil {
+			slog.Debug("网关配额状态损坏文档清理失败（TTL 兜底自愈）",
+				"event", "gateway_runtime_state_cleanup_failed",
+				"keyPrefix", s.prefix,
+				"error", delErr)
+		}
 		return false, nil
 	}
 	return true, nil
@@ -237,7 +244,13 @@ func (c *RedisSharedCache) Get(ctx context.Context, key string, target any) (boo
 		return false, err
 	}
 	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		_ = c.client.Del(ctx, location).Err()
+		// 损坏文档清理吞错补 Debug（第二批日志补齐 5）：条目有 PX TTL 兜底自愈。
+		if delErr := c.client.Del(ctx, location).Err(); delErr != nil {
+			slog.Debug("网关共享缓存损坏文档清理失败（TTL 兜底自愈）",
+				"event", "gateway_runtime_state_cleanup_failed",
+				"keyPrefix", c.keyPrefix,
+				"error", delErr)
+		}
 		return false, nil
 	}
 	return true, nil

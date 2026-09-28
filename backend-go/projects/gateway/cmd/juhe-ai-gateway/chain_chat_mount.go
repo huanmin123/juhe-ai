@@ -20,6 +20,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 )
 
+// chatGenerationHubDrainTimeout 是停机时生成排空的有界等待（对齐 Node
+// shutdownChatGenerationRegistry 的 abort + 有界等待语义）：Abort 全部 runner
+// 后最多等这么久让轮次收敛终态，超时强制摘除，不阻塞其余停机步骤。
+const chatGenerationHubDrainTimeout = 8 * time.Second
+
 // composeChatFamily builds the chat Deps over the chat database handle and
 // the assembled /v1 chain, and registers the my-chat route family on the
 // kernel. It fails fast naming the missing chat database handle.
@@ -104,6 +109,12 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		}
 		return ref.EnabledGroupIDs, true
 	})
+	// 可靠性批次2（缺陷1）：把生成排空接进 composed.shutdowns。shutdowns 是
+	// LIFO（后注册先执行）：本注册晚于 chainShutdown / chainServices.Close，
+	// 停机时 hub 排空先于网关链关闭——runner 的收尾派发（轮次落 canceled 终态）
+	// 仍可使用在途链；compose.go Shutdown 注释宣称的 "chat generation hub
+	// drain first" 此前从未接线，SIGTERM 会直接丢弃全部在途轮次。
+	composed.shutdowns = append(composed.shutdowns, func() { hub.Shutdown(chatGenerationHubDrainTimeout) })
 	deps.ToolCapabilit = newChatToolCapabilitiesResolver(deps)
 	deps.Register(composed.kernel, systemAPIPrefix+"/my-chat")
 	return deps, nil

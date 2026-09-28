@@ -87,6 +87,9 @@ services:
       JUHE_AI_PORT: 3000
       # 不显式指向 dist 就不挂管理 SPA（代码默认空）
       JUHE_AI_FRONTEND_DIST_PATH: /app/frontend/dist
+      # 运行日志文件写侧/grep 面（gateway）与索引器/轮转清理（jobs）必须
+      # 三方同目录，未配置时 gateway 侧文件日志与 grep 面整体禁用
+      JUHE_AI_LOG_DIR: /app/backend/logs
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "data.aijh.huanmin.top:59.110.140.235"
@@ -127,6 +130,9 @@ services:
       TZ: Asia/Shanghai
       NODE_ENV: production
       JUHE_AI_INSTANCE_ID: juhe-ai-jobs
+      # 与 gateway 同目录：F1 索引器按文件 cursor 消费 juhe-ai.log 与轮转文件，
+      # 保留清理也只删该目录下的 rotated 文件
+      JUHE_AI_LOG_DIR: /app/backend/logs
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "data.aijh.huanmin.top:59.110.140.235"

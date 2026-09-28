@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
@@ -129,6 +130,13 @@ func usageContextOf(context gatewaypreauth.GatewayFailureUsageContext) gatewayus
 type usageDispatchAdapter struct {
 	service  *gatewayusage.Service
 	recorder gatewayusage.UsageRecorder
+	// enqueueFailures 统计 EnqueueUsageRecord 失败次数并驱动采样告警（前 10
+	// 条逐条、之后每 100 条一条，对齐 chain_usage.go 既有采样模式）。方法为
+	// 指针接收者：值接收者会在每次接口调用时复制接收者，计数从 0 加到 1 即
+	// 随副本丢弃，采样永不生效。组合根以指针字面量构造进程级单实例
+	// （chain_compose.go 的两个端口各持一个实例、各自计数即可，无需共享），
+	// atomic 增量落在同一实例上，采样状态跨接口调用持久。
+	enqueueFailures int64
 }
 
 // DispatchUsageRecord mirrors dispatchUsageRecord: the finalized aggregate
@@ -137,7 +145,7 @@ type usageDispatchAdapter struct {
 // the result metrics; the token/cost accounting rides on the response
 // snapshot captured by the audit pipeline (registered takeover point until
 // the G17 pricing slice mounts).
-func (a usageDispatchAdapter) DispatchUsageRecord(input gatewayresponse.ModelsUsageDispatchInput) {
+func (a *usageDispatchAdapter) DispatchUsageRecord(input gatewayresponse.ModelsUsageDispatchInput) {
 	if a.recorder == nil {
 		return
 	}
@@ -162,11 +170,23 @@ func (a usageDispatchAdapter) DispatchUsageRecord(input gatewayresponse.ModelsUs
 	record.FirstTokenMs = &firstTokenMs
 	durationMs := int(input.DurationMs)
 	record.DurationMs = &durationMs
-	_ = a.recorder.EnqueueUsageRecord(context.Background(), record)
+	if err := a.recorder.EnqueueUsageRecord(context.Background(), record); err != nil {
+		// 计费用量记录入队失败 = 整条丢失（缓冲满 + spool 写盘失败路径），
+		// 不允许静默：按采样告警（前 10 条逐条、之后每 100 条一条）。记录
+		// id 由 recorder 侧归一化时生成，此处尚不可得，线索以 traceId 定位。
+		failed := atomic.AddInt64(&a.enqueueFailures, 1)
+		if failed <= 10 || failed%100 == 0 {
+			slog.Error("usage 记录入队失败，无法持久投递，已丢弃",
+				"event", "gateway_usage_enqueue_failed",
+				"traceId", input.UsageContext.TraceID,
+				"enqueueFailureCount", failed,
+				"error", err.Error())
+		}
+	}
 }
 
 // RecordGatewayFailure implements gatewayresponse.FailureUsageRecorder.
-func (a usageDispatchAdapter) RecordGatewayFailure(input gatewayresponse.FailureUsageRecordInput) {
+func (a *usageDispatchAdapter) RecordGatewayFailure(input gatewayresponse.FailureUsageRecordInput) {
 	if a.service == nil {
 		return
 	}
@@ -358,6 +378,7 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	failureObservation := gatewayresponse.ClassifyGatewayUpstreamFailure(failureClassificationInput)
 	slog.Warn("上游返回非成功状态",
 		"event", "gateway_upstream_response_failed",
+		"traceId", input.UsageContext.TraceID,
 		"accountId", input.Account.ID,
 		"accountType", input.Account.Type,
 		"upstreamUrl", chainSanitizedUpstreamURL(input.UpstreamURL),
@@ -656,6 +677,7 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 	})
 	slog.Warn("网关请求上游失败",
 		"event", "gateway_upstream_request_failed",
+		"traceId", input.UsageContext.TraceID,
 		"accountId", input.Account.ID,
 		"accountType", input.Account.Type,
 		"upstreamUrl", chainSanitizedUpstreamURL(input.UpstreamURL),

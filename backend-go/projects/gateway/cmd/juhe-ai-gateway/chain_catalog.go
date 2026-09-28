@@ -10,6 +10,16 @@ package main
 // 三协议子供应商的聚合；此前 Go 迁移只按单码查询，导致 AI 对话与 /v1/models
 // 在 openai/hybrid 分组下稳定返回空目录（管理面 internal/providers 已移植
 // 同一扩展，两侧语义自此重新对齐）。
+//
+// 2026-09-28 修复：补回 Node toBuiltInCatalogItem 的静态能力兜底
+// （decorateBuiltinStaticDerivedCapabilities）。数据库目录表从 Node 时代起就
+// 没有 supported_tools / input_modalities / output_modalities 列，Node 在读取
+// 链用静态定价表兜底，Go 迁移此前只移植到了管理面
+// （internal/providers ApplyBuiltInStaticDerivedFields），chat 面目录的
+// supportedTools / inputModalities / outputModalities 恒空，导致 AI 问答
+// supportsWebSearch 恒 false、web_search 等内置工具对 GPT 模型永不注入。
+// 两侧现在共同调用 providers.ResolveBuiltInStaticDerivedCapabilities，
+// custom 行与管理面现状对齐不做兜底。
 
 import (
 	"context"
@@ -21,6 +31,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 )
 
 // ---------------------------------------------------------------------------
@@ -591,11 +602,84 @@ func catalogColumnList(columns [][2]string) string {
 }
 
 // decorateBuiltinCatalogRow applies the toBuiltInCatalogItem derivations the
-// SQL read cannot express: scope='built_in' and
-// supportsServiceTier=len(supportedServiceTiers)>0.
+// SQL read cannot express: scope='built_in',
+// supportsServiceTier=len(supportedServiceTiers)>0 and the static capability
+// fallback (decorateBuiltinStaticDerivedCapabilities).
 func decorateBuiltinCatalogRow(row map[string]any) {
 	row["scope"] = "built_in"
 	row["supportsServiceTier"] = catalogStringListLength(row["supportedServiceTiers"]) > 0
+	decorateBuiltinStaticDerivedCapabilities(row)
+}
+
+// decorateBuiltinStaticDerivedCapabilities 补上 toBuiltInCatalogItem 的静态能力
+// 兜底（移植自 Node toBuiltInCatalogItem 的静态能力兜底，与管理面
+// providers.ApplyBuiltInStaticDerivedFields 同源：两侧共同调用
+// providers.ResolveBuiltInStaticDerivedCapabilities，见 internal/providers/catalog.go）。
+// 背景：数据库目录表从 Node 时代起就没有 supported_tools / input_modalities /
+// output_modalities 列，Node 在读取链用静态定价表兜底，Go 迁移只移植到了管理面，
+// chat 面（AI 问答模型选项 / toolCapabilities / 模型能力详情 / 协议偏好）此前恒空，
+// 导致 supportsWebSearch 恒 false、web_search 等内置工具永不注入。
+// 放置点在目录装载（gatewayruntimecache 缓存写入前），缓存命中路径因此同样
+// 携带兜底值。custom（custom_provider_models）行与管理面现状对齐：不做兜底。
+// 行自身对这三个能力键没有声明（列清单不含它们），空值一律按静态快照填充。
+func decorateBuiltinStaticDerivedCapabilities(row map[string]any) {
+	resolved := providers.ResolveBuiltInStaticDerivedCapabilities(
+		catalogRowString(row["providerCode"]),
+		catalogRowString(row["model"]),
+		catalogRowInt64Ptr(row["maxOutputTokens"]),
+		catalogRowString(row["source"]))
+	row["inputModalities"] = resolved.InputModalities
+	row["outputModalities"] = resolved.OutputModalities
+	row["supportedTools"] = resolved.SupportedTools
+	// GenerationParameterCapabilities 序列化为与 管理面 ModelCatalogItem 相同的
+	// JSON 形状（含 step 字段），经 RawMessage 进入共享 item。
+	encoded, err := json.Marshal(resolved.GenerationParameterCapabilities)
+	if err != nil {
+		// map[string]any 的值全是 string/float64，序列化不会失败；兜底为空对象
+		// 保持键存在（与管理面恒非 nil 的语义一致）。
+		encoded = []byte("{}")
+	}
+	row["generationParameterCapabilities"] = json.RawMessage(encoded)
+	if resolved.CachedImageInputUsdPer1M != nil {
+		row["cachedImageInputUsdPer1M"] = *resolved.CachedImageInputUsdPer1M
+	}
+	if resolved.SourcePricingCurrency != "" {
+		row["sourcePricingCurrency"] = resolved.SourcePricingCurrency
+	}
+	if resolved.SourceExchangeRateToUsd != nil {
+		row["sourceExchangeRateToUsd"] = *resolved.SourceExchangeRateToUsd
+	}
+	if resolved.SourceExchangeRateDate != "" {
+		row["sourceExchangeRateDate"] = resolved.SourceExchangeRateDate
+	}
+	if resolved.SourcePricingNote != "" {
+		row["sourcePricingNote"] = resolved.SourcePricingNote
+	}
+}
+
+// catalogRowString reads a string row value (the scan normalization already
+// renders SQL text into string).
+func catalogRowString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+// catalogRowInt64Ptr reads a nullable integer row value; SQLite decodes
+// INTEGER as float64/int64 and PostgreSQL as int64.
+func catalogRowInt64Ptr(value any) *int64 {
+	switch typed := value.(type) {
+	case float64:
+		converted := int64(typed)
+		return &converted
+	case int64:
+		converted := typed
+		return &converted
+	case int:
+		converted := int64(typed)
+		return &converted
+	default:
+		return nil
+	}
 }
 
 // decorateCustomCatalogRow applies the toCustomCatalogItem derivations:

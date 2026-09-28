@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 )
 
@@ -294,7 +295,14 @@ func (s *AffinityService) trafficMigrationPreferenceForAccountsAsync(ctx context
 		return nil
 	}
 	if containsString(accountIDs, preference.SourceAccountID) {
-		_ = s.deleteRedisTrafficMigrationPreference(ctx, scopedKey)
+		// 过期清理吞错补 Debug（第二批日志补齐 5）：偏向条目有 TTL 兜底自愈，
+		// 删除失败只降级为等到期失效。
+		if err := s.deleteRedisTrafficMigrationPreference(ctx, scopedKey); err != nil {
+			slog.Debug("Redis 流量迁移偏向过期清理失败（TTL 兜底自愈）",
+				"event", "redis_openai_traffic_migration_preference_cleanup_failed",
+				"scopeKey", scopedKey,
+				"error", err)
+		}
 		return nil
 	}
 	if containsString(accountIDs, preference.TargetAccountID) {

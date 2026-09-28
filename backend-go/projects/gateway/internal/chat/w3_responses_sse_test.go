@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // CollectChatResponsesSse 是 OpenAI Responses SSE 采集器的契约入口：按空行分帧、
@@ -431,4 +432,112 @@ func sortInt64sCopyW3(values []int64) []int64 {
 	out := append([]int64{}, values...)
 	sortInt64s(out)
 	return out
+}
+
+// TestCollectResponsesSseSlowUpstreamW3 证明采集器增量消费：上游每写一个事件块
+// 就等待 onEvent 到达后才写下一块；若实现退化为全量缓冲，第一步等待会超时
+// 失败（打字机/自动滚动契约，对齐 Node for-await 语义）。
+func TestCollectResponsesSseSlowUpstreamW3(t *testing.T) {
+	reader, writer := io.Pipe()
+	events := make(chan ChatResponsesEvent, 8)
+	type outcomeW3 struct {
+		result ChatResponsesCollectionResult
+		err    error
+	}
+	outcome := make(chan outcomeW3, 1)
+	go func() {
+		result, err := CollectChatResponsesSse(reader, maxMessageBytes, 0, func(event ChatResponsesEvent) error {
+			events <- event
+			return nil
+		}, nil)
+		outcome <- outcomeW3{result: result, err: err}
+	}()
+	write := func(payload string) {
+		if _, err := writer.Write([]byte(payload)); err != nil {
+			t.Fatalf("写入上游事件失败: %v", err)
+		}
+	}
+	waitEvent := func(wantType, wantDelta string) {
+		t.Helper()
+		select {
+		case event := <-events:
+			if event.Type != wantType || event.Delta != wantDelta {
+				t.Fatalf("event = %+v, 期望 %s %q", event, wantType, wantDelta)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("上游尚未结束时 onEvent(%s %q) 未即时送达", wantType, wantDelta)
+		}
+	}
+	write(responsesBlockW3("", `{"type":"response.output_text.delta","delta":"先"}`))
+	waitEvent("text_delta", "先")
+	write(responsesBlockW3("", `{"type":"response.reasoning_summary_text.delta","delta":"思考"}`))
+	waitEvent("reasoning_delta", "思考")
+	write(responsesBlockW3("", `{"type":"response.output_text.delta","delta":"答"}`))
+	waitEvent("text_delta", "答")
+	write(responsesBlockW3("response.completed", `{"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2}}}`))
+	waitEvent("completed", "")
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭上游失败: %v", err)
+	}
+	finished := <-outcome
+	if finished.err != nil {
+		t.Fatalf("采集失败: %v", finished.err)
+	}
+	if finished.result.Content != "先答" {
+		t.Fatalf("Content = %q, 期望 先答", finished.result.Content)
+	}
+	if finished.result.InputTokens == nil || *finished.result.InputTokens != 3 || finished.result.OutputTokens == nil || *finished.result.OutputTokens != 2 {
+		t.Fatalf("用量不正确: %+v", finished.result)
+	}
+	select {
+	case extra := <-events:
+		t.Fatalf("不应有多余事件: %+v", extra)
+	default:
+	}
+}
+
+// TestCollectResponsesSseSplitRuneW3 覆盖多字节字符拆在两次 Read 之间：增量
+// UTF-8 校验必须暂存未凑齐的尾部字节，解析结果与一次性读入完全一致。
+func TestCollectResponsesSseSplitRuneW3(t *testing.T) {
+	full := responsesBlockW3("", `{"type":"response.output_text.delta","delta":"你好"}`) +
+		responsesBlockW3("response.completed", `{"type":"response.completed","response":{"output":[]}}`)
+	// “你”(E4 BD A0) 拆在第一块尾，“好”(E5 A5 BD) 完整落在第二块；终态块的
+	// 事件 JSON 也拆成两段，覆盖数据块与边界分帧两种跨块形态。
+	split := [][]byte{
+		[]byte(`data: {"type":"response.output_text.delta","delta":"` + "\xe4\xbd"),
+		[]byte("\xa0\xe5\xa5\xbd" + `"}` + "\n\n"),
+		[]byte(`data: {"type":"response.comp`),
+		[]byte(`leted","response":{"output":[]}}` + "\n\n"),
+	}
+	collect := func(stream io.Reader) (ChatResponsesCollectionResult, []ChatResponsesEvent, error) {
+		var events []ChatResponsesEvent
+		result, err := CollectChatResponsesSse(stream, maxMessageBytes, 0, func(event ChatResponsesEvent) error {
+			events = append(events, event)
+			return nil
+		}, nil)
+		return result, events, err
+	}
+	streamedResult, streamedEvents, streamErr := collect(&chunkedReaderW3{chunks: split})
+	wholeResult, wholeEvents, wholeErr := collect(strings.NewReader(full))
+	if streamErr != nil || wholeErr != nil {
+		t.Fatalf("采集失败: streamed=%v whole=%v", streamErr, wholeErr)
+	}
+	if streamedResult.Content != wholeResult.Content || wholeResult.Content != "你好" {
+		t.Fatalf("Content 不一致: streamed=%q whole=%q", streamedResult.Content, wholeResult.Content)
+	}
+	if len(streamedEvents) != len(wholeEvents) || len(wholeEvents) != 2 {
+		t.Fatalf("事件数不一致: streamed=%d whole=%d", len(streamedEvents), len(wholeEvents))
+	}
+	for i := range wholeEvents {
+		if streamedEvents[i].Type != wholeEvents[i].Type || streamedEvents[i].Delta != wholeEvents[i].Delta {
+			t.Fatalf("事件 %d 不一致: %+v vs %+v", i, streamedEvents[i], wholeEvents[i])
+		}
+	}
+	// 跨块合并后出现非法字节：必须判定整体无效，错误文案不变。
+	if _, err := CollectChatResponsesSse(&chunkedReaderW3{chunks: [][]byte{
+		[]byte(`data: {"delta":"` + "\xe4\xbd"),
+		[]byte("\xff\"}\n\n"),
+	}}, maxMessageBytes, 0, nil, nil); err == nil || !strings.Contains(err.Error(), "上游返回了无效的 SSE JSON") {
+		t.Fatalf("跨块非法 UTF-8 应报错: %v", err)
+	}
 }

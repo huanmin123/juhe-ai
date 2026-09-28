@@ -113,6 +113,10 @@ func main() {
 		fail(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+	// 2026-09-28 日志治理：oauthmgmt/aipublic/taskruns 等并行装配面以及
+	// safego/inval 的兜底路径统一走 slog.Default()，这里把进程 JSON logger
+	// 设为默认。
+	slog.SetDefault(logger)
 	processlog.CatchPanic(logger)
 	processlog.KeepAliveOnBrokenOutputPipe()
 	ownerMode, err := ownermode.Load(os.Getenv)
@@ -130,6 +134,21 @@ func main() {
 	runtimeCfg, err := loadRuntimeConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load gateway runtime config: %w", err))
+	}
+	// BUG-0195：文件日志写侧装配。runtimeCfg 就绪后立即切换最终 logger 并
+	// 重设 slog.Default()——下方全部 compose 面（compose.go 的
+	// slog.Default() 消费点与 chain_compose.go:356 的
+	// kernel.NewSlogRequestEventSink）都在此之后求值，/v1 链与 HTTP 访问
+	// 日志因此进入 stdout+文件多路 JSONL。此前的启动段（fail/passive 健康
+	// 进程）保持上方 stdout-only logger，行为不变。
+	finalLogger, logSink, sinkErr := newRuntimeLogger(runtimeCfg, os.Stdout, logLevel)
+	if sinkErr != nil {
+		fail(fmt.Errorf("assemble runtime log file sink: %w", sinkErr))
+	}
+	logger = finalLogger
+	slog.SetDefault(logger)
+	if logSink != nil {
+		defer logSink.Close()
 	}
 	if err := gateGatewayChain(runtimeCfg.ChainEnabled); err != nil {
 		fail(err)
@@ -508,7 +527,32 @@ func main() {
 		j3bHostComponent = j3bHost.Component()
 	}
 	postgresPools := pgpool.NewRegistry()
-	defer postgresPools.Close()
+	// 连接池生命周期观测：与 jobs 侧同一 sqlpool observer 契约，事件字段已
+	// 脱敏（不含 URL/userinfo），Debug 级透传；进程 logger 为 nil 时回落
+	// slog.Default()。
+	pgpoolObserverLogger := logger
+	if pgpoolObserverLogger == nil {
+		pgpoolObserverLogger = slog.Default()
+	}
+	postgresPools.SetObserver(func(event pgpool.PoolEvent) {
+		pgpoolObserverLogger.Debug("gateway_pgpool_event",
+			"event", event.Kind,
+			"role", event.Role,
+			"maxOpen", event.MaxOpen,
+			"maxIdle", event.MaxIdle,
+			"refs", event.Refs,
+			"open", event.DBStats.OpenConnections,
+			"inUse", event.DBStats.InUse,
+			"idle", event.DBStats.Idle,
+			"waitCount", event.DBStats.WaitCount,
+			"waitDurationMs", event.DBStats.WaitDuration.Milliseconds(),
+		)
+	})
+	defer func() {
+		if err := postgresPools.Close(); err != nil {
+			pgpoolObserverLogger.Error("gateway postgres 连接池关闭失败", "event", "gateway_pgpool_close_failed", "component", "gateway_pgpool", "error", err)
+		}
+	}()
 	auditConfig, err := auditlog.LoadConfig(os.Getenv)
 	if err != nil {
 		fail(fmt.Errorf("load F3 audit-log config: %w", err))
@@ -734,6 +778,9 @@ func main() {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}
 		defer composed.Shutdown()
+		// F4 队列丢弃计数出口（F3 同款 seam，main.go 上方）：producer 在组合
+		// 根内构造，这里在 Server 启动前注入访问器，先于任何 scrape 读取。
+		gatewayusage.SetOperationLogDroppedTotal(composed.producer.DroppedTotal)
 		// T6d gateway-side consumption: re-project the runtime rows and quota
 		// scope bindings the jobs expiry sweep cannot touch (jobregistry
 		// GoBinding freeze). Best-effort compensator: failures never stop the
@@ -817,6 +864,9 @@ func main() {
 			PublisherEnabled: true,
 			ReaderEnabled:    false,
 		})
+		// 2026-09-28 日志治理：publish/unregister 失败告警经进程 logger（30s
+		// 节流），Start 前注入。
+		registry.SetLogger(logger)
 		components = append(components, supervisor.Component{
 			Name: "Internal gateway registry",
 			Run: func(componentCtx context.Context) error {
@@ -1154,6 +1204,11 @@ func runSessionRetention(ctx context.Context, store *sessionretention.Store, int
 }
 
 func fail(err error) {
+	// 2026-09-28 日志治理：fail 在进程 logger 构造前也可能被调用（如
+	// JUHE_AI_LOG_LEVEL 解析失败），此时 slog.Default() 落到标准 stderr
+	// handler；JSON logger 就绪后则进入 stdout JSON 流。原 stderr 输出与
+	// 退出码保持不变。
+	slog.Default().Error("gateway startup failed", "error", err.Error())
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
 }

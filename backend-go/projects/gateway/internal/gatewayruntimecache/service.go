@@ -393,8 +393,11 @@ func (s *Service) syncInvalidationsBestEffort(ctx context.Context) {
 	}
 	bus := s.opts.Bus
 	if err := bus.SyncFromShared(ctx, inval.TopicGatewayRuntime, inval.TopicGatewayAPIKeyValidation); err != nil {
-		// The invalidation helper records the Redis failure upstream; cached AI
-		// runtime stays usable until bounded local retention expires.
+		// 2026-09-28 日志治理：inval 层自身不落日志（此前注释所称"上游已
+		// 记录"不成立），跨实例失效同步失败在此 30s 节流告警；本调用位于
+		// 缓存读前热路径。缓存读不受影响，本地与共享层照常可用直至有界
+		// retention 过期。
+		s.logSharedFailure("gateway_runtime_cache_invalidation_sync_failed", err)
 		return
 	}
 	for _, topic := range []string{inval.TopicGatewayRuntime, inval.TopicGatewayAPIKeyValidation} {

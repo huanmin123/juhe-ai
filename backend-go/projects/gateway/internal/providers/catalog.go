@@ -393,52 +393,35 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.SupportsPromptCaching = promptCaching.Bool && promptCaching.Valid
 	visible := catalogVisible.Bool && catalogVisible.Valid
 	item.CatalogVisible = &visible
-	applyBuiltInStaticDerivedFields(&item)
+	ApplyBuiltInStaticDerivedFields(&item)
 	item.SupportsServiceTier = len(item.SupportedServiceTiers) > 0
 	return item, nil
 }
 
-// applyBuiltInStaticDerivedFields ports the toBuiltInCatalogItem capability
+// ApplyBuiltInStaticDerivedFields ports the toBuiltInCatalogItem capability
 // derivations: modality/tool fallbacks from the static pricing table (the
 // internal/pricing seam), the generated generation-parameter capabilities
 // clamped by maxOutputTokens and the static-only source-pricing passthroughs
 // (keepStaticPricingSource: a manual-override row keeps its own pricing
-// provenance).
-func applyBuiltInStaticDerivedFields(item *ModelCatalogItem) {
-	item.InputModalities = []string{}
-	item.OutputModalities = []string{}
-	item.SupportedTools = []string{}
-	item.SourcePricingCurrency = ""
-	item.SourceExchangeRateDate = ""
-	item.SourcePricingNote = ""
-	static := staticPricingFor(item.ProviderCode, item.Model)
-	keepStaticPricingSource := item.Source != "manual-override"
-	if static != nil {
-		if len(static.InputModalities) > 0 {
-			item.InputModalities = append([]string{}, static.InputModalities...)
-		}
-		if len(static.OutputModalities) > 0 {
-			item.OutputModalities = append([]string{}, static.OutputModalities...)
-		}
-		if len(static.SupportedTools) > 0 {
-			item.SupportedTools = append([]string{}, static.SupportedTools...)
-		}
-		if keepStaticPricingSource {
-			if static.CachedImageInputUsdPer1M != nil {
-				item.CachedImageInputUsdPer1M = static.CachedImageInputUsdPer1M
-			}
-			item.SourcePricingCurrency = static.SourcePricingCurrency
-			item.SourceExchangeRateToUsd = static.SourceExchangeRateToUsd
-			item.SourceExchangeRateDate = static.SourceExchangeRateDate
-			item.SourcePricingNote = static.SourcePricingNote
-		}
+// provenance). 解析本体在 ResolveBuiltInStaticDerivedCapabilities（derived.go），
+// 与 chat 面目录读取链共用同一实现。SourceExchangeRateToUsd 有意收窄为
+// “解析出非 nil 才赋值”：静态表未解析出汇率时不回写，防止未来 DB 行自带
+// 该值被静态 nil 覆盖，与共享解析器的语义一致。
+func ApplyBuiltInStaticDerivedFields(item *ModelCatalogItem) {
+	resolved := ResolveBuiltInStaticDerivedCapabilities(item.ProviderCode, item.Model, item.MaxOutputTokens, item.Source)
+	item.InputModalities = resolved.InputModalities
+	item.OutputModalities = resolved.OutputModalities
+	item.SupportedTools = resolved.SupportedTools
+	item.SourcePricingCurrency = resolved.SourcePricingCurrency
+	item.SourceExchangeRateDate = resolved.SourceExchangeRateDate
+	item.SourcePricingNote = resolved.SourcePricingNote
+	if resolved.CachedImageInputUsdPer1M != nil {
+		item.CachedImageInputUsdPer1M = resolved.CachedImageInputUsdPer1M
 	}
-	capabilities := generationParameterCapabilitiesForModel(item.ProviderCode, item.Model, item.MaxOutputTokens)
-	if static != nil && len(static.GenerationParameterCapabilities) > 0 {
-		capabilities = static.GenerationParameterCapabilities
+	if resolved.SourceExchangeRateToUsd != nil {
+		item.SourceExchangeRateToUsd = resolved.SourceExchangeRateToUsd
 	}
-	item.GenerationParameterCapabilities = generationParameterCapabilitiesToAny(
-		limitGenerationParameterMaxOutputTokens(capabilities, item.MaxOutputTokens))
+	item.GenerationParameterCapabilities = resolved.GenerationParameterCapabilities
 }
 
 // listCustomCatalogModels mirrors listCustomProviderModelsForCatalogAsync

@@ -125,10 +125,10 @@ const sanitized = cloneVisibleChatMessage({
     { type: 'input_image', assetId: 'asset_1', order: 1, dataUrl: 'data:image/png;base64,AAAA', hiddenDescription: 'secret' },
     { type: 'output_text', blockId: 'block_text', order: 2, text: '先给结论' },
     { type: 'reasoning', blockId: 'block_reasoning', order: 3, text: 'thinking', status: 'completed', extra: 'drop' },
-    { type: 'tool_call', blockId: 'block_tool', order: 4, callId: 'tool_1', toolType: 'search', status: 'canceled', item: { query: 'safe', password: 'secret' } },
+    { type: 'tool_call', blockId: 'block_tool', order: 4, callId: 'tool_1', toolType: 'search', status: 'canceled', item: { query: '北京天气', results: [{ title: '天气网', url: 'https://example.com/weather' }] } },
     { type: 'output_image', blockId: 'block_image', order: 5, assetId: 'asset_generated', status: 'completed', mimeType: 'image/png', width: 1024, height: 1024, revisedPrompt: '绿色圆形' }
   ],
-  toolEvents: [{ id: 'tool_legacy', type: 'search', status: 'canceled', item: { token: 'secret' } }]
+  toolEvents: [{ id: 'tool_legacy', type: 'search', status: 'canceled', item: { action: { query: '北京天气' } } }]
 } as unknown as ChatMessage)
 assert.ok(sanitized)
 assert.equal(JSON.stringify(sanitized).includes('secret'), false)
@@ -142,20 +142,20 @@ assert.deepEqual(sanitized!.contentBlocks?.slice(2).map((block) => ({ blockId: '
   { blockId: 'block_image', order: 5 }
 ])
 assert.equal((sanitized!.contentBlocks?.[4] as { status?: string }).status, 'canceled')
-assert.equal('item' in (sanitized!.contentBlocks?.[4] ?? {}), false, 'tool_call 原始 item 不得进入展示缓存')
+assert.deepEqual((sanitized!.contentBlocks?.[4] as { item?: Record<string, unknown> }).item, { query: '北京天气', results: [{ title: '天气网', url: 'https://example.com/weather' }] }, 'tool_call item 必须完整保留以支撑缓存命中的工具明细回放')
 assert.deepEqual(sanitized!.contentBlocks?.[5], { type: 'output_image', blockId: 'block_image', order: 5, assetId: 'asset_generated', status: 'completed', mimeType: 'image/png', width: 1024, height: 1024, revisedPrompt: '绿色圆形' })
 assert.deepEqual({ eventVersion: sanitized!.eventVersion, renderRevision: sanitized!.renderRevision }, { eventVersion: 12, renderRevision: 8 })
-assert.deepEqual(sanitized!.toolEvents, [{ id: 'tool_legacy', type: 'search', status: 'canceled' }])
+assert.deepEqual(sanitized!.toolEvents, [{ id: 'tool_legacy', type: 'search', status: 'canceled', item: { action: { query: '北京天气' } } }], 'toolEvents item 必须保留')
 const deepToolPayload = cloneVisibleChatMessage({
   ...message(2, 'safe'),
-  contentBlocks: [{ type: 'tool_call', id: 'tool_deep', toolType: 'search', status: 'completed', item: { query: 'safe', nested: { a: { b: { c: { d: { e: { password: 'deep-secret', raw: 'data:image/png;base64,AAAA' } } } } } } } }],
-  toolEvents: [{ id: 'tool_deep', type: 'search', status: 'completed', item: { authorization: 'Bearer secret', response: { token: 'secret', payload: 'raw-upstream-body' } } }]
+  contentBlocks: [{ type: 'tool_call', id: 'tool_deep', toolType: 'search', status: 'completed', item: { query: '深嵌套安全负载', nested: { a: { b: { c: { d: { e: { findings: ['结论一', '结论二'], pinned: true } } } } } } } }],
+  toolEvents: [{ id: 'tool_deep', type: 'search', status: 'completed', item: { action: { query: '工具事件深负载', results: [{ title: '结果', url: 'https://example.com/r' }] } } }]
 })
 assert.ok(deepToolPayload)
-assert.equal(JSON.stringify(deepToolPayload).includes('deep-secret'), false)
-assert.equal(JSON.stringify(deepToolPayload).includes('base64'), false)
-assert.equal(JSON.stringify(deepToolPayload).includes('raw-upstream-body'), false)
-assert.equal(deepToolPayload!.toolEvents?.[0]?.item, undefined)
+assert.deepEqual((deepToolPayload!.contentBlocks?.[0] as { item?: Record<string, unknown> }).item, { query: '深嵌套安全负载', nested: { a: { b: { c: { d: { e: { findings: ['结论一', '结论二'], pinned: true } } } } } } }, 'tool_call item 深层结构必须原样往返')
+assert.deepEqual(deepToolPayload!.toolEvents?.[0]?.item, { action: { query: '工具事件深负载', results: [{ title: '结果', url: 'https://example.com/r' }] } }, 'toolEvents item 深层结构必须原样往返')
+assert.equal(cloneVisibleChatMessage({ ...message(3, 'safe'), contentBlocks: [{ type: 'tool_call', id: 'tool_blob', toolType: 'search', status: 'completed', item: { raw: 'data:image/png;base64,AAAA' } }] }), undefined, 'item 内 data:/base64 载荷必须整条放弃不入缓存')
+assert.equal(cloneVisibleChatMessage({ ...message(4, 'safe'), toolEvents: [{ id: 'tool_oversize', type: 'search', status: 'completed', item: { payload: 'x'.repeat(2 * 1024 * 1024 + 1) } }] }), undefined, 'item 单字符串超过持久化字节上限必须整条放弃不入缓存')
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), contentText: 'data:image/png;base64,AAAA' }), undefined)
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), model: 'data:application/octet-stream;base64,AAAA' }), undefined)
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), expiresAt: '2026-07-20 08:00:00' }), undefined, '缓存消息不得持久化无时区 expiresAt')

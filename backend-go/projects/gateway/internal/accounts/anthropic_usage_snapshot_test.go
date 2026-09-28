@@ -11,10 +11,11 @@ import (
 )
 
 func TestAnthropicUsageSnapshotFromRowArms(t *testing.T) {
-	// 完整快照：claude_5h/7d 双窗全部解析。
+	// 完整快照：claude_5h/7d 双窗全部解析。reset_at 用远未来时间：窗口折叠
+	// 逻辑对照真实当前时钟，近期时间会在过期后把利用率折叠为 0（w13g 惯例）。
 	out, err := anthropicUsageSnapshotFromRow("gateway", `{"claude_usage_updated_at":"2026-09-27T00:00:00.000Z",
-		"claude_5h_used_percent":14,"claude_5h_reset_at":"2026-09-27T04:00:00.000Z",
-		"claude_7d_used_percent":7,"claude_7d_reset_at":"2026-09-28T02:34:03.000Z",
+		"claude_5h_used_percent":14,"claude_5h_reset_at":"2099-09-27T04:00:00.000Z",
+		"claude_7d_used_percent":7,"claude_7d_reset_at":"2099-09-28T02:34:03.000Z",
 		"claude_unified_status":"allowed"}`, "ok", "2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z",
 		"2026-01-04T00:00:00Z", "", "2026-01-01T00:00:00Z")
 	if err != nil || out == nil {
@@ -24,11 +25,11 @@ func TestAnthropicUsageSnapshotFromRowArms(t *testing.T) {
 		t.Fatalf("kind：%+v", out)
 	}
 	if out.FiveHour == nil || out.FiveHour.Utilization != 14 || out.FiveHour.ResetsAt == nil ||
-		*out.FiveHour.ResetsAt != "2026-09-27T04:00:00.000Z" {
+		*out.FiveHour.ResetsAt != "2099-09-27T04:00:00.000Z" {
 		t.Fatalf("5h 窗：%+v", out.FiveHour)
 	}
 	if out.SevenDay == nil || out.SevenDay.Utilization != 7 || out.SevenDay.ResetsAt == nil ||
-		*out.SevenDay.ResetsAt != "2026-09-28T02:34:03.000Z" {
+		*out.SevenDay.ResetsAt != "2099-09-28T02:34:03.000Z" {
 		t.Fatalf("7d 窗：%+v", out.SevenDay)
 	}
 	if out.UsedPercent != nil || out.SubscriptionTier != nil {
@@ -62,7 +63,7 @@ func TestAnthropicUsageSnapshotFromRowArms(t *testing.T) {
 func TestAnthropicUsageSnapshotLoaderKindFilter(t *testing.T) {
 	env := newTestEnv(t)
 	now := "2026-01-01T00:00:00Z"
-	claudeJSON := `{"claude_5h_used_percent":14,"claude_5h_reset_at":"2026-09-27T04:00:00.000Z",
+	claudeJSON := `{"claude_5h_used_percent":14,"claude_5h_reset_at":"2099-09-27T04:00:00.000Z",
 		"claude_7d_used_percent":7,"claude_unified_status":"allowed"}`
 	env.exec(t, `INSERT INTO account_usage_snapshots (system_account_id, account_id, kind, source, snapshot_json,
 		refresh_status, created_at, updated_at) VALUES ('sys', 'acc-claude-1', 'anthropic_claude', 'gateway', ?, 'fresh', ?, ?)`,

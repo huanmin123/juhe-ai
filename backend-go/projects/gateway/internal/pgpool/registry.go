@@ -54,6 +54,7 @@ type Registry struct {
 
 type Key = sqlpool.Key
 type Handle = sqlpool.Handle
+type PoolEvent = sqlpool.PoolEvent
 
 func NewRegistry() *Registry {
 	return &Registry{}
@@ -75,6 +76,17 @@ func (r *Registry) Close() error {
 		return nil
 	}
 	return r.shared().Close()
+}
+
+// SetObserver forwards credential-free pool lifecycle events to gateway-owned
+// logging/metrics code without coupling this package to a telemetry backend
+// (mirror of the jobs-side registry). The shared contract already excludes the
+// URL, so a DSN password can never reach the observer.
+func (r *Registry) SetObserver(observer func(PoolEvent)) {
+	if r == nil {
+		return
+	}
+	r.shared().SetObserver(observer)
 }
 
 func (r *Registry) shared() *sqlpool.Registry {

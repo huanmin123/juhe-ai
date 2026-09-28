@@ -67,6 +67,25 @@ assert.match(createModalSource, /:cancel-button-props="\{ disabled: creating \}"
 assert.match(createModalSource, /function handleBindModeChange[\s\S]{0,300}selectedObjectId\.value = undefined/, '切换绑定模式必须清空已选对象')
 assert.match(createModalSource, /watch\(\(\) => props\.open[\s\S]{0,600}bindMode\.value = 'api_key'[\s\S]{0,300}selectedObjectId\.value = undefined/, '每次打开弹窗不得记忆上次选择')
 assert.match(createModalSource, /emit\('created', conversation\)/, '创建成功必须向父组件投递新会话')
+// --- 弹窗空态提示：加载完成且列表为空时给出明确提示（加载中回落默认空内容） ---
+assert.match(
+  createModalSource,
+  /apiKeyEmptyHint = computed\(\(\) => \(optionsLoading\.value\.api_key \? undefined : '暂无可用 API Key'\)\)/,
+  'API Key 模式加载完成且列表为空时必须提示暂无可用 API Key'
+)
+assert.match(
+  createModalSource,
+  /groupEmptyHint = computed\(\(\) => \(optionsLoading\.value\.group \? undefined : '暂无可绑定对象'\)\)/,
+  '分组模式加载完成且列表为空时必须提示暂无可绑定对象'
+)
+assert.match(
+  createModalSource,
+  /accountEmptyHint = computed\(\(\) => \(optionsLoading\.value\.account \? undefined : '暂无可绑定对象'\)\)/,
+  '账户模式加载完成且列表为空时必须提示暂无可绑定对象'
+)
+assert.match(createModalSource, /:not-found-content="apiKeyEmptyHint"/, 'API Key 下拉必须接入空态提示')
+assert.match(createModalSource, /:not-found-content="groupEmptyHint"/, '分组下拉必须接入空态提示')
+assert.match(createModalSource, /:not-found-content="accountEmptyHint"/, '账户下拉必须接入空态提示')
 
 // --- ChatView 三处入口统一打开弹窗 ---
 

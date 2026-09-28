@@ -26,6 +26,7 @@
           v-model:value="selectedObjectId"
           :options="apiKeyOptions"
           :loading="optionsLoading.api_key"
+          :not-found-content="apiKeyEmptyHint"
           placeholder="请选择 API Key"
           show-search
           option-filter-prop="label"
@@ -36,6 +37,7 @@
           v-model:value="selectedObjectId"
           :options="groupOptions"
           :loading="optionsLoading.group"
+          :not-found-content="groupEmptyHint"
           placeholder="请选择分组"
           show-search
           option-filter-prop="label"
@@ -46,6 +48,7 @@
           v-model:value="selectedObjectId"
           :options="accountOptions"
           :loading="optionsLoading.account"
+          :not-found-content="accountEmptyHint"
           placeholder="请选择账户"
           show-search
           option-filter-prop="label"
@@ -91,6 +94,11 @@ const optionsLoading = ref<Record<ChatConversationBindMode, boolean>>({ api_key:
 const loadedKinds = new Set<ChatConversationBindMode>()
 
 const objectLabel = computed(() => bindMode.value === 'api_key' ? 'API Key' : bindMode.value === 'group' ? '分组' : '账户')
+
+// 加载完成且列表为空时给出空态提示；加载中保持组件默认空内容（不介入加载/重试逻辑）。
+const apiKeyEmptyHint = computed(() => (optionsLoading.value.api_key ? undefined : '暂无可用 API Key'))
+const groupEmptyHint = computed(() => (optionsLoading.value.group ? undefined : '暂无可绑定对象'))
+const accountEmptyHint = computed(() => (optionsLoading.value.account ? undefined : '暂无可绑定对象'))
 
 watch(() => props.open, (open) => {
   if (!open) return

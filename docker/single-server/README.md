@@ -86,6 +86,15 @@ bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / ma
 - `JUHE_AI_SECRET`：≥32 位强随机；账号凭据/内建 API Key 加密封套，**有加密数据后不可更换**，务必留档。
 - `JUHE_AI_DATABASE_DRIVER=postgres` + `JUHE_AI_POSTGRES_URL`；audit/operation/account-health 子系统缺省跟随主库驱动与主 URL。
 - `JUHE_AI_RUNTIME_LOG_POSTGRES_URL` / `JUHE_AI_TABLE_MONITOR_POSTGRES_URL`：**必须显式**（F1/F2 无主 URL 回退）。
+- `JUHE_AI_LOG_DIR`（compose 已显式配 `/app/backend/logs`，对应宿主 `data/app/logs`）：运行日志文件三方同目录契约——gateway 文件日志写侧与 grep 扫描面、jobs F1 索引器与轮转文件保留清理都按它取目录；gateway 未配置时文件日志写侧与 grep 面整体禁用（启动事件 `runtime_log_file_sink_disabled`），jobs 未配置时会派生 `<DATA_DIR>/logs` 造成与 gateway 分叉，故两侧都必须显式同值。gateway 文件日志为 BUG-0195 修复（2026-09-28）：slog 同时写 stdout 与 `juhe-ai.log`（按大小轮转 `<base>.<YYYYMMDDTHHMMSSZ>.<uuid>.log`），`slog.Default()` 一并接管——HTTP 访问日志自此为 JSON 且进文件；文件清理由 jobs 保留清理负责（只删已完整索引的 rotated 文件）。
+- `JUHE_AI_LOG_MAX_FILE_MB`（gateway 写侧轮转阈值，2026-09-28 随 BUG-0195 恢复——Node 既有 env，同名同默认同范围）：默认 `100`，合法 `1..1024`，越界启动失败；另有 `JUHE_AI_LOG_MAX_FILES`（默认 `500`）/ `JUHE_AI_LOG_RETENTION_DAYS`（默认 `30`，1..30）为轮转文件保留参数，由 jobs 索引器按此清理 rotated 文件（**jobs 长期停机期间 gateway 持续写不受 500×30 约束，目录会继续增长，需关注磁盘**）。注意区分：索引**行**保留是独立参数 `JUHE_AI_RUNTIME_LOG_RETENTION_DAYS`（默认 `14`，1..90，可被 system_settings `runtimeLogIndexRetentionDays` 覆盖），索引查询读窗默认最近 3 天——500×30 只约束文件，不约束索引行。
+- `JUHE_AI_CHAT_*`（AI 问答子系统，gateway/jobs 双进程，越界均启动失败）：
+  - `JUHE_AI_CHAT_RETENTION_DAYS`：默认 `3`，合法 `1..365`；gateway 读取保留窗口与 jobs retention 清理按它取值，**双进程必须同值**，否则清理窗口与读取保留不一致（消息先被读不到或超期残留）。
+  - `JUHE_AI_CHAT_ASSETS_ROOT`：chat 资产对象根目录，未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生 `<数据根>/chat-assets`；gateway 资产写入与 jobs 资产清理**双进程必须同值**（同卷同目录）。
+  - `JUHE_AI_CHAT_DATABASE_PATH`：仅 sqlite 模式生效的 chat 库文件（默认 `<数据根>/chat.sqlite3`），生产 PG 模式（`juhe_chat` schema 跟随主库）不配置。
+  - `JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION`：单会话最大轮次，默认 `50`，合法 `1..1000`。
+  - `JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER`：单用户最大会话数，默认 `50`，合法 `1..1000`。
+  - `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS`：单轮上游 SSE 事件预算，默认 `65536`，合法 `2048..262144`（调高只为容纳合法长输出，不解除单事件/累计内容等 DoS 防护）。
 - `JUHE_AI_J3B_CIRCUIT_REDIS_URL`：**必须显式且不得与 `JUHE_AI_REDIS_STATE_URL` 相同键空间**（gateway 启动强校验；现用同实例 DB2）。
 - `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE=postgres`（+ INPUT_POSTGRES_URL）：PG 模式按运维手册显式化。
 - `JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`（默认 0.1）与 `JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS`（默认 1）：成功请求正文长期采样率与热保留窗口（失败/问题请求恒全量保留 7 天，成功正文长期保留 3 天）。当前生产显式配 `1`——审计开启即全量可见正文（BUG-0198）。

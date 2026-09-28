@@ -1,16 +1,20 @@
 # 网络代理部署目录
 
-> 面向需要通过安全网络代理访问上游模型 API 的部署。
-> 这里说明 sing-box 的安装、启动、本地代理端口和 juhe-ai 后台代理绑定方式。
+> 面向唯一生产形态（国内单台云服务器 + Docker Compose）的上游代理部署。
+> 这里说明 sing-box 的安装、云端配置结构、订阅链接解析、择优切换与订阅更新策略，以及接入 juhe-ai 的方式。
 
 ## 文档索引
 
-- [sing-box 网络代理部署指南](sing-box网络代理部署指南.md)：Linux、Windows、macOS 下安装 sing-box、配置本机 mixed 代理和接入 juhe-ai；第 10 节为多节点订阅池的择优控制器（selector + juhe-proxy-switch）。
-- [代理部署示例](代理部署示例.md)：一次本机 sing-box + juhe-ai 账号代理绑定示例。
-- [controller/](controller/)：择优控制器与订阅更新器权威文件（`juhe-proxy-switch.py`、`juhe-sub-update.py` 及对应 systemd service/timer 单元）。
+- [sing-box 网络代理部署指南](sing-box网络代理部署指南.md)：权威文档。云端服务器安装 sing-box、配置 mixed 入站与订阅节点池、订阅链接拉取与解析思路、择优控制器与订阅定时更新器的策略、接入 juhe-ai 与验收清单。
+- [代理部署示例](代理部署示例.md)：云端单机 Docker 形态的最小落地路径速览。
+
+## 实现边界
+
+- 本目录文档只写思路、策略与验收标准，**不随附实现脚本**；两项自动化（择优控制器、订阅定时更新器）由维护者自行实现或交给 AI 按文档生成，实现文件保存在维护者自有目录，不入仓库。
+- 订阅链接、节点凭据等用户资产不入仓库、不入日志。
 
 ## 适用边界
 
 - juhe-ai 中转请求上游 API 时，推荐使用后台“代理管理”配置账号级代理。
 - `JUHE_AI_OAUTH_PROXY_URL` 只作为 OpenAI OAuth token 换取 / 刷新的兜底代理，不是所有模型请求的全局代理。
-- 系统安装依赖、Docker 拉镜像、npm registry 访问属于服务器自身网络代理，和账号级上游代理是两件事。
+- 系统安装依赖、Docker 拉镜像属于服务器自身网络代理，和账号级上游代理是两件事。

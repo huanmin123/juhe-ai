@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -335,7 +336,13 @@ func (s *RedisRuntimeStateStore) GetJSON(ctx context.Context, key string) (json.
 		return nil, err
 	}
 	if !json.Valid([]byte(raw)) {
-		_ = s.Delete(ctx, key)
+		// 损坏文档清理吞错补 Debug（第二批日志补齐 5）：条目有 PX TTL 兜底自愈。
+		if delErr := s.Delete(ctx, key); delErr != nil {
+			slog.Debug("网关运行时状态损坏文档清理失败（TTL 兜底自愈）",
+				"event", "gateway_runtime_state_cleanup_failed",
+				"keyPrefix", s.prefix,
+				"error", delErr)
+		}
 		return nil, nil
 	}
 	return json.RawMessage(raw), nil
@@ -370,7 +377,14 @@ func (s *RedisRuntimeStateStore) GetJSONMany(ctx context.Context, keys []string)
 		output[i] = json.RawMessage(raw)
 	}
 	if len(malformed) > 0 {
-		_ = s.client.Del(ctx, malformed...).Err()
+		// 损坏文档批量清理吞错补 Debug（第二批日志补齐 5）：条目有 PX TTL 兜底自愈。
+		if delErr := s.client.Del(ctx, malformed...).Err(); delErr != nil {
+			slog.Debug("网关运行时状态损坏文档批量清理失败（TTL 兜底自愈）",
+				"event", "gateway_runtime_state_cleanup_failed",
+				"keyPrefix", s.prefix,
+				"keyCount", len(malformed),
+				"error", delErr)
+		}
 	}
 	return output, nil
 }

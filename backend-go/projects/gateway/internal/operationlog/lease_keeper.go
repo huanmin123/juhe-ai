@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
@@ -54,6 +55,10 @@ type LeaseKeeper struct {
 	stopCh    chan struct{}
 	stopOnce  sync.Once
 	closeOnce sync.Once
+	// closed 记录 closeOnce 是否已耗尽：once 用尽后的再次 Close 会被静默
+	// 跳过，掩盖 reacquire 重建租约后租约无法释放的现场。仅用于 Close 入口
+	// 的跳过告警，不改变 Close 行为。
+	closed atomic.Bool
 }
 
 // StartLeaseKeeper acquires the F4 persistence lease. ok=false means the row
@@ -159,11 +164,17 @@ func (k *LeaseKeeper) renewLoop(done chan struct{}) {
 				k.log.Warn("续租 F4 operation-log owner lease 失败；租约仍可能有效，按周期重试", "error", renewErr, "consecutiveFailures", consecutiveFailures, "graceWindow", grace.String())
 				continue
 			}
+			recovered := consecutiveFailures
 			firstFailure = time.Time{}
 			consecutiveFailures = 0
 			if !renewed {
 				k.fatal(ErrOwnerLeaseLost)
 				return
+			}
+			if recovered > 0 {
+				k.log.Info("续租 F4 operation-log owner lease 已从连续失败中恢复",
+					"event", "operation_log_lease_renewal_recovered",
+					"consecutiveFailures", recovered)
 			}
 		}
 	}
@@ -179,7 +190,8 @@ func (k *LeaseKeeper) renewGraceWindow() time.Duration {
 func (k *LeaseKeeper) fatal(err error) {
 	k.fatalOnce.Do(func() {
 		if k.log != nil {
-			k.log.Error("F4 operation-log owner lease 丢失，放弃所有权", "error", err)
+			lease := k.Lease()
+			k.log.Error("F4 operation-log owner lease 丢失，放弃所有权", "error", err, "ownerID", lease.OwnerID, "fenceToken", lease.FenceToken)
 		}
 		k.mu.Lock()
 		k.lostErr = err
@@ -193,7 +205,15 @@ func (k *LeaseKeeper) fatal(err error) {
 // loop (the row is no longer ours; ReleaseOwnerLease would report
 // ErrOwnerLeaseLost).
 func (k *LeaseKeeper) Close() {
+	if k.closed.Load() {
+		lease := k.Lease()
+		k.log.Warn("F4 operation-log lease keeper 已关闭，跳过本次释放",
+			"event", "operation_log_lease_close_skipped",
+			"ownerID", lease.OwnerID, "fenceToken", lease.FenceToken)
+		return
+	}
 	k.closeOnce.Do(func() {
+		k.closed.Store(true)
 		k.stopOnce.Do(func() { close(k.stopCh) })
 		if k.LostError() != nil {
 			return
@@ -244,10 +264,10 @@ func (k *LeaseKeeper) reacquire(ctx context.Context) error {
 	defer cancel()
 	lease, ok, err := k.store.AcquireOwnerLease(acquireCtx, k.owner, k.ttl)
 	if err != nil {
-		return fmt.Errorf("重启后重新获取 F4 operation-log owner lease 失败: %w", err)
+		return fmt.Errorf("重启后重新获取 F4 operation-log owner lease 失败 (owner %s): %w", k.owner, err)
 	}
 	if !ok {
-		return fmt.Errorf("重启后 F4 operation-log owner lease 仍被其他 owner 持有")
+		return fmt.Errorf("重启后 F4 operation-log owner lease 仍被其他 owner 持有 (owner %s)", k.owner)
 	}
 	k.mu.Lock()
 	k.lease = lease

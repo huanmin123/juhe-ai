@@ -587,7 +587,7 @@ func TestW1ZChainAttemptAuditSinkConvertsDispatchInputs(t *testing.T) {
 // 携带完整身份与时间维度；最小输入保持空账户与缺省指针。
 func TestW1ZChainFinalizationUsageRecordCompletedUpstreamAttempt(t *testing.T) {
 	// recorder 缺省：静默 no-op。
-	(chainFinalizationUsage{}).RecordCompletedUpstreamAttempt(gatewayresponse.CompletedAttemptInput{})
+	(&chainFinalizationUsage{}).RecordCompletedUpstreamAttempt(gatewayresponse.CompletedAttemptInput{})
 
 	recorder := &capturingUsageRecorder{}
 	usage := chainFinalizationUsage{recorder: recorder}

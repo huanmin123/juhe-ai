@@ -457,6 +457,9 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 		if err != nil {
 			return jobsched.TaskResult{}, err
 		}
+		started := time.Now()
+		processedTotal := 0
+		batches := 0
 		for index := 0; index < maxBatches; index++ {
 			if taskCtx.Err() != nil {
 				break
@@ -468,10 +471,15 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 			if err != nil {
 				return jobsched.TaskResult{}, err
 			}
+			processedTotal += processed
+			batches++
 			if processed < batchSize {
 				break
 			}
 		}
+		a.logStatsRound("usage_stats_aggregation_round_completed",
+			"usage 统计聚合轮执行完成", "usage 统计聚合轮无待聚合记录",
+			processedTotal, batches, 0, time.Since(started))
 		return jobsched.TaskResult{}, nil
 	})
 
@@ -484,16 +492,30 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 		if err != nil {
 			return jobsched.TaskResult{}, err
 		}
-		_, err = store.RunClientIPStatsAggregation(taskCtx, statsverify.RunClientIPStatsAggregationOptions{
+		started := time.Now()
+		result, err := store.RunClientIPStatsAggregation(taskCtx, statsverify.RunClientIPStatsAggregationOptions{
 			IngestGate:                       gateFunc(a.ingestDrainGate()),
 			StatsAggregationBatchSize:        batchSize,
 			StatsAggregationMaxBatchesPerRun: maxBatches,
 		})
-		return jobsched.TaskResult{}, err
+		if err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		a.logStatsRound("client_ip_stats_aggregation_round_completed",
+			"client-ip 统计聚合轮执行完成", "client-ip 统计聚合轮无待聚合记录",
+			result.Processed, result.Batches, 0, time.Since(started))
+		return jobsched.TaskResult{}, nil
 	})
 	a.scheduleWiredJob("group-account-stats-refresh", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		_, err := store.RunGroupAccountStatsRefresh(taskCtx, time.Now())
-		return jobsched.TaskResult{}, err
+		started := time.Now()
+		refreshed, err := store.RunGroupAccountStatsRefresh(taskCtx, time.Now())
+		if err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		a.logStatsRound("group_account_stats_refresh_round_completed",
+			"分组账户统计刷新轮执行完成", "分组账户统计刷新轮无脏行",
+			0, 0, refreshed, time.Since(started))
+		return jobsched.TaskResult{}, nil
 	})
 	a.scheduleWiredJob("usage-stats-consistency-check", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
 		if _, err := store.RunUsageStatsConsistencyCheck(taskCtx, time.Now(), a.logger); err != nil {
@@ -639,9 +661,12 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	refreshOptions = append(refreshOptions, oauthrefresh.WithLogger(a.logger))
 	refreshJob := oauthrefresh.NewRefreshJob(store, oauthrefresh.NewHTTPTokenExchanger(), refreshOptions...)
 	a.scheduleWiredJob("openai-oauth-access-token-refresh", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		if _, err := refreshJob.RunOnce(taskCtx, oauthrefresh.RefreshOptions{}); err != nil {
+		started := time.Now()
+		result, err := refreshJob.RunOnce(taskCtx, oauthrefresh.RefreshOptions{})
+		if err != nil {
 			return jobsched.TaskResult{}, err
 		}
+		logOAuthRefreshRound(a.logger, result, time.Since(started))
 		return jobsched.TaskResult{}, nil
 	})
 	// P0 修复：anthropic/gemini/grok OAuth keepalive 接入生产驱动。此前
@@ -656,11 +681,13 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 			if taskCtx.Err() != nil {
 				break
 			}
+			planStart := time.Now()
 			result, err := keepaliveJob.RunOnce(taskCtx, plan, 0)
 			if err != nil {
 				return jobsched.TaskResult{}, err
 			}
-			a.logger.Debug("oauth keepalive 计划执行完成",
+			keepaliveFields := []any{
+				"event", "oauth_keepalive_plan_completed",
 				"job", "oauth-keepalive-token-refresh",
 				"provider", result.Provider,
 				"scanned", result.Scanned,
@@ -668,14 +695,26 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 				"refreshed", result.Refreshed,
 				"failed", result.Failed,
 				"skippedLocked", result.SkippedLocked,
-				"skippedFresh", result.SkippedFresh)
+				"skippedFresh", result.SkippedFresh,
+				"durationMs", time.Since(planStart).Milliseconds(),
+			}
+			if result.Scanned+result.Due+result.Refreshed+result.Failed+result.SkippedLocked+result.SkippedFresh > 0 {
+				a.logger.Info("oauth keepalive 计划执行完成", keepaliveFields...)
+				continue
+			}
+			a.logger.Debug("oauth keepalive 计划无待处理账户", keepaliveFields...)
 		}
 		return jobsched.TaskResult{}, nil
 	})
 	a.scheduleWiredJob("api-key-availability-schedule-status-sync", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		if _, err := store.SyncApiKeyScheduleStatuses(taskCtx, time.Now(), 0); err != nil {
+		started := time.Now()
+		result, err := store.SyncApiKeyScheduleStatuses(taskCtx, time.Now(), 0)
+		if err != nil {
 			return jobsched.TaskResult{}, err
 		}
+		logScheduleStatusSync(a.logger, "api_key_availability_schedule_sync_completed",
+			"API Key 可用性排期同步轮执行完成", "API Key 可用性排期同步轮无状态变化",
+			result, time.Since(started))
 		return jobsched.TaskResult{}, nil
 	})
 	// P0 修复：排期激活 hook 装配。此前以 nil hook 调用，定时窗口启用的账号
@@ -689,12 +728,18 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 	}
 	activationHook := newAccountScheduleActivationHook(activationBusiness, a.logger)
 	a.scheduleWiredJob("account-availability-schedule-status-sync", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
-		if _, err := store.SyncAccountScheduleStatuses(taskCtx, time.Now(), 0, activationHook); err != nil {
+		started := time.Now()
+		result, err := store.SyncAccountScheduleStatuses(taskCtx, time.Now(), 0, activationHook)
+		if err != nil {
 			return jobsched.TaskResult{}, err
 		}
+		logScheduleStatusSync(a.logger, "account_availability_schedule_sync_completed",
+			"账户可用性排期同步轮执行完成", "账户可用性排期同步轮无状态变化",
+			result, time.Since(started))
 		return jobsched.TaskResult{}, nil
 	})
 	a.scheduleWiredJob("resource-authorization-expiry-sweep", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		started := time.Now()
 		// T6d：GrantFinalizer 装配注入——事务内的健康任务输入 fanout 是
 		// Node syncResourceAuthorizationGrantRuntimeAsync 中可移植的下游
 		// 副作用；runtime 投影/quota scope bindings 属 gateway authz 域，
@@ -710,10 +755,83 @@ func (a *workerAssembly) wireOAuthFamily(ctx context.Context) error {
 			if err := markAllGroupAccountStatsAfterAuthzWrite(taskCtx, a.logger, a.statsStore, "authorization_expired"); err != nil {
 				return jobsched.TaskResult{}, err
 			}
+			a.logger.Info("授权过期 sweep 处理完成",
+				"event", "resource_authorization_expiry_sweep_completed",
+				"expired", result.Expired,
+				"durationMs", time.Since(started).Milliseconds())
+			return jobsched.TaskResult{}, nil
 		}
+		a.logger.Debug("授权过期 sweep 无到期授权",
+			"event", "resource_authorization_expiry_sweep_completed",
+			"expired", 0,
+			"durationMs", time.Since(started).Milliseconds())
 		return jobsched.TaskResult{}, nil
 	})
 	return nil
+}
+
+// logOAuthRefreshRound 输出 openai-oauth-access-token-refresh 单轮结果汇总：
+// 结果对象任一计数非零打 Info，全零打 Debug；字段全为计数与 durationMs。
+func logOAuthRefreshRound(logger *slog.Logger, result oauthrefresh.RefreshResult, elapsed time.Duration) {
+	fields := []any{
+		"event", "oauth_refresh_round_completed",
+		"scanned", result.Scanned,
+		"due", result.Due,
+		"refreshed", result.Refreshed,
+		"failed", result.Failed,
+		"exceptioned", result.Exceptioned,
+		"cooldowned", result.Cooldowned,
+		"skippedBackoff", result.SkippedBackoff,
+		"startedCount", result.Started,
+		"skippedLocked", result.SkippedLocked,
+		"deferredBudget", result.DeferredBudget,
+		"durationMs", elapsed.Milliseconds(),
+	}
+	if result.Scanned+result.Due+result.Refreshed+result.Failed+result.Exceptioned+result.Cooldowned+result.SkippedBackoff+result.Started+result.SkippedLocked+result.DeferredBudget > 0 {
+		logger.Info("OAuth 刷新轮执行完成", fields...)
+		return
+	}
+	logger.Debug("OAuth 刷新轮无到期账户", fields...)
+}
+
+// logStatsRound 输出统计族任务（usage/client-ip 聚合、group stats 刷新）
+// 的单轮汇总：processed+refreshed 非零打 Info，全零打 Debug。
+func (a *workerAssembly) logStatsRound(event, activeMsg, idleMsg string, processed, batches, refreshed int, elapsed time.Duration) {
+	fields := []any{
+		"event", event,
+		"processed", processed,
+		"batches", batches,
+		"refreshed", refreshed,
+		"durationMs", elapsed.Milliseconds(),
+	}
+	if processed > 0 || refreshed > 0 {
+		a.logger.Info(activeMsg, fields...)
+		return
+	}
+	a.logger.Debug(idleMsg, fields...)
+}
+
+// logScheduleStatusSync 输出可用性排期同步单轮汇总：翻转（activated/
+// disabled）或无效行非零打 Info，全零打 Debug；ChangedIDs/InvalidIDs 只打
+// 计数不打对象。
+func logScheduleStatusSync(logger *slog.Logger, event, activeMsg, idleMsg string, result oauthrefresh.ScheduleStatusSyncResult, elapsed time.Duration) {
+	fields := []any{
+		"event", event,
+		"scanned", result.Scanned,
+		"activated", result.Activated,
+		"disabled", result.Disabled,
+		"unchanged", result.Unchanged,
+		"skipped", result.Skipped,
+		"invalid", result.Invalid,
+		"changedCount", len(result.ChangedIDs),
+		"invalidCount", len(result.InvalidIDs),
+		"durationMs", elapsed.Milliseconds(),
+	}
+	if result.Activated+result.Disabled+result.Invalid+len(result.ChangedIDs)+len(result.InvalidIDs) > 0 {
+		logger.Info(activeMsg, fields...)
+		return
+	}
+	logger.Debug(idleMsg, fields...)
 }
 
 // usageWriterMaxWriteAttempts 是生产装配的写入重试上限（统计链路排查

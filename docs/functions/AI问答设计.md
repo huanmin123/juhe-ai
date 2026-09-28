@@ -114,8 +114,8 @@ flowchart LR
 
 - 新建会话必须显式提交 `bindMode` 与对应绑定对象，三种模式：`api_key`（用户所选 Key）、`group`（指定分组）、`account`（指定账户）；无默认绑定，省略 `bindMode` 返回 400。
 - `api_key` 模式绑定当前登录用户拥有、已启用且未过期的 API Key；`group` / `account` 模式绑定启用中的分组/账户，可选范围按角色两档：普通用户只能选择自有或被授权的启用对象——分组"自有+被授权"与 `/my-groups/options` 的 union 口径一致（授权 status 为 `active`/`paused`/`expired` 且未被 per-grantee 设置停用），账户"自有"与 `/my-accounts/options` 的 owner 面一致（名下未删除、非授权实例行、网关可调度有效状态 `active`）；`admin`/`super_admin` 保留全量启用号池（号池测试用途）。
-- 上述 `group` / `account` 可选范围在下拉端点、创建会话校验、发送与模型列表/模型能力读取前复核三层强制同口径：越权提交的绑定对象与"对象不存在"同型返回 400，不区分提示，避免对象枚举；存量越权绑定的会话视为绑定对象不可用，历史消息仍可读，但不能继续发送（与既有"停用后历史可读"降级模式一致）。系统进程内的调度装配上下文不受此范围约束（授权已在创建与发送校验收敛）。
-- `group` / `account` 模式的鉴权与计费主体是当前用户唯一的 `purpose = chat` 专用对话 Key，由服务端幂等确保存在；它只承载 Bearer 鉴权、额度和使用记录归属，不参与这些会话的调度与模型作用域。专用 Key 仍禁止删除或改名。
+- 上述 `group` / `account` 可选范围在创建会话校验、发送前复核、模型列表、模型能力详情与手动压缩五处强制同口径（下拉端点读取同一范围，仅服务选择，不承担拒绝）：越权提交的绑定对象与"对象不存在"同型返回 400，不区分提示，避免对象枚举；存量越权绑定的会话视为绑定对象不可用，历史消息仍可读，但不能继续发送（与既有"停用后历史可读"降级模式一致），发送被拒后软/硬水位触发的压缩对该作用域同样不可达。系统进程内的调度装配上下文不受此范围约束（授权已在创建与发送校验收敛）。
+- `group` / `account` 模式的鉴权与计费主体是当前用户唯一的 `purpose = chat` 专用对话 Key，由服务端幂等确保存在；它只承载 Bearer 鉴权、额度和使用记录归属，不参与这些会话的调度与模型作用域。专用 Key 仍禁止删除或改名。创建会话时若专用对话 Key 处于停用或过期状态，返回 400 `chat_invalid_request`（文案"专用对话 Key 已停用或过期，请在 API Key 页面恢复后重试"），与 `api_key` 模式绑定对象不可用的返回对称；仅装配缺失、查询失败等服务端问题保持 500。
 - `api_key` 模式不触碰专用 Key；不再存在"新会话默认绑定专用 Key"的行为。
 - 创建会话时保存 `bind_mode`、绑定对象 ID 与名称快照、`api_key_id` 与 `api_key_name_snapshot`（鉴权 Key 名称）。
 - 会话创建后不支持更换绑定；需要更换时新建会话。
@@ -165,7 +165,7 @@ AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边�
 - 点击停止时先中止当前 `fetch`，再携带当前 `clientMessageId` 和已知 `turnId` 调用 `POST /conversations/:id/stop`；服务端只允许条件命中的准备或轮次收口，停止 HTTP 与旧发送对账完成前保持门禁。停止请求失败时 runtime 恢复同轮附着，页面必须显示明确中文错误，不能吞掉拒绝或伪造已停止。
 - 客户端断流或终态不确定时按 `clientMessageId` 刷新对账；无法确认时进入后台重试的待确认状态，不能直接恢复草稿造成重复计费。
 - 单次前台探活默认最多执行 180 次状态确认。轮次尚未被服务端接受且持续处于 `preparing` / `not_found` 时，达到上限后必须以明确的客户端确认超时失败收口并允许人工重试；已经接受且服务端仍报告 `running` 时释放停滞 SSE，只执行一次最终权威消息同步，不伪造服务端失败终态。同版本 streaming 快照不能解除耗尽状态，只有更高 `eventVersion` 或真实终态才能开启新的有界探活周期。页面级待确认恢复最多自动调度 8 轮，之后保留“重新确认”人工入口。
-- 生成参数通过编辑器 `/参数`（兼容 `/parameters`）命令打开独立弹窗，不在输入框底部放设置图标或狭窄浮层；命令自身不作为消息内容保留。弹窗只显示模型能力接口返回的项目，并对每项展示用途、启用/默认状态、当前值、范围和推荐值。参数在下一次发送时生效；未启用即不发送该字段并继续使用模型默认行为，关闭弹窗也不重置已选值。能力按供应商、精确模型和 Chat Completions / Responses 请求协议取保守交集，并在模型详情和实际发送时按 API Key 命中的账户端点模式、模型映射及账户类型再次收敛；OAuth 归一化和跨协议桥接只保留明确可保真转发的参数。未知、兼容层会静默忽略、或任一候选路径不能保真转发的参数一律隐藏且不发送。若静态目录滞后而已命中账户明确返回模型不存在或模型/图像能力不支持，网关只避开该账户并继续尝试后续候选；无效提示词、上下文超限和内容策略等请求语义错误不重放。温度与 Top P 互斥，最大输出 Tokens 受模型目录上限约束；服务端对每一轮请求重复校验，不信任前端状态。
+- 生成参数通过编辑器 `/参数`（兼容 `/parameters`）命令打开独立弹窗，不在输入框底部放设置图标或狭窄浮层；命令自身不作为消息内容保留。弹窗只显示模型能力接口返回的项目，并对每项展示用途、启用/默认状态、当前值、范围、步长和推荐值；数值参数的能力载荷（`generationParameters`）必须透出 `step`，前端滑块按载荷步长渲染，缺失时不得自行猜测步长。参数在下一次发送时生效；未启用即不发送该字段并继续使用模型默认行为，关闭弹窗也不重置已选值。能力按供应商、精确模型和 Chat Completions / Responses 请求协议取保守交集，并在模型详情和实际发送时按 API Key 命中的账户端点模式、模型映射及账户类型再次收敛；OAuth 归一化和跨协议桥接只保留明确可保真转发的参数。未知、兼容层会静默忽略、或任一候选路径不能保真转发的参数一律隐藏且不发送。若静态目录滞后而已命中账户明确返回模型不存在或模型/图像能力不支持，网关只避开该账户并继续尝试后续候选；无效提示词、上下文超限和内容策略等请求语义错误不重放。温度与 Top P 互斥，最大输出 Tokens 受模型目录上限约束；服务端对每一轮请求重复校验，不信任前端状态。
 
 ### 6.4 会话列表
 
@@ -265,7 +265,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 模型、思考级别和服务等级放在输入框底部左侧，发送/停止放在右侧。选项只来自服务端模型目录；未知能力不按模型名猜测，也不补“自动”选项。
 - 思考级别不提供“无思考”和“自动”；目录默认值只用于能力说明，页面初始不选择任何档位。用户可以清除已选值回到空状态；未显式选择时不发送思考级别。
 - 服务等级不提供“自动”；模型声明服务等级能力时显示真实可选项，但页面初始不选择任何档位。用户可以清除已选值回到空状态；未显式选择时省略 `service_tier` 并由上游决定。
-- 思考级别、服务等级、输入/输出模态和工具按“上游可用模型 ID 与本地官方能力快照”返回；同名模型存在多个可达供应商候选时取共同能力。模型未声明对应能力时不显示控件，也不发送字段。
+- 思考级别、服务等级、输入/输出模态和工具按“上游可用模型 ID 与本地官方能力快照”返回；同名模型存在多个可达供应商候选时取共同能力。模型未声明对应能力时不显示控件，也不发送字段。“本地官方能力快照”是数据源口径而非运行时探测结果：数据库内置模型目录行本无 `supported_tools` / `input_modalities` / `output_modalities` 列，目录行未声明工具与模态能力时按静态定价表兜底填充，与管理面目录同一份静态来源；兜底后仍未声明的模型才视为无该能力。
 - 图片命令、粘贴提示和服务端验收同时读取模型 `inputModalities`；仅凭 Responses 协议可用不能推导图片能力。
 - 上下文不再由客户端提交 `contextWindowTokens`；服务端区分模型目录的总窗口、最大输入和最大输出。官方没有独立最大输入时，按 `contextWindowTokens - maxOutputTokens` 派生保守输入预算。
 
@@ -275,7 +275,8 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - Responses 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段，由网关做协议适配和安全校验。
 - 用户选择 reasoning effort 时，Responses 请求发送 `reasoning: { effort, summary: "auto" }`；前端只展示上游公开的 reasoning summary 事件，不展示或伪造隐藏思维链。
 - Chat 模块解析 `response.output_item.added`、`response.function_call_arguments.delta`、`response.output_text.delta`、`response.completed` 等事件，并将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块。
-- 只有模型目录明确声明 `web_search` 且最终走 Responses 时才注入联网搜索；不能因为使用 Responses 就给所有模型强塞工具。
+- 只有模型目录明确声明 `web_search` 且最终走 Responses 时才注入联网搜索；不能因为使用 Responses 就给所有模型强塞工具。“明确声明”按 8.5 节数据源口径理解：内置目录行未声明工具/模态能力时按本地官方能力快照（静态定价表）兜底填充，与管理面目录口径一致（Go 侧 `ApplyBuiltInStaticDerivedFields` 同源，chat 面读取链同源兜底）；兜底后仍未声明才不注入。同名多候选取保守交集的判定规则不变。
+- 会话详情的工具能力矩阵（`toolCapabilities`：`web_search` / `generate_image` 的可用性与不可用原因）按绑定模式计算分组候选作用域：`group` 模式按绑定分组的可派发账户聚合、`account` 模式按绑定账户收敛、`api_key` 模式按 Key 路由策略的分组绑定——不把 `group` / `account` 会话的专用对话 Key 路由策略当作工具能力作用域。
 - 文本模型明确需要位图时调用本站 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器固定 `gpt-image-2`，文本模型根据用户意图填写尺寸、质量和格式；执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败，不读取用户原话做关键词放行、静默缩放或提示词优化。工具循环对 Chat/Responses 都可用，不依赖上游 `image_generation` 托管工具。`chatImageGenerationTotalTimeoutSeconds` 控制一次图片工具调用从网关选号到资产提交的整体时限，默认 `900` 秒、范围 `60..86400`；每个新聊天任务冻结当次系统设置快照，不能与网关 image lane 的单账户首响应超时混为一个字段。通用边界见 [AI 工具创建规范](../architecture/backend/AI工具创建规范.md)。
 - 对话模型与图像模型职责严格分离：`gpt-5.5`、GPT-5.6 等普通模型只负责回答和选择 `generate_image` / 编辑工具，工具适配器才使用当前会话默认图像模型，当前固定为 `gpt-image-2`。图像账户后台健康检查使用上游 `GET /v1/models` 精确确认模型 ID，不得把普通对话模型写进 Images 请求，也不得用文本 `/v1/responses` 探测纯图像模型；真实生成和编辑仍分别走 Images generations / edits。
 - `generate_image` 完成后通过 artifact sink 原子写入同一个 `assetId` 的 original/preview 两个对象：original 保留 provider 实际 WebP/PNG/JPEG，preview 统一 WebP、最长边约 640；消息只加载 `?variant=preview`；点击预览通过页面内 Ant Design Vue 图片灯箱按需请求 `?variant=original`。下载和复制都位于助手消息底部工具栏：下载通过 fetch + blob 保存本地文件，复制在用户点击时把原图转换为 PNG 并写入真实图片 ClipboardItem，不能复制 `attachment://` Markdown。内部附件 Markdown 已由结构化图片块渲染，渲染器必须忽略它的 alt/书签名称。资产响应默认 `Content-Disposition: inline`，可选 `download=1` 时改为 attachment；两个版本分别使用 SHA-256 ETag、`private, max-age=86400, immutable` 和条件请求 304；对象提交成功后才解除补偿删除。
@@ -338,7 +339,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 约束：
 
-- 生成中、已过期或已经不是最近轮次的消息不能编辑；最近失败或已停止尾轮可以由用户显式编辑，也可以点击用户消息操作区的“重新发送/重新生成”原位替换。传输探测、状态查询和重附着只恢复同一服务端 runner，不创建第二次模型请求；只有用户显式点击重新发送才生成新 `clientMessageId`，产品不自动重试模型请求。
+- 生成中、已过期或已经不是最近轮次的消息不能编辑；最近失败或已停止尾轮可以由用户显式编辑，也可以点击用户消息操作区的“重新发送/重新生成”原位替换。传输探测、状态查询和重附着只恢复同一服务端 runner，不创建第二次模型请求；只有用户显式点击重新发送才生成新 `clientMessageId`，产品不自动重试模型请求。已进入流式生成的轮次，客户端断开（连接关闭而非显式停止）只停止向该连接写响应，不取消服务端生成：runner 与请求 context 脱钩继续执行到终态，重附恢复同轮。
 - 编辑入口只出现在最近一个可编辑用户轮次，旧消息不显示编辑按钮。
 - 文本和已提交图片资产都可恢复到编辑器；用户输入图片继续引用原 `assetId`，替换事务会原子解绑旧轮次并绑定新轮次，不复制二进制或回退到 Data URL。旧助手消息产生的 `assistant_generated` 资产不能继续指向被删除消息；替换事务先删除旧输出引用并解除来源轮次/消息。明确出现在新用户消息 `input_image` 中的生成资产必须保持有效，再绑定为新用户输入并延长保留期；其他生成资产立即进入清理队列，物理对象删除成功后释放资产额度。编辑开始前暂存的草稿若引用这些已失效的旧回答图片，替换接受后前端只移除未随新用户消息保留的失效附件并明确提示，不能恢复一个下一次必然发送失败的草稿。
 - 复用 `assistant_generated` 后，`chat_assets.turn_id/message_id` 仍表示原始生成来源并在来源回答被替换时清空；当前输入归属、图片说明认领和有效期以匹配新用户轮次/消息的有效 `user_input` 引用为准。已有有效引用的生成资产不属于“未提交草稿”，不能占用每消息 5 张的新上传槽位，也不能被草稿删除接口认领。替换只删除目标消息的引用：仍有原 `assistant_output` 或其他有效 `user_input` 引用时必须保留全局资产；只有无来源且最后一个有效引用已删除、又未随新消息保留时才立即过期。引用删除按账号、会话和消息归属清理，即使资产在同一事务中刚被置为过期也不能留下悬空记录。
@@ -386,7 +387,7 @@ backend/src/storage/
 - `chat-transport.ts`：按账户实际端点和模型映射选择 Chat / Responses，构造对应请求体。
 - `chat-system-instructions.ts`：纯函数构建版本化产品提示、版本与 hash。
 - `chat-context-budget.ts`：为 system instructions、历史、当前输入、图片和工具预留统一上下文预算。
-- Chat / Responses SSE parser：有界解析跨 chunk UTF-8、文本、reasoning、工具事件、完成和流内失败。
+- Chat / Responses SSE parser：有界解析跨 chunk UTF-8、文本、reasoning、工具事件、完成和流内失败；增量解析并在收到事件时即时转发下游，不整段缓冲后处理。
 - `chat-active-streams.ts`：按会话和 turn ID 条件删除停止句柄，防止旧流清理误删新流。
 - `chat-bounded-json.ts`：模型目录和上游错误的普通 JSON 流式限长读取，超限立即取消 reader；聊天与生图流的消费者提前退出同样必须取消 reader。
 - `chat-content-blocks.ts`：完成、取消和失败终态写库前先把仍处于 `started/updated` 的 reasoning、tool 和 output image 块复制收敛到消息终态，再执行有界序列化降级；不能出现 SSE 已终态但刷新后过程块仍显示“执行中”。
@@ -407,13 +408,14 @@ PATCH /__aisys__/api/my-chat/conversations/:id
 GET /__aisys__/api/my-chat/conversations/:id/models
 DELETE /__aisys__/api/my-chat/conversations/:id
 GET /__aisys__/api/my-chat/conversation-bind-options
+POST /__aisys__/api/my-chat/conversations/:id/context/compactions
 ```
 
 - 创建请求必填 `bindMode`（`api_key | group | account`）并按模式携带 `apiKeyId` / `groupId` / `accountId`；省略 `bindMode` 或携带与模式不符的字段返回 400。`api_key` 模式必须显式选择用户自己的 Key；`group` / `account` 模式的鉴权主体由服务端幂等确保为专用对话 Key。会话绑定后不提供更换接口。
-- 页面新建会话通过新建弹窗选择绑定模式与对象：Key 下拉读 `/my-api-keys`，分组与账户下拉读 `/my-chat/conversation-bind-options`（登录用户可用、仅启用对象、只返回最小 id/name 摘要，仅服务新建会话绑定下拉）。下拉范围按角色两档：普通用户仅返回自有或被授权的启用对象（口径同 §5.2），`admin`/`super_admin` 返回全量启用号池；该范围与创建会话校验、发送与模型列表/模型能力读取前复核三层强制同口径，越权绑定与"对象不存在"同型返回 400，存量越权绑定的会话视为绑定对象不可用（历史可读、不能继续发送）。本条修订原"复用管理面 options 端点、`my-chat` 前缀下不新增选项端点"的设计：管理面 `/groups/options`、`/accounts/options` 仅管理员可用（`RequireAdmin`），普通用户调用返回 403"需要管理员权限"，原条款导致普通用户无法使用 `group` / `account` 绑定模式。
+- 页面新建会话通过新建弹窗选择绑定模式与对象：Key 下拉读 `/my-api-keys`，分组与账户下拉读 `/my-chat/conversation-bind-options`（登录用户可用、仅启用对象、只返回最小 id/name 摘要，仅服务新建会话绑定下拉）。下拉范围按角色两档：普通用户仅返回自有或被授权的启用对象（口径同 §5.2），`admin`/`super_admin` 返回全量启用号池；该范围与创建会话校验、发送前复核、模型列表、模型能力详情与手动压缩五处强制同口径，越权绑定与"对象不存在"同型返回 400，存量越权绑定的会话视为绑定对象不可用（历史可读、不能继续发送）。分组/账户下拉为空时显示空态"暂无可绑定对象"，不渲染空白列表。该端点响应带 `Cache-Control: no-store`，绑定对象摘要不落浏览器或任何中间层缓存。本条修订原"复用管理面 options 端点、`my-chat` 前缀下不新增选项端点"的设计：管理面 `/groups/options`、`/accounts/options` 仅管理员可用（`RequireAdmin`），普通用户调用返回 403"需要管理员权限"，原条款导致普通用户无法使用 `group` / `account` 绑定模式。
 - 会话列表使用 `(last_message_at, id)` 复合游标，默认 30、最大 50，只返回摘要。
 - PATCH 只接受 `title` 和 `isPinned`（及 `defaultImageModel`），至少提供一个字段；标题最长 60 字符。
-- 模型列表先校验会话归属与绑定对象可用性，再按绑定模式聚合供应商：`api_key` 模式按 Key 路由策略的全部 active 分组绑定汇总；`group` 模式按指定分组的可派发账户汇总；`account` 模式按该账户 provider 目录并与 `account_supported_models` 取交集。聚合后调用客户端动态模型目录服务；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数有关，不随账户数增长。
+- 模型列表先校验会话归属与绑定对象可用性，再按绑定模式聚合供应商：`api_key` 模式按 Key 路由策略的全部 active 分组绑定汇总；`group` 模式按指定分组的可派发账户汇总；`account` 模式按该账户 provider 目录并与 `account_supported_models` 取交集。聚合后调用客户端动态模型目录服务；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数有关，不随账户数增长。目录聚合包含未定价模型（对齐 Node `includeUnpriced` 语义，chat 面与计费解耦），不能因静态定价表缺记录把模型从 chat 模型列表过滤掉；计费事实仍由网关使用记录链路维护。
 - 模型能力使用 `/conversations/:conversationId/models/:modelId` 按相同供应商合集从当前目录定点读取，同名模型能力取保守交集；运行路径不读取 `chat_list:*` 或 `chat_model:*` 发布快照。
 - `gateway_model_catalog_snapshots` 中的旧聊天快照属于可清理历史数据，不再是发布门禁、模型列表或能力详情的事实来源。
 - 模型列表表达稳定配置能力，不因账户临时冷却、并发占满或短时不可用而抖动；实际发送仍由网关按实时账户状态、模型限制和协议能力完成最终校验与调度。
@@ -421,6 +423,7 @@ GET /__aisys__/api/my-chat/conversation-bind-options
 - 能力摘要只保留模型目录真实声明：思考列表移除产品不开放的 `none`；服务列表在模型声明 Priority/Flex 能力时显式加入可供用户手动选择的标准 `default`；上下文返回 `maxInputTokens`，缺少时才使用 `contextWindowTokens`。思考级别和服务等级有可用能力时，页面默认选择列表第一项；切换模型后保留仍有效的用户选择，否则回落新模型第一项；能力列表为空时不显示对应下拉。
 - 同一模型 ID 可命中多个实际供应商时，思考级别和服务档位取能力交集，最大输入窗口取所有候选的最小值；任一候选缺少窗口事实时不伪造窗口。这样切号后仍不会把某个账户不支持的字段发送给上游。
 - 发送接口按最新能力摘要再次校验用户显式提交的值，不能只信前端，也不得在字段缺失时补默认值；不支持的思考/服务值返回 `422 chat_model_capability_mismatch`。
+- 手动压缩 `POST /conversations/:id/context/compactions` 先校验会话归属与绑定对象可用性（五处强制之一）；压缩 claim 受理后立即返回 `202`，payload 的 status 为 `accepted`（本次受理）或 `already_running`（已有进行中的压缩），压缩主体在后台执行、执行 context 与请求连接脱钩——客户端断开不中止已受理的压缩，完成事实以会话上下文状态与后续消息为准，不在 HTTP 响应内等待压缩完成。
 - DELETE 返回 `204`，不删除网关使用记录或原始审计。
 
 ### 10.3 消息列表
@@ -501,33 +504,31 @@ GET /__aisys__/api/my-chat/conversations/:id/submissions/:clientMessageId
 event: message.started
 data: {"turnId":"turn_xxx","userMessage":{...},"assistantMessage":{...}}
 
-event: message.delta
-data: {"messageId":"msg_xxx","delta":"新增文本"}
-
-event: reasoning.delta
-data: {"messageId":"msg_xxx","delta":"思考增量"}
-
-event: tool.started | tool.updated | tool.completed
-  data: {"messageId":"msg_xxx","item":{...}}
+event: message.snapshot
+data: {"turnId":"turn_xxx","assistant":{...},"eventVersion":12}
 
 event: content_block.started | content_block.delta | content_block.updated | content_block.completed
-data: {"messageId":"msg_xxx","blockId":"block_xxx","block":{...},"patch":{...},"eventVersion":12}
+data: {"messageId":"msg_xxx","blockId":"block_xxx","block":{...},"delta":"...","patch":{...},"eventVersion":12}
 
 event: message.completed
 data: {"messageId":"msg_xxx","finishReason":"stop","traceId":"trace_xxx"}
 
 event: message.failed
 data: {"messageId":"msg_xxx","code":"upstream_stream_failed","message":"模型响应中断，请重新发送"}
+
+event: message.canceled
+data: {"messageId":"msg_xxx"}
 ```
 
+- 事件族以 wire 为准（2026-09-28 回正修订）：Go 实现将 Node 的 text delta 投影为内容块事件——线上事件族只有 `message.started`、`message.snapshot`（重附着建立 SSE 时的首个事件，权威全量投影）、`content_block.*`、`message.completed` / `message.failed` / `message.canceled` 与 comment heartbeat。文本、reasoning 与工具过程增量都经 `content_block.*` 承载（reasoning 是内容块类型之一）；旧清单中的 `message.delta`、`reasoning.delta`、`tool.started/updated/completed` 是内部投影事件，不上行 wire，前端不得依赖。
 - SSE 建立后每 5 秒发送 comment heartbeat；初次流与重附着流复用同一实现。前端把任意 chunk 和 comment 记为传输活动，但 heartbeat 不进入业务事件、`eventVersion` 或消息内容。
 - 从请求开始 10 秒没有传输活动时，前端只进入“正在确认生成状态”并查询 submission status；`preparing` 继续等待，runner 存活时重附着同一轮，权威终态刷新当前消息，runner 缺失时由服务端收口为 `stream_interrupted`。10 秒静默本身不能直接标记失败。
 - `not_found` 必须连续确认 3 次且跨越至少 1 秒 grace 才能结束未接受请求；submission status 连续 5 次网络失败后停止自动查询并请求页面权威同步，新传输活动会重置计数。前台 watchdog 默认最多 180 次，页面级待确认最多 8 轮，普通 runtime reconciliation 最多 4 次，watchdog 耗尽后的最终权威同步最多 1 次；达到上限后停止定时器并保留人工操作，禁止永久轮询。
 - Chat Completions 以 `[DONE]` 与 finish reason 收口；Responses 必须收到 `response.completed` 才能成功。HTTP EOF 不能替代协议终态。
-- Chat Completions 与 Responses 的单事件和 pending block 最大 `64 KiB`；图像最终结果走独立分块临时文件路径，共享的单轮事件预算默认 `65536`，可通过 `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS` 在 `2048..262144` 内调整。Responses reasoning/tool 辅助过程累计最大 `192 KiB`。collector 只保留事件计数和既有有界内容，空间复杂度不随事件数量增长；任一边界超限都进入失败终态，不能把无界过程写入内存或消息结构。
+- Chat Completions 与 Responses 的单事件和 pending block 最大 `64 KiB`；图像最终结果走独立分块临时文件路径，共享的单轮事件预算默认 `65536`，可通过 `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS` 在 `2048..262144` 内调整。Responses reasoning/tool 辅助过程累计最大 `192 KiB`。collector 只保留事件计数和既有有界内容，空间复杂度不随事件数量增长；收集器增量解析，事件在整段响应结束前即转发下游，不能先全量缓冲（如 `io.ReadAll`）再统一处理。任一边界超限都进入失败终态，不能把无界过程写入内存或消息结构。
 - 非 SSE 的模型目录响应最大 `4 MiB`，上游错误响应最大 `64 KiB`；必须边读流边计数并在超限时取消 reader，不能先完整 `response.text()` 后再截断。
 - 用户主动取消后浏览器连接已经关闭，不依赖 `message.canceled` 送达；服务端落库状态为 `canceled`，页面刷新后以存储状态为准。
-- 工具过程只持久化有界、可展示的结构化投影；原始上游 payload 不进入浏览器缓存或普通消息正文，审计链路按现有权限保留必要排障事实。
+- 工具过程只持久化有界、可展示的结构化投影；原始上游 payload 不进入浏览器缓存或普通消息正文，审计链路按现有权限保留必要排障事实。读取投影必须完整恢复内容块字段——`output_text` / `reasoning` / `tool_call` 的 `order`、`tool_call` 的 `item` / `blockId`、`output_image` 的 `mimeType` / `width` / `height` / `revisedPrompt`；前端本地缓存（IndexedDB 克隆）保留同一字段集，刷新或缓存命中后不得比实时 SSE 链路少字段。
 - 模型、内部工具、流式解析、编排和持久化失败都必须把真实 `Error.message` 或上游错误消息经过统一脱敏、单行化和长度限制后返回前端；API Key、Authorization、Cookie、Token、URL 凭据参数和服务端绝对路径必须替换。服务端日志继续记录完整异常对象，并携带 conversation/turn/trace 定位字段。
 
 ### 11.2 解析要求
@@ -566,7 +567,7 @@ data: {"messageId":"msg_xxx","code":"upstream_stream_failed","message":"模型�
 | `next_sequence_no` | 下一消息序号，默认 1 |
 | `user_turn_count` | 已接受的普通用户轮次数，默认 0；替换不增加，失败和取消仍计数 |
 | `active_turn_id` | 当前生成轮次；空表示无生成任务 |
-| `active_started_at` | 当前生成开始时间，用于崩溃恢复 |
+| `active_started_at` | 当前生成开始时间；流式期间服务端周期刷新为最后活跃时间，用于崩溃恢复 |
 | `last_message_at` | 稳定列表排序时间 |
 | `created_at`、`updated_at` | UTC 时间 |
 
@@ -678,10 +679,13 @@ PostgreSQL 约束：
 
 ### 13.3 崩溃恢复
 
-- `ops-worker` 扫描超过“网关最大响应时限 + 宽限时间”的 `active_started_at`。
+- `ops-worker` 扫描 `active_started_at` 早于“网关最大响应时限 + 宽限时间”（当前即 20 分钟）的会话；阈值语义是“最后活跃后 20 分钟”而非“轮次开始后 20 分钟”——流式期间周期刷新 `active_started_at`，仍在产出的合法长生成不被误杀。
 - 对应助手消息改为 `failed`，错误码 `stream_interrupted`，并清除会话活动轮次。
 - 恢复操作按游标和固定小批执行，必须幂等。
 - 页面刷新不尝试恢复原 SSE，也不自动重发可能已经计费的请求。
+- 连接断开不等于取消：已启动生成的 runner 与请求 context 脱钩，客户端断开只停止向该连接写响应，服务端生成继续执行到终态，重附恢复同轮；只有显式 stop / 取消请求才落库 `canceled`。
+- 成功路径终态收口（`CompleteChatTurn`）失败时同型走恢复路径：按有界部分正文落库并收口明确终态，不得遗留 `streaming` 或丢弃已流出内容。
+- 正常停机（SIGTERM）先生成排空、再关网关链：GenerationHub 的排空调用注册进组合根 shutdowns（LIFO，后注册先执行，排空先于链关闭），对全部在飞轮次执行 Abort 并有界等待（8 秒）落终态，使收尾派发仍可使用在途链；排空窗口内未落终态的轮次按上述崩溃恢复阈值收口。排空顺序是契约，不回退为停机时直接丢弃在飞轮次。
 
 ## 14. 上下文组装
 
@@ -830,6 +834,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - `account` 模式发送命中指定账户且分组记账按该账户所属分组；`group` 模式发送始终落在指定分组；外部 HTTP 请求无法构造调度目标，无内部 context 的请求调度行为与现状一致。
 - 进入页面不自动选中会话，删除当前会话后回到空状态；待确认提交仍可回到原会话恢复。
 - 会话创建后不能修改绑定；`api_key` 模式 Key 删除后历史只读；`group`/`account` 模式对象被禁用后不能继续发送；存量越权绑定的会话视为绑定对象不可用，同样历史可读、不能继续发送。
+- `group` / `account` 模式创建会话时专用对话 Key 处于停用或过期状态，返回 400 `chat_invalid_request`（提示"专用对话 Key 已停用或过期，请在 API Key 页面恢复后重试"），与 `api_key` 模式绑定对象不可用对称；装配缺失或查询失败等服务端问题保持 500。
 - 同一 `clientMessageId` 不产生第二次网关请求。
 - 同会话并发发送返回 `409`，不同会话允许并发。
 - 同一用户不同会话并发占用容量时，配额检查串行化且最终窗口不得超过上限。

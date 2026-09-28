@@ -290,6 +290,8 @@ func (s *Service) RecordFailedUpstreamAttempt(ctx Ctx, usageContext GatewayUsage
 	// choke point 按账号解析）与账号五元组，日志 groupId 非统计事实。
 	fields.Set("groupId", orNil(usageContext.GroupID))
 	fields.Set("endpoint", orNil(usageContext.Endpoint))
+	// 请求身份线索（第二批日志补齐 3）：与 :391 分组快照省略 warn 同口径。
+	fields.Set("traceId", orNil(usageContext.TraceID))
 	if failureObservation != nil {
 		fields.Set("failureClass", failureObservation.FailureClass)
 		fields.Set("metricReasonClass", failureObservation.MetricReasonClass)
@@ -376,6 +378,8 @@ func (s *Service) RecordGatewayFailure(ctx Ctx, usageContext GatewayFailureUsage
 	fields.Set("apiKeyId", orNil(usageContext.APIKeyID))
 	fields.Set("groupId", orNil(usageContext.GroupID))
 	fields.Set("endpoint", orNil(usageContext.Endpoint))
+	// 请求身份线索（第二批日志补齐 3）：与 :391 分组快照省略 warn 同口径。
+	fields.Set("traceId", orNil(usageContext.TraceID))
 	s.logWarnProbe(usageContext.TrafficSource, fields, "网关请求失败")
 
 	providerCode := usageContext.ProviderCode

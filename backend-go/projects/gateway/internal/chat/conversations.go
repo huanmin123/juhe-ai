@@ -160,6 +160,10 @@ type ContentBlock struct {
 	MimeType *string        `json:"mimeType,omitempty"`
 	Width    *int64         `json:"width,omitempty"`
 	Height   *int64         `json:"height,omitempty"`
+	// RevisedPrompt mirrors AssistantContentBlock.revisedPrompt (the
+	// provider-rewritten image prompt) so REST reads restore the full
+	// output_image shape the write side persists.
+	RevisedPrompt *string `json:"revisedPrompt,omitempty"`
 }
 
 // Message mirrors ChatMessage.
@@ -804,6 +808,12 @@ func parseContentBlocks(value string) []ContentBlock {
 	return out
 }
 
+// contentBlockFromMap projects one persisted JSON block back onto the DTO.
+// Read-side restores are best-effort: optional metadata (order/item/blockId/
+// mimeType/width/height/revisedPrompt) is recovered only when present and
+// well-formed, and is omitted otherwise instead of dropping the whole block.
+// This mirrors the write side (assistantBlock), which persists those fields,
+// so REST reads return the same shape the SSE path already streams.
 func contentBlockFromMap(item map[string]any) (ContentBlock, bool) {
 	blockType, _ := item["type"].(string)
 	block := ContentBlock{Type: blockType}
@@ -824,6 +834,9 @@ func contentBlockFromMap(item map[string]any) (ContentBlock, bool) {
 		}
 		if id, ok := item["blockId"].(string); ok {
 			block.BlockID = id
+		}
+		if order, ok := numericIndex(item["order"]); ok {
+			block.Order = &order
 		}
 		return block, true
 	case "input_text":
@@ -876,6 +889,18 @@ func contentBlockFromMap(item map[string]any) (ContentBlock, bool) {
 		block.Order = &order
 		block.AssetID = &assetID
 		block.Status = &status
+		if mimeType, ok := item["mimeType"].(string); ok {
+			block.MimeType = &mimeType
+		}
+		if width, ok := numericIndex(item["width"]); ok {
+			block.Width = &width
+		}
+		if height, ok := numericIndex(item["height"]); ok {
+			block.Height = &height
+		}
+		if revisedPrompt, ok := item["revisedPrompt"].(string); ok {
+			block.RevisedPrompt = &revisedPrompt
+		}
 		return block, true
 	case "tool_call":
 		id, hasID := item["id"].(string)
@@ -904,6 +929,15 @@ func contentBlockFromMap(item map[string]any) (ContentBlock, bool) {
 		}
 		block.ToolType = &toolType
 		block.Status = &status
+		if blockID, ok := item["blockId"].(string); ok {
+			block.BlockID = blockID
+		}
+		if order, ok := numericIndex(item["order"]); ok {
+			block.Order = &order
+		}
+		if toolItem, ok := item["item"].(map[string]any); ok {
+			block.Item = toolItem
+		}
 		return block, true
 	}
 	return ContentBlock{}, false

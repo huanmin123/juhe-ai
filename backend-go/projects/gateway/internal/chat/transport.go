@@ -545,6 +545,7 @@ type ChatGenerationParameterCapability struct {
 	Parameter    string  `json:"parameter"`
 	Min          float64 `json:"min"`
 	Max          float64 `json:"max"`
+	Step         float64 `json:"step"`
 	DefaultValue float64 `json:"defaultValue"`
 }
 

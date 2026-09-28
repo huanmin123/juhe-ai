@@ -557,7 +557,12 @@ type recoveryInput struct {
 	// mergeGroupIDs（合并路由设计 3.4）：merge 上下文下按绑定优先级的启用
 	// 分组集合；非空时 active/recoverable 读取按其扇出重建扁平池，等待
 	// scopeKey 仍取 input.groupID（窗口组）。空保持单组读取。
-	mergeGroupIDs            []string
+	mergeGroupIDs []string
+	// recoverableScope（可靠性批次2 缺陷5）：provided 候选（chat 调度覆盖）
+	// 的可恢复等待作用域；非空时 active/recoverable 读取按注入的绑定作用域
+	// 组集合（+account 模式目标账户）收敛，忽略 groupID/mergeGroupIDs，
+	// 保证等待重读绝不逃逸绑定作用域。
+	recoverableScope         *CandidateRecoverableScope
 	startedAt                int64
 	serverRetryBudget        *ServerRetryBudget
 	routeCoordinationBudget  *gatewayrouting.RouteCoordinationBudget
@@ -639,6 +644,117 @@ func (s *Service) waitForRecoverableOpenAIGatewayCandidateAccounts(input recover
 		return nil, waitErr
 	}
 	// The final state snapshot comes from the last refresh.
+	finalAccounts, err := loadActiveAccounts()
+	if err != nil {
+		return nil, err
+	}
+	return finalAccounts, nil
+}
+
+// waitForRecoverableProvidedCandidateAccounts 对 chat 调度覆盖注入的候选集合
+// 执行可恢复等待（可靠性批次2 缺陷5）：注入候选（绑定作用域收敛）全部临时
+// 不可用（熔断冷却）时，按注入的绑定作用域组重读发现恢复——group 模式等绑定
+// 分组出现可用账户，account 模式等目标账户在任何启用分组出现可用。等待骨架
+// （预算、等待 observer、scopeKey 协调）与外部 /v1 的
+// waitForRecoverableOpenAIGatewayCandidateAccounts 同款；读取参数与
+// resolveChatDispatchTargetScope 的收敛读取同参（仅 RequestedModel，不带
+// endpoint family 过滤），绝不按 Key 策略窗口组重读（不逃逸绑定作用域）。
+func (s *Service) waitForRecoverableProvidedCandidateAccounts(input recoveryInput) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+	requestedModel, _ := RequestModel(input.req)
+	scope := input.recoverableScope
+	loadScopedAccounts := func(recoverable bool, windowMs *int64) ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+		accounts := []gatewayruntimecache.OpenAIAccountSecret{}
+		seen := map[string]bool{}
+		for _, group := range scope.GroupIDs {
+			var (
+				list []gatewayruntimecache.OpenAIAccountSecret
+				err  error
+			)
+			if recoverable {
+				list, err = s.RuntimeCache.ListRecoverableUnavailableOpenAIAccountsForGroupAsync(s.requestContext(), group, input.systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
+					RequestedModel: requestedModel,
+				}, windowMs)
+			} else {
+				list, err = s.RuntimeCache.ListFreshOpenAIAccountsForGroupAsync(s.requestContext(), group, input.systemAccountID, gatewayruntimecache.CachedOpenAIAccountsForGroupOptions{
+					RequestedModel: requestedModel,
+				})
+			}
+			if err != nil {
+				return nil, err
+			}
+			for _, account := range list {
+				if scope.AccountID != "" && account.ID != scope.AccountID {
+					continue
+				}
+				if seen[account.ID] {
+					continue
+				}
+				seen[account.ID] = true
+				accounts = append(accounts, account)
+			}
+		}
+		return accounts, nil
+	}
+	windowMs := input.serverRetryBudget.RemainingMs(nil)
+	loadActiveAccounts := func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+		return loadScopedAccounts(false, nil)
+	}
+	loadRecoverableAccounts := func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+		return loadScopedAccounts(true, &windowMs)
+	}
+	activeAccounts, err := loadActiveAccounts()
+	if err != nil {
+		return nil, err
+	}
+	if len(activeAccounts) > 0 {
+		return activeAccounts, nil
+	}
+	recoverableAccounts, err := loadRecoverableAccounts()
+	if err != nil {
+		return nil, err
+	}
+	if len(recoverableAccounts) == 0 {
+		return []gatewayruntimecache.OpenAIAccountSecret{}, nil
+	}
+	waitStartedAtMs := s.NowMs()
+	deadlineAtMs := input.serverRetryBudget.DeadlineAtMs(&waitStartedAtMs)
+	nextRetryAfterMs := func(ctx context.Context) (int64, bool) {
+		recoverable, loadErr := loadRecoverableAccounts()
+		if loadErr != nil {
+			return 0, false
+		}
+		return nextRecoverableAccountRetryAfterMs(recoverable, s.NowMs())
+	}
+	refresh := func(ctx context.Context) error {
+		_, loadErr := loadActiveAccounts()
+		return loadErr
+	}
+	ready := func(ctx context.Context) bool {
+		accounts, loadErr := loadActiveAccounts()
+		return loadErr == nil && len(accounts) > 0
+	}
+	waitErr := s.Recoverable.WaitForRecoverableUnavailableState(s.requestContext(), RecoverableWaitInput{
+		ScopeKey:                 recoverableCandidateScopeKey(input.systemAccountID, input.apiKeyID, "chat:"+strings.Join(scope.GroupIDs, "|")+":"+scope.AccountID, requestedModel, ""),
+		Reason:                   "account_cooldown_recoverable",
+		Refresh:                  refresh,
+		IsReady:                  ready,
+		NextRetryAfterMs:         nextRetryAfterMs,
+		AuditCapture:             input.auditCapture,
+		MaxWaitMs:                input.serverRetryBudget.RemainingMs(&waitStartedAtMs),
+		RequestStartedAtMs:       waitStartedAtMs,
+		DeadlineAtMs:             deadlineAtMs,
+		RouteCoordinationBudget:  input.routeCoordinationBudget,
+		GatewayRequestWallBudget: input.gatewayRequestWallBudget,
+		Signal:                   input.signal,
+	})
+	// finally: pauseNoAvailableWait
+	input.serverRetryBudget.PauseNoAvailableWait(nil)
+	if waitErr != nil {
+		if errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded) {
+			return []gatewayruntimecache.OpenAIAccountSecret{}, nil
+		}
+		return nil, waitErr
+	}
 	finalAccounts, err := loadActiveAccounts()
 	if err != nil {
 		return nil, err

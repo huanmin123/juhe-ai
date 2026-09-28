@@ -97,7 +97,7 @@ func findSinkInputByMetadata(inputs []operationlog.Input, metadata string) *oper
 // Input untouched, while empty fields keep the historical producer contract.
 func TestOperationLogProducerSinkDeferredFieldsLockedIn(t *testing.T) {
 	store := &sinkFakeStore{}
-	sink := &OperationLogProducerSink{Producer: operationlog.NewProducer(store, operationlog.OwnerLease{}, operationlog.Config{InstanceID: "test"}, nil)}
+	sink := &OperationLogProducerSink{Producer: operationlog.NewProducer(store, operationlog.StaticLease(operationlog.OwnerLease{}), operationlog.Config{InstanceID: "test"}, nil)}
 
 	metadata := json.RawMessage(`{"ipHash":"abc","policyId":"ip_policy_1"}`)
 	sink.Record(OperationLogEntry{
@@ -180,7 +180,7 @@ func TestOperationLogProducerSinkDeferredFieldsLockedIn(t *testing.T) {
 // pre-extension contract.
 func TestOperationLogProducerSinkHandoverFields(t *testing.T) {
 	store := &sinkFakeStore{}
-	sink := &OperationLogProducerSink{Producer: operationlog.NewProducer(store, operationlog.OwnerLease{}, operationlog.Config{InstanceID: "test"}, nil)}
+	sink := &OperationLogProducerSink{Producer: operationlog.NewProducer(store, operationlog.StaticLease(operationlog.OwnerLease{}), operationlog.Config{InstanceID: "test"}, nil)}
 
 	status := 204
 	sink.Record(OperationLogEntry{
@@ -300,7 +300,7 @@ func TestOperationLogProducerSinkHandoverFields(t *testing.T) {
 // id") and the operation-logs surface stays empty.
 func TestProducerSinkGeneratesOperationLogIDs(t *testing.T) {
 	store := &sinkFakeStore{}
-	producer := operationlog.NewProducer(store, operationlog.OwnerLease{}, operationlog.Config{}, nil)
+	producer := operationlog.NewProducer(store, operationlog.StaticLease(operationlog.OwnerLease{}), operationlog.Config{}, nil)
 	sink := &OperationLogProducerSink{Producer: producer, MaxChanges: 100}
 	request := httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", nil)
 	sink.Record(OperationLogEntry{
@@ -422,7 +422,7 @@ func TestOperationLogProducerSinkMaxChangesBoundaries(t *testing.T) {
 	newSink := func(t *testing.T, maxChanges int, logger SinkLogger) (*OperationLogProducerSink, *sinkFakeStore) {
 		t.Helper()
 		store := &sinkFakeStore{}
-		producer := operationlog.NewProducer(store, operationlog.OwnerLease{}, operationlog.Config{InstanceID: "boundary"}, nil)
+		producer := operationlog.NewProducer(store, operationlog.StaticLease(operationlog.OwnerLease{}), operationlog.Config{InstanceID: "boundary"}, nil)
 		return &OperationLogProducerSink{Producer: producer, MaxChanges: maxChanges, Logger: logger}, store
 	}
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/accounthealth"
@@ -43,13 +44,26 @@ type Runner struct {
 	mu                sync.Mutex
 	running           map[string]Running
 	lastClosedCleanup time.Time
+
+	// settledApplied / settledUnknown 是 probe 结算累计计数（runCandidate 在
+	// Commit Applied / outcome Unknown 时递增），RunCycle 汇总时读取并清零。
+	// probe 结算异步滞后于轮次，计数反映自上轮汇总以来的完成量。
+	settledApplied atomic.Int64
+	settledUnknown atomic.Int64
+
+	// inputLoadWarnMu/inputLoadWarnedAt 支撑 LoadAccount 失败告警按账户 30s
+	// 节流（镜像 gatewayruntimecache 节流模式）：扫描周期 1s + Unknown 退避
+	// 10s + 每轮候选上限 128，业务库故障 + 候选堆积时不节流理论上可达约
+	// 13 条/s（日志治理终审建议）。
+	inputLoadWarnMu   sync.Mutex
+	inputLoadWarnedAt map[string]time.Time
 }
 
 func NewRunner(store Store, loader InputLoader, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{store: store, loader: loader, logger: logger, probe: defaultProbe, running: map[string]Running{}}
+	return &Runner{store: store, loader: loader, logger: logger, probe: defaultProbe, running: map[string]Running{}, inputLoadWarnedAt: map[string]time.Time{}}
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -73,6 +87,7 @@ func (r *Runner) Run(ctx context.Context) error {
 // RunCycle exists for deterministic tests and is bounded: it creates at most
 // 32 local workers, while Redis acquire enforces the shared global/source caps.
 func (r *Runner) RunCycle(ctx context.Context) error {
+	started := time.Now()
 	now, err := r.store.ServerNow(ctx)
 	if err != nil {
 		return fmt.Errorf("读取 model-recovery Redis 时间: %w", err)
@@ -112,6 +127,21 @@ func (r *Runner) RunCycle(ctx context.Context) error {
 		go r.runCandidate(ctx, candidate.State, leaseID, continuationWaiting, continuationSources[candidate.State.CredentialSourceAccountID])
 	}
 	r.mu.Unlock()
+	applied := r.settledApplied.Swap(0)
+	unknown := r.settledUnknown.Swap(0)
+	fields := []any{
+		"event", "model_recovery_cycle_summary",
+		"due", len(due),
+		"selected", len(selected),
+		"applied", applied,
+		"unknown", unknown,
+		"durationMs", time.Since(started).Milliseconds(),
+	}
+	if len(due)+len(selected)+int(applied)+int(unknown) > 0 {
+		r.logger.Info("model-recovery cycle completed", fields...)
+		return nil
+	}
+	r.logger.Debug("model-recovery cycle idle", fields...)
 	return nil
 }
 
@@ -150,13 +180,31 @@ func (r *Runner) runCandidate(parent context.Context, candidate State, leaseID s
 	}
 	next, settlement := Settle(state, RecoveryResult{Generation: state.Generation, DispatchRevision: state.DispatchRevision, LeaseID: leaseID, Outcome: outcome, ObservedAt: observedAt})
 	if settlement != Applied {
+		r.logger.Debug("model-recovery settlement not applied",
+			"event", "model_recovery_settlement_not_applied",
+			"runId", leaseID,
+			"accountId", state.CredentialSourceAccountID,
+			"outcome", outcome,
+			"status", string(settlement))
 		return
+	}
+	if outcome == Unknown {
+		r.settledUnknown.Add(1)
 	}
 	if status, err := r.store.Commit(settleCtx, state, next, leaseID); err != nil || status != Applied {
 		if err != nil {
 			r.logger.Warn("model-recovery commit failed", "capabilityHash", state.CapabilityHash, "error", err)
+		} else {
+			r.logger.Debug("model-recovery commit not applied",
+				"event", "model_recovery_commit_not_applied",
+				"runId", leaseID,
+				"accountId", state.CredentialSourceAccountID,
+				"outcome", outcome,
+				"status", string(status))
 		}
+		return
 	}
+	r.settledApplied.Add(1)
 }
 
 func (r *Runner) renewLease(ctx context.Context, state State, leaseID string, cancel context.CancelFunc, lostLease chan<- struct{}, done <-chan struct{}) {
@@ -182,16 +230,44 @@ func (r *Runner) renewLease(ctx context.Context, state State, leaseID string, ca
 	}
 }
 
+// warnInputLoadFailed 按账户 30s 节流输出业务库输入加载失败告警（日志治理
+// 终审建议：候选堆积 + 业务库故障时逐次 Warn 可达约 13 条/s）。零值构造
+// （map 为 nil）时首条计入后正常节流。
+func (r *Runner) warnInputLoadFailed(accountID string, err error) {
+	const warnInterval = 30 * time.Second
+	now := time.Now()
+	r.inputLoadWarnMu.Lock()
+	if r.inputLoadWarnedAt == nil {
+		r.inputLoadWarnedAt = map[string]time.Time{}
+	}
+	if last, ok := r.inputLoadWarnedAt[accountID]; ok && now.Sub(last) < warnInterval {
+		r.inputLoadWarnMu.Unlock()
+		return
+	}
+	r.inputLoadWarnedAt[accountID] = now
+	r.inputLoadWarnMu.Unlock()
+	r.logger.Warn("model-recovery input load failed",
+		"event", "model_recovery_input_load_failed",
+		"credentialSourceAccountId", accountID,
+		"error", err.Error())
+}
+
 func (r *Runner) executeProbe(ctx context.Context, state State) Outcome {
 	inputs, err := r.loader.LoadAccount(ctx, state.CredentialSourceAccountID)
 	if err != nil {
+		r.warnInputLoadFailed(state.CredentialSourceAccountID, err)
 		return Unknown
 	}
 	for _, input := range inputs {
 		if input.AccountID != state.CredentialSourceAccountID || input.DispatchRevision != state.DispatchRevision {
 			continue
 		}
-		return r.probe(ctx, state, input)
+		outcome := r.probe(ctx, state, input)
+		r.logger.Debug("model-recovery probe outcome",
+			"event", "model_recovery_probe_outcome",
+			"accountId", state.CredentialSourceAccountID,
+			"outcome", outcome)
+		return outcome
 	}
 	return Unknown
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -59,6 +60,13 @@ func (s *RecordCleanupStore) nowIso() string {
 		return ISOOf(s.Now())
 	}
 	return ISOOf(time.Now())
+}
+
+// logger 返回清理链日志出口。RecordCleanupStore 当前无 Logger 注入字段
+// （组合根未提供），按任务约定调用时取 slog.Default()、不缓存；后续需要
+// 定向注入时再收敛到结构体字段。
+func (s *RecordCleanupStore) logger() *slog.Logger {
+	return slog.Default()
 }
 
 func sqliteBusyBlockedReason(domain string) string {
@@ -511,7 +519,11 @@ func (s *RecordCleanupStore) cleanupAPIKeyRelated(ctx context.Context, apiKeyID,
 	}
 	usageRows, hasMoreCoveredRows, hasUncoveredRows, blockedReason, err := s.selectAPIKeyUsageRowsGuarded(ctx, apiKeyID, systemAccountID, recordCleanupBatchLimit)
 	if err != nil {
-		_ = s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso())
+		if markErr := s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso()); markErr != nil {
+			s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+				"event", "record_cleanup_mark_target_failed",
+				"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+		}
 		return retention.RelatedCleanupResult{}, err
 	}
 	rowsToDelete := usageRows
@@ -530,14 +542,22 @@ func (s *RecordCleanupStore) cleanupAPIKeyRelated(ctx context.Context, apiKeyID,
 			})
 		}
 		if err != nil {
-			_ = s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso())
+			if markErr := s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}
 	if blockedReason == "" {
 		deletedUsageRows, err = s.deleteUsageRows(ctx, rowsToDelete, "api_key_id = ? AND system_account_id = ?", apiKeyID, systemAccountID)
 		if err != nil {
-			_ = s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso())
+			if markErr := s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}
@@ -548,7 +568,11 @@ func (s *RecordCleanupStore) cleanupAPIKeyRelated(ctx context.Context, apiKeyID,
 			UpdatedAt:    updatedAt,
 			ShardDeleted: true,
 		}); err != nil {
-			_ = s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso())
+			if markErr := s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}
@@ -556,7 +580,11 @@ func (s *RecordCleanupStore) cleanupAPIKeyRelated(ctx context.Context, apiKeyID,
 	if blockedReason == "" {
 		hasUsageMore, err = s.hasAPIKeyUsageRecords(ctx, apiKeyID, systemAccountID)
 		if err != nil {
-			_ = s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso())
+			if markErr := s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}
@@ -573,7 +601,11 @@ func (s *RecordCleanupStore) cleanupAPIKeyRelated(ctx context.Context, apiKeyID,
 			})
 		}
 		if err != nil {
-			_ = s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso())
+			if markErr := s.markAPIKeyTarget(ctx, apiKeyID, systemAccountID, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除 API Key 关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "api_key", "apiKeyId", apiKeyID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 		hasMore = false
@@ -618,7 +650,11 @@ func (s *RecordCleanupStore) cleanupAccountRelated(ctx context.Context, target r
 	for _, accountID := range accountIDs {
 		rows, hasMore, hasUncovered, err := s.selectAccountUsageRows(ctx, accountID, recordCleanupBatchLimit)
 		if err != nil {
-			_ = s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso())
+			if markErr := s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "account", "accountId", accountID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 		hasMoreCoveredRows = hasMoreCoveredRows || hasMore
@@ -637,14 +673,22 @@ func (s *RecordCleanupStore) cleanupAccountRelated(ctx context.Context, target r
 			Rows:      shardUsageRowsToMaps(rowsToDelete),
 			UpdatedAt: updatedAt,
 		}); err != nil {
-			_ = s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso())
+			if markErr := s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}
 	for _, row := range rowsToDelete {
 		deleted, err := s.deleteUsageRows(ctx, []shardUsageRow{row}, "account_id = ?", textOfAccountID(row))
 		if err != nil {
-			_ = s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso())
+			if markErr := s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 		deletedUsageRows += deleted
@@ -656,13 +700,21 @@ func (s *RecordCleanupStore) cleanupAccountRelated(ctx context.Context, target r
 			UpdatedAt:    updatedAt,
 			ShardDeleted: true,
 		}); err != nil {
-			_ = s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso())
+			if markErr := s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}
 	hasUsageMore, err := s.hasAccountUsageRecords(ctx, accountIDs)
 	if err != nil {
-		_ = s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso())
+		if markErr := s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso()); markErr != nil {
+			s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+				"event", "record_cleanup_mark_target_failed",
+				"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+		}
 		return retention.RelatedCleanupResult{}, err
 	}
 	hasMore := hasUsageMore
@@ -678,7 +730,11 @@ func (s *RecordCleanupStore) cleanupAccountRelated(ctx context.Context, target r
 			})
 		}
 		if err != nil {
-			_ = s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso())
+			if markErr := s.markAccountTarget(ctx, target, "", err.Error(), s.nowIso()); markErr != nil {
+				s.logger().Warn("已删除账户关联数据清理目标标记失败，失败状态未落库",
+					"event", "record_cleanup_mark_target_failed",
+					"targetKind", "account", "accountId", target.AccountID, "error", markErr)
+			}
 			return retention.RelatedCleanupResult{}, err
 		}
 	}

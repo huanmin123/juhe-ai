@@ -2,6 +2,7 @@ package gatewaypreauth
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -25,6 +26,7 @@ type PreflightOptions struct {
 	APIKeyRecord                    *gatewayruntimecache.GatewayAPIKeyRow
 	GroupFallbackAPIKeyRecord       *gatewayruntimecache.GatewayAPIKeyRow
 	CandidateAccounts               []gatewayruntimecache.OpenAIAccountSecret
+	RecoverableCandidateScope       *CandidateRecoverableScope
 	ResponseInspectionPolicies      []gatewayruntimecache.ResponseInspectionPolicySummary
 	DisableSessionAffinity          bool
 	TrafficSource                   string
@@ -40,6 +42,17 @@ type PreflightOptions struct {
 	DownstreamCommitState           *DownstreamCommitState
 	NormalRouteFirstByteConfig      *NormalRouteFirstByteRuntimeConfig
 	RoutePlanSnapshot               *gatewayrouting.RoutePlanSnapshot[string]
+}
+
+// CandidateRecoverableScope 是 provided 候选（chat 调度覆盖注入）的可恢复等待
+// 作用域：GroupIDs 是绑定作用域组集合（group 模式=绑定分组；account 模式=账户
+// 启用分组全集），AccountID 是 account 模式的目标账户（空=不按账户收敛）。
+// 注入候选全部临时不可用（熔断冷却）时，可恢复等待按该作用域重读发现恢复，
+// 绝不按 Key 策略窗口组重读（否则会逃逸绑定作用域）。nil（外部 /v1、API Key
+// 分组回退）保持既有按窗口组读取的语义。
+type CandidateRecoverableScope struct {
+	GroupIDs  []string
+	AccountID string
 }
 
 // PreflightInput mirrors PrepareOpenAIGatewayDispatchContextInput.
@@ -482,7 +495,14 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	sessionIdentity := resolveSessionIdentityFromStrategy(s, req, initialClientStrategy, systemAccountID, apiKeyID)
 	bindAuditSessionIdentity(auditCapture, sessionIdentity, initialClientStrategy.ClientProfile)
 
+	// 可靠性批次2（缺陷3）：options.CandidateAccounts 非 nil 且 Identity 为空
+	// 只出现在 chat 调度覆盖（进程内绑定作用域候选注入）——该场景候选已由绑定
+	// 作用域收敛（usage 按 BoundGroupID 记账），跳过 Key 策略面的 normal 路由
+	// 判定，避免多 provider 分组的专用 chat Key 策略把绑定会话请求按 Key 绑定
+	// 面判成 400（model_target_group_not_bound 等）。API Key 分组回退注入的
+	// 候选恒带 Identity，外部 /v1 直连不注入候选，两者 normal 路由语义不变。
 	if interactionResourceAffinity == nil && !hasInitialModelsResponseProtocol && options.Identity == nil &&
+		options.CandidateAccounts == nil &&
 		trafficSource == TrafficSourceGateway && apiKeyRecord != nil {
 		previousGroupID := groupID
 		previousBindingCount := len(apiKeyRecord.GroupBindings)
@@ -957,7 +977,18 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 				dispatchPreparation.HotQualityExplorationReservation.AccountRuntimeKey == gatewayAccountRuntimeKey(account) {
 				outcome = "dispatched"
 			}
-			_ = settleHotQuality(outcome)
+			// 热度探索结算失败不允许静默：探索预约/热度样本因此悬空。真实
+			// scopeKey 由 gatewayhotquality 内部构造，本层不可达，线索以
+			// groupId + systemAccountId 承载（scope 同源）。
+			if err := settleHotQuality(outcome); err != nil {
+				slog.Warn("热度质量探索结算失败，探索预约保持未结算",
+					"event", "gateway_hot_quality_settlement_failed",
+					"accountId", account.ID,
+					"groupId", groupID,
+					"systemAccountId", systemAccountID,
+					"outcome", outcome,
+					"error", err.Error())
+			}
 		},
 		Signal: input.Signal,
 	})
@@ -966,7 +997,15 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	}
 	if compactPreflight.Completed {
 		if settleHotQuality != nil {
-			_ = settleHotQuality("not_dispatched")
+			// 结算失败告警口径与 OnDispatchedAccount 侧一致（探索预约悬空）。
+			if err := settleHotQuality("not_dispatched"); err != nil {
+				slog.Warn("热度质量探索结算失败，探索预约保持未结算",
+					"event", "gateway_hot_quality_settlement_failed",
+					"groupId", groupID,
+					"systemAccountId", systemAccountID,
+					"outcome", "not_dispatched",
+					"error", err.Error())
+			}
 		}
 		if dispatchPreparation.ReleaseClientIPConcurrency != nil {
 			dispatchPreparation.ReleaseClientIPConcurrency()
@@ -976,7 +1015,16 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 	runtimeResponseInspectionPolicies, err := s.RuntimeCache.ListCachedActiveResponseInspectionPoliciesForAccountsAsync(ctx, compactPreflight.Accounts)
 	if err != nil {
 		if settleHotQuality != nil {
-			_ = settleHotQuality("not_dispatched")
+			// 结算失败告警口径与 OnDispatchedAccount 侧一致（探索预约悬空）；
+			// 本分支随后按缓存读失败退出，结算悬空不得无声。
+			if err := settleHotQuality("not_dispatched"); err != nil {
+				slog.Warn("热度质量探索结算失败，探索预约保持未结算",
+					"event", "gateway_hot_quality_settlement_failed",
+					"groupId", groupID,
+					"systemAccountId", systemAccountID,
+					"outcome", "not_dispatched",
+					"error", err.Error())
+			}
 		}
 		if dispatchPreparation.ReleaseClientIPConcurrency != nil {
 			dispatchPreparation.ReleaseClientIPConcurrency()
@@ -1536,7 +1584,23 @@ func candidateLoader(s *Service, options *PreflightOptions, interaction *gateway
 // recoverableLoader mirrors the recoverUnavailableCandidateAccounts closure:
 // it delegates to waitForRecoverableOpenAIGatewayCandidateAccounts.
 func recoverableLoader(s *Service, options *PreflightOptions, interaction *gatewaygemini.AffinityBinding, apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, input recoveryInput) func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
-	if options.CandidateAccounts != nil || interaction != nil {
+	if interaction != nil {
+		return nil
+	}
+	if options.CandidateAccounts != nil {
+		// 可靠性批次2（缺陷5）：chat 覆盖候选注入路径同样接入可恢复等待——
+		// 注入候选全部临时不可用（熔断冷却）时不再直接终态失败。读取源限定
+		// 为注入的绑定作用域组（+account 模式目标账户），与外部 /v1 的
+		// waitForRecoverableOpenAIGatewayCandidateAccounts 同一等待骨架与预算
+		// 语义；作用域未注入（API Key 分组回退等其他 provided 路径）保持原
+		// 短路语义，不按 Key 策略窗口组重读。
+		if scope := options.RecoverableCandidateScope; scope != nil && len(scope.GroupIDs) > 0 {
+			scoped := input
+			scoped.recoverableScope = scope
+			return func() ([]gatewayruntimecache.OpenAIAccountSecret, error) {
+				return s.waitForRecoverableProvidedCandidateAccounts(scoped)
+			}
+		}
 		return nil
 	}
 	// 3.4：merge 下逐绑定扇出刷新/恢复读取（等待 scopeKey 保持窗口组）。

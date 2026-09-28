@@ -138,10 +138,13 @@ func chatConversationDispatchTarget(db *sql.DB, table string, bind func(string) 
 // 已收敛到绑定作用域的原始候选窗口（直接装配进 preflight 的
 // CandidateAccounts，走既有候选管线）；groupID 是生效分组（group 模式=绑定
 // 分组；account 模式=承载分组，即候选命中组/BoundGroupID 口径；空=解析不出，
-// 仅影响窗口组展示，空候选已走既有无可用账户语义）。
+// 仅影响窗口组展示，空候选已走既有无可用账户语义）；recoverableScope 是注入
+// 候选的可恢复等待作用域（可靠性批次2 缺陷5：group 模式=绑定分组，account
+// 模式=账户启用分组全集+目标账户），随候选一起注入 preflight。
 type chatDispatchTargetScope struct {
-	groupID  string
-	accounts []gatewayruntimecache.OpenAIAccountSecret
+	groupID          string
+	accounts         []gatewayruntimecache.OpenAIAccountSecret
+	recoverableScope *gatewaypreauth.CandidateRecoverableScope
 }
 
 // resolveChatDispatchTargetScope 在派发候选装配前按绑定目标解析生效分组并
@@ -167,7 +170,11 @@ func (c *gatewayChain) resolveChatDispatchTargetScope(ctx context.Context, req *
 		if err != nil {
 			return chatDispatchTargetScope{}, fmt.Errorf("收敛聊天调度目标候选失败: %w", err)
 		}
-		return chatDispatchTargetScope{groupID: target.GroupID, accounts: accounts}, nil
+		return chatDispatchTargetScope{
+			groupID:          target.GroupID,
+			accounts:         accounts,
+			recoverableScope: &gatewaypreauth.CandidateRecoverableScope{GroupIDs: []string{target.GroupID}},
+		}, nil
 	}
 	// account 模式：会话不持久化承载分组，按账户当前启用分组逐组解析。
 	enabledGroups, _ := chainChatDispatchAccountGroupsOf(target.AccountID)
@@ -199,7 +206,13 @@ func (c *gatewayChain) resolveChatDispatchTargetScope(ctx context.Context, req *
 		// 启用组（仅影响展示/失败记录窗口组），空候选走既有"无可用账户"语义。
 		hitGroup = enabledGroups[0]
 	}
-	return chatDispatchTargetScope{groupID: hitGroup, accounts: narrowed}, nil
+	return chatDispatchTargetScope{
+		groupID:  hitGroup,
+		accounts: narrowed,
+		// 可恢复等待作用域取账户启用分组全集+目标账户：目标账户恢复（冷却
+		// 结束回到任一启用分组的可用窗口）即可被重新收敛为候选。
+		recoverableScope: &gatewaypreauth.CandidateRecoverableScope{GroupIDs: enabledGroups, AccountID: target.AccountID},
+	}, nil
 }
 
 // applyChatDispatchGroupContext 把 DispatchContext 的窗口级分组上下文对齐到

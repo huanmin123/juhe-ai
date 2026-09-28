@@ -675,6 +675,10 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 const defaultStringLimit = 120
 
 // requireChatAPIKeyForOwner mirrors requireChatApiKeyForOwnerAsync.
+// 可靠性批次2（缺陷4）：EnsureChatAPIKey 幂等重建后 Key 仍缺失/停用/过期属于
+// 用户可恢复状态（API Key 页面可恢复），与 api_key 模式 requireOwnedApiKey 的
+// 停用口径对齐返回 400（invalidRequestError）；ChatKeys 端口未接线与查询失败
+// 仍是服务端问题，保持 DomainError（500）。
 func (rt *chatRoutes) requireChatAPIKeyForOwner(ownerID string) (*ChatAPIKeyRecord, error) {
 	if rt.deps.ChatKeys == nil {
 		return nil, &DomainError{Message: "AI 对话专用 API Key 不存在、已停用或已过期"}
@@ -688,7 +692,7 @@ func (rt *chatRoutes) requireChatAPIKeyForOwner(ownerID string) (*ChatAPIKeyReco
 		return nil, err
 	}
 	if key == nil || key.Secret == "" || key.Status != "active" {
-		return nil, &DomainError{Message: "AI 对话专用 API Key 不存在、已停用或已过期"}
+		return nil, &invalidRequestError{Message: "专用对话 Key 已停用或过期，请在 API Key 页面恢复后重试"}
 	}
 	return key, nil
 }
@@ -823,6 +827,7 @@ func generationParametersPayload(capabilities []ChatGenerationParameterCapabilit
 			"parameter":    capability.Parameter,
 			"min":          capability.Min,
 			"max":          capability.Max,
+			"step":         capability.Step,
 			"defaultValue": capability.DefaultValue,
 		})
 	}
@@ -908,7 +913,11 @@ func (rt *chatRoutes) compactionTrigger(w http.ResponseWriter, r *http.Request) 
 		writeChatRouteError(w, err)
 		return
 	}
-	result := rt.deps.Compactions.Start(r.Context(), input)
+	// 可靠性批次2（缺陷2）：claim 成功后 Start 立即返回 202，压缩主体继续在
+	// 后台执行；执行 context 与请求 context 脱钩（WithoutCancel 保留取值、
+	// 去掉请求生命周期取消），避免 handler 返回后 r.Context() 取消把后台压缩
+	// 打断。服务端停止压缩的能力保持在服务层（failClaim 重试水位与停机排空）。
+	result := rt.deps.Compactions.Start(context.WithoutCancel(r.Context()), input)
 	serverTime := rt.now()
 	if result.Status == "accepted" || result.Status == "already_running" {
 		writeOKStatus(w, http.StatusAccepted, map[string]any{"state": result.Status, "serverTime": serverTime})

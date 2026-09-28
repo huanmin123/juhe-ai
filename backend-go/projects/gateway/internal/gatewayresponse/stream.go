@@ -20,6 +20,44 @@ func (nopStreamLogger) Debug(string, map[string]any, string) {}
 func (nopStreamLogger) Info(string, map[string]any, string)  {}
 func (nopStreamLogger) Warn(string, map[string]any, string)  {}
 
+// identityStreamLogger 在管道日志 fields 上统一注入请求身份线索
+// （traceId / accountId；空值省略键）。克隆后注入，不改写调用方的 map；
+// 未设置任何线索时不注入。仅日志增强，不影响事件名与消息。
+type identityStreamLogger struct {
+	inner     StreamLogger
+	traceID   string
+	accountID string
+}
+
+func (l identityStreamLogger) withIdentity(fields map[string]any) map[string]any {
+	if l.traceID == "" && l.accountID == "" {
+		return fields
+	}
+	out := make(map[string]any, len(fields)+2)
+	for key, value := range fields {
+		out[key] = value
+	}
+	if l.traceID != "" {
+		out["traceId"] = l.traceID
+	}
+	if l.accountID != "" {
+		out["accountId"] = l.accountID
+	}
+	return out
+}
+
+func (l identityStreamLogger) Debug(event string, fields map[string]any, message string) {
+	l.inner.Debug(event, l.withIdentity(fields), message)
+}
+
+func (l identityStreamLogger) Info(event string, fields map[string]any, message string) {
+	l.inner.Info(event, l.withIdentity(fields), message)
+}
+
+func (l identityStreamLogger) Warn(event string, fields map[string]any, message string) {
+	l.inner.Warn(event, l.withIdentity(fields), message)
+}
+
 // StreamFailureContext 对齐 StreamFailureContext。
 type StreamFailureContext struct {
 	DownstreamBytesWritten int64
@@ -156,6 +194,11 @@ func FlushGateway(res gatewaypreauth.GatewayResponseWriter) {
 
 // StreamPipeOptions 对齐 StreamPipeOptions。
 type StreamPipeOptions struct {
+	// TraceID / AccountID 是可选请求身份线索：由调用方从 usage context /
+	// 账户视图填入，仅注入管道日志 fields（空值省略键，不参与任何管道行为、
+	// 回调语义与数据流）。
+	TraceID            string
+	AccountID          string
 	ClientRetryEnabled bool
 	// CommittedFailureSignalProtocolEvent 对齐 committedFailureSignal ===
 	// 'protocol_error_event'；nil 表示按 clientRetryEnabled 推导。

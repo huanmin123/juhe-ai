@@ -219,7 +219,13 @@ func (input *HandleUpstreamResponseInput) applyInspectionDecisionSideEffects(dec
 		return
 	}
 	if err := input.Deps.AccountEffects.ApplyInspectionPolicySideEffects(decision, input.Account, true); err != nil {
-		input.logger().Warn("gateway_upstream_inspection_side_effect_failed", nil, "响应检查策略运行时副作用失败已隔离")
+		// 字段对齐 finalize.go 流式同 event 告警面（第二批日志补齐 2）。
+		input.logger().Warn("gateway_upstream_inspection_side_effect_failed", map[string]any{
+			"traceId":   input.UsageContext.TraceID,
+			"accountId": input.Account.GetID(),
+			"policyId":  decision.PolicyID,
+			"error":     err.Error(),
+		}, "响应检查策略运行时副作用失败已隔离")
 	}
 }
 

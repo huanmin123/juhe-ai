@@ -222,7 +222,10 @@ func (c chatModelCatalog) ListProviderCatalog(providerCode, systemAccountID stri
 		return nil
 	}
 	items, err := c.cache.ListCachedProviderModelCatalogAsync(context.Background(), gatewayruntimecache.ModelCatalogListOptions{
-		ProviderCode:    providerCode,
+		ProviderCode: providerCode,
+		// chat 面与计费解耦：未定价模型照常出现在 chat 模型列表/能力/默认推举
+		// （对齐 Node includeUnpriced:true；无价行仅在计费口径被目录源剔除）。
+		IncludeUnpriced: true,
 		SystemAccountID: systemAccountID,
 	})
 	if err != nil {

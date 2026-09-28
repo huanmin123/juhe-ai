@@ -18,7 +18,7 @@ package aipublic
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -71,15 +71,17 @@ func (d *Deps) redisDriver() *redisPenaltyDriver {
 	return d.redisShared
 }
 
-// warnPenaltyFallback reports the Redis fallback (Deps.Warn, standard log
-// otherwise) — the migration-time degradation marker.
+// warnPenaltyFallback reports the Redis fallback (Deps.Warn, slog default
+// logger otherwise) — the migration-time degradation marker.
 func (d *Deps) warnPenaltyFallback(err error) {
 	message := "aipublic penalty-window Redis 限流不可用，回退进程内存：" + err.Error()
 	if d.Warn != nil {
 		d.Warn(message)
 		return
 	}
-	log.Printf("%s", message)
+	// Default 必须在调用时取：main 侧 slog.SetDefault(jsonLogger) 后本行落
+	// JSON 日志管道。
+	slog.Default().Warn(message, "event", "aipublic_penalty_redis_fallback")
 }
 
 // consumeRateLimit mirrors consumePenaltyWindowRateLimitAsync: the Redis

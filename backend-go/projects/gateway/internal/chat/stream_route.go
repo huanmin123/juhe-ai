@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
 )
 
 // POST /conversations/{id}/stream ported from chat.routes.ts: preparation
@@ -22,6 +25,10 @@ const (
 	// 上游 SSE 事件上限默认值见 gateway_sse.go 的 defaultMaxSSEEvents
 	// （JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS，env 可覆盖）。
 )
+
+// chatActiveTurnTouchInterval 是流式期间 active_started_at 活性刷新间隔
+// （5 分钟，远小于 jobs 的 20 分钟中断阈值）；var 形式便于测试注入更短间隔。
+var chatActiveTurnTouchInterval = 5 * time.Minute
 
 type streamMessageBody struct {
 	ClientMessageID      string
@@ -675,8 +682,14 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		TurnID:             accepted.TurnID,
 		AssistantMessageID: accepted.AssistantMessage.ID,
 	}
-	runnerContext, runnerCancel := context.WithCancel(r.Context())
-	defer runnerCancel()
+	// runner context 与客户端连接脱钩（契约：docs/functions/AI问答设计.md，
+	// runner 在服务端跑完整轮生成，页面刷新/断线后经 GET /streams/:turnId
+	// 重附恢复）：WithoutCancel 保留请求 context 的 values（链执行器自建
+	// 请求，不依赖其取消），取消仅来自 hub Stop / 预备取消 / 进程 Shutdown
+	// 的显式 Abort。因此不能 defer 取消——接受轮次后 runner 生命周期归
+	// hub/stop 路径管理，handler 返回不得取消仍在运行的 runner；仅在 hub
+	// 拒绝接管的失败分支与 runner 终态之后显式收尾。
+	runnerContext, runnerCancel := context.WithCancel(context.WithoutCancel(r.Context()))
 	// 调度覆盖通道：group/account 会话把绑定目标绑定到执行器视图，模型轮次、
 	// 图片生成等 /v1 派发统一落在绑定作用域（cmd 侧注入进程内 context；外部
 	// 请求无法构造）。api_key/legacy 返回原执行器，行为与现状一致。
@@ -722,6 +735,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	// the explicit Register/Subscribe/Launch sequence preserves that contract
 	// under Go's preemptive scheduling.
 	if rt.deps.Hub == nil || !rt.deps.Hub.Register(runner) {
+		runnerCancel() // hub 未接管：收尾未被启动的 runner context
 		_, _ = rt.deps.Store.FailChatTurn(FailTurnInput{
 			ConversationID:  conversation.ID,
 			SystemAccountID: ownerID,
@@ -766,6 +780,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !rt.deps.Hub.Launch(runner) {
+		runnerCancel() // Launch 失败：runner 未进入执行，由 handler 收尾
 		_, _ = rt.deps.Store.FailChatTurn(FailTurnInput{
 			ConversationID:  conversation.ID,
 			SystemAccountID: ownerID,
@@ -778,7 +793,17 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		writeMessageCode(w, http.StatusConflict, "当前会话生成任务冲突", "chat_stream_conflict")
 		return
 	}
+	// 接受轮次后启动活性刷新循环：流式期间周期性推进 active_started_at，
+	// 使 jobs 的中断阈值按"最后活跃后 20 分钟"判定（长轮次不再被误判，
+	// 真中断恢复延迟不变）；runner 终态或 runner context 取消即停止。
+	stopActiveTouch := startActiveTurnTouchLoop(runnerContext, chatActiveTurnTouchInterval, func() {
+		// 活性信号尽力而为：刷新失败只忽略，不打断生成。
+		_ = rt.deps.Store.TouchActiveChatTurn(runnerContext, conversation.ID, accepted.TurnID, rt.now())
+	})
 	<-runner.Completion()
+	stopActiveTouch()
+	// runner 已终态：此处取消仅做资源收尾，不再影响任何运行中的生成。
+	runnerCancel()
 	if stopHeartbeat != nil {
 		stopHeartbeat()
 	}
@@ -788,6 +813,31 @@ func responseClosedState(mu *sync.Mutex, state *bool) bool {
 	mu.Lock()
 	defer mu.Unlock()
 	return *state
+}
+
+// startActiveTurnTouchLoop 在轮次流式期间按 interval 周期调用 touch（由
+// stream_route 用于刷新 active_started_at 活性信号，见 TouchActiveChatTurn
+// 的语义说明）。stop 与 ctx 取消都会结束循环：runner 终态后调用 stop，
+// runner context 被取消（Stop/Shutdown/预备取消）时循环自行退出。
+func startActiveTurnTouchLoop(ctx context.Context, interval time.Duration, touch func()) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		defer safego.Recover("chat.stream_route.active_touch")
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				touch()
+			}
+		}
+	}()
+	var stopOnce sync.Once
+	return func() { stopOnce.Do(func() { close(done) }) }
 }
 
 // writeStreamRouteError mirrors the stream route catch block.

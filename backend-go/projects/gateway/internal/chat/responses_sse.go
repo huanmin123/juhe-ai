@@ -7,7 +7,6 @@ import (
 	"io"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 )
 
 // OpenAI Responses SSE collection ported from chat-responses-sse.ts. Event
@@ -49,13 +48,6 @@ func CollectChatResponsesSse(stream io.Reader, maxBytes, maxEvents int, onEvent 
 	result := ChatResponsesCollectionResult{ToolCalls: []ChatToolCall{}, ContinuationItems: []any{}}
 	if maxEvents <= 0 {
 		maxEvents = defaultMaxSSEEvents
-	}
-	raw, err := io.ReadAll(stream)
-	if err != nil {
-		return result, err
-	}
-	if !utf8.Valid(raw) {
-		return result, errors.New("上游返回了无效的 SSE JSON")
 	}
 	var (
 		content           strings.Builder
@@ -192,26 +184,21 @@ func CollectChatResponsesSse(stream io.Reader, maxBytes, maxEvents int, onEvent 
 		}
 		return nil
 	}
-	buffer := string(raw)
-	for {
-		boundary := findEventBoundary(buffer)
-		if boundary == nil {
-			break
-		}
-		block := buffer[:boundary.index]
-		buffer = buffer[boundary.index+boundary.length:]
-		if err := consumeBlock(block); err != nil {
-			return result, err
-		}
+	// 增量读取：每凑齐一个完整事件块立即消费并回调 onEvent，保证下游在上游
+	// 整段响应结束前收到 message.delta/reasoning.delta（打字机/自动滚动），
+	// 对齐 Node for-await 语义；本函数只改“何时拿到数据”，不改解析出的内容。
+	trailing, err := pumpSSEBlocks(stream, consumeBlock)
+	if err != nil {
+		return result, err
 	}
-	if len(buffer) > responsesMaxEventBytes {
-		if !isPendingImageBlock(buffer) {
+	if len(trailing) > responsesMaxEventBytes {
+		if !isPendingImageBlock(string(trailing)) {
 			return result, errors.New("上游 Responses 单个事件超过 64 KiB 上限")
 		}
 		return result, errors.New("图像 SSE 事件被截断")
 	}
-	if strings.TrimSpace(buffer) != "" {
-		if err := consumeBlock(buffer); err != nil {
+	if strings.TrimSpace(string(trailing)) != "" {
+		if err := consumeBlock(string(trailing)); err != nil {
 			return result, err
 		}
 	}

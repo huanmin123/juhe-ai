@@ -620,7 +620,7 @@ func TestW2BUsageBridgeArms(t *testing.T) {
 	defaulted.Close()
 
 	// 314：nil recorder 的失败尝试投递按静默契约返回。
-	chainFinalizationUsage{}.RecordFailedUpstreamAttempt(gatewayresponse.FailedAttemptInput{})
+	(&chainFinalizationUsage{}).RecordFailedUpstreamAttempt(gatewayresponse.FailedAttemptInput{})
 }
 
 // ---------------------------------------------------------------------------

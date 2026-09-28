@@ -61,6 +61,12 @@ type fixedLeaseSource OwnerLease
 
 func (s fixedLeaseSource) Lease() OwnerLease { return OwnerLease(s) }
 
+// StaticLease pins one lease value behind the LeaseSource interface for
+// callers without a keeper (tests, static compositions).
+//
+// 预留导出 API：当前全仓无生产调用方，仅供静态组合/测试场景使用。
+func StaticLease(lease OwnerLease) LeaseSource { return fixedLeaseSource(lease) }
+
 func (p *Producer) warn(msg string, args ...any) {
 	if p.log != nil {
 		p.log.Warn(msg, args...)
@@ -155,6 +161,9 @@ func (p *Producer) persistOne(input AuditLogInput) {
 		return
 	}
 	if result.Ignored {
+		p.warn("F3 重复或迟到的审计输入被忽略，跳过本次持久化",
+			"event", "audit_input_ignored",
+			"traceID", input.TraceID, "auditLogID", input.ID)
 		return
 	}
 	if _, err := p.store.AppendHotSearch(ctx, lease, []AuditLogInput{input}); err != nil {

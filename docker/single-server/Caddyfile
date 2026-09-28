@@ -12,6 +12,11 @@ aijh.huanmin.top {
 		flush_interval -1
 	}
 
+	# 管理面 AI 问答对话流（SSE）同属流式响应，必须关闭缓冲
+	reverse_proxy /__aisys__/api/my-chat/* 172.18.0.10:3000 {
+		flush_interval -1
+	}
+
 	reverse_proxy 172.18.0.10:3000
 }
 

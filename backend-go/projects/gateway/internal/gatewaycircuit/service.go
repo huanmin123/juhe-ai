@@ -15,15 +15,15 @@ import (
 )
 
 const (
-	gatewayAccountCircuitKnownModelLimit      = 256
-	gatewayAccountCircuitUnknownModelBucket   = "unknown"
+	gatewayAccountCircuitKnownModelLimit       = 256
+	gatewayAccountCircuitUnknownModelBucket    = "unknown"
 	gatewayAccountCircuitFailureEvidenceMarker = "|request_evidence_sha256="
 )
 
 // Transport failure kinds mirror GatewayAccountCircuitTransportFailureKind.
 const (
-	TransportFailureKindTransport     = "transport"
-	TransportFailureKindTimeout       = "timeout"
+	TransportFailureKindTransport      = "transport"
+	TransportFailureKindTimeout        = "timeout"
 	TransportFailureKindReadIncomplete = "read_incomplete"
 )
 
@@ -35,12 +35,12 @@ type TransportFailure struct {
 
 // Confirmation mirrors GatewayAccountCircuitConfirmation.
 type Confirmation struct {
-	Scope            Scope
-	ScopeKey         string
+	Scope             Scope
+	ScopeKey          string
 	AccountRuntimeKey string
-	Generation       int64
-	DispatchRevision string
-	LeaseID          string
+	Generation        int64
+	DispatchRevision  string
+	LeaseID           string
 }
 
 // FailureDecision mirrors GatewayAccountCircuitFailureDecision.
@@ -78,10 +78,10 @@ const (
 type CircuitOperation string
 
 const (
-	OperationSuspect             CircuitOperation = "suspect"
-	OperationAcquireConfirmation CircuitOperation = "acquire_confirmation"
+	OperationSuspect              CircuitOperation = "suspect"
+	OperationAcquireConfirmation  CircuitOperation = "acquire_confirmation"
 	OperationCompleteConfirmation CircuitOperation = "complete_confirmation"
-	OperationReplaceRevision     CircuitOperation = "replace_revision"
+	OperationReplaceRevision      CircuitOperation = "replace_revision"
 	OperationRecordParentEvidence CircuitOperation = "record_parent_evidence"
 )
 
@@ -106,31 +106,34 @@ type RoutingObservabilityEvent struct {
 	From      string
 	To        string
 	Source    string
+	// AccountRuntimeKey 是可选账户线索（第二批日志补齐 4）：仅用于观测日志
+	// 归属，不参与 metric key 与记账聚合；零值（未填）保持既有行为。
+	AccountRuntimeKey string
 }
 
 // ServiceOptions mirrors GatewayAccountCircuitServiceOptions.
 type ServiceOptions struct {
-	Now                        func() int64
-	CreateID                   func() string
-	OnMutation                 func(ctx context.Context, input MutationEvent) error
-	IsRuntimeStateReady        func(accountRuntimeKey string) bool
-	EnsureRuntimeStateReady    func(ctx context.Context, accountRuntimeKey string) (bool, error)
+	Now                              func() int64
+	CreateID                         func() string
+	OnMutation                       func(ctx context.Context, input MutationEvent) error
+	IsRuntimeStateReady              func(accountRuntimeKey string) bool
+	EnsureRuntimeStateReady          func(ctx context.Context, accountRuntimeKey string) (bool, error)
 	EscalationDistinctScopeThreshold *int64
 	EscalationWindowMs               *int64
-	Settings                   Settings
-	Random                     func() float64
+	Settings                         Settings
+	Random                           func() float64
 }
 
 // PrepareAttemptInput mirrors PrepareGatewayAccountCircuitAttemptInput.
 type PrepareAttemptInput struct {
-	Account                       gatewayruntimecache.OpenAIAccountSecret
-	RequestLane                   string
-	Model                         *string
-	ConfirmationLeaseDurationMs   int64
-	ConfirmationEligible          *bool
-	ConfirmationFailuresRequired  *int64
-	Confirmation                  *Confirmation
-	FailureEvidenceKey            *string
+	Account                      gatewayruntimecache.OpenAIAccountSecret
+	RequestLane                  string
+	Model                        *string
+	ConfirmationLeaseDurationMs  int64
+	ConfirmationEligible         *bool
+	ConfirmationFailuresRequired *int64
+	Confirmation                 *Confirmation
+	FailureEvidenceKey           *string
 }
 
 type observerState struct {
@@ -163,24 +166,24 @@ type settlementSignal struct {
 
 // Attempt mirrors GatewayAccountCircuitAttempt.
 type Attempt struct {
-	service                    *CircuitService
-	Scope                      Scope
-	DispatchRevision           string
-	ConfirmationLeaseDurationMs int64
+	service                      *CircuitService
+	Scope                        Scope
+	DispatchRevision             string
+	ConfirmationLeaseDurationMs  int64
 	ConfirmationFailuresRequired int64
-	IsObserver                 bool
+	IsObserver                   bool
 
-	mu                                 sync.Mutex
-	requestRecoveryGeneration          *int64
-	requestRecoveryEvidenceKey         *string
+	mu                                     sync.Mutex
+	requestRecoveryGeneration              *int64
+	requestRecoveryEvidenceKey             *string
 	confirmationKeyRotationFailureObserved bool
-	confirmation                       *Confirmation
-	confirmationSettlementIntent       *confirmationSettlementIntent
-	confirmationSettled                *confirmationSettlement
-	settlementDone                     chan struct{}
-	settlementErr                      error
-	failureEvidenceKey                 *string
-	observer                           *observerState
+	confirmation                           *Confirmation
+	confirmationSettlementIntent           *confirmationSettlementIntent
+	confirmationSettled                    *confirmationSettlement
+	settlementDone                         chan struct{}
+	settlementErr                          error
+	failureEvidenceKey                     *string
+	observer                               *observerState
 }
 
 // IsConfirmation mirrors the isConfirmation getter.
@@ -425,17 +428,17 @@ func (a *Attempt) settleConfirmation(ctx context.Context, requested confirmation
 
 // CircuitService mirrors GatewayAccountCircuitService.
 type CircuitService struct {
-	store                        Store
-	now                          func() int64
-	createID                     func() string
-	onMutation                   func(ctx context.Context, input MutationEvent) error
-	isRuntimeStateReady          func(accountRuntimeKey string) bool
-	ensureRuntimeStateReady      func(ctx context.Context, accountRuntimeKey string) (bool, error)
+	store                            Store
+	now                              func() int64
+	createID                         func() string
+	onMutation                       func(ctx context.Context, input MutationEvent) error
+	isRuntimeStateReady              func(accountRuntimeKey string) bool
+	ensureRuntimeStateReady          func(ctx context.Context, accountRuntimeKey string) (bool, error)
 	escalationDistinctScopeThreshold int64
 	escalationWindowMs               int64
-	settings                     Settings
-	random                       func() float64
-	observability                func(event RoutingObservabilityEvent)
+	settings                         Settings
+	random                           func() float64
+	observability                    func(event RoutingObservabilityEvent)
 }
 
 // NewCircuitService mirrors new GatewayAccountCircuitService.
@@ -469,12 +472,12 @@ func NewCircuitService(store Store, options ServiceOptions) (*CircuitService, er
 		random = defaultRandom
 	}
 	return &CircuitService{
-		store:                        store,
-		now:                          now,
-		createID:                     createID,
-		onMutation:                   options.OnMutation,
-		isRuntimeStateReady:          isReady,
-		ensureRuntimeStateReady:      options.EnsureRuntimeStateReady,
+		store:                            store,
+		now:                              now,
+		createID:                         createID,
+		onMutation:                       options.OnMutation,
+		isRuntimeStateReady:              isReady,
+		ensureRuntimeStateReady:          options.EnsureRuntimeStateReady,
 		escalationDistinctScopeThreshold: threshold,
 		escalationWindowMs:               windowMs,
 		settings:                         settings,
@@ -499,7 +502,12 @@ func (s *CircuitService) observeBlockedDispatch(state State) {
 	if state.Phase == PhaseClosed {
 		return
 	}
-	s.observe(RoutingObservabilityEvent{Kind: "circuit_dispatch", Outcome: "blocked", Phase: state.Phase})
+	s.observe(RoutingObservabilityEvent{
+		Kind:              "circuit_dispatch",
+		Outcome:           "blocked",
+		Phase:             state.Phase,
+		AccountRuntimeKey: state.Scope.AccountRuntimeKey,
+	})
 }
 
 func (s *CircuitService) notifyMutation(
@@ -574,7 +582,12 @@ func (s *CircuitService) PrepareAttempt(ctx context.Context, input PrepareAttemp
 		runtimeStateReady = ready
 	}
 	if !runtimeStateReady {
-		s.observe(RoutingObservabilityEvent{Kind: "circuit_dispatch", Outcome: "rebuild_blocked", Phase: PhaseSuspect})
+		s.observe(RoutingObservabilityEvent{
+			Kind:              "circuit_dispatch",
+			Outcome:           "rebuild_blocked",
+			Phase:             PhaseSuspect,
+			AccountRuntimeKey: scope.AccountRuntimeKey,
+		})
 		blocked := ClosedState(scope, dispatchRevision, 0, "runtime-state-rebuilding", s.now())
 		blocked.Phase = PhaseSuspect
 		blocked.FailureReason = strPtr("runtime_state_rebuilding")
@@ -875,17 +888,17 @@ func (s *CircuitService) CompleteConfirmation(
 			maxProtocolScopes = 8
 		}
 		escalation, err := s.store.RecordProtocolModelOpenEvidence(ctx, ProtocolModelOpenEvidenceInput{
-			Scope:                   confirmation.Scope,
-			Generation:              result.State.Generation,
-			DispatchRevision:        confirmation.DispatchRevision,
-			EvidenceID:              fmt.Sprintf("%s:%d:%s", confirmation.ScopeKey, confirmation.Generation, confirmation.LeaseID),
-			AccountTransitionID:     fmt.Sprintf("confirmation-parent:%s", completionIdentity),
-			Reason:                  reasonValue,
-			ConfirmedFailureCount:   1,
-			DistinctScopeThreshold:  s.escalationDistinctScopeThreshold,
-			WindowMs:                s.escalationWindowMs,
-			MaxProtocolScopes:       maxProtocolScopes,
-			NowMs:                   &now,
+			Scope:                  confirmation.Scope,
+			Generation:             result.State.Generation,
+			DispatchRevision:       confirmation.DispatchRevision,
+			EvidenceID:             fmt.Sprintf("%s:%d:%s", confirmation.ScopeKey, confirmation.Generation, confirmation.LeaseID),
+			AccountTransitionID:    fmt.Sprintf("confirmation-parent:%s", completionIdentity),
+			Reason:                 reasonValue,
+			ConfirmedFailureCount:  1,
+			DistinctScopeThreshold: s.escalationDistinctScopeThreshold,
+			WindowMs:               s.escalationWindowMs,
+			MaxProtocolScopes:      maxProtocolScopes,
+			NowMs:                  &now,
 		})
 		if err != nil {
 			return MutationResult{}, err
@@ -977,9 +990,9 @@ func (s *CircuitService) completeObserverFraming(ctx context.Context, input comp
 }
 
 type keyRotationFramingInput struct {
-	scope             Scope
-	generation        int64
-	dispatchRevision  string
+	scope              Scope
+	generation         int64
+	dispatchRevision   string
 	failureEvidenceKey *string
 }
 
@@ -1170,19 +1183,19 @@ func AccountCircuitDispatchRevision(account gatewayruntimecache.OpenAIAccountSec
 		"credentials":  accountCircuitCredentialOwnerIdentity(account.Credentials),
 	}))
 	revisionPayload := map[string]any{
-		"accountRuntimeKey":          account.ID,
-		"credentialSourceAccountId":  nilOrString(account.CredentialSourceAccountID),
-		"providerCode":               account.ProviderCode,
-		"providerProtocolProfileId":  account.ProviderProtocolProfileID,
-		"protocolCode":               account.ProtocolCode,
-		"protocolVersion":            account.ProtocolVersion,
-		"accountType":                account.Type,
-		"baseUrl":                    account.BaseURL,
-		"proxyProfileId":             nilOrString(account.ProxyProfileID),
-		"proxyUrl":                   nilOrString(account.ProxyURL),
-		"clientCompatibility":        account.ClientCompatibility,
-		"supportedEndpointModes":     anySlice(account.SupportedEndpointModes),
-		"credentialMaterialDigest":   credentialMaterialDigest,
+		"accountRuntimeKey":         account.ID,
+		"credentialSourceAccountId": nilOrString(account.CredentialSourceAccountID),
+		"providerCode":              account.ProviderCode,
+		"providerProtocolProfileId": account.ProviderProtocolProfileID,
+		"protocolCode":              account.ProtocolCode,
+		"protocolVersion":           account.ProtocolVersion,
+		"accountType":               account.Type,
+		"baseUrl":                   account.BaseURL,
+		"proxyProfileId":            nilOrString(account.ProxyProfileID),
+		"proxyUrl":                  nilOrString(account.ProxyURL),
+		"clientCompatibility":       account.ClientCompatibility,
+		"supportedEndpointModes":    anySlice(account.SupportedEndpointModes),
+		"credentialMaterialDigest":  credentialMaterialDigest,
 	}
 	return fmt.Sprintf("v1:%s", sha256Hex(stableSerialize(revisionPayload))), nil
 }

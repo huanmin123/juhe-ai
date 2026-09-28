@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
@@ -53,6 +54,10 @@ type LeaseKeeper struct {
 	stopCh    chan struct{}
 	stopOnce  sync.Once
 	closeOnce sync.Once
+	// closed 记录 closeOnce 是否已耗尽：once 用尽后的再次 Close 会被静默
+	// 跳过，掩盖 reacquire 重建租约后租约无法释放的现场。仅用于 Close 入口
+	// 的跳过告警，不改变 Close 行为。
+	closed atomic.Bool
 }
 
 // StartLeaseKeeper acquires the F3 audit owner lease. ok=false means the row
@@ -158,11 +163,17 @@ func (k *LeaseKeeper) renewLoop(done chan struct{}) {
 				k.log.Warn("续租 F3 audit owner lease 失败；租约仍可能有效，按周期重试", "error", renewErr, "consecutiveFailures", consecutiveFailures, "graceWindow", grace.String())
 				continue
 			}
+			recovered := consecutiveFailures
 			firstFailure = time.Time{}
 			consecutiveFailures = 0
 			if !renewed {
 				k.fatal(ErrOwnerLeaseLost)
 				return
+			}
+			if recovered > 0 {
+				k.log.Info("续租 F3 audit owner lease 已从连续失败中恢复",
+					"event", "audit_lease_renewal_recovered",
+					"consecutiveFailures", recovered)
 			}
 		}
 	}
@@ -177,7 +188,8 @@ func (k *LeaseKeeper) renewGraceWindow() time.Duration {
 
 func (k *LeaseKeeper) fatal(err error) {
 	k.fatalOnce.Do(func() {
-		k.log.Error("F3 audit owner lease 丢失，放弃所有权", "error", err)
+		lease := k.Lease()
+		k.log.Error("F3 audit owner lease 丢失，放弃所有权", "error", err, "ownerID", lease.OwnerID, "fenceToken", lease.FenceToken)
 		k.mu.Lock()
 		k.lostErr = err
 		k.mu.Unlock()
@@ -190,7 +202,15 @@ func (k *LeaseKeeper) fatal(err error) {
 // loop (the row is no longer ours; ReleaseOwnerLease would report
 // ErrOwnerLeaseLost).
 func (k *LeaseKeeper) Close() {
+	if k.closed.Load() {
+		lease := k.Lease()
+		k.log.Warn("F3 audit lease keeper 已关闭，跳过本次释放",
+			"event", "audit_lease_close_skipped",
+			"ownerID", lease.OwnerID, "fenceToken", lease.FenceToken)
+		return
+	}
 	k.closeOnce.Do(func() {
+		k.closed.Store(true)
 		k.stopOnce.Do(func() { close(k.stopCh) })
 		if k.LostError() != nil {
 			return
@@ -198,7 +218,7 @@ func (k *LeaseKeeper) Close() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := k.store.ReleaseOwnerLease(releaseCtx, k.Lease()); err != nil {
-			k.log.Error("释放 F3 audit owner lease 失败", "error", err)
+			k.log.Warn("释放 F3 audit owner lease 失败", "error", err)
 		}
 	})
 }
@@ -241,10 +261,10 @@ func (k *LeaseKeeper) reacquire(ctx context.Context) error {
 	defer cancel()
 	lease, ok, err := k.store.AcquireOwnerLease(acquireCtx, k.owner, k.ttl)
 	if err != nil {
-		return fmt.Errorf("重启后重新获取 F3 audit owner lease 失败: %w", err)
+		return fmt.Errorf("重启后重新获取 F3 audit owner lease 失败 (owner %s): %w", k.owner, err)
 	}
 	if !ok {
-		return fmt.Errorf("重启后 F3 audit owner lease 仍被其他 owner 持有")
+		return fmt.Errorf("重启后 F3 audit owner lease 仍被其他 owner 持有 (owner %s)", k.owner)
 	}
 	k.mu.Lock()
 	k.lease = lease
@@ -321,8 +341,10 @@ func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease,
 			case <-ctx.Done():
 				return
 			case <-timer.C:
-				_, err := store.CleanupRetention(ctx, lease, cfg.RetentionConfigAt(time.Now()))
+				passStarted := time.Now()
+				result, err := store.CleanupRetention(ctx, lease, cfg.RetentionConfigAt(time.Now()))
 				if err == nil {
+					logger.Info("F3 audit retention complete", "event", "audit_retention_completed", "durationMs", time.Since(passStarted).Milliseconds(), "successHotTrimmed", result.SuccessHotTrimmed, "deletedNonPersistedLogs", result.DeletedNonPersistedLogs, "deletedLogs", result.DeletedLogs, "deletedErrorGroups", result.DeletedErrorGroups, "deletedPayloadBlobs", result.DeletedPayloadBlobs, "deletedHotSearchFiles", result.DeletedHotSearchFiles)
 					timer.Reset(schedulejitter.Delay(cfg.RetentionInterval))
 					continue
 				}

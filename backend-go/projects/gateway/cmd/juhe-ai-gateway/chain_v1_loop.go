@@ -498,6 +498,7 @@ func (l *v1DispatchLoop) renderDispatchExhausted(ctx context.Context, attempt *g
 	lastAttempt := attempt.LastAttempt
 	fields := map[string]any{
 		"event":         "gateway_dispatch_exhausted",
+		"traceId":       l.traceID,
 		"endpoint":      l.current.UsageContext.Endpoint,
 		"apiKeyId":      l.current.UsageContext.APIKeyID,
 		"groupId":       l.current.UsageContext.GroupID,
@@ -569,6 +570,7 @@ func (l *v1DispatchLoop) renderDispatchExhausted(ctx context.Context, attempt *g
 func (l *v1DispatchLoop) renderUnexpectedDispatchFailure(ctx context.Context, dispatchErr error) {
 	l.c.observability.Logger().Warn("gateway_request_unexpected_error", map[string]any{
 		"event":    "gateway_request_unexpected_error",
+		"traceId":  l.traceID,
 		"endpoint": l.current.UsageContext.Endpoint,
 		"apiKeyId": l.current.UsageContext.APIKeyID,
 		"groupId":  l.current.UsageContext.GroupID,
@@ -859,6 +861,7 @@ func (l *v1DispatchLoop) exhaustDispatchFailedAccountID(accountID string) {
 func (l *v1DispatchLoop) renderDispatchExhaustedWithMessage(ctx context.Context, message, accountID, accountName string) {
 	l.c.observability.Logger().Warn("gateway_dispatch_exhausted", map[string]any{
 		"event":                  "gateway_dispatch_exhausted",
+		"traceId":                l.traceID,
 		"failureReason":          "first_byte_timeout",
 		"lastAttemptAccountId":   accountID,
 		"lastAttemptAccountName": accountName,
@@ -899,6 +902,7 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 		if err := dispatched.ConfirmSameAccountApiKeyFailures(); err != nil {
 			l.c.observability.Logger().Warn("gateway_account_api_key_rotation_confirm_failed", map[string]any{
 				"event":     "gateway_account_api_key_rotation_confirm_failed",
+				"traceId":   l.traceID,
 				"accountId": dispatched.Account.ID,
 				"error":     err.Error(),
 			}, "已确认同账户 API Key 轮转失败结算未完成")
@@ -908,6 +912,7 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 		if err := dispatched.ConfirmAccountAPIKeySuccess(); err != nil {
 			l.c.observability.Logger().Warn("gateway_account_api_key_success_settlement_failed", map[string]any{
 				"event":     "gateway_account_api_key_success_settlement_failed",
+				"traceId":   l.traceID,
 				"accountId": dispatched.Account.ID,
 				"error":     err.Error(),
 			}, "账户 API Key 成功结算未完成")
@@ -919,6 +924,7 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 		if err := dispatched.ConfirmAccountLockSuccess(); err != nil {
 			l.c.observability.Logger().Warn("gateway_account_lock_success_settlement_failed", map[string]any{
 				"event":     "gateway_account_lock_success_settlement_failed",
+				"traceId":   l.traceID,
 				"accountId": dispatched.Account.ID,
 				"error":     err.Error(),
 			}, "账户锁成功结算未完成")

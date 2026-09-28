@@ -184,3 +184,30 @@ func TestConversationBindOptionsUnauthenticated(t *testing.T) {
 		t.Fatalf("未登录 = %d %s", unauthorized.status, unauthorized.rawString())
 	}
 }
+
+// TestConversationBindOptionsNoStoreHeaders：下拉内容随数据范围实时变化，
+// 成功响应必须携带 no-store（与 accounts 包 options 口径一致）。
+func TestConversationBindOptionsNoStoreHeaders(t *testing.T) {
+	env := newGenerationEnv(t)
+	env.deps.GroupOptionsLookup = mockGroupOptionsLookup{}
+	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
+	request, err := http.NewRequest(http.MethodGet, env.server.URL+"/__aisys__/api/my-chat/conversation-bind-options", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-Test-Owner", routeTestOwner)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("bind options = %d", response.StatusCode)
+	}
+	if got := response.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want %q", got, "no-store")
+	}
+	if got := response.Header.Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma = %q, want %q", got, "no-cache")
+	}
+}

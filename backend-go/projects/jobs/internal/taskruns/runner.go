@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -119,7 +119,10 @@ func RunWithScheduledLease(
 				lost := &ErrLeaseLost{Lease: current.Fence()}
 				if renewErr != nil && !errors.As(renewErr, new(*ErrLeaseLost)) {
 					lost = &ErrLeaseLost{Lease: current.Fence()}
-					log.Printf("background_job_lease_renew_failed jobName=%s leaseKey=%s error=%v", opts.JobName, current.LeaseKey, renewErr)
+					slog.Warn("后台任务租约续期失败",
+						"event", "background_job_lease_renew_failed",
+						"jobName", opts.JobName, "leaseKey", current.LeaseKey,
+						"runId", opts.RunID, "error", renewErr)
 				}
 				leaseMu.Lock()
 				leaseLost = lost
@@ -149,7 +152,10 @@ func RunWithScheduledLease(
 		releaseCancel()
 		released = releasedRelease
 		if releaseErr != nil {
-			log.Printf("background_job_lease_release_failed jobName=%s leaseKey=%s error=%v", opts.JobName, lease.LeaseKey, releaseErr)
+			slog.Warn("后台任务租约释放失败",
+				"event", "background_job_lease_release_failed",
+				"jobName", opts.JobName, "leaseKey", lease.LeaseKey,
+				"runId", opts.RunID, "error", releaseErr)
 		}
 	}
 	if fnErr != nil {
@@ -246,13 +252,23 @@ func RunWithTaskRun(
 		// 启动 CAS 未命中同样落 skipped 终态：收口不依赖调用方 ctx 存活
 		// （缺陷3修复，与下方最终收口同规则）。
 		finishCtx, finishCancel := boundedFinishContext(ctx)
-		_, _ = store.FinishTaskRun(finishCtx, TaskRunFinishInput{
+		if _, finishErr := store.FinishTaskRun(finishCtx, TaskRunFinishInput{
 			RunID:        run.RunID,
 			Status:       StatusSkipped,
 			ErrorMessage: "任务启动 CAS 未命中，运行记录已非 queued",
 			FinishedAt:   &finished,
-		})
-		updated, _ := store.GetTaskRun(finishCtx, run.RunID)
+		}); finishErr != nil {
+			// 原先双吞错：终态落库失败无任何痕迹，行可能永久停留非终态。
+			slog.Warn("任务启动 CAS 未命中的 skipped 终态落库失败",
+				"event", "task_run_start_cas_miss_finish_failed",
+				"runId", run.RunID, "leaseKey", opts.LeaseKey, "error", finishErr)
+		}
+		updated, getErr := store.GetTaskRun(finishCtx, run.RunID)
+		if getErr != nil {
+			slog.Warn("任务启动 CAS 未命中后读取运行记录失败",
+				"event", "task_run_start_cas_miss_get_failed",
+				"runId", run.RunID, "error", getErr)
+		}
 		finishCancel()
 		return derefRun(updated), ScheduledLeaseOutcome{
 			Outcome:    OutcomeSkipped,
@@ -303,7 +319,10 @@ func RunWithTaskRun(
 				}
 				lost := &ErrLeaseLost{Lease: fence}
 				if hbErr != nil {
-					log.Printf("task_run_heartbeat_failed runID=%s leaseKey=%s error=%v", run.RunID, fence.LeaseKey, hbErr)
+					slog.Warn("任务运行记录心跳失败",
+						"event", "task_run_heartbeat_failed",
+						"runId", run.RunID, "leaseKey", fence.LeaseKey,
+						"jobName", opts.JobName, "error", hbErr)
 				}
 				mu.Lock()
 				leaseLost = lost

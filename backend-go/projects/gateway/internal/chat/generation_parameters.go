@@ -23,17 +23,17 @@ const (
 // same fields, so the transport snapshot plugs in directly.
 type chatGenerationRouteAccount = ChatTransportAccount
 
-// generationParameterDefinitions mirrors the definitions table. The step
-// column never leaves this package (the option payload exposes
-// parameter/min/max/defaultValue), so it is omitted from the capability
-// struct.
+// generationParameterDefinitions mirrors the definitions table. Step carries
+// the slider/input step the option payload exposes alongside
+// parameter/min/max/defaultValue (the frontend consumes capability.step for
+// its generation-parameter controls), matching the providers package copy.
 var generationParameterDefinitions = map[string]ChatGenerationParameterCapability{
-	"temperature":      {Parameter: "temperature", Min: 0, Max: 2, DefaultValue: 1},
-	"topP":             {Parameter: "topP", Min: 0, Max: 1, DefaultValue: 1},
-	"frequencyPenalty": {Parameter: "frequencyPenalty", Min: -2, Max: 2, DefaultValue: 0},
-	"presencePenalty":  {Parameter: "presencePenalty", Min: -2, Max: 2, DefaultValue: 0},
-	"maxOutputTokens":  {Parameter: "maxOutputTokens", Min: 1, Max: 128_000, DefaultValue: 4_096},
-	"seed":             {Parameter: "seed", Min: 0, Max: 2_147_483_647, DefaultValue: 0},
+	"temperature":      {Parameter: "temperature", Min: 0, Max: 2, Step: 0.1, DefaultValue: 1},
+	"topP":             {Parameter: "topP", Min: 0, Max: 1, Step: 0.05, DefaultValue: 1},
+	"frequencyPenalty": {Parameter: "frequencyPenalty", Min: -2, Max: 2, Step: 0.1, DefaultValue: 0},
+	"presencePenalty":  {Parameter: "presencePenalty", Min: -2, Max: 2, Step: 0.1, DefaultValue: 0},
+	"maxOutputTokens":  {Parameter: "maxOutputTokens", Min: 1, Max: 128_000, Step: 1, DefaultValue: 4_096},
+	"seed":             {Parameter: "seed", Min: 0, Max: 2_147_483_647, Step: 1, DefaultValue: 0},
 }
 
 var generationParameterNames = []string{"temperature", "topP", "frequencyPenalty", "presencePenalty", "maxOutputTokens", "seed"}

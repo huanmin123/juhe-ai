@@ -44,7 +44,7 @@ func TestW1UsageAttemptRecorderRoundTrip(t *testing.T) {
 		t.Fatalf("record = %v", err)
 	}
 	// usageDispatchAdapter：真实 recorder（spool 化）派发一条用量记录。
-	usageDispatchAdapter{service: service, recorder: recorder}.DispatchUsageRecord(
+	(&usageDispatchAdapter{service: service, recorder: recorder}).DispatchUsageRecord(
 		gatewayresponse.ModelsUsageDispatchInput{
 			UsageContext: gatewaypreauth.GatewayFailureUsageContext{
 				SystemAccountID: "sys_1", APIKeyID: "key_1", GroupID: "grp_1",

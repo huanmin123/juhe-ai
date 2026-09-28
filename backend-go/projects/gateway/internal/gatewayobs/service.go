@@ -262,6 +262,10 @@ func (observer *Observer) logRoutingObservation(observation Observation) {
 			"to":     observation.To,
 			"source": observation.Source,
 		}
+		// 账户线索（第二批日志补齐 4）：空值不伪造键。
+		if observation.AccountRuntimeKey != "" {
+			fields["accountRuntimeKey"] = observation.AccountRuntimeKey
+		}
 		if observation.To == "OPEN" {
 			logger.Warn(fields, "账户短电路状态转换")
 		} else {
@@ -282,11 +286,17 @@ func (observer *Observer) logRoutingObservation(observation Observation) {
 		return
 	}
 	if observation.Kind == KindCircuitDispatch {
-		logger.Debug(map[string]interface{}{
+		fields := map[string]interface{}{
 			"event":   "gateway_account_circuit_dispatch_skipped",
 			"outcome": observation.Outcome,
 			"phase":   observation.Phase,
-		}, "账户短电路派发被跳过")
+		}
+		// 账户线索（第二批日志补齐 4）：生产仅发出 circuit_dispatch 事件，
+		// 不注入则账户维度在现网日志中不可见；空值不伪造键。
+		if observation.AccountRuntimeKey != "" {
+			fields["accountRuntimeKey"] = observation.AccountRuntimeKey
+		}
+		logger.Debug(fields, "账户短电路派发被跳过")
 	}
 }
 

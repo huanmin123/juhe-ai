@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -50,14 +51,6 @@ func CollectOpenAIChatSse(stream io.Reader, maxContentBytes int, onDelta func(de
 	if maxEvents <= 0 {
 		maxEvents = defaultMaxSSEEvents
 	}
-	raw, err := io.ReadAll(stream)
-	if err != nil {
-		return result, err
-	}
-	if !utf8.Valid(raw) {
-		return result, errors.New("上游返回了无效的 SSE JSON")
-	}
-	buffer := string(raw)
 	var (
 		content      strings.Builder
 		finishReason string
@@ -169,33 +162,32 @@ func CollectOpenAIChatSse(stream io.Reader, maxContentBytes int, onDelta func(de
 		}
 		return nil
 	}
-	for {
-		boundary := findEventBoundary(buffer)
-		if boundary == nil {
-			break
-		}
-		eventText := buffer[:boundary.index]
+	// 增量读取：每凑齐一个完整事件块立即消费并回调 onDelta/onReasoningDelta，
+	// 保证下游在上游整段响应结束前收到事件（打字机/自动滚动），对齐 Node
+	// for-await 语义；本函数只改“何时拿到数据”，不改解析出的内容。
+	consumeBlock := func(eventText string) error {
 		eventCount++
 		if eventCount > maxEvents {
-			return result, errors.New("上游 Chat Completions 事件数量超过 " + itoa(maxEvents) + " 上限")
+			return errors.New("上游 Chat Completions 事件数量超过 " + itoa(maxEvents) + " 上限")
 		}
 		if len(eventText) > sseMaxEventBytes {
-			return result, errors.New("上游 Chat Completions 单个事件超过 64 KiB 上限")
+			return errors.New("上游 Chat Completions 单个事件超过 64 KiB 上限")
 		}
-		if err := consumeEvent(eventText); err != nil {
-			return result, err
-		}
-		buffer = buffer[boundary.index+boundary.length:]
+		return consumeEvent(eventText)
 	}
-	if len(buffer) > sseMaxEventBytes {
+	trailing, err := pumpSSEBlocks(stream, consumeBlock)
+	if err != nil {
+		return result, err
+	}
+	if len(trailing) > sseMaxEventBytes {
 		return result, errors.New("上游 Chat Completions 单个事件超过 64 KiB 上限")
 	}
-	if strings.TrimSpace(buffer) != "" {
+	if strings.TrimSpace(string(trailing)) != "" {
 		eventCount++
 		if eventCount > maxEvents {
 			return result, errors.New("上游 Chat Completions 事件数量超过 " + itoa(maxEvents) + " 上限")
 		}
-		if err := consumeEvent(buffer); err != nil {
+		if err := consumeEvent(string(trailing)); err != nil {
 			return result, err
 		}
 	}
@@ -279,6 +271,132 @@ func findEventBoundary(value string) *eventBoundary {
 		return &eventBoundary{index: crlf, length: 4}
 	}
 	return &eventBoundary{index: lf, length: 2}
+}
+
+var (
+	sseLFBoundaryBytes   = []byte("\n\n")
+	sseCRLFBoundaryBytes = []byte("\r\n\r\n")
+)
+
+// findEventBoundaryBytes 与 findEventBoundary 语义一致，作用于字节切片，
+// 供增量读取路径复用同一套边界判定（含 \n\n 与 \r\n\r\n 的先后裁决）。
+func findEventBoundaryBytes(value []byte) *eventBoundary {
+	lf := bytes.Index(value, sseLFBoundaryBytes)
+	crlf := bytes.Index(value, sseCRLFBoundaryBytes)
+	if lf < 0 && crlf < 0 {
+		return nil
+	}
+	if crlf >= 0 && (lf < 0 || crlf < lf) {
+		return &eventBoundary{index: crlf, length: 4}
+	}
+	return &eventBoundary{index: lf, length: 2}
+}
+
+// sseReadStreamChunkBytes 是增量读取上游 SSE 的单次 Read 缓冲大小。
+const sseReadStreamChunkBytes = 32 * 1024
+
+// pumpSSEBlocks 从 stream 增量读取字节流：每凑齐一个完整事件块（以 \n\n 或
+// \r\n\r\n 分隔）立即交给 consume 处理并返回，而不是先 io.ReadAll 全量缓冲。
+// 增量解析保证下游在整段响应结束前收到事件（打字机/自动滚动），对齐 Node
+// for-await 语义。读取过程中对已读字节做边界安全的 UTF-8 校验：多字节字符
+// 拆在两次 Read 之间时，未凑齐的尾部字节暂存、与后续数据合并后再判定，不单
+// 独判无效。consume 返回错误时立即终止读取并透传；EOF 后返回剩余未成块的
+// 字节，由调用方按原有尾块语义（预算、事件数与错误文案）处理。
+func pumpSSEBlocks(stream io.Reader, consume func(block string) error) ([]byte, error) {
+	validator := utf8BoundaryValidator{}
+	pending := make([]byte, 0, sseReadStreamChunkBytes)
+	scratch := make([]byte, sseReadStreamChunkBytes)
+	for {
+		n, readErr := stream.Read(scratch)
+		if n > 0 {
+			if err := validator.feed(scratch[:n]); err != nil {
+				return pending, err
+			}
+			pending = append(pending, scratch[:n]...)
+			for {
+				boundary := findEventBoundaryBytes(pending)
+				if boundary == nil {
+					break
+				}
+				block := string(pending[:boundary.index])
+				pending = append(pending[:0], pending[boundary.index+boundary.length:]...)
+				if err := consume(block); err != nil {
+					return pending, err
+				}
+			}
+		}
+		if readErr != nil {
+			// errors.Is 覆盖上游 Reader 以 wrapped error 返回 EOF 的实现。
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return pending, readErr
+		}
+	}
+	if err := validator.finish(); err != nil {
+		return pending, err
+	}
+	return pending, nil
+}
+
+// utf8BoundaryValidator 对增量到达的字节做 UTF-8 边界安全校验：结尾可能是
+// 未凑齐的多字节序列时暂存 carry，与下一批数据合并后再判定，避免把跨 Read
+// 截断的字符误判为无效。错误文案与全量 utf8.Valid 校验版本一致。
+type utf8BoundaryValidator struct {
+	carry    []byte // 上一批结尾未凑齐的多字节序列（0..3 字节）
+	combined []byte // carry 与新数据拼接的复用缓冲
+}
+
+func (v *utf8BoundaryValidator) feed(chunk []byte) error {
+	data := chunk
+	if len(v.carry) > 0 {
+		v.combined = append(v.combined[:0], v.carry...)
+		v.combined = append(v.combined, chunk...)
+		data = v.combined
+	}
+	trailing := utf8TrailingPartial(data)
+	v.carry = append(v.carry[:0], data[len(data)-trailing:]...)
+	if !utf8.Valid(data[:len(data)-trailing]) {
+		return errors.New("上游返回了无效的 SSE JSON")
+	}
+	return nil
+}
+
+// finish 在流结束时调用：仍残留未凑齐的字节说明流在多字节字符中间截断，
+// 整体视为无效 UTF-8（与对全量字节做 utf8.Valid 的结论一致）。
+func (v *utf8BoundaryValidator) finish() error {
+	if len(v.carry) > 0 {
+		return errors.New("上游返回了无效的 SSE JSON")
+	}
+	return nil
+}
+
+// utf8TrailingPartial 返回 data 结尾可能属于未凑齐多字节 UTF-8 序列的字节
+// 长度（0..3）。这些字节不能单独判定无效，须与后续数据合并校验。
+func utf8TrailingPartial(data []byte) int {
+	for i := 1; i <= 4 && i <= len(data); i++ {
+		b := data[len(data)-i]
+		if b&0xC0 != 0x80 {
+			var size int
+			switch {
+			case b < 0x80:
+				return 0
+			case b&0xE0 == 0xC0:
+				size = 2
+			case b&0xF0 == 0xE0:
+				size = 3
+			case b&0xF8 == 0xF0:
+				size = 4
+			default:
+				return 0 // 非法起始字节：不按残缺处理，交给 utf8.Valid 报错
+			}
+			if i < size {
+				return i
+			}
+			return 0
+		}
+	}
+	return 0
 }
 
 func mergeStableToolField(current, chunk string) string {

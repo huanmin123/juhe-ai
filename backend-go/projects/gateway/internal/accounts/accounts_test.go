@@ -540,7 +540,7 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 		t.Fatal("name search terms missing")
 	}
 
-	// Detail: owner fields present, credentials masked on the response.
+	// Detail: owner fields present, credentials surface unmasked for editing.
 	code, detail := env.do(t, http.MethodGet, "/__aisys__/api/accounts/"+id, "")
 	if code != http.StatusOK {
 		t.Fatalf("detail: %d %v", code, detail)
@@ -552,11 +552,11 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 		t.Fatalf("detail contract: %v", detailData)
 	}
 	credentials := detailData["credentials"].(map[string]any)
-	if credentials["api_key"] != "sk-liv***7890" {
-		t.Fatalf("detail credentials must be masked: %v", credentials)
+	if credentials["api_key"] != "sk-live-secret-1234567890" {
+		t.Fatalf("detail credentials must be readable for editing: %v", credentials)
 	}
 	if credentials["base_url"] != "https://api.openai.com/v1" {
-		t.Fatalf("base_url survives masking: %v", credentials)
+		t.Fatalf("base_url 应原样返回：%v", credentials)
 	}
 	if detailData["boundGroupId"] == nil || detailData["boundGroupName"] == nil {
 		t.Fatalf("bound group missing: %v", detailData)

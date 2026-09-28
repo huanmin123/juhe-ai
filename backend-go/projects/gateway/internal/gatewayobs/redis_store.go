@@ -3,6 +3,7 @@ package gatewayobs
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"regexp"
 	"strconv"
@@ -75,7 +76,9 @@ func GetRedisClient(ctx context.Context, redisURL string) (*redis.Client, error)
 	}
 	client := redis.NewClient(options)
 	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
+		if closeErr := client.Close(); closeErr != nil {
+			slog.Debug("关闭 Ping 失败的 Redis 客户端连接失败", "event", "gateway_handle_close_failed", "component", "gatewayobs_redis_client", "error", closeErr)
+		}
 		return nil, err
 	}
 	redisClientCache.clients[normalized] = client

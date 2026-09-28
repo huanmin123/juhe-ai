@@ -8,13 +8,14 @@ package main
 // — the web_search / generate_image availability matrix with the per-tool
 // unavailable reasons and the catch-branch fallback shape. The resolver rides
 // the same generation-wave ports the mount already assembles (ChatKeys +
-// GatewayKeys + ModelCatalog); the small transport-selection helpers below
-// mirror the archived chat-transport.ts / chat-model-options.ts logic because
-// the chat package keeps its ports unexported and this file owns the wiring
-// side. Catalog snapshot assembly mirrors the chat package's
-// loadChatModelCatalogSnapshot (account fan-out per group + provider catalog
-// lists); the archived constrainCatalogItemForAccountTypes only narrows
-// service tiers, which the tool matrix never reads.
+// GatewayKeys + ModelCatalog，group/account 绑定模式另用 GroupLookup /
+// AccountLookup 与发送侧 resolveChatBindingScope 对齐聚合口径); the small
+// transport-selection helpers below mirror the archived chat-transport.ts /
+// chat-model-options.ts logic because the chat package keeps its ports
+// unexported and this file owns the wiring side. Catalog snapshot assembly
+// mirrors the chat package's loadChatModelCatalogSnapshot (account fan-out per
+// group + provider catalog lists); the archived constrainCatalogItemForAccountTypes
+// only narrows service tiers, which the tool matrix never reads.
 
 import (
 	"strings"
@@ -64,16 +65,19 @@ func resolveChatToolCapabilities(deps *chat.Deps, conversation *chat.Conversatio
 	if gatewayKey == nil {
 		return unavailable("会话绑定的 API Key 不可用")
 	}
-	// Node maps every group binding unfiltered here (unlike
-	// loadChatModelAccessAsync); empty/duplicate ids collapse in the fan-out.
-	groupIDs := make([]string, 0, len(gatewayKey.GroupBindings))
-	for _, binding := range gatewayKey.GroupBindings {
-		groupIDs = append(groupIDs, binding.GroupID)
+	// 绑定模式聚合口径（与发送侧 resolveChatBindingScope 对齐）：api_key/
+	// legacy 沿 Key 视图分组绑定全量（Node 原口径，空/重复 id 在 fan-out 收
+	// 敛）；group 按会话绑定分组的账户候选聚合；account 收敛为绑定账户的运
+	// 行时传输视图（不在任何启用分组快照中时为空作用域）。绑定对象校验失败
+	// 沿发送侧 400 文案作 unavailable reason，服务侧不可用保持 catch 文案。
+	scope, unavailableReason := chatToolBindScopeFor(deps, conversation, gatewayKey, ownerID)
+	if unavailableReason != "" {
+		return unavailable(unavailableReason)
 	}
-	_, catalogItems := chatToolCatalogSnapshot(deps, groupIDs, ownerID, model)
+	_, catalogItems := chatToolCatalogForScope(deps, scope, ownerID, model)
 	// chatToolModelOption 恒返回非 nil（无目录行时返回空能力视图，w2 登记）。
 	option := chatToolModelOption(model, catalogItems)
-	supportedProtocols := chatToolSupportedProtocols(deps, groupIDs, ownerID, model)
+	supportedProtocols := chatToolProtocolsForScope(deps, scope, ownerID, model)
 	supportsWebSearch := chatToolContains(option.supportedTools, "web_search")
 	protocol := ""
 	if len(supportedProtocols) > 0 {
@@ -82,7 +86,7 @@ func resolveChatToolCapabilities(deps *chat.Deps, conversation *chat.Conversatio
 	webSearchAvailable := supportsWebSearch && protocol == string(chat.ProtocolResponses)
 	imagePermissionEnabled := gatewayKey.ImageGenerationEnabled
 	functionCallingAvailable := chatToolContains(option.supportedTools, "function_calling")
-	imageRouteAvailable := chatToolHasImageGenerationRoute(deps, groupIDs, ownerID)
+	imageRouteAvailable := chatToolImageRouteForScope(deps, scope, ownerID)
 	imageGenerationAvailable := len(supportedProtocols) > 0 && imagePermissionEnabled && functionCallingAvailable && imageRouteAvailable
 
 	webSearchReason := ""
@@ -116,6 +120,133 @@ func resolveChatToolCapabilities(deps *chat.Deps, conversation *chat.Conversatio
 
 // chatToolCapabilitiesCatchReason mirrors the Node catch branch copy.
 const chatToolCapabilitiesCatchReason = "工具能力状态暂时无法读取"
+
+// chatToolBindScope 是能力读取的绑定作用域：api_key/group 按分组聚合，
+// account 收敛为绑定账户的单元素传输视图。镜像 chat 包的 chatBindingScope
+// （包内类型未导出，镜像契约同 generation_deps.go / stream_route.go）。
+type chatToolBindScope struct {
+	bindMode string
+	groupIDs []string
+	accounts []chat.ChatTransportAccount
+}
+
+// chatToolBindScopeFor 按会话 bind_mode 解析聚合口径，镜像发送侧
+// resolveChatBindingScope（generation_deps.go）：api_key/legacy = Key 视图
+// 分组绑定全量；group = 会话绑定分组（数据范围内存在且启用）；account =
+// 绑定账户（数据范围内存在且启用，经启用分组快照收敛传输视图）。
+func chatToolBindScopeFor(deps *chat.Deps, conversation *chat.Conversation, gatewayKey *chat.GatewayKeyView, ownerID string) (*chatToolBindScope, string) {
+	switch conversation.BindMode {
+	case chat.BindModeGroup:
+		if deps.GroupLookup == nil {
+			return nil, chatToolCapabilitiesCatchReason
+		}
+		group, err := deps.GroupLookup.FindChatGroup(chat.ChatBindScope{ViewerID: ownerID}, derefString(conversation.BindGroupID))
+		if err != nil {
+			return nil, chatToolCapabilitiesCatchReason
+		}
+		if group == nil {
+			return nil, "会话绑定的分组不存在或已删除"
+		}
+		if !group.Enabled {
+			return nil, "会话绑定的分组已停用"
+		}
+		return &chatToolBindScope{bindMode: chat.BindModeGroup, groupIDs: []string{group.ID}}, ""
+	case chat.BindModeAccount:
+		if deps.AccountLookup == nil {
+			return nil, chatToolCapabilitiesCatchReason
+		}
+		ref, err := deps.AccountLookup.FindChatAccount(chat.ChatBindScope{ViewerID: ownerID}, derefString(conversation.BindAccountID))
+		if err != nil {
+			return nil, chatToolCapabilitiesCatchReason
+		}
+		if ref == nil {
+			return nil, "会话绑定的账户不存在或已删除"
+		}
+		if !ref.Enabled {
+			return nil, "会话绑定的账户已停用"
+		}
+		return &chatToolBindScope{bindMode: chat.BindModeAccount, accounts: chatToolConvergeAccount(deps, ref, ownerID)}, ""
+	default:
+		// api_key/legacy：Node 原口径——Key 视图分组绑定全量（unfiltered，
+		// 空/重复 id 在 fan-out 收敛）。
+		groupIDs := make([]string, 0, len(gatewayKey.GroupBindings))
+		for _, binding := range gatewayKey.GroupBindings {
+			groupIDs = append(groupIDs, binding.GroupID)
+		}
+		return &chatToolBindScope{bindMode: chat.BindModeAPIKey, groupIDs: groupIDs}, ""
+	}
+}
+
+// chatToolConvergeAccount 镜像 chat 包 convergeChatAccountScope：按绑定账户
+// 的启用分组快照收敛为单元素传输视图；不在任何启用分组快照中时为空作用域。
+func chatToolConvergeAccount(deps *chat.Deps, ref *chat.ChatAccountRef, systemAccountID string) []chat.ChatTransportAccount {
+	if deps == nil || deps.ModelCatalog == nil {
+		return []chat.ChatTransportAccount{}
+	}
+	for _, groupID := range chatToolUniqueStrings(ref.EnabledGroupIDs) {
+		for _, account := range deps.ModelCatalog.ListAccountsForGroup(groupID, systemAccountID, "", "") {
+			if account.ID == ref.ID {
+				return []chat.ChatTransportAccount{account}
+			}
+		}
+	}
+	return []chat.ChatTransportAccount{}
+}
+
+// chatToolCatalogForScope 按绑定作用域取账户快照与目录：api_key/group 沿
+// 分组 fan-out；account 取单元素视图 + provider 目录单值（镜像
+// loadChatModelCatalogForScope 的 account 分支）。
+func chatToolCatalogForScope(deps *chat.Deps, scope *chatToolBindScope, systemAccountID, requestedModel string) ([]chat.ChatTransportAccount, []chat.ProviderModelCatalogItem) {
+	if scope.bindMode != chat.BindModeAccount {
+		return chatToolCatalogSnapshot(deps, scope.groupIDs, systemAccountID, requestedModel)
+	}
+	catalog := []chat.ProviderModelCatalogItem{}
+	if deps == nil || deps.ModelCatalog == nil {
+		return scope.accounts, catalog
+	}
+	for _, account := range scope.accounts {
+		code := strings.ToLower(strings.TrimSpace(account.ProviderCode))
+		if code == "" {
+			continue
+		}
+		catalog = append(catalog, deps.ModelCatalog.ListProviderCatalog(code, systemAccountID)...)
+	}
+	return scope.accounts, catalog
+}
+
+// chatToolProtocolsForScope 按绑定作用域判定双协议：api_key/group 沿分组
+// 快照路径；account 在收敛后的单账户视图上按固定顺序判定（镜像
+// scopeSupportedProtocols 的 account 分支）。
+func chatToolProtocolsForScope(deps *chat.Deps, scope *chatToolBindScope, systemAccountID, model string) []chat.ChatTransportProtocol {
+	if scope.bindMode != chat.BindModeAccount {
+		return chatToolSupportedProtocols(deps, scope.groupIDs, systemAccountID, model)
+	}
+	supported := []chat.ChatTransportProtocol{}
+	for _, protocol := range []chat.ChatTransportProtocol{chat.ProtocolChatCompletions, chat.ProtocolResponses} {
+		for _, account := range scope.accounts {
+			if chatToolAccountSupportsProtocol(account, model, protocol) {
+				supported = append(supported, protocol)
+				break
+			}
+		}
+	}
+	return supported
+}
+
+// chatToolImageRouteForScope 按绑定作用域判断生图路由：api_key/group 沿分组
+// 路径；account 在收敛后的单账户视图上判断 api_key 类型账户（镜像
+// scopeHasImageGenerationRoute 的 account 分支）。
+func chatToolImageRouteForScope(deps *chat.Deps, scope *chatToolBindScope, systemAccountID string) bool {
+	if scope.bindMode != chat.BindModeAccount {
+		return chatToolHasImageGenerationRoute(deps, scope.groupIDs, systemAccountID)
+	}
+	for _, account := range scope.accounts {
+		if account.Type == "api_key" {
+			return true
+		}
+	}
+	return false
+}
 
 // chatToolCapabilitiesPayload renders the {model, tools:[...]} response shape;
 // an unavailable tool carries its reason, an available one omits the key

@@ -19,7 +19,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -219,6 +220,21 @@ func isoMillis(t time.Time) string {
 // nowISO renders the store clock.
 func (s *Store) nowISO() string { return isoMillis(s.now()) }
 
+// stripURLQueryForLog 返回去掉 query、fragment 与 userinfo 的日志用 URL。
+// token/设备流端点的 query 可能携带凭据类参数（如 verification_uri_complete
+// 的 user_code），本包不跨域引用 gatewayusage 的 SanitizeURLForLog（用量快照
+// 域），按日志治理规范直接砍掉 query，保留 scheme/host/path 供定位上游。
+func stripURLQueryForLog(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.User = nil
+	return parsed.String()
+}
+
 // exchange performs one upstream token call through the injected exchanger.
 // 所有供应商（openai/anthropic/gemini/grok）的 token 出站都经过这里：统一落
 // 日志（URL/状态码/耗时/响应体长度），失败时附截断后的响应体，避免上游侧
@@ -228,7 +244,10 @@ func (s *Store) exchange(ctx context.Context, request TokenHTTPRequest) (TokenHT
 	response, err := s.exchanger.Do(ensureContext(ctx), request)
 	elapsed := time.Since(started)
 	if err != nil {
-		log.Printf("ERROR OAuth token 请求失败 url=%s elapsed=%s err=%v", request.URL, elapsed, err)
+		slog.Error("OAuth token 请求失败",
+			"event", "oauth_token_request_failed",
+			"url", stripURLQueryForLog(request.URL),
+			"elapsedMs", elapsed.Milliseconds(), "error", err)
 		return response, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -236,10 +255,18 @@ func (s *Store) exchange(ctx context.Context, request TokenHTTPRequest) (TokenHT
 		if len(body) > 300 {
 			body = body[:300] + "…"
 		}
-		log.Printf("ERROR OAuth token 请求被上游拒绝 url=%s status=%d elapsed=%dms body=%s", request.URL, response.StatusCode, elapsed.Milliseconds(), body)
+		slog.Error("OAuth token 请求被上游拒绝",
+			"event", "oauth_token_request_rejected",
+			"url", stripURLQueryForLog(request.URL),
+			"status", response.StatusCode, "elapsedMs", elapsed.Milliseconds(),
+			"bodyLen", len(response.Body), "body", body)
 		return response, nil
 	}
-	log.Printf("INFO OAuth token 请求完成 url=%s status=%d elapsed=%dms bodyLen=%d", request.URL, response.StatusCode, elapsed.Milliseconds(), len(response.Body))
+	slog.Info("OAuth token 请求完成",
+		"event", "oauth_token_request_completed",
+		"url", stripURLQueryForLog(request.URL),
+		"status", response.StatusCode, "elapsedMs", elapsed.Milliseconds(),
+		"bodyLen", len(response.Body))
 	return response, nil
 }
 

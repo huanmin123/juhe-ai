@@ -41,22 +41,6 @@ func TestW2AccountTestResultJSONContract(t *testing.T) {
 	})
 }
 
-func TestW2MaskCredentialValue(t *testing.T) {
-	// 密钥字段走掩码；api_keys 列表逐项掩码；普通字段原样。
-	if got := maskCredentialValue("api_keys", []any{"sk-1", "sk-2"}); got == nil {
-		t.Fatal("api_keys 列表应逐项掩码")
-	}
-	if got := maskCredentialValue("api_key", "sk-secret"); got == "sk-secret" {
-		t.Fatal("密钥字段应掩码")
-	}
-	if got := maskCredentialValue("notes", "普通文本"); got != "普通文本" {
-		t.Fatalf("普通字段应原样返回：%v", got)
-	}
-	if got := maskCredentialValue("api_keys", "not-a-list"); got == nil {
-		t.Fatal("非列表 api_keys 走单值掩码")
-	}
-}
-
 func TestW2M11ReadGates(t *testing.T) {
 	env, _ := newM11TestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")

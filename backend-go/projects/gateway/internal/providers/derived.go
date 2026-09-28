@@ -55,6 +55,67 @@ func staticPricingFor(providerCode, model string) *staticPricingSnapshot {
 	}
 }
 
+// BuiltInStaticDerivedCapabilities 是内置目录行的静态派生能力全集：数据库目录表
+// 从 Node 时代起就没有 supported_tools / input_modalities / output_modalities
+// 列，Node toBuiltInCatalogItem 在读取链用代码内静态定价表兜底填充。管理面
+// （ApplyBuiltInStaticDerivedFields）与 chat 面
+// （cmd/juhe-ai-gateway/chain_catalog.go decorateBuiltinStaticDerivedCapabilities）
+// 共同调用 ResolveBuiltInStaticDerivedCapabilities，保证两侧解析同源不漂移；
+// 静态数据源仍是 internal/pricing 的快照表（staticPricingFor）。
+type BuiltInStaticDerivedCapabilities struct {
+	InputModalities                 []string
+	OutputModalities                []string
+	SupportedTools                  []string
+	CachedImageInputUsdPer1M        *float64
+	SourcePricingCurrency           string
+	SourceExchangeRateToUsd         *float64
+	SourceExchangeRateDate          string
+	SourcePricingNote               string
+	GenerationParameterCapabilities map[string]any
+}
+
+// ResolveBuiltInStaticDerivedCapabilities ports the toBuiltInCatalogItem
+// capability derivations (the body of ApplyBuiltInStaticDerivedFields) into a
+// row-shape-agnostic result so the admin face and the chat face resolve the
+// static fallback through one implementation. keepStaticPricingSource keeps
+// the manual-override provenance rule: a manual-override row retains its own
+// pricing source instead of the static table's.
+func ResolveBuiltInStaticDerivedCapabilities(providerCode, model string, maxOutputTokens *int64, source string) BuiltInStaticDerivedCapabilities {
+	resolved := BuiltInStaticDerivedCapabilities{
+		InputModalities:                 []string{},
+		OutputModalities:                []string{},
+		SupportedTools:                  []string{},
+		GenerationParameterCapabilities: map[string]any{},
+	}
+	static := staticPricingFor(providerCode, model)
+	keepStaticPricingSource := source != "manual-override"
+	if static != nil {
+		if len(static.InputModalities) > 0 {
+			resolved.InputModalities = append([]string{}, static.InputModalities...)
+		}
+		if len(static.OutputModalities) > 0 {
+			resolved.OutputModalities = append([]string{}, static.OutputModalities...)
+		}
+		if len(static.SupportedTools) > 0 {
+			resolved.SupportedTools = append([]string{}, static.SupportedTools...)
+		}
+		if keepStaticPricingSource {
+			resolved.CachedImageInputUsdPer1M = static.CachedImageInputUsdPer1M
+			resolved.SourcePricingCurrency = static.SourcePricingCurrency
+			resolved.SourceExchangeRateToUsd = static.SourceExchangeRateToUsd
+			resolved.SourceExchangeRateDate = static.SourceExchangeRateDate
+			resolved.SourcePricingNote = static.SourcePricingNote
+		}
+	}
+	capabilities := generationParameterCapabilitiesForModel(providerCode, model, maxOutputTokens)
+	if static != nil && len(static.GenerationParameterCapabilities) > 0 {
+		capabilities = static.GenerationParameterCapabilities
+	}
+	resolved.GenerationParameterCapabilities = generationParameterCapabilitiesToAny(
+		limitGenerationParameterMaxOutputTokens(capabilities, maxOutputTokens))
+	return resolved
+}
+
 // generationParameterCapability mirrors ChatGenerationParameterCapability.
 type generationParameterCapability struct {
 	Parameter    string  `json:"parameter"`

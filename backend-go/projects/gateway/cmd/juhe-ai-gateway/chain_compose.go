@@ -360,8 +360,8 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	// runtime cache the preflight uses (Node listClientModelCatalogAsync);
 	// an unwired ModelCatalog port renders /v1/models as an empty list.
 	sink := gatewayresponse.NewSink(gatewayresponse.SinkDeps{
-		UsageRecords:  usageDispatchAdapter{service: usageService, recorder: recorder},
-		UsageDispatch: usageDispatchAdapter{service: usageService, recorder: recorder},
+		UsageRecords:  &usageDispatchAdapter{service: usageService, recorder: recorder},
+		UsageDispatch: &usageDispatchAdapter{service: usageService, recorder: recorder},
 		ModelCatalog:  chainClientModelCatalog{cache: deps.Cache},
 		Logger:        gatewayResponseLogger{inner: slog.Default()},
 		NowMs:         func() int64 { return clock.Now().UnixMilli() },

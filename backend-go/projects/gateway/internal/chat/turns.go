@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1132,6 +1133,26 @@ func classifyConditionalStopState(conversation conversationRow, assistant *messa
 		return &CancelActiveTurnResult{State: CancelStateTurnMismatch}
 	}
 	return nil
+}
+
+// TouchActiveChatTurn 在轮次流式期间刷新会话 active_started_at 活性信号
+// （尽力而为）：仅当会话 active_turn_id 仍指向该轮次、且助手消息仍处于
+// streaming 时才刷新，幂等且不会复活已终态轮次。配合 jobs 的中断扫描，
+// 中断阈值语义由"开始后 20 分钟"变为"最后活跃后 20 分钟"——合法长轮次
+// 不再被误判中断，真中断的恢复延迟不变。
+func (s *Store) TouchActiveChatTurn(ctx context.Context, conversationID, turnID, nowValue string) error {
+	now, err := requireRFC3339Instant(nowValue, "聊天轮次活性 now")
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, s.bind(`UPDATE `+s.table("chat_conversations")+`
+		SET active_started_at = ?
+		WHERE id = ? AND active_turn_id = ?
+			AND EXISTS (
+				SELECT 1 FROM `+s.table("chat_messages")+`
+				WHERE conversation_id = ? AND turn_id = ? AND role = 'assistant' AND status = 'streaming')`),
+		now, conversationID, turnID, conversationID, turnID)
+	return err
 }
 
 // ListMessages mirrors listChatMessages: single-cursor pagination with

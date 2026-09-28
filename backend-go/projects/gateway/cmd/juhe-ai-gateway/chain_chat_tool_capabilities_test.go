@@ -289,3 +289,158 @@ func TestChatToolCapabilitiesWiredAtCompositionRoot(t *testing.T) {
 		}
 	}
 }
+
+// --- 会话绑定模式感知（group/account 聚合口径与发送侧对齐）---
+
+type toolCapsGroupLookup struct {
+	group *chat.ChatGroupRef
+	err   error
+}
+
+func (f toolCapsGroupLookup) FindChatGroup(chat.ChatBindScope, string) (*chat.ChatGroupRef, error) {
+	return f.group, f.err
+}
+
+type toolCapsAccountLookup struct {
+	ref *chat.ChatAccountRef
+	err error
+}
+
+func (f toolCapsAccountLookup) FindChatAccount(chat.ChatBindScope, string) (*chat.ChatAccountRef, error) {
+	return f.ref, f.err
+}
+
+func toolCapsGroupConversation(model, groupID string) *chat.Conversation {
+	conversation := toolCapsConversation(model)
+	conversation.BindMode = chat.BindModeGroup
+	conversation.BindGroupID = &groupID
+	return conversation
+}
+
+func toolCapsAccountConversation(model, accountID string) *chat.Conversation {
+	conversation := toolCapsConversation(model)
+	conversation.BindMode = chat.BindModeAccount
+	conversation.BindAccountID = &accountID
+	return conversation
+}
+
+func toolCapsEnabledGroup(id string) toolCapsGroupLookup {
+	return toolCapsGroupLookup{group: &chat.ChatGroupRef{ID: id, Name: "分组", Enabled: true}}
+}
+
+// TestChatToolCapabilitiesGroupBindModeScope：group 模式按会话绑定分组的账户
+// 候选聚合，与 Key 自身分组绑定解耦——绑定含 Responses 账户的分组时
+// web_search 可用；绑定仅 chat_completions 的分组时不可用。
+func TestChatToolCapabilitiesGroupBindModeScope(t *testing.T) {
+	rawCatalog, view := toolCapsFixture()
+	catalog := rawCatalog.(toolCapsCatalog)
+	// 目录快照按空协议族查询：为 grp-responses 补 |gpt-5.3| 快照行。
+	catalog.accountsByGroup["grp-responses|gpt-5.3|"] = []chat.ChatTransportAccount{toolCapsAccount("acct-responses", "oauth", "responses_sse")}
+	deps := toolCapsDeps(
+		toolCapsChatKeys{record: &chat.ChatAPIKeyRecord{ID: "key-1", Secret: "sk-chat", Status: "active"}},
+		toolCapsGatewayKeys{view: view},
+		catalog)
+
+	// 绑定分组含 Responses 账户（grp-responses）：web_search 可用；该分组无
+	// api_key 生图路由 → generate_image 不可用。
+	deps.GroupLookup = toolCapsEnabledGroup("grp-responses")
+	payload := resolveChatToolCapabilities(deps, toolCapsGroupConversation("gpt-5.3", "grp-responses"), "owner-1")
+	expectTool(t, payload, "web_search", true, "")
+	expectTool(t, payload, "generate_image", false, "当前 API Key 路由没有可用的图像生成 API Key 账户")
+
+	// 绑定分组仅 chat_completions（grp-chat）：路由不支持 Responses 搜索。
+	deps.GroupLookup = toolCapsEnabledGroup("grp-chat")
+	payload = resolveChatToolCapabilities(deps, toolCapsGroupConversation("gpt-5.3", "grp-chat"), "owner-1")
+	expectTool(t, payload, "web_search", false, "当前路由不支持 Responses 网页搜索")
+
+	// 绑定分组无任何账户候选：无路由 reason（Key 自身绑定不得兜底）。
+	deps.GroupLookup = toolCapsEnabledGroup("grp-empty")
+	payload = resolveChatToolCapabilities(deps, toolCapsGroupConversation("gpt-5.3", "grp-empty"), "owner-1")
+	expectTool(t, payload, "web_search", false, "当前 API Key 没有可用的对话路由")
+	expectTool(t, payload, "generate_image", false, "当前 API Key 没有可用的对话路由")
+
+	// 反向解耦臂：Key 无任何分组绑定，group 模式仍按绑定分组聚合出能力。
+	noBindView := &chat.GatewayKeyView{ImageGenerationEnabled: true}
+	depsNoBind := toolCapsDeps(
+		toolCapsChatKeys{record: &chat.ChatAPIKeyRecord{ID: "key-1", Secret: "sk-chat", Status: "active"}},
+		toolCapsGatewayKeys{view: noBindView},
+		catalog)
+	depsNoBind.GroupLookup = toolCapsEnabledGroup("grp-responses")
+	payload = resolveChatToolCapabilities(depsNoBind, toolCapsGroupConversation("gpt-5.3", "grp-responses"), "owner-1")
+	expectTool(t, payload, "web_search", true, "")
+}
+
+// TestChatToolCapabilitiesGroupBindValidationArms：绑定分组停用/不存在与
+// 端口未接线/查询失败沿发送侧 400 文案与 catch 文案降级。
+func TestChatToolCapabilitiesGroupBindValidationArms(t *testing.T) {
+	rawCatalog, view := toolCapsFixture()
+	catalog := rawCatalog.(toolCapsCatalog)
+	deps := toolCapsDeps(
+		toolCapsChatKeys{record: &chat.ChatAPIKeyRecord{ID: "key-1", Secret: "sk-chat", Status: "active"}},
+		toolCapsGatewayKeys{view: view},
+		catalog)
+
+	deps.GroupLookup = toolCapsGroupLookup{group: &chat.ChatGroupRef{ID: "grp-x", Name: "停用", Enabled: false}}
+	payload := resolveChatToolCapabilities(deps, toolCapsGroupConversation("gpt-5.3", "grp-x"), "owner-1")
+	expectTool(t, payload, "web_search", false, "会话绑定的分组已停用")
+
+	deps.GroupLookup = toolCapsGroupLookup{}
+	payload = resolveChatToolCapabilities(deps, toolCapsGroupConversation("gpt-5.3", "grp-x"), "owner-1")
+	expectTool(t, payload, "web_search", false, "会话绑定的分组不存在或已删除")
+
+	deps.GroupLookup = toolCapsGroupLookup{err: errors.New("db down")}
+	payload = resolveChatToolCapabilities(deps, toolCapsGroupConversation("gpt-5.3", "grp-x"), "owner-1")
+	expectTool(t, payload, "web_search", false, chatToolCapabilitiesCatchReason)
+
+	// GroupLookup 未接线（生产 mount 已接线，此处钉住降级语义）。
+	payload = resolveChatToolCapabilities(toolCapsDeps(
+		toolCapsChatKeys{record: &chat.ChatAPIKeyRecord{ID: "key-1", Secret: "sk-chat", Status: "active"}},
+		toolCapsGatewayKeys{view: view},
+		catalog), toolCapsGroupConversation("gpt-5.3", "grp-x"), "owner-1")
+	expectTool(t, payload, "web_search", false, chatToolCapabilitiesCatchReason)
+}
+
+// TestChatToolCapabilitiesAccountBindModeScope：account 模式收敛为绑定账户
+// 的运行时传输视图，能力按该账户判定，与 Key 自身分组绑定解耦。
+func TestChatToolCapabilitiesAccountBindModeScope(t *testing.T) {
+	rawCatalog, view := toolCapsFixture()
+	catalog := rawCatalog.(toolCapsCatalog)
+	// 收敛路径按 requestedModel="" 查询：为 grp-responses / grp-chat 补空模型
+	// 快照行。
+	catalog.accountsByGroup["grp-responses||"] = []chat.ChatTransportAccount{toolCapsAccount("acct-responses", "oauth", "responses_sse")}
+	catalog.accountsByGroup["grp-chat||"] = []chat.ChatTransportAccount{toolCapsAccount("acct-chat", "api_key", "chat_sse")}
+	deps := toolCapsDeps(
+		toolCapsChatKeys{record: &chat.ChatAPIKeyRecord{ID: "key-1", Secret: "sk-chat", Status: "active"}},
+		toolCapsGatewayKeys{view: view},
+		catalog)
+
+	// 绑定 Responses 账户：web_search 可用；oauth 账户无 api_key 生图路由。
+	deps.AccountLookup = toolCapsAccountLookup{ref: &chat.ChatAccountRef{
+		ID: "acct-responses", Name: "账户", ProviderCode: "gpt", Enabled: true, EnabledGroupIDs: []string{"grp-responses"},
+	}}
+	payload := resolveChatToolCapabilities(deps, toolCapsAccountConversation("gpt-5.3", "acct-responses"), "owner-1")
+	expectTool(t, payload, "web_search", true, "")
+	expectTool(t, payload, "generate_image", false, "当前 API Key 路由没有可用的图像生成 API Key 账户")
+
+	// 绑定仅 chat_sse 的账户：路由不支持 Responses 搜索。
+	deps.AccountLookup = toolCapsAccountLookup{ref: &chat.ChatAccountRef{
+		ID: "acct-chat", Name: "账户", ProviderCode: "gpt", Enabled: true, EnabledGroupIDs: []string{"grp-chat"},
+	}}
+	payload = resolveChatToolCapabilities(deps, toolCapsAccountConversation("gpt-5.3", "acct-chat"), "owner-1")
+	expectTool(t, payload, "web_search", false, "当前路由不支持 Responses 网页搜索")
+
+	// 账户不在任何启用分组快照：空作用域 → 无路由 reason。
+	deps.AccountLookup = toolCapsAccountLookup{ref: &chat.ChatAccountRef{
+		ID: "acct-orphan", Name: "账户", ProviderCode: "gpt", Enabled: true,
+	}}
+	payload = resolveChatToolCapabilities(deps, toolCapsAccountConversation("gpt-5.3", "acct-orphan"), "owner-1")
+	expectTool(t, payload, "web_search", false, "当前 API Key 没有可用的对话路由")
+
+	// 绑定账户停用/不存在沿发送侧 400 文案。
+	deps.AccountLookup = toolCapsAccountLookup{ref: &chat.ChatAccountRef{ID: "acct-responses", Enabled: false}}
+	payload = resolveChatToolCapabilities(deps, toolCapsAccountConversation("gpt-5.3", "acct-responses"), "owner-1")
+	expectTool(t, payload, "web_search", false, "会话绑定的账户已停用")
+	deps.AccountLookup = toolCapsAccountLookup{}
+	payload = resolveChatToolCapabilities(deps, toolCapsAccountConversation("gpt-5.3", "acct-x"), "owner-1")
+	expectTool(t, payload, "web_search", false, "会话绑定的账户不存在或已删除")
+}

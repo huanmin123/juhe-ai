@@ -294,7 +294,10 @@ func (r *Runner) runInputs(ctx context.Context, trigger Trigger, inputs []Input)
 				queuedAt := time.Now()
 				select {
 				case <-ctx.Done():
-					_ = r.store.ReleaseAccountLease(context.Background(), owner, account)
+					if releaseErr := r.store.ReleaseAccountLease(context.Background(), owner, account); releaseErr != nil {
+						r.logger.Debug("J2 account-balance 账户租约释放失败，等待租约 TTL 兜底过期",
+							"event", "account_balance_lease_release_failed", "accountId", input.AccountID, "error", releaseErr)
+					}
 					recordError(input.AccountID, ctx.Err())
 				case dbQueue <- task:
 					r.logger.Debug("J2 account-balance DB queue 入队", "phase", "db_queue", "account_id", input.AccountID, "queue_depth", len(dbQueue), "queue_wait_ms", time.Since(queuedAt).Milliseconds())
@@ -359,7 +362,10 @@ func (r *Runner) prepareInput(ctx context.Context, owner OwnerLease, input Input
 	if queryErr != nil {
 		// Local setup/decryption errors are not upstream balance diagnostics.
 		// Keep the original error visible and do not fabricate a snapshot.
-		_ = r.store.ReleaseAccountLease(context.Background(), owner, accountLease)
+		if releaseErr := r.store.ReleaseAccountLease(context.Background(), owner, accountLease); releaseErr != nil {
+			r.logger.Debug("J2 account-balance 账户租约释放失败，等待租约 TTL 兜底过期",
+				"event", "account_balance_lease_release_failed", "accountId", input.AccountID, "error", releaseErr)
+		}
 		return runStateExecuted, AccountLease{}, nil, queryErr
 	}
 	return runStateExecuted, accountLease, &query, nil

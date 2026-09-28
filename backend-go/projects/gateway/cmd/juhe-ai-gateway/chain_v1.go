@@ -61,9 +61,14 @@ type gatewayChain struct {
 	// （chain_compose.go 的 chainSyncPricingAllowed）。
 	finalizationPricing            gatewayusage.PricingCatalog
 	finalizationSyncPricingAllowed bool
-	auditSettings                  gatewayusage.AuditLogSettingsSource
-	auditDispatcher                gatewayusage.AuditDispatcher
-	usageModelResolver             gatewayusage.UsageModelResolver
+	// finalizationEnqueueFailures 是完成/失败尝试用量记录入队失败的进程级
+	// 计数本体（每请求构造的 chainFinalizationUsage.enqueueFailures 指向它）：
+	// 计数器放链根结构体上，采样（前 10 条逐条、之后每 100 条一条）跨请求
+	// 累计，不随每请求构造的 chainFinalizationUsage 归零。
+	finalizationEnqueueFailures int64
+	auditSettings               gatewayusage.AuditLogSettingsSource
+	auditDispatcher             gatewayusage.AuditDispatcher
+	usageModelResolver          gatewayusage.UsageModelResolver
 	// responseAccountEffects 是 W4-B（BUG-0175 D-132）的响应层账户副作用
 	// 面（配置策略避让 / 桶避让写侧）；nil 保持 finalization 的缺席守卫。
 	responseAccountEffects gatewayresponse.AccountFailureEffects
@@ -250,6 +255,9 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		}
 		chatScope = scope
 		preflightOptions.CandidateAccounts = chatScope.accounts
+		// 可靠性批次2（缺陷5）：注入候选的可恢复等待作用域——绑定作用域候选
+		// 全部临时不可用时 preflight 按该作用域等待恢复，而不是直接终态失败。
+		preflightOptions.RecoverableCandidateScope = chatScope.recoverableScope
 	}
 	preflight, err := c.preauth.PrepareOpenAIGatewayDispatchContext(ctx, gatewaypreauth.PreflightInput{
 		Req:             req,
@@ -492,10 +500,11 @@ func (c *gatewayChain) handleUpstreamResponse(
 		MarkFirstOutput:            firstOutputMetricMarkOf(dispatched.MarkFirstOutput, startedAt, req.MethodUpper()),
 		DownstreamCommitState:      commitState,
 		Deps: &gatewayresponse.FinalizationDeps{
-			UsageRecords: chainFinalizationUsage{
+			UsageRecords: &chainFinalizationUsage{
 				recorder:           c.finalizationUsage,
 				pricing:            c.finalizationPricing,
 				syncPricingAllowed: c.finalizationSyncPricingAllowed,
+				enqueueFailures:    &c.finalizationEnqueueFailures,
 			},
 			Logger: gatewayResponseLogger{inner: slog.Default()},
 			NowMs:  func() int64 { return c.preauth.NowMs() },
@@ -579,6 +588,15 @@ func (c *gatewayChain) handleUpstreamResponse(
 		// downstream stays untouched (bare disconnect); an unwritten one
 		// renders the fixed 503 upstream copy. (V6: the previous 502
 		// 上游响应处理失败/upstream_error exit had no Node source.)
+		// 非 cutover 响应管道错误兜底补关联线索：流式臂的管道层已有
+		// gateway_stream_pipe_error warn；非流式臂与流式提前返回路径
+		// （StreamBeforeDownstreamCommitError）无管道层 warn，本条 Debug
+		// 即链面唯一线索。带 traceId 与错误原文，供链面 trace 关联；
+		// 下方固定 503 契约不变。
+		slog.Debug("上游响应管道处理失败，进入固定 503 兜底",
+			"event", "gateway_upstream_response_pipeline_failed",
+			"traceId", context.UsageContext.TraceID,
+			"error", err.Error())
 		if !res.HeadersSent() && !commitState.TransportCommitted {
 			gatewaypreauth.SendGatewayJSONError(res, http.StatusServiceUnavailable,
 				gatewaypreauth.GatewayErrorPayloadOf("上游暂时不可用，请重试", "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
@@ -647,7 +665,25 @@ func (c *gatewayChain) handleOrchestratorError(
 	}
 	// Express error middleware fallback (server.ts:525-539): the plain
 	// {"message":"服务器内部错误"} 500 body — no gateway error envelope, no
-	// invented copy.
+	// invented copy. 5xx 必须自带根因：入口编排错误（body Capture /
+	// newRequestBudgets / resolveRouteAction / applyChatDispatchGroupContext
+	// 等分支共用本出口）在此补进程 Error 日志，并经 WriteErrorCause 把根因
+	// 记入 kernel 完成日志 failureReason——该 helper 记录根因后仍复用
+	// WriteError 构造响应，客户端响应体逐字节不变
+	//（internal/kernel/envelope.go:102-107）。
+	orchestratorTraceID := ""
+	if req.HTTP != nil {
+		orchestratorTraceID = kernel.Context(req.HTTP).TraceID
+	}
+	slog.Error("网关编排入口处理失败，已返回 500",
+		"event", "gateway_orchestrator_entry_failed",
+		"traceId", orchestratorTraceID,
+		"endpoint", endpoint,
+		"error", message)
+	if req.HTTP != nil {
+		kernel.WriteErrorCause(req.HTTP, res, http.StatusInternalServerError, "服务器内部错误", err)
+		return
+	}
 	kernel.WriteError(res, http.StatusInternalServerError, "服务器内部错误")
 }
 

@@ -1,386 +1,283 @@
 # sing-box 网络代理部署指南
 
-> 本文只说明如何用 sing-box 提供本地 HTTP / SOCKS 混合代理端口，并把该端口接入 juhe-ai。订阅、节点来源、企业出口策略和上游代理凭据由用户自行提供，不写入仓库文档。
+> 面向唯一生产形态：国内单台云服务器 + Docker Compose。本文只考虑在云端服务器上部署 sing-box 作为 juhe-ai 的上游代理，不涉及任何其他部署位置。
+>
+> 本文**不随附实现脚本**：订阅解析、择优控制器、订阅定时更新器三部分只写清思路、策略与验收标准，实现（含 systemd 单元与自动化脚本）由维护者自行完成或交给 AI 按本文生成；订阅链接、节点凭据属于用户资产，不写入仓库。
 
 ## 1. 为什么需要代理
 
-juhe-ai 是上游 AI 账号中转服务。很多部署环境无法直连 OpenAI、Anthropic、Gemini、DeepSeek、GLM 或其他 OpenAI-compatible 上游时，必须让服务器的出站请求走可用代理，否则会出现账号测试失败、OAuth 刷新失败、网关请求超时或上游连接错误。
+juhe-ai 是上游 AI 账号中转服务。云服务器无法直连 OpenAI、Anthropic、Gemini 等上游时，必须让服务器出站请求走可用代理，否则会出现账号测试失败、OAuth 刷新失败、网关请求超时或上游连接错误。
 
 需要区分两类代理：
 
 | 类型 | 作用 | 配置位置 |
 | --- | --- | --- |
-| 服务器网络代理 | 拉 Docker 镜像、装 npm 依赖、系统包更新 | Shell 环境变量、Docker daemon、系统代理 |
+| 服务器网络代理 | 拉 Docker 镜像、装系统包更新 | Shell 环境变量、Docker daemon、系统代理 |
 | juhe-ai 上游账号代理 | 账号测试、OAuth、网关请求上游模型 API | 后台“代理管理”并绑定到 AI 账户 |
 
-## 2. 安装方式
+## 2. 目标形态与总体结构
 
-sing-box 支持 Linux、Windows、macOS。具体包名和命令以官方文档为准：
+一台云端服务器上同时运行 Docker 化的 juhe-ai 与宿主机 sing-box（systemd 常驻）：
+
+```text
+juhe-ai 容器（gateway / jobs）
+  → socks5h://172.18.0.1:17892          （Docker bridge 网关 = 宿主机）
+  → 宿主机 sing-box（systemd 服务）
+      ├ mixed 入站：172.18.0.1:17892（容器可达；不监听公网）
+      ├ selector 组：聚合订阅节点池，决定当前出口节点
+      ├ clash_api：127.0.0.1:19090（供自动化查询与切换）
+      └ 出站：订阅节点池 → 上游 AI API
+```
+
+关键结构决定：
+
+- sing-box 跑在宿主机而不是容器里：节点池更新要重启代理进程、自动化要读写本机文件与 systemd，宿主机进程最简单可靠。
+- 入站监听 Docker bridge 网关地址（如 `172.18.0.1`）而不是 `127.0.0.1`：容器内进程要能访问；同时**绝不监听 `0.0.0.0`**，代理端口一旦暴露公网会被扫成开放代理。防火墙仅放行本机与容器网段。
+- 出站用 `selector` 组而不是 `urltest`：原因与替代策略见第 9 节。
+- 订阅链接是用户资产：保存在服务器本地文件（约定 `/etc/sing-box/subscription-url`，权限 `600`），不入仓库、不入日志。
+
+文件与目录约定：
+
+| 路径 | 用途 |
+| --- | --- |
+| `/etc/sing-box/config.json` | sing-box 主配置（由更新器自动重写） |
+| `/etc/sing-box/subscription-url` | 订阅链接，一行一个 URL，权限 600 |
+| `/etc/sing-box/config.json.bak-*` | 每次变更前的配置备份 |
+| `/var/lib/juhe-proxy-switch/state.json` | 择优控制器状态（延迟、失败计数、拉黑、切换历史） |
+| `/var/lib/juhe-proxy-switch/lock` | 控制器与更新器共用的互斥锁 |
+| `/var/log/juhe-proxy-switch.log` | 控制器决策日志 |
+| `/var/log/juhe-sub-update.log` | 订阅更新器日志 |
+
+## 3. 安装 sing-box（Linux）
+
+使用官方软件源或 GitHub Release：
 
 - 官方包管理安装页：`https://sing-box.sagernet.org/installation/package-manager/`
-- 官方客户端 / 图形界面说明：`https://sing-box.sagernet.org/clients/`
 - 官方 Release：`https://github.com/SagerNet/sing-box/releases`
 
-### Linux
+Debian / Ubuntu 按官方 package-manager 页面添加 SagerNet 软件源后安装；发行版无合适软件源时，下载对应架构（`linux-amd64` / `linux-arm64`）压缩包，把 `sing-box` 放入 `/usr/local/bin/`。安装后用 `sing-box version` 确认可执行。
 
-Linux 服务器推荐使用官方软件源或下载对应架构 release 包。Debian / Ubuntu 可按官方 package manager 文档添加 SagerNet 软件源后安装：
+版本要求：需支持 `selector` 出站、`clash_api` 与 `cache_file` 持久化（1.13.x 已验证可用）。注意 1.13 的 `cache_file` 无 `store_selected` 字段，启用 `enabled` 即持久化所选节点。
 
-```bash
-sudo apt update
-sudo apt install -y curl ca-certificates
-# 按官方 package-manager 页面添加 sing-box 软件源后：
-sudo apt install -y sing-box
-sing-box version
-```
+## 4. sing-box 配置结构
 
-如果发行版没有合适的软件源，下载 `linux-amd64`、`linux-arm64` 等对应架构压缩包，解压后把 `sing-box` 放入 `/usr/local/bin/`，再用 systemd 管理。
+配置由四个部分组成；自动化（第 10 节）只重写“订阅节点出站 + selector 组”这两块，其余保持稳定。
 
-### macOS
+### 4.1 mixed 入站
 
-macOS 可使用官方 macOS 包、图形客户端，或按官方 package manager 文档使用 Homebrew：
-
-```bash
-brew search sing-box
-brew install sing-box
-sing-box version
-```
-
-如果使用图形客户端，确保它实际监听本机代理端口，例如 `127.0.0.1:7890`。
-
-### Windows
-
-Windows 可使用官方 Windows release、图形客户端，或按官方 package manager 文档使用 winget / Scoop / Chocolatey。为避免包 ID 变化，先搜索再安装：
-
-```powershell
-winget search sing-box
-# 根据搜索结果安装官方包 ID
-winget install --id <官方包ID>
-sing-box version
-```
-
-也可以从官方 Release 下载 Windows 压缩包，解压到固定目录，再把该目录加入 `PATH` 或用任务计划程序 / 服务工具托管。
-
-## 3. 本地 mixed 入站
-
-推荐让 sing-box 在本机提供一个 mixed 入站，HTTP 和 SOCKS 客户端都可以连：
-
-```json
+```jsonc
 {
-  "log": {
-    "level": "info"
-  },
-  "inbounds": [
-    {
-      "type": "mixed",
-      "tag": "mixed-in",
-      "listen": "127.0.0.1",
-      "listen_port": 7890,
-      "sniff": true
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ],
-  "route": {
-    "final": "direct"
-  }
+  "type": "mixed",
+  "tag": "mixed-in",
+  "listen": "172.18.0.1",        // Docker bridge 网关，容器经此访问；禁用 0.0.0.0
+  "listen_port": 17892,
+  "sniff": true
 }
 ```
 
-上面配置只展示本机入站结构；真实访问上游时，需要把你的订阅、企业代理或自建节点写成 outbound，并把 `route.final` 指向该 outbound。不要把订阅链接、节点密码或 token 写进仓库文档。
+HTTP 与 SOCKS 客户端都可连该端口。
 
-裸机同机部署优先监听 `127.0.0.1`。如果 juhe-ai 在 Docker 容器中，而 sing-box 跑在宿主机，需要让容器能访问宿主机代理：
+### 4.2 订阅节点出站
 
-- Windows / macOS Docker Desktop：后台代理 Host 通常填 `host.docker.internal`。
-- Linux Docker Engine：给 Compose 增加 `extra_hosts: ["host.docker.internal:host-gateway"]`，或让 sing-box 监听宿主机内网 / bridge 可达地址。
-- 监听 `0.0.0.0` 时必须用防火墙限制来源，禁止公网直接访问该代理端口。
+每个订阅节点对应一个 outbound（tag = 稳定唯一的节点名），结构由订阅解析器生成（见第 8 节）。节点数量随订阅变化，这是配置中唯一“可变”的部分。
 
-## 4. Linux systemd 示例
-
-配置文件建议放在 `/etc/sing-box/config.json`：
-
-```bash
-sudo install -d -m 755 /etc/sing-box
-sudo nano /etc/sing-box/config.json
-sing-box check -c /etc/sing-box/config.json
-```
-
-systemd 示例：
-
-```ini
-[Unit]
-Description=sing-box
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/env sing-box run -c /etc/sing-box/config.json
-Restart=always
-RestartSec=5
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启动：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now sing-box
-sudo systemctl status sing-box
-```
-
-验证本机端口：
-
-```bash
-ss -lntp | grep ':7890 ' || true
-curl -x socks5h://127.0.0.1:7890 https://api.openai.com/v1/models -I
-```
-
-## 5. macOS 常驻示例
-
-如果用 Homebrew 安装，可以用 brew services 托管：
-
-```bash
-mkdir -p ~/.config/sing-box
-nano ~/.config/sing-box/config.json
-sing-box check -c ~/.config/sing-box/config.json
-brew services start sing-box
-brew services list | grep sing-box
-```
-
-如果使用图形客户端，确认它开机自启，并实际监听本机端口：
-
-```bash
-lsof -iTCP:7890 -sTCP:LISTEN || true
-curl -x socks5h://127.0.0.1:7890 https://api.openai.com/v1/models -I
-```
-
-macOS 发布包部署时，juhe-ai 后台代理 Host 使用 `127.0.0.1`；Docker Desktop 容器访问宿主机 sing-box 时使用 `host.docker.internal`。
-
-## 6. Windows 常驻示例
-
-Windows 可以用图形客户端开机自启，也可以把官方 `sing-box.exe` 固定到目录后用任务计划程序或 NSSM 托管。
-
-配置文件示例路径：
-
-```powershell
-New-Item -ItemType Directory -Force C:\sing-box | Out-Null
-notepad C:\sing-box\config.json
-sing-box check -c C:\sing-box\config.json
-```
-
-NSSM 示例：
-
-```powershell
-nssm install sing-box C:\sing-box\sing-box.exe "run -c C:\sing-box\config.json"
-nssm set sing-box AppDirectory C:\sing-box
-nssm set sing-box Start SERVICE_AUTO_START
-nssm start sing-box
-```
-
-验证：
-
-```powershell
-netstat -ano | Select-String ':7890'
-curl.exe -x socks5h://127.0.0.1:7890 https://api.openai.com/v1/models -I
-```
-
-Windows 发布包部署时，juhe-ai 后台代理 Host 使用 `127.0.0.1`；Docker Desktop 容器访问宿主机 sing-box 时使用 `host.docker.internal`。
-
-## 7. 接入 juhe-ai
-
-在 juhe-ai 后台进入“代理管理”，新增代理：
-
-```text
-名称：sing-box 本机代理
-类型：socks5h
-Host：127.0.0.1
-端口：7890
-用户名：留空，除非 sing-box 入站启用了认证
-密码：留空，除非 sing-box 入站启用了认证
-状态：启用
-```
-
-不同部署形态下 Host 选择：
-
-| juhe-ai 运行位置 | sing-box 运行位置 | Host |
-| --- | --- | --- |
-| 同一台机器发布包运行 | 同一台机器 | `127.0.0.1` |
-| Windows / macOS Docker Desktop 容器 | 宿主机 | `host.docker.internal` |
-| Linux Docker 容器 | 宿主机 | `host.docker.internal` 加 `host-gateway`，或宿主机内网 / bridge IP |
-| 应用服务器 | 独立代理服务器 | 代理服务器内网 IP |
-
-保存后执行“测试代理”。测试通过后，把该代理绑定到需要走代理的 AI 账户。账号测试、OAuth 刷新和网关请求会按账号代理走对应出口。
-
-## 8. OAuth 兜底代理
-
-如果只有 OpenAI OAuth token 换取 / 刷新需要兜底代理，可以在 `backend/.env` 或 Docker `.env` 中配置：
-
-```env
-JUHE_AI_OAUTH_PROXY_URL=socks5h://127.0.0.1:7890
-```
-
-Docker 容器访问宿主机 sing-box 时示例：
-
-```env
-JUHE_AI_OAUTH_PROXY_URL=socks5h://host.docker.internal:7890
-```
-
-注意：该变量不是所有上游请求的全局代理。普通上游模型请求仍应通过后台代理绑定到账号。
-
-## 9. 排障
-
-- 后台代理测试失败：先在服务器上用 `curl -x socks5h://...` 验证代理端口是否可用。
-- Docker 容器访问失败：确认容器里能解析并访问 Host；Linux 需要 `host-gateway` 或可达宿主机 IP。
-- OAuth 可以刷新但网关请求仍失败：检查 AI 账户是否绑定代理，不能只配置 `JUHE_AI_OAUTH_PROXY_URL`。
-- 代理端口误暴露公网：立即关闭监听或加防火墙，仅允许应用服务器访问。
-- 上游仍超时：确认 sing-box outbound 真正走可用节点，且 DNS、IPv6、TLS 拦截和企业防火墙策略没有阻断。
-
-## 10. 多节点择优控制器（selector + juhe-proxy-switch）
-
-当 sing-box 的出站是一个订阅节点池时，用默认 `urltest` 组会按"到测速 URL 的延迟"每几分钟自动换节点，存在三个问题：只测延迟不测真实上游连通性（能通 gstatic 的节点可能对真实目标 503）；排名洗牌导致节点乒乓切换；坏节点没有记忆，过几分钟又当选。生产节点池实测还存在**目的地相关劣化**：同一节点对测速站正常、对部分真实站点返回 503，而 `api.ipify.org` 这类 IP 回显站被多个节点阻断，不能作为探针。
-
-控制器用 `selector` 组 + 本机择优脚本替代 urltest，实现四条策略：
-
-1. **先测通再切**：任何切换动作前，候选节点必须通过对真实上游（`https://api.openai.com/v1/models`，收到任意 HTTP 响应即视为传输可达）的实时确认测试。
-2. **不频繁切**：性能切换设最小间隔（默认 10 分钟）；评估周期 2 分钟，评估 ≠ 切换。
-3. **差异不大不切**：候选必须比当前节点快超过容差（默认 100ms）才允许切换。
-4. **差异过大（或当前节点坏了）才切**：当前节点连续 2 次健康检查失败触发救援切换，救援不受最小间隔限制；连续失败 3 次的节点拉黑冷却 30 分钟。
-
-控制器故障时退化为"selector 停留在当前节点"，不会乱切，不影响 sing-box 本身运行。
-
-### 10.1 文件清单
-
-| 位置 | 文件 | 作用 |
-| --- | --- | --- |
-| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.py` | 择优控制器（多组模式，仅标准库） |
-| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.service` | 云端 oneshot 服务单元（单组 auto） |
-| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch-home.service` | 家庭形态服务单元（四组分流，各组自有测试 URL） |
-| 仓库权威副本 | `docs/deploy/proxy/controller/juhe-proxy-switch.timer` | 2 分钟定时器（两形态共用） |
-| 服务器 | `/usr/local/bin/juhe-proxy-switch.py` | 运行副本（从仓库上传） |
-| 服务器 | `/etc/systemd/system/juhe-proxy-switch.{service,timer}` | systemd 单元 |
-| 服务器 | `/var/lib/juhe-proxy-switch/state.json` | 状态：延迟记录、失败计数、拉黑、切换历史 |
-| 服务器 | `/var/log/juhe-proxy-switch.log` | 决策日志（约 1 行/2 分钟；journald 无持久化的机器必备） |
-
-### 10.2 sing-box 配置变更点
+### 4.3 selector 组
 
 ```jsonc
-// outbounds 中原 urltest 组改为 selector（tag 保持不变，入口/路由零改动）：
 {
   "type": "selector",
   "tag": "auto",
-  "outbounds": ["sub-001", "sub-002", "/* ...原 urltest 的节点列表... */"],
-  "default": "sub-007",                      // 初始/兜底节点
+  "outbounds": ["<节点tag1>", "<节点tag2>", "/* ...全部节点... */"],
+  "default": "<初始/兜底节点tag>",
   "interrupt_exist_connections": false
 }
-// experimental 增加 cache_file（启用即持久化所选节点，重启不丢；1.13 无 store_selected 字段）：
+```
+
+`route.final` 指向该组 tag。组内节点列表随节点池同步重写，组 tag 保持不变，入站与路由零改动。
+
+### 4.4 experimental（自动化依赖）
+
+```jsonc
 "experimental": {
   "clash_api": { "external_controller": "127.0.0.1:19090" },
   "cache_file": { "enabled": true }
 }
 ```
 
-变更流程：备份 `/etc/sing-box/config.json` → 修改 → `sing-box check -c` 校验 → `systemctl restart` → `curl http://127.0.0.1:19090/proxies/auto` 确认 `type: Selector` → 验证 `curl -x socks5h://<入站>:<端口> https://api.openai.com/v1/models` 有响应。
+`clash_api` 是择优控制器与更新器的操作面（查询当前选择、切换节点、健康校验）；`cache_file` 持久化所选节点，重启不丢。
 
-### 10.3 控制器部署
+## 5. systemd 常驻与基础验证
 
-```sh
-scp docs/deploy/proxy/controller/juhe-proxy-switch.* root@<服务器>:/tmp/
-ssh root@<服务器>
-sed -i 's/\r$//' /tmp/juhe-proxy-switch.*                       # Windows 编辑过则去除 CR
-install -m 755 /tmp/juhe-proxy-switch.py /usr/local/bin/
-install -m 644 /tmp/juhe-proxy-switch.service /tmp/juhe-proxy-switch.timer /etc/systemd/system/
-mkdir -p /var/lib/juhe-proxy-switch && touch /var/log/juhe-proxy-switch.log
-systemctl daemon-reload && systemctl enable --now juhe-proxy-switch.timer
-/usr/local/bin/juhe-proxy-switch.py                             # 手动跑一轮验证
+配置文件放 `/etc/sing-box/config.json`，每次修改后先 `sing-box check -c /etc/sing-box/config.json` 再重启。systemd 单元要点：
+
+```ini
+[Service]
+Type=simple
+ExecStart=/usr/bin/env sing-box run -c /etc/sing-box/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
 ```
 
-### 10.4 策略参数
+`Restart=always` 必须保留：更新器会周期性重启进程，失败后要能自动拉起。
 
-参数集中在脚本头部常量，改后无需额外配置：
+基础验证：
 
-| 参数 | 默认值 | 含义 |
+```sh
+ss -lntp | grep ':17892 '                                          # 入站已监听
+curl -x socks5h://172.18.0.1:17892 https://api.openai.com/v1/models -I   # 出口可达主上游
+curl http://127.0.0.1:19090/proxies/auto                           # selector 组存在且 type=Selector
+```
+
+## 6. 接入 juhe-ai
+
+在后台“代理管理”新增代理：类型 `socks5h`，地址与端口即第 2 节的入站（当前生产为 `172.18.0.1:17892`），无认证则用户名密码留空。保存后执行“测试代理”，通过后把该代理绑定到需要走代理的 AI 账户。账号测试、OAuth 刷新和网关请求按账号代理走对应出口。
+
+| juhe-ai 运行位置 | sing-box 运行位置 | 代理 Host |
 | --- | --- | --- |
-| `TOLERANCE_MS` | 100 | 性能切换容差（候选须比当前快超过该值） |
-| `MIN_SWITCH_INTERVAL_S` | 600 | 性能切换最小间隔；救援切换不受限 |
-| `FAILED_TIMES_TO_RESCUE` | 2 | 当前节点连续失败该次数触发救援切换 |
-| `FAILED_TIMES_TO_BLACKLIST` | 3 | 连续失败该次数拉黑 |
-| `BLACKLIST_COOLDOWN_S` | 1800 | 拉黑冷却时长 |
-| `TEST_URL` | `https://api.openai.com/v1/models` | 唯一测试 URL（真实上游） |
-| `SWEEP_BATCH` / `SWEEP_STALE_S` | 15 / 900 | 慢扫描批量与过期阈值（全池约 10 分钟刷新一遍） |
+| 同机 Docker 容器（当前形态） | 同机宿主机 | Docker bridge 网关 IP（`172.18.0.1`）；或 `host.docker.internal` 加 `host-gateway` 映射 |
+| 同机发布包直跑 | 同机 | `127.0.0.1` |
+| 应用服务器 | 独立代理服务器 | 代理服务器内网 IP |
 
-### 10.5 运维与回滚
+## 7. OAuth 兜底代理
 
-```sh
-tail /var/log/juhe-proxy-switch.log                             # 决策日志
-python3 -m json.tool /var/lib/juhe-proxy-switch/state.json      # 状态与切换历史
-systemctl stop juhe-proxy-switch.timer                          # 暂停控制器（节点固定）
-systemctl start juhe-proxy-switch.timer                         # 恢复
+`JUHE_AI_OAUTH_PROXY_URL` 只作为 OpenAI OAuth token 换取 / 刷新的兜底代理（Docker 形态写入 compose 使用的 env 文件，契约见 `docker/single-server/README.md`）：
+
+```env
+JUHE_AI_OAUTH_PROXY_URL=socks5h://172.18.0.1:17892
 ```
 
-回滚到 urltest：恢复 sing-box 配置备份（`config.json.bak-*`）→ `sing-box check` → 重启 → `systemctl disable --now juhe-proxy-switch.timer`。仓库 `docs/deploy/proxy/controller/` 与服务器 `/usr/local/bin`、`/etc/systemd/system` 两侧副本需同步维护。
+注意：该变量不是所有上游请求的全局代理。普通上游模型请求仍应通过后台“代理管理”绑定到账号；不能只配置本变量。
 
-### 10.6 边界说明
+## 8. 订阅链接解析与节点池生成
 
-- 控制器只解决"节点池里选哪个"；**若整池分钟级漂移劣化（几乎所有节点反复通/断），任何选节点机制都救不了**，此时应切换到其他代理链路（如常驻隧道）。节点自身的每连接级丢包由网关跨账户重试兜底。
-- 后台"代理管理"的 test_status 是展示态（jobs 周期探测回写），其中 IP 回显类目标在部分节点上必失败，可能显示 failed/warning；**派单只看代理是否启用，不受 test_status 影响**。
-- 测试 URL 选定 `api.openai.com` 是因为它是主要业务上游；若主要流量切换到其他供应商，应同步调整 `TEST_URL`。
+订阅服务商随时轮换节点，静态节点列表会静默失效；订阅解析是两项自动化（第 9、10 节）的共同基础。本节定义“从订阅 URL 到合法 sing-box 配置”的完整思路。
 
-### 10.7 多组部署（按服务分流形态）
+### 8.1 拉取策略
 
-控制器支持管理多个 selector 组（环境变量 `JUHE_SB_GROUPS` 逗号分隔），并为每组指定独立的测试 URL（`JUHE_SB_GROUP_URLS`，格式 `组=URL,组=URL`）——用于"按服务分流"的部署：如 claude/openai/github/google 各一个组，分别用 anthropic.com / status.openai.com / github.com / google 204 测速，路由规则按域名把各服务导到对应组。
+- **链路兜底**：依次尝试直连 → 本机 sing-box 自身出口（`socks5h://<入站地址>`），第一个成功者生效。订阅面板域名在国内常直连超时，必须有代理兜底。
+- **限频识别**：订阅面板对同 token 高频抓取会返回 403 或 200 + HTML 限频页而非订阅内容。解析前必须做订阅形态校验（见 8.2），非订阅内容视为本次失败：换下一条链路，整链等 30 秒后重试一轮；仍失败则本轮放弃，等下个周期。
+- **错峰**：多台部署共用同一订阅时，定时器需加随机延迟（如 0-5 分钟抖动），避免同 token 同时触发限频。
+- **频率**：每小时一轮足够；订阅池本身存在分钟级漂移，更高频收益低且易限频。
 
-- 策略完全一致（先测通再切、10 分钟防抖、100ms 容差、坏节点拉黑），但**按"组 × 节点"独立记账**：同一节点对不同服务目的地可用性不同，A 组拉黑的节点不影响 B 组。
-- 所有组必须引用同一节点池（控制器以同一份全池扫描服务所有组，扫描预算均摊）。
-- 原 urltest 组迁移为 selector 时，必须**删除 urltest 特有字段**（`url`/`interval`/`tolerance`/`idle_timeout`），否则 `sing-box check` 失败——这正是 check 门禁要拦的情况。各组转换前的 urltest 当前选择可通过 clash_api 读取并设为 selector `default`，语义无损迁移。
-- 家庭形态（sing-box 系统服务 + 四组分流）的 unit 样例见 `controller/juhe-proxy-switch-home.service`。
-- 后台"代理管理"的 test_status 是展示态（jobs 周期探测回写），其中 IP 回显类目标在部分节点上必失败，可能显示 failed/warning；**派单只看代理是否启用，不受 test_status 影响**。
-- 测试 URL 选定 `api.openai.com` 是因为它是主要业务上游；若主要流量切换到其他供应商，应同步调整 `TEST_URL`。
+### 8.2 返回体识别与解析
 
-## 11. 订阅定时更新器（juhe-sub-update）
+订阅返回体常见三种形态，按序识别：
 
-订阅服务商可能随时轮换节点，静态节点列表会静默失效。更新器每小时拉取订阅并做变更检测，与第 10 节的择优控制器组成完整自动化：
+1. **base64 分享链接列表**：整体 base64 解码后逐行得到 `ss://`、`vmess://`、`vless://`、`trojan://`、`hysteria2://` 等分享链接——最常见的机场形态。
+2. **Clash YAML**：`proxies:` 列表，逐项映射字段。
+3. **sing-box JSON**：直接含 `outbounds` 数组，取非 `direct`/`block`/`dns` 项。
 
-- **抓取链**：直连 → 家里隧道 socks5（`127.0.0.1:17890`）→ 云端 sing-box socks5（`172.18.0.1:17892`），第一个成功者生效（订阅面板国内直连常超时，走代理兜底）。
-- **变更检测**：解析结果与线上节点做无序集合比较（过滤"剩余流量/套餐到期"等数值型信息条目，保证比较稳定）；一致则零动作、不打断在途连接，有变化才进入应用流程。
-- **应用流程**：备份（保留最近 5 份）→ `sing-box check` 门禁（不过则放弃，线上配置分毫不动）→ 重启 → 校验 Clash API → 重置择优控制器状态 → 抽样实测（默认 10 个）并预选健康节点。
-- **失败安全**：解析 0 节点 / check 不过 / 重启后 API 不健康，均保持线上配置不变或自动回滚到最近备份。
-- **互斥**：与择优控制器共用 `/var/lib/juhe-proxy-switch/lock`，不会并发操作 Clash API。
+识别方法：先尝试 base64 解码且解码结果含已知分享链接 scheme 则走形态 1；否则尝试 YAML 解析含 `proxies` 键则走形态 2；否则尝试 JSON 解析含 `outbounds` 键则走形态 3；都不满足即判定“非订阅内容”（进入 8.1 的限频/失败处理）。
 
-文件清单与部署：
+### 8.3 分享链接 → sing-box outbound 映射要点
 
-```sh
-# 仓库权威副本：docs/deploy/proxy/controller/juhe-sub-update.{py,service,timer}
-scp docs/deploy/proxy/controller/juhe-sub-update.* root@<服务器>:/tmp/
-ssh root@<服务器>
-sed -i 's/\r$//' /tmp/juhe-sub-update.*
-install -m 755 /tmp/juhe-sub-update.py /usr/local/bin/
-install -m 644 /tmp/juhe-sub-update.service /tmp/juhe-sub-update.timer /etc/systemd/system/
-printf 'https://<订阅链接>\n' > /etc/sing-box/subscription-url   # 600，用户资产不入仓库
-touch /var/log/juhe-sub-update.log
-systemctl daemon-reload && systemctl enable --now juhe-sub-update.timer
-```
+每种协议的映射由其 URI 规范决定，实现时逐协议处理；共性要点：
 
-运维：日志 `/var/log/juhe-sub-update.log`；手动立即更新 `systemctl start juhe-sub-update.service`；暂停 `systemctl stop juhe-sub-update.timer`。
+| 要点 | 说明 |
+| --- | --- |
+| 必填字段 | 服务器地址、端口、协议专属凭据（ss 的加密方法+密码、vmess/vless 的 uuid、trojan 的密码等） |
+| TLS | `tls=true` 时填 `tls.enabled`、`server_name`（SNI）；`allowInsecure` 对应 `insecure`，默认不开启 |
+| 传输层 | ws 需换算 `path` / `Host` 头到 `transport`；grpc 需 `service_name`；tcp 直接省略 |
+| 混淆/插件 | ss 的 simple-obfs 等插件参数需换算为 sing-box 对应字段，无法表达的节点丢弃并记日志 |
+| query 参数 | `encryption`、`flow`、`sni`、`fp`（uTLS 指纹）、`type`/`path`/`host` 等按各协议 URI 规范读取 |
 
-### 11.1 部署差异参数与环境变量
+Clash YAML 形态同理：`name/type/server/port/uuid/password/cipher/tls/servername/network/ws-opts` 等字段逐项换算。无法映射的节点跳过并记日志，不让单个坏节点阻塞整池。
 
-同一份脚本适配不同 sing-box 部署（云端主用形态 / 家庭出口形态等），差异全部经 systemd unit 的 `Environment=` 注入：
+### 8.4 规范化：稳定 tag 与信息条目过滤
 
-| 环境变量 | 云端缺省 | 家庭形态 | 含义 |
-| --- | --- | --- | --- |
-| `JUHE_SB_BIN` | `/usr/local/bin/sing-box` | `/usr/bin/sing-box` | sing-box 二进制（check 门禁用） |
-| `JUHE_SB_UNIT` | `juhe-pw-proxy` | `sing-box` | 重启的 systemd 服务名 |
-| `JUHE_SB_API` | `http://127.0.0.1:19090` | 空 | clash_api 地址；空 = 无 API，健康门禁走 socks 实测，跳过预选 |
-| `JUHE_SB_SOCKS_TEST` | `socks5h://172.18.0.1:17892` | `socks5h://127.0.0.1:7890` | 重启后本地 socks 实测探针 |
-| `JUHE_SB_FETCH_VIA` | `direct,socks5h://127.0.0.1:17890,socks5h://172.18.0.1:17892` | `direct,socks5h://127.0.0.1:7890` | 抓取链，按序取第一个成功者 |
-| `JUHE_SB_CONTROLLER_STATE` | `/var/lib/juhe-proxy-switch/state.json` | （无需） | 存在才重置，家庭无控制器天然跳过 |
+- **tag 稳定且唯一**：tag 由节点名生成；重名节点追加序号去重。同一节点输入必须产生同一 tag——tag 漂移会让无序比较误判“全部变化”，也会让控制器按 tag 记账失真。节点名可能含表情与空白，保留原样（UTF-8）但做 trim。
+- **剔除数值型信息条目**：机场常在节点列表里混入“剩余流量：xx GB”“套餐到期：xxxx”“官网：xxx”等伪节点，且数值每次抓取都变。解析阶段按特征（无法解析为合法节点 / 名称匹配流量、到期、官网等模式）剔除，保证变更检测的比较稳定。
+- **空池保护**：解析得到 0 个有效节点视为失败，绝不应用。
 
-多分组配置（如按 claude/openai/github/google 分流的多个 urltest 组引用同一节点池）会一并重写，各组保持原有分流语义。家庭版 unit 见仓库 `controller/juhe-sub-update-home.service`。
+### 8.5 生成配置
 
-**面板限频**：订阅面板对同 token 高频抓取会返回 403 限频页（如"你订阅更新那么着急干嘛？"，约数十秒解封）。更新器对返回体做订阅形态校验，非订阅内容自动换下一条抓取链路、整链 30 秒后重试一轮；多台部署共用同一订阅时依靠 `RandomizedDelaySec=300` 错峰。
+在既有配置骨架（第 4 节）上只重写两块：订阅节点 outbounds（全量替换）与 selector 组的 `outbounds` 列表（组 tag、入站、route、experimental 均不动）。selector 的 `default` 取变更前线上实际选择（经 clash_api 读出），保持出口语义无损；首次部署无线上状态时取解析列表第一个节点。
+
+## 9. 择优控制器：思路与策略
+
+### 9.1 为什么不用 urltest
+
+订阅节点池用默认 `urltest` 组会按“到测速 URL 的延迟”自动换节点，生产实测有四个致命问题：
+
+1. 只测延迟不测真实上游连通性：能通 gstatic 的节点可能对真实目标返回 503。
+2. 排名洗牌导致节点乒乓切换，连接频繁中断。
+3. 坏节点没有记忆，过几分钟又当选。
+4. **目的地相关劣化**：同一节点对测速站正常、对部分真实站点 503；`api.ipify.org` 这类 IP 回显站会被部分节点阻断，不能当探针。
+
+### 9.2 控制器思路
+
+用 `selector` 组 + 独立的择优控制器进程（一个仅用标准库的脚本即可实现）替代 urltest：控制器按周期经 `clash_api` 评估节点、决定是否切换。控制器故障时退化为“selector 停留在当前节点”，不乱切、不影响 sing-box 本身运行——这是安全底线。
+
+### 9.3 四条切换策略
+
+1. **先测通再切**：任何切换前，候选节点必须通过对真实上游（主业务上游 API，如 `https://api.openai.com/v1/models`，收到任意 HTTP 响应即视为传输可达）的实时确认测试。
+2. **不频繁切**：性能切换设最小间隔（参考值 10 分钟）；评估周期 2 分钟——评估 ≠ 切换。
+3. **差异不大不切**：候选必须比当前节点快超过容差（参考值 100ms）才允许切换，避免无意义抖动。
+4. **差异过大或当前节点坏了才切**：当前节点连续 2 次健康检查失败触发救援切换（不受最小间隔限制）；连续失败 3 次的节点拉黑冷却 30 分钟。
+
+### 9.4 参数参考
+
+| 参数 | 参考值 | 含义 |
+| --- | --- | --- |
+| 评估周期 | 2 分钟 | 每轮对全池做一次健康/延迟评估 |
+| 性能切换容差 | 100ms | 候选须比当前快超过该值 |
+| 性能切换最小间隔 | 600s | 救援切换不受限 |
+| 救援阈值 | 连续 2 次失败 | 当前节点连续失败该次数触发救援切换 |
+| 拉黑阈值 | 连续 3 次失败 | 连续失败该次数拉黑 |
+| 拉黑冷却 | 1800s | 冷却后重新参与评估 |
+| 测试 URL | 主业务上游 | 真实业务目标；主要流量换供应商时同步调整 |
+| 慢扫描批量 / 过期 | 15 个 / 900s | 全池较大时分批测，避免单轮超时；过期结果作废 |
+
+### 9.5 状态、日志与互斥
+
+- **状态文件**（`/var/lib/juhe-proxy-switch/state.json`）：各节点延迟记录、连续失败计数、拉黑表、切换历史。重启控制器不丢记忆。
+- **决策日志**（`/var/log/juhe-proxy-switch.log`）：每轮一行（时间、当前节点、候选与延迟、动作），journald 无持久化的机器上这是唯一可追溯记录。
+- **互斥**：控制器与更新器可能同时操作 clash_api / 重启 sing-box，必须共用一个文件锁（`/var/lib/juhe-proxy-switch/lock`）串行化。
+
+### 9.6 边界说明
+
+- 控制器只解决“节点池里选哪个”；**若整池分钟级漂移劣化（几乎所有节点反复通/断），任何选节点机制都救不了**，此时应切换到其他代理链路。节点自身的每连接级丢包由网关跨账户重试兜底。
+- 后台“代理管理”的 test_status 是展示态（jobs 周期探测回写），IP 回显类目标在部分节点上必失败，可能显示 failed/warning；**派单只看代理是否启用，不受 test_status 影响**。
+
+## 10. 订阅定时更新器：思路与策略
+
+订阅服务商随时轮换节点，静态配置会静默失效。更新器以 systemd timer 每小时运行一轮（带 8.1 的错峰抖动），与择优控制器组成完整自动化。
+
+### 10.1 单轮流程
+
+1. **拉取与解析**：按第 8 节完成拉取、识别、解析、规范化，得到本次节点集合。
+2. **变更检测**：与线上生效节点做**无序集合比较**（顺序无关；比较基于 8.4 规范化后的稳定 tag 与关键连接参数）。无变化 → 本轮结束，零动作、不打断在途连接。
+3. **备份**：有变化才继续；备份当前 `/etc/sing-box/config.json`，保留最近 5 份。
+4. **重写配置**：按 8.5 生成新配置，写入前先落盘到临时文件。
+5. **check 门禁**：`sing-box check` 不过 → 放弃本次变更，线上配置分毫不动，记日志告警。特别要拦住“urltest 特有字段（`url`/`interval`/`tolerance`/`idle_timeout`）残留导致 check 失败”这类结构性错误。
+6. **重启**：`systemctl restart` sing-box（依赖单元的 `Restart=always` 兜底）。
+7. **健康校验**：Clash API 可用、selector 组存在；`JUHE_SB_API` 类 API 不可用的部署可退化为经 socks 入站实测主上游。
+8. **重置控制器状态**：清空控制器的延迟记录与拉黑表（节点池已变，旧记账作废）；写 selector `default` 为变更前线上选择（语义无损迁移）。
+9. **抽样预选**：抽样实测（默认 10 个）节点，把最快可达者设为当前出口，避免重启后停留在随机节点上。
+10. **失败安全**：步骤 6-9 任一失败 → 自动回滚到最近备份并重启，保持代理可用；回滚动作本身也记日志。
+
+### 10.2 与其他组件的协作
+
+- 与择优控制器共用互斥锁（9.5），不会并发操作 Clash API。
+- 订阅 URL 从 `/etc/sing-box/subscription-url` 读取（600），不落日志、不进报告。
+- 手动立即更新：`systemctl start <更新器 service>`；暂停自动化：`systemctl stop <更新器 timer>`。
+
+## 11. 排障
+
+- 后台代理测试失败：先在服务器上用 `curl -x socks5h://<入站>:<端口>` 验证代理端口可用性，再查账号绑定。
+- 容器访问失败：确认容器内能路由到入站地址（bridge 网关 / host-gateway）；`host.docker.internal` 在 Linux Engine 上必须显式加 `host-gateway`。
+- OAuth 可以刷新但网关请求仍失败：AI 账户未绑定代理，只配了 `JUHE_AI_OAUTH_PROXY_URL`。
+- 上游仍超时：确认 selector 当前节点真实可达（9.3 的确认测试）、DNS / IPv6 / TLS 拦截未阻断；查看控制器决策日志确认切换行为。
+- 节点池大面积通/断翻转：整池漂移劣化（9.6），控制器无解，切备用链路或等订阅服务商恢复。
+- 更新后全部节点不可用：检查 check 门禁日志与回滚记录；常见根因是订阅返回了限频页被误解析，确认 8.2 的形态校验已启用。
+
+## 12. 验收清单
+
+- [ ] `sing-box check` 通过；入站仅监听 bridge 网关地址，公网无法访问代理端口。
+- [ ] `curl -x socks5h://172.18.0.1:17892 https://api.openai.com/v1/models -I` 有响应。
+- [ ] `curl http://127.0.0.1:19090/proxies/auto` 返回 `type: Selector`，组内包含全部订阅节点。
+- [ ] 后台“代理管理”测试通过；绑定账号后账号测试、OAuth 刷新、网关请求均走代理成功。
+- [ ] 控制器：手工把 selector 切到一个坏节点，2 个周期内自动救援切换到可达节点；决策日志与状态文件正常增长。
+- [ ] 更新器：订阅无变化时一轮零动作；构造变化（或等真实变更）后走完 备份→check→重启→重置→预选 全流程；check 注入坏配置时拒绝应用并保持线上可用。
+- [ ] 订阅 URL 权限 600，不出现在任何日志与文档中。

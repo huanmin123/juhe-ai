@@ -219,6 +219,11 @@ type runtimeConfig struct {
 	LogFileEnabled   bool
 	LogMaxFiles      int
 	LogRetentionDays int
+	// LogMaxFileMB 是 gateway 自身文件日志写侧的大小轮转阈值（MB）。恢复
+	// Node 既有 env 契约（archived config/runtime.ts numberConfig
+	// JUHE_AI_LOG_MAX_FILE_MB：默认 100，1..1024），Go 侧同名同默认同范围，
+	// 越界 fail-fast。
+	LogMaxFileMB int
 
 	// Business owner handoff gates for the business database this composition
 	// would own. Names mirror the J3b owner contract (modelcheckowner).
@@ -745,6 +750,18 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 			return runtimeConfig{}, parsedErr
 		}
 		cfg.LogRetentionDays = parsed
+	}
+	// 写侧轮转阈值：恢复 Node 既有 env 契约（archived config/runtime.ts
+	// numberConfig('JUHE_AI_LOG_MAX_FILE_MB', 100, 1, 1024)），同名同默认
+	// 同范围；解析复用 numberConfig 语义（parseTruncatedInt：非数字或越界
+	// fail-fast，Math.trunc 先于范围检查）。
+	cfg.LogMaxFileMB = 100
+	if raw := strings.TrimSpace(getenv("JUHE_AI_LOG_MAX_FILE_MB")); raw != "" {
+		parsed, parsedErr := parseTruncatedInt("JUHE_AI_LOG_MAX_FILE_MB", raw, 1, 1024)
+		if parsedErr != nil {
+			return runtimeConfig{}, parsedErr
+		}
+		cfg.LogMaxFileMB = parsed
 	}
 
 	cfg.BusinessOwner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER")))
