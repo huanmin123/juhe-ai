@@ -77,7 +77,8 @@ custom(global/personal) 目录行在目录读取链上，若同 `(provider_code,
 | 管理面回归 | providers 包全量（含新回填助手与原语单测） | `cd backend-go && go test ./projects/gateway/internal/providers/ -count=1` | 全部通过 | ok（12s） | 通过 |
 | 两面 parity | custom 覆盖场景 chat 面与 providers.Store 真实读取链同值（含全新模型两侧保持空） | `TestChainCatalogCustomCapabilityInheritAdminFaceParity` | 三键 DeepEqual（nil 与空切片视为等价） | 通过 | 通过 |
 | 继承值正确性 | 覆盖行三键与 `ApplyBuiltInStaticDerivedFields` 同键样本完全同值（含 web_search） | `TestChainCatalogCustomRowInheritsBuiltinCapabilities` | 完全同值 | 通过 | 通过 |
-| 生产功能验证 | 生产会话重问实时信息、带图发送、工具面板 | 发布后按「发布注意」清缓存后人工验证 | web_search 注入、图片可发、面板可用 | 待发布后执行 | 未执行 |
+| 端到端（隔离+真实上游） | personal custom 覆盖内置行的 my-chat 全链路 | 隔离 standalone 实例 + 复现数据（personal gpt-6-sol 覆盖行 + 神影账户）+ 经生产隧道访问 api.shenwenai.com，POST /stream 问「北京今天天气怎么样？」 | 走 /v1/responses、web_search 真实执行、回复实时天气 | **通过（2026-09-28 18:36）**：模型能力 API `supportedTools` 含 web_search 等 11 项（修复前恒空，生产 17:10 实证）；网关日志上游事件为 `response.output_text.delta`（Responses 协议，修复前为无事件名 chat_completions chunk）；回复「今天（2026年9月28日）北京以晴到多云为主，白天最高约 24℃…」并引用 baidu.weather.com.cn 当日链接；落库 4 个 tool_call 块 + output_text、finish_reason=stop | 通过 |
+| 生产功能验证 | 生产会话重问实时信息、带图发送、工具面板 | 发布后按「发布注意」清缓存后人工验证 | web_search 注入、图片可发、面板可用 | **已发布（2026-09-28 19:16 gateway）；缓存项自然满足**（生产 Redis DB0 dbsize=0，`gateway:provider-model-catalog` 共享缓存键不存在，gateway 重启后进程内缓存亦已重置，首次目录装载即带继承能力）；三项人工验证待该场景用户下次对话执行 | 待用户复测 |
 
 ## 复发记录
 
@@ -95,8 +96,8 @@ custom(global/personal) 目录行在目录读取链上，若同 `(provider_code,
 ## 完成总结
 
 - 完成时间：2026-09-28
-- 结论：已修复（待发布）。custom 目录行能力继承按口径 b 落地，chat 面与管理面同源回填，测试全绿。
-- 后续建议：发布后清共享目录缓存键；生产功能验证三项（联网/带图/工具面板）完成后回填本记录。
+- 结论：已修复并**已发布（2026-09-28 19:16 gateway+jobs）**。custom 目录行能力继承按口径 b 落地，chat 面与管理面同源回填，测试全绿；隔离环境 + 真实上游端到端实证 web_search 真实执行（见验证记录）。生产发布时共享目录缓存键本就不存在（DB0 空），进程内缓存随重启重置，首次装载即带继承能力。
+- 后续建议：生产功能验证三项（联网/带图/工具面板）由该场景用户下次对话顺带确认后回填本记录。
 
 ## 发布注意
 

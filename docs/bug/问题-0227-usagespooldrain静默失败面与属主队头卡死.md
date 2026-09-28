@@ -71,6 +71,8 @@
 | 单元测试 | usagespooldrain 包全量（含新增 BUG-0227 回归） | `cd backend-go && go test ./projects/jobs/internal/usagespooldrain/... -count=1` | 通过 | ok（4.061s，含 TestW0227DrainOnceSkipsUnreadableHeadAndRecovers / TestW0227WatermarkSkipsUnreadableHead / TestW0227RunLogsWarnOnDrainRoundFailure / 改造后的 TestW9GDrainOnceReadFileError 全 PASS） | 已通过 |
 | 回归测试 | jobs 组合根 Spool/Drain 相关 | `cd backend-go && go test ./projects/jobs/cmd/juhe-ai-jobs/ -run 'Spool|Drain' -count=1` | 通过 | ok（10.723s） | 已通过 |
 | 构建验证 | jobs 模块全量构建 | `cd backend-go && go build ./projects/jobs/...` | 通过 | 无错误输出 | 已通过 |
+| 端到端（隔离） | 不可读队头不阻塞消费、水位前进、修复后自然恢复 | 包内 Windows 独占句柄三测试 | 通过 | 全 PASS | 已通过 |
+| 生产验证 | 发布后 drain 正常消费、零积压、计费实时 | 观察发布后 jobs 日志与 spool 目录/usage_records | 持续消费、无积压 | **已发布实证（2026-09-28 19:16 jobs 随 gateway+jobs 发布）**：`usage_record_spool_drain_summary windowFiles=2`（发布后 74s 窗口即时消费 2 个交接文件）、spool 目录 0 积压、`usage_records` gateway 流量实时入库（19:17:51 最新） | 通过 |
 
 ## 复发记录
 
@@ -85,5 +87,5 @@
 ## 完成总结
 
 - 完成时间：2026-09-28
-- 结论：代码侧已修复（契约 1-3 落地，契约 4 保持），包内测试与组合根回归全绿；状态=已修复待发布。
+- 结论：代码侧已修复（契约 1-3 落地，契约 4 保持），包内测试与组合根回归全绿；**已发布（2026-09-28 19:16 随 gateway+jobs 全量，生产 drain 恢复实时消费实证见验证记录）**。
 - 后续建议：发布序列修正（消除 root→app 过渡窗口产生跨属主文件的根因，如切换用户前先停旧容器写入、发布后检查 spool 属主）由部署侧另一任务承担，本记录仅覆盖代码侧修复。

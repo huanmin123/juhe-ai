@@ -83,14 +83,14 @@
 
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| 单元/二进制级 | 等待机制（解析、1s 重试到 deadline、超时维持 fail-fast、err 不重试） | `backend-go/projects/gateway/cmd/juhe-ai-gateway/w1_owner_acquire_wait_test.go`（随等待机制实现交付） | 全部通过 | 本次未能执行：当前工作区 cmd 包存在并行在途改动（`chain_catalog.go:204` `undefined: chainInheritCustomCatalogCapabilities` 编译失败，与本文档改动无关——本文档未改任何 Go 代码）。测试随机制交付时已通过 | 待工作区稳定后复跑 |
+| 单元/二进制级 | 等待机制（解析、1s 重试到 deadline、超时维持 fail-fast、err 不重试） | `backend-go/projects/gateway/cmd/juhe-ai-gateway/w1_owner_acquire_wait_test.go`（随等待机制实现交付） | 全部通过 | 初次因并行在途改动未能执行；**2026-09-28 19:2x 工作区稳定后复跑 `TestW1MOwnerLeaseAcquireWaitArms` 全臂 PASS（含 C-F4 过期租约接管成功）** | 通过 |
 | 配置校验 | compose.yml 结构（gateway env、healthcheck、jobs 不受影响） | 本机无 docker（`docker compose config` 不可用），改用 python `yaml.safe_load` 解析并断言 | YAML 解析通过；gateway `JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=45s`、`start_period=75s`；jobs 仍 `30s` 且无该 env | 解析与断言全部通过（2026-09-28 本机执行） | 通过 |
 | 脚本语法 | deploy.sh 注释更新后语法 | `bash -n docker/single-server/deploy.sh` | 语法通过 | 通过（2026-09-28 本机执行） | 通过 |
-| 生产验证 | 发布过渡窗口行为 | 下次发布（deploy.sh all + 手动上传新 compose.yml）后观察 gateway 启动 | 启动期出现等待日志、无重启循环、healthy 滞后 ≤75s | 待发布 | 待执行 |
+| 生产验证 | 发布过渡窗口行为 | 下次发布（deploy.sh all + 手动上传新 compose.yml）后观察 gateway 启动 | 启动期出现等待日志、无重启循环、healthy 滞后 ≤75s | **已发布实证（2026-09-28 19:16 gateway+jobs）**：新 compose.yml 上传（旧配置备份 `compose.yml.bak-0228-1915`）+ `docker compose config -q` 通过；gateway 启动日志 `owner lease held by another owner process, waiting for predecessor lease expiry (lease=F3 audit, waitBudget=45s)` → 25 秒后 `juhe-ai-gateway started`，**零重启循环**（对照 16:00 发布 8 连败），deploy.sh 第 3 次探测即 healthy（≤24s），md5 三点闭环一致 | 通过 |
 
 ## 复发记录
 
-- 时间：无（修复待发布。历史同类观测：2026-09-27 23:19 发布 2 次、2026-09-28 16:00 发布 8 次循环，均为同一机制、非独立复发）
+- 时间：无（**已发布 2026-09-28 19:16**。历史同类观测：2026-09-27 23:19 发布 2 次、2026-09-28 16:00 发布 8 次循环，均为同一机制、非独立复发）
 - 环境：不适用
 - 现象：不适用
 - 关联处理：不适用
@@ -103,6 +103,6 @@
 
 ## 完成总结
 
-- 完成时间：2026-09-28（配置与文档交付）；生产生效待下次发布
+- 完成时间：2026-09-28（配置与文档交付）；**已发布（2026-09-28 19:16 gateway+jobs，compose.yml 已上传生效，生产实证等待接管零重启循环，见验证记录）**
 - 结论：根因 = compose stop 10s 宽限 < gateway 优雅关闭预算（10s+5s+5s+defer 链）→ SIGKILL 截断 defer 租约释放 → DB 租约 TTL 残留 → 新进程启动 fail-fast `os.Exit(1)` → `restart: unless-stopped` 重启循环直至 TTL 过期自愈。修复 = 既有等待机制（`main.go:1115-1174`）的部署侧配置：compose 显式 `JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=45s` + gateway healthcheck `start_period=75s`，文档与脚本注释全链同步；同发布窗口的 spool root 属主问题按 BUG-0227 另行任务修复，部署侧已补 chown 时序契约。
 - 后续建议：下次发布时同步上传新 compose.yml 并按"验证记录"生产栏观察；发布后复查一次 `data/app/data/usage-record-spool` 属主（BUG-0227 部署侧）；若未来 gateway 优雅关闭预算发生变化，需重估 45s/75s 取值与 stop_grace_period 的关系。
