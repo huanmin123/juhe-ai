@@ -78,11 +78,11 @@ func chatToolBindingCandidatesOf(runtime *chatToolBindingRuntime, toolID string)
 }
 
 // chatSearchImageModelFamily 返回 provider 家族可路由的注册图像模型枚举
-//（候选白名单：GPT 系账户 × gpt-image-2；Grok 系账户 × grok-imagine 系，
-// 契约 §6.3——目录声明 image_generation 的其他模型不进候选）。
+//（候选白名单：GPT 系供应商（gpt/openai vendor）× gpt-image-2；Grok 系账户 ×
+// grok-imagine 系，契约 §6.3——目录声明 image_generation 的其他模型不进候选）。
 func chatSearchImageModelFamily(providerCode string) []string {
 	switch normalizeProviderToken(providerCode) {
-	case "openai":
+	case "openai", "gpt":
 		return []string{string(ImageModelGPTImage2)}
 	case "xai":
 		return []string{string(ImageModelGrokImagineImage), string(ImageModelGrokImagineQuality)}

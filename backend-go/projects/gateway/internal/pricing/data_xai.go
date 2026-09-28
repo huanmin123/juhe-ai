@@ -10,6 +10,9 @@ type xaiTextModelMetadata struct {
 	supportedAPIProtocols     []string
 	supportedReasoningEfforts []string
 	defaultReasoningEffort    string
+	// responsesWebSearch：该模型在 responses 协议下支持 hosted web_search
+	//（xAI Responses API 联网搜索；按实测能力声明的近期 grok-4.x 文本模型开启）。
+	responsesWebSearch bool
 }
 
 func xaiTextModel(model string, contextWindowTokens int, inputUsdPer1M, cachedInputUsdPer1M, outputUsdPer1M float64, metadata xaiTextModelMetadata) rawModel {
@@ -40,9 +43,14 @@ func xaiTextModel(model string, contextWindowTokens int, inputUsdPer1M, cachedIn
 		out.SupportedAPIProtocols = []string{"chat_completions", "responses"}
 	}
 	// 纯 chat 供应商：function_calling 在该行全部会话协议（默认
-	// chat_completions + responses，multi-agent 行仅 responses）下可用；无
-	// hosted 工具。
-	out.SupportedToolsByProtocol = toolsByProtocol(out.SupportedAPIProtocols, []string{"function_calling"})
+	// chat_completions + responses，multi-agent 行仅 responses）下可用；
+	// responsesWebSearch 的行在 responses 协议追加 hosted web_search
+	//（chat_completions 恒仅 function_calling，toolsByProtocol 收敛）。
+	tools := []string{"function_calling"}
+	if metadata.responsesWebSearch {
+		tools = append(tools, "web_search")
+	}
+	out.SupportedToolsByProtocol = toolsByProtocol(out.SupportedAPIProtocols, tools)
 	return out
 }
 
@@ -55,16 +63,19 @@ var xAIModelPricingData = []rawModel{
 		releaseDate:               "2026-09-21",
 		supportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
 		defaultReasoningEffort:    "high",
+		responsesWebSearch:        true,
 	}),
 	xaiTextModel("grok-4.6", 500_000, 2, 0.5, 6, xaiTextModelMetadata{
 		releaseDate:               "2026-08-12",
 		supportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
 		defaultReasoningEffort:    "high",
+		responsesWebSearch:        true,
 	}),
 	xaiTextModel("grok-4.5", 500_000, 2, 0.3, 6, xaiTextModelMetadata{
 		releaseDate:               "2026-07-08",
 		supportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
 		defaultReasoningEffort:    "high",
+		responsesWebSearch:        true,
 	}),
 	// grok-4.3: the official model page lists no release date; 2026-05-01 is
 	// an approximate anchor from the first press coverage. Effort set is the
