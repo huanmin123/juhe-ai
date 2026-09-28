@@ -271,6 +271,8 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 ### 8.6 模型原生工具协议
 
+> 状态提示（2026-09-28）：本节的「工具能力驱动协议偏好 + hosted 工具注入」路径已有替代设计稿——[AI 问答工具体系与主子模型设计](AI问答工具体系与主子模型设计.md)（主对话恒 Chat Completions，搜索/生图改为会话级绑定子模型执行的模型工具，删除本节 hosted 注入路径）。设计稿裁决实施时本节同步改写；实施前本节仍为当前行为契约。
+
 - 发送前按 API Key 可达账户、模型映射和协议桥接结果选择 Chat Completions 或 Responses；模型目录里的原生协议用于能力说明，不能覆盖显式的 source endpoint mapping。
 - Responses 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段，由网关做协议适配和安全校验。
 - 用户选择 reasoning effort 时，Responses 请求发送 `reasoning: { effort, summary: "auto" }`；前端只展示上游公开的 reasoning summary 事件，不展示或伪造隐藏思维链。
