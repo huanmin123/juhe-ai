@@ -290,7 +290,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 **custom 目录行能力继承**（2026-09-28，BUG-0229）：
 
 - 目标：`custom_provider_models` 表没有 `supported_tools` / `input_modalities` / `output_modalities` 列，custom（`global` / `personal`）目录行按 scope 优先级整行替换内置 `provider_model_catalog` 行后，不能让被覆盖模型的能力三键恒空——否则 `web_search` / `generate_image` / 诊断工具永不注入、带图输入被服务端 400、前端隐藏上传按钮、`toolCapabilities` 恒不可用、协议偏好退化。
-- 可见行为：目录读取链在合并（scope 优先级整行替换）之后，对胜出的 custom 行按与合并相同的键（hybrid 下 `provider+model`，其余裸 `model`）查找内置扫描行，三个空能力键 `supportedTools` / `inputModalities` / `outputModalities` 以内置行（经 8.5 节静态快照兜底后）的值填充；仅填空，不覆盖非空值。custom 表本无这三列，语义上即“覆盖内置行的 custom 行继承内置行能力”。管理面与 chat 面同源解析（同一回填实现，保持 BUG-0210 建立的两面 parity 原则）。
+- 可见行为：目录读取链在合并（scope 优先级整行替换）之后，对胜出的 custom 行按与合并相同的键（hybrid 下 `provider+model`，其余裸 `model`）查找内置扫描行，空能力键 `supportedToolsByProtocol`（「协议 × 工具」二维矩阵）/ `inputModalities` / `outputModalities` 以内置行（经 8.5 节静态快照兜底后）的值填充；仅填空，不覆盖非空值。custom 表本无这些能力列，语义上即“覆盖内置行的 custom 行继承内置行能力”。管理面与 chat 面同源解析（同一回填实现，保持 BUG-0210 建立的两面 parity 原则）；一维 `supportedTools` 投影已退场，仅继承二维矩阵。
 - 边界：仅“覆盖内置行”的场景继承；全新自定义模型（内置无对应行）三键保持空，不得用静态定价表的别名/前缀匹配规则回填（日期后缀剥离与前缀别名会对 `gpt-5.5-my` 这类自有命名误配能力）。生成参数能力（`generationParameterCapabilities`）不在此继承范围，仍按 custom 行自身的 provider+model 生成。
 
 ### 8.7 消息信息层级
@@ -527,7 +527,7 @@ event: message.canceled
 data: {"messageId":"msg_xxx"}
 ```
 
-- 事件族以 wire 为准（2026-09-28 回正修订）：Go 实现将 Node 的 text delta 投影为内容块事件——线上事件族只有 `message.started`、`message.snapshot`（重附着建立 SSE 时的首个事件，权威全量投影）、`content_block.*`、`message.completed` / `message.failed` / `message.canceled` 与 comment heartbeat。文本、reasoning 与工具过程增量都经 `content_block.*` 承载（reasoning 是内容块类型之一）；旧清单中的 `message.delta`、`reasoning.delta`、`tool.started/updated/completed` 是内部投影事件，不上行 wire，前端不得依赖。
+- 事件族以 wire 为准（2026-09-28 回正修订）：Go 实现将 Node 的 text delta 投影为内容块事件——线上事件族只有 `message.started`、`message.snapshot`（重附着建立 SSE 时的首个事件，权威全量投影）、`content_block.*`、`tool.binding_required`（模型工具未绑定的纯引导事件，不驱动内容块投影，见 8.6）、`message.completed` / `message.failed` / `message.canceled` 与 comment heartbeat。文本、reasoning 与工具过程增量都经 `content_block.*` 承载（reasoning 是内容块类型之一）；旧清单中的 `message.delta`、`reasoning.delta`、`tool.started/updated/completed` 是内部投影事件，不上行 wire，前端不得依赖。
 - SSE 建立后每 5 秒发送 comment heartbeat；初次流与重附着流复用同一实现。前端把任意 chunk 和 comment 记为传输活动，但 heartbeat 不进入业务事件、`eventVersion` 或消息内容。
 - 从请求开始 10 秒没有传输活动时，前端只进入“正在确认生成状态”并查询 submission status；`preparing` 继续等待，runner 存活时重附着同一轮，权威终态刷新当前消息，runner 缺失时由服务端收口为 `stream_interrupted`。10 秒静默本身不能直接标记失败。
 - `not_found` 必须连续确认 3 次且跨越至少 1 秒 grace 才能结束未接受请求；submission status 连续 5 次网络失败后停止自动查询并请求页面权威同步，新传输活动会重置计数。前台 watchdog 默认最多 180 次，页面级待确认最多 8 轮，普通 runtime reconciliation 最多 4 次，watchdog 耗尽后的最终权威同步最多 1 次；达到上限后停止定时器并保留人工操作，禁止永久轮询。

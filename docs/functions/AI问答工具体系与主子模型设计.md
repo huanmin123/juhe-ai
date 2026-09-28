@@ -141,7 +141,7 @@ AI 对话（chat 包 + 对话前端）
 3. `buildChatTransportRequest` 的 Responses 分支与 Responses 事件解析：主对话不再产生 Responses 流；上下文压缩调用同步恒 `chat_completions`。图片输入改为 Chat Completions 多模态格式（`content` 数组 `image_url` 块），服务端与前端校验口径同步（`inputModalities` 含 `image` 的模型才允许带图）。
 4. `toolCapabilities` 旧矩阵计算（`chain_chat_tool_capabilities.go` 的模型×协议判定）重写为绑定状态聚合。
 5. 上述路径的既有测试同步删除或改写；`AI问答设计.md` 8.6 同步改写并指向本文档。
-6. 保留：模型目录能力数据链（静态兜底、custom 继承、`supportedTools` 字段）——服务于绑定候选过滤与模型能力展示，不再驱动协议与注入。
+6. 保留：模型目录能力数据链（静态兜底、custom 继承、`supportedToolsByProtocol` 二维矩阵）——服务于绑定候选过滤与模型能力展示，不再驱动协议与注入；一维 `supportedTools` 字段按 §2.10 / §6.4 直接退场，不保留。
 
 ## 12. 兼容与迁移
 

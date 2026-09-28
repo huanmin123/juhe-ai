@@ -70,7 +70,7 @@
             :stoppable="generating || Boolean(pendingConfirmation)"
             :turn-limit-reached="turnLimitReached && !editingTurn"
             :turn-limit-message="turnLimitMessage"
-            :image-input-supported="Boolean(selectedModelOption?.inputModalities.includes('image') && selectedModelOption.supportedApiProtocols.includes('responses'))"
+            :image-input-supported="Boolean(selectedModelOption?.inputModalities.includes('image'))"
             :image-policy="imagePolicy"
             :account-options="accounts"
             :account-value="selectedConversation.bindAccountId"
