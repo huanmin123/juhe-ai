@@ -302,9 +302,29 @@ func (r *Runner) consumeProbeOutboxRow(ctx context.Context, lease OwnerLease, ro
 	}
 	var input Input
 	if r.directInputReader != nil {
-		inputs, err := r.directInputReader.LoadAccount(ctx, row.AccountID)
-		if err != nil {
-			return err
+		var inputs []Input
+		if accountLoader, ok := r.directInputReader.(directInputAccountFailureLoader); ok {
+			result, loadErr := accountLoader.LoadAccountWithFailures(ctx, row.AccountID)
+			if loadErr != nil {
+				return loadErr
+			}
+			if len(result.Failures) > 0 {
+				// 候选构造失败是确定性行损坏：保持零值 input 走
+				// runExplicitRequest 的 input_stale 终态结算出队——保持
+				// pending 重试永远不会成功，只会形成毒丸行并每周期刷错
+				// （BUG-0211：单坏账户 16 行停摆 J1 探活 35 分钟）。
+				r.logger.Warn("probe_request 账户候选构造失败，按 input_stale 收敛",
+					"event", "account_health_probe_outbox_row_input_stale",
+					"requestId", row.RequestID, "accountId", row.AccountID,
+					"failureCount", len(result.Failures))
+			}
+			inputs = result.Inputs
+		} else {
+			var loadErr error
+			inputs, loadErr = r.directInputReader.LoadAccount(ctx, row.AccountID)
+			if loadErr != nil {
+				return loadErr
+			}
 		}
 		// 与 runCycle 的 request 文件消费一致：候选缺失/不唯一时保持零值，
 		// 由 runExplicitRequest 的 input_stale 判定落 stale 终态。

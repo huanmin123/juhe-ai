@@ -67,6 +67,13 @@ type directInputFailureLoader interface {
 	LoadDueWithFailures(ctx context.Context, limit int) (DirectInputLoadResult, error)
 }
 
+// directInputAccountFailureLoader 是单账户显式请求的隔离加载面（PG/SQLite
+// 直读 reader 均实现）：构造失败的账户返回 Failures 而非错误，调用方按
+// input_stale 收敛而不是中断整轮（BUG-0211）。
+type directInputAccountFailureLoader interface {
+	LoadAccountWithFailures(ctx context.Context, accountID string) (DirectInputLoadResult, error)
+}
+
 // DirectInputReader 是 PG 与 SQLite 直读适配器的公共装配面：组合根用它承载
 // 两种输入源；SetSuppressionProvider 由 Runner 装配时注入 jobs 重试窗口。
 type DirectInputReader interface {
@@ -305,9 +312,29 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 	}
 	for _, request := range requests {
 		if _, found := inputsByAccount[request.AccountID]; !found && r.directInputReader != nil {
-			explicitInputs, loadErr := r.directInputReader.LoadAccount(ctx, request.AccountID)
-			if loadErr != nil {
-				return loadErr
+			var explicitInputs []Input
+			if accountLoader, ok := r.directInputReader.(directInputAccountFailureLoader); ok {
+				result, loadErr := accountLoader.LoadAccountWithFailures(ctx, request.AccountID)
+				if loadErr != nil {
+					return loadErr
+				}
+				if len(result.Failures) > 0 {
+					// 候选构造失败是确定性行损坏：保持零值 input 走
+					// runExplicitRequest 的 input_stale 终态结算并消费该行，
+					// 不得中断整轮（BUG-0211：单坏账户的显式请求把周期
+					// inputs 的探测一并停摆 35 分钟）。
+					r.logger.Warn("显式探活请求账户候选构造失败，按 input_stale 收敛",
+						"event", "account_health_explicit_request_input_stale",
+						"requestId", request.RequestID, "accountId", request.AccountID,
+						"failureCount", len(result.Failures))
+				}
+				explicitInputs = result.Inputs
+			} else {
+				var loadErr error
+				explicitInputs, loadErr = r.directInputReader.LoadAccount(ctx, request.AccountID)
+				if loadErr != nil {
+					return loadErr
+				}
 			}
 			if len(explicitInputs) == 1 {
 				inputsByAccount[request.AccountID] = explicitInputs[0]
