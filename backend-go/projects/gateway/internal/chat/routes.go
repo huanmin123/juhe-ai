@@ -953,16 +953,20 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 				empty := ""
 				imageAccountID = &empty
 			} else {
-				valid := false
-				for _, candidate := range candidates.image {
-					if candidate.AccountID == fields.imageBinding.accountID {
-						valid = true
-						break
-					}
+				// 生图绑定的生效模型是 default_image_model：校验按「账户 ×
+				// 本请求生效后的模型」组合判定（同请求携带 defaultImageModel
+				// 时以新值为准），避免裸 API 造出 grok 账户 + gpt-image-2 这类
+				// 立即失效的绑定（候选与状态聚合同口径）。
+				effectiveImageModel := conversation.DefaultImageModel
+				if fields.defaultImageModel != nil {
+					effectiveImageModel = ChatImageModel(*fields.defaultImageModel)
 				}
-				if !valid {
+				if !containsChatToolBindingCandidate(candidates.image, ChatToolBindingCandidate{
+					AccountID: fields.imageBinding.accountID,
+					ModelID:   string(effectiveImageModel),
+				}) {
 					writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
-						Message:    "生图绑定必须在候选列表内（账户可路由注册图像模型）",
+						Message:    "生图绑定必须在候选列表内（账户可路由当前默认图像模型；如需切换模型请同时提交 defaultImageModel）",
 						ToolID:     "generate_image",
 						Candidates: candidates.image,
 					})
@@ -1045,6 +1049,12 @@ func (rt *chatRoutes) clearConversation(w http.ResponseWriter, r *http.Request) 
 	}
 	if conversation == nil {
 		writeChatRouteError(w, &ConversationNotFoundError{})
+		return
+	}
+	// 归档（存量旧模式）会话只读（设计 §7）：清空历史与资产写入同属破坏性
+	// 会话操作，与发送/绑定修改同闸 403。
+	if conversation.Archived {
+		writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
 		return
 	}
 	if action := rt.getAction(conversation.ID, ownerID); action != nil {

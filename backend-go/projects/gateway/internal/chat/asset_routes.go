@@ -239,6 +239,11 @@ func (rt *chatRoutes) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		writeChatRouteError(w, &ConversationNotFoundError{})
 		return
 	}
+	// 归档（存量旧模式）会话只读（设计 §7）：资产上传与发送同闸 403。
+	if conversation.Archived {
+		writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
+		return
+	}
 	asset, err := rt.uploadChatAsset(r, ownerID, conversation.ID)
 	if err != nil {
 		writeChatRouteError(w, err)

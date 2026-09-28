@@ -372,7 +372,11 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 	var profileProtocols []string
 	switch {
 	case isOpenAIProtocolProfileOf(profile):
-		profileProtocols = []string{mappingFamilyChatCompletions, mappingFamilyResponses}
+		// OpenAI 兼容档案同族承接 images 协议模型（/v1/images/generations 与
+		// chat/responses 共享 base_url 与凭据；endpoint_modes 的 images_json
+		// 亦属本档案能力）——供 GPT/Grok 等系生图账户声明纯图像模型（如
+		// gpt-image-2、grok-imagine 系）进入 supportedModels。
+		profileProtocols = []string{mappingFamilyChatCompletions, mappingFamilyResponses, "images"}
 	case isAnthropicProtocolProfileOf(profile):
 		profileProtocols = []string{mappingFamilyMessages}
 	case isGeminiProtocolProfileOf(profile):

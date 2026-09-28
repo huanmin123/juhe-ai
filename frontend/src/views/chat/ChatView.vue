@@ -656,12 +656,17 @@ async function changeAccount(accountId?: string): Promise<void> {
   try {
     const updated = await conversationMutationQueue.enqueue(conversation.id, () => chatApi.updateConversation(conversation.id, { accountId }))
     replaceConversation(updated)
+    // 切换账户即切换目录作用域：无论 lastModel 是否保留，都失效旧账户的
+    // 模型列表与能力缓存，避免能力摘要短暂沿用旧账户口径。
+    modelLoadCoordinator.cancel(conversation.id)
+    models.value = []
+    selectedModelCapabilities.value = undefined
     if (conversation.lastModel && !updated.lastModel) {
-      modelLoadCoordinator.cancel(conversation.id)
-      models.value = []
       selectedModel.value = undefined
-      selectedModelCapabilities.value = undefined
       message.info('当前模型在新账户不可用，请重新选择模型')
+    } else if (updated.lastModel) {
+      void loadSelectedModelCapabilities(updated.lastModel)
+      message.success(updated.bindAccountName ? `已切换到账户「${updated.bindAccountName}」` : '账户已更新')
     } else {
       message.success(updated.bindAccountName ? `已切换到账户「${updated.bindAccountName}」` : '账户已更新')
     }
