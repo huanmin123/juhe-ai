@@ -39,13 +39,19 @@
           <div v-else-if="conversationForbidden" class="submission-confirmation-bar">
             <span>当前会话权限已失效，请重新登录或刷新权限后重试</span>
           </div>
+          <div v-else-if="conversationArchived" class="submission-confirmation-bar">
+            <span>当前会话已归档（存量旧绑定形态），仅供查看，请新建对话继续使用</span>
+          </div>
+          <div v-else-if="accountUnbound" class="submission-confirmation-bar">
+            <span>先在下方选择 AI 账户，再选择模型开始对话</span>
+          </div>
           <div v-else-if="editingTurn" class="turn-editing-bar">
             <span>正在修改最近一轮消息</span>
             <a-button type="link" size="small" :disabled="editingTurn.phase === 'submitting'" @click="cancelTurnEdit">取消编辑</a-button>
           </div>
           <div v-else-if="turnLimitReached" class="turn-limit-bar">
             <span>{{ turnLimitMessage }}</span>
-            <a-button type="link" size="small" @click="openCreateConversationModal">新建对话</a-button>
+            <a-button type="link" size="small" :loading="creatingConversation" @click="createConversationDirectly">新建对话</a-button>
           </div>
           <div v-if="conversationActionLoading" class="conversation-action-bar" role="status" aria-live="polite">
             <a-spin size="small" />
@@ -60,17 +66,22 @@
             :conversation-id="selectedConversation.id"
             :context-status="contextStatus"
             :context-status-loading="contextStatusLoading"
-            :disabled="generating || submissionBlocked || conversationActionLoading"
+            :disabled="generating || submissionBlocked || conversationActionLoading || conversationArchived"
             :stoppable="generating || Boolean(pendingConfirmation)"
             :turn-limit-reached="turnLimitReached && !editingTurn"
             :turn-limit-message="turnLimitMessage"
             :image-input-supported="Boolean(selectedModelOption?.inputModalities.includes('image') && selectedModelOption.supportedApiProtocols.includes('responses'))"
             :image-policy="imagePolicy"
+            :account-options="accounts"
+            :account-value="selectedConversation.bindAccountId"
+            :accounts-loading="accountsLoading"
             :model-options="models"
             :model-capabilities="selectedModelOption"
             :models-loading="modelsLoading"
             :mobile="mobile"
             :model-capabilities-loading="modelCapabilitiesLoading"
+            @accounts-open="loadAccounts"
+            @update:account-value="changeAccount"
             @models-open="loadModelsOnOpen"
             @submit="handleComposerSubmit"
             @stop="stopGeneration"
@@ -81,7 +92,7 @@
       <div v-else class="chat-start-state">
         <MessageOutlined />
         <strong>新建对话后开始提问</strong>
-        <a-button type="primary" @click="openCreateConversationModal"><PlusOutlined />新建对话</a-button>
+        <a-button type="primary" :loading="creatingConversation" @click="createConversationDirectly"><PlusOutlined />新建对话</a-button>
       </div>
     </main>
 
@@ -118,6 +129,12 @@
             <div v-for="tool in detailConversation.toolCapabilities.tools" :key="tool.id" class="conversation-tool-capability">
               <a-tag :color="toolCapabilityTagColor(tool)">{{ toolCapabilityTitle(tool) }}：{{ toolCapabilityState(tool) }}</a-tag>
               <span v-if="tool.invalidReason" class="conversation-tool-capability-reason">{{ tool.invalidReason }}</span>
+              <a-button
+                v-if="tool.kind === 'model' && !detailConversation.archived"
+                type="link"
+                size="small"
+                @click="openToolBindingDialog(tool.id)"
+              >{{ tool.bound ? '更换绑定' : '设置绑定' }}</a-button>
             </div>
           </div>
           <span v-else class="conversation-tool-capability-reason">暂无能力信息</span>
@@ -136,10 +153,16 @@
         </a-radio>
       </a-radio-group>
     </a-modal>
+    <ChatToolBindingDialog
+      :open="toolBindingDialogOpen"
+      :conversation="selectedConversation!"
+      :tool-id="toolBindingToolId"
+      @close="toolBindingDialogOpen = false"
+      @saved="handleToolBindingSaved"
+    />
     <a-modal v-model:open="deleteDialogOpen" title="删除会话" ok-text="删除" cancel-text="取消" ok-type="danger" :confirm-loading="conversationUpdating" @ok="confirmDeleteConversation">
       删除后聊天记录无法恢复，确定删除“{{ pendingConversation?.title }}”吗？
     </a-modal>
-    <ChatCreateConversationModal v-model:open="createModalOpen" @created="handleConversationCreated" />
   </section>
 </template>
 
@@ -147,12 +170,13 @@
 import { ArrowDownOutlined, CopyOutlined, MessageOutlined, MoreOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, defineComponent, h, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
-import { chatApi, ChatStreamHttpError } from '@/api/domains/chat'
+import { chatApi, ChatStreamHttpError, type ChatAccountOption } from '@/api/domains/chat'
 import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
 import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapability, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+
 import { beginLatestTurnEdit, beginLatestTurnRetry, isDefinitiveChatHttpRejection, removeInvalidatedGeneratedAssetsFromDraft, resolveChatReconciliationNotice, resolveChatSubmitFailure, restoreChatMessagesAfterRejectedReplacement } from './chatTurnEditing'
 import {
   applyChatReconciliationIfActive,
@@ -173,8 +197,8 @@ import {
   type ChatPendingSubmission
 } from './chatPendingSubmissionStorage'
 import ChatMessageList from './ChatMessageList.vue'
-import ChatCreateConversationModal from './ChatCreateConversationModal.vue'
 import AIComposer from './composer/AIComposer.vue'
+import ChatToolBindingDialog from './ChatToolBindingDialog.vue'
 import type { ChatInputBlock } from './composer/chatComposerDocument'
 import { defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls } from './composer/chatModelControls'
 import type { JSONContent } from '@tiptap/core'
@@ -228,6 +252,10 @@ const hasMoreConversations = ref(false)
 const selectedConversationId = ref<string>()
 const messages = ref<ChatMessage[]>([])
 const models = ref<ChatModelListOption[]>([])
+const accounts = ref<ChatAccountOption[]>([])
+const accountsLoading = ref(false)
+const toolBindingDialogOpen = ref(false)
+const toolBindingToolId = ref('web_search')
 const imagePolicy = ref<ChatImagePolicy>()
 const selectedModel = ref<string>()
 const selectedModelCapabilities = ref<ChatModelCapabilities>()
@@ -258,7 +286,7 @@ const renameDialogOpen = ref(false)
 const detailsDialogOpen = ref(false)
 const detailLoading = ref(false)
 const deleteDialogOpen = ref(false)
-const createModalOpen = ref(false)
+const creatingConversation = ref(false)
 const imageModelDialogOpen = ref(false)
 const imageModelUpdating = ref(false)
 const pendingImageModel = ref<ChatImageModel>('gpt-image-2')
@@ -281,6 +309,7 @@ const imageModelOptions: ReadonlyArray<{ value: ChatImageModel; label: string }>
 const requestLifecycleEpochs = new ChatRequestLifecycleEpochs()
 let activeStopTarget: ActiveChatStopTarget | undefined
 const reconcilingSubmissionClientMessageIds = new Set<string>()
+const bindingPromptedKeys = new Set<string>()
 let pendingConfirmationTimer: number | undefined
 let pendingConfirmationRetryCount = 0
 let contextStatusTimer: number | undefined
@@ -314,6 +343,10 @@ const conversationForbidden = computed(() => {
   conversationAccessEpoch.value
   return Boolean(selectedConversation.value && chatGenerationRuntime.isConversationBlocked(selectedConversation.value.systemAccountId, selectedConversation.value.id))
 })
+// 归档（存量旧模式）会话只读（账户唯一绑定设计 §7）；未绑定账户的会话需要
+// 先完成「选账户」才能选模型与发送（设计 §6 顺序流）。
+const conversationArchived = computed(() => Boolean(selectedConversation.value?.archived))
+const accountUnbound = computed(() => Boolean(selectedConversation.value && !selectedConversation.value.archived && !selectedConversation.value.bindAccountId))
 const turnLimitReached = computed(() => Boolean(selectedConversation.value && isChatTurnLimitReached(selectedConversation.value.userTurnCount, selectedConversation.value.userTurnLimit)))
 const turnLimitMessage = computed(() => chatTurnLimitMessage(selectedConversation.value?.userTurnLimit ?? 0))
 const selectedModelOption = computed(() => selectedModelCapabilities.value?.id === selectedModel.value ? selectedModelCapabilities.value : undefined)
@@ -450,7 +483,8 @@ async function selectConversation(id: string, options: {
     const conversation = conversations.value.find((item) => item.id === id)
     if (!conversation) throw new Error('会话不存在')
     if (authState.currentUser.value?.id !== conversation.systemAccountId) return false
-    selectedModel.value = conversation.lastModel ?? conversation.defaultModel?.id
+    // 归档会话只读：不预填模型、不拉模型能力（能力端点对归档会话无作用域）。
+    selectedModel.value = conversation.archived ? undefined : conversation.lastModel
     if (selectedModel.value) void loadSelectedModelCapabilities(selectedModel.value)
     let loadedSyncHead: ChatConversationSyncHead | undefined
     const messageItems = await (async () => {
@@ -575,22 +609,82 @@ function createConversationFromPane(): void {
     return
   }
   pendingCreateAfterDrawerClose.value = false
-  openCreateConversationModal()
+  void createConversationDirectly()
 }
 function handleConversationDrawerAfterOpenChange(open: boolean): void {
   if (open || !pendingCreateAfterDrawerClose.value) return
   pendingCreateAfterDrawerClose.value = false
-  openCreateConversationModal()
+  void createConversationDirectly()
 }
-function openCreateConversationModal(): void {
-  createModalOpen.value = true
+// 免弹窗直进（契约 AI问答会话账户唯一绑定设计 §6）：点击新建即创建空会话
+// 并进入，会话内完成「选账户 → 选模型 → 发送」。
+async function createConversationDirectly(): Promise<void> {
+  if (creatingConversation.value) return
+  creatingConversation.value = true
+  try {
+    const item = await chatApi.createConversation()
+    conversations.value.unshift(item)
+    void selectConversation(item.id).then((selected) => {
+      if (selected) conversationDrawerOpen.value = false
+    })
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '新建会话失败，请稍后重试'))
+  } finally {
+    creatingConversation.value = false
+  }
 }
-function handleConversationCreated(item: ChatConversation): void {
-  createModalOpen.value = false
-  conversations.value.unshift(item)
-  void selectConversation(item.id).then((selected) => {
-    if (selected) conversationDrawerOpen.value = false
-  })
+// 账户候选（设计 §5）：用户授权范围内全部可派发账户，打开下拉时刷新。
+async function loadAccounts(): Promise<void> {
+  if (accountsLoading.value) return
+  accountsLoading.value = true
+  try {
+    accounts.value = await chatApi.listChatAccounts()
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '加载账户列表失败'))
+  } finally {
+    accountsLoading.value = false
+  }
+}
+// 设置/切换会话绑定账户（设计 §6）：PATCH accountId；服务端在当前 lastModel
+// 不再可路由时联动清空模型（响应 lastModel 为空），此时清空本地模型选择并
+// 失效模型目录缓存，用户重选模型。
+async function changeAccount(accountId?: string): Promise<void> {
+  const conversation = selectedConversation.value
+  if (!accountId || !conversation || conversation.archived || conversationActionLoading.value) return
+  if (accountId === conversation.bindAccountId) return
+  conversationActionLoading.value = true
+  try {
+    const updated = await conversationMutationQueue.enqueue(conversation.id, () => chatApi.updateConversation(conversation.id, { accountId }))
+    replaceConversation(updated)
+    if (conversation.lastModel && !updated.lastModel) {
+      modelLoadCoordinator.cancel(conversation.id)
+      models.value = []
+      selectedModel.value = undefined
+      selectedModelCapabilities.value = undefined
+      message.info('当前模型在新账户不可用，请重新选择模型')
+    } else {
+      message.success(updated.bindAccountName ? `已切换到账户「${updated.bindAccountName}」` : '账户已更新')
+    }
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '账户切换失败'))
+  } finally {
+    conversationActionLoading.value = false
+  }
+}
+function openToolBindingDialog(toolId: string): void {
+  if (!selectedConversation.value || selectedConversation.value.archived) return
+  toolBindingToolId.value = toolId
+  toolBindingDialogOpen.value = true
+}
+async function handleToolBindingSaved(updated: ChatConversation): Promise<void> {
+  replaceConversation(updated)
+  // 详情弹窗开着时同步刷新（工具能力状态随绑定变化）。
+  if (detailsDialogOpen.value) {
+    try {
+      const loaded = await chatApi.getConversation(updated.id)
+      if (detailsDialogOpen.value && detailConversation.value?.id === updated.id) detailConversation.value = loaded
+    } catch { /* 详情刷新失败不打断主流程 */ }
+  }
 }
 async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatInputBlock[]): Promise<void> {
   const conversation = selectedConversation.value
@@ -820,6 +914,19 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
   const projection: ChatMessage = {
     ...(turn.projection as ChatMessage),
     ...(turn.status === 'failed' && turn.error?.message ? { errorMessage: turn.error.message } : {})
+  }
+  // tool.binding_required 引导（工具体系设计 §9）：事件是瞬态投影，不落库；
+  // 首次出现时 toast 提示并打开对应工具的绑定弹窗，按 callId 去重。
+  for (const toolEvent of projection.toolEvents ?? []) {
+    if (toolEvent.item?.errorCode !== 'tool_binding_required') continue
+    const promptKey = `${turn.conversationId}:${toolEvent.id}`
+    if (bindingPromptedKeys.has(promptKey)) continue
+    bindingPromptedKeys.add(promptKey)
+    const hint = typeof toolEvent.item.errorMessage === 'string' && toolEvent.item.errorMessage.trim()
+      ? toolEvent.item.errorMessage
+      : '该能力需要先设置绑定的账户和模型后才能使用'
+    message.warning(hint)
+    openToolBindingDialog(String(toolEvent.item.toolId ?? toolEvent.type ?? 'web_search'))
   }
   if (projection.id) {
     const index = messages.value.findIndex((item) => item.id === projection.id || (item.role === 'assistant' && item.clientMessageId === turn.clientMessageId && item.id.startsWith('optimistic-assistant:')))
@@ -1061,6 +1168,16 @@ async function loadSelectedModelCapabilities(modelId: string): Promise<void> {
 }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
   if (generating.value || submissionBlocked.value) { composer.value?.restore(payload.snapshot); return }
+  if (conversationArchived.value) {
+    composer.value?.restore(payload.snapshot)
+    message.warning('当前会话已归档，仅供查看；请新建对话继续使用')
+    return
+  }
+  if (accountUnbound.value) {
+    composer.value?.restore(payload.snapshot)
+    message.warning('请先选择 AI 账户，再选择模型发送')
+    return
+  }
   if (!selectedConversation.value || !selectedModel.value || !selectedModelOption.value || modelsLoading.value || modelCapabilitiesLoading.value) {
     composer.value?.restore(payload.snapshot)
     message.warning(modelsLoading.value || modelCapabilitiesLoading.value ? '模型仍在加载，请稍后发送' : selectedModel.value ? '当前模型能力不可用，请重新选择' : '当前没有可用模型')

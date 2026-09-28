@@ -31,7 +31,7 @@ assert(actionHandler.indexOf('await chatApi.clearConversation') < actionHandler.
 assert.match(actionHandler, /chatGenerationRuntime\.forget\(conversation\.systemAccountId, conversation\.id\)/, '清空成功必须移除该会话所有 runtime，包括尚无 turnId 的终态投影')
 assert.match(actionHandler, /if \(selectedConversationId\.value === conversation\.id\) \{[\s\S]{0,500}composer\.value\?\.clear\(\)[\s\S]{0,500}messages\.value = \[\]/, '清空 A 返回时只有仍选中 A 才能清理当前编辑器和消息，不能误清已切换的 B')
 assert.match(actionHandler, /catch \(error\)[\s\S]{0,180}message\.error/, '动作失败必须保留现有消息并提示错误')
-assert.match(viewSource, /:disabled="generating \|\| submissionBlocked \|\| conversationActionLoading"/, '动作请求期间必须禁用编辑器避免并发操作')
+assert.match(viewSource, /:disabled="generating \|\| submissionBlocked \|\| conversationActionLoading \|\| conversationArchived"/, '动作请求期间必须禁用编辑器避免并发操作')
 assert.match(viewSource, /shouldAutomaticallyRetryPendingConfirmation\(pendingConfirmationRetryCount\)/, '待确认后台重试必须经过有界策略，耗尽后保留手动确认入口')
 assert.match(viewSource, /async function refreshMessages[\s\S]{0,220}const loadEpoch = conversationLoadEpoch[\s\S]{0,500}isCurrentChatConversationLoad/, '直接消息刷新必须使用会话加载代次，清空前的迟到响应不得复活旧消息')
 assert.match(viewSource, /function isRequestUiCurrent[\s\S]{0,500}request\.uiEpoch[\s\S]{0,500}conversationLoadEpoch/, '提交失败协程恢复草稿前必须验证请求所属页面代次')

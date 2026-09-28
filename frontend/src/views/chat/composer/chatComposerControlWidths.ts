@@ -1,4 +1,4 @@
-export type ChatComposerControlKind = 'model' | 'reasoning' | 'service'
+export type ChatComposerControlKind = 'account' | 'model' | 'reasoning' | 'service'
 
 export interface ChatComposerControlWidths {
   triggerWidth: number
@@ -6,6 +6,7 @@ export interface ChatComposerControlWidths {
 }
 
 const controlMinWidths: Record<ChatComposerControlKind, number> = {
+  account: 104,
   model: 112,
   reasoning: 92,
   service: 104

@@ -5,6 +5,8 @@ export interface ChatToolProcessGroup {
   key: string
   type: string
   status: ChatToolStatus
+  /** 摘要行补充（如「N 个来源」），跟随状态文案展示。 */
+  statusDetail?: string
   callCount: number
   duplicateCount: number
   summaries: string[]
@@ -21,6 +23,7 @@ interface LifecycleTool {
 interface CanonicalToolAction {
   key: string
   summaries: string[]
+  statusDetail?: string
 }
 
 const summaryLimit = 160
@@ -53,7 +56,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     })
   })
 
-  const grouped = new Map<string, { type: string; statuses: ChatToolStatus[]; callIds: Set<string>; summaries: Set<string> }>()
+  const grouped = new Map<string, { type: string; statuses: ChatToolStatus[]; callIds: Set<string>; summaries: Set<string>; statusDetail?: string }>()
   for (const tool of lifecycle.values()) {
     const canonical = canonicalizeToolAction(tool)
     const existing = grouped.get(canonical.key) ?? {
@@ -65,6 +68,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     existing.statuses.push(tool.status)
     existing.callIds.add(tool.callId || `event-${tool.fallbackIndex}`)
     canonical.summaries.forEach((summary) => existing.summaries.add(limitSummary(summary)))
+    if (canonical.statusDetail) existing.statusDetail = canonical.statusDetail
     grouped.set(canonical.key, existing)
   }
 
@@ -72,6 +76,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     key,
     type: group.type,
     status: resolveGroupStatus(group.statuses),
+    ...(group.statusDetail ? { statusDetail: group.statusDetail } : {}),
     callCount: group.callIds.size,
     duplicateCount: Math.max(0, group.callIds.size - 1),
     summaries: [...group.summaries]
@@ -86,6 +91,26 @@ function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {
     return {
       key: stableJson([tool.type, { errorCode, errorMessage }]),
       summaries: [errorMessage || chatErrorMessage(errorCode)]
+    }
+  }
+  // 应用层模型工具（工具体系设计 §10 时间线）：web_search 展示查询与来源
+  //（来源可展开）；generate_image 仅状态条目（图片走 output_image 块）。
+  if (tool.type === 'web_search') {
+    const query = normalizeWhitespace(readString(item.query))
+    const sourceCount = typeof item.sourceCount === 'number' && Number.isFinite(item.sourceCount) ? item.sourceCount : undefined
+    const sources = Array.isArray(item.sources)
+      ? item.sources.filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).slice(0, 8)
+      : []
+    return {
+      key: stableJson([tool.type, { query, sourceCount }]),
+      summaries: [...(query ? [query] : []), ...sources],
+      ...(sourceCount !== undefined ? { statusDetail: `${sourceCount} 个来源` } : {})
+    }
+  }
+  if (tool.type === 'generate_image') {
+    return {
+      key: stableJson([tool.type, { callId: tool.callId || `event-${tool.fallbackIndex}` }]),
+      summaries: []
     }
   }
   if (tool.type === 'web_search_call' || tool.type === 'file_search_call') {

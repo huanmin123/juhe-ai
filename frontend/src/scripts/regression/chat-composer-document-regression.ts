@@ -298,7 +298,7 @@ assert.match(composerSource, /for \(const \[localId, record\] of detached\)[\s\S
 assert.doesNotMatch(composerSource, /可撤销删除后重试/, '删除图片后不能承诺仍可恢复已释放的本地文件')
 assert.match(composerSource, /function retryImageUpload\(localId: string\): void \{[\s\S]{0,220}if \(!record\) \{[\s\S]{0,120}请重新选择图片/, '撤销恢复已删除的图片节点时必须提示重新选择图片，不能静默失效')
 assert.match(composerSource, /for \(const item of pending\) patchImageNode[\s\S]{0,80}pruneDetachedImageRecords\(\)/, '普通 Tiptap 文档更新必须执行脱离图片记录清理')
-assert.match(composerSource, /const canSubmit = computed\(\(\) => Boolean\(hasContent\.value && props\.modelValue && props\.modelCapabilities && !props\.modelsLoading && !props\.modelCapabilitiesLoading && imagesReady\.value/, '模型未选中、能力仍在加载或图片未上传完成时不得清空并提交草稿')
+assert.match(composerSource, /const canSubmit = computed\(\(\) => Boolean\(hasContent\.value && props\.accountValue && props\.modelValue && props\.modelCapabilities && !props\.modelsLoading && !props\.modelCapabilitiesLoading && imagesReady\.value/, '模型未选中、能力仍在加载或图片未上传完成时不得清空并提交草稿')
 assert.match(chatViewSource, /contentBlocks: blocks\.map\(\(block\) => block\.type === 'input_image' \? \{ type: block\.type, assetId: block\.assetId \}/, '聊天提交必须只携带图片 assetId')
 assert.match(chatViewSource, /function handleComposerSubmit[\s\S]{0,500}!selectedModel\.value[\s\S]{0,220}composer\.value\?\.restore\(payload\.snapshot\)/, '页面发送边界必须在模型不可用时恢复已清空快照')
 assert.match(composerSource, /import \{[^\n]*findChatComposerCommandQuery[^\n]*\} from '\.\/chatComposerCommands'/, 'AIComposer 必须接入基于 EditorState 的命令查询')

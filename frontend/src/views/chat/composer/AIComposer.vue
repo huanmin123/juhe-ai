@@ -92,9 +92,23 @@
             </a-menu>
           </template>
         </a-dropdown>
-        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled" size="small" :bordered="false" aria-label="选择模型" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @dropdown-visible-change="handleModelDropdownVisibleChange" @update:value="emit('update:modelValue', $event)" />
-        <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled" allow-clear size="small" :bordered="false" aria-label="思考级别" :style="{ width: `${reasoningControlWidths.triggerWidth}px` }" :dropdown-match-select-width="reasoningControlWidths.popupWidth" @update:value="handleReasoningEffortUpdate" />
-        <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled" allow-clear size="small" :bordered="false" aria-label="服务等级" :style="{ width: `${serviceTierControlWidths.triggerWidth}px` }" :dropdown-match-select-width="serviceTierControlWidths.popupWidth" @update:value="handleServiceTierUpdate" />
+        <a-select
+          :value="accountValue"
+          :options="accountSelectOptions"
+          :loading="accountsLoading"
+          :disabled="disabled"
+          size="small"
+          :bordered="false"
+          placeholder="选择账户"
+          aria-label="选择 AI 账户"
+          :style="{ width: `${accountControlWidths.triggerWidth}px` }"
+          :dropdown-match-select-width="accountControlWidths.popupWidth"
+          @dropdown-visible-change="handleAccountDropdownVisibleChange"
+          @update:value="emit('update:accountValue', $event)"
+        />
+        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled || !accountValue" size="small" :bordered="false" aria-label="选择模型" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @dropdown-visible-change="handleModelDropdownVisibleChange" @update:value="emit('update:modelValue', $event)" />
+        <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled || !accountValue" allow-clear size="small" :bordered="false" aria-label="思考级别" :style="{ width: `${reasoningControlWidths.triggerWidth}px` }" :dropdown-match-select-width="reasoningControlWidths.popupWidth" @update:value="handleReasoningEffortUpdate" />
+        <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled || !accountValue" allow-clear size="small" :bordered="false" aria-label="服务等级" :style="{ width: `${serviceTierControlWidths.triggerWidth}px` }" :dropdown-match-select-width="serviceTierControlWidths.popupWidth" @update:value="handleServiceTierUpdate" />
       </div>
       <a-tooltip :title="contextTooltip">
         <span class="ai-composer-context" role="img" :aria-label="`上下文用量 ${contextTooltip}`">
@@ -116,7 +130,7 @@ import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { Editor, JSONContent } from '@tiptap/core'
-import { chatApi, chatAssetContentUrl } from '@/api/domains/chat'
+import { chatApi, chatAssetContentUrl, type ChatAccountOption } from '@/api/domains/chat'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { composerDocumentToBlocks, composerTextToDocument, type ChatInputBlock } from './chatComposerDocument'
@@ -144,6 +158,9 @@ const props = defineProps<{
   turnLimitMessage: string
   imageInputSupported: boolean
   imagePolicy?: ChatImagePolicy
+  accountOptions: ChatAccountOption[]
+  accountValue?: string
+  accountsLoading: boolean
   modelOptions: ChatModelListOption[]
   modelCapabilities?: ChatModelCapabilities
   modelValue?: string
@@ -156,13 +173,18 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void
-  (event: 'stop' | 'models-open'): void
+  (event: 'stop' | 'models-open' | 'accounts-open'): void
   (event: 'conversation-action', action: 'set-image-model' | 'compact-context' | 'clear-conversation'): void
+  (event: 'update:accountValue', value?: string): void
   (event: 'update:modelValue', value?: string): void
   (event: 'update:reasoningEffort', value: ChatReasoningEffort | ''): void
   (event: 'update:serviceTier', value: ChatServiceTier | ''): void
   (event: 'update:generationParameters', value: ChatGenerationParameters): void
 }>()
+
+function handleAccountDropdownVisibleChange(open: boolean): void {
+  if (open) emit('accounts-open')
+}
 
 function handleModelDropdownVisibleChange(open: boolean): void {
   if (open) emit('models-open')
@@ -308,6 +330,8 @@ const imageToolDisabledReason = computed(() => props.disabled
         ? '图片处理策略正在加载'
       : '')
 const selectedModelOption = computed(() => props.modelCapabilities?.id === props.modelValue ? props.modelCapabilities : undefined)
+const accountSelectOptions = computed(() => props.accountOptions.map((item) => ({ label: item.name, value: item.id, title: item.name })))
+const accountControlWidths = computed(() => chatComposerControlWidths('account', props.accountOptions.find((item) => item.id === props.accountValue)?.name, accountSelectOptions.value.map((item) => item.label)))
 const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.name, value: item.id, title: item.name })))
 const reasoningOptions = computed(() => selectableChatReasoningEfforts(selectedModelOption.value).map((value) => {
   const label = `思考 ${reasoningEffortLabel(value)}`
@@ -358,9 +382,10 @@ const hasContent = computed(() => {
   return Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length))
 })
 const imagesReady = computed(() => imageItems.value.every((item) => item.uploadStatus === 'uploaded' && Boolean(item.assetId)))
-const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && props.modelCapabilities && !props.modelsLoading && !props.modelCapabilitiesLoading && imagesReady.value && pendingImagePreparationCount.value === 0 && !props.disabled && !props.turnLimitReached && (props.imageInputSupported || imageItems.value.length === 0)))
+const canSubmit = computed(() => Boolean(hasContent.value && props.accountValue && props.modelValue && props.modelCapabilities && !props.modelsLoading && !props.modelCapabilitiesLoading && imagesReady.value && pendingImagePreparationCount.value === 0 && !props.disabled && !props.turnLimitReached && (props.imageInputSupported || imageItems.value.length === 0)))
 const sendTooltip = computed(() => {
   if (props.turnLimitReached) return props.turnLimitMessage
+  if (!props.accountValue) return '请先选择 AI 账户'
   if (pendingImagePreparationCount.value > 0) return '图片正在压缩，请稍候'
   if (imageItems.value.some((item) => item.uploadStatus === 'preparing')) return '图片正在压缩，请稍候'
   if (imageItems.value.some((item) => item.uploadStatus === 'failed')) return '请重试或删除上传失败的图片'

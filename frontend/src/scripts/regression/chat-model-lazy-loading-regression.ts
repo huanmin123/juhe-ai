@@ -13,7 +13,7 @@ const selectConversationSource = chatViewSource.slice(selectConversationStart, s
 
 assert.ok(selectConversationStart >= 0 && selectConversationEnd > selectConversationStart, '必须能定位会话选择流程')
 assert.doesNotMatch(selectConversationSource, /listModels|modelLoadCoordinator\.(?:load|refresh|refreshIfExpired)|startChatConversationLoad[\s\S]*loadModels/, '打开会话和首屏不得请求模型列表')
-assert.match(selectConversationSource, /selectedModel\.value\s*=\s*conversation\.lastModel/, '已有会话必须直接恢复 lastModel，不能等待模型列表')
+assert.match(selectConversationSource, /selectedModel\.value\s*=\s*conversation\.archived \? undefined : conversation\.lastModel/, '已有会话必须直接恢复 lastModel，不能等待模型列表（归档只读会话除外）')
 assert.match(chatViewSource, /async function loadSelectedModelCapabilities/, '当前模型能力必须由独立按 ID 加载流程维护')
 assert.match(chatViewSource, /chatApi\.getModelCapabilities\(conversationId, modelId, \{ signal \}\)/, '当前模型必须按 ID 获取能力详情并传递取消信号')
 assert.match(performanceSource, /class ChatModelCapabilitiesLoadCoordinator[\s\S]*new AbortController\(\)/, '能力协调器必须提供 AbortController 取消')
@@ -23,8 +23,8 @@ assert.match(composerSource, /item\.name/, '模型下拉展示名称必须来自
 assert.match(chatApiSource, /listModels:[\s\S]*ChatModelListOption\[\]/, '模型列表 API 必须使用轻量类型')
 assert.match(chatApiSource, /getModelCapabilities:[\s\S]*ChatModelCapabilities/, '模型能力必须使用独立详情 API')
 assert.match(chatTypesSource, /interface ChatModelListOption\s*\{\s*id: string\s*name: string\s*\}/, '模型列表项只能包含 id 和 name')
-assert.match(chatTypesSource, /defaultModel\?: ChatModelListOption/, '会话响应必须携带轻量默认模型引用')
-assert.match(chatViewSource, /conversation\.lastModel \?\? conversation\.defaultModel\?\.id/, '新会话必须无需打开列表即可恢复服务端默认模型')
+assert.doesNotMatch(chatTypesSource, /defaultModel\?: ChatModelListOption/, '会话响应不再携带默认模型引用（账户唯一绑定后模型恢复只用 lastModel）')
+assert.match(chatViewSource, /selectedModel\.value = conversation\.archived \? undefined : conversation\.lastModel/, '已有会话必须无需打开列表即可恢复 lastModel（归档只读除外；新空会话选完账户后经模型下拉按需加载）')
 assert.match(chatViewSource, /ChatModelCapabilitiesLoadCoordinator/, '模型能力请求必须由可测试的并发与取消协调器管理')
 assert.ok((chatViewSource.match(/modelCapabilitiesLoadCoordinator\.cancel\(\)/g) ?? []).length >= 2, '切换会话和卸载都必须取消旧能力请求')
 

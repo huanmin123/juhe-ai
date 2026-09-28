@@ -37,7 +37,7 @@
     "test:chat-conversation-optimistic": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-conversation-optimistic-regression.ts",
     "test:chat-conversation-load": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-conversation-load-regression.ts",
     "test:chat-conversation-performance": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-conversation-performance-regression.ts",
-    "test:chat-conversation-bind-modes": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-conversation-bind-modes-regression.ts",
+    "test:chat-conversation-account-binding": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-conversation-account-binding-regression.ts",
     "test:chat-model-lazy-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-model-lazy-loading-regression.ts",
     "test:chat-conversation-details": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-conversation-details-regression.ts",
     "test:chat-editor-history": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-editor-history-regression.ts",

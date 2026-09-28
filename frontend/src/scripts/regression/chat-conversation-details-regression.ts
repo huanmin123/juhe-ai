@@ -17,8 +17,8 @@ assert.match(
   '复制会话 ID 必须复用公共剪贴板能力并提供成功反馈'
 )
 assert.match(source, /<a-descriptions-item label="工具能力">/, '会话详情必须展示工具能力')
-assert.match(source, /tool\.available \? '可用' : '不可用'/, '工具能力必须明确展示可用或不可用')
-assert.match(source, /!tool\.available && tool\.reason/, '工具不可用时必须展示后端返回的原因')
+assert.match(source, /if \(!tool\.bound\) return '未设置'[\s\S]{0,120}return tool\.valid \? '已绑定' : '已失效'/, '工具能力必须按绑定新契约展示未设置/已绑定/已失效')
+assert.match(source, /v-if="tool\.invalidReason"[\s\S]{0,120}\{\{ tool\.invalidReason \}\}/, '工具绑定失效时必须展示后端返回的原因')
 assert.match(
   source,
   /async function openDetails[\s\S]{0,500}chatApi\.getConversation\(item\.id\)/,

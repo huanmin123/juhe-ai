@@ -42,7 +42,7 @@ const typeSource = readFileSync(new URL('../../types/domain/chat.ts', import.met
 const viewSource = readFileSync(new URL('../../views/chat/ChatView.vue', import.meta.url), 'utf8')
 const composerSource = readFileSync(new URL('../../views/chat/composer/AIComposer.vue', import.meta.url), 'utf8')
 
-assert.match(typeSource, /interface ChatConversation[\s\S]{0,500}userTurnCount: number[\s\S]{0,200}userTurnLimit: number/, '会话类型必须声明后端权威轮次字段')
+assert.match(typeSource, /interface ChatConversation[\s\S]{0,900}userTurnCount: number[\s\S]{0,200}userTurnLimit: number/, '会话类型必须声明后端权威轮次字段')
 assert.match(composerSource, /turnLimitReached: boolean[\s\S]{0,300}turnLimitMessage: string/, 'Composer 必须接收独立轮次限制状态和提示')
 assert.match(composerSource, /canSubmit[\s\S]{0,300}!props\.turnLimitReached/, '轮次上限必须参与发送门禁')
 const canSubmitSource = composerSource.slice(composerSource.indexOf('const canSubmit = computed'), composerSource.indexOf('const sendTooltip = computed'))
@@ -58,7 +58,7 @@ assert.ok(turnLimitGuardIndex < submitSource.indexOf('replaceEditorContentWithou
 assert.ok(turnLimitGuardIndex < submitSource.indexOf("emit('submit'"), '达到上限的键盘提交不得 emit submit')
 
 assert.match(viewSource, /const turnLimitReached = computed\([\s\S]{0,300}isChatTurnLimitReached/, 'ChatView 必须从当前会话权威字段计算 reached')
-assert.match(viewSource, /class="turn-limit-bar"[\s\S]{0,300}turnLimitMessage[\s\S]{0,300}@click="openCreateConversationModal"[\s\S]{0,120}新建对话/, 'Composer 上方必须显示低噪提示并通过绑定模式弹窗新建')
+assert.match(viewSource, /class="turn-limit-bar"[\s\S]{0,300}turnLimitMessage[\s\S]{0,300}@click="createConversationDirectly"[\s\S]{0,120}新建对话/, 'Composer 上方必须显示低噪提示并直接新建会话')
 assert.match(viewSource, /:turn-limit-reached="turnLimitReached && !editingTurn"/, '编辑最近一轮时 Composer 必须放开 replace 提交')
 assert.match(viewSource, /const activeEdit =[\s\S]{0,300}canSubmitChatTurn\(\{[\s\S]{0,300}replaceTurnId: activeEdit\?\.replaceTurnId/, '发送前必须用权威 count 再检查；仅服务端已接受轮次的 activeEdit 才使用替换例外')
 const handleFailureSource = viewSource.slice(viewSource.indexOf('async function handleSubmitFailure'), viewSource.indexOf('async function applySubmissionOutcome'))

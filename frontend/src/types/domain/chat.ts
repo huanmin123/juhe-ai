@@ -45,7 +45,6 @@ export interface ChatConversation {
   searchAccountId?: string
   searchModelId?: string
   imageAccountId?: string
-  defaultModel?: ChatModelListOption
   title: string
   isPinned: boolean
   lastModel?: string

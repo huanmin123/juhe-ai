@@ -4,27 +4,9 @@ import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 /**
  * 会话账户唯一绑定（AI 问答会话账户唯一绑定设计）：创建免请求体直进空会话，
- * 服务端忽略任何请求体内容；字段保留仅为兼容存量调用方（前端交互流改造在
- * 后续阶段落地）。
+ * 服务端忽略任何请求体内容；进入会话后经 PATCH accountId 完成绑定。
  */
-export interface ChatConversationCreatePayload {
-  bindMode?: string
-  apiKeyId?: string
-  groupId?: string
-  accountId?: string
-}
-
-export interface ChatConversationBindOption { id: string; name: string }
-
-export interface ChatConversationBindOptions { groups: ChatConversationBindOption[]; accounts: ChatConversationBindOption[] }
-
-/** GET /my-chat/accounts 返回的用户授权范围内可派发账户最小摘要。 */
-export interface ChatAccountOption {
-  id: string
-  name: string
-  providerCode: string
-  status: string
-}
+export interface ChatAccountOption { id: string; name: string; providerCode: string; status: string }
 
 /**
  * 模型工具的会话级绑定键（工具体系设计 §8.2）：searchBinding 为「账户+模型」
@@ -36,11 +18,9 @@ export type ChatToolBindingPatch =
 export const chatApi = {
   getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
-  /** 旧绑定下拉端点已退场（404）；保留客户端方法仅为兼容存量组件，前端阶段删除。 */
-  getConversationBindOptions: () => unwrap<ChatConversationBindOptions>(http.get('/my-chat/conversation-bind-options')),
   /** 用户授权范围内全部可派发账户（会话绑定与工具绑定统一候选源）。 */
   listChatAccounts: () => unwrap<ChatAccountOption[]>(http.get('/my-chat/accounts')),
-  createConversation: (payload?: ChatConversationCreatePayload) => unwrap<ChatConversation>(http.post('/my-chat/conversations', payload)),
+  createConversation: () => unwrap<ChatConversation>(http.post('/my-chat/conversations')),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),
   /** 会话工具绑定状态与候选（工具体系设计 §8.1）。 */
   getToolBindings: (conversationId: string) => unwrap<ChatConversationToolCapabilities>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/tool-bindings`)),

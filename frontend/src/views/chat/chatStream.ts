@@ -103,6 +103,19 @@ export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamE
     const existing = message.toolEvents?.find((tool) => tool.id === id)
     if (existing) { existing.status = status; existing.item = item }
     else (message.toolEvents ??= []).push({ id, type: String(item.type ?? 'tool'), status, item })
+    message.renderRevision = (message.renderRevision ?? 0) + 1
+    return
+  }
+  // tool.binding_required（工具体系设计 §9）：模型工具未绑定的引导事件。纯事件
+  // 不驱动内容块投影，落 toolEvents 失败条目（errorCode=tool_binding_required +
+  // UserHint），时间线渲染引导文案；candidates 原样保留供绑定弹窗预选。
+  if (event.type === 'tool.binding_required') {
+    const item = event.data.item
+    const id = String(item.callId ?? `binding-${message.toolEvents?.length ?? 0}`)
+    const existing = message.toolEvents?.find((tool) => tool.id === id)
+    if (existing) { existing.status = 'failed'; existing.item = item }
+    else (message.toolEvents ??= []).push({ id, type: String(item.toolId ?? 'tool'), status: 'failed', item })
+    message.renderRevision = (message.renderRevision ?? 0) + 1
     return
   }
   if (event.type === 'message.completed') {
@@ -180,6 +193,7 @@ function isValidChatStreamData(eventType: string, data: unknown): boolean {
   if (eventType === 'message.snapshot') return nonEmptyString(data.turnId) && isAssistantSnapshot(data.assistant)
   if (eventType === 'message.delta' || eventType === 'reasoning.delta') return nonEmptyString(data.messageId) && typeof data.delta === 'string'
   if (eventType === 'tool.started' || eventType === 'tool.updated' || eventType === 'tool.completed' || eventType === 'tool.failed' || eventType === 'tool.canceled') return nonEmptyString(data.messageId) && isRecord(data.item)
+  if (eventType === 'tool.binding_required') return nonEmptyString(data.messageId) && isRecord(data.item) && nonEmptyString(data.item.toolId)
   if (eventType === 'content_block.started' || eventType === 'content_block.completed') return nonEmptyString(data.messageId) && isContentBlock(data.block)
   if (eventType === 'content_block.delta') return nonEmptyString(data.messageId) && nonEmptyString(data.blockId) && typeof data.delta === 'string'
   if (eventType === 'content_block.updated') return nonEmptyString(data.messageId) && nonEmptyString(data.blockId) && isSafeContentBlockPatch(data.patch)

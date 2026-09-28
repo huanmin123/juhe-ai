@@ -7,7 +7,8 @@ const publicChatErrorMessages: Readonly<Record<string, string>> = Object.freeze(
   image_generation_rate_limited: '图片生成失败：上游请求过于频繁，请稍后重试',
   image_generation_request_rejected: '图片生成失败：上游拒绝了本次图片参数或内容',
   stream_interrupted: '生成连接已中断，请重新发送',
-  internal_generation_failed: '生成任务异常结束，请重新发送'
+  internal_generation_failed: '生成任务异常结束，请重新发送',
+  tool_binding_required: '该能力需要先设置绑定的账户和模型后才能使用'
 })
 
 export function chatErrorMessage(errorCode: string | undefined): string {
