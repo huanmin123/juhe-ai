@@ -1038,7 +1038,7 @@ func TestW1FChatToolSupportedProtocolsArms(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			got := chatToolSupportedProtocols(testCase.deps, []string{"grp-a", "grp-a", "  "}, "owner-1", "gpt-5.3")
+			got := chatToolProtocolsForScope(testCase.deps, &chatToolBindScope{accounts: scopeAccountsOf(testCase.deps)}, "owner-1", "gpt-5.3")
 			if len(got) != len(testCase.want) {
 				t.Fatalf("protocols = %v, want %v", got, testCase.want)
 			}
@@ -1049,6 +1049,26 @@ func TestW1FChatToolSupportedProtocolsArms(t *testing.T) {
 			}
 		})
 	}
+}
+
+// scopeAccountsOf 从目录端口按 grp-a 双协议族快照收敛 scope 账户视图（协议
+// 探测入参，替代已删除的分组 fan-out 路径；按 ID 去重）。
+func scopeAccountsOf(deps *chat.Deps) []chat.ChatTransportAccount {
+	if deps == nil || deps.ModelCatalog == nil {
+		return []chat.ChatTransportAccount{}
+	}
+	accounts := []chat.ChatTransportAccount{}
+	seen := map[string]bool{}
+	for _, family := range []string{"chat_completions", "responses"} {
+		for _, account := range deps.ModelCatalog.ListAccountsForGroup("grp-a", "", "gpt-5.3", family) {
+			if seen[account.ID] {
+				continue
+			}
+			seen[account.ID] = true
+			accounts = append(accounts, account)
+		}
+	}
+	return accounts
 }
 
 func TestW1FChatToolTransportSelection(t *testing.T) {
@@ -1073,19 +1093,13 @@ func TestW1FChatToolTransportSelection(t *testing.T) {
 	}
 
 	t.Run("图像生成路由判定", func(t *testing.T) {
-		catalog, _ := toolCapsFixture()
-		if chatToolHasImageGenerationRoute(nil, []string{"grp-image"}, "owner-1") {
-			t.Fatalf("nil deps 必须返回 false")
+		if chatToolImageRouteForScope(nil, &chatToolBindScope{}, "owner-1") {
+			t.Fatalf("空 scope 必须返回 false")
 		}
-		if chatToolHasImageGenerationRoute(toolCapsDeps(nil, nil, nil), []string{"grp-image"}, "owner-1") {
-			t.Fatalf("nil 目录必须返回 false")
-		}
-		if !chatToolHasImageGenerationRoute(toolCapsDeps(nil, nil, catalog), []string{"grp-image", "grp-image"}, "owner-1") {
+		if !chatToolImageRouteForScope(nil, &chatToolBindScope{accounts: []chat.ChatTransportAccount{toolCapsAccount("acct-image", "api_key", "chat_sse")}}, "owner-1") {
 			t.Fatalf("api_key 账户必须命中图像路由")
 		}
-		raw := catalog.(toolCapsCatalog)
-		raw.accountsByGroup["grp-image|gpt-image-2|"] = []chat.ChatTransportAccount{toolCapsAccount("acct-image", "oauth", "chat_sse")}
-		if chatToolHasImageGenerationRoute(toolCapsDeps(nil, nil, raw), []string{"grp-image"}, "owner-1") {
+		if chatToolImageRouteForScope(nil, &chatToolBindScope{accounts: []chat.ChatTransportAccount{toolCapsAccount("acct-image", "oauth", "chat_sse")}}, "owner-1") {
 			t.Fatalf("纯 oauth 账户不得命中图像路由")
 		}
 	})
@@ -1187,29 +1201,28 @@ func TestW1FChatToolPayloadBuilders(t *testing.T) {
 	})
 
 	t.Run("目录快照首见 provider 序", func(t *testing.T) {
-		if accounts, catalog := chatToolCatalogSnapshot(nil, []string{"grp"}, "owner", "m"); accounts != nil || catalog != nil {
-			t.Fatalf("nil deps 必须返回 nil: %+v %+v", accounts, catalog)
+		if _, catalog := chatToolCatalogForScope(nil, &chatToolBindScope{}, "owner", "m"); len(catalog) != 0 {
+			t.Fatalf("nil deps 必须返回空目录: %+v", catalog)
 		}
-		if accounts, catalog := chatToolCatalogSnapshot(toolCapsDeps(nil, nil, nil), []string{"grp"}, "owner", "m"); accounts != nil || catalog != nil {
-			t.Fatalf("nil 目录必须返回 nil: %+v %+v", accounts, catalog)
+		if _, catalog := chatToolCatalogForScope(toolCapsDeps(nil, nil, nil), &chatToolBindScope{}, "owner", "m"); len(catalog) != 0 {
+			t.Fatalf("nil 目录必须返回空目录: %+v", catalog)
 		}
 		fake := toolCapsCatalog{
-			accountsByGroup: map[string][]chat.ChatTransportAccount{
-				"grp-a|m|": {
-					{ID: "acc-1", ProviderCode: "OpenAI"},
-					{ID: "acc-no-provider"},
-					{ID: "acc-2", ProviderCode: "gpt"},
-					{ID: "acc-3", ProviderCode: "openai"},
-				},
-			},
 			catalogByCode: map[string][]chat.ProviderModelCatalogItem{
 				"openai": {{Model: "m", ProviderCode: "openai"}},
 				"gpt":    {{Model: "m", ProviderCode: "gpt"}},
 			},
 		}
-		accounts, catalog := chatToolCatalogSnapshot(toolCapsDeps(nil, nil, fake), []string{"grp-a", "grp-a", " "}, "owner", "m")
-		if len(accounts) != 4 {
-			t.Fatalf("账户扇出 = %d, want 4", len(accounts))
+		// 生产 scope 恒为绑定账户单元素；多元素视图按账户序逐个取 provider 目录
+		//（空 provider 账户跳过，normalize 小写归一）。
+		scope := &chatToolBindScope{accounts: []chat.ChatTransportAccount{
+			{ID: "acc-1", ProviderCode: "OpenAI"},
+			{ID: "acc-no-provider"},
+			{ID: "acc-2", ProviderCode: "gpt"},
+		}}
+		accounts, catalog := chatToolCatalogForScope(toolCapsDeps(nil, nil, fake), scope, "owner", "m")
+		if len(accounts) != 3 {
+			t.Fatalf("scope 账户 = %d, want 3", len(accounts))
 		}
 		if len(catalog) != 2 || catalog[0].ProviderCode != "openai" || catalog[1].ProviderCode != "gpt" {
 			t.Fatalf("provider 目录 = %+v, want 首见序 openai→gpt", catalog)

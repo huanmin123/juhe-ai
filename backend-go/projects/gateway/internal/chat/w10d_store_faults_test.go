@@ -314,7 +314,7 @@ func TestW10DConversationLifecycleFaultArms(t *testing.T) {
 		substr string
 	}{
 		{"会话计数查询失败", "SELECT COUNT(*)"},
-		{"会话写入失败", "'新对话', ?, 'gpt-image-2'"},
+		{"会话写入失败", "'新对话', NULL, 'gpt-image-2'"},
 		{"会话读取失败", "WHERE id = ? AND system_account_id = ?"},
 		{"提交失败", commitFaultKeyW10D},
 	}
@@ -324,7 +324,7 @@ func TestW10DConversationLifecycleFaultArms(t *testing.T) {
 		}, func(f *chatFixture) error {
 			_, err := f.store.CreateConversation(CreateConversationInput{
 				ID: "conv_w10d_create", SystemAccountID: routeTestOwner, APIKeyID: "k1",
-				DefaultModel: "gpt-5", Now: f.nowISO, MaxConversationsPerUser: 30,
+				Now: f.nowISO, MaxConversationsPerUser: 30,
 			})
 			return err
 		})

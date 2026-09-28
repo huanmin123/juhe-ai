@@ -522,18 +522,23 @@ type GatewayRuntime struct {
 // Model), so the deep billing structures stay raw JSON exactly as delivered by
 // the loader; the flat pricing fields are mirrored field by field.
 type ProviderModelCatalogItem struct {
-	ID                                      *string         `json:"id,omitempty"`
-	Scope                                   string          `json:"scope"`
-	Status                                  string          `json:"status"`
-	ProviderCode                            string          `json:"providerCode"`
-	Model                                   string          `json:"model"`
-	Mode                                    *string         `json:"mode,omitempty"`
-	CatalogOrder                            *int            `json:"catalogOrder,omitempty"`
-	ReleaseDate                             *string         `json:"releaseDate,omitempty"`
-	ShutdownDate                            *string         `json:"shutdownDate,omitempty"`
-	SupportedAPIProtocols                   []string        `json:"supportedApiProtocols"`
-	InputModalities                         []string        `json:"inputModalities"`
-	OutputModalities                        []string        `json:"outputModalities"`
+	ID                    *string  `json:"id,omitempty"`
+	Scope                 string   `json:"scope"`
+	Status                string   `json:"status"`
+	ProviderCode          string   `json:"providerCode"`
+	Model                 string   `json:"model"`
+	Mode                  *string  `json:"mode,omitempty"`
+	CatalogOrder          *int     `json:"catalogOrder,omitempty"`
+	ReleaseDate           *string  `json:"releaseDate,omitempty"`
+	ShutdownDate          *string  `json:"shutdownDate,omitempty"`
+	SupportedAPIProtocols []string `json:"supportedApiProtocols"`
+	InputModalities       []string `json:"inputModalities"`
+	OutputModalities      []string `json:"outputModalities"`
+	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（工具体系设计 6.4）：键为
+	// 该行协议枚举，值为该协议下可用的工具集。
+	SupportedToolsByProtocol map[string][]string `json:"supportedToolsByProtocol"`
+	// SupportedTools 是二维矩阵的一维并集。实施中间态：阶段 2 随 chat 面切换
+	// 删除，不作为新数据源使用。
 	SupportedTools                          []string        `json:"supportedTools"`
 	GenerationParameterCapabilities         json.RawMessage `json:"generationParameterCapabilities,omitempty"`
 	InputUsdPer1M                           *float64        `json:"inputUsdPer1M,omitempty"`
@@ -593,6 +598,12 @@ func CloneProviderModelCatalogItems(items []ProviderModelCatalogItem) []Provider
 		}
 		if item.OutputModalities != nil {
 			cloned.OutputModalities = append([]string(nil), item.OutputModalities...)
+		}
+		if item.SupportedToolsByProtocol != nil {
+			cloned.SupportedToolsByProtocol = make(map[string][]string, len(item.SupportedToolsByProtocol))
+			for protocol, tools := range item.SupportedToolsByProtocol {
+				cloned.SupportedToolsByProtocol[protocol] = append([]string(nil), tools...)
+			}
 		}
 		if item.SupportedTools != nil {
 			cloned.SupportedTools = append([]string(nil), item.SupportedTools...)

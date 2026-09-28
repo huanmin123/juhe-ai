@@ -72,10 +72,14 @@ func geminiTextModel(in geminiModelInput) rawModel {
 		SupportedAPIProtocols:                     in.supportedAPIProtocols,
 		InputModalities:                           in.inputModalities,
 		OutputModalities:                          in.outputModalities,
-		SupportedTools:                            in.supportedTools,
-		SupportedReasoningEfforts:                 in.supportedReasoningEfforts,
-		DefaultReasoningEffort:                    in.defaultReasoningEffort,
-		SupportsPromptCaching:                     true,
+		// 「协议 × 工具」矩阵：google_search_grounding / code_execution 等
+		// 原生（hosted）工具归 generate_content / stream_generate_content /
+		// interactions 原生协议；OpenAI 兼容的 chat_completions 只携带
+		// function_calling；count_tokens 是计数协议，不携带工具键。
+		SupportedToolsByProtocol:  toolsByProtocol(in.supportedAPIProtocols, in.supportedTools),
+		SupportedReasoningEfforts: in.supportedReasoningEfforts,
+		DefaultReasoningEffort:    in.defaultReasoningEffort,
+		SupportsPromptCaching:     true,
 	}
 	visible := true
 	out.CatalogVisible = &visible
@@ -109,7 +113,7 @@ func geminiEmbeddingModel(in geminiModelInput) rawModel {
 		SupportedAPIProtocols:     in.supportedAPIProtocols,
 		InputModalities:           in.inputModalities,
 		OutputModalities:          in.outputModalities,
-		SupportedTools:            in.supportedTools,
+		SupportedToolsByProtocol:  toolsByProtocol(in.supportedAPIProtocols, in.supportedTools),
 		SupportedReasoningEfforts: in.supportedReasoningEfforts,
 		DefaultReasoningEffort:    in.defaultReasoningEffort,
 	}

@@ -117,8 +117,9 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}
 	ctx := r.Context()
 	// AI 问答会话绑定模式的调度覆盖目标（设计 §6）：仅聊天进程内执行器注入
-	// 的 group/account 目标生效；外部 HTTP 请求（含 api_key 模式会话）恒为空，
-	// 后续候选覆盖、分组上下文对齐与回退禁用全部短路，调度行为与现状一致。
+	// AI 问答会话绑定账户的调度覆盖目标（账户唯一绑定设计 §5/§7）：仅聊天进程
+	// 内执行器注入的绑定账户目标生效；外部 HTTP 请求恒为空，后续候选覆盖、
+	// 分组上下文对齐与回退禁用全部短路，调度行为与现状一致。
 	chatTarget, hasChatTarget := chatDispatchTargetFromContext(ctx)
 	// SwitchTarget（切号冻结目标）请求级载体：派发链内第一个完成上游请求构造
 	// 的账户在此冻结有效上游目标，此后跨账户切换 / 分组回退 / 重派窗口一律

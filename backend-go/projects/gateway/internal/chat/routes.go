@@ -113,18 +113,13 @@ type Deps struct {
 	ChatKeys ChatAPIKeyProvider
 	// GatewayKeys validates gateway API keys (group bindings + image flag).
 	GatewayKeys GatewayKeyValidator
-	// GroupLookup resolves group binding objects (会话 group 模式校验，
-	// internal/groups 实现). Optional; nil 让 group 模式返回显式错误。
-	GroupLookup ChatGroupLookup
-	// AccountLookup resolves account binding objects (会话 account 模式校验，
-	// internal/accounts 实现). Optional; nil 让 account 模式返回显式错误。
+	// AccountLookup resolves the conversation's bound account object（会话账户
+	// 唯一绑定的选择/切换校验，internal/accounts 实现）。Optional; nil 让绑定
+	// 校验返回显式错误。
 	AccountLookup ChatAccountLookup
-	// GroupOptionsLookup 列出新建会话绑定下拉的启用分组最小摘要（只读，
-	// internal/groups 实现）。Optional; nil 让绑定下拉端点返回显式错误。
-	GroupOptionsLookup ChatGroupOptionsLookup
-	// AccountOptionsLookup 列出新建会话绑定下拉的可绑定账户最小摘要（口径
-	// 同 AccountLookup，internal/accounts 实现）。Optional; nil 让绑定下拉
-	// 端点返回显式错误。
+	// AccountOptionsLookup 列出用户授权范围内全部可派发账户（GET /my-chat/
+	// accounts，口径同 AccountLookup，internal/accounts 实现）。Optional; nil
+	// 让账户列表端点返回显式错误。
 	AccountOptionsLookup ChatAccountOptionsLookup
 	// ObjectStore persists chat asset objects (local chat assets root).
 	ObjectStore ObjectStore
@@ -319,7 +314,7 @@ func (d *Deps) Register(k *kernel.Kernel, prefix string) {
 		k.Register(method+" "+prefix+pattern, rt.wrap(handler))
 	}
 	mount("GET", "/image-policy", rt.imagePolicy)
-	mount("GET", "/conversation-bind-options", rt.conversationBindOptions)
+	mount("GET", "/accounts", rt.myChatAccounts)
 	mount("GET", "/conversations", rt.listConversations)
 	mount("POST", "/conversations", rt.createConversationHandler)
 	mount("GET", "/conversations/{conversationId}", rt.getConversation)
@@ -590,38 +585,26 @@ func (rt *chatRoutes) imagePolicy(w http.ResponseWriter, r *http.Request) {
 	}{Input: defaultChatImageInputPolicy})
 }
 
-// conversationBindOptionsResponse 仅服务新建会话绑定下拉（AI 问答新建对话
-// 弹窗）：分组/账户的最小 id/name 投影，避免放开管理面 groups/accounts
-// options 端点。
-type conversationBindOptionsResponse struct {
-	Groups   []ChatBindOption `json:"groups"`
-	Accounts []ChatBindOption `json:"accounts"`
-}
-
-// setNoStoreHeaders 与 accounts 包惯例一致：绑定下拉内容随数据范围实时
+// setNoStoreHeaders 与 accounts 包惯例一致：账户列表内容随数据范围实时
 // 变化，成功响应禁缓存。
 func setNoStoreHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 }
 
-// conversationBindOptions mirrors GET /conversation-bind-options：登录用户
-// 一次取回其数据范围（ChatBindScope）内可绑定分组与账户的最小摘要（分组仅
-// 有效 enabled 行；账户与 FindChatAccount 同口径）。查询端口未接线或查询
-// 失败沿用既有 500 语义。
-func (rt *chatRoutes) conversationBindOptions(w http.ResponseWriter, r *http.Request) {
+// myChatAccounts mirrors GET /my-chat/accounts（设计 §5.2，替代已退场的
+// GET /conversation-bind-options）：登录用户一次取回其数据范围
+// （ChatBindScope）内全部可派发账户（id/name/providerCode/status，去重），
+// 供会话绑定与（后续阶段的）工具绑定统一使用。查询端口未接线或查询失败沿用
+// 既有 500 语义。
+func (rt *chatRoutes) myChatAccounts(w http.ResponseWriter, r *http.Request) {
 	bindScope, err := rt.requireChatBindScope(r)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
 	}
-	if rt.deps.GroupOptionsLookup == nil || rt.deps.AccountOptionsLookup == nil {
-		writeChatRouteError(w, &DomainError{Message: "绑定选项列表暂不可用，请稍后重试"})
-		return
-	}
-	groups, err := rt.deps.GroupOptionsLookup.ListChatGroupOptions(r.Context(), bindScope)
-	if err != nil {
-		writeChatRouteError(w, err)
+	if rt.deps.AccountOptionsLookup == nil {
+		writeChatRouteError(w, &DomainError{Message: "账户列表暂不可用，请稍后重试"})
 		return
 	}
 	accounts, err := rt.deps.AccountOptionsLookup.ListChatAccountOptions(r.Context(), bindScope)
@@ -629,15 +612,19 @@ func (rt *chatRoutes) conversationBindOptions(w http.ResponseWriter, r *http.Req
 		writeChatRouteError(w, err)
 		return
 	}
-	// 信封恒为数组：空列表渲染 [] 而非 null。
-	if groups == nil {
-		groups = []ChatBindOption{}
-	}
-	if accounts == nil {
-		accounts = []ChatBindOption{}
+	// 信封恒为数组：空列表渲染 [] 而非 null；按 id 去重（实现层查询理论无重
+	// 复，去重兜底）。
+	deduped := make([]ChatAccountOption, 0, len(accounts))
+	seen := map[string]bool{}
+	for _, account := range accounts {
+		if account.ID == "" || seen[account.ID] {
+			continue
+		}
+		seen[account.ID] = true
+		deduped = append(deduped, account)
 	}
 	setNoStoreHeaders(w)
-	writeOK(w, conversationBindOptionsResponse{Groups: groups, Accounts: accounts})
+	writeOK(w, deduped)
 }
 
 func (rt *chatRoutes) listConversations(w http.ResponseWriter, r *http.Request) {
@@ -715,13 +702,16 @@ type updateConversationFields struct {
 	title             *string
 	isPinned          *bool
 	defaultImageModel *string
+	accountID         *string
 }
 
 // parseUpdateConversationBody mirrors updateConversationSchema (strict +
-// refine, zod issue order).
+// refine, zod issue order) with the account-only binding extension（设计 §5.4）：
+// accountId 写入/切换绑定账户；searchBinding/imageBinding 属工具阶段契约，
+// 本阶段仍按未知键拒绝（unrecognized key），阶段 2 接入候选校验。
 func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversationFields, error) {
 	fields := updateConversationFields{}
-	for _, key := range []string{"title", "isPinned", "defaultImageModel"} {
+	for _, key := range []string{"title", "isPinned", "defaultImageModel", "accountId"} {
 		value, ok := raw[key]
 		if !ok {
 			continue
@@ -755,21 +745,35 @@ func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversa
 				return fields, &invalidRequestError{Message: "Invalid enum value. Expected one of: " + chatImageModelEnumHint() + ", received '" + model + "'"}
 			}
 			fields.defaultImageModel = &model
+		case "accountId":
+			text, err := boundedTrimmedString(value, defaultStringLimit)
+			if err != nil {
+				if err.Error() == "String must contain at least 1 character(s)" {
+					return fields, &invalidRequestError{Message: "请选择会话绑定的账户"}
+				}
+				return fields, &invalidRequestError{Message: err.Error()}
+			}
+			fields.accountID = text
 		}
 	}
 	for key := range raw {
 		switch key {
-		case "title", "isPinned", "defaultImageModel":
+		case "title", "isPinned", "defaultImageModel", "accountId":
 		default:
 			return updateConversationFields{}, &invalidRequestError{Message: "Unrecognized key: \"" + key + "\""}
 		}
 	}
-	if fields.title == nil && fields.isPinned == nil && fields.defaultImageModel == nil {
+	if fields.title == nil && fields.isPinned == nil && fields.defaultImageModel == nil && fields.accountID == nil {
 		return fields, &invalidRequestError{Message: "没有可更新的会话字段"}
 	}
 	return fields, nil
 }
 
+// patchConversation mirrors PATCH /conversations/{id}. accountId 走账户选择/
+// 切换链路：数据范围与启用校验（AccountLookup）→ 名称快照落库；当前
+// lastModel 不在新账户可路由范围时联动清空模型选择（前端按响应 lastModel
+// 为空提示重选，设计 §5.4/§6）。归档会话禁止切换账户（设计 §8「不做原地
+// 迁移」），展示字段（标题/置顶/默认图像模型）保持可改。
 func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) {
 	raw, err := readJSONBody(r)
 	if err != nil {
@@ -791,14 +795,8 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 		writeChatRouteError(w, err)
 		return
 	}
-	conversation, err := rt.deps.Store.UpdateConversation(UpdateConversationInput{
-		ConversationID:    r.PathValue("conversationId"),
-		SystemAccountID:   ownerID,
-		Title:             fields.title,
-		IsPinned:          fields.isPinned,
-		DefaultImageModel: fields.defaultImageModel,
-		Now:               rt.now(),
-	})
+	conversationID := r.PathValue("conversationId")
+	conversation, err := rt.deps.Store.GetConversation(conversationID, ownerID)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
@@ -807,7 +805,77 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 		kernel.WriteError(w, http.StatusNotFound, "会话不存在")
 		return
 	}
-	writeOK(w, rt.conversationPayload(conversation))
+	var bindAccountID *string
+	bindAccountName := ""
+	clearLastModel := false
+	if fields.accountID != nil {
+		if conversation.Archived {
+			writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
+			return
+		}
+		bindScope, err := rt.requireChatBindScope(r)
+		if err != nil {
+			writeChatRouteError(w, err)
+			return
+		}
+		if rt.deps.AccountLookup == nil {
+			writeChatRouteError(w, &DomainError{Message: "会话绑定账户校验暂不可用，请稍后重试"})
+			return
+		}
+		ref, err := rt.deps.AccountLookup.FindChatAccount(bindScope, *fields.accountID)
+		if err != nil {
+			writeChatRouteError(w, err)
+			return
+		}
+		if ref == nil {
+			writeChatRouteError(w, &invalidRequestError{Message: "绑定的账户不存在"})
+			return
+		}
+		if !ref.Enabled {
+			writeChatRouteError(w, &invalidRequestError{Message: "绑定的账户已停用"})
+			return
+		}
+		bindAccountID = &ref.ID
+		bindAccountName = ref.Name
+		// 切换账户视为新语境（设计 §6）：当前 lastModel 不在新账户可路由
+		// 范围时联动清空模型选择。
+		if conversation.LastModel != nil {
+			scope := &chatBindingScope{accounts: rt.convergeChatAccountScope(ref, ownerID)}
+			models, _, err := rt.loadChatModelListsForScope(scope, ownerID)
+			if err != nil {
+				writeChatRouteError(w, err)
+				return
+			}
+			routable := false
+			for _, model := range models {
+				if model.ID == *conversation.LastModel {
+					routable = true
+					break
+				}
+			}
+			clearLastModel = !routable
+		}
+	}
+	updated, err := rt.deps.Store.UpdateConversation(UpdateConversationInput{
+		ConversationID:          conversationID,
+		SystemAccountID:         ownerID,
+		Title:                   fields.title,
+		IsPinned:                fields.isPinned,
+		DefaultImageModel:       fields.defaultImageModel,
+		BindAccountID:           bindAccountID,
+		BindAccountNameSnapshot: bindAccountName,
+		ClearLastModel:          clearLastModel,
+		Now:                     rt.now(),
+	})
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	if updated == nil {
+		kernel.WriteError(w, http.StatusNotFound, "会话不存在")
+		return
+	}
+	writeOK(w, rt.conversationPayload(updated))
 }
 
 func (rt *chatRoutes) deleteConversation(w http.ResponseWriter, r *http.Request) {

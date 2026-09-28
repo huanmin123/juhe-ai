@@ -26,11 +26,12 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   system_account_id TEXT NOT NULL,
   api_key_id TEXT,
   api_key_name_snapshot TEXT NOT NULL,
-  bind_mode TEXT NOT NULL DEFAULT 'api_key',
-  bind_group_id TEXT,
-  bind_group_name_snapshot TEXT,
   bind_account_id TEXT,
   bind_account_name_snapshot TEXT,
+  archived INTEGER NOT NULL DEFAULT 0,
+  search_account_id TEXT,
+  search_model_id TEXT,
+  image_account_id TEXT,
   title TEXT NOT NULL DEFAULT '新对话',
   title_source_message_id TEXT,
   is_pinned INTEGER NOT NULL DEFAULT 0,
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   CHECK (user_turn_count >= 0),
   CHECK (message_revision >= 0),
   CHECK (is_pinned IN (0, 1)),
-  CHECK (bind_mode IN ('api_key', 'group', 'account')),
+  CHECK (archived IN (0, 1)),
   CHECK (context_revision >= 0),
   CHECK (compacted_through_sequence >= 0 AND compacted_through_sequence < next_sequence_no),
   CHECK (context_state IN ('ready', 'compact_pending', 'compacting', 'compact_failed')),
@@ -358,22 +359,29 @@ func newChatFixture(t *testing.T) *chatFixture {
 	return &chatFixture{t: t, db: db, store: store, nowISO: "2026-03-10T08:00:00.000Z"}
 }
 
-// createConversation inserts a conversation directly through the store.
+// createConversation inserts a conversation directly through the store. 创建
+// 恒为空会话（last_model NULL，账户唯一绑定契约）；既有 store 断言依赖
+// last_model=gpt-5 的夹具，这里创建后直写再回读。
 func (f *chatFixture) createConversation(id, ownerID string) *Conversation {
 	f.t.Helper()
-	conversation, err := f.store.CreateConversation(CreateConversationInput{
+	if _, err := f.store.CreateConversation(CreateConversationInput{
 		ID:                      id,
 		SystemAccountID:         ownerID,
 		APIKeyID:                "chat_key_1",
 		APIKeyNameSnapshot:      "对话密钥",
-		DefaultModel:            "gpt-5",
 		Now:                     f.nowISO,
 		MaxConversationsPerUser: 30,
-	})
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE chat_conversations SET last_model = 'gpt-5' WHERE id = ?`, id); err != nil {
+		f.t.Fatal(err)
+	}
+	refreshed, err := f.store.GetConversation(id, ownerID)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return conversation
+	return refreshed
 }
 
 // accept accepts a plain text turn.
@@ -556,14 +564,14 @@ func TestListConversationsKeysetPagination(t *testing.T) {
 	}
 }
 
-// 遗留行兼容：bind 快照五列是加列交付的，存量行只有 bind_mode 有
-// NOT NULL DEFAULT，bind_group_name_snapshot / bind_account_name_snapshot
-// 为 NULL。读取面必须容忍 NULL，否则存量用户的会话列表/详情整体 500。
+// 遗留行兼容：bind_account_name_snapshot 是加列交付的，存量行可为 NULL；归
+// 档行（一次性迁移对旧模式会话的 archived=1 标记）照常读取。读取面必须容忍
+// NULL 与 archived 标记，否则存量用户的会话列表/详情整体 500。
 func TestListAndGetTolerateLegacyNullBindNameSnapshots(t *testing.T) {
 	f := newChatFixture(t)
 	f.createConversation("chat_conv_legacy", "owner-1")
 	if _, err := f.db.Exec(`UPDATE chat_conversations
-		SET bind_group_name_snapshot = NULL, bind_account_name_snapshot = NULL
+		SET bind_account_name_snapshot = NULL, archived = 1
 		WHERE id = 'chat_conv_legacy'`); err != nil {
 		t.Fatal(err)
 	}
@@ -571,14 +579,14 @@ func TestListAndGetTolerateLegacyNullBindNameSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conversation == nil || conversation.BindGroupNameSnapshot != "" || conversation.BindAccountNameSnapshot != "" {
-		t.Fatalf("legacy row must read back with empty bind name snapshots: %+v", conversation)
+	if conversation == nil || conversation.BindAccountNameSnapshot != "" || !conversation.Archived {
+		t.Fatalf("legacy row must read back with empty bind name snapshot and archived flag: %+v", conversation)
 	}
 	page, err := f.store.ListConversations(ListConversationsInput{SystemAccountID: "owner-1", Limit: 50})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page) != 1 || page[0].ID != "chat_conv_legacy" || page[0].BindGroupNameSnapshot != "" || page[0].BindAccountNameSnapshot != "" {
+	if len(page) != 1 || page[0].ID != "chat_conv_legacy" || page[0].BindAccountNameSnapshot != "" || !page[0].Archived {
 		t.Fatalf("legacy row must not break listing: %+v", page)
 	}
 }

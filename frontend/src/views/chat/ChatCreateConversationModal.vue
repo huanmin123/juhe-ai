@@ -65,7 +65,14 @@ import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { chatApi, type ChatConversationCreatePayload } from '@/api/domains/chat'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { ChatConversation, ChatConversationBindMode } from '@/types/domain/chat'
+import type { ChatConversation } from '@/types/domain/chat'
+
+/**
+ * 兼容旧交互流的本地绑定模式类型：会话账户唯一绑定后服务端已收敛为仅
+ * account（服务端忽略历史请求体字段）；本组件与新建弹窗交互在后续前端阶段
+ * 退场，此处仅做类型层面引用清理。
+ */
+type ChatConversationBindMode = 'api_key' | 'group' | 'account'
 
 interface ChatCreateOption {
   label: string

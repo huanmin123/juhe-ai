@@ -33,13 +33,16 @@ func xaiTextModel(model string, contextWindowTokens int, inputUsdPer1M, cachedIn
 		SupportedAPIProtocols:                   metadata.supportedAPIProtocols,
 		InputModalities:                         []string{"text", "image"},
 		OutputModalities:                        []string{"text"},
-		SupportedTools:                          []string{"function_calling"},
 		SupportedReasoningEfforts:               metadata.supportedReasoningEfforts,
 		DefaultReasoningEffort:                  metadata.defaultReasoningEffort,
 	}
 	if out.SupportedAPIProtocols == nil {
 		out.SupportedAPIProtocols = []string{"chat_completions", "responses"}
 	}
+	// 纯 chat 供应商：function_calling 在该行全部会话协议（默认
+	// chat_completions + responses，multi-agent 行仅 responses）下可用；无
+	// hosted 工具。
+	out.SupportedToolsByProtocol = toolsByProtocol(out.SupportedAPIProtocols, []string{"function_calling"})
 	return out
 }
 

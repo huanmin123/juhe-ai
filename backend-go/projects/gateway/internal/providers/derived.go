@@ -6,7 +6,7 @@
 // provider-billing.policies.ts + provider-billing.shared.ts).
 //
 // Static in-code pricing sources (inputModalities / outputModalities /
-// supportedTools / cachedImageInputUsdPer1M / sourcePricing*) live in
+// supportedToolsByProtocol / cachedImageInputUsdPer1M / sourcePricing*) live in
 // internal/pricing's snapshot tables; staticPricingFor resolves them through
 // pricing.FindProviderModelPricing (getProviderModelPricing). The static
 // generationParameterCapabilities override stays unused: the Node static rows
@@ -26,7 +26,7 @@ import (
 type staticPricingSnapshot struct {
 	InputModalities                 []string
 	OutputModalities                []string
-	SupportedTools                  []string
+	SupportedToolsByProtocol        map[string][]string
 	GenerationParameterCapabilities map[string][]generationParameterCapability
 	CachedImageInputUsdPer1M        *float64
 	SourcePricingCurrency           string
@@ -43,29 +43,38 @@ func staticPricingFor(providerCode, model string) *staticPricingSnapshot {
 	if found == nil {
 		return nil
 	}
-	return &staticPricingSnapshot{
+	snapshot := &staticPricingSnapshot{
 		InputModalities:          found.InputModalities,
 		OutputModalities:         found.OutputModalities,
-		SupportedTools:           found.SupportedTools,
+		SupportedToolsByProtocol: pricing.CopyToolsByProtocol(found.SupportedToolsByProtocol),
 		CachedImageInputUsdPer1M: found.CachedImageInputUsdPer1M,
 		SourcePricingCurrency:    found.SourcePricingCurrency,
 		SourceExchangeRateToUsd:  found.SourceExchangeRateToUsd,
 		SourceExchangeRateDate:   found.SourceExchangeRateDate,
 		SourcePricingNote:        found.SourcePricingNote,
 	}
+	if snapshot.SupportedToolsByProtocol == nil {
+		snapshot.SupportedToolsByProtocol = map[string][]string{}
+	}
+	return snapshot
 }
 
 // BuiltInStaticDerivedCapabilities 是内置目录行的静态派生能力全集：数据库目录表
 // 从 Node 时代起就没有 supported_tools / input_modalities / output_modalities
-// 列，Node toBuiltInCatalogItem 在读取链用代码内静态定价表兜底填充。管理面
+// 列，Node toBuiltInCatalogItem 在读取链用代码内静态定价表兜底。管理面
 // （ApplyBuiltInStaticDerivedFields）与 chat 面
 // （cmd/juhe-ai-gateway/chain_catalog.go decorateBuiltinStaticDerivedCapabilities）
 // 共同调用 ResolveBuiltInStaticDerivedCapabilities，保证两侧解析同源不漂移；
 // 静态数据源仍是 internal/pricing 的快照表（staticPricingFor）。
+//
+// SupportedToolsByProtocol 是「协议 × 工具」矩阵（AI问答工具体系与主子模型设计
+// 6.4）：键为该行协议枚举，值为该协议下可用的工具集；目录投影的一维
+// supportedTools 过渡字段由调用侧以 pricing.UnionToolsByProtocol 派生（阶段 2
+// 随 chat 面切换删除）。
 type BuiltInStaticDerivedCapabilities struct {
 	InputModalities                 []string
 	OutputModalities                []string
-	SupportedTools                  []string
+	SupportedToolsByProtocol        map[string][]string
 	CachedImageInputUsdPer1M        *float64
 	SourcePricingCurrency           string
 	SourceExchangeRateToUsd         *float64
@@ -84,7 +93,7 @@ func ResolveBuiltInStaticDerivedCapabilities(providerCode, model string, maxOutp
 	resolved := BuiltInStaticDerivedCapabilities{
 		InputModalities:                 []string{},
 		OutputModalities:                []string{},
-		SupportedTools:                  []string{},
+		SupportedToolsByProtocol:        map[string][]string{},
 		GenerationParameterCapabilities: map[string]any{},
 	}
 	static := staticPricingFor(providerCode, model)
@@ -96,8 +105,8 @@ func ResolveBuiltInStaticDerivedCapabilities(providerCode, model string, maxOutp
 		if len(static.OutputModalities) > 0 {
 			resolved.OutputModalities = append([]string{}, static.OutputModalities...)
 		}
-		if len(static.SupportedTools) > 0 {
-			resolved.SupportedTools = append([]string{}, static.SupportedTools...)
+		if len(static.SupportedToolsByProtocol) > 0 {
+			resolved.SupportedToolsByProtocol = pricing.CopyToolsByProtocol(static.SupportedToolsByProtocol)
 		}
 		if keepStaticPricingSource {
 			resolved.CachedImageInputUsdPer1M = static.CachedImageInputUsdPer1M

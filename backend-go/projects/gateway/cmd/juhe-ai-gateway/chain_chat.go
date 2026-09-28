@@ -53,9 +53,8 @@ import (
 type chatGatewayExecutor struct {
 	// chain is the assembled /v1 gateway chain handler.
 	chain http.Handler
-	// dispatchTarget 是 AI 问答会话绑定模式的调度覆盖目标（设计 §6）：仅
-	// group/account 模式非零，Dispatch 时注入进程内 context；api_key/legacy
-	// 模式为零值，调度行为与现状逐字节一致。
+	// dispatchTarget 是 AI 问答会话绑定账户的调度覆盖目标：绑定账户非空时
+	// Dispatch 注入进程内 context；零值（外部请求）调度行为与现状一致。
 	dispatchTarget chatDispatchTarget
 }
 
@@ -63,12 +62,11 @@ func newChatGatewayExecutor(chain http.Handler) *chatGatewayExecutor {
 	return &chatGatewayExecutor{chain: chain}
 }
 
-// WithChatDispatchTarget 实现聊天侧的调度覆盖端口
-// （chat.chatDispatchTargetAware 同形）：group/account 模式返回绑定目标的
-// 执行器视图；api_key/legacy（或不支持的模式）返回原执行器实例，不产生任何
-// 包装或行为差异。
-func (e *chatGatewayExecutor) WithChatDispatchTarget(bindMode, groupID, accountID string) chat.GenerationExecutor {
-	target := chatDispatchTarget{Mode: bindMode, GroupID: groupID, AccountID: accountID}
+// WithChatDispatchAccount 实现聊天侧的调度覆盖端口
+// （chat.chatDispatchTargetAware 同形）：绑定账户非空返回目标的执行器视图；
+// 空账户返回原执行器实例，不产生任何包装或行为差异。
+func (e *chatGatewayExecutor) WithChatDispatchAccount(accountID string) chat.GenerationExecutor {
+	target := chatDispatchTarget{AccountID: accountID}
 	if !target.pinned() {
 		return e
 	}
@@ -133,9 +131,8 @@ func (e *chatGatewayExecutor) Dispatch(ctx context.Context, req chat.GenerationD
 	if method == "" {
 		method = http.MethodPost
 	}
-	// 调度覆盖通道（设计 §6）：仅当本执行器携带 group/account 绑定目标时注入
-	// 进程内 context；外部 HTTP 请求的 context 由服务端构造，无法携带该未导出
-	// key，不存在伪造通道。
+	// 调度覆盖通道：仅当本执行器携带绑定账户目标时注入进程内 context；外部
+	// HTTP 请求的 context 由服务端构造，无法携带该未导出 key，不存在伪造通道。
 	if e.dispatchTarget.pinned() {
 		ctx = contextWithChatDispatchTarget(ctx, e.dispatchTarget)
 	}

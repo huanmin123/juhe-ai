@@ -1147,9 +1147,9 @@ function imageModelLabel(model: ChatImageModel): string {
   return imageModelOptions.find((option) => option.value === model)?.label ?? model
 }
 function conversationBindLabel(item: ChatConversation): string {
-  if (item.bindMode === 'group') return `分组：${item.bindGroupName || '已删除'}`
-  if (item.bindMode === 'account') return `账户：${item.bindAccountName || '已删除'}`
-  return `API Key：${item.apiKeyNameSnapshot || '已删除'}`
+  // 账户唯一绑定：仅展示绑定账户或未配置态；归档（存量旧模式）会话标注只读。
+  if (item.archived) return '已归档（只读）'
+  return `账户：${item.bindAccountName || '未配置'}`
 }
 async function retryLatestTurn(messageItem: ChatMessage): Promise<void> {
   if (generating.value || submissionBlocked.value || editingTurn.value) return

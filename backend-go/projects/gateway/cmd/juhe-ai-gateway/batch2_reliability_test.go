@@ -18,7 +18,7 @@ func TestComposeChatFamilyRegistersHubDrainBatch2(t *testing.T) {
 	db := w1hNewChatFamilyDB(t)
 	composed := &composition{db: db, kernel: kernel.New(kernel.Options{}), authDeps: &authsys.Deps{}}
 	services := &chainRuntimeServices{Cache: w1hNewRuntimeCache(t, &w1hReadModels{})}
-	deps, err := composeChatFamily(composed, runtimeConfig{ChatAssetsRoot: t.TempDir(), Secret: "batch2-secret"}, db, services, &gatewayChain{}, w1hGroupLookup{}, w1hAccountLookup{}, w1hGroupOptionsLookup{}, w1hAccountOptionsLookup{})
+	deps, err := composeChatFamily(composed, runtimeConfig{ChatAssetsRoot: t.TempDir(), Secret: "batch2-secret"}, db, services, &gatewayChain{}, w1hAccountLookup{}, w1hAccountOptionsLookup{})
 	if err != nil {
 		t.Fatalf("composeChatFamily = %v", err)
 	}

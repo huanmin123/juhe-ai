@@ -318,26 +318,29 @@ func TestDepsGuardsW3(t *testing.T) {
 	if _, err := nilKeys.requireChatAPIKeyForOwner("owner"); err == nil {
 		t.Fatalf("nil 密钥的自动开通应报错")
 	}
-	noGateway := &chatRoutes{deps: &Deps{}}
-	if _, err := noGateway.loadChatModelAccess(&ChatAPIKeyRecord{Secret: "s"}); err == nil {
+	noGateway := &Deps{}
+	if _, err := noGateway.gatewayKeyOrError("s"); err == nil {
 		t.Fatalf("GatewayKeys 缺失应报错")
 	}
 	returnsNilView := &stubGatewayNilW3{}
-	if _, err := (&chatRoutes{deps: &Deps{GatewayKeys: returnsNilView}}).loadChatModelAccess(&ChatAPIKeyRecord{Secret: "s"}); err == nil {
+	if _, err := (&Deps{GatewayKeys: returnsNilView}).gatewayKeyOrError("s"); err == nil {
 		t.Fatalf("nil 视图应报错")
 	}
-	// 分组去重与无效绑定过滤。
-	dup := &chatRoutes{deps: &Deps{GatewayKeys: mockGatewayKeys{}, ModelCatalog: mockModelCatalog{}}}
-	access, err := dup.loadChatModelAccess(&ChatAPIKeyRecord{Secret: "s"})
-	if err != nil || !equalStringsW3(access.GroupIDs, []string{"group-a"}) {
-		t.Fatalf("分组提取不正确: %+v err=%v", access, err)
+	// 账户绑定作用域守卫：AccountLookup 缺失 → 500；未选账户 → 400 引导。
+	noAccountLookup := &chatRoutes{deps: &Deps{}}
+	if _, err := noAccountLookup.resolveChatBindingScope(&Conversation{}, ChatBindScope{ViewerID: "o"}); err == nil {
+		t.Fatalf("AccountLookup 缺失应报错")
 	}
-	if !dup.hasChatImageGenerationRoute([]string{"group-a"}, "owner") {
-		t.Fatalf("api_key 账户应支持图片路由")
+	unbound := &Conversation{}
+	if _, err := (&chatRoutes{deps: &Deps{AccountLookup: mockAccountLookup{}}}).resolveChatBindingScope(unbound, ChatBindScope{ViewerID: "o"}); err == nil || !strings.Contains(err.Error(), "请先选择") {
+		t.Fatalf("未选账户应报引导错误: %v", err)
 	}
-	emptyCatalog := &emptyCatalogW3{}
-	if (&chatRoutes{deps: &Deps{ModelCatalog: emptyCatalog}}).hasChatImageGenerationRoute([]string{"g"}, "owner") {
+	// 空作用域（无账户视图）不支持生图路由。
+	if (&chatRoutes{deps: &Deps{ModelCatalog: mockModelCatalog{}}}).scopeHasImageGenerationRoute(&chatBindingScope{}, "owner") {
 		t.Fatalf("无账户不应支持图片路由")
+	}
+	if !(&chatRoutes{deps: &Deps{ModelCatalog: mockModelCatalog{}}}).scopeHasImageGenerationRoute(&chatBindingScope{accounts: []ChatTransportAccount{{Type: "api_key"}}}, "owner") {
+		t.Fatalf("api_key 账户应支持图片路由")
 	}
 	if got := normalizeProviderToken("  OpenAI "); got != "openai" {
 		t.Fatalf("normalizeProviderToken = %q", got)

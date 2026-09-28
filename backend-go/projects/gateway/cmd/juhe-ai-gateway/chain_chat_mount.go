@@ -28,12 +28,10 @@ const chatGenerationHubDrainTimeout = 8 * time.Second
 // composeChatFamily builds the chat Deps over the chat database handle and
 // the assembled /v1 chain, and registers the my-chat route family on the
 // kernel. It fails fast naming the missing chat database handle.
-// groupLookup / accountLookup 是三种绑定模式的绑定对象解析端口（生产组合根传
-// groups.Store / accounts.Store；nil 让对应模式返回显式错误）。
-// groupOptionsLookup / accountOptionsLookup 是新建会话绑定下拉的最小摘要
-// 查询端口（生产组合根同样传 groups.Store / accounts.Store；nil 让绑定下拉
-// 端点返回显式错误）。
-func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB, services *chainRuntimeServices, chain *gatewayChain, groupLookup chat.ChatGroupLookup, accountLookup chat.ChatAccountLookup, groupOptionsLookup chat.ChatGroupOptionsLookup, accountOptionsLookup chat.ChatAccountOptionsLookup) (*chat.Deps, error) {
+// accountLookup 是会话绑定账户的解析校验端口（生产组合根传 accounts.Store；
+// nil 让绑定校验返回显式错误）。accountOptionsLookup 是 GET /my-chat/accounts
+// 的账户列表查询端口（同一 accounts.Store；nil 让端点返回显式错误）。
+func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB, services *chainRuntimeServices, chain *gatewayChain, accountLookup chat.ChatAccountLookup, accountOptionsLookup chat.ChatAccountOptionsLookup) (*chat.Deps, error) {
 	if composed == nil {
 		return nil, fmt.Errorf("my-chat 组合缺少 composition")
 	}
@@ -72,14 +70,11 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		ModelCatalog:   chatModelCatalog{cache: services.Cache},
 		ChatKeys:       newChatAPIKeyProvider(composed.db, composed.pgDialect, cfg.Secret),
 		GatewayKeys:    chatGatewayKeyValidator{cache: services.Cache},
-		// AI 问答三种绑定模式的绑定对象解析端口（groups/accounts Store 只读
-		// 查询，FindChatGroup/FindChatAccount）：创建与发送前置校验的分组/账户
-		// 存在性 + 启用口径。
-		GroupLookup:   groupLookup,
+		// AI 问答会话账户绑定的解析校验端口（accounts.Store 只读查询
+		// FindChatAccount）：账户选择/切换与发送前置校验的存在性 + 启用口径。
 		AccountLookup: accountLookup,
-		// 新建会话绑定下拉的最小摘要查询端口（同一 groups/accounts Store 的
-		// ListChatGroupOptions/ListChatAccountOptions）。
-		GroupOptionsLookup:      groupOptionsLookup,
+		// GET /my-chat/accounts 的账户列表查询端口（同一 accounts.Store 的
+		// ListChatAccountOptions）。
 		AccountOptionsLookup:    accountOptionsLookup,
 		ObjectStore:             objectStore,
 		ImageProcessor:          newChatImageProcessor(),

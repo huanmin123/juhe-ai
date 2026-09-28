@@ -1305,7 +1305,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		}
 		composed.chatDB = chatDB
 		composed.ownChatDB = ownChatDB
-		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, groupsStore, accountStore, groupsStore, accountStore); chatErr != nil {
+		if _, chatErr := composeChatFamily(composed, cfg, chatDB, chainServices, chain, accountStore, accountStore); chatErr != nil {
 			return nil, fmt.Errorf("compose my-chat family: %w", chatErr)
 		}
 		// cacheDriver==='redis': the system-api limiter switches onto the

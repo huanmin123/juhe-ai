@@ -567,6 +567,16 @@ func (f w2cGatewayKeysFake) ValidateGatewayKey(string) (*chat.GatewayKeyView, er
 	return f.view, f.err
 }
 
+// w2cAccountLookup 解析会话绑定账户（矩阵用固定账户 w2c-acc，启用分组 grp）。
+type w2cAccountLookup struct {
+	ref *chat.ChatAccountRef
+	err error
+}
+
+func (f w2cAccountLookup) FindChatAccount(chat.ChatBindScope, string) (*chat.ChatAccountRef, error) {
+	return f.ref, f.err
+}
+
 type w2cModelCatalogFake struct {
 	accounts map[string][]chat.ChatTransportAccount
 	catalog  []chat.ProviderModelCatalogItem
@@ -627,11 +637,13 @@ func TestW2CChatToolCapabilitiesResolverMatrix(t *testing.T) {
 	ownerID := "w2c-owner"
 	validKeyRecord := &chat.ChatAPIKeyRecord{ID: "chat-key", Name: "对话 Key", Secret: "sk-chat", Status: "active"}
 	conversation := func(lastModel string, apiKeyID string) *chat.Conversation {
-		return &chat.Conversation{ID: "conv", SystemAccountID: ownerID, LastModel: w2cStrPtr(lastModel), APIKeyID: w2cStrPtr(apiKeyID)}
+		return &chat.Conversation{ID: "conv", SystemAccountID: ownerID, LastModel: w2cStrPtr(lastModel), APIKeyID: w2cStrPtr(apiKeyID), BindAccountID: w2cStrPtr("w2c-acc")}
 	}
+	boundAccountLookup := w2cAccountLookup{ref: &chat.ChatAccountRef{ID: "w2c-acc", Name: "账户", ProviderCode: "openai", Enabled: true, EnabledGroupIDs: []string{"grp"}}}
 	fullCatalog := func() w2cModelCatalogFake {
 		return w2cModelCatalogFake{
 			accounts: map[string][]chat.ChatTransportAccount{
+				"grp||":                         {w2cResponsesAccount()},
 				"grp|gpt-test|":                 {w2cResponsesAccount()},
 				"grp|gpt-test|responses":        {w2cResponsesAccount()},
 				"grp|gpt-test|chat_completions": {w2cResponsesAccount()},
@@ -643,9 +655,10 @@ func TestW2CChatToolCapabilitiesResolverMatrix(t *testing.T) {
 
 	t.Run("解析闭包29与全可用矩阵", func(t *testing.T) {
 		deps := &chat.Deps{
-			ChatKeys:     w2cChatKeysFake{record: validKeyRecord},
-			GatewayKeys:  w2cGatewayKeysFake{view: &chat.GatewayKeyView{GroupBindings: []chat.GatewayGroupBinding{{GroupID: "grp", Status: "active", GroupEnabled: true}}, ImageGenerationEnabled: true}},
-			ModelCatalog: fullCatalog(),
+			ChatKeys:      w2cChatKeysFake{record: validKeyRecord},
+			GatewayKeys:   w2cGatewayKeysFake{view: &chat.GatewayKeyView{GroupBindings: []chat.GatewayGroupBinding{{GroupID: "grp", Status: "active", GroupEnabled: true}}, ImageGenerationEnabled: true}},
+			ModelCatalog:  fullCatalog(),
+			AccountLookup: boundAccountLookup,
 		}
 		resolver := newChatToolCapabilitiesResolver(deps)
 		payload := resolver(conversation("gpt-test", "chat-key"), ownerID)
@@ -713,13 +726,13 @@ func TestW2CChatToolCapabilitiesResolverMatrix(t *testing.T) {
 	t.Run("目录与协议原因矩阵74-111", func(t *testing.T) {
 		gateway := w2cGatewayKeysFake{view: &chat.GatewayKeyView{GroupBindings: []chat.GatewayGroupBinding{{GroupID: "grp"}}, ImageGenerationEnabled: true}}
 		// 目录为空（无账户无目录行）→ option 恒非 nil（空列表），落“无对话路由”。
-		emptyCatalog := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: w2cModelCatalogFake{}}
+		emptyCatalog := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: w2cModelCatalogFake{}, AccountLookup: boundAccountLookup}
 		if entry := w2cToolEntryOf(t, resolveChatToolCapabilities(emptyCatalog, conversation("gpt-test", "chat-key"), ownerID), "web_search"); entry["reason"] != "当前 API Key 没有可用的对话路由" {
 			t.Fatalf("空目录 reason = %v", entry["reason"])
 		}
 		// 无任何账户 → 双“没有可用的对话路由”。
 		noAccounts := w2cModelCatalogFake{catalog: []chat.ProviderModelCatalogItem{{Model: "gpt-test", SupportedTools: []string{"web_search", "function_calling"}}}}
-		noRoute := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: noAccounts}
+		noRoute := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: noAccounts, AccountLookup: boundAccountLookup}
 		payload := resolveChatToolCapabilities(noRoute, conversation("gpt-test", "chat-key"), ownerID)
 		if entry := w2cToolEntryOf(t, payload, "web_search"); entry["reason"] != "当前 API Key 没有可用的对话路由" {
 			t.Fatalf("无路由 web reason = %v", entry["reason"])
@@ -733,29 +746,35 @@ func TestW2CChatToolCapabilitiesResolverMatrix(t *testing.T) {
 		chatOnlyAccount.SupportedEndpointModes = []string{"chat_sse"}
 		chatOnly := w2cModelCatalogFake{
 			accounts: map[string][]chat.ChatTransportAccount{
+				"grp||":                         {chatOnlyAccount},
 				"grp|gpt-test|":                 {chatOnlyAccount},
 				"grp|gpt-test|chat_completions": {chatOnlyAccount},
 			},
 			catalog: []chat.ProviderModelCatalogItem{{Model: "gpt-test", SupportedTools: []string{"web_search", "function_calling"}, SupportedAPIProtocols: []string{"chat_completions"}}},
 		}
-		chatOnlyDeps := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: chatOnly}
+		chatOnlyDeps := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: chatOnly, AccountLookup: boundAccountLookup}
 		payload = resolveChatToolCapabilities(chatOnlyDeps, conversation("gpt-test", "chat-key"), ownerID)
 		if entry := w2cToolEntryOf(t, payload, "web_search"); entry["reason"] != "当前路由不支持 Responses 网页搜索" {
 			t.Fatalf("chat-only web reason = %v", entry["reason"])
 		}
-		if entry := w2cToolEntryOf(t, payload, "generate_image"); entry["reason"] != "当前 API Key 路由没有可用的图像生成 API Key 账户" {
-			t.Fatalf("chat-only image reason = %v", entry["reason"])
+		// 账户唯一绑定：绑定账户 w2c-acc 即 api_key 类型账户，构成生图路由
+		//（权限开 + function_calling）→ 图片生成可用，reason 省略。
+		if entry := w2cToolEntryOf(t, payload, "generate_image"); entry["available"] != true {
+			t.Fatalf("chat-only image entry = %v, want available", entry)
+		}
+		if _, hasReason := w2cToolEntryOf(t, payload, "generate_image")["reason"]; hasReason {
+			t.Fatalf("可用工具不应携带 reason")
 		}
 		// 模型不支持 web_search（95-96）。
 		noWebSearch := fullCatalog()
 		noWebSearch.catalog = []chat.ProviderModelCatalogItem{{Model: "gpt-test", SupportedTools: []string{"function_calling"}}}
-		noWebSearchDeps := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: noWebSearch}
+		noWebSearchDeps := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: noWebSearch, AccountLookup: boundAccountLookup}
 		if entry := w2cToolEntryOf(t, resolveChatToolCapabilities(noWebSearchDeps, conversation("gpt-test", "chat-key"), ownerID), "web_search"); entry["reason"] != "当前模型不支持网页搜索" {
 			t.Fatalf("不支持搜索 reason = %v", entry["reason"])
 		}
 		// 图片生成权限关闭（106-107）。
 		noPermission := w2cGatewayKeysFake{view: &chat.GatewayKeyView{GroupBindings: []chat.GatewayGroupBinding{{GroupID: "grp"}}, ImageGenerationEnabled: false}}
-		noPermissionDeps := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: noPermission, ModelCatalog: fullCatalog()}
+		noPermissionDeps := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: noPermission, ModelCatalog: fullCatalog(), AccountLookup: boundAccountLookup}
 		if entry := w2cToolEntryOf(t, resolveChatToolCapabilities(noPermissionDeps, conversation("gpt-test", "chat-key"), ownerID), "generate_image"); entry["reason"] != "当前用户未开启图片生成" {
 			t.Fatalf("权限关闭 reason = %v", entry["reason"])
 		}
@@ -763,7 +782,7 @@ func TestW2CChatToolCapabilitiesResolverMatrix(t *testing.T) {
 		noFunctionCalling := fullCatalog()
 		noFunctionCalling.catalog = []chat.ProviderModelCatalogItem{{Model: "gpt-test", SupportedTools: []string{"web_search"}}}
 		noFunctionCalling.accounts["grp|gpt-image-2|"] = []chat.ChatTransportAccount{{ID: "img-acc", Type: "api_key"}}
-		noFCDeps := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: noFunctionCalling}
+		noFCDeps := &chat.Deps{ChatKeys: w2cChatKeysFake{record: validKeyRecord}, GatewayKeys: gateway, ModelCatalog: noFunctionCalling, AccountLookup: boundAccountLookup}
 		if entry := w2cToolEntryOf(t, resolveChatToolCapabilities(noFCDeps, conversation("gpt-test", "chat-key"), ownerID), "generate_image"); entry["reason"] != "当前模型不支持函数工具调用" {
 			t.Fatalf("不支持函数调用 reason = %v", entry["reason"])
 		}

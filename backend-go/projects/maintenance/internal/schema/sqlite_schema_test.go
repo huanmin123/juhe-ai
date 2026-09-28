@@ -441,13 +441,14 @@ func TestEnsureSQLiteBusinessAddsCustomQuestionIDsColumns(t *testing.T) {
 	})
 }
 
-// TestEnsureSQLiteChatAddsBindModeColumns covers the conversation bind-mode
-// column delivery (AI 问答三种绑定模式): fresh databases declare the five
-// columns inside sqliteChatDDL, while legacy chat databases (created before
-// the feature) receive them through the guarded PRAGMA table_info /
-// ALTER TABLE ADD COLUMN migration; legacy rows take the DEFAULT 'api_key',
-// which expresses the historical behavior without any data backfill.
-func TestEnsureSQLiteChatAddsBindModeColumns(t *testing.T) {
+// TestEnsureSQLiteChatAddsAccountBindingColumns covers the conversation
+// account-only binding column delivery (AI 问答会话账户唯一绑定设计):
+// fresh databases declare the columns inside sqliteChatDDL, while legacy chat
+// databases (created before the feature) receive them through the guarded
+// PRAGMA table_info / ALTER TABLE ADD COLUMN migration; legacy rows take
+// archived DEFAULT 0 (未归档), and ensure never recreates the dropped
+// bind_mode/bind_group_id/bind_group_name_snapshot columns.
+func TestEnsureSQLiteChatAddsAccountBindingColumns(t *testing.T) {
 	legacyConversationDDL := `CREATE TABLE chat_conversations (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -483,16 +484,20 @@ func TestEnsureSQLiteChatAddsBindModeColumns(t *testing.T) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`
+	accountBindingColumns := []string{"bind_account_id", "bind_account_name_snapshot", "archived", "search_account_id", "search_model_id", "image_account_id"}
 
 	t.Run("fresh database declares the columns", func(t *testing.T) {
 		db := openSharedMemorySQLite(t, "authsys-schema-test-chat-bind-fresh")
 		if _, err := EnsureSQLiteChat(context.Background(), db); err != nil {
 			t.Fatalf("EnsureSQLiteChat: %v", err)
 		}
-		for _, column := range []string{"bind_mode", "bind_group_id", "bind_group_name_snapshot", "bind_account_id", "bind_account_name_snapshot"} {
+		for _, column := range accountBindingColumns {
 			if !sqliteTableHasColumn(t, db, "chat_conversations", column) {
 				t.Errorf("fresh chat_conversations lacks %s", column)
 			}
+		}
+		if sqliteTableHasColumn(t, db, "chat_conversations", "bind_mode") {
+			t.Error("fresh chat_conversations must not declare the retired bind_mode column")
 		}
 	})
 
@@ -505,27 +510,27 @@ func TestEnsureSQLiteChatAddsBindModeColumns(t *testing.T) {
 			VALUES ('conv_legacy', 'owner-1', '历史密钥', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
 			t.Fatalf("seed legacy row: %v", err)
 		}
-		if sqliteTableHasColumn(t, db, "chat_conversations", "bind_mode") {
-			t.Fatal("legacy precondition violated: chat_conversations already has bind_mode")
+		if sqliteTableHasColumn(t, db, "chat_conversations", "bind_account_id") {
+			t.Fatal("legacy precondition violated: chat_conversations already has bind_account_id")
 		}
 		if _, err := EnsureSQLiteChat(context.Background(), db); err != nil {
 			t.Fatalf("EnsureSQLiteChat over legacy table: %v", err)
 		}
-		for _, column := range []string{"bind_mode", "bind_group_id", "bind_group_name_snapshot", "bind_account_id", "bind_account_name_snapshot"} {
+		for _, column := range accountBindingColumns {
 			if !sqliteTableHasColumn(t, db, "chat_conversations", column) {
 				t.Errorf("legacy chat_conversations lacks %s after ensure", column)
 			}
 		}
-		var bindMode string
-		if err := db.QueryRow(`SELECT bind_mode FROM chat_conversations WHERE id = 'conv_legacy'`).Scan(&bindMode); err != nil {
-			t.Fatalf("read legacy bind_mode: %v", err)
+		var archived int
+		if err := db.QueryRow(`SELECT archived FROM chat_conversations WHERE id = 'conv_legacy'`).Scan(&archived); err != nil {
+			t.Fatalf("read legacy archived: %v", err)
 		}
-		if bindMode != "api_key" {
-			t.Fatalf("legacy row bind_mode = %q, want default api_key", bindMode)
+		if archived != 0 {
+			t.Fatalf("legacy row archived = %d, want default 0", archived)
 		}
-		// ADD COLUMN 携带的列级 CHECK 对新增行同样生效。
-		if _, err := db.Exec(`UPDATE chat_conversations SET bind_mode = 'pool' WHERE id = 'conv_legacy'`); err == nil {
-			t.Fatal("expected CHECK violation for invalid bind_mode, got nil")
+		// ADD COLUMN 携带的列级 CHECK 对新增值同样生效。
+		if _, err := db.Exec(`UPDATE chat_conversations SET archived = 2 WHERE id = 'conv_legacy'`); err == nil {
+			t.Fatal("expected CHECK violation for invalid archived, got nil")
 		}
 	})
 }

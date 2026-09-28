@@ -16,6 +16,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 )
 
 // ModelPriceSet mirrors ProviderModelPriceSet.
@@ -38,20 +40,26 @@ type ModelPriceSet struct {
 // optional keys; defaultReasoningEffort is nullable in Node (always present)
 // while serviceTierPrices / the always-array keys are non-optional objects.
 type ModelCatalogItem struct {
-	ID                                      string                   `json:"id"`
-	ProviderCode                            string                   `json:"providerCode"`
-	Model                                   string                   `json:"model"`
-	Scope                                   string                   `json:"scope"`
-	Status                                  string                   `json:"status"`
-	CatalogVisible                          *bool                    `json:"catalogVisible,omitempty"`
-	SystemAccountID                         *string                  `json:"systemAccountId,omitempty"`
-	Mode                                    *string                  `json:"mode,omitempty"`
-	CatalogOrder                            *int64                   `json:"catalogOrder,omitempty"`
-	ReleaseDate                             *string                  `json:"releaseDate,omitempty"`
-	ShutdownDate                            *string                  `json:"shutdownDate,omitempty"`
-	SupportedAPIProtocols                   []string                 `json:"supportedApiProtocols"`
-	InputModalities                         []string                 `json:"inputModalities"`
-	OutputModalities                        []string                 `json:"outputModalities"`
+	ID                    string   `json:"id"`
+	ProviderCode          string   `json:"providerCode"`
+	Model                 string   `json:"model"`
+	Scope                 string   `json:"scope"`
+	Status                string   `json:"status"`
+	CatalogVisible        *bool    `json:"catalogVisible,omitempty"`
+	SystemAccountID       *string  `json:"systemAccountId,omitempty"`
+	Mode                  *string  `json:"mode,omitempty"`
+	CatalogOrder          *int64   `json:"catalogOrder,omitempty"`
+	ReleaseDate           *string  `json:"releaseDate,omitempty"`
+	ShutdownDate          *string  `json:"shutdownDate,omitempty"`
+	SupportedAPIProtocols []string `json:"supportedApiProtocols"`
+	InputModalities       []string `json:"inputModalities"`
+	OutputModalities      []string `json:"outputModalities"`
+	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（AI问答工具体系与主子模型
+	// 设计 6.4）：键为该行 supportedApiProtocols 的现有枚举值，值为该协议下
+	// 可用的工具集。
+	SupportedToolsByProtocol map[string][]string `json:"supportedToolsByProtocol"`
+	// SupportedTools 是二维矩阵的一维并集（pricing.UnionToolsByProtocol 派生）。
+	// 实施中间态：阶段 2 随 chat 面切换删除，不作为新数据源使用。
 	SupportedTools                          []string                 `json:"supportedTools"`
 	GenerationParameterCapabilities         map[string]any           `json:"generationParameterCapabilities"`
 	SupportedServiceTiers                   []string                 `json:"supportedServiceTiers"`
@@ -405,14 +413,17 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 // clamped by maxOutputTokens and the static-only source-pricing passthroughs
 // (keepStaticPricingSource: a manual-override row keeps its own pricing
 // provenance). 解析本体在 ResolveBuiltInStaticDerivedCapabilities（derived.go），
-// 与 chat 面目录读取链共用同一实现。SourceExchangeRateToUsd 有意收窄为
+// 与 chat 面目录读取链共用同一实现。工具能力以「协议 × 工具」矩阵解析
+// （SupportedToolsByProtocol），一维 supportedTools 投影为矩阵并集（阶段 2 随
+// chat 面切换删除）。SourceExchangeRateToUsd 有意收窄为
 // “解析出非 nil 才赋值”：静态表未解析出汇率时不回写，防止未来 DB 行自带
 // 该值被静态 nil 覆盖，与共享解析器的语义一致。
 func ApplyBuiltInStaticDerivedFields(item *ModelCatalogItem) {
 	resolved := ResolveBuiltInStaticDerivedCapabilities(item.ProviderCode, item.Model, item.MaxOutputTokens, item.Source)
 	item.InputModalities = resolved.InputModalities
 	item.OutputModalities = resolved.OutputModalities
-	item.SupportedTools = resolved.SupportedTools
+	item.SupportedToolsByProtocol = resolved.SupportedToolsByProtocol
+	item.SupportedTools = pricing.UnionToolsByProtocol(resolved.SupportedToolsByProtocol)
 	item.SourcePricingCurrency = resolved.SourcePricingCurrency
 	item.SourceExchangeRateDate = resolved.SourceExchangeRateDate
 	item.SourcePricingNote = resolved.SourcePricingNote
@@ -543,6 +554,7 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	// generation-parameter capabilities generate from provider+model.
 	item.InputModalities = []string{}
 	item.OutputModalities = []string{}
+	item.SupportedToolsByProtocol = map[string][]string{}
 	item.SupportedTools = []string{}
 	item.GenerationParameterCapabilities = generationParameterCapabilitiesToAny(
 		generationParameterCapabilitiesForModel(item.ProviderCode, item.Model, item.MaxOutputTokens))
@@ -592,13 +604,14 @@ func mergeModelCatalogItems(items []ModelCatalogItem, preserveProviderIdentity b
 }
 
 // inheritCustomCatalogCapabilities 应用 custom 目录行能力继承（BUG-0229，
-// 契约见 AI问答设计 8.6）：合并胜出的 custom（global/personal）行按
-// mergeModelCatalogItems 的同一合并键（hybrid 下 provider+model，其余裸 model）
+// 契约见 AI问答设计 8.6、工具体系设计 6.4）：合并胜出的 custom（global/personal）
+// 行按 mergeModelCatalogItems 的同一合并键（hybrid 下 provider+model，其余裸 model）
 // 查找内置扫描行（scanBuiltInCatalogItem 已过 ApplyBuiltInStaticDerivedFields
-// 静态兜底），仅填空 supportedTools / inputModalities / outputModalities；全新
-// 自定义模型（内置无对应行）保持空。解析本体 InheritBuiltinCatalogCapabilities
-// 与 chat 面（chain_catalog.go chainInheritCustomCatalogCapabilities）同源，两面
-// 不漂移。
+// 静态兜底），仅填空 supportedToolsByProtocol / inputModalities /
+// outputModalities（二维矩阵继承）；一维 supportedTools 投影在二维继承后按
+// 并集回填（custom 行入链时一维恒空）；全新自定义模型（内置无对应行）保持空。
+// 解析本体 InheritBuiltinCatalogCapabilities 与 chat 面
+// （chain_catalog.go chainInheritCustomCatalogCapabilities）同源，两面不漂移。
 func inheritCustomCatalogCapabilities(items, builtinRows []ModelCatalogItem, preserveProviderIdentity bool) {
 	if len(items) == 0 || len(builtinRows) == 0 {
 		return
@@ -639,19 +652,22 @@ func inheritCustomCatalogCapabilities(items, builtinRows []ModelCatalogItem, pre
 		}
 		resolved := InheritBuiltinCatalogCapabilities(
 			CustomCatalogCapabilityKeys{
-				SupportedTools:   item.SupportedTools,
-				InputModalities:  item.InputModalities,
-				OutputModalities: item.OutputModalities,
+				SupportedToolsByProtocol: item.SupportedToolsByProtocol,
+				InputModalities:          item.InputModalities,
+				OutputModalities:         item.OutputModalities,
 			},
 			CustomCatalogCapabilityKeys{
-				SupportedTools:   builtin.SupportedTools,
-				InputModalities:  builtin.InputModalities,
-				OutputModalities: builtin.OutputModalities,
+				SupportedToolsByProtocol: builtin.SupportedToolsByProtocol,
+				InputModalities:          builtin.InputModalities,
+				OutputModalities:         builtin.OutputModalities,
 			},
 		)
-		item.SupportedTools = resolved.SupportedTools
+		item.SupportedToolsByProtocol = resolved.SupportedToolsByProtocol
 		item.InputModalities = resolved.InputModalities
 		item.OutputModalities = resolved.OutputModalities
+		if len(item.SupportedTools) == 0 {
+			item.SupportedTools = pricing.UnionToolsByProtocol(item.SupportedToolsByProtocol)
+		}
 	}
 }
 

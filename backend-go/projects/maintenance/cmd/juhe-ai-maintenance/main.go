@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/businesshandoff"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/chatbindingmigration"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/cutoverevidence"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/goruntimemetrics"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
@@ -100,6 +102,8 @@ func runMaintenance(argv []string) int {
 	seedSecret := fs.String("secret", "", "seed encryption secret (or JUHE_AI_SECRET); empty selects the Node dev default")
 	migrateHybridSmart := fs.Bool("migrate-hybrid-smart-strategies", false, "one-shot migration of hybrid_smart route strategies to failover+disabled with config_json=NULL (PostgreSQL only via --dsn; default read-only dry-run listing the affected rows, add --confirm to write)")
 	migrateConfirm := fs.Bool("confirm", false, "execute the --migrate-hybrid-smart-strategies migration; without it the migration stays a dry-run")
+	migrateChatBinding := fs.Bool("migrate-chat-account-only-binding", false, `one-shot idempotent migration of chat_conversations to the account-only binding model (docs/functions/AI问答会话账户唯一绑定设计.md): rows with bind_mode IS NULL OR bind_mode <> 'account' are stamped archived=1, the bind_mode/bind_group_id/bind_group_name_snapshot data is backed up to chat_conversations_bind_legacy_backup and the three columns are dropped (SQLite rebuilds the table because its table CHECK blocks DROP COLUMN; PostgreSQL uses DROP COLUMN IF EXISTS). Requires --driver sqlite --chat-sqlite-path FILE or --driver postgres --dsn URL. The report JSON carries the rollback SQL (recreate the three columns from the backup table after rolling the code back): SQLite = ALTER TABLE chat_conversations ADD COLUMN bind_mode TEXT NOT NULL DEFAULT 'api_key'; ADD COLUMN bind_group_id TEXT; ADD COLUMN bind_group_name_snapshot TEXT; UPDATE chat_conversations SET bind_mode = COALESCE((SELECT b.bind_mode FROM chat_conversations_bind_legacy_backup b WHERE b.id = chat_conversations.id), 'api_key'), bind_group_id = (SELECT b.bind_group_id FROM chat_conversations_bind_legacy_backup b WHERE b.id = chat_conversations.id), bind_group_name_snapshot = (SELECT b.bind_group_name_snapshot FROM chat_conversations_bind_legacy_backup b WHERE b.id = chat_conversations.id); PostgreSQL = ALTER TABLE juhe_chat.chat_conversations ADD COLUMN IF NOT EXISTS bind_mode text NOT NULL DEFAULT 'api_key'; ADD COLUMN IF NOT EXISTS bind_group_id text; ADD COLUMN IF NOT EXISTS bind_group_name_snapshot text; UPDATE juhe_chat.chat_conversations c SET bind_mode = COALESCE(b.bind_mode, 'api_key'), bind_group_id = b.bind_group_id, bind_group_name_snapshot = b.bind_group_name_snapshot FROM juhe_chat.chat_conversations_bind_legacy_backup b WHERE b.id = c.id`)
+	chatSQLitePath := fs.String("chat-sqlite-path", "", "explicit chat SQLite file path for --migrate-chat-account-only-binding (requires --driver sqlite)")
 	postgresSchemaSnapshot := fs.Bool("postgres-schema-snapshot", false, "read-only PostgreSQL schema snapshot JSON to stdout (requires JUHE_AI_SCHEMA_SNAPSHOT_TARGET=production|test, JUHE_AI_SCHEMA_SNAPSHOT_POSTGRES_URL and JUHE_AI_SCHEMA_SNAPSHOT_READ_ONLY_CONFIRM=READ_ONLY; PostgreSQL only, SQLite is rejected)")
 	businessDatasetExport := fs.Bool("export-business-dataset", false, "read-only export of the fixed 40-table business dataset from --business-dataset-url into --business-dataset-dir (requires --business-dataset-confirm-readonly=READ_ONLY; PostgreSQL only)")
 	businessDatasetImport := fs.Bool("import-business-dataset", false, "all-or-nothing import of the business dataset in --business-dataset-dir into the authoritative --business-dataset-url database; commits only when every manifest assertion verifies")
@@ -122,6 +126,13 @@ func runMaintenance(argv []string) int {
 			return 0
 		}
 		return 2
+	}
+	if *migrateChatBinding {
+		if *migrateHybridSmart || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
+			fmt.Fprintln(os.Stderr, "chat account-only binding migration flag is mutually exclusive with other maintenance commands")
+			return 2
+		}
+		return chatAccountOnlyBindingMigrationResult(*bootstrapDriver, *chatSQLitePath, *bootstrapDSN)
 	}
 	if *migrateHybridSmart {
 		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || strings.TrimSpace(*j3bCutoverEvidence) != "" || *ownerManifestCheck || *capabilityManifestCheck || *routeOwnerManifestCheck || *businessHandoffCheck || *businessSchemaCheck || *nodeActivePathCheck || *j3cReadOnlyCheck || *j3bInventoryCheck || strings.TrimSpace(*j3bInventoryEvidence) != "" || strings.TrimSpace(*j3bBackfillEvidence) != "" || *j3Check || *j3Apply || *j3bCheck || *j3bApply || *j3bPostgresReadback || *j3bPostgresBackfill || *j3bSQLiteCheck || *j3bSQLiteApply || *j3bBackfill || *j3bReadback || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *assembleCutoverEvidence || *mockdataRun || *mockdataVerifyCoverage {
@@ -346,6 +357,64 @@ func goRuntimeMetricsURLRequiredExitCode(rawURL string) int {
 func goRuntimeMetricsApplyPreflightExitCode(rawURL string, nodeStopped, goStopped, backupConfirmed bool) int {
 	if goRuntimeMetricsURLRequiredExitCode(rawURL) != 0 || !nodeStopped || !goStopped || !backupConfirmed {
 		return 2
+	}
+	return 0
+}
+
+// chatAccountOnlyBindingMigrationResult returns the CLI exit code;
+// runMaintenance dispatches it and tests call it in-process. Usage errors
+// (missing/contradictory driver flags) exit 2, runtime failures exit 1, a
+// not-ready post-state (legacy columns still present) exits 3. The rollback
+// SQL is printed next to the JSON report (design §10 回滚窗口).
+func chatAccountOnlyBindingMigrationResult(driver, chatPath, dsn string) int {
+	driver = strings.ToLower(strings.TrimSpace(driver))
+	if driver != "sqlite" && driver != "postgres" {
+		fmt.Fprintf(os.Stderr, "--migrate-chat-account-only-binding 需要 --driver sqlite（配 --chat-sqlite-path）或 --driver postgres（配 --dsn）\n")
+		return 2
+	}
+	var db *sql.DB
+	var err error
+	var dialect chatbindingmigration.Dialect
+	if driver == "sqlite" {
+		if strings.TrimSpace(dsn) != "" {
+			fmt.Fprintln(os.Stderr, "--dsn 只适用于 --driver postgres；sqlite 模式使用 --chat-sqlite-path")
+			return 2
+		}
+		if strings.TrimSpace(chatPath) == "" {
+			fmt.Fprintln(os.Stderr, "--driver sqlite 需要 --chat-sqlite-path 指向 chat SQLite 文件")
+			return 2
+		}
+		dialect = chatbindingmigration.DialectSQLite
+		db, err = chatbindingmigration.OpenSQLite(chatPath)
+	} else {
+		if strings.TrimSpace(chatPath) != "" {
+			fmt.Fprintln(os.Stderr, "--chat-sqlite-path 只适用于 --driver sqlite；postgres 模式使用 --dsn")
+			return 2
+		}
+		if strings.TrimSpace(dsn) == "" {
+			fmt.Fprintln(os.Stderr, "--driver postgres 需要 --dsn 指向显式的 PostgreSQL URL")
+			return 2
+		}
+		dialect = chatbindingmigration.DialectPostgres
+		db, err = chatbindingmigration.OpenPostgres(dsn)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open chat account-only binding migration connection: %v\n", err)
+		return 2
+	}
+	defer db.Close()
+	report, runErr := chatbindingmigration.Run(context.Background(), db, dialect, time.Now().UTC())
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "chat account-only binding migration failed: %v\n", runErr)
+		return 1
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode chat account-only binding migration report: %v\n", err)
+		return 1
+	}
+	fmt.Println(report.RollbackSQL)
+	if !report.Ready() {
+		return 3
 	}
 	return 0
 }

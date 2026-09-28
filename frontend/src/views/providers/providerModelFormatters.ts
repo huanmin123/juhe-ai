@@ -417,26 +417,59 @@ export function formatModelModalities(values?: readonly string[]): string {
   return values?.length ? values.map((value) => labels[value] ?? value).join(' / ') : '-'
 }
 
+const modelToolLabels: Record<string, string> = {
+  function_calling: '函数调用',
+  web_search: '联网搜索',
+  google_search_grounding: 'Google 搜索',
+  google_maps_grounding: 'Google 地图检索',
+  file_search: '文件搜索',
+  image_generation: '图像生成',
+  code_interpreter: '代码解释器',
+  code_execution: '代码执行',
+  hosted_shell: '托管终端',
+  apply_patch: '文件补丁',
+  skills: '技能',
+  computer_use: '计算机操作',
+  mcp: 'MCP',
+  tool_search: '工具搜索',
+  structured_outputs: '结构化输出',
+  url_context: 'URL 上下文'
+}
+
+export function modelToolLabel(value: string): string {
+  return modelToolLabels[value] ?? value
+}
+
 export function formatModelTools(values?: readonly string[]): string {
-  const labels: Record<string, string> = {
-    function_calling: '函数调用',
-    web_search: '联网搜索',
-    google_search_grounding: 'Google 搜索',
-    google_maps_grounding: 'Google 地图检索',
-    file_search: '文件搜索',
-    image_generation: '图像生成',
-    code_interpreter: '代码解释器',
-    code_execution: '代码执行',
-    hosted_shell: '托管终端',
-    apply_patch: '文件补丁',
-    skills: '技能',
-    computer_use: '计算机操作',
-    mcp: 'MCP',
-    tool_search: '工具搜索',
-    structured_outputs: '结构化输出',
-    url_context: 'URL 上下文'
+  return values?.length ? values.map(modelToolLabel).join(' / ') : '-'
+}
+
+export interface ModelProtocolToolsEntry {
+  protocol: string
+  tools: string[]
+}
+
+/**
+ * 目录行「协议 × 工具」矩阵投影：每协议一条（该协议下可用工具列表）。
+ * 顺序跟随该行 supportedApiProtocols；矩阵中多出的键按字典序补尾（防御性，
+ * 正常数据不出现）。只返回携带工具的协议条目。
+ */
+export function modelToolsByProtocol(item: ProviderModelPricing): ModelProtocolToolsEntry[] {
+  const matrix = item.supportedToolsByProtocol ?? {}
+  const order: string[] = [...(item.supportedApiProtocols ?? [])]
+  for (const key of Object.keys(matrix).sort()) {
+    if (!order.includes(key)) order.push(key)
   }
-  return values?.length ? values.map((value) => labels[value] ?? value).join(' / ') : '-'
+  return order
+    .map((protocol) => ({ protocol, tools: matrix[protocol] ?? [] }))
+    .filter((entry) => entry.tools.length > 0)
+}
+
+/** 关键词命中判定：任一协议下的工具名（原始枚举或中文标签）命中即命中。 */
+export function modelToolsByProtocolMatchKeyword(item: ProviderModelPricing, keyword: string): boolean {
+  return modelToolsByProtocol(item).some((entry) => entry.tools.some((tool) =>
+    tool.toLowerCase().includes(keyword) || modelToolLabel(tool).toLowerCase().includes(keyword)
+  ))
 }
 
 export function trimNumber(value: number): string {

@@ -677,14 +677,8 @@ func TestStreamUpstreamHTTPFailureClassified(t *testing.T) {
 
 func TestProvisionConversationsIdempotent(t *testing.T) {
 	env := newGenerationEnv(t)
-	// 缺 bindMode → 400（旧"空请求体自动绑定专用 Key"路径已删除）。
-	missing := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, "{}")
-	if missing.status != http.StatusBadRequest || missing.code() != "chat_invalid_request" {
-		t.Fatalf("missing bindMode = %d %s", missing.status, missing.rawString())
-	}
-	// group 模式：鉴权主体由 EnsureChatAPIKey 幂等确保，两次创建同一 Key。
-	env.deps.GroupLookup = mockGroupLookup{}
-	first := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"bindMode":"group","groupId":"group-a"}`)
+	// 免弹窗直进：空 body 创建空会话，鉴权主体由 EnsureChatAPIKey 幂等确保。
+	first := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, "")
 	if first.status != http.StatusCreated {
 		t.Fatalf("create = %d %s", first.status, first.rawString())
 	}
@@ -692,17 +686,16 @@ func TestProvisionConversationsIdempotent(t *testing.T) {
 	if data["apiKeyId"] != "chat_key_provisioned" {
 		t.Fatalf("apiKeyId = %v", data["apiKeyId"])
 	}
-	if data["bindMode"] != "group" || data["bindGroupId"] != "group-a" || data["bindGroupName"] != "分组 A" {
-		t.Fatalf("bind payload = %v", data)
+	if _, has := data["bindAccountId"]; has {
+		t.Fatalf("空会话不应携带绑定: %v", data)
 	}
-	defaultModel, _ := data["defaultModel"].(map[string]any)
-	if defaultModel == nil || defaultModel["id"] != "gpt-5" {
-		t.Fatalf("defaultModel = %v", data["defaultModel"])
+	if data["archived"] != false {
+		t.Fatalf("archived = %v, want false", data["archived"])
 	}
 	if data["userTurnLimit"] != float64(100) {
 		t.Fatalf("userTurnLimit = %v", data["userTurnLimit"])
 	}
-	second := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"bindMode":"group","groupId":"group-a"}`)
+	second := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, "")
 	if second.status != http.StatusCreated {
 		t.Fatalf("second create = %d %s", second.status, second.rawString())
 	}
@@ -712,29 +705,20 @@ func TestProvisionConversationsIdempotent(t *testing.T) {
 	if ensureCount != 2 {
 		t.Fatalf("chat key ensure count = %d, want 2", ensureCount)
 	}
-	// api_key 模式不触碰专用 Key。
-	env.chatKeys.mu.Lock()
-	env.chatKeys.ensureCount = 0
-	env.chatKeys.mu.Unlock()
-	byKey := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`)
-	if byKey.status != http.StatusCreated {
-		t.Fatalf("api_key create = %d %s", byKey.status, byKey.rawString())
-	}
-	env.chatKeys.mu.Lock()
-	ensureCount = env.chatKeys.ensureCount
-	env.chatKeys.mu.Unlock()
-	if ensureCount != 0 {
-		t.Fatalf("api_key mode must not ensure chat key, ensure count = %d", ensureCount)
-	}
-	invalid := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"nope":1}`)
-	if invalid.status != http.StatusBadRequest || invalid.code() != "chat_invalid_request" {
-		t.Fatalf("invalid = %d %s", invalid.status, invalid.rawString())
+	// 未知键按兼容口径忽略（历史 bindMode/apiKeyId/groupId/accountId 字段与
+	// 任意旧客户端字段均不阻断创建）。
+	ignored := env.do("POST", "/__aisys__/api/my-chat/conversations", routeTestOwner, `{"nope":1}`)
+	if ignored.status != http.StatusCreated {
+		t.Fatalf("ignored-key create = %d %s", ignored.status, ignored.rawString())
 	}
 }
 
 func TestModelsRoutes(t *testing.T) {
 	env := newGenerationEnv(t)
-	env.fixture.createConversation("chat_conv_m", routeTestOwner)
+	env.deps.AccountLookup = mockAccountLookup{}
+	createBoundConversation(t, env.fixture, "chat_conv_m", routeTestOwner, CreateConversationInput{
+		BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
+	})
 	list := env.do("GET", "/__aisys__/api/my-chat/conversations/chat_conv_m/models", routeTestOwner, "")
 	if list.status != http.StatusOK {
 		t.Fatalf("list = %d %s", list.status, list.rawString())

@@ -278,33 +278,39 @@ func EnsureSQLiteChat(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
 	if err != nil {
 		return SchemaCounts{}, err
 	}
-	if err := ensureSQLiteChatBindModeColumns(ctx, db); err != nil {
-		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat bind-mode columns: %w", err)
+	if err := ensureSQLiteChatAccountBindingColumns(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat account-binding columns: %w", err)
 	}
 	return counts, nil
 }
 
-// sqliteChatBindModeColumns 列出 chat_conversations 会话绑定模式列（AI 问答
-// 三种绑定模式）在既有库上的幂等补齐声明。新库由 sqliteChatDDL 直接声明这
-// 些列，守卫先查列存在再 ALTER；既有行 bind_mode 取 DEFAULT 'api_key'，即
-// 表达历史行为，不做数据回填。SQLite 允许 ADD COLUMN 携带列级常量 CHECK，
-// 存量行默认值恒满足约束。
-var sqliteChatBindModeColumns = []struct {
+// sqliteChatAccountBindingColumns 列出 chat_conversations 会话账户唯一绑定
+// 列（AI 问答会话账户唯一绑定设计，2026-09-28）在既有库上的幂等补齐声明：
+// bind_account_id/bind_account_name_snapshot（唯一绑定载体，早于本设计的
+// 三种绑定模式时期即存在）与 archived/search_account_id/search_model_id/
+// image_account_id 四个新列。新库由 sqliteChatDDL 直接声明这些列，守卫先查
+// 列存在再 ALTER。bind_mode/bind_group_id/bind_group_name_snapshot 三列已由
+// 一次性迁移命令 --migrate-chat-account-only-binding 删除（SQLite 侧经表重建，
+// 因表级 CHECK 引用旧列时 DROP COLUMN 报错），ensure 不再重建旧列。SQLite
+// 允许 ADD COLUMN 携带列级常量 CHECK，archived 存量行取 DEFAULT 0 恒满足约束。
+var sqliteChatAccountBindingColumns = []struct {
 	column string
 	decl   string
 }{
-	{"bind_mode", "TEXT NOT NULL DEFAULT 'api_key' CHECK (bind_mode IN ('api_key', 'group', 'account'))"},
-	{"bind_group_id", "TEXT"},
-	{"bind_group_name_snapshot", "TEXT"},
 	{"bind_account_id", "TEXT"},
 	{"bind_account_name_snapshot", "TEXT"},
+	{"archived", "INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1))"},
+	{"search_account_id", "TEXT"},
+	{"search_model_id", "TEXT"},
+	{"image_account_id", "TEXT"},
 }
 
-// ensureSQLiteChatBindModeColumns delivers the conversation bind-mode columns
-// to legacy databases through the same guarded PRAGMA table_info /
-// ALTER TABLE ADD COLUMN pattern as the business and stats schemas.
-func ensureSQLiteChatBindModeColumns(ctx context.Context, db *sql.DB) error {
-	for _, target := range sqliteChatBindModeColumns {
+// ensureSQLiteChatAccountBindingColumns delivers the conversation
+// account-binding columns to legacy databases through the same guarded PRAGMA
+// table_info / ALTER TABLE ADD COLUMN pattern as the business and stats
+// schemas.
+func ensureSQLiteChatAccountBindingColumns(ctx context.Context, db *sql.DB) error {
+	for _, target := range sqliteChatAccountBindingColumns {
 		if err := ensureSQLiteTableColumn(ctx, db, "chat_conversations", target.column, target.decl); err != nil {
 			return fmt.Errorf("ensure chat_conversations.%s: %w", target.column, err)
 		}

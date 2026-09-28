@@ -355,7 +355,7 @@ func TestW1HComposeChatFamilyGuards(t *testing.T) {
 		if testCase.nilChain {
 			chain = nil
 		}
-		_, err := composeChatFamily(composed, runtimeConfig{ChatAssetsRoot: t.TempDir()}, testCase.chatDB, services, chain, nil, nil, nil, nil)
+		_, err := composeChatFamily(composed, runtimeConfig{ChatAssetsRoot: t.TempDir()}, testCase.chatDB, services, chain, nil, nil)
 		if err == nil {
 			t.Fatalf("%s: composeChatFamily 未报错", testCase.name)
 		}
@@ -365,33 +365,20 @@ func TestW1HComposeChatFamilyGuards(t *testing.T) {
 	}
 }
 
-// w1hGroupLookup / w1hAccountLookup 是组合根接线断言用的最小绑定对象端口
-// fake（仅证明 deps.GroupLookup / deps.AccountLookup 接到传入实例）。
-type w1hGroupLookup struct{}
-
-func (w1hGroupLookup) FindChatGroup(_ chat.ChatBindScope, groupID string) (*chat.ChatGroupRef, error) {
-	return &chat.ChatGroupRef{ID: groupID, Name: "分组", Enabled: true}, nil
-}
-
+// w1hAccountLookup 是组合根接线断言用的最小绑定账户端口 fake（仅证明
+// deps.AccountLookup 接到传入实例）。
 type w1hAccountLookup struct{}
 
 func (w1hAccountLookup) FindChatAccount(_ chat.ChatBindScope, accountID string) (*chat.ChatAccountRef, error) {
 	return &chat.ChatAccountRef{ID: accountID, Name: "账户", Enabled: true}, nil
 }
 
-// w1hGroupOptionsLookup / w1hAccountOptionsLookup 是组合根接线断言用的最小
-// 绑定下拉摘要端口 fake（仅证明 deps.GroupOptionsLookup /
+// w1hAccountOptionsLookup 是组合根接线断言用的最小账户列表端口 fake（仅证明
 // deps.AccountOptionsLookup 接到传入实例）。
-type w1hGroupOptionsLookup struct{}
-
-func (w1hGroupOptionsLookup) ListChatGroupOptions(_ context.Context, _ chat.ChatBindScope) ([]chat.ChatBindOption, error) {
-	return []chat.ChatBindOption{{ID: "grp_1", Name: "分组"}}, nil
-}
-
 type w1hAccountOptionsLookup struct{}
 
-func (w1hAccountOptionsLookup) ListChatAccountOptions(_ context.Context, _ chat.ChatBindScope) ([]chat.ChatBindOption, error) {
-	return []chat.ChatBindOption{{ID: "acc_1", Name: "账户"}}, nil
+func (w1hAccountOptionsLookup) ListChatAccountOptions(_ context.Context, _ chat.ChatBindScope) ([]chat.ChatAccountOption, error) {
+	return []chat.ChatAccountOption{{ID: "acc_1", Name: "账户", ProviderCode: "openai", Status: "active"}}, nil
 }
 
 func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
@@ -406,18 +393,18 @@ func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
 		ChatDiagnosticToolEnabled:   true,
 		ChatToolEnvironment:         "w1h-env",
 	}
-	deps, err := composeChatFamily(composed, cfg, db, services, &gatewayChain{}, w1hGroupLookup{}, w1hAccountLookup{}, w1hGroupOptionsLookup{}, w1hAccountOptionsLookup{})
+	deps, err := composeChatFamily(composed, cfg, db, services, &gatewayChain{}, w1hAccountLookup{}, w1hAccountOptionsLookup{})
 	if err != nil {
 		t.Fatalf("composeChatFamily = %v, want nil", err)
 	}
 	if deps == nil {
 		t.Fatalf("deps = nil")
 	}
-	if deps.GroupLookup == nil || deps.AccountLookup == nil {
-		t.Fatalf("GroupLookup / AccountLookup 未接线（三种绑定模式端口）")
+	if deps.AccountLookup == nil {
+		t.Fatalf("AccountLookup 未接线（会话绑定账户端口）")
 	}
-	if deps.GroupOptionsLookup == nil || deps.AccountOptionsLookup == nil {
-		t.Fatalf("GroupOptionsLookup / AccountOptionsLookup 未接线（新建会话绑定下拉端口）")
+	if deps.AccountOptionsLookup == nil {
+		t.Fatalf("AccountOptionsLookup 未接线（/my-chat/accounts 端口）")
 	}
 	if deps.Store == nil || deps.Store.Postgres() {
 		t.Fatalf("chat Store 缺失或方言错误（want sqlite）")

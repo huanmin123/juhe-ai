@@ -426,18 +426,16 @@ func TestW1BuildAssetDataURL(t *testing.T) {
 }
 
 // w1TargetAwareExecutor 在 w1FakeExecutor 上实现调度覆盖端口（记录
-// WithChatDispatchTarget 调用并透传 Dispatch），模拟组合根执行器。
+// WithChatDispatchAccount 调用并透传 Dispatch），模拟组合根执行器。
 type w1TargetAwareExecutor struct {
 	w1FakeExecutor
 	withCalls int
-	mode      string
-	groupID   string
 	accountID string
 }
 
-func (e *w1TargetAwareExecutor) WithChatDispatchTarget(bindMode, groupID, accountID string) chat.GenerationExecutor {
+func (e *w1TargetAwareExecutor) WithChatDispatchAccount(accountID string) chat.GenerationExecutor {
 	e.withCalls++
-	e.mode, e.groupID, e.accountID = bindMode, groupID, accountID
+	e.accountID = accountID
 	return e
 }
 
@@ -468,9 +466,7 @@ func TestW1RunObservationDispatchTargetAware(t *testing.T) {
 	missing := newW1ObservationFixture(t)
 	missing.seedReadyAsset(t, "asset_pin")
 	if _, err := missing.db.Exec(`CREATE TABLE chat_conversations (
-		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL,
-		bind_mode TEXT NOT NULL DEFAULT 'api_key',
-		bind_group_id TEXT, bind_account_id TEXT)`); err != nil {
+		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, bind_account_id TEXT)`); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 	missingAware := &w1TargetAwareExecutor{}
@@ -485,17 +481,15 @@ func TestW1RunObservationDispatchTargetAware(t *testing.T) {
 		t.Fatalf("缺失后状态 = %q，want failed", status)
 	}
 
-	// 会话存在（group 模式）：派发前绑定目标，观察正常完成。
+	// 会话存在（绑定账户）：派发前绑定目标，观察正常完成。
 	bound := newW1ObservationFixture(t)
 	bound.seedReadyAsset(t, "asset_pin")
 	if _, err := bound.db.Exec(`CREATE TABLE chat_conversations (
-		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL,
-		bind_mode TEXT NOT NULL DEFAULT 'api_key',
-		bind_group_id TEXT, bind_account_id TEXT)`); err != nil {
+		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, bind_account_id TEXT)`); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
-	if _, err := bound.db.Exec(`INSERT INTO chat_conversations (id, system_account_id, bind_mode, bind_group_id, bind_account_id)
-		VALUES ('conv_1', 'sys_1', 'group', 'group_pin', NULL)`); err != nil {
+	if _, err := bound.db.Exec(`INSERT INTO chat_conversations (id, system_account_id, bind_account_id)
+		VALUES ('conv_1', 'sys_1', 'acc_pin')`); err != nil {
 		t.Fatalf("insert conversation: %v", err)
 	}
 	boundAware := &w1TargetAwareExecutor{w1FakeExecutor: w1FakeExecutor{status: 200}}
@@ -504,8 +498,8 @@ func TestW1RunObservationDispatchTargetAware(t *testing.T) {
 	if err := bound.obs.runObservation(ctx, input, target); err != nil {
 		t.Fatalf("runObservation: %v", err)
 	}
-	if boundAware.withCalls != 1 || boundAware.mode != "group" || boundAware.groupID != "group_pin" {
-		t.Fatalf("WithChatDispatchTarget = calls:%d %s/%s", boundAware.withCalls, boundAware.mode, boundAware.groupID)
+	if boundAware.withCalls != 1 || boundAware.accountID != "acc_pin" {
+		t.Fatalf("WithChatDispatchAccount = calls:%d %s", boundAware.withCalls, boundAware.accountID)
 	}
 	if boundAware.got == nil || boundAware.got.Path != "/v1/responses" {
 		t.Fatalf("dispatch = %v", boundAware.got)

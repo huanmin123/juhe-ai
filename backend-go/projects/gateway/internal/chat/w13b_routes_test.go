@@ -57,77 +57,48 @@ func TestW13BCreateConversationMatrix(t *testing.T) {
 	if recorder := post("{bad", routeTestOwner); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("bad json = %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 非对象体。
-	if recorder := post(`[1]`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("array body = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// 未知键。
-	if recorder := post(`{"other":1}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("unknown key = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// 缺 bindMode。
-	if recorder := post(`{}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("missing bindMode = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// 非法 bindMode 值。
-	if recorder := post(`{"bindMode":"pool"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("invalid bindMode = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// apiKeyId 非字符串。
-	if recorder := post(`{"bindMode":"api_key","apiKeyId":5}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("bad apiKeyId = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// apiKeyId 空白。
-	if recorder := post(`{"bindMode":"api_key","apiKeyId":"  "}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("blank apiKeyId = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// 携带与模式不符的键。
-	if recorder := post(`{"bindMode":"api_key","apiKeyId":"k1","groupId":"group-a"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("mismatched key = %d %s", recorder.Code, recorder.Body.String())
+	// 非对象体 / 未知键 / 历史 bindMode 字段：兼容忽略（免弹窗直进契约，内容
+	// 不参与创建）→ 201 空会话。
+	for name, body := range map[string]string{
+		"array body":   `[1]`,
+		"unknown key":  `{"other":1}`,
+		"legacy keys":  `{"bindMode":"account","apiKeyId":"k1","groupId":"g","accountId":"a"}`,
+		"empty object": `{}`,
+	} {
+		if recorder := post(body, routeTestOwner); recorder.Code != http.StatusCreated {
+			t.Fatalf("%s create = %d %s", name, recorder.Code, recorder.Body.String())
+		}
 	}
 	// 未认证。
-	if recorder := post(`{"bindMode":"api_key","apiKeyId":"k1"}`, ""); recorder.Code != http.StatusInternalServerError {
+	if recorder := post("", ""); recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("unauth = %d %s", recorder.Code, recorder.Body.String())
 	}
-	// apiKeyId 指向不存在的 key。
+	// 专用 Key 查询失败。
 	rt.deps.ChatKeys = &failingChatKeysW13B{findErr: errors.New("key boom")}
-	if recorder := post(`{"bindMode":"api_key","apiKeyId":"k1"}`, routeTestOwner); recorder.Code != http.StatusInternalServerError {
+	if recorder := post("", routeTestOwner); recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("find error = %d %s", recorder.Code, recorder.Body.String())
 	}
-	// api_key 模式创建（显式选择用户 Key，返回绑定模式与默认模型）。
+	// 空会话创建（鉴权主体为 EnsureChatAPIKey 幂等补齐的专用 Key，无绑定、无
+	// 默认模型）。
 	rt.deps.ChatKeys = &mockChatKeys{}
-	recorder := post(`{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`, routeTestOwner)
+	recorder := post("", routeTestOwner)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", recorder.Code, recorder.Body.String())
 	}
 	payload := w13bDecode(t, recorder)
 	data := payload["data"].(map[string]any)
-	if data["defaultModel"] == nil {
-		t.Fatalf("默认模型缺失: %s", recorder.Body.String())
+	if _, has := data["defaultModel"]; has {
+		t.Fatalf("空会话不应携带 defaultModel: %s", recorder.Body.String())
 	}
-	if data["bindMode"] != "api_key" {
-		t.Fatalf("bindMode = %v", data["bindMode"])
+	if _, has := data["bindAccountId"]; has {
+		t.Fatalf("空会话不应携带绑定: %s", recorder.Body.String())
 	}
-	// group 模式：EnsureChatAPIKey 幂等补齐鉴权 Key。
-	rt.deps.GroupLookup = mockGroupLookup{}
-	groupRecorder := post(`{"bindMode":"group","groupId":"group-a"}`, routeTestOwner)
-	if groupRecorder.Code != http.StatusCreated {
-		t.Fatalf("group create = %d %s", groupRecorder.Code, groupRecorder.Body.String())
+	if data["apiKeyId"] != "chat_key_provisioned" {
+		t.Fatalf("apiKeyId = %v", data["apiKeyId"])
 	}
-	groupData := w13bDecode(t, groupRecorder)["data"].(map[string]any)
-	if groupData["apiKeyId"] != "chat_key_provisioned" || groupData["bindGroupId"] != "group-a" {
-		t.Fatalf("group bind payload = %v", groupData)
-	}
-	// group 模式分组不存在 / 已停用（用户引用错误 → 400）。
-	if recorder := post(`{"bindMode":"group","groupId":"missing"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("missing group = %d %s", recorder.Code, recorder.Body.String())
-	}
-	if recorder := post(`{"bindMode":"group","groupId":"disabled"}`, routeTestOwner); recorder.Code != http.StatusBadRequest {
-		t.Fatalf("disabled group = %d %s", recorder.Code, recorder.Body.String())
-	}
-	// group 模式 ChatKeys nil → 专用 Key ensure 失败。
+	// ChatKeys nil → 专用 Key ensure 失败。
 	rt.deps.ChatKeys = nil
-	if recorder := post(`{"bindMode":"group","groupId":"group-a"}`, routeTestOwner); recorder.Code != http.StatusInternalServerError {
+	if recorder := post("", routeTestOwner); recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("nil chat keys = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
@@ -965,8 +936,6 @@ func TestW13BDepsTraceAndHelpers(t *testing.T) {
 	if accounts := rt.accountsForGroups([]string{"g"}, "o", "m", ""); len(accounts) != 0 {
 		t.Fatalf("nil catalog 应返回空")
 	}
-	_, catalog := rt.loadChatModelCatalogSnapshot([]string{"g"}, "o", "m")
-	_ = catalog
 	rt.deps.ModelCatalog = mockModelCatalog{}
 	// constrainChatModelOptionForAccounts：空账户。
 	option := &ChatModelOption{ID: "m", SupportedAPIProtocols: []string{"chat_completions", "responses"}}
@@ -982,9 +951,11 @@ func TestW13BDepsTraceAndHelpers(t *testing.T) {
 	if len(reachable) != 1 || reachable[0] != "b" {
 		t.Fatalf("可达模型过滤失败: %v", reachable)
 	}
-	// loadChatModelListsFromAccountSnapshot 去重。
+	// loadChatModelListsForScope 目录去重（重复 provider 调用不产生重复模型）。
 	seen := map[string]bool{}
-	models, _, err := rt.loadChatModelListsFromAccountSnapshot([]string{"g", "g"}, routeTestOwner)
+	models, _, err := rt.loadChatModelListsForScope(&chatBindingScope{accounts: []ChatTransportAccount{
+		{Type: "api_key", ProviderCode: "openai", SupportedEndpointModes: []string{"chat_sse"}},
+	}}, routeTestOwner)
 	if err != nil {
 		t.Fatal(err)
 	}

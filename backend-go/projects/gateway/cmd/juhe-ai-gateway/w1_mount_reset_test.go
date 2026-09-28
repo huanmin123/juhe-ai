@@ -19,16 +19,16 @@ import (
 )
 
 func TestW1ComposeChatFamilyGuards(t *testing.T) {
-	if _, err := composeChatFamily(nil, runtimeConfig{}, nil, nil, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "composition") {
+	if _, err := composeChatFamily(nil, runtimeConfig{}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "composition") {
 		t.Fatalf("nil composed = %v", err)
 	}
-	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, nil, nil, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "聊天数据库") {
+	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "聊天数据库") {
 		t.Fatalf("nil chatDB = %v", err)
 	}
-	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, &sql.DB{}, nil, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "runtime cache") {
+	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, &sql.DB{}, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "runtime cache") {
 		t.Fatalf("nil services = %v", err)
 	}
-	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, &sql.DB{}, &chainRuntimeServices{}, nil, nil, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "网关链") {
+	if _, err := composeChatFamily(&composition{}, runtimeConfig{}, &sql.DB{}, &chainRuntimeServices{}, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "网关链") {
 		t.Fatalf("nil chain = %v", err)
 	}
 }

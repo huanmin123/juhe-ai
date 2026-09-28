@@ -114,24 +114,17 @@ func chatImageModelProfileFor(model string) chatImageModelProfile {
 	return chatImageModelProfile{SupportsAutoQuality: true}
 }
 
-// Conversation bind modes (AI 问答三种会话绑定模式；api_key 即存量行为)。
-const (
-	BindModeAPIKey  = "api_key"
-	BindModeGroup   = "group"
-	BindModeAccount = "account"
-)
-
-// Conversation mirrors ChatConversation (route response shape).
+// Conversation mirrors ChatConversation (route response shape). 会话绑定收敛
+// 为仅 account（AI 问答会话账户唯一绑定设计）：bindAccountId 为空即「未选账户」
+// 状态；archived=1 是存量旧模式（api_key/group）会话的一次性迁移只读标记。
 type Conversation struct {
 	ID                      string         `json:"id"`
 	SystemAccountID         string         `json:"systemAccountId"`
 	APIKeyID                *string        `json:"apiKeyId,omitempty"`
 	APIKeyNameSnapshot      string         `json:"apiKeyNameSnapshot"`
-	BindMode                string         `json:"bindMode"`
-	BindGroupID             *string        `json:"bindGroupId,omitempty"`
-	BindGroupNameSnapshot   string         `json:"bindGroupName,omitempty"`
 	BindAccountID           *string        `json:"bindAccountId,omitempty"`
 	BindAccountNameSnapshot string         `json:"bindAccountName,omitempty"`
+	Archived                bool           `json:"archived"`
 	Title                   string         `json:"title"`
 	IsPinned                bool           `json:"isPinned"`
 	LastModel               *string        `json:"lastModel,omitempty"`
@@ -188,17 +181,20 @@ type Message struct {
 }
 
 // conversationRow is the raw scan target with the full chat_conversations
-// column list.
+// column list（账户唯一绑定形状：无 bind_mode/bind_group_id/
+// bind_group_name_snapshot，含 archived 与工具绑定三列——工具三列本阶段仅
+// 落列与读取，候选校验与写入在工具阶段接入）。
 type conversationRow struct {
 	id                          string
 	systemAccountID             string
 	apiKeyID                    sql.NullString
 	apiKeyNameSnapshot          string
-	bindMode                    string
-	bindGroupID                 sql.NullString
-	bindGroupNameSnapshot       sql.NullString
 	bindAccountID               sql.NullString
 	bindAccountNameSnapshot     sql.NullString
+	archived                    int64
+	searchAccountID             sql.NullString
+	searchModelID               sql.NullString
+	imageAccountID              sql.NullString
 	title                       string
 	titleSourceMessageID        sql.NullString
 	isPinned                    int64
@@ -231,7 +227,7 @@ type conversationRow struct {
 }
 
 const conversationColumns = `id, system_account_id, api_key_id, api_key_name_snapshot,
-	bind_mode, bind_group_id, bind_group_name_snapshot, bind_account_id, bind_account_name_snapshot,
+	bind_account_id, bind_account_name_snapshot, archived, search_account_id, search_model_id, image_account_id,
 	title, title_source_message_id,
 	is_pinned, last_model, default_image_model, next_sequence_no, user_turn_count, message_revision,
 	active_turn_id, active_started_at, context_revision, active_checkpoint_id, compacted_through_sequence,
@@ -243,8 +239,8 @@ const conversationColumns = `id, system_account_id, api_key_id, api_key_name_sna
 func scanConversationRow(scan func(...any) error) (conversationRow, error) {
 	var row conversationRow
 	err := scan(&row.id, &row.systemAccountID, &row.apiKeyID, &row.apiKeyNameSnapshot,
-		&row.bindMode, &row.bindGroupID, &row.bindGroupNameSnapshot, &row.bindAccountID,
-		&row.bindAccountNameSnapshot, &row.title,
+		&row.bindAccountID, &row.bindAccountNameSnapshot, &row.archived,
+		&row.searchAccountID, &row.searchModelID, &row.imageAccountID, &row.title,
 		&row.titleSourceMessageID, &row.isPinned, &row.lastModel, &row.defaultImageModel,
 		&row.nextSequenceNo, &row.userTurnCount, &row.messageRevision, &row.activeTurnID,
 		&row.activeStartedAt, &row.contextRevision, &row.activeCheckpointID,
@@ -289,11 +285,9 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 		SystemAccountID:         row.systemAccountID,
 		APIKeyID:                nullText(row.apiKeyID),
 		APIKeyNameSnapshot:      row.apiKeyNameSnapshot,
-		BindMode:                row.bindMode,
-		BindGroupID:             nullText(row.bindGroupID),
-		BindGroupNameSnapshot:   row.bindGroupNameSnapshot.String,
 		BindAccountID:           nullText(row.bindAccountID),
 		BindAccountNameSnapshot: row.bindAccountNameSnapshot.String,
+		Archived:                row.archived == 1,
 		Title:                   row.title,
 		IsPinned:                row.isPinned == 1,
 		LastModel:               nullText(row.lastModel),
@@ -308,25 +302,22 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 }
 
 // CreateConversationInput mirrors the createChatConversation input object.
-// Bind fields carry the resolved binding (handler 已完成校验与名称快照)；
-// BindMode 为空时按 'api_key' 落库（存量直调方的历史行为）。
+// 会话绑定收敛为仅 account（AI 问答会话账户唯一绑定设计）：创建即空会话
+// （bind_account_id NULL，未选账户），账户选定后经 UpdateConversation 写入。
 type CreateConversationInput struct {
 	ID                      string
 	SystemAccountID         string
 	APIKeyID                string
 	APIKeyNameSnapshot      string
-	BindMode                string
-	BindGroupID             string
-	BindGroupNameSnapshot   string
 	BindAccountID           string
 	BindAccountNameSnapshot string
-	DefaultModel            string
 	Now                     string
 	MaxConversationsPerUser int
 }
 
 // CreateConversation mirrors createChatConversation: per-user policy lock,
-// per-user conversation-count guard, insert with 新对话 defaults.
+// per-user conversation-count guard, insert with 新对话 defaults. last_model
+// 落 NULL：空会话未选账户，无默认模型（选定账户后由模型列表首项联动）。
 func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation, error) {
 	now, err := requireRFC3339Instant(input.Now, "聊天会话 now")
 	if err != nil {
@@ -354,21 +345,15 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 	if total >= int64(input.MaxConversationsPerUser) {
 		return nil, &ConflictError{Code: ConflictConversationLimit}
 	}
-	defaultModel := sqlText(optString(input.DefaultModel))
-	bindMode := input.BindMode
-	if bindMode == "" {
-		bindMode = BindModeAPIKey
-	}
 	_, err = tx.Exec(s.bind(`INSERT INTO `+s.table("chat_conversations")+` (
 		id, system_account_id, api_key_id, api_key_name_snapshot,
-		bind_mode, bind_group_id, bind_group_name_snapshot, bind_account_id, bind_account_name_snapshot,
+		bind_account_id, bind_account_name_snapshot,
 		title, last_model, default_image_model,
 		next_sequence_no, user_turn_count, last_message_at, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '新对话', ?, 'gpt-image-2', 1, 0, ?, ?, ?)`),
+	) VALUES (?, ?, ?, ?, ?, ?, '新对话', NULL, 'gpt-image-2', 1, 0, ?, ?, ?)`),
 		id, input.SystemAccountID, input.APIKeyID, input.APIKeyNameSnapshot,
-		bindMode, sqlText(optString(input.BindGroupID)), input.BindGroupNameSnapshot,
 		sqlText(optString(input.BindAccountID)), input.BindAccountNameSnapshot,
-		defaultModel, now, now, now)
+		now, now, now)
 	if err != nil {
 		return nil, err
 	}
@@ -501,7 +486,9 @@ func (s *Store) queryConversationRows(query string, args ...any) ([]conversation
 }
 
 // UpdateConversation mirrors updateChatConversation: partial assignments and
-// the changes-!==1 → undefined → 404 contract.
+// the changes-!==1 → undefined → 404 contract. BindAccountID 写入/切换会话绑定
+// 账户（handler 已完成数据范围与启用校验并解析名称快照）；ClearLastModel 是
+// 切换账户的联动清空臂（当前 lastModel 不在新账户可路由范围时由 handler 判定）。
 func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation, error) {
 	now, err := requireRFC3339Instant(input.Now, "聊天会话 now")
 	if err != nil {
@@ -525,6 +512,13 @@ func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation
 		assignments = append(assignments, "default_image_model = ?")
 		params = append(params, string(model))
 	}
+	if input.BindAccountID != nil {
+		assignments = append(assignments, "bind_account_id = ?", "bind_account_name_snapshot = ?")
+		params = append(params, *input.BindAccountID, input.BindAccountNameSnapshot)
+	}
+	if input.ClearLastModel {
+		assignments = append(assignments, "last_model = NULL")
+	}
 	assignments = append(assignments, "updated_at = ?")
 	params = append(params, now, input.ConversationID, input.SystemAccountID)
 	result, err := s.db.Exec(s.bind(`UPDATE `+s.table("chat_conversations")+`
@@ -540,12 +534,15 @@ func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation
 }
 
 type UpdateConversationInput struct {
-	ConversationID    string
-	SystemAccountID   string
-	Title             *string
-	IsPinned          *bool
-	DefaultImageModel *string
-	Now               string
+	ConversationID          string
+	SystemAccountID         string
+	Title                   *string
+	IsPinned                *bool
+	DefaultImageModel       *string
+	BindAccountID           *string
+	BindAccountNameSnapshot string
+	ClearLastModel          bool
+	Now                     string
 }
 
 func joinAssignments(assignments []string) string {

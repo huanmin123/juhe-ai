@@ -1,10 +1,9 @@
 package main
 
-// AI 问答会话三种绑定模式的进程内调度覆盖通道测试（设计 §6/§9）：
+// AI 问答会话账户唯一绑定的进程内调度覆盖通道测试（设计 §5/§7）：
 //  - 执行器目标绑定 → /v1 context 注入（未导出 key，外部请求不可构造）；
-//  - group 模式候选组固定为指定分组（全链：派发落在绑定分组上游）；
-//  - account 模式候选收敛单账户且 usage 归属按账户 BoundGroupID 记账；
-//  - 无 target 请求（外部请求 / api_key 模式）调度路径与现状一致；
+//  - account 目标候选收敛单账户且 usage 归属按账户 BoundGroupID 记账；
+//  - 无 target 请求（外部请求）调度路径与现状一致；
 //  - 绑定目标不可用走既有"无可用账户"语义，分组回退被禁用不逃逸。
 // 测试风格与 chain_test.go 的 full-chain smoke 一致（真实 SQLite fixture +
 // mock 上游 + spool 用量断言）。
@@ -44,7 +43,7 @@ func newChatDispatchUpstream(t *testing.T, body string) *chatDispatchUpstream {
 }
 
 // seedChatDispatchPinGroup 在 fixture 上补一组双分组事实：group_main 的 acc_1
-// 指向主上游（Key 默认路由），group_pin 的 acc_pin 指向绑定分组上游。
+// 指向主上游（Key 默认路由），group_pin 的 acc_pin 指向绑定账户上游。
 func seedChatDispatchPinGroup(t *testing.T, fixture *chainFixture, mainURL, pinURL, accountStatus string) {
 	t.Helper()
 	now := "2026-09-04T00:00:00.000Z"
@@ -152,43 +151,36 @@ func waitForSpoolRecords(t *testing.T, spoolDir string) []map[string]any {
 	return nil
 }
 
-// TestChatConversationDispatchTargetReadsBindColumns：观察适配器的会话绑定
-// 目标只读查询（chat_conversations 同表同列）。
-func TestChatConversationDispatchTargetReadsBindColumns(t *testing.T) {
+// TestChatConversationDispatchTargetReadsBindColumn：观察适配器的会话绑定
+// 账户只读查询（chat_conversations.bind_account_id 同表同列）。
+func TestChatConversationDispatchTargetReadsBindColumn(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "obs-target.sqlite3"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.Exec(`CREATE TABLE chat_conversations (
-		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL,
-		bind_mode TEXT NOT NULL DEFAULT 'api_key',
-		bind_group_id TEXT, bind_account_id TEXT)`); err != nil {
+		id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, bind_account_id TEXT)`); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 	bind := func(query string) string { return query }
-	insert := func(id, mode string, groupID, accountID any) {
+	insert := func(id string, accountID any) {
 		t.Helper()
-		if _, err := db.Exec(`INSERT INTO chat_conversations (id, system_account_id, bind_mode, bind_group_id, bind_account_id)
-			VALUES (?, 'sys_owner', ?, ?, ?)`, id, mode, groupID, accountID); err != nil {
+		if _, err := db.Exec(`INSERT INTO chat_conversations (id, system_account_id, bind_account_id)
+			VALUES (?, 'sys_owner', ?)`, id, accountID); err != nil {
 			t.Fatalf("insert conversation: %v", err)
 		}
 	}
-	insert("conv_group", "group", "group_pin", nil)
-	insert("conv_account", "account", nil, "acc_pin")
-	insert("conv_api_key", "api_key", nil, nil)
+	insert("conv_account", "acc_pin")
+	insert("conv_unbound", nil)
 
-	target, found, err := chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_group", "sys_owner")
-	if err != nil || !found || !target.pinned() || target.Mode != "group" || target.GroupID != "group_pin" {
-		t.Fatalf("group target = %+v found=%v err=%v", target, found, err)
-	}
-	target, found, err = chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_account", "sys_owner")
-	if err != nil || !found || !target.pinned() || target.Mode != "account" || target.AccountID != "acc_pin" {
+	target, found, err := chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_account", "sys_owner")
+	if err != nil || !found || !target.pinned() || target.AccountID != "acc_pin" {
 		t.Fatalf("account target = %+v found=%v err=%v", target, found, err)
 	}
-	target, found, err = chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_api_key", "sys_owner")
+	target, found, err = chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_unbound", "sys_owner")
 	if err != nil || !found || target.pinned() {
-		t.Fatalf("api_key target = %+v found=%v err=%v", target, found, err)
+		t.Fatalf("unbound target = %+v found=%v err=%v", target, found, err)
 	}
 	if _, found, err := chatConversationDispatchTarget(db, "chat_conversations", bind, "conv_missing", "sys_owner"); err == nil || found {
 		t.Fatalf("missing conversation = found=%v err=%v", found, err)
@@ -197,9 +189,8 @@ func TestChatConversationDispatchTargetReadsBindColumns(t *testing.T) {
 
 const chatDispatchSmokeBody = `{"id":"chatcmpl-pin","object":"chat.completion","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"CONTENT"},"finish_reason":"stop"}]}`
 
-// TestChatGatewayExecutorInjectsDispatchTargetContext：绑定目标的执行器视图
-// 在派发时把目标注入进程内 context；api_key/legacy 模式返回原实例且 context
-// 无目标。
+// TestChatGatewayExecutorInjectsDispatchTargetContext：绑定账户目标的执行器
+// 视图在派发时把目标注入进程内 context；无绑定返回原实例且 context 无目标。
 func TestChatGatewayExecutorInjectsDispatchTargetContext(t *testing.T) {
 	var seenTarget chatDispatchTarget
 	var sawKey bool
@@ -210,31 +201,31 @@ func TestChatGatewayExecutorInjectsDispatchTargetContext(t *testing.T) {
 	})
 	executor := newChatGatewayExecutor(handler)
 
-	// api_key 模式：WithChatDispatchTarget 返回原实例，context 无目标。
-	same := executor.WithChatDispatchTarget("api_key", "", "")
+	// 无绑定账户：WithChatDispatchAccount 返回原实例，context 无目标。
+	same := executor.WithChatDispatchAccount("")
 	if _, identical := same.(*chatGatewayExecutor); !identical {
-		t.Fatalf("api_key 模式必须返回原执行器实例")
+		t.Fatalf("空账户必须返回原执行器实例")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := executor.Dispatch(ctx, chatGenerationDispatchSmoke()); err != nil {
-		t.Fatalf("api_key dispatch: %v", err)
+		t.Fatalf("unbound dispatch: %v", err)
 	}
 	if sawKey || seenTarget.pinned() {
-		t.Fatalf("api_key 模式 context 不得携带目标: %v key=%v", seenTarget, sawKey)
+		t.Fatalf("无绑定 context 不得携带目标: %v key=%v", seenTarget, sawKey)
 	}
 
-	// group 模式：新实例 + context 注入目标。
-	bound := executor.WithChatDispatchTarget("group", "group_pin", "")
+	// 绑定账户：新实例 + context 注入目标。
+	bound := executor.WithChatDispatchAccount("acc_pin")
 	if bound == executor {
-		t.Fatalf("group 模式必须返回绑定目标的执行器视图")
+		t.Fatalf("绑定账户必须返回目标的执行器视图")
 	}
 	sawKey = false
 	if _, err := bound.Dispatch(ctx, chatGenerationDispatchSmoke()); err != nil {
-		t.Fatalf("group dispatch: %v", err)
+		t.Fatalf("bound dispatch: %v", err)
 	}
-	if !sawKey || !seenTarget.pinned() || seenTarget.Mode != "group" || seenTarget.GroupID != "group_pin" {
-		t.Fatalf("group 目标未注入 context: %v key=%v", seenTarget, sawKey)
+	if !sawKey || !seenTarget.pinned() || seenTarget.AccountID != "acc_pin" {
+		t.Fatalf("账户目标未注入 context: %v key=%v", seenTarget, sawKey)
 	}
 }
 
@@ -254,13 +245,13 @@ func TestChatDispatchTargetFromContextRejectsExternal(t *testing.T) {
 	if _, ok := chatDispatchTargetFromContext(context.WithValue(request.Context(), chatDispatchTargetContextKey{}, "group_pin")); ok {
 		t.Fatal("非目标类型值不得解析为调度目标")
 	}
-	if _, ok := chatDispatchTargetFromContext(context.WithValue(request.Context(), chatDispatchTargetContextKey{}, chatDispatchTarget{Mode: "api_key"})); ok {
-		t.Fatal("api_key 目标不构成覆盖")
+	if _, ok := chatDispatchTargetFromContext(context.WithValue(request.Context(), chatDispatchTargetContextKey{}, chatDispatchTarget{})); ok {
+		t.Fatal("零值目标不构成覆盖")
 	}
 }
 
-// withChatDispatchAccountGroups 置位 account 模式承载分组解析端口（生产由
-// composeChatFamily 按域 A EnabledGroupIDs 口径装配），测试结束还原。
+// withChatDispatchAccountGroups 置位绑定账户承载分组解析端口（生产由
+// composeChatFamily 按 EnabledGroupIDs 口径装配），测试结束还原。
 func withChatDispatchAccountGroups(t *testing.T, groups ...string) {
 	t.Helper()
 	resolved := append([]string{}, groups...)
@@ -273,32 +264,9 @@ func withChatDispatchAccountGroups(t *testing.T, groups ...string) {
 	t.Cleanup(func() { setChainChatDispatchAccountGroups(nil) })
 }
 
-// TestChatDispatchGroupPinFullChain：group 模式会话的派发固定落在指定分组
-// （group_pin 上游命中），Key 默认路由分组（group_main 上游）零命中。
-func TestChatDispatchGroupPinFullChain(t *testing.T) {
-	fixture := newChainFixture(t)
-	shortenChainWaitBudgets(t, fixture)
-	main := newChatDispatchUpstream(t, strings.Replace(chatDispatchSmokeBody, "CONTENT", "主分组内容", 1))
-	pin := newChatDispatchUpstream(t, strings.Replace(chatDispatchSmokeBody, "CONTENT", "绑定分组内容", 1))
-	seedChatDispatchPinGroup(t, fixture, main.server.URL, pin.server.URL, "active")
-	chain, _ := composeChatDispatchChain(t, fixture)
-
-	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{Mode: "group", GroupID: "group_pin"}, true)
-	if status != http.StatusOK {
-		t.Fatalf("status=%d body=%s", status, body)
-	}
-	if !strings.Contains(body, "绑定分组内容") {
-		t.Fatalf("派发未落在绑定分组上游: %s", body)
-	}
-	if pin.hits != 1 || main.hits != 0 {
-		t.Fatalf("upstream hits main=%d pin=%d, want main=0 pin=1", main.hits, pin.hits)
-	}
-}
-
-// TestChatDispatchAccountPinFullChain：account 模式按生产真实形状构造目标
-// （{account, GroupID:"", acc_pin}——会话不持久化承载分组）经消费侧承载分组
-// 解析收敛单账户，usage 归属按实际派发账户记账（accountId=acc_pin，
-// groupId=承载分组 group_pin）。
+// TestChatDispatchAccountPinFullChain：绑定账户目标经消费侧承载分组解析收敛
+// 单账户（acc_pin 落在 group_pin 上游），usage 归属按实际派发账户记账
+// （accountId=acc_pin，groupId=承载分组 group_pin）。
 func TestChatDispatchAccountPinFullChain(t *testing.T) {
 	fixture := newChainFixture(t)
 	shortenChainWaitBudgets(t, fixture)
@@ -308,7 +276,7 @@ func TestChatDispatchAccountPinFullChain(t *testing.T) {
 	withChatDispatchAccountGroups(t, "group_pin")
 	chain, spoolDir := composeChatDispatchChain(t, fixture)
 
-	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{Mode: "account", GroupID: "", AccountID: "acc_pin"}, true)
+	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
@@ -337,8 +305,8 @@ func TestChatDispatchAccountPinFullChain(t *testing.T) {
 	}
 }
 
-// TestChatDispatchAccountMultiGroupConvergesFullChain：account 会话属于多个
-// 启用分组时，逐组解析收敛到该账户单元素（启用分组列表第二位的承载分组命中），
+// TestChatDispatchAccountMultiGroupConvergesFullChain：绑定账户属于多个启用
+// 分组时，逐组解析收敛到该账户单元素（启用分组列表第二位的承载分组命中），
 // 生效分组与 usage 归属都落在承载分组。
 func TestChatDispatchAccountMultiGroupConvergesFullChain(t *testing.T) {
 	fixture := newChainFixture(t)
@@ -360,7 +328,7 @@ func TestChatDispatchAccountMultiGroupConvergesFullChain(t *testing.T) {
 	withChatDispatchAccountGroups(t, "group_other", "group_pin")
 	chain, spoolDir := composeChatDispatchChain(t, fixture)
 
-	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{Mode: "account", GroupID: "", AccountID: "acc_pin"}, true)
+	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
@@ -386,8 +354,8 @@ func TestChatDispatchAccountMultiGroupConvergesFullChain(t *testing.T) {
 	}
 }
 
-// TestChatDispatchUnpinnedRequestUnchanged：无目标（外部请求 / api_key 模式）
-// 的调度路径与现状一致——Key 默认路由分组命中，绑定分组零命中。
+// TestChatDispatchUnpinnedRequestUnchanged：无目标（外部请求）的调度路径与
+// 现状一致——Key 默认路由分组命中，绑定分组零命中。
 func TestChatDispatchUnpinnedRequestUnchanged(t *testing.T) {
 	fixture := newChainFixture(t)
 	shortenChainWaitBudgets(t, fixture)
@@ -408,7 +376,7 @@ func TestChatDispatchUnpinnedRequestUnchanged(t *testing.T) {
 	}
 }
 
-// TestChatDispatchTargetUnavailableUsesExistingNoAccountSemantics：绑定分组
+// TestChatDispatchTargetUnavailableUsesExistingNoAccountSemantics：绑定账户
 // 解析不出可派发账户时走既有"无可用账户"错误语义（不新造错误分支），且
 // 不回退到 Key 的其他绑定分组。
 func TestChatDispatchTargetUnavailableUsesExistingNoAccountSemantics(t *testing.T) {
@@ -417,14 +385,15 @@ func TestChatDispatchTargetUnavailableUsesExistingNoAccountSemantics(t *testing.
 	main := newChatDispatchUpstream(t, chatDispatchSmokeBody)
 	pin := newChatDispatchUpstream(t, chatDispatchSmokeBody)
 	seedChatDispatchPinGroup(t, fixture, main.server.URL, pin.server.URL, "active")
-	// 空绑定分组：存在但无任何账户。
+	// 空承载分组：存在但无任何账户。
 	if _, err := fixture.db.Exec(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
 		VALUES ('group_empty', ?, 'openai', 1, 'personal')`, fixture.systemAccount); err != nil {
 		t.Fatalf("seed empty group: %v", err)
 	}
+	withChatDispatchAccountGroups(t, "group_empty")
 	chain, _ := composeChatDispatchChain(t, fixture)
 
-	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{Mode: "group", GroupID: "group_empty"}, true)
+	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
@@ -449,28 +418,29 @@ func TestChatDispatchTargetUnavailableUsesExistingNoAccountSemantics(t *testing.
 	}
 }
 
-// TestChatDispatchPinnedGroupExhaustedDoesNotEscape：绑定分组账户全部失败时
+// TestChatDispatchPinnedAccountExhaustedDoesNotEscape：绑定账户上游全部失败时
 // 禁用 API Key 分组回退——Key 绑定的 group_main 不被尝试，走既有耗尽 503。
-func TestChatDispatchPinnedGroupExhaustedDoesNotEscape(t *testing.T) {
+func TestChatDispatchPinnedAccountExhaustedDoesNotEscape(t *testing.T) {
 	fixture := newChainFixture(t)
 	shortenChainWaitBudgets(t, fixture)
 	dead := newDeadUpstreamAddr(t)
 	main := newChatDispatchUpstream(t, chatDispatchSmokeBody)
 	pin := newChatDispatchUpstream(t, chatDispatchSmokeBody)
 	seedChatDispatchPinGroup(t, fixture, main.server.URL, dead, "active")
+	withChatDispatchAccountGroups(t, "group_pin")
 	chain, _ := composeChatDispatchChain(t, fixture)
 
-	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{Mode: "group", GroupID: "group_pin"}, true)
+	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{AccountID: "acc_pin"}, true)
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
 	if main.hits != 0 || pin.hits != 0 {
-		t.Fatalf("绑定分组耗尽不得逃逸: main=%d pin=%d", main.hits, pin.hits)
+		t.Fatalf("绑定账户耗尽不得逃逸: main=%d pin=%d", main.hits, pin.hits)
 	}
 }
 
 // TestChatDispatchGroupContextAlignsPinnedPolicy：窗口级分组上下文对齐——
-// 高并发（动态调度）绑定分组的 scheduling policy 与 usage 窗口组取绑定分组。
+// 高并发（动态调度）承载分组的 scheduling policy 与 usage 窗口组取承载分组。
 func TestChatDispatchGroupContextAlignsPinnedPolicy(t *testing.T) {
 	fixture := newChainFixture(t)
 	now := "2026-09-04T00:00:00.000Z"
@@ -491,13 +461,13 @@ func TestChatDispatchGroupContextAlignsPinnedPolicy(t *testing.T) {
 		GroupSchedulingPolicy: nil,
 		UsageContext:          gatewaypreauth.GatewayFailureUsageContext{GroupID: "group_main"},
 	}
-	// group 模式生效分组 = 绑定分组（account 模式由 resolveChatDispatchTargetScope
-	// 解析承载分组后传入同一入口）。
+	// 生效分组 = 承载分组（resolveChatDispatchTargetScope 解析命中组后传入
+	// 同一入口）。
 	if err := chain.applyChatDispatchGroupContext(context.Background(), fixture.systemAccount, "group_hc", dispatchContext); err != nil {
 		t.Fatalf("applyChatDispatchGroupContext: %v", err)
 	}
 	if dispatchContext.GroupSchedulingPolicy == nil || *dispatchContext.GroupSchedulingPolicy == nil {
-		t.Fatalf("调度策略未对齐到绑定分组: %+v", dispatchContext.GroupSchedulingPolicy)
+		t.Fatalf("调度策略未对齐到承载分组: %+v", dispatchContext.GroupSchedulingPolicy)
 	}
 	if got := (*dispatchContext.GroupSchedulingPolicy)["weighted"]; got == nil {
 		t.Fatalf("调度策略内容不符: %+v", *dispatchContext.GroupSchedulingPolicy)

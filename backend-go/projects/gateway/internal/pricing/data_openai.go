@@ -23,8 +23,9 @@ var openAIGPT4ModelPricingData = []rawModel{
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"chat_completions", "responses"},
-		SupportedTools:        []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"},
-		InputCostPerToken:     f64p(0.000002), InputCostPerTokenPriority: f64p(0.0000035),
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
+		InputCostPerToken: f64p(0.000002), InputCostPerTokenPriority: f64p(0.0000035),
 		OutputCostPerToken: f64p(0.000008), OutputCostPerTokenPriority: f64p(0.000014),
 		CacheReadInputTokenCost: f64p(5e-7), CacheReadInputTokenCostPriority: f64p(8.75e-7),
 		SupportsPromptCaching: true,
@@ -36,8 +37,9 @@ var openAIGPT4ModelPricingData = []rawModel{
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"chat_completions", "responses"},
-		SupportedTools:        []string{"function_calling", "web_search", "file_search", "code_interpreter", "mcp"},
-		InputCostPerToken:     f64p(4e-7), InputCostPerTokenPriority: f64p(7e-7),
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "code_interpreter", "mcp"}),
+		InputCostPerToken: f64p(4e-7), InputCostPerTokenPriority: f64p(7e-7),
 		OutputCostPerToken: f64p(0.0000016), OutputCostPerTokenPriority: f64p(0.0000028),
 		CacheReadInputTokenCost: f64p(1e-7), CacheReadInputTokenCostPriority: f64p(1.75e-7),
 		SupportsPromptCaching: true,
@@ -49,8 +51,9 @@ var openAIGPT4ModelPricingData = []rawModel{
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"chat_completions", "responses"},
-		SupportedTools:        []string{"function_calling", "file_search", "image_generation", "code_interpreter", "mcp"},
-		InputCostPerToken:     f64p(1e-7), InputCostPerTokenPriority: f64p(2e-7),
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "file_search", "image_generation", "code_interpreter", "mcp"}),
+		InputCostPerToken: f64p(1e-7), InputCostPerTokenPriority: f64p(2e-7),
 		OutputCostPerToken: f64p(4e-7), OutputCostPerTokenPriority: f64p(8e-7),
 		CacheReadInputTokenCost: f64p(2.5e-8), CacheReadInputTokenCostPriority: f64p(5e-8),
 		ShutdownDate:          "2026-10-23",
@@ -63,8 +66,9 @@ var openAIGPT4ModelPricingData = []rawModel{
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"chat_completions", "responses"},
-		SupportedTools:        []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"},
-		InputCostPerToken:     f64p(0.0000025), InputCostPerTokenPriority: f64p(0.00000425),
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
+		InputCostPerToken: f64p(0.0000025), InputCostPerTokenPriority: f64p(0.00000425),
 		OutputCostPerToken: f64p(0.00001), OutputCostPerTokenPriority: f64p(0.000017),
 		CacheReadInputTokenCost: f64p(0.00000125), CacheReadInputTokenCostPriority: f64p(0.000002125),
 		SupportsPromptCaching: true,
@@ -76,8 +80,9 @@ var openAIGPT4ModelPricingData = []rawModel{
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"chat_completions", "responses"},
-		SupportedTools:        []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"},
-		InputCostPerToken:     f64p(1.5e-7), InputCostPerTokenPriority: f64p(2.5e-7),
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
+		InputCostPerToken: f64p(1.5e-7), InputCostPerTokenPriority: f64p(2.5e-7),
 		OutputCostPerToken: f64p(6e-7), OutputCostPerTokenPriority: f64p(0.000001),
 		CacheReadInputTokenCost: f64p(7.5e-8), CacheReadInputTokenCostPriority: f64p(1.25e-7),
 		SupportsPromptCaching: true,
@@ -89,10 +94,11 @@ var openAIGPT4ModelPricingData = []rawModel{
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"chat_completions", "responses"},
-		SupportedTools:        []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"},
-		InputCostPerToken:     f64p(0.000005),
-		OutputCostPerToken:    f64p(0.000015),
-		ShutdownDate:          "2026-10-23",
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
+		InputCostPerToken:  f64p(0.000005),
+		OutputCostPerToken: f64p(0.000015),
+		ShutdownDate:       "2026-10-23",
 	},
 	{
 		Model: "gpt-4-turbo", Mode: "chat",
@@ -176,22 +182,33 @@ var openAIGPT4ModelPricingData = []rawModel{
 	},
 }
 
-// gpt5ToolsGpt5Dot6 mirrors the shared supported_tools list of the GPT-5.6
-// family rows.
+// gpt5ToolsGpt5Dot6 mirrors the shared hosted tool list of the GPT-5.6 family
+// rows; the *ByProtocol matrices split it across the row protocols (responses
+// carries the hosted set, chat_completions only function_calling).
 var gpt5ToolsGpt5Dot6 = []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "computer_use", "mcp", "tool_search"}
 
-// gpt5ToolsGpt55 mirrors the GPT-5.5 family supported_tools list.
+var gpt5ToolsGpt5Dot6ByProtocol = toolsByProtocol([]string{"chat_completions", "responses"}, gpt5ToolsGpt5Dot6)
+
+// gpt5ToolsGpt55 mirrors the GPT-5.5 family hosted tool list.
 var gpt5ToolsGpt55 = []string{"function_calling", "web_search", "file_search", "tool_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "computer_use", "mcp"}
 
-// gpt5ToolsGpt54Mini mirrors the GPT-5.4/mini family supported_tools list.
+var gpt5ToolsGpt55ByProtocol = toolsByProtocol([]string{"chat_completions", "responses"}, gpt5ToolsGpt55)
+
+// gpt5ToolsGpt54Mini mirrors the GPT-5.4/mini family tool list.
 var gpt5ToolsGpt54Mini = gpt5ToolsGpt55
 
-// gpt5ToolsGpt54Nano mirrors the GPT-5.4-nano supported_tools list.
+var gpt5ToolsGpt54MiniByProtocol = gpt5ToolsGpt55ByProtocol
+
+// gpt5ToolsGpt54Nano mirrors the GPT-5.4-nano tool list.
 var gpt5ToolsGpt54Nano = []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"}
 
-// gpt5ToolsProCodex mirrors the GPT-5 pro / codex supported_tools lists that
-// share the same content.
+var gpt5ToolsGpt54NanoByProtocol = toolsByProtocol([]string{"chat_completions", "responses"}, gpt5ToolsGpt54Nano)
+
+// gpt5ToolsProCodex543 mirrors the GPT-5 pro / codex tool lists that share
+// the same content (responses-only rows).
 var gpt5ToolsProCodex543 = []string{"function_calling", "web_search", "file_search", "tool_search", "image_generation", "apply_patch", "computer_use", "mcp"}
+
+var gpt5ToolsProCodex543ByProtocol = toolsByProtocol([]string{"responses"}, gpt5ToolsProCodex543)
 
 // openAIGPT5ModelPricingData — GPT-6/GPT-5 family, curated with the
 // 2026-07-30 pricing changelog.
@@ -211,7 +228,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt5Dot6,
+		SupportedToolsByProtocol:  gpt5ToolsGpt5Dot6ByProtocol,
 	},
 	{
 		Model: "gpt-6-luna", Mode: "chat", ReleaseDate: "2026-09-22",
@@ -228,7 +245,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt5Dot6,
+		SupportedToolsByProtocol:  gpt5ToolsGpt5Dot6ByProtocol,
 	},
 	{
 		Model: "gpt-6-astra", Mode: "chat", CatalogOrder: intp(-1), ReleaseDate: "2026-09-03",
@@ -245,7 +262,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt5Dot6,
+		SupportedToolsByProtocol:  gpt5ToolsGpt5Dot6ByProtocol,
 	},
 	{
 		// gpt-5.6-sol official promo prices (from 2026-08-21, re-check at
@@ -268,7 +285,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:         []string{"chat_completions", "responses"},
 		InputModalities:               []string{"text", "image"},
 		OutputModalities:              []string{"text"},
-		SupportedTools:                gpt5ToolsGpt5Dot6,
+		SupportedToolsByProtocol:      gpt5ToolsGpt5Dot6ByProtocol,
 	},
 	{
 		Model: "gpt-5.6-terra", Mode: "chat", CatalogOrder: intp(1), ReleaseDate: "2026-06-26",
@@ -288,7 +305,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:         []string{"chat_completions", "responses"},
 		InputModalities:               []string{"text", "image"},
 		OutputModalities:              []string{"text"},
-		SupportedTools:                gpt5ToolsGpt5Dot6,
+		SupportedToolsByProtocol:      gpt5ToolsGpt5Dot6ByProtocol,
 	},
 	{
 		Model: "gpt-5.6-luna", Mode: "chat", CatalogOrder: intp(2), ReleaseDate: "2026-06-26",
@@ -307,7 +324,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:         []string{"chat_completions", "responses"},
 		InputModalities:               []string{"text", "image"},
 		OutputModalities:              []string{"text"},
-		SupportedTools:                gpt5ToolsGpt5Dot6,
+		SupportedToolsByProtocol:      gpt5ToolsGpt5Dot6ByProtocol,
 	},
 	{
 		Model: "gpt-5.5", Mode: "chat",
@@ -321,7 +338,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt55,
+		SupportedToolsByProtocol:  gpt5ToolsGpt55ByProtocol,
 	},
 	{
 		Model: "gpt-5.5-2026-04-23", Mode: "chat",
@@ -335,7 +352,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt55,
+		SupportedToolsByProtocol:  gpt5ToolsGpt55ByProtocol,
 	},
 	{
 		Model: "gpt-5.5-pro", Mode: "responses",
@@ -348,7 +365,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "mcp"}),
 	},
 	{
 		Model: "gpt-5.5-pro-2026-04-23", Mode: "responses",
@@ -361,7 +378,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "mcp"}),
 	},
 	{
 		Model: "gpt-5.4", Mode: "chat",
@@ -375,7 +392,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt54Mini,
+		SupportedToolsByProtocol:  gpt5ToolsGpt54MiniByProtocol,
 	},
 	{
 		Model: "gpt-5.4-2026-03-05", Mode: "chat",
@@ -389,7 +406,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt54Mini,
+		SupportedToolsByProtocol:  gpt5ToolsGpt54MiniByProtocol,
 	},
 	{
 		Model: "gpt-5.4-mini", Mode: "chat",
@@ -403,7 +420,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt54Mini,
+		SupportedToolsByProtocol:  gpt5ToolsGpt54MiniByProtocol,
 	},
 	{
 		Model: "gpt-5.4-mini-2026-03-17", Mode: "chat",
@@ -417,7 +434,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt54Mini,
+		SupportedToolsByProtocol:  gpt5ToolsGpt54MiniByProtocol,
 	},
 	{
 		Model: "gpt-5.4-nano", Mode: "chat",
@@ -431,7 +448,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt54Nano,
+		SupportedToolsByProtocol:  gpt5ToolsGpt54NanoByProtocol,
 	},
 	{
 		Model: "gpt-5.4-nano-2026-03-17", Mode: "chat",
@@ -445,7 +462,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsGpt54Nano,
+		SupportedToolsByProtocol:  gpt5ToolsGpt54NanoByProtocol,
 	},
 	{
 		Model: "gpt-5.4-pro", Mode: "responses",
@@ -458,7 +475,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsProCodex543,
+		SupportedToolsByProtocol:  gpt5ToolsProCodex543ByProtocol,
 	},
 	{
 		Model: "gpt-5.4-pro-2026-03-05", Mode: "responses",
@@ -471,7 +488,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            gpt5ToolsProCodex543,
+		SupportedToolsByProtocol:  gpt5ToolsProCodex543ByProtocol,
 	},
 	{
 		Model: "gpt-5.3-codex", Mode: "responses",
@@ -484,7 +501,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "hosted_shell", "skills"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "web_search", "hosted_shell", "skills"}),
 		SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
 	},
 	{
@@ -499,7 +516,8 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"},
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"}),
 	},
 	{
 		Model: "gpt-5.2-2025-12-11", Mode: "chat",
@@ -513,7 +531,8 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"},
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"}),
 	},
 	{
 		Model: "gpt-5.2-pro", Mode: "responses",
@@ -526,7 +545,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"}),
 	},
 	{
 		Model: "gpt-5.2-pro-2025-12-11", Mode: "responses",
@@ -539,7 +558,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"}),
 	},
 	{
 		Model: "gpt-5.1", Mode: "chat",
@@ -553,7 +572,8 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "apply_patch", "mcp"},
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "apply_patch", "mcp"}),
 	},
 	{
 		Model: "gpt-5.1-2025-11-13", Mode: "chat",
@@ -567,7 +587,8 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "apply_patch", "mcp"},
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
+			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "apply_patch", "mcp"}),
 	},
 	{
 		Model: "gpt-5", Mode: "chat",
@@ -581,7 +602,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
 	},
 	{
 		Model: "gpt-5-2025-08-07", Mode: "chat",
@@ -595,7 +616,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
 	},
 	{
 		Model: "gpt-5-mini", Mode: "chat",
@@ -608,7 +629,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "code_interpreter", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "web_search", "file_search", "code_interpreter", "mcp"}),
 		SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	},
 	{
@@ -622,7 +643,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "code_interpreter", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "web_search", "file_search", "code_interpreter", "mcp"}),
 		SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	},
 	{
@@ -636,7 +657,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
 		SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	},
 	{
@@ -650,7 +671,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
 		SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	},
 	{
@@ -663,7 +684,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"}),
 		SupportedReasoningEfforts: []string{"high"},
 	},
 	{
@@ -676,7 +697,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedAPIProtocols:     []string{"responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
-		SupportedTools:            []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"}),
 		SupportedReasoningEfforts: []string{"high"},
 	},
 }
@@ -785,7 +806,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
-		SupportedTools:            []string{"function_calling", "file_search", "mcp"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "file_search", "mcp"}),
 		InputCostPerToken:         f64p(0.000015),
 		OutputCostPerToken:        f64p(0.00006),
 		CacheReadInputTokenCost:   f64p(0.0000075),
@@ -796,23 +817,23 @@ var openAIReasoningModelPricingData = []rawModel{
 	{
 		Model: "o1-pro", Mode: "responses",
 		MaxTokens: intp(100000), ContextWindowTokens: intp(200000), MaxOutputTokens: intp(100000),
-		InputModalities:       []string{"text", "image"},
-		OutputModalities:      []string{"text"},
-		SupportedAPIProtocols: []string{"responses"},
-		SupportedTools:        []string{"function_calling", "file_search", "mcp"},
-		InputCostPerToken:     f64p(0.00015),
-		OutputCostPerToken:    f64p(0.0006),
-		ShutdownDate:          "2026-10-23",
-		SupportsPromptCaching: true,
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"text"},
+		SupportedAPIProtocols:    []string{"responses"},
+		SupportedToolsByProtocol: toolsByProtocol([]string{"responses"}, []string{"function_calling", "file_search", "mcp"}),
+		InputCostPerToken:        f64p(0.00015),
+		OutputCostPerToken:       f64p(0.0006),
+		ShutdownDate:             "2026-10-23",
+		SupportsPromptCaching:    true,
 	},
 	{
 		Model: "o3", Mode: "chat",
 		MaxTokens: intp(100000), ContextWindowTokens: intp(200000), MaxOutputTokens: intp(100000),
-		InputModalities:       []string{"text", "image"},
-		OutputModalities:      []string{"text"},
-		SupportedAPIProtocols: []string{"chat_completions", "responses"},
-		SupportedTools:        []string{"function_calling", "file_search", "image_generation", "code_interpreter", "mcp", "web_search"},
-		InputCostPerToken:     f64p(0.000002), InputCostPerTokenPriority: f64p(0.0000035),
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"text"},
+		SupportedAPIProtocols:    []string{"chat_completions", "responses"},
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "file_search", "image_generation", "code_interpreter", "mcp", "web_search"}),
+		InputCostPerToken:        f64p(0.000002), InputCostPerTokenPriority: f64p(0.0000035),
 		OutputCostPerToken: f64p(0.000008), OutputCostPerTokenPriority: f64p(0.000014),
 		CacheReadInputTokenCost: f64p(5e-7), CacheReadInputTokenCostPriority: f64p(8.75e-7),
 		SupportsPromptCaching:     true,
@@ -822,13 +843,13 @@ var openAIReasoningModelPricingData = []rawModel{
 	{
 		Model: "o3-pro", Mode: "responses",
 		MaxTokens: intp(100000), ContextWindowTokens: intp(200000), MaxOutputTokens: intp(100000),
-		InputModalities:       []string{"text", "image"},
-		OutputModalities:      []string{"text"},
-		SupportedAPIProtocols: []string{"responses"},
-		SupportedTools:        []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"},
-		InputCostPerToken:     f64p(0.00002),
-		OutputCostPerToken:    f64p(0.00008),
-		SupportsPromptCaching: true,
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"text"},
+		SupportedAPIProtocols:    []string{"responses"},
+		SupportedToolsByProtocol: toolsByProtocol([]string{"responses"}, []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"}),
+		InputCostPerToken:        f64p(0.00002),
+		OutputCostPerToken:       f64p(0.00008),
+		SupportsPromptCaching:    true,
 	},
 	{
 		Model: "o3-mini", Mode: "chat",
@@ -836,7 +857,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		InputModalities:           []string{"text"},
 		OutputModalities:          []string{"text"},
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
-		SupportedTools:            []string{"function_calling", "file_search", "code_interpreter", "mcp", "image_generation"},
+		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "file_search", "code_interpreter", "mcp", "image_generation"}),
 		InputCostPerToken:         f64p(0.0000011),
 		OutputCostPerToken:        f64p(0.0000044),
 		CacheReadInputTokenCost:   f64p(5.5e-7),
@@ -847,11 +868,11 @@ var openAIReasoningModelPricingData = []rawModel{
 	{
 		Model: "o4-mini", Mode: "chat",
 		MaxTokens: intp(100000), ContextWindowTokens: intp(200000), MaxOutputTokens: intp(100000),
-		InputModalities:       []string{"text", "image"},
-		OutputModalities:      []string{"text"},
-		SupportedAPIProtocols: []string{"chat_completions", "responses"},
-		SupportedTools:        []string{"function_calling", "file_search", "code_interpreter", "mcp", "web_search"},
-		InputCostPerToken:     f64p(0.0000011), InputCostPerTokenPriority: f64p(0.000002),
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"text"},
+		SupportedAPIProtocols:    []string{"chat_completions", "responses"},
+		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "file_search", "code_interpreter", "mcp", "web_search"}),
+		InputCostPerToken:        f64p(0.0000011), InputCostPerTokenPriority: f64p(0.000002),
 		OutputCostPerToken: f64p(0.0000044), OutputCostPerTokenPriority: f64p(0.000008),
 		CacheReadInputTokenCost: f64p(2.75e-7), CacheReadInputTokenCostPriority: f64p(5e-7),
 		ShutdownDate:              "2026-10-23",

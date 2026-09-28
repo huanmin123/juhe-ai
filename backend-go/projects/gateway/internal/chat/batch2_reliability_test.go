@@ -277,12 +277,7 @@ func (b *batch2ChatKeys) FindChatAPIKey(string, string) (*ChatAPIKeyRecord, erro
 	return b.record, b.findErr
 }
 
-// batch2GroupLookup 是创建会话 group 模式的最小分组端口 fake。
-type batch2GroupLookup struct{}
-
-func (batch2GroupLookup) FindChatGroup(_ ChatBindScope, groupID string) (*ChatGroupRef, error) {
-	return &ChatGroupRef{ID: groupID, Name: "分组", Enabled: true}, nil
-}
+// batch2GroupLookup 已随 group 绑定模式退场删除（账户唯一绑定收敛）。
 
 func TestRequireChatAPIKeyForOwnerDisabledKeyBatch2(t *testing.T) {
 	env := newGenerationEnv(t)
@@ -325,19 +320,19 @@ func TestRequireChatAPIKeyForOwnerDisabledKeyBatch2(t *testing.T) {
 	})
 }
 
-// TestCreateConversationGroupModeDisabledChatKeyBatch2 覆盖 handler 级：group
-// 模式创建会话时专用 chat Key 停用 → 400 + 中文文案（原为 500 不对称）。
-func TestCreateConversationGroupModeDisabledChatKeyBatch2(t *testing.T) {
+// TestCreateConversationDisabledChatKeyBatch2 覆盖 handler 级：创建会话（免
+// 请求体，鉴权主体恒为专用 chat Key）时专用 chat Key 停用 → 400 + 中文文案
+// （原为 500 不对称）。
+func TestCreateConversationDisabledChatKeyBatch2(t *testing.T) {
 	env := newGenerationEnv(t)
-	env.deps.GroupLookup = batch2GroupLookup{}
 	rt := newChatRoutesForTest(env.deps)
 	rt.deps.ChatKeys = &batch2ChatKeys{record: &ChatAPIKeyRecord{ID: "chat_key_batch2", Secret: "s", Status: "disabled"}}
-	request := w13bJSONRequest(t, "POST", "/conversations", `{"bindMode":"group","groupId":"grp-1"}`)
+	request := w13bJSONRequest(t, "POST", "/conversations", "")
 	request = request.WithContext(authedContextW13B(routeTestOwner))
 	recorder := httptest.NewRecorder()
 	rt.createConversationHandler(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("停用专用 Key 的 group 模式创建应为 400: %d %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("停用专用 Key 的创建应为 400: %d %s", recorder.Code, recorder.Body.String())
 	}
 	body := map[string]any{}
 	_ = json.Unmarshal(recorder.Body.Bytes(), &body)
@@ -345,6 +340,6 @@ func TestCreateConversationGroupModeDisabledChatKeyBatch2(t *testing.T) {
 		t.Fatalf("400 文案不符: %v", body)
 	}
 	if code, _ := body["code"].(string); code != "chat_invalid_request" {
-		t.Fatalf("错误码应与 api_key 模式口径一致: %v", body)
+		t.Fatalf("错误码不符: %v", body)
 	}
 }

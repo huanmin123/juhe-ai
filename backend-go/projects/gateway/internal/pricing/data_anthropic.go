@@ -26,7 +26,10 @@ func anthropicModel(model string, catalogOrder int, releaseDate string, inPer1M,
 		SupportedServiceTiers: []string{},
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
-		SupportedTools:        []string{"function_calling", "code_execution"},
+		// 「协议 × 工具」矩阵：function_calling / code_execution 归 Anthropic
+		// 原生 messages 协议；message_token_counting 是计数协议，不携带工具键。
+		SupportedToolsByProtocol: toolsByProtocol([]string{"messages", "message_token_counting"},
+			[]string{"function_calling", "code_execution"}),
 
 		SupportedReasoningEfforts: efforts,
 		DefaultReasoningEffort:    defaultEffort,

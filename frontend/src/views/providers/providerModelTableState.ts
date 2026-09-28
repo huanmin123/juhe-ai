@@ -5,11 +5,11 @@ import {
   formatModelCategory,
   formatModelModalities,
   formatModelScope,
-  formatModelTools,
   getModelCategory,
   modelCatalogDisplaySections,
   modelCategoryLabels,
   modelCategoryOrder,
+  modelToolsByProtocolMatchKeyword,
   type ModelCategoryKey
 } from './providerModelFormatters'
 
@@ -20,11 +20,12 @@ export const baseModelColumns = [
   { title: '发布时间', key: 'releaseDate', width: 120 },
   { title: '用途', key: 'category', width: 120 },
   { title: '接口协议', key: 'protocols', width: 230 },
+  { title: '工具能力', key: 'tools', width: 300 },
   { title: '操作', key: 'actions', width: 116, fixed: 'right' }
 ]
 
 export function buildProviderModelColumns(_category: ModelCategoryKey, rows: ProviderModelPricing[]) {
-  const visibleKeys = new Set(['model', 'scope', 'status', 'releaseDate', 'category', 'protocols', 'actions'])
+  const visibleKeys = new Set(['model', 'scope', 'status', 'releaseDate', 'category', 'protocols', 'tools', 'actions'])
 
   const commonColumns = baseModelColumns.filter((column) => column.key !== 'actions' && visibleKeys.has(column.key))
   const displayColumns = new Map<string, { title: string; key: string; width: number; catalogDisplaySectionKey: string }>()
@@ -75,7 +76,7 @@ export function filterProviderModelsByKeyword(models: ProviderModelPricing[], ke
       || (item.supportedApiProtocols ?? []).some((protocol) => formatApiProtocol(protocol).toLowerCase().includes(keyword))
       || formatModelModalities(item.inputModalities).toLowerCase().includes(keyword)
       || formatModelModalities(item.outputModalities).toLowerCase().includes(keyword)
-      || formatModelTools(item.supportedTools).toLowerCase().includes(keyword)
+      || modelToolsByProtocolMatchKeyword(item, keyword)
     return keywordMatches
   })
 }

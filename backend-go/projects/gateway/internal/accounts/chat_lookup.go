@@ -53,19 +53,21 @@ func chatOwnerScopeClause(bindScope chat.ChatBindScope) (string, []any) {
 	return ` AND accounts.system_account_id = ?`, []any{bindScope.ViewerID}
 }
 
-// ListChatAccountOptions 列出 AI 问答新建会话绑定下拉的账户最小摘要，与
-// FindChatAccount 完全同口径：数据范围内（admin/super_admin 全量号池，普通
-// 用户仅自己名下）deleted_at IS NULL、非授权实例戳行
-// （authorization_instance_authorization_id IS NULL）且 ownerEffectiveStatusSQL
-// = 'active'（status=active、可调度、未冷却、未过期、无 account_expired 错误）。
-// 只投影 id/name，不暴露归属、provider、授权状态等管理面字段；排序
+// ListChatAccountOptions 列出用户授权范围内全部可派发账户（GET /my-chat/
+// accounts，AI 问答会话账户唯一绑定设计 §5.2），与 FindChatAccount 完全同
+// 口径：数据范围内（admin/super_admin 全量号池，普通用户仅自己名下）
+// deleted_at IS NULL、非授权实例戳行（authorization_instance_authorization_id
+// IS NULL）且 ownerEffectiveStatusSQL = 'active'（status=active、可调度、未
+// 冷却、未过期、无 account_expired 错误）。投影 id/name/provider_code/status
+// （status 为生效状态表达式取值，查询过滤后恒 'active'，保留字段供后续工具
+// 绑定阶段展示绑定失效态），不暴露归属、授权状态等管理面字段；排序
 // name ASC, id ASC 与下拉展示一致。
-func (s *Store) ListChatAccountOptions(ctx context.Context, bindScope chat.ChatBindScope) ([]chat.ChatBindOption, error) {
+func (s *Store) ListChatAccountOptions(ctx context.Context, bindScope chat.ChatBindScope) ([]chat.ChatAccountOption, error) {
 	now := sqlQuoteISO(isoMillis(s.now()))
 	effective := ownerEffectiveStatusSQL("accounts", now)
 	ownerClause, ownerArgs := chatOwnerScopeClause(bindScope)
 	args := append([]any{}, ownerArgs...)
-	rows, err := s.db.Query(s.bind(`SELECT accounts.id, accounts.name
+	rows, err := s.db.Query(s.bind(`SELECT accounts.id, accounts.name, accounts.provider_code, `+effective+`
 		FROM `+s.table("accounts")+` accounts
 		WHERE accounts.deleted_at IS NULL
 			AND accounts.authorization_instance_authorization_id IS NULL
@@ -75,10 +77,10 @@ func (s *Store) ListChatAccountOptions(ctx context.Context, bindScope chat.ChatB
 		return nil, err
 	}
 	defer rows.Close()
-	options := []chat.ChatBindOption{}
+	options := []chat.ChatAccountOption{}
 	for rows.Next() {
-		var option chat.ChatBindOption
-		if err := rows.Scan(&option.ID, &option.Name); err != nil {
+		var option chat.ChatAccountOption
+		if err := rows.Scan(&option.ID, &option.Name, &option.ProviderCode, &option.Status); err != nil {
 			return nil, err
 		}
 		options = append(options, option)

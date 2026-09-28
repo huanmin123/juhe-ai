@@ -17,15 +17,16 @@ import (
 
 // chatDispatchTargetAware 是进程内调度覆盖通道在 chat 侧的可选扩展端口：
 // 组合根（cmd/juhe-ai-gateway）的 chatGatewayExecutor 实现它，把会话绑定
-// 目标（group/account 模式）绑定到执行器视图并在派发时注入请求 context；
-// api_key/legacy 模式返回原执行器（行为与现状一致）。internal/chat 不引用
-// cmd 包，经类型断言探测；未实现该端口的执行器（测试 mock）保持现状语义。
+// 账户绑定到执行器视图并在派发时注入请求 context；未绑定/归档会话不会进入
+// 生成链（发送预检拦截），此处未解析出账户时返回原执行器。internal/chat 不
+// 引用 cmd 包，经类型断言探测；未实现该端口的执行器（测试 mock）保持现状
+// 语义。
 type chatDispatchTargetAware interface {
-	WithChatDispatchTarget(bindMode, groupID, accountID string) GenerationExecutor
+	WithChatDispatchAccount(accountID string) GenerationExecutor
 }
 
 // dispatchExecutorOf 解析执行器视图：input.executor 优先（stream_route 已按
-// 会话绑定模式解析），为空回落 fallback（rt.deps.Executor）。
+// 会话绑定账户解析），为空回落 fallback（rt.deps.Executor）。
 func dispatchExecutorOf(input generationExecuteInput, fallback GenerationExecutor) GenerationExecutor {
 	if input.executor != nil {
 		return input.executor
@@ -33,21 +34,22 @@ func dispatchExecutorOf(input generationExecuteInput, fallback GenerationExecuto
 	return fallback
 }
 
-// bindConversationDispatchTarget 按会话绑定模式解析执行器视图：会话为
-// group/account 模式且执行器实现 chatDispatchTargetAware 时返回绑定目标的
-// 视图；api_key/legacy 模式原样返回（不触碰端口，行为逐字节一致）。
+// bindConversationDispatchTarget 按会话绑定账户解析执行器视图：会话绑定
+// 账户且执行器实现 chatDispatchTargetAware 时返回绑定目标的视图；无绑定
+// 原样返回（不触碰端口）。
 func bindConversationDispatchTarget(executor GenerationExecutor, conversation *Conversation) GenerationExecutor {
 	if executor == nil || conversation == nil {
 		return executor
 	}
-	if conversation.BindMode != BindModeGroup && conversation.BindMode != BindModeAccount {
+	accountID := derefString(conversation.BindAccountID)
+	if accountID == "" {
 		return executor
 	}
 	aware, ok := executor.(chatDispatchTargetAware)
 	if !ok {
 		return executor
 	}
-	return aware.WithChatDispatchTarget(conversation.BindMode, derefString(conversation.BindGroupID), derefString(conversation.BindAccountID))
+	return aware.WithChatDispatchAccount(accountID)
 }
 
 type generationExecuteInput struct {

@@ -246,45 +246,45 @@ func mimeForW3(filename string) string {
 // TestGenerationDepsRoutesW3 覆盖会话创建、模型目录与压缩触发路由。
 func TestGenerationDepsRoutesW3(t *testing.T) {
 	env := newGenerationEnv(t)
-	env.fixture.createConversation("chat_conv_models", routeTestOwner)
+	env.deps.AccountLookup = mockAccountLookup{}
+	createBoundConversation(t, env.fixture, "chat_conv_models", routeTestOwner, CreateConversationInput{
+		BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
+	})
 	env.fixture.seedTurns(routeTestOwner, "chat_conv_models", 1)
 	smallConversation := env.fixture.createConversation("chat_conv_compact", routeTestOwner)
 	_ = smallConversation
 	env.fixture.seedTurns(routeTestOwner, "chat_conv_compact", 1)
 	prefix := "/__aisys__/api/my-chat"
 
-	t.Run("创建会话默认模型", func(t *testing.T) {
-		response := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`)
+	t.Run("创建会话为空会话", func(t *testing.T) {
+		response := env.do("POST", prefix+"/conversations", routeTestOwner, "")
 		if response.status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", response.status, response.rawString())
 		}
 		data := response.dataMap()
-		if data["defaultModel"] == nil {
-			t.Fatalf("应返回默认模型: %v", data)
+		if _, has := data["defaultModel"]; has {
+			t.Fatalf("空会话不应携带默认模型: %v", data)
+		}
+		if _, has := data["bindAccountId"]; has {
+			t.Fatalf("空会话不应携带绑定: %v", data)
 		}
 	})
-	t.Run("创建会话缺 bindMode", func(t *testing.T) {
-		response := env.do("POST", prefix+"/conversations", routeTestOwner, "{}")
-		if response.status != http.StatusBadRequest || response.code() != "chat_invalid_request" {
-			t.Fatalf("status=%d body=%s", response.status, response.rawString())
-		}
-	})
-	t.Run("创建会话带 apiKeyId", func(t *testing.T) {
+	t.Run("创建会话忽略历史字段", func(t *testing.T) {
 		response := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`)
 		if response.status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", response.status, response.rawString())
 		}
 	})
-	t.Run("创建会话未知键", func(t *testing.T) {
+	t.Run("创建会话未知键被忽略", func(t *testing.T) {
 		response := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bogus":1}`)
-		if response.status != http.StatusBadRequest || response.code() != "chat_invalid_request" {
+		if response.status != http.StatusCreated {
 			t.Fatalf("status=%d body=%s", response.status, response.rawString())
 		}
 	})
-	t.Run("创建会话非对象体", func(t *testing.T) {
+	t.Run("创建会话非对象体被忽略", func(t *testing.T) {
 		response := env.do("POST", prefix+"/conversations", routeTestOwner, `[1]`)
-		if response.status != http.StatusBadRequest {
-			t.Fatalf("status=%d", response.status)
+		if response.status != http.StatusCreated {
+			t.Fatalf("status=%d body=%s", response.status, response.rawString())
 		}
 	})
 	t.Run("模型列表", func(t *testing.T) {

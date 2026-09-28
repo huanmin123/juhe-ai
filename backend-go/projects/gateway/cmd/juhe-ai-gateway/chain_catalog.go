@@ -27,6 +27,12 @@ package main
 // 「custom 目录行能力继承」）在合并后对 custom 来源行按同一合并键回填空能力
 // 键（仅填空，providers.InheritBuiltinCatalogCapabilities 与管理面同源）；
 // 全新自定义模型（内置无对应行）保持空，不用静态定价表的别名/前缀匹配回填。
+//
+// 2026-09-28 目录「协议 × 工具」矩阵（工具体系设计 6.4，整体改造第一阶段）：
+// 静态兜底与 custom 继承改为携带二维 supportedToolsByProtocol（键=该行
+// supportedApiProtocols 枚举，值=该协议下可用工具）；一维 supportedTools 作为
+// 二维并集的过渡投影保留（阶段 2 随 chat 面切换删除），chat 面现有
+// supportsWebSearch / function_calling 判定继续读一维并集，行为不变。
 
 import (
 	"context"
@@ -38,6 +44,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 )
 
@@ -445,12 +452,13 @@ func chainCatalogScopePriority(scope string) int {
 }
 
 // chainInheritCustomCatalogCapabilities 应用 custom 目录行能力继承（BUG-0229，
-// 契约见 AI问答设计 8.6）：合并胜出的 custom（global/personal）行按
-// chainMergeCatalogItems 的同一合并键（hybrid 下 provider+model，其余裸 model）
+// 契约见 AI问答设计 8.6、工具体系设计 6.4）：合并胜出的 custom（global/personal）
+// 行按 chainMergeCatalogItems 的同一合并键（hybrid 下 provider+model，其余裸 model）
 // 查找内置扫描行（已过 decorateBuiltinStaticDerivedCapabilities 静态兜底），
-// 仅填空 supportedTools / inputModalities / outputModalities；全新自定义模型
-// （内置无对应行）保持空，不退回静态定价表别名/前缀匹配。回填发生在缓存
-// 写入前，缓存命中路径同样携带继承值；解析本体与管理面同源
+// 仅填空 supportedToolsByProtocol / inputModalities / outputModalities（二维矩阵
+// 继承）；一维 supportedTools 投影在二维继承后按并集回填（custom 行入链时一维
+// 恒空）；全新自定义模型（内置无对应行）保持空，不退回静态定价表别名/前缀匹配。
+// 回填发生在缓存写入前，缓存命中路径同样携带继承值；解析本体与管理面同源
 // （providers.InheritBuiltinCatalogCapabilities）。
 func chainInheritCustomCatalogCapabilities(merged, builtinRows []gatewayruntimecache.ProviderModelCatalogItem, preserveProviderIdentity bool) {
 	if len(merged) == 0 || len(builtinRows) == 0 {
@@ -492,19 +500,22 @@ func chainInheritCustomCatalogCapabilities(merged, builtinRows []gatewayruntimec
 		}
 		resolved := providers.InheritBuiltinCatalogCapabilities(
 			providers.CustomCatalogCapabilityKeys{
-				SupportedTools:   item.SupportedTools,
-				InputModalities:  item.InputModalities,
-				OutputModalities: item.OutputModalities,
+				SupportedToolsByProtocol: item.SupportedToolsByProtocol,
+				InputModalities:          item.InputModalities,
+				OutputModalities:         item.OutputModalities,
 			},
 			providers.CustomCatalogCapabilityKeys{
-				SupportedTools:   builtin.SupportedTools,
-				InputModalities:  builtin.InputModalities,
-				OutputModalities: builtin.OutputModalities,
+				SupportedToolsByProtocol: builtin.SupportedToolsByProtocol,
+				InputModalities:          builtin.InputModalities,
+				OutputModalities:         builtin.OutputModalities,
 			},
 		)
-		item.SupportedTools = resolved.SupportedTools
+		item.SupportedToolsByProtocol = resolved.SupportedToolsByProtocol
 		item.InputModalities = resolved.InputModalities
 		item.OutputModalities = resolved.OutputModalities
+		if len(item.SupportedTools) == 0 {
+			item.SupportedTools = pricing.UnionToolsByProtocol(item.SupportedToolsByProtocol)
+		}
 	}
 }
 
@@ -694,7 +705,9 @@ func decorateBuiltinCatalogRow(row map[string]any) {
 // chat 面（AI 问答模型选项 / toolCapabilities / 模型能力详情 / 协议偏好）此前恒空，
 // 导致 supportsWebSearch 恒 false、web_search 等内置工具永不注入。
 // 放置点在目录装载（gatewayruntimecache 缓存写入前），缓存命中路径因此同样
-// 携带兜底值。custom（custom_provider_models）行不做静态表兜底（行装饰层无法
+// 携带兜底值。工具能力以「协议 × 工具」矩阵（supportedToolsByProtocol，6.4）
+// 解析，一维 supportedTools 投影为矩阵并集（过渡字段，阶段 2 随 chat 面切换
+// 删除）。custom（custom_provider_models）行不做静态表兜底（行装饰层无法
 // 判定内置对应行）；其能力按 BUG-0229 契约在合并后经
 // chainInheritCustomCatalogCapabilities 从被覆盖内置行继承（仅填空）。
 // 行自身对这三个能力键没有声明（列清单不含它们），空值一律按静态快照填充。
@@ -706,7 +719,11 @@ func decorateBuiltinStaticDerivedCapabilities(row map[string]any) {
 		catalogRowString(row["source"]))
 	row["inputModalities"] = resolved.InputModalities
 	row["outputModalities"] = resolved.OutputModalities
-	row["supportedTools"] = resolved.SupportedTools
+	// 「协议 × 工具」矩阵（6.4）：二维矩阵为权威数据；一维 supportedTools 为
+	// 矩阵并集的过渡投影（阶段 2 随 chat 面切换删除）。两键都在缓存写入前的
+	// 行装饰层注入，缓存命中路径同样携带。
+	row["supportedToolsByProtocol"] = resolved.SupportedToolsByProtocol
+	row["supportedTools"] = pricing.UnionToolsByProtocol(resolved.SupportedToolsByProtocol)
 	// GenerationParameterCapabilities 序列化为与 管理面 ModelCatalogItem 相同的
 	// JSON 形状（含 step 字段），经 RawMessage 进入共享 item。
 	encoded, err := json.Marshal(resolved.GenerationParameterCapabilities)
@@ -762,7 +779,8 @@ func catalogRowInt64Ptr(value any) *int64 {
 // source custom-global/custom-personal, supportsPromptCaching from a present
 // cachedInputUsdPer1M and supportsServiceTier from the tier list. 能力三键不在此
 // 装饰：custom 表无这三列，能力继承依赖合并键与内置扫描行，在合并后由
-// chainInheritCustomCatalogCapabilities 统一回填（BUG-0229 契约，仅填空）。
+// chainInheritCustomCatalogCapabilities 统一回填（BUG-0229 契约，仅填空；工具
+// 键为二维矩阵）。
 func decorateCustomCatalogRow(row map[string]any) {
 	if scope, _ := row["scope"].(string); scope == "global" {
 		row["source"] = "custom-global"

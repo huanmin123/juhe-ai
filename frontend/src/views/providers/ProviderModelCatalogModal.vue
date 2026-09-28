@@ -80,6 +80,15 @@
               <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
             </a-space>
           </template>
+          <template v-else-if="column.key === 'tools'">
+            <div v-if="modelToolsByProtocol(record).length" class="tools-matrix-cell">
+              <div v-for="entry in modelToolsByProtocol(record)" :key="entry.protocol" class="tools-matrix-row">
+                <a-tag :color="getApiProtocolTagColor(entry.protocol)" class="tools-matrix-protocol">{{ formatApiProtocol(entry.protocol) }}</a-tag>
+                <span class="tools-matrix-tools">{{ formatModelTools(entry.tools) }}</span>
+              </div>
+            </div>
+            <span v-else class="muted-text">-</span>
+          </template>
           <template v-else-if="column.catalogDisplaySectionKey">
             <div
               v-if="modelCatalogDisplaySection(record, column.catalogDisplaySectionKey)"
@@ -119,6 +128,15 @@
               <strong>{{ record.releaseDate || '-' }}</strong>
               <span>接口协议</span>
               <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
+              <template v-if="modelToolsByProtocol(record).length">
+                <span>工具能力</span>
+                <strong class="model-mobile-tools-matrix">
+                  <span v-for="entry in modelToolsByProtocol(record)" :key="entry.protocol" class="model-mobile-tools-row">
+                    <a-tag :color="getApiProtocolTagColor(entry.protocol)">{{ formatApiProtocol(entry.protocol) }}</a-tag>
+                    <span>{{ formatModelTools(entry.tools) }}</span>
+                  </span>
+                </strong>
+              </template>
               <template v-for="section in modelCatalogDisplaySections(record)" :key="section.key">
                 <span>{{ section.label }}</span>
                 <strong class="model-mobile-catalog-value">
@@ -152,11 +170,13 @@ import {
   formatModelCategory,
   formatModelScope,
   formatModelStatus,
+  formatModelTools,
   getApiProtocolTagColor,
   modelCatalogDisplaySection,
   modelCatalogDisplaySections,
   modelScopeColor,
   modelStatusColor,
+  modelToolsByProtocol,
   type ModelCategoryKey
 } from './providerModelFormatters'
 
@@ -355,6 +375,44 @@ function modelRowKey(record: ProviderModelPricing): string {
   overflow: visible;
   text-overflow: clip;
   white-space: normal;
+}
+
+.tools-matrix-cell {
+  display: grid;
+  gap: 4px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.tools-matrix-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.tools-matrix-protocol {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+.tools-matrix-tools {
+  min-width: 0;
+  color: #0f172a;
+  overflow-wrap: anywhere;
+}
+
+.model-mobile-card-grid .model-mobile-tools-matrix {
+  display: grid;
+  gap: 4px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.model-mobile-card-grid .model-mobile-tools-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
 }
 
 .model-mobile-catalog-value > span {

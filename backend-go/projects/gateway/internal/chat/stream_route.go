@@ -337,6 +337,16 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		writeMessageCode(w, http.StatusNotFound, "会话不存在", "chat_conversation_not_found")
 		return
 	}
+	// 发送预检（设计 §5.5/§8）：归档（存量旧模式）会话只读；未选账户不能发送
+	//（400 chat_account_required 引导选择账户）。
+	if conversation.Archived {
+		writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
+		return
+	}
+	if conversation.BindAccountID == nil {
+		writeMessageCode(w, http.StatusBadRequest, chatAccountRequiredMessage, "chat_account_required")
+		return
+	}
 	existingTurn, err := rt.deps.Store.FindTurnByClientMessageID(conversation.ID, ownerID, body.ClientMessageID)
 	if err != nil {
 		writeChatRouteError(w, err)
@@ -411,11 +421,10 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(err)
 		return
 	}
-	// 发送前置校验按绑定模式收敛（三种模式同一入口）：归属 Key 校验保持会话
-	// api_key_id（鉴权主体明文来源，域 A 保证三种模式均非空）；绑定对象可用
-	// 性与模型作用域经 resolveChatBindingScope（api_key 内部含 Key 校验与 Key
-	// 视图分组；group/account 校验对象在请求者数据范围（ChatBindScope）内
-	// 存在且启用，存量越权绑定与"不存在/停用"同型降级）。
+	// 发送前置校验（账户唯一绑定单一入口）：归属 Key 校验保持会话 api_key_id
+	//（鉴权主体明文来源）；绑定账户可用性与模型作用域经
+	// resolveChatBindingScope（数据范围内存在且启用，存量越权绑定与
+	//「不存在/停用」同型降级）。
 	apiKey, err := rt.requireOwnedApiKey(derefString(conversation.APIKeyID), ownerID)
 	if err != nil {
 		failWith(err)
@@ -690,9 +699,10 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	// hub/stop 路径管理，handler 返回不得取消仍在运行的 runner；仅在 hub
 	// 拒绝接管的失败分支与 runner 终态之后显式收尾。
 	runnerContext, runnerCancel := context.WithCancel(context.WithoutCancel(r.Context()))
-	// 调度覆盖通道：group/account 会话把绑定目标绑定到执行器视图，模型轮次、
+	// 调度覆盖通道：绑定账户的会话把目标账户绑定到执行器视图，模型轮次、
 	// 图片生成等 /v1 派发统一落在绑定作用域（cmd 侧注入进程内 context；外部
-	// 请求无法构造）。api_key/legacy 返回原执行器，行为与现状一致。
+	// 请求无法构造）。未绑定会话不可能到达此处（上方预检），执行器视图恒收敛
+	// 到绑定账户。
 	dispatchExecutor := bindConversationDispatchTarget(rt.deps.Executor, conversation)
 	options := ChatGenerationRunnerOptions{
 		Identity: identity,
@@ -917,29 +927,19 @@ func (d *Deps) gatewayKeyOrError(secret string) (*GatewayKeyView, error) {
 	return d.GatewayKeys.ValidateGatewayKey(secret)
 }
 
-// scopeRouteAccounts 按绑定作用域解析指定协议的候选账户：account 模式直接
-// 使用收敛后的单账户视图（协议过滤由调用方的
-// chatTransportAccountSupportsProtocol 循环承担）；api_key/group 沿分组账户
-// 快照路径（ListAccountsForGroup 按 requestedModel + endpointFamily 过滤）。
+// scopeRouteAccounts 按绑定作用域解析指定协议的候选账户：直接使用收敛后的
+// 单账户视图（协议过滤由调用方的 chatTransportAccountSupportsProtocol 循环
+// 承担）。
 func (rt *chatRoutes) scopeRouteAccounts(scope *chatBindingScope, systemAccountID, model, endpointFamily string) []ChatTransportAccount {
-	if scope.bindMode == BindModeAccount {
-		return scope.accounts
-	}
-	return rt.accountsForGroups(scope.groupIDs, systemAccountID, model, endpointFamily)
+	return scope.accounts
 }
 
-// scopeHasImageGenerationRoute 按绑定作用域判断图像生成路由：api_key/group
-// 沿分组路径；account 模式在收敛后的单账户视图上判断（任一注册图像模型存在
-// api_key 类型账户即视为有生图路由，与 hasChatImageGenerationRoute 同口径）。
+// scopeHasImageGenerationRoute 在收敛后的单账户视图上判断图像生成路由
+// （api_key 类型账户即可用生图路由）。
 func (rt *chatRoutes) scopeHasImageGenerationRoute(scope *chatBindingScope, systemAccountID string) bool {
-	if scope.bindMode != BindModeAccount {
-		return rt.hasChatImageGenerationRoute(scope.groupIDs, systemAccountID)
-	}
-	for range SupportedChatImageModels() {
-		for _, account := range scope.accounts {
-			if account.Type == "api_key" {
-				return true
-			}
+	for _, account := range scope.accounts {
+		if account.Type == "api_key" {
+			return true
 		}
 	}
 	return false

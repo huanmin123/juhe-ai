@@ -1,9 +1,9 @@
 package chat
 
-// AI 问答会话三种绑定模式（bindMode = api_key | group | account）的路由级
-// 覆盖：创建矩阵（成功 + 400/校验失败）、EnsureChatAPIKey 的调用边界、
-// 模型列表/能力接口按绑定模式的 provider_codes 来源与 supported_models 交集。
-// Mock 风格与 generation_test.go 一致（严格 mock 闭包 + 录制断言）。
+// AI 问答会话账户唯一绑定（docs/functions/AI问答会话账户唯一绑定设计.md）的
+// 路由级覆盖：免请求体创建空会话、PATCH accountId 写入/切换与模型联动、
+// 发送预检（未绑定 400 chat_account_required、归档 403 只读）、模型列表按绑定
+// 账户收敛。Mock 风格与 generation_test.go 一致（严格 mock 闭包 + 录制断言）。
 
 import (
 	"net/http"
@@ -32,30 +32,9 @@ func (r *bindScopeRecorder) snapshot() (scopes []ChatBindScope, ids []string) {
 	return append([]ChatBindScope{}, r.scopes...), append([]string{}, r.ids...)
 }
 
-// mockGroupLookup resolves test groups: group-a/group-b 启用，disabled 停用，
-// 其余不存在；seen 非 nil 时记录收到的 scope 与 groupID。
-type mockGroupLookup struct {
-	seen *bindScopeRecorder
-}
-
-func (m mockGroupLookup) FindChatGroup(scope ChatBindScope, groupID string) (*ChatGroupRef, error) {
-	if m.seen != nil {
-		m.seen.record(scope, groupID)
-	}
-	switch groupID {
-	case "group-a":
-		return &ChatGroupRef{ID: groupID, Name: "分组 A", Enabled: true}, nil
-	case "group-b":
-		return &ChatGroupRef{ID: groupID, Name: "分组 B", Enabled: true}, nil
-	case "group-disabled":
-		return &ChatGroupRef{ID: groupID, Name: "停用分组", Enabled: false}, nil
-	}
-	return nil, nil
-}
-
 // mockAccountLookup resolves test accounts: account-1/account-2/account-3 启
-// 用（绑定 group-a），account-disabled 停用，其余不存在；seen 非 nil 时记录
-// 收到的 scope 与 accountID。
+// 用（默认绑定 group-a，可经 groupsOfAccount 覆盖），account-disabled 停用，
+// 其余不存在；seen 非 nil 时记录收到的 scope 与 accountID。
 type mockAccountLookup struct {
 	groupsOfAccount map[string][]string
 	seen            *bindScopeRecorder
@@ -91,69 +70,238 @@ func (m *owningChatKeys) FindChatAPIKey(keyID, ownerID string) (*ChatAPIKeyRecor
 	return &ChatAPIKeyRecord{ID: keyID, Name: "对话密钥", Secret: "chat-secret", Status: "active"}, nil
 }
 
-// bindModeCatalog records group/provider calls and serves per-group provider
-// codes so the model-list source assertions can discriminate scopes:
-// group-a → openai（gpt-5, gpt-5-mini），group-b → anthropic（claude-x）。
-type bindModeCatalog struct {
-	mu            sync.Mutex
-	groupCalls    []string
-	providerCalls []string
+// createBoundConversation 直接经 Store 建立会话夹具（可携带绑定账户）。
+func createBoundConversation(t *testing.T, fixture *chatFixture, id, ownerID string, input CreateConversationInput) *Conversation {
+	t.Helper()
+	input.ID = id
+	input.SystemAccountID = ownerID
+	input.APIKeyID = "chat_key_1"
+	input.APIKeyNameSnapshot = "对话密钥"
+	input.Now = fixture.nowISO
+	input.MaxConversationsPerUser = 30
+	conversation, err := fixture.store.CreateConversation(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conversation
 }
 
-func (c *bindModeCatalog) recordGroup(groupID string) {
-	c.mu.Lock()
-	c.groupCalls = append(c.groupCalls, groupID)
-	c.mu.Unlock()
-}
-
-func (c *bindModeCatalog) recordProvider(providerCode string) {
-	c.mu.Lock()
-	c.providerCalls = append(c.providerCalls, providerCode)
-	c.mu.Unlock()
-}
-
-func (c *bindModeCatalog) snapshot() (groups, providers []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string{}, c.groupCalls...), append([]string{}, c.providerCalls...)
-}
-
-func (c *bindModeCatalog) groupProviderCode(groupID string) string {
-	switch groupID {
-	case "group-b":
-		return "anthropic"
-	default:
-		return "openai"
+// archiveConversation 把夹具会话置为归档（模拟一次性迁移对存量旧模式行的
+// archived=1 标记）。
+func archiveConversation(t *testing.T, fixture *chatFixture, conversationID string) {
+	t.Helper()
+	if _, err := fixture.store.DB().Exec(`UPDATE chat_conversations SET archived = 1 WHERE id = ?`, conversationID); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func (c *bindModeCatalog) ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily string) []ChatTransportAccount {
-	c.recordGroup(groupID)
-	enabled := true
-	return []ChatTransportAccount{{
-		ID: "account-1", Type: "api_key", ProviderCode: c.groupProviderCode(groupID),
-		SupportedEndpointModes: []string{"chat_sse", "responses_sse"},
-		ModelMappings: []ChatTransportModelMapping{{
-			Enabled: &enabled, SourceModel: requestedModel, SourceEndpointFamily: endpointFamily,
-		}},
-	}}
+// setConversationLastModel 直写夹具会话的 last_model（模型联动断言用）。
+func setConversationLastModel(t *testing.T, fixture *chatFixture, conversationID, model string) {
+	t.Helper()
+	if _, err := fixture.store.DB().Exec(`UPDATE chat_conversations SET last_model = ? WHERE id = ?`, model, conversationID); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func (c *bindModeCatalog) ListProviderCatalog(providerCode, systemAccountID string) []ProviderModelCatalogItem {
-	c.recordProvider(providerCode)
-	switch providerCode {
-	case "anthropic":
-		return []ProviderModelCatalogItem{{
-			Model: "claude-x", ProviderCode: "anthropic",
-			SupportedAPIProtocols: []string{"chat_completions"},
-			InputModalities:       []string{"text"}, OutputModalities: []string{"text"},
+// TestCreateConversationEmptyBody：免弹窗直进契约——空 body 与携带历史字段
+// （bindMode/apiKeyId/groupId/accountId）的 body 均创建空会话（bindAccountId
+// NULL、archived=false），鉴权主体为 EnsureChatAPIKey 幂等补齐的专用 Key。
+func TestCreateConversationEmptyBody(t *testing.T) {
+	env := newGenerationEnv(t)
+	prefix := "/__aisys__/api/my-chat"
+
+	created := env.do("POST", prefix+"/conversations", routeTestOwner, "")
+	if created.status != http.StatusCreated {
+		t.Fatalf("empty body create = %d %s", created.status, created.rawString())
+	}
+	data := created.dataMap()
+	if _, has := data["bindAccountId"]; has {
+		t.Fatalf("空会话不应返回 bindAccountId: %v", data)
+	}
+	if data["archived"] != false {
+		t.Fatalf("空会话 archived = %v, want false", data["archived"])
+	}
+	if data["apiKeyId"] != "chat_key_provisioned" || data["apiKeyNameSnapshot"] != "对话密钥" {
+		t.Fatalf("鉴权主体 payload = %v", data)
+	}
+	if _, has := data["defaultModel"]; has {
+		t.Fatalf("空会话不应携带 defaultModel: %v", data)
+	}
+	if data["lastModel"] != nil {
+		t.Fatalf("空会话 lastModel = %v, want null", data["lastModel"])
+	}
+	env.chatKeys.mu.Lock()
+	ensureCount := env.chatKeys.ensureCount
+	env.chatKeys.mu.Unlock()
+	if ensureCount != 1 {
+		t.Fatalf("ensure count = %d, want 1", ensureCount)
+	}
+
+	// 历史字段按兼容口径忽略：携带 bindMode/accountId 的旧客户端请求体仍创建
+	// 空会话，不因未知字段 400。
+	legacy := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"account","apiKeyId":"legacy","groupId":"g","accountId":"a"}`)
+	if legacy.status != http.StatusCreated {
+		t.Fatalf("legacy body create = %d %s", legacy.status, legacy.rawString())
+	}
+	legacyData := legacy.dataMap()
+	if _, has := legacyData["bindAccountId"]; has {
+		t.Fatalf("legacy body 不得写入绑定: %v", legacyData)
+	}
+
+	// 非法 JSON 仍按既有 400 契约拒绝（Express json() 同款）。
+	malformed := env.do("POST", prefix+"/conversations", routeTestOwner, `{`)
+	if malformed.status != http.StatusBadRequest || malformed.code() != "chat_invalid_request" {
+		t.Fatalf("malformed body = %d %s", malformed.status, malformed.rawString())
+	}
+}
+
+// TestPatchAccountIdFlow：accountId 键写入/切换绑定账户；切换时 lastModel 不
+// 在新账户可路由范围则联动清空，在范围内保留；停用/不存在/空白值 400；
+// searchBinding/imageBinding 属工具阶段契约，本阶段按未知键拒绝。
+func TestPatchAccountIdFlow(t *testing.T) {
+	prefix := "/__aisys__/api/my-chat"
+
+	t.Run("首次写入绑定并回显名称快照", func(t *testing.T) {
+		env := newGenerationEnv(t)
+		env.deps.AccountLookup = mockAccountLookup{seen: &bindScopeRecorder{}}
+		conversation := createBoundConversation(t, env.fixture, "patch_bind_conv", routeTestOwner, CreateConversationInput{})
+		response := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"accountId":"account-1"}`)
+		if response.status != http.StatusOK {
+			t.Fatalf("patch accountId = %d %s", response.status, response.rawString())
+		}
+		data := response.dataMap()
+		if data["bindAccountId"] != "account-1" || data["bindAccountName"] != "账户 account-1" {
+			t.Fatalf("bind payload = %v", data)
+		}
+	})
+
+	t.Run("切换账户联动清空不可路由模型", func(t *testing.T) {
+		env := newGenerationEnv(t)
+		// account-1（group-a）仅 gpt-5-mini 可路由；account-2（group-b）仅 gpt-5。
+		catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
+			"group-a": {
+				ID: "account-1", Type: "api_key", ProviderCode: "openai",
+				SupportedEndpointModes: []string{"chat_sse"},
+				SupportedModels:        []string{"gpt-5-mini"},
+			},
+			"group-b": {
+				ID: "account-2", Type: "api_key", ProviderCode: "openai",
+				SupportedEndpointModes: []string{"chat_sse"},
+				SupportedModels:        []string{"gpt-5"},
+			},
 		}}
-	default:
-		return mockModelCatalog{}.ListProviderCatalog(providerCode, systemAccountID)
-	}
+		env.deps.ModelCatalog = catalog
+		env.deps.AccountLookup = mockAccountLookup{groupsOfAccount: map[string][]string{
+			"account-1": {"group-a"}, "account-2": {"group-b"},
+		}}
+		conversation := createBoundConversation(t, env.fixture, "patch_switch_conv", routeTestOwner, CreateConversationInput{
+			BindAccountID: "account-2", BindAccountNameSnapshot: "账户 account-2",
+		})
+		setConversationLastModel(t, env.fixture, conversation.ID, "gpt-5")
+
+		// 切到 account-1：gpt-5 不在 [gpt-5-mini] → 清空。
+		switched := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"accountId":"account-1"}`)
+		if switched.status != http.StatusOK {
+			t.Fatalf("switch = %d %s", switched.status, switched.rawString())
+		}
+		if data := switched.dataMap(); data["lastModel"] != nil {
+			t.Fatalf("切换后 lastModel = %v, want null", data["lastModel"])
+		}
+
+		// 切回 account-2 前先恢复 last_model=gpt-5：范围内 → 保留。
+		setConversationLastModel(t, env.fixture, conversation.ID, "gpt-5")
+		kept := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"accountId":"account-2"}`)
+		if kept.status != http.StatusOK {
+			t.Fatalf("switch back = %d %s", kept.status, kept.rawString())
+		}
+		if data := kept.dataMap(); data["lastModel"] != "gpt-5" {
+			t.Fatalf("范围内切换 lastModel = %v, want gpt-5", data["lastModel"])
+		}
+	})
+
+	t.Run("失败臂", func(t *testing.T) {
+		env := newGenerationEnv(t)
+		env.deps.AccountLookup = mockAccountLookup{}
+		conversation := createBoundConversation(t, env.fixture, "patch_fail_conv", routeTestOwner, CreateConversationInput{})
+		cases := []struct {
+			name    string
+			body    string
+			message string
+		}{
+			{"账户不存在", `{"accountId":"missing"}`, "绑定的账户不存在"},
+			{"账户已停用", `{"accountId":"account-disabled"}`, "绑定的账户已停用"},
+			{"空白账户", `{"accountId":"  "}`, "请选择会话绑定的账户"},
+			{"工具绑定键未接入", `{"searchBinding":{"accountId":"a","modelId":"m"}}`, "请求参数无效"},
+			{"生图绑定键未接入", `{"imageBinding":{"accountId":"a"}}`, "请求参数无效"},
+		}
+		for _, item := range cases {
+			response := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, item.body)
+			if response.status != http.StatusBadRequest {
+				t.Fatalf("%s = %d %s", item.name, response.status, response.rawString())
+			}
+			if got := response.message(); got != item.message {
+				t.Fatalf("%s message = %q, want %q", item.name, got, item.message)
+			}
+		}
+	})
 }
 
-// accountViewCatalog 让账号模式测试精确控制收敛后的账户传输视图（provider、
+// TestAccountBindingSendPrechecks：发送预检——未绑定 400 chat_account_required；
+// 归档会话 403 只读（clear/delete 照常、PATCH accountId 拒绝、压缩同拒）。
+func TestAccountBindingSendPrechecks(t *testing.T) {
+	prefix := "/__aisys__/api/my-chat"
+
+	t.Run("未绑定发送 400 chat_account_required", func(t *testing.T) {
+		env := newGenerationEnv(t)
+		conversation := createBoundConversation(t, env.fixture, "precheck_unbound", routeTestOwner, CreateConversationInput{})
+		response := env.streamPost(conversation.ID, routeTestOwner, streamPayload("cmid-unbound", "问题", "gpt-5"))
+		if response.status != http.StatusBadRequest || response.code() != "chat_account_required" {
+			t.Fatalf("未绑定发送 = %d %s", response.status, response.rawString())
+		}
+		if env.executor.callCount() != 0 {
+			t.Fatalf("未绑定不得派发上游")
+		}
+	})
+
+	t.Run("归档会话只读", func(t *testing.T) {
+		env := newGenerationEnv(t)
+		env.deps.AccountLookup = mockAccountLookup{}
+		conversation := createBoundConversation(t, env.fixture, "precheck_archived", routeTestOwner, CreateConversationInput{
+			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
+		})
+		archiveConversation(t, env.fixture, conversation.ID)
+
+		sent := env.streamPost(conversation.ID, routeTestOwner, streamPayload("cmid-archived", "问题", "gpt-5"))
+		if sent.status != http.StatusForbidden || sent.code() != "chat_conversation_archived" || sent.message() != "该会话绑定方式已升级，请新建会话" {
+			t.Fatalf("归档发送 = %d %s", sent.status, sent.rawString())
+		}
+		if env.executor.callCount() != 0 {
+			t.Fatalf("归档会话不得派发上游")
+		}
+
+		compacted := env.do("POST", prefix+"/conversations/"+conversation.ID+"/context/compactions", routeTestOwner, `{"model":"gpt-5"}`)
+		if compacted.status != http.StatusForbidden || compacted.code() != "chat_conversation_archived" {
+			t.Fatalf("归档压缩 = %d %s", compacted.status, compacted.rawString())
+		}
+
+		patched := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"accountId":"account-2"}`)
+		if patched.status != http.StatusForbidden || patched.code() != "chat_conversation_archived" {
+			t.Fatalf("归档切账户 = %d %s", patched.status, patched.rawString())
+		}
+
+		// 归档会话的 clear/delete 照常（设计 §8）。
+		cleared := env.do("POST", prefix+"/conversations/"+conversation.ID+"/clear", routeTestOwner, "{}")
+		if cleared.status != http.StatusOK {
+			t.Fatalf("归档 clear = %d %s", cleared.status, cleared.rawString())
+		}
+		deleted := env.do("DELETE", prefix+"/conversations/"+conversation.ID, routeTestOwner, "")
+		if deleted.status != http.StatusNoContent {
+			t.Fatalf("归档 delete = %d %s", deleted.status, deleted.rawString())
+		}
+	})
+}
+
+// accountViewCatalog 让账户绑定测试精确控制收敛后的账户传输视图（provider、
 // supportedModels），覆盖 supported_models 交集与 provider_code 单值来源。
 type accountViewCatalog struct {
 	mu            sync.Mutex
@@ -186,221 +334,29 @@ func (c *accountViewCatalog) snapshot() (groups, providers []string) {
 	return append([]string{}, c.groupCalls...), append([]string{}, c.providerCalls...)
 }
 
-// createBoundConversation 直接经 Store 建立带绑定字段的会话夹具。
-func createBoundConversation(t *testing.T, fixture *chatFixture, id, ownerID string, input CreateConversationInput) *Conversation {
-	t.Helper()
-	input.ID = id
-	input.SystemAccountID = ownerID
-	input.APIKeyID = "chat_key_1"
-	input.APIKeyNameSnapshot = "对话密钥"
-	input.Now = fixture.nowISO
-	input.MaxConversationsPerUser = 30
-	conversation, err := fixture.store.CreateConversation(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return conversation
-}
-
-func TestBindModeCreateSuccessMatrix(t *testing.T) {
-	env := newGenerationEnv(t)
-	groupLookup := mockGroupLookup{seen: &bindScopeRecorder{}}
-	accountLookup := mockAccountLookup{seen: &bindScopeRecorder{}}
-	env.deps.GroupLookup = groupLookup
-	env.deps.AccountLookup = accountLookup
-	prefix := "/__aisys__/api/my-chat"
-	// 创建校验把请求者数据范围传给 Find 端口：普通用户 = viewer + IsAdmin=false。
-	userScope := ChatBindScope{ViewerID: routeTestOwner, IsAdmin: false}
-
-	// api_key：显式选择用户 Key，不触碰专用 Key。
-	byKey := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`)
-	if byKey.status != http.StatusCreated {
-		t.Fatalf("api_key create = %d %s", byKey.status, byKey.rawString())
-	}
-	data := byKey.dataMap()
-	if data["bindMode"] != "api_key" || data["apiKeyId"] != "chat_key_provisioned" {
-		t.Fatalf("api_key payload = %v", data)
-	}
-	if _, has := data["bindGroupId"]; has {
-		t.Fatalf("api_key 模式不应返回 bindGroupId: %v", data)
-	}
-	if _, has := data["bindAccountId"]; has {
-		t.Fatalf("api_key 模式不应返回 bindAccountId: %v", data)
-	}
-	env.chatKeys.mu.Lock()
-	ensureCount := env.chatKeys.ensureCount
-	env.chatKeys.mu.Unlock()
-	if ensureCount != 0 {
-		t.Fatalf("api_key mode ensure count = %d, want 0", ensureCount)
-	}
-
-	// group：鉴权主体为 EnsureChatAPIKey 幂等补齐的专用 Key。
-	byGroup := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"group","groupId":"group-b"}`)
-	if byGroup.status != http.StatusCreated {
-		t.Fatalf("group create = %d %s", byGroup.status, byGroup.rawString())
-	}
-	data = byGroup.dataMap()
-	if data["bindMode"] != "group" || data["bindGroupId"] != "group-b" || data["bindGroupName"] != "分组 B" {
-		t.Fatalf("group payload = %v", data)
-	}
-	if data["apiKeyId"] != "chat_key_provisioned" || data["apiKeyNameSnapshot"] != "对话密钥" {
-		t.Fatalf("group 鉴权主体 payload = %v", data)
-	}
-	defaultModel, _ := data["defaultModel"].(map[string]any)
-	if defaultModel == nil || defaultModel["id"] != "gpt-5" {
-		t.Fatalf("group defaultModel = %v", data["defaultModel"])
-	}
-	scopes, ids := groupLookup.seen.snapshot()
-	if len(scopes) != 1 || ids[0] != "group-b" || scopes[0] != userScope {
-		t.Fatalf("FindChatGroup scopes = %v ids = %v, want [%v] [group-b]", scopes, ids, userScope)
-	}
-	env.chatKeys.mu.Lock()
-	ensureCount = env.chatKeys.ensureCount
-	env.chatKeys.mu.Unlock()
-	if ensureCount != 1 {
-		t.Fatalf("group mode ensure count = %d, want 1", ensureCount)
-	}
-
-	// account：鉴权主体同样是专用 Key，绑定对象为账户快照。
-	byAccount := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"account","accountId":"account-1"}`)
-	if byAccount.status != http.StatusCreated {
-		t.Fatalf("account create = %d %s", byAccount.status, byAccount.rawString())
-	}
-	data = byAccount.dataMap()
-	if data["bindMode"] != "account" || data["bindAccountId"] != "account-1" || data["bindAccountName"] != "账户 account-1" {
-		t.Fatalf("account payload = %v", data)
-	}
-	if data["apiKeyId"] != "chat_key_provisioned" {
-		t.Fatalf("account 鉴权主体 payload = %v", data)
-	}
-	env.chatKeys.mu.Lock()
-	ensureCount = env.chatKeys.ensureCount
-	env.chatKeys.mu.Unlock()
-	if ensureCount != 2 {
-		t.Fatalf("account mode ensure count = %d, want 2", ensureCount)
-	}
-	scopes, ids = accountLookup.seen.snapshot()
-	if len(scopes) != 1 || ids[0] != "account-1" || scopes[0] != userScope {
-		t.Fatalf("FindChatAccount scopes = %v ids = %v, want [%v] [account-1]", scopes, ids, userScope)
-	}
-
-	// 会话详情回读绑定字段。
-	detail := env.do("GET", prefix+"/conversations/"+data["id"].(string), routeTestOwner, "")
-	if detail.status != http.StatusOK {
-		t.Fatalf("detail = %d %s", detail.status, detail.rawString())
-	}
-	detailData := detail.dataMap()
-	if detailData["bindMode"] != "account" || detailData["bindAccountId"] != "account-1" || detailData["bindAccountName"] != "账户 account-1" {
-		t.Fatalf("detail bind payload = %v", detailData)
-	}
-}
-
-func TestBindModeCreateFailures(t *testing.T) {
-	env := newGenerationEnv(t)
-	env.deps.GroupLookup = mockGroupLookup{}
-	env.deps.AccountLookup = mockAccountLookup{}
-	env.deps.ChatKeys = &owningChatKeys{}
-	prefix := "/__aisys__/api/my-chat"
-	// 与模式不符的键复用未知键错误契约（英文消息经 kernel 本地化为 400 状态
-	// 默认文案"请求参数无效"，与既有未知键行为一致）。
-	const unrecognizedBoundary = "请求参数无效"
-	cases := []struct {
-		name    string
-		body    string
-		message string
-	}{
-		{"缺 bindMode", `{}`, "请选择会话绑定方式"},
-		{"bindMode 空白", `{"bindMode":"  "}`, "请选择会话绑定方式"},
-		{"bindMode 非法值", `{"bindMode":"pool"}`, "会话绑定方式无效"},
-		{"api_key 缺 apiKeyId", `{"bindMode":"api_key"}`, "请选择会话绑定的 API Key"},
-		{"group 缺 groupId", `{"bindMode":"group"}`, "请选择会话绑定的分组"},
-		{"account 缺 accountId", `{"bindMode":"account"}`, "请选择会话绑定的账户"},
-		{"api_key 带 groupId", `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned","groupId":"group-a"}`, unrecognizedBoundary},
-		{"group 带 apiKeyId", `{"bindMode":"group","groupId":"group-a","apiKeyId":"chat_key_provisioned"}`, unrecognizedBoundary},
-		{"account 带 groupId", `{"bindMode":"account","accountId":"account-1","groupId":"group-a"}`, unrecognizedBoundary},
-	}
-	for _, item := range cases {
-		response := env.do("POST", prefix+"/conversations", routeTestOwner, item.body)
-		if response.status != http.StatusBadRequest {
-			t.Fatalf("%s = %d %s", item.name, response.status, response.rawString())
-		}
-		if got := response.message(); got != item.message {
-			t.Fatalf("%s message = %q, want %q", item.name, got, item.message)
-		}
-	}
-
-	// 用户引用对象缺失/停用 → 400 chat_invalid_request（可恢复输入错误，
-	// 不再按服务端故障 500）。
-	failures := []struct {
-		name string
-		body string
-	}{
-		{"api_key 他人 Key", `{"bindMode":"api_key","apiKeyId":"other_key"}`},
-		{"api_key 不存在的 Key", `{"bindMode":"api_key","apiKeyId":"missing_key"}`},
-		{"group 分组不存在", `{"bindMode":"group","groupId":"missing"}`},
-		{"group 分组已停用", `{"bindMode":"group","groupId":"group-disabled"}`},
-		{"account 账户不存在", `{"bindMode":"account","accountId":"missing"}`},
-		{"account 账户已停用", `{"bindMode":"account","accountId":"account-disabled"}`},
-	}
-	for _, item := range failures {
-		response := env.do("POST", prefix+"/conversations", routeTestOwner, item.body)
-		if response.status != http.StatusBadRequest || response.code() != "chat_invalid_request" {
-			t.Fatalf("%s = %d %s", item.name, response.status, response.rawString())
-		}
-	}
-}
-
-func TestBindModeModelListSources(t *testing.T) {
+// TestAccountBindingModelListSources：模型候选=会话绑定账户可路由模型；未绑定
+// 返回空列表与单模型 404；绑定账户的 provider 单值与 supported_models 交集；
+// 不在启用分组快照中为空作用域。
+func TestAccountBindingModelListSources(t *testing.T) {
 	prefix := "/__aisys__/api/my-chat"
 
-	t.Run("api_key 按策略分组聚合 openai", func(t *testing.T) {
+	t.Run("未绑定空列表与单模型 404", func(t *testing.T) {
 		env := newGenerationEnv(t)
-		catalog := &bindModeCatalog{}
-		env.deps.ModelCatalog = catalog
-		createBoundConversation(t, env.fixture, "bind_conv_key", routeTestOwner, CreateConversationInput{BindMode: BindModeAPIKey})
-		list := env.do("GET", prefix+"/conversations/bind_conv_key/models", routeTestOwner, "")
+		conversation := createBoundConversation(t, env.fixture, "models_unbound", routeTestOwner, CreateConversationInput{})
+		list := env.do("GET", prefix+"/conversations/"+conversation.ID+"/models", routeTestOwner, "")
 		if list.status != http.StatusOK {
 			t.Fatalf("list = %d %s", list.status, list.rawString())
 		}
-		groups, providers := catalog.snapshot()
-		if len(groups) == 0 || groups[0] != "group-a" {
-			t.Fatalf("group calls = %v", groups)
+		if models := list.dataArray(); len(models) != 0 {
+			t.Fatalf("未绑定 models = %v, want []", models)
 		}
-		if len(providers) != 1 || providers[0] != "openai" {
-			t.Fatalf("provider calls = %v", providers)
-		}
-		models := modelIDsFromList(t, list)
-		if len(models) != 2 || models["gpt-5"] == false || models["gpt-5-mini"] == false {
-			t.Fatalf("models = %v", list.dataArray())
+		missing := env.do("GET", prefix+"/conversations/"+conversation.ID+"/models/gpt-5", routeTestOwner, "")
+		if missing.status != http.StatusNotFound || missing.code() != "chat_model_not_found" {
+			t.Fatalf("未绑定单模型 = %d %s", missing.status, missing.rawString())
 		}
 	})
 
-	t.Run("group 只取绑定分组", func(t *testing.T) {
-		env := newGenerationEnv(t)
-		catalog := &bindModeCatalog{}
-		env.deps.ModelCatalog = catalog
-		env.deps.GroupLookup = mockGroupLookup{}
-		createBoundConversation(t, env.fixture, "bind_conv_group", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeGroup, BindGroupID: "group-b", BindGroupNameSnapshot: "分组 B",
-		})
-		list := env.do("GET", prefix+"/conversations/bind_conv_group/models", routeTestOwner, "")
-		if list.status != http.StatusOK {
-			t.Fatalf("list = %d %s", list.status, list.rawString())
-		}
-		groups, providers := catalog.snapshot()
-		if len(groups) != 1 || groups[0] != "group-b" {
-			t.Fatalf("group calls = %v, want [group-b]", groups)
-		}
-		if len(providers) != 1 || providers[0] != "anthropic" {
-			t.Fatalf("provider calls = %v, want [anthropic]", providers)
-		}
-		models := modelIDsFromList(t, list)
-		if len(models) != 1 || !models["claude-x"] {
-			t.Fatalf("models = %v", list.dataArray())
-		}
-	})
-
-	t.Run("account 单 provider 与 supported_models 交集", func(t *testing.T) {
+	t.Run("绑定账户单 provider 与 supported_models 交集", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
 			// account-1 的运行时视图：openai、仅 gpt-5-mini。
@@ -413,7 +369,7 @@ func TestBindModeModelListSources(t *testing.T) {
 		env.deps.ModelCatalog = catalog
 		env.deps.AccountLookup = mockAccountLookup{}
 		createBoundConversation(t, env.fixture, "bind_conv_account", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeAccount, BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
+			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
 		})
 		list := env.do("GET", prefix+"/conversations/bind_conv_account/models", routeTestOwner, "")
 		if list.status != http.StatusOK {
@@ -441,7 +397,7 @@ func TestBindModeModelListSources(t *testing.T) {
 		}
 	})
 
-	t.Run("account 不在快照中为空作用域", func(t *testing.T) {
+	t.Run("绑定账户不在快照中为空作用域", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
 			"group-a": {ID: "account-9", Type: "api_key", ProviderCode: "openai", SupportedEndpointModes: []string{"chat_sse"}},
@@ -449,7 +405,7 @@ func TestBindModeModelListSources(t *testing.T) {
 		env.deps.ModelCatalog = catalog
 		env.deps.AccountLookup = mockAccountLookup{}
 		createBoundConversation(t, env.fixture, "bind_conv_absent", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeAccount, BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
+			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
 		})
 		list := env.do("GET", prefix+"/conversations/bind_conv_absent/models", routeTestOwner, "")
 		if list.status != http.StatusOK {
@@ -457,19 +413,6 @@ func TestBindModeModelListSources(t *testing.T) {
 		}
 		if models := list.dataArray(); len(models) != 0 {
 			t.Fatalf("空作用域 models = %v", models)
-		}
-	})
-
-	t.Run("group 绑定对象停用后列表拒绝", func(t *testing.T) {
-		env := newGenerationEnv(t)
-		env.deps.ModelCatalog = &bindModeCatalog{}
-		env.deps.GroupLookup = mockGroupLookup{}
-		createBoundConversation(t, env.fixture, "bind_conv_disabled", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeGroup, BindGroupID: "group-disabled", BindGroupNameSnapshot: "停用分组",
-		})
-		list := env.do("GET", prefix+"/conversations/bind_conv_disabled/models", routeTestOwner, "")
-		if list.status != http.StatusBadRequest || list.code() != "chat_invalid_request" {
-			t.Fatalf("停用分组列表 = %d %s", list.status, list.rawString())
 		}
 	})
 }

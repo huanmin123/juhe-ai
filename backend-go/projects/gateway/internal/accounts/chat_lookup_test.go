@@ -1,11 +1,12 @@
 package accounts
 
-// ListChatAccountOptions / FindChatAccount（新建会话绑定账户侧）的存储级覆
-// 盖：与 FindChatAccount 同口径的五类过滤（status 非 active、schedulable 禁
-// 用、deleted_at 非空、authorization_instance_authorization_id 非空、正常
+// ListChatAccountOptions / FindChatAccount（会话账户绑定侧）的存储级覆盖：
+// 与 FindChatAccount 同口径的五类过滤（status 非 active、schedulable 禁用、
+// deleted_at 非空、authorization_instance_authorization_id 非空、正常
 // active），仅最后一类可见，排序 name ASC, id ASC（同名跨 owner 按 id 决胜）；
 // 数据范围按 ChatBindScope 收敛——admin/super_admin 读全量号池，普通用户仅
-// 自己名下（他人行、已删行、实例戳行仍排除）。
+// 自己名下（他人行、已删行、实例戳行仍排除）。选项投影含
+// providerCode/status（/my-chat/accounts 形状）。
 
 import (
 	"context"
@@ -48,9 +49,9 @@ func TestListChatAccountOptionsAdminSeesAllActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []chat.ChatBindOption{
-		{ID: "acc_active_1", Name: "可用账户"},
-		{ID: "acc_active_2", Name: "可用账户"},
+	want := []chat.ChatAccountOption{
+		{ID: "acc_active_1", Name: "可用账户", ProviderCode: "openai", Status: "active"},
+		{ID: "acc_active_2", Name: "可用账户", ProviderCode: "openai", Status: "active"},
 	}
 	if len(options) != len(want) {
 		t.Fatalf("options = %v, want %v", options, want)
@@ -116,7 +117,7 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []chat.ChatBindOption{{ID: "acc_own_active", Name: "a 自有可用"}}
+		want := []chat.ChatAccountOption{{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "openai", Status: "active"}}
 		if len(options) != len(want) {
 			t.Fatalf("viewer options = %v, want %v", options, want)
 		}
@@ -160,9 +161,9 @@ func TestChatAccountLookupViewerScope(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []chat.ChatBindOption{
-			{ID: "acc_own_active", Name: "a 自有可用"},
-			{ID: "acc_other_active", Name: "c 他人可用"},
+		want := []chat.ChatAccountOption{
+			{ID: "acc_own_active", Name: "a 自有可用", ProviderCode: "openai", Status: "active"},
+			{ID: "acc_other_active", Name: "c 他人可用", ProviderCode: "openai", Status: "active"},
 		}
 		if len(options) != len(want) {
 			t.Fatalf("admin options = %v, want %v", options, want)

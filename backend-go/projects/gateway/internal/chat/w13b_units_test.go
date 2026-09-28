@@ -961,17 +961,15 @@ func TestW13BSelectChatTransportAndReasoningDefault(t *testing.T) {
 	if got := commonReasoningDefault([]ProviderModelCatalogItem{{}}, []string{"low"}); got != "" {
 		t.Fatalf("缺默认应为空")
 	}
-	// resolveChatSupportedProtocols 的账户聚合。
+	// scopeSupportedProtocols 的单账户视图聚合（chatRoutes 方法，经
+	// chatBindingScope 间接覆盖；此处钉住账户视图双协议判定）。
 	enabled := true
-	protocols := resolveChatSupportedProtocols([]string{"g1"}, "m", func(groupID, model, endpointFamily string) []ChatTransportAccount {
-		return []ChatTransportAccount{{SupportedEndpointModes: []string{"chat_sse", "responses_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: model, SourceEndpointFamily: endpointFamily}}}}
-	})
+	view := ChatTransportAccount{SupportedEndpointModes: []string{"chat_sse", "responses_sse"}, ModelMappings: []ChatTransportModelMapping{{Enabled: &enabled, SourceModel: "m"}}}
+	protocols := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{accounts: []ChatTransportAccount{view}}, "o", "m")
 	if len(protocols) != 2 {
 		t.Fatalf("双协议解析失败: %v", protocols)
 	}
-	empty := resolveChatSupportedProtocols([]string{"g1"}, "m", func(groupID, model, endpointFamily string) []ChatTransportAccount {
-		return nil
-	})
+	empty := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{}, "o", "m")
 	if len(empty) != 0 {
 		t.Fatalf("空账户应返回空协议: %v", empty)
 	}

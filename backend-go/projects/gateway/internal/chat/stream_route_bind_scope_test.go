@@ -1,10 +1,9 @@
 package chat
 
-// AI 问答三种绑定模式的发送链覆盖（设计 §6）：发送前置校验按绑定作用域收敛
-// （resolveChatBindingScope）、协议选择按 scope 账户视图、调度覆盖目标绑定
-// 到执行器视图（chatDispatchTargetAware 端口，cmd 组合根实现）。测试风格与
-// chat_bind_modes_test.go / generation_test.go 一致（严格 mock 闭包 + 录制
-// 断言）。
+// AI 问答会话账户唯一绑定的发送链覆盖：发送前置校验（账户可用性）、协议选
+// 择按 scope 账户视图、调度覆盖目标绑定到执行器视图（chatDispatchTargetAware
+// 端口，cmd 组合根实现）。测试风格与 chat_bind_modes_test.go /
+// generation_test.go 一致（严格 mock 闭包 + 录制断言）。
 
 import (
 	"context"
@@ -14,23 +13,21 @@ import (
 	"testing"
 )
 
-// targetAwareExecutor 记录 WithChatDispatchTarget 调用并透传 Dispatch，模拟
+// targetAwareExecutor 记录 WithChatDispatchAccount 调用并透传 Dispatch，模拟
 // 组合根 chatGatewayExecutor 的覆盖端口实现。
 type targetAwareExecutor struct {
 	inner *mockExecutor
 
 	mu        sync.Mutex
 	withCalls int
-	mode      string
-	groupID   string
 	accountID string
 }
 
-func (e *targetAwareExecutor) WithChatDispatchTarget(bindMode, groupID, accountID string) GenerationExecutor {
+func (e *targetAwareExecutor) WithChatDispatchAccount(accountID string) GenerationExecutor {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.withCalls++
-	e.mode, e.groupID, e.accountID = bindMode, groupID, accountID
+	e.accountID = accountID
 	return e
 }
 
@@ -38,10 +35,10 @@ func (e *targetAwareExecutor) Dispatch(ctx context.Context, req GenerationDispat
 	return e.inner.Dispatch(ctx, req)
 }
 
-func (e *targetAwareExecutor) snapshot() (withCalls int, mode, groupID, accountID string) {
+func (e *targetAwareExecutor) snapshot() (withCalls int, accountID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.withCalls, e.mode, e.groupID, e.accountID
+	return e.withCalls, e.accountID
 }
 
 // dispatchPaths 返回已发生的派发路径序列。
@@ -55,7 +52,7 @@ func dispatchPaths(executor *mockExecutor) []string {
 	return paths
 }
 
-// inactiveChatKeys 让专用 Key 停用（group/account 模式鉴权主体失效语义）。
+// inactiveChatKeys 让专用 Key 停用（鉴权主体失效语义）。
 type inactiveChatKeys struct {
 	mockChatKeys
 }
@@ -74,45 +71,13 @@ func scriptChatCompletions(env *generationEnv) {
 	}}
 }
 
-func TestStreamBindModeGroupScope(t *testing.T) {
+func TestStreamBindAccountScopeAndProtocol(t *testing.T) {
 	env := newGenerationEnv(t)
 	aware := &targetAwareExecutor{inner: env.executor}
 	env.deps.Executor = aware
-	env.deps.GroupLookup = mockGroupLookup{}
-	catalog := &bindModeCatalog{}
-	env.deps.ModelCatalog = catalog
-	createBoundConversation(t, env.fixture, "bind_stream_group", routeTestOwner, CreateConversationInput{
-		BindMode: BindModeGroup, BindGroupID: "group-b", BindGroupNameSnapshot: "分组 B",
-	})
-	scriptChatCompletions(env)
-	response := env.streamPost("bind_stream_group", routeTestOwner, streamPayload("cmid-group", "问题", "claude-x"))
-	if response.status != http.StatusOK {
-		t.Fatalf("group stream = %d %s", response.status, response.rawString())
-	}
-	// 模型目录/账户候选只取绑定分组（group-b → anthropic），不读 Key 视图分组。
-	groups, providers := catalog.snapshot()
-	if len(groups) == 0 || groups[0] != "group-b" {
-		t.Fatalf("scope group calls = %v, want [group-b ...]", groups)
-	}
-	if len(providers) == 0 || providers[0] != "anthropic" {
-		t.Fatalf("scope provider calls = %v, want [anthropic ...]", providers)
-	}
-	// 调度覆盖目标绑定到执行器视图（进程内通道；cmd 侧注入 context）。
-	withCalls, mode, groupID, accountID := aware.snapshot()
-	if withCalls != 1 || mode != "group" || groupID != "group-b" || accountID != "" {
-		t.Fatalf("dispatch target = calls:%d %s/%s/%s", withCalls, mode, groupID, accountID)
-	}
-	if paths := dispatchPaths(env.executor); len(paths) == 0 || paths[0] != "/v1/chat/completions" {
-		t.Fatalf("dispatch paths = %v", paths)
-	}
-}
-
-func TestStreamBindModeAccountScopeAndProtocol(t *testing.T) {
-	env := newGenerationEnv(t)
-	aware := &targetAwareExecutor{inner: env.executor}
-	env.deps.Executor = aware
-	// 账户启用的分组是 group-b（与 Key 视图分组 group-a 不同）：作用域证据 =
-	// 目录与账户候选只来自 group-b 的快照收敛。
+	// 账户启用的分组是 group-b：作用域证据 = 目录与账户候选只来自 group-b 的
+	// 快照收敛（mockModelCatalog/mockGatewayKeys 的 Key 视图分组是 group-a，
+	// 断言发送链不再读 Key 视图分组）。
 	env.deps.AccountLookup = mockAccountLookup{groupsOfAccount: map[string][]string{"account-1": {"group-b"}}}
 	catalog := &accountViewCatalog{views: map[string]ChatTransportAccount{
 		"group-b": {
@@ -123,7 +88,7 @@ func TestStreamBindModeAccountScopeAndProtocol(t *testing.T) {
 	}}
 	env.deps.ModelCatalog = catalog
 	createBoundConversation(t, env.fixture, "bind_stream_account", routeTestOwner, CreateConversationInput{
-		BindMode: BindModeAccount, BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
+		BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
 	})
 	scriptChatCompletions(env)
 	response := env.streamPost("bind_stream_account", routeTestOwner, streamPayload("cmid-account", "问题", "gpt-5"))
@@ -142,40 +107,23 @@ func TestStreamBindModeAccountScopeAndProtocol(t *testing.T) {
 	if paths := dispatchPaths(env.executor); len(paths) == 0 || paths[0] != "/v1/chat/completions" {
 		t.Fatalf("protocol dispatch paths = %v, want /v1/chat/completions", paths)
 	}
-	withCalls, mode, groupID, accountID := aware.snapshot()
-	// 生产形状：account 会话不持久化承载分组，target 恒为 {account, GroupID:"",
-	// AccountID}；承载分组由 /v1 消费侧（cmd resolveChatDispatchTargetScope）
-	// 按账户启用分组解析，不在 chat 侧构造。
-	if withCalls != 1 || mode != "account" || groupID != "" || accountID != "account-1" {
-		t.Fatalf("account dispatch target = calls:%d %s/%s/%s", withCalls, mode, groupID, accountID)
+	// 调度覆盖目标绑定到执行器视图（进程内通道；cmd 侧注入 context）。生产形
+	// 状：target 只携带账户 ID，承载分组由 /v1 消费侧（cmd
+	// resolveChatDispatchTargetScope）按账户启用分组解析，不在 chat 侧构造。
+	if withCalls, accountID := aware.snapshot(); withCalls != 1 || accountID != "account-1" {
+		t.Fatalf("account dispatch target = calls:%d %s", withCalls, accountID)
 	}
 }
 
-func TestStreamBindModeValidationFailures(t *testing.T) {
+func TestStreamBindValidationFailures(t *testing.T) {
 	prefix := "bind_stream_fail"
 
-	t.Run("group 分组已停用", func(t *testing.T) {
-		env := newGenerationEnv(t)
-		env.deps.GroupLookup = mockGroupLookup{}
-		env.deps.ModelCatalog = &bindModeCatalog{}
-		createBoundConversation(t, env.fixture, prefix+"-gdisabled", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeGroup, BindGroupID: "group-disabled", BindGroupNameSnapshot: "停用分组",
-		})
-		response := env.streamPost(prefix+"-gdisabled", routeTestOwner, streamPayload("cmid-gd", "问题", "claude-x"))
-		if response.status != http.StatusBadRequest || !strings.Contains(response.message(), "会话绑定的分组已停用") {
-			t.Fatalf("停用分组发送 = %d %s", response.status, response.rawString())
-		}
-		if env.executor.callCount() != 0 {
-			t.Fatalf("停用分组不得派发上游")
-		}
-	})
-
-	t.Run("account 账户已停用", func(t *testing.T) {
+	t.Run("绑定账户已停用", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.deps.AccountLookup = mockAccountLookup{}
-		env.deps.ModelCatalog = &bindModeCatalog{}
+		env.deps.ModelCatalog = mockModelCatalog{}
 		createBoundConversation(t, env.fixture, prefix+"-adisabled", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeAccount, BindAccountID: "account-disabled", BindAccountNameSnapshot: "停用账户",
+			BindAccountID: "account-disabled", BindAccountNameSnapshot: "停用账户",
 		})
 		response := env.streamPost(prefix+"-adisabled", routeTestOwner, streamPayload("cmid-ad", "问题", "gpt-5"))
 		if response.status != http.StatusBadRequest || !strings.Contains(response.message(), "会话绑定的账户已停用") {
@@ -186,38 +134,36 @@ func TestStreamBindModeValidationFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("api_key 模式 Key 不存在", func(t *testing.T) {
+	t.Run("会话 Key 不存在", func(t *testing.T) {
 		env := newGenerationEnv(t)
+		env.deps.AccountLookup = mockAccountLookup{}
 		env.deps.ChatKeys = &owningChatKeys{}
-		env.deps.ModelCatalog = &bindModeCatalog{}
-		createBoundConversation(t, env.fixture, prefix+"-keymissing", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeAPIKey,
-		})
-		// 覆写鉴权 Key 为不存在的 Key（createBoundConversation 固定 chat_key_1）。
+		env.deps.ModelCatalog = mockModelCatalog{}
+		// 绑定账户合法，但鉴权主体（会话 api_key_id）指向不存在的 Key。
 		if _, err := env.fixture.store.CreateConversation(CreateConversationInput{
-			ID: prefix + "-keymissing2", SystemAccountID: routeTestOwner,
+			ID: prefix + "-keymissing", SystemAccountID: routeTestOwner,
 			APIKeyID: "missing_key", APIKeyNameSnapshot: "他人 Key",
-			BindMode:                BindModeAPIKey,
+			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
 			Now:                     env.fixture.nowISO,
 			MaxConversationsPerUser: 30,
 		}); err != nil {
 			t.Fatal(err)
 		}
-		response := env.streamPost(prefix+"-keymissing2", routeTestOwner, streamPayload("cmid-km", "问题", "gpt-5"))
+		response := env.streamPost(prefix+"-keymissing", routeTestOwner, streamPayload("cmid-km", "问题", "gpt-5"))
 		if response.status != http.StatusBadRequest || !strings.Contains(response.message(), "API Key 不存在或不可用") {
 			t.Fatalf("Key 不存在发送 = %d %s", response.status, response.rawString())
 		}
 	})
 
-	t.Run("group 模式专用 Key 停用后不能发送", func(t *testing.T) {
+	t.Run("专用 Key 停用后不能发送", func(t *testing.T) {
 		env := newGenerationEnv(t)
+		env.deps.AccountLookup = mockAccountLookup{}
 		env.deps.ChatKeys = &inactiveChatKeys{}
-		env.deps.GroupLookup = mockGroupLookup{}
-		env.deps.ModelCatalog = &bindModeCatalog{}
-		createBoundConversation(t, env.fixture, prefix+"-gkeydead", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeGroup, BindGroupID: "group-a", BindGroupNameSnapshot: "分组 A",
+		env.deps.ModelCatalog = mockModelCatalog{}
+		createBoundConversation(t, env.fixture, prefix+"-keydead", routeTestOwner, CreateConversationInput{
+			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
 		})
-		response := env.streamPost(prefix+"-gkeydead", routeTestOwner, streamPayload("cmid-gk", "问题", "gpt-5"))
+		response := env.streamPost(prefix+"-keydead", routeTestOwner, streamPayload("cmid-gk", "问题", "gpt-5"))
 		if response.status != http.StatusBadRequest || !strings.Contains(response.message(), "API Key 不存在或不可用") {
 			t.Fatalf("专用 Key 停用发送 = %d %s", response.status, response.rawString())
 		}
@@ -226,83 +172,39 @@ func TestStreamBindModeValidationFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("执行器未实现覆盖端口时 group 会话照常发送", func(t *testing.T) {
+	t.Run("执行器未实现覆盖端口时绑定会话照常发送", func(t *testing.T) {
 		env := newGenerationEnv(t)
-		env.deps.GroupLookup = mockGroupLookup{}
-		env.deps.ModelCatalog = &bindModeCatalog{}
+		env.deps.AccountLookup = mockAccountLookup{}
+		env.deps.ModelCatalog = mockModelCatalog{}
 		createBoundConversation(t, env.fixture, prefix+"-plain", routeTestOwner, CreateConversationInput{
-			BindMode: BindModeGroup, BindGroupID: "group-a", BindGroupNameSnapshot: "分组 A",
+			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
 		})
 		scriptChatCompletions(env)
 		response := env.streamPost(prefix+"-plain", routeTestOwner, streamPayload("cmid-plain", "问题", "gpt-5"))
 		if response.status != http.StatusOK {
-			t.Fatalf("plain executor group stream = %d %s", response.status, response.rawString())
+			t.Fatalf("plain executor stream = %d %s", response.status, response.rawString())
 		}
 		if env.executor.callCount() == 0 {
-			t.Fatalf("group 会话必须照常派发")
+			t.Fatalf("绑定会话必须照常派发")
 		}
 	})
 }
 
 // TestCompactionServiceBindsConversationDispatchTarget：压缩摘要的内部二次
-// 调用统一（设计 §6）——group/account 会话经 CompactionService 解析会话绑定
-// 目标并绑定到执行器视图；api_key/legacy 返回原执行器；会话缺失/读失败
-// fail-closed 返回跳过错误，不回落未 pin 执行器。
+// 调用统一——绑定账户会话经 CompactionService 解析会话绑定账户并绑定到执行
+// 器视图；未绑定会话不触碰端口（发送预检已拦截，服务层兜底）；会话缺失/读
+// 失败 fail-closed 返回跳过错误，不回落未 pin 执行器。
 func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
 	aware := &targetAwareExecutor{inner: &mockExecutor{}}
 
-	t.Run("group 会话绑定目标", func(t *testing.T) {
-		fixture := newChatFixture(t)
-		aware.mu.Lock()
-		aware.withCalls = 0
-		aware.mu.Unlock()
-		if _, err := fixture.store.CreateConversation(CreateConversationInput{
-			ID: "comp_conv_group", SystemAccountID: routeTestOwner, APIKeyID: "chat_key_1",
-			BindMode: BindModeGroup, BindGroupID: "group-b", BindGroupNameSnapshot: "分组 B",
-			Now: fixture.nowISO, MaxConversationsPerUser: 30,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		service := NewCompactionService(fixture.store, aware, func(text string) int { return 1 }, func() string { return fixture.nowISO })
-		executor, executorErr := service.dispatchExecutor(CompactionInput{ConversationID: "comp_conv_group", SystemAccountID: routeTestOwner})
-		if executorErr != nil || executor != GenerationExecutor(aware) {
-			t.Fatalf("group 会话压缩必须绑定到覆盖执行器视图: %v", executorErr)
-		}
-		if withCalls, mode, groupID, accountID := aware.snapshot(); withCalls != 1 || mode != "group" || groupID != "group-b" || accountID != "" {
-			t.Fatalf("compaction target = calls:%d %s/%s/%s", withCalls, mode, groupID, accountID)
-		}
-	})
-
-	t.Run("api_key 会话不触碰端口", func(t *testing.T) {
-		fixture := newChatFixture(t)
-		aware.mu.Lock()
-		aware.withCalls = 0
-		aware.mu.Unlock()
-		if _, err := fixture.store.CreateConversation(CreateConversationInput{
-			ID: "comp_conv_key", SystemAccountID: routeTestOwner, APIKeyID: "chat_key_1",
-			BindMode: BindModeAPIKey,
-			Now:      fixture.nowISO, MaxConversationsPerUser: 30,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		service := NewCompactionService(fixture.store, aware, func(text string) int { return 1 }, func() string { return fixture.nowISO })
-		executor, executorErr := service.dispatchExecutor(CompactionInput{ConversationID: "comp_conv_key", SystemAccountID: routeTestOwner})
-		if executorErr != nil || executor != GenerationExecutor(aware) {
-			t.Fatalf("api_key 会话压缩必须返回原执行器: %v", executorErr)
-		}
-		if withCalls, _, _, _ := aware.snapshot(); withCalls != 0 {
-			t.Fatalf("api_key 会话不得触碰覆盖端口, calls=%d", withCalls)
-		}
-	})
-
-	t.Run("account 会话 GroupID 为空是生产形状", func(t *testing.T) {
+	t.Run("绑定账户会话绑定目标", func(t *testing.T) {
 		fixture := newChatFixture(t)
 		aware.mu.Lock()
 		aware.withCalls = 0
 		aware.mu.Unlock()
 		if _, err := fixture.store.CreateConversation(CreateConversationInput{
 			ID: "comp_conv_account", SystemAccountID: routeTestOwner, APIKeyID: "chat_key_1",
-			BindMode: BindModeAccount, BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
+			BindAccountID: "account-1", BindAccountNameSnapshot: "账户 account-1",
 			Now: fixture.nowISO, MaxConversationsPerUser: 30,
 		}); err != nil {
 			t.Fatal(err)
@@ -310,11 +212,31 @@ func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
 		service := NewCompactionService(fixture.store, aware, func(text string) int { return 1 }, func() string { return fixture.nowISO })
 		executor, executorErr := service.dispatchExecutor(CompactionInput{ConversationID: "comp_conv_account", SystemAccountID: routeTestOwner})
 		if executorErr != nil || executor != GenerationExecutor(aware) {
-			t.Fatalf("account 会话压缩必须绑定到覆盖执行器视图: %v", executorErr)
+			t.Fatalf("绑定会话压缩必须绑定到覆盖执行器视图: %v", executorErr)
 		}
-		// 生产形状：bind_group_id 恒空，承载分组由 /v1 消费侧解析。
-		if withCalls, mode, groupID, accountID := aware.snapshot(); withCalls != 1 || mode != "account" || groupID != "" || accountID != "account-1" {
-			t.Fatalf("compaction account target = calls:%d %s/%s/%s", withCalls, mode, groupID, accountID)
+		if withCalls, accountID := aware.snapshot(); withCalls != 1 || accountID != "account-1" {
+			t.Fatalf("compaction target = calls:%d %s", withCalls, accountID)
+		}
+	})
+
+	t.Run("未绑定会话不触碰端口", func(t *testing.T) {
+		fixture := newChatFixture(t)
+		aware.mu.Lock()
+		aware.withCalls = 0
+		aware.mu.Unlock()
+		if _, err := fixture.store.CreateConversation(CreateConversationInput{
+			ID: "comp_conv_unbound", SystemAccountID: routeTestOwner, APIKeyID: "chat_key_1",
+			Now: fixture.nowISO, MaxConversationsPerUser: 30,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		service := NewCompactionService(fixture.store, aware, func(text string) int { return 1 }, func() string { return fixture.nowISO })
+		executor, executorErr := service.dispatchExecutor(CompactionInput{ConversationID: "comp_conv_unbound", SystemAccountID: routeTestOwner})
+		if executorErr != nil || executor != GenerationExecutor(aware) {
+			t.Fatalf("未绑定会话压缩必须返回原执行器: %v", executorErr)
+		}
+		if withCalls, _ := aware.snapshot(); withCalls != 0 {
+			t.Fatalf("未绑定会话不得触碰覆盖端口, calls=%d", withCalls)
 		}
 	})
 
@@ -328,7 +250,7 @@ func TestCompactionServiceBindsConversationDispatchTarget(t *testing.T) {
 		if executorErr == nil || executorErr.Error() != "chat_context_target_unavailable" || executor != nil {
 			t.Fatalf("会话缺失必须 fail-closed 返回跳过错误: executor=%v err=%v", executor, executorErr)
 		}
-		if withCalls, _, _, _ := aware.snapshot(); withCalls != 0 {
+		if withCalls, _ := aware.snapshot(); withCalls != 0 {
 			t.Fatalf("会话缺失不得触碰覆盖端口, calls=%d", withCalls)
 		}
 	})
@@ -380,23 +302,23 @@ func TestCompactionSummarizePageSkipsDispatchWhenTargetUnavailable(t *testing.T)
 	}
 }
 
-// TestStreamBindModeLegacyConversationUnchanged 钉住存量会话（bind_mode 为空
-// = api_key 语义）发送行为不变：走 Key 视图分组，不产生覆盖目标。
-func TestStreamBindModeLegacyConversationUnchanged(t *testing.T) {
+// TestStreamUnboundConversationRejected 钉住未选账户会话的发送行为：发送预检
+// 400 chat_account_required，不产生覆盖目标、不派发上游。
+func TestStreamUnboundConversationRejected(t *testing.T) {
 	env := newGenerationEnv(t)
 	aware := &targetAwareExecutor{inner: env.executor}
 	env.deps.Executor = aware
-	env.fixture.createConversation("legacy_stream_conv", routeTestOwner)
+	env.fixture.createConversation("unbound_stream_conv", routeTestOwner)
 	scriptChatCompletions(env)
-	response := env.streamPost("legacy_stream_conv", routeTestOwner, streamPayload("cmid-legacy", "问题", "gpt-5"))
-	if response.status != http.StatusOK {
-		t.Fatalf("legacy stream = %d %s", response.status, response.rawString())
+	response := env.streamPost("unbound_stream_conv", routeTestOwner, streamPayload("cmid-unbound", "问题", "gpt-5"))
+	if response.status != http.StatusBadRequest || response.code() != "chat_account_required" {
+		t.Fatalf("unbound stream = %d %s", response.status, response.rawString())
 	}
-	if withCalls, _, _, _ := aware.snapshot(); withCalls != 0 {
-		t.Fatalf("legacy 会话不得触碰覆盖端口，calls=%d", withCalls)
+	if withCalls, _ := aware.snapshot(); withCalls != 0 {
+		t.Fatalf("未绑定会话不得触碰覆盖端口，calls=%d", withCalls)
 	}
-	if !strings.Contains(response.rawString(), "message.completed") {
-		t.Fatalf("legacy stream 未完成: %s", response.rawString())
+	if env.executor.callCount() != 0 {
+		t.Fatalf("未绑定会话不得派发上游")
 	}
 	_ = context.Background
 }

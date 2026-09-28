@@ -121,37 +121,6 @@ type ChatTransportModelMapping struct {
 	UpstreamEndpointFamily string `json:"upstreamEndpointFamily,omitempty"`
 }
 
-// resolveChatSupportedProtocols mirrors resolveChatSupportedProtocols.
-func resolveChatSupportedProtocols(groupIDs []string, model string, loadAccounts func(groupID, model, endpointFamily string) []ChatTransportAccount) []ChatTransportProtocol {
-	protocolOrder := []ChatTransportProtocol{ProtocolChatCompletions, ProtocolResponses}
-	supported := map[ChatTransportProtocol]bool{}
-	groups := uniqueStrings(groupIDs)
-	for _, groupID := range groups {
-		for _, protocol := range protocolOrder {
-			if supported[protocol] {
-				continue
-			}
-			accounts := loadAccounts(groupID, model, string(protocol))
-			for _, account := range accounts {
-				if chatTransportAccountSupportsProtocol(account, model, protocol) {
-					supported[protocol] = true
-					break
-				}
-			}
-		}
-		if supported[ProtocolChatCompletions] && supported[ProtocolResponses] {
-			break
-		}
-	}
-	out := []ChatTransportProtocol{}
-	for _, protocol := range protocolOrder {
-		if supported[protocol] {
-			out = append(out, protocol)
-		}
-	}
-	return out
-}
-
 // chatTransportAccountSupportsProtocol mirrors chatTransportAccountSupportsProtocol.
 func chatTransportAccountSupportsProtocol(account ChatTransportAccount, model string, protocol ChatTransportProtocol) bool {
 	var mapping *ChatTransportModelMapping

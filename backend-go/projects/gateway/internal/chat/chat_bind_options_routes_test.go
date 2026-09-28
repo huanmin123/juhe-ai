@@ -1,9 +1,10 @@
 package chat
 
-// 新建会话绑定下拉（GET /conversation-bind-options）的路由级覆盖：登录态
-// 200 信封精确形状、查询端口未接线的 500 臂、未登录 401 臂，以及数据范围
-// （ChatBindScope）两臂——普通用户传 viewer scope 且拿到用户集合，
-// admin/super_admin 拿到全量集合。Mock 风格与 chat_bind_modes_test.go 一致。
+// GET /my-chat/accounts（AI 问答会话账户唯一绑定设计 §5.2，替代已退场的
+// GET /conversation-bind-options）的路由级覆盖：登录态 200 信封精确形状、查询
+// 端口未接线的 500 臂、未登录 401 臂，以及数据范围（ChatBindScope）两臂——
+// 普通用户传 viewer scope 且拿到用户集合，admin/super_admin 拿到全量集合；
+// 旧 bind-options 端点退场为 404。Mock 风格与 chat_bind_modes_test.go 一致。
 
 import (
 	"context"
@@ -17,99 +18,77 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
 
-// mockGroupOptionsLookup 返回确定性的启用分组最小摘要：按 IsAdmin 臂返回不
-// 同集合（admin=管理集合，普通用户=用户集合），seen 非 nil 时记录收到的
-// scope。
-type mockGroupOptionsLookup struct {
-	seen *bindScopeRecorder
-}
-
-func (m mockGroupOptionsLookup) ListChatGroupOptions(_ context.Context, scope ChatBindScope) ([]ChatBindOption, error) {
-	if m.seen != nil {
-		m.seen.record(scope, "")
-	}
-	if scope.IsAdmin {
-		return []ChatBindOption{{ID: "g-admin", Name: "管理分组"}}, nil
-	}
-	return []ChatBindOption{{ID: "g1", Name: "分组一"}, {ID: "g2", Name: "分组二"}}, nil
-}
-
-// mockAccountOptionsLookup 返回确定性的可绑定账户最小摘要：按 IsAdmin 臂返
-// 回不同集合，seen 非 nil 时记录收到的 scope。
+// mockAccountOptionsLookup 返回确定性的可派发账户摘要（id/name/providerCode/
+// status）：按 IsAdmin 臂返回不同集合，seen 非 nil 时记录收到的 scope。
 type mockAccountOptionsLookup struct {
 	seen *bindScopeRecorder
 }
 
-func (m mockAccountOptionsLookup) ListChatAccountOptions(_ context.Context, scope ChatBindScope) ([]ChatBindOption, error) {
+func (m mockAccountOptionsLookup) ListChatAccountOptions(_ context.Context, scope ChatBindScope) ([]ChatAccountOption, error) {
 	if m.seen != nil {
 		m.seen.record(scope, "")
 	}
 	if scope.IsAdmin {
-		return []ChatBindOption{{ID: "a-admin", Name: "管理账户"}}, nil
+		return []ChatAccountOption{{ID: "a-admin", Name: "管理账户", ProviderCode: "openai", Status: "active"}}, nil
 	}
-	return []ChatBindOption{{ID: "a1", Name: "账户一"}}, nil
+	return []ChatAccountOption{{ID: "a1", Name: "账户一", ProviderCode: "openai", Status: "active"}}, nil
 }
 
-func TestConversationBindOptionsRoutes(t *testing.T) {
+func TestMyChatAccountsRoute(t *testing.T) {
 	env := newGenerationEnv(t)
-	env.deps.GroupOptionsLookup = mockGroupOptionsLookup{}
 	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
-	response := env.do("GET", "/__aisys__/api/my-chat/conversation-bind-options", routeTestOwner, "")
+	response := env.do("GET", "/__aisys__/api/my-chat/accounts", routeTestOwner, "")
 	if response.status != http.StatusOK {
-		t.Fatalf("bind options = %d %s", response.status, response.rawString())
+		t.Fatalf("accounts = %d %s", response.status, response.rawString())
 	}
-	// 最小投影信封的精确形状：groups/accounts 恒为数组，元素只含 id/name。
-	want := `{"data":{"groups":[{"id":"g1","name":"分组一"},{"id":"g2","name":"分组二"}],"accounts":[{"id":"a1","name":"账户一"}]}}`
+	// 最小投影信封的精确形状：accounts 恒为数组，元素只含
+	// id/name/providerCode/status。
+	want := `{"data":[{"id":"a1","name":"账户一","providerCode":"openai","status":"active"}]}`
 	if response.rawString() != want {
-		t.Fatalf("bind options body = %s, want %s", response.rawString(), want)
+		t.Fatalf("accounts body = %s, want %s", response.rawString(), want)
 	}
 }
 
-// TestConversationBindOptionsScopeArms 覆盖下拉端点的数据范围两臂：普通用户
-// 把 viewer scope（IsAdmin=false）传给查询端口并拿到用户集合；admin /
-// super_admin 把 IsAdmin=true scope 传给查询端口并拿到全量集合。
-func TestConversationBindOptionsScopeArms(t *testing.T) {
+// TestMyChatAccountsScopeArms 覆盖账户列表端点的数据范围两臂：普通用户把
+// viewer scope（IsAdmin=false）传给查询端口并拿到用户集合；admin/super_admin
+// 把 IsAdmin=true scope 传给查询端口并拿到全量集合。
+func TestMyChatAccountsScopeArms(t *testing.T) {
 	t.Run("普通用户传 viewer scope 且拿到用户集合", func(t *testing.T) {
 		env := newGenerationEnv(t)
-		groupSeen := &bindScopeRecorder{}
 		accountSeen := &bindScopeRecorder{}
-		env.deps.GroupOptionsLookup = mockGroupOptionsLookup{seen: groupSeen}
 		env.deps.AccountOptionsLookup = mockAccountOptionsLookup{seen: accountSeen}
-		response := env.do("GET", "/__aisys__/api/my-chat/conversation-bind-options", routeTestOwner, "")
+		response := env.do("GET", "/__aisys__/api/my-chat/accounts", routeTestOwner, "")
 		if response.status != http.StatusOK {
-			t.Fatalf("user bind options = %d %s", response.status, response.rawString())
+			t.Fatalf("user accounts = %d %s", response.status, response.rawString())
 		}
 		userScope := ChatBindScope{ViewerID: routeTestOwner, IsAdmin: false}
-		for name, seen := range map[string]*bindScopeRecorder{"groups": groupSeen, "accounts": accountSeen} {
-			scopes, _ := seen.snapshot()
-			if len(scopes) != 1 || scopes[0] != userScope {
-				t.Fatalf("%s 查询收到的 scope = %v, want [%v]", name, scopes, userScope)
-			}
+		scopes, _ := accountSeen.snapshot()
+		if len(scopes) != 1 || scopes[0] != userScope {
+			t.Fatalf("查询收到的 scope = %v, want [%v]", scopes, userScope)
 		}
-		want := `{"data":{"groups":[{"id":"g1","name":"分组一"},{"id":"g2","name":"分组二"}],"accounts":[{"id":"a1","name":"账户一"}]}}`
+		want := `{"data":[{"id":"a1","name":"账户一","providerCode":"openai","status":"active"}]}`
 		if response.rawString() != want {
-			t.Fatalf("user bind options body = %s, want %s", response.rawString(), want)
+			t.Fatalf("user accounts body = %s, want %s", response.rawString(), want)
 		}
 	})
 
 	t.Run("admin 与 super_admin 拿到全量集合", func(t *testing.T) {
 		for _, role := range []string{"admin", "super_admin"} {
 			env := newBindOptionsEnvWithRole(t, role)
-			env.deps.GroupOptionsLookup = mockGroupOptionsLookup{}
 			env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
-			response := env.do("GET", "/__aisys__/api/my-chat/conversation-bind-options", routeTestOwner, "")
+			response := env.do("GET", "/__aisys__/api/my-chat/accounts", routeTestOwner, "")
 			if response.status != http.StatusOK {
-				t.Fatalf("%s bind options = %d %s", role, response.status, response.rawString())
+				t.Fatalf("%s accounts = %d %s", role, response.status, response.rawString())
 			}
-			want := `{"data":{"groups":[{"id":"g-admin","name":"管理分组"}],"accounts":[{"id":"a-admin","name":"管理账户"}]}}`
+			want := `{"data":[{"id":"a-admin","name":"管理账户","providerCode":"openai","status":"active"}]}`
 			if response.rawString() != want {
-				t.Fatalf("%s bind options body = %s, want %s", role, response.rawString(), want)
+				t.Fatalf("%s accounts body = %s, want %s", role, response.rawString(), want)
 			}
 		}
 	})
 }
 
-// newBindOptionsEnvWithRole 构建以指定角色登录的绑定下拉测试环境：生产
+// newBindOptionsEnvWithRole 构建以指定角色登录的账户列表测试环境：生产
 // RequireSession 在 Register 时捕获闭包、newGenerationEnv 的同名中间件恒为
 // user 角色，无法事后换角色，故本地重装同一形状的登录中间件。
 func newBindOptionsEnvWithRole(t *testing.T, role string) *generationEnv {
@@ -149,49 +128,33 @@ func newBindOptionsEnvWithRole(t *testing.T, role string) *generationEnv {
 	}
 }
 
-func TestConversationBindOptionsUnwiredArms(t *testing.T) {
-	prefix := "/__aisys__/api/my-chat"
-	cases := []struct {
-		name           string
-		groupsLookup   ChatGroupOptionsLookup
-		accountsLookup ChatAccountOptionsLookup
-	}{
-		{name: "两个查询端口均未接线"},
-		{name: "分组查询端口未接线", accountsLookup: mockAccountOptionsLookup{}},
-		{name: "账户查询端口未接线", groupsLookup: mockGroupOptionsLookup{}},
+func TestMyChatAccountsUnwiredArm(t *testing.T) {
+	env := newGenerationEnv(t)
+	response := env.do("GET", "/__aisys__/api/my-chat/accounts", routeTestOwner, "")
+	if response.status != http.StatusInternalServerError || response.code() != "internal_generation_failed" {
+		t.Fatalf("unwired accounts = %d %s", response.status, response.rawString())
 	}
-	for _, item := range cases {
-		env := newGenerationEnv(t)
-		env.deps.GroupOptionsLookup = item.groupsLookup
-		env.deps.AccountOptionsLookup = item.accountsLookup
-		response := env.do("GET", prefix+"/conversation-bind-options", routeTestOwner, "")
-		if response.status != http.StatusInternalServerError || response.code() != "internal_generation_failed" {
-			t.Fatalf("%s = %d %s", item.name, response.status, response.rawString())
-		}
-		// DomainError 明细沿 writeChatRouteError 的既有 500 语义附带在"详情"中。
-		if !strings.Contains(response.message(), "绑定选项列表暂不可用，请稍后重试") {
-			t.Fatalf("%s message = %q, want 含 %q", item.name, response.message(), "绑定选项列表暂不可用，请稍后重试")
-		}
+	// DomainError 明细沿 writeChatRouteError 的既有 500 语义附带在"详情"中。
+	if !strings.Contains(response.message(), "账户列表暂不可用，请稍后重试") {
+		t.Fatalf("message = %q, want 含 %q", response.message(), "账户列表暂不可用，请稍后重试")
 	}
 }
 
-func TestConversationBindOptionsUnauthenticated(t *testing.T) {
+func TestMyChatAccountsUnauthenticated(t *testing.T) {
 	env := newGenerationEnv(t)
-	env.deps.GroupOptionsLookup = mockGroupOptionsLookup{}
 	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
-	unauthorized := env.do("GET", "/__aisys__/api/my-chat/conversation-bind-options", "", "")
+	unauthorized := env.do("GET", "/__aisys__/api/my-chat/accounts", "", "")
 	if unauthorized.status != http.StatusUnauthorized || unauthorized.message() != "请先登录" {
 		t.Fatalf("未登录 = %d %s", unauthorized.status, unauthorized.rawString())
 	}
 }
 
-// TestConversationBindOptionsNoStoreHeaders：下拉内容随数据范围实时变化，
-// 成功响应必须携带 no-store（与 accounts 包 options 口径一致）。
-func TestConversationBindOptionsNoStoreHeaders(t *testing.T) {
+// TestMyChatAccountsNoStoreHeaders：账户列表内容随数据范围实时变化，成功
+// 响应必须携带 no-store（与 accounts 包 options 口径一致）。
+func TestMyChatAccountsNoStoreHeaders(t *testing.T) {
 	env := newGenerationEnv(t)
-	env.deps.GroupOptionsLookup = mockGroupOptionsLookup{}
 	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
-	request, err := http.NewRequest(http.MethodGet, env.server.URL+"/__aisys__/api/my-chat/conversation-bind-options", nil)
+	request, err := http.NewRequest(http.MethodGet, env.server.URL+"/__aisys__/api/my-chat/accounts", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,12 +165,23 @@ func TestConversationBindOptionsNoStoreHeaders(t *testing.T) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("bind options = %d", response.StatusCode)
+		t.Fatalf("accounts = %d", response.StatusCode)
 	}
 	if got := response.Header.Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want %q", got, "no-store")
 	}
 	if got := response.Header.Get("Pragma"); got != "no-cache" {
 		t.Fatalf("Pragma = %q, want %q", got, "no-cache")
+	}
+}
+
+// TestConversationBindOptionsRetired：旧绑定下拉端点随三种绑定模式退场（设计
+// §9.3），不再注册。
+func TestConversationBindOptionsRetired(t *testing.T) {
+	env := newGenerationEnv(t)
+	env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
+	response := env.do("GET", "/__aisys__/api/my-chat/conversation-bind-options", routeTestOwner, "")
+	if response.status != http.StatusNotFound {
+		t.Fatalf("retired bind options = %d %s", response.status, response.rawString())
 	}
 }

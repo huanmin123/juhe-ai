@@ -74,15 +74,13 @@ func TestTransportPlumbingW3(t *testing.T) {
 		t.Fatalf("chat 协议应保留原文: %q", got)
 	}
 	groups := []string{"g1", "g1", "g2", ""}
-	loader := func(groupID, model, endpointFamily string) []ChatTransportAccount {
-		if groupID == "g1" {
-			return []ChatTransportAccount{{ID: "a1", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: model}}}}
-		}
-		return []ChatTransportAccount{{ID: "a2", SupportedEndpointModes: []string{"responses_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: model}}}}
-	}
-	protocols := resolveChatSupportedProtocols(groups, "gpt-5", loader)
+	_ = groups
+	protocols := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{accounts: []ChatTransportAccount{
+		{ID: "a1", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
+		{ID: "a2", SupportedEndpointModes: []string{"responses_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
+	}}, "o", "gpt-5")
 	if len(protocols) != 2 || protocols[0] != ProtocolChatCompletions || protocols[1] != ProtocolResponses {
-		t.Fatalf("resolveChatSupportedProtocols = %v", protocols)
+		t.Fatalf("scopeSupportedProtocols = %v", protocols)
 	}
 	responsesParams := transportGenerationParameters(ProtocolResponses, &ChatGenerationParameters{Temperature: floatPtrW3(0.5), MaxOutputTokens: floatPtrW3(100), Seed: floatPtrW3(1)})
 	if responsesParams["max_output_tokens"] != float64(100) || responsesParams["temperature"] != 0.5 || hasKeyW3(responsesParams, "seed") || hasKeyW3(responsesParams, "frequency_penalty") {

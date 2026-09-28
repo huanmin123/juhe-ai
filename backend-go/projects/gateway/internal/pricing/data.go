@@ -1,6 +1,9 @@
 package pricing
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // rawModel mirrors provider-driver.types RawModelPricing — the LiteLLM/
 // model-price-repo style snapshot rows the Node *.data.ts files carry. Token
@@ -57,7 +60,11 @@ type rawModel struct {
 	SupportedAPIProtocols []string
 	InputModalities       []string
 	OutputModalities      []string
-	SupportedTools        []string
+	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（AI问答工具体系与主子模型
+	// 设计 6.4）：键为该行 SupportedAPIProtocols 的现有枚举值，值为该协议下
+	// 可用的工具集。hosted 工具只在能执行它的协议下声明；一维 SupportedTools
+	// 快照字段已退场，目录投影的一维值由并集派生（UnionToolsByProtocol）。
+	SupportedToolsByProtocol map[string][]string
 
 	SupportsPromptCaching     bool
 	SupportedServiceTiers     []string
@@ -81,6 +88,78 @@ type rawModel struct {
 func perToken(usdPer1M float64) *float64 {
 	out := usdPer1M / 1_000_000
 	return &out
+}
+
+// toolsByProtocol 按静态快照的统一拆分口径，把一行的一维工具集分配到其
+// SupportedAPIProtocols 枚举下（6.4「协议 × 工具」矩阵，不新增协议枚举）：
+//   - chat_completions：恒只携带 function_calling（该行声明了它才出现）；
+//   - responses / messages / generate_content / stream_generate_content /
+//     interactions：hosted/原生工具的归属协议，携带完整声明工具集；
+//   - 其余协议（count_tokens / message_token_counting / embed_content /
+//     completions / images 等计数、嵌入、遗留与媒体协议）：不执行对话工具，
+//     不出现键。
+//
+// 空 tools 返回 nil（行未声明任何工具）。
+func toolsByProtocol(protocols, tools []string) map[string][]string {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := map[string][]string{}
+	for _, protocol := range protocols {
+		switch protocol {
+		case "chat_completions":
+			for _, tool := range tools {
+				if tool == "function_calling" {
+					out[protocol] = []string{"function_calling"}
+					break
+				}
+			}
+		case "responses", "messages", "generate_content", "stream_generate_content", "interactions":
+			out[protocol] = tools
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// UnionToolsByProtocol 派生二维矩阵的一维并集（目录投影过渡期保留的
+// supportedTools 字段取值口径）：按键字典序遍历（确定性），按各协议列表顺序
+// 追加并去重。空/nil 矩阵返回 nil。
+func UnionToolsByProtocol(toolsByProtocol map[string][]string) []string {
+	if len(toolsByProtocol) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(toolsByProtocol))
+	for key := range toolsByProtocol {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	seen := map[string]bool{}
+	union := []string{}
+	for _, key := range keys {
+		for _, tool := range toolsByProtocol[key] {
+			if seen[tool] {
+				continue
+			}
+			seen[tool] = true
+			union = append(union, tool)
+		}
+	}
+	return union
+}
+
+// CopyToolsByProtocol 深拷贝矩阵，隔离快照共享的列表底层数组；nil 保持 nil。
+func CopyToolsByProtocol(toolsByProtocol map[string][]string) map[string][]string {
+	if toolsByProtocol == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(toolsByProtocol))
+	for protocol, tools := range toolsByProtocol {
+		out[protocol] = append([]string(nil), tools...)
+	}
+	return out
 }
 
 // providerEntry mirrors one ModelPricingProviderDriver registration.
