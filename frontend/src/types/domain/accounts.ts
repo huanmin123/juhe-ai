@@ -464,6 +464,8 @@ export interface AccountSummary {
   authorizationLimits?: RequestQuotaLimits
   authorizationQuotaExceeded?: boolean
   authorizationSources?: AuthorizationSourceSummary[]
+  /** 运行态锁死状态只读投影（只读展示用，不作为配置提交）。 */
+  lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
   // List/options endpoints may return only the permissions relevant to that action.
   permissions?: Partial<ResourcePermissions>
   authorizationUsageAvailable?: boolean

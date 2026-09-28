@@ -21,12 +21,16 @@
       </template>
       <span class="status-tag-group">
         <StatusTag class="status-tag" :color="accountStatusColor(account)" :label="accountStatusText(account)" />
+        <StatusTag v-if="lockTag" class="status-tag priority-tag" :color="lockTag.color" :label="lockTag.label" />
         <StatusTag v-if="account.superPriorityEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'gold' : 'default'" :label="dispatchFlagActive ? '超级优先' : '超级优先暂停'" />
         <StatusTag v-if="account.fallbackEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'purple' : 'default'" :label="dispatchFlagActive ? '降级备用' : '备用暂停'" />
       </span>
     </a-tooltip>
     <span v-else class="status-tag-group">
       <StatusTag class="status-tag" :color="accountStatusColor(account)" :label="accountStatusText(account)" />
+      <a-tooltip v-if="lockTag" :title="lockTooltip">
+        <StatusTag class="status-tag priority-tag" :color="lockTag.color" :label="lockTag.label" />
+      </a-tooltip>
       <a-tooltip v-if="account.superPriorityEnabled" :title="superPriorityTooltip">
         <StatusTag class="status-tag priority-tag" :color="dispatchFlagActive ? 'gold' : 'default'" :label="dispatchFlagActive ? '超级优先' : '超级优先暂停'" />
       </a-tooltip>
@@ -44,7 +48,7 @@ import { CopyOutlined } from '@ant-design/icons-vue'
 
 import StatusTag from '@/components/StatusTag.vue'
 import type { AccountListItem } from '@/types/domain'
-import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from './accountFormatters'
+import { accountLockTag, accountLockTooltipLines, accountStatusColor, accountStatusText, accountStatusTooltipLines } from './accountFormatters'
 import { accountStatusTooltipTraceId } from './accountStatusPresentation'
 
 const props = defineProps<{
@@ -60,6 +64,9 @@ const fallbackTooltip = computed(() => dispatchFlagActive.value
   ? '降级备用：仅在同分组其他可用账户都不可用时使用'
   : '降级备用已保留；账户恢复可调度并参与调度后自动生效'
 )
+
+const lockTag = computed(() => accountLockTag(props.account))
+const lockTooltip = computed(() => accountLockTooltipLines(props.account)[0])
 
 const tooltipLines = computed(() => {
   return accountStatusTooltipLines(props.account)

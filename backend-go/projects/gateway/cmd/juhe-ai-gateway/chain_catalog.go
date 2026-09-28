@@ -18,8 +18,15 @@ package main
 // （internal/providers ApplyBuiltInStaticDerivedFields），chat 面目录的
 // supportedTools / inputModalities / outputModalities 恒空，导致 AI 问答
 // supportsWebSearch 恒 false、web_search 等内置工具对 GPT 模型永不注入。
-// 两侧现在共同调用 providers.ResolveBuiltInStaticDerivedCapabilities，
-// custom 行与管理面现状对齐不做兜底。
+// 两侧现在共同调用 providers.ResolveBuiltInStaticDerivedCapabilities。
+//
+// 2026-09-28 修复（BUG-0226）：custom（global/personal）目录行按 scope 优先级
+// 整行替换内置行后，custom_provider_models 没有能力三列，替换后目录里该模型
+// 的 supportedTools / inputModalities / outputModalities 恒空（web_search 永不
+// 注入、带图输入被 400、协议偏好退化）。现按文档契约（AI问答设计 8.6
+// 「custom 目录行能力继承」）在合并后对 custom 来源行按同一合并键回填空能力
+// 键（仅填空，providers.InheritBuiltinCatalogCapabilities 与管理面同源）；
+// 全新自定义模型（内置无对应行）保持空，不用静态定价表的别名/前缀匹配回填。
 
 import (
 	"context"
@@ -164,6 +171,7 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 	}
 	now := s.now().UTC().Format("2006-01-02")
 	items := []gatewayruntimecache.ProviderModelCatalogItem{}
+	builtinRows := []gatewayruntimecache.ProviderModelCatalogItem{}
 
 	builtInCodes := chainCatalogBuiltInSourceProviderCodes(input.ProviderCode, sourceCodes)
 	if len(builtInCodes) > 0 {
@@ -176,6 +184,7 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 		if err != nil {
 			return nil, err
 		}
+		builtinRows = append(builtinRows, scanned...)
 		items = append(items, scanned...)
 	}
 
@@ -192,6 +201,7 @@ func (s *chainCatalogSource) ListProviderModelCatalog(ctx context.Context, input
 
 	preserveProviderIdentity := chainNormalizeProviderToken(input.ProviderCode) == chainCatalogHybridProviderCode
 	merged := chainMergeCatalogItems(items, preserveProviderIdentity)
+	chainInheritCustomCatalogCapabilities(merged, builtinRows, preserveProviderIdentity)
 	out := make([]gatewayruntimecache.ProviderModelCatalogItem, 0, len(merged))
 	for _, item := range merged {
 		if !chainIsSupportedCatalogModel(item) {
@@ -434,6 +444,70 @@ func chainCatalogScopePriority(scope string) int {
 	}
 }
 
+// chainInheritCustomCatalogCapabilities 应用 custom 目录行能力继承（BUG-0226，
+// 契约见 AI问答设计 8.6）：合并胜出的 custom（global/personal）行按
+// chainMergeCatalogItems 的同一合并键（hybrid 下 provider+model，其余裸 model）
+// 查找内置扫描行（已过 decorateBuiltinStaticDerivedCapabilities 静态兜底），
+// 仅填空 supportedTools / inputModalities / outputModalities；全新自定义模型
+// （内置无对应行）保持空，不退回静态定价表别名/前缀匹配。回填发生在缓存
+// 写入前，缓存命中路径同样携带继承值；解析本体与管理面同源
+// （providers.InheritBuiltinCatalogCapabilities）。
+func chainInheritCustomCatalogCapabilities(merged, builtinRows []gatewayruntimecache.ProviderModelCatalogItem, preserveProviderIdentity bool) {
+	if len(merged) == 0 || len(builtinRows) == 0 {
+		return
+	}
+	type key struct {
+		provider string
+		model    string
+	}
+	builtinByKey := make(map[key]gatewayruntimecache.ProviderModelCatalogItem, len(builtinRows))
+	for _, item := range builtinRows {
+		model := strings.TrimSpace(item.Model)
+		if model == "" {
+			continue
+		}
+		itemKey := key{model: model}
+		if preserveProviderIdentity {
+			itemKey.provider = chainNormalizeProviderToken(item.ProviderCode)
+		}
+		// 同优先级内置行后行胜出，与 chainMergeCatalogItems 的决胜语义一致。
+		builtinByKey[itemKey] = item
+	}
+	for index := range merged {
+		item := &merged[index]
+		if item.Scope != "global" && item.Scope != "personal" {
+			continue
+		}
+		model := strings.TrimSpace(item.Model)
+		if model == "" {
+			continue
+		}
+		itemKey := key{model: model}
+		if preserveProviderIdentity {
+			itemKey.provider = chainNormalizeProviderToken(item.ProviderCode)
+		}
+		builtin, ok := builtinByKey[itemKey]
+		if !ok {
+			continue
+		}
+		resolved := providers.InheritBuiltinCatalogCapabilities(
+			providers.CustomCatalogCapabilityKeys{
+				SupportedTools:   item.SupportedTools,
+				InputModalities:  item.InputModalities,
+				OutputModalities: item.OutputModalities,
+			},
+			providers.CustomCatalogCapabilityKeys{
+				SupportedTools:   builtin.SupportedTools,
+				InputModalities:  builtin.InputModalities,
+				OutputModalities: builtin.OutputModalities,
+			},
+		)
+		item.SupportedTools = resolved.SupportedTools
+		item.InputModalities = resolved.InputModalities
+		item.OutputModalities = resolved.OutputModalities
+	}
+}
+
 // chainIsSupportedCatalogModel mirrors isSupportedCatalogModel.
 func chainIsSupportedCatalogModel(item gatewayruntimecache.ProviderModelCatalogItem) bool {
 	mode := ""
@@ -620,7 +694,9 @@ func decorateBuiltinCatalogRow(row map[string]any) {
 // chat 面（AI 问答模型选项 / toolCapabilities / 模型能力详情 / 协议偏好）此前恒空，
 // 导致 supportsWebSearch 恒 false、web_search 等内置工具永不注入。
 // 放置点在目录装载（gatewayruntimecache 缓存写入前），缓存命中路径因此同样
-// 携带兜底值。custom（custom_provider_models）行与管理面现状对齐：不做兜底。
+// 携带兜底值。custom（custom_provider_models）行不做静态表兜底（行装饰层无法
+// 判定内置对应行）；其能力按 BUG-0226 契约在合并后经
+// chainInheritCustomCatalogCapabilities 从被覆盖内置行继承（仅填空）。
 // 行自身对这三个能力键没有声明（列清单不含它们），空值一律按静态快照填充。
 func decorateBuiltinStaticDerivedCapabilities(row map[string]any) {
 	resolved := providers.ResolveBuiltInStaticDerivedCapabilities(
@@ -684,7 +760,9 @@ func catalogRowInt64Ptr(value any) *int64 {
 
 // decorateCustomCatalogRow applies the toCustomCatalogItem derivations:
 // source custom-global/custom-personal, supportsPromptCaching from a present
-// cachedInputUsdPer1M and supportsServiceTier from the tier list.
+// cachedInputUsdPer1M and supportsServiceTier from the tier list. 能力三键不在此
+// 装饰：custom 表无这三列，能力继承依赖合并键与内置扫描行，在合并后由
+// chainInheritCustomCatalogCapabilities 统一回填（BUG-0226 契约，仅填空）。
 func decorateCustomCatalogRow(row map[string]any) {
 	if scope, _ := row["scope"].(string); scope == "global" {
 		row["source"] = "custom-global"

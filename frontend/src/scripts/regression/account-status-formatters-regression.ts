@@ -1,7 +1,7 @@
 import type { AccountEffectiveAvailabilityStatus, AccountStatus, AccountSummary, ApiKeySummary } from '@/types/domain'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from '../../views/accounts/accountFormatters'
+import { accountLockTag, accountStatusColor, accountStatusText, accountStatusTooltipLines } from '../../views/accounts/accountFormatters'
 import type { AccountFilters } from '../../views/accounts/accountFormTypes'
 import { filterAccounts } from '../../views/accounts/accountListFilters'
 import { accountMenuItems, canToggleAccountStatus } from '../../views/accounts/accountRules'
@@ -634,6 +634,31 @@ assertEqual(
   '无可用权限账户不应被正常状态筛选命中'
 )
 
+assertEqual(accountLockTag(accountFixture()), undefined, '未投影锁死状态的账户不应显示锁死策略标签')
+assertTrue(
+  !accountStatusTooltipLines(accountFixture()).some((line) => line.includes('锁死')),
+  '未投影锁死状态的账户 tooltip 不应出现锁死说明行'
+)
+const lockedIdleAccount = accountFixture({ lockState: 'LOCKED_IDLE' })
+assertEqual(accountLockTag(lockedIdleAccount)?.color, 'volcano', '已锁死账户的策略标签颜色应为 volcano')
+assertEqual(accountLockTag(lockedIdleAccount)?.label, '已锁死', '已锁死账户的策略标签文案应为已锁死')
+assertTrue(
+  accountStatusTooltipLines(lockedIdleAccount).some((line) => line.includes('等待真实流量')),
+  '已锁死账户 tooltip 应说明等待真实流量，暂不开始死亡计时'
+)
+const lockEngagedAccount = accountFixture({ lockState: 'ENGAGED' })
+assertEqual(accountLockTag(lockEngagedAccount)?.color, 'red', '锁死坚持中账户的策略标签颜色应为 red')
+assertEqual(accountLockTag(lockEngagedAccount)?.label, '锁死坚持中', '锁死坚持中账户的策略标签文案应为锁死坚持中')
+assertStatus('锁死坚持中账户', lockEngagedAccount, '可调度', 'green')
+assertTrue(
+  accountStatusTooltipLines(lockEngagedAccount).some((line) => line.includes('不切换其他账户')),
+  '锁死坚持中账户 tooltip 应说明失败窗口内不切换其他账户'
+)
+const lockDeadConfirmedAccount = accountFixture({ lockState: 'DEAD_CONFIRMED' })
+assertEqual(accountLockTag(lockDeadConfirmedAccount)?.color, 'default', '锁死待恢复账户的策略标签颜色应为 default')
+assertEqual(accountLockTag(lockDeadConfirmedAccount)?.label, '锁死待恢复', '锁死待恢复账户的策略标签文案应为锁死待恢复')
+assertEqual(accountLockTag(accountFixture({ lockState: 'UNLOCKED' })), undefined, '解锁状态账户不应显示锁死策略标签')
+
 const frequentFailureTooltip = accountStatusTooltipLines(accountFixture({
   qualityRecentRequestCount: 6,
   qualityRecentErrorCount: 5,
@@ -704,7 +729,7 @@ assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactive), '停用', 'API Key 停
 assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactive), 'default', 'API Key 停用状态颜色应使用停用颜色')
 assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('计划边界会自动更新当前运行状态')), 'API Key 配置时间计划时应在状态 tooltip 展示单状态提示')
 
-console.log('账户状态 formatter 回归通过：正常、待检查、停用、异常、限流、冷却、停调、近期失败、近期不稳、频繁失败、质量归因说明、运行态调度降级、运行态短暂避让、运行态事前确认、运行态半开探测、运行态探针确认失败、授权额度、授权绑定、Key 池不可用、派生可用性筛选映射、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
+console.log('账户状态 formatter 回归通过：正常、待检查、停用、异常、限流、冷却、停调、近期失败、近期不稳、频繁失败、质量归因说明、运行态调度降级、运行态短暂避让、运行态事前确认、运行态半开探测、运行态探针确认失败、授权额度、授权绑定、Key 池不可用、派生可用性筛选映射、持久临时不可调用、长期不可用、时间计划提示、无可用权限、锁死状态均可显示和筛选')
 
 function assertStatus(name: string, account: AccountSummary, text: string, color: string): void {
   assertEqual(accountStatusText(account), text, `${name} 文案应为 ${text}`)

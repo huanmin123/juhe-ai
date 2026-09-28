@@ -135,23 +135,42 @@ func TestW9GDrainOnceContextCancelled(t *testing.T) {
 }
 
 // TestW9GDrainOnceReadFileError：文件被无任何共享位的句柄占用（共享冲突，
-// 非 ErrNotExist）时 DrainOnce 终止本轮并上抛错误。
+// 非 ErrNotExist）时 DrainOnce 记节流 Error、跳过该文件继续本轮（BUG-0227：
+// 不再终止本轮），文件保留原位且不隔离。
 func TestW9GDrainOnceReadFileError(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("独占句柄共享冲突语义仅在本机 Windows 验证")
 	}
 	directory := t.TempDir()
-	path := gatewaySpoolFile(t, directory, "0001-locked", baseRecord("id-locked"))
+	locked := gatewaySpoolFile(t, directory, "0001-locked", baseRecord("id-locked"))
+	gatewaySpoolFile(t, directory, "0002-good", baseRecord("id-good"))
+	enqueuer := &recordingEnqueuer{}
+	logs := &logCapture{}
+	drainer := &Drainer{Directory: directory, Enqueuer: enqueuer, Logger: logs.logger()}
 
-	closeHandle := holdFileHandle(t, path, 0)
-	defer closeHandle()
+	closeHandle := holdFileHandle(t, locked, 0)
+	defer func() {
+		if closeHandle != nil {
+			closeHandle()
+			closeHandle = nil
+		}
+	}()
 
-	processed, err := newTestDrainer(directory, &recordingEnqueuer{}).DrainOnce(context.Background())
-	if err == nil || errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("err = %v, want 非 ErrNotExist 读取错误", err)
+	processed, err := drainer.DrainOnce(context.Background())
+	if err != nil {
+		t.Fatalf("err = %v, want nil（不可读文件跳过本轮不报错）", err)
 	}
-	if processed != 0 {
-		t.Fatalf("processed = %d, want 0", processed)
+	if processed != 1 {
+		t.Fatalf("processed = %d, want 1（不可读队头不阻塞后续文件）", processed)
+	}
+	if _, statErr := os.Stat(locked); statErr != nil {
+		t.Fatalf("不可读文件必须保留原位: %v", statErr)
+	}
+	if got := logs.countEventValue("usage_record_spool_file_read_failed", "file", locked); got != 1 {
+		t.Fatalf("read_failed 错误日志 = %d, want 1", got)
+	}
+	if len(enqueuer.inputs) != 1 || enqueuer.inputs[0].ID != "id-good" {
+		t.Fatalf("enqueued = %+v", enqueuer.inputs)
 	}
 }
 

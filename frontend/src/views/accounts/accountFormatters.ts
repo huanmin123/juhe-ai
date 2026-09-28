@@ -142,6 +142,21 @@ export function accountCooldownText(account: AccountListItem) {
   return `暂停至 ${formatDateTime(account.cooldownUntil)}`
 }
 
+export function accountLockTag(account: AccountListItem): AccountStatusTagInfo | undefined {
+  if (account.lockState === 'LOCKED_IDLE') return { color: 'volcano', label: '已锁死' }
+  if (account.lockState === 'ENGAGED') return { color: 'red', label: '锁死坚持中' }
+  if (account.lockState === 'DEAD_CONFIRMED') return { color: 'default', label: '锁死待恢复' }
+  return undefined
+}
+
+export function accountLockTooltipLines(account: AccountListItem): string[] {
+  if (account.lockState === 'LOCKED_IDLE') return ['已锁死：等待真实流量，暂不开始死亡计时']
+  // 死亡窗口使用事故开始时的快照，运行时配置可能已改，不把秒数拼进文案以免误导。
+  if (account.lockState === 'ENGAGED') return ['锁死生效：失败窗口内不切换其他账户，窗口内无有效成功将判死']
+  if (account.lockState === 'DEAD_CONFIRMED') return ['锁死死亡窗口已结算，账户进入临时不可用；探针恢复后锁死策略保留']
+  return []
+}
+
 export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const lines = accountStatusPresentationTooltipLines(account)
   const circuitStatus = activeCircuitStatus(account)
@@ -155,6 +170,7 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
   if (circuitStatus && account.circuitSummary?.nextCheckAt) {
     lines.push(`下次电路检查：${formatDateTime(account.circuitSummary.nextCheckAt)}`)
   }
+  lines.push(...accountLockTooltipLines(account))
   return lines
 }
 

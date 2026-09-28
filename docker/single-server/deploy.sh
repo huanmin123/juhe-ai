@@ -4,7 +4,10 @@
 # 防呆设计（对应 2026-09-26 部署事故：shared 模块修复后 gateway 用旧产物上线）：
 #   1. 每次发布无条件全量重编译目标二进制（不信任 build/bin 里的既有产物）；
 #   2. md5 三点闭环：本地新编译 = 服务器 build/bin = 容器内运行二进制；
-#   3. 逐容器等待 healthy 后才判定成功（F3 audit 租约释放期会有 1-2 分钟重启循环，属预期）。
+#   3. 逐容器等待 healthy 后才判定成功（BUG-0228 起 compose 为 gateway 配
+#      JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=45s：发布 recreate 窗口新 gateway 在启动期
+#      等待前任 F3/F4 租约 TTL（默认 30s）过期后接管，等待计入 healthcheck
+#      start_period=75s，healthy 滞后至多约 1 分钟属预期，不再有重启循环）。
 #
 # 红线：本机构建（服务器严禁编译，仅 docker compose build 组装镜像），见同目录 README 与
 # .local/project-resources/prod/runbooks/国内单机Docker部署与运维.md。

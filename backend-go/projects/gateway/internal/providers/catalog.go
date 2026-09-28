@@ -181,6 +181,7 @@ func (s *Store) listProviderModelCatalog(ctx context.Context, providerCode, syst
 		return nil, err
 	}
 	items := mergeModelCatalogItems(append(builtIn, custom...), isHybridProviderCode(providerCode))
+	inheritCustomCatalogCapabilities(items, builtIn, isHybridProviderCode(providerCode))
 	filtered := []ModelCatalogItem{}
 	for _, item := range items {
 		if !isSupportedCatalogModel(item) {
@@ -588,6 +589,70 @@ func mergeModelCatalogItems(items []ModelCatalogItem, preserveProviderIdentity b
 		output = append(output, merged[itemKey])
 	}
 	return output
+}
+
+// inheritCustomCatalogCapabilities 应用 custom 目录行能力继承（BUG-0226，
+// 契约见 AI问答设计 8.6）：合并胜出的 custom（global/personal）行按
+// mergeModelCatalogItems 的同一合并键（hybrid 下 provider+model，其余裸 model）
+// 查找内置扫描行（scanBuiltInCatalogItem 已过 ApplyBuiltInStaticDerivedFields
+// 静态兜底），仅填空 supportedTools / inputModalities / outputModalities；全新
+// 自定义模型（内置无对应行）保持空。解析本体 InheritBuiltinCatalogCapabilities
+// 与 chat 面（chain_catalog.go chainInheritCustomCatalogCapabilities）同源，两面
+// 不漂移。
+func inheritCustomCatalogCapabilities(items, builtinRows []ModelCatalogItem, preserveProviderIdentity bool) {
+	if len(items) == 0 || len(builtinRows) == 0 {
+		return
+	}
+	type key struct {
+		provider string
+		model    string
+	}
+	builtinByKey := make(map[key]ModelCatalogItem, len(builtinRows))
+	for _, item := range builtinRows {
+		model := strings.TrimSpace(item.Model)
+		if model == "" {
+			continue
+		}
+		itemKey := key{model: model}
+		if preserveProviderIdentity {
+			itemKey.provider = normalizeProviderToken(item.ProviderCode)
+		}
+		// 同优先级内置行后行胜出，与 mergeModelCatalogItems 的决胜语义一致。
+		builtinByKey[itemKey] = item
+	}
+	for index := range items {
+		item := &items[index]
+		if item.Scope != catalogScopeGlobal && item.Scope != catalogScopePersonal {
+			continue
+		}
+		model := strings.TrimSpace(item.Model)
+		if model == "" {
+			continue
+		}
+		itemKey := key{model: model}
+		if preserveProviderIdentity {
+			itemKey.provider = normalizeProviderToken(item.ProviderCode)
+		}
+		builtin, ok := builtinByKey[itemKey]
+		if !ok {
+			continue
+		}
+		resolved := InheritBuiltinCatalogCapabilities(
+			CustomCatalogCapabilityKeys{
+				SupportedTools:   item.SupportedTools,
+				InputModalities:  item.InputModalities,
+				OutputModalities: item.OutputModalities,
+			},
+			CustomCatalogCapabilityKeys{
+				SupportedTools:   builtin.SupportedTools,
+				InputModalities:  builtin.InputModalities,
+				OutputModalities: builtin.OutputModalities,
+			},
+		)
+		item.SupportedTools = resolved.SupportedTools
+		item.InputModalities = resolved.InputModalities
+		item.OutputModalities = resolved.OutputModalities
+	}
 }
 
 func catalogScopePriority(scope string) int {

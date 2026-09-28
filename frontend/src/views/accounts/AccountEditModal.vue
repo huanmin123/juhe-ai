@@ -202,6 +202,10 @@
 
               <section class="form-section">
                 <div class="form-section-title">账户锁死</div>
+                <div v-if="lockRuntimeStateText" class="lock-runtime-state">
+                  <span>当前状态：{{ lockRuntimeStateText }}</span>
+                  <small>锁死启停请在列表操作菜单执行。</small>
+                </div>
                 <div class="lock-config-fields">
                   <a-form-item label="死期（秒）">
                     <a-input-number v-model:value="form.lockDeathTimeoutSeconds" :min="30" :max="3600" :precision="0" />
@@ -382,6 +386,15 @@ function authorizedSourceAccountDetail(): AccountAdvancedDetail | undefined {
   const detail = props.accountAdvancedDetail
   return detail?.accessType === 'authorized' ? detail : undefined
 }
+
+// 锁死运行态只读展示：来自高级详情投影，不进入任何保存 payload。
+const lockRuntimeStateText = computed(() => {
+  const lockState = props.accountAdvancedDetail?.lockState
+  if (lockState === 'LOCKED_IDLE') return '已锁死（等待真实流量）'
+  if (lockState === 'ENGAGED') return '锁死坚持中（失败窗口内不切换账户）'
+  if (lockState === 'DEAD_CONFIRMED') return '锁死待恢复（判死结算后等待探针恢复）'
+  return undefined
+})
 
 const sourceAccountStatusText = computed(() => {
   const detail = authorizedSourceAccountDetail()
@@ -602,6 +615,24 @@ const emit = defineEmits<{
   display: grid;
   gap: 12px;
   min-width: 0;
+}
+
+.lock-runtime-state {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  background: #f8fbff;
+  color: #1f2937;
+  font-size: 12px;
+}
+
+.lock-runtime-state small {
+  color: #64748b;
+  font-size: 12px;
 }
 
 .lock-config-fields {

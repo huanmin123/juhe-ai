@@ -275,7 +275,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - Responses 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段，由网关做协议适配和安全校验。
 - 用户选择 reasoning effort 时，Responses 请求发送 `reasoning: { effort, summary: "auto" }`；前端只展示上游公开的 reasoning summary 事件，不展示或伪造隐藏思维链。
 - Chat 模块解析 `response.output_item.added`、`response.function_call_arguments.delta`、`response.output_text.delta`、`response.completed` 等事件，并将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块。
-- 只有模型目录明确声明 `web_search` 且最终走 Responses 时才注入联网搜索；不能因为使用 Responses 就给所有模型强塞工具。“明确声明”按 8.5 节数据源口径理解：内置目录行未声明工具/模态能力时按本地官方能力快照（静态定价表）兜底填充，与管理面目录口径一致（Go 侧 `ApplyBuiltInStaticDerivedFields` 同源，chat 面读取链同源兜底）；兜底后仍未声明才不注入。同名多候选取保守交集的判定规则不变。
+- 只有模型目录明确声明 `web_search` 且最终走 Responses 时才注入联网搜索；不能因为使用 Responses 就给所有模型强塞工具。“明确声明”按 8.5 节数据源口径理解：内置目录行未声明工具/模态能力时按本地官方能力快照（静态定价表）兜底填充，与管理面目录口径一致（Go 侧 `ApplyBuiltInStaticDerivedFields` 同源，chat 面读取链同源兜底）；覆盖内置行的 custom 目录行按本节末「custom 目录行能力继承」继承声明；兜底/继承后仍未声明才不注入。同名多候选取保守交集的判定规则不变。
 - 会话详情的工具能力矩阵（`toolCapabilities`：`web_search` / `generate_image` 的可用性与不可用原因）按绑定模式计算分组候选作用域：`group` 模式按绑定分组的可派发账户聚合、`account` 模式按绑定账户收敛、`api_key` 模式按 Key 路由策略的分组绑定——不把 `group` / `account` 会话的专用对话 Key 路由策略当作工具能力作用域。
 - 文本模型明确需要位图时调用本站 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器固定 `gpt-image-2`，文本模型根据用户意图填写尺寸、质量和格式；执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败，不读取用户原话做关键词放行、静默缩放或提示词优化。工具循环对 Chat/Responses 都可用，不依赖上游 `image_generation` 托管工具。`chatImageGenerationTotalTimeoutSeconds` 控制一次图片工具调用从网关选号到资产提交的整体时限，默认 `900` 秒、范围 `60..86400`；每个新聊天任务冻结当次系统设置快照，不能与网关 image lane 的单账户首响应超时混为一个字段。通用边界见 [AI 工具创建规范](../architecture/backend/AI工具创建规范.md)。
 - 对话模型与图像模型职责严格分离：`gpt-5.5`、GPT-5.6 等普通模型只负责回答和选择 `generate_image` / 编辑工具，工具适配器才使用当前会话默认图像模型，当前固定为 `gpt-image-2`。图像账户后台健康检查使用上游 `GET /v1/models` 精确确认模型 ID，不得把普通对话模型写进 Images 请求，也不得用文本 `/v1/responses` 探测纯图像模型；真实生成和编辑仍分别走 Images generations / edits。
@@ -285,6 +285,12 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 上游自行执行的内置工具只展示状态和结果；Chat 模块不重复执行、不伪造工具结果。
 - 模型要求本地未注册的 function tool 时，返回明确的“不支持此工具”状态并结束本轮，不能静默当作普通文本。
 - 工具调用参数、结果和错误均有字节上限、超时和审计 trace；不得把工具原始 JSON 无界写入 SSE 或聊天正文。
+
+**custom 目录行能力继承**（2026-09-28，BUG-0226）：
+
+- 目标：`custom_provider_models` 表没有 `supported_tools` / `input_modalities` / `output_modalities` 列，custom（`global` / `personal`）目录行按 scope 优先级整行替换内置 `provider_model_catalog` 行后，不能让被覆盖模型的能力三键恒空——否则 `web_search` / `generate_image` / 诊断工具永不注入、带图输入被服务端 400、前端隐藏上传按钮、`toolCapabilities` 恒不可用、协议偏好退化。
+- 可见行为：目录读取链在合并（scope 优先级整行替换）之后，对胜出的 custom 行按与合并相同的键（hybrid 下 `provider+model`，其余裸 `model`）查找内置扫描行，三个空能力键 `supportedTools` / `inputModalities` / `outputModalities` 以内置行（经 8.5 节静态快照兜底后）的值填充；仅填空，不覆盖非空值。custom 表本无这三列，语义上即“覆盖内置行的 custom 行继承内置行能力”。管理面与 chat 面同源解析（同一回填实现，保持 BUG-0210 建立的两面 parity 原则）。
+- 边界：仅“覆盖内置行”的场景继承；全新自定义模型（内置无对应行）三键保持空，不得用静态定价表的别名/前缀匹配规则回填（日期后缀剥离与前缀别名会对 `gpt-5.5-my` 这类自有命名误配能力）。生成参数能力（`generationParameterCapabilities`）不在此继承范围，仍按 custom 行自身的 provider+model 生成。
 
 ### 8.7 消息信息层级
 
