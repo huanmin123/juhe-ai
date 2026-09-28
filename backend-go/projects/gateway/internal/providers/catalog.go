@@ -591,7 +591,7 @@ func mergeModelCatalogItems(items []ModelCatalogItem, preserveProviderIdentity b
 	return output
 }
 
-// inheritCustomCatalogCapabilities 应用 custom 目录行能力继承（BUG-0226，
+// inheritCustomCatalogCapabilities 应用 custom 目录行能力继承（BUG-0229，
 // 契约见 AI问答设计 8.6）：合并胜出的 custom（global/personal）行按
 // mergeModelCatalogItems 的同一合并键（hybrid 下 provider+model，其余裸 model）
 // 查找内置扫描行（scanBuiltInCatalogItem 已过 ApplyBuiltInStaticDerivedFields

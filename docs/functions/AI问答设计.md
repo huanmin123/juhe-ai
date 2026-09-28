@@ -286,7 +286,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 模型要求本地未注册的 function tool 时，返回明确的“不支持此工具”状态并结束本轮，不能静默当作普通文本。
 - 工具调用参数、结果和错误均有字节上限、超时和审计 trace；不得把工具原始 JSON 无界写入 SSE 或聊天正文。
 
-**custom 目录行能力继承**（2026-09-28，BUG-0226）：
+**custom 目录行能力继承**（2026-09-28，BUG-0229）：
 
 - 目标：`custom_provider_models` 表没有 `supported_tools` / `input_modalities` / `output_modalities` 列，custom（`global` / `personal`）目录行按 scope 优先级整行替换内置 `provider_model_catalog` 行后，不能让被覆盖模型的能力三键恒空——否则 `web_search` / `generate_image` / 诊断工具永不注入、带图输入被服务端 400、前端隐藏上传按钮、`toolCapabilities` 恒不可用、协议偏好退化。
 - 可见行为：目录读取链在合并（scope 优先级整行替换）之后，对胜出的 custom 行按与合并相同的键（hybrid 下 `provider+model`，其余裸 `model`）查找内置扫描行，三个空能力键 `supportedTools` / `inputModalities` / `outputModalities` 以内置行（经 8.5 节静态快照兜底后）的值填充；仅填空，不覆盖非空值。custom 表本无这三列，语义上即“覆盖内置行的 custom 行继承内置行能力”。管理面与 chat 面同源解析（同一回填实现，保持 BUG-0210 建立的两面 parity 原则）。

@@ -1,5 +1,5 @@
 // custom_capability_inherit.go owns the custom catalog-row capability
-// inheritance contract (BUG-0226, 文档契约见 docs/functions/AI问答设计.md
+// inheritance contract (BUG-0229, 文档契约见 docs/functions/AI问答设计.md
 // 8.6「custom 目录行能力继承」): a custom (global/personal) catalog row that
 // overrides a built-in row under the catalog merge key inherits the three
 // capability keys from that built-in row (after the built-in static-derived

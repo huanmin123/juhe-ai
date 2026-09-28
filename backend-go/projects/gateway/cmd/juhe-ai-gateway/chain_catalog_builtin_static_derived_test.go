@@ -6,7 +6,7 @@ package main
 // 补齐。管理面对照物是 providers.ApplyBuiltInStaticDerivedFields（同一解析器
 // ResolveBuiltInStaticDerivedCapabilities），本文件同时断言两面 parity。
 //
-// 2026-09-28 custom 目录行能力继承回归（BUG-0226）：custom（global/personal）
+// 2026-09-28 custom 目录行能力继承回归（BUG-0229）：custom（global/personal）
 // 目录行按 scope 优先级整行替换内置行后，三个空能力键以被覆盖内置行（经静态
 // 兜底后）的值填充（仅填空）；全新自定义模型（内置无对应行）保持空，不退回
 // 静态定价表别名/前缀匹配。管理面（providers.inheritCustomCatalogCapabilities）
