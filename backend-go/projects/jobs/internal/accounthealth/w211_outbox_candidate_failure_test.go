@@ -1,6 +1,6 @@
 package accounthealth
 
-// BUG-0211 回归：J1 显式探活请求（outbox drain 与 runCycle requests 循环）
+// BUG-0218 回归：J1 显式探活请求（outbox drain 与 runCycle requests 循环）
 // 对候选构造失败的账户无隔离——LoadAccount 抛错使行保持 pending（毒丸行）
 // 且 runCycle 整轮中断，单坏账户停摆全链探活（生产 2026-09-28：16 行卡死
 // J1 达 35 分钟）。修复后：实现 LoadAccountWithFailures 的 reader 构造失败

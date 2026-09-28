@@ -312,7 +312,7 @@ func (r *Runner) consumeProbeOutboxRow(ctx context.Context, lease OwnerLease, ro
 				// 候选构造失败是确定性行损坏：保持零值 input 走
 				// runExplicitRequest 的 input_stale 终态结算出队——保持
 				// pending 重试永远不会成功，只会形成毒丸行并每周期刷错
-				// （BUG-0211：单坏账户 16 行停摆 J1 探活 35 分钟）。
+				// （BUG-0218：单坏账户 16 行停摆 J1 探活 35 分钟）。
 				r.logger.Warn("probe_request 账户候选构造失败，按 input_stale 收敛",
 					"event", "account_health_probe_outbox_row_input_stale",
 					"requestId", row.RequestID, "accountId", row.AccountID,

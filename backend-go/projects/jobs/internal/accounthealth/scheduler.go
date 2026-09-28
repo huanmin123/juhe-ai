@@ -69,7 +69,7 @@ type directInputFailureLoader interface {
 
 // directInputAccountFailureLoader 是单账户显式请求的隔离加载面（PG/SQLite
 // 直读 reader 均实现）：构造失败的账户返回 Failures 而非错误，调用方按
-// input_stale 收敛而不是中断整轮（BUG-0211）。
+// input_stale 收敛而不是中断整轮（BUG-0218）。
 type directInputAccountFailureLoader interface {
 	LoadAccountWithFailures(ctx context.Context, accountID string) (DirectInputLoadResult, error)
 }
@@ -321,7 +321,7 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 				if len(result.Failures) > 0 {
 					// 候选构造失败是确定性行损坏：保持零值 input 走
 					// runExplicitRequest 的 input_stale 终态结算并消费该行，
-					// 不得中断整轮（BUG-0211：单坏账户的显式请求把周期
+					// 不得中断整轮（BUG-0218：单坏账户的显式请求把周期
 					// inputs 的探测一并停摆 35 分钟）。
 					r.logger.Warn("显式探活请求账户候选构造失败，按 input_stale 收敛",
 						"event", "account_health_explicit_request_input_stale",
