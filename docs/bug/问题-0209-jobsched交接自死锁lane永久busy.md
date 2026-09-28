@@ -1,7 +1,7 @@
 # BUG-0209：jobsched lane 交接自死锁——被唤醒任务重排队，lane 永久 busy
 
 - 编号：BUG-0209
-- 状态：已修复（待发布）
+- 状态：已修复（2026-09-28 09:05 已随 jobs 单独发布上线，lane 恢复轮转）
 - 发现：2026-09-28 发布后验证 BUG-0206 收口时，recovery 首轮后不再触发；/health 任务快照显示 `external-account-maintenance` 与 `stats-online` 两个 lane 全体成员 `QueuedForLane: true`、`LastSkipReason: resource_lane_busy`、无人 Running
 
 ## 根因
