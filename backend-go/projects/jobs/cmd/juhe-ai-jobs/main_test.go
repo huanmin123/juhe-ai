@@ -16,17 +16,17 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/ownermode"
 )
 
-func TestValidateLoopbackListenAddress(t *testing.T) {
+func TestValidateHealthListenAddress(t *testing.T) {
 	for _, test := range []struct {
 		address string
 		valid   bool
 	}{
 		{"127.0.0.1:3305", true}, {"127.255.255.254:65535", true}, {"localhost:3305", true}, {"LOCALHOST:3305", true}, {"[::1]:3305", true},
-		{"0.0.0.0:3305", false}, {"[::]:3305", false}, {"192.168.1.10:3305", false}, {"127.0.0.1", false}, {"localhost", false}, {":3305", false}, {"localhost:not-a-port", false}, {"localhost:0", false}, {"localhost:65536", false},
+		{"0.0.0.0:3305", true}, {"[::]:3305", true}, {":3305", true}, {"192.168.1.10:3305", true}, {"juhe-ai-go-jobs:3305", false}, {"127.0.0.1", false}, {"localhost", false}, {"localhost:not-a-port", false}, {"localhost:0", false}, {"localhost:65536", false},
 	} {
-		err := validateLoopbackListenAddress(test.address)
+		err := validateHealthListenAddress(test.address)
 		if (err == nil) != test.valid {
-			t.Fatalf("validateLoopbackListenAddress(%q) err=%v valid=%v", test.address, err, test.valid)
+			t.Fatalf("validateHealthListenAddress(%q) err=%v valid=%v", test.address, err, test.valid)
 		}
 	}
 }
@@ -47,8 +47,10 @@ func TestListenLoopbackUsesValidatedAddress(t *testing.T) {
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := listenLoopback("0.0.0.0:3305"); err == nil {
-		t.Fatal("listenLoopback accepted wildcard address")
+	// BUG-0226：全接口监听在容器部署下合法（供 gateway 跨容器抓取），
+	// 主机名字符串仍拒绝（见 TestValidateHealthListenAddress）。
+	if _, err := listenLoopback("juhe-ai-go-jobs:3305"); err == nil {
+		t.Fatal("listenLoopback accepted hostname address")
 	}
 }
 

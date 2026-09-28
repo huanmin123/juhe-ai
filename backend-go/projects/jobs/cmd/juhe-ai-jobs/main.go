@@ -874,36 +874,39 @@ func runPassiveJobs(healthAddress string, ownerMode ownermode.Mode, logger *slog
 }
 
 func listenLoopback(address string) (net.Listener, error) {
-	if err := validateLoopbackListenAddress(address); err != nil {
+	if err := validateHealthListenAddress(address); err != nil {
 		return nil, err
 	}
 	return net.Listen("tcp", address)
 }
 
-func validateLoopbackListenAddress(address string) error {
+// validateHealthListenAddress 校验健康监听地址（BUG-0226：原校验强制
+// loopback，容器部署下 gateway 无法跨容器抓取，系统指标页 jobs 段恒降级
+// "不可达"）。语义：默认值仍是 127.0.0.1（loopback）；显式配置允许空 host
+// （全接口）、0.0.0.0/[::] 与任意具体 IP（compose 内网监听供 gateway 用
+// 容器名抓取）。安全边界由部署侧承担：该端口不得映射公网（single-server
+// compose 无 ports 映射）。主机名字符串（如容器名）仍拒绝——监听地址
+// 必须是 IP 或通配。
+func validateHealthListenAddress(address string) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
-		return fmt.Errorf("invalid loopback listen address %q: %w", address, err)
+		return fmt.Errorf("invalid health listen address %q: %w", address, err)
 	}
 	portNumber, err := strconv.Atoi(port)
 	if err != nil || portNumber < 1 || portNumber > 65535 {
-		return fmt.Errorf("invalid loopback listen address %q: port must be between 1 and 65535", address)
+		return fmt.Errorf("invalid health listen address %q: port must be between 1 and 65535", address)
 	}
 	if strings.EqualFold(host, "localhost") {
 		return nil
 	}
+	if host == "" {
+		return nil
+	}
 	ip := net.ParseIP(host)
-	if ip == nil || !isLoopbackListenIP(ip) {
-		return fmt.Errorf("invalid loopback listen address %q: host must be localhost or a loopback IP", address)
+	if ip == nil {
+		return fmt.Errorf("invalid health listen address %q: host must be localhost, an IP or empty (BUG-0226: 容器部署配 0.0.0.0)", address)
 	}
 	return nil
-}
-
-func isLoopbackListenIP(ip net.IP) bool {
-	if ipv4 := ip.To4(); ipv4 != nil {
-		return ipv4[0] == 127
-	}
-	return ip.Equal(net.IPv6loopback)
 }
 
 func passiveJobsHealthHandler(ownerMode ownermode.Mode) http.Handler {
