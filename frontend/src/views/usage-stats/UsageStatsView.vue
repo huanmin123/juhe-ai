@@ -204,12 +204,10 @@ let usageStatsResourceRequestSeq = 0
 let usageStatsTrendRequestSeq = 0
 let usageStatsSummaryRequestSeq = 0
 const {
-  applyResult: applyAccountUsageResult,
   items: accountUsageRows,
   loading,
   mobileHasMore: accountUsageMobileHasMore,
   mobileLoadingMore: accountUsageMobileLoadingMore,
-  pagination: accountUsagePagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -324,7 +322,6 @@ const {
   displayRows,
   hasSelectedTrendAccounts,
   hasTrendData,
-  selectedTrendAccountIds,
   trendEmptyDescription,
   visibleTrendRows,
   clearTrendAccountState: clearTrendAccountSelectionState,

@@ -164,7 +164,7 @@ assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), blob: new Blob(['x'])
 const cyclic = message(1, 'x') as ChatMessage & { metadata?: unknown }; cyclic.metadata = cyclic
 assert.equal(cloneVisibleChatMessage(cyclic), undefined)
 
-let now = 10
+const now = 10
 const adapter = new MemoryAdapter()
 const cache = new ChatLocalCache({ adapter, clock: () => now, estimate: async () => ({ quota: 1_000_000 }) })
 await cache.putHead('A', { conversationId: 'c1', messageRevision: 1 })

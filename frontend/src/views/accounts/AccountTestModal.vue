@@ -173,9 +173,6 @@ const selectedEndpointModeText = computed(() => {
     ?? '无可测试请求形态'
 })
 const resultJson = computed(() => props.result ? JSON.stringify(props.result, null, 2) : '')
-const imageTest = computed(() => props.result?.testEndpointMode === 'images_json'
-  || selectedEndpointModeSelectValue.value === 'images_json'
-)
 const runDisabled = computed(() => (
   props.modelsLoading
   || !props.modelsReady

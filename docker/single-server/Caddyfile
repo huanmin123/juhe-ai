@@ -1,5 +1,6 @@
 # 生产入口（唯一权威配置）：HTTPS 自动签发续期，80 强制升级。
-# DNS aijh.huanmin.top -> 103.36.63.105；上游为固定容器 IP（见 compose.yml），
+# DNS aijh.huanmin.top -> 生产服务器公网 IP（见 .local/project-resources/prod/assets，BUG-0225 不入库）；
+# 上游为固定容器 IP（见 compose.yml，172.18.x compose 内网段非实例事实），
 # 直连 IP 绕过 Docker DNS（偶发 lookup 失败曾导致 502）。
 # 无域名备用：IP 版配置备份在服务器 /opt/juhe-ai/Caddyfile.ip-http-only.bak（仅 :80）。
 aijh.huanmin.top {

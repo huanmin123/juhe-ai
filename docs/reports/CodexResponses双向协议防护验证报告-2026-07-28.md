@@ -57,4 +57,4 @@
 
 - [实施计划](../plans/计划-20260728T071315383Z-CodexResponses双向协议防护修复.md)
 - [问题记录](../bug/问题-0138-CodexResponses双向ID防护失效.md)
-- [长期设计](../functions/Responses协议防火墙与历史会话自愈设计.md)
+- [长期设计](../functions/Responses历史会话与请求修复.md)

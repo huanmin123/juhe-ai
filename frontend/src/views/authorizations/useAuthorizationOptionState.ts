@@ -197,12 +197,12 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
           selectedId
         }), async () => {
           if (resourceType === 'account') {
-            let nextAccounts = managementView
+            const nextAccounts = managementView
               ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
               : await api.myAccounts.options({ keyword: search, limit: remoteOptionLimit })
             return await ensureSelectedAccountOption(nextAccounts, selectedId, ownerSystemAccountId, managementView)
           }
-          let nextGroups = managementView
+          const nextGroups = managementView
             ? await api.groups.authorizationOptions({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
             : await api.myGroups.authorizationOptions({ keyword: search, limit: remoteOptionLimit })
           return await ensureSelectedGroupOption(nextGroups, selectedId, ownerSystemAccountId, managementView)
@@ -271,7 +271,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
             nextUsers = nextUsers.filter((user) => !excludedGranteeIds.includes(user.id))
             return await ensureSelectedSystemAccountPrincipal(nextUsers, selectedId, managementView)
           }
-          let nextTeams = managementView
+          const nextTeams = managementView
             ? await api.authorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
             : await api.myAuthorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
           return await ensureSelectedTeamOption(nextTeams, selectedId, managementView)
@@ -334,7 +334,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
           search,
           selectedId
         }), async () => {
-          let nextGroups = managementView
+          const nextGroups = managementView
             ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
             : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
           return await ensureSelectedAuthorizationGranteeGroupOption(nextGroups, selectedId, granteeSystemAccountId, providerCode, managementView)

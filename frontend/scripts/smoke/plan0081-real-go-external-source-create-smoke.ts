@@ -426,7 +426,7 @@ function assertDetail(
   }
 }
 
-function assertSource(value: Record<string, unknown>, sourceName: string, detail: boolean): void {
+function assertSource(value: Record<string, unknown>, sourceName: string, _detail: boolean): void {
   expect(
     hasOnlyKeys(value, [
       'id', 'name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes', 'lastUsedAt', 'createdAt',

@@ -319,6 +319,11 @@ type BridgeOptions struct {
 	Sleep func(ctx context.Context, delay time.Duration) error
 	// NewTimer overrides retry timer creation (Node setTimeout). The done
 	// channel closes after the delay; stop cancels it.
+	// 注入契约：返回的 stop 必须幂等，且无论 timer 是否已 fire 都必须最终
+	// 令 done 变为可读——retry goroutine 退出唯一依赖 done 可读，违反该契约
+	// （stop 只调 timer.Stop 而不关 done）会让被抢跑结算
+	// （retryPendingImmediately）废弃的 goroutine 永久泄漏（BUG-0222；
+	// 契约全文见 wait.go WaitCoordinatorOptions.NewTimer）。
 	NewTimer func(delay time.Duration) (done <-chan struct{}, stop func())
 }
 
@@ -485,8 +490,22 @@ func NewBridge(options BridgeOptions) (*Bridge, error) {
 	if newTimer == nil {
 		newTimer = func(delay time.Duration) (<-chan struct{}, func()) {
 			done := make(chan struct{})
-			timer := time.AfterFunc(delay, func() { close(done) })
-			return done, func() { timer.Stop() }
+			// closeDone 幂等：timer 自然 fire 的回调与 stop 闭包两条路径都会
+			// close(done)，sync.Once 保证只关一次。
+			var once sync.Once
+			closeDone := func() { once.Do(func() { close(done) }) }
+			timer := time.AfterFunc(delay, closeDone)
+			return done, func() {
+				// BUG-0222：retry goroutine 的 select 只有 done 与 Bridge 级
+				// stopCh 两条退路。retryPendingImmediately（rebuild 尾部抢跑
+				// 结算）遍历调用 stop 时 timer 多半尚未 fire，只调 timer.Stop
+				// 而不关 done 会让被废弃的 goroutine 永久阻塞在 <-done 上直
+				// 到 Bridge.Close。无条件 Stop 后幂等 close(done)：timer 未
+				// fire 时由本闭包关闭，已 fire 时由回调关闭，stop 后 done 必
+				// 然可读（范式同 wait.go WaitCoordinator 默认实现）。
+				timer.Stop()
+				closeDone()
+			}
 		}
 	}
 	persistIncident := options.PersistIncident

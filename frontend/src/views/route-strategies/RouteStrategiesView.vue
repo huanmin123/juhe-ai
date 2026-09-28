@@ -371,8 +371,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { loadGroupOptionsResource } from '@/composables/useGroupOptionsResource'
 import {
-  useProviderModelSelectOptions,
-  type ProviderModelSelectOption
+  useProviderModelSelectOptions
 } from '@/composables/useProviderModelSelectOptions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -520,28 +519,12 @@ const modelProviderCodes = computed(() => {
 // 混合智能路由移除后，表单内暂无可选模型；模型候选机制保留，按绑定分组供应商作用域按需加载。
 const selectedModelIds = computed<string[]>(() => [])
 const {
-  loading: modelOptionsLoading,
-  loadModelOptions,
-  resetModelOptions,
-  selectOptions: loadedModelSelectOptions
+  resetModelOptions
 } = useProviderModelSelectOptions({
   scopeParams: modelOptionsScopeParams,
   providerCodes: modelProviderCodes,
   selectedIds: selectedModelIds,
   onLoadError: (error) => message.warning(extractApiErrorMessage(error, '模型选项加载失败'))
-})
-const modelSelectOptions = computed<ProviderModelSelectOption[]>(() => {
-  const optionsByValue = new Map<string, ProviderModelSelectOption>()
-  for (const value of selectedModelIds.value) {
-    optionsByValue.set(value, {
-      label: value,
-      value,
-      providerCodes: modelProviderCodes.value,
-      supportedApiProtocols: []
-    })
-  }
-  for (const option of loadedModelSelectOptions.value) optionsByValue.set(option.value, option)
-  return [...optionsByValue.values()]
 })
 
 const modeOptions: Array<{ label: string; value: RouteStrategyMode }> = [
@@ -1357,18 +1340,6 @@ function clearGroupOptionsSearchTimer() {
     window.clearTimeout(groupOptionsSearchTimer)
     groupOptionsSearchTimer = undefined
   }
-}
-
-function handleModelOptionsDropdown(open: boolean) {
-  if (open && modelProviderCodes.value.length) void loadModelOptions()
-}
-
-function handleModelOptionsSearch(value: string): void {
-  clearModelOptionsSearchTimer()
-  modelOptionsSearchTimer = window.setTimeout(() => {
-    modelOptionsSearchTimer = undefined
-    if (modelProviderCodes.value.length) void loadModelOptions({ keyword: value, selectedIds: selectedModelIds.value })
-  }, 250)
 }
 
 function clearModelOptionsSearchTimer(): void {

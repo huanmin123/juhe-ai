@@ -434,7 +434,6 @@ let sectionObserver: IntersectionObserver | undefined
 const sectionRequestGate = createSettingsSectionRequestGate()
 const sectionSaveRequestGate = createSettingsSectionRequestGate()
 let pageActive = true
-let viewerKey = currentViewerKey()
 
 function sectionValues(sectionKey: ManagementSettingsSectionKey): Record<string, unknown> {
   const source = sectionKey === 'brand' ? globalForm : systemForm
@@ -484,11 +483,6 @@ function currentSectionRequestSignature(sectionKey: ManagementSettingsSectionKey
     viewerId: viewer?.id,
     viewerRole: viewer?.role
   })
-}
-
-function currentViewerKey(): string {
-  const viewer = authState.currentUser.value
-  return JSON.stringify([viewer?.id ?? 'anonymous', viewer?.role ?? 'anonymous'])
 }
 
 async function loadSettings() {
@@ -640,7 +634,6 @@ watch(() => authState.revision.value, () => {
   savingGlobal.value = false
   savingSystem.value = false
   for (const key of Object.keys(sectionLoading) as ManagementSettingsSectionKey[]) sectionLoading[key] = false
-  viewerKey = currentViewerKey()
   resetSectionsForViewerChange()
 })
 

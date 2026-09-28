@@ -130,10 +130,6 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
       && requestCatalogScopeKey === currentProviderModelCatalogScopeKey()
   }
 
-  function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
-    return dedupeAccountModelOptions(options)
-  }
-
   return {
     loadProviderModelOptions,
     providerModelOptions,

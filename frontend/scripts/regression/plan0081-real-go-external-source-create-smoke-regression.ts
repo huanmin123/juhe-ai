@@ -50,7 +50,6 @@ const sourceId = 'source-sensitive-id'
 const tokenId = 'token/id sensitive'
 const token = `juis_${'A'.repeat(43)}`
 const marker = 'PLAN-0081 external source create smoke marker v1'
-const sourceNamePrefix = 'PLAN-0081 external source create smoke '
 const secretHeaders = { 'Cache-Control': 'no-store', Pragma: 'no-cache' }
 const records: RequestRecord[] = []
 let scenario: Scenario = 'success'

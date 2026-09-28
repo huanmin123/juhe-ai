@@ -96,7 +96,7 @@ import {
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 
-const props = defineProps<{
+defineProps<{
   isManagementView: boolean
   record: UsageRecordListItem
 }>()

@@ -230,7 +230,7 @@ const goRuntimeActiveRole = ref<GoRuntimeTrendRole>('gateway')
 const healthSnapshot = ref<SystemMetricsHealthSnapshot>()
 const backgroundJobsResult = ref<SystemMetricsRuntimeJobsResult>()
 const backgroundJobStatus = ref('')
-const { usageStatsWindow, usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
+const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 
 const goRuntimeChartRef = ref<HTMLDivElement>()
 const goRuntimeChart = shallowRef<ECharts>()

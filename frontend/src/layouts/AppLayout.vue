@@ -440,13 +440,6 @@ function openHelp() {
   window.open(target, '_blank', 'noopener,noreferrer')
 }
 
-async function refreshAnnouncementsInModal() {
-  const result = await loadAnnouncements()
-  if (announcementModalOpen.value && result.loaded) {
-    await markAnnouncementsViewed(result.items)
-  }
-}
-
 async function loadAnnouncements(options: AnnouncementLoadOptions = {}): Promise<AnnouncementLoadResult> {
   const requestUserKey = currentAnnouncementUserKey()
   if (!requestUserKey || mustChangePassword.value) {

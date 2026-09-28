@@ -39,7 +39,7 @@ export function groupConcurrencyText(group: GroupRow): string {
   return String(groupStats(group).currentConcurrency)
 }
 
-export function groupConcurrencyTooltip(group: GroupRow): string {
+export function groupConcurrencyTooltip(_group: GroupRow): string {
   return '当前正在转发的请求数'
 }
 

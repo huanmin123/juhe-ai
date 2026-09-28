@@ -62,7 +62,7 @@ JUHE_AI_OPERATION_LOG_INPUT_URL=http://127.0.0.1:3304
 JUHE_AI_OPERATION_LOG_INPUT_SECRET=替换为另一把独立且至少32位的稳定随机密钥
 ```
 
-F3/F4 secret 不能复用或回退 `JUHE_AI_SECRET`。routine upgrade 启动后检查 Node 两个 health、jobs `3305/health`、gateway `3306/health` 均返回 `200`、`curl -i http://127.0.0.1:3303/__aiinternal__/health` 与 `curl -i http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health` 均返回 `204`、无 Key gateway `401`，并检查 `backend/logs/juhe-ai-jobs.log` 与 `backend/logs/juhe-ai-gateway.log` 的启动错误。F1/F2 新鲜度和 Node -> F3/F4 -> Node 详情读回只在首次部署、owner/存储变更、故障或回切时执行。完整边界见 [AI 部署执行清单](../AI部署执行清单.md)。
+F3/F4 secret 不能复用或回退 `JUHE_AI_SECRET`。routine upgrade 启动后检查 Node 两个 health、jobs `3305/health`、gateway `3306/health` 均返回 `200`、`curl -i http://127.0.0.1:3303/__aiinternal__/health` 与 `curl -i http://127.0.0.1:3304/__aiinternal__/v1/operation-logs/health` 均返回 `204`、无 Key gateway `401`，并检查 `backend/logs/juhe-ai-jobs.log` 与 `backend/logs/juhe-ai-gateway.log` 的启动错误。F1/F2 新鲜度和 Node -> F3/F4 -> Node 详情读回只在首次部署、owner/存储变更、故障或回切时执行。
 
 配置完成后才可启动：
 
@@ -241,4 +241,4 @@ Linux 生产默认只由 systemd 守护主服务；主进程继续看护 DB serv
 
 CentOS 7 等旧内核无法加载 WireGuard 内核模块时，只允许从 WireGuard 官方源码固定提交构建 `wireguard-go`，记录源码提交和 SHA-256，并由 `wg-quick@<interface>.service` 托管；不得使用来源不明的预编译二进制。必须以真实握手、收发计数和 HTTP/TLS 请求验证用户态实现。
 
-外部 health 探针可以只告警。公网失败但本机 health 正常时，先按 DNS、Caddy、WireGuard、证书和 Nginx 分层排查，不重启应用。确有无人值守自动恢复需求时，再按 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) 单独评审防抖、限频和发布互斥。
+外部 health 探针可以只告警。公网失败但本机 health 正常时，先按 DNS、Caddy、WireGuard、证书和 Nginx 分层排查，不重启应用。确有无人值守自动恢复需求时，须单独评审防抖、限频和发布互斥（原《状态检测与自动恢复指南》已随旧形态文档清理删除）。

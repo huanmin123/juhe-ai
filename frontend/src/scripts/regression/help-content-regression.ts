@@ -40,7 +40,7 @@ assertEqual(userRoutes.length, 17, '用户手册路由清单必须维护 17 项'
 assertEqual(adminRoutes.length, 28, '管理员手册路由清单必须维护 28 项')
 
 for (const route of [...userRoutes, ...adminRoutes]) {
-  assertMatch(routerSource, new RegExp(`path:\\s*['\"]${escapeRegExp(route)}['\"]`), `路由源必须保留 ${route}`)
+  assertMatch(routerSource, new RegExp(`path:\\s*['"]${escapeRegExp(route)}['"]`), `路由源必须保留 ${route}`)
 }
 
 for (const route of userRoutes) {

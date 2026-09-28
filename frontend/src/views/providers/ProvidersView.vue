@@ -269,7 +269,6 @@ import {
   formatModelServiceTier,
   formatProviderCapability,
   getModelCategory,
-  modelModeOptions,
   visibleProviderCapabilities,
   type ModelCategoryKey
 } from './providerModelFormatters'

@@ -366,7 +366,6 @@ const {
   handleDropdown: handleTeamOptionsDropdown,
   handleSearch: handleTeamOptionsSearch,
   invalidate: invalidateTeamOptions,
-  load: loadTeamOptions,
   loading: teamOptionsLoading,
   options: teams,
   resetSearch: resetTeamOptionsSearch
@@ -380,7 +379,6 @@ const {
   handleDropdown: handleGranteeUserOptionsDropdown,
   handleSearch: handleGranteeUserOptionsSearch,
   invalidate: invalidateGranteeUserOptions,
-  load: loadGranteeUserOptions,
   loading: granteeUserOptionsLoading,
   options: granteeUsers,
   resetSearch: resetGranteeUserOptionsSearch
@@ -394,7 +392,6 @@ const {
   handleDropdown: handleResourceOwnerUserOptionsDropdown,
   handleSearch: handleResourceOwnerUserOptionsSearch,
   invalidate: invalidateResourceOwnerUserOptions,
-  load: loadResourceOwnerUserOptions,
   loading: resourceOwnerUserOptionsLoading,
   options: resourceOwnerUsers,
   resetSearch: resetResourceOwnerUserOptionsSearch

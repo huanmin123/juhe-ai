@@ -150,14 +150,13 @@ import {
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
-import { sanitizePaginationState, stringOrFallback, stringUnionOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
+import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   ModelCheckLevel,
   ModelCheckModel,
   ModelCheckOptions,
   ModelCheckProgressEvent,
-  ModelCheckProfile,
   ModelCheckRunDetail,
   ModelCheckRunPayload,
   ModelCheckRunListItem,
@@ -975,14 +974,6 @@ function stopCurrentModelCheck(appendLog = true) {
     appendLog,
     stopRequest: () => modelChecksApi.stop(modelCheckScopeParams.value)
   })
-}
-
-function clearTerminal() {
-  if (modelCheckRunSession.submitting) {
-    stopCurrentModelCheck(false)
-  }
-  modelCheckRunSession.terminalLines = []
-  modelCheckRunSession.terminalVisible = false
 }
 
 function defaultModelChecksPageState(): ModelChecksPageState {

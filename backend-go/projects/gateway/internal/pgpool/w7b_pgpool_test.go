@@ -185,6 +185,13 @@ func TestW7BRealPostgresPoolLifecycle(t *testing.T) {
 	if err := handle.DB().QueryRowContext(context.Background(), `SELECT 1`).Scan(&one); err != nil || one != 1 {
 		t.Fatalf("SELECT 1 = %d err=%v", one, err)
 	}
+	// w0219 防御性集成断言：经 gateway pgpool 打开的连接执行含裸 `?` 的
+	// 查询，驱动层改写（rewrite.go）应把它改写为 $1 并在真实 PG 上正确执行
+	// ——遗漏 bind() 的执行点不再报 42601 的端到端证明。
+	var marker string
+	if err := handle.DB().QueryRowContext(context.Background(), `SELECT ?::text`, "w0219-rewrite").Scan(&marker); err != nil || marker != "w0219-rewrite" {
+		t.Fatalf("裸 ? 查询经驱动层改写应成功: marker=%q err=%v", marker, err)
+	}
 	if err := handle.Close(); err != nil {
 		t.Fatal(err)
 	}

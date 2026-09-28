@@ -205,6 +205,14 @@ type Scheduler struct {
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
+
+	// stopBoundCtx 是绑定停机信号的任务根 ctx（BUG-0220）：Scheduler 级
+	// 单次构造，Stop/StopAndDrain 在 close(stopCh) 的同一 stopOnce 闭包里
+	// 经 stopBoundCancel 取消。每轮 taskCtx 从它派生；不得改为每轮新建
+	// ctx + 监听 goroutine——那样每轮泄漏 1 个 goroutine，仅 Scheduler
+	// 停机时释放，长驻进程无界累积。
+	stopBoundCtx    context.Context
+	stopBoundCancel context.CancelFunc
 }
 
 type fireKind int
@@ -222,7 +230,12 @@ type jobState struct {
 	laneQueued bool
 
 	// 以下状态由 Scheduler.mu 保护。
-	running       bool
+	running bool
+	// pending 当前无置位路径（BUG-0223）：全文件仅有 armPostRun 的一处清零，
+	// 恒为 false。Node coalesceOne 的「结束后补跑一次」在 Go 由「错过锚点
+	// 立即照常 fire」承担（见 jobLoop 错过间隔分支），不经过本字段；
+	// Snapshot.Pending 保留仅为快照形状兼容，不得在新代码中依赖它表达
+	// 补跑状态。
 	pending       bool
 	fixedRateNext *time.Time
 	deferredAt    *time.Time
@@ -283,14 +296,18 @@ func NewScheduler(options Options) *Scheduler {
 	if options.Random == nil {
 		options.Random = rand.Float64
 	}
+	// 任务根 ctx 与 stopCh 同生命周期：构造一次，停机时在 stopOnce 内取消。
+	stopBoundCtx, stopBoundCancel := context.WithCancel(context.Background())
 	scheduler := &Scheduler{
-		clock:      options.Clock,
-		random:     options.Random,
-		stableSeed: options.StableSeed,
-		logger:     options.Logger,
-		jobs:       map[string]*jobState{},
-		lanes:      map[string]*laneState{},
-		stopCh:     make(chan struct{}),
+		clock:           options.Clock,
+		random:          options.Random,
+		stableSeed:      options.StableSeed,
+		logger:          options.Logger,
+		jobs:            map[string]*jobState{},
+		lanes:           map[string]*laneState{},
+		stopCh:          make(chan struct{}),
+		stopBoundCtx:    stopBoundCtx,
+		stopBoundCancel: stopBoundCancel,
 	}
 	go scheduler.stuckWatchLoop()
 	return scheduler
@@ -327,7 +344,12 @@ func (s *Scheduler) Schedule(spec Spec) {
 
 // Stop 立即停止调度并丢弃全部任务（不等待活跃任务结束）。
 func (s *Scheduler) Stop() {
-	s.stopOnce.Do(func() { close(s.stopCh) })
+	// stopCh 关闭与任务根 ctx 取消必须在同一 stopOnce 闭包内原子执行，
+	// 避免停机传播出现只关通道不取消 ctx 的窗口。
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		s.stopBoundCancel()
+	})
 	s.mu.Lock()
 	s.stopped = true
 	s.jobs = map[string]*jobState{}
@@ -338,7 +360,10 @@ func (s *Scheduler) Stop() {
 // StopAndDrain 停止调度并等待活跃任务结束；超时未排空返回 drained=false 与
 // 仍在运行的约数（对齐 Node stopAndDrain）。
 func (s *Scheduler) StopAndDrain(timeout time.Duration) (drained bool, activeCount int) {
-	s.stopOnce.Do(func() { close(s.stopCh) })
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		s.stopBoundCancel()
+	})
 	s.mu.Lock()
 	s.stopped = true
 	s.jobs = map[string]*jobState{}
@@ -496,12 +521,20 @@ func (s *Scheduler) jobLoop(job *jobState) {
 					// 缺陷修复：skip 直接 continue 会跳过收尾的 armPostRun；
 					// fixedDelay 的触发目标已在 fire 时一次性清空，不重建会让
 					// nextTarget 双空、jobLoop return（任务静默死亡）。
+					// BUG-0223 补注：skip-continue 路径一律必须 rearm，原因
+					// 同下——本分支与 inBackoff 分支都不经过 armPostRun 收尾。
 					s.rearmAfterRegularSkip(job, now)
 					continue
 				}
 			}
 			if s.inBackoff(job, now) {
 				s.recordSkip(job, now, "failure_backoff")
+				// BUG-0223 防御收口：skip-continue 不经过 armPostRun 的收尾
+				// 重排。当前靠「backoff 活跃 ⇒ 失败收尾的 armPostRun 已布防
+				// deferredAt」隐式不变量续命，严密但脆弱（无注释无测试）；
+				// 此处显式补一行幂等 rearm（目标存在则不覆盖，见
+				// rearmAfterRegularSkip 守卫），不再依赖该隐式不变量。
+				s.rearmAfterRegularSkip(job, now)
 				continue
 			}
 		}
@@ -694,7 +727,12 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 	job.lastScheduledAt = &scheduledStamp
 	s.mu.Unlock()
 
-	taskCtx, cancel := context.WithCancel(s.contextBoundToStop())
+	// 两层 ctx 各自持有 cancel（BUG-0220）：Timeout>0 时 WithTimeout 层覆盖
+	// cancel 引用，WithCancel 层的 taskCancel 不得随之丢失——该层不取消会让
+	// ctx 节点作为停机根的 child 永久滞留。两个 cancel 均幂等，由 handler
+	// 收尾的 defer 一并调用。
+	taskCtx, taskCancel := context.WithCancel(s.contextBoundToStop())
+	cancel := taskCancel
 	var deadline *time.Time
 	if spec.Timeout > 0 {
 		taskCtx, cancel = context.WithTimeout(taskCtx, spec.Timeout)
@@ -718,8 +756,8 @@ func (s *Scheduler) runOnce(job *jobState, scheduledAt time.Time) {
 		defer s.runWG.Done()
 		defer s.runActive.Add(-1)
 		// 先取样 ctx 状态再 cancel：cancel 本身会把 Err 变成 Canceled，
-		// 不能作为停机/超时的判定依据。
-		defer func() { completion.ctxErr = taskCtx.Err(); cancel() }()
+		// 不能作为停机/超时的判定依据。两层 cancel 都调用（幂等）。
+		defer func() { completion.ctxErr = taskCtx.Err(); cancel(); taskCancel() }()
 		completion.result, completion.runErr = spec.Task(taskCtx, TaskContext{
 			ScheduledAt: scheduledAt,
 			StartedAt:   startedAt,
@@ -1008,6 +1046,9 @@ func (s *Scheduler) armPostRun(job *jobState) bool {
 		job.deferredAt = &at
 		return true
 	}
+	// BUG-0223：pending 当前无置位路径（见 jobState.pending 注释），本分支
+	// 实际不可达；保留以维持与 Node finally 补跑语义的形状对应——若未来
+	// 恢复置位（补跑标记），此处的立即重试逻辑仍然正确。
 	if job.pending && !job.laneQueued {
 		job.pending = false
 		job.deferredAt = &now
@@ -1020,16 +1061,12 @@ func (s *Scheduler) armPostRun(job *jobState) bool {
 	return false
 }
 
+// contextBoundToStop 返回绑定停机信号的任务根 ctx：Scheduler 级单次构造
+// （NewScheduler），Stop/StopAndDrain 时随 stopCh 关闭一并取消。保留方法做
+// 单一入口；不得改回每轮新建 ctx + 监听 goroutine 的实现——每轮调用一次就
+// 泄漏 1 个 goroutine，长驻进程无界累积（BUG-0220）。
 func (s *Scheduler) contextBoundToStop() context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		select {
-		case <-s.stopCh:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	return ctx
+	return s.stopBoundCtx
 }
 
 func (s *Scheduler) setFixedRateNext(job *jobState, at *time.Time) {

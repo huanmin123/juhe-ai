@@ -12,7 +12,6 @@ import {
   realGoClientIpAllowlistSmokeEnv,
   runRealGoClientIpAllowlistCleanupOnly,
   runRealGoClientIpAllowlistCleanupOnlyFromEnvironment,
-  runRealGoClientIpAllowlistSmoke,
   runRealGoClientIpAllowlistSmokeFromEnvironment,
   type ClientIpAllowlistSmokeEnvironment,
   type RealGoClientIpAllowlistSmokeRuntime

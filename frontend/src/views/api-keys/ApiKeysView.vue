@@ -153,7 +153,7 @@
 <script setup lang="ts">
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
@@ -215,7 +215,6 @@ let routeStrategyOptionsKeyword = ''
 let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined
 let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
-let pageActive = true
 const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -643,17 +642,11 @@ watch(apiKeys, () => rememberPrincipalSelection(systemAccountFilterSelection.val
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
 onBeforeUnmount(() => {
-  pageActive = false
   clearRouteStrategyOptionsSearchTimer()
 })
 
 onDeactivated(() => {
-  pageActive = false
   invalidatePendingLoads()
-})
-
-onActivated(() => {
-  pageActive = true
 })
 
 watch(() => authState.revision.value, () => {

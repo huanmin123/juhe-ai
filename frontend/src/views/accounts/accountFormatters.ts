@@ -10,7 +10,6 @@ import type { AccountListItem, AccountStatus, AccountTestResult } from '@/types/
 import {
   accountDiagnosticMessageWithoutRepeatedFields,
   accountDiagnosticTooltipLines,
-  conciseAccountLastErrorText,
   splitAccountDiagnosticMessage,
   type AccountDiagnosticMessageParts
 } from './accountDiagnosticMessages'
@@ -143,32 +142,6 @@ export function accountCooldownText(account: AccountListItem) {
   return `暂停至 ${formatDateTime(account.cooldownUntil)}`
 }
 
-function accountRetestNextText(account: AccountListItem): string {
-  if (!account.cooldownUntil) return ''
-  const timestamp = serverDateTimeTimestamp(account.cooldownUntil)
-  if (timestamp === undefined) return formatDateTime(account.cooldownUntil)
-  if (timestamp <= Date.now()) {
-    return `复测排队中（计划 ${formatDateTime(account.cooldownUntil)}）`
-  }
-  return formatDateTime(account.cooldownUntil)
-}
-
-function accountCooldownRetestText(account: AccountListItem): string {
-  const parts: string[] = []
-  if (account.cooldownRetestFailureCount) {
-    parts.push(`连续失败 ${formatNumber(account.cooldownRetestFailureCount)} 次`)
-  }
-  if (account.cooldownRetestLastAt) {
-    const status = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
-    parts.push(`最近 ${formatDateTime(account.cooldownRetestLastAt)}${status}`)
-  }
-  const nextText = accountRetestNextText(account)
-  if (nextText) {
-    parts.push(`下次冷却复测：${nextText}`)
-  }
-  return parts.length ? `后台复测：${parts.join('，')}` : ''
-}
-
 export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const lines = accountStatusPresentationTooltipLines(account)
   const circuitStatus = activeCircuitStatus(account)
@@ -185,144 +158,9 @@ export function accountStatusTooltipLines(account: AccountListItem): string[] {
   return lines
 }
 
-function conciseAccountStatusTooltipLines(account: AccountListItem): string[] {
-  const lines = [directAccountStatusText(account)]
-  const effectiveStatus = account.effectiveAvailability?.status
-  if (account.status === 'error') {
-    lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
-  }
-  if (effectiveStatus === 'instance_expired') {
-    lines.push(account.accountExpiresAt ? `到期时间：${formatDateTime(account.accountExpiresAt)}` : '账户已到期，当前不可用')
-  } else if (effectiveStatus === 'instance_pending_test') {
-    lines.push(pendingHealthCheckStatusText(account))
-  } else if (effectiveStatus === 'instance_disabled') {
-    lines.push('已停用，不参与调度')
-  } else if (effectiveStatus === 'instance_unschedulable') {
-    lines.push('已关闭调度，不参与调度')
-  }
-  if (isTemporaryAccountStatus(account)) {
-    const retestText = accountCooldownRetestText(account)
-    if (retestText) lines.push(retestText)
-    if (isLongTermUnavailableAccount(account)) {
-      lines.push('已进入长期不可用每 1 小时复测；从观察开始满 7 天仍失败时转为异常')
-    }
-  } else if (account.effectiveAvailability?.status === 'instance_cooldown') {
-    const cooldownText = accountCooldownText(account)
-    if (cooldownText) {
-      lines.push(cooldownText)
-    } else {
-      lines.push('正在冷却，不参与调度')
-    }
-  }
-  lines.push(...accountHealthCheckTooltipLines(account))
-  lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
-    reasonLabel: '最后错误',
-    statusCode: account.cooldownRetestLastStatusCode,
-    errorCode: account.lastErrorCode,
-    concise: true
-  }))
-  if (account.lastErrorTraceId) {
-    lines.push(`最后错误 traceId：${account.lastErrorTraceId}`)
-  }
-  return lines
-}
-
-function accountHealthCheckTooltipLines(account: AccountListItem): string[] {
-  const lines: string[] = []
-  if (account.lastHealthCheckAt) {
-    lines.push(`最近主动健康检查：${formatDateTime(account.lastHealthCheckAt)}`)
-  }
-  if (account.lastHealthCheckTraceId) {
-    lines.push(`健康检查 traceId：${account.lastHealthCheckTraceId}`)
-  }
-  if (account.lastHealthSuccessAt) {
-    lines.push(`最近健康成功信号：${formatDateTime(account.lastHealthSuccessAt)}`)
-  }
-  if ((account.status === 'active' || account.status === 'pending_test') && account.nextHealthCheckAt) {
-    const nextTimestamp = serverDateTimeTimestamp(account.nextHealthCheckAt)
-    const nextText = nextTimestamp !== undefined && nextTimestamp <= Date.now()
-      ? `等待复核（计划 ${formatDateTime(account.nextHealthCheckAt)}）`
-      : formatDateTime(account.nextHealthCheckAt)
-    lines.push(`下次健康复核：${nextText}`)
-  }
-  if (account.healthCheckFailureCount) {
-    const status = account.lastHealthCheckStatusCode ? `，HTTP ${account.lastHealthCheckStatusCode}` : ''
-    const code = account.lastHealthCheckErrorCode ? `，${accountErrorCodeText(account.lastHealthCheckErrorCode)}` : ''
-    lines.push(`后台健康检测连续失败：${formatNumber(account.healthCheckFailureCount)} 次${status}${code}`)
-  }
-  const message = formatAccountHealthCheckError(account.lastHealthCheckErrorMessage, {
-    statusCode: account.lastHealthCheckStatusCode,
-    errorCode: account.lastHealthCheckErrorCode
-  })
-  if (message) {
-    lines.push(`健康检测原因：${message}`)
-  }
-  return lines
-}
-
-function formatAccountHealthCheckError(
-  message: string | undefined,
-  fields: { statusCode?: number; errorCode?: string }
-): string {
-  const value = accountDiagnosticMessageWithoutRepeatedFields(conciseAccountLastErrorText(message), fields)
-  const maxLength = 120
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
-}
-
-function shouldShowEffectiveAvailabilitySummary(account: AccountListItem): boolean {
-  const availability = account.effectiveAvailability
-  if (!availability || availability.available) return false
-  if (isDirectAccountStatus(availability.status)) return false
-  if (availability.blockerScope === 'source_account' || availability.blockerScope === 'runtime') return false
-  if (availability.status === 'authorization_expired'
-    || availability.status === 'authorization_paused'
-    || availability.status === 'authorization_quota_exceeded') {
-    return false
-  }
-  return true
-}
-
 function shouldDisplayEffectiveAvailabilityAsStatus(account: AccountListItem): account is AccountListItem & { effectiveAvailability: NonNullable<AccountListItem['effectiveAvailability']> } {
   const availability = account.effectiveAvailability
   return Boolean(availability && !availability.available)
-}
-
-function authorizedInstanceLocalStatusTooltipLines(account: AccountListItem): string[] {
-  if (!isAuthorizedInstanceLocalStatusHandledAsContext(account)) return []
-  const lines = [`授权实例本地状态：${localAccountStatusText(account)}`]
-  if (account.status === 'error') {
-    lines.push(`本地异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
-  }
-  if (isTemporaryAccountStatus(account)) {
-    const retestText = accountCooldownRetestText(account)
-    if (retestText) lines.push(`本地${retestText}`)
-    if (isLongTermUnavailableAccount(account)) {
-      lines.push('本地已进入长期不可用低频复测；后台仍会自动探活，成功后恢复可调度')
-    }
-  }
-  lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
-    reasonLabel: '本地最后错误',
-    idLabelPrefix: '本地',
-    statusCode: account.cooldownRetestLastStatusCode,
-    errorCode: account.lastErrorCode,
-    concise: true
-  }))
-  return lines
-}
-
-function isAuthorizedInstanceLocalStatusHandledAsContext(account: AccountListItem): boolean {
-  return isAuthorizedAccount(account)
-    && !isAccountInstanceEffectiveAvailability(account)
-    && Boolean(localAccountStatusText(account))
-}
-
-function localAccountStatusText(account: AccountListItem): string {
-  if (isAccountPackageExpiredStatus(account)) return '账户到期'
-  if (isLongTermUnavailableAccount(account)) return '长期不可用'
-  if (account.status !== 'active') return statusText(account.status)
-  if (isFutureTime(account.cooldownUntil)) return '冷却中'
-  if (!account.schedulable) return '停调'
-  return ''
 }
 
 export function authorizationSourceAccountStatusTag(account: AccountListItem): AccountStatusTagInfo | undefined {
@@ -429,10 +267,6 @@ function isAccountInstanceEffectiveAvailability(account: AccountListItem): accou
   return scope === 'account' || scope === 'authorized_instance'
 }
 
-function isConciseAccountStatus(status: NonNullable<AccountListItem['effectiveAvailability']>['status']): boolean {
-  return isDirectAccountStatus(status)
-}
-
 function directAccountStatusText(account: AccountListItem): string {
   const status = account.effectiveAvailability?.status
   if (status === 'instance_expired') return '账户到期'
@@ -446,13 +280,6 @@ function directAccountStatusText(account: AccountListItem): string {
   if (status === 'instance_cooldown') return '冷却中'
   if (status === 'instance_unschedulable') return '停调'
   return statusText(account.status)
-}
-
-function pendingHealthCheckStatusText(account: AccountListItem): string {
-  if (isPendingHealthCheckFailed(account)) {
-    return '后台健康检查未通过，系统每 1 小时自动重试；首次失败持续 24 小时仍未通过时转为异常；人工测试仅用于诊断，不改变账户状态'
-  }
-  return '等待后台健康检查，通过后自动参与调度；人工测试仅用于诊断，不改变账户状态'
 }
 
 export function isPendingHealthCheckFailed(account: AccountListItem): boolean {

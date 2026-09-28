@@ -4,13 +4,48 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 )
+
+// seedActiveModelCatalogRowCount 在临时库上重放与 runStorageBootstrap
+// sqlite 分支完全相同的 ensure+seed 出口（bootstrap.OpenSQLiteFile +
+// schema.EnsureSQLiteBusiness + schema.SeedSQLiteDefaults，同一默认墙钟），
+// 再在期望库上执行与被测断言完全同一条活跃行数查询
+// （SELECT count(*) FROM provider_model_catalog）返回计数：seed 只 upsert
+// ShutdownDate 仍在未来的活跃行（internal/schema activeModelCatalogSeedRows
+// 按当前 UTC 日期过滤），两侧同出口、同查询、同日期口径，任何 shutdown
+// 日期到达都不再分叉。不直接取 seed 出口自报的 ModelCatalogRows：断言对象
+// 是落库后的表行数，期望值必须来自同一条查询才算对称，否则出口计数口径
+// 一旦与表内容分叉，断言会把分叉固化而不是发现差异（原硬编码 118 即此类
+// 时间炸弹，见 BUG-0221：2026-09-28 gpt-3.5-turbo-1106 到期后两侧恒差 1）。
+func seedActiveModelCatalogRowCount(t *testing.T, secret string) int {
+	t.Helper()
+	db, err := bootstrap.OpenSQLiteFile(filepath.Join(t.TempDir(), "catalog-count-source.sqlite3"))
+	if err != nil {
+		t.Fatalf("open catalog count source db: %v", err)
+	}
+	defer db.Close()
+	if _, err := schema.EnsureSQLiteBusiness(context.Background(), db); err != nil {
+		t.Fatalf("ensure catalog count source schema: %v", err)
+	}
+	if _, err := schema.SeedSQLiteDefaults(context.Background(), db, schema.SeedOptions{Secret: secret}); err != nil {
+		t.Fatalf("seed catalog count source: %v", err)
+	}
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM provider_model_catalog").Scan(&count); err != nil {
+		t.Fatalf("query catalog count source: %v", err)
+	}
+	return count
+}
 
 func TestParseSQLiteStoragePaths(t *testing.T) {
 	parsed, err := parseSQLiteStoragePaths("business=b.sqlite,chat=c.sqlite,dataset=d.sqlite,usage-catalog=u.sqlite,stats=s.sqlite,codex-context-shard-root=shards,codex-context-shard-count=2")
@@ -85,13 +120,14 @@ func TestRunStorageBootstrapSQLiteEndToEnd(t *testing.T) {
 	if err := db.QueryRow("SELECT count(*) FROM provider_model_catalog").Scan(&catalogRows); err != nil {
 		t.Fatalf("query catalog: %v", err)
 	}
-	// 本测试使用真实时钟：seed 只 upsert ShutdownDate 仍在未来的活跃行
-	// （internal/schema/seed_shared.go activeModelCatalogSeedRows）。
-	// 2026-09-23 全厂商同步后总量为 119；deepseek-v4-flash
-	// 已于 2026-09-10 退役，故当日预期为 118。目录数据再次同步或行跨过
-	// 退役日（下一批 2026-09-28 / 2026-10-23）时需同步更新此值。
-	if catalogRows != 118 {
-		t.Fatalf("catalog rows = %d, want 118", catalogRows)
+	// 行数期望与被测侧同源对称计算：期望库重放同一 ensure+seed 后用同一条
+	// 查询取活跃行数（按当前 UTC 日期过滤 shutdown 到期行），替换原硬编码
+	// 118——目录快照演进或 shutdown 到期（如 2026-09-28 gpt-3.5-turbo-1106，
+	// BUG-0221）时断言不再失真。期望库与被测库两次 seed 间隔若跨 UTC 午夜
+	// 存在理论竞态，概率可忽略，不做防御。
+	wantCatalogRows := seedActiveModelCatalogRowCount(t, "juhe-ai-seed-test-secret")
+	if catalogRows != wantCatalogRows {
+		t.Fatalf("catalog rows = %d, want %d (同源活跃种子行数)", catalogRows, wantCatalogRows)
 	}
 	var apiKeys int
 	if err := db.QueryRow("SELECT count(*) FROM api_keys").Scan(&apiKeys); err != nil {

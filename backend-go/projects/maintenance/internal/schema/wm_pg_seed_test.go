@@ -101,6 +101,10 @@ func TestWMSeedPostgresDefaultsProducesStableStatementStream(t *testing.T) {
 	if !strings.HasPrefix(passwordHash, "pbkdf2$sha512$120000$") {
 		t.Fatalf("seed 管理员密码哈希格式错误: %q", passwordHash)
 	}
+	// BUG-0224：超管插入的 must_change_password 必须为 1，首登强制改密。
+	if flag, _ := first.args[7].(int); flag != 1 {
+		t.Fatalf("seed 超管 must_change_password = %v, want 1", first.args[7])
+	}
 	// 固定时钟时间戳参数必须落在语句里。
 	if timestamp, _ := first.args[9].(string); timestamp != "2026-09-04T08:00:00.000Z" {
 		t.Fatalf("seed 时间戳参数应来自注入时钟: %v", first.args[9])

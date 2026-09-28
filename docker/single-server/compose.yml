@@ -71,7 +71,8 @@ services:
     # 镜像未设 WORKDIR，必须显式锚定到 /app/backend，相对 data/logs 才落在
     # 下方挂载的宿主机持久目录（usage spool 交接、chat-assets、文件日志等）。
     working_dir: /app/backend
-    # 固定容器 IP：Caddy 直连 IP，不经 Docker DNS（偶发 lookup 失败会导致 502）
+    # 固定容器 IP：Caddy 直连 IP，不经 Docker DNS（偶发 lookup 失败会导致 502）；
+    # 172.18.x 为 compose 内网段（下方 ipam），非公网实例事实，无需变量化
     networks:
       default:
         ipv4_address: 172.18.0.10
@@ -91,11 +92,14 @@ services:
       # 三方同目录，未配置时 gateway 侧文件日志与 grep 面整体禁用
       JUHE_AI_LOG_DIR: /app/backend/logs
     extra_hosts:
+      # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
+      # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
+      # 即报错（与 POSTGRES_PASSWORD 的 :?required 同模式）。
       - "host.docker.internal:host-gateway"
-      - "data.aijh.huanmin.top:59.110.140.235"
-      - "data.aijh.huanmin.top:39.107.67.243"
-      - "egress.aijh.huanmin.top:59.110.140.235"
-      - "egress.aijh.huanmin.top:39.107.67.243"
+      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
     env_file: .env
     volumes:
       # PG 模式下该目录仍承载 usage spool / codex context shard 等文件数据
@@ -134,11 +138,14 @@ services:
       # 保留清理也只删该目录下的 rotated 文件
       JUHE_AI_LOG_DIR: /app/backend/logs
     extra_hosts:
+      # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
+      # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
+      # 即报错（与 POSTGRES_PASSWORD 的 :?required 同模式）。
       - "host.docker.internal:host-gateway"
-      - "data.aijh.huanmin.top:59.110.140.235"
-      - "data.aijh.huanmin.top:39.107.67.243"
-      - "egress.aijh.huanmin.top:59.110.140.235"
-      - "egress.aijh.huanmin.top:39.107.67.243"
+      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
     env_file: .env
     volumes:
       - ./data/app/data:/app/backend/data
@@ -171,11 +178,14 @@ services:
     environment:
       TZ: Asia/Shanghai
     extra_hosts:
+      # host.docker.internal 非实例事实；data/egress 两条隧道域名的出海代理公网 IP 属实例事实
+      # （BUG-0225，不入库），由 .env 的 JUHE_AI_PROXY_IP_A/B 注入，缺失时 compose config 阶段
+      # 即报错（与 POSTGRES_PASSWORD 的 :?required 同模式）。
       - "host.docker.internal:host-gateway"
-      - "data.aijh.huanmin.top:59.110.140.235"
-      - "data.aijh.huanmin.top:39.107.67.243"
-      - "egress.aijh.huanmin.top:59.110.140.235"
-      - "egress.aijh.huanmin.top:39.107.67.243"
+      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+      - "data.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
+      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_A:?JUHE_AI_PROXY_IP_A is required}"
+      - "egress.aijh.huanmin.top:${JUHE_AI_PROXY_IP_B:?JUHE_AI_PROXY_IP_B is required}"
     env_file: .env
 
   caddy:

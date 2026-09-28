@@ -197,7 +197,6 @@ const {
   handleDropdown: handleGroupOptionsDropdown,
   handleSearch: handleGroupOptionsSearch,
   invalidate: invalidateGroupOptions,
-  load: loadGroupOptions,
   loading: groupOptionsLoading,
   resetSearch: resetGroupOptionsSearch,
   selectedGroupSelection,

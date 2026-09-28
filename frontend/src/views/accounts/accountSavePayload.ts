@@ -29,10 +29,7 @@ import {
 } from './accountModelMappingProtocolMatrix'
 import type { AccountModelMappingProviderProfile } from './accountModelMappingProtocolMatrix'
 import {
-  OPENAI_CHAT_COMPLETIONS_FAMILY,
-  OPENAI_RESPONSES_FAMILY,
-  isHybridProviderCode,
-  isOpenAIProtocolProfile
+  isHybridProviderCode
 } from '@/shared/providerProtocol'
 import { accountModelMappingSourceModelOptions } from './accountModelMappingModelOptions'
 import {

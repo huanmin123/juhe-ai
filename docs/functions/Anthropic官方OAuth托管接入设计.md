@@ -1,6 +1,6 @@
 # Anthropic 官方 OAuth 托管接入设计
 
-> 状态：实施中。目标是在现有账户和系统 API 架构内，复用已验证的 OpenAI OAuth 骨架，为 Anthropic 官方 OAuth 提供托管接入能力。
+> 状态：已实现（2026-09-28 核对）。托管接入由 Go gateway `backend-go/projects/gateway/internal/oauthmgmt` 承接：`plans.go` 注册 `anthropicPlan`，`routes.go` 按统一模板挂载 `/__aisys__/api/anthropic-oauth` 与 `/__aisys__/api/my-anthropic-oauth`（auth-url、create-from-code、create-from-refresh-token、reauthorize、refresh-token 全套端点）；jobs `backend-go/projects/jobs/internal/oauthrefresh` 的保活 / 刷新计划已覆盖 `anthropic` OAuth 账户。本文写作时的模块路径（如 `modules/anthropic-oauth`）为 Node 时代表述，当前实现位置以上述 Go 包为准；设计目标与范围边界继续有效。
 
 ## 背景
 

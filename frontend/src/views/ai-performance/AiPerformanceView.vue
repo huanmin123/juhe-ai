@@ -190,7 +190,6 @@ const {
   accountsLoading,
   accountFilterItems,
   accountPickerHiddenValues,
-  activeAccountIds,
   addedAccountIds,
   addedAccountSelections,
   clearAccountState,

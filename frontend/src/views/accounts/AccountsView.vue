@@ -302,7 +302,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountBalanceDetails, AccountBatchEditResult, AccountListItem, AccountMutationResult, AccountSummary, AccountTagSummary } from '@/types/domain'
+import type { AccountBalanceDetails, AccountBatchEditResult, AccountListItem, AccountMutationResult, AccountSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -317,9 +317,6 @@ import {
 import {
   statusOptions
 } from './accountOptions'
-import {
-  accountDisplayName
-} from './accountBasicFormatters'
 import { isAuthorizedAccount } from './accountFormatters'
 import {
   accountTableScrollX,
@@ -440,8 +437,7 @@ const {
   proxies,
   loading: proxyOptionsLoading,
   handleDropdown: handleProxyOptionsDropdown,
-  handleSearch: handleProxyOptionsSearch,
-  load: loadProxyOptions
+  handleSearch: handleProxyOptionsSearch
 } = useAccountProxyOptions({
   errorMessage: '加载代理选项失败',
   scope: () => ({
@@ -480,7 +476,6 @@ const {
 const {
   disabled: tagFilterDisabled,
   handleDropdown: handleFilterAccountTagDropdown,
-  load: loadFilterAccountTagOptions,
   loading: filterAccountTagOptionsLoading,
   options: filterAccountTagOptions,
   reset: resetFilterAccountTagOptions

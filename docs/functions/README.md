@@ -103,6 +103,7 @@
 - [xAI / Grok 账号接入](xAI账号接入.md)
 - [GPT 请求服务等级与思考级别覆盖设计](GPT请求服务等级与思考级别覆盖设计.md)
 - [Anthropic 账号接入](Anthropic账号接入.md)
+- [Anthropic 官方 OAuth 托管接入设计](Anthropic官方OAuth托管接入设计.md)
 - [Anthropic 与 GPT 全链路能力对比](Anthropic与GPT全链路能力对比.md)
 - [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)
 - [Anthropic Messages 转 Chat Completions 协议转换设计](AnthropicMessages转Chat协议转换设计.md)

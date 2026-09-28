@@ -38,4 +38,4 @@ IP 管理只显示 `127.0.0.1`，不同真实客户端和不同 API Key 的新�
 
 - [执行计划](../plans/计划-20260727T140542094Z-performance真实客户端IP修复.md)
 - [IP 统计与封禁设计](../functions/IP统计与封禁设计.md)
-- [macOS performance 运维脚本](../deploy/macos/operations/README.md)
+- macOS performance 运维脚本

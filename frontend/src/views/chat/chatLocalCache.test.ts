@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/types/domain/chat'
-import { ChatLocalCache, cloneVisibleChatMessage, type ChatCachePutContext, type ChatCachePutResult, type ChatCacheSyncSnapshot, type ChatCacheConversationHead, type ChatCacheEvictionCursor, type ChatCacheSyncCommitResult, type ChatRunningTurn, type ChatLocalCacheStorageAdapter } from './chatLocalCache'
+import { ChatLocalCache, cloneVisibleChatMessage, type ChatCachePutContext, type ChatCachePutResult, type ChatCacheSyncSnapshot, type ChatCacheConversationHead, type ChatCacheSyncCommitResult, type ChatLocalCacheStorageAdapter } from './chatLocalCache'
 
 class MemoryStorageAdapter implements ChatLocalCacheStorageAdapter {
   readonly heads = new Map<string, ChatCacheConversationHead>()

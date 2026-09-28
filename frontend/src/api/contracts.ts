@@ -13,7 +13,6 @@ import type {
   ModelCheckRunListParams,
   MonitoredDatabaseRole,
   PublicApiLogResultFilter,
-  RequestQuotaLimits,
   ResponseInspectionPolicyAction,
   ResponseInspectionPolicyMatch,
   ResponseInspectionPolicyProtocolCode,

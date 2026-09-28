@@ -137,12 +137,19 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	}
 
 	// Admin login: the seeded super admin must verify the default password.
+	// BUG-0224: must_change_password must seed as 1 so the first login hits
+	// the must_change_password 403 gate (adjudication note on
+	// pgSeedSystemAccountsInsert in pg_schema.go).
 	var passwordHash string
-	if err := db.QueryRowContext(ctx, "SELECT password_hash FROM system_accounts WHERE id = 'sys_admin' AND username = 'admin' AND role = 'super_admin' AND status = 'active'").Scan(&passwordHash); err != nil {
+	var mustChangePassword int
+	if err := db.QueryRowContext(ctx, "SELECT password_hash, must_change_password FROM system_accounts WHERE id = 'sys_admin' AND username = 'admin' AND role = 'super_admin' AND status = 'active'").Scan(&passwordHash, &mustChangePassword); err != nil {
 		t.Fatalf("load seeded admin: %v", err)
 	}
 	if err := verifySeedTestPassword("admin", passwordHash); err != nil {
 		t.Fatalf("seeded admin password does not verify: %v", err)
+	}
+	if mustChangePassword != 1 {
+		t.Fatalf("seeded admin must_change_password = %d, want 1 (BUG-0224: first login must be forced to change the default password)", mustChangePassword)
 	}
 
 	// Key row counts (Node seedDefaults contract).

@@ -4,7 +4,6 @@ import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
-  canCreateOAuthAccount,
   canManageNativeOAuthAccount,
   isGatewayTestableAccountProfile
 } from './accountProviderCapabilities'

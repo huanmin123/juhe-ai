@@ -9,7 +9,7 @@ import { loadProviderOptionsResource } from '@/composables/useProviderOptionsRes
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
-import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
+import { rememberGroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountMutationResult, AccountSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'

@@ -824,8 +824,11 @@ func (r *Runner) recordCycleSummary(attempt time.Time, counts *cycleCounts, cycl
 		r.status.LastError = cycleErr.Error()
 	}
 	r.mu.Unlock()
-	// 周期结果汇总（日志在锁外；有活动 Info / 全零 Debug / 失败 Warn，字段
-	// 全为计数与 durationMs）。周期失败每轮一条：失败计数递增可定位。
+	// 周期结果汇总（日志在锁外；有活动 Info / 全零 Debug / 失败 Debug，字段
+	// 全为计数与 durationMs）。失败周期降为 Debug：同一 cycleErr 已由外层
+	// recordError 的 proxy_latency_runner_error Warn 统一告警（带
+	// consecutiveErrors，覆盖全部错误入口），此处保留周期计数细节供
+	// debug 级排障，默认级别不再对同一错误双条。
 	if r.logger == nil {
 		return
 	}
@@ -847,7 +850,7 @@ func (r *Runner) recordCycleSummary(attempt time.Time, counts *cycleCounts, cycl
 	}
 	if cycleErr != nil {
 		fields = append(fields, "error", cycleErr.Error())
-		r.logger.Warn("J3a cycle failed", fields...)
+		r.logger.Debug("J3a cycle failed", fields...)
 		return
 	}
 	if counts.processed+counts.executed+counts.inputs+counts.selected > 0 {

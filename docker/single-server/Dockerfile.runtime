@@ -10,15 +10,22 @@ ARG TARGET_BINARY
 # 国内服务器直连 dl-cdn.alpinelinux.org 不稳定，统一改走 USTC 镜像；
 # ca-certificates 供 gateway/jobs 出站 HTTPS（OpenAI 上游探针）使用，
 # tzdata 供 TZ=Asia/Shanghai 生效。
+# 非 root 运行（BUG-0225）：固定 UID/GID 1000 的系统用户 app，三进程容器不再以 root 跑；
+# 挂载宿主机目录（data/app/*）须先 chown -R 1000:1000（见 README 发布前置）。
 RUN set -eux; \
     sed -i "s#https\?://dl-cdn.alpinelinux.org#https://${ALPINE_MIRROR}#g" /etc/apk/repositories; \
-    apk add --no-cache ca-certificates tzdata
+    apk add --no-cache ca-certificates tzdata; \
+    addgroup -S -g 1000 app && adduser -S -u 1000 -G app app
 
 COPY build/bin/${TARGET_BINARY} /usr/local/bin/juhe-ai-go-project
 COPY build/frontend-dist /app/frontend/dist
 
+# 二进制与前端 dist 保持 root 属主只读可执行（app 只需 r-x）；仅运行时可写目录交给 app。
 RUN chmod 0755 /usr/local/bin/juhe-ai-go-project \
     && test -f /app/frontend/dist/index.html \
-    && mkdir -p /app/backend/data /app/backend/logs
+    && mkdir -p /app/backend/data /app/backend/logs \
+    && chown -R app:app /app/backend
+
+USER app
 
 ENTRYPOINT ["/usr/local/bin/juhe-ai-go-project"]

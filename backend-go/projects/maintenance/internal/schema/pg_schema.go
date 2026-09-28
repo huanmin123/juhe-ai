@@ -138,7 +138,26 @@ type PGSeedResult struct {
 	StatementCount int
 }
 
-// pgSeedSystemAccountsInsert seeds the default super admin account.
+// pgSeedSystemAccountsInsert seeds the default super admin account with
+// must_change_password = 1 (BUG-0224: the seeded super admin authenticates
+// with the well-known default password admin/admin, so the first login must
+// hit the must_change_password 403 gate instead of relying on a manual
+// rename step). Contract adjudication 2026-09-28: the Node archive
+// (migration-backup/node/final-archive) carries no seed source at all — the
+// postgres-seed-defaults.ts this port's header cites does not exist there —
+// so there is no Node seed value to mirror. The Node generic create path
+// defaults mustChangePassword to true but
+// normalizeSystemAccountMustChangePassword (system-accounts.repository.ts:1500)
+// short-circuits to false for super_admin/admin; that semantics belongs to
+// admin-console account creation (password chosen by the creator), not to a
+// seed row created with a public default password. The runtime 403 gate
+// (Node auth.middleware.ts:51-52, Go authsys middleware) checks the column
+// value with no role exemption, so a seeded 1 takes effect for super_admin.
+// The deploy guide's standing "首次登录立即改密" step states the intent;
+// seeding 1 turns it into the enforced gate. Both PG call sites
+// (EnsurePostgresSeeds and seedPostgresDefaults) share this constant and
+// stay ON CONFLICT DO NOTHING, so existing databases keep their stored rows
+// untouched.
 const pgSeedSystemAccountsInsert = `
       INSERT INTO "juhe_business"."system_accounts" (
         id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, created_at, updated_at
@@ -895,7 +914,7 @@ func EnsurePostgresSeeds(ctx context.Context, db *sql.DB) (PGSeedResult, error) 
 	if err != nil {
 		return PGSeedResult{}, fmt.Errorf("hash seed admin password: %w", err)
 	}
-	if err := exec(pgSeedSystemAccountsInsert, "sys_admin", "admin", "超级管理员", "系统默认超级管理员账户", "super_admin", "active", adminPasswordHash, 0, 0, now, now); err != nil {
+	if err := exec(pgSeedSystemAccountsInsert, "sys_admin", "admin", "超级管理员", "系统默认超级管理员账户", "super_admin", "active", adminPasswordHash, 1, 0, now, now); err != nil {
 		return PGSeedResult{}, err
 	}
 	for _, setting := range pgSeedGlobalSettings {

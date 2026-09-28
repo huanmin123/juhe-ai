@@ -72,16 +72,19 @@ func (d *Deps) redisDriver() *redisPenaltyDriver {
 }
 
 // warnPenaltyFallback reports the Redis fallback (Deps.Warn, slog default
-// logger otherwise) — the migration-time degradation marker.
+// logger otherwise) — the migration-time degradation marker. 生产组合根未注入
+// Deps.Warn（func(string) 签名，仅测试注入），默认路径走 slog 兜底并按结构化
+// 规范把 err 放进 error 键；注入分支受签名约束保持拼接消息。
 func (d *Deps) warnPenaltyFallback(err error) {
-	message := "aipublic penalty-window Redis 限流不可用，回退进程内存：" + err.Error()
 	if d.Warn != nil {
-		d.Warn(message)
+		d.Warn("aipublic penalty-window Redis 限流不可用，回退进程内存：" + err.Error())
 		return
 	}
 	// Default 必须在调用时取：main 侧 slog.SetDefault(jsonLogger) 后本行落
 	// JSON 日志管道。
-	slog.Default().Warn(message, "event", "aipublic_penalty_redis_fallback")
+	slog.Default().Warn("aipublic penalty-window Redis 限流不可用，回退进程内存",
+		"event", "aipublic_penalty_redis_fallback",
+		"error", err.Error())
 }
 
 // consumeRateLimit mirrors consumePenaltyWindowRateLimitAsync: the Redis

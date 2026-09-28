@@ -124,13 +124,6 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AuditLogList from './AuditLogList.vue'
 import {
-  displayAuditGroupName,
-  displayName,
-  formatDateTime,
-  statusColor,
-  trafficSourceText
-} from './auditLogFormatters'
-import {
   auditLogFilterCounts,
   auditLogListParams
 } from './auditLogFilters'
@@ -225,7 +218,6 @@ const {
   clearSearchTimer: clearAccountOptionsSearchTimer,
   handleDropdown: handleAccountOptionsDropdown,
   handleSearch: handleAccountOptionsSearch,
-  load: loadAccountOptions,
   loading: accountOptionsLoading,
   options: accountOptions,
   resetSearch: resetAccountOptionsSearch
@@ -387,10 +379,6 @@ function restorePageStateAfterRouteTraceCleared(): void {
   } else {
     void loadData({ forceOptions: true })
   }
-}
-
-function refreshRecords(): void {
-  void loadData({ forceOptions: true })
 }
 
 function resetFilters(): void {

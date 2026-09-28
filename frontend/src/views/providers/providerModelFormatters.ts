@@ -10,7 +10,6 @@ import type {
   ProviderModelStatus
 } from '@/types/domain'
 import {
-  categoryFromModeOrModel,
   getModelCategoryFromPricing,
   modelCategoryLabels,
   modelCategoryOrder,

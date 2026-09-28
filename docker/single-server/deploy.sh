@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 国内单机生产发布脚本（103.36.63.105，go-only 单机 Docker）。
+# 国内单机生产发布脚本（目标服务器见 .local 资产与 .env，go-only 单机 Docker）。
 #
 # 防呆设计（对应 2026-09-26 部署事故：shared 模块修复后 gateway 用旧产物上线）：
 #   1. 每次发布无条件全量重编译目标二进制（不信任 build/bin 里的既有产物）；
@@ -18,7 +18,18 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
-SERVER=root@103.36.63.105
+# 目标服务器属实例事实，不入库（BUG-0225）：优先环境变量 JUHE_AI_DEPLOY_SERVER，
+# 其次同目录 .env（gitignore）里的同名变量；两者皆缺时 fail-fast。
+if [ -z "${JUHE_AI_DEPLOY_SERVER:-}" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+  JUHE_AI_DEPLOY_SERVER=$(grep '^JUHE_AI_DEPLOY_SERVER=' "$SCRIPT_DIR/.env" | tail -n 1 | cut -d= -f2- | tr -d '\r"'\' || true)
+fi
+if [ -z "${JUHE_AI_DEPLOY_SERVER:-}" ]; then
+  echo "[FAIL] 缺少 JUHE_AI_DEPLOY_SERVER（ssh 目标，<user>@<IP>）。" >&2
+  echo "       从 .local/project-resources/prod/assets/ 服务器资产台账获取并写入 docker/single-server/.env：" >&2
+  echo "         echo 'JUHE_AI_DEPLOY_SERVER=<user>@<服务器IP>' >> docker/single-server/.env" >&2
+  exit 1
+fi
+SERVER="$JUHE_AI_DEPLOY_SERVER"
 SERVER_DIR=/opt/juhe-ai
 SSH="ssh -i $REPO_ROOT/.local/project-resources/prod/assets/ssh/juhe_ai_cn103_ed25519 -o BatchMode=yes -o ConnectTimeout=15"
 HEALTH_URL=https://aijh.huanmin.top/__aisys__/health

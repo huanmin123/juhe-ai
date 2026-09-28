@@ -1665,9 +1665,8 @@ function assertExternalIntegrationSourceDetail(
     value.status === 'active' || value.status === 'disabled',
     `${label}.status must be active or disabled`
   )
-  const scopes = assertExternalIntegrationSourceScopesSubset(value.scopes, `${label}.scopes`)
+  assertExternalIntegrationSourceScopesSubset(value.scopes, `${label}.scopes`)
   assertExternalIntegrationSourceRateLimits(value.rateLimits, `${label}.rateLimits`)
-  const rateLimits = value.rateLimits as Array<{ windowSeconds: number; maxRequests: number }>
   assertOptionalISOString(value, 'expiresAt', label)
   if (Object.hasOwn(value, 'notes')) {
     expect(typeof value.notes === 'string', `${label}.notes must be a string when present`)

@@ -3,6 +3,7 @@ package pgpool
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,16 +34,30 @@ func (sqlDebugTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.T
 	}
 }
 
+// defaultPGXDriver 可注入点：测试用 fake driver 覆盖 OpenConnector 错误分支
+// 与改写接线（rewrite.go）。直接持有 pgx stdlib 的默认 driver 实例并就地包
+// rewriteDriver，不向 database/sql 注册新驱动名，避免与 pgx 原生名冲突。
+var defaultPGXDriver driver.Driver = stdlib.GetDefaultDriver()
+
+// openPGX 打开 gateway 的 PG 池句柄：两条臂都统一套方言改写 driver
+// （rewrite.go）。默认臂与 sql.Open("pgx", url) 惰性语义一致（pgx 的
+// OpenConnector 是惰性包装，DSN 解析延迟到 Connect）；JUHE_AI_DEBUG_SQL=1
+// 调试臂解析 ConnConfig 挂 tracer 后经 stdlib.GetConnector 同样包一层
+// rewriteConnector，tracer 行为不变。
 func openPGX(url string) (*sql.DB, error) {
 	if os.Getenv("JUHE_AI_DEBUG_SQL") != "1" {
-		return sql.Open("pgx", url)
+		connector, err := (&rewriteDriver{inner: defaultPGXDriver}).OpenConnector(url)
+		if err != nil {
+			return nil, err
+		}
+		return sql.OpenDB(connector), nil
 	}
 	cfg, err := pgx.ParseConfig(url)
 	if err != nil {
 		return nil, err
 	}
 	cfg.Tracer = sqlDebugTracer{}
-	return stdlib.OpenDB(*cfg), nil
+	return sql.OpenDB(rewriteConnector{inner: stdlib.GetConnector(*cfg)}), nil
 }
 
 // Registry keeps the gateway-specific pgx opener and delegates pool

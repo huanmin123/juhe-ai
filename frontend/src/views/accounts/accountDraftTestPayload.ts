@@ -1,6 +1,6 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { groupLabelForId } from '@/shared/groupLabelCache'
-import { isAnthropicProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import { isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type {
   AccountEditBasicDetail,
   AccountListItem,

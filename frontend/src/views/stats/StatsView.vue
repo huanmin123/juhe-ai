@@ -194,7 +194,7 @@ const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageSta
 const usageOverview = ref<UsageStatsOverview>()
 const dailyTrend = ref<UsageStatsOverviewDailyTrendResult>()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
-const { usageStatsWindow, usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
+const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,

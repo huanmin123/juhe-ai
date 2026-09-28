@@ -88,7 +88,6 @@
 import { message } from '@/lib/antd'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
-import { api } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'

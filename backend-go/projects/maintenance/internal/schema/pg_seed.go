@@ -61,7 +61,9 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 	if err != nil {
 		return PGSeedResult{}, fmt.Errorf("hash seed admin password: %w", err)
 	}
-	if err := exec(pgSeedSystemAccountsInsert, "sys_admin", "admin", "超级管理员", "系统默认超级管理员账户", "super_admin", "active", adminPasswordHash, 0, 0, now, now); err != nil {
+	// must_change_password = 1: BUG-0224, see the adjudication note on
+	// pgSeedSystemAccountsInsert in pg_schema.go.
+	if err := exec(pgSeedSystemAccountsInsert, "sys_admin", "admin", "超级管理员", "系统默认超级管理员账户", "super_admin", "active", adminPasswordHash, 1, 0, now, now); err != nil {
 		return PGSeedResult{}, err
 	}
 	for _, setting := range pgSeedGlobalSettings {

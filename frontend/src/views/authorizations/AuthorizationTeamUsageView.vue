@@ -323,7 +323,6 @@ const {
   handleDropdown: handleResourceOwnerOptionsDropdown,
   handleSearch: handleResourceOwnerOptionsSearch,
   invalidate: invalidateResourceOwnerOptions,
-  load: loadResourceOwnerOptions,
   loading: resourceOwnerOptionsLoading,
   resetSearch: resetResourceOwnerOptionsSearch,
   systemAccounts: resourceOwners
@@ -336,7 +335,6 @@ const {
   handleDropdown: handleTeamOptionsDropdown,
   handleSearch: handleTeamOptionsSearch,
   invalidate: invalidateTeamOptions,
-  load: loadTeamOptions,
   loading: teamOptionsLoading,
   options: teams,
   resetSearch: resetTeamOptionsSearch

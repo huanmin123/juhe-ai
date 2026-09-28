@@ -137,13 +137,19 @@ func TestSeedPostgresDefaultsSmoke(t *testing.T) {
 		t.Fatalf("seed statement count changed between runs: %d -> %d", first.StatementCount, second.StatementCount)
 	}
 	var adminRows int
+	var mustChangePassword int
 	if err := db.QueryRowContext(ctx,
-		`SELECT count(*) FROM "juhe_business"."system_accounts" WHERE id = 'sys_admin' AND username = 'admin'`,
-	).Scan(&adminRows); err != nil {
+		`SELECT count(*), coalesce(max(must_change_password), 0) FROM "juhe_business"."system_accounts" WHERE id = 'sys_admin' AND username = 'admin'`,
+	).Scan(&adminRows, &mustChangePassword); err != nil {
 		t.Fatalf("count admin rows: %v", err)
 	}
 	if adminRows != 1 {
 		t.Fatalf("admin rows = %d, want 1", adminRows)
+	}
+	// BUG-0224: the seeded super admin must carry must_change_password = 1 so
+	// the first login hits the must_change_password 403 gate.
+	if mustChangePassword != 1 {
+		t.Fatalf("seeded admin must_change_password = %d, want 1", mustChangePassword)
 	}
 	var catalogRows int
 	if err := db.QueryRowContext(ctx,

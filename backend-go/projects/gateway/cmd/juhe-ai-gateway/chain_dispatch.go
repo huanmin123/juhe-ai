@@ -916,9 +916,10 @@ func newChainListAvailabilityDirtyMarker(composed *composition) gatewayaccountef
 			return err
 		}
 		// 家族展开：id IN (source) OR authorization_instance_source_account_id
-		// IN (source)（repository.ts:665-681）。
+		// IN (source)（repository.ts:665-681）。占位符用 PG 方言 $n（BUG-0219：
+		// gateway pgpool 无驱动层 ? -> $n 改写，裸 ? 在 pgx 下报 42601）。
 		rows, err := tx.QueryContext(ctx, `SELECT id FROM juhe_business.accounts
-			WHERE deleted_at IS NULL AND (id = ? OR authorization_instance_source_account_id = ?)
+			WHERE deleted_at IS NULL AND (id = $1 OR authorization_instance_source_account_id = $2)
 			ORDER BY id ASC`, accountID, accountID)
 		if err != nil {
 			return err

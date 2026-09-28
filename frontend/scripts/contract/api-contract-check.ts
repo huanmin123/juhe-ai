@@ -238,7 +238,7 @@ function resolveUrlExpression(expr: string, helpers: HelperDef[], location: stri
     const helper = helpers.find((h) => h.name === helperCall[1])
     if (!helper) throw new FrontendParseError(location, `未知的 URL 辅助函数: ${trimmed}`)
     const args = splitTopLevel(helperCall[2], ',')
-    let body = helper.body
+    const body = helper.body
     if (body.startsWith('`')) {
       let template = body.slice(1, -1)
       for (let p = 0; p < helper.params.length; p++) {

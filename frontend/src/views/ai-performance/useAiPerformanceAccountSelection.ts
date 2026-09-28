@@ -87,7 +87,6 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
   const visibleOverview = computed<AiPerformanceOverview | undefined>(() => {
     const currentOverview = displayOverview.value
     if (!currentOverview) return undefined
-    const visibleIds = visibleAccountIdSet.value
     return {
       ...currentOverview,
       accounts: visibleAccounts.value,

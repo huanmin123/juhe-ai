@@ -1,7 +1,6 @@
 package jobsched
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -14,9 +13,11 @@ import (
 // 事件与字段；nil logger 路径断言零行为变化。
 
 // newW2LoggedScheduler 构建带 TextHandler 日志的调度器，返回调度器与日志
-// buffer；级别由调用方指定。
-func newW2LoggedScheduler(clock *fakeClock, level slog.Level) (*Scheduler, *bytes.Buffer) {
-	buffer := &bytes.Buffer{}
+// buffer；级别由调用方指定。buffer 用同包 raceBuffer（BUG-0223：裸
+// bytes.Buffer 下调度器 goroutine 的 slog 写入与测试 goroutine 的
+// waitForLog/断言读竞争，-race 必报 data race）。
+func newW2LoggedScheduler(clock *fakeClock, level slog.Level) (*Scheduler, *raceBuffer) {
+	buffer := &raceBuffer{}
 	scheduler := NewScheduler(Options{
 		StableSeed: "instance:stats-worker:0",
 		Clock:      clock,
@@ -26,8 +27,9 @@ func newW2LoggedScheduler(clock *fakeClock, level slog.Level) (*Scheduler, *byte
 	return scheduler, buffer
 }
 
-// waitForLog 等待日志出现（记账与锁外日志之间存在微小窗口）。
-func waitForLog(t *testing.T, buffer *bytes.Buffer, substr string) {
+// waitForLog 等待日志出现（记账与锁外日志之间存在微小窗口）。读经
+// raceBuffer.String() 持锁进行，与调度器 goroutine 的写入同步。
+func waitForLog(t *testing.T, buffer *raceBuffer, substr string) {
 	t.Helper()
 	waitFor(t, time.Second, func() bool {
 		return strings.Contains(buffer.String(), substr)

@@ -424,7 +424,6 @@ const saveAnnouncement = submitAction('announcements.save', async () => {
       if (targetId) invalidatePendingAnnouncementDetail(targetId)
       await loadData()
     }
-  } finally {
   }
 })
 

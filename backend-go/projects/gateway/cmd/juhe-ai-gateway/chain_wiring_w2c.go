@@ -252,7 +252,7 @@ func (c *chainHighConcurrencyQueue) WaitForCapacity(ctx context.Context, input g
 // circuitSummary 复用同一事实源）；配置不齐或契约校验失败时保持既有
 // ServiceOptions{} 行为（无持久观测），绝不 fail-fast 网关启动，也绝不向
 // 请求热路径传播持久化错误（见 chain_circuit_controlplane.go）。
-func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNamespace string, persist chainAccountCircuitPersistConfig) (*gatewaycircuit.CircuitService, func(), error) {
+func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNamespace string, persist chainAccountCircuitPersistConfig, logger gatewaycircuit.Logger) (*gatewaycircuit.CircuitService, func(), error) {
 	var store gatewaycircuit.Store
 	if runtimeStateDriver == "redis" {
 		redisStore, storeErr := gatewaycircuit.NewRedisStore(gatewaycircuit.RedisStoreOptions{
@@ -275,7 +275,10 @@ func newChainAccountCircuitService(runtimeStateDriver, redisStateURL, redisNames
 		}
 		store = memoryStore
 	}
-	options := gatewaycircuit.ServiceOptions{}
+	// BUG-0222：logger 为 nil 时服务内部回落 NopLogger；生产装配传
+	// chainCircuitWaitLogger（releaseAcquiredConfirmation 二次补结算失败的
+	// Warn 留痕依赖注入，否则日志逻辑就位但不输出）。
+	options := gatewaycircuit.ServiceOptions{Logger: logger}
 	closes := []func(){}
 	mutationHook, closePersist, hookErr := newChainAccountCircuitPersistHook(store, persist)
 	if hookErr != nil {

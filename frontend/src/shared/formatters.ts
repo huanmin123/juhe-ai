@@ -103,7 +103,7 @@ export function parseStrictServerDateTime(value?: string): Date | undefined {
   if (!value) return undefined
   const match = serverDateTimePattern.exec(value)
   if (!match) return undefined
-  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fractionText, timezone] = match
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, _fractionText, timezone] = match
   const year = Number(yearText)
   const month = Number(monthText)
   const day = Number(dayText)

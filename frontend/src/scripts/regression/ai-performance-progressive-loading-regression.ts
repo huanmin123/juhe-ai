@@ -21,7 +21,7 @@ assert.match(viewSource, /function retryBase\(\) \{[\s\S]{0,100}loadPerformanceC
 assert.match(viewSource, /seriesError[\s\S]*retrySeries/, 'series 必须提供独立重试')
 assert.match(selectionSource, /options\.loadMissingSeries\(acceptedIds\)/, '新增账户只能补缺失 series')
 assert.doesNotMatch(selectionSource, /options\.reloadPerformance\(\)/, '账户选择变化不得重取 base')
-const removeAccountBody = selectionSource.match(/function removeAddedAccount\(id: string\) \{([\s\S]*?)\n  \}/)?.[1] ?? ''
+const removeAccountBody = selectionSource.match(/function removeAddedAccount\(id: string\) \{([\s\S]*?)\n {2}\}/)?.[1] ?? ''
 assert.ok(removeAccountBody, '必须保留删除追加账户入口')
 assert.doesNotMatch(removeAccountBody, /load|api\./, '删除追加账户必须纯本地完成且零请求')
 assert.match(viewSource, /onDeactivate:[\s\S]*deactivatePerformanceRequests/, 'KeepAlive 失活必须推进请求 epoch')

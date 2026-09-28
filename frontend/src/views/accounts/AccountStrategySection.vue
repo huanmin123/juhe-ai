@@ -106,7 +106,6 @@ import {
   ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
-  OPENAI_CHAT_COMPLETIONS_FAMILY,
   isHybridProviderCode
 } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'

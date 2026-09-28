@@ -99,6 +99,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return failWith(stderr, err)
 	}
 	logger := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: logLevel}))
+	// --run-jobs-once 的 stdout 契约是仅输出结果 JSON 数组：该模式下进程
+	// logger（含装配期与任务执行期经 worker logger 的全部汇总/告警日志）
+	// 重建为写 stderr 的 JSON logger，日志与结果彻底分流；--once 与守护
+	// 路径不受影响，继续写 stdout。
+	if *runJobsOnce != "" {
+		logger = slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: logLevel}))
+	}
 	// 2026-09-28 日志治理：safego 等以 slog.Default() 兜底的组件统一走进程
 	// JSON logger。SetDefault 不在此处安装：--once 与 --run-jobs-once 分支的
 	// 契约是向 stdout 输出单个 JSON 结果，SetDefault 会安装 std log → slog

@@ -122,6 +122,9 @@ type ServiceOptions struct {
 	EscalationWindowMs               *int64
 	Settings                         Settings
 	Random                           func() float64
+	// Logger 用于非请求关键路径的留痕（如确认槽位释放补结算失败）；
+	// nil 默认 NopLogger，保持静默行为。生产由组合根注入。
+	Logger Logger
 }
 
 // PrepareAttemptInput mirrors PrepareGatewayAccountCircuitAttemptInput.
@@ -439,6 +442,7 @@ type CircuitService struct {
 	settings                         Settings
 	random                           func() float64
 	observability                    func(event RoutingObservabilityEvent)
+	logger                           Logger
 }
 
 // NewCircuitService mirrors new GatewayAccountCircuitService.
@@ -471,6 +475,10 @@ func NewCircuitService(store Store, options ServiceOptions) (*CircuitService, er
 	if random == nil {
 		random = defaultRandom
 	}
+	logger := options.Logger
+	if logger == nil {
+		logger = NopLogger
+	}
 	return &CircuitService{
 		store:                            store,
 		now:                              now,
@@ -483,6 +491,7 @@ func NewCircuitService(store Store, options ServiceOptions) (*CircuitService, er
 		settings:                         settings,
 		random:                           random,
 		observability:                    nil,
+		logger:                           logger,
 	}, nil
 }
 
@@ -772,8 +781,22 @@ func (s *CircuitService) releaseAcquiredConfirmation(ctx context.Context, confir
 		return
 	}
 	_, err := s.CompleteConfirmation(ctx, *confirmation, OutcomeUnknown, nil, nil, nil)
-	if err != nil {
-		_, _ = s.CompleteConfirmation(ctx, *confirmation, OutcomeUnknown, nil, nil, nil)
+	if err == nil {
+		return
+	}
+	if _, retryErr := s.CompleteConfirmation(ctx, *confirmation, OutcomeUnknown, nil, nil, nil); retryErr != nil {
+		// BUG-0222：补结算重放仍失败时确认槽位只能等租约超时回收，此处
+		// 必须留痕，否则槽位悬挂无线索可查。重放失败不改变调用方
+		// best-effort 语义，错误不向请求路径传播。
+		s.logger.Warn(map[string]any{
+			"event":             "gateway_circuit_confirmation_release_failed",
+			"accountRuntimeKey": confirmation.AccountRuntimeKey,
+			"scopeKey":          confirmation.ScopeKey,
+			"generation":        confirmation.Generation,
+			"dispatchRevision":  confirmation.DispatchRevision,
+			"leaseID":           confirmation.LeaseID,
+			"error":             retryErr.Error(),
+		}, "确认槽位释放补结算重放失败，槽位悬挂待租约超时回收")
 	}
 }
 

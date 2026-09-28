@@ -42,6 +42,9 @@ const (
 	balanceRefreshLeaseMS = 30_000
 	// balanceDetectInputTTL 是 J2 输入信封的有效期（≤15min 上限内的保守值）。
 	balanceDetectInputTTL = 5 * time.Minute
+	// balanceLeaseReleaseTimeout 是候选级租约释放的收口上限（对齐 taskruns
+	// 的 runFinishTimeout 范式：释放是有限 IO，不随任务时长放大）。
+	balanceLeaseReleaseTimeout = 5 * time.Second
 )
 
 // balanceConfigJSON 是 balance_query_config_json 的 Node camelCase 序列化
@@ -671,8 +674,15 @@ func (r *balanceDetectRuntime) RunWithLease(ctx context.Context, candidate opsjo
 	if !acquired {
 		return false, nil
 	}
+	// BUG-0223 防御收口：run 可能耗尽/取消外层 ctx（任务超时、停机传播），
+	// 以已取消 ctx 释放租约会以 context.Canceled 失败且错误被吞，租约滞留至
+	// 30s TTL 才能被接管。参照 taskruns 的 boundedFinishContext 范式：用脱离
+	// 取消传播的 bounded ctx 收尾（WithoutCancel 保留 ctx 值但剥离取消信号，
+	// 释放错误照旧可吞但不再因 ctx 取消而失败）。
+	releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), balanceLeaseReleaseTimeout)
+	defer releaseCancel()
 	defer func() {
-		_ = r.leasestore.ReleaseLease(ctx, leaseKey, ownerID)
+		_ = r.leasestore.ReleaseLease(releaseCtx, leaseKey, ownerID)
 	}()
 	return true, run(ctx)
 }

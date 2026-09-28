@@ -120,7 +120,7 @@ export function buildAccountBalancePayload(form: Pick<AccountFormModel,
   return { balanceQueryEnabled: true, balanceQueryConfig: buildBalanceQueryConfig(form) }
 }
 
-export function accountBalanceWillAutoDisable(form: Pick<AccountFormModel, 'type' | 'apiKeys' | 'balanceQueryEnabled'>): boolean {
+export function accountBalanceWillAutoDisable(_form: Pick<AccountFormModel, 'type' | 'apiKeys' | 'balanceQueryEnabled'>): boolean {
   return false
 }
 

@@ -565,7 +565,7 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		Confirmed:         cfg.BusinessHandoffConfirmed,
 		SchemaReady:       cfg.BusinessSchemaReady,
 		NodeWriterStopped: cfg.BusinessNodeWriterStopped,
-	})
+	}, chainCircuitWaitLogger{inner: slog.Default()})
 	if circuitsErr != nil {
 		return nil, circuitsErr
 	}

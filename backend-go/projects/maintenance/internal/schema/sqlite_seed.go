@@ -54,8 +54,10 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 	if err != nil {
 		return SQLiteSeedResult{}, fmt.Errorf("hash seed admin password: %w", err)
 	}
+	// must_change_password = 1: BUG-0224, see the adjudication note on
+	// pgSeedSystemAccountsInsert in pg_schema.go (shared contract).
 	if err := exec(sqSeedSystemAccountsInsert,
-		"sys_admin", "admin", "超级管理员", "系统默认超级管理员账户", "super_admin", "active", adminPasswordHash, 0, 0, now, now); err != nil {
+		"sys_admin", "admin", "超级管理员", "系统默认超级管理员账户", "super_admin", "active", adminPasswordHash, 1, 0, now, now); err != nil {
 		return SQLiteSeedResult{}, err
 	}
 
@@ -156,6 +158,8 @@ func SeedSQLiteDefaults(ctx context.Context, db *sql.DB, options SeedOptions) (S
 }
 
 // sqSeedSystemAccountsInsert is the Node default super admin insert.
+// must_change_password = 1 (BUG-0224): adjudication note on
+// pgSeedSystemAccountsInsert in pg_schema.go covers the shared contract.
 const sqSeedSystemAccountsInsert = `
       INSERT OR IGNORE INTO system_accounts (
         id, username, display_name, description, role, status, password_hash, must_change_password, image_generation_enabled, created_at, updated_at

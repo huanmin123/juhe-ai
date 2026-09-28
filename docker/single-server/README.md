@@ -1,6 +1,6 @@
 # 单机 Docker 部署（国内服务器，go-only）
 
-国内单台服务器（103.36.63.105，Debian 13）上以 Docker Compose 运行全套 juhe-ai：PostgreSQL + Redis + gateway/jobs/maintenance（本地交叉编译的二进制）+ Caddy 入口。这是替代 K3s 混合形态的 go-only 目标部署形态；服务器资产、密码与运行事实记录在 `.local/project-resources/prod/`（私有）。
+国内单台服务器（Debian 13）上以 Docker Compose 运行全套 juhe-ai：PostgreSQL + Redis + gateway/jobs/maintenance（本地交叉编译的二进制）+ Caddy 入口。这是替代 K3s 混合形态的 go-only 目标部署形态；服务器地址、资产、密码与运行事实记录在 `.local/project-resources/prod/`（私有，不入库——BUG-0225）。
 
 ## 拓扑
 
@@ -17,7 +17,7 @@ maintenance：compose --profile tool 一次性容器（幂等 CLI）
 - gateway 启动硬性要求 J3b 运行态索引 ready：新库必须先跑 `docker compose run --rm gateway -init-account-circuit-runtime-index`。
 - 管理前端由 gateway 从镜像内 `/app/frontend/dist` 提供（必须显式 `JUHE_AI_FRONTEND_DIST_PATH`，默认空不挂 SPA）；根路径 `/` 由 Caddy 301 到 `/__aisys__/`。
 - PG/Redis 不对宿主机发布端口。入口为 `https://aijh.huanmin.top`（Caddy ACME 自动续期，80 常驻 308 升级 HTTPS，443/udp HTTP/3）。
-- 同机共存：聚合AI公益站（juhe-pw 栈，`gyai.huanmin.top`）以 external 方式加入本栈网络并复用本栈 PG/Redis/Caddy；`Caddyfile` 为两栈共享文件（含公益站反代块），划分与修改纪律见 `.local/project-resources/prod/assets/国内单机-103.36.63.105.md`「同机共存」节。
+- 同机共存：聚合AI公益站（juhe-pw 栈，`gyai.huanmin.top`）以 external 方式加入本栈网络并复用本栈 PG/Redis/Caddy；`Caddyfile` 为两栈共享文件（含公益站反代块），划分与修改纪律见 `.local/project-resources/prod/assets/` 服务器资产台账「同机共存」节。
 
 ## 目录
 
@@ -26,7 +26,7 @@ docker/single-server/
 ├── compose.yml          # Compose 拓扑（本目录即 Compose 项目目录；gateway/jobs 必须 working_dir: /app/backend，见下）
 ├── Caddyfile            # 共享入口配置：aijh.huanmin.top（本项目）+ gyai.huanmin.top（同机公益站 juhe-pw 栈）；ACME 自动 HTTPS，:80 常驻 308
 ├── Dockerfile.runtime   # alpine + 预编译二进制 + 前端 dist（未设 WORKDIR，cwd 锚定靠 compose）
-├── .env                 # 密钥与连接串（gitignore；服务器同路径放置）
+├── .env                 # 密钥、连接串与部署变量（gitignore；服务器同路径放置，见下".env 契约"）
 └── build/               # 本机构建产物（gitignore）：bin/ + frontend-dist/
 ```
 
@@ -54,10 +54,11 @@ for p in gateway jobs maintenance; do
 done
 (cd frontend && pnpm build && rm -rf ../docker/single-server/build/frontend-dist && cp -r dist ../docker/single-server/build/frontend-dist)
 
-# 2. 上传（服务器目录约定 /opt/juhe-ai）
-ssh root@103.36.63.105 'mkdir -p /opt/juhe-ai'
+# 2. 上传（服务器目录约定 /opt/juhe-ai；<PROD_SERVER_IP> = 生产服务器公网 IP，
+#    见 .local/project-resources/prod/assets/，日常发布用 deploy.sh + JUHE_AI_DEPLOY_SERVER）
+ssh root@<PROD_SERVER_IP> 'mkdir -p /opt/juhe-ai'
 tar czf - -C docker/single-server compose.yml Caddyfile Dockerfile.runtime .env build \
-  | ssh root@103.36.63.105 'tar xzf - -C /opt/juhe-ai && chmod 0755 /opt/juhe-ai/build/bin/*'
+  | ssh root@<PROD_SERVER_IP> 'tar xzf - -C /opt/juhe-ai && chmod 0755 /opt/juhe-ai/build/bin/*'
 
 # 3. 服务器上构建镜像 + 初始化 + 启动（完整序列见运维手册）
 cd /opt/juhe-ai
@@ -66,6 +67,8 @@ docker compose up -d postgres redis
 # … maintenance 初始化与预置序列（见运维手册）…
 docker compose up -d
 ```
+
+> **非 root 容器（2026-09-28 起，BUG-0225）**：`Dockerfile.runtime` 以固定 UID/GID 1000 的非特权用户 `app` 运行，gateway/jobs/maintenance 三进程不再以 root 跑。compose 无需 `user:` 字段（镜像 `USER app` 已生效；bind mount 属主由宿主机目录决定，加 `user:` 也解决不了挂载目录写权限）。**首次启用的一次性前置**：宿主机挂载根授权 `chown -R 1000:1000 /opt/juhe-ai/data/app`（data 与 logs 两个子目录；回滚 = `chown -R root:root`），否则容器以 app 身份无权写 data/logs。caddy/PG/Redis 容器不受影响（镜像各自管理用户，caddy 仍需绑 80/443）。**发布、更新与回滚流程与命令均不变**。
 
 ## 更新发布
 
@@ -81,6 +84,11 @@ bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / ma
 手动流程（等价于脚本内部步骤，仅排障时用）：构建（见上节命令）→ 上传 `build/` → `docker compose build gateway jobs maintenance` → `docker compose up -d`。maintenance 幂等，发布后跑一次 `--ensure-schema` 应用加法式 schema。回滚 = 上传上一个版本的 build/ 并重新 build+up。
 
 ## .env 契约（当前实例全集见服务器 /opt/juhe-ai/.env）
+
+### Compose 与 deploy 脚本级必含变量（BUG-0225 实例事实变量化）
+
+- 服务器 `/opt/juhe-ai/.env`：除下述业务变量外，必须包含 `POSTGRES_PASSWORD`、`REDIS_PASSWORD`（既有必填）与 **`JUHE_AI_PROXY_IP_A` / `JUHE_AI_PROXY_IP_B`**——出海代理隧道两条域名（`data.aijh.huanmin.top` / `egress.aijh.huanmin.top`）的公网 IP，注入 gateway/jobs/maintenance 三服务的 `extra_hosts`；缺失时 `docker compose config` 阶段即报错（`:?required` 模式，与 `POSTGRES_PASSWORD` 一致）。真实取值属实例事实，只在 `.local/project-resources/prod/` 私有留档。
+- 本地发布机 `docker/single-server/.env`（gitignore，不入库）：须含 `JUHE_AI_DEPLOY_SERVER=<user>@<服务器IP>`——`deploy.sh` 的 ssh 目标，环境变量同名导出优先，`.env` 次之，均缺时脚本 fail-fast 并提示取值位置。
 
 - `NODE_ENV=production`：触发全部生产校验（SECRET 强度、CORS 白名单必填、禁 dev 自动登录）。
 - `JUHE_AI_SECRET`：≥32 位强随机；账号凭据/内建 API Key 加密封套，**有加密数据后不可更换**，务必留档。
@@ -100,7 +108,7 @@ bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / ma
 - `JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`（默认 0.1）与 `JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS`（默认 1）：成功请求正文长期采样率与热保留窗口（失败/问题请求恒全量保留 7 天，成功正文长期保留 3 天）。当前生产显式配 `1`——审计开启即全量可见正文（BUG-0198）。
 - `JUHE_AI_MAINTENANCE_J3A/J3B_POSTGRES_URL`：`--apply-*` 预置命令的 maintenance 专用 URL。
 - `JUHE_AI_GO_RUNTIME_METRICS_*`（系统指标页 Go Runtime 采样，2026-09-27 起出厂默认开启）：`JUHE_AI_GO_RUNTIME_METRICS_STORE` 未配置/空时跟随 `JUHE_AI_DATABASE_DRIVER`——生产 PG 模式默认即 postgres，`JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL` 可省略（自动回退复用 `JUHE_AI_POSTGRES_URL`），通常无需显式配置；显式 `sqlite|postgres` 仍有效且优先于 driver 跟随，显式 `disabled` 关闭（读接口返回 `samplingEnabled=false`）。写入仍严格限定 `juhe_stats.go_runtime_metrics_samples` / `go_runtime_metrics_hourly` / `go_runtime_metrics_trend_windows` 三表（回退后两个 URL 都空才启动报错）。可选调参：`JUHE_AI_GO_RUNTIME_METRICS_INTERVAL`（默认 `15s`，下限 1s）、`JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS`（默认 `30`，1..3650）、`JUHE_AI_GO_RUNTIME_METRICS_SERVICE`（默认 `juhe-ai`）、`JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH`（仅 sqlite 模式生效；未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生为 `<数据根>/go-runtime-metrics.sqlite3`，生产 PG 模式用不到）。`JUHE_AI_GO_RUNTIME_METRICS_ROLE` **已删除、不得配置**（role 由进程身份固定：gateway/gateway、jobs/jobs）。顺序契约按存储分派：**postgres 模式先建表再启动**——新环境首次启动 gateway/jobs 前必须先用 maintenance `--check-go-runtime-metrics` / `--apply-go-runtime-metrics`（配 `--node-stopped --go-stopped --backup-confirmed`）建好三表（Go 启动只读校验 schema、缺表即启动失败并循环重启）；**sqlite 模式启动自举建表（幂等），无需预处理**。之后 `docker compose up -d gateway jobs`；已建表环境发布/重启无需任何额外 env。
-- `JUHE_AI_ALLOWED_ORIGINS`：生产必填、逗号分隔、拒绝 `*`；当前 `https://aijh.huanmin.top,http://103.36.63.105`。
+- `JUHE_AI_ALLOWED_ORIGINS`：生产必填、逗号分隔、拒绝 `*`；当前为 `https://aijh.huanmin.top` 加 `http://<生产服务器公网 IP>`（实例值见服务器 `/opt/juhe-ai/.env` 与 `.local` 资产）。
 - `JUHE_AI_COOKIE_SECURE=true`（HTTPS 已启用）；`JUHE_AI_TRUST_PROXY=true`（经 Caddy）。
 - `JUHE_AI_REDIS_NAMESPACE=prod`：redis 驱动下必填非空。
-- 管理后台账号沿用老生产 `system_accounts`（154 个），无默认密码残留。
+- 管理后台账号沿用老生产 `system_accounts`（154 个），无默认密码残留；seed 的 `sys_admin`（admin/admin）仅在全新部署或重置 schema 后出现，且 `must_change_password=1` 首登强制改密（BUG-0224），现有实例行不被 seed 重跑改写。

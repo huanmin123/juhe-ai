@@ -127,11 +127,14 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				return ChatToolModelTurn{}, errors.New(upstreamMessagePayload(payloadText, "模型请求失败（HTTP "+itoa(statusOrZero(upstream))+")"))
 			}
 			failureCode = GenErrUpstreamStream
+			// BUG-0223 防御收口：Body.Close 移入 defer——Collect 内部 panic
+			// （由上层 safego 恢复）时本 defer 仍执行，保证上游连接释放；
+			// 正常路径的 Close 错误依旧忽略（读取已完成后关闭失败无补救动作）。
+			defer func() { _ = upstream.Body.Close() }()
 			if input.protocol == ProtocolResponses {
 				collected, collectErr := CollectChatResponsesSse(upstream.Body, maxMessageBytes, 0, func(event ChatResponsesEvent) error {
 					return projectResponsesEvent(event, messageID, runCtx, &partialContent, &contentBlocks)
 				}, nil)
-				_ = upstream.Body.Close()
 				if collectErr != nil {
 					return ChatToolModelTurn{}, collectErr
 				}
@@ -150,7 +153,6 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			}, func(delta string) {
 				runCtx.Publish("reasoning.delta", map[string]any{"messageId": messageID, "delta": delta}, ChatGenerationProjectionUpdate{ReasoningTextDelta: &delta})
 			}, 0)
-			_ = upstream.Body.Close()
 			if collectErr != nil {
 				return ChatToolModelTurn{}, collectErr
 			}

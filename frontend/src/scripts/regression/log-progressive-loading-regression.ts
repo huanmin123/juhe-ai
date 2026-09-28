@@ -207,7 +207,7 @@ const auditPayloadReaderSource = auditDetailSource.slice(
 assert.match(auditPayloadReaderSource, /readBlobWindow\(ctx, bodyBlobID, 0, 0, true\)/, '管理员审计 payload 接口必须一次返回完整正文')
 
 const grepItemType = runtimeTypesSource.match(/export interface RuntimeLogGrepItem \{[\s\S]*?\n\}/)?.[0] ?? ''
-assert.doesNotMatch(grepItemType, /rawJson:|\n  line:|\n  file:/, 'grep 列表不得提前返回原始行或服务器完整路径')
+assert.doesNotMatch(grepItemType, /rawJson:|\n {2}line:|\n {2}file:/, 'grep 列表不得提前返回原始行或服务器完整路径')
 assert.match(logsApiSource, /grepDetail: \(item: \{ id: string; fileName: string; lineNumber: number \}\)/, 'grep 原始行必须由点击详情后的定位接口读取')
 assert.match(runtimeRoutesSource, /runtime-logs\/grep-detail/, '后端必须提供 grep 增量详情端点')
 const runtimeDetailDeltaSource = runtimeReadsSource.slice(
