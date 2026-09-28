@@ -158,8 +158,11 @@ type runtimeConfig struct {
 	// GoRuntimeMetrics is the shared sampler/store env family
 	// (JUHE_AI_GO_RUNTIME_METRICS_*): the gateway self-samples its Go runtime
 	// (role default gateway) and serves the go-runtime-trend route by querying
-	// the same store in-process. Disabled (default) keeps the route on the
-	// empty-items degradation.
+	// the same store in-process. Enabled by default since 2026-09-27 (the
+	// store follows JUHE_AI_DATABASE_DRIVER when
+	// JUHE_AI_GO_RUNTIME_METRICS_STORE is unset); only the explicit "disabled"
+	// store value turns sampling off, which keeps the route on the empty-items
+	// degradation.
 	GoRuntimeMetrics gometrics.Config
 	// AccountHealthProbeDeadlineMS is the probe deadline window the gateway
 	// writes into every account_health_probe_request_outbox row
@@ -732,7 +735,17 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	// clamping it silently; the value truncates before the range check
 	// (Math.trunc, runtime.ts:1391), so "10.5" passes as 10. Defaults stay
 	// 500/30.
-	cfg.LogDir = strings.TrimSpace(getenv("JUHE_AI_LOG_DIR"))
+	// 2026-09-28 默认开启整改（对齐 jobs runtimelog 的派生哲学）：
+	// JUHE_AI_LOG_DIR 未配置时派生 <DATA_DIR>/logs（固定名见 internal/datadir，
+	// 与 jobs 侧派生对称，零配置部署下 gateway 写侧/grep 面与 jobs 索引器/
+	// 保留清理共享同一目录）；显式配置路径优先；"disabled" 字面量（大小写
+	// 不敏感，对齐 gometrics 关闭约定）= 显式关闭文件日志写侧与 grep 面，
+	// LogDir 保持空。目录由写侧 NewFileSink 代建（BUG-0195），无目录派生
+	// 副作用。
+	cfg.LogDir = datadir.Path(getenv, dataDir, "JUHE_AI_LOG_DIR", datadir.RuntimeLogsDirectory)
+	if strings.EqualFold(cfg.LogDir, "disabled") {
+		cfg.LogDir = ""
+	}
 	// 2026-09-21 起文件日志为常驻能力，JUHE_AI_LOG_FILE_ENABLED 开关移除。
 	cfg.LogFileEnabled = true
 	cfg.LogMaxFiles = 500

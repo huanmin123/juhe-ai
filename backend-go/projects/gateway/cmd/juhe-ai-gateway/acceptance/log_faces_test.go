@@ -1,7 +1,9 @@
 // X04 404 项补齐：三日志读面（audit-logs / runtime-logs / public-api-logs）
 // 的进程级 200 探测。go 模式下这三个家族在 compose 挂载 logreads.ReadsDeps
 // （F3/F1/F5 数据集读 + 文件日志 grep），未登录保持 401 请先登录契约；
-// 未配 JUHE_AI_LOG_DIR 时 grep 走"文件日志未启用"的 200 降级契约。
+// 2026-09-28 默认开启整改后，未配 JUHE_AI_LOG_DIR 时组合根派生
+// <DATA_DIR>/logs（写侧 NewFileSink 代建目录），grep 面可用——无命中时
+// available:true + "没有匹配"提示；只有显式 disabled 才落回禁用契约。
 package acceptance
 
 import (
@@ -69,10 +71,11 @@ func TestAcceptanceLogReadFaces(t *testing.T) {
 		client.do(http.MethodGet, path, nil, wantStatus(http.StatusOK))
 	}
 
-	// grep 未配文件日志目录：available:false 的 200 降级契约。
+	// grep 未配 JUHE_AI_LOG_DIR：默认派生 <DATA_DIR>/logs，目录可用、无命中
+	// → available:true + "没有匹配"提示（默认开启整改 2026-09-28）。
 	_, grep := client.do(http.MethodGet, "/__aisys__/api/runtime-logs/grep?keywords=probe", nil, wantStatus(http.StatusOK))
-	if data(grep)["available"] != false {
-		t.Fatalf("grep available=%v, want the disabled contract", data(grep)["available"])
+	if data(grep)["available"] != true {
+		t.Fatalf("grep available=%v, want the derived-directory contract: %v", data(grep)["available"], data(grep))
 	}
 	// search-hot 无关键字：available:true + 中文提示。
 	_, hot := client.do(http.MethodGet, "/__aisys__/api/audit-logs/search-hot", nil, wantStatus(http.StatusOK))

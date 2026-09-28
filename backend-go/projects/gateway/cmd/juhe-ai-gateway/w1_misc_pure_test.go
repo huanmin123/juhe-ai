@@ -321,9 +321,9 @@ func TestW1UCaptureDatasetHandleSQLiteConfig(t *testing.T) {
 	if err := seed.Close(); err != nil {
 		t.Fatalf("seed close = %v", err)
 	}
-	handle := openSQLiteCaptureDatasetHandle(path)
-	if handle == nil {
-		t.Fatal("存在的 dataset 文件必须打开成功，want 非 nil 句柄")
+	handle, openErr := openSQLiteCaptureDatasetHandle(path)
+	if openErr != nil || handle == nil {
+		t.Fatalf("存在的 dataset 文件必须打开成功，want 非 nil 句柄: %v", openErr)
 	}
 	t.Cleanup(func() { _ = handle.Close() })
 	if got := handle.Stats().MaxOpenConnections; got != 1 {

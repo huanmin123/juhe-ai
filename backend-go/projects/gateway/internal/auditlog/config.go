@@ -22,8 +22,11 @@ const (
 	defaultRetentionInterval        = time.Minute
 	defaultRetentionBatchSize       = 512
 	defaultSuccessHotRetentionHours = 1
-	defaultSuccessSampleRate        = 0.1
-	defaultSuccessRetentionDays     = 3
+	// 2026-09-28 默认开启整改：成功正文默认全量（1.0；原 0.1 采样是"未配置
+	// 即降级"的反模式），窗口仍默认 1h 热窗 / 3d 长期保留；失败面本就全量。
+	// 显式配置 0..1 仍生效（0 须与 SUCCESS_RETENTION_DAYS=0 联动）。
+	defaultSuccessSampleRate    = 1.0
+	defaultSuccessRetentionDays = 3
 	defaultProblemRetentionDays     = 7
 	defaultPostgresPoolSize         = 5096
 	defaultPostgresMaxIdleConns     = sqlpool.MaxIdleConns

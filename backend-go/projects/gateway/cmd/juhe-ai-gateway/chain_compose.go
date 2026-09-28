@@ -133,6 +133,19 @@ type chainRuntimeDeps struct {
 	// to the header-only identities Node serves when the resolver is absent).
 	Identity    *sessionIdentityServices
 	CodexBridge gatewaypreauth.CodexBridgePreflight
+	// CodexContextRoot / CodexContextStateStore 是 Codex Responses↔Chat 桥
+	// 会话状态（gatewaycodex.ChatBridgeStateService，Node codex-responses/
+	// chat-bridge-state.ts）的组合根装配输入：CodexContextRoot 携带
+	// JUHE_AI_CODEX_CONTEXT_ROOT（Node runtimeConfig.codexContextRoot，
+	// segments 根目录），CodexContextStateStore 是 codex context 双模行存储
+	//（gatewaycodex.CodexContextRowStore 的 sqlite shard / postgres 实现）。
+	// 背景迁移漏装配（与终局波 TrafficRuntimeMigrator 同类断线）：
+	// NewChatBridgeStateService 实现完整但组合根从未装配，CodexBridge 恒
+	// nil 使 preflight 恒走 no-op 适配器；2026-09-28 哲学裁定（功能默认
+	// 开启）：生产组合根默认提供两者，链组装构造真实桥；任一缺席保持
+	// 既有 no-op 降级（组合测试语义不变）。
+	CodexContextRoot       string
+	CodexContextStateStore gatewaycodex.CodexContextRowStore
 	Recoverable gatewaypreauth.RecoverableWait
 	// DispatchRecoverableWait 是 G11 等待引擎的 dispatch 侧句柄（nil 仅组合
 	// 测试——engine.RecoverableWait 保持缺席语义，抑制耗尽路径快速退出）。
@@ -419,6 +432,30 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 	if redisBacked := newChainSessionAffinityDispatchPort(sessionAffinity, deps.Identity); redisBacked != nil {
 		dispatchSessionAffinity = redisBacked
 	}
+	// ---- Codex Responses↔Chat bridge state (G18 chat-bridge-state.ts) ----
+	// 2026-09-28 哲学裁定补齐（功能默认开启）：ChatBridgeStateService 实现
+	// 完整但组合根从未装配（迁移漏装配，与终局波 TrafficRuntimeMigrator 同
+	// 类断线），deps.CodexBridge 恒 nil → chainCodexBridgePreflight 恒走
+	// no-op 适配器，restore/compaction preflight 恒缺席。装配优先级：
+	// CodexBridge 显式提供（组合测试注入）优先；否则依赖齐备（双模行存储
+	// + segments 根）时构造真实桥——构造失败 fail-fast（recorder 已建，
+	// 对齐 gatewaypreauth.New 的错误处理惯例）；依赖缺席保持 no-op 降级
+	// （与 Identity 缺席时 codexClientStrategy 的降级分支一致）。
+	codexBridge := deps.CodexBridge
+	if codexBridge == nil && deps.CodexContextStateStore != nil && strings.TrimSpace(deps.CodexContextRoot) != "" {
+		bridge, bridgeErr := newChainCodexBridgePreflight(chainCodexBridgeDeps{
+			Root:   deps.CodexContextRoot,
+			Store:  deps.CodexContextStateStore,
+			Clock:  clock,
+			Logger: slogWarnLogger{inner: logger},
+			Sink:   sink,
+		})
+		if bridgeErr != nil {
+			recorder.Close()
+			return nil, nil, fmt.Errorf("compose codex chat bridge state: %w", bridgeErr)
+		}
+		codexBridge = bridge
+	}
 	// G18 client-source avoidance collaborators: the source-identity resolver
 	// plugs into the shared client-strategy deps (preauth resolution and the
 	// failure-time re-resolution use the same scope), and the turn-retry
@@ -652,7 +689,7 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		ClientStrategy:     clientStrategyAdapter{deps: codexClientStrategy},
 		SessionIdentity:    sessionIdentityAdapter{services: deps.Identity},
 		SessionAffinity:    sessionAffinityAdapter{services: deps.Identity},
-		Codex:              chainCodexBridgePreflight(deps.CodexBridge),
+		Codex:              chainCodexBridgePreflight(codexBridge),
 		Recoverable:        deps.Recoverable,
 		AuditSettings:      auditSettingsAdapter{enabled: deps.AuditLogEnabled},
 		AuditDispatch:      deps.AuditDispatch,

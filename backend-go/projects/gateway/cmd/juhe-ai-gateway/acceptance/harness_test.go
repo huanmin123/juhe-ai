@@ -602,6 +602,18 @@ func (f *gatewayFixture) loginClient(t *testing.T, username, password string) *h
 	}
 	client := &acceptanceClient{t: t, http: &http.Client{Timeout: 30 * time.Second, Jar: jar}, baseURL: f.baseURL}
 	client.do(http.MethodPost, "/__aisys__/api/auth/login", map[string]any{"username": username, "password": password}, wantStatus(http.StatusOK))
+	// BUG-0224 起 seed 账户首登命中全局强制改密 gate（403 must_change_password
+	// 拦截管理面；/auth/me 挂 auth 路由族不受 gate，可读 mustChangePassword）。
+	// 为 true 时双改密解除：must 态改密免验旧密（先改到临时密码），再以临时
+	// 密码验旧密改回原密码——净效果密码不变、gate 解除、当前会话保留
+	// （RevokeOtherSessions 只踢其他会话），后续断言语义不变。
+	status, me := client.do(http.MethodGet, "/__aisys__/api/auth/me", nil, wantStatus(http.StatusOK))
+	summary, _ := me["data"].(map[string]any)
+	if status == http.StatusOK && summary != nil && summary["mustChangePassword"] == true {
+		tempPassword := "juhe-ai-acceptance-tmp-2026"
+		client.do(http.MethodPost, "/__aisys__/api/auth/change-password", map[string]any{"newPassword": tempPassword}, wantStatus(http.StatusOK))
+		client.do(http.MethodPost, "/__aisys__/api/auth/change-password", map[string]any{"oldPassword": tempPassword, "newPassword": password}, wantStatus(http.StatusOK))
+	}
 	return client.http
 }
 

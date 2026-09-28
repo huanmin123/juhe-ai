@@ -13,7 +13,9 @@ func TestAcceptanceFreshSQLiteBoot(t *testing.T) {
 	fixture := startGateway(t, gatewayEnvOptions{})
 
 	// 业务系统 API 健康（Node db-service 契约，kernel.HealthHandler）：
-	// service=juhe-ai-db-service + accountBalance/proxyLatency ready 快照。
+	// service=juhe-ai-db-service + accountBalance ready 快照（原 Node 契约
+	// 冻结的 proxyLatency stub 已随 2026-09-28 默认开启整改移除——J3a 真实
+	// 字段在 jobs /health payload，前端只读 jobs 段）。
 	response2, err := http.Get(fixture.baseURL + "/__aisys__/api/health")
 	if err != nil {
 		t.Fatalf("GET system health: %v", err)
@@ -32,8 +34,8 @@ func TestAcceptanceFreshSQLiteBoot(t *testing.T) {
 	if nested, _ := systemHealth["accountBalance"].(map[string]any); nested == nil || nested["ready"] != true {
 		t.Fatalf("system health accountBalance wrong: %#v", systemHealth)
 	}
-	if nested, _ := systemHealth["proxyLatency"].(map[string]any); nested == nil || nested["ready"] != true {
-		t.Fatalf("system health proxyLatency wrong: %#v", systemHealth)
+	if _, hasProxyLatency := systemHealth["proxyLatency"]; hasProxyLatency {
+		t.Fatalf("system health must not carry the removed proxyLatency stub: %#v", systemHealth)
 	}
 
 	// 进程级 /health（gateway main healthHandler）：owner/worker 字段契约，

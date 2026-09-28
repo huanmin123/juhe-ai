@@ -178,8 +178,10 @@ type composition struct {
 	// GoRuntimeSampler is the in-process Go runtime metrics sampler
 	// (shared platform/gometrics; role default gateway). main runs it as a
 	// supervisor component; the opened store handle is closed via shutdowns.
-	// Nil when the store env family is disabled (default) — the
-	// go-runtime-trend route then serves empty items.
+	// Nil only for the explicit JUHE_AI_GO_RUNTIME_METRICS_STORE=disabled
+	// opt-out — sampling is enabled by default since 2026-09-27 (store follows
+	// the main database driver), and the go-runtime-trend route serves empty
+	// items only in the nil / assembly-degraded path.
 	GoRuntimeSampler *gometrics.Sampler
 	// teamStore retains the system-teams store so the assembly tests can drive
 	// the committed-write side effects directly (the routes family shares it).
@@ -1048,7 +1050,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	healthOutcomes.PostgresURL = cfg.AccountHealthOutcomePostgresURL
 	// health-snapshot 数据源：gateway 段进程内直读 owner readiness（与
 	// /__aisys__/health 同源）；jobs 段按 JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS
-	// 拉取 loopback /health（生产 compose 未注入地址时按不可用降级）。
+	// 拉取 loopback /health（2026-09-28 默认开启整改：未配置时默认
+	// 127.0.0.1:3305——与 jobs 进程默认健康监听对齐，同主机裸跑形态直接
+	// 可用；显式 "disabled" 关闭该段抓取；跨容器 compose 形态仍需显式容器
+	// 名视角地址覆盖）。
 	(&statreads.Deps{
 		Business:                composed.db,
 		Stats:                   composed.statsDB,
@@ -1062,7 +1067,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		HealthOutcomes:          healthOutcomes,
 		RuntimeMode:             cfg.RuntimeMode,
 		GatewayReadiness:        ownerHealth.readiness,
-		JobsHealthURL:           statreads.JobsHealthURL(os.Getenv("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS")),
+		JobsHealthURL:           statreads.JobsHealthURL(jobsHealthListenAddress(os.Getenv)),
 	}).Mount(kern)
 	// X04: the /__aisys__/help static help center, session-gated like the Node
 	// web layer (requireHelpSession + role redirects over dist/help).
@@ -1354,16 +1359,25 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// capturePublicApiLog (Node /__aipublic__ prefix middleware): a writable
 	// dataset handle feeds the P05 pipeline (bounded channel → batch insert).
 	// The read families open dataset handles read-only; the capture writer is
-	// the go-only gateway's one writable dataset consumer.
+	// the go-only gateway's one writable dataset consumer. 2026-09-28 默认开启
+	// 整改：每条静默降级路径（数据集文件缺失 / 句柄打开失败 / store 初始化
+	// 失败）补 public_api_log_capture_unavailable Warn——公开面日志捕获保持
+	// 降级语义（不 fail-fast），但降级必须可见。
 	var captureDatasetDB *sql.DB
 	if composed.pgDialect {
 		captureDatasetDB = composed.db
 	} else if cfg.DatasetDatabasePath != "" {
-		if _, err := os.Stat(cfg.DatasetDatabasePath); err == nil {
-			if handle := openSQLiteCaptureDatasetHandle(cfg.DatasetDatabasePath); handle != nil {
-				captureDatasetDB = handle
-				composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
-			}
+		if _, err := os.Stat(cfg.DatasetDatabasePath); err != nil {
+			slog.Warn("公开面日志捕获不可用（数据集文件缺失，capture 静默降级）",
+				"event", "public_api_log_capture_unavailable",
+				"path", cfg.DatasetDatabasePath, "error", err.Error())
+		} else if handle, err := openSQLiteCaptureDatasetHandle(cfg.DatasetDatabasePath); err != nil {
+			slog.Warn("公开面日志捕获不可用（数据集句柄打开失败，capture 静默降级）",
+				"event", "public_api_log_capture_unavailable",
+				"path", cfg.DatasetDatabasePath, "error", err.Error())
+		} else {
+			captureDatasetDB = handle
+			composed.shutdowns = append(composed.shutdowns, func() { _ = handle.Close() })
 		}
 	}
 	if captureDatasetDB != nil {
@@ -1371,6 +1385,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			pipeline := publicapilogs.NewPipeline(logStore, publicapilogs.Config{})
 			composed.shutdowns = append(composed.shutdowns, func() { pipeline.Close(context.Background()) })
 			aipublicDeps.Capture = aipublic.PublicApiLogCaptureSink(pipeline.Enqueue)
+		} else {
+			slog.Warn("公开面日志捕获不可用（日志 store 初始化失败，capture 静默降级）",
+				"event", "public_api_log_capture_unavailable",
+				"path", cfg.DatasetDatabasePath, "error", err.Error())
 		}
 	}
 	aipublicDeps.Mount(kern)
@@ -1389,7 +1407,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			"status":         accountBalanceSystemHealthStatus(accountBalance.Ready),
 			"service":        "juhe-ai-db-service",
 			"accountBalance": accountBalance,
-			"proxyLatency":   map[string]any{"enabled": false, "ready": true},
 			"checkedAt":      time.Now().UTC().Format(time.RFC3339Nano),
 		}
 	}))
@@ -1423,6 +1440,25 @@ func settingsTimezone(read SettingValueFunc) ipstats.TimezoneSource {
 	return func(context.Context) (string, error) {
 		return read("usageStatsTimezone")
 	}
+}
+
+// jobsHealthListenAddress resolves the gateway-side jobs health fetch address
+// (JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS, 2026-09-28 default-on rectification):
+// unset/blank defaults to statreads.DefaultJobsHealthListenAddress
+// (127.0.0.1:3305, aligned with the jobs process' own default health listen
+// so a same-host bare-process deployment works with zero configuration); the
+// literal "disabled" (case-insensitive, the gometrics opt-out convention)
+// explicitly turns the health-snapshot jobs section off (empty address → the
+// Deps-level degradation); any explicit address wins verbatim.
+func jobsHealthListenAddress(getenv func(string) string) string {
+	address := strings.TrimSpace(getenv("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS"))
+	if strings.EqualFold(address, "disabled") {
+		return ""
+	}
+	if address == "" {
+		return statreads.DefaultJobsHealthListenAddress
+	}
+	return address
 }
 
 // apiKeyCleanupSubmitter adapts the apikeys after-commit maintenance handoff
@@ -1641,20 +1677,20 @@ func openSQLiteReadOnly(path string) (*sql.DB, error) {
 // handle with the same shape as the api-key cleanup dataset handle
 // (sqliteFileDSN busy_timeout + SetMaxOpenConns(1) + WAL pragmas): both
 // handles write the same dataset file, so the capture writer must share the
-// lock-wait semantics. 打开或配置失败时返回 nil，由调用方保持 capture 静默
-// 降级（等价原实现的 if err == nil 语义）；调用方先用 os.Stat 守卫文件存在，
-// 本函数不负责建库契约。
-func openSQLiteCaptureDatasetHandle(path string) *sql.DB {
+// lock-wait semantics. 打开或配置失败时返回原始错误（2026-09-28 默认开启
+// 整改：调用方据此记录 public_api_log_capture_unavailable，不再静默）；
+// 调用方先用 os.Stat 守卫文件存在，本函数不负责建库契约。
+func openSQLiteCaptureDatasetHandle(path string) (*sql.DB, error) {
 	handle, err := sql.Open("sqlite", sqliteFileDSN(path))
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	handle.SetMaxOpenConns(1)
 	if err := configureSQLiteConnection(handle); err != nil {
 		_ = handle.Close()
-		return nil
+		return nil, err
 	}
-	return handle
+	return handle, nil
 }
 
 // businessDialect converts the storage dialect for the business-owner stores.

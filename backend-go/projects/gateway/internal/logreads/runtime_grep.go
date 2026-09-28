@@ -62,7 +62,9 @@ const (
 // RuntimeLogGrepConfig mirrors the runtimeConfig.log.* surface the grep
 // family reads (JUHE_AI_LOG_DIR / JUHE_AI_LOG_MAX_FILES /
 // JUHE_AI_LOG_RETENTION_DAYS；JUHE_AI_LOG_FILE_ENABLED 开关已于 2026-09-21
-// 移除，FileEnabled 恒为 true).
+// 移除，FileEnabled 恒为 true)。2026-09-28 默认开启整改起，组合根未配置
+// JUHE_AI_LOG_DIR 时派生 <DATA_DIR>/logs，只有显式 disabled（组合根把
+// Directory 归一为空）才会落回禁用契约。
 type RuntimeLogGrepConfig struct {
 	FileEnabled   bool
 	Directory     string
@@ -80,7 +82,9 @@ type RuntimeLogGrep struct {
 
 // NewRuntimeLogGrep clamps the config bounds (Node numberConfig semantics)
 // and returns the service. An empty directory keeps the service mounted but
-// reports the file-logging-disabled contract.
+// reports the file-logging-disabled contract (2026-09-28 default-on: only
+// the explicit JUHE_AI_LOG_DIR=disabled opt-out reaches this branch — an
+// unconfigured env derives <DATA_DIR>/logs at the composition root).
 func NewRuntimeLogGrep(cfg RuntimeLogGrepConfig) *RuntimeLogGrep {
 	cfg.Directory = strings.TrimSpace(cfg.Directory)
 	if cfg.MaxFiles <= 0 {
@@ -435,7 +439,7 @@ func (g *RuntimeLogGrep) Search(ctx context.Context, options RuntimeLogGrepOptio
 	if !g.cfg.FileEnabled {
 		result := build(emptyRange)
 		result.ElapsedMs = g.sinceMillis(started)
-		result.Message = "文件日志未启用，无法使用 grep 模式。"
+		result.Message = "文件日志已显式关闭（JUHE_AI_LOG_DIR=disabled），无法使用 grep 模式。"
 		return result, nil
 	}
 	if !g.active.CompareAndSwap(0, 1) {

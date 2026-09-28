@@ -40,6 +40,13 @@ const (
 	AuditBlobDirectory         = "audit-blob"
 	OperationLogDatabase       = "operation-log.sqlite3"
 	ChatAssetsDirectory        = "chat-assets"
+	// RuntimeLogsDirectory is the 2026-09-28 default-on derivation for
+	// JUHE_AI_LOG_DIR: an unset env derives <DATA_DIR>/logs (symmetric with
+	// the jobs runtimelog config derivation); the gateway file sink and the
+	// jobs F1 indexer/cleanup then share one directory in a zero-config
+	// deployment. The literal "disabled" stays a composition-root concern
+	// (explicit opt-out), not a fixed name.
+	RuntimeLogsDirectory = "logs"
 	// ModelCheckDatabase is the J3b model-check owner's dedicated store
 	// (2026-09-20 zero-config arm). It must stay distinct from
 	// BusinessDatabase: the J3b owner contract requires a separate file.

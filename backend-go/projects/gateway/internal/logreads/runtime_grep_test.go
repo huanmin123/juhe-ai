@@ -218,7 +218,7 @@ func TestRuntimeLogGrepDisabledContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Available || result.Message != "文件日志未启用，无法使用 grep 模式。" {
+	if result.Available || result.Message != "文件日志已显式关闭（JUHE_AI_LOG_DIR=disabled），无法使用 grep 模式。" {
 		t.Fatalf("disabled grep result: %#v", result)
 	}
 	if result.Items == nil || len(result.Items) != 0 {

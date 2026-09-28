@@ -40,15 +40,66 @@ func TestWNBug0195NewRuntimeLoggerDisabledWithoutLogDir(t *testing.T) {
 		t.Fatalf("disabled 臂不得返回错误: %v", err)
 	}
 	if sink != nil {
-		t.Fatal("未配置 LogDir 时 sink 必须为 nil")
+		t.Fatal("LogDir 为空（显式 disabled）时 sink 必须为 nil")
 	}
 	event := wnBug0195EventLine(t, &stdout, "runtime_log_file_sink_disabled")
-	if !strings.Contains(event["msg"].(string), "JUHE_AI_LOG_DIR") {
-		t.Fatalf("disabled 事件文案必须说明 JUHE_AI_LOG_DIR 未配置: %v", event["msg"])
+	if !strings.Contains(event["msg"].(string), "JUHE_AI_LOG_DIR") || !strings.Contains(event["msg"].(string), "disabled") {
+		t.Fatalf("disabled 事件文案必须说明 JUHE_AI_LOG_DIR 显式关闭: %v", event["msg"])
 	}
 	logger.Info("stdout-only 探针")
 	if !strings.Contains(stdout.String(), "stdout-only 探针") {
 		t.Fatal("降级 logger 必须只写 stdout")
+	}
+}
+
+// TestRuntimeConfigLogDirDefaultOnDerivation 覆盖 2026-09-28 默认开启整改的
+// LogDir 装配契约：JUHE_AI_LOG_DIR 未配置时派生 <JUHE_AI_DATA_DIR>/logs
+// （与 jobs runtimelog 派生对称）；"disabled" 字面量（大小写不敏感）显式关闭
+// （LogDir 归空）；显式路径原样优先。
+func TestRuntimeConfigLogDirDefaultOnDerivation(t *testing.T) {
+	// 未配置 → 派生 <DATA_DIR>/logs（DATA_DIR 未配置时为 ./data）。
+	env := developmentSecurityEnv(t)
+	env["JUHE_AI_DATA_DIR"] = filepath.Join("derived-root")
+	cfg, err := loadRuntimeConfigEnv(t, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join("derived-root", "logs"); cfg.LogDir != want {
+		t.Fatalf("未配置 JUHE_AI_LOG_DIR 必须派生 %s, got %q", want, cfg.LogDir)
+	}
+
+	// DATA_DIR 也未配置 → ./data/logs。
+	env = developmentSecurityEnv(t)
+	cfg, err = loadRuntimeConfigEnv(t, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join("data", "logs"); cfg.LogDir != want {
+		t.Fatalf("零配置必须派生 %s, got %q", want, cfg.LogDir)
+	}
+
+	// disabled 字面量 → 显式关闭（大小写不敏感）。
+	for _, raw := range []string{"disabled", "DISABLED", " Disabled "} {
+		env = developmentSecurityEnv(t)
+		env["JUHE_AI_LOG_DIR"] = raw
+		cfg, err = loadRuntimeConfigEnv(t, env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LogDir != "" {
+			t.Fatalf("JUHE_AI_LOG_DIR=%q 必须显式关闭（LogDir 归空）, got %q", raw, cfg.LogDir)
+		}
+	}
+
+	// 显式路径优先。
+	env = developmentSecurityEnv(t)
+	env["JUHE_AI_LOG_DIR"] = " explicit-logs "
+	cfg, err = loadRuntimeConfigEnv(t, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogDir != "explicit-logs" {
+		t.Fatalf("显式路径必须 TrimSpace 后原样生效, got %q", cfg.LogDir)
 	}
 }
 

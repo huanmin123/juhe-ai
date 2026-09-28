@@ -334,7 +334,7 @@ func TestW11FGrepSearchBranches(t *testing.T) {
 	disabled := NewRuntimeLogGrep(RuntimeLogGrepConfig{FileEnabled: false})
 	disabled.Now = func() time.Time { return grepPinnedNow }
 	result, err = disabled.Search(ctx, RuntimeLogGrepOptions{Keywords: []string{"keyword"}})
-	if err != nil || !strings.Contains(result.Message, "文件日志未启用") {
+	if err != nil || !strings.Contains(result.Message, "文件日志已显式关闭") {
 		t.Fatalf("disabled = %+v/%v", result, err)
 	}
 	// 目录不存在 → 无可搜索文件。

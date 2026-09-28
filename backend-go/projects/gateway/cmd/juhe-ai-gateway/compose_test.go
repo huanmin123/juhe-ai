@@ -17,6 +17,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/statreads"
 )
 
 // composeTestConfig builds the sqlite-mode composition config over a temp
@@ -614,13 +615,15 @@ func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
 
 	// The audit search-hot empty-keyword hint and the runtime grep
 	// file-logging-disabled degradation both stay 200 (composeTestConfig
-	// leaves JUHE_AI_LOG_DIR unset, so grep reports the disabled contract).
+	// hand-builds the config with an empty LogDir — the equivalent of the
+	// explicit JUHE_AI_LOG_DIR=disabled opt-out since the 2026-09-28
+	// default-on derivation — so grep reports the disabled contract).
 	hotData := decodeData(get("/__aisys__/api/audit-logs/search-hot"))
 	if hotData["available"] != true {
 		t.Fatalf("search-hot available=%v", hotData["available"])
 	}
 	grepData := decodeData(get("/__aisys__/api/runtime-logs/grep?keywords=probe"))
-	if grepData["available"] != false || grepData["message"] != "文件日志未启用，无法使用 grep 模式。" {
+	if grepData["available"] != false || grepData["message"] != "文件日志已显式关闭（JUHE_AI_LOG_DIR=disabled），无法使用 grep 模式。" {
 		t.Fatalf("grep payload=%v", grepData)
 	}
 
@@ -632,5 +635,32 @@ func TestComposeSystemAPIMountsLogReadFamilies(t *testing.T) {
 	_ = anonymous.Body.Close()
 	if anonymous.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("anonymous audit-logs status=%d want 401", anonymous.StatusCode)
+	}
+}
+
+// TestJobsHealthListenAddressDefaultResolution 覆盖 2026-09-28 默认开启整改的
+// jobs 健康抓取地址装配：未配置默认 127.0.0.1:3305（与 jobs 进程默认健康
+// 监听对齐）；"disabled" 字面量（大小写不敏感）显式关闭；显式地址 TrimSpace
+// 后原样优先。
+func TestJobsHealthListenAddressDefaultResolution(t *testing.T) {
+	// 未配置 → 默认回环地址，JobsHealthURL 拼出 loopback /health。
+	if got := jobsHealthListenAddress(func(string) string { return "" }); got != "127.0.0.1:3305" {
+		t.Fatalf("未配置必须默认 127.0.0.1:3305（statreads.DefaultJobsHealthListenAddress）, got %q", got)
+	}
+	if url := statreads.JobsHealthURL(jobsHealthListenAddress(func(string) string { return "" })); url != "http://127.0.0.1:3305/health" {
+		t.Fatalf("默认地址必须拼出 %q, got %q", "http://127.0.0.1:3305/health", url)
+	}
+
+	// disabled 字面量 → 显式关闭（空串，Deps 层降级）。
+	for _, raw := range []string{"disabled", "DISABLED", " disabled "} {
+		if got := jobsHealthListenAddress(func(string) string { return raw }); got != "" {
+			t.Fatalf("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS=%q 必须显式关闭（空串）, got %q", raw, got)
+		}
+	}
+
+	// 显式地址（含容器名视角）TrimSpace 后原样优先。
+	env := map[string]string{"JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS": " juhe-ai-go-jobs:3305 "}
+	if got := jobsHealthListenAddress(func(key string) string { return env[key] }); got != "juhe-ai-go-jobs:3305" {
+		t.Fatalf("显式地址必须原样生效, got %q", got)
 	}
 }

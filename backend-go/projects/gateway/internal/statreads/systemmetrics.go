@@ -556,12 +556,14 @@ func (d *Deps) gatewayHealthSection() map[string]any {
 }
 
 // jobsHealthSection fetches the jobs /health payload over the loopback side
-// channel. Missing address (compose never injected it), transport errors,
-// non-200 answers and non-JSON bodies all degrade to available:false +
-// reason; a 200 JSON object is passed through verbatim.
+// channel. An empty URL (the composition root only leaves it empty for the
+// explicit "disabled" opt-out since 2026-09-28 — an unset env defaults to
+// DefaultJobsHealthListenAddress), transport errors, non-200 answers and
+// non-JSON bodies all degrade to available:false + reason; a 200 JSON
+// object is passed through verbatim.
 func (d *Deps) jobsHealthSection(r *http.Request) map[string]any {
 	if d.JobsHealthURL == "" {
-		return map[string]any{"available": false, "reason": "JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS 未配置"}
+		return map[string]any{"available": false, "reason": "JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS 未配置或已显式关闭（disabled）"}
 	}
 	fetchCtx, cancel := context.WithTimeout(r.Context(), healthSnapshotJobsTimeout)
 	defer cancel()

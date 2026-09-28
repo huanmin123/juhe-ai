@@ -62,7 +62,7 @@ func TestW9BGrepSearchFileScenarios(t *testing.T) {
 	disabled := NewRuntimeLogGrep(RuntimeLogGrepConfig{FileEnabled: false, Directory: dir, MaxFiles: 10, RetentionDays: 30})
 	disabled.Now = func() time.Time { return now }
 	result, err = disabled.Search(context.Background(), RuntimeLogGrepOptions{Keywords: []string{"alpha"}})
-	if err != nil || result.Available || !strings.Contains(result.Message, "文件日志未启用") {
+	if err != nil || result.Available || !strings.Contains(result.Message, "文件日志已显式关闭") {
 		t.Fatalf("未启用=%+v err=%v", result, err)
 	}
 	// 时间范围过滤（早于全部文件 mtime）。

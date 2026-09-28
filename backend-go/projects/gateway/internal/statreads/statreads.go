@@ -19,6 +19,16 @@ const (
 	globalStatsScopeID         = "global"
 )
 
+// DefaultJobsHealthListenAddress is the default loopback address the gateway
+// health-snapshot jobs section fetches when JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS
+// is unset (2026-09-28 default-on rectification): it matches the jobs
+// process' own default health listen (cmd/juhe-ai-jobs main.go
+// envOrDefault("JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS", "127.0.0.1:3305")), so a
+// same-host bare-process deployment works without any configuration. The
+// composition root resolves the env (including the explicit "disabled"
+// opt-out); this constant only pins the shared default.
+const DefaultJobsHealthListenAddress = "127.0.0.1:3305"
+
 // Deps bundles the statreads collaborators. Business reaches the business
 // database (accounts / system_accounts / groups ...), Stats reaches the stats
 // database (usage_stats_* / *_windows / account_health_hourly ...). Both use
@@ -63,17 +73,20 @@ type Deps struct {
 	// gateway section to an unavailable marker.
 	GatewayReadiness func() (int, map[string]any)
 	// JobsHealthURL is the jobs process' loopback /health URL derived from
-	// JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS (JobsHealthURL helper). The
-	// health-snapshot route fetches it per request (2s timeout) and embeds
-	// the payload verbatim; empty or unreachable degrades the jobs section
-	// to available:false + reason.
+	// JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS (JobsHealthURL helper; the
+	// composition root defaults an unset env to
+	// DefaultJobsHealthListenAddress since 2026-09-28). The health-snapshot
+	// route fetches it per request (2s timeout) and embeds the payload
+	// verbatim; empty (explicit "disabled" opt-out at the composition root)
+	// or unreachable degrades the jobs section to available:false + reason.
 	JobsHealthURL string
 }
 
 // JobsHealthURL turns the jobs loopback health listen address
 // (JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS) into the /health URL; an empty or
 // blank address keeps the health-snapshot jobs section on the unconfigured
-// degradation.
+// degradation (production assemblies only reach it via the explicit
+// "disabled" opt-out — see DefaultJobsHealthListenAddress).
 func JobsHealthURL(listenAddress string) string {
 	address := strings.TrimSpace(listenAddress)
 	if address == "" {

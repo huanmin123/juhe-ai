@@ -143,4 +143,13 @@ func TestJobsHealthURLJoinsListenAddress(t *testing.T) {
 	if got := JobsHealthURL(""); got != "" {
 		t.Fatalf("未配置必须返回空串: %q", got)
 	}
+	// 2026-09-28 默认开启整改：组合根未配置 env 时注入默认回环地址
+	//（DefaultJobsHealthListenAddress，与 jobs 进程默认健康监听对齐），
+	// helper 把它拼成 loopback /health。
+	if got := JobsHealthURL(DefaultJobsHealthListenAddress); got != "http://127.0.0.1:3305/health" {
+		t.Fatalf("默认地址拼接错误: %q", got)
+	}
+	if DefaultJobsHealthListenAddress != "127.0.0.1:3305" {
+		t.Fatalf("默认地址必须与 jobs 默认健康监听对齐: %q", DefaultJobsHealthListenAddress)
+	}
 }

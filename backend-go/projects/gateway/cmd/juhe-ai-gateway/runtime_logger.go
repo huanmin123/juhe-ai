@@ -1,10 +1,11 @@
 package main
 
-// BUG-0195：gateway 文件日志写侧装配。JUHE_AI_LOG_DIR 非空时 slog 输出经
-// TeeWriter 同时进 stdout 与按大小滚动的 JSONL 文件（jobs runtimelog 索引器
-// 消费面：current=juhe-ai.log，轮转名 <base>.<UTC时间戳>.<token>.log）；
-// 目录未配置或文件 sink 打开失败时降级 stdout-only，进程不因文件路故障拒绝
-// 启动。文件清理属 jobs 保留清理职责，写侧不做删除。
+// BUG-0195：gateway 文件日志写侧装配。runtimeConfig.LogDir 非空时 slog 输出
+// 经 TeeWriter 同时进 stdout 与按大小滚动的 JSONL 文件（jobs runtimelog 索引
+// 器消费面：current=juhe-ai.log，轮转名 <base>.<UTC时间戳>.<token>.log）；
+// 目录为空（2026-09-28 起 LogDir 由组合根派生，仅 JUHE_AI_LOG_DIR=disabled
+// 显式关闭才会为空）或文件 sink 打开失败时降级 stdout-only，进程不因文件路
+// 故障拒绝启动。文件清理属 jobs 保留清理职责，写侧不做删除。
 
 import (
 	"io"
@@ -22,7 +23,7 @@ import (
 func newRuntimeLogger(cfg runtimeConfig, stdout io.Writer, level slog.Level) (*slog.Logger, *processlog.FileSink, error) {
 	bootstrap := slog.New(slog.NewJSONHandler(stdout, &slog.HandlerOptions{Level: level}))
 	if cfg.LogDir == "" {
-		bootstrap.Info("JUHE_AI_LOG_DIR 未配置，文件日志与 grep 面禁用",
+		bootstrap.Info("JUHE_AI_LOG_DIR 显式关闭（disabled），文件日志与 grep 面禁用",
 			"event", "runtime_log_file_sink_disabled")
 		return bootstrap, nil, nil
 	}

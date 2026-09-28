@@ -1877,9 +1877,17 @@ func trimSpaceLocal(value string) string {
 }
 
 // codexPreflightAdapter implements gatewaypreauth.CodexBridgePreflight over
-// the G18 chat bridge state service.
+// the G18 chat bridge state service. The zero value (bridge == nil) keeps the
+// no-op degrade below; the real assembly (newChainCodexBridgePreflight,
+// chain_compose.go 装配块) fills bridge / compact / registry so the
+// restore + compaction preflight run through the real services.
+// 迁移漏装配修复（2026-09-28 哲学裁定「功能默认开启」补齐组合根装配）：
+// NewChatBridgeStateService 实现完整但组合根从未装配，deps.CodexBridge 恒
+// nil 使本适配器恒走零值分支——restore/compaction preflight 恒缺席。
 type codexPreflightAdapter struct {
-	bridge *gatewaycodex.ChatBridgeStateService
+	bridge   *gatewaycodex.ChatBridgeStateService
+	compact  *gatewaycodex.CompactPreflightService
+	registry *gatewaycodex.ContextRequestStateRegistry
 }
 
 // chainCodexBridgePreflight keeps the preflight port non-nil: the adapter
@@ -1890,6 +1898,102 @@ func chainCodexBridgePreflight(bridge gatewaypreauth.CodexBridgePreflight) gatew
 		return bridge
 	}
 	return codexPreflightAdapter{}
+}
+
+// chainCodexBridgeDeps carries the chat bridge state assembly inputs; every
+// entry is required (the chain assembly fail-fasts before calling when the
+// store / segments root are absent).
+type chainCodexBridgeDeps struct {
+	// Root is JUHE_AI_CODEX_CONTEXT_ROOT（Node runtimeConfig.codexContextRoot）:
+	// the segments root the SegmentStore appends gzip payloads under.
+	Root string
+	// Store is the codex context dual-mode row store
+	//（gatewaycodex.CodexContextRowStore 的 sqlite shard / postgres 实现）.
+	Store gatewaycodex.CodexContextRowStore
+	Clock gatewaypreauth.Clock
+	// Logger / Sink fill the exported service seams: state save/restore
+	// observability（logger.warn contract）and the gateway failure-response
+	// sender（restore/compact 失败面的 403/404/413 响应）。
+	Logger gatewaypreauth.Logger
+	Sink   gatewaypreauth.ResponseSink
+}
+
+// newChainCodexBridgePreflight wires the real bridge preflight over
+// gatewaycodex.ChatBridgeStateService + CompactPreflightService. 服务本身无
+// 后台任务与 Close（segments / 行存储生命周期归其构造方）；共享 registry
+// 对齐 Node server 层单 registry 语义（request symbol 存储）。Dispatcher
+// （合成摘要上游派发）保持缺席——dispatch 侧真实实现归后续装配，缺席时
+// bridge 合成路径显式返回「codex compact summary dispatcher 未配置」，
+// 不静默降级。
+func newChainCodexBridgePreflight(deps chainCodexBridgeDeps) (gatewaypreauth.CodexBridgePreflight, error) {
+	clock := deps.Clock
+	if clock == nil {
+		clock = gatewaypreauth.SystemClock{}
+	}
+	bridge, err := gatewaycodex.NewChatBridgeStateService(
+		gatewaycodex.ChatBridgeStateConfig{CodexContextRoot: deps.Root},
+		deps.Store,
+		nil,
+		clock,
+	)
+	if err != nil {
+		return nil, err
+	}
+	bridge.Logger = deps.Logger
+	bridge.Sink = deps.Sink
+	registry := gatewaycodex.NewContextRequestStateRegistry()
+	compact := &gatewaycodex.CompactPreflightService{
+		Bridge:   bridge,
+		Registry: registry,
+		Clock:    clock,
+		Sink:     deps.Sink,
+	}
+	return codexPreflightAdapter{bridge: bridge, compact: compact, registry: registry}, nil
+}
+
+// chainCodexContextStateInputOf projects the preauth port input onto the
+// gatewaycodex preflight input (field-for-field；两形状同源 G05 port)。
+func chainCodexContextStateInputOf(input gatewaypreauth.CodexContextStateInput) gatewaycodex.ContextStatePreflightInput {
+	return gatewaycodex.ContextStatePreflightInput{
+		Req:             input.Req,
+		Res:             input.Res,
+		AuditCapture:    input.AuditCapture,
+		UsageContext:    input.UsageContext,
+		StartedAt:       input.StartedAt,
+		SystemAccountID: input.SystemAccountID,
+		APIKeyID:        input.APIKeyID,
+		GroupID:         input.GroupID,
+		GroupAccess:     input.GroupAccess,
+		Signal:          input.Signal,
+	}
+}
+
+// chainCodexCompactPreflightInputOf projects the preauth port input onto the
+// gatewaycodex compact preflight input; the pass-through handles
+// （ClientIPAccountAvoidance / RequestCoordination）按 Node 语义原样转发到
+// dispatch seam，容器从具体类型放宽为 any。
+func chainCodexCompactPreflightInputOf(input gatewaypreauth.CodexCompactPreflightInput) gatewaycodex.CompactPreflightInput {
+	return gatewaycodex.CompactPreflightInput{
+		Req:                        input.Req,
+		Res:                        input.Res,
+		AuditCapture:               input.AuditCapture,
+		UsageContext:               input.UsageContext,
+		StartedAt:                  input.StartedAt,
+		SystemAccountID:            input.SystemAccountID,
+		APIKeyID:                   input.APIKeyID,
+		GroupID:                    input.GroupID,
+		GroupAccess:                input.GroupAccess,
+		RequestClientCompatibility: input.RequestClientCompatibility,
+		DispatchAccounts:           input.DispatchAccounts,
+		ActiveGatewaySettings:      input.ActiveGatewaySettings,
+		ClientIPAccountAvoidance:   input.ClientIPAccountAvoidance,
+		ModelPriority:              input.ModelPriority,
+		RequestLane:                input.RequestLane,
+		GroupSchedulingPolicy:      input.GroupSchedulingPolicy,
+		RequestCoordination:        input.RequestCoordination,
+		OnDispatchedAccount:        input.OnDispatchedAccount,
+		Signal:                     input.Signal,
+	}
 }
 
 func (a codexPreflightAdapter) CompactionExpectedForRequest(req *gatewaypreauth.GatewayRequest) bool {
@@ -1905,20 +2009,40 @@ func (a auditSettingsAdapter) AuditLogEnabled() bool {
 	return a.enabled != nil && a.enabled()
 }
 
-func (a codexPreflightAdapter) ApplyContextStatePreflight(_ context.Context, input gatewaypreauth.CodexContextStateInput) (bool, error) {
-	// The context-state preflight finishes inside the bridge service; the
-	// adapter degrades to "not completed" when the service is absent so the
-	// request proceeds to dispatch (Node: registry miss → continue).
-	_ = input
-	return false, nil
+func (a codexPreflightAdapter) ApplyContextStatePreflight(ctx context.Context, input gatewaypreauth.CodexContextStateInput) (bool, error) {
+	if a.bridge == nil || a.registry == nil {
+		// The context-state preflight finishes inside the bridge service; the
+		// adapter degrades to "not completed" when the service is absent so the
+		// request proceeds to dispatch (Node: registry miss → continue).
+		return false, nil
+	}
+	_, existed := a.registry.Get(input.Req)
+	completed, err := a.bridge.ApplyContextStatePreflight(ctx, a.registry, chainCodexContextStateInputOf(input))
+	if !existed && input.Signal != nil {
+		if _, present := a.registry.Get(input.Req); present {
+			// 请求信号终结（响应完成/客户端断开）→ Release，对齐 Node
+			// request symbol 的 GC 回收语义（chatbridgestate.go 注释：server
+			// 层 owns one registry; Release drops the entry when the request
+			// finishes）——registry 是强键 map，无人 Release 会随请求累积。
+			context.AfterFunc(input.Signal, func() { a.registry.Release(input.Req) })
+		}
+	}
+	return completed, err
 }
 
-func (a codexPreflightAdapter) ApplyChatBridgeCompactPreflight(_ context.Context, input gatewaypreauth.CodexCompactPreflightInput) (gatewaypreauth.CodexCompactPreflightResult, error) {
-	// The context-state preflight finishes inside the bridge service; the
-	// adapter degrades to "not completed" when the service is absent so the
-	// request proceeds to dispatch (Node: registry miss → continue) with the
-	// dispatch accounts passed through unchanged.
-	return gatewaypreauth.CodexCompactPreflightResult{Completed: false, Accounts: input.DispatchAccounts}, nil
+func (a codexPreflightAdapter) ApplyChatBridgeCompactPreflight(ctx context.Context, input gatewaypreauth.CodexCompactPreflightInput) (gatewaypreauth.CodexCompactPreflightResult, error) {
+	if a.compact == nil {
+		// The context-state preflight finishes inside the bridge service; the
+		// adapter degrades to "not completed" when the service is absent so the
+		// request proceeds to dispatch (Node: registry miss → continue) with the
+		// dispatch accounts passed through unchanged.
+		return gatewaypreauth.CodexCompactPreflightResult{Completed: false, Accounts: input.DispatchAccounts}, nil
+	}
+	result, err := a.compact.ApplyChatBridgeCompactPreflight(ctx, chainCodexCompactPreflightInputOf(input))
+	if err != nil {
+		return gatewaypreauth.CodexCompactPreflightResult{}, err
+	}
+	return gatewaypreauth.CodexCompactPreflightResult{Completed: result.Completed, Accounts: result.Accounts}, nil
 }
 
 // ---------------------------------------------------------------------------
