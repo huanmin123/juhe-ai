@@ -236,7 +236,7 @@ func TestPatchAccountIdFlow(t *testing.T) {
 			// 工具绑定键（阶段 2 接入）：二元组不在候选内 → 400 + 候选返回
 			//（mock 账户 a1 无可派发视图，候选为空）。
 			{"搜索绑定不在候选", `{"searchBinding":{"accountId":"a1","modelId":"gpt-5"}}`, "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）"},
-			{"生图绑定不在候选", `{"imageBinding":{"accountId":"a1"}}`, "生图绑定必须在候选列表内（账户可路由注册图像模型）"},
+			{"生图绑定不在候选", `{"imageBinding":{"accountId":"a1"}}`, "生图绑定必须在候选列表内（账户可路由当前默认图像模型；如需切换模型请同时提交 defaultImageModel）"},
 			{"搜索绑定缺模型", `{"searchBinding":{"accountId":"a1"}}`, "请选择工具绑定的模型"},
 		}
 		for _, item := range cases {
@@ -299,10 +299,14 @@ func TestAccountBindingSendPrechecks(t *testing.T) {
 			t.Fatalf("归档切账户 = %d %s", patched.status, patched.rawString())
 		}
 
-		// 归档会话的 clear/delete 照常（设计 §8）。
+		// 归档 clear 与资产上传同闸只读；delete 照常（用户可自行删除归档会话）。
 		cleared := env.do("POST", prefix+"/conversations/"+conversation.ID+"/clear", routeTestOwner, "{}")
-		if cleared.status != http.StatusOK {
+		if cleared.status != http.StatusForbidden || cleared.code() != "chat_conversation_archived" {
 			t.Fatalf("归档 clear = %d %s", cleared.status, cleared.rawString())
+		}
+		uploaded := env.do("POST", prefix+"/conversations/"+conversation.ID+"/assets", routeTestOwner, "")
+		if uploaded.status != http.StatusForbidden || uploaded.code() != "chat_conversation_archived" {
+			t.Fatalf("归档上传资产 = %d %s", uploaded.status, uploaded.rawString())
 		}
 		deleted := env.do("DELETE", prefix+"/conversations/"+conversation.ID, routeTestOwner, "")
 		if deleted.status != http.StatusNoContent {

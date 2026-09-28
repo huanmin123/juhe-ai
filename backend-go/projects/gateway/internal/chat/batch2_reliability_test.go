@@ -226,11 +226,23 @@ func TestCompactionTriggerHandlerDecoupledContextBatch2(t *testing.T) {
 	if repeatRecorder.Code != http.StatusAccepted || !strings.Contains(repeatRecorder.Body.String(), "already_running") {
 		t.Fatalf("后台压缩在途时重复触发应为 202 already_running: %d %s", repeatRecorder.Code, repeatRecorder.Body.String())
 	}
-	// 请求返回后取消请求 context：执行 context 不应被传染。
+	// 请求返回后取消请求 context：执行 context 不应被传染。后台压缩 goroutine
+	// 从启动到派发存在调度窗口（handler 202 返回不等于已 Dispatch），轮询等待
+	// 派发事实出现再断言，消除时序抖动。
 	cancelRequest()
-	execCtx := executor.dispatchContext()
-	if execCtx == nil {
-		t.Fatalf("压缩应已派发上游")
+	var execCtx context.Context
+	deadline := time.After(3 * time.Second)
+	for {
+		execCtx = executor.dispatchContext()
+		if execCtx != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("压缩应已派发上游")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	select {
 	case <-execCtx.Done():
@@ -239,7 +251,7 @@ func TestCompactionTriggerHandlerDecoupledContextBatch2(t *testing.T) {
 	}
 	// 释放后台压缩并等待结束，避免 goroutine 泄漏。
 	close(executor.gate)
-	deadline := time.After(3 * time.Second)
+	settleDeadline := time.After(3 * time.Second)
 	for {
 		compactions.mu.Lock()
 		active := len(compactions.active)
@@ -248,7 +260,7 @@ func TestCompactionTriggerHandlerDecoupledContextBatch2(t *testing.T) {
 			break
 		}
 		select {
-		case <-deadline:
+		case <-settleDeadline:
 			t.Fatalf("后台压缩未在释放后完成: %d", active)
 		default:
 			time.Sleep(10 * time.Millisecond)
