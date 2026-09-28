@@ -10,6 +10,8 @@ gateway ─┬─ postgres:5432（单库 juhe_ai，8 schema，见下）
          └─ redis:6379（DB0=cache，DB1=state，DB2=J3b circuit，namespace=prod）
 jobs ─────┘（与 gateway 共用同一 PG/Redis/namespace）
 maintenance：compose --profile tool 一次性容器（幂等 CLI）
+
+一次性迁移命令（2026-09-28 AI 对话账户唯一绑定）：`juhe-ai-maintenance -migrate-chat-account-only-binding -driver postgres -dsn "$JUHE_AI_POSTGRES_URL"` —— 在 `--ensure-schema` 之后执行；幂等可重入（重复运行报 `alreadyMigrated: true`）；归档存量旧模式会话、备份并删除 `juhe_chat.chat_conversations` 的 `bind_mode`/`bind_group_id`/`bind_group_name_snapshot` 三列（PG 用 `DROP COLUMN IF EXISTS`）；stdout JSON 报告含 `rollbackSql`（回滚 = 先恢复旧版二进制，再执行报告中的恢复 SQL）。
 ```
 
 - Redis `queue` 是 Node 时代残留概念，Go 代码不读 `JUHE_AI_REDIS_QUEUE_URL`，无需第三个实例。
