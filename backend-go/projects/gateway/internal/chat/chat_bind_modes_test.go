@@ -11,11 +11,37 @@ import (
 	"testing"
 )
 
-// mockGroupLookup resolves test groups: group-a/group-b 启用，disabled 停用，
-// 其余不存在。
-type mockGroupLookup struct{}
+// bindScopeRecorder 记录 mock 收到的 (scope, id) 序列，供 scope 传递断言
+// （普通用户=请求者 viewer，admin=IsAdmin true）。
+type bindScopeRecorder struct {
+	mu     sync.Mutex
+	scopes []ChatBindScope
+	ids    []string
+}
 
-func (mockGroupLookup) FindChatGroup(groupID string) (*ChatGroupRef, error) {
+func (r *bindScopeRecorder) record(scope ChatBindScope, id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scopes = append(r.scopes, scope)
+	r.ids = append(r.ids, id)
+}
+
+func (r *bindScopeRecorder) snapshot() (scopes []ChatBindScope, ids []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]ChatBindScope{}, r.scopes...), append([]string{}, r.ids...)
+}
+
+// mockGroupLookup resolves test groups: group-a/group-b 启用，disabled 停用，
+// 其余不存在；seen 非 nil 时记录收到的 scope 与 groupID。
+type mockGroupLookup struct {
+	seen *bindScopeRecorder
+}
+
+func (m mockGroupLookup) FindChatGroup(scope ChatBindScope, groupID string) (*ChatGroupRef, error) {
+	if m.seen != nil {
+		m.seen.record(scope, groupID)
+	}
 	switch groupID {
 	case "group-a":
 		return &ChatGroupRef{ID: groupID, Name: "分组 A", Enabled: true}, nil
@@ -27,13 +53,18 @@ func (mockGroupLookup) FindChatGroup(groupID string) (*ChatGroupRef, error) {
 	return nil, nil
 }
 
-// mockAccountLookup resolves test accounts: account-1 启用（绑定 group-a），
-// account-disabled 停用，其余不存在。
+// mockAccountLookup resolves test accounts: account-1/account-2/account-3 启
+// 用（绑定 group-a），account-disabled 停用，其余不存在；seen 非 nil 时记录
+// 收到的 scope 与 accountID。
 type mockAccountLookup struct {
 	groupsOfAccount map[string][]string
+	seen            *bindScopeRecorder
 }
 
-func (m mockAccountLookup) FindChatAccount(accountID string) (*ChatAccountRef, error) {
+func (m mockAccountLookup) FindChatAccount(scope ChatBindScope, accountID string) (*ChatAccountRef, error) {
+	if m.seen != nil {
+		m.seen.record(scope, accountID)
+	}
 	switch accountID {
 	case "account-1", "account-2", "account-3":
 		groups := []string{"group-a"}
@@ -173,9 +204,13 @@ func createBoundConversation(t *testing.T, fixture *chatFixture, id, ownerID str
 
 func TestBindModeCreateSuccessMatrix(t *testing.T) {
 	env := newGenerationEnv(t)
-	env.deps.GroupLookup = mockGroupLookup{}
-	env.deps.AccountLookup = mockAccountLookup{}
+	groupLookup := mockGroupLookup{seen: &bindScopeRecorder{}}
+	accountLookup := mockAccountLookup{seen: &bindScopeRecorder{}}
+	env.deps.GroupLookup = groupLookup
+	env.deps.AccountLookup = accountLookup
 	prefix := "/__aisys__/api/my-chat"
+	// 创建校验把请求者数据范围传给 Find 端口：普通用户 = viewer + IsAdmin=false。
+	userScope := ChatBindScope{ViewerID: routeTestOwner, IsAdmin: false}
 
 	// api_key：显式选择用户 Key，不触碰专用 Key。
 	byKey := env.do("POST", prefix+"/conversations", routeTestOwner, `{"bindMode":"api_key","apiKeyId":"chat_key_provisioned"}`)
@@ -215,6 +250,10 @@ func TestBindModeCreateSuccessMatrix(t *testing.T) {
 	if defaultModel == nil || defaultModel["id"] != "gpt-5" {
 		t.Fatalf("group defaultModel = %v", data["defaultModel"])
 	}
+	scopes, ids := groupLookup.seen.snapshot()
+	if len(scopes) != 1 || ids[0] != "group-b" || scopes[0] != userScope {
+		t.Fatalf("FindChatGroup scopes = %v ids = %v, want [%v] [group-b]", scopes, ids, userScope)
+	}
 	env.chatKeys.mu.Lock()
 	ensureCount = env.chatKeys.ensureCount
 	env.chatKeys.mu.Unlock()
@@ -239,6 +278,10 @@ func TestBindModeCreateSuccessMatrix(t *testing.T) {
 	env.chatKeys.mu.Unlock()
 	if ensureCount != 2 {
 		t.Fatalf("account mode ensure count = %d, want 2", ensureCount)
+	}
+	scopes, ids = accountLookup.seen.snapshot()
+	if len(scopes) != 1 || ids[0] != "account-1" || scopes[0] != userScope {
+		t.Fatalf("FindChatAccount scopes = %v ids = %v, want [%v] [account-1]", scopes, ids, userScope)
 	}
 
 	// 会话详情回读绑定字段。

@@ -62,11 +62,15 @@ func (s *BusinessDueStore) AdvancePeriodicDue(ctx context.Context, accountID str
 	}
 	// 写 balance_query_next_refresh_at 会命中 accounts 上的语句级触发器并置
 	// availability dirty 标记，这是依赖该列做失效检测的设计内行为。
+	// fence 绑定 RFC3339Nano 原文并 cast 到 timestamptz：等值两侧同过 PG 同
+	// 一处 cast 舍入，纳秒精度存量文本也能精确命中（绑定 time.Time 会被
+	// pgx 截断到微秒、与列 cast 的四舍五入相差 1μs、围栏恒不命中——
+	// 2026-09-28 BUG-0206 同族）。
 	fence := `AND balance_query_next_refresh_at IS NULL`
 	args := []any{balanceDueText(*next), balanceDueText(s.now()), accountID, configRevision}
 	if expected != nil {
-		fence = `AND balance_query_next_refresh_at::timestamptz = $5`
-		args = append(args, expected.UTC())
+		fence = `AND balance_query_next_refresh_at::timestamptz = $5::timestamptz`
+		args = append(args, expected.UTC().Format(time.RFC3339Nano))
 	}
 	query := `UPDATE juhe_business.accounts
 SET balance_query_next_refresh_at = $1, updated_at = $2

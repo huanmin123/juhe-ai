@@ -15,8 +15,11 @@ import (
 // (RunInputServerSharedLease) and moves here unchanged — one bounded
 // retention pass per schedulejitter-delayed RetentionInterval, reading the
 // retention-days business setting each pass, fenced by the shared
-// LeaseKeeper. A lost lease is terminal for the component (the supervisor
-// boundary retries until the process restarts with a fresh fence), while a
+// LeaseKeeper. On re-entry after a supervisor restart it re-acquires the
+// owner lease with a fresh fence token instead of replaying the previous
+// run's terminal error (the 2026-09 BUG-0196-family replay loop that kept
+// the component retrying every 30s without ever touching the database); a
+// lost lease mid-run stays terminal for the current generation, while a
 // transient retention failure keeps the cadence alive like before.
 func RunOwner(ctx context.Context, store Store, keeper *LeaseKeeper, cfg Config, logger *slog.Logger) error {
 	if keeper == nil {
@@ -24,6 +27,9 @@ func RunOwner(ctx context.Context, store Store, keeper *LeaseKeeper, cfg Config,
 	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if err := keeper.reacquire(ctx); err != nil {
+		return err
 	}
 	lease := keeper.Lease()
 	retention := time.NewTimer(schedulejitter.Delay(cfg.RetentionInterval))

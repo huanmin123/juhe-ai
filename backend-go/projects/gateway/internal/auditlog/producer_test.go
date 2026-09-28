@@ -172,7 +172,7 @@ func (l *fakeProducerLogger) snapshot() []string {
 // server write sequence minus HTTP.
 func TestProducerCapturePersistsAndAppendsHotSearch(t *testing.T) {
 	fake := &fakeStore{renewOK: true}
-	producer := NewProducer(fake, OwnerLease{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, nil)
+	producer := NewProducer(fake, fixedLeaseSource{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, nil)
 	producer.Capture(producerTestInput("audit-1"))
 	fake.waitForCalls(t, 3)
 
@@ -191,7 +191,7 @@ func TestProducerCapturePersistsAndAppendsHotSearch(t *testing.T) {
 // must not append to the hot-search mirror.
 func TestProducerCaptureSkipsHotSearchWhenIgnored(t *testing.T) {
 	fake := &fakeStore{renewOK: true, persistIgn: true}
-	producer := NewProducer(fake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, nil)
+	producer := NewProducer(fake, fixedLeaseSource{}, Config{OwnerLease: 30 * time.Second}, nil)
 	producer.Capture(producerTestInput("audit-ignored"))
 	fake.waitForCalls(t, 2)
 
@@ -209,7 +209,7 @@ func TestProducerCaptureDropsOnLostOwnerLease(t *testing.T) {
 		"renew error":    {renewErr: errors.New("storage down")},
 	} {
 		logger := &fakeProducerLogger{warns: &[]string{}}
-		producer := NewProducer(fake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, logger)
+		producer := NewProducer(fake, fixedLeaseSource{}, Config{OwnerLease: 30 * time.Second}, logger)
 		producer.Capture(producerTestInput("audit-drop"))
 		fake.waitForCalls(t, 1)
 
@@ -227,7 +227,7 @@ func TestProducerCaptureDropsOnLostOwnerLease(t *testing.T) {
 // so the renewal is skipped and the write proceeds under the shared keeper.
 func TestProducerCapturePersistsWithoutRenewWhenTTLUnset(t *testing.T) {
 	fake := &fakeStore{renewOK: true}
-	producer := NewProducer(fake, OwnerLease{}, Config{}, nil)
+	producer := NewProducer(fake, fixedLeaseSource{}, Config{}, nil)
 	producer.Capture(producerTestInput("audit-no-ttl"))
 	fake.waitForCalls(t, 2)
 
@@ -242,14 +242,14 @@ func TestProducerCapturePersistsWithoutRenewWhenTTLUnset(t *testing.T) {
 func TestProducerCaptureSwallowsPersistAndHotSearchErrors(t *testing.T) {
 	logger := &fakeProducerLogger{warns: &[]string{}}
 	persistFake := &fakeStore{renewOK: true, persistErr: errors.New("persist failed")}
-	NewProducer(persistFake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, logger).Capture(producerTestInput("audit-persist-fail"))
+	NewProducer(persistFake, fixedLeaseSource{}, Config{OwnerLease: 30 * time.Second}, logger).Capture(producerTestInput("audit-persist-fail"))
 	persistFake.waitForCalls(t, 2)
 	if _, _, hots := persistFake.counts(); hots != 0 {
 		t.Fatalf("failed persist must not reach hot search: hot=%d", hots)
 	}
 
 	hotFake := &fakeStore{renewOK: true, hotErr: errors.New("hot search failed")}
-	NewProducer(hotFake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, logger).Capture(producerTestInput("audit-hot-fail"))
+	NewProducer(hotFake, fixedLeaseSource{}, Config{OwnerLease: 30 * time.Second}, logger).Capture(producerTestInput("audit-hot-fail"))
 	hotFake.waitForCalls(t, 3)
 
 	if len(logger.snapshot()) < 2 {
@@ -262,7 +262,7 @@ func TestProducerCaptureSwallowsPersistAndHotSearchErrors(t *testing.T) {
 // point; the producer must not lose or duplicate entries).
 func TestProducerCaptureConcurrentWrites(t *testing.T) {
 	fake := &fakeStore{renewOK: true}
-	producer := NewProducer(fake, OwnerLease{}, Config{OwnerLease: 30 * time.Second}, nil)
+	producer := NewProducer(fake, fixedLeaseSource{}, Config{OwnerLease: 30 * time.Second}, nil)
 	const writers = 32
 	var wg sync.WaitGroup
 	for index := 0; index < writers; index++ {
@@ -306,7 +306,7 @@ func TestProducerCaptureDropsWhenQueueSaturated(t *testing.T) {
 	gate := make(chan struct{})
 	store := &gatedStore{fakeStore: inner, gate: gate}
 	logger := &fakeProducerLogger{warns: &[]string{}}
-	producer := NewProducer(store, OwnerLease{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, logger)
+	producer := NewProducer(store, fixedLeaseSource{OwnerID: "owner-1", FenceToken: 7}, Config{OwnerLease: 30 * time.Second}, logger)
 
 	// Park every worker inside the gated renewal so no further dequeues race
 	// with the fills below.
@@ -356,5 +356,5 @@ func TestProducerCaptureDropsWhenQueueSaturated(t *testing.T) {
 func TestProducerNilReceiverAndNilStoreAreInert(t *testing.T) {
 	var nilProducer *Producer
 	nilProducer.Capture(producerTestInput("nil-receiver"))
-	NewProducer(nil, OwnerLease{}, Config{}, nil).Capture(producerTestInput("nil-store"))
+	NewProducer(nil, fixedLeaseSource{}, Config{}, nil).Capture(producerTestInput("nil-store"))
 }

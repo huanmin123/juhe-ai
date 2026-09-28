@@ -24,6 +24,15 @@ const (
 	producerWorkers = 4
 )
 
+// LeaseSource exposes the currently held owner lease. The LeaseKeeper
+// implements it; producers read the lease per record so every write fences
+// with the live fence token (reacquire rotates the token when the supervisor
+// revives a lost keeper — a frozen snapshot would fence every subsequent
+// write until a process restart).
+type LeaseSource interface {
+	Lease() OwnerLease
+}
+
 // Producer persists operation logs directly through the store with a held
 // owner lease (the process-wide LeaseKeeper owns the renewal lifecycle; the
 // producer only extends the same lease per record).
@@ -35,7 +44,7 @@ const (
 // fire-and-forget and never blocks the business transaction.
 type Producer struct {
 	store Store
-	lease OwnerLease
+	lease LeaseSource
 	cfg   Config
 	log   slogLogger
 
@@ -55,9 +64,10 @@ func (p *Producer) warn(msg string, args ...any) {
 	}
 }
 
-// NewProducer binds the producer to an already-held lease shared with the
-// resident F4 owner component (retention).
-func NewProducer(store Store, lease OwnerLease, cfg Config, log slogLogger) *Producer {
+// NewProducer binds the producer to the shared lease source (the process-wide
+// LeaseKeeper, also implemented by fixedLeaseSource for static compositions)
+// together with the resident F4 owner component (retention).
+func NewProducer(store Store, lease LeaseSource, cfg Config, log slogLogger) *Producer {
 	return &Producer{
 		store: store,
 		lease: lease,
@@ -66,6 +76,12 @@ func NewProducer(store Store, lease OwnerLease, cfg Config, log slogLogger) *Pro
 		queue: make(chan Input, producerQueueCapacity),
 	}
 }
+
+// fixedLeaseSource pins one lease value for callers without a keeper (tests,
+// static compositions).
+type fixedLeaseSource OwnerLease
+
+func (s fixedLeaseSource) Lease() OwnerLease { return OwnerLease(s) }
 
 // Record persists one entry asynchronously (fire-and-forget). Errors are
 // logged and swallowed: operation logs never fail the business transaction
@@ -107,6 +123,7 @@ func (p *Producer) persistOne(entry Input) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	lease := p.lease.Lease()
 	// Extending the lease per record keeps it alive under write activity
 	// (the LeaseKeeper ticker covers the idle case). A non-positive TTL
 	// would set lease_until to the current instant and self-destruct the
@@ -115,13 +132,13 @@ func (p *Producer) persistOne(entry Input) {
 	if p.cfg.OwnerLease > 0 {
 		renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer renewCancel()
-		renewed, err := p.store.RenewOwnerLease(renewCtx, p.lease, p.cfg.OwnerLease)
+		renewed, err := p.store.RenewOwnerLease(renewCtx, lease, p.cfg.OwnerLease)
 		if err != nil || !renewed {
 			p.warn("F4 owner lease renewal failed; dropping operation log", "error", err, "traceID", entry.TraceID, "operationLogID", entry.ID)
 			return
 		}
 	}
-	if _, err := p.store.Persist(ctx, p.lease, entry); err != nil {
+	if _, err := p.store.Persist(ctx, lease, entry); err != nil {
 		p.warn("F4 Go 操作日志提交失败", "error", err)
 	}
 }

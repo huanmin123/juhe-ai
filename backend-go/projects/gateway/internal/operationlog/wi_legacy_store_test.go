@@ -156,11 +156,11 @@ func TestWIProducerWarnOnFailure(t *testing.T) {
 	recorder := &wiRecordingSlog{warns: make(chan string, 4)}
 	// 过期 fence：续租被拒 → 告警并丢弃（fire-and-forget 契约）。
 	stale := OwnerLease{OwnerID: lease.OwnerID, FenceToken: lease.FenceToken + 7}
-	producer := NewProducer(store, stale, Config{OwnerLease: time.Minute}, recorder)
+	producer := NewProducer(store, fixedLeaseSource(stale), Config{OwnerLease: time.Minute}, recorder)
 	producer.Record(Input{ID: "wi-op-entry", Summary: "s", CreatedAt: "2026-09-10T08:00:00Z"})
 	waitForSlogWarn(t, recorder)
 	// 无 Logger 时同样安全。
-	quiet := NewProducer(store, lease, Config{OwnerLease: 0}, nil)
+	quiet := NewProducer(store, fixedLeaseSource(lease), Config{OwnerLease: 0}, nil)
 	quiet.Record(Input{ID: "wi-op-entry-2", Summary: "s", CreatedAt: "2026-09-10T08:00:00Z"})
 	_ = slog.Default()
 }

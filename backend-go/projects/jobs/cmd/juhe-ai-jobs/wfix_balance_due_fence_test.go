@@ -279,9 +279,12 @@ func fenceRequireText(t *testing.T, haystack, needle, label string) {
 	}
 }
 
-// TestBalancePGDueSQLContract：PG 分支 SQL 契约——Commit/Enable 的 fence 为
-// `::timestamptz = ?`（pgpool 改写后 `$n`），fence 参数为 time.Time，写入值
-// 为预格式化文本；List 的 due 过滤与游标比较全部 cast。
+// TestBalancePGDueSQLContract：PG 分支 SQL 契约（2026-09-28 BUG-0206 修订）——
+// Commit/Enable 的 fence 为 `::timestamptz = ?::timestamptz`（pgpool 改写后
+// `$n::timestamptz`），fence 参数为库内读回的 RFC3339Nano 原文：等值两侧同过
+// PG 同一处 cast 舍入，纳秒精度存量值（.690411968）可精确命中；绑定 time.Time
+// 会被 pgx 截断到微秒、与列 cast 的四舍五入相差 1μs、围栏恒不命中。写入值
+// 仍为预格式化文本；List 的 due 过滤 cast，游标比较为原文+cast。
 func TestBalancePGDueSQLContract(t *testing.T) {
 	ctx := context.Background()
 	runtime, recorder := newFencePGRuntime(t)
@@ -296,23 +299,19 @@ func TestBalancePGDueSQLContract(t *testing.T) {
 	statement := recorder.all()[0]
 	fenceRequireText(t, statement.query, "SET balance_query_next_refresh_at = ?", "Commit SET 子句")
 	fenceRequireText(t, statement.query, "updated_at = ?", "Commit updated_at 写入")
-	fenceRequireText(t, statement.query, "AND balance_query_next_refresh_at::timestamptz = ?", "Commit fence cast")
+	fenceRequireText(t, statement.query, "AND balance_query_next_refresh_at::timestamptz = ?::timestamptz", "Commit fence cast")
 	// pgpool driver 层把 ? 改写为 $n（与生产同源），cast 不被破坏。
 	bound := sqldialect.BindSQL(true, statement.query)
-	fenceRequireText(t, bound, "AND balance_query_next_refresh_at::timestamptz = $5", "Commit fence 改写后契约")
-	// 参数形态：$1 收口 NULL、$2 预格式化 updated_at、$5 time.Time 期望值。
+	fenceRequireText(t, bound, "AND balance_query_next_refresh_at::timestamptz = $5::timestamptz", "Commit fence 改写后契约")
+	// 参数形态：$1 收口 NULL、$2 预格式化 updated_at、$5 围栏原文文本。
 	if statement.args[0] != nil {
 		t.Fatalf("收口提交的 next 参数必须是 NULL，得到 %v", statement.args[0])
 	}
 	if text, ok := statement.args[1].(string); !ok || text != balanceDueText(runtime.nowFunc()) {
 		t.Fatalf("updated_at 参数必须是预格式化文本，得到 %v", statement.args[1])
 	}
-	expected, err := parseBalanceInstant(nanoDue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fenceTime, ok := statement.args[4].(time.Time); !ok || !fenceTime.Equal(expected) {
-		t.Fatalf("fence 参数必须是 time.Time 期望值 %v，得到 %v", expected, statement.args[4])
+	if fenceText, ok := statement.args[4].(string); !ok || fenceText != nanoDue {
+		t.Fatalf("fence 参数必须是围栏原文文本 %s，得到 %v", nanoDue, statement.args[4])
 	}
 
 	// CommitDetectionDue：推进（next=毫秒文本）。
@@ -335,26 +334,51 @@ func TestBalancePGDueSQLContract(t *testing.T) {
 		t.Fatalf("录制 Enable 失败: %v", err)
 	}
 	statement = recorder.all()[2]
-	fenceRequireText(t, statement.query, " AND balance_query_next_refresh_at::timestamptz = ?", "Enable fence cast")
-	if _, ok := statement.args[5].(time.Time); !ok {
-		t.Fatalf("Enable fence 参数必须是 time.Time，得到 %T", statement.args[5])
+	fenceRequireText(t, statement.query, " AND balance_query_next_refresh_at::timestamptz = ?::timestamptz", "Enable fence cast")
+	if fenceText, ok := statement.args[5].(string); !ok || fenceText != nanoDue {
+		t.Fatalf("Enable fence 参数必须是围栏原文文本 %s，得到 %v", nanoDue, statement.args[5])
 	}
 	if nextText, ok := statement.args[1].(string); !ok || nextText != milliNext {
 		t.Fatalf("Enable next 参数必须是预格式化文本 %s，得到 %v", milliNext, statement.args[1])
 	}
 
-	// ListDueCandidates：due 过滤与游标比较全部 cast，now 参数为 time.Time。
+	// ListDueCandidates：due 过滤 cast，游标比较为原文文本+cast，now 参数为
+	// time.Time。
 	if _, err := runtime.ListDueCandidates(ctx, 10); err != nil {
 		t.Fatalf("录制候选扫描失败: %v", err)
 	}
 	statement = recorder.all()[3]
 	fenceRequireText(t, statement.query, "AND balance_query_next_refresh_at::timestamptz <= ?", "List due 过滤 cast")
-	fenceRequireText(t, statement.query, "OR balance_query_next_refresh_at::timestamptz > ? OR (balance_query_next_refresh_at::timestamptz = ? AND id > ?)", "List 游标比较 cast")
+	fenceRequireText(t, statement.query, "OR balance_query_next_refresh_at::timestamptz > ?::timestamptz OR (balance_query_next_refresh_at::timestamptz = ?::timestamptz AND id > ?)", "List 游标比较 cast")
 	boundList := sqldialect.BindSQL(true, statement.query)
 	if strings.Contains(boundList, "?") {
 		t.Fatalf("List SQL 经 pgpool 改写后不得残留 ? 占位符:\n%s", boundList)
 	}
 	if _, ok := statement.args[0].(time.Time); !ok {
 		t.Fatalf("List now 参数必须是 time.Time，得到 %T", statement.args[0])
+	}
+}
+
+// TestBalancePGDueCursorEmptyPlaceholderContract：无游标时比较臂占位绑定值
+// 必须是可解析时间文本（合法 timestamptz 输入）——占位臂在 SQL 里被
+// `? = ”` 守卫，但比较臂 cast 若拿到空串会在求值时报错。
+func TestBalancePGDueCursorEmptyPlaceholderContract(t *testing.T) {
+	ctx := context.Background()
+	runtime, recorder := newFencePGRuntime(t)
+	if _, err := runtime.ListDueCandidates(ctx, 1); err != nil {
+		t.Fatalf("录制候选扫描失败: %v", err)
+	}
+	statement := recorder.all()[0]
+	if guard, ok := statement.args[1].(string); !ok || guard != "" {
+		t.Fatalf("游标守卫占位必须是空串，得到 %v", statement.args[1])
+	}
+	for _, index := range []int{2, 3} {
+		text, ok := statement.args[index].(string)
+		if !ok {
+			t.Fatalf("无游标占位参数必须是文本，得到 %T", statement.args[index])
+		}
+		if _, err := parseBalanceInstant(text); err != nil {
+			t.Fatalf("无游标占位必须是可解析时间文本（防 cast 报错）: %v (%s)", err, text)
+		}
 	}
 }

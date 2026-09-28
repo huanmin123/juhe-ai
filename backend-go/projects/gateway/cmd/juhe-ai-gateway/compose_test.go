@@ -139,7 +139,7 @@ func openComposeAuditSources(t *testing.T, root string) (auditlog.Config, *audit
 		_ = store.Close()
 		t.Fatalf("start F3 audit lease keeper: ok=%v err=%v", ok, err)
 	}
-	producer := auditlog.NewProducer(store, keeper.Lease(), config, producerLogger{})
+	producer := auditlog.NewProducer(store, keeper, config, producerLogger{})
 	return config, producer, func() {
 		keeper.Close()
 		_ = store.Close()

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,20 +23,28 @@ type modelAccess struct {
 
 // --- 会话绑定模式（AI 问答三种绑定模式）端口与作用域 ---
 
+// ChatBindScope 是会话绑定对象的数据范围，普通用户=自有+被授权的启用对象，
+// admin/super_admin=全量号池；由 requireChatBindScope 从登录态解析，沿创建
+// 校验、下拉端点与发送/模型作用域复核三条链路统一传递。
+type ChatBindScope struct {
+	ViewerID string
+	IsAdmin  bool
+}
+
 // ChatGroupLookup resolves a group binding object (group 模式创建与模型作用
-// 域校验：存在且 enabled + 名称快照). Port satisfied at the composition root
-// by the groups store; nil disables the group bind mode with an explicit
-// error.
+// 域校验：数据范围内存在且 enabled + 名称快照). Port satisfied at the
+// composition root by the groups store; nil disables the group bind mode with
+// an explicit error.
 type ChatGroupLookup interface {
-	FindChatGroup(groupID string) (*ChatGroupRef, error)
+	FindChatGroup(scope ChatBindScope, groupID string) (*ChatGroupRef, error)
 }
 
 // ChatAccountLookup resolves an account binding object (account 模式创建与
-// 模型作用域校验：存在且启用 + 名称/provider 事实 + 启用分组绑定). Port
-// satisfied at the composition root by the accounts store; nil disables the
-// account bind mode with an explicit error.
+// 模型作用域校验：数据范围内存在且启用 + 名称/provider 事实 + 启用分组绑定).
+// Port satisfied at the composition root by the accounts store; nil disables
+// the account bind mode with an explicit error.
 type ChatAccountLookup interface {
-	FindChatAccount(accountID string) (*ChatAccountRef, error)
+	FindChatAccount(scope ChatBindScope, accountID string) (*ChatAccountRef, error)
 }
 
 // ChatBindOption 是新建会话绑定下拉的最小 id/name 投影：不含归属、供应商、
@@ -45,19 +54,20 @@ type ChatBindOption struct {
 	Name string `json:"name"`
 }
 
-// ChatGroupOptionsLookup 列出新建会话绑定下拉的启用分组最小摘要（仅
-// enabled = 1）。Port satisfied at the composition root by the groups store;
+// ChatGroupOptionsLookup 列出新建会话绑定下拉的启用分组最小摘要（仅有效
+// enabled 行；数据范围与 FindChatGroup 同口径）。ctx 供实现复用带 context 的
+// Options 查询。Port satisfied at the composition root by the groups store;
 // nil 让绑定下拉端点返回显式错误。
 type ChatGroupOptionsLookup interface {
-	ListChatGroupOptions() ([]ChatBindOption, error)
+	ListChatGroupOptions(ctx context.Context, scope ChatBindScope) ([]ChatBindOption, error)
 }
 
 // ChatAccountOptionsLookup 列出新建会话绑定下拉的可绑定账户最小摘要（口径
-// 与 FindChatAccount 完全一致：未删、非授权实例戳行、生效状态 active）。
-// Port satisfied at the composition root by the accounts store; nil 让绑定
-// 下拉端点返回显式错误。
+// 与 FindChatAccount 完全一致：数据范围内未删、非授权实例戳行、生效状态
+// active）。ctx 供实现复用带 context 的查询。Port satisfied at the
+// composition root by the accounts store; nil 让绑定下拉端点返回显式错误。
 type ChatAccountOptionsLookup interface {
-	ListChatAccountOptions() ([]ChatBindOption, error)
+	ListChatAccountOptions(ctx context.Context, scope ChatBindScope) ([]ChatBindOption, error)
 }
 
 // ChatGroupRef is the read-only group view the bind modes rely on. Enabled
@@ -224,9 +234,11 @@ func normalizeProviderToken(value string) string {
 }
 
 // resolveChatBindingScope 校验会话归属下的绑定对象可用性并解析模型作用域：
-// api_key（含存量默认）保持 Key 校验与 Key 视图分组；group 校验分组存在且
-// enabled；account 校验账户存在且启用并收敛运行时账户视图。
-func (rt *chatRoutes) resolveChatBindingScope(conversation *Conversation, ownerID string) (*chatBindingScope, error) {
+// api_key（含存量默认）保持 Key 校验与 Key 视图分组；group/account 校验绑定
+// 对象在请求者数据范围（ChatBindScope）内存在且启用——范围外与不存在同型
+// (nil, nil)，沿用既有 400 文案。
+func (rt *chatRoutes) resolveChatBindingScope(conversation *Conversation, bindScope ChatBindScope) (*chatBindingScope, error) {
+	ownerID := bindScope.ViewerID
 	switch conversation.BindMode {
 	case "", BindModeAPIKey:
 		apiKey, err := rt.requireOwnedApiKey(derefString(conversation.APIKeyID), ownerID)
@@ -243,7 +255,7 @@ func (rt *chatRoutes) resolveChatBindingScope(conversation *Conversation, ownerI
 		if rt.deps.GroupLookup == nil {
 			return nil, &DomainError{Message: "会话绑定分组校验暂不可用，请稍后重试"}
 		}
-		group, err := rt.deps.GroupLookup.FindChatGroup(groupID)
+		group, err := rt.deps.GroupLookup.FindChatGroup(bindScope, groupID)
 		if err != nil {
 			return nil, err
 		}
@@ -259,7 +271,7 @@ func (rt *chatRoutes) resolveChatBindingScope(conversation *Conversation, ownerI
 		if rt.deps.AccountLookup == nil {
 			return nil, &DomainError{Message: "会话绑定账户校验暂不可用，请稍后重试"}
 		}
-		ref, err := rt.deps.AccountLookup.FindChatAccount(accountID)
+		ref, err := rt.deps.AccountLookup.FindChatAccount(bindScope, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -531,6 +543,11 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 		writeChatRouteError(w, err)
 		return
 	}
+	bindScope, err := rt.requireChatBindScope(r)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
 	var apiKey *ChatAPIKeyRecord
 	scope := &chatBindingScope{bindMode: bindMode}
 	bindGroupID, bindGroupName := "", ""
@@ -563,7 +580,7 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 			writeChatRouteError(w, &DomainError{Message: "会话绑定分组校验暂不可用，请稍后重试"})
 			return
 		}
-		group, groupErr := rt.deps.GroupLookup.FindChatGroup(*groupID)
+		group, groupErr := rt.deps.GroupLookup.FindChatGroup(bindScope, *groupID)
 		if groupErr != nil {
 			writeChatRouteError(w, groupErr)
 			return
@@ -593,7 +610,7 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 			writeChatRouteError(w, &DomainError{Message: "会话绑定账户校验暂不可用，请稍后重试"})
 			return
 		}
-		account, accountErr := rt.deps.AccountLookup.FindChatAccount(*accountID)
+		account, accountErr := rt.deps.AccountLookup.FindChatAccount(bindScope, *accountID)
 		if accountErr != nil {
 			writeChatRouteError(w, accountErr)
 			return
@@ -678,16 +695,16 @@ func (rt *chatRoutes) requireChatAPIKeyForOwner(ownerID string) (*ChatAPIKeyReco
 
 // requireOwnedChatModelScope mirrors requireOwnedChatModelAccessAsync with
 // the bind-mode generalization: 会话归属 + 绑定对象可用性校验（api_key 模式
-// 保持 Key 校验；group/account 校验对象存在且启用）。
-func (rt *chatRoutes) requireOwnedChatModelScope(conversationID, ownerID string) (*Conversation, *chatBindingScope, error) {
-	conversation, err := rt.deps.Store.GetConversation(conversationID, ownerID)
+// 保持 Key 校验；group/account 校验对象在请求者数据范围内存在且启用）。
+func (rt *chatRoutes) requireOwnedChatModelScope(conversationID string, bindScope ChatBindScope) (*Conversation, *chatBindingScope, error) {
+	conversation, err := rt.deps.Store.GetConversation(conversationID, bindScope.ViewerID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if conversation == nil {
 		return nil, nil, &ConversationNotFoundError{}
 	}
-	scope, err := rt.resolveChatBindingScope(conversation, ownerID)
+	scope, err := rt.resolveChatBindingScope(conversation, bindScope)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -703,12 +720,13 @@ func derefString(value *string) string {
 
 // listConversationModels mirrors GET /conversations/{id}/models.
 func (rt *chatRoutes) listConversationModels(w http.ResponseWriter, r *http.Request) {
-	ownerID, err := rt.requireChatAuth(r)
+	bindScope, err := rt.requireChatBindScope(r)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
 	}
-	_, scope, err := rt.requireOwnedChatModelScope(r.PathValue("conversationId"), ownerID)
+	ownerID := bindScope.ViewerID
+	_, scope, err := rt.requireOwnedChatModelScope(r.PathValue("conversationId"), bindScope)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
@@ -723,13 +741,14 @@ func (rt *chatRoutes) listConversationModels(w http.ResponseWriter, r *http.Requ
 
 // getConversationModel mirrors GET /conversations/{id}/models/{modelId}.
 func (rt *chatRoutes) getConversationModel(w http.ResponseWriter, r *http.Request) {
-	ownerID, err := rt.requireChatAuth(r)
+	bindScope, err := rt.requireChatBindScope(r)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
 	}
+	ownerID := bindScope.ViewerID
 	modelID := r.PathValue("modelId")
-	_, scope, err := rt.requireOwnedChatModelScope(r.PathValue("conversationId"), ownerID)
+	_, scope, err := rt.requireOwnedChatModelScope(r.PathValue("conversationId"), bindScope)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
@@ -848,6 +867,11 @@ func (rt *chatRoutes) compactionTrigger(w http.ResponseWriter, r *http.Request) 
 		writeChatRouteError(w, err)
 		return
 	}
+	bindScope, err := rt.requireChatBindScope(r)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
 	conversation, err := rt.deps.Store.GetConversation(r.PathValue("conversationId"), ownerID)
 	if err != nil {
 		writeChatRouteError(w, err)
@@ -879,7 +903,7 @@ func (rt *chatRoutes) compactionTrigger(w http.ResponseWriter, r *http.Request) 
 		writeChatRouteError(w, &DomainError{Message: "上下文压缩启动失败，请稍后重试"})
 		return
 	}
-	input, err := rt.resolveChatCompactionInput(conversation, ownerID, *model)
+	input, err := rt.resolveChatCompactionInput(conversation, bindScope, *model)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
@@ -904,15 +928,17 @@ func (rt *chatRoutes) compactionTrigger(w http.ResponseWriter, r *http.Request) 
 }
 
 // resolveChatCompactionInput mirrors resolveChatCompactionInput. 鉴权主体恒
-// 为会话 api_key_id（三种模式同一语义）；模型能力与协议按绑定作用域收敛。
-func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, ownerID, model string) (CompactionInput, error) {
+// 为会话 api_key_id（三种模式同一语义）；绑定对象按请求者数据范围复核，模型
+// 能力与协议按绑定作用域收敛。
+func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, bindScope ChatBindScope, model string) (CompactionInput, error) {
+	ownerID := bindScope.ViewerID
 	input := CompactionInput{ConversationID: conversation.ID, SystemAccountID: ownerID, Model: model}
 	apiKey, err := rt.requireOwnedApiKey(derefString(conversation.APIKeyID), ownerID)
 	if err != nil {
 		return input, err
 	}
 	input.APIKeySecret = apiKey.Secret
-	scope, err := rt.resolveChatBindingScope(conversation, ownerID)
+	scope, err := rt.resolveChatBindingScope(conversation, bindScope)
 	if err != nil {
 		return input, err
 	}

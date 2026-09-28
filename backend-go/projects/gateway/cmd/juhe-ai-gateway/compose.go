@@ -783,11 +783,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 
 	// F4 producer sink: every management mutation lands in the operation log
 	// through the in-process producer. The producer shares the process-wide
-	// LeaseKeeper with the F4 input server (single owner_id/fence_token for
+	// LeaseKeeper with the F4 owner component (single owner_id/fence_token for
 	// both writers of this process); the renewal lifecycle is owned by the
-	// keeper, while the producer only extends the same lease per record with
-	// the configured owner-lease TTL.
-	producer := operationlog.NewProducer(operationStore, operationLease.Lease(), operationlog.Config{OwnerLease: operationLease.TTL()}, producerLogger{})
+	// keeper, while the producer reads the live lease per record (reacquire
+	// rotates the fence token) and extends it with the configured owner-lease
+	// TTL.
+	producer := operationlog.NewProducer(operationStore, operationLease, operationlog.Config{OwnerLease: operationLease.TTL()}, producerLogger{})
 	composed.producer = producer
 	composed.operationStore = operationStore
 	// F3 chain audit sink (去跨进程战役第四刀): main 构造的进程内 producer

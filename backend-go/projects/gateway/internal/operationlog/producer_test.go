@@ -216,7 +216,7 @@ func utf16LengthUnits(value string) int {
 
 func TestProducerPersistsAndSwallowsErrors(t *testing.T) {
 	fake := &fakeStore{}
-	producer := NewProducer(fake, OwnerLease{}, Config{InstanceID: "test"}, nil)
+	producer := NewProducer(fake, fixedLeaseSource{}, Config{InstanceID: "test"}, nil)
 
 	producer.Record(Input{
 		ActorSystemAccountID: "sysacc_1",
@@ -318,7 +318,7 @@ func TestProducerRecordDropsWhenQueueSaturated(t *testing.T) {
 	store := &gatedStore{fakeStore: inner, gate: gate}
 	var warns []string
 	logger := &sliceLogger{warns: &warns}
-	producer := NewProducer(store, OwnerLease{}, Config{InstanceID: "test", OwnerLease: 30 * time.Second}, logger)
+	producer := NewProducer(store, fixedLeaseSource{}, Config{InstanceID: "test", OwnerLease: 30 * time.Second}, logger)
 
 	// 把每个 worker 停在阻塞续期内，后续不再有出队与填充竞争。
 	for i := 0; i < producerWorkers; i++ {

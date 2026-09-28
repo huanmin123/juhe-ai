@@ -316,6 +316,11 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		writeChatRouteError(w, err)
 		return
 	}
+	bindScope, err := rt.requireChatBindScope(r)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
 	conversation, err := rt.deps.Store.GetConversation(r.PathValue("conversationId"), ownerID)
 	if err != nil {
 		writeChatRouteError(w, err)
@@ -402,13 +407,14 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	// 发送前置校验按绑定模式收敛（三种模式同一入口）：归属 Key 校验保持会话
 	// api_key_id（鉴权主体明文来源，域 A 保证三种模式均非空）；绑定对象可用
 	// 性与模型作用域经 resolveChatBindingScope（api_key 内部含 Key 校验与 Key
-	// 视图分组；group 校验分组存在且 enabled；account 校验账户存在且启用）。
+	// 视图分组；group/account 校验对象在请求者数据范围（ChatBindScope）内
+	// 存在且启用，存量越权绑定与"不存在/停用"同型降级）。
 	apiKey, err := rt.requireOwnedApiKey(derefString(conversation.APIKeyID), ownerID)
 	if err != nil {
 		failWith(err)
 		return
 	}
-	scope, err := rt.resolveChatBindingScope(conversation, ownerID)
+	scope, err := rt.resolveChatBindingScope(conversation, bindScope)
 	if err != nil {
 		failWith(err)
 		return

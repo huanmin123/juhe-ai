@@ -113,7 +113,8 @@ flowchart LR
 ### 5.2 会话绑定规则
 
 - 新建会话必须显式提交 `bindMode` 与对应绑定对象，三种模式：`api_key`（用户所选 Key）、`group`（指定分组）、`account`（指定账户）；无默认绑定，省略 `bindMode` 返回 400。
-- `api_key` 模式绑定当前登录用户拥有、已启用且未过期的 API Key；`group` 模式绑定启用中的分组；`account` 模式绑定启用中的账户（可选范围与网关可调度口径一致）。
+- `api_key` 模式绑定当前登录用户拥有、已启用且未过期的 API Key；`group` / `account` 模式绑定启用中的分组/账户，可选范围按角色两档：普通用户只能选择自有或被授权的启用对象——分组"自有+被授权"与 `/my-groups/options` 的 union 口径一致（授权 status 为 `active`/`paused`/`expired` 且未被 per-grantee 设置停用），账户"自有"与 `/my-accounts/options` 的 owner 面一致（名下未删除、非授权实例行、网关可调度有效状态 `active`）；`admin`/`super_admin` 保留全量启用号池（号池测试用途）。
+- 上述 `group` / `account` 可选范围在下拉端点、创建会话校验、发送与模型列表/模型能力读取前复核三层强制同口径：越权提交的绑定对象与"对象不存在"同型返回 400，不区分提示，避免对象枚举；存量越权绑定的会话视为绑定对象不可用，历史消息仍可读，但不能继续发送（与既有"停用后历史可读"降级模式一致）。系统进程内的调度装配上下文不受此范围约束（授权已在创建与发送校验收敛）。
 - `group` / `account` 模式的鉴权与计费主体是当前用户唯一的 `purpose = chat` 专用对话 Key，由服务端幂等确保存在；它只承载 Bearer 鉴权、额度和使用记录归属，不参与这些会话的调度与模型作用域。专用 Key 仍禁止删除或改名。
 - `api_key` 模式不触碰专用 Key；不再存在"新会话默认绑定专用 Key"的行为。
 - 创建会话时保存 `bind_mode`、绑定对象 ID 与名称快照、`api_key_id` 与 `api_key_name_snapshot`（鉴权 Key 名称）。
@@ -150,7 +151,7 @@ AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边�
 
 ### 6.2 新建会话
 
-1. 用户点击"新建对话"打开新建弹窗：先选绑定模式（API Key / 分组 / 账户），再在对应下拉中选择具体对象；对象未选择时创建按钮禁用，不记忆上次选择。Key 下拉读 `/my-api-keys`（self 域），分组与账户下拉读 `/my-chat/conversation-bind-options`（登录用户可用，仅启用对象，最小 id/name 摘要）。
+1. 用户点击"新建对话"打开新建弹窗：先选绑定模式（API Key / 分组 / 账户），再在对应下拉中选择具体对象；对象未选择时创建按钮禁用，不记忆上次选择。Key 下拉读 `/my-api-keys`（self 域），分组与账户下拉读 `/my-chat/conversation-bind-options`（登录用户可用，仅启用对象，最小 id/name 摘要；范围按角色两档：普通用户仅见自有或被授权启用对象，`admin`/`super_admin` 见全量启用号池）。
 2. `POST /conversations` 携带 `bindMode` 与对应对象 ID 立即创建会话，绑定后不允许更换；省略 `bindMode` 返回 400。
 3. 创建成功后使用响应中的默认模型引用；用户首次展开模型下拉时才读取 `id/name` 列表，切换模型时再按 ID 读取能力。
 4. 空会话属于正常可删除会话，不为其引入请求路径扫描或特殊兼容逻辑。
@@ -409,7 +410,7 @@ GET /__aisys__/api/my-chat/conversation-bind-options
 ```
 
 - 创建请求必填 `bindMode`（`api_key | group | account`）并按模式携带 `apiKeyId` / `groupId` / `accountId`；省略 `bindMode` 或携带与模式不符的字段返回 400。`api_key` 模式必须显式选择用户自己的 Key；`group` / `account` 模式的鉴权主体由服务端幂等确保为专用对话 Key。会话绑定后不提供更换接口。
-- 页面新建会话通过新建弹窗选择绑定模式与对象：Key 下拉读 `/my-api-keys`，分组与账户下拉读 `/my-chat/conversation-bind-options`（登录用户可用、仅启用对象、只返回最小 id/name 摘要，仅服务新建会话绑定下拉）。本条修订原"复用管理面 options 端点、`my-chat` 前缀下不新增选项端点"的设计：管理面 `/groups/options`、`/accounts/options` 仅管理员可用（`RequireAdmin`），普通用户调用返回 403"需要管理员权限"，原条款导致普通用户无法使用 `group` / `account` 绑定模式。
+- 页面新建会话通过新建弹窗选择绑定模式与对象：Key 下拉读 `/my-api-keys`，分组与账户下拉读 `/my-chat/conversation-bind-options`（登录用户可用、仅启用对象、只返回最小 id/name 摘要，仅服务新建会话绑定下拉）。下拉范围按角色两档：普通用户仅返回自有或被授权的启用对象（口径同 §5.2），`admin`/`super_admin` 返回全量启用号池；该范围与创建会话校验、发送与模型列表/模型能力读取前复核三层强制同口径，越权绑定与"对象不存在"同型返回 400，存量越权绑定的会话视为绑定对象不可用（历史可读、不能继续发送）。本条修订原"复用管理面 options 端点、`my-chat` 前缀下不新增选项端点"的设计：管理面 `/groups/options`、`/accounts/options` 仅管理员可用（`RequireAdmin`），普通用户调用返回 403"需要管理员权限"，原条款导致普通用户无法使用 `group` / `account` 绑定模式。
 - 会话列表使用 `(last_message_at, id)` 复合游标，默认 30、最大 50，只返回摘要。
 - PATCH 只接受 `title` 和 `isPinned`（及 `defaultImageModel`），至少提供一个字段；标题最长 60 字符。
 - 模型列表先校验会话归属与绑定对象可用性，再按绑定模式聚合供应商：`api_key` 模式按 Key 路由策略的全部 active 分组绑定汇总；`group` 模式按指定分组的可派发账户汇总；`account` 模式按该账户 provider 目录并与 `account_supported_models` 取交集。聚合后调用客户端动态模型目录服务；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数有关，不随账户数增长。
@@ -825,10 +826,10 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 
 - 用户只能读取、发送和删除自己的会话。
 - 管理角色使用个人接口时也不能读取他人会话。
-- 新建会话必须显式携带 `bindMode` 与匹配的绑定对象；省略、非法值或字段错配返回 400。三种模式的模型列表分别等于 Key 路由作用域、指定分组可派发账户聚合、指定账户 provider 目录（含 `account_supported_models` 交集）。
+- 新建会话必须显式携带 `bindMode` 与匹配的绑定对象；省略、非法值或字段错配返回 400；`group` / `account` 模式越权绑定不可选对象时与对象不存在同型返回 400。三种模式的模型列表分别等于 Key 路由作用域、指定分组可派发账户聚合、指定账户 provider 目录（含 `account_supported_models` 交集）。
 - `account` 模式发送命中指定账户且分组记账按该账户所属分组；`group` 模式发送始终落在指定分组；外部 HTTP 请求无法构造调度目标，无内部 context 的请求调度行为与现状一致。
 - 进入页面不自动选中会话，删除当前会话后回到空状态；待确认提交仍可回到原会话恢复。
-- 会话创建后不能修改绑定；`api_key` 模式 Key 删除后历史只读；`group`/`account` 模式对象被禁用后不能继续发送。
+- 会话创建后不能修改绑定；`api_key` 模式 Key 删除后历史只读；`group`/`account` 模式对象被禁用后不能继续发送；存量越权绑定的会话视为绑定对象不可用，同样历史可读、不能继续发送。
 - 同一 `clientMessageId` 不产生第二次网关请求。
 - 同会话并发发送返回 `409`，不同会话允许并发。
 - 同一用户不同会话并发占用容量时，配额检查串行化且最终窗口不得超过上限。

@@ -2,6 +2,7 @@ package operationlog
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -18,14 +19,21 @@ import (
 // fence the first holder (BUG: producer self-destructed via a zero-TTL renew
 // and the sidecar then took the row over).
 //
-// Lifecycle: StartLeaseKeeper acquires once; renewal runs on a ticker at
-// ttl/3 (the retired listener-era cadence). A transient renewal error keeps
-// the lease valid until ttl elapses, so the next tick retries; a rejected
-// renewal (expired or taken over) is terminal — the keeper records
-// ErrOwnerLeaseLost, closes Lost, and stops renewing. Recovery from a lost
-// fence is a process restart (fresh acquisition, fresh fence token); the
-// owner component surfaces the lost fence to its supervisor boundary and
-// stays not-ready, never silently writing with a stale fence.
+// Lifecycle (2026-09-28 revision, mirror of the auditlog.LeaseKeeper
+// BUG-0196 semantics): StartLeaseKeeper acquires once; renewal runs on a
+// ticker at ttl/3 (minimum 1s, the retired listener-era cadence). The renewal
+// UPDATE is guarded by owner_id + fence_token + lease_until > db-clock, so a
+// late retry can never renew somebody else's lease; the store reports logical
+// rejection as renewed=false with nil error, therefore any renewal error is
+// transport-class (timeout, network, 5xx) and does not prove the lease is
+// gone. Transport-class failures keep retrying at the normal cadence inside
+// the ownerRenewGraceFactor×TTL window since the first consecutive failure.
+// Only a 0-row rejection (expired or taken over) or an exceeded grace window
+// is terminal — the keeper records ErrOwnerLeaseLost (or the grace error),
+// closes Lost, and stops renewing. reacquire revives a terminal keeper for
+// the next supervisor restart of RunOwner with a fresh fence token; replaying
+// the stored error without touching the database (the pre-revision behavior
+// that left the gateway owner-less until a full process restart) is gone.
 type LeaseKeeper struct {
 	store Store
 	owner string
@@ -36,6 +44,11 @@ type LeaseKeeper struct {
 	lease   OwnerLease
 	lostErr error
 	lostCh  chan struct{}
+	// loopDone is closed when the current renewal-loop generation exits; it
+	// lets reacquire wait for the old loop (and its unsynchronized fatal
+	// bookkeeping) to fully stop before rebuilding one-shot state. Guarded by
+	// mu.
+	loopDone chan struct{}
 
 	fatalOnce sync.Once
 	stopCh    chan struct{}
@@ -58,7 +71,7 @@ func StartLeaseKeeper(ctx context.Context, store Store, owner string, ttl time.D
 		logger = slog.Default()
 	}
 	keeper := &LeaseKeeper{store: store, owner: owner, ttl: ttl, log: logger, lease: lease, lostCh: make(chan struct{}), stopCh: make(chan struct{})}
-	go keeper.renewLoop()
+	keeper.startRenewLoop()
 	return keeper, true, nil
 }
 
@@ -86,24 +99,68 @@ func (k *LeaseKeeper) LostError() error {
 	return k.lostErr
 }
 
-func (k *LeaseKeeper) renewLoop() {
+// ownerRenewGraceFactor bounds how long renewLoop tolerates transport-class
+// renewal failures: the guarded renewal UPDATE makes an in-window retry safe,
+// so one network jitter must not permanently kill the owner (production
+// 2026-09: a single 5s renewal timeout used to go terminal and left the
+// gateway permanently owner-less until a full process restart). After
+// 2×TTL without a successful renewal the lease can no longer be assumed
+// unexpired, so the keeper gives up ownership and lets the supervisor
+// restart re-acquire fresh.
+const ownerRenewGraceFactor = 2
+
+// startRenewLoop registers a fresh loop generation and spawns it. The done
+// channel is published under mu so reacquire can wait for this exact
+// generation to exit.
+func (k *LeaseKeeper) startRenewLoop() {
+	done := make(chan struct{})
+	k.mu.Lock()
+	k.loopDone = done
+	k.mu.Unlock()
+	go k.renewLoop(done)
+}
+
+func (k *LeaseKeeper) renewLoop(done chan struct{}) {
+	// close(done) is registered first so it runs last: the generation is only
+	// reported as exited after fatal bookkeeping (and any safego recovery)
+	// has completed, which is the ordering reacquire relies on.
+	defer close(done)
 	defer safego.Recover("operationlog.lease_keeper.renew_loop")
-	ticker := time.NewTicker(k.ttl / 3)
+	interval := k.ttl / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	grace := k.renewGraceWindow()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var firstFailure time.Time
+	var consecutiveFailures int
 	for {
 		select {
 		case <-k.stopCh:
 			return
 		case <-ticker.C:
-			renewCtx, cancel := storeContext(context.Background())
-			renewed, err := k.store.RenewOwnerLease(renewCtx, k.Lease(), k.ttl)
+			renewCtx, cancel := context.WithTimeout(context.Background(), minDuration(5*time.Second, interval))
+			renewed, renewErr := k.store.RenewOwnerLease(renewCtx, k.Lease(), k.ttl)
 			cancel()
-			if err != nil {
-				// Transient storage failure: the lease stays valid until ttl
-				// elapses, so keep the process alive and retry next tick.
-				k.log.Error("F4 owner lease renewal failed; retrying next tick", "error", err)
+			if renewErr != nil {
+				// Transport-class failure: the lease stays plausibly unexpired,
+				// so retry at the normal cadence. Each attempt keeps its own
+				// bounded context; a lease that really did expire mid-window
+				// surfaces as renewed=false (0 rows) on a later attempt.
+				if firstFailure.IsZero() {
+					firstFailure = time.Now()
+				}
+				consecutiveFailures++
+				if time.Since(firstFailure) > grace {
+					k.fatal(fmt.Errorf("续租 F4 operation-log owner lease 失败：连续 %d 次未成功，超过 %s 放宽窗口，放弃所有权: %w", consecutiveFailures, grace, renewErr))
+					return
+				}
+				k.log.Warn("续租 F4 operation-log owner lease 失败；租约仍可能有效，按周期重试", "error", renewErr, "consecutiveFailures", consecutiveFailures, "graceWindow", grace.String())
 				continue
 			}
+			firstFailure = time.Time{}
+			consecutiveFailures = 0
 			if !renewed {
 				k.fatal(ErrOwnerLeaseLost)
 				return
@@ -112,8 +169,18 @@ func (k *LeaseKeeper) renewLoop() {
 	}
 }
 
+// renewGraceWindow is the relaxed retry window for transport-class renewal
+// failures: 2×TTL since the first consecutive failure (see
+// ownerRenewGraceFactor).
+func (k *LeaseKeeper) renewGraceWindow() time.Duration {
+	return ownerRenewGraceFactor * k.ttl
+}
+
 func (k *LeaseKeeper) fatal(err error) {
 	k.fatalOnce.Do(func() {
+		if k.log != nil {
+			k.log.Error("F4 operation-log owner lease 丢失，放弃所有权", "error", err)
+		}
 		k.mu.Lock()
 		k.lostErr = err
 		k.mu.Unlock()
@@ -137,4 +204,67 @@ func (k *LeaseKeeper) Close() {
 			k.log.Warn("F4 owner lease release failed", "error", err)
 		}
 	})
+}
+
+// reacquire revives a terminal keeper for the next supervisor restart of
+// RunOwner: the stored loss must not be replayed without touching the
+// database (production 2026-09: every restart returned the same stored error
+// immediately and the gateway stayed owner-less until a process restart).
+// A healthy keeper is returned untouched. For a lost keeper the old stopCh is
+// closed and the previous loop generation is awaited (fatal() touches
+// fatalOnce without mu, so the wait orders the old loop's writes ahead of the
+// rebuild), then a fresh AcquireOwnerLease (new fence token) runs: the
+// guarded acquire only succeeds when the row is free or expired. On success
+// all one-shot state is rebuilt and a new renewal loop starts; lostCh is
+// replaced so observers re-reading Lost() (RunOwner re-reads it every select
+// iteration) see the fresh state.
+func (k *LeaseKeeper) reacquire(ctx context.Context) error {
+	if k.LostError() == nil {
+		return nil
+	}
+	k.stopOnce.Do(func() {
+		if k.stopCh != nil {
+			close(k.stopCh)
+		}
+	})
+	// Wait for the previous loop generation to fully exit before rebuilding
+	// one-shot state: fatal() touches fatalOnce without mu, so this wait is
+	// what orders the old loop's writes ahead of the resets below.
+	k.mu.RLock()
+	done := k.loopDone
+	k.mu.RUnlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return fmt.Errorf("等待旧续租循环退出时上下文取消: %w", ctx.Err())
+		}
+	}
+	acquireCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	lease, ok, err := k.store.AcquireOwnerLease(acquireCtx, k.owner, k.ttl)
+	if err != nil {
+		return fmt.Errorf("重启后重新获取 F4 operation-log owner lease 失败: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("重启后 F4 operation-log owner lease 仍被其他 owner 持有")
+	}
+	k.mu.Lock()
+	k.lease = lease
+	k.lostErr = nil
+	k.lostCh = make(chan struct{})
+	k.stopCh = make(chan struct{})
+	k.stopOnce = sync.Once{}
+	k.fatalOnce = sync.Once{}
+	k.mu.Unlock()
+	k.startRenewLoop()
+	k.log.Info("F4 operation-log owner lease 已重新获取，owner 组件恢复", "ownerID", lease.OwnerID, "fenceToken", lease.FenceToken)
+	return nil
+}
+
+func minDuration(first, second time.Duration) time.Duration {
+	if first < second {
+		return first
+	}
+	return second
 }

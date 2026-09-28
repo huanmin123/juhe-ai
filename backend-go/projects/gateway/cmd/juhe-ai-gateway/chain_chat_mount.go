@@ -96,7 +96,9 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		if accountLookup == nil {
 			return nil, false
 		}
-		ref, err := accountLookup.FindChatAccount(accountID)
+		// 进程级系统上下文（无请求用户），绑定授权已在创建与发送校验收敛；
+		// 按 admin 范围（全量号池口径）解析账户启用分组。
+		ref, err := accountLookup.FindChatAccount(chat.ChatBindScope{IsAdmin: true}, accountID)
 		if err != nil || ref == nil {
 			return nil, false
 		}

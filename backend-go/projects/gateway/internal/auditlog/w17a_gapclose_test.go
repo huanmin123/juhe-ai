@@ -32,7 +32,7 @@ func TestW17AProducerNilDroppedTotalAndPanicIsolation(t *testing.T) {
 	}
 
 	logger := &fakeProducerLogger{warns: &[]string{}}
-	producer := NewProducer(&w17aPanicStore{}, OwnerLease{}, Config{}, logger)
+	producer := NewProducer(&w17aPanicStore{}, fixedLeaseSource{}, Config{}, logger)
 	producer.Capture(producerTestInput("w17a-panic"))
 	deadline := time.Now().Add(5 * time.Second)
 	for {

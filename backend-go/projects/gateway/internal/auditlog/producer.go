@@ -32,7 +32,7 @@ const (
 
 type Producer struct {
 	store Store
-	lease OwnerLease
+	lease LeaseSource
 	cfg   Config
 	log   producerLogger
 
@@ -46,17 +46,33 @@ type producerLogger interface {
 	Error(msg string, args ...any)
 }
 
+// LeaseSource exposes the currently held owner lease. The LeaseKeeper
+// implements it; producers read the lease per record so every write fences
+// with the live fence token (reacquire rotates the token when the supervisor
+// revives a lost keeper — a frozen snapshot would fence every subsequent
+// write until a process restart).
+type LeaseSource interface {
+	Lease() OwnerLease
+}
+
+// fixedLeaseSource pins one lease value for callers without a keeper (tests,
+// static compositions).
+type fixedLeaseSource OwnerLease
+
+func (s fixedLeaseSource) Lease() OwnerLease { return OwnerLease(s) }
+
 func (p *Producer) warn(msg string, args ...any) {
 	if p.log != nil {
 		p.log.Warn(msg, args...)
 	}
 }
 
-// NewProducer binds the producer to an already-held owner lease (the
-// process-wide LeaseKeeper owned by main) and the persistence config. The
-// renewal lifecycle stays with the keeper; the producer only extends the same
-// lease per record, mirroring the operationlog.Producer contract.
-func NewProducer(store Store, lease OwnerLease, cfg Config, log producerLogger) *Producer {
+// NewProducer binds the producer to the shared lease source (the process-wide
+// LeaseKeeper owned by main, or fixedLeaseSource for static compositions)
+// and the persistence config. The renewal lifecycle stays with the keeper;
+// the producer only extends the same lease per record, mirroring the
+// operationlog.Producer contract.
+func NewProducer(store Store, lease LeaseSource, cfg Config, log producerLogger) *Producer {
 	return &Producer{
 		store: store,
 		lease: lease,
@@ -118,6 +134,7 @@ func (p *Producer) persistOne(input AuditLogInput) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	lease := p.lease.Lease()
 	// Extending the lease per record keeps it alive under write activity
 	// (the LeaseKeeper ticker covers the idle case). A non-positive TTL
 	// would set lease_until to the current instant and self-destruct the
@@ -126,13 +143,13 @@ func (p *Producer) persistOne(input AuditLogInput) {
 	if p.cfg.OwnerLease > 0 {
 		renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer renewCancel()
-		renewed, err := p.store.RenewOwnerLease(renewCtx, p.lease, p.cfg.OwnerLease)
+		renewed, err := p.store.RenewOwnerLease(renewCtx, lease, p.cfg.OwnerLease)
 		if err != nil || !renewed {
 			p.warn("F3 owner lease renewal failed; dropping audit capture", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
 			return
 		}
 	}
-	result, err := p.store.Persist(ctx, p.lease, input)
+	result, err := p.store.Persist(ctx, lease, input)
 	if err != nil {
 		p.warn("F3 审计采集持久化失败", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
 		return
@@ -140,7 +157,7 @@ func (p *Producer) persistOne(input AuditLogInput) {
 	if result.Ignored {
 		return
 	}
-	if _, err := p.store.AppendHotSearch(ctx, p.lease, []AuditLogInput{input}); err != nil {
+	if _, err := p.store.AppendHotSearch(ctx, lease, []AuditLogInput{input}); err != nil {
 		p.warn("F3 audit hot-search append failed", "error", err, "traceID", input.TraceID, "auditLogID", input.ID)
 	}
 }

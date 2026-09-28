@@ -369,13 +369,13 @@ func TestW1HComposeChatFamilyGuards(t *testing.T) {
 // fake（仅证明 deps.GroupLookup / deps.AccountLookup 接到传入实例）。
 type w1hGroupLookup struct{}
 
-func (w1hGroupLookup) FindChatGroup(groupID string) (*chat.ChatGroupRef, error) {
+func (w1hGroupLookup) FindChatGroup(_ chat.ChatBindScope, groupID string) (*chat.ChatGroupRef, error) {
 	return &chat.ChatGroupRef{ID: groupID, Name: "分组", Enabled: true}, nil
 }
 
 type w1hAccountLookup struct{}
 
-func (w1hAccountLookup) FindChatAccount(accountID string) (*chat.ChatAccountRef, error) {
+func (w1hAccountLookup) FindChatAccount(_ chat.ChatBindScope, accountID string) (*chat.ChatAccountRef, error) {
 	return &chat.ChatAccountRef{ID: accountID, Name: "账户", Enabled: true}, nil
 }
 
@@ -384,13 +384,13 @@ func (w1hAccountLookup) FindChatAccount(accountID string) (*chat.ChatAccountRef,
 // deps.AccountOptionsLookup 接到传入实例）。
 type w1hGroupOptionsLookup struct{}
 
-func (w1hGroupOptionsLookup) ListChatGroupOptions() ([]chat.ChatBindOption, error) {
+func (w1hGroupOptionsLookup) ListChatGroupOptions(_ context.Context, _ chat.ChatBindScope) ([]chat.ChatBindOption, error) {
 	return []chat.ChatBindOption{{ID: "grp_1", Name: "分组"}}, nil
 }
 
 type w1hAccountOptionsLookup struct{}
 
-func (w1hAccountOptionsLookup) ListChatAccountOptions() ([]chat.ChatBindOption, error) {
+func (w1hAccountOptionsLookup) ListChatAccountOptions(_ context.Context, _ chat.ChatBindScope) ([]chat.ChatBindOption, error) {
 	return []chat.ChatBindOption{{ID: "acc_1", Name: "账户"}}, nil
 }
 

@@ -219,7 +219,11 @@ func (k *LeaseKeeper) reacquire(ctx context.Context) error {
 	if k.LostError() == nil {
 		return nil
 	}
-	k.stopOnce.Do(func() { close(k.stopCh) })
+	k.stopOnce.Do(func() {
+		if k.stopCh != nil {
+			close(k.stopCh)
+		}
+	})
 	// Wait for the previous loop generation to fully exit before rebuilding
 	// one-shot state: fatal() touches fatalOnce without mu, so this wait is
 	// what orders the old loop's writes ahead of the resets below.

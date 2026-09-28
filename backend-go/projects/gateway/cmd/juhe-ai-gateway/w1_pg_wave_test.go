@@ -429,7 +429,7 @@ func TestW1G2ComposeSystemAPIPostgresSuccess(t *testing.T) {
 		t.Fatalf("启动 F3 PG 审计租约失败: ok=%v err=%v", ok, err)
 	}
 	t.Cleanup(auditKeeper.Close)
-	auditProducer := auditlog.NewProducer(auditStore, auditKeeper.Lease(), auditConfig, producerLogger{})
+	auditProducer := auditlog.NewProducer(auditStore, auditKeeper, auditConfig, producerLogger{})
 
 	operationConfig := operationlog.Config{
 		Enabled:              true,

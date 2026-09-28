@@ -358,6 +358,18 @@ func (rt *chatRoutes) requireChatAuth(r *http.Request) (string, error) {
 	return "", errors.New("请先登录")
 }
 
+// requireChatBindScope 解析会话绑定对象的数据范围（ChatBindScope）：与
+// requireChatAuth 同一鉴权来源（AuthContext），IsAdmin 经 authsys.IsAdminRole
+// 判定（admin/super_admin=全量号池，其余=自有+被授权）；未登录错误与
+// requireChatAuth 同型。
+func (rt *chatRoutes) requireChatBindScope(r *http.Request) (ChatBindScope, error) {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		return ChatBindScope{}, errors.New("请先登录")
+	}
+	return ChatBindScope{ViewerID: auth.SystemAccountID, IsAdmin: authsys.IsAdminRole(auth.Role)}, nil
+}
+
 type messageCodePayload struct {
 	Message string `json:"message"`
 	Code    string `json:"code"`
@@ -587,10 +599,12 @@ type conversationBindOptionsResponse struct {
 }
 
 // conversationBindOptions mirrors GET /conversation-bind-options：登录用户
-// 一次取回可绑定分组与账户的最小摘要（分组仅 enabled = 1；账户与
-// FindChatAccount 同口径）。查询端口未接线或查询失败沿用既有 500 语义。
+// 一次取回其数据范围（ChatBindScope）内可绑定分组与账户的最小摘要（分组仅
+// 有效 enabled 行；账户与 FindChatAccount 同口径）。查询端口未接线或查询
+// 失败沿用既有 500 语义。
 func (rt *chatRoutes) conversationBindOptions(w http.ResponseWriter, r *http.Request) {
-	if _, err := rt.requireChatAuth(r); err != nil {
+	bindScope, err := rt.requireChatBindScope(r)
+	if err != nil {
 		writeChatRouteError(w, err)
 		return
 	}
@@ -598,12 +612,12 @@ func (rt *chatRoutes) conversationBindOptions(w http.ResponseWriter, r *http.Req
 		writeChatRouteError(w, &DomainError{Message: "绑定选项列表暂不可用，请稍后重试"})
 		return
 	}
-	groups, err := rt.deps.GroupOptionsLookup.ListChatGroupOptions()
+	groups, err := rt.deps.GroupOptionsLookup.ListChatGroupOptions(r.Context(), bindScope)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return
 	}
-	accounts, err := rt.deps.AccountOptionsLookup.ListChatAccountOptions()
+	accounts, err := rt.deps.AccountOptionsLookup.ListChatAccountOptions(r.Context(), bindScope)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return

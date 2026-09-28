@@ -554,7 +554,7 @@ func main() {
 	defer auditLease.Close()
 	// The F3 producer is the process-wide chain audit sink; it shares the
 	// audit lease above and only extends it per record.
-	auditProducer := auditlog.NewProducer(auditStore, auditLease.Lease(), auditConfig, producerLogger{})
+	auditProducer := auditlog.NewProducer(auditStore, auditLease, auditConfig, producerLogger{})
 	// Queue-saturation drops become a Prometheus gauge seam (before Serve, so
 	// the write happens before any scrape goroutine reads it).
 	gatewayusage.SetAuditCapturedDroppedTotal(auditProducer.DroppedTotal)

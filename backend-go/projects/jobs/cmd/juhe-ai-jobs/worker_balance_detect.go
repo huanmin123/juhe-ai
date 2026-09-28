@@ -155,6 +155,28 @@ func balanceDueColumn(postgres bool) string {
 	return "balance_query_next_refresh_at"
 }
 
+// balanceDueCompare 返回 due 与「库内读回的 RFC3339Nano 文本」比较的 SQL
+// 片段与绑定值（op 为 "=" / ">" 等原样运算符）。PG 分支绑定原始文本参数并
+// cast 到 timestamptz 后比较：等值两侧同过 PG 的同一处 cast 舍入，纳秒精度
+// 存量值（如 .690411968 → .690412）与毫秒截断新值都能精确命中。绑定
+// time.Time（pgx 截断到微秒 .690411）时与列 cast 的四舍五入相差 1μs，
+// 等值围栏恒不命中——探测意图永不收口（2026-09-28 BUG-0206 根因）。
+// SQLite 列是文本，库内值经 Go RFC3339Nano 往返恒等，绑定原文直接比较。
+// dueText 为空（无游标占位）时绑定零值时间文本：占位臂在 SQL 里被
+// `? = ”` 守卫短路，但占位值仍必须是合法 timestamptz 输入，防求值报错。
+func balanceDueCompare(postgres bool, op string, dueText string) (string, any) {
+	if postgres {
+		if dueText == "" {
+			dueText = "0001-01-01T00:00:00Z"
+		}
+		return balanceDueColumn(true) + " " + op + " ?::timestamptz", textParam(dueText)
+	}
+	if dueText == "" {
+		dueText = time.Time{}.UTC().Format(time.RFC3339Nano)
+	}
+	return balanceDueColumn(false) + " " + op + " ?", textParam(dueText)
+}
+
 // balanceDetectRuntime 承载探测意图仓储、互斥租约与 builtin 探测器共享的
 // 句柄与状态（对齐 Node 仓储的模块级游标/凭据解密语境）。
 type balanceDetectRuntime struct {
@@ -248,32 +270,31 @@ func (r *balanceDetectRuntime) ListDueCandidates(ctx context.Context, limit int)
 	selectedIDs := map[string]struct{}{}
 	cursor := r.cursor
 	wrapped := false
-	// due 比较统一走 balanceDueColumn：PG 分支 cast 到 timestamptz 后与
-	// time.Time 参数比较（text 列直接比较是文本语义、恒不命中）；SQLite
-	// 分支保持文本比较，timeParam 的规范 RFC3339Nano 文本与列内同规范文本
-	// 逐字节可比。
+	// due 比较统一走 balanceDueCompare（PG 绑定原文 cast 到 timestamptz，
+	// 两侧同过一处舍入；SQLite 文本直接比较）：等值分支若绑定 time.Time
+	// 会与列 cast 的纳秒舍入相差 1μs、恒不命中（BUG-0206）。
 	dueExpr := balanceDueColumn(postgres)
 	for page := 0; page < 4 && len(selected) < limit; page++ {
+		cursorText := ""
+		cursorID := ""
+		if cursor != nil {
+			cursorText = cursor.nextRefreshAt.UTC().Format(time.RFC3339Nano)
+			cursorID = cursor.id
+		}
+		dueGTSQL, dueGTArg := balanceDueCompare(postgres, ">", cursorText)
+		dueEQSQL, dueEQArg := balanceDueCompare(postgres, "=", cursorText)
 		query := fmt.Sprintf(`
       SELECT id, system_account_id, dispatch_revision, config_revision, credentials_encrypted, balance_query_next_refresh_at, proxy_profile_id
       FROM %s
       WHERE balance_query_next_refresh_at IS NOT NULL
         AND %s <= ?
-        AND (? = '' OR %s > ? OR (%s = ? AND id > ?))
+        AND (? = '' OR %s OR (%s AND id > ?))
         AND %s
       ORDER BY balance_query_next_refresh_at ASC, id ASC
       LIMIT ?
-    `, r.business.table("accounts"), dueExpr, dueExpr, dueExpr, balanceDetectionCandidateWhere(postgres))
-		cursorText := ""
-		var cursorTime any = timeParam(postgres, time.Time{})
-		cursorID := ""
-		if cursor != nil {
-			cursorText = cursor.nextRefreshAt.UTC().Format(time.RFC3339Nano)
-			cursorTime = timeParam(postgres, cursor.nextRefreshAt)
-			cursorID = cursor.id
-		}
+    `, r.business.table("accounts"), dueExpr, dueGTSQL, dueEQSQL, balanceDetectionCandidateWhere(postgres))
 		rows, err := r.business.db.QueryContext(ctx, query,
-			timeParam(postgres, now), textParam(cursorText), cursorTime, cursorTime, textParam(cursorID), scanPageSize)
+			timeParam(postgres, now), textParam(cursorText), dueGTArg, dueEQArg, textParam(cursorID), scanPageSize)
 		if err != nil {
 			return nil, fmt.Errorf("读取余额自动探测候选失败: %w", err)
 		}
@@ -377,8 +398,7 @@ func (r *balanceDetectRuntime) CommitDetectionDue(ctx context.Context, input ops
 	if input.ExpectedNextRefreshAt == nil || *input.ExpectedNextRefreshAt == "" {
 		return false, errors.New("余额探测意图提交缺少 due 围栏")
 	}
-	expected, err := parseBalanceInstant(*input.ExpectedNextRefreshAt)
-	if err != nil {
+	if _, err := parseBalanceInstant(*input.ExpectedNextRefreshAt); err != nil {
 		return false, err
 	}
 	var next any
@@ -390,18 +410,19 @@ func (r *balanceDetectRuntime) CommitDetectionDue(ctx context.Context, input ops
 		// text 列写预格式化文本；next 为 nil 时保持传 NULL（清空意图语义）。
 		next = balanceDueText(parsed)
 	}
+	fenceSQL, fenceArg := balanceDueCompare(postgres, "=", *input.ExpectedNextRefreshAt)
 	query := fmt.Sprintf(`
     UPDATE %s
     SET balance_query_next_refresh_at = ?,
         updated_at = ?
     WHERE id = ?
       AND config_revision = ?
-      AND %s = ?
       AND %s
-  `, r.business.table("accounts"), balanceDueColumn(postgres), balanceDetectionCandidateWhere(postgres))
+      AND %s
+  `, r.business.table("accounts"), fenceSQL, balanceDetectionCandidateWhere(postgres))
 	result, err := r.business.db.ExecContext(ctx, query,
 		next, balanceDueText(r.nowFunc()), textParam(input.AccountID),
-		input.ExpectedConfigRevision, timeParam(postgres, expected))
+		input.ExpectedConfigRevision, fenceArg)
 	if err != nil {
 		return false, err
 	}
@@ -430,14 +451,14 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 		textParam(input.AccountID), input.ExpectedConfigRevision,
 	}
 	if input.ExpectedNextRefreshAt != nil && *input.ExpectedNextRefreshAt != "" {
-		parsed, parseErr := parseBalanceInstant(*input.ExpectedNextRefreshAt)
-		if parseErr != nil {
+		if _, parseErr := parseBalanceInstant(*input.ExpectedNextRefreshAt); parseErr != nil {
 			return false, parseErr
 		}
-		// 围栏与 CommitDetectionDue 同范式：PG cast 到 timestamptz 后与
-		// time.Time 参数比较；SQLite 保持规范文本等值。
-		fence = " AND " + balanceDueColumn(postgres) + " = ?"
-		args = append(args, timeParam(postgres, parsed))
+		// 围栏与 CommitDetectionDue 同范式：PG 绑定原文 cast 到 timestamptz，
+		// 两侧同过一处舍入；SQLite 保持规范文本等值。
+		fenceSQL, fenceArg := balanceDueCompare(postgres, "=", *input.ExpectedNextRefreshAt)
+		fence = " AND " + fenceSQL
+		args = append(args, fenceArg)
 	}
 	query := fmt.Sprintf(`
     UPDATE %s

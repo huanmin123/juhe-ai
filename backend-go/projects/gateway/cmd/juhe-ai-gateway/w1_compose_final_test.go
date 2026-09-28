@@ -222,7 +222,7 @@ func w1uFinalNewPGComposeFixture(t *testing.T) *w1uFinalPGComposeFixture {
 		t.Fatalf("启动 F3 PG 审计租约失败: ok=%v err=%v", ok, err)
 	}
 	t.Cleanup(auditKeeper.Close)
-	auditProducer := auditlog.NewProducer(auditStore, auditKeeper.Lease(), auditConfig, producerLogger{})
+	auditProducer := auditlog.NewProducer(auditStore, auditKeeper, auditConfig, producerLogger{})
 
 	cfg := runtimeConfig{
 		// standalone + memory 驱动：performance 模式的热质量运行时强制要求

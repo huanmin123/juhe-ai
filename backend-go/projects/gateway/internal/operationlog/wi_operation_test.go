@@ -127,18 +127,19 @@ func TestWIRunOwnerContract(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("取消后 RunOwner 未退出")
 	}
-	// lease 丢失 → 终态错误透传。
-	lostKeeper := &LeaseKeeper{lostCh: make(chan struct{})}
-	lostKeeper.fatal(ErrOwnerLeaseLost)
+	// lease 丢失后 RunOwner 再进入：入口 reacquire 必须先触库重取——行仍被
+	// wi-owner 自己持有（未过期）时重取被拒，fail-closed 返回错误而非继续
+	// 服务（2026-09-28 修订：不再无限回放旧 keeper 的存储错误）。
+	keeper.fatal(ErrOwnerLeaseLost)
 	lostDone := make(chan error, 1)
-	go func() { lostDone <- RunOwner(ctx, store, lostKeeper, Config{}, slog.Default()) }()
+	go func() { lostDone <- RunOwner(ctx, store, keeper, Config{}, slog.Default()) }()
 	select {
 	case err := <-lostDone:
-		if !errors.Is(err, ErrOwnerLeaseLost) {
-			t.Fatalf("丢失租约应透传: %v", err)
+		if err == nil {
+			t.Fatal("行仍被持有时入口重取必须失败")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunOwner 未报告丢失租约")
+		t.Fatal("RunOwner 未报告入口重取失败")
 	}
 }
 
