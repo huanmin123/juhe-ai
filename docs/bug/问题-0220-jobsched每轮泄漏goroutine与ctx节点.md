@@ -52,6 +52,7 @@
 | 包回归 | jobsched 全量 | `go test -count=1 ./projects/jobs/internal/jobsched/` | 全绿 | ok 1.602s | 通过 |
 | 竞态 | 泄漏测试 race | `go test -race -count=1 -run TestSchedulerRunOnceDoesNotLeak...` | PASS | PASS | 通过 |
 | 静态检查 | `go vet ./projects/jobs/internal/jobsched/` | 通过 | 通过 | 通过 | 通过 |
+| **生产实证** | 发布前后 goroutines 曲线（stats 库 go_runtime_metrics_samples，15 分钟分桶） | 系统指标页 / SQL | 修复后平坦 | 修复前 12:33~16:00 从 ~1,500 匀速爬升至 28,521（每分钟约 +135，与任务节拍泄漏率吻合，threads 19-20）；发布（16:00）后 32 分钟稳定 avg 99~101、max 196（若未修应已 +4,000），threads 回落 11-13——修复被生产数据直接证实 | 通过 |
 
 ## 复发记录
 
