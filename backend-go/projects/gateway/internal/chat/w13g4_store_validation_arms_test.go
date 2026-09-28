@@ -242,7 +242,7 @@ func TestW13G4ContextLoadTruncationArms(t *testing.T) {
 		})
 	result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 		ConversationID: conversationID, SystemAccountID: routeTestOwner,
-		APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+		APIKeySecret: "secret", Model: "gpt-5",
 	})
 	if result.Status != "installed" {
 		t.Fatalf("compact result = %+v", result)

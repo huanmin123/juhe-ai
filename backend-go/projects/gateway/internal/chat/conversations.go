@@ -117,6 +117,8 @@ func chatImageModelProfileFor(model string) chatImageModelProfile {
 // Conversation mirrors ChatConversation (route response shape). 会话绑定收敛
 // 为仅 account（AI 问答会话账户唯一绑定设计）：bindAccountId 为空即「未选账户」
 // 状态；archived=1 是存量旧模式（api_key/group）会话的一次性迁移只读标记。
+// searchAccountId/searchModelId/imageAccountId 是模型工具的会话级绑定列
+//（工具体系设计 §7：空 = 未绑定，绑定语义见 tool_bindings.go）。
 type Conversation struct {
 	ID                      string         `json:"id"`
 	SystemAccountID         string         `json:"systemAccountId"`
@@ -125,6 +127,9 @@ type Conversation struct {
 	BindAccountID           *string        `json:"bindAccountId,omitempty"`
 	BindAccountNameSnapshot string         `json:"bindAccountName,omitempty"`
 	Archived                bool           `json:"archived"`
+	SearchAccountID         *string        `json:"searchAccountId,omitempty"`
+	SearchModelID           *string        `json:"searchModelId,omitempty"`
+	ImageAccountID          *string        `json:"imageAccountId,omitempty"`
 	Title                   string         `json:"title"`
 	IsPinned                bool           `json:"isPinned"`
 	LastModel               *string        `json:"lastModel,omitempty"`
@@ -288,6 +293,9 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 		BindAccountID:           nullText(row.bindAccountID),
 		BindAccountNameSnapshot: row.bindAccountNameSnapshot.String,
 		Archived:                row.archived == 1,
+		SearchAccountID:         nullText(row.searchAccountID),
+		SearchModelID:           nullText(row.searchModelID),
+		ImageAccountID:          nullText(row.imageAccountID),
 		Title:                   row.title,
 		IsPinned:                row.isPinned == 1,
 		LastModel:               nullText(row.lastModel),
@@ -516,6 +524,16 @@ func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation
 		assignments = append(assignments, "bind_account_id = ?", "bind_account_name_snapshot = ?")
 		params = append(params, *input.BindAccountID, input.BindAccountNameSnapshot)
 	}
+	// 工具绑定三列（工具体系设计 §8.2）：searchBinding 二元组一体写入（nil 列
+	// 集 NULL 解绑）；imageBinding 只带账户（生图模型沿用 defaultImageModel）。
+	if input.SearchAccountID != nil {
+		assignments = append(assignments, "search_account_id = ?", "search_model_id = ?")
+		params = append(params, optSQLText(*input.SearchAccountID), optSQLText(input.SearchModelID))
+	}
+	if input.ImageAccountID != nil {
+		assignments = append(assignments, "image_account_id = ?")
+		params = append(params, optSQLText(*input.ImageAccountID))
+	}
 	if input.ClearLastModel {
 		assignments = append(assignments, "last_model = NULL")
 	}
@@ -533,6 +551,14 @@ func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation
 	return s.GetConversation(input.ConversationID, input.SystemAccountID)
 }
 
+// optSQLText 把可选列值转换为 SQL 参数（空串 = NULL）。
+func optSQLText(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 type UpdateConversationInput struct {
 	ConversationID          string
 	SystemAccountID         string
@@ -541,8 +567,13 @@ type UpdateConversationInput struct {
 	DefaultImageModel       *string
 	BindAccountID           *string
 	BindAccountNameSnapshot string
-	ClearLastModel          bool
-	Now                     string
+	// SearchAccountID/SearchModelID 成对携带（nil = 本次不改；非 nil 时空串 =
+	// 解绑，一体写两列）。
+	SearchAccountID *string
+	SearchModelID   string
+	ImageAccountID  *string
+	ClearLastModel  bool
+	Now             string
 }
 
 func joinAssignments(assignments []string) string {

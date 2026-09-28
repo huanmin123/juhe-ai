@@ -51,13 +51,13 @@ type CompactionResult struct {
 	AfterBytes            int64
 }
 
-// CompactionInput mirrors the compactChatContextOnce input.
+// CompactionInput mirrors the compactChatContextOnce input（压缩调用恒
+// chat_completions，工具体系设计 §11.3——Protocol 字段随协议偏好删除）。
 type CompactionInput struct {
 	ConversationID              string
 	SystemAccountID             string
 	APIKeySecret                string
 	Model                       string
-	Protocol                    ChatTransportProtocol
 	EffectiveContextLimitTokens *int64
 }
 
@@ -422,7 +422,7 @@ func (s *CompactionService) runClaimedCompaction(input CompactionInput, ctx cont
 		EffectiveContextLimitTokens: input.EffectiveContextLimitTokens,
 		RequestBodyBytes:            afterBytes,
 		ModelID:                     input.Model,
-		EndpointFamily:              string(input.Protocol),
+		EndpointFamily:              string(ProtocolChatCompletions),
 		PromptVersion:               compactionPromptVersion,
 		Entries:                     entries,
 		Now:                         s.Now(),
@@ -601,29 +601,16 @@ func (s *CompactionService) summarizePage(ctx context.Context, input CompactionI
 	if err != nil {
 		return memorySnapshot{}, errors.New("chat_context_summary_invalid_json")
 	}
-	var body map[string]any
-	if input.Protocol == ProtocolResponses {
-		body = map[string]any{
-			"model":        input.Model,
-			"instructions": instructions,
-			"input":        []any{map[string]any{"role": "user", "content": string(payload)}},
-			"stream":       false,
-		}
-	} else {
-		body = map[string]any{
-			"model":    input.Model,
-			"messages": []any{map[string]any{"role": "system", "content": instructions}, map[string]any{"role": "user", "content": string(payload)}},
-			"stream":   false,
-		}
+	body := map[string]any{
+		"model":    input.Model,
+		"messages": []any{map[string]any{"role": "system", "content": instructions}, map[string]any{"role": "user", "content": string(payload)}},
+		"stream":   false,
 	}
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return memorySnapshot{}, err
 	}
 	path := "/v1/chat/completions"
-	if input.Protocol == ProtocolResponses {
-		path = "/v1/responses"
-	}
 	timeoutCtx := context.Background()
 	if ctx != nil {
 		var cancel context.CancelFunc
@@ -662,7 +649,7 @@ func (s *CompactionService) summarizePage(ctx context.Context, input CompactionI
 	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
 		return memorySnapshot{}, errors.New("chat_context_summary_missing_response")
 	}
-	text := extractCompactionResponseText(parsed, input.Protocol)
+	text := extractCompactionResponseText(parsed)
 	value, err := parseJSONObjectLoose(text)
 	if err != nil {
 		return memorySnapshot{}, err
@@ -685,34 +672,18 @@ func readBoundedAll(body io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func extractCompactionResponseText(payload map[string]any, protocol ChatTransportProtocol) string {
-	if protocol == ProtocolChatCompletions {
-		choices, _ := payload["choices"].([]any)
-		if len(choices) > 0 {
-			first := objectItem(choices[0])
-			message := objectItem(first["message"])
-			if content, ok := message["content"].(string); ok {
-				return boundedString(content, compactionResponseBytes)
-			}
-		}
-		return ""
-	}
-	if text, ok := payload["output_text"].(string); ok {
-		return text
-	}
-	output, _ := payload["output"].([]any)
-	texts := []string{}
-	for _, item := range output {
-		record := objectItem(item)
-		contentList, _ := record["content"].([]any)
-		for _, content := range contentList {
-			record := objectItem(content)
-			if text, ok := record["text"].(string); ok && text != "" {
-				texts = append(texts, text)
-			}
+// extractCompactionResponseText 提取 chat_completions 非流式响应正文（恒
+// chat 协议；Responses 解析分支随协议偏好删除）。
+func extractCompactionResponseText(payload map[string]any) string {
+	choices, _ := payload["choices"].([]any)
+	if len(choices) > 0 {
+		first := objectItem(choices[0])
+		message := objectItem(first["message"])
+		if content, ok := message["content"].(string); ok {
+			return boundedString(content, compactionResponseBytes)
 		}
 	}
-	return strings.Join(texts, "\n")
+	return ""
 }
 
 func parseJSONObjectLoose(value string) (map[string]any, error) {

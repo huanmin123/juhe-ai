@@ -342,12 +342,7 @@ func TestW9FSubmissionStatusValidation(t *testing.T) {
 func TestW9FGetConversationToolCapabilities(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_tool", routeTestOwner)
-	previous := env.deps.ToolCapabilit
-	env.deps.ToolCapabilit = func(conversation *Conversation, ownerID string) any {
-		return map[string]any{"model": conversation.LastModel, "tools": []any{}}
-	}
 	response := env.do("GET", w9fPrefix+"/conversations/chat_conv_tool", routeTestOwner, "")
-	env.deps.ToolCapabilit = previous
 	if response.status != http.StatusOK || !strings.Contains(response.rawString(), "toolCapabilities") {
 		t.Fatalf("tool capabilities = %d %s", response.status, response.rawString())
 	}

@@ -86,9 +86,6 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		DiagnosticToolEnabled:   cfg.ChatDiagnosticToolEnabled,
 		ToolEnvironment:         cfg.ChatToolEnvironment,
 	}
-	// BUG-0175 D-201: wire the GET conversations toolCapabilities resolver over
-	// the assembled ports (Node loadChatConversationToolCapabilities). Left nil
-	// the route renders the Node catch-branch fallback for every conversation.
 	// AI 问答调度覆盖通道（设计 §6）：account 模式承载分组解析端口，域 A 同
 	// 口径（FindChatAccount 的 EnabledGroupIDs，enabled=1 分组绑定）。生产组合
 	// 根装配期置位一次，此后只读（进程级槽，chain_obs_wiring.go 同模式）。
@@ -110,7 +107,6 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 	// 仍可使用在途链；compose.go Shutdown 注释宣称的 "chat generation hub
 	// drain first" 此前从未接线，SIGTERM 会直接丢弃全部在途轮次。
 	composed.shutdowns = append(composed.shutdowns, func() { hub.Shutdown(chatGenerationHubDrainTimeout) })
-	deps.ToolCapabilit = newChatToolCapabilitiesResolver(deps)
 	deps.Register(composed.kernel, systemAPIPrefix+"/my-chat")
 	return deps, nil
 }

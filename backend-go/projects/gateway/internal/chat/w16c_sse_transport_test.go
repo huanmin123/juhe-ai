@@ -48,49 +48,8 @@ func TestW16CCollectOpenAIChatSseLimits(t *testing.T) {
 	}
 }
 
-// TestW16CParseImageBlockArms 覆盖图像块解析的 failed / completed 无结果臂。
-func TestW16CParseImageBlockArms(t *testing.T) {
-	failed := parseImageBlock("image_generation.failed", `{"status":"failed"}`)
-	if failed.event == nil || failed.event.Type != "image_failed" {
-		t.Fatalf("failed 事件 = %+v", failed.event)
-	}
-	noResult := parseImageBlock("response.output_item.completed", `{"type":"image_generation_call"}`)
-	if noResult.event == nil || noResult.event.Type != "image_failed" {
-		t.Fatalf("completed 无结果 = %+v", noResult.event)
-	}
-	started := parseImageBlock("response.output_item.added", `{"type":"image_generation_call"}`)
-	if started.event == nil || started.event.Type != "image_started" {
-		t.Fatalf("added 事件 = %+v", started.event)
-	}
-	// eventName 为空时从 data 的 type 字段推导。
-	fromData := parseImageBlock("", `{"type":"image_generation.failed"}`)
-	if fromData.event == nil || fromData.event.Type != "image_failed" {
-		t.Fatalf("type 推导 failed = %+v", fromData.event)
-	}
-}
 
-// TestW16CParseResponsesBlockImageWithoutCallID 覆盖输出项图像缺 callId 的分支。
-func TestW16CParseResponsesBlockImageWithoutCallID(t *testing.T) {
-	block := "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"image_generation_call\"}}\n\n"
-	parsed := parseResponsesBlock(block)
-	if parsed.event == nil || parsed.event.Type != "image_started" {
-		t.Fatalf("无 callId 图像项 = %+v", parsed.event)
-	}
-	if _, ok := parsed.event.Item["callId"]; ok {
-		t.Fatalf("不应合并 callId: %+v", parsed.event.Item)
-	}
-}
 
-// TestW16CCompletedResponseImagesMissingCallID 覆盖终态图像缺 callId 的跳过臂。
-func TestW16CCompletedResponseImagesMissingCallID(t *testing.T) {
-	images := completedResponseImages(map[string]any{"output": []any{
-		map[string]any{"type": "image_generation_call", "result": "raw"},
-		map[string]any{"type": "reasoning"},
-	}})
-	if len(images) != 0 {
-		t.Fatalf("缺 callId 应跳过: %+v", images)
-	}
-}
 
 // TestW16CStripImageResultStringsScannerArms 覆盖扫描器空白与无名冒号臂。
 func TestW16CStripImageResultStringsScannerArms(t *testing.T) {
@@ -140,7 +99,6 @@ func TestW16CTransportAccountProtocolModes(t *testing.T) {
 func TestW16CTransportRequestPromptCacheKey(t *testing.T) {
 	temperature := 0.5
 	_, body := buildChatTransportRequest(ChatTransportRequestInput{
-		Protocol:       ProtocolChatCompletions,
 		Model:          "gpt-4o",
 		CurrentContent: "问题",
 		PromptCacheKey: "cache-key-1",

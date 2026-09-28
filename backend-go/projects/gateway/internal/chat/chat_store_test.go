@@ -360,7 +360,9 @@ func newChatFixture(t *testing.T) *chatFixture {
 }
 
 // createConversation inserts a conversation directly through the store. 创建
-// 恒为空会话（last_model NULL，账户唯一绑定契约）；既有 store 断言依赖
+// 恒为空会话（last_model NULL，账户唯一绑定契约）后直写夹具默认值：last_model
+// 与 account-1 绑定（流式/路由链路测试的发送预检要求已绑定账户；专门验证
+// 未绑定预检的用例自行清空 bind_account_id）。既有 store 断言依赖
 // last_model=gpt-5 的夹具，这里创建后直写再回读。
 func (f *chatFixture) createConversation(id, ownerID string) *Conversation {
 	f.t.Helper()
@@ -374,7 +376,8 @@ func (f *chatFixture) createConversation(id, ownerID string) *Conversation {
 	}); err != nil {
 		f.t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE chat_conversations SET last_model = 'gpt-5' WHERE id = ?`, id); err != nil {
+	if _, err := f.db.Exec(`UPDATE chat_conversations SET last_model = 'gpt-5',
+		bind_account_id = 'account-1', bind_account_name_snapshot = '账户 account-1' WHERE id = ?`, id); err != nil {
 		f.t.Fatal(err)
 	}
 	refreshed, err := f.store.GetConversation(id, ownerID)

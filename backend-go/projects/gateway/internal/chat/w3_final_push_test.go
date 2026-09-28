@@ -14,13 +14,13 @@ import (
 // 裁剪与时间线补发、流式路由的 Hub 冲突/超大消息/替换链路、deps 参数守卫、
 // ETag 匹配表与 Windows 锁重入。
 
-// TestSummarizePageW3 直接驱动压缩总结的两种协议与失败路径。
+// TestSummarizePageW3 直接驱动压缩总结（恒 chat 协议）与失败路径。
 func TestSummarizePageW3(t *testing.T) {
 	_, clock := fixedChatClock()
 	newService := func(executor GenerationExecutor) *CompactionService {
 		return NewCompactionService(newChatFixture(t).store, executor, func(text string) int { return len(text) }, func() string { return isoMillis(clock()) })
 	}
-	input := CompactionInput{ConversationID: "c", SystemAccountID: "o", APIKeySecret: "k", Model: "gpt-5", Protocol: ProtocolChatCompletions}
+	input := CompactionInput{ConversationID: "c", SystemAccountID: "o", APIKeySecret: "k", Model: "gpt-5"}
 	messages := []any{map[string]any{"role": "user", "content": "问题"}}
 
 	t.Run("chat 协议成功", func(t *testing.T) {
@@ -35,18 +35,21 @@ func TestSummarizePageW3(t *testing.T) {
 			t.Fatalf("chat 总结失败: %+v err=%v", snapshot, err)
 		}
 	})
-	t.Run("responses 协议成功", func(t *testing.T) {
+	t.Run("恒 chat：responses 路径不再被压缩调用", func(t *testing.T) {
 		executor := mockExecutor{steps: []scriptStep{{
-			match: func(call dispatchCall) bool { return call.Path == "/v1/responses" },
+			match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
 			respond: func(dispatchCall) *GenerationDispatchResponse {
-				return jsonStatusResponse(200, `{"output_text":"{\"currentGoal\":\"G\",\"recentUserIntent\":\"I\"}"}`)
+				return jsonStatusResponse(200, `{"choices":[{"message":{"content":"{\"currentGoal\":\"G\",\"recentUserIntent\":\"I\"}"}}]}`)
 			},
 		}}}
-		snapshot, err := newService(&executor).summarizePage(context.Background(), CompactionInput{
-			ConversationID: "c", SystemAccountID: "o", APIKeySecret: "k", Model: "gpt-5", Protocol: ProtocolResponses,
-		}, emptySnapshot(), messages)
+		snapshot, err := newService(&executor).summarizePage(context.Background(), input, emptySnapshot(), messages)
 		if err != nil || snapshot.CurrentGoal != "G" {
-			t.Fatalf("responses 总结失败: %+v err=%v", snapshot, err)
+			t.Fatalf("chat 总结失败: %+v err=%v", snapshot, err)
+		}
+		for _, call := range executor.calls {
+			if call.Path != "/v1/chat/completions" {
+				t.Fatalf("压缩路径必须恒 chat: %s", call.Path)
+			}
 		}
 	})
 	t.Run("失败路径", func(t *testing.T) {

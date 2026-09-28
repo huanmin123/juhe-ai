@@ -86,18 +86,17 @@ func TestInheritCustomCatalogCapabilitiesMergeKeys(t *testing.T) {
 	merged := []ModelCatalogItem{customRow("my-chat")}
 	inheritCustomCatalogCapabilities(merged, []ModelCatalogItem{builtinRow}, false)
 	if !containsProtocolTool(merged[0].SupportedToolsByProtocol, "responses", "web_search") ||
-		!containsStringItem(merged[0].SupportedTools, "web_search") ||
 		!containsStringItem(merged[0].InputModalities, "image") ||
 		len(merged[0].OutputModalities) == 0 {
-		t.Fatalf("bare-model key must inherit across providers: matrix=%v tools=%v in=%v out=%v",
-			merged[0].SupportedToolsByProtocol, merged[0].SupportedTools, merged[0].InputModalities, merged[0].OutputModalities)
+		t.Fatalf("bare-model key must inherit across providers: matrix=%v in=%v out=%v",
+			merged[0].SupportedToolsByProtocol, merged[0].InputModalities, merged[0].OutputModalities)
 	}
 	merged = []ModelCatalogItem{customRow("my-chat")}
 	inheritCustomCatalogCapabilities(merged, []ModelCatalogItem{builtinRow}, true)
-	if len(merged[0].SupportedToolsByProtocol) != 0 || len(merged[0].SupportedTools) != 0 ||
+	if len(merged[0].SupportedToolsByProtocol) != 0 ||
 		len(merged[0].InputModalities) != 0 || len(merged[0].OutputModalities) != 0 {
-		t.Fatalf("hybrid identity must not inherit across providers: matrix=%v tools=%v in=%v out=%v",
-			merged[0].SupportedToolsByProtocol, merged[0].SupportedTools, merged[0].InputModalities, merged[0].OutputModalities)
+		t.Fatalf("hybrid identity must not inherit across providers: matrix=%v in=%v out=%v",
+			merged[0].SupportedToolsByProtocol, merged[0].InputModalities, merged[0].OutputModalities)
 	}
 	merged = []ModelCatalogItem{customRow("openai")}
 	inheritCustomCatalogCapabilities(merged, []ModelCatalogItem{builtinRow}, true)

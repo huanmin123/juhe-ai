@@ -22,15 +22,6 @@ func TestW16CImageResultChunksErrorArms(t *testing.T) {
 	}
 }
 
-// TestW16CMustJSONErrorArm 覆盖 mustJSON 的 Marshal 失败臂。
-func TestW16CMustJSONErrorArm(t *testing.T) {
-	if got := mustJSON(make(chan int)); got != "" {
-		t.Fatalf("不可序列化值应返回空串: %q", got)
-	}
-	if got := mustJSON(map[string]any{"a": 1.0}); got != `{"a":1}` {
-		t.Fatalf("正常序列化 = %q", got)
-	}
-}
 
 // TestW16CNewGenerationHubDefaultClock 覆盖 now==nil 默认时钟臂。
 func TestW16CNewGenerationHubDefaultClock(t *testing.T) {

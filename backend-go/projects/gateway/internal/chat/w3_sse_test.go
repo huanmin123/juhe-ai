@@ -499,9 +499,6 @@ func TestStreamExecuteHelpersW3(t *testing.T) {
 	if statusOrZero(nil) != 0 || statusOrZero(&GenerationDispatchResponse{Status: 502}) != 502 {
 		t.Fatalf("statusOrZero 契约不正确")
 	}
-	if finishReasonOr([]ChatToolCall{{CallID: "c"}}, "stop") != "tool_calls" || finishReasonOr(nil, "stop") != "stop" {
-		t.Fatalf("finishReasonOr 契约不正确")
-	}
 	if isPreparationCanceled(&PreparationCanceledError{}) != true || isPreparationCanceled(errors.New("x")) {
 		t.Fatalf("isPreparationCanceled 契约不正确")
 	}
@@ -522,68 +519,8 @@ func TestStreamExecuteHelpersW3(t *testing.T) {
 	if fallback.Code != GenErrUpstreamHTTP {
 		t.Fatalf("非 internal 失败码应保留: %+v", fallback)
 	}
-	if mustJSON(map[string]any{"a": 1}) != `{"a":1}` {
-		t.Fatalf("mustJSON 失败")
-	}
-	if isApplicationFunctionToolEvent(map[string]any{"type": "function_call"}) != true ||
-		isApplicationFunctionToolEvent(map[string]any{"type": "response.function_call_arguments.delta"}) != true ||
-		isApplicationFunctionToolEvent(map[string]any{"type": "reasoning"}) {
-		t.Fatalf("isApplicationFunctionToolEvent 契约不正确")
-	}
-	projection := chatGenerationToolEventProjection("tool_updated", map[string]any{"id": "c1", "type": "web_search"})
-	if projection.Status != "updated" || projection.ID != "c1" || projection.ToolType != "web_search" {
-		t.Fatalf("工具投影不正确: %+v", projection)
-	}
-	defaultProjection := chatGenerationToolEventProjection("tool_started", nil)
-	if defaultProjection.ID != "tool" || defaultProjection.ToolType != "tool" || defaultProjection.Status != "started" {
-		t.Fatalf("默认工具投影不正确: %+v", defaultProjection)
-	}
 }
 
-// TestProjectResponsesEventW3 覆盖 Responses 事件投影到 runner 的路径。
-func TestProjectResponsesEventW3(t *testing.T) {
-	var (
-		mu           sync.Mutex
-		published    []string
-		blocks       = []*assistantBlock{}
-		partialWrite strings.Builder
-	)
-	context := &ChatGenerationExecutionContext{
-		Publish: func(eventType string, data map[string]any, update ChatGenerationProjectionUpdate) bool {
-			mu.Lock()
-			published = append(published, eventType)
-			mu.Unlock()
-			if update.ContentTextDelta != nil || update.ToolEvent != nil {
-				projectToolEvent(&blocks, "tool_started", map[string]any{"id": "c1", "type": "web_search"})
-			}
-			return true
-		},
-	}
-	if err := projectResponsesEvent(ChatResponsesEvent{Type: "text_delta", Delta: "文"}, "m1", context, &partialWrite, &blocks); err != nil {
-		t.Fatalf("text_delta 投影失败: %v", err)
-	}
-	if err := projectResponsesEvent(ChatResponsesEvent{Type: "reasoning_delta", Delta: "思"}, "m1", context, &partialWrite, &blocks); err != nil {
-		t.Fatalf("reasoning 投影失败: %v", err)
-	}
-	if err := projectResponsesEvent(ChatResponsesEvent{Type: "reasoning_completed"}, "m1", context, &partialWrite, &blocks); err != nil {
-		t.Fatalf("reasoning 完成投影失败: %v", err)
-	}
-	if err := projectResponsesEvent(ChatResponsesEvent{Type: "tool_started", Item: map[string]any{"id": "c1", "type": "web_search"}}, "m1", context, &partialWrite, &blocks); err != nil {
-		t.Fatalf("工具投影失败: %v", err)
-	}
-	if err := projectResponsesEvent(ChatResponsesEvent{Type: "tool_completed", Item: map[string]any{"type": "function_call", "id": "c1"}}, "m1", context, &partialWrite, &blocks); err != nil {
-		t.Fatalf("function_call 工具事件应跳过: %v", err)
-	}
-	if err := projectResponsesEvent(ChatResponsesEvent{Type: "failed", Error: map[string]any{"msg": "x"}}, "m1", context, &partialWrite, &blocks); err == nil {
-		t.Fatalf("failed 事件应返回错误")
-	}
-	if partialWrite.String() != "文" {
-		t.Fatalf("正文增量累积不正确: %q", partialWrite.String())
-	}
-	if len(blocks) != 1 {
-		t.Fatalf("本地工具块数量 = %d", len(blocks))
-	}
-}
 
 // TestPublishApplicationToolEventW3 覆盖应用侧工具事件广播。
 func TestPublishApplicationToolEventW3(t *testing.T) {
@@ -637,3 +574,10 @@ func TestHeadRevisionW3(t *testing.T) {
 		t.Fatalf("版本不应为负: %d", head)
 	}
 }
+
+// errReaderW3 返回恒失败的 reader（采集器读取失败路径）。
+type errReaderW3Impl struct{}
+
+func (errReaderW3Impl) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+
+func errReaderW3() io.Reader { return errReaderW3Impl{} }

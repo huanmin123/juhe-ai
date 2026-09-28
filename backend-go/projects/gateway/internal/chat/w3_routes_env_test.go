@@ -414,9 +414,9 @@ func TestStreamWithImageInputW3(t *testing.T) {
 	}
 	assetID, _ := created.dataMap()["id"].(string)
 	env.executor.steps = []scriptStep{{
-		match: func(call dispatchCall) bool { return call.Path == "/v1/responses" },
+		match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
 		respond: func(dispatchCall) *GenerationDispatchResponse {
-			return sseResponse(responsesTextSSE("我看到了图片"))
+			return sseResponse(chatCompletionsSSE("我看到了图片", true))
 		},
 	}}
 	payload := `{"clientMessageId":"cmid-img-1","content":"看这张图","model":"gpt-5","contentBlocks":[{"type":"input_text","text":"看这张图"},{"type":"input_image","assetId":"` + assetID + `"}]}`
@@ -786,7 +786,7 @@ func TestContextBudgetHelpersW3(t *testing.T) {
 	}
 	input := fixedChatBudgetInput{
 		CurrentUserContent: "abcd", Instructions: "abcd",
-		EffectiveTools: []string{"web_search"}, InternalTools: []*toolDefinition{testToolW3("t")},
+		InternalTools: []*toolDefinition{testToolW3("t")},
 		ImageTokenEstimate: 100,
 	}
 	total := rt.fixedChatInputTokens(input)

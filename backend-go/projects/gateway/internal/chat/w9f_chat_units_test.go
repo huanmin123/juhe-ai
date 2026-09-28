@@ -245,19 +245,6 @@ func TestW9FQueryHelpers(t *testing.T) {
 	}
 }
 
-func TestW9FTrimmedPointer(t *testing.T) {
-	if trimmedPointer(nil) != nil {
-		t.Fatal("nil pointer")
-	}
-	blank := "   "
-	if trimmedPointer(&blank) != nil {
-		t.Fatal("blank pointer")
-	}
-	value := " x "
-	if got := trimmedPointer(&value); got == nil || *got != "x" {
-		t.Fatalf("trimmed = %v", got)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // stream_route.go：请求体解析与模型选项解析

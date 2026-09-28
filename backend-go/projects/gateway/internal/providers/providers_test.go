@@ -900,7 +900,7 @@ func TestProvidersModelsCatalog(t *testing.T) {
 		t.Fatalf("gpt-4o-mini service tier fields: %v", mini)
 	}
 	for _, key := range []string{"supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts",
-		"codexSupportedReasoningLevels", "inputModalities", "outputModalities", "supportedTools", "supportedToolsByProtocol", "serviceTierPrices"} {
+		"codexSupportedReasoningLevels", "inputModalities", "outputModalities", "supportedToolsByProtocol", "serviceTierPrices"} {
 		if _, exists := mini[key]; !exists {
 			t.Fatalf("built-in row missing %s: %v", key, mini)
 		}

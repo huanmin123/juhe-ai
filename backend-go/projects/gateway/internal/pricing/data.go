@@ -1,7 +1,6 @@
 package pricing
 
 import (
-	"sort"
 	"strings"
 )
 
@@ -63,7 +62,7 @@ type rawModel struct {
 	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（AI问答工具体系与主子模型
 	// 设计 6.4）：键为该行 SupportedAPIProtocols 的现有枚举值，值为该协议下
 	// 可用的工具集。hosted 工具只在能执行它的协议下声明；一维 SupportedTools
-	// 快照字段已退场，目录投影的一维值由并集派生（UnionToolsByProtocol）。
+	// 快照字段已随阶段 2 全链退场（消费方一律按二维矩阵读取）。
 	SupportedToolsByProtocol map[string][]string
 
 	SupportsPromptCaching     bool
@@ -124,31 +123,6 @@ func toolsByProtocol(protocols, tools []string) map[string][]string {
 	return out
 }
 
-// UnionToolsByProtocol 派生二维矩阵的一维并集（目录投影过渡期保留的
-// supportedTools 字段取值口径）：按键字典序遍历（确定性），按各协议列表顺序
-// 追加并去重。空/nil 矩阵返回 nil。
-func UnionToolsByProtocol(toolsByProtocol map[string][]string) []string {
-	if len(toolsByProtocol) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(toolsByProtocol))
-	for key := range toolsByProtocol {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	seen := map[string]bool{}
-	union := []string{}
-	for _, key := range keys {
-		for _, tool := range toolsByProtocol[key] {
-			if seen[tool] {
-				continue
-			}
-			seen[tool] = true
-			union = append(union, tool)
-		}
-	}
-	return union
-}
 
 // CopyToolsByProtocol 深拷贝矩阵，隔离快照共享的列表底层数组；nil 保持 nil。
 func CopyToolsByProtocol(toolsByProtocol map[string][]string) map[string][]string {

@@ -137,7 +137,7 @@ func (mockModelCatalog) ListProviderCatalog(providerCode, systemAccountID string
 			SupportedAPIProtocols: []string{"chat_completions", "responses"},
 			InputModalities:       []string{"text", "image"},
 			OutputModalities:      []string{"text"},
-			SupportedTools:        []string{"function_calling"},
+			SupportedToolsByProtocol: map[string][]string{"chat_completions": {"function_calling"}},
 		},
 		{
 			Model: "gpt-5-mini", ProviderCode: "openai",
@@ -145,7 +145,7 @@ func (mockModelCatalog) ListProviderCatalog(providerCode, systemAccountID string
 			SupportedAPIProtocols:     []string{"chat_completions"},
 			InputModalities:           []string{"text"},
 			OutputModalities:          []string{"text"},
-			SupportedTools:            []string{"function_calling"},
+			SupportedToolsByProtocol:      map[string][]string{"chat_completions": {"function_calling"}},
 		},
 	}
 }
@@ -256,6 +256,9 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 		ModelCatalog:               mockModelCatalog{},
 		ChatKeys:                   chatKeys,
 		GatewayKeys:                mockGatewayKeys{},
+		// 账户唯一绑定契约：发送预检需校验绑定账户；默认接线 account-1 →
+		// group-a 的 mock（与夹具默认绑定一致）。专门测试校验失败的用例自行置 nil。
+		AccountLookup:              mockAccountLookup{},
 		ObjectStore:                objectStore,
 		ImageProcessor:             stubImageProcessor{},
 		Compactions:                compactions,
@@ -286,6 +289,18 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 		routeEnv: &routeEnv{t: t, server: server, fixture: fixture},
 		executor: executor, chatKeys: chatKeys, objectDir: objectDir, hub: hub, compactions: compactions,
 		deps: deps,
+	}
+}
+
+
+// bindStreamConversation 把 fixture 会话升级为「绑定 account-1」的可发送形态
+//（阶段 1b 发送预检后流式/压缩链路测试的统一前置：mockAccountLookup 默认
+// account-1 → group-a，与 mockModelCatalog 的账户视图对齐）。
+func bindStreamConversation(t *testing.T, env *generationEnv, conversationID string) {
+	t.Helper()
+	env.deps.AccountLookup = mockAccountLookup{}
+	if _, err := env.fixture.db.Exec(`UPDATE chat_conversations SET bind_account_id = 'account-1', bind_account_name_snapshot = '账户 account-1' WHERE id = ?`, conversationID); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -345,6 +360,7 @@ func TestStreamLifecycleMatrix(t *testing.T) {
 			name: "duplicate clientMessageId -> 409",
 			setup: func(env *generationEnv) string {
 				env.fixture.createConversation("chat_conv_dup", routeTestOwner)
+	bindStreamConversation(t, env, "chat_conv_dup")
 				env.executor.steps = []scriptStep{{
 					match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
 					respond: func(call dispatchCall) *GenerationDispatchResponse {
@@ -411,6 +427,7 @@ func TestStreamLifecycleMatrix(t *testing.T) {
 func TestStreamHappyPathChatCompletions(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_s", routeTestOwner)
+	bindStreamConversation(t, env, "chat_conv_s")
 	env.executor.steps = []scriptStep{{
 		match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
 		respond: func(call dispatchCall) *GenerationDispatchResponse {
@@ -480,6 +497,7 @@ func TestStreamHappyPathChatCompletions(t *testing.T) {
 func TestStreamResponsesWithDiagnosticTool(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_t", routeTestOwner)
+	bindStreamConversation(t, env, "chat_conv_t")
 	round := 0
 	var roundMu sync.Mutex
 	env.executor.steps = []scriptStep{{
@@ -546,6 +564,12 @@ func TestStreamResponsesWithDiagnosticTool(t *testing.T) {
 func TestStreamImageGenerationPipeline(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_i", routeTestOwner)
+	bindStreamConversation(t, env, "chat_conv_i")
+	// 生图为模型工具（契约 §6.2）：管线测试需已绑定生图账户，否则收到
+	// tool.binding_required 引导而非生成事件。
+	if _, err := env.fixture.db.Exec(`UPDATE chat_conversations SET image_account_id = 'account-1' WHERE id = 'chat_conv_i'`); err != nil {
+		t.Fatal(err)
+	}
 	modelRound := 0
 	var roundMu sync.Mutex
 	env.executor.steps = []scriptStep{
@@ -616,6 +640,7 @@ func TestStreamImageGenerationPipeline(t *testing.T) {
 func TestStreamStopAndConflicts(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_c", routeTestOwner)
+	bindStreamConversation(t, env, "chat_conv_c")
 	env.executor.steps = []scriptStep{{
 		match:   func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
 		respond: func(call dispatchCall) *GenerationDispatchResponse { return nil },
@@ -655,6 +680,7 @@ func TestStreamStopAndConflicts(t *testing.T) {
 func TestStreamUpstreamHTTPFailureClassified(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("chat_conv_f", routeTestOwner)
+	bindStreamConversation(t, env, "chat_conv_f")
 	env.executor.steps = []scriptStep{{
 		match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
 		respond: func(call dispatchCall) *GenerationDispatchResponse {
@@ -746,7 +772,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		env.fixture.createConversation("chat_conv_z", routeTestOwner)
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_z", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+			APIKeySecret: "secret", Model: "gpt-5",
 		})
 		if result.Status != "skipped" || result.Reason != "no_compactable_turn" {
 			t.Fatalf("result = %+v", result)
@@ -767,7 +793,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		}}
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_y", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+			APIKeySecret: "secret", Model: "gpt-5",
 		})
 		if result.Status != "installed" {
 			t.Fatalf("result = %+v", result)
@@ -797,7 +823,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		}}
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_w", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+			APIKeySecret: "secret", Model: "gpt-5",
 		})
 		if result.Status != "failed" {
 			t.Fatalf("result = %+v", result)
@@ -824,7 +850,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		go func() {
 			done <- env.compactions.Start(context.Background(), CompactionInput{
 				ConversationID: "chat_conv_x", SystemAccountID: routeTestOwner,
-				APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+				APIKeySecret: "secret", Model: "gpt-5",
 			})
 		}()
 		deadline := time.Now().Add(2 * time.Second)
@@ -839,7 +865,7 @@ func TestCompactionServiceLoop(t *testing.T) {
 		}
 		second := env.compactions.Start(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_x", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+			APIKeySecret: "secret", Model: "gpt-5",
 		})
 		if second.Status != "already_running" {
 			t.Fatalf("second start = %+v", second)

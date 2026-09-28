@@ -74,8 +74,14 @@ func TestChatInternalToolRegistryW3(t *testing.T) {
 	if tools := dev.resolveTools(false); len(tools) != 0 {
 		t.Fatalf("function calling 关闭时应返回空: %d", len(tools))
 	}
-	if tools := dev.resolveTools(true); len(tools) != 1 || tools[0].ModelName != "diagnostic_echo" {
-		t.Fatalf("resolveTools 应只含可用工具: %v", tools)
+	// web_search 是常驻模型工具（契约 §6.1），不随环境/图片开关变化。
+	devTools := dev.resolveTools(true)
+	if len(devTools) != 2 || devTools[0].ModelName != "diagnostic_echo" || devTools[1].ModelName != "web_search" {
+		names := make([]string, 0, len(devTools))
+		for _, tool := range devTools {
+			names = append(names, tool.ModelName)
+		}
+		t.Fatalf("resolveTools 应含 diagnostic_echo+web_search: %v", names)
 	}
 	if _, err := dev.definition("bogus"); err == nil {
 		t.Fatalf("未知工具应报错")
@@ -268,7 +274,7 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 
 	t.Run("无工具调用直接返回", func(t *testing.T) {
 		orchestrator := newChatInternalToolOrchestrator(registry, registry.resolveTools(true), &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 2, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
-		result, err := orchestrator.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+		result, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 			if round != 1 || len(continuation) != 0 {
 				t.Errorf("首轮参数不正确: %d %v", round, continuation)
 			}
@@ -284,7 +290,7 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 			events = append(events, event)
 		})
 		round := 0
-		result, err := orchestrator.Run(ProtocolChatCompletions, func(r int, continuation []any) (ChatToolModelTurn, error) {
+		result, err := orchestrator.Run(func(r int, continuation []any) (ChatToolModelTurn, error) {
 			round++
 			if r == 1 {
 				return ChatToolModelTurn{ToolCalls: []ChatToolCall{
@@ -315,7 +321,7 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 		aborted := false
 		context := &chatToolExecutionContext{Aborted: func() bool { return aborted }}
 		orchestrator := newChatInternalToolOrchestrator(registry, registry.resolveTools(true), context, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
-		_, err := orchestrator.Run(ProtocolChatCompletions, func(int, []any) (ChatToolModelTurn, error) {
+		_, err := orchestrator.Run(func(int, []any) (ChatToolModelTurn, error) {
 			aborted = true
 			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"x"}`}}}, nil
 		})
@@ -329,7 +335,7 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 		orchestrator := newChatInternalToolOrchestrator(emptyRegistry, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 4, MaxImageCalls: 2}, func(event ChatToolExecutionEvent) {
 			events = append(events, event)
 		})
-		result, err := orchestrator.Run(ProtocolChatCompletions, func(r int, continuation []any) (ChatToolModelTurn, error) {
+		result, err := orchestrator.Run(func(r int, continuation []any) (ChatToolModelTurn, error) {
 			if r == 1 {
 				return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "missing_tool", ArgumentsJSON: `{}`}}}, nil
 			}
@@ -354,7 +360,7 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 	t.Run("第二次失败直接失败", func(t *testing.T) {
 		emptyRegistry := &chatInternalToolRegistry{definitions: map[string]*toolDefinition{}}
 		orchestrator := newChatInternalToolOrchestrator(emptyRegistry, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 9, MaxImageCalls: 2}, nil)
-		_, err := orchestrator.Run(ProtocolChatCompletions, func(int, []any) (ChatToolModelTurn, error) {
+		_, err := orchestrator.Run(func(int, []any) (ChatToolModelTurn, error) {
 			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "missing_tool", ArgumentsJSON: `{}`}}}, nil
 		})
 		if err == nil {
@@ -363,13 +369,13 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 	})
 	t.Run("轮次与次数上限", func(t *testing.T) {
 		limits := newChatInternalToolOrchestrator(registry, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 1, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
-		if _, err := limits.Run(ProtocolChatCompletions, func(int, []any) (ChatToolModelTurn, error) {
+		if _, err := limits.Run(func(int, []any) (ChatToolModelTurn, error) {
 			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{}`}}}, nil
 		}); err == nil {
 			t.Fatalf("轮次上限应报错")
 		}
 		fewCalls := newChatInternalToolOrchestrator(registry, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 0, MaxImageCalls: 2}, nil)
-		_, err := fewCalls.Run(ProtocolChatCompletions, func(int, []any) (ChatToolModelTurn, error) {
+		_, err := fewCalls.Run(func(int, []any) (ChatToolModelTurn, error) {
 			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"x"}`}}}, nil
 		})
 		if err == nil || !strings.Contains(err.Error(), "tool_call_limit_exceeded") == false {
@@ -383,7 +389,7 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 		}}
 		registryOne := &chatInternalToolRegistry{definitions: map[string]*toolDefinition{"diagnostic_echo": failing}}
 		orchestrator := newChatInternalToolOrchestrator(registryOne, nil, &chatToolExecutionContext{}, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 4, MaxImageCalls: 2}, nil)
-		_, err := orchestrator.Run(ProtocolChatCompletions, func(int, []any) (ChatToolModelTurn, error) {
+		_, err := orchestrator.Run(func(int, []any) (ChatToolModelTurn, error) {
 			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{}`}}}, nil
 		})
 		if err != abortError {
@@ -404,7 +410,7 @@ func TestChatInternalToolOrchestratorW3(t *testing.T) {
 				t.Fatalf("panic 应原样透传: %v", recovered)
 			}
 		}()
-		_, _ = orchestrator.Run(ProtocolChatCompletions, func(int, []any) (ChatToolModelTurn, error) {
+		_, _ = orchestrator.Run(func(int, []any) (ChatToolModelTurn, error) {
 			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{}`}}}, nil
 		})
 		t.Fatalf("应发生 panic")

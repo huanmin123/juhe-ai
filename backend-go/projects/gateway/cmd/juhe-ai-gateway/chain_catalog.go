@@ -44,7 +44,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 )
 
@@ -513,9 +512,6 @@ func chainInheritCustomCatalogCapabilities(merged, builtinRows []gatewayruntimec
 		item.SupportedToolsByProtocol = resolved.SupportedToolsByProtocol
 		item.InputModalities = resolved.InputModalities
 		item.OutputModalities = resolved.OutputModalities
-		if len(item.SupportedTools) == 0 {
-			item.SupportedTools = pricing.UnionToolsByProtocol(item.SupportedToolsByProtocol)
-		}
 	}
 }
 
@@ -723,7 +719,6 @@ func decorateBuiltinStaticDerivedCapabilities(row map[string]any) {
 	// 矩阵并集的过渡投影（阶段 2 随 chat 面切换删除）。两键都在缓存写入前的
 	// 行装饰层注入，缓存命中路径同样携带。
 	row["supportedToolsByProtocol"] = resolved.SupportedToolsByProtocol
-	row["supportedTools"] = pricing.UnionToolsByProtocol(resolved.SupportedToolsByProtocol)
 	// GenerationParameterCapabilities 序列化为与 管理面 ModelCatalogItem 相同的
 	// JSON 形状（含 step 字段），经 RawMessage 进入共享 item。
 	encoded, err := json.Marshal(resolved.GenerationParameterCapabilities)

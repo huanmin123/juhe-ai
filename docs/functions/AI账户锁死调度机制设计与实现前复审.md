@@ -272,7 +272,7 @@ DEAD_CONFIRMED
 已实现事实（首版前端落地）：
 
 - 列表状态列（[AccountStatusTag.vue](../../frontend/src/views/accounts/AccountStatusTag.vue:1)，桌面表格与移动端卡片共用）按列表项投影的 `lockState` 显示锁死策略标签：`LOCKED_IDLE` 显示“已锁死”（volcano）、`ENGAGED` 显示“锁死坚持中”（red）、`DEAD_CONFIRMED` 显示“锁死待恢复”（default），`UNLOCKED` 或未投影不显示；锁死标签排在超级优先之前。账户状态 tooltip（`accountStatusTooltipLines`）末尾附加对应锁死说明行，`ENGAGED` 说明不拼入窗口秒数（死亡窗口使用事故开始时的快照，运行时配置可能已改）。
-- 编辑弹窗“账户锁死”区在死亡窗口/重试间隔之上展示只读运行态“当前状态”（数据来自高级详情投影的 `lockState`，不进入任何保存 payload），锁死启停仍以列表 lock/unlock 操作菜单为唯一入口。
+- 编辑弹窗“账户锁死”区在死亡窗口/重试间隔之上展示只读运行态“当前状态”（数据来自高级详情投影的 `lockState`，不进入任何保存 payload；`UNLOCKED` 或高级详情未加载时该只读块整体不渲染），锁死启停仍以列表 lock/unlock 操作菜单为唯一入口。
 
 ## 7. 并发、作用域和竞态要求
 

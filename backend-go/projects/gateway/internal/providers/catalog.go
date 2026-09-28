@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 )
 
 // ModelPriceSet mirrors ProviderModelPriceSet.
@@ -56,11 +55,8 @@ type ModelCatalogItem struct {
 	OutputModalities      []string `json:"outputModalities"`
 	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（AI问答工具体系与主子模型
 	// 设计 6.4）：键为该行 supportedApiProtocols 的现有枚举值，值为该协议下
-	// 可用的工具集。
-	SupportedToolsByProtocol map[string][]string `json:"supportedToolsByProtocol"`
-	// SupportedTools 是二维矩阵的一维并集（pricing.UnionToolsByProtocol 派生）。
-	// 实施中间态：阶段 2 随 chat 面切换删除，不作为新数据源使用。
-	SupportedTools                          []string                 `json:"supportedTools"`
+	// 可用的工具集。一维 SupportedTools 已随阶段 2 全链退场。
+	SupportedToolsByProtocol                map[string][]string     `json:"supportedToolsByProtocol"`
 	GenerationParameterCapabilities         map[string]any           `json:"generationParameterCapabilities"`
 	SupportedServiceTiers                   []string                 `json:"supportedServiceTiers"`
 	SupportedReasoningEfforts               []string                 `json:"supportedReasoningEfforts"`
@@ -414,7 +410,7 @@ func scanBuiltInCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 // (keepStaticPricingSource: a manual-override row keeps its own pricing
 // provenance). 解析本体在 ResolveBuiltInStaticDerivedCapabilities（derived.go），
 // 与 chat 面目录读取链共用同一实现。工具能力以「协议 × 工具」矩阵解析
-// （SupportedToolsByProtocol），一维 supportedTools 投影为矩阵并集（阶段 2 随
+// （SupportedToolsByProtocol）；一维 supportedTools 已随阶段 2 全链退场（
 // chat 面切换删除）。SourceExchangeRateToUsd 有意收窄为
 // “解析出非 nil 才赋值”：静态表未解析出汇率时不回写，防止未来 DB 行自带
 // 该值被静态 nil 覆盖，与共享解析器的语义一致。
@@ -423,7 +419,6 @@ func ApplyBuiltInStaticDerivedFields(item *ModelCatalogItem) {
 	item.InputModalities = resolved.InputModalities
 	item.OutputModalities = resolved.OutputModalities
 	item.SupportedToolsByProtocol = resolved.SupportedToolsByProtocol
-	item.SupportedTools = pricing.UnionToolsByProtocol(resolved.SupportedToolsByProtocol)
 	item.SourcePricingCurrency = resolved.SourcePricingCurrency
 	item.SourceExchangeRateDate = resolved.SourceExchangeRateDate
 	item.SourcePricingNote = resolved.SourcePricingNote
@@ -555,7 +550,6 @@ func scanCustomCatalogItem(scan func(...any) error) (ModelCatalogItem, error) {
 	item.InputModalities = []string{}
 	item.OutputModalities = []string{}
 	item.SupportedToolsByProtocol = map[string][]string{}
-	item.SupportedTools = []string{}
 	item.GenerationParameterCapabilities = generationParameterCapabilitiesToAny(
 		generationParameterCapabilitiesForModel(item.ProviderCode, item.Model, item.MaxOutputTokens))
 	item.CodexSupportedReasoningLevels = []string{}
@@ -665,9 +659,6 @@ func inheritCustomCatalogCapabilities(items, builtinRows []ModelCatalogItem, pre
 		item.SupportedToolsByProtocol = resolved.SupportedToolsByProtocol
 		item.InputModalities = resolved.InputModalities
 		item.OutputModalities = resolved.OutputModalities
-		if len(item.SupportedTools) == 0 {
-			item.SupportedTools = pricing.UnionToolsByProtocol(item.SupportedToolsByProtocol)
-		}
 	}
 }
 

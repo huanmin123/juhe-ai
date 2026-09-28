@@ -75,11 +75,6 @@ type GenerationRegistry interface {
 // through the store-only interrupted-turn paths.
 type AttachStreamHandler func(w http.ResponseWriter, r *http.Request, identity GenerationIdentity) bool
 
-// ToolCapabilitiesResolver produces GET /conversations/{id} toolCapabilities
-// (Node loadChatConversationToolCapabilities). Provided by the model-catalog
-// wave; when nil the route renders the Node catch-branch fallback shape.
-type ToolCapabilitiesResolver func(conversation *Conversation, ownerID string) any
-
 // Deps carries the route collaborators.
 type Deps struct {
 	Store *Store
@@ -97,9 +92,8 @@ type Deps struct {
 	// Now overrides the wall clock (tests); time.Now by default.
 	Now func() time.Time
 	// Generations and AttachStream are the generation-wave ports.
-	Generations   GenerationRegistry
-	AttachStream  AttachStreamHandler
-	ToolCapabilit ToolCapabilitiesResolver
+	Generations  GenerationRegistry
+	AttachStream AttachStreamHandler
 
 	// --- generation-wave ports (frozen for the G20 composition root) ---
 	// Hub is the in-process generation registry (NewGenerationHub).
@@ -320,6 +314,7 @@ func (d *Deps) Register(k *kernel.Kernel, prefix string) {
 	mount("GET", "/conversations/{conversationId}", rt.getConversation)
 	mount("PATCH", "/conversations/{conversationId}", rt.patchConversation)
 	mount("DELETE", "/conversations/{conversationId}", rt.deleteConversation)
+	mount("GET", "/conversations/{conversationId}/tool-bindings", rt.toolBindingsHandler)
 	mount("POST", "/conversations/{conversationId}/clear", rt.clearConversation)
 	mount("GET", "/conversations/{conversationId}/messages", rt.listMessages)
 	mount("GET", "/conversations/{conversationId}/sync", rt.syncHead)
@@ -658,6 +653,11 @@ func (rt *chatRoutes) getConversation(w http.ResponseWriter, r *http.Request) {
 		writeChatRouteError(w, err)
 		return
 	}
+	bindScope, err := rt.requireChatBindScope(r)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
 	conversation, err := rt.deps.Store.GetConversation(r.PathValue("conversationId"), ownerID)
 	if err != nil {
 		writeChatRouteError(w, err)
@@ -670,32 +670,21 @@ func (rt *chatRoutes) getConversation(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, struct {
 		conversationResponse
 		ToolCapabilities any `json:"toolCapabilities"`
-	}{conversationResponse: rt.conversationPayload(conversation), ToolCapabilities: rt.toolCapabilities(conversation, ownerID)})
+	}{conversationResponse: rt.conversationPayload(conversation), ToolCapabilities: rt.toolCapabilities(conversation, bindScope)})
 }
 
-func (rt *chatRoutes) toolCapabilities(conversation *Conversation, ownerID string) any {
-	if rt.deps.ToolCapabilit != nil {
-		return rt.deps.ToolCapabilit(conversation, ownerID)
+// toolCapabilities 渲染会话详情内嵌的绑定状态聚合（契约 §8.3）：与 GET
+// tool-bindings 同一形状（chat 包 buildChatToolBindingsPayload，端口齐备时
+// 直接聚合）。解析失败时渲染兜底形状（工具条目标注不可用原因）。
+func (rt *chatRoutes) toolCapabilities(conversation *Conversation, bindScope ChatBindScope) any {
+	payload, err := rt.buildChatToolBindingsPayload(bindScope, conversation)
+	if err != nil {
+		return &ChatToolBindingsPayload{Tools: []ChatToolBindingStatus{
+			{ID: "web_search", Kind: "model", Candidates: []ChatToolBindingCandidate{}, InvalidReason: "工具绑定状态暂时无法读取"},
+			{ID: "generate_image", Kind: "model", Candidates: []ChatToolBindingCandidate{}, InvalidReason: "工具绑定状态暂时无法读取"},
+		}}
 	}
-	// Node catch branch: unavailable('工具能力状态暂时无法读取').
-	return map[string]any{
-		"model": trimmedPointer(conversation.LastModel),
-		"tools": []map[string]any{
-			{"id": "web_search", "label": "网页搜索", "available": false, "reason": "工具能力状态暂时无法读取"},
-			{"id": "generate_image", "label": "图片生成", "available": false, "reason": "工具能力状态暂时无法读取"},
-		},
-	}
-}
-
-func trimmedPointer(value *string) *string {
-	if value == nil {
-		return nil
-	}
-	trimmed := strings.TrimSpace(*value)
-	if trimmed == "" {
-		return nil
-	}
-	return &trimmed
+	return payload
 }
 
 type updateConversationFields struct {
@@ -703,15 +692,74 @@ type updateConversationFields struct {
 	isPinned          *bool
 	defaultImageModel *string
 	accountID         *string
+	// searchBinding/imageBinding 是模型工具的绑定键（工具体系设计 §8.2）：
+	// nil = 本次不修改；传 null 解绑（非 nil 指针指向 nil 对象时解绑）。
+	searchBinding *chatToolBindingUpdate
+	imageBinding  *chatToolBindingUpdate
+}
+
+// chatToolBindingUpdate 是 PATCH 绑定键的解析结果：unbound=true 表示显式
+// 解绑；否则 accountId（+搜索的 modelId）必须落在候选内。
+type chatToolBindingUpdate struct {
+	unbound  bool
+	accountID string
+	modelID  string
+}
+
+// parseChatToolBindingObject 解析 {accountId, modelId?}（严格键：search 允许
+// accountId+modelId，image 仅 accountId）。nil JSON 值 = 解绑。
+func parseChatToolBindingObject(value json.RawMessage, allowModelID bool) (*chatToolBindingUpdate, error) {
+	if string(value) == "null" {
+		return &chatToolBindingUpdate{unbound: true}, nil
+	}
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(value, &parsed); err != nil || parsed == nil {
+		return nil, &invalidRequestError{Message: "Expected object, received " + jsonValueTypeName(value)}
+	}
+	allowed := []string{"accountId"}
+	if allowModelID {
+		allowed = append(allowed, "modelId")
+	}
+	for key := range parsed {
+		if !containsString(allowed, key) {
+			return nil, &invalidRequestError{Message: "Unrecognized key: \"" + key + "\""}
+		}
+	}
+	out := &chatToolBindingUpdate{}
+	for _, key := range allowed {
+		raw, ok := parsed[key]
+		if !ok {
+			continue
+		}
+		text, err := boundedTrimmedString(raw, defaultStringLimit)
+		if err != nil {
+			if err.Error() == "String must contain at least 1 character(s)" {
+				return nil, &invalidRequestError{Message: "请选择工具绑定的账户"}
+			}
+			return nil, &invalidRequestError{Message: err.Error()}
+		}
+		if key == "accountId" {
+			out.accountID = *text
+		} else {
+			out.modelID = *text
+		}
+	}
+	if out.accountID == "" {
+		return nil, &invalidRequestError{Message: "请选择工具绑定的账户"}
+	}
+	if allowModelID && out.modelID == "" {
+		return nil, &invalidRequestError{Message: "请选择工具绑定的模型"}
+	}
+	return out, nil
 }
 
 // parseUpdateConversationBody mirrors updateConversationSchema (strict +
 // refine, zod issue order) with the account-only binding extension（设计 §5.4）：
-// accountId 写入/切换绑定账户；searchBinding/imageBinding 属工具阶段契约，
-// 本阶段仍按未知键拒绝（unrecognized key），阶段 2 接入候选校验。
+// accountId 写入/切换绑定账户；searchBinding/imageBinding 是模型工具绑定键
+//（工具体系设计 §8.2，候选校验在 handler 完成）。
 func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversationFields, error) {
 	fields := updateConversationFields{}
-	for _, key := range []string{"title", "isPinned", "defaultImageModel", "accountId"} {
+	for _, key := range []string{"title", "isPinned", "defaultImageModel", "accountId", "searchBinding", "imageBinding"} {
 		value, ok := raw[key]
 		if !ok {
 			continue
@@ -754,16 +802,29 @@ func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversa
 				return fields, &invalidRequestError{Message: err.Error()}
 			}
 			fields.accountID = text
+		case "searchBinding":
+			binding, err := parseChatToolBindingObject(value, true)
+			if err != nil {
+				return fields, err
+			}
+			fields.searchBinding = binding
+		case "imageBinding":
+			binding, err := parseChatToolBindingObject(value, false)
+			if err != nil {
+				return fields, err
+			}
+			fields.imageBinding = binding
 		}
 	}
 	for key := range raw {
 		switch key {
-		case "title", "isPinned", "defaultImageModel", "accountId":
+		case "title", "isPinned", "defaultImageModel", "accountId", "searchBinding", "imageBinding":
 		default:
 			return updateConversationFields{}, &invalidRequestError{Message: "Unrecognized key: \"" + key + "\""}
 		}
 	}
-	if fields.title == nil && fields.isPinned == nil && fields.defaultImageModel == nil && fields.accountID == nil {
+	if fields.title == nil && fields.isPinned == nil && fields.defaultImageModel == nil &&
+		fields.accountID == nil && fields.searchBinding == nil && fields.imageBinding == nil {
 		return fields, &invalidRequestError{Message: "没有可更新的会话字段"}
 	}
 	return fields, nil
@@ -772,8 +833,10 @@ func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversa
 // patchConversation mirrors PATCH /conversations/{id}. accountId 走账户选择/
 // 切换链路：数据范围与启用校验（AccountLookup）→ 名称快照落库；当前
 // lastModel 不在新账户可路由范围时联动清空模型选择（前端按响应 lastModel
-// 为空提示重选，设计 §5.4/§6）。归档会话禁止切换账户（设计 §8「不做原地
-// 迁移」），展示字段（标题/置顶/默认图像模型）保持可改。
+// 为空提示重选，设计 §5.4/§6）。归档会话禁止切换账户与工具绑定（设计 §8
+//「不做原地迁移」），展示字段（标题/置顶/默认图像模型）保持可改。
+// searchBinding/imageBinding 走候选校验（工具体系设计 §8.2）：二元组/账户
+// 必须在候选列表内，失败 400 返回候选；null 解绑。
 func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) {
 	raw, err := readJSONBody(r)
 	if err != nil {
@@ -795,6 +858,11 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 		writeChatRouteError(w, err)
 		return
 	}
+	bindScope, err := rt.requireChatBindScope(r)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
 	conversationID := r.PathValue("conversationId")
 	conversation, err := rt.deps.Store.GetConversation(conversationID, ownerID)
 	if err != nil {
@@ -811,11 +879,6 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 	if fields.accountID != nil {
 		if conversation.Archived {
 			writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
-			return
-		}
-		bindScope, err := rt.requireChatBindScope(r)
-		if err != nil {
-			writeChatRouteError(w, err)
 			return
 		}
 		if rt.deps.AccountLookup == nil {
@@ -856,6 +919,59 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 			clearLastModel = !routable
 		}
 	}
+	var searchAccountID *string
+	var searchModelID string
+	var imageAccountID *string
+	if fields.searchBinding != nil || fields.imageBinding != nil {
+		if conversation.Archived {
+			writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
+			return
+		}
+		candidates, err := rt.resolveChatToolBindingCandidates(bindScope)
+		if err != nil {
+			writeChatRouteError(w, err)
+			return
+		}
+		if fields.searchBinding != nil {
+			if fields.searchBinding.unbound {
+				empty := ""
+				searchAccountID = &empty
+			} else if containsChatToolBindingCandidate(candidates.search, ChatToolBindingCandidate{AccountID: fields.searchBinding.accountID, ModelID: fields.searchBinding.modelID}) {
+				searchAccountID = &fields.searchBinding.accountID
+				searchModelID = fields.searchBinding.modelID
+			} else {
+				writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
+					Message:    "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）",
+					ToolID:     "web_search",
+					Candidates: candidates.search,
+				})
+				return
+			}
+		}
+		if fields.imageBinding != nil {
+			if fields.imageBinding.unbound {
+				empty := ""
+				imageAccountID = &empty
+			} else {
+				valid := false
+				for _, candidate := range candidates.image {
+					if candidate.AccountID == fields.imageBinding.accountID {
+						valid = true
+						break
+					}
+				}
+				if !valid {
+					writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
+						Message:    "生图绑定必须在候选列表内（账户可路由注册图像模型）",
+						ToolID:     "generate_image",
+						Candidates: candidates.image,
+					})
+					return
+				}
+				imageAccountID = &fields.imageBinding.accountID
+			}
+		}
+	}
 	updated, err := rt.deps.Store.UpdateConversation(UpdateConversationInput{
 		ConversationID:          conversationID,
 		SystemAccountID:         ownerID,
@@ -864,6 +980,9 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 		DefaultImageModel:       fields.defaultImageModel,
 		BindAccountID:           bindAccountID,
 		BindAccountNameSnapshot: bindAccountName,
+		SearchAccountID:         searchAccountID,
+		SearchModelID:           searchModelID,
+		ImageAccountID:          imageAccountID,
 		ClearLastModel:          clearLastModel,
 		Now:                     rt.now(),
 	})

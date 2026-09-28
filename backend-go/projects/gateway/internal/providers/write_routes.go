@@ -1090,7 +1090,6 @@ func customCatalogItemFromRecord(record *customProviderModelRecord) ModelCatalog
 		SupportedAPIProtocols: copyStringSlice(record.SupportedAPIProtocols),
 		InputModalities:       []string{},
 		OutputModalities:      []string{},
-		SupportedTools:        []string{},
 		GenerationParameterCapabilities: generationParameterCapabilitiesToAny(
 			generationParameterCapabilitiesForModel(record.ProviderCode, record.Model, record.MaxOutputTokens)),
 		InputUsdPer1M:                 record.InputUsdPer1M,

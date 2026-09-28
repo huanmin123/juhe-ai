@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 )
@@ -157,11 +156,11 @@ func TestChainCatalogBuiltinStaticDerivedCapabilitiesRealDataChain(t *testing.T)
 	if terra == nil {
 		t.Fatalf("catalog missing gpt-5.6-terra: %#v", items)
 	}
-	if !staticDerivedContains(terra.SupportedTools, "web_search") {
-		t.Fatalf("gpt-5.6-terra supportedTools missing web_search: %v", terra.SupportedTools)
+	if !staticDerivedContains(terra.SupportedToolsByProtocol["responses"], "web_search") {
+		t.Fatalf("gpt-5.6-terra supportedTools missing web_search: %v", terra.SupportedToolsByProtocol["responses"])
 	}
-	if !staticDerivedContains(terra.SupportedTools, "function_calling") {
-		t.Fatalf("gpt-5.6-terra supportedTools missing function_calling: %v", terra.SupportedTools)
+	if !staticDerivedContains(terra.SupportedToolsByProtocol["responses"], "function_calling") {
+		t.Fatalf("gpt-5.6-terra supportedTools missing function_calling: %v", terra.SupportedToolsByProtocol["responses"])
 	}
 	// 二维矩阵：hosted 工具（web_search 等）只归 responses；chat_completions
 	// 恒 [function_calling]；一维 supportedTools 为矩阵并集。
@@ -184,9 +183,9 @@ func TestChainCatalogBuiltinStaticDerivedCapabilitiesRealDataChain(t *testing.T)
 	if custom == nil {
 		t.Fatalf("catalog missing custom-plain-model: %#v", items)
 	}
-	if len(custom.SupportedTools) != 0 || len(custom.SupportedToolsByProtocol) != 0 || len(custom.InputModalities) != 0 || len(custom.OutputModalities) != 0 {
-		t.Fatalf("brand-new custom model must not gain inherited capabilities: tools=%v matrix=%v in=%v out=%v",
-			custom.SupportedTools, custom.SupportedToolsByProtocol, custom.InputModalities, custom.OutputModalities)
+	if len(custom.SupportedToolsByProtocol) != 0 || len(custom.InputModalities) != 0 || len(custom.OutputModalities) != 0 {
+		t.Fatalf("brand-new custom model must not gain inherited capabilities: matrix=%v in=%v out=%v",
+			custom.SupportedToolsByProtocol, custom.InputModalities, custom.OutputModalities)
 	}
 	if len(custom.GenerationParameterCapabilities) != 0 {
 		t.Fatalf("custom row generationParameterCapabilities must stay absent: %s", custom.GenerationParameterCapabilities)
@@ -205,7 +204,7 @@ func TestChainCatalogBuiltinStaticDerivedCapabilitiesSurviveCacheHit(t *testing.
 		t.Fatalf("first catalog read: %v", err)
 	}
 	terra := findStaticDerivedItem(first, "gpt-5.6-terra")
-	if terra == nil || !staticDerivedContains(terra.SupportedTools, "web_search") {
+	if terra == nil || !staticDerivedContains(terra.SupportedToolsByProtocol["responses"], "web_search") {
 		t.Fatalf("first read missing web_search: %#v", terra)
 	}
 	// 删除底层行：第二次读取若回源将拿不到该模型，能取到即为缓存命中。
@@ -220,11 +219,11 @@ func TestChainCatalogBuiltinStaticDerivedCapabilitiesSurviveCacheHit(t *testing.
 	if cached == nil {
 		t.Fatalf("cache hit lost the builtin row entirely: %#v", second)
 	}
-	if !staticDerivedContains(cached.SupportedTools, "web_search") ||
-		!staticDerivedContains(cached.SupportedTools, "function_calling") ||
+	if !staticDerivedContains(cached.SupportedToolsByProtocol["responses"], "web_search") ||
+		!staticDerivedContains(cached.SupportedToolsByProtocol["responses"], "function_calling") ||
 		!staticDerivedContains(cached.InputModalities, "image") {
 		t.Fatalf("cache hit lost static capabilities: tools=%v in=%v",
-			cached.SupportedTools, cached.InputModalities)
+			cached.SupportedToolsByProtocol["responses"], cached.InputModalities)
 	}
 	if !staticDerivedContains(cached.SupportedToolsByProtocol["responses"], "web_search") ||
 		!reflect.DeepEqual(cached.SupportedToolsByProtocol["chat_completions"], []string{"function_calling"}) {
@@ -271,9 +270,6 @@ func TestChainCatalogBuiltinStaticDerivedParityWithAdminFace(t *testing.T) {
 		}
 		if !reflect.DeepEqual(chatItem.OutputModalities, admin.OutputModalities) {
 			t.Fatalf("%s outputModalities chat=%v admin=%v", sample.model, chatItem.OutputModalities, admin.OutputModalities)
-		}
-		if !reflect.DeepEqual(chatItem.SupportedTools, admin.SupportedTools) {
-			t.Fatalf("%s supportedTools chat=%v admin=%v", sample.model, chatItem.SupportedTools, admin.SupportedTools)
 		}
 		if !staticDerivedCapabilityMapEqual(chatItem.SupportedToolsByProtocol, admin.SupportedToolsByProtocol) {
 			t.Fatalf("%s supportedToolsByProtocol chat=%v admin=%v", sample.model, chatItem.SupportedToolsByProtocol, admin.SupportedToolsByProtocol)
@@ -334,11 +330,11 @@ func TestChainCatalogCustomRowInheritsBuiltinCapabilities(t *testing.T) {
 		t.Fatalf("gpt-5.6-sol must be won by the personal custom row: scope=%s source=%s id=%s",
 			overridden.Scope, overridden.Source, staticDerivedStringPtrValue(overridden.ID))
 	}
-	if !staticDerivedContains(overridden.SupportedTools, "web_search") {
-		t.Fatalf("overridden custom row supportedTools missing web_search: %v", overridden.SupportedTools)
+	if !staticDerivedContains(overridden.SupportedToolsByProtocol["responses"], "web_search") {
+		t.Fatalf("overridden custom row supportedTools missing web_search: %v", overridden.SupportedToolsByProtocol)
 	}
-	if !staticDerivedContains(overridden.SupportedTools, "function_calling") {
-		t.Fatalf("overridden custom row supportedTools missing function_calling: %v", overridden.SupportedTools)
+	if !staticDerivedContains(overridden.SupportedToolsByProtocol["responses"], "function_calling") {
+		t.Fatalf("overridden custom row supportedTools missing function_calling: %v", overridden.SupportedToolsByProtocol)
 	}
 	if !staticDerivedContains(overridden.SupportedToolsByProtocol["responses"], "web_search") ||
 		!reflect.DeepEqual(overridden.SupportedToolsByProtocol["chat_completions"], []string{"function_calling"}) {
@@ -370,10 +366,10 @@ func TestChainCatalogCustomRowInheritsBuiltinCapabilities(t *testing.T) {
 	if brandNew == nil {
 		t.Fatalf("catalog missing brand-new-personal-model: %#v", items)
 	}
-	if len(brandNew.SupportedTools) != 0 || len(brandNew.SupportedToolsByProtocol) != 0 ||
+	if len(brandNew.SupportedToolsByProtocol) != 0 ||
 		len(brandNew.InputModalities) != 0 || len(brandNew.OutputModalities) != 0 {
-		t.Fatalf("brand-new personal custom model must stay empty: tools=%v matrix=%v in=%v out=%v",
-			brandNew.SupportedTools, brandNew.SupportedToolsByProtocol, brandNew.InputModalities, brandNew.OutputModalities)
+		t.Fatalf("brand-new personal custom model must stay empty: matrix=%v in=%v out=%v",
+			brandNew.SupportedToolsByProtocol, brandNew.InputModalities, brandNew.OutputModalities)
 	}
 }
 
@@ -420,9 +416,6 @@ func TestChainCatalogCustomCapabilityInheritAdminFaceParity(t *testing.T) {
 		if adminItem == nil {
 			t.Fatalf("admin catalog missing %s: %#v", model, adminItems)
 		}
-		if !staticDerivedCapabilityEqual(chatItem.SupportedTools, adminItem.SupportedTools) {
-			t.Fatalf("%s supportedTools chat=%v admin=%v", model, chatItem.SupportedTools, adminItem.SupportedTools)
-		}
 		if !staticDerivedCapabilityMapEqual(chatItem.SupportedToolsByProtocol, adminItem.SupportedToolsByProtocol) {
 			t.Fatalf("%s supportedToolsByProtocol chat=%v admin=%v", model, chatItem.SupportedToolsByProtocol, adminItem.SupportedToolsByProtocol)
 		}
@@ -468,30 +461,33 @@ func TestChainInheritCustomCatalogCapabilitiesMergeKeys(t *testing.T) {
 	merged := []gatewayruntimecache.ProviderModelCatalogItem{customRow("my-chat")}
 	chainInheritCustomCatalogCapabilities(merged, []gatewayruntimecache.ProviderModelCatalogItem{builtinRow}, false)
 	if !staticDerivedContains(merged[0].SupportedToolsByProtocol["responses"], "web_search") ||
-		!staticDerivedContains(merged[0].SupportedTools, "web_search") ||
 		!staticDerivedContains(merged[0].InputModalities, "image") ||
 		len(merged[0].OutputModalities) == 0 {
-		t.Fatalf("bare-model key must inherit across providers: matrix=%v tools=%v in=%v out=%v",
-			merged[0].SupportedToolsByProtocol, merged[0].SupportedTools, merged[0].InputModalities, merged[0].OutputModalities)
+		t.Fatalf("bare-model key must inherit across providers: matrix=%v in=%v out=%v",
+			merged[0].SupportedToolsByProtocol, merged[0].InputModalities, merged[0].OutputModalities)
 	}
 	// hybrid：不同供应商同名模型不继承。
 	merged = []gatewayruntimecache.ProviderModelCatalogItem{customRow("my-chat")}
 	chainInheritCustomCatalogCapabilities(merged, []gatewayruntimecache.ProviderModelCatalogItem{builtinRow}, true)
-	if len(merged[0].SupportedToolsByProtocol) != 0 || len(merged[0].SupportedTools) != 0 ||
+	if len(merged[0].SupportedToolsByProtocol) != 0 ||
 		len(merged[0].InputModalities) != 0 || len(merged[0].OutputModalities) != 0 {
-		t.Fatalf("hybrid identity must not inherit across providers: matrix=%v tools=%v in=%v out=%v",
-			merged[0].SupportedToolsByProtocol, merged[0].SupportedTools, merged[0].InputModalities, merged[0].OutputModalities)
+		t.Fatalf("hybrid identity must not inherit across providers: matrix=%v in=%v out=%v",
+			merged[0].SupportedToolsByProtocol, merged[0].InputModalities, merged[0].OutputModalities)
 	}
 	// hybrid：同供应商 (provider, model) 同键才继承；非空键不被覆盖。
 	sameProvider := customRow("openai")
-	sameProvider.SupportedTools = []string{"custom_tool"}
+	sameProvider.SupportedToolsByProtocol = map[string][]string{"responses": {"custom_tool"}}
 	merged = []gatewayruntimecache.ProviderModelCatalogItem{sameProvider}
 	chainInheritCustomCatalogCapabilities(merged, []gatewayruntimecache.ProviderModelCatalogItem{builtinRow}, true)
-	if len(merged[0].SupportedTools) != 1 || merged[0].SupportedTools[0] != "custom_tool" {
-		t.Fatalf("non-empty supportedTools must stay: %v", merged[0].SupportedTools)
+	if !reflect.DeepEqual(merged[0].SupportedToolsByProtocol["responses"], []string{"custom_tool"}) {
+		t.Fatalf("non-empty matrix must stay: %v", merged[0].SupportedToolsByProtocol)
 	}
-	if !staticDerivedContains(merged[0].SupportedToolsByProtocol["responses"], "web_search") {
-		t.Fatalf("empty matrix must inherit under (provider, model): %v", merged[0].SupportedToolsByProtocol)
+	// 空**矩阵**在同 (provider, model) 键下整体继承。
+	emptyMatrix := customRow("openai")
+	mergedEmpty := []gatewayruntimecache.ProviderModelCatalogItem{emptyMatrix}
+	chainInheritCustomCatalogCapabilities(mergedEmpty, []gatewayruntimecache.ProviderModelCatalogItem{builtinRow}, true)
+	if !staticDerivedContains(mergedEmpty[0].SupportedToolsByProtocol["responses"], "web_search") {
+		t.Fatalf("empty matrix must inherit under (provider, model): %v", mergedEmpty[0].SupportedToolsByProtocol)
 	}
 	if !staticDerivedContains(merged[0].InputModalities, "image") || len(merged[0].OutputModalities) == 0 {
 		t.Fatalf("empty keys must inherit under (provider, model): in=%v out=%v",
@@ -508,105 +504,6 @@ func TestChainInheritCustomCatalogCapabilitiesMergeKeys(t *testing.T) {
 // toolCapsRealCatalogChain 是混合目录桩：ListProviderCatalog 走真实
 // runtime cache（SQLite 装载 + 缓存命中），ListAccountsForGroup 用桩账户
 // （被测对象是目录链，不是账户选择链）。
-type toolCapsRealCatalogChain struct {
-	chatModelCatalog
-	accounts map[string][]chat.ChatTransportAccount
-}
-
-func (c toolCapsRealCatalogChain) ListAccountsForGroup(groupID, systemAccountID, requestedModel, endpointFamily string) []chat.ChatTransportAccount {
-	return c.accounts[groupID+"|"+requestedModel+"|"+endpointFamily]
-}
-
-// TestChatToolCapabilitiesWebSearchAvailableFromRealCatalogChain: 真实目录链
-// 之上，Responses 协议账户下 toolCapabilities 判定 web_search 可用，协议
-// 偏好（preferResponses）选中 responses；chat DTO 投影（模型选项的组装入参）
-// 保留能力集合。
-func TestChatToolCapabilitiesWebSearchAvailableFromRealCatalogChain(t *testing.T) {
-	fixture := newChainFixture(t)
-	seedBuiltinStaticDerivedRows(t, fixture)
-	if _, err := fixture.cache.ListCachedProviderModelCatalogAsync(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"}); err != nil {
-		t.Fatalf("warm catalog cache: %v", err)
-	}
-	responseAccount := chat.ChatTransportAccount{
-		ID:                     "acct-responses",
-		Type:                   "oauth",
-		ProviderCode:           "gpt",
-		SupportedModels:        []string{"gpt-5.6-terra"},
-		SupportedEndpointModes: []string{"responses_sse"},
-	}
-	catalog := toolCapsRealCatalogChain{
-		chatModelCatalog: chatModelCatalog{cache: fixture.cache},
-		accounts: map[string][]chat.ChatTransportAccount{
-			fixture.groupID + "||":                       {responseAccount},
-			fixture.groupID + "|gpt-5.6-terra|":          {responseAccount},
-			fixture.groupID + "|gpt-5.6-terra|responses": {responseAccount},
-		},
-	}
-	deps := toolCapsDeps(
-		toolCapsChatKeys{record: &chat.ChatAPIKeyRecord{ID: "key-1", Secret: "sk-chat", Status: "active"}},
-		toolCapsGatewayKeys{view: &chat.GatewayKeyView{
-			GroupBindings: []chat.GatewayGroupBinding{{GroupID: fixture.groupID, Status: "active", GroupEnabled: true}},
-		}},
-		catalog)
-	// 账户唯一绑定口径：会话绑定桩账户（启用分组=fixture.groupID），能力按
-	// 该账户收敛（Key 自身分组绑定仅承载图片权限）。
-	deps.AccountLookup = toolCapsAccountLookup{ref: &chat.ChatAccountRef{
-		ID: "acct-responses", Name: "账户", ProviderCode: "gpt", Enabled: true, EnabledGroupIDs: []string{fixture.groupID},
-	}}
-	payload := resolveChatToolCapabilities(deps, toolCapsAccountConversation("gpt-5.6-terra", "acct-responses"), "owner-1")
-	expectTool(t, payload, "web_search", true, "")
-
-	// 协议偏好：真实链解析出的协议集合含 responses，preferResponses 生效
-	//（账户唯一绑定后按绑定账户视图判定）。
-	protocols := []chat.ChatTransportProtocol{}
-	for _, protocol := range []chat.ChatTransportProtocol{chat.ProtocolChatCompletions, chat.ProtocolResponses} {
-		if chatToolAccountSupportsProtocol(responseAccount, "gpt-5.6-terra", protocol) {
-			protocols = append(protocols, protocol)
-		}
-	}
-	hasResponses := false
-	for _, protocol := range protocols {
-		if protocol == chat.ProtocolResponses {
-			hasResponses = true
-		}
-	}
-	if !hasResponses {
-		t.Fatalf("supported protocols missing responses: %v", protocols)
-	}
-	if selected := chatToolSelectTransport(protocols, true); selected != chat.ProtocolResponses {
-		t.Fatalf("preferResponses selected %q, want responses", selected)
-	}
-
-	// chat DTO 投影（buildChatModelOptions 的直接入参）：JSON 往返不丢能力。
-	projected := catalog.ListProviderCatalog("gpt", "")
-	var projectedTerra *chat.ProviderModelCatalogItem
-	for index := range projected {
-		if projected[index].Model == "gpt-5.6-terra" {
-			projectedTerra = &projected[index]
-			break
-		}
-	}
-	if projectedTerra == nil {
-		t.Fatalf("projected catalog missing gpt-5.6-terra: %#v", projected)
-	}
-	if !staticDerivedContains(projectedTerra.SupportedTools, "web_search") ||
-		!staticDerivedContains(projectedTerra.SupportedTools, "function_calling") {
-		t.Fatalf("projected supportedTools lost capabilities: %v", projectedTerra.SupportedTools)
-	}
-	// chat DTO 投影（internal/chat，阶段 2 改造范围）本阶段仍是一维；二维矩阵
-	// 断言在 runtime cache item 层（上方 SurviveCacheHit 用例）覆盖。
-	cachedItems, err := fixture.cache.ListCachedProviderModelCatalogAsync(context.Background(), gatewayruntimecache.ModelCatalogListOptions{ProviderCode: "gpt"})
-	if err != nil {
-		t.Fatalf("cached catalog read: %v", err)
-	}
-	cachedTerra := findStaticDerivedItem(cachedItems, "gpt-5.6-terra")
-	if cachedTerra == nil || !staticDerivedContains(cachedTerra.SupportedToolsByProtocol["responses"], "web_search") {
-		t.Fatalf("cached item matrix missing web_search under responses: %v", cachedTerra)
-	}
-	if !staticDerivedContains(projectedTerra.InputModalities, "image") {
-		t.Fatalf("projected inputModalities lost image: %v", projectedTerra.InputModalities)
-	}
-	if len(projectedTerra.GenerationParameterCapabilities) == 0 {
-		t.Fatalf("projected generationParameterCapabilities empty")
-	}
-}
+// TestChatToolCapabilitiesWebSearchAvailableFromRealCatalogChain 与 toolCapsRealCatalogChain
+// 已随 cmd 侧 toolCapabilities resolver 退场删除（绑定状态聚合移入 internal/chat，
+// 契约 AI问答工具体系设计 §8；能力链断言由本文件 RealDataChain/SurviveCacheHit/parity 覆盖）。

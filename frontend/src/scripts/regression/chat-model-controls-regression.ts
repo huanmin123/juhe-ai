@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { chatGenerationParameterDescription, defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls, reasoningEffortLabel, selectableChatReasoningEfforts } from '../../views/chat/composer/chatModelControls'
 
 const composerSource = readFileSync(new URL('../../views/chat/composer/AIComposer.vue', import.meta.url), 'utf8')
-const capabilityBase = { supportedApiProtocols: ['responses'], inputModalities: ['text'], outputModalities: ['text'], supportedTools: [], generationParameters: [] }
+const capabilityBase = { supportedApiProtocols: ['responses'], inputModalities: ['text'], outputModalities: ['text'], supportedToolsByProtocol: {}, generationParameters: [] }
 
 assert.equal(reasoningEffortLabel('medium'), '中')
 assert.match(chatGenerationParameterDescription('temperature'), /随机性/, '温度必须有可理解的参数说明')

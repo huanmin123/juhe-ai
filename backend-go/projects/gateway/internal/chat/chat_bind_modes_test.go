@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"strings"
 )
 
 // bindScopeRecorder 记录 mock 收到的 (scope, id) 序列，供 scope 传递断言
@@ -222,6 +223,7 @@ func TestPatchAccountIdFlow(t *testing.T) {
 	t.Run("失败臂", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.deps.AccountLookup = mockAccountLookup{}
+		env.deps.AccountOptionsLookup = mockAccountOptionsLookup{}
 		conversation := createBoundConversation(t, env.fixture, "patch_fail_conv", routeTestOwner, CreateConversationInput{})
 		cases := []struct {
 			name    string
@@ -231,8 +233,11 @@ func TestPatchAccountIdFlow(t *testing.T) {
 			{"账户不存在", `{"accountId":"missing"}`, "绑定的账户不存在"},
 			{"账户已停用", `{"accountId":"account-disabled"}`, "绑定的账户已停用"},
 			{"空白账户", `{"accountId":"  "}`, "请选择会话绑定的账户"},
-			{"工具绑定键未接入", `{"searchBinding":{"accountId":"a","modelId":"m"}}`, "请求参数无效"},
-			{"生图绑定键未接入", `{"imageBinding":{"accountId":"a"}}`, "请求参数无效"},
+			// 工具绑定键（阶段 2 接入）：二元组不在候选内 → 400 + 候选返回
+			//（mock 账户 a1 无可派发视图，候选为空）。
+			{"搜索绑定不在候选", `{"searchBinding":{"accountId":"a1","modelId":"gpt-5"}}`, "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）"},
+			{"生图绑定不在候选", `{"imageBinding":{"accountId":"a1"}}`, "生图绑定必须在候选列表内（账户可路由注册图像模型）"},
+			{"搜索绑定缺模型", `{"searchBinding":{"accountId":"a1"}}`, "请选择工具绑定的模型"},
 		}
 		for _, item := range cases {
 			response := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, item.body)
@@ -242,6 +247,11 @@ func TestPatchAccountIdFlow(t *testing.T) {
 			if got := response.message(); got != item.message {
 				t.Fatalf("%s message = %q, want %q", item.name, got, item.message)
 			}
+		}
+		// 候选校验失败的负载携带候选数组与 toolId。
+		invalid := env.do("PATCH", prefix+"/conversations/"+conversation.ID, routeTestOwner, `{"searchBinding":{"accountId":"a1","modelId":"gpt-5"}}`)
+		if invalid.code() != "chat_tool_binding_invalid" || !strings.Contains(invalid.rawString(), `"toolId":"web_search"`) || !strings.Contains(invalid.rawString(), `"candidates":[]`) {
+			t.Fatalf("chat_tool_binding_invalid 负载 = %s", invalid.rawString())
 		}
 	})
 }

@@ -26,6 +26,7 @@ func w10dAuthReq(method, path string) *http.Request {
 func TestW10DStreamTurnImageModalityMismatch(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("conv_w10d_r", routeTestOwner)
+	bindStreamConversation(t, env, "conv_w10d_r")
 	rt := newChatRoutesForTest(env.deps)
 	payload := `{"clientMessageId":"img-1","content":"看图","model":"gpt-5-mini","contentBlocks":[{"type":"input_text","text":"看图"},{"type":"input_image","assetId":"` + w9fHexAssetID(1) + `"}]}`
 	recorder := w9fInvokeStream(rt, "conv_w10d_r", payload)
@@ -60,6 +61,7 @@ func TestW10DCompactionTriggerRouteBranches(t *testing.T) {
 	t.Run("压缩中已运行", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.fixture.createConversation("conv_w10d_r", routeTestOwner)
+		bindStreamConversation(t, env, "conv_w10d_r")
 		rt := newChatRoutesForTest(env.deps)
 		action := rt.claimAction("conv_w10d_r", routeTestOwner, "compacting")
 		recorder := httptest.NewRecorder()
@@ -74,6 +76,7 @@ func TestW10DCompactionTriggerRouteBranches(t *testing.T) {
 	t.Run("清空中冲突", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.fixture.createConversation("conv_w10d_r", routeTestOwner)
+		bindStreamConversation(t, env, "conv_w10d_r")
 		rt := newChatRoutesForTest(env.deps)
 		action := rt.claimAction("conv_w10d_r", routeTestOwner, "clearing")
 		recorder := httptest.NewRecorder()
@@ -88,6 +91,7 @@ func TestW10DCompactionTriggerRouteBranches(t *testing.T) {
 	t.Run("活动轮次冲突", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.fixture.createConversation("conv_w10d_r", routeTestOwner)
+		bindStreamConversation(t, env, "conv_w10d_r")
 		rt := newChatRoutesForTest(env.deps)
 		if _, err := env.fixture.db.Exec(`UPDATE chat_conversations SET active_turn_id = 'chat_turn_live', active_started_at = '2026-03-10T08:00:00.000Z' WHERE id = 'conv_w10d_r'`); err != nil {
 			t.Fatal(err)
@@ -103,6 +107,7 @@ func TestW10DCompactionTriggerRouteBranches(t *testing.T) {
 	t.Run("压缩服务缺失", func(t *testing.T) {
 		env := newGenerationEnv(t)
 		env.fixture.createConversation("conv_w10d_r", routeTestOwner)
+		bindStreamConversation(t, env, "conv_w10d_r")
 		env.deps.Compactions = nil
 		rt := newChatRoutesForTest(env.deps)
 		recorder := httptest.NewRecorder()

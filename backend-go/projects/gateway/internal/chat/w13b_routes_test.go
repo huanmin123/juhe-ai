@@ -23,6 +23,7 @@ func w13bRoutes(t *testing.T) (*generationEnv, *chatRoutes, string) {
 	env := newGenerationEnv(t)
 	conversationID := "w13b-conv-route"
 	env.fixture.createConversation(conversationID, routeTestOwner)
+	bindStreamConversation(t, env, conversationID)
 	return env, newChatRoutesForTest(env.deps), conversationID
 }
 
@@ -178,17 +179,8 @@ func TestW13BModelsRoutesMatrix(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown model = %d %s", recorder.Code, recorder.Body.String())
 	}
-	// gateway key 校验失败 → 500。
-	rt.deps.GatewayKeys = failingGatewayKeysW13B{}
-	request = httptest.NewRequest("GET", "/conversations/"+conversationID+"/models", nil)
-	request = request.WithContext(authedContextW13B(routeTestOwner))
-	request.SetPathValue("conversationId", conversationID)
-	recorder = httptest.NewRecorder()
-	rt.listConversationModels(recorder, request)
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("gateway error = %d %s", recorder.Code, recorder.Body.String())
-	}
-	rt.deps.GatewayKeys = mockGatewayKeys{}
+	// 网关键守卫断言已随账户唯一绑定收敛退场：models 列表按绑定账户作用域
+	// 解析，不再经 GatewayKeys（发送/工具执行路径仍校验）。
 }
 
 type failingGatewayKeysW13B struct{}

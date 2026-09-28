@@ -290,7 +290,7 @@ func TestCompactionSummarizePageSkipsDispatchWhenTargetUnavailable(t *testing.T)
 			service := NewCompactionService(fixture.store, aware, func(text string) int { return 1 }, func() string { return fixture.nowISO })
 			_, err := service.summarizePage(context.Background(), CompactionInput{
 				ConversationID: testCase.convID, SystemAccountID: routeTestOwner,
-				Model: "m", Protocol: ProtocolChatCompletions,
+				Model: "m",
 			}, emptySnapshot(), []any{map[string]any{"role": "user", "content": "内容"}})
 			if err == nil || err.Error() != "chat_context_target_unavailable" {
 				t.Fatalf("读失败/缺失必须返回跳过错误: %v", err)
@@ -309,6 +309,10 @@ func TestStreamUnboundConversationRejected(t *testing.T) {
 	aware := &targetAwareExecutor{inner: env.executor}
 	env.deps.Executor = aware
 	env.fixture.createConversation("unbound_stream_conv", routeTestOwner)
+	// 夹具默认绑定 account-1；本用例钉未绑定行为，显式清空。
+	if _, err := env.fixture.db.Exec(`UPDATE chat_conversations SET bind_account_id = NULL, bind_account_name_snapshot = '' WHERE id = 'unbound_stream_conv'`); err != nil {
+		t.Fatal(err)
+	}
 	scriptChatCompletions(env)
 	response := env.streamPost("unbound_stream_conv", routeTestOwner, streamPayload("cmid-unbound", "问题", "gpt-5"))
 	if response.status != http.StatusBadRequest || response.code() != "chat_account_required" {

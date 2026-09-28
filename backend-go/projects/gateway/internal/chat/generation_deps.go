@@ -504,18 +504,20 @@ func containsAny(values []string, candidates []string) bool {
 }
 
 // chatModelCapabilitiesPayload mirrors { ...modelOption, name: modelOption.id }.
+// 工具能力按「协议 × 工具」矩阵返回（supportedToolsByProtocol）；一维
+// supportedTools 已退场（工具体系设计 6.4）。
 func chatModelCapabilitiesPayload(option *ChatModelOption) map[string]any {
 	payload := map[string]any{
-		"id":                        option.ID,
-		"name":                      option.ID,
-		"supportsPromptCaching":     option.SupportsPromptCaching,
-		"supportedReasoningEfforts": nilToEmpty(option.SupportedReasoningEfforts),
-		"supportedServiceTiers":     nilToEmpty(option.SupportedServiceTiers),
-		"supportedApiProtocols":     nilToEmpty(option.SupportedAPIProtocols),
-		"inputModalities":           nilToEmpty(option.InputModalities),
-		"outputModalities":          nilToEmpty(option.OutputModalities),
-		"supportedTools":            nilToEmpty(option.SupportedTools),
-		"generationParameters":      generationParametersPayload(option.GenerationParameters),
+		"id":                         option.ID,
+		"name":                       option.ID,
+		"supportsPromptCaching":      option.SupportsPromptCaching,
+		"supportedReasoningEfforts":  nilToEmpty(option.SupportedReasoningEfforts),
+		"supportedServiceTiers":      nilToEmpty(option.SupportedServiceTiers),
+		"supportedApiProtocols":      nilToEmpty(option.SupportedAPIProtocols),
+		"inputModalities":            nilToEmpty(option.InputModalities),
+		"outputModalities":           nilToEmpty(option.OutputModalities),
+		"supportedToolsByProtocol":   option.SupportedToolsByProtocol,
+		"generationParameters":       generationParametersPayload(option.GenerationParameters),
 	}
 	if option.DefaultReasoningEffort != "" {
 		payload["defaultReasoningEffort"] = option.DefaultReasoningEffort
@@ -658,8 +660,9 @@ func (rt *chatRoutes) compactionTrigger(w http.ResponseWriter, r *http.Request) 
 }
 
 // resolveChatCompactionInput mirrors resolveChatCompactionInput. 鉴权主体恒
-// 为会话 api_key_id（三种模式同一语义）；绑定对象按请求者数据范围复核，模型
-// 能力与协议按绑定作用域收敛。
+// 为会话 api_key_id；绑定对象按请求者数据范围复核，模型能力按绑定作用域收敛。
+// 压缩调用恒 chat_completions（工具体系设计 §11.3：上下文压缩的协议偏好
+// 随主对话协议偏好一并删除）。
 func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, bindScope ChatBindScope, model string) (CompactionInput, error) {
 	ownerID := bindScope.ViewerID
 	input := CompactionInput{ConversationID: conversation.ID, SystemAccountID: ownerID, Model: model}
@@ -681,12 +684,17 @@ func (rt *chatRoutes) resolveChatCompactionInput(conversation *Conversation, bin
 	if option == nil || containsString(option.SupportedAPIProtocols, "images") {
 		return input, &ModelCapabilityError{Message: "当前模型不支持上下文压缩，请切换对话模型"}
 	}
-	supportedProtocols := rt.scopeSupportedProtocols(scope, ownerID, model)
-	if len(supportedProtocols) == 0 {
+	routeAccounts := rt.scopeRouteAccounts(scope, ownerID, model, string(ProtocolChatCompletions))
+	chatReachable := false
+	for _, account := range routeAccounts {
+		if chatTransportAccountSupportsProtocol(account, model, ProtocolChatCompletions) {
+			chatReachable = true
+			break
+		}
+	}
+	if !chatReachable {
 		return input, &ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由"}
 	}
-	supportsWebSearch := containsString(option.SupportedTools, "web_search")
-	input.Protocol = selectChatTransport(supportedProtocols, supportsWebSearch)
 	if option.MaxInputTokens != nil {
 		limit := *option.MaxInputTokens
 		input.EffectiveContextLimitTokens = &limit

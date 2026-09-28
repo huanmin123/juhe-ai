@@ -197,18 +197,9 @@ func TestW14LModelsRouteBindingArms(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("奇怪绑定应仍可用 = %d %s", recorder.Code, recorder.Body.String())
 	}
-	// 网关键缺失（secret 为空返回 nil）→ DomainError。
-	rt.deps.GatewayKeys = w14lEmptyGatewayKeys{}
-	recorder = call()
-	if recorder.Code < 400 {
-		t.Fatalf("空网关键应拒绝: %d %s", recorder.Code, recorder.Body.String())
-	}
-	rt.deps.GatewayKeys = mockGatewayKeys{}
+	// 网关键守卫断言已随账户唯一绑定收敛退场：models 列表按绑定账户作用域
+	// 解析，不再经 GatewayKeys（发送/工具执行路径仍校验）。
 }
-
-type w14lEmptyGatewayKeys struct{}
-
-func (w14lEmptyGatewayKeys) ValidateGatewayKey(string) (*GatewayKeyView, error) { return nil, nil }
 
 // TestW14LAssetUploadMatrix 覆盖资产上传的 multipart 与配额臂。
 func TestW14LAssetUploadMatrix(t *testing.T) {

@@ -150,7 +150,7 @@ func TestW13G4ClaimCompactionArms(t *testing.T) {
 	})
 	result := env2.compactions.CompactOnce(context.Background(), CompactionInput{
 		ConversationID: conversationID2, SystemAccountID: routeTestOwner,
-		APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+		APIKeySecret: "secret", Model: "gpt-5",
 	})
 	if result.Status != "installed" {
 		t.Fatalf("预装 checkpoint = %+v", result)
@@ -201,7 +201,7 @@ func TestW13G4CompactionFailureArms(t *testing.T) {
 		env.executor.steps = append(env.executor.steps, w13g4CompactionStep(huge))
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: "chat_conv_w13g4_cf1", SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+			APIKeySecret: "secret", Model: "gpt-5",
 		})
 		if result.Status != "failed" || result.Reason != "chat_context_summary_not_smaller" {
 			t.Fatalf("not smaller = %+v", result)
@@ -223,7 +223,7 @@ func TestW13G4CompactionFailureArms(t *testing.T) {
 		}
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: conversationID, SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+			APIKeySecret: "secret", Model: "gpt-5",
 		})
 		if result.Status != "failed" {
 			t.Fatalf("单轮超限 = %+v", result)
@@ -238,7 +238,7 @@ func TestW13G4CompactionFailureArms(t *testing.T) {
 		script.failOnce("SET context_progress_sequence = ?")
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: conversationID, SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+			APIKeySecret: "secret", Model: "gpt-5",
 		})
 		if result.Status != "failed" {
 			t.Fatalf("进度写入失败 = %+v", result)
@@ -253,7 +253,7 @@ func TestW13G4CompactionFailureArms(t *testing.T) {
 		script.failOnce("INSERT INTO chat_context_checkpoints")
 		result := env.compactions.CompactOnce(context.Background(), CompactionInput{
 			ConversationID: conversationID, SystemAccountID: routeTestOwner,
-			APIKeySecret: "secret", Model: "gpt-5", Protocol: ProtocolChatCompletions,
+			APIKeySecret: "secret", Model: "gpt-5",
 		})
 		if result.Status != "failed" {
 			t.Fatalf("安装失败 = %+v", result)

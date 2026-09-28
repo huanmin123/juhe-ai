@@ -1,5 +1,5 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 /**
@@ -26,6 +26,13 @@ export interface ChatAccountOption {
   status: string
 }
 
+/**
+ * 模型工具的会话级绑定键（工具体系设计 §8.2）：searchBinding 为「账户+模型」
+ * 二元组（传 null 解绑）；imageBinding 仅账户（生图模型沿用 defaultImageModel）。
+ */
+export type ChatToolBindingPatch =
+  | { searchBinding?: { accountId: string; modelId: string } | null; imageBinding?: { accountId: string } | null }
+
 export const chatApi = {
   getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
@@ -35,6 +42,8 @@ export const chatApi = {
   listChatAccounts: () => unwrap<ChatAccountOption[]>(http.get('/my-chat/accounts')),
   createConversation: (payload?: ChatConversationCreatePayload) => unwrap<ChatConversation>(http.post('/my-chat/conversations', payload)),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),
+  /** 会话工具绑定状态与候选（工具体系设计 §8.1）。 */
+  getToolBindings: (conversationId: string) => unwrap<ChatConversationToolCapabilities>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/tool-bindings`)),
   listMessages: (conversationId: string, params?: ChatMessageListParams) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/messages`, { params })),
   getConversationSync: (conversationId: string, knownRevision?: number) => unwrap<ChatConversationSyncHead>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/sync`, { params: { knownRevision: knownRevision ?? 0 } })),
   getSubmissionStatus: (conversationId: string, clientMessageId: string) => unwrap<ChatSubmissionStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/submissions/${encodeURIComponent(clientMessageId)}`)),
@@ -59,7 +68,7 @@ export const chatApi = {
     }))
   },
   deleteAsset: (conversationId: string, assetId: string) => http.delete(`/my-chat/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(assetId)}`),
-  updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean; defaultImageModel?: ChatImageModel; accountId?: string }) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${encodeURIComponent(conversationId)}`, payload)),
+  updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean; defaultImageModel?: ChatImageModel; accountId?: string } & ChatToolBindingPatch) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${encodeURIComponent(conversationId)}`, payload)),
   stop: (conversationId: string, target: { clientMessageId?: string; turnId?: string }) => unwrap<{ stopped: boolean }>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/stop`, target)),
   clearConversation: (conversationId: string) => unwrap<ChatConversation>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/clear`, {})),
   deleteConversation: (conversationId: string) => http.delete(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)

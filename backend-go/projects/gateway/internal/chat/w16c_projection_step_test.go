@@ -5,6 +5,7 @@ package chat
 // 早已持久化这些字段，此处锁定"读回不丢"的契约。
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -56,7 +57,7 @@ func TestW16CContentBlockProjectionRoundTrip(t *testing.T) {
 		t.Fatalf("output_image revisedPrompt = %+v", img)
 	}
 	// 恢复后的 DTO 再序列化/读取一轮，新字段仍存活（往返闭合）。
-	again := parseContentBlocks(mustJSON(blocks))
+	again := parseContentBlocks(mustJSONTest(blocks))
 	if len(again) != 4 {
 		t.Fatalf("再往返块数 = %d (%+v)", len(again), again)
 	}
@@ -168,4 +169,13 @@ func TestW16CGenerationParameterStepPayload(t *testing.T) {
 	if len(glm) != 3 || glm[0].Step != 0.1 || glm[1].Step != 0.05 || glm[2].Step != 1 {
 		t.Fatalf("glm step = %+v", glm)
 	}
+}
+
+// mustJSONTest 是 mustJSON 的测试本地等价物（原随 responses_sse.go 删除）。
+func mustJSONTest(value any) string {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(payload)
 }

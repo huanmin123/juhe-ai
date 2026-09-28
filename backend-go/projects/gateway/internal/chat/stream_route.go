@@ -469,8 +469,9 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
 		return
 	}
-	supportsWebSearch := containsString(modelOption.SupportedTools, "web_search")
-	protocol := selectChatTransport(accountSupportedProtocols, supportsWebSearch || imageCount > 0)
+	// 主对话恒 chat_completions（工具体系设计 §11.1）：协议不再由工具能力/图片
+	// 输入驱动；联网搜索与生图是会话级绑定的模型工具，经子代理执行。
+	protocol := ProtocolChatCompletions
 	routeAccounts := rt.scopeRouteAccounts(scope, ownerID, body.Model, string(protocol))
 	filteredAccounts := []ChatTransportAccount{}
 	for _, account := range routeAccounts {
@@ -478,14 +479,14 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			filteredAccounts = append(filteredAccounts, account)
 		}
 	}
+	if len(filteredAccounts) == 0 {
+		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
+		return
+	}
 	routeModelOption := constrainChatModelOptionForAccounts(modelOption, body.Model, filteredAccounts, []ChatTransportProtocol{protocol})
 	if len(routeModelOption.SupportedAPIProtocols) == 0 {
 		failWith(&ModelCapabilityError{Message: "当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射"})
 		return
-	}
-	effectiveTools := []string{}
-	if protocol == ProtocolResponses && supportsWebSearch {
-		effectiveTools = append(effectiveTools, HostedToolWebSearch)
 	}
 	imageGenerationEnabled := gatewayKey.ImageGenerationEnabled && rt.scopeHasImageGenerationRoute(scope, ownerID)
 	environment := rt.deps.ToolEnvironment
@@ -493,15 +494,22 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		environment = "development"
 	}
 	internalToolRegistry := newChatInternalToolRegistry(environment, rt.deps.DiagnosticToolEnabled, imageGenerationEnabled)
-	internalTools := internalToolRegistry.resolveTools(containsString(modelOption.SupportedTools, "function_calling"))
+	// function_calling 判定口径：目录矩阵任一协议含 function_calling（主对话
+	// 恒 chat，但矩阵可能仅在 responses 键下声明，按「任一协议」避免误杀）。
+	internalTools := internalToolRegistry.resolveTools(modelOption.supportsTool("function_calling"))
 	internalToolNames := make([]string, 0, len(internalTools))
 	for _, tool := range internalTools {
 		internalToolNames = append(internalToolNames, tool.ModelName)
 	}
-	if imageCount > 0 && (!containsString(modelOption.InputModalities, "image") || protocol != ProtocolResponses) {
+	// 图片输入校验（契约 §11.3）：inputModalities 含 image 的模型才允许带图
+	//（目录矩阵读取链），协议维度不再参与。
+	if imageCount > 0 && !containsString(modelOption.InputModalities, "image") {
 		failWith(&RequestError{Code: RequestImageNotSupported, Message: "当前模型或路由不支持图片输入，请切换模型或移除图片"})
 		return
 	}
+	// 模型工具绑定运行时（契约 §6.3/§9）：候选摘要供 binding_required 引导，
+	// 绑定账户解析固定派发执行器；端口缺失时降级为无候选视图。
+	toolBindings := rt.resolveChatToolBindingRuntime(bindScope, conversation)
 	nowValue := rt.now()
 	resolvedInput, err := rt.resolveChatAssetInput(body.ContentBlocks, ownerID, conversation.ID, nowValue)
 	if err != nil {
@@ -521,11 +529,10 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	if routeModelOption.SupportsPromptCaching {
 		promptCacheKey = buildChatPromptCacheKey(ownerID, apiKey.ID, conversation.ID)
 	}
-	_, systemInstructionsText, _ := buildChatSystemInstructions(effectiveTools, internalToolNames)
+	_, systemInstructionsText, _ := buildChatSystemInstructions(internalToolNames)
 	budgetInput := fixedChatBudgetInput{
-		CurrentUserContent: resolveChatBudgetContent(protocol, body.Content, resolvedInput.Blocks),
+		CurrentUserContent: body.Content,
 		Instructions:       systemInstructionsText,
-		EffectiveTools:     effectiveTools,
 		InternalTools:      internalTools,
 		ImageTokenEstimate: resolvedInput.ImageTokenEstimate,
 		MaxInputTokens:     effectiveContextLimitTokens,
@@ -539,7 +546,6 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		SystemAccountID:             ownerID,
 		APIKeySecret:                apiKey.Secret,
 		Model:                       body.Model,
-		Protocol:                    protocol,
 		EffectiveContextLimitTokens: effectiveContextLimitTokens,
 	}
 	compactOnce := func() bool {
@@ -550,13 +556,13 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 		return result.Status == "installed"
 	}
 	contextCompacted := false
-	preparedContext, err := rt.loadChatTransportHistory(protocol, conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
+	preparedContext, err := rt.loadChatTransportHistory(conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
 	if err != nil {
 		var contextErr *ChatModelContextError
 		if errors.As(err, &contextErr) && contextErr.Reason == ModelContextLoadLimit {
 			if compactOnce() {
 				contextCompacted = true
-				preparedContext, err = rt.loadChatTransportHistory(protocol, conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
+				preparedContext, err = rt.loadChatTransportHistory(conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
 			}
 		}
 		if err != nil {
@@ -583,7 +589,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			failWith(err)
 			return
 		}
-		preparedContext, err = rt.loadChatTransportHistory(protocol, conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
+		preparedContext, err = rt.loadChatTransportHistory(conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
 		if err != nil {
 			failWith(err)
 			return
@@ -597,7 +603,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	if effectiveContextLimitTokens != nil && int64(estimatedRequestTokens) >= int64(0.85*float64(*effectiveContextLimitTokens)) {
 		if compactOnce() {
 			contextCompacted = true
-			preparedContext, err = rt.loadChatTransportHistory(protocol, conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
+			preparedContext, err = rt.loadChatTransportHistory(conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
 			if err != nil {
 				failWith(err)
 				return
@@ -611,13 +617,11 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	buildTransport := func(continuation []any) (string, []byte, error) {
 		path, bodyMap := buildChatTransportRequest(ChatTransportRequestInput{
-			Protocol:             protocol,
 			Instructions:         systemInstructionsText,
 			Model:                body.Model,
 			History:              preparedContext.History,
 			CurrentContent:       body.Content,
 			CurrentBlocks:        resolvedInput.Blocks,
-			EffectiveTools:       effectiveTools,
 			InternalTools:        internalTools,
 			ToolContinuation:     continuation,
 			ReasoningEffort:      reasoningEffort,
@@ -639,7 +643,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 	if len(serializedTransportBody) > maxInternalChatRequestBytes && !contextCompacted && len(preparedContext.History) > 0 {
 		if compactOnce() {
 			contextCompacted = true
-			preparedContext, err = rt.loadChatTransportHistory(protocol, conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
+			preparedContext, err = rt.loadChatTransportHistory(conversation.ID, ownerID, rt.now(), body.ReplaceTurnID)
 			if err != nil {
 				failWith(err)
 				return
@@ -718,7 +722,6 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			defaultImageModel:           string(conversation.DefaultImageModel),
 			internalToolRegistry:        internalToolRegistry,
 			internalTools:               internalTools,
-			effectiveTools:              effectiveTools,
 			systemInstructionsText:      systemInstructionsText,
 			resolvedInput:               resolvedInput,
 			preparedContext:             preparedContext,
@@ -729,6 +732,7 @@ func (rt *chatRoutes) streamTurn(w http.ResponseWriter, r *http.Request) {
 			effectiveContextLimitTokens: effectiveContextLimitTokens,
 			estimatedRequestTokens:      int64(estimatedRequestTokens),
 			buildTransport:              buildTransport,
+			toolBindings:                toolBindings,
 		}, identity),
 		UnexpectedErrorTraceID: traceID,
 	}
@@ -924,7 +928,14 @@ func (d *Deps) gatewayKeyOrError(secret string) (*GatewayKeyView, error) {
 	if d.GatewayKeys == nil {
 		return nil, &DomainError{Message: "API Key 不存在或不可用"}
 	}
-	return d.GatewayKeys.ValidateGatewayKey(secret)
+	view, err := d.GatewayKeys.ValidateGatewayKey(secret)
+	if err != nil {
+		return nil, err
+	}
+	if view == nil {
+		return nil, &DomainError{Message: "会话绑定的 API Key 不可用"}
+	}
+	return view, nil
 }
 
 // scopeRouteAccounts 按绑定作用域解析指定协议的候选账户：直接使用收敛后的

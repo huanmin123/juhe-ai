@@ -135,10 +135,8 @@ export interface ProviderModelPricing {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   inputModalities?: Array<'text' | 'image' | 'audio' | 'video' | 'file'>
   outputModalities?: Array<'text' | 'image' | 'audio' | 'video' | 'file'>
-  /** 「协议 × 工具」矩阵（AI问答工具体系与主子模型设计 6.4）：键为该行 supportedApiProtocols 的现有枚举值，值为该协议下可用的工具集。 */
+  /** 「协议 × 工具」矩阵（AI问答工具体系与主子模型设计 6.4）：键为该行 supportedApiProtocols 的现有枚举值，值为该协议下可用的工具集。一维 supportedTools 已随阶段 2 退场。 */
   supportedToolsByProtocol?: Record<string, string[]>
-  /** 一维工具集 = 二维矩阵并集。实施中间态：阶段 2 随 chat 面切换删除，不作为新数据源使用。 */
-  supportedTools?: string[]
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number

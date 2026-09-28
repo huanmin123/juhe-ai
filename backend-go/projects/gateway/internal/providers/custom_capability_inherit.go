@@ -17,7 +17,7 @@ package providers
 // passed through the static-derived fallback
 // (ApplyBuiltInStaticDerivedFields / decorateBuiltinStaticDerivedCapabilities).
 // SupportedToolsByProtocol 是「协议 × 工具」矩阵；目录投影的一维
-// supportedTools 过渡字段由调用侧以二维并集派生（阶段 2 随 chat 面切换删除）。
+// 一维 supportedTools 过渡字段已随阶段 2 全链删除（消费方按二维矩阵读取）。
 type CustomCatalogCapabilityKeys struct {
 	SupportedToolsByProtocol map[string][]string
 	InputModalities          []string

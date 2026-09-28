@@ -186,6 +186,7 @@ func TestCompactionTriggerHandlerDecoupledContextBatch2(t *testing.T) {
 	rt := newChatRoutesForTest(env.deps)
 	conversationID := "conv-batch2-handler"
 	env.fixture.createConversation(conversationID, routeTestOwner)
+	bindStreamConversation(t, env, conversationID)
 	env.fixture.seedTurns(routeTestOwner, conversationID, 4)
 
 	request := w13bJSONRequest(t, "POST", "/conversations/"+conversationID+"/context/compactions", `{"model":"gpt-5"}`)

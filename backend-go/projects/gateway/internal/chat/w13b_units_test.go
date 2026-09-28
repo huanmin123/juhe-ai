@@ -224,9 +224,6 @@ func TestW13BStringHelpers(t *testing.T) {
 	if derefAssistantI64(nil) != 0 || derefAssistantI64(int64PtrT(7)) != 7 {
 		t.Fatalf("derefAssistantI64 失败")
 	}
-	if mustJSON(map[string]any{"a": float64(1)}) != `{"a":1}` {
-		t.Fatalf("mustJSON 失败")
-	}
 	if !containsAny([]string{"x", "responses"}, []string{"responses"}) || containsAny([]string{"x"}, []string{"y"}) {
 		t.Fatalf("containsAny 失败")
 	}
@@ -245,13 +242,6 @@ func TestW13BStringHelpers(t *testing.T) {
 	}
 	if statusOrZero(nil) != 0 || statusOrZero(&GenerationDispatchResponse{Status: 502}) != 502 {
 		t.Fatalf("statusOrZero 失败")
-	}
-	if finishReasonOr(nil, "stop") != "stop" || finishReasonOr([]ChatToolCall{{}}, "stop") != "tool_calls" {
-		t.Fatalf("finishReasonOr 失败")
-	}
-	if !isApplicationFunctionToolEvent(map[string]any{"type": "function_call"}) ||
-		isApplicationFunctionToolEvent(map[string]any{"type": "message"}) {
-		t.Fatalf("isApplicationFunctionToolEvent 失败")
 	}
 	if nilIfZero(0) != nil || *nilIfZero(5) != 5 {
 		t.Fatalf("nilIfZero 失败")
@@ -930,22 +920,7 @@ func TestW13BRouteCapabilityForAccount(t *testing.T) {
 	}
 }
 
-func TestW13BSelectChatTransportAndReasoningDefault(t *testing.T) {
-	both := []ChatTransportProtocol{ProtocolChatCompletions, ProtocolResponses}
-	if got := selectChatTransport(both, false); got != ProtocolChatCompletions {
-		t.Fatalf("默认应选 chat_completions: %s", got)
-	}
-	if got := selectChatTransport(both, true); got != ProtocolResponses {
-		t.Fatalf("偏好 responses 应选 responses: %s", got)
-	}
-	responsesOnly := []ChatTransportProtocol{ProtocolResponses}
-	if got := selectChatTransport(responsesOnly, false); got != ProtocolResponses {
-		t.Fatalf("仅 responses 应回退: %s", got)
-	}
-	none := []ChatTransportProtocol{"messages"}
-	if got := selectChatTransport(none, false); got != ProtocolChatCompletions {
-		t.Fatalf("无可用协议应回退 chat_completions: %s", got)
-	}
+func TestW13BReasoningDefault(t *testing.T) {
 	items := []ProviderModelCatalogItem{{DefaultReasoningEffort: strPtrT("low")}}
 	if got := commonReasoningDefault(items, []string{"low"}); got != "low" {
 		t.Fatalf("默认思考级别失败: %q", got)
@@ -1135,27 +1110,7 @@ func TestW13BImageToolNormalizers(t *testing.T) {
 	}
 }
 
-func TestW13BProjectToolEvent(t *testing.T) {
-	blocks := []*assistantBlock{}
-	projectToolEvent(&blocks, "tool_started", map[string]any{"type": "web_search"})
-	if len(blocks) != 1 || blocks[0].CallID != "tool_1" || blocks[0].ToolType != "web_search" {
-		t.Fatalf("无 id 工具块创建失败: %+v", blocks)
-	}
-	projectToolEvent(&blocks, "tool_completed", map[string]any{"id": "tool_1"})
-	if blocks[0].Status != "completed" {
-		t.Fatalf("既有工具块更新失败")
-	}
-	projectToolEvent(&blocks, "tool_started", map[string]any{"call_id": "custom"})
-	if len(blocks) != 2 || blocks[1].CallID != "custom" || blocks[1].ToolType != "tool" {
-		t.Fatalf("call_id 工具块创建失败: %+v", blocks)
-	}
-	projection := chatGenerationToolEventProjection("tool_updated", map[string]any{"id": "x", "type": "web_search"})
-	if projection.Status != "updated" || projection.ID != "x" {
-		t.Fatalf("工具事件投影失败: %+v", projection)
-	}
-	if got := chatGenerationToolEventProjection("other", nil).ID; got != "tool" {
-		t.Fatalf("默认工具 id 失败")
-	}
+func TestW13BUpstreamMessagePayload(t *testing.T) {
 	if msg := upstreamMessagePayload(`{"error":{"message":"上游错误"}}`, "fallback"); msg != "上游错误" {
 		t.Fatalf("上游错误消息失败: %q", msg)
 	}
@@ -1280,98 +1235,6 @@ func TestW13BResolveChatModelRequestOptions(t *testing.T) {
 
 func floatPtrW13B(value float64) *float64 { return &value }
 
-func TestW13BParseResponsesBlockMatrix(t *testing.T) {
-	if parsed := parseResponsesBlock("data: [DONE]\n\n"); parsed.event != nil {
-		t.Fatalf("DONE 块应为空")
-	}
-	if parsed := parseResponsesBlock("data: not-json\n\n"); parsed.event != nil {
-		t.Fatalf("非法 JSON 应为空")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"); parsed.event == nil || parsed.event.Type != "text_delta" {
-		t.Fatalf("text_delta 解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"x\"}\n\n"); parsed.event.Type != "reasoning_delta" {
-		t.Fatalf("reasoning_delta 解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"web_search_call\"}}\n\n"); parsed.event == nil || parsed.event.Type != "tool_started" {
-		t.Fatalf("tool_started 解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\"}}\n\n"); parsed.event != nil {
-		t.Fatalf("message added 应为空")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\"}}\n\n"); parsed.event.Type != "reasoning_completed" {
-		t.Fatalf("reasoning_completed 解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"file_search_call\"}}\n\n"); parsed.event.Type != "tool_completed" {
-		t.Fatalf("tool_completed 解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.failed\",\"error\":{\"message\":\"x\"}}\n\n"); parsed.event.Type != "failed" {
-		t.Fatalf("failed 解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.failed\",\"response\":{}}\n\n"); parsed.event.Type != "failed" {
-		t.Fatalf("failed response 解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.failed\"}\n\n"); parsed.event.Type != "failed" || parsed.event.Error == nil {
-		t.Fatalf("failed 默认解析失败")
-	}
-	if parsed := parseResponsesBlock("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"image_generation_call\",\"id\":\"img1\"}}\n\n"); parsed.event == nil || parsed.event.Type != "image_started" {
-		t.Fatalf("图片 added 解析失败")
-	}
-	merged := parseResponsesBlock("data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"image_generation_call\",\"call_id\":\"img1\"}}\n\n")
-	if merged.event.Item["callId"] != "img1" {
-		t.Fatalf("图片 callId 合并失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"response.image_generation_call.completed\",\"status\":\"completed\",\"result\":\"QUJD\"}\n\n"); parsed.event.Type != "image_completed" || parsed.imageResultData == "" {
-		t.Fatalf("图片完成解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"image_generation_call.partial_image\"}\n\n"); parsed.event.Type != "image_updated" {
-		t.Fatalf("图片部分解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"image_generation.failed\"}\n\n"); parsed.event.Type != "image_failed" {
-		t.Fatalf("图片失败解析失败")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"image_generation_call.done\"}\n\n"); parsed.event.Type != "image_failed" {
-		t.Fatalf("无结果 done 应为 image_failed")
-	}
-	if parsed := parseResponsesBlock("data: {\"type\":\"image_generation_call.added\"}\n\n"); parsed.event.Type != "image_started" {
-		t.Fatalf("无结果 added 应为 image_started")
-	}
-	if responsesImageCallID(map[string]any{"call_id": " x "}) != "x" {
-		t.Fatalf("call_id 提取失败")
-	}
-	if responsesImageCallID(map[string]any{"id": 9}) != "" {
-		t.Fatalf("非字符串 id 应为空")
-	}
-	if !isImageResultFieldName("b64_json") || isImageResultFieldName("other") {
-		t.Fatalf("图片字段名判断失败")
-	}
-	if extractImageResultChunks("plain") != nil {
-		t.Fatalf("无字段应返回 nil")
-	}
-	if extractImageResultChunksWithFields(`{"b64_json":"QUJD"}`, "b64_json") == nil {
-		t.Fatalf("b64 提取失败")
-	}
-	images := completedResponseImages(map[string]any{"output": []any{
-		map[string]any{"type": "image_generation_call", "result": "QUJD", "call_id": "c1", "revised_prompt": "p"},
-		map[string]any{"type": "image_generation_call"},
-		map[string]any{"type": "message"},
-	}})
-	if len(images) != 1 || images[0].callID != "c1" || images[0].revisedPrompt != "p" {
-		t.Fatalf("完成图片提取失败: %+v", images)
-	}
-	item := normalizeResponsesContinuationItem(map[string]any{"type": "function_call", "call_id": "call-1"})
-	if item["id"] == "" || item["status"] != "completed" {
-		t.Fatalf("续答项归一失败: %v", item)
-	}
-	kept := normalizeResponsesContinuationItem(map[string]any{"type": "function_call"})
-	if kept["id"] != nil {
-		t.Fatalf("无 call_id 应原样返回")
-	}
-	long := normalizeResponsesContinuationItem(map[string]any{"type": "function_call", "call_id": strings.Repeat("a", 80)})
-	if id, _ := long["id"].(string); len(id) != 63 {
-		t.Fatalf("超长 id 应截断: %d", len(id))
-	}
-}
 
 func TestW13BStripImageResultStrings(t *testing.T) {
 	payload, values, err := stripImageResultStrings(`{"a":"x","result":"QUJD","b64_json":"REVG"}`, "result", "b64_json")
@@ -1453,81 +1316,6 @@ func TestW13BCollectOpenAIChatSseEdgeCases(t *testing.T) {
 	}
 }
 
-func TestW13BCollectChatResponsesSseEdgeCases(t *testing.T) {
-	if _, err := CollectChatResponsesSse(errReaderW13B{}, 100, 0, nil, nil); err == nil {
-		t.Fatalf("读取错误应上抛")
-	}
-	if _, err := CollectChatResponsesSse(strings.NewReader("\xff"), 100, 0, nil, nil); err == nil {
-		t.Fatalf("无效 UTF-8 应报错")
-	}
-	stream := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n" +
-		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":2},\"output\":[]}}\n\n"
-	result, err := CollectChatResponsesSse(strings.NewReader(stream), 100, 0, nil, nil)
-	if err != nil || result.Content != "hi" || *result.InputTokens != 5 {
-		t.Fatalf("responses 收集失败: %v %+v", err, result)
-	}
-	// completedItems 回退路径（无 output 数组）。
-	stream = "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"f\",\"arguments\":\"{}\",\"id\":\"i1\"}}\n\n" +
-		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n"
-	result, err = CollectChatResponsesSse(strings.NewReader(stream), 100, 0, nil, nil)
-	if err != nil || len(result.ToolCalls) != 1 || len(result.ContinuationItems) != 1 {
-		t.Fatalf("completedItems 回退失败: %v %+v", err, result)
-	}
-	// 尾部缓冲消费。
-	stream = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}"
-	if _, err := CollectChatResponsesSse(strings.NewReader(stream), 100, 0, nil, nil); err != nil {
-		t.Fatalf("尾部 completed 块应消费: %v", err)
-	}
-	// 事件数超限。
-	events := strings.Repeat("data: {}\n\n", 4)
-	if _, err := CollectChatResponsesSse(strings.NewReader(events+"data: {\"type\":\"response.completed\",\"response\":{}}\n\n"), 100, 2, nil, nil); err == nil {
-		t.Fatalf("事件数超限应报错")
-	}
-	// 非图片大事件超限。
-	big := "data: " + strings.Repeat("x", 70*1024) + "\n\n"
-	if _, err := CollectChatResponsesSse(strings.NewReader(big), 100, 0, nil, nil); err == nil {
-		t.Fatalf("大事件应报错")
-	}
-	// 截断的图片事件。
-	bigImage := "event: image_generation_call\n" + strings.Repeat("x", 70*1024)
-	if _, err := CollectChatResponsesSse(strings.NewReader(bigImage), 100, 0, nil, nil); err == nil || err.Error() != "图像 SSE 事件被截断" {
-		t.Fatalf("截断图片事件应报错: %v", err)
-	}
-	// onEvent 回调错误传播。
-	if _, err := CollectChatResponsesSse(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{}}\n\n"), 100, 0, func(event ChatResponsesEvent) error {
-		return errors.New("callback boom")
-	}, nil); err == nil {
-		t.Fatalf("回调错误应上抛")
-	}
-	// 图片结果 sink。
-	called := ""
-	stream = "data: {\"type\":\"response.image_generation_call.completed\",\"id\":\"img1\",\"status\":\"completed\",\"result\":\"QUJD\"}\n\n" +
-		"data: {\"type\":\"response.completed\",\"response\":{}}\n\n"
-	_, err = CollectChatResponsesSse(strings.NewReader(stream), 100, 0, nil, func(callID, revisedPrompt string, chunks []string) error {
-		called = callID + ":" + strings.Join(chunks, ",")
-		return nil
-	})
-	if err != nil || called != "img1:QUJD" {
-		t.Fatalf("图片结果回调失败: %q %v", called, err)
-	}
-	// sink 错误传播。
-	_, err = CollectChatResponsesSse(strings.NewReader(stream), 100, 0, nil, func(callID, revisedPrompt string, chunks []string) error {
-		return errors.New("sink boom")
-	})
-	if err == nil {
-		t.Fatalf("sink 错误应上抛")
-	}
-	// 辅助字节超限。
-	aux := strings.Repeat("event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\""+strings.Repeat("x", 1000)+"\"}\n\n", 200)
-	if _, err := CollectChatResponsesSse(strings.NewReader(aux+"data: {\"type\":\"response.completed\",\"response\":{}}\n\n"), 100, 0, nil, nil); err == nil {
-		t.Fatalf("辅助字节超限应报错")
-	}
-	// 工具参数超限。
-	args := "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"i1\",\"delta\":\"" + strings.Repeat("x", 70*1024) + "\"}\n\n"
-	if _, err := CollectChatResponsesSse(strings.NewReader(args), 100, 0, nil, nil); err == nil {
-		t.Fatalf("工具参数超限应报错")
-	}
-}
 
 type errReaderW13B struct{}
 
@@ -1763,17 +1551,17 @@ func TestW13BChatInternalToolRegistry(t *testing.T) {
 	if _, err := registry.definition("missing"); err == nil {
 		t.Fatalf("未知工具应报错")
 	}
-	if len(registry.resolveTools(true)) != 2 {
-		t.Fatalf("双工具解析失败")
+	if names := toolNamesOf(registry.resolveTools(true)); !equalStringsW3(names, []string{"diagnostic_echo", "web_search", "generate_image"}) {
+		t.Fatalf("dev 注册表应含诊断/搜索/生图三工具: %v", names)
 	}
 	if len(registry.resolveTools(false)) != 0 {
 		t.Fatalf("function calling 关闭应为空")
 	}
-	if len(newChatInternalToolRegistry("production", true, true).resolveTools(true)) != 1 {
-		t.Fatalf("生产环境应只有图片工具")
+	if names := toolNamesOf(newChatInternalToolRegistry("production", true, true).resolveTools(true)); !equalStringsW3(names, []string{"web_search", "generate_image"}) {
+		t.Fatalf("生产环境应有搜索+图片模型工具: %v", names)
 	}
-	if len(newChatInternalToolRegistry("development", false, false).resolveTools(true)) != 0 {
-		t.Fatalf("未启用内部工具且未启用图片应为空")
+	if names := toolNamesOf(newChatInternalToolRegistry("development", false, false).resolveTools(true)); !equalStringsW3(names, []string{"web_search"}) {
+		t.Fatalf("开关全关时仍应注册搜索模型工具: %v", names)
 	}
 	if _, err := registry.normalizeArguments("any", "{}", 1); err == nil {
 		t.Fatalf("参数超限应报错")
@@ -1898,19 +1686,19 @@ func TestW13BOrchestratorRunLimits(t *testing.T) {
 	orchestrator := newChatInternalToolOrchestrator(registry, tools, contextValue, ChatOrchestratorLimits{MaxModelRounds: 1, MaxToolCalls: 1, MaxImageCalls: 0}, func(event ChatToolExecutionEvent) {
 		published = append(published, event)
 	})
-	if _, err := orchestrator.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+	if _, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		return ChatToolModelTurn{}, errors.New("模型失败")
 	}); err == nil {
 		t.Fatalf("模型失败应上抛")
 	}
-	if _, err := orchestrator.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+	if _, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "c1", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"hi"}`}}}, nil
 	}); err == nil {
 		t.Fatalf("超过模型轮次上限应报错")
 	}
 	abortContext := &chatToolExecutionContext{OwnerID: "o", Aborted: func() bool { return true }}
 	abortOrchestrator := newChatInternalToolOrchestrator(registry, tools, abortContext, ChatOrchestratorLimits{MaxModelRounds: 2, MaxToolCalls: 2, MaxImageCalls: 0}, nil)
-	if _, err := abortOrchestrator.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+	if _, err := abortOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		return ChatToolModelTurn{}, nil
 	}); err == nil || !strings.Contains(err.Error(), "取消") {
 		t.Fatalf("中止应报错: %v", err)
@@ -1919,7 +1707,7 @@ func TestW13BOrchestratorRunLimits(t *testing.T) {
 	allowContext := &chatToolExecutionContext{OwnerID: "o"}
 	count := 0
 	failureOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 5, MaxImageCalls: 0}, nil)
-	result, err := failureOrchestrator.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+	result, err := failureOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		count++
 		if count == 1 {
 			return ChatToolModelTurn{ToolCalls: []ChatToolCall{{CallID: "bad", ToolName: "missing_tool", ArgumentsJSON: "{}"}}}, nil
@@ -1935,7 +1723,7 @@ func TestW13BOrchestratorRunLimits(t *testing.T) {
 	// 复用缓存 + 次数上限。
 	cacheOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 8, MaxImageCalls: 0}, nil)
 	cacheCount := 0
-	cacheResult, err := cacheOrchestrator.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+	cacheResult, err := cacheOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		cacheCount++
 		if cacheCount == 1 {
 			return ChatToolModelTurn{ToolCalls: []ChatToolCall{
@@ -1950,7 +1738,7 @@ func TestW13BOrchestratorRunLimits(t *testing.T) {
 	}
 	// 超过工具调用上限。
 	limitOrchestrator := newChatInternalToolOrchestrator(registry, tools, allowContext, ChatOrchestratorLimits{MaxModelRounds: 4, MaxToolCalls: 1, MaxImageCalls: 0}, nil)
-	if _, err := limitOrchestrator.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+	if _, err := limitOrchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		return ChatToolModelTurn{ToolCalls: []ChatToolCall{
 			{CallID: "a", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"1"}`, SourceOrder: 1},
 			{CallID: "b", ToolName: "diagnostic_echo", ArgumentsJSON: `{"text":"2"}`, SourceOrder: 0},
@@ -1965,4 +1753,12 @@ func TestW13BStoreGeneratedImageSinkGuards(t *testing.T) {
 	if _, err := sink.CommitGeneratedImage(GeneratedImageCommitInput{}); err == nil {
 		t.Fatalf("未配置存储应报错")
 	}
+}
+
+func toolNamesOf(tools []*toolDefinition) []string {
+	out := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, tool.ModelName)
+	}
+	return out
 }

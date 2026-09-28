@@ -12,8 +12,15 @@ import (
 // Transport plumbing ported from chat-transport.ts, chat-tools.ts,
 // chat-system-instructions.ts, chat-prompt-cache.ts and the parameter slices
 // of chat-generation-parameters.ts.
+//
+// 工具体系设计（docs/functions/AI问答工具体系与主子模型设计.md §11）：主对话
+// 协议恒 chat_completions——工具驱动的协议偏好与 Responses 传输分支已整体
+// 删除，联网搜索/生图改为会话级绑定的子模型经进程内 /v1 链执行（见
+// generation_websearch.go 与 stream_execute.go 的组装）。
 
-// ChatTransportProtocol mirrors ChatTransportProtocol.
+// ChatTransportProtocol mirrors ChatTransportProtocol. 主对话恒
+// chat_completions；responses 仅作为工具绑定候选过滤的目录矩阵键保留
+// （supportedToolsByProtocol 的协议枚举）。
 type ChatTransportProtocol string
 
 const (
@@ -21,41 +28,10 @@ const (
 	ProtocolResponses       ChatTransportProtocol = "responses"
 )
 
-// ChatHostedTool mirrors ChatHostedTool.
-type ChatHostedTool = string
-
-const HostedToolWebSearch = "web_search"
-
-// normalizeChatHostedTools mirrors normalizeChatHostedTools.
-func normalizeChatHostedTools(input []string) []string {
-	selected := map[string]bool{}
-	for _, value := range input {
-		if value == "web_search" || value == "image_generation" {
-			selected[value] = true
-		}
-	}
-	out := []string{}
-	for _, tool := range []string{"web_search", "image_generation"} {
-		if selected[tool] {
-			out = append(out, tool)
-		}
-	}
-	return out
-}
-
-// mapChatHostedToolsToResponses mirrors mapChatHostedToolsToResponses.
-func mapChatHostedToolsToResponses(input []string) []map[string]any {
-	out := []map[string]any{}
-	for _, tool := range normalizeChatHostedTools(input) {
-		out = append(out, map[string]any{"type": tool})
-	}
-	return out
-}
-
 // ChatTransportMessage mirrors ChatTransportMessage.
 type ChatTransportMessage struct {
 	Role    string `json:"role"`
-	Content any    `json:"content"` // string | []transportInputBlock | raw continuation items
+	Content any    `json:"content"` // string | []chatContentPart
 }
 
 // ChatTransportInputBlock mirrors ChatTransportInputBlock.
@@ -63,42 +39,6 @@ type ChatTransportInputBlock struct {
 	Type    string `json:"type"` // input_text|input_image
 	Text    string `json:"text,omitempty"`
 	DataURL string `json:"dataUrl,omitempty"`
-}
-
-// resolveChatBudgetContent mirrors resolveChatBudgetContent.
-func resolveChatBudgetContent(protocol ChatTransportProtocol, currentContent string, blocks []ChatTransportInputBlock) string {
-	if protocol != ProtocolResponses || len(blocks) == 0 {
-		return currentContent
-	}
-	texts := []string{}
-	for _, block := range blocks {
-		if block.Type == "input_text" {
-			texts = append(texts, block.Text)
-		}
-	}
-	return strings.Join(texts, "\n")
-}
-
-// selectChatTransport mirrors selectChatTransport.
-func selectChatTransport(supportedProtocols []ChatTransportProtocol, preferResponses bool) ChatTransportProtocol {
-	has := func(protocol ChatTransportProtocol) bool {
-		for _, candidate := range supportedProtocols {
-			if candidate == protocol {
-				return true
-			}
-		}
-		return false
-	}
-	if preferResponses && has(ProtocolResponses) {
-		return ProtocolResponses
-	}
-	if has(ProtocolChatCompletions) {
-		return ProtocolChatCompletions
-	}
-	if has(ProtocolResponses) {
-		return ProtocolResponses
-	}
-	return ProtocolChatCompletions
 }
 
 // ChatTransportAccount mirrors ChatTransportAccount (runtime account snapshot
@@ -187,8 +127,9 @@ type ChatGenerationParameters struct {
 	Seed             *float64
 }
 
-// transportGenerationParameters mirrors transportGenerationParameters.
-func transportGenerationParameters(protocol ChatTransportProtocol, input *ChatGenerationParameters) map[string]any {
+// transportGenerationParameters mirrors transportGenerationParameters（主对话恒
+// chat_completions，仅保留该协议的参数切片）。
+func transportGenerationParameters(input *ChatGenerationParameters) map[string]any {
 	out := map[string]any{}
 	if input == nil {
 		return out
@@ -200,10 +141,6 @@ func transportGenerationParameters(protocol ChatTransportProtocol, input *ChatGe
 	}
 	set("temperature", input.Temperature)
 	set("top_p", input.TopP)
-	if protocol == ProtocolResponses {
-		set("max_output_tokens", input.MaxOutputTokens)
-		return out
-	}
 	set("frequency_penalty", input.FrequencyPenalty)
 	set("presence_penalty", input.PresencePenalty)
 	set("max_completion_tokens", input.MaxOutputTokens)
@@ -212,13 +149,19 @@ func transportGenerationParameters(protocol ChatTransportProtocol, input *ChatGe
 }
 
 // toolDefinition mirrors ChatInternalToolDefinition minus the executor (the
-// executor lives in generation_tools.go).
+// executor lives in generation_tools.go). Kind 区分执行方式（契约 §5）：
+// code=后端代码直接执行；model=会话级绑定的子模型执行（web_search /
+// generate_image）。两类工具对主模型的注入完全一致（function 定义），主模型
+// 不感知后端执行方式。
 type toolDefinition struct {
-	ID                             string
-	Version                        string
-	ModelName                      string
-	Description                    string
-	InputSchema                    map[string]any
+	ID          string
+	Version     string
+	ModelName   string
+	Kind        string // "code" | "model"
+	Description string
+	InputSchema map[string]any
+	// MaxArgumentBytes / MaxResultBytes / TimeoutMs bound one call（模型工具的
+	// TimeoutMs 是子调用整体超时上限，执行侧另有 context 超时）。
 	MaxArgumentBytes               int
 	MaxResultBytes                 int
 	TimeoutMs                      int64
@@ -231,33 +174,28 @@ type toolDefinition struct {
 
 // chatToolExecutionContext mirrors ChatToolExecutionContext (transport subset).
 type chatToolExecutionContext struct {
-	OwnerID                 string
-	ConversationID          string
-	TurnID                  string
-	AssistantMessageID      string
-	TraceID                 string
-	APIKey                  string
-	DefaultImageModel       string
-	Aborted                 func() bool
+	OwnerID            string
+	ConversationID     string
+	TurnID             string
+	AssistantMessageID string
+	TraceID            string
+	APIKey             string
+	DefaultImageModel  string
+	Aborted            func() bool
 	LoadImageEditReferences func(assetIDs []string) ([]ChatImageEditReference, error)
 	ImageGeneration         func(input ChatImageGenerationRequest) (ChatImageGenerationToolResult, error)
 	ArtifactSink            ChatGeneratedImageArtifactSink
+	// WebSearch 是 web_search 模型工具的执行端口：组装侧（stream_execute）按
+	// 会话绑定解析——未绑定返回 chatToolBindingRequiredError，已绑定经进程内
+	// /v1 链固定派发到绑定「账户+模型」（generation_websearch.go）。
+	WebSearch func(query string) (chatToolExecutionResult, error)
 }
 
-// compileChatInternalTools mirrors compileChatInternalTools.
-func compileChatInternalTools(protocol ChatTransportProtocol, tools []*toolDefinition) []map[string]any {
+// compileChatInternalTools mirrors compileChatInternalTools（恒 chat_completions
+// 形状：{type:"function", function:{...}}）。
+func compileChatInternalTools(tools []*toolDefinition) []map[string]any {
 	out := []map[string]any{}
 	for _, tool := range tools {
-		if protocol == ProtocolResponses {
-			out = append(out, map[string]any{
-				"type":        "function",
-				"name":        tool.ModelName,
-				"description": tool.Description,
-				"parameters":  tool.InputSchema,
-				"strict":      false,
-			})
-			continue
-		}
 		out = append(out, map[string]any{
 			"type": "function",
 			"function": map[string]any{
@@ -271,18 +209,11 @@ func compileChatInternalTools(protocol ChatTransportProtocol, tools []*toolDefin
 	return out
 }
 
-// buildChatToolContinuation mirrors buildChatToolContinuation.
-func buildChatToolContinuation(protocol ChatTransportProtocol, continuationItems []any, outputs []ChatToolExecutionOutput) []any {
+// buildChatToolContinuation mirrors buildChatToolContinuation（恒 chat_completions
+// 形状：tool 角色消息）。
+func buildChatToolContinuation(continuationItems []any, outputs []ChatToolExecutionOutput) []any {
 	out := append([]any{}, continuationItems...)
 	for _, output := range outputs {
-		if protocol == ProtocolResponses {
-			out = append(out, map[string]any{
-				"type":    "function_call_output",
-				"call_id": output.CallID,
-				"output":  output.ModelOutput,
-			})
-			continue
-		}
 		out = append(out, map[string]any{
 			"role":         "tool",
 			"tool_call_id": output.CallID,
@@ -292,91 +223,38 @@ func buildChatToolContinuation(protocol ChatTransportProtocol, continuationItems
 	return out
 }
 
-// chatResponsesModelRequestsReasoningSummary reports whether the model name
-// looks like a reasoning model for the Responses wire. Used only to decide
-// whether the chat page may attach reasoning.summary="auto" when the user did
-// not pick an effort: summaries stream only when explicitly requested, while
-// non-reasoning models reject the reasoning parameter outright.
-func chatResponsesModelRequestsReasoningSummary(model string) bool {
-	name := strings.ToLower(strings.TrimSpace(model))
-	if name == "" {
-		return false
+// chatContentPart 渲染 Chat Completions 多模态 content 数组块：文本块与图片
+// 输入块（image_url，data URL）。契约 §11.3：图片输入从 Responses 迁到 Chat
+// Completions 多模态格式。
+func chatContentParts(blocks []ChatTransportInputBlock) []map[string]any {
+	out := make([]map[string]any, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == "input_image" {
+			out = append(out, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": block.DataURL},
+			})
+			continue
+		}
+		out = append(out, map[string]any{"type": "text", "text": block.Text})
 	}
-	if strings.HasPrefix(name, "gpt-5") || strings.HasPrefix(name, "codex") {
-		return true
-	}
-	return regexpOpenAIOSeries.MatchString(name) || regexpReasoning.MatchString(name)
+	return out
 }
 
-// /(?:^|[-_.])o[134](?:[-_.]|$)/ — the o1/o3/o4 series without swallowing gpt-4o.
-var regexpOpenAIOSeries = regexp.MustCompile(`(?:^|[-_.])o[134](?:[-_.]|$)`)
-
-// buildChatTransportRequest mirrors buildChatTransportRequest.
+// buildChatTransportRequest mirrors buildChatTransportRequest（恒
+// chat_completions）。当前输入含图片块时 user content 渲染为多模态数组。
 func buildChatTransportRequest(input ChatTransportRequestInput) (string, map[string]any) {
-	if input.Protocol == ProtocolResponses {
-		internalTools := compileChatInternalTools(ProtocolResponses, input.InternalTools)
-		tools := append(mapChatHostedToolsToResponses(input.EffectiveTools), internalTools...)
-		currentBlocks := input.CurrentBlocks
-		if len(currentBlocks) == 0 {
-			currentBlocks = []ChatTransportInputBlock{{Type: "input_text", Text: input.CurrentContent}}
-		}
-		responsesInput := []any{}
-		for _, message := range input.History {
-			responsesInput = append(responsesInput, map[string]any{
-				"role":    message.Role,
-				"content": toResponsesMessageContent(message),
-			})
-		}
-		currentContentBlocks := []any{}
-		for _, block := range currentBlocks {
-			if block.Type == "input_image" {
-				currentContentBlocks = append(currentContentBlocks, map[string]any{"type": "input_image", "image_url": block.DataURL, "detail": "high"})
-				continue
-			}
-			currentContentBlocks = append(currentContentBlocks, map[string]any{"type": "input_text", "text": block.Text})
-		}
-		responsesInput = append(responsesInput, map[string]any{"role": "user", "content": currentContentBlocks})
-		responsesInput = append(responsesInput, input.ToolContinuation...)
-		body := map[string]any{
-			"model":        input.Model,
-			"instructions": input.Instructions,
-			"input":        responsesInput,
-			"stream":       true,
-		}
-		if input.ReasoningEffort != "" {
-			body["reasoning"] = map[string]any{"effort": input.ReasoningEffort, "summary": "auto"}
-		} else if chatResponsesModelRequestsReasoningSummary(input.Model) {
-			// Reasoning summaries stream only when explicitly requested, and the
-			// reasoning parameter itself is rejected by non-reasoning models, so
-			// the no-effort path attaches summary="auto" for name-detected
-			// reasoning models only.
-			body["reasoning"] = map[string]any{"summary": "auto"}
-		}
-		if input.ServiceTier != "" {
-			body["service_tier"] = input.ServiceTier
-		}
-		for key, value := range transportGenerationParameters(ProtocolResponses, input.GenerationParameters) {
-			body[key] = value
-		}
-		if input.PromptCacheKey != "" {
-			body["prompt_cache_key"] = input.PromptCacheKey
-		}
-		if len(tools) > 0 {
-			body["tools"] = tools
-			body["tool_choice"] = "auto"
-		}
-		if len(internalTools) > 0 {
-			body["parallel_tool_calls"] = false
-		}
-		return "/v1/responses", body
-	}
 	messages := []any{map[string]any{"role": "system", "content": input.Instructions}}
 	for _, message := range input.History {
 		messages = append(messages, map[string]any{"role": message.Role, "content": message.Content})
 	}
-	messages = append(messages, map[string]any{"role": "user", "content": input.CurrentContent})
+	if len(input.CurrentBlocks) > 0 {
+		messages = append(messages, map[string]any{"role": "user", "content": chatContentParts(input.CurrentBlocks)})
+	} else {
+		messages = append(messages, map[string]any{"role": "user", "content": input.CurrentContent})
+	}
 	messages = append(messages, input.ToolContinuation...)
-	internalTools := compileChatInternalTools(ProtocolChatCompletions, input.InternalTools)
+	internalTools := compileChatInternalTools(input.InternalTools)
 	body := map[string]any{
 		"model":          input.Model,
 		"messages":       messages,
@@ -389,7 +267,7 @@ func buildChatTransportRequest(input ChatTransportRequestInput) (string, map[str
 	if input.ServiceTier != "" {
 		body["service_tier"] = input.ServiceTier
 	}
-	for key, value := range transportGenerationParameters(ProtocolChatCompletions, input.GenerationParameters) {
+	for key, value := range transportGenerationParameters(input.GenerationParameters) {
 		body[key] = value
 	}
 	if input.PromptCacheKey != "" {
@@ -405,45 +283,17 @@ func buildChatTransportRequest(input ChatTransportRequestInput) (string, map[str
 
 // ChatTransportRequestInput mirrors buildChatTransportRequest input.
 type ChatTransportRequestInput struct {
-	Protocol             ChatTransportProtocol
 	Instructions         string
 	Model                string
 	History              []ChatTransportMessage
 	CurrentContent       string
 	CurrentBlocks        []ChatTransportInputBlock
-	EffectiveTools       []string
 	InternalTools        []*toolDefinition
 	ToolContinuation     []any
 	ReasoningEffort      string
 	ServiceTier          string
 	GenerationParameters *ChatGenerationParameters
 	PromptCacheKey       string
-}
-
-func toResponsesMessageContent(message ChatTransportMessage) any {
-	switch content := message.Content.(type) {
-	case string:
-		if message.Role == "user" {
-			return toResponsesBlocks([]ChatTransportInputBlock{{Type: "input_text", Text: content}})
-		}
-		return content
-	case []ChatTransportInputBlock:
-		return toResponsesBlocks(content)
-	default:
-		return message.Content
-	}
-}
-
-func toResponsesBlocks(blocks []ChatTransportInputBlock) []any {
-	out := make([]any, 0, len(blocks))
-	for _, block := range blocks {
-		if block.Type == "input_image" {
-			out = append(out, map[string]any{"type": "input_image", "image_url": block.DataURL, "detail": "high"})
-			continue
-		}
-		out = append(out, map[string]any{"type": "input_text", "text": block.Text})
-	}
-	return out
 }
 
 // --- system instructions (chat-system-instructions.ts) ---
@@ -462,7 +312,7 @@ const imageGenerationPreference = "调用图片生成工具时，如果用户没
 const toolDiscipline = "避免重复调用名称相同且参数等价的工具；前次调用失败、结果可能过期或用户明确要求刷新时允许再次调用。"
 
 // buildChatSystemInstructions mirrors buildChatSystemInstructions.
-func buildChatSystemInstructions(effectiveTools []string, internalToolNames []string) (version, text, hash string) {
+func buildChatSystemInstructions(internalToolNames []string) (version, text, hash string) {
 	internalNames := map[string]bool{}
 	for _, name := range internalToolNames {
 		trimmed := trimSpace(name)
@@ -474,7 +324,7 @@ func buildChatSystemInstructions(effectiveTools []string, internalToolNames []st
 	if internalNames["generate_image"] {
 		blocks = append(blocks, imageGenerationPreference)
 	}
-	if len(normalizeChatHostedTools(effectiveTools)) > 0 || len(internalNames) > 0 {
+	if len(internalNames) > 0 {
 		blocks = append(blocks, toolDiscipline)
 	}
 	text = strings.Join(blocks, "\n\n")
@@ -505,8 +355,24 @@ type ChatModelOption struct {
 	SupportedAPIProtocols     []string
 	InputModalities           []string
 	OutputModalities          []string
-	SupportedTools            []string
-	GenerationParameters      []ChatGenerationParameterCapability
+	// SupportedToolsByProtocol 是目录「协议 × 工具」矩阵的多行聚合（工具体系
+	// 设计 6.4）：每个协议键下的工具集为全部目录行的交集。一维 SupportedTools
+	// 已随阶段 2 退场，能力判定一律按矩阵读取。
+	SupportedToolsByProtocol map[string][]string
+	GenerationParameters     []ChatGenerationParameterCapability
+}
+
+// supportsTool 报告矩阵任一协议下是否声明了 tool（function_calling 判定口径：
+// 主对话恒 chat_completions，但目录矩阵可能只在 responses 键下声明
+// function_calling——按「任一协议」口径判定，避免误杀仅声明在 responses 下的
+// 能力）。
+func (o *ChatModelOption) supportsTool(tool string) bool {
+	for _, tools := range o.SupportedToolsByProtocol {
+		if containsString(tools, tool) {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatGenerationParameterCapability mirrors ChatGenerationParameterCapability.
@@ -532,7 +398,9 @@ type ProviderModelCatalogItem struct {
 	SupportedAPIProtocols     []string `json:"supportedApiProtocols,omitempty"`
 	InputModalities           []string `json:"inputModalities,omitempty"`
 	OutputModalities          []string `json:"outputModalities,omitempty"`
-	SupportedTools            []string `json:"supportedTools,omitempty"`
+	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（键为协议枚举、值为该协议
+	// 下可用工具集）。一维 SupportedTools 已退场（工具体系设计 6.4/§2.10）。
+	SupportedToolsByProtocol map[string][]string `json:"supportedToolsByProtocol,omitempty"`
 	// GenerationParameterCapabilities mirrors generationParameterCapabilities
 	// (BUG-0175 D-185). Nil rows derive the same table from
 	// providerCode/model/maxOutputTokens, exactly like the archive catalog
@@ -591,6 +459,10 @@ func buildChatModelOptions(modelIDs []string, catalog []ProviderModelCatalogItem
 			}
 			return nil
 		}))
+		toolMatrices := make([]map[string][]string, 0, len(items))
+		for _, item := range items {
+			toolMatrices = append(toolMatrices, item.SupportedToolsByProtocol)
+		}
 		option := &ChatModelOption{
 			ID: id,
 			SupportsPromptCaching: len(items) > 0 && allMatch(items, func(item ProviderModelCatalogItem) bool {
@@ -604,7 +476,7 @@ func buildChatModelOptions(modelIDs []string, catalog []ProviderModelCatalogItem
 			SupportedAPIProtocols:     intersectStringCapabilityLists(mapItems(items, func(item ProviderModelCatalogItem) []string { return nilToEmpty(item.SupportedAPIProtocols) })),
 			InputModalities:           intersectStringCapabilityLists(mapItems(items, func(item ProviderModelCatalogItem) []string { return nilToEmpty(item.InputModalities) })),
 			OutputModalities:          intersectStringCapabilityLists(mapItems(items, func(item ProviderModelCatalogItem) []string { return nilToEmpty(item.OutputModalities) })),
-			SupportedTools:            intersectStringCapabilityLists(mapItems(items, func(item ProviderModelCatalogItem) []string { return nilToEmpty(item.SupportedTools) })),
+			SupportedToolsByProtocol:  intersectToolsByProtocolMaps(toolMatrices),
 			// BUG-0175 D-185: the per-model generation parameter capability
 			// list (chat-model-options.ts:108 flattenGenerationParameters).
 			GenerationParameters: flattenGenerationParameters(items),
@@ -613,6 +485,27 @@ func buildChatModelOptions(modelIDs []string, catalog []ProviderModelCatalogItem
 			option.MaxInputTokens = maxInputTokens
 		}
 		out = append(out, option)
+	}
+	return out
+}
+
+// intersectToolsByProtocolMaps 聚合多行目录的「协议 × 工具」矩阵：每个协议键
+// 下的工具集取全部行的交集（行缺该键视为空集，与一维 intersect 语义同型）；
+// 键按字典序输出保证确定性，值内顺序保持第一行该键列表的相对顺序。
+func intersectToolsByProtocolMaps(maps []map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	if len(maps) == 0 {
+		return out
+	}
+	for key := range maps[0] {
+		lists := make([][]string, 0, len(maps))
+		for _, matrix := range maps {
+			lists = append(lists, nilToEmpty(matrix[key]))
+		}
+		intersected := intersectStringCapabilityLists(lists)
+		if len(intersected) > 0 {
+			out[key] = intersected
+		}
 	}
 	return out
 }

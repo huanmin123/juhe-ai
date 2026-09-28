@@ -535,11 +535,9 @@ type ProviderModelCatalogItem struct {
 	InputModalities       []string `json:"inputModalities"`
 	OutputModalities      []string `json:"outputModalities"`
 	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（工具体系设计 6.4）：键为
-	// 该行协议枚举，值为该协议下可用的工具集。
-	SupportedToolsByProtocol map[string][]string `json:"supportedToolsByProtocol"`
-	// SupportedTools 是二维矩阵的一维并集。实施中间态：阶段 2 随 chat 面切换
-	// 删除，不作为新数据源使用。
-	SupportedTools                          []string        `json:"supportedTools"`
+	// 该行协议枚举，值为该协议下可用的工具集。一维 SupportedTools 已随阶段 2
+	// 全链退场。
+	SupportedToolsByProtocol                map[string][]string `json:"supportedToolsByProtocol"`
 	GenerationParameterCapabilities         json.RawMessage `json:"generationParameterCapabilities,omitempty"`
 	InputUsdPer1M                           *float64        `json:"inputUsdPer1M,omitempty"`
 	OutputUsdPer1M                          *float64        `json:"outputUsdPer1M,omitempty"`
@@ -604,9 +602,6 @@ func CloneProviderModelCatalogItems(items []ProviderModelCatalogItem) []Provider
 			for protocol, tools := range item.SupportedToolsByProtocol {
 				cloned.SupportedToolsByProtocol[protocol] = append([]string(nil), tools...)
 			}
-		}
-		if item.SupportedTools != nil {
-			cloned.SupportedTools = append([]string(nil), item.SupportedTools...)
 		}
 		if item.SupportedServiceTiers != nil {
 			cloned.SupportedServiceTiers = append([]string(nil), item.SupportedServiceTiers...)

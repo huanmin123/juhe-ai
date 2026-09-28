@@ -262,8 +262,9 @@ type transportHistory struct {
 	Head               *ContextHead
 }
 
-// loadChatTransportHistory mirrors loadChatTransportHistory.
-func (rt *chatRoutes) loadChatTransportHistory(protocol ChatTransportProtocol, conversationID, ownerID, nowValue, excludeTurnID string) (*transportHistory, error) {
+// loadChatTransportHistory mirrors loadChatTransportHistory（主对话恒
+// chat_completions，历史渲染不再随协议分叉）。
+func (rt *chatRoutes) loadChatTransportHistory(conversationID, ownerID, nowValue, excludeTurnID string) (*transportHistory, error) {
 	context, err := rt.deps.Store.LoadModelContext(conversationID, ownerID, nowValue, 512, 16*1024*1024)
 	if err != nil {
 		return nil, err
@@ -283,7 +284,7 @@ func (rt *chatRoutes) loadChatTransportHistory(protocol ChatTransportProtocol, c
 	for i := range suffix {
 		message := &suffix[i]
 		if message.role == "user" {
-			content, err := rt.renderUserContextMessage(protocol, message, conversationID, ownerID, nowValue, unresolved)
+			content, err := rt.renderUserContextMessage(message, conversationID, ownerID, nowValue, unresolved)
 			if err != nil {
 				return nil, err
 			}
@@ -383,15 +384,13 @@ func completeMessagePairs(messages []contextSourceMessage, excludeTurnID string)
 	return result
 }
 
-// renderUserContextMessage mirrors renderUserContextMessage.
-func (rt *chatRoutes) renderUserContextMessage(protocol ChatTransportProtocol, message *contextSourceMessage, conversationID, ownerID, nowValue string, unresolved map[string]ObservationTarget) (any, error) {
+// renderUserContextMessage mirrors renderUserContextMessage（恒 chat_completions：
+// 历史图片以语义说明文本回放，未就绪图片触发观察流程等待）。
+func (rt *chatRoutes) renderUserContextMessage(message *contextSourceMessage, conversationID, ownerID, nowValue string, unresolved map[string]ObservationTarget) (any, error) {
 	markers, _ := parseStoredInputMarkers(message.contentBlocksJSON)
 	blocks := make([]ContentBlock, len(markers))
 	copy(blocks, markers)
 	if len(blocks) == 0 {
-		if protocol == ProtocolResponses {
-			return []map[string]any{{"type": "input_text", "text": message.contentText}}, nil
-		}
 		return message.contentText, nil
 	}
 	assetIDs := []string{}
@@ -430,17 +429,19 @@ func (rt *chatRoutes) renderUserContextMessage(protocol ChatTransportProtocol, m
 			}
 		}
 	}
-	if hasUnresolved && protocol != ProtocolResponses {
-		return nil, &ChatModelContextError{Message: "当前模型不能读取最近图片且图片说明尚未完成，请稍后重试或切换支持图片的模型", Reason: "unsupported_image"}
+	if hasUnresolved {
+		// 恒 chat 多模态后图片合法性已在发送预检按 inputModalities 判定；
+		// 历史图片的观察（隐藏说明）未完成属等待语义，统一 image_pending。
+		return nil, &ChatModelContextError{Message: "当前模型不能读取最近图片且图片说明尚未完成，请稍后重试或切换支持图片的模型", Reason: "image_pending"}
 	}
-	rendered := []map[string]any{}
+	rendered := []string{}
 	for _, block := range blocks {
 		if block.Type == "input_text" {
 			text := ""
 			if block.Text != nil {
 				text = *block.Text
 			}
-			rendered = append(rendered, map[string]any{"type": "input_text", "text": text})
+			rendered = append(rendered, text)
 			continue
 		}
 		if block.AssetID == nil {
@@ -452,20 +453,12 @@ func (rt *chatRoutes) renderUserContextMessage(protocol ChatTransportProtocol, m
 		}
 		if asset.ObservationStatus == "ready" && asset.Observation != nil {
 			payload, _ := json.Marshal(asset.Observation)
-			rendered = append(rendered, map[string]any{"type": "input_text", "text": "[历史图片说明 assetId=" + asset.ID + "]\n" + string(payload)})
+			rendered = append(rendered, "[历史图片说明 assetId="+asset.ID+"]\n"+string(payload))
 			continue
 		}
-		rendered = append(rendered, map[string]any{"type": "input_text", "text": "[历史图片说明生成中 assetId=" + asset.ID + "]"})
+		rendered = append(rendered, "[历史图片说明生成中 assetId="+asset.ID+"]")
 	}
-	if protocol == ProtocolResponses {
-		return rendered, nil
-	}
-	texts := []string{}
-	for _, block := range rendered {
-		text, _ := block["text"].(string)
-		texts = append(texts, text)
-	}
-	return strings.Join(texts, "\n"), nil
+	return strings.Join(rendered, "\n"), nil
 }
 
 // --- context budget (chat-context-budget.ts) ---
@@ -476,11 +469,11 @@ const (
 	messageOverheadTokens       = 12
 )
 
-// fixedChatBudgetInput mirrors FixedChatInputBudget.
+// fixedChatBudgetInput mirrors FixedChatInputBudget（工具预算项恒为内部
+// function tools——hosted 工具注入已随 Responses 传输分支删除）。
 type fixedChatBudgetInput struct {
 	CurrentUserContent string
 	Instructions       string
-	EffectiveTools     []string
 	InternalTools      []*toolDefinition
 	ImageTokenEstimate int64
 	MaxInputTokens     *int64
@@ -527,7 +520,7 @@ func (rt *chatRoutes) fixedChatInputTokens(input fixedChatBudgetInput) int {
 		rt.estimateChatTokens(input.Instructions) +
 		rt.estimateChatTokens(input.CurrentUserContent) +
 		messageOverheadTokens*2 +
-		len(normalizeChatHostedTools(input.EffectiveTools))*toolDefinitionReserveTokens +
+		len(input.InternalTools)*toolDefinitionReserveTokens +
 		rt.tokenCount(string(schemaPayload)) +
 		maxInt(0, int(math.Floor(float64(input.ImageTokenEstimate))))
 }

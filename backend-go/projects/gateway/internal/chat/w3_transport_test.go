@@ -47,34 +47,9 @@ func TestChatTransportAccountSupportsProtocolW3(t *testing.T) {
 	}
 }
 
-// TestTransportPlumbingW3 覆盖协议选择、hosted 工具与预算内容的纯函数契约。
+// TestTransportPlumbingW3 覆盖协议可用性、参数映射与工具编译的纯函数契约
+//（主对话恒 chat_completions：协议偏好与 hosted 工具注入已删除）。
 func TestTransportPlumbingW3(t *testing.T) {
-	if got := selectChatTransport([]ChatTransportProtocol{ProtocolChatCompletions, ProtocolResponses}, true); got != ProtocolResponses {
-		t.Fatalf("preferResponses 应选 responses: %s", got)
-	}
-	if got := selectChatTransport([]ChatTransportProtocol{ProtocolResponses, ProtocolChatCompletions}, false); got != ProtocolChatCompletions {
-		t.Fatalf("无偏好时应选 chat_completions: %s", got)
-	}
-	if got := selectChatTransport([]ChatTransportProtocol{ProtocolResponses}, true); got != ProtocolResponses {
-		t.Fatalf("仅有 responses: %s", got)
-	}
-	if got := selectChatTransport(nil, true); got != ProtocolChatCompletions {
-		t.Fatalf("空列表兜底: %s", got)
-	}
-	if got := normalizeChatHostedTools([]string{"image_generation", "web_search", "bogus", "web_search"}); !equalStringsW3(got, []string{"web_search", "image_generation"}) {
-		t.Fatalf("normalizeChatHostedTools = %v", got)
-	}
-	if got := mapChatHostedToolsToResponses([]string{"web_search"}); len(got) != 1 || got[0]["type"] != "web_search" {
-		t.Fatalf("mapChatHostedToolsToResponses = %v", got)
-	}
-	if got := resolveChatBudgetContent(ProtocolResponses, "正文", []ChatTransportInputBlock{{Type: "input_text", Text: "a"}, {Type: "input_image", DataURL: "data:"}, {Type: "input_text", Text: "b"}}); got != "a\nb" {
-		t.Fatalf("resolveChatBudgetContent = %q", got)
-	}
-	if got := resolveChatBudgetContent(ProtocolChatCompletions, "正文", nil); got != "正文" {
-		t.Fatalf("chat 协议应保留原文: %q", got)
-	}
-	groups := []string{"g1", "g1", "g2", ""}
-	_ = groups
 	protocols := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{accounts: []ChatTransportAccount{
 		{ID: "a1", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
 		{ID: "a2", SupportedEndpointModes: []string{"responses_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
@@ -82,41 +57,23 @@ func TestTransportPlumbingW3(t *testing.T) {
 	if len(protocols) != 2 || protocols[0] != ProtocolChatCompletions || protocols[1] != ProtocolResponses {
 		t.Fatalf("scopeSupportedProtocols = %v", protocols)
 	}
-	responsesParams := transportGenerationParameters(ProtocolResponses, &ChatGenerationParameters{Temperature: floatPtrW3(0.5), MaxOutputTokens: floatPtrW3(100), Seed: floatPtrW3(1)})
-	if responsesParams["max_output_tokens"] != float64(100) || responsesParams["temperature"] != 0.5 || hasKeyW3(responsesParams, "seed") || hasKeyW3(responsesParams, "frequency_penalty") {
-		t.Fatalf("responses 参数映射不正确: %v", responsesParams)
-	}
-	if got := transportGenerationParameters(ProtocolChatCompletions, &ChatGenerationParameters{FrequencyPenalty: floatPtrW3(0.1), PresencePenalty: floatPtrW3(-0.1), MaxOutputTokens: floatPtrW3(50), Seed: floatPtrW3(9), TopP: floatPtrW3(0.9)}); got["max_completion_tokens"] != float64(50) || hasKeyW3(got, "max_output_tokens") {
+	if got := transportGenerationParameters(&ChatGenerationParameters{FrequencyPenalty: floatPtrW3(0.1), PresencePenalty: floatPtrW3(-0.1), MaxOutputTokens: floatPtrW3(50), Seed: floatPtrW3(9), TopP: floatPtrW3(0.9)}); got["max_completion_tokens"] != float64(50) || hasKeyW3(got, "max_output_tokens") {
 		t.Fatalf("chat 参数映射不正确: %v", got)
 	}
-	if got := transportGenerationParameters(ProtocolResponses, nil); len(got) != 0 {
+	if got := transportGenerationParameters(nil); len(got) != 0 {
 		t.Fatalf("nil 参数应返回空 map: %v", got)
 	}
-	if got := compileChatInternalTools(ProtocolResponses, []*toolDefinition{testToolW3("t")}); got[0]["name"] != "t" || hasKeyW3(got[0], "function") {
-		t.Fatalf("responses 工具编译不正确: %v", got)
-	}
-	if got := compileChatInternalTools(ProtocolChatCompletions, []*toolDefinition{testToolW3("t")}); got[0]["function"] == nil {
+	if got := compileChatInternalTools([]*toolDefinition{testToolW3("t")}); got[0]["function"] == nil || got[0]["function"].(map[string]any)["name"] != "t" {
 		t.Fatalf("chat 工具编译不正确: %v", got)
 	}
-	continuation := buildChatToolContinuation(ProtocolResponses, []any{"keep"}, []ChatToolExecutionOutput{{CallID: "c1", ModelOutput: "out"}})
-	if continuation[0] != "keep" || continuation[1].(map[string]any)["call_id"] != "c1" {
-		t.Fatalf("responses 续答装配不正确: %v", continuation)
-	}
-	chatContinuation := buildChatToolContinuation(ProtocolChatCompletions, nil, []ChatToolExecutionOutput{{CallID: "c1", ModelOutput: "out"}})
-	if chatContinuation[0].(map[string]any)["role"] != "tool" {
+	chatContinuation := buildChatToolContinuation([]any{"keep"}, []ChatToolExecutionOutput{{CallID: "c1", ModelOutput: "out"}})
+	if chatContinuation[0] != "keep" || chatContinuation[1].(map[string]any)["role"] != "tool" || chatContinuation[1].(map[string]any)["tool_call_id"] != "c1" {
 		t.Fatalf("chat 续答装配不正确: %v", chatContinuation)
 	}
-	if got := toResponsesMessageContent(ChatTransportMessage{Role: "assistant", Content: "文本"}); got != "文本" {
-		t.Fatalf("assistant 文本应原样: %v", got)
-	}
-	if got := toResponsesMessageContent(ChatTransportMessage{Role: "user", Content: "文本"}); got == nil {
-		t.Fatalf("user 文本应转为块")
-	}
-	if got := toResponsesMessageContent(ChatTransportMessage{Role: "user", Content: []ChatTransportInputBlock{{Type: "input_image", DataURL: "data:x"}}}); got == nil {
-		t.Fatalf("块内容应转换")
-	}
-	if got := toResponsesMessageContent(ChatTransportMessage{Role: "user", Content: 42}); got != 42 {
-		t.Fatalf("其他类型应原样: %v", got)
+	// 多模态 content 块：文本与 image_url（data URL）。
+	parts := chatContentParts([]ChatTransportInputBlock{{Type: "input_text", Text: "看图"}, {Type: "input_image", DataURL: "data:image/webp;base64,x"}})
+	if parts[0]["type"] != "text" || parts[1]["type"] != "image_url" || parts[1]["image_url"].(map[string]any)["url"] != "data:image/webp;base64,x" {
+		t.Fatalf("多模态块构造不正确: %v", parts)
 	}
 }
 
@@ -139,77 +96,47 @@ func hasKeyW3(value map[string]any, key string) bool {
 	return ok
 }
 
-// TestBuildChatTransportRequestW3 覆盖两种协议的请求体装配。
+// TestBuildChatTransportRequestW3 覆盖恒 chat 请求体装配与图片输入多模态。
 func TestBuildChatTransportRequestW3(t *testing.T) {
 	path, body := buildChatTransportRequest(ChatTransportRequestInput{
-		Protocol: ProtocolResponses, Instructions: "sys", Model: "gpt-5",
-		History:        []ChatTransportMessage{{Role: "user", Content: "历史"}, {Role: "user", Content: []ChatTransportInputBlock{{Type: "input_text", Text: "块历史"}}}},
-		CurrentContent: "问题", CurrentBlocks: []ChatTransportInputBlock{{Type: "input_image", DataURL: "data:img"}},
-		EffectiveTools: []string{"web_search"}, InternalTools: []*toolDefinition{testToolW3("diagnostic_echo")},
+		Instructions: "sys", Model: "gpt-5",
+		History:        []ChatTransportMessage{{Role: "user", Content: "历史"}},
+		CurrentContent: "问题", CurrentBlocks: []ChatTransportInputBlock{{Type: "input_text", Text: "看图"}, {Type: "input_image", DataURL: "data:img"}},
+		InternalTools:  []*toolDefinition{testToolW3("diagnostic_echo")},
 		ReasoningEffort: "low", ServiceTier: "priority",
 		GenerationParameters: &ChatGenerationParameters{Temperature: floatPtrW3(0.3)}, PromptCacheKey: "cache-1",
 	})
-	if path != "/v1/responses" {
+	if path != "/v1/chat/completions" {
 		t.Fatalf("path = %s", path)
 	}
-	if body["instructions"] != "sys" || body["reasoning"] == nil || body["service_tier"] != "priority" || body["temperature"] != 0.3 || body["prompt_cache_key"] != "cache-1" {
-		t.Fatalf("responses 请求体字段不正确: %v", body)
-	}
-	tools := body["tools"].([]map[string]any)
-	if len(tools) != 2 || tools[0]["type"] != "web_search" {
-		t.Fatalf("responses 工具装配不正确: %v", tools)
-	}
-	if body["parallel_tool_calls"] != false || body["tool_choice"] != "auto" {
-		t.Fatalf("工具控制字段不正确: %v", body)
-	}
-	input := body["input"].([]any)
-	if len(input) != 3 {
-		t.Fatalf("input 长度 = %d, 期望 3（历史 2 + 当前 1）", len(input))
-	}
-	chatPath, chatBody := buildChatTransportRequest(ChatTransportRequestInput{
-		Protocol: ProtocolChatCompletions, Instructions: "sys", Model: "gpt-5",
-		History: []ChatTransportMessage{{Role: "user", Content: "历史"}}, CurrentContent: "问题",
-		InternalTools: []*toolDefinition{testToolW3("diagnostic_echo")}, ReasoningEffort: "high", PromptCacheKey: "cache-2",
-	})
-	if chatPath != "/v1/chat/completions" {
-		t.Fatalf("chat path = %s", chatPath)
-	}
-	messages := chatBody["messages"].([]any)
+	messages := body["messages"].([]any)
 	if len(messages) != 3 || messages[0].(map[string]any)["role"] != "system" {
 		t.Fatalf("chat 消息装配不正确: %v", messages)
 	}
-	if chatBody["reasoning_effort"] != "high" || chatBody["stream_options"] == nil {
-		t.Fatalf("chat 请求体字段不正确: %v", chatBody)
+	// 当前输入含图片块时 user content 渲染为多模态数组（text + image_url）。
+	current := messages[2].(map[string]any)
+	parts := current["content"].([]map[string]any)
+	if len(parts) != 2 || parts[0]["type"] != "text" || parts[1]["type"] != "image_url" {
+		t.Fatalf("多模态当前输入不正确: %v", current["content"])
 	}
-	if chatBody["tools"] == nil || chatBody["parallel_tool_calls"] != false {
-		t.Fatalf("chat 工具装配不正确: %v", chatBody)
+	if image := parts[1]["image_url"].(map[string]any); image["url"] != "data:img" {
+		t.Fatalf("image_url 不正确: %v", image)
 	}
-	// 空 CurrentBlocks 时以纯文本块兜底。
-	_, fallbackBody := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "gpt-5", CurrentContent: "问题"})
-	inputBlocks := fallbackBody["input"].([]any)
-	if len(inputBlocks) != 1 {
-		t.Fatalf("兜底输入块数量 = %d", len(inputBlocks))
+	if body["service_tier"] != "priority" || body["temperature"] != 0.3 || body["prompt_cache_key"] != "cache-1" {
+		t.Fatalf("chat 请求体字段不正确: %v", body)
 	}
-}
-
-// TestBuildChatTransportRequestReasoningSummaryW3 覆盖无显式 effort 时 Responses 思考摘要的按需注入。
-func TestBuildChatTransportRequestReasoningSummaryW3(t *testing.T) {
-	_, gpt5Body := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "gpt-5.6", CurrentContent: "问题"})
-	reasoning, ok := gpt5Body["reasoning"].(map[string]any)
-	if !ok || reasoning["summary"] != "auto" || hasKeyW3(reasoning, "effort") {
-		t.Fatalf("gpt-5 无 effort 时应只带 summary=auto: %v", gpt5Body["reasoning"])
+	tools := body["tools"].([]map[string]any)
+	if len(tools) != 1 || tools[0]["function"].(map[string]any)["name"] != "diagnostic_echo" {
+		t.Fatalf("chat 工具装配不正确: %v", tools)
 	}
-	_, o3Body := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "O3", CurrentContent: "问题"})
-	if reasoning, ok = o3Body["reasoning"].(map[string]any); !ok || reasoning["summary"] != "auto" {
-		t.Fatalf("o3 无 effort 时应带 summary=auto: %v", o3Body["reasoning"])
+	if body["parallel_tool_calls"] != false || body["tool_choice"] != "auto" || body["stream_options"] == nil {
+		t.Fatalf("工具控制字段不正确: %v", body)
 	}
-	_, plainBody := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "gpt-4o", CurrentContent: "问题"})
-	if hasKeyW3(plainBody, "reasoning") {
-		t.Fatalf("非推理模型不得携带 reasoning 参数: %v", plainBody["reasoning"])
-	}
-	_, effortBody := buildChatTransportRequest(ChatTransportRequestInput{Protocol: ProtocolResponses, Model: "gpt-4o", CurrentContent: "问题", ReasoningEffort: "low"})
-	if reasoning, ok = effortBody["reasoning"].(map[string]any); !ok || reasoning["effort"] != "low" || reasoning["summary"] != "auto" {
-		t.Fatalf("显式 effort 时应带 effort+summary: %v", effortBody["reasoning"])
+	// 纯文本输入：user content 保持字符串。
+	_, textBody := buildChatTransportRequest(ChatTransportRequestInput{Model: "gpt-5", CurrentContent: "问题"})
+	textMessages := textBody["messages"].([]any)
+	if content := textMessages[len(textMessages)-1].(map[string]any)["content"]; content != "问题" {
+		t.Fatalf("纯文本 content = %v", content)
 	}
 }
 
@@ -220,7 +147,7 @@ func TestBuildChatModelOptionsW3(t *testing.T) {
 		{Model: "gpt-5", ProviderCode: "openai", SupportsPromptCaching: &yes,
 			SupportedReasoningEfforts: []string{"low", "high", "bogus"}, DefaultReasoningEffort: strPtrT("low"),
 			SupportedServiceTiers: []string{"priority"}, ContextWindowTokens: int64PtrT(100000), MaxOutputTokens: int64PtrT(20000),
-			SupportedAPIProtocols: []string{"chat_completions", "responses"}, InputModalities: []string{"text"}, OutputModalities: []string{"text"}, SupportedTools: []string{"function_calling"}},
+			SupportedAPIProtocols: []string{"chat_completions", "responses"}, InputModalities: []string{"text"}, OutputModalities: []string{"text"}, SupportedToolsByProtocol: map[string][]string{"chat_completions": {"function_calling"}}},
 		{Model: "gpt-5", ProviderCode: "openai", SupportsPromptCaching: &yes,
 			SupportedReasoningEfforts: []string{"low"}, DefaultReasoningEffort: strPtrT("low"),
 			SupportedServiceTiers: []string{"priority"},
@@ -284,6 +211,20 @@ func TestBuildChatModelOptionsW3(t *testing.T) {
 	}
 	if got := intersectStringCapabilityLists(nil); len(got) != 0 {
 		t.Fatalf("空交集应为空: %v", got)
+	}
+	// 二维工具矩阵聚合：行间按协议键取交集；任一协议命中即视为支持该工具。
+	matrix := buildChatModelOptions([]string{"gpt-5"}, []ProviderModelCatalogItem{
+		{Model: "gpt-5", SupportedToolsByProtocol: map[string][]string{"responses": {"web_search", "function_calling"}}},
+		{Model: "gpt-5", SupportedToolsByProtocol: map[string][]string{"responses": {"web_search"}, "chat_completions": {"function_calling"}}},
+	})[0]
+	if got := matrix.SupportedToolsByProtocol["responses"]; !equalStringsW3(got, []string{"web_search"}) {
+		t.Fatalf("矩阵交集不正确: %v", matrix.SupportedToolsByProtocol)
+	}
+	if got := matrix.SupportedToolsByProtocol["chat_completions"]; len(got) != 0 {
+		t.Fatalf("单行缺失的协议键应被剔除: %v", matrix.SupportedToolsByProtocol)
+	}
+	if !matrix.supportsTool("web_search") || matrix.supportsTool("function_calling") || matrix.supportsTool("file_search") {
+		t.Fatalf("supportsTool 应按保守交集结果的任一协议口径: %v", matrix.SupportedToolsByProtocol)
 	}
 }
 
@@ -527,11 +468,11 @@ func TestResolveChatModelRequestOptionsW3(t *testing.T) {
 
 // TestSystemInstructionsAndCacheKeyW3 覆盖系统指令装配与缓存键派生。
 func TestSystemInstructionsAndCacheKeyW3(t *testing.T) {
-	version, text, hash := buildChatSystemInstructions([]string{"web_search"}, []string{"generate_image"})
+	version, text, hash := buildChatSystemInstructions([]string{"generate_image"})
 	if version != "chat-system-v4" || !strings.Contains(text, "图片生成工具") || !strings.Contains(text, "避免重复调用") || len(hash) != 64 {
 		t.Fatalf("系统指令装配不正确: %s %d", version, len(hash))
 	}
-	_, plain, _ := buildChatSystemInstructions(nil, nil)
+	_, plain, _ := buildChatSystemInstructions(nil)
 	if strings.Contains(plain, "图片生成工具") || strings.Contains(plain, "避免重复调用") {
 		t.Fatalf("无工具时不应包含工具段落")
 	}

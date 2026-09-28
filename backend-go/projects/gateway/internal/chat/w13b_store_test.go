@@ -1340,14 +1340,15 @@ func TestW13BSummarizePageProtocolBodies(t *testing.T) {
 	summaryPayload := `{"choices":[{"message":{"content":"` + `{\"currentGoal\":\"g\",\"recentUserIntent\":\"i\"}` + `"}}],"output_text":"` + `{\"currentGoal\":\"g\",\"recentUserIntent\":\"i\"}` + `"}`
 	executor := &pathRecorderExecutorW13B{paths: &seenPaths, body: summaryPayload}
 	service := NewCompactionService(newChatFixture(t).store, executor, func(text string) int { return 1 }, func() string { return "2026-03-10T08:00:00.000Z" })
-	if _, err := service.summarizePage(context.Background(), CompactionInput{Model: "m", Protocol: ProtocolChatCompletions}, emptySnapshot(), []any{}); err != nil {
+	// 压缩调用恒 chat_completions（工具体系设计 §11.3）。
+	if _, err := service.summarizePage(context.Background(), CompactionInput{Model: "m"}, emptySnapshot(), []any{}); err != nil {
 		t.Fatalf("chat 协议总结失败: %v", err)
 	}
-	if _, err := service.summarizePage(context.Background(), CompactionInput{Model: "m", Protocol: ProtocolResponses}, emptySnapshot(), []any{map[string]any{"role": "user", "content": "内容"}}); err != nil {
-		t.Fatalf("responses 协议总结失败: %v", err)
+	if _, err := service.summarizePage(context.Background(), CompactionInput{Model: "m"}, emptySnapshot(), []any{map[string]any{"role": "user", "content": "内容"}}); err != nil {
+		t.Fatalf("第二次总结失败: %v", err)
 	}
-	if len(seenPaths) != 2 || seenPaths[0] != "/v1/chat/completions" || seenPaths[1] != "/v1/responses" {
-		t.Fatalf("协议路径不正确: %v", seenPaths)
+	if len(seenPaths) != 2 || seenPaths[0] != "/v1/chat/completions" || seenPaths[1] != "/v1/chat/completions" {
+		t.Fatalf("压缩路径必须恒 chat: %v", seenPaths)
 	}
 	// 执行器错误与空响应：阻塞执行器用已取消的 context 快速返回。
 	failService := NewCompactionService(newChatFixture(t).store, &mockExecutor{steps: []scriptStep{{
@@ -1392,11 +1393,11 @@ func TestW13BSummarizePageProtocolBodies(t *testing.T) {
 		match: func(call dispatchCall) bool { return true },
 		respond: func(call dispatchCall) *GenerationDispatchResponse {
 			fence := "```json\n" + `{"currentGoal":"目标","recentUserIntent":"意图"}` + "\n```"
-			encoded, _ := json.Marshal(fence)
-			return jsonStatusResponse(200, `{"output_text":`+string(encoded)+`}`)
+			inner, _ := json.Marshal(fence)
+			return jsonStatusResponse(200, `{"choices":[{"message":{"content":`+string(inner)+`}}]}`)
 		},
 	}}}, func(text string) int { return 1 }, func() string { return "2026-03-10T08:00:00.000Z" })
-	snapshot, err := fenced.summarizePage(context.Background(), CompactionInput{Model: "m", Protocol: ProtocolResponses}, emptySnapshot(), []any{map[string]any{"role": "user", "content": "用户消息"}})
+	snapshot, err := fenced.summarizePage(context.Background(), CompactionInput{Model: "m"}, emptySnapshot(), []any{map[string]any{"role": "user", "content": "用户消息"}})
 	if err != nil || snapshot.CurrentGoal != "目标" {
 		t.Fatalf("围栏总结失败: %+v %v", snapshot, err)
 	}

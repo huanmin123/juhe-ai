@@ -657,6 +657,10 @@ assertTrue(
 const lockDeadConfirmedAccount = accountFixture({ lockState: 'DEAD_CONFIRMED' })
 assertEqual(accountLockTag(lockDeadConfirmedAccount)?.color, 'default', '锁死待恢复账户的策略标签颜色应为 default')
 assertEqual(accountLockTag(lockDeadConfirmedAccount)?.label, '锁死待恢复', '锁死待恢复账户的策略标签文案应为锁死待恢复')
+assertTrue(
+  accountStatusTooltipLines(lockDeadConfirmedAccount).some((line) => line.includes('死亡窗口已结算')),
+  '锁死待恢复账户 tooltip 应说明死亡窗口已结算且锁死策略保留'
+)
 assertEqual(accountLockTag(accountFixture({ lockState: 'UNLOCKED' })), undefined, '解锁状态账户不应显示锁死策略标签')
 
 const frequentFailureTooltip = accountStatusTooltipLines(accountFixture({

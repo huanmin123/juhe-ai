@@ -78,6 +78,7 @@ func TestStreamDetachRunsWithoutClientContext(t *testing.T) {
 	conversationID := "chat_conv_detach_run"
 	fixture.createConversation(conversationID, routeTestOwner)
 	env := buildGenerationEnvW10D(t, fixture)
+	bindStreamConversation(t, env, conversationID)
 	rt := newChatRoutesForTest(env.deps)
 	gate := make(chan struct{})
 	env.executor.steps = append(env.executor.steps, scriptStep{
@@ -160,6 +161,7 @@ func TestStreamCompleteChatTurnFailureRecovers(t *testing.T) {
 	conversationID := "chat_conv_complete_recover"
 	fixture.createConversation(conversationID, routeTestOwner)
 	env := buildGenerationEnvW10D(t, fixture)
+	bindStreamConversation(t, env, conversationID)
 	rt := newChatRoutesForTest(env.deps)
 	// 注意：respond 在 runner goroutine 内执行，禁止 t.Fatal（Goexit 会悬挂
 	// 生成），破坏失败以 500 响应 + 破坏标志回传，由测试主体断言。
@@ -221,6 +223,7 @@ func TestStreamActiveTouchDuringRun(t *testing.T) {
 	conversationID := "chat_conv_touch_run"
 	fixture.createConversation(conversationID, routeTestOwner)
 	env := buildGenerationEnvW10D(t, fixture)
+	bindStreamConversation(t, env, conversationID)
 	rt := newChatRoutesForTest(env.deps)
 	// rt.now() 换为递增时钟：每次调用 +30s，使 active_started_at 的刷新可观察。
 	var clockMu sync.Mutex

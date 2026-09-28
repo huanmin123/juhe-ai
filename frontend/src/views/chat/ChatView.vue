@@ -116,8 +116,8 @@
           <a-spin v-if="detailLoading" size="small" />
           <div v-else-if="detailConversation.toolCapabilities" class="conversation-tool-capabilities">
             <div v-for="tool in detailConversation.toolCapabilities.tools" :key="tool.id" class="conversation-tool-capability">
-              <a-tag :color="tool.available ? 'success' : 'default'">{{ tool.label }}：{{ tool.available ? '可用' : '不可用' }}</a-tag>
-              <span v-if="!tool.available && tool.reason" class="conversation-tool-capability-reason">{{ tool.reason }}</span>
+              <a-tag :color="toolCapabilityTagColor(tool)">{{ toolCapabilityTitle(tool) }}：{{ toolCapabilityState(tool) }}</a-tag>
+              <span v-if="tool.invalidReason" class="conversation-tool-capability-reason">{{ tool.invalidReason }}</span>
             </div>
           </div>
           <span v-else class="conversation-tool-capability-reason">暂无能力信息</span>
@@ -152,7 +152,7 @@ import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
-import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapability, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { beginLatestTurnEdit, beginLatestTurnRetry, isDefinitiveChatHttpRejection, removeInvalidatedGeneratedAssetsFromDraft, resolveChatReconciliationNotice, resolveChatSubmitFailure, restoreChatMessagesAfterRejectedReplacement } from './chatTurnEditing'
 import {
   applyChatReconciliationIfActive,
@@ -1145,6 +1145,20 @@ async function saveDefaultImageModel(): Promise<void> {
 
 function imageModelLabel(model: ChatImageModel): string {
   return imageModelOptions.find((option) => option.value === model)?.label ?? model
+}
+const toolCapabilityTitles: Record<string, string> = { web_search: '网页搜索', generate_image: '图片生成', diagnostic_echo: '诊断回显' }
+function toolCapabilityTitle(tool: ChatConversationToolCapability): string {
+  return toolCapabilityTitles[tool.id] ?? tool.id
+}
+function toolCapabilityState(tool: ChatConversationToolCapability): string {
+  if (tool.kind === 'code') return '内置工具'
+  if (!tool.bound) return '未设置'
+  return tool.valid ? '已绑定' : '已失效'
+}
+function toolCapabilityTagColor(tool: ChatConversationToolCapability): string {
+  if (tool.kind === 'code') return 'default'
+  if (tool.valid) return 'success'
+  return 'warning'
 }
 function conversationBindLabel(item: ChatConversation): string {
   // 账户唯一绑定：仅展示绑定账户或未配置态；归档（存量旧模式）会话标注只读。

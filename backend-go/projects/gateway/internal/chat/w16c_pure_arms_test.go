@@ -273,7 +273,7 @@ func TestW16COrchestratorAbortAndLimits(t *testing.T) {
 	publish := func(ChatToolExecutionEvent) {}
 	aborted := &chatToolExecutionContext{Aborted: func() bool { return true }}
 	orchestrator := newChatInternalToolOrchestrator(registry, nil, aborted, ChatOrchestratorLimits{MaxModelRounds: 3, MaxToolCalls: 2, MaxImageCalls: 2}, publish)
-	if _, err := orchestrator.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+	if _, err := orchestrator.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		t.Fatal("取消后不应发起模型调用")
 		return ChatToolModelTurn{}, nil
 	}); err == nil {
@@ -292,7 +292,7 @@ func TestW16COrchestratorAbortAndLimits(t *testing.T) {
 	}
 	// 模型轮次超限（未取消、轮次上限为 0）。
 	roundLimited := newChatInternalToolOrchestrator(registry, nil, limitContext, ChatOrchestratorLimits{MaxModelRounds: 0, MaxToolCalls: 2, MaxImageCalls: 2}, publish)
-	if _, err := roundLimited.Run(ProtocolChatCompletions, func(round int, continuation []any) (ChatToolModelTurn, error) {
+	if _, err := roundLimited.Run(func(round int, continuation []any) (ChatToolModelTurn, error) {
 		t.Fatal("轮次超限后不应发起模型调用")
 		return ChatToolModelTurn{}, nil
 	}); err == nil {
@@ -305,26 +305,3 @@ func TestW16COrchestratorAbortAndLimits(t *testing.T) {
 	}
 }
 
-// TestW16CProjectToolEventArms 覆盖工具事件投影的 id 生成与状态分支。
-func TestW16CProjectToolEventArms(t *testing.T) {
-	blocks := &[]*assistantBlock{}
-	projectToolEvent(blocks, "tool_started", map[string]any{})
-	if len(*blocks) != 1 || (*blocks)[0].CallID != "tool_1" {
-		t.Fatalf("生成 id = %+v", *blocks)
-	}
-	existing := &[]*assistantBlock{{Type: "tool_call", CallID: "t1", ToolType: "web_search", Status: asstStarted}}
-	projectToolEvent(existing, "tool_updated", map[string]any{"id": "t1"})
-	if (*existing)[0].Status != "updated" {
-		t.Fatalf("updated 状态 = %+v", (*existing)[0])
-	}
-	projectToolEvent(existing, "tool_completed", map[string]any{"id": "t1"})
-	if (*existing)[0].Status != "completed" {
-		t.Fatalf("completed 状态 = %+v", (*existing)[0])
-	}
-	// 投影事件的 tool_updated / tool_completed 状态分支。
-	for _, eventType := range []string{"tool_updated", "tool_completed"} {
-		if event := chatGenerationToolEventProjection(eventType, nil); event.Status == "started" {
-			t.Fatalf("%s 状态应变化: %+v", eventType, event)
-		}
-	}
-}

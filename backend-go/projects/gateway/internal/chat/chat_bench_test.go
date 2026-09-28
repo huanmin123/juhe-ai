@@ -24,7 +24,6 @@ var (
 	benchSinkValues    []string
 	benchSinkEndpoint  string
 	benchSinkBody      map[string]any
-	benchSinkToolEvent *ChatGenerationToolEvent
 	benchSinkEntries   []CheckpointEntryInput
 )
 
@@ -83,64 +82,6 @@ func BenchmarkChatCollectOpenAIChatSseContentToolUsage(b *testing.B) {
 	}
 }
 
-// benchBuildResponsesSseStream 构造固定的 OpenAI Responses SSE 成功序列：
-// 24 个文本增量 → 4 个 reasoning 增量 → function_call added/参数增量×4/done →
-// response.completed（usage + output 数组）。事件形态与 w16c_sse_transport_test.go
-// 与 w3_responses_sse_test.go 同源。
-func benchBuildResponsesSseStream() string {
-	var sb strings.Builder
-	textEvent := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"" + benchChatDeltaText + "\"}\n\n"
-	for i := 0; i < 24; i++ {
-		sb.WriteString(textEvent)
-	}
-	reasoningEvent := `event: response.reasoning_summary_text.delta` + "\n" + `data: {"type":"response.reasoning_summary_text.delta","delta":"分析问题要点"}` + "\n\n"
-	for i := 0; i < 4; i++ {
-		sb.WriteString(reasoningEvent)
-	}
-	sb.WriteString(`event: response.output_item.added` + "\n" + `data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_bench_1","call_id":"call_bench_alpha","name":"web_search","arguments":""}}` + "\n\n")
-	argsDeltaEvent := `event: response.function_call_arguments.delta` + "\n" + `data: {"type":"response.function_call_arguments.delta","item_id":"fc_bench_1","delta":"{\"query\":\"go bench\"}"}` + "\n\n"
-	for i := 0; i < 4; i++ {
-		sb.WriteString(argsDeltaEvent)
-	}
-	sb.WriteString(`event: response.output_item.done` + "\n" + `data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_bench_1","call_id":"call_bench_alpha","name":"web_search","arguments":"{\"query\":\"go bench\",\"limit\":10}","status":"completed"}}` + "\n\n")
-	sb.WriteString(`event: response.completed` + "\n" + `data: {"type":"response.completed","response":{"id":"resp_bench","usage":{"input_tokens":128,"output_tokens":64},"output":[{"type":"reasoning","id":"rs_bench"},{"type":"function_call","id":"fc_bench_1","call_id":"call_bench_alpha","name":"web_search","arguments":"{\"query\":\"go bench\",\"limit\":10}","status":"completed"}]}}` + "\n\n")
-	return sb.String()
-}
-
-// BenchmarkChatCollectChatResponsesSseCompleted 量化 Responses 上游 SSE 收集
-// 全链：块解析（事件名正则 + JSON 解码 + 图像显式判定）→ 文本/推理累计 →
-// 工具参数增量累计 → 终态 continuation 归一与工具调用归一 → usage 提取。
-func BenchmarkChatCollectChatResponsesSseCompleted(b *testing.B) {
-	stream := benchBuildResponsesSseStream()
-	result, err := CollectChatResponsesSse(strings.NewReader(stream), 1<<20, 0, nil, nil)
-	if err != nil {
-		b.Fatalf("sanity collect: %v", err)
-	}
-	if len(result.Content) != 24*len(benchChatDeltaText) ||
-		result.InputTokens == nil || *result.InputTokens != 128 ||
-		result.OutputTokens == nil || *result.OutputTokens != 64 ||
-		len(result.ToolCalls) != 1 || result.ToolCalls[0].CallID != "call_bench_alpha" ||
-		len(result.ContinuationItems) != 2 {
-		b.Fatalf("sanity collect result: content=%d tokens=%v/%v toolCalls=%+v continuation=%d",
-			len(result.Content), result.InputTokens, result.OutputTokens, result.ToolCalls, len(result.ContinuationItems))
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		reader := strings.NewReader(stream)
-		b.StartTimer()
-		loopResult, err := CollectChatResponsesSse(reader, 1<<20, 0, nil, nil)
-		if err != nil || len(loopResult.ToolCalls) != 1 {
-			b.Fatalf("collect: err=%v toolCalls=%d", err, len(loopResult.ToolCalls))
-		}
-	}
-}
-
-// benchBuildImageResultDoc 构造含两个图像 base64 结果字段（result / b64_json，
-// 各约 7.7 KiB、无转义字符）的终态 JSON 文档，与 stripImageResultStrings 的
-// 扫描契约一致。
 func benchBuildImageResultDoc() string {
 	payload := strings.Repeat("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk", 92)
 	return `[{"type":"image_generation_call","call_id":"call_bench_1","result":"` + payload +
@@ -205,7 +146,6 @@ func benchBuildTransportInput() ChatTransportRequestInput {
 		history = append(history, ChatTransportMessage{Role: role, Content: fmt.Sprintf("历史消息 %02d：请继续基于上下文作答。", i)})
 	}
 	return ChatTransportRequestInput{
-		Protocol:             ProtocolChatCompletions,
 		Instructions:         "你是聚合网关的聊天助手，回答使用简体中文并保持要点先行。",
 		Model:                "gpt-4o",
 		History:              history,
@@ -241,39 +181,6 @@ func BenchmarkChatBuildChatTransportRequestChatCompletions(b *testing.B) {
 		benchSinkEndpoint, benchSinkBody = buildChatTransportRequest(input)
 		if benchSinkEndpoint != "/v1/chat/completions" || len(benchSinkBody) == 0 {
 			b.Fatalf("request: endpoint=%q", benchSinkEndpoint)
-		}
-	}
-}
-
-// BenchmarkChatProjectToolEventUpdate 量化流式工具事件投影的更新路径
-// （stream_execute.go 每个工具事件执行 projectToolEvent +
-// chatGenerationToolEventProjection 两次投影）：已有工具块的状态/Item 原地
-// 更新 + 对外工具事件构造。预置 4 个工具块保证跨迭代零增长。
-func BenchmarkChatProjectToolEventUpdate(b *testing.B) {
-	blocks := &[]*assistantBlock{
-		{Type: "tool_call", CallID: "t1", ToolType: "web_search", Status: asstStarted},
-		{Type: "tool_call", CallID: "t2", ToolType: "web_search", Status: asstStarted},
-		{Type: "tool_call", CallID: "t3", ToolType: "web_search", Status: asstStarted},
-		{Type: "tool_call", CallID: "t4", ToolType: "web_search", Status: asstStarted},
-	}
-	item := map[string]any{"id": "t2", "type": "web_search", "delta": "{\"query\":\"go\"}"}
-
-	projectToolEvent(blocks, "tool_updated", item)
-	if (*blocks)[1].Status != "updated" || (*blocks)[1].CallID != "t2" {
-		b.Fatalf("sanity projection blocks = %+v", *blocks)
-	}
-	projection := chatGenerationToolEventProjection("tool_updated", item)
-	if projection == nil || projection.ID != "t2" || projection.Status != "updated" {
-		b.Fatalf("sanity tool event = %+v", projection)
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		projectToolEvent(blocks, "tool_updated", item)
-		benchSinkToolEvent = chatGenerationToolEventProjection("tool_updated", item)
-		if (*blocks)[1].Status != "updated" || benchSinkToolEvent == nil {
-			b.Fatal("projection update failed")
 		}
 	}
 }

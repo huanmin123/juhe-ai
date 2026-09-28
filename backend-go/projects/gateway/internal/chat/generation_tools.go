@@ -52,6 +52,9 @@ func newChatInternalToolRegistry(environment string, internalToolsEnabled, image
 		(!echo.RequiresInternalToolsEnabled || internalToolsEnabled) {
 		registry.definitions[echo.ModelName] = echo
 	}
+	// web_search 是常驻模型工具（契约 §6.1）：不受环境/内部工具开关限制，
+	// 会话未绑定时经 chatToolBindingRequiredError 引导。
+	registry.definitions["web_search"] = newWebSearchTool()
 	image := newGenerateImageTool()
 	if !image.RequiresImageGenerationEnabled || imageGenerationEnabled {
 		registry.definitions[image.ModelName] = image
@@ -80,7 +83,7 @@ func (r *chatInternalToolRegistry) resolveTools(functionCalling bool) []*toolDef
 	if !functionCalling {
 		return []*toolDefinition{}
 	}
-	names := []string{"diagnostic_echo", "generate_image"}
+	names := []string{"diagnostic_echo", "web_search", "generate_image"}
 	out := []*toolDefinition{}
 	for _, name := range names {
 		if definition, ok := r.definitions[name]; ok {
@@ -114,6 +117,21 @@ type chatInternalToolError struct {
 
 func (e *chatInternalToolError) Error() string { return e.Message }
 
+// chatToolBindingRequiredError 表示模型工具（kind=model）被调用但会话未绑定
+// 执行目标（契约 §8.4/§9）：orchestrator 捕获后下发 SSE tool.binding_required
+// 引导事件，并把 UserHint 作为明确 tool result 回喂主模型（不中断轮次）。
+type chatToolBindingRequiredError struct {
+	ToolName string
+	// UserHint 是回喂主模型的 tool result 文案。
+	UserHint string
+	// Candidates 是绑定候选摘要（tool.binding_required 事件 data）。
+	Candidates []ChatToolBindingCandidate
+}
+
+func (e *chatToolBindingRequiredError) Error() string {
+	return "模型工具未绑定: " + e.ToolName
+}
+
 var publicToolErrorMessages = map[string]string{
 	"tool_not_available":                 "请求的工具当前不可用",
 	"tool_arguments_too_large":           "工具参数超过允许上限",
@@ -143,6 +161,7 @@ func newDiagnosticEchoTool() *toolDefinition {
 		ID:          "diagnostic.echo",
 		Version:     "1.0.0",
 		ModelName:   "diagnostic_echo",
+		Kind:        "code",
 		Description: "仅在开发和测试环境回显一段有界文本，用于验证内部工具调用链。",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -172,12 +191,64 @@ func newDiagnosticEchoTool() *toolDefinition {
 	}
 }
 
-// newGenerateImageTool mirrors createGenerateImageTool.
+// chatWebSearchBindingHint 是 web_search 未绑定时回喂主模型的 tool result 文案
+// （契约 §8.4：主模型据此自然告知用户）。
+const chatWebSearchBindingHint = "搜索工具未配置：当前会话尚未绑定搜索模型，无法执行联网搜索。请直接告知用户在会话设置中绑定搜索模型后重试，不要编造搜索结果。"
+
+// chatImageBindingHint 是 generate_image 未绑定时回喂主模型的 tool result 文案。
+const chatImageBindingHint = "图片生成工具未配置：当前会话尚未绑定生图账户，无法生成图片。请直接告知用户在会话设置中绑定生图账户后重试，不要编造生成结果。"
+
+// newWebSearchTool 注册 web_search 模型工具（契约 §6.1）：参数只有搜索词——
+// 由主模型根据用户问题生成；执行经 chatToolExecutionContext.WebSearch 端口
+// （组装侧按会话绑定派发子代理，未绑定返回 chatToolBindingRequiredError）。
+func newWebSearchTool() *toolDefinition {
+	return &toolDefinition{
+		ID:          "web.search",
+		Version:     "1.0.0",
+		ModelName:   "web_search",
+		Kind:        "model",
+		Description: "联网搜索工具：针对用户问题里你不确定或有时效性要求的信息（新闻、天气、价格、版本、最新事实等），提炼一个简明的搜索词调用本工具，返回搜索结果摘要与来源 URL。回答实时性问题前应先调用；确信已知的稳定知识不必搜索。",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"query": map[string]any{"type": "string", "minLength": 1, "maxLength": 2000}},
+			"required":             []string{"query"},
+			"additionalProperties": false,
+		},
+		MaxArgumentBytes: 8 * 1024,
+		MaxResultBytes:   chatWebSearchResultMaxBytes + 1024,
+		TimeoutMs:        chatWebSearchTimeoutMs,
+		DuplicatePolicy:  "reuse_exact",
+		Execute: func(input map[string]any, context *chatToolExecutionContext) (chatToolExecutionResult, error) {
+			if context.WebSearch == nil {
+				return chatToolExecutionResult{}, &chatToolBindingRequiredError{ToolName: "web_search", UserHint: chatWebSearchBindingHint}
+			}
+			query := ""
+			if input != nil {
+				if value, ok := input["query"].(string); ok {
+					query = value
+				} else if input["query"] != nil {
+					query = fmt.Sprint(input["query"])
+				}
+			}
+			query = strings.TrimSpace(query)
+			if query == "" {
+				return chatToolExecutionResult{}, &chatInternalToolError{Code: "tool_arguments_invalid", Message: "搜索词不能为空"}
+			}
+			return context.WebSearch(query)
+		},
+	}
+}
+
+// newGenerateImageTool mirrors createGenerateImageTool. 工具体系设计 §6.2：
+// kind=model——执行依赖会话的「生图账户 + 生图模型」绑定（image_account_id +
+// default_image_model）；绑定检查在组装侧 ImageGeneration 回调完成，未绑定返回
+// chatToolBindingRequiredError（不保留旧路由派发兼容）。
 func newGenerateImageTool() *toolDefinition {
 	return &toolDefinition{
 		ID:          "image.generate",
 		Version:     "2.0.0",
 		ModelName:   "generate_image",
+		Kind:        "model",
 		Description: "根据用户需求生成图片，或使用同一会话中明确的 assetId 编辑既有图片。编辑时必须传 reference_asset_ids；无法唯一判断目标图片时先询问用户。请根据用户需求直接设置 size、quality 和 output_format；size 可用 auto 或满足 Schema 描述约束的 WIDTHxHEIGHT。未设置 size 时使用 auto，未设置 quality 时使用 auto，未设置 output_format 时使用 WebP。",
 		InputSchema: map[string]any{
 			"type": "object",
@@ -497,8 +568,9 @@ func newChatInternalToolOrchestrator(
 	}
 }
 
-// Run mirrors ChatInternalToolOrchestrator.run.
-func (o *chatInternalToolOrchestrator) Run(protocol ChatTransportProtocol, invokeModel func(round int, continuation []any) (ChatToolModelTurn, error)) (ChatToolOrchestratorResult, error) {
+// Run mirrors ChatInternalToolOrchestrator.run（主对话恒 chat_completions，
+// 续答形状不再随协议分叉）。
+func (o *chatInternalToolOrchestrator) Run(invokeModel func(round int, continuation []any) (ChatToolModelTurn, error)) (ChatToolOrchestratorResult, error) {
 	continuation := []any{}
 	var inputTokens, outputTokens *int64
 	for round := 1; ; round++ {
@@ -535,7 +607,7 @@ func (o *chatInternalToolOrchestrator) Run(protocol ChatTransportProtocol, invok
 		if err != nil {
 			return ChatToolOrchestratorResult{}, err
 		}
-		continuation = buildChatToolContinuation(protocol, turn.ContinuationItems, outputs)
+		continuation = buildChatToolContinuation(turn.ContinuationItems, outputs)
 	}
 }
 
@@ -624,6 +696,24 @@ func (o *chatInternalToolOrchestrator) executeCall(call ChatToolCall) (ChatToolE
 	}
 	result, err := definition.Execute(normalized, o.context)
 	if err != nil {
+		var bindingErr *chatToolBindingRequiredError
+		if errors.As(err, &bindingErr) {
+			// 模型工具未绑定（契约 §9）：下发 tool.binding_required 引导事件，
+			// 把 UserHint 作为明确 tool result 回喂主模型，轮次继续。
+			publicResult := map[string]any{"toolId": definition.ModelName}
+			if len(bindingErr.Candidates) > 0 {
+				publicResult["candidates"] = bindingErr.Candidates
+			}
+			o.publishEvent(ChatToolExecutionEvent{
+				Status: "binding_required", CallID: call.CallID, ToolName: definition.ModelName,
+				ErrorCode: "tool_binding_required", ErrorMessage: bindingErr.UserHint, PublicResult: publicResult,
+			})
+			failurePayload := map[string]any{"ok": false, "error": map[string]any{"code": "tool_binding_required", "message": bindingErr.UserHint}}
+			failureJSON, _ := json.Marshal(failurePayload)
+			output := ChatToolExecutionOutput{CallID: call.CallID, ToolName: definition.ModelName, ModelOutput: string(failureJSON)}
+			o.seenResults[cacheKey] = output
+			return output, true, nil
+		}
 		return ChatToolExecutionOutput{}, false, err
 	}
 	output := ChatToolExecutionOutput{CallID: call.CallID, ToolName: definition.ModelName, ModelOutput: result.ModelOutput, PublicResult: result.PublicResult}

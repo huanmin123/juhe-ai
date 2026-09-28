@@ -415,9 +415,8 @@ func TestW1HComposeChatFamilyAssemblesDeps(t *testing.T) {
 	if deps.Executor == nil || deps.AttachStream == nil {
 		t.Fatalf("executor / attach stream 未接线")
 	}
-	if deps.ToolCapabilit == nil {
-		t.Fatalf("ToolCapabilit 未接线（BUG-0175 D-201）")
-	}
+	// ToolCapabilit resolver 端口已随工具体系改造退场：toolCapabilities 由
+	// chat 包 routes.go 内聚（绑定状态聚合，契约 AI问答工具体系设计 §8）。
 	if deps.ObjectStore == nil || deps.ImageObservation == nil {
 		t.Fatalf("ObjectStore / ImageObservation 未接线")
 	}

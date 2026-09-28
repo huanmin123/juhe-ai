@@ -399,7 +399,6 @@ func toProviderModelPricing(item *rawModel, entry *providerEntry, providerCode s
 		InputModalities:           append([]string(nil), item.InputModalities...),
 		OutputModalities:          append([]string(nil), item.OutputModalities...),
 		SupportedToolsByProtocol:  CopyToolsByProtocol(item.SupportedToolsByProtocol),
-		SupportedTools:            UnionToolsByProtocol(item.SupportedToolsByProtocol),
 		SupportedServiceTiers:     supportedServiceTiers,
 		SupportedReasoningEfforts: append([]string(nil), item.SupportedReasoningEfforts...),
 		DefaultReasoningEffort:    item.DefaultReasoningEffort,

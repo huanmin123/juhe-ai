@@ -69,7 +69,8 @@ func staticPricingFor(providerCode, model string) *staticPricingSnapshot {
 //
 // SupportedToolsByProtocol 是「协议 × 工具」矩阵（AI问答工具体系与主子模型设计
 // 6.4）：键为该行协议枚举，值为该协议下可用的工具集；目录投影的一维
-// supportedTools 过渡字段由调用侧以 pricing.UnionToolsByProtocol 派生（阶段 2
+// 一维 supportedTools 过渡字段已随阶段 2 全链删除（消费方按二维矩阵读取）。
+// （原注释行：
 // 随 chat 面切换删除）。
 type BuiltInStaticDerivedCapabilities struct {
 	InputModalities                 []string

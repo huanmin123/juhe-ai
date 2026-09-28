@@ -1,17 +1,34 @@
 export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
 export type ChatImageModel = 'gpt-image-2' | 'grok-imagine-image' | 'grok-imagine-image-quality'
-export type ChatConversationToolId = 'web_search' | 'generate_image'
+export type ChatConversationToolId = 'web_search' | 'generate_image' | 'diagnostic_echo'
+export type ChatConversationToolKind = 'code' | 'model'
 
+/**
+ * 模型工具的会话级绑定候选/绑定条目（「账号 + 模型」二元组，工具体系设计 §6.3/§8.1）。
+ */
+export interface ChatToolBindingCandidate {
+  accountId: string
+  accountName: string
+  modelId: string
+  modelName: string
+}
+
+/**
+ * 单个工具的绑定状态（工具体系设计 §8.1/§8.3）：bound/binding/valid/candidates；
+ * code 工具无绑定概念（仅列出 id/kind）。valid=false 时 invalidReason 说明原因。
+ */
 export interface ChatConversationToolCapability {
   id: ChatConversationToolId
-  label: string
-  available: boolean
-  reason?: string
+  kind: ChatConversationToolKind
+  bound?: boolean
+  binding?: ChatToolBindingCandidate | null
+  valid?: boolean
+  invalidReason?: string
+  candidates?: ChatToolBindingCandidate[]
 }
 
 export interface ChatConversationToolCapabilities {
-  model?: string
   tools: ChatConversationToolCapability[]
 }
 
@@ -24,6 +41,10 @@ export interface ChatConversation {
   bindAccountName?: string
   /** 存量旧模式（api_key/group）会话的一次性迁移只读标记；true 时发送入口禁用。 */
   archived: boolean
+  /** 模型工具的会话级绑定列（空 = 未绑定，工具体系设计 §7）。 */
+  searchAccountId?: string
+  searchModelId?: string
+  imageAccountId?: string
   defaultModel?: ChatModelListOption
   title: string
   isPinned: boolean
@@ -181,7 +202,8 @@ export interface ChatModelCapabilities {
   supportedApiProtocols: string[]
   inputModalities: string[]
   outputModalities: string[]
-  supportedTools: string[]
+  /** 「协议 × 工具」矩阵（工具体系设计 6.4）：键为协议枚举，值为该协议下可用工具集。一维 supportedTools 已退场。 */
+  supportedToolsByProtocol: Record<string, string[]>
   generationParameters: ChatGenerationParameterCapability[]
 }
 
@@ -191,6 +213,7 @@ export type ChatStreamEvent =
   | { type: 'message.delta'; data: { messageId: string; delta: string; eventVersion: number } }
   | { type: 'reasoning.delta'; data: { messageId: string; delta: string; eventVersion: number } }
   | { type: 'tool.started' | 'tool.updated' | 'tool.completed' | 'tool.failed' | 'tool.canceled'; data: { messageId: string; item: Record<string, unknown>; eventVersion: number } }
+  | { type: 'tool.binding_required'; data: { messageId: string; item: { callId?: string; toolId: string; candidates?: ChatToolBindingCandidate[]; [key: string]: unknown }; eventVersion: number } }
   | { type: 'content_block.started'; data: { messageId: string; block: ChatMessageContentBlock; eventVersion: number } }
   | { type: 'content_block.delta'; data: { messageId: string; blockId: string; delta: string; eventVersion: number } }
   | { type: 'content_block.updated'; data: { messageId: string; blockId: string; patch: Partial<ChatMessageContentBlock>; eventVersion: number } }

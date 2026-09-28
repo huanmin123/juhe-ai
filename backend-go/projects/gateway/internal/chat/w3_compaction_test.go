@@ -85,22 +85,14 @@ func TestPassiveDelayISOW3(t *testing.T) {
 	}
 }
 
-// TestExtractCompactionResponseTextW3 覆盖两种协议的响应文本提取。
+// TestExtractCompactionResponseTextW3 覆盖恒 chat 的响应文本提取。
 func TestExtractCompactionResponseTextW3(t *testing.T) {
 	chatPayload := map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "  {\"a\":1}  "}}}}
-	if got := extractCompactionResponseText(chatPayload, ProtocolChatCompletions); got != `{"a":1}` {
+	if got := extractCompactionResponseText(chatPayload); got != `{"a":1}` {
 		t.Fatalf("chat 提取失败: %q", got)
 	}
-	if got := extractCompactionResponseText(map[string]any{}, ProtocolChatCompletions); got != "" {
+	if got := extractCompactionResponseText(map[string]any{}); got != "" {
 		t.Fatalf("chat 空载荷应为空: %q", got)
-	}
-	responsesPayload := map[string]any{"output_text": "直接文本"}
-	if got := extractCompactionResponseText(responsesPayload, ProtocolResponses); got != "直接文本" {
-		t.Fatalf("responses output_text 提取失败: %q", got)
-	}
-	structured := map[string]any{"output": []any{map[string]any{"content": []any{map[string]any{"text": "第一段"}, map[string]any{}, map[string]any{"text": "第二段"}}}}}
-	if got := extractCompactionResponseText(structured, ProtocolResponses); got != "第一段\n第二段" {
-		t.Fatalf("responses 结构化提取失败: %q", got)
 	}
 }
 
