@@ -181,6 +181,25 @@ func TestFindProviderModelPricingCacheReadMultipliers(t *testing.T) {
 			t.Fatalf("glm %s chat_completions tools = %v, want [function_calling] (BUG-0231)", model.Model, model.SupportedToolsByProtocol)
 		}
 	}
+
+	// BUG-0231 盘点扩展：openai 家全部 chat 模式行必须声明 function_calling
+	//（image/embedding 模式不注入工具，口径内不声明）。
+	for _, model := range openAIModelPricingData {
+		if model.Mode != "" && model.Mode != "chat" {
+			continue
+		}
+		declared := false
+		for _, tools := range model.SupportedToolsByProtocol {
+			for _, tool := range tools {
+				if tool == "function_calling" {
+					declared = true
+				}
+			}
+		}
+		if !declared {
+			t.Fatalf("openai %s tools = %v, chat 行缺 function_calling (BUG-0231)", model.Model, model.SupportedToolsByProtocol)
+		}
+	}
 }
 
 // TestFindRawProviderModelPricingDuplicateNameShutdownGivesUpLayer pins the

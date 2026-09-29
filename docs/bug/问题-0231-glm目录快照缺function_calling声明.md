@@ -42,3 +42,17 @@
 - `pricing_golden_test.go` 补 glm 断言（glm-5.3-flash 矩阵 chat_completions=[function_calling]）。
 - 能力数据经代码内静态快照读取链派生（BUG-0210/0229 同款边界），发布新 gateway 即全量生效，无需刷库；Redis 目录共享缓存此前已实证为空。
 - 契约依据：`docs/functions/AI问答工具体系与主子模型设计.md` §6.4（静态快照升级口径），无需契约变更。
+
+## 全供应商盘点（2026-09-29，用户指令「其他供应商也需要看看」）
+
+| 供应商 | 覆盖 | 结论 |
+| --- | --- | --- |
+| deepseek | 3/3 chat 行声明 | ✓ 无缺口 |
+| glm | 16/16（本修复） | ✓ |
+| anthropic | 构造器统一声明 `messages:[function_calling, code_execution]` | ✓ |
+| gemini | 文本模型 9/9 传 supportedTools；缺的 1 个是 embedding 模型（不注入工具，口径内） | ✓ |
+| xai | 文本构造器统一声明；image 模型（grok-imagine 系）不声明（口径内） | ✓ |
+| openai | 45/60 声明；**缺 8 个旧 chat 模型**：gpt-4-turbo、gpt-4-turbo-2024-04-09、gpt-4-1106-preview、gpt-4、gpt-4-0613、gpt-3.5-turbo、gpt-3.5-turbo-0125、gpt-3.5-turbo-1106（官方均支持 function calling）；其余 7 个缺口为 gpt-image 系 image 模式（口径内） | **同批补齐**（8 行按各自 SupportedAPIProtocols 声明 function_calling，responses 协议下同仅 function_calling——旧模型无 hosted 搜索） |
+
+- golden test 同步升级：glm 全系 + openai 全部 chat 模式行「必须声明 function_calling」断言（image/embedding 模式豁免），防止回归。
+- 口径口径化：**chat 模式行必须声明 function_calling；image/embedding/audio 等非对话模式不声明**——本断言已固化在 golden test。
