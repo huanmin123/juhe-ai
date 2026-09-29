@@ -38,12 +38,12 @@
 -> 成功、当前候选失败、同账号重试、切号、切组或客户端交接
 ```
 
-代码证据：
+代码证据（以下为 Node 时代路径锚点，源码已随 Node 归档至 `migration-backup/node/final-archive/`，现行实现在 `backend-go/projects/gateway`；链接已降级为纯文本）：
 
-- 请求预检建立 `ServerRetryBudget`、`GatewayRequestWallBudget` 和请求尝试跟踪器：[backend/src/modules/gateway/request/preflight.ts](../../backend/src/modules/gateway/request/preflight.ts:399)。
-- 主循环先检查墙钟，再构造当前轮次账号集合；无候选时才考虑后备分组：[backend/src/modules/gateway/routes.ts](../../backend/src/modules/gateway/routes.ts:765)。
-- 每轮调用 `fetchFirstAvailableUpstream`，并传递同一请求的墙钟、等待预算、尝试去重和语义重试上下文：[backend/src/modules/gateway/routes.ts](../../backend/src/modules/gateway/routes.ts:1005)。
-- 单候选 attempt 前依次执行账号电路、运行态抑制、代理和并发槽检查：[backend/src/modules/gateway/dispatch/upstream-dispatch.ts](../../backend/src/modules/gateway/dispatch/upstream-dispatch.ts:449)。
+- 请求预检建立 `ServerRetryBudget`、`GatewayRequestWallBudget` 和请求尝试跟踪器：`backend/src/modules/gateway/request/preflight.ts`。
+- 主循环先检查墙钟，再构造当前轮次账号集合；无候选时才考虑后备分组：`backend/src/modules/gateway/routes.ts`。
+- 每轮调用 `fetchFirstAvailableUpstream`，并传递同一请求的墙钟、等待预算、尝试去重和语义重试上下文：`backend/src/modules/gateway/routes.ts`。
+- 单候选 attempt 前依次执行账号电路、运行态抑制、代理和并发槽检查：`backend/src/modules/gateway/dispatch/upstream-dispatch.ts`。
 
 ### 2.2 当前的超级优先不是锁死
 

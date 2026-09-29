@@ -1073,9 +1073,14 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 		return err
 	}
 	desiredState := state
+	// lastErr/lastStatus 保留最后一次底层错误与 CAS 结果：耗尽路径原先返回
+	// 固定文案导致生产 6442 条失败无法定性（锁/冲突/约束不可区分）。
+	var lastErr error
+	lastStatus := ""
 	for attempt := int64(1); attempt <= b.maxPersistAttempts; attempt++ {
 		refreshed, err := b.refreshDesiredState(ctx, scope, desiredState)
 		if err != nil {
+			lastErr = err
 			if attempt == b.maxPersistAttempts {
 				break
 			}
@@ -1114,6 +1119,7 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 		}
 		persisted, err := b.persistIncident(ctx, persistInput)
 		if err != nil {
+			lastErr = err
 			if attempt == b.maxPersistAttempts {
 				break
 			}
@@ -1123,6 +1129,7 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 			delay = int64Min(delay*2, 30_000)
 			continue
 		}
+		lastStatus = persisted.Status
 		// Physical account cleanup is a terminal outcome for late runtime
 		// observations; do not retain a pending item, do not record
 		// dispatch/ledger revisions and do not schedule retries.（对齐归档热修
@@ -1145,6 +1152,7 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 			if persisted.Incident != nil {
 				runtimeState, err := b.refreshDesiredState(ctx, scope, desiredState)
 				if err != nil {
+					lastErr = err
 					if attempt == b.maxPersistAttempts {
 						break
 					}
@@ -1161,11 +1169,12 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 					return nil
 				}
 				if incidentIsNewerThanRuntimeState(persisted.Incident, *runtimeState) {
-					restored, err := b.store.Restore(ctx, IncidentToRuntimeState(*persisted.Incident, incidentScopeKeyMapFromRuntimeState(*runtimeState)), int64Ptr(b.now()))
-					if err != nil {
-						if attempt == b.maxPersistAttempts {
-							break
-						}
+				restored, err := b.store.Restore(ctx, IncidentToRuntimeState(*persisted.Incident, incidentScopeKeyMapFromRuntimeState(*runtimeState)), int64Ptr(b.now()))
+				if err != nil {
+					lastErr = err
+					if attempt == b.maxPersistAttempts {
+						break
+					}
 						if sleepErr := b.sleep(ctx, msToDuration(delay)); sleepErr != nil {
 							return sleepErr
 						}
@@ -1195,7 +1204,10 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 		}
 		return nil
 	}
-	return errors.New("账户 circuit control-plane 持久化重试耗尽")
+	if lastErr != nil {
+		return fmt.Errorf("账户 circuit control-plane 持久化重试耗尽（最后错误：%w）", lastErr)
+	}
+	return fmt.Errorf("账户 circuit control-plane 持久化重试耗尽（最后状态：%s）", lastStatus)
 }
 
 func buildPersistIncidentInput(

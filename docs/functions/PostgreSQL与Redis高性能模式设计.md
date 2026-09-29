@@ -1,6 +1,6 @@
 # PostgreSQL 与 Redis 高性能模式设计
 
-> 本文定义当前 Node 过渡阶段从默认 SQLite + 内存缓存扩展到 PostgreSQL + Redis 高性能模式的边界。执行计划见 [PLAN-20260626T000630000Z PostgreSQL 与 Redis 高性能模式](../plans/计划-20260626T000630000Z-PostgreSQL与Redis高性能模式.md)。
+> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`）。文中“当前 Node 过渡阶段”的 standalone / performance、DB service、Redis Streams 等拓扑叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权。执行计划见 [PLAN-20260626T000630000Z PostgreSQL 与 Redis 高性能模式](../plans/计划-20260626T000630000Z-PostgreSQL与Redis高性能模式.md)。
 > 数据库、缓存、运行态和队列的业务语义适配边界见 [存储适配接口设计](存储适配接口设计.md)。
 > 统计准确性、读写资源隔离、Redis 清理和压测验收的细化规则见 [可靠统计与读写资源隔离设计](可靠统计与读写资源隔离设计.md)。
 > 管理后台页面 revision、字段投影、统一确认、IndexedDB 和最近登录用户预热见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。

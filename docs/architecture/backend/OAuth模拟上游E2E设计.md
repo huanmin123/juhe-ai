@@ -1,5 +1,7 @@
 # OAuth 模拟上游 E2E 设计
 
+> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`）。文中“为 Node 后端提供 OAuth 模拟上游”、`backend/src/scripts/regression/` 落点等叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权。
+
 ## 1. 目标
 
 为 Node 后端提供一个进程内、本地监听、每次独立启动的 OAuth 模拟上游，用于稳定验证 OpenAI、Anthropic、Gemini 和 Grok 的授权码交换、Refresh Token 刷新、错误响应、凭据归一化与首次上游请求准备。

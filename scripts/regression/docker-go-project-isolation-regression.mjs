@@ -4,125 +4,44 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
-// X01/X03 go-only 收口：standalone compose.yml 是 go-only 拓扑（gateway 主入口
-// + jobs，无 Node 容器、无 network_mode: service:<Node>）；performance 仍是
-// hybrid 遗留形态（juhe-ai + go-gateway + go-jobs，go-only 变体为 X03 待办）。
-const standaloneSource = readFileSync(resolve(root, 'docker', 'compose.yml'), 'utf8').replaceAll('\r\n', '\n')
-const performanceSource = readFileSync(resolve(root, 'docker', 'compose.performance.yml'), 'utf8').replaceAll('\r\n', '\n')
+// 现行唯一 Compose 形态是 docker/single-server/compose.yml（go-only：gateway
+// 主入口 + jobs，无 Node 容器、无 network_mode: service:<Node>）；镜像经
+// Dockerfile.runtime 从交叉编译二进制构建，各服务以 TARGET_BINARY 选定项目，
+// 密钥与连接串统一经同目录 .env 注入，不再在 Compose 里逐项展开。
+const composeSource = readFileSync(resolve(root, 'docker', 'single-server', 'compose.yml'), 'utf8').replaceAll('\r\n', '\n')
 const projectDockerfile = readFileSync(resolve(root, 'docker', 'Dockerfile.go-project'), 'utf8').replaceAll('\r\n', '\n')
 
 // 2026-09-19 零配置收口：7 个 worker 任务族开关与 6 个 retention 子开关已删除、
-// 任务恒开，Compose 不得再向任何服务注入这些 env。
-const removedJobFamilySwitchNames = [
+// 任务恒开，Compose 不得再向任何服务注入这些 env；J1 与 worker 主开关同理。
+const removedEnvSwitchNames = [
   'JUHE_AI_JOBS_STATS_ENABLED', 'JUHE_AI_JOBS_OAUTH_ENABLED', 'JUHE_AI_JOBS_TASK_RUNS_ENABLED',
   'JUHE_AI_JOBS_USAGE_WRITER_ENABLED', 'JUHE_AI_JOBS_BALANCE_DETECT_ENABLED',
   'JUHE_AI_JOBS_RETENTION_ENABLED', 'JUHE_AI_JOBS_PROBE_ENABLED',
   'JUHE_AI_JOBS_RETENTION_CHAT_ENABLED', 'JUHE_AI_JOBS_RETENTION_DATA_ENABLED',
   'JUHE_AI_JOBS_RETENTION_RECORD_MAINTENANCE_ENABLED', 'JUHE_AI_JOBS_RETENTION_EXPIRED_ACCOUNT_ENABLED',
-  'JUHE_AI_JOBS_RETENTION_API_KEY_RETRY_ENABLED', 'JUHE_AI_JOBS_RETENTION_ACCOUNT_RETRY_ENABLED'
+  'JUHE_AI_JOBS_RETENTION_API_KEY_RETRY_ENABLED', 'JUHE_AI_JOBS_RETENTION_ACCOUNT_RETRY_ENABLED',
+  'JUHE_AI_ACCOUNT_HEALTH_ENABLED', 'JUHE_AI_JOBS_WORKER_ENABLED'
 ]
-for (const [label, source] of [['standalone', standaloneSource], ['performance', performanceSource]]) {
-  for (const name of removedJobFamilySwitchNames) {
-    assert.doesNotMatch(source, new RegExp(`${name}:`, 'u'), `${label} compose must not inject the removed job family switch ${name}`)
-  }
+for (const name of removedEnvSwitchNames) {
+  assert.doesNotMatch(composeSource, new RegExp(`${name}:`, 'u'), `single-server compose must not inject the removed job family switch ${name}`)
 }
 
-// ---- standalone：go-only 终态 ----
+// ---- single-server：go-only 终态 ----
 {
-  const mode = 'standalone'
-  const gateway = serviceBlock(standaloneSource, 'gateway')
-  const jobs = serviceBlock(standaloneSource, 'jobs')
-  assert.doesNotMatch(standaloneSource, /^  juhe-ai:\n/mu, 'standalone compose must not keep a Node service')
-  assert.doesNotMatch(standaloneSource, /network_mode:\s*service:juhe-ai/u, 'standalone compose must not share the retired Node loopback namespace')
-  assert.match(standaloneSource, /^volumes:/mu, 'standalone compose must declare named volumes')
+  const mode = 'single-server'
+  const gateway = serviceBlock(composeSource, 'gateway')
+  const jobs = serviceBlock(composeSource, 'jobs')
+  assert.doesNotMatch(composeSource, /^  juhe-ai:\n/mu, 'single-server compose must not keep a Node service')
+  assert.doesNotMatch(composeSource, /network_mode:\s*service:juhe-ai/u, 'single-server compose must not share the retired Node loopback namespace')
+  assert.match(composeSource, /^volumes:/mu, 'single-server compose must declare named volumes')
 
   assertProjectContract(gateway, 'gateway', mode)
-  // 2026-09-19 零配置语义：gateway 主入口与网关链开关缺省即开（显式 false 可
-  // 关），Compose 以 :-true 透传保持显式覆盖能力。
-  assert.match(gateway, /JUHE_AI_GATEWAY_SYSTEM_API_ENABLED: \$\{JUHE_AI_GATEWAY_SYSTEM_API_ENABLED:-true\}/u, 'standalone gateway must own the main HTTP entry by default')
-  assert.match(gateway, /JUHE_AI_GATEWAY_CHAIN_ENABLED: \$\{JUHE_AI_GATEWAY_CHAIN_ENABLED:-true\}/u, 'standalone gateway must expose the chain gate to the Go runtime')
-  for (const name of [
-    'JUHE_AI_BUSINESS_OWNER', 'JUHE_AI_BUSINESS_HANDOFF_CONFIRMED',
-    'JUHE_AI_BUSINESS_NODE_WRITER_STOPPED', 'JUHE_AI_BUSINESS_SCHEMA_READY',
-    'JUHE_AI_BUSINESS_OWNER_EPOCH', 'JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH',
-    'JUHE_AI_BUSINESS_DATABASE_PATH', 'JUHE_AI_BUSINESS_POSTGRES_URL'
-  ]) {
-    assert.match(gateway, new RegExp(`${name}:`, 'u'), `standalone gateway must receive ${name}`)
-  }
-  assert.match(gateway, /ports:/u, 'standalone gateway must publish the public HTTP port')
-  // 2026-09-19 零配置语义：F3/F4 INSTANCE_ID 缺省主机名，Compose 透传显式值即可。
-  assert.match(gateway, /JUHE_AI_AUDIT_LOG_INSTANCE_ID: \$\{JUHE_AI_AUDIT_LOG_INSTANCE_ID:-\}/u, 'standalone gateway must own F3')
-  assert.match(gateway, /JUHE_AI_OPERATION_LOG_INSTANCE_ID: \$\{JUHE_AI_OPERATION_LOG_INSTANCE_ID:-\}/u, 'standalone gateway must own F4')
-  assert.match(gateway, /JUHE_AI_FRONTEND_DIST_PATH: \$\{JUHE_AI_FRONTEND_DIST_PATH:-\/app\/frontend\/dist\}/u, 'standalone gateway must point at the packaged management SPA')
-  assert.match(gateway, /JUHE_AI_SECRET: \$\{JUHE_AI_SECRET:\?JUHE_AI_SECRET is required\}/u, 'standalone gateway must reject a missing shared runtime secret before startup')
-  assert.doesNotMatch(gateway, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:|JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, 'standalone gateway must not receive F1/F2 ownership')
-  assert.match(gateway, /JUHE_AI_RUNTIME_LOG_DATABASE_PATH:/u, 'standalone gateway must receive the F1 source path for F3/F4 SQLite isolation checks')
-  assert.match(gateway, /JUHE_AI_TABLE_MONITOR_DATABASE_PATH:/u, 'standalone gateway must receive the F2 source path for F3/F4 SQLite isolation checks')
-  assert.match(gateway, /juhe-ai-runtime-log-data:\/app\/backend\/runtime-log-data:ro/u, 'standalone gateway must mount the F1 source read-only')
-  assert.match(gateway, /juhe-ai-table-monitor-data:\/app\/backend\/table-monitor-data:ro/u, 'standalone gateway must mount the F2 source read-only')
-  // go-only 卷语义：gateway 是业务库唯一 writer，业务卷不能只读。
-  assert.match(gateway, /- juhe-ai-data:\/app\/backend\/data\s*$/mu, 'standalone gateway must own the business database volume read-write')
-
   assertProjectContract(jobs, 'jobs', mode)
-  assert.match(jobs, /depends_on:\s*\n\s+gateway:\s*\n\s+condition:\s+service_healthy/u, 'standalone jobs must start after the gateway is healthy')
-  // 2026-09-19 零配置语义：F1/F2 INSTANCE_ID 缺省主机名，Compose 透传显式值即可。
-  assert.match(jobs, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID: \$\{JUHE_AI_RUNTIME_LOG_INSTANCE_ID:-\}/u, 'standalone jobs must own F1')
-  assert.match(jobs, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID: \$\{JUHE_AI_TABLE_MONITOR_INSTANCE_ID:-\}/u, 'standalone jobs must own F2')
-  // 2026-09-19 起 J1 无 ENABLED 开关、强制常开：Compose 不得再注入该开关；
-  // 签名 key 未配置时由 Go 侧自动生成并持久化，不得再写 :? 硬必填。
-  assert.doesNotMatch(jobs, /JUHE_AI_ACCOUNT_HEALTH_ENABLED:/u, 'standalone jobs must not receive the removed J1 ENABLED switch (J1 runs always-on)')
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: \$\{JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY:-\}/u, 'standalone jobs must pass the J1 signing key through (Go auto-generates when unset)')
-  assert.doesNotMatch(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: \$\{JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY:\?/u, 'standalone jobs must not hard-require the auto-generated J1 signing key')
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:/u, 'standalone jobs must receive the J1 owner declaration')
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, 'standalone jobs must receive the J1 signed-request directory')
-  assert.match(jobs, /juhe-ai-account-health-data:\/app\/backend\/account-health-data\s*$/mu, 'standalone jobs must own the J1 SQLite store volume')
-  assert.match(jobs, /juhe-ai-account-health-inputs:\/app\/backend\/account-health-inputs\s*$/mu, 'standalone jobs must consume J1 signed requests from the shared directory')
-  // Health-probe outbox rows are consumed/deleted by jobs, so the shared
-  // SQLite business volume must be writable by both Go owners.
-  assert.match(jobs, /- juhe-ai-data:\/app\/backend\/data\s*$/mu, 'standalone jobs must write the health-probe outbox on the business volume')
-  assert.doesNotMatch(jobs, /JUHE_AI_JOBS_WORKER_ENABLED:/u, 'standalone jobs must not receive the removed worker master switch (worker family runs always-on)')
-  for (const name of [
-    'JUHE_AI_SECRET', 'JUHE_AI_TASK_RUNS_DATABASE_PATH', 'JUHE_AI_CHAT_DATABASE_PATH',
-    'JUHE_AI_USAGE_SHARD_ROOT', 'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT',
-    'JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT', 'JUHE_AI_CHAT_ASSETS_ROOT',
-    'JUHE_AI_CODEX_CONTEXT_ROOT'
-  ]) {
-    assert.match(jobs, new RegExp(`${name}:`, 'u'), `standalone worker must receive ${name}`)
-  }
-  assert.doesNotMatch(jobs, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:|JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, 'standalone jobs must not receive F3/F4 ownership')
-}
-
-// ---- performance：hybrid 遗留形态（未收口，X03 待办） ----
-{
-  const mode = 'performance'
-  const node = serviceBlock(performanceSource, 'juhe-ai')
-  const gateway = serviceBlock(performanceSource, 'go-gateway')
-  const jobs = serviceBlock(performanceSource, 'go-jobs')
-  assertProjectContractLegacy(gateway, 'gateway', mode)
-  assertProjectContractLegacy(jobs, 'jobs', mode)
-  assert.match(gateway, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:/u, `${mode} gateway must own F3`)
-  assert.match(gateway, /JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, `${mode} gateway must own F4`)
-  assert.doesNotMatch(gateway, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:|JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, `${mode} gateway must not receive F1/F2 ownership`)
-  assert.match(jobs, /JUHE_AI_RUNTIME_LOG_INSTANCE_ID:/u, `${mode} jobs must own F1`)
-  assert.match(jobs, /JUHE_AI_TABLE_MONITOR_INSTANCE_ID:/u, `${mode} jobs must own F2`)
-  assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER: \$\{JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:-go\}/u, `${mode} Node must start with the fixed Go J1 owner`)
-  assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, `${mode} Node must receive the J1 signed-request directory`)
-  // 2026-09-19 起 J1 无 ENABLED 开关、强制常开：Compose 不得再注入该开关；
-  // 签名 key 未配置时由 Go 侧自动生成并持久化，不得再写 :? 硬必填。
-  assert.doesNotMatch(jobs, /JUHE_AI_ACCOUNT_HEALTH_ENABLED:/u, `${mode} jobs must not receive the removed J1 ENABLED switch (J1 runs always-on)`)
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: \$\{JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY:-\}/u, `${mode} jobs must pass the J1 signing key through (Go auto-generates when unset)`)
-  assert.doesNotMatch(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY: \$\{JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY:\?/u, `${mode} jobs must not hard-require the auto-generated J1 signing key`)
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER:/u, `${mode} jobs must receive the J1 owner declaration`)
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY:/u, `${mode} jobs must receive the J1 signed-request directory`)
-  assert.doesNotMatch(jobs, /JUHE_AI_AUDIT_LOG_INSTANCE_ID:|JUHE_AI_OPERATION_LOG_INSTANCE_ID:/u, `${mode} jobs must not receive F3/F4 ownership`)
-  // 去跨进程战役第四刀：F3/F4 loopback input URL 随监听器删除，Compose 不
-  // 得再向任何服务注入该 env（不得存在）。
-  assert.doesNotMatch(node, /JUHE_AI_AUDIT_LOG_INPUT_URL:|JUHE_AI_OPERATION_LOG_INPUT_URL:/u, `${mode} Node must not receive the deleted F3/F4 loopback input URLs`)
-  assert.match(node, /JUHE_AI_ACCOUNT_HEALTH_JOBS_OUTCOME_POSTGRES_URL:/u, 'performance Node must receive the J1 jobs outcome read URL')
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_STORE: \$\{JUHE_AI_ACCOUNT_HEALTH_STORE:-postgres\}/u, 'performance jobs must default J1 store to PostgreSQL')
-  assert.match(jobs, /JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE: \$\{JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE:-postgres\}/u, 'performance jobs must default J1 input to read-only PostgreSQL')
-  assert.match(node, /juhe-ai-account-health-inputs:\/app\/backend\/account-health-inputs\s*$/mu, 'performance Node must share the J1 signed-request directory')
-  assert.match(jobs, /juhe-ai-account-health-inputs:\/app\/backend\/account-health-inputs\s*$/mu, 'performance jobs must consume J1 signed requests from the shared directory')
+  // 跨进程交接契约：usage spool、chat-assets、codex context shard 等文件数据按
+  // 进程 cwd 相对路径派生，gateway 与 jobs 必须挂载同源 bind mount 才能完成
+  // 用量交接（单机形态以共享宿主目录替代旧 named volume 语义）。
+  assert.match(gateway, /- \.\/data\/app\/data:\/app\/backend\/data\s*$/mu, 'single-server gateway must mount the shared app data directory')
+  assert.match(jobs, /- \.\/data\/app\/data:\/app\/backend\/data\s*$/mu, 'single-server jobs must mount the same shared app data directory (usage spool handoff)')
 }
 
 assert.match(projectDockerfile, /GO_PROJECT/u, 'Go project Dockerfile must select one project at build time')
@@ -143,16 +62,11 @@ function serviceBlock(source, name) {
   return next === -1 ? remaining : remaining.slice(0, header.length + next)
 }
 
+// single-server 形态的项目契约：两个 Go 服务各自经 Dockerfile.runtime +
+// TARGET_BINARY 构建独立项目二进制（源码构建形态的 Dockerfile.go-project
+// 契约另行断言），并各自暴露容器健康检查。
 function assertProjectContract(service, project, mode) {
-  assert.match(service, /dockerfile:\s+docker\/Dockerfile\.go-project/u, `${mode} ${project} must use the generic Go project Dockerfile`)
-  assert.match(service, new RegExp(`GO_PROJECT:\\s+${project}`, 'u'), `${mode} ${project} build must select its module`)
-  assert.match(service, /juhe-ai-go-project-healthcheck/u, `${mode} ${project} must expose project health`)
-}
-
-// performance 仍处于 hybrid 遗留形态：两个 Go 服务共享 Node 的 loopback
-// network namespace（F3/F4 input listener 只绑 loopback）。go-only 变体落地时
-// 应改为 standalone 的 assertProjectContract 契约。
-function assertProjectContractLegacy(service, project, mode) {
-  assertProjectContract(service, project, mode)
-  assert.match(service, /^\s+network_mode:\s+service:juhe-ai\s*$/mu, `${mode} ${project} must share the Node loopback namespace during this migration`)
+  assert.match(service, /dockerfile:\s+Dockerfile\.runtime/u, `${mode} ${project} must build from the runtime image Dockerfile`)
+  assert.match(service, new RegExp(`TARGET_BINARY:\\s+juhe-ai-${project}`, 'u'), `${mode} ${project} build must select its project binary`)
+  assert.match(service, /healthcheck:/u, `${mode} ${project} must expose project health`)
 }

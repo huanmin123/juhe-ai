@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="772" viewBox="0 0 1280 772" role="img" aria-label="juhe-ai 调度引擎全景图">
+  <title>juhe-ai 调度引擎：一次请求的完整决策链</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#C2410C"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16A34A"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#DC2626"/>
+    </marker>
+  </defs>
+
+  <g font-family="ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+
+  <rect x="0.5" y="0.5" width="1279" height="771" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+
+  <text x="48" y="56" font-size="26" font-weight="700" fill="#0F172A">juhe-ai 调度引擎</text>
+  <text x="48" y="82" font-size="14" fill="#475569">一次请求的完整决策链 —— 12 类实时信号 · 语义提交边界 · 后台自愈闭环</text>
+  <rect x="1006" y="34" width="226" height="30" rx="15" fill="#EFF6FF" stroke="#BFDBFE"/>
+  <text x="1119" y="54" font-size="13" font-weight="600" fill="#1D4ED8" text-anchor="middle">不是轮询，是一台状态机</text>
+
+  <!-- Layer 1: signals -->
+  <rect x="40" y="104" width="1200" height="152" rx="14" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="60" y="130" font-size="13" font-weight="700" fill="#334155">每请求实时读取的调度信号</text>
+
+  <g text-anchor="middle">
+    <g font-size="13" font-weight="600" fill="#1E40AF">
+      <rect x="60"  y="142" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="151" y="161">账号状态</text>
+      <rect x="258" y="142" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="349" y="161">冷却窗口</text>
+      <rect x="456" y="142" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="547" y="161">并发占用</text>
+      <rect x="654" y="142" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="745" y="161">短窗口热质量</text>
+      <rect x="852" y="142" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="943" y="161">会话亲和</text>
+      <rect x="1050" y="142" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="1141" y="161">优先级</text>
+      <rect x="60"  y="196" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="151" y="215">时间计划</text>
+      <rect x="258" y="196" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="349" y="215">到期与额度</text>
+      <rect x="456" y="196" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="547" y="215">模型能力</text>
+      <rect x="654" y="196" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="745" y="215">错误处理策略</text>
+      <rect x="852" y="196" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="943" y="215">成本与价格</text>
+      <rect x="1050" y="196" width="182" height="46" rx="12" fill="#EFF6FF" stroke="#BFDBFE"/><text x="1141" y="215">来源保护</text>
+    </g>
+    <g font-size="11" fill="#64748B">
+      <text x="151" y="179">六状态硬边界，异常即出局</text>
+      <text x="349" y="179">系统自动 + 用户显式双通道</text>
+      <text x="547" y="179">并发槽 · 软并发 · 分组排队</text>
+      <text x="745" y="179">质量缓存 · 首字慢观察</text>
+      <text x="943" y="179">只加权排序，不越过边界</text>
+      <text x="1141" y="179">普通 · 超级优先 · 降级备用</text>
+      <text x="151" y="233">账号可用时段窗口</text>
+      <text x="349" y="233">Key · 授权 · 套餐到期</text>
+      <text x="547" y="233">支持模型 · 映射 · 协议桥接</text>
+      <text x="745" y="233">账户级副作用白名单规则</text>
+      <text x="943" y="233">成本优先 · 在途成本预占</text>
+      <text x="1141" y="233">IP 级账号回避 · 错误熔断</text>
+    </g>
+  </g>
+
+  <!-- Layer 2: decision main chain -->
+  <rect x="40" y="276" width="1200" height="246" rx="14" fill="#FFFBEB" stroke="#FDE68A"/>
+  <text x="60" y="302" font-size="13" font-weight="700" fill="#92400E">网关决策主链（juhe-ai-gateway）</text>
+
+  <g text-anchor="middle">
+    <rect x="70" y="318" width="150" height="88" rx="10" fill="#1D4ED8"/>
+    <text x="145" y="348" font-size="14" font-weight="700" fill="#FFFFFF">请求 + 本地 API Key</text>
+    <text x="145" y="374" font-size="11" fill="#BFDBFE">客户端只配一次</text>
+
+    <rect x="260" y="318" width="170" height="88" rx="10" fill="#FFF7ED" stroke="#FDBA74"/>
+    <text x="345" y="346" font-size="14" font-weight="700" fill="#C2410C">认证 · 额度 · 限流</text>
+    <text x="345" y="370" font-size="11" fill="#9A3412">Key 额度快照</text>
+    <text x="345" y="388" font-size="11" fill="#9A3412">请求预算 · 用户级限流</text>
+
+    <rect x="470" y="318" width="210" height="88" rx="10" fill="#FFF7ED" stroke="#FDBA74"/>
+    <text x="575" y="344" font-size="14" font-weight="700" fill="#C2410C">路由策略选组</text>
+    <text x="575" y="366" font-size="11" fill="#9A3412">普通 · 权重 · 故障回退 · 轮询 · 合并</text>
+    <text x="575" y="386" font-size="11" fill="#9A3412">成本优先 / 速度优先偏好</text>
+
+    <rect x="720" y="318" width="250" height="88" rx="10" fill="#FFF7ED" stroke="#F59E0B" stroke-width="2.5"/>
+    <text x="845" y="344" font-size="15" font-weight="700" fill="#C2410C">组内多因子排序</text>
+    <text x="845" y="366" font-size="11" fill="#9A3412">12 类信号加权 · 并发槽预占</text>
+    <text x="845" y="386" font-size="11" fill="#9A3412">会话亲和加权 · 降级备用垫底</text>
+
+    <rect x="1010" y="318" width="170" height="88" rx="10" fill="#FFF7ED" stroke="#FDBA74"/>
+    <text x="1095" y="346" font-size="14" font-weight="700" fill="#C2410C">派发上游</text>
+    <text x="1095" y="370" font-size="11" fill="#9A3412">协议适配 · 代理</text>
+    <text x="1095" y="388" font-size="11" fill="#9A3412">跨协议桥接 · 账户内 Key 轮换</text>
+  </g>
+
+  <g stroke="#C2410C" stroke-width="1.6" fill="none">
+    <line x1="222" y1="362" x2="256" y2="362" marker-end="url(#arrowOrange)"/>
+    <line x1="432" y1="362" x2="466" y2="362" marker-end="url(#arrowOrange)"/>
+    <line x1="682" y1="362" x2="716" y2="362" marker-end="url(#arrowOrange)"/>
+    <line x1="972" y1="362" x2="1006" y2="362" marker-end="url(#arrowOrange)"/>
+  </g>
+
+  <text x="1095" y="422" font-size="11" font-weight="600" fill="#92400E" text-anchor="middle">是否已交付可见输出？</text>
+  <path d="M 1095 406 L 1040 436" stroke="#DC2626" stroke-width="1.6" fill="none" marker-end="url(#arrowRed)"/>
+  <path d="M 1095 406 C 950 428, 800 428, 712 436" stroke="#16A34A" stroke-width="1.6" fill="none" marker-end="url(#arrowGreen)"/>
+
+  <rect x="560" y="436" width="300" height="58" rx="10" fill="#ECFDF5" stroke="#34D399"/>
+  <text x="710" y="458" font-size="13" font-weight="700" fill="#047857" text-anchor="middle">未交付可见输出 → 预算内有界换号</text>
+  <text x="710" y="478" font-size="11" fill="#059669" text-anchor="middle">端点 · 墙钟 · attempt 预算内扫描后续候选</text>
+
+  <rect x="890" y="436" width="300" height="58" rx="10" fill="#FEF2F2" stroke="#FCA5A5"/>
+  <text x="1040" y="458" font-size="13" font-weight="700" fill="#B91C1C" text-anchor="middle">已交付可见输出 → 绝不拼接第二份结果</text>
+  <text x="1040" y="478" font-size="11" fill="#DC2626" text-anchor="middle">不制造重复工具调用与上下文分叉</text>
+
+  <path d="M 560 464 C 470 468, 500 406, 836 406" stroke="#16A34A" stroke-width="1.4" stroke-dasharray="5 4" fill="none" marker-end="url(#arrowGreen)"/>
+  <text x="520" y="447" font-size="11" font-weight="600" fill="#059669" text-anchor="middle">换号回环</text>
+
+  <!-- Layer 3: self-healing loop -->
+  <rect x="40" y="542" width="1200" height="132" rx="14" fill="#F0FDF4" stroke="#BBF7D0"/>
+  <text x="60" y="568" font-size="13" font-weight="700" fill="#166534">后台自愈闭环（juhe-ai-jobs）—— 坏一次 ≠ 坏了，自动回池</text>
+
+  <g text-anchor="middle">
+    <rect x="75" y="582" width="210" height="52" rx="10" fill="#FFFFFF" stroke="#34D399"/>
+    <text x="180" y="603" font-size="13" font-weight="700" fill="#047857">周期健康探针</text>
+    <text x="180" y="622" font-size="10.5" fill="#059669">激活检查 · 运行态恢复</text>
+    <rect x="305" y="582" width="210" height="52" rx="10" fill="#FFFFFF" stroke="#34D399"/>
+    <text x="410" y="603" font-size="13" font-weight="700" fill="#047857">冷却复测</text>
+    <text x="410" y="622" font-size="10.5" fill="#059669">来源 fencing · 匹配恢复</text>
+    <rect x="535" y="582" width="210" height="52" rx="10" fill="#FFFFFF" stroke="#34D399"/>
+    <text x="640" y="603" font-size="13" font-weight="700" fill="#047857">半开单飞恢复</text>
+    <text x="640" y="622" font-size="10.5" fill="#059669">全池软阻断时受控放行</text>
+    <rect x="765" y="582" width="210" height="52" rx="10" fill="#FFFFFF" stroke="#34D399"/>
+    <text x="870" y="603" font-size="13" font-weight="700" fill="#047857">OAuth Token 保活</text>
+    <text x="870" y="622" font-size="10.5" fill="#059669">预刷新 · 懒刷新 · 有界退避</text>
+    <rect x="995" y="582" width="210" height="52" rx="10" fill="#FFFFFF" stroke="#34D399"/>
+    <text x="1100" y="603" font-size="13" font-weight="700" fill="#047857">统计与审计回流</text>
+    <text x="1100" y="622" font-size="10.5" fill="#059669">用量 · 质量 · 决策日志</text>
+  </g>
+
+  <path d="M 40 608 C 18 608, 18 180, 36 180" stroke="#16A34A" stroke-width="1.6" stroke-dasharray="6 4" fill="none" marker-end="url(#arrowGreen)"/>
+  <text x="12" y="394" font-size="11" font-weight="600" fill="#16A34A" text-anchor="middle" transform="rotate(-90 12 394)">状态回流</text>
+
+  <!-- footer note -->
+  <rect x="40" y="694" width="1200" height="56" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="640" y="716" font-size="13" fill="#334155" text-anchor="middle">全部候选耗尽：返回稳定 503 + Retry-After，不打刚失败的账号；零可派发等待预算默认 270 秒</text>
+  <text x="640" y="736" font-size="11" fill="#64748B" text-anchor="middle">上游私有错误与响应头不透传客户端 · opaque 失败不写跨请求状态，一次网络抖动不误伤账号池</text>
+
+  </g>
+</svg>

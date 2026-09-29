@@ -1,6 +1,6 @@
 # SQLite 存储说明
 
-> 迁移方向更新（2026-08-08）：SQLite 是保留的正式部署模式，Go 必须兼容 SQLite 与 PostgreSQL/Redis；不能以 `standalone` / `performance` 决定 Go 是否可用。当前 Node SQLite 单写者、DB service 和 typed command 边界继续生效。B0 兼容验证或未迁 Node 功能可以经既有 owner bridge；完成 F3 的 Go 完整功能必须独占其 SQLite file owner，不能把 Node bridge 留作依赖。具体 driver 在 B0 定案。详见 [完整功能接管与 Node 归档迁移规则](../migration/完整功能接管与Node归档迁移规则.md)。
+> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`）。文中“当前 Node 阶段”的 SQLite 单写者、DB service、typed command 与 owner bridge 等迁移期叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权；当前存储事实以 [架构总览](../architecture/架构总览.md) 与 Go 实现为准。
 
 ## 当前 Node 阶段为什么用 SQLite
 

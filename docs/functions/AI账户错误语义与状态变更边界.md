@@ -1,5 +1,7 @@
 # AI 账户错误语义与状态变更边界
 
+> **历史截面提示。** 本文部分段落撰写于 Node 过渡期，涉及单 Node 进程容量 / Node 事件循环等拓扑假设的句子为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`），不构成当前实现或操作授权。
+
 > 本文是 AI 账户切换、熔断、恢复和错误副作用的强约束文档。任何修改网关账户错误处理、API Key 轮换、账户运行态、后台探针或恢复状态机的代码，必须先阅读本文。
 
 ## 1. 不可信上游原则

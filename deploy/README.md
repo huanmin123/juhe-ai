@@ -24,7 +24,7 @@
 详见 `docs/migration/部署go-only双轨开关.md`（源码仓库内）。
 
 
-发布包可以来自 Windows、macOS 或 Linux 任一打包平台。发布包包含两个可独立部署的常驻 Go 二进制：`backend-go/juhe-ai-jobs`（Windows 为 `.exe`）承载 F1 运行日志索引与 F2 表监控，`backend-go/juhe-ai-gateway` 承载主入口、F3 审计与 F4 操作日志；`backend-go/juhe-ai-maintenance` 只用于一次性维护命令。日志搜索（Go 原生 grep）要求目标机器提供系统 `rg`，或配置 `JUHE_AI_RG_PATH`。
+发布包可以来自 Windows、macOS 或 Linux 任一打包平台。发布包包含两个可独立部署的常驻 Go 二进制：`backend-go/juhe-ai-jobs`（Windows 为 `.exe`）承载 F1 运行日志索引与 F2 表监控，`backend-go/juhe-ai-gateway` 承载主入口、F3 审计与 F4 操作日志；`backend-go/juhe-ai-maintenance` 只用于一次性维护命令。日志搜索（grep）由 Go 进程内逐行扫描完成，不依赖 `rg` 或任何外部二进制。
 
 ## 部署前检查
 
@@ -40,7 +40,7 @@ go-only 发布包不再携带 `backend/.env.example`（X02 裁剪）。可以直
 notepad .\backend\.env
 ```
 
-如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动从 example 创建 `backend/.env`，生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。这不会生成 F2/F3/F4 owner ID 或 F3/F4 input secret；任一组件必填项缺失时启动会明确失败。因此首次启动前仍应手工编辑 `backend/.env`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。公网 HTTPS 默认优先使用 Caddy 自动申请和续期免费证书，详见 `docs/deploy/https/Caddy自动HTTPS部署指南.md`。
+如果没有手动创建，`start.ps1` / `start.sh` 首次启动会自动创建 `backend/.env`（发布包已无 example 模板），生成稳定随机 `JUHE_AI_SECRET` 写回文件，并填入本机默认 `JUHE_AI_ALLOWED_ORIGINS`。这不会生成 F2/F3/F4 owner ID 或 F3/F4 input secret；任一组件必填项缺失时启动会明确失败。因此首次启动前仍应手工编辑 `backend/.env`。公网 IP、域名或反向代理部署后，仍要把 `JUHE_AI_ALLOWED_ORIGINS` 改成实际后台访问 Origin，并备份 `backend/.env`。公网 HTTPS 默认优先使用 Caddy 自动申请和续期免费证书，详见 `docs/deploy/https/Caddy自动HTTPS部署指南.md`。
 
 最低配置：
 

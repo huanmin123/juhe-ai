@@ -1,5 +1,7 @@
 # 网关 Body 解析性能治理设计
 
+> **历史状态。** 本文是 Node 后端时代的网关 Body 解析性能治理记录（“本轮范围仅限 Node 后端”）：Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`（见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`），文中治理条目与 Node 热路径叙述保留为历史对照，不构成当前实现或操作授权。
+
 ## 1. 目标
 
 盘点请求接收、路由、账号适配、协议桥接、响应处理、SSE、审计、用量和运行日志中的 Body 解析，减少网关热路径上的重复 `JSON.parse`、重复 UTF-8 转换和纯日志目的结构扫描。

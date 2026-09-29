@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0235
-- 状态：待验证（代码已修复，待生产部署验证）
+- 状态：已修复（2026-09-29 23:15 发布，生产实证通过）
 - 严重程度：P1（聊天保留清理任务自上线从未成功，资产清理链失效）
 - 发现时间：2026-09-29
 - 发现方式：自查（生产整体巡检）
@@ -49,9 +49,11 @@
   - 纯文本计数断言（IN(1/2/3/7) 渲染后最大 `$n` 序号 == 3+n 且无残留 `?`；旧写法对照必须暴露撞号）——通过；
   - 真实 PG 端到端（dev 库，生产同构 pgpool rewriteDriver 路径，目标 ID 不存在 + 事务回滚零副作用）：修复版 UPDATE 通过参数绑定，旧写法复现 `mismatched param and argument count`——通过。
 - `cleanuprepo`/`retention`/`jobregistry` 包全量测试通过（169s 全绿）。
-- 生产验证（待部署后）：任务恢复成功日志 `chat_retention_cleanup_completed`；3 行过期资产被认领清理；`consecFail` 归零。
+- 生产验证（2026-09-29 23:15 发布 jobs `f2fcdb5fa1467ab0306c5b4f92b464b0`，md5 三点闭环 + healthy + 公网 200 + ensure-schema 幂等 623 语句与上批一致）：**23:19:53 首轮即成功**——`chat_retention_cleanup_completed`，`claimedAssets:3, deletedAssets:3, failedAssets:0`，存量 3 行过期资产全部认领清理（`chat_assets` 归零，含物理文件删除链）；新进程 `jobsched_run_failed` 计数 0（修复前每 10 分钟一次）。
 
 ## 防回归与观测性备注
 
 - 占位符计数断言已固化；同款"外层 Bind + BindIn"模式全仓扫描仅此一处（`placeholderList` + 外层 Bind 为正确写法）。
-- 定位过程中暴露的观测缺口（本次未改，另行任务）：`jobsched_run_failed` 无阶段/SQL/traceId 上下文；jobs 进程不写文件日志，失败历史仅剩 stdout 窗口；cleanuprepo 关键分支（认领数、执行阶段）无 INFO 打点。
+- 定位过程中暴露的观测缺口（同批处置，2026-09-29 23:5x gateway 发布）：**gateway `gatewaycircuit.Bridge.persistWithRetry` 已透出最后底层错误**——耗尽路径原先返回固定文案"账户 circuit control-plane 持久化重试耗尽"，生产 6442 条失败（仅 2 个账户、两波积压回放：acc_0877c91c6f1a16ee 4515 条 01-03 点、acc_1788710035361_583e5e47 1929 条 12-13 点）无法定性最后一级原因；现错误携带"最后错误/最后 CAS 状态"，下次风暴可直接定性。
+- 仍待改进（另行任务）：`jobsched_run_failed` 无阶段/SQL 上下文；jobs 进程无文件日志 sink（stdout 仅约 4 小时窗口，历史不可考；gateway 已有 `processlog.FileSink` 共享实现，jobs 移植涉及文件名/清理/索引器兼容契约，按文档先行原则立项）。
+- 巡检同窗另两支独立现象（未定性，观察项）：PG lock timeout 逐日上升（9-26:1→9-29:195，集中凌晨 00-09 点，受害语句集中在 `juhe_dataset.runtime_log_index_owner_leases` 行锁，消费方为 jobs runtimelog 索引器，量小且自愈）；F4 operation log retention lock timeout 21 次（同域锁等待）。

@@ -1,5 +1,7 @@
 # 后台 Worker 多角色拆分设计
 
+> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`）。文中 standalone / performance 的 worker 角色拆分、Go sidecar 迁移期边界等拓扑叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权。
+
 > **Go sidecar 现行边界（2026-08-12）。** 本文的 `standalone` / `performance` 拓扑只描述当前 Node 实现，不能推导 Go 按旧 job / queue 拆分。F1、F2、F3 均被唯一 `juhe-ai-go-sidecar` 接管，功能独立而进程统一；任何 Node runtime-log importer、F2 scheduler 或 F3 writer/queue 记载均为历史，不得重新接入 Node worker。
 
 > 面向后端实现、部署和 AI 维护者。

@@ -153,7 +153,7 @@ ss -lntp | grep ':3000 ' || true
 pgrep -af 'node|juhe-ai' | grep '/opt/juhe-ai-lite' || true
 ```
 
-当前新版本由主进程看护 DB service 和 worker，不要把 `worker.js` 或 `db-service.js` 单独注册成 systemd 服务。升级后必须确认 `3000` 只由当前服务进程监听，进程命令行里没有旧 release 路径。只有强杀、系统崩溃或持续 SQLite `database is locked` 时，再检查是否有脱离当前 server 的旧子进程。
+当前发布包为 go-only 形态：`start.sh` 直接拉起并看护 `juhe-ai-gateway` 与 `juhe-ai-jobs` 两个 Go 进程（`juhe-ai-maintenance` 仅按需一次性执行），不存在 Node worker 或 DB service 子进程，不要把任何二进制单独注册成 systemd 服务绕过 `start.sh`。升级后必须确认 `3000` 只由当前 gateway 进程监听，进程命令行里没有旧 release 路径。只有强杀、系统崩溃或持续 SQLite `database is locked` 时，再检查是否有脱离 `start.sh` 看护的残留进程。
 
 ## 4. Docker 差异
 
