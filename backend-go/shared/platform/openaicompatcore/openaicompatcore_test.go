@@ -97,11 +97,11 @@ func TestHostedToolRuntimeModesProjection(t *testing.T) {
 
 func TestNormalizeEndpointFamily(t *testing.T) {
 	cases := map[string]string{
-		"messages":               FamilyAnthropicMessages,
-		"generate_content":       FamilyGeminiGenerateContent,
+		"messages":                FamilyAnthropicMessages,
+		"generate_content":        FamilyGeminiGenerateContent,
 		"stream_generate_content": FamilyGeminiStreamGenerate,
-		"chat_completions":       FamilyChatCompletions,
-		"unknown":                "unknown",
+		"chat_completions":        FamilyChatCompletions,
+		"unknown":                 "unknown",
 	}
 	for input, want := range cases {
 		if got := NormalizeEndpointFamily(input); got != want {

@@ -41,7 +41,7 @@ func f9AnthropicChunksWithoutStop() [][]byte {
 }
 
 // f9AnthropicPipeOptions 对齐 anthropic 精确客户端的生产管道选项
-//（finalize.go HandleStreamUpstreamResponse 的固定接线）。
+// （finalize.go HandleStreamUpstreamResponse 的固定接线）。
 func f9AnthropicPipeOptions(driver StreamDriver) StreamPipeOptions {
 	return StreamPipeOptions{
 		InterpretProtocolFailures:             true,

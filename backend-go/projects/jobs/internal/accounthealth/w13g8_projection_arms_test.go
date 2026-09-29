@@ -56,7 +56,7 @@ func TestW13G8ProjectionListDecodeArms(t *testing.T) {
 		f := newProjectionFixture(t)
 		// INTEGER 字面量落在 TEXT payload 列 → 驱动按文本返回，走解码失败臂
 		// 而非列类型臂（documenting 驱动行为）。
-		if _, err := f.store.db.Exec(`INSERT INTO account_health_outcomes `+w13g8OutcomeColumns+`
+		if _, err := f.store.db.Exec(`INSERT INTO account_health_outcomes ` + w13g8OutcomeColumns + `
 VALUES ('w13g8-bad-type', 'w13g8-req', 'acct-1', 'probe_success', '2026-09-18T00:00:00Z', 1, 1, 1, 123)`); err != nil {
 			t.Fatal(err)
 		}

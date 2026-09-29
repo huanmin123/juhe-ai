@@ -34,8 +34,8 @@ func (c *manualClock) advance(d time.Duration) {
 }
 
 type manualTimer struct {
-	at       time.Time
-	fn       func()
+	at        time.Time
+	fn        func()
 	cancelled bool
 }
 
@@ -271,11 +271,11 @@ func (s *stubStatsWriter) RequestStatsWriter(_ context.Context, operation string
 
 // recordingConcurrency is a seam double capturing subscription calls.
 type recordingConcurrency struct {
-	mu         sync.Mutex
-	released   []AccountConcurrencyReleaseEvent
-	current    map[string]int
-	lane       map[string]int
-	listeners  []*listenerHandle
+	mu        sync.Mutex
+	released  []AccountConcurrencyReleaseEvent
+	current   map[string]int
+	lane      map[string]int
+	listeners []*listenerHandle
 }
 
 func newRecordingConcurrency() *recordingConcurrency {

@@ -21,13 +21,13 @@ func w13g5QualitySeedRow(id string) UsageStatsRecordRow {
 		Success:    1,
 		DurationMs: f64Ptr(100), FirstTokenMs: f64Ptr(20),
 		InputTokens: f64Ptr(10), OutputTokens: f64Ptr(5), CostUsd: f64Ptr(0.01),
-		CreatedAt:                    "2026-09-18T07:15:00.000Z",
-		AccountID:                    strPtr("w13g5-acc"),
-		AccountOwnerSystemAccountID:  strPtr("w13g5-alice"),
-		AccountAccessType:            strPtr("owner"),
-		GroupID:                      strPtr("w13g5-grp"),
-		GroupOwnerSystemAccountID:    strPtr("w13g5-alice"),
-		GroupAccessType:              strPtr("owner"),
+		CreatedAt:                   "2026-09-18T07:15:00.000Z",
+		AccountID:                   strPtr("w13g5-acc"),
+		AccountOwnerSystemAccountID: strPtr("w13g5-alice"),
+		AccountAccessType:           strPtr("owner"),
+		GroupID:                     strPtr("w13g5-grp"),
+		GroupOwnerSystemAccountID:   strPtr("w13g5-alice"),
+		GroupAccessType:             strPtr("owner"),
 	}
 }
 

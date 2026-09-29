@@ -22,7 +22,6 @@ func TestW16CImageResultChunksErrorArms(t *testing.T) {
 	}
 }
 
-
 // TestW16CNewGenerationHubDefaultClock 覆盖 now==nil 默认时钟臂。
 func TestW16CNewGenerationHubDefaultClock(t *testing.T) {
 	hub := NewGenerationHub(nil)

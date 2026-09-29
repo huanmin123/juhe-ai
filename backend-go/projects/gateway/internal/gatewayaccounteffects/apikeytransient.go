@@ -3,10 +3,10 @@ package gatewayaccounteffects
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -37,16 +37,16 @@ type AccountApiKeyTransientTarget struct {
 // AccountApiKeyTransientState mirrors AccountApiKeyTransientState; the JSON
 // tags are the Redis wire contract shared with Node.
 type AccountApiKeyTransientState struct {
-	SchemaVersion   int                        `json:"schemaVersion"`
-	AccountID       string                     `json:"accountId"`
-	KeyFingerprint  string                     `json:"keyFingerprint"`
-	KeyIndex        *int                       `json:"keyIndex,omitempty"`
-	Generation      string                     `json:"generation"`
-	LastObservedAtMs int64                     `json:"lastObservedAtMs"`
-	ObservationKind string                     `json:"observationKind"` // 'failure' | 'success'
-	FailureCount    int                        `json:"failureCount"`
-	Status          AccountApiKeyFailureStatus `json:"status,omitempty"`
-	SuppressUntilMs *int64                     `json:"suppressUntilMs,omitempty"`
+	SchemaVersion    int                        `json:"schemaVersion"`
+	AccountID        string                     `json:"accountId"`
+	KeyFingerprint   string                     `json:"keyFingerprint"`
+	KeyIndex         *int                       `json:"keyIndex,omitempty"`
+	Generation       string                     `json:"generation"`
+	LastObservedAtMs int64                      `json:"lastObservedAtMs"`
+	ObservationKind  string                     `json:"observationKind"` // 'failure' | 'success'
+	FailureCount     int                        `json:"failureCount"`
+	Status           AccountApiKeyFailureStatus `json:"status,omitempty"`
+	SuppressUntilMs  *int64                     `json:"suppressUntilMs,omitempty"`
 }
 
 // AccountApiKeyTransientMutationReason mirrors the reason union.
@@ -81,17 +81,17 @@ type AccountApiKeyTransientStateStore interface {
 
 // TransientMutationInput carries the recordFailure/recordSuccess arguments.
 type TransientMutationInput struct {
-	Target            AccountApiKeyTransientTarget
-	Status            AccountApiKeyFailureStatus // failure only
+	Target             AccountApiKeyTransientTarget
+	Status             AccountApiKeyFailureStatus // failure only
 	ExpectedGeneration string
 }
 
 // Transient store defaults (account-api-key-transient-redis-store.ts).
 const (
-	TransientMinimumStateTtlMs        = int64(25 * 60 * 60_000)
-	TransientDefaultStateTtlMs        = int64(48 * 60 * 60_000)
+	TransientMinimumStateTtlMs             = int64(25 * 60 * 60_000)
+	TransientDefaultStateTtlMs             = int64(48 * 60 * 60_000)
 	TransientDefaultFailureCounterWindowMs = int64(10 * 60_000)
-	TransientDefaultStoreName         = "gateway-account-api-key-transient-avoidance"
+	TransientDefaultStoreName              = "gateway-account-api-key-transient-avoidance"
 )
 
 var transientSuppressionDelayMs = []int64{3_000, 5_000, 10_000}
@@ -113,10 +113,10 @@ type RedisAccountApiKeyTransientStateStoreOptions struct {
 // identical to the Node originals: they are the executable contract shared
 // with in-flight Node gateway processes.
 type RedisAccountApiKeyTransientStateStore struct {
-	redisURL              string
-	keyPrefix             string
-	stateTtlMs            int64
-	suppressionDelayMs    []int64
+	redisURL               string
+	keyPrefix              string
+	stateTtlMs             int64
+	suppressionDelayMs     []int64
 	failureCounterWindowMs int64
 
 	once   sync.Once
@@ -173,10 +173,10 @@ func NewRedisAccountApiKeyTransientStateStore(options RedisAccountApiKeyTransien
 	}
 	// redisNamespacedKey(`juhe-ai:state:<name>:state:`).
 	return &RedisAccountApiKeyTransientStateStore{
-		redisURL:              redisURL,
-		keyPrefix:             "juhe-ai:" + strings.TrimSpace(options.Namespace) + ":state:" + name + ":state:",
-		stateTtlMs:            stateTtlMs,
-		suppressionDelayMs:    append([]int64(nil), suppressionDelays...),
+		redisURL:               redisURL,
+		keyPrefix:              "juhe-ai:" + strings.TrimSpace(options.Namespace) + ":state:" + name + ":state:",
+		stateTtlMs:             stateTtlMs,
+		suppressionDelayMs:     append([]int64(nil), suppressionDelays...),
 		failureCounterWindowMs: failureCounterWindowMs,
 	}, nil
 }
@@ -249,8 +249,8 @@ func (s *RedisAccountApiKeyTransientStateStore) RecordSuccess(ctx context.Contex
 }
 
 type transientMutationArgs struct {
-	operation         string
-	target            AccountApiKeyTransientTarget
+	operation          string
+	target             AccountApiKeyTransientTarget
 	status             AccountApiKeyFailureStatus
 	expectedGeneration string
 }
@@ -651,4 +651,3 @@ func newUUID() string {
 	bytes[8] = (bytes[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
 }
-

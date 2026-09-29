@@ -12,7 +12,7 @@ import (
 )
 
 // TestW13g2TeamDetailTwoMembers 覆盖 team 详情多成员排序的第二键比较
-//（usage_detail.go 558-565）与 stale 绑定替换（instance_provision 353-358）。
+// （usage_detail.go 558-565）与 stale 绑定替换（instance_provision 353-358）。
 func TestW13g2TeamDetailTwoMembers(t *testing.T) {
 	s, fp := w13g2FailStore(t)
 	db := s.db
@@ -30,7 +30,7 @@ func TestW13g2TeamDetailTwoMembers(t *testing.T) {
 	}
 	for _, member := range []string{"gn1", "gn2"} {
 		if _, err := db.Exec(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
-			VALUES (?, 'team_td13', ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, "teammem_td_" + member, member); err != nil {
+			VALUES (?, 'team_td13', ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, "teammem_td_"+member, member); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -161,7 +161,7 @@ func TestW13g2FailpointFinalArms(t *testing.T) {
 		GranteeType: "team", Status: StatusPaused,
 		GranteeTeamID: sqlNullString("team_fa13"),
 		ResourceType:  "group", ResourceID: "grp_fa13",
-		LimitsJSON:    sqlNullString("not-json"),
+		LimitsJSON: sqlNullString("not-json"),
 	}, "owner", "2026-01-01T00:00:00Z")
 	tx.Rollback()
 	if err == nil {

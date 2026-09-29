@@ -614,7 +614,9 @@ func TestW14GBackfillApplyConflict(t *testing.T) {
 }
 
 // w14gPagedReader 依序返回预制页。
-type w14gPagedReader struct{ pages []GatewayAccountCircuitDispatchRevisionPage }
+type w14gPagedReader struct {
+	pages []GatewayAccountCircuitDispatchRevisionPage
+}
 
 func (r *w14gPagedReader) ListGatewayAccountCircuitDispatchRevisions(_ context.Context, _ GatewayAccountCircuitDispatchRevisionPageInput) (GatewayAccountCircuitDispatchRevisionPage, error) {
 	if len(r.pages) == 0 {

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	redis "github.com/redis/go-redis/v9"
 	miniredis "github.com/alicebob/miniredis/v2"
+	redis "github.com/redis/go-redis/v9"
 )
 
 func newTestRedisStore(t *testing.T, capacity int64, now func() int64) (*RedisStore, *miniredis.Miniredis) {
@@ -279,7 +279,7 @@ func TestRedisRestoreListDueAndReplaceRevision(t *testing.T) {
 	}
 	// replaceAccountDispatchRevision closes base + authorized family keys.
 	if _, err := store.Suspect(ctx, SuspectInput{
-		Scope: Scope{Kind: ScopeKindAccount, AccountRuntimeKey: "acc:authorized:s:g:a"},
+		Scope:            Scope{Kind: ScopeKindAccount, AccountRuntimeKey: "acc:authorized:s:g:a"},
 		DispatchRevision: "9", TransitionID: "fam", Reason: "r", NowMs: clock,
 	}); err != nil {
 		t.Fatalf("family suspect: %v", err)

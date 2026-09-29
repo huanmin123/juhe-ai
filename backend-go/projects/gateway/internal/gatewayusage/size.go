@@ -200,7 +200,7 @@ type identitySet struct {
 }
 
 type identityItem struct {
-	kind  reflect.Kind
+	kind    reflect.Kind
 	pointer uintptr
 }
 

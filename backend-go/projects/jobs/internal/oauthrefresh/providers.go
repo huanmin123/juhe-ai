@@ -68,7 +68,7 @@ type OpenAITokenInfo struct {
 }
 
 // RefreshOpenAIToken mirrors refreshOpenAIOAuthToken: refresh grant with the
-// narrowed scope and the default client id fallback. proxyURL ('' = direct)
+// narrowed scope and the default client id fallback. proxyURL (” = direct)
 // rides the request the way the Node TokenExchangeTransport proxyUrl did.
 func RefreshOpenAIToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time, proxyURL string) (*OpenAITokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
@@ -198,7 +198,7 @@ type AnthropicTokenInfo struct {
 }
 
 // RefreshAnthropicToken mirrors refreshAnthropicAuthToken. proxyURL
-// ('' = direct) rides the request the way the Node TokenExchangeTransport
+// (” = direct) rides the request the way the Node TokenExchangeTransport
 // proxyUrl did.
 func RefreshAnthropicToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time, proxyURL string) (*AnthropicTokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)
@@ -884,7 +884,7 @@ type GrokTokenInfo struct {
 }
 
 // RefreshGrokToken mirrors refreshGrokAuthToken: a missing rotated refresh
-// token keeps the input one. proxyURL ('' = direct) rides the request the way
+// token keeps the input one. proxyURL (” = direct) rides the request the way
 // the Node TokenExchangeTransport proxyUrl did.
 func RefreshGrokToken(ctx context.Context, ex TokenExchanger, refreshToken, clientID string, now time.Time, proxyURL string) (*GrokTokenInfo, error) {
 	refreshToken = normalizeText(refreshToken)

@@ -13,11 +13,11 @@ import (
 
 // w12dFakeOutboxStore 是 ProbeRequestOutboxStore 的脚本化 Mock（可回放）。
 type w12dFakeOutboxStore struct {
-	rows    []ProbeOutboxRow
-	claimErr error
+	rows        []ProbeOutboxRow
+	claimErr    error
 	completeErr error
-	claimed  []string
-	completed []string
+	claimed     []string
+	completed   []string
 }
 
 func (s *w12dFakeOutboxStore) ClaimPendingProbeRequests(ctx context.Context, limit int, now time.Time) ([]ProbeOutboxRow, error) {

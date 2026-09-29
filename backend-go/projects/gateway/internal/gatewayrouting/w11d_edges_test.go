@@ -10,7 +10,6 @@ import (
 	"testing"
 )
 
-
 func TestW11DNormalRouteErrorArms(t *testing.T) {
 	binding := GroupBindingRow{
 		ID: "b1", APIKeyID: "key1", SystemAccountID: "owner1",

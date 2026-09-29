@@ -43,7 +43,7 @@ import (
 
 // gatewayruntimecacheAccountForCircuitAudit 构造一个最小 OpenAIAccountSecret：
 // DispatchRevision 为 nil 时 AccountCircuitDispatchRevision 走凭据摘要派生
-//（service.go:1161-1188），同一账号确定性产出同一 revision。
+// （service.go:1161-1188），同一账号确定性产出同一 revision。
 func gatewayruntimecacheAccountForCircuitAudit(id string) gatewayruntimecache.OpenAIAccountSecret {
 	return gatewayruntimecache.OpenAIAccountSecret{
 		ID:              id,
@@ -58,7 +58,7 @@ func gatewayruntimecacheAccountForCircuitAudit(id string) gatewayruntimecache.Op
 
 // suspectWithConfirmation 驱动到"SUSPECT 到期并持有 confirmation 租约"的
 // 状态，返回 confirmation 尝试句柄。scope 与 PrepareAttempt 内部一致
-//（GatewayAccountProtocolModelScope：账号 × 协议桶 × 模型）。
+// （GatewayAccountProtocolModelScope：账号 × 协议桶 × 模型）。
 func suspectWithConfirmation(t *testing.T, service *CircuitService, store *MemoryStore, account gatewayruntimecache.OpenAIAccountSecret, model string, clock *int64) (*Attempt, Scope) {
 	t.Helper()
 	ctx := context.Background()

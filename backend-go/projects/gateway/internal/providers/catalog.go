@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
-
 )
 
 // ModelPriceSet mirrors ProviderModelPriceSet.
@@ -56,7 +55,7 @@ type ModelCatalogItem struct {
 	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（AI问答工具体系与主子模型
 	// 设计 6.4）：键为该行 supportedApiProtocols 的现有枚举值，值为该协议下
 	// 可用的工具集。一维 SupportedTools 已随阶段 2 全链退场。
-	SupportedToolsByProtocol                map[string][]string     `json:"supportedToolsByProtocol"`
+	SupportedToolsByProtocol                map[string][]string      `json:"supportedToolsByProtocol"`
 	GenerationParameterCapabilities         map[string]any           `json:"generationParameterCapabilities"`
 	SupportedServiceTiers                   []string                 `json:"supportedServiceTiers"`
 	SupportedReasoningEfforts               []string                 `json:"supportedReasoningEfforts"`

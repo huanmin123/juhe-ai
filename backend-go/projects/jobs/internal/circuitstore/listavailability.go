@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 )
 
 // 账户列表可用性投影读模型仓储：移植 Node

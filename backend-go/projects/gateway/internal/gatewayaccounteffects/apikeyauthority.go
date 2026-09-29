@@ -16,9 +16,9 @@ type AccountApiKeyAutomaticProbeTrafficSource string
 
 // Automatic probe traffic sources.
 const (
-	TrafficSourceAccountHealthCheck  AccountApiKeyAutomaticProbeTrafficSource = "account_health_check"
+	TrafficSourceAccountHealthCheck   AccountApiKeyAutomaticProbeTrafficSource = "account_health_check"
 	TrafficSourceRuntimeRecoveryProbe AccountApiKeyAutomaticProbeTrafficSource = "runtime_recovery_probe"
-	TrafficSourceCooldownRetest      AccountApiKeyAutomaticProbeTrafficSource = "cooldown_retest"
+	TrafficSourceCooldownRetest       AccountApiKeyAutomaticProbeTrafficSource = "cooldown_retest"
 )
 
 // AccountApiKeyAutomaticProbeOutcome mirrors AccountApiKeyAutomaticProbeOutcome.
@@ -26,10 +26,10 @@ type AccountApiKeyAutomaticProbeOutcome string
 
 // Automatic probe outcomes.
 const (
-	ProbeOutcomeCompleteSuccess      AccountApiKeyAutomaticProbeOutcome = "complete_success"
+	ProbeOutcomeCompleteSuccess        AccountApiKeyAutomaticProbeOutcome = "complete_success"
 	ProbeOutcomeFramingCompleteNeutral AccountApiKeyAutomaticProbeOutcome = "framing_complete_neutral"
-	ProbeOutcomeUpstreamFailure      AccountApiKeyAutomaticProbeOutcome = "upstream_failure"
-	ProbeOutcomeProbeTaskFailure     AccountApiKeyAutomaticProbeOutcome = "probe_task_failure"
+	ProbeOutcomeUpstreamFailure        AccountApiKeyAutomaticProbeOutcome = "upstream_failure"
+	ProbeOutcomeProbeTaskFailure       AccountApiKeyAutomaticProbeOutcome = "probe_task_failure"
 )
 
 // QuotaRecoveryMode mirrors the 'generic' | 'explicit_reset' union.
@@ -54,10 +54,10 @@ type AccountApiKeyPersistentMutationContext struct {
 
 // Mutation authority values.
 const (
-	MutationAuthorityExplicitUserPolicy            = "explicit_user_policy"
-	MutationAuthoritySystemQuotaPolicy             = "system_quota_policy"
+	MutationAuthorityExplicitUserPolicy              = "explicit_user_policy"
+	MutationAuthoritySystemQuotaPolicy               = "system_quota_policy"
 	MutationAuthorityConfirmedSameAccountKeyRotation = "confirmed_same_account_key_rotation"
-	MutationAuthorityAutomaticProbe                = "automatic_probe"
+	MutationAuthorityAutomaticProbe                  = "automatic_probe"
 )
 
 // TrafficSourceGateway mirrors the 'gateway' traffic source.

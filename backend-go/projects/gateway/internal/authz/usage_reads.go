@@ -37,16 +37,16 @@ type UsageRowSummary struct {
 // UsageAggregateSummary mirrors AuthorizationUsageAggregateSummary
 // (authorizationUsageAggregateSummary :688-698).
 type UsageAggregateSummary struct {
-	RequestCount     float64  `json:"requestCount"`
-	InputTokens      float64  `json:"inputTokens"`
-	CacheWriteTokens float64  `json:"cacheWriteTokens"`
-	TotalTokens      float64  `json:"totalTokens"`
-	TotalCost        float64  `json:"totalCost"`
-	LastUsedAt       *string  `json:"lastUsedAt,omitempty"`
+	RequestCount     float64 `json:"requestCount"`
+	InputTokens      float64 `json:"inputTokens"`
+	CacheWriteTokens float64 `json:"cacheWriteTokens"`
+	TotalTokens      float64 `json:"totalTokens"`
+	TotalCost        float64 `json:"totalCost"`
+	LastUsedAt       *string `json:"lastUsedAt,omitempty"`
 }
 
 // TeamUsageRow mirrors AuthorizationTeamUsageRow (:1920-1931 domain/types.ts):
-// always-present string fields keep the Node `?? ''` shape, optional owner and
+// always-present string fields keep the Node `?? ”` shape, optional owner and
 // timestamp fields stay absent.
 type TeamUsageRow struct {
 	ID                            string          `json:"id"`
@@ -324,8 +324,8 @@ func (s *Store) teamUsageRows(ctx context.Context, filters UsageFilters, access 
 	}
 	return &TeamUsageRowsResult{
 		Range: rng, Rows: items,
-		Total:    pagedTotalUpperBound(page, pageSize, len(items), hasMore),
-		Page:     page, PageSize: pageSize, HasMore: hasMore,
+		Total: pagedTotalUpperBound(page, pageSize, len(items), hasMore),
+		Page:  page, PageSize: pageSize, HasMore: hasMore,
 	}, nil
 }
 
@@ -462,8 +462,8 @@ func (s *Store) userUsageRows(ctx context.Context, filters UsageFilters, access 
 	}
 	return &UserUsageRowsResult{
 		Range: rng, Rows: items,
-		Total:    pagedTotalUpperBound(page, pageSize, len(items), hasMore),
-		Page:     page, PageSize: pageSize, HasMore: hasMore,
+		Total: pagedTotalUpperBound(page, pageSize, len(items), hasMore),
+		Page:  page, PageSize: pageSize, HasMore: hasMore,
 	}, nil
 }
 
@@ -590,7 +590,7 @@ func normalizeUsagePageOptions(page, pageSize int) (int, int) {
 
 // pagedTotalUpperBound mirrors query-utils.ts pagedTotalUpperBound.
 func pagedTotalUpperBound(page, pageSize, itemCount int, hasMore bool) int {
-	return (page - 1) * pageSize + itemCount + boolToInt(hasMore)
+	return (page-1)*pageSize + itemCount + boolToInt(hasMore)
 }
 
 func boolToInt(value bool) int {

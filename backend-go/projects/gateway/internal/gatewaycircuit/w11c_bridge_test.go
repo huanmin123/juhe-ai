@@ -275,7 +275,7 @@ func newNonExpiringMemoryStoreWithOptions(t *testing.T, capacity int64) *MemoryS
 	}
 	store, err := NewMemoryStore(MemoryStoreOptions{
 		Capacity: capacity, Now: func() int64 { return 0 },
-		Random:   func() float64 { return 0.5 },
+		Random: func() float64 { return 0.5 },
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore: %v", err)
@@ -290,16 +290,16 @@ func w11cIncidentOf(scope Scope, state State) IncidentRecord {
 		incidentID = *state.IncidentID
 	}
 	return IncidentRecord{
-		AccountID:         RuntimeAccountIDFromKey(scope.AccountRuntimeKey),
-		AccountRuntimeKey: scope.AccountRuntimeKey,
-		CircuitScopeKey:   scopeKey,
-		ScopeKind:         IncidentScopeKindAccount,
-		IncidentID:        incidentID,
-		State:             state.Phase,
-		Generation:        state.Generation,
-		DispatchRevision:  1,
-		LedgerRevision:    1,
-		TransitionID:      state.TransitionID,
+		AccountID:                       RuntimeAccountIDFromKey(scope.AccountRuntimeKey),
+		AccountRuntimeKey:               scope.AccountRuntimeKey,
+		CircuitScopeKey:                 scopeKey,
+		ScopeKind:                       IncidentScopeKindAccount,
+		IncidentID:                      incidentID,
+		State:                           state.Phase,
+		Generation:                      state.Generation,
+		DispatchRevision:                1,
+		LedgerRevision:                  1,
+		TransitionID:                    state.TransitionID,
 		ConfirmationFailuresRequired:    2,
 		ConfirmationFailureEvidenceKeys: []string{},
 	}

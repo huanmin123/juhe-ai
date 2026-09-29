@@ -73,7 +73,6 @@ func TestW11GBindingWriteStageErrors(t *testing.T) {
 	_ = admin
 }
 
-
 // strategyUpdatedAt 读取当前 updated_at 版本。
 func strategyUpdatedAt(env *testEnv, t *testing.T, id string) string {
 	t.Helper()

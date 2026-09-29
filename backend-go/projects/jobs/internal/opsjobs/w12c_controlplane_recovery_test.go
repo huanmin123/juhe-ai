@@ -23,11 +23,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type w12cErrOutbox struct {
-	inner     *fakeOutbox
-	claimErr  error
-	ackErr    error
+	inner      *fakeOutbox
+	claimErr   error
+	ackErr     error
 	releaseErr error
-	ackResult bool
+	ackResult  bool
 }
 
 func (f *w12cErrOutbox) Claim(ctx context.Context, owner string, nowMS, leaseMS int64, limit int) ([]OutboxEvent, error) {

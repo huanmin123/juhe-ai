@@ -64,8 +64,8 @@ func TestW12fStatsOpenSQLiteFailureArms(t *testing.T) {
 
 func TestW12fStatsRFC3339Rejects(t *testing.T) {
 	cases := []struct {
-		name  string
-		raw   string
+		name string
+		raw  string
 	}{
 		{"小时越界", "2026-09-14T24:00:00Z"},
 		{"分钟越界", "2026-09-14T10:60:00Z"},

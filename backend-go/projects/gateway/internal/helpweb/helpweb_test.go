@@ -125,7 +125,7 @@ func TestHelpMountedMethodContract(t *testing.T) {
 }
 
 // token 认证基础设施失败 → 503 JSON；401/403 形态的拒绝 → 302 登录重定向
-//（Node readHelpCurrentUser 401/403 → undefined user → redirect）。
+// （Node readHelpCurrentUser 401/403 → undefined user → redirect）。
 func TestHelpSessionFailureSemantics(t *testing.T) {
 	fixture, errs := tokenFixture(t)
 

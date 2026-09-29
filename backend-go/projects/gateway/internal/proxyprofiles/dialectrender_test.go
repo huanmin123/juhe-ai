@@ -408,16 +408,16 @@ func TestPostgresPatchBindsBooleanAndTimestampCast(t *testing.T) {
 		t.Fatalf("PG UPDATE 不得携带 SQLite 片段：\n%s", update.query)
 	}
 	wantArgs := []string{
-		"new.host",   // host
-		"false",      // enabled（bool 绑定）
-		"unknown",    // test_status 重置
-		"<nil>",      // latency_ms
-		"<nil>",      // outbound_ip
-		"<nil>",      // outbound_region
-		"<nil>",      // last_test_message
-		"<nil>",      // last_tested_at
-		"2026-09-04T12:00:00.000Z", // updated_at candidate
-		"p-1",        // id
+		"new.host",                    // host
+		"false",                       // enabled（bool 绑定）
+		"unknown",                     // test_status 重置
+		"<nil>",                       // latency_ms
+		"<nil>",                       // outbound_ip
+		"<nil>",                       // outbound_region
+		"<nil>",                       // last_test_message
+		"<nil>",                       // last_tested_at
+		"2026-09-04T12:00:00.000Z",    // updated_at candidate
+		"p-1",                         // id
 		"2026-09-01T00:00:00.000000Z", // CAS revision
 	}
 	if len(update.args) != len(wantArgs) {
@@ -529,15 +529,15 @@ func TestOptionLimitQueryParsing(t *testing.T) {
 		raw  string
 		want int
 	}{
-		{"", 50},      // absent（未传参时 hasLimit=false，同形回落）
-		{"abc", 50},   // NaN -> undefined -> 50
-		{"1.8", 50},   // 非整数 -> undefined -> 50
-		{"1e2", 50},   // Number("1e2")=100 -> clamp 50
-		{"0x10", 16}, // 16 在 1..50 内原样保留
-		{"0b11", 3},  // 3
-		{"0o17", 15}, // 15
+		{"", 50},         // absent（未传参时 hasLimit=false，同形回落）
+		{"abc", 50},      // NaN -> undefined -> 50
+		{"1.8", 50},      // 非整数 -> undefined -> 50
+		{"1e2", 50},      // Number("1e2")=100 -> clamp 50
+		{"0x10", 16},     // 16 在 1..50 内原样保留
+		{"0b11", 3},      // 3
+		{"0o17", 15},     // 15
 		{"Infinity", 50}, // 非整数 -> undefined -> 50
-		{"1e400", 50}, // 溢出 -> Infinity -> undefined -> 50
+		{"1e400", 50},    // 溢出 -> Infinity -> undefined -> 50
 		{"NaN", 50},
 		{"inf", 50},   // 小写不识别 -> NaN
 		{"0x", 50},    // 空十六进制 -> NaN
@@ -553,8 +553,8 @@ func TestOptionLimitQueryParsing(t *testing.T) {
 		{"51", 50},
 		{" 7 ", 7},
 		{"+9", 9},
-		{"5.", 5},      // Number("5.")=5
-		{"1e-400", 1},  // 下溢 -> 0 -> clamp 1
+		{"5.", 5},     // Number("5.")=5
+		{"1e-400", 1}, // 下溢 -> 0 -> clamp 1
 	}
 	for _, tc := range cases {
 		value, present := integerQueryValue(tc.raw)

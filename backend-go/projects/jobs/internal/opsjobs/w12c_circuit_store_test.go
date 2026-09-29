@@ -386,7 +386,7 @@ func TestW12CMemoryStoreClosedRetentionAndHalfOpenLeaseExpiry(t *testing.T) {
 	if got := store.Size(1_000); got != 1 {
 		t.Fatalf("保留期内 CLOSED 不应清理: %d", got)
 	}
-	if got := store.Size(1_000+store.closedRetentionMS+1); got != 0 {
+	if got := store.Size(1_000 + store.closedRetentionMS + 1); got != 0 {
 		t.Fatalf("超过保留期应清理: %d", got)
 	}
 
@@ -670,9 +670,9 @@ func TestW12CBalanceDetectRetryAndSummaryArms(t *testing.T) {
 
 // w12cErrBalanceRepo 在 fakeBalanceRepo 上注入方法级错误。
 type w12cErrBalanceRepo struct {
-	inner      *fakeBalanceRepo
-	commitErr  error
-	enableErr  error
+	inner       *fakeBalanceRepo
+	commitErr   error
+	enableErr   error
 	snapshotErr error
 }
 

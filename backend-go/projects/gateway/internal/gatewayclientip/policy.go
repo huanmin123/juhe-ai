@@ -20,7 +20,7 @@ const (
 // Shared cache names mirror the Node createAppCache / createSharedJsonCache
 // names so the Redis key layout stays auditable next to the Node deployment.
 const (
-	policyByIPCacheName = "gateway:client-ip-policy-by-ip"
+	policyByIPCacheName     = "gateway:client-ip-policy-by-ip"
 	policySnapshotCacheName = "gateway:client-ip-policy-snapshot"
 )
 
@@ -57,9 +57,9 @@ type PolicySource interface {
 // StatsWriterOperation names mirror the BackgroundStatsWriteOperation types
 // this family bridges to the stats writer.
 const (
-	StatsWriterOpListActiveClientIPPolicies  = "list_active_client_ip_policies"
+	StatsWriterOpListActiveClientIPPolicies     = "list_active_client_ip_policies"
 	StatsWriterOpFindActiveClientIPPolicyByHash = "find_active_client_ip_policy_by_hash"
-	StatsWriterOpRecordClientIPPolicyHits    = "record_client_ip_policy_hits"
+	StatsWriterOpRecordClientIPPolicyHits       = "record_client_ip_policy_hits"
 )
 
 // StatsWriterBridge mirrors requestStatsWriter: server/worker processes
@@ -72,7 +72,7 @@ type StatsWriterBridge interface {
 // StatsWriterPayload carries the bridge request/response payloads:
 // "policies" for list, "policy" + "ipHash" for find, "hits" for record.
 type StatsWriterPayload struct {
-	IPHash   string             `json:"ipHash,omitempty"`
+	IPHash   string                 `json:"ipHash,omitempty"`
 	Policies []ActiveClientIPPolicy `json:"policies,omitempty"`
 	Policy   *ActiveClientIPPolicy  `json:"policy,omitempty"`
 	Hits     []PolicyHitInput       `json:"hits,omitempty"`
@@ -143,8 +143,8 @@ func (s *SQLPolicySource) scanPolicies(rows *sql.Rows) ([]ActiveClientIPPolicy, 
 	policies := []ActiveClientIPPolicy{}
 	for rows.Next() {
 		var (
-			policy   ActiveClientIPPolicy
-			reason   sql.NullString
+			policy    ActiveClientIPPolicy
+			reason    sql.NullString
 			expiresAt sql.NullString
 		)
 		if err := rows.Scan(&policy.ID, &policy.IPHash, &policy.PolicyType, &reason, &expiresAt,
@@ -228,11 +228,11 @@ func (s *SQLPolicySource) FindActiveClientIPPolicyByHash(ctx context.Context, in
 // policyHitEntry carries the normalized hit plus the timezone-resolved
 // stat_date the SQL upsert needs.
 type policyHitEntry struct {
-	ipHash    string
-	statDate  string
-	policyID  string
-	hitCount  int64
-	hitAt     string
+	ipHash   string
+	statDate string
+	policyID string
+	hitCount int64
+	hitAt    string
 }
 
 // RecordClientIPPolicyHits mirrors recordClientIpPolicyHits(Async): one

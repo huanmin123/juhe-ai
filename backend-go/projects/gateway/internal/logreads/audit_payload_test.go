@@ -21,7 +21,6 @@ var hotSearchPinnedNow = time.Date(2026, 6, 3, 13, 0, 0, 0, time.UTC)
 
 // pinAuditHotClock pins the concrete audit reader clock.
 
-
 func pinAuditHotClock(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader) {
 	_, _ = runtime, public
 	concrete, ok := audit.(*auditLogSQLReader)

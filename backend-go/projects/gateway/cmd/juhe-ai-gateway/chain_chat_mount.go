@@ -9,9 +9,9 @@ package main
 
 import (
 	"database/sql"
-	"log/slog"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -76,11 +76,11 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		AccountLookup: accountLookup,
 		// GET /my-chat/accounts 的账户列表查询端口（同一 accounts.Store 的
 		// ListChatAccountOptions）。
-		AccountOptionsLookup:    accountOptionsLookup,
-		ObjectStore:             objectStore,
+		AccountOptionsLookup: accountOptionsLookup,
+		ObjectStore:          objectStore,
 		// 生图 URL 下载按绑定账户的 proxy_profile 出站（BUG-0232 关联：
 		// grok /v1/images/edits 只回 imgen.x.ai 临时链接）；解析失败回落直连。
-		ImageDownloadProxy:       newChatImageDownloadProxy(composed.db, composed.pgDialect, cfg.Secret, func(message string) { slog.Warn(message) }),
+		ImageDownloadProxy:      newChatImageDownloadProxy(composed.db, composed.pgDialect, cfg.Secret, func(message string) { slog.Warn(message) }),
 		ImageProcessor:          newChatImageProcessor(),
 		ImageObservation:        newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),
 		Compactions:             compactions,

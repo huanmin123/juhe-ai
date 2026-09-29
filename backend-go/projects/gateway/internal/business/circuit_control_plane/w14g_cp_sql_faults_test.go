@@ -38,15 +38,15 @@ import (
 var w14gErrInjected = errors.New("w14g injected sql fault")
 
 type w14gFaults struct {
-	mu           sync.Mutex
-	onQuery      func(query string) error
-	onExec       func(query string) error
-	onRowsNext   func(query string, dest []driver.Value)
-	onRowsFail   func(query string) error
-	onRowsErr    func(query string) error
-	onRowsClose  func(query string) error
-	onCommit     func() error
-	onAffected   func(query string) (int64, bool)
+	mu          sync.Mutex
+	onQuery     func(query string) error
+	onExec      func(query string) error
+	onRowsNext  func(query string, dest []driver.Value)
+	onRowsFail  func(query string) error
+	onRowsErr   func(query string) error
+	onRowsClose func(query string) error
+	onCommit    func() error
+	onAffected  func(query string) (int64, bool)
 }
 
 func (f *w14gFaults) set(mod func(*w14gFaults)) {

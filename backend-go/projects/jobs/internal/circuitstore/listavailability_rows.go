@@ -706,23 +706,23 @@ func accessTypeOf(authorized bool) string {
 func permissionsOf(authorized bool, sourceType sql.NullString) map[string]any {
 	if authorized {
 		return map[string]any{
-			"canUse":                true,
-			"canEdit":               false,
-			"canDelete":             false,
+			"canUse":                 true,
+			"canEdit":                false,
+			"canDelete":              false,
 			"canReturnAuthorization": sourceType.String == "manual",
-			"canAuthorize":          false,
-			"canViewCredentials":    false,
-			"canLock":               true,
+			"canAuthorize":           false,
+			"canViewCredentials":     false,
+			"canLock":                true,
 		}
 	}
 	return map[string]any{
-		"canUse":                true,
-		"canEdit":               true,
-		"canDelete":             true,
+		"canUse":                 true,
+		"canEdit":                true,
+		"canDelete":              true,
 		"canReturnAuthorization": false,
-		"canAuthorize":          true,
-		"canViewCredentials":    true,
-		"canLock":               true,
+		"canAuthorize":           true,
+		"canViewCredentials":     true,
+		"canLock":                true,
 	}
 }
 
@@ -799,9 +799,9 @@ func isValidClientCompatibility(value string) bool {
 // ---- 锁状态（listAccountLockStatesAsync + DEAD_CONFIRMED 恢复写）----
 
 type accountLockView struct {
-	enabled                bool
-	lockState              string
-	lockDeathTimeoutSeconds *int
+	enabled                  bool
+	lockState                string
+	lockDeathTimeoutSeconds  *int
 	lockRetryIntervalSeconds *int
 }
 
@@ -827,11 +827,11 @@ func (l *ProjectionItemLoader) loadAccountLockView(ctx context.Context, accountI
 	const columns = `enabled, lock_state, lock_death_timeout_seconds, lock_retry_interval_seconds, generation`
 	row := l.db.QueryRowContext(ctx, `SELECT `+columns+` FROM `+l.table("account_lock_states")+` WHERE account_id = ?`, accountID)
 	var (
-		enabled        any
-		lockState      string
-		deathTimeout   sql.NullInt64
-		retryInterval  sql.NullInt64
-		generation     sql.NullInt64
+		enabled       any
+		lockState     string
+		deathTimeout  sql.NullInt64
+		retryInterval sql.NullInt64
+		generation    sql.NullInt64
 	)
 	if err := row.Scan(&enabled, &lockState, &deathTimeout, &retryInterval, &generation); err != nil {
 		if err == sql.ErrNoRows {
@@ -840,9 +840,9 @@ func (l *ProjectionItemLoader) loadAccountLockView(ctx context.Context, accountI
 		return nil, false, err
 	}
 	view := &accountLockView{
-		enabled:                booleanValue(enabled),
-		lockState:              lockState,
-		lockDeathTimeoutSeconds: nullableInt(deathTimeout),
+		enabled:                  booleanValue(enabled),
+		lockState:                lockState,
+		lockDeathTimeoutSeconds:  nullableInt(deathTimeout),
 		lockRetryIntervalSeconds: nullableInt(retryInterval),
 	}
 	if !view.enabled || lockState != "DEAD_CONFIRMED" {

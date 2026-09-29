@@ -13,22 +13,22 @@ import (
 
 // Constants mirror client-ip-error-circuit.service.ts verbatim.
 const (
-	preAuthMaxEntries               = 20_000
-	clientIPErrorCircuitMaxEntries  = 10_000
-	preAuthWindowMs                 = 60_000
-	preAuthMissingThreshold         = 40
-	preAuthInvalidTokenThreshold    = 8
+	preAuthMaxEntries                 = 20_000
+	clientIPErrorCircuitMaxEntries    = 10_000
+	preAuthWindowMs                   = 60_000
+	preAuthMissingThreshold           = 40
+	preAuthInvalidTokenThreshold      = 8
 	preAuthInvalidTokenSprayThreshold = 120
-	preAuthInitialBlockMs           = 30_000
-	preAuthMaxBlockMs               = 5 * 60_000
+	preAuthInitialBlockMs             = 30_000
+	preAuthMaxBlockMs                 = 5 * 60_000
 
-	clientIPSignatureWindowMs   = 30_000
-	clientIPTotalWindowMs       = 60_000
-	clientIPSignatureThreshold  = 5
-	clientIPTotalThreshold      = 20
-	clientIPInitialBlockMs      = 30_000
-	clientIPMaxBlockMs          = 10 * 60_000
-	maxSignaturesPerScope       = 20
+	clientIPSignatureWindowMs  = 30_000
+	clientIPTotalWindowMs      = 60_000
+	clientIPSignatureThreshold = 5
+	clientIPTotalThreshold     = 20
+	clientIPInitialBlockMs     = 30_000
+	clientIPMaxBlockMs         = 10 * 60_000
+	maxSignaturesPerScope      = 20
 
 	// circuitStateStoreName mirrors createRuntimeStateStore('gateway-client-ip-error-circuit').
 	circuitStateStoreName = "gateway-client-ip-error-circuit"
@@ -37,9 +37,9 @@ const (
 // Pre-auth failure reasons mirror GatewayPreAuthFailureReason plus the spray
 // pseudo reason.
 const (
-	preAuthReasonMissingBearerToken   = "missing_bearer_token"
-	preAuthReasonInvalidAPIKey        = "invalid_api_key"
-	preAuthReasonInvalidTokenSpray    = "invalid_api_key_spray"
+	preAuthReasonMissingBearerToken = "missing_bearer_token"
+	preAuthReasonInvalidAPIKey      = "invalid_api_key"
+	preAuthReasonInvalidTokenSpray  = "invalid_api_key_spray"
 )
 
 // Error circuit reasons mirror GatewayClientIpErrorCircuitReason.
@@ -50,11 +50,11 @@ const (
 
 // preAuthEntry mirrors PreAuthEntry.
 type preAuthEntry struct {
-	Key            string   `json:"key"`
-	Samples        []int64  `json:"samples"`
-	BlockCount     int      `json:"blockCount"`
-	BlockedUntilMs *int64   `json:"blockedUntilMs,omitempty"`
-	LastReason     *string  `json:"lastReason,omitempty"`
+	Key            string  `json:"key"`
+	Samples        []int64 `json:"samples"`
+	BlockCount     int     `json:"blockCount"`
+	BlockedUntilMs *int64  `json:"blockedUntilMs,omitempty"`
+	LastReason     *string `json:"lastReason,omitempty"`
 }
 
 // signatureSample mirrors the Array<[string, number[]]> signature tuple.

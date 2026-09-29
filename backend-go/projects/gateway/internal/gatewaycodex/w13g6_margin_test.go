@@ -318,8 +318,8 @@ func writeFileAt(path string, data []byte) error {
 func TestW13g6MaterializedMutationNonArray(t *testing.T) {
 	start := 2
 	state := &CodexResponsesContextRequestState{
-		PreviousResponseKind:                PreviousKindInternal,
-		MaterializedCurrentInputStartIndex:  &start,
+		PreviousResponseKind:               PreviousKindInternal,
+		MaterializedCurrentInputStartIndex: &start,
 	}
 	input := "scalar-input"
 	if got := currentInputFromMaterializedMutation(state, input); got != input {
@@ -401,5 +401,5 @@ func TestW13g6AnthropicDownstreamUnknownStream(t *testing.T) {
 	}
 }
 
-	// 静态引用 gatewaysession，保证会话身份 seam 的编译期契约。
-	var _ = gatewaysession.IdentityStatusMissing
+// 静态引用 gatewaysession，保证会话身份 seam 的编译期契约。
+var _ = gatewaysession.IdentityStatusMissing

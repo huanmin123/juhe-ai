@@ -367,8 +367,8 @@ func TestAIPublicRateLimitRedisSharedKeyspace(t *testing.T) {
 	}
 	expectedArgs := []any{
 		itoa64(nowMs), "2", "0",
-		"60000", itoa64((nowMs/60000)*60000), "100", "900000", "86400000",
-		"3600000", itoa64((nowMs/3600000)*3600000), "5000", "3600000", "86400000",
+		"60000", itoa64((nowMs / 60000) * 60000), "100", "900000", "86400000",
+		"3600000", itoa64((nowMs / 3600000) * 3600000), "5000", "3600000", "86400000",
 	}
 	if len(call.args) != len(expectedArgs) {
 		t.Fatalf("argument count mismatch: got %v", call.args)

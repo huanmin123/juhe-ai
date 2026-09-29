@@ -386,8 +386,10 @@ func (w *w13cFailResponseWriter) Header() http.Header {
 	}
 	return w.header
 }
-func (w *w13cFailResponseWriter) Write([]byte) (int, error) { return 0, errors.New("w13c write failure") }
-func (w *w13cFailResponseWriter) WriteHeader(int)           {}
+func (w *w13cFailResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("w13c write failure")
+}
+func (w *w13cFailResponseWriter) WriteHeader(int) {}
 
 func TestW13CHeartbeatLoopArms2(t *testing.T) {
 	// 写入失败 → 循环立即退出。

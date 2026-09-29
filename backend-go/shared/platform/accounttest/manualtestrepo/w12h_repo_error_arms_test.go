@@ -10,8 +10,8 @@ package manualtestrepo
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 

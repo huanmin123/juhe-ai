@@ -299,7 +299,7 @@ func TestW12HStaleFilterMatrixAndOrphanMinuteCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	seedScore("acc-b", "fresh", "2026-09-04T07:00:00.000Z") // 非 dirty → stale 降级
+	seedScore("acc-b", "fresh", "2026-09-04T07:00:00.000Z")  // 非 dirty → stale 降级
 	seedScore("acc-c", "failed", "2026-09-04T06:00:00.000Z") // 非 dirty → failed→unknown 降级
 	seedScore("acc-d", "stale", "2026-09-04T05:00:00.000Z")  // 非 fresh/failed → 不参与
 	// acc-orphan：只有分钟行、无质量行、无元数据 → 孤儿分钟行被清理。

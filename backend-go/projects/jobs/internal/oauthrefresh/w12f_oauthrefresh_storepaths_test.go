@@ -21,11 +21,11 @@ func TestW12fRotateCredentialsMismatchArms(t *testing.T) {
 	seedOpenAIOAuthAccount(t, db, "w12f-rot", openAICredentials(expiresInMillis(0)), now)
 
 	base := RotateCredentialsInput{
-		AccountID:                        "w12f-rot",
-		ExpectedProviderCode:             "gpt",
-		ExpectedAccountType:              "oauth",
+		AccountID:                         "w12f-rot",
+		ExpectedProviderCode:              "gpt",
+		ExpectedAccountType:               "oauth",
 		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		ExpectedConfigRevision:           1,
+		ExpectedConfigRevision:            1,
 	}
 
 	// provider 不匹配 → nil, nil。
@@ -99,7 +99,7 @@ func TestW12fKeepaliveRefreshOneArms(t *testing.T) {
 	}
 	// keepalive 仅支持 anthropic/gemini/xai；openai 账户命中不支持分支。
 	unsupported := KeepalivePlan{Provider: "gpt", AccountType: "oauth", Lead: time.Hour}
-	seedAccountRow(t, db, accountRowSeed{ID: "w12f-fresh", ProviderCode: "gpt", ProfileID: "profile_gpt_openai_v1", Type: "oauth", Credentials: openAICredentials(expiresInMillis(int64((6*time.Hour)/time.Millisecond))), Now: now})
+	seedAccountRow(t, db, accountRowSeed{ID: "w12f-fresh", ProviderCode: "gpt", ProfileID: "profile_gpt_openai_v1", Type: "oauth", Credentials: openAICredentials(expiresInMillis(int64((6 * time.Hour) / time.Millisecond))), Now: now})
 	if _, err := job.refreshOne(ctx, unsupported, &RotationAccount{ID: "w12f-fresh", ConfigRevision: 1}, now); err == nil {
 		t.Fatal("不支持的保活供应商必须报错")
 	}

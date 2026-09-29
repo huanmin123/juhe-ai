@@ -35,9 +35,15 @@ func SlogLogger(logger *slog.Logger) Logger {
 	return slogLogger{logger: logger}
 }
 
-func (a slogLogger) Info(fields map[string]any, message string) { a.logger.Info(message, slogFields(fields)...) }
-func (a slogLogger) Warn(fields map[string]any, message string) { a.logger.Warn(message, slogFields(fields)...) }
-func (a slogLogger) Error(fields map[string]any, message string) { a.logger.Error(message, slogFields(fields)...) }
+func (a slogLogger) Info(fields map[string]any, message string) {
+	a.logger.Info(message, slogFields(fields)...)
+}
+func (a slogLogger) Warn(fields map[string]any, message string) {
+	a.logger.Warn(message, slogFields(fields)...)
+}
+func (a slogLogger) Error(fields map[string]any, message string) {
+	a.logger.Error(message, slogFields(fields)...)
+}
 
 func slogFields(fields map[string]any) []any {
 	if len(fields) == 0 {

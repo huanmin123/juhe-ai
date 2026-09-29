@@ -9,7 +9,7 @@ import (
 )
 
 // w16l：legacy 迁移路径 helper 与 appendHotSearchFile 的定向补测
-//（全模块扫描发现 94.8% < 95% 硬门槛，补齐边际）。
+// （全模块扫描发现 94.8% < 95% 硬门槛，补齐边际）。
 func TestW16LEqualLegacyPath(t *testing.T) {
 	same := `internal/auditlog/./legacy.db`
 	if runtime.GOOS == "windows" {

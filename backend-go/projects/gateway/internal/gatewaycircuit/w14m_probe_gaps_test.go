@@ -117,12 +117,12 @@ func TestW14MProbeMergeSettledThenReplacesGeneration(t *testing.T) {
 	base.states[key] = &ProbeState{RuntimeKey: key, Generation: 3, NextProbeAtMs: 900}
 	stub := &w14mProbeStub{ProbeStateStore: base}
 	settled := &ProbeState{
-		RuntimeKey:     key,
-		Generation:     3,
-		NextProbeAtMs:  900,
-		Outcome:        strPtr(ProbeOutcomeSuccess),
-		CompletedAtMs:  int64Ptr(950),
-		SourceFences:   []string{encodeSourceFence(testFence("w14m-late"))},
+		RuntimeKey:    key,
+		Generation:    3,
+		NextProbeAtMs: 900,
+		Outcome:       strPtr(ProbeOutcomeSuccess),
+		CompletedAtMs: int64Ptr(950),
+		SourceFences:  []string{encodeSourceFence(testFence("w14m-late"))},
 	}
 	stub.onMerge = func(ProbeState) (*ProbeState, error) { return settled, nil }
 	stub.onNextGen = func() (int64, error) { return 4, nil }
@@ -325,10 +325,10 @@ func TestW14MProbeSourceFenceTerminalAndNilSettlement(t *testing.T) {
 	key := AvailabilityProbeRuntimeKey("w14m-terminal", ProbeKindCodexSourceAvoidance, 0)
 	base := newMockProbeStore()
 	base.states[key] = &ProbeState{
-		RuntimeKey:     key,
-		Generation:     1,
+		RuntimeKey:      key,
+		Generation:      1,
 		ProbeRunUntilMs: int64Ptr(500),
-		SourceFences:   []string{encodeSourceFence(testFence("w14m-term"))},
+		SourceFences:    []string{encodeSourceFence(testFence("w14m-term"))},
 	}
 	coordinator := NewProbeCoordinator(base, func() int64 { return 1_000 }, func() string { return "w14m-owner" })
 	disposition, err := coordinator.SourceFenceSettlementDisposition(ctx, SourceFenceDispositionInput{

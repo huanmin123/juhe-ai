@@ -345,5 +345,3 @@ func TestW14CDeleteAssetFaultArms(t *testing.T) {
 		t.Fatal("会话查询故障必须报错")
 	}
 }
-
-

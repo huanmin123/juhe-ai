@@ -19,7 +19,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type manualClock struct {
-	mu sync.Mutex
+	mu  sync.Mutex
 	now time.Time
 }
 
@@ -56,15 +56,15 @@ type fakeModels struct {
 	groupCalls     map[string]int
 	groupAccessErr error
 
-	accounts    map[string]OpenAIAccountsForGroupResult
-	accountErr  error
+	accounts   map[string]OpenAIAccountsForGroupResult
+	accountErr error
 
 	policies    map[string][]ResponseInspectionPolicySummary
 	policyCalls map[string]int
 
-	catalog     map[string][]ProviderModelCatalogItem
+	catalog      map[string][]ProviderModelCatalogItem
 	catalogCalls map[string]int
-	catalogErr  error
+	catalogErr   error
 
 	concurrency map[string]int
 }
@@ -81,21 +81,21 @@ func newFakeModels() *fakeModels {
 		catalogCalls: map[string]int{},
 		concurrency:  map[string]int{},
 		settings: GatewaySettings{
-			GatewayTextRawBodyLimitMegabytes:          8,
+			GatewayTextRawBodyLimitMegabytes:           8,
 			AccountCircuitConfirmationFailuresRequired: 3,
-			UsageStatsTimezone:                        "UTC",
-			DefaultTemporaryUnschedulableMinutes:      10,
-			StreamCircuitBreakerEnabled:               true,
-			TextFirstResponseTimeoutSeconds:           60,
-			TextStreamIdleTimeoutSeconds:              30,
-			TextUncommittedAttemptMaxLifetimeSeconds:  300,
-			ImageFirstResponseTimeoutSeconds:          60,
-			ImageStreamIdleTimeoutSeconds:             30,
-			ImageUncommittedAttemptMaxLifetimeSeconds: 300,
-			ImageRequestWallTimeoutSeconds:            600,
-			NoAvailableAccountWaitTimeoutSeconds:      30,
-			StreamFailureThresholdCount:               3,
-			StreamFailureThresholdWindowMinutes:       5,
+			UsageStatsTimezone:                         "UTC",
+			DefaultTemporaryUnschedulableMinutes:       10,
+			StreamCircuitBreakerEnabled:                true,
+			TextFirstResponseTimeoutSeconds:            60,
+			TextStreamIdleTimeoutSeconds:               30,
+			TextUncommittedAttemptMaxLifetimeSeconds:   300,
+			ImageFirstResponseTimeoutSeconds:           60,
+			ImageStreamIdleTimeoutSeconds:              30,
+			ImageUncommittedAttemptMaxLifetimeSeconds:  300,
+			ImageRequestWallTimeoutSeconds:             600,
+			NoAvailableAccountWaitTimeoutSeconds:       30,
+			StreamFailureThresholdCount:                3,
+			StreamFailureThresholdWindowMinutes:        5,
 		},
 	}
 }
@@ -209,11 +209,11 @@ func newTestService(t *testing.T, models ReadModels, clock *manualClock, mutate 
 
 func testAPIKeyRow(id string, mode string, groupIDs ...string) *GatewayAPIKeyRow {
 	row := &GatewayAPIKeyRow{
-		ID:               id,
-		SystemAccountID:  "sys_owner",
-		RouteStrategyID:  "rs_" + id,
+		ID:                id,
+		SystemAccountID:   "sys_owner",
+		RouteStrategyID:   "rs_" + id,
 		RouteStrategyMode: mode,
-		Status:           "active",
+		Status:            "active",
 	}
 	for _, groupID := range groupIDs {
 		row.GroupBindings = append(row.GroupBindings, GatewayAPIKeyGroupBindingRow{
@@ -238,9 +238,9 @@ func testAccount(id string, groupOwner string) OpenAIAccountSecret {
 		ConcurrencyLimit: 5, Priority: 1,
 		ClientCompatibility: "openai_standard", HealthCheckEndpointMode: "chat_json",
 		BaseURL: "https://upstream.test/v1", APIKey: "upstream-secret",
-		Credentials:            map[string]any{"apiKey": "upstream-secret"},
-		SupportedModels:        []string{"gpt-test"},
-		StreamFailureCount:     0,
+		Credentials:        map[string]any{"apiKey": "upstream-secret"},
+		SupportedModels:    []string{"gpt-test"},
+		StreamFailureCount: 0,
 	}
 }
 
@@ -779,7 +779,7 @@ func TestClearReasonDiscrimination(t *testing.T) {
 		t.Fatalf("settings_updated must clear settings cache once, got %d", clears)
 	}
 	// 模型目录原因触发 catalog 世代推进。
-	models.catalog["gpt"] = []ProviderModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-test", SupportedAPIProtocols: []string{"responses"}, SupportedTools: []string{}, InputModalities: []string{"text"}, OutputModalities: []string{"text"}, SupportedServiceTiers: []string{}, SupportedReasoningEfforts: []string{}, Source: "built_in", Scope: "built_in", Status: "active"}}
+	models.catalog["gpt"] = []ProviderModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-test", SupportedAPIProtocols: []string{"responses"}, InputModalities: []string{"text"}, OutputModalities: []string{"text"}, SupportedServiceTiers: []string{}, SupportedReasoningEfforts: []string{}, Source: "built_in", Scope: "built_in", Status: "active"}}
 	if _, err := svc.ListCachedProviderModelCatalogAsync(ctx, ModelCatalogListOptions{ProviderCode: "gpt"}); err != nil {
 		t.Fatalf("warm catalog: %v", err)
 	}
@@ -910,7 +910,7 @@ func catalogItem(provider, model string) ProviderModelCatalogItem {
 		ProviderCode: provider, Model: model, Scope: "built_in", Status: "active",
 		Source: "built_in", SupportedAPIProtocols: []string{"responses"},
 		InputModalities: []string{"text"}, OutputModalities: []string{"text"},
-		SupportedTools: []string{}, SupportedServiceTiers: []string{}, SupportedReasoningEfforts: []string{},
+		SupportedServiceTiers: []string{}, SupportedReasoningEfforts: []string{},
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 )
 
 // TestW10DRenderUserContextMessageBranches 覆盖 renderUserContextMessage 分支
-//（恒 chat：无标记返回字符串、未就绪图片触发观察等待与 unsupported_image）。
+// （恒 chat：无标记返回字符串、未就绪图片触发观察等待与 unsupported_image）。
 func TestW10DRenderUserContextMessageBranches(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.fixture.createConversation("conv_w10d_rc", routeTestOwner)

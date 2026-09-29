@@ -67,11 +67,11 @@ func TestW14HPersistPayloadBlobLifecycle(t *testing.T) {
 	}
 	// retention：删除两条日志并调度 + 执行 blob 文件 GC。
 	config := RetentionConfig{
-		SuccessHotCutoff:  time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
-		SuccessCutoff:     time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
-		FailureCutoff:     time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
-		ErrorGroupCutoff:  time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
-		BatchSize:         100,
+		SuccessHotCutoff: time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		SuccessCutoff:    time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		FailureCutoff:    time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		ErrorGroupCutoff: time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		BatchSize:        100,
 	}
 	retention, err := store.CleanupRetention(ctx, lease, config)
 	if err != nil {

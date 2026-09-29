@@ -19,14 +19,14 @@ import (
 
 // w14hLegacyFixture 构造带 5 表数据与 blob 文件的旧 Node 审计源。
 type w14hLegacyFixture struct {
-	sourcePath    string
-	targetPath    string
-	sourceBlobs   string
-	targetBlobs   string
-	blobRaw       []byte
+	sourcePath     string
+	targetPath     string
+	sourceBlobs    string
+	targetBlobs    string
+	blobRaw        []byte
 	blobCompressed []byte
-	blobKey       string
-	blobDigest    string
+	blobKey        string
+	blobDigest     string
 }
 
 func w14hGzipBytes(raw []byte) []byte {
@@ -320,4 +320,4 @@ func TestW14HVerifyBlobFileMatrix(t *testing.T) {
 	if _, err := MigrateLegacySQLite(context.Background(), options); err == nil || !strings.Contains(err.Error(), "blob 目录") {
 		t.Fatalf("缺 blob 目录=%v", err)
 	}
-	}
+}

@@ -130,8 +130,8 @@ func TestW14dRotationCASConflictAtStore(t *testing.T) {
 		ExpectedProviderCode:              "gpt",
 		ExpectedAccountType:               "oauth",
 		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Credentials:            map[string]any{"access_token": "new"},
-		Access:                 AccessScope{ViewerID: adminID, IsAdmin: true},
+		Credentials:                       map[string]any{"access_token": "new"},
+		Access:                            AccessScope{ViewerID: adminID, IsAdmin: true},
 	})
 	if err == nil || err.Error() != "账户配置版本冲突" {
 		t.Fatalf("store CAS conflict: %v", err)

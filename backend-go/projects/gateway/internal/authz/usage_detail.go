@@ -15,20 +15,20 @@ import (
 
 // UsageSummary mirrors AccountUsageSummary (domain/types.ts:487-502).
 type UsageSummary struct {
-	RequestCount      float64 `json:"requestCount"`
-	InputTokens       float64 `json:"inputTokens"`
-	OutputTokens      float64 `json:"outputTokens"`
-	CacheReadTokens   float64 `json:"cacheReadTokens"`
-	CacheReadCost     float64 `json:"cacheReadCost"`
-	CacheWriteTokens  float64 `json:"cacheWriteTokens"`
+	RequestCount       float64 `json:"requestCount"`
+	InputTokens        float64 `json:"inputTokens"`
+	OutputTokens       float64 `json:"outputTokens"`
+	CacheReadTokens    float64 `json:"cacheReadTokens"`
+	CacheReadCost      float64 `json:"cacheReadCost"`
+	CacheWriteTokens   float64 `json:"cacheWriteTokens"`
 	CacheWrite1hTokens float64 `json:"cacheWrite1hTokens"`
-	CacheWriteCost    float64 `json:"cacheWriteCost"`
-	ThinkingTokens    float64 `json:"thinkingTokens"`
-	InputImageTokens  float64 `json:"inputImageTokens"`
-	OutputImageTokens float64 `json:"outputImageTokens"`
-	TotalTokens       float64 `json:"totalTokens"`
-	TotalCost         float64 `json:"totalCost"`
-	LastUsedAt        *string `json:"lastUsedAt,omitempty"`
+	CacheWriteCost     float64 `json:"cacheWriteCost"`
+	ThinkingTokens     float64 `json:"thinkingTokens"`
+	InputImageTokens   float64 `json:"inputImageTokens"`
+	OutputImageTokens  float64 `json:"outputImageTokens"`
+	TotalTokens        float64 `json:"totalTokens"`
+	TotalCost          float64 `json:"totalCost"`
+	LastUsedAt         *string `json:"lastUsedAt,omitempty"`
 }
 
 // LastUsedAtString exposes the sorting key of the embedded summary.
@@ -45,19 +45,19 @@ func fullUsageSummary(row *usageWindowRow) UsageSummary {
 		return UsageSummary{}
 	}
 	summary := UsageSummary{
-		RequestCount:      row.RequestCount,
-		InputTokens:       row.InputTokens,
-		OutputTokens:      row.OutputTokens,
-		CacheReadTokens:   row.CacheReadTokens,
-		CacheReadCost:     row.CacheReadCostUsd,
-		CacheWriteTokens:  row.CacheWriteTokens,
+		RequestCount:       row.RequestCount,
+		InputTokens:        row.InputTokens,
+		OutputTokens:       row.OutputTokens,
+		CacheReadTokens:    row.CacheReadTokens,
+		CacheReadCost:      row.CacheReadCostUsd,
+		CacheWriteTokens:   row.CacheWriteTokens,
 		CacheWrite1hTokens: row.CacheWrite1hTokens,
-		CacheWriteCost:    row.CacheWriteCostUsd,
-		ThinkingTokens:    row.ThinkingTokens,
-		InputImageTokens:  row.InputImageTokens,
-		OutputImageTokens: row.OutputImageTokens,
-		TotalTokens:       row.InputTokens + row.OutputTokens,
-		TotalCost:         row.TotalCostUsd,
+		CacheWriteCost:     row.CacheWriteCostUsd,
+		ThinkingTokens:     row.ThinkingTokens,
+		InputImageTokens:   row.InputImageTokens,
+		OutputImageTokens:  row.OutputImageTokens,
+		TotalTokens:        row.InputTokens + row.OutputTokens,
+		TotalCost:          row.TotalCostUsd,
 	}
 	if row.LastUsedAt.Valid && row.LastUsedAt.String != "" {
 		value := row.LastUsedAt.String
@@ -156,9 +156,9 @@ func scanRuntimeUsageRow(scanner interface{ Scan(...any) error }) (runtimeUsageR
 
 // usageScopeRequest mirrors UsageSummaryScopeRequest.
 type usageScopeRequest struct {
-	rowKey         string
+	rowKey          string
 	systemAccountID string
-	scopeID        string
+	scopeID         string
 }
 
 // usageStatsSystemAccountID mirrors authorizationUsageStatsSystemAccountId

@@ -24,12 +24,12 @@ func TestW12fNullCredentialsScanArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.RotateCredentials(ctx, RotateCredentialsInput{
-		AccountID:                        "w12f-null",
-		ExpectedProviderCode:             "gpt",
-		ExpectedAccountType:              "oauth",
+		AccountID:                         "w12f-null",
+		ExpectedProviderCode:              "gpt",
+		ExpectedAccountType:               "oauth",
 		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		ExpectedConfigRevision:           1,
-		Credentials:                      map[string]any{"refresh_token": "w12f-rt"},
+		ExpectedConfigRevision:            1,
+		Credentials:                       map[string]any{"refresh_token": "w12f-rt"},
 	}); err == nil {
 		t.Fatal("垃圾密文必须报错")
 	}

@@ -27,18 +27,18 @@ import (
 
 // w12dFakeStore 是 Store 接口的脚本化 Mock（可注入 panic 与错误）。
 type w12dFakeStore struct {
-	findCursor      *Cursor
-	findCursorErr   error
-	findByIdentity  *Cursor
-	findByIdentErr  error
-	commitPanic     bool
-	commitErr       error
-	retentionDays   int
-	retentionErr    error
-	cleanupErr      error
-	cleanupResult   CleanupResult
-	replaceErr      error
-	copyErr         error
+	findCursor     *Cursor
+	findCursorErr  error
+	findByIdentity *Cursor
+	findByIdentErr error
+	commitPanic    bool
+	commitErr      error
+	retentionDays  int
+	retentionErr   error
+	cleanupErr     error
+	cleanupResult  CleanupResult
+	replaceErr     error
+	copyErr        error
 }
 
 func (s *w12dFakeStore) FindCursor(ctx context.Context, logFile string) (*Cursor, error) {
@@ -95,14 +95,14 @@ func (s *w12dFakeStore) Close() error { return nil }
 func w12dFakeConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{
-		Mode:              ModeSQLite,
+		Mode:                   ModeSQLite,
 		RuntimeLogDatabasePath: filepath.Join(t.TempDir(), "w12d-rl.sqlite3"),
-		BusinessPath:      filepath.Join(t.TempDir(), "w12d-business.sqlite3"),
-		LogDirectory:      t.TempDir(),
-		PollInterval:      time.Hour,
-		RetentionInterval: time.Hour,
-		RetentionDays:     7,
-		BatchSize:         16,
+		BusinessPath:           filepath.Join(t.TempDir(), "w12d-business.sqlite3"),
+		LogDirectory:           t.TempDir(),
+		PollInterval:           time.Hour,
+		RetentionInterval:      time.Hour,
+		RetentionDays:          7,
+		BatchSize:              16,
 	}
 }
 

@@ -16,10 +16,10 @@ import (
 // step and retains the normalized records. The real Redis Stream / IPC /
 // spool-backed writer is assembled by the J-F/G20 wave.
 type MemoryUsageRecorder struct {
-	mu      sync.Mutex
-	clock   Clock
+	mu        sync.Mutex
+	clock     Clock
 	idFactory UsageRecordIDFactory
-	records []UsageRecordInput
+	records   []UsageRecordInput
 	// Failures forces EnqueueUsageRecord to fail (port-failure tests).
 	Failures int
 	// Delivered counts successful enqueues.
@@ -154,16 +154,16 @@ func (d *FinalizationDispatch) Runtime() GatewayUsageFinalizationRuntime {
 
 // GatewayUsageFinalizationRuntime mirrors GatewayUsageFinalizationRuntime.
 type GatewayUsageFinalizationRuntime struct {
-	PendingCount      int
-	QueuedCount       int
-	QueuedBytes       int
-	ActiveCount       int
-	DroppedCount      int
+	PendingCount       int
+	QueuedCount        int
+	QueuedBytes        int
+	ActiveCount        int
+	DroppedCount       int
 	AdmissionWaitCount int
 	OverflowSpoolCount int
-	MaxItems          int
-	MaxBytes          int
-	MaxConcurrency    int
+	MaxItems           int
+	MaxBytes           int
+	MaxConcurrency     int
 }
 
 // GatewayUsageFinalizationQueue mirrors the module state of
@@ -177,15 +177,15 @@ type GatewayUsageFinalizationQueue struct {
 	maxBytes       int
 	maxConcurrency int
 
-	mu                sync.Mutex
-	cond              *sync.Cond
-	queued            []taskUnit
-	queuedBytes       int
-	active            int
+	mu                 sync.Mutex
+	cond               *sync.Cond
+	queued             []taskUnit
+	queuedBytes        int
+	active             int
 	admissionWaitCount int
 	overflowSpoolCount int
-	waiters           int
-	wg                sync.WaitGroup
+	waiters            int
+	wg                 sync.WaitGroup
 }
 
 // gatewayUsageFinalizationDefaults mirror the Node runtime defaults
@@ -195,7 +195,7 @@ type GatewayUsageFinalizationQueue struct {
 // not a throughput limit. Node 的 5000=globalMax 是全进程共享 governor 预算；
 // Go 此处为收尾队列独占上限，实际 DB 写并发仍受 PG 池封顶。
 const (
-	defaultUsageFinalizationMaxItems        = 2048
+	defaultUsageFinalizationMaxItems       = 2048
 	defaultUsageFinalizationMaxConcurrency = 5000
 )
 

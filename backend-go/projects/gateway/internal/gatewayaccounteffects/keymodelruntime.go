@@ -35,20 +35,20 @@ const (
 var keyModelBackoffMs = []int64{5_000, 15_000, 60_000, 5 * 60_000}
 
 const (
-	KeyModelRecoverySuccessThreshold    = 3
-	KeyModelRecoverySuccessMaxGapMs     = int64(2 * 60_000)
-	KeyModelRecoveryIntervalMs          = int64(10_000)
-	KeyModelProbeTimeoutMs              = int64(30_000)
-	KeyModelProbeLeaseMs                = int64(45_000)
-	KeyModelProbeLeaseRenewMs           = int64(10_000)
-	KeyModelForegroundLimit             = 2
-	KeyModelForegroundPrecommitLeaseMs  = int64(90_000)
-	KeyModelForegroundLeaseRenewMs      = int64(30_000)
+	KeyModelRecoverySuccessThreshold          = 3
+	KeyModelRecoverySuccessMaxGapMs           = int64(2 * 60_000)
+	KeyModelRecoveryIntervalMs                = int64(10_000)
+	KeyModelProbeTimeoutMs                    = int64(30_000)
+	KeyModelProbeLeaseMs                      = int64(45_000)
+	KeyModelProbeLeaseRenewMs                 = int64(10_000)
+	KeyModelForegroundLimit                   = 2
+	KeyModelForegroundPrecommitLeaseMs        = int64(90_000)
+	KeyModelForegroundLeaseRenewMs            = int64(30_000)
 	KeyModelForegroundRedisOperationTimeoutMs = int64(100)
-	KeyModelMainProbeUnknownRetryMs     = int64(10_000)
-	keyModelStateCapacity               = 50_000
-	keyModelClosedRetentionMs           = int64(5 * 60_000)
-	keyModelReceiptRetentionMs          = int64(5 * 60_000)
+	KeyModelMainProbeUnknownRetryMs           = int64(10_000)
+	keyModelStateCapacity                     = 50_000
+	keyModelClosedRetentionMs                 = int64(5 * 60_000)
+	keyModelReceiptRetentionMs                = int64(5 * 60_000)
 )
 
 // CapabilityKey mirrors CapabilityKey; the JSON tags are the canonical hash
@@ -65,25 +65,25 @@ type CapabilityKey struct {
 
 // KeyModelProbeLease mirrors the probeLease field.
 type KeyModelProbeLease struct {
-	LeaseID          string `json:"leaseId"`
-	LeaseUntilMs     int64  `json:"leaseUntilMs"`
-	PriorSuccessCount int   `json:"priorSuccessCount"`
+	LeaseID           string `json:"leaseId"`
+	LeaseUntilMs      int64  `json:"leaseUntilMs"`
+	PriorSuccessCount int    `json:"priorSuccessCount"`
 }
 
 // KeyModelState mirrors KeyModelState; the JSON shape is the Redis wire
 // contract (Lua cjson on write, JSON parse on read).
 type KeyModelState struct {
 	CapabilityKey
-	CapabilityHash         string             `json:"capabilityHash"`
-	Generation             int64              `json:"generation"`
-	Phase                  KeyModelPhase      `json:"phase"`
-	BackoffAttempt         int                `json:"backoffAttempt"`
-	RetryAtMs              *int64             `json:"retryAtMs,omitempty"`
-	RecoverySuccessCount   int                `json:"recoverySuccessCount"`
-	LastRecoverySuccessAtMs *int64            `json:"lastRecoverySuccessAtMs,omitempty"`
-	LastObservedAtMs       int64              `json:"lastObservedAtMs"`
-	LastOutcome            KeyModelOutcome    `json:"lastOutcome,omitempty"`
-	ProbeLease             *KeyModelProbeLease `json:"probeLease,omitempty"`
+	CapabilityHash          string              `json:"capabilityHash"`
+	Generation              int64               `json:"generation"`
+	Phase                   KeyModelPhase       `json:"phase"`
+	BackoffAttempt          int                 `json:"backoffAttempt"`
+	RetryAtMs               *int64              `json:"retryAtMs,omitempty"`
+	RecoverySuccessCount    int                 `json:"recoverySuccessCount"`
+	LastRecoverySuccessAtMs *int64              `json:"lastRecoverySuccessAtMs,omitempty"`
+	LastObservedAtMs        int64               `json:"lastObservedAtMs"`
+	LastOutcome             KeyModelOutcome     `json:"lastOutcome,omitempty"`
+	ProbeLease              *KeyModelProbeLease `json:"probeLease,omitempty"`
 }
 
 // Clone returns a deep copy of the state (cloneState).
@@ -233,15 +233,15 @@ func CreateKeyModelOpenState(key CapabilityKey, nowMs int64) (KeyModelState, err
 	}
 	retryAt := nowMs + KeyModelBackoffDelayMs(1)
 	return KeyModelState{
-		CapabilityKey:       normalized,
-		CapabilityHash:      hash,
-		Generation:          1,
-		Phase:               KeyModelPhaseOpen,
-		BackoffAttempt:      1,
-		RetryAtMs:           &retryAt,
+		CapabilityKey:        normalized,
+		CapabilityHash:       hash,
+		Generation:           1,
+		Phase:                KeyModelPhaseOpen,
+		BackoffAttempt:       1,
+		RetryAtMs:            &retryAt,
 		RecoverySuccessCount: 0,
-		LastObservedAtMs:    nowMs,
-		LastOutcome:         KeyModelOutcomeUpstreamNotComplete,
+		LastObservedAtMs:     nowMs,
+		LastOutcome:          KeyModelOutcomeUpstreamNotComplete,
 	}, nil
 }
 
@@ -342,8 +342,8 @@ func AcquireKeyModelRecoveryLease(state KeyModelState, input AcquireKeyModelReco
 	}
 	current.Phase = KeyModelPhaseHalfOpen
 	current.ProbeLease = &KeyModelProbeLease{
-		LeaseID:          leaseID,
-		LeaseUntilMs:     input.NowMs + KeyModelProbeLeaseMs,
+		LeaseID:           leaseID,
+		LeaseUntilMs:      input.NowMs + KeyModelProbeLeaseMs,
 		PriorSuccessCount: current.RecoverySuccessCount,
 	}
 	return KeyModelMutationApplied, current, nil

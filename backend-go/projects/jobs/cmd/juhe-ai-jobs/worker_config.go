@@ -108,7 +108,7 @@ type workerConfig struct {
 	// 账户列表可用性投影维护（Node runtimeConfig.background
 	// accountListAvailabilityProjection* 同名 env、默认值与边界）：
 	//   - ListProjectionEnabled 2026-09-21 起恒 true（开关移除恒注册；原述
-//     "Node 默认 false"为过时口径，2026-09-28 默认开启整改回正）；
+	//     "Node 默认 false"为过时口径，2026-09-28 默认开启整改回正）；
 	//   - ListProjectionIntervalMS env 1000..60000 默认 1000；
 	//   - ListProjectionBatchSize 1..100 默认 100；
 	//   - ListProjectionMaxBatchesPerRun 1..400 默认 200；

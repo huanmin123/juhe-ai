@@ -77,8 +77,8 @@ func newUsageRouteEnv(t *testing.T, autoLogin string) *usageRouteEnv {
 	}
 	authDeps := &authsys.Deps{
 		Port: service, Accounts: accounts,
-		Captcha: modelcheckauth.NewCaptchaService(nil),
-		LoginGuard: modelcheckauth.NewLoginGuard(nil),
+		Captcha:              modelcheckauth.NewCaptchaService(nil),
+		LoginGuard:           modelcheckauth.NewLoginGuard(nil),
 		CaptchaDisabled:      true,
 		DevAutoLoginUsername: autoLogin,
 	}

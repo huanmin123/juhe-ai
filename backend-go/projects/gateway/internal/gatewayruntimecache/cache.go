@@ -25,12 +25,12 @@ func SystemClock() Clock { return realClock{} }
 // Node appCache behaviour when cacheDriver === 'redis': reads and writes are
 // no-ops because the Redis shared cache becomes the fact source.
 type entryCache[K comparable, V any] struct {
-	name          string
-	max           int
-	ttl           time.Duration
+	name           string
+	max            int
+	ttl            time.Duration
 	updateAgeOnGet bool
-	enabled       bool
-	clock         Clock
+	enabled        bool
+	clock          Clock
 
 	mu      sync.Mutex
 	items   map[K]*list.Element

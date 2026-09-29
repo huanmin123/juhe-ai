@@ -100,7 +100,7 @@ func (c *coreConn) Prepare(q string) (driver.Stmt, error) {
 	return &fullStmt{conn: c}, nil
 }
 
-func (c *coreConn) Close() error   { return nil }
+func (c *coreConn) Close() error { return nil }
 func (c *coreConn) Begin() (driver.Tx, error) {
 	c.beginCount++
 	return &fakeTx{}, nil

@@ -521,7 +521,6 @@ func TestStreamExecuteHelpersW3(t *testing.T) {
 	}
 }
 
-
 // TestPublishApplicationToolEventW3 覆盖应用侧工具事件广播。
 func TestPublishApplicationToolEventW3(t *testing.T) {
 	var events []string

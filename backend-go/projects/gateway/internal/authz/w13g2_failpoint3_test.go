@@ -41,7 +41,7 @@ func TestW13g2FailpointTeamCascade(t *testing.T) {
 	}
 	for _, member := range []string{"tc1", "tc2"} {
 		if _, err := db.Exec(`INSERT INTO system_team_members (id, team_id, system_account_id, status, joined_at, created_at, updated_at)
-			VALUES (?, 'team_tc13', ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, "teammem_tc_" + member, member); err != nil {
+			VALUES (?, 'team_tc13', ?, 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, "teammem_tc_"+member, member); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -69,17 +69,17 @@ func TestW13g2FailpointTeamCascade(t *testing.T) {
 	// 超限数据：21 条 tc1 链接的 active team sources → member 回收超限
 	// failf（team_cascade.go 214-216）。
 	for i := 0; i < 21; i++ {
-		suffix := string(rune('a' + i/26)) + string(rune('a' + i%26))
+		suffix := string(rune('a'+i/26)) + string(rune('a'+i%26))
 		if _, err := db.Exec(`INSERT INTO resource_authorizations
 			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, activated_at, created_by, created_at, updated_at)
 			VALUES (?, 'group', ?, 'owner', ?, 'use', 'active', '2026-01-01T00:00:00Z', 'c', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-			"rt_tc13_" + suffix, "grp_tc13_" + suffix, "tc1"); err != nil {
+			"rt_tc13_"+suffix, "grp_tc13_"+suffix, "tc1"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO resource_authorization_sources
 			(id, authorization_id, source_type, source_team_id, status, activated_at, created_by, created_at, updated_at)
 			VALUES (?, ?, 'team', 'team_tc13', 'active', '2026-01-01T00:00:00Z', 'c', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-			"src_tc13_" + suffix, "rt_tc13_" + suffix); err != nil {
+			"src_tc13_"+suffix, "rt_tc13_"+suffix); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -90,17 +90,17 @@ func TestW13g2FailpointTeamCascade(t *testing.T) {
 	// 追加到 401 条 → revokeAllTeamSourcesTx 的 members×grants 上限 failf
 	//（team_cascade.go 84-86）。
 	for i := 21; i < 401; i++ {
-		suffix := string(rune('a' + i/26)) + string(rune('a' + i%26))
+		suffix := string(rune('a'+i/26)) + string(rune('a'+i%26))
 		if _, err := db.Exec(`INSERT INTO resource_authorizations
 			(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, activated_at, created_by, created_at, updated_at)
 			VALUES (?, 'group', ?, 'owner', 'tc2', 'use', 'active', '2026-01-01T00:00:00Z', 'c', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-			"rt_tc13_" + suffix, "grp_tc13_" + suffix); err != nil {
+			"rt_tc13_"+suffix, "grp_tc13_"+suffix); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO resource_authorization_sources
 			(id, authorization_id, source_type, source_team_id, status, activated_at, created_by, created_at, updated_at)
 			VALUES (?, ?, 'team', 'team_tc13', 'active', '2026-01-01T00:00:00Z', 'c', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-			"src_tc13_" + suffix, "rt_tc13_" + suffix); err != nil {
+			"src_tc13_"+suffix, "rt_tc13_"+suffix); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -137,7 +137,7 @@ func mustTx(t *testing.T, db *sql.DB) *sql.Tx {
 }
 
 // TestW13g2QuotaBindingBuild 覆盖 syncGrantQuotaScopeBindings 的绑定构建
-//（downstream.go 196-248）：hourly limits 生成 account/group 授权绑定。
+// （downstream.go 196-248）：hourly limits 生成 account/group 授权绑定。
 func TestW13g2QuotaBindingBuild(t *testing.T) {
 	s, _ := w13g2FailStore(t)
 	db := s.db

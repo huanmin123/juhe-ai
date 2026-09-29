@@ -94,7 +94,9 @@ type w14fFakeResult struct {
 	raErr        error
 }
 
-func (r w14fFakeResult) LastInsertId() (int64, error) { return 0, errors.New("w14f: last_insert_id unsupported") }
+func (r w14fFakeResult) LastInsertId() (int64, error) {
+	return 0, errors.New("w14f: last_insert_id unsupported")
+}
 func (r w14fFakeResult) RowsAffected() (int64, error) { return r.rowsAffected, r.raErr }
 
 type w14fFakeRows struct {
@@ -230,9 +232,9 @@ func (s *w14fRevalidateScript) execFn(query string, _ []driver.NamedValue) (driv
 
 func TestW14fRevalidatePoolRetrySuccessPath(t *testing.T) {
 	script := &w14fRevalidateScript{
-		accountRows:       [][]driver.Value{w14fRevalidateAccountRow(t)},
-		gateRows:          [][]driver.Value{{"active", int64(1), int64(1)}},
-		candidateRow:      true,
+		accountRows:  [][]driver.Value{w14fRevalidateAccountRow(t)},
+		gateRows:     [][]driver.Value{{"active", int64(1), int64(1)}},
+		candidateRow: true,
 		// 第一次 UPDATE 命中 0 行（changed==0 分支），重试命中 1 行。
 		retrySecondUpdate: true,
 		updateResult:      w14fFakeResult{rowsAffected: 0},

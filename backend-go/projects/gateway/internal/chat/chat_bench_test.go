@@ -20,11 +20,11 @@ import (
 
 // bench 系列包级 sink 防止纯函数调用被编译器消除。
 var (
-	benchSinkStripped  string
-	benchSinkValues    []string
-	benchSinkEndpoint  string
-	benchSinkBody      map[string]any
-	benchSinkEntries   []CheckpointEntryInput
+	benchSinkStripped string
+	benchSinkValues   []string
+	benchSinkEndpoint string
+	benchSinkBody     map[string]any
+	benchSinkEntries  []CheckpointEntryInput
 )
 
 // benchChatDeltaText 是流式基准的固定文本增量（48 字节/事件）。

@@ -169,7 +169,7 @@ func TestWhKnownErrorValidationPropagation(t *testing.T) {
 		t.Fatalf("message = %v", errObject["message"])
 	}
 	// 本地协议响应分支：SSE content type 附带 Cache-Control。
-	_, recorder, writer = newTestRequest("POST", "/v1/messages", )
+	_, recorder, writer = newTestRequest("POST", "/v1/messages")
 	local := NewGatewayLocalProtocolResponse(GatewayLocalProtocolResponse{
 		Message: "本地响应", Code: "local", Body: "event: done\ndata: {}\n\n",
 		ContentType: "text/event-stream",
@@ -253,10 +253,10 @@ func TestWhCancelAuditCapture(t *testing.T) {
 
 type whCancellableCapture struct{ cancelled bool }
 
-func (c *whCancellableCapture) Cancel() { c.cancelled = true }
-func (c *whCancellableCapture) BindContext(AuditGatewayContext) {}
+func (c *whCancellableCapture) Cancel()                                   { c.cancelled = true }
+func (c *whCancellableCapture) BindContext(AuditGatewayContext)           {}
 func (c *whCancellableCapture) AddGatewayMetadata(string, map[string]any) {}
-func (c *whCancellableCapture) Finalize(AuditFinalizeInput) {}
+func (c *whCancellableCapture) Finalize(AuditFinalizeInput)               {}
 
 // 协议视图：驱动协议判定与原生请求识别。
 func TestWhProtocolView(t *testing.T) {

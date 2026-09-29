@@ -562,12 +562,12 @@ func TestW14CStreamResultDiagnosticAuditBody(t *testing.T) {
 	response := NewLimitedCapture(1024)
 	response.Push([]byte("w14c-response"))
 	result := StreamResult(StreamResultInput{
-		Completed:              false,
-		Message:                "w14c",
-		DiagnosticCapture:      diagnostic,
-		UpstreamCapture:        upstream,
-		ResponseCapture:        response,
-		OutputReceived:         true,
+		Completed:         false,
+		Message:           "w14c",
+		DiagnosticCapture: diagnostic,
+		UpstreamCapture:   upstream,
+		ResponseCapture:   response,
+		OutputReceived:    true,
 	})
 	if !strings.Contains(result.ResponseBodyText, "w14c-diagnostic") {
 		t.Fatalf("诊断体必须进入响应文本: %q", result.ResponseBodyText)

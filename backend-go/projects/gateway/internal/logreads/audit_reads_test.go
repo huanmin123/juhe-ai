@@ -45,7 +45,6 @@ type readsTestEnv struct {
 // mutate hook runs after the readers are constructed and before Mount (used
 // to pin the runtime reader clock).
 
-
 func newReadsTestEnv(t *testing.T, datasetDDL []string, mutate func(audit AuditLogReader, runtime RuntimeLogReader, public PublicApiLogReader), login bool) *readsTestEnv {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:logreads-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")

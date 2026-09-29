@@ -24,9 +24,9 @@ type SuppressibleGatewayAccount struct {
 
 // AuthorizedBinding mirrors GatewayAccountRuntimeClearTarget['authorizedBinding'].
 type AuthorizedBinding struct {
-	SystemAccountID         string
-	GroupID                 string
-	AccountAuthorizationID  string
+	SystemAccountID        string
+	GroupID                string
+	AccountAuthorizationID string
 }
 
 // GatewayAccountRuntimeClearTarget mirrors GatewayAccountRuntimeClearTarget.

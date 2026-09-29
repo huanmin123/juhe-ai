@@ -86,11 +86,11 @@ func TestHierarchyTransitionIDDeterministic(t *testing.T) {
 
 func TestNormalizeConfirmationFailuresRequired(t *testing.T) {
 	tests := []struct {
-		name    string
-		value   *int64
+		name     string
+		value    *int64
 		fallback int64
-		want    int64
-		wantErr string
+		want     int64
+		wantErr  string
 	}{
 		{name: "nil uses fallback", value: nil, fallback: DefaultConfirmationFailuresRequired, want: 2},
 		{name: "legacy fallback clamped", value: int64Ptr(1), fallback: 1, want: 1},
@@ -116,7 +116,7 @@ func TestNormalizeConfirmationFailuresRequired(t *testing.T) {
 
 func TestNormalizeFailureEvidenceKey(t *testing.T) {
 	sha := strings.Repeat("ab", 32)
-	got, err := NormalizeFailureEvidenceKey(strPtr(strings.ToUpper(sha + " ")), "")
+	got, err := NormalizeFailureEvidenceKey(strPtr(strings.ToUpper(sha+" ")), "")
 	if err != nil || got != sha {
 		t.Fatalf("NormalizeFailureEvidenceKey uppercase = (%q, %v)", got, err)
 	}
@@ -221,7 +221,7 @@ func TestAccountCircuitBackoffDelayMsGolden(t *testing.T) {
 		t.Fatalf("sha1 sanity failed: %s", digest)
 	}
 	window := int64(30000) // base 120000 -> minute window
-	want := int64(120000 + (int64(0xa9993e36)%int64(window*2+1)) - window)
+	want := int64(120000 + (int64(0xa9993e36) % int64(window*2+1)) - window)
 	if want == 120000 {
 		want = 120001 // Node flips a zero offset to 1
 	}

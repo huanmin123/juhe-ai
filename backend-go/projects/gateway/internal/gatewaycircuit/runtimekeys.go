@@ -9,13 +9,13 @@ import (
 // SuppressibleGatewayAccount mirrors the SuppressibleGatewayAccount shape in
 // account-runtime-keys.ts (only the fields the runtime key needs).
 type SuppressibleGatewayAccount struct {
-	ID                         string
-	AccessType                 string // 'owner' | 'authorized' | ''
-	AccountAccessType          string // 'owner' | 'account_authorized' | 'group_authorized' | ''
-	BindingSystemAccountID     string
-	BoundGroupID               string
-	AccountAuthorizationID     string
-	CredentialSourceAccountID  string
+	ID                        string
+	AccessType                string // 'owner' | 'authorized' | ''
+	AccountAccessType         string // 'owner' | 'account_authorized' | 'group_authorized' | ''
+	BindingSystemAccountID    string
+	BoundGroupID              string
+	AccountAuthorizationID    string
+	CredentialSourceAccountID string
 }
 
 // GatewayAccountRuntimeKeyString mirrors gatewayAccountRuntimeKey(string).

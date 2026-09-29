@@ -52,10 +52,10 @@ func w16fMergeEnv(base, overlay map[string]string) map[string]string {
 // TestW16fLoadConfigPoolArms 覆盖 LoadConfig 的连接池与超时配置失败臂。
 func TestW16fLoadConfigPoolArms(t *testing.T) {
 	base := map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":        "go",
-		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":       "w16f-instance",
-		"JUHE_AI_ACCOUNT_HEALTH_STORE":             "postgres",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL":      "postgres://w16f.invalid:5432/db",
+		"JUHE_AI_ACCOUNT_HEALTH_JOBS_OWNER":   "go",
+		"JUHE_AI_ACCOUNT_HEALTH_INSTANCE_ID":  "w16f-instance",
+		"JUHE_AI_ACCOUNT_HEALTH_STORE":        "postgres",
+		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": "postgres://w16f.invalid:5432/db",
 		// INPUT_SOURCE 显式 files：缺省已改为跟随 store 模式（2026-09-19），
 		// postgres store 会默认 direct input 并要求 INPUT_POSTGRES_URL。
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE":      "files",
@@ -254,7 +254,7 @@ func TestW16fNextDueCooldownArms(t *testing.T) {
 	sourceRevision := int64(5)
 	base := Input{
 		AccountID: "w16f-acc", InputVersion: 2, ConfigRevision: 3, DispatchRevision: 4,
-		IssuedAt: now.Add(-time.Hour),
+		IssuedAt:    now.Add(-time.Hour),
 		Eligibility: Eligibility{AccountStatus: "temporary_unavailable", BoundGroup: true, AuthorizationEligible: true, SourceConfigRevision: &sourceRevision},
 	}
 	validFence := &CooldownFence{ObservationStartedAt: now.Add(-time.Hour), Generation: "gen-w16f", SourceConfigRevision: &sourceRevision}

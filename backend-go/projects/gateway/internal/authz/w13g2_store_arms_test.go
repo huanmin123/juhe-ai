@@ -761,7 +761,7 @@ func TestW13g2MutationStoreArms(t *testing.T) {
 }
 
 // TestW13g2ReturnGroupArms 覆盖 ReturnGroupForGrantee 的守卫分支
-//（return_group.go 61-98）与 RevokeGrantsForResourceDeleted。
+// （return_group.go 61-98）与 RevokeGrantsForResourceDeleted。
 func TestW13g2ReturnGroupArms(t *testing.T) {
 	f := newFixture(t)
 	w13g2SeedAccounts(t, f)

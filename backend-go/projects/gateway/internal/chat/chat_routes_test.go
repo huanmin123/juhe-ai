@@ -17,8 +17,8 @@ import (
 // middleware that derives the owner from X-Test-Owner (mirroring the
 // requireAuth + forceSelfAccessScope mount).
 type routeEnv struct {
-	t      *testing.T
-	server *httptest.Server
+	t       *testing.T
+	server  *httptest.Server
 	fixture *chatFixture
 }
 

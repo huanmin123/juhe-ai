@@ -107,17 +107,17 @@ func OpenSQLite(rawPath string) (*sql.DB, error) {
 
 // Report is the JSON result printed by the command.
 type Report struct {
-	Driver                string   `json:"driver"`
-	AlreadyMigrated       bool     `json:"alreadyMigrated"`
-	ArchivedRowsUpdated   int64    `json:"archivedRowsUpdated"`
-	ArchivedRowsTotal     int64    `json:"archivedRowsTotal"`
-	BackupTable           string   `json:"backupTable"`
-	BackedUpRows          int64    `json:"backedUpRows"`
-	DroppedColumns        []string `json:"droppedColumns,omitempty"`
-	RebuiltTable          bool     `json:"rebuiltTable"`
-	MigratedAt            string   `json:"migratedAt"`
+	Driver                 string   `json:"driver"`
+	AlreadyMigrated        bool     `json:"alreadyMigrated"`
+	ArchivedRowsUpdated    int64    `json:"archivedRowsUpdated"`
+	ArchivedRowsTotal      int64    `json:"archivedRowsTotal"`
+	BackupTable            string   `json:"backupTable"`
+	BackedUpRows           int64    `json:"backedUpRows"`
+	DroppedColumns         []string `json:"droppedColumns,omitempty"`
+	RebuiltTable           bool     `json:"rebuiltTable"`
+	MigratedAt             string   `json:"migratedAt"`
 	RemainingLegacyColumns []string `json:"remainingLegacyColumns,omitempty"`
-	RollbackSQL           string   `json:"rollbackSql"`
+	RollbackSQL            string   `json:"rollbackSql"`
 }
 
 // Ready reports the post-condition: none of the legacy columns may remain.

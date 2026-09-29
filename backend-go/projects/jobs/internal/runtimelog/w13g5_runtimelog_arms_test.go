@@ -88,4 +88,3 @@ func openW13g5SQLiteStore(t *testing.T) Store {
 	}
 	return store
 }
-

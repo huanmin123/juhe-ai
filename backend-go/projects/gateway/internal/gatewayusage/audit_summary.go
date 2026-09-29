@@ -75,13 +75,13 @@ func SummarizeAuditPayloadForLimit(payload *AuditLogPayloadInput, fullBodyLimitB
 		originalSha256 = sha256Hex(body)
 	}
 	summary := buildAuditPayloadSummary(auditPayloadSummaryBuildInput{
-		body:                   body,
-		originalSha256:         originalSha256,
-		originalBodySizeBytes:  originalBodySizeBytes,
-		originalContentType:    originalContentType,
+		body:                    body,
+		originalSha256:          originalSha256,
+		originalBodySizeBytes:   originalBodySizeBytes,
+		originalContentType:     originalContentType,
 		originalContentEncoding: originalContentEncoding,
-		fullBodyLimitBytes:     fullBodyLimitBytes,
-		reason:                 summaryReasonOrDefault(options.Reason),
+		fullBodyLimitBytes:      fullBodyLimitBytes,
+		reason:                  summaryReasonOrDefault(options.Reason),
 	})
 	encoded, err := json.Marshal(summary)
 	if err != nil {
@@ -202,13 +202,13 @@ func numericSummaryValue(value any) int {
 }
 
 type auditPayloadSummaryBuildInput struct {
-	body                   []byte
-	originalSha256         string
-	originalBodySizeBytes  int
-	originalContentType    string
+	body                    []byte
+	originalSha256          string
+	originalBodySizeBytes   int
+	originalContentType     string
 	originalContentEncoding string
-	fullBodyLimitBytes     int
-	reason                 AuditPayloadSummaryReason
+	fullBodyLimitBytes      int
+	reason                  AuditPayloadSummaryReason
 }
 
 // buildAuditPayloadSummary mirrors buildAuditPayloadSummary. Returned as an

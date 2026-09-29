@@ -11,13 +11,13 @@ import (
 // w11cFailingProbeStore wraps the mock and can fail individual operations.
 type w11cFailingProbeStore struct {
 	*mockProbeStore
-	failGet        bool
-	failNextGen    bool
+	failGet         bool
+	failNextGen     bool
 	failSetIfAbsent bool
-	failMerge      bool
-	failAcquire    bool
-	failCommit     bool
-	failReplace    bool
+	failMerge       bool
+	failAcquire     bool
+	failCommit      bool
+	failReplace     bool
 }
 
 func (m *w11cFailingProbeStore) Get(ctx context.Context, key string) (*ProbeState, error) {

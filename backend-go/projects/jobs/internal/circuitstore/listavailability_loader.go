@@ -32,8 +32,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
+	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/opsjobs"
 )
 
 // CredentialCodec 是账户凭据解密与 API Key 池提取能力（proberepo.Store 同源
@@ -155,35 +155,35 @@ type hydratedEntry struct {
 	// projection.payload_json 逐字段一致；undefined 字段不出现）。
 	payload map[string]any
 	// 投影列输入（accountListAvailabilityProjectionWrite 的取值面）。
-	accountID           string
-	effectiveStatus     string
-	effectiveAvailable  bool
-	currentConcurrency  int
-	providerCode        string
-	profileID           string
-	accountType         string
-	boundGroupID        string
-	name                string
-	priority            int
-	superPriority       bool
-	fallback            bool
-	concurrencyLimit    int
-	sourceAccountID     string
-	authorizationID     string
+	accountID          string
+	effectiveStatus    string
+	effectiveAvailable bool
+	currentConcurrency int
+	providerCode       string
+	profileID          string
+	accountType        string
+	boundGroupID       string
+	name               string
+	priority           int
+	superPriority      bool
+	fallback           bool
+	concurrencyLimit   int
+	sourceAccountID    string
+	authorizationID    string
 	// sortLastUsedAt 是 accounts.last_used_at（legacy 排序键，与公共
 	// lastUsedAt 字段分离；authorized 行公共字段展示授权用量）。
 	sortLastUsedAt *string
 	// nextTransition 候选输入（Node nextTransitionAt 的候选集合）。
-	accountExpiresAt    *string // 本账户到期（payload 无此键，仅作候选）
-	authorizationExpiresAt *string
-	sourceExpiresAt     *string
-	sourceCooldownUntil *string
-	cooldownUntil       *string
-	apiKeyNextProbeAt   *string
-	runtimeNextAttemptAt *string
-	runtimeRecoveryAt   *string
-	statusBoundaryAt    *string
-	quotaResetAt        *string
+	accountExpiresAt               *string // 本账户到期（payload 无此键，仅作候选）
+	authorizationExpiresAt         *string
+	sourceExpiresAt                *string
+	sourceCooldownUntil            *string
+	cooldownUntil                  *string
+	apiKeyNextProbeAt              *string
+	runtimeNextAttemptAt           *string
+	runtimeRecoveryAt              *string
+	statusBoundaryAt               *string
+	quotaResetAt                   *string
 	availabilityScheduleJSON       *string
 	sourceAvailabilityScheduleJSON *string
 }

@@ -5,13 +5,13 @@ package gatewayusage
 
 // AuditLogSettings mirrors AuditLogSettings.
 type AuditLogSettings struct {
-	Enabled                  bool
-	FullBodyCaptureEnabled   bool
-	SuccessSampleRate        float64
-	ActiveCaptureMaxBytes    int
-	SuccessHotRetentionHours int
-	SuccessRetentionDays     int
-	ProblemRetentionDays     int
+	Enabled                   bool
+	FullBodyCaptureEnabled    bool
+	SuccessSampleRate         float64
+	ActiveCaptureMaxBytes     int
+	SuccessHotRetentionHours  int
+	SuccessRetentionDays      int
+	ProblemRetentionDays      int
 	SuccessFullBodyLimitBytes int
 	ProblemFullBodyLimitBytes int
 }

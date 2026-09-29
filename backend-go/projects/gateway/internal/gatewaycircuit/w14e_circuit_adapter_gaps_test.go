@@ -24,11 +24,11 @@ func TestW14EJitterArms(t *testing.T) {
 		interval int64
 		floor    int64
 	}{
-		{interval: 500, floor: 0},                    // sub-minute：窗口被 interval/2 收窄
-		{interval: 5 * 60_000, floor: 1},             // minute 档
-		{interval: 2 * 60 * 60_000, floor: 1},        // hour 档
-		{interval: 2 * 24 * 60 * 60_000, floor: 1},   // day 档
-		{interval: 10 * 24 * 60 * 60_000, floor: 1},  // week 档
+		{interval: 500, floor: 0},                   // sub-minute：窗口被 interval/2 收窄
+		{interval: 5 * 60_000, floor: 1},            // minute 档
+		{interval: 2 * 60 * 60_000, floor: 1},       // hour 档
+		{interval: 2 * 24 * 60 * 60_000, floor: 1},  // day 档
+		{interval: 10 * 24 * 60 * 60_000, floor: 1}, // week 档
 	}
 	for _, testCase := range cases {
 		if got := passiveScheduleJitterWindowMs(testCase.interval); got < testCase.floor {
@@ -159,11 +159,11 @@ func TestW14EPreAuthAdapterOptionsAndAudit(t *testing.T) {
 	}
 	erroring := gatewaypreauth.RecoverableWaitInput{
 		ScopeKey: "w14e-scope-err", Reason: "recoverable_unavailable",
-		IsReady:          func(context.Context) bool { return false },
-		NextRetryAfterMs: func(context.Context) (int64, bool) { return 0, false },
-		Refresh:          func(context.Context) error { return errors.New("w14e refresh boom") },
-		AuditCapture:     w14eMetadataCapture{},
-		MaxWaitMs:        5_000,
+		IsReady:            func(context.Context) bool { return false },
+		NextRetryAfterMs:   func(context.Context) (int64, bool) { return 0, false },
+		Refresh:            func(context.Context) error { return errors.New("w14e refresh boom") },
+		AuditCapture:       w14eMetadataCapture{},
+		MaxWaitMs:          5_000,
 		RequestStartedAtMs: time.Now().UnixMilli(),
 		DeadlineAtMs:       time.Now().UnixMilli() + 60_000,
 	}

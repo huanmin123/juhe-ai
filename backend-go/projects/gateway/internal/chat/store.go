@@ -110,7 +110,7 @@ func (s *Store) bind(query string) string {
 	return out.String()
 }
 
-// lockSuffix mirrors `tx.driver === 'postgres' ? ' FOR UPDATE' : ''`.
+// lockSuffix mirrors `tx.driver === 'postgres' ? ' FOR UPDATE' : ”`.
 func (s *Store) lockSuffix() string {
 	if s.pg {
 		return " FOR UPDATE"

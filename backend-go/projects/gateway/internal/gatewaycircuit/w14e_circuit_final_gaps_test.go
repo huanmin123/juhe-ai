@@ -381,7 +381,7 @@ func TestW14EPrepareAttemptConfirmationDispatchableArms(t *testing.T) {
 	evidenceB := strings.Repeat("b", 64)
 
 	if _, err := service.SuspectForegroundFailure(ctx, suspectForegroundInput{
-		scope: protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
+		scope:            protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
 		dispatchRevision: revisionOf(t, testAccount()), confirmationFailuresRequired: int64Ptr(2),
 		reason: "transport:connect failed", failureEvidenceKey: strPtr(evidenceA),
 	}); err != nil {
@@ -462,5 +462,3 @@ func TestW14EPrecheckSummaryOpenAIProfileArms(t *testing.T) {
 		t.Fatalf("bound system = (%q, %v)", got, err)
 	}
 }
-
-

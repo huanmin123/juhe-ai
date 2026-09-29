@@ -59,7 +59,9 @@ func (k KeyModelRedisKeys) AdmissionLease(hash, attemptID string) string {
 }
 
 // AdmissionWake mirrors keys.admissionWake(hash).
-func (k KeyModelRedisKeys) AdmissionWake(hash string) string { return k.Prefix + ":admissionWake:" + hash }
+func (k KeyModelRedisKeys) AdmissionWake(hash string) string {
+	return k.Prefix + ":admissionWake:" + hash
+}
 
 // MainProbeFence mirrors keys.mainProbeFence(hash).
 func (k KeyModelRedisKeys) MainProbeFence(hash string) string {

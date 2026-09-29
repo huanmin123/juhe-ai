@@ -14,17 +14,17 @@ import (
 // DraftSnapshot 对齐 Node AccountTestDraftSnapshot 的 worker 消费字段投影
 // （storage/account-test-tasks.repository.ts 的 v1 信封解密产物）。
 type DraftSnapshot struct {
-	ID                        string                      `json:"id"`
-	StateTargetAccountID      string                      `json:"stateTargetAccountId,omitempty"`
-	OwnerSystemAccountID      string                      `json:"ownerSystemAccountId"`
-	GroupID                   string                      `json:"groupId"`
-	GroupName                 string                      `json:"groupName,omitempty"`
-	ProviderCode              string                      `json:"providerCode"`
-	ProviderProtocolProfileID string                      `json:"providerProtocolProfileId,omitempty"`
-	ProtocolCode              string                      `json:"protocolCode,omitempty"`
-	ProtocolVersion           string                      `json:"protocolVersion,omitempty"`
-	Name                      string                      `json:"name"`
-	Type                      string                      `json:"type"`
+	ID                        string `json:"id"`
+	StateTargetAccountID      string `json:"stateTargetAccountId,omitempty"`
+	OwnerSystemAccountID      string `json:"ownerSystemAccountId"`
+	GroupID                   string `json:"groupId"`
+	GroupName                 string `json:"groupName,omitempty"`
+	ProviderCode              string `json:"providerCode"`
+	ProviderProtocolProfileID string `json:"providerProtocolProfileId,omitempty"`
+	ProtocolCode              string `json:"protocolCode,omitempty"`
+	ProtocolVersion           string `json:"protocolVersion,omitempty"`
+	Name                      string `json:"name"`
+	Type                      string `json:"type"`
 	// ProxyProfileID 是表单草稿绑定的代理档案：执行侧解析为出站 ProxyURL，
 	// 缺失时海外上游直连不可达（历史卡死根因）。
 	ProxyProfileID          string                      `json:"proxyProfileId,omitempty"`

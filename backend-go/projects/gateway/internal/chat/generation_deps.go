@@ -508,16 +508,16 @@ func containsAny(values []string, candidates []string) bool {
 // supportedTools 已退场（工具体系设计 6.4）。
 func chatModelCapabilitiesPayload(option *ChatModelOption) map[string]any {
 	payload := map[string]any{
-		"id":                         option.ID,
-		"name":                       option.ID,
-		"supportsPromptCaching":      option.SupportsPromptCaching,
-		"supportedReasoningEfforts":  nilToEmpty(option.SupportedReasoningEfforts),
-		"supportedServiceTiers":      nilToEmpty(option.SupportedServiceTiers),
-		"supportedApiProtocols":      nilToEmpty(option.SupportedAPIProtocols),
-		"inputModalities":            nilToEmpty(option.InputModalities),
-		"outputModalities":           nilToEmpty(option.OutputModalities),
-		"supportedToolsByProtocol":   option.SupportedToolsByProtocol,
-		"generationParameters":       generationParametersPayload(option.GenerationParameters),
+		"id":                        option.ID,
+		"name":                      option.ID,
+		"supportsPromptCaching":     option.SupportsPromptCaching,
+		"supportedReasoningEfforts": nilToEmpty(option.SupportedReasoningEfforts),
+		"supportedServiceTiers":     nilToEmpty(option.SupportedServiceTiers),
+		"supportedApiProtocols":     nilToEmpty(option.SupportedAPIProtocols),
+		"inputModalities":           nilToEmpty(option.InputModalities),
+		"outputModalities":          nilToEmpty(option.OutputModalities),
+		"supportedToolsByProtocol":  option.SupportedToolsByProtocol,
+		"generationParameters":      generationParametersPayload(option.GenerationParameters),
 	}
 	if option.DefaultReasoningEffort != "" {
 		payload["defaultReasoningEffort"] = option.DefaultReasoningEffort

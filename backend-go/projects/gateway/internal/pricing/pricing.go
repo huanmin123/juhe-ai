@@ -79,7 +79,7 @@ type Pricing struct {
 	OutputModalities      []string
 	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（6.4）：键为该行协议枚举，
 	// 值为该协议下可用的工具集。一维 SupportedTools 已随阶段 2 退场。
-	SupportedToolsByProtocol map[string][]string
+	SupportedToolsByProtocol  map[string][]string
 	SupportedServiceTiers     []string
 	SupportedReasoningEfforts []string
 	DefaultReasoningEffort    string

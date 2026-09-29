@@ -11,68 +11,68 @@ import (
 // strings and nil pointers mean the Node undefined fields; Success, TraceID
 // and TrafficSource are always set by the record builders.
 type UsageRecordInput struct {
-	ID                               string `json:"id,omitempty"`
-	SystemAccountID                  string `json:"systemAccountId,omitempty"`
-	TraceID                          string `json:"traceId"`
-	TrafficSource                    string `json:"trafficSource"`
-	ClientIP                         string `json:"clientIp,omitempty"`
-	APIKeyID                         string `json:"apiKeyId,omitempty"`
-	GroupID                          string `json:"groupId,omitempty"`
-	AccountID                        string `json:"accountId,omitempty"`
-	AccountOwnerSystemAccountID      string `json:"accountOwnerSystemAccountId,omitempty"`
-	GroupOwnerSystemAccountID        string `json:"groupOwnerSystemAccountId,omitempty"`
-	AccountAccessType                string `json:"accountAccessType,omitempty"`
-	GroupAccessType                  string `json:"groupAccessType,omitempty"`
-	AccountAuthorizationID           string `json:"accountAuthorizationId,omitempty"`
-	AccountAuthorizationSourceType   string `json:"accountAuthorizationSourceType,omitempty"`
-	AccountAuthorizationSourceTeamID string `json:"accountAuthorizationSourceTeamId,omitempty"`
-	GroupAuthorizationID             string `json:"groupAuthorizationId,omitempty"`
-	GroupAuthorizationSourceType     string `json:"groupAuthorizationSourceType,omitempty"`
-	GroupAuthorizationSourceTeamID   string `json:"groupAuthorizationSourceTeamId,omitempty"`
-	Endpoint                         string `json:"endpoint,omitempty"`
-	ProviderCode                     string `json:"providerCode,omitempty"`
-	ProviderProtocolProfileID        string `json:"providerProtocolProfileId,omitempty"`
-	UsageSemantic                    string `json:"usageSemantic,omitempty"`
-	Model                            string `json:"model,omitempty"`
-	UpstreamModel                    string `json:"upstreamModel,omitempty"`
-	UpstreamResponseModel            string `json:"upstreamResponseModel,omitempty"`
-	PricingModel                     string `json:"pricingModel,omitempty"`
-	RequestedServiceTier             string `json:"requestedServiceTier,omitempty"`
-	EffectiveServiceTier             string `json:"effectiveServiceTier,omitempty"`
-	ReportedServiceTier              string `json:"reportedServiceTier,omitempty"`
-	BilledServiceTier                string `json:"billedServiceTier,omitempty"`
-	RequestedReasoningEffort         string `json:"requestedReasoningEffort,omitempty"`
-	EffectiveReasoningEffort         string `json:"effectiveReasoningEffort,omitempty"`
-	PricingSnapshot                  any    `json:"pricingSnapshot,omitempty"`
-	ModelMappingApplied              *bool  `json:"modelMappingApplied,omitempty"`
-	ModelMappingSource               string `json:"modelMappingSource,omitempty"`
-	SourceEndpointFamily             string `json:"sourceEndpointFamily,omitempty"`
-	UpstreamEndpointFamily           string `json:"upstreamEndpointFamily,omitempty"`
-	Stream                           *bool  `json:"stream,omitempty"`
-	StatusCode                       *int   `json:"statusCode,omitempty"`
-	Success                          bool   `json:"success"`
-	FailureAttribution               string `json:"failureAttribution,omitempty"`
-	FirstTokenMs                     *int   `json:"firstTokenMs,omitempty"`
-	DurationMs                       *int   `json:"durationMs,omitempty"`
-	InputTokens                      *int   `json:"inputTokens,omitempty"`
-	OutputTokens                     *int   `json:"outputTokens,omitempty"`
-	CacheReadTokens                  *int   `json:"cacheReadTokens,omitempty"`
+	ID                               string   `json:"id,omitempty"`
+	SystemAccountID                  string   `json:"systemAccountId,omitempty"`
+	TraceID                          string   `json:"traceId"`
+	TrafficSource                    string   `json:"trafficSource"`
+	ClientIP                         string   `json:"clientIp,omitempty"`
+	APIKeyID                         string   `json:"apiKeyId,omitempty"`
+	GroupID                          string   `json:"groupId,omitempty"`
+	AccountID                        string   `json:"accountId,omitempty"`
+	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
+	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`
+	AccountAccessType                string   `json:"accountAccessType,omitempty"`
+	GroupAccessType                  string   `json:"groupAccessType,omitempty"`
+	AccountAuthorizationID           string   `json:"accountAuthorizationId,omitempty"`
+	AccountAuthorizationSourceType   string   `json:"accountAuthorizationSourceType,omitempty"`
+	AccountAuthorizationSourceTeamID string   `json:"accountAuthorizationSourceTeamId,omitempty"`
+	GroupAuthorizationID             string   `json:"groupAuthorizationId,omitempty"`
+	GroupAuthorizationSourceType     string   `json:"groupAuthorizationSourceType,omitempty"`
+	GroupAuthorizationSourceTeamID   string   `json:"groupAuthorizationSourceTeamId,omitempty"`
+	Endpoint                         string   `json:"endpoint,omitempty"`
+	ProviderCode                     string   `json:"providerCode,omitempty"`
+	ProviderProtocolProfileID        string   `json:"providerProtocolProfileId,omitempty"`
+	UsageSemantic                    string   `json:"usageSemantic,omitempty"`
+	Model                            string   `json:"model,omitempty"`
+	UpstreamModel                    string   `json:"upstreamModel,omitempty"`
+	UpstreamResponseModel            string   `json:"upstreamResponseModel,omitempty"`
+	PricingModel                     string   `json:"pricingModel,omitempty"`
+	RequestedServiceTier             string   `json:"requestedServiceTier,omitempty"`
+	EffectiveServiceTier             string   `json:"effectiveServiceTier,omitempty"`
+	ReportedServiceTier              string   `json:"reportedServiceTier,omitempty"`
+	BilledServiceTier                string   `json:"billedServiceTier,omitempty"`
+	RequestedReasoningEffort         string   `json:"requestedReasoningEffort,omitempty"`
+	EffectiveReasoningEffort         string   `json:"effectiveReasoningEffort,omitempty"`
+	PricingSnapshot                  any      `json:"pricingSnapshot,omitempty"`
+	ModelMappingApplied              *bool    `json:"modelMappingApplied,omitempty"`
+	ModelMappingSource               string   `json:"modelMappingSource,omitempty"`
+	SourceEndpointFamily             string   `json:"sourceEndpointFamily,omitempty"`
+	UpstreamEndpointFamily           string   `json:"upstreamEndpointFamily,omitempty"`
+	Stream                           *bool    `json:"stream,omitempty"`
+	StatusCode                       *int     `json:"statusCode,omitempty"`
+	Success                          bool     `json:"success"`
+	FailureAttribution               string   `json:"failureAttribution,omitempty"`
+	FirstTokenMs                     *int     `json:"firstTokenMs,omitempty"`
+	DurationMs                       *int     `json:"durationMs,omitempty"`
+	InputTokens                      *int     `json:"inputTokens,omitempty"`
+	OutputTokens                     *int     `json:"outputTokens,omitempty"`
+	CacheReadTokens                  *int     `json:"cacheReadTokens,omitempty"`
 	CacheReadCostUsd                 *float64 `json:"cacheReadCostUsd,omitempty"`
-	CacheWriteTokens                 *int   `json:"cacheWriteTokens,omitempty"`
-	CacheWrite1hTokens               *int   `json:"cacheWrite1hTokens,omitempty"`
+	CacheWriteTokens                 *int     `json:"cacheWriteTokens,omitempty"`
+	CacheWrite1hTokens               *int     `json:"cacheWrite1hTokens,omitempty"`
 	CacheWriteCostUsd                *float64 `json:"cacheWriteCostUsd,omitempty"`
-	ThinkingTokens                   *int   `json:"thinkingTokens,omitempty"`
-	InputImageTokens                 *int   `json:"inputImageTokens,omitempty"`
-	OutputImageTokens                *int   `json:"outputImageTokens,omitempty"`
-	InputAudioTokens                 *int   `json:"inputAudioTokens,omitempty"`
-	OutputAudioTokens                *int   `json:"outputAudioTokens,omitempty"`
-	OutputImageCount                 *int   `json:"outputImageCount,omitempty"`
+	ThinkingTokens                   *int     `json:"thinkingTokens,omitempty"`
+	InputImageTokens                 *int     `json:"inputImageTokens,omitempty"`
+	OutputImageTokens                *int     `json:"outputImageTokens,omitempty"`
+	InputAudioTokens                 *int     `json:"inputAudioTokens,omitempty"`
+	OutputAudioTokens                *int     `json:"outputAudioTokens,omitempty"`
+	OutputImageCount                 *int     `json:"outputImageCount,omitempty"`
 	CostUsd                          *float64 `json:"costUsd,omitempty"`
-	ErrorCode                        string `json:"errorCode,omitempty"`
-	ErrorMessage                     string `json:"errorMessage,omitempty"`
-	RequestSnapshot                  any    `json:"requestSnapshot,omitempty"`
-	ResponseSnapshot                 any    `json:"responseSnapshot,omitempty"`
-	CreatedAt                        string `json:"createdAt,omitempty"`
+	ErrorCode                        string   `json:"errorCode,omitempty"`
+	ErrorMessage                     string   `json:"errorMessage,omitempty"`
+	RequestSnapshot                  any      `json:"requestSnapshot,omitempty"`
+	ResponseSnapshot                 any      `json:"responseSnapshot,omitempty"`
+	CreatedAt                        string   `json:"createdAt,omitempty"`
 }
 
 // UsageFailureAttribution mirrors the Node union.
@@ -90,11 +90,11 @@ const (
 
 // Usage access scope discriminator values.
 const (
-	AccountAccessTypeOwner            = "owner"
+	AccountAccessTypeOwner             = "owner"
 	AccountAccessTypeAccountAuthorized = "account_authorized"
 	AccountAccessTypeGroupAuthorized   = "group_authorized"
-	GroupAccessTypeOwner              = "owner"
-	GroupAccessTypeAuthorized         = "authorized"
+	GroupAccessTypeOwner               = "owner"
+	GroupAccessTypeAuthorized          = "authorized"
 )
 
 // AuthorizationSourceTypeManual / AuthorizationSourceTypeTeam mirror

@@ -451,7 +451,9 @@ func TestW12HCooldownRunnerErrorArms(t *testing.T) {
 		reader.findErr = errors.New("w12h find failure")
 		runner := newRunner(reader, &mockProber{}, &w12hFailingCooldownMutation{})
 		runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-		waitFor(t, func() bool { return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil })
+		waitFor(t, func() bool {
+			return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil
+		})
 	})
 
 	t.Run("分组候选失败", func(t *testing.T) {
@@ -459,7 +461,9 @@ func TestW12HCooldownRunnerErrorArms(t *testing.T) {
 		reader.groupErr = errors.New("w12h group failure")
 		runner := newRunner(reader, &mockProber{}, &w12hFailingCooldownMutation{})
 		runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-		waitFor(t, func() bool { return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil })
+		waitFor(t, func() bool {
+			return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil
+		})
 	})
 
 	t.Run("凭据检查失败", func(t *testing.T) {
@@ -467,7 +471,9 @@ func TestW12HCooldownRunnerErrorArms(t *testing.T) {
 		reader.keyErr = errors.New("w12h key failure")
 		runner := newRunner(reader, &mockProber{}, &w12hFailingCooldownMutation{})
 		runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-		waitFor(t, func() bool { return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil })
+		waitFor(t, func() bool {
+			return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil
+		})
 	})
 
 	t.Run("系统账户缺失", func(t *testing.T) {
@@ -492,7 +498,9 @@ func TestW12HCooldownRunnerErrorArms(t *testing.T) {
 	t.Run("探针异常", func(t *testing.T) {
 		runner := newRunner(baseReader(), &mockProber{err: errors.New("w12h probe failure")}, &w12hFailingCooldownMutation{})
 		runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-		waitFor(t, func() bool { return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil })
+		waitFor(t, func() bool {
+			return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil
+		})
 	})
 
 	t.Run("诊断结果缺失", func(t *testing.T) {
@@ -507,7 +515,9 @@ func TestW12HCooldownRunnerErrorArms(t *testing.T) {
 		mutation := &w12hFailingCooldownMutation{successErr: errors.New("w12h success failure")}
 		runner := newRunner(baseReader(), &mockProber{observation: successObservation()}, mutation)
 		runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-		waitFor(t, func() bool { return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil })
+		waitFor(t, func() bool {
+			return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil
+		})
 	})
 
 	t.Run("额度失败写回失败", func(t *testing.T) {
@@ -519,7 +529,9 @@ func TestW12HCooldownRunnerErrorArms(t *testing.T) {
 		}}
 		runner := newRunner(baseReader(), prober, mutation)
 		runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-		waitFor(t, func() bool { return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil })
+		waitFor(t, func() bool {
+			return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil
+		})
 	})
 
 	t.Run("顺延写回失败", func(t *testing.T) {
@@ -527,7 +539,9 @@ func TestW12HCooldownRunnerErrorArms(t *testing.T) {
 		prober := &mockProber{observation: &ProbeObservation{Result: ProbeResult{}, Evidence: ProbeEvidence{}}}
 		runner := newRunner(baseReader(), prober, mutation)
 		runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-		waitFor(t, func() bool { return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil })
+		waitFor(t, func() bool {
+			return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil
+		})
 	})
 }
 
@@ -620,7 +634,7 @@ func TestW12HCooldownScanErrorAndLifecycle(t *testing.T) {
 	logger := &fakeLogger{}
 	runner := NewCooldownRetestRunner(CooldownDeps{
 		Logger: logger, Reader: cooldownReader(), Prober: &mockProber{},
-		Mutation:  &w12hFailingCooldownMutation{},
+		Mutation:   &w12hFailingCooldownMutation{},
 		Candidates: &w12hFailingCandidates{err: errors.New("w12h list failure")},
 		Settings:   func(string, int, int) int { return 24 }, Concurrency: func() int { return 2 }, QueueWorkers: 1,
 	})

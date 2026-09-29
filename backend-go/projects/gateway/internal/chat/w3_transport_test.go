@@ -48,7 +48,7 @@ func TestChatTransportAccountSupportsProtocolW3(t *testing.T) {
 }
 
 // TestTransportPlumbingW3 覆盖协议可用性、参数映射与工具编译的纯函数契约
-//（主对话恒 chat_completions：协议偏好与 hosted 工具注入已删除）。
+// （主对话恒 chat_completions：协议偏好与 hosted 工具注入已删除）。
 func TestTransportPlumbingW3(t *testing.T) {
 	protocols := (&chatRoutes{}).scopeSupportedProtocols(&chatBindingScope{accounts: []ChatTransportAccount{
 		{ID: "a1", SupportedEndpointModes: []string{"chat_sse"}, ModelMappings: []ChatTransportModelMapping{{SourceModel: "gpt-5"}}},
@@ -102,7 +102,7 @@ func TestBuildChatTransportRequestW3(t *testing.T) {
 		Instructions: "sys", Model: "gpt-5",
 		History:        []ChatTransportMessage{{Role: "user", Content: "历史"}},
 		CurrentContent: "问题", CurrentBlocks: []ChatTransportInputBlock{{Type: "input_text", Text: "看图"}, {Type: "input_image", DataURL: "data:img"}},
-		InternalTools:  []*toolDefinition{testToolW3("diagnostic_echo")},
+		InternalTools:   []*toolDefinition{testToolW3("diagnostic_echo")},
 		ReasoningEffort: "low", ServiceTier: "priority",
 		GenerationParameters: &ChatGenerationParameters{Temperature: floatPtrW3(0.3)}, PromptCacheKey: "cache-1",
 	})

@@ -149,7 +149,7 @@ func TestDispatchPriorityTierPreservation(t *testing.T) {
 	make := func(id string, priority int64, super, fallback bool) SuppressibleAccount {
 		return SuppressibleAccount{
 			SuppressibleGatewayAccount: SuppressibleGatewayAccount{ID: id},
-			Priority: priority, SuperPriorityEnabled: super, FallbackEnabled: fallback,
+			Priority:                   priority, SuperPriorityEnabled: super, FallbackEnabled: fallback,
 		}
 	}
 	base := []SuppressibleAccount{make("a", 10, true, false), make("b", 10, false, false)}

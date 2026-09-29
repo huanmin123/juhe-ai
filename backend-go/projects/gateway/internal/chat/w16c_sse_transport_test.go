@@ -48,9 +48,6 @@ func TestW16CCollectOpenAIChatSseLimits(t *testing.T) {
 	}
 }
 
-
-
-
 // TestW16CStripImageResultStringsScannerArms 覆盖扫描器空白与无名冒号臂。
 func TestW16CStripImageResultStringsScannerArms(t *testing.T) {
 	// ':' 前无字符串 token。

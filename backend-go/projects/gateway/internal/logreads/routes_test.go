@@ -34,8 +34,6 @@ type testEnv struct {
 	mu       sync.Mutex
 }
 
-
-
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:logreads-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")

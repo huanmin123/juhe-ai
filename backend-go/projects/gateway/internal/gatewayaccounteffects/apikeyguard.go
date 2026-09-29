@@ -14,7 +14,7 @@ import (
 var apiKeyLocalSuppressionDelayMs = []int64{3_000, 5_000, 10_000}
 
 const (
-	apiKeyLocalSuppressionMaxMs           = int64(10 * 60_000)
+	apiKeyLocalSuppressionMaxMs            = int64(10 * 60_000)
 	apiKeyLocalObservationFenceRetentionMs = int64(10 * 60_000)
 	apiKeyLocalObservationFenceCapacity    = 50_000
 	apiKeyDistributedStateStoreName        = "gateway-account-api-key-transient-avoidance"
@@ -22,9 +22,9 @@ const (
 
 // AccountApiKeyRuntimeTarget mirrors AccountApiKeyRuntimeTarget.
 type AccountApiKeyRuntimeTarget struct {
-	AccountID          string
-	KeyFingerprint     string
-	KeyIndex           *int
+	AccountID           string
+	KeyFingerprint      string
+	KeyIndex            *int
 	TransientGeneration string
 }
 
@@ -49,16 +49,16 @@ type LocalApiKeyObservationFence struct {
 
 // GatewayAccountApiKeyFailureGuardInput mirrors GatewayAccountApiKeyFailureGuardInput.
 type GatewayAccountApiKeyFailureGuardInput struct {
-	Status          AccountApiKeyFailureStatus
-	StatusCode      *int64
-	ErrorCode       *string
-	ErrorMessage    *string
-	TrafficSource   string
-	MutationContext *AccountApiKeyPersistentMutationContext
-	ClientIP        string
-	APIKeyID        string
+	Status           AccountApiKeyFailureStatus
+	StatusCode       *int64
+	ErrorCode        *string
+	ErrorMessage     *string
+	TrafficSource    string
+	MutationContext  *AccountApiKeyPersistentMutationContext
+	ClientIP         string
+	APIKeyID         string
 	ObservationEpoch *int64
-	Source          string
+	Source           string
 }
 
 // Failure guard decision reasons.
@@ -73,25 +73,25 @@ const (
 
 // GatewayAccountApiKeyFailureGuardDecision mirrors GatewayAccountApiKeyFailureGuardDecision.
 type GatewayAccountApiKeyFailureGuardDecision struct {
-	Persist              bool
-	Reason               string
-	FailureCount         *int
+	Persist               bool
+	Reason                string
+	FailureCount          *int
 	DistinctClientIPCount *int
-	DistinctAPIKeyCount  *int
-	SuccessCount         *int
-	FailureRatio         *float64
+	DistinctAPIKeyCount   *int
+	SuccessCount          *int
+	FailureRatio          *float64
 }
 
 // GatewayAccountApiKeyFailureGuardSnapshotEntry mirrors the snapshot entry.
 type GatewayAccountApiKeyFailureGuardSnapshotEntry struct {
-	AccountID         string
-	KeyFingerprint    string
-	Status            AccountApiKeyFailureStatus
-	LocalFailureCount int
-	StormFailureCount *int
+	AccountID             string
+	KeyFingerprint        string
+	Status                AccountApiKeyFailureStatus
+	LocalFailureCount     int
+	StormFailureCount     *int
 	DistinctClientIPCount *int
 	DistinctAPIKeyCount   *int
-	Suppressed        bool
+	Suppressed            bool
 }
 
 // AccountApiKeyRuntimeSelectionState mirrors the dispatch selection state the
@@ -112,10 +112,10 @@ type TransientStateStoreFactory func() (AccountApiKeyTransientStateStore, error)
 // AccountAPIKeyFailureGuard mirrors the module-level state of
 // account-api-key-failure-guard.service.ts.
 type AccountAPIKeyFailureGuard struct {
-	clock     Clock
-	config    SideEffectsConfig
-	logger    Logger
-	newStore  TransientStateStoreFactory
+	clock    Clock
+	config   SideEffectsConfig
+	logger   Logger
+	newStore TransientStateStoreFactory
 
 	mu               sync.Mutex
 	suppressions     map[string]*LocalApiKeySuppression

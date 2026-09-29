@@ -12,13 +12,13 @@ import (
 
 // RedisAccountConcurrencyOptions configures Redis-backed account concurrency.
 type RedisAccountConcurrencyOptions struct {
-	RedisURL            string
-	Client              redis.Cmdable
-	Namespace           string
-	Name                string
-	Clock               func() int64
-	Logger              Logger
-	StateOperationTO    time.Duration
+	RedisURL         string
+	Client           redis.Cmdable
+	Namespace        string
+	Name             string
+	Clock            func() int64
+	Logger           Logger
+	StateOperationTO time.Duration
 }
 
 // RedisAccountConcurrency implements AccountConcurrencySource using Redis.
@@ -64,10 +64,10 @@ func NewRedisAccountConcurrency(opts RedisAccountConcurrencyOptions) (*RedisAcco
 	}
 	namespace := opts.Namespace
 	return &RedisAccountConcurrency{
-		client:  client,
-		keys:    redisAccountConcurrencyStoreKeys(name, namespace),
-		clock:   clock,
-		logger:  opts.Logger,
+		client: client,
+		keys:   redisAccountConcurrencyStoreKeys(name, namespace),
+		clock:  clock,
+		logger: opts.Logger,
 	}, nil
 }
 

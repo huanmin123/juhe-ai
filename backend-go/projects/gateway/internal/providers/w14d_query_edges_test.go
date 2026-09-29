@@ -5,9 +5,9 @@
 package providers
 
 import (
-	"strings"
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -346,10 +346,10 @@ func TestW14dFixedNumberEdges(t *testing.T) {
 
 func TestW14dNormalizeCustomModelCapabilitiesDirect(t *testing.T) {
 	cases := []struct {
-		name    string
+		name     string
 		provider string
-		input   customModelCapabilityInput
-		wantErr string
+		input    customModelCapabilityInput
+		wantErr  string
 	}{
 		{"invalid mode", "gpt", customModelCapabilityInput{Mode: stringPtr("video")}, "当前只支持文本和图像自定义模型"},
 		{"bad tier token", "gpt", customModelCapabilityInput{SupportedServiceTiers: []string{"!!"}}, "服务等级包含不支持的值"},

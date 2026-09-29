@@ -16,7 +16,7 @@ const (
 	clientIPAccountAvoidanceMaxEntries                 = 5_000
 	clientIPAccountAvoidanceMaxPendingFailures         = 256
 	clientIPAccountAvoidanceMaxTTL                     = 10 * 60_000 // ms
-	clientIPAccountAvoidanceDefaultTTL                 = 5 * 60_000 // ms
+	clientIPAccountAvoidanceDefaultTTL                 = 5 * 60_000  // ms
 	clientIPAccountAvoidanceActivationFailureThreshold = 2
 
 	// avoidanceStateStoreName mirrors createRuntimeStateStore('gateway-client-ip-account-avoidance').
@@ -107,8 +107,8 @@ type AvoidanceOptions struct {
 	RedisNamespace string
 	// StateStore overrides the constructed Redis store (tests / injected
 	// handles). Requires StateStoreClose when it owns resources.
-	StateStore       RuntimeStateStore
-	StateStoreClose  func()
+	StateStore      RuntimeStateStore
+	StateStoreClose func()
 }
 
 // Avoidance owns the client-IP account avoidance memory. It satisfies the

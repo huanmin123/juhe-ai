@@ -137,8 +137,8 @@ func TestW14GDiagnosticSanitizerBranches(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type w14gSizeStruct struct {
-	Ptr   *int
-	Keep  string `json:"keep"`
+	Ptr    *int
+	Keep   string `json:"keep"`
 	Hidden string `json:"-"`
 }
 

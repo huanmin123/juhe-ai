@@ -389,7 +389,7 @@ var webSearchSourceBlocklist = []struct{ host, pathPrefix string }{
 
 // isWebSearchBlockedSource 判断 URL 是否命中来源黑名单：解析后的 host 剥离
 // www./m. 等子域前缀并忽略 scheme/端口，host 等于域名或以其为后缀的子域
-//（域名边界匹配，避免 bing.com 子串误伤 rubbing.com/webbing.com 类域名），
+// （域名边界匹配，避免 bing.com 子串误伤 rubbing.com/webbing.com 类域名），
 // 且路径按段前缀命中（path 等于前缀或以前缀加 / 开头，避免 /link 误伤
 // /linkedin 类路径）。
 func isWebSearchBlockedSource(rawURL string) bool {

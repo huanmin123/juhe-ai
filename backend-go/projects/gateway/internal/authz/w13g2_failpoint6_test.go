@@ -53,7 +53,7 @@ func TestW13g2FailpointReturnGroupPgArms(t *testing.T) {
 }
 
 // TestW13g2FailpointReturnArms 覆盖 Return 的 refresh/enqueue 深层臂
-//（mutations.go 752-763）与 sync 的 team paused 链。
+// （mutations.go 752-763）与 sync 的 team paused 链。
 func TestW13g2FailpointReturnArms(t *testing.T) {
 	s, fp := w13g2FailStore(t)
 	db := s.db
@@ -175,16 +175,16 @@ func TestW13g2MutationDataBranches(t *testing.T) {
 	if _, err := f.store.Create(ctx, CreateInput{
 		ResourceType: "group", ResourceID: "grp_md13",
 		GranteeType: "system_account", GranteeID: "md1",
-		ExpiresAt:   &expires,
-		LimitsJSON:  &limits,
+		ExpiresAt:  &expires,
+		LimitsJSON: &limits,
 	}, "owner"); err != nil {
 		t.Fatal(err)
 	}
 	retry, err := f.store.Create(ctx, CreateInput{
 		ResourceType: "group", ResourceID: "grp_md13",
 		GranteeType: "system_account", GranteeID: "md1",
-		ExpiresAt:   &expires,
-		LimitsJSON:  &limits,
+		ExpiresAt:  &expires,
+		LimitsJSON: &limits,
 	}, "owner")
 	if err != nil || retry.Created {
 		t.Fatalf("幂等 create 应成功: %+v %v", retry, err)
@@ -217,7 +217,7 @@ func TestW13g2MutationDataBranches(t *testing.T) {
 }
 
 // TestW13g2UsageDetailDirectAccount 覆盖 direct 详情的 account scopeType
-//（usage_detail.go 474-476）与排序比较分支（564）。
+// （usage_detail.go 474-476）与排序比较分支（564）。
 func TestW13g2UsageDetailDirectAccount(t *testing.T) {
 	f := newUsageFixture(t)
 	f.seedAccount(t, "owner", "active")

@@ -24,7 +24,7 @@ func TestW14GGetRedisClientCache(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	// 同 URL 第二次命中缓存。
-	cached, err := GetRedisClient(ctx, "redis://" + server.Addr() + "/0 ")
+	cached, err := GetRedisClient(ctx, "redis://"+server.Addr()+"/0 ")
 	if err != nil || cached != client {
 		t.Fatalf("缓存命中失败 err=%v same=%v", err, cached == client)
 	}
@@ -185,7 +185,7 @@ func TestW14GUpstreamResponseModelBranches(t *testing.T) {
 	}
 	// 协议识别：anthropic-version 头 / 非法 URL / nil headers。
 	if got := UpstreamResponseModelProtocolForRequest(UpstreamResponseModelRequestInfo{
-		Headers:    http.Header{"Anthropic-Version": {"2023-01-01"}},
+		Headers:     http.Header{"Anthropic-Version": {"2023-01-01"}},
 		UpstreamURL: "http://example.com/v1",
 	}); got != UpstreamResponseModelProtocolAnthropic {
 		t.Fatalf("anthropic-version 识别 = %s", got)
@@ -240,10 +240,10 @@ func TestW14GDiagnosticContextAndSanitizerBranches(t *testing.T) {
 	}
 	// 引号敏感赋值清洗的防御分支。
 	cases := []string{
-		`'password`,                 // 未闭合引号
-		`'password' ` + "`x",        // 缺冒号
-		`'password':`,               // 冒号后结束
-		`'password': 42`,            // 值非引号
+		`'password`,                     // 未闭合引号
+		`'password' ` + "`x",            // 缺冒号
+		`'password':`,                   // 冒号后结束
+		`'password': 42`,                // 值非引号
 		`'password': 'a\` + "\n" + `b'`, // 转义跨行
 	}
 	for index, input := range cases {

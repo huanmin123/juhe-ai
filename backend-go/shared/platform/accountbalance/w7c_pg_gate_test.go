@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.provider_protocol_profiles (
 		if actual == drift.dataType {
 			continue
 		}
-		if _, err := db.ExecContext(ctx, `ALTER TABLE juhe_business.` + drift.table + ` ALTER COLUMN ` + drift.column + ` TYPE ` + drift.dataType + ` USING ` + drift.using); err != nil {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE juhe_business.`+drift.table+` ALTER COLUMN `+drift.column+` TYPE `+drift.dataType+` USING `+drift.using); err != nil {
 			t.Fatalf("对齐 %s.%s 为 %s 失败: %v", drift.table, drift.column, drift.dataType, err)
 		}
 	}

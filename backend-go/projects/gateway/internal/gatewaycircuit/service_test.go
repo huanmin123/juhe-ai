@@ -134,11 +134,11 @@ func TestPrepareAttemptConfirmationLeaseFlow(t *testing.T) {
 
 	// Create a SUSPECT incident from an earlier foreground failure.
 	decision, err := service.SuspectForegroundFailure(context.Background(), suspectForegroundInput{
-		scope: protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
-		dispatchRevision: revisionOf(t, testAccount()),
+		scope:                        protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
+		dispatchRevision:             revisionOf(t, testAccount()),
 		confirmationFailuresRequired: int64Ptr(2),
-		reason:           "transport:connect failed",
-		failureEvidenceKey: strPtr(strings.Repeat("a", 64)),
+		reason:                       "transport:connect failed",
+		failureEvidenceKey:           strPtr(strings.Repeat("a", 64)),
 	})
 	if err != nil || decision.Outcome != DecisionSuspected {
 		t.Fatalf("suspect = (%s, %v)", decision.Outcome, err)
@@ -237,10 +237,10 @@ func TestConfirmationSettlementDeduplicates(t *testing.T) {
 
 	// Build a confirmation through prepareAttempt.
 	_, err = service.SuspectForegroundFailure(context.Background(), suspectForegroundInput{
-		scope: protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
-		dispatchRevision: revisionOf(t, testAccount()),
+		scope:                        protocolModelScope(testAccount(), LaneText, strPtr("gpt-4o")),
+		dispatchRevision:             revisionOf(t, testAccount()),
 		confirmationFailuresRequired: int64Ptr(2),
-		reason: "transport:connect failed",
+		reason:                       "transport:connect failed",
 	})
 	if err != nil {
 		t.Fatalf("suspect: %v", err)

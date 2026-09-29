@@ -131,7 +131,7 @@ func (c *w13g2FailConn) ExecContext(ctx context.Context, query string, args []dr
 var w13g2FailDrivers sync.Map
 
 // w13g2RegisterFailDriver 按唯一名字注册（或复用）失败注入驱动；重复运行
-//（-count=N）复用同一实例避免 sql.Register 重名 panic。
+// （-count=N）复用同一实例避免 sql.Register 重名 panic。
 func w13g2RegisterFailDriver(key string) *w13g2FailDriver {
 	if loaded, ok := w13g2FailDrivers.Load(key); ok {
 		return loaded.(*w13g2FailDriver)
@@ -191,7 +191,7 @@ func w13g2SeedFail(t *testing.T, s *Store) (*sql.DB, *CreateResult) {
 }
 
 // TestW13g2FailpointArms 批量覆盖事务深层错误臂：每个子测试自建独立授权
-//（独立资源与 grantee），武装一个 SQL 片段 → 调用写路径 → 断言失败。
+// （独立资源与 grantee），武装一个 SQL 片段 → 调用写路径 → 断言失败。
 func TestW13g2FailpointArms(t *testing.T) {
 	s, fp := w13g2FailStore(t)
 	db := s.db

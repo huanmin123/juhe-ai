@@ -106,7 +106,7 @@ func TestRefactor0008CompleteConfirmationTransportFailureArm(t *testing.T) {
 func TestRefactor0008CompleteConfirmationMissingLeaseArm(t *testing.T) {
 	store, _ := newRefactor0008RedisStore(t, 4)
 	_, err := store.CompleteConfirmation(context.Background(), CompleteInput{
-		Scope: Scope{Kind: "account", AccountRuntimeKey: "refactor0008-ml"},
+		Scope:        Scope{Kind: "account", AccountRuntimeKey: "refactor0008-ml"},
 		TransitionID: "t4", LeaseID: "", Outcome: "framing_complete",
 	})
 	if err == nil || !strings.Contains(err.Error(), "leaseId") {

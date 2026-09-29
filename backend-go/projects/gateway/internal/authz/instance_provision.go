@@ -120,16 +120,16 @@ func (s *Store) ensureAccountAuthorizationInstance(ctx context.Context, tx *sql.
 	}
 
 	var source struct {
-		providerCode                    string
-		providerProtocolProfileID       string
-		protocolCode                    string
-		protocolVersion                 string
-		name                            string
-		accountType                     string
-		concurrencyLimit                int
-		continuousProbeEnabled          int
-		healthCheckModel                string
-		healthCheckEndpointMode         string
+		providerCode              string
+		providerProtocolProfileID string
+		protocolCode              string
+		protocolVersion           string
+		name                      string
+		accountType               string
+		concurrencyLimit          int
+		continuousProbeEnabled    int
+		healthCheckModel          string
+		healthCheckEndpointMode   string
 	}
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT `+sourceAccountColumns+` FROM `+s.table("accounts")+`
 		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), in.SourceAccountID).

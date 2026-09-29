@@ -51,7 +51,7 @@ func w13g2UpdateAt(t *testing.T, body string) string {
 
 // TestW13g2MountSelfSurfaceChain 驱动 my-* 面全部注册闭包（routes.go
 // 153-189）+ create 的 MutationGuard Scope/Fingerprint/create 闭包
-//（177-181）+ account 资源 create 的 target-group 装载分支（428-430）。
+// （177-181）+ account 资源 create 的 target-group 装载分支（428-430）。
 func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 	env := newUsageRouteEnv(t, "owner1")
 	f := env.f
@@ -474,7 +474,7 @@ func TestW13g2PureHelperGaps(t *testing.T) {
 }
 
 // TestW13g2UsageStoreEmptyScopes 驱动 usage 读族的无 scope 空结果分支
-//（usage_reads.go 336-338 / 368-371 / 473-476）。
+// （usage_reads.go 336-338 / 368-371 / 473-476）。
 func TestW13g2UsageStoreEmptyScopes(t *testing.T) {
 	f := newUsageFixture(t)
 	rng := UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06", Days: 30, MaxDays: 31}

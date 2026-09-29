@@ -27,9 +27,9 @@ const (
 	// 显式配置 0..1 仍生效（0 须与 SUCCESS_RETENTION_DAYS=0 联动）。
 	defaultSuccessSampleRate    = 1.0
 	defaultSuccessRetentionDays = 3
-	defaultProblemRetentionDays     = 7
-	defaultPostgresPoolSize         = 5096
-	defaultPostgresMaxIdleConns     = sqlpool.MaxIdleConns
+	defaultProblemRetentionDays = 7
+	defaultPostgresPoolSize     = 5096
+	defaultPostgresMaxIdleConns = sqlpool.MaxIdleConns
 )
 
 type Config struct {

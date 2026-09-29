@@ -37,19 +37,19 @@ func TestW11CRuntimeStoreInputValidation(t *testing.T) {
 	// Canary completion validation.
 	if _, err := rt.CompleteGatewayAccountCircuitCanary(ctx, GatewayAccountCircuitCompleteCanaryInput{
 		GatewayAccountCircuitTransitionIdentity: w7bIdentity(accountID, scope, 1, 1, "t"),
-		LeaseID: "lease", Outcome: GatewayAccountCircuitCompletionOutcome("bogus"),
+		LeaseID:                                 "lease", Outcome: GatewayAccountCircuitCompletionOutcome("bogus"),
 	}); err == nil {
 		t.Fatalf("invalid outcome must fail")
 	}
 	if _, err := rt.CompleteGatewayAccountCircuitCanary(ctx, GatewayAccountCircuitCompleteCanaryInput{
 		GatewayAccountCircuitTransitionIdentity: w7bIdentity(accountID, scope, 1, 1, "t"),
-		LeaseID: "lease", Outcome: GatewayAccountCircuitCompletionUnknown, Reason: strings.Repeat("r", 2000),
+		LeaseID:                                 "lease", Outcome: GatewayAccountCircuitCompletionUnknown, Reason: strings.Repeat("r", 2000),
 	}); err == nil {
 		t.Fatalf("oversized reason must fail")
 	}
 	if _, err := rt.CompleteGatewayAccountCircuitCanary(ctx, GatewayAccountCircuitCompleteCanaryInput{
 		GatewayAccountCircuitTransitionIdentity: w7bIdentity(accountID, scope, 1, 1, "t"),
-		LeaseID: "lease", Outcome: GatewayAccountCircuitCompletionUnknown, EvidenceScopeKey: strings.Repeat("k", 3000),
+		LeaseID:                                 "lease", Outcome: GatewayAccountCircuitCompletionUnknown, EvidenceScopeKey: strings.Repeat("k", 3000),
 	}); err == nil {
 		t.Fatalf("oversized evidence scope key must fail")
 	}
@@ -99,7 +99,7 @@ func TestW11CRuntimeCanaryLifecycleBranches(t *testing.T) {
 	// canary transport failure re-opens the circuit.
 	lease, err := rt.AcquireGatewayAccountCircuitCanaryLease(ctx, GatewayAccountCircuitAcquireCanaryLeaseInput{
 		GatewayAccountCircuitTransitionIdentity: w7bIdentity(accountID, scope, 2, 1, "w11c-canary-acquire"),
-		LeaseID: "w11c-canary-lease", LeaseUntil: clock.Now().Add(time.Minute),
+		LeaseID:                                 "w11c-canary-lease", LeaseUntil: clock.Now().Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("canary acquire: %v", err)
@@ -109,7 +109,7 @@ func TestW11CRuntimeCanaryLifecycleBranches(t *testing.T) {
 	}
 	completed, err := rt.CompleteGatewayAccountCircuitCanary(ctx, GatewayAccountCircuitCompleteCanaryInput{
 		GatewayAccountCircuitTransitionIdentity: w7bIdentity(accountID, scope, 2, 1, "w11c-canary-complete"),
-		LeaseID: "w11c-canary-lease", Outcome: GatewayAccountCircuitCompletionTransportFailure, Reason: "w11c-upstream",
+		LeaseID:                                 "w11c-canary-lease", Outcome: GatewayAccountCircuitCompletionTransportFailure, Reason: "w11c-upstream",
 	})
 	if err != nil {
 		t.Fatalf("canary complete: %v", err)
@@ -120,14 +120,14 @@ func TestW11CRuntimeCanaryLifecycleBranches(t *testing.T) {
 	// A canary with a framing outcome and evidence scope key recovers.
 	recoveredLease, err := rt.AcquireGatewayAccountCircuitCanaryLease(ctx, GatewayAccountCircuitAcquireCanaryLeaseInput{
 		GatewayAccountCircuitTransitionIdentity: w7bIdentity(accountID, scope, completed.State.Generation, 1, "w11c-canary-acquire-2"),
-		LeaseID: "w11c-canary-lease-2", LeaseUntil: clock.Now().Add(2 * time.Minute),
+		LeaseID:                                 "w11c-canary-lease-2", LeaseUntil: clock.Now().Add(2 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("canary acquire 2: %v", err)
 	}
 	recovered, err := rt.CompleteGatewayAccountCircuitCanary(ctx, GatewayAccountCircuitCompleteCanaryInput{
 		GatewayAccountCircuitTransitionIdentity: w7bIdentity(accountID, scope, recoveredLease.State.Generation, 1, "w11c-canary-complete-2"),
-		LeaseID: "w11c-canary-lease-2", Outcome: GatewayAccountCircuitCompletionFramingComplete, EvidenceScopeKey: "w11c-evidence-scope",
+		LeaseID:                                 "w11c-canary-lease-2", Outcome: GatewayAccountCircuitCompletionFramingComplete, EvidenceScopeKey: "w11c-evidence-scope",
 	})
 	if err != nil {
 		t.Fatalf("canary framing: %v", err)
@@ -138,7 +138,7 @@ func TestW11CRuntimeCanaryLifecycleBranches(t *testing.T) {
 	// Lease deadline validation on the canary acquire.
 	if _, err := rt.AcquireGatewayAccountCircuitCanaryLease(ctx, GatewayAccountCircuitAcquireCanaryLeaseInput{
 		GatewayAccountCircuitTransitionIdentity: w7bIdentity(accountID, scope, 1, 1, "w11c-bad"),
-		LeaseID: " ", LeaseUntil: clock.Now().Add(time.Minute),
+		LeaseID:                                 " ", LeaseUntil: clock.Now().Add(time.Minute),
 	}); err == nil {
 		t.Fatalf("blank lease id must fail")
 	}

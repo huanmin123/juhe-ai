@@ -51,20 +51,20 @@ func (w *PreAuthRecoverableWait) WaitForRecoverableUnavailableState(ctx context.
 		signal = ctx
 	}
 	engineInput := waitInput{
-		scopeKey:                input.ScopeKey,
-		reason:                  input.Reason,
-		refresh:                 input.Refresh,
-		isReady:                 func() bool { return input.IsReady(ctx) },
-		nextRetryAfterMs:        func() (int64, bool) { return input.NextRetryAfterMs(ctx) },
-		signal:                  signal,
-		waitWithoutRetryAfter:   true,
-		maxWaitMs:               input.MaxWaitMs,
-		requestStartedAtMs:      int64Ptr(input.RequestStartedAtMs),
-		deadlineAtMs:            int64Ptr(input.DeadlineAtMs),
-		coordinator:             w.Coordinator,
-		routeCoordinationBudget: input.RouteCoordinationBudget,
+		scopeKey:                 input.ScopeKey,
+		reason:                   input.Reason,
+		refresh:                  input.Refresh,
+		isReady:                  func() bool { return input.IsReady(ctx) },
+		nextRetryAfterMs:         func() (int64, bool) { return input.NextRetryAfterMs(ctx) },
+		signal:                   signal,
+		waitWithoutRetryAfter:    true,
+		maxWaitMs:                input.MaxWaitMs,
+		requestStartedAtMs:       int64Ptr(input.RequestStartedAtMs),
+		deadlineAtMs:             int64Ptr(input.DeadlineAtMs),
+		coordinator:              w.Coordinator,
+		routeCoordinationBudget:  input.RouteCoordinationBudget,
 		gatewayRequestWallBudget: input.GatewayRequestWallBudget,
-		logger:                  w.Logger,
+		logger:                   w.Logger,
 	}
 	if input.AuditCapture != nil {
 		engineInput.auditCapture = input.AuditCapture

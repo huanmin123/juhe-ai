@@ -106,7 +106,7 @@ func TestW12dProjectOutcomeFaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	outcome := Outcome{OutcomeID: "w12d-fault-2", RequestID: "r", AccountID: "w12d-fault-acc", Outcome: OutcomeUpstreamFailed, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
-		NextDueAt: ptrTime(projectionFixtureNow.Add(time.Hour)),
+		NextDueAt:  ptrTime(projectionFixtureNow.Add(time.Hour)),
 		Projection: &Projection{TargetAccountID: "w12d-fault-acc", TransitionKind: "health_failure", InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, ExpectedAccountStatus: "active"}}
 	fixture.insertOutcome(projectionFixtureNow, outcome)
 	if _, err := fixture.projector.DrainOnce(ctx); err == nil || !strings.Contains(err.Error(), "input version") {
@@ -132,7 +132,7 @@ func TestW12dProjectionPlanArms(t *testing.T) {
 	fixture.seedAccount(t, map[string]any{"id": "w12d-plan-acc", "status": "pending_test", "config_revision": int64(5), "dispatch_revision": int64(7), "availability_schedule_json": "{bad-json"})
 	w12dSeedInputVersion(t, fixture, "w12d-plan-acc", 1)
 	outcome := Outcome{OutcomeID: "w12d-plan-1", RequestID: "r", AccountID: "w12d-plan-acc", Outcome: OutcomeSuccess, ObservedAt: projectionFixtureNow, InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7,
-		NextDueAt: ptrTime(projectionFixtureNow.Add(time.Hour)),
+		NextDueAt:  ptrTime(projectionFixtureNow.Add(time.Hour)),
 		Projection: &Projection{TargetAccountID: "w12d-plan-acc", TransitionKind: "activation_success", InputVersion: 1, ConfigRevision: 5, DispatchRevision: 7, ExpectedAccountStatus: "pending_test"}}
 	fixture.insertOutcome(projectionFixtureNow, outcome)
 	result := fixture.drain(t)

@@ -96,7 +96,7 @@ func TestW11CServiceAcquireReplayNotCommitted(t *testing.T) {
 	// committed: the raw error propagates (covered elsewhere); here the
 	// notify error path is exercised instead.
 	notifyFail, _ := newTestService(t, store, ServiceOptions{
-		Now: func() int64 { return *clock },
+		Now:        func() int64 { return *clock },
 		OnMutation: func(context.Context, MutationEvent) error { return errors.New("w11c notify failed") },
 	})
 	if _, err := notifyFail.acquireConfirmation(ctx, scope, state, 30_000, strings.Repeat("b", 64)); err == nil {

@@ -91,8 +91,8 @@ type testEnv struct {
 	providersDeps *Deps
 }
 
-
 var mustChangeFalse = false
+
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:providers-"+strings.ReplaceAll(t.Name(), "/", "-")+"?mode=memory&cache=shared")

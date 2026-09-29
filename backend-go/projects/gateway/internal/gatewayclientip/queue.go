@@ -14,11 +14,11 @@ import (
 
 // Reject reasons mirror HighConcurrencyQueueRejectReason.
 const (
-	QueueRejectQueueDisabled    = "queue_disabled"
-	QueueRejectQueueFull        = "queue_full"
-	QueueRejectAPIKeyQueueFull  = "api_key_queue_full"
-	QueueRejectTimeout          = "timeout"
-	QueueRejectAborted          = "aborted"
+	QueueRejectQueueDisabled   = "queue_disabled"
+	QueueRejectQueueFull       = "queue_full"
+	QueueRejectAPIKeyQueueFull = "api_key_queue_full"
+	QueueRejectTimeout         = "timeout"
+	QueueRejectAborted         = "aborted"
 )
 
 // highConcurrencyStateStoreKeyPrefix is the Redis key family Node namespaces
@@ -27,15 +27,15 @@ const highConcurrencyQueueKeyFamily = "juhe-ai:state:high-concurrency-queue:"
 
 // HighConcurrencyQueueWaitInput mirrors HighConcurrencyQueueWaitInput.
 type HighConcurrencyQueueWaitInput struct {
-	SystemAccountID           string
-	GroupID                   string
-	APIKeyID                  string
-	AccountIDs                []string
-	AccountConcurrencyLimits  map[string]int
-	Lane                      string
-	Policy                    map[string]any
-	MaxWaitMs                 *int64
-	Signal                    context.Context
+	SystemAccountID          string
+	GroupID                  string
+	APIKeyID                 string
+	AccountIDs               []string
+	AccountConcurrencyLimits map[string]int
+	Lane                     string
+	Policy                   map[string]any
+	MaxWaitMs                *int64
+	Signal                   context.Context
 }
 
 // HighConcurrencyQueueWaitResult mirrors the HighConcurrencyQueueWaitResult
@@ -81,14 +81,14 @@ type HighConcurrencyQueueOptions struct {
 
 // HighConcurrencyGroupQueue owns the per-group wait queues.
 type HighConcurrencyGroupQueue struct {
-	clock        Clock
-	logger       Logger
-	driver       string
-	sched        FlushScheduler
-	sleep        func(time.Duration)
-	defaults     HighConcurrencyPolicyDefaults
-	concurrency  AccountConcurrencySource
-	unsubscribe  func()
+	clock       Clock
+	logger      Logger
+	driver      string
+	sched       FlushScheduler
+	sleep       func(time.Duration)
+	defaults    HighConcurrencyPolicyDefaults
+	concurrency AccountConcurrencySource
+	unsubscribe func()
 
 	redis     *redis.Client
 	closeFns  []func()
@@ -109,19 +109,19 @@ type highConcurrencyQueueState struct {
 }
 
 type highConcurrencyQueueItem struct {
-	id                 int64
-	groupKey           string
-	lane               string
-	apiKeyKey          string
-	accountIDs         map[string]bool
-	accountCapacities  map[string]highConcurrencyAccountCapacity
-	enqueuedAtMs       int64
-	deadlineAtMs       int64
-	cancelTimer        func()
-	signal             context.Context
-	completed          bool
-	resolve            chan HighConcurrencyQueueWaitResult
-	done               chan struct{}
+	id                int64
+	groupKey          string
+	lane              string
+	apiKeyKey         string
+	accountIDs        map[string]bool
+	accountCapacities map[string]highConcurrencyAccountCapacity
+	enqueuedAtMs      int64
+	deadlineAtMs      int64
+	cancelTimer       func()
+	signal            context.Context
+	completed         bool
+	resolve           chan HighConcurrencyQueueWaitResult
+	done              chan struct{}
 }
 
 type highConcurrencyAccountCapacity struct {
@@ -687,8 +687,8 @@ type redisQueueSizes struct {
 }
 
 func (q *HighConcurrencyGroupQueue) enqueueRedisHighConcurrencyQueueItem(ctx context.Context, groupKey string, apiKeyKey string, itemID string, deadlineAtMs int64, maxQueueSize int, perAPIKeyQueueLimit int) (struct {
-	status            string
-	queueSize         int
+	status             string
+	queueSize          int
 	perAPIKeyQueueSize int
 }, error) {
 	nowMs := q.clock.Now().UnixMilli()

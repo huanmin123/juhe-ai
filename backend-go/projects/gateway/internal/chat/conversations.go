@@ -118,7 +118,7 @@ func chatImageModelProfileFor(model string) chatImageModelProfile {
 // 为仅 account（AI 问答会话账户唯一绑定设计）：bindAccountId 为空即「未选账户」
 // 状态；archived=1 是存量旧模式（api_key/group）会话的一次性迁移只读标记。
 // searchAccountId/searchModelId/imageAccountId 是模型工具的会话级绑定列
-//（工具体系设计 §7：空 = 未绑定，绑定语义见 tool_bindings.go）。
+// （工具体系设计 §7：空 = 未绑定，绑定语义见 tool_bindings.go）。
 type Conversation struct {
 	ID                      string         `json:"id"`
 	SystemAccountID         string         `json:"systemAccountId"`

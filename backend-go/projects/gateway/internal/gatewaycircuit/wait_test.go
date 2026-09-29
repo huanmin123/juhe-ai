@@ -205,10 +205,10 @@ func TestWaitEngineRefreshesThroughCoordinator(t *testing.T) {
 				}
 				return nil
 			},
-			isReady:          func() bool { return ready },
-			nextRetryAfterMs: func() (int64, bool) { return 0, false },
+			isReady:               func() bool { return ready },
+			nextRetryAfterMs:      func() (int64, bool) { return 0, false },
 			waitWithoutRetryAfter: true,
-			maxWaitMs:        30_000, checkIntervalMs: 100,
+			maxWaitMs:             30_000, checkIntervalMs: 100,
 			coordinator: coordinator,
 			now:         clock.now,
 		})
@@ -244,11 +244,11 @@ func TestRouteCoordinationBudgetIntegration(t *testing.T) {
 	go func() {
 		outcome, _ := waitForRecoverableUnavailableState(context.Background(), waitInput{
 			reason: "r", scopeKey: "scope",
-			refresh: func(ctx context.Context) error { return nil },
-			isReady:          func() bool { return true },
-			nextRetryAfterMs: func() (int64, bool) { return 0, false },
+			refresh:               func(ctx context.Context) error { return nil },
+			isReady:               func() bool { return true },
+			nextRetryAfterMs:      func() (int64, bool) { return 0, false },
 			waitWithoutRetryAfter: true,
-			maxWaitMs:        5_000, checkIntervalMs: 100,
+			maxWaitMs:             5_000, checkIntervalMs: 100,
 			coordinator:             coordinator,
 			routeCoordinationBudget: budget,
 			now:                     clock.now,

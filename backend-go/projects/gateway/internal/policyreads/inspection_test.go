@@ -26,8 +26,8 @@ type recordingSink struct {
 	entries []authsys.OperationLogEntry
 }
 
-
 var mustChangeFalse = false
+
 func (s *recordingSink) Record(entry authsys.OperationLogEntry, _ *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

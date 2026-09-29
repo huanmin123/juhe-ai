@@ -425,7 +425,8 @@ func (s *Store) RouteStrategyOptions(ctx context.Context, access AccessScope, qu
 // ownerOrViewer mirrors Node's `ownerSystemAccountId ?? viewerSystemAccountId`
 // page parameters (the two never disagree: manageableSystemAccountId already
 // falls back to the viewer for non-admins).
-func ownerOrViewer(owner, viewer string) string {	if owner != "" {
+func ownerOrViewer(owner, viewer string) string {
+	if owner != "" {
 		return owner
 	}
 	return viewer

@@ -47,7 +47,7 @@ func LocalSuppressionExhaustedFailureResponse(nextRetryAfterMs *int64) LocalSupp
 }
 
 // RecoverableSuppressionScopeKey mirrors recoverableSuppressionScopeKey:
-// [systemAccountId, apiKeyId ?? '', groupId].join(':').
+// [systemAccountId, apiKeyId ?? ”, groupId].join(':').
 func RecoverableSuppressionScopeKey(systemAccountID, apiKeyID, groupID string) string {
 	if apiKeyID == "" {
 		apiKeyID = ""

@@ -25,11 +25,11 @@ func newGuardForTest(t *testing.T, driver string) (*AccountAPIKeyFailureGuard, *
 
 func TestFailureGuardThresholdBranches(t *testing.T) {
 	tests := []struct {
-		name          string
-		account       gatewayruntimecache.OpenAIAccountSecret
-		input         GatewayAccountApiKeyFailureGuardInput
-		wantPersist   bool
-		wantReason    string
+		name        string
+		account     gatewayruntimecache.OpenAIAccountSecret
+		input       GatewayAccountApiKeyFailureGuardInput
+		wantPersist bool
+		wantReason  string
 	}{
 		{
 			name:        "未选择 key fingerprint",

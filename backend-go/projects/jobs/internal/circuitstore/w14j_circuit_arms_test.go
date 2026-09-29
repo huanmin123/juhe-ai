@@ -123,7 +123,6 @@ func TestW14JListByRuntimeKeysValidationArms(t *testing.T) {
 	}
 }
 
-
 // TestW14JClaimSQLiteValidationArms 覆盖 Claim 参数校验臂。
 func TestW14JClaimSQLiteValidationArms(t *testing.T) {
 	_, control, _, _ := w13g5CircuitFixture(t)
@@ -364,4 +363,3 @@ func TestW14JMapOutboxEventScopeToken(t *testing.T) {
 		t.Fatalf("空 scope/token 不得映射: %+v", event)
 	}
 }
-

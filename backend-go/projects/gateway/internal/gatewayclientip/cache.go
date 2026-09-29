@@ -24,9 +24,9 @@ func systemClock() Clock { return gatewayruntimecache.SystemClock() }
 // family uses: per-entry TTL, LRU recency on get, max-size eviction. Node is
 // single threaded; Go serializes access with a mutex.
 type entryTTLCache[V any] struct {
-	clock  Clock
-	max    int
-	mu     sync.Mutex
+	clock   Clock
+	max     int
+	mu      sync.Mutex
 	entries map[string]entryTTLValue[V]
 	// order holds insert order for eviction (lru-cache evicts by recency;
 	// get refreshes recency, so track order by last access).
@@ -280,6 +280,6 @@ type sharedSnapshotEntry struct {
 // sharedByIPEntry mirrors ClientIpPolicyByIpCacheEntry; Policy nil mirrors
 // the Node `policy?: ActiveClientIpPolicy` absence.
 type sharedByIPEntry struct {
-	LoadedAt string                 `json:"loadedAt"`
-	Policy   *ActiveClientIPPolicy  `json:"policy,omitempty"`
+	LoadedAt string                `json:"loadedAt"`
+	Policy   *ActiveClientIPPolicy `json:"policy,omitempty"`
 }

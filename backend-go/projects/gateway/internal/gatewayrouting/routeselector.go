@@ -85,10 +85,10 @@ func (r *routeStateRegistry) trimLocked() {
 // redisRouteStateTtlMs and redisRouteStateOperationTimeoutMs mirror the Node
 // constants; the counter contract lives on RedisRouteCounter.
 const (
-	RedisRouteStateTtlMs               = int64(30 * 24 * 60 * 60 * 1000)
-	RedisRouteStateOperationTimeoutMs  = 3000
-	RedisRouteStateRoundRobinMode      = "round-robin"
-	RedisRouteStateWeightedMode        = "weighted"
+	RedisRouteStateTtlMs              = int64(30 * 24 * 60 * 60 * 1000)
+	RedisRouteStateOperationTimeoutMs = 3000
+	RedisRouteStateRoundRobinMode     = "round-robin"
+	RedisRouteStateWeightedMode       = "weighted"
 	// ErrHighPerformanceDynamicRouteRequiresStateURL mirrors the Node error
 	// thrown when the redis driver is selected without JUHE_AI_REDIS_STATE_URL.
 	ErrHighPerformanceDynamicRouteRequiresStateURL = "高性能模式动态路由需要 JUHE_AI_REDIS_STATE_URL"

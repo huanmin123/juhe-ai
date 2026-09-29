@@ -191,7 +191,7 @@ func TestW12HMutationHelperArms(t *testing.T) {
 	if normalizeProbeDeferSeconds(0) != initialProbeBackoffSeconds {
 		t.Fatal("下限钳制不符")
 	}
-	if normalizeProbeDeferSeconds(1 << 30) != maxProbeBackoffSeconds {
+	if normalizeProbeDeferSeconds(1<<30) != maxProbeBackoffSeconds {
 		t.Fatal("上限钳制不符")
 	}
 	if normalizeProbeDeferSeconds(120) != 120 {

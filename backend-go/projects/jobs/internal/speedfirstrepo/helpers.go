@@ -28,5 +28,5 @@ func formatMillis(ms int64) string {
 // 实现收敛到 shared/platform/schedulejitter（全输入域等价，含 interval<1
 // 钳制与 ms 整除语义）。
 func passiveJitterWindowMS(intervalMS int64) int64 {
-	return int64(schedulejitter.Window(time.Duration(intervalMS) * time.Millisecond) / time.Millisecond)
+	return int64(schedulejitter.Window(time.Duration(intervalMS)*time.Millisecond) / time.Millisecond)
 }

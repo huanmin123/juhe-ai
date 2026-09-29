@@ -8,13 +8,13 @@ package chat
 type ConflictCode string
 
 const (
-	ConflictMessageInProgress     ConflictCode = "chat_message_in_progress"
-	ConflictContextCompacting     ConflictCode = "chat_context_compacting"
-	ConflictConversationClearing  ConflictCode = "chat_conversation_clearing"
-	ConflictStorageQuotaExceeded  ConflictCode = "chat_storage_quota_exceeded"
-	ConflictReplaceConflict       ConflictCode = "chat_replace_conflict"
-	ConflictConversationLimit     ConflictCode = "chat_conversation_limit_exceeded"
-	ConflictTurnLimitExceeded     ConflictCode = "chat_turn_limit_exceeded"
+	ConflictMessageInProgress    ConflictCode = "chat_message_in_progress"
+	ConflictContextCompacting    ConflictCode = "chat_context_compacting"
+	ConflictConversationClearing ConflictCode = "chat_conversation_clearing"
+	ConflictStorageQuotaExceeded ConflictCode = "chat_storage_quota_exceeded"
+	ConflictReplaceConflict      ConflictCode = "chat_replace_conflict"
+	ConflictConversationLimit    ConflictCode = "chat_conversation_limit_exceeded"
+	ConflictTurnLimitExceeded    ConflictCode = "chat_turn_limit_exceeded"
 )
 
 var conflictMessages = map[ConflictCode]string{
@@ -47,7 +47,9 @@ func (e *ConversationNotFoundError) Error() string { return "会话不存在" }
 // finalize path converts the turn to failed before the route surfaces a 500.
 type AssistantStorageLimitError struct{}
 
-func (e *AssistantStorageLimitError) Error() string { return "助手回答超过可安全持久化的字节上限" }
+func (e *AssistantStorageLimitError) Error() string {
+	return "助手回答超过可安全持久化的字节上限"
+}
 
 // ContextBudgetError maps to ChatContextBudgetError → 422
 // {message, code: chat_input_exceeds_context}.
@@ -61,8 +63,8 @@ func (e *ContextBudgetError) Error() string {
 type RequestErrorCode string
 
 const (
-	RequestImageNotSupported  RequestErrorCode = "chat_image_not_supported"
-	RequestBodyTooLarge       RequestErrorCode = "chat_request_body_too_large"
+	RequestImageNotSupported RequestErrorCode = "chat_image_not_supported"
+	RequestBodyTooLarge      RequestErrorCode = "chat_request_body_too_large"
 )
 
 // RequestError maps to Node ChatRequestError → 422 {message, code}.
@@ -83,8 +85,8 @@ func (e *ModelCapabilityError) Error() string { return e.Message }
 type ModelContextErrorCode string
 
 const (
-	ModelContextLoadLimit  ModelContextErrorCode = "load_limit"
-	ModelContextImagePend  ModelContextErrorCode = "image_pending"
+	ModelContextLoadLimit ModelContextErrorCode = "load_limit"
+	ModelContextImagePend ModelContextErrorCode = "image_pending"
 )
 
 // ModelContextError maps to ChatModelContextError → 422
@@ -137,4 +139,6 @@ func (e *ContextConflictError) Error() string {
 // GatewayUnavailableError maps to ChatGatewayUnavailableError.
 type GatewayUnavailableError struct{}
 
-func (e *GatewayUnavailableError) Error() string { return "当前没有可用的内部 Gateway，请稍后重试" }
+func (e *GatewayUnavailableError) Error() string {
+	return "当前没有可用的内部 Gateway，请稍后重试"
+}

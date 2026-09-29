@@ -30,6 +30,43 @@ func applyAccountCredentialsPatch(current, patch Credentials) Credentials {
 	return credentials
 }
 
+// stripCipherPlaceholderCredentials（BUG-0238 契约 4，后端防线）剔除 PATCH
+// requested 中回传的统一密文占位：敏感键 string 值 === __ENCRYPTED__ → 删除
+// 该键（视为未修改，走既有 preserve 保留现值）；api_keys 数组滤除占位项，
+// 滤后为空 → 删除该键，滤后非空 → 以滤后数组为新值。非敏感键不动。占位是
+// 固定字面量，无需 current 参与。
+func stripCipherPlaceholderCredentials(requested Credentials) Credentials {
+	output := Credentials{}
+	for key, value := range requested {
+		if !sensitiveCredentialKeys[key] {
+			output[key] = value
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if typed == credentialCipherPlaceholder {
+				continue
+			}
+			output[key] = value
+		case []any:
+			kept := make([]any, 0, len(typed))
+			for _, item := range typed {
+				if text, ok := item.(string); ok && text == credentialCipherPlaceholder {
+					continue
+				}
+				kept = append(kept, item)
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			output[key] = kept
+		default:
+			output[key] = value
+		}
+	}
+	return output
+}
+
 // mergeAccountCredentialsForUpdate mirrors mergeAccountCredentialsForUpdate:
 // the legacy full-record submit keeps optional current fields unless the
 // request carries a replacement, and api_key accounts resolve the

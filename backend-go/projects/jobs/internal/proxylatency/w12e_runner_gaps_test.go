@@ -739,8 +739,8 @@ func TestW12EDecryptArms(t *testing.T) {
 		envelope("$$$", "AAAAAAAAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAAAA"), // iv 解码失败
 		envelope("AAAAAAAAAAAAAAAAAAAAAA", "$$$", "AAAAAAAAAAAAAAAAAAAAAA"), // tag 解码失败
 		envelope("AAAAAAAAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAAAA", "$$$"), // ciphertext 解码失败
-		envelope("short", "AAAAAAAAAAAAAAAAAAAAAA", "AAAA"),                // iv 长度非法
-		envelope("AAAAAAAAAAAAAAAAAAAAAA", "short", "AAAA"),                // tag 长度非法
+		envelope("short", "AAAAAAAAAAAAAAAAAAAAAA", "AAAA"),                 // iv 长度非法
+		envelope("AAAAAAAAAAAAAAAAAAAAAA", "short", "AAAA"),                 // tag 长度非法
 	}
 	for index, item := range bad {
 		if _, err := decryptProxyPasswordV1("secret", item); err == nil {

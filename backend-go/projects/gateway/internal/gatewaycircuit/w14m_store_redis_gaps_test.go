@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	redis "github.com/redis/go-redis/v9"
 	miniredis "github.com/alicebob/miniredis/v2"
+	redis "github.com/redis/go-redis/v9"
 )
 
 // w14mEvalReply 描述一次 Redis 回复（值或错误）。
@@ -229,10 +229,10 @@ func joinQuoted(keys []string) string {
 
 func w14mSuspectStateJSON(runtimeKey string) string {
 	state := map[string]any{
-		"scopeKey":   "account:" + runtimeKey,
-		"scope":      map[string]any{"kind": "account", "accountRuntimeKey": runtimeKey},
-		"phase":      PhaseSuspect,
-		"retryAtMs":  100,
+		"scopeKey":    "account:" + runtimeKey,
+		"scope":       map[string]any{"kind": "account", "accountRuntimeKey": runtimeKey},
+		"phase":       PhaseSuspect,
+		"retryAtMs":   100,
 		"updatedAtMs": 100,
 	}
 	encoded, _ := json.Marshal(map[string]any{

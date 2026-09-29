@@ -14,11 +14,11 @@ import (
 // state model ?? req.body.model), and EndpointFamilyOverride mirrors
 // setGatewayModelMappingSourceEndpointFamilyOverride.
 type RequestView struct {
-	Method                  string
-	OriginalURL             string
-	Path                    string
-	BodyModel               string
-	EndpointFamilyOverride  string
+	Method                 string
+	OriginalURL            string
+	Path                   string
+	BodyModel              string
+	EndpointFamilyOverride string
 }
 
 // requestModel mirrors requestModel(req): the Gemini path model wins over
@@ -30,7 +30,7 @@ func (v RequestView) requestModel() string {
 	return v.BodyModel
 }
 
-// requestEndpointPath mirrors `(req.originalUrl || req.path || '').split('?', 1)[0]`.
+// requestEndpointPath mirrors `(req.originalUrl || req.path || ”).split('?', 1)[0]`.
 func (v RequestView) requestEndpointPath() string {
 	source := v.OriginalURL
 	if source == "" {
@@ -130,7 +130,7 @@ func geminiRequestEndpointFamily(method, endpoint string) string {
 	return family
 }
 
-// replaceV1Prefix mirrors .replace(/^\/v1(?=\/|$)/, '').
+// replaceV1Prefix mirrors .replace(/^\/v1(?=\/|$)/, ”).
 func replaceV1Prefix(path string) string {
 	if strings.HasPrefix(path, "/v1") {
 		rest := path[3:]
@@ -142,8 +142,8 @@ func replaceV1Prefix(path string) string {
 }
 
 var (
-	geminiInteractionsPattern  = regexp.MustCompile(`^/interactions(?:/[^/]+(?:/cancel)?)?$`)
-	geminiModelActionPattern   = regexp.MustCompile(`^/models/[^/]+:(generatecontent|streamgeneratecontent|counttokens|embedcontent)$`)
+	geminiInteractionsPattern = regexp.MustCompile(`^/interactions(?:/[^/]+(?:/cancel)?)?$`)
+	geminiModelActionPattern  = regexp.MustCompile(`^/models/[^/]+:(generatecontent|streamgeneratecontent|counttokens|embedcontent)$`)
 )
 
 // geminiEndpointFamilyFromPath mirrors geminiEndpointFamilyFromPath
@@ -193,7 +193,7 @@ func normalizedGeminiPath(pathAndQuery string) string {
 	return normalized
 }
 
-// replaceV1BetaPrefix mirrors .replace(/^\/v1beta(?=\/|$)/, '').
+// replaceV1BetaPrefix mirrors .replace(/^\/v1beta(?=\/|$)/, ”).
 func replaceV1BetaPrefix(path string) string {
 	if strings.HasPrefix(path, "/v1beta") {
 		rest := path[len("/v1beta"):]

@@ -12,15 +12,15 @@ import (
 
 // KeyModelFailureIntent mirrors KeyModelFailureIntent.
 type KeyModelFailureIntent struct {
-	IntentID        string
-	RequestID       string
-	AttemptID       string
-	Capability      CapabilityKey
-	ObservedAtMs    int64
-	Outcome         KeyModelOutcome
-	SourceFence     string
-	Permit          *KeyModelForegroundPermit
-	RecoveryTarget  *KeyModelRecoveryTarget
+	IntentID       string
+	RequestID      string
+	AttemptID      string
+	Capability     CapabilityKey
+	ObservedAtMs   int64
+	Outcome        KeyModelOutcome
+	SourceFence    string
+	Permit         *KeyModelForegroundPermit
+	RecoveryTarget *KeyModelRecoveryTarget
 }
 
 // KeyModelRecoveryTarget mirrors KeyModelRecoveryTarget.
@@ -49,9 +49,9 @@ type KeyModelFailureResult struct {
 // KeyModelAdmissionResult mirrors KeyModelAdmissionResult.
 type KeyModelAdmissionResult struct {
 	// Status is admitted | busy | blocked.
-	Status      KeyModelForegroundDecision
+	Status       KeyModelForegroundDecision
 	WakeSequence int64
-	Permit      *KeyModelForegroundPermit
+	Permit       *KeyModelForegroundPermit
 }
 
 // KeyModelForegroundPermit mirrors KeyModelForegroundPermit.

@@ -82,9 +82,9 @@ func TestW13g5PostgresAccountQualityStatsSystemAccountIDArms(t *testing.T) {
 		t.Fatal("owner 访问缺归属必须报错")
 	}
 	if got, err := postgresAccountQualityStatsSystemAccountID(UsageStatsRecordRow{
-		ID:                          "w13g5-r3",
-		AccountAccessType:           w13g5s("account_authorized"),
-		SystemAccountID:             "w13g5-caller",
+		ID:                "w13g5-r3",
+		AccountAccessType: w13g5s("account_authorized"),
+		SystemAccountID:   "w13g5-caller",
 	}); err != nil || got != "w13g5-caller" {
 		t.Fatalf("account_authorized 必须取调用方: %v %v", got, err)
 	}

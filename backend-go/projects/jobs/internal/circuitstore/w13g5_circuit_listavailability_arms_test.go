@@ -558,4 +558,3 @@ func TestW13g5ListSmallHelpers(t *testing.T) {
 		t.Fatalf("占位符生成: %s", got)
 	}
 }
-

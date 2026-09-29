@@ -34,30 +34,30 @@ type ListItemSourceSummary struct {
 // ListItem mirrors ResourceAuthorizationListItem (domain/types.ts:1843-1876):
 // optional fields stay absent like the Node undefined projections.
 type ListItem struct {
-	ID                      string                `json:"id"`
-	ResourceType            string                `json:"resourceType"`
-	ResourceID              string                `json:"resourceId"`
-	ResourceName            *string               `json:"resourceName,omitempty"`
-	OwnerID                 string                `json:"resourceOwnerSystemAccountId"`
-	OwnerName               *string               `json:"resourceOwnerSystemAccountName,omitempty"`
-	GranteeType             string                `json:"granteeType"`
-	GranteeUserID           *string               `json:"granteeSystemAccountId,omitempty"`
-	GranteeName             *string               `json:"granteeSystemAccountName,omitempty"`
-	GranteeUsername         *string               `json:"granteeUsername,omitempty"`
-	GranteeTeamID           *string               `json:"granteeTeamId,omitempty"`
-	GranteeTeamName         *string               `json:"granteeTeamName,omitempty"`
-	Status                  string                `json:"status"`
-	Remark                  *string               `json:"remark,omitempty"`
-	ExpiresAt               *string               `json:"expiresAt,omitempty"`
-	Limits                  any                   `json:"limits,omitempty"`
-	ResourceAccountExpiresAt *string              `json:"resourceAccountExpiresAt,omitempty"`
-	EffectiveSourceType     string                `json:"effectiveSourceType"`
-	EffectiveSourceTeamID   *string               `json:"effectiveSourceTeamId,omitempty"`
-	EffectiveSourceTeamName *string               `json:"effectiveSourceTeamName,omitempty"`
-	CreatedAt               string                `json:"createdAt"`
-	UpdatedAt               string                `json:"updatedAt"`
-	SourceSummary           ListItemSourceSummary `json:"sourceSummary"`
-	Permissions             ListItemPermissions   `json:"permissions"`
+	ID                       string                `json:"id"`
+	ResourceType             string                `json:"resourceType"`
+	ResourceID               string                `json:"resourceId"`
+	ResourceName             *string               `json:"resourceName,omitempty"`
+	OwnerID                  string                `json:"resourceOwnerSystemAccountId"`
+	OwnerName                *string               `json:"resourceOwnerSystemAccountName,omitempty"`
+	GranteeType              string                `json:"granteeType"`
+	GranteeUserID            *string               `json:"granteeSystemAccountId,omitempty"`
+	GranteeName              *string               `json:"granteeSystemAccountName,omitempty"`
+	GranteeUsername          *string               `json:"granteeUsername,omitempty"`
+	GranteeTeamID            *string               `json:"granteeTeamId,omitempty"`
+	GranteeTeamName          *string               `json:"granteeTeamName,omitempty"`
+	Status                   string                `json:"status"`
+	Remark                   *string               `json:"remark,omitempty"`
+	ExpiresAt                *string               `json:"expiresAt,omitempty"`
+	Limits                   any                   `json:"limits,omitempty"`
+	ResourceAccountExpiresAt *string               `json:"resourceAccountExpiresAt,omitempty"`
+	EffectiveSourceType      string                `json:"effectiveSourceType"`
+	EffectiveSourceTeamID    *string               `json:"effectiveSourceTeamId,omitempty"`
+	EffectiveSourceTeamName  *string               `json:"effectiveSourceTeamName,omitempty"`
+	CreatedAt                string                `json:"createdAt"`
+	UpdatedAt                string                `json:"updatedAt"`
+	SourceSummary            ListItemSourceSummary `json:"sourceSummary"`
+	Permissions              ListItemPermissions   `json:"permissions"`
 }
 
 // canManageOwner mirrors canManageResourceOwner over the request scope: a

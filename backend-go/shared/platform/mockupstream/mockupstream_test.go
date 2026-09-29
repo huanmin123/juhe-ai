@@ -133,11 +133,11 @@ func TestBodyStreamFlagPriority(t *testing.T) {
 	defer m.Close()
 
 	cases := []struct {
-		name      string
-		path      string
-		accept    string
-		body      string
-		wantSSE   bool
+		name    string
+		path    string
+		accept  string
+		body    string
+		wantSSE bool
 	}{
 		{"body true only", "/v1/chat/completions", "", `{"stream":true}`, true},
 		{"body false beats query", "/v1/chat/completions?stream=true", "", `{"stream":false}`, false},

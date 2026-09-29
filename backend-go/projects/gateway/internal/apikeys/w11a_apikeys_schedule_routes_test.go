@@ -35,13 +35,13 @@ func TestW11AScheduleDocumentMatrix(t *testing.T) {
 	}
 	// Date range arms.
 	for document, wantErr := range map[string]bool{
-		`{"enabled":true,"mode":"allow_windows","dateRange":null}`:                                       true,
-		`{"enabled":true,"mode":"allow_windows","dateRange":"x"}`:                                        true,
-		`{"enabled":true,"mode":"allow_windows","dateRange":{"bogus":1}}`:                                true,
-		`{"enabled":true,"mode":"allow_windows","dateRange":{"startDate":"2026-13-01"}}`:                 true,
-		`{"enabled":true,"mode":"allow_windows","dateRange":{"startDate":"not-a-date"}}`:                 true,
-		`{"enabled":true,"mode":"allow_windows","dateRange":{"startDate":5}}`:                            true,
-		`{"enabled":true,"mode":"allow_windows","dateRange":{"startDate":"2026-03-01","endDate":"2026-02-01"}}`: true,
+		`{"enabled":true,"mode":"allow_windows","dateRange":null}`:                                                            true,
+		`{"enabled":true,"mode":"allow_windows","dateRange":"x"}`:                                                             true,
+		`{"enabled":true,"mode":"allow_windows","dateRange":{"bogus":1}}`:                                                     true,
+		`{"enabled":true,"mode":"allow_windows","dateRange":{"startDate":"2026-13-01"}}`:                                      true,
+		`{"enabled":true,"mode":"allow_windows","dateRange":{"startDate":"not-a-date"}}`:                                      true,
+		`{"enabled":true,"mode":"allow_windows","dateRange":{"startDate":5}}`:                                                 true,
+		`{"enabled":true,"mode":"allow_windows","dateRange":{"startDate":"2026-03-01","endDate":"2026-02-01"}}`:               true,
 		`{"enabled":true,"mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"09:00","end":"18:00"}],"dateRange":{}}`: false,
 	} {
 		_, err := NormalizeSchedule(w11aScheduleObject(document))

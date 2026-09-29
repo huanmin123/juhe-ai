@@ -12,25 +12,25 @@ import (
 
 // Constants mirror client-ip-policy-cache.service.ts verbatim.
 const (
-	clientIPPolicyCacheTTL            = 30 * time.Second
-	clientIPPolicyCacheMaxEntries     = 5_000
-	clientIPPolicyHitFlushDelay       = 1000 * time.Millisecond
+	clientIPPolicyCacheTTL             = 30 * time.Second
+	clientIPPolicyCacheMaxEntries      = 5_000
+	clientIPPolicyHitFlushDelay        = 1000 * time.Millisecond
 	clientIPPolicyHitMaxPendingEntries = 5_000
-	clientIPPolicyHitFlushBatchSize   = 1_000
+	clientIPPolicyHitFlushBatchSize    = 1_000
 )
 
 // Cache driver / runtime mode values mirror runtimeConfig.
 const (
-	CacheDriverRedis = "redis"
+	CacheDriverRedis       = "redis"
 	RuntimeModePerformance = "performance"
-	ProcessRoleServer = "server"
-	ProcessRoleWorker = "worker"
-	WorkerRoleStatsWorker = "stats-worker"
+	ProcessRoleServer      = "server"
+	ProcessRoleWorker      = "worker"
+	WorkerRoleStatsWorker  = "stats-worker"
 )
 
 // InspectClientIPPolicyOptions mirrors InspectClientIpPolicyOptions.
 type InspectClientIPPolicyOptions struct {
-	CacheOnly           bool
+	CacheOnly            bool
 	EnsureSnapshotLoaded bool
 }
 
@@ -62,12 +62,12 @@ type policyCacheEntry struct {
 
 // PolicyCacheRuntime mirrors getClientIpPolicyCacheRuntime().
 type PolicyCacheRuntime struct {
-	SnapshotLoadedAt     string
-	SnapshotPolicyCount  int
+	SnapshotLoadedAt      string
+	SnapshotPolicyCount   int
 	PendingPolicyHitCount int
 	DroppedPolicyHitCount int
 	MaxPendingPolicyHits  int
-	FlushBatchSize       int
+	FlushBatchSize        int
 }
 
 // FlushScheduler mirrors the setTimeout scheduling of the hit buffer flush;
@@ -126,8 +126,8 @@ type PolicyCache struct {
 	// expiry-bounded TTL).
 	policyCache *entryTTLCache[policyCacheEntry]
 	// activePolicySnapshot mirrors the memory-driver snapshot map.
-	snapshotMu    sync.Mutex
-	snapshot      map[string]ActiveClientIPPolicy
+	snapshotMu       sync.Mutex
+	snapshot         map[string]ActiveClientIPPolicy
 	snapshotLoadedAt string
 
 	// sharedSnapshot / sharedByIP mirror the shared JSON caches

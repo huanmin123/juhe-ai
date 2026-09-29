@@ -318,7 +318,9 @@ func TestW12HCooldownFinalFailureErrorAndDelayHelpers(t *testing.T) {
 		Settings: func(string, int, int) int { return 24 }, Concurrency: func() int { return 2 }, QueueWorkers: 1,
 	})
 	runner.Enqueue(cooldownCandidate("acc-1", "fp-1", "sk-key"), 24)
-	waitFor(t, func() bool { return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil })
+	waitFor(t, func() bool {
+		return logger.findByEvent("background_account_api_key_cooldown_retest_retry_exhausted") != nil
+	})
 
 	// quotaRecoveryDelaySeconds：合法/非法策略两个分支。
 	valid := &OpenAIAccountCandidate{ID: "acc-1", QuotaRecoveryPolicy: map[string]any{

@@ -141,8 +141,8 @@ func TestW13g2ReturnGroupSuccessChain(t *testing.T) {
 }
 
 // TestW13g2InstanceNameLadder 用数据占用覆盖名字候选梯子
-//（instance_provision.go 275-293）：baseName 与 baseName-<short> 依次被占，
-//落到 -<short>-2；全部占用则退到时间戳候选。
+// （instance_provision.go 275-293）：baseName 与 baseName-<short> 依次被占，
+// 落到 -<short>-2；全部占用则退到时间戳候选。
 func TestW13g2InstanceNameLadder(t *testing.T) {
 	s, _ := w13g2FailStore(t)
 	db := s.db

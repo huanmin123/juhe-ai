@@ -795,10 +795,10 @@ func TestW14dCompactPreflightTails(t *testing.T) {
 		Req: req, Res: resWriter, AuditCapture: &recordedAudit{},
 		UsageContext: gatewaypreauth.GatewayFailureUsageContext{TrafficSource: "gateway"},
 		StartedAt:    1, SystemAccountID: "sys", APIKeyID: "key", GroupID: "group",
-		GroupAccess:                   gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
-		RequestClientCompatibility:    "codex_responses",
-		DispatchAccounts:              []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()},
-		Signal:                        context.Background(),
+		GroupAccess:                gatewayruntimecache.GroupUsageAccessMetadata{ProviderCode: "openai"},
+		RequestClientCompatibility: "codex_responses",
+		DispatchAccounts:           []gatewayruntimecache.OpenAIAccountSecret{compactBridgeAccount()},
+		Signal:                     context.Background(),
 	})
 	if err != nil {
 		t.Fatal(err)

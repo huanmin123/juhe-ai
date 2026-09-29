@@ -286,7 +286,7 @@ func TestW14JAckReleasePGDialectPath(t *testing.T) {
 }
 
 // TestW14JIncidentReadsPGDialectPath 覆盖 incident 只读面的 PG 前缀路径
-//（ListForRebuild / ListByRuntimeKeys / GetByScopeKey / cursor 往返）。
+// （ListForRebuild / ListByRuntimeKeys / GetByScopeKey / cursor 往返）。
 func TestW14JIncidentReadsPGDialectPath(t *testing.T) {
 	list, control, db, spec := w14jPGFixture(t)
 	ctx := context.Background()

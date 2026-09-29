@@ -60,12 +60,12 @@ func (c *w12hFakeConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (c *w12hFakeConn) Close() error                       { c.closed = true; return nil }
-func (c *w12hFakeConn) LocalAddr() net.Addr                { return nil }
-func (c *w12hFakeConn) RemoteAddr() net.Addr               { return nil }
-func (c *w12hFakeConn) SetDeadline(time.Time) error        { return c.setDeadlineErr }
-func (c *w12hFakeConn) SetReadDeadline(time.Time) error    { return c.setDeadlineErr }
-func (c *w12hFakeConn) SetWriteDeadline(time.Time) error   { return c.setDeadlineErr }
+func (c *w12hFakeConn) Close() error                     { c.closed = true; return nil }
+func (c *w12hFakeConn) LocalAddr() net.Addr              { return nil }
+func (c *w12hFakeConn) RemoteAddr() net.Addr             { return nil }
+func (c *w12hFakeConn) SetDeadline(time.Time) error      { return c.setDeadlineErr }
+func (c *w12hFakeConn) SetReadDeadline(time.Time) error  { return c.setDeadlineErr }
+func (c *w12hFakeConn) SetWriteDeadline(time.Time) error { return c.setDeadlineErr }
 
 // w12hFakeCtx 白盒上下文：Deadline/Err/Done 允许不一致组合，用于确定性
 // 命中拨号器在握手成功后检查 ctx.Err() 的分支。
@@ -75,10 +75,10 @@ type w12hFakeCtx struct {
 	done     chan struct{}
 }
 
-func (c *w12hFakeCtx) Deadline() (time.Time, bool)    { return c.deadline, !c.deadline.IsZero() }
-func (c *w12hFakeCtx) Done() <-chan struct{}          { return c.done }
-func (c *w12hFakeCtx) Err() error                     { return c.err }
-func (c *w12hFakeCtx) Value(any) any                  { return nil }
+func (c *w12hFakeCtx) Deadline() (time.Time, bool) { return c.deadline, !c.deadline.IsZero() }
+func (c *w12hFakeCtx) Done() <-chan struct{}       { return c.done }
+func (c *w12hFakeCtx) Err() error                  { return c.err }
+func (c *w12hFakeCtx) Value(any) any               { return nil }
 
 // 握手成功形状（无凭据 + ATYP=0x04 绑定地址）。
 func w12hSuccessScript(atyp byte) []byte {

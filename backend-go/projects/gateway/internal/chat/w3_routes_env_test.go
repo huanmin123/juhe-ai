@@ -786,7 +786,7 @@ func TestContextBudgetHelpersW3(t *testing.T) {
 	}
 	input := fixedChatBudgetInput{
 		CurrentUserContent: "abcd", Instructions: "abcd",
-		InternalTools: []*toolDefinition{testToolW3("t")},
+		InternalTools:      []*toolDefinition{testToolW3("t")},
 		ImageTokenEstimate: 100,
 	}
 	total := rt.fixedChatInputTokens(input)

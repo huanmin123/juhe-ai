@@ -146,7 +146,7 @@ type chainRuntimeDeps struct {
 	// 既有 no-op 降级（组合测试语义不变）。
 	CodexContextRoot       string
 	CodexContextStateStore gatewaycodex.CodexContextRowStore
-	Recoverable gatewaypreauth.RecoverableWait
+	Recoverable            gatewaypreauth.RecoverableWait
 	// DispatchRecoverableWait 是 G11 等待引擎的 dispatch 侧句柄（nil 仅组合
 	// 测试——engine.RecoverableWait 保持缺席语义，抑制耗尽路径快速退出）。
 	DispatchRecoverableWait *gatewaycircuit.PreAuthRecoverableWait

@@ -113,8 +113,8 @@ func TestW16fDispatchFamilyArms(t *testing.T) {
 	ctx := context.Background()
 	// 家族根 + 授权实例（source 指向根）+ 孤儿实例（source 缺失）。
 	for _, row := range []struct {
-		id      string
-		source  any
+		id       string
+		source   any
 		revision int64
 	}{{id: "w16f-root", source: nil, revision: 7}, {id: "w16f-instance", source: "w16f-root", revision: 7}, {id: "w16f-orphan", source: "w16f-missing-root", revision: 7}} {
 		if _, err := fixture.business.Exec(`INSERT INTO accounts (id, status, config_revision, dispatch_revision, authorization_instance_source_account_id) VALUES (?, 'active', 5, ?, ?)`, row.id, row.revision, row.source); err != nil {

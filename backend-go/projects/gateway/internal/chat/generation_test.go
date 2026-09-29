@@ -134,9 +134,9 @@ func (mockModelCatalog) ListProviderCatalog(providerCode, systemAccountID string
 			SupportedReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: strPtrT("low"),
 			SupportedServiceTiers: []string{"priority"},
 			ContextWindowTokens:   int64PtrT(100000), MaxOutputTokens: int64PtrT(20000),
-			SupportedAPIProtocols: []string{"chat_completions", "responses"},
-			InputModalities:       []string{"text", "image"},
-			OutputModalities:      []string{"text"},
+			SupportedAPIProtocols:    []string{"chat_completions", "responses"},
+			InputModalities:          []string{"text", "image"},
+			OutputModalities:         []string{"text"},
 			SupportedToolsByProtocol: map[string][]string{"chat_completions": {"function_calling"}},
 		},
 		{
@@ -145,7 +145,7 @@ func (mockModelCatalog) ListProviderCatalog(providerCode, systemAccountID string
 			SupportedAPIProtocols:     []string{"chat_completions"},
 			InputModalities:           []string{"text"},
 			OutputModalities:          []string{"text"},
-			SupportedToolsByProtocol:      map[string][]string{"chat_completions": {"function_calling"}},
+			SupportedToolsByProtocol:  map[string][]string{"chat_completions": {"function_calling"}},
 		},
 	}
 }
@@ -247,15 +247,15 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 	hub := NewGenerationHub(func() string { return fixture.nowISO })
 	compactions := NewCompactionService(fixture.store, executor, func(text string) int { return len(text) / 4 }, func() string { return fixture.nowISO })
 	deps := &Deps{
-		Store:                      fixture.store,
-		MaxTurnsPerConversation:    100,
-		Now:                        clock,
-		Generations:                hub,
-		Hub:                        hub,
-		Executor:                   executor,
-		ModelCatalog:               mockModelCatalog{},
-		ChatKeys:                   chatKeys,
-		GatewayKeys:                mockGatewayKeys{},
+		Store:                   fixture.store,
+		MaxTurnsPerConversation: 100,
+		Now:                     clock,
+		Generations:             hub,
+		Hub:                     hub,
+		Executor:                executor,
+		ModelCatalog:            mockModelCatalog{},
+		ChatKeys:                chatKeys,
+		GatewayKeys:             mockGatewayKeys{},
 		// 账户唯一绑定契约：发送预检需校验绑定账户；默认接线 account-1 →
 		// group-a 的 mock（与夹具默认绑定一致）。专门测试校验失败的用例自行置 nil。
 		AccountLookup:              mockAccountLookup{},
@@ -292,9 +292,8 @@ func buildGenerationEnvW10D(t *testing.T, fixture *chatFixture) *generationEnv {
 	}
 }
 
-
 // bindStreamConversation 把 fixture 会话升级为「绑定 account-1」的可发送形态
-//（阶段 1b 发送预检后流式/压缩链路测试的统一前置：mockAccountLookup 默认
+// （阶段 1b 发送预检后流式/压缩链路测试的统一前置：mockAccountLookup 默认
 // account-1 → group-a，与 mockModelCatalog 的账户视图对齐）。
 func bindStreamConversation(t *testing.T, env *generationEnv, conversationID string) {
 	t.Helper()
@@ -360,7 +359,7 @@ func TestStreamLifecycleMatrix(t *testing.T) {
 			name: "duplicate clientMessageId -> 409",
 			setup: func(env *generationEnv) string {
 				env.fixture.createConversation("chat_conv_dup", routeTestOwner)
-	bindStreamConversation(t, env, "chat_conv_dup")
+				bindStreamConversation(t, env, "chat_conv_dup")
 				env.executor.steps = []scriptStep{{
 					match: func(call dispatchCall) bool { return call.Path == "/v1/chat/completions" },
 					respond: func(call dispatchCall) *GenerationDispatchResponse {

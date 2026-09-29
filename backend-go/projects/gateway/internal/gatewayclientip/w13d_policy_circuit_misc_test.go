@@ -638,7 +638,7 @@ func TestW13DCircuitRedisPaths(t *testing.T) {
 	base := NewMemoryRuntimeStateStore(newManualClock(time.UnixMilli(1_000_000)))
 	store := &w13dScriptedStore{RuntimeStateStore: base}
 	circuit, err := NewErrorCircuit(ErrorCircuitOptions{
-		Clock: newManualClock(time.UnixMilli(1_000_000)),
+		Clock:              newManualClock(time.UnixMilli(1_000_000)),
 		RuntimeStateDriver: RuntimeStateDriverRedis,
 		StateStore:         store,
 	})

@@ -53,11 +53,19 @@ func TestW12fListAvailabilityClosedArms(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{"EnsureRuntimeDependency", func() error { return repo.EnsureRuntimeDependency(ctx, isoMillisW12f(time.Now()) ) }},
+		{"EnsureRuntimeDependency", func() error { return repo.EnsureRuntimeDependency(ctx, isoMillisW12f(time.Now())) }},
 		{"TouchRuntimeDependency", func() error { return repo.TouchRuntimeDependency(ctx, isoMillisW12f(time.Now())) }},
-		{"MarkRuntimeDependencyUnavailable", func() error { return repo.MarkRuntimeDependencyUnavailable(ctx, "w12f-reason", isoMillisW12f(time.Now())) }},
-		{"BeginRuntimeDependencyRecovery", func() error { _, err := repo.BeginRuntimeDependencyRecovery(ctx, isoMillisW12f(time.Now())); return err }},
-		{"CompleteRuntimeDependencyRecovery", func() error { _, err := repo.CompleteRuntimeDependencyRecovery(ctx, isoMillisW12f(time.Now())); return err }},
+		{"MarkRuntimeDependencyUnavailable", func() error {
+			return repo.MarkRuntimeDependencyUnavailable(ctx, "w12f-reason", isoMillisW12f(time.Now()))
+		}},
+		{"BeginRuntimeDependencyRecovery", func() error {
+			_, err := repo.BeginRuntimeDependencyRecovery(ctx, isoMillisW12f(time.Now()))
+			return err
+		}},
+		{"CompleteRuntimeDependencyRecovery", func() error {
+			_, err := repo.CompleteRuntimeDependencyRecovery(ctx, isoMillisW12f(time.Now()))
+			return err
+		}},
 		{"EnqueueMissing", func() error { _, err := repo.EnqueueMissing(ctx, 10, 1000); return err }},
 		{"EnqueueDue", func() error { _, err := repo.EnqueueDue(ctx, 10, 1000); return err }},
 		{"EnqueueAllForRuntimeRecovery", func() error { _, err := repo.EnqueueAllForRuntimeRecovery(ctx, 1000); return err }},

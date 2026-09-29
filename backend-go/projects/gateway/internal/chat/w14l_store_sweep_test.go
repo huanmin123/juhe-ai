@@ -130,7 +130,7 @@ func w14lSequences() map[string]func(f *chatFixture, conversationID string) erro
 				match: func(call dispatchCall) bool { return true },
 				respond: func(call dispatchCall) *GenerationDispatchResponse {
 					summary := `{"durableMemory":["喜欢简洁"],"currentGoal":"配置服务","constraints":[],"decisions":[],"completed":["阅读文档"],"pending":["部署"],"importantToolResults":[],"imageMemories":[],"recentUserIntent":"配置服务","uncertainties":[]}`
-					return jsonStatusResponse(200, `{"choices":[{"message":{"content":` + jsonQuote(summary) + `}}]}`)
+					return jsonStatusResponse(200, `{"choices":[{"message":{"content":`+jsonQuote(summary)+`}}]}`)
 				},
 			})
 			service := NewCompactionService(f.store, executor, func(text string) int { return len(text) / 4 }, func() string { return f.nowISO })

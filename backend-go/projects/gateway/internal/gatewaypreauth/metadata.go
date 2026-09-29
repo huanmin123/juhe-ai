@@ -94,7 +94,7 @@ func RequestModel(req *GatewayRequest) (string, bool) {
 var geminiPathModelPattern = regexp.MustCompile(`(?i)/models/([^/:?#]+):(?:generateContent|streamGenerateContent|countTokens|embedContent)$`)
 
 // requestModelFromGeminiPath mirrors requestModelFromGeminiPath: the path is
-// `originalUrl.split('?', 1)[0] || req.path || ''`.
+// `originalUrl.split('?', 1)[0] || req.path || ”`.
 func requestModelFromGeminiPath(pathAndQuery, fallbackPath string) (string, bool) {
 	path := strings.SplitN(pathAndQuery, "?", 2)[0]
 	if path == "" {

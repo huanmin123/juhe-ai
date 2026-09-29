@@ -209,24 +209,24 @@ func (s *Store) RequestContextCompaction(input RequestCompactionInput) (bool, er
 }
 
 type RequestCompactionInput struct {
-	ConversationID       string
-	SystemAccountID      string
-	ExpectedRevision     int64
+	ConversationID        string
+	SystemAccountID       string
+	ExpectedRevision      int64
 	SourceThroughSequence int64
-	Now                  string
+	Now                   string
 }
 
 // ContextCompactionClaim mirrors ChatContextCompactionClaim.
 type ContextCompactionClaim struct {
-	ClaimID              string
-	ConversationID       string
-	SystemAccountID      string
-	SourceRevision       int64
-	SourceFromSequence   int64
+	ClaimID               string
+	ConversationID        string
+	SystemAccountID       string
+	SourceRevision        int64
+	SourceFromSequence    int64
 	SourceThroughSequence int64
-	ProgressSequence     int64
-	AttemptCount         int64
-	ClaimedAt            string
+	ProgressSequence      int64
+	AttemptCount          int64
+	ClaimedAt             string
 }
 
 // ClaimContextCompaction mirrors claimChatContextCompaction.
@@ -368,15 +368,15 @@ func (s *Store) findCompactionClaim(q queryer, conversationID, ownerID, claimID 
 		return nil, err
 	}
 	return &ContextCompactionClaim{
-		ClaimID:              contextClaimID,
-		ConversationID:       id,
-		SystemAccountID:      systemAccountID,
-		SourceRevision:       contextClaimRevision,
-		SourceFromSequence:   compactedThrough + 1,
+		ClaimID:               contextClaimID,
+		ConversationID:        id,
+		SystemAccountID:       systemAccountID,
+		SourceRevision:        contextClaimRevision,
+		SourceFromSequence:    compactedThrough + 1,
 		SourceThroughSequence: claimThrough,
-		ProgressSequence:     progressSequence,
-		AttemptCount:         attemptCount + 1,
-		ClaimedAt:            claimedAt,
+		ProgressSequence:      progressSequence,
+		AttemptCount:          attemptCount + 1,
+		ClaimedAt:             claimedAt,
 	}, nil
 }
 
@@ -860,27 +860,27 @@ func (s *Store) InstallContextCheckpoint(input InstallCheckpointInput) (*checkpo
 }
 
 type InstallCheckpointInput struct {
-	CheckpointID               string
-	ClaimID                    string
-	ConversationID             string
-	SystemAccountID            string
-	SourceRevision             int64
-	SourceThroughSequence      int64
-	ExpiresAt                  string
-	PayloadDigest              string
-	EstimatedInputTokens       *int64
-	UpstreamInputTokens        *int64
-	ActiveContextTokens        *int64
+	CheckpointID                string
+	ClaimID                     string
+	ConversationID              string
+	SystemAccountID             string
+	SourceRevision              int64
+	SourceThroughSequence       int64
+	ExpiresAt                   string
+	PayloadDigest               string
+	EstimatedInputTokens        *int64
+	UpstreamInputTokens         *int64
+	ActiveContextTokens         *int64
 	EffectiveContextLimitTokens *int64
-	RequestBodyBytes           int64
-	ModelID                    string
-	ProviderCode               *string
-	ProviderProfileID          *string
-	EndpointFamily             string
-	CompactCompatibilityHash   *string
-	PromptVersion              string
-	Entries                    []CheckpointEntryInput
-	Now                        string
+	RequestBodyBytes            int64
+	ModelID                     string
+	ProviderCode                *string
+	ProviderProfileID           *string
+	EndpointFamily              string
+	CompactCompatibilityHash    *string
+	PromptVersion               string
+	Entries                     []CheckpointEntryInput
+	Now                         string
 }
 
 func activeContextTokensFor(input InstallCheckpointInput) *int64 {
@@ -1063,12 +1063,12 @@ func (s *Store) RecordCompactionProgress(input RecordCompactionProgressInput) (b
 }
 
 type RecordCompactionProgressInput struct {
-	ConversationID     string
-	SystemAccountID    string
-	ClaimID            string
-	ThroughSequence    int64
-	EarliestExpiresAt  string
-	Now                string
+	ConversationID    string
+	SystemAccountID   string
+	ClaimID           string
+	ThroughSequence   int64
+	EarliestExpiresAt string
+	Now               string
 }
 
 // ReleaseCompactionClaim mirrors releaseChatContextCompactionClaim.
@@ -1145,10 +1145,10 @@ func (s *Store) FailPendingCompaction(input FailPendingCompactionInput) (bool, e
 }
 
 type FailPendingCompactionInput struct {
-	ConversationID  string
-	SystemAccountID string
+	ConversationID   string
+	SystemAccountID  string
 	ExpectedRevision int64
-	ErrorCode       string
-	RetryAt         *string
-	Now             string
+	ErrorCode        string
+	RetryAt          *string
+	Now              string
 }

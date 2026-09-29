@@ -6,8 +6,8 @@ import "context"
 // CLIENT_COMPATIBILITY_CAPABILITIES union
 // ('openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code').
 const (
-	ClientCompatibilityOpenAIStandard = "openai_standard"
-	ClientCompatibilityCodexResponses = "codex_responses"
+	ClientCompatibilityOpenAIStandard  = "openai_standard"
+	ClientCompatibilityCodexResponses  = "codex_responses"
 	ClientCompatibilityAnthropicNative = "anthropic_native"
 	ClientCompatibilityClaudeCode      = "claude_code"
 )
@@ -81,10 +81,10 @@ type CachedAccountsForGroupOptions struct {
 // ProviderModelRouteInput mirrors resolveCachedProviderModelRouteAsync's
 // input shape.
 type ProviderModelRouteInput struct {
-	Model            string
-	ProviderCodes    []string
-	SystemAccountID  string
-	IncludeUnpriced  bool
+	Model           string
+	ProviderCodes   []string
+	SystemAccountID string
+	IncludeUnpriced bool
 }
 
 // Provider model route outcomes (runtime-cache.service.ts

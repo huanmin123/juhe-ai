@@ -1,6 +1,6 @@
 // 波次 w14j：共享覆盖库（w1cover）PG 门控测试的自愈 seed。
 // 该库会被外部流程周期性重置为最小形状；这里集中沉淀加法幂等 DDL
-//（CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS / ADD CONSTRAINT /
+// （CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS / ADD CONSTRAINT /
 // SET DEFAULT / CREATE OR REPLACE FUNCTION / 种子行 ON CONFLICT DO NOTHING），
 // 各 PG 门控测试入口调用即可自愈。连接串绝不写入日志与断言。
 package main

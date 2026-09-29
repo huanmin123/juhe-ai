@@ -436,9 +436,9 @@ func TestW14HObservedContextArms(t *testing.T) {
 
 type w14hEmptyTraceObservability struct{ obs *fakeObservability }
 
-func (e *w14hEmptyTraceObservability) Logger() Logger { return e.obs.Logger() }
-func (e *w14hEmptyTraceObservability) TraceID() string { return "" }
-func (e *w14hEmptyTraceObservability) CreateTraceID() string { return "trace_w14h" }
+func (e *w14hEmptyTraceObservability) Logger() Logger                        { return e.obs.Logger() }
+func (e *w14hEmptyTraceObservability) TraceID() string                       { return "" }
+func (e *w14hEmptyTraceObservability) CreateTraceID() string                 { return "trace_w14h" }
 func (e *w14hEmptyTraceObservability) SanitizeURLForLog(value string) string { return value }
 func (e *w14hEmptyTraceObservability) LogRequestStage(stage string, fields map[string]any, outcome string, startedAt time.Time) {
 	e.obs.LogRequestStage(stage, fields, outcome, startedAt)
@@ -469,9 +469,9 @@ type w14hCapture struct {
 	onMetadata func(label string, metadata map[string]any)
 }
 
-func (c w14hCapture) BindContext(AuditGatewayContext)            {}
+func (c w14hCapture) BindContext(AuditGatewayContext)                   {}
 func (c w14hCapture) AddGatewayMetadata(label string, m map[string]any) { c.onMetadata(label, m) }
-func (c w14hCapture) Finalize(AuditFinalizeInput)                {}
+func (c w14hCapture) Finalize(AuditFinalizeInput)                       {}
 
 func TestW14HResolveRuntimeAsyncArms(t *testing.T) {
 	ctx := context.Background()
@@ -707,7 +707,7 @@ type w14hMarkerWriter struct {
 	marked bool
 }
 
-func (w *w14hMarkerWriter) MarkUpstream()      { w.marked = true }
+func (w *w14hMarkerWriter) MarkUpstream()        { w.marked = true }
 func (w *w14hMarkerWriter) MarkedUpstream() bool { return w.marked }
 
 func TestW14HResponsePayloadExtraArms(t *testing.T) {

@@ -123,7 +123,6 @@ func toolsByProtocol(protocols, tools []string) map[string][]string {
 	return out
 }
 
-
 // CopyToolsByProtocol 深拷贝矩阵，隔离快照共享的列表底层数组；nil 保持 nil。
 func CopyToolsByProtocol(toolsByProtocol map[string][]string) map[string][]string {
 	if toolsByProtocol == nil {

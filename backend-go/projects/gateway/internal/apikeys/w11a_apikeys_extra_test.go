@@ -36,12 +36,12 @@ func TestW11APatchTypingHelpers(t *testing.T) {
 	}
 	received := map[string]string{
 		"null": patchReceived(nil), "true": patchReceived(true), "false": patchReceived(false),
-		"42":      patchReceived(float64(42)),
-		"1.5":     patchReceived(1.5),
-		"text":    patchReceived("text"),
-		"a,b":     patchReceived([]any{"a", "b"}),
+		"42":              patchReceived(float64(42)),
+		"1.5":             patchReceived(1.5),
+		"text":            patchReceived("text"),
+		"a,b":             patchReceived([]any{"a", "b"}),
 		"[object Object]": patchReceived(map[string]any{"k": 1}),
-		"unknown": patchReceived(complex(1, 2)),
+		"unknown":         patchReceived(complex(1, 2)),
 	}
 	for want, got := range received {
 		if got != want {
@@ -510,4 +510,3 @@ func TestW11ADescriptionAndDuplicateNameArms(t *testing.T) {
 		t.Fatal("pg unique violation must map to a conflict")
 	}
 }
-

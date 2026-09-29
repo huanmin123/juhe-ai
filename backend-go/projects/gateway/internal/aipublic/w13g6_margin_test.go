@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/apikeys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
@@ -250,8 +250,8 @@ type w13g6FailingCacheInvalidator struct{}
 func (w13g6FailingCacheInvalidator) InvalidateValidation(string, string, []string) error {
 	return assertErr("w13g6 validation cache failure")
 }
-func (w13g6FailingCacheInvalidator) InvalidateQuota(string, string)      {}
-func (w13g6FailingCacheInvalidator) InvalidateRuntime(string, string)    {}
+func (w13g6FailingCacheInvalidator) InvalidateQuota(string, string)   {}
+func (w13g6FailingCacheInvalidator) InvalidateRuntime(string, string) {}
 
 type assertErr string
 

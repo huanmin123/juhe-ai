@@ -32,8 +32,8 @@ import (
 	"context"
 	"testing"
 
-	redis "github.com/redis/go-redis/v9"
 	miniredis "github.com/alicebob/miniredis/v2"
+	redis "github.com/redis/go-redis/v9"
 )
 
 func TestCircuitAuditR1KeyspaceGatewayAndJobsInteroperable(t *testing.T) {

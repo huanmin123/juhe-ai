@@ -68,7 +68,7 @@ func TestAcquireHighConcurrencyClientIPSlotDisabledTable(t *testing.T) {
 func TestClientIPConcurrencyLocalSlotLifecycle(t *testing.T) {
 	slots, _, _ := newTestConcurrency(t, nil)
 	policy := map[string]any{
-		"clientIpConcurrencyLimit":      float64(2),
+		"clientIpConcurrencyLimit":        float64(2),
 		"clientIpConcurrencyOverflowMode": "reject",
 	}
 	ctx := context.Background()
@@ -381,7 +381,7 @@ func TestClientIPConcurrencyRedisMode(t *testing.T) {
 	ctx := context.Background()
 	input := baseAcquireInput("10.0.0.8")
 	input.Policy = map[string]any{
-		"clientIpConcurrencyLimit":      float64(1),
+		"clientIpConcurrencyLimit":        float64(1),
 		"clientIpConcurrencyOverflowMode": "reject",
 	}
 	first, err := slots.AcquireHighConcurrencyClientIPSlot(ctx, input)

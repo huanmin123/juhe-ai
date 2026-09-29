@@ -21,10 +21,10 @@ func resolvedMapping(source, upstream string) *gatewayproto.ResolvedModelMapping
 
 func TestModelMappedUpstreamPathAnthropicMessagesTarget(t *testing.T) {
 	cases := []struct {
-		name    string
-		source  string
+		name     string
+		source   string
 		original string
-		want    string
+		want     string
 	}{
 		{"chat source keeps query", FamilyChatCompletions, "/v1/chat/completions?beta=1", "/messages?beta=1"},
 		{"responses source", FamilyResponses, "/v1/responses", "/messages"},

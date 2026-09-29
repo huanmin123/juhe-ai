@@ -7,9 +7,9 @@ package chat
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
-	"strings"
 )
 
 // bindScopeRecorder 记录 mock 收到的 (scope, id) 序列，供 scope 传递断言

@@ -346,16 +346,16 @@ func (s *w14hCountingCleanupStore) CleanupBefore(context.Context, string, int) (
 // ---------------------------------------------------------------------------
 
 type w14hStoreStep struct {
-	matcher       []string
-	cols          []string
-	rows          [][]driver.Value
-	noRows        bool
-	rowsErr       error
-	eofErr        error
-	execErr       error
-	prepareErr    error
-	affected      int64
-	affectedErr   error
+	matcher     []string
+	cols        []string
+	rows        [][]driver.Value
+	noRows      bool
+	rowsErr     error
+	eofErr      error
+	execErr     error
+	prepareErr  error
+	affected    int64
+	affectedErr error
 }
 
 type w14hStoreScript struct {
@@ -444,8 +444,8 @@ func (t w14hStoreTx) Commit() error   { return t.script.commitErr }
 func (t w14hStoreTx) Rollback() error { return nil }
 
 type w14hStoreResult struct {
-	affected     int64
-	affectedErr  error
+	affected    int64
+	affectedErr error
 }
 
 func (r w14hStoreResult) LastInsertId() (int64, error) { return 0, nil }

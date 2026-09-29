@@ -706,9 +706,9 @@ type updateConversationFields struct {
 // chatToolBindingUpdate 是 PATCH 绑定键的解析结果：unbound=true 表示显式
 // 解绑；否则 accountId（+搜索的 modelId）必须落在候选内。
 type chatToolBindingUpdate struct {
-	unbound  bool
+	unbound   bool
 	accountID string
-	modelID  string
+	modelID   string
 }
 
 // parseChatToolBindingObject 解析 {accountId, modelId?}（严格键：search 允许
@@ -761,7 +761,7 @@ func parseChatToolBindingObject(value json.RawMessage, allowModelID bool) (*chat
 // parseUpdateConversationBody mirrors updateConversationSchema (strict +
 // refine, zod issue order) with the account-only binding extension（设计 §5.4）：
 // accountId 写入/切换绑定账户；searchBinding/imageBinding 是模型工具绑定键
-//（工具体系设计 §8.2，候选校验在 handler 完成）。
+// （工具体系设计 §8.2，候选校验在 handler 完成）。
 func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversationFields, error) {
 	fields := updateConversationFields{}
 	for _, key := range []string{"title", "isPinned", "defaultImageModel", "accountId", "searchBinding", "imageBinding"} {
@@ -839,7 +839,7 @@ func parseUpdateConversationBody(raw map[string]json.RawMessage) (updateConversa
 // 切换链路：数据范围与启用校验（AccountLookup）→ 名称快照落库；当前
 // lastModel 不在新账户可路由范围时联动清空模型选择（前端按响应 lastModel
 // 为空提示重选，设计 §5.4/§6）。归档会话禁止切换账户与工具绑定（设计 §8
-//「不做原地迁移」），展示字段（标题/置顶/默认图像模型）保持可改。
+// 「不做原地迁移」），展示字段（标题/置顶/默认图像模型）保持可改。
 // searchBinding/imageBinding 走候选校验（工具体系设计 §8.2）：二元组/账户
 // 必须在候选列表内，失败 400 返回候选；null 解绑。
 func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) {

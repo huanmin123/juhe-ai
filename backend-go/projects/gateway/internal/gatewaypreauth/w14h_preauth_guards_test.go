@@ -18,13 +18,13 @@ import (
 // w14hDeadlineError 只实现 DeadlineExceeded，用于命中独立于 Timeout 的分支。
 type w14hDeadlineError struct{}
 
-func (*w14hDeadlineError) Error() string           { return "w14h deadline" }
-func (*w14hDeadlineError) DeadlineExceeded() bool  { return true }
+func (*w14hDeadlineError) Error() string          { return "w14h deadline" }
+func (*w14hDeadlineError) DeadlineExceeded() bool { return true }
 
 // w14hCodexAdapterError 实现 CodexAdapterErrorMarker。
 type w14hCodexAdapterError struct{ payload *CodexAdapterValidationError }
 
-func (e *w14hCodexAdapterError) Error() string                        { return "w14h codex adapter" }
+func (e *w14hCodexAdapterError) Error() string { return "w14h codex adapter" }
 func (e *w14hCodexAdapterError) CodexAdapterError() *CodexAdapterValidationError {
 	return e.payload
 }

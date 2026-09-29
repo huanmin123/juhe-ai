@@ -1235,7 +1235,6 @@ func TestW13BResolveChatModelRequestOptions(t *testing.T) {
 
 func floatPtrW13B(value float64) *float64 { return &value }
 
-
 func TestW13BStripImageResultStrings(t *testing.T) {
 	payload, values, err := stripImageResultStrings(`{"a":"x","result":"QUJD","b64_json":"REVG"}`, "result", "b64_json")
 	if err != nil || len(values) != 2 || values[0] != "QUJD" || values[1] != "REVG" {
@@ -1315,7 +1314,6 @@ func TestW13BCollectOpenAIChatSseEdgeCases(t *testing.T) {
 		t.Fatalf("mergeStableToolField 追加失败")
 	}
 }
-
 
 type errReaderW13B struct{}
 

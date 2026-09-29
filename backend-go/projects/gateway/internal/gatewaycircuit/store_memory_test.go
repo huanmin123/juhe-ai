@@ -387,8 +387,8 @@ func TestMemoryCanaryRecoveryCycle(t *testing.T) {
 	}
 }
 
-func TransitionIDFor(i int) string  { return string(rune('a' + i)) + "-tid" }
-func CompleteIDFor(i int) string    { return string(rune('a' + i)) + "-done" }
+func TransitionIDFor(i int) string { return string(rune('a'+i)) + "-tid" }
+func CompleteIDFor(i int) string   { return string(rune('a'+i)) + "-done" }
 
 func TestMemoryCapacityExhaustionAndClosedEviction(t *testing.T) {
 	now := int64(0)

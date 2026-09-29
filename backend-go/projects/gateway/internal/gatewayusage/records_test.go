@@ -132,11 +132,11 @@ func TestNormalizeUsageRecordInputGroupRules(t *testing.T) {
 	})
 	t.Run("missing owner clears group", func(t *testing.T) {
 		normalized, _ := NormalizeUsageRecordInput(UsageRecordInput{
-			TraceID:          "t",
-			TrafficSource:    "gateway",
-			Success:          true,
-			GroupID:          "g1",
-			GroupAccessType:  GroupAccessTypeAuthorized,
+			TraceID:         "t",
+			TrafficSource:   "gateway",
+			Success:         true,
+			GroupID:         "g1",
+			GroupAccessType: GroupAccessTypeAuthorized,
 		}, fixedClock{ms: 0}, nil)
 		if normalized.GroupID != "" || normalized.GroupAccessType != "" {
 			t.Fatalf("expected cleared, got %+v", normalized)
@@ -241,9 +241,9 @@ func TestBoundUsageRecordSnapshot(t *testing.T) {
 
 func TestFailedUpstreamAttemptAttribution(t *testing.T) {
 	tests := []struct {
-		url         string
-		override    UsageFailureAttribution
-		want        UsageFailureAttribution
+		url      string
+		override UsageFailureAttribution
+		want     UsageFailureAttribution
 	}{
 		{"https://api.example.com/v1", "", FailureAttributionAccountUpstream},
 		{"concurrency:limit", "", FailureAttributionGatewayCapacity},
@@ -387,11 +387,11 @@ func TestBuildGatewayErrorResponseSnapshot(t *testing.T) {
 	payload.Set("error", err0)
 	status := 502
 	snapshot := BuildGatewayErrorResponseSnapshot(status, payload, &UpstreamAttempt{
-		AccountID:    "acc1",
-		AccountName:  "account one",
-		UpstreamURL:  "https://upstream/v1",
-		Status:       &status,
-		Message:      "upstream said no",
+		AccountID:        "acc1",
+		AccountName:      "account one",
+		UpstreamURL:      "https://upstream/v1",
+		Status:           &status,
+		Message:          "upstream said no",
 		ResponseBodyText: "raw",
 	})
 	if snapshot.ErrorMessage != "boom" || snapshot.GeneratedBy != GeneratedByGateway {

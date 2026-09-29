@@ -42,8 +42,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,7 +73,7 @@ func TestW14dStrategyProtocolArms(t *testing.T) {
 		t.Fatalf("anthropic protocol = %q", got)
 	}
 	anthropicExplicit := newTestRequest(t, "POST", "/v1/messages", nil, map[string]string{
-		"anthropic-version":         "2023-06-01",
+		"anthropic-version":        "2023-06-01",
 		GatewayClientProfileHeader: "claude_code",
 	})
 	deps := &ClientStrategyDeps{}
@@ -430,7 +430,7 @@ func TestW14dBridgeCompactSummaryReadArms(t *testing.T) {
 		}}
 		rawBody, _ := json.Marshal(reqBody)
 		attachBody(req, reqBody, rawBody)
-		if _, err := service.ApplyContextStatePreflight(ctx, registry, bridgeBaseInput(req, func() (*gatewaypreauth.TrackingWriter) {
+		if _, err := service.ApplyContextStatePreflight(ctx, registry, bridgeBaseInput(req, func() *gatewaypreauth.TrackingWriter {
 			_, writer := newTrackedWriter()
 			return writer
 		}(), &recordedAudit{})); err != nil {

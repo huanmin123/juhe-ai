@@ -30,11 +30,11 @@ type HighConcurrencyPolicyDefaults struct {
 // GroupSchedulingPolicy is the resolved policy subset the runtime family
 // consumes.
 type GroupSchedulingPolicy struct {
-	MaxQueueWaitMs                int64
-	MaxQueueSize                  int
-	PerAPIKeyQueueLimit           int
-	ImageLaneMaxConcurrency       int
-	ClientIPConcurrencyLimit      int
+	MaxQueueWaitMs                  int64
+	MaxQueueSize                    int
+	PerAPIKeyQueueLimit             int
+	ImageLaneMaxConcurrency         int
+	ClientIPConcurrencyLimit        int
 	ClientIPConcurrencyOverflowMode string // "reject" | "queue"
 }
 

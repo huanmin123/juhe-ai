@@ -618,9 +618,9 @@ func TestW11DListErrorArms(t *testing.T) {
 		if _, err := dropEnv.db.Exec(`DROP TABLE client_ip_policies`); err != nil {
 			t.Fatal(err)
 		}
-	if _, err := dropEnv.store.activePolicySets(context.Background(), "now"); err == nil {
-		t.Fatal("策略集合查询失败必须上抛")
-	}
+		if _, err := dropEnv.store.activePolicySets(context.Background(), "now"); err == nil {
+			t.Fatal("策略集合查询失败必须上抛")
+		}
 	})
 }
 

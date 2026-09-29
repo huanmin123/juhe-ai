@@ -31,10 +31,10 @@ func account(id string, priority int, super, fallback bool) gatewayruntimecache.
 
 func TestAvoidanceScopeNormalizationTable(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       AvoidanceScopeInput
-		wantScope   bool
-		wantAPIKey  string
+		name       string
+		input      AvoidanceScopeInput
+		wantScope  bool
+		wantAPIKey string
 	}{
 		{name: "blank ip drops scope", input: AvoidanceScopeInput{SystemAccountID: "sys", APIKeyID: "key", ClientIP: "   "}},
 		{name: "empty ip drops scope", input: AvoidanceScopeInput{SystemAccountID: "sys", ClientIP: ""}},

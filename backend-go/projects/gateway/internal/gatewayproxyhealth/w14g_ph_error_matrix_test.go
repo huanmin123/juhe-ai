@@ -5,7 +5,8 @@ package gatewayproxyhealth
 import (
 	"context"
 	"errors"
-	"testing")
+	"testing"
+)
 
 // ---------------------------------------------------------------------------
 // latencydegradation.go：公开面 store 错误传播矩阵

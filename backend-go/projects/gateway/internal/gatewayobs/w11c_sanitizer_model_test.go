@@ -54,12 +54,12 @@ func TestW11CQuotedAssignmentScannerEdges(t *testing.T) {
 	// The quoted assignment redaction handles separators, escapes and line
 	// terminators through the handwritten scanner.
 	inputs := map[string]bool{
-		`{token: 'abc12345'}`:                true,  // bare key needs quotes? scanner accepts both
-		`{"api_key": "secret12345"}`:         true,  // quoted key
-		`{'authorization': "Bearer abcdefgh1234"}`: true, // mixed quotes
-		`{apikey: }`:                         false, // missing value
-		`{apikey: x}`:                        true,  // bare assignment redacts
-		`{apikey: 'a\nb'}`:                   true,  // escaped payload
+		`{token: 'abc12345'}`:                      true,  // bare key needs quotes? scanner accepts both
+		`{"api_key": "secret12345"}`:               true,  // quoted key
+		`{'authorization': "Bearer abcdefgh1234"}`: true,  // mixed quotes
+		`{apikey: }`:                               false, // missing value
+		`{apikey: x}`:                              true,  // bare assignment redacts
+		`{apikey: 'a\nb'}`:                         true,  // escaped payload
 	}
 	for input, expectRedaction := range inputs {
 		output := sanitizeSensitiveString(input)

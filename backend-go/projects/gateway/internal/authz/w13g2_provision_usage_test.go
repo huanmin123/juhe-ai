@@ -30,7 +30,7 @@ func w13g2SeedProvision(t *testing.T, f *fixture) {
 }
 
 // TestW13g2ProvisionRestoreArm 覆盖软删实例的 restore arm
-//（instance_provision.go 163-207）与 dispatch revision/outbox。
+// （instance_provision.go 163-207）与 dispatch revision/outbox。
 func TestW13g2ProvisionRestoreArm(t *testing.T) {
 	f := newFixture(t)
 	w13g2SeedProvision(t, f)
@@ -255,7 +255,7 @@ func TestW13g2ProvisionGuards(t *testing.T) {
 
 // TestW13g2ProvisionSyncNames 覆盖
 // SyncAccountAuthorizationInstanceNamesForSourceAccount 及其 tx 形式
-//（instance_provision.go 502-568）。
+// （instance_provision.go 502-568）。
 func TestW13g2ProvisionSyncNames(t *testing.T) {
 	f := newFixture(t)
 	w13g2SeedProvision(t, f)

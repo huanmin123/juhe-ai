@@ -58,13 +58,13 @@ func TestSpoolPersistDisabledFails(t *testing.T) {
 func TestSpoolPersistAndReplay(t *testing.T) {
 	spool, directory := newTestSpool(t, true)
 	input := UsageRecordInput{
-		ID:            "usage_20231114_s1_test",
-		TraceID:       "trace-spool-1",
-		TrafficSource: TrafficSourceGateway,
-		Success:       true,
+		ID:              "usage_20231114_s1_test",
+		TraceID:         "trace-spool-1",
+		TrafficSource:   TrafficSourceGateway,
+		Success:         true,
 		SystemAccountID: "sys-owner",
-		Model:         "gpt-requested",
-		CreatedAt:     "2023-11-14T22:13:20.123Z",
+		Model:           "gpt-requested",
+		CreatedAt:       "2023-11-14T22:13:20.123Z",
 	}
 	if err := spool.Persist(context.Background(), input); err != nil {
 		t.Fatalf("persist = %v", err)

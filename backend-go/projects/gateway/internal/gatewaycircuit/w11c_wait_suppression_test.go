@@ -26,11 +26,15 @@ func TestW11CWaitCoordinatorSettlesNonHeadAndDeadline(t *testing.T) {
 	// Register two waiters on the same scope; the head blocks the queue.
 	first := make(chan string, 1)
 	second := make(chan string, 1)
-	go func() { first <- coordinator.WaitForTurn(WaitTurnInput{ScopeKey: "w11c", Reason: "r", DelayMs: 60_000, DeadlineAtMs: 2_000_000}) }()
+	go func() {
+		first <- coordinator.WaitForTurn(WaitTurnInput{ScopeKey: "w11c", Reason: "r", DelayMs: 60_000, DeadlineAtMs: 2_000_000})
+	}()
 	for coordinator.Snapshot().WaiterCount < 1 {
 		time.Sleep(time.Millisecond)
 	}
-	go func() { second <- coordinator.WaitForTurn(WaitTurnInput{ScopeKey: "w11c", Reason: "r", DelayMs: 60_000, DeadlineAtMs: 2_000_000}) }()
+	go func() {
+		second <- coordinator.WaitForTurn(WaitTurnInput{ScopeKey: "w11c", Reason: "r", DelayMs: 60_000, DeadlineAtMs: 2_000_000})
+	}()
 	for coordinator.Snapshot().WaiterCount < 2 {
 		time.Sleep(time.Millisecond)
 	}
@@ -106,10 +110,10 @@ func TestW11CWaitEngineWallBudgetAndReserve(t *testing.T) {
 	reserve := int64(1_000)
 	outcome, err := waitForRecoverableUnavailableState(context.Background(), waitInput{
 		reason: "r", scopeKey: "w11c-scope",
-		refresh:            func(context.Context) error { return nil },
-		isReady:            func() bool { return false },
-		nextRetryAfterMs:   func() (int64, bool) { return 0, false },
-		maxWaitMs:          60_000, checkIntervalMs: 100,
+		refresh:          func(context.Context) error { return nil },
+		isReady:          func() bool { return false },
+		nextRetryAfterMs: func() (int64, bool) { return 0, false },
+		maxWaitMs:        60_000, checkIntervalMs: 100,
 		coordinator:              coordinator,
 		gatewayRequestWallBudget: wall,
 		finalResponseReserveMs:   &reserve,
@@ -152,11 +156,11 @@ func TestW11CWaitEngineBudgetExhaustion(t *testing.T) {
 	go func() {
 		outcome, _ := waitForRecoverableUnavailableState(context.Background(), waitInput{
 			reason: "r", scopeKey: "w11c-scope",
-			refresh:              func(context.Context) error { return nil },
-			isReady:              func() bool { return false },
-			nextRetryAfterMs:     func() (int64, bool) { return 0, false },
+			refresh:               func(context.Context) error { return nil },
+			isReady:               func() bool { return false },
+			nextRetryAfterMs:      func() (int64, bool) { return 0, false },
 			waitWithoutRetryAfter: true,
-			maxWaitMs:            60_000, checkIntervalMs: 100,
+			maxWaitMs:             60_000, checkIntervalMs: 100,
 			coordinator:             coordinator,
 			routeCoordinationBudget: budget,
 			now:                     func() int64 { return hub.clock },
@@ -184,10 +188,10 @@ func TestW11CWaitEngineAuditCapture(t *testing.T) {
 		isReady:          func() bool { return false },
 		nextRetryAfterMs: func() (int64, bool) { return 0, false },
 		maxWaitMs:        60_000, checkIntervalMs: 100,
-		deadlineAtMs:     int64Ptr(0),
-		coordinator:      coordinator,
-		auditCapture:     capture,
-		now:              clock.now,
+		deadlineAtMs: int64Ptr(0),
+		coordinator:  coordinator,
+		auditCapture: capture,
+		now:          clock.now,
 	})
 	if err != nil || outcome.skippedReason != WaitSkippedDeadlineExceeded {
 		t.Fatalf("outcome = (%+v, %v)", outcome, err)

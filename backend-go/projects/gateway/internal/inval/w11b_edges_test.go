@@ -7,8 +7,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/redis/go-redis/v9"
 	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestW11BSyncFromSharedArms(t *testing.T) {

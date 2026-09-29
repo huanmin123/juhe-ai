@@ -365,8 +365,6 @@ func TestW13CPipeDecisionErrorPropagation(t *testing.T) {
 	}
 }
 
-
-
 func TestW13CSettleDecisionArms(t *testing.T) {
 	// decisionError 冒泡臂。
 	pipe, _ := w11bNewFinalPipe(t, nil)

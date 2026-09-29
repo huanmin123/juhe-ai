@@ -8,11 +8,11 @@ import (
 
 func TestNormalizeClientIPForStatsTable(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          string
-		wantNil        bool
-		wantClientIP   string
-		wantAggregate  string
+		name          string
+		input         string
+		wantNil       bool
+		wantClientIP  string
+		wantAggregate string
 	}{
 		{name: "plain ipv4", input: "192.168.1.7", wantClientIP: "192.168.1.7", wantAggregate: "192.168.1.7"},
 		{name: "trim whitespace", input: " 10.0.0.1 ", wantClientIP: "10.0.0.1", wantAggregate: "10.0.0.1"},
@@ -79,15 +79,15 @@ func TestNormalizeIPHashForRuntimeTable(t *testing.T) {
 
 func TestResolveGroupSchedulingPolicyTable(t *testing.T) {
 	tests := []struct {
-		name       string
-		value      map[string]any
-		defaults   HighConcurrencyPolicyDefaults
+		name        string
+		value       map[string]any
+		defaults    HighConcurrencyPolicyDefaults
 		wantMaxWait int64
 		wantMaxSize int
 		wantPerKey  int
 		wantLimit   int
-		wantMode   string
-		wantErr    string
+		wantMode    string
+		wantErr     string
 	}{
 		{
 			name:        "defaults",
@@ -104,8 +104,8 @@ func TestResolveGroupSchedulingPolicyTable(t *testing.T) {
 			wantMaxWait: 1_000, wantMaxSize: 5, wantPerKey: 2, wantLimit: 3, wantMode: "queue",
 		},
 		{
-			name:       "per key falls back to max queue size",
-			value:      map[string]any{"maxQueueSize": float64(7)},
+			name:        "per key falls back to max queue size",
+			value:       map[string]any{"maxQueueSize": float64(7)},
 			wantMaxWait: 60_000, wantMaxSize: 7, wantPerKey: 7, wantLimit: 0, wantMode: "reject",
 		},
 		{

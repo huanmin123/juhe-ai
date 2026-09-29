@@ -62,12 +62,12 @@ func TestW12fRotateCredentialsSuccessTx(t *testing.T) {
 	next := openAICredentials(expiresInMillis(0))
 	next["access_token"] = "w12f-at-rotated"
 	result, err := store.RotateCredentials(ctx, RotateCredentialsInput{
-		AccountID:                        "w12f-rot-ok",
-		ExpectedProviderCode:             "gpt",
-		ExpectedAccountType:              "oauth",
+		AccountID:                         "w12f-rot-ok",
+		ExpectedProviderCode:              "gpt",
+		ExpectedAccountType:               "oauth",
 		ExpectedProviderProtocolProfileID: "profile_gpt_openai_v1",
-		ExpectedConfigRevision:           1,
-		Credentials:                      next,
+		ExpectedConfigRevision:            1,
+		Credentials:                       next,
 	})
 	if err != nil || result == nil || !result.Changed {
 		t.Fatalf("旋转必须成功: %+v err=%v", result, err)
