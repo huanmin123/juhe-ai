@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 )
 
 const defaultResultProjectionConsumer = "juhe-ai-proxy-latency-go-projector-v1"
@@ -222,6 +223,24 @@ func (p *ResultProjector) recordRejectedSkip(result ProjectionResult) {
 	}
 }
 
+// lockAccountListDirtyInTx 在事务首条语句位置取账户列表 dirty 写序列化
+// advisory 锁（advisorylock.AccountListDirty = 7001001）。锁序契约（问题
+// -0184，2026-09-30 生产三方死锁环）：本投影器的每秒轮询事务会 UPDATE
+// juhe_business.proxy_profiles，行级触发器 account_list_availability_proxies
+// 经 mark_dirty_accounts 在触发器内取 7001001；若事务先拿 proxy 行锁再等
+// advisory，与首锁 7001001 的合规方（circuitstore applyOneClaim 等）交叉
+// 持锁会形成 40P01 死锁环。因此凡 BeginTx 后将要 UPDATE proxy_profiles
+// 的事务必须在首语句取本锁；非 PG 方言 no-op（SQLite 单 writer 无死锁）。
+func (p *ResultProjector) lockAccountListDirtyInTx(ctx context.Context, tx *sql.Tx) error {
+	if p.mode != StorePostgres {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, advisorylock.AccountListDirty); err != nil {
+		return fmt.Errorf("获取 J3a Go result projection dirty 序列化锁失败: %w", err)
+	}
+	return nil
+}
+
 // drainProjectRow 投影一行并推进游标，包括确定性 rejected 行（receipt 与
 // 游标同一事务推进）。同步手动路径（ProjectOutcome）不受影响，仍对
 // rejected fail-closed。
@@ -234,6 +253,9 @@ func (p *ResultProjector) drainProjectRow(ctx context.Context, stored StoredOutc
 		return ProjectionResult{}, fmt.Errorf("开始 J3a Go result projection 事务失败: %w", err)
 	}
 	defer tx.Rollback()
+	if err := p.lockAccountListDirtyInTx(ctx, tx); err != nil {
+		return ProjectionResult{}, err
+	}
 	result, err := p.projectStoredTx(ctx, tx, stored)
 	if err != nil {
 		return ProjectionResult{}, err
@@ -288,6 +310,9 @@ func (p *ResultProjector) ProjectManualNoTargets(ctx context.Context, request Ma
 		return ProjectionResult{}, fmt.Errorf("开始 J3a Go no-target projection 事务失败: %w", err)
 	}
 	defer tx.Rollback()
+	if err := p.lockAccountListDirtyInTx(ctx, tx); err != nil {
+		return ProjectionResult{}, err
+	}
 	proxyFound, configRevision, lastTestedAt, err := p.proxyFenceTx(ctx, tx, request.ProxyID)
 	if err != nil {
 		return ProjectionResult{}, err
@@ -339,6 +364,11 @@ func (p *ResultProjector) ProjectManualOutbound(ctx context.Context, outcome Out
 		return fmt.Errorf("开始 J3a Go outbound projection 事务失败: %w", err)
 	}
 	defer tx.Rollback()
+	// CAS 快路径（首条 UPDATE proxy_profiles）同样先取 7001001：UPDATE 会经
+	// 触发器隐式写 dirty，必须纳入 dirty 写锁序。
+	if err := p.lockAccountListDirtyInTx(ctx, tx); err != nil {
+		return err
+	}
 	query, args := p.manualOutboundUpdate(outcome, outboundIP, outboundRegion)
 	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -382,6 +412,9 @@ func (p *ResultProjector) projectStored(ctx context.Context, stored StoredOutcom
 		return ProjectionResult{}, fmt.Errorf("开始 J3a Go result projection 事务失败: %w", err)
 	}
 	defer tx.Rollback()
+	if err := p.lockAccountListDirtyInTx(ctx, tx); err != nil {
+		return ProjectionResult{}, err
+	}
 	result, err := p.projectStoredTx(ctx, tx, stored)
 	if err != nil {
 		return ProjectionResult{}, err

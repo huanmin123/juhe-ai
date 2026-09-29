@@ -465,7 +465,7 @@ POST /__aisys__/api/ip-stats/:ipHash/allowlist
 POST /__aisys__/api/ip-stats/:ipHash/unallowlist
 ```
 
-Node 当前仍保留上述六条完整产品接口作为未切流回退 owner。Go 渐进迁移已将 `GET /ip-stats` 列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条 admin-only 写接口纳入 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；详情继续由 Node 提供。Go 列表使用只读鉴权且不 touch session，从注册表读取全量成员和策略状态，并仅在范围窗口 ready 时消费 Node worker 写入的完整预聚合统计；四条 Go 写路由使用 `256 KiB` strict JSON、写 session touch、两层 write limiter、进程内 mutation guard、PostgreSQL 注册表行锁和提交后 `gateway:client-ip-policy-by-ip` shared cache version 失效。blacklist 支持永久、分钟或按固定 24 小时天数封禁，unallowlist / unblock 在无活动策略时返回 `disabledCount=0` 成功。策略 created / updated / disabled / expires 时间统一写成 Node `Date.toISOString()` 等价的 UTC 三位毫秒文本。详细门禁见 [W6 管理端客户端 IP 统计与策略迁移记录](../migration/W6-管理端客户端IP策略迁移记录.md)。
+Node 当前仍保留上述六条完整产品接口作为未切流回退 owner。Go 渐进迁移已将 `GET /ip-stats` 列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条 admin-only 写接口纳入 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；详情继续由 Node 提供。Go 列表使用只读鉴权且不 touch session，从注册表读取全量成员和策略状态，并仅在范围窗口 ready 时消费 Node worker 写入的完整预聚合统计；四条 Go 写路由使用 `256 KiB` strict JSON、写 session touch、两层 write limiter、进程内 mutation guard、PostgreSQL 注册表行锁和提交后 `gateway:client-ip-policy-by-ip` shared cache version 失效。blacklist 支持永久、分钟或按固定 24 小时天数封禁，unallowlist / unblock 在无活动策略时返回 `disabledCount=0` 成功。策略 created / updated / disabled / expires 时间统一写成 Node `Date.toISOString()` 等价的 UTC 三位毫秒文本。详细门禁见 W6 管理端客户端 IP 统计与策略迁移记录。
 
 列表查询参数：
 

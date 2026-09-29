@@ -266,9 +266,9 @@ flowchart LR
 
 - `frontend/`：Vue 3 + TypeScript + Ant Design Vue 管理后台。
 - `backend-go/`：Go 三项目。`gateway` 是唯一 HTTP 主入口（管理 API、公开面、`/v1` 网关链、chat）；`jobs` 承载后台任务与探针 / 统计 / retention 任务族；`maintenance` 提供 schema / seed 一次性 CLI。
-- 原 Node.js 后端已于 2026-09 完成全量迁移并归档至 `migration-backup/`，当前实现以 Go 为准。
+- 原 Node.js 后端已于 2026-09-05 完成全量迁移并清零，Node 足迹清理后仓库内不再保留归档（git 历史可溯），不得恢复；当前实现以 Go 为准。
 
-存储、进程职责与网关主链路详见 [架构总览](docs/architecture/架构总览.md) 与 [Go 三项目架构基线](docs/migration/Go三项目架构基线.md)。
+存储、进程职责与网关主链路详见 [架构总览](docs/architecture/架构总览.md) 与 [Go 三项目架构基线](docs/architecture/Go三项目架构基线.md)。
 
 ## 文档导航
 
@@ -279,7 +279,6 @@ flowchart LR
 | 与 Sub2API / New API / CLIProxyAPI 逐项对比 | [客户端稳定性竞品对比](docs/functions/客户端稳定性竞品对比.md) |
 | 本地开发、运行、测试与验证 | [开发文档](docs/develop/README.md) |
 | 部署场景与配置 | [部署文档](docs/deploy/README.md) |
-| Node→Go 迁移记录 | [迁移文档](docs/migration/README.md) |
 | 前端架构 | [前端架构文档](docs/architecture/frontend/README.md) |
 
 ## 项目边界

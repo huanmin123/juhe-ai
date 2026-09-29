@@ -5,8 +5,8 @@ package mockdata
 // PRAGMA 失败、Scan 类型错位、rows.Err、Commit/Rollback/Close 失败、
 // RowsAffected 失败）各自可测。
 //
-// 与 internal/schema/wm_pg_fake_test.go、internal/businesshandoff/
-// w12g_fake_driver_test.go 同一手法；真实 modernc/sqlite 行为仍由其余测试覆盖。
+// 与 internal/schema/wm_pg_fake_test.go 同一手法；真实 modernc/sqlite 行为仍由
+// 其余测试覆盖。
 
 import (
 	"context"

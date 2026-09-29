@@ -16,6 +16,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/oauthrefresh"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/schedulejitter"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/advisorylock"
 )
 
 // J1 outcome → 业务账户投影器（BUG-0174 M-1）。行为基线是 Node 归档的

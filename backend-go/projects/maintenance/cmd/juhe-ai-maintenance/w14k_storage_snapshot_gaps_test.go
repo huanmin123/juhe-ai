@@ -3,7 +3,7 @@ package main
 // w14k 波次：storage bootstrap 与 schema snapshot 会话层的剩余分支。runner
 // 主体已在 wm_cli_runners_test.go / w12g_storage_direct_test.go / wm_snapshot_
 // session_test.go 覆盖；本文件补 encode 失败、ensureSQLiteStorage 各失败点、
-// paths 重复 key、runSnapshotSession 事务错误注入与 resolve* 的目录树顶分支。
+// paths 重复 key 与 runSnapshotSession 事务错误注入。
 
 import (
 	"context"
@@ -122,23 +122,6 @@ func TestW14KParseSQLiteStoragePathsDuplicateKey(t *testing.T) {
 		t.Fatal("重复 key 必须被拒绝")
 	} else if !strings.Contains(err.Error(), "重复") {
 		t.Fatalf("错误必须说明重复: %v", err)
-	}
-}
-
-func TestW14KResolveHelpersAtVolumeRoot(t *testing.T) {
-	// 从卷根向上没有更多父目录：命中 parent==dir 的 break 分支，两个解析器
-	// 都按原样返回当前目录/路径。
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	volumeRoot := filepath.VolumeName(cwd) + string(os.PathSeparator)
-	t.Chdir(volumeRoot)
-	if got := resolveRepositoryRoot(); got != "." {
-		t.Fatalf("卷根上必须返回 .: %q", got)
-	}
-	if got := resolveRepoPath("docs/migration"); got != "docs/migration" {
-		t.Fatalf("卷根上找不到必须原样返回: %q", got)
 	}
 }
 

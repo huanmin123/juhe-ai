@@ -5,7 +5,7 @@
 - 本文件只承担项目级导航、核心业务边界和高频事件入口，不复制专题文档正文。
 - 具体架构、功能、前后端实现、测试、问题、重构、迁移和报告规则以 `docs/` 下对应权威文档为准。
 - 本文件不自动触发生产部署或线上运维流程；只有用户主动提出生产操作并明确提供适用资料后，才读取和执行对应范围内的外部操作规范。
-- 后端为 Go 三项目（`backend-go/projects/{gateway,jobs,maintenance}`）；原 Node 后端（`backend/`）已完成 Node→Go 全量迁移并归档至 `migration-backup/node/final-archive/`（不得恢复、修改或运行），运行事实以 Go 实现为准。现行生产形态为国内单机 Docker go-only（服务器与凭据见 `.local/project-resources/prod/assets/国内单机-103.36.63.105.md`，部署配置在 `docker/single-server/`，运维入口见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）；PG/Redis 为云机本机 compose 容器，出海代理隧道为用户自管外部资产；旧 Mac + K3s + Edge 混合形态已下线，平台配置仓 `F:\k8s` 中 juhe-ai 现役配置已清理（历史报告类文档保留），残留核查另行任务。
+- 后端为 Go 三项目（`backend-go/projects/{gateway,jobs,maintenance}`）；原 Node 后端已于 2026-09-05 完成全量迁移并清零，2026-09-30 Node 足迹清理后仓库内不再保留归档（git 历史可溯），不得恢复，运行事实以 Go 实现为准。现行生产形态为国内单机 Docker go-only（服务器与凭据见 `.local/project-resources/prod/assets/国内单机-103.36.63.105.md`，部署配置在 `docker/single-server/`，运维入口见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）；PG/Redis 为云机本机 compose 容器，出海代理隧道为用户自管外部资产；旧 Mac + K3s + Edge 混合形态已下线，平台配置仓 `F:\k8s` 中 juhe-ai 现役配置已清理（历史报告类文档保留），残留核查另行任务。
 
 ## 文档与代码一致性
 
@@ -86,13 +86,12 @@
 | 项目定位、模块边界、数据关系或网关主流程变化 | `docs/architecture/架构总览.md` |
 | 新功能、字段、接口、存储、脚本或关键流程 | `docs/architecture/功能开发指导.md` 和 `docs/functions/README.md` |
 | 前端页面、布局、样式、交互、文案或品牌 | `docs/architecture/frontend/README.md` |
-| 后端接口、存储、网关、后台任务或队列 | `backend-go/README.md` 与 `docs/migration/Go三项目架构基线.md`；后端实现专题见 `docs/architecture/backend/README.md`（历史） |
+| 后端接口、存储、网关、后台任务或队列 | `backend-go/README.md` 与 `docs/architecture/Go三项目架构基线.md`；后端实现专题见 `docs/architecture/backend/README.md`（历史） |
 | 需求计划、执行进度或关联文档 | `docs/plans/README.md` |
 | 本地安装、运行、联调、测试或验证 | `docs/develop/README.md` |
 | 部署相关变动（compose/env/参数/运行时目录/初始化与验证步骤） | `docs/deploy/README.md` 与 `docker/single-server/README.md`（同步约束见上文"部署变更文档同步"） |
 | bug、异常、测试失败或数据不一致 | `docs/architecture/问题修复指导.md`，必要时记录到 `docs/bug/README.md` |
 | 大文件拆分、职责调整或重复逻辑收敛 | `docs/architecture/大文件重构指南.md`，复盘记录到 `docs/refactors/README.md` |
-| Node 后端向 Go 迁移 | `docs/migration/README.md` |
 | 压测、性能分析、容量或验证报告 | `docs/reports/README.md` |
 
 ## CodeGraph 与 RTK

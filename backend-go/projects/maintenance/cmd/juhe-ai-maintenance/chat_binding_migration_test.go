@@ -45,8 +45,8 @@ func TestChatAccountOnlyBindingMigrationMainDispatchMutex(t *testing.T) {
 	if code := runMaintenance([]string{"-migrate-chat-account-only-binding", "-ensure-schema"}); code != 2 {
 		t.Fatalf("mutex with ensure-schema exit code = %d, want 2", code)
 	}
-	if code := runMaintenance([]string{"-migrate-chat-account-only-binding", "-migrate-hybrid-smart-strategies", "-dsn", "postgres://u:p@h/db"}); code != 2 {
-		t.Fatalf("mutex with hybrid migration exit code = %d, want 2", code)
+	if code := runMaintenance([]string{"-migrate-chat-account-only-binding", "-version"}); code != 2 {
+		t.Fatalf("mutex with version exit code = %d, want 2", code)
 	}
 }
 

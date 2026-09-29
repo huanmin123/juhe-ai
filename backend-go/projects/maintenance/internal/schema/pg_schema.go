@@ -107,19 +107,22 @@ type PGResult struct {
 // EnsurePostgres applies the full PostgreSQL schema (business, chat, dataset,
 // usage, stats and codex context) to db, executing CREATE SCHEMA once per
 // schema group and every DDL statement in the Node applyPostgresSchema order.
-// All statements are idempotent, so repeated calls are no-ops.
+// All statements are idempotent, so repeated calls are no-ops. Transient lock
+// conflicts (deadlock_detected 40P01 / lock_not_available 55P03 / statement
+// timeout 57014, e.g. against concurrently running jobs projections) are
+// retried per statement with bounded backoff — see pg_lock_retry.go.
 func EnsurePostgres(ctx context.Context, db *sql.DB) (PGResult, error) {
 	createdSchemas := make(map[string]bool)
 	for i, statement := range postgresSchemaStatements {
 		if !createdSchemas[statement.SchemaName] {
 			createdSchemas[statement.SchemaName] = true
 			createSchema := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", quotePGIdentifier(statement.SchemaName))
-			if _, err := db.ExecContext(ctx, createSchema); err != nil {
+			if err := execPostgresStatementWithLockRetry(ctx, db, createSchema, createSchema); err != nil {
 				return PGResult{}, fmt.Errorf("create postgres schema %s: %w", statement.SchemaName, err)
 			}
 		}
 		execSQL := fmt.Sprintf("SET search_path TO %s, public;\n%s", quotePGIdentifier(statement.SchemaName), statement.SQL)
-		if _, err := db.ExecContext(ctx, execSQL); err != nil {
+		if err := execPostgresStatementWithLockRetry(ctx, db, execSQL, statement.SQL); err != nil {
 			return PGResult{}, fmt.Errorf("postgres schema statement %d (%s/%s): %w", i, statement.SchemaName, statement.Source, err)
 		}
 	}

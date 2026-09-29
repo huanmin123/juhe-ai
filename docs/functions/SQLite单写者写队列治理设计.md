@@ -1,8 +1,8 @@
 # SQLite 单写者写队列治理设计
 
 > 面向后端实现、后台 worker 和数据库维护者。
-> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目，SQLite 单写者语义由 Go 进程边界承载，见 `docs/migration/README.md` 终局声明）。文中"当前 Node standalone 模式"等措辞是写作时点的过渡边界，保留为历史对照，不构成当前实现或操作授权。执行计划见 [PLAN-20260618T024133000Z SQLite 单写者写队列治理](../plans/计划-20260618T024133000Z-SQLite单写者写队列治理.md)。PostgreSQL performance 模式的并发写入边界见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。
-> 迁移方向更新（2026-08-08）：SQLite 单写者是 Go 可运行于 SQLite 模式的前提，而非待删除对象。B0 兼容验证与未迁 Node 功能可经既有 typed command / owner bridge 写入；完成 F3 的 Go 完整功能必须独占目标 file owner，不能继续依赖 Node bridge。每个 SQLite 文件继续只有一个 writer owner。SQLite 与 PostgreSQL/Redis 均为正式目标模式，完整规则见 [完整功能接管与 Node 归档迁移规则](../migration/完整功能接管与Node归档迁移规则.md)。
+> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目，SQLite 单写者语义由 Go 进程边界承载，见 `docs/architecture/架构总览.md` 终局声明）。文中"当前 Node standalone 模式"等措辞是写作时点的过渡边界，保留为历史对照，不构成当前实现或操作授权。执行计划见 [PLAN-20260618T024133000Z SQLite 单写者写队列治理](../plans/计划-20260618T024133000Z-SQLite单写者写队列治理.md)。PostgreSQL performance 模式的并发写入边界见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。
+> 迁移方向更新（2026-08-08）：SQLite 单写者是 Go 可运行于 SQLite 模式的前提，而非待删除对象。B0 兼容验证与未迁 Node 功能可经既有 typed command / owner bridge 写入；完成 F3 的 Go 完整功能必须独占目标 file owner，不能继续依赖 Node bridge。每个 SQLite 文件继续只有一个 writer owner。SQLite 与 PostgreSQL/Redis 均为正式目标模式，完整规则见 完整功能接管与 Node 归档迁移规则。
 
 ## 背景
 

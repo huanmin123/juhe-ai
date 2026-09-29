@@ -14,15 +14,12 @@
 
 发布包是 go-only 形态，只有一条启动路径：`juhe-ai-go-gateway` 以 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口，`juhe-ai-go-jobs` 承载 F1/F2。Node Web/API 已归档，不再提供 `hybrid` / `node` 部署模式；`JUHE_AI_DEPLOY_MODE` 出现历史值时启动脚本会拒绝启动，唯一合法值是 `go`（缺省即 go）。
 
-可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。`JUHE_AI_OWNER_LOCK_ENABLED=true` 会被拒绝（owner lock 尚无 Go server 包装）。
+可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。
 
 可选运行变量（均有缺省值，常规单机部署无需设置）：
 
 - `JUHE_AI_JOBS_INTERNAL_URL` 已删除（去跨进程战役第二刀）：gateway 与 jobs 之间不再有任何 HTTP 互调，账户健康检查派发改走业务库 `account_health_probe_request_outbox` 通道（gateway 写行、jobs J1 Runner 消费），`/__aiinternal__` 路由已整体下线；手动账户测试派发此前已在 gateway 进程内执行。启动脚本不再转发该变量，配置它不会生效。
 - `JUHE_AI_BLUE_GREEN_OWNER_MODE`：Go 进程蓝绿 owner 模式，合法值 `active` / `standby` / `drain`（大小写不敏感），缺省 `active`。gateway 与 jobs 启动时各自校验，非法值启动失败；仅 `active` 持有 owner 工作，`standby` / `drain` 供蓝绿切换窗口把候补/下线槽排除出 owner 判定（含账户余额健康对对端 ownerMode 的裁决）。
-
-详见 `docs/migration/部署go-only双轨开关.md`（源码仓库内）。
-
 
 发布包可以来自 Windows、macOS 或 Linux 任一打包平台。发布包包含两个可独立部署的常驻 Go 二进制：`backend-go/juhe-ai-jobs`（Windows 为 `.exe`）承载 F1 运行日志索引与 F2 表监控，`backend-go/juhe-ai-gateway` 承载主入口、F3 审计与 F4 操作日志；`backend-go/juhe-ai-maintenance` 只用于一次性维护命令。日志搜索（grep）由 Go 进程内逐行扫描完成，不依赖 `rg` 或任何外部二进制。
 

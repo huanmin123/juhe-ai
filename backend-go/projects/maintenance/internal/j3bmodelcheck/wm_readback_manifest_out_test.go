@@ -9,8 +9,8 @@ import (
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 )
 
-// TestWMWriteJ3bReadbackManifestFile 覆盖 --j3b-readback-manifest-out 的写盘
-// 函数：verify 成功报告 → v2 manifest JSON 落盘且可被 Decode 对称读回；未就绪
+// TestWMWriteJ3bReadbackManifestFile 覆盖 readback manifest 的写盘函数：
+// verify 成功报告 → v2 manifest JSON 落盘且可被 Decode 对称读回；未就绪
 // 报告与不可写路径失败闭环。
 func TestWMWriteJ3bReadbackManifestFile(t *testing.T) {
 	tables, rows, digests := completeReadbackEvidence()

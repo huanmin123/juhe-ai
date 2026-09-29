@@ -38,7 +38,7 @@
 -> 成功、当前候选失败、同账号重试、切号、切组或客户端交接
 ```
 
-代码证据（以下为 Node 时代路径锚点，源码已随 Node 归档至 `migration-backup/node/final-archive/`，现行实现在 `backend-go/projects/gateway`；链接已降级为纯文本）：
+代码证据（以下为 Node 时代路径锚点，源码已随 Node 归档（已移出仓库，git 历史可溯），现行实现在 `backend-go/projects/gateway`；链接已降级为纯文本）：
 
 - 请求预检建立 `ServerRetryBudget`、`GatewayRequestWallBudget` 和请求尝试跟踪器：`backend/src/modules/gateway/request/preflight.ts`。
 - 主循环先检查墙钟，再构造当前轮次账号集合；无候选时才考虑后备分组：`backend/src/modules/gateway/routes.ts`。

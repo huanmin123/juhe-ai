@@ -12,8 +12,7 @@
 - [前端测试分层规则](前端测试分层规则.md)
 - [临时管理访问令牌](临时管理访问令牌.md)
 - [Mockdata 造数设计](../functions/Mockdata造数设计.md)
-- [Go 渐进减法迁移开发构建部署调整](../migration/开发构建部署调整.md)
-- [Go 开发手册](../migration/Go开发手册.md)
+- [Go 开发手册](../architecture/Go开发手册.md)
 
 ## 适用边界
 

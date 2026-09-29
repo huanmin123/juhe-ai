@@ -1,6 +1,6 @@
 # SQLite 存储说明
 
-> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`）。文中“当前 Node 阶段”的 SQLite 单写者、DB service、typed command 与 owner bridge 等迁移期叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权；当前存储事实以 [架构总览](../architecture/架构总览.md) 与 Go 实现为准。
+> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明）。文中“当前 Node 阶段”的 SQLite 单写者、DB service、typed command 与 owner bridge 等迁移期叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权；当前存储事实以 [架构总览](../architecture/架构总览.md) 与 Go 实现为准。
 
 ## 当前 Node 阶段为什么用 SQLite
 
@@ -533,7 +533,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 手动清理 `usage_records` 同样按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合游标和必要回填游标保护。提交前先按 `created_at < cutoffAt` 与统计安全游标交集做有限预检查；没有可安全清理记录、统计游标尚未建立或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
 - 统计聚合、系统指标采样和审计日志落库只负责写入或聚合，不再在各自流程里顺手删除历史表数据；F1 运行日志索引与 F2 表监控由对应 Go owner 持有各自的 retention，不接受 Node 清理器回退接管。
 - **统计缓存离线重建（历史能力，当前不可用）**：统计缓存损坏或统计口径升级时的离线重建，历史上由 Node 脚本 `backend/dist/scripts/maintenance/rebuild-usage-stats.js` 承担：standalone 从 usage shard 文件中尚未清理的 `usage_records` 重新构建缓存，performance 从 `juhe_usage.usage_records` 重建 `juhe_stats` 缓存；清空并重建统计结果库 / PostgreSQL `juhe_stats` 里的统计缓存，默认每批 2000 条、最多 1000 批，批间让出事件循环，可用 `--batch-size=数量`、`--max-batches=数量` 控制单轮吞吐；必须显式传 `--confirm-offline` 或设置 `JUHE_AI_CONFIRM_USAGE_STATS_REBUILD=1` 避免在线误执行；usage shard / `juhe_usage.usage_records` 为空或历史记录已丢弃时明确放弃历史统计，后续从新请求重新累计。
-  **2026-09-20 状态**：该 Node 脚本已随 Node 后端全量归档删除（源码只读保留在 `migration-backup/node/final-archive/backend/src/scripts/maintenance/rebuild-usage-stats.ts`，`backend/dist/` 已不存在），**不要再执行上文的 `node backend/dist/...` 命令**；当前 Go 侧（`backend-go/projects/maintenance`）没有等价的离线重建 CLI，统计缓存损坏暂无恢复入口，该缺口已登记为 [BUG-0182](../bug/问题-0182-统计缓存离线重建CLI缺失.md)。在 Go CLI 落地前，损坏的统计缓存暂无替代重建做法，只能等待实现后按其文档执行；执行任何重建前仍须确认业务库路径或 PostgreSQL 连接无误，避免误操作业务数据。
+  **2026-09-20 状态**：该 Node 脚本已随 Node 后端全量归档删除（源码在 Node 归档中只读保留，归档已移出仓库、git 历史可溯；`backend/dist/` 已不存在），**不要再执行上文的 `node backend/dist/...` 命令**；当前 Go 侧（`backend-go/projects/maintenance`）没有等价的离线重建 CLI，统计缓存损坏暂无恢复入口，该缺口已登记为 [BUG-0182](../bug/问题-0182-统计缓存离线重建CLI缺失.md)。在 Go CLI 落地前，损坏的统计缓存暂无替代重建做法，只能等待实现后按其文档执行；执行任何重建前仍须确认业务库路径或 PostgreSQL 连接无误，避免误操作业务数据。
 
 ## 操作日志存储
 

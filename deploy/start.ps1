@@ -3,9 +3,10 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   $PSNativeCommandUseErrorActionPreference = $true
 }
 
-# X01/X03 go-only 终态：本脚本是唯一的启动路径。Node Web/API 已物理归档到
-# migration-backup/node/final-archive/（X02），legacybridge 反代已删除，
-# 不再提供 hybrid / node 部署模式；历史值会被 fail-closed 拒绝。
+# X01/X03 go-only 终态：本脚本是唯一的启动路径。Node 后端已于 2026-09-05
+# 清零、2026-09-30 足迹清理后仓库内不再保留归档（git 历史可溯），
+# legacybridge 反代已删除，不再提供 hybrid / node 部署模式；历史值会被
+# fail-closed 拒绝。
 
 $appDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $appDir
@@ -299,10 +300,6 @@ $portValue = if ($env:JUHE_AI_PORT) { $env:JUHE_AI_PORT } else { Read-DotEnvValu
 # gateway 不再监听 3303/3304，写入走进程内 producer）。
 
 Write-Host "Starting juhe-ai at http://${hostValue}:${portValue} (deploy mode: ${deployMode}; go-only: the Go gateway owns the main HTTP entry, Go jobs owns F1/F2)"
-$ownerLockEnabled = if ($env:JUHE_AI_OWNER_LOCK_ENABLED) { $env:JUHE_AI_OWNER_LOCK_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_ENABLED' -Fallback 'false' }
-if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)) {
-  throw 'JUHE_AI_OWNER_LOCK_ENABLED=true has no Go-mode server wrapper yet; go-only mode refuses to start without this deployment guard.'
-}
 
 $goGateway = $null
 $goJobs = $null

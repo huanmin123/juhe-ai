@@ -1,6 +1,6 @@
 # AI 账户上游余额查询设计
 
-> **历史截面提示。** 本文部分章节撰写于 Node 过渡期，涉及 ops-worker 承载余额刷新 / 快照探测的叙述为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`），不构成当前实现或操作授权。
+> **历史截面提示。** 本文部分章节撰写于 Node 过渡期，涉及 ops-worker 承载余额刷新 / 快照探测的叙述为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明），不构成当前实现或操作授权。
 
 > 状态：既有核心实现完成；2026-07-16 完成余额查询身份比较、缺失快照自愈和列表最终状态收敛；2026-07-24 完成 MetaAPI 与 One API 系源码审计，并实现 API Key 专属 OpenAI 兼容账单自动适配，待真实上游验证。
 >

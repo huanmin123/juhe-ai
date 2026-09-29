@@ -8,7 +8,7 @@
 - `projects/jobs`：定时探活、复制、统计和周期维护。
 - `projects/maintenance`：一次性 schema、迁移、回填、重建和诊断。
 
-三个项目只共享 `shared/contracts` 和无业务编排的 `shared/platform`，互相禁止 import；唯一受控例外是 gateway 组合根经 `maintenance/bootstrap` 在 SQLite 启动时做 schema 引导（ensure+seed，登记于《Go 三项目架构基线》）。项目边界、并发和迁移顺序见 [Go 三项目架构基线](../docs/migration/Go三项目架构基线.md) 与 [Go 开发手册](../docs/migration/Go开发手册.md)。
+三个项目只共享 `shared/contracts` 和无业务编排的 `shared/platform`，互相禁止 import；唯一受控例外是 gateway 组合根经 `maintenance/bootstrap` 在 SQLite 启动时做 schema 引导（ensure+seed，登记于《Go 三项目架构基线》）。项目边界、并发和迁移顺序见 [Go 三项目架构基线](../docs/architecture/Go三项目架构基线.md) 与 [Go 开发手册](../docs/architecture/Go开发手册.md)。
 
 `shared/platform` 还提供无业务的 `sqlpool` 生命周期/引用计数基础设施；gateway/jobs 只保留各自的 `pgx` opener 和项目薄适配层。`shared/platform/upstreamhttp` 是跨项目的上游传输基础设施：统一直连与 HTTP(S)/SOCKS5(SOCKS5H) 代理、禁用环境代理、HTTP/2、响应头大小/超时、无重定向 client、SOCKS5 握手和有界响应体读取/排空。它不包含供应商协议、SSE、余额适配器、探测结果或重试策略。当前 `jobs` 的 J1 健康探活、J2 余额查询和 J3a 代理延迟/出口检测都使用该包；`gateway` 当前还没有生产上游 client，`maintenance` 当前没有上游请求。
 
@@ -19,16 +19,30 @@
 
 每个项目独立加载配置、Store、schema 和 owner lease。普通单条或单轮错误必须记录并由组件的下一轮处理；租约丢失和不可恢复基础设施错误只影响所属项目，由该项目的服务管理器重启，绝不通过进程内依赖影响另一项目。
 
-## J3a PostgreSQL 一次性 bootstrap
+## J3a/J3b PostgreSQL 一次性 bootstrap
 
-`projects/maintenance` 的 J3a bootstrap 不是常驻服务。它和 jobs runtime 共享同一 J3a PostgreSQL schema 契约：6 张 jobs 表、2 个索引、必需列的名称/类型/`NOT NULL`、主键/唯一约束均须匹配。maintenance 只检查或加法预置，不会创建 schema、改变 owner、`ALTER` 既有表、访问 `juhe_business`、调用 Node、写 Goose ledger 或作为 jobs runtime 的 fallback。默认检查缺项或结构不符时返回 `3`；`--apply` 需要经过授权、使用已拥有该 schema 的专用维护/目标 jobs 角色，并在完成后再次只读检查。jobs runtime 的 `Store.CheckSchema` 也会执行该结构 preflight，无法绕过 maintenance 后以同名畸形表启动。
+`projects/maintenance` 的 J3a/J3b bootstrap 不是常驻服务，是现行生产初始化契约命令（`docker/single-server/README.md` 初始化序列：PG 先手工 `CREATE SCHEMA`，再由下列命令建表）。J3a bootstrap 与 jobs runtime 共享同一 J3a PostgreSQL schema 契约：6 张 jobs 表、2 个索引、必需列的名称/类型/`NOT NULL`、主键/唯一约束均须匹配。maintenance 只做加法预置，不会创建 schema、改变 owner、`ALTER` 既有表、访问 `juhe_business`、调用 Node、写 Goose ledger 或作为 jobs runtime 的 fallback；apply 完成后命令会再次只读检查，缺项或结构不符时返回 `3`。jobs runtime 的 `Store.CheckSchema` 也会执行该结构 preflight，无法绕过 maintenance 后以同名畸形表启动。
 
 ```powershell
 $env:JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL = 'postgres://<schema-owner-role>:<secret>@<host>:5432/<database>?sslmode=require'
-go run ./projects/maintenance/cmd/juhe-ai-maintenance --check-j3a-proxy-latency-postgres
 go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3a-proxy-latency-postgres
-go run ./projects/maintenance/cmd/juhe-ai-maintenance --check-j3a-proxy-latency-postgres
 Remove-Item Env:JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL -ErrorAction SilentlyContinue
+```
+
+J3b 专属 `juhe_j3b` schema 同序列执行（同样要求先手工 `CREATE SCHEMA`）：
+
+```powershell
+$env:JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL = 'postgres://<schema-owner-role>:<secret>@<host>:5432/<database>?sslmode=require'
+go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3b-model-check-postgres
+Remove-Item Env:JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL -ErrorAction SilentlyContinue
+```
+
+J3b 专属 SQLite 库用 `--apply-j3b-model-check-sqlite` 引导（读 `JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH`，apply 需 `-node-stopped -go-stopped -backup-confirmed` 三确认）：
+
+```powershell
+$env:JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH = '<path-to>\j3b-model-check.sqlite3'
+go run ./projects/maintenance/cmd/juhe-ai-maintenance --apply-j3b-model-check-sqlite -node-stopped -go-stopped -backup-confirmed
+Remove-Item Env:JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH -ErrorAction SilentlyContinue
 ```
 
 维护项目的真实 bootstrap 回归也是显式 opt-in，仅接受直连 `5432` 的一次性 `juhe_ai_sub2api_dev_j3a_` scratch，且要求管理员预先创建 `juhe_jobs` schema：
@@ -39,9 +53,7 @@ go test ./projects/maintenance/internal/j3aproxylatency -run '^TestPostgresBoots
 Remove-Item Env:JUHE_AI_MAINTENANCE_J3A_BOOTSTRAP_SMOKE_URL -ErrorAction SilentlyContinue
 ```
 
-该测试要求 scratch 初始缺少全部 J3a 表/索引，成功后保留 schema 供管理员按生命周期销毁；不会自行创建或删除数据库/schema。
-
-jobs runtime 的对应 opt-in 检查：
+该测试要求 scratch 初始缺少全部 J3a 表/索引，成功后保留 schema 供管理员按生命周期销毁；不会自行创建或删除数据库/schema。生产应用连接、Secret 值、runtime owner 开关与发布授权不属于该命令。jobs runtime 的对应 opt-in 检查：
 
 ```powershell
 $env:J3A_PG_SCHEMA_CONTRACT_SMOKE_URL = 'postgres://<schema-owner-role>:<secret>@<host>:5432/juhe_ai_sub2api_dev_j3a_<name>?sslmode=require'
@@ -50,8 +62,6 @@ Remove-Item Env:J3A_PG_SCHEMA_CONTRACT_SMOKE_URL -ErrorAction SilentlyContinue
 ```
 
 它验证完整结构能被 runtime 接受、错误列会在启动 preflight 被拒绝；同样只适用于可销毁 scratch。
-
-生产应用连接、Secret 值、runtime owner 开关与发布授权不属于该命令；完整 handoff 条件见 [J3a 代理延迟检测完整迁移契约](../docs/migration/J3a-代理延迟检测完整迁移契约.md)。
 
 离线迁移也按 owner 分开执行：F1 使用 `juhe-ai-jobs --migrate-runtime-log-legacy-sqlite`；F3/F4 使用 `juhe-ai-gateway --migrate-audit-log-legacy-sqlite`、`--migrate-operation-log-legacy-sqlite` 或 `--migrate-operation-log-legacy-postgres`。F3/F4 离线模式必须显式传入 `--node-stopped --go-stopped --backup-confirmed`，不得和相应常驻 owner 并发运行。
 
@@ -71,7 +81,7 @@ go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-sql
 go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-postgres --node-stopped --go-stopped --backup-confirmed
 ```
 
-两条命令都会输出 JSON 计数和迁移结果。它们不是生产切流授权：完成后仍须按 [F4 操作日志完整迁移契约](../docs/migration/F4-操作日志完整迁移契约.md) 核验可读性、首尾样本、发布候选与回滚提交。
+两条命令都会输出 JSON 计数和迁移结果。它们不是生产切流授权：完成后仍须按 F4 操作日志完整迁移契约 核验可读性、首尾样本、发布候选与回滚提交。
 
 ## F1：运行日志索引与保留
 
@@ -128,7 +138,7 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 
 2026-08-09 已在用户授权的专用、可销毁开发 PostgreSQL 数据库中强制执行并通过该 smoke；测试结束后已终止残留会话并删除临时数据库，连接串未写入仓库或文档。未设置 URL 时，该 smoke 会显式 `skipped`，绝不等同 PostgreSQL 验证通过；设为强制模式后，缺 URL 或 URL 无法连接都会失败。
 
-完整边界、归档和 PostgreSQL smoke 记录见 [F1 运行日志索引与保留](../docs/migration/F1-运行日志索引与保留功能冻结.md)。
+完整边界、归档和 PostgreSQL smoke 记录见 F1 运行日志索引与保留。
 
 ## F2：表存储监控采样与保留
 
@@ -148,4 +158,4 @@ J3a 管理入口的 IngressRoute 由 k8s release state 与 Go 镜像 digest 同�
 
 Node 只保留表监控 HTTP 读取，SQLite 读取只打开 F2 专用输出文件；Node scheduler、stats writer 和 Node retention 已退出。配置、连接、schema、owner lease 或采样失败都必须保留原始错误并显式失败，不能伪造空结果或切回旧 Node 路径。
 
-SQLite 定向测试覆盖采样、快照写入和保留清理。2026-08-09 开发 PostgreSQL/PgBouncer 可连通性已确认；共享开发库已有 F2 快照，smoke 对该库按空库保护拒绝写入。经用户明确授权创建一次性空库后，强制 smoke 已通过真实 adapter、lease takeover、relation-size 快照、五个 schema 的 `RunOnce` 采样和 retention 清理，测试库已删除。生产发布生命周期、Docker 实启动和 listener 仍未验证，不能据此称生产运行通过。完整边界见 [F2 表存储监控采样与保留功能冻结](../docs/migration/F2-表存储监控采样与保留功能冻结.md)。
+SQLite 定向测试覆盖采样、快照写入和保留清理。2026-08-09 开发 PostgreSQL/PgBouncer 可连通性已确认；共享开发库已有 F2 快照，smoke 对该库按空库保护拒绝写入。经用户明确授权创建一次性空库后，强制 smoke 已通过真实 adapter、lease takeover、relation-size 快照、五个 schema 的 `RunOnce` 采样和 retention 清理，测试库已删除。生产发布生命周期、Docker 实启动和 listener 仍未验证，不能据此称生产运行通过。完整边界见 F2 表存储监控采样与保留功能冻结。

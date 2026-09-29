@@ -12,6 +12,17 @@ services:
     image: postgres:18-alpine
     container_name: juhe-ai-postgres
     restart: unless-stopped
+    # 单机专用形态的内存调优（2026-09-30 固化进部署契约；此前默认 shared_buffers=128MB
+    # 是 8GB 机器上的隐性瓶颈：两库 juhe_ai 3.3GB + juhe_public 222MB 共享 128MB 缓存，
+    # 实测缓存命中率 0.85~0.95、iowait ~9%、checkpoint 5 分钟一轮刷 2-3k 缓冲区）。
+    # shared_buffers=2GB（物理内存 25% 标准值）；effective_cache_size=4GB 是优化器估值
+    # 不占内存。其余参数维持默认，按需再调。
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=4GB
     environment:
       POSTGRES_DB: juhe_ai
       POSTGRES_USER: juhe_ai

@@ -74,7 +74,7 @@ func TestWMMockdataExitBranches(t *testing.T) {
 		// 互斥文案取决于分支顺序：ensure-schema 分支在 mockdata 分支之前，
 		// 因此这条组合报的是存储引导分支的文案（两者都是 exit 2 的互斥错误）。
 		{name: "mutex with storage bootstrap", args: []string{"-mockdata", "-ensure-schema"}, wantCode: 2, wantErr: "storage bootstrap flags are mutually exclusive"},
-		{name: "mutex with manifest check", args: []string{"-verify-mockdata-coverage", "-verify-business-owner-manifest"}, wantCode: 2, wantErr: "mockdata flags are mutually exclusive"},
+		{name: "mutex with boundary check", args: []string{"-verify-mockdata-coverage", "-check-boundary"}, wantCode: 2, wantErr: "mockdata flags are mutually exclusive"},
 		{name: "run and verify are mutually exclusive", args: []string{"-mockdata", "-verify-mockdata-coverage"}, wantCode: 2, wantErr: "mockdata seeding and mockdata coverage verification flags are mutually exclusive"},
 		{name: "postgres driver rejected", args: []string{"-mockdata", "-driver", "postgres", "-mockdata-data-dir", root}, wantCode: 2, wantErr: "只支持 SQLite"},
 		{name: "dsn rejected", args: []string{"-mockdata", "-dsn", "postgres://u@127.0.0.1:5432/db", "-mockdata-data-dir", root}, wantCode: 2, wantErr: "不接受 --dsn"},

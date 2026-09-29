@@ -140,16 +140,12 @@ function Assert-SafeRemovalTarget {
 function Invoke-ReleasePackageValidator {
   param(
     [Parameter(Mandatory = $true)][string[]]$Paths,
-    [switch]$LinksOnly,
-    [string]$DeployMode
+    [switch]$LinksOnly
   )
 
   $validatorArgs = @('--quiet')
   if ($LinksOnly) {
     $validatorArgs += '--links-only'
-  }
-  if ($DeployMode) {
-    $validatorArgs += "--deploy-mode=$DeployMode"
   }
   $validatorArgs += $Paths
 
@@ -219,29 +215,6 @@ function Write-Utf8NoBom {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Copy-ReleaseBackendPackageJson {
-  param(
-    [Parameter(Mandatory = $true)][string]$Source,
-    [Parameter(Mandatory = $true)][string]$Destination
-  )
-
-  if (-not (Test-Path -LiteralPath $Source)) {
-    throw "Required path not found: $Source"
-  }
-
-  Assert-NoReparsePoints -Path $Source
-  Invoke-ReleasePackageValidator -Paths @($Source) -LinksOnly
-  $packageJson = Get-Content -Raw -LiteralPath $Source | ConvertFrom-Json
-  $packageJson.scripts = [ordered]@{
-    'check:runtime' = 'node dist/scripts/preflight/check-node-sqlite.js'
-    'maintenance:backfill-account-balance' = 'node dist/scripts/maintenance/run-account-balance-backfill.js'
-    'ops:drain-redis-streams' = 'node dist/scripts/operations/drain-redis-streams.js'
-    'ops:redis-queue-fence' = 'node dist/scripts/operations/manage-redis-queue-fence.js'
-    'start' = 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'
-  }
-  Write-Utf8NoBom -Path $Destination -Content (($packageJson | ConvertTo-Json -Depth 20) + "`n")
-}
-
 Set-Location $repoRoot
 
 $releaseSourceOutput = @(& (Join-Path $PSScriptRoot 'assert-release-source.ps1') -RepoRoot $repoRoot -ExpectedCommit $ExpectedCommit)
@@ -265,8 +238,8 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
 }
 
 # Node backend（juhe-ai-backend）已于 2026-09-04 物理归档到
-# migration-backup/node/final-archive/（X02 全量归档）；Node check:runtime
-# 预检随之移除，发布物走 go-only 校验（见文件末尾 -DeployMode go）。
+# （归档已移出仓库，git 历史可溯）（X02 全量归档）；Node check:runtime
+# 预检随之移除，发布物走 go-only 校验（见文件末尾的发布包校验）。
 
 Write-Host '==> Building workspace'
 $env:VITE_JUHE_AI_API_BASE_URL = $FrontendApiBaseUrl
@@ -329,21 +302,13 @@ foreach ($project in @('gateway', 'jobs', 'maintenance')) {
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')
 Copy-RequiredItem (Join-Path $repoRoot 'pnpm-lock.yaml') (Join-Path $packageRoot 'pnpm-lock.yaml')
 Copy-RequiredItem (Join-Path $repoRoot 'pnpm-workspace.yaml') (Join-Path $packageRoot 'pnpm-workspace.yaml')
-# Node backend 已归档到 migration-backup/node/final-archive/（X02）；go-only
+# Node backend 已归档到 （归档已移出仓库，git 历史可溯）（X02）；go-only
 # 发布物不再复制 backend/package.json、backend/.env.example、backend/dist。
-# Copy-ReleaseBackendPackageJson 函数保留仅供历史 hybrid 包对照，不再调用。
-# Copy-ReleaseBackendPackageJson (Join-Path $repoRoot 'backend/package.json') (Join-Path $packageRoot 'backend/package.json')
-# Copy-RequiredItem (Join-Path $repoRoot 'backend/.env.example') (Join-Path $packageRoot 'backend/.env.example')
-# Copy-RequiredItem (Join-Path $repoRoot 'backend/dist') (Join-Path $packageRoot 'backend/dist')
 Copy-RequiredItem (Join-Path $repoRoot 'frontend/package.json') (Join-Path $packageRoot 'frontend/package.json')
 Copy-RequiredItem (Join-Path $repoRoot 'frontend/.env.example') (Join-Path $packageRoot 'frontend/.env.example')
 Copy-RequiredItem (Join-Path $repoRoot 'frontend/dist') (Join-Path $packageRoot 'frontend/dist')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.sh') (Join-Path $packageRoot 'start.sh')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.ps1') (Join-Path $packageRoot 'start.ps1')
-Copy-RequiredItem (Join-Path $repoRoot 'scripts/run-with-owner-lock.mjs') (Join-Path $packageRoot 'scripts/run-with-owner-lock.mjs')
-Copy-RequiredItem (Join-Path $repoRoot 'scripts/validate-owner-manifest.mjs') (Join-Path $packageRoot 'scripts/validate-owner-manifest.mjs')
-Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.json') (Join-Path $packageRoot 'deploy/owner-manifest.json')
-Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.schema.json') (Join-Path $packageRoot 'deploy/owner-manifest.schema.json')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/README.md') (Join-Path $packageRoot 'README.md')
 Copy-RequiredItem (Join-Path $repoRoot 'docs/deploy') (Join-Path $packageRoot 'docs/deploy')
 
@@ -356,8 +321,8 @@ $startPowerShellContent = Get-Content -Raw -LiteralPath $startPowerShellPath
 Write-Utf8NoBom -Path $startPowerShellPath -Content $startPowerShellContent
 
 Assert-NoReparsePoints -Path $packageRoot -Recurse
-# Node backend 已归档（X02）：发布物为 go-only 形态，用 go 模式校验。
-Invoke-ReleasePackageValidator -Paths @($packageRoot) -DeployMode go
+# Node backend 已归档（X02）：发布物为 go-only 形态（校验器缺省即 go-only）。
+Invoke-ReleasePackageValidator -Paths @($packageRoot)
 
 if ($ArchiveFormat -eq 'tar.gz' -or $ArchiveFormat -eq 'both') {
   Write-Host '==> Creating tar.gz archive'

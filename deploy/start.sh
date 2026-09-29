@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# X01/X03 go-only 终态：本脚本是唯一的启动路径。Node Web/API 已物理归档到
-# migration-backup/node/final-archive/（X02），legacybridge 反代已删除，
-# 不再提供 hybrid / node 部署模式；历史值会被 fail-closed 拒绝。
+# X01/X03 go-only 终态：本脚本是唯一的启动路径。Node 后端已于 2026-09-05
+# 清零、2026-09-30 足迹清理后仓库内不再保留归档（git 历史可溯），
+# legacybridge 反代已删除，不再提供 hybrid / node 部署模式；历史值会被
+# fail-closed 拒绝。
 # 本脚本不依赖 Node.js：所有操作用纯 shell + curl 实现。
 
 APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -354,12 +355,6 @@ PORT="${JUHE_AI_PORT:-$(read_dotenv_value JUHE_AI_PORT '3000')}"
 # gateway 不再监听 3303/3304，写入走进程内 producer）。
 
 echo "Starting juhe-ai at http://${HOST}:${PORT} (deploy mode: ${DEPLOY_MODE}; go-only: the Go gateway owns the main HTTP entry, Go jobs owns F1/F2)"
-OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
-OWNER_LOCK_ENABLED_NORMALIZED="$(printf '%s' "$OWNER_LOCK_ENABLED" | tr '[:upper:]' '[:lower:]')"
-if [ "$OWNER_LOCK_ENABLED_NORMALIZED" = 'true' ]; then
-  echo 'JUHE_AI_OWNER_LOCK_ENABLED=true has no Go-mode server wrapper yet; go-only mode refuses to start without this deployment guard.' >&2
-  exit 1
-fi
 
 trap on_exit EXIT
 trap 'exit 130' INT

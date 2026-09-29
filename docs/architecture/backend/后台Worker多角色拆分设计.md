@@ -1,6 +1,6 @@
 # 后台 Worker 多角色拆分设计
 
-> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`）。文中 standalone / performance 的 worker 角色拆分、Go sidecar 迁移期边界等拓扑叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权。
+> **历史状态。** 本文撰写于 Node 后端时代（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明）。文中 standalone / performance 的 worker 角色拆分、Go sidecar 迁移期边界等拓扑叙述是写作时点的设计截面，保留为历史对照，不构成当前实现或操作授权。
 
 > **Go sidecar 现行边界（2026-08-12）。** 本文的 `standalone` / `performance` 拓扑只描述当前 Node 实现，不能推导 Go 按旧 job / queue 拆分。F1、F2、F3 均被唯一 `juhe-ai-go-sidecar` 接管，功能独立而进程统一；任何 Node runtime-log importer、F2 scheduler 或 F3 writer/queue 记载均为历史，不得重新接入 Node worker。
 
@@ -89,7 +89,7 @@
 - standalone 的 process event loop 采样角色固定为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`；performance 额外按实例记录 `gateway`、`usage-worker`、`log-worker`。
 - 系统监控接口使用 `ingestWorkerSnapshotAvailable`、`statsWorkerSnapshotAvailable`、`opsWorkerSnapshotAvailable` 表达三类 worker 可观测性；不可观测时对应 runtime 返回 `null`，不能用空数组或 0 伪装正常。
 
-以上 process event loop 和 `db-service` 口径只描述当前 Node 过渡实现。未来某个完整功能在 F3 / F4 完成接管后，必须按 [Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md) 单独定义 Go runtime、直接异步执行、cursor / freshness 等指标；不得把旧 Asynq / queue 设为新 Go 功能前置，也不再把 `eventLoopLagMs`、`process_event_loop_*` 或 `db-service` 冒充为 Go 长期契约。
+以上 process event loop 和 `db-service` 口径只描述当前 Node 过渡实现。未来某个完整功能在 F3 / F4 完成接管后，必须按 Go 迁移指标与观测规划 单独定义 Go runtime、直接异步执行、cursor / freshness 等指标；不得把旧 Asynq / queue 设为新 Go 功能前置，也不再把 `eventLoopLagMs`、`process_event_loop_*` 或 `db-service` 冒充为 Go 长期契约。
 
 ## 并发策略
 

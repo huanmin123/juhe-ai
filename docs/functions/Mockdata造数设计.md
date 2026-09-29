@@ -1,7 +1,7 @@
 # Mockdata 造数设计
 
 > 面向本地演示、测试联调和页面验收。
-> 唯一造数入口是仓库根目录的 `pnpm mockdata`，编排 Go `maintenance` 与 Go `jobs` 的既有一次性命令，在本地 SQLite 数据根上重建一套可重复执行的离线造数；不进入后端运行请求链路。历史（Node）实现已归档至 `migration-backup/node/final-archive/`，仅作只读参照，不再是权威实现。
+> 唯一造数入口是仓库根目录的 `pnpm mockdata`，编排 Go `maintenance` 与 Go `jobs` 的既有一次性命令，在本地 SQLite 数据根上重建一套可重复执行的离线造数；不进入后端运行请求链路。历史（Node）实现已归档（归档已移出仓库，git 历史可溯），仅作只读参照，不再是权威实现。
 
 ## 1. 目标
 

@@ -37,14 +37,30 @@ type wmSchemaRecorder struct {
 	execs         []wmCapturedStatement
 	queries       []wmCapturedStatement
 	failExecAfter int
-	scripted      []wmScriptedRows
-	scriptedMu    sync.Mutex
+	// failNextExecsWith 按序作用于每次执行调用（FIFO）：头部为非 nil 错误时
+	// 取出并返回该错误（不录制本次执行）；头部为 nil 时取出并按成功执行正常
+	// 录制；耗尽后回退到 failExecAfter 语义。用于注入 *pgconn.PgError 等精确
+	// 错误序列并用 nil 占位定位中段语句（pg_lock_retry_test.go 的重试用例）。
+	failNextExecsWith []error
+	// execAttempts 统计 recordExec 的全部调用（含失败尝试），供重试用例
+	// 断言同一条语句的实际执行次数。
+	execAttempts int
+	scripted     []wmScriptedRows
+	scriptedMu   sync.Mutex
 }
 
 func (r *wmSchemaRecorder) recordExec(query string, args []driver.NamedValue) error {
 	captured := wmCaptureArgs(query, args)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.execAttempts++
+	if len(r.failNextExecsWith) > 0 {
+		injected := r.failNextExecsWith[0]
+		r.failNextExecsWith = r.failNextExecsWith[1:]
+		if injected != nil {
+			return injected
+		}
+	}
 	if r.failExecAfter > 0 && len(r.execs)+1 > r.failExecAfter {
 		return fmt.Errorf("wm schema fake: 注入执行失败（第 %d 条）", len(r.execs)+1)
 	}
@@ -71,6 +87,20 @@ func (r *wmSchemaRecorder) execCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.execs)
+}
+
+// execAttemptCount 返回 recordExec 的全部调用次数（含失败尝试）。
+func (r *wmSchemaRecorder) execAttemptCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.execAttempts
+}
+
+// remainingInjectedFailures 返回尚未消费的注入错误数。
+func (r *wmSchemaRecorder) remainingInjectedFailures() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.failNextExecsWith)
 }
 
 func (r *wmSchemaRecorder) execQueries() []string {

@@ -15,40 +15,25 @@ const FORBIDDEN_PERSISTENCE_SUFFIXES = [
   '.rdb',
   '.aof'
 ]
+// go-only 唯一形态（X01/X03）：Node backend 已归档并移出仓库，发布物只含
+// Go 二进制与前端静态产物；backend/dist（Node server）不再是发布物内容。
 const REQUIRED_RELEASE_FILES = [
   'start.sh',
   'start.ps1',
-  // Node backend 已物理归档到 migration-backup/node/final-archive/（X02，
-  // 2026-09-04）。hybrid/node 模式的 backend/dist/server.js 仅用于校验历史
-  // 发布包；当前打包（package-release.*）产出 go-only 发布物并以 go 模式校验。
-  'backend/dist/server.js',
   'frontend/dist/index.html'
 ]
 const REQUIRED_GO_PROJECTS = ['jobs', 'gateway', 'maintenance']
 
-// 部署模式校验分支（X01/X03 go-only 终态）：
-// - go（默认）：go-only 发布物不携带 backend/dist（Node server），但三 Go 二进制必填。
-//   package-release.* 只产出并以 go 模式校验发布物。
-// - hybrid / node：仅为校验历史发布包保留的兼容分支；hybrid 要求 Node server +
-//   前端 + 三 Go 二进制，node（回滚兜底）不要求 Go 二进制。
+// 部署模式（X01/X03 go-only 终态）：go 是唯一合法值，缺省即 go。
+// --deploy-mode=go 与不传参数两种调用形态均通过；传 hybrid / node 或任何
+// 其他值（含历史迁移期双轨值）一律报错并提示 go-only，防止旧脚本误用。
 const DEFAULT_DEPLOY_MODE = 'go'
-const DEPLOY_MODES = new Set(['hybrid', 'go', 'node'])
-const REQUIRED_RELEASE_FILES_BY_MODE = new Map([
-  ['hybrid', REQUIRED_RELEASE_FILES],
-  ['go', ['start.sh', 'start.ps1', 'frontend/dist/index.html']],
-  ['node', ['start.sh', 'start.ps1', 'backend/dist/server.js', 'frontend/dist/index.html']]
-])
-const REQUIRED_GO_PROJECTS_BY_MODE = new Map([
-  ['hybrid', REQUIRED_GO_PROJECTS],
-  ['go', REQUIRED_GO_PROJECTS],
-  ['node', []]
-])
 
 export function resolveDeployMode(value) {
   const mode = value === undefined || value === null || value === '' ? DEFAULT_DEPLOY_MODE : value
-  if (!DEPLOY_MODES.has(mode)) {
+  if (mode !== DEFAULT_DEPLOY_MODE) {
     throw new ReleasePackageValidationError(
-      `Unknown deploy mode: ${mode} (expected go, hybrid, node, or omitted for ${DEFAULT_DEPLOY_MODE})`
+      `Unsupported deploy mode: ${mode}. The hybrid and node deploy modes were retired with the archived Node backend; go-only is the only supported topology (omit --deploy-mode or pass --deploy-mode=go).`
     )
   }
   return mode
@@ -145,13 +130,13 @@ export async function validateReleasePackagePaths(paths, options = {}) {
     const absolutePath = path.resolve(inputPath)
     await visitPath(absolutePath, '', linksOnly)
     if (!linksOnly) {
-      await validateRequiredReleaseFiles(absolutePath, deployMode)
+      await validateRequiredReleaseFiles(absolutePath)
     }
   }
 }
 
-async function validateRequiredReleaseFiles(releaseRoot, deployMode) {
-  for (const relativePath of REQUIRED_RELEASE_FILES_BY_MODE.get(deployMode)) {
+async function validateRequiredReleaseFiles(releaseRoot) {
+  for (const relativePath of REQUIRED_RELEASE_FILES) {
     const absolutePath = path.join(releaseRoot, ...relativePath.split('/'))
     let stats
     try {
@@ -163,7 +148,7 @@ async function validateRequiredReleaseFiles(releaseRoot, deployMode) {
       fail(relativePath, 'required release entry must be a regular file')
     }
   }
-  for (const project of REQUIRED_GO_PROJECTS_BY_MODE.get(deployMode)) {
+  for (const project of REQUIRED_GO_PROJECTS) {
     const candidates = [
       `backend-go/juhe-ai-${project}`,
       `backend-go/juhe-ai-${project}.exe`

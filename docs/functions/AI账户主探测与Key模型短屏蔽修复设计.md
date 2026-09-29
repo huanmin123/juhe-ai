@@ -1,6 +1,6 @@
 # AI 账户主探测与 Key-模型短屏蔽修复设计
 
-> **历史截面提示。** 本文部分段落撰写于 Node 过渡期，涉及 Node 进程生命周期 / Node worker 承载的句子为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`），不构成当前实现或操作授权。
+> **历史截面提示。** 本文部分段落撰写于 Node 过渡期，涉及 Node 进程生命周期 / Node worker 承载的句子为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明），不构成当前实现或操作授权。
 
 > 状态：最终实现契约 v1.2，代码尚未按本契约落地。
 >
@@ -37,7 +37,7 @@ Node 必须做最小接入，因为当前网关掌握实际选中的 Key、客�
 - J1 多 API Key 探测可以轮换 Key，并记录成功的 winner Key；任意符合 J1 规则的 Key 成功，仍按现有账户健康语义决定账户结果。
 - `accounts.status` 继续承载 `active`、`pending_test`、`temporary_unavailable`、`rate_limited`、`error` 和 `disabled` 等账户级状态。
 
-权威背景见 [账号健康检测设计](账号健康检测设计.md)、[账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 和 [J1 账号健康探活完整迁移契约](../migration/J1-账号健康探活完整迁移契约.md)。
+权威背景见 [账号健康检测设计](账号健康检测设计.md)、[账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 和 J1 账号健康探活完整迁移契约。
 
 ### 2.2 调度
 

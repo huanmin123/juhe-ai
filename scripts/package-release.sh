@@ -273,34 +273,6 @@ copy_required_item() {
   cp -R "$source_path" "$destination_path"
 }
 
-copy_release_backend_package_json() {
-  local source_path="$1"
-  local destination_path="$2"
-
-  if [ ! -f "$source_path" ]; then
-    echo "Required path not found: $source_path" >&2
-    exit 1
-  fi
-
-  node "$VALIDATOR_PATH" --quiet --links-only "$source_path"
-  node - "$source_path" "$destination_path" <<'NODE'
-const fs = require('node:fs')
-
-const [sourcePath, destinationPath] = process.argv.slice(2)
-const packageJson = JSON.parse(fs.readFileSync(sourcePath, 'utf8'))
-
-packageJson.scripts = {
-  'check:runtime': 'node dist/scripts/preflight/check-node-sqlite.js',
-  'maintenance:backfill-account-balance': 'node dist/scripts/maintenance/run-account-balance-backfill.js',
-  'ops:drain-redis-streams': 'node dist/scripts/operations/drain-redis-streams.js',
-  'ops:redis-queue-fence': 'node dist/scripts/operations/manage-redis-queue-fence.js',
-  start: 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'
-}
-
-fs.writeFileSync(destinationPath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
-NODE
-}
-
 create_zip_archive() {
   if command -v zip >/dev/null 2>&1; then
     (cd "$RELEASE_ROOT" && zip -qry "$ZIP_ARCHIVE_PATH" "$PACKAGE_NAME")
@@ -346,8 +318,8 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 # Node backend（juhe-ai-backend）已于 2026-09-04 物理归档到
-# migration-backup/node/final-archive/（X02 全量归档）；Node check:runtime
-# 预检随之移除，发布物走 go-only 校验（见文件末尾 --deploy-mode=go）。
+# （归档已移出仓库，git 历史可溯）（X02 全量归档）；Node check:runtime
+# 预检随之移除，发布物走 go-only 校验（见文件末尾的发布包校验）。
 
 export VITE_JUHE_AI_API_BASE_URL="$FRONTEND_API_BASE_URL"
 export VITE_JUHE_AI_GATEWAY_BASE_URL="$FRONTEND_GATEWAY_BASE_URL"
@@ -381,27 +353,19 @@ TAR_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar.gz"
 ZIP_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.zip"
 assert_safe_removal_target "$PACKAGE_ROOT" "$RELEASE_ROOT" 1
 rm -rf "$PACKAGE_ROOT"
-mkdir -p "$PACKAGE_ROOT/backend-go" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs" "$PACKAGE_ROOT/scripts" "$PACKAGE_ROOT/deploy"
+mkdir -p "$PACKAGE_ROOT/backend-go" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs"
 printf '%s\n' "$RELEASE_SOURCE_COMMIT" > "$PACKAGE_ROOT/RELEASE_SOURCE_COMMIT"
 
 copy_required_item "$REPO_ROOT/package.json" "$PACKAGE_ROOT/package.json"
 copy_required_item "$REPO_ROOT/pnpm-lock.yaml" "$PACKAGE_ROOT/pnpm-lock.yaml"
 copy_required_item "$REPO_ROOT/pnpm-workspace.yaml" "$PACKAGE_ROOT/pnpm-workspace.yaml"
-# Node backend 已归档到 migration-backup/node/final-archive/（X02）；go-only
+# Node backend 已归档到 （归档已移出仓库，git 历史可溯）（X02）；go-only
 # 发布物不再复制 backend/package.json、backend/.env.example、backend/dist。
-# copy_release_backend_package_json 函数保留仅供历史 hybrid 包对照，不再调用。
-# copy_release_backend_package_json "$REPO_ROOT/backend/package.json" "$PACKAGE_ROOT/backend/package.json"
-# copy_required_item "$REPO_ROOT/backend/.env.example" "$PACKAGE_ROOT/backend/.env.example"
-# copy_required_item "$REPO_ROOT/backend/dist" "$PACKAGE_ROOT/backend/dist"
 copy_required_item "$REPO_ROOT/frontend/package.json" "$PACKAGE_ROOT/frontend/package.json"
 copy_required_item "$REPO_ROOT/frontend/.env.example" "$PACKAGE_ROOT/frontend/.env.example"
 copy_required_item "$REPO_ROOT/frontend/dist" "$PACKAGE_ROOT/frontend/dist"
 copy_required_item "$REPO_ROOT/deploy/start.sh" "$PACKAGE_ROOT/start.sh"
 copy_required_item "$REPO_ROOT/deploy/start.ps1" "$PACKAGE_ROOT/start.ps1"
-copy_required_item "$REPO_ROOT/scripts/run-with-owner-lock.mjs" "$PACKAGE_ROOT/scripts/run-with-owner-lock.mjs"
-copy_required_item "$REPO_ROOT/scripts/validate-owner-manifest.mjs" "$PACKAGE_ROOT/scripts/validate-owner-manifest.mjs"
-copy_required_item "$REPO_ROOT/deploy/owner-manifest.json" "$PACKAGE_ROOT/deploy/owner-manifest.json"
-copy_required_item "$REPO_ROOT/deploy/owner-manifest.schema.json" "$PACKAGE_ROOT/deploy/owner-manifest.schema.json"
 copy_required_item "$REPO_ROOT/deploy/README.md" "$PACKAGE_ROOT/README.md"
 copy_required_item "$REPO_ROOT/docs/deploy" "$PACKAGE_ROOT/docs/deploy"
 
@@ -430,8 +394,8 @@ tr -d '\r' < "$PACKAGE_ROOT/start.sh" > "$TMP_START_SCRIPT"
 mv "$TMP_START_SCRIPT" "$PACKAGE_ROOT/start.sh"
 chmod +x "$PACKAGE_ROOT/start.sh"
 
-# Node backend 已归档（X02）：发布物为 go-only 形态，用 go 模式校验。
-node "$VALIDATOR_PATH" --quiet --deploy-mode=go "$PACKAGE_ROOT"
+# Node backend 已归档（X02）：发布物为 go-only 形态（校验器缺省即 go-only）。
+node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"
 
 if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   echo "==> Creating tar.gz archive"

@@ -122,9 +122,8 @@ func j3bReadbackRequiredTables() []string {
 // JSON form (the Marshal symmetric to contracts.DecodeJ3bReadbackManifest) to
 // outPath. The manifest is self-checked against contracts.ValidateJ3bReadbackManifest
 // before any byte is written, so an invalid manifest never reaches the
-// filesystem. It is the optional --j3b-readback-manifest-out output of the
-// --verify-j3b-model-check-postgres-backfill path; the verification itself is
-// unchanged.
+// filesystem. The readback-manifest CLI wiring was retired with the Node→Go
+// migration command family; the verification itself is unchanged.
 func WriteJ3bReadbackManifestFile(outPath string, report PostgresBackfillVerificationReport, options J3bReadbackManifestOptions) (string, error) {
 	manifest, err := NewPostgresJ3bReadbackManifest(report, options)
 	if err != nil {

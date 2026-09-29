@@ -10,8 +10,8 @@ import { clearStaleGoDevListeners } from './dev-stale-listener-cleanup.mjs'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = resolve(root, 'frontend')
 const backendGoRoot = resolve(root, 'backend-go')
-// Node backend（juhe-ai-backend）已物理归档到 migration-backup/node/final-archive/
-// （X02，2026-09-04）。dev 启动器为 go-only：Go gateway 直接提供管理面、公开面与
+// Node backend（juhe-ai-backend）归档已移出仓库（git 历史可溯；X02，2026-09-04
+// 全量归档）。dev 启动器为 go-only：Go gateway 直接提供管理面、公开面与
 // /v1 网关路由；dev 专属数据/日志 fallback 统一落在 gitignored 的 .local/dev/ 下，
 // 不再写回已删除的 backend/ 目录。
 const devDataRoot = resolve(root, '.local', 'dev', 'data')

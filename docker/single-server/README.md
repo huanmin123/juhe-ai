@@ -19,6 +19,7 @@ maintenance：compose --profile tool 一次性容器（幂等 CLI）
 - gateway 启动硬性要求 J3b 运行态索引 ready：新库必须先跑 `docker compose run --rm gateway -init-account-circuit-runtime-index`。
 - 管理前端由 gateway 从镜像内 `/app/frontend/dist` 提供（必须显式 `JUHE_AI_FRONTEND_DIST_PATH`，默认空不挂 SPA）；根路径 `/` 由 Caddy 301 到 `/__aisys__/`。
 - PG/Redis 不对宿主机发布端口。入口为 `https://aijh.huanmin.top`（Caddy ACME 自动续期，80 常驻 308 升级 HTTPS，443/udp HTTP/3）。
+- postgres 服务经 compose `command` 预置内存调优（2026-09-30 起部署契约）：`shared_buffers=2GB`、`effective_cache_size=4GB`（后者为优化器估值不占内存）。此前镜像默认 `shared_buffers=128MB` 在 8GB 单机上是隐性瓶颈（两库共享 128MB 缓存导致命中率 0.85~0.95、iowait ~9%、checkpoint 5 分钟一轮）。**新建实例勿删此 command**，改参数需同步本节与 `.local` 运维手册。
 - caddy 服务声明 `init: true`（2026-09-29 起强制）：healthcheck 的 busybox wget 走 https 每次探测泄漏 1 个 `ssl_client` 子进程，caddy 自身作为容器 PID 1 不回收，曾连续堆积 9470 个 zombie 导致容器 docker exec 全败（`procReady not received`，实例级损坏）；docker 内置 init（tini）负责收割，移除该字段即回归。
 - 同机共存：聚合AI公益站（juhe-pw 栈，`gyai.huanmin.top`）以 external 方式加入本栈网络并复用本栈 PG/Redis/Caddy；`Caddyfile` 为两栈共享文件（含公益站反代块），划分与修改纪律见 `.local/project-resources/prod/assets/` 服务器资产台账「同机共存」节。
 

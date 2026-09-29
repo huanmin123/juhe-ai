@@ -1,6 +1,6 @@
 # AI 账户运行态探针恢复设计
 
-> **历史截面提示。** 本文部分章节撰写于 Node 过渡期，涉及 Node 网关进程 / 多 Web 节点 / 后台探针 worker 承载的段落为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/migration/README.md` 终局声明与 `docs/architecture/架构总览.md`），不构成当前实现或操作授权。
+> **历史截面提示。** 本文部分章节撰写于 Node 过渡期，涉及 Node 网关进程 / 多 Web 节点 / 后台探针 worker 承载的段落为历史截面（Node 已于 2026-09-05 归档清零，现行后端为 Go 三项目 `backend-go/projects/{gateway,jobs,maintenance}`，见 `docs/architecture/架构总览.md` 终局声明），不构成当前实现或操作授权。
 
 ## 目标
 
