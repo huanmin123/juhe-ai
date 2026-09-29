@@ -224,10 +224,14 @@ func (s *AssetStore) FailChatAssetProcessing(assetID, ownerID, conversationID, e
 }
 
 func (s *AssetStore) incrementAssetUserUsage(tx queryer, ownerID string, quotaBytes int64, now string) error {
-	_, err := tx.Exec(s.ports.Bind(`INSERT INTO `+s.ports.Table("chat_user_asset_usage")+` (system_account_id, asset_bytes, asset_count, updated_at)
+	// DO UPDATE 右值必须表名限定：PG 对未限定的自引用列报 42702
+	// ambiguous（SQLite 容忍裸列，隔离实例测不出）；与 quota_hourly_dirty
+	// 的限定写法同款。
+	usageTable := s.ports.Table("chat_user_asset_usage")
+	_, err := tx.Exec(s.ports.Bind(`INSERT INTO `+usageTable+` (system_account_id, asset_bytes, asset_count, updated_at)
 		VALUES (?, ?, 1, ?)
 		ON CONFLICT (system_account_id) DO UPDATE SET
-			asset_bytes = asset_bytes + ?, asset_count = asset_count + 1, updated_at = ?`),
+			asset_bytes = `+usageTable+`.asset_bytes + ?, asset_count = `+usageTable+`.asset_count + 1, updated_at = ?`),
 		ownerID, quotaBytes, now, quotaBytes, now)
 	return err
 }
