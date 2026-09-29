@@ -67,6 +67,22 @@ func TestW12CBackoffTargetLockedBranches(t *testing.T) {
 	}
 }
 
+// 回归（生产 chat-retention-cleanup consecFail>30 时 backoffMs 为巨大负数）：
+// Base<<exponent 溢出 int64 为负会绕过 max 钳制，令 backoffUntil 落到
+// 过去、退避被跳过；必须翻倍循环在溢出/max 处截止。
+func TestW12CBackoffTargetNoOverflow(t *testing.T) {
+	now := time.Date(2026, 9, 29, 22, 0, 0, 0, time.UTC)
+	for _, consecFail := range []int64{1, 5, 31, 38, 40, 100} {
+		scheduler := NewScheduler(Options{Clock: newFakeClock(now), Random: func() float64 { return 1.5 }})
+		job := &jobState{spec: Spec{Name: "chat-retention-cleanup",
+			Backoff: &Backoff{Base: 30 * time.Second, Max: 10 * time.Minute}}}
+		got := scheduler.backoffTargetLocked(job, consecFail, now)
+		if got == nil || !got.After(now) || got.After(now.Add(10*time.Minute+time.Millisecond)) {
+			t.Fatalf("consecFail=%d 退避目标必须落在 (now, now+Max]，实际 %v", consecFail, got)
+		}
+	}
+}
+
 func TestW12CPassiveDelayEdgeCases(t *testing.T) {
 	rnd := func() float64 { return 0.5 }
 	// 窗口为 0 时延迟不足 1ms 应归一为 1ms。

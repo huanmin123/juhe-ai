@@ -36,6 +36,10 @@ import (
 // (Go has no portable birthtime), a missing log directory answers the
 // "没有可搜索的日志文件" contract instead of Node's opendir crash, and the
 // rg-specific failure message collapses into the generic scan-failure one.
+// 2026-09-29 (BUG-0234): file mtimes no longer clamp the time range — the
+// window is wall-clock based and file filtering is a lower-bound
+// intersection (mtime >= start), so the single active unrotated file
+// (mtime≈now) stays scannable and the default window stays 3 days wide.
 // ---------------------------------------------------------------------------
 
 const (
@@ -232,41 +236,24 @@ func parseGrepInstantMillis(value string) (int64, error) {
 	return parsed.UnixMilli(), nil
 }
 
-// normalizeGrepTimeRange mirrors normalizeGrepTimeRange.
-func (g *RuntimeLogGrep) normalizeGrepTimeRange(startAt, endAt string, files []grepLogFile) (grepTimeRange, error) {
+// normalizeGrepTimeRange mirrors normalizeGrepTimeRange post-BUG-0234:
+// wall-clock only — endAt defaults to now (capped at now), startAt defaults
+// to end-3d, a reversed range restarts at end-3d, and an oversized window
+// shrinks to end-7d. File mtimes never rewrite user input: the single
+// active file keeps mtime≈now and must not clamp the window to zero width.
+func (g *RuntimeLogGrep) normalizeGrepTimeRange(startAt, endAt string) (grepTimeRange, error) {
 	nowMs := g.now().UnixMilli()
-	var earliestFileMs, latestFileMs *int64
-	if len(files) > 0 {
-		earliest, latest := files[0].mtimeMs, files[0].mtimeMs
-		for _, file := range files[1:] {
-			earliest = min(earliest, file.mtimeMs)
-			latest = max(latest, file.mtimeMs)
-		}
-		earliestFileMs, latestFileMs = &earliest, &latest
-	}
 	adjusted := false
-	var requestedEndMs *int64
+	endMs := nowMs
 	if strings.TrimSpace(endAt) != "" {
 		parsed, err := parseGrepInstantMillis(endAt)
 		if err != nil {
 			return grepTimeRange{}, err
 		}
-		requestedEndMs = &parsed
-	}
-	endMs := nowMs
-	if requestedEndMs != nil {
-		endMs = *requestedEndMs
+		endMs = parsed
 	}
 	if endMs > nowMs {
 		endMs = nowMs
-		adjusted = true
-	}
-	if requestedEndMs == nil && latestFileMs != nil && endMs < *latestFileMs {
-		endMs = *latestFileMs
-		adjusted = true
-	}
-	if earliestFileMs != nil && endMs < *earliestFileMs {
-		endMs = *earliestFileMs
 		adjusted = true
 	}
 	var startMs int64
@@ -279,23 +266,13 @@ func (g *RuntimeLogGrep) normalizeGrepTimeRange(startAt, endAt string, files []g
 	} else {
 		startMs = endMs - grepDefaultRangeDays*grepDayMillis
 	}
-	if earliestFileMs != nil && startMs < *earliestFileMs {
-		startMs = *earliestFileMs
-		adjusted = true
-	}
 	if startMs > endMs {
 		startMs = endMs - grepDefaultRangeDays*grepDayMillis
-		if earliestFileMs != nil {
-			startMs = max(startMs, *earliestFileMs)
-		}
 		adjusted = true
 	}
 	if endMs-startMs > grepMaxRangeDays*grepDayMillis {
 		startMs = endMs - grepMaxRangeDays*grepDayMillis
 		adjusted = true
-	}
-	if earliestFileMs != nil && startMs < *earliestFileMs {
-		startMs = *earliestFileMs
 	}
 	return grepTimeRange{
 		startMs:  startMs,
@@ -306,15 +283,19 @@ func (g *RuntimeLogGrep) normalizeGrepTimeRange(startAt, endAt string, files []g
 	}, nil
 }
 
-// filterLogFilesByTimeRange mirrors filterLogFilesByTimeRange (empty and
-// out-of-window files drop out).
+// filterLogFilesByTimeRange mirrors filterLogFilesByTimeRange post-BUG-0234
+// as a lower-bound intersection: a file participates when its last write
+// time is not older than the window start (a file written before the
+// window cannot contain in-window lines). The mtime upper bound is gone —
+// an active file keeps being written so its mtime stays ≈now even when the
+// user searches a historical window. Empty files still drop out.
 func filterLogFilesByTimeRange(files []grepLogFile, timeRange grepTimeRange) []grepLogFile {
 	searchable := make([]grepLogFile, 0, len(files))
 	for _, file := range files {
 		if file.size <= 0 {
 			continue
 		}
-		if file.mtimeMs >= timeRange.startMs && file.mtimeMs <= timeRange.endMs {
+		if file.mtimeMs >= timeRange.startMs {
 			searchable = append(searchable, file)
 		}
 	}
@@ -421,7 +402,7 @@ func (g *RuntimeLogGrep) Search(ctx context.Context, options RuntimeLogGrepOptio
 			Items:            []RuntimeLogGrepItem{},
 		}
 	}
-	emptyRange, err := g.normalizeGrepTimeRange(options.StartAt, options.EndAt, nil)
+	emptyRange, err := g.normalizeGrepTimeRange(options.StartAt, options.EndAt)
 	if err != nil {
 		return RuntimeLogGrepResult{}, err
 	}
@@ -453,7 +434,7 @@ func (g *RuntimeLogGrep) Search(ctx context.Context, options RuntimeLogGrepOptio
 	if err != nil {
 		return RuntimeLogGrepResult{}, err
 	}
-	timeRange, err := g.normalizeGrepTimeRange(options.StartAt, options.EndAt, listing)
+	timeRange, err := g.normalizeGrepTimeRange(options.StartAt, options.EndAt)
 	if err != nil {
 		return RuntimeLogGrepResult{}, err
 	}
@@ -828,7 +809,7 @@ func (g *RuntimeLogGrep) Options() (RuntimeLogGrepRuntime, error) {
 		}
 		files = listing
 	}
-	timeRange, err := g.normalizeGrepTimeRange("", "", files)
+	timeRange, err := g.normalizeGrepTimeRange("", "")
 	if err != nil {
 		return RuntimeLogGrepRuntime{}, err
 	}

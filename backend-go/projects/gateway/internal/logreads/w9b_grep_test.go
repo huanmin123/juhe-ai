@@ -65,12 +65,19 @@ func TestW9BGrepSearchFileScenarios(t *testing.T) {
 	if err != nil || result.Available || !strings.Contains(result.Message, "文件日志已显式关闭") {
 		t.Fatalf("未启用=%+v err=%v", result, err)
 	}
-	// 时间范围过滤（早于全部文件 mtime）。
+	// BUG-0234 后：时钟拨早（窗口早于全部文件 mtime）不再触发 mtime 抬升或
+	// 文件排除——窗口保持墙钟 [now-3d, now]，mtime 晚于窗口起点的文件仍参与扫描。
 	old := now.Add(-90 * 24 * time.Hour)
 	oldGrep := w9bGrep(dir, old)
 	result, err = oldGrep.Search(context.Background(), RuntimeLogGrepOptions{Keywords: []string{"alpha"}})
-	if err != nil || !result.Available || !strings.Contains(result.Message, "已自动调整") {
+	if err != nil || !result.Available || strings.Contains(result.Message, "已自动调整") {
 		t.Fatalf("范围外=%+v err=%v", result, err)
+	}
+	if result.ScannedFileCount != 2 || len(result.Items) != 2 {
+		t.Fatalf("早期窗口仍须扫描全部文件=%+v", result)
+	}
+	if want := old.Add(-grepDefaultRangeDays * 24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z"); result.StartAt != want {
+		t.Fatalf("窗口起点=%s want=%s", result.StartAt, want)
 	}
 	// 目录不存在 → 无文件。
 	missing := w9bGrep(filepath.Join(dir, "missing"), now)
@@ -168,13 +175,12 @@ func TestW9BGrepScanLogFilesTruncationArms(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "req.log"), []byte(builder.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// BUG-0234 后：窗口不再被文件 mtime 抬升（无调整提示），全部正常时
+	// Message 为空属正常；请求行形态文件参与扫描不 panic，且长行与非请求行
+	// 命中仍须可见（该行缺 event 字段，是否被自排除取决于实现，故只断言非空）。
 	result, err = grep.Search(context.Background(), RuntimeLogGrepOptions{Keywords: []string{"alpha"}})
-	if err != nil {
-		t.Fatalf("请求行=%v", err)
-	}
-	// 命中行数取决于 isRuntimeLogSearchRequestLine；只验证不 panic 且有消息。
-	if result.Message == "" {
-		t.Fatal("必须返回提示消息")
+	if err != nil || !result.Available || len(result.Items) == 0 {
+		t.Fatalf("请求行=%+v err=%v", result, err)
 	}
 }
 

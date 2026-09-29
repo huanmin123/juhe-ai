@@ -19,8 +19,8 @@ import (
 // grepPinnedNow pins the grep window clock.
 var grepPinnedNow = time.Date(2026, 6, 3, 13, 0, 0, 0, time.UTC)
 
-
 var mustChangeFalse = false
+
 func pinGrepClock(env *readsTestEnv) {
 	env.grep.Now = func() time.Time { return grepPinnedNow }
 }
@@ -75,6 +75,23 @@ func TestRuntimeLogGrepFamily(t *testing.T) {
 	if wantString(t, options, "earliestFileTime") == "" {
 		t.Fatalf("grep-options earliestFileTime missing: %v", options)
 	}
+	// BUG-0234: the default window is wall-clock [now-3d, now]; the fixture
+	// files' mtime (pinnedNow-30min, standing in for the single active file
+	// with mtime≈now) must not clamp it to zero width.
+	defaultStart, err := time.Parse(time.RFC3339Nano, wantString(t, options, "defaultStartAt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultEnd, err := time.Parse(time.RFC3339Nano, wantString(t, options, "defaultEndAt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := defaultEnd.Sub(grepPinnedNow).Milliseconds(); diff < -1000 || diff > 1000 {
+		t.Fatalf("defaultEndAt must stay pinnedNow: %v", defaultEnd)
+	}
+	if diff := grepPinnedNow.Add(-grepDefaultRangeDays * 24 * time.Hour).Sub(defaultStart).Milliseconds(); diff < -1000 || diff > 1000 {
+		t.Fatalf("defaultStartAt must stay pinnedNow-3d: %v", defaultStart)
+	}
 
 	// grep: all keywords must match (case-insensitive), the grep API's own
 	// request lines never match, newest first.
@@ -122,6 +139,22 @@ func TestRuntimeLogGrepFamily(t *testing.T) {
 	}
 	if strings.Join(ids, ",") != strings.Join(wantIDs, ",") {
 		t.Fatalf("grep single keyword order: %v", ids)
+	}
+
+	// BUG-0234: an endAt earlier than the fixture files' mtime
+	// (pinnedNow-30min) must not exclude them — the mtime upper bound is
+	// gone, and mtime >= start keeps both files scannable for the
+	// historical window.
+	code, payload = env.do(t, http.MethodGet, "/__aisys__/api/runtime-logs/grep?keywords=payment&endAt="+grepPinnedNow.Add(-time.Hour).Format(time.RFC3339), "")
+	if code != http.StatusOK {
+		t.Fatalf("grep early endAt status: %d %v", code, payload)
+	}
+	data = wantData(t, payload)
+	if !wantBool(t, data, "available") || wantFloat(t, data, "scannedFileCount") != 2 {
+		t.Fatalf("grep early endAt must still scan both files: %v", data)
+	}
+	if items := wantItems(t, data); len(items) != 3 {
+		t.Fatalf("grep early endAt matches: %v", items)
 	}
 
 	// The self-referencing search request line carries level 50 -> "error"

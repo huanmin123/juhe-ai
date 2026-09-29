@@ -699,13 +699,16 @@ func (s *ChatStore) cleanupExpiredAssets(ctx context.Context, now string, limit 
 	}
 	updateArgs := []any{claimID, now, now}
 	updateArgs = append(updateArgs, stringSliceToAny(assetIDs)...)
+	// IN 列表必须用未编号的 `?` 序列让外层 Bind 统一编号：BindIn 已产出 $n，
+	// 再经 Bind/全局改写层会把 SET 的 `?` 从 $1 重编并与 IN 列表撞号，服务端
+	// 参数计数与传参不符即 pgx "mismatched param and argument count"。
 	updated, err := execChangedQ(ctx, tx, s.DB.Bind(fmt.Sprintf(`
       UPDATE %s
       SET cleanup_status = 'claimed', cleanup_claim_id = ?, cleanup_claimed_at = ?,
           cleanup_attempt_count = cleanup_attempt_count + 1, cleanup_retry_at = NULL,
           cleanup_error_code = NULL, updated_at = ?
       WHERE id IN (%s)
-	`, s.table("chat_assets"), s.DB.BindIn(len(assetIDs)))), updateArgs...)
+	`, s.table("chat_assets"), placeholderList(len(assetIDs)))), updateArgs...)
 	if err != nil {
 		return outcome, err
 	}

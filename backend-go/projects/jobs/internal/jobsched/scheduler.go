@@ -1138,10 +1138,16 @@ func (s *Scheduler) backoffTargetLocked(job *jobState, consecFail int64, now tim
 	if exponent < 0 {
 		exponent = 0
 	}
-	if exponent > 30 {
-		exponent = 30
+	// Base<<exponent 在大 consecFail 时溢出 int64 为负（如 Base=30s、
+	// exponent=30），且负值绕过下方 max 钳制，令 backoffUntil 落到过去、
+	// 退避被跳过；改为翻倍循环，达到 max 或临近溢出即截止。
+	ceiling := backoff.Base
+	for shifts := int64(0); shifts < exponent; shifts++ {
+		if ceiling >= max || ceiling > (time.Duration(1)<<62) {
+			break
+		}
+		ceiling <<= 1
 	}
-	ceiling := backoff.Base << uint(exponent)
 	if ceiling > max {
 		ceiling = max
 	}

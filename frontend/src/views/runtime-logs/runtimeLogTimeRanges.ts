@@ -26,21 +26,16 @@ export function defaultGrepRange(runtime?: RuntimeLogGrepRuntime): RuntimeLogDay
 
 export function normalizeGrepRange(value: RuntimeLogDayjsRange | undefined, runtime?: RuntimeLogGrepRuntime): RuntimeLogDayjsRange {
   const now = dayjs()
-  const earliest = runtime?.earliestFileTime === undefined
-    ? now.subtract(runtime?.fileRetentionDays ?? 30, 'day')
-    : requireRuntimeLogDateTime(runtime.earliestFileTime, 'earliestFileTime')
+  const defaultRangeDays = runtime?.defaultRangeDays ?? 3
   const maxRangeDays = runtime?.maxRangeDays ?? 7
   let end = value?.[1]?.isValid() ? value[1] : now
   if (end.isAfter(now)) end = now
-  if (end.isBefore(earliest)) end = earliest
 
-  let start = value?.[0]?.isValid() ? value[0] : end.subtract(runtime?.defaultRangeDays ?? 3, 'day')
-  if (start.isBefore(earliest)) start = earliest
-  if (start.isAfter(end)) start = end.subtract(runtime?.defaultRangeDays ?? 3, 'day')
+  let start = value?.[0]?.isValid() ? value[0] : end.subtract(defaultRangeDays, 'day')
+  if (start.isAfter(end)) start = end.subtract(defaultRangeDays, 'day')
   if (end.diff(start, 'millisecond') > maxRangeDays * 24 * 60 * 60 * 1000) {
     start = end.subtract(maxRangeDays, 'day')
   }
-  if (start.isBefore(earliest)) start = earliest
   return [start, end]
 }
 
@@ -52,9 +47,7 @@ export function isDefaultGrepRange(range: RuntimeLogDayjsRange | undefined, runt
 }
 
 export function isGrepDateDisabled(current: Dayjs, runtime?: RuntimeLogGrepRuntime): boolean {
-  const earliest = (runtime?.earliestFileTime === undefined
-    ? dayjs().subtract(runtime?.fileRetentionDays ?? 30, 'day')
-    : requireRuntimeLogDateTime(runtime.earliestFileTime, 'earliestFileTime')).startOf('day')
+  const earliest = dayjs().subtract(runtime?.fileRetentionDays ?? 30, 'day').startOf('day')
   return current.isBefore(earliest, 'day') || current.isAfter(dayjs(), 'day')
 }
 

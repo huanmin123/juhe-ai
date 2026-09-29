@@ -208,6 +208,10 @@ services:
     image: caddy:2-alpine
     container_name: juhe-ai-caddy
     restart: unless-stopped
+    # healthcheck 的 busybox wget 走 https 每次泄漏 1 个 ssl_client 子进程（busybox 固有行为），
+    # caddy 自身作为 PID 1 不回收（2026-09-29 生产曾堆积 9470 个 zombie 致 docker exec 全败）；
+    # init: true 注入 docker 内置 init（tini）负责收割。
+    init: true
     depends_on:
       gateway:
         condition: service_healthy

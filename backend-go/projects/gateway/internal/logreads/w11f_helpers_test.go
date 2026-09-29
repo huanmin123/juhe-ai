@@ -270,47 +270,38 @@ func TestW11FGrepTimeRange(t *testing.T) {
 	g := NewRuntimeLogGrep(RuntimeLogGrepConfig{FileEnabled: true, Directory: t.TempDir()})
 	now := time.Date(2026, 6, 3, 13, 0, 0, 0, time.UTC)
 	g.Now = func() time.Time { return now }
-	old := now.Add(-48 * time.Hour).UnixMilli()
 	older := now.Add(-96 * time.Hour).UnixMilli()
-	files := []grepLogFile{{mtimeMs: older}, {mtimeMs: old}}
 
 	// 非法 endAt / startAt。
-	if _, err := g.normalizeGrepTimeRange("", "zzz", files); err == nil {
+	if _, err := g.normalizeGrepTimeRange("", "zzz"); err == nil {
 		t.Fatal("bad endAt must fail")
 	}
-	if _, err := g.normalizeGrepTimeRange("zzz", "", files); err == nil {
+	if _, err := g.normalizeGrepTimeRange("zzz", ""); err == nil {
 		t.Fatal("bad startAt must fail")
 	}
 	// 未来 endAt → 钳制到 now。
-	timeRange, err := g.normalizeGrepTimeRange("", now.Add(time.Hour).Format(time.RFC3339), files)
+	timeRange, err := g.normalizeGrepTimeRange("", now.Add(time.Hour).Format(time.RFC3339))
 	if err != nil || !timeRange.adjusted || timeRange.endMs != now.UnixMilli() {
 		t.Fatalf("future endAt = %+v/%v", timeRange, err)
 	}
-	// 显式 endAt 早于最早文件 → 提到最早文件。
-	timeRange, err = g.normalizeGrepTimeRange("", time.UnixMilli(older).Add(-2*time.Hour).Format(time.RFC3339), files)
-	if err != nil || timeRange.endMs != older {
+	// BUG-0234: 显式 endAt 早于一切保留文件 mtime 也不再被抬升（mtime 不改写用户输入）。
+	earlyEnd := older - 2*60*60*1000
+	timeRange, err = g.normalizeGrepTimeRange("", time.UnixMilli(earlyEnd).Format(time.RFC3339))
+	if err != nil || timeRange.endMs != earlyEnd {
 		t.Fatalf("early endAt = %+v/%v", timeRange, err)
 	}
-	// 默认 endAt 早于最新文件 → 提到最新文件。
-	lateFiles := []grepLogFile{{mtimeMs: now.Add(-1 * time.Hour).UnixMilli()}}
-	g.Now = func() time.Time { return now.Add(-48 * time.Hour) }
-	timeRange, err = g.normalizeGrepTimeRange("", "", lateFiles)
-	if err != nil || timeRange.endMs != lateFiles[0].mtimeMs {
-		t.Fatalf("default endAt bump = %+v/%v", timeRange, err)
-	}
-	g.Now = func() time.Time { return now }
-	// startAt 显式早于最早文件 → 提到最早文件。
-	timeRange, err = g.normalizeGrepTimeRange(time.UnixMilli(older-86400000*10).Format(time.RFC3339), "", files)
-	if err != nil || timeRange.startMs != older {
-		t.Fatalf("early startAt = %+v/%v", timeRange, err)
+	// BUG-0234: startAt 缺省 = endAt - 3 天（默认窗口由墙钟计算，与文件 mtime 无关）。
+	timeRange, err = g.normalizeGrepTimeRange("", time.UnixMilli(older).Format(time.RFC3339))
+	if err != nil || timeRange.endMs != older || timeRange.startMs != older-grepDefaultRangeDays*grepDayMillis {
+		t.Fatalf("default start = %+v/%v", timeRange, err)
 	}
 	// startAt 晚于 endAt → 重算。
-	timeRange, err = g.normalizeGrepTimeRange(now.Add(-1*time.Hour).Format(time.RFC3339), now.Add(-2*time.Hour).Format(time.RFC3339), nil)
+	timeRange, err = g.normalizeGrepTimeRange(now.Add(-1*time.Hour).Format(time.RFC3339), now.Add(-2*time.Hour).Format(time.RFC3339))
 	if err != nil || !timeRange.adjusted || timeRange.startMs > timeRange.endMs {
 		t.Fatalf("reversed start = %+v/%v", timeRange, err)
 	}
 	// 超过 7 天 → 收缩。
-	timeRange, err = g.normalizeGrepTimeRange(now.Add(-30*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), nil)
+	timeRange, err = g.normalizeGrepTimeRange(now.Add(-30*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339))
 	if err != nil || timeRange.endMs-timeRange.startMs > grepMaxRangeDays*grepDayMillis {
 		t.Fatalf("oversized range = %+v/%v", timeRange, err)
 	}
