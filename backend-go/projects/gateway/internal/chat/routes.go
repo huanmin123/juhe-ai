@@ -117,6 +117,11 @@ type Deps struct {
 	AccountOptionsLookup ChatAccountOptionsLookup
 	// ObjectStore persists chat asset objects (local chat assets root).
 	ObjectStore ObjectStore
+	// ImageDownloadProxy resolves the HTTP client for downloading
+	// upstream-returned image URLs（BUG-0232 关联：上游 /v1/images/edits 只回
+	// imgen.x.ai 临时链接，国内直连不可达——按生图绑定账户的 proxy_profile
+	// 出站）。nil 端口或返回 nil 保持直连默认。
+	ImageDownloadProxy func(accountID string) *http.Client
 	// ImageProcessor decodes/encodes uploads and previews (sharp port).
 	ImageProcessor ImageProcessor
 	// ImageObservation schedules and awaits image semantic observations.

@@ -1595,22 +1595,22 @@ func TestW13BChatInternalToolRegistry(t *testing.T) {
 }
 
 func TestW13BImageGenerationTransportValidation(t *testing.T) {
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: " ", Prompt: "p"}, "key", ""); err == nil {
+	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: " ", Prompt: "p"}, "key", "", nil); err == nil {
 		t.Fatalf("空模型应报错")
 	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: " "}, "key", ""); err == nil {
+	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: " "}, "key", "", nil); err == nil {
 		t.Fatalf("空提示词应报错")
 	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Size: "bad"}, "key", ""); err == nil {
+	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Size: "bad"}, "key", "", nil); err == nil {
 		t.Fatalf("非法尺寸应报错")
 	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Quality: "ultra"}, "key", ""); err == nil {
+	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", Quality: "ultra"}, "key", "", nil); err == nil {
 		t.Fatalf("非法质量应报错")
 	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", OutputFormat: "bmp"}, "key", ""); err == nil {
+	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", OutputFormat: "bmp"}, "key", "", nil); err == nil {
 		t.Fatalf("非法输出格式应报错")
 	}
-	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", References: []ChatImageEditReference{{}}}, "key", ""); err == nil {
+	if _, err := GenerateChatImage(context.Background(), nil, ChatImageGenerationRequest{Model: "m", Prompt: "p", References: []ChatImageEditReference{{}}}, "key", "", nil); err == nil {
 		t.Fatalf("引用限制应校验")
 	}
 	if err := validateChatImageEditReferenceLimits(nil); err == nil {

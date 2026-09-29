@@ -124,7 +124,10 @@ func (e *ChatImageGenerationRequestError) Error() string { return e.Message }
 
 // GenerateChatImage mirrors generateChatImage: builds the request, dispatches
 // through the executor, decodes b64_json and verifies the payload.
-func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input ChatImageGenerationRequest, apiKey, traceID string) (ChatImageGenerationToolResult, error) {
+// downloadClient 为 url 回退下载的 HTTP 客户端（BUG-0232 关联：上游 grok
+// /v1/images/edits 只回 imgen.x.ai 临时链接，需按绑定账户的 proxy_profile
+// 出站）；nil 使用直连默认。
+func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input ChatImageGenerationRequest, apiKey, traceID string, downloadClient *http.Client) (ChatImageGenerationToolResult, error) {
 	result := ChatImageGenerationToolResult{}
 	model := trimSpace(input.Model)
 	prompt := trimSpace(input.Prompt)
@@ -243,7 +246,7 @@ func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input Ch
 			return result, errors.New("图像生成响应缺少 b64_json 或可下载的 url")
 		}
 		var err error
-		decoded, err = downloadGeneratedImage(ctx, urlValues[0])
+		decoded, err = downloadGeneratedImage(ctx, downloadClient, urlValues[0])
 		if err != nil {
 			return result, err
 		}
@@ -331,13 +334,16 @@ var chatImageURLDownloadClient = &http.Client{Timeout: 60 * time.Second}
 
 // downloadGeneratedImage GETs an upstream image URL with a bounded read; the
 // bytes rejoin the same MIME sniffing / dimension parsing path as b64_json.
-func downloadGeneratedImage(ctx requestContext, rawURL string) ([]byte, error) {
+func downloadGeneratedImage(ctx requestContext, client *http.Client, rawURL string) ([]byte, error) {
+	if client == nil {
+		client = chatImageURLDownloadClient
+	}
 	trimmed := trimSpace(rawURL)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, trimmed, nil)
 	if err != nil {
 		return nil, fmt.Errorf("图像生成响应 url 无效: %w", err)
 	}
-	response, err := chatImageURLDownloadClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("图像生成 url 下载失败: %w", err)
 	}

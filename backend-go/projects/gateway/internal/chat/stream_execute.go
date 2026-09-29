@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -190,7 +191,13 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				if runCtx.Context != nil {
 					ctx = runCtx.Context
 				}
-				generated, err := GenerateChatImage(ctx, bindings.ImageExecutor, request, input.apiKey.Secret, input.traceID)
+				// url 回退下载按绑定账户的 proxy_profile 出站（端口 nil 或
+				// 账户未绑代理时返回 nil，走直连默认）。
+				var downloadClient *http.Client
+				if rt.deps.ImageDownloadProxy != nil {
+					downloadClient = rt.deps.ImageDownloadProxy(bindings.ImageAccountID)
+				}
+				generated, err := GenerateChatImage(ctx, bindings.ImageExecutor, request, input.apiKey.Secret, input.traceID, downloadClient)
 				if err != nil {
 					return ChatImageGenerationToolResult{}, err
 				}
