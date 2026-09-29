@@ -1,7 +1,7 @@
 package pricing
 
 // Golden vectors derived from the archived Node sources under
-// migration-backup/node/final-archive/backend/src/modules/model-pricing/
+// Node 归档 modules/model-pricing/
 // (archive moved out of the repo; retrievable from git history):
 //   - lookup: model-pricing.service.ts (findProviderModelPricing closure,
 //     shutdown handling) + provider-driver.registry.ts (candidates, alias,

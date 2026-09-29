@@ -5,7 +5,7 @@
 // disconnect, malformed SSE), and deterministic bodies for golden replay.
 //
 // The wire contract mirrors the archived Node regression mocks
-// (migration-backup/node/final-archive/backend/src/scripts/regression/
+// (Node 归档 scripts/regression/
 // chat-gateway-mock-ai-regression.ts and
 // gateway-quality-priority-real-sample-mock-ai-regression.ts; archive moved
 // out of the repo, retrievable from git history):

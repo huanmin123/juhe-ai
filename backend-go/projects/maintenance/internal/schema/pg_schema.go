@@ -146,7 +146,7 @@ type PGSeedResult struct {
 // with the well-known default password admin/admin, so the first login must
 // hit the must_change_password 403 gate instead of relying on a manual
 // rename step). Contract adjudication 2026-09-28: the Node archive
-// (migration-backup/node/final-archive; archive moved out of the repo,
+// (Node archive moved out of the repo,
 // retrievable from git history) carries no seed source at all — the
 // postgres-seed-defaults.ts this port's header cites does not exist there —
 // so there is no Node seed value to mirror. The Node generic create path

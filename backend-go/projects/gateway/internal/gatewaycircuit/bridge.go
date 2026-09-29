@@ -1134,7 +1134,7 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 		// observations; do not retain a pending item, do not record
 		// dispatch/ledger revisions and do not schedule retries.（对齐归档热修，
 		// 归档已移出仓库，git 历史可溯：
-		// migration-backup/node/final-archive/backend/src/modules/gateway/runtime/
+		// Node 归档 modules/gateway/runtime/
 		// account-circuit-control-plane-bridge.ts persistWithRetry；jobs 侧
 		// internal/circuitstore 同键读面注释互指，跨 module 不可 import。）
 		if persisted.Status == CASAccountNotFound {

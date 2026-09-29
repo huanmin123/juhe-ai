@@ -2,7 +2,7 @@ package openaicompatbridge
 
 // OpenAI（chat_completions / responses）-> Anthropic Messages 桥接请求构造的
 // 补充覆盖测试。语义对照 Node 归档实现 openai-anthropic-bridge.ts
-// （migration-backup/node/final-archive，归档已移出仓库，git 历史可溯），
+// （Node 归档，已移出仓库，git 历史可溯），
 // 错误码与默认值逐项断言。
 
 import (

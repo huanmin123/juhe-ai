@@ -1,6 +1,6 @@
 // Package schemasnapshot ports the read-only PostgreSQL schema snapshot
 // operations tool from the archived Node backend
-// (migration-backup/node/final-archive/backend/src/scripts/operations/postgres-schema-snapshot.ts;
+// (Node 归档 scripts/operations/postgres-schema-snapshot.ts;
 // archive moved out of the repo, retrievable from git history).
 //
 // The output JSON contract (object shapes, field names, digest computation)

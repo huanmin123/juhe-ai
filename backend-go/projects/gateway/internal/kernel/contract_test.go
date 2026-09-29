@@ -20,7 +20,7 @@ import (
 // The golden values in this file were produced against the locked Node
 // dependency chain (compression@1.8.1 + negotiator@0.6.4 + compressible@2.0.18
 // + vary@1.1.2 + body-parser@1.20.5 + type-is@1.6.18) and the archived Node
-// sources under migration-backup/node/final-archive/backend/src/shared
+// sources under Node 归档 shared
 // (archive moved out of the repo, retrievable from git history).
 
 // TestNegotiateAcceptEncodingGolden locks negotiator@0.6.4's encoding choice

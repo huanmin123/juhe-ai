@@ -1343,34 +1343,34 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 // through the reveal endpoint. Masking of the list surface stays on the stored
 // credential_mask column.
 type EditBasicDetail struct {
-	ID                        string       `json:"id"`
-	ConfigRevision            int64        `json:"configRevision"`
-	SystemAccountID           *string      `json:"systemAccountId,omitempty"`
-	OwnerSystemAccountID      string       `json:"ownerSystemAccountId"`
-	ProviderCode              string       `json:"providerCode"`
-	ProviderProtocolProfileID string       `json:"providerProtocolProfileId"`
-	ProtocolCode              string       `json:"protocolCode"`
-	ProtocolVersion           string       `json:"protocolVersion"`
-	Name                      string       `json:"name"`
-	Notes                     *string      `json:"notes,omitempty"`
-	Type                      string       `json:"type"`
-	Credentials               Credentials  `json:"credentials"`
+	ID                        string      `json:"id"`
+	ConfigRevision            int64       `json:"configRevision"`
+	SystemAccountID           *string     `json:"systemAccountId,omitempty"`
+	OwnerSystemAccountID      string      `json:"ownerSystemAccountId"`
+	ProviderCode              string      `json:"providerCode"`
+	ProviderProtocolProfileID string      `json:"providerProtocolProfileId"`
+	ProtocolCode              string      `json:"protocolCode"`
+	ProtocolVersion           string      `json:"protocolVersion"`
+	Name                      string      `json:"name"`
+	Notes                     *string     `json:"notes,omitempty"`
+	Type                      string      `json:"type"`
+	Credentials               Credentials `json:"credentials"`
 	// CredentialsMasked marks that at least one sensitive credential key was
 	// replaced with the cipher placeholder (BUG-0238 契约 1): the client uses
 	// the flag to trigger the reveal endpoint on the first eye toggle.
-	CredentialsMasked        bool         `json:"credentialsMasked"`
-	Status                   string       `json:"status"`
-	ConcurrencyLimit          int          `json:"concurrencyLimit"`
-	Priority                  int          `json:"priority"`
-	SuperPriorityEnabled      bool         `json:"superPriorityEnabled"`
-	FallbackEnabled           bool         `json:"fallbackEnabled"`
-	ClientCompatibility       string       `json:"clientCompatibility"`
-	SupportedModels           []string     `json:"supportedModels"`
-	Tags                      []TagSummary `json:"tags"`
-	HealthCheckModel          string       `json:"healthCheckModel"`
-	HealthCheckEndpointMode   string       `json:"healthCheckEndpointMode"`
-	BoundGroupID              *string      `json:"boundGroupId,omitempty"`
-	BoundGroupName            *string      `json:"boundGroupName,omitempty"`
+	CredentialsMasked       bool         `json:"credentialsMasked"`
+	Status                  string       `json:"status"`
+	ConcurrencyLimit        int          `json:"concurrencyLimit"`
+	Priority                int          `json:"priority"`
+	SuperPriorityEnabled    bool         `json:"superPriorityEnabled"`
+	FallbackEnabled         bool         `json:"fallbackEnabled"`
+	ClientCompatibility     string       `json:"clientCompatibility"`
+	SupportedModels         []string     `json:"supportedModels"`
+	Tags                    []TagSummary `json:"tags"`
+	HealthCheckModel        string       `json:"healthCheckModel"`
+	HealthCheckEndpointMode string       `json:"healthCheckEndpointMode"`
+	BoundGroupID            *string      `json:"boundGroupId,omitempty"`
+	BoundGroupName          *string      `json:"boundGroupName,omitempty"`
 }
 
 // Credentials mirrors AccountCredentials: an open record of credential fields.
@@ -1734,12 +1734,12 @@ func (s *Store) findCredentialRecordRow(ctx context.Context, accountID string, a
 // 2）：账户身份字段加 projectEditableCredentials 明文投影（含全部 api_keys
 // 池真实值）。
 type RevealedCredentials struct {
-	ID                  string      `json:"id"`
-	Name                string      `json:"name"`
-	Type                string      `json:"type"`
-	ConfigRevision      int64       `json:"configRevision"`
-	OwnerSystemAccountID string     `json:"ownerSystemAccountId"`
-	Credentials         Credentials `json:"credentials"`
+	ID                   string      `json:"id"`
+	Name                 string      `json:"name"`
+	Type                 string      `json:"type"`
+	ConfigRevision       int64       `json:"configRevision"`
+	OwnerSystemAccountID string      `json:"ownerSystemAccountId"`
+	Credentials          Credentials `json:"credentials"`
 }
 
 // FindRevealableCredentials（BUG-0238 契约 2）按需返回完整明文可编辑凭据
@@ -1757,11 +1757,11 @@ func (s *Store) FindRevealableCredentials(ctx context.Context, accountID string,
 		return nil, err
 	}
 	return &RevealedCredentials{
-		ID:                  row.id,
-		Name:                row.name,
-		Type:                row.accountType,
-		ConfigRevision:      row.configRevision,
+		ID:                   row.id,
+		Name:                 row.name,
+		Type:                 row.accountType,
+		ConfigRevision:       row.configRevision,
 		OwnerSystemAccountID: row.systemAccountID,
-		Credentials:         projectEditableCredentials(row.accountType, credentials),
+		Credentials:          projectEditableCredentials(row.accountType, credentials),
 	}, nil
 }

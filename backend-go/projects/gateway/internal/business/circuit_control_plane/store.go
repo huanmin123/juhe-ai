@@ -571,7 +571,7 @@ func (s *Store) CompareAndSetIncident(ctx context.Context, in IncidentMutation) 
 		return IncidentResult{}, err
 	}
 	defer tx.Rollback()
-	// Node hotfix（migration-backup/node/final-archive/backend/src/storage/
+	// Node hotfix（Node 归档 storage/
 	// account-circuit-control-plane.repository.ts compareAndSetAccountCircuitIncidentInClient，
 	// 归档已移出仓库，git 历史可溯）：
 	// 物理清理会在逻辑删除后级联 circuit ledger，锁行 SELECT 需补 deleted_at

@@ -3,7 +3,7 @@ package main
 // Regression matrix for the ported archived Node hotfix
 // "accountBalanceGoOwnerHealth ownerMode blue/green semantics". The cases
 // mirror the archived regression script
-// (migration-backup/node/final-archive/backend/src/scripts/regression/
+// (Node 归档 scripts/regression/
 // account-balance-jobs-health-regression.ts; archive moved out of the repo,
 // retrievable from git history) and extend it with the drain
 // row of the ownerMode matrix: active keeps the owner-flag contract,

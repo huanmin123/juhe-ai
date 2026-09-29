@@ -56,4 +56,3 @@ go_tests_tmp.txt
 vendor
 
 /.codegraph/
-migration-backup

@@ -12,7 +12,7 @@
 
 ### 部署模式（go-only 终态）
 
-发布包是 go-only 形态，只有一条启动路径：`juhe-ai-go-gateway` 以 `JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口，`juhe-ai-go-jobs` 承载 F1/F2。Node Web/API 已归档，不再提供 `hybrid` / `node` 部署模式；`JUHE_AI_DEPLOY_MODE` 出现历史值时启动脚本会拒绝启动，唯一合法值是 `go`（缺省即 go）。
+发布包是 go-only 形态，只有一条启动路径：`juhe-ai-go-gateway` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口（系统 API 与 `/v1` 网关链是 gateway 常驻能力，无环境变量开关），`juhe-ai-go-jobs` 承载 F1/F2。Node Web/API 已归档，不再提供 `hybrid` / `node` 部署模式；`JUHE_AI_DEPLOY_MODE` 出现历史值时启动脚本会拒绝启动，唯一合法值是 `go`（缺省即 go）。
 
 可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。
 

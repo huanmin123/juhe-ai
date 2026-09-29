@@ -15,7 +15,7 @@ func sqlNullInt64(value int64) sql.NullInt64 { return sql.NullInt64{Int64: value
 func sqlNullInt64NonValid() sql.NullInt64 { return sql.NullInt64{} }
 
 // BUG-0174 M-8：账户创建事务后链对齐（Node 归档，已移出仓库，git 历史可溯：
-// migration-backup/node/final-archive/backend/src/storage/repositories.ts
+// Node 归档 storage/repositories.ts
 // createAccountInClientAsync）。覆盖：创建上限断言（:2342,2470-2508）、
 // dispatch revision 家族推进（:2412-2417）、J1 snapshot outbox 与
 // input_versions 版本行（:2418-2432，探活候选 SQL 硬 JOIN 该表）、提交后

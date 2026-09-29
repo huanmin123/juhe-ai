@@ -1,6 +1,6 @@
 // The juhe-ai-maintenance local mockdata commands (--mockdata /
 // --verify-mockdata-coverage): the Go port of the Node maintenance script
-// (migration-backup-1/node/final-archive/backend/src/scripts/maintenance/mockdata/
+// (Node 归档 scripts/maintenance/mockdata/
 // cli.ts; archive moved out of the repo, retrievable from git history),
 // scoped to the local SQLite layout.
 //

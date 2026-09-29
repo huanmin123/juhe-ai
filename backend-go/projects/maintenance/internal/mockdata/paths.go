@@ -10,7 +10,7 @@
 //   - 重复执行幂等：每次先按固定清理标识删除上一批数据，再重建。
 //
 // 依据：docs/functions/Mockdata造数设计.md（清理标识、覆盖点与验证点）与
-// migration-backup-1/node/final-archive/backend/src/scripts/maintenance/mockdata/
+// Node 归档 scripts/maintenance/mockdata/
 // （Node 实现的只读参照物，归档已移出仓库，git 历史可溯）。
 package mockdata
 

@@ -3,7 +3,7 @@ package proxyprofiles
 // Manual proxy test family (POST /__aisys__/api/proxies/{id}/test).
 //
 // Behavior baseline: the archived Node manual route
-// migration-backup/node/j3a-proxy-latency-manual-control-cutover-20260826/
+// Node 归档的 j3a cutover 记录（已移出仓库，git 历史可溯）
 // proxies-manual-test.route.ts (+ proxy-test.contract.ts; archive moved out
 // of the repo, retrievable from git history) with the frozen
 // external report schema (J3a migration contract 11.2) and the current Go

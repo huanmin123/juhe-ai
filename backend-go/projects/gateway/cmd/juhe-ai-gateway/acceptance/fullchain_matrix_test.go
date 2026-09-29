@@ -861,7 +861,7 @@ func fullchainF5(t *testing.T, f *fullchainFixture) {
 	t.Run("usage_attribution", func(t *testing.T) {
 		f.requireUsageChain(t)
 		// 归因裁决（E2E-FINDING #12，2026-09-17）：Node 归档
-		// （migration-backup-1/node/final-archive/backend/src/modules/gateway/usage/，
+		// （Node 归档 modules/gateway/usage/，
 		// 归档已移出仓库，git 历史可溯）
 		// records.ts:324 失败分支兜底 failureAttribution ?? 'account_upstream'，流式
 		// !completed 终态不传归因 → 兜底 account_upstream；Go finalize.go 是精确

@@ -101,7 +101,7 @@ func TestW14KPgGateBootstrapChecks(t *testing.T) {
 // CollectSnapshot 的 $1::text[] catalog 查询（relations/columns/constraints/
 // indexes/functions/triggers/views/partitions/sequences）调用 collectRows 时
 // 未传 schemaNames 参数，而 Node 原件（归档已移出仓库，git 历史可溯）
-// migration-backup/node/final-archive/backend/src/scripts/operations/
+// Node 归档 scripts/operations/
 // postgres-schema-snapshot.ts 每条查询都携带 [schemaNames]。路由式 fake 驱动
 // 不校验参数个数，w12g 未能暴露；真实 PostgreSQL 上快照必然以
 // "expected 1 arguments, got 0" 失败（exit 1）。该包修复后，本用例会自动从

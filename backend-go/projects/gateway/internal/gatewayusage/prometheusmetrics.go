@@ -12,7 +12,7 @@ import (
 )
 
 // Prometheus HTTP / gateway metrics family, line-by-line port of
-// migration-backup/node/final-archive/backend/src/shared/prometheus-metrics.ts
+// Node 归档 shared/prometheus-metrics.ts
 // (archive moved out of the repo; retrievable from git history).
 // Labels stay bounded (route group / method / status class / outcome /
 // failure scope); no paths, identifiers or error text are ever attached.

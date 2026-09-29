@@ -219,6 +219,58 @@ func TestAcceptanceManagementBackbone(t *testing.T) {
 			t.Fatalf("account plaintext credential leaked: %#v", detailPayload)
 		}
 
+		// BUG-0238 契约 1：明细敏感键渲染统一密文占位 + credentialsMasked。
+		detailData := data(detailPayload)
+		detailCredentials, _ := detailData["credentials"].(map[string]any)
+		if detailCredentials["api_key"] != "__ENCRYPTED__" || detailData["credentialsMasked"] != true {
+			t.Fatalf("account detail must mask sensitive credentials: %#v", detailPayload)
+		}
+
+		// BUG-0238 契约 2/3：reveal 端点按需取回明文，审计异步落库可查询。
+		_, revealed := client.do(http.MethodPost, "/__aisys__/api/accounts/"+accountID+"/reveal-credentials", nil, wantStatus(http.StatusOK))
+		if credentials, _ := data(revealed)["credentials"].(map[string]any); credentials["api_key"] != "sk-acceptance-"+runTag {
+			t.Fatalf("reveal must return the plaintext api_key: %#v", revealed)
+		}
+		logDeadline := time.Now().Add(15 * time.Second)
+		revealLogged := false
+		for time.Now().Before(logDeadline) {
+			_, listed := client.do(http.MethodGet, "/__aisys__/api/operation-logs", nil, wantStatus(http.StatusOK))
+			for _, raw := range anySlice(data(listed), "items") {
+				entry, _ := raw.(map[string]any)
+				if entry == nil {
+					continue
+				}
+				if str(entry["module"]) == "accounts" && str(entry["action"]) == "reveal_credentials" {
+					revealLogged = true
+					break
+				}
+			}
+			if revealLogged {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		if !revealLogged {
+			t.Fatalf("operation logs never persisted the accounts.reveal_credentials entry")
+		}
+
+		// BUG-0238 契约 4：PATCH 提交占位 api_key + 无关字段（notes）后
+		// reveal 取值仍为原始明文（存储未污染）；revision 随无关字段推进。
+		_, placeholderPatched := client.do(http.MethodPatch, "/__aisys__/api/accounts/"+accountID, map[string]any{
+			"expectedConfigRevision": revisionValue,
+			"notes":                  "X05 占位防回写",
+			"credentials":            map[string]any{"api_key": "__ENCRYPTED__", "base_url": "https://api.openai.com/v1"},
+		}, wantStatus(http.StatusOK))
+		placeholderRevision, _ := data(placeholderPatched)["configRevision"].(float64)
+		if placeholderRevision <= revisionValue {
+			t.Fatalf("placeholder patch must still commit the unrelated field: %#v", placeholderPatched)
+		}
+		_, revealedAgain := client.do(http.MethodPost, "/__aisys__/api/accounts/"+accountID+"/reveal-credentials", nil, wantStatus(http.StatusOK))
+		if credentials, _ := data(revealedAgain)["credentials"].(map[string]any); credentials["api_key"] != "sk-acceptance-"+runTag {
+			t.Fatalf("placeholder PATCH must not overwrite the stored credential: %#v", revealedAgain)
+		}
+		revisionValue = placeholderRevision
+
 		// 编辑：expectedConfigRevision 乐观锁。
 		_, patched := client.do(http.MethodPatch, "/__aisys__/api/accounts/"+accountID, map[string]any{
 			"expectedConfigRevision": revisionValue, "notes": "X05 编辑",

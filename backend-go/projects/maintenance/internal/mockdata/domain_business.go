@@ -28,7 +28,7 @@ import (
 // 该域函数与它的私有辅助，其他域不得在此写入。
 //
 // 样本清单移植自 Node 归档实现（归档已移出仓库，git 历史可溯）
-// migration-backup-1/node/final-archive/backend/src/scripts/maintenance/mockdata/
+// Node 归档 scripts/maintenance/mockdata/
 // （business/{foundation,extras}.ts 与 core/{accounts,api-keys,
 // authorizations,teams,group-writes,availability-schedules,quota-limits}.ts）
 // 的语义，不逐行翻译：Node 通过仓储写入的行这里按同一批列直接落库。
