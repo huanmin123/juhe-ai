@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// BUG-0231：ON CONFLICT DO UPDATE 的右值自引用必须表名限定——PG 对未限定
+// BUG-0232：ON CONFLICT DO UPDATE 的右值自引用必须表名限定——PG 对未限定
 // 裸列报 42702 ambiguous（SQLite 容忍，隔离实例测不出）。本测试固化两种方言
 // 下的最终语句形状，防止回归。
 type recordingQueryer struct {
