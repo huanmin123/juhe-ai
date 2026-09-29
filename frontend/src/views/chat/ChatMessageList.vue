@@ -193,6 +193,7 @@ async function copyDiagnostic(message: ChatMessage): Promise<void> {
   try { await writeTextToClipboard(content); antdMessage.success('诊断信息已复制') } catch { antdMessage.error('复制失败，请稍后重试') }
 }
 function showStatusText(message: ChatMessage): boolean { return message.status !== 'completed' && !(message.role === 'assistant' && message.status === 'streaming') }
+// 失败轮重试（契约 §10.4）：仅 failed 消息展示「重试本条」，重发由父组件执行；canceled/streaming 不显示。
 function runtimeFor(message: ChatMessage): RunningTurn | undefined {
   const runtime = props.runtimeTurn
   if (!runtime || message.role !== 'assistant') return undefined

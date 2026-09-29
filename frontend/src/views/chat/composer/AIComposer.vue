@@ -101,12 +101,14 @@
           :bordered="false"
           placeholder="选择账户"
           aria-label="选择 AI 账户"
+          show-search
+          :filter-option="filterSelectOptionByLabel"
           :style="{ width: `${accountControlWidths.triggerWidth}px` }"
           :dropdown-match-select-width="accountControlWidths.popupWidth"
           @dropdown-visible-change="handleAccountDropdownVisibleChange"
           @update:value="emit('update:accountValue', $event)"
         />
-        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled || !accountValue" size="small" :bordered="false" aria-label="选择模型" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @dropdown-visible-change="handleModelDropdownVisibleChange" @update:value="emit('update:modelValue', $event)" />
+        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled || !accountValue" size="small" :bordered="false" aria-label="选择模型" show-search :filter-option="filterSelectOptionByLabel" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @dropdown-visible-change="handleModelDropdownVisibleChange" @update:value="emit('update:modelValue', $event)" />
         <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled || !accountValue" allow-clear size="small" :bordered="false" aria-label="思考级别" :style="{ width: `${reasoningControlWidths.triggerWidth}px` }" :dropdown-match-select-width="reasoningControlWidths.popupWidth" @update:value="handleReasoningEffortUpdate" />
         <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled || !accountValue" allow-clear size="small" :bordered="false" aria-label="服务等级" :style="{ width: `${serviceTierControlWidths.triggerWidth}px` }" :dropdown-match-select-width="serviceTierControlWidths.popupWidth" @update:value="handleServiceTierUpdate" />
       </div>
@@ -330,6 +332,14 @@ const imageToolDisabledReason = computed(() => props.disabled
         ? '图片处理策略正在加载'
       : '')
 const selectedModelOption = computed(() => props.modelCapabilities?.id === props.modelValue ? props.modelCapabilities : undefined)
+// 账户/模型下拉输入过滤（工具体系设计 §10.4）：按选项 label（账户名/模型名）
+// 模糊包含匹配，大小写不敏感；只过滤下拉内候选展示，不改变选项集，也不影响
+// chatComposerControlWidths 宽度自适应与 a-select 原生键盘导航。
+function filterSelectOptionByLabel(input: string, option: { label?: unknown }): boolean {
+  const query = input.trim().toLowerCase()
+  if (!query) return true
+  return String(option.label ?? '').toLowerCase().includes(query)
+}
 const accountSelectOptions = computed(() => props.accountOptions.map((item) => ({ label: item.name, value: item.id, title: item.name })))
 const accountControlWidths = computed(() => chatComposerControlWidths('account', props.accountOptions.find((item) => item.id === props.accountValue)?.name, accountSelectOptions.value.map((item) => item.label)))
 const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.name, value: item.id, title: item.name })))

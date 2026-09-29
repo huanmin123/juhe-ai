@@ -175,7 +175,7 @@ import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
-import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapability, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatConversationToolCapability, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 
 import { beginLatestTurnEdit, beginLatestTurnRetry, isDefinitiveChatHttpRejection, removeInvalidatedGeneratedAssetsFromDraft, resolveChatReconciliationNotice, resolveChatSubmitFailure, restoreChatMessagesAfterRejectedReplacement } from './chatTurnEditing'
 import {
@@ -189,6 +189,7 @@ import {
 import { createChatConversationSummaryRefresher, mergeChatConversationSummary } from './chatConversationSummary'
 import { canSubmitChatTurn, chatTurnLimitMessage, isChatTurnLimitReached, markChatConversationTurnLimitReached } from './chatTurnLimit'
 import { isCurrentChatConversationLoad } from './chatConversationLoad'
+import { loadConversationPreferences, saveConversationPreferences } from './chatConversationPreferences'
 import { resolveChatStopTarget, shouldRebuildChatStopTarget, stopActiveChatGeneration } from './chatStopGeneration'
 import {
   clearChatPendingSubmission,
@@ -617,7 +618,8 @@ function handleConversationDrawerAfterOpenChange(open: boolean): void {
   void createConversationDirectly()
 }
 // 免弹窗直进（契约 AI问答会话账户唯一绑定设计 §6）：点击新建即创建空会话
-// 并进入，会话内完成「选账户 → 选模型 → 发送」。
+// 并进入，会话内完成「选账户 → 选模型 → 发送」；进入后后台应用上次会话
+// 偏好（工具体系设计 §10.6），不阻塞会话进入。
 async function createConversationDirectly(): Promise<void> {
   if (creatingConversation.value) return
   creatingConversation.value = true
@@ -625,13 +627,124 @@ async function createConversationDirectly(): Promise<void> {
     const item = await chatApi.createConversation()
     conversations.value.unshift(item)
     void selectConversation(item.id).then((selected) => {
-      if (selected) conversationDrawerOpen.value = false
+      if (selected) {
+        conversationDrawerOpen.value = false
+        void applyConversationPreferences(item)
+      }
     })
   } catch (error) {
     message.error(extractApiErrorMessage(error, '新建会话失败，请稍后重试'))
   } finally {
     creatingConversation.value = false
   }
+}
+
+// 新建会话偏好复用（§10.6）：读本地偏好逐项校验后应用——账户须在可派发列表
+// 内、绑定须在最新候选内（账户+模型 / 账户精确匹配）、模型须在会话模型列表
+// 内（模型为本地选定，随下次发送随请求体生效）。失效项静默跳过（最多
+// console.debug），任一 PATCH 失败静默跳过该项继续；全部失效不应用；至少一
+// 项应用成功时轻提示「已按上次配置初始化」。偏好不存在时行为与现状一致。
+async function applyConversationPreferences(created: ChatConversation): Promise<void> {
+  const preferences = loadConversationPreferences()
+  if (!preferences) return
+  const conversationId = created.id
+  const findConversation = () => conversations.value.find((item) => item.id === conversationId)
+  let applied = false
+  if (preferences.accountId) {
+    const preferredAccountId = preferences.accountId
+    try {
+      const accountOptions = accounts.value.length ? accounts.value : await chatApi.listChatAccounts()
+      // 用户已手动选定账户（PATCH 已生效）时整体放弃偏好应用——偏好模型与
+      // 绑定均基于偏好账户，换户后无意义。
+      const touched = findConversation()?.bindAccountId
+      if (touched) {
+        console.debug('[chat-preferences] 用户已手动选择账户，跳过偏好应用')
+        return
+      }
+      if (accountOptions.some((item) => item.id === preferredAccountId)) {
+        const saved = await conversationMutationQueue.enqueue(conversationId, () => chatApi.updateConversation(conversationId, { accountId: preferredAccountId }))
+        replaceConversation(saved)
+        applied = true
+      } else {
+        console.debug('[chat-preferences] 偏好账户不在可派发列表，跳过', preferredAccountId)
+      }
+    } catch (error) {
+      console.debug('[chat-preferences] 应用偏好账户失败，跳过', error)
+    }
+  }
+  if (preferences.model) {
+    const preferredModel = preferences.model
+    try {
+      const items = await modelLoadCoordinator.load({ conversationId })
+      if (items.some((item) => item.id === preferredModel)) {
+        // 用户已手动选定模型时不覆盖（后台应用与手选的竞争守卫）。
+        if (!disposed && selectedConversationId.value === conversationId && !selectedModel.value) {
+          models.value = [...items]
+          selectedModel.value = preferredModel
+        }
+        applied = true
+      } else {
+        console.debug('[chat-preferences] 偏好模型不在会话模型列表，跳过', preferredModel)
+      }
+    } catch (error) {
+      console.debug('[chat-preferences] 应用偏好模型失败，跳过', error)
+    }
+  }
+  try {
+    const capabilities = await chatApi.getToolBindings(conversationId)
+    if (preferences.searchBinding) {
+      // 用户已在弹窗手动保存搜索绑定时跳过（刚拉取的候选状态已反映）。
+      const search = capabilities.tools.find((tool) => tool.id === 'web_search')
+      if (search?.bound) {
+        console.debug('[chat-preferences] 用户已手动设置搜索绑定，跳过')
+      } else {
+      const matched = search?.candidates?.find((item) => item.accountId === preferences.searchBinding?.accountId && item.modelId === preferences.searchBinding?.modelId)
+      if (matched) {
+        try {
+          const saved = await conversationMutationQueue.enqueue(conversationId, () => chatApi.updateConversation(conversationId, { searchBinding: { accountId: matched.accountId, modelId: matched.modelId } }))
+          replaceConversation(saved)
+          applied = true
+        } catch (error) {
+          console.debug('[chat-preferences] 应用搜索绑定失败，跳过', error)
+        }
+      } else {
+        console.debug('[chat-preferences] 偏好搜索绑定不在候选内，跳过', preferences.searchBinding)
+      }
+      }
+    }
+    if (preferences.imageBinding) {
+      // 用户已在弹窗手动保存生图绑定时跳过（刚拉取的候选状态已反映）。
+      const image = capabilities.tools.find((tool) => tool.id === 'generate_image')
+      if (image?.bound) {
+        console.debug('[chat-preferences] 用户已手动设置生图绑定，跳过')
+      } else {
+      const matched = image?.candidates?.find((item) => item.accountId === preferences.imageBinding?.accountId)
+      if (matched) {
+        // 生图生效模型 = defaultImageModel：偏好值仍在该账户候选内则沿用偏好，
+        // 否则取命中候选的模型（与弹窗/账户联动同款规则）。
+        const candidateModelIds = (image?.candidates ?? []).filter((item) => item.accountId === matched.accountId).map((item) => item.modelId)
+        const preferredImageModel = preferences.defaultImageModel
+        const nextImageModel = (preferredImageModel && candidateModelIds.includes(preferredImageModel) ? preferredImageModel : matched.modelId) as ChatConversation['defaultImageModel']
+        const currentDefault = findConversation()?.defaultImageModel
+        try {
+          const saved = await conversationMutationQueue.enqueue(conversationId, () => chatApi.updateConversation(conversationId, {
+            imageBinding: { accountId: matched.accountId },
+            ...(nextImageModel !== currentDefault ? { defaultImageModel: nextImageModel } : {})
+          }))
+          replaceConversation(saved)
+          applied = true
+        } catch (error) {
+          console.debug('[chat-preferences] 应用生图绑定失败，跳过', error)
+        }
+      } else {
+        console.debug('[chat-preferences] 偏好生图绑定不在候选内，跳过', preferences.imageBinding)
+      }
+      }
+    }
+  } catch (error) {
+    console.debug('[chat-preferences] 读取绑定候选失败，跳过绑定应用', error)
+  }
+  if (applied && !disposed) message.success('已按上次配置初始化')
 }
 // 账户候选（设计 §5）：用户授权范围内全部可派发账户，打开下拉时刷新。
 async function loadAccounts(): Promise<void> {
@@ -647,7 +760,7 @@ async function loadAccounts(): Promise<void> {
 }
 // 设置/切换会话绑定账户（设计 §6）：PATCH accountId；服务端在当前 lastModel
 // 不再可路由时联动清空模型（响应 lastModel 为空），此时清空本地模型选择并
-// 失效模型目录缓存，用户重选模型。
+// 失效模型目录缓存，模型默认值与绑定补全由 applyAccountSwitchDefaults 后台联动。
 async function changeAccount(accountId?: string): Promise<void> {
   const conversation = selectedConversation.value
   if (!accountId || !conversation || conversation.archived || conversationActionLoading.value) return
@@ -663,17 +776,97 @@ async function changeAccount(accountId?: string): Promise<void> {
     selectedModelCapabilities.value = undefined
     if (conversation.lastModel && !updated.lastModel) {
       selectedModel.value = undefined
-      message.info('当前模型在新账户不可用，请重新选择模型')
     } else if (updated.lastModel) {
       void loadSelectedModelCapabilities(updated.lastModel)
-      message.success(updated.bindAccountName ? `已切换到账户「${updated.bindAccountName}」` : '账户已更新')
-    } else {
-      message.success(updated.bindAccountName ? `已切换到账户「${updated.bindAccountName}」` : '账户已更新')
     }
+    message.success(updated.bindAccountName ? `已切换到账户「${updated.bindAccountName}」` : '账户已更新')
+    saveConversationPreferences({ accountId: updated.bindAccountId ?? null })
+    // 账户联动默认（工具体系设计 §10.5）：lastModel 为空自动取首项、绑定未设
+    // 置/失效时同账户优先补全；后台串行执行，任一步失败仅轻提示，不阻断、
+    // 不回滚账户切换。
+    void applyAccountSwitchDefaults(conversation, updated)
   } catch (error) {
     message.error(extractApiErrorMessage(error, '账户切换失败'))
   } finally {
     conversationActionLoading.value = false
+  }
+}
+
+// 账户切换后的静默联动（§10.5）：① lastModel 为空时从新账户模型列表取首项
+// 选定（模型随下次发送随请求体生效），原模型被清且列表为空时维持「请重新
+// 选择」提示；② web_search/generate_image 绑定未设置或已失效时，取同账户第
+// 一个候选自动 PATCH（生图模型与 defaultImageModel 不同时一并更新，与弹窗
+// 保存逻辑同款）；已绑定且有效的不覆盖，同账户无候选跳过（保留 binding_required
+// 引导）。
+async function applyAccountSwitchDefaults(previous: ChatConversation, updated: ChatConversation): Promise<void> {
+  const conversationId = updated.id
+  if (!updated.lastModel) {
+    try {
+      const items = await modelLoadCoordinator.load({ conversationId })
+      if (disposed || selectedConversationId.value !== conversationId) return
+      const first = items[0]
+      if (first) {
+        models.value = [...items]
+        // 用户在后台加载期间已手动选定模型时不覆盖。
+        if (!selectedModel.value) {
+          selectedModel.value = first.id
+          message.success(`模型已自动切换为 ${first.name}`)
+        }
+      } else if (previous.lastModel && !disposed) {
+        message.info('当前模型在新账户不可用，请重新选择模型')
+      }
+    } catch (error) {
+      if (!isAbortError(error) && !disposed && selectedConversationId.value === conversationId) {
+        message.warning(previous.lastModel ? '当前模型在新账户不可用，请重新选择模型' : '自动选择模型失败，请手动选择模型')
+      }
+    }
+  }
+  const accountId = updated.bindAccountId
+  if (!accountId || disposed) return
+  let capabilities: ChatConversationToolCapabilities
+  try {
+    capabilities = await chatApi.getToolBindings(conversationId)
+  } catch (error) {
+    if (!disposed) message.warning(extractApiErrorMessage(error, '工具绑定状态读取失败，未自动补全绑定'))
+    return
+  }
+  let latest = conversations.value.find((item) => item.id === conversationId) ?? updated
+  for (const tool of capabilities.tools) {
+    if (tool.id !== 'web_search' && tool.id !== 'generate_image') continue
+    if (tool.bound && tool.valid) continue
+    const candidate = (tool.candidates ?? []).find((item) => item.accountId === accountId)
+    if (!candidate) continue
+    try {
+      const saved = await conversationMutationQueue.enqueue(conversationId, () => chatApi.updateConversation(conversationId, tool.id === 'generate_image'
+        ? {
+            imageBinding: { accountId: candidate.accountId },
+            ...(candidate.modelId !== latest.defaultImageModel ? { defaultImageModel: candidate.modelId as ChatConversation['defaultImageModel'] } : {})
+          }
+        : { searchBinding: { accountId: candidate.accountId, modelId: candidate.modelId } }))
+      replaceConversation(saved)
+      latest = saved
+      recordToolBindingPreference(tool.id, saved)
+    } catch (error) {
+      if (!disposed) message.warning(extractApiErrorMessage(error, tool.id === 'generate_image' ? '图片生成绑定自动设置失败' : '网页搜索绑定自动设置失败'))
+    }
+  }
+}
+
+// 绑定保存/联动成功后的偏好 upsert（§10.6：绑定、模型变更成功即更新）。
+function recordToolBindingPreference(toolId: string, conversation: ChatConversation): void {
+  if (toolId === 'generate_image') {
+    saveConversationPreferences({
+      imageBinding: conversation.imageAccountId ? { accountId: conversation.imageAccountId } : null,
+      defaultImageModel: conversation.defaultImageModel ?? null
+    })
+    return
+  }
+  if (toolId === 'web_search') {
+    saveConversationPreferences({
+      searchBinding: conversation.searchAccountId && conversation.searchModelId
+        ? { accountId: conversation.searchAccountId, modelId: conversation.searchModelId }
+        : null
+    })
   }
 }
 function openToolBindingDialog(toolId: string): void {
@@ -683,6 +876,7 @@ function openToolBindingDialog(toolId: string): void {
 }
 async function handleToolBindingSaved(updated: ChatConversation): Promise<void> {
   replaceConversation(updated)
+  recordToolBindingPreference(toolBindingToolId.value, updated)
   // 详情弹窗开着时同步刷新（工具能力状态随绑定变化）。
   if (detailsDialogOpen.value) {
     try {
@@ -1255,6 +1449,7 @@ async function saveDefaultImageModel(): Promise<void> {
   try {
     const updated = await conversationMutationQueue.enqueue(conversation.id, () => chatApi.updateConversation(conversation.id, { defaultImageModel }))
     replaceConversation(updated)
+    saveConversationPreferences({ defaultImageModel: updated.defaultImageModel ?? null })
     message.success('默认图像模型已更新')
   } catch (error) {
     const current = conversations.value.find((item) => item.id === conversation.id)
@@ -1306,6 +1501,7 @@ async function retryLatestTurn(messageItem: ChatMessage): Promise<void> {
   editingTurn.value = { ...candidate, replaceTurnId: candidate.replaceTurnId, displacedDraft, originalMessages, source: 'retry', phase: 'editing' }
   await sendMessage(candidate.content, displacedDraft, candidate.contentBlocks)
 }
+
 function beginTurnEdit(messageItem: ChatMessage): void {
   if (generating.value || submissionBlocked.value || editingTurn.value) return
   const candidate = beginLatestTurnEdit(messages.value, messageItem.id)
@@ -1769,6 +1965,8 @@ function isAbortError(error: unknown): boolean {
 }
 watch(selectedModel, (modelId) => {
   resetModelControls()
+  // 模型选定即更新会话偏好（§10.6）；存储不可用时静默跳过。
+  if (modelId) saveConversationPreferences({ model: modelId })
   if (!modelId) {
     selectedModelCapabilities.value = undefined
     modelCapabilitiesLoading.value = false

@@ -18,6 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -45,14 +47,17 @@ func chatWebSearchResultBytesConfig() int {
 	return chatEnvIntOrDefault("JUHE_AI_CHAT_WEB_SEARCH_RESULT_BYTES", 4*1024, 512, 64*1024)
 }
 
-// chatWebSearchProgress 是子代理过程增量（契约 §6.1/§10.3）：stage 推进
+// chatWebSearchProgress 是子代理过程增量（契约 §6.1/§6.2/§10.3）：stage 推进
 // reasoning → searching → answering；actions 为已发生的搜索动作可读描述；
-// reasoning/answer 为累积文本（progress 限长，完整内容仅在回喂 result 内）。
+// reasoning/answer 为累积文本（progress 限长，完整内容仅在回喂 result 内）；
+// stageTimings 为各已完成阶段的耗时毫秒映射（在阶段切换点结算，进行中阶段
+// 不计入），随过程快照下发并随终态最后一次快照落库。
 type chatWebSearchProgress struct {
-	Stage     string   `json:"stage"`
-	Reasoning string   `json:"reasoning,omitempty"`
-	Actions   []string `json:"actions,omitempty"`
-	Answer    string   `json:"answer,omitempty"`
+	Stage        string           `json:"stage"`
+	Reasoning    string           `json:"reasoning,omitempty"`
+	Actions      []string         `json:"actions,omitempty"`
+	Answer       string           `json:"answer,omitempty"`
+	StageTimings map[string]int64 `json:"stageTimings,omitempty"`
 }
 
 // executeChatWebSearch 执行 web_search 子调用并组装 tool result：
@@ -133,6 +138,20 @@ func consumeWebSearchStream(reader io.Reader, progress func(chatWebSearchProgres
 	state := chatWebSearchProgress{Stage: "reasoning"}
 	emittedStage := ""
 	lastEmit := time.Time{}
+	// 阶段耗时计时（契约 §6.2）：首个阶段起点为子调用流开始；progress 快照按
+	// 值下发，累积 map 维护在此局部状态，emit 时深拷贝携带。
+	activeStage := state.Stage
+	stageStart := time.Now()
+	stageTimings := map[string]int64{}
+	settleStageTiming := func(next string) {
+		if next == activeStage {
+			return
+		}
+		// 多轮搜索会重复进入同一阶段（如 searching），耗时按阶段名累积。
+		stageTimings[activeStage] += time.Since(stageStart).Milliseconds()
+		stageStart = time.Now()
+		activeStage = next
+	}
 	emit := func(force bool) {
 		if progress == nil {
 			return
@@ -147,6 +166,7 @@ func consumeWebSearchStream(reader io.Reader, progress func(chatWebSearchProgres
 			Answer:    truncateUTF8Bytes(state.Answer, 1024),
 		}
 		snapshot.Actions = append([]string{}, state.Actions...)
+		snapshot.StageTimings = copyWebSearchStageTimings(stageTimings)
 		emittedStage = state.Stage
 		progress(snapshot)
 	}
@@ -207,6 +227,8 @@ func consumeWebSearchStream(reader io.Reader, progress func(chatWebSearchProgres
 				completed = map[string]any{}
 			}
 		}
+		// 阶段推进结算上一阶段耗时（先结算再下发，切换首发快照即携带）。
+		settleStageTiming(state.Stage)
 		// 阶段切换即时下发（不等节流窗口）。
 		if state.Stage != emittedStage && progress != nil {
 			emit(true)
@@ -215,8 +237,22 @@ func consumeWebSearchStream(reader io.Reader, progress func(chatWebSearchProgres
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("搜索子调用流读取失败: %w", err)
 	}
+	// 流结束：工具调用整体完成，进行中的阶段（通常 answering）此刻已是已完成
+	// 阶段，终态快照结算其耗时（契约 §6.2/§10.3「回答 Ns」可达）。
+	settleStageTiming("")
 	emit(true)
 	return completed, nil
+}
+
+// copyWebSearchStageTimings 深拷贝阶段耗时映射：progress 快照按值下发，
+// 防止后续累积修改穿透已下发/已落库的快照。
+func copyWebSearchStageTimings(timings map[string]int64) map[string]int64 {
+	if timings == nil {
+		return nil
+	}
+	copied := make(map[string]int64, len(timings))
+	maps.Copy(copied, timings)
+	return copied
 }
 
 // appendWebSearchAction 从 web_search_call 的 action 提取可读动作并去重追加：
@@ -297,7 +333,8 @@ func extractWebSearchResponse(payload map[string]any) (string, []string) {
 }
 
 // collectWebSearchCitations 收集 output[].content[].annotations[].url_citation
-// 的 url 字段（去重、按首次出现顺序）。
+// 的 url 字段（去重、按首次出现顺序；命中来源黑名单的搜索页/跳转链 URL 不进
+// 清单，契约 §6.2）。
 func collectWebSearchCitations(payload map[string]any) []string {
 	seen := map[string]bool{}
 	sources := []string{}
@@ -326,7 +363,7 @@ func collectWebSearchCitations(payload map[string]any) []string {
 					continue
 				}
 				url, _ := annotation["url"].(string)
-				if url == "" || seen[url] {
+				if url == "" || seen[url] || isWebSearchBlockedSource(url) {
 					continue
 				}
 				seen[url] = true
@@ -335,6 +372,47 @@ func collectWebSearchCitations(payload map[string]any) []string {
 		}
 	}
 	return sources
+}
+
+// webSearchSourceBlocklist 来源提取保守黑名单（契约 §6.2）：搜索引擎自身
+// 搜索页与已知跳转包装（host+路径模式命中）。这类 URL 不是内容来源，进清单
+// 只制造噪音；过滤只作用于来源清单（sources/sourceCount），不影响回喂主
+// 模型的原始结果。
+var webSearchSourceBlocklist = []struct{ host, pathPrefix string }{
+	{"baidu.com", "/link"},
+	{"google.com", "/search"},
+	{"google.com", "/url"},
+	{"bing.com", "/search"},
+	{"bing.com", "/ck"},
+	{"duckduckgo.com", "/l"},
+}
+
+// isWebSearchBlockedSource 判断 URL 是否命中来源黑名单：解析后的 host 剥离
+// www./m. 等子域前缀并忽略 scheme/端口，host 等于域名或以其为后缀的子域
+//（域名边界匹配，避免 bing.com 子串误伤 rubbing.com/webbing.com 类域名），
+// 且路径按段前缀命中（path 等于前缀或以前缀加 / 开头，避免 /link 误伤
+// /linkedin 类路径）。
+func isWebSearchBlockedSource(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	for _, prefix := range []string{"www.", "m."} {
+		for strings.HasPrefix(host, prefix) {
+			host = strings.TrimPrefix(host, prefix)
+		}
+	}
+	path := parsed.Path
+	for _, rule := range webSearchSourceBlocklist {
+		if host != rule.host && !strings.HasSuffix(host, "."+rule.host) {
+			continue
+		}
+		if path == rule.pathPrefix || strings.HasPrefix(path, rule.pathPrefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // formatWebSearchToolResult 组装并裁剪回喂主模型的 tool result：正文在前、

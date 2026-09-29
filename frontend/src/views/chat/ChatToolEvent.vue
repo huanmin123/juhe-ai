@@ -2,13 +2,13 @@
   <div ref="processRoot" class="chat-process">
     <template v-for="tool in process.toolGroups" :key="tool.key">
       <details v-if="tool.summaries.length || tool.duplicateCount || tool.progress" class="chat-process-group" :open="isExpanded(tool)">
-        <summary @click="rememberToggleIntent(tool, $event)">
+        <summary @click.prevent="toggleExpanded(tool)">
           <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
-          <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status) }}<template v-if="tool.statusDetail"> · {{ tool.statusDetail }}</template><template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template></span>
+          <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status) }}<template v-if="tool.statusDetail"> · {{ tool.statusDetail }}</template><template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template><template v-if="terminalStageTimingsLabel(tool)"> · {{ terminalStageTimingsLabel(tool) }}</template></span>
         </summary>
         <div class="chat-process-details" :class="{ 'is-streaming': isActiveToolGroup(tool) }">
           <div v-if="tool.progress" class="chat-subagent">
-            <p class="chat-subagent-stage">{{ progressStageLabel(tool) }}</p>
+            <p class="chat-subagent-stage">{{ progressStageLabel(tool) }}<template v-if="isRunningToolGroup(tool)"> · 已等待 {{ waitedSeconds }}s</template></p>
             <ChatMarkdown v-if="tool.progress.reasoning" class="chat-subagent-reasoning" :content="tool.progress.reasoning" />
             <ul v-if="tool.progress.actions?.length" class="chat-subagent-actions">
               <li v-for="action in tool.progress.actions" :key="action">{{ action }}</li>
@@ -16,9 +16,19 @@
             <p v-if="tool.progress.answer" class="chat-subagent-answer">{{ tool.progress.answer }}</p>
           </div>
           <ul v-if="tool.summaries.length">
-            <li v-for="summary in tool.summaries" :key="summary">
-              <a v-if="isSourceLink(summary)" :href="summary" target="_blank" rel="noopener noreferrer">{{ summary }}</a>
+            <li v-for="summary in sourceSummariesOf(tool).texts" :key="summary">
+              <a v-if="isSourceSummaryLink(summary)" :href="summary" target="_blank" rel="noopener noreferrer">{{ summary }}</a>
               <template v-else>{{ summary }}</template>
+            </li>
+            <li v-for="domain in sourceSummariesOf(tool).domains" :key="domain.host">
+              <button type="button" class="chat-source-domain" :aria-expanded="isSourceDomainExpanded(tool, domain)" @click="toggleSourceDomain(tool, domain)">
+                {{ domain.host }}<template v-if="domain.count > 1"> ×{{ domain.count }}</template>
+              </button>
+              <ul v-if="isSourceDomainExpanded(tool, domain)" class="chat-source-domain-urls">
+                <li v-for="url in domain.urls" :key="url">
+                  <a :href="url" target="_blank" rel="noopener noreferrer">{{ url }}</a>
+                </li>
+              </ul>
             </li>
           </ul>
           <p v-if="tool.duplicateCount">相同条件重复 {{ tool.duplicateCount }} 次</p>
@@ -37,33 +47,91 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import type { ChatMessage, ChatToolStatus } from '@/types/domain/chat'
+import { serverDateTimeTimestamp } from '@/shared/formatters'
 import ChatMarkdown from './ChatMarkdown.vue'
-import { projectChatMessageProcess, type ChatToolProcessGroup } from './chatMessageProcess'
+import { aggregateSourceSummaries, isSourceSummaryLink, projectChatMessageProcess, type ChatSourceDomainGroup, type ChatSourceSummaries, type ChatToolProgress, type ChatToolProcessGroup } from './chatMessageProcess'
 
 const props = defineProps<{ message: ChatMessage }>()
 const process = computed(() => projectChatMessageProcess(props.message))
 const processRoot = ref<HTMLElement>()
+// 手动折叠意图（契约 §10.4）：Map 存于 ref，Vue 3 对集合代理后 set/delete 触发重渲染；
+// details 的 :open 完全受控于 isExpanded，click.prevent 接管原生 toggle，消除流式重渲染竞态。
 const manuallyToggled = ref(new Map<string, boolean>())
+const expandedSourceDomains = ref(new Set<string>())
 
 function isActiveToolGroup(tool: ChatToolProcessGroup): boolean {
   return tool.status === 'started' || tool.status === 'updated' || tool.status === 'failed'
+}
+function isRunningToolGroup(tool: ChatToolProcessGroup): boolean {
+  return tool.status === 'started' || tool.status === 'updated'
+}
+function isTerminalToolGroup(tool: ChatToolProcessGroup): boolean {
+  return tool.status === 'completed' || tool.status === 'failed' || tool.status === 'canceled'
 }
 function isExpanded(tool: ChatToolProcessGroup): boolean {
   const manual = manuallyToggled.value.get(tool.key)
   return manual ?? isActiveToolGroup(tool)
 }
-function rememberToggleIntent(tool: ChatToolProcessGroup, event: MouseEvent): void {
-  const details = (event.currentTarget as HTMLElement).parentElement as HTMLDetailsElement | null
-  if (details) manuallyToggled.value.set(tool.key, !details.open)
+function toggleExpanded(tool: ChatToolProcessGroup): void {
+  manuallyToggled.value.set(tool.key, !isExpanded(tool))
 }
 // 子代理过程区阶段提示（契约 §10.3）：执行中按阶段展示；终态/历史回看为
 // 持久化快照，用中性标题，避免完成的轮次仍显示「…中」。
 function progressStageLabel(tool: ChatToolProcessGroup): string {
-  if (tool.status === 'completed' || tool.status === 'canceled' || tool.status === 'failed') return '子代理执行过程'
+  if (isTerminalToolGroup(tool)) return '子代理执行过程'
   const stage = tool.progress?.stage
   return ({ reasoning: '子代理思考中…', searching: '子代理联网搜索中…', answering: '子代理汇总结果中…', generating: '正在生成图片…' }[stage ?? '']) ?? '子代理执行中…'
+}
+
+// 来源主域聚合（契约 §10.4）：同 hostname 的 URL 聚合一行，非链接文本与解析失败 URL 原样单列。
+const sourceSummariesByKey = computed(() => new Map(process.value.toolGroups.map((tool) => [tool.key, aggregateSourceSummaries(tool.summaries)])))
+function sourceSummariesOf(tool: ChatToolProcessGroup): ChatSourceSummaries {
+  return sourceSummariesByKey.value.get(tool.key) ?? { texts: tool.summaries, domains: [] }
+}
+function sourceDomainKey(tool: ChatToolProcessGroup, domain: ChatSourceDomainGroup): string {
+  return `${tool.key}\n${domain.host}`
+}
+function isSourceDomainExpanded(tool: ChatToolProcessGroup, domain: ChatSourceDomainGroup): boolean {
+  return expandedSourceDomains.value.has(sourceDomainKey(tool, domain))
+}
+function toggleSourceDomain(tool: ChatToolProcessGroup, domain: ChatSourceDomainGroup): void {
+  const key = sourceDomainKey(tool, domain)
+  if (expandedSourceDomains.value.has(key)) expandedSourceDomains.value.delete(key)
+  else expandedSourceDomains.value.add(key)
+}
+
+// 阶段耗时时间线（契约 §10.3 stageTimings）：终态折叠行尾展示，>1s 的阶段才显示，秒取整。
+function terminalStageTimingsLabel(tool: ChatToolProcessGroup): string {
+  if (!isTerminalToolGroup(tool)) return ''
+  const timings = tool.progress?.stageTimings
+  if (!timings) return ''
+  const stageLabels: Array<[keyof NonNullable<ChatToolProgress['stageTimings']>, string]> = [['reasoning', '思考'], ['searching', '搜索'], ['answering', '回答']]
+  return stageLabels
+    .filter(([key]) => (timings[key] ?? 0) > 1000)
+    .map(([key, label]) => `${label} ${Math.round((timings[key] ?? 0) / 1000)}s`)
+    .join(' · ')
+}
+
+// 执行中等待时长（契约 §10.4）：仅存在 started/updated 分组时启用单个每秒 interval，
+// 起算时间为消息 streaming 开始时间（createdAt 可解析时），否则回退组件挂载时间。
+const mountedAt = Date.now()
+const nowTick = ref(Date.now())
+let nowTimer: ReturnType<typeof setInterval> | undefined
+const stageWaitStartedAt = computed(() => serverDateTimeTimestamp(props.message.createdAt) ?? mountedAt)
+const waitedSeconds = computed(() => Math.max(0, Math.floor((nowTick.value - stageWaitStartedAt.value) / 1000)))
+const hasRunningToolGroup = computed(() => process.value.toolGroups.some((tool) => isRunningToolGroup(tool)))
+watch(hasRunningToolGroup, (running) => { if (running) startNowTimer(); else stopNowTimer() }, { immediate: true })
+onUnmounted(stopNowTimer)
+function startNowTimer(): void {
+  if (nowTimer !== undefined) return
+  nowTimer = setInterval(() => { nowTick.value = Date.now() }, 1000)
+}
+function stopNowTimer(): void {
+  if (nowTimer === undefined) return
+  clearInterval(nowTimer)
+  nowTimer = undefined
 }
 watch(() => props.message, async () => {
   await nextTick()
@@ -80,9 +148,6 @@ function toolLabel(type: string): string {
 }
 function statusLabel(status: ChatToolStatus): string {
   return ({ started: '准备中', updated: '执行中', completed: '已完成', failed: '失败', canceled: '已停止' })[status]
-}
-function isSourceLink(value: string): boolean {
-  return /^https?:\/\//i.test(value.trim())
 }
 </script>
 
@@ -109,6 +174,9 @@ function isSourceLink(value: string): boolean {
 .chat-process-details li { margin: 2px 0; overflow-wrap: anywhere; }
 .chat-process-details a { color: #3b82f6; }
 .chat-process-details p { margin: 4px 0 0; color: #98a2b3; }
+.chat-source-domain { padding: 0; border: 0; background: none; color: #3b82f6; font: inherit; cursor: pointer; }
+.chat-source-domain:hover, .chat-source-domain:focus-visible { text-decoration: underline; }
+.chat-source-domain-urls { margin: 2px 0 0; padding-left: 15px; list-style: none; }
 .chat-reasoning { color: #8995a5; }
 .chat-reasoning summary { color: #8995a5; }
 .chat-reasoning div { max-height: 168px; margin: 5px 0 0 13px; padding: 5px 9px; overflow: auto; border-left: 2px solid #edf1f5; color: #7b8796; }

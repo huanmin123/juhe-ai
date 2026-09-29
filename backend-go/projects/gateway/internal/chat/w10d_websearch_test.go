@@ -214,6 +214,9 @@ func TestW10DWebSearchSubagentBound(t *testing.T) {
 	if !strings.Contains(persisted, `"progress"`) || !strings.Contains(persisted, `"stage"`) {
 		t.Fatalf("落库 tool_call item 必须携带 progress 快照: %s", persisted)
 	}
+	if !strings.Contains(persisted, `"stageTimings"`) {
+		t.Fatalf("落库 progress 快照必须携带阶段耗时映射（契约 §6.2）: %s", persisted)
+	}
 	if !strings.Contains(persisted, `北京天气`) {
 		t.Fatalf("落库必须保留搜索动作快照: %s", persisted)
 	}
@@ -262,6 +265,52 @@ func TestW10DWebSearchResultExtraction(t *testing.T) {
 	}
 }
 
+// TestW10DWebSearchSourceBlocklistFilter 验证来源提取黑名单（契约 §6.2）：
+// 搜索页与跳转链 URL（baidu.com/link、google.com/search|url、bing.com/search|ck、
+// duckduckgo.com/l）不进来源清单；同域正常路径与非黑名单域保留、顺序不变。
+func TestW10DWebSearchSourceBlocklistFilter(t *testing.T) {
+	payload := map[string]any{
+		"output": []any{map[string]any{
+			"type": "message", "role": "assistant",
+			"content": []any{map[string]any{
+				"type": "output_text", "text": "汇总正文",
+				"annotations": []any{
+					map[string]any{"type": "url_citation", "url": "https://www.baidu.com/link?url=abc123"},
+					map[string]any{"type": "url_citation", "url": "http://m.baidu.com/link?url=def456"},
+					map[string]any{"type": "url_citation", "url": "https://www.google.com/search?q=x"},
+					map[string]any{"type": "url_citation", "url": "https://google.com/url?q=y"},
+					map[string]any{"type": "url_citation", "url": "https://www.bing.com/search?q=z"},
+					map[string]any{"type": "url_citation", "url": "https://www.bing.com/ck/a?ai=1"},
+					map[string]any{"type": "url_citation", "url": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example.com"},
+				map[string]any{"type": "url_citation", "url": "https://weather.example.com/bj"},
+				map[string]any{"type": "url_citation", "url": "https://tieba.baidu.com/p/123"},
+				map[string]any{"type": "url_citation", "url": "https://rubbing.com/search?q=not-bing"},
+				map[string]any{"type": "url_citation", "url": "https://webbing.com/link?id=not-baidu"},
+				},
+			}},
+		}},
+	}
+	text, sources := extractWebSearchResponse(payload)
+	if text != "汇总正文" {
+		t.Fatalf("text = %q", text)
+	}
+	want := []string{"https://weather.example.com/bj", "https://tieba.baidu.com/p/123", "https://rubbing.com/search?q=not-bing", "https://webbing.com/link?id=not-baidu"}
+	if strings.Join(sources, "|") != strings.Join(want, "|") {
+		t.Fatalf("过滤后来源 = %v, want %v（黑名单 URL 须剔除、含黑名单域子串的正常域名不得误杀）", sources, want)
+	}
+	// 黑名单命中不回喂来源清单，正常来源仍随 tool result 回喂主模型。
+	// 泄漏断言带 "//" 边界，避免 rubbing.com/search 被 bing.com/search 子串误伤。
+	result := formatWebSearchToolResult(text, sources, "query")
+	for _, blocked := range []string{"//baidu.com/link", "//google.com/search", "//google.com/url", "//bing.com/search", "//bing.com/ck", "//duckduckgo.com/l"} {
+		if strings.Contains(result, blocked) {
+			t.Fatalf("tool result 泄漏黑名单来源 %s: %q", blocked, result)
+		}
+	}
+	if !strings.Contains(result, "- https://weather.example.com/bj") {
+		t.Fatalf("tool result 丢失正常来源: %q", result)
+	}
+}
+
 // TestW10DConsumeWebSearchStream 覆盖子调用 SSE 解析器：思考摘要/搜索动作/
 // 回答增量聚合、阶段推进序列、completed 权威提取与失败事件回退。
 func TestW10DConsumeWebSearchStream(t *testing.T) {
@@ -303,6 +352,17 @@ func TestW10DConsumeWebSearchStream(t *testing.T) {
 	wantActions := []string{"搜索「q1」", "打开网页", "搜索「q2」", "搜索「q3」"}
 	if strings.Join(last.Actions, "|") != strings.Join(wantActions, "|") {
 		t.Fatalf("actions = %v, want %v", last.Actions, wantActions)
+	}
+	// 阶段耗时映射（契约 §6.2）：切换点结算已完成阶段（毫秒、多次进入同阶段
+	// 累积）；流结束时进行中的末阶段（answering）也已整体完成，终态快照必须
+	// 结算其耗时（否则「回答 Ns」永不可达）。
+	if last.StageTimings == nil {
+		t.Fatalf("终态 progress 缺少 stageTimings: %+v", last)
+	}
+	for _, stage := range []string{"reasoning", "searching", "answering"} {
+		if elapsed, ok := last.StageTimings[stage]; !ok || elapsed < 0 {
+			t.Fatalf("stageTimings 缺少阶段 %s: %v", stage, last.StageTimings)
+		}
 	}
 	if text, _ := completed["output_text"].(string); text != "答案全文" {
 		t.Fatalf("completed = %v", completed)

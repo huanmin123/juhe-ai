@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { projectChatMessageProcess } from '../../views/chat/chatMessageProcess'
+import { aggregateSourceSummaries, projectChatMessageProcess } from '../../views/chat/chatMessageProcess'
 import type { ChatMessage } from '../../types/domain/chat'
 
 function message(toolEvents: ChatMessage['toolEvents'], reasoningText = '先分析'): ChatMessage {
@@ -196,5 +196,48 @@ const generatingImage = projectChatMessageProcess({
   ]
 } as ChatMessage)
 assert.equal(generatingImage.toolGroups[0]?.progress?.stage, 'generating', '生图 started 阶段提示必须投影')
+
+const settledWithStageTimings = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_ws_timings', toolType: 'web_search', status: 'completed', item: { type: 'web_search', query: '北京天气', sourceCount: 1, progress: { stage: 'answering', stageTimings: { reasoning: 8400, searching: 41000, answering: 12000 } } } }
+  ]
+} as ChatMessage)
+assert.deepEqual(
+  settledWithStageTimings.toolGroups[0]?.progress?.stageTimings,
+  { reasoning: 8400, searching: 41000, answering: 12000 },
+  '终态落库快照必须携带 stageTimings 供折叠行展示阶段耗时时间线（契约 §10.3）'
+)
+const timingsOnlyProgress = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_ws_timings_only', toolType: 'web_search', status: 'completed', item: { type: 'web_search', query: '上海天气', progress: { stageTimings: { searching: 5000 } } } }
+  ]
+} as ChatMessage)
+assert.deepEqual(timingsOnlyProgress.toolGroups[0]?.progress?.stageTimings, { searching: 5000 }, '仅 stageTimings 的快照也必须保留，不得因无 stage/reasoning 被丢弃')
+
+const aggregatedSources = aggregateSourceSummaries([
+  '北京 天气',
+  'https://www.weather.com.cn/a1',
+  'https://www.weather.com.cn/a2',
+  'http://example.com/only',
+  '上海 天气'
+])
+assert.deepEqual(aggregatedSources.texts, ['北京 天气', '上海 天气'], '非链接文本摘要必须保持原顺序前置平铺')
+assert.equal(aggregatedSources.domains.length, 2, '来源 URL 必须按 hostname 聚合')
+assert.equal(aggregatedSources.domains[0]?.host, 'www.weather.com.cn', '聚合域名按该域 URL 数量降序排列')
+assert.equal(aggregatedSources.domains[0]?.count, 2)
+assert.deepEqual(aggregatedSources.domains[0]?.urls, ['https://www.weather.com.cn/a1', 'https://www.weather.com.cn/a2'], '域名行展开必须列出该域全部原始 URL')
+assert.equal(aggregatedSources.domains[1]?.host, 'example.com')
+assert.equal(aggregatedSources.domains[1]?.count, 1, '单 URL 域名不显示 ×N 计数由渲染层处理，聚合层仍需记录 count')
+
+const tieBreakDomains = aggregateSourceSummaries(['https://b.com/1', 'https://a.com/1', 'https://a.com/2', 'https://b.com/2'])
+assert.deepEqual(
+  tieBreakDomains.domains.map((domain) => domain.host),
+  ['a.com', 'b.com'],
+  '同数量域名必须按域名字典序稳定排列'
+)
+
+const unparseableHost = aggregateSourceSummaries(['https://', '普通文本摘要', ' http://?q=1 '])
+assert.deepEqual(unparseableHost.texts, ['https://', '普通文本摘要', ' http://?q=1 '], '无法解析 hostname 的 URL 必须原样单列，不得进入聚合')
+assert.equal(unparseableHost.domains.length, 0)
 
 console.log('AI 问答工具生命周期、动作聚合与历史投影回归通过')

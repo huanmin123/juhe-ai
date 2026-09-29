@@ -7,6 +7,8 @@ export interface ChatToolProgress {
   reasoning?: string
   actions?: string[]
   answer?: string
+  /** 各已完成阶段耗时毫秒（契约 §10.3 stageTimings），在阶段切换点计算，随最后一次快照下发与落库。 */
+  stageTimings?: Partial<Record<'reasoning' | 'searching' | 'answering', number>>
 }
 
 export interface ChatToolProcessGroup {
@@ -48,6 +50,55 @@ export function projectChatMessageProcess(message: ChatMessage): { reasoningText
     .map((block) => ({ id: block.callId ?? block.id ?? block.blockId ?? 'tool', type: block.toolType, status: block.status ?? 'started', item: block.item }))
   const rawTools = message.toolEvents?.length ? message.toolEvents : persistedTools
   return { reasoningText, toolGroups: groupToolEvents(rawTools) }
+}
+
+/** 来源摘要按主域聚合（契约 §10.4）：同 hostname 的 URL 归为一组，非链接文本与无法解析 host 的 URL 原样单列。 */
+export interface ChatSourceDomainGroup {
+  host: string
+  count: number
+  urls: string[]
+}
+
+export interface ChatSourceSummaries {
+  /** 非链接文本摘要（保持原顺序）与 hostname 解析失败的 URL（原样单列）。 */
+  texts: string[]
+  /** 按 URL 数量降序、同数按域名序排列的主域聚合。 */
+  domains: ChatSourceDomainGroup[]
+}
+
+export function isSourceSummaryLink(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim())
+}
+
+export function aggregateSourceSummaries(summaries: string[]): ChatSourceSummaries {
+  const texts: string[] = []
+  const domains = new Map<string, ChatSourceDomainGroup>()
+  for (const summary of summaries) {
+    const trimmed = summary.trim()
+    if (isSourceSummaryLink(trimmed)) {
+      const host = parseSourceHostname(trimmed)
+      if (host) {
+        const group = domains.get(host) ?? { host, count: 0, urls: [] }
+        group.count += 1
+        group.urls.push(summary)
+        domains.set(host, group)
+        continue
+      }
+    }
+    texts.push(summary)
+  }
+  return {
+    texts,
+    domains: [...domains.values()].sort((left, right) => right.count - left.count || left.host.localeCompare(right.host))
+  }
+}
+
+function parseSourceHostname(value: string): string {
+  try {
+    return new URL(value).hostname.toLowerCase()
+  } catch {
+    return ''
+  }
 }
 
 function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
@@ -96,7 +147,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
   }))
 }
 
-/** 从 tool.updated 事件 item 提取子代理过程快照（stage/reasoning/actions/answer）。 */
+/** 从 tool.updated 事件 item 提取子代理过程快照（stage/reasoning/actions/answer/stageTimings）。 */
 function readToolProgress(item: Record<string, unknown> | undefined): ChatToolProgress | undefined {
   const progress = asRecord(item?.progress)
   if (!progress) return undefined
@@ -106,13 +157,29 @@ function readToolProgress(item: Record<string, unknown> | undefined): ChatToolPr
   const actions = Array.isArray(progress.actions)
     ? progress.actions.filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).slice(0, 12)
     : []
-  if (!stage && !reasoning && !answer && actions.length === 0) return undefined
+  const stageTimings = readStageTimings(progress.stageTimings)
+  if (!stage && !reasoning && !answer && actions.length === 0 && !stageTimings) return undefined
   return {
     ...(stage ? { stage } : {}),
     ...(reasoning ? { reasoning } : {}),
     ...(actions.length ? { actions } : {}),
-    ...(answer ? { answer } : {})
+    ...(answer ? { answer } : {}),
+    ...(stageTimings ? { stageTimings } : {})
   }
+}
+
+const stageTimingKeys = ['reasoning', 'searching', 'answering'] as const
+
+/** 只收敛契约定义的阶段键（reasoning/searching/answering）与有限正毫秒值，其余忽略。 */
+function readStageTimings(value: unknown): ChatToolProgress['stageTimings'] {
+  const record = asRecord(value)
+  if (!record) return undefined
+  const timings: NonNullable<ChatToolProgress['stageTimings']> = {}
+  for (const key of stageTimingKeys) {
+    const ms = record[key]
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) timings[key] = ms
+  }
+  return Object.keys(timings).length ? timings : undefined
 }
 
 function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {
