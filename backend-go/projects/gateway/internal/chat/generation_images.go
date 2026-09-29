@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -183,7 +184,17 @@ func GenerateChatImage(ctx requestContext, executor GenerationExecutor, input Ch
 			_ = writer.WriteField("response_format", "b64_json")
 		}
 		for _, reference := range input.References {
-			part, partErr := writer.CreateFormFile("image[]", reference.Filename)
+			// part 必须带真实 MIME：CreateFormFile 固定 octet-stream，实测
+			// 中转上游（shenwenai /v1/images/edits）按 part Content-Type 解
+			// 析图，octet-stream 被拒 invalid_image（BUG-0232 关联取证）。
+			mimeType := strings.TrimSpace(reference.MimeType)
+			if mimeType == "" {
+				mimeType = http.DetectContentType(reference.Data)
+			}
+			header := textproto.MIMEHeader{}
+			header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image[]"; filename="%s"`, escapeMultipartFilename(reference.Filename)))
+			header.Set("Content-Type", mimeType)
+			part, partErr := writer.CreatePart(header)
 			if partErr != nil {
 				return result, partErr
 			}
@@ -689,4 +700,11 @@ func loadImageEditReferences(reader AssetEditReferenceReader, objectStore Object
 		})
 	}
 	return references, nil
+}
+
+// escapeMultipartFilename 最小转义 multipart Content-Disposition 文件名里的
+// 引号与反斜杠（filename 源自资产原始文件名，资产名受控但保持防御一致性）。
+func escapeMultipartFilename(name string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, "'")
+	return replacer.Replace(strings.TrimSpace(name))
 }
