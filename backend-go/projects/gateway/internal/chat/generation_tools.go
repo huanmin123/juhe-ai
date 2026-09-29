@@ -624,7 +624,13 @@ func (o *chatInternalToolOrchestrator) executeCalls(calls []ChatToolCall) ([]Cha
 			return nil, errors.New("工具执行已取消")
 		}
 		toolName := call.ToolName
-		o.publishEvent(ChatToolExecutionEvent{Status: "started", CallID: call.CallID, ToolName: toolName})
+		started := ChatToolExecutionEvent{Status: "started", CallID: call.CallID, ToolName: toolName}
+		if toolName == "generate_image" {
+			// 生图无流式过程（Images API），started 即带生成中阶段供前端
+			// 过程区展示（契约 §10.3；progress 结构 stage 通用）。
+			started.PublicResult = map[string]any{"progress": chatWebSearchProgress{Stage: "generating"}}
+		}
+		o.publishEvent(started)
 		result, executed, execErr := o.executeCall(call)
 		if execErr != nil {
 			canceled := (o.context.Aborted != nil && o.context.Aborted()) || isAbortError(execErr)
@@ -694,6 +700,15 @@ func (o *chatInternalToolOrchestrator) executeCall(call ChatToolCall) (ChatToolE
 			return reused, true, nil
 		}
 	}
+	// 过程增量端口按本次 callID 绑定（契约 §10.3）：执行器上报的 progress 经
+	// 内容块投影通道以 item.progress 渐进下发（瞬态，落库前剥离）；调用串行
+	// 执行，defer 清理防泄漏到下一次调用。
+	previousProgress := o.context.ToolProgress
+	o.context.ToolProgress = func(progress chatWebSearchProgress) {
+		payload := map[string]any{"progress": progress}
+		o.publishEvent(ChatToolExecutionEvent{Status: "updated", CallID: call.CallID, ToolName: definition.ModelName, PublicResult: payload})
+	}
+	defer func() { o.context.ToolProgress = previousProgress }()
 	result, err := definition.Execute(normalized, o.context)
 	if err != nil {
 		var bindingErr *chatToolBindingRequiredError

@@ -59,8 +59,8 @@ type generationExecuteInput struct {
 	userMessageID string
 	// protocol 恒 chat_completions（工具体系设计 §11.1）；保留字段仅为
 	// Compactions.Schedule 等下游记账的协议枚举来源。
-	protocol      ChatTransportProtocol
-	apiKey        *ChatAPIKeyRecord
+	protocol ChatTransportProtocol
+	apiKey   *ChatAPIKeyRecord
 	// executor 是本轮生成的上游派发执行器：会话绑定账户的调度覆盖视图
 	//（stream_route 经 chatDispatchTargetAware 端口解析）；nil 回落
 	// rt.deps.Executor。
@@ -87,7 +87,7 @@ type generationExecuteInput struct {
 // buildGenerationExecute mirrors the `execute` closure handed to
 // ChatGenerationRunner.
 func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, identity ChatGenerationIdentity) func(ctx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
-		return func(runCtx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
+	return func(runCtx *ChatGenerationExecutionContext) (ChatGenerationTerminalResult, error) {
 		var partialContent strings.Builder
 		failureCode := GenErrInternal
 		messageID := identity.AssistantMessageID
@@ -158,7 +158,8 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 		publishTool := func(event ChatToolExecutionEvent) {
 			publishApplicationToolEvent(runCtx.Publish, messageID, event)
 		}
-		toolContext := &chatToolExecutionContext{
+		var toolContext *chatToolExecutionContext
+		toolContext = &chatToolExecutionContext{
 			OwnerID:            identity.OwnerID,
 			ConversationID:     input.conversation.ID,
 			TurnID:             turnID,
@@ -198,7 +199,13 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				if bindings == nil || bindings.SearchAccountID == "" || bindings.SearchModelID == "" {
 					return chatToolExecutionResult{}, &chatToolBindingRequiredError{ToolName: "web_search", UserHint: chatWebSearchBindingHint, Candidates: chatToolBindingCandidatesOf(bindings, "web_search")}
 				}
-				return executeChatWebSearch(runCtx, bindings.SearchExecutor, input.apiKey.Secret, input.traceID, bindings.SearchModelID, query)
+				// 过程增量经 context.ToolProgress 渐进上报（闭包引用预声明的
+				// toolContext 变量，调用发生在构造完成后）。
+				var progress func(chatWebSearchProgress)
+				if toolContext != nil {
+					progress = toolContext.ToolProgress
+				}
+				return executeChatWebSearch(runCtx, bindings.SearchExecutor, input.apiKey.Secret, input.traceID, bindings.SearchModelID, query, progress)
 			},
 		}
 		if rt.deps.ObjectStore != nil {
@@ -394,8 +401,6 @@ func isPreparationCanceled(err error) bool {
 	var canceled *PreparationCanceledError
 	return errors.As(err, &canceled)
 }
-
-
 
 // publishApplicationToolEvent mirrors publishApplicationToolEvent. Status
 // "binding_required" 渲染为 tool.binding_required 引导事件（契约 §8.4，纯事件

@@ -159,4 +159,32 @@ assert.equal(persisted.reasoningText, '历史思考')
 assert.equal(persisted.toolGroups[0]?.summaries[0], '历史', '历史 contentBlocks 必须复用相同投影')
 
 assert(duplicateSearch.toolGroups.every((group) => group.summaries.every((summary) => summary.length <= 160)), '摘要必须有长度上限')
+
+const subagentProgressing = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_ws_prog', toolType: 'web_search', status: 'updated', item: { type: 'web_search', executionOwner: 'application', query: '北京天气', progress: { stage: 'searching', reasoning: '先查天气', actions: ['搜索「北京天气」'], answer: '' } } }
+  ]
+} as ChatMessage)
+assert.equal(subagentProgressing.toolGroups.length, 1)
+assert.equal(subagentProgressing.toolGroups[0]?.progress?.stage, 'searching', '执行中的子代理过程快照必须投影到分组')
+assert.deepEqual(subagentProgressing.toolGroups[0]?.progress?.actions, ['搜索「北京天气」'])
+assert.equal(subagentProgressing.toolGroups[0]?.progress?.reasoning, '先查天气')
+assert.equal(subagentProgressing.toolGroups[0]?.status, 'updated', '执行中分组保持活跃状态驱动过程区展开')
+
+const subagentSettled = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_ws_done', toolType: 'web_search', status: 'completed', item: { type: 'web_search', executionOwner: 'application', query: '北京天气', sourceCount: 2 } }
+  ]
+} as ChatMessage)
+assert.equal(subagentSettled.toolGroups[0]?.progress, undefined, '终态分组不得保留瞬态过程快照')
+assert.equal(subagentSettled.toolGroups[0]?.status, 'completed', '终态分组收敛驱动过程区折叠')
+assert.equal(subagentSettled.toolGroups[0]?.statusDetail, '2 个来源')
+
+const generatingImage = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_img_prog', toolType: 'generate_image', status: 'started', item: { type: 'generate_image', executionOwner: 'application', progress: { stage: 'generating' } } }
+  ]
+} as ChatMessage)
+assert.equal(generatingImage.toolGroups[0]?.progress?.stage, 'generating', '生图 started 阶段提示必须投影')
+
 console.log('AI 问答工具生命周期、动作聚合与历史投影回归通过')

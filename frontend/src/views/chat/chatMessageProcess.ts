@@ -1,12 +1,22 @@
 import type { ChatMessage, ChatToolEvent, ChatToolStatus } from '@/types/domain/chat'
 import { chatErrorMessage } from './chatErrorMessage'
 
+/** 子代理执行过程（契约 §10.3）：后端 tool.updated 事件 item.progress 瞬态快照，终态事件不含。 */
+export interface ChatToolProgress {
+  stage?: string
+  reasoning?: string
+  actions?: string[]
+  answer?: string
+}
+
 export interface ChatToolProcessGroup {
   key: string
   type: string
   status: ChatToolStatus
   /** 摘要行补充（如「N 个来源」），跟随状态文案展示。 */
   statusDetail?: string
+  /** 执行中子代理过程（思考摘要/搜索动作/回答摘要），仅活跃分组保留。 */
+  progress?: ChatToolProgress
   callCount: number
   duplicateCount: number
   summaries: string[]
@@ -56,7 +66,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     })
   })
 
-  const grouped = new Map<string, { type: string; statuses: ChatToolStatus[]; callIds: Set<string>; summaries: Set<string>; statusDetail?: string }>()
+  const grouped = new Map<string, { type: string; statuses: ChatToolStatus[]; callIds: Set<string>; summaries: Set<string>; statusDetail?: string; progress?: ChatToolProgress }>()
   for (const tool of lifecycle.values()) {
     const canonical = canonicalizeToolAction(tool)
     const existing = grouped.get(canonical.key) ?? {
@@ -69,6 +79,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     existing.callIds.add(tool.callId || `event-${tool.fallbackIndex}`)
     canonical.summaries.forEach((summary) => existing.summaries.add(limitSummary(summary)))
     if (canonical.statusDetail) existing.statusDetail = canonical.statusDetail
+    if (tool.status !== 'completed' && tool.status !== 'canceled') existing.progress = readToolProgress(tool.item)
     grouped.set(canonical.key, existing)
   }
 
@@ -77,10 +88,30 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     type: group.type,
     status: resolveGroupStatus(group.statuses),
     ...(group.statusDetail ? { statusDetail: group.statusDetail } : {}),
+    ...(group.progress ? { progress: group.progress } : {}),
     callCount: group.callIds.size,
     duplicateCount: Math.max(0, group.callIds.size - 1),
     summaries: [...group.summaries]
   }))
+}
+
+/** 从 tool.updated 事件 item 提取子代理过程快照（stage/reasoning/actions/answer）。 */
+function readToolProgress(item: Record<string, unknown> | undefined): ChatToolProgress | undefined {
+  const progress = asRecord(item?.progress)
+  if (!progress) return undefined
+  const stage = normalizeWhitespace(readString(progress.stage))
+  const reasoning = normalizeWhitespace(readString(progress.reasoning))
+  const answer = normalizeWhitespace(readString(progress.answer))
+  const actions = Array.isArray(progress.actions)
+    ? progress.actions.filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).slice(0, 12)
+    : []
+  if (!stage && !reasoning && !answer && actions.length === 0) return undefined
+  return {
+    ...(stage ? { stage } : {}),
+    ...(reasoning ? { reasoning } : {}),
+    ...(actions.length ? { actions } : {}),
+    ...(answer ? { answer } : {})
+  }
 }
 
 function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {

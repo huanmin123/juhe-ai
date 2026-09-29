@@ -174,14 +174,14 @@ type toolDefinition struct {
 
 // chatToolExecutionContext mirrors ChatToolExecutionContext (transport subset).
 type chatToolExecutionContext struct {
-	OwnerID            string
-	ConversationID     string
-	TurnID             string
-	AssistantMessageID string
-	TraceID            string
-	APIKey             string
-	DefaultImageModel  string
-	Aborted            func() bool
+	OwnerID                 string
+	ConversationID          string
+	TurnID                  string
+	AssistantMessageID      string
+	TraceID                 string
+	APIKey                  string
+	DefaultImageModel       string
+	Aborted                 func() bool
 	LoadImageEditReferences func(assetIDs []string) ([]ChatImageEditReference, error)
 	ImageGeneration         func(input ChatImageGenerationRequest) (ChatImageGenerationToolResult, error)
 	ArtifactSink            ChatGeneratedImageArtifactSink
@@ -189,6 +189,11 @@ type chatToolExecutionContext struct {
 	// 会话绑定解析——未绑定返回 chatToolBindingRequiredError，已绑定经进程内
 	// /v1 链固定派发到绑定「账户+模型」（generation_websearch.go）。
 	WebSearch func(query string) (chatToolExecutionResult, error)
+	// ToolProgress 是当前工具调用的过程增量端口（契约 §10.3 子代理过程区）：
+	// orchestrator 在每次 executeCall 前按 callID 绑定（经内容块投影通道以
+	// item.progress 渐进下发），执行器（web_search 流式解析器）节流上报；
+	// 串行执行无并发。
+	ToolProgress func(progress chatWebSearchProgress)
 }
 
 // compileChatInternalTools mirrors compileChatInternalTools（恒 chat_completions

@@ -1,12 +1,20 @@
 <template>
-  <div class="chat-process">
+  <div ref="processRoot" class="chat-process">
     <template v-for="tool in process.toolGroups" :key="tool.key">
-      <details v-if="tool.summaries.length || tool.duplicateCount" class="chat-process-group" :open="isExpanded(tool)">
+      <details v-if="tool.summaries.length || tool.duplicateCount || tool.progress" class="chat-process-group" :open="isExpanded(tool)">
         <summary @click="rememberToggleIntent(tool, $event)">
           <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
           <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status) }}<template v-if="tool.statusDetail"> · {{ tool.statusDetail }}</template><template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template></span>
         </summary>
-        <div class="chat-process-details">
+        <div class="chat-process-details" :class="{ 'is-streaming': isActiveToolGroup(tool) }">
+          <div v-if="tool.progress" class="chat-subagent">
+            <p class="chat-subagent-stage">{{ progressStageLabel(tool.progress) }}</p>
+            <p v-if="tool.progress.reasoning" class="chat-subagent-reasoning">{{ tool.progress.reasoning }}</p>
+            <ul v-if="tool.progress.actions?.length" class="chat-subagent-actions">
+              <li v-for="action in tool.progress.actions" :key="action">{{ action }}</li>
+            </ul>
+            <p v-if="tool.progress.answer" class="chat-subagent-answer">{{ tool.progress.answer }}</p>
+          </div>
           <ul v-if="tool.summaries.length">
             <li v-for="summary in tool.summaries" :key="summary">
               <a v-if="isSourceLink(summary)" :href="summary" target="_blank" rel="noopener noreferrer">{{ summary }}</a>
@@ -29,12 +37,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { ChatMessage, ChatToolStatus } from '@/types/domain/chat'
-import { projectChatMessageProcess, type ChatToolProcessGroup } from './chatMessageProcess'
+import { projectChatMessageProcess, type ChatToolProcessGroup, type ChatToolProgress } from './chatMessageProcess'
 
 const props = defineProps<{ message: ChatMessage }>()
 const process = computed(() => projectChatMessageProcess(props.message))
+const processRoot = ref<HTMLElement>()
 const manuallyToggled = ref(new Map<string, boolean>())
 
 function isActiveToolGroup(tool: ChatToolProcessGroup): boolean {
@@ -48,6 +57,19 @@ function rememberToggleIntent(tool: ChatToolProcessGroup, event: MouseEvent): vo
   const details = (event.currentTarget as HTMLElement).parentElement as HTMLDetailsElement | null
   if (details) manuallyToggled.value.set(tool.key, !details.open)
 }
+// 子代理过程区阶段提示（契约 §10.3）：思考摘要流式追加时贴底展示。
+function progressStageLabel(progress: ChatToolProgress): string {
+  return ({ reasoning: '子代理思考中…', searching: '子代理联网搜索中…', answering: '子代理汇总结果中…', generating: '正在生成图片…' }[progress.stage ?? '']) ?? '子代理执行中…'
+}
+watch(() => props.message, async () => {
+  await nextTick()
+  const root = processRoot.value
+  if (!root) return
+  for (const details of [...root.querySelectorAll<HTMLDetailsElement>('details.chat-process-group[open]')]) {
+    const body = details.querySelector<HTMLElement>('.chat-process-details.is-streaming')
+    if (body) body.scrollTop = body.scrollHeight
+  }
+}, { flush: 'post' })
 
 function toolLabel(type: string): string {
   return ({ web_search_call: '联网搜索', web_search: '联网搜索', image_generation: '图片生成', generate_image: '图片生成', file_search_call: '文件检索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用')
@@ -71,6 +93,12 @@ function isSourceLink(value: string): boolean {
 .chat-process-status.is-completed { background: #52a447; }
 .chat-process-status.is-failed, .chat-process-status.is-canceled { background: #d9534f; }
 .chat-process-details { max-height: 168px; margin: 5px 0 0 13px; padding-left: 9px; overflow: auto; border-left: 2px solid #edf1f5; color: #7b8796; }
+.chat-subagent { margin: 0 0 4px; }
+.chat-subagent-stage { margin: 0; color: #98a2b3; }
+.chat-subagent-reasoning { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #7b8796; }
+.chat-subagent-actions { margin: 4px 0 0; padding-left: 17px; }
+.chat-subagent-actions li { margin: 2px 0; }
+.chat-subagent-answer { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #67748a; }
 .chat-process-details ul { margin: 0; padding-left: 17px; }
 .chat-process-details li { margin: 2px 0; overflow-wrap: anywhere; }
 .chat-process-details a { color: #3b82f6; }

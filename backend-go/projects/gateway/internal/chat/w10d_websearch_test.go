@@ -35,7 +35,6 @@ func (w10dWebSearchCatalog) ListProviderCatalog(providerCode, systemAccountID st
 	return items
 }
 
-
 // TestW10DStreamChatOnlyProtocol 验证主对话恒 chat_completions：目录矩阵声明
 // web_search 不再把协议偏好切到 responses。
 func TestW10DStreamChatOnlyProtocol(t *testing.T) {
@@ -113,8 +112,9 @@ func TestW10DWebSearchBindingRequired(t *testing.T) {
 }
 
 // TestW10DWebSearchSubagentBound 驱动已绑定链路：主模型调用 web_search →
-// 子代理经 /v1/responses 固定模型派发（tools=[{type:"web_search"}]）→ 结果与
-// 来源 URL 作为 tool result 回喂 → 主模型继续生成。
+// 子代理经 /v1/responses 流式派发（stream + reasoning summary + hosted
+// web_search）→ 过程增量经 content_block.updated 下发（item.progress）→
+// response.completed 内完整响应提取结果与来源回喂主模型。
 func TestW10DWebSearchSubagentBound(t *testing.T) {
 	env := newGenerationEnv(t)
 	env.deps.ModelCatalog = w10dWebSearchCatalog{}
@@ -123,7 +123,16 @@ func TestW10DWebSearchSubagentBound(t *testing.T) {
 	if _, err := env.fixture.db.Exec(`UPDATE chat_conversations SET search_account_id = 'account-1', search_model_id = 'gpt-5' WHERE id = ?`, "conv_w10d_bound"); err != nil {
 		t.Fatal(err)
 	}
-	subagentPayload := `{"id":"resp_1","output_text":"北京今日晴，26 度。","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"北京今日晴，26 度。","annotations":[{"type":"url_citation","url":"https://weather.example.com/bj"},{"type":"url_citation","url":"https://news.example.com/weather"}]}]}]}`
+	subagentSSE := strings.Join([]string{
+		`data: {"type":"response.created"}`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"先查一下北京今天的天气。"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"web_search_call","id":"ws_1","action":{"type":"search","query":"北京天气"}}}`,
+		`data: {"type":"response.web_search_call.in_progress","item_id":"ws_1"}`,
+		`data: {"type":"response.output_text.delta","delta":"北京今日晴，26 度。"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"北京今日晴，26 度。","annotations":[{"type":"url_citation","url":"https://weather.example.com/bj"},{"type":"url_citation","url":"https://news.example.com/weather"}]}]}]}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n\n")
 	round := 0
 	env.executor.steps = []scriptStep{
 		{
@@ -143,13 +152,16 @@ func TestW10DWebSearchSubagentBound(t *testing.T) {
 				if tool, _ := tools[0].(map[string]any); tool["type"] != "web_search" {
 					t.Fatalf("子调用 tool type = %v", tools[0])
 				}
-				if stream, ok := body["stream"].(bool); ok && stream {
-					t.Fatalf("子调用必须非流式: %v", body["stream"])
+				if stream, _ := body["stream"].(bool); !stream {
+					t.Fatalf("子调用必须流式（契约 §6.1）: %v", body["stream"])
+				}
+				if reasoning, _ := body["reasoning"].(map[string]any); reasoning["summary"] != "auto" {
+					t.Fatalf("子调用 reasoning = %v, want summary=auto", body["reasoning"])
 				}
 				if call.Headers["x-juhe-ai-purpose"] != "chat_web_search" {
 					t.Fatalf("子调用缺少 purpose 标识: %v", call.Headers)
 				}
-				return jsonStatusResponse(200, subagentPayload)
+				return sseResponse(subagentSSE)
 			},
 		},
 		{
@@ -173,6 +185,15 @@ func TestW10DWebSearchSubagentBound(t *testing.T) {
 	raw := response.rawString()
 	if !strings.Contains(raw, "北京今日晴") {
 		t.Fatalf("缺少回答: %s", raw)
+	}
+	// 子代理过程增量（契约 §10.3）：思考摘要/搜索动作/阶段推进渐进下发。
+	for _, fragment := range []string{
+		`"stage":"searching"`, `"stage":"answering"`,
+		`搜索「北京天气」`, `先查一下北京今天的天气`,
+	} {
+		if !strings.Contains(raw, fragment) {
+			t.Fatalf("缺少子代理过程增量 %s: %s", fragment, raw)
+		}
 	}
 	paths := map[string]bool{}
 	for _, call := range env.executor.calls {
@@ -226,6 +247,73 @@ func TestW10DWebSearchResultExtraction(t *testing.T) {
 	empty := formatWebSearchToolResult("", nil, "q1")
 	if !strings.Contains(empty, "搜索未返回可用结果") {
 		t.Fatalf("empty = %q", empty)
+	}
+}
+
+// TestW10DConsumeWebSearchStream 覆盖子调用 SSE 解析器：思考摘要/搜索动作/
+// 回答增量聚合、阶段推进序列、completed 权威提取与失败事件回退。
+func TestW10DConsumeWebSearchStream(t *testing.T) {
+	sse := strings.Join([]string{
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"想一下"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"web_search_call","action":{"type":"search","query":"q1"}}}`,
+		`data: {"type":"response.web_search_call.searching","item_id":"ws_1"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"web_search_call","action":{"type":"open_page","url":"https://a.example.com"}}}`,
+		`data: {"type":"response.output_item.done","item":{"type":"web_search_call","status":"completed","action":{"type":"search","query":"q1","queries":["q1"]}}}`,
+		`data: {"type":"response.output_item.done","item":{"type":"web_search_call","status":"completed","action":{"type":"search","queries":["q2","q3"]}}}`,
+		`data: {"type":"response.output_text.delta","delta":"答"}`,
+		`data: {"type":"response.completed","response":{"output_text":"答案全文"}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n\n")
+	var stages []string
+	var last chatWebSearchProgress
+	completed, err := consumeWebSearchStream(strings.NewReader(sse), func(p chatWebSearchProgress) {
+		if len(stages) == 0 || stages[len(stages)-1] != p.Stage {
+			stages = append(stages, p.Stage)
+		}
+		last = p
+	})
+	if err != nil {
+		t.Fatalf("consume err = %v", err)
+	}
+	wantStages := []string{"reasoning", "searching", "answering"}
+	if strings.Join(stages, ",") != strings.Join(wantStages, ",") {
+		t.Fatalf("阶段序列 = %v, want %v", stages, wantStages)
+	}
+	if last.Reasoning != "想一下" || last.Answer != "答" {
+		t.Fatalf("最终快照 = %+v", last)
+	}
+	// 官方 added 带 query、done 复述同一 query 必须去重；中转上游仅 done 带
+	// queries 数组的场景按数组逐条提取；非 search 动作给可读标签。
+	wantActions := []string{"搜索「q1」", "打开网页", "搜索「q2」", "搜索「q3」"}
+	if strings.Join(last.Actions, "|") != strings.Join(wantActions, "|") {
+		t.Fatalf("actions = %v, want %v", last.Actions, wantActions)
+	}
+	if text, _ := completed["output_text"].(string); text != "答案全文" {
+		t.Fatalf("completed = %v", completed)
+	}
+	// 失败事件（无 completed 响应）→ 空对象回退，由提取器走空结果文案。
+	fallback, err := consumeWebSearchStream(strings.NewReader("data: {\"type\":\"response.failed\"}\n\n"), nil)
+	if err != nil || fallback == nil {
+		t.Fatalf("failed 回退 = %v err=%v", fallback, err)
+	}
+	if text, sources := extractWebSearchResponse(fallback); text != "" || len(sources) != 0 {
+		t.Fatalf("failed 提取 = %q %v", text, sources)
+	}
+}
+
+// TestW10DTerminalizeStripsProgress 验证过程增量为瞬态（契约 §10.3）：
+// 持久化内容块时剥除 item.progress，中断/终态消息不残留过程快照。
+func TestW10DTerminalizeStripsProgress(t *testing.T) {
+	raw := terminalizeAssistantBlocks([]*assistantBlock{{
+		Type: "tool_call", BlockID: "b1", CallID: "c1", ToolType: "web_search", Status: asstStarted,
+		Item: map[string]any{"query": "q", "progress": map[string]any{"stage": "searching"}},
+	}}, asstCanceled)
+	if strings.Contains(string(raw), "progress") {
+		t.Fatalf("持久化块不得携带 progress: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"query":"q"`) {
+		t.Fatalf("持久化块应保留终态字段: %s", raw)
 	}
 }
 
