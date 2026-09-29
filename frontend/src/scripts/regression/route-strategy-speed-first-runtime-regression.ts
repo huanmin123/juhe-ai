@@ -14,10 +14,12 @@ assert.match(scopedApiSource, /speedFirstRuntime: \(id: string,[\s\S]*api\.route
 assert.match(typesSource, /speedFirstLatencyRuntime\?: RouteStrategySpeedFirstLatencyRuntimeSummary/, '策略列表行必须声明速度运行态汇总')
 assert.match(typesSource, /interface RouteStrategySpeedFirstLatencyRuntime[\s\S]*degradedCount: number[\s\S]*items: RouteStrategySpeedFirstLatencyRuntimeItem\[\]/, '速度运行态详情必须声明汇总和明细字段')
 
-assert.match(viewSource, /速度降级 \$\{runtime\.degradedCount\} 个账号/, '列表必须显示速度降级账号数量')
-assert.match(viewSource, /速度正常/, '列表必须显示速度正常文案')
+assert.match(viewSource, /速度降级 \$\{runtime\.degradedCount\} 个账号` : ''/, '列表必须显示速度降级账号数量，且正常态返回空文案')
+assert.doesNotMatch(viewSource, /速度正常/, '列表正常态不得常驻展示速度正常文案')
 assert.match(viewSource, /速度状态暂不可用/, '列表必须显示速度状态不可用文案')
-assert.match(viewSource, /v-if="isSpeedFirstRouteStrategy\(record\)"[\s\S]*查看速度状态/, '查看速度状态入口只能出现在速度优先策略')
+assert.match(viewSource, /if \(isSpeedFirstRouteStrategy\(record\)\) \{[\s\S]*?key: 'speedRuntime', label: '查看速度状态'[\s\S]*?\}/, '查看速度状态入口必须位于行操作且只出现在速度优先策略')
+assert.match(viewSource, /key === 'speedRuntime'[\s\S]*?openSpeedFirstRuntime\(record\)/, '行操作查看速度状态必须打开运行态详情')
+assert.doesNotMatch(viewSource, /speed-first-runtime-link|speed-first-runtime-mobile-link/, '模式列与移动端卡片不得保留查看速度状态专用入口')
 assert.match(viewSource, /const speedFirstRuntimeDrawerOpen = ref\(false\)/, '速度运行态详情 Drawer 默认必须关闭')
 assert.match(viewSource, /function openSpeedFirstRuntime\([\s\S]*void loadSpeedFirstRuntime\(record\)/, '速度运行态详情必须由用户点击按需加载')
 assert.match(viewSource, /@refresh="refreshSpeedFirstRuntime"/, '速度运行态详情必须支持显式刷新')
@@ -48,4 +50,4 @@ assert.match(drawerSource, /record\.recoverySuccessCount.*record\.requiredRecove
 assert.match(drawerSource, /record\.recoveryProbeRoundSuccessCount.*record\.recoveryProbeRoundAttemptCount/, 'Drawer 必须展示后台探针窗口进度')
 assert.match(drawerSource, /record\.reason/, 'Drawer 必须展示速度运行态原因')
 
-console.log('策略路由速度优先运行态前端回归通过：API 路径、内联状态、按需加载、竞态作废和 Drawer 字段均已覆盖')
+console.log('策略路由速度优先运行态前端回归通过：API 路径、异常态内联标记、行操作入口、按需加载、竞态作废和 Drawer 字段均已覆盖')

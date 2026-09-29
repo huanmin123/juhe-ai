@@ -108,15 +108,6 @@
             <span v-if="speedFirstLatencyStatusText(record)" class="speed-first-latency-status" :class="speedFirstLatencyStatusClass(record)">
               {{ speedFirstLatencyStatusText(record) }}
             </span>
-            <a-button
-              v-if="isSpeedFirstRouteStrategy(record)"
-              type="link"
-              size="small"
-              class="speed-first-runtime-link"
-              @click="openSpeedFirstRuntime(record)"
-            >
-              查看速度状态
-            </a-button>
           </div>
         </template>
         <template v-else-if="column.key === 'status'">
@@ -180,20 +171,12 @@
               <span>说明</span>
               <strong>{{ record.description || '-' }}</strong>
             </div>
-            <div v-if="isSpeedFirstRouteStrategy(record)" class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="speedFirstLatencyStatusText(record)" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>速度状态</span>
               <strong :class="speedFirstLatencyStatusClass(record)">{{ speedFirstLatencyStatusText(record) }}</strong>
             </div>
           </div>
           <div class="mobile-list-card-actions">
-            <a-button
-              v-if="isSpeedFirstRouteStrategy(record)"
-              size="small"
-              class="speed-first-runtime-mobile-link"
-              @click="openSpeedFirstRuntime(record)"
-            >
-              查看速度状态
-            </a-button>
             <RowActions
               variant="button"
               :actions="routeStrategyActions(record)"
@@ -568,7 +551,7 @@ const columns = computed<Array<Record<string, unknown>>>(() => {
     { title: '绑定分组', key: 'groups', width: 320 },
     { title: 'API Key', key: 'apiKeyCount', width: 100 },
     { title: '更新时间', dataIndex: 'updatedAt', key: 'updatedAt', width: 180 },
-    { title: '操作', key: 'actions', width: 96, fixed: 'right' }
+    { title: '操作', key: 'actions', width: 104, fixed: 'right' }
   ]
   return isManagementView.value
     ? [{ title: '系统账户', key: 'systemAccount', width: 180 }, ...baseColumns]
@@ -1427,6 +1410,9 @@ function routeStrategyActions(record: RouteStrategyListItem): RowActionItem[] {
   const actions: RowActionItem[] = [
     { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' }
   ]
+  if (isSpeedFirstRouteStrategy(record)) {
+    actions.push({ key: 'speedRuntime', label: '查看速度状态', icon: 'view' })
+  }
   if (!record.isDefault) {
     actions.push({
       key: 'delete',
@@ -1445,6 +1431,10 @@ function routeStrategyActions(record: RouteStrategyListItem): RowActionItem[] {
 function handleRouteStrategyAction(key: string, record: RouteStrategyListItem) {
   if (key === 'edit') {
     void openEdit(record)
+    return
+  }
+  if (key === 'speedRuntime') {
+    openSpeedFirstRuntime(record)
     return
   }
   if (key === 'delete') {
@@ -1506,14 +1496,14 @@ function speedFirstLatencyStatusText(record: RouteStrategyListItem): string {
   if (!isSpeedFirstRouteStrategy(record)) return ''
   const runtime = record.speedFirstLatencyRuntime
   if (!runtime || !runtime.runtimeAvailable) return '速度状态暂不可用'
-  return runtime.degradedCount > 0 ? `速度降级 ${runtime.degradedCount} 个账号` : '速度正常'
+  return runtime.degradedCount > 0 ? `速度降级 ${runtime.degradedCount} 个账号` : ''
 }
 
 function speedFirstLatencyStatusClass(record: RouteStrategyListItem): string {
-  if (!isSpeedFirstRouteStrategy(record)) return ''
+  if (!speedFirstLatencyStatusText(record)) return ''
   const runtime = record.speedFirstLatencyRuntime
   if (!runtime || !runtime.runtimeAvailable) return 'speed-first-latency-status-unavailable'
-  return runtime.degradedCount > 0 ? 'speed-first-latency-status-degraded' : 'speed-first-latency-status-ok'
+  return 'speed-first-latency-status-degraded'
 }
 
 function openSpeedFirstRuntime(record: RouteStrategyListItem): void {
@@ -1745,18 +1735,8 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   color: #d97706;
 }
 
-.speed-first-latency-status-ok {
-  color: #16a34a;
-}
-
 .speed-first-latency-status-unavailable {
   color: #64748b;
-}
-
-.speed-first-runtime-link,
-.speed-first-runtime-mobile-link {
-  padding: 0;
-  font-size: 12px;
 }
 
 .route-strategy-name-text {
