@@ -165,6 +165,22 @@ func TestFindProviderModelPricingCacheReadMultipliers(t *testing.T) {
 	if grok.LongContextInputTokenThreshold == nil || *grok.LongContextInputTokenThreshold != 200000 || !grok.LongContextInputTokenThresholdInclusive {
 		t.Fatalf("grok-4.7 long context = %v inclusive=%v, want 200000 inclusive", grok.LongContextInputTokenThreshold, grok.LongContextInputTokenThresholdInclusive)
 	}
+
+	// BUG-0231：glm 全系快照必须声明 function_calling（chat_completions），
+	// 否则 glm 主模型会话内部工具零注入。
+	glmFlash := FindProviderModelPricing("glm", "glm-5.3-flash")
+	if glmFlash == nil {
+		t.Fatal("glm-5.3-flash must resolve")
+	}
+	if tools, ok := glmFlash.SupportedToolsByProtocol["chat_completions"]; !ok || len(tools) != 1 || tools[0] != "function_calling" {
+		t.Fatalf("glm-5.3-flash chat_completions tools = %v, want [function_calling]", glmFlash.SupportedToolsByProtocol)
+	}
+	for _, model := range glmModelPricingData {
+		tools, ok := model.SupportedToolsByProtocol["chat_completions"]
+		if !ok || len(tools) != 1 || tools[0] != "function_calling" {
+			t.Fatalf("glm %s chat_completions tools = %v, want [function_calling] (BUG-0231)", model.Model, model.SupportedToolsByProtocol)
+		}
+	}
 }
 
 // TestFindRawProviderModelPricingDuplicateNameShutdownGivesUpLayer pins the
