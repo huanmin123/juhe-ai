@@ -40,8 +40,8 @@ func nodeModelCatalogCompare(left, right modelCatalogSeedRow) int {
 
 func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
 	// 120 rows after the 2026-09-30 manual sync from the Go pricing catalog
-	// (grok-4.7, claude-opus-5-5, claude-fable-5; gpt 61, xai 11, deepseek 4,
-	// anthropic 15, gemini 13, glm 16).
+	// (gpt-6.1-sol; gpt 61, xai 11, deepseek 4, anthropic 15, gemini 13,
+	// glm 16).
 	if len(modelCatalogSeedRows) != 120 {
 		t.Fatalf("model catalog seed rows = %d, want 120 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
 	}
