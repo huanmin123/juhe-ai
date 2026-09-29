@@ -70,6 +70,7 @@
           @model-options-open="$emit('model-options-open', $event)"
           @model-options-search="$emit('model-options-search', $event)"
           @refresh-models="$emit('refresh-models')"
+          @reveal-credentials="$emit('reveal-credentials')"
           @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
         />
 
@@ -77,6 +78,8 @@
           v-else-if="isTokenCredentialForm && !authorizedEditing"
           :auth-loading="authLoading"
           :auth-result="authResult"
+          :can-reveal-credentials="canRevealCredentials"
+          :credentials-revealing="credentialsRevealing"
           :editing="editing"
           :form="form"
           :is-anthropic-o-auth="isAnthropicOAuthForm"
@@ -97,6 +100,7 @@
           @generate-auth-url="$emit('generate-auth-url')"
           @open-auth-url="$emit('open-auth-url')"
           @refresh-models="$emit('refresh-models')"
+          @reveal-credentials="$emit('reveal-credentials')"
           @model-options-open="$emit('model-options-open', $event)"
           @model-options-search="$emit('model-options-search', $event)"
         />
@@ -322,6 +326,9 @@ const props = withDefaults(defineProps<{
   balanceQueryCanRun?: boolean
   balanceQueryLoading?: boolean
   confirmLoading: boolean
+  credentialsMasked?: boolean
+  credentialsRevealed?: boolean
+  credentialsRevealing?: boolean
   credentialTitle: string
   editing: boolean
   form: AccountFormModel
@@ -360,10 +367,16 @@ const props = withDefaults(defineProps<{
   apiKeyRuntimeLoading: false,
   balanceQueryCanRun: false,
   balanceQueryLoading: false,
+  credentialsMasked: false,
+  credentialsRevealed: false,
+  credentialsRevealing: false,
   loading: false,
   testButtonDisabled: false,
   testLoading: false
 })
+
+// BUG-0238：凭据仍处于加密占位且未取回明文时，才允许触发 reveal 交互。
+const canRevealCredentials = computed(() => props.credentialsMasked && !props.credentialsRevealed)
 
 // OAuth 账户新建态没有可测凭据（授权码/token 一次性，落库后才能测）：
 // 隐藏底部测试按钮，编辑态（accountDetail 已加载）保留。
@@ -494,6 +507,7 @@ const emit = defineEmits<{
   (event: 'proxyOptionsSearch', value: string): void
   (event: 'ok'): void
   (event: 'open-auth-url'): void
+  (event: 'reveal-credentials'): void
   (event: 'select-provider', providerCode: string): void
   (event: 'select-type-choice', value: string): void
   (event: 'test'): void

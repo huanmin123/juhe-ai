@@ -57,7 +57,7 @@ import { FALLBACK_PROVIDERS } from './accountOptions'
 import { accountProviderProtocolKind, canCreateOAuthAccount, supportsOAuthAccountType } from './accountProviderCapabilities'
 import { authUrl } from './accountOAuthPayload'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
-import { normalizedAccountApiKeys } from './accountCredentials'
+import { applyRevealedAccountCredentials, normalizedAccountApiKeys } from './accountCredentials'
 import { buildAccountDraftTestPayload } from './accountDraftTestPayload'
 import {
   draftApiKeyTestRuntimeDetailsForPayload,
@@ -113,6 +113,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const editingAccountAdvancedDetail = ref<AccountAdvancedDetail>()
   const savedApiKeyRuntimeSnapshot = ref<SavedAccountApiKeyRuntimeSnapshot>()
   const accountApiKeyRuntimeLoading = ref(false)
+  // BUG-0238：编辑明细凭据为密文占位（credentialsMasked）与已取回明文（credentialsRevealed）状态。
+  const credentialsMasked = ref(false)
+  const credentialsRevealed = ref(false)
+  const credentialsRevealing = ref(false)
   const editingBasicBaseline = ref<AccountBasicEditSnapshot>()
   const editingAdvancedBaseline = ref<AccountSavePayload>()
   const cloningSourceId = ref<string>()
@@ -317,6 +321,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningScheduleFingerprint.value = undefined
     savedApiKeyRuntimeSnapshot.value = undefined
     accountApiKeyRuntimeLoading.value = false
+    credentialsMasked.value = false
+    credentialsRevealed.value = false
+    credentialsRevealing.value = false
     editingBasicBaseline.value = undefined
     editingAdvancedBaseline.value = undefined
     editingAccountAdvancedDetail.value = undefined
@@ -426,6 +433,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     clearDraftApiKeyTestSnapshot()
     savedApiKeyRuntimeSnapshot.value = undefined
     accountApiKeyRuntimeLoading.value = false
+    credentialsMasked.value = false
+    credentialsRevealed.value = false
+    credentialsRevealing.value = false
     editingBasicBaseline.value = undefined
     editingAdvancedBaseline.value = undefined
     editingAccountAdvancedDetail.value = undefined
@@ -532,6 +542,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     clearDraftApiKeyTestSnapshot()
     savedApiKeyRuntimeSnapshot.value = undefined
     accountApiKeyRuntimeLoading.value = false
+    credentialsMasked.value = false
+    credentialsRevealed.value = false
+    credentialsRevealing.value = false
     editingBasicBaseline.value = undefined
     editingAdvancedBaseline.value = undefined
     resetDeferredAccountOptionState()
@@ -783,6 +796,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingAccountAdvancedDetail.value = advancedDetail
     cloningSourceId.value = undefined
     creatingAccountScopeParams.value = undefined
+    // BUG-0238：明细声明凭据已加密占位；仅在表单未保留既有敏感值（高级配置重载会保留
+    // 已 reveal 的明文）时重置 reveal 状态，避免高级加载把已取回的明文误标回占位态。
+    credentialsMasked.value = sourceAccount.credentialsMasked === true
+    if (!(preserveBasicFields && (preserveTypedApiKeys || preserveTypedOAuthTokens))) {
+      credentialsRevealed.value = false
+    }
     Object.assign(form, formPatch)
     if (preservedBasic) {
       Object.assign(form, preservedBasic)
@@ -803,6 +822,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const requestToken = nextFormOpenRequestToken()
     savedApiKeyRuntimeSnapshot.value = undefined
     accountApiKeyRuntimeLoading.value = false
+    credentialsMasked.value = false
+    credentialsRevealed.value = false
+    credentialsRevealing.value = false
     editingBasicBaseline.value = undefined
     editingAdvancedBaseline.value = undefined
     editingAccountAdvancedDetail.value = undefined
@@ -937,6 +959,63 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
   }
 
+  /**
+   * BUG-0238：按需取回账户凭据明文。编辑明细加载的是 __ENCRYPTED__ 占位内容，
+   * 用户点击敏感字段眼睛/查看明文时调用 reveal 接口，用真实完整值替换表单敏感字段。
+   * 多 Key 池任一行触发一次即全量替换，不做逐行请求。
+   */
+  async function revealAccountCredentials(): Promise<void> {
+    const accountId = editingId.value
+    if (!accountId || !editingAccountDetail.value) return
+    if (!credentialsMasked.value || credentialsRevealed.value || credentialsRevealing.value) return
+    credentialsRevealing.value = true
+    const requestToken = formOpenRequestToken
+    try {
+      const revealed = options.isManagementView.value
+        ? await api.accounts.revealCredentials(accountId, editingAccountScopeParams())
+        : await api.myAccounts.revealCredentials(accountId)
+      if (!isCurrentFormOpenRequest(requestToken) || !modalOpen.value || editingAccountDetail.value?.id !== accountId) return
+      if (revealed.id !== accountId) {
+        message.error('账户凭据明文返回异常，请关闭弹窗后重试')
+        return
+      }
+      applyRevealedAccountCredentials(form, revealed.credentials)
+      credentialsRevealed.value = true
+      refreshEditBaselinesAfterCredentialReveal()
+      // 运行状态快照按占位身份匹配，替换为真实值后按真实键强制刷新一次。
+      void loadAccountApiKeyRuntimeDetails(true)
+    } catch (error) {
+      console.error(error)
+      if (isCurrentFormOpenRequest(requestToken)) {
+        message.error(options.extractApiErrorMessage(error, '查看账户凭据明文失败，请稍后重试'))
+      }
+    } finally {
+      if (isCurrentFormOpenRequest(requestToken)) credentialsRevealing.value = false
+    }
+  }
+
+  /**
+   * reveal 后用当前表单重建编辑基线：占位加载基线不含敏感键，若不重建，
+   * 未再修改的保存会提交与现值相同的明文凭据造成无谓变更。
+   */
+  function refreshEditBaselinesAfterCredentialReveal(): void {
+    const account = editingAccountDetail.value
+    if (!account) return
+    if (editingBasicBaseline.value) {
+      editingBasicBaseline.value = buildAccountBasicEditSnapshot(form, account.credentials)
+    }
+    if (editingAdvancedBaseline.value) {
+      editingAdvancedBaseline.value = buildAccountSavePayload({
+        accounts: options.accounts.value,
+        accountDetail: account,
+        editingId: account.id,
+        form,
+        errorPolicyRules: accountErrorPolicyRules.value,
+        responseInspectionRules: accountResponseInspectionRules.value
+      })
+    }
+  }
+
   function handleAccountTagOptionsDropdown(open: boolean): void {
     if (open) void loadAccountTagOptions(accountTagOperationScopeParams())
   }
@@ -987,6 +1066,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     availableProviders,
     cloningSourceId,
     createScopeParams,
+    credentialsMasked,
+    credentialsRevealed,
+    credentialsRevealing,
+    revealAccountCredentials,
     editingId,
     editingAccountDetail,
     editingAccountAdvancedDetail,
