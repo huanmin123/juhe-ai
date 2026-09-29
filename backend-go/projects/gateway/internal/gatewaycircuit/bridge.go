@@ -1170,12 +1170,12 @@ func (b *Bridge) persistWithRetry(ctx context.Context, scope Scope, state State)
 					return nil
 				}
 				if incidentIsNewerThanRuntimeState(persisted.Incident, *runtimeState) {
-				restored, err := b.store.Restore(ctx, IncidentToRuntimeState(*persisted.Incident, incidentScopeKeyMapFromRuntimeState(*runtimeState)), int64Ptr(b.now()))
-				if err != nil {
-					lastErr = err
-					if attempt == b.maxPersistAttempts {
-						break
-					}
+					restored, err := b.store.Restore(ctx, IncidentToRuntimeState(*persisted.Incident, incidentScopeKeyMapFromRuntimeState(*runtimeState)), int64Ptr(b.now()))
+					if err != nil {
+						lastErr = err
+						if attempt == b.maxPersistAttempts {
+							break
+						}
 						if sleepErr := b.sleep(ctx, msToDuration(delay)); sleepErr != nil {
 							return sleepErr
 						}

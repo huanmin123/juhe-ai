@@ -56,7 +56,8 @@ func TestLoginGuardEvictsOldestIPKeysAtCapacity(t *testing.T) {
 	clock := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	guard := NewLoginGuard(func() time.Time { return clock })
 	for i := 0; i < loginGuardMaxIPKeys; i++ {
-		clock = clock.Add(time.Second)
+		// 500ms 步长让 1000 条都留在 600s 窗口内，否则先触发过期清理而非容量淘汰。
+		clock = clock.Add(500 * time.Millisecond)
 		if _, _, _, err := guard.Failed(fmt.Sprintf("ip-%04d", i), ""); err != nil {
 			t.Fatal(err)
 		}
@@ -85,7 +86,8 @@ func TestLoginGuardEvictsOldestUserKeysAtCapacity(t *testing.T) {
 	clock := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	guard := NewLoginGuard(func() time.Time { return clock })
 	for i := 0; i < loginGuardMaxUserKeys; i++ {
-		clock = clock.Add(time.Second)
+		// 500ms 步长让 1000 条都留在 600s 窗口内，否则先触发过期清理而非容量淘汰。
+		clock = clock.Add(500 * time.Millisecond)
 		if _, _, _, err := guard.Failed("203.0.113.1", fmt.Sprintf("User-%04d", i)); err != nil {
 			t.Fatal(err)
 		}
