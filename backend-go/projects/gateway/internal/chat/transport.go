@@ -183,8 +183,12 @@ type chatToolExecutionContext struct {
 	DefaultImageModel       string
 	Aborted                 func() bool
 	LoadImageEditReferences func(assetIDs []string) ([]ChatImageEditReference, error)
-	ImageGeneration         func(input ChatImageGenerationRequest) (ChatImageGenerationToolResult, error)
-	ArtifactSink            ChatGeneratedImageArtifactSink
+	// ConstrainImageModel 把主模型自选的生图模型收敛到会话生图绑定账户实际
+	// 可路由的集合内（BUG-0230）：组装侧按 bindings 注入；nil 表示无约束
+	//（未绑定等场景由发送预检拦截）。
+	ConstrainImageModel func(model string) string
+	ImageGeneration     func(input ChatImageGenerationRequest) (ChatImageGenerationToolResult, error)
+	ArtifactSink        ChatGeneratedImageArtifactSink
 	// WebSearch 是 web_search 模型工具的执行端口：组装侧（stream_execute）按
 	// 会话绑定解析——未绑定返回 chatToolBindingRequiredError，已绑定经进程内
 	// /v1 链固定派发到绑定「账户+模型」（generation_websearch.go）。

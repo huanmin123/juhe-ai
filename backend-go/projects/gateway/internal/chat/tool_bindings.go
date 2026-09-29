@@ -23,7 +23,7 @@ type ChatToolBindingCandidate struct {
 // ChatToolBindingStatus 是单个工具的绑定状态（GET tool-bindings / 会话详情
 // toolCapabilities 的条目形状，契约 §8.1/§8.3）。
 type ChatToolBindingStatus struct {
-	ID  string `json:"id"`
+	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	// Bound：会话是否已为该工具写入绑定（web_search = 账户+模型两列；generate_
 	// image = 账户列 + default_image_model）。
@@ -33,8 +33,8 @@ type ChatToolBindingStatus struct {
 	Binding *ChatToolBindingCandidate `json:"binding"`
 	// Valid：绑定仍可派发（账户 active 且模型仍在候选/账户可路由）；失效时
 	// InvalidReason 说明原因。
-	Valid         bool   `json:"valid"`
-	InvalidReason string `json:"invalidReason,omitempty"`
+	Valid         bool                       `json:"valid"`
+	InvalidReason string                     `json:"invalidReason,omitempty"`
 	Candidates    []ChatToolBindingCandidate `json:"candidates"`
 }
 
@@ -54,13 +54,13 @@ type chatToolBindingCandidates struct {
 // chatToolBindingRuntime 是发送链路的绑定运行时视图（stream_route 解析、
 // generationExecuteInput 携带）：绑定目标 + 候选摘要 + 固定派发执行器。
 type chatToolBindingRuntime struct {
-	SearchAccountID string
-	SearchModelID   string
-	SearchExecutor  GenerationExecutor
+	SearchAccountID  string
+	SearchModelID    string
+	SearchExecutor   GenerationExecutor
 	SearchCandidates []ChatToolBindingCandidate
-	ImageAccountID  string
-	ImageExecutor   GenerationExecutor
-	ImageCandidates []ChatToolBindingCandidate
+	ImageAccountID   string
+	ImageExecutor    GenerationExecutor
+	ImageCandidates  []ChatToolBindingCandidate
 }
 
 // chatToolBindingCandidatesOf 取指定工具的候选摘要（nil 视图返回 nil）。
@@ -78,7 +78,7 @@ func chatToolBindingCandidatesOf(runtime *chatToolBindingRuntime, toolID string)
 }
 
 // chatSearchImageModelFamily 返回 provider 家族可路由的注册图像模型枚举
-//（候选白名单：GPT 系供应商（gpt/openai vendor）× gpt-image-2；Grok 系账户 ×
+// （候选白名单：GPT 系供应商（gpt/openai vendor）× gpt-image-2；Grok 系账户 ×
 // grok-imagine 系，契约 §6.3——目录声明 image_generation 的其他模型不进候选）。
 func chatSearchImageModelFamily(providerCode string) []string {
 	switch normalizeProviderToken(providerCode) {
@@ -89,6 +89,37 @@ func chatSearchImageModelFamily(providerCode string) []string {
 	default:
 		return nil
 	}
+}
+
+// constrainChatImageModel 把主模型自选的生图模型收敛到绑定账户实际可路由的
+// 集合内（BUG-0230）：model 已在集合内原样返回；不在时优先会话默认生图模型
+// （其亦需在集合内），否则取该账户候选首项（候选解析顺序确定性）。候选为空
+// 或绑定账户无候选时不约束（未绑定/解析失败由发送预检与绑定校验承接）。
+func constrainChatImageModel(model, accountID, defaultModel string, candidates []ChatToolBindingCandidate) string {
+	if model == "" || accountID == "" {
+		return model
+	}
+	supported := map[string]bool{}
+	first := ""
+	for _, candidate := range candidates {
+		if candidate.AccountID != accountID {
+			continue
+		}
+		if !supported[candidate.ModelID] && first == "" {
+			first = candidate.ModelID
+		}
+		supported[candidate.ModelID] = true
+	}
+	if len(supported) == 0 || supported[model] {
+		return model
+	}
+	if supported[defaultModel] {
+		return defaultModel
+	}
+	if first != "" {
+		return first
+	}
+	return model
 }
 
 // accountSupportsImageModel 判定账户视图可路由注册图像模型：图像路由口径与
@@ -129,7 +160,7 @@ func accountSupportsImageModel(account ChatTransportAccount, model string) bool 
 // resolveChatToolBindingCandidates 计算两类模型工具的绑定候选（契约 §6.3）：
 // 搜索候选 = 账户可派发 responses 协议 × 目录矩阵 supportedToolsByProtocol
 // ["responses"] 含 web_search 的模型；生图候选 = 注册图像枚举中账户可路由的
-//（家族 × api_key 类型）。候选按账户列表顺序（/my-chat/accounts 口径）与
+// （家族 × api_key 类型）。候选按账户列表顺序（/my-chat/accounts 口径）与
 // 模型枚举/目录顺序确定性输出。
 func (rt *chatRoutes) resolveChatToolBindingCandidates(bindScope ChatBindScope) (*chatToolBindingCandidates, error) {
 	if rt.deps.AccountOptionsLookup == nil {

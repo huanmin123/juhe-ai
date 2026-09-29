@@ -323,6 +323,12 @@ func executeGenerateImageTool(input map[string]any, context *chatToolExecutionCo
 	if !IsSupportedChatImageModel(imageModel) {
 		return chatToolExecutionResult{}, fmt.Errorf("图像模型 %s 不受支持", imageModel)
 	}
+	// BUG-0230：主模型自选的模型可能不在会话生图绑定账户的可路由集合内
+	//（派发层会以 model_unsupported 拒绝），组装侧注入的收敛回调把它折回
+	// 集合内目标；后续请求、资产落库与工具结果全部使用收敛后的模型。
+	if context.ConstrainImageModel != nil {
+		imageModel = context.ConstrainImageModel(imageModel)
+	}
 	references := []ChatImageEditReference{}
 	if operation == "edit" {
 		if context.LoadImageEditReferences == nil {

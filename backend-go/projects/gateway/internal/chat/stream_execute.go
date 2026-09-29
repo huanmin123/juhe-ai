@@ -171,6 +171,13 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 			LoadImageEditReferences: func(assetIDs []string) ([]ChatImageEditReference, error) {
 				return loadImageEditReferences(rt.deps.AssetEditReferences, rt.deps.ObjectStore, assetIDs, identity.OwnerID, input.conversation.ID, rt.now())
 			},
+			ConstrainImageModel: func(model string) string {
+				bindings := input.toolBindings
+				if bindings == nil {
+					return model
+				}
+				return constrainChatImageModel(model, bindings.ImageAccountID, input.defaultImageModel, bindings.ImageCandidates)
+			},
 			ImageGeneration: func(request ChatImageGenerationRequest) (ChatImageGenerationToolResult, error) {
 				// 生图模型工具（契约 §6.2）：未绑定账户 → binding_required 引导；
 				// 已绑定 → 经 /v1 链固定派发绑定账户（不做旧路由派发兼容）。

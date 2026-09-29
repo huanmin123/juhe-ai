@@ -3,13 +3,13 @@
 ## 基本信息
 
 - 编号：BUG-0230
-- 状态：待修复（已定性，方案待定）
+- 状态：已修复（随 2026-09-29 13:5x 发布）
 - 严重程度：P2
 - 发现时间：2026-09-29
 - 发现方式：生产换绑 grok 生图链路验证（会话 `chat_conv_0a1be842667879680a56b64411f82065`）
 - 模块：网关 / chat 工具执行链（generation_tools + gatewaydispatch）
 - 关联 bug：无
-- 责任人：待派单
+- 责任人：主代理
 
 ## 问题概述
 
@@ -35,11 +35,15 @@
 - `executeGenerateImageTool` 透传主模型选择，无「绑定账户支持集」校验或回退。
 - 派发链（候选模型过滤 + `gatewayRequestCapabilityMismatchReasonFor`）按账户 SupportedModels 拒绝，语义正确；缺陷在工具执行层未约束输入。
 
-## 修复方向（待定稿）
+## 修复方向（已实施，2026-09-29）
 
-- 首选：`executeGenerateImageTool`（或 ImageGeneration 回调内）当 `input.model` 不在绑定账户支持模型集合时回退 `context.DefaultImageModel`，并可在工具结果里注明已收敛；绑定支持集经 toolBindings 运行时携带。
-- 备选：工具 schema 动态枚举（组装侧按绑定支持集生成 `model` enum），主模型无机会选错。
-- 文档同步点：`docs/functions/AI问答工具体系与主子模型设计.md` §6.2（生图工具契约）。
+- 实施：执行层收敛（首选方向的落地）。
+  - 新增纯函数 `constrainChatImageModel(model, accountID, defaultModel, candidates)`（`internal/chat/tool_bindings.go`）：`model` 不在绑定账户候选集合时回退 `defaultModel`（须在集合内），否则取该账户候选首项；集合内 / 候选为空 / 未绑定原样返回。
+  - `chatToolExecutionContext` 新增 `ConstrainImageModel func(model string) string` 端口（`internal/chat/transport.go`），组装侧（`internal/chat/stream_execute.go`）按 `input.toolBindings`（ImageAccountID + ImageCandidates）与 `input.defaultImageModel` 注入。
+  - `executeGenerateImageTool` 在注册枚举校验后调用收敛（`internal/chat/generation_tools.go`），收敛后的模型贯通子调用请求、`CommitGeneratedImage` 落库与工具结果 `model` 字段。
+- 测试：`TestConstrainChatImageModelW3`（`internal/chat/w3_tools_images_test.go`）覆盖六分支 + 收敛贯通子调用与工具结果；chat 包全量绿。
+- 文档同步：`docs/functions/AI问答工具体系与主子模型设计.md` §6.2 补「主模型自选模型的收敛」条目。
+- 未采用备选（工具 schema 动态枚举）：内部工具注册表为全局静态，按会话生成枚举需把注册表实例化到会话级，侵入面大；执行层单点收敛已消除派发拒绝面。
 
 ## 关联事实（非本缺陷）
 

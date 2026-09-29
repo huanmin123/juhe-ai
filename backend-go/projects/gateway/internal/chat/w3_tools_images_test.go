@@ -16,13 +16,15 @@ import (
 // 全部用 Mock 替换，不触达真实上游。
 
 type stubImageGenerationW3 struct {
-	calls  int
-	fail   error
-	result ChatImageGenerationToolResult
+	calls     int
+	fail      error
+	result    ChatImageGenerationToolResult
+	lastModel string
 }
 
 func (s *stubImageGenerationW3) generate(request ChatImageGenerationRequest) (ChatImageGenerationToolResult, error) {
 	s.calls++
+	s.lastModel = request.Model
 	if s.fail != nil {
 		return ChatImageGenerationToolResult{}, s.fail
 	}
@@ -832,6 +834,54 @@ func TestGenerateChatImageGrokProfileW3(t *testing.T) {
 		}}}
 		if _, err := GenerateChatImage(context.Background(), &missing, ChatImageGenerationRequest{Model: "grok-imagine-image", Prompt: "猫"}, "key", ""); err == nil || !strings.Contains(err.Error(), "缺少 b64_json") {
 			t.Fatalf("双缺失应报错: %v", err)
+		}
+	})
+}
+
+// TestConstrainChatImageModelW3 覆盖 BUG-0230 收敛：主模型自选生图模型超出
+// 绑定账户可路由集合时折回会话默认模型（默认亦不可路由时取该账户候选首项），
+// 集合内 / 无候选 / 未绑定原样返回；收敛结果贯通子调用请求与工具结果。
+func TestConstrainChatImageModelW3(t *testing.T) {
+	candidates := []ChatToolBindingCandidate{
+		{AccountID: "acc-a", ModelID: "gpt-image-2"},
+		{AccountID: "acc-b", ModelID: "grok-imagine-image"},
+		{AccountID: "acc-b", ModelID: "grok-imagine-quality"},
+	}
+	if got := constrainChatImageModel("gpt-image-2", "acc-b", "grok-imagine-image", candidates); got != "grok-imagine-image" {
+		t.Fatalf("越界选择应回退默认模型: %s", got)
+	}
+	if got := constrainChatImageModel("grok-imagine-quality", "acc-b", "grok-imagine-image", candidates); got != "grok-imagine-quality" {
+		t.Fatalf("集合内选择应原样: %s", got)
+	}
+	if got := constrainChatImageModel("gpt-image-2", "acc-b", "gpt-image-2", candidates); got != "grok-imagine-image" {
+		t.Fatalf("默认亦不可路由应取候选首项: %s", got)
+	}
+	if got := constrainChatImageModel("gpt-image-2", "acc-none", "grok-imagine-image", candidates); got != "gpt-image-2" {
+		t.Fatalf("绑定账户无候选不约束: %s", got)
+	}
+	if got := constrainChatImageModel("gpt-image-2", "", "grok-imagine-image", candidates); got != "gpt-image-2" {
+		t.Fatalf("未绑定不约束: %s", got)
+	}
+	if got := constrainChatImageModel("grok-imagine-image", "acc-b", "grok-imagine-image", nil); got != "grok-imagine-image" {
+		t.Fatalf("候选为空不约束: %s", got)
+	}
+
+	t.Run("收敛贯通子调用与工具结果", func(t *testing.T) {
+		image := &stubImageGenerationW3{result: ChatImageGenerationToolResult{Data: testTinyPNGBytesW3, Bytes: int64(len(testTinyPNGBytesW3)), MimeType: "image/png", Width: 1, Height: 1}}
+		context := toolContextW3(image)
+		context.DefaultImageModel = "grok-imagine-image"
+		context.ConstrainImageModel = func(model string) string {
+			return constrainChatImageModel(model, "acc-b", context.DefaultImageModel, candidates)
+		}
+		result, err := executeGenerateImageTool(map[string]any{"prompt": "猫", "model": "gpt-image-2"}, context)
+		if err != nil {
+			t.Fatalf("生成失败: %v", err)
+		}
+		if image.lastModel != "grok-imagine-image" {
+			t.Fatalf("子调用模型应收敛为 grok-imagine-image: %s", image.lastModel)
+		}
+		if result.PublicResult["model"] != "grok-imagine-image" {
+			t.Fatalf("工具结果模型应收敛: %v", result.PublicResult["model"])
 		}
 	})
 }
