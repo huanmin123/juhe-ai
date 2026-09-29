@@ -11,7 +11,10 @@
           <span class="chat-process-status" :class="`is-${entry.block.status ?? 'started'}`" aria-hidden="true" />
           <span>{{ reasoningStatusLabel(entry.block.status ?? 'started') }}</span>
         </summary>
-        <div class="chat-process-details" :class="{ 'is-streaming': isReasoningStreaming(entry.block) }">{{ entry.block.text || '正在思考…' }}</div>
+        <div class="chat-process-details" :class="{ 'is-streaming': isReasoningStreaming(entry.block) }">
+          <ChatMarkdown v-if="entry.block.text" class="chat-process-reasoning" :content="entry.block.text" />
+          <template v-else>正在思考…</template>
+        </div>
       </details>
       <ChatToolEvent
         v-else-if="entry.kind === 'tools'"
@@ -103,7 +106,10 @@ function rememberReasoningToggleIntent(block: Extract<ChatMessageContentBlock, {
 .chat-process-status.is-started, .chat-process-status.is-updated { animation: chat-process-pulse 1.4s ease-in-out infinite; }
 .chat-process-status.is-completed { background: #52a447; }
 .chat-process-status.is-failed, .chat-process-status.is-canceled { background: #d9534f; }
-.chat-process-details { max-height: 220px; margin: 5px 0 0 13px; padding: 5px 9px; overflow: auto; white-space: pre-wrap; border-left: 2px solid #edf1f5; color: #7b8796; }
+.chat-process-details { max-height: 220px; margin: 5px 0 0 13px; padding: 5px 9px; overflow: auto; border-left: 2px solid #edf1f5; color: #7b8796; }
+.chat-process-details .chat-process-reasoning { color: #7b8796; font-size: 12px; line-height: 1.6; }
+.chat-process-details .chat-process-reasoning :deep(p) { margin: 0 0 6px; }
+.chat-process-details .chat-process-reasoning :deep(p:last-child) { margin-bottom: 0; }
 @keyframes chat-process-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; box-shadow: 0 0 0 4px rgba(22, 119, 255, .12); } }
 @media (prefers-reduced-motion: reduce) { .chat-process-status.is-started, .chat-process-status.is-updated { animation: none; } }
 </style>

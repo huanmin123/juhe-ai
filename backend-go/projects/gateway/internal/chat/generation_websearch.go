@@ -172,6 +172,12 @@ func consumeWebSearchStream(reader io.Reader, progress func(chatWebSearchProgres
 			continue
 		}
 		switch {
+		case event.Type == "response.reasoning_summary_part.added" || event.Type == "response.reasoning_text_part.added":
+			// 上游多段思考摘要在各段自带强调标记（如 **…**），段间不加分隔会
+			// 连成「**a****b**」——新段开始前补空行分隔。
+			if strings.TrimSpace(state.Reasoning) != "" && !strings.HasSuffix(state.Reasoning, "\n") {
+				state.Reasoning += "\n\n"
+			}
 		case event.Type == "response.reasoning_summary_text.delta" || event.Type == "response.reasoning_text.delta":
 			state.Reasoning += event.Delta
 			state.Stage = "reasoning"

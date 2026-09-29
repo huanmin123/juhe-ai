@@ -254,7 +254,10 @@ func TestW10DWebSearchResultExtraction(t *testing.T) {
 // 回答增量聚合、阶段推进序列、completed 权威提取与失败事件回退。
 func TestW10DConsumeWebSearchStream(t *testing.T) {
 	sse := strings.Join([]string{
-		`data: {"type":"response.reasoning_summary_text.delta","delta":"想一下"}`,
+		`data: {"type":"response.reasoning_summary_part.added","item":{"type":"reasoning"}}`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"**想一下**"}`,
+		`data: {"type":"response.reasoning_summary_part.added","item":{"type":"reasoning"}}`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"**再确认**"}`,
 		`data: {"type":"response.output_item.added","item":{"type":"web_search_call","action":{"type":"search","query":"q1"}}}`,
 		`data: {"type":"response.web_search_call.searching","item_id":"ws_1"}`,
 		`data: {"type":"response.output_item.added","item":{"type":"web_search_call","action":{"type":"open_page","url":"https://a.example.com"}}}`,
@@ -280,7 +283,7 @@ func TestW10DConsumeWebSearchStream(t *testing.T) {
 	if strings.Join(stages, ",") != strings.Join(wantStages, ",") {
 		t.Fatalf("阶段序列 = %v, want %v", stages, wantStages)
 	}
-	if last.Reasoning != "想一下" || last.Answer != "答" {
+	if last.Reasoning != "**想一下**\n\n**再确认**" || last.Answer != "答" {
 		t.Fatalf("最终快照 = %+v", last)
 	}
 	// 官方 added 带 query、done 复述同一 query 必须去重；中转上游仅 done 带

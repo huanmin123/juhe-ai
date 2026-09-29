@@ -9,7 +9,7 @@
         <div class="chat-process-details" :class="{ 'is-streaming': isActiveToolGroup(tool) }">
           <div v-if="tool.progress" class="chat-subagent">
             <p class="chat-subagent-stage">{{ progressStageLabel(tool.progress) }}</p>
-            <p v-if="tool.progress.reasoning" class="chat-subagent-reasoning">{{ tool.progress.reasoning }}</p>
+            <ChatMarkdown v-if="tool.progress.reasoning" class="chat-subagent-reasoning" :content="tool.progress.reasoning" />
             <ul v-if="tool.progress.actions?.length" class="chat-subagent-actions">
               <li v-for="action in tool.progress.actions" :key="action">{{ action }}</li>
             </ul>
@@ -31,7 +31,7 @@
     </template>
     <details v-if="process.reasoningText" class="chat-reasoning">
       <summary>思考摘要</summary>
-      <div>{{ process.reasoningText }}</div>
+      <div><ChatMarkdown class="chat-reasoning-body" :content="process.reasoningText" /></div>
     </details>
   </div>
 </template>
@@ -39,6 +39,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ChatMessage, ChatToolStatus } from '@/types/domain/chat'
+import ChatMarkdown from './ChatMarkdown.vue'
 import { projectChatMessageProcess, type ChatToolProcessGroup, type ChatToolProgress } from './chatMessageProcess'
 
 const props = defineProps<{ message: ChatMessage }>()
@@ -95,7 +96,9 @@ function isSourceLink(value: string): boolean {
 .chat-process-details { max-height: 168px; margin: 5px 0 0 13px; padding-left: 9px; overflow: auto; border-left: 2px solid #edf1f5; color: #7b8796; }
 .chat-subagent { margin: 0 0 4px; }
 .chat-subagent-stage { margin: 0; color: #98a2b3; }
-.chat-subagent-reasoning { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #7b8796; }
+.chat-subagent-reasoning { margin: 4px 0 0; color: #7b8796; font-size: 12px; line-height: 1.6; }
+.chat-subagent-reasoning :deep(p) { margin: 0 0 6px; }
+.chat-subagent-reasoning :deep(p:last-child) { margin-bottom: 0; }
 .chat-subagent-actions { margin: 4px 0 0; padding-left: 17px; }
 .chat-subagent-actions li { margin: 2px 0; }
 .chat-subagent-answer { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #67748a; }
@@ -105,7 +108,10 @@ function isSourceLink(value: string): boolean {
 .chat-process-details p { margin: 4px 0 0; color: #98a2b3; }
 .chat-reasoning { color: #8995a5; }
 .chat-reasoning summary { color: #8995a5; }
-.chat-reasoning div { max-height: 168px; margin: 5px 0 0 13px; padding: 5px 9px; overflow: auto; white-space: pre-wrap; border-left: 2px solid #edf1f5; color: #7b8796; }
+.chat-reasoning div { max-height: 168px; margin: 5px 0 0 13px; padding: 5px 9px; overflow: auto; border-left: 2px solid #edf1f5; color: #7b8796; }
+.chat-reasoning .chat-reasoning-body { color: #7b8796; font-size: 12px; line-height: 1.6; }
+.chat-reasoning .chat-reasoning-body :deep(p) { margin: 0 0 6px; }
+.chat-reasoning .chat-reasoning-body :deep(p:last-child) { margin-bottom: 0; }
 @keyframes chat-process-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; box-shadow: 0 0 0 4px rgba(75, 143, 232, .12); } }
 @media (prefers-reduced-motion: reduce) { .chat-process-status.is-started, .chat-process-status.is-updated { animation: none; } }
 </style>
