@@ -7,7 +7,8 @@ package mockdata
 // 依据：docs/functions/Mockdata造数设计.md「数据边界」「清理策略」「验证点」与
 // migration-backup-1/node/final-archive/backend/src/scripts/maintenance/mockdata/
 // 的 observability/{logs,storage,monitoring}.ts、records/record-cleanup.ts
-// （Node 版曾把审计 / 运行日志 / 表监控造数让给 Go owner，这里补上审计、操作与
+// （归档已移出仓库，git 历史可溯；Node 版曾把审计 / 运行日志 / 表监控造数让给
+// Go owner，这里补上审计、操作与
 // 运行日志；表空间监控仍由 F2 owner 生成，本域不写）。
 //
 // 硬边界：

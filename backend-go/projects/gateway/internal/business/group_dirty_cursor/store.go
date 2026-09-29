@@ -304,8 +304,10 @@ func (s *Store) UpdateGroupAccountStatsAllCursor(ctx context.Context, cursorGrou
 	return s.UpdateAllCursor(ctx, cursorGroupID)
 }
 
-// CoveredManifestOperations records the exact owner-manifest operations
-// implemented by this isolated port. It does not mutate capability status.
+// CoveredManifestOperations records the exact operations implemented by this
+// isolated port (names originate from the retired owner-manifest, which was
+// removed with the migration records; retrievable from git history). It does
+// not mutate capability status.
 var CoveredManifestOperations = []string{
 	"mark_all_group_account_stats_dirty",
 	"delete_group_account_stats_dirty_rows",

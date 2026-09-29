@@ -224,8 +224,8 @@ func (p *ResultProjector) recordRejectedSkip(result ProjectionResult) {
 }
 
 // lockAccountListDirtyInTx 在事务首条语句位置取账户列表 dirty 写序列化
-// advisory 锁（advisorylock.AccountListDirty = 7001001）。锁序契约（问题
-// -0184，2026-09-30 生产三方死锁环）：本投影器的每秒轮询事务会 UPDATE
+// advisory 锁（advisorylock.AccountListDirty = 7001001）。锁序契约（问题-0237
+// 的 2026-09-30 生产三方死锁环；锁序约定出处见问题-0184/0192）：本投影器的每秒轮询事务会 UPDATE
 // juhe_business.proxy_profiles，行级触发器 account_list_availability_proxies
 // 经 mark_dirty_accounts 在触发器内取 7001001；若事务先拿 proxy 行锁再等
 // advisory，与首锁 7001001 的合规方（circuitstore applyOneClaim 等）交叉

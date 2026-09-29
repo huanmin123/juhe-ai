@@ -73,7 +73,7 @@ type summaryDomain struct {
 
 // summaryDocument 是 mockdata-summary.json 的结构。
 //
-// 字段结构参照 Node 归档实现
+// 字段结构参照 Node 归档实现（归档已移出仓库，git 历史可溯）
 // migration-backup-1/node/final-archive/backend/src/scripts/maintenance/mockdata/summary.ts
 // 的 writeSummary（generatedAt / options / owner / mockUserPassword /
 // mockUsers / apiKeys / counts）。Node 的 apiKeyBindingRule、authorizationSamples、

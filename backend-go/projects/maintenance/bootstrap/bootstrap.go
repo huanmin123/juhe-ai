@@ -2,7 +2,7 @@
 // six-database SQLite ensure+seed flow (and the PostgreSQL equivalent).
 //
 // Baseline note (2026-09-04, user-approved amendment): the Go three-project
-// baseline (docs/migration/Go三项目架构基线.md line 32) forbids gateway ->
+// baseline (docs/architecture/Go三项目架构基线.md line 32) forbids gateway ->
 // maintenance imports. The X05 fresh dual-mode acceptance requires the
 // gateway composition root to run the same ensure+seed the Node db-service
 // runs at startup (backend/src/storage/database.ts getBusinessDatabase ->

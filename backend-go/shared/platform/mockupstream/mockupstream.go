@@ -7,7 +7,8 @@
 // The wire contract mirrors the archived Node regression mocks
 // (migration-backup/node/final-archive/backend/src/scripts/regression/
 // chat-gateway-mock-ai-regression.ts and
-// gateway-quality-priority-real-sample-mock-ai-regression.ts):
+// gateway-quality-priority-real-sample-mock-ai-regression.ts; archive moved
+// out of the repo, retrievable from git history):
 //
 //   - exact method+path whitelist (POST /v1/chat/completions,
 //     /v1/responses, /v1/embeddings; GET /v1/models); any other

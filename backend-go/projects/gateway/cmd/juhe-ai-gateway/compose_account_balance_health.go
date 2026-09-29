@@ -2,7 +2,8 @@ package main
 
 // Port of the archived Node production hotfix "accountBalanceGoOwnerHealth
 // ownerMode blue/green semantics" (migration-backup/node/final-archive/
-// backend/src/modules/system-api/system-api-app.ts). The DB-service health
+// backend/src/modules/system-api/system-api-app.ts; archive moved out of
+// the repo, retrievable from git history). The DB-service health
 // endpoint resolves the account-balance dependency against the Go jobs /health
 // endpoint, and blue-green standby slots are judged by reachability plus the
 // peer's ownerMode instead of the owner-only readiness flags.

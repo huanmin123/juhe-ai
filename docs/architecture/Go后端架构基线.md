@@ -1,10 +1,10 @@
 # Go 后端架构基线
 
-> **现行双模式基线（2026-08-14）。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块；F1/F2 已物理在 `jobs`，F3/F4 已物理在 `gateway`。Go 要同时支持 SQLite 与 PostgreSQL/Redis，并按 完整功能接管与 Node 归档迁移规则 的 L1-L4 生命周期一次接管一个完整功能：接管后对应 Node 文件退出活跃路径并归档，不保留 fallback。功能批次编号 F1-F6 以 迁移状态与后续批次-20260812（已删除，git 历史可溯） 为准。
+> **现行双模式基线（2026-08-14）。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块；F1/F2 已物理在 `jobs`，F3/F4 已物理在 `gateway`。Go 要同时支持 SQLite 与 PostgreSQL/Redis，并按 完整功能接管与 Node 归档迁移规则（已删除，git 历史可溯） 的 L1-L4 生命周期一次接管一个完整功能：接管后对应 Node 文件退出活跃路径并归档，不保留 fallback。功能批次编号 F1-F6 以 迁移状态与后续批次-20260812（已删除，git 历史可溯） 为准。
 
 > **项目边界补充（方案 A 更新）。** Go 代码按 [Go 三项目架构基线](Go三项目架构基线.md) 拆为独立的 `gateway`、`jobs`、`maintenance` 模块。本文保留通用技术、存储和并发规则；F1/F2 由 jobs 承载，F3/F4 由 gateway 承载。一般新定时功能进入 jobs；J3b 是唯一已批准例外，由 gateway 在同一进程内承担管理入口、scheduler、专属 J3b Store 与 Business projector，不得调用 jobs 或 Node。
 
-**方案 A 的优先级。** 本文中面向未迁移、明确排除 J3b 的 legacy 功能的 `owner bridge`、typed command、DB-service HTTP/IPC 仅表示共存期的既有边界，不适用于 J3b；以下所有通用 bridge 条款均按此排除解释。J3b 的唯一运行时 owner 是 `gateway`：`jobs` 必须对所有 J3b 启用配置 fail-closed，`maintenance` 只执行显式离线 schema/backfill/审计命令，且不存在 `gateway`/`jobs`/Node 之间的 J3b transport、fallback 或双写。若本文其他段落与 J3b 模型检测完整迁移契约 或 Business SQLite 单 Owner L1 清单 的 J3b 专门条款冲突，以 J3b 专门条款为准。
+**方案 A 的优先级。** 本文中面向未迁移、明确排除 J3b 的 legacy 功能的 `owner bridge`、typed command、DB-service HTTP/IPC 仅表示共存期的既有边界，不适用于 J3b；以下所有通用 bridge 条款均按此排除解释。J3b 的唯一运行时 owner 是 `gateway`：`jobs` 必须对所有 J3b 启用配置 fail-closed，`maintenance` 只执行显式离线 schema/backfill/审计命令，且不存在 `gateway`/`jobs`/Node 之间的 J3b transport、fallback 或双写。若本文其他段落与上述 J3b 专门边界冲突，以 J3b 专门边界为准（原裁决文档「J3b 模型检测完整迁移契约」与「Business SQLite 单 Owner L1 清单」已随迁移记录清退，git 历史可溯）。
 
 ## 1. 技术基线
 
@@ -17,7 +17,7 @@
 - PostgreSQL：适配器使用连接池、事务函数和上下文超时收口；具体库选择在 B0 后固定。
 - Redis：仅 PostgreSQL/Redis 模式的 cache、state 可使用 Redis。当前 Node Redis Streams 是 Node 历史实现，新 Go 完整功能默认直接异步执行，不能混称或假定已接线。
 - SQLite：必须提供 SQLite Store adapter；具体 driver、连接方式和未迁移 legacy 功能的 Node owner bridge 在 B0 定案。该 bridge 规则不适用于 J3b：J3b 不得使用 Node owner bridge、typed command、HTTP、IPC、queue 或 RPC，必须由 gateway 完成完整 handoff 后同进程独占。SQLite 模式不要求 Redis，并继续遵守每个文件单 writer。
-- 观测：Prometheus `/__aisys__/metrics`、受控 pprof、结构化 `slog` 和内部系统监控 API 分层维护；Go runtime 指标以 `runtime/metrics`、Prometheus Go collector、PG/Redis adapter 和直接异步执行状态为基础，具体口径见 Go 迁移指标与观测规划。
+- 观测：Prometheus `/__aisys__/metrics`、受控 pprof、结构化 `slog` 和内部系统监控 API 分层维护；Go runtime 指标以 `runtime/metrics`、Prometheus Go collector、PG/Redis adapter 和直接异步执行状态为基础，具体口径原定于「Go 迁移指标与观测规划」（已随迁移记录清退，git 历史可溯）。
 - 校验：使用 DTO 校验库处理字段形状和范围，跨字段业务规则仍写 service 校验，并转换为项目中文错误结构。
 - 测试：使用 Go 标准 `testing`、`httptest`、`go test ./... -race`、基准测试、testcontainers、必要的 mock upstream 和 goroutine 泄漏检查；跨服务依赖测试必须显式触发。
 

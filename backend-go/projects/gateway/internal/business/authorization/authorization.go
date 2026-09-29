@@ -106,8 +106,10 @@ func (s *Store) requireOwner() error {
 	return nil
 }
 
-// CheckQuotaBatch evaluates the exact four-owner-manifest read operations
-// against current authorization rows. Expired/revoked rows are ignored; an
+// CheckQuotaBatch evaluates the exact four read operations (as named by the
+// retired owner-manifest; manifest removed with the migration records,
+// retrievable from git history) against current authorization rows.
+// Expired/revoked rows are ignored; an
 // enabled quota with no usage owner denies, because allowing would hide a
 // migration omission.
 func (s *Store) CheckQuotaBatch(ctx context.Context, in QuotaRequest) ([]QuotaDecision, error) {

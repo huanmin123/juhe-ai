@@ -146,7 +146,8 @@ type PGSeedResult struct {
 // with the well-known default password admin/admin, so the first login must
 // hit the must_change_password 403 gate instead of relying on a manual
 // rename step). Contract adjudication 2026-09-28: the Node archive
-// (migration-backup/node/final-archive) carries no seed source at all — the
+// (migration-backup/node/final-archive; archive moved out of the repo,
+// retrievable from git history) carries no seed source at all — the
 // postgres-seed-defaults.ts this port's header cites does not exist there —
 // so there is no Node seed value to mirror. The Node generic create path
 // defaults mustChangePassword to true but
@@ -494,7 +495,7 @@ var pgSeedProviders = []pgSeedProvider{
 		Description:                "通用 OpenAI-compatible 供应商，用于接入兼容 OpenAI v1 协议的上游服务，默认只提供 API Key 透传能力",
 		ParentCode:                 "",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
+		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
 	},
 	{
 		ID:                         "gpt",
@@ -503,7 +504,7 @@ var pgSeedProviders = []pgSeedProvider{
 		Description:                "GPT 官方供应商，继承通用 OpenAI-compatible 能力，并启用 OAuth、Codex Responses 等 GPT 专属能力",
 		ParentCode:                 "openai",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
+		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"gpt-6-sol\",\"gpt-6-luna\",\"gpt-6-astra\",\"gpt-5.6-terra\",\"gpt-5.6-sol\"]",
 	},
 	{
 		ID:                         "xai",
@@ -557,7 +558,7 @@ var pgSeedProviders = []pgSeedProvider{
 		Description:                "混合供应商账户用于创建真实上游账户，并在账户内配置允许的下游协议入口和上游模型映射；不指向其他账户、分组或 API Key",
 		ParentCode:                 "",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"gpt-6-sol\",\"claude-opus-5-5\",\"gemini-3.8-flash\",\"glm-5.3\"]",
+		DefaultSupportedModelsJSON: "[\"gpt-6.1-sol\",\"claude-opus-5-5\",\"gemini-3.8-flash\",\"glm-5.3\"]",
 	},
 }
 

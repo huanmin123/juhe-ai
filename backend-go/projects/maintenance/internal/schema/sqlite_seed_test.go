@@ -117,8 +117,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
-	if first.ModelCatalogRows != 119 {
-		t.Fatalf("first seed model catalog rows = %d, want 119", first.ModelCatalogRows)
+	if first.ModelCatalogRows != 120 {
+		t.Fatalf("first seed model catalog rows = %d, want 120", first.ModelCatalogRows)
 	}
 	snapshotAfterFirst := seedTestSnapshot(t, db)
 
@@ -168,7 +168,7 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"external_integration_sources":        1,
 		"external_integration_source_tokens":  1,
 		"system_settings":                     61,
-		"provider_model_catalog":              119,
+		"provider_model_catalog":              120,
 	}
 	for table, want := range expectCounts {
 		if got := countSeedTestRows(t, db, "SELECT count(*) FROM "+table); got != want {

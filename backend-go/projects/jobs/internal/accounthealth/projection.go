@@ -569,7 +569,19 @@ func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) 
 		return base, fmt.Errorf("开始 J1 投影事务失败: %w", err)
 	}
 	defer tx.Rollback()
+	// 双键顺序契约（问题-0237 的 2026-09-30 生产三方死锁环；约定出处 0184/0192）：本事务后续
+	// UPDATE juhe_business.accounts 时，库端触发器
+	// account_list_availability_accounts_update 会隐式写
+	// account_list_availability_dirty 并在触发器内取
+	// advisorylock.AccountListDirty（7001001）。若本事务先取 health-projection
+	// 键、再在触发器内等 7001001，会与首锁 7001001 的合规方（circuitstore
+	// applyOneClaim 等批量 dirty 写事务）交叉持锁形成 40P01 死锁环。因此固定
+	// 顺序：先 7001001（dirty 写全局串行化），再 health-projection 键（本投影
+	// 器互斥），最后才取 accounts/input_versions 行锁。仅 PG 方言执行。
 	if p.business.postgres {
+		if _, err := tx.ExecContext(ctx, p.business.bind("SELECT pg_advisory_xact_lock(?)"), advisorylock.AccountListDirty); err != nil {
+			return base, err
+		}
 		if _, err := tx.ExecContext(ctx, p.business.bind("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))"), accountHealthProjectionAdvisoryLockKey); err != nil {
 			return base, err
 		}

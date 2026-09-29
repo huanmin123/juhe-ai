@@ -245,7 +245,9 @@ func (s *Store) CheckContract(ctx context.Context) error {
 	return nil
 }
 
-// Cleanup executes the sole owner-manifest operation. Orphaned authorization
+// Cleanup executes the sole account-cleanup operation of the retired
+// owner-manifest (manifest removed with the migration records; retrievable
+// from git history). Orphaned authorization
 // instances are soft-deleted first. Expired roots/instances are then handled
 // in Node's root-first order; each candidate is physically deleted only after
 // a cleared durable record fence, and every Business mutation is transactional

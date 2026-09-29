@@ -49,7 +49,7 @@
 
 ## 3. 技术边界
 
-- 运行时：当前实现使用官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`；standalone 模式需要内置 `node:sqlite` 可用，performance 模式不应在运行路径加载 SQLite。后续后端目标运行时是 Go，且 Go 必须同时支持 SQLite 与 PostgreSQL/Redis 两种正式模式；模式不决定 Go 是否可用。迁移规则见 Go 渐进减法迁移目录、完整功能接管与 Node 归档迁移规则、[Go 技术选型与依赖基线](../Go技术选型与依赖基线.md)、Go 迁移指标与观测规划 和 双模式存储目标（保留历史文件名）。迁移完成前，本文仍描述当前 Node 后端事实。
+- 运行时：当前实现使用官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`；standalone 模式需要内置 `node:sqlite` 可用，performance 模式不应在运行路径加载 SQLite。后续后端目标运行时是 Go，且 Go 必须同时支持 SQLite 与 PostgreSQL/Redis 两种正式模式；模式不决定 Go 是否可用。迁移已于 2026-09-05 终局（Node 清零归档，2026-09-30 足迹清理后归档移出仓库，git 历史可溯），迁移规则文档已随之清退；现行 Go 边界见 [Go 技术选型与依赖基线](../Go技术选型与依赖基线.md) 与 [架构总览](../架构总览.md)。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
 - 存储：默认 standalone 模式使用 Node 内置 `node:sqlite`，按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行；显式 performance 模式使用 PostgreSQL 保存事实域和统计域，使用 Redis 保存可丢弃缓存、短 TTL 运行态和 Redis Streams 队列。业务层必须通过 Store Port 访问存储，不能直接感知 SQLite / PostgreSQL / Redis。

@@ -58,7 +58,8 @@ func ResolveSchedule(jobName string, settings SettingsInterval) (Schedule, bool)
 const DriverPostgres = "postgres"
 
 // ModeConstraint 冻结 Node background-jobs.ts:286-316 的 databaseDriver 注册
-// 分叉（权威对照：docs/migration/jobs调度分支冻结清单.md 第 2.2/4.1 节）。
+// 分叉（原权威对照为 jobs 调度分支冻结清单第 2.2/4.1 节；文档已随迁移记录
+// 清退，git 历史可溯）。
 type ModeConstraint struct {
 	// PostgresOnly：仅 PG 高性能分支注册（默认分支把该 stage 并入
 	// usage-rank-snapshots-refresh）——ai-performance-summary-windows-refresh。

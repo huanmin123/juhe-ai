@@ -317,9 +317,9 @@ if ! command -v pnpm >/dev/null 2>&1; then
   fi
 fi
 
-# Node backend（juhe-ai-backend）已于 2026-09-04 物理归档到
-# （归档已移出仓库，git 历史可溯）（X02 全量归档）；Node check:runtime
-# 预检随之移除，发布物走 go-only 校验（见文件末尾的发布包校验）。
+# Node backend（juhe-ai-backend）已于 2026-09-04 清零归档（X02；归档已移出
+# 仓库，git 历史可溯）；Node check:runtime 预检随之移除，发布物走 go-only
+# 校验（见文件末尾的发布包校验）。
 
 export VITE_JUHE_AI_API_BASE_URL="$FRONTEND_API_BASE_URL"
 export VITE_JUHE_AI_GATEWAY_BASE_URL="$FRONTEND_GATEWAY_BASE_URL"

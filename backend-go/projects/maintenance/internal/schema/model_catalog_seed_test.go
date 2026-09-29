@@ -39,17 +39,17 @@ func nodeModelCatalogCompare(left, right modelCatalogSeedRow) int {
 }
 
 func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
-	// 119 rows after the 2026-09-23 manual sync from the Go pricing catalog
-	// (grok-4.7, claude-opus-5-5, claude-fable-5; gpt 60, xai 11, deepseek 4,
+	// 120 rows after the 2026-09-30 manual sync from the Go pricing catalog
+	// (grok-4.7, claude-opus-5-5, claude-fable-5; gpt 61, xai 11, deepseek 4,
 	// anthropic 15, gemini 13, glm 16).
-	if len(modelCatalogSeedRows) != 119 {
-		t.Fatalf("model catalog seed rows = %d, want 119 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
+	if len(modelCatalogSeedRows) != 120 {
+		t.Fatalf("model catalog seed rows = %d, want 120 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 60, "xai": 11, "deepseek": 4, "anthropic": 15, "gemini": 13, "glm": 16}
+	want := map[string]int{"gpt": 61, "xai": 11, "deepseek": 4, "anthropic": 15, "gemini": 13, "glm": 16}
 	if len(perProvider) != len(want) {
 		t.Fatalf("provider set = %v, want %v", perProvider, want)
 	}
@@ -111,6 +111,7 @@ func TestProviderModelCatalogID(t *testing.T) {
 		// Golden values produced by Node providerModelCatalogId.
 		{"gpt", "gpt-5.6-sol", "provider_model_gpt_gpt_5_6_sol_69ec47b65152"},
 		{"gpt", "gpt-6-astra", "provider_model_gpt_gpt_6_astra_14ec3d68eae1"},
+		{"gpt", "gpt-6.1-sol", "provider_model_gpt_gpt_6_1_sol_09b2adf74e3b"},
 	}
 	for _, testCase := range cases {
 		if got := providerModelCatalogID(testCase.provider, testCase.model); got != testCase.want {

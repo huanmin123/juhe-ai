@@ -207,6 +207,13 @@ var gpt5ToolsGpt5Dot6 = []string{"function_calling", "web_search", "file_search"
 
 var gpt5ToolsGpt5Dot6ByProtocol = toolsByProtocol([]string{"chat_completions", "responses"}, gpt5ToolsGpt5Dot6)
 
+// gpt5ToolsGpt61Sol mirrors the GPT-6.1 Sol hosted tool list (same set as
+// the GPT-5.6 family), but the 2026-09-30 model page restricts tool calling
+// to the Responses API: Chat Completions is supported without tool calling,
+// so the matrix carries no chat_completions key (consumers treat a missing
+// protocol key as an empty tool set).
+var gpt5ToolsGpt61SolByProtocol = toolsByProtocol([]string{"responses"}, gpt5ToolsGpt5Dot6)
+
 // gpt5ToolsGpt55 mirrors the GPT-5.5 family hosted tool list.
 var gpt5ToolsGpt55 = []string{"function_calling", "web_search", "file_search", "tool_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "computer_use", "mcp"}
 
@@ -231,6 +238,23 @@ var gpt5ToolsProCodex543ByProtocol = toolsByProtocol([]string{"responses"}, gpt5
 // openAIGPT5ModelPricingData — GPT-6/GPT-5 family, curated with the
 // 2026-07-30 pricing changelog.
 var openAIGPT5ModelPricingData = []rawModel{
+	{
+		Model: "gpt-6.1-sol", Mode: "chat", ReleaseDate: "2026-09-30",
+		ContextWindowTokens: intp(1050000), MaxInputTokens: intp(922000), MaxOutputTokens: intp(128000),
+		InputCostPerToken: f64p(0.000002), InputCostPerTokenPriority: f64p(0.000004), InputCostPerTokenFlex: f64p(0.000001),
+		OutputCostPerToken: f64p(0.00001), OutputCostPerTokenPriority: f64p(0.00002), OutputCostPerTokenFlex: f64p(0.000005),
+		CacheCreationInputTokenCost: f64p(0.0000025), CacheCreationInputTokenCostPriority: f64p(0.000005), CacheCreationInputTokenCostFlex: f64p(0.00000125),
+		CacheReadInputTokenCost: f64p(1e-7), CacheReadInputTokenCostPriority: f64p(2e-7), CacheReadInputTokenCostFlex: f64p(5e-8),
+		LongContextInputTokenThreshold: intp(272000),
+		LongContextInputCostMultiplier: f64p(2), LongContextOutputCostMultiplier: f64p(1.5),
+		SupportsPromptCaching:     true,
+		SupportedServiceTiers:     []string{"priority", "flex"},
+		SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"},
+		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
+		InputModalities:           []string{"text", "image"},
+		OutputModalities:          []string{"text"},
+		SupportedToolsByProtocol:  gpt5ToolsGpt61SolByProtocol,
+	},
 	{
 		Model: "gpt-6-sol", Mode: "chat", ReleaseDate: "2026-09-22",
 		ContextWindowTokens: intp(1050000), MaxInputTokens: intp(922000), MaxOutputTokens: intp(128000),

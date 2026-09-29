@@ -1,7 +1,8 @@
 // The juhe-ai-maintenance local mockdata commands (--mockdata /
 // --verify-mockdata-coverage): the Go port of the Node maintenance script
 // (migration-backup-1/node/final-archive/backend/src/scripts/maintenance/mockdata/
-// cli.ts), scoped to the local SQLite layout.
+// cli.ts; archive moved out of the repo, retrievable from git history),
+// scoped to the local SQLite layout.
 //
 // Driver matrix: SQLite only. The development runtime is go-only + SQLite
 // (scripts/dev.mjs sets JUHE_AI_DATA_DIR / JUHE_AI_LOG_DIR); PostgreSQL mockdata

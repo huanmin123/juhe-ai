@@ -42,8 +42,8 @@ const (
 // Config 是 J1 账户健康机制的终态配置：机制强制常开（2026-09-19 产品决策），
 // LoadConfig 恒走完整校验路径、缺失必填项即 fail-fast。原「deliberately
 // opt-in」开关（JUHE_AI_ACCOUNT_HEALTH_ENABLED）的防双 owner 理由已随 Node
-// 后端归档（migration-backup/node/final-archive）失效，开关与 Config.Enabled
-// 字段一并移除。
+// 后端归档（migration-backup/node/final-archive，归档已移出仓库，git 历史可溯）
+// 失效，开关与 Config.Enabled 字段一并移除。
 type Config struct {
 	InstanceID                      string
 	Store                           StoreConfig

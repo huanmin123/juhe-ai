@@ -12,7 +12,8 @@ import (
 )
 
 // BUG-0161 review-and-fix pairings. Every test below locks one adjudicated
-// claim against the Node archive (migration-backup/node/final-archive).
+// claim against the Node archive (migration-backup/node/final-archive;
+// archive moved out of the repo, retrievable from git history).
 
 // --- Claim 4: integerQueryValue uses JS Number + Number.isInteger. ---
 

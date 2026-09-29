@@ -11,7 +11,7 @@ import (
 // 镜像 Node backend/src/storage/usage-record-shards.ts
 // applyUsageRecordShardBaseSchema，含 legacy index drop）。
 //
-// 为什么复制而不是 import：Go 三项目基线（docs/migration/Go三项目架构基线.md）
+// 为什么复制而不是 import：Go 三项目基线（docs/architecture/Go三项目架构基线.md）
 // 禁止 maintenance -> jobs 的依赖，而本地造数写出的 usage 分片必须与 jobs 写出的
 // 文件同形——分片缺列或缺索引会让 jobs 的读取/聚合路径在联调时行为不一致。
 // 逐字一致性由 sqlite_usage_shard_test.go 的镜像不变量测试对照 jobs 源文本守护，

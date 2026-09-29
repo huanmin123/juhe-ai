@@ -39,7 +39,8 @@ type RuntimeSnapshot struct {
 	// fields for explicitly supplied legacy samples. Collector.Snapshot never
 	// populates them because host RSS/FD semantics are outside the portable Go
 	// runtime contract; host capacity observation belongs to the host metrics
-	// owner (docs/migration/Go迁移指标与观测规划.md).
+	// owner (ownership split defined by the retired observability planning doc;
+	// doc removed with the migration records, retrievable from git history).
 	RSSBytes      *uint64
 	FDCount       *uint64
 	UptimeSeconds float64

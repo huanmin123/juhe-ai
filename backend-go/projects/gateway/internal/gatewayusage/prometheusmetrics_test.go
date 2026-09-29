@@ -6,7 +6,8 @@ import (
 )
 
 // Golden shapes locked against
-// migration-backup/node/final-archive/backend/src/shared/prometheus-metrics.ts.
+// migration-backup/node/final-archive/backend/src/shared/prometheus-metrics.ts
+// (archive moved out of the repo; retrievable from git history).
 
 func TestClassifyHTTPMetricRouteGolden(t *testing.T) {
 	golden := map[string]HTTPMetricRouteGroup{

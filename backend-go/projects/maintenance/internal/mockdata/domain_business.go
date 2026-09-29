@@ -27,7 +27,7 @@ import (
 // 范围与覆盖点见 docs/functions/Mockdata造数设计.md「数据边界」；本文件只放
 // 该域函数与它的私有辅助，其他域不得在此写入。
 //
-// 样本清单移植自 Node 归档实现
+// 样本清单移植自 Node 归档实现（归档已移出仓库，git 历史可溯）
 // migration-backup-1/node/final-archive/backend/src/scripts/maintenance/mockdata/
 // （business/{foundation,extras}.ts 与 core/{accounts,api-keys,
 // authorizations,teams,group-writes,availability-schedules,quota-limits}.ts）

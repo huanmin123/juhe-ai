@@ -4,7 +4,8 @@ package proxyprofiles
 //
 // Behavior baseline: the archived Node manual route
 // migration-backup/node/j3a-proxy-latency-manual-control-cutover-20260826/
-// proxies-manual-test.route.ts (+ proxy-test.contract.ts) with the frozen
+// proxies-manual-test.route.ts (+ proxy-test.contract.ts; archive moved out
+// of the repo, retrievable from git history) with the frozen
 // external report schema (J3a migration contract 11.2) and the current Go
 // probe semantics in backend-go/projects/jobs/internal/proxylatency
 // (manual.go / transport.go / manual_outbound.go / manual_admin.go).

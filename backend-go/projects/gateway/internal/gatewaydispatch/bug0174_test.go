@@ -12,7 +12,8 @@ import (
 )
 
 // BUG-0174 M-2/M-3/M-9 regression tests. The behavior baseline is the Node
-// archive upstream-dispatch.ts (migration-backup/node/final-archive).
+// archive upstream-dispatch.ts (migration-backup/node/final-archive; archive
+// moved out of the repo, retrievable from git history).
 
 // multiKeyTestAccount builds a pool-isolation account (two distinct keys, a
 // supported provider) so its selected key fingerprint is non-nil and the

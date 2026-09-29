@@ -15,7 +15,8 @@ import (
 )
 
 // BUG-0174 波1 回归：B-1 指纹统一、B-3 轮转策略族、M-7 池隔离谓词。
-// Node 基线：migration-backup/node/final-archive/backend/src/storage/account-api-key-rotation.ts。
+// Node 基线（归档已移出仓库，git 历史可溯）：
+// migration-backup/node/final-archive/backend/src/storage/account-api-key-rotation.ts。
 
 const testRotationSecret = "juhe-ai-test-secret"
 

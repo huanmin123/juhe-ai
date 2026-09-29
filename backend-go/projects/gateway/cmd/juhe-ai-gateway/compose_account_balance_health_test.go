@@ -4,7 +4,8 @@ package main
 // "accountBalanceGoOwnerHealth ownerMode blue/green semantics". The cases
 // mirror the archived regression script
 // (migration-backup/node/final-archive/backend/src/scripts/regression/
-// account-balance-jobs-health-regression.ts) and extend it with the drain
+// account-balance-jobs-health-regression.ts; archive moved out of the repo,
+// retrievable from git history) and extend it with the drain
 // row of the ownerMode matrix: active keeps the owner-flag contract,
 // standby judges by jobs reachability plus the peer ownerMode, drain keeps
 // the owner-flag contract while still reporting ownerMode.

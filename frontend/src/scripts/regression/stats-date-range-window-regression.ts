@@ -10,7 +10,7 @@ const usageStatsPageConfigSource = readFileSync(resolve(frontendRoot, 'views', '
 const aiPerformanceViewSource = readFileSync(resolve(frontendRoot, 'views', 'ai-performance', 'AiPerformanceView.vue'), 'utf8')
 const ipStatsViewSource = readFileSync(resolve(frontendRoot, 'views', 'ip-stats', 'IpStatsView.vue'), 'utf8')
 const usageStatsWindowSource = readFileSync(resolve(frontendRoot, 'composables', 'useUsageStatsWindow.ts'), 'utf8')
-const statsRoutesSource = readFileSync(resolve(frontendRoot, '..', '..', 'migration-backup', 'node', 'final-archive', 'backend', 'src', 'modules', 'stats', 'stats.routes.ts'), 'utf8')
+const statsRoutesSource = readFileSync(resolve(frontendRoot, '..', '..', 'backend-go', 'projects', 'gateway', 'internal', 'statreads', 'usageoverview.go'), 'utf8')
 
 assert.match(
   usageStatsWindowSource,
@@ -91,7 +91,7 @@ assert.match(
 
 assert.match(
   statsRoutesSource,
-  /function normalizeSystemMetricsDateRangeAsync[\s\S]*const today = dateKey\(new Date\(\), timezone\)[\s\S]*startDate = input\.startDate \?\? input\.endDate \?\? today[\s\S]*endDate = input\.endDate \?\? input\.startDate \?\? today/,
+  /func \(d \*Deps\) normalizeSystemMetricsDateRange[\s\S]*dateKeyIn\(d\.Now\(\), location\)[\s\S]*startDate = endDate[\s\S]*startDate = todayKey[\s\S]*endDate = startDate[\s\S]*endDate = todayKey/,
   'system metrics omitted dates must resolve to one server-timezone day'
 )
 

@@ -3,7 +3,7 @@
 > 面向 Go 后端迁移执行者。
 > 本文固定 Go 迁移期默认依赖、禁用依赖、评估门禁和封装规则。后续新增 Go 模块不得临时自选框架或把第三方库类型暴露到业务层。
 
-> **2026-08-14 现行边界。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块，F1/F2 在 `jobs`，F3/F4 在 `gateway`；本文件中的早期依赖版本和“已落地”段落若与当前代码冲突，只作历史记录。Go 功能默认直接异步执行，不以 Redis、Asynq 或通用 Queue Port 为前置；每个功能仍须分别验证 SQLite 与 PostgreSQL/Redis Store adapter、goroutine 生命周期和资源维度并发。详见 完整功能接管与 Node 归档迁移规则。
+> **2026-08-14 现行边界。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块，F1/F2 在 `jobs`，F3/F4 在 `gateway`；本文件中的早期依赖版本和“已落地”段落若与当前代码冲突，只作历史记录。Go 功能默认直接异步执行，不以 Redis、Asynq 或通用 Queue Port 为前置；每个功能仍须分别验证 SQLite 与 PostgreSQL/Redis Store adapter、goroutine 生命周期和资源维度并发。（迁移期接管规则原文档已随迁移记录清退，git 历史可溯。）
 
 ## 1. 选型原则
 
@@ -112,7 +112,7 @@ B0 不能只创建空 Go 工程，必须证明两个 profile 的 adapter 能在�
 | PostgreSQL | `github.com/jackc/pgx/v5 v5.10.0` | health adapter、goose baseline / W1a / W1b migration、sqlc catalog / W1b auth-log 查询已落地；integration 用例已补，当前主线程 Docker 不可用时 `SKIP`，需 Docker 环境复跑 |
 | Redis | `github.com/redis/go-redis/v9 v9.21.0` | 历史 PostgreSQL/Redis adapter 候选记录；不适用于 SQLite profile，P0 需重新验证 |
 | Job / queue | `github.com/hibiken/asynq v0.26.0` | 历史 PostgreSQL/Redis adapter 候选记录；不表示当前直接异步架构会引入该依赖，B0 仅验证 SQLite / PostgreSQL adapter 与 goroutine 生命周期 |
-| 指标 | 标准库 `runtime/metrics` + `github.com/prometheus/client_golang v1.23.2` | `/__aisys__/metrics` loopback smoke 已通过；Go runtime / PG / Redis / Asynq / worker lag 的完整采样口径见 Go 迁移指标与观测规划，后续 W6/W7 落地 |
+| 指标 | 标准库 `runtime/metrics` + `github.com/prometheus/client_golang v1.23.2` | `/__aisys__/metrics` loopback smoke 已通过；Go runtime / PG / Redis / worker lag 的完整采样口径原定于「Go 迁移指标与观测规划」（已随迁移记录清退，git 历史可溯） |
 | SQL CLI | `sqlc v1.31.1` | CLI 已安装，已生成 `internal/store/postgres/postgresqueries` |
 | Migration CLI / lib | `github.com/pressly/goose/v3 v3.27.2` | CLI 已安装；integration 测试通过 goose 执行 baseline DDL |
 | Testcontainers | `github.com/testcontainers/testcontainers-go v0.43.0` | `go test -tags=integration ./internal/testkit/integration -count=1` 当前主线程因 Docker 不可用输出 `SKIP`；Docker/testcontainers 健康环境必须复跑，覆盖 PostgreSQL / Redis / Asynq / W1a / W1b foundation / W1b public API log queue / public group / public route strategy / public API Key / public account smoke 与 shell E2E |

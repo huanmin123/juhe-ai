@@ -45,7 +45,7 @@ type cleanupRule struct {
 // cleanupRules 按「子表先删」的外键安全顺序排列。
 //
 // 顺序依据 Node 归档实现的清理顺序（migration-backup-1/.../mockdata/maintenance/
-// cleanup.ts），并补上 Go 侧新增的业务表；任何新增域只要写出带清理标识的行，
+// cleanup.ts，归档已移出仓库，git 历史可溯），并补上 Go 侧新增的业务表；任何新增域只要写出带清理标识的行，
 // 就必须把「自身无标识但有外键指向被删父行」的子表补进这张表。
 func cleanupRules() []cleanupRule {
 	name := CleanupNamePrefix + "%"

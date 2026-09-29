@@ -1,7 +1,8 @@
 # `account-cleanup` Business owner
 
-本目录只承接 `cleanup_expired_deleted_accounts`，对应
-`BusinessSQLite-owner-manifest.json` 的 `account-cleanup` transaction group。
+本目录只承接 `cleanup_expired_deleted_accounts`，对应原
+`BusinessSQLite-owner-manifest.json` 的 `account-cleanup` transaction group
+（manifest 已随迁移记录清退，git 历史可溯）。
 当前没有接入 Gateway main/HTTP，也没有修改 Node、manifest 或 shared schema。
 
 ## 已冻结的 Node 行为

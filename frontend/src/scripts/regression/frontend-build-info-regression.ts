@@ -46,7 +46,7 @@ assert.equal(
 const viteConfigSource = readFileSync(new URL('../../../vite.config.ts', import.meta.url), 'utf8')
 const powerShellReleaseSource = readFileSync(new URL('../../../../scripts/package-release.ps1', import.meta.url), 'utf8')
 const shellReleaseSource = readFileSync(new URL('../../../../scripts/package-release.sh', import.meta.url), 'utf8')
-const serverSource = readFileSync(new URL('../../../../migration-backup/node/final-archive/backend/src/server.ts', import.meta.url), 'utf8')
+const serverSource = readFileSync(new URL('../../../../backend-go/projects/gateway/internal/helpweb/spa.go', import.meta.url), 'utf8')
 
 assert.match(viteConfigSource, /__JUHE_AI_FRONTEND_BUILD_ID__/, 'Vite 必须注入当前页面 Build ID')
 assert.match(viteConfigSource, /fileName:\s*['"]build-info\.json['"]/, 'Vite 必须输出静态 Build ID 清单')
@@ -56,7 +56,7 @@ assert.match(shellReleaseSource, /VITE_JUHE_AI_BUILD_ID=["']?\$RELEASE_SOURCE_CO
 // 任何 J3b 构建变量，也不得恢复按开关隐藏模型检测入口的行为。
 assert.doesNotMatch(powerShellReleaseSource, /VITE_JUHE_AI_J3B_ENABLED/, 'PowerShell 发布不得再注入 J3b 开关')
 assert.doesNotMatch(shellReleaseSource, /VITE_JUHE_AI_J3B_ENABLED/, 'POSIX 发布不得再注入 J3b 开关')
-assert.match(serverSource, /build-info\.json/, '后端静态服务必须显式设置 Build ID 清单缓存规则')
+assert.match(serverSource, /noCacheBasenames[\s\S]*"build-info\.json":\s*true/, '后端静态服务必须显式设置 Build ID 清单缓存规则（gateway helpweb no-cache 例外清单）')
 
 let requestedUrl = ''
 let requestedCache: RequestCache | undefined
