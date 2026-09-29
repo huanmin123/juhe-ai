@@ -707,10 +707,14 @@ func (o *chatInternalToolOrchestrator) executeCall(call ChatToolCall) (ChatToolE
 		}
 	}
 	// 过程增量端口按本次 callID 绑定（契约 §10.3）：执行器上报的 progress 经
-	// 内容块投影通道以 item.progress 渐进下发（瞬态，落库前剥离）；调用串行
-	// 执行，defer 清理防泄漏到下一次调用。
+	// 内容块投影通道以 item.progress 渐进下发；最后一次快照随终态 PublicResult
+	// 持久化（历史回看重建子代理过程区）。调用串行执行，defer 清理防泄漏到
+	// 下一次调用。
 	previousProgress := o.context.ToolProgress
+	var lastProgress *chatWebSearchProgress
 	o.context.ToolProgress = func(progress chatWebSearchProgress) {
+		snapshot := progress
+		lastProgress = &snapshot
 		payload := map[string]any{"progress": progress}
 		o.publishEvent(ChatToolExecutionEvent{Status: "updated", CallID: call.CallID, ToolName: definition.ModelName, PublicResult: payload})
 	}
@@ -738,8 +742,16 @@ func (o *chatInternalToolOrchestrator) executeCall(call ChatToolCall) (ChatToolE
 		return ChatToolExecutionOutput{}, false, err
 	}
 	output := ChatToolExecutionOutput{CallID: call.CallID, ToolName: definition.ModelName, ModelOutput: result.ModelOutput, PublicResult: result.PublicResult}
+	if lastProgress != nil {
+		// 终态输出携带最后一次 progress 快照（契约 §10.3）：投影层把它并入
+		// tool_call item，terminalize 不剥离，随消息落库供历史回看。
+		if output.PublicResult == nil {
+			output.PublicResult = map[string]any{}
+		}
+		output.PublicResult["progress"] = *lastProgress
+	}
 	o.seenResults[cacheKey] = output
-	o.publishEvent(ChatToolExecutionEvent{Status: "completed", CallID: call.CallID, ToolName: definition.ModelName, PublicResult: result.PublicResult})
+	o.publishEvent(ChatToolExecutionEvent{Status: "completed", CallID: call.CallID, ToolName: definition.ModelName, PublicResult: output.PublicResult})
 	return output, true, nil
 }
 

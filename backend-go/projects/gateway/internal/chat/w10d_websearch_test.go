@@ -205,6 +205,18 @@ func TestW10DWebSearchSubagentBound(t *testing.T) {
 	if strings.Contains(raw, "event: tool.binding_required") {
 		t.Fatalf("已绑定时不得出现 binding_required: %s", raw)
 	}
+	// 终态落库保留 progress 快照（契约 §10.3）：completed 事件携带最后一次
+	// 快照并入 tool_call item，terminalize 不剥离，历史回看可重建过程区。
+	var persisted string
+	if err := env.fixture.db.QueryRow(`SELECT content_blocks_json FROM chat_messages WHERE conversation_id = ? AND role = 'assistant' AND content_blocks_json LIKE '%web_search%'`, "conv_w10d_bound").Scan(&persisted); err != nil {
+		t.Fatalf("读取落库内容块失败: %v", err)
+	}
+	if !strings.Contains(persisted, `"progress"`) || !strings.Contains(persisted, `"stage"`) {
+		t.Fatalf("落库 tool_call item 必须携带 progress 快照: %s", persisted)
+	}
+	if !strings.Contains(persisted, `北京天气`) {
+		t.Fatalf("落库必须保留搜索动作快照: %s", persisted)
+	}
 }
 
 // TestW10DWebSearchResultExtraction 覆盖子调用响应解析与裁剪：output_text
