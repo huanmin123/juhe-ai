@@ -36,6 +36,16 @@ assert.equal(persistedTerminalFunction.toolGroups[0]?.callCount, 1)
 assert.equal(persistedTerminalFunction.toolGroups[0]?.status, 'completed', '后置 updated 不能把已完成生命周期降级')
 assert.match(persistedTerminalFunction.toolGroups[0]?.summaries[0] ?? '', /^lookup/, '终态合并后必须保留原函数摘要')
 
+const persistedSearchSnapshot = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'search_hist', toolType: 'web_search', status: 'completed', item: { type: 'web_search', query: '上海 天气', sources: ['https://example.com/a'], sourceCount: 1, progress: { stage: 'answering', reasoning: '已找到结果', actions: ['搜索「上海 天气」'], answer: '上海今天小雨' } } }
+  ]
+} as ChatMessage)
+assert.ok(persistedSearchSnapshot.toolGroups[0]?.progress, '终态落库块的 progress 快照必须被读取（历史回看重建过程区，契约 §10.3）')
+assert.equal(persistedSearchSnapshot.toolGroups[0]?.progress?.reasoning, '已找到结果')
+assert.deepEqual(persistedSearchSnapshot.toolGroups[0]?.progress?.actions, ['搜索「上海 天气」'])
+assert.equal(persistedSearchSnapshot.toolGroups[0]?.progress?.answer, '上海今天小雨')
+
 const duplicateSearch = projectChatMessageProcess(message([
   { id: 'search_a', type: 'web_search_call', status: 'completed', item: { action: { queries: [' 上海 天气 ', '北京   天气', '北京 天气'] } } },
   { id: 'search_b', type: 'web_search_call', status: 'completed', item: { action: { queries: ['北京 天气', '上海 天气'] } } }

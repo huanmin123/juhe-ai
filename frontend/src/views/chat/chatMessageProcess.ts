@@ -1,7 +1,7 @@
 import type { ChatMessage, ChatToolEvent, ChatToolStatus } from '@/types/domain/chat'
 import { chatErrorMessage } from './chatErrorMessage'
 
-/** 子代理执行过程（契约 §10.3）：后端 tool.updated 事件 item.progress 瞬态快照，终态事件不含。 */
+/** 子代理执行过程（契约 §10.3）：后端 tool.updated 事件与终态落库 item 均携带 progress 过程快照。 */
 export interface ChatToolProgress {
   stage?: string
   reasoning?: string
@@ -79,7 +79,8 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     existing.callIds.add(tool.callId || `event-${tool.fallbackIndex}`)
     canonical.summaries.forEach((summary) => existing.summaries.add(limitSummary(summary)))
     if (canonical.statusDetail) existing.statusDetail = canonical.statusDetail
-    if (tool.status !== 'completed' && tool.status !== 'canceled') existing.progress = readToolProgress(tool.item)
+    // progress 快照在终态/历史回看时同样读取（契约 §10.3：快照随终态 item 落库）。
+    existing.progress = readToolProgress(tool.item)
     grouped.set(canonical.key, existing)
   }
 

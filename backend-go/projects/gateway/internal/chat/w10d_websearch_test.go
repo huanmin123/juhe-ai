@@ -305,15 +305,15 @@ func TestW10DConsumeWebSearchStream(t *testing.T) {
 	}
 }
 
-// TestW10DTerminalizeStripsProgress 验证过程增量为瞬态（契约 §10.3）：
-// 持久化内容块时剥除 item.progress，中断/终态消息不残留过程快照。
-func TestW10DTerminalizeStripsProgress(t *testing.T) {
+// TestW10DTerminalizeKeepsProgressSnapshot 验证过程增量随终态持久化（契约
+// §10.3）：落库时保留 item.progress 最后一次快照，历史回看据此重建子代理过程区。
+func TestW10DTerminalizeKeepsProgressSnapshot(t *testing.T) {
 	raw := terminalizeAssistantBlocks([]*assistantBlock{{
 		Type: "tool_call", BlockID: "b1", CallID: "c1", ToolType: "web_search", Status: asstStarted,
 		Item: map[string]any{"query": "q", "progress": map[string]any{"stage": "searching"}},
 	}}, asstCanceled)
-	if strings.Contains(string(raw), "progress") {
-		t.Fatalf("持久化块不得携带 progress: %s", raw)
+	if !strings.Contains(string(raw), `"progress":{"stage":"searching"}`) {
+		t.Fatalf("持久化块必须保留 progress 快照: %s", raw)
 	}
 	if !strings.Contains(string(raw), `"query":"q"`) {
 		t.Fatalf("持久化块应保留终态字段: %s", raw)

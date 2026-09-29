@@ -1210,10 +1210,8 @@ func terminalizeAssistantBlocks(blocks []*assistantBlock, status string) json.Ra
 				cloned.Status = status
 			}
 		}
-		// 子代理过程增量（item.progress）为瞬态展示（契约 §10.3），不随内容块持久化。
-		if cloned.Type == "tool_call" && cloned.Item != nil {
-			delete(cloned.Item, "progress")
-		}
+		// 子代理过程增量（item.progress）为限长展示数据，终态落库时保留
+		// 最后一次快照（契约 §10.3），供历史回看重建子代理过程区。
 		normalized = append(normalized, cloned)
 	}
 	payload, err := json.Marshal(rawBlocksSlice(normalized))

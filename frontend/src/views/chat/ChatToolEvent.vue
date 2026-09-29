@@ -8,7 +8,7 @@
         </summary>
         <div class="chat-process-details" :class="{ 'is-streaming': isActiveToolGroup(tool) }">
           <div v-if="tool.progress" class="chat-subagent">
-            <p class="chat-subagent-stage">{{ progressStageLabel(tool.progress) }}</p>
+            <p class="chat-subagent-stage">{{ progressStageLabel(tool) }}</p>
             <ChatMarkdown v-if="tool.progress.reasoning" class="chat-subagent-reasoning" :content="tool.progress.reasoning" />
             <ul v-if="tool.progress.actions?.length" class="chat-subagent-actions">
               <li v-for="action in tool.progress.actions" :key="action">{{ action }}</li>
@@ -40,7 +40,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ChatMessage, ChatToolStatus } from '@/types/domain/chat'
 import ChatMarkdown from './ChatMarkdown.vue'
-import { projectChatMessageProcess, type ChatToolProcessGroup, type ChatToolProgress } from './chatMessageProcess'
+import { projectChatMessageProcess, type ChatToolProcessGroup } from './chatMessageProcess'
 
 const props = defineProps<{ message: ChatMessage }>()
 const process = computed(() => projectChatMessageProcess(props.message))
@@ -58,9 +58,12 @@ function rememberToggleIntent(tool: ChatToolProcessGroup, event: MouseEvent): vo
   const details = (event.currentTarget as HTMLElement).parentElement as HTMLDetailsElement | null
   if (details) manuallyToggled.value.set(tool.key, !details.open)
 }
-// 子代理过程区阶段提示（契约 §10.3）：思考摘要流式追加时贴底展示。
-function progressStageLabel(progress: ChatToolProgress): string {
-  return ({ reasoning: '子代理思考中…', searching: '子代理联网搜索中…', answering: '子代理汇总结果中…', generating: '正在生成图片…' }[progress.stage ?? '']) ?? '子代理执行中…'
+// 子代理过程区阶段提示（契约 §10.3）：执行中按阶段展示；终态/历史回看为
+// 持久化快照，用中性标题，避免完成的轮次仍显示「…中」。
+function progressStageLabel(tool: ChatToolProcessGroup): string {
+  if (tool.status === 'completed' || tool.status === 'canceled' || tool.status === 'failed') return '子代理执行过程'
+  const stage = tool.progress?.stage
+  return ({ reasoning: '子代理思考中…', searching: '子代理联网搜索中…', answering: '子代理汇总结果中…', generating: '正在生成图片…' }[stage ?? '']) ?? '子代理执行中…'
 }
 watch(() => props.message, async () => {
   await nextTick()
