@@ -18,7 +18,7 @@ var openAIModelPricingData = func() []rawModel {
 // openAIGPT4ModelPricingData — curated 2026-07-13.
 var openAIGPT4ModelPricingData = []rawModel{
 	{
-		Model: "gpt-4.1", Mode: "chat",
+		Model: "gpt-4.1", Mode: "chat", ReleaseDate: "2025-04-14",
 		MaxTokens: intp(32768), ContextWindowTokens: intp(1047576), MaxOutputTokens: intp(32768),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
@@ -32,7 +32,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		SupportedServiceTiers: []string{"priority"},
 	},
 	{
-		Model: "gpt-4.1-mini", Mode: "chat",
+		Model: "gpt-4.1-mini", Mode: "chat", ReleaseDate: "2025-04-14",
 		MaxTokens: intp(32768), ContextWindowTokens: intp(1047576), MaxOutputTokens: intp(32768),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
@@ -46,7 +46,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		SupportedServiceTiers: []string{"priority"},
 	},
 	{
-		Model: "gpt-4.1-nano", Mode: "chat",
+		Model: "gpt-4.1-nano", Mode: "chat", ReleaseDate: "2025-04-14",
 		MaxTokens: intp(32768), ContextWindowTokens: intp(1047576), MaxOutputTokens: intp(32768),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
@@ -61,7 +61,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		SupportedServiceTiers: []string{"priority"},
 	},
 	{
-		Model: "gpt-4o", Mode: "chat",
+		Model: "gpt-4o", Mode: "chat", ReleaseDate: "2024-05-13",
 		MaxTokens: intp(16384), ContextWindowTokens: intp(128000), MaxOutputTokens: intp(16384),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
@@ -75,7 +75,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		SupportedServiceTiers: []string{"priority"},
 	},
 	{
-		Model: "gpt-4o-mini", Mode: "chat",
+		Model: "gpt-4o-mini", Mode: "chat", ReleaseDate: "2024-07-18",
 		MaxTokens: intp(16384), ContextWindowTokens: intp(128000), MaxOutputTokens: intp(16384),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
@@ -89,19 +89,21 @@ var openAIGPT4ModelPricingData = []rawModel{
 		SupportedServiceTiers: []string{"priority"},
 	},
 	{
-		Model: "gpt-4o-2024-05-13", Mode: "chat",
+		Model: "gpt-4o-2024-05-13", Mode: "chat", ReleaseDate: "2024-05-13",
 		MaxTokens: intp(4096), ContextWindowTokens: intp(128000), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"chat_completions", "responses"},
 		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions", "responses"},
 			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
-		InputCostPerToken:  f64p(0.000005),
-		OutputCostPerToken: f64p(0.000015),
-		ShutdownDate:       "2026-10-23",
+		InputCostPerToken:       f64p(0.000005),
+		CacheReadInputTokenCost: f64p(0.0000025),
+		OutputCostPerToken:      f64p(0.000015),
+		SupportsPromptCaching:   true,
+		ShutdownDate:            "2026-10-23",
 	},
 	{
-		Model: "gpt-4-turbo", Mode: "chat",
+		Model: "gpt-4-turbo", Mode: "chat", ReleaseDate: "2024-04-09",
 		MaxTokens: intp(4096), ContextWindowTokens: intp(128000), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
@@ -113,7 +115,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		ShutdownDate:       "2026-10-23",
 	},
 	{
-		Model: "gpt-4-turbo-2024-04-09", Mode: "chat",
+		Model: "gpt-4-turbo-2024-04-09", Mode: "chat", ReleaseDate: "2024-04-09",
 		MaxTokens: intp(4096), ContextWindowTokens: intp(128000), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"text"},
@@ -125,7 +127,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		ShutdownDate:       "2026-10-23",
 	},
 	{
-		Model: "gpt-4-1106-preview", Mode: "chat",
+		Model: "gpt-4-1106-preview", Mode: "chat", ReleaseDate: "2023-11-06",
 		MaxTokens: intp(4096), ContextWindowTokens: intp(128000), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text"},
 		OutputModalities:      []string{"text"},
@@ -137,7 +139,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		ShutdownDate:       "2026-10-23",
 	},
 	{
-		Model: "gpt-4", Mode: "chat",
+		Model: "gpt-4", Mode: "chat", ReleaseDate: "2023-06-13",
 		MaxTokens: intp(8192), ContextWindowTokens: intp(8192), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text"},
 		OutputModalities:      []string{"text"},
@@ -149,7 +151,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		ShutdownDate:       "2026-10-23",
 	},
 	{
-		Model: "gpt-4-0613", Mode: "chat",
+		Model: "gpt-4-0613", Mode: "chat", ReleaseDate: "2023-06-13",
 		MaxTokens: intp(8192), ContextWindowTokens: intp(8192), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text"},
 		OutputModalities:      []string{"text"},
@@ -161,7 +163,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		ShutdownDate:       "2026-10-23",
 	},
 	{
-		Model: "gpt-3.5-turbo", Mode: "chat",
+		Model: "gpt-3.5-turbo", Mode: "chat", ReleaseDate: "2023-06-13",
 		MaxTokens: intp(4096), ContextWindowTokens: intp(16385), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text"},
 		OutputModalities:      []string{"text"},
@@ -173,7 +175,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		ShutdownDate:       "2026-10-23",
 	},
 	{
-		Model: "gpt-3.5-turbo-0125", Mode: "chat",
+		Model: "gpt-3.5-turbo-0125", Mode: "chat", ReleaseDate: "2024-01-25",
 		MaxTokens: intp(4096), ContextWindowTokens: intp(16385), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text"},
 		OutputModalities:      []string{"text"},
@@ -185,7 +187,7 @@ var openAIGPT4ModelPricingData = []rawModel{
 		ShutdownDate:       "2026-10-23",
 	},
 	{
-		Model: "gpt-3.5-turbo-1106", Mode: "chat",
+		Model: "gpt-3.5-turbo-1106", Mode: "chat", ReleaseDate: "2023-11-06",
 		MaxTokens: intp(4096), ContextWindowTokens: intp(16385), MaxOutputTokens: intp(4096),
 		InputModalities:       []string{"text"},
 		OutputModalities:      []string{"text"},
@@ -343,7 +345,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:      gpt5ToolsGpt5Dot6ByProtocol,
 	},
 	{
-		Model: "gpt-5.5", Mode: "chat",
+		Model: "gpt-5.5", Mode: "chat", ReleaseDate: "2026-04-23",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.000005), InputCostPerTokenPriority: f64p(0.0000125), InputCostPerTokenFlex: f64p(0.0000025),
 		OutputCostPerToken: f64p(0.00003), OutputCostPerTokenPriority: f64p(0.000075), OutputCostPerTokenFlex: f64p(0.000015),
@@ -357,7 +359,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsGpt55ByProtocol,
 	},
 	{
-		Model: "gpt-5.5-2026-04-23", Mode: "chat",
+		Model: "gpt-5.5-2026-04-23", Mode: "chat", ReleaseDate: "2026-04-23",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.000005), InputCostPerTokenPriority: f64p(0.0000125), InputCostPerTokenFlex: f64p(0.0000025),
 		OutputCostPerToken: f64p(0.00003), OutputCostPerTokenPriority: f64p(0.000075), OutputCostPerTokenFlex: f64p(0.000015),
@@ -371,7 +373,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsGpt55ByProtocol,
 	},
 	{
-		Model: "gpt-5.5-pro", Mode: "responses",
+		Model: "gpt-5.5-pro", Mode: "responses", ReleaseDate: "2026-04-23",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00003), InputCostPerTokenFlex: f64p(0.000015),
 		OutputCostPerToken: f64p(0.00018), OutputCostPerTokenFlex: f64p(0.00009),
@@ -384,7 +386,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "mcp"}),
 	},
 	{
-		Model: "gpt-5.5-pro-2026-04-23", Mode: "responses",
+		Model: "gpt-5.5-pro-2026-04-23", Mode: "responses", ReleaseDate: "2026-04-23",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00003), InputCostPerTokenFlex: f64p(0.000015),
 		OutputCostPerToken: f64p(0.00018), OutputCostPerTokenFlex: f64p(0.00009),
@@ -397,7 +399,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "mcp"}),
 	},
 	{
-		Model: "gpt-5.4", Mode: "chat",
+		Model: "gpt-5.4", Mode: "chat", ReleaseDate: "2026-03-05",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.0000025), InputCostPerTokenPriority: f64p(0.000005), InputCostPerTokenFlex: f64p(0.00000125),
 		OutputCostPerToken: f64p(0.000015), OutputCostPerTokenPriority: f64p(0.00003), OutputCostPerTokenFlex: f64p(0.0000075),
@@ -411,7 +413,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsGpt54MiniByProtocol,
 	},
 	{
-		Model: "gpt-5.4-2026-03-05", Mode: "chat",
+		Model: "gpt-5.4-2026-03-05", Mode: "chat", ReleaseDate: "2026-03-05",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.0000025), InputCostPerTokenPriority: f64p(0.000005), InputCostPerTokenFlex: f64p(0.00000125),
 		OutputCostPerToken: f64p(0.000015), OutputCostPerTokenPriority: f64p(0.00003), OutputCostPerTokenFlex: f64p(0.0000075),
@@ -425,7 +427,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsGpt54MiniByProtocol,
 	},
 	{
-		Model: "gpt-5.4-mini", Mode: "chat",
+		Model: "gpt-5.4-mini", Mode: "chat", ReleaseDate: "2026-03-17",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(7.5e-7), InputCostPerTokenPriority: f64p(0.0000015), InputCostPerTokenFlex: f64p(3.75e-7),
 		OutputCostPerToken: f64p(0.0000045), OutputCostPerTokenPriority: f64p(0.000009), OutputCostPerTokenFlex: f64p(0.00000225),
@@ -439,7 +441,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsGpt54MiniByProtocol,
 	},
 	{
-		Model: "gpt-5.4-mini-2026-03-17", Mode: "chat",
+		Model: "gpt-5.4-mini-2026-03-17", Mode: "chat", ReleaseDate: "2026-03-17",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(7.5e-7), InputCostPerTokenPriority: f64p(0.0000015), InputCostPerTokenFlex: f64p(3.75e-7),
 		OutputCostPerToken: f64p(0.0000045), OutputCostPerTokenPriority: f64p(0.000009), OutputCostPerTokenFlex: f64p(0.00000225),
@@ -453,7 +455,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsGpt54MiniByProtocol,
 	},
 	{
-		Model: "gpt-5.4-nano", Mode: "chat",
+		Model: "gpt-5.4-nano", Mode: "chat", ReleaseDate: "2026-03-17",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(2e-7), InputCostPerTokenFlex: f64p(1e-7),
 		OutputCostPerToken: f64p(0.00000125), OutputCostPerTokenFlex: f64p(6.25e-7),
@@ -467,7 +469,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsGpt54NanoByProtocol,
 	},
 	{
-		Model: "gpt-5.4-nano-2026-03-17", Mode: "chat",
+		Model: "gpt-5.4-nano-2026-03-17", Mode: "chat", ReleaseDate: "2026-03-17",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(2e-7), InputCostPerTokenFlex: f64p(1e-7),
 		OutputCostPerToken: f64p(0.00000125), OutputCostPerTokenFlex: f64p(6.25e-7),
@@ -481,7 +483,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsGpt54NanoByProtocol,
 	},
 	{
-		Model: "gpt-5.4-pro", Mode: "responses",
+		Model: "gpt-5.4-pro", Mode: "responses", ReleaseDate: "2026-03-05",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00003), InputCostPerTokenFlex: f64p(0.000015),
 		OutputCostPerToken: f64p(0.00018), OutputCostPerTokenFlex: f64p(0.00009),
@@ -494,7 +496,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  gpt5ToolsProCodex543ByProtocol,
 	},
 	{
-		Model: "gpt-5.4-pro-2026-03-05", Mode: "responses",
+		Model: "gpt-5.4-pro-2026-03-05", Mode: "responses", ReleaseDate: "2026-03-05",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00003), InputCostPerTokenFlex: f64p(0.000015),
 		OutputCostPerToken: f64p(0.00018), OutputCostPerTokenFlex: f64p(0.00009),
@@ -521,7 +523,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
 	},
 	{
-		Model: "gpt-5.2", Mode: "chat",
+		Model: "gpt-5.2", Mode: "chat", ReleaseDate: "2025-12-11",
 		MaxTokens: intp(128000), MaxInputTokens: intp(400000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00000175), InputCostPerTokenPriority: f64p(0.0000035),
 		OutputCostPerToken: f64p(0.000014), OutputCostPerTokenPriority: f64p(0.000028),
@@ -536,7 +538,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"}),
 	},
 	{
-		Model: "gpt-5.2-2025-12-11", Mode: "chat",
+		Model: "gpt-5.2-2025-12-11", Mode: "chat", ReleaseDate: "2025-12-11",
 		MaxTokens: intp(128000), MaxInputTokens: intp(400000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00000175), InputCostPerTokenPriority: f64p(0.0000035),
 		OutputCostPerToken: f64p(0.000014), OutputCostPerTokenPriority: f64p(0.000028),
@@ -551,7 +553,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"}),
 	},
 	{
-		Model: "gpt-5.2-pro", Mode: "responses",
+		Model: "gpt-5.2-pro", Mode: "responses", ReleaseDate: "2025-12-11",
 		MaxTokens: intp(128000), MaxInputTokens: intp(400000), MaxOutputTokens: intp(128000),
 		InputCostPerToken:         f64p(0.000021),
 		OutputCostPerToken:        f64p(0.000168),
@@ -564,7 +566,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"}),
 	},
 	{
-		Model: "gpt-5.2-pro-2025-12-11", Mode: "responses",
+		Model: "gpt-5.2-pro-2025-12-11", Mode: "responses", ReleaseDate: "2025-12-11",
 		MaxTokens: intp(128000), MaxInputTokens: intp(400000), MaxOutputTokens: intp(128000),
 		InputCostPerToken:         f64p(0.000021),
 		OutputCostPerToken:        f64p(0.000168),
@@ -577,7 +579,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"responses"}, []string{"function_calling", "file_search", "image_generation", "mcp", "web_search"}),
 	},
 	{
-		Model: "gpt-5.1", Mode: "chat",
+		Model: "gpt-5.1", Mode: "chat", ReleaseDate: "2025-11-13",
 		MaxTokens: intp(128000), MaxInputTokens: intp(400000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00000125), InputCostPerTokenPriority: f64p(0.0000025),
 		OutputCostPerToken: f64p(0.00001), OutputCostPerTokenPriority: f64p(0.00002),
@@ -592,7 +594,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "apply_patch", "mcp"}),
 	},
 	{
-		Model: "gpt-5.1-2025-11-13", Mode: "chat",
+		Model: "gpt-5.1-2025-11-13", Mode: "chat", ReleaseDate: "2025-11-13",
 		MaxTokens: intp(128000), MaxInputTokens: intp(400000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00000125), InputCostPerTokenPriority: f64p(0.0000025),
 		OutputCostPerToken: f64p(0.00001), OutputCostPerTokenPriority: f64p(0.00002),
@@ -607,7 +609,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "apply_patch", "mcp"}),
 	},
 	{
-		Model: "gpt-5", Mode: "chat",
+		Model: "gpt-5", Mode: "chat", ReleaseDate: "2025-08-07",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00000125), InputCostPerTokenPriority: f64p(0.0000025),
 		OutputCostPerToken: f64p(0.00001), OutputCostPerTokenPriority: f64p(0.00002),
@@ -621,7 +623,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
 	},
 	{
-		Model: "gpt-5-2025-08-07", Mode: "chat",
+		Model: "gpt-5-2025-08-07", Mode: "chat", ReleaseDate: "2025-08-07",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.00000125), InputCostPerTokenPriority: f64p(0.0000025),
 		OutputCostPerToken: f64p(0.00001), OutputCostPerTokenPriority: f64p(0.00002),
@@ -635,7 +637,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions", "responses"}, []string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "mcp"}),
 	},
 	{
-		Model: "gpt-5-mini", Mode: "chat",
+		Model: "gpt-5-mini", Mode: "chat", ReleaseDate: "2025-08-07",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(2.5e-7), InputCostPerTokenPriority: f64p(4.5e-7),
 		OutputCostPerToken: f64p(0.000002), OutputCostPerTokenPriority: f64p(0.0000036),
@@ -649,7 +651,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	},
 	{
-		Model: "gpt-5-mini-2025-08-07", Mode: "chat",
+		Model: "gpt-5-mini-2025-08-07", Mode: "chat", ReleaseDate: "2025-08-07",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(2.5e-7), InputCostPerTokenPriority: f64p(4.5e-7),
 		OutputCostPerToken: f64p(0.000002), OutputCostPerTokenPriority: f64p(0.0000036),
@@ -663,7 +665,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	},
 	{
-		Model: "gpt-5-nano", Mode: "chat",
+		Model: "gpt-5-nano", Mode: "chat", ReleaseDate: "2025-08-07",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(5e-8), InputCostPerTokenPriority: f64p(2e-7),
 		OutputCostPerToken: f64p(4e-7), OutputCostPerTokenPriority: f64p(8e-7),
@@ -677,7 +679,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	},
 	{
-		Model: "gpt-5-nano-2025-08-07", Mode: "chat",
+		Model: "gpt-5-nano-2025-08-07", Mode: "chat", ReleaseDate: "2025-08-07",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxInputTokens: intp(272000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(5e-8), InputCostPerTokenPriority: f64p(2e-7),
 		OutputCostPerToken: f64p(4e-7), OutputCostPerTokenPriority: f64p(8e-7),
@@ -691,7 +693,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high"},
 	},
 	{
-		Model: "gpt-5-pro", Mode: "responses",
+		Model: "gpt-5-pro", Mode: "responses", ReleaseDate: "2025-10-06",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxOutputTokens: intp(272000),
 		InputCostPerToken:         f64p(0.000015),
 		OutputCostPerToken:        f64p(0.00012),
@@ -704,7 +706,7 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"high"},
 	},
 	{
-		Model: "gpt-5-pro-2025-10-06", Mode: "responses",
+		Model: "gpt-5-pro-2025-10-06", Mode: "responses", ReleaseDate: "2025-10-06",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(400000), MaxOutputTokens: intp(272000),
 		InputCostPerToken:         f64p(0.000015),
 		OutputCostPerToken:        f64p(0.00012),
@@ -749,7 +751,7 @@ var openAIImageModelPricingData = []rawModel{
 		SupportsPromptCaching:        true,
 	},
 	{
-		Model: "gpt-image-2", Mode: "image_generation",
+		Model: "gpt-image-2", Mode: "image_generation", ReleaseDate: "2026-04-21",
 		InputModalities:              []string{"text", "image"},
 		OutputModalities:             []string{"image"},
 		SupportedAPIProtocols:        []string{"images"},
@@ -761,7 +763,7 @@ var openAIImageModelPricingData = []rawModel{
 		SupportsPromptCaching:        true,
 	},
 	{
-		Model: "gpt-image-2-2026-04-21", Mode: "image_generation",
+		Model: "gpt-image-2-2026-04-21", Mode: "image_generation", ReleaseDate: "2026-04-21",
 		InputModalities:              []string{"text", "image"},
 		OutputModalities:             []string{"image"},
 		SupportedAPIProtocols:        []string{"images"},
@@ -800,7 +802,7 @@ var openAIImageModelPricingData = []rawModel{
 		ShutdownDate:                 "2026-12-01",
 	},
 	{
-		Model: "gpt-image-1", Mode: "image_generation",
+		Model: "gpt-image-1", Mode: "image_generation", ReleaseDate: "2025-04-23",
 		InputModalities:              []string{"text", "image"},
 		OutputModalities:             []string{"image"},
 		SupportedAPIProtocols:        []string{"images", "responses"},
@@ -817,7 +819,7 @@ var openAIImageModelPricingData = []rawModel{
 // openAIReasoningModelPricingData — o-series models, curated 2026-07-13.
 var openAIReasoningModelPricingData = []rawModel{
 	{
-		Model: "o1", Mode: "chat",
+		Model: "o1", Mode: "chat", ReleaseDate: "2024-12-05",
 		MaxTokens: intp(100000), ContextWindowTokens: intp(200000), MaxOutputTokens: intp(100000),
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
@@ -843,7 +845,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		SupportsPromptCaching:    true,
 	},
 	{
-		Model: "o3", Mode: "chat",
+		Model: "o3", Mode: "chat", ReleaseDate: "2025-04-16",
 		MaxTokens: intp(100000), ContextWindowTokens: intp(200000), MaxOutputTokens: intp(100000),
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"text"},
@@ -868,7 +870,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		SupportsPromptCaching:    true,
 	},
 	{
-		Model: "o3-mini", Mode: "chat",
+		Model: "o3-mini", Mode: "chat", ReleaseDate: "2025-01-31",
 		MaxTokens: intp(100000), ContextWindowTokens: intp(200000), MaxOutputTokens: intp(100000),
 		InputModalities:           []string{"text"},
 		OutputModalities:          []string{"text"},
@@ -882,7 +884,7 @@ var openAIReasoningModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"low", "medium", "high"},
 	},
 	{
-		Model: "o4-mini", Mode: "chat",
+		Model: "o4-mini", Mode: "chat", ReleaseDate: "2025-04-16",
 		MaxTokens: intp(100000), ContextWindowTokens: intp(200000), MaxOutputTokens: intp(100000),
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"text"},

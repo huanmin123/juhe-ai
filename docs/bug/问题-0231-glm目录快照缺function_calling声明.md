@@ -56,3 +56,28 @@
 
 - golden test 同步升级：glm 全系 + openai 全部 chat 模式行「必须声明 function_calling」断言（image/embedding 模式豁免），防止回归。
 - 口径口径化：**chat 模式行必须声明 function_calling；image/embedding/audio 等非对话模式不声明**——本断言已固化在 golden test。
+
+## 全列空值盘点（2026-09-29，用户指令「某些模型的某个列或者行是空的是否合理」）
+
+反射审计全部六家快照的核心结构化列（价格/参数/协议/模态/工具/推理档/缓存），逐列判定：
+
+**补全（不合理空，共三项，有内部佐证或公开 GA 事实）**：
+
+1. **anthropic 构造器缺 `Mode: "chat"`**——生产 `provider_model_catalog` 中 anthropic 46 行 mode 列全空（唯一空值供应商，其余家全部有值）；空 Mode 无功能阻断（`isSupportedCatalogModel` 仅排除 audio 系）但属数据完整性缺口。构造器一处补齐即全覆盖。
+2. **openai 家 46 行缺 `ReleaseDate`**——其余五家全部行都维护发布日期，仅 openai 大面积缺。补全依据三级：①名字自带 `YYYY-MM-DD` 后缀的 dated 行（19 行，名字即日期，完全佐证）；②同系列 dated 行佐证的主行（gpt-5.5→2026-04-23、gpt-5.4→2026-03-05 等 16 行）；③公开 GA 事实（gpt-4.1 系→2025-04-14、gpt-4o-mini→2024-07-18、o1→2024-12-05、o3→2025-04-16、o3-mini→2025-01-31、o4-mini→2025-04-16、gpt-4/gpt-3.5-turbo→2023-06-13、gpt-image-1→2025-04-23）。**不补**（无佐证）：gpt-image-1.5、gpt-image-1-mini、gpt-image-2.5-sunburst/flare、gpt-5.3-codex、o1-pro、o3-pro。
+3. **gpt-4o-2024-05-13 缺 `CacheReadInputTokenCost` 与 `SupportsPromptCaching`**——gpt-4o 全系官方支持 prompt caching 且 cached=input×50%（主行 2.5→1.25 同款比例），dated 行按快照日价 $5/M 补 $2.5/M（不抄主行降后价）。
+
+**判定为合理空（不补，列出判据）**：
+
+| 列 | 范围 | 判据 |
+| --- | --- | --- |
+| MaxTokens | 全部供应商基本不维护 | 家内/跨家一致口径；openai 旧行保留历史值 |
+| MaxInputTokens | openai/deepseek/glm/xai 全系 | 家内一致不维护（ContextWindow+MaxOutput 已表达） |
+| MaxOutputTokens | xai 构造器不传 | 家内一致 |
+| CacheRead / SupportsPromptCaching | gpt-4-turbo/4/3.5 旧行 | 官方不支持 prompt caching（2024-10 才上线），不支持即无缓存价 |
+| CacheRead | o1-pro/o3-pro/gpt-*-pro | 无公开佐证，保守不编 |
+| ReasoningEfforts | glm-4.5~5.1、claude-4-5 系、gemini-2.5 系、grok-4.20 系、o1-pro/o3-pro | 代际分界：这些代不支持 effort 枚举（thinking 开关型或预算型），快照对新一代维护、旧代不维护是有意边界 |
+| SupportedToolsByProtocol | image/embedding 行 | 非对话模式不注入工具（口径） |
+| ContextWindow/MaxOutput | gpt-image-1/1.5/2 旧行 | 按张计费的图像模型，快照未维护 token 参数（2.5 系新行有值属来源差异，无官方 token 参数佐证旧行数值） |
+
+**防回归固化**：新增 `catalog_completeness_test.go` 三条门禁——①全供应商 chat 行必须声明 function_calling；②全部行 Mode 非空；③名字带 `YYYY-MM-DD` 后缀的行必须带同值 ReleaseDate。

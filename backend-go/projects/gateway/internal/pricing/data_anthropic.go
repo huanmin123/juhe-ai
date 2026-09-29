@@ -8,6 +8,7 @@ package pricing
 func anthropicModel(model string, catalogOrder int, releaseDate string, inPer1M, outPer1M float64, contextWindow, maxInput, maxOutput int, efforts []string, defaultEffort string) rawModel {
 	return rawModel{
 		Model:        model,
+		Mode:         "chat",
 		CatalogOrder: &catalogOrder,
 		ReleaseDate:  releaseDate,
 
