@@ -440,10 +440,14 @@ func TestAcceptanceManagementBackbone(t *testing.T) {
 	t.Run("operation_logs", func(t *testing.T) {
 		// F4 producer 与 input server 共享同一进程级 owner lease（无租约
 		// 自毁/争用），上述管理面写操作的操作日志必须异步落库且可查询。
+		// 查询必须带 module/action 过滤：列表默认 pageSize=20 且按
+		// created_at DESC 排序，本测试全程 35+ 条写操作，announcements.create
+		// 全量落库后恒在第 2 页之后——不带过滤的裸查询依赖「轮询早于其余
+		// 条目异步落库」的时序碰巧命中，构成间歇性失败。
 		logDeadline := time.Now().Add(15 * time.Second)
 		logged := false
 		for time.Now().Before(logDeadline) {
-			_, listed := client.do(http.MethodGet, "/__aisys__/api/operation-logs", nil, wantStatus(http.StatusOK))
+			_, listed := client.do(http.MethodGet, "/__aisys__/api/operation-logs?module=announcements&action=create", nil, wantStatus(http.StatusOK))
 			for _, raw := range anySlice(data(listed), "items") {
 				entry, _ := raw.(map[string]any)
 				if entry == nil {

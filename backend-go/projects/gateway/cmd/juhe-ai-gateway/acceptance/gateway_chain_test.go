@@ -30,6 +30,9 @@ type chainFixture struct {
 	upstreamHits *atomic.Int64
 	defaultKey   string
 	chatKey      string
+	// accountID 是 mock 上游账户 ID：会话账户唯一绑定契约下，chat 流程
+	// 需要它 PATCH 会话绑定账户后才有可路由模型列表。
+	accountID string
 }
 
 // startChainFixture 组装链路验收公共环境：mock 上游 + chain 网关 + 通过管理
@@ -122,6 +125,7 @@ func startChainFixture(t *testing.T) *chainFixture {
 		fixture: fixture, admin: admin, upstream: upstream, upstreamHits: &upstreamHits,
 		defaultKey: revealKeySecret(t, admin, defaultKeyID),
 		chatKey:    revealKeySecret(t, admin, chatKeyID),
+		accountID:  accountID,
 	}
 	return chain
 }

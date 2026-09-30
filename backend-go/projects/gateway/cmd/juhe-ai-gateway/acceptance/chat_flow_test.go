@@ -1,6 +1,7 @@
-// X05 场景 6：chat。seed「AI 对话 API Key」→ conversation 创建 →
-// POST /stream（真实网关链执行器 dispatch 到 mock 上游）→ SSE 事件序列
-// （content_block.* → message.completed 终态）→ 资产上传边界。
+// X05 场景 6：chat。conversation 免请求体创建 → PATCH accountId 绑定
+// mock 上游账户（账户唯一绑定契约）→ POST /stream（真实网关链执行器
+// 固定派发到绑定账户）→ SSE 事件序列（content_block.* → message.completed
+// 终态）→ 资产上传边界。
 package acceptance
 
 import (
@@ -18,17 +19,22 @@ func TestAcceptanceChatFlow(t *testing.T) {
 	admin := chain.admin
 	base := chain.fixture.baseURL
 
-	// conversation 创建（chat/routes.go Register：POST /my-chat/conversations，
-	// apiKeyId 绑定 seed chat key）。
-	_, created := admin.do(http.MethodPost, "/__aisys__/api/my-chat/conversations",
-		map[string]any{"apiKeyId": chatKeyIDOf(t, chain)}, 0)
+	// conversation 创建（chat/routes.go Register：POST /my-chat/conversations
+	// 免请求体创建空会话，历史字段兼容忽略；鉴权主体由服务端
+	// EnsureChatAPIKey 自动复用 seed chat key）。
+	_, created := admin.do(http.MethodPost, "/__aisys__/api/my-chat/conversations", nil, 0)
 	conversation := data(created)
 	conversationID := str(conversation["id"])
 	if conversationID == "" {
 		t.Fatalf("conversation create payload wrong: %#v", created)
 	}
 
-	// 会话模型列表（seed 目录模型经 runtime cache 提供）。
+	// 账户唯一绑定（《AI问答会话账户唯一绑定设计》§5：PATCH accountId 选
+	// 账户，未选账户的会话模型列表为空、不能发送）。
+	admin.do(http.MethodPatch, "/__aisys__/api/my-chat/conversations/"+conversationID,
+		map[string]any{"accountId": chain.accountID}, wantStatus(http.StatusOK))
+
+	// 会话模型列表 = 绑定账户可路由模型（seed 目录模型经 runtime cache 提供）。
 	modelDeadline := time.Now().Add(10 * time.Second)
 	modelsVisible := false
 	for time.Now().Before(modelDeadline) {
@@ -128,19 +134,4 @@ func TestAcceptanceChatFlow(t *testing.T) {
 	if cleanupStatus >= 400 {
 		t.Fatalf("conversation delete failed: %d", cleanupStatus)
 	}
-}
-
-// chatKeyIDOf 重新列出 seed keys 找 purpose=chat 的 key id。
-func chatKeyIDOf(t *testing.T, chain *chainFixture) string {
-	t.Helper()
-	_, listPayload := chain.admin.do(http.MethodGet, "/__aisys__/api/api-keys?page=1&pageSize=100", nil, wantStatus(http.StatusOK))
-	items, _ := data(listPayload)["items"].([]any)
-	for _, raw := range items {
-		item, _ := raw.(map[string]any)
-		if item != nil && str(item["purpose"]) == "chat" {
-			return str(item["id"])
-		}
-	}
-	t.Fatalf("seed chat key missing: %#v", listPayload)
-	return ""
 }
