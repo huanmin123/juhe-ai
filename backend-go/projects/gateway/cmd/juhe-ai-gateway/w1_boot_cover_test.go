@@ -83,12 +83,22 @@ var (
 	w1bCoverBinaryErr  error
 )
 
+// w1bCoverageRootForProcess 返回本 go test 进程唯一的覆盖基目录。固定共享
+// 路径（%TEMP%\w1b-cov）在跨进程场景有两类实际故障（2026-09-30 BUG-0252
+// 批实测）：并行 go test 进程同时 `go build -cover` 写同一 exe 触发 Windows
+// 文件锁冲突；被中断测试遗留的插桩子进程锁住运行中 exe，后续任何构建
+// （含单测试）必然失败。按 pid 唯一化后两者不再可达；旧进程残留目录由
+// 系统临时目录清理兜底，不主动回收（运行中 exe 无法删除）。
+func w1bCoverageRootForProcess() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("%s-%d", w1bCoverageRoot, os.Getpid()))
+}
+
 // w1bBuildCoverBinary 用 `go build -cover` 构建插桩二进制；包内只构建一次，
 // 所有测试函数复用同一可执行文件。
 func w1bBuildCoverBinary(t *testing.T) string {
 	t.Helper()
 	w1bCoverBinaryOnce.Do(func() {
-		binDir := filepath.Join(os.TempDir(), w1bCoverageRoot, "bin")
+		binDir := filepath.Join(w1bCoverageRootForProcess(), "bin")
 		if err := os.MkdirAll(binDir, 0o755); err != nil {
 			w1bCoverBinaryErr = fmt.Errorf("创建插桩二进制目录失败: %w", err)
 			return
@@ -120,11 +130,12 @@ func w1bBuildCoverBinary(t *testing.T) string {
 	return w1bCoverBinaryPath
 }
 
-// w1bCoverageDir 返回场景专属 GOCOVERDIR 固定基目录（不用 t.TempDir()：
-// 测试结束后计数器文件必须保留，供外部 covdata 管线收割）。
+// w1bCoverageDir 返回场景专属 GOCOVERDIR 基目录（不用 t.TempDir()：
+// 测试结束后计数器文件必须保留，供外部 covdata 管线收割；基目录按 go test
+// 进程唯一化，跨进程场景目录互不冲突）。
 func w1bCoverageDir(t *testing.T, scenario string) string {
 	t.Helper()
-	dir := filepath.Join(os.TempDir(), w1bCoverageRoot, scenario)
+	dir := filepath.Join(w1bCoverageRootForProcess(), scenario)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("创建场景覆盖目录 %s 失败: %v", dir, err)
 	}
@@ -214,7 +225,7 @@ func w1bRunScenario(t *testing.T, scenario string, env []string, args ...string)
 		}
 		exitCode = exitErr.ExitCode()
 	}
-	w1bAppendCoverageManifest(t, filepath.Join(os.TempDir(), w1bCoverageRoot, scenario))
+	w1bAppendCoverageManifest(t, filepath.Join(w1bCoverageRootForProcess(), scenario))
 	t.Logf("场景 %s: exit=%d stdout=%q stderr=%q", scenario, exitCode, stdout.String(), stderr.String())
 	return stdout.String(), stderr.String(), exitCode
 }
@@ -571,7 +582,7 @@ func TestW1BBootCoverPassiveGatewayGracefulShutdown(t *testing.T) {
 			ctxErr := ctx.Err()
 			cancel()
 			if ctxErr != nil {
-				t.Fatalf("场景 %s 超过 %s 有界等待，进程已被终止", scenario, w1bScenarioTimeout)
+				t.Fatalf("场景 %s 超过 %s 有界等待，进程已被终止；stdout=%q stderr=%q", scenario, w1bScenarioTimeout, stdout.String(), stderr.String())
 			}
 			exitCode := 0
 			if waitErr != nil {
