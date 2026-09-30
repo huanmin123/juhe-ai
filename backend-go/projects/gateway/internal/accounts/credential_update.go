@@ -44,14 +44,14 @@ func stripCipherPlaceholderCredentials(requested Credentials) Credentials {
 		}
 		switch typed := value.(type) {
 		case string:
-			if typed == credentialCipherPlaceholder {
+			if typed == CredentialCipherPlaceholder {
 				continue
 			}
 			output[key] = value
 		case []any:
 			kept := make([]any, 0, len(typed))
 			for _, item := range typed {
-				if text, ok := item.(string); ok && text == credentialCipherPlaceholder {
+				if text, ok := item.(string); ok && text == CredentialCipherPlaceholder {
 					continue
 				}
 				kept = append(kept, item)

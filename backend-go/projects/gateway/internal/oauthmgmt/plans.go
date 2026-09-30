@@ -1,6 +1,10 @@
 package oauthmgmt
 
-import "context"
+import (
+	"context"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
+)
 
 // providerPlans mirrors the four Node modules' route/service wiring. The
 // exchanges close over the per-provider services; upstream transport stays
@@ -185,6 +189,21 @@ func anthropicPlan() providerPlan {
 	return plan
 }
 
+// geminiBodyClientSecret 读取请求 body 的 clientSecret：统一密文占位
+// （accounts.CredentialCipherPlaceholder，重新授权上下文 clientSecret 的
+// 掩码回显被前端原样提交，BUG-0238 契约延伸）视为"未提交"，转为空串让
+// 既有空值回退生效——authURL/exchangeRefresh 走 GEMINI_OAUTH_CLIENT_SECRET
+// 环境变量回退（resolveGeminiOAuthClient，该建户链路无账户存储上下文）；
+// exchangeCode 的会话一致性检查跳过空值、token 请求沿用授权会话保存的
+// 真实值；refreshInput 的 pick 回退账户存储的 client_secret 现值。
+func geminiBodyClientSecret(body map[string]any) string {
+	value := optionalTrimmedText(body, "clientSecret")
+	if value == accounts.CredentialCipherPlaceholder {
+		return ""
+	}
+	return value
+}
+
 // --- Gemini ------------------------------------------------------------------
 
 func geminiPlan() providerPlan {
@@ -218,7 +237,7 @@ func geminiPlan() providerPlan {
 		return s.generateGeminiAuthURL(geminiAuthURLOptions{
 			OAuthType:      optionalTrimmedText(body, "oauthType"),
 			ClientID:       optionalTrimmedText(body, "clientId"),
-			ClientSecret:   optionalTrimmedText(body, "clientSecret"),
+			ClientSecret:   geminiBodyClientSecret(body),
 			ProjectID:      optionalTrimmedText(body, "projectId"),
 			TierID:         optionalTrimmedText(body, "tierId"),
 			QuotaProjectID: optionalTrimmedText(body, "quotaProjectId"),
@@ -239,7 +258,7 @@ func geminiPlan() providerPlan {
 			CallbackURL:    optionalTrimmedText(body, "callbackUrl"),
 			OAuthType:      optionalTrimmedText(body, "oauthType"),
 			ClientID:       optionalTrimmedText(body, "clientId"),
-			ClientSecret:   optionalTrimmedText(body, "clientSecret"),
+			ClientSecret:   geminiBodyClientSecret(body),
 			ProjectID:      optionalTrimmedText(body, "projectId"),
 			TierID:         optionalTrimmedText(body, "tierId"),
 			QuotaProjectID: optionalTrimmedText(body, "quotaProjectId"),
@@ -276,7 +295,7 @@ func geminiPlan() providerPlan {
 		info, err := s.refreshGeminiToken(ctx, refreshToken, geminiAuthURLOptions{
 			OAuthType:      optionalTrimmedText(body, "oauthType"),
 			ClientID:       optionalTrimmedText(body, "clientId"),
-			ClientSecret:   optionalTrimmedText(body, "clientSecret"),
+			ClientSecret:   geminiBodyClientSecret(body),
 			ProjectID:      optionalTrimmedText(body, "projectId"),
 			TierID:         optionalTrimmedText(body, "tierId"),
 			QuotaProjectID: quotaProjectID,
@@ -336,7 +355,7 @@ func geminiPlan() providerPlan {
 		info, err := s.refreshGeminiToken(ctx, refreshToken, geminiAuthURLOptions{
 			OAuthType:      oauthType,
 			ClientID:       pick("client_id", optionalTrimmedText(body, "clientId")),
-			ClientSecret:   pick("client_secret", optionalTrimmedText(body, "clientSecret")),
+			ClientSecret:   pick("client_secret", geminiBodyClientSecret(body)),
 			ProjectID:      pick("project_id", optionalTrimmedText(body, "projectId")),
 			TierID:         pick("tier_id", optionalTrimmedText(body, "tierId")),
 			QuotaProjectID: pick("quota_project_id", optionalTrimmedText(body, "quotaProjectId")),

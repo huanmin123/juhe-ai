@@ -1595,10 +1595,11 @@ func projectEditableCredentials(accountType string, credentials Credentials) Cre
 	return output
 }
 
-// credentialCipherPlaceholder is the unified cipher placeholder fixed by the
+// CredentialCipherPlaceholder is the unified cipher placeholder fixed by the
 // BUG-0238 contract (前后端共同常量)：明细面敏感凭据键渲染为该字面量，PATCH
-// 通道以其识别"用户未修改"的占位提交。
-const credentialCipherPlaceholder = "__ENCRYPTED__"
+// 通道以其识别"用户未修改"的占位提交。导出供 oauthmgmt 等跨包引用（如
+// gemini 授权/重新授权流对 clientSecret 占位提交的"视为未提交"回退）。
+const CredentialCipherPlaceholder = "__ENCRYPTED__"
 
 // sensitiveCredentialKeys is the BUG-0238 契约敏感键集合：值在明细面替换为
 // 统一密文占位，其余键原样返回。
@@ -1637,13 +1638,13 @@ func applyCipherPlaceholder(credentials Credentials) (Credentials, bool) {
 func cipherPlaceholderValue(value any) (any, bool) {
 	switch typed := value.(type) {
 	case string:
-		return credentialCipherPlaceholder, true
+		return CredentialCipherPlaceholder, true
 	case []any:
 		items := make([]any, len(typed))
 		changed := false
 		for index, item := range typed {
 			if _, ok := item.(string); ok {
-				items[index] = credentialCipherPlaceholder
+				items[index] = CredentialCipherPlaceholder
 				changed = true
 				continue
 			}

@@ -198,6 +198,9 @@
       :balance-query-loading="balanceQueryTesting"
       :confirm-loading="modalConfirmLoading"
       :credential-title="selectedAccountTypeTitle"
+      :credentials-masked="credentialsMasked"
+      :credentials-revealed="credentialsRevealed"
+      :credentials-revealing="credentialsRevealing"
       :editing="Boolean(editingId)"
       :account-detail="editingAccountDetail"
       :account-advanced-detail="editingAccountAdvancedDetail"
@@ -251,6 +254,7 @@
       @balance-query="queryBalanceFromEdit"
       @ok="saveAccount"
       @open-auth-url="openAuthUrl"
+      @reveal-credentials="revealAccountCredentials"
       @select-provider="selectProvider"
       @test="testAccountFromEditModal"
       @select-type-choice="selectAccountTypeChoice"
@@ -869,6 +873,10 @@ const {
   authResult,
   availableProviders,
   createScopeParams,
+  credentialsMasked,
+  credentialsRevealed,
+  credentialsRevealing,
+  revealAccountCredentials,
   editingAccountDetail,
   editingAccountAdvancedDetail,
   editingId,

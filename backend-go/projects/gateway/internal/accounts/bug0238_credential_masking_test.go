@@ -55,11 +55,11 @@ func TestBug0238EditDetailCipherPlaceholder(t *testing.T) {
 	if err != nil || detail == nil {
 		t.Fatalf("detail: %v %v", detail, err)
 	}
-	if detail.Credentials["api_key"] != credentialCipherPlaceholder {
+	if detail.Credentials["api_key"] != CredentialCipherPlaceholder {
 		t.Fatalf("api_key 应为占位符: %v", detail.Credentials)
 	}
 	pool, _ := detail.Credentials["api_keys"].([]any)
-	if len(pool) != 2 || pool[0] != credentialCipherPlaceholder || pool[1] != credentialCipherPlaceholder {
+	if len(pool) != 2 || pool[0] != CredentialCipherPlaceholder || pool[1] != CredentialCipherPlaceholder {
 		t.Fatalf("api_keys 应逐项占位: %v", detail.Credentials["api_keys"])
 	}
 	if detail.Credentials["api_key_strategy"] != "random" || detail.Credentials["base_url"] != "https://api.openai.com/v1" {
@@ -237,7 +237,7 @@ func TestBug0238PatchStripsCipherPlaceholder(t *testing.T) {
 
 	// legacy credentials 通道提交占位 api_key：存储凭据不变、revision 不推进。
 	code, patched := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
-		`{"expectedConfigRevision":1,"credentials":{"api_key":"`+credentialCipherPlaceholder+`","base_url":"https://api.openai.com/v1"}}`)
+		`{"expectedConfigRevision":1,"credentials":{"api_key":"`+CredentialCipherPlaceholder+`","base_url":"https://api.openai.com/v1"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("占位 PATCH: %d %v", code, patched)
 	}
@@ -250,7 +250,7 @@ func TestBug0238PatchStripsCipherPlaceholder(t *testing.T) {
 
 	// credentialsPatch 通道同样剔除占位（null=删键语义不受影响）。
 	code, patchChannel := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+id,
-		`{"expectedConfigRevision":1,"credentialsPatch":{"api_key":"`+credentialCipherPlaceholder+`"}}`)
+		`{"expectedConfigRevision":1,"credentialsPatch":{"api_key":"`+CredentialCipherPlaceholder+`"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("credentialsPatch 占位提交: %d %v", code, patchChannel)
 	}
@@ -265,7 +265,7 @@ func TestBug0238PatchStripsCipherPlaceholder(t *testing.T) {
 		"base_url": "https://api.openai.com/v1",
 	})
 	code, mixed := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-b238-pool",
-		`{"expectedConfigRevision":1,"credentials":{"api_keys":["`+credentialCipherPlaceholder+`","sk-pool-new-1","sk-pool-new-2"],"api_key_strategy":"random"}}`)
+		`{"expectedConfigRevision":1,"credentials":{"api_keys":["`+CredentialCipherPlaceholder+`","sk-pool-new-1","sk-pool-new-2"],"api_key_strategy":"random"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("混合池 PATCH: %d %v", code, mixed)
 	}
@@ -285,7 +285,7 @@ func TestBug0238PatchStripsCipherPlaceholder(t *testing.T) {
 		"base_url": "https://api.openai.com/v1",
 	})
 	code, allPlaceholder := env.do(t, http.MethodPatch, "/__aisys__/api/accounts/acc-b238-pool2",
-		`{"expectedConfigRevision":1,"credentials":{"api_keys":["`+credentialCipherPlaceholder+`"],"api_key_strategy":"random"}}`)
+		`{"expectedConfigRevision":1,"credentials":{"api_keys":["`+CredentialCipherPlaceholder+`"],"api_key_strategy":"random"}}`)
 	if code != http.StatusOK {
 		t.Fatalf("全占位池 PATCH: %d %v", code, allPlaceholder)
 	}
@@ -300,7 +300,7 @@ func TestBug0238PlaceholderPureArms(t *testing.T) {
 		"api_key": "secret", "api_keys": []any{"a", 1.0}, "access_token": "t",
 		"refresh_token": "", "client_secret": nil, "base_url": "https://x", "client_id": "cid",
 	})
-	if masked["api_key"] != credentialCipherPlaceholder || maskedAny != true {
+	if masked["api_key"] != CredentialCipherPlaceholder || maskedAny != true {
 		t.Fatalf("string 敏感键应直接占位: %v %v", masked, maskedAny)
 	}
 	if masked["base_url"] != "https://x" || masked["client_id"] != "cid" {
@@ -309,14 +309,14 @@ func TestBug0238PlaceholderPureArms(t *testing.T) {
 	if masked["client_secret"] != nil {
 		t.Fatalf("非 string 敏感值保持原样: %v", masked["client_secret"])
 	}
-	if pool, _ := masked["api_keys"].([]any); len(pool) != 2 || pool[0] != credentialCipherPlaceholder || pool[1] != 1.0 {
+	if pool, _ := masked["api_keys"].([]any); len(pool) != 2 || pool[0] != CredentialCipherPlaceholder || pool[1] != 1.0 {
 		t.Fatalf("api_keys 逐项占位、非 string 项保留: %v", masked["api_keys"])
 	}
 
 	stripped := stripCipherPlaceholderCredentials(Credentials{
-		"api_key":          credentialCipherPlaceholder,
-		"api_keys":         []any{credentialCipherPlaceholder, "sk-real", 2.0},
-		"access_token":     credentialCipherPlaceholder,
+		"api_key":          CredentialCipherPlaceholder,
+		"api_keys":         []any{CredentialCipherPlaceholder, "sk-real", 2.0},
+		"access_token":     CredentialCipherPlaceholder,
 		"base_url":         "https://x",
 		"api_key_strategy": "random",
 	})
@@ -334,7 +334,7 @@ func TestBug0238PlaceholderPureArms(t *testing.T) {
 	}
 
 	// 全占位数组 → 整键删除；空数组 → 同样删除。
-	empty := stripCipherPlaceholderCredentials(Credentials{"api_keys": []any{credentialCipherPlaceholder}})
+	empty := stripCipherPlaceholderCredentials(Credentials{"api_keys": []any{CredentialCipherPlaceholder}})
 	if _, ok := empty["api_keys"]; ok {
 		t.Fatalf("滤后为空的 api_keys 应删除: %v", empty)
 	}

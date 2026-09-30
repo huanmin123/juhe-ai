@@ -252,14 +252,18 @@ func (d *Deps) runExportAccounts(w http.ResponseWriter, r *http.Request, access 
 	}
 	if d.Sink != nil {
 		owner := scopeOwnerID(access)
-		matchedText := ""
-		if result.Summary.MatchedAccounts != nil {
-			matchedText = fmt.Sprintf("，匹配 %d 条", *result.Summary.MatchedAccounts)
-		}
 		changes := []authsys.OperationLogChange{
 			safeChange("accountExported", "导出账户数", nil, result.Summary.Accounts),
 			safeChange("proxyExported", "导出代理数", nil, result.Summary.Proxies),
 			safeChange("accountSkipped", "跳过账户数", nil, result.Summary.SkippedAccounts),
+			// BUG-0238 决策 a：导出保留明文凭据（迁移语义），审计条目必须
+			// 留痕凭据导出本身——Sensitive 标记走灰显，After 只描述规模。
+			{
+				Field:     "credentials",
+				Label:     "凭据",
+				Sensitive: true,
+				After:     fmt.Sprintf("已导出 %d 个账户的明文凭据", result.Summary.Accounts),
+			},
 		}
 		if result.Summary.MatchedAccounts != nil {
 			changes = append(changes, safeChange("accountMatched", "匹配账户数", nil, *result.Summary.MatchedAccounts))
@@ -276,9 +280,8 @@ func (d *Deps) runExportAccounts(w http.ResponseWriter, r *http.Request, access 
 			OperationKey:                  "accounts.export",
 			ResourceType:                  "account",
 			ResourceName:                  "AI 账户导出",
-			Summary: fmt.Sprintf("导出 AI 账户：%d 个账户，%d 个代理%s",
-				result.Summary.Accounts, result.Summary.Proxies, matchedText),
-			Changes: changes,
+			Summary:                       fmt.Sprintf("导出账户凭据：%d 个账户", result.Summary.Accounts),
+			Changes:                       changes,
 		}
 		// Node records admin exports admin_only without viewers; user exports
 		// carry the owner viewer.
