@@ -42,6 +42,7 @@ package circuitruntime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -950,6 +951,15 @@ func TestW14GRuntimeOwnerRestoreCapacityExhausted(t *testing.T) {
 
 // TestW14GRealRedisScanPaginationBounds 覆盖依赖 HSCAN 分页的页数上限分支；
 // 真实 Redis 不可达时跳过。命名空间与数据均使用 w14g 前缀，只清理自己的键。
+//
+// BUG-0251：HSCAN 的 COUNT 只是迭代提示而非返回数上限——listpack 编码的
+// 小 hash 一页即全量返回且游标归零（dev Redis 8.2.7 实测：2/50 field 均
+// 一页全回，1000 field 才按 COUNT 逐 entry 分页；默认 hash-max-listpack-
+// entries=128 是分水岭），页数上限分支在小 hash 上无法触发，原 2-field
+// seed 形态从用例引入起在任何环境都不可能通过。本用例 seed 200 个 state
+// 超过默认 listpack 阈值（hash 转 hashtable 后 COUNT 1 逐 entry 分页）；
+// 首轮探测若当前环境仍一页全量返回（阈值被调高等），按「环境不可构造分页」
+// 跳过而非红灯。
 func TestW14GRealRedisScanPaginationBounds(t *testing.T) {
 	clock := newW7BClock()
 	ctx := context.Background()
@@ -968,7 +978,25 @@ func TestW14GRealRedisScanPaginationBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w14gSeedTwoStates(t, b, clock)
+	// seed 200 个 state（单次批量 HSet）：超过默认 listpack 阈值，保证
+	// hash 走 hashtable 编码的 COUNT 分页路径。
+	seedArgs := make([]any, 0, 400)
+	for i := 0; i < 200; i++ {
+		_, field, source := w14gSeedStateSource(clock, fmt.Sprintf("w14g-a%03d", i))
+		seedArgs = append(seedArgs, field, source)
+	}
+	if err := b.client.client.HSet(ctx, b.keys.states, seedArgs...).Err(); err != nil {
+		t.Fatal(err)
+	}
+	// 分页可行性探测：一页全量返回说明当前环境无法构造多页（如
+	// hash-max-listpack-entries 被调高），按环境限制跳过。
+	_, probeNext, err := b.client.client.HScan(ctx, b.keys.states, 0, "", 1).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeNext == 0 {
+		t.Skipf("当前 Redis 对 %d-entry states hash 一页全量返回（listpack 阈值更高或实现差异），无法构造分页场景", len(seedArgs)/2)
+	}
 	// readHash 页数上限。
 	input := w14gNormalizedInput(t)
 	input.MaxPages = 1
