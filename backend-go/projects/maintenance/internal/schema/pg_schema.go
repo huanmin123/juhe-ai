@@ -139,6 +139,10 @@ func quotePGIdentifier(identifier string) string {
 // PGSeedResult summarizes EnsurePostgresSeeds.
 type PGSeedResult struct {
 	StatementCount int
+	// CustomModelOverlapCleaned 是 model catalog seed 在目录 upsert 后删除的
+	// 与本次 seed 运行时可见内置行同名的 custom_provider_models 存量行数
+	// （契约 2026-09-30：自定义模型不得与内置模型同名，内置权威优先）。
+	CustomModelOverlapCleaned int
 }
 
 // pgSeedSystemAccountsInsert seeds the default super admin account with

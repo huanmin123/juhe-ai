@@ -461,6 +461,21 @@ type pgSeedBuiltInModelKey struct {
 	Model        string `json:"model"`
 }
 
+// pgSeedCustomModelOverlapCleanup deletes custom_provider_models rows whose
+// (provider_code, model) collides with a runtime-visible built-in seed row
+// (契约 2026-09-30：自定义模型不得与内置模型同名，内置权威优先；存量同名行
+// 由 maintenance seed 自动清理，回归内置定义；可见行集合即
+// activeModelCatalogSeedRows 的 (ProviderCode, Model) 键)。
+const pgSeedCustomModelOverlapCleanup = `
+    DELETE FROM "juhe_business"."custom_provider_models"
+    WHERE EXISTS (
+      SELECT 1
+      FROM jsonb_to_recordset($1::jsonb) AS built_in(provider_code text, model text)
+      WHERE built_in.provider_code = "juhe_business"."custom_provider_models".provider_code
+        AND built_in.model = "juhe_business"."custom_provider_models".model
+    )
+  `
+
 // seedPostgresModelCatalog ports the Node bulk provider_model_catalog upsert
 // and the guarded stale disable, returning those statement counts.
 func seedPostgresModelCatalog(ctx context.Context, client postgresSeedClient, exec func(string, ...any) error, options SeedOptions, now string, result *PGSeedResult) error {
@@ -491,6 +506,19 @@ func seedPostgresModelCatalog(ctx context.Context, client postgresSeedClient, ex
 		return fmt.Errorf("postgres seed stale disable rows affected: %w", err)
 	}
 	result.StatementCount += int(changes)
+	// 契约 2026-09-30：目录 upsert 后删除与本次 seed 可见内置行同名的
+	// custom_provider_models 存量行（可见行集合 = activeModelCatalogSeedRows），
+	// 删除行数计入 CustomModelOverlapCleaned。
+	cleanupResult, err := client.ExecContext(ctx, pgSeedCustomModelOverlapCleanup, string(builtInJSON))
+	if err != nil {
+		return fmt.Errorf("postgres seed statement %d (custom model overlap cleanup): %w", result.StatementCount+1, err)
+	}
+	cleaned, err := cleanupResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("postgres seed custom model overlap cleanup rows affected: %w", err)
+	}
+	result.StatementCount++
+	result.CustomModelOverlapCleaned = int(cleaned)
 	return nil
 }
 

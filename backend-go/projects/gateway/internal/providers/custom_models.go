@@ -248,6 +248,33 @@ func scanCustomProviderModelRecord(scan func(...any) error) (*customProviderMode
 	return &record, nil
 }
 
+// customModelBuiltInNameConflictMessage is the 2026-09-30 contract rejection
+// text (自定义模型与模型映射设计.md 第 4 节：自定义模型不得与内置模型同名，
+// 内置权威优先)；the routes render it as a 400 body.
+const customModelBuiltInNameConflictMessage = "该模型已由系统内置提供，请直接使用系统模型"
+
+// existsVisibleBuiltInCatalogModel reports whether the provider's built-in
+// catalog carries a runtime-visible row (active + catalog_visible + not
+// shutdown, the listBuiltInCatalogModels availability predicate) with the
+// exact model name.
+func (s *Store) existsVisibleBuiltInCatalogModel(ctx context.Context, providerCode, model string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT 1
+		FROM `+s.table("provider_model_catalog")+`
+		WHERE provider_code = ? AND model = ?
+			AND status = 'active'
+			AND `+s.visibleTruePredicate("catalog_visible")+`
+			AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > `+s.todayText()+`)
+		LIMIT 1`), providerCode, model)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return true, rows.Err()
+	}
+	return false, rows.Err()
+}
+
 // upsertCustomProviderModel ports upsertCustomProviderModelAsync. The returned
 // error messages are verbatim repository texts; the route renders them as 400
 // bodies.
@@ -293,6 +320,16 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 	}
 	if existing != nil && strings.TrimSpace(existing.Model) != model {
 		return nil, fmt.Errorf("模型 ID 创建后不能修改")
+	}
+	// 契约 2026-09-30（docs/functions/自定义模型与模型映射设计.md 第 4 节）：
+	// 自定义模型不得与同供应商运行时可见的内置模型同名（内置权威优先），
+	// 创建与整体保存全路径拒绝。
+	builtInConflict, err := s.existsVisibleBuiltInCatalogModel(ctx, providerCode, model)
+	if err != nil {
+		return nil, err
+	}
+	if builtInConflict {
+		return nil, fmt.Errorf("%s", customModelBuiltInNameConflictMessage)
 	}
 	id := ""
 	if existing != nil {
@@ -400,6 +437,18 @@ func (s *Store) upsertCustomProviderModel(ctx context.Context, input customProvi
 // default-reference cleanup. fields carries the submitted patch keys.
 func (s *Store) patchCustomProviderModel(ctx context.Context, current *customProviderModelRecord, next customProviderModelUpsertInput,
 	fields []string, expectedUpdatedAt, ownerSystemAccountID string, cleanup *defaultReferenceCleanupInput) (*customModelPatchOutcome, error) {
+	// 契约 2026-09-30（docs/functions/自定义模型与模型映射设计.md 第 4 节）：
+	// 改名（提交了与现名不同的非空 model）撞同供应商运行时可见内置模型时拒绝；
+	// 名字未变（含 HTTP patch 不携带 model 键的零值）不查询，正常编辑不受影响。
+	if renamed := strings.TrimSpace(next.Model); renamed != "" && renamed != strings.TrimSpace(current.Model) {
+		builtInConflict, err := s.existsVisibleBuiltInCatalogModel(ctx, current.ProviderCode, renamed)
+		if err != nil {
+			return nil, err
+		}
+		if builtInConflict {
+			return nil, fmt.Errorf("%s", customModelBuiltInNameConflictMessage)
+		}
+	}
 	if current.UpdatedAt != expectedUpdatedAt {
 		return &customModelPatchOutcome{Kind: "conflict", Record: customModelMutationRecordOf(current)}, nil
 	}

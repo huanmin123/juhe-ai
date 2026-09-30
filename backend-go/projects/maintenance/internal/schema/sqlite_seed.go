@@ -22,6 +22,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,10 @@ type SQLiteSeedResult struct {
 	// shutdown filter (119 rows in the 2026-09-23 snapshot before any
 	// shutdown date is reached).
 	ModelCatalogRows int
+	// CustomModelOverlapCleaned 是 model catalog seed 在目录 upsert 后删除的
+	// 与本次 seed 运行时可见内置行同名的 custom_provider_models 存量行数
+	// （契约 2026-09-30：自定义模型不得与内置模型同名，内置权威优先）。
+	CustomModelOverlapCleaned int
 }
 
 // SeedSQLiteDefaults ports Node seedDefaults for one business SQLite
@@ -654,6 +659,29 @@ func seedSQLiteModelCatalog(ctx context.Context, db *sql.DB, options SeedOptions
 		}
 		result.StatementCount++
 		result.ModelCatalogRows++
+	}
+	// 契约 2026-09-30（docs/functions/自定义模型与模型映射设计.md 第 4 节）：
+	// 目录 upsert 后删除与本次 seed 可见内置行（activeModelCatalogSeedRows
+	// 的 (ProviderCode, Model) 集合）同名的 custom_provider_models 存量行，
+	// 删除行数计入 CustomModelOverlapCleaned。
+	if len(rows) > 0 {
+		valueRows := make([]string, 0, len(rows))
+		args := make([]any, 0, len(rows)*2)
+		for _, model := range rows {
+			valueRows = append(valueRows, "(?, ?)")
+			args = append(args, model.ProviderCode, model.Model)
+		}
+		cleanupResult, err := db.ExecContext(ctx,
+			"DELETE FROM custom_provider_models WHERE (provider_code, model) IN (VALUES "+strings.Join(valueRows, ", ")+")", args...)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite seed statement %d (custom model overlap cleanup): %w", result.StatementCount+1, err)
+		}
+		cleaned, err := cleanupResult.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("sqlite seed custom model overlap cleanup rows affected: %w", err)
+		}
+		result.StatementCount++
+		result.CustomModelOverlapCleaned = int(cleaned)
 	}
 	return builtInModelKeys, nil
 }
