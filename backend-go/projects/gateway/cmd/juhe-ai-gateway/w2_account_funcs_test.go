@@ -349,12 +349,12 @@ func TestW2BAccountTestDispatchCancelInvalidID(t *testing.T) {
 }
 
 // TestW2BAccountTestDispatchWireArms 覆盖 wireInProcessAccountTestDispatch
-// 的三个前置错误臂：152（队列 env 非法）/ 159（业务库句柄 nil）/ 172（
-// Secret 为空且契约表可读）。
+// 的三个前置错误臂：探针并发 env 非法（fail closed）/ 业务库句柄 nil /
+// Secret 为空且契约表可读。
 func TestW2BAccountTestDispatchWireArms(t *testing.T) {
 	cfg := runtimeConfig{Secret: "w2b-secret"}
 
-	// 152：JUHE_AI_JOBS_PROBE_CONCURRENCY 非整数 → fail closed。
+	// 探针并发 env：JUHE_AI_JOBS_PROBE_CONCURRENCY 非整数 → fail closed。
 	t.Setenv(envProbeConcurrency, "not-a-number")
 	if err := wireInProcessAccountTestDispatch(&composition{}, cfg, nil); err == nil ||
 		!strings.Contains(err.Error(), "必须是整数") {

@@ -780,29 +780,13 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.BusinessOwner = strings.ToLower(strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER")))
 	cfg.BusinessDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_BUSINESS_DATABASE_PATH", datadir.BusinessDatabase)
 	cfg.BusinessPostgresURL = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_POSTGRES_URL"))
-	cfg.BusinessHandoffConfirmed = envBoolTrue(getenv("JUHE_AI_BUSINESS_HANDOFF_CONFIRMED"))
-	cfg.BusinessNodeWriterStopped = envBoolTrue(getenv("JUHE_AI_BUSINESS_NODE_WRITER_STOPPED"))
-	cfg.BusinessSchemaReady = envBoolTrue(getenv("JUHE_AI_BUSINESS_SCHEMA_READY"))
-	cfg.BusinessOwnerEpoch = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_OWNER_EPOCH"))
-	cfg.BusinessCutoverEvidencePath = strings.TrimSpace(getenv("JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH"))
-	// 2026-09-19 零配置自动认领：sqlite/postgres 模式下切流语义家族全部未配
-	// 置时，按"新装部署、无 Node 切流历史"处理——组合根自动认领业务库 owner
-	// （handoff 三证置真、epoch 用固定 standalone 值）。2026-09-22 口径对齐
-	// J3b 家族（modelcheckowner/config.go 仅 handoff/readiness 语义变量）：
-	// 家族收窄为五个切流语义变量，纯运维变量（BUSINESS_OWNER、
-	// BUSINESS_DATABASE_PATH、BUSINESS_POSTGRES_URL）不再触发切流门禁——只
-	// 配置业务库路径或独立连接串（常见运维需求）不得导致启动失败。显式配置
-	// 五证任一成员仍保持原门禁（businessOwnerGate + cutover evidence 校验），
-	// 生产切流纪律不变。postgres 自动认领时业务连接回落共享
-	// JUHE_AI_POSTGRES_URL：五证未配置即不存在独立业务连接串的切流语义，
-	// 独立凭据仍可通过显式配置 JUHE_AI_BUSINESS_POSTGRES_URL 提供并被保留。
-	if (cfg.DatabaseDriver == "sqlite" || cfg.DatabaseDriver == "postgres") && !hasAnyRawConfig(getenv,
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED",
-		"JUHE_AI_BUSINESS_SCHEMA_READY",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH",
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH",
-	) {
+	// 清理批次 C1（2026-09-30）：Node→Go 切流已完成且 Node 进程已于
+	// 2026-09-05 清零（不可恢复），BUSINESS 切流五证 env 家族与 cutover
+	// evidence 校验链整体退役——owner 事实一律按零配置自动认领（原显式配置
+	// 分支在所有现存部署中从未被配置过，五源核对零引用）。ownermode 输入
+	// 字段保留并恒为 auto-claim 真值组合；postgres 模式业务连接回落共享
+	// JUHE_AI_POSTGRES_URL 的语义不变（独立凭据仍可显式配置）。
+	if cfg.DatabaseDriver == "sqlite" || cfg.DatabaseDriver == "postgres" {
 		cfg.BusinessOwner = "gateway"
 		cfg.BusinessHandoffConfirmed = true
 		cfg.BusinessNodeWriterStopped = true
@@ -817,36 +801,13 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	return cfg, nil
 }
 
-// businessOwnerGate validates the business database owner handoff the same way
-// the J3b owner contract does (modelcheckowner.LoadConfig): an enabled system
-// api composition must prove it owns the business database before any store is
-// opened; otherwise the process fails closed. The 2026-09-19 zero-config
-// standalone arm (BusinessOwnerAutoClaimed) already carries the auto-claimed
-// owner facts from loadRuntimeConfig and skips the cutover evidence proof.
+// businessOwnerGate keeps only the connection preconditions after the C1
+// cutover-gate retirement (2026-09-30): the handoff/cutover evidence family is
+// gone with the Node cutover era; an enabled system api composition still
+// fails closed when its business database connection is not resolvable.
 func (c *runtimeConfig) businessOwnerGate() error {
 	if !c.SystemAPIEnabled {
 		return nil
-	}
-	if c.BusinessOwnerAutoClaimed {
-		return nil
-	}
-	if c.BusinessOwner != "gateway" {
-		return fmt.Errorf("启用系统 API 组合根时 JUHE_AI_BUSINESS_OWNER 必须为 gateway")
-	}
-	if !c.BusinessHandoffConfirmed {
-		return fmt.Errorf("Business owner handoff 未确认（JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true），必须保持关闭")
-	}
-	if !c.BusinessNodeWriterStopped {
-		return fmt.Errorf("Business owner handoff 已确认但 Node writer 未停止（JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true），必须保持关闭")
-	}
-	if !c.BusinessSchemaReady {
-		return fmt.Errorf("Business schema readiness 未确认（JUHE_AI_BUSINESS_SCHEMA_READY=true），必须保持关闭")
-	}
-	if c.BusinessOwnerEpoch == "" {
-		return fmt.Errorf("Business owner handoff 已确认但 JUHE_AI_BUSINESS_OWNER_EPOCH 未提供，必须保持关闭")
-	}
-	if c.BusinessCutoverEvidencePath == "" {
-		return fmt.Errorf("Business owner handoff 已确认但 JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH 未提供，必须保持关闭")
 	}
 	if c.DatabaseDriver == "postgres" {
 		if c.BusinessPostgresURL == "" {

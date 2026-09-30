@@ -14,6 +14,7 @@ package accounts
 // accountsApi/myAccountsApi.revalidateApiKeyRuntime contract).
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -127,8 +128,13 @@ func (d *Deps) runAPIKeyRuntimeRevalidate(w http.ResponseWriter, r *http.Request
 	}
 	effects := d.Store.runtimeResetEffectsOrNil()
 	if effects == nil {
-		println("accounts slice runtime-reset effects port not wired for revalidate")
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+		// BUG-0248：裸 println 改走注入的 slog（含 path/id 上下文）。
+		if d.Log != nil {
+			d.Log.Error("accounts slice runtime-reset effects port not wired for revalidate", "path", r.URL.Path, "id", r.PathValue("id"))
+		}
+		// 上方账户读取已成功，err 在此恒 nil；端口未装配是本分支唯一失败
+		// 来源，静态 cause 保住 failureReason（对齐 BUG-0248 项 1 修法）。
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", errors.New("accounts runtime-reset effects port not wired"))
 		return
 	}
 	revalidated, err := effects.RevalidateAccountAPIKeyRuntimePool(r.Context(), account.ID, int64(revision))

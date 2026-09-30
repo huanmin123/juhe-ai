@@ -933,7 +933,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 被授权人（grantee / 团队成员）在 accounts list/detail/m11 读取面
 	// 看不到被授权实例账户（管理员路径走 CanAccessAll 短路，不受影响）。
 	// 装配顺序：authzStore 在本函数 L543 已构造，早于本 Mount，无初始化环。
-	(&accounts.Deps{Store: accountStore, Auth: authDeps, Sink: sink, Authorized: authzStore}).Mount(kern)
+	// Log 接线（BUG-0248）：accounts 降级日志（writeError/writeM11ReadError/
+	// 端口未装配分支）走进程默认 logger，同 apikeys 先例；漏接线会让生产
+	// logger 恒 nil、上述错误日志静默。
+	(&accounts.Deps{Store: accountStore, Auth: authDeps, Sink: sink, Authorized: authzStore, Log: slog.Default()}).Mount(kern)
 	// providers built-in PATCH (update_model_configuration) operation log:
 	// same authsys producer sink as the other management families (the Deps
 	// port existed without its composition wiring until this wave's assembly

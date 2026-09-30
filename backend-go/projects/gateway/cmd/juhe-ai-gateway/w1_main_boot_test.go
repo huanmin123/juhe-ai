@@ -8,10 +8,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -27,7 +24,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	gatewaydispatch "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/redis/go-redis/v9"
 	_ "modernc.org/sqlite"
 )
@@ -485,95 +481,17 @@ func w1MergeCoverageProfiles(t *testing.T, unitPath, bootPath, outPath string) {
 	}
 }
 
-// w1BuildSystemApiEvidence 在本地构造一套可验证的 J3b 交接证据
-// （读回清单 + 备份工件 + 证据 JSON），打开 SystemAPIEnabled 的组合根 boot。
+// w1BuildSystemApiEvidence 返回系统 API 组合根启动所需的基础 env。
+// 清理批次 C1（2026-09-30）：cutover evidence 构造已随切流门禁退役
+// （evidencePath 恒空，保留签名兼容调用点）；门禁 env 家族不再解析。
 func w1BuildSystemApiEvidence(t *testing.T, root string) (evidencePath string, env map[string]string) {
 	t.Helper()
-	const (
-		formatVersion = "j3b-readback-manifest/v2"
-		scope         = "j3b-legacy-facts-v2"
-		sourceSchema  = "juhe_dataset+juhe_stats"
-		targetSchema  = "juhe_j3b"
-		epoch         = "w1-boot-epoch"
-	)
-	// 读回清单：固定 9 张必需表，行数相等 + 摘要一致（本地构造的合法事实）。
-	tableNames := []string{
-		"account_quality_health_hourly", "model_check_items", "model_check_observations",
-		"model_check_runs", "model_account_trust_results", "model_token_intercept_baseline_versions",
-		"model_trust_aggregation_state", "model_trust_latest_dirty_accounts", "model_trust_observation_receipts",
-	}
-	tables := make([]gatewaydispatch.J3bReadbackTableDigest, 0, len(tableNames))
-	for _, name := range tableNames {
-		digest := sha256.Sum256([]byte("w1-table:" + name))
-		tables = append(tables, gatewaydispatch.J3bReadbackTableDigest{
-			Name: name, SourceRows: 0, TargetRows: 0,
-			SourceDigest: hex.EncodeToString(digest[:]), TargetDigest: hex.EncodeToString(digest[:]),
-		})
-	}
-	sort.Slice(tables, func(i, j int) bool { return tables[i].Name < tables[j].Name })
-	manifest := gatewaydispatch.J3bReadbackManifest{
-		FormatVersion: formatVersion, Scope: scope, Producer: "w1-boot",
-		SourceSnapshotIdentity: "w1-boot-snapshot", SourceSchema: sourceSchema, TargetSchema: targetSchema,
-		ProjectionComplete: true,
-		VerifiedAt:         time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
-		Tables:             tables,
-	}
-	canonicalHash, err := gatewaydispatch.ComputeJ3bReadbackManifestHash(manifest)
-	if err != nil {
-		t.Fatalf("manifest hash = %v", err)
-	}
-	manifest.ManifestHash = canonicalHash
-	manifestBytes, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatalf("manifest marshal = %v", err)
-	}
-	manifestPath := filepath.Join(root, "readback-manifest.json")
-	if err := os.WriteFile(manifestPath, manifestBytes, 0o644); err != nil {
-		t.Fatalf("write manifest = %v", err)
-	}
-	manifestDigest := sha256.Sum256(manifestBytes)
-	// 备份工件：内容任意，哈希与文件一致即可。
-	backupBytes := []byte("w1-boot-backup-artifact")
-	backupPath := filepath.Join(root, "business-backup.bin")
-	if err := os.WriteFile(backupPath, backupBytes, 0o644); err != nil {
-		t.Fatalf("write backup = %v", err)
-	}
-	backupDigest := sha256.Sum256(backupBytes)
-	evidence := gatewaydispatch.J3bCutoverEvidence{
-		OldOwner: "node", NewOwner: "go-gateway", OwnerEpoch: epoch,
-		DrainCompleted: true, InFlight: 0, ActivePathZero: true, BlockedFindings: 0,
-		RollbackReplayCursor: "w1-boot-cursor",
-		BackupArtifact: gatewaydispatch.J3bBackupArtifact{
-			Path: backupPath, Hash: hex.EncodeToString(backupDigest[:]),
-		},
-		Freshness: gatewaydispatch.J3bEvidenceFreshness{
-			CapturedAt: time.Now().UTC().Format(time.RFC3339), MaxAgeSeconds: 86400,
-		},
-		ReadbackManifest: gatewaydispatch.J3bReadbackManifestReference{
-			Path: manifestPath, Hash: hex.EncodeToString(manifestDigest[:]),
-			FormatVersion: formatVersion, Scope: scope,
-			SourceSnapshotIdentity: "w1-boot-snapshot", SourceSchema: sourceSchema, TargetSchema: targetSchema,
-		},
-	}
-	evidenceBytes, err := json.Marshal(evidence)
-	if err != nil {
-		t.Fatalf("evidence marshal = %v", err)
-	}
-	evidencePath = filepath.Join(root, "cutover-evidence.json")
-	if err := os.WriteFile(evidencePath, evidenceBytes, 0o644); err != nil {
-		t.Fatalf("write evidence = %v", err)
-	}
-	return evidencePath, map[string]string{
-		"JUHE_AI_BUSINESS_OWNER":                 "gateway",
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED":     "true",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED":   "true",
-		"JUHE_AI_BUSINESS_SCHEMA_READY":          "true",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH":           epoch,
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH": evidencePath,
-		"JUHE_AI_BUSINESS_DATABASE_PATH":         filepath.Join(root, "business.sqlite3"),
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":     "true",
-		"JUHE_AI_GATEWAY_CHAIN_ENABLED":          "true",
-		"JUHE_AI_CHAT_DATABASE_PATH":             filepath.Join(root, "chat.sqlite3"),
+	return "", map[string]string{
+		"JUHE_AI_BUSINESS_OWNER":             "gateway",
+		"JUHE_AI_BUSINESS_DATABASE_PATH":     filepath.Join(root, "business.sqlite3"),
+		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED": "true",
+		"JUHE_AI_GATEWAY_CHAIN_ENABLED":      "true",
+		"JUHE_AI_CHAT_DATABASE_PATH":         filepath.Join(root, "chat.sqlite3"),
 	}
 }
 

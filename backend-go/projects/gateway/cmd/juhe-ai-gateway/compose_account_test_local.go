@@ -29,78 +29,39 @@ import (
 //
 // jobs 不再运行该队列，sweep 从此只有 gateway 一个持有者；会话/任务表读写
 // 分工不变（gateway 路由写创建/取消/失败，执行方写 running/结果）。
-// 诊断并发/超时沿用原 jobs 约定（JUHE_AI_JOBS_PROBE_CONCURRENCY 默认 512 +
+// 诊断并发沿用原 jobs 约定（JUHE_AI_JOBS_PROBE_CONCURRENCY 默认 512 +
 // [10s,20s,30s] / images 120s）。
 
-// gatewayTestQueueEnv 是手动测试队列的 env 旋钮（同名 env、默认值与边界对齐
-// 原 jobs loadWorkerConfig；队列执行权移交 gateway 后由 gateway 读取）。
-type gatewayTestQueueEnv struct {
-	ProbeConcurrency     int
-	RefillMaxBatchSize   int
-	QueuedSweepBatchSize int
-	QueuedMaxWaitMS      int64
-	RunningStaleMS       int64
-}
-
-// 队列旋钮 env 名（同名 env 对齐原 jobs 约定）。
+// 队列旋钮（2026-09-30 C4 收编：原
+// JUHE_AI_BACKGROUND_ACCOUNT_TEST_REFILL_MAX_BATCH_SIZE /
+// QUEUED_SWEEP_BATCH_SIZE / QUEUED_MAX_WAIT_MS / RUNNING_STALE_MS 四个
+// env 全库五源零引用，属内部 batch/微调阈值旋钮，收编为常量，取值=原默认值
+// 且边界语义不再适用；JUHE_AI_JOBS_PROBE_CONCURRENCY 在 deploy/README.md
+// 现行契约有容量提示记载，保留为 env）。
 const (
-	envProbeConcurrency     = "JUHE_AI_JOBS_PROBE_CONCURRENCY"
-	envRefillMaxBatchSize   = "JUHE_AI_BACKGROUND_ACCOUNT_TEST_REFILL_MAX_BATCH_SIZE"
-	envQueuedSweepBatchSize = "JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_SWEEP_BATCH_SIZE"
-	envQueuedMaxWaitMS      = "JUHE_AI_BACKGROUND_ACCOUNT_TEST_QUEUED_MAX_WAIT_MS"
-	envRunningStaleMS       = "JUHE_AI_BACKGROUND_ACCOUNT_TEST_RUNNING_STALE_MS"
+	envProbeConcurrency       = "JUHE_AI_JOBS_PROBE_CONCURRENCY"
+	gatewayTestRefillBatch    = 1_000
+	gatewayTestSweepBatch     = 500
+	gatewayTestQueuedMaxWait  = 10 * 60_000
+	gatewayTestRunningStaleMS = 10 * 60_000
 )
 
-// loadGatewayTestQueueEnv 读取队列旋钮；非法取值 fail closed（对齐原 jobs
-// workerEnvInt 语义：配置错误不允许静默降级）。
-func loadGatewayTestQueueEnv(getenv func(string) string) (gatewayTestQueueEnv, error) {
-	env := gatewayTestQueueEnv{
-		ProbeConcurrency:     512,
-		RefillMaxBatchSize:   1_000,
-		QueuedSweepBatchSize: 500,
-		QueuedMaxWaitMS:      10 * 60_000,
-		RunningStaleMS:       10 * 60_000,
+// loadGatewayProbeConcurrency 读取探针并发 env；非法取值 fail closed（对齐原
+// jobs workerEnvInt 语义：配置错误不允许静默降级）。
+func loadGatewayProbeConcurrency(getenv func(string) string) (int, error) {
+	probeConcurrency := 512
+	value := strings.TrimSpace(getenv(envProbeConcurrency))
+	if value == "" {
+		return probeConcurrency, nil
 	}
-	envInt := func(name string, fallback int64, lower, upper int64) (int64, error) {
-		value := strings.TrimSpace(getenv(name))
-		if value == "" {
-			return fallback, nil
-		}
-		parsed, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("%s 必须是整数", name)
-		}
-		if parsed < lower || parsed > upper {
-			return 0, fmt.Errorf("%s 必须介于 %d 和 %d 之间", name, lower, upper)
-		}
-		return parsed, nil
-	}
-	probeConcurrency, err := envInt(envProbeConcurrency, int64(env.ProbeConcurrency), 1, 5096)
+	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
-		return env, err
+		return 0, fmt.Errorf("%s 必须是整数", envProbeConcurrency)
 	}
-	env.ProbeConcurrency = int(probeConcurrency)
-	refill, err := envInt(envRefillMaxBatchSize, int64(env.RefillMaxBatchSize), 1, 100_000)
-	if err != nil {
-		return env, err
+	if parsed < 1 || parsed > 5096 {
+		return 0, fmt.Errorf("%s 必须介于 %d 和 %d 之间", envProbeConcurrency, 1, 5096)
 	}
-	env.RefillMaxBatchSize = int(refill)
-	sweep, err := envInt(envQueuedSweepBatchSize, int64(env.QueuedSweepBatchSize), 1, 100_000)
-	if err != nil {
-		return env, err
-	}
-	env.QueuedSweepBatchSize = int(sweep)
-	queuedMaxWaitMS, err := envInt(envQueuedMaxWaitMS, env.QueuedMaxWaitMS, 1_000, 24*60*60_000)
-	if err != nil {
-		return env, err
-	}
-	env.QueuedMaxWaitMS = queuedMaxWaitMS
-	runningStaleMS, err := envInt(envRunningStaleMS, env.RunningStaleMS, 60_000, 60*60_000)
-	if err != nil {
-		return env, err
-	}
-	env.RunningStaleMS = runningStaleMS
-	return env, nil
+	return int(parsed), nil
 }
 
 // gatewayAccountTestDispatch 是 accounts.TestDispatchEffects 的进程内适配器。
@@ -149,7 +110,7 @@ func (d *gatewayAccountTestDispatch) DispatchAccountTestCancel(taskID string) {
 // accounts.Store。业务库契约表缺失时按 nil 端口降级（路由保持 Node
 // worker-unavailable 契约：任务置败 + 503），不阻塞组合根。
 func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, accountStore *accounts.Store) error {
-	env, err := loadGatewayTestQueueEnv(os.Getenv)
+	probeConcurrency, err := loadGatewayProbeConcurrency(os.Getenv)
 	if err != nil {
 		return err
 	}
@@ -176,7 +137,7 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 	probeService, err := accountprobe.NewService(accountprobe.Options{
 		Source:      savedStore,
 		Secret:      cfg.Secret,
-		Concurrency: env.ProbeConcurrency,
+		Concurrency: probeConcurrency,
 	})
 	if err != nil {
 		return err
@@ -193,11 +154,11 @@ func wireInProcessAccountTestDispatch(composed *composition, cfg runtimeConfig, 
 		return err
 	}
 	queue, err := accounttest.NewManualTestQueue(repo, executor.Execute, accounttest.ManualTestQueueConfig{
-		RefillMaxBatchSize:   env.RefillMaxBatchSize,
-		QueuedMaxWaitMS:      env.QueuedMaxWaitMS,
-		RunningStaleMS:       env.RunningStaleMS,
-		QueuedSweepBatchSize: env.QueuedSweepBatchSize,
-		Concurrency:          env.ProbeConcurrency,
+		RefillMaxBatchSize:   gatewayTestRefillBatch,
+		QueuedMaxWaitMS:      gatewayTestQueuedMaxWait,
+		RunningStaleMS:       gatewayTestRunningStaleMS,
+		QueuedSweepBatchSize: gatewayTestSweepBatch,
+		Concurrency:          probeConcurrency,
 		NowMS:                func() int64 { return time.Now().UnixMilli() },
 	})
 	if err != nil {

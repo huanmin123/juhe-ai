@@ -658,63 +658,40 @@ func TestW1ZChainFinalizationUsageRecordCompletedUpstreamAttempt(t *testing.T) {
 // compose_account_test_local.go
 // ---------------------------------------------------------------------------
 
-// TestW1ZLoadGatewayTestQueueEnv：默认值、全量覆盖与 fail closed 表。
+// TestW1ZLoadGatewayTestQueueEnv：探针并发默认值、覆盖与 fail closed 表。
+// 2026-09-30 C4 收编：REFILL/SWEEP/QUEUED_MAX_WAIT/RUNNING_STALE 四个旋钮
+// 已收编为常量，env 解析只剩 JUHE_AI_JOBS_PROBE_CONCURRENCY。
 func TestW1ZLoadGatewayTestQueueEnv(t *testing.T) {
-	defaults := gatewayTestQueueEnv{
-		ProbeConcurrency:     512,
-		RefillMaxBatchSize:   1_000,
-		QueuedSweepBatchSize: 500,
-		QueuedMaxWaitMS:      10 * 60_000,
-		RunningStaleMS:       10 * 60_000,
-	}
-	env, err := loadGatewayTestQueueEnv(func(string) string { return "" })
-	if err != nil || env != defaults {
-		t.Fatalf("默认 env = %+v err = %v，want %+v", env, err, defaults)
+	concurrency, err := loadGatewayProbeConcurrency(func(string) string { return "" })
+	if err != nil || concurrency != 512 {
+		t.Fatalf("默认 concurrency = %d err = %v，want 512", concurrency, err)
 	}
 
-	env, err = loadGatewayTestQueueEnv(func(name string) string {
-		switch name {
-		case envProbeConcurrency:
+	concurrency, err = loadGatewayProbeConcurrency(func(name string) string {
+		if name == envProbeConcurrency {
 			return " 16 "
-		case envRefillMaxBatchSize:
-			return "20"
-		case envQueuedSweepBatchSize:
-			return "10"
-		case envQueuedMaxWaitMS:
-			return "5000"
-		case envRunningStaleMS:
-			return "120000"
 		}
 		return ""
 	})
-	want := gatewayTestQueueEnv{ProbeConcurrency: 16, RefillMaxBatchSize: 20, QueuedSweepBatchSize: 10, QueuedMaxWaitMS: 5000, RunningStaleMS: 120000}
-	if err != nil || env != want {
-		t.Fatalf("覆盖 env = %+v err = %v，want %+v（值按 envInt 语义去空白）", env, err, want)
+	if err != nil || concurrency != 16 {
+		t.Fatalf("覆盖 concurrency = %d err = %v，want 16（值按去空白语义）", concurrency, err)
 	}
 
-	knobs := []string{envProbeConcurrency, envRefillMaxBatchSize, envQueuedSweepBatchSize, envQueuedMaxWaitMS, envRunningStaleMS}
-	for _, knob := range knobs {
-		for _, bad := range []struct {
-			name    string
-			value   string
-			wantErr string
-		}{
-			{name: "非整数", value: "abc", wantErr: "必须是整数"},
-			{name: "低于下界", value: "0", wantErr: "必须介于"},
-			{name: "高于上界", value: "999999999", wantErr: "必须介于"},
-		} {
-			t.Run(knob+"/"+bad.name, func(t *testing.T) {
-				_, err := loadGatewayTestQueueEnv(func(name string) string {
-					if name == knob {
-						return bad.value
-					}
-					return ""
-				})
-				if err == nil || !strings.Contains(err.Error(), bad.wantErr) {
-					t.Fatalf("loadGatewayTestQueueEnv(%s=%q) err = %v，want 包含 %q", knob, bad.value, err, bad.wantErr)
-				}
-			})
-		}
+	for _, bad := range []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "非整数", value: "abc", wantErr: "必须是整数"},
+		{name: "低于下界", value: "0", wantErr: "必须介于"},
+		{name: "高于上界", value: "999999999", wantErr: "必须介于"},
+	} {
+		t.Run(bad.name, func(t *testing.T) {
+			_, err := loadGatewayProbeConcurrency(func(string) string { return bad.value })
+			if err == nil || !strings.Contains(err.Error(), bad.wantErr) {
+				t.Fatalf("loadGatewayProbeConcurrency(%q) err = %v，want 包含 %q", bad.value, err, bad.wantErr)
+			}
+		})
 	}
 }
 

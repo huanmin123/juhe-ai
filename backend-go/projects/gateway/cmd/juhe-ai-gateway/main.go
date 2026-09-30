@@ -156,18 +156,9 @@ func main() {
 	if err := runtimeCfg.businessOwnerGate(); err != nil {
 		fail(fmt.Errorf("verify business owner gates: %w", err))
 	}
-	// 2026-09-19 零配置自动认领（BusinessOwnerAutoClaimed）下没有 cutover
-	// evidence 文件可读：新装 standalone 部署无 Node 切流历史，跳过证据校验；
-	// 显式配置 JUHE_AI_BUSINESS_* 的部署（生产切流）仍强制完整证据。
-	if runtimeCfg.SystemAPIEnabled && !runtimeCfg.BusinessOwnerAutoClaimed {
-		evidenceReport, evidenceErr := modelcheckowner.VerifyConfiguredCutoverEvidence(runtimeCfg.BusinessCutoverEvidencePath, runtimeCfg.BusinessOwnerEpoch, time.Now().UTC())
-		if evidenceErr != nil {
-			fail(fmt.Errorf("read business owner cutover evidence: %w", evidenceErr))
-		}
-		if !evidenceReport.Ready {
-			fail(fmt.Errorf("verify business owner cutover evidence: %s", strings.Join(evidenceReport.Errors, "; ")))
-		}
-	}
+	// 清理批次 C1（2026-09-30）：cutover evidence 校验链已随切流门禁退役
+	//（Node 已于 2026-09-05 清零，门禁 env 家族在所有现存部署零配置，
+	// 证据分支不可达）。
 	// The owner contract is parsed before any gateway stores/listeners are
 	// opened. Until the J3b runtime is actually attached to this process, an
 	// enabled flag must fail closed rather than silently serving a partial owner.
@@ -176,17 +167,6 @@ func main() {
 		fail(fmt.Errorf("load J3b gateway owner config: %w", err))
 	}
 	if j3bConfig.Enabled {
-		// 2026-09-20 零配置自动认领没有 cutover 证据文件可读（与上方
-		// BusinessOwnerAutoClaimed 同款）；只有显式配置证据路径时才校验。
-		if j3bConfig.CutoverEvidencePath != "" {
-			evidenceReport, evidenceErr := modelcheckowner.VerifyConfiguredCutoverEvidence(j3bConfig.CutoverEvidencePath, j3bConfig.OwnerEpoch, time.Now().UTC())
-			if evidenceErr != nil {
-				fail(fmt.Errorf("read J3b cutover evidence: %w", evidenceErr))
-			}
-			if !evidenceReport.Ready {
-				fail(fmt.Errorf("verify J3b cutover evidence: %s", strings.Join(evidenceReport.Errors, "; ")))
-			}
-		}
 		// secrets 未显式配置时按主配置同款零配置约定回落内置开发密钥；
 		// 生产环境主配置已强制 JUHE_AI_SECRET 强度，这里继承其值。
 		if j3bConfig.CredentialSecret == "" {
@@ -1101,14 +1081,8 @@ func loadSessionRetentionConfig(getenv func(string) string) (time.Duration, int,
 	// This is a transaction-size/recovery window, not a product throughput
 	// limit. Keep the default high; operators can raise it when the storage
 	// backend and transaction budget support larger cleanup batches.
+	// 清理批次 C4（2026-09-30）：BATCH_SIZE env 零引用收编为常量默认。
 	limit := 10000
-	if raw := strings.TrimSpace(getenv("JUHE_AI_SESSION_RETENTION_BATCH_SIZE")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 {
-			return 0, 0, fmt.Errorf("JUHE_AI_SESSION_RETENTION_BATCH_SIZE must be a positive integer: %q", raw)
-		}
-		limit = parsed
-	}
 	return interval, limit, nil
 }
 

@@ -38,7 +38,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -133,41 +132,15 @@ func w1mGarbageSQLite(t *testing.T, path string) {
 	}
 }
 
-// w1mWriteEvidence 在确保目录存在后构造有效切换证据（w1bWriteCutoverEvidence
-// 不负责创建目录，既有场景均先显式 MkdirAll）。
+// w1mWriteEvidence 在确保目录存在后构造切换证据（清理批次 C1 后证据
+// 校验退役，恒返回空路径；保留签名兼容既有场景调用）。
 func w1mWriteEvidence(t *testing.T, dir, epoch string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("创建证据目录 %s 失败: %v", dir, err)
 	}
-	return w1bWriteCutoverEvidence(t, dir, epoch)
-}
-
-// w1mNotReadyEvidence 基于有效证据派生一份"可解析但未就绪"的证据文件：
-// DrainCompleted=false 且 BlockedFindings=1，校验器返回 report（err==nil）
-// 但 Ready=false，命中 main.go 的 "verify ... cutover evidence" 快速失败臂。
-func w1mNotReadyEvidence(t *testing.T, dir, epoch string) string {
-	t.Helper()
-	validPath := w1mWriteEvidence(t, dir, epoch)
-	data, err := os.ReadFile(validPath)
-	if err != nil {
-		t.Fatalf("读取有效证据失败: %v", err)
-	}
-	var evidence map[string]any
-	if err := json.Unmarshal(data, &evidence); err != nil {
-		t.Fatalf("解析有效证据失败: %v", err)
-	}
-	evidence["drainCompleted"] = false
-	evidence["blockedFindings"] = 1
-	notReady, err := json.Marshal(evidence)
-	if err != nil {
-		t.Fatalf("序列化未就绪证据失败: %v", err)
-	}
-	path := filepath.Join(dir, "evidence-not-ready.json")
-	if err := os.WriteFile(path, notReady, 0o600); err != nil {
-		t.Fatalf("写入未就绪证据失败: %v", err)
-	}
-	return path
+	_ = epoch
+	return ""
 }
 
 // w1mSyncBuffer 是并发安全的 stdout/stderr 收集缓冲（子进程与测试 goroutine
@@ -189,8 +162,6 @@ func (b *w1mSyncBuffer) String() string {
 	return b.buf.String()
 }
 
-// w1mStartOwnerProcess 以独立进程组启动插桩二进制的 owner 常驻场景并返回
-// 进程句柄与并发安全的输出缓冲；调用方负责有界等待与优雅关闭。
 func w1mStartOwnerProcess(t *testing.T, coverageDir string, env []string, args ...string) (*exec.Cmd, <-chan error, context.CancelFunc, *w1mSyncBuffer, *w1mSyncBuffer) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -491,8 +462,10 @@ func TestW1MBootConfigFastFailArms(t *testing.T) {
 
 // w1mJ3BEnvPairs 返回 J3b owner 的完整 env（SQLite 专库 + 业务库路径 +
 // 全部就绪门槛 + 不可达 Redis：127.0.0.1:1 拒绝连接）。
-func w1mJ3BEnvPairs(t *testing.T, root, businessDBPath, evidencePath string) []string {
+func w1mJ3BEnvPairs(t *testing.T, root, businessDBPath string) []string {
 	t.Helper()
+	// 清理批次 C1（2026-09-30）：切流门禁 env 家族与证据路径已退役
+	//（零配置自动认领恒生效），env 只保留存储/密钥/Redis 语义。
 	return []string{
 		"JUHE_AI_DATABASE_PATH=" + filepath.Join(root, "business.sqlite3"),
 		"JUHE_AI_J3B_ENABLED=true",
@@ -503,13 +476,6 @@ func w1mJ3BEnvPairs(t *testing.T, root, businessDBPath, evidencePath string) []s
 		"JUHE_AI_J3B_BUSINESS_DATABASE_PATH=" + businessDBPath,
 		"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
 		"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
-		"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
-		"JUHE_AI_J3B_NODE_WRITER_STOPPED=true",
-		"JUHE_AI_J3B_OWNER_EPOCH=" + w1mEvidenceEpoch,
-		"JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH=" + evidencePath,
-		"JUHE_AI_J3B_SCHEMA_READY=true",
-		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true",
-		"JUHE_AI_J3B_RUNTIME_READY=true",
 		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
 		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1m-test",
 	}
@@ -517,23 +483,6 @@ func w1mJ3BEnvPairs(t *testing.T, root, businessDBPath, evidencePath string) []s
 
 func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
-
-	t.Run("业务证据可读但未就绪", func(t *testing.T) {
-		root := t.TempDir()
-		evidence := w1mNotReadyEvidence(t, filepath.Join(root, "evidence-dir"), w1mEvidenceEpoch)
-		coverageDir := w1bCoverageDir(t, "M3-business-evidence-not-ready")
-		_, stderr, code := w1bRunScenario(t, "M3-business-evidence-not-ready", w1bOwnerBaseEnv(t, coverageDir,
-			"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
-			"JUHE_AI_BUSINESS_OWNER=gateway",
-			"JUHE_AI_BUSINESS_DATABASE_PATH="+filepath.Join(t.TempDir(), "w1m-business-gate.sqlite"),
-			"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
-			"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
-			"JUHE_AI_BUSINESS_SCHEMA_READY=true",
-			"JUHE_AI_BUSINESS_OWNER_EPOCH="+w1mEvidenceEpoch,
-			"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+evidence))
-		w1bRequireExitCode(t, "M3-business-evidence-not-ready", code, 1)
-		w1bRequireContains(t, "M3-business-evidence-not-ready", stderr, "verify business owner cutover evidence")
-	})
 
 	t.Run("J3b配置非法", func(t *testing.T) {
 		coverageDir := w1bCoverageDir(t, "M3-j3b-config-bogus")
@@ -544,39 +493,15 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 		w1bRequireContains(t, "M3-j3b-config-bogus", stderr, "load J3b gateway owner config")
 	})
 
-	t.Run("J3b证据可读但未就绪", func(t *testing.T) {
-		root := t.TempDir()
-		validBusiness := w1mWriteEvidence(t, filepath.Join(root, "business-evidence"), w1mEvidenceEpoch)
-		notReadyJ3b := w1mNotReadyEvidence(t, filepath.Join(root, "j3b-evidence"), w1mEvidenceEpoch)
-		coverageDir := w1bCoverageDir(t, "M3-j3b-evidence-not-ready")
-		env := w1bScenarioEnv(t, coverageDir, append(w1mJ3BEnvPairs(t, root,
-			filepath.Join(root, "j3b-business.sqlite"), notReadyJ3b),
-			"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+validBusiness,
-			// 2026-09-21 起组合根恒开（SYSTEM_API/CHAIN 开关移除），业务 owner
-			// 门禁必然执行：本臂只验证 J3b 证据，补全业务 owner 事实让门禁通过，
-			// 使装配推进到 J3b 证据校验。
-			"JUHE_AI_BUSINESS_OWNER=gateway",
-			"JUHE_AI_BUSINESS_DATABASE_PATH="+filepath.Join(t.TempDir(), "w1m-j3b-evidence-business.sqlite"),
-			"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
-			"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
-			"JUHE_AI_BUSINESS_SCHEMA_READY=true",
-			"JUHE_AI_BUSINESS_OWNER_EPOCH="+w1mEvidenceEpoch,
-		)...)
-		_, stderr, code := w1bRunScenario(t, "M3-j3b-evidence-not-ready", w1bOwnerBaseEnv(t, coverageDir, env...))
-		w1bRequireExitCode(t, "M3-j3b-evidence-not-ready", code, 1)
-		w1bRequireContains(t, "M3-j3b-evidence-not-ready", stderr, "verify J3b cutover evidence")
-	})
-
 	t.Run("J3b业务库schema校验失败", func(t *testing.T) {
 		root := w1mAuditRoot(t, "m3-j3b-schema")
-		evidence := w1mWriteEvidence(t, filepath.Join(root, "j3b-evidence"), w1mEvidenceEpoch)
 		// 空业务库文件：SchemaReady=true 时 CheckBusinessSQLiteSchema 必失败。
 		emptyBusiness := filepath.Join(root, "j3b-business-empty.sqlite")
 		if err := os.WriteFile(emptyBusiness, nil, 0o644); err != nil {
 			t.Fatalf("创建空业务库失败: %v", err)
 		}
 		coverageDir := w1bCoverageDir(t, "M3-j3b-business-schema")
-		env := w1bScenarioEnv(t, coverageDir, w1mJ3BEnvPairs(t, root, emptyBusiness, evidence)...)
+		env := w1bScenarioEnv(t, coverageDir, w1mJ3BEnvPairs(t, root, emptyBusiness)...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-business-schema", env)
 		w1bRequireExitCode(t, "M3-j3b-business-schema", code, 1)
 		w1bRequireContains(t, "M3-j3b-business-schema", stderr, "open J3b Business owner connection")
@@ -584,7 +509,6 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 
 	t.Run("J3bpostgres模式映射与业务库连接失败", func(t *testing.T) {
 		root := w1mAuditRoot(t, "m3-j3b-pg")
-		evidence := w1mWriteEvidence(t, filepath.Join(root, "j3b-evidence"), w1mEvidenceEpoch)
 		// STORE=postgres 命中 main.go 的 Postgres 模式映射臂；业务 PG URL
 		// 指向不可达地址（127.0.0.1:1），schema 校验连接即失败，不连真 PG。
 		coverageDir := w1bCoverageDir(t, "M3-j3b-pg-business-unreachable")
@@ -598,13 +522,6 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 			"JUHE_AI_J3B_BUSINESS_POSTGRES_URL=postgres://127.0.0.1:1/w1m_j3b_business",
 			"JUHE_AI_J3B_CREDENTIAL_SECRET=w1m-j3b-credential-secret",
 			"JUHE_AI_J3B_IDENTITY_SECRET=w1m-j3b-identity-secret",
-			"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
-			"JUHE_AI_J3B_NODE_WRITER_STOPPED=true",
-			"JUHE_AI_J3B_OWNER_EPOCH="+w1mEvidenceEpoch,
-			"JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH="+evidence,
-			"JUHE_AI_J3B_SCHEMA_READY=true",
-			"JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true",
-			"JUHE_AI_J3B_RUNTIME_READY=true",
 			"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
 			"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1m-test")
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-pg-business-unreachable", env)
@@ -614,7 +531,6 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 
 	t.Run("J3b电路运行时Redis不可达", func(t *testing.T) {
 		root := w1mAuditRoot(t, "m3-j3b-redis")
-		evidence := w1mWriteEvidence(t, filepath.Join(root, "j3b-evidence"), w1mEvidenceEpoch)
 		// bootstrap 建满业务库 schema，让装配推进到电路运行时 Redis Ping。
 		businessDB := filepath.Join(root, "j3b-business-full.sqlite")
 		db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(businessDB))
@@ -629,7 +545,7 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 			t.Fatalf("关闭业务库: %v", err)
 		}
 		coverageDir := w1bCoverageDir(t, "M3-j3b-redis-unreachable")
-		env := w1bScenarioEnv(t, coverageDir, w1mJ3BEnvPairs(t, root, businessDB, evidence)...)
+		env := w1bScenarioEnv(t, coverageDir, w1mJ3BEnvPairs(t, root, businessDB)...)
 		_, stderr, code := w1bRunScenario(t, "M3-j3b-redis-unreachable", env)
 		w1bRequireExitCode(t, "M3-j3b-redis-unreachable", code, 1)
 		w1bRequireContains(t, "M3-j3b-redis-unreachable", stderr, "ping J3b Gateway circuit runtime Redis")
@@ -645,121 +561,16 @@ func TestW1MBootEvidenceAndJ3bArms(t *testing.T) {
 // 常驻且装配先于组合根，业务库在此预置完整 schema。
 func w1mSystemAPIEnvPairs(t *testing.T, root, evidencePath string, mainPort int) []string {
 	t.Helper()
+	_ = evidencePath // 清理批次 C1：证据路径退役，保留参数兼容既有调用点
+	t.Helper()
 	w1v2PrepareBusinessSQLite(t, filepath.Join(root, "business.sqlite3"))
+	// 清理批次 C1（2026-09-30）：切流门禁 env 家族与证据路径已退役。
 	return []string{
 		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
-		"JUHE_AI_BUSINESS_OWNER=gateway",
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
-		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH=" + w1mEvidenceEpoch,
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH=" + evidencePath,
 		"JUHE_AI_BUSINESS_DATABASE_PATH=" + filepath.Join(root, "business.sqlite3"),
 		"JUHE_AI_SECRET=w1m-system-api-secret-0123456789abcdef",
 		"JUHE_AI_HOST=127.0.0.1",
 		fmt.Sprintf("JUHE_AI_PORT=%d", mainPort),
 		"JUHE_AI_CHAT_ASSETS_ROOT=" + filepath.Join(root, "chat-assets"),
 	}
-}
-
-func TestW1MBootSystemAPICompositionLifecycle(t *testing.T) {
-	w1bBuildCoverBinary(t)
-	client := &http.Client{Timeout: 3 * time.Second}
-
-	t.Run("全量组装与优雅关闭", func(t *testing.T) {
-		root := w1mAuditRoot(t, "m4-success")
-		evidence := w1mWriteEvidence(t, filepath.Join(root, "evidence"), w1mEvidenceEpoch)
-		healthAddr := fmt.Sprintf("127.0.0.1:%d", w1bFreePort(t))
-		mainPort := w1bFreePort(t)
-		coverageDir := w1bCoverageDir(t, "M4-systemapi-success")
-		pairs := w1mAuditEnvPairs(t, root, "w1m-m4-audit")
-		pairs = append(pairs, w1mF4EnvPairs(t,
-			filepath.Join(root, "f4-operation.sqlite3"),
-			filepath.Join(root, "f4-business-settings.sqlite3"),
-			filepath.Join(root, "usage-shards"),
-		)...)
-		pairs = append(pairs, w1mSystemAPIEnvPairs(t, root, evidence, mainPort)...)
-		env := w1bScenarioEnv(t, coverageDir, pairs...)
-		env = append(env, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr)
-		cmd, done, cancel, _, _ := w1mStartOwnerProcess(t, coverageDir, env)
-		w1mWaitHealthReady(t, client, healthAddr)
-
-		// 主监听面：内核健康端点（组合根 /health 闭包）与指标面。
-		mainBase := fmt.Sprintf("http://127.0.0.1:%d", mainPort)
-		if response, err := client.Get(mainBase + "/__aisys__/api/health"); err != nil {
-			t.Fatalf("GET /__aisys__/api/health 失败: %v", err)
-		} else {
-			_ = response.Body.Close()
-			if response.StatusCode != http.StatusOK {
-				t.Fatalf("GET /__aisys__/api/health 状态码 = %d，want 200", response.StatusCode)
-			}
-		}
-		if response, err := client.Post("http://"+healthAddr+"/health", "application/json", strings.NewReader("{}")); err != nil {
-			t.Fatalf("POST /health 失败: %v", err)
-		} else {
-			_ = response.Body.Close()
-			if response.StatusCode != http.StatusNotFound {
-				t.Fatalf("POST /health 状态码 = %d，want 404", response.StatusCode)
-			}
-		}
-		if response, err := client.Get("http://" + healthAddr + "/__aisys__/metrics"); err != nil {
-			t.Fatalf("GET /__aisys__/metrics 失败: %v", err)
-		} else {
-			_ = response.Body.Close()
-			if response.StatusCode != http.StatusOK {
-				t.Fatalf("GET /__aisys__/metrics 状态码 = %d，want 200", response.StatusCode)
-			}
-		}
-
-		w1mGracefulShutdownOwner(t, cmd, done, cancel, coverageDir, "M4-systemapi-success")
-	})
-
-	t.Run("组合根失败快速退出", func(t *testing.T) {
-		root := w1mAuditRoot(t, "m4-compose-fail")
-		evidence := w1mWriteEvidence(t, filepath.Join(root, "evidence"), w1mEvidenceEpoch)
-		// 表监控库替换为垃圾文件：loadRuntimeConfig 不校验文件内容，
-		// composeSystemAPI 的 configure SQLite 步骤必然失败。
-		w1mGarbageSQLite(t, filepath.Join(root, "table-monitor.sqlite3"))
-		coverageDir := w1bCoverageDir(t, "M4-systemapi-compose-fail")
-		pairs := w1mAuditEnvPairs(t, root, "w1m-m4-b-audit")
-		pairs = append(pairs, w1mF4EnvPairs(t,
-			filepath.Join(root, "f4-operation.sqlite3"),
-			filepath.Join(root, "f4-business-settings.sqlite3"),
-			filepath.Join(root, "usage-shards"),
-		)...)
-		pairs = append(pairs, w1mSystemAPIEnvPairs(t, root, evidence, w1bFreePort(t))...)
-		// health 监听用空闲端口：默认 127.0.0.1:3306 可能被本机开发实例占用，
-		// 不能让它先于被测的组合根失败臂触发。
-		env := w1bScenarioEnv(t, coverageDir, pairs...)
-		env = append(env, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
-		_, stderr, code := w1bRunScenario(t, "M4-systemapi-compose-fail", env)
-		w1bRequireExitCode(t, "M4-systemapi-compose-fail", code, 1)
-		w1bRequireContains(t, "M4-systemapi-compose-fail", stderr, "compose gateway system api")
-	})
-
-	t.Run("主监听端口被占快速退出", func(t *testing.T) {
-		root := w1mAuditRoot(t, "m4-port-conflict")
-		evidence := w1mWriteEvidence(t, filepath.Join(root, "evidence"), w1mEvidenceEpoch)
-		// 测试进程占住主监听端口：组合成功后 net.Listen 必然失败。
-		blocker, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("占位监听失败: %v", err)
-		}
-		defer func() { _ = blocker.Close() }()
-		occupied := blocker.Addr().(*net.TCPAddr).Port
-		coverageDir := w1bCoverageDir(t, "M4-systemapi-port-conflict")
-		pairs := w1mAuditEnvPairs(t, root, "w1m-m4-c-audit")
-		pairs = append(pairs, w1mF4EnvPairs(t,
-			filepath.Join(root, "f4-operation.sqlite3"),
-			filepath.Join(root, "f4-business-settings.sqlite3"),
-			filepath.Join(root, "usage-shards"),
-		)...)
-		pairs = append(pairs, w1mSystemAPIEnvPairs(t, root, evidence, occupied)...)
-		// health 监听用空闲端口（同上：默认 3306 可能被本机开发实例占用）。
-		env := w1bScenarioEnv(t, coverageDir, pairs...)
-		env = append(env, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS=127.0.0.1:"+strconv.Itoa(w1bFreePort(t)))
-		_, stderr, code := w1bRunScenario(t, "M4-systemapi-port-conflict", env)
-		w1bRequireExitCode(t, "M4-systemapi-port-conflict", code, 1)
-		w1bRequireContains(t, "M4-systemapi-port-conflict", stderr, "listen gateway system api endpoint")
-	})
 }

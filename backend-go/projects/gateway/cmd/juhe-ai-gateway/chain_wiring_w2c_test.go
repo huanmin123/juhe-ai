@@ -552,6 +552,169 @@ func TestChainHotQualityPortPreservesCandidateIdentityThroughOrder(t *testing.T)
 	}
 }
 
+// TestChainHotQualityLifecycleScopeMatchesOrderingScope 是 BUG-0241 复审装配
+// 层 scope 失配的回归锁：经生产 factory（newChainHotQualityLifecycleFactory →
+// chainHotQualityLifecycleAccountOf 真实投影）构造 lifecycle，断言其内部
+// scope key 与读侧排序投影（chainHotQualityAccountViewOf →
+// hotQualityScopeForAccount → HotQualityScopeKey）对同一账户输入产出完全
+// 相同的字符串。此前写侧 view 只填 ID，ProtocolProfile 落成 ":"，本批写入的
+// completed_response/首字样本在排序读侧永远读不到。
+func TestChainHotQualityLifecycleScopeMatchesOrderingScope(t *testing.T) {
+	gatewayhotquality.ResetGatewayHotQualityRuntimeForTest()
+	t.Cleanup(gatewayhotquality.ResetGatewayHotQualityRuntimeForTest)
+	runtime, err := gatewayhotquality.GetGatewayHotQualityRuntime(context.Background(), gatewayhotquality.RuntimeDriverConfig{
+		RuntimeMode:        "standalone",
+		RuntimeStateDriver: "memory",
+	})
+	if err != nil {
+		t.Fatalf("create hot quality runtime: %v", err)
+	}
+	factory := newChainHotQualityLifecycleFactory(runtime)
+	lane := "text"
+	model := "gpt-4o"
+	cases := []struct {
+		name      string
+		candidate gatewaydispatch.AccountCandidate
+	}{
+		{
+			name: "profile-id account",
+			candidate: gatewaydispatch.AccountCandidate{
+				ID:                        "acc-profile",
+				AccountAccessType:         "owner",
+				ProviderProtocolProfileID: "prof-openai-v1",
+				ProtocolCode:              "openai",
+				ProtocolVersion:           "v1",
+			},
+		},
+		{
+			name: "code-version fallback account",
+			candidate: gatewaydispatch.AccountCandidate{
+				ID:                "acc-fallback",
+				AccountAccessType: "owner",
+				ProtocolCode:      "openai",
+				ProtocolVersion:   "v1",
+			},
+		},
+		{
+			// BUG-0241 留档收口回归锁：授权账户的 runtimeKey 必须落
+			// id:authorized:... 形态（此前写侧裸 ID 排序读不到）。
+			name: "authorized account",
+			candidate: gatewaydispatch.AccountCandidate{
+				ID:                        "acc-authz",
+				AccountAccessType:         "account_authorized",
+				BindingSystemAccountID:    strPtrOf("sys"),
+				BoundGroupID:              strPtrOf("grp"),
+				AccountAuthorizationID:    strPtrOf("authz-1"),
+				ProviderProtocolProfileID: "prof-openai-v1",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 读侧：与 chainHotQualityPort.OrderAsync 相同的投影链
+			// （hotQualityScopeForAccount 的取值：profile id 优先，空值回落
+			// protocolCode:protocolVersion）。
+			readView := chainHotQualityAccountViewOf(tc.candidate)
+			readRuntimeKey, err := gatewayhotquality.GatewayAccountRuntimeKey(readView)
+			if err != nil {
+				t.Fatalf("read runtime key: %v", err)
+			}
+			readProfile := readView.ProviderProtocolProfileID
+			if readProfile == "" {
+				readProfile = readView.ProtocolCode + ":" + readView.ProtocolVersion
+			}
+			readKey, err := gatewayhotquality.HotQualityScopeKey(gatewayhotquality.HotQualityScope{
+				AccountRuntimeKey: readRuntimeKey,
+				ProtocolProfile:   readProfile,
+				RequestLane:       lane,
+				ModelFamily:       gatewayhotquality.GatewayHotQualityModelFamily(&model),
+			})
+			if err != nil {
+				t.Fatalf("read scope key: %v", err)
+			}
+
+			// 写侧：引擎 input 语义（dispatchsingle.go 用
+			// hotQualityProtocolProfileOf 预组合协议画像键）。
+			engineProfile := tc.candidate.ProviderProtocolProfileID
+			if engineProfile == "" {
+				engineProfile = tc.candidate.ProtocolCode + ":" + tc.candidate.ProtocolVersion
+			}
+			lifecycle := factory(gatewaydispatch.HotQualityLifecycleInput{
+				AttemptID:       "hotq-scope-" + tc.candidate.ID,
+				AccountID:       tc.candidate.ID,
+				RequestLane:     lane,
+				Model:           model,
+				ProtocolProfile: engineProfile,
+				// 引擎侧授权绑定上下文填充（dispatchsingle.go 同款投影）。
+				AccountAccessType:      tc.candidate.AccountAccessType,
+				BindingSystemAccountID: derefStringPtr(tc.candidate.BindingSystemAccountID),
+				BoundGroupID:           derefStringPtr(tc.candidate.BoundGroupID),
+				AccountAuthorizationID: derefStringPtr(tc.candidate.AccountAuthorizationID),
+			})
+			if lifecycle == nil {
+				t.Fatal("factory must mount the lifecycle for a complete input")
+			}
+			adapter, ok := lifecycle.(*chainHotQualityAttemptLifecycle)
+			if !ok {
+				t.Fatalf("factory product = %T, want *chainHotQualityAttemptLifecycle", lifecycle)
+			}
+			writeKey, err := gatewayhotquality.HotQualityScopeKey(adapter.lifecycle.Scope)
+			if err != nil {
+				t.Fatalf("write scope key: %v", err)
+			}
+			if writeKey != readKey {
+				t.Fatalf("write scope key %q != read scope key %q（写侧热质量记录排序读不到，BUG-0241 回归）", writeKey, readKey)
+			}
+		})
+	}
+
+	// 本锁的前置契约：引擎侧 input 的协议画像键仍由 hotQualityProtocolProfileOf
+	// 预组合（若引擎改变该语义，上表的 engineProfile 复写即失真，须同步更新）。
+	source := readSource(t, "../../internal/gatewaydispatch/dispatchsingle.go")
+	if !strings.Contains(source, "ProtocolProfile: hotQualityProtocolProfileOf(c.account)") {
+		t.Fatal("dispatchsingle.go must keep the engine-side protocol profile projection (hotQualityProtocolProfileOf)")
+	}
+}
+
+// TestChainHotQualityLifecycleAuthorizedRuntimeKeyMatches 是 BUG-0241 留档收口
+// 的回归锁（原为缺口行为锁，已翻转）：HotQualityLifecycleInput 携带授权绑定
+// 上下文四元组，写侧投影产出与读侧 GatewayAccountRuntimeKey 一致的
+// id:authorized:... 形态；此前写侧裸 ID，授权账户 attempt 排序读不到。
+func TestChainHotQualityLifecycleAuthorizedRuntimeKeyMatches(t *testing.T) {
+	candidate := gatewaydispatch.AccountCandidate{
+		ID:                        "acc-authz",
+		AccountAccessType:         "account_authorized",
+		BindingSystemAccountID:    strPtrOf("sys"),
+		BoundGroupID:              strPtrOf("grp"),
+		AccountAuthorizationID:    strPtrOf("authz-1"),
+		ProviderProtocolProfileID: "prof",
+	}
+	readRuntimeKey, err := gatewayhotquality.GatewayAccountRuntimeKey(chainHotQualityAccountViewOf(candidate))
+	if err != nil {
+		t.Fatalf("read runtime key: %v", err)
+	}
+	if readRuntimeKey != "acc-authz:authorized:sys:grp:authz-1" {
+		t.Fatalf("read runtime key = %q, want the authorized binding key", readRuntimeKey)
+	}
+
+	// 写侧：引擎 input 携带授权绑定上下文（dispatchsingle.go 同款投影）。
+	writeView := chainHotQualityLifecycleAccountOf(gatewaydispatch.HotQualityLifecycleInput{
+		AccountID:              candidate.ID,
+		ProtocolProfile:        candidate.ProviderProtocolProfileID,
+		AccountAccessType:      candidate.AccountAccessType,
+		BindingSystemAccountID: derefStringPtr(candidate.BindingSystemAccountID),
+		BoundGroupID:           derefStringPtr(candidate.BoundGroupID),
+		AccountAuthorizationID: derefStringPtr(candidate.AccountAuthorizationID),
+	})
+	writeRuntimeKey, err := gatewayhotquality.GatewayAccountRuntimeKey(writeView)
+	if err != nil {
+		t.Fatalf("write runtime key: %v", err)
+	}
+	if writeRuntimeKey != readRuntimeKey {
+		t.Fatalf("write runtime key %q != read runtime key %q（授权账户热质量记录排序读不到，BUG-0241 回归）", writeRuntimeKey, readRuntimeKey)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // D-129: composition-root DB service fallback (process-local)
 // ---------------------------------------------------------------------------

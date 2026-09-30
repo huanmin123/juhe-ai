@@ -202,10 +202,37 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 					if dispatched.ReleaseConcurrency != nil {
 						dispatched.ReleaseConcurrency()
 					}
+					// BUG-0247 项 1：响应轮终态统一消费重试租约释放回调
+					//（Node routes.ts:2498-2501 finally 的
+					// releaseAccountLockRetryLease(accountLockLeaseScheduleNextRetry)）。
+					// 引擎构造结果时已摘走 activeAccountLockRetryLease（引擎出口
+					// defer 因此不兜底），此前 chain 面零消费——"被选中但未协议
+					// 验证成功"路径的派发租约悬挂至 5 分钟 lease_until 过期
+					//（chain_account_locks.go 派发租约 300s），同账户重试
+					// AcquireRetryLease 返回 WaitMs 空耗墙钟预算。
+					// scheduleNextRetry 恒 false 对齐 Node 语义：Node 仅在
+					// same-account 重试携带路径（routes.ts:1914/:1950/:2143/:2160/
+					// :2180/:2274）置 true，Go 链面无这些路径——流式服务端重试
+					// 与速度优先切换均为跨账户轮换（Node 对应分支同样以 false
+					// 释放），首字截止切号的预留由 settleFirstByteDeadlineCutover-
+					// Verdict 消费、与本租约无关。once 语义防双释放。
+					if dispatched.ReleaseAccountLockRetryLease != nil {
+						dispatched.ReleaseAccountLockRetryLease(false)
+					}
 				}()
 				return l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
 			}()
 			if handling.FirstByteDeadlineCutover {
+				// BUG-0241 留档收口：首字截止切号的本 attempt 以 timeout 终态
+				// 结算（Node catch 响应段 timeout 族；速度优先排序正依赖该
+				// 信号识别慢账户），再走 cutover 消费端。
+				if dispatched.HotQualityAttempt != nil {
+					dispatched.HotQualityAttempt.RecordTerminal(ctx, gatewaydispatch.HotQualityTerminal{
+						OutcomeClass: gatewaydispatch.HotQualityOutcomeTimeout,
+						FailureScope: "protocol_model",
+						Source:       "gateway_transport",
+					})
+				}
 				// R5：非流式管线 configured_deadline 首字超时的切号 verdict
 				// （Node routes.ts catch 响应段）交给既有 cutover 消费端：
 				// 收窄到保留目标重派（false → continue）或耗尽退出（true）。
@@ -217,6 +244,12 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 				continue
 			}
 			if !handling.RetryUpstream {
+				// routes.ts:1841-1860: the unified hot-quality terminal
+				// settlement runs first (BUG-0241): completed_response on
+				// protocol-validated success (with the explicit first-byte
+				// sample) / upstream_response_failure on the diagnostic
+				// forwarded response.
+				l.settleHotQualityTerminal(ctx, dispatched, handling)
 				// routes.ts:2393-2455: the speed-first response observation
 				// (slow/success sampling) runs once the response completed
 				// without a server-retry verdict.
@@ -226,6 +259,10 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 				l.confirmProtocolSuccessSideEffects(ctx, dispatched, handling)
 				return
 			}
+			// BUG-0241 留档收口：响应期重试族的当前 attempt 在换号前结算诊断
+			// 终态（重试轮次是新 attempt 与新 lifecycle），对齐 Node 统一
+			// 结算点对所有响应轮生效的语义。
+			l.settleHotQualityTerminal(ctx, dispatched, handling)
 			// D1: the response layer asked for a server-side account switch
 			// (Node routes.ts:1899 `if (handledResponse.retryUpstream)`); the
 			// loop continues on the remaining candidates or settles the
@@ -889,6 +926,107 @@ func (l *v1DispatchLoop) renderDispatchExhaustedWithMessage(ctx context.Context,
 		RecordUsage:  boolPtr(false),
 		FailureScope: "upstream",
 	})
+}
+
+// settleHotQualityTerminal 镜像 Node routes.ts:1841-1860 响应体处理完成后的
+// 统一热质量终态结算点（BUG-0241：链面消费引擎经 UpstreamDispatchResult 带出的
+// HotQualityAttempt 句柄；留档收口批次放开 AlreadyFinalized 渲染族与
+// RetryUpstream 响应期重试族的结算，分派对齐 Node 五臂）：
+//   - 响应期重试族（RetryUpstream：response_inspection / pre_commit 等 2xx
+//     提交前校验失败被重试，不经 attemptoutcomes 两条引擎失败路径）→
+//     upstream_response_failure / none / upstream_response；其中用户配置的
+//     响应检查策略（configured_response_policy，Node 的
+//     explicitUserPolicyRetry）→ explicit_policy_failure / account /
+//     explicit_policy；重试轮次是新的 attempt 与新 lifecycle（attemptId 含
+//     attemptIndex，Node 同构），本 attempt 以诊断失败终态收口；
+//   - AlreadyFinalized 渲染族的传输失败（TransportFailure.Kind）→
+//     timeout / read_interruption / transport_failure，failureScope
+//     protocol_model、source gateway_transport（Node
+//     hotQualityOutcomeForTransportFailure）；
+//   - AlreadyFinalized 渲染族的本地失败/下游冲突（无 TransportFailure）→
+//     unknown / none / request_lifecycle（Node neutral /
+//     requestLocalProtocolFailure 臂）；
+//   - 协议验证成功（ProtocolValidatedSuccess 隐含 2xx + 校验通过 + 非透传
+//     失败）→ completed_response / none / request_lifecycle；
+//   - 未验证但完整转发的响应（非 2xx 透传 / 校验未过的转发）→
+//     upstream_response_failure / none / upstream_response。
+//
+// 引擎失败路径的重试（非 2xx 失败响应 / 传输错误）已在 attemptoutcomes.go
+// 两条失败路径（:163/:347）结算，本函数不与其重叠（lifecycle terminalOnce
+// 幂等，首个结算生效）；载荷统一携带显式首字样本 FirstTokenMs（Node 的
+// firstByteMs 对所有 outcomeClass 臂统一求值）。句柄 nil（引擎未装配热质量
+// 工厂）时为中性 no-op。
+func (l *v1DispatchLoop) settleHotQualityTerminal(
+	ctx context.Context,
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	handling gatewayresponse.UpstreamResponseHandlingResult,
+) {
+	if dispatched.HotQualityAttempt == nil {
+		return
+	}
+	terminal := gatewaydispatch.HotQualityTerminal{
+		OutcomeClass: gatewaydispatch.HotQualityOutcomeUpstreamResponseFailure,
+		FailureScope: "none",
+		Source:       "upstream_response",
+	}
+	switch {
+	case handling.RetryUpstream && isExplicitPolicyRetry(handling):
+		terminal = gatewaydispatch.HotQualityTerminal{
+			OutcomeClass: gatewaydispatch.HotQualityOutcomeExplicitPolicyFailure,
+			FailureScope: "account",
+			Source:       "explicit_policy",
+		}
+	case handling.RetryUpstream:
+		// response_inspection（非用户策略）/ pre_commit_stream_failure 等
+		// 响应期重试的当前 attempt 诊断终态。
+	case handling.TransportFailure != nil:
+		terminal = gatewaydispatch.HotQualityTerminal{
+			OutcomeClass: transportFailureOutcomeClass(handling.TransportFailure.Kind),
+			FailureScope: "protocol_model",
+			Source:       "gateway_transport",
+		}
+	case handling.AlreadyFinalized:
+		// 本地渲染族（网关本地失败 / 下游冲突 / neutral 终止）。
+		terminal = gatewaydispatch.HotQualityTerminal{
+			OutcomeClass: gatewaydispatch.HotQualityOutcomeUnknown,
+			FailureScope: "none",
+			Source:       "request_lifecycle",
+		}
+	case handling.ProtocolValidatedSuccess:
+		terminal = gatewaydispatch.HotQualityTerminal{
+			OutcomeClass: gatewaydispatch.HotQualityOutcomeCompletedResponse,
+			FailureScope: "none",
+			Source:       "request_lifecycle",
+		}
+	}
+	if handling.FirstTokenMs != nil {
+		value := float64(*handling.FirstTokenMs)
+		terminal.FirstByteMs = &value
+	}
+	dispatched.HotQualityAttempt.RecordTerminal(ctx, terminal)
+}
+
+// isExplicitPolicyRetry 识别用户配置的响应检查策略触发的重试（Node
+// routes.ts 的 explicitUserPolicyRetry：检查决策 Reason 为
+// configured_response_policy）。
+func isExplicitPolicyRetry(handling gatewayresponse.UpstreamResponseHandlingResult) bool {
+	return handling.RetryReason == gatewayresponse.StreamServerRetryResponseInspection &&
+		handling.ResponseInspection != nil &&
+		handling.ResponseInspection.Reason == "configured_response_policy"
+}
+
+// transportFailureOutcomeClass mirrors hotQualityOutcomeForTransportFailure
+// （Node routes.ts:2747-2749）：timeout→timeout、read_incomplete→
+// read_interruption、其余→transport_failure。
+func transportFailureOutcomeClass(kind string) string {
+	switch kind {
+	case "timeout":
+		return gatewaydispatch.HotQualityOutcomeTimeout
+	case "read_incomplete":
+		return gatewaydispatch.HotQualityOutcomeReadInterruption
+	default:
+		return gatewaydispatch.HotQualityOutcomeTransportFailure
+	}
 }
 
 // confirmProtocolSuccessSideEffects 镜像 routes.ts:2478-2486 的最终协议

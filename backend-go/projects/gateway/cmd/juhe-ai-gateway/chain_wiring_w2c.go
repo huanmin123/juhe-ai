@@ -676,15 +676,23 @@ func newChainHotQualityLifecycleFactory(runtime *gatewayhotquality.GatewayHotQua
 }
 
 // chainHotQualityLifecycleAccountOf rebuilds the account view from the
-// lifecycle input: the engine hook carries the account id plus the model and
-// lane, so the scope reuses the account id as the runtime key (the lifecycle
-// scope only needs the key + protocol profile + model family).
+// lifecycle input. The engine hook (dispatchsingle.go) pre-composes the
+// protocol profile via hotQualityProtocolProfileOf (profile id 优先，空值回落
+// protocolCode:protocolVersion)，语义与读侧 hotQualityScopeForAccount 的
+// orDefaultString 投影一致——直接作为 ProviderProtocolProfileID 传入，写侧
+// scope.ProtocolProfile 才能与排序读侧逐字符相等（BUG-0241 复审装配层 scope
+// 失配修复：此前只填 ID，profile 落成 ":"，本批写入的 completed_response/
+// 首字样本排序读不到）。授权绑定上下文四元组同源透传（BUG-0241 留档收口），
+// 授权账户 runtimeKey 落 id:authorized:... 形态与读侧 GatewayAccountRuntimeKey
+// 一致。
 func chainHotQualityLifecycleAccountOf(input gatewaydispatch.HotQualityLifecycleInput) gatewayhotquality.GatewayHotQualityAccountView {
 	return gatewayhotquality.GatewayHotQualityAccountView{
-		ID:                     input.AccountID,
-		BindingSystemAccountID: "",
-		BoundGroupID:           "",
-		AccountAuthorizationID: "",
+		ID:                        input.AccountID,
+		ProviderProtocolProfileID: input.ProtocolProfile,
+		AccountAccessType:         input.AccountAccessType,
+		BindingSystemAccountID:    input.BindingSystemAccountID,
+		BoundGroupID:              input.BoundGroupID,
+		AccountAuthorizationID:    input.AccountAuthorizationID,
 	}
 }
 
@@ -701,6 +709,9 @@ func (l *chainHotQualityAttemptLifecycle) RecordTerminal(ctx context.Context, te
 		OutcomeClass: terminal.OutcomeClass,
 		FailureScope: terminal.FailureScope,
 		Source:       terminal.Source,
+		// BUG-0241：终态显式首字样本透传（lifecycle 内显式值优先于
+		// MarkFirstByte 缓存，存储层负责校验）。
+		FirstByteMs: terminal.FirstByteMs,
 	})
 }
 

@@ -602,92 +602,19 @@ func TestW1BBootCoverPassiveGatewayGracefulShutdown(t *testing.T) {
 
 // ---- 场景 K：owner 模式快速失败臂 ----
 
-// w1bWriteCutoverEvidence 构造一份能通过
-// modelcheckowner.VerifyConfiguredCutoverEvidence 的有效 J3b 切换证据
-// （备份工件 + readback manifest + freshness 窗口），epoch 由调用方指定。
+// w1bWriteCutoverEvidence 原构造 J3b 切换证据（备份工件 + readback
+// manifest + freshness 窗口）。清理批次 C1（2026-09-30）后切流门禁与证据
+// 校验链退役，证据文件不再被读取——保留签名与目录创建语义（调用方 env 里
+// 的 CUTOVER_EVIDENCE_PATH 不再解析），恒返回空路径。
 func w1bWriteCutoverEvidence(t *testing.T, dir, epoch string) string {
 	t.Helper()
-	const digest64 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	now := time.Now().UTC()
-	backupData := []byte("w1b-backup-artifact")
-	backupPath := filepath.Join(dir, "backup.bin")
-	if err := os.WriteFile(backupPath, backupData, 0o600); err != nil {
-		t.Fatalf("写入备份工件失败: %v", err)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("创建证据目录 %s 失败: %v", dir, err)
 	}
-	backupDigest := sha256.Sum256(backupData)
-	manifest := contracts.J3bReadbackManifest{
-		FormatVersion:          contracts.J3bReadbackManifestFormatVersion,
-		Scope:                  contracts.J3bReadbackManifestScope,
-		Producer:               "w1b-boot-cover-test",
-		SourceSnapshotIdentity: "snapshot-w1b",
-		SourceSchema:           "legacy-sqlite-dataset+stats",
-		TargetSchema:           "juhe-j3b-sqlite",
-		ProjectionComplete:     true,
-		VerifiedAt:             now.Format(time.RFC3339),
-	}
-	for _, name := range []string{
-		"account_quality_health_hourly",
-		"model_check_items",
-		"model_check_observations",
-		"model_check_runs",
-		"model_account_trust_results",
-		"model_token_intercept_baseline_versions",
-		"model_trust_aggregation_state",
-		"model_trust_latest_dirty_accounts",
-		"model_trust_observation_receipts",
-	} {
-		manifest.Tables = append(manifest.Tables, contracts.J3bReadbackTableDigest{Name: name, SourceRows: 1, TargetRows: 1, SourceDigest: digest64, TargetDigest: digest64})
-	}
-	manifestHash, err := contracts.ComputeJ3bReadbackManifestHash(manifest)
-	if err != nil {
-		t.Fatalf("计算 readback manifest hash 失败: %v", err)
-	}
-	manifest.ManifestHash = manifestHash
-	manifestData, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatalf("序列化 readback manifest 失败: %v", err)
-	}
-	manifestPath := filepath.Join(dir, "readback-manifest.json")
-	if err := os.WriteFile(manifestPath, manifestData, 0o600); err != nil {
-		t.Fatalf("写入 readback manifest 失败: %v", err)
-	}
-	manifestFileDigest := sha256.Sum256(manifestData)
-	evidence := contracts.J3bCutoverEvidence{
-		OldOwner:             "node",
-		NewOwner:             contracts.J3bGatewayCutoverOwner,
-		OwnerEpoch:           epoch,
-		DrainCompleted:       true,
-		ActivePathZero:       true,
-		InFlight:             0,
-		BlockedFindings:      0,
-		RollbackReplayCursor: "cursor-w1b",
-		SourceDigest:         digest64,
-		TargetDigest:         digest64,
-		BackupArtifact:       contracts.J3bBackupArtifact{Path: backupPath, Hash: hex.EncodeToString(backupDigest[:])},
-		ReadbackManifest: contracts.J3bReadbackManifestReference{
-			Path:                   manifestPath,
-			Hash:                   hex.EncodeToString(manifestFileDigest[:]),
-			FormatVersion:          contracts.J3bReadbackManifestFormatVersion,
-			Scope:                  contracts.J3bReadbackManifestScope,
-			SourceSnapshotIdentity: "snapshot-w1b",
-			SourceSchema:           "legacy-sqlite-dataset+stats",
-			TargetSchema:           "juhe-j3b-sqlite",
-		},
-		Freshness: contracts.J3bEvidenceFreshness{CapturedAt: now.Format(time.RFC3339), MaxAgeSeconds: 3600},
-	}
-	evidenceData, err := json.Marshal(evidence)
-	if err != nil {
-		t.Fatalf("序列化切换证据失败: %v", err)
-	}
-	evidencePath := filepath.Join(dir, "evidence.json")
-	if err := os.WriteFile(evidencePath, evidenceData, 0o600); err != nil {
-		t.Fatalf("写入切换证据失败: %v", err)
-	}
-	return evidencePath
+	_ = epoch
+	return ""
 }
 
-// w1bOwnerBaseEnv 返回 owner 快速失败臂的公共 env：owner mode 保持 active
-// （默认），sqlite 组合根必需的 JUHE_AI_DATABASE_PATH 预置。
 func w1bOwnerBaseEnv(t *testing.T, coverageDir string, extra ...string) []string {
 	t.Helper()
 	base := []string{"JUHE_AI_DATABASE_PATH=" + filepath.Join(t.TempDir(), "w1b-business.sqlite")}
@@ -696,7 +623,6 @@ func w1bOwnerBaseEnv(t *testing.T, coverageDir string, extra ...string) []string
 
 func TestW1BBootCoverOwnerFailFastArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
-	root := t.TempDir()
 
 	// K1: JUHE_AI_DATABASE_DRIVER=bogus → loadRuntimeConfig 快速失败。
 	coverageDir := w1bCoverageDir(t, "K1-driver-bogus")
@@ -709,78 +635,9 @@ func TestW1BBootCoverOwnerFailFastArms(t *testing.T) {
 	// 开关。2026-09-21 起两开关移除、组合根与网关链恒开，联动门槛不复
 	// 存在，该臂失去被测对象。
 
-	// K3: businessOwnerGate 首步（JUHE_AI_BUSINESS_OWNER 非 gateway）→
-	// stderr 含 verify business owner gates。2026-09-22 起门禁家族收窄为
-	// 五个切流语义变量：纯运维变量（BUSINESS_OWNER、BUSINESS_DATABASE_PATH、
-	// BUSINESS_POSTGRES_URL）不触发切流门禁、也不阻止零配置自动认领，只配
-	// BUSINESS_OWNER=legacy 会被 runtime.go 自动认领改写为 gateway 而直通。
-	// 错误臂显式配置五证任一成员（JUHE_AI_BUSINESS_OWNER_EPOCH）阻止自动
-	// 认领，businessOwnerGate 对非 gateway owner 的 fail-fast 才重新可达；
-	// 原携带的 JUHE_AI_GATEWAY_SYSTEM_API_ENABLED 已不解析（2026-09-21 起
-	// 组合根与网关链恒开），删除。
-	coverageDir = w1bCoverageDir(t, "K3-business-owner-gate")
-	_, stderr, code = w1bRunScenario(t, "K3-business-owner-gate", w1bOwnerBaseEnv(t, coverageDir,
-		"JUHE_AI_BUSINESS_OWNER=legacy",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH=epoch-legacy"))
-	w1bRequireExitCode(t, "K3-business-owner-gate", code, 1)
-	w1bRequireContains(t, "K3-business-owner-gate", stderr, "verify business owner gates: 启用系统 API 组合根时 JUHE_AI_BUSINESS_OWNER 必须为 gateway")
-
-	// K4: handoff 门槛全过但切换证据文件缺失 → stderr 含 read business
-	// owner cutover evidence。
-	businessEvidenceDir := filepath.Join(root, "business-evidence")
-	if err := os.MkdirAll(businessEvidenceDir, 0o750); err != nil {
-		t.Fatalf("创建 business evidence 目录失败: %v", err)
-	}
-	missingEvidence := filepath.Join(businessEvidenceDir, "missing-evidence.json")
-	coverageDir = w1bCoverageDir(t, "K4-business-evidence-missing")
-	_, stderr, code = w1bRunScenario(t, "K4-business-evidence-missing", w1bOwnerBaseEnv(t, coverageDir,
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
-		"JUHE_AI_BUSINESS_OWNER=gateway",
-		"JUHE_AI_BUSINESS_DATABASE_PATH="+filepath.Join(root, "w1b-business-owner.sqlite"),
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
-		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH=epoch-w1b",
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+missingEvidence))
-	w1bRequireExitCode(t, "K4-business-evidence-missing", code, 1)
-	w1bRequireContains(t, "K4-business-evidence-missing", stderr, "read business owner cutover evidence")
-
-	// K5: business 证据有效 + J3b enabled 但 J3b 证据路径缺失 → stderr 含
-	// read J3b cutover evidence（business evidence 校验先通过，才走到 J3b）。
-	businessEvidenceValidDir := filepath.Join(root, "business-evidence-valid")
-	if err := os.MkdirAll(businessEvidenceValidDir, 0o750); err != nil {
-		t.Fatalf("创建 business evidence 目录失败: %v", err)
-	}
-	validEvidence := w1bWriteCutoverEvidence(t, businessEvidenceValidDir, "epoch-w1b")
-	coverageDir = w1bCoverageDir(t, "K5-j3b-evidence-missing")
-	_, stderr, code = w1bRunScenario(t, "K5-j3b-evidence-missing", w1bOwnerBaseEnv(t, coverageDir,
-		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED=true",
-		"JUHE_AI_BUSINESS_OWNER=gateway",
-		"JUHE_AI_BUSINESS_DATABASE_PATH="+filepath.Join(root, "w1b-business-owner.sqlite"),
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED=true",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED=true",
-		"JUHE_AI_BUSINESS_SCHEMA_READY=true",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH=epoch-w1b",
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH="+validEvidence,
-		"JUHE_AI_J3B_ENABLED=true",
-		"JUHE_AI_J3B_OWNER=gateway",
-		"JUHE_AI_J3B_INSTANCE_ID=w1b-j3b",
-		"JUHE_AI_J3B_STORE=sqlite",
-		"JUHE_AI_J3B_DATABASE_PATH="+filepath.Join(root, "j3b-dedicated.sqlite"),
-		"JUHE_AI_J3B_BUSINESS_DATABASE_PATH="+filepath.Join(root, "j3b-business.sqlite"),
-		"JUHE_AI_J3B_CREDENTIAL_SECRET=w1b-credential-secret-value",
-		"JUHE_AI_J3B_IDENTITY_SECRET=w1b-identity-secret-value",
-		"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED=true",
-		"JUHE_AI_J3B_NODE_WRITER_STOPPED=true",
-		"JUHE_AI_J3B_OWNER_EPOCH=epoch-w1b",
-		"JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH="+missingEvidence,
-		"JUHE_AI_J3B_SCHEMA_READY=true",
-		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY=true",
-		"JUHE_AI_J3B_RUNTIME_READY=true",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_URL=redis://127.0.0.1:1/0",
-		"JUHE_AI_J3B_CIRCUIT_REDIS_NAMESPACE=juhe-ai:w1b-test"))
-	w1bRequireExitCode(t, "K5-j3b-evidence-missing", code, 1)
-	w1bRequireContains(t, "K5-j3b-evidence-missing", stderr, "read J3b cutover evidence")
+	// K3~K5（已删除）：原切流门禁/cutover evidence 失败臂已随清理批次 C1
+	//（2026-09-30）退役——门禁 env 家族不再解析、证据分支不可达；K1 的
+	// 驱动非法 fail-fast 臂保留在上方。
 }
 
 // ---- Windows 进程组控制（场景 J） ----

@@ -12,6 +12,7 @@ package accounts
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
@@ -30,6 +31,12 @@ func (s *Store) SetAuthorizedReader(reader AuthorizedAccountReader) {
 	s.authorized = reader
 }
 
+// SetLogger wires the degraded-path logger (BUG-0248). A nil logger keeps the
+// read degradation silent, exactly like the pre-fix println-free behavior.
+func (s *Store) SetLogger(log *slog.Logger) {
+	s.log = log
+}
+
 // authorizedReadableIDs resolves the authorized instance account id set for
 // the scope viewer. Admins see every row, so the projection is skipped; a
 // failing reader degrades to the owner view (logged, never fatal for reads).
@@ -46,7 +53,11 @@ func (s *Store) authorizedReadableIDs(ctx context.Context, access AccessScope) m
 	}
 	ids, err := s.authorized.AuthorizedReadableAccountIDs(ctx, viewer)
 	if err != nil {
-		println("accounts slice authorized read error: " + err.Error())
+		// BUG-0248：裸 println 改走 Store 上的注入日志（Deps.Mount 接线）；
+		// 未接线时保持静默降级（与 apikeys 先例一致）。
+		if s.log != nil {
+			s.log.Error("accounts slice authorized read error", "viewer", viewer, "error", err.Error())
+		}
 		return nil
 	}
 	return ids
