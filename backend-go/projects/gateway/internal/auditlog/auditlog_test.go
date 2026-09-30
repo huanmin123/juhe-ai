@@ -126,12 +126,8 @@ func TestLoadConfigPrefersDedicatedPostgresURL(t *testing.T) {
 	if cfg.PostgresMaxOpenConns != 5096 || cfg.PostgresMaxIdleConns != 10 {
 		t.Fatalf("default F3 PostgreSQL pool=%d/%d want 5096/10", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
 	}
-	env["JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS"] = "1200"
-	env["JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS"] = "10"
-	cfg, err = LoadConfig(func(name string) string { return env[name] })
-	if err != nil || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 10 {
-		t.Fatalf("configured F3 PostgreSQL pool=%d/%d err=%v", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns, err)
-	}
+	// 2026-09-30 C4 收编：JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS /
+	// MAX_IDLE_CONNS 收编为常量，pool 覆盖断言删除（取值恒为默认）。
 	// 2026-09-19：专职 URL 缺省回退主 JUHE_AI_POSTGRES_URL（显式仍优先）；
 	// 两者皆空才保持 fail-fast。
 	delete(env, "JUHE_AI_AUDIT_LOG_POSTGRES_URL")

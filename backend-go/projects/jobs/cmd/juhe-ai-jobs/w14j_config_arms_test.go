@@ -29,16 +29,12 @@ func TestW14JLoadWorkerConfigRangeArms(t *testing.T) {
 	}{
 		{"chat-retention-zero", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}},
 		{"chat-retention-over", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "366"}},
-		{"record-batch-zero", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE": "0"}},
-		{"record-batch-over", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE": "10001"}},
+		// record-batch / list-projection 批量族错误臂已删除
+		// （2026-09-30 C4 收编为常量，env 不再被读取）。
 		{"probe-concurrency-zero", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "0"}},
 		{"probe-concurrency-over", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "5097"}},
 		{"list-projection-interval-low", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "999"}},
 		{"list-projection-interval-high", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "60001"}},
-		{"list-projection-batch-zero", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "0"}},
-		{"list-projection-batch-over", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "101"}},
-		{"list-projection-max-batches-zero", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN": "0"}},
-		{"list-projection-concurrency-over", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY": "9"}},
 		{"usage-shard-count-bad", map[string]string{"JUHE_AI_USAGE_SHARD_COUNT": "not-a-number"}},
 		{"codex-shard-count-bad", map[string]string{"JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT": "not-a-number"}},
 	}

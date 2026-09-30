@@ -11,7 +11,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
@@ -540,60 +539,6 @@ func TestDispatchFailedResponseWithCircuitReportsFraming(t *testing.T) {
 	var attemptErr *UpstreamAttemptError
 	if !errorsAs(err, &attemptErr) {
 		t.Fatalf("expected UpstreamAttemptError, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// 管道写失败与检查截断
-// ---------------------------------------------------------------------------
-
-type failingWriter struct{}
-
-func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("下游写失败") }
-
-func TestPipeNonStreamUpstreamResponseWriteError(t *testing.T) {
-	_, err := PipeNonStreamUpstreamResponse(context.Background(), strings.NewReader("payload"), failingWriter{}, NonStreamPipeInput{
-		StartedAt: gatewayupstream.NowMs(),
-		Signal:    context.Background(),
-	})
-	var pipeErr *NonStreamUpstreamBodyPipeError
-	if !errorsAs(err, &pipeErr) {
-		t.Fatalf("expected pipe error, got %v", err)
-	}
-	if !strings.Contains(pipeErr.Message, "下游写失败") {
-		t.Fatalf("message = %q", pipeErr.Message)
-	}
-	if pipeErr.PartialResult.TransferredBytes != 7 {
-		t.Fatalf("partial = %#v", pipeErr.PartialResult)
-	}
-}
-
-func TestPipeInspectionLimitExceededRequireFullyBuffered(t *testing.T) {
-	result, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), strings.NewReader("body-too-large"), &strings.Builder{}, InspectableNonStreamPipeInput{
-		NonStreamPipeInput:   NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), Signal: context.Background()},
-		InspectBytes:         4,
-		RequireFullyBuffered: true,
-	})
-	if err != nil {
-		t.Fatalf("inspection: %v", err)
-	}
-	if !result.InspectionLimitExceeded || result.FullyBuffered {
-		t.Fatalf("result = %#v", result)
-	}
-	if string(result.CompleteBody) != "body" {
-		t.Fatalf("complete = %q", result.CompleteBody)
-	}
-}
-
-func TestPipeInspectionBeforeDownstreamCommitError(t *testing.T) {
-	commitErr := errors.New("提交校验失败")
-	_, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), strings.NewReader("payload-exceeds-limit"), &strings.Builder{}, InspectableNonStreamPipeInput{
-		NonStreamPipeInput:     NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), Signal: context.Background()},
-		InspectBytes:           4,
-		BeforeDownstreamCommit: func([]byte) error { return commitErr },
-	})
-	if !errors.Is(err, commitErr) {
-		t.Fatalf("expected commit error, got %v", err)
 	}
 }
 

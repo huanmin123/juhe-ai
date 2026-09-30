@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
 
@@ -135,7 +136,18 @@ func OpenStore(cfg Config) (*Store, *sql.DB, error) {
 		}
 		dsn = "file:" + cfg.DatabasePath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	}
-	db, err := sql.Open(driver, dsn)
+	var db *sql.DB
+	var err error
+	if driver == "pgx" {
+		// pgx 池统一经 sqldialect 改写 driver 打开（清理批次 C5 统一裸开
+		// 路径）：本包 PG 方言 SQL 由 placeholder() 生成 `$n`，改写层幂等
+		// 透传，并对未来遗漏改写的 `?` SQL 提供驱动层兜底；与
+		// sql.Open("pgx", dsn) 同一 driver 实例、同一惰性语义。SQLite 路径
+		// 原样打开。
+		db, err = sqldialect.OpenDB(stdlib.GetDefaultDriver(), dsn)
+	} else {
+		db, err = sql.Open(driver, dsn)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("open Go metrics database: %w", err)
 	}

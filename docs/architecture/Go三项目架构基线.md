@@ -3,6 +3,8 @@
 > 状态：架构落地第一阶段（项目边界与工程骨架），不代表三个项目已经完成业务接管或生产切流。
 >
 > 本文是 Go 后续迁移的边界契约。F1/F2 已物理迁入 `jobs`，F3/F4 已物理迁入 `gateway`；`backend-go` 根目录只保留工作区定义。一般新迁移的定时功能进入 `jobs`；J3b 是经方案 A 明确批准的例外：其管理入口、调度和投影与 Business SQLite owner 同进程落在 `gateway`。当前 Gateway 已具备 J3b 的实现装配基线，但 Business SQLite 全量 handoff、三库回填、切换/回滚与 Node active-path-zero 尚未通过，不代表 J3b 已完成接管。
+>
+> **终局补记（2026-09-30）**：上述迁移已全部完成——Node 后端已于 2026-09-05 全量清零（归档已移出仓库，git 历史可溯），Go 三项目为唯一后端实现，现行生产形态为国内单机 Docker go-only（部署配置见 `docker/single-server/`）。本文的项目边界、依赖方向、运行数据边界、并发任务优先级、发布配置契约与验收门（§1-§4、§6-§7）继续作为现行契约生效；§5"定时迁移顺序"是迁移期的历史规划存档，仅作过程溯源，不再是执行计划；文中其余 Node 共存期措辞（如"Node 尚未迁移时"）按历史背景理解。
 
 ## 1. 最终项目划分
 
@@ -81,6 +83,8 @@ Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine
 
 ## 5. 定时迁移顺序
 
+> 历史存档（2026-09-30 标注）：本节为迁移期规划，迁移已随 2026-09-05 Node 清零全部完成，以下顺序仅作过程溯源，不再是执行计划。
+
 1. 先完成 `jobs` 项目骨架、任务 registry、生命周期、lease、指标和 SQLite/PostgreSQL Store 接入边界。
 2. 按完整功能迁移 Node 定时域：先复制/探活等 jobs 域实时外部 I/O；J3b 按方案 A 在 gateway 内完成；再迁移统计窗口和聚合，最后低优先级维护/保留清理。
 3. 每一项迁移先冻结字段、状态、幂等、租约、失败和恢复契约，再实现 Go job；Node 只保留生产者/读适配所需的最小边界。
@@ -105,11 +109,11 @@ Go 不复刻 Node 的事件循环、worker thread 或低并发队列。goroutine
 - 配置按项目命名空间隔离：`JUHE_AI_GATEWAY_*`、`JUHE_AI_JOBS_*`、`JUHE_AI_MAINTENANCE_*`。共享数据库连接只在明确 owner 的项目中配置，不能通过“默认共享全部 env”隐藏依赖。
 - 每个项目有独立 release、日志目录、健康/就绪端点、进程身份和重启策略。部署编排可以放在同一机器，但不能以同一进程或同一 supervisor 作为运行前提。
 - `gateway` 的健康检查覆盖 HTTP/API 和上游桥接依赖；`jobs` 的健康检查覆盖 scheduler、lease、任务滞后和关键 Store；`maintenance` 以退出码和报告文件验收，不伪造长驻 health。
-- 当前源码已将 F1/F2 放入 `jobs`、F3/F4 放入 `gateway`；J3b 的目标 owner 由方案 A 改为 gateway。每个环境的实际常驻 owner 仍须由该环境的部署、健康、读回和回滚证据确认；除 J3b 外不把新定时功能放入 gateway。
+- 当前源码已将 F1/F2 放入 `jobs`、F3/F4 放入 `gateway`；J3b 的目标 owner 由方案 A 改为 gateway。历史注记：原「由部署、健康、读回和回滚证据确认实际常驻 owner」的 Node→Go 切流门禁（business/J3b 切流语义 env 家族 + cutover evidence/readback 校验）已于 2026-09-30 随迁移完成整体退役，gateway 与 J3b 启动一律 auto-claim 业务库 owner，历史机制见 git 历史；除 J3b 外不把新定时功能放入 gateway。
 
 ## 7. 验收门
 
 - 三个模块可分别 `go test ./...`、构建和查看版本；模块间无直接 import。
 - 新 jobs 任务有单元测试、取消/超时测试、单条失败隔离测试、SQLite 单 writer 测试和 PostgreSQL/Redis 真实 smoke（环境可用时）。
-- 迁移完成前必须保留旧 owner 的回切证据；迁移完成后扫描 Node 活跃 import、旧 queue/worker、双写和 fallback 引用均为零。
+- 迁移完成前必须保留旧 owner 的回切证据；迁移完成后扫描 Node 活跃 import、旧 queue/worker、双写和 fallback 引用均为零。（迁移期门禁的历史记录：迁移已于 2026-09-05 完成验收，切流门禁与回切证据机制已于 2026-09-30 清理退役。）
 - 文档、启动器、Docker、systemd/launchd/PowerShell 和回归脚本必须以三项目边界为准；只更新代码不算架构完成。

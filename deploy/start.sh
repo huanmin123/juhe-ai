@@ -275,14 +275,20 @@ run_go_maintenance_bootstrap() {
   bootstrap_args=()
   case "$database_driver" in
     sqlite)
-      business_path="$(read_dotenv_value JUHE_AI_DATABASE_PATH './data/juhe-ai.sqlite3')"
-      chat_path="$(read_dotenv_value JUHE_AI_CHAT_DATABASE_PATH './data/juhe-ai-chat.sqlite3')"
-      dataset_path="$(read_dotenv_value JUHE_AI_DATASET_DATABASE_PATH './data/juhe-ai-dataset.sqlite3')"
-      usage_catalog_path="$(read_dotenv_value JUHE_AI_USAGE_CATALOG_DATABASE_PATH './data/juhe-ai-usage-catalog.sqlite3')"
-      stats_path="$(read_dotenv_value JUHE_AI_STATS_DATABASE_PATH './data/juhe-ai-stats.sqlite3')"
-      codex_shard_root="$(read_dotenv_value JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT './data/codex-context/state-shards')"
+      # 回退值与 gateway/jobs 零配置 datadir 派生表同源（短名固定表，2026-09-19 起）：
+      # 数据根先解析 JUHE_AI_DATA_DIR（进程 env 优先、backend/.env 回退，缺省 ./data，
+      # 对齐 Go internal/datadir.Dir），五个库路径与 codex shard root 未显式配置时
+      # 派生到 <数据根>/<固定名>；显式配置的路径同样进程 env 优先、backend/.env
+      # 回退（对齐 postgres 分支 JUHE_AI_POSTGRES_URL 的读法，gateway/jobs 同序）。
+      data_dir="${JUHE_AI_DATA_DIR:-$(read_dotenv_value JUHE_AI_DATA_DIR './data')}"
+      business_path="${JUHE_AI_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_DATABASE_PATH "${data_dir}/business.sqlite3")}"
+      chat_path="${JUHE_AI_CHAT_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_CHAT_DATABASE_PATH "${data_dir}/chat.sqlite3")}"
+      dataset_path="${JUHE_AI_DATASET_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_DATASET_DATABASE_PATH "${data_dir}/dataset.sqlite3")}"
+      usage_catalog_path="${JUHE_AI_USAGE_CATALOG_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_USAGE_CATALOG_DATABASE_PATH "${data_dir}/usage-catalog.sqlite3")}"
+      stats_path="${JUHE_AI_STATS_DATABASE_PATH:-$(read_dotenv_value JUHE_AI_STATS_DATABASE_PATH "${data_dir}/stats.sqlite3")}"
+      codex_shard_root="${JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT:-$(read_dotenv_value JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT "${data_dir}/codex-context/state-shards")}"
       paths="business=${business_path},chat=${chat_path},dataset=${dataset_path},usage-catalog=${usage_catalog_path},stats=${stats_path},codex-context-shard-root=${codex_shard_root}"
-      codex_shard_count="$(read_dotenv_value JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT '')"
+      codex_shard_count="${JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT:-$(read_dotenv_value JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT '')}"
       case "$codex_shard_count" in
         '') ;;
         *[!0-9]*|'0') echo "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT must be an integer between 1 and 256 (got: $codex_shard_count)." >&2; return 1 ;;

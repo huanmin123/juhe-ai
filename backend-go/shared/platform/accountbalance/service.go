@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/schedulejitter"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
 type Service struct {
@@ -45,8 +46,12 @@ func NewService(config RuntimeConfig, logger *slog.Logger) (*Service, error) {
 	inputPool := config.InputPostgresPool
 	if inputPool == nil {
 		// No injected handle: open a dedicated pgx pool for the business read
-		// side (hosts with a shared pgpool registry inject PoolHandle).
-		opened, openErr := sql.Open("pgx", config.BusinessPostgresURL)
+		// side (hosts with a shared pgpool registry inject PoolHandle). 经
+		// sqldialect 改写 driver 打开（清理批次 C5 统一裸开路径）：本包
+		// PG 臂 SQL 已是 `$n`，改写层幂等透传，并对未来遗漏改写的 `?` SQL
+		// 提供驱动层兜底；与 sql.Open("pgx", url) 同一 driver 实例、同一
+		// 惰性语义。
+		opened, openErr := sqldialect.OpenDB(stdlib.GetDefaultDriver(), config.BusinessPostgresURL)
 		if openErr != nil {
 			_ = store.Close()
 			return nil, openErr

@@ -80,15 +80,14 @@ func TestW12CPGWorkerAssemblyWiring(t *testing.T) {
 	}
 	redisServer := miniredis.RunT(t)
 	env := map[string]string{
-		"JUHE_AI_DATABASE_DRIVER":         "postgres",
-		"JUHE_AI_POSTGRES_URL":            pgURL,
-		"JUHE_AI_POSTGRES_MAX_OPEN_CONNS": "10",
-		"JUHE_AI_POSTGRES_MAX_IDLE_CONNS": "5",
-		"JUHE_AI_SECRET":                  wgBalanceSecret,
-		"JUHE_AI_INSTANCE_ID":             "w12c-pg-assembly",
-		"JUHE_AI_WORKER_ROLE":             "stats-worker",
-		"JUHE_AI_REDIS_STATE_URL":         "redis://" + redisServer.Addr(),
-		"JUHE_AI_REDIS_NAMESPACE":         "juhe-ai:w12c",
+		"JUHE_AI_DATABASE_DRIVER": "postgres",
+		"JUHE_AI_POSTGRES_URL":    pgURL,
+		// PG pool conns 已收编为常量（2026-09-30 C4），不再设置 env。
+		"JUHE_AI_SECRET":          wgBalanceSecret,
+		"JUHE_AI_INSTANCE_ID":     "w12c-pg-assembly",
+		"JUHE_AI_WORKER_ROLE":     "stats-worker",
+		"JUHE_AI_REDIS_STATE_URL": "redis://" + redisServer.Addr(),
+		"JUHE_AI_REDIS_NAMESPACE": "juhe-ai:w12c",
 	}
 	config, err := loadWorkerConfig(getenvFrom(env))
 	if err != nil {

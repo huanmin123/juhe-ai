@@ -1,4 +1,3 @@
-import type { AccountSummary } from '@/types/domain'
 import {
   writeAccountErrorPolicyToCredentials
 } from './accountErrorPolicyPayload'
@@ -71,9 +70,70 @@ export function buildAccountCredentials(input: {
   return credentials
 }
 
-export function currentAccountCredentials(accounts: AccountSummary[], editingId?: string): Record<string, unknown> {
-  if (!editingId) return {}
-  return accounts.find((account) => account.id === editingId)?.credentials ?? {}
+/**
+ * BUG-0243：api_key 密钥池保存守卫的基线——从（可能已掩码的）已存凭据提取
+ * 池行数、策略与权重。掩码池 api_keys 各行均为占位符，但行数与权重列仍承载真实语义。
+ */
+export interface AccountApiKeyPoolBaseline {
+  poolCount: number
+  strategy?: string
+  weights?: number[]
+}
+
+export function accountApiKeyPoolBaseline(credentials: Record<string, unknown> | undefined): AccountApiKeyPoolBaseline | undefined {
+  if (!credentials) return undefined
+  const values = Array.isArray(credentials.api_keys) && credentials.api_keys.length
+    ? credentials.api_keys
+    : [credentials.api_key]
+  let poolCount = 0
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) poolCount += 1
+  }
+  if (!poolCount) return undefined
+  const weights = Array.isArray(credentials.api_key_weights)
+    ? credentials.api_key_weights.filter((value): value is number => typeof value === 'number')
+    : []
+  return {
+    poolCount,
+    strategy: typeof credentials.api_key_strategy === 'string' ? credentials.api_key_strategy : undefined,
+    weights: weights.length ? weights : undefined
+  }
+}
+
+/**
+ * BUG-0243：api_key 表单存在密文占位行时的保存守卫（在保存前校验链调用，不在此改写数据）。
+ * - 混合行（占位 + 真实值）：直接阻断——按占位过滤逻辑保存会把池静默截断为真实行子集，
+ *   其余未揭示的真实 Key 被删除。
+ * - 纯占位池：行数/策略/权重相对已存基线有变化时同样阻断——这些修改会在占位过滤后
+ *   与基线一致化而被"未检测到修改"静默丢弃。
+ * 无需阻断时返回 undefined。
+ */
+export function validateAccountApiKeyCipherRows(
+  form: AccountFormModel,
+  baseline?: AccountApiKeyPoolBaseline
+): string | undefined {
+  if (form.type !== 'api_key') return undefined
+  const rows = normalizedAccountApiKeys(form)
+  const placeholderRowCount = rows.filter((row) => isCredentialCipherPlaceholder(row)).length
+  if (!placeholderRowCount) return undefined
+  if (placeholderRowCount < rows.length) {
+    return '部分密钥仍为密文占位，请先点击眼睛获取明文，或清空占位行后再保存'
+  }
+  if (baseline && apiKeyPoolShapeChanged(form, rows.length, baseline)) {
+    return '密钥仍为密文占位，修改密钥行、策略或权重前请先点击眼睛获取明文'
+  }
+  return undefined
+}
+
+function apiKeyPoolShapeChanged(form: AccountFormModel, rowCount: number, baseline: AccountApiKeyPoolBaseline): boolean {
+  if (rowCount !== baseline.poolCount) return true
+  if (typeof baseline.strategy === 'string' && form.apiKeyStrategy !== baseline.strategy) return true
+  if (baseline.weights?.length) {
+    const weights = normalizedAccountApiKeyWeights(form, rowCount)
+    if (weights.length !== baseline.weights.length) return true
+    if (weights.some((weight, index) => weight !== baseline.weights?.[index])) return true
+  }
+  return false
 }
 
 function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown> {
@@ -120,21 +180,6 @@ export function normalizedAccountApiKeys(form: AccountFormModel): string[] {
   return output
 }
 
-type AccountCredentialBaseline = Pick<AccountSummary, 'type' | 'credentials'>
-
-export function accountFormApiKeysChanged(form: AccountFormModel, account?: AccountCredentialBaseline): boolean {
-  if (form.type !== 'api_key') return false
-  const nextKeys = normalizedAccountApiKeys(form)
-  if (!nextKeys.length) return false
-  const currentKeys = normalizedCredentialApiKeys(account?.credentials)
-  if (!currentKeys.length) return true
-  return stableStringListKey(nextKeys) !== stableStringListKey(currentKeys)
-}
-
-export function accountFormApiKeyRuntimeChanged(form: AccountFormModel, account?: AccountCredentialBaseline): boolean {
-  return accountFormApiKeysChanged(form, account) || accountFormBaseUrlChanged(form, account)
-}
-
 export function normalizedAccountApiKeyWeights(form: AccountFormModel, count = normalizedAccountApiKeys(form).length): number[] {
   return Array.from({ length: count }, (_, index) => {
     const value = Number(form.apiKeyWeights?.[index] ?? 1)
@@ -142,33 +187,8 @@ export function normalizedAccountApiKeyWeights(form: AccountFormModel, count = n
   })
 }
 
-function normalizedCredentialApiKeys(credentials: Record<string, unknown> | undefined): string[] {
-  const values = Array.isArray(credentials?.api_keys) && credentials.api_keys.length
-    ? credentials.api_keys
-    : [credentials?.api_key]
-  const output: string[] = []
-  const seen = new Set<string>()
-  for (const value of values) {
-    if (typeof value !== 'string') continue
-    const key = value.trim()
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    output.push(key)
-  }
-  return output
-}
-
-function accountFormBaseUrlChanged(form: AccountFormModel, account?: AccountCredentialBaseline): boolean {
-  if (form.type !== 'api_key') return false
-  return normalizeCredentialText(form.baseUrl) !== normalizeCredentialText(account?.credentials?.base_url)
-}
-
 function normalizeCredentialText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function stableStringListKey(value: string[]): string {
-  return value.join('\n')
 }
 
 function buildOAuthCredentials(form: AccountFormModel, currentCredentials: Record<string, unknown>): Record<string, unknown> {
@@ -197,21 +217,51 @@ function buildGoogleOAuthCredentials(form: AccountFormModel): Record<string, unk
 }
 
 /**
- * BUG-0238：把 reveal 接口取回的明文凭据写回编辑表单（按账户类型存在的敏感字段全量替换）。
- * api_keys 池以服务端真实池为准重建行，维持行数与真实值一致。
+ * BUG-0238：把 reveal 接口取回的明文凭据写回编辑表单（按账户类型存在的敏感字段）。
+ * BUG-0243 问题 5b：不再整表覆盖——占位态下用户已输入的新值（非占位、非空）优先保留，
+ * 占位行/占位字段按序写入服务端真实值（对齐高级配置加载 preserveTypedApiKeys 语义）；
+ * 服务端未被占位行消费的真实 Key 追加到行尾，不静默丢弃。
  */
 export function applyRevealedAccountCredentials(form: AccountFormModel, credentials: Record<string, unknown>): void {
   if (form.type === 'api_key') {
-    const apiKeys = accountApiKeysForForm(credentials)
+    const apiKeys = mergeRevealedApiKeyRows(normalizedAccountApiKeys(form), accountApiKeysForForm(credentials))
     form.apiKey = apiKeys[0] ?? ''
     form.apiKeys = apiKeys
     return
   }
-  form.accessToken = asString(credentials.access_token)
-  form.refreshToken = asString(credentials.refresh_token)
+  form.accessToken = revealedOrTypedCredentialText(form.accessToken, credentials.access_token)
+  form.refreshToken = revealedOrTypedCredentialText(form.refreshToken, credentials.refresh_token)
   if (form.type === 'google_oauth') {
-    form.googleClientSecret = asString(credentials.client_secret)
+    form.googleClientSecret = revealedOrTypedCredentialText(form.googleClientSecret, credentials.client_secret)
   }
+}
+
+/** 单键字段：非占位且非空的用户输入保留；占位/空值由服务端真实值替换。 */
+function revealedOrTypedCredentialText(current: string, revealed: unknown): string {
+  if (current.trim() && !isCredentialCipherPlaceholder(current)) return current
+  return asString(revealed)
+}
+
+/** api_keys 行合并：占位行按序消费服务端真实值，用户已输入行原样保留，
+ * 服务端剩余真实值追加行尾；真实值按既有规则去重。 */
+function mergeRevealedApiKeyRows(rows: string[], revealedKeys: string[]): string[] {
+  const remaining = revealedKeys.filter((key) => key.trim())
+  const merged: string[] = []
+  for (const row of rows) {
+    if (isCredentialCipherPlaceholder(row)) {
+      const revealed = remaining.shift()
+      if (revealed !== undefined) merged.push(revealed)
+      continue
+    }
+    merged.push(row)
+  }
+  merged.push(...remaining)
+  const seen = new Set<string>()
+  return merged.filter((key) => {
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function pickOAuthCredentialMetadata(currentCredentials: Record<string, unknown>): Record<string, unknown> {

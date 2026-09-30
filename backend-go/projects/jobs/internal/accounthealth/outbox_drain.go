@@ -69,14 +69,14 @@ type ProbeRequestDrain struct {
 	Store       ProbeRequestOutboxStore
 	Boundary    ProbeRequestBoundary
 	SettleFence ProbeSourceFenceSettler
-	// Limit 是单周期 claim 上限（<=0 时取 defaultProbeOutboxDrainLimit；
-	// 组合根经 env JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_LIMIT 配置，
-	// 默认 256、边界 16..4096）。
+	// Limit 是单周期 claim 上限（<=0 时取 defaultProbeOutboxDrainLimit）。
+	// 组合根注入常量 256（原 env JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_LIMIT
+	// 五源零引用，2026-09-30 C4 收编）。
 	Limit int
 	// Concurrency 是行消费的有界并发 worker 数（<=1 保持既有串行语义；
-	// 上限 clamp 到 maxProbeOutboxDrainConcurrency。组合根经 env
-	// JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_CONCURRENCY 配置，默认 2、
-	// 边界 1..8）。行间无顺序依赖：幂等键是逐行 RequestID（HasRequest），
+	// 上限 clamp 到 maxProbeOutboxDrainConcurrency。组合根注入常量 2，原 env
+	// JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_CONCURRENCY 五源零引用，
+	// 2026-09-30 C4 收编）。行间无顺序依赖：幂等键是逐行 RequestID（HasRequest），
 	// 账户级状态收敛由 outcome 投影面的 epoch/fence 校验兜底。
 	Concurrency int
 	// BacklogWarnThreshold 是 drain 后 pending 堆积告警阈值（<=0 关闭告警；
@@ -90,8 +90,8 @@ type ProbeRequestDrain struct {
 // 消费前过期的堆积）。
 const defaultProbeOutboxDrainLimit = 256
 
-// maxProbeOutboxDrainConcurrency 是行消费并发的硬上限（组合根 env 边界
-// 1..8；包内 clamp 防御直接构造 ProbeRequestDrain 的调用方）。
+// maxProbeOutboxDrainConcurrency 是行消费并发的硬上限（包内 clamp 防御
+// 直接构造 ProbeRequestDrain 的调用方；组合根现注入常量 2，C4 收编）。
 const maxProbeOutboxDrainConcurrency = 8
 
 // ProbeRequestBacklogCounter 是 outbox store 的可选只读能力：统计 pending

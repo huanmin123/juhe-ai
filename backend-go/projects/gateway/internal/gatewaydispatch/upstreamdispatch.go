@@ -56,10 +56,14 @@ type UpstreamDispatchResult struct {
 	// 协议成功后，把 ENGAGED 账户锁 CAS 复位为 LOCKED_IDLE（Node
 	// account-lock.repository.ts:completeAccountLockSuccessAsync,
 	// routes.ts:2481-2483）。nil = 账户锁未启用或引擎未装配。
-	ConfirmAccountLockSuccess     func() error
-	ConfirmHalfOpenSuccess        func() bool
-	ReleaseHalfOpenLease          func() bool
-	HotQualityAttempt             *hotQualityAttemptHandle
+	ConfirmAccountLockSuccess func() error
+	ConfirmHalfOpenSuccess    func() bool
+	ReleaseHalfOpenLease      func() bool
+	// HotQualityAttempt 携带本尝试的热质量结算句柄（引擎每次真实尝试惰性创建）。
+	// 声明为接口而非 *hotQualityAttemptHandle：链面（BUG-0241 成功终态结算）
+	// 与链面测试需要在该字段上消费/注入生命周期，具体句柄保持包内。
+	// nil = 引擎未装配热质量工厂。
+	HotQualityAttempt             HotQualityAttemptLifecycle
 	NormalRouteFirstByteDeadline  *gatewayrouting.NormalRouteAttemptFirstByteDeadline
 	ResponsePrecommitDeadlineAtMs *int64
 	OnFirstByteDeadline           FirstByteDeadlineHandler
@@ -287,6 +291,13 @@ type HotQualityLifecycleInput struct {
 	// protocolCode:protocolVersion）：热质量 scope 的必需字段（Node 传入
 	// 整个 account 对象，Go 用输入携带的投影）。
 	ProtocolProfile string
+	// 授权绑定上下文四元组（BUG-0241 留档收口）：读侧 GatewayAccountRuntimeKey
+	// 对 account_authorized/authorized 账户要求三元组全非空，写侧投影必须
+	// 同源携带，否则授权账户 attempt 落在裸 ID key 下排序读不到。
+	AccountAccessType      string
+	BindingSystemAccountID string
+	BoundGroupID           string
+	AccountAuthorizationID string
 }
 
 // attemptLifecycleFacade mirrors the lifecycle surface the engine consumes.
@@ -323,6 +334,10 @@ type HotQualityTerminal struct {
 	OutcomeClass string
 	FailureScope string
 	Source       string
+	// FirstByteMs 镜像 Node recordTerminal 的 firstByteMs：终态显式携带的首字
+	// 样本（lifecycle 内显式值优先于 MarkFirstByte 缓存，且不在此预校验——
+	// 校验由存储层完成）。nil = 无显式样本。
+	FirstByteMs *float64
 }
 
 // Terminal outcome classes mirror the Node union.
@@ -335,6 +350,7 @@ const (
 	HotQualityOutcomeClientCancellation      = "client_cancellation"
 	HotQualityOutcomeExplicitPolicyFailure   = "explicit_policy_failure"
 	HotQualityOutcomeUpstreamResponseFailure = "upstream_response_failure"
+	HotQualityOutcomeCompletedResponse       = "completed_response"
 )
 
 func (h *hotQualityAttemptHandle) lifecycle() *attemptLifecycleFacade {
@@ -854,7 +870,6 @@ codexTurnReversalPass:
 				}
 				accountCircuitAttempt = preparation.Attempt
 			}
-			accountCircuitAttemptTransferred := false
 			kind, singleResult, loopErr := e.dispatchSingleAccount(ctx, dispatchSingleAccountInput{
 				args:                                 &args,
 				coordination:                         coordination,
@@ -888,7 +903,6 @@ codexTurnReversalPass:
 				concurrencyRetryWaitBudgetMs:         &concurrencyRetryWaitBudgetMs,
 				keyModelFailureBudget:                keyModelFailureBudget,
 				accountCircuitAttempt:                accountCircuitAttempt,
-				setAccountCircuitAttemptTransferred:  func() { accountCircuitAttemptTransferred = true },
 				reserveSameAccountRetry:              reserveSameAccountRetry,
 				createAccountLockLeaseRelease:        func(bool) func(bool) bool { return createAccountLockLeaseRelease() },
 			})
@@ -901,10 +915,13 @@ codexTurnReversalPass:
 			// is no "skip rest of cycle" concept in Node — whole-cycle
 			// termination happens exclusively through thrown errors (loopErr)
 			// or the post-cycle recoverable-wait logic below.
+			// BUG-0247 项 3：Node :1855 的 if (!accountCircuitAttemptTransferred)
+			// settleUndispatchedAccountCircuitAttempt 在 Go 引擎无对应实现，
+			// transferred 标志在 Go 侧从无读者（迁移遗留死数据流，含
+			// setAccountCircuitAttemptTransferred 回调与两处构造点调用，已删）。
 			if kind == dispatchResultSelected {
 				return *singleResult, nil
 			}
-			_ = accountCircuitAttemptTransferred
 		}
 
 		if len(capacityLimitFailures) > 0 && args.GroupSchedulingPolicy != nil {
@@ -940,6 +957,9 @@ codexTurnReversalPass:
 				return UpstreamDispatchResult{}, err
 			}
 			if queueWait.Ready {
+				// BUG-0247 项 2：外环容量等待后刷新请求级并发等待预算
+				//（Node upstream-dispatch.ts:1892/:1909/:1926 三处同构重置；
+				// 预算递减恢复后本重置为活写）。
 				concurrencyRetryWaitBudgetMs = e.Config.AccountConcurrencyRetryBudgetMs
 				reordered, err := e.Degradation.OrderWithLaneAsync(ctx, dispatchAccounts, requestLane, args.GroupSchedulingPolicy, args.ModelPriority)
 				if err != nil {
@@ -961,6 +981,7 @@ codexTurnReversalPass:
 					}
 					serverRetryBudget.PauseNoAvailableWait(nil)
 				}
+				// BUG-0247 项 2：外环容量等待重试刷新预算（Node :1909）。
 				concurrencyRetryWaitBudgetMs = e.Config.AccountConcurrencyRetryBudgetMs
 				continue
 			}
@@ -982,6 +1003,7 @@ codexTurnReversalPass:
 					return UpstreamDispatchResult{}, err
 				}
 				serverRetryBudget.PauseNoAvailableWait(nil)
+				// BUG-0247 项 2：外环容量等待重试刷新预算（Node :1926）。
 				concurrencyRetryWaitBudgetMs = e.Config.AccountConcurrencyRetryBudgetMs
 				continue
 			}

@@ -74,9 +74,6 @@ func TestW12dLoadConfigFullPostgresMatrix(t *testing.T) {
 	// 显式 env 值覆盖默认值并覆盖全部解析分支。
 	set(t, map[string]string{
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY_ID":          "w12d-key",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS":       "8",
-		"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS":       "4",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS": "6",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS": "2",
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_TTL_MS":                  "7200000",
 		"JUHE_AI_ACCOUNT_HEALTH_SCAN_INTERVAL":                 "10s",
@@ -84,8 +81,6 @@ func TestW12dLoadConfigFullPostgresMatrix(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_PROBE_TIMEOUT":                 "5s",
 		"JUHE_AI_ACCOUNT_HEALTH_MAX_RESPONSE_BYTES":            "4096",
 		"JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY":               "16",
-		"JUHE_AI_ACCOUNT_HEALTH_IO_CONCURRENCY":                "8",
-		"JUHE_AI_ACCOUNT_HEALTH_DB_CONCURRENCY":                "4",
 		"JUHE_AI_ACCOUNT_HEALTH_DB_QUEUE_SIZE":                 "64",
 		"JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT":            "32",
 	})
@@ -93,13 +88,14 @@ func TestW12dLoadConfigFullPostgresMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("explicit env: %v", err)
 	}
-	if config.Store.PostgresMaxOpenConns != 8 || config.Store.PostgresMaxIdleConns != 4 || config.DirectInputPostgresMaxOpenConns != 6 || config.DirectInputPostgresMaxIdleConns != 2 {
+	// 清理批次 C4（2026-09-30）：连接池/IO/DB 并发 env 已收编常量。
+	if config.Store.PostgresMaxOpenConns != defaultPostgresPoolSize || config.Store.PostgresMaxIdleConns != defaultPostgresMaxIdleConns || config.DirectInputPostgresMaxOpenConns != defaultPostgresPoolSize || config.DirectInputPostgresMaxIdleConns != defaultPostgresMaxIdleConns {
 		t.Fatalf("explicit pool: %+v", config)
 	}
 	if config.InputTTL != 2*time.Hour || config.ScanInterval != 10*time.Second || config.OwnerLease != time.Minute || config.ProbeTimeout != 5*time.Second {
 		t.Fatalf("explicit durations: %+v", config)
 	}
-	if config.MaxResponseBytes != 4096 || config.MaxConcurrency != 16 || config.IOConcurrency != 8 || config.DBConcurrency != 4 || config.DBQueueSize != 64 || config.DirectInputLimit != 32 {
+	if config.MaxResponseBytes != 4096 || config.MaxConcurrency != 16 || config.IOConcurrency != config.MaxConcurrency || config.DBConcurrency != defaultDBConcurrency || config.DBQueueSize != 64 || config.DirectInputLimit != 32 {
 		t.Fatalf("explicit workers: %+v", config)
 	}
 	if config.InputKeys["w12d-key"] == nil {
@@ -135,13 +131,10 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		// 失败臂已删除（2026-09-19 零配置决策：DATABASE_PATH/INPUT_DIRECTORY
 		// 按 DATA_DIR 派生，SIGNING_KEY 缺省生成/复用 key 文件，均不再必填）。
 		{"postgres missing url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL": ""}, "POSTGRES_URL"},
-		{"pool invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS": "2", "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS": "4"}, "连接池配置无效"},
-		{"pool zero", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS": "0"}, "必须是正整数"},
 		{"sqlite db inside input dir", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY": filepath.Join(rootOnce(), "w12d-inputs"), "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": filepath.Join(rootOnce(), "w12d-inputs", "x.sqlite3")}, "不得放入 input 目录"},
 		{"bad input source", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "redis"}, "files、postgres 或 sqlite"},
 		{"pg input with sqlite store", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_STORE": "sqlite", "JUHE_AI_ACCOUNT_HEALTH_DATABASE_PATH": filepath.Join(t.TempDir(), "jobs", "x.sqlite3"), "JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres"}, "只允许与 postgres"},
 		{"missing input pg url", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": ""}, "INPUT_POSTGRES_URL"},
-		{"input pool invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE": "postgres", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://w12d/b", "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS": "-1"}, "必须是正整数"},
 		{"short signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "aaaa"}, "至少 32 字节"},
 		{"bad signing key", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": "!!!"}, "至少 32 字节"},
 		{"production missing credential secret", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "", "NODE_ENV": "production"}, "CREDENTIAL_SECRET"},
@@ -152,8 +145,6 @@ func TestW12dLoadConfigErrorMatrix(t *testing.T) {
 		{"lease below timeout", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_OWNER_LEASE": "15s", "JUHE_AI_ACCOUNT_HEALTH_PROBE_TIMEOUT": "60s"}, "必须大于"},
 		{"max response invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_MAX_RESPONSE_BYTES": "0"}, "必须在"},
 		{"concurrency below min", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY": "0"}, "必须在"},
-		{"io concurrency invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_IO_CONCURRENCY": "-3"}, "必须在"},
-		{"db concurrency invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_DB_CONCURRENCY": "x"}, "必须在"},
 		{"db queue invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_DB_QUEUE_SIZE": "99999"}, "必须在"},
 		{"direct input limit invalid", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT": "99999"}, "必须在"},
 		{"direct input limit zero", map[string]string{"JUHE_AI_ACCOUNT_HEALTH_DIRECT_INPUT_LIMIT": "0"}, "必须在"},

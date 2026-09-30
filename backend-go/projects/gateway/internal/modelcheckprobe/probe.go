@@ -533,9 +533,14 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 		}
 		return result, nil
 	}
-	if settle != nil {
-		defer settle(false)
-	}
+	// BUG-0248：defer 闭包按返回时的变量值判 nil。直接 defer settle(false)
+	// 会在注册时捕获函数值，成功路径的 settle=nil 对它无效，函数返回时仍以
+	// false 二次结算（生产实现有 sync.Once 保护，但端口契约被误用）。
+	defer func() {
+		if settle != nil {
+			settle(false)
+		}
+	}()
 	defer response.Body.Close()
 	maxBytes := options.MaxResponseBytes
 	if maxBytes <= 0 {

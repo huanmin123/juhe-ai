@@ -239,48 +239,9 @@ func TestW12EParseManualOutboundArms(t *testing.T) {
 	}
 }
 
-// TestW12ELoadRuntimeConfigPoolArms：连接池环境变量的逐项校验臂。
+// TestW12ELoadRuntimeConfigPoolArms：原连接池 env 逐项校验臂已随清理批次 C4
+// （2026-09-30，连接池 env 收编常量）退役；保留 nil source 防御断言。
 func TestW12ELoadRuntimeConfigPoolArms(t *testing.T) {
-	base := func() map[string]string {
-		return map[string]string{
-			"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
-			"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "w12e",
-			"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
-			"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":        "postgres://jobs",
-			"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":  "postgres://business",
-			"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL": "postgres://writer",
-			"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":   "secret",
-		}
-	}
-	env := base()
-	env["JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS"] = "0"
-	if _, err := LoadRuntimeConfig(func(name string) string { return env[name] }); err == nil {
-		t.Fatalf("非法 MAX_OPEN_CONNS 应报错")
-	}
-	env = base()
-	env["JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS"] = "-1"
-	if _, err := LoadRuntimeConfig(func(name string) string { return env[name] }); err == nil {
-		t.Fatalf("非法 MAX_IDLE_CONNS 应报错")
-	}
-	env = base()
-	env["JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS"] = "abc"
-	if _, err := LoadRuntimeConfig(func(name string) string { return env[name] }); err == nil {
-		t.Fatalf("非法 INPUT_MAX_OPEN_CONNS 应报错")
-	}
-}
-
-// TestW12ELoadManualAdminConfigArms：管理端口配置的失败臂。
-func TestW12ELoadManualAdminConfigArms(t *testing.T) {
-	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":                 "true",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS":          "127.0.0.1:18080",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":            "postgres://business",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS": "10",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS": "0",
-	}
-	if _, err := LoadManualAdminConfig(func(name string) string { return env[name] }); err == nil {
-		t.Fatalf("非法 MAX_IDLE_CONNS 应报错")
-	}
 	if _, err := NewPostgresManualAdminSource(nil, nil); err == nil {
 		t.Fatalf("nil db 应报错")
 	}

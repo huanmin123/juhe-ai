@@ -433,14 +433,8 @@ func TestSettingsModeAndProbeSettingsSuccess(t *testing.T) {
 	}
 }
 
-// TestLoadWorkerConfigShutdownFlushBadInt 覆盖停机冲刷批次的非整数分支。
-func TestLoadWorkerConfigShutdownFlushBadInt(t *testing.T) {
-	env := wgFullValidWorkerEnv(t)
-	env["JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES"] = "abc"
-	if _, err := loadWorkerConfig(getenvFrom(env)); err == nil {
-		t.Fatal("非整数必须报错")
-	}
-}
+// TestLoadWorkerConfigShutdownFlushBadInt 已删除（2026-09-30 C4：
+// 停机冲刷批收编为常量，env 不再被读取）。
 
 // TestProbeFamilyInvalidNamespaceDisabled 覆盖探针/速度优先族在 Redis
 // namespace 非法时的登记分支。

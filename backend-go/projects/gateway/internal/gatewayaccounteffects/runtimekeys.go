@@ -55,16 +55,6 @@ func GatewayAccountRuntimeKey(account SuppressibleGatewayAccount) (string, error
 	return account.ID, nil
 }
 
-// MustGatewayAccountRuntimeKey is the variant for call sites that already
-// validated the authorized binding; invalid input panics like the Node throw.
-func MustGatewayAccountRuntimeKey(account SuppressibleGatewayAccount) string {
-	key, err := GatewayAccountRuntimeKey(account)
-	if err != nil {
-		panic(err)
-	}
-	return key
-}
-
 // GatewayAccountID mirrors gatewayAccountId.
 func GatewayAccountID(account SuppressibleGatewayAccount) string {
 	return account.ID

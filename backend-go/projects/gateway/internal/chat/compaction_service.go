@@ -561,25 +561,39 @@ func initialSnapshot(entries []contextEntry) memorySnapshot {
 		"imageMemories": []any{}, "recentUserIntent": "", "uncertainties": []any{},
 	}
 	for _, entry := range entries {
-		var content map[string]any
-		if err := json.Unmarshal([]byte(entry.contentJSON), &content); err != nil {
-			continue
-		}
+		// BUG-0245：写入侧（snapshotEntries）里 tool_result/image_observation
+		// 的 contentJSON 是数组（json.Marshal([]map[string]any)），其余 kind 是
+		// 对象；按 kind 分派反序列化目标，数组保真（Node 原版直接赋值数组），
+		// 否则数组 JSON unmarshal 到 map 必败被跳过，prior snapshot 的
+		// importantToolResults/imageMemories 恒空。
 		switch entry.kind {
-		case "durable_memory":
-			raw["durableMemory"] = content["durableMemory"]
-			raw["constraints"] = content["constraints"]
-			raw["decisions"] = content["decisions"]
-		case "task_state":
-			raw["currentGoal"] = content["currentGoal"]
-			raw["completed"] = content["completed"]
-			raw["pending"] = content["pending"]
-			raw["recentUserIntent"] = content["recentUserIntent"]
-			raw["uncertainties"] = content["uncertainties"]
-		case "tool_result":
-			raw["importantToolResults"] = content
-		case "image_observation":
-			raw["imageMemories"] = content
+		case "tool_result", "image_observation":
+			var content []any
+			if err := json.Unmarshal([]byte(entry.contentJSON), &content); err != nil {
+				continue
+			}
+			if entry.kind == "tool_result" {
+				raw["importantToolResults"] = content
+			} else {
+				raw["imageMemories"] = content
+			}
+		default:
+			var content map[string]any
+			if err := json.Unmarshal([]byte(entry.contentJSON), &content); err != nil {
+				continue
+			}
+			switch entry.kind {
+			case "durable_memory":
+				raw["durableMemory"] = content["durableMemory"]
+				raw["constraints"] = content["constraints"]
+				raw["decisions"] = content["decisions"]
+			case "task_state":
+				raw["currentGoal"] = content["currentGoal"]
+				raw["completed"] = content["completed"]
+				raw["pending"] = content["pending"]
+				raw["recentUserIntent"] = content["recentUserIntent"]
+				raw["uncertainties"] = content["uncertainties"]
+			}
 		}
 	}
 	snapshot, err := parseSnapshot(raw)

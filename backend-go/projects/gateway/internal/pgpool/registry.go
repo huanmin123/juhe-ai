@@ -1,63 +1,28 @@
 package pgpool
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"fmt"
-	"log/slog"
-	"os"
 	"sync"
 
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
-	pgx "github.com/jackc/pgx/v5"
 	stdlib "github.com/jackc/pgx/v5/stdlib"
 )
 
-// sqlDebugTracer 是临时诊断工具(JUHE_AI_DEBUG_SQL=1 启用):打印每条失败
-// SQL 的完整语句与参数,用于定位 PG 方言回归;诊断完成后移除。
-type sqlDebugTracer struct{}
-
-type sqlDebugKey struct{}
-
-func (sqlDebugTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	return context.WithValue(ctx, sqlDebugKey{}, data)
-}
-
-func (sqlDebugTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
-	if data.Err == nil {
-		return
-	}
-	if start, ok := ctx.Value(sqlDebugKey{}).(pgx.TraceQueryStartData); ok {
-		slog.Error("SQL_DEBUG 查询失败", "sql", start.SQL, "args", fmt.Sprint(start.Args), "err", data.Err.Error())
-	}
-}
-
 // defaultPGXDriver 可注入点：测试用 fake driver 覆盖 OpenConnector 错误分支
-// 与改写接线（rewrite.go）。直接持有 pgx stdlib 的默认 driver 实例并就地包
-// rewriteDriver，不向 database/sql 注册新驱动名，避免与 pgx 原生名冲突。
+// 与改写接线。直接持有 pgx stdlib 的默认 driver 实例（与 database/sql 注册
+// 名 "pgx" 指向同一实例），不向 database/sql 注册新驱动名，避免与 pgx 原生
+// 名冲突。
 var defaultPGXDriver driver.Driver = stdlib.GetDefaultDriver()
 
-// openPGX 打开 gateway 的 PG 池句柄：两条臂都统一套方言改写 driver
-// （rewrite.go）。默认臂与 sql.Open("pgx", url) 惰性语义一致（pgx 的
-// OpenConnector 是惰性包装，DSN 解析延迟到 Connect）；JUHE_AI_DEBUG_SQL=1
-// 调试臂解析 ConnConfig 挂 tracer 后经 stdlib.GetConnector 同样包一层
-// rewriteConnector，tracer 行为不变。
+// openPGX 打开 gateway 的 PG 池句柄：统一套方言改写 driver
+// （shared/platform/sqldialect，清理批次 C5 收敛）。与 sql.Open("pgx", url)
+// 惰性语义一致（pgx 的 OpenConnector 是惰性包装，DSN 解析延迟到 Connect）。
+// 原 JUHE_AI_DEBUG_SQL 临时调试臂已随 BUG-0219 诊断完成删除（清理批次 C6）。
 func openPGX(url string) (*sql.DB, error) {
-	if os.Getenv("JUHE_AI_DEBUG_SQL") != "1" {
-		connector, err := (&rewriteDriver{inner: defaultPGXDriver}).OpenConnector(url)
-		if err != nil {
-			return nil, err
-		}
-		return sql.OpenDB(connector), nil
-	}
-	cfg, err := pgx.ParseConfig(url)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Tracer = sqlDebugTracer{}
-	return sql.OpenDB(rewriteConnector{inner: stdlib.GetConnector(*cfg)}), nil
+	return sqldialect.OpenDB(defaultPGXDriver, url)
 }
 
 // Registry keeps the gateway-specific pgx opener and delegates pool

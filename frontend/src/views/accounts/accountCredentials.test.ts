@@ -4,10 +4,12 @@ import { defaultAccountForm } from './accountFormDefaults'
 import type { AccountFormModel } from './accountFormTypes'
 import {
   CREDENTIAL_CIPHER_PLACEHOLDER,
+  accountApiKeyPoolBaseline,
   applyRevealedAccountCredentials,
   buildAccountCredentials,
   isCredentialCipherPlaceholder,
-  normalizedAccountApiKeys
+  normalizedAccountApiKeys,
+  validateAccountApiKeyCipherRows
 } from './accountCredentials'
 import { buildAccountBasicEditSnapshot } from './accountEditPatch'
 
@@ -159,6 +161,55 @@ describe('applyRevealedAccountCredentials reveal 写回', () => {
     expect(form.refreshToken).toBe('rt-real')
     expect(form.googleClientSecret).toBe('secret-real')
   })
+
+  // BUG-0243 问题 5b：reveal 保留占位态下用户已输入的新值。
+  it('api_key：占位态新输入的行保留，占位行按序填入服务端真实值（BUG-0243 问题 5b）', () => {
+    const form = apiKeysForm([PH, PH, 'sk-user-new'], [1, 2, 3])
+    applyRevealedAccountCredentials(form, { api_keys: ['sk-real-1', 'sk-real-2'] })
+    expect(form.apiKeys).toEqual(['sk-real-1', 'sk-real-2', 'sk-user-new'])
+    expect(form.apiKey).toBe('sk-real-1')
+  })
+
+  it('api_key：服务端未被占位行消费的真实 Key 追加行尾，不静默丢弃（BUG-0243 问题 5b）', () => {
+    const form = apiKeysForm(['sk-user-new', PH], [1, 2])
+    applyRevealedAccountCredentials(form, { api_keys: ['sk-real-1', 'sk-real-2'] })
+    expect(form.apiKeys).toEqual(['sk-user-new', 'sk-real-1', 'sk-real-2'])
+  })
+
+  it('api_key：与服务端真实值重复的用户输入按既有规则去重（BUG-0243 问题 5b）', () => {
+    const form = apiKeysForm([PH, 'sk-real-1'], [1, 2])
+    applyRevealedAccountCredentials(form, { api_keys: ['sk-real-1', 'sk-real-2'] })
+    expect(form.apiKeys).toEqual(['sk-real-1', 'sk-real-2'])
+  })
+
+  it('api_key：占位行多于服务端池时多余占位行剔除，不留占位符（BUG-0243 问题 5b）', () => {
+    const form = apiKeysForm([PH, PH, PH], [1, 2, 3])
+    applyRevealedAccountCredentials(form, { api_keys: ['sk-real-1'] })
+    expect(form.apiKeys).toEqual(['sk-real-1'])
+    expect(form.apiKeys.some((key) => isCredentialCipherPlaceholder(key))).toBe(false)
+  })
+
+  it('oauth：用户已输入的新 token 保留，占位/空字段由服务端真实值替换（BUG-0243 问题 5b）', () => {
+    const form = defaultAccountForm('gpt', 'oauth')
+    form.accessToken = 'typed-access-token'
+    form.refreshToken = ''
+    applyRevealedAccountCredentials(form, { access_token: 'at-real', refresh_token: 'rt-real' })
+    expect(form.accessToken).toBe('typed-access-token')
+    expect(form.refreshToken).toBe('rt-real')
+  })
+
+  it('google_oauth：用户已输入的 client_secret 保留，占位 token 字段替换（BUG-0243 问题 5b）', () => {
+    const form = defaultAccountForm('gemini', 'google_oauth')
+    form.accessToken = PH
+    form.googleClientSecret = 'typed-secret'
+    applyRevealedAccountCredentials(form, {
+      access_token: 'at-real',
+      refresh_token: 'rt-real',
+      client_secret: 'secret-real'
+    })
+    expect(form.accessToken).toBe('at-real')
+    expect(form.googleClientSecret).toBe('typed-secret')
+  })
 })
 
 describe('buildAccountBasicEditSnapshot 基础编辑占位过滤', () => {
@@ -200,5 +251,91 @@ describe('buildAccountBasicEditSnapshot 基础编辑占位过滤', () => {
     const cleared = buildAccountBasicEditSnapshot(form, { access_token: PH, refresh_token: PH })
     expect(cleared.credentials).not.toHaveProperty('access_token')
     expect(cleared.credentials).not.toHaveProperty('refresh_token')
+  })
+})
+
+describe('accountApiKeyPoolBaseline 掩码池基线提取（BUG-0243）', () => {
+  it('掩码 api_keys 按行计数，策略与权重保留真实语义', () => {
+    const baseline = accountApiKeyPoolBaseline({
+      api_keys: [PH, PH, PH],
+      api_key_strategy: 'weighted_round_robin',
+      api_key_weights: [1, 2, 3]
+    })
+    expect(baseline).toEqual({ poolCount: 3, strategy: 'weighted_round_robin', weights: [1, 2, 3] })
+  })
+
+  it('单键账户按 api_key 计数，无策略/权重', () => {
+    expect(accountApiKeyPoolBaseline({ api_key: PH })).toEqual({ poolCount: 1 })
+  })
+
+  it('无已存凭据时返回 undefined（创建路径无基线）', () => {
+    expect(accountApiKeyPoolBaseline(undefined)).toBeUndefined()
+    expect(accountApiKeyPoolBaseline({ base_url: 'https://api.openai.com/v1' })).toBeUndefined()
+  })
+})
+
+describe('validateAccountApiKeyCipherRows 占位行保存守卫（BUG-0243）', () => {
+  it('混合占位与真实行：阻断并提示先获取明文（P1 池截断场景）', () => {
+    const message = validateAccountApiKeyCipherRows(apiKeysForm([PH, 'sk-new', PH], [1, 1, 1]))
+    expect(message).toBe('部分密钥仍为密文占位，请先点击眼睛获取明文，或清空占位行后再保存')
+  })
+
+  it('混合行无需基线即阻断（无已存凭据的路径同样适用）', () => {
+    expect(validateAccountApiKeyCipherRows(apiKeysForm(['sk-new', PH]), undefined)).toBeTruthy()
+  })
+
+  it('纯占位池：策略相对基线变化时提示需先获取明文（P3）', () => {
+    const form = apiKeysForm([PH, PH], [1, 1], 'round_robin')
+    const baseline = accountApiKeyPoolBaseline({
+      api_keys: [PH, PH],
+      api_key_strategy: 'weighted_round_robin',
+      api_key_weights: [1, 1]
+    })
+    expect(validateAccountApiKeyCipherRows(form, baseline)).toBe('密钥仍为密文占位，修改密钥行、策略或权重前请先点击眼睛获取明文')
+  })
+
+  it('纯占位池：权重相对基线变化时提示需先获取明文（P3）', () => {
+    const form = apiKeysForm([PH, PH], [1, 5], 'weighted_round_robin')
+    const baseline = accountApiKeyPoolBaseline({
+      api_keys: [PH, PH],
+      api_key_strategy: 'weighted_round_robin',
+      api_key_weights: [1, 2]
+    })
+    expect(validateAccountApiKeyCipherRows(form, baseline)).toBeTruthy()
+  })
+
+  it('纯占位池：删除占位行时提示需先获取明文（P3）', () => {
+    const form = apiKeysForm([PH], [1], 'round_robin')
+    const baseline = accountApiKeyPoolBaseline({
+      api_keys: [PH, PH],
+      api_key_strategy: 'round_robin',
+      api_key_weights: [1, 1]
+    })
+    expect(validateAccountApiKeyCipherRows(form, baseline)).toBeTruthy()
+  })
+
+  it('纯占位池且行数/策略/权重未变：放行，保持既有"未检测到修改"路径', () => {
+    const form = apiKeysForm([PH, PH], [1, 2], 'weighted_round_robin')
+    const baseline = accountApiKeyPoolBaseline({
+      api_keys: [PH, PH],
+      api_key_strategy: 'weighted_round_robin',
+      api_key_weights: [1, 2]
+    })
+    expect(validateAccountApiKeyCipherRows(form, baseline)).toBeUndefined()
+  })
+
+  it('全部真实值：不误伤正常保存（含 reveal 后重建的池）', () => {
+    const baseline = accountApiKeyPoolBaseline({
+      api_keys: [PH, PH],
+      api_key_strategy: 'weighted_round_robin',
+      api_key_weights: [1, 2]
+    })
+    expect(validateAccountApiKeyCipherRows(apiKeysForm(['sk-a', 'sk-b'], [1, 2]), baseline)).toBeUndefined()
+    expect(validateAccountApiKeyCipherRows(apiKeysForm(['sk-single']), undefined)).toBeUndefined()
+  })
+
+  it('非 api_key 表单不触发守卫', () => {
+    const form = defaultAccountForm('gpt', 'oauth')
+    expect(validateAccountApiKeyCipherRows(form, accountApiKeyPoolBaseline({ access_token: PH }))).toBeUndefined()
   })
 })

@@ -541,7 +541,11 @@ func (d *Deps) writeTestError(w http.ResponseWriter, err error) {
 		kernel.WriteBadRequest(w, validation.Message)
 		return
 	}
-	println("accounts test slice internal error: " + err.Error())
+	// BUG-0248：裸 println 改走注入的 slog（对齐 writeError/writeM11ReadError
+	// 落点；调用面跨本文件多个 handler，签名保持 (w, err)，无 path/id 上下文）。
+	if d.Log != nil {
+		d.Log.Error("accounts test slice internal error", "error", err.Error())
+	}
 	kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 }
 

@@ -10,6 +10,7 @@ import type {
 } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
+import { isCredentialCipherPlaceholder } from './accountCredentials'
 import type { AccountFormModel } from './accountFormTypes'
 import { buildAccountSavePayload, resolveFormProviderProfile, validateAccountSaveForm } from './accountSavePayload'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
@@ -183,7 +184,9 @@ function preserveCredentialText(output: Record<string, unknown>, source: Record<
 }
 
 function hasCredentialText(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0
+  // BUG-0243：密文占位符视同缺失——编辑明细（0238 后）敏感键为 '__ENCRYPTED__'，
+  // 不得作为真实凭据回填进草稿测试/余额查询载荷，也不得计入 OAuth 测试凭据存在性判断。
+  return typeof value === 'string' && value.trim().length > 0 && !isCredentialCipherPlaceholder(value)
 }
 
 function emptyAccountUsageSummary(): AccountSummary['usage'] {

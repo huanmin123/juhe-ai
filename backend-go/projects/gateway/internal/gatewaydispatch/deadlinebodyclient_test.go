@@ -22,6 +22,11 @@ func injectNowMs(t *testing.T, now func() int64) {
 	t.Cleanup(func() { gatewayupstream.NowMs = previous })
 }
 
+// chunkResult 是 pending-read 观察器测试的载荷：观察器为泛型
+// （ObserveFirstBytePendingRead[T]），原 Reader 管道族的 ChunkResult 已随
+// BUG-0247 项 3 删除，测试自带等价载荷。
+type chunkResult struct{ N int }
+
 // preSettledPendingRead 返回一个已 settle 的 pending read（与 Decide* 的
 // 同步 settle 语义一致：读完成先于决策）。
 func preSettledPendingRead(t *testing.T, result chunkResult, err error, settledAt int64) *ObservedFirstBytePendingRead[chunkResult] {

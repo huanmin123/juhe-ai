@@ -70,21 +70,6 @@ type Config struct {
 	SQLiteReadPoolSize int
 }
 
-// j3bHandoffFamilyEnv lists the migration-era handoff/readiness family. The
-// zero-config rule mirrors runtime.go's JUHE_AI_BUSINESS_* family (2026-09-19):
-// when every member is unconfigured the deployment is treated as a fresh
-// standalone install with no Node cutover history and the owner facts are
-// auto-claimed; configuring any member keeps the original fail-closed gates.
-var j3bHandoffFamilyEnv = []string{
-	"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED",
-	"JUHE_AI_J3B_NODE_WRITER_STOPPED",
-	"JUHE_AI_J3B_OWNER_EPOCH",
-	"JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH",
-	"JUHE_AI_J3B_SCHEMA_READY",
-	"JUHE_AI_J3B_HEALTH_BOUNDARY_READY",
-	"JUHE_AI_J3B_RUNTIME_READY",
-}
-
 func LoadConfig(getenv func(string) string) (Config, error) {
 	if getenv == nil {
 		getenv = os.Getenv
@@ -167,44 +152,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.IdentitySecret == "" {
 		cfg.IdentitySecret = cfg.CredentialSecret
 	}
-	if hasAnyRawConfig(getenv, j3bHandoffFamilyEnv...) {
-		cfg.BusinessHandoffConfirmed = trueValue(getenv("JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED"))
-		if !cfg.BusinessHandoffConfirmed {
-			return Config{}, errors.New("J3b Business owner handoff 未确认，必须保持关闭")
-		}
-		cfg.NodeWriterStopped = trueValue(getenv("JUHE_AI_J3B_NODE_WRITER_STOPPED"))
-		if !cfg.NodeWriterStopped {
-			return Config{}, errors.New("J3b Business owner handoff 已确认但 Node writer 未停止，必须保持关闭")
-		}
-		cfg.OwnerEpoch = strings.TrimSpace(getenv("JUHE_AI_J3B_OWNER_EPOCH"))
-		if cfg.OwnerEpoch == "" {
-			return Config{}, errors.New("J3b Business owner handoff 已确认但 JUHE_AI_J3B_OWNER_EPOCH 未提供，必须保持关闭")
-		}
-		cfg.CutoverEvidencePath = strings.TrimSpace(getenv("JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH"))
-		if cfg.CutoverEvidencePath == "" {
-			return Config{}, errors.New("J3b Business owner handoff 已确认但 JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH 未提供，必须保持关闭")
-		}
-		cfg.SchemaReady = trueValue(getenv("JUHE_AI_J3B_SCHEMA_READY"))
-		if !cfg.SchemaReady {
-			return Config{}, errors.New("J3b schema readiness 未确认，必须保持关闭")
-		}
-		cfg.HealthBoundaryReady = trueValue(getenv("JUHE_AI_J3B_HEALTH_BOUNDARY_READY"))
-		if !cfg.HealthBoundaryReady {
-			return Config{}, errors.New("J3b/J3c health boundary 未确认，必须保持关闭")
-		}
-		cfg.RuntimeReady = trueValue(getenv("JUHE_AI_J3B_RUNTIME_READY"))
-		if !cfg.RuntimeReady {
-			return Config{}, errors.New("J3b runtime readiness 未确认，必须保持关闭")
-		}
-	} else {
-		cfg.AutoClaimed = true
-		cfg.BusinessHandoffConfirmed = true
-		cfg.NodeWriterStopped = true
-		cfg.OwnerEpoch = "standalone"
-		cfg.SchemaReady = true
-		cfg.HealthBoundaryReady = true
-		cfg.RuntimeReady = true
-	}
+	// 清理批次 C1（2026-09-30）：Node→Go 切流已完成且 Node 进程已于
+	// 2026-09-05 清零（不可恢复），J3B 切流门禁 env 家族与 cutover evidence
+	// 校验链整体退役——owner 事实一律按零配置自动认领（原显式配置分支在
+	// 所有现存部署中从未被配置过，五源核对零引用）。
+	cfg.AutoClaimed = true
+	cfg.BusinessHandoffConfirmed = true
+	cfg.NodeWriterStopped = true
+	cfg.OwnerEpoch = "standalone"
+	cfg.SchemaReady = true
+	cfg.HealthBoundaryReady = true
+	cfg.RuntimeReady = true
 	cfg.CircuitRuntimeRedisURL = strings.TrimSpace(getenv("JUHE_AI_J3B_CIRCUIT_REDIS_URL"))
 	if cfg.CircuitRuntimeRedisURL == "" {
 		// A（状态机专项 2026-09-25）：回退行为本身不变（显式设置同值仍允许），
@@ -275,17 +233,4 @@ func (c Config) ValidateCircuitRuntimeRedisIsolation() error {
 		"JUHE_AI_J3B_CIRCUIT_REDIS_URL 未显式配置，当前值回退自主链 JUHE_AI_REDIS_STATE_URL，" +
 		"两套 Lua 状态机并发写同一 states hash 会互相毒化；" +
 		"必须显式配置独立的 JUHE_AI_J3B_CIRCUIT_REDIS_URL（或经评估确认共享后，显式设置同值并知晓风险）")
-}
-
-func hasAnyRawConfig(getenv func(string) string, keys ...string) bool {
-	for _, key := range keys {
-		if strings.TrimSpace(getenv(key)) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func trueValue(value string) bool {
-	return strings.EqualFold(strings.TrimSpace(value), "true")
 }

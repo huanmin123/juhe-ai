@@ -129,37 +129,22 @@ func TestACircuitRedisValidatorIgnoresEmptyURL(t *testing.T) {
 // circuit URL 时，仍按原样回退 JUHE_AI_REDIS_STATE_URL 并要求 namespace；
 // 完全缺失时仍按原样报"缺少 Redis state URL"（既有拒绝面不变）。
 func TestACircuitRedisLoadConfigFallbackBehaviorUnchanged(t *testing.T) {
-	handoff := map[string]string{
-		"JUHE_AI_J3B_STORE":                      "sqlite",
-		"JUHE_AI_J3B_DATABASE_PATH":              "F:/tmp/a-isolation-j3b.db",
-		"JUHE_AI_J3B_BUSINESS_DATABASE_PATH":     "F:/tmp/a-isolation-business.db",
-		"JUHE_AI_J3B_CREDENTIAL_SECRET":          "cred",
-		"JUHE_AI_J3B_BUSINESS_HANDOFF_CONFIRMED": "true",
-		"JUHE_AI_J3B_NODE_WRITER_STOPPED":        "true",
-		"JUHE_AI_J3B_OWNER_EPOCH":                "epoch-1",
-		"JUHE_AI_J3B_CUTOVER_EVIDENCE_PATH":      "F:/tmp/a-isolation-evidence.json",
-		"JUHE_AI_J3B_SCHEMA_READY":               "true",
-		"JUHE_AI_J3B_HEALTH_BOUNDARY_READY":      "true",
-		"JUHE_AI_J3B_RUNTIME_READY":              "true",
+	// 清理批次 C1（2026-09-30）：切流门禁家族退役后，本测试只保留"回退解析
+	// 行为不变"的断言（REDIS_STATE_URL 回退 + FellBack 标记）；原严格模式
+	// "无 URL 拒绝面"与"非自动认领 fail-fast"随门禁退役（auto-claim 恒真）。
+	values := map[string]string{
+		"JUHE_AI_J3B_STORE":                  "sqlite",
+		"JUHE_AI_J3B_DATABASE_PATH":          "F:/tmp/a-isolation-j3b.db",
+		"JUHE_AI_J3B_BUSINESS_DATABASE_PATH": "F:/tmp/a-isolation-business.db",
+		"JUHE_AI_J3B_CREDENTIAL_SECRET":      "cred",
+		"JUHE_AI_REDIS_STATE_URL":            "redis://main-chain:6379/9",
+		"JUHE_AI_REDIS_NAMESPACE":            "juhe-ai:dev",
 	}
-	if _, err := LoadConfig(aCircuitIsolationEnv(handoff)); err == nil ||
-		!strings.Contains(err.Error(), "Redis state URL") {
-		t.Fatalf("无任何 URL 时既有拒绝面必须保持: err=%v", err)
-	}
-	withStateURL := map[string]string{}
-	for key, value := range handoff {
-		withStateURL[key] = value
-	}
-	withStateURL["JUHE_AI_REDIS_STATE_URL"] = "redis://main-chain:6379/9"
-	withStateURL["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:dev"
-	cfg, err := LoadConfig(aCircuitIsolationEnv(withStateURL))
+	cfg, err := LoadConfig(aCircuitIsolationEnv(values))
 	if err != nil {
 		t.Fatalf("回退解析行为不得改变: %v", err)
 	}
 	if !cfg.CircuitRuntimeRedisURLFellBack || cfg.CircuitRuntimeRedisURL != "redis://main-chain:6379/9" {
 		t.Fatalf("回退解析结果不符: fellBack=%v url=%q", cfg.CircuitRuntimeRedisURLFellBack, cfg.CircuitRuntimeRedisURL)
-	}
-	if err := cfg.ValidateCircuitRuntimeRedisIsolation(); err == nil {
-		t.Fatal("非自动认领路径的启用+回退组合同样必须 fail-fast")
 	}
 }

@@ -116,17 +116,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		RetentionBatchSize:   retentionBatchSize,
 		RetentionMaxBatches:  retentionMaxBatches,
 	}
-	if cfg.PostgresMaxOpenConns, err = positiveIntOrDefault("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS", getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS"), defaultPostgresPoolSize); err != nil {
-		return Config{}, err
-	}
-	if cfg.PostgresMaxIdleConns, err = positiveIntOrDefault("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresMaxIdleConns); err != nil {
-		return Config{}, err
-	}
-	if mode == ModePostgres {
-		if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
-			return Config{}, fmt.Errorf("F2 PostgreSQL 连接池配置无效: %w", err)
-		}
-	}
+	// 清理批次 C4（2026-09-30）：连接池 env 族零引用收编为默认常量。
+	cfg.PostgresMaxOpenConns = defaultPostgresPoolSize
+	cfg.PostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	if mode == ModeSQLite {
 		if cfg.OutputPath == "" {
 			return Config{}, fmt.Errorf("sqlite 模式缺少 JUHE_AI_TABLE_MONITOR_DATABASE_PATH")

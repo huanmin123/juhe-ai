@@ -36,7 +36,6 @@ func TestWFLoadManualAdminConfig(t *testing.T) {
 	}{
 		{name: "监听地址缺端口", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1"}, wantErr: "host:port"},
 		{name: "监听端口越界", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1:70000"}, wantErr: "端口必须"},
-		{name: "连接数非数字", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS": "x"}, wantErr: "正整数"},
 		{name: "deadline 非法", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE": "nope"}, wantErr: "duration"},
 	}
 	for _, tt := range cases {

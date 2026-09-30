@@ -104,29 +104,32 @@ func TestRuntimeConfigUsesHighPerformanceConcurrencyAndPoolDefaults(t *testing.T
 }
 
 func TestRuntimeConfigAcceptsExternalPoolAndConcurrency(t *testing.T) {
+	// 清理批次 C4（2026-09-30）：IO/DB 并发与连接池上限族 env 零引用收编为
+	// 常量（设置这些 env 不再产生效果）；仍可配置的 MAX_CONCURRENCY/
+	// DB_QUEUE_SIZE 语义不变。
 	values := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":                      "j2-test",
-		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":                    "go",
-		"JUHE_AI_ACCOUNT_BALANCE_STORE":                         "postgres",
-		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL":                  "postgres://j2-store",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL":            "postgres://input",
-		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":             "secret",
-		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":              "0123456789abcdef0123456789abcdef",
-		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY":               "64",
-		"JUHE_AI_ACCOUNT_BALANCE_IO_CONCURRENCY":                "128",
-		"JUHE_AI_ACCOUNT_BALANCE_DB_CONCURRENCY":                "12",
-		"JUHE_AI_ACCOUNT_BALANCE_DB_QUEUE_SIZE":                 "300",
-		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS":       "1200",
-		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS":       "10",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS": "900",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS": "8",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":           "j2-test",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":         "go",
+		"JUHE_AI_ACCOUNT_BALANCE_STORE":              "postgres",
+		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL":       "postgres://j2-store",
+		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL": "postgres://input",
+		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":  "secret",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":   "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY":    "64",
+		"JUHE_AI_ACCOUNT_BALANCE_DB_QUEUE_SIZE":      "300",
 	}
 	cfg, err := LoadRuntimeConfig(func(name string) string { return values[name] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxConcurrency != 64 || cfg.IOConcurrency != 128 || cfg.DBConcurrency != 12 || cfg.DBQueueSize != 300 || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 10 || cfg.InputPostgresMaxOpenConns != 900 || cfg.InputPostgresMaxIdleConns != 8 {
-		t.Fatalf("external pool configuration not applied: %#v", cfg)
+	if cfg.MaxConcurrency != 64 || cfg.DBQueueSize != 300 {
+		t.Fatalf("external concurrency configuration not applied: %#v", cfg)
+	}
+	if cfg.IOConcurrency != cfg.MaxConcurrency || cfg.DBConcurrency != defaultAccountBalanceDBConcurrency {
+		t.Fatalf("IO/DB concurrency must follow the consolidated constants: %#v", cfg)
+	}
+	if cfg.PostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.PostgresMaxIdleConns != defaultPostgresMaxIdleConns || cfg.InputPostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.InputPostgresMaxIdleConns != defaultPostgresMaxIdleConns {
+		t.Fatalf("pool limits must follow the consolidated constants: %#v", cfg)
 	}
 }
 

@@ -4,67 +4,15 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// 检查管道缓冲→流转过渡、锁观测投影、分组回退繁忙跳过与模型映射运行时来源。
-
-// TestPipeInspectionCommitsWhenLimitExceeded: 缓冲超限且提交成功 → 缓冲块与
-// 后续块全部流向下游。
-func TestPipeInspectionCommitsWhenLimitExceeded(t *testing.T) {
-	reader := &multiChunkReader{chunks: [][]byte{[]byte("aa"), []byte("bb"), []byte("cc")}}
-	var downstream strings.Builder
-	written := 0
-	var committed []byte
-	result, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), reader, &downstream, InspectableNonStreamPipeInput{
-		NonStreamPipeInput: NonStreamPipeInput{
-			StartedAt:      gatewayupstream.NowMs(),
-			Signal:         context.Background(),
-			OnChunkWritten: func(n int) { written += n },
-		},
-		InspectBytes: 3, // 首块之后必然超限
-		BeforeDownstreamCommit: func(inspectionBody []byte) error {
-			committed = append([]byte(nil), inspectionBody...)
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("inspection: %v", err)
-	}
-	if downstream.String() != "aabbcc" {
-		t.Fatalf("downstream = %q", downstream.String())
-	}
-	if string(committed) != "aab" {
-		t.Fatalf("commit body = %q", committed)
-	}
-	if written != 6 {
-		t.Fatalf("written = %d", written)
-	}
-	if result.FullyBuffered {
-		t.Fatal("超限后不应标记全缓冲")
-	}
-}
-
-// TestPipeInspectionBufferedWriteError: 缓冲提交时下游失败 → 管道错误。
-func TestPipeInspectionBufferedWriteError(t *testing.T) {
-	reader := &multiChunkReader{chunks: [][]byte{[]byte("aa"), []byte("bb")}}
-	_, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), reader, failingWriter{}, InspectableNonStreamPipeInput{
-		NonStreamPipeInput: NonStreamPipeInput{StartedAt: gatewayupstream.NowMs(), Signal: context.Background()},
-		InspectBytes:       1,
-	})
-	var pipeErr *NonStreamUpstreamBodyPipeError
-	if !errorsAs(err, &pipeErr) {
-		t.Fatalf("expected pipe error, got %v", err)
-	}
-	if !strings.Contains(pipeErr.Message, "下游写失败") {
-		t.Fatalf("message = %q", pipeErr.Message)
-	}
-}
+// 检查锁观测投影、分组回退繁忙跳过与模型映射运行时来源。
+//（原非流式 Reader 管道族检查测试已随 BUG-0247 项 3 删除——生产管道在
+// gatewayresponse 包实现。）
 
 // stateLocks 返回非阻断的锁状态（观测投影）。
 type stateLocks struct {

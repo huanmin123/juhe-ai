@@ -88,24 +88,13 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL")
 	}
 	var err error
-	if cfg.PostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if cfg.PostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if cfg.InputPostgresMaxOpenConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if cfg.InputPostgresMaxIdleConns, err = runtimePositiveInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
-		return RuntimeConfig{}, fmt.Errorf("J2 jobs PostgreSQL 连接池配置无效: %w", err)
-	}
-	if err := sqlpool.ValidatePoolLimits(cfg.InputPostgresMaxOpenConns, cfg.InputPostgresMaxIdleConns); err != nil {
-		return RuntimeConfig{}, fmt.Errorf("J2 业务读取 PostgreSQL 连接池配置无效: %w", err)
-	}
+	// 清理批次 C4（2026-09-30）：连接池上限族 env（*_POSTGRES_MAX_OPEN_CONNS
+	// 等 4 个）全库五源核对零引用，收编为默认常量（单机单实例形态下从未
+	// 配置过第二个值）；常量组合恒过 ValidatePoolLimits，校验随之退役。
+	cfg.PostgresMaxOpenConns = defaultPostgresMaxOpenConns
+	cfg.PostgresMaxIdleConns = defaultPostgresMaxIdleConns
+	cfg.InputPostgresMaxOpenConns = defaultPostgresMaxOpenConns
+	cfg.InputPostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	cfg.BusinessPostgresURL = firstNonEmptyString(getenv("JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL"), getenv("JUHE_AI_BUSINESS_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
 	if cfg.BusinessPostgresURL == "" {
 		return RuntimeConfig{}, errors.New("J2 direct input 缺少 JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
@@ -152,12 +141,9 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.MaxConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", defaultAccountBalanceConcurrency, 1, maxAccountBalanceWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.IOConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_IO_CONCURRENCY", cfg.MaxConcurrency, 1, maxAccountBalanceWorkItems); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if cfg.DBConcurrency, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_DB_CONCURRENCY", defaultAccountBalanceDBConcurrency, 1, maxAccountBalanceWorkItems); err != nil {
-		return RuntimeConfig{}, err
-	}
+	// 清理批次 C4（2026-09-30）：IO/DB 并发 env 零引用收编为常量语义。
+	cfg.IOConcurrency = cfg.MaxConcurrency
+	cfg.DBConcurrency = defaultAccountBalanceDBConcurrency
 	if cfg.DBQueueSize, err = runtimeInt(getenv, "JUHE_AI_ACCOUNT_BALANCE_DB_QUEUE_SIZE", defaultAccountBalanceDBQueueSize, 1, maxAccountBalanceWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}

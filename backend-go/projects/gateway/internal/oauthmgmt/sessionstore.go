@@ -23,7 +23,14 @@ type sessionEntry struct {
 	expiresAt time.Time
 }
 
-const oauthSessionTTL = 30 * time.Minute
+const (
+	oauthSessionTTL = 30 * time.Minute
+	// oauthSessionMaxEntries bounds the store: abandoned authorization flows
+	// only ever delete their own key (get/compareDelete 的惰性删除)，未完成
+	// 授权会单调积累内存，所以对齐 kernel.DeduplicationStore 的
+	// maxEntries+trim 先例——写入时顺带清扫过期项并按上限裁剪。
+	oauthSessionMaxEntries = 5_000
+)
 
 func newSessionStore(now func() time.Time) *sessionStore {
 	if now == nil {
@@ -44,11 +51,42 @@ func (s *sessionStore) set(namespace, sessionID string, value any, ttl time.Dura
 	if ttl <= 0 {
 		ttl = time.Millisecond
 	}
+	key := s.key(namespace, sessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entries[s.key(namespace, sessionID)] = sessionEntry{
+	now := s.now()
+	s.entries[key] = sessionEntry{
 		value:     raw,
-		expiresAt: s.now().Add(ttl),
+		expiresAt: now.Add(ttl),
+	}
+	s.evictLocked(key, now)
+}
+
+// evictLocked keeps the store bounded (caller holds mu): first sweep the
+// expired entries, then trim the overflow below maxEntries, protecting the
+// just-written key (mirror of DeduplicationStore cleanupExpiredLocked +
+// trimIfNeeded; map iteration order is unspecified, so overflow eviction is
+// arbitrary-but-bounded exactly like the precedent).
+func (s *sessionStore) evictLocked(protectedKey string, now time.Time) {
+	for key, entry := range s.entries {
+		if !entry.expiresAt.After(now) {
+			delete(s.entries, key)
+		}
+	}
+	if len(s.entries) <= oauthSessionMaxEntries {
+		return
+	}
+	overflow := len(s.entries) - oauthSessionMaxEntries
+	removed := 0
+	for key := range s.entries {
+		if key == protectedKey {
+			continue
+		}
+		delete(s.entries, key)
+		removed++
+		if removed >= overflow {
+			break
+		}
 	}
 }
 

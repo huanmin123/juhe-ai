@@ -386,18 +386,12 @@ func TestW12CLoadWorkerConfigErrorMatrix(t *testing.T) {
 		env  map[string]string
 	}{
 		{"非法 driver", map[string]string{"JUHE_AI_DATABASE_DRIVER": "mysql"}},
-		{"负 replica", map[string]string{"JUHE_AI_WORKER_REPLICA_INDEX": "-1"}},
-		{"超大 replica", map[string]string{"JUHE_AI_WORKER_REPLICA_INDEX": "64"}},
-		{"非法 open conns", map[string]string{"JUHE_AI_POSTGRES_MAX_OPEN_CONNS": "abc"}},
-		{"非法 idle conns", map[string]string{"JUHE_AI_POSTGRES_MAX_IDLE_CONNS": "xyz"}},
-		{"非法 projection max batches", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN": "401"}},
+		// replica / PG pool conns / projection 批量族 / record maintenance
+		// 批量族错误臂已删除（2026-09-30 C4 收编为常量，env 不再被读取）。
 		{"非法 chat retention", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}},
-		{"非法 batch size", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE": "0"}},
-		{"非法 flush batches", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES": "0"}},
 		// 「非法 stats toggle」臂已删除（2026-09-19 家族开关移除：开关 env 不再被读取）。
 		{"非法 probe concurrency", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "0"}},
 		{"非法 projection interval", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "1"}},
-		{"非法 projection batch", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "101"}},
 	}
 	for _, tc := range cases {
 		tc := tc

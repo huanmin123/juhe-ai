@@ -110,7 +110,9 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 		if !ok {
 			blocked, retryAfter, message, guardErr := d.LoginGuard.Failed(clientIP, body.Username)
 			if guardErr != nil {
-				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+				// BUG-0248：此处 err 必为 nil（VerifyCredentials 错误分支已提前
+				// return），根因必须传 guardErr，否则状态存储故障的 500 无因。
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", guardErr)
 				return
 			}
 			if blocked {
@@ -129,7 +131,8 @@ func (d *Deps) postLogin(cookieSameSite string, cookieSecure bool) http.HandlerF
 		if !issuedOK {
 			blocked, retryAfter, message, guardErr := d.LoginGuard.Failed(clientIP, body.Username)
 			if guardErr != nil {
-				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+				// BUG-0248：同上，CreateSession 的 err 为 nil，根因是 guardErr。
+				kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", guardErr)
 				return
 			}
 			if blocked {
@@ -367,7 +370,8 @@ func (d *Deps) postTemporaryAccessToken(w http.ResponseWriter, r *http.Request) 
 		// store failure lands as 500 (D8 fail-closed), the block result stays
 		// ignored exactly like auth.routes.ts.
 		if _, _, _, failedErr := d.LoginGuard.Failed(clientIP, body.Username); failedErr != nil {
-			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+			// BUG-0248：VerifyCredentials 已成功（err 为 nil），根因是 failedErr。
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", failedErr)
 			return
 		}
 		kernel.WriteError(w, http.StatusUnauthorized, "账号或密码错误")

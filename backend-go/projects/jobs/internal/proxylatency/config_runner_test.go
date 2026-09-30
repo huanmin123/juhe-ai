@@ -58,12 +58,12 @@ func TestLoadRuntimeConfigAcceptsLargeGoCapacity(t *testing.T) {
 		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL":   "postgres://business-writer",
 		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":     "credential-secret",
 		"JUHE_AI_PROXY_LATENCY_INPUT_LIMIT":           "5096",
-		"JUHE_AI_PROXY_LATENCY_BATCH_SIZE":            "5096",
 		"JUHE_AI_PROXY_LATENCY_CANDIDATE_POOL_FACTOR": "1000",
-		"JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY":    "5096",
 	}
+	// 清理批次 C4（2026-09-30）：BATCH/WORKER 并发 env 零引用收编为常量，
+	// 本测试保留仍可配置项（INPUT_LIMIT/CANDIDATE_POOL_FACTOR）的上限语义。
 	cfg, err := LoadRuntimeConfig(func(name string) string { return env[name] })
-	if err != nil || cfg.InputLimit != 5096 || cfg.BatchSize != 5096 || cfg.CandidatePoolFactor != 1_000 || cfg.WorkerConcurrency != 5096 {
+	if err != nil || cfg.InputLimit != 5096 || cfg.CandidatePoolFactor != 1_000 || cfg.BatchSize != defaultProxyLatencyBatchSize || cfg.WorkerConcurrency != defaultProxyLatencyConcurrency {
 		t.Fatalf("large Go capacity config=%+v err=%v", cfg, err)
 	}
 }

@@ -814,15 +814,16 @@ type w12ePollingReader struct {
 	runner *Runner
 }
 
-func (r *w12ePollingReader) LoadDue(context.Context, int) ([]InputDraft, error) {
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if r.runner.Status().LastError != "" {
-			return nil, errors.New("w12e cycle boom")
-		}
-		time.Sleep(2 * time.Millisecond)
+func (r *w12ePollingReader) LoadDue(ctx context.Context, _ int) ([]InputDraft, error) {
+	// 与 w12eCountingReader 同款修复：等待续租失败后的 cancel（channel
+	// 写入先于 cancel，join 顺序确定），消除 LastError 可见性与 channel
+	// 写入之间的固有竞态。
+	select {
+	case <-ctx.Done():
+		return nil, errors.New("w12e cycle boom")
+	case <-time.After(2 * time.Second):
+		return nil, errors.New("w12e cycle timeout")
 	}
-	return nil, errors.New("w12e cycle timeout")
 }
 
 // w12eCountingReader 第 N 次 LoadDue 等到续租错误可见后返回错误。
@@ -832,19 +833,21 @@ type w12eCountingReader struct {
 	loads  int
 }
 
-func (r *w12eCountingReader) LoadDue(context.Context, int) ([]InputDraft, error) {
+func (r *w12eCountingReader) LoadDue(ctx context.Context, _ int) ([]InputDraft, error) {
 	r.loads++
 	if r.loads < r.failOn {
 		return nil, nil
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if r.runner.Status().LastError != "" {
-			return nil, errors.New("w12e second cycle boom")
-		}
-		time.Sleep(2 * time.Millisecond)
+	// 等待续租失败后的 cancel（runOwned 的 renewal goroutine 先写
+	// renewErr channel 再 cancel——ctx.Done 时 join 顺序确定）。原先轮询
+	// Status().LastError 可见即返回，与 channel 写入之间存在固有竞态
+	//（recordError 先于 channel 写入），负载下 join 顺序翻转。
+	select {
+	case <-ctx.Done():
+		return nil, errors.New("w12e second cycle boom")
+	case <-time.After(2 * time.Second):
+		return nil, errors.New("w12e second cycle timeout")
 	}
-	return nil, errors.New("w12e second cycle timeout")
 }
 
 func portOfURL(t *testing.T, raw string) int {

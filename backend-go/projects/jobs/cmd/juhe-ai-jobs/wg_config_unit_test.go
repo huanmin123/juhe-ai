@@ -143,15 +143,11 @@ func TestLoadWorkerConfigRejectsInvalidEnv(t *testing.T) {
 		mutate   func(env map[string]string)
 		contains string
 	}{
-		{"replica 非整数", func(e map[string]string) { e["JUHE_AI_WORKER_REPLICA_INDEX"] = "abc" }, "必须是整数"},
-		{"replica 越上界", func(e map[string]string) { e["JUHE_AI_WORKER_REPLICA_INDEX"] = "64" }, "必须介于 0 和 63"},
-		{"replica 负数", func(e map[string]string) { e["JUHE_AI_WORKER_REPLICA_INDEX"] = "-1" }, "必须介于 0 和 63"},
+		// replica / 维护批次 / 停机冲刷批 / 列表投影批量族错误臂已删除
+		// （2026-09-30 C4 收编为常量，env 不再被读取）。
 		{"driver 非法", func(e map[string]string) { e["JUHE_AI_DATABASE_DRIVER"] = "oracle" }, "必须为 sqlite 或 postgres"},
 		{"chat 保留天下界", func(e map[string]string) { e["JUHE_AI_CHAT_RETENTION_DAYS"] = "0" }, "必须在 1 到 365"},
 		{"chat 保留天上界", func(e map[string]string) { e["JUHE_AI_CHAT_RETENTION_DAYS"] = "366" }, "必须在 1 到 365"},
-		{"维护批次下界", func(e map[string]string) { e["JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE"] = "0" }, "必须介于 1 和 10000"},
-		{"维护批次上界", func(e map[string]string) { e["JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE"] = "10001" }, "必须介于 1 和 10000"},
-		{"停机冲刷批次下界", func(e map[string]string) { e["JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES"] = "0" }, "必须介于 1 和 10000"},
 		{"探针并发下界", func(e map[string]string) { e["JUHE_AI_JOBS_PROBE_CONCURRENCY"] = "0" }, "必须介于 1 和 5096"},
 		{"探针并发上界", func(e map[string]string) { e["JUHE_AI_JOBS_PROBE_CONCURRENCY"] = "5097" }, "必须介于 1 和 5096"},
 		{"列表投影间隔下界", func(e map[string]string) {
@@ -160,24 +156,6 @@ func TestLoadWorkerConfigRejectsInvalidEnv(t *testing.T) {
 		{"列表投影间隔上界", func(e map[string]string) {
 			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS"] = "60001"
 		}, "必须介于 1000 和 60000"},
-		{"列表投影批次下界", func(e map[string]string) {
-			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE"] = "0"
-		}, "必须介于 1 和 100"},
-		{"列表投影批次上界", func(e map[string]string) {
-			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE"] = "101"
-		}, "必须介于 1 和 100"},
-		{"列表投影批次数下界", func(e map[string]string) {
-			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN"] = "0"
-		}, "必须介于 1 和 400"},
-		{"列表投影批次数上界", func(e map[string]string) {
-			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN"] = "401"
-		}, "必须介于 1 和 400"},
-		{"列表投影并发下界", func(e map[string]string) {
-			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY"] = "0"
-		}, "必须介于 1 和 8"},
-		{"列表投影并发出界", func(e map[string]string) {
-			e["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY"] = "9"
-		}, "必须介于 1 和 8"},
 		{"电路容量非整数", func(e map[string]string) { e["JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY"] = "abc" }, "必须是整数"},
 		{"电路容量下界", func(e map[string]string) { e["JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY"] = "999" }, "必须介于 1000 和 1000000"},
 		{"电路容量上界", func(e map[string]string) { e["JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY"] = "1000001" }, "必须介于 1000 和 1000000"},

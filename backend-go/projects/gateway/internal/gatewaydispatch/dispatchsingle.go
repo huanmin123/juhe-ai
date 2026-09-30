@@ -52,7 +52,6 @@ type dispatchSingleAccountInput struct {
 	concurrencyRetryWaitBudgetMs         *int64
 	keyModelFailureBudget                *gatewayaccounteffects.GatewayKeyModelFailureBudget
 	accountCircuitAttempt                *gatewaycircuit.Attempt
-	setAccountCircuitAttemptTransferred  func()
 	reserveSameAccountRetry              func(identity gatewayrouting.GatewayDispatchAttemptIdentity, reason, accountID string) (string, error)
 	createAccountLockLeaseRelease        func(scheduleNextRetry bool) func(bool) bool
 }
@@ -139,8 +138,10 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 	var concurrencyAcquireWaitedMs int64
 	if reservedSlot != nil {
 		concurrencySlot = *reservedSlot
+		// 预留槽无短等，请求级预算不变（Node :768-771 reservedSlot 的
+		// remainingWaitBudgetMs 原样携带 concurrencyRetryWaitBudgetMs）。
 	} else {
-		acquired, waitedMs, acquireErr := e.acquireAccountConcurrencyWithShortRetry(
+		acquired, waitedMs, remainingWaitBudgetMs, acquireErr := e.acquireAccountConcurrencyWithShortRetry(
 			ctx, signal, concurrencyAccountID, originalAccount.ConcurrencyLimit,
 			*in.concurrencyRetryWaitBudgetMs, gatewayprotoLane(in.requestLane), in.args.GroupSchedulingPolicy,
 			in.coordination.ServerRetryBudget,
@@ -151,8 +152,12 @@ func (e *Engine) dispatchSingleAccount(ctx context.Context, in dispatchSingleAcc
 		}
 		concurrencySlot = acquired
 		concurrencyAcquireWaitedMs = waitedMs
+		// BUG-0247 项 2：请求级并发等待预算按本次获取实际短等递减
+		//（Node upstream-dispatch.ts:793 concurrencyRetryWaitBudgetMs =
+		// concurrencyAcquire.remainingWaitBudgetMs；预算在外环容量等待后由
+		// upstreamdispatch.go 三处重置点刷新）。
+		*in.concurrencyRetryWaitBudgetMs = remainingWaitBudgetMs
 	}
-	*in.concurrencyRetryWaitBudgetMs = e.remainingConcurrencyWaitBudget(*in.concurrencyRetryWaitBudgetMs)
 	if !concurrencySlot.Acquired {
 		_ = releaseHalfOpenLease(ctx, halfOpenLease)
 		message := accountConcurrencyLimitMessage(concurrencySlot, concurrencyAcquireWaitedMs)
@@ -198,7 +203,7 @@ rotationLoop:
 		retryAccountApiKey = false
 		skipAccount = false
 		if reacquireConcurrencyForNextKey {
-			acquired, waitedMs, acquireErr := e.acquireAccountConcurrencyWithShortRetry(
+			acquired, waitedMs, remainingWaitBudgetMs, acquireErr := e.acquireAccountConcurrencyWithShortRetry(
 				ctx, signal, concurrencyAccountID, originalAccount.ConcurrencyLimit,
 				*in.concurrencyRetryWaitBudgetMs, gatewayprotoLane(in.requestLane), in.args.GroupSchedulingPolicy,
 				in.coordination.ServerRetryBudget,
@@ -207,7 +212,9 @@ rotationLoop:
 				releaseTransientState()
 				return dispatchResultContinue, nil, acquireErr
 			}
-			*in.concurrencyRetryWaitBudgetMs = e.remainingConcurrencyWaitBudget(*in.concurrencyRetryWaitBudgetMs)
+			// BUG-0247 项 2：Key 轮换重取同样按实际短等递减请求级预算
+			//（Node upstream-dispatch.ts:866）。
+			*in.concurrencyRetryWaitBudgetMs = remainingWaitBudgetMs
 			concurrencySlot = acquired
 			reacquireConcurrencyForNextKey = false
 			// P0-1（PLAN-20260918T142845703Z）: 生产并发实现未 Acquired 时
@@ -441,9 +448,13 @@ rotationLoop:
 
 	releaseTransientState()
 	*in.pendingApiKeyFailures = pendingAccountApiKeyFailures
-	if accountScopedResult != nil {
-		return dispatchResultSelected, accountScopedResult, nil
-	}
+	// BUG-0247 项 3：此处不存在 accountScopedResult 非 nil 的到达路径——
+	// *c.loop.resultRef（=&accountScopedResult）仅在 attemptoutcomes.go 两个
+	// 构造点（response.OK 与 ReturnResponse 分支）写入，且每次写入后立即
+	// 返回 responseKindSelected；runUpstreamAttemptLoop 将其映射为
+	// attemptLoopSelected 后，上面的 switch 已提前 return dispatchResultSelected。
+	// 因此轮换循环正常退出（break / 条件假）时 resultRef 必然未被写入，
+	// 旧的 nil 检查分支不可达，已删。
 	// M-2（BUG-0174）: a single-account terminal skip continues the cycle with
 	// the next candidate (Node upstream-dispatch.ts:619 for-of). skipAccount
 	// is true exactly when this account's rotation loop ended through one of
@@ -773,6 +784,13 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				RequestLane:     in.requestLane,
 				Model:           requestModelOrEmpty(in.args.Req),
 				ProtocolProfile: hotQualityProtocolProfileOf(c.account),
+				// BUG-0241 留档收口：授权绑定上下文与读侧投影
+				// （chainHotQualityAccountViewOf）同源，授权账户 runtimeKey
+				// 落 id:authorized:... 形态而非裸 ID。
+				AccountAccessType:      c.account.AccountAccessType,
+				BindingSystemAccountID: derefStringPtr(c.account.BindingSystemAccountID),
+				BoundGroupID:           derefStringPtr(c.account.BoundGroupID),
+				AccountAuthorizationID: derefStringPtr(c.account.AccountAuthorizationID),
 			}}
 
 			if in.coordination.OnUpstreamAttemptStarted != nil {
@@ -784,6 +802,12 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 					keyModelAttempt.MarkPrecommit()
 				}
 				c.concurrencySlot.MarkFirstOutput()
+				// BUG-0241 留档收口：流式即时首字通道（Node
+				// routes.ts:1502-1517 markFirstOutputWithTiming 在首个语义
+				// 输出事件时 markFirstByte(Date.now()-attemptStartedAt)）；
+				// lifecycle 内只记首个有效值，重复调用幂等。
+				elapsedMs := float64(gatewayupstream.NowMs() - attemptStartedAt)
+				hotQualityAttempt.MarkFirstByte(&elapsedMs)
 			}
 
 			// 每次尝试一个模型归因 slot：观察钩子在 fetch 后、转换前挂到原始

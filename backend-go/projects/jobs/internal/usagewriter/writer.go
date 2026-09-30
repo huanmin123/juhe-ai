@@ -142,6 +142,11 @@ type Writer struct {
 	stop         chan struct{}
 	done         chan struct{}
 	stopOnce     sync.Once
+	// flushMu 串行化冲刷执行者（BUG-0248）：removeBatch/deadLetterBatch 按
+	// peek 时的队头快照切片删除 pending，该不变量只在同一时刻至多一个冲
+	// 刷执行者（flushCycle / flushShutdown / Drain）成立——否则并发执行者
+	// 各持过期快照双删 pending。锁序固定 flushMu → mu，不得反向嵌套。
+	flushMu sync.Mutex
 
 	droppedDispatchCount         int
 	droppedOverflowCount         int
@@ -427,8 +432,11 @@ func (w *Writer) run() {
 
 // flushCycle mirrors flushUsageRecordQueue: flush batches until empty or
 // failure; on failure keep the batch and wait the fixed retry delay (or the
-// injected RetryWait).
+// injected RetryWait). The whole invocation holds flushMu so a concurrent
+// Drain cannot interleave its own head-batch snapshot (BUG-0248).
 func (w *Writer) flushCycle() {
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
 	for {
 		w.mu.Lock()
 		if len(w.pending) == 0 {
@@ -611,7 +619,10 @@ func (w *Writer) waitRetry() bool {
 // retryOnFailure=false and the shutdown batch cap. Called from the flush
 // loop after the stop signal; a failing batch stops the drain (Node
 // retryOnFailure=false keeps the batch queued and the process exits).
+// Serialized against Drain by flushMu (BUG-0248).
 func (w *Writer) flushShutdown() {
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
 	for batch := 0; batch < w.config.ShutdownFlushMaxBatches; batch++ {
 		w.mu.Lock()
 		if len(w.pending) == 0 {
@@ -663,7 +674,14 @@ func (w *Writer) flushOnceShutdown() {
 
 // Drain synchronously flushes everything queued (flushAllUsageRecordQueue:
 // drain=true, retryOnFailure=false) without stopping the writer.
+//
+// BUG-0248 并发契约：pending 的批删除按队头快照切片（removeBatch），只支持
+// 单一冲刷执行者。方法保留公开（usagespooldrain / statsagg 的测试装配在
+// 调用），运行时防护为 flushMu 串行——与后台 flushCycle / 停机 flushShutdown
+// 并发调用 Drain 不会双删 pending，只会等待在役执行者完成后接力。
 func (w *Writer) Drain() {
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
 	for batch := 0; batch < w.config.ShutdownFlushMaxBatches; batch++ {
 		before := w.PendingCount()
 		if before == 0 {

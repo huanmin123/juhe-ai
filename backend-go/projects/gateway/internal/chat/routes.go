@@ -72,7 +72,10 @@ type GenerationRegistry interface {
 // AttachStreamHandler streams subscribed runner events to the response (Node
 // responseSubscriber + heartbeat). Provided by the generation wave together
 // with GenerationRegistry; when either is nil the streams route resolves
-// through the store-only interrupted-turn paths.
+// through the store-only interrupted-turn paths. The bool reports whether the
+// stream was attached and owns the response: false means nothing has been
+// written (subscribe lost the runner to a terminal race or shutdown) and the
+// caller falls back to its terminal-state resolution (BUG-0248-4).
 type AttachStreamHandler func(w http.ResponseWriter, r *http.Request, identity GenerationIdentity) bool
 
 // Deps carries the route collaborators.
@@ -1568,12 +1571,17 @@ func (rt *chatRoutes) attachStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if rt.deps.Generations != nil && rt.deps.AttachStream != nil {
 		if _, active := rt.deps.Generations.Get(ownerID, conversation.ID, turnID); active {
-			rt.deps.AttachStream(w, r, GenerationIdentity{
+			if rt.deps.AttachStream(w, r, GenerationIdentity{
 				OwnerID:        ownerID,
 				ConversationID: conversation.ID,
 				TurnID:         turnID,
-			})
-			return
+			}) {
+				return
+			}
+			// BUG-0248-4：AttachStream 返回 false（订阅窗口内 runner 恰好
+			// 终态被移除等竞态，SSE 尚未写任何字节）时不得静默返回空 200，
+			// 落入下方既有终态判定：store 已终态 → chat_stream_terminal，
+			// 否则标记中断 → chat_stream_runner_missing。
 		}
 	}
 	interrupted, err := rt.deps.Store.FailInterruptedTurnIfMatches(CancelIfMatchesInput{

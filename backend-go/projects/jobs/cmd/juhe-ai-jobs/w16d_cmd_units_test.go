@@ -189,12 +189,10 @@ func TestW16DLoadWorkerConfigErrorArms(t *testing.T) {
 		name string
 		env  map[string]string
 	}{
-		{"record maintenance batch size 非整数", base(map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE": "abc"})},
 		{"probe concurrency 非整数", base(map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "abc"})},
 		{"投影 interval 非整数", base(map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "abc"})},
-		{"投影 batch 非整数", base(map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "abc"})},
-		{"投影 max batches 非整数", base(map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN": "abc"})},
-		{"投影 worker concurrency 非整数", base(map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY": "abc"})},
+		// record maintenance batch / 投影 batch 族错误臂已删除
+		// （2026-09-30 C4 收编为常量，env 不再被读取）。
 		// 「probe 缺业务库路径」臂已删除（2026-09-19 家族开关移除 + DATA_DIR
 		// 派生：业务库路径派生后恒非空，不再是 loadWorkerConfig 失败分支）。
 	}
@@ -261,9 +259,8 @@ func TestW16DHealthProjectionBoundArms(t *testing.T) {
 		env  map[string]string
 	}{
 		{"interval 下界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "999"}},
-		{"batch 上界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "101"}},
-		{"max batches 上界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN": "401"}},
-		{"worker concurrency 上界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY": "9"}},
+		// batch / max batches / worker concurrency 边界臂已删除
+		// （2026-09-30 C4 收编为常量，env 不再被读取）。
 	}
 	for _, test := range projectionCases {
 		t.Run(test.name, func(t *testing.T) {

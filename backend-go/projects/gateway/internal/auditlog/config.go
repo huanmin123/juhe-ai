@@ -76,14 +76,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("JUHE_AI_AUDIT_LOG_STORE 必须为 sqlite 或 postgres")
 	}
 	postgresURL := strings.TrimSpace(getenv("JUHE_AI_AUDIT_LOG_POSTGRES_URL"))
-	postgresMaxOpen, err := parsePositiveInteger("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS", getenv("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS"), defaultPostgresPoolSize)
-	if err != nil {
-		return Config{}, err
-	}
-	postgresMaxIdle, err := parsePositiveInteger("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresMaxIdleConns)
-	if err != nil {
-		return Config{}, err
-	}
+	// F3 PG 连接池上限为内部常量（2026-09-30 C4 收编：原
+	// JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS / MAX_IDLE_CONNS 全库五源
+	// 零引用，pool 覆盖族旋钮从未被配置，取值固定为下方默认值）。
+	postgresMaxOpen := defaultPostgresPoolSize
+	postgresMaxIdle := defaultPostgresMaxIdleConns
 	// 路径类 env 派生（2026-09-19 零配置约定，internal/datadir 固定名表）：
 	// 未配置时落 <JUHE_AI_DATA_DIR=./data>/<固定名>，显式配置优先。隔离校验
 	// 逐对核验派生结果（派生固定名互不相同，天然满足）。
@@ -320,18 +317,6 @@ func parseBoundedInteger(name, value string, fallback, min, max int) (int, error
 		return 0, fmt.Errorf("%s 必须是 %d 到 %d 之间的整数", name, min, max)
 	}
 	return int(parsed), nil
-}
-
-func parsePositiveInteger(name, value string, fallback int) (int, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback, nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1 {
-		return 0, fmt.Errorf("%s 必须是正整数", name)
-	}
-	return parsed, nil
 }
 
 func parseBoundedDecimal(name, value string, fallback, min, max float64, maxDecimals int) (float64, error) {

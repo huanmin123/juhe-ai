@@ -381,14 +381,8 @@ func TestW9HLoadConfigMatrix(t *testing.T) {
 	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "POSTGRES_URL") {
 		t.Fatalf("pg url err=%v", err)
 	}
-	// postgres mode with pool bounds violating the platform idle ceiling.
-	env = w9hValidConfigEnv("postgres", storePath, inputDir)
-	env["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL"] = "postgres://example"
-	env["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS"] = "4"
-	env["JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS"] = "9"
-	if _, err := load(env); err == nil || !strings.Contains(err.Error(), "连接池配置无效") {
-		t.Fatalf("pg pool err=%v", err)
-	}
+	// 清理批次 C4（2026-09-30）：连接池上限 env 已收编常量，"idle 超平台
+	// 上限"臂退役。
 	// Missing input directory derives <DATA_DIR>/account-health-input and is
 	// created on load (2026-09-19 zero-config decision).
 	dataDir = t.TempDir()

@@ -788,6 +788,7 @@ func (s *Store) FailChatTurn(input FailTurnInput) (*Message, error) {
 		ErrorMessage:     &errorMessage,
 		TraceID:          input.TraceID,
 		ContentBlocks:    input.ContentBlocks,
+		ContentBlocksRaw: input.ContentBlocksRaw,
 		Now:              input.Now,
 	})
 }
@@ -816,6 +817,7 @@ func (s *Store) CancelChatTurn(input CancelTurnInput) (*Message, error) {
 		Status:           StatusCanceled,
 		TraceID:          input.TraceID,
 		ContentBlocks:    input.ContentBlocks,
+		ContentBlocksRaw: input.ContentBlocksRaw,
 		Now:              input.Now,
 	})
 }

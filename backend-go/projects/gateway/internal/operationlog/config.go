@@ -70,14 +70,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	postgresMaxOpen, err := positiveIntOrDefault("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS", getenv("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS"), defaultPostgresPoolSize)
-	if err != nil {
-		return Config{}, err
-	}
-	postgresMaxIdle, err := positiveIntOrDefault("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS", getenv("JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS"), defaultPostgresMaxIdleConns)
-	if err != nil {
-		return Config{}, err
-	}
+	// F4 PG 连接池上限为内部常量（2026-09-30 C4 收编：原
+	// JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS / MAX_IDLE_CONNS 全库五源
+	// 零引用，pool 覆盖族旋钮从未被配置，取值固定为下方默认值）。
+	postgresMaxOpen := defaultPostgresPoolSize
+	postgresMaxIdle := defaultPostgresMaxIdleConns
 	// 路径类 env 派生（2026-09-19 零配置约定，internal/datadir 固定名表）：
 	// 未配置时落 <JUHE_AI_DATA_DIR=./data>/<固定名>，显式配置优先。PG 模式
 	// OpenStore 不消费 DatabasePath/BusinessSettingsPath，派生值无副作用。
@@ -173,18 +170,6 @@ func intOrDefault(name, value string, fallback, min, max int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < min || parsed > max {
 		return 0, fmt.Errorf("%s must be an integer from %d to %d", name, min, max)
-	}
-	return parsed, nil
-}
-
-func positiveIntOrDefault(name, value string, fallback int) (int, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback, nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1 {
-		return 0, fmt.Errorf("%s must be a positive integer", name)
 	}
 	return parsed, nil
 }

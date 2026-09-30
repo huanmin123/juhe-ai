@@ -41,7 +41,6 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			GroupID:         usageContext.GroupID,
 		})
 		*c.loop.keepConcurrencySlotRef = true
-		in.setAccountCircuitAttemptTransferred()
 		// R2 修复（成功侧结算）：真成功拿到完整 2xx 响应即结算 confirmation
 		//（framing_complete → RECOVERING，原 store API 语义在此位置正确），
 		// 不再把租约挂到 30s leaseUntil 过期。失败/错误分支的结算见各分支的
@@ -166,7 +165,6 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 	}
 	if failedResponseResult.Action == FailedResponseActionReturnResponse {
 		*c.loop.keepConcurrencySlotRef = true
-		in.setAccountCircuitAttemptTransferred()
 		// R2 修复（透传侧结算）：失败响应直接透传给客户端的分支（真实触发面：
 		// 账号诊断流量 chain_ports.go:305 与非网关流量 :314 的 ReturnResponse
 		// 配置）原先不结算 confirmation，租约悬挂至 30s leaseUntil 过期。该
@@ -197,7 +195,24 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			ReleaseConcurrency:               onceFunc(c.loop.concurrencySlot.Release),
 			MarkFirstOutput:                  c.markFirstOutput,
 			ConfirmSameAccountApiKeyFailures: func() error { return nil },
-			ConfirmHalfOpenSuccess:           func() bool { return false },
+			// BUG-0247 项 1：ReturnResponse 分支补齐成功侧结算回调，与
+			// response.OK() 分支同构（Node 的调用点是 routes.ts:2481-2483
+			// protocolValidatedSuccess 时 completeAccountLockSuccessAsync；Go
+			// 以结果字段承载，chain 面 confirmProtocolSuccessSideEffects 消费）。
+			// 本分支只承载非 2xx 透传（协议验证成功在链上恒为 false，回调
+			// 当面不会被触发），字段补齐是结构对齐：透传响应若未来通过协议
+			// 校验，锁复位随结果可达，无需再造分支。
+			ConfirmAccountLockSuccess: func() error {
+				if in.accountLockTrafficEnabled && e.Locks != nil {
+					var obs *AccountLockObservation
+					if in.activeAccountLockObservation != nil {
+						obs = *in.activeAccountLockObservation
+					}
+					return e.Locks.CompleteSuccessAsync(ctx, c.account.ID, "", obs)
+				}
+				return nil
+			},
+			ConfirmHalfOpenSuccess: func() bool { return false },
 			ReleaseHalfOpenLease: func() bool {
 				return releaseHalfOpenLease(ctx, c.loop.halfOpenLease)
 			},

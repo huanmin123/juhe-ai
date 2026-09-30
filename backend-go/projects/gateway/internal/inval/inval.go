@@ -26,6 +26,14 @@
 // built on int64 ordering. The RedisSharedStore layout
 // (`<namespace>:inval:topic-version:<topic>`) is therefore Go-only and NOT
 // interoperable with the Node history format by design.
+//
+// Single-instance reality (PLAN-20260930T120000000Z C10): current production
+// runs the Go gateway as a single instance (国内单机 Docker form), so the
+// cross-instance sync paths below (Redis Lua publish and the read-before-use
+// SyncFromShared) have no second observer to reach — the same-instance local
+// handlers are the only consumers. The sync machinery is retained as a
+// faithful migration carry-over; it starts paying off only once the
+// distributed mode lands (see docs/functions/分布式部署与用户分片设计.md).
 package inval
 
 import (

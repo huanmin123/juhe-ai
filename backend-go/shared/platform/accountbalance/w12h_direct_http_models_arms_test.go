@@ -334,34 +334,8 @@ func TestW12HModelAndRuntimeArms(t *testing.T) {
 	if _, err := LoadRuntimeConfig(lookup(base())); err != nil {
 		t.Fatalf("合法配置必须通过: %v", err)
 	}
-	idle := base()
-	idle["JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS"] = "0"
-	if _, err := LoadRuntimeConfig(lookup(idle)); err == nil {
-		t.Fatal("jobs 空闲连接 0 必须失败")
-	}
-	inputOpen := base()
-	inputOpen["JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS"] = "-1"
-	if _, err := LoadRuntimeConfig(lookup(inputOpen)); err == nil {
-		t.Fatal("输入连接 -1 必须失败")
-	}
-	inputIdle := base()
-	inputIdle["JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS"] = "0"
-	if _, err := LoadRuntimeConfig(lookup(inputIdle)); err == nil {
-		t.Fatal("输入空闲连接 0 必须失败")
-	}
-	swapped := base()
-	swapped["JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS"] = "1"
-	swapped["JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS"] = "5"
-	if _, err := LoadRuntimeConfig(lookup(swapped)); err == nil {
-		t.Fatal("空闲大于最大必须失败")
-	}
-	inputSwapped := base()
-	inputSwapped["JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS"] = "1"
-	inputSwapped["JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS"] = "5"
-	if _, err := LoadRuntimeConfig(lookup(inputSwapped)); err == nil {
-		t.Fatal("输入空闲大于最大必须失败")
-	}
-
+	// 清理批次 C4（2026-09-30）：连接池上限族 env 已收编为常量（非法值
+	// 校验面随配置面一起退役，常量组合恒有效），本节仅保留合法配置断言。
 	// integerValue 的默认分支（字符串 interval）。
 	if _, err := NormalizeConfig(map[string]any{"adapter": "builtin", "intervalMinutes": "ten"}); err == nil {
 		t.Fatal("字符串 interval 必须失败")

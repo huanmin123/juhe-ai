@@ -2,7 +2,6 @@ package proxylatency
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -101,24 +100,12 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	}
 	cfg.Store = StoreConfig{Mode: mode, PostgresURL: storeURL}
 	var err error
-	if cfg.PostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if cfg.PostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if cfg.InputPostgresMaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS", defaultPostgresMaxOpenConns); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if cfg.InputPostgresMaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if err := sqlpool.ValidatePoolLimits(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns); err != nil {
-		return RuntimeConfig{}, fmt.Errorf("J3a jobs PostgreSQL 连接池配置无效: %w", err)
-	}
-	if err := sqlpool.ValidatePoolLimits(cfg.InputPostgresMaxOpenConns, cfg.InputPostgresMaxIdleConns); err != nil {
-		return RuntimeConfig{}, fmt.Errorf("J3a 业务读取 PostgreSQL 连接池配置无效: %w", err)
-	}
+	// 清理批次 C4（2026-09-30）：连接池上限族 env（4 个）零引用收编为默认
+	// 常量（单机单实例从未配置第二个值），常量组合校验随之退役。
+	cfg.PostgresMaxOpenConns = defaultPostgresMaxOpenConns
+	cfg.PostgresMaxIdleConns = defaultPostgresMaxIdleConns
+	cfg.InputPostgresMaxOpenConns = defaultPostgresMaxOpenConns
+	cfg.InputPostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	cfg.BusinessPostgresURL = firstNonEmptyString(getenv("JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL"), getenv("JUHE_AI_BUSINESS_POSTGRES_URL"), getenv("JUHE_AI_POSTGRES_URL"))
 	if cfg.BusinessPostgresURL == "" {
 		return RuntimeConfig{}, errors.New("J3a 缺少 JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL（或回退 JUHE_AI_POSTGRES_URL）")
@@ -130,18 +117,13 @@ func LoadRuntimeConfig(getenv func(string) string) (RuntimeConfig, error) {
 	if cfg.InputLimit, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_INPUT_LIMIT", defaultProxyLatencyProbeLimit, 1, maxProxyLatencyWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.BatchSize, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_BATCH_SIZE", defaultProxyLatencyBatchSize, 1, maxProxyLatencyWorkItems); err != nil {
-		return RuntimeConfig{}, err
-	}
+	// 清理批次 C4（2026-09-30）：BATCH/WORKER/DB 并发三旋钮零引用收编常量。
+	cfg.BatchSize = defaultProxyLatencyBatchSize
 	if cfg.CandidatePoolFactor, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_CANDIDATE_POOL_FACTOR", defaultProxyLatencyPoolFactor, 1, 1_000); err != nil {
 		return RuntimeConfig{}, err
 	}
-	if cfg.WorkerConcurrency, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY", defaultProxyLatencyConcurrency, 1, maxProxyLatencyWorkItems); err != nil {
-		return RuntimeConfig{}, err
-	}
-	if cfg.DBConcurrency, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_DB_CONCURRENCY", defaultProxyLatencyDBConcurrency, 1, 64); err != nil {
-		return RuntimeConfig{}, err
-	}
+	cfg.WorkerConcurrency = defaultProxyLatencyConcurrency
+	cfg.DBConcurrency = defaultProxyLatencyDBConcurrency
 	if cfg.DBQueueSize, err = runtimeInt(getenv, "JUHE_AI_PROXY_LATENCY_DB_QUEUE_SIZE", defaultProxyLatencyDBQueueSize, 1, maxProxyLatencyWorkItems); err != nil {
 		return RuntimeConfig{}, err
 	}

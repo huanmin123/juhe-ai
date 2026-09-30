@@ -12,12 +12,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
 )
 
@@ -515,33 +513,6 @@ func TestW14MBusinessRecoveryArms(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
-}
-
-func TestW14MCutoverEvidenceArms(t *testing.T) {
-	backup := contracts.J3bBackupArtifact{Path: "missing.db", Hash: ""}
-	// 不存在的路径。
-	if err := verifyConfiguredBackupArtifact(backup); err == nil || !strings.Contains(err.Error(), "unreadable") {
-		t.Fatalf("err = %v", err)
-	}
-	// 目录而非常规文件。
-	backup.Path = t.TempDir()
-	if err := verifyConfiguredBackupArtifact(backup); err == nil || !strings.Contains(err.Error(), "regular file") {
-		t.Fatalf("err = %v", err)
-	}
-	// 清单读取失败。
-	reference := contracts.J3bReadbackManifestReference{Path: "missing.json"}
-	if err := verifyConfiguredReadbackManifest(reference, contracts.J3bCutoverEvidence{}, time.Now()); err == nil || !strings.Contains(err.Error(), "read manifest") {
-		t.Fatalf("err = %v", err)
-	}
-	// 清单内容非法。
-	dir := t.TempDir()
-	reference.Path = filepath.Join(dir, "manifest.json")
-	if err := os.WriteFile(reference.Path, []byte("not-json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyConfiguredReadbackManifest(reference, contracts.J3bCutoverEvidence{}, time.Now()); err == nil || !strings.Contains(err.Error(), "manifest") {
-		t.Fatal("非法清单应报错")
-	}
 }
 
 func TestW14MTrustPureHelpers(t *testing.T) {

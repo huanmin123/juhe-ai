@@ -241,8 +241,14 @@ func (d *Deps) balanceRefresh(selfOnly bool) http.HandlerFunc {
 		}
 		refresher := d.Store.wiredBalanceRefresher()
 		if refresher == nil {
-			println("accounts slice balance refresher port not wired")
-			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
+			// BUG-0248：裸 println 改走注入的 slog（含 path/id 上下文）。
+			if d.Log != nil {
+				d.Log.Error("accounts slice balance refresher port not wired", "path", r.URL.Path, "id", r.PathValue("id"))
+			}
+			// 上方候选读取已成功，err 在此恒 nil（原样传入会让 failureReason
+			// 丢失，同 BUG-0248 项 1）；refresher 未装配是本分支唯一失败来源，
+			// 以静态 cause 保住 failureReason。
+			kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", errors.New("accounts balance refresher port not wired"))
 			return
 		}
 		result, err := refresher.RefreshManual(r.Context(), *candidate)
@@ -865,6 +871,10 @@ func (d *Deps) groupBinding(selfOnly bool) http.HandlerFunc {
 
 // writeM11ReadError renders the unexpected read error as the Node 500 shape.
 func (d *Deps) writeM11ReadError(w http.ResponseWriter, err error) {
-	println("accounts m11 slice internal error: " + err.Error())
+	// BUG-0248：原始错误改走注入的 slog。调用面跨
+	// api_key_runtime_revalidate.go，签名保持 (w, err)，无 path/id 上下文。
+	if d.Log != nil {
+		d.Log.Error("accounts m11 slice internal error", "error", err.Error())
+	}
 	kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 }

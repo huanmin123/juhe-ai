@@ -39,15 +39,10 @@ func TestW13G8LoadWorkerConfigRemainingArms(t *testing.T) {
 		{"chat 保留天数非法", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "0"}, "JUHE_AI_CHAT_RETENTION_DAYS"},
 		{"chat 保留天数越界", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "366"}, "JUHE_AI_CHAT_RETENTION_DAYS"},
 		{"chat 保留天数非整数", map[string]string{"JUHE_AI_CHAT_RETENTION_DAYS": "w13g8"}, "JUHE_AI_CHAT_RETENTION_DAYS"},
-		{"维护批量越界", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE": "20000"}, "RECORD_MAINTENANCE_BATCH_SIZE"},
-		{"队列条目非整数", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_ITEMS": "x"}, "QUEUE_MAX_ITEMS"},
-		{"队列内存非整数", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_MB": "y"}, "QUEUE_MAX_MB"},
-		{"关停冲刷批非整数", map[string]string{"JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES": "z"}, "SHUTDOWN_FLUSH_MAX_BATCHES"},
+		// 维护批量 / 队列 / 关停冲刷批与投影批量族错误臂已删除
+		// （2026-09-30 C4 收编为常量，env 不再被读取）。
 		{"探针并发越界", map[string]string{"JUHE_AI_JOBS_PROBE_CONCURRENCY": "5097"}, "JUHE_AI_JOBS_PROBE_CONCURRENCY"},
 		{"投影间隔越界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS": "999"}, "PROJECTION_INTERVAL_MS"},
-		{"投影批量越界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE": "101"}, "PROJECTION_BATCH_SIZE"},
-		{"投影轮次越界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN": "401"}, "MAX_BATCHES_PER_RUN"},
-		{"投影并发越界", map[string]string{"JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY": "9"}, "WORKER_CONCURRENCY"},
 		// 家族开关与 sqlite 路径门禁的失败臂已删除（2026-09-19 家族开关移除 +
 		// DATA_DIR 派生：开关 env 不再被读取，路径类 env 派生后恒非空）。
 		// 非 production 空 SECRET 回退开发密钥，仅 production 仍 fail closed。

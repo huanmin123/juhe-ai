@@ -288,9 +288,9 @@ func TestWlExecuteDispatcherPaths(t *testing.T) {
 		if dispatcher.lastCap.ClientModel != "client-model" || dispatcher.lastCap.UpstreamEndpointMode != "mode" {
 			t.Fatalf("已有能力必须原样传递: %+v", dispatcher.lastCap)
 		}
-		if len(dispatcher.settleCalls) != 2 || dispatcher.settleCalls[0] != true || dispatcher.settleCalls[1] != false {
-			// 行为存疑：成功路径 settle 以 true 结算后又经 defer 以 false 再调用一次，
-			// 依赖 dispatcher 侧幂等；此处按当前实际行为断言。
+		if len(dispatcher.settleCalls) != 1 || dispatcher.settleCalls[0] != true {
+			// BUG-0248：成功路径 settle 以 true 结算一次；defer 闭包按返回时
+			// 的变量值判 nil，不再以 false 二次结算。
 			t.Fatalf("成功结算序列=%v", dispatcher.settleCalls)
 		}
 	})

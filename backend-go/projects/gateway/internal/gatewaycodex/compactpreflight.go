@@ -227,6 +227,24 @@ func (s *CompactPreflightService) ApplyChatBridgeCompactPreflight(ctx context.Co
 	if exchange == nil {
 		return CompactPreflightResult{}, fmt.Errorf("codex compact summary dispatcher 未配置")
 	}
+	// BUG-0241 留档收口：对齐 Node compact-preflight.ts:125-134——读回完成后
+	// 立即结算本交换的质量终态（truncated→incomplete_response/protocol_model；
+	// 非 2xx 未截断→upstream_response_failure；否则 completed_response），
+	// 首字样本经 recordExchangeTerminal 统一携带。
+	opaqueUpstream := !exchange.UpstreamOK && !exchange.Truncated
+	successTerminal := CompactQualityTerminal{
+		OutcomeClass: "completed_response",
+		FailureScope: "none",
+		Source:       "gateway_transport",
+	}
+	if exchange.Truncated {
+		successTerminal.OutcomeClass = "incomplete_response"
+		successTerminal.FailureScope = "protocol_model"
+	} else if opaqueUpstream {
+		successTerminal.OutcomeClass = "upstream_response_failure"
+		successTerminal.Source = "upstream_response"
+	}
+	s.recordExchangeTerminal(exchange, input, successTerminal)
 	if input.OnDispatchedAccount != nil {
 		input.OnDispatchedAccount(exchange.Account)
 	}

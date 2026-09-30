@@ -752,6 +752,10 @@ func (s *DeletedAccountStore) logicallyDeleteAccountsTx(ctx context.Context, tx 
 	}
 	var deletedIDs []string
 	for _, chunk := range chunkValues(ids, 900) {
+		// BUG-0239：IN 列表必须用未编号的 `?` 序列（placeholderList）让外层
+		// Bind 统一编号；BindIn 已产出 $n，SET 的 `?` 再经 Bind 会从 $1 重编
+		// 并与 IN 列表撞号，pgx 按最大序号计参数即报
+		// "mismatched param and argument count"。
 		if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
       UPDATE %s
       SET status = 'disabled',
@@ -762,12 +766,13 @@ func (s *DeletedAccountStore) logicallyDeleteAccountsTx(ctx context.Context, tx 
           updated_at = ?
       WHERE deleted_at IS NULL
         AND id IN (%s)
-		`, s.table("accounts"), s.Business.BindIn(len(chunk)))),
+		`, s.table("accounts"), placeholderList(len(chunk)))),
 			append([]any{deletedAt, actor, deletedAt}, stringSliceToAny(chunk)...)...); err != nil {
 			return nil, err
 		}
+		// 同上（BUG-0239）：WHERE 前置 `?` 与 IN 列表必须由同一次 Bind 编号。
 		rows, err := queryRows(ctx, tx, s.Business.Bind(fmt.Sprintf(
-			`SELECT id FROM %s WHERE deleted_at = ? AND id IN (%s)`, s.table("accounts"), s.Business.BindIn(len(chunk)))),
+			`SELECT id FROM %s WHERE deleted_at = ? AND id IN (%s)`, s.table("accounts"), placeholderList(len(chunk)))),
 			append([]any{deletedAt}, stringSliceToAny(chunk)...)...)
 		if err != nil {
 			return nil, err
@@ -783,6 +788,8 @@ func (s *DeletedAccountStore) logicallyDeleteAccountsTx(ctx context.Context, tx 
 		if s.Business.Postgres {
 			lockSuffix = " FOR UPDATE"
 		}
+		// 同上（BUG-0239）：tombstone SELECT 的前置 `?` 与 IN 列表由同一次
+		// Bind 编号；lockSuffix（FOR UPDATE）无占位符不受影响。
 		tombstones, err := queryRows(ctx, tx, s.Business.Bind(fmt.Sprintf(`
       SELECT id, config_revision, dispatch_revision
       FROM %s
@@ -791,7 +798,7 @@ func (s *DeletedAccountStore) logicallyDeleteAccountsTx(ctx context.Context, tx 
         AND provider_code IN ('gpt', 'openai', 'xai', 'anthropic', 'deepseek', 'glm', 'gemini', 'hybrid')
         AND type IN ('api_key', 'oauth', 'google_oauth')
       ORDER BY id ASC%s
-		`, s.table("accounts"), s.Business.BindIn(len(deletedIDs)), lockSuffix)),
+		`, s.table("accounts"), placeholderList(len(deletedIDs)), lockSuffix)),
 			append([]any{deletedAt}, stringSliceToAny(deletedIDs)...)...)
 		if err != nil {
 			return nil, err

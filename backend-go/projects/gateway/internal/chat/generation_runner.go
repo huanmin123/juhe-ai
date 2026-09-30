@@ -619,59 +619,95 @@ func (r *ChatGenerationRunner) Abort() bool {
 func (r *ChatGenerationRunner) aborted() bool { return r.cancelled() }
 
 func (r *ChatGenerationRunner) run(onSettled func()) {
-	defer safego.Recover("chat.generation_runner.execute")
+	// BUG-0246：panic 兜底也必须收尾。原 defer safego.Recover 只记日志，
+	// execute 闭包或收尾段 panic 时 completion 永不 close、hub 槽位永不
+	// 释放。改为 Handle：recover 后补 finish（close completion + onSettled
+	// 释放槽位）。正常路径的 finish 在 settle 内先于 return 调用，而 panic
+	// 只能发生在 settle 的 finish 之前（finish 后立即 return，defer 时
+	// recover()==nil），onSettled 不会双触发；finish 内 onSettled 另有
+	// recover 防护、completionOnce 防 double close。
+	defer safego.Handle("chat.generation_runner.execute", func(recovered any) {
+		r.finish(onSettled)
+	})
 	result, err := r.execute(&ChatGenerationExecutionContext{
 		Context:        r.ctx,
 		Aborted:        r.aborted,
 		Publish:        r.Publish,
 		SnapshotBlocks: r.SnapshotContentBlocks,
 	})
+	r.settle(result, err, onSettled)
+}
+
+// settle 是 execute 返回后的收尾判定（原 run 主体）：终态投影、状态转移、
+// 终态事件发射与 finish。锁不再跨外部回调持有——onUnexpectedError 在无锁
+// 状态执行，持锁判定段各自 defer Unlock，任一段 panic 展开后锁均已释放，
+// run 的 panic 兜底才能安全补 finish（onSettled 里 hub 会再锁 runner.mu
+// 记终态快照，持锁展开会把 runner 锁死成永久占用）。currentState 的运行
+// 期写者只有本 goroutine（Start 先于 run 置 running），分段加锁与原单段
+// 持锁的判定结果等价。
+func (r *ChatGenerationRunner) settle(result ChatGenerationTerminalResult, err error, onSettled func()) {
 	r.mu.Lock()
-	if isTerminalProcessStatus(r.currentState) {
-		r.mu.Unlock()
+	terminal := isTerminalProcessStatus(r.currentState)
+	r.mu.Unlock()
+	if terminal {
 		r.finish(onSettled)
 		return
 	}
 	if err == nil {
-		r.finalizeTimelineLocked(result.Status)
-		r.currentState = result.Status
-		r.authoritativeTerm = true
-		r.emitEventLocked("message."+result.Status, result.Data)
-		r.mu.Unlock()
+		r.applySuccess(result)
 		r.finish(onSettled)
 		return
 	}
 	publicError := ClassifyUnknownChatGenerationError(err)
 	authoritativeFailure := false
 	if r.onUnexpectedError != nil {
-		r.mu.Unlock()
 		finalizerErr := r.onUnexpectedError(publicError)
-		r.mu.Lock()
 		if finalizerErr == nil {
 			authoritativeFailure = true
 		}
 	}
-	if !isTerminalProcessStatus(r.currentState) {
-		if authoritativeFailure {
-			r.finalizeTimelineLocked(asstFailed)
-			r.currentState = asstFailed
-			r.authoritativeTerm = true
-			data := map[string]any{
-				"messageId": r.Identity.AssistantMessageID,
-				"code":      string(publicError.Code),
-				"message":   publicError.Message,
-			}
-			if r.unexpectedErrorTraceID != "" {
-				data["traceId"] = r.unexpectedErrorTraceID
-			}
-			r.emitEventLocked("message.failed", data)
-		} else {
-			r.timeline.Finalize(asstFailed)
-			r.currentState = asstFailed
-		}
-	}
-	r.mu.Unlock()
+	r.applyFailure(publicError, authoritativeFailure)
 	r.finish(onSettled)
+}
+
+// applySuccess 持锁应用成功结果；defer Unlock 保证本段 panic 展开后锁立即可用。
+func (r *ChatGenerationRunner) applySuccess(result ChatGenerationTerminalResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if isTerminalProcessStatus(r.currentState) {
+		return
+	}
+	r.finalizeTimelineLocked(result.Status)
+	r.currentState = result.Status
+	r.authoritativeTerm = true
+	r.emitEventLocked("message."+result.Status, result.Data)
+}
+
+// applyFailure 持锁应用失败路径的终态化与 message.failed 事件；defer Unlock
+// 保证本段 panic 展开后锁立即可用。
+func (r *ChatGenerationRunner) applyFailure(publicError PublicChatGenerationError, authoritativeFailure bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if isTerminalProcessStatus(r.currentState) {
+		return
+	}
+	if authoritativeFailure {
+		r.finalizeTimelineLocked(asstFailed)
+		r.currentState = asstFailed
+		r.authoritativeTerm = true
+		data := map[string]any{
+			"messageId": r.Identity.AssistantMessageID,
+			"code":      string(publicError.Code),
+			"message":   publicError.Message,
+		}
+		if r.unexpectedErrorTraceID != "" {
+			data["traceId"] = r.unexpectedErrorTraceID
+		}
+		r.emitEventLocked("message.failed", data)
+		return
+	}
+	r.timeline.Finalize(asstFailed)
+	r.currentState = asstFailed
 }
 
 func (r *ChatGenerationRunner) finish(onSettled func()) {

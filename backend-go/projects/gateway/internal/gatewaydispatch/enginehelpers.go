@@ -52,13 +52,12 @@ func (e *Engine) takeReservedSlot(handle *SpeedFirstCutoverReservationHandle, ac
 	return nil
 }
 
-// remainingConcurrencyWaitBudget mirrors the budget carry after each acquire.
-func (e *Engine) remainingConcurrencyWaitBudget(current int64) int64 {
-	return current
-}
-
 // acquireAccountConcurrencyWithShortRetry mirrors
-// acquireAccountConcurrencyWithShortRetry.
+// acquireAccountConcurrencyWithShortRetry（upstream-dispatch.ts:2231-2266）。
+// 返回 (slot, waitedMs, remainingWaitBudgetMs, err)：remainingWaitBudgetMs 是
+// 扣除本次短等并经 serverRetryBudget 收窄后的请求级预算余额——调用方把它回写
+// 共享的 concurrencyRetryWaitBudgetMs（Node :793/:866 的预算 carry，BUG-0247
+// 项 2 恢复请求级递减语义；错误路径预算无意义，恒 0）。
 func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 	ctx context.Context,
 	signal context.Context,
@@ -68,12 +67,12 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 	lane gatewayproto.RequestLane,
 	policy *gatewayruntimecache.GroupSchedulingPolicy,
 	serverRetryBudget *gatewaypreauth.ServerRetryBudget,
-) (ConcurrencySlot, int64, error) {
+) (ConcurrencySlot, int64, int64, error) {
 	remainingWaitBudgetMs := maxInt64(0, waitBudgetMs)
 	acquireOptions := e.accountConcurrencyLaneAcquireOptions(concurrencyLimit, lane, policy)
 	slot, err := e.Concurrency.TryAcquireAsync(ctx, accountID, concurrencyLimit, acquireOptions)
 	if err != nil {
-		return slot, 0, err
+		return slot, 0, 0, err
 	}
 	waitedMs := int64(0)
 	retryCount := int64(0)
@@ -87,7 +86,7 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 			currentDelayMs := minInt64(delayMs, remainingWaitBudgetMs)
 			if waitErr := waitForDelayMs(signal, currentDelayMs); waitErr != nil {
 				serverRetryBudget.PauseNoAvailableWait(nil)
-				return slot, waitedMs, &UpstreamRequestAbortedError{Message: "请求已取消"}
+				return slot, waitedMs, 0, &UpstreamRequestAbortedError{Message: "请求已取消"}
 			}
 			waitedMs += currentDelayMs
 			remainingWaitBudgetMs -= currentDelayMs
@@ -95,12 +94,12 @@ func (e *Engine) acquireAccountConcurrencyWithShortRetry(
 			slot, err = e.Concurrency.TryAcquireAsync(ctx, accountID, concurrencyLimit, acquireOptions)
 			if err != nil {
 				serverRetryBudget.PauseNoAvailableWait(nil)
-				return slot, waitedMs, err
+				return slot, waitedMs, 0, err
 			}
 		}
 		serverRetryBudget.PauseNoAvailableWait(nil)
 	}
-	return slot, waitedMs, nil
+	return slot, waitedMs, remainingWaitBudgetMs, nil
 }
 
 func (e *Engine) nextConcurrencyRetryDelayMs(attempt int64, remainingWaitBudgetMs int64) int64 {

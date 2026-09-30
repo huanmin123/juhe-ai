@@ -12,7 +12,8 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	stdlib "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
 
@@ -107,8 +108,12 @@ func OpenStore(config StoreConfig) (*Store, error) {
 			if strings.TrimSpace(config.PostgresURL) == "" {
 				return nil, errors.New("account-balance postgres 缺少连接 URL")
 			}
-			// sql.Open 对已知驱动惰性连接，openErr 恒为 nil（w12h 授权删除死守卫）。
-			db, _ := sql.Open("pgx", config.PostgresURL)
+			// 经 sqldialect 改写 driver 打开（清理批次 C5 统一裸开路径）：
+			// 与 sql.Open("pgx", url) 同一 driver 实例、同一惰性语义
+			// （openErr 恒为 nil，w12h 授权删除死守卫）；本包 PG 臂 SQL
+			// 已是 `$n`，改写层幂等透传，并对未来遗漏改写的 `?` SQL
+			// 提供驱动层兜底。
+			db, _ := sqldialect.OpenDB(stdlib.GetDefaultDriver(), config.PostgresURL)
 			db.SetMaxOpenConns(maxOpen)
 			db.SetMaxIdleConns(maxIdle)
 			return &Store{db: db, mode: config.Mode}, nil

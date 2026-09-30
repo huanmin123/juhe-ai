@@ -63,26 +63,7 @@ func TestW16fLoadConfigPoolArms(t *testing.T) {
 		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY": w16fSigningKey(),
 		"JUHE_AI_ACCOUNT_HEALTH_CREDENTIAL_SECRET": "w16f-secret",
 	}
-	// POSTGRES_MAX_IDLE_CONNS=0 → configPositiveInt 失败臂。
-	invalidIdle := w16fConfigEnv(w16fMergeEnv(base, map[string]string{"JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS": "0"}))
-	if _, err := LoadConfig(invalidIdle); err == nil || !strings.Contains(err.Error(), "必须是正整数") {
-		t.Fatalf("idle=0 必须报错: %v", err)
-	}
-	// INPUT_SOURCE=postgres + INPUT_POSTGRES_MAX_OPEN_CONNS 非法 → 输入池 open 失败臂。
-	inputPoolBase := w16fMergeEnv(base, map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE":       "postgres",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL": "postgres://w16f.invalid:5432/business",
-	})
-	if _, err := LoadConfig(w16fConfigEnv(w16fMergeEnv(inputPoolBase, map[string]string{"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS": "w16f"}))); err == nil || !strings.Contains(err.Error(), "必须是正整数") {
-		t.Fatalf("input pool open 无效必须报错: %v", err)
-	}
-	// idle > open → sqlpool.ValidatePoolLimits 失败臂。
-	if _, err := LoadConfig(w16fConfigEnv(w16fMergeEnv(inputPoolBase, map[string]string{
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS": "4",
-		"JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS": "999",
-	}))); err == nil || !strings.Contains(err.Error(), "连接池配置无效") {
-		t.Fatalf("input pool idle>open 必须报错: %v", err)
-	}
+	// 清理批次 C4（2026-09-30）：连接池 env 校验臂已随收编退役。
 	// PROBE_TIMEOUT 非法 → configDuration 失败臂。
 	if _, err := LoadConfig(w16fConfigEnv(w16fMergeEnv(base, map[string]string{"JUHE_AI_ACCOUNT_HEALTH_PROBE_TIMEOUT": "w16f"}))); err == nil || !strings.Contains(err.Error(), "duration") {
 		t.Fatalf("probe timeout 非法必须报错: %v", err)

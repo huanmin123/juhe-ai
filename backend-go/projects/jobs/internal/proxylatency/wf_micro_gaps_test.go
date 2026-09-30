@@ -16,16 +16,8 @@ func TestWFLoadManualAdminConfigDeadlineAndPools(t *testing.T) {
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1:18433",
 		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":   "postgres://m:x@127.0.0.1:5432/b",
 	}
-	// 连接池上限不兼容。
-	env := map[string]string{}
-	for key, value := range base {
-		env[key] = value
-	}
-	env["JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS"] = "1"
-	env["JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS"] = "2"
-	if _, err := LoadManualAdminConfig(wfEnv(env)); err == nil || !strings.Contains(err.Error(), "连接池配置无效") {
-		t.Fatalf("连接池 err=%v", err)
-	}
+	// 清理批次 C4（2026-09-30）：管理面连接池 env 已收编为常量（原"上限
+	// 不兼容"臂退役），本测试保留 deadline 与合法配置断言。
 	// deadline 超上限。
 	env2 := map[string]string{}
 	for key, value := range base {
@@ -44,32 +36,26 @@ func TestWFLoadManualAdminConfigDeadlineAndPools(t *testing.T) {
 	env3["JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS"] = "2"
 	env3["JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE"] = "10s"
 	cfg, err := LoadManualAdminConfig(wfEnv(env3))
-	if err != nil || cfg.MaxOpenConns != 4 || cfg.MaxIdleConns != 2 || cfg.RequestDeadline != 10*time.Second {
+	// 清理批次 C4：连接池 env 收编常量，仅断言 deadline 显式配置生效。
+	if err != nil || cfg.MaxOpenConns != 5096 || cfg.MaxIdleConns != 10 || cfg.RequestDeadline != 10*time.Second {
 		t.Fatalf("显式配置=%+v err=%v", cfg, err)
 	}
 }
 
+// 清理批次 C4（2026-09-30）：原连接池上限不兼容臂已随池 env 收编退役
+// （常量组合恒有效）。
 func TestWFLoadRuntimeConfigInputPoolAndLimits(t *testing.T) {
 	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":                    "go",
-		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":                   "wf",
-		"JUHE_AI_PROXY_LATENCY_STORE":                         "postgres",
-		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":                  "postgres://j:x@127.0.0.1:5432/j",
-		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":            "postgres://b:x@127.0.0.1:5432/b",
-		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL":           "postgres://r:x@127.0.0.1:5432/b",
-		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":             "s",
-		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS": "1",
-		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS": "2",
+		"JUHE_AI_PROXY_LATENCY_JOBS_OWNER":          "go",
+		"JUHE_AI_PROXY_LATENCY_INSTANCE_ID":         "wf",
+		"JUHE_AI_PROXY_LATENCY_STORE":               "postgres",
+		"JUHE_AI_PROXY_LATENCY_POSTGRES_URL":        "postgres://j:x@127.0.0.1:5432/j",
+		"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL":  "postgres://b:x@127.0.0.1:5432/b",
+		"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL": "postgres://r:x@127.0.0.1:5432/b",
+		"JUHE_AI_PROXY_LATENCY_CREDENTIAL_SECRET":   "s",
 	}
-	if _, err := LoadRuntimeConfig(wfEnv(env)); err == nil || !strings.Contains(err.Error(), "业务读取") {
-		t.Fatalf("业务连接池 err=%v", err)
-	}
-	env["JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS"] = "2"
-	env["JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS"] = "2"
-	env["JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS"] = "2"
-	env["JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS"] = "3"
-	if _, err := LoadRuntimeConfig(wfEnv(env)); err == nil || !strings.Contains(err.Error(), "jobs PostgreSQL") {
-		t.Fatalf("jobs 连接池 err=%v", err)
+	if _, err := LoadRuntimeConfig(wfEnv(env)); err != nil {
+		t.Fatalf("合法配置必须通过: %v", err)
 	}
 }
 

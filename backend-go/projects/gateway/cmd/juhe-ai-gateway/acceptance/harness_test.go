@@ -5,7 +5,6 @@ package acceptance
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -21,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -198,110 +196,6 @@ func logTail(path string, limit int) string {
 }
 
 // ---------------------------------------------------------------------------
-// J3b cutover evidence（gateway 启动门禁要求的交接证据）
-// ---------------------------------------------------------------------------
-
-// writeCutoverEvidence 生成 gateway 启动门禁（VerifyConfiguredCutoverEvidence）
-// 可接受的最小证据集：备份工件 + readback manifest + evidence JSON。真实
-// 生产证据由迁移流程生成；验收环境只证明「门禁在位且可被合法证据满足」。
-func writeCutoverEvidence(t *testing.T, root, ownerEpoch string) string {
-	t.Helper()
-	now := time.Now().UTC()
-
-	// 备份工件：任意稳定内容 + SHA-256。
-	artifactPath := filepath.Join(root, "acceptance-backup.bin")
-	artifactBody := []byte("juhe-ai acceptance backup artifact " + ownerEpoch)
-	if err := os.WriteFile(artifactPath, artifactBody, 0o644); err != nil {
-		t.Fatalf("write backup artifact: %v", err)
-	}
-	artifactSum := sha256.Sum256(artifactBody)
-
-	tables := make([]contracts.J3bReadbackTableDigest, 0, 9)
-	emptySum := sha256.Sum256(nil)
-	emptyDigest := hex.EncodeToString(emptySum[:])
-	for _, name := range []string{
-		"account_quality_health_hourly",
-		"model_check_items",
-		"model_check_observations",
-		"model_check_runs",
-		"model_account_trust_results",
-		"model_token_intercept_baseline_versions",
-		"model_trust_aggregation_state",
-		"model_trust_latest_dirty_accounts",
-		"model_trust_observation_receipts",
-	} {
-		tables = append(tables, contracts.J3bReadbackTableDigest{
-			Name: name, SourceRows: 0, TargetRows: 0,
-			SourceDigest: emptyDigest, TargetDigest: emptyDigest,
-		})
-	}
-	manifest := contracts.J3bReadbackManifest{
-		FormatVersion:          contracts.J3bReadbackManifestFormatVersion,
-		Scope:                  contracts.J3bReadbackManifestScope,
-		Producer:               "acceptance-harness",
-		SourceSnapshotIdentity: "acceptance-snapshot",
-		SourceSchema:           "legacy-sqlite-dataset+stats",
-		TargetSchema:           "juhe-j3b-sqlite",
-		ProjectionComplete:     true,
-		VerifiedAt:             now.Format(time.RFC3339),
-		Tables:                 tables,
-	}
-	manifestHash, err := contracts.ComputeJ3bReadbackManifestHash(manifest)
-	if err != nil {
-		t.Fatalf("compute readback manifest hash: %v", err)
-	}
-	manifest.ManifestHash = manifestHash
-	manifestPath := filepath.Join(root, "acceptance-readback.json")
-	manifestBytes, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatalf("marshal readback manifest: %v", err)
-	}
-	if err := os.WriteFile(manifestPath, manifestBytes, 0o644); err != nil {
-		t.Fatalf("write readback manifest: %v", err)
-	}
-	manifestSum := sha256.Sum256(manifestBytes)
-
-	evidence := map[string]any{
-		"oldOwner":       "node",
-		"newOwner":       "go-gateway",
-		"ownerEpoch":     ownerEpoch,
-		"drainCompleted": true,
-		"inFlight":       0,
-		"activePathZero": true,
-		"backupArtifact": map[string]any{
-			"path": artifactPath,
-			"hash": hex.EncodeToString(artifactSum[:]),
-		},
-		"rollbackReplayCursor": "acceptance-cursor-0",
-		"freshness": map[string]any{
-			"capturedAt":    now.Format(time.RFC3339),
-			"maxAgeSeconds": 24 * 60 * 60,
-		},
-		"sourceDigest": "",
-		"targetDigest": "",
-		"readbackManifest": map[string]any{
-			"path":                   manifestPath,
-			"hash":                   hex.EncodeToString(manifestSum[:]),
-			"formatVersion":          contracts.J3bReadbackManifestFormatVersion,
-			"scope":                  contracts.J3bReadbackManifestScope,
-			"sourceSnapshotIdentity": "acceptance-snapshot",
-			"sourceSchema":           "legacy-sqlite-dataset+stats",
-			"targetSchema":           "juhe-j3b-sqlite",
-		},
-		"blockedFindings": 0,
-	}
-	evidencePath := filepath.Join(root, "acceptance-cutover-evidence.json")
-	evidenceBytes, err := json.Marshal(evidence)
-	if err != nil {
-		t.Fatalf("marshal cutover evidence: %v", err)
-	}
-	if err := os.WriteFile(evidencePath, evidenceBytes, 0o644); err != nil {
-		t.Fatalf("write cutover evidence: %v", err)
-	}
-	return evidencePath
-}
-
-// ---------------------------------------------------------------------------
 // maintenance storage bootstrap
 // ---------------------------------------------------------------------------
 
@@ -389,7 +283,6 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	fixture.healthURL = fmt.Sprintf("http://127.0.0.1:%d", healthPort)
 	secret := randomHex(t, 16)
 	fixture.secret = secret
-	ownerEpoch := "acceptance-epoch-" + randomHex(t, 4)
 
 	pg := opts.PGDSN != ""
 	sixPaths := map[string]string{
@@ -426,16 +319,13 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 		"JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS": fmt.Sprintf("127.0.0.1:%d", healthPort),
 		// 2026-09-21 起模型检测 owner 默认常驻：数据目录收敛进隔离 storage，
 		// 管理 listener 用随机端口避免并发场景抢占 3307。
-		"JUHE_AI_DATA_DIR":                         filepath.Join(root, "storage"),
-		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS":    "127.0.0.1:0",
-		"JUHE_AI_RUNTIME_MODE":                     "standalone",
-		"JUHE_AI_SECRET":                           secret,
+		"JUHE_AI_DATA_DIR":                      filepath.Join(root, "storage"),
+		"JUHE_AI_J3B_MANAGEMENT_LISTEN_ADDRESS": "127.0.0.1:0",
+		"JUHE_AI_RUNTIME_MODE":                  "standalone",
+		"JUHE_AI_SECRET":                        secret,
+		// 清理批次 C1（2026-09-30）：切流门禁 env 家族与证据路径已退役
+		//（零配置自动认领恒生效）。
 		"JUHE_AI_BUSINESS_OWNER":                   "gateway",
-		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED":       "true",
-		"JUHE_AI_BUSINESS_NODE_WRITER_STOPPED":     "true",
-		"JUHE_AI_BUSINESS_SCHEMA_READY":            "true",
-		"JUHE_AI_BUSINESS_OWNER_EPOCH":             ownerEpoch,
-		"JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH":   writeCutoverEvidence(t, root, ownerEpoch),
 		"JUHE_AI_GATEWAY_SYSTEM_API_ENABLED":       "true",
 		"JUHE_AI_AUTH_CAPTCHA_DISABLED":            "true",
 		"JUHE_AI_AUDIT_LOG_STORE":                  "sqlite",

@@ -10,12 +10,12 @@
 
 三个项目只共享 `shared/contracts` 和无业务编排的 `shared/platform`，互相禁止 import；唯一受控例外是 gateway 组合根经 `maintenance/bootstrap` 在 SQLite 启动时做 schema 引导（ensure+seed，登记于《Go 三项目架构基线》）。项目边界、并发和迁移顺序见 [Go 三项目架构基线](../docs/architecture/Go三项目架构基线.md) 与 [Go 开发手册](../docs/architecture/Go开发手册.md)。
 
-`shared/platform` 还提供无业务的 `sqlpool` 生命周期/引用计数基础设施；gateway/jobs 只保留各自的 `pgx` opener 和项目薄适配层。`shared/platform/upstreamhttp` 是跨项目的上游传输基础设施：统一直连与 HTTP(S)/SOCKS5(SOCKS5H) 代理、禁用环境代理、HTTP/2、响应头大小/超时、无重定向 client、SOCKS5 握手和有界响应体读取/排空。它不包含供应商协议、SSE、余额适配器、探测结果或重试策略。当前 `jobs` 的 J1 健康探活、J2 余额查询和 J3a 代理延迟/出口检测都使用该包；`gateway` 当前还没有生产上游 client，`maintenance` 当前没有上游请求。
+`shared/platform` 还提供无业务的 `sqlpool` 生命周期/引用计数基础设施；gateway/jobs 只保留各自的 `pgx` opener 和项目薄适配层。`shared/platform/upstreamhttp` 是跨项目的上游传输基础设施：统一直连与 HTTP(S)/SOCKS5(SOCKS5H) 代理、禁用环境代理、HTTP/2、响应头大小/超时、无重定向 client、SOCKS5 握手和有界响应体读取/排空。它不包含供应商协议、SSE、余额适配器、探测结果或重试策略。当前 `jobs` 的 J1 健康探活、J2 余额查询和 J3a 代理延迟/出口检测都使用该包；`gateway` 的 `/v1` 转发链生产上游 client 位于 `projects/gateway/internal/gatewaydispatch/gatewayupstream`（transport.go 等），`maintenance` 当前没有上游请求。
 
 当前常驻入口是 `projects/jobs/cmd/juhe-ai-jobs` 与 `projects/gateway/cmd/juhe-ai-gateway`：
 
-- `jobs` 运行 F1 运行日志索引与保留、F2 表存储监控采样与保留。
-- `gateway` 当前运行 F3 原始审计日志、F4 操作日志的本机签名输入、读取与保留；它尚未接管 Node 的对外 API 或 AI 桥接。
+- `jobs` 运行 F1 运行日志索引与保留、F2 表存储监控采样与保留，以及 jobregistry 注册的探针/统计/retention 任务族。
+- `gateway` 承载管理面 `/__aisys__/api` 全部业务域、公开面 `/__aipublic__` 和 `/v1` 网关链；F3 原始审计日志、F4 操作日志的本机签名输入、读取与保留也在 gateway 内。Node 后端已于 2026-09-05 全量清零，对外 API 与 AI 桥接由 gateway 唯一承担。权威挂载矩阵见 `cmd/juhe-ai-gateway/compose.go`（同源引用先例见 `docs/functions/README.md` 头部）。
 
 每个项目独立加载配置、Store、schema 和 owner lease。普通单条或单轮错误必须记录并由组件的下一轮处理；租约丢失和不可恢复基础设施错误只影响所属项目，由该项目的服务管理器重启，绝不通过进程内依赖影响另一项目。
 
@@ -85,7 +85,7 @@ go run ./projects/gateway/cmd/juhe-ai-gateway --migrate-operation-log-legacy-pos
 
 ## F1：运行日志索引与保留
 
-`jobs` 内的 F1 直接扫描 Node 已落盘的 JSONL 运行日志，按文件 goroutine 并发处理，并直接提交索引、cursor、facet 和保留清理；不使用 Redis Stream、Asynq、任务队列或常驻通用 worker pool。
+`jobs` 内的 F1 直接扫描已落盘的 JSONL 运行日志，按文件 goroutine 并发处理，并直接提交索引、cursor、facet 和保留清理；不使用 Redis Stream、Asynq、任务队列或常驻通用 worker pool。JSONL 运行日志由 gateway 自身 FileSink 产生（`cmd/juhe-ai-gateway/runtime.go` 与 `runtime_logger.go`，BUG-0195 写侧，目录由写侧 NewFileSink 代建）；Node 已于 2026-09-05 清零，不再存在 Node 写侧。
 
 运行前必须满足：
 
@@ -110,7 +110,7 @@ $env:JUHE_AI_LOG_DIR = 'F:\temp\juhe-ai\logs'
 go run ./projects/jobs/cmd/juhe-ai-jobs
 ```
 
-主程序初始化并验证 F1 schema。Node 的 importer、保留清理、writer、scheduler 与所有 F1 表的通用清理已下线；Go 是该功能唯一 writer。Node 仅继续产生 JSONL 文件并只读查询 Go 产物。
+主程序初始化并验证 F1 schema。Node 的 importer、保留清理、writer、scheduler 与所有 F1 表的通用清理已下线；Go 是该功能唯一 writer。
 
 已存在的 Node F1 索引数据不能在常驻启动时自动复制。先停止 Node 与 Go indexer，设置 `JUHE_AI_DATASET_DATABASE_PATH` 指向旧 dataset 文件，并提供所有 SQLite owner 路径以完成物理隔离校验，再执行：
 
@@ -143,8 +143,7 @@ rtk go test -race ./internal/runtimelog -run '^TestPostgresRuntimeLogAdapterSmok
 ## F2：表存储监控采样与保留
 
 F2 默认并发为 `512`，`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 可配置上限为 `5096`；PostgreSQL pool 默认 `16`。实际值必须与 PostgreSQL `max_connections` 和 PgBouncer `MAX_CLIENT_CONN`/`DEFAULT_POOL_SIZE` 一起调整。
-实时锁等待、长事务和 firing 告警仍属于发布稳定性门禁；当前仓库内 Jenkins 仅构建并写入 release state，具体门禁承接方需在外部发布控制面明确。
-J3a 管理入口的 IngressRoute 由 k8s release state 与 Go 镜像 digest 同批提交。
+实时锁等待、长事务和 firing 告警仍属于发布稳定性门禁（历史注记：共存期仓库内 Jenkins 仅构建并写入 release state，Jenkinsfile 已于 2026-09-30 随归档删除）。现行生产为国内单机 Docker 形态（部署配置见 `docker/single-server/`）；J3a 管理入口现行契约见 `docker/single-server/README.md` 的 `JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS`（默认 `127.0.0.1:0` 随机回环端口，`/health` payload 报告实际监听地址）。
 
 `jobs` 内的 F2 是唯一采样、快照写入和表监控历史保留 owner。它在 SQLite 和 PostgreSQL 两种正式模式下直接异步并发采样；不使用 queue、Redis、Asynq、Node IPC、Node/Go 开关、fallback 或双 writer。
 
@@ -156,6 +155,6 @@ J3a 管理入口的 IngressRoute 由 k8s release state 与 Go 镜像 digest 同�
 - `JUHE_AI_TABLE_MONITOR_OWNER_LEASE` 默认 `5m`；同一事实库同一时间只允许一个 Go owner，第二实例拒绝启动，失去 lease 后采样和保留清理拒写。
 - `JUHE_AI_TABLE_MONITOR_INTERVAL` 默认 `1m`，单轮 `JUHE_AI_TABLE_MONITOR_RUN_TIMEOUT` 默认 `45s`，`JUHE_AI_TABLE_MONITOR_RETENTION_DAYS` 默认 `30`，`JUHE_AI_TABLE_MONITOR_MAX_TABLES` 默认 `256`；`JUHE_AI_TABLE_MONITOR_MAX_CONCURRENT_SOURCES` 默认 `512`（范围 `1..5096`），`JUHE_AI_TABLE_MONITOR_RETENTION_BATCH_SIZE` 默认 `512`（范围 `1..5096`），`JUHE_AI_TABLE_MONITOR_RETENTION_MAX_BATCHES` 默认 `512`（范围 `1..5096`）。达到 retention 批次数上限后仍有过期数据才显式失败，不静默遗漏。
 
-Node 只保留表监控 HTTP 读取，SQLite 读取只打开 F2 专用输出文件；Node scheduler、stats writer 和 Node retention 已退出。配置、连接、schema、owner lease 或采样失败都必须保留原始错误并显式失败，不能伪造空结果或切回旧 Node 路径。
+Node 侧的表监控 HTTP 读取、scheduler、stats writer 和 retention 已随 2026-09-05 的 Node 清零全部退出；SQLite 读取只打开 F2 专用输出文件。配置、连接、schema、owner lease 或采样失败都必须保留原始错误并显式失败，不能伪造空结果或切回旧 Node 路径。
 
 SQLite 定向测试覆盖采样、快照写入和保留清理。2026-08-09 开发 PostgreSQL/PgBouncer 可连通性已确认；共享开发库已有 F2 快照，smoke 对该库按空库保护拒绝写入。经用户明确授权创建一次性空库后，强制 smoke 已通过真实 adapter、lease takeover、relation-size 快照、五个 schema 的 `RunOnce` 采样和 retention 清理，测试库已删除。生产发布生命周期、Docker 实启动和 listener 仍未验证，不能据此称生产运行通过。完整边界见 F2 表存储监控采样与保留功能冻结。

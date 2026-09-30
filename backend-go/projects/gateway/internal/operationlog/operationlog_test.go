@@ -220,12 +220,8 @@ func TestLoadConfigAppliesBoundedRuntimeSettings(t *testing.T) {
 	if cfg.PostgresMaxOpenConns != 5096 || cfg.PostgresMaxIdleConns != 10 {
 		t.Fatalf("default F4 PostgreSQL pool=%d/%d want 5096/10", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
 	}
-	values["JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS"] = "1200"
-	values["JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS"] = "10"
-	cfg, err = LoadConfig(func(key string) string { return values[key] })
-	if err != nil || cfg.PostgresMaxOpenConns != 1200 || cfg.PostgresMaxIdleConns != 10 {
-		t.Fatalf("configured F4 PostgreSQL pool=%d/%d err=%v", cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns, err)
-	}
+	// 2026-09-30 C4 收编：JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS /
+	// MAX_IDLE_CONNS 收编为常量，pool 覆盖断言删除（取值恒为默认）。
 	values["JUHE_AI_OPERATION_LOG_OWNER_LEASE"] = "4s"
 	if _, err = LoadConfig(func(key string) string { return values[key] }); err == nil {
 		t.Fatal("short F4 owner lease must fail")

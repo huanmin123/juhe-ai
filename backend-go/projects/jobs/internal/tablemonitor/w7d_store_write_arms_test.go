@@ -296,13 +296,7 @@ func TestW7DLoadConfigEnvironmentMatrix(t *testing.T) {
 		t.Fatal("负批次数必须拒绝")
 	}
 
-	// Postgres 池数值：非法值与合法覆盖。
-	if _, err := run(t, func(env map[string]string) { env["JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS"] = "0" }); err == nil {
-		t.Fatal("非法 max open 必须拒绝")
-	}
-	if _, err := run(t, func(env map[string]string) { env["JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS"] = "x" }); err == nil {
-		t.Fatal("非法 max idle 必须拒绝")
-	}
+	// 清理批次 C4（2026-09-30）：连接池 env 已收编常量，非法值校验臂退役。
 
 	// postgres 模式：缺 URL 拒绝；合法配置接受池覆盖。
 	if _, err := run(t, func(env map[string]string) {
@@ -319,7 +313,7 @@ func TestW7DLoadConfigEnvironmentMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pgCfg.Mode != ModePostgres || pgCfg.PostgresMaxOpenConns != 8 || pgCfg.PostgresMaxIdleConns != 2 {
+	if pgCfg.Mode != ModePostgres || pgCfg.PostgresMaxOpenConns != defaultPostgresPoolSize || pgCfg.PostgresMaxIdleConns != defaultPostgresMaxIdleConns {
 		t.Fatalf("postgres 配置未生效: %#v", pgCfg)
 	}
 

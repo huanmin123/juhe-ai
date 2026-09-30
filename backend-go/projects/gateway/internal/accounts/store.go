@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -134,6 +135,10 @@ type Store struct {
 	// :1608-1610). Nil until SetAuthorizationStatsSource wires it; a nil port
 	// keeps the zero fields.
 	authorizationStats AuthorizationStatsSource
+	// log 是降级日志落点（BUG-0248：authorized 读路径曾用裸 println 绕过
+	// JSONL 管道）。Nil until SetLogger wires it（Deps.Mount 注入
+	// Deps.Log）；nil 保持静默。
+	log *slog.Logger
 }
 
 // NewStore builds the store.

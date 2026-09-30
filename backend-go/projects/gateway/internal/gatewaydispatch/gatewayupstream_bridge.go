@@ -88,16 +88,6 @@ type LimitedBodyReadInput = gatewayupstream.LimitedBodyReadInput
 
 type LimitedBodyReadResult = gatewayupstream.LimitedBodyReadResult
 
-type NonStreamPipeInput = gatewayupstream.NonStreamPipeInput
-
-type NonStreamPipeResult = gatewayupstream.NonStreamPipeResult
-
-type InspectableNonStreamPipeInput = gatewayupstream.InspectableNonStreamPipeInput
-
-type InspectableNonStreamPipeResult = gatewayupstream.InspectableNonStreamPipeResult
-
-type DownstreamWriter = gatewayupstream.DownstreamWriter
-
 type IncomingHeaders = gatewayupstream.IncomingHeaders
 
 type OfficialOAuthClientHeaderProfile = gatewayupstream.OfficialOAuthClientHeaderProfile
@@ -178,41 +168,39 @@ func waitForDelayMs(ctx context.Context, delayMs int64) error {
 // --- 传输族导出函数面（var 别名，普通函数值语义等价；泛型函数用 func 包装） ---
 
 var (
-	ApplyOpenAICodexHeaders                    = gatewayupstream.ApplyOpenAICodexHeaders
-	BuildAnthropicUsageRecordMaintenanceJob    = gatewayupstream.BuildAnthropicUsageRecordMaintenanceJob
-	BuildOpenAICodexUsageRecordMaintenanceJob  = gatewayupstream.BuildOpenAICodexUsageRecordMaintenanceJob
-	BuildUpstreamHeaders                       = gatewayupstream.BuildUpstreamHeaders
-	CopyOfficialOAuthClientRequestHeaders      = gatewayupstream.CopyOfficialOAuthClientRequestHeaders
-	CopyResponseHeaders                        = gatewayupstream.CopyResponseHeaders
-	CopySafeUpstreamRequestHeaders             = gatewayupstream.CopySafeUpstreamRequestHeaders
-	HeadersToObject                            = gatewayupstream.HeadersToObject
-	IsAnthropicMessagesScopedHeaderName        = gatewayupstream.IsAnthropicMessagesScopedHeaderName
-	IsCodexResponsesScopedHeaderName           = gatewayupstream.IsCodexResponsesScopedHeaderName
-	IsEffectiveOpenAIStreamRequest             = gatewayupstream.IsEffectiveOpenAIStreamRequest
-	IsGeminiGenerateContentScopedHeaderName    = gatewayupstream.IsGeminiGenerateContentScopedHeaderName
-	IsOpenAICodexClientHeaders                 = gatewayupstream.IsOpenAICodexClientHeaders
-	IsUpstreamRequestAbortedError              = gatewayupstream.IsUpstreamRequestAbortedError
-	NewBoundedConcurrencyGovernor              = gatewayupstream.NewBoundedConcurrencyGovernor
-	NewGatewayUpstreamResponseForTransform     = gatewayupstream.NewGatewayUpstreamResponseForTransform
-	NewResolvedUpstreamURLPolicy               = gatewayupstream.NewResolvedUpstreamURLPolicy
-	NormalizeOpenAICodexClientHeaders          = gatewayupstream.NormalizeOpenAICodexClientHeaders
-	NormalizeOpenAICodexResponsesLiteBody      = gatewayupstream.NormalizeOpenAICodexResponsesLiteBody
-	ParseAnthropicUsageHeaders                 = gatewayupstream.ParseAnthropicUsageHeaders
-	ParseOpenAICodexUsageHeaders               = gatewayupstream.ParseOpenAICodexUsageHeaders
-	PersistAnthropicUsageHeaders               = gatewayupstream.PersistAnthropicUsageHeaders
-	PersistOpenAICodexUsageHeaders             = gatewayupstream.PersistOpenAICodexUsageHeaders
-	PipeNonStreamUpstreamResponse              = gatewayupstream.PipeNonStreamUpstreamResponse
-	PipeNonStreamUpstreamResponseForInspection = gatewayupstream.PipeNonStreamUpstreamResponseForInspection
-	ReadStreamChunkWithAbort                   = gatewayupstream.ReadStreamChunkWithAbort
-	ReadStreamChunkWithIdleTimeout             = gatewayupstream.ReadStreamChunkWithIdleTimeout
-	ReadUpstreamBodyLimited                    = gatewayupstream.ReadUpstreamBodyLimited
-	RequestUpstream                            = gatewayupstream.RequestUpstream
-	StripAnthropicMessagesScopedHeaders        = gatewayupstream.StripAnthropicMessagesScopedHeaders
-	StripCodexResponsesScopedHeaders           = gatewayupstream.StripCodexResponsesScopedHeaders
-	StripGeminiGenerateContentScopedHeaders    = gatewayupstream.StripGeminiGenerateContentScopedHeaders
-	UpstreamRequestTimeoutMs                   = gatewayupstream.UpstreamRequestTimeoutMs
-	UpstreamSocketTimeoutMs                    = gatewayupstream.UpstreamSocketTimeoutMs
-	UsesOpenAICodexResponsesLite               = gatewayupstream.UsesOpenAICodexResponsesLite
+	ApplyOpenAICodexHeaders                   = gatewayupstream.ApplyOpenAICodexHeaders
+	BuildAnthropicUsageRecordMaintenanceJob   = gatewayupstream.BuildAnthropicUsageRecordMaintenanceJob
+	BuildOpenAICodexUsageRecordMaintenanceJob = gatewayupstream.BuildOpenAICodexUsageRecordMaintenanceJob
+	BuildUpstreamHeaders                      = gatewayupstream.BuildUpstreamHeaders
+	CopyOfficialOAuthClientRequestHeaders     = gatewayupstream.CopyOfficialOAuthClientRequestHeaders
+	CopyResponseHeaders                       = gatewayupstream.CopyResponseHeaders
+	CopySafeUpstreamRequestHeaders            = gatewayupstream.CopySafeUpstreamRequestHeaders
+	HeadersToObject                           = gatewayupstream.HeadersToObject
+	IsAnthropicMessagesScopedHeaderName       = gatewayupstream.IsAnthropicMessagesScopedHeaderName
+	IsCodexResponsesScopedHeaderName          = gatewayupstream.IsCodexResponsesScopedHeaderName
+	IsEffectiveOpenAIStreamRequest            = gatewayupstream.IsEffectiveOpenAIStreamRequest
+	IsGeminiGenerateContentScopedHeaderName   = gatewayupstream.IsGeminiGenerateContentScopedHeaderName
+	IsOpenAICodexClientHeaders                = gatewayupstream.IsOpenAICodexClientHeaders
+	IsUpstreamRequestAbortedError             = gatewayupstream.IsUpstreamRequestAbortedError
+	NewBoundedConcurrencyGovernor             = gatewayupstream.NewBoundedConcurrencyGovernor
+	NewGatewayUpstreamResponseForTransform    = gatewayupstream.NewGatewayUpstreamResponseForTransform
+	NewResolvedUpstreamURLPolicy              = gatewayupstream.NewResolvedUpstreamURLPolicy
+	NormalizeOpenAICodexClientHeaders         = gatewayupstream.NormalizeOpenAICodexClientHeaders
+	NormalizeOpenAICodexResponsesLiteBody     = gatewayupstream.NormalizeOpenAICodexResponsesLiteBody
+	ParseAnthropicUsageHeaders                = gatewayupstream.ParseAnthropicUsageHeaders
+	ParseOpenAICodexUsageHeaders              = gatewayupstream.ParseOpenAICodexUsageHeaders
+	PersistAnthropicUsageHeaders              = gatewayupstream.PersistAnthropicUsageHeaders
+	PersistOpenAICodexUsageHeaders            = gatewayupstream.PersistOpenAICodexUsageHeaders
+	ReadStreamChunkWithAbort                  = gatewayupstream.ReadStreamChunkWithAbort
+	ReadStreamChunkWithIdleTimeout            = gatewayupstream.ReadStreamChunkWithIdleTimeout
+	ReadUpstreamBodyLimited                   = gatewayupstream.ReadUpstreamBodyLimited
+	RequestUpstream                           = gatewayupstream.RequestUpstream
+	StripAnthropicMessagesScopedHeaders       = gatewayupstream.StripAnthropicMessagesScopedHeaders
+	StripCodexResponsesScopedHeaders          = gatewayupstream.StripCodexResponsesScopedHeaders
+	StripGeminiGenerateContentScopedHeaders   = gatewayupstream.StripGeminiGenerateContentScopedHeaders
+	UpstreamRequestTimeoutMs                  = gatewayupstream.UpstreamRequestTimeoutMs
+	UpstreamSocketTimeoutMs                   = gatewayupstream.UpstreamSocketTimeoutMs
+	UsesOpenAICodexResponsesLite              = gatewayupstream.UsesOpenAICodexResponsesLite
 )
 
 // ObserveFirstBytePendingRead mirrors the generic pending-read observer.
@@ -238,11 +226,6 @@ const (
 	DeadlineDecisionResponsePrecommit = gatewayupstream.DeadlineDecisionResponsePrecommit
 
 	FirstByteDeadlineActionContinue = gatewayupstream.FirstByteDeadlineActionContinue
-
-	NonStreamResponseCaptureBytes       = gatewayupstream.NonStreamResponseCaptureBytes
-	NonStreamUsageTailCaptureBytes      = gatewayupstream.NonStreamUsageTailCaptureBytes
-	UpstreamErrorBodyCaptureBytes       = gatewayupstream.UpstreamErrorBodyCaptureBytes
-	ResponseBackpressureWarnThresholdMs = gatewayupstream.ResponseBackpressureWarnThresholdMs
 
 	OpenAICodexOriginator          = gatewayupstream.OpenAICodexOriginator
 	OpenAICodexResponsesLiteHeader = gatewayupstream.OpenAICodexResponsesLiteHeader
@@ -272,104 +255,17 @@ type RecordMaintenanceJob = gatewayupstream.RecordMaintenanceJob
 
 // --- 传输族内部结构的测试可见面（原私有名，测试原位保留所需的桥接） ---
 
-type ChunkResult = gatewayupstream.ChunkResult
-
-type ChunkRead = gatewayupstream.ChunkRead
-
 type ReadOutcome[T any] = gatewayupstream.ReadOutcome[T]
 
 type DeadlineHandlerPanic = gatewayupstream.DeadlineHandlerPanic
 
-type chunkResult = gatewayupstream.ChunkResult
-
-type FirstByteDeadlineReadInput = gatewayupstream.FirstByteDeadlineReadInput
-
-type firstByteDeadlineReadInput = gatewayupstream.FirstByteDeadlineReadInput
-
 // ObservedFirstBytePendingRead mirrors the generic pending-read outcome type.
 type ObservedFirstBytePendingRead[T any] = gatewayupstream.ObservedFirstBytePendingRead[T]
 
-type chunkRead = gatewayupstream.ChunkRead
-
-func readFirstNonStreamChunkWithDeadlines(reader io.Reader, buffer []byte, startedAt int64, input gatewayupstream.FirstByteDeadlineReadInput) (chunkRead, bool, error) {
-	return gatewayupstream.ReadFirstNonStreamChunkWithDeadlines(reader, buffer, startedAt, input)
-}
-
-// --- 首字节死线读块的内部结构（原私有名，测试原位保留所需的桥接） ---
-
-type DeadlineDecision = gatewayupstream.DeadlineDecision
-
-type deadlineDecision = gatewayupstream.DeadlineDecision
-
 type rollingBufferCapture = gatewayupstream.RollingBufferCapture
-
-type raceReadType = gatewayupstream.RaceReadType
-
-func firstNonStreamReadAfterDeadlineDecision(decision gatewayupstream.DeadlineDecision, firstByteDeadlineObserved bool, input gatewayupstream.FirstByteDeadlineReadInput) (chunkRead, bool, error) {
-	return gatewayupstream.FirstNonStreamReadAfterDeadlineDecision(decision, firstByteDeadlineObserved, input)
-}
-
-func raceReadWithDeadlines(pendingRead *ObservedFirstBytePendingRead[ChunkResult], signal context.Context, softTimeoutMs, hardTimeoutMs, maxLifetimeTimeoutMs, responsePrecommitTimeoutMs *int64) (raceReadType, ChunkResult, error) {
-	return gatewayupstream.RaceReadWithDeadlines(pendingRead, signal, softTimeoutMs, hardTimeoutMs, maxLifetimeTimeoutMs, responsePrecommitTimeoutMs)
-}
-
-// 首字节死线 race 读取结果枚举（原私有常量，测试经桥可见）。
-const (
-	RaceReadDone                 = gatewayupstream.RaceReadDone
-	RaceSoftTimeout              = gatewayupstream.RaceSoftTimeout
-	RaceHardTimeout              = gatewayupstream.RaceHardTimeout
-	RaceMaxLifetimeTimeout       = gatewayupstream.RaceMaxLifetimeTimeout
-	RaceResponsePrecommitTimeout = gatewayupstream.RaceResponsePrecommitTimeout
-	RaceAbort                    = gatewayupstream.RaceAbort
-)
-
-const (
-	raceReadDone                 = RaceReadDone
-	raceSoftTimeout              = RaceSoftTimeout
-	raceHardTimeout              = RaceHardTimeout
-	raceMaxLifetimeTimeout       = RaceMaxLifetimeTimeout
-	raceResponsePrecommitTimeout = RaceResponsePrecommitTimeout
-	raceAbort                    = RaceAbort
-)
-
-func readNonStreamChunkWithAbsoluteDeadline(reader io.Reader, buffer []byte, signal context.Context, maxLifetimeDeadlineAt, maxLifetimeMs, responsePrecommitDeadlineAtMs *int64) (int, error, bool) {
-	return gatewayupstream.ReadNonStreamChunkWithAbsoluteDeadline(reader, buffer, signal, maxLifetimeDeadlineAt, maxLifetimeMs, responsePrecommitDeadlineAtMs)
-}
-
-func nonStreamBodyMaxLifetimeDeadlineAt(startedAt int64, maxLifetimeMs *int64) *int64 {
-	return gatewayupstream.NonStreamBodyMaxLifetimeDeadlineAt(startedAt, maxLifetimeMs)
-}
-
-type limitedBufferCapture = gatewayupstream.LimitedBufferCapture
-
-func newLimitedBufferCapture(limitBytes int) *limitedBufferCapture {
-	return gatewayupstream.NewLimitedBufferCapture(limitBytes)
-}
 
 func newRollingBufferCapture(limitBytes int) *rollingBufferCapture {
 	return gatewayupstream.NewRollingBufferCapture(limitBytes)
-}
-
-func readFirstNonStreamChunk(input NonStreamPipeInput, reader io.Reader, buffer []byte, firstByteSeen *bool, firstByteDeadlineObserved bool, maxLifetimeDeadlineAt *int64, pendingReadSupersedesDeadline bool) (ChunkRead, bool, error) {
-	return gatewayupstream.ReadFirstNonStreamChunk(input, reader, buffer, firstByteSeen, firstByteDeadlineObserved, maxLifetimeDeadlineAt, pendingReadSupersedesDeadline)
-}
-
-func bytesTextPtr(body []byte) *string { return gatewayupstream.BytesTextPtr(body) }
-
-func derefInt64(value *int64) int64 { return gatewayupstream.DerefInt64(value) }
-
-func derefOrMax(value *int64) int64 { return gatewayupstream.DerefOrMax(value) }
-
-func derefMin(a, b *int64) bool { return gatewayupstream.DerefMin(a, b) }
-
-func formatSecondsText(ms int64) string { return gatewayupstream.FormatSecondsText(ms) }
-
-func buildNonStreamPipeResult(capture *limitedBufferCapture, usageTailCapture *gatewayupstream.RollingBufferCapture, firstByteSeen bool, firstByteMs int64, transferredBytes int) NonStreamPipeResult {
-	return gatewayupstream.BuildNonStreamPipeResult(capture, usageTailCapture, firstByteSeen, firstByteMs, transferredBytes)
-}
-
-func errorMessageOf(err error, fallback string) string {
-	return gatewayupstream.ErrorMessageOf(err, fallback)
 }
 
 func runDeadlineHandler(handler FirstByteDeadlineHandler, input FirstByteDeadlineDecisionInput) (FirstByteDeadlineAction, error) {
@@ -444,14 +340,6 @@ func closeReader(reader io.Reader) error {
 
 func isAllowedOfficialOAuthClientHeader(name string, profile OfficialOAuthClientHeaderProfile) bool {
 	return gatewayupstream.IsAllowedOfficialOAuthClientHeader(name, profile)
-}
-
-type inspectPlan = gatewayupstream.InspectPlan
-
-type inspectOutcome = gatewayupstream.InspectOutcome
-
-func pipeNonStreamUpstreamResponseCommon(ctx context.Context, upstreamBody io.Reader, downstream DownstreamWriter, input NonStreamPipeInput, reserved bool, inspect *inspectPlan) (inspectOutcome, bool, error) {
-	return gatewayupstream.PipeNonStreamUpstreamResponseCommon(ctx, upstreamBody, downstream, input, reserved, inspect)
 }
 
 func numberValueOf(value string) *float64 {

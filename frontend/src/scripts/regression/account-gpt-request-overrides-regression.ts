@@ -260,6 +260,8 @@ assert.equal(oauthPayload.credentialsPatch?.service_tier_override, 'priority', '
 assert.equal(oauthPayload.credentialsPatch?.reasoning_effort_override, 'max', 'OAuth credentialsPatch 必须保留思考级别覆盖')
 
 oauthForm.serviceTierOverride = 'flex'
+// 国外 OAuth 供应商（gpt 等）的 refresh_token 表单必须绑定出海代理后才能保存，与后端创建拦截一致
+oauthForm.proxyProfileId = 'proxy-overseas-regression'
 assert.equal(
   validateAccountSaveForm({
     form: oauthForm,

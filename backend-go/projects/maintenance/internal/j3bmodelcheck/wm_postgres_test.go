@@ -202,57 +202,6 @@ func TestWMBackfillPostgresCopiesFactsIdempotently(t *testing.T) {
 	}
 }
 
-func TestWMVerifyPostgresBackfillMatchesAfterBackfill(t *testing.T) {
-	ctx := context.Background()
-	db, _ := wmReadyJ3bDB(t, 2)
-	if _, err := BackfillPostgres(ctx, db, PostgresBackfillOptions{}); err != nil {
-		t.Fatalf("backfill: %v", err)
-	}
-	report, err := VerifyPostgresBackfill(ctx, db, PostgresReadbackOptions{})
-	if err != nil {
-		t.Fatalf("readback: %v", err)
-	}
-	if !report.Ready || !report.TransactionReadOnly {
-		t.Fatalf("复制后的回读必须就绪: %+v errors=%v", report, report.Tables)
-	}
-	for _, item := range postgresLegacyJ3bFactTables {
-		if report.Tables[item.name] != "match" {
-			t.Fatalf("表 %s 应 match: %s", item.name, report.Tables[item.name])
-		}
-		if report.SourceRows[item.name] != 2 || report.TargetRows[item.name] != 2 {
-			t.Fatalf("表 %s 行数应一致为 2: %+v", item.name, report)
-		}
-		if report.SourceDigest[item.name] == "" || report.SourceDigest[item.name] != report.TargetDigest[item.name] {
-			t.Fatalf("表 %s 双侧 digest 应一致且非空", item.name)
-		}
-		if report.SourceExceededRowLimit[item.name] || report.TargetExceededRowLimit[item.name] {
-			t.Fatalf("表 %s 不应超限", item.name)
-		}
-	}
-	if report.Tables[trustAggregationStateTable] != "match" {
-		t.Fatalf("trust 游标应 match: %s", report.Tables[trustAggregationStateTable])
-	}
-
-	verifiedAt := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
-	manifest, err := NewPostgresJ3bReadbackManifest(report, J3bReadbackManifestOptions{SourceSnapshotIdentity: "wm-snapshot-1", VerifiedAt: verifiedAt})
-	if err != nil {
-		t.Fatalf("生成 PG readback manifest: %v", err)
-	}
-	if manifest.TargetSchema != SchemaName || len(manifest.Tables) != 9 {
-		t.Fatalf("manifest 应覆盖 9 张表: %+v", manifest)
-	}
-	if errs := contracts.ValidateJ3bReadbackManifest(manifest, verifiedAt.Add(time.Minute), 3600); len(errs) != 0 {
-		t.Fatalf("manifest 必须通过共享契约校验: %v", errs)
-	}
-
-	if _, err := NewPostgresJ3bReadbackManifest(PostgresBackfillVerificationReport{Ready: true}, J3bReadbackManifestOptions{SourceSnapshotIdentity: "wm", VerifiedAt: verifiedAt}); err == nil {
-		t.Fatal("非只读事务的 report 不得生成 manifest")
-	}
-	if _, err := NewPostgresJ3bReadbackManifest(report, J3bReadbackManifestOptions{VerifiedAt: verifiedAt}); err == nil {
-		t.Fatal("缺少 snapshot identity 不得生成 manifest")
-	}
-}
-
 func TestWMVerifyPostgresBackfillFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	t.Run("transaction writable", func(t *testing.T) {

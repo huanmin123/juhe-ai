@@ -52,6 +52,15 @@ func (sink PublicApiLogCaptureSink) CaptureAIPublic(spec publicapilogs.CaptureSp
 // at most this many response bytes for the snapshot preview.
 const captureSnapshotBudget = 32 * 1024
 
+// captureRequestBodyLimitBytes mirrors the Node chain mounted at
+// publicApiPrefix (system-api-app.ts): capturePublicApiLog runs ahead of
+// express.json({ limit: systemApiJsonBodyLimit }) with
+// systemApiJsonBodyLimit = '256kb', and an oversized body takes the
+// handleJsonBodyError 413 branch ({"message":"请求体过大"}) before the auth
+// middleware and the route handlers. The kernel bodyLimitMiddleware only
+// covers SystemAPIPrefix, so the bound lives here with the buffering.
+const captureRequestBodyLimitBytes = 256 * 1024
+
 // captureResponseWriter mirrors the res.json/res.send interception: the first
 // response payload (status + body bytes) feeds the response snapshot.
 type captureResponseWriter struct {
@@ -98,10 +107,16 @@ func (w *captureResponseWriter) Flush() {
 type captureRequestBody struct {
 	raw         []byte
 	parseFailed bool
+	// tooLarge marks an express.json limit rejection (entity.too.large): the
+	// oversized bytes are dropped (never buffered whole, never replayed) and
+	// the wrapper answers 413 instead of running the guard/handler.
+	tooLarge bool
 }
 
 // bufferCaptureRequestBody caches the request body for POST/PUT/PATCH (the
-// Node body-parser methods) without consuming it.
+// Node body-parser methods) without consuming it. The read is bounded by
+// captureRequestBodyLimitBytes: reading limit+1 bytes proves the body exceeds
+// the Node 256kb budget without ever buffering more than that.
 func bufferCaptureRequestBody(r *http.Request) *captureRequestBody {
 	switch r.Method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch:
@@ -111,11 +126,15 @@ func bufferCaptureRequestBody(r *http.Request) *captureRequestBody {
 	if r.Body == nil {
 		return &captureRequestBody{}
 	}
-	raw, err := io.ReadAll(r.Body)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, captureRequestBodyLimitBytes+1))
 	_ = r.Body.Close()
 	if err != nil {
 		r.Body = io.NopCloser(bytes.NewReader(nil))
 		return &captureRequestBody{parseFailed: true}
+	}
+	if len(raw) > captureRequestBodyLimitBytes {
+		r.Body = io.NopCloser(bytes.NewReader(nil))
+		return &captureRequestBody{tooLarge: true}
 	}
 	r.Body = io.NopCloser(bytes.NewReader(raw))
 	buffered := &captureRequestBody{raw: raw}
@@ -217,12 +236,21 @@ func (d *Deps) withCapture(handler func(w http.ResponseWriter, r *http.Request, 
 		buffered := bufferCaptureRequestBody(r)
 		recorder := &captureResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		holder := &captureSourceHolder{}
-		handler(recorder, r, holder)
+		if buffered != nil && buffered.tooLarge {
+			// handleJsonBodyError over-limit branch: Node answers 413
+			// {"message":"请求体过大"} from the body parser, ahead of the auth
+			// middleware and the routes, and never replays the body.
+			kernel.WriteError(recorder, http.StatusRequestEntityTooLarge, "请求体过大")
+		} else {
+			handler(recorder, r, holder)
+		}
 		closed := r.Context().Err() != nil
 		statusCode := recorder.status
 		responsePayload := decodeCapturePayload(recorder.payload)
 		var bodyRejected *publicapilogs.BodyRejection
-		if buffered != nil && buffered.parseFailed && statusCode >= 400 {
+		if buffered != nil && buffered.tooLarge {
+			bodyRejected = &publicapilogs.BodyRejection{StatusCode: statusCode, ErrorType: "entity.too.large"}
+		} else if buffered != nil && buffered.parseFailed && statusCode >= 400 {
 			bodyRejected = &publicapilogs.BodyRejection{StatusCode: statusCode, ErrorType: "entity.parse_failed"}
 		}
 		d.recordCapture(publicapilogs.CaptureSpec{

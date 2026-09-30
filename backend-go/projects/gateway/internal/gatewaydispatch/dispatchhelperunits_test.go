@@ -487,7 +487,7 @@ func TestAcquireAccountConcurrencyWithShortRetryExhaustion(t *testing.T) {
 	store := &countingBusyConcurrencyStore{}
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
-	slot, waitedMs, err := engine.acquireAccountConcurrencyWithShortRetry(
+	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
 		context.Background(), context.Background(), "a-1", 4, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
 	)
 	if err != nil {
@@ -498,6 +498,12 @@ func TestAcquireAccountConcurrencyWithShortRetryExhaustion(t *testing.T) {
 	}
 	if waitedMs <= 0 {
 		t.Fatalf("短等后 waitedMs 应大于 0, got %d", waitedMs)
+	}
+	// BUG-0247 项 2：预算按实际短等递减——10ms 预算全部耗尽后余额为 0
+	//（Node acquireAccountConcurrencyWithShortRetry 返回 remainingWaitBudgetMs，
+	// 调用方回写 concurrencyRetryWaitBudgetMs）。
+	if remainingWaitBudgetMs != 0 {
+		t.Fatalf("耗尽后剩余预算应为 0, got %d", remainingWaitBudgetMs)
 	}
 	if store.acquireCalls.Load() < 2 {
 		t.Fatalf("预算内应存在多次重试获取, got %d", store.acquireCalls.Load())
@@ -529,7 +535,7 @@ func TestAcquireAccountConcurrencyWithShortRetryAbort(t *testing.T) {
 	coordination := newTestCoordination(t)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := engine.acquireAccountConcurrencyWithShortRetry(
+	_, _, _, err := engine.acquireAccountConcurrencyWithShortRetry(
 		canceled, canceled, "a-1", 4, 10_000, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
 	)
 	var aborted *UpstreamRequestAbortedError
@@ -556,7 +562,7 @@ func TestAcquireAccountConcurrencyStoreError(t *testing.T) {
 	engine, _, _ := newTestEngine(t)
 	engine.Concurrency = errorConcurrencyStore{}
 	coordination := newTestCoordination(t)
-	_, _, err := engine.acquireAccountConcurrencyWithShortRetry(
+	_, _, _, err := engine.acquireAccountConcurrencyWithShortRetry(
 		context.Background(), context.Background(), "a-1", 4, 10, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
 	)
 	if err == nil || err.Error() != "store boom" {
@@ -569,11 +575,15 @@ func TestAcquireAccountConcurrencyImmediateSuccess(t *testing.T) {
 	store := &fakeConcurrencyStore{}
 	engine.Concurrency = store
 	coordination := newTestCoordination(t)
-	slot, waitedMs, err := engine.acquireAccountConcurrencyWithShortRetry(
+	slot, waitedMs, remainingWaitBudgetMs, err := engine.acquireAccountConcurrencyWithShortRetry(
 		context.Background(), context.Background(), "a-1", 4, 1_200, gatewayprotoLane("text"), nil, coordination.ServerRetryBudget,
 	)
 	if err != nil || !slot.Acquired || waitedMs != 0 {
 		t.Fatalf("首取成功: slot=%+v waited=%d err=%v", slot, waitedMs, err)
+	}
+	// BUG-0247 项 2：无短等时预算余额原样保留（Node :768-771 同构）。
+	if remainingWaitBudgetMs != 1_200 {
+		t.Fatalf("无等待时剩余预算应不变, got %d", remainingWaitBudgetMs)
 	}
 }
 
@@ -1406,5 +1416,96 @@ func TestKeyModelCapabilityMergePermitLostSignal(t *testing.T) {
 	case <-merged.Done():
 	case <-time.After(time.Second):
 		t.Fatal("permit 丢失后合并信号必须取消")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BUG-0241：热质量终态载荷与成功侧结算分工
+// ---------------------------------------------------------------------------
+
+type terminalCapturingLifecycle struct {
+	firstByteCalls int
+	terminals      []HotQualityTerminal
+}
+
+func (l *terminalCapturingLifecycle) MarkFirstByte(firstByteMs *float64) {
+	l.firstByteCalls++
+}
+
+func (l *terminalCapturingLifecycle) RecordTerminal(_ context.Context, terminal HotQualityTerminal) {
+	l.terminals = append(l.terminals, terminal)
+}
+
+// TestHotQualityTerminalFirstByteMsForwarded：句柄把 HotQualityTerminal 的
+// 显式首字样本原样转发给工厂生命周期（成功终态载荷的传递面）。
+func TestHotQualityTerminalFirstByteMsForwarded(t *testing.T) {
+	lifecycle := &terminalCapturingLifecycle{}
+	handle := &hotQualityAttemptHandle{
+		factory: func(HotQualityLifecycleInput) HotQualityAttemptLifecycle { return lifecycle },
+		input:   HotQualityLifecycleInput{AttemptID: "hotq-1", AccountID: "a-1"},
+	}
+	firstByte := 234.0
+	handle.RecordTerminal(context.Background(), HotQualityTerminal{
+		OutcomeClass: HotQualityOutcomeCompletedResponse,
+		FailureScope: "none",
+		Source:       "request_lifecycle",
+		FirstByteMs:  &firstByte,
+	})
+	if len(lifecycle.terminals) != 1 {
+		t.Fatalf("terminals = %d, want 1", len(lifecycle.terminals))
+	}
+	terminal := lifecycle.terminals[0]
+	if terminal.OutcomeClass != HotQualityOutcomeCompletedResponse {
+		t.Fatalf("outcomeClass = %s", terminal.OutcomeClass)
+	}
+	if terminal.FirstByteMs == nil || *terminal.FirstByteMs != 234 {
+		t.Fatalf("firstByteMs = %v, want 234", terminal.FirstByteMs)
+	}
+	if HotQualityOutcomeCompletedResponse != "completed_response" {
+		t.Fatalf("常量值漂移: %s", HotQualityOutcomeCompletedResponse)
+	}
+}
+
+// TestDispatchSuccessLeavesHotQualityTerminalToChain：钉住 BUG-0241 的结算
+// 分工——引擎 2xx 成功路径自己不结算终态（失败侧见 attemptoutcomes.go），只把
+// 句柄随结果带出；成功终态由链面（settleHotQualityTerminal）在句柄上记录。
+func TestDispatchSuccessLeavesHotQualityTerminalToChain(t *testing.T) {
+	okServer := sequentialServer(t, 0, 500)
+	defer okServer.Close()
+	engine, driver, _ := newTestEngine(t)
+	lifecycle := &terminalCapturingLifecycle{}
+	engine.HotQualityAttemptFactory = func(HotQualityLifecycleInput) HotQualityAttemptLifecycle {
+		return lifecycle
+	}
+	driver.urlByAccount = map[string][]string{
+		"a-1": {okServer.URL + "/v1/chat/completions"},
+	}
+	req := newTestRequest(t, `{"model":"gpt-test","stream":false}`)
+	result, err := engine.FetchFirstAvailableUpstream(context.Background(), fastDispatchArgs(t, req, testAccounts("a-1")))
+	if err != nil {
+		t.Fatalf("成功派发不应报错: %v", err)
+	}
+	if len(lifecycle.terminals) != 0 {
+		t.Fatalf("引擎成功路径不得自行结算终态: %d", len(lifecycle.terminals))
+	}
+	if result.HotQualityAttempt == nil {
+		t.Fatal("成功结果必须携带热质量句柄供链面结算")
+	}
+	// 链面结算契约：句柄上记 completed_response，显式首字样本随之透传。
+	firstByte := 456.0
+	result.HotQualityAttempt.RecordTerminal(context.Background(), HotQualityTerminal{
+		OutcomeClass: HotQualityOutcomeCompletedResponse,
+		FailureScope: "none",
+		Source:       "request_lifecycle",
+		FirstByteMs:  &firstByte,
+	})
+	if len(lifecycle.terminals) != 1 {
+		t.Fatalf("链面结算后 terminals = %d, want 1", len(lifecycle.terminals))
+	}
+	if got := lifecycle.terminals[0].OutcomeClass; got != HotQualityOutcomeCompletedResponse {
+		t.Fatalf("outcomeClass = %s, want completed_response", got)
+	}
+	if lifecycle.terminals[0].FirstByteMs == nil || *lifecycle.terminals[0].FirstByteMs != 456 {
+		t.Fatalf("firstByteMs = %v, want 456", lifecycle.terminals[0].FirstByteMs)
 	}
 }

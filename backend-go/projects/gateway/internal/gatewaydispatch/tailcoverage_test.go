@@ -5,11 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -79,85 +77,6 @@ func TestNormalizeOpenAIOAuthCodexInputVariants(t *testing.T) {
 	normalizeOpenAIOAuthCodexInput(untouched)
 	if untouched["input"] != 7 {
 		t.Fatal("非字符串/数组 input 保持原样")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// 管道检查缓冲（多块 → 缓冲 → EOF 全量提交）
-// ---------------------------------------------------------------------------
-
-type multiChunkReader struct {
-	chunks [][]byte
-	index  int
-}
-
-func (m *multiChunkReader) Read(buffer []byte) (int, error) {
-	if m.index >= len(m.chunks) {
-		return 0, io.EOF
-	}
-	chunk := m.chunks[m.index]
-	m.index++
-	copy(buffer, chunk)
-	return len(chunk), nil
-}
-
-func TestPipeInspectionBuffersThenCommits(t *testing.T) {
-	reader := &multiChunkReader{chunks: [][]byte{[]byte("aa"), []byte("bb"), []byte("cc")}}
-	var downstream strings.Builder
-	var chunkReads []string
-	result, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), reader, &downstream, InspectableNonStreamPipeInput{
-		NonStreamPipeInput: NonStreamPipeInput{
-			StartedAt:   gatewayupstream.NowMs(),
-			Signal:      context.Background(),
-			OnChunkRead: func(chunk []byte) { chunkReads = append(chunkReads, string(chunk)) },
-		},
-		InspectBytes: 64,
-	})
-	if err != nil {
-		t.Fatalf("inspection: %v", err)
-	}
-	if !result.FullyBuffered {
-		t.Fatal("小载荷必须全量缓冲")
-	}
-	if string(result.CompleteBody) != "aabbcc" {
-		t.Fatalf("complete = %q", result.CompleteBody)
-	}
-	// 全缓冲成功时下游未被写入（调用方负责提交 CompleteBody）。
-	if downstream.String() != "" {
-		t.Fatalf("downstream = %q", downstream.String())
-	}
-	if result.CompleteBodyText == nil || *result.CompleteBodyText != "aabbcc" {
-		t.Fatalf("complete text = %#v", result.CompleteBodyText)
-	}
-	if len(chunkReads) != 3 {
-		t.Fatalf("chunk reads = %#v", chunkReads)
-	}
-}
-
-// TestPipeUsageTailAndCaptureBodyDisabled: 关闭捕获时 diagnostic 仅有传输统计。
-func TestPipeUsageTailAndCaptureBodyDisabled(t *testing.T) {
-	disabled := false
-	var downstream strings.Builder
-	result, err := PipeNonStreamUpstreamResponse(context.Background(), strings.NewReader("abcdef"), &downstream, NonStreamPipeInput{
-		StartedAt:      gatewayupstream.NowMs(),
-		Signal:         context.Background(),
-		CaptureBody:    &disabled,
-		UsageTailBytes: ptrInt64(2),
-		OnChunkWritten: func(int) {},
-		OnBodyCompleted: func(transferred int) {
-			if transferred != 6 {
-				t.Fatalf("transferred = %d", transferred)
-			}
-		},
-	})
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	if result.CapturedBodyText != nil {
-		t.Fatal("关闭捕获后不应有捕获文本")
-	}
-	if result.UsageTailText == nil || *result.UsageTailText != "ef" {
-		t.Fatalf("usage tail = %#v", result.UsageTailText)
 	}
 }
 

@@ -120,15 +120,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("postgres 模式缺少 JUHE_AI_ACCOUNT_HEALTH_POSTGRES_URL（或 JUHE_AI_POSTGRES_URL）")
 	}
 	if mode == StorePostgres {
-		if cfg.Store.PostgresMaxOpenConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_OPEN_CONNS", defaultPostgresPoolSize); err != nil {
-			return Config{}, err
-		}
-		if cfg.Store.PostgresMaxIdleConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
-			return Config{}, err
-		}
-		if err := sqlpool.ValidatePoolLimits(cfg.Store.PostgresMaxOpenConns, cfg.Store.PostgresMaxIdleConns); err != nil {
-			return Config{}, fmt.Errorf("J1 jobs PostgreSQL 连接池配置无效: %w", err)
-		}
+		// 清理批次 C4（2026-09-30）：连接池 env 族零引用收编为默认常量。
+		cfg.Store.PostgresMaxOpenConns = defaultPostgresPoolSize
+		cfg.Store.PostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	}
 	cfg.InputDirectory = datadir.Path(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY", "account-health-input")
 	if strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_DIRECTORY")) == "" {
@@ -176,15 +170,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		if cfg.BusinessPostgresURL == "" {
 			return Config{}, errors.New("postgres direct input 缺少 JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_URL")
 		}
-		if cfg.DirectInputPostgresMaxOpenConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_OPEN_CONNS", defaultPostgresPoolSize); err != nil {
-			return Config{}, err
-		}
-		if cfg.DirectInputPostgresMaxIdleConns, err = configPositiveInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_INPUT_POSTGRES_MAX_IDLE_CONNS", defaultPostgresMaxIdleConns); err != nil {
-			return Config{}, err
-		}
-		if err := sqlpool.ValidatePoolLimits(cfg.DirectInputPostgresMaxOpenConns, cfg.DirectInputPostgresMaxIdleConns); err != nil {
-			return Config{}, fmt.Errorf("J1 业务读取 PostgreSQL 连接池配置无效: %w", err)
-		}
+		// 清理批次 C4（2026-09-30）：direct input 连接池 env 族零引用收编常量。
+		cfg.DirectInputPostgresMaxOpenConns = defaultPostgresPoolSize
+		cfg.DirectInputPostgresMaxIdleConns = defaultPostgresMaxIdleConns
 	}
 	var key []byte
 	keyText := strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_HEALTH_INPUT_SIGNING_KEY"))
@@ -250,12 +238,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.MaxConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_MAX_CONCURRENCY", concurrencyDefault, minJ1Concurrency, maxJ1Concurrency); err != nil {
 		return Config{}, err
 	}
-	if cfg.IOConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_IO_CONCURRENCY", cfg.MaxConcurrency, minJ1Concurrency, maxJ1Concurrency); err != nil {
-		return Config{}, err
-	}
-	if cfg.DBConcurrency, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_DB_CONCURRENCY", defaultDBConcurrency, minJ1Concurrency, maxJ1Concurrency); err != nil {
-		return Config{}, err
-	}
+	// 清理批次 C4（2026-09-30）：IO/DB 并发 env 零引用收编为常量语义。
+	cfg.IOConcurrency = cfg.MaxConcurrency
+	cfg.DBConcurrency = defaultDBConcurrency
 	if cfg.DBQueueSize, err = configInt(getenv, "JUHE_AI_ACCOUNT_HEALTH_DB_QUEUE_SIZE", defaultDBQueueSize, minJ1Concurrency, maxJ1Capacity); err != nil {
 		return Config{}, err
 	}

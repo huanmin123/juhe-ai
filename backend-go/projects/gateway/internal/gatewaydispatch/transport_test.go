@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
@@ -417,71 +416,6 @@ func TestReadUpstreamBodyLimitedTruncation(t *testing.T) {
 	}
 	if result.DiagnosticBodyText != strings.Repeat("a", 10)+"\n[truncated]" {
 		t.Fatalf("diagnostic = %q", result.DiagnosticBodyText)
-	}
-}
-
-func TestPipeNonStreamUpstreamResponse(t *testing.T) {
-	payload := "chunk-one|chunk-two"
-	reader := strings.NewReader(payload)
-	var downstream strings.Builder
-	startedAt := gatewayupstream.NowMs()
-	result, err := PipeNonStreamUpstreamResponse(context.Background(), reader, &downstream, NonStreamPipeInput{
-		StartedAt:   startedAt,
-		OnFirstByte: func() {},
-	})
-	if err != nil {
-		t.Fatalf("PipeNonStreamUpstreamResponse: %v", err)
-	}
-	if downstream.String() != payload {
-		t.Fatalf("downstream = %q", downstream.String())
-	}
-	if result.TransferredBytes != len(payload) {
-		t.Fatalf("transferred = %d", result.TransferredBytes)
-	}
-	if result.FirstByteMs == nil || *result.FirstByteMs < 0 {
-		t.Fatalf("firstByteMs = %v", result.FirstByteMs)
-	}
-	if result.CapturedBodyText == nil || *result.CapturedBodyText != payload {
-		t.Fatalf("captured = %v", result.CapturedBodyText)
-	}
-}
-
-func TestPipeNonStreamUpstreamResponseAbortMidway(t *testing.T) {
-	reader := &slowAbortReader{ctx: newCancelledContext()}
-	var downstream strings.Builder
-	_, err := PipeNonStreamUpstreamResponse(context.Background(), reader, &downstream, NonStreamPipeInput{
-		StartedAt: gatewayupstream.NowMs(),
-	})
-	var aborted *UpstreamRequestAbortedError
-	if !errorsAs(err, &aborted) {
-		t.Fatalf("expected abort error, got %v", err)
-	}
-}
-
-func TestPipeNonStreamUpstreamResponseForInspection(t *testing.T) {
-	payload := "hello-inspection-world"
-	reader := strings.NewReader(payload)
-	var downstream strings.Builder
-	var inspectionBody []byte
-	result, err := PipeNonStreamUpstreamResponseForInspection(context.Background(), reader, &downstream, InspectableNonStreamPipeInput{
-		NonStreamPipeInput: NonStreamPipeInput{StartedAt: gatewayupstream.NowMs()},
-		InspectBytes:       6,
-		BeforeDownstreamCommit: func(body []byte) error {
-			inspectionBody = append([]byte(nil), body...)
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("inspection pipe: %v", err)
-	}
-	if string(inspectionBody) != "hello-" {
-		t.Fatalf("inspection body = %q", string(inspectionBody))
-	}
-	if result.FullyBuffered {
-		t.Fatal("expected streaming inspection (body exceeds inspect bytes)")
-	}
-	if downstream.String() != payload {
-		t.Fatalf("downstream = %q", downstream.String())
 	}
 }
 

@@ -2,11 +2,9 @@ package gatewaydispatch
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayoauthcodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -145,104 +143,6 @@ func TestGeminiRequestEndpointFamily(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 首块读取：脚本化时钟下的墙钟归因
-// ---------------------------------------------------------------------------
-
-func TestReadFirstNonStreamChunkPrecommitSettledAfterDeadline(t *testing.T) {
-	// 脚本时钟：前两次 now=base（计算截止），读结算时 now=base+20（晚于截止）。
-	base := int64(100_000)
-	started := time.Now()
-	// 前 5ms 返回 base（截止=base+5），读结算时（~10ms）返回 base+20 → 结算晚于截止。
-	injectNowMs(t, func() int64 {
-		if time.Since(started) < 5*time.Millisecond {
-			return base
-		}
-		return base + 20
-	})
-	reader := &sleepSettleReader{}
-	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		StartedAt:                     base - 1_000,
-		Signal:                        context.Background(),
-		ResponsePrecommitDeadlineAtMs: ptrInt64(base + 5),
-		PendingReadSupersedesDeadline: true,
-	})
-	var deadlineErr *GatewayResponsePrecommitDeadlineError
-	if !errorsAs(err, &deadlineErr) || deadlineErr.DeadlineAtMs != base+5 {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-// sleepSettleReader 延迟 10ms 后返回数据（先于 20ms 的墙钟计时器，
-// 但结算时刻晚于墙钟截止）。
-type sleepSettleReader struct {
-	done bool
-}
-
-func (s *sleepSettleReader) Read(buffer []byte) (int, error) {
-	if s.done {
-		return 0, io.EOF
-	}
-	s.done = true
-	time.Sleep(10 * time.Millisecond)
-	copy(buffer, "abc")
-	return 3, nil
-}
-
-func TestReadFirstNonStreamChunkMaxLifetimeRace(t *testing.T) {
-	base := int64(200_000)
-	injectNowMs(t, func() int64 { return base })
-	reader := newBlockingReader()
-	t.Cleanup(reader.close)
-	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		StartedAt:             base - 1_000,
-		Signal:                context.Background(),
-		MaxLifetimeDeadlineAt: ptrInt64(base + 1),
-		MaxLifetimeMs:         ptrInt64(2_000),
-	})
-	var lifetimeErr *UpstreamBodyReadMaxLifetimeError
-	if !errorsAs(err, &lifetimeErr) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestReadFirstNonStreamChunkRacePrecommitAttribution(t *testing.T) {
-	base := int64(300_000)
-	injectNowMs(t, func() int64 { return base })
-	reader := newBlockingReader()
-	t.Cleanup(reader.close)
-	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		StartedAt:                     base - 1_000,
-		Signal:                        context.Background(),
-		ResponsePrecommitDeadlineAtMs: ptrInt64(base + 1),
-	})
-	var deadlineErr *GatewayResponsePrecommitDeadlineError
-	if !errorsAs(err, &deadlineErr) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestReadFirstNonStreamChunkSoftDeadlineContinue(t *testing.T) {
-	base := int64(400_000)
-	injectNowMs(t, func() int64 { return base })
-	// 软截止先触发 + handler continue：循环重进后读完成 → 正常读出。
-	reader := &sleepSettleReader{}
-	read, observed, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		StartedAt:           base - 1_000,
-		Signal:              context.Background(),
-		FirstByteDeadlineMs: ptrInt64(1_000),
-		OnFirstByteDeadline: func(FirstByteDeadlineDecisionInput) FirstByteDeadlineAction {
-			return FirstByteDeadlineActionContinue
-		},
-	})
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if read.N != 3 || !observed {
-		t.Fatalf("read = %#v observed=%v", read, observed)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 上游尝试循环的取消耗键（请求级换 Key 消耗请求尝试计数）
 // ---------------------------------------------------------------------------
 
@@ -286,39 +186,6 @@ func TestFetchWallBudgetCoordinationErrorText(t *testing.T) {
 	}
 	if kind != errorKindRethrow || stop.rethrown != abortErr {
 		t.Fatalf("kind=%v rethrown=%v", kind, stop.rethrown)
-	}
-}
-
-func TestReadFirstNonStreamChunkPrecommitAfterMaxLifetime(t *testing.T) {
-	// precommit 与 maxLifetime 均已过期且 maxLifetime 更早 → 上限错误归因。
-	base := int64(500_000)
-	injectNowMs(t, func() int64 { return base })
-	reader := newBlockingReader()
-	t.Cleanup(reader.close)
-	_, _, err := readFirstNonStreamChunkWithDeadlines(reader, make([]byte, 8), base-1_000, firstByteDeadlineReadInput{
-		StartedAt:                     base - 1_000,
-		Signal:                        context.Background(),
-		ResponsePrecommitDeadlineAtMs: ptrInt64(base - 50),
-		MaxLifetimeDeadlineAt:         ptrInt64(base - 100),
-		MaxLifetimeMs:                 ptrInt64(4_000),
-	})
-	var lifetimeErr *UpstreamBodyReadMaxLifetimeError
-	if !errorsAs(err, &lifetimeErr) {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestRaceReadWithDeadlinesNilSignalSoftOnly(t *testing.T) {
-	reader := newBlockingReader()
-	t.Cleanup(reader.close)
-	pendingRead := ObserveFirstBytePendingRead(func() (chunkResult, error) {
-		buffer := make([]byte, 8)
-		n, err := reader.Read(buffer)
-		return chunkResult{N: n, Err: err}, err
-	})
-	raceType, _, _ := raceReadWithDeadlines(pendingRead, nil, ptrInt64(-1), nil, nil, nil)
-	if raceType != raceSoftTimeout {
-		t.Fatalf("raceType = %v", raceType)
 	}
 }
 

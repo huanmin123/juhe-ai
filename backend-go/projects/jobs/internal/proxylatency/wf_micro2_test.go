@@ -27,7 +27,6 @@ func TestWFLoadRuntimeConfigRemainingGuards(t *testing.T) {
 		{name: "probe timeout 过短", key: "JUHE_AI_PROXY_LATENCY_PROBE_TIMEOUT", value: "100ms", wantErr: "duration"},
 		{name: "input ttl 过长", key: "JUHE_AI_PROXY_LATENCY_INPUT_TTL", value: "16m", wantErr: "duration"},
 		{name: "db queue 超上限", key: "JUHE_AI_PROXY_LATENCY_DB_QUEUE_SIZE", value: "99999", wantErr: "有效范围"},
-		{name: "worker 并发超上限", key: "JUHE_AI_PROXY_LATENCY_WORKER_CONCURRENCY", value: "99999", wantErr: "有效范围"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

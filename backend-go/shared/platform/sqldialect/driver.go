@@ -1,33 +1,57 @@
-package pgpool
+package sqldialect
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
 )
 
-// rewriteDriver 装配层 PG 方言改写：把方言共享 SQL 的顺序 `?` 占位符统一改写
-// 为 PostgreSQL 的 `$n`。pgx stdlib 不做 `?` → `$n` 改写，含 `?` 的 SQL 直发
-// 即 42601（w20c 测试环境实测四类语句：投影列表 CTE、探针候选、circuit
-// outbox、circuit incident）。在 driver 层改写使 pgpool 全部 PG 池的消费方
-// 零改动获得改写，SQLite driver 不经过此路径。
+// Driver 是装配层 PG 方言改写 driver：把方言共享 SQL 的顺序 `?` 占位符统一
+// 改写为 PostgreSQL 的 `$n`。这是消灭 BUG-0177/BUG-0219/BUG-0235 占位符
+// 家族的结构性防御：方言共享 SQL 裸 `?` 直发 pgx 即 42601 语法错误——pgx
+// stdlib 不做 `?` → `$n` 改写（w20c 测试环境实测四类语句：投影列表 CTE、
+// 探针候选、circuit outbox、circuit incident）。在 driver 层兜底改写，使任
+// 何未来遗漏 bind() 的执行点在 pgx 下也能正确执行，不再以方言语法错误暴露；
+// SQLite driver 不经过此路径。
 //
-// 幂等性：已改写为 `$n` 的 SQL 不含 `?`，现有局部改写实现（cleanuprepo 的
-// DB.Bind、circuitstore 的 boundDB、accountquality 的 dollarize、
-// oauthrefresh/recordmaintenance 的局部器）先于本层执行时产出不含 `?` 的
-// SQL，两层互不干扰。
+// 2026-09-30（清理批次 C5）：自 gateway/jobs pgpool 的双副本 rewrite.go
+// 逐字节等价收敛而来；accountbalance/gometrics 的裸开 pgx 路径同批接入。
+//
+// 幂等双保险与共存关系：各 chain 文件的手动 bind() 保留不动——bind() 先把
+// SQL 改写为 `$n`，到达本层的 SQL 不含 `?`，驱动层无可改写、原样透传；遗漏
+// bind() 时由本层兜底改写。两层互不干扰，输出等价。已改写为 `$n` 的 SQL 不
+// 含 `?`，各局部改写实现（cleanuprepo 的 DB.Bind、circuitstore 的 boundDB、
+// accountquality 的 dollarize、oauthrefresh/recordmaintenance 的局部器）先于
+// 本层执行时两层同样互不干扰。
 //
 // 前置约束：本 driver 覆盖范围内的 SQL 不允许把 `?` 用作字符串字面量内容
-// 或 jsonb 存在运算符（w20c 对 jobs + shared 全量扫描确认无此用法）；
-// 引入此类 SQL 时必须改用参数传递或先改写为 `$n`。
-
-type rewriteDriver struct {
+// 或 jsonb 存在运算符（gateway internal 与 jobs + shared 全量扫描确认无此用
+// 法）；引入此类 SQL 时必须改用参数传递或先改写为 `$n`。
+type Driver struct {
 	inner driver.Driver
 }
 
-func (d *rewriteDriver) Open(name string) (driver.Conn, error) {
+// WrapDriver 把 inner 包一层 `?`→`$n` 方言改写。不向 database/sql 注册新驱动
+// 名，避免与 pgx 原生名冲突；调用方直接持有 inner（如 pgx stdlib 默认 driver
+// 实例）并就地包装。
+func WrapDriver(inner driver.Driver) *Driver {
+	return &Driver{inner: inner}
+}
+
+// OpenDB 打开经改写包装的句柄：等价
+// sql.OpenDB(WrapDriver(inner).OpenConnector(dsn))，OpenConnector 错误上抛。
+// 对惰性 driver（如 pgx stdlib：OpenConnector 是惰性包装，DSN 解析延迟到
+// Connect）与 sql.Open(inner 注册名, dsn) 语义一致。
+func OpenDB(inner driver.Driver, dsn string) (*sql.DB, error) {
+	connector, err := WrapDriver(inner).OpenConnector(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return sql.OpenDB(connector), nil
+}
+
+func (d *Driver) Open(name string) (driver.Conn, error) {
 	conn, err := d.inner.Open(name)
 	if err != nil {
 		return nil, err
@@ -35,7 +59,7 @@ func (d *rewriteDriver) Open(name string) (driver.Conn, error) {
 	return rewriteConn{Conn: conn}, nil
 }
 
-func (d *rewriteDriver) OpenConnector(name string) (driver.Connector, error) {
+func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 	if dc, ok := d.inner.(driver.DriverContext); ok {
 		inner, err := dc.OpenConnector(name)
 		if err != nil {
@@ -59,7 +83,7 @@ func (c rewriteConnector) Connect(ctx context.Context) (driver.Conn, error) {
 }
 
 func (c rewriteConnector) Driver() driver.Driver {
-	return &rewriteDriver{inner: c.inner.Driver()}
+	return &Driver{inner: c.inner.Driver()}
 }
 
 type dsnConnector struct {
@@ -74,10 +98,10 @@ func (c dsnConnector) Connect(ctx context.Context) (driver.Conn, error) {
 func (c dsnConnector) Driver() driver.Driver { return c.driver }
 
 func bindQuery(query string) string {
-	return sqldialect.BindSQL(true, query)
+	return BindSQL(true, query)
 }
 
-// rewriteConn 透传 pgx 连接的完整能力面。database/sql 依据 conn 的静态类型
+// rewriteConn 透传底层连接的完整能力面。database/sql 依据 conn 的静态类型
 // 决定能力（Ping/BeginTx/QueryContext/…），嵌入 driver.Conn 接口只提升
 // Begin/Close/Prepare，其余能力必须显式断言透传，否则降级或失效。
 

@@ -23,8 +23,8 @@ const minimumProductionSecretLength = 32
 //   - JUHE_AI_DATABASE_DRIVER：sqlite（默认）| postgres；
 //   - JUHE_AI_DATABASE_PATH / JUHE_AI_STATS_DATABASE_PATH：SQLite 双库；
 //   - JUHE_AI_POSTGRES_URL：PostgreSQL 连接（performance 模式）；
-//   - JUHE_AI_INSTANCE_ID / JUHE_AI_WORKER_ROLE / JUHE_AI_WORKER_REPLICA_INDEX：
-//     调度器 stable seed 与租约 owner 前缀；
+//   - JUHE_AI_INSTANCE_ID / JUHE_AI_WORKER_ROLE：调度器 stable seed 与
+//     租约 owner 前缀（replica index 恒 0，见 loadWorkerConfig）；
 //   - JUHE_AI_SECRET：凭据封套密钥（oauthrefresh / internalapi 派发签名）；
 //   - JUHE_AI_USAGE_CATALOG_DATABASE_PATH / JUHE_AI_USAGE_SHARD_ROOT /
 //     JUHE_AI_USAGE_SHARD_COUNT：usagewriter 分片写入。
@@ -87,9 +87,9 @@ type workerConfig struct {
 	RecordMaintenanceQueueMaxMb    int
 
 	// RecordMaintenanceBatchSize / RecordMaintenanceShutdownFlushMaxBatches
-	// 是 record_maintenance_jobs 交接表 drain 的批次与停机排空批数
-	// （Node background.recordMaintenanceBatchSize / recordMaintenanceShutdownFlushMaxBatches
-	// 同名 env 与默认值）。
+	// 是 record_maintenance_jobs 交接表 drain 的批次与停机排空批数（C4 收编
+	// 为常量 10/1，Node background.recordMaintenanceBatchSize /
+	// recordMaintenanceShutdownFlushMaxBatches 同值）。
 	RecordMaintenanceBatchSize               int
 	RecordMaintenanceShutdownFlushMaxBatches int
 
@@ -106,13 +106,12 @@ type workerConfig struct {
 	ProbeConcurrency int
 
 	// 账户列表可用性投影维护（Node runtimeConfig.background
-	// accountListAvailabilityProjection* 同名 env、默认值与边界）：
+	// accountListAvailabilityProjection* 同值）：
 	//   - ListProjectionEnabled 2026-09-21 起恒 true（开关移除恒注册；原述
 	//     "Node 默认 false"为过时口径，2026-09-28 默认开启整改回正）；
-	//   - ListProjectionIntervalMS env 1000..60000 默认 1000；
-	//   - ListProjectionBatchSize 1..100 默认 100；
-	//   - ListProjectionMaxBatchesPerRun 1..400 默认 200；
-	//   - ListProjectionWorkerConcurrency 1..8 默认 4（仅 PG 生效，与 Node 一致）。
+	//   - ListProjectionIntervalMS env 1000..60000 默认 1000（运维节奏保留）；
+	//   - ListProjectionBatchSize / MaxBatchesPerRun / WorkerConcurrency
+	//     C4 收编为常量 100/200/4（仅 PG 生效，与 Node 一致）。
 	ListProjectionEnabled           bool
 	ListProjectionIntervalMS        int
 	ListProjectionBatchSize         int
@@ -157,8 +156,7 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		InstanceID:       "juhe-ai-jobs",
 		WorkerRole:       "worker",
 		WorkerReplicaIdx: 0,
-		// idle 上限受平台 pgpool 校验约束（idle <= min(open, 10)），默认值
-		// 必须落在合法区间内，否则 postgres 模式组装 worker pool 时直接失败。
+		// PG pool 常量 50/10（C4 收编，见 loadWorkerConfig 内注释）。
 		PostgresMaxOpenConns: 50,
 		PostgresMaxIdleConns: 10,
 		UsageShardCount:      16,
@@ -196,13 +194,8 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if value := strings.TrimSpace(getenv("JUHE_AI_WORKER_ROLE")); value != "" {
 		config.WorkerRole = value
 	}
-	config.WorkerReplicaIdx, err = workerEnvInt(getenv, "JUHE_AI_WORKER_REPLICA_INDEX", 0)
-	if err != nil {
-		return config, err
-	}
-	if config.WorkerReplicaIdx < 0 || config.WorkerReplicaIdx > 63 {
-		return config, fmt.Errorf("JUHE_AI_WORKER_REPLICA_INDEX 必须介于 0 和 63 之间")
-	}
+	// WorkerReplicaIdx 恒 0（原 env JUHE_AI_WORKER_REPLICA_INDEX 五源零引用，
+	// 2026-09-30 C4 收编为常量；当前为单实例单 worker 形态，无多副本分流）。
 	config.Secret = strings.TrimSpace(getenv("JUHE_AI_SECRET"))
 	// 生产信号与 gateway runtime.go productionRuntime 同源（NODE_ENV 单一
 	// production 判定）。
@@ -226,14 +219,10 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	config.StatsSQLitePath = datadir.Path(getenv, "JUHE_AI_STATS_DATABASE_PATH", "stats.sqlite3")
 	config.TaskRunsSQLitePath = datadir.Path(getenv, "JUHE_AI_TASK_RUNS_DATABASE_PATH", "task-runs.sqlite3")
 	config.PostgresURL = strings.TrimSpace(getenv("JUHE_AI_POSTGRES_URL"))
-	config.PostgresMaxOpenConns, err = workerEnvInt(getenv, "JUHE_AI_POSTGRES_MAX_OPEN_CONNS", config.PostgresMaxOpenConns)
-	if err != nil {
-		return config, err
-	}
-	config.PostgresMaxIdleConns, err = workerEnvInt(getenv, "JUHE_AI_POSTGRES_MAX_IDLE_CONNS", config.PostgresMaxIdleConns)
-	if err != nil {
-		return config, err
-	}
+	// PG pool 覆盖族（原 env JUHE_AI_POSTGRES_MAX_OPEN_CONNS /
+	// JUHE_AI_POSTGRES_MAX_IDLE_CONNS）五源零引用，2026-09-30 C4 收编为常量
+	// 50/10。idle 上限受平台 pgpool 校验约束（idle <= min(open, 10)），常量值
+	// 必须落在合法区间内，否则 postgres 模式组装 worker pool 时直接失败。
 	config.UsageCatalogSQLitePath = datadir.Path(getenv, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", "usage-catalog.sqlite3")
 	config.UsageShardRoot = datadir.Path(getenv, "JUHE_AI_USAGE_SHARD_ROOT", "usage-shards")
 	// usage spool 交接表目录：与 gateway 组合根（compose.go spoolDirectory）
@@ -278,31 +267,17 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if config.ChatRetentionDays < 1 || config.ChatRetentionDays > 365 {
 		return config, fmt.Errorf("JUHE_AI_CHAT_RETENTION_DAYS 必须在 1 到 365 之间的整数")
 	}
-	config.RecordMaintenanceQueueMaxItems, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_ITEMS", config.RecordMaintenanceQueueMaxItems)
-	if err != nil {
-		return config, err
-	}
-	config.RecordMaintenanceQueueMaxMb, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_MB", config.RecordMaintenanceQueueMaxMb)
-	if err != nil {
-		return config, err
-	}
-	config.RecordMaintenanceBatchSize, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE", config.RecordMaintenanceBatchSize)
-	if err != nil {
-		return config, err
-	}
-	if config.RecordMaintenanceBatchSize < 1 || config.RecordMaintenanceBatchSize > 10_000 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_BATCH_SIZE 必须介于 1 和 10000 之间")
-	}
-	config.RecordMaintenanceShutdownFlushMaxBatches, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES", config.RecordMaintenanceShutdownFlushMaxBatches)
-	if err != nil {
-		return config, err
-	}
-	if config.RecordMaintenanceShutdownFlushMaxBatches < 1 || config.RecordMaintenanceShutdownFlushMaxBatches > 10_000 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_SHUTDOWN_FLUSH_MAX_BATCHES 必须介于 1 和 10000 之间")
-	}
+	// record maintenance 内部队列/批量参数（原 env
+	// JUHE_AI_BACKGROUND_RECORD_MAINTENANCE_QUEUE_MAX_ITEMS /
+	// QUEUE_MAX_MB / BATCH_SIZE / SHUTDOWN_FLUSH_MAX_BATCHES）五源零引用，
+	// 2026-09-30 C4 收编为常量 5000/32/10/1（Node background 同名默认值）。
 	// 家族级开关（JUHE_AI_JOBS_<FAMILY>_ENABLED）已随 2026-09-19 零配置决策
 	// 删除：全部任务族强制常开，该循环不再读取任何家族开关变量。
 	config.ProbeConcurrency, err = workerEnvInt(getenv, "JUHE_AI_JOBS_PROBE_CONCURRENCY", config.ProbeConcurrency)
+	if err != nil {
+		return config, err
+	}
+	config.DatasetSQLitePath = datadir.Path(getenv, "JUHE_AI_DATASET_DATABASE_PATH", "dataset.sqlite3")
 	if err != nil {
 		return config, err
 	}
@@ -325,27 +300,9 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	if config.ListProjectionIntervalMS < 1_000 || config.ListProjectionIntervalMS > 60_000 {
 		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS 必须介于 1000 和 60000 之间")
 	}
-	config.ListProjectionBatchSize, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE", config.ListProjectionBatchSize)
-	if err != nil {
-		return config, err
-	}
-	if config.ListProjectionBatchSize < 1 || config.ListProjectionBatchSize > 100 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE 必须介于 1 和 100 之间")
-	}
-	config.ListProjectionMaxBatchesPerRun, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN", config.ListProjectionMaxBatchesPerRun)
-	if err != nil {
-		return config, err
-	}
-	if config.ListProjectionMaxBatchesPerRun < 1 || config.ListProjectionMaxBatchesPerRun > 400 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_MAX_BATCHES_PER_RUN 必须介于 1 和 400 之间")
-	}
-	config.ListProjectionWorkerConcurrency, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY", config.ListProjectionWorkerConcurrency)
-	if err != nil {
-		return config, err
-	}
-	if config.ListProjectionWorkerConcurrency < 1 || config.ListProjectionWorkerConcurrency > 8 {
-		return config, fmt.Errorf("JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_WORKER_CONCURRENCY 必须介于 1 和 8 之间")
-	}
+	// 投影批量族（原 env ..._PROJECTION_BATCH_SIZE / MAX_BATCHES_PER_RUN /
+	// WORKER_CONCURRENCY）五源零引用，2026-09-30 C4 收编为常量 100/200/4
+	// （仅 PG 生效，与 Node 一致）；轮询间隔 INTERVAL_MS 属运维节奏保留 env。
 	config.RedisStateURL = strings.TrimSpace(getenv("JUHE_AI_REDIS_STATE_URL"))
 	config.RedisNamespace = strings.TrimSpace(getenv("JUHE_AI_REDIS_NAMESPACE"))
 	capacity := int64(50_000)

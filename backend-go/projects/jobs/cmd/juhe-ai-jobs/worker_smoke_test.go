@@ -28,7 +28,6 @@ func workerSmokeTestEnv(t *testing.T) map[string]string {
 		"JUHE_AI_USAGE_SHARD_ROOT":                filepath.Join(root, "usage-shards"),
 		"JUHE_AI_INSTANCE_ID":                     "smoke-instance",
 		"JUHE_AI_WORKER_ROLE":                     "stats-worker",
-		"JUHE_AI_WORKER_REPLICA_INDEX":            "0",
 		"JUHE_AI_SECRET":                          "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":           "5000",
 		"JUHE_AI_DATASET_DATABASE_PATH":           filepath.Join(root, "dataset.sqlite3"),

@@ -1,6 +1,8 @@
 # Go 后端架构基线
 
 > **现行双模式基线（2026-08-14）。** `backend-go/go.work` 管理独立的 `gateway`、`jobs`、`maintenance` 模块；F1/F2 已物理在 `jobs`，F3/F4 已物理在 `gateway`。Go 要同时支持 SQLite 与 PostgreSQL/Redis，并按 完整功能接管与 Node 归档迁移规则（已删除，git 历史可溯） 的 L1-L4 生命周期一次接管一个完整功能：接管后对应 Node 文件退出活跃路径并归档，不保留 fallback。功能批次编号 F1-F6 以 迁移状态与后续批次-20260812（已删除，git 历史可溯） 为准。
+>
+> **终局补记（2026-09-30）。** 上述 L1-L4 迁移已全部完成：Node 后端于 2026-09-05 全量清零（归档已移出仓库，git 历史可溯），Go 三项目为唯一后端实现，现行生产形态为国内单机 Docker go-only。本文的通用技术、存储和并发规则继续生效；凡涉及 Node 共存期的条款（双模式并行的 owner bridge、typed command、DB-service HTTP/IPC、F1-F6 批次编号语境等）均为历史背景，按共存期边界理解，不再是现行运行事实。
 
 > **项目边界补充（方案 A 更新）。** Go 代码按 [Go 三项目架构基线](Go三项目架构基线.md) 拆为独立的 `gateway`、`jobs`、`maintenance` 模块。本文保留通用技术、存储和并发规则；F1/F2 由 jobs 承载，F3/F4 由 gateway 承载。一般新定时功能进入 jobs；J3b 是唯一已批准例外，由 gateway 在同一进程内承担管理入口、scheduler、专属 J3b Store 与 Business projector，不得调用 jobs 或 Node。
 

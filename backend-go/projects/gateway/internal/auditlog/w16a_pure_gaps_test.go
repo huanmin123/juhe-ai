@@ -92,15 +92,6 @@ func TestW16aNodeUTF16StringMarshalEscapesEveryArm(t *testing.T) {
 	}
 }
 
-func TestW16aLoadConfigRejectsBadPostgresPoolSetting(t *testing.T) {
-	root := t.TempDir()
-	env := sqliteEnv(root)
-	env["JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS"] = "zero"
-	if _, err := LoadConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), "JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS 必须是正整数") {
-		t.Fatalf("非法池上限必须失败: %v", err)
-	}
-}
-
 func TestW16aLoadConfigRejectsBusinessSettingsSameFile(t *testing.T) {
 	root := t.TempDir()
 	env := sqliteEnv(root)

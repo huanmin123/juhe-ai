@@ -56,3 +56,6 @@ go_tests_tmp.txt
 vendor
 
 /.codegraph/
+
+# docker single-server 构建产物（deploy.sh 每次全量重编译，不信任既有产物）
+backend-go/docker/single-server/build/bin/

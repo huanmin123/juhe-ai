@@ -93,7 +93,7 @@ assert.match(editOpenSource, /'edit-basic'/, '普通编辑弹窗首开只允许�
 assert.match(basicInfoSource, /<a-form-item class="dispatch-status-field" label="状态">/, '新增和编辑必须展示同一组三态状态选择')
 assert.match(basicInfoSource, /@change="form\.statusSelectionExplicit = true"/, '手动切换状态必须标记为显式选择')
 assert.doesNotMatch(healthCheckModelFieldSource, /allow-clear/, '必填检查模型不得暴露清空入口并生成后端不接受的 null PATCH')
-assert.match(savePayloadSource, /if \(!healthCheckModel\) return '请选择检查模型'/, '保存前必须在前端拦截空检查模型')
+assert.match(savePayloadSource, /if \(!healthCheckModel && !oauthDefaultsAllowed\) return '请选择检查模型'/, '保存前必须在前端拦截空检查模型（国外 OAuth 供应商创建留空时由后端默认模型兜底）')
 assert.match(editFormSource, /supportedModels\[0\] \?\? ''/, '已选检查模型离开支持模型集合时应回落到首个可用模型')
 assert.match(cachedDefaultGroupSource, /getCachedUserReferenceData\(referenceParams\)/, '新增表单应直接读取登录后预热的默认分组缓存')
 assert.doesNotMatch(cachedDefaultGroupSource, /loadUserReferenceData|api\./, '默认分组缓存缺失时弹窗不得补发网络请求')

@@ -211,21 +211,9 @@ func TestW9BNormalizedViewersArms(t *testing.T) {
 	}
 }
 
-func TestW9BLoadConfigPostgresPoolLimitsArm(t *testing.T) {
-	env := func(key string) string {
-		values := map[string]string{
-			"JUHE_AI_OPERATION_LOG_STORE":                   "postgres",
-			"JUHE_AI_OPERATION_LOG_POSTGRES_URL":            "postgres://example/db",
-			"JUHE_AI_OPERATION_LOG_INSTANCE_ID":             "w9b",
-			"JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS": "2",
-			"JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS": "5",
-		}
-		return values[key]
-	}
-	if _, err := LoadConfig(env); err == nil || !strings.Contains(err.Error(), "连接池配置无效") {
-		t.Fatalf("池上限校验=%v", err)
-	}
-}
+// 2026-09-30 C4 收编：JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS /
+// MAX_IDLE_CONNS 收编为常量后 pool 值不再可配置，
+// TestW9BLoadConfigPostgresPoolLimitsArm（非法池上限 fail 臂）随之删除。
 
 func TestW9BProducerNilSafetyAndUnmarshalFallback(t *testing.T) {
 	// nil 接收者与 nil store 都是 no-op。

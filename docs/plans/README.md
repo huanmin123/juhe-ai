@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20260930T120000000Z](计划-20260930T120000000Z-全面审查清理批次-过度设计与死代码.md)：登记 2026-09-30 全面审查确认的过度设计与死代码清理批次共 10 项——C1 Node→Go 切流门禁与 cutover evidence/readback 链整体空转（约 1440 行、12 个门禁 env 全部署零出现，删留 auto-claim）、C2 前端 7 个死组件 1479 行、C3 juhe-ai-boolcheck 调试二进制（bc27d0e0d 带入的 `.local` 凭据路径已提交，全库零引用）、C4 125/318 env 全名零引用按域分批收编常量（每批同步 docker/single-server/README.md）、C5 pgpool rewrite.go gateway/jobs 双副本收敛 shared/platform（手动 bind 层退役前置）、C6 `JUHE_AI_DEBUG_SQL` 临时 tracer 按自述删除、C7 死导出符号（前端三个零调用导出随 BUG-0243 批次）、C8 env 解析小工具多副本并入 R1 先例、C9 git 追踪 33MB 编译产物 `git rm` + .gitignore、C10 inval 跨实例同步与 Prometheus metrics 两项保守裁决交用户——每项列位置/证据摘要/代价/处置建议；已立案，待用户授权实施（删除类操作需授权，本计划只登记不动代码）。
+
 - [PLAN-20260919T093823230Z](计划-20260919T093823230Z-切号有效上游目标冻结与target-aware切号实施.md)：实施《切号时有效上游目标与上下文迁移设计》定稿契约：`gatewaydispatch` 新增请求级 `SwitchTarget` 冻结结构与 `FilterAccountsForSwitchTarget` target-aware 过滤，流式未提交重试、上游失败账户推进、分组 fallback、模型感知 reload 全部消费冻结目标，target 缺失时 fail-closed（`switch_target_unresolved`）；`ConvertedContext` 独立重构与验收矩阵第 8 行 RHS-only 候选加载暂缓。已完成（2026-09-19，独立复审通过；代码随 BUG-0178 批次提交 bc27d0e0d 入库）。
 
 - [PLAN-20260919T000723744Z](计划-20260919T000723744Z-核心系统缺陷修复第二轮-登记项处置.md)：处置第一轮登记项：dial 阶段失败拆分、account_runtime 死包删除、gatewayaccounteffects 死半区整簇删除、outbox drain 并发/告警/settings 缓存、OAuth 保活最小装配、路由状态锁内扫描与 latency_degraded 批量读、图像 lane 瞬态语义文档澄清。独立复审通过（无 blocker）。全部落地（`4d47decaa`/`d372ec2fa`/`412f679a4`/`94f879229` 等）；gatewaydispatch/gatewaycircuit 侧修复已随 R3 线提交 `d64e51c9b` 入库（HEAD 复核健在）。已完成。

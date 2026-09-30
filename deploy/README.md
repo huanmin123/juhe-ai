@@ -14,7 +14,7 @@
 
 发布包是 go-only 形态，只有一条启动路径：`juhe-ai-go-gateway` 绑定 `JUHE_AI_HOST:JUHE_AI_PORT` 成为主入口（系统 API 与 `/v1` 网关链是 gateway 常驻能力，无环境变量开关），`juhe-ai-go-jobs` 承载 F1/F2。Node Web/API 已归档，不再提供 `hybrid` / `node` 部署模式；`JUHE_AI_DEPLOY_MODE` 出现历史值时启动脚本会拒绝启动，唯一合法值是 `go`（缺省即 go）。
 
-可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 按 `backend/.env` 六库路径或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。
+可选预检：`JUHE_AI_GO_MAINTENANCE_BOOTSTRAP=true` 启动前执行幂等的 `backend-go/juhe-ai-maintenance --ensure-schema`（SQLite 六库路径与 codex shard 根目录按进程 env 优先、`backend/.env` 回退读取，与 gateway/jobs 同序；未配置的路径回退到零配置派生表同源的短名，数据根为 `JUHE_AI_DATA_DIR`（同样 env 优先、`backend/.env` 回退，缺省 `./data`），如 `<数据根>/business.sqlite3`；或 PostgreSQL `--dsn`），`JUHE_AI_GO_MAINTENANCE_SEED=true` 追加 `--seed`。
 
 可选运行变量（均有缺省值，常规单机部署无需设置）：
 
@@ -72,6 +72,8 @@ JUHE_AI_SECRET=可留空由启动脚本首次生成，或换成自己保存的�
 JUHE_AI_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 JUHE_AI_OAUTH_PROXY_URL=
 ```
+
+上表样例沿用了 Node 时代长名（如 `./data/juhe-ai.sqlite3`）。这些旧长名仅在像样例这样显式配置时继续有效：路径 env 显式配置时 gateway、jobs 与 maintenance 预检都直接使用配置值，两侧一致。若不配置这些路径 env，gateway/jobs 与 maintenance 预检按零配置派生表落到数据根 `JUHE_AI_DATA_DIR`（缺省 `./data`）下的短名文件（`business.sqlite3`、`chat.sqlite3`、`dataset.sqlite3`、`usage-catalog.sqlite3`、`stats.sqlite3` 等），不会读取长名文件；新部署可省略这些路径 env 改用短名派生（owner ID 等其他必填项仍需配置），沿用长名的既有部署保持显式配置即可。
 
 新部署可以使用启动脚本生成的 `JUHE_AI_SECRET`，也可以改成自己保存的强随机值；如上线窗口已离线处理并保留当前 schema 数据，必须沿用原 `JUHE_AI_SECRET` 解密敏感字段。F3 审计与 F4 操作日志已完全进程内写入（去跨进程战役第四刀），不存在独立的输入端点密钥；审计派发、操作日志写入与 `JUHE_AI_SECRET` 派生的 owner lease 全部在 gateway 进程内完成。项目运行时不承担旧数据迁移或旧结构兼容。`JUHE_AI_DATABASE_PATH` 保存业务配置和资源关系；公开接口日志、模型检测和清理目标在数据集目录库；Go F1 运行日志索引在 `JUHE_AI_RUNTIME_LOG_DATABASE_PATH`；usage shard 注册表、列表筛选目录和账号 / API Key scope catalog 在使用记录目录库；新写入的使用记录保存在 usage shard 目录；统计缓存和窗口表保存在统计结果库；Go F2 表监控快照在 `JUHE_AI_TABLE_MONITOR_DATABASE_PATH`；Go F3 原始审计事实、payload/blob 与 hot-search 分别使用上述 F3 专用路径；Go F4 操作日志事实库在 `JUHE_AI_OPERATION_LOG_DATABASE_PATH`，只读业务设置来自 `JUHE_AI_OPERATION_LOG_BUSINESS_SETTINGS_PATH`。八个 SQLite 文件路径必须互不相同，usage shard 根目录也要与这些文件区分。原始审计正文捕获固定开启，不再通过环境变量关闭。
 

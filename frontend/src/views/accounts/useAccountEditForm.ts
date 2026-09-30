@@ -815,6 +815,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountResponseInspectionRules.value = advancedLoad?.responseInspectionRules ?? loadAccountResponseInspectionRules()
     form.quotaRecoveryPolicy = advancedLoad?.patch.quotaRecoveryPolicy ?? loadAccountQuotaRecoveryPolicy(undefined)
     authResult.value = undefined
+    // BUG-0243 问题 5a：reveal 先于高级配置加载返回时，上方 advancedBaseline 由占位 patch
+    // 重建（不含已 reveal 的明文凭据），未再修改的保存 diff 会把真实凭据当变更重提交；
+    // preserve 保住了表单明文（credentialsRevealed 未被上方重置），按当前表单重跑基线重建。
+    if (credentialsRevealed.value) refreshEditBaselinesAfterCredentialReveal()
     return true
   }
 

@@ -26,11 +26,11 @@ import (
 
 // chatWebSearchTimeoutMs 是子调用整体超时（契约 §6.1 默认 120s；env
 // JUHE_AI_CHAT_WEB_SEARCH_TIMEOUT_MS 可覆盖，毫秒）。chatWebSearchResultMaxBytes
-// 是回喂主模型的 tool result 字节上限（契约 §13.3 默认 4KB；env
-// JUHE_AI_CHAT_WEB_SEARCH_RESULT_BYTES 可覆盖）。env 初始化求值一次。
+// 是回喂主模型的 tool result 字节上限（契约 §13.3 默认 4KB；2026-09-30 C4
+// 收编：原 JUHE_AI_CHAT_WEB_SEARCH_RESULT_BYTES 全库五源零引用，内部限额
+// 微调旋钮收编为常量）。超时 env 初始化求值一次。
 var (
-	chatWebSearchTimeoutMs      = chatWebSearchTimeoutConfig()
-	chatWebSearchResultMaxBytes = chatWebSearchResultBytesConfig()
+	chatWebSearchTimeoutMs = chatWebSearchTimeoutConfig()
 	// chatWebSearchMaxResponseBytes 是子调用单块/终态响应的读取上限。
 	chatWebSearchMaxResponseBytes = 2 * 1024 * 1024
 	// chatWebSearchProgressIntervalMs 是过程增量下发节流窗口（阶段切换即时）。
@@ -39,12 +39,12 @@ var (
 	chatWebSearchInstructions = "你是搜索子代理。针对用户给出的搜索词执行联网搜索，用简明段落汇总关键结果（优先时效性信息），并在末尾以「来源:」列表逐行列出引用的 URL。只依据真实搜索结果作答，不得编造。"
 )
 
+// chatWebSearchResultMaxBytes 是回喂主模型的 tool result 字节上限（原 env
+// JUHE_AI_CHAT_WEB_SEARCH_RESULT_BYTES 默认值 4KB，收编为常量）。
+const chatWebSearchResultMaxBytes = 4 * 1024
+
 func chatWebSearchTimeoutConfig() int64 {
 	return int64(chatEnvIntOrDefault("JUHE_AI_CHAT_WEB_SEARCH_TIMEOUT_MS", 120*1000, 1000, 600*1000))
-}
-
-func chatWebSearchResultBytesConfig() int {
-	return chatEnvIntOrDefault("JUHE_AI_CHAT_WEB_SEARCH_RESULT_BYTES", 4*1024, 512, 64*1024)
 }
 
 // chatWebSearchProgress 是子代理过程增量（契约 §6.1/§6.2/§10.3）：stage 推进

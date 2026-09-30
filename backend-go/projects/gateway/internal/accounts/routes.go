@@ -3,6 +3,7 @@ package accounts
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,6 +23,11 @@ type Deps struct {
 	// TestDispatch is the manual-test dispatch port (test_effects.go); Mount
 	// injects it into the store, so composition roots only set the field.
 	TestDispatch TestDispatchEffects
+	// Log 可选（nil 时跳过日志）：writeError / writeM11ReadError 等以 500
+	// 响应吞掉原始错误（客户端只见「服务器内部错误」），裸 println 会绕过
+	// JSONL 日志管道——这里提供落点（对齐 apikeys 先例），Mount 会同步接线
+	// 到 Store（authorized 读路径），未接线时静默。（BUG-0248）
+	Log *slog.Logger
 }
 
 // Mount wires the accounts route family: admin surface on /accounts
@@ -30,6 +36,9 @@ type Deps struct {
 // and drops any systemAccountId query).
 func (d *Deps) Mount(k *kernel.Kernel) {
 	d.Store.SetAuthorizedReader(d.Authorized)
+	// BUG-0248：authorized 读路径的降级日志走 Store（无 Deps 上下文），
+	// 这里与 SetAuthorizedReader 同位接线。
+	d.Store.SetLogger(d.Log)
 
 	prefix := "/__aisys__/api"
 	admin := d.Auth.RequireAdmin
@@ -819,7 +828,12 @@ func (d *Deps) writeError(w http.ResponseWriter, err error) {
 	case errors.As(err, &tagInUse):
 		kernel.WriteBadRequest(w, tagInUse.Error())
 	default:
-		println("accounts slice internal error: " + err.Error())
+		// BUG-0248：原始错误只落服务端日志（响应是通用 500 文案）。
+		// writeError 的调用面跨 m09/api-key-revalidate 文件，签名保持
+		// (w, err)，此处无法携带 path/id 上下文。
+		if d.Log != nil {
+			d.Log.Error("accounts slice internal error", "error", err.Error())
+		}
 		kernel.WriteError(w, http.StatusInternalServerError, "服务器内部错误")
 	}
 }

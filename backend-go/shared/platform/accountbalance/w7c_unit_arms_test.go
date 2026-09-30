@@ -619,36 +619,30 @@ func TestW7CLoadRuntimeConfigArms(t *testing.T) {
 	}
 
 	valid := map[string]string{
-		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":                    "go",
-		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":                      "w7c",
-		"JUHE_AI_ACCOUNT_BALANCE_STORE":                         "postgres",
-		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL":                  "postgres://example.test/db",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL":            "postgres://example.test/business",
-		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":             "secret",
-		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":              "0123456789abcdef0123456789abcdef",
-		"JUHE_AI_ACCOUNT_BALANCE_SCAN_INTERVAL":                 "10s",
-		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE":                   "10m",
-		"JUHE_AI_ACCOUNT_BALANCE_ACCOUNT_LEASE":                 "5m",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_TTL":                     "10m",
-		"JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT":                 "5s",
-		"JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET":                  "30s",
-		"JUHE_AI_ACCOUNT_BALANCE_MAX_RESPONSE_BYTES":            "1024",
-		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY":               "8",
-		"JUHE_AI_ACCOUNT_BALANCE_IO_CONCURRENCY":                "4",
-		"JUHE_AI_ACCOUNT_BALANCE_DB_CONCURRENCY":                "2",
-		"JUHE_AI_ACCOUNT_BALANCE_DB_QUEUE_SIZE":                 "16",
-		"JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE":                    "16",
-		"JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE":           "8",
-		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS":       "4",
-		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_IDLE_CONNS":       "2",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_OPEN_CONNS": "4",
-		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS": "2",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER":          "go",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_ID":            "w7c",
+		"JUHE_AI_ACCOUNT_BALANCE_STORE":               "postgres",
+		"JUHE_AI_ACCOUNT_BALANCE_POSTGRES_URL":        "postgres://example.test/db",
+		"JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL":  "postgres://example.test/business",
+		"JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET":   "secret",
+		"JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET":    "0123456789abcdef0123456789abcdef",
+		"JUHE_AI_ACCOUNT_BALANCE_SCAN_INTERVAL":       "10s",
+		"JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE":         "10m",
+		"JUHE_AI_ACCOUNT_BALANCE_ACCOUNT_LEASE":       "5m",
+		"JUHE_AI_ACCOUNT_BALANCE_INPUT_TTL":           "10m",
+		"JUHE_AI_ACCOUNT_BALANCE_PROBE_TIMEOUT":       "5s",
+		"JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET":        "30s",
+		"JUHE_AI_ACCOUNT_BALANCE_MAX_RESPONSE_BYTES":  "1024",
+		"JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY":     "8",
+		"JUHE_AI_ACCOUNT_BALANCE_DB_QUEUE_SIZE":       "16",
+		"JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE":          "16",
+		"JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE": "8",
 	}
 	config, err := LoadRuntimeConfig(w7cEnvGetter(valid))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.OwnerID != "w7c" || config.IOConcurrency != 4 || config.DBQueueSize != 16 || config.MaxResponseBytes != 1024 {
+	if config.OwnerID != "w7c" || config.IOConcurrency != config.MaxConcurrency || config.DBConcurrency != defaultAccountBalanceDBConcurrency || config.DBQueueSize != 16 || config.MaxResponseBytes != 1024 {
 		t.Fatalf("parsed config: %#v", config)
 	}
 
@@ -660,8 +654,6 @@ func TestW7CLoadRuntimeConfigArms(t *testing.T) {
 		{"owner not go", "JUHE_AI_ACCOUNT_BALANCE_JOBS_OWNER", "JOBS_OWNER=go"},
 		// owner id 缺省回落主机名（2026-09-21 零配置），不再有缺失失败臂。
 		{"wrong store", "JUHE_AI_ACCOUNT_BALANCE_STORE", "postgres"},
-		{"bad pool open", "JUHE_AI_ACCOUNT_BALANCE_POSTGRES_MAX_OPEN_CONNS", "正整数"},
-		{"bad input pool idle", "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_MAX_IDLE_CONNS", "连接池配置无效"},
 		{"missing business url", "JUHE_AI_ACCOUNT_BALANCE_INPUT_POSTGRES_URL", "INPUT_POSTGRES_URL"},
 		{"missing credential secret", "JUHE_AI_ACCOUNT_BALANCE_CREDENTIAL_SECRET", "CREDENTIAL_SECRET"},
 		{"short http secret", "JUHE_AI_ACCOUNT_BALANCE_JOBS_HTTP_SECRET", "32"},
@@ -673,8 +665,6 @@ func TestW7CLoadRuntimeConfigArms(t *testing.T) {
 		{"bad cycle budget", "JUHE_AI_ACCOUNT_BALANCE_CYCLE_BUDGET", "duration"},
 		{"bad response bytes", "JUHE_AI_ACCOUNT_BALANCE_MAX_RESPONSE_BYTES", "1.."},
 		{"bad max concurrency", "JUHE_AI_ACCOUNT_BALANCE_MAX_CONCURRENCY", "1..5096"},
-		{"bad io concurrency", "JUHE_AI_ACCOUNT_BALANCE_IO_CONCURRENCY", "1..5096"},
-		{"bad db concurrency", "JUHE_AI_ACCOUNT_BALANCE_DB_CONCURRENCY", "1..5096"},
 		{"bad db queue", "JUHE_AI_ACCOUNT_BALANCE_DB_QUEUE_SIZE", "1..5096"},
 		{"bad batch size", "JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE", "1..5096"},
 		{"bad recovery batch", "JUHE_AI_ACCOUNT_BALANCE_RECOVERY_BATCH_SIZE", "1.."},
@@ -721,7 +711,9 @@ func TestW7CLoadRuntimeConfigArms(t *testing.T) {
 	}
 	tight["JUHE_AI_ACCOUNT_BALANCE_ACCOUNT_LEASE"] = "5m"
 	tight["JUHE_AI_ACCOUNT_BALANCE_OWNER_LEASE"] = "60s"
-	tight["JUHE_AI_ACCOUNT_BALANCE_IO_CONCURRENCY"] = "1"
+	// 清理批次 C4：IO_CONCURRENCY 已收编（恒等于 MAX_CONCURRENCY），用
+	// BATCH_SIZE 拉高 waves 触发同一 lease 覆盖校验。
+	tight["JUHE_AI_ACCOUNT_BALANCE_BATCH_SIZE"] = "4096"
 	if _, err := LoadRuntimeConfig(w7cEnvGetter(tight)); err == nil || !strings.Contains(err.Error(), "最坏 probe") {
 		t.Fatalf("lease below batch worst case: %v", err)
 	}

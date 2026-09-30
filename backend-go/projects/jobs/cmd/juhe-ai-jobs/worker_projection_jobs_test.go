@@ -46,11 +46,6 @@ func TestListProjectionConfigDefaults(t *testing.T) {
 	if _, err := loadWorkerConfig(getenvFrom(withInterval("61000"))); err == nil {
 		t.Fatal("interval > 60000 必须 fail closed")
 	}
-	withBatch := workerSmokeTestEnv(t)
-	withBatch["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_BATCH_SIZE"] = "101"
-	if _, err := loadWorkerConfig(getenvFrom(withBatch)); err == nil {
-		t.Fatal("batchSize > 100 必须 fail closed")
-	}
 }
 
 // projectionSeedDB 建立投影族全链所需的最小 SQLite 业务库（列集与

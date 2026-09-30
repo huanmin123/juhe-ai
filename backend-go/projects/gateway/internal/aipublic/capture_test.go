@@ -240,6 +240,108 @@ func TestAIPublicCaptureBodyParseFailed(t *testing.T) {
 	}
 }
 
+// TestAIPublicCaptureBodyTooLargeRejected mirrors the express.json 256kb
+// limit mounted at publicApiPrefix (system-api-app.ts: capturePublicApiLog,
+// express.json({limit}), handleJsonBodyError): an oversized POST answers the
+// 413 {"message":"请求体过大"} branch before the bearer guard and the routes,
+// unauthenticated requests included, and the capture records the
+// request_body_too_large marker with a nil source.
+func TestAIPublicCaptureBodyTooLargeRejected(t *testing.T) {
+	capture := &recordingCapture{}
+	env := newAIPublicCaptureEnv(t, func(deps *Deps) { deps.Capture = capture })
+	env.seedTargetUser("user_huanmin", "huanmin", "active")
+	token := env.seedSource("extsrc_big", "exttok_big", "juis_token_bigbigbigbi",
+		"active", "active", []string{"juhe_ai_public:group_add:write"}, "[]", "", "")
+
+	oversized := `{"padding":"` + strings.Repeat("a", captureRequestBodyLimitBytes) + `"}`
+
+	// Over-limit with a valid token: the limit fires before the guard, so the
+	// token never validates and the record carries no source.
+	code, payload, _ := env.doAuth(http.MethodPost, Prefix+"/group/add", oversized, token)
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body status: %d", code)
+	}
+	if payload["message"] != "请求体过大" {
+		t.Fatalf("oversized body message mismatch: %v", payload)
+	}
+	inputs := capture.recorded()
+	if len(inputs) != 1 {
+		t.Fatalf("oversized request must record exactly once, got %d", len(inputs))
+	}
+	rejected := inputs[0]
+	if rejected.StatusCode != 413 || rejected.Success {
+		t.Fatalf("oversized input mismatch: %+v", rejected)
+	}
+	if rejected.SourceRefID != "" || rejected.TokenID != "" {
+		t.Fatalf("oversized request must not reach the guard/handler: %+v", rejected)
+	}
+	if rejected.RequestCaptureStatus != publicapilogs.CaptureStatusDropped {
+		t.Fatalf("oversized body must drop the request snapshot: %+v", rejected)
+	}
+	requestData := snapshotMap(t, rejected.RequestData)
+	body, isMap := requestData["body"].(map[string]any)
+	if !isMap || body["dropped"] != true || body["reason"] != "request_body_too_large" {
+		t.Fatalf("too-large dropped marker mismatch: %v", requestData["body"])
+	}
+	var rows int
+	if err := env.db.QueryRow(`SELECT COUNT(*) FROM groups`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("oversized request must not create groups: %d", rows)
+	}
+
+	// The pre-auth 401 path takes the same limit: an unauthenticated oversized
+	// POST answers 413 (Node mounts express.json ahead of the router guard).
+	code, payload, _ = env.doAuth(http.MethodPost, Prefix+"/group/add", oversized, "")
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("unauthenticated oversized body status: %d", code)
+	}
+	if payload["message"] != "请求体过大" {
+		t.Fatalf("unauthenticated oversized body message mismatch: %v", payload)
+	}
+	inputs = capture.recorded()
+	if len(inputs) != 2 {
+		t.Fatalf("unauthenticated oversized request must record, got %d", len(inputs))
+	}
+	if inputs[1].StatusCode != 413 || inputs[1].SourceRefID != "" {
+		t.Fatalf("unauthenticated oversized input mismatch: %+v", inputs[1])
+	}
+}
+
+// TestAIPublicCaptureBodyLimitBoundary keeps the in-limit contract: a body of
+// exactly captureRequestBodyLimitBytes passes the bound, parses and reaches
+// the route handler (the semantic 400 here), never the 413 branch.
+func TestAIPublicCaptureBodyLimitBoundary(t *testing.T) {
+	capture := &recordingCapture{}
+	env := newAIPublicCaptureEnv(t, func(deps *Deps) { deps.Capture = capture })
+	env.seedTargetUser("user_huanmin", "huanmin", "active")
+	token := env.seedSource("extsrc_edge", "exttok_edge", "juis_token_edgeedgeedg",
+		"active", "active", []string{"juhe_ai_public:group_add:write"}, "[]", "", "")
+
+	prefix, suffix := `{"padding":"`, `"}`
+	exact := prefix + strings.Repeat("a", captureRequestBodyLimitBytes-len(prefix)-len(suffix)) + suffix
+	if len(exact) != captureRequestBodyLimitBytes {
+		t.Fatalf("boundary body must be exactly the limit, got %d", len(exact))
+	}
+
+	code, _, _ := env.doAuth(http.MethodPost, Prefix+"/group/add", exact, token)
+	if code != http.StatusBadRequest {
+		t.Fatalf("exact-limit body must reach the handler (semantic 400), got %d", code)
+	}
+	inputs := capture.recorded()
+	if len(inputs) != 1 {
+		t.Fatalf("exact-limit request must record exactly once, got %d", len(inputs))
+	}
+	edge := inputs[0]
+	if edge.StatusCode != 400 || edge.SourceRefID != "extsrc_edge" || edge.TokenID != "exttok_edge" {
+		t.Fatalf("exact-limit input must pass auth and reach the route: %+v", edge)
+	}
+	if edge.RequestCaptureStatus == publicapilogs.CaptureStatusDropped {
+		t.Fatalf("exact-limit body must not drop the request snapshot: %+v", edge)
+	}
+}
+
 // TestAIPublicCaptureNilSafe keeps the routes functional without the port.
 func TestAIPublicCaptureNilSafe(t *testing.T) {
 	env := newAIPublicCaptureEnv(t, nil)

@@ -71,15 +71,9 @@ func LoadManualAdminConfig(getenv func(string) string) (ManualAdminConfig, error
 	}
 	cfg.PostgresURL = managementURL
 	var err error
-	if cfg.MaxOpenConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS", 5096); err != nil {
-		return ManualAdminConfig{}, err
-	}
-	if cfg.MaxIdleConns, err = positiveInt(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS", sqlpool.MaxIdleConns); err != nil {
-		return ManualAdminConfig{}, err
-	}
-	if err := sqlpool.ValidatePoolLimits(cfg.MaxOpenConns, cfg.MaxIdleConns); err != nil {
-		return ManualAdminConfig{}, fmt.Errorf("J3a 管理 PostgreSQL 连接池配置无效: %w", err)
-	}
+	// 清理批次 C4（2026-09-30）：管理面连接池 env 零引用收编为默认常量。
+	cfg.MaxOpenConns = 5096
+	cfg.MaxIdleConns = sqlpool.MaxIdleConns
 	if cfg.RequestDeadline, err = runtimeDuration(getenv, "JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE", 25*time.Second, time.Second, 25*time.Second); err != nil {
 		return ManualAdminConfig{}, err
 	}

@@ -114,7 +114,6 @@ func balanceDetectAssemblyEnv(t *testing.T, businessPath, statsPath string) map[
 		"JUHE_AI_USAGE_SHARD_ROOT":                filepath.Join(filepath.Dir(businessPath), "usage-shards"),
 		"JUHE_AI_INSTANCE_ID":                     "balance-detect-instance",
 		"JUHE_AI_WORKER_ROLE":                     "ops-worker",
-		"JUHE_AI_WORKER_REPLICA_INDEX":            "0",
 		"JUHE_AI_SECRET":                          "0123456789abcdef0123456789abcdef",
 		"JUHE_AI_JOBS_DRAIN_TIMEOUT_MS":           "2000",
 		"JUHE_AI_DATASET_DATABASE_PATH":           filepath.Join(filepath.Dir(businessPath), "dataset.sqlite3"),

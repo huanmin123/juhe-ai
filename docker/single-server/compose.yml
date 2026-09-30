@@ -1,7 +1,9 @@
 # 单机 Docker 部署拓扑（国内单服务器，2026-09 起，替代 K3s 混合形态的 go-only 目标形态）。
 #
 # 与 docker/compose.yml（Harbor/K3s 用）的差异：
-# - Postgres/Redis 直接作为 Compose 服务，单库 juhe_ai + 6 schema（maintenance --ensure-schema 建）。
+# - Postgres/Redis 直接作为 Compose 服务，单库 juhe_ai + 8 schema：6 个由 maintenance
+#   --ensure-schema 建（business/usage/stats/chat/dataset/codex_context），juhe_jobs、juhe_j3b
+#   需手工 CREATE SCHEMA 后由 maintenance --apply-* 建表（完整序列见同目录 README.md）。
 # - gateway 以本机 80 端口经 Caddy 对外，管理 SPA 挂 /__aisys__/，/v1 为 OpenAI 兼容入口。
 # - 镜像来自本地交叉编译二进制（Dockerfile.runtime），服务器上不做源码构建。
 # - 密钥与连接串全部在 .env（同目录，不入库）；.env 生成方式见 README.md。
@@ -99,11 +101,14 @@ services:
       JUHE_AI_PORT: 3000
       # 不显式指向 dist 就不挂管理 SPA（代码默认空）
       JUHE_AI_FRONTEND_DIST_PATH: /app/frontend/dist
-      # 运行日志文件写侧/grep 面（gateway）与索引器/轮转清理（jobs）必须
-      # 三方同目录，未配置时 gateway 侧文件日志与 grep 面整体禁用
+      # 运行日志文件写侧/grep 面（gateway）与索引器/轮转清理（jobs）必须三方同目录。
+      # 未配置时 gateway 会经 datadir 派生 <DATA_DIR>/logs 默认开启（与 jobs 派生对称），
+      # 但派生目录可能与 jobs 显式目录不同源、破坏三方同目录契约，故此处显式配置
+      # （显式 disabled 字面量才关闭，完整契约见 README.md ".env 契约"节）
       JUHE_AI_LOG_DIR: /app/backend/logs
       # 系统指标页 jobs 健康段抓取地址（gateway 视角：跨容器用容器名）；
-      # 未配置时该段降级"不可达/未配置"（BUG-0226）。jobs 侧同名变量配 0.0.0.0
+      # 未配置时默认 127.0.0.1:3305（同主机裸跑形态可用，跨容器不可达，BUG-0226）。
+      # jobs 侧同名变量配 0.0.0.0
       JUHE_AI_JOBS_HEALTH_LISTEN_ADDRESS: juhe-ai-go-jobs:3305
       # F3/F4 owner 租约启动获取等待（BUG-0228，2026-09-28 起）：compose recreate
       # 先 stop 旧容器（SIGTERM 10s 宽限后 SIGKILL），旧 gateway 优雅关闭预算

@@ -1,6 +1,7 @@
 package gatewayupstream
 
 import (
+	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"context"
@@ -488,7 +489,11 @@ func bodyReader(body []byte) io.Reader {
 	if len(body) == 0 {
 		return nil
 	}
-	return strings.NewReader(string(body))
+	// BUG-0247 项 4：bytes.NewReader 零拷贝视图替代 strings.NewReader(string(body))
+	// 的全量拷贝。安全性：body 切片在请求在途期间只被整体替换（兼容性恢复
+	// c.loop.body = recovery.Body / RequestBodyOverride 均为切片头赋值），
+	// 不存在对同一底层数组的原地改写，视图不会被并发改写。
+	return bytes.NewReader(body)
 }
 
 func upstreamRequestHeaders(headers http.Header, body []byte) http.Header {

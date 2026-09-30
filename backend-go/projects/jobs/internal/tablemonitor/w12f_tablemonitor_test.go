@@ -195,13 +195,12 @@ func TestW12fTMConfigArms(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// PostgreSQL 模式：idle > open 的连接池上限必须报错。
+	// 清理批次 C4（2026-09-30）：连接池 env 已收编常量，"idle>open"臂退役。
 	envPG := w12fTestEnv(root)
 	envPG["JUHE_AI_TABLE_MONITOR_STORE"] = "postgres"
-	envPG["JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS"] = "2"
-	envPG["JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_IDLE_CONNS"] = "5"
-	if _, err := LoadConfig(func(key string) string { return envPG[key] }); err == nil || !strings.Contains(err.Error(), "连接池配置无效") {
-		t.Fatalf("PG 连接池 idle>open 必须报错: %v", err)
+	envPG["JUHE_AI_TABLE_MONITOR_POSTGRES_URL"] = "postgres://w12f/table_monitor"
+	if _, err := LoadConfig(func(key string) string { return envPG[key] }); err != nil {
+		t.Fatalf("PG 合法配置必须通过: %v", err)
 	}
 
 	// SQLite 模式：shard root 含 glob 特殊字符 → 枚举失败。

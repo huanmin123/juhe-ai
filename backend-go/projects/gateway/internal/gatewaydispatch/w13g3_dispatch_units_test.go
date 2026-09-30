@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
@@ -292,45 +291,6 @@ func TestW13g3MappingAllowedBySupportedModels(t *testing.T) {
 	if isMappingAllowedBySupportedModels("m", []string{"other"}) {
 		t.Fatal("unlisted upstream model must be rejected")
 	}
-}
-
-func TestW13g3AfterDeadlineDecisionBranches(t *testing.T) {
-	input := firstByteDeadlineReadInput{StartedAt: gatewayupstream.NowMs(), FirstByteDeadlineMs: ptrInt64(1_000)}
-	t.Run("superseded pending read returns raw chunk", func(t *testing.T) {
-		superseded := false
-		local := input
-		local.PendingReadSupersedesDeadline = true
-		local.OnFirstByteDeadlineSuperseded = func() { superseded = true }
-		chunk, observed, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Read: chunkResult{N: 3}}, false, local)
-		if err != nil || chunk.N != 3 || observed || !superseded {
-			t.Fatalf("chunk=%+v observed=%v superseded=%v err=%v", chunk, observed, superseded, err)
-		}
-		eof, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Read: chunkResult{Err: io.EOF}}, false, local)
-		if err != nil || !eof.Done {
-			t.Fatalf("eof chunk = %+v err = %v", eof, err)
-		}
-	})
-	t.Run("decision error and abort", func(t *testing.T) {
-		chunk, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, DecisionErr: errW13g3}, true, input)
-		if !errors.Is(err, errW13g3) || chunk.N != 0 {
-			t.Fatalf("decision error = %+v %v", chunk, err)
-		}
-		_, _, err = firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Action: FirstByteDeadlineActionAbort}, true, input)
-		var timeoutErr *GatewayFirstByteTimeoutError
-		if !errorsAs(err, &timeoutErr) || timeoutErr.Source != FirstByteTimeoutSourceConfiguredDeadline {
-			t.Fatalf("expected configured deadline timeout, got %v", err)
-		}
-	})
-	t.Run("read result and eof without supersede", func(t *testing.T) {
-		chunk, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Read: chunkResult{N: 5}}, true, input)
-		if err != nil || chunk.N != 5 {
-			t.Fatalf("read chunk = %+v err = %v", chunk, err)
-		}
-		eof, _, err := firstNonStreamReadAfterDeadlineDecision(deadlineDecision{HasRead: true, Read: chunkResult{Err: io.EOF}}, true, input)
-		if err != nil || !eof.Done {
-			t.Fatalf("eof = %+v err = %v", eof, err)
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------

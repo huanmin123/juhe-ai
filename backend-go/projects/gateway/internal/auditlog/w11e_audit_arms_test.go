@@ -82,14 +82,8 @@ func TestW11ELoadConfigValidationArms(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "共用") {
 		t.Fatalf("共用文件必须拒绝: %v", err)
 	}
-	pgPool := map[string]string{"JUHE_AI_AUDIT_LOG_STORE": "postgres", "JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS": "2", "JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS": "4", "JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_URL": "postgres://w11e.invalid/settings", "JUHE_AI_AUDIT_LOG_POSTGRES_URL": "postgres://w11e.invalid/db"}
-	if _, err := LoadConfig(w11eEnvWith(pgPool)); err == nil || !strings.Contains(err.Error(), "连接池") {
-		t.Fatalf("非法连接池必须拒绝: %v", err)
-	}
-	pgMaxIdle := map[string]string{"JUHE_AI_AUDIT_LOG_POSTGRES_MAX_IDLE_CONNS": "x"}
-	if _, err := LoadConfig(w11eEnvWith(pgMaxIdle)); err == nil || !strings.Contains(err.Error(), "MAX_IDLE") {
-		t.Fatalf("非法 idle 配置必须拒绝: %v", err)
-	}
+	// 2026-09-30 C4 收编：JUHE_AI_AUDIT_LOG_POSTGRES_MAX_OPEN_CONNS /
+	// MAX_IDLE_CONNS 收编为常量后 pool 值不再可配置，原非法连接池两臂删除。
 	// codex/usage shard 内放置审计库必须拒绝。
 	root := t.TempDir()
 	env := sqliteEnv(root)

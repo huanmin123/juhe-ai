@@ -289,8 +289,9 @@ func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (
 	if settlerCloser != nil {
 		a.addCloser(settlerCloser)
 	}
-	// D 任务②③：drain 上限/并发与堆积告警阈值经 env 配置（非法回退默认
-	// 并 warn，风格对齐保留天数 env）。
+	// D 任务②③：drain 上限/并发已收编为常量（原 env ..._DRAIN_LIMIT /
+	// ..._DRAIN_CONCURRENCY 五源零引用，2026-09-30 C4），堆积告警阈值仍经
+	// env 配置（非法回退默认并 warn）。
 	warnInvalidEnv := func(message string) {
 		a.logger.Warn(message, "event", "account_health_probe_outbox_env_invalid")
 	}
@@ -298,8 +299,8 @@ func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (
 		Store:                healthProbeOutboxStore{business: business, logger: a.logger},
 		Boundary:             healthProbeBoundary{business: business},
 		SettleFence:          settler,
-		Limit:                parseProbeOutboxBoundedInt(getenv, probeOutboxDrainLimitEnvVar, defaultProbeOutboxDrainLimit, minProbeOutboxDrainLimit, maxProbeOutboxDrainLimit, warnInvalidEnv),
-		Concurrency:          parseProbeOutboxBoundedInt(getenv, probeOutboxDrainConcurrencyEnvVar, defaultProbeOutboxDrainConcurrency, minProbeOutboxDrainConcurrency, maxProbeOutboxDrainConcurrency, warnInvalidEnv),
+		Limit:                defaultProbeOutboxDrainLimit,
+		Concurrency:          defaultProbeOutboxDrainConcurrency,
 		BacklogWarnThreshold: parseProbeOutboxBoundedInt(getenv, probeOutboxBacklogWarnEnvVar, defaultProbeOutboxBacklogWarnThreshold, minProbeOutboxBacklogWarnThreshold, maxProbeOutboxBacklogWarnThreshold, warnInvalidEnv),
 	}
 	return face, nil
@@ -309,15 +310,11 @@ func (a *workerAssembly) wireHealthProbeOutboxFace(getenv func(string) string) (
 // 非法值取默认并 warn）。
 const probeOutboxRetentionEnvVar = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_RETENTION_DAYS"
 
-// D 任务②③的 outbox 消费面 env：
-//   - DRAIN_LIMIT：单周期 claim 上限（默认 256，16..4096）；
-//   - DRAIN_CONCURRENCY：行消费有界并发（默认 2，1..8，保守起步）；
-//   - BACKLOG_WARN：drain 后 pending 堆积告警阈值（默认 1000，1..1000000）。
-const (
-	probeOutboxDrainLimitEnvVar       = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_LIMIT"
-	probeOutboxDrainConcurrencyEnvVar = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_CONCURRENCY"
-	probeOutboxBacklogWarnEnvVar      = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_BACKLOG_WARN"
-)
+// D 任务③的 outbox 消费面堆积告警 env：
+//   - BACKLOG_WARN：drain 后 pending 堆积告警阈值（默认 1000，1..1000000）；
+//   - DRAIN_LIMIT / DRAIN_CONCURRENCY（单周期 claim 上限 256、行消费有界
+//     并发 2）已收编为常量（五源零引用，2026-09-30 C4），env 不再读取。
+const probeOutboxBacklogWarnEnvVar = "JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_BACKLOG_WARN"
 
 const (
 	defaultProbeOutboxRetentionDays = 7
@@ -327,17 +324,14 @@ const (
 	// （jobregistry 1h 级任务）；实际唤醒经 schedulejitter 抖动。
 	defaultProbeOutboxPruneInterval = time.Hour
 
-	// drain 上限默认 256（D 任务②由 64 上调）：派发风暴时原 64 上限使溢出
+	// drain 上限常量 256（D 任务②由 64 上调）：派发风暴时原 64 上限使溢出
 	// 行在消费前过期；上限与 accounthealth 包内 defaultProbeOutboxDrainLimit
-	// 兜底同值。
+	// 兜底同值。原 env ..._DRAIN_LIMIT（16..4096）五源零引用，C4 收编。
 	defaultProbeOutboxDrainLimit = 256
-	minProbeOutboxDrainLimit     = 16
-	maxProbeOutboxDrainLimit     = 4096
-	// 并发默认 2 保守起步（快探针串行曾是周期扫描的拖累；行间无顺序依赖，
-	// 上限 8 与 ListProjectionWorkerConcurrency 档位一致）。
+	// 行消费有界并发常量 2 保守起步（快探针串行曾是周期扫描的拖累；行间无
+	// 顺序依赖，上限 8 与 ListProjectionWorkerConcurrency 档位一致）。原 env
+	// ..._DRAIN_CONCURRENCY（1..8）五源零引用，C4 收编。
 	defaultProbeOutboxDrainConcurrency     = 2
-	minProbeOutboxDrainConcurrency         = 1
-	maxProbeOutboxDrainConcurrency         = 8
 	defaultProbeOutboxBacklogWarnThreshold = 1000
 	minProbeOutboxBacklogWarnThreshold     = 1
 	maxProbeOutboxBacklogWarnThreshold     = 1_000_000

@@ -71,17 +71,16 @@ func TestWILoadConfigMatrix(t *testing.T) {
 	if dataDirected.DatabasePath != filepath.Join(dataRoot, "operation-log.sqlite3") || dataDirected.BusinessSettingsPath != filepath.Join(dataRoot, "business.sqlite3") || dataDirected.UsageShardRoot != filepath.Join(dataRoot, "usage-shards") {
 		t.Fatalf("DATA_DIR 派生路径=%+v", dataDirected)
 	}
-	// 非法矩阵。
+	// 非法矩阵。（2026-09-30 C4 收编：PG pool 两项 env 已收编为常量，
+	// 对应非法臂移除。）
 	invalids := map[string]map[string]string{
-		"owner lease 太短":  {"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "1s"},
-		"owner lease 非法":  {"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "abc"},
-		"retention 太短":    {"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL": "500ms"},
-		"retention 太长":    {"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL": "25h"},
-		"batch 越界":        {"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "5097"},
-		"batch 非数字":       {"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "x"},
-		"pg max open 非数字": {"JUHE_AI_OPERATION_LOG_POSTGRES_MAX_OPEN_CONNS": "x"},
-		"pg max idle 非数字": {"JUHE_AI_OPERATION_LOG_POSTGRES_MAX_IDLE_CONNS": "0"},
-		"非法 mode":         {"JUHE_AI_OPERATION_LOG_STORE": "weird"},
+		"owner lease 太短": {"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "1s"},
+		"owner lease 非法": {"JUHE_AI_OPERATION_LOG_OWNER_LEASE": "abc"},
+		"retention 太短":   {"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL": "500ms"},
+		"retention 太长":   {"JUHE_AI_OPERATION_LOG_RETENTION_INTERVAL": "25h"},
+		"batch 越界":       {"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "5097"},
+		"batch 非数字":      {"JUHE_AI_OPERATION_LOG_RETENTION_BATCH_SIZE": "x"},
+		"非法 mode":        {"JUHE_AI_OPERATION_LOG_STORE": "weird"},
 	}
 	for name, overrides := range invalids {
 		if _, err := LoadConfig(wiEnv(base, overrides)); err == nil {

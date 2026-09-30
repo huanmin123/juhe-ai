@@ -291,9 +291,10 @@ func TestW16KRecoveryResolverArms(t *testing.T) {
 	}
 }
 
-// TestW16KOutboxFaceInvalidDrainEnvArm 锁定 outbox 消费面 env 非法降级臂
-// （263-265）：JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_DRAIN_LIMIT 非法时
-// face 仍装配成功，drain 上限回落默认并触发 warnInvalidEnv。
+// TestW16KOutboxFaceInvalidDrainEnvArm 锁定 outbox 消费面 env 非法降级臂：
+// JUHE_AI_ACCOUNT_HEALTH_PROBE_OUTBOX_BACKLOG_WARN 非法时 face 仍装配成功，
+// 堆积告警阈值回落默认并触发 warnInvalidEnv（DRAIN_LIMIT/DRAIN_CONCURRENCY
+// 已于 2026-09-30 C4 收编为常量，改用保留 env 覆盖同一降级路径）。
 func TestW16KOutboxFaceInvalidDrainEnvArm(t *testing.T) {
 	root := t.TempDir()
 	businessPath := filepath.Join(root, "w16k-outbox-business.sqlite3")
@@ -306,7 +307,7 @@ func TestW16KOutboxFaceInvalidDrainEnvArm(t *testing.T) {
 	env := w16dJ1Env(t, root)
 	env["JUHE_AI_REDIS_STATE_URL"] = "redis://" + redisServer.Addr()
 	env["JUHE_AI_REDIS_NAMESPACE"] = "juhe-ai:w16k"
-	env[probeOutboxDrainLimitEnvVar] = "w16k-not-a-number"
+	env[probeOutboxBacklogWarnEnvVar] = "w16k-not-a-number"
 
 	assembly := newWorkerAssembly(workerConfig{
 		Driver:             "sqlite",
@@ -324,7 +325,11 @@ func TestW16KOutboxFaceInvalidDrainEnvArm(t *testing.T) {
 	if face.drain == nil {
 		t.Fatal("face.drain 必须就绪")
 	}
-	if face.drain.Limit != defaultProbeOutboxDrainLimit {
-		t.Fatalf("非法 drain limit 必须回落默认 %d，得到 %d", defaultProbeOutboxDrainLimit, face.drain.Limit)
+	if face.drain.BacklogWarnThreshold != defaultProbeOutboxBacklogWarnThreshold {
+		t.Fatalf("非法 backlog warn 必须回落默认 %d，得到 %d", defaultProbeOutboxBacklogWarnThreshold, face.drain.BacklogWarnThreshold)
+	}
+	if face.drain.Limit != defaultProbeOutboxDrainLimit || face.drain.Concurrency != defaultProbeOutboxDrainConcurrency {
+		t.Fatalf("drain limit/concurrency 必须为常量 %d/%d，得到 %d/%d",
+			defaultProbeOutboxDrainLimit, defaultProbeOutboxDrainConcurrency, face.drain.Limit, face.drain.Concurrency)
 	}
 }

@@ -54,13 +54,10 @@ func TestWFLoadRuntimeConfig(t *testing.T) {
 		{name: "store 非 postgres", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_STORE": "sqlite"}, wantErr: "postgres jobs store"},
 		// 缺 jobs URL 的失败臂已由零配置回退（JUHE_AI_POSTGRES_URL）取代，
 		// 依赖缺席语义见 TestWFLoadRuntimeConfig 头部断言。
-		{name: "连接池非数字", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS": "abc"}, wantErr: "正整数"},
 		{name: "缺业务 URL", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_URL": ""}, wantErr: "INPUT_POSTGRES_URL"},
 		{name: "缺结果 URL", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_RESULT_POSTGRES_URL": ""}, wantErr: "RESULT_POSTGRES_URL"},
 		{name: "input limit 越界", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_INPUT_LIMIT": "0"}, wantErr: "有效范围"},
-		{name: "batch size 越界", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_BATCH_SIZE": "99999"}, wantErr: "有效范围"},
 		{name: "candidate factor 越界", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_CANDIDATE_POOL_FACTOR": "1001"}, wantErr: "有效范围"},
-		{name: "db 并发越界", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_DB_CONCURRENCY": "65"}, wantErr: "有效范围"},
 		{name: "input TTL 过短", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_INPUT_TTL": "30s"}, wantErr: "duration"},
 		{name: "interval 过短", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_INTERVAL": "100ms"}, wantErr: "duration"},
 		{name: "owner lease 过短", patch: map[string]string{"JUHE_AI_PROXY_LATENCY_OWNER_LEASE": "1s"}, wantErr: "duration"},
@@ -94,19 +91,15 @@ func TestWFLoadRuntimeConfig(t *testing.T) {
 	for key, value := range base {
 		full[key] = value
 	}
-	full["JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_OPEN_CONNS"] = "8"
-	full["JUHE_AI_PROXY_LATENCY_POSTGRES_MAX_IDLE_CONNS"] = "4"
-	full["JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_OPEN_CONNS"] = "6"
-	full["JUHE_AI_PROXY_LATENCY_INPUT_POSTGRES_MAX_IDLE_CONNS"] = "3"
+	// 清理批次 C4（2026-09-30）：连接池/BATCH env 已收编常量，显式覆盖仅
+	// 保留仍可配置项。
 	full["JUHE_AI_PROXY_LATENCY_INPUT_LIMIT"] = "100"
-	full["JUHE_AI_PROXY_LATENCY_BATCH_SIZE"] = "64"
 	full["JUHE_AI_PROXY_LATENCY_INTERVAL"] = "10s"
 	cfg, err = LoadRuntimeConfig(wfEnv(full))
 	if err != nil {
 		t.Fatalf("合法配置失败: %v", err)
 	}
-	if !cfg.Enabled || cfg.InstanceID != "wf-i" || cfg.Store.Mode != StorePostgres || cfg.PostgresMaxOpenConns != 8 || cfg.PostgresMaxIdleConns != 4 ||
-		cfg.InputPostgresMaxOpenConns != 6 || cfg.InputPostgresMaxIdleConns != 3 || cfg.InputLimit != 100 || cfg.BatchSize != 64 || cfg.Interval != 10*time.Second {
+	if !cfg.Enabled || cfg.InstanceID != "wf-i" || cfg.Store.Mode != StorePostgres || cfg.PostgresMaxOpenConns != defaultPostgresMaxOpenConns || cfg.InputLimit != 100 || cfg.BatchSize != defaultProxyLatencyBatchSize || cfg.Interval != 10*time.Second {
 		t.Fatalf("显式配置=%+v", cfg)
 	}
 	cfg, err = LoadRuntimeConfig(wfEnv(base))

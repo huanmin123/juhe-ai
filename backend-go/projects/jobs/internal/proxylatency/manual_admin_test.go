@@ -219,15 +219,13 @@ func TestLoadManualAdminConfigIsExplicitAndBounded(t *testing.T) {
 		t.Fatalf("absent config=%#v err=%v", cfg, err)
 	}
 	env := map[string]string{
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":                 "true",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS":          "0.0.0.0:3405",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":            "postgres://example",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_OPEN_CONNS": "1000",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_MAX_IDLE_CONNS": "10",
-		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE":                "25s",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_ENABLED":        "true",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS": "0.0.0.0:3405",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_POSTGRES_URL":   "postgres://example",
+		"JUHE_AI_PROXY_LATENCY_MANAGEMENT_DEADLINE":       "25s",
 	}
 	cfg, err := LoadManualAdminConfig(func(key string) string { return env[key] })
-	if err != nil || !cfg.Enabled || cfg.RequestDeadline != 25*time.Second || cfg.MaxOpenConns != 1000 {
+	if err != nil || !cfg.Enabled || cfg.RequestDeadline != 25*time.Second || cfg.MaxOpenConns != 5096 {
 		t.Fatalf("enabled config=%#v err=%v", cfg, err)
 	}
 	env["JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS"] = "0.0.0.0:not-a-port"

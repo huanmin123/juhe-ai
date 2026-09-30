@@ -22,6 +22,23 @@ import (
 // oauthnormalizer / oauthadapter / builtintools / usageheaders / headerpolicy /
 // transport 的纯函数面。
 
+// blockingReader 阻塞直到 release 被调用（用于流式读取超时/取消分支；
+// 原 bodyreadpaths_test.go 定义，随 BUG-0247 项 3 该文件删除后随用例迁此）。
+type blockingReader struct {
+	release chan struct{}
+}
+
+func newBlockingReader() *blockingReader {
+	return &blockingReader{release: make(chan struct{})}
+}
+
+func (b *blockingReader) Read([]byte) (int, error) {
+	<-b.release
+	return 0, io.EOF
+}
+
+func (b *blockingReader) close() { close(b.release) }
+
 // ---------------------------------------------------------------------------
 // bodypreparation.go
 // ---------------------------------------------------------------------------

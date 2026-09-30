@@ -631,11 +631,8 @@ func TestW9GConfigValidationArms(t *testing.T) {
 		override map[string]string
 		wantErr  string
 	}{
-		{
-			name:     "postgres 池参数非整数",
-			override: map[string]string{"JUHE_AI_TABLE_MONITOR_POSTGRES_MAX_OPEN_CONNS": "abc"},
-			wantErr:  "必须是正整数",
-		},
+		// 「postgres 池参数非整数」臂已随清理批次 C4（2026-09-30，连接池
+		// env 收编常量）退役。
 		// 「sqlite 缺输出路径」「sqlite 缺运行日志路径」「源库路径缺失」
 		// 「缺 Codex shard 根」四个失败臂已删除（2026-09-19 零配置决策：
 		// 路径类 env 缺省按 DATA_DIR 派生，恒非空，不再是校验失败分支）。
