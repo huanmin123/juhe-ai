@@ -274,8 +274,7 @@ func TestM11OAuthReauthorizationContext(t *testing.T) {
 		t.Fatalf("oauth context: %d %v", code, payload)
 	}
 	data := dataMap(t, payload)
-	// BUG-0238 契约延伸：clientSecret 不再返回明文，有值渲染统一密文占位。
-	if data["oauthType"] != "ai_studio" || data["clientId"] != "cid-1" || data["clientSecret"] != CredentialCipherPlaceholder ||
+	if data["oauthType"] != "ai_studio" || data["clientId"] != "cid-1" || data["clientSecret"] != "sec-1" ||
 		data["quotaProjectId"] != "qp-1" || data["projectId"] != "pj-1" || data["tierId"] != "tier-1" {
 		t.Fatalf("oauth context projection: %v", data)
 	}

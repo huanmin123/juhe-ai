@@ -1337,40 +1337,34 @@ func (s *Store) ListOptionSummaries(ctx context.Context, access AccessScope, opt
 }
 
 // EditBasicDetail mirrors AccountEditBasicDetail. Credential fields follow the
-// BUG-0238 contract (docs/bug/问题-0238-管理面账户编辑明细接口回显明文凭据.md):
-// the edit detail renders sensitive keys as the unified cipher placeholder
-// (password inputs show masked dots); the real material is fetched on demand
-// through the reveal endpoint. Masking of the list surface stays on the stored
-// credential_mask column.
+// management contract (docs/architecture/backend/README.md): editing reads the
+// full credentials so the edit form shows and saves real key material; masking
+// stays on the list surface and the stored credential_mask column.
 type EditBasicDetail struct {
-	ID                        string      `json:"id"`
-	ConfigRevision            int64       `json:"configRevision"`
-	SystemAccountID           *string     `json:"systemAccountId,omitempty"`
-	OwnerSystemAccountID      string      `json:"ownerSystemAccountId"`
-	ProviderCode              string      `json:"providerCode"`
-	ProviderProtocolProfileID string      `json:"providerProtocolProfileId"`
-	ProtocolCode              string      `json:"protocolCode"`
-	ProtocolVersion           string      `json:"protocolVersion"`
-	Name                      string      `json:"name"`
-	Notes                     *string     `json:"notes,omitempty"`
-	Type                      string      `json:"type"`
-	Credentials               Credentials `json:"credentials"`
-	// CredentialsMasked marks that at least one sensitive credential key was
-	// replaced with the cipher placeholder (BUG-0238 契约 1): the client uses
-	// the flag to trigger the reveal endpoint on the first eye toggle.
-	CredentialsMasked       bool         `json:"credentialsMasked"`
-	Status                  string       `json:"status"`
-	ConcurrencyLimit        int          `json:"concurrencyLimit"`
-	Priority                int          `json:"priority"`
-	SuperPriorityEnabled    bool         `json:"superPriorityEnabled"`
-	FallbackEnabled         bool         `json:"fallbackEnabled"`
-	ClientCompatibility     string       `json:"clientCompatibility"`
-	SupportedModels         []string     `json:"supportedModels"`
-	Tags                    []TagSummary `json:"tags"`
-	HealthCheckModel        string       `json:"healthCheckModel"`
-	HealthCheckEndpointMode string       `json:"healthCheckEndpointMode"`
-	BoundGroupID            *string      `json:"boundGroupId,omitempty"`
-	BoundGroupName          *string      `json:"boundGroupName,omitempty"`
+	ID                        string       `json:"id"`
+	ConfigRevision            int64        `json:"configRevision"`
+	SystemAccountID           *string      `json:"systemAccountId,omitempty"`
+	OwnerSystemAccountID      string       `json:"ownerSystemAccountId"`
+	ProviderCode              string       `json:"providerCode"`
+	ProviderProtocolProfileID string       `json:"providerProtocolProfileId"`
+	ProtocolCode              string       `json:"protocolCode"`
+	ProtocolVersion           string       `json:"protocolVersion"`
+	Name                      string       `json:"name"`
+	Notes                     *string      `json:"notes,omitempty"`
+	Type                      string       `json:"type"`
+	Credentials               Credentials  `json:"credentials"`
+	Status                    string       `json:"status"`
+	ConcurrencyLimit          int          `json:"concurrencyLimit"`
+	Priority                  int          `json:"priority"`
+	SuperPriorityEnabled      bool         `json:"superPriorityEnabled"`
+	FallbackEnabled           bool         `json:"fallbackEnabled"`
+	ClientCompatibility       string       `json:"clientCompatibility"`
+	SupportedModels           []string     `json:"supportedModels"`
+	Tags                      []TagSummary `json:"tags"`
+	HealthCheckModel          string       `json:"healthCheckModel"`
+	HealthCheckEndpointMode   string       `json:"healthCheckEndpointMode"`
+	BoundGroupID              *string      `json:"boundGroupId,omitempty"`
+	BoundGroupName            *string      `json:"boundGroupName,omitempty"`
 }
 
 // Credentials mirrors AccountCredentials: an open record of credential fields.
@@ -1472,8 +1466,8 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	if err != nil {
 		return nil, err
 	}
-	// 共享凭据面可见性门（BUG-0238 与 reveal 同源）：owner 行放行、越权行
-	// 404、授权实例行保留 403（Node 出处见 gateCredentialRow）。
+	// 凭据面可见性门：owner 行放行、越权行 404、授权实例行保留 403（Node
+	// 出处见 gateCredentialRow）。
 	if hidden, err := gateCredentialRow(access, authorized, row.systemAccountID, row.authorizationID, row.sourceAccountID); hidden || err != nil {
 		return nil, err
 	}
@@ -1534,10 +1528,6 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 	if err != nil {
 		return nil, err
 	}
-	// BUG-0238 契约 1：明细面敏感键渲染为统一密文占位，非敏感键原样；
-	// projectEditableCredentials 仍是唯一的明文投影（reveal 复用）。
-	projected := projectEditableCredentials(row.accountType, credentials)
-	maskedCredentials, credentialsMasked := applyCipherPlaceholder(projected)
 	detail := &EditBasicDetail{
 		ID:                        row.id,
 		ConfigRevision:            row.configRevision,
@@ -1549,8 +1539,7 @@ func (s *Store) FindEditBasicDetail(ctx context.Context, accountID string, acces
 		Name:                      row.name,
 		Notes:                     nullPtrString(row.notes),
 		Type:                      row.accountType,
-		Credentials:               maskedCredentials,
-		CredentialsMasked:         credentialsMasked,
+		Credentials:               projectEditableCredentials(row.accountType, credentials),
 		Status:                    row.status,
 		ConcurrencyLimit:          row.concurrencyLimit,
 		Priority:                  row.priority,
@@ -1581,10 +1570,9 @@ var editableCredentialKeysByAccountType = map[string][]string{
 }
 
 // projectEditableCredentials mirrors projectEditableCredentials: the
-// whitelisted editable credential keys surface unmasked. Since BUG-0238 the
-// edit detail masks the sensitive subset through applyCipherPlaceholder; this
-// projection stays the single plaintext source the reveal endpoint returns
-// (and the PATCH merge feeds through DecryptJSON, not this read path).
+// whitelisted editable credential keys surface unmasked on the edit-basic
+// detail, matching the management contract that editing reads full
+// credentials. Masking is a list/storage concern only (credential_mask).
 func projectEditableCredentials(accountType string, credentials Credentials) Credentials {
 	output := Credentials{}
 	for _, key := range append(append([]string{}, basicEditableCredentialKeys...), editableCredentialKeysByAccountType[accountType]...) {
@@ -1595,70 +1583,9 @@ func projectEditableCredentials(accountType string, credentials Credentials) Cre
 	return output
 }
 
-// CredentialCipherPlaceholder is the unified cipher placeholder fixed by the
-// BUG-0238 contract (前后端共同常量)：明细面敏感凭据键渲染为该字面量，PATCH
-// 通道以其识别"用户未修改"的占位提交。导出供 oauthmgmt 等跨包引用（如
-// gemini 授权/重新授权流对 clientSecret 占位提交的"视为未提交"回退）。
-const CredentialCipherPlaceholder = "__ENCRYPTED__"
-
-// sensitiveCredentialKeys is the BUG-0238 契约敏感键集合：值在明细面替换为
-// 统一密文占位，其余键原样返回。
-var sensitiveCredentialKeys = map[string]bool{
-	"api_key":       true,
-	"api_keys":      true,
-	"access_token":  true,
-	"refresh_token": true,
-	"client_secret": true,
-}
-
-// applyCipherPlaceholder replaces the sensitive credential values with the
-// unified cipher placeholder（BUG-0238 契约 1：string 值直接替换，api_keys
-// 数组逐项替换，非敏感键原样），并报告是否存在任一被替换的敏感键
-// （credentialsMasked）。
-func applyCipherPlaceholder(credentials Credentials) (Credentials, bool) {
-	output := Credentials{}
-	masked := false
-	for key, value := range credentials {
-		if !sensitiveCredentialKeys[key] {
-			output[key] = value
-			continue
-		}
-		replaced, changed := cipherPlaceholderValue(value)
-		if changed {
-			masked = true
-		}
-		output[key] = replaced
-	}
-	return output, masked
-}
-
-// cipherPlaceholderValue maps one credential value onto its placeholder form:
-// strings collapse to the placeholder, string arrays collapse item-wise
-// (non-string items pass through untouched), every other shape stays as-is.
-func cipherPlaceholderValue(value any) (any, bool) {
-	switch typed := value.(type) {
-	case string:
-		return CredentialCipherPlaceholder, true
-	case []any:
-		items := make([]any, len(typed))
-		changed := false
-		for index, item := range typed {
-			if _, ok := item.(string); ok {
-				items[index] = CredentialCipherPlaceholder
-				changed = true
-				continue
-			}
-			items[index] = item
-		}
-		return items, changed
-	default:
-		return value, false
-	}
-}
-
 // credentialScopeArgs renders the owner scope clause + bind args shared by the
-// credential-surface row queries（edit detail 与 reveal，BUG-0238）：授权实例
-// 直通（authorized）豁免 owner 作用域过滤，其余按 ManageableID 收窄。
+// credential-surface row queries：授权实例直通（authorized）豁免 owner 作用域
+// 过滤，其余按 ManageableID 收窄。
 func credentialScopeArgs(access AccessScope, id string, authorized bool) (string, []any) {
 	args := []any{id}
 	if scoped := access.ManageableID(); scoped != "" && !authorized {
@@ -1667,10 +1594,10 @@ func credentialScopeArgs(access AccessScope, id string, authorized bool) (string
 	return "", args
 }
 
-// gateCredentialRow applies the shared visibility gate behind the credential
-// surfaces（edit detail 与 reveal，BUG-0238）：owner 行放行；越权行保持缺失
-// （hidden=true，路由渲染 404 账户不存在）；M10 授权实例行无条件走保留 403
-// （Node account-edit-basic.repository.ts:149-151 对任何实例行抛
+// gateCredentialRow applies the visibility gate behind the credential
+// surface（edit detail）：owner 行放行；越权行保持缺失（hidden=true，路由渲染
+// 404 账户不存在）；M10 授权实例行无条件走保留 403（Node
+// account-edit-basic.repository.ts:149-151 对任何实例行抛
 // AccountEditBasicForbiddenError，与运行时授权状态无关）。
 func gateCredentialRow(access AccessScope, authorized bool, systemAccountID string, authorizationID, sourceAccountID sql.NullString) (bool, error) {
 	// canManageResourceOwner (Node account-edit-basic.repository.ts:148):
@@ -1683,86 +1610,4 @@ func gateCredentialRow(access AccessScope, authorized bool, systemAccountID stri
 		return false, &editBasicForbiddenError{}
 	}
 	return false, nil
-}
-
-// credentialRecordRow is the shared scan target for the scope-checked
-// credential row lookup behind the reveal surface（BUG-0238）：身份、版本与
-// 密封凭据列。
-type credentialRecordRow struct {
-	id                   string
-	configRevision       int64
-	systemAccountID      string
-	name                 string
-	accountType          string
-	credentialsEncrypted string
-	authorizationID      sql.NullString
-	sourceAccountID      sql.NullString
-}
-
-// findCredentialRecordRow runs the shared scope-checked credential row lookup
-// （BUG-0238）：行查询、owner 作用域 404 与授权实例 403 语义与
-// FindEditBasicDetail 完全一致。缺失或越权返回 (nil, nil)。
-func (s *Store) findCredentialRecordRow(ctx context.Context, accountID string, access AccessScope) (*credentialRecordRow, error) {
-	id := strings.TrimSpace(accountID)
-	if id == "" {
-		return nil, nil
-	}
-	authorized := s.authorizedReadableIDs(ctx, access)[id]
-	scopeClause, args := credentialScopeArgs(access, id, authorized)
-	var row credentialRecordRow
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision,
-			accounts.system_account_id, accounts.name, accounts.type, accounts.credentials_encrypted,
-			accounts.authorization_instance_authorization_id, accounts.authorization_instance_source_account_id
-		FROM `+s.table("accounts")+` accounts
-		WHERE accounts.id = ?
-			AND accounts.deleted_at IS NULL`+scopeClause+`
-		LIMIT 1`), args...).Scan(
-		&row.id, &row.configRevision, &row.systemAccountID, &row.name,
-		&row.accountType, &row.credentialsEncrypted, &row.authorizationID, &row.sourceAccountID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if hidden, err := gateCredentialRow(access, authorized, row.systemAccountID, row.authorizationID, row.sourceAccountID); hidden || err != nil {
-		return nil, err
-	}
-	return &row, nil
-}
-
-// RevealedCredentials mirrors the reveal-credentials payload（BUG-0238 契约
-// 2）：账户身份字段加 projectEditableCredentials 明文投影（含全部 api_keys
-// 池真实值）。
-type RevealedCredentials struct {
-	ID                   string      `json:"id"`
-	Name                 string      `json:"name"`
-	Type                 string      `json:"type"`
-	ConfigRevision       int64       `json:"configRevision"`
-	OwnerSystemAccountID string      `json:"ownerSystemAccountId"`
-	Credentials          Credentials `json:"credentials"`
-}
-
-// FindRevealableCredentials（BUG-0238 契约 2）按需返回完整明文可编辑凭据
-// 投影：行查询、scope/404/实例 403 语义与 FindEditBasicDetail 完全一致
-// （共享 findCredentialRecordRow）。缺失或越权返回 (nil, nil)（路由渲染 404
-// 账户不存在）。
-func (s *Store) FindRevealableCredentials(ctx context.Context, accountID string, access AccessScope) (*RevealedCredentials, error) {
-	ctx = ensureCtx(ctx)
-	row, err := s.findCredentialRecordRow(ctx, accountID, access)
-	if err != nil || row == nil {
-		return nil, err
-	}
-	var credentials Credentials
-	if err := DecryptJSON(s.secret, row.credentialsEncrypted, &credentials); err != nil {
-		return nil, err
-	}
-	return &RevealedCredentials{
-		ID:                   row.id,
-		Name:                 row.name,
-		Type:                 row.accountType,
-		ConfigRevision:       row.configRevision,
-		OwnerSystemAccountID: row.systemAccountID,
-		Credentials:          projectEditableCredentials(row.accountType, credentials),
-	}, nil
 }

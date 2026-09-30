@@ -580,13 +580,7 @@ func (s *Store) FindOAuthReauthorizationContext(ctx context.Context, accountID s
 	}
 	if oauthType == "ai_studio" {
 		context.ClientID = stringContextField(metadata["client_id"])
-		// BUG-0238 契约延伸（接口不返回明文密钥）：clientSecret 有值时渲染
-		// 统一密文占位（指针语义保持：原值非空→指向占位串，原空→nil 省略）；
-		// 授权/重新授权流以 accounts.CredentialCipherPlaceholder 识别占位提交。
-		if secret := stringContextField(metadata["client_secret"]); secret != nil {
-			placeholder := CredentialCipherPlaceholder
-			context.ClientSecret = &placeholder
-		}
+		context.ClientSecret = stringContextField(metadata["client_secret"])
 	}
 	context.QuotaProjectID = stringContextField(metadata["quota_project_id"])
 	context.ProjectID = stringContextField(metadata["project_id"])

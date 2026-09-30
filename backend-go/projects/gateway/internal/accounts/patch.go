@@ -627,9 +627,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		// .repository.ts:338-345）：credentialsPatch 走 null=删键合并，
 		// legacy credentials 走 mergeAccountCredentialsForUpdate 预合并
 		// （api_key 单 Key 替换清空旧池，BUG-0175 D-164/D-165）。
-		// BUG-0238 契约 4：入参先剔除统一密文占位（视为未修改，preserve
-		// 语义承接现值），两个通道共用同一过滤。
-		requested := stripCipherPlaceholderCredentials(input.Credentials)
+		requested := input.Credentials
 		var next Credentials
 		if input.CredentialsPatch {
 			next = applyAccountCredentialsPatch(current, requested)

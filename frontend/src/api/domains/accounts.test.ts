@@ -67,7 +67,6 @@ describe('accountsApi 请求形状', () => {
 
   it('详情类方法逐个命中对应资源路径', async () => {
     await accountsApi.editBasicDetail('a-1')
-    await accountsApi.revealCredentials('a-1')
     await accountsApi.advancedDetail('a-1')
     await accountsApi.cloneContext('a-1')
     await accountsApi.oauthReauthorizationContext('a-1')
@@ -75,7 +74,6 @@ describe('accountsApi 请求形状', () => {
     await accountsApi.balanceDetails('a-1')
     expect(requestShapes()).toEqual([
       ['GET', '/accounts/a-1/edit-basic'],
-      ['POST', '/accounts/a-1/reveal-credentials'],
       ['GET', '/accounts/a-1/advanced'],
       ['GET', '/accounts/a-1/clone-context'],
       ['GET', '/accounts/a-1/oauth-reauthorization-context'],
@@ -209,7 +207,6 @@ describe('myAccountsApi 请求形状', () => {
     await myAccountsApi.tags()
     await myAccountsApi.deleteTag('tag-1')
     await myAccountsApi.editBasicDetail('a-1')
-    await myAccountsApi.revealCredentials('a-1')
     await myAccountsApi.create({ name: 'x' })
     await myAccountsApi.update('a-1', { expectedConfigRevision: 1 })
     await myAccountsApi.delete('a-1')
@@ -220,7 +217,6 @@ describe('myAccountsApi 请求形状', () => {
       ['GET', '/my-accounts/tags'],
       ['DELETE', '/my-accounts/tags/tag-1'],
       ['GET', '/my-accounts/a-1/edit-basic'],
-      ['POST', '/my-accounts/a-1/reveal-credentials'],
       ['POST', '/my-accounts'],
       ['PATCH', '/my-accounts/a-1'],
       ['DELETE', '/my-accounts/a-1'],

@@ -583,8 +583,6 @@ export interface AccountEditBasicDetail {
   notes?: string
   type: AccountType
   credentials: AccountCredentials
-  /** BUG-0238：凭据敏感键已替换为密文占位符（__ENCRYPTED__）时为 true。 */
-  credentialsMasked?: boolean
   status: AccountStatus
   concurrencyLimit: number
   priority: number
@@ -597,13 +595,6 @@ export interface AccountEditBasicDetail {
   healthCheckEndpointMode: AccountHealthCheckEndpointMode
   boundGroupId?: string
   boundGroupName?: string
-}
-
-/** BUG-0238：POST /accounts/{id}/reveal-credentials 响应——完整明文凭据投影。 */
-export interface AccountCredentialsRevealResult {
-  id: string
-  configRevision: number
-  credentials: AccountCredentials
 }
 
 export interface AccountAdvancedDetail {

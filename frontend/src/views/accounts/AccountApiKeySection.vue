@@ -73,7 +73,6 @@
               data-form-type="other"
               placeholder="粘贴完整 API Key"
               @paste="handleApiKeyPaste(index, $event)"
-              @update:visible="handleCredentialVisibilityChange"
             >
               <template v-if="showApiKeyRuntimeDetails" #prefix>
                 <a-tooltip v-if="runtimeErrorReasonText(runtimeDetailForIndex(index))" :title="runtimeErrorReasonText(runtimeDetailForIndex(index))" placement="topLeft">
@@ -232,13 +231,12 @@ const props = defineProps<{
   title: string
 }>()
 
-const emit = defineEmits<{
+defineEmits<{
   (event: 'delete-tag', tagId: string): void
   (event: 'load-api-key-runtime', force?: boolean): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
   (event: 'refresh-models'): void
-  (event: 'reveal-credentials'): void
   (event: 'tag-options-dropdown', open: boolean): void
 }>()
 
@@ -328,12 +326,6 @@ function suggestAccountNameFromBaseUrl(event: ClipboardEvent): void {
   if (!props.form.name.trim()) return
   const name = accountNameFromBaseUrl(event.clipboardData?.getData('text') ?? '')
   if (name) props.form.name = name
-}
-
-// BUG-0238：值仍为加密占位时，首次点亮眼睛（变为可见）触发一次 reveal 取回明文；
-// 是否需要调用由上层（credentialsMasked && !credentialsRevealed）守卫，这里只上报可见事件。
-function handleCredentialVisibilityChange(visible: boolean): void {
-  if (visible) emit('reveal-credentials')
 }
 
 function syncApiKeyWeights(): void {

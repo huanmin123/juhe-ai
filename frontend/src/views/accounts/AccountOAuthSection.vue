@@ -5,85 +5,22 @@
       <a-form-item label="OAuth 类型"><a-segmented v-model:value="form.oauthType" :options="geminiOAuthTypeOptions" block disabled /></a-form-item>
       <a-form-item v-if="geminiSupportsTierId" label="额度层级"><a-select v-model:value="form.tierId" :options="geminiTierOptions" /></a-form-item>
       <a-form-item v-if="geminiSupportsProjectId" label="GCP Project ID"><a-input v-model:value="form.projectId" placeholder="已保存的 OAuth 运行项目" /></a-form-item>
-      <a-form-item>
-        <template #label>
-          <span class="token-field-label">Access Token</span>
-          <a-button
-            v-if="canRevealCredentials"
-            class="reveal-credentials-button"
-            size="small"
-            type="link"
-            :loading="credentialsRevealing"
-            @click="emit('reveal-credentials')"
-          >
-            查看明文
-          </a-button>
-        </template>
-        <!-- BUG-0243 问题 4：凭据为密文占位（canRevealCredentials 即 credentialsMasked 且未 reveal）
-             时用 a-input-password 遮挡，避免 __ENCRYPTED__ 占位符字面量明文可见；眼睛点亮触发
-             reveal，reveal 后恢复可编辑 textarea。 -->
-        <a-input-password
-          v-if="canRevealCredentials"
-          v-model:value="form.accessToken"
-          autocomplete="new-password"
-          data-lpignore="true"
-          data-1p-ignore="true"
-          data-form-type="other"
-          placeholder="粘贴 Google Access Token"
-          @update:visible="handleCredentialVisibilityChange"
-        />
-        <a-textarea v-else v-model:value="form.accessToken" :rows="3" autocomplete="off" placeholder="粘贴 Google Access Token" />
-      </a-form-item>
+      <a-form-item label="Access Token"><a-textarea v-model:value="form.accessToken" :rows="3" autocomplete="off" placeholder="粘贴 Google Access Token" /></a-form-item>
       <a-form-item label="Refresh Token">
-        <a-input-password
-          v-if="canRevealCredentials"
-          v-model:value="form.refreshToken"
-          autocomplete="new-password"
-          data-lpignore="true"
-          data-1p-ignore="true"
-          data-form-type="other"
-          placeholder="粘贴 Google OAuth Refresh Token"
-          @update:visible="handleCredentialVisibilityChange"
-        />
-        <a-textarea v-else v-model:value="form.refreshToken" :rows="3" autocomplete="off" placeholder="粘贴 Google OAuth Refresh Token" />
+        <a-textarea v-model:value="form.refreshToken" :rows="3" autocomplete="off" placeholder="粘贴 Google OAuth Refresh Token" />
       </a-form-item>
       <template v-if="geminiRequiresClientCredentials">
         <a-form-item label="Client ID"><a-input v-model:value="form.googleClientId" autocomplete="off" /></a-form-item>
         <a-form-item label="Client Secret">
-          <a-input-password v-model:value="form.googleClientSecret" autocomplete="off" @update:visible="handleCredentialVisibilityChange" />
+          <a-input-password v-model:value="form.googleClientSecret" autocomplete="off" />
         </a-form-item>
       </template>
       <a-form-item label="Quota Project ID"><a-input v-model:value="form.googleQuotaProjectId" placeholder="可选，用于 x-goog-user-project" /></a-form-item>
     </template>
 
     <template v-else-if="editing">
-      <a-form-item>
-        <template #label>
-          <span class="token-field-label">Access Token</span>
-          <a-button
-            v-if="canRevealCredentials"
-            class="reveal-credentials-button"
-            size="small"
-            type="link"
-            :loading="credentialsRevealing"
-            @click="emit('reveal-credentials')"
-          >
-            查看明文
-          </a-button>
-        </template>
-        <!-- BUG-0243 问题 4：同上，占位态用 a-input-password 遮挡占位符字面量。 -->
-        <a-input-password
-          v-if="canRevealCredentials"
-          v-model:value="form.accessToken"
-          autocomplete="new-password"
-          data-lpignore="true"
-          data-1p-ignore="true"
-          data-form-type="other"
-          placeholder="粘贴完整 Access Token"
-          @update:visible="handleCredentialVisibilityChange"
-        />
+      <a-form-item label="Access Token">
         <a-textarea
-          v-else
           v-model:value="form.accessToken"
           :rows="3"
           autocomplete="off"
@@ -94,18 +31,7 @@
         />
       </a-form-item>
       <a-form-item label="Refresh Token">
-        <a-input-password
-          v-if="canRevealCredentials"
-          v-model:value="form.refreshToken"
-          autocomplete="new-password"
-          data-lpignore="true"
-          data-1p-ignore="true"
-          data-form-type="other"
-          placeholder="粘贴完整 Refresh Token"
-          @update:visible="handleCredentialVisibilityChange"
-        />
         <a-textarea
-          v-else
           v-model:value="form.refreshToken"
           :rows="3"
           autocomplete="off"
@@ -286,8 +212,6 @@ import type { AccountModelSelectOption } from './accountEditFormPayload'
 const props = defineProps<{
   authLoading: boolean
   authResult?: OAuthAuthURLResult
-  canRevealCredentials?: boolean
-  credentialsRevealing?: boolean
   editing: boolean
   form: AccountFormModel
   isAnthropicOAuth: boolean
@@ -424,24 +348,14 @@ watch(
   { immediate: true }
 )
 
-const emit = defineEmits<{
+defineEmits<{
   (event: 'copy-auth-url', value: string): void
   (event: 'generate-auth-url'): void
   (event: 'open-auth-url'): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
   (event: 'refresh-models'): void
-  (event: 'reveal-credentials'): void
 }>()
-
-// BUG-0238：凭据仍为加密占位时，Token/Client Secret 字段的眼睛（a-input-password
-// 变为可见）或 Access Token 标签上的“查看明文”按钮触发 reveal；
-// 是否真正调用由上层（credentialsMasked && !credentialsRevealed）守卫。
-// BUG-0243 问题 4：占位态下 Token 字段即上述 a-input-password（遮挡 __ENCRYPTED__ 占位符
-// 字面量），reveal 后（canRevealCredentials 为 false）恢复为可编辑明文 textarea。
-function handleCredentialVisibilityChange(visible: boolean): void {
-  if (visible) emit('reveal-credentials')
-}
 </script>
 
 <style scoped>
@@ -449,18 +363,6 @@ function handleCredentialVisibilityChange(visible: boolean): void {
   padding: 0;
   border: 0;
   background: transparent;
-}
-
-.token-field-label {
-  display: inline-flex;
-  align-items: center;
-}
-
-.reveal-credentials-button {
-  margin-left: 6px;
-  padding-inline: 0;
-  height: auto;
-  font-size: 12px;
 }
 
 .supported-models-label {

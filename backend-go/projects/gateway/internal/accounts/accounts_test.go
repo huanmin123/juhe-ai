@@ -540,7 +540,7 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 		t.Fatal("name search terms missing")
 	}
 
-	// Detail: owner fields present; BUG-0238 后敏感凭据键渲染为统一密文占位。
+	// Detail: owner fields present, credentials surface unmasked for editing.
 	code, detail := env.do(t, http.MethodGet, "/__aisys__/api/accounts/"+id, "")
 	if code != http.StatusOK {
 		t.Fatalf("detail: %d %v", code, detail)
@@ -552,11 +552,8 @@ func TestAccountCreateLifecycleAndSealedCredentials(t *testing.T) {
 		t.Fatalf("detail contract: %v", detailData)
 	}
 	credentials := detailData["credentials"].(map[string]any)
-	if credentials["api_key"] != "__ENCRYPTED__" {
-		t.Fatalf("detail api_key must render the cipher placeholder: %v", credentials)
-	}
-	if detailData["credentialsMasked"] != true {
-		t.Fatalf("detail must flag credentialsMasked: %v", detailData)
+	if credentials["api_key"] != "sk-live-secret-1234567890" {
+		t.Fatalf("detail credentials must be readable for editing: %v", credentials)
 	}
 	if credentials["base_url"] != "https://api.openai.com/v1" {
 		t.Fatalf("base_url 应原样返回：%v", credentials)

@@ -51,8 +51,6 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("DELETE "+prefix+"/accounts/tags/{tagId}", admin(d.scoped(d.deleteTag)))
 	k.Register("GET "+prefix+"/accounts/{id}", admin(d.scoped(d.detail)))
 	k.Register("GET "+prefix+"/accounts/{id}/edit-basic", admin(d.scoped(d.detail)))
-	// BUG-0238 契约 2：明细面敏感凭据键改占位后，按需 reveal 取回明文。
-	k.Register("POST "+prefix+"/accounts/{id}/reveal-credentials", admin(d.scoped(d.revealCredentials)))
 	k.Register("GET "+prefix+"/accounts/{id}/clone-context", admin(d.scoped(d.cloneContext)))
 	k.Register("POST "+prefix+"/accounts", d.mountGuarded(d.create, "accounts.create", false))
 	k.Register("PATCH "+prefix+"/accounts/{id}", admin(d.scoped(d.patchBasic)))
@@ -93,7 +91,6 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("DELETE "+prefix+"/my-accounts/tags/{tagId}", self(d.scoped(d.deleteTag)))
 	k.Register("GET "+prefix+"/my-accounts/{id}", self(d.scoped(d.detail)))
 	k.Register("GET "+prefix+"/my-accounts/{id}/edit-basic", self(d.scoped(d.detail)))
-	k.Register("POST "+prefix+"/my-accounts/{id}/reveal-credentials", self(d.scoped(d.revealCredentials)))
 	k.Register("GET "+prefix+"/my-accounts/{id}/clone-context", self(d.scoped(d.cloneContext)))
 	k.Register("POST "+prefix+"/my-accounts", d.mountGuarded(d.create, "accounts.create", true))
 	k.Register("PATCH "+prefix+"/my-accounts/{id}", self(d.scoped(d.patchBasic)))
@@ -299,68 +296,6 @@ func (d *Deps) detail(w http.ResponseWriter, r *http.Request) {
 	}
 	setNoStoreHeaders(w)
 	kernel.WriteOK(w, detail, "")
-}
-
-// revealCredentials（BUG-0238 契约 2/3）服务按需明文取回：明细面敏感键
-// 渲染为统一密文占位，眼睛开关 POST 到这里拿真实完整凭据；权限与 403/404
-// 语义同 detail。成功写操作日志（Changes 只记敏感键名清单，不记值）。
-func (d *Deps) revealCredentials(w http.ResponseWriter, r *http.Request) {
-	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
-	access := requestScope(r)
-	revealed, err := d.Store.FindRevealableCredentials(r.Context(), r.PathValue("id"), access)
-	if err != nil {
-		d.writeError(w, err)
-		return
-	}
-	if revealed == nil {
-		kernel.WriteError(w, http.StatusNotFound, "账户不存在")
-		return
-	}
-	if d.Sink != nil {
-		d.Sink.Record(authsys.OperationLogEntry{
-			ActorSystemAccountID:          auth.SystemAccountID,
-			ActorUsername:                 auth.Username,
-			ActorDisplayName:              auth.DisplayName,
-			ActorRole:                     auth.Role,
-			OperationScopeSystemAccountID: revealed.OwnerSystemAccountID,
-			Mode:                          operationMode(access),
-			Module:                        "accounts",
-			Action:                        "reveal_credentials",
-			OperationKey:                  "accounts.reveal_credentials",
-			ResourceType:                  "account",
-			ResourceID:                    revealed.ID,
-			ResourceName:                  revealed.Name,
-			Summary:                       "查看账户凭据明文：" + revealed.Name,
-			Changes: []authsys.OperationLogChange{
-				{Field: "credentials", Label: "凭据键", After: strings.Join(revealedSensitiveKeys(revealed.Credentials), ",")},
-			},
-			Viewers: []authsys.OperationLogViewer{
-				{SystemAccountID: revealed.OwnerSystemAccountID, Reason: "resource_owner"},
-			},
-		}, r)
-	}
-	setNoStoreHeaders(w)
-	kernel.WriteOK(w, map[string]any{
-		"id":             revealed.ID,
-		"configRevision": revealed.ConfigRevision,
-		"credentials":    revealed.Credentials,
-	}, "")
-}
-
-// revealedSensitiveKeys 按固定顺序列出明文投影中实际存在的敏感键名
-// （BUG-0238 契约 3：审计只记键名，不记值）。
-func revealedSensitiveKeys(credentials Credentials) []string {
-	keys := []string{}
-	for _, key := range []string{"api_key", "api_keys", "access_token", "refresh_token", "client_secret"} {
-		if _, ok := credentials[key]; ok {
-			keys = append(keys, key)
-		}
-	}
-	return keys
 }
 
 func (d *Deps) create(w http.ResponseWriter, r *http.Request) {

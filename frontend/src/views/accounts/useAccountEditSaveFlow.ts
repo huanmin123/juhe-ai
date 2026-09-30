@@ -28,11 +28,7 @@ import {
   type AccountSavePayload
 } from './accountSavePayload'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
-import {
-  accountApiKeyPoolBaseline,
-  normalizedAccountApiKeys,
-  validateAccountApiKeyCipherRows
-} from './accountCredentials'
+import { normalizedAccountApiKeys } from './accountCredentials'
 import { managedOAuthProviderKind, type ManagedOAuthProviderKind } from './accountProviderCapabilities'
 import { normalizeGrokSsoTokens } from './grokSsoTokens'
 import {
@@ -128,16 +124,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     const lockConfigValidationMessage = validateAccountLockConfigForm(options.form)
     if (lockConfigValidationMessage) {
       message.warning(lockConfigValidationMessage)
-      return
-    }
-    // BUG-0243：api_key 占位行守卫——混合占位/真实行或占位池结构修改时阻断保存，
-    // 避免 0238 占位过滤把密钥池静默截断或丢弃修改。
-    const cipherRowsValidationMessage = validateAccountApiKeyCipherRows(
-      options.form,
-      accountApiKeyPoolBaseline(options.editingAccountDetail.value?.credentials)
-    )
-    if (cipherRowsValidationMessage) {
-      message.warning(cipherRowsValidationMessage)
       return
     }
 
@@ -330,15 +316,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     const credentialValidationMessage = validateBasicEditCredentialFields(options.form)
     if (credentialValidationMessage) {
       message.warning(credentialValidationMessage)
-      return
-    }
-    // BUG-0243：基础编辑路径同样接入 api_key 占位行保存守卫。
-    const cipherRowsValidationMessage = validateAccountApiKeyCipherRows(
-      options.form,
-      accountApiKeyPoolBaseline(options.editingAccountDetail.value?.credentials)
-    )
-    if (cipherRowsValidationMessage) {
-      message.warning(cipherRowsValidationMessage)
       return
     }
     const tagValidationMessage = validateBasicEditTags(options.form.tags)

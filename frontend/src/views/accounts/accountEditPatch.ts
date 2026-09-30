@@ -1,6 +1,5 @@
 import type { AccountFormModel } from './accountFormTypes'
 import {
-  isCredentialCipherPlaceholder,
   normalizedAccountApiKeys,
   normalizedAccountApiKeyWeights
 } from './accountCredentials'
@@ -123,20 +122,14 @@ function buildBasicEditCredentials(
     supported_endpoint_modes: normalizedTextList(form.supportedEndpointModes).sort()
   }
   if (form.type === 'api_key') {
-    // BUG-0238：占位行不代表用户输入，保存前剔除；权重随行同步过滤。
     const apiKeys = normalizedAccountApiKeys(form)
-    const weights = normalizedAccountApiKeyWeights(form, apiKeys.length)
-    const keptRows = apiKeys
-      .map((key, index) => ({ key, weight: weights[index] }))
-      .filter((row) => !isCredentialCipherPlaceholder(row.key))
-    const keptKeys = keptRows.map((row) => row.key)
     credentials.base_url = form.baseUrl.trim()
-    if (keptKeys.length) credentials.api_key = keptKeys[0]
-    if (keptKeys.length > 1) {
-      credentials.api_keys = keptKeys
+    if (apiKeys.length) credentials.api_key = apiKeys[0]
+    if (apiKeys.length > 1) {
+      credentials.api_keys = apiKeys
       credentials.api_key_strategy = form.apiKeyStrategy
       if (credentials.api_key_strategy === 'weighted_round_robin') {
-        credentials.api_key_weights = keptRows.map((row) => row.weight)
+        credentials.api_key_weights = normalizedAccountApiKeyWeights(form, apiKeys.length)
       }
     }
     return compactRecord(credentials)
@@ -144,31 +137,20 @@ function buildBasicEditCredentials(
 
   credentials.base_url = form.baseUrl.trim() || credentialText(currentCredentials.base_url)
   if (form.type === 'oauth') {
-    credentials.access_token = sensitiveCredentialText(form.accessToken, currentCredentials.access_token)
-    credentials.refresh_token = sensitiveCredentialText(form.refreshToken, currentCredentials.refresh_token)
+    credentials.access_token = form.accessToken.trim() || credentialText(currentCredentials.access_token)
+    credentials.refresh_token = form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)
     return compactRecord(credentials)
   }
 
-  credentials.access_token = sensitiveCredentialText(form.accessToken, currentCredentials.access_token)
-  credentials.refresh_token = sensitiveCredentialText(form.refreshToken, currentCredentials.refresh_token)
+  credentials.access_token = form.accessToken.trim() || credentialText(currentCredentials.access_token)
+  credentials.refresh_token = form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)
   credentials.client_id = form.googleClientId.trim() || credentialText(currentCredentials.client_id)
-  credentials.client_secret = sensitiveCredentialText(form.googleClientSecret, currentCredentials.client_secret)
+  credentials.client_secret = form.googleClientSecret.trim() || credentialText(currentCredentials.client_secret)
   credentials.quota_project_id = form.googleQuotaProjectId.trim() || credentialText(currentCredentials.quota_project_id)
   credentials.oauth_type = form.oauthType
   credentials.tier_id = form.tierId.trim()
   credentials.project_id = form.projectId.trim() || credentialText(currentCredentials.project_id)
   return compactRecord(credentials)
-}
-
-/**
- * BUG-0238：敏感单键的基础编辑值。表单值为占位或为空时回退已存值，
- * 已存值（来自加密明细）同样为占位则整体省略该键（后端按省略保留现值）。
- */
-function sensitiveCredentialText(formValue: string, storedValue: unknown): string | undefined {
-  const formText = formValue.trim()
-  if (formText && !isCredentialCipherPlaceholder(formText)) return formText
-  const storedText = credentialText(storedValue)
-  return storedText && !isCredentialCipherPlaceholder(storedText) ? storedText : undefined
 }
 
 function compactRecord(input: Record<string, unknown>): Record<string, unknown> {
