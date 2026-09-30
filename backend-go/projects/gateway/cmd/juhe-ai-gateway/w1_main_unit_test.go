@@ -152,14 +152,15 @@ func TestW1MainSessionRetentionConfig(t *testing.T) {
 	if err != nil || interval != 15*time.Minute || limit != 10000 {
 		t.Fatalf("default = %v, %d, %v", interval, limit, err)
 	}
-	// 自定义合法值。
+	// 自定义 interval 生效；BATCH_SIZE 已随清理批次 C4（2026-09-30）收编为
+	// 编译期常量默认，残留 env 值（含合法数字）被忽略。
 	interval, limit, err = loadSessionRetentionConfig(func(key string) string {
 		if key == "JUHE_AI_SESSION_RETENTION_INTERVAL" {
 			return "1h"
 		}
 		return "25"
 	})
-	if err != nil || interval != time.Hour || limit != 25 {
+	if err != nil || interval != time.Hour || limit != 10000 {
 		t.Fatalf("custom = %v, %d, %v", interval, limit, err)
 	}
 	// 非法值：报错。
@@ -171,13 +172,13 @@ func TestW1MainSessionRetentionConfig(t *testing.T) {
 	}); err == nil {
 		t.Fatal("非正间隔必须报错")
 	}
-	if _, _, err := loadSessionRetentionConfig(func(key string) string {
+	if _, limit, err := loadSessionRetentionConfig(func(key string) string {
 		if key == "JUHE_AI_SESSION_RETENTION_BATCH_SIZE" {
 			return "-3"
 		}
 		return ""
-	}); err == nil {
-		t.Fatal("非正批大小必须报错")
+	}); err != nil || limit != 10000 {
+		t.Fatalf("已收编的 BATCH_SIZE 非法残留值必须被忽略（limit=10000）: %d, %v", limit, err)
 	}
 	// runSessionRetention：配置无效直接报错。
 	if err := runSessionRetention(t.Context(), nil, 0, 0, nil); err == nil {

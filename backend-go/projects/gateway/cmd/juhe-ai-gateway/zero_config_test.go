@@ -12,7 +12,6 @@ package main
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -63,21 +62,21 @@ func TestZeroConfigBusinessOwnerGateSemantics(t *testing.T) {
 	// 2026-09-21 起组合根/网关链开关移除（恒开），原「显式 false 关闭 /
 	// 联动校验 / 非法开关值 fail-fast」语义随之消失；本测试聚焦业务 owner
 	// 门禁与自动认领的边界。
-	// 显式配置五证任一切流语义成员 → 不自动认领，handoff 门禁保持。
-	// （2026-09-22 口径收窄前本用例以 JUHE_AI_BUSINESS_OWNER 触发；OWNER 属
-	// 纯运维变量后改用 HANDOFF_CONFIRMED。）
+	// 清理批次 C1（2026-09-30）：切流五证 env 家族整体退役，残留切流语义
+	// env（如 HANDOFF_CONFIRMED）被忽略——与纯运维变量同样恒自动认领，
+	// 门禁只保留连接性检查。
 	explicit, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
 		"JUHE_AI_BUSINESS_OWNER":             "gateway",
 		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED": "true",
 	}))
 	if err != nil {
-		t.Fatalf("显式切流语义配置: %v", err)
+		t.Fatalf("显式切流语义残留配置: %v", err)
 	}
-	if explicit.BusinessOwnerAutoClaimed {
-		t.Fatal("显式配置切流语义变量时不得自动认领")
+	if !explicit.BusinessOwnerAutoClaimed {
+		t.Fatal("C1 退役后残留切流语义 env 必须被忽略（恒自动认领）")
 	}
-	if err := explicit.businessOwnerGate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_BUSINESS_NODE_WRITER_STOPPED") {
-		t.Fatalf("显式配置下 handoff 门禁必须保持: %v", err)
+	if err := explicit.businessOwnerGate(); err != nil {
+		t.Fatalf("连接性满足时残留切流语义 env 不得阻断启动: %v", err)
 	}
 	// 2026-09-22 口径收窄：纯运维变量不触发切流门禁——仅配置
 	// JUHE_AI_BUSINESS_DATABASE_PATH（常见运维需求）或 JUHE_AI_BUSINESS_OWNER
@@ -126,8 +125,10 @@ func TestZeroConfigBusinessOwnerGateSemantics(t *testing.T) {
 
 func TestZeroConfigPostgresAutoClaimFallsBackToSharedPostgresURL(t *testing.T) {
 	// postgres + BUSINESS_* 切流语义家族（五证）全空：与 sqlite 同语义自动认
-	// 领，业务连接回落共享 JUHE_AI_POSTGRES_URL；显式配置切流语义任一成员仍
-	// 走原门禁。
+	// 领，业务连接回落共享 JUHE_AI_POSTGRES_URL。
+	// 清理批次 C1（2026-09-30）：切流五证 env 家族整体退役（Node 已清零、
+	// 五源核对零引用），残留的切流语义 env 一律被忽略、恒自动认领——
+	// 原第三段「显式配置五证不自动认领」的断言随门禁一起退役。
 	// POSTGRES_URL 本身是 performance hint（mode 推断为 performance），按真实
 	// 高性能形态补齐 Redis 连接。
 	cfg, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
@@ -169,7 +170,8 @@ func TestZeroConfigPostgresAutoClaimFallsBackToSharedPostgresURL(t *testing.T) {
 	if err := explicitURL.businessOwnerGate(); err != nil {
 		t.Fatalf("仅运维变量自动认领下 businessOwnerGate 必须放行: %v", err)
 	}
-	// 显式配置五证任一成员：不自动认领，保持原门禁（含独立 URL 契约）。
+	// C1 后：显式残留五证 env 被忽略——仍自动认领，gate 只查连接性
+	//（postgres 业务连接可解析即放行）。
 	explicitGate, err := loadRuntimeConfig(w1iFakeEnv(map[string]string{
 		"JUHE_AI_DATABASE_DRIVER":            "postgres",
 		"JUHE_AI_POSTGRES_URL":               "postgres://root:secret@127.0.0.1:15432/juhe_ai_dev?sslmode=disable",
@@ -178,12 +180,12 @@ func TestZeroConfigPostgresAutoClaimFallsBackToSharedPostgresURL(t *testing.T) {
 		"JUHE_AI_BUSINESS_HANDOFF_CONFIRMED": "true",
 	}))
 	if err != nil {
-		t.Fatalf("显式切流语义配置: %v", err)
+		t.Fatalf("显式切流语义残留配置: %v", err)
 	}
-	if explicitGate.BusinessOwnerAutoClaimed {
-		t.Fatal("显式配置切流语义变量时不得自动认领")
+	if !explicitGate.BusinessOwnerAutoClaimed {
+		t.Fatal("C1 退役后残留切流语义 env 必须被忽略（恒自动认领）")
 	}
-	if err := explicitGate.businessOwnerGate(); err == nil {
-		t.Fatal("显式配置切流语义变量时 handoff 门禁必须保持")
+	if err := explicitGate.businessOwnerGate(); err != nil {
+		t.Fatalf("连接性满足时残留切流语义 env 不得阻断启动: %v", err)
 	}
 }

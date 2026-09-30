@@ -148,6 +148,9 @@ func TestW1UEnvBool(t *testing.T) {
 // loadSessionRetentionConfig 的默认值与非法值拒绝已由 main_test.go 覆盖；这里
 // 只补合法自定义区间、首尾空白裁剪与负数/零批量分支。
 func TestW1ULoadSessionRetentionConfigExtraBranches(t *testing.T) {
+	// 清理批次 C4（2026-09-30）：JUHE_AI_SESSION_RETENTION_BATCH_SIZE 收编
+	// 为编译期常量默认 10000，残留 env（任意值）被忽略；本用例锁定该契约
+	// 并保留 interval 的裁剪/校验分支。
 	getenv := func(interval, batch string) func(string) string {
 		return func(key string) string {
 			switch key {
@@ -160,25 +163,20 @@ func TestW1ULoadSessionRetentionConfigExtraBranches(t *testing.T) {
 		}
 	}
 	interval, limit, err := loadSessionRetentionConfig(getenv("5m", "250"))
-	if err != nil || interval != 5*time.Minute || limit != 250 {
-		t.Fatalf("自定义 (5m, 250) = (%s, %d, %v)，want (5m, 250, nil)", interval, limit, err)
+	if err != nil || interval != 5*time.Minute || limit != 10000 {
+		t.Fatalf("自定义 (5m, 250) = (%s, %d, %v)，want (5m, 10000, nil)", interval, limit, err)
 	}
 	interval, limit, err = loadSessionRetentionConfig(getenv(" 2h ", " 300 "))
-	if err != nil || interval != 2*time.Hour || limit != 300 {
-		t.Fatalf("空白裁剪 ( 2h ,  300 ) = (%s, %d, %v)，want (2h, 300, nil)", interval, limit, err)
+	if err != nil || interval != 2*time.Hour || limit != 10000 {
+		t.Fatalf("空白裁剪 ( 2h ,  300 ) = (%s, %d, %v)，want (2h, 10000, nil)", interval, limit, err)
 	}
 	if _, _, err := loadSessionRetentionConfig(getenv("-1m", "")); err == nil {
 		t.Error("负数 interval 必须报错")
 	} else if !strings.Contains(err.Error(), "JUHE_AI_SESSION_RETENTION_INTERVAL") {
 		t.Errorf("interval 错误消息 = %q，want 包含变量名", err.Error())
 	}
-	if _, _, err := loadSessionRetentionConfig(getenv("", "-1")); err == nil {
-		t.Error("负数 batch 必须报错")
-	} else if !strings.Contains(err.Error(), "JUHE_AI_SESSION_RETENTION_BATCH_SIZE") {
-		t.Errorf("batch 错误消息 = %q，want 包含变量名", err.Error())
-	}
-	if _, _, err := loadSessionRetentionConfig(getenv("", "0")); err == nil {
-		t.Error("零 batch 必须报错")
+	if _, limit, err := loadSessionRetentionConfig(getenv("", "-1")); err != nil || limit != 10000 {
+		t.Errorf("已收编的 batch 非法残留值必须被忽略（limit=10000）: %d, %v", limit, err)
 	}
 }
 

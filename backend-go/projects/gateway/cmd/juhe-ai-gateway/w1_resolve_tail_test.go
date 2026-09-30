@@ -909,6 +909,10 @@ func TestW1KResponseAccountEffectsInspectionPolicyArms(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestW1KBusinessOwnerGateArms(t *testing.T) {
+	// 清理批次 C1（2026-09-30）：切流五证/cutover evidence 门禁家族退役，
+	// owner 事实恒 auto-claim——handoff 语义字段（owner/handoff/writer/
+	// schema/epoch/evidence）不再是 businessOwnerGate 输入，置任何值都
+	// 不得阻断启动；gate 只保留连接性前置。
 	valid := runtimeConfig{
 		SystemAPIEnabled:            true,
 		BusinessOwner:               "gateway",
@@ -935,17 +939,23 @@ func TestW1KBusinessOwnerGateArms(t *testing.T) {
 		t.Fatalf("完整 postgres 交接配置必须通过: %v", err)
 	}
 
+	// 退役字段反向断言：切流语义字段全部置无效值时 gate 仍通过。
+	retired := valid
+	retired.BusinessOwner = "jobs"
+	retired.BusinessHandoffConfirmed = false
+	retired.BusinessNodeWriterStopped = false
+	retired.BusinessSchemaReady = false
+	retired.BusinessOwnerEpoch = ""
+	retired.BusinessCutoverEvidencePath = ""
+	if err := retired.businessOwnerGate(); err != nil {
+		t.Fatalf("已退役的切流语义字段不得再阻断启动: %v", err)
+	}
+
 	fails := []struct {
 		name   string
 		mutate func(*runtimeConfig)
 		want   string
 	}{
-		{"owner 非 gateway", func(c *runtimeConfig) { c.BusinessOwner = "jobs" }, "JUHE_AI_BUSINESS_OWNER"},
-		{"交接未确认", func(c *runtimeConfig) { c.BusinessHandoffConfirmed = false }, "JUHE_AI_BUSINESS_HANDOFF_CONFIRMED"},
-		{"Node writer 未停止", func(c *runtimeConfig) { c.BusinessNodeWriterStopped = false }, "JUHE_AI_BUSINESS_NODE_WRITER_STOPPED"},
-		{"schema 未就绪", func(c *runtimeConfig) { c.BusinessSchemaReady = false }, "JUHE_AI_BUSINESS_SCHEMA_READY"},
-		{"缺少 epoch", func(c *runtimeConfig) { c.BusinessOwnerEpoch = "" }, "JUHE_AI_BUSINESS_OWNER_EPOCH"},
-		{"缺少交接证据", func(c *runtimeConfig) { c.BusinessCutoverEvidencePath = "" }, "JUHE_AI_BUSINESS_CUTOVER_EVIDENCE_PATH"},
 		{"postgres 缺少 URL", func(c *runtimeConfig) { c.DatabaseDriver = "postgres" }, "JUHE_AI_BUSINESS_POSTGRES_URL"},
 		{"sqlite 缺少路径", func(c *runtimeConfig) { c.BusinessDatabasePath = "" }, "JUHE_AI_BUSINESS_DATABASE_PATH"},
 	}

@@ -42,6 +42,8 @@ func TestW1MainEnvHelpers(t *testing.T) {
 }
 
 func TestW1LoadSessionRetentionConfig(t *testing.T) {
+	// C4（2026-09-30）后 BATCH_SIZE 已收编为常量默认，自定义/非法残留值
+	// 一律被忽略（limit 恒 10000）；interval 自定义与校验语义不变。
 	values := map[string]string{}
 	getenv := func(key string) string { return values[key] }
 	interval, limit, err := loadSessionRetentionConfig(getenv)
@@ -51,7 +53,7 @@ func TestW1LoadSessionRetentionConfig(t *testing.T) {
 	values["JUHE_AI_SESSION_RETENTION_INTERVAL"] = "5m"
 	values["JUHE_AI_SESSION_RETENTION_BATCH_SIZE"] = "42"
 	interval, limit, err = loadSessionRetentionConfig(getenv)
-	if err != nil || interval != 5*time.Minute || limit != 42 {
+	if err != nil || interval != 5*time.Minute || limit != 10000 {
 		t.Fatalf("自定义值 = %v %d %v", interval, limit, err)
 	}
 	values["JUHE_AI_SESSION_RETENTION_INTERVAL"] = "bogus"
@@ -60,8 +62,8 @@ func TestW1LoadSessionRetentionConfig(t *testing.T) {
 	}
 	values["JUHE_AI_SESSION_RETENTION_INTERVAL"] = "5m"
 	values["JUHE_AI_SESSION_RETENTION_BATCH_SIZE"] = "0"
-	if _, _, err := loadSessionRetentionConfig(getenv); err == nil {
-		t.Fatal("非正 batch 必须报错")
+	if _, limit, err := loadSessionRetentionConfig(getenv); err != nil || limit != 10000 {
+		t.Fatalf("已收编的 batch 非法残留值必须被忽略（limit=10000）: %d, %v", limit, err)
 	}
 	if _, _, err := loadSessionRetentionConfig(nil); err != nil {
 		t.Fatalf("nil getter 回落 os.Getenv: %v", err)

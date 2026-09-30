@@ -37,20 +37,29 @@ func TestLoadSessionRetentionConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadSessionRetentionConfigRejectsInvalidValues(t *testing.T) {
-	for name, values := range map[string]string{
-		"JUHE_AI_SESSION_RETENTION_INTERVAL":   "0s",
-		"JUHE_AI_SESSION_RETENTION_BATCH_SIZE": "not-a-number",
-	} {
-		_, _, err := loadSessionRetentionConfig(func(key string) string {
-			if key == name {
-				return values
-			}
-			return ""
-		})
-		if err == nil {
-			t.Fatalf("invalid %s must fail", name)
+func TestLoadSessionRetentionConfigContract(t *testing.T) {
+	if _, _, err := loadSessionRetentionConfig(func(key string) string {
+		if key == "JUHE_AI_SESSION_RETENTION_INTERVAL" {
+			return "0s"
 		}
+		return ""
+	}); err == nil {
+		t.Fatal("invalid JUHE_AI_SESSION_RETENTION_INTERVAL must fail")
+	}
+	// 清理批次 C4（2026-09-30）：JUHE_AI_SESSION_RETENTION_BATCH_SIZE 五源
+	// 核对零引用，收编为编译期常量默认——残留 env（含非法值）不再参与
+	// 解析，也不得再导致启动失败。
+	_, limit, err := loadSessionRetentionConfig(func(key string) string {
+		if key == "JUHE_AI_SESSION_RETENTION_BATCH_SIZE" {
+			return "not-a-number"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("retired BATCH_SIZE env must be ignored: %v", err)
+	}
+	if limit != 10000 {
+		t.Fatalf("batch limit must keep the compiled default 10000: %d", limit)
 	}
 }
 

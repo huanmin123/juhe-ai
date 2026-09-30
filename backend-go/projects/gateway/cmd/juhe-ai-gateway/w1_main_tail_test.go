@@ -423,6 +423,14 @@ func TestW1WOwnerFullBootTailArms(t *testing.T) {
 func TestW1WOwnerJ3bFailFastArms(t *testing.T) {
 	w1bBuildCoverBinary(t)
 
+	// 场景表说明（2026-09-30 C1 切流门禁退役后）：
+	//   - timezone-missing / j3b-host-schema 两臂已删除——它们断言的是
+	//     严格切流模式（J3b 七证显式配置、专属库外部预置、SCHEMA_READY
+	//     门禁）的 fail-fast；C1 后 AutoClaimed 恒真，专属库由组合根
+	//     ensureJ3bDedicatedSQLiteBootstrap 幂等自举（main.go），装配对
+	//     自举产物必然成功，两臂从设计上不可达（实测进程完整启动）。
+	//   - 保留的三个臂失败点不被自举修复：非法 env 值（retention）、
+	//     非法 Redis URL（circuit-url）、fence 未 ready（circuit-meta）。
 	scenarios := []struct {
 		name       string
 		prepareJ3b bool
@@ -430,21 +438,6 @@ func TestW1WOwnerJ3bFailFastArms(t *testing.T) {
 		mutate     func(t *testing.T, f *w1wOwnerFixture) []string
 		wantStderr string
 	}{
-		{
-			name: "timezone-missing", prepareJ3b: true, seedMeta: true,
-			mutate: func(t *testing.T, f *w1wOwnerFixture) []string {
-				db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(f.businessPath)+"?mode=rw")
-				if err != nil {
-					t.Fatalf("打开业务库失败: %v", err)
-				}
-				defer db.Close()
-				if _, err := db.Exec(`DELETE FROM system_settings WHERE key='usageStatsTimezone'`); err != nil {
-					t.Fatalf("DELETE usageStatsTimezone 失败: %v", err)
-				}
-				return nil
-			},
-			wantStderr: "load J3b Gateway usage stats timezone",
-		},
 		{
 			name: "retention-interval", prepareJ3b: true, seedMeta: true,
 			mutate: func(t *testing.T, f *w1wOwnerFixture) []string {
@@ -465,11 +458,6 @@ func TestW1WOwnerJ3bFailFastArms(t *testing.T) {
 			name: "circuit-meta-missing", prepareJ3b: true, seedMeta: false,
 			mutate:     func(t *testing.T, f *w1wOwnerFixture) []string { return nil },
 			wantStderr: "verify J3b Gateway circuit runtime owner fence",
-		},
-		{
-			name: "j3b-host-schema", prepareJ3b: false, seedMeta: true,
-			mutate:     func(t *testing.T, f *w1wOwnerFixture) []string { return nil },
-			wantStderr: "open J3b Gateway owner host",
 		},
 		// management-port-occupied 臂已删除（2026-09-21 起管理面同权挂主端口，
 		// 别名端口被占只告警不阻断启动）——降级语义由下方的

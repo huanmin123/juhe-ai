@@ -516,14 +516,23 @@ func TestLoadRuntimeConfigConcurrencyGlobalMaxBound(t *testing.T) {
 	}
 }
 
-func TestBusinessOwnerGateFailsClosed(t *testing.T) {
+func TestBusinessOwnerGateKeepsConnectionPreconditions(t *testing.T) {
+	// 清理批次 C1（2026-09-30）：切流五证/cutover evidence 门禁随 Node 清零
+	// 整体退役，owner 事实恒 auto-claim——handoff 语义字段不再是门禁输入；
+	// businessOwnerGate 只保留连接性前置（postgres 模式缺业务连接串仍
+	// fail closed）。
 	cfg := composeTestConfig(t)
 	if err := cfg.businessOwnerGate(); err != nil {
-		t.Fatalf("proven gates must pass: %v", err)
+		t.Fatalf("auto-claimed owner gate must pass: %v", err)
 	}
 	cfg.BusinessNodeWriterStopped = false
+	if err := cfg.businessOwnerGate(); err != nil {
+		t.Fatalf("retired cutover-era fields must no longer gate startup: %v", err)
+	}
+	cfg.DatabaseDriver = "postgres"
+	cfg.BusinessPostgresURL = ""
 	if err := cfg.businessOwnerGate(); err == nil {
-		t.Fatal("unstopped Node writer must fail closed")
+		t.Fatal("postgres without business URL must fail closed")
 	}
 }
 

@@ -202,7 +202,9 @@ func w1bRunScenario(t *testing.T, scenario string, env []string, args ...string)
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("场景 %s 超过 %s 有界等待，进程已被终止: %v", scenario, w1bScenarioTimeout, ctx.Err())
+		// 超时必须带出进程现场（stdout/stderr 最后一条日志指示卡点），
+		// 否则 30s 等待只留下一个无输出的终止（BUG-0251 同批诊断增强）。
+		t.Fatalf("场景 %s 超过 %s 有界等待，进程已被终止: %v；stdout=%q stderr=%q", scenario, w1bScenarioTimeout, ctx.Err(), stdout.String(), stderr.String())
 	}
 	exitCode := 0
 	if runErr != nil {
