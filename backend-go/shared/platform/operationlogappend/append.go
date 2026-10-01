@@ -22,7 +22,11 @@ import (
 )
 
 const (
-	defaultTimeout = 5 * time.Second
+	// BUG-0254：对齐 j3a/j3b 与 F1/F4 族先例（statement 30s / lock 5s），
+	// ctx 预算须大于 PG 侧超时——每日 pg_dump 备份窗口的整库读 IO 会拖长
+	// 持锁事务，1s 锁等待批量 55P03（调用方 proxylatency manual_admin 审计
+	// 追加为低频管理路径，正常时段毫秒级，上限放宽不改变常态行为）。
+	defaultTimeout = 15 * time.Second
 	maxSearchTerms = 1500
 )
 
@@ -115,8 +119,8 @@ func AppendPostgres(parent context.Context, db *sql.DB, input Input) error {
 	}
 	defer tx.Rollback()
 	for _, statement := range []string{
-		"SET LOCAL statement_timeout = '5s'",
-		"SET LOCAL lock_timeout = '1s'",
+		"SET LOCAL statement_timeout = '30s'",
+		"SET LOCAL lock_timeout = '5s'",
 		"SET LOCAL idle_in_transaction_session_timeout = '5s'",
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
