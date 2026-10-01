@@ -11,7 +11,7 @@
       </a-tooltip>
     </span>
   </div>
-  <a-tag v-else-if="columnKey === 'type'" color="processing">{{ accountTypeText(account.type) }}</a-tag>
+  <a-tag v-else-if="columnKey === 'type'" :class="`type-tag type-tag-${account.type}`">{{ accountTypeText(account.type) }}</a-tag>
   <a-tag v-else-if="columnKey === 'providerCode'" color="geekblue">{{ account.providerName || providerName(account.providerCode) }}</a-tag>
   <span v-else-if="columnKey === 'systemAccount'" :class="account.systemAccountName ? 'name-cell' : 'muted-cell'">
     {{ account.systemAccountName || '-' }}

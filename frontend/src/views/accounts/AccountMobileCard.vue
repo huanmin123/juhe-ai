@@ -14,7 +14,7 @@
           </a-tooltip>
         </div>
         <div class="account-mobile-tags">
-          <a-tag color="processing">{{ accountTypeText(account.type) }}</a-tag>
+          <a-tag :class="`type-tag type-tag-${account.type}`">{{ accountTypeText(account.type) }}</a-tag>
           <a-tag color="geekblue">{{ providerName }}</a-tag>
           <a-tooltip :title="accountScheduleSummary(account.availabilitySchedule)">
             <a-tag :color="accountScheduleTagColor(account.availabilitySchedule)">{{ accountScheduleSummary(account.availabilitySchedule) }}</a-tag>
