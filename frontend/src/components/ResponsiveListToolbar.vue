@@ -35,7 +35,7 @@
     </div>
 
     <div v-else-if="hasActions" class="responsive-list-toolbar-actions mobile-drawer-trigger">
-      <a-button class="responsive-list-actions-button" @click="actionsOpen = true">更多操作</a-button>
+      <a-button class="responsive-list-actions-button" @click="openActionsDrawer">更多操作</a-button>
     </div>
   </div>
 
@@ -68,7 +68,7 @@
   </a-drawer>
 
   <a-drawer v-if="hasActions && shouldCollapseActions" v-model:open="actionsOpen" title="更多操作" placement="bottom" height="min(62vh, 420px)" class="responsive-list-actions-drawer" :body-style="{ padding: '14px 16px 16px' }">
-    <div class="responsive-list-actions-drawer-body">
+    <div class="responsive-list-actions-drawer-body" @click="handleActionsDrawerClick">
       <slot name="actions" />
     </div>
   </a-drawer>
@@ -76,7 +76,7 @@
 
 <script setup lang="ts">
 import { FilterOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
-import { Comment, Fragment, Text, computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, useSlots, type VNode } from 'vue'
+import { Comment, Fragment, Text, computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, useSlots, watch, type VNode } from 'vue'
 
 const props = withDefaults(defineProps<{
   keyword?: string
@@ -118,8 +118,36 @@ const emit = defineEmits<{
   (event: 'refresh'): void
 }>()
 
-const filtersOpen = ref(false)
+// 筛选抽屉支持外部受控（v-model:filter-drawer-open，用于「未选系统账户先去筛选」这类引导跳转）；
+// 未绑定 model 时回落组件内部状态，既有用法不受影响。
+// 筛选抽屉与「更多操作」抽屉互斥：同屏只允许一个底部抽屉。
+const filterDrawerOpenModel = defineModel<boolean | undefined>('filterDrawerOpen', { default: undefined })
+const internalFiltersOpen = ref(false)
 const actionsOpen = ref(false)
+const filtersOpen = computed({
+  get: () => filterDrawerOpenModel.value ?? internalFiltersOpen.value,
+  set: (value: boolean) => {
+    internalFiltersOpen.value = value
+    filterDrawerOpenModel.value = value
+  }
+})
+// 两个底部抽屉互斥（同屏只开一个）：外部受控 model 变化不走 setter，故用 watch 而不是 setter 内联动。
+watch(filtersOpen, (open) => {
+  if (open) actionsOpen.value = false
+})
+watch(actionsOpen, (open) => {
+  if (open) filtersOpen.value = false
+})
+
+function openActionsDrawer() {
+  filtersOpen.value = false
+  actionsOpen.value = true
+}
+
+// 动作抽屉内的按钮点击后抽屉自动收起（动作要么打开弹层、要么直接执行，抽屉不应滞留遮挡页面）。
+function handleActionsDrawerClick(event: MouseEvent) {
+  if ((event.target as HTMLElement | null)?.closest?.("button")) actionsOpen.value = false
+}
 const isMobile = ref(initialMobileState())
 const slots = useSlots()
 let resizeListenerAttached = false

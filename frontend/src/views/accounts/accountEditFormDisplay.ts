@@ -210,7 +210,7 @@ function accountTypeChoiceTag(
 ): string {
   if (isDeepSeekProviderCode(providerCode) && type === 'api_key') {
     if (providerProtocolProfileId === DEEPSEEK_ANTHROPIC_V1_PROFILE_ID) return 'Claude Code'
-    if (providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) return 'OpenAI'
+    if (providerProtocolProfileId === DEEPSEEK_OPENAI_V1_PROFILE_ID) return 'OpenAI 兼容'
   }
   if (isGlmProviderCode(providerCode) && type === 'api_key') {
     if (providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return 'Anthropic'

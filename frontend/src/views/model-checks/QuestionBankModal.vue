@@ -157,6 +157,7 @@
           <a-descriptions-item label="提交时间">{{ formatDateTime(detailItem.createdAt) }}</a-descriptions-item>
           <a-descriptions-item label="更新时间">{{ formatDateTime(detailItem.updatedAt) }}</a-descriptions-item>
           <a-descriptions-item label="审核时间">{{ detailItem.reviewedAt ? formatDateTime(detailItem.reviewedAt) : '-' }}</a-descriptions-item>
+          <a-descriptions-item label="审核人">{{ isManagementView && detailItem.reviewedBy ? detailItem.reviewedBy : '-' }}</a-descriptions-item>
         </a-descriptions>
       </div>
     </a-drawer>

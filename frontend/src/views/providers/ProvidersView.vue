@@ -49,17 +49,17 @@
             </div>
           </div>
           <div class="mobile-list-meta-grid">
-            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="isManagementView && formatProviderAccountTypes(record.accountTypes)" class="mobile-list-meta-item">
               <span>账户类型</span>
-              <strong>{{ record.accountTypes.join(' / ') }}</strong>
+              <strong>{{ formatProviderAccountTypes(record.accountTypes) }}</strong>
             </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="isManagementView && formatCapabilitiesSummary(record.capabilities) !== '-'" class="mobile-list-meta-item">
               <span>接口能力</span>
               <strong>{{ formatCapabilitiesSummary(record.capabilities) }}</strong>
             </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="record.description" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>说明</span>
-              <strong>{{ record.description || '-' }}</strong>
+              <strong>{{ record.description }}</strong>
             </div>
             <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>默认 Base URL</span>
@@ -267,6 +267,7 @@ import {
   findFirstModelCategory,
   formatCapabilitiesSummary,
   formatModelServiceTier,
+  formatProviderAccountTypes,
   formatProviderCapability,
   getModelCategory,
   visibleProviderCapabilities,

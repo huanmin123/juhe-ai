@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -114,7 +115,87 @@ func TestHTTPHandlerMapsMustChangePasswordTo403WithCode(t *testing.T) {
 	}
 }
 
+// TestHTTPHandlerMapsAuthorizeErrorsToAuthsysContract 锁定 BUG-0256：
+// ServeHTTP 对 Authorize 失败的映射与 authsys.sessionMiddleware 主面
+// 契约对齐——哨兵错误透出真实 message，非哨兵错误归为 500，err==nil 但
+// 空 actor id 按未登录处理。
+func TestHTTPHandlerMapsAuthorizeErrorsToAuthsysContract(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		status  int
+		message string
+	}{
+		{name: "login required", err: modelcheckauth.ErrLoginRequired, status: http.StatusUnauthorized, message: "请先登录"},
+		{name: "session expired", err: modelcheckauth.ErrSessionExpired, status: http.StatusUnauthorized, message: "登录会话已过期"},
+		{name: "invalid token", err: modelcheckauth.ErrInvalidToken, status: http.StatusUnauthorized, message: "访问令牌无效或已过期"},
+		{name: "forbidden admin role", err: modelcheckauth.ErrForbidden, status: http.StatusForbidden, message: "需要管理员权限"},
+		{name: "unexpected storage failure", err: errors.New("read management session: connection refused"), status: http.StatusInternalServerError, message: "服务器内部错误"},
+		{name: "empty actor without error", err: nil, status: http.StatusUnauthorized, message: "请先登录"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newTestHTTPHandler()
+			handler.Authorize = func(context.Context, *http.Request) (string, error) {
+				return "", tc.err
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/run/active", nil))
+			if response.Code != tc.status {
+				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), tc.status)
+			}
+			var body struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Message != tc.message {
+				t.Fatalf("message=%q, want %q", body.Message, tc.message)
+			}
+		})
+	}
+}
+
 type fakeRunService struct{}
+
+// TestHTTPHandlerAuthDeniedLogsStructuredWarnWithoutCredentials 锁定
+// BUG-0256 遗留观察项收尾：鉴权拒绝落进程结构化 Warn 日志
+// （event=j3b_auth_denied，含 method/path/status/reason/remote），且
+// 绝不记录请求携带的任何 cookie/token 值。包内测试串行，临时替换
+// default logger 后 defer 恢复，无并发冲突。
+func TestHTTPHandlerAuthDeniedLogsStructuredWarnWithoutCredentials(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	defer slog.SetDefault(previous)
+	handler := newTestHTTPHandler()
+	handler.Authorize = func(context.Context, *http.Request) (string, error) {
+		return "", modelcheckauth.ErrLoginRequired
+	}
+	request := httptest.NewRequest(http.MethodGet, "/run/active", nil)
+	request.Header.Set("Cookie", modelcheckauth.SessionCookieName+"=secret-session-token")
+	request.Header.Set("Authorization", "Bearer secret-bearer-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s, want 401", response.Code, response.Body.String())
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "j3b_auth_denied") {
+		t.Fatalf("auth denial log missing j3b_auth_denied: %s", logs)
+	}
+	if !strings.Contains(logs, `"status":401`) {
+		t.Fatalf("auth denial log missing status 401: %s", logs)
+	}
+	if !strings.Contains(logs, `"path":"/run/active"`) {
+		t.Fatalf("auth denial log missing path: %s", logs)
+	}
+	for _, secret := range []string{"secret-session-token", "secret-bearer-token"} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("auth denial log leaked credential value %q: %s", secret, logs)
+		}
+	}
+}
 
 type fakeQualityManager struct{}
 

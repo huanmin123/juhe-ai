@@ -180,6 +180,11 @@ func resolveToken(authorization, cookieHeader string) (string, error) {
 		}
 		return matched[1], nil
 	}
+	// cookie 分支与 authsys.ParseCookie 的 last-wins 语义对齐（重名
+	// juhe_ai_session cookie 时两面不得分叉，2026-10-01，BUG-0256）：
+	// 遍历全部分号段，取最后一个同名段为准；任一同名段值空或解码失败
+	// 立即 fail-closed 返回 ErrLoginRequired，不静默跳过可疑输入。
+	token := ""
 	for _, part := range strings.Split(cookieHeader, ";") {
 		name, value, found := strings.Cut(strings.TrimSpace(part), "=")
 		if !found || name != SessionCookieName {
@@ -189,9 +194,12 @@ func resolveToken(authorization, cookieHeader string) (string, error) {
 		if err != nil || decoded == "" {
 			return "", ErrLoginRequired
 		}
-		return decoded, nil
+		token = decoded
 	}
-	return "", ErrLoginRequired
+	if token == "" {
+		return "", ErrLoginRequired
+	}
+	return token, nil
 }
 
 func (a *Authenticator) table(name string) string {

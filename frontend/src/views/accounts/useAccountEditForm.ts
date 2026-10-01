@@ -96,6 +96,8 @@ interface UseAccountEditFormOptions {
   loadData: () => Promise<void>
   refreshAccountMutationRows: (mutation: AccountMutationResult) => Promise<void>
   focusCreatedAccount?: (account: AccountSummary) => void
+  /** 创建被「未选系统账户」guard 拦截时触发（页面可借此打开筛选抽屉引导选择）。 */
+  onCreateGuardSystemAccount?: () => void
   providerDefinitions: ReadonlyValue<ProviderDefinition[]>
   providers: ReadonlyValue<ProviderDefinition[]>
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
@@ -233,6 +235,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     authLoading,
     authResult,
     generateOAuthUrl,
+    lastValidationFailure,
     saveAccount,
     saving
   } = useAccountEditSaveFlow({
@@ -358,7 +361,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   async function openCreate() {
     const requestToken = nextFormOpenRequestToken()
     if (options.isManagementView.value && !options.accountScopeParams.value?.systemAccountId) {
-      message.warning('请先在右侧选择目标系统账户，再创建 AI 账户')
+      message.warning('请先选择目标系统账户，再创建 AI 账户')
+      options.onCreateGuardSystemAccount?.()
       return
     }
     editingId.value = undefined
@@ -987,6 +991,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     availableProviders,
     cloningSourceId,
     createScopeParams,
+    lastValidationFailure,
     editingId,
     editingAccountDetail,
     editingAccountAdvancedDetail,

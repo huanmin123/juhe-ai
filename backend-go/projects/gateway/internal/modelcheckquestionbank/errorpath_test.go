@@ -205,14 +205,14 @@ func TestHandlersNilAuditSinkIsOptional(t *testing.T) {
 // Question 的 nil 要点在有权视角必须渲染为空数组而非 null；无权视角
 // 必须省略答案与要点字段。
 func TestQuestionViewNilKeyPointsRendersEmptyArray(t *testing.T) {
-	view := questionView(Question{ID: "mcq-1", ReferenceAnswer: "答案"}, true)
+	view := questionView(Question{ID: "mcq-1", ReferenceAnswer: "答案"}, true, false)
 	if view.KeyPoints == nil {
 		t.Fatal("nil keyPoints 必须渲染为空数组")
 	}
 	if len(*view.KeyPoints) != 0 || view.ReferenceAnswer != "答案" {
 		t.Fatalf("view = %+v", view)
 	}
-	restricted := questionView(Question{ID: "mcq-1", ReferenceAnswer: "答案", KeyPoints: []string{"要点"}}, false)
+	restricted := questionView(Question{ID: "mcq-1", ReferenceAnswer: "答案", KeyPoints: []string{"要点"}}, false, false)
 	if restricted.ReferenceAnswer != "" || restricted.KeyPoints != nil {
 		t.Fatalf("无权视角必须省略答案与要点: %+v", restricted)
 	}

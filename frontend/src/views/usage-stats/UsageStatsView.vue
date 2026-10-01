@@ -1,7 +1,7 @@
 <template>
   <div class="usage-stats-page">
     <a-card class="page-card usage-stats-header-card">
-      <div class="page-toolbar usage-stats-toolbar">
+      <div class="page-toolbar usage-stats-toolbar usage-stats-toolbar-desktop">
         <div class="usage-stats-filters">
           <SystemPrincipalSelect
             v-if="isManagementView"
@@ -58,7 +58,23 @@
           </a-button>
         </div>
       </div>
-      <div v-if="accountFilterItems.length" class="usage-stats-account-list" aria-label="账户筛选">
+      <!-- 手机端紧凑条：指标切换常驻，用户/日期/添加账户收进底部抽屉 -->
+      <div class="usage-stats-mobile-bar">
+        <a-segmented v-model:value="selectedMetric" class="usage-stats-mobile-metric" :disabled="loading" :options="metricOptions" @change="handleMetricChange" />
+        <a-button class="usage-stats-mobile-filter-button" @click="mobileFilterOpen = true">
+          <template #icon>
+            <FilterOutlined />
+          </template>
+          筛选
+          <span v-if="mobileFilterActive" class="usage-stats-mobile-filter-dot" />
+        </a-button>
+      </div>
+      <div
+        v-if="accountFilterItems.length"
+        class="usage-stats-account-list"
+        :class="{ collapsed: mobileChipsCollapsed }"
+        aria-label="账户筛选"
+      >
         <span
           v-for="item in accountFilterItems"
           :key="item.account.id"
@@ -86,7 +102,88 @@
           </a-tooltip>
         </span>
       </div>
+      <button
+        v-if="accountFilterItems.length > mobileChipCollapseThreshold"
+        type="button"
+        class="usage-stats-chips-toggle"
+        @click="mobileChipsCollapsed = !mobileChipsCollapsed"
+      >
+        {{ mobileChipsCollapsed ? `展开全部 ${accountFilterItems.length} 个账户` : '收起账户列表' }}
+        <CaretDownOutlined class="usage-stats-chips-toggle-icon" :class="{ open: !mobileChipsCollapsed }" />
+      </button>
     </a-card>
+
+    <a-drawer
+      v-model:open="mobileFilterOpen"
+      title="筛选统计"
+      placement="bottom"
+      height="min(66vh, 520px)"
+      class="usage-stats-mobile-filter-drawer"
+      :body-style="{ padding: '14px 16px 16px' }"
+    >
+      <div class="stats-mobile-filter-body">
+        <div v-if="isManagementView" class="stats-mobile-filter-field">
+          <span class="stats-mobile-filter-label">用户</span>
+          <SystemPrincipalSelect
+            v-model:value="filters.systemAccountId"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :disabled="loading"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
+            v-model:selected-principal="filters.systemAccount"
+            all-label="全部用户"
+            class="stats-mobile-filter-control"
+            include-all
+            placeholder="筛选用户"
+            @change="handleSystemAccountFilterChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
+          />
+        </div>
+        <div class="stats-mobile-filter-field">
+          <span class="stats-mobile-filter-label">时间范围</span>
+          <a-range-picker
+            v-model:value="dateRange"
+            :allow-clear="false"
+            :disabled="loading"
+            :disabled-date="disabledDate"
+            class="stats-mobile-filter-control"
+            format="YYYY-MM-DD"
+            @calendar-change="handleCalendarChange"
+            @change="handleDateRangeChange"
+            @open-change="handleDateRangeOpenChange"
+          />
+        </div>
+        <div class="stats-mobile-filter-field">
+          <span class="stats-mobile-filter-label">添加趋势账户</span>
+          <AccountAppendSelect
+            v-model:value="addedTrendAccountIds"
+            :accounts="accountOptionRows"
+            :selected-accounts="addedTrendAccountSelections"
+            class="stats-mobile-filter-control"
+            :disabled="loading"
+            :hidden-account-ids="accountPickerHiddenValues"
+            :loading="accountOptionsLoading"
+            :max="maxAddedTrendAccounts"
+            max-tag-count="responsive"
+            placeholder="输入账户名称添加账户"
+            @change="handleAddedTrendAccountsChange"
+            @dropdown-visible-change="handleAccountOptionsDropdown"
+            @search="handleAccountOptionsSearch"
+          />
+        </div>
+        <div class="stats-mobile-filter-actions">
+          <a-button :disabled="loading" @click="resetFilters">重置</a-button>
+          <a-button type="primary" :loading="loading" @click="refreshUsageStats">
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+            刷新
+          </a-button>
+        </div>
+      </div>
+    </a-drawer>
 
     <StatsSummaryCards :cards="summaryCards" :loading="summaryCardsLoading" compact />
 
@@ -122,7 +219,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { CloseOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { CaretDownOutlined, CloseOutlined, FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 
@@ -314,6 +411,12 @@ const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizeUsageStatsDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
+// 手机端：筛选抽屉开合；账户 chips（图例兼筛选）超过阈值折叠，展开按钮显示总数。
+// 筛选打点：指定到具体用户时提示（'all' 是全部用户哨兵；日期为必选无「非默认」态）。
+const mobileFilterOpen = ref(false)
+const mobileChipsCollapsed = ref(true)
+const mobileChipCollapseThreshold = 4
+const mobileFilterActive = computed(() => Boolean(filters.systemAccountId) && filters.systemAccountId !== 'all')
 const {
   accountFilterItems,
   accountPickerHiddenValues,
@@ -708,35 +811,121 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
   white-space: nowrap;
 }
 
+/* 手机端紧凑筛选条与账户 chips 折叠（桌面隐藏） */
+.usage-stats-mobile-bar {
+  display: none;
+}
+
+.usage-stats-mobile-metric {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.usage-stats-mobile-bar :deep(.ant-segmented-item-label) {
+  padding: 6px 12px;
+}
+
+.usage-stats-mobile-filter-button {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.usage-stats-mobile-filter-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--juhe-coral, #a6755e);
+}
+
+.usage-stats-chips-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 32px;
+  margin-top: 8px;
+  border: 0;
+  border-radius: var(--juhe-radius-sm, 8px);
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.usage-stats-chips-toggle-icon {
+  font-size: 10px;
+  transition: transform 0.18s ease;
+}
+
+.usage-stats-chips-toggle-icon.open {
+  transform: rotate(180deg);
+}
+
+.stats-mobile-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stats-mobile-filter-label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.stats-mobile-filter-control {
+  width: 100%;
+}
+
+.stats-mobile-filter-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.stats-mobile-filter-actions .ant-btn {
+  flex: 1 1 0;
+}
+
 .chart-panel {
   width: 100%;
   height: 360px;
 }
 
 @media (max-width: 900px) {
-  .usage-stats-toolbar,
-  .usage-stats-filters {
-    align-items: stretch;
+  .usage-stats-toolbar-desktop {
+    display: none;
   }
 
-  .usage-stats-filters {
-    width: 100%;
-    flex: none;
-    flex-direction: column;
-  }
-
-  .usage-stats-system-account-select,
-  .usage-stats-range-picker,
-  .usage-stats-metric-segmented,
-  .usage-stats-account-select {
-    flex: none;
-    width: 100%;
+  .usage-stats-mobile-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     min-width: 0;
-    max-width: none;
+  }
+
+  .usage-stats-account-list.collapsed {
+    max-height: 84px;
+    overflow: hidden;
+  }
+
+  .usage-stats-chips-toggle {
+    display: flex;
   }
 
   .chart-panel {
     height: 300px;
+  }
+}
+
+@media (min-width: 901px) {
+  .usage-stats-mobile-filter-drawer {
+    display: none;
   }
 }
 </style>

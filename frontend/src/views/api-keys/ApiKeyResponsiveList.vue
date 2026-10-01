@@ -111,19 +111,19 @@
           </div>
         </div>
         <div class="mobile-list-meta-grid">
-          <div class="mobile-list-meta-item mobile-list-meta-wide">
+          <div class="mobile-list-meta-item">
             <span>API Key</span>
             <strong>{{ formatKeyPreview(record) }}</strong>
           </div>
-          <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
+          <div v-if="isManagementView" class="mobile-list-meta-item">
             <span>系统账户</span>
             <strong>{{ apiKeySystemAccountText(record) }}</strong>
           </div>
-          <div class="mobile-list-meta-item">
+          <div v-if="record.expiresAt" class="mobile-list-meta-item">
             <span>过期时间</span>
             <strong>{{ formatDateTime(record.expiresAt) }}</strong>
           </div>
-          <div class="mobile-list-meta-item mobile-list-meta-wide">
+          <div class="mobile-list-meta-item">
             <span>时间计划</span>
             <strong>{{ apiKeyScheduleSummary(record.availabilitySchedule) }}</strong>
           </div>
@@ -139,9 +139,9 @@
             <span>策略路由</span>
             <strong>{{ apiKeyRouteStrategyName(record) }} / {{ apiKeyRouteStrategyModeText(record.routeStrategyMode) }}</strong>
           </div>
-          <div class="mobile-list-meta-item mobile-list-meta-wide">
+          <div v-if="record.description" class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
-            <strong>{{ record.description || '-' }}</strong>
+            <strong>{{ record.description }}</strong>
           </div>
         </div>
         <div class="mobile-list-card-actions">

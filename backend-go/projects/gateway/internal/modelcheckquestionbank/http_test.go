@@ -210,7 +210,7 @@ func TestHandlersCreateContractAndDedup(t *testing.T) {
 			t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 		}
 		data := decodeData(t, recorder)
-		for _, key := range []string{"id", "title", "questionText", "referenceAnswer", "keyPoints", "status", "rejectReason", "createdBy", "createdAt", "updatedAt", "reviewedAt"} {
+		for _, key := range []string{"id", "title", "questionText", "referenceAnswer", "keyPoints", "status", "rejectReason", "createdBy", "createdAt", "updatedAt", "reviewedAt", "reviewedBy"} {
 			if _, ok := data[key]; !ok {
 				t.Fatalf("契约缺少字段 %q: %v", key, data)
 			}
@@ -220,6 +220,9 @@ func TestHandlersCreateContractAndDedup(t *testing.T) {
 		}
 		if data["rejectReason"] != nil || data["reviewedAt"] != nil {
 			t.Fatalf("新题 rejectReason/reviewedAt 必须为 null: %v", data)
+		}
+		if data["reviewedBy"] != nil {
+			t.Fatalf("自助面新题 reviewedBy 必须为 null: %v", data)
 		}
 		points, ok := data["keyPoints"].([]any)
 		if !ok || len(points) != 2 {
@@ -334,6 +337,38 @@ func TestHandlersDetailPermissionAndMasking(t *testing.T) {
 		data := decodeData(t, recorder)
 		if data["referenceAnswer"] == nil {
 			t.Fatalf("管理员应看到答案: %v", data)
+		}
+	})
+
+	t.Run("reviewedBy 仅管理面透出", func(t *testing.T) {
+		// 管理面 detail：审核后题目透出审核人系统账户 id。
+		adminDetail := decodeData(t, call(t, h.admin, h.adminActor, http.MethodGet, "/q/"+questionID, ""))
+		if adminDetail["reviewedBy"] != "sys-admin" {
+			t.Fatalf("管理面 detail reviewedBy = %v, want sys-admin", adminDetail["reviewedBy"])
+		}
+		// 自助面同请求（创建者视角）：reviewedBy 恒为 null。
+		selfDetail := decodeData(t, call(t, h.self, alice, http.MethodGet, "/q/"+questionID, ""))
+		if selfDetail["reviewedBy"] != nil {
+			t.Fatalf("自助面 detail reviewedBy 必须为 null: %v", selfDetail["reviewedBy"])
+		}
+		// 管理面 list：审核后题目非空、未审核题目为 null。
+		items, _ := decodeList(t, call(t, h.admin, h.adminActor, http.MethodGet, "/q", ""))
+		if len(items) != 2 {
+			t.Fatalf("admin list = %d items", len(items))
+		}
+		for _, item := range items {
+			if item["status"] == StatusApproved {
+				if item["reviewedBy"] != "sys-admin" {
+					t.Fatalf("管理面列表 approved 题 reviewedBy = %v", item["reviewedBy"])
+				}
+			} else if item["reviewedBy"] != nil {
+				t.Fatalf("管理面列表未审核题 reviewedBy 必须为 null: %v", item["reviewedBy"])
+			}
+		}
+		// 未审核题管理面 detail reviewedBy 为 null。
+		pending := decodeData(t, call(t, h.admin, h.adminActor, http.MethodGet, "/q/"+bobPendingID, ""))
+		if pending["reviewedBy"] != nil {
+			t.Fatalf("未审核题 reviewedBy 必须为 null: %v", pending["reviewedBy"])
 		}
 	})
 
@@ -543,6 +578,9 @@ func TestHandlersReviewEndpoint(t *testing.T) {
 		data := decodeData(t, recorder)
 		if data["status"] != StatusRejected || data["rejectReason"] != "题目质量不足" || data["reviewedAt"] == nil {
 			t.Fatalf("data = %v", data)
+		}
+		if data["reviewedBy"] != "sys-admin" {
+			t.Fatalf("审核响应 reviewedBy = %v, want sys-admin", data["reviewedBy"])
 		}
 		entries := h.sink.recorded()
 		last := entries[len(entries)-1]

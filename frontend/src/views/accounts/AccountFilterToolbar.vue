@@ -1,5 +1,6 @@
 <template>
   <ResponsiveListToolbar
+    v-model:filter-drawer-open="filterDrawerOpenModel"
     :keyword="filters.keyword"
     search-placeholder="账户名称"
     filter-title="筛选账户"
@@ -238,6 +239,8 @@ const props = defineProps<{
   tagOptions: AccountTagSummary[]
   tagOptionsLoading?: boolean
 }>()
+
+const filterDrawerOpenModel = defineModel<boolean | undefined>('filterDrawerOpen', { default: undefined })
 
 const emit = defineEmits<{
   (event: 'create'): void

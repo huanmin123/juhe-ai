@@ -25,13 +25,14 @@ const (
 // QuestionView 是题库对外 JSON 契约（前端并行开发依赖，字段名不得改动）：
 //
 //	{ id, title, questionText, referenceAnswer, keyPoints, status, rejectReason,
-//	  createdBy, createdAt, updatedAt, reviewedAt }
+//	  createdBy, createdAt, updatedAt, reviewedAt, reviewedBy }
 //
 // 无权限时的处理约定（本包唯一契约解释）：referenceAnswer 与 keyPoints
 // 选择【省略字段】——referenceAnswer 为必填非空，omitempty 即等价于
 // "无权限"；keyPoints 用 *[]string 区分"无权限省略"与"有权但为空数组
-// （渲染 []）"。rejectReason/reviewedAt 无值渲染 null。titleNorm 与
-// reviewedBy 不进对外契约。
+// （渲染 []）"。rejectReason/reviewedAt 无值渲染 null。reviewedBy（审核
+// 人系统账户 id）无值或自助面渲染 null，仅管理面透出。titleNorm 不进
+// 对外契约。
 type QuestionView struct {
 	ID              string    `json:"id"`
 	Title           string    `json:"title"`
@@ -44,6 +45,7 @@ type QuestionView struct {
 	CreatedAt       string    `json:"createdAt"`
 	UpdatedAt       string    `json:"updatedAt"`
 	ReviewedAt      *string   `json:"reviewedAt"`
+	ReviewedBy      *string   `json:"reviewedBy"`
 }
 
 // QuestionList 是列表契约：{ items, total, page, pageSize }。
@@ -133,7 +135,7 @@ func (h *HTTPHandlers) ServeList(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]QuestionView, 0, len(items))
 	for _, question := range items {
-		views = append(views, questionView(question, h.canSeeAnswer(question, actor)))
+		views = append(views, questionView(question, h.canSeeAnswer(question, actor), h.adminMode))
 	}
 	kernel.WriteOK(w, QuestionList{Items: views, Total: total, Page: page, PageSize: pageSize}, "")
 }
@@ -162,7 +164,7 @@ func (h *HTTPHandlers) ServeCreate(w http.ResponseWriter, r *http.Request) {
 			{Field: "title", Label: "标题", After: question.Title},
 			{Field: "status", Label: "状态", After: question.Status},
 		})
-	kernel.WriteJSON(w, http.StatusCreated, map[string]any{"data": questionView(question, true)})
+	kernel.WriteJSON(w, http.StatusCreated, map[string]any{"data": questionView(question, true, h.adminMode)})
 }
 
 // ServeDetail 查看单题：approved 题面全员可读；pending/rejected 题目仅
@@ -187,7 +189,7 @@ func (h *HTTPHandlers) ServeDetail(w http.ResponseWriter, r *http.Request) {
 		kernel.WriteNotFound(w, "题目不存在")
 		return
 	}
-	kernel.WriteOK(w, questionView(question, h.canSeeAnswer(question, actor)), "")
+	kernel.WriteOK(w, questionView(question, h.canSeeAnswer(question, actor), h.adminMode), "")
 }
 
 // ServeUpdate 修改题目（创建者或管理员，仅 pending/rejected）。
@@ -218,7 +220,7 @@ func (h *HTTPHandlers) ServeUpdate(w http.ResponseWriter, r *http.Request) {
 			{Field: "title", Label: "标题", After: question.Title},
 			{Field: "status", Label: "状态", After: question.Status},
 		})
-	kernel.WriteOK(w, questionView(question, true), "")
+	kernel.WriteOK(w, questionView(question, true, h.adminMode), "")
 }
 
 // ServeDelete 硬删除题目（管理员任意；创建者限本人 pending/rejected）。
@@ -300,7 +302,7 @@ func (h *HTTPHandlers) ServeReview(w http.ResponseWriter, r *http.Request) {
 		changes = append(changes, authsys.OperationLogChange{Field: "rejectReason", Label: "驳回理由", After: body.Reason})
 	}
 	h.recordAudit(auth, r, action, "model_check_question_bank.review", question.ID, question.Title, summary, changes)
-	kernel.WriteOK(w, questionView(question, true), "")
+	kernel.WriteOK(w, questionView(question, true, h.adminMode), "")
 }
 
 // ServeOptions 是选择器专用端点：仅 approved，返回 {items:[{id,title}]}。
@@ -431,8 +433,10 @@ func (h *HTTPHandlers) recordAudit(auth *authsys.AuthContext, r *http.Request, a
 }
 
 // questionView 按权限渲染对外契约；includeAnswer=false 时
-// referenceAnswer/keyPoints 省略字段（见 QuestionView 契约注释）。
-func questionView(question Question, includeAnswer bool) QuestionView {
+// referenceAnswer/keyPoints 省略字段（见 QuestionView 契约注释）；
+// includeReviewer=true 且已落审核人时透出 reviewedBy——reviewedBy 仅
+// 管理面透出，自助面调用一律传 false。
+func questionView(question Question, includeAnswer, includeReviewer bool) QuestionView {
 	view := QuestionView{
 		ID:           question.ID,
 		Title:        question.Title,
@@ -449,6 +453,10 @@ func questionView(question Question, includeAnswer bool) QuestionView {
 	if question.ReviewedAt != "" {
 		reviewedAt := question.ReviewedAt
 		view.ReviewedAt = &reviewedAt
+	}
+	if includeReviewer && question.ReviewedBy != "" {
+		reviewedBy := question.ReviewedBy
+		view.ReviewedBy = &reviewedBy
 	}
 	if includeAnswer {
 		view.ReferenceAnswer = question.ReferenceAnswer

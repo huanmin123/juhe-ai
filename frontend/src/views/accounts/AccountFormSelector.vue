@@ -3,6 +3,7 @@
     <div v-if="showAccountTypePicker" class="account-entry-head">
       <span class="entry-label">账户类型</span>
       <a-segmented
+        block
         :value="selectedAccountTypeChoiceValue"
         :disabled="editing"
         :options="segmentedTypeOptions"
@@ -49,8 +50,10 @@ const emit = defineEmits<{
 
 const enabledProviders = computed(() => props.providers.filter((provider) => provider.enabled))
 
+// 选项只展示接入方式短码（tag），供应商名由下方供应商徽标承载，避免多类型供应商逐项重复前缀；
+// 完整「供应商 + 接入方式」全称由弹框标题（typeTitle = label）呈现。
 const segmentedTypeOptions = computed(() => props.accountTypeChoices.map((item) => ({
-  label: item.label,
+  label: item.tag,
   value: item.value
 })))
 

@@ -329,6 +329,19 @@ export function formatCapabilitiesSummary(capabilities: string[]): string {
   return visibleCapabilities.length ? visibleCapabilities.map(formatProviderCapability).join(' / ') : '-'
 }
 
+// 供应商账户类型的展示文案（与账户域 accountTypeText 同词汇），并兼容
+// OpenAI-compatible 等长 code 的可读化；未知值原样透传。
+const providerAccountTypeLabels: Record<string, string> = {
+  api_key: 'API Key',
+  oauth: 'OAuth',
+  google_oauth: 'Google OAuth'
+}
+
+export function formatProviderAccountTypes(accountTypes: string[]): string {
+  const labels = accountTypes.map((type) => providerAccountTypeLabels[type] ?? type)
+  return labels.length ? labels.join(' / ') : ''
+}
+
 function providerProfileApiProtocolsForModelCategory(
   provider: ProviderDefinition | undefined,
   category: ModelCategoryKey

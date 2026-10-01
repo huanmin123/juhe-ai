@@ -33,6 +33,17 @@ html {
 
 body {
   margin: 0;
+/* 粗触控设备（手机/平板）+窄屏：主操作按钮触控目标 ≥44px；表格行内小按钮不变 */
+@media (pointer: coarse) and (max-width: 900px) {
+  .page-toolbar .ant-btn,
+  .ant-modal-footer .ant-btn,
+  .mobile-list-card-actions .ant-btn,
+  .responsive-list-filter-actions .ant-btn,
+  .responsive-list-actions-drawer .ant-btn {
+    min-height: 44px;
+  }
+}
+
   min-width: 320px;
   color: var(--juhe-fg);
   background: var(--juhe-bg);
@@ -352,7 +363,7 @@ body.immersive-layout-active {
   box-shadow: 0 0 0 3px rgba(83, 105, 107, 0.12);
 }
 
-@media (max-width: 991px) {
+@media (max-width: 900px) {
   .page-card .ant-card-body {
     padding: 16px;
   }

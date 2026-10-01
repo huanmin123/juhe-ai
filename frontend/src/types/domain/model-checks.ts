@@ -225,6 +225,8 @@ export interface ModelCheckQuestionBankItem {
   createdAt: string
   updatedAt: string
   reviewedAt?: string
+  /** 审核人系统账户 id；仅管理面透出，自助面恒为 null */
+  reviewedBy?: string | null
 }
 
 export interface ModelCheckQuestionBankListParams {

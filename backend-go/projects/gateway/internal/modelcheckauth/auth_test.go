@@ -60,6 +60,44 @@ func TestResolveTokenRejectsInvalidBearer(t *testing.T) {
 	}
 }
 
+// TestResolveTokenPicksLastSessionCookie 锁定 last-wins：重名
+// juhe_ai_session cookie 与 authsys.ParseCookie 的 map 覆盖语义一致，
+// 取最后一个同名段（BUG-0256，两面不得分叉）。
+func TestResolveTokenPicksLastSessionCookie(t *testing.T) {
+	token, err := resolveToken("", "theme=dark; "+SessionCookieName+"=first-token; "+SessionCookieName+"=second-token")
+	if err != nil || token != "second-token" {
+		t.Fatalf("token=%q err=%v, want second-token", token, err)
+	}
+}
+
+func TestResolveTokenKeepsSingleCookieAndBearerPrecedence(t *testing.T) {
+	token, err := resolveToken("", "other=1; "+SessionCookieName+"=single-token")
+	if err != nil || token != "single-token" {
+		t.Fatalf("token=%q err=%v, want single-token", token, err)
+	}
+	valid := "juhe_tmp_" + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM1234"
+	token, err = resolveToken("Bearer "+valid, SessionCookieName+"=cookie-token")
+	if err != nil || token != valid {
+		t.Fatalf("token=%q err=%v, want bearer precedence over cookie", token, err)
+	}
+}
+
+// TestResolveTokenFailsClosedOnEmptySessionCookie 锁定 fail-closed：
+// 任一同名段值空（含尾部重名空段）或完全无 cookie 都必须是
+// ErrLoginRequired，不得静默跳过后继续取前一个值。
+func TestResolveTokenFailsClosedOnEmptySessionCookie(t *testing.T) {
+	for _, header := range []string{
+		"",
+		SessionCookieName + "=",
+		"other=1; " + SessionCookieName + "=",
+		SessionCookieName + "=valid-token; " + SessionCookieName + "=",
+	} {
+		if _, err := resolveToken("", header); err != ErrLoginRequired {
+			t.Fatalf("header %q err=%v, want ErrLoginRequired", header, err)
+		}
+	}
+}
+
 func TestCheckContractRejectsMissingAuthRuntimeColumn(t *testing.T) {
 	for _, omitted := range []string{"display_name", "role", "must_change_password", "last_login_at", "updated_at"} {
 		t.Run(omitted, func(t *testing.T) {

@@ -860,7 +860,7 @@ function snapshotPageState(): RouteStrategiesPageState {
 function openCreate() {
   editDetailRequestToken += 1
   if (isManagementView.value && !routeStrategyScopeParams.value?.systemAccountId) {
-    message.warning('请先在右侧选择目标系统账户，再创建策略路由')
+    message.warning('请先选择目标系统账户，再创建策略路由')
     return
   }
   editingId.value = undefined

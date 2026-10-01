@@ -428,7 +428,7 @@ function resetFilters() {
 
 function openCreate() {
   if (isManagementView.value && !groupScopeParams.value?.systemAccountId) {
-    message.warning('请先在右侧选择目标系统账户，再创建分组')
+    message.warning('请先选择目标系统账户，再创建分组')
     return
   }
   groupEditRequestId += 1

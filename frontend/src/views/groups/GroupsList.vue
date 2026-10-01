@@ -108,9 +108,9 @@
             <span>系统账户</span>
             <strong>{{ groupSystemAccountText(record) }}</strong>
           </div>
-          <div class="mobile-list-meta-item mobile-list-meta-wide">
+          <div v-if="groupDisplayDescription(record)" class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
-            <strong>{{ groupDisplayDescription(record) || '-' }}</strong>
+            <strong>{{ groupDisplayDescription(record) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
             <span>可用账号</span>

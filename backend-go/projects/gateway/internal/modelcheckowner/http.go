@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -253,16 +254,37 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	actorSystemAccountID, err := h.Authorize(r.Context(), r)
 	if err != nil || strings.TrimSpace(actorSystemAccountID) == "" {
-		status := http.StatusUnauthorized
-		if errors.Is(err, modelcheckauth.ErrMustChange) {
+		// 错误映射与 authsys.sessionMiddleware 主面契约对齐
+		// （2026-10-01，BUG-0256）：按哨兵错误透出真实原因；管理面与
+		// 自助面共用本入口，ErrForbidden 只可能来自管理面，无需分面区分。
+		switch {
+		case errors.Is(err, modelcheckauth.ErrMustChange):
+			warnAuthDenied(r, http.StatusForbidden, err.Error())
 			writeOwnerErrorCode(w, http.StatusForbidden, "must_change_password", err.Error())
 			return
+		case err == nil:
+			// 认证成功却返回空 actor id 属于异常空身份，按主面未登录契约处理。
+			warnAuthDenied(r, http.StatusUnauthorized, "empty actor id")
+			writeOwnerError(w, http.StatusUnauthorized, "请先登录")
+			return
+		case errors.Is(err, modelcheckauth.ErrLoginRequired),
+			errors.Is(err, modelcheckauth.ErrInvalidToken),
+			errors.Is(err, modelcheckauth.ErrSessionExpired):
+			warnAuthDenied(r, http.StatusUnauthorized, err.Error())
+			writeOwnerError(w, http.StatusUnauthorized, err.Error())
+			return
+		case errors.Is(err, modelcheckauth.ErrForbidden):
+			warnAuthDenied(r, http.StatusForbidden, err.Error())
+			writeOwnerError(w, http.StatusForbidden, err.Error())
+			return
+		default:
+			// 非哨兵错误（DB 故障、authenticator 未初始化等）是服务端
+			// 问题，归入 500 且不透出内部细节，与主面 writeErrorCause 同口径；
+			// 内部错误文本进日志是安全的——日志不外发，响应仍只给统一文案。
+			warnAuthDenied(r, http.StatusInternalServerError, err.Error())
+			writeOwnerError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
 		}
-		if errors.Is(err, modelcheckauth.ErrForbidden) {
-			status = http.StatusForbidden
-		}
-		writeOwnerError(w, status, "模型检测管理请求未授权")
-		return
 	}
 	scope, scopeErr := resolveManagementScope(r, actorSystemAccountID, h.AllowCrossAccount, h.ForceActorScope)
 	if scopeErr != nil {
@@ -327,6 +349,21 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// warnAuthDenied 落一条鉴权拒绝的结构化 Warn 日志。BUG-0256 遗留观察项
+// 收尾——管理面无访问日志导致生产排障只能靠 DB 时间线旁证，鉴权拒绝先落
+// 进程日志。remote 取直连对端 r.RemoteAddr，不解析可伪造的 XFF 头；
+// 只记录 method/path/status/reason，绝不记录 token/cookie 值。
+func warnAuthDenied(r *http.Request, status int, reason string) {
+	slog.Warn("模型检测面鉴权拒绝",
+		"event", "j3b_auth_denied",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"status", status,
+		"reason", reason,
+		"remote", r.RemoteAddr,
+	)
 }
 
 // serveQuestionBank 把题库端点委托给对应前缀的 modelcheckquestionbank

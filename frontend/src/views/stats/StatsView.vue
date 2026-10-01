@@ -1,7 +1,7 @@
 <template>
   <div class="stats-page">
     <a-card class="page-card stats-header-card">
-      <div class="page-toolbar stats-toolbar">
+      <div class="page-toolbar stats-toolbar stats-toolbar-desktop">
         <div class="stats-toolbar-filters">
           <a-range-picker
             v-model:value="dateRange"
@@ -49,7 +49,78 @@
           </a-button>
         </div>
       </div>
+      <!-- 手机端紧凑条：高频快捷时间段留在首屏，精确筛选收进底部抽屉 -->
+      <div class="stats-mobile-bar">
+        <a-segmented
+          :value="quickRangeValue ?? ''"
+          :disabled="loading"
+          :options="quickRangeOptions"
+          class="stats-mobile-quick-range"
+          @change="handleQuickRangeChange"
+        />
+        <a-button class="stats-mobile-filter-button" @click="mobileFilterOpen = true">
+          <template #icon>
+            <FilterOutlined />
+          </template>
+          筛选
+          <span v-if="mobileFilterActive" class="stats-mobile-filter-dot" />
+        </a-button>
+      </div>
     </a-card>
+
+    <a-drawer
+      v-model:open="mobileFilterOpen"
+      title="筛选统计"
+      placement="bottom"
+      height="min(62vh, 480px)"
+      class="stats-mobile-filter-drawer"
+      :body-style="{ padding: '14px 16px 16px' }"
+    >
+      <div class="stats-mobile-filter-body">
+        <div class="stats-mobile-filter-field">
+          <span class="stats-mobile-filter-label">时间范围</span>
+          <a-range-picker
+            v-model:value="dateRange"
+            :allow-clear="false"
+            :disabled="loading"
+            :disabled-date="disabledDate"
+            class="stats-mobile-filter-control"
+            format="YYYY-MM-DD"
+            @calendar-change="handleCalendarChange"
+            @change="handleDateRangeChange"
+            @open-change="handleDateRangeOpenChange"
+          />
+        </div>
+        <div v-if="isManagementView" class="stats-mobile-filter-field">
+          <span class="stats-mobile-filter-label">用户</span>
+          <SystemPrincipalSelect
+            v-model:value="selectedSystemAccountId"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :disabled="loading"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
+            v-model:selected-principal="selectedSystemAccount"
+            all-label="全部用户"
+            class="stats-mobile-filter-control"
+            include-all
+            placeholder="筛选用户"
+            @change="handleSystemAccountChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
+          />
+        </div>
+        <div class="stats-mobile-filter-actions">
+          <a-button :disabled="loading" @click="resetFilters">重置</a-button>
+          <a-button type="primary" :loading="loading" @click="refreshData">
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+            刷新
+          </a-button>
+        </div>
+      </div>
+    </a-drawer>
 
     <StatsSummaryCards
       :cards="summaryCards"
@@ -125,7 +196,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
@@ -264,6 +335,10 @@ const quickRangeValue = computed<QuickRange | undefined>(() => {
   return startDate === formatDateKey(range[0]) && endDate === formatDateKey(range[1]) ? mode : undefined
 })
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
+// 手机端筛选抽屉开合；有非默认筛选（自定义日期或指定到具体用户，'all' 是全部用户哨兵）时在筛选按钮上打点提示。
+const mobileFilterOpen = ref(false)
+const mobileFilterActive = computed(() => quickRangeValue.value === undefined
+  || (Boolean(selectedSystemAccountId.value) && selectedSystemAccountId.value !== 'all'))
 const dailyTrendRangeLabel = computed(() => dailyTrend.value
   ? `${formatDateLabel(dailyTrend.value.range.startDate)} 至 ${formatDateLabel(dailyTrend.value.range.endDate)}`
   : currentWindowLabel.value)
@@ -902,27 +977,83 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
+/* 手机端紧凑筛选条：快捷时间段常驻 + 筛选按钮（含生效筛选打点）；桌面隐藏 */
+.stats-mobile-bar {
+  display: none;
+}
+
+.stats-mobile-quick-range {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.stats-mobile-bar :deep(.ant-segmented-item-label) {
+  padding: 6px 12px;
+}
+
+.stats-mobile-filter-button {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.stats-mobile-filter-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--juhe-coral, #a6755e);
+}
+
+.stats-mobile-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stats-mobile-filter-label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.stats-mobile-filter-control {
+  width: 100%;
+}
+
+.stats-mobile-filter-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.stats-mobile-filter-actions .ant-btn {
+  flex: 1 1 0;
+}
+
 @media (max-width: 768px) {
-  .stats-toolbar {
-    align-items: stretch;
+  .stats-toolbar-desktop {
+    display: none;
   }
 
-  .stats-toolbar-filters {
-    width: 100%;
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .stats-range-picker,
-  .stats-quick-range,
-  .stats-system-account-select {
-    width: 100%;
+  .stats-mobile-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     min-width: 0;
   }
 
   .chart-panel,
   .chart-panel-large {
     height: 280px;
+  }
+}
+
+@media (min-width: 769px) {
+  .stats-mobile-filter-drawer {
+    display: none;
   }
 }
 </style>

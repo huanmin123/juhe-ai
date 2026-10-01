@@ -80,6 +80,15 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   const authLoading = ref(false)
   const authResult = ref<OAuthAuthURLResult>()
   const pendingCreatedLock = ref<{ accountIds: string[] }>()
+  // 表单校验失败信号（at 为单调递增序号）：向导形态据此把用户带回出错步骤。
+  const lastValidationFailure = ref<{ message: string; seq: number }>()
+  let validationFailureSeq = 0
+
+  function reportValidationFailure(validationMessage: string) {
+    message.warning(validationMessage)
+    validationFailureSeq += 1
+    lastValidationFailure.value = { message: validationMessage, seq: validationFailureSeq }
+  }
 
   watch(options.modalOpen, (open) => {
     if (!open) pendingCreatedLock.value = undefined
@@ -118,12 +127,12 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       mappingUpstreamModelOptions: options.providerModelOptions.value
     })
     if (validationMessage) {
-      message.warning(validationMessage)
+      reportValidationFailure(validationMessage)
       return
     }
     const lockConfigValidationMessage = validateAccountLockConfigForm(options.form)
     if (lockConfigValidationMessage) {
-      message.warning(lockConfigValidationMessage)
+      reportValidationFailure(lockConfigValidationMessage)
       return
     }
 
@@ -572,6 +581,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     authLoading,
     authResult,
     generateOAuthUrl,
+    lastValidationFailure,
     saveAccount,
     saving
   }

@@ -282,7 +282,7 @@ assert.match(
 )
 assert.match(
   saveFlowSource,
-  /const validationMessage = validateAccountSaveForm\([\s\S]*?if \(validationMessage\) \{[\s\S]*?message\.warning\(validationMessage\)[\s\S]*?return/,
+  /const validationMessage = validateAccountSaveForm\([\s\S]*?if \(validationMessage\) \{[\s\S]*?reportValidationFailure\(validationMessage\)[\s\S]*?return/,
   '新增和完整编辑确认必须在模型校验失败后中止，不得继续保存账户'
 )
 const basicEditSaveSource = sourceBetween(saveFlowSource, 'async function saveBasicAccountEdit(): Promise<void> {', 'function finishUnchangedEdit(): void {')

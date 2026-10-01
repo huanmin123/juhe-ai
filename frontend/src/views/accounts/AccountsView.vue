@@ -1,6 +1,7 @@
 <template>
   <a-card class="page-card accounts-page-card responsive-page-card">
     <AccountFilterToolbar
+      v-model:filter-drawer-open="filterDrawerOpen"
       :active-filter-count="activeAdvancedFilterCount"
       :export-loading="exportLoading"
       :filters="filters"
@@ -187,6 +188,7 @@
       :inherited-error-policy-rules="inheritedErrorPolicyRules"
       v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
+      :validation-failure="lastValidationFailure"
       :api-key-runtime-details="accountApiKeyRuntimeDetails"
       :api-key-runtime-loading="accountApiKeyRuntimeLoading"
       :api-key-test-details="apiKeyTestDetails"
@@ -869,6 +871,7 @@ const {
   authResult,
   availableProviders,
   createScopeParams,
+  lastValidationFailure,
   editingAccountDetail,
   editingAccountAdvancedDetail,
   editingId,
@@ -922,6 +925,7 @@ const {
   groupIdForAccount,
   groups,
   isManagementView,
+  onCreateGuardSystemAccount: openFilterDrawerForSystemAccount,
   ensureProviderDefinition,
   loadGroupOptions,
   loadData,
@@ -1348,9 +1352,18 @@ async function confirmBatchDisable(): Promise<void> {
   }
 }
 
+// 「未选系统账户」guard 拦截创建/导入时，直接打开筛选抽屉引导用户选择系统账户
+//（手机端系统账户选择藏在筛选抽屉里，光靠 toast 无法指路）。
+const filterDrawerOpen = ref<boolean | undefined>(undefined)
+
+function openFilterDrawerForSystemAccount() {
+  filterDrawerOpen.value = true
+}
+
 function openImportModal() {
   if (isManagementView.value && !accountScopeParams.value?.systemAccountId) {
-    message.warning('请先在右侧选择目标系统账户，再导入 AI 账户')
+    message.warning('请先选择目标系统账户，再导入 AI 账户')
+    openFilterDrawerForSystemAccount()
     return
   }
   importModalOpen.value = true

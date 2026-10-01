@@ -52,9 +52,9 @@ type Actor struct {
 	SystemAccountID string
 }
 
-// Question 是题库题目的完整行（含 title_norm、reviewed_by 等不出 HTTP
-// 契约的内部字段；HTTP 契约由 http.go 的 QuestionView 承载）。时间一律
-// 为 UTC RFC3339Nano 文本，空字符串表示无值。
+// Question 是题库题目的完整行（title_norm 不出 HTTP 契约；reviewed_by
+// 经 http.go 的 QuestionView 仅管理面透出）。时间一律为 UTC RFC3339Nano
+// 文本，空字符串表示无值。
 type Question struct {
 	ID              string
 	Title           string

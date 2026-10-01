@@ -152,6 +152,18 @@ func TestHTTPHandlerRejectsUnknownLoginFields(t *testing.T) {
 	}
 }
 
+// TestCookieTokenPicksLastSessionCookie 锁定 BUG-0256 收尾：独立 listener
+// `/auth/` 登录面的 cookieToken 委托 resolveToken 后与主面 ParseCookie
+// 统一 last-wins——重名 juhe_ai_session cookie 取最后一个同名段。
+func TestCookieTokenPicksLastSessionCookie(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/me", nil)
+	request.Header.Set("Cookie", "theme=dark; "+SessionCookieName+"=stale-token; "+SessionCookieName+"=valid-token")
+	token, err := cookieToken(request)
+	if err != nil || token != "valid-token" {
+		t.Fatalf("token=%q err=%v, want valid-token", token, err)
+	}
+}
+
 func TestHTTPHandlerRejectsInvalidTemporaryTokenFieldsBeforeDefaultTTL(t *testing.T) {
 	handler := &HTTPHandler{Auth: &Authenticator{db: nil}, TemporaryAccessIPAllowlist: []string{"127.0.0.1"}}
 	request := httptest.NewRequest(http.MethodPost, "/temporary-access-tokens", strings.NewReader(`{"username":"","password":"secret"}`))

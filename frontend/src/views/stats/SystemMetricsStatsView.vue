@@ -1,7 +1,7 @@
 <template>
   <div class="system-metrics-page">
     <a-card class="page-card system-metrics-header-card">
-      <div class="page-toolbar system-metrics-toolbar">
+      <div class="page-toolbar system-metrics-toolbar system-metrics-toolbar-desktop">
         <div class="system-metrics-filters">
           <a-range-picker
             v-model:value="dateRange"
@@ -32,7 +32,59 @@
           </a-button>
         </div>
       </div>
+      <!-- 手机端紧凑条：快捷时间段常驻，精确日期与重置/刷新收进抽屉 -->
+      <div class="system-metrics-mobile-bar">
+        <a-segmented
+          :value="quickRangeValue ?? ''"
+          :disabled="loading"
+          :options="quickRangeOptions"
+          class="system-metrics-mobile-quick-range"
+          @change="handleQuickRangeChange"
+        />
+        <a-button class="system-metrics-mobile-filter-button" @click="mobileFilterOpen = true">
+          <template #icon>
+            <FilterOutlined />
+          </template>
+          筛选
+          <span v-if="mobileFilterActive" class="system-metrics-mobile-filter-dot" />
+        </a-button>
+      </div>
     </a-card>
+
+    <a-drawer
+      v-model:open="mobileFilterOpen"
+      title="筛选统计"
+      placement="bottom"
+      height="min(52vh, 420px)"
+      class="system-metrics-mobile-filter-drawer"
+      :body-style="{ padding: '14px 16px 16px' }"
+    >
+      <div class="system-metrics-mobile-filter-body">
+        <div class="system-metrics-mobile-filter-field">
+          <span class="system-metrics-mobile-filter-label">时间范围</span>
+          <a-range-picker
+            v-model:value="dateRange"
+            :allow-clear="false"
+            :disabled="loading"
+            :disabled-date="disabledDate"
+            class="system-metrics-mobile-filter-control"
+            format="YYYY-MM-DD"
+            @calendar-change="handleCalendarChange"
+            @change="handleDateRangeChange"
+            @open-change="handleDateRangeOpenChange"
+          />
+        </div>
+        <div class="system-metrics-mobile-filter-actions">
+          <a-button :disabled="loading" @click="resetFilters">重置</a-button>
+          <a-button type="primary" :loading="loading" @click="loadPageData">
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+            刷新
+          </a-button>
+        </div>
+      </div>
+    </a-drawer>
 
     <a-row :gutter="[16, 16]" class="system-metrics-section">
       <a-col :xs="24">
@@ -158,7 +210,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onActivated, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { FilterOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
@@ -293,6 +345,9 @@ const quickRangeValue = computed<QuickRange | undefined>(() => {
   return startDate === formatDateKey(range[0]) && endDate === formatDateKey(range[1]) ? rangeMode.value : undefined
 })
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
+// 手机端筛选抽屉开合；自定义日期（快捷段未命中）时打点。
+const mobileFilterOpen = ref(false)
+const mobileFilterActive = computed(() => quickRangeValue.value === undefined)
 const goRuntimeLoading = ref(false)
 const goRuntimeError = ref('')
 const healthSnapshotLoading = ref(false)
@@ -896,20 +951,71 @@ onBeforeUnmount(() => {
   padding-top: 56px;
 }
 
+/* 手机端紧凑筛选条（桌面隐藏） */
+.system-metrics-mobile-bar {
+  display: none;
+}
+
+.system-metrics-mobile-quick-range {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.system-metrics-mobile-bar :deep(.ant-segmented-item-label) {
+  padding: 6px 12px;
+}
+
+.system-metrics-mobile-filter-button {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.system-metrics-mobile-filter-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--juhe-coral, #a6755e);
+}
+
+.system-metrics-mobile-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.system-metrics-mobile-filter-label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.system-metrics-mobile-filter-control {
+  width: 100%;
+}
+
+.system-metrics-mobile-filter-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.system-metrics-mobile-filter-actions .ant-btn {
+  flex: 1 1 0;
+}
+
 @media (max-width: 768px) {
-  .system-metrics-toolbar {
-    align-items: stretch;
+  .system-metrics-toolbar-desktop {
+    display: none;
   }
 
-  .system-metrics-filters {
-    width: 100%;
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .system-metrics-range-picker,
-  .system-metrics-quick-range {
-    width: 100%;
+  .system-metrics-mobile-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     min-width: 0;
   }
 
@@ -922,6 +1028,11 @@ onBeforeUnmount(() => {
     align-items: flex-start;
     flex-direction: column;
     gap: 6px;
+  }
+}
+@media (min-width: 769px) {
+  .system-metrics-mobile-filter-drawer {
+    display: none;
   }
 }
 </style>

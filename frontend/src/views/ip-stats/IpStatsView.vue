@@ -142,7 +142,7 @@
         :scroll-x="1220"
         size="small"
         :lock-body-scroll="false"
-        :mobile-breakpoint="760"
+        :mobile-breakpoint="900"
         @change="handleDetailTableChange"
       >
         <template #emptyText>

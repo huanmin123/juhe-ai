@@ -46,7 +46,7 @@ assert(routeStrategiesViewSource.includes('用于在 API Key 中识别这套路�
 assert(routeStrategiesViewSource.includes('bindingSectionTooltip'), '策略路由分组绑定区域必须提供随模式变化的说明')
 assert(routeStrategiesViewSource.includes('InfoCircleOutlined'), '策略路由技术字段必须展示说明图标')
 assert(routeStrategiesViewSource.includes('SystemPrincipalSelect'), '策略路由管理页必须复用系统账户选择器限定目标用户')
-assert(routeStrategiesViewSource.includes('请先在右侧选择目标系统账户，再创建策略路由'), '管理员创建策略路由前必须先选择具体系统账户')
+assert(routeStrategiesViewSource.includes('请先选择目标系统账户，再创建策略路由'), '管理员创建策略路由前必须先选择具体系统账户')
 assert(routeStrategiesViewSource.includes('routeStrategyOperationScopeParams(record)'), '策略路由编辑和删除必须使用记录归属作用域')
 assert(routeStrategiesViewSource.includes('systemAccountId: operationScopeParams?.systemAccountId'), '策略路由分组选项必须按当前操作系统账户加载')
 assert(routeStrategiesViewSource.includes('groupOptionsRequestToken'), '策略路由分组选项加载必须防止编辑回填、打开下拉和远程搜索请求互相覆盖')

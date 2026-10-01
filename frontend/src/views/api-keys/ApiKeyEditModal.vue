@@ -163,7 +163,7 @@ const visibleRouteStrategyOptions = computed(() => (
 function openCreate() {
   const createScopeParams = normalizedScopeParams(props.scopeParams)
   if (props.isManagementView && !createScopeParams?.systemAccountId) {
-    message.warning('请先在右侧选择目标系统账户，再创建 API Key')
+    message.warning('请先选择目标系统账户，再创建 API Key')
     return
   }
   const defaultStrategy = cachedDefaultRouteStrategy(createScopeParams)

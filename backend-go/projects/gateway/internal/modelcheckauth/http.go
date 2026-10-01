@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -392,18 +391,11 @@ func requestToken(r *http.Request) (string, error) {
 	return cookieToken(r)
 }
 
+// cookieToken 解析独立 listener `/auth/` 登录面的会话 cookie。
+// BUG-0256 收尾：删除本包最后一个 first-wins 手写解析，委托
+// resolveToken 的 cookie 分支，与主面 ParseCookie 统一 last-wins。
 func cookieToken(r *http.Request) (string, error) {
-	for _, cookie := range strings.Split(r.Header.Get("Cookie"), ";") {
-		name, value, found := strings.Cut(strings.TrimSpace(cookie), "=")
-		if found && name == SessionCookieName {
-			decoded, err := url.PathUnescape(value)
-			if err != nil || decoded == "" {
-				return "", ErrLoginRequired
-			}
-			return decoded, nil
-		}
-	}
-	return "", ErrLoginRequired
+	return resolveToken("", r.Header.Get("Cookie"))
 }
 
 func decodeJSON(r *http.Request, maxBody int64, dst any) error {

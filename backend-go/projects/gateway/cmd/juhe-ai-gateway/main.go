@@ -22,6 +22,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	circuitcontrolplane "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_control_plane"
 	circuitprojector "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_projector"
 	circuitruntime "github.com/huanminabc/juhe-ai/backend-go-gateway/internal/business/circuit_runtime"
@@ -413,11 +414,39 @@ func main() {
 				fail(err)
 			}
 		}
+		// dev 自动登录接入 J3b 面（2026-10-01，BUG-0256）：与 authsys.
+		// sessionMiddleware 的 developmentAutoLogin 同语义，仅对"完全无
+		// 凭证"（ErrLoginRequired）回退 dev 身份；生产由 runtime.go 的
+		// production fail-fast 门禁禁用，此处不重复门禁。OpenHost 默认面
+		// 与下方 MountScoped 的管理/自助两面共用同一组 Authorize 变量。
+		adminAuthorize := modelcheckowner.NewAdminAuthorize(authenticator)
+		selfAuthorize := modelcheckowner.NewSelfAuthorize(authenticator)
+		if runtimeCfg.DevAutoLoginUsername != "" {
+			// 显式 OwnerGate（不用无 gate 的 legacy 形式）：dev 自动登录的
+			// 账号查询与主面 system-accounts 走同一 handoff 证据链。
+			devAutoLoginAccounts, devAutoLoginErr := authsys.NewAccountStore(businessConnection.DB, businessMode, time.Now, authsys.OwnerGate{
+				Confirmed:         j3bConfig.BusinessHandoffConfirmed,
+				SchemaReady:       j3bConfig.SchemaReady,
+				NodeWriterStopped: j3bConfig.NodeWriterStopped,
+			})
+			if devAutoLoginErr != nil {
+				fail(fmt.Errorf("create J3b Gateway dev auto-login account store: %w", devAutoLoginErr))
+			}
+			devAutoLoginSource := func(ctx context.Context) (modelcheckowner.DevAutoLoginAccount, bool) {
+				summary, err := devAutoLoginAccounts.FindByUsername(ctx, runtimeCfg.DevAutoLoginUsername)
+				if err != nil || summary.ID == "" || summary.Status != "active" {
+					return modelcheckowner.DevAutoLoginAccount{}, false
+				}
+				return modelcheckowner.DevAutoLoginAccount{SystemAccountID: summary.ID, Role: summary.Role}, true
+			}
+			adminAuthorize = modelcheckowner.NewDevAutoLoginAuthorize(adminAuthorize, devAutoLoginSource, true)
+			selfAuthorize = modelcheckowner.NewDevAutoLoginAuthorize(selfAuthorize, devAutoLoginSource, false)
+		}
 		j3bHost, hostErr := modelcheckowner.OpenHost(context.Background(), j3bConfig, modelcheckowner.HostDependencies{
 			Resolve:           businessSource.Resolver(),
 			ResolveComparison: businessSource.ComparisonResolver(),
 			AccountOptions:    businessSource,
-			Authorize:         modelcheckowner.NewAdminAuthorize(authenticator),
+			Authorize:         adminAuthorize,
 			Build:             businessSource.BuildRequest,
 			BuildScoped:       businessSource.BuildScopedRequest,
 			Dispatcher:        &gatewaydispatch.ProbeAdapter{Dispatcher: &gatewaydispatch.Dispatcher{Client: &http.Client{}, KeyModel: keyModelGate, Circuit: probeCircuit}},
@@ -472,10 +501,10 @@ func main() {
 		}
 		j3bManagementMount = func(mux *http.ServeMux) {
 			mux.Handle("/auth/", http.StripPrefix("/auth", &modelcheckauth.HTTPHandler{Auth: authenticator, Captcha: captchaService, TemporaryAccessIPAllowlist: commaList(os.Getenv("JUHE_AI_TEMPORARY_ACCESS_IP_ALLOWLIST"))}))
-			if err := j3bHost.MountScoped(mux, "/__aisys__/api/model-checks/", modelcheckowner.NewAdminAuthorize(authenticator), true); err != nil {
+			if err := j3bHost.MountScoped(mux, "/__aisys__/api/model-checks/", adminAuthorize, true); err != nil {
 				fail(fmt.Errorf("mount J3b Gateway administrator routes: %w", err))
 			}
-			if err := j3bHost.MountScoped(mux, "/__aisys__/api/my-model-checks/", modelcheckowner.NewSelfAuthorize(authenticator), false); err != nil {
+			if err := j3bHost.MountScoped(mux, "/__aisys__/api/my-model-checks/", selfAuthorize, false); err != nil {
 				fail(fmt.Errorf("mount J3b Gateway self routes: %w", err))
 			}
 			if err := j3bHost.Mount(mux, "/model-checks/"); err != nil {

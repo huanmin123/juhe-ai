@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckquestionbank"
 	_ "modernc.org/sqlite"
 )
@@ -178,9 +179,11 @@ func TestQBQuestionBankMountsAndGlobalVisibility(t *testing.T) {
 		t.Fatalf("admin delete status=%d body=%s", deleted.Code, deleted.Body.String())
 	}
 
-	// 未认证 401：授权失败的请求不得触达题库 handlers。
+	// 未认证 401：授权失败的请求不得触达题库 handlers。BUG-0256 后
+	// 错误映射按哨兵分流，"未认证"必须用 ErrLoginRequired 哨兵表达
+	//（非哨兵自定义错误按新契约归 500）。
 	unauthorized := qbMountHandler(t, admin, self, false)
-	unauthorized.Authorize = func(context.Context, *http.Request) (string, error) { return "", errUnauthorizedStub }
+	unauthorized.Authorize = func(context.Context, *http.Request) (string, error) { return "", modelcheckauth.ErrLoginRequired }
 	if status := qbGet(t, unauthorized, http.MethodGet, "/question-bank"); status.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated list status=%d, want 401", status.Code)
 	}
@@ -191,10 +194,3 @@ func TestQBQuestionBankMountsAndGlobalVisibility(t *testing.T) {
 		t.Fatalf("unwired question bank status=%d, want 503", status.Code)
 	}
 }
-
-// errUnauthorizedStub 是未认证臂的可识别错误。
-var errUnauthorizedStub = &stubUnauthorizedError{}
-
-type stubUnauthorizedError struct{}
-
-func (*stubUnauthorizedError) Error() string { return "unauthorized" }

@@ -11,8 +11,8 @@
       <div v-if="item.extra" class="metric-extra">{{ item.extra }}</div>
     </a-card>
   </div>
-  <a-row v-else :gutter="[16, 16]">
-    <a-col v-for="item in cards" :key="item.key" :xs="24" :sm="12" :lg="6">
+  <a-row v-else :gutter="[12, 12]">
+    <a-col v-for="item in cards" :key="item.key" :xs="12" :sm="12" :lg="6">
       <a-card class="metric-card" :loading="loading">
         <div class="metric-label">{{ item.label }}</div>
         <div class="metric-value">{{ item.value }}</div>
@@ -42,8 +42,8 @@ defineProps<{
 <style scoped>
 .metric-card-grid.compact {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+  gap: 12px;
 }
 
 .summary-error {
@@ -83,5 +83,26 @@ defineProps<{
   margin-top: 6px;
   color: #94a3b8;
   font-size: 12px;
+}
+
+/* 手机端两列网格：数字与补充行按半宽收窄，避免换行撑破卡片 */
+@media (max-width: 600px) {
+  .metric-card :deep(.ant-card-body) {
+    min-height: 104px;
+    padding: 14px 14px;
+  }
+
+  .compact-card :deep(.ant-card-body) {
+    min-height: 96px;
+    padding: 14px;
+  }
+
+  .metric-value {
+    font-size: 21px;
+  }
+
+  .metric-extra {
+    font-size: 11px;
+  }
 }
 </style>

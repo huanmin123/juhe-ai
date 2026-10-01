@@ -2,7 +2,7 @@
   <a-modal
     v-model:open="open"
     :title="title"
-    width="820px"
+    :width="editing ? 960 : 720"
     :confirm-loading="confirmLoading"
     :focus-trigger-after-close="false"
     force-render
@@ -17,7 +17,51 @@
         <a-spin tip="正在加载账户配置" />
       </div>
       <template v-else>
+        <div v-if="!editing" class="wizard-steps" aria-label="创建步骤">
+          <div class="wizard-step" :class="{ current: wizardStep === 1, done: wizardStep > 1 }">
+            <span class="wizard-step-no">{{ wizardStep > 1 ? '✓' : '1' }}</span>
+            <span class="wizard-step-text">
+              <span class="wizard-step-title">类型与凭证</span>
+              <span class="wizard-step-sub">密钥或授权</span>
+            </span>
+          </div>
+          <div class="wizard-step-bar" :class="{ done: wizardStep > 1 }" />
+          <div class="wizard-step" :class="{ current: wizardStep === 2, done: wizardStep > 2 }">
+            <span class="wizard-step-no">{{ wizardStep > 2 ? '✓' : '2' }}</span>
+            <span class="wizard-step-text">
+              <span class="wizard-step-title">归属与调度</span>
+              <span class="wizard-step-sub">分组、标签与状态</span>
+            </span>
+          </div>
+          <div class="wizard-step-bar" :class="{ done: wizardStep > 2 }" />
+          <div class="wizard-step" :class="{ current: wizardStep === 3 }">
+            <span class="wizard-step-no">3</span>
+            <span class="wizard-step-text">
+              <span class="wizard-step-title">高级配置</span>
+              <span class="wizard-step-sub">可选 · 可跳过</span>
+            </span>
+          </div>
+        </div>
+        <div class="account-form-layout" :class="{ workbench: editing }">
+          <aside v-if="editing" class="bench-nav" aria-label="配置分区">
+            <div class="bench-nav-label">配置分区</div>
+            <button
+              v-for="section in benchSections"
+              :key="section.id"
+              type="button"
+              class="bench-nav-item"
+              :class="{ active: activeBenchId === section.id }"
+              @click="navToBench(section.id)"
+            >
+              <span class="bench-nav-dot" :class="section.tone" />
+              <span class="bench-nav-name">{{ section.name }}</span>
+              <span class="bench-nav-sum">{{ section.summary }}</span>
+            </button>
+            <div class="bench-nav-tip">点击直达分区；滚动表单时自动高亮当前位置。</div>
+          </aside>
+          <div ref="formScrollEl" class="form-scroll" @scroll="syncBenchNav">
         <AccountFormSelector
+          v-show="editing || wizardStep === 1"
           :account-type="form.type"
           :account-type-choices="accountTypeChoices"
           :editing="editing"
@@ -29,8 +73,13 @@
           @select-type-choice="$emit('select-type-choice', $event)"
         />
 
-        <AccountBasicInfoSection
+        <section
           v-if="hasAccountType"
+          v-show="editing || wizardStep === 2"
+          id="acct-sec-basic"
+          class="form-part"
+        >
+          <AccountBasicInfoSection
           :editing="editing"
           :form="form"
           :group-options="groupOptions"
@@ -47,7 +96,13 @@
           @group-options-search="$emit('group-options-search', $event)"
           @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
         />
+        </section>
 
+        <section
+          v-show="editing || wizardStep === 1"
+          id="acct-sec-credential"
+          class="form-part"
+        >
         <AccountApiKeySection
           v-if="isApiKeyForm && !authorizedEditing"
           :api-key-runtime-details="apiKeyRuntimeDetails"
@@ -136,9 +191,15 @@
             />
           </div>
         </section>
+        </section>
 
-        <a-collapse
+        <section
           v-if="hasAccountType"
+          v-show="editing || wizardStep === 3"
+          id="acct-sec-advanced"
+          class="form-part"
+        >
+        <a-collapse
           v-model:activeKey="advancedActiveKeys"
           class="account-advanced-collapse"
           expand-icon-position="end"
@@ -249,15 +310,22 @@
             </div>
           </a-collapse-panel>
         </a-collapse>
+        </section>
+          </div>
+        </div>
       </template>
     </a-form>
 
     <template #footer>
       <div class="account-modal-footer">
         <a-button v-if="!oauthCreateTestHidden" :disabled="testButtonDisabled" :loading="testLoading" @click="$emit('test')">测试</a-button>
+        <template v-if="!editing">
+          <a-button v-if="wizardStep > 1" @click="wizardStep -= 1">上一步</a-button>
+          <a-button v-if="wizardStep < 3" type="primary" @click="wizardStep += 1">下一步</a-button>
+        </template>
         <a-space>
           <a-button @click="$emit('cancel')">取消</a-button>
-          <a-button v-bind="confirmButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>
+          <a-button v-if="editing || wizardStep === 3" v-bind="confirmButtonProps" :loading="confirmLoading" @click="$emit('ok')">确定</a-button>
         </a-space>
       </div>
     </template>
@@ -288,6 +356,7 @@ import {
   defaultAccountEndpointModes,
   endpointModesEqual
 } from './accountEndpointModes'
+import { accountValidationErrorStep } from './accountSavePayload'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyInheritedRule, AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
@@ -305,6 +374,12 @@ const errorPolicyRules = defineModel<AccountErrorPolicyRuleForm[]>('errorPolicyR
 const inheritedErrorPolicyRules = defineModel<AccountErrorPolicyInheritedRule[]>('inheritedErrorPolicyRules', { default: () => [] })
 const responseInspectionRules = defineModel<AccountResponseInspectionRuleForm[]>('responseInspectionRules', { required: true })
 const advancedActiveKeys = ref<string[]>([])
+
+// 双形态外壳的纯展示状态：新建=三步向导、编辑=分栏工作台。
+// 只控制分区可见性与导航高亮，不参与表单数据、校验与提交逻辑。
+const wizardStep = ref(1)
+const formScrollEl = ref<HTMLElement | null>(null)
+const activeBenchId = ref('acct-sec-basic')
 
 const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
@@ -354,6 +429,7 @@ const props = withDefaults(defineProps<{
   testButtonDisabled?: boolean
   testLoading?: boolean
   title: string
+  validationFailure?: { message: string; seq: number }
 }>(), {
   advancedLoaded: false,
   advancedLoading: false,
@@ -463,6 +539,44 @@ watch(advancedActiveKeys, (keys) => {
   if (keys.includes('advanced')) emit('advanced-open')
 })
 
+const benchSections = computed(() => [
+  { id: 'acct-sec-basic', name: '基础信息', summary: '归属与调度', tone: 'plain' },
+  { id: 'acct-sec-credential', name: '凭证与模型', summary: props.isApiKeyForm ? 'API Key' : 'OAuth', tone: props.isApiKeyForm ? 'coral' : 'ok' },
+  { id: 'acct-sec-advanced', name: '高级配置', summary: advancedConfiguredCount.value > 0 ? `已配置 ${advancedConfiguredCount.value} 项` : '默认', tone: 'plain' }
+])
+
+watch(open, (next) => {
+  if (next) {
+    wizardStep.value = 1
+    activeBenchId.value = 'acct-sec-basic'
+  }
+})
+
+// 向导形态下「确定」校验失败（useAccountEditSaveFlow 上报）时，把用户带回出错字段所在步骤；
+// 编辑工作台形态不适用（分区间导航已有 bench-nav）。toast 由 save 流程提示，这里只做步骤回跳。
+watch(() => props.validationFailure?.seq, (seq) => {
+  if (!seq || props.editing || !open.value) return
+  const message = props.validationFailure?.message ?? ''
+  const step = accountValidationErrorStep(message)
+  if (wizardStep.value !== step) wizardStep.value = step
+})
+
+function navToBench(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function syncBenchNav() {
+  const container = formScrollEl.value
+  if (!container) return
+  const containerTop = container.getBoundingClientRect().top
+  let current = benchSections.value[0]?.id ?? ''
+  for (const section of benchSections.value) {
+    const el = document.getElementById(section.id)
+    if (el && el.getBoundingClientRect().top - containerTop <= 120) current = section.id
+  }
+  activeBenchId.value = current
+}
+
 function credentialItem(key: string, label: string, value: unknown): { key: string; label: string; value: string } | undefined {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
@@ -501,6 +615,211 @@ const emit = defineEmits<{
 </script>
 
 <style scoped>
+.wizard-steps {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px 18px;
+  border-bottom: 1px solid var(--juhe-border);
+  margin-bottom: 18px;
+}
+
+.wizard-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+}
+
+.wizard-step-no {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--juhe-soft);
+  border: 1px solid var(--juhe-border);
+  color: var(--juhe-faint);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.wizard-step.current .wizard-step-no {
+  background: var(--juhe-primary-grad);
+  border-color: transparent;
+  color: #fff;
+}
+
+.wizard-step.done .wizard-step-no {
+  background: var(--juhe-accent-soft);
+  border-color: transparent;
+  color: var(--juhe-accent);
+}
+
+.wizard-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.wizard-step-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--juhe-muted);
+}
+
+.wizard-step.current .wizard-step-title {
+  color: var(--juhe-fg);
+}
+
+.wizard-step.done .wizard-step-title {
+  color: var(--juhe-accent-mid);
+}
+
+.wizard-step-sub {
+  font-size: 10.5px;
+  color: var(--juhe-faint);
+}
+
+.wizard-step-bar {
+  flex: 1 1 0;
+  height: 2px;
+  margin: 0 6px;
+  border-radius: 1px;
+  background: var(--juhe-border);
+  min-width: 24px;
+}
+
+.wizard-step-bar.done {
+  background: var(--juhe-accent-mid);
+}
+
+.account-form-layout {
+  display: block;
+  min-width: 0;
+}
+
+.account-form-layout.workbench {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.bench-nav {
+  width: 184px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  border-radius: var(--juhe-radius);
+  background: var(--juhe-rail);
+  border: 1px solid var(--juhe-border);
+  align-self: flex-start;
+  position: sticky;
+  top: 0;
+}
+
+.bench-nav-label {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  color: var(--juhe-faint);
+  padding: 2px 10px 8px;
+}
+
+.bench-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--juhe-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+  color: var(--juhe-fg-soft);
+}
+
+.bench-nav-item:hover {
+  background: rgba(34, 40, 43, 0.04);
+}
+
+.bench-nav-item.active {
+  background: var(--juhe-accent-soft);
+  color: var(--juhe-accent);
+  font-weight: 600;
+}
+
+.bench-nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 24%;
+  bottom: 24%;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #22282b, #53696b);
+  transform: rotate(-0.6deg);
+}
+
+.bench-nav-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--juhe-faint);
+}
+
+.bench-nav-dot.ok {
+  background: var(--juhe-ok);
+}
+
+.bench-nav-dot.coral {
+  background: var(--juhe-coral);
+}
+
+.bench-nav-name {
+  font-size: 12.5px;
+  flex: 1;
+}
+
+.bench-nav-sum {
+  font-size: 10px;
+  color: var(--juhe-faint);
+  max-width: 52px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bench-nav-item.active .bench-nav-sum {
+  color: var(--juhe-accent-mid);
+}
+
+.bench-nav-tip {
+  margin-top: 6px;
+  padding: 10px 10px 2px;
+  border-top: 1px dashed var(--juhe-border);
+  font-size: 10.5px;
+  color: var(--juhe-faint);
+  line-height: 1.6;
+}
+
+.form-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: calc(100vh - 340px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.form-part {
+  scroll-margin-top: 8px;
+}
+
 .form-section {
   min-width: 0;
   padding: 0;
@@ -521,20 +840,20 @@ const emit = defineEmits<{
   align-items: center;
   gap: 6px;
   min-width: 0;
-  color: #1f2937;
+  color: var(--juhe-fg-soft);
   font-weight: 500;
 }
 
 .probe-toggle-help {
-  color: #8c8c8c;
+  color: var(--juhe-muted);
   cursor: help;
 }
 
 .readonly-config-section {
   padding: 12px;
-  border: 1px solid #dbeafe;
-  border-radius: 8px;
-  background: #f8fbff;
+  border: 1px solid var(--juhe-border);
+  border-radius: var(--juhe-radius-sm);
+  background: var(--juhe-soft);
 }
 
 .readonly-model-mappings {
@@ -546,7 +865,7 @@ const emit = defineEmits<{
 .account-advanced-collapse {
   max-width: 100%;
   min-width: 0;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -623,10 +942,10 @@ const emit = defineEmits<{
   gap: 2px;
   margin-bottom: 12px;
   padding: 8px 10px;
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--juhe-border);
   border-radius: 6px;
-  background: #f8fbff;
-  color: #1f2937;
+  background: var(--juhe-soft);
+  color: var(--juhe-fg-soft);
   font-size: 12px;
 }
 
@@ -655,7 +974,7 @@ const emit = defineEmits<{
 .advanced-section-stack :deep(.error-policy-collapse) {
   overflow: hidden;
   padding: 0;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -663,7 +982,7 @@ const emit = defineEmits<{
 .advanced-section-stack :deep(.response-policy-collapse) {
   overflow: hidden;
   padding: 0;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -712,6 +1031,86 @@ const emit = defineEmits<{
 
   .account-modal-footer :deep(.ant-space) {
     justify-content: flex-end;
+  }
+
+  /* 新建向导：只保留「序号 + 主标题」，三步均分一行，连接条与副标题隐藏 */
+  .wizard-steps {
+    gap: 6px;
+    padding-bottom: 12px;
+    margin-bottom: 14px;
+  }
+
+  .wizard-step {
+    flex: 1 1 0;
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .wizard-step-text {
+    min-width: 0;
+  }
+
+  .wizard-step-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .wizard-step-sub,
+  .wizard-step-bar {
+    display: none;
+  }
+
+  /* 编辑工作台：折叠为纵向，分区导航变横向条，右侧表单回到全宽 */
+  .account-form-layout.workbench {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .bench-nav {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 8px;
+    position: static;
+  }
+
+  .bench-nav-label,
+  .bench-nav-sum,
+  .bench-nav-tip {
+    display: none;
+  }
+
+  .bench-nav-item {
+    flex: 1 1 0;
+    min-width: 0;
+    justify-content: center;
+    padding: 7px 8px;
+  }
+
+  .bench-nav-name {
+    flex: 0 1 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .bench-nav-item.active::before {
+    left: 8%;
+    right: 8%;
+    top: auto;
+    bottom: 0;
+    width: auto;
+    height: 2px;
+    transform: none;
+  }
+
+  /* 窄屏撤销内层滚动窗口，由 modal-body 统一滚动，避免双层滚动 */
+  .form-scroll {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 }
 </style>
