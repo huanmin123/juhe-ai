@@ -138,6 +138,7 @@ describe('accountsApi 请求形状', () => {
     await accountsApi.testOptions('a-1')
     await accountsApi.test('a-1')
     await accountsApi.testDraft({ model: 'gpt-4o' } as never)
+    await accountsApi.testDraftOptions({ account: {} as never, keyword: 'gpt', selectedIds: ['gpt-4o'] })
     await accountsApi.createTestSession()
     await accountsApi.heartbeatTestSession('sess-1')
     await accountsApi.completeTestSession('sess-1')
@@ -148,6 +149,7 @@ describe('accountsApi 请求形状', () => {
       ['GET', '/accounts/a-1/test-options'],
       ['POST', '/accounts/a-1/test'],
       ['POST', '/accounts/test-draft'],
+      ['POST', '/accounts/test-draft-options'],
       ['POST', '/accounts/test-sessions'],
       ['POST', '/accounts/test-sessions/sess-1/heartbeat'],
       ['POST', '/accounts/test-sessions/sess-1/complete'],
@@ -189,6 +191,14 @@ describe('accountsApi 请求形状', () => {
     expect(payloadOf(lastRequest())).toEqual({ model: 'gpt-4o' })
     await accountsApi.testOptions('a-1')
     expect(lastRequest().timeout).toBe(0)
+    await accountsApi.testDraftOptions(
+      { account: {} as never, keyword: 'gpt', limit: 50, selectedIds: ['gpt-4o'] },
+      undefined,
+      { signal: controller.signal }
+    )
+    expect(lastRequest().timeout).toBe(0)
+    expect(lastRequest().signal).toBe(controller.signal)
+    expect(payloadOf(lastRequest())).toEqual({ account: {}, keyword: 'gpt', limit: 50, selectedIds: ['gpt-4o'] })
     await accountsApi.testTask('task-1')
     expect(lastRequest().timeout).toBe(0)
     await accountsApi.createTestSession()
@@ -252,6 +262,7 @@ describe('myAccountsApi 请求形状', () => {
     await myAccountsApi.bindGroup('a-1', { groupId: 'g-1', expectedConfigRevision: 1 })
     await myAccountsApi.migrateTraffic('a-1', { targetAccountId: 'a-2' })
     await myAccountsApi.testDraft({ model: 'gpt-4o' } as never)
+    await myAccountsApi.testDraftOptions({ account: {} as never, keyword: 'gpt', selectedIds: ['gpt-4o'] })
     await myAccountsApi.createTestSession()
     await myAccountsApi.heartbeatTestSession('sess-1')
     await myAccountsApi.completeTestSession('sess-1')
@@ -285,6 +296,7 @@ describe('myAccountsApi 请求形状', () => {
       ['POST', '/my-accounts/a-1/group'],
       ['POST', '/my-accounts/a-1/traffic-migration'],
       ['POST', '/my-accounts/test-draft'],
+      ['POST', '/my-accounts/test-draft-options'],
       ['POST', '/my-accounts/test-sessions'],
       ['POST', '/my-accounts/test-sessions/sess-1/heartbeat'],
       ['POST', '/my-accounts/test-sessions/sess-1/complete'],

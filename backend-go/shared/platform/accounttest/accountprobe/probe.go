@@ -81,12 +81,14 @@ type View struct {
 	// 支持集合（由仓储层按协议归一化注入）。
 	NormalizeEndpointModes map[EndpointMode]bool
 	ProxyURL               string
-	// ProbeModelOverride 是按请求钉住的探针模型（来自 ProbeRequest.ProbeModel，
-	// 由 Service 在 LoadProbeView 之后注入）。非空时探针直接使用该模型，跳过
-	// 账户健康检查模型及其 SupportedModels 校验——钉住模型来自熔断 scope 的
-	// modelBucket（真实流量使用过的模型），上游对它的裁决就是真实探针结果；
-	// 上游返回 404 model_not_found 时按普通 framing_complete 分类（服务活着），
-	// 不视为探测配置错误。为空时保持健康检查模型默认逻辑。
+	// ProbeModelOverride 是按请求钉住的探针模型（熔断恢复探测经
+	// ProbeRequest.ProbeModel 注入，人工测试由 executor/draftView 按任务所选
+	// 模型直接设置）。非空时探针直接使用该模型，跳过账户健康检查模型及其
+	// SupportedModels 校验——熔断场景钉住模型来自 scope 的 modelBucket（真实
+	// 流量使用过的模型），上游对它的裁决就是真实探针结果；人工测试场景钉住
+	// 模型来自弹窗自由选择（契约允许目录内、支持列表外模型）。上游返回 404
+	// model_not_found 时按普通 framing_complete 分类（服务活着），不视为探测
+	// 配置错误。为空时保持健康检查模型默认逻辑。
 	ProbeModelOverride string
 }
 

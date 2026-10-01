@@ -216,8 +216,8 @@ assert.match(
 )
 assert.match(
   testModalSource,
-  /useFixedTestModel\(model/,
-  '新增和编辑表单测试必须固定使用表单检查模型'
+  /initializeDraftTestOptions\(/,
+  '新增和编辑表单测试默认播种表单检查模型并支持自由切换'
 )
 assert.match(
   editModalSource,

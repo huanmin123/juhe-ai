@@ -699,7 +699,7 @@ watch(
 <style scoped>
 .app-shell {
   min-height: 100vh;
-  background: #f5f7fb;
+  background: var(--juhe-bg);
 }
 
 .app-shell-immersive {
@@ -717,15 +717,15 @@ watch(
 
 .main-shell {
   min-width: 0;
-  background: #f5f7fb;
+  background: var(--juhe-bg);
 }
 
 .content {
   position: relative;
   padding: 26px 24px 36px;
   background:
-    radial-gradient(circle at 20% 0%, rgba(22, 119, 255, 0.06), transparent 28%),
-    #f5f7fb;
+    radial-gradient(46% 40% at 88% 0%, rgba(210, 220, 216, 0.35), transparent 55%),
+    var(--juhe-bg);
 }
 
 .content-immersive {
@@ -739,11 +739,11 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   background: rgba(255, 255, 255, 0.96);
-  border: 1px solid #dbe3ec;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 50%;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 4px 14px rgba(34, 40, 43, 0.12);
   cursor: pointer;
 }
 
@@ -764,11 +764,11 @@ watch(
   align-items: center;
   justify-content: center;
   padding: 0;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   background: rgba(255, 255, 255, 0.96);
-  border: 1px solid #dbe3ec;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 50%;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 4px 14px rgba(34, 40, 43, 0.12);
   cursor: pointer;
 }
 
@@ -783,10 +783,10 @@ watch(
   gap: 8px;
   margin: -10px 0 12px auto;
   padding: 8px 12px;
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  color: #1d4ed8;
-  background: rgba(239, 246, 255, 0.96);
+  color: var(--juhe-accent);
+  background: rgba(250, 249, 247, 0.96);
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
   font-size: 13px;
 }
@@ -810,7 +810,7 @@ watch(
 }
 
 .route-switch-summary-card {
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
@@ -837,7 +837,7 @@ watch(
   height: 14px;
   border-radius: 6px;
   background:
-    linear-gradient(90deg, rgba(226, 232, 240, 0.88) 25%, rgba(241, 245, 249, 0.95) 37%, rgba(226, 232, 240, 0.88) 63%);
+    linear-gradient(90deg, rgba(34, 40, 43, 0.06) 25%, rgba(34, 40, 43, 0.1) 37%, rgba(34, 40, 43, 0.06) 63%);
   background-size: 400% 100%;
   animation: route-switch-skeleton-loading 1.2s ease-in-out infinite;
 }

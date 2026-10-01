@@ -151,7 +151,7 @@ function showRouteAssetLoadOverlay(options: {
     'padding:0 16px',
     'border:0',
     'border-radius:6px',
-    'background:#1677ff',
+    'background:#53696b',
     'color:#fff',
     'font-size:14px',
     'font-weight:600',

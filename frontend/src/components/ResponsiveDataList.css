@@ -79,7 +79,7 @@
 
 .responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-first),
 .responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-last) {
-  border-left: 1px solid #edf1f7;
+  border-left: 1px solid var(--juhe-border);
 }
 
 .responsive-data-list-table :deep(.responsive-data-list-actions-column .ant-space) {
@@ -140,7 +140,7 @@
 }
 
 .responsive-data-list-footer-clickable:hover {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .responsive-data-list-pull {

@@ -57,11 +57,17 @@ func (d *Deps) mountTestRoutes(k *kernel.Kernel) {
 	k.Register("POST "+prefix+"/accounts/test-draft", admin(d.scoped(func(w http.ResponseWriter, r *http.Request) {
 		d.testDraft(w, r, requestScope(r))
 	})))
+	k.Register("POST "+prefix+"/accounts/test-draft-options", admin(d.scoped(func(w http.ResponseWriter, r *http.Request) {
+		d.testDraftOptions(w, r, requestScope(r))
+	})))
 	k.Register("GET "+prefix+"/my-accounts/{id}/test-options", self(d.scoped(d.testOptions)))
 	k.Register("GET "+prefix+"/my-accounts/{id}/test-options/models/{modelId}", self(d.scoped(d.testOptionsModel)))
 	k.Register("POST "+prefix+"/my-accounts/{id}/test", self(d.scoped(d.testAccount)))
 	k.Register("POST "+prefix+"/my-accounts/test-draft", self(d.scoped(func(w http.ResponseWriter, r *http.Request) {
 		d.testDraft(w, r, selfScope(r))
+	})))
+	k.Register("POST "+prefix+"/my-accounts/test-draft-options", self(d.scoped(func(w http.ResponseWriter, r *http.Request) {
+		d.testDraftOptions(w, r, selfScope(r))
 	})))
 
 	// Session/task namespaces (account-test-session.routes.ts +
@@ -282,9 +288,11 @@ func (d *Deps) testAccount(w http.ResponseWriter, r *http.Request) {
 
 	var model, testEndpointMode string
 	if draft != nil {
+		// §5.1 草稿测试自由选模型：请求携带 model 时以请求为准（供应商目录
+		// 能力校验，不做草稿支持列表成员校验），未携带回落草稿检查模型。
 		model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
 			manualTestCapabilitiesContextFromDraft(draft),
-			draft.HealthCheckModel,
+			firstNonEmptyTextValue(parsed.Model, draft.HealthCheckModel),
 			firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
 	} else {
 		model, testEndpointMode, err = d.Store.ResolveAccountManualTestSelection(ctx,
@@ -368,9 +376,11 @@ func (d *Deps) testDraft(w http.ResponseWriter, r *http.Request, access AccessSc
 		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
 		return
 	}
+	// §5.1 草稿测试自由选模型：请求携带 model 时以请求为准（供应商目录
+	// 能力校验，不做草稿支持列表成员校验），未携带回落草稿检查模型。
 	model, testEndpointMode, err := d.Store.ResolveAccountManualTestSelection(ctx,
 		manualTestCapabilitiesContextFromDraft(draft),
-		draft.HealthCheckModel,
+		firstNonEmptyTextValue(parsed.Model, draft.HealthCheckModel),
 		firstNonEmptyTextValue(parsed.TestEndpointMode, draft.HealthCheckEndpointMode))
 	if err != nil {
 		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "创建账户草稿测试任务失败"))
@@ -414,6 +424,119 @@ func (d *Deps) testDraft(w http.ResponseWriter, r *http.Request, access AccessSc
 	}
 	_ = d.Store.FailTestTask(r.Context(), task.ID, testDraftWorkerUnavailableMessage)
 	kernel.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"message": testDraftWorkerUnavailableMessage})
+}
+
+// testDraftOptions mirrors POST /test-draft-options (§5.1 新增/编辑表单测试
+// 自由选模型)：草稿载荷走与实际草稿测试一致的 prepareAccountDraftTestSnapshot
+// 校验链（draftAccountID 为空，草稿不落任何已保存账户），产出上下文喂给与
+// GET /{id}/test-options 同一个 AccountManualTestOptions 目录装配；filter 三元
+// 组语义对齐 GET（keyword/limit/selectedIds，limit 默认 50 上限 50）。
+func (d *Deps) testDraftOptions(w http.ResponseWriter, r *http.Request, access AccessScope) {
+	auth := authsys.AuthContextFrom(r)
+	if auth == nil {
+		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	var body map[string]any
+	if !kernel.DecodeJSON(w, r, &body) {
+		return
+	}
+	account, query, message := parseDraftTestOptionsBody(body)
+	if message != "" {
+		kernel.WriteBadRequest(w, message)
+		return
+	}
+	ctx := ensureCtx(r.Context())
+	draft, err := d.Store.prepareAccountDraftTestSnapshot(ctx, account, access, "")
+	if err != nil {
+		kernel.WriteBadRequest(w, pipelineErrorMessage(err, "读取草稿测试模型选项失败"))
+		return
+	}
+	options, err := d.Store.AccountManualTestOptions(ctx, manualTestCapabilitiesContextFromDraft(draft), query)
+	if err != nil {
+		d.writeTestError(w, err)
+		return
+	}
+	setNoStoreHeaders(w)
+	kernel.WriteOK(w, options, "")
+}
+
+// parseDraftTestOptionsBody mirrors the POST /test-draft-options body schema
+// (strict key set)：account 复用 POST /test-draft 的草稿账户 schema，filter
+// 三元组复用 NormalizeManualTestOptionsQuery 的规范化语义（body 字段版本：
+// keyword 去空白、limit 1-50 默认 50、selectedIds 去重截断 50）。
+func parseDraftTestOptionsBody(body map[string]any) (*TestDraftAccountInput, ManualTestOptionsQuery, string) {
+	query := ManualTestOptionsQuery{Limit: 50}
+	for key := range body {
+		switch key {
+		case "account", "keyword", "limit", "selectedIds":
+		default:
+			return nil, query, "账户草稿测试参数无效"
+		}
+	}
+	var account *TestDraftAccountInput
+	if value, exists := body["account"]; exists && value != nil {
+		record, ok := value.(map[string]any)
+		if !ok {
+			return nil, query, "账户草稿测试参数无效"
+		}
+		parsed, message := parseTestDraftAccountInput(record)
+		if message != "" {
+			return nil, query, "账户草稿测试参数无效"
+		}
+		account = parsed
+	}
+	if account == nil {
+		return nil, query, "账户草稿测试参数无效"
+	}
+	if value, exists := body["keyword"]; exists && value != nil {
+		text, ok := value.(string)
+		if !ok {
+			return nil, query, "账户草稿测试参数无效"
+		}
+		query.Keyword = strings.TrimSpace(text)
+	}
+	if value, exists := body["limit"]; exists && value != nil {
+		number, ok := value.(float64)
+		if !ok || number != float64(int(number)) || number < 1 || number > 50 {
+			return nil, query, "limit 必须是 1 到 50 的整数"
+		}
+		query.Limit = int(number)
+	}
+	if value, exists := body["selectedIds"]; exists && value != nil {
+		list, ok := value.([]any)
+		if !ok {
+			return nil, query, "账户草稿测试参数无效"
+		}
+		query.SelectedIDs = normalizeDraftSelectedIDs(list)
+		if query.SelectedIDs == nil {
+			return nil, query, "账户草稿测试参数无效"
+		}
+	}
+	return account, query, ""
+}
+
+// normalizeDraftSelectedIDs mirrors normalizedQueryTextList for the body array
+// form: trim + dedupe + cap 50; a nil result flags a non-string member.
+func normalizeDraftSelectedIDs(list []any) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, item := range list {
+		text, ok := item.(string)
+		if !ok {
+			return nil
+		}
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+		if len(out) >= 50 {
+			break
+		}
+	}
+	return out
 }
 
 // ---- session routes ----

@@ -18,7 +18,7 @@ export function announcementTimelineColor(level: AnnouncementLevel): string {
   if (level === 'critical') return '#f5222d'
   if (level === 'warning') return '#fa8c16'
   if (level === 'normal') return '#bfbfbf'
-  return '#1677ff'
+  return '#53696b'
 }
 
 export function announcementStatusText(status: AnnouncementStatus): string {

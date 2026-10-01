@@ -332,7 +332,7 @@ function formatBytes(value: number): string {
 }
 
 .readonly-code-viewer-editor :deep(.cm-panel.cm-search input.cm-textfield:focus) {
-  border-color: #1677ff;
+  border-color: var(--juhe-accent);
   outline: none;
   box-shadow: 0 0 0 2px rgb(5 145 255 / 10%);
 }
@@ -348,8 +348,8 @@ function formatBytes(value: number): string {
 }
 
 .readonly-code-viewer-editor :deep(.cm-panel.cm-search .cm-button:hover) {
-  border-color: #1677ff;
-  color: #1677ff;
+  border-color: var(--juhe-accent);
+  color: var(--juhe-accent);
 }
 
 .readonly-code-viewer-editor :deep(.cm-panel.cm-search label) {

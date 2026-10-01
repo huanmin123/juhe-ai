@@ -18,7 +18,7 @@ const ERROR_TOOLTIP_EDGE_GAP = 12
 
 export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']): EChartsOption {
   return {
-    color: ['#1677ff', '#ff4d4f', '#faad14'],
+    color: ['#53696b', '#ff4d4f', '#faad14'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => usageTrendTooltip(params)
@@ -89,7 +89,7 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
 export function buildDailyConsumptionOption(trend: UsageStatsOverviewDailyTrendResult['dailyTrend']): EChartsOption {
   const lastDate = trend[trend.length - 1]?.statDate
   return {
-    color: ['#1677ff'],
+    color: ['#53696b'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => dailyConsumptionTooltip(params, lastDate)
@@ -133,7 +133,7 @@ export function buildDailyConsumptionOption(trend: UsageStatsOverviewDailyTrendR
 
 export function buildModelDistributionOption(distribution: UsageStatsOverview['modelDistribution']): EChartsOption {
   return {
-    color: ['#1677ff', '#52c41a', '#722ed1', '#faad14', '#13c2c2', '#eb2f96', '#fa541c', '#2f54eb', '#a0d911', '#8c8c8c'],
+    color: ['#53696b', '#52c41a', '#722ed1', '#faad14', '#13c2c2', '#eb2f96', '#fa541c', '#2f54eb', '#a0d911', '#8c8c8c'],
     tooltip: {
       trigger: 'item',
       formatter: (params: unknown) => modelTooltip(params)
@@ -283,10 +283,10 @@ export function buildGoRuntimeOption(items: GoRuntimeTrendItem[], timezone = 'As
   const isResourceView = view === 'resource'
   return {
     color: isMemoryView
-      ? ['#52c41a', '#95de64', '#13c2c2', '#87e8de', '#1677ff', '#69b1ff', '#fa8c16', '#ffc069']
+      ? ['#52c41a', '#95de64', '#13c2c2', '#87e8de', '#53696b', '#69b1ff', '#fa8c16', '#ffc069']
       : isResourceView
-        ? ['#1677ff', '#ff4d4f']
-        : ['#1677ff', '#69b1ff', '#52c41a', '#95de64', '#fa8c16', '#ffc069', '#722ed1', '#b37feb', '#13c2c2', '#5cdbd3', '#eb2f96'],
+        ? ['#53696b', '#ff4d4f']
+        : ['#53696b', '#69b1ff', '#52c41a', '#95de64', '#fa8c16', '#ffc069', '#722ed1', '#b37feb', '#13c2c2', '#5cdbd3', '#eb2f96'],
     tooltip: { trigger: 'axis', formatter: (params: unknown) => goRuntimeTooltip(params, items) },
     legend: { type: 'scroll', bottom: 0, data: series.map((item) => item.name) },
     grid: { left: 56, right: 64, top: 28, bottom: 72 },

@@ -82,18 +82,18 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const draftApiKeyTestSnapshot = options.draftApiKeyTestSnapshot ?? ref<DraftApiKeyTestSnapshot>()
   const testForm = reactive<AccountTestForm>({ model: '', testEndpointMode: 'account_default' })
   const {
+    initializeDraftTestOptions,
     initializeSavedAccountTestOptions,
+    loadDraftTestModelOptions,
     loadTestModelOptions,
     resetTestModels,
     restoreTestSelection,
     testEndpointModes,
     testModelOptions,
-    testModelReadonly,
     testModelsError,
     testModelsLoading,
     testModelsReady,
-    updateSelectableTestModel,
-    useFixedTestModel
+    updateSelectableTestModel
   } = useAccountTestModels({
     accountScopeParams: options.accountScopeParams,
     isManagementView: options.isManagementView,
@@ -168,18 +168,25 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     beginTestView(account)
     draftTestingAccountPayload.value = draftPayload
     draftTestMode.value = mode
-    useFixedTestModel(model, fixedEndpointModes ?? accountTestEndpointModesForAccount(account, draftPayload))
+    initializeDraftTestOptions(
+      account,
+      draftPayload,
+      model,
+      fixedEndpointModes ?? accountTestEndpointModesForAccount(account, draftPayload),
+      mode
+    )
     testModalOpen.value = true
+    void loadAccountTestModelOptionsNow(account, '')
   }
 
   async function runAccountTest(): Promise<void> {
     const account = testingAccount.value
+    const draftTestActive = Boolean(draftTestingAccountPayload.value)
     if (
       !account
       || testRunning.value
-      || testModelsLoading.value
       || !testModelsReady.value
-      || Boolean(testModelsError.value)
+      || (!draftTestActive && (testModelsLoading.value || Boolean(testModelsError.value)))
       || !testForm.model.trim()
       || testForm.testEndpointMode === 'account_default'
     ) {
@@ -265,7 +272,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   async function loadAccountTestModelOptions(open: boolean, keyword = ''): Promise<void> {
     const account = testingAccount.value
-    if (!open || !account || testModelReadonly.value) return
+    if (!open || !account) return
     const normalizedKeyword = keyword.trim()
     if (normalizedKeyword) {
       clearModelSearchTimer()
@@ -285,6 +292,10 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   async function loadAccountTestModelOptionsNow(account: AccountListItem, keyword: string): Promise<void> {
     try {
+      if (draftTestingAccountPayload.value) {
+        await loadDraftTestModelOptions(keyword)
+        return
+      }
       await loadTestModelOptions(account, keyword)
     } catch (error) {
       if (isAbortError(error)) return
@@ -711,7 +722,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testForm,
     testModalOpen,
     testModelOptions,
-    testModelReadonly,
     testModelsError,
     testModelsLoading,
     testModelsReady,

@@ -86,17 +86,17 @@ defineEmits<{
 
 <style scoped>
 .header {
-  min-height: 92px;
-  height: auto;
+  height: 52px;
+  min-height: 52px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 28px 16px;
+  padding: 0 20px;
   line-height: normal;
-  background: rgba(255, 255, 255, 0.96);
-  border-bottom: 1px solid #edf1f7;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+  background: rgba(244, 244, 242, 0.88);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--juhe-border);
   z-index: 2;
 }
 
@@ -112,7 +112,7 @@ defineEmits<{
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: var(--juhe-muted);
   background: transparent;
   border: 0;
   border-radius: 50%;
@@ -127,13 +127,13 @@ defineEmits<{
 .help-trigger:focus-visible,
 .announcement-trigger:hover,
 .announcement-trigger:focus-visible {
-  color: #1677ff;
-  background: #eff6ff;
+  color: var(--juhe-accent);
+  background: var(--juhe-accent-soft);
 }
 
 .help-trigger:focus-visible,
 .announcement-trigger:focus-visible {
-  outline: 2px solid rgba(22, 119, 255, 0.28);
+  outline: 2px solid rgba(83, 105, 107, 0.28);
   outline-offset: 2px;
 }
 
@@ -143,7 +143,7 @@ defineEmits<{
 }
 
 .announcement-trigger.active {
-  color: #faad14;
+  color: var(--juhe-warn);
   background: transparent;
   box-shadow: none;
 }
@@ -173,19 +173,19 @@ defineEmits<{
   right: 8px;
   width: 8px;
   height: 8px;
-  background: #f5222d;
-  border: 2px solid #fff;
+  background: var(--juhe-coral);
+  border: 2px solid #f4f4f2;
   border-radius: 50%;
-  box-shadow: 0 0 0 2px rgba(245, 34, 45, 0.14);
+  box-shadow: 0 0 0 2px rgba(166, 117, 94, 0.18);
 }
 
 .user-trigger {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
+  min-height: 36px;
   padding: 2px 2px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   background: transparent;
   border: 0;
   cursor: pointer;
@@ -224,11 +224,11 @@ defineEmits<{
 
 .user-trigger:hover .user-name,
 .user-trigger:focus-visible .user-name {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .user-trigger:focus-visible {
-  outline: 2px solid rgba(22, 119, 255, 0.28);
+  outline: 2px solid rgba(83, 105, 107, 0.28);
   outline-offset: 4px;
   border-radius: 10px;
 }
@@ -242,9 +242,9 @@ defineEmits<{
   flex: 0 0 34px;
   color: #fff;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
-  background: #14b8a6;
+  background: var(--juhe-primary-grad);
   border-radius: 50%;
 }
 
@@ -259,7 +259,7 @@ defineEmits<{
 .user-name {
   max-width: 120px;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -269,12 +269,12 @@ defineEmits<{
 
 .user-role {
   margin-top: 3px;
-  color: #64748b;
-  font-size: 12px;
+  color: var(--juhe-muted);
+  font-size: 11px;
 }
 
 .user-arrow {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 11px;
 }
 
@@ -283,19 +283,34 @@ defineEmits<{
   align-items: center;
   gap: 12px;
   line-height: 1.2;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.header-copy :deep(.ant-space-item:last-child) {
+  min-width: 0;
 }
 
 .title {
-  color: #0f172a;
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 28px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--juhe-fg);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .subtitle {
-  color: #64748b;
-  font-size: 13px;
-  line-height: 20px;
+  display: none;
+  overflow: hidden;
+  color: var(--juhe-muted);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .menu-trigger {
@@ -305,13 +320,14 @@ defineEmits<{
   width: 40px;
   height: 40px;
   margin-left: -8px;
-  color: #0f172a;
+  color: var(--juhe-fg);
 }
 
 @media (max-width: 991px) {
   .header {
-    min-height: 76px;
-    padding: 12px 16px;
+    height: auto;
+    min-height: 56px;
+    padding: 0 12px;
   }
 
   .header-copy {
@@ -327,14 +343,8 @@ defineEmits<{
     display: none;
   }
 
-  .title {
-    font-size: 18px;
-    line-height: 26px;
-  }
-
   .subtitle {
-    font-size: 12px;
-    line-height: 18px;
+    display: block;
   }
 }
 

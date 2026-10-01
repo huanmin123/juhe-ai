@@ -6,14 +6,14 @@
     :collapsed="collapsed"
     :trigger="null"
     collapsible
-    theme="dark"
+    theme="light"
     class="sidebar"
   >
     <div class="brand">
       <img class="brand-icon" :src="appIcon" :alt="`${appName} 图标`" />
       <span class="brand-text">{{ appName }}</span>
     </div>
-    <a-menu :openKeys="menuOpenKeys" :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @openChange="handleOpenChange" />
+    <a-menu :openKeys="menuOpenKeys" :selectedKeys="selectedKeys" theme="light" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @openChange="handleOpenChange" />
     <button class="collapse-toggle" type="button" @click="collapsed = !collapsed">
       <MenuUnfoldOutlined v-if="collapsed" />
       <MenuFoldOutlined v-else />
@@ -33,7 +33,7 @@
       <img class="brand-icon" :src="appIcon" :alt="`${appName} 图标`" />
       <span class="brand-text">{{ appName }}</span>
     </div>
-    <a-menu :openKeys="menuOpenKeys" :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @openChange="handleOpenChange" />
+    <a-menu :openKeys="menuOpenKeys" :selectedKeys="selectedKeys" theme="light" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @openChange="handleOpenChange" />
   </a-drawer>
 </template>
 
@@ -80,8 +80,9 @@ watch(
   top: 0;
   height: 100vh;
   overflow: hidden;
-  background: linear-gradient(180deg, #061a2e 0%, #03111f 100%) !important;
-  box-shadow: 8px 0 24px rgba(3, 17, 31, 0.08);
+  background: var(--juhe-rail) !important;
+  border-right: 1px solid var(--juhe-border);
+  box-shadow: none;
 }
 
 .sidebar :deep(.ant-layout-sider-children) {
@@ -95,7 +96,7 @@ watch(
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-color: rgba(226, 232, 240, 0.28) transparent;
+  scrollbar-color: rgba(60, 68, 70, 0.3) transparent;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
 }
@@ -110,14 +111,14 @@ watch(
 
 .sidebar :deep(.ant-menu::-webkit-scrollbar-thumb) {
   min-height: 44px;
-  background-color: rgba(226, 232, 240, 0.24);
+  background-color: rgba(60, 68, 70, 0.3);
   background-clip: content-box;
   border: 2px solid transparent;
   border-radius: 999px;
 }
 
 .sidebar :deep(.ant-menu::-webkit-scrollbar-thumb:hover) {
-  background-color: rgba(226, 232, 240, 0.4);
+  background-color: rgba(60, 68, 70, 0.5);
 }
 
 .sidebar :deep(.ant-menu::-webkit-scrollbar-button) {
@@ -133,9 +134,10 @@ watch(
   gap: 10px;
   padding: 10px 22px 0;
   overflow: hidden;
-  color: #fff;
-  font-size: 18px;
-  font-weight: 800;
+  color: var(--juhe-fg);
+  font-family: var(--juhe-font-display);
+  font-size: 16px;
+  font-weight: 650;
   letter-spacing: 0.2px;
   line-height: 1;
   white-space: nowrap;
@@ -145,10 +147,7 @@ watch(
   width: 28px;
   height: 28px;
   flex: 0 0 auto;
-  padding: 5px;
-  background: rgba(255, 255, 255, 0.92);
-  border-radius: 9px;
-  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.2);
+  display: block;
 }
 
 .brand-text {
@@ -166,9 +165,9 @@ watch(
   gap: 10px;
   margin: 10px 6px 14px;
   padding: 0 12px;
-  color: rgba(255, 255, 255, 0.78);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--juhe-muted);
+  background: #fff;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   cursor: pointer;
   transition:
@@ -178,9 +177,9 @@ watch(
 }
 
 .collapse-toggle:hover {
-  color: #fff;
-  background: rgba(22, 119, 255, 0.18);
-  border-color: rgba(22, 119, 255, 0.32);
+  color: var(--juhe-accent);
+  background: var(--juhe-accent-soft);
+  border-color: var(--juhe-accent);
 }
 
 .collapse-toggle span {
@@ -190,6 +189,7 @@ watch(
 .brand-drawer {
   height: 72px;
   padding: 12px 20px 0;
+  color: var(--juhe-fg);
 }
 
 :global(.mobile-drawer .ant-drawer-content-wrapper) {
@@ -197,28 +197,42 @@ watch(
 }
 
 :global(.mobile-drawer .ant-drawer-content) {
-  background: linear-gradient(180deg, #061a2e 0%, #03111f 100%);
+  background: var(--juhe-rail);
 }
 
-:global(.mobile-drawer .ant-menu-dark) {
+:global(.mobile-drawer .ant-menu-light) {
   background: transparent;
 }
 
-:deep(.ant-menu-dark) {
+:global(.mobile-drawer .ant-menu-item) {
+  height: 36px;
+  margin: 4px 8px;
+  border-radius: 9px;
+  line-height: 36px;
+}
+
+:global(.mobile-drawer .ant-menu-item-selected) {
+  position: relative;
+  background: var(--juhe-accent-soft);
+  color: var(--juhe-accent);
+}
+
+:deep(.ant-menu-light) {
   background: transparent;
 }
 
-:deep(.ant-menu-dark .ant-menu-item) {
-  height: 40px;
-  margin: 6px 6px;
-  border-radius: 8px;
-  line-height: 40px;
+:deep(.ant-menu-item) {
+  height: 36px;
+  margin: 4px 8px;
+  border-radius: 9px;
+  line-height: 36px;
 }
 
 :deep(.ant-menu-item-group-title) {
   padding: 14px 20px 4px;
-  color: rgba(255, 255, 255, 0.48);
-  font-size: 12px;
+  color: var(--juhe-faint);
+  font-size: 11px;
+  letter-spacing: 0.12em;
   line-height: 18px;
 }
 
@@ -226,8 +240,21 @@ watch(
   display: none;
 }
 
-:deep(.ant-menu-dark .ant-menu-item-selected) {
-  background: linear-gradient(135deg, #1677ff 0%, #2f80ed 100%);
-  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.26);
+:deep(.ant-menu-item-selected) {
+  position: relative;
+  background: var(--juhe-accent-soft);
+  color: var(--juhe-accent);
+}
+
+:deep(.ant-menu-item-selected)::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px 2px 2px 3px;
+  background: linear-gradient(180deg, var(--juhe-fg), var(--juhe-accent));
+  transform: rotate(-0.5deg);
 }
 </style>

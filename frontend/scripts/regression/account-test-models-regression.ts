@@ -85,9 +85,9 @@ assertIncludes(openTestModalSource, 'account.healthCheckModel', '测试弹窗默
 assertIncludes(openTestModalSource, 'account.healthCheckEndpointMode', '测试弹窗默认请求形态必须直接使用当前账户列表字段')
 assertIncludes(accountTestComponentSource, '@dropdown-visible-change', '模型选择器首次展开时才应触发候选模型列表加载')
 assertNotIncludes(accountTestComponentSource, 'load-endpoint-mode-options', '请求形态选择器不得触发二次模型能力加载')
-assertIncludes(accountTestModelsSource, 'await api.accounts.testOptions(', '管理端测试模型必须直接请求账户 test-options')
-assertIncludes(accountTestModelsSource, 'await api.myAccounts.testOptions(', '个人端测试模型必须直接请求个人账户 test-options')
-assertIncludes(accountTestModelsSource, '{ signal: controller.signal }', '测试选项请求必须接收 AbortSignal')
+assertIncludes(accountTestModelsSource, '? api.accounts.testOptions(', '管理端测试模型必须直接请求账户 test-options')
+assertIncludes(accountTestModelsSource, ': api.myAccounts.testOptions(', '个人端测试模型必须直接请求个人账户 test-options')
+assertIncludes(accountTestModelsSource, '{ signal }', '测试选项请求必须接收 AbortSignal')
 assertIncludes(accountTestModelsSource, 'limit: 50', '测试模型下拉每次最多请求 50 条')
 assertIncludes(accountTestModelsSource, 'selectedIds', '测试模型搜索必须保留检查模型和当前选中模型')
 assertIncludes(accountTestComponentSource, "@search=\"$emit('search-model-options', $event)\"", '模型选择器搜索必须触发服务端按需加载')
@@ -98,7 +98,9 @@ assertIncludes(updateSelectableTestModelSource, 'applyTestEndpointModes(option.t
 assertNotIncludes(accountTestModelsSource, 'accountTestEndpointModesForAccount', '保存账户测试不得从裁剪后的列表账户推导请求形态')
 assertNotIncludes(accountTestModelsSource, 'endpointModesForProtocol', '模型协议标签不得决定保存账户可测试请求形态')
 assertNotIncludes(accountTestModelsSource, 'modelRequestToken', '模型切换不应再维护独立请求 token')
-assertIncludes(accountTestModelsSource, 'testModelReadonly.value = true', '草稿测试应进入只读模型模式')
+assertIncludes(accountTestModelsSource, 'initializeDraftTestOptions', '草稿测试应播种默认检查模型进入可切换模式')
+assertIncludes(accountTestModelsSource, '? api.accounts.testDraftOptions(', '管理端草稿测试选项必须请求 test-draft-options')
+assertIncludes(accountTestModelsSource, ': api.myAccounts.testDraftOptions(', '个人端草稿测试选项必须请求 test-draft-options')
 assertNotIncludes(accountTestModelsSource, 'supportedModels', '列表人工测试模型不应受账户 supportedModels 限制')
 assertNotIncludes(accountTestModelsSource, 'api.providers.options', '列表人工测试不应再加载完整供应商选项')
 assertNotIncludes(accountTestModelsSource, 'api.providers.models', '列表人工测试不应自行拼供应商模型目录')
@@ -136,7 +138,8 @@ assertIncludes(terminateAttachedTestRunSource, 'cancelAccountTestRunBackend(run)
 assertIncludes(closeTestModalSource, 'terminateAttachedTestRun(true)', '关闭弹窗必须终止正在运行的后台任务')
 assertIncludes(closeTestModalSource, 'detachCurrentTestView()', '没有运行任务时关闭弹窗仍应清理视图绑定')
 
-assertIncludes(accountTestComponentSource, 'v-if="modelReadonly"', '草稿测试模型应使用只读控件展示')
+assertIncludes(accountTestComponentSource, 'label="选择测试模型"', '测试模型选择器应始终可自由切换')
+assertNotIncludes(accountTestComponentSource, 'modelReadonly', '测试模型选择器不得保留只读分支')
 assertIncludes(accountTestComponentSource, ':mask-closable="true"', '运行中也应允许关闭并分离当前测试视图')
 assertNotIncludes(accountTestComponentSource, 'isBatchMode', '测试弹窗不应保留批量模式')
 assertNotIncludes(accountTestComponentSource, 'batchItems', '测试弹窗不应保留批量结果')
@@ -176,7 +179,7 @@ assert.deepEqual(
   '列表人工测试应允许提交不在账户 supportedModels 中的 test-options 模型'
 )
 
-console.log('账户人工测试解耦回归通过：模型选项携带请求形态、草稿固定模型和运行隔离均符合预期')
+console.log('账户人工测试解耦回归通过：模型选项携带请求形态、草稿可选模型与运行隔离均符合预期')
 
 function accountFixture(): AccountSummary {
   return {

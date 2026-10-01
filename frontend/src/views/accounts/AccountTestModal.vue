@@ -28,15 +28,8 @@
 
       <a-form layout="vertical" class="test-form">
         <div class="test-config-row">
-          <a-form-item class="test-config-field" :label="modelReadonly ? '检查模型' : '选择测试模型'">
-            <a-input
-              v-if="modelReadonly"
-              class="readonly-model-input"
-              :value="model"
-              readonly
-            />
+          <a-form-item class="test-config-field" label="选择测试模型">
             <a-select
-              v-else
               :value="model"
               show-search
               :filter-option="false"
@@ -85,7 +78,7 @@
 
       <div class="test-modal-footer">
         <div class="test-footer-hint">
-          <span>{{ modelReadonly ? '当前表单检查模型' : '本次人工测试配置' }}</span>
+          <span>本次人工测试配置</span>
         </div>
         <a-space>
           <a-button :disabled="!result" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
@@ -133,9 +126,9 @@ const props = defineProps<{
   activeTask?: AccountTestTask
   model: string
   modelOptions: Array<{ label: string; value: string }>
-  modelReadonly: boolean
   modelsError: string
   modelsLoading: boolean
+  modelsOptional?: boolean
   modelsReady: boolean
   open: boolean
   providerName?: (providerCode?: string) => string
@@ -174,9 +167,8 @@ const selectedEndpointModeText = computed(() => {
 })
 const resultJson = computed(() => props.result ? JSON.stringify(props.result, null, 2) : '')
 const runDisabled = computed(() => (
-  props.modelsLoading
+  (!props.modelsOptional && (props.modelsLoading || Boolean(props.modelsError)))
   || !props.modelsReady
-  || Boolean(props.modelsError)
   || !props.model.trim()
   || !selectedEndpointModeSelectValue.value
 ))
@@ -297,9 +289,6 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
   width: 100%;
 }
 
-.readonly-model-input {
-  font-family: Consolas, 'Courier New', monospace;
-}
 
 .test-field-error {
   margin-top: 6px;

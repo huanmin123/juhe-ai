@@ -194,8 +194,14 @@ func (e *Executor) resolveView(ctx context.Context, task accounttest.ManualTestT
 		return nil, fmt.Sprintf("账户 %s 不在当前分组或凭据不可用，无法执行网关测试", task.AccountID), nil
 	}
 	view := proberepo.AssembleProbeView(account, candidate)
-	if strings.TrimSpace(task.Model) != "" {
-		view.HealthCheckModel = strings.TrimSpace(task.Model)
+	if model := strings.TrimSpace(task.Model); model != "" {
+		// BUG-0255：人工测试契约（AI账户检查模型与人工测试设计）允许测试
+		// 供应商目录内、尚未加入账户支持列表的模型；只覆写 HealthCheckModel
+		// 会落回 resolveTestModel 对 SupportedModels 的成员校验而拒绝。钉住
+		// ProbeModelOverride 走显式分支跳过该校验（与熔断恢复探测的钉住
+		// 语义一致），HealthCheckModel 同步覆写保持结果信封展示本次模型。
+		view.ProbeModelOverride = model
+		view.HealthCheckModel = model
 	}
 	if strings.TrimSpace(task.TestEndpointMode) != "" {
 		view.HealthCheckEndpointMode = strings.TrimSpace(task.TestEndpointMode)

@@ -163,9 +163,9 @@
       :account="testingAccount"
       :active-task="activeSingleTestTask"
       :model-options="testModelOptions"
-      :model-readonly="testModelReadonly"
       :models-error="testModelsError"
       :models-loading="testModelsLoading"
+      :models-optional="Boolean(draftTestingAccountPayload)"
       :models-ready="testModelsReady"
       :provider-name="providerName"
       :result="testResult"
@@ -1123,6 +1123,7 @@ const {
 const {
   activeSingleTestTask,
   closeTestModal,
+  draftTestingAccountPayload,
   loadAccountTestModelOptions,
   openDraftTestModal: openDraftTestModalWithHealthCheckModel,
   openSavedDraftTestModal: openSavedDraftTestModalWithHealthCheckModel,
@@ -1133,7 +1134,6 @@ const {
   testForm,
   testModalOpen,
   testModelOptions,
-  testModelReadonly,
   testModelsError,
   testModelsLoading,
   testModelsReady,

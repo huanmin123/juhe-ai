@@ -317,7 +317,7 @@ function normalizeDraftItemOrder(items: TableColumnManagerItem[]): TableColumnMa
 }
 
 .table-column-manager-item.drag-over {
-  border-color: #1677ff;
+  border-color: var(--juhe-accent);
   background: #f8fbff;
 }
 

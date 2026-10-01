@@ -288,8 +288,15 @@ func draftBaseURL(credentials map[string]any) string {
 func draftView(secret string, draft *DraftSnapshot, modelOverride, endpointModeOverride string) *accountprobe.View {
 	entries := apiKeyEntries(secret, draft.Credentials)
 	healthModel := draft.HealthCheckModel
+	// BUG-0255（与 executor.go 保存账户路径同语义）：编辑弹窗草稿测试允许
+	// 选中供应商目录内、但不在草稿 SupportedModels 里的模型（§5.1 自由选模
+	// 型）；只覆写 HealthCheckModel 会落回 resolveTestModel 对 SupportedModels
+	// 的成员校验而拒绝。钉住 ProbeModelOverride 走显式分支跳过该校验，
+	// HealthCheckModel 同步覆写保持结果信封展示本次模型。
+	probeModelOverride := ""
 	if strings.TrimSpace(modelOverride) != "" {
 		healthModel = strings.TrimSpace(modelOverride)
+		probeModelOverride = healthModel
 	}
 	healthMode := draft.HealthCheckEndpointMode
 	if strings.TrimSpace(endpointModeOverride) != "" {
@@ -307,6 +314,7 @@ func draftView(secret string, draft *DraftSnapshot, modelOverride, endpointModeO
 		ClientCompatibility:       draft.ClientCompatibility,
 		HealthCheckModel:          healthModel,
 		HealthCheckEndpointMode:   healthMode,
+		ProbeModelOverride:        probeModelOverride,
 		SupportedModels:           draft.SupportedModels,
 		ModelMappings:             draft.ModelMappings,
 		BaseURL:                   draftBaseURL(draft.Credentials),

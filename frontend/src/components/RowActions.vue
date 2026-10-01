@@ -349,7 +349,7 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 }
 
 .row-action-tone-primary {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .row-actions-button .row-action-tone-primary.ant-btn-primary,
@@ -431,7 +431,7 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 }
 
 .row-action-menu-tone-primary .row-action-menu-icon {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .row-action-menu-tone-success .row-action-menu-icon {

@@ -211,9 +211,17 @@ export interface AccountModelCatalogDiscoveryAccountPayload {
 
 export interface AccountDraftTestPayload {
   account: AccountDraftTestAccountPayload
+  model?: string
   testEndpointMode?: AccountSupportedEndpointMode
   prompt?: string
   testSessionId?: string
+}
+
+export interface AccountTestDraftOptionsPayload {
+  account: AccountDraftTestAccountPayload
+  keyword?: string
+  limit?: number
+  selectedIds?: string[]
 }
 
 export interface AccountBalanceDraftTestPayload {

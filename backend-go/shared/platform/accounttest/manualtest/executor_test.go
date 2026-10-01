@@ -474,6 +474,132 @@ func TestExecutorSavedAccountPath(t *testing.T) {
 	}
 }
 
+// BUG-0255：人工测试选中供应商目录内、但不在账户 SupportedModels 里的模型
+// 时必须照常执行——契约允许验证尚未加入支持列表的模型，只覆写
+// HealthCheckModel 的旧路径会撞 resolveTestModel 成员校验直接失败。
+func TestExecutorSavedAccountModelOutsideSupportedList(t *testing.T) {
+	var seenModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("body must be JSON: %v", err)
+		}
+		seenModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(chatSuccessBody()))
+	}))
+	defer server.Close()
+
+	saved := &fakeSavedSource{
+		account: &proberepo.AccountForTestView{
+			AccountForTest: accountquality.AccountForTest{
+				ID: "acc-saved", Name: "保存账户", Type: "api_key", Status: "active",
+				BoundGroupID: "grp-1", OwnerSystemAccountID: "sys-1",
+			},
+			ProviderCode:              "openai",
+			ProviderProtocolProfileID: "profile_openai_openai_v1",
+			ProtocolVersion:           "v1",
+			HealthCheckModel:          "gpt-test",
+			HealthCheckEndpointMode:   "chat_json",
+			SupportedModels:           []string{"gpt-test"},
+			Credentials:               map[string]any{"api_key": "sk-saved"},
+		},
+		candidate: &proberepo.CandidateAccount{
+			OpenAIAccountCandidate: accountquality.OpenAIAccountCandidate{
+				ID: "acc-saved", Name: "保存账户", Type: "api_key", Status: "active",
+			},
+			ProviderCode:    "openai",
+			ProtocolCode:    "openai",
+			ProtocolVersion: "v1",
+			Credentials:     map[string]any{"api_key": "sk-saved", "base_url": server.URL + "/v1"},
+			SelectedAPIKey:  "sk-saved",
+			APIKeyEntries: []proberepo.KeyEntry{
+				{Key: "sk-saved", Fingerprint: "fp", Index: 0},
+			},
+		},
+	}
+	executor := newTestExecutor(t, saved)
+	task := manualTestTask("")
+	task.ID = "task-saved-free-model"
+	task.AccountID = "acc-saved"
+	task.Model = "gpt-catalog-only"
+	result, err := executor.Execute(context.Background(), task, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success {
+		t.Fatalf("支持列表外模型应照常测试: %+v", result)
+	}
+	if seenModel != "gpt-catalog-only" {
+		t.Fatalf("上游请求 model = %q，期望 gpt-catalog-only", seenModel)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(result.ResultJSON), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope["model"] != "gpt-catalog-only" {
+		t.Fatalf("结果信封 model = %v", envelope["model"])
+	}
+}
+
+// BUG-0255 草稿路径同语义：编辑弹窗草稿测试选中的目录模型不在草稿
+// SupportedModels 内时（§5.1 自由选模型），draftView 只覆写 HealthCheckModel
+// 会落回 resolveTestModel 的成员校验直接失败；必须钉住 ProbeModelOverride
+// 走显式分支，请求直达上游且请求体 model 为所选值。
+func TestExecutorDraftModelOutsideSupportedList(t *testing.T) {
+	var seenModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("body must be JSON: %v", err)
+		}
+		seenModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(chatSuccessBody()))
+	}))
+	defer server.Close()
+
+	draft := DraftSnapshot{
+		ID:                        "acct-draft-free",
+		OwnerSystemAccountID:      "sys-1",
+		GroupID:                   "grp-1",
+		ProviderCode:              "openai",
+		ProviderProtocolProfileID: "profile_openai_openai_v1",
+		ProtocolCode:              "openai",
+		ProtocolVersion:           "v1",
+		Name:                      "草稿账户",
+		Type:                      "api_key",
+		Credentials: map[string]any{
+			"api_key":                  "sk-test-123456",
+			"base_url":                 server.URL + "/v1",
+			"supported_endpoint_modes": []any{"chat_json"},
+		},
+		ClientCompatibility:     "openai_standard",
+		SupportedModels:         []string{"gpt-test"},
+		HealthCheckModel:        "gpt-test",
+		HealthCheckEndpointMode: "chat_json",
+	}
+	task := manualTestTask(encryptDraft(t, &draft))
+	task.Model = "gpt-catalog-only"
+	result, err := newTestExecutor(t, nil).Execute(context.Background(), task, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success {
+		t.Fatalf("草稿支持列表外模型应照常直达上游: %+v", result)
+	}
+	if seenModel != "gpt-catalog-only" {
+		t.Fatalf("上游请求 model = %q，期望 gpt-catalog-only", seenModel)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(result.ResultJSON), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope["model"] != "gpt-catalog-only" {
+		t.Fatalf("结果信封 model = %v", envelope["model"])
+	}
+}
+
 // TestOverlayRotatedCredentials：OAuth 草稿快照的 token 在账户后台轮换后
 // 失效（上游报 no auth context）——组装视图前必须用账户行实时 token 覆盖；
 // api_key 类型不受影响。

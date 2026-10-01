@@ -4,6 +4,7 @@ import type {
   AccountSupportedEndpointMode,
   AccountListItem
 } from '@/types/domain'
+import type { AccountDraftTestPayload } from '@/api/client'
 import type {
   AccountTestModelOption,
   AccountTestOptions
@@ -11,6 +12,7 @@ import type {
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { accountOperationScopeParams } from './accountOperationScope'
+import type { AccountTestDraftMode } from './accountTestSessionClient'
 import type { AccountTestEndpointMode, AccountTestForm } from './accountTestFlow'
 import { isAbortError } from './accountTestTaskHelpers'
 
@@ -20,18 +22,25 @@ type UseAccountTestModelsInput = {
   testForm: AccountTestForm
 }
 
+interface DraftTestOptionsContext {
+  account: AccountListItem
+  defaultOption: AccountTestModelOption
+  mode: AccountTestDraftMode
+  payload: AccountDraftTestPayload['account']
+}
+
 export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const testModelOptions = ref<AccountTestModelOption[]>([])
   const testModelOptionsLoading = ref(false)
   const testModelsLoading = computed(() => testModelOptionsLoading.value)
   const testModelsReady = ref(false)
   const testModelsError = ref('')
-  const testModelReadonly = ref(false)
   const testEndpointModes = ref<AccountSupportedEndpointMode[]>([])
   let selectedAccount: AccountListItem | undefined
   let loadedOptionsAccountKey = ''
   let activeOptionsRequestKey = ''
   let defaultModel = ''
+  let draftTestContext: DraftTestOptionsContext | undefined
   let optionsAbortController: AbortController | undefined
   let optionsRequestToken = 0
 
@@ -60,37 +69,85 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     account = selectedAccount,
     keyword = ''
   ): Promise<AccountTestOptions | undefined> {
-    if (!account || testModelReadonly.value) return undefined
+    if (!account) return undefined
     if (!selectedAccount) selectedAccount = account
     if (selectedAccount.id !== account.id) return undefined
     const normalizedKeyword = keyword.trim()
     const selectedIds = selectedModelIds(account, input.testForm.model)
-    const accountKey = accountOptionsKey(account, normalizedKeyword, selectedIds)
-    if (loadedOptionsAccountKey === accountKey) return undefined
-    if (testModelOptionsLoading.value && activeOptionsRequestKey === accountKey) return undefined
+    return requestTestModelOptions({
+      account,
+      optionsKey: accountOptionsKey(account, normalizedKeyword, selectedIds),
+      fetcher: (signal) => fetchSavedAccountTestOptions(account, normalizedKeyword, selectedIds, signal),
+      applyResponseOptions: (response) => {
+        testModelOptions.value = normalizeModelOptions(response)
+      }
+    })
+  }
+
+  const loadSavedAccountTestOptions = loadTestModelOptions
+
+  function initializeDraftTestOptions(
+    account: AccountListItem,
+    draftPayload: AccountDraftTestPayload['account'],
+    model: string,
+    endpointModes: AccountSupportedEndpointMode[],
+    mode: AccountTestDraftMode
+  ): void {
+    resetTestModels()
+    selectedAccount = account
+    const normalizedModel = model.trim()
+    const modes = normalizeEndpointModes(endpointModes)
+    defaultModel = normalizedModel
+    const defaultOption: AccountTestModelOption = {
+      label: normalizedModel,
+      testEndpointModes: modes,
+      value: normalizedModel
+    }
+    draftTestContext = { account, defaultOption, mode, payload: draftPayload }
+    testModelOptions.value = normalizedModel ? [defaultOption] : []
+    testEndpointModes.value = modes
+    input.testForm.model = normalizedModel
+    input.testForm.testEndpointMode = modes[0] ?? 'account_default'
+    testModelsReady.value = Boolean(normalizedModel && modes.length)
+  }
+
+  async function loadDraftTestModelOptions(keyword = ''): Promise<AccountTestOptions | undefined> {
+    const context = draftTestContext
+    const account = context?.account
+    if (!context || !account) return undefined
+    if (selectedAccount?.id !== account.id) return undefined
+    const normalizedKeyword = keyword.trim()
+    const selectedIds = draftSelectedModelIds(context.defaultOption.value, input.testForm.model)
+    return requestTestModelOptions({
+      account,
+      optionsKey: draftOptionsKey(account, normalizedKeyword, selectedIds),
+      fetcher: (signal) => fetchDraftTestOptions(context, normalizedKeyword, selectedIds, signal),
+      applyResponseOptions: (response) => {
+        testModelOptions.value = mergeDraftModelOptions(context.defaultOption, response)
+      }
+    })
+  }
+
+  async function requestTestModelOptions(request: {
+    account: AccountListItem
+    optionsKey: string
+    fetcher: (signal: AbortSignal) => Promise<AccountTestOptions>
+    applyResponseOptions: (response: AccountTestOptions) => void
+  }): Promise<AccountTestOptions | undefined> {
+    if (loadedOptionsAccountKey === request.optionsKey) return undefined
+    if (testModelOptionsLoading.value && activeOptionsRequestKey === request.optionsKey) return undefined
     optionsAbortController?.abort()
     const requestToken = nextOptionsRequestToken()
     const controller = new AbortController()
     optionsAbortController = controller
-    activeOptionsRequestKey = accountKey
+    activeOptionsRequestKey = request.optionsKey
     testModelOptionsLoading.value = true
     testModelsError.value = ''
     try {
-      const params = {
-        keyword: normalizedKeyword || undefined,
-        limit: 50,
-        selectedIds
-      }
-      const response = input.isManagementView.value
-        ? await api.accounts.testOptions(
-          account.id,
-          { ...accountOperationScopeParams(account, input.accountScopeParams.value), ...params },
-          { signal: controller.signal }
-        )
-        : await api.myAccounts.testOptions(account.id, params, { signal: controller.signal })
-      if (!isCurrentOptionsRequest(requestToken, account.id)) return undefined
-      loadedOptionsAccountKey = accountKey
-      testModelOptions.value = normalizeModelOptions(response)
+      const response = await request.fetcher(controller.signal)
+      if (!isCurrentOptionsRequest(requestToken, request.account.id)) return undefined
+      loadedOptionsAccountKey = request.optionsKey
+      request.applyResponseOptions(response)
       if (!input.testForm.model) {
         input.testForm.model = defaultModel || testModelOptions.value[0]?.value || ''
       }
@@ -102,7 +159,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       return response
     } catch (error) {
       if (isAbortError(error)) return undefined
-      if (isCurrentOptionsRequest(requestToken, account.id)) {
+      if (isCurrentOptionsRequest(requestToken, request.account.id)) {
         testModelsError.value = extractApiErrorMessage(error, '测试模型列表加载失败，请重试')
       }
       throw error
@@ -117,23 +174,47 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     }
   }
 
-  const loadSavedAccountTestOptions = loadTestModelOptions
+  function fetchSavedAccountTestOptions(
+    account: AccountListItem,
+    keyword: string,
+    selectedIds: string[],
+    signal: AbortSignal
+  ): Promise<AccountTestOptions> {
+    const params = {
+      keyword: keyword || undefined,
+      limit: 50,
+      selectedIds
+    }
+    return input.isManagementView.value
+      ? api.accounts.testOptions(
+        account.id,
+        { ...accountOperationScopeParams(account, input.accountScopeParams.value), ...params },
+        { signal }
+      )
+      : api.myAccounts.testOptions(account.id, params, { signal })
+  }
 
-  function useFixedTestModel(model: string, endpointModes: AccountSupportedEndpointMode[]): void {
-    resetTestModels()
-    const normalizedModel = model.trim()
-    testModelReadonly.value = true
-    testModelOptions.value = normalizedModel
-      ? [{
-          label: normalizedModel,
-          testEndpointModes: normalizeEndpointModes(endpointModes),
-          value: normalizedModel
-        }]
-      : []
-    testEndpointModes.value = normalizeEndpointModes(endpointModes)
-    input.testForm.model = normalizedModel
-    input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'
-    testModelsReady.value = true
+  function fetchDraftTestOptions(
+    context: DraftTestOptionsContext,
+    keyword: string,
+    selectedIds: string[],
+    signal: AbortSignal
+  ): Promise<AccountTestOptions> {
+    const payload = {
+      account: context.payload,
+      keyword: keyword || undefined,
+      limit: 50,
+      selectedIds
+    }
+    return input.isManagementView.value
+      ? api.accounts.testDraftOptions(
+        payload,
+        context.mode === 'create'
+          ? input.accountScopeParams.value
+          : accountOperationScopeParams(context.account, input.accountScopeParams.value),
+        { signal }
+      )
+      : api.myAccounts.testDraftOptions(payload, { signal })
   }
 
   function restoreTestSelection(
@@ -162,7 +243,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   }
 
   function updateSelectableTestModel(model: string): void {
-    if (testModelReadonly.value) return
     const normalizedModel = model.trim()
     const option = testModelOptions.value.find((item) => item.value === normalizedModel)
     if (!selectedAccount || !option) return
@@ -178,11 +258,11 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     loadedOptionsAccountKey = ''
     activeOptionsRequestKey = ''
     defaultModel = ''
+    draftTestContext = undefined
     nextOptionsRequestToken()
     testModelOptionsLoading.value = false
     testModelsReady.value = false
     testModelsError.value = ''
-    testModelReadonly.value = false
     testModelOptions.value = []
     testEndpointModes.value = []
     input.testForm.model = ''
@@ -212,19 +292,19 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   }
 
   return {
+    initializeDraftTestOptions,
     initializeSavedAccountTestOptions,
+    loadDraftTestModelOptions,
     loadSavedAccountTestOptions,
     loadTestModelOptions,
     resetTestModels,
     restoreTestSelection,
     testEndpointModes,
     testModelOptions,
-    testModelReadonly,
     testModelsError,
     testModelsLoading,
     testModelsReady,
     updateSelectableTestModel,
-    useFixedTestModel
   }
 }
 
@@ -244,6 +324,23 @@ function normalizeModelOptions(options: AccountTestOptions): AccountTestModelOpt
   return output
 }
 
+function mergeDraftModelOptions(
+  defaultOption: AccountTestModelOption,
+  response: AccountTestOptions
+): AccountTestModelOption[] {
+  const remoteOptions = normalizeModelOptions(response)
+  const remoteDefault = remoteOptions.find((option) => option.value === defaultOption.value)
+  const mergedDefault = remoteDefault
+    ? {
+      ...defaultOption,
+      testEndpointModes: [
+        ...new Set([...defaultOption.testEndpointModes, ...remoteDefault.testEndpointModes])
+      ]
+    }
+    : defaultOption
+  return [mergedDefault, ...remoteOptions.filter((option) => option.value !== defaultOption.value)]
+}
+
 function normalizeEndpointModes(modes: AccountSupportedEndpointMode[]): AccountSupportedEndpointMode[] {
   return [...new Set(modes)]
 }
@@ -252,6 +349,14 @@ function accountOptionsKey(account: AccountListItem, keyword: string, selectedId
   return `${account.id}:${account.configRevision ?? 'uncached'}:${keyword}:${selectedIds.join(',')}`
 }
 
+function draftOptionsKey(account: AccountListItem, keyword: string, selectedIds: string[]): string {
+  return `${account.id}:${keyword}:${selectedIds.join(',')}`
+}
+
 function selectedModelIds(account: AccountListItem, selectedModel: string): string[] {
   return [...new Set([account.healthCheckModel.trim(), selectedModel.trim()].filter(Boolean))]
+}
+
+function draftSelectedModelIds(defaultModelId: string, selectedModel: string): string[] {
+  return [...new Set([defaultModelId.trim(), selectedModel.trim()].filter(Boolean))]
 }

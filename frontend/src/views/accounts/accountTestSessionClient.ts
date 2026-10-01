@@ -48,7 +48,7 @@ export function submitAccountTestTask(input: {
 }): Promise<AccountTestTask> {
   const requestPayload: AccountTestPayload = { ...input.payload, testSessionId: input.sessionId }
   if (input.draftPayload) {
-    const { model: _ignoredModel, account: _ignoredAccount, ...draftTestOptions } = requestPayload
+    const { account: _ignoredAccount, ...draftTestOptions } = requestPayload
     const draftRequestPayload: AccountDraftTestPayload = { account: input.draftPayload, ...draftTestOptions }
     if (input.draftMode === 'saved') {
       return input.isManagementView

@@ -5,7 +5,7 @@ import { providerDisplayName } from '@/shared/providerDisplay'
 import type { AiPerformanceOverview } from '@/types/domain'
 import { formatInteger } from '@/views/stats/statsFormatters'
 
-export const chartColors = ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#2f54eb', '#a0d911', '#fa541c', '#8c8c8c', '#08979c', '#531dab']
+export const chartColors = ['#53696b', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#2f54eb', '#a0d911', '#fa541c', '#8c8c8c', '#08979c', '#531dab']
 
 export type AiPerformanceMetric = 'averageFirstToken' | 'maxFirstToken' | 'averageDuration' | 'maxDuration'
 type AiPerformanceSeries = AiPerformanceOverview['hourlySeries'][number]
