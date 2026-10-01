@@ -25,10 +25,17 @@ const (
 	postgresInsertRowsPerStatement = 5000
 	postgresCleanupRowsPerBatch    = 5000
 	sqliteCleanupRowsPerBatch      = 500
-	postgresStatementTimeout       = "5s"
-	postgresLockTimeout            = "2s"
-	postgresIdleTxTimeout          = "5s"
-	postgresOwnerLeaseTimeout      = 5 * time.Second
+	// BUG-0254：lock_timeout 2s→5s、statement_timeout 5s→30s，对齐
+	// maintenance j3a/j3b 族先例（30s/5s）。每日 04:10 pg_dump 的整库读
+	// IO 压力会把持锁事务拖长（生产实测 F1 连续 55P03 峰值与备份窗口
+	// 吻合），2s 锁等待在备份窗口内批量超时；正常时段事务为毫秒级，
+	// 上限放宽不改变常态行为。idle 事务超时保持 5s 防挂死语义不变。
+	postgresStatementTimeout = "30s"
+	postgresLockTimeout      = "5s"
+	postgresIdleTxTimeout    = "5s"
+	// 租约获取/续租的 Go 侧 ctx 预算须大于 PG 侧 lock_timeout+执行时间
+	//（BUG-0254 同批上调，否则 ctx 先于锁超时取消，放宽失效）。
+	postgresOwnerLeaseTimeout = 15 * time.Second
 )
 
 var errPostgresRuntimeLogSchemaMissing = errors.New("PostgreSQL 运行日志 schema 不完整")

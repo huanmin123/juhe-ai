@@ -14,7 +14,9 @@ import (
 
 const storageTimeLayout = "2006-01-02T15:04:05.000000000Z"
 
-const storeOperationTimeout = 10 * time.Second
+// BUG-0254：须大于 PG 侧 statement_timeout（30s）+ 连接余量，否则 ctx
+// 先于语句超时取消，放宽失效。
+const storeOperationTimeout = 35 * time.Second
 
 // Schema bootstrap performs DDL and a complete compatibility audit. It is not
 // a request-path operation, so it has a separate bounded deadline.

@@ -501,8 +501,8 @@ func TestOwnerLeaseFenceBlocksReplacementUntilCallbackReturns(t *testing.T) {
 func TestPostgresTransactionGuardsAreBounded(t *testing.T) {
 	statements := postgresTransactionGuardStatements()
 	want := []string{
-		"SET LOCAL statement_timeout = '5s'",
-		"SET LOCAL lock_timeout = '2s'",
+		"SET LOCAL statement_timeout = '30s'",
+		"SET LOCAL lock_timeout = '5s'",
 		"SET LOCAL idle_in_transaction_session_timeout = '5s'",
 	}
 	if !reflect.DeepEqual(statements, want) {

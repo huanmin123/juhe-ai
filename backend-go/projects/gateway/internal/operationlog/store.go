@@ -29,9 +29,14 @@ const (
 	maxListWindowRows = 1001
 	maxPageSize       = 50
 
-	postgresApplicationName         = "juhe-ai-gateway-f4-operationlog"
-	postgresStatementTimeout        = "10s"
-	postgresLockTimeout             = "1s"
+	postgresApplicationName = "juhe-ai-gateway-f4-operationlog"
+	// BUG-0254：statement 10s→30s、lock 1s→5s，对齐 maintenance j3a/j3b
+	// 族先例（30s/5s）。每日 04:10 pg_dump 的整库读 IO 压力会拖长持锁
+	// 事务（生产实测 F4 retention 在备份窗口 55P03），1s 锁等待批量超时；
+	// 正常时段事务毫秒级，上限放宽不改变常态行为。迁移分支的宽松预算
+	//（5min/30s）与 idle 超时防挂死语义保持不变。
+	postgresStatementTimeout        = "30s"
+	postgresLockTimeout             = "5s"
 	postgresIdleTransactionTimeout  = "10s"
 	legacyMigrationDeadline         = 30 * time.Minute
 	legacyMigrationStatementTimeout = "5min"

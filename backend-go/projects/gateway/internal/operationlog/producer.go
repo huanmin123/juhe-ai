@@ -138,7 +138,9 @@ func (p *Producer) persistOne(entry Input) {
 			p.warn("F4 操作日志持久化 panic 已隔离", "panic", recovered, "traceID", entry.TraceID, "operationLogID", entry.ID)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// BUG-0254：Persist/Renew 语句 PG 侧 lock_timeout=5s，ctx 窗口须大于
+	// 锁等待+执行（原 10s 在备份窗口的锁队列下会先于语句失败取消）。
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	lease := p.lease.Lease()
 	// Extending the lease per record keeps it alive under write activity
@@ -147,7 +149,7 @@ func (p *Producer) persistOne(entry Input) {
 	// fence, so the renewal is skipped instead — the configured
 	// composition always passes the real owner-lease TTL.
 	if p.cfg.OwnerLease > 0 {
-		renewCtx, renewCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		renewCtx, renewCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer renewCancel()
 		renewed, err := p.store.RenewOwnerLease(renewCtx, lease, p.cfg.OwnerLease)
 		if err != nil || !renewed {

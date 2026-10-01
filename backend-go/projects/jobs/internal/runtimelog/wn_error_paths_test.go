@@ -20,7 +20,7 @@ import (
 func TestPostgresFakeBeginFailurePropagatesToAllTxMethods(t *testing.T) {
 	server := newPGFakeServer(t)
 	registerPostgresCatalog(t, server)
-	server.handleError("SET LOCAL statement_timeout = '5s'", "42501", "permission denied for guard")
+	server.handleError("SET LOCAL statement_timeout = '30s'", "42501", "permission denied for guard")
 	store := openFakePostgresStore(t, server)
 	ctx := context.Background()
 	lease := OwnerLease{OwnerID: "owner-a", FenceToken: 7}

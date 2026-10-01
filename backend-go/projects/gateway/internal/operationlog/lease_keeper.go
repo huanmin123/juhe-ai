@@ -145,7 +145,9 @@ func (k *LeaseKeeper) renewLoop(done chan struct{}) {
 		case <-k.stopCh:
 			return
 		case <-ticker.C:
-			renewCtx, cancel := context.WithTimeout(context.Background(), minDuration(5*time.Second, interval))
+			// BUG-0254：续租语句 PG 侧 lock_timeout=5s，ctx 窗口须大于
+			// 锁等待+执行（min 与续租周期取小保持不变）。
+			renewCtx, cancel := context.WithTimeout(context.Background(), minDuration(15*time.Second, interval))
 			renewed, renewErr := k.store.RenewOwnerLease(renewCtx, k.Lease(), k.ttl)
 			cancel()
 			if renewErr != nil {
@@ -260,7 +262,7 @@ func (k *LeaseKeeper) reacquire(ctx context.Context) error {
 			return fmt.Errorf("等待旧续租循环退出时上下文取消: %w", ctx.Err())
 		}
 	}
-	acquireCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	acquireCtx, cancel := context.WithTimeout(ctx, 15*time.Second) // BUG-0254：大于 PG 侧 lock_timeout=5s
 	defer cancel()
 	lease, ok, err := k.store.AcquireOwnerLease(acquireCtx, k.owner, k.ttl)
 	if err != nil {
