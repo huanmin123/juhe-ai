@@ -317,6 +317,8 @@ func (d *Deps) Register(k *kernel.Kernel, prefix string) {
 	}
 	mount("GET", "/image-policy", rt.imagePolicy)
 	mount("GET", "/accounts", rt.myChatAccounts)
+	mount("GET", "/tool-preferences", rt.toolPreferencesHandler)
+	mount("PATCH", "/tool-preferences", rt.patchToolPreferencesHandler)
 	mount("GET", "/conversations", rt.listConversations)
 	mount("POST", "/conversations", rt.createConversationHandler)
 	mount("GET", "/conversations/{conversationId}", rt.getConversation)
@@ -630,6 +632,198 @@ func (rt *chatRoutes) myChatAccounts(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, deduped)
 }
 
+// toolPreferencesHandler mirrors GET /my-chat/tool-preferences（工具体系设计
+// §8.5，2026-10-02）：用户级默认工具绑定状态，与 tool-bindings 同形状；偏好行
+// 不存在时两类模型工具均 bound:false。内容随数据范围/偏好实时变化，成功响应
+// 禁缓存。
+func (rt *chatRoutes) toolPreferencesHandler(w http.ResponseWriter, r *http.Request) {
+	bindScope, err := rt.requireChatBindScope(r)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	pref, err := rt.deps.Store.GetUserToolPreferences(bindScope.ViewerID)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	payload, err := rt.buildUserToolPreferencesPayload(bindScope, pref)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	setNoStoreHeaders(w)
+	writeOK(w, payload)
+}
+
+// updateToolPreferencesFields 是 PATCH /tool-preferences 的解析结果：nil 指针 =
+// 本次不修改；binding 非 nil 且 unbound=true 表示显式清除默认。
+type updateToolPreferencesFields struct {
+	searchBinding     *chatToolBindingUpdate
+	imageBinding      *chatToolBindingUpdate
+	defaultImageModel *string
+}
+
+// parseUpdateToolPreferencesBody 解析 PATCH /tool-preferences 请求体（契约
+// §8.6）：严格键集 {searchBinding, imageBinding, defaultImageModel}，未知键
+// 400，至少一键；searchBinding/imageBinding 复用会话 PATCH 的绑定对象解析
+// （parseChatToolBindingObject，null/空 = 清除默认）；defaultImageModel 校验
+// 同会话 PATCH 的枚举口径（IsSupportedChatImageModel）。
+func parseUpdateToolPreferencesBody(raw map[string]json.RawMessage) (updateToolPreferencesFields, error) {
+	fields := updateToolPreferencesFields{}
+	for _, key := range []string{"searchBinding", "imageBinding", "defaultImageModel"} {
+		value, ok := raw[key]
+		if !ok {
+			continue
+		}
+		switch key {
+		case "searchBinding":
+			binding, err := parseChatToolBindingObject(value, true)
+			if err != nil {
+				return fields, err
+			}
+			fields.searchBinding = binding
+		case "imageBinding":
+			binding, err := parseChatToolBindingObject(value, false)
+			if err != nil {
+				return fields, err
+			}
+			fields.imageBinding = binding
+		case "defaultImageModel":
+			var model string
+			if err := json.Unmarshal(value, &model); err != nil {
+				return fields, &invalidRequestError{Message: "Expected string, received " + jsonValueTypeName(value)}
+			}
+			if !IsSupportedChatImageModel(model) {
+				return fields, &invalidRequestError{Message: "Invalid enum value. Expected one of: " + chatImageModelEnumHint() + ", received '" + model + "'"}
+			}
+			fields.defaultImageModel = &model
+		}
+	}
+	for key := range raw {
+		switch key {
+		case "searchBinding", "imageBinding", "defaultImageModel":
+		default:
+			return updateToolPreferencesFields{}, &invalidRequestError{Message: "Unrecognized key: \"" + key + "\""}
+		}
+	}
+	if fields.searchBinding == nil && fields.imageBinding == nil && fields.defaultImageModel == nil {
+		return fields, &invalidRequestError{Message: "没有可更新的工具偏好字段"}
+	}
+	return fields, nil
+}
+
+// patchToolPreferencesHandler mirrors PATCH /my-chat/tool-preferences（契约
+// §8.6，2026-10-02）：候选校验同会话 PATCH 口径——search 二元组必须 ∈
+// candidates.search，image 按「账户 × 生效后 defaultImageModel」组合判定
+// （同请求带 defaultImageModel 以新值为准，否则偏好行现值，现值空取
+// gpt-image-2），失败 writeChatToolBindingInvalid（400 + 候选负载）；通过后读
+// 现偏好行、合并只更新请求键、整行 upsert，返回 GET 同形状 payload。该端点
+// 只改用户默认，不触碰任何会话。
+func (rt *chatRoutes) patchToolPreferencesHandler(w http.ResponseWriter, r *http.Request) {
+	raw, err := readJSONBody(r)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	body, err := decodeObjectBody(raw)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	fields, err := parseUpdateToolPreferencesBody(body)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	bindScope, err := rt.requireChatBindScope(r)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	pref, err := rt.deps.Store.GetUserToolPreferences(bindScope.ViewerID)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	candidates, err := rt.resolveChatToolBindingCandidates(bindScope)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	if fields.searchBinding != nil && !fields.searchBinding.unbound {
+		if !containsChatToolBindingCandidate(candidates.search, ChatToolBindingCandidate{
+			AccountID: fields.searchBinding.accountID,
+			ModelID:   fields.searchBinding.modelID,
+		}) {
+			writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
+				Message:    "搜索绑定必须在候选列表内（账户可派发且模型支持联网搜索）",
+				ToolID:     "web_search",
+				Candidates: candidates.search,
+			})
+			return
+		}
+	}
+	if fields.imageBinding != nil && !fields.imageBinding.unbound {
+		// 生图默认按「账户 × 生效后 defaultImageModel」组合判定：同请求带
+		// defaultImageModel 以新值为准，否则偏好行现值，现值空取 gpt-image-2
+		//（与会话 PATCH 的候选校验同口径）。
+		effectiveImageModel := chatToolPreferencesDefaultImageModelFallback
+		if pref != nil && pref.DefaultImageModel != "" {
+			effectiveImageModel = pref.DefaultImageModel
+		}
+		if fields.defaultImageModel != nil {
+			effectiveImageModel = *fields.defaultImageModel
+		}
+		if !containsChatToolBindingCandidate(candidates.image, ChatToolBindingCandidate{
+			AccountID: fields.imageBinding.accountID,
+			ModelID:   effectiveImageModel,
+		}) {
+			writeChatToolBindingInvalid(w, &chatToolBindingInvalidError{
+				Message:    "生图绑定必须在候选列表内（账户可路由当前默认图像模型；如需切换模型请同时提交 defaultImageModel）",
+				ToolID:     "generate_image",
+				Candidates: candidates.image,
+			})
+			return
+		}
+	}
+	merged := UserToolPreferences{}
+	if pref != nil {
+		merged = *pref
+	}
+	merged.SystemAccountID = bindScope.ViewerID
+	if fields.searchBinding != nil {
+		if fields.searchBinding.unbound {
+			merged.SearchAccountID = ""
+			merged.SearchModelID = ""
+		} else {
+			merged.SearchAccountID = fields.searchBinding.accountID
+			merged.SearchModelID = fields.searchBinding.modelID
+		}
+	}
+	if fields.imageBinding != nil {
+		if fields.imageBinding.unbound {
+			merged.ImageAccountID = ""
+		} else {
+			merged.ImageAccountID = fields.imageBinding.accountID
+		}
+	}
+	if fields.defaultImageModel != nil {
+		merged.DefaultImageModel = *fields.defaultImageModel
+	}
+	if err := rt.deps.Store.UpsertUserToolPreferences(merged); err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	payload, err := rt.buildUserToolPreferencesPayload(bindScope, &merged)
+	if err != nil {
+		writeChatRouteError(w, err)
+		return
+	}
+	setNoStoreHeaders(w)
+	writeOK(w, payload)
+}
+
 func (rt *chatRoutes) listConversations(w http.ResponseWriter, r *http.Request) {
 	ownerID, err := rt.requireChatAuth(r)
 	if err != nil {
@@ -930,6 +1124,9 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 	var searchAccountID *string
 	var searchModelID string
 	var imageAccountID *string
+	// effectiveImageModel 是本请求生效后的默认图像模型（生图绑定校验与用户
+	// 偏好回写共用：同请求携带 defaultImageModel 时以新值为准）。
+	var effectiveImageModel ChatImageModel
 	if fields.searchBinding != nil || fields.imageBinding != nil {
 		if conversation.Archived {
 			writeMessageCode(w, http.StatusForbidden, chatConversationArchivedMessage, "chat_conversation_archived")
@@ -957,6 +1154,10 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		if fields.imageBinding != nil {
+			effectiveImageModel = conversation.DefaultImageModel
+			if fields.defaultImageModel != nil {
+				effectiveImageModel = ChatImageModel(*fields.defaultImageModel)
+			}
 			if fields.imageBinding.unbound {
 				empty := ""
 				imageAccountID = &empty
@@ -965,10 +1166,6 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 				// 本请求生效后的模型」组合判定（同请求携带 defaultImageModel
 				// 时以新值为准），避免裸 API 造出 grok 账户 + gpt-image-2 这类
 				// 立即失效的绑定（候选与状态聚合同口径）。
-				effectiveImageModel := conversation.DefaultImageModel
-				if fields.defaultImageModel != nil {
-					effectiveImageModel = ChatImageModel(*fields.defaultImageModel)
-				}
 				if !containsChatToolBindingCandidate(candidates.image, ChatToolBindingCandidate{
 					AccountID: fields.imageBinding.accountID,
 					ModelID:   string(effectiveImageModel),
@@ -1005,6 +1202,14 @@ func (rt *chatRoutes) patchConversation(w http.ResponseWriter, r *http.Request) 
 	if updated == nil {
 		kernel.WriteError(w, http.StatusNotFound, "会话不存在")
 		return
+	}
+	// 用户级默认绑定回写（工具体系设计 §2.11/§10.6，2026-10-02）：会话内显式
+	// 改/解绑 searchBinding/imageBinding 成功后，best-effort 把生效值回写为该
+	// 用户全局默认（解绑置空；生图回写含联动后的 default_image_model）；回写
+	// 失败仅记日志，不影响会话 PATCH 的成功响应。单独 defaultImageModel 键不
+	// 触发回写；归档 403 路径在候选校验前返回，自然不回写。
+	if fields.searchBinding != nil || fields.imageBinding != nil {
+		rt.writeBackUserToolPreferences(bindScope.ViewerID, fields, effectiveImageModel)
 	}
 	writeOK(w, rt.conversationPayload(updated))
 }

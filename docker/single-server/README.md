@@ -16,6 +16,7 @@ maintenance：compose --profile tool 一次性容器（幂等 CLI）
 
 - Redis `queue` 是 Node 时代残留概念，Go 代码不读 `JUHE_AI_REDIS_QUEUE_URL`，无需第三个实例。
 - 8 个 PG schema：6 个由 `maintenance --ensure-schema` 建（business/usage/stats/chat/dataset/codex_context）；`juhe_jobs`、`juhe_j3b` 需手工 `CREATE SCHEMA AUTHORIZATION juhe_ai` 后由 maintenance `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` 建表；J2 account_balance 四表按代码内 `balancePostgresSchema` 手工执行（完整序列见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）。
+- chat 库加表随例行 `--ensure-schema` 幂等生效，无一次性迁移：如 2026-10-02 的 `juhe_chat.chat_user_tool_preferences`（AI 对话工具默认绑定，见 docs/functions/AI问答工具体系与主子模型设计.md §7）。
 - gateway 启动硬性要求 J3b 运行态索引 ready：新库必须先跑 `docker compose run --rm gateway -init-account-circuit-runtime-index`。
 - 管理前端由 gateway 从镜像内 `/app/frontend/dist` 提供（必须显式 `JUHE_AI_FRONTEND_DIST_PATH`，默认空不挂 SPA）；根路径 `/` 由 Caddy 301 到 `/__aisys__/`。
 - PG/Redis 不对宿主机发布端口。入口为 `https://aijh.huanmin.top`（Caddy ACME 自动续期，80 常驻 308 升级 HTTPS，443/udp HTTP/3）。
@@ -83,9 +84,19 @@ bash docker/single-server/deploy.sh all          # gateway + jobs 一同发布�
 bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / maintenance 同理
 ```
 
-脚本固定执行：**无条件全量重编译**（不信任 `build/bin` 既有产物，防止 shared 模块修复后旧产物上线）→ 上传 → **md5 三点闭环校验**（本地新编译 = 服务器 build/bin = 容器内运行二进制）→ `docker compose build` + `up -d` → 逐容器等待 healthy → 公网健康检查。任一环节失败立即退出并给出回滚提示。
+脚本固定执行：**无条件全量重编译**（不信任 `build/bin` 既有产物，防止 shared 模块修复后旧产物上线）→ 上传 → **md5 三点闭环校验**（本地新编译 = 服务器 build/bin = 容器内运行二进制）→ `docker compose build` + `up -d` → 逐容器等待 healthy → 公网健康检查 → **发布后验证**（`verify-release.sh`，见下）。任一环节失败立即退出并给出回滚提示。
 
 手动流程（等价于脚本内部步骤，仅排障时用）：构建（见上节命令）→ 上传 `build/` → `docker compose build gateway jobs maintenance` → `docker compose up -d`。maintenance 幂等，发布后跑一次 `--ensure-schema` 应用加法式 schema。回滚 = 上传上一个版本的 build/ 并重新 build+up。
+
+**发布后验证（`verify-release.sh`，2026-10-02 起 deploy.sh 第 [6/6] 步自动上传并在服务器运行；也可手动 `cd /opt/juhe-ai && bash verify-release.sh`）**。强制断言（无凭据）：① gateway 与 jobs 的 `/app/backend/data` 挂载解析到同一宿主目录且两侧 `usage-record-spool` 目录存在——不同源时接口照常 200 但用量永不到库（BUG-0193）；② jobs 近 10 分钟日志无 `usage_record_spool_drain_unwired`。可选闭环（一次性配置凭据后变为强制）：从 gateway 容器内发一条最小 `/v1/chat/completions` 请求（`max_tokens:1`），按响应头 `X-Trace-Id` 断言 `juhe_dataset.audit_logs` 与 `juhe_usage.usage_records` 各至少一行落库（请求 → 审计 → spool → jobs drain → PG 全链路）；失败时输出分诊信息（spool 文件数 / 近 5 分钟落库行数 / 容器状态）。凭据一次性配置（Key 经 `docker exec` 环境变量传入容器内 wget，不进脚本/日志/进程参数；每次发布产生一条用量与一条审计记录，等价并取代此前管理面手工调 `/v1` 的验证步骤）：
+
+```sh
+mkdir -p /opt/juhe-ai/.release-verify && chmod 700 /opt/juhe-ai/.release-verify
+echo -n '<网关 API Key>' > /opt/juhe-ai/.release-verify/api-key && chmod 600 /opt/juhe-ai/.release-verify/api-key
+echo -n '<模型 ID>' > /opt/juhe-ai/.release-verify/model   # 可选；缺省取 /v1/models 第一项（可能是图像类等非典型模型，建议固定便宜稳定的文本模型）
+```
+
+凭据文件缺省时闭环项告警跳过、不阻塞发布；配置后闭环失败会使 deploy.sh 以失败退出。落库轮询超时默认 180 秒，可用环境变量 `JUHE_AI_RELEASE_VERIFY_TIMEOUT` 覆盖。
 
 **数据库约束迁移（2026-10-01 起，模型质量检测批次，两步）**：本次升级的两处 CHECK 约束分属两条迁移通道，发布检查必须两步分别执行——
 1. `maintenance --ensure-schema`（业务库，例行幂等）：迁移 `model_quality_schedules.interval_minutes`（`10..10080` → `1..10080`，对应定时检查间隔下限放宽到 1 分钟）。实现方式：PG 在 ensure-schema 内用 DO 块替换约束；SQLite 业务库重建 `model_quality_schedules` 表迁移（数据保持；SQLite 无法原位改列约束）。

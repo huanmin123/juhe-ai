@@ -26,17 +26,18 @@ import (
 // plus the Go-appended statements (model-check question bank table, its
 // indexes, the custom_question_ids ALTER columns, the stats
 // success_cost_usd ALTER/backfill statements, the chat_conversations
-// account-binding ALTER columns, and the model_quality_schedules
-// interval_minutes CHECK migration DO block; the retired bind-mode ALTERs
+// account-binding ALTER columns, the model_quality_schedules
+// interval_minutes CHECK migration DO block, and the chat_user_tool_preferences
+// user-level tool binding table; the retired bind-mode ALTERs
 // were removed with the account-only binding migration). Regenerate them when
 // either source changes.
-const goldenPostgresSchemaStatementCount = 624
+const goldenPostgresSchemaStatementCount = 625
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	"juhe_business":      310,
-	"juhe_chat":          42,
+	"juhe_chat":          43,
 	"juhe_dataset":       7,
 	"juhe_usage":         48,
 	"juhe_stats":         201,

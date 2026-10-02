@@ -32,6 +32,17 @@ export interface ChatConversationToolCapabilities {
   tools: ChatConversationToolCapability[]
 }
 
+/**
+ * 用户级默认工具绑定的严格键集（工具体系设计 §8.6）：至少提供一个键；
+ * searchBinding 为「账户+模型」二元组、imageBinding 仅账户（传 null 清除默认）；
+ * 生图候选模型与生效默认图像模型不同时随请求附带 defaultImageModel。
+ */
+export interface ChatToolPreferencesPatch {
+  searchBinding?: { accountId: string; modelId: string } | null
+  imageBinding?: { accountId: string } | null
+  defaultImageModel?: ChatImageModel
+}
+
 export interface ChatConversation {
   id: string
   systemAccountId: string

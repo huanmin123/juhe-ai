@@ -42,12 +42,19 @@ assert.match(chatViewSource, /conversation\.archived \? undefined : conversation
 assert.match(chatViewSource, /if \(conversationArchived\.value\)[\s\S]{0,220}message\.warning\('当前会话已归档，仅供查看/, '发送预检必须拦截归档会话')
 assert.match(chatViewSource, /tool\.kind === 'model' && !detailConversation\.archived/, '归档会话详情不得展示绑定设置入口')
 
-// --- 工具绑定面板与引导（工具体系设计 §8/§9/§10） ---
+// --- 工具绑定面板与引导（工具体系设计 §8/§9/§10/§10.6-§10.7） ---
 
-assert.match(bindingDialogSource, /chatApi\.getToolBindings\(props\.conversation\.id\)/, '绑定弹窗必须从 tool-bindings 端点拉取候选与状态')
+assert.match(bindingDialogSource, /chatApi\.getToolBindings\(props\.conversation!\.id\)/, '会话模式绑定弹窗必须从 tool-bindings 端点拉取候选与状态')
 assert.match(bindingDialogSource, /searchBinding: candidate \? \{ accountId: candidate\.accountId, modelId: candidate\.modelId \} : null/, '搜索绑定必须以「账户+模型」二元组整体写入或解绑')
 assert.match(bindingDialogSource, /imageBinding: candidate \? \{ accountId: candidate\.accountId \} : null/, '生图绑定必须只写账户键')
-assert.match(bindingDialogSource, /candidate\.modelId !== props\.conversation\.defaultImageModel[\s\S]{0,300}defaultImageModel/, '生图绑定选定模型与默认图像模型不同时必须一并更新 defaultImageModel')
+assert.match(bindingDialogSource, /candidate\.modelId !== props\.conversation!\.defaultImageModel[\s\S]{0,300}defaultImageModel/, '会话模式生图绑定选定模型与默认图像模型不同时必须一并更新 defaultImageModel')
+assert.match(bindingDialogSource, /mode\?: 'conversation' \| 'user'/, '绑定弹窗必须提供全局模式 prop（默认会话模式）')
+assert.match(bindingDialogSource, /chatApi\.getToolPreferences\(\)/, '弹窗必须读取用户级默认工具偏好（user 模式数据源 / conversation 模式全局默认置顶）')
+assert.match(bindingDialogSource, /chatApi\.updateToolPreferences\(/, 'user 模式保存必须走偏好 PATCH 端点')
+assert.match(bindingDialogSource, /candidate\.modelId !== effectiveImageModel\.value[\s\S]{0,200}defaultImageModel: candidate\.modelId as ChatImageModel/, 'user 模式生图候选模型与偏好生效默认不同时必须一并更新 defaultImageModel')
+assert.match(bindingDialogSource, /const \[bindings, preferences\] = await Promise\.all\(\[[\s\S]{0,200}chatApi\.getToolPreferences\(\)\.catch\(\(\) => undefined\)/, '会话模式偏好拉取失败不得阻断弹窗（按无偏好处理保持接口顺序）')
+assert.match(chatApiSource, /getToolPreferences: \(\) => unwrap<ChatConversationToolCapabilities>\(http\.get\('\/my-chat\/tool-preferences'\)\)/, 'chatApi 必须提供用户级默认工具绑定读取方法')
+assert.match(chatApiSource, /updateToolPreferences: \(payload: ChatToolPreferencesPatch\) => unwrap<ChatConversationToolCapabilities>\(http\.patch\('\/my-chat\/tool-preferences', payload\)\)/, 'chatApi 必须提供用户级默认工具绑定更新方法')
 assert.match(chatStreamSource, /event\.type === 'tool\.binding_required'/, 'SSE 层必须处理 tool.binding_required 事件（否则协议错误中断流）')
 assert.match(chatViewSource, /toolEvent\.item\?\.errorCode !== 'tool_binding_required'[\s\S]{0,700}openToolBindingDialog\(/, 'binding_required 事件必须 toast 提示并打开绑定弹窗')
 assert.match(chatViewSource, /bindingPromptedKeys/, 'binding_required 引导必须按事件去重')

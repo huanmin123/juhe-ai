@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -336,7 +337,10 @@ func resolveChatModelOptionsFromAccountSnapshot(accounts []ChatTransportAccount,
 // 创建即空会话（bind_account_id NULL），任何请求体内容（含历史 bindMode/
 // apiKeyId/groupId/accountId 字段）按兼容口径忽略；鉴权主体仍是自动创建/复用
 // 的 chat 专用 Key（EnsureChatAPIKey 幂等不变）。账户选定经 PATCH accountId
-// 写入，模型默认推举由前端在账户选定后从模型列表取首项。
+// 写入，模型默认推举由前端在账户选定后从模型列表取首项。用户工具偏好继承
+// （工具体系设计 §2.11，2026-10-02）：创建时把偏好行非空列写入绑定三列与
+// default_image_model 初值——创建时不校验候选，失效组合由读取侧 valid=false /
+// tool.binding_required 引导兜底；读偏好失败不阻断创建（按无偏好继续）。
 func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.Request) {
 	// 兼容忽略历史字段：仅做 JSON 合法性与大小校验（Express json() 同款），
 	// 内容不参与创建。
@@ -354,13 +358,22 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 		writeChatRouteError(w, err)
 		return
 	}
-	conversation, err := rt.deps.Store.CreateConversation(CreateConversationInput{
+	input := CreateConversationInput{
 		SystemAccountID:         ownerID,
 		APIKeyID:                apiKey.ID,
 		APIKeyNameSnapshot:      apiKey.Name,
 		Now:                     rt.now(),
 		MaxConversationsPerUser: rt.deps.maxConversationsPerUser(),
-	})
+	}
+	if pref, prefErr := rt.deps.Store.GetUserToolPreferences(ownerID); prefErr != nil {
+		log.Printf("chat: 读取用户工具偏好失败（创建按无偏好继续）owner=%s: %v", ownerID, prefErr)
+	} else if pref != nil {
+		input.SearchAccountID = pref.SearchAccountID
+		input.SearchModelID = pref.SearchModelID
+		input.ImageAccountID = pref.ImageAccountID
+		input.DefaultImageModel = pref.DefaultImageModel
+	}
+	conversation, err := rt.deps.Store.CreateConversation(input)
 	if err != nil {
 		writeChatRouteError(w, err)
 		return

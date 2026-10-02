@@ -7,7 +7,11 @@
 #   3. 逐容器等待 healthy 后才判定成功（BUG-0228 起 compose 为 gateway 配
 #      JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=45s：发布 recreate 窗口新 gateway 在启动期
 #      等待前任 F3/F4 租约 TTL（默认 30s）过期后接管，等待计入 healthcheck
-#      start_period=75s，healthy 滞后至多约 1 分钟属预期，不再有重启循环）。
+#      start_period=75s，healthy 滞后至多约 1 分钟属预期，不再有重启循环）；
+#   4. 发布后验证（verify-release.sh，PLAN-20261002T114140718Z）：usage spool
+#      同源与 jobs drain 接线为强制断言；服务器配置一次性凭据文件
+#      .release-verify/api-key 后，追加"一条 /v1 请求 → 审计 + 用量落库"
+#      闭环门禁（缺凭据文件时该项告警跳过，不阻塞发布）。
 #
 # 红线：本机构建（服务器严禁编译，仅 docker compose build 组装镜像），见同目录 README 与
 # .local/project-resources/prod/runbooks/国内单机Docker部署与运维.md。
@@ -45,7 +49,7 @@ case "$TARGET" in
 esac
 
 cd "$REPO_ROOT"
-echo "== [1/5] 全量重编译（linux/amd64，不信任既有产物）=="
+echo "== [1/6] 全量重编译（linux/amd64，不信任既有产物）=="
 BUILD_BIN=docker/single-server/build/bin
 mkdir -p "$BUILD_BIN"
 declare -A LOCAL_MD5
@@ -56,11 +60,11 @@ for p in "${TARGETS[@]}"; do
   echo "  juhe-ai-$p  ${LOCAL_MD5[$p]}"
 done
 
-echo "== [2/5] 上传到 $SERVER:$SERVER_DIR/build/bin =="
+echo "== [2/6] 上传到 $SERVER:$SERVER_DIR/build/bin =="
 tar czf - -C "$BUILD_BIN" ${TARGETS[@]/#/juhe-ai-} \
   | $SSH "$SERVER" "tar xzf - -C $SERVER_DIR/build/bin && chmod 0755 $SERVER_DIR/build/bin/juhe-ai-*"
 
-echo "== [3/5] 服务器侧 md5 比对（上传完整性）=="
+echo "== [3/6] 服务器侧 md5 比对（上传完整性）=="
 for p in "${TARGETS[@]}"; do
   SERVER_MD5=$($SSH "$SERVER" "md5sum $SERVER_DIR/build/bin/juhe-ai-$p" | awk '{print $1}')
   if [ "$SERVER_MD5" != "${LOCAL_MD5[$p]}" ]; then
@@ -70,10 +74,10 @@ for p in "${TARGETS[@]}"; do
   echo "  juhe-ai-$p  OK"
 done
 
-echo "== [4/5] 服务器组装镜像并滚动更新 =="
+echo "== [4/6] 服务器组装镜像并滚动更新 =="
 $SSH "$SERVER" "cd $SERVER_DIR && docker compose build ${TARGETS[*]} 2>&1 | tail -1 && docker compose up -d ${TARGETS[*]} 2>&1 | tail -2"
 
-echo "== [5/5] 健康 check + 容器运行二进制闭环校验 =="
+echo "== [5/6] 健康 check + 容器运行二进制闭环校验 =="
 for p in "${TARGETS[@]}"; do
   [ "$p" = "maintenance" ] && continue  # maintenance 是一次性 tool 容器，无常驻进程
   ok=""
@@ -100,5 +104,13 @@ if [ "$CODE" != "200" ]; then
   echo "[FAIL] 公网健康检查 $HEALTH_URL 返回 $CODE（期望 200）" >&2
   exit 1
 fi
-echo "== 发布完成：${TARGETS[*]}，公网健康 $CODE =="
+echo "== [6/6] 发布后验证（spool 同源 + drain 接线 + 业务闭环）=="
+$SSH "$SERVER" "cat > $SERVER_DIR/verify-release.sh && chmod 0755 $SERVER_DIR/verify-release.sh" < "$SCRIPT_DIR/verify-release.sh"
+if ! $SSH "$SERVER" "cd $SERVER_DIR && bash verify-release.sh"; then
+  echo "[FAIL] 发布后验证未通过（脚本输出见上；闭环分诊要点：spool 文件数 / 近 5 分钟落库行数 / 容器状态）。" >&2
+  echo "       发布产物本身已完成 build+up，按验证输出定位问题后重跑：ssh 到服务器 cd $SERVER_DIR && bash verify-release.sh" >&2
+  exit 1
+fi
+
+echo "== 发布完成：${TARGETS[*]}，公网健康 $CODE，发布后验证通过 =="
 echo "提示：发布后按运维手册跑一次 maintenance --ensure-schema（幂等加法）。"

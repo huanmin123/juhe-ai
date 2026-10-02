@@ -303,13 +303,13 @@ POST /__aisys__/api/accounts/balance/test-draft
 5. 全部规则形成明确 `unsupported` 时，以同一条件清除探测意图但不写配置或失败快照，账户继续保持关闭，表示当前无法确认支持。`pending`、`failed`、查询异常和本地 transport 中断不是不支持结论，保留关闭状态并把探测意图延后固定短周期重试。
 6. 用户在探测期间编辑账户、主动开启或关闭余额查询时，配置版本、开关、空配置或预期探测时间条件更新失败；后台结果不得覆盖用户选择。
 
-SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：业务配置和调度时间通过 DB service 条件提交，租约与余额快照通过 stats-writer 写入；手动刷新所在的 DB service 也通过 server IPC 把统计写操作转交 stats-writer。查询结束时先按 `configRevision + balanceQueryConfig` 提交业务状态，stats-writer 写快照前再次核对当前配置。配置在请求期间发生变化时丢弃旧结果，不恢复旧快照和旧调度时间。
+（历史 Node 拓扑描述：DB service、stats-writer 与 server IPC 已随 2026-09-05 Node 归档退役，Go 现行写库边界见 [架构总览](../architecture/架构总览.md) 的「数据访问隔离」节；现行补偿路径见下节 go-only 说明。）SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：业务配置和调度时间通过 DB service 条件提交，租约与余额快照通过 stats-writer 写入；手动刷新所在的 DB service 也通过 server IPC 把统计写操作转交 stats-writer。查询结束时先按 `configRevision + balanceQueryConfig` 提交业务状态，stats-writer 写快照前再次核对当前配置。配置在请求期间发生变化时丢弃旧结果，不恢复旧快照和旧调度时间。
 
 自动探测意图只由新账户首次激活创建一次；它允许因 worker 重启或临时失败进行受控补偿尝试。周期健康检查、旧账户和普通编辑不创建新意图，避免持续增加上游请求。导入创建账户沿用同一首次激活流程。
 
 go-only 补偿路径（jobs `worker_balance_detect`）的意图推进与清除与第 5 节 due 写回同语义同格式：`balance_query_next_refresh_at` 为 TEXT 列，写入值统一为 RFC3339Nano UTC 毫秒截断文本，围栏以 `::timestamptz` 等值比较（SQLite 分支为同格式文本等值）；围栏未命中（期间被用户编辑或手动刷新抢先）只跳过本次推进/清除，不算失败。命中 `unsupported` 时清除意图（收口），临时失败按固定短周期延后，命中 `fresh/unlimited` 时开启配置并安排下次刷新。围栏格式失配会让意图永不收口、候选被 J2 探测循环按扫描节奏反复执行（见问题-0204），该格式家族回归由毫秒截断往返测试锁定。
 
-本功能首次上线后在 release 根目录执行一次维护命令 `pnpm --filter juhe-ai-backend maintenance:backfill-account-balance`，覆盖所有系统账户作用域下尚未开启余额查询的合格物理账户。发布包保留该命令和编译脚本。PostgreSQL 可在主服务运行时后台执行；SQLite 必须先停止主服务并设置 `JUHE_AI_SQLITE_OFFLINE_MAINTENANCE_CONFIRMED=1`，由专用离线维护启动器独占 business/stats 写入，禁止与在线 DB service/worker 并行。命令按账户 ID 游标每页 50 条读取、并发 2 探测，逐页输出 `scanned/enabled/unsupported/stale` 进度；不把全部账户载入内存，也不阻塞 PostgreSQL 主服务。上线后的常态只保留新账户首次激活探测，不把全量扫描注册为周期任务。
+（历史 Node 时代首次上线的维护命令记录：命令与进程拓扑已随 Node 归档失效，仅作历史对照；现行一次性维护命令统一由 `juhe-ai-maintenance` 承载。）本功能首次上线后在 release 根目录执行一次维护命令 `pnpm --filter juhe-ai-backend maintenance:backfill-account-balance`，覆盖所有系统账户作用域下尚未开启余额查询的合格物理账户。发布包保留该命令和编译脚本。PostgreSQL 可在主服务运行时后台执行；SQLite 必须先停止主服务并设置 `JUHE_AI_SQLITE_OFFLINE_MAINTENANCE_CONFIRMED=1`，由专用离线维护启动器独占 business/stats 写入，禁止与在线 DB service/worker 并行。命令按账户 ID 游标每页 50 条读取、并发 2 探测，逐页输出 `scanned/enabled/unsupported/stale` 进度；不把全部账户载入内存，也不阻塞 PostgreSQL 主服务。上线后的常态只保留新账户首次激活探测，不把全量扫描注册为周期任务。
 
 ## 8. 后台连续失败判定
 

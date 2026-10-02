@@ -1,5 +1,5 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus, ChatToolPreferencesPatch } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 /**
@@ -24,6 +24,10 @@ export const chatApi = {
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),
   /** 会话工具绑定状态与候选（工具体系设计 §8.1）。 */
   getToolBindings: (conversationId: string) => unwrap<ChatConversationToolCapabilities>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/tool-bindings`)),
+  /** 用户级默认工具绑定状态与候选（工具体系设计 §8.5），与 tool-bindings 同形状。 */
+  getToolPreferences: () => unwrap<ChatConversationToolCapabilities>(http.get('/my-chat/tool-preferences')),
+  /** 更新用户级默认工具绑定（工具体系设计 §8.6）：严格键集至少一键，只改用户默认、不触碰任何会话。 */
+  updateToolPreferences: (payload: ChatToolPreferencesPatch) => unwrap<ChatConversationToolCapabilities>(http.patch('/my-chat/tool-preferences', payload)),
   listMessages: (conversationId: string, params?: ChatMessageListParams) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/messages`, { params })),
   getConversationSync: (conversationId: string, knownRevision?: number) => unwrap<ChatConversationSyncHead>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/sync`, { params: { knownRevision: knownRevision ?? 0 } })),
   getSubmissionStatus: (conversationId: string, clientMessageId: string) => unwrap<ChatSubmissionStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/submissions/${encodeURIComponent(clientMessageId)}`)),

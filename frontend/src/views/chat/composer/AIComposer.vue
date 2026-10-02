@@ -176,7 +176,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void
   (event: 'stop' | 'models-open' | 'accounts-open'): void
-  (event: 'conversation-action', action: 'set-image-model' | 'compact-context' | 'clear-conversation'): void
+  (event: 'conversation-action', action: 'set-image-model' | 'set-tool-defaults' | 'set-image-tool-defaults' | 'compact-context' | 'clear-conversation'): void
   (event: 'update:accountValue', value?: string): void
   (event: 'update:modelValue', value?: string): void
   (event: 'update:reasoningEffort', value: ChatReasoningEffort | ''): void

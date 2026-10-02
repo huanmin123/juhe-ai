@@ -157,6 +157,7 @@
       :open="toolBindingDialogOpen"
       :conversation="selectedConversation!"
       :tool-id="toolBindingToolId"
+      :mode="toolBindingMode"
       @close="toolBindingDialogOpen = false"
       @saved="handleToolBindingSaved"
     />
@@ -189,7 +190,6 @@ import {
 import { createChatConversationSummaryRefresher, mergeChatConversationSummary } from './chatConversationSummary'
 import { canSubmitChatTurn, chatTurnLimitMessage, isChatTurnLimitReached, markChatConversationTurnLimitReached } from './chatTurnLimit'
 import { isCurrentChatConversationLoad } from './chatConversationLoad'
-import { loadConversationPreferences, saveConversationPreferences } from './chatConversationPreferences'
 import { resolveChatStopTarget, shouldRebuildChatStopTarget, stopActiveChatGeneration } from './chatStopGeneration'
 import {
   clearChatPendingSubmission,
@@ -257,6 +257,9 @@ const accounts = ref<ChatAccountOption[]>([])
 const accountsLoading = ref(false)
 const toolBindingDialogOpen = ref(false)
 const toolBindingToolId = ref('web_search')
+// 绑定弹窗模式（工具体系设计 §10.7）：'conversation' 会话级覆盖（会话详情/
+// binding_required 引导入口）；'user' 全局默认（/ 命令「搜索/生图默认绑定」入口）。
+const toolBindingMode = ref<'conversation' | 'user'>('conversation')
 const imagePolicy = ref<ChatImagePolicy>()
 const selectedModel = ref<string>()
 const selectedModelCapabilities = ref<ChatModelCapabilities>()
@@ -618,8 +621,8 @@ function handleConversationDrawerAfterOpenChange(open: boolean): void {
   void createConversationDirectly()
 }
 // 免弹窗直进（契约 AI问答会话账户唯一绑定设计 §6）：点击新建即创建空会话
-// 并进入，会话内完成「选账户 → 选模型 → 发送」；进入后后台应用上次会话
-// 偏好（工具体系设计 §10.6），不阻塞会话进入。
+// 并进入，会话内完成「选账户 → 选模型 → 发送」；搜索/生图默认绑定由服务端
+// 以用户级默认工具偏好直接初始化（工具体系设计 §10.6），前端无偏好应用链。
 async function createConversationDirectly(): Promise<void> {
   if (creatingConversation.value) return
   creatingConversation.value = true
@@ -627,124 +630,13 @@ async function createConversationDirectly(): Promise<void> {
     const item = await chatApi.createConversation()
     conversations.value.unshift(item)
     void selectConversation(item.id).then((selected) => {
-      if (selected) {
-        conversationDrawerOpen.value = false
-        void applyConversationPreferences(item)
-      }
+      if (selected) conversationDrawerOpen.value = false
     })
   } catch (error) {
     message.error(extractApiErrorMessage(error, '新建会话失败，请稍后重试'))
   } finally {
     creatingConversation.value = false
   }
-}
-
-// 新建会话偏好复用（§10.6）：读本地偏好逐项校验后应用——账户须在可派发列表
-// 内、绑定须在最新候选内（账户+模型 / 账户精确匹配）、模型须在会话模型列表
-// 内（模型为本地选定，随下次发送随请求体生效）。失效项静默跳过（最多
-// console.debug），任一 PATCH 失败静默跳过该项继续；全部失效不应用；至少一
-// 项应用成功时轻提示「已按上次配置初始化」。偏好不存在时行为与现状一致。
-async function applyConversationPreferences(created: ChatConversation): Promise<void> {
-  const preferences = loadConversationPreferences()
-  if (!preferences) return
-  const conversationId = created.id
-  const findConversation = () => conversations.value.find((item) => item.id === conversationId)
-  let applied = false
-  if (preferences.accountId) {
-    const preferredAccountId = preferences.accountId
-    try {
-      const accountOptions = accounts.value.length ? accounts.value : await chatApi.listChatAccounts()
-      // 用户已手动选定账户（PATCH 已生效）时整体放弃偏好应用——偏好模型与
-      // 绑定均基于偏好账户，换户后无意义。
-      const touched = findConversation()?.bindAccountId
-      if (touched) {
-        console.debug('[chat-preferences] 用户已手动选择账户，跳过偏好应用')
-        return
-      }
-      if (accountOptions.some((item) => item.id === preferredAccountId)) {
-        const saved = await conversationMutationQueue.enqueue(conversationId, () => chatApi.updateConversation(conversationId, { accountId: preferredAccountId }))
-        replaceConversation(saved)
-        applied = true
-      } else {
-        console.debug('[chat-preferences] 偏好账户不在可派发列表，跳过', preferredAccountId)
-      }
-    } catch (error) {
-      console.debug('[chat-preferences] 应用偏好账户失败，跳过', error)
-    }
-  }
-  if (preferences.model) {
-    const preferredModel = preferences.model
-    try {
-      const items = await modelLoadCoordinator.load({ conversationId })
-      if (items.some((item) => item.id === preferredModel)) {
-        // 用户已手动选定模型时不覆盖（后台应用与手选的竞争守卫）。
-        if (!disposed && selectedConversationId.value === conversationId && !selectedModel.value) {
-          models.value = [...items]
-          selectedModel.value = preferredModel
-        }
-        applied = true
-      } else {
-        console.debug('[chat-preferences] 偏好模型不在会话模型列表，跳过', preferredModel)
-      }
-    } catch (error) {
-      console.debug('[chat-preferences] 应用偏好模型失败，跳过', error)
-    }
-  }
-  try {
-    const capabilities = await chatApi.getToolBindings(conversationId)
-    if (preferences.searchBinding) {
-      // 用户已在弹窗手动保存搜索绑定时跳过（刚拉取的候选状态已反映）。
-      const search = capabilities.tools.find((tool) => tool.id === 'web_search')
-      if (search?.bound) {
-        console.debug('[chat-preferences] 用户已手动设置搜索绑定，跳过')
-      } else {
-      const matched = search?.candidates?.find((item) => item.accountId === preferences.searchBinding?.accountId && item.modelId === preferences.searchBinding?.modelId)
-      if (matched) {
-        try {
-          const saved = await conversationMutationQueue.enqueue(conversationId, () => chatApi.updateConversation(conversationId, { searchBinding: { accountId: matched.accountId, modelId: matched.modelId } }))
-          replaceConversation(saved)
-          applied = true
-        } catch (error) {
-          console.debug('[chat-preferences] 应用搜索绑定失败，跳过', error)
-        }
-      } else {
-        console.debug('[chat-preferences] 偏好搜索绑定不在候选内，跳过', preferences.searchBinding)
-      }
-      }
-    }
-    if (preferences.imageBinding) {
-      // 用户已在弹窗手动保存生图绑定时跳过（刚拉取的候选状态已反映）。
-      const image = capabilities.tools.find((tool) => tool.id === 'generate_image')
-      if (image?.bound) {
-        console.debug('[chat-preferences] 用户已手动设置生图绑定，跳过')
-      } else {
-      const matched = image?.candidates?.find((item) => item.accountId === preferences.imageBinding?.accountId)
-      if (matched) {
-        // 生图生效模型 = defaultImageModel：偏好值仍在该账户候选内则沿用偏好，
-        // 否则取命中候选的模型（与弹窗/账户联动同款规则）。
-        const candidateModelIds = (image?.candidates ?? []).filter((item) => item.accountId === matched.accountId).map((item) => item.modelId)
-        const preferredImageModel = preferences.defaultImageModel
-        const nextImageModel = (preferredImageModel && candidateModelIds.includes(preferredImageModel) ? preferredImageModel : matched.modelId) as ChatConversation['defaultImageModel']
-        const currentDefault = findConversation()?.defaultImageModel
-        try {
-          const saved = await conversationMutationQueue.enqueue(conversationId, () => chatApi.updateConversation(conversationId, {
-            imageBinding: { accountId: matched.accountId },
-            ...(nextImageModel !== currentDefault ? { defaultImageModel: nextImageModel } : {})
-          }))
-          replaceConversation(saved)
-          applied = true
-        } catch (error) {
-          console.debug('[chat-preferences] 应用生图绑定失败，跳过', error)
-        }
-      } else {
-        console.debug('[chat-preferences] 偏好生图绑定不在候选内，跳过', preferences.imageBinding)
-      }
-      }
-    }
-  } catch (error) {
-    console.debug('[chat-preferences] 读取绑定候选失败，跳过绑定应用', error)
-  }
-  if (applied && !disposed) message.success('已按上次配置初始化')
 }
 // 账户候选（设计 §5）：用户授权范围内全部可派发账户，打开下拉时刷新。
 async function loadAccounts(): Promise<void> {
@@ -780,7 +672,6 @@ async function changeAccount(accountId?: string): Promise<void> {
       void loadSelectedModelCapabilities(updated.lastModel)
     }
     message.success(updated.bindAccountName ? `已切换到账户「${updated.bindAccountName}」` : '账户已更新')
-    saveConversationPreferences({ accountId: updated.bindAccountId ?? null })
     // 账户联动默认（工具体系设计 §10.5）：lastModel 为空自动取首项、绑定未设
     // 置/失效时同账户优先补全；后台串行执行，任一步失败仅轻提示，不阻断、
     // 不回滚账户切换。
@@ -845,38 +736,30 @@ async function applyAccountSwitchDefaults(previous: ChatConversation, updated: C
         : { searchBinding: { accountId: candidate.accountId, modelId: candidate.modelId } }))
       replaceConversation(saved)
       latest = saved
-      recordToolBindingPreference(tool.id, saved)
     } catch (error) {
       if (!disposed) message.warning(extractApiErrorMessage(error, tool.id === 'generate_image' ? '图片生成绑定自动设置失败' : '网页搜索绑定自动设置失败'))
     }
   }
 }
 
-// 绑定保存/联动成功后的偏好 upsert（§10.6：绑定、模型变更成功即更新）。
-function recordToolBindingPreference(toolId: string, conversation: ChatConversation): void {
-  if (toolId === 'generate_image') {
-    saveConversationPreferences({
-      imageBinding: conversation.imageAccountId ? { accountId: conversation.imageAccountId } : null,
-      defaultImageModel: conversation.defaultImageModel ?? null
-    })
-    return
-  }
-  if (toolId === 'web_search') {
-    saveConversationPreferences({
-      searchBinding: conversation.searchAccountId && conversation.searchModelId
-        ? { accountId: conversation.searchAccountId, modelId: conversation.searchModelId }
-        : null
-    })
-  }
-}
-function openToolBindingDialog(toolId: string): void {
-  if (!selectedConversation.value || selectedConversation.value.archived) return
+// 打开绑定弹窗：默认会话模式（须有未归档会话）；user 模式读写用户级默认偏好，
+// 不依赖当前会话状态（工具体系设计 §10.7）。
+function openToolBindingDialog(toolId: string, mode: 'conversation' | 'user' = 'conversation'): void {
+  if (mode === 'conversation' && (!selectedConversation.value || selectedConversation.value.archived)) return
   toolBindingToolId.value = toolId
+  toolBindingMode.value = mode
   toolBindingDialogOpen.value = true
 }
-async function handleToolBindingSaved(updated: ChatConversation): Promise<void> {
+// 绑定保存回调（工具体系设计 §10.6/§10.7）：conversation 模式沿用会话刷新链；
+// user 模式保存只改用户全局默认（不触碰任何会话），仅轻提示，不
+// replaceConversation、不刷新详情（新会话由服务端创建时自动继承默认）。
+async function handleToolBindingSaved(updated?: ChatConversation): Promise<void> {
+  if (toolBindingMode.value === 'user') {
+    message.success('全局默认已更新，新会话自动继承')
+    return
+  }
+  if (!updated) return
   replaceConversation(updated)
-  recordToolBindingPreference(toolBindingToolId.value, updated)
   // 详情弹窗开着时同步刷新（工具能力状态随绑定变化）。
   if (detailsDialogOpen.value) {
     try {
@@ -1385,12 +1268,23 @@ function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSO
   const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
   void sendMessage(content, payload.snapshot, payload.blocks)
 }
-async function handleConversationAction(action: 'set-image-model' | 'compact-context' | 'clear-conversation'): Promise<void> {
+async function handleConversationAction(action: 'set-image-model' | 'set-tool-defaults' | 'set-image-tool-defaults' | 'compact-context' | 'clear-conversation'): Promise<void> {
   const conversation = selectedConversation.value
   if (!conversation || conversationActionLoading.value || generating.value || submissionBlocked.value) return
   if (action === 'set-image-model') {
     pendingImageModel.value = conversation.defaultImageModel
     imageModelDialogOpen.value = true
+    return
+  }
+  if (action === 'set-tool-defaults') {
+    // / 命令「搜索默认绑定」（工具体系设计 §10.7）：打开绑定弹窗的全局模式，
+    // 读写用户级默认偏好端点，不依赖当前会话状态。
+    openToolBindingDialog('web_search', 'user')
+    return
+  }
+  if (action === 'set-image-tool-defaults') {
+    // / 命令「生图默认绑定」：同上，全局模式打开 generate_image 绑定弹窗。
+    openToolBindingDialog('generate_image', 'user')
     return
   }
   if (action === 'compact-context') {
@@ -1449,7 +1343,6 @@ async function saveDefaultImageModel(): Promise<void> {
   try {
     const updated = await conversationMutationQueue.enqueue(conversation.id, () => chatApi.updateConversation(conversation.id, { defaultImageModel }))
     replaceConversation(updated)
-    saveConversationPreferences({ defaultImageModel: updated.defaultImageModel ?? null })
     message.success('默认图像模型已更新')
   } catch (error) {
     const current = conversations.value.find((item) => item.id === conversation.id)
@@ -1965,8 +1858,6 @@ function isAbortError(error: unknown): boolean {
 }
 watch(selectedModel, (modelId) => {
   resetModelControls()
-  // 模型选定即更新会话偏好（§10.6）；存储不可用时静默跳过。
-  if (modelId) saveConversationPreferences({ model: modelId })
   if (!modelId) {
     selectedModelCapabilities.value = undefined
     modelCapabilitiesLoading.value = false

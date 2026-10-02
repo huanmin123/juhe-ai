@@ -8,6 +8,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -246,27 +247,34 @@ func (rt *chatRoutes) providerCatalogForAccount(account ChatTransportAccount, sy
 	return rt.deps.ModelCatalog.ListProviderCatalog(code, systemAccountID)
 }
 
-// buildChatToolBindingsPayload 聚合会话的工具绑定状态（契约 §8.1）：
-// bound/valid 判定按候选列表（绑定 ∈ 候选 = 可派发）；code 工具仅列出。
-func (rt *chatRoutes) buildChatToolBindingsPayload(bindScope ChatBindScope, conversation *Conversation) (*ChatToolBindingsPayload, error) {
-	candidates, err := rt.resolveChatToolBindingCandidates(bindScope)
-	if err != nil {
-		return nil, err
-	}
-	payload := &ChatToolBindingsPayload{Tools: []ChatToolBindingStatus{}}
+// chatToolBindingSource 是绑定状态聚合的绑定来源（工具体系设计 §8.1/§8.5）：
+// 会话版取会话三列 + default_image_model；用户偏好版取偏好行四列（生图生效
+// 模型为空串时由调用方先落 gpt-image-2 兜底）。空串 = 未绑定。
+type chatToolBindingSource struct {
+	SearchAccountID     string
+	SearchModelID       string
+	ImageAccountID      string
+	EffectiveImageModel string
+}
+
+// buildChatToolBindingStatuses 按候选列表聚合两类模型工具的绑定状态（bound/
+// valid 判定：绑定 ∈ 候选 = 可派发）+ code 工具仅列出。会话版与用户偏好版
+// （GET/PATCH /my-chat/tool-preferences）共用。
+func (rt *chatRoutes) buildChatToolBindingStatuses(bindScope ChatBindScope, source chatToolBindingSource, candidates *chatToolBindingCandidates) []ChatToolBindingStatus {
+	tools := []ChatToolBindingStatus{}
 
 	// web_search：绑定 = search_account_id + search_model_id 两列（一体写入）。
 	searchStatus := ChatToolBindingStatus{
 		ID: "web_search", Kind: "model",
 		Candidates: candidates.search,
 	}
-	if conversation.SearchAccountID != nil && conversation.SearchModelID != nil {
+	if source.SearchAccountID != "" && source.SearchModelID != "" {
 		searchStatus.Bound = true
 		searchStatus.Binding = &ChatToolBindingCandidate{
-			AccountID: *conversation.SearchAccountID,
-			ModelID:   *conversation.SearchModelID,
+			AccountID: source.SearchAccountID,
+			ModelID:   source.SearchModelID,
 		}
-		if name, ok := rt.bindingAccountName(bindScope, *conversation.SearchAccountID); ok {
+		if name, ok := rt.bindingAccountName(bindScope, source.SearchAccountID); ok {
 			searchStatus.Binding.AccountName = name
 		}
 		searchStatus.Binding.ModelName = searchStatus.Binding.ModelID
@@ -275,7 +283,7 @@ func (rt *chatRoutes) buildChatToolBindingsPayload(bindScope ChatBindScope, conv
 			searchStatus.InvalidReason = "搜索绑定已失效（账户停用/删除或模型不再支持），请重新设置"
 		}
 	}
-	payload.Tools = append(payload.Tools, searchStatus)
+	tools = append(tools, searchStatus)
 
 	// generate_image：绑定 = image_account_id + default_image_model（模型列
 	// 语义升级，列名不变）。
@@ -283,14 +291,14 @@ func (rt *chatRoutes) buildChatToolBindingsPayload(bindScope ChatBindScope, conv
 		ID: "generate_image", Kind: "model",
 		Candidates: candidates.image,
 	}
-	if conversation.ImageAccountID != nil {
+	if source.ImageAccountID != "" {
 		imageStatus.Bound = true
 		imageStatus.Binding = &ChatToolBindingCandidate{
-			AccountID: *conversation.ImageAccountID,
-			ModelID:   string(conversation.DefaultImageModel),
-			ModelName: string(conversation.DefaultImageModel),
+			AccountID: source.ImageAccountID,
+			ModelID:   source.EffectiveImageModel,
+			ModelName: source.EffectiveImageModel,
 		}
-		if name, ok := rt.bindingAccountName(bindScope, *conversation.ImageAccountID); ok {
+		if name, ok := rt.bindingAccountName(bindScope, source.ImageAccountID); ok {
 			imageStatus.Binding.AccountName = name
 		}
 		imageStatus.Valid = containsChatToolBindingCandidate(candidates.image, *imageStatus.Binding)
@@ -298,7 +306,7 @@ func (rt *chatRoutes) buildChatToolBindingsPayload(bindScope ChatBindScope, conv
 			imageStatus.InvalidReason = "生图绑定已失效（账户停用/删除或图像模型不可路由），请重新设置"
 		}
 	}
-	payload.Tools = append(payload.Tools, imageStatus)
+	tools = append(tools, imageStatus)
 
 	// code 工具仅列出（无绑定概念）：按注册器当前环境的实际注册情况。
 	environment := rt.deps.ToolEnvironment
@@ -310,8 +318,24 @@ func (rt *chatRoutes) buildChatToolBindingsPayload(bindScope ChatBindScope, conv
 		if definition.Kind != "code" {
 			continue
 		}
-		payload.Tools = append(payload.Tools, ChatToolBindingStatus{ID: definition.ModelName, Kind: "code"})
+		tools = append(tools, ChatToolBindingStatus{ID: definition.ModelName, Kind: "code"})
 	}
+	return tools
+}
+
+// buildChatToolBindingsPayload 聚合会话的工具绑定状态（契约 §8.1）：
+// bound/valid 判定按候选列表（绑定 ∈ 候选 = 可派发）；code 工具仅列出。
+func (rt *chatRoutes) buildChatToolBindingsPayload(bindScope ChatBindScope, conversation *Conversation) (*ChatToolBindingsPayload, error) {
+	candidates, err := rt.resolveChatToolBindingCandidates(bindScope)
+	if err != nil {
+		return nil, err
+	}
+	payload := &ChatToolBindingsPayload{Tools: rt.buildChatToolBindingStatuses(bindScope, chatToolBindingSource{
+		SearchAccountID:     derefString(conversation.SearchAccountID),
+		SearchModelID:       derefString(conversation.SearchModelID),
+		ImageAccountID:      derefString(conversation.ImageAccountID),
+		EffectiveImageModel: string(conversation.DefaultImageModel),
+	}, candidates)}
 	return payload, nil
 }
 
@@ -421,4 +445,71 @@ func (rt *chatRoutes) toolDispatchExecutor(accountID string) GenerationExecutor 
 		return rt.deps.Executor
 	}
 	return aware.WithChatDispatchAccount(accountID)
+}
+
+// chatToolPreferencesDefaultImageModelFallback 是偏好行 default_image_model 为
+// 空时的生效模型兜底（与会话创建默认一致，契约 §8.5/§8.6）。
+const chatToolPreferencesDefaultImageModelFallback = string(ImageModelGPTImage2)
+
+// buildUserToolPreferencesPayload 聚合用户级默认绑定的状态负载（契约 §8.5，
+// 2026-10-02）：与 tool-bindings 同形状（bound/binding/valid/invalidReason/
+// candidates + code 工具仅列出）；binding 来自偏好行，生图生效模型取偏好行
+// default_image_model（空则 gpt-image-2）；候选解析与 tool-bindings 同源
+// （resolveChatToolBindingCandidates，跨账户合法口径不变）。偏好行不存在时
+// 两类模型工具均 bound:false。
+func (rt *chatRoutes) buildUserToolPreferencesPayload(bindScope ChatBindScope, pref *UserToolPreferences) (*ChatToolBindingsPayload, error) {
+	candidates, err := rt.resolveChatToolBindingCandidates(bindScope)
+	if err != nil {
+		return nil, err
+	}
+	source := chatToolBindingSource{
+		EffectiveImageModel: chatToolPreferencesDefaultImageModelFallback,
+	}
+	if pref != nil {
+		source.SearchAccountID = pref.SearchAccountID
+		source.SearchModelID = pref.SearchModelID
+		source.ImageAccountID = pref.ImageAccountID
+		if pref.DefaultImageModel != "" {
+			source.EffectiveImageModel = pref.DefaultImageModel
+		}
+	}
+	return &ChatToolBindingsPayload{Tools: rt.buildChatToolBindingStatuses(bindScope, source, candidates)}, nil
+}
+
+// writeBackUserToolPreferences 把会话绑定变更回写为用户级全局默认（契约
+// §2.11/§10.6，best-effort）：只动请求键对应列——searchBinding 键动搜索两列
+// （解绑置空），imageBinding 键动 image_account_id + 本请求生效后的
+// default_image_model（含联动与同请求 defaultImageModel），不覆盖另一工具的
+// 既有默认；读偏好失败按无偏好行继续合并。回写失败不阻断会话 PATCH 的成功
+// 响应，仅记日志（chat 包无日志端口，用标准库 log 落 stderr，见交付说明）。
+func (rt *chatRoutes) writeBackUserToolPreferences(ownerID string, fields updateConversationFields, effectiveImageModel ChatImageModel) {
+	pref, err := rt.deps.Store.GetUserToolPreferences(ownerID)
+	if err != nil {
+		log.Printf("chat: 读取用户工具偏好失败（回写按无偏好行继续）owner=%s: %v", ownerID, err)
+	}
+	merged := UserToolPreferences{}
+	if pref != nil {
+		merged = *pref
+	}
+	merged.SystemAccountID = ownerID
+	if fields.searchBinding != nil {
+		if fields.searchBinding.unbound {
+			merged.SearchAccountID = ""
+			merged.SearchModelID = ""
+		} else {
+			merged.SearchAccountID = fields.searchBinding.accountID
+			merged.SearchModelID = fields.searchBinding.modelID
+		}
+	}
+	if fields.imageBinding != nil {
+		if fields.imageBinding.unbound {
+			merged.ImageAccountID = ""
+		} else {
+			merged.ImageAccountID = fields.imageBinding.accountID
+		}
+		merged.DefaultImageModel = string(effectiveImageModel)
+	}
+	if err := rt.deps.Store.UpsertUserToolPreferences(merged); err != nil {
+		log.Printf("chat: 用户工具偏好回写失败 owner=%s: %v", ownerID, err)
+	}
 }

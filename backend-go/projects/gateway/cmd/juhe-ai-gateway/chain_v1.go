@@ -288,15 +288,15 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		c.handleOrchestratorError(err, req, res, startedAt, endpoint)
 		return
 	}
-	// 主 dispatch 循环复用 preflight 构造的 server retry budget（等待上限来自
-	// NoAvailableAccountWaitTimeoutSeconds）；preflight 未装配 DispatchContext
-	// 时（请求已在其内部完成，不会进入 dispatch）才新建。此前这里无条件
-	// NewServerRetryBudget(0)→WaitBudgetMs=1，循环内并发排队/恢复等待的预算
-	// 与 preflight/fallback 路径脱节，上限实际回落到各自策略默认。
+	// serverRetryBudget 与 budgets 先以自建实例装配（与 preflight 未装配
+	// DispatchContext 的兜底同值）；loop.current 换代点（初始 resolveRouteAction
+	// 产物 + dispatch 期间 switchToFallbackGroup）统一经
+	// adoptDispatchContextBudgets 回收 preflight 构造/更新后的请求级实例——
+	// codex 压缩请求在 preflight 内对 wall budget 调用 WithoutLimit()（Unbounded
+	// 实例），RouteAction→fallback 与切组换代同样携带，统一收口避免各路径
+	// 漏回收（对齐 Node routes.ts 主循环始终引用 currentPreflight 携带的
+	// budget 实例）。
 	serverRetryBudget := gatewaypreauth.NewServerRetryBudget(0, c.clock)
-	if preflight.DispatchContext != nil && preflight.DispatchContext.ServerRetryBudget != nil {
-		serverRetryBudget = preflight.DispatchContext.ServerRetryBudget
-	}
 
 	// D-109（BUG-0175）客户端 IP 并发槽生命周期：Node
 	// attachClientIpSlotRelease（routes.ts:2751-2756）把 release 以 once 语义
@@ -350,12 +350,20 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 			return
 		}
 	}
+	// 换代点统一回收（初始 preflight 直接产出与 RouteAction→fallback 产物都在
+	// 这里进入主循环）：compaction 的 Unbounded wall budget 等请求级实例随
+	// context 生效，coordination 构造据此重导出 TimeoutPolicy。
+	loop.adoptDispatchContextBudgets(context)
 	// D-120（BUG-0175）SSE 等待心跳装配（preflight.ts:855-860）：等待预算在
 	// BeginNoAvailableWait/PauseNoAvailableWait 边沿起停心跳，长等待期间向
 	// 下游写 SSE 保活块，防止空闲超时断连。非 SSE 下游协议心跳为 nil
 	//（SetWaitObserver(nil) 清除，与 Node setWaitObserver(undefined) 一致）。
-	// 提交状态跨心跳与响应处理共享：心跳标记 transport committed 后，上游若
-	// 返回非流式响应，由 finalizeNonStreamResponseAfterSseHeartbeat 收尾。
+	// observer 必须挂在 adopt 后的最终实例上：初始 preflight 恒构造新
+	// ServerRetryBudget（编排入口 options 不带预算），adopt 必然替换自建实例，
+	// 挂载点在 adopt 之后才不会落在被丢弃的实例上（切组换代经 options 同源
+	// 复用实例，observer 随之保持有效）。提交状态跨心跳与响应处理共享：
+	// 心跳标记 transport committed 后，上游若返回非流式响应，由
+	// finalizeNonStreamResponseAfterSseHeartbeat 收尾。
 	loop.waitCommitState = &gatewayresponse.DownstreamCommitState{}
 	loop.waitHeartbeat = gatewayresponse.CreateGatewaySseWaitHeartbeat(gatewayresponse.HeartbeatDeps{
 		Res:                res,
@@ -364,7 +372,7 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		Signal:             ctx,
 	})
 	if loop.waitHeartbeat != nil {
-		serverRetryBudget.SetWaitObserver(&gatewaypreauth.ServerRetryBudgetWaitObserver{
+		loop.serverRetryBudget.SetWaitObserver(&gatewaypreauth.ServerRetryBudgetWaitObserver{
 			OnWaitStarted: loop.waitHeartbeat.Start,
 			OnWaitPaused:  loop.waitHeartbeat.Stop,
 		})
@@ -482,6 +490,18 @@ func (c *gatewayChain) handleUpstreamResponse(
 		responseSnapshot.UpstreamResponseModel = model
 	})
 	responseSnapshot.Body = gatewayresponse.NewReaderUpstreamBody(ctx, upstream.Body)
+	// 响应层超时锚点对齐 Node routes.ts:1574/:1604 的 attemptStartedAt
+	// （从 dispatch 结果解构）：首字/语义结果/生命周期预算按每个 attempt 的
+	// 开始时刻独立计量，不共享请求级起点——否则第一个账户耗掉的时间直接从
+	// 后续账户的 120s 首字预算里扣除，换号重试的流一建立就预算耗尽秒败。
+	// 首字统计口径同源 attempt 级。零值（engine 未带出）回退请求级 startedAt。
+	// Prometheus 首字直方图例外（MarkFirstOutput 仍传请求级 startedAt）：
+	// Node routes.ts:1507-1508 recordGatewayFirstOutputMetric 以请求入口
+	// requestContext.startedAt 为锚，attempt 级只用于 :1509 markFirstByte。
+	attemptStartedAt := dispatched.AttemptStartedAt
+	if attemptStartedAt == 0 {
+		attemptStartedAt = startedAt
+	}
 	input := &gatewayresponse.HandleUpstreamResponseInput{
 		Req:                        req,
 		Downstream:                 gatewayresponse.StreamDownstream{Res: res},
@@ -491,9 +511,9 @@ func (c *gatewayChain) handleUpstreamResponse(
 		AuditAttemptID:             dispatched.AuditAttemptID,
 		AuditCapture:               responseAuditCaptureOf(auditCapture),
 		Settings:                   settings,
-		TimeoutProfile:             timeoutProfileOf(settings, string(context.RequestLane)),
+		TimeoutProfile:             responseTimeoutProfileOf(dispatched, settings, string(context.RequestLane)),
 		UsageContext:               context.UsageContext,
-		StartedAtMs:                startedAt,
+		StartedAtMs:                attemptStartedAt,
 		Signal:                     ctx,
 		SessionAffinityKey:         context.SessionAffinityKey,
 		ClientStrategy:             clientStrategyViewOf(context),
@@ -713,6 +733,33 @@ func (c *gatewayChain) preflightOptions(requestLane gatewayproto.RequestLane) *g
 	}
 }
 
+// responseTimeoutProfileOf 对齐 Node 契约：响应层原样使用 dispatch 结果携带
+// 的 timeout profile（upstream-dispatch.ts 的结果字段 → routes.ts 直传
+// handleStreamUpstreamResponse）——压缩等已禁超时的 profile 在 dispatch 层
+// 判定后原样生效，响应层不得用 settings 重建覆盖。dispatched.TimeoutProfile
+// 为零值（引擎未带出，如构造点之外的旧路径）时回退 settings 派生（与
+// UpstreamDispatchResult.AttemptIndex 零值兜底的既有模式一致）。
+func responseTimeoutProfileOf(dispatched gatewaydispatch.UpstreamDispatchResult, settings gatewayruntimecache.GatewaySettings, lane string) gatewayresponse.TimeoutProfile {
+	profile := dispatched.TimeoutProfile
+	if profile.FirstResponseTimeoutMs == 0 && profile.IdleTimeoutMs == 0 &&
+		profile.UncommittedAttemptMaxLifetimeMs == 0 && !profile.TimeoutsDisabled {
+		return timeoutProfileOf(settings, lane)
+	}
+	return dispatchTimeoutProfileOf(profile)
+}
+
+// dispatchTimeoutProfileOf 把 dispatch 层的 GatewayTimeoutProfile 投影到响应
+// 层消费的字段子集（与 timeoutProfileOf 的手工映射同语义，只映射
+// gatewayresponse.TimeoutProfile 的字段集）。
+func dispatchTimeoutProfileOf(profile gatewayrouting.GatewayTimeoutProfile) gatewayresponse.TimeoutProfile {
+	return gatewayresponse.TimeoutProfile{
+		FirstResponseTimeoutMs:          profile.FirstResponseTimeoutMs,
+		IdleTimeoutMs:                   profile.IdleTimeoutMs,
+		UncommittedAttemptMaxLifetimeMs: profile.UncommittedAttemptMaxLifetimeMs,
+		TimeoutsDisabled:                profile.TimeoutsDisabled,
+	}
+}
+
 // timeoutProfileOf projects the runtime settings + lane onto the response
 // timeout profile (mirrors the dispatch timeoutProfile the result carries;
 // the response layer re-derives the budget values).
@@ -738,16 +785,40 @@ func timeoutProfileOf(settings gatewayruntimecache.GatewaySettings, lane string)
 // clientStrategyViewOf projects the preflight client strategy into the
 // finalization view (G18 frozen subset; the semantic-interpretation gate
 // mirrors gatewayClientAllowsUpstreamSemanticInterpretation).
+// clientStrategyViewOf 把 preflight 冻结的 G18 客户端策略上下文投影到响应层
+// 消费面（Node routes.ts 的 clientStrategy 输入，finalization 侧按同名字段消费）。
+// 投影源是 strategy.Opaque 携带的完整 gatewaycodex 上下文（G18 冻结快照，
+// chain_v1_streamretry.go 的 clientStrategyPreCommitFailureSignal 同模式）；
+// Opaque 缺失（测试 mock / 无策略装配）时仅按 ClientProfile 判定解释门，
+// 压缩期望与预提交重试信号保持 false（fail-closed）。
 func clientStrategyViewOf(context *gatewaypreauth.DispatchContext) *gatewayresponse.ClientStrategyView {
 	strategy := context.ClientStrategy
-	interpret := true
-	if strategy.ClientProfile == "" {
-		interpret = true
-	}
-	return &gatewayresponse.ClientStrategyView{
+	view := &gatewayresponse.ClientStrategyView{
 		ClientProfile:      strategy.ClientProfile,
 		DownstreamProtocol: strategy.DownstreamProtocol,
-		InterpretSemantics: interpret,
+		// InterpretSemantics 对齐 gatewayClientAllowsUpstreamSemanticInterpretation
+		//（client-profiles/strategy.ts）：仅 codex / claude_code / gemini_cli 三画像
+		// 允许上游响应语义解释，普通 openai 兼容客户端不解释。
+		InterpretSemantics: clientProfileAllowsSemanticInterpretation(strategy.ClientProfile),
+	}
+	resolved, ok := strategy.Opaque.(gatewaycodex.OpenAIGatewayClientStrategyContext)
+	if !ok {
+		return view
+	}
+	view.CodexCompactionExpected = resolved.CodexCompactionExpected
+	view.AllowClientSourceAccountAvoidance = resolved.AllowClientSourceAccountAvoidance
+	view.RetryPreCommitProtocolError = resolved.RetryCoordination.PreCommitFailureSignal == gatewaycodex.FailureSignalProtocolErrorEvent
+	return view
+}
+
+// clientProfileAllowsSemanticInterpretation 镜像
+// gatewayClientAllowsUpstreamSemanticInterpretation 的三画像门。
+func clientProfileAllowsSemanticInterpretation(clientProfile string) bool {
+	switch clientProfile {
+	case "codex", "claude_code", "gemini_cli":
+		return true
+	default:
+		return false
 	}
 }
 

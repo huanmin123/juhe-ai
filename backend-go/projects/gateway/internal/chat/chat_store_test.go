@@ -317,6 +317,14 @@ CREATE TABLE IF NOT EXISTS chat_image_generations (
   expires_at TEXT NOT NULL,
   CHECK (operation IN ('generate', 'edit'))
 );
+CREATE TABLE IF NOT EXISTS chat_user_tool_preferences (
+  system_account_id TEXT PRIMARY KEY,
+  search_account_id TEXT,
+  search_model_id TEXT,
+  image_account_id TEXT,
+  default_image_model TEXT,
+  updated_at TEXT NOT NULL
+);
 `
 
 // chatFixture bundles one store test environment.

@@ -62,6 +62,11 @@ type v1DispatchLoop struct {
 	// streamServerRetryCount mirrors Node streamServerRetryCount (routes.ts:
 	// 541) for the stream_server_retry_dispatch audit metadata.
 	streamServerRetryCount int
+	// compactWaitHeartbeat 是 codex 压缩 SSE 请求在上游派发等待期的专属保活
+	// 心跳（Node activeCompactSseWaitHeartbeat，routes.ts:1229-1239：10s 间隔
+	// 写出 compaction 保活块，防客户端/中间层在压缩长等待期空闲断连）。
+	// 每轮 fetch 前创建 Start、fetch 返回即停；nil = 非压缩等待保活场景。
+	compactWaitHeartbeat *gatewayresponse.GatewaySseWaitHeartbeat
 	// ---- W4-B（BUG-0175 D-114）speed-first per-request 状态
 	//（routes.ts:542-546 locals）----
 	// speedFirstByteRetryCount 是本请求已执行的速度优先切号次数（上限
@@ -115,6 +120,87 @@ func (l *v1DispatchLoop) stopWaitHeartbeat() {
 	}
 }
 
+// newRequestCoordination 构造每轮派发的引擎协调上下文（Node routes.ts 主循环
+// 顶部的 coordination 装配）。TimeoutPolicy 对齐 Node routes.ts:1261-1263：
+// wall budget unbounded（codex 压缩请求在 preflight 内经 WithoutLimit 得到的
+// Unbounded 实例）时重导出 'codex_compaction_unbounded'，dispatch 层据此禁用
+// 压缩流的超时判定；其余请求保持空串（默认超时策略）。
+func (l *v1DispatchLoop) newRequestCoordination() *gatewaydispatch.RequestCoordinationContext {
+	coordination := &gatewaydispatch.RequestCoordinationContext{
+		Scope:                    gatewaydispatch.CoordinationScopeGatewayRequest,
+		ServerRetryBudget:        l.serverRetryBudget,
+		GatewayRequestWallBudget: l.budgets.wall,
+		RouteCoordinationBudget:  l.budgets.coordination,
+		RequestAttemptTracker:    l.budgets.tracker,
+	}
+	if l.budgets.wall != nil && l.budgets.wall.Unbounded {
+		coordination.TimeoutPolicy = gatewaydispatch.TimeoutPolicyCodexCompactionUnbounded
+	}
+	return coordination
+}
+
+// startCompactSseWaitHeartbeat 对齐 Node routes.ts:1229-1239 +
+// shouldKeepCodexCompactSseAliveDuringUpstreamWait（routes.ts:2939-2948）：
+// 流式 codex 压缩请求（G18 上下文 codexCompactionExpected）且下游
+// responses_sse 时，上游派发等待期挂 10s 间隔的 compaction 保活心跳并立即
+// Start（首个保活块即刻写出）。提交状态与预算心跳共享 loop.waitCommitState
+// 单实例（语义已提交后心跳自动停写）。
+func (l *v1DispatchLoop) startCompactSseWaitHeartbeat(ctx context.Context, current *gatewaypreauth.DispatchContext) {
+	view := clientStrategyViewOf(current)
+	if !gatewaypreauth.RequestStream(l.req) ||
+		view.ClientProfile != "codex" || !view.CodexCompactionExpected ||
+		view.DownstreamProtocol != "responses_sse" {
+		return
+	}
+	heartbeat := gatewayresponse.CreateGatewaySseWaitHeartbeat(gatewayresponse.HeartbeatDeps{
+		Res:                         l.res,
+		DownstreamProtocol:          view.DownstreamProtocol,
+		DownstreamCommit:            l.waitCommitState,
+		Signal:                      ctx,
+		IntervalMs:                  10_000,
+		EmitCodexCompactionKeepalive: true,
+	})
+	if heartbeat == nil {
+		return
+	}
+	l.compactWaitHeartbeat = heartbeat
+	heartbeat.Start()
+}
+
+// stopCompactSseWaitHeartbeat 停止本轮压缩等待保活（Stop 幂等）：fetch 返回
+// 即上游等待期结束，真实流转发由响应管道接管；请求终态由 run 收尾兜底。
+func (l *v1DispatchLoop) stopCompactSseWaitHeartbeat() {
+	if l.compactWaitHeartbeat != nil {
+		l.compactWaitHeartbeat.Stop()
+		l.compactWaitHeartbeat = nil
+	}
+}
+
+// adoptDispatchContextBudgets 在 loop.current 换代点（初始 resolveRouteAction
+// 产物 + dispatch 期间 switchToFallbackGroup 切组）回收 preflight 构造/更新后
+// 的请求级预算实例（对齐 Node routes.ts 主循环始终引用 currentPreflight 携带
+// 的 budget）：RouteAction→fallback 与切组路径的 fallback preflight 同样会在
+// compaction 分支产出 WithoutLimit 的 Unbounded wall budget，统一在此收口，
+// 防止 coordination 继续引用换代前的自建/旧实例。字段为 nil 时保持原值
+// （preflight 保证恒填，防御保持兜底实例）。
+func (l *v1DispatchLoop) adoptDispatchContextBudgets(context *gatewaypreauth.DispatchContext) {
+	if context == nil {
+		return
+	}
+	if context.ServerRetryBudget != nil {
+		l.serverRetryBudget = context.ServerRetryBudget
+	}
+	if context.GatewayRequestWallBudget != nil {
+		l.budgets.wall = context.GatewayRequestWallBudget
+	}
+	if context.RouteCoordinationBudget != nil {
+		l.budgets.coordination = context.RouteCoordinationBudget
+	}
+	if context.RequestAttemptTracker != nil {
+		l.budgets.tracker = context.RequestAttemptTracker
+	}
+}
+
 // run mirrors the Node while(true) dispatch loop: fetch the first available
 // upstream for the current group context and hand the response to the
 // response layer; classify dispatch errors, switching to the fallback group
@@ -122,15 +208,12 @@ func (l *v1DispatchLoop) stopWaitHeartbeat() {
 func (l *v1DispatchLoop) run(ctx context.Context) {
 	// routes.ts:2643: a leftover cutover reservation releases with the request.
 	defer l.releasePendingSpeedFirstReservation()
+	// routes.ts:2640 finally：压缩等待保活心跳随请求终态兜底停止（Stop 幂等，
+	// 常规路径已在 fetch 返回时停止）。
+	defer l.stopCompactSseWaitHeartbeat()
 	for {
 		current := l.current
-		coordination := &gatewaydispatch.RequestCoordinationContext{
-			Scope:                    gatewaydispatch.CoordinationScopeGatewayRequest,
-			ServerRetryBudget:        l.serverRetryBudget,
-			GatewayRequestWallBudget: l.budgets.wall,
-			RouteCoordinationBudget:  l.budgets.coordination,
-			RequestAttemptTracker:    l.budgets.tracker,
-		}
+		coordination := l.newRequestCoordination()
 		// W4-B（BUG-0175）D-114 接线：普通路由首字截止配置与速度优先决策
 		// 闭包（Node normalRouteFirstByteConfig / onNormalRouteFirstByteDeadline，
 		// routes.ts:1272-1273 的 coordination 注入）。
@@ -164,6 +247,9 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		// 本轮上游派发起点：引擎调用单点在循环体内，每轮刷新（含回退分组
 		// 切换后的下一轮），供耗尽埋点的阶段起点口径使用。
 		l.roundStartedAtMs = time.Now().UnixMilli()
+		// codex 压缩 SSE 的派发等待期保活（Node routes.ts:1229-1239）：fetch
+		// 前挂 10s compaction 保活心跳，fetch 返回（等待期结束）即停。
+		l.startCompactSseWaitHeartbeat(ctx, current)
 		dispatched, dispatchErr := l.c.engine.FetchFirstAvailableUpstream(ctx, gatewaydispatch.FetchFirstAvailableUpstreamArgs{
 			Req:                             l.req,
 			Accounts:                        dispatchAccounts,
@@ -189,6 +275,7 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			// preAcquiredConcurrency 参数）。
 			PreAcquiredConcurrency: speedFirstReservationHandleOf(dispatchReservation),
 		})
+		l.stopCompactSseWaitHeartbeat()
 		if dispatchErr == nil {
 			// ---- response piping + finalization (response/finalization.ts) ----
 			// F13（E2E-FINDING #13 第二层）：账户并发槽随本轮派发迭代释放。
@@ -218,6 +305,18 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 					// Verdict 消费、与本租约无关。once 语义防双释放。
 					if dispatched.ReleaseAccountLockRetryLease != nil {
 						dispatched.ReleaseAccountLockRetryLease(false)
+					}
+					// 半开探测租约释放（Node routes.ts:2520 finally 的
+					// releaseHalfOpenLease）：keepConcurrencySlot=true 时引擎
+					// releaseTransientState 不释放、所有权移交链面，此前链面
+					// 零消费——选中 2xx 尝试若持有半开认领，租约悬挂至 180s
+					// TTL（localSuppressionHalfOpenLeaseMs），刚成功服务请求的
+					// 健康账户被压在 half-open 排除态且不可再认领。nil 检查
+					// 兼容无租约路径；成功侧由 confirmProtocolSuccessSideEffects
+					// 先行 ConfirmHalfOpenSuccess（Node :2484），此处兜底其余
+					// 终态路径，once 语义防双结算。
+					if dispatched.ReleaseHalfOpenLease != nil {
+						dispatched.ReleaseHalfOpenLease()
 					}
 				}()
 				return l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
@@ -834,6 +933,9 @@ func (l *v1DispatchLoop) switchToFallbackGroup(ctx context.Context, reason strin
 	// Node 644-651 transfers the client-ip slot and settles the hot-quality
 	// reservation; those lifecycle ports stay engine-internal in Go. The
 	// per-group retry resets ride on the fresh DispatchContext.
+	// 换代点预算回收：切组 fallback preflight 产出的请求级实例（compaction 时
+	// 含 WithoutLimit 的 Unbounded wall budget）随之生效。
+	l.adoptDispatchContextBudgets(next)
 	l.current = next
 	// Node 652-657: a switched fallback resets the per-group stream server-
 	// retry bookkeeping (streamServerRetryExcludedAccountIds /
@@ -1067,6 +1169,13 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 				"error":     err.Error(),
 			}, "账户锁成功结算未完成")
 		}
+	}
+	// 半开探测的成功确认（Node routes.ts:2484 confirmHalfOpenSuccess）：
+	// 引擎对 gateway 流量的回调受 automaticAccountStateMutationAllowed 门
+	// 约束（探针流量 only），此处对齐 Node 调用形态——回调为 nil 或 no-op
+	// 时自然无害，协议成功即释放半开租约的成功语义不再依赖 finally 兜底。
+	if dispatched.ConfirmHalfOpenSuccess != nil {
+		dispatched.ConfirmHalfOpenSuccess()
 	}
 }
 

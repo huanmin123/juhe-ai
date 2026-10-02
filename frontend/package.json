@@ -52,7 +52,7 @@
     "test:chat-mobile-toolbox": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-mobile-toolbox-regression.ts",
     "test:chat-turn-limit": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-turn-limit-regression.ts",
     "test:chat-model-controls": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-model-controls-regression.ts",
-    "test:chat-conversation-preferences": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-conversation-preferences-regression.ts",
+    "test:chat-tool-preferences": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-tool-preferences-regression.ts",
     "test:chat-composer-responsive": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-composer-responsive-regression.ts",
     "test:chat-scroll-policy": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-scroll-policy-regression.ts",
     "test:chat-message-layout": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-message-layout-regression.ts",

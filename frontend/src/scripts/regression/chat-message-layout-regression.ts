@@ -20,7 +20,7 @@ assert.match(source, /message-row-assistant\s*\{\s*justify-content:\s*flex-start
 assert.match(source, /message-bubble-user/, '用户消息需要独立气泡样式，不能和 AI 共用整行布局')
 assert.doesNotMatch(source, /message-avatar|UserOutlined|RobotOutlined/, 'A 方案不能显示用户或 AI 头像')
 assert.doesNotMatch(source, /message-meta|messages\[item\.index\]\.model|>我</, 'A 方案不能显示角色名、模型名或“我”')
-assert.match(source, /message-bubble-user\s*\{[^}]*background:\s*#f[0-9a-f]{5}/is, '用户消息必须使用浅灰小气泡')
+assert.match(source, /message-bubble-user\s*\{[^}]*background:\s*var\(--juhe-surface-soft\)/is, '用户消息必须使用浅灰小气泡（背景经 surface-soft 主题令牌，c52e41bbb 起不再硬编码色值）')
 assert.match(source, /message-row-user\s+\.message-body\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*align-items:\s*flex-end/is, '用户消息 body 必须按列右对齐，不能让操作栏拉伸短气泡')
 assert.match(source, /message-bubble-user\s*\{[^}]*width:\s*fit-content[^}]*max-width:\s*100%/is, '用户气泡必须按正文宽度收缩且不能溢出')
 assert.match(source, /message-bubble-assistant\s*\{[^}]*background:\s*transparent[^}]*border:\s*0[^}]*box-shadow:\s*none/is, 'AI 正文必须无背景、无边框、无阴影')

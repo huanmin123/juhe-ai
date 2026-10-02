@@ -358,6 +358,15 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
       CHECK (json_valid(source_asset_ids_json) AND json_type(source_asset_ids_json) = 'array')
     );
 
+    CREATE TABLE IF NOT EXISTS chat_user_tool_preferences (
+      system_account_id TEXT PRIMARY KEY,
+      search_account_id TEXT,
+      search_model_id TEXT,
+      image_account_id TEXT,
+      default_image_model TEXT,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_recent
       ON chat_conversations(system_account_id, last_message_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_pinned_recent

@@ -281,6 +281,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - **联网搜索（`web_search` 模型工具）**：未绑定时仍注入工具定义；主模型发起调用后返回 `tool.binding_required` SSE 引导事件（含候选列表与用户提示），主轮继续；已绑定时由子代理以绑定「账号 + 模型」发起非流式 Responses 请求（`tools:[{type:"web_search"}]`、`x-juhe-ai-purpose: chat_web_search`），经网关 /v1 链固定派发绑定账户，结果与来源 URL 裁剪后回喂主模型。绑定候选 = 全部授权可派发账户 × 目录「协议 × 工具」矩阵声明 `web_search` 的 responses 可派发模型（跨账户合法，如 GPT 对话 + Grok 搜索）。
 - **图片生成（`generate_image` 模型工具）**：绑定粒度为账户，生效模型沿会话 `defaultImageModel`（枚举白名单 GPT 系 `gpt-image-2` 与 Grok 系 `grok-imagine-image` / `grok-imagine-image-quality`）；候选 = 可路由注册图像模型的 api_key 型账户。文本模型明确需要位图时调用 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败。工具循环上限见设计文档（`MaxModelRounds=4`、`MaxToolCalls=8`、`MaxImageCalls=2`）。`chatImageGenerationTotalTimeoutSeconds` 控制一次图片工具调用从网关选号到资产提交的整体时限，默认 `900` 秒、范围 `60..86400`；每个新聊天任务冻结当次系统设置快照。通用边界见 [AI 工具创建规范](../architecture/backend/AI工具创建规范.md)。
 - 会话详情的工具能力（`toolCapabilities`：`web_search` / `generate_image` 的 `bound` / `binding` / `valid` / `invalidReason` / `candidates`）按候选口径聚合（见《AI 问答工具体系与主子模型设计》§8）；会话绑定候选不随主对话账户收敛（跨账户组合合法）。
+- **用户级默认工具绑定（2026-10-02）**：搜索与生图的默认绑定按登录用户服务端存储（`chat_user_tool_preferences`，跨设备生效）；新建会话由服务端以默认值初始化绑定三列与 `defaultImageModel`（失效组合沿「已失效，请重设」引导，不静默漂移）；任一会话显式保存/解绑 `searchBinding`/`imageBinding` 后服务端回写全局默认（解绑置空；best-effort 不阻断会话保存）。`GET/PATCH /my-chat/tool-preferences`（PATCH 严格键 `searchBinding`/`imageBinding`/`defaultImageModel`，候选校验同会话 PATCH，只改用户默认不触碰会话）；入口为输入框 `/` 命令「搜索默认绑定」/「生图默认绑定」（复用绑定弹窗全局模式）；旧纯前端 localStorage 偏好复用机制已删除。完整契约见设计文档 §2.11/§7/§8.5-8.6/§10.6-10.7。
 - 模型目录能力为「协议 × 工具」二维矩阵（`supportedToolsByProtocol`）：内置行未声明时按 8.5 节静态快照兜底填充，custom 目录行按本节末「custom 目录行能力继承」继承声明；一维 `supportedTools` 已退场。
 - 图像账户需显式声明 Images 端点能力（`supported_endpoint_modes` 含 `images_json`，非默认项）；图像账户后台健康检查使用上游 `GET /v1/models` 精确确认模型 ID，不得把普通对话模型写进 Images 请求。
 - `generate_image` 完成后通过 artifact sink 原子写入同一个 `assetId` 的 original/preview 两个对象：original 保留 provider 实际 WebP/PNG/JPEG，preview 统一 WebP、最长边约 640；消息只加载 `?variant=preview`；点击预览通过页面内 Ant Design Vue 图片灯箱按需请求 `?variant=original`。下载和复制都位于助手消息底部工具栏：下载通过 fetch + blob 保存本地文件，复制在用户点击时把原图转换为 PNG 并写入真实图片 ClipboardItem，不能复制 `attachment://` Markdown。内部附件 Markdown 已由结构化图片块渲染，渲染器必须忽略它的 alt/书签名称。资产响应默认 `Content-Disposition: inline`，可选 `download=1` 时改为 attachment；两个版本分别使用 SHA-256 ETag、`private, max-age=86400, immutable` 和条件请求 304；对象提交成功后才解除补偿删除。
@@ -417,6 +418,8 @@ PATCH /__aisys__/api/my-chat/conversations/:id
 GET /__aisys__/api/my-chat/conversations/:id/models
 DELETE /__aisys__/api/my-chat/conversations/:id
 GET /__aisys__/api/my-chat/accounts
+GET /__aisys__/api/my-chat/tool-preferences
+PATCH /__aisys__/api/my-chat/tool-preferences
 POST /__aisys__/api/my-chat/conversations/:id/context/compactions
 ```
 
@@ -664,6 +667,22 @@ PostgreSQL 约束：
 - 用户估算明显偏离时再通过系统设置调整上限；MVP 不做按租户分库分表和复杂计费套餐。
 
 不保存 token、成本、命中账户或分组快照，这些事实继续由网关使用记录维护，聊天消息只通过 `trace_id` 关联。
+
+### 12.5 `chat_user_tool_preferences`（2026-10-02）
+
+搜索与生图模型工具的用户级默认绑定（见 8.6「用户级默认工具绑定」与《AI 问答工具体系与主子模型设计》§7/§8）：
+
+| 字段 | 规则 |
+| --- | --- |
+| `system_account_id` | 登录用户 ID，主键，每用户一行 |
+| `search_account_id`、`search_model_id` | `web_search` 默认绑定「账户 + 模型」二元组，空 = 未设默认 |
+| `image_account_id` | `generate_image` 默认绑定账户（生效模型沿 `default_image_model`），空 = 未设默认 |
+| `default_image_model` | 新会话 `default_image_model` 的创建初值来源，空 = 未设（沿用服务端默认 `gpt-image-2`） |
+| `updated_at` | UTC 时间 |
+
+- 新建会话由服务端读取该行并把非空列写入会话绑定三列与 `default_image_model` 初值；创建时不做候选校验，失效组合沿既有 valid=false / `tool.binding_required` 引导兜底。
+- 会话内显式保存/解绑 `searchBinding`/`imageBinding` 后服务端 best-effort 回写该行（解绑置空；生图回写含联动后 `default_image_model`）；回写失败仅记日志。
+- 建表经 `maintenance --ensure-schema` 幂等生效，无存量回填、无一次性迁移。
 
 ## 13. 消息事务、幂等与并发
 

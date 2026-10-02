@@ -177,6 +177,21 @@ var postgresSchemaChat = []PGStatement{
       CHECK (asset_count >= 0)
     )`,
 	},
+	// 用户级默认工具绑定表（AI 问答工具体系与主子模型设计 §2.11/§7，2026-10-02）：
+	// 每用户一行（system_account_id 主键），四列均可空（空 = 未设默认）；
+	// 无存量回填，建表经 --ensure-schema 幂等生效。
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat",
+		SQL: `CREATE TABLE IF NOT EXISTS chat_user_tool_preferences (
+      system_account_id text PRIMARY KEY,
+      search_account_id text,
+      search_model_id text,
+      image_account_id text,
+      default_image_model text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`,
+	},
 	{
 		SchemaName: "juhe_chat",
 		Source:     "chat",

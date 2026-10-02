@@ -92,6 +92,7 @@ describe('chatApi 请求形状', () => {
     await chatApi.createConversation()
     await chatApi.getConversation('conv-1')
     await chatApi.getToolBindings('conv-1')
+    await chatApi.getToolPreferences()
     await chatApi.listMessages('conv-1')
     await chatApi.getConversationSync('conv-1')
     await chatApi.getSubmissionStatus('conv-1', 'cm-1')
@@ -111,6 +112,7 @@ describe('chatApi 请求形状', () => {
       ['POST', '/my-chat/conversations'],
       ['GET', '/my-chat/conversations/conv-1'],
       ['GET', '/my-chat/conversations/conv-1/tool-bindings'],
+      ['GET', '/my-chat/tool-preferences'],
       ['GET', '/my-chat/conversations/conv-1/messages'],
       ['GET', '/my-chat/conversations/conv-1/sync'],
       ['GET', '/my-chat/conversations/conv-1/submissions/cm-1'],
@@ -149,6 +151,16 @@ describe('chatApi 请求形状', () => {
     await chatApi.updateConversation('conv-1', { imageBinding: { accountId: 'account-2' }, defaultImageModel: 'grok-imagine-image' })
     expect(payloadOf(requests[1])).toEqual({ imageBinding: { accountId: 'account-2' }, defaultImageModel: 'grok-imagine-image' })
     await chatApi.updateConversation('conv-1', { searchBinding: null })
+    expect(payloadOf(requests[2])).toEqual({ searchBinding: null })
+  })
+
+  it('工具偏好 PATCH：严格键集打到 /my-chat/tool-preferences，null 清除默认', async () => {
+    await chatApi.updateToolPreferences({ searchBinding: { accountId: 'account-1', modelId: 'gpt-6-sol' } })
+    expect(requestShapes()[0]).toEqual(['PATCH', '/my-chat/tool-preferences'])
+    expect(payloadOf(requests[0])).toEqual({ searchBinding: { accountId: 'account-1', modelId: 'gpt-6-sol' } })
+    await chatApi.updateToolPreferences({ imageBinding: { accountId: 'account-2' }, defaultImageModel: 'grok-imagine-image' })
+    expect(payloadOf(requests[1])).toEqual({ imageBinding: { accountId: 'account-2' }, defaultImageModel: 'grok-imagine-image' })
+    await chatApi.updateToolPreferences({ searchBinding: null })
     expect(payloadOf(requests[2])).toEqual({ searchBinding: null })
   })
 

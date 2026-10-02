@@ -312,6 +312,9 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 // CreateConversationInput mirrors the createChatConversation input object.
 // 会话绑定收敛为仅 account（AI 问答会话账户唯一绑定设计）：创建即空会话
 // （bind_account_id NULL，未选账户），账户选定后经 UpdateConversation 写入。
+// 四个工具偏好继承列（工具体系设计 §2.11，2026-10-02）：用户工具偏好继承，
+// 创建时不校验候选，失效组合由读取侧 valid=false 兜底；绑定三列空串 = 未
+// 绑定（NULL），DefaultImageModel 空串维持现默认 gpt-image-2。
 type CreateConversationInput struct {
 	ID                      string
 	SystemAccountID         string
@@ -319,6 +322,10 @@ type CreateConversationInput struct {
 	APIKeyNameSnapshot      string
 	BindAccountID           string
 	BindAccountNameSnapshot string
+	SearchAccountID         string
+	SearchModelID           string
+	ImageAccountID          string
+	DefaultImageModel       string
 	Now                     string
 	MaxConversationsPerUser int
 }
@@ -326,6 +333,8 @@ type CreateConversationInput struct {
 // CreateConversation mirrors createChatConversation: per-user policy lock,
 // per-user conversation-count guard, insert with 新对话 defaults. last_model
 // 落 NULL：空会话未选账户，无默认模型（选定账户后由模型列表首项联动）。
+// 工具绑定三列与 default_image_model 初值来自用户工具偏好继承（空偏好 =
+// NULL / gpt-image-2，与既有行为一致）。
 func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation, error) {
 	now, err := requireRFC3339Instant(input.Now, "聊天会话 now")
 	if err != nil {
@@ -334,6 +343,10 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 	id := input.ID
 	if id == "" {
 		id = s.newID("conv")
+	}
+	defaultImageModel := input.DefaultImageModel
+	if defaultImageModel == "" {
+		defaultImageModel = string(ImageModelGPTImage2)
 	}
 	release := s.lockUserPolicy(input.SystemAccountID)
 	defer release()
@@ -356,11 +369,14 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 	_, err = tx.Exec(s.bind(`INSERT INTO `+s.table("chat_conversations")+` (
 		id, system_account_id, api_key_id, api_key_name_snapshot,
 		bind_account_id, bind_account_name_snapshot,
+		search_account_id, search_model_id, image_account_id,
 		title, last_model, default_image_model,
 		next_sequence_no, user_turn_count, last_message_at, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, '新对话', NULL, 'gpt-image-2', 1, 0, ?, ?, ?)`),
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '新对话', NULL, ?, 1, 0, ?, ?, ?)`),
 		id, input.SystemAccountID, input.APIKeyID, input.APIKeyNameSnapshot,
 		sqlText(optString(input.BindAccountID)), input.BindAccountNameSnapshot,
+		optSQLText(input.SearchAccountID), optSQLText(input.SearchModelID), optSQLText(input.ImageAccountID),
+		defaultImageModel,
 		now, now, now)
 	if err != nil {
 		return nil, err

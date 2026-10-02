@@ -158,7 +158,8 @@ var goldenStatsTables = []string{
 	"usage_stats_weekly",
 }
 
-// goldenChatTables is the golden table list extracted from the Node chat-schema.ts (10 tables).
+// goldenChatTables is the golden table list extracted from the Node chat-schema.ts (10 tables,
+// plus the Go-appended chat_user_tool_preferences user-level tool binding table, 2026-10-02).
 var goldenChatTables = []string{
 	"chat_asset_references",
 	"chat_assets",
@@ -170,6 +171,7 @@ var goldenChatTables = []string{
 	"chat_messages",
 	"chat_user_asset_usage",
 	"chat_user_storage_windows",
+	"chat_user_tool_preferences",
 }
 
 // goldenCodexContextTables is the golden table list extracted from the Node codex-context-state-schema.ts (4 tables).
@@ -203,7 +205,7 @@ var goldenUsageCatalogTables = []string{
 var goldenSchemaCounts = SQLiteResult{
 	Business:     SchemaCounts{Tables: 73, Indexes: 214},
 	Stats:        SchemaCounts{Tables: 64, Indexes: 124},
-	Chat:         SchemaCounts{Tables: 10, Indexes: 26},
+	Chat:         SchemaCounts{Tables: 11, Indexes: 26},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
 	Dataset:      SchemaCounts{Tables: 3, Indexes: 4},
 	UsageCatalog: SchemaCounts{Tables: 4, Indexes: 10},
@@ -212,7 +214,7 @@ var goldenSchemaCounts = SQLiteResult{
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
 // verify every schema exactly).
-const goldenTotalTables = 156
+const goldenTotalTables = 157
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one

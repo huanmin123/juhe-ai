@@ -1,7 +1,7 @@
 # AI 问答工具体系与主子模型设计
 
-- 状态：已实施（2026-09-28；阶段 1/2/3 提交 4a5309674 / 195b1cbb6 / 前端改造，候选缺口修复 31a085f97）
-- 日期：2026-09-28
+- 状态：已实施（2026-09-28；阶段 1/2/3 提交 4a5309674 / 195b1cbb6 / 前端改造，候选缺口修复 31a085f97）；2026-10-02 增补「用户级默认工具绑定」（§2.11/§2.12、§7 新表、§8.4/§8.5、§10.4/§10.6/§10.7 改写、§11 删除项、§14 验收）。
+- 日期：2026-09-28（2026-10-02 增补用户级默认绑定）
 - 前置：《AI 问答设计》8.6（已按本设计改写为「工具体系与主子模型」节）——能力数据链（8.5 静态快照兜底、custom 目录行能力继承）继续有效并被本设计复用。
 - 验证记录（2026-09-28 隔离实例 + 真实上游）：GPT 纯对话、未绑定 `tool.binding_required` 引导（9 候选 + UserHint 回喂）、GROK 跨账户搜索（grok-4.7 子代理 24 来源实时数据）、GPT 生图（gpt-image-2 真实出图 1370×1148）、非候选绑定 400 + 候选返回、浏览器端免弹窗直进/账户流/绑定弹窗/时间线来源（31 来源 8 链接可展开）全通过。已知限制：GROK 生图账户建模受 xai 供应商 openai 协议档案的目录断言限制（`supportedModels` 不接受 images 协议模型），grok-imagine 生图候选需账户建模层提供 images 档案或映射通道后才能落地；GPT 系生图（gpt vendor 协议直通）不受影响。
 
@@ -27,6 +27,8 @@
 8. 一次完整交付（工具类型系统 + web_search 子代理 + 生图显性化 + 目录「协议 × 工具」矩阵细化 + 旧路径删除）；与《AI 问答会话账户唯一绑定设计》（会话仅账户绑定、免弹窗直进、工具候选放宽到全部授权账户）同批实施。
 9. 供应商模型目录细化为「协议 × 工具」矩阵（见 6.4）：候选过滤以「该协议下可用工具」二维数据为准，不再依赖代码内隐式绑定知识。
 10. **不做向后兼容**：一维 `supportedTools` 字段直接退场、消费方全量切换，不保留派生兼容层与新旧并存；生产发布即切换（能力数据在静态快照内，随发布全量刷新，无需刷库）。
+11. **用户级默认工具绑定（2026-10-02，用户裁决「推荐方案」）**：搜索与生图绑定新增「用户级全局默认」，按登录用户（`system_account_id`）服务端存储一张偏好行；**新建会话由服务端直接以默认值初始化绑定三列与 `default_image_model`（创建时不做候选校验，失效组合沿既有 valid=false / `tool.binding_required` 引导兜底，不静默漂移、不阻断创建）**；**会话内显式修改 `searchBinding` / `imageBinding` 后由服务端 best-effort 回写全局默认（解绑亦回写置空；回写失败仅记日志，不影响会话 PATCH 成功响应）**；既有会话不补继承。单独 PATCH `defaultImageModel`（会话级「默认图像模型」命令）不回写。
+12. **删除纯前端 localStorage 偏好复用机制（§10.6 旧版）**：被服务端全局默认取代后文件、调用点与回归入口一并删除，不留尾巴；账户联动默认（§10.5）不依赖该机制，保留。
 
 ## 3. 非目标
 
@@ -106,6 +108,7 @@ AI 对话（chat 包 + 对话前端）
 - 存量会话：搜索与生图绑定列均为 NULL，首次触发对应工具时统一进入引导流程（不保留旧图像路由派发的兼容路径，两个模型工具行为一致）。
 - 绑定完整性约束：账号+模型必须仍在会话作用域且可派发，失效时（账号停用/删除、模型下架）绑定状态返回「已失效，请重设」，不静默漂移到其他账号。
 - 消息内容块：子代理执行以现有 `tool_call` / `tool_result` 内容块落库与呈现；搜索来源列表作为 `tool_result` 的结构化字段（前端时间线渲染「已搜索 + 来源」）。不新增块类型。
+- **用户级默认绑定表（2026-10-02）**：`chat_user_tool_preferences`，`system_account_id` 主键，每用户一行；列 `search_account_id` / `search_model_id` / `image_account_id` / `default_image_model`（均可空，空 = 未设默认）+ `updated_at`。无存量回填；建表经 `maintenance --ensure-schema` 幂等生效，无一次性迁移。新建会话时服务端读取该行并把非空列写入会话的绑定三列与 `default_image_model` 初值（偏好未设时维持现行为：绑定三列 NULL、`default_image_model` 默认 `gpt-image-2`）。
 
 ## 8. API 契约
 
@@ -114,6 +117,8 @@ AI 对话（chat 包 + 对话前端）
 2. `PATCH /my-chat/conversations/{id}`：新增可修改键 `searchBinding: {accountId, modelId}`（传 null/空解绑；二元组必须在候选列表内，否则 400 并返回候选）。生图绑定沿用图像模型设置入口并补账号选择（`imageBinding`）。
 3. `toolCapabilities`（会话详情内嵌字段）：**形状重写**为上述绑定状态（旧「可用性矩阵 + 不可用原因」语义废弃）；前端同步改。
 4. SSE：新增事件 `tool.binding_required`（工具调用触发但未绑定时下发，携带 `toolId` 与候选摘要），前端据此弹引导；主模型本轮收到「工具未配置」的 tool result，可自然告知用户。
+5. `GET /my-chat/tool-preferences`（2026-10-02）：返回用户级默认绑定，**与 `tool-bindings` 同形状**（`{ tools: [...] }`，含 `bound` / `binding` / `valid` / `invalidReason` / `candidates`）；`binding` 来自偏好行（`generate_image` 的生效模型取偏好行 `default_image_model`，组合判定 valid）；候选解析与 `tool-bindings` 同源（`resolveChatToolBindingCandidates(bindScope)`，跨账户合法口径不变）。偏好行不存在时两类模型工具均 `bound: false`。
+6. `PATCH /my-chat/tool-preferences`（2026-10-02）：严格键集 `{ searchBinding, imageBinding, defaultImageModel }`，至少提供一个；`searchBinding: {accountId, modelId}|null`、`imageBinding: {accountId}|null`（null/空 = 清除默认）；候选校验与错误形状同会话 PATCH（不在候选内 400 `chat_tool_binding_invalid` + 候选负载；`imageBinding` 按「账户 × 生效后 `default_imageModel`」判定，同请求带 `defaultImageModel` 时以新值为准）；成功返回 GET 同形状 payload。**该端点只改用户默认，不触碰任何会话**。
 
 ## 9. 执行流程
 
@@ -136,9 +141,13 @@ AI 对话（chat 包 + 对话前端）
 1. 会话设置面板：新增「搜索模型」「生图模型」两行绑定选择器，选择器按「账号 · 模型」组合呈现候选（如「神影-克隆 · gpt-6-sol」）；未绑定显示「未设置」，绑定失效（账号停用/模型下架）显示「已失效，请重设」。
 2. 引导：`tool.binding_required` 触发时前端弹轻量引导（「该会话支持联网搜索，选择账号和模型」+「账号 · 模型」组合候选下拉）；也可忽略继续纯对话。
 3. 消息时间线：搜索工具执行展示为现有 tool_call 块样式，**执行中默认展开为「子代理过程区」**（与思考块同款的渐进展示，非 JSON）：依次呈现子代理思考摘要（流式追加、自动滚动、按 Markdown 渲染）、搜索动作（「搜索「query」」逐条追加）与回答摘要头部；**轮次全部结束后自动折叠**为一行（「联网搜索 已完成 · N 个来源」），可手动展开回看摘要与来源 URL（可点击）。生图执行中在图片块位置展示生成进行态，完成后折叠为图片块本身。历史回看（刷新后）同样保留子代理过程区快照（思考摘要、搜索动作与回答摘要头部，来自落库的 progress 快照，标题为「子代理执行过程」）；无快照的存量旧消息仅展示终态摘要与来源。折叠交互为**单击切换且不受流式更新干扰**（前端手动接管 click：preventDefault + 状态 Map 切换，`:open` 绑定受控值，消除浏览器原生 toggle 与流式重渲染的竞态「点击被吃掉」体感）。终态折叠行附**阶段耗时时间线**（「思考 8s · 搜索 41s · 回答 12s」，来自 progress.stageTimings；无数据的历史消息不显示），执行中过程区头部显示当前阶段与已等待秒数。来源列表按**主域聚合**展示：同一 hostname 的多个 URL 聚合为一行（`weather.com.cn ×8`），默认展示聚合域名列表（按出现次数降序），展开域名行显示该域全部原始 URL；非链接类摘要文本不受影响。失败或中断的**最新轮**（`upstream_stream_failed` / `stream_interrupted` / 生成 failed）在该轮用户消息上提供既有「重新发送/重新生成」入口（带生成中/模型加载门控，复用 replaceTurn 重发原始输入）；历史非最新失败轮不支持原位重试（替换语义限定最新轮，与编辑重发同口径）。
-4. 选择器可搜索：会话**账户与模型选择下拉**（输入区控件）支持**输入模糊搜索**（按名称过滤，账户数量大时不再逐项翻找；下拉打开时加载候选的现有行为不变）；绑定设置弹窗宽度自适应内容（`min(92vw, 720px)`），候选列表支持**输入过滤**（按账户名/模型名模糊匹配）并按**最近使用优先**排序（本次偏好中的绑定组合置顶，其余保持接口顺序）；长列表靠既有最大高度滚动收纳。生图绑定选定候选模型与会话默认图像模型不同时随保存一并更新（现有行为）。
-5. 账户联动默认（前端行为）：会话选定/切换账户成功后——① 若 `lastModel` 失效（服务端返回空），自动从该账户模型列表取首项选定并提示（不再要求用户手动重选）；② 若搜索/生图绑定**未设置或已失效**（不在最新候选内），自动选定「同账户优先」的第一个候选（搜索与生图分别处理；同账户无候选时不跨账户乱选，保留 `binding_required` 引导）；已设置且仍有效的绑定**不覆盖**。联动为静默后台 PATCH，任一步失败不阻断对话主流程，仅轻提示。
-6. 新建会话偏好复用（纯前端，无 schema 变更）：前端在 localStorage 维护「上次使用的会话配置」（键 `juhe-ai:chat:conversation-preferences:v1`，内容 = 账户、模型、搜索绑定、生图绑定、默认图像模型，绑定/模型变更成功即更新）。**新建会话进入后自动应用**：逐项校验（账户在可派发列表内、绑定在最新候选内），有效项依次 PATCH 生效（任一步失败静默跳过该项继续）并轻提示「已按上次配置初始化」；用户已手动操作（选定账户/模型、弹窗保存绑定）时跳过对应项以手动结果为准；部分失效（如账户被删除/停用）则跳过该项由用户重选，全部失效则不应用。偏好不跨设备同步（本地存储），清除浏览器数据即重置。
+4. 选择器可搜索：会话**账户与模型选择下拉**（输入区控件）支持**输入模糊搜索**（按名称过滤，账户数量大时不再逐项翻找；下拉打开时加载候选的现有行为不变）；绑定设置弹窗宽度自适应内容（`min(92vw, 720px)`），候选列表支持**输入过滤**（按账户名/模型名模糊匹配）并按**全局默认置顶**排序（2026-10-02 起：用户级默认绑定组合置顶，其余保持接口顺序；取代旧「最近使用优先」，localStorage 偏好来源已删除）；长列表靠既有最大高度滚动收纳。生图绑定选定候选模型与生效的默认图像模型不同时随保存一并更新（会话模式更新会话 `defaultImageModel`，全局模式更新偏好行 `defaultImageModel`，现有行为）。
+5. 账户联动默认（前端行为）：会话选定/切换账户成功后——① 若 `lastModel` 失效（服务端返回空），自动从该账户模型列表取首项选定并提示（不再要求用户手动重选）；② 若搜索/生图绑定**未设置或已失效**（不在最新候选内），自动选定「同账户优先」的第一个候选（搜索与生图分别处理；同账户无候选时不跨账户乱选，保留 `binding_required` 引导）；已设置且仍有效的绑定**不覆盖**。联动为静默后台 PATCH，任一步失败不阻断对话主流程，仅轻提示。（注意：联动写入的是会话级绑定；按 §2.11，经 `searchBinding`/`imageBinding` 键的会话绑定变更同样服务端回写全局默认。）
+6. **用户级默认绑定（2026-10-02，取代旧版 localStorage 偏好复用）**：搜索与生图的默认绑定按登录用户服务端存储（§7 新表 `chat_user_tool_preferences`，跨设备生效、清浏览器数据不丢）。可见行为：
+   - **新建会话自动继承**：服务端创建会话时直接以用户默认初始化绑定三列与 `default_image_model`（无前端 PATCH 往返、无竞态；继承组合失效时沿既有「已失效，请重设」/`tool.binding_required` 引导，不静默漂移）；未设默认时行为与旧版一致。
+   - **会话内改绑定跟随回写**：任一会话显式保存/解绑 `searchBinding`/`imageBinding` 成功后，服务端把生效值回写为该用户全局默认（解绑置空；生图回写含联动后的 `default_image_model`）；回写失败不阻断会话保存。
+   - **入口**：输入框 `/` 命令新增「搜索默认绑定」「生图默认绑定」两条（见第 7 条）；会话详情「工具能力」行的既有绑定弹窗保留（会话级覆盖）。
+7. `/` 命令入口（2026-10-02）：`chatComposerCommands` 新增两条 conversation 类命令：`tool-defaults`（action `set-tool-defaults`，标签「搜索默认绑定」，打开 `web_search` 弹窗）与 `image-tool-defaults`（action `set-image-tool-defaults`，标签「生图默认绑定」，打开 `generate_image` 弹窗），经既有 `conversation-action` 链路打开 `ChatToolBindingDialog` 的**全局模式**（`mode: 'user'`）：数据源改走 `GET/PATCH /my-chat/tool-preferences`，保存只改用户默认、不触碰当前会话；弹窗文案标明「全局默认，新会话自动继承」；候选过滤与全局默认置顶同第 4 条。
 
 ## 11. 删除项清单（不留尾巴）
 
@@ -147,6 +156,7 @@ AI 对话（chat 包 + 对话前端）
 3. `buildChatTransportRequest` 的 Responses 分支与 Responses 事件解析：主对话不再产生 Responses 流；上下文压缩调用同步恒 `chat_completions`。图片输入改为 Chat Completions 多模态格式（`content` 数组 `image_url` 块），服务端与前端校验口径同步（`inputModalities` 含 `image` 的模型才允许带图）。
 4. `toolCapabilities` 旧矩阵计算（`chain_chat_tool_capabilities.go` 的模型×协议判定）重写为绑定状态聚合。
 5. 上述路径的既有测试同步删除或改写；`AI问答设计.md` 8.6 同步改写并指向本文档。
+6. **纯前端 localStorage 偏好复用机制删除（2026-10-02，被 §10.6 服务端全局默认取代）**：`frontend/src/views/chat/chatConversationPreferences.ts` 整文件删除；`ChatView.vue` 的 `applyConversationPreferences` / `recordToolBindingPreference` 及全部调用点删除（新建会话不再有前端偏好应用链）；`ChatToolBindingDialog.vue` 的 `resolveLastUsedCandidateKey`（最近使用置顶）删除、排序改全局默认置顶；回归脚本 `chat-conversation-preferences-regression.ts` 与 `package.json` 对应 `test:` 入口删除；受波及的 `chat-composer-commands` / `chat-conversation-account-binding` / `chat-conversation-details` 回归锚点同步改写。存储键 `juhe-ai:chat:conversation-preferences:v1` 不再读写（存量残留数据不再消费，可自然遗留）。
 6. 保留：模型目录能力数据链（静态兜底、custom 继承、`supportedToolsByProtocol` 二维矩阵）——服务于绑定候选过滤与模型能力展示，不再驱动协议与注入；一维 `supportedTools` 字段按 §2.10 / §6.4 直接退场，不保留。
 
 ## 12. 兼容与迁移
@@ -172,6 +182,8 @@ AI 对话（chat 包 + 对话前端）
 5. 带图输入：`inputModalities` 含 image 的模型可正常带图对话（Chat Completions 多模态）。
 6. 旧路径删除验证：代码中不再存在 chat 面 hosted 工具注入与工具驱动协议偏好的任何分支；相关测试清零或改写。
 7. 网关与调度域零改动（diff 不涉及 gatewaydispatch/调度/转换器）。
+8. **用户级默认绑定（2026-10-02）**：经 `/` 命令「搜索默认绑定」/「生图默认绑定」设置搜索/生图默认后——新建会话的绑定三列与 `default_image_model` 初值等于偏好值（工具能力行直接显示已绑定或已失效）；任一会话保存/解绑 `searchBinding`/`imageBinding` 后 `GET /my-chat/tool-preferences` 反映同一变化（解绑置空）；未设默认的用户新建会话行为与现状一致（NULL / `gpt-image-2`）；候选外 PATCH 偏好 400 并返回候选；归档会话绑定修改仍 403；偏好端点不修改任何会话。
+9. **localStorage 偏好机制删除（2026-10-02）**：前端源码不再存在 `juhe-ai:chat:conversation-preferences:v1` 键与 `chatConversationPreferences` 模块；`test:chat-conversation-preferences` 入口移除；受波及回归脚本全部改写并通过。
 
 ## 15. 验证方式
 

@@ -314,7 +314,7 @@ func TestW10DConversationLifecycleFaultArms(t *testing.T) {
 		substr string
 	}{
 		{"会话计数查询失败", "SELECT COUNT(*)"},
-		{"会话写入失败", "'新对话', NULL, 'gpt-image-2'"},
+		{"会话写入失败", "'新对话', NULL, ?"},
 		{"会话读取失败", "WHERE id = ? AND system_account_id = ?"},
 		{"提交失败", commitFaultKeyW10D},
 	}
