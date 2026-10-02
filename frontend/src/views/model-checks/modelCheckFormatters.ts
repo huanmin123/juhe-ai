@@ -234,7 +234,11 @@ export function checkTitleByType(itemType: string, itemKey: string): string {
     distribution_similarity: '分布相似度对照',
     trusted_comparison: '可信对比',
     custom_quiz: '题库测试',
-    astra_constants: 'Astra 专项探针'
+    astra_constants: 'Astra 专项探针',
+    identity_selfreport: '身份自报一致性',
+    identity_extraction: '指令完整性复读',
+    identity_anchor: '推理锚点题',
+    sampling_statistics: '采样统计分析'
   }
   return labels[itemType] ?? itemKey
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -297,6 +298,158 @@ func TestEvaluateSamplingStatisticsComparisonAnomalyRecorded(t *testing.T) {
 	consistency := item.Evidence["consistencySampling"].(map[string]any)
 	if consistency["comparisonAnomaly"] != true || consistency["comparisonClusterCount"] != 3 {
 		t.Fatalf("对照异常记录=%+v", consistency)
+	}
+}
+
+// 终审 CONCERN-A 回归：温度可控性判定——只有 Codex 适配与 Anthropic 协议
+// 两条路径温度不可送达（与 tunedBasic 的实际请求构造一致）。
+func TestSamplingTemperatureControlled(t *testing.T) {
+	if samplingTemperatureControlled(AdapterOpenAIOAuthCodex, modelcheckprofile.ProtocolOpenAIResponses) {
+		t.Fatal("Codex 适配：tunedBasic 不应用温度且协议层 delete temperature，不可控")
+	}
+	if samplingTemperatureControlled("", modelcheckprofile.ProtocolAnthropic) {
+		t.Fatal("Anthropic 协议：buildBasicWithTunings 只写 max_tokens 不送温度，不可控")
+	}
+	for _, protocol := range []modelcheckprofile.Protocol{modelcheckprofile.ProtocolOpenAIResponses, modelcheckprofile.ProtocolOpenAIChat, modelcheckprofile.ProtocolGeminiNative} {
+		if !samplingTemperatureControlled("", protocol) {
+			t.Fatalf("%s 显式写 temperature，应可控", protocol)
+		}
+	}
+}
+
+// Suite 侧判定的协议解析与 tunedBasic 同源：UpstreamProtocol 优先、回落
+// Protocol；Codex 适配不看协议直接不可控。
+func TestSuiteSamplingTemperatureReachable(t *testing.T) {
+	if (Suite{Adapter: AdapterOpenAIOAuthCodex, Protocol: modelcheckprofile.ProtocolOpenAIResponses}).samplingTemperatureReachable() {
+		t.Fatal("Codex 适配温度不可达")
+	}
+	if (Suite{Protocol: modelcheckprofile.ProtocolAnthropic}).samplingTemperatureReachable() {
+		t.Fatal("Anthropic 协议温度不可达")
+	}
+	if !(Suite{Protocol: modelcheckprofile.ProtocolOpenAIChat}).samplingTemperatureReachable() {
+		t.Fatal("openai_chat 温度可达")
+	}
+	if (Suite{Protocol: modelcheckprofile.ProtocolOpenAIChat, UpstreamProtocol: modelcheckprofile.ProtocolAnthropic}).samplingTemperatureReachable() {
+		t.Fatal("实际生效协议（UpstreamProtocol）为 anthropic 时温度不可达")
+	}
+}
+
+// CONCERN-A：温度不可控路径上分裂簇只落证据（clusterCount/clusterSizes 照
+// 常落库），verdict 恒 evidence_only，不产生 mixing_detected。
+func TestEvaluateSamplingStatisticsConsistencyTemperatureUncontrolled(t *testing.T) {
+	t.Run("分裂簇不判混用且降级证据落库", func(t *testing.T) {
+		observations := SamplingObservations{
+			TemperatureUncontrolled: true,
+			TokenUnits: []SamplingUnitObservation{
+				samplingObservation("coin", map[string]int{"正面": 3, "反面": 3}, nil),
+			},
+			ConsistencyTarget: []string{"1340", "1340", "1340", "1340", "999", "999"},
+		}
+		item := EvaluateSamplingStatistics(observations)
+		if item.Status != "passed" || samplingReasonCodesContain(item.Evidence, "mixing_detected") {
+			t.Fatalf("温度不可控不得判混用: status=%s reasons=%+v", item.Status, item.Evidence["reasonCodes"])
+		}
+		consistency := item.Evidence["consistencySampling"].(map[string]any)
+		if consistency["verdict"] != "evidence_only" {
+			t.Fatalf("verdict=%v want evidence_only: %+v", consistency["verdict"], consistency)
+		}
+		if consistency["temperatureControlled"] != false {
+			t.Fatalf("temperatureControlled=false 须落证据: %+v", consistency)
+		}
+		if consistency["clusterCount"] != 2 || consistency["sampleCount"] != 6 {
+			t.Fatalf("簇结构证据照常落库: %+v", consistency)
+		}
+	})
+	t.Run("对照分裂不记 comparisonAnomaly（可能是温度噪声）", func(t *testing.T) {
+		observations := SamplingObservations{
+			ComparisonAttached:      true,
+			TemperatureUncontrolled: true,
+			TokenUnits: []SamplingUnitObservation{
+				samplingObservation("coin", map[string]int{"正面": 3, "反面": 3}, map[string]int{"正面": 3, "反面": 3}),
+			},
+			ConsistencyTarget:     []string{"1340", "1340", "999", "999", "1340", "999"},
+			ConsistencyComparison: []string{"1340", "999", "999", "42", "42", "42"},
+		}
+		item := EvaluateSamplingStatistics(observations)
+		if item.Status != "passed" || samplingReasonCodesContain(item.Evidence, "mixing_detected") {
+			t.Fatalf("温度不可控不得判混用: status=%s reasons=%+v", item.Status, item.Evidence["reasonCodes"])
+		}
+		consistency := item.Evidence["consistencySampling"].(map[string]any)
+		if _, ok := consistency["comparisonAnomaly"]; ok {
+			t.Fatalf("温度不可控时对照分裂只留簇证据: %+v", consistency)
+		}
+		if consistency["comparisonClusterCount"] != 3 {
+			t.Fatalf("对照簇计数证据保留: %+v", consistency)
+		}
+	})
+	t.Run("全部采样失败仍走 skipped 证据不足路径", func(t *testing.T) {
+		observations := SamplingObservations{
+			TemperatureUncontrolled: true,
+			TokenUnits: []SamplingUnitObservation{
+				{Key: "coin", TargetBuckets: map[string]int{}, TargetFailures: 6},
+			},
+			ConsistencyTargetFailures: 6,
+		}
+		item := EvaluateSamplingStatistics(observations)
+		if item.Status != "skipped" || item.Evidence["requestFailure"] != true {
+			t.Fatalf("全失败不伪造成失败: %+v", item)
+		}
+	})
+}
+
+// anthropicSplitTransport 以 Anthropic content 格式交替返回两个互斥答案，
+// 模拟默认温度下诚实弱模型的天然答案分裂。
+type anthropicSplitTransport struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (t *anthropicSplitTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	t.mu.Lock()
+	t.count++
+	answer := "1340"
+	if t.count%2 == 0 {
+		answer = "999"
+	}
+	t.mu.Unlock()
+	responseBody := fmt.Sprintf(`{"model":%q,"content":[{"type":"text","text":%q}],"usage":{"input_tokens":10,"output_tokens":2}}`, payload.Model, answer)
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(responseBody))}, nil
+}
+
+// CONCERN-A 传导：Anthropic 协议套件运行采样族时温度不可控标志从 suite 侧
+// 传入 Evaluate——分裂答案只落簇证据，整项 passed 且无 mixing_detected。
+func TestRunSamplingStatisticsTemperatureUncontrolledAnthropic(t *testing.T) {
+	suite := Suite{
+		Endpoint: "https://anthropic.example",
+		Client:   &http.Client{Transport: &anthropicSplitTransport{}},
+		Model:    "claude-opus-5",
+		Protocol: modelcheckprofile.ProtocolAnthropic,
+	}
+	anchor, err := BuildIdentityAnchorProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, terminal, err := RunSamplingStatistics(context.Background(), suite, time.Second, anchor)
+	if err != nil || terminal {
+		t.Fatalf("err=%v terminal=%v", err, terminal)
+	}
+	if item.Status != "passed" || samplingReasonCodesContain(item.Evidence, "mixing_detected") {
+		t.Fatalf("Anthropic 温度不可控路径分裂答案不得判混用: status=%s reasons=%+v", item.Status, item.Evidence["reasonCodes"])
+	}
+	consistency := item.Evidence["consistencySampling"].(map[string]any)
+	if consistency["verdict"] != "evidence_only" || consistency["temperatureControlled"] != false {
+		t.Fatalf("降级证据=%+v", consistency)
+	}
+	if consistency["clusterCount"] != 2 {
+		t.Fatalf("簇证据保留: %+v", consistency)
 	}
 }
 

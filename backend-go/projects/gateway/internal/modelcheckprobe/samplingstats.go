@@ -18,6 +18,18 @@ package modelcheckprobe
 //     对错格局做 McNemar 精确二项检验（锚点按题目文本配对，对照套件复用
 //     目标侧锚点题），p<0.05 且目标系统性差于对照 → systematic_divergence。
 //
+// 温度可控性边界（2026-10-02 终审 CONCERN-A）：consistency_sampling 的
+// temperature=0 同题一致前提仅在温度可实际送达上游的路径成立。两条温度
+// 不可控路径——OpenAI OAuth Codex 适配（tunedBasic 不应用温度，且
+// normalizeOpenAIOAuthCodexRequest 在协议层 delete temperature）与
+// Anthropic 协议（buildBasicWithTunings 只写 max_tokens，不送温度字段）——
+// 上的一致性采样运行在默认温度，诚实账户（尤其弱模型）答案天然分裂，不得
+// 保留 mixing_detected 硬判。三个子机制的差异化处理：consistency_sampling
+// 在温度不可控路径降级 evidence_only（簇结构证据照常落库、不判 mixing_
+// detected）；token_distribution 本就 evidence_only（2026-10-02 判分降级）
+// 不受温度影响；paired_divergence 不受影响——配对检验对温度不敏感（目标与
+// 对照两侧同条件采样，采样噪声由 McNemar 的 p 值处理）。
+//
 // 评分契约：三项均不进普通分母（MaxScore=0）；mixing_detected /
 // systematic_divergence 任一成立由 summary 层整轮短路 suspicious（token_
 // distribution 的 distribution_mismatch / distribution_divergent 已随判分
@@ -200,6 +212,33 @@ type SamplingObservations struct {
 	ConsistencyComparisonFailures int
 	Pairs                         []SamplingPair
 	PairedAttached                bool
+	// TemperatureUncontrolled 为 true 表示目标侧采样温度无法送达上游
+	// （CONCERN-A：Codex 适配或 Anthropic 协议），consistency_sampling 恒
+	// 降级 evidence_only。零值 false 保持既有温度可控路径的判分语义。
+	TemperatureUncontrolled bool
+}
+
+// samplingTemperatureControlled 判定采样温度能否实际送达上游（纯函数）。
+// 两条不可控路径（与 tunedBasic 的实际请求构造一致）：
+//   - Adapter == AdapterOpenAIOAuthCodex：tunedBasic 走 BuildOpenAIOAuthCodexBasic
+//     不应用温度，且 normalizeOpenAIOAuthCodexRequest 在协议层 delete temperature；
+//   - Protocol == anthropic：buildBasicWithTunings 对 Anthropic 只写 max_tokens，
+//     不送温度字段（§4.2 既定避 400 约束）。
+//
+// openai_chat / openai_responses 直连与 gemini_native 均显式写 temperature，
+// 温度可控。
+func samplingTemperatureControlled(adapter string, protocol modelcheckprofile.Protocol) bool {
+	return adapter != AdapterOpenAIOAuthCodex && protocol != modelcheckprofile.ProtocolAnthropic
+}
+
+// samplingTemperatureReachable 报告本套件（目标侧）的采样温度是否可送达
+// 上游；协议解析与 tunedBasic 同源（UpstreamProtocol 优先，回落 Protocol）。
+func (s Suite) samplingTemperatureReachable() bool {
+	protocol := s.UpstreamProtocol
+	if protocol == "" {
+		protocol = s.Protocol
+	}
+	return samplingTemperatureControlled(s.Adapter, protocol)
 }
 
 // RunSamplingStatistics 执行 §17 采样统计族并返回家族证据项；第二个返回值
@@ -230,7 +269,14 @@ func RunSamplingStatistics(ctx context.Context, input Suite, timeout time.Durati
 		}
 		comparisonRun, comparisonTerminal = comparison.familyRunner(timeout)
 	}
-	observations := SamplingObservations{ComparisonAttached: comparison != nil, PairedAttached: comparison != nil}
+	observations := SamplingObservations{
+		ComparisonAttached: comparison != nil,
+		PairedAttached:     comparison != nil,
+		// CONCERN-A 传导：温度不可控（Codex 适配 / Anthropic 协议）时
+		// consistency_sampling 降级 evidence_only，只按目标侧判定（对照侧
+		// 分裂本就不产生处罚，仅记 comparisonAnomaly 证据）。
+		TemperatureUncontrolled: !input.samplingTemperatureReachable(),
+	}
 
 	// token_distribution：串行错峰，目标与对照逐采样交错。
 	observations.TokenUnits = make([]SamplingUnitObservation, 0, samplingUnitCount)
@@ -353,7 +399,9 @@ func samplingTerminalEvaluation(result Result) Evaluation {
 //	      "clusterSizes": {"1340": 6},     // 键为数值归一后的答案（≤50 字）
 //	      "comparisonClusterCount": 2,     // 有对照时输出
 //	      "comparisonAnomaly": bool,       // 对照分裂而目标一致
-//	      "verdict": "passed" | "failed" | "insufficient"
+//	      "temperatureControlled": false,  // 仅温度不可控路径输出（CONCERN-A
+//	                                    // 降级证据，便于排障）
+//	      "verdict": "passed" | "failed" | "evidence_only" | "insufficient"
 //	  },
 //	  "pairedDivergence": {
 //	      "pairCount": 9,
@@ -424,7 +472,17 @@ func EvaluateSamplingStatistics(observations SamplingObservations) Evaluation {
 	}
 	consistencyVerdict := "insufficient"
 	if len(observations.ConsistencyTarget) > 0 {
-		if len(targetClusters) >= 2 {
+		if observations.TemperatureUncontrolled {
+			// CONCERN-A：温度不可控路径（Codex 适配 / Anthropic 协议）上
+			// temperature=0 同题一致前提不成立——采样运行在默认温度，诚实
+			// 账户（尤其弱模型）答案天然分裂。簇结构证据照常落库，verdict 恒
+			// evidence_only，不产生 mixing_detected；对照分裂同理可能是温度
+			// 噪声，不再记 comparisonAnomaly。token_distribution 不受影响
+			// （本就 evidence_only）；paired_divergence 不受影响（配对检验对
+			// 温度不敏感：两侧同条件采样，McNemar 的 p 值处理噪声）。
+			consistencyVerdict = "evidence_only"
+			consistencyRecord["temperatureControlled"] = false
+		} else if len(targetClusters) >= 2 {
 			consistencyVerdict = "failed"
 			reasonCodes = append(reasonCodes, "mixing_detected")
 		} else {
