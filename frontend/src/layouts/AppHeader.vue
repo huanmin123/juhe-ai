@@ -240,7 +240,7 @@ defineEmits<{
   align-items: center;
   justify-content: center;
   flex: 0 0 34px;
-  color: #fff;
+  color: var(--juhe-fg-invert);
   font-size: 13px;
   font-weight: 600;
   line-height: 1;

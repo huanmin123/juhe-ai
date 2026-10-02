@@ -2030,10 +2030,10 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.chat-workspace { height: var(--app-visual-viewport-height, 100dvh); min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); overflow: hidden; background: #fff; border: 0; border-radius: 0; }
+.chat-workspace { height: var(--app-visual-viewport-height, 100dvh); min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); overflow: hidden; background: var(--juhe-surface); border: 0; border-radius: 0; }
 .conversation-panel { min-width: 0; border-right: 1px solid var(--juhe-border); background: var(--juhe-surface-soft); }
 .chat-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.composer-shell { position: relative; padding: 12px clamp(12px, 3vw, 28px) 14px; border-top: 1px solid var(--juhe-border); background: #fff; }
+.composer-shell { position: relative; padding: 12px clamp(12px, 3vw, 28px) 14px; border-top: 1px solid var(--juhe-border); background: var(--juhe-surface); }
 .turn-editing-bar { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 4px 4px; color: var(--juhe-muted); font-size: 12px; }
 .turn-limit-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; padding: 0 4px 4px; color: var(--juhe-muted); font-size: 12px; }
 .submission-confirmation-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 0 4px 4px; color: var(--juhe-warn); font-size: 12px; }
@@ -2052,13 +2052,13 @@ onBeforeUnmount(() => {
 :deep(.conversation-item) { width: 100%; height: 38px; display: flex; align-items: stretch; overflow: hidden; margin-bottom: 3px; color: var(--juhe-fg); font-size: 13px; background: transparent; border: 1px solid transparent; border-radius: 6px; }
 :deep(.conversation-item-select) { min-width: 0; flex: 1; overflow: hidden; padding: 0 10px; color: inherit; font: inherit; line-height: 36px; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 0; cursor: pointer; }
 :deep(.conversation-more-button) { width: 38px; flex: 0 0 38px; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--juhe-muted); background: transparent; border: 0; cursor: pointer; }
-:deep(.conversation-item:hover) { background: #fff; border-color: var(--juhe-border); }
+:deep(.conversation-item:hover) { background: var(--juhe-surface); border-color: var(--juhe-border); }
 :deep(.conversation-item.active) { background: var(--juhe-accent-soft); border-color: var(--juhe-border-strong); }
 :deep(.conversation-load-more) { width: 100%; height: 34px; color: var(--juhe-muted); background: transparent; border: 0; cursor: pointer; }
 :deep(.conversation-load-more:hover) { color: var(--juhe-accent); }
 :deep(.conversation-load-more:disabled) { color: var(--juhe-faint); cursor: wait; }
 :deep(.conversation-list-empty) { padding: 32px 12px; color: var(--juhe-faint); text-align: center; }
-.conversation-context-menu { position: fixed; z-index: 1100; width: 136px; padding: 5px; background: #fff; border: 1px solid var(--juhe-border); border-radius: 7px; box-shadow: 0 10px 26px rgba(34, 40, 43, .16); }
+.conversation-context-menu { position: fixed; z-index: 1100; width: 136px; padding: 5px; background: var(--juhe-surface); border: 1px solid var(--juhe-border); border-radius: 7px; box-shadow: 0 10px 26px rgba(34, 40, 43, .16); }
 .conversation-context-menu button { width: 100%; display: block; padding: 7px 9px; color: var(--juhe-fg-soft); text-align: left; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
 .conversation-context-menu button:hover { background: var(--juhe-surface-soft); }
 .conversation-context-menu button.is-danger { color: var(--juhe-danger); }

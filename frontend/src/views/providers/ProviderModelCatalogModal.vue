@@ -342,7 +342,7 @@ function modelRowKey(record: ProviderModelPricing): string {
   display: grid;
   gap: 10px;
   padding: 12px;
-  background: #fff;
+  background: var(--juhe-surface);
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
 }

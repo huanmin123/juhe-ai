@@ -876,7 +876,7 @@ onMounted(loadData)
   padding: 12px;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .team-member-card div {

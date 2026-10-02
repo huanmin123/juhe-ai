@@ -191,7 +191,7 @@ function handleTableChange(...args: unknown[]): void {
   display: inline-block;
   max-width: 100%;
   overflow: hidden;
-  color: #cf1322;
+  color: var(--juhe-danger);
   text-overflow: ellipsis;
   vertical-align: bottom;
   white-space: nowrap;
@@ -203,20 +203,20 @@ function handleTableChange(...args: unknown[]): void {
   padding: 12px;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 :deep(.ant-table-tbody > tr.stats-background-job-row-failed > td) {
-  background: #fff1f0;
+  background: var(--juhe-danger-soft);
 }
 
 :deep(.ant-table-tbody > tr.stats-background-job-row-failed:hover > td) {
-  background: #ffe1e0;
+  background: var(--juhe-danger-soft);
 }
 
 .background-job-card-failed {
-  border-color: #ffa39e;
-  background: #fff1f0;
+  border-color: var(--juhe-danger-line);
+  background: var(--juhe-danger-soft);
 }
 
 .background-job-card-head {

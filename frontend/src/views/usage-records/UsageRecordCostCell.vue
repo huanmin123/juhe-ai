@@ -13,7 +13,7 @@ defineProps<{
 
 <style scoped>
 .cost-cell {
-  color: #059669;
+  color: var(--juhe-ok);
   font-family: Consolas, 'Courier New', monospace;
 }
 

@@ -793,8 +793,8 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
 }
 
 .usage-stats-account-filter-remove:hover {
-  color: #cf1322;
-  background: #fff1f0;
+  color: var(--juhe-danger);
+  background: var(--juhe-danger-soft);
 }
 
 .usage-stats-legend-dot {

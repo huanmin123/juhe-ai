@@ -314,7 +314,7 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
   padding: 10px;
-  background: #fff;
+  background: var(--juhe-surface);
   cursor: pointer;
   text-align: left;
 }
@@ -408,7 +408,7 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
   grid-template-columns: minmax(150px, 1fr) minmax(110px, 0.7fr) 64px minmax(220px, 1.5fr) minmax(140px, 1fr);
   gap: 10px;
   padding: 9px 10px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .api-doc-field-row > * {

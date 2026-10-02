@@ -167,13 +167,13 @@ const open = defineModel<boolean>('open', { required: true })
   min-width: 0;
   padding: 4px 10px;
   overflow: hidden;
-  color: #0f766e;
+  color: var(--juhe-ok);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
   border-radius: 6px;
-  background: #ecfeff;
+  background: var(--juhe-ok-soft);
 }
 
 .created-key-copy-button {

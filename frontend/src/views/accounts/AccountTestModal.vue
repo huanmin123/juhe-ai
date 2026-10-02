@@ -244,7 +244,7 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
   justify-content: center;
   width: 40px;
   height: 40px;
-  color: #fff;
+  color: var(--juhe-fg-invert);
   border-radius: 8px;
   background: var(--juhe-accent);
 }
@@ -292,7 +292,7 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
 
 .test-field-error {
   margin-top: 6px;
-  color: #ff4d4f;
+  color: var(--juhe-danger);
   font-size: 12px;
   line-height: 1.5;
 }

@@ -364,7 +364,7 @@ onBeforeUnmount(() => {
   --surface-strong: #ffffff;
   --white: #ffffff;
   --fg: #22282b;
-  --muted: #8b9190;
+  --muted: #6d7372;
   --border: rgba(34, 40, 43, .1);
   --border-strong: rgba(34, 40, 43, .24);
   --accent: #758789;

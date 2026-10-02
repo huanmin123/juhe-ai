@@ -166,7 +166,7 @@ watch(
   margin: 10px 6px 14px;
   padding: 0 12px;
   color: var(--juhe-muted);
-  background: #fff;
+  background: var(--juhe-surface);
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
   cursor: pointer;

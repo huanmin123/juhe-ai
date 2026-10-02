@@ -200,9 +200,9 @@ function clientProfileLabel(value: string): string {
 
 <style scoped>
 .response-policy-shell {
-  border: 1px solid #e9d5ff;
+  border: 1px solid var(--juhe-violet-line);
   border-radius: 16px;
-  background: #fcfaff;
+  background: var(--juhe-violet-soft);
 }
 
 .response-policy-collapse {
@@ -220,7 +220,7 @@ function clientProfileLabel(value: string): string {
 }
 
 .response-policy-collapse :deep(.ant-collapse-content) {
-  border-top: 1px solid #ede9fe;
+  border-top: 1px solid var(--juhe-violet-line);
   background: transparent;
 }
 
@@ -289,7 +289,7 @@ function clientProfileLabel(value: string): string {
   overflow: hidden;
   border: 1px solid var(--juhe-border);
   border-radius: 12px !important;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .rule-collapse :deep(.ant-collapse-header) {

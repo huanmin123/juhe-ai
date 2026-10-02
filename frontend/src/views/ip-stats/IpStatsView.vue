@@ -746,7 +746,7 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   padding: 14px;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .ip-detail-mobile-head {

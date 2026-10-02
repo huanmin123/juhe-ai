@@ -129,8 +129,8 @@ function showRouteAssetLoadOverlay(options: {
     'padding:24px',
     'border-radius:8px',
     'background:#fff',
-    'box-shadow:0 20px 48px rgba(15,23,42,0.22)',
-    'color:#0f172a',
+    'box-shadow:0 20px 48px rgba(34,40,43,0.22)',
+    'color:#22282b',
     'font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
     'text-align:left'
   ].join(';')
@@ -141,7 +141,7 @@ function showRouteAssetLoadOverlay(options: {
 
   const description = document.createElement('div')
   description.textContent = options.description
-  description.style.cssText = 'font-size:14px;line-height:22px;color:#475569;margin-bottom:18px'
+  description.style.cssText = 'font-size:14px;line-height:22px;color:#3c4447;margin-bottom:18px'
 
   const button = document.createElement('button')
   button.type = 'button'

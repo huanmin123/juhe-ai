@@ -991,7 +991,7 @@ const emit = defineEmits<{
 .wizard-step.current .wizard-step-no {
   background: var(--juhe-primary-grad);
   border-color: transparent;
-  color: #fff;
+  color: var(--juhe-fg-invert);
 }
 
 .wizard-step.done .wizard-step-no {
@@ -1075,7 +1075,7 @@ const emit = defineEmits<{
 
 .modal-title-name :deep(.ant-input:focus) {
   border-color: var(--juhe-accent-mid);
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .modal-title-chip {
@@ -1089,7 +1089,7 @@ const emit = defineEmits<{
   padding: 3px 10px;
   border-radius: 999px;
   background: var(--juhe-primary-grad);
-  color: #fff;
+  color: var(--juhe-fg-invert);
   font-size: 12px;
   font-weight: 600;
 }
@@ -1160,7 +1160,7 @@ const emit = defineEmits<{
   border: 1px solid var(--juhe-border);
   border-radius: var(--juhe-radius);
   overflow: hidden;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .bench-card-head {
@@ -1172,7 +1172,7 @@ const emit = defineEmits<{
   padding: 12px 16px;
   border: 0;
   border-radius: 0;
-  background: #fff;
+  background: var(--juhe-surface);
   cursor: pointer;
   font: inherit;
   color: inherit;
@@ -1200,12 +1200,12 @@ const emit = defineEmits<{
 }
 
 .bench-card-icon.ok {
-  background: #eef4ef;
+  background: var(--juhe-ok-soft);
   color: var(--juhe-ok);
 }
 
 .bench-card-icon.warn {
-  background: #f4efe9;
+  background: var(--juhe-surface-soft);
   color: var(--juhe-coral);
 }
 
@@ -1320,7 +1320,7 @@ const emit = defineEmits<{
   min-width: 0;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .account-form,
@@ -1429,7 +1429,7 @@ const emit = defineEmits<{
   padding: 0;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .advanced-section-stack :deep(.response-policy-collapse) {
@@ -1437,7 +1437,7 @@ const emit = defineEmits<{
   padding: 0;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .advanced-section-stack :deep(.error-policy-collapse .ant-collapse-header) {

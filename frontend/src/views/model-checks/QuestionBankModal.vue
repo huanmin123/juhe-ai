@@ -641,7 +641,7 @@ async function confirmReject() {
 }
 
 .question-item-reject {
-  color: #dc2626;
+  color: var(--juhe-danger);
 }
 
 .question-empty {
@@ -717,7 +717,7 @@ async function confirmReject() {
 }
 
 .question-detail-descriptions {
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .question-reject-hint {

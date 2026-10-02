@@ -237,7 +237,7 @@ const emit = defineEmits<{
   padding: 14px;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .usage-mobile-head {

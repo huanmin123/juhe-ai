@@ -833,7 +833,7 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 </script>
 
 <style scoped>
-.ai-composer { position: relative; border: 1px solid var(--juhe-border-strong); border-radius: 10px; background: #fff; box-shadow: 0 2px 8px rgba(34, 40, 43, .05); }
+.ai-composer { position: relative; border: 1px solid var(--juhe-border-strong); border-radius: 10px; background: var(--juhe-surface); box-shadow: 0 2px 8px rgba(34, 40, 43, .05); }
 .ai-composer:focus-within { border-color: var(--juhe-accent); box-shadow: 0 0 0 2px rgba(83, 105, 107, .12); }
 .ai-composer-footer { min-height: 44px; display: flex; align-items: center; gap: 4px; padding: 5px 8px; color: var(--juhe-faint); font-size: 11px; border-top: 1px solid var(--juhe-border); }
 .ai-composer-model-controls { min-width: 0; flex: 1; display: flex; align-items: center; gap: 1px; overflow-x: auto; scrollbar-width: none; }
@@ -845,7 +845,7 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .ai-composer-editor { min-height: 56px; max-height: 220px; overflow-y: auto; padding: 9px 12px; }
 .ai-composer-editor :deep(.ProseMirror) { min-height: 38px; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-composer-editor :deep(.ProseMirror p.is-editor-empty:first-child::before) { color: var(--juhe-faint); content: attr(data-placeholder); float: left; height: 0; pointer-events: none; }
-.ai-composer-command-menu { position: absolute; z-index: 3; bottom: 76px; left: 8px; width: min(430px, calc(100% - 16px)); padding: 5px; background: #fff; border: 1px solid var(--juhe-border); border-radius: 7px; box-shadow: 0 10px 24px rgba(34, 40, 43, .14); }
+.ai-composer-command-menu { position: absolute; z-index: 3; bottom: 76px; left: 8px; width: min(430px, calc(100% - 16px)); padding: 5px; background: var(--juhe-surface); border: 1px solid var(--juhe-border); border-radius: 7px; box-shadow: 0 10px 24px rgba(34, 40, 43, .14); }
 .ai-composer-command-menu button { width: 100%; display: grid; grid-template-columns: minmax(96px, auto) minmax(0, 1fr); align-items: start; column-gap: 12px; padding: 8px; text-align: left; border: 0; background: transparent; cursor: pointer; }
 .ai-composer-command-menu strong { color: var(--juhe-fg); font-size: 13px; line-height: 19px; white-space: nowrap; }
 .ai-composer-command-description { color: var(--juhe-muted); font-size: 12px; line-height: 19px; }

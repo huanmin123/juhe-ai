@@ -440,7 +440,7 @@ defineEmits<{
   padding: 12px;
   border: 1px solid var(--juhe-border-strong);
   border-radius: 14px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .oauth-step-card span {

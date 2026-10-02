@@ -251,7 +251,7 @@ function handleActionClick(key: string) {
   padding: 14px;
   border: 1px solid var(--juhe-border);
   border-radius: 14px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .account-mobile-card-head {
@@ -297,17 +297,17 @@ function handleActionClick(key: string) {
 
 .authorized-account-icon {
   flex: none;
-  color: #08979c;
+  color: var(--juhe-ok);
   cursor: help;
   font-size: 14px;
 }
 
 .authorized-account-icon.source-danger {
-  color: #cf1322;
+  color: var(--juhe-danger);
 }
 
 .authorized-account-icon.source-warning {
-  color: #d48806;
+  color: var(--juhe-warn);
 }
 
 .authorized-account-tooltip-text {
@@ -392,10 +392,10 @@ function handleActionClick(key: string) {
 }
 
 .expired-cell {
-  color: #cf1322;
+  color: var(--juhe-danger);
 }
 
 .proxy-error {
-  color: #dc2626 !important;
+  color: var(--juhe-danger) !important;
 }
 </style>

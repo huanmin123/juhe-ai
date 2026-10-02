@@ -275,7 +275,7 @@ defineExpose({ scrollToBottom, followStream, captureScrollAnchor, restoreScrollA
 </script>
 
 <style scoped>
-.message-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; outline: none; background: #fff; scrollbar-gutter: stable; }
+.message-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; outline: none; background: var(--juhe-surface); scrollbar-gutter: stable; }
 .message-virtual-space { position: relative; width: 100%; }
 .message-row { position: absolute; top: 0; left: 0; width: 100%; display: flex; align-items: flex-start; padding: 14px clamp(14px, 3vw, 36px); }
 .message-row-user { justify-content: flex-end; }

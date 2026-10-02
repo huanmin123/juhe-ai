@@ -611,7 +611,7 @@ onBeforeUnmount(() => {
 
 /* 分组折叠卡 */
 .settings-group {
-  background: var(--juhe-surface, #fff);
+  background: var(--juhe-surface);
   border: 1px solid var(--juhe-border, rgba(34, 40, 43, 0.1));
   border-radius: var(--juhe-radius, 12px);
   box-shadow: 0 10px 30px rgba(34, 40, 43, 0.05);

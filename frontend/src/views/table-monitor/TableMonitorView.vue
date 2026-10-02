@@ -866,7 +866,7 @@ onBeforeUnmount(() => {
   gap: 10px;
   padding: 12px;
   text-align: left;
-  background: #fff;
+  background: var(--juhe-surface);
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
   box-shadow: 0 1px 2px rgb(15 23 42 / 4%);

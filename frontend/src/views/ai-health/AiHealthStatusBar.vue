@@ -84,10 +84,11 @@ function scrollToLatest(): void {
   })
 }
 
+// 画布取色须为字面量，色值镜像主题令牌（ok/danger/faint）
 function statusColor(status: AiHealthHourPoint['status']): string {
-  if (status === 'success') return '#10b981'
-  if (status === 'failure') return '#ef4444'
-  return '#d7dde5'
+  if (status === 'success') return '#6f8f7a'
+  if (status === 'failure') return '#9d5547'
+  return '#a9aeac'
 }
 
 function statusLabel(status: AiHealthHourPoint['status']): string {

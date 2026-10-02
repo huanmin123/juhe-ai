@@ -1456,7 +1456,7 @@ onMounted(() => {
   padding: 16px;
   border: 1px solid var(--juhe-border);
   border-radius: 16px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .form-grid {

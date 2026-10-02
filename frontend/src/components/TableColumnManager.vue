@@ -304,7 +304,7 @@ function normalizeDraftItemOrder(items: TableColumnManagerItem[]): TableColumnMa
   padding: 10px 12px 10px 38px;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
   transition: border-color 0.16s ease, background-color 0.16s ease, opacity 0.16s ease;
 }
 

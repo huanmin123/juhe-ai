@@ -74,7 +74,7 @@ function claudeUsageBar(key: string, label: string, window?: ClaudeUsageWindow):
     percent,
     displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
     resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '—',
-    color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
+    color: rawPercent >= 100 ? '#9d5547' : rawPercent >= 80 ? '#a98548' : '#6f8f7a',
     tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
   }
 }
@@ -97,7 +97,7 @@ export function grokOAuthUsageBar(account: OAuthUsageDisplayAccount): OAuthUsage
     percent: Math.min(Math.round(rawPercent), 100),
     displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
     resetText: usage.periodEnd ? formatRelativeReset(usage.periodEnd) : '—',
-    color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
+    color: rawPercent >= 100 ? '#9d5547' : rawPercent >= 80 ? '#a98548' : '#6f8f7a',
     tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal',
     tooltip: tooltipSegments.join(' · ')
   }
@@ -169,7 +169,7 @@ function oauthUsageBar(key: string, label: string, window?: { utilization: numbe
     percent,
     displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
     resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '现在',
-    color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
+    color: rawPercent >= 100 ? '#9d5547' : rawPercent >= 80 ? '#a98548' : '#6f8f7a',
     tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
   }
 }

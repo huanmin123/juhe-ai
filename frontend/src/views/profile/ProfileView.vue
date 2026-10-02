@@ -410,7 +410,7 @@ async function focusRequestedSection(): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .profile-hero :deep(.ant-card-body) {
@@ -430,12 +430,12 @@ async function focusRequestedSection(): Promise<void> {
   align-items: center;
   justify-content: center;
   flex: 0 0 72px;
-  color: #fff;
+  color: var(--juhe-fg-invert);
   font-size: 24px;
   font-weight: 800;
   line-height: 1;
-  background: linear-gradient(145deg, #0f766e, #14b8a6);
-  border: 4px solid #ccfbf1;
+  background: var(--juhe-primary-grad);
+  border: 4px solid var(--juhe-surface);
   border-radius: 50%;
   box-shadow: 0 10px 24px rgba(13, 148, 136, 0.2);
 }
@@ -488,9 +488,9 @@ async function focusRequestedSection(): Promise<void> {
   align-items: flex-start;
   gap: 12px;
   padding: 16px 18px;
-  color: #92400e;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  color: var(--juhe-warn);
+  background: var(--juhe-warn-soft);
+  border: 1px solid var(--juhe-warn-line);
   border-radius: 14px;
   box-shadow: 0 8px 22px rgba(146, 64, 14, 0.06);
 }
@@ -502,8 +502,8 @@ async function focusRequestedSection(): Promise<void> {
   align-items: center;
   justify-content: center;
   flex: 0 0 34px;
-  color: #b45309;
-  background: #fef3c7;
+  color: var(--juhe-warn);
+  background: var(--juhe-warn-soft);
   border-radius: 10px;
 }
 
@@ -514,7 +514,7 @@ async function focusRequestedSection(): Promise<void> {
 
 .profile-required-notice p {
   margin: 4px 0 0;
-  color: #a16207;
+  color: var(--juhe-warn);
   font-size: 13px;
   line-height: 20px;
 }
@@ -573,9 +573,9 @@ async function focusRequestedSection(): Promise<void> {
   align-items: center;
   justify-content: center;
   flex: 0 0 36px;
-  color: #0f766e;
+  color: var(--juhe-ok);
   font-size: 16px;
-  background: #ccfbf1;
+  background: var(--juhe-ok-soft);
   border-radius: 10px;
 }
 
@@ -644,7 +644,7 @@ async function focusRequestedSection(): Promise<void> {
   justify-content: center;
   color: var(--juhe-fg-soft);
   font-size: 15px;
-  background: #fff;
+  background: var(--juhe-surface);
   border: 1px solid var(--juhe-border);
   border-radius: 9px;
 }
@@ -707,13 +707,13 @@ async function focusRequestedSection(): Promise<void> {
 }
 
 .profile-capability-icon.image {
-  color: #7c3aed;
-  background: #ede9fe;
+  color: var(--juhe-violet);
+  background: var(--juhe-violet-soft);
 }
 
 .profile-capability-icon.status {
-  color: #047857;
-  background: #d1fae5;
+  color: var(--juhe-ok);
+  background: var(--juhe-ok-soft);
 }
 
 .profile-capability-copy {

@@ -68,7 +68,7 @@ function actionTagColor(template: ResponseInspectionActionTemplate): string {
   gap: 7px;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
   padding: 10px 12px;
   color: inherit;
   cursor: pointer;
@@ -111,12 +111,12 @@ function actionTagColor(template: ResponseInspectionActionTemplate): string {
   flex: 0 0 auto;
   border: 2px solid var(--juhe-border-strong);
   border-radius: 50%;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .response-action-option.active .response-action-option-dot {
   border-color: var(--juhe-accent);
-  box-shadow: inset 0 0 0 2px #fff;
+  box-shadow: inset 0 0 0 2px var(--juhe-surface);
   background: var(--juhe-accent);
 }
 

@@ -129,7 +129,7 @@ function viewerRowKey(viewer: OperationLogDetailViewer): string {
   padding: 12px;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
   color: var(--juhe-muted);
   font-size: 12px;
 }

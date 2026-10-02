@@ -187,6 +187,6 @@ function cardTitle(record: RuntimeLogListRecord): string {
 }
 
 .error-message-cell {
-  color: #dc2626;
+  color: var(--juhe-danger);
 }
 </style>

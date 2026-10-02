@@ -492,7 +492,7 @@ function collapseAllRules() {
   overflow: hidden;
   border: 1px solid var(--juhe-border);
   border-radius: 12px !important;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .rule-collapse :deep(.ant-collapse-header) {

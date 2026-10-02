@@ -355,27 +355,27 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 .row-actions-button .row-action-tone-primary.ant-btn-primary,
 .row-actions-button .row-action-tone-primary.ant-btn-primary:hover,
 .row-actions-button .row-action-tone-primary.ant-btn-primary:focus-visible {
-  color: #fff;
+  color: var(--juhe-fg-invert);
 }
 
 .row-action-tone-success {
-  color: #16a34a;
+  color: var(--juhe-ok);
 }
 
 .row-action-tone-warning {
-  color: #d97706;
+  color: var(--juhe-warn);
 }
 
 .row-action-tone-info {
-  color: #0891b2;
+  color: var(--juhe-accent-mid);
 }
 
 .row-action-tone-purple {
-  color: #7c3aed;
+  color: var(--juhe-violet);
 }
 
 .row-action-tone-danger {
-  color: #dc2626;
+  color: var(--juhe-danger);
 }
 
 .row-actions-icon .row-action-button:hover {
@@ -383,33 +383,33 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 }
 
 .row-actions-icon .row-action-tone-primary:hover {
-  color: #0958d9;
+  color: var(--juhe-accent);
   background: var(--juhe-accent-soft);
 }
 
 .row-actions-icon .row-action-tone-success:hover {
-  color: #15803d;
-  background: #f0fdf4;
+  color: var(--juhe-ok);
+  background: var(--juhe-ok-soft);
 }
 
 .row-actions-icon .row-action-tone-warning:hover {
-  color: #b45309;
-  background: #fffbeb;
+  color: var(--juhe-warn);
+  background: var(--juhe-warn-soft);
 }
 
 .row-actions-icon .row-action-tone-info:hover {
-  color: #0e7490;
-  background: #ecfeff;
+  color: var(--juhe-accent-mid);
+  background: var(--juhe-accent-soft);
 }
 
 .row-actions-icon .row-action-tone-purple:hover {
-  color: #6d28d9;
-  background: #f5f3ff;
+  color: var(--juhe-violet);
+  background: var(--juhe-violet-soft);
 }
 
 .row-actions-icon .row-action-tone-danger:hover {
-  color: #b91c1c;
-  background: #fef2f2;
+  color: var(--juhe-danger);
+  background: var(--juhe-danger-soft);
 }
 
 .row-action-more-button {
@@ -435,22 +435,22 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 }
 
 .row-action-menu-tone-success .row-action-menu-icon {
-  color: #16a34a;
+  color: var(--juhe-ok);
 }
 
 .row-action-menu-tone-warning .row-action-menu-icon {
-  color: #d97706;
+  color: var(--juhe-warn);
 }
 
 .row-action-menu-tone-info .row-action-menu-icon {
-  color: #0891b2;
+  color: var(--juhe-accent-mid);
 }
 
 .row-action-menu-tone-purple .row-action-menu-icon {
-  color: #7c3aed;
+  color: var(--juhe-violet);
 }
 
 .row-action-menu-tone-danger .row-action-menu-icon {
-  color: #dc2626;
+  color: var(--juhe-danger);
 }
 </style>

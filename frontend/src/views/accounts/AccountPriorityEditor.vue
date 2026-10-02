@@ -161,7 +161,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
   overflow: hidden;
   border: 1px solid var(--juhe-border-strong);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
   box-shadow: 0 0 0 2px rgba(83, 105, 107, .10);
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
@@ -218,7 +218,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
 .account-priority-confirm:hover:not(:disabled),
 .account-priority-confirm:focus-visible {
   background: var(--juhe-accent);
-  color: #fff;
+  color: var(--juhe-fg-invert);
   outline: none;
 }
 

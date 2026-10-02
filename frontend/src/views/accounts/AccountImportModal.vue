@@ -444,7 +444,7 @@ function downloadTextFile(filename: string, content: string, type: string): void
   padding: 14px;
   border: 1px solid var(--juhe-border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .import-section-head {
@@ -548,7 +548,7 @@ function downloadTextFile(filename: string, content: string, type: string): void
 }
 
 .summary-item.danger strong {
-  color: #dc2626;
+  color: var(--juhe-danger);
 }
 
 .source-summary {
@@ -579,7 +579,7 @@ function downloadTextFile(filename: string, content: string, type: string): void
 }
 
 .row-error {
-  color: #dc2626;
+  color: var(--juhe-danger);
 }
 
 @media (max-width: 900px) {

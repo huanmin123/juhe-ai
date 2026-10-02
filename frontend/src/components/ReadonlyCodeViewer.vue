@@ -270,7 +270,7 @@ function formatBytes(value: number): string {
 
 <style scoped>
 .readonly-code-viewer {
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .readonly-code-viewer-toolbar {
@@ -302,7 +302,7 @@ function formatBytes(value: number): string {
 }
 
 .readonly-code-viewer-warning {
-  color: #d97706;
+  color: var(--juhe-warn);
 }
 
 .readonly-code-viewer-editor {
@@ -327,14 +327,14 @@ function formatBytes(value: number): string {
   padding: 0 7px;
   border: 1px solid var(--juhe-border-strong);
   border-radius: 6px;
-  background: #fff;
+  background: var(--juhe-surface);
   color: var(--juhe-fg);
 }
 
 .readonly-code-viewer-editor :deep(.cm-panel.cm-search input.cm-textfield:focus) {
   border-color: var(--juhe-accent);
   outline: none;
-  box-shadow: 0 0 0 2px rgb(5 145 255 / 10%);
+  box-shadow: 0 0 0 2px rgba(83, 105, 107, .12);
 }
 
 .readonly-code-viewer-editor :deep(.cm-panel.cm-search .cm-button) {
@@ -342,7 +342,7 @@ function formatBytes(value: number): string {
   padding: 0 8px;
   border: 1px solid var(--juhe-border-strong);
   border-radius: 6px;
-  background: #fff;
+  background: var(--juhe-surface);
   color: var(--juhe-fg-soft);
   cursor: pointer;
 }

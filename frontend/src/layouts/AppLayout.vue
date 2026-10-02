@@ -730,7 +730,7 @@ watch(
 
 .content-immersive {
   padding: 0;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .immersive-mobile-menu-trigger {

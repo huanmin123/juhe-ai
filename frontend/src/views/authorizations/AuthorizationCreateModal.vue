@@ -187,7 +187,7 @@ defineEmits<{
 }
 
 .inline-radio-required {
-  color: var(--ant-color-error, #ff4d4f);
+  color: var(--ant-color-error, var(--juhe-danger));
   margin-inline-end: 4px;
 }
 

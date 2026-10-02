@@ -383,13 +383,13 @@ onBeforeUnmount(() => {
 .ai-health-legend { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; color: var(--juhe-muted); font-size: 13px; white-space: nowrap; }
 .ai-health-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .ai-health-legend i { width: 7px; height: 18px; border-radius: 2px; }
-.ai-health-legend .success { background: #10b981; }
-.ai-health-legend .failure { background: #ef4444; }
-.ai-health-legend .unknown { background: #d7dde5; }
+.ai-health-legend .success { background: var(--juhe-ok); }
+.ai-health-legend .failure { background: var(--juhe-danger); }
+.ai-health-legend .unknown { background: var(--juhe-faint); }
 .ai-health-content { min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; scrollbar-gutter: stable; display: flex; position: relative; flex-direction: column; }
 .ai-health-content :deep(.ant-spin-nested-loading), .ai-health-content :deep(.ant-spin-container) { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; }
 .ai-health-list { display: grid; gap: 12px; }
-.ai-health-account { min-width: 0; padding: 16px; border: 1px solid var(--juhe-border); border-radius: 8px; background: #fff; }
+.ai-health-account { min-width: 0; padding: 16px; border: 1px solid var(--juhe-border); border-radius: 8px; background: var(--juhe-surface); }
 .ai-health-account-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .ai-health-account-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .ai-health-account-title strong { max-width: min(480px, 55vw); overflow: hidden; color: var(--juhe-fg); font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
@@ -397,8 +397,8 @@ onBeforeUnmount(() => {
 .ai-health-account-rate strong { color: var(--juhe-fg); font-size: 20px; line-height: 1.1; }
 .ai-health-account-rate span { margin-top: 3px; color: var(--juhe-faint); font-size: 12px; }
 .ai-health-account-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 9px; color: var(--juhe-muted); font-size: 13px; }
-.success-text { color: #059669; }
-.failure-text { color: #dc2626; }
+.success-text { color: var(--juhe-ok); }
+.failure-text { color: var(--juhe-danger); }
 .unknown-text { color: var(--juhe-faint); }
 .ai-health-detail-error { margin-bottom: 12px; }
 .ai-health-range-labels { display: flex; justify-content: space-between; margin-top: 3px; color: var(--juhe-faint); font-size: 11px; }

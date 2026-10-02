@@ -14,10 +14,11 @@ export function announcementLevelColor(level: AnnouncementLevel): string {
   return 'blue'
 }
 
+// AntD a-tag :color 为 JS 消费，须为字面量，色值镜像主题令牌（danger/warn/faint/accent）
 export function announcementTimelineColor(level: AnnouncementLevel): string {
-  if (level === 'critical') return '#f5222d'
-  if (level === 'warning') return '#fa8c16'
-  if (level === 'normal') return '#bfbfbf'
+  if (level === 'critical') return '#9d5547'
+  if (level === 'warning') return '#a98548'
+  if (level === 'normal') return '#a9aeac'
   return '#53696b'
 }
 

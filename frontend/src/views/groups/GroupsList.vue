@@ -264,11 +264,11 @@ function forwardTableChange(...args: unknown[]) {
 }
 
 .account-count-value.available {
-  color: #0891b2;
+  color: var(--juhe-ok);
 }
 
 .account-count-value.limited {
-  color: #f59e0b;
+  color: var(--juhe-warn);
 }
 
 .account-count-unit {
@@ -290,17 +290,17 @@ function forwardTableChange(...args: unknown[]) {
 
 .authorized-group-icon {
   flex: none;
-  color: #08979c;
+  color: var(--juhe-ok);
   cursor: help;
   font-size: 14px;
 }
 
 .authorized-group-icon.source-danger {
-  color: #cf1322;
+  color: var(--juhe-danger);
 }
 
 .authorized-group-icon.source-warning {
-  color: #d48806;
+  color: var(--juhe-warn);
 }
 
 .authorized-tooltip-text {

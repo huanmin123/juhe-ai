@@ -182,7 +182,7 @@ const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, prop
 }
 
 .expired-cell {
-  color: #dc2626;
+  color: var(--juhe-danger);
 }
 
 .schedule-tag {
@@ -227,17 +227,17 @@ const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, prop
 
 .authorized-account-icon {
   flex: none;
-  color: #08979c;
+  color: var(--juhe-ok);
   cursor: help;
   font-size: 14px;
 }
 
 .authorized-account-icon.source-danger {
-  color: #cf1322;
+  color: var(--juhe-danger);
 }
 
 .authorized-account-icon.source-warning {
-  color: #d48806;
+  color: var(--juhe-warn);
 }
 
 .authorized-account-tooltip-text {

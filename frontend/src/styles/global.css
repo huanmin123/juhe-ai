@@ -5,7 +5,7 @@
   --juhe-rail: #fbfbfa;
   --juhe-fg: #22282b;
   --juhe-fg-soft: #3c4447;
-  --juhe-muted: #8b9190;
+  --juhe-muted: #6d7372;
   --juhe-faint: #a9aeac;
   --juhe-border: rgba(34, 40, 43, .10);
   --juhe-border-strong: rgba(34, 40, 43, .24);
@@ -16,6 +16,16 @@
   --juhe-ok: #6f8f7a;
   --juhe-warn: #a98548;
   --juhe-danger: #9d5547;
+  --juhe-violet: #7a6d8f;
+  --juhe-ok-soft: #ebf0ec;
+  --juhe-warn-soft: #f5f0e3;
+  --juhe-danger-soft: #f6ecea;
+  --juhe-violet-soft: #eeeaf2;
+  --juhe-ok-line: rgba(111, 143, 122, .38);
+  --juhe-warn-line: rgba(169, 133, 72, .38);
+  --juhe-danger-line: rgba(157, 85, 71, .38);
+  --juhe-violet-line: rgba(122, 109, 143, .38);
+  --juhe-fg-invert: #ffffff;
   --juhe-primary-grad: linear-gradient(135deg, #22282b, #53696b);
   --juhe-radius: 12px;
   --juhe-radius-sm: 10px;

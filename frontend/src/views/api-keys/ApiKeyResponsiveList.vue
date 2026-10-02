@@ -275,14 +275,14 @@ const emit = defineEmits<{
   box-sizing: border-box;
   padding: 3px 8px;
   overflow: hidden;
-  color: #008b8b;
+  color: var(--juhe-ok);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
   border-radius: 4px;
-  background: #eefafa;
+  background: var(--juhe-ok-soft);
 }
 
 .key-copy-button {

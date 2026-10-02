@@ -345,7 +345,7 @@ function requiredPositiveInt(value: unknown, label: string, max = Number.POSITIV
   padding: 14px;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .form-section-title {

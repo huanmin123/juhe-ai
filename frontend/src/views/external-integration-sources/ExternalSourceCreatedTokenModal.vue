@@ -128,13 +128,13 @@ function copyPublicApiBaseUrl(): void {
   flex: 1;
   padding: 4px 10px;
   overflow: hidden;
-  color: #0f766e;
+  color: var(--juhe-ok);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
   border-radius: 6px;
-  background: #ecfeff;
+  background: var(--juhe-ok-soft);
 }
 
 .created-token-input {
@@ -157,7 +157,7 @@ function copyPublicApiBaseUrl(): void {
   line-height: 1.6;
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .created-token-actions {

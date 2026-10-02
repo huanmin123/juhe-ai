@@ -833,8 +833,8 @@ onBeforeUnmount(() => {
 }
 
 .health-process-card.degraded {
-  border-color: #ffd591;
-  background: #fffbe6;
+  border-color: var(--juhe-warn-line);
+  background: var(--juhe-warn-soft);
 }
 
 .health-process-head {
@@ -885,16 +885,16 @@ onBeforeUnmount(() => {
 .health-line-unhealthy {
   padding: 5px 10px;
   border-radius: 6px;
-  background: #fff1f0;
+  background: var(--juhe-danger-soft);
 }
 
 .health-line-unhealthy .health-line-label {
-  color: #cf1322;
+  color: var(--juhe-danger);
   font-weight: 600;
 }
 
 .health-line-unhealthy .health-line-items {
-  color: #a8071a;
+  color: var(--juhe-danger);
   font-weight: 500;
 }
 
@@ -961,7 +961,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   min-width: 0;
   padding: 6px 10px;
-  border: 1px solid #f1f5f9;
+  border: 1px solid var(--juhe-border);
   border-radius: 6px;
 }
 

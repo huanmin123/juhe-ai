@@ -1732,7 +1732,7 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 }
 
 .speed-first-latency-status-degraded {
-  color: #d97706;
+  color: var(--juhe-warn);
 }
 
 .speed-first-latency-status-unavailable {

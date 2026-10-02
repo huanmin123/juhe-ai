@@ -350,8 +350,8 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
 }
 
 .ai-performance-account-filter-remove:hover {
-  color: #cf1322;
-  background: #fff1f0;
+  color: var(--juhe-danger);
+  background: var(--juhe-danger-soft);
 }
 
 .ai-performance-legend-dot {
@@ -382,7 +382,7 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   text-align: left;
   border: 0;
   background: transparent;
-  color: var(--juhe-fg-soft, #4a5257);
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   cursor: pointer;
   padding: 6px 0;
@@ -395,10 +395,10 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   gap: 6px;
   min-height: 36px;
   padding: 6px 14px;
-  border: 1px solid var(--juhe-border, #d8d5cf);
+  border: 1px solid var(--juhe-border);
   border-radius: var(--juhe-radius-sm, 8px);
   background: transparent;
-  color: var(--juhe-fg-soft, #4a5257);
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   cursor: pointer;
 }

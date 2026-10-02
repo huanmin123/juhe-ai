@@ -268,7 +268,7 @@ function modelText(value: string) {
 }
 
 .run-descriptions {
-  background: #fff;
+  background: var(--juhe-surface);
 }
 
 .check-list {

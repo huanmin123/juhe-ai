@@ -180,8 +180,8 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
   display: inline-flex;
   justify-content: center;
   border-radius: 999px;
-  background: #eef2ff;
-  color: #4338ca;
+  background: var(--juhe-violet-soft);
+  color: var(--juhe-violet);
   font-size: 11px;
   font-weight: 600;
 }
@@ -202,11 +202,11 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
 }
 
 .oauth-usage-percent.warning {
-  color: #d97706;
+  color: var(--juhe-warn);
 }
 
 .oauth-usage-percent.danger {
-  color: #dc2626;
+  color: var(--juhe-danger);
 }
 
 .oauth-usage-reset {
@@ -238,8 +238,8 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
   color: var(--juhe-muted);
 }
 
-.balance-failed { color: #dc2626; }
-.balance-fresh { color: #15803d; }
+.balance-failed { color: var(--juhe-danger); }
+.balance-fresh { color: var(--juhe-ok); }
 .balance-pending,
 .balance-refreshing,
 .balance-unsupported { color: var(--juhe-muted); }
@@ -250,7 +250,7 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
   font-size: 11px;
 }
 
-.balance-refresh-icon:hover { color: #0958d9; }
+.balance-refresh-icon:hover { color: var(--juhe-accent); }
 
 .balance-refresh-icon.disabled {
   color: var(--juhe-faint);
@@ -343,7 +343,7 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
   text-align: center;
 }
 
-.balance-details-error { color: #dc2626; }
+.balance-details-error { color: var(--juhe-danger); }
 .balance-details-hint { padding-top: 8px; }
 
 </style>
