@@ -157,10 +157,10 @@ function statusLabel(status: ChatToolStatus): string {
 .chat-process summary, .chat-process-summary-only { display: flex; width: fit-content; max-width: 100%; align-items: center; gap: 7px; color: #718096; user-select: none; }
 .chat-process summary { cursor: pointer; }
 .chat-process-status { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #94a3b8; }
-.chat-process-status.is-started, .chat-process-status.is-updated { background: #4b8fe8; }
+.chat-process-status.is-started, .chat-process-status.is-updated { background: var(--juhe-accent); }
 .chat-process-status.is-started, .chat-process-status.is-updated { animation: chat-process-pulse 1.4s ease-in-out infinite; }
-.chat-process-status.is-completed { background: #52a447; }
-.chat-process-status.is-failed, .chat-process-status.is-canceled { background: #d9534f; }
+.chat-process-status.is-completed { background: var(--juhe-ok); }
+.chat-process-status.is-failed, .chat-process-status.is-canceled { background: var(--juhe-danger); }
 .chat-process-details { max-height: 168px; margin: 5px 0 0 13px; padding-left: 9px; overflow: auto; border-left: 2px solid #edf1f5; color: #7b8796; }
 .chat-subagent { margin: 0 0 4px; }
 .chat-subagent-stage { margin: 0; color: #98a2b3; }
@@ -172,9 +172,9 @@ function statusLabel(status: ChatToolStatus): string {
 .chat-subagent-answer { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #67748a; }
 .chat-process-details ul { margin: 0; padding-left: 17px; }
 .chat-process-details li { margin: 2px 0; overflow-wrap: anywhere; }
-.chat-process-details a { color: #3b82f6; }
+.chat-process-details a { color: var(--juhe-accent); }
 .chat-process-details p { margin: 4px 0 0; color: #98a2b3; }
-.chat-source-domain { padding: 0; border: 0; background: none; color: #3b82f6; font: inherit; cursor: pointer; }
+.chat-source-domain { padding: 0; border: 0; background: none; color: var(--juhe-accent); font: inherit; cursor: pointer; }
 .chat-source-domain:hover, .chat-source-domain:focus-visible { text-decoration: underline; }
 .chat-source-domain-urls { margin: 2px 0 0; padding-left: 15px; list-style: none; }
 .chat-reasoning { color: #8995a5; }
@@ -183,6 +183,6 @@ function statusLabel(status: ChatToolStatus): string {
 .chat-reasoning .chat-reasoning-body { color: #7b8796; font-size: 12px; line-height: 1.6; }
 .chat-reasoning .chat-reasoning-body :deep(p) { margin: 0 0 6px; }
 .chat-reasoning .chat-reasoning-body :deep(p:last-child) { margin-bottom: 0; }
-@keyframes chat-process-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; box-shadow: 0 0 0 4px rgba(75, 143, 232, .12); } }
+@keyframes chat-process-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; box-shadow: 0 0 0 4px rgba(83, 105, 107, .14); } }
 @media (prefers-reduced-motion: reduce) { .chat-process-status.is-started, .chat-process-status.is-updated { animation: none; } }
 </style>

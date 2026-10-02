@@ -324,6 +324,12 @@ func RunOwner(ctx context.Context, store Store, keeper *LeaseKeeper, cfg Config,
 // runRetentionMaintenance keeps one bounded maintenance pass per configured
 // interval. Retention also removes completed hot-search buckets, so both
 // cleanup surfaces share the same owner fence and do not need a second task.
+//
+// 2026-10-02 日志与审计设置：每 tick 先直读业务库 system_settings 四个审计
+// 保留键（无缓存），按 DB 行存在 → DB 值，否则 env 固化值（LoadConfig 已合
+// 并代码默认）合成生效配置；读失败记 warn 并跳过本轮（不执行清理，F4
+// operationlog 同语义，不静默回退扩大清理范围）。reader 懒打开单句柄，随本
+// maintenance 代际关闭。
 func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease, cfg Config, logger *slog.Logger, fatal chan<- error) <-chan struct{} {
 	logger = loggerOrDefault(logger)
 	done := make(chan struct{})
@@ -334,6 +340,8 @@ func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease,
 			}
 			close(done)
 		}()
+		settingsReader := NewBusinessSettingsReader(cfg)
+		defer settingsReader.Close()
 		timer := time.NewTimer(schedulejitter.Delay(cfg.RetentionInterval))
 		defer timer.Stop()
 		for {
@@ -341,8 +349,18 @@ func runRetentionMaintenance(ctx context.Context, store Store, lease OwnerLease,
 			case <-ctx.Done():
 				return
 			case <-timer.C:
+				settings, settingsErr := settingsReader.ReadRetentionSettings(ctx)
+				if settingsErr != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					logger.Warn("F3 audit retention settings unavailable; skip pass", "error", settingsErr)
+					timer.Reset(schedulejitter.Delay(cfg.RetentionInterval))
+					continue
+				}
+				effective := cfg.EffectiveRetentionSettings(settings)
 				passStarted := time.Now()
-				result, err := store.CleanupRetention(ctx, lease, cfg.RetentionConfigAt(time.Now()))
+				result, err := store.CleanupRetention(ctx, lease, effective.RetentionConfigAt(time.Now()))
 				if err == nil {
 					logger.Info("F3 audit retention complete", "event", "audit_retention_completed", "durationMs", time.Since(passStarted).Milliseconds(), "successHotTrimmed", result.SuccessHotTrimmed, "deletedNonPersistedLogs", result.DeletedNonPersistedLogs, "deletedLogs", result.DeletedLogs, "deletedErrorGroups", result.DeletedErrorGroups, "deletedPayloadBlobs", result.DeletedPayloadBlobs, "deletedHotSearchFiles", result.DeletedHotSearchFiles)
 					timer.Reset(schedulejitter.Delay(cfg.RetentionInterval))

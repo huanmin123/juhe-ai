@@ -860,6 +860,12 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "streamFailureThresholdWindowMinutes", ValueJSON: "5"},
 	{Key: "operationLogRetentionDays", ValueJSON: "365"},
 	{Key: "operationLogMaxChangesPerRecord", ValueJSON: "100"},
+	// 2026-10-02 日志与审计设置：审计 retention 四键（与 settings 包
+	// compatibleSystemSettingDefaults、auditlog LoadConfig 代码默认一致）。
+	{Key: "auditLogSuccessRetentionDays", ValueJSON: "3"},
+	{Key: "auditLogProblemRetentionDays", ValueJSON: "7"},
+	{Key: "auditLogSuccessHotRetentionHours", ValueJSON: "1"},
+	{Key: "auditLogSuccessSampleRate", ValueJSON: "1.0"},
 	{Key: "statsAggregationIntervalSeconds", ValueJSON: "60"},
 	{Key: "statsAggregationBatchSize", ValueJSON: "2000"},
 	{Key: "statsAggregationMaxBatchesPerRun", ValueJSON: "5"},

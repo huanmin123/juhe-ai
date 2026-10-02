@@ -28,7 +28,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -434,22 +433,23 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	// PG 与 stats 同池共用 aggDB（juhe_business. 前缀）；SQLite 用业务库句柄
 	//（与 settings 同一连接，D-48 生产者接线）。
 	a.windows = &statsagg.WindowRefresher{DB: aggDB, Dialect: dialect, Clock: timezone, BusinessDB: settingsDB}
-	a.settings = dbSettingsSource{source: jobssettings.NewSource(jobssettings.Options{
+	settingsSource := jobssettings.NewSource(jobssettings.Options{
 		DB:   settingsDB,
 		Mode: settingsMode(postgres),
 		Warn: jobssettingsWarn(a.logger),
-	})}
+	})
+	a.settings = dbSettingsSource{source: settingsSource}
 
 	// 上游客户端身份版本覆盖（system_settings 键
 	// upstreamClientVersionOverrides）：启动立即应用一次，之后每 60s 对齐
 	//（jobs 无网关的设置失效通道，用周期刷新保证管理端改动 ≤60s 生效；
 	// 读取失败保持既有覆盖不动）。本函数在进程装配期只执行一次。
-	a.refreshUpstreamClientVersionOverrides()
+	a.refreshUpstreamClientVersionOverrides(settingsSource)
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			a.refreshUpstreamClientVersionOverrides()
+			a.refreshUpstreamClientVersionOverrides(settingsSource)
 		}
 	}()
 

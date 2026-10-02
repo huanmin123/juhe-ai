@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 const source = (relativePath: string) => readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8')
 
 const settingsSource = source('../../views/settings/SettingsView.vue')
+const settingsDisplaySource = source('../../views/settings/settingsDisplay.ts')
 const settingsFormSource = source('../../views/settings/settingsForm.ts')
 const systemAccountsSource = source('../../views/system-accounts/SystemAccountsView.vue')
 const systemAccountEditFormSource = source('../../views/system-accounts/systemAccountEditForm.ts')
@@ -18,12 +19,15 @@ for (const field of [
   'gatewayUserRequestLimitPerMonth',
   'userAiAccountLimit'
 ]) {
-  assert(settingsSource.includes(field), `系统设置缺少用户限制字段：${field}`)
+  // 2026-10-02 方案 C 重设计：字段注册表（settingsDisplay.ts）是字段事实源，视图按注册表渲染
+  assert(settingsDisplaySource.includes(field), `系统设置字段注册表缺少用户限制字段：${field}`)
   assert(settingsFormSource.includes(field), `系统设置表单契约缺少字段：${field}`)
 }
-assert.match(settingsSource, /<span>用户限制<\/span>/, '系统设置分区应使用用户限制名称')
-assert.match(settingsSource, /sectionErrors\['user-request-limit'\][\s\S]*retrySection\('user-request-limit'\)/, '用户限制分区加载失败后必须提供重试入口')
-assert.equal((settingsSource.match(/:precision="0"/g) ?? []).length >= 5, true, '全局限制输入必须限制为整数')
+assert(settingsDisplaySource.includes('用户限制'), '系统设置分区应使用用户限制名称')
+assert.match(settingsSource, /groupErrorMessage[\s\S]*重新加载[\s\S]*retryGroup/, '用户限制所在分组加载失败后必须提供重试入口')
+// 2026-10-02 日志与审计组：数字精度改为注册表驱动（缺省 0 = 整数；仅审计成功采样率为 4 位小数）
+assert.match(settingsSource, /:precision="entry\.precision \?\? 0"/, '数字输入精度按注册表统一渲染，缺省必须为整数')
+assert.equal((settingsDisplaySource.match(/precision: \d+/g) ?? []).length, 1, '仅审计成功采样率可输入小数，其余设置数字字段保持整数')
 
 assert.match(systemAccountsSource, /<strong>用户限制<\/strong>/, '系统账户编辑应使用用户限制名称')
 assert.match(systemAccountsSource, /留空继承全局，填写 0 表示不限/, '系统账户编辑必须说明三态语义')

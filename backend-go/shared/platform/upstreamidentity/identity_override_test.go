@@ -117,11 +117,11 @@ func TestSetClientVersionOverridesIgnoresUnknownKeysAndInvalidValues(t *testing.
 	SetClientVersionOverrides(map[string]string{
 		"codex":      "1.2.3",
 		"unknown":    "4.5.6",
-		"claudeCode": "2.1.285-x",   // 预发行后缀不合法
-		"geminiCLI":  "0.61",        // 两段
-		"zcode":      "",            // 空
-		"grokCLI":    "1.0.13.0",    // 四段
-		"":           "0.0.1",       // 空键
+		"claudeCode": "2.1.285-x", // 预发行后缀不合法
+		"geminiCLI":  "0.61",      // 两段
+		"zcode":      "",          // 空
+		"grokCLI":    "1.0.13.0",  // 四段
+		"":           "0.0.1",     // 空键
 	})
 	if got := EffectiveCodexVersion(); got != "1.2.3" {
 		t.Fatalf("valid codex override must apply, got %q", got)

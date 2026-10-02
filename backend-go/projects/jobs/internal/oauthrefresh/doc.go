@@ -21,7 +21,11 @@
 //   - backoff: failed refreshes record a backoffUntil = now +
 //     oauthAccessTokenRefreshRetryBackoffSeconds (default 300s, 0..86400);
 //     backoff state is guarded by the account config_revision and dropped when
-//     the account is mutated.
+//     the account is mutated. Accounts already terminal (status=error with a
+//     managed refresh error code) use a 24h backoff instead (2026-10-02:
+//     dead refresh tokens otherwise retry ~288x/day forever); upstream
+//     responses never mark an account terminal (untrusted in relay
+//     environments) — only local-configuration failures do.
 //   - keepalive window: anthropic 60s, gemini 60s, grok 300s
 //     (oauth-dispatch-preparation lead constants) with a 3-attempt
 //     config-revision CAS retry per refresh.

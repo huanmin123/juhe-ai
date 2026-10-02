@@ -664,13 +664,9 @@ var anthropicOAuthBetaMergeValues = []string{
 // 主链头值此前误用该常量（BUG-0174 M-4）。
 const anthropicVersionHeaderValue = "2023-06-01"
 
-// geminiCLIUserAgent 对齐 GEMINI_CLI_USER_AGENT
-// （code-assist-runtime.ts:8；探针 probe.go:1019 逐值一致）。版本跟随
-// @google/gemini-cli npm 最新稳定（2026-10-02 锚点 0.61.0），与
-// upstreamidentity.GeminiCLIUserAgent 同步维护。内置默认；运行时可被
-// upstreamidentity.SetClientVersionOverrides 覆盖（使用点经
-// upstreamidentity.EffectiveGeminiCLIUserAgent 运行时拼接）。
-const geminiCLIUserAgent = "GeminiCLI/0.61.0 (Windows; AMD64)"
+// Gemini CLI 主链身份经 upstreamidentity.EffectiveGeminiCLIUserAgent()
+// 运行时取（内置锚点与版本跟随说明见 upstreamidentity.GeminiCLIUserAgent；
+// 历史 GEMINI_CLI_USER_AGENT 对齐背景：code-assist-runtime.ts:8）。
 
 // glmCodingAnthropicProfileID 是 GLM Coding Anthropic 档案标识（Node
 // GLM_CODING_ANTHROPIC_V1_PROFILE_ID；探针 probe.go:416 同值判定）。

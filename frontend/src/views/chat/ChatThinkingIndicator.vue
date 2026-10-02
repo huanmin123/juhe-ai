@@ -28,7 +28,7 @@ onBeforeUnmount(() => { if (timer !== undefined) window.clearInterval(timer) })
 <style scoped>
 .chat-thinking { min-height: 32px; display: inline-flex; align-items: center; gap: 8px; color: #64748b; font-size: 13px; }
 .chat-thinking-mark { display: inline-flex; align-items: center; gap: 3px; }
-.chat-thinking-mark i { width: 4px; height: 4px; border-radius: 50%; background: #1677ff; animation: chat-thinking-dot 1.2s ease-in-out infinite; }
+.chat-thinking-mark i { width: 4px; height: 4px; border-radius: 50%; background: var(--juhe-accent); animation: chat-thinking-dot 1.2s ease-in-out infinite; }
 .chat-thinking-mark i:nth-child(2) { animation-delay: .16s; }
 .chat-thinking-mark i:nth-child(3) { animation-delay: .32s; }
 .chat-thinking-elapsed { min-width: 4.5em; color: #98a2b3; font-variant-numeric: tabular-nums; }

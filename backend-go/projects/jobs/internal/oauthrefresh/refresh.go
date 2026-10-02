@@ -20,6 +20,10 @@ const (
 	OpenAIOAuthTokenRefreshLocalConfigurationInvalidCode = "oauth_token_refresh_local_configuration_invalid"
 	openAIOAuthRefreshFailureThreshold                   = 3
 	openAIOAuthRefreshStartAdmissionBudget               = 55 * time.Second
+	// openAIOAuthRefreshTerminalBackoff 是已终态（error × 本家族管理码）
+	// 账户的刷新失败退避：确定性死亡的上游凭据不值得 300s 级重试；重新
+	// 授权 bump config_revision 会清除退避立即重试（见 processCandidate）。
+	openAIOAuthRefreshTerminalBackoff = 24 * time.Hour
 )
 
 // ManagedRefreshErrorCodes are the failure codes the refresh family owns and
@@ -485,7 +489,19 @@ func (j *RefreshJob) processCandidate(ctx context.Context, candidate RefreshCand
 	if IsLocalConfigurationError(refreshErr) {
 		failureKind = FailureKindLocalConfiguration
 	}
-	failureState, recordErr := j.failures.Record(ctx, accountID, j.now().Add(retryBackoff).UnixMilli(), failureKind, attemptRevision)
+	// 已终态（error × 本家族管理码）的账户保留低频自动恢复通道：常规
+	// 300s 退避对确定性死亡的上游凭据（如 refresh token 被撤销）只会制造
+	// 每天 288 次无效重试与告警刷屏，退避拉长到 24h。账户被变更（重新
+	// 授权换 token）会 bump config_revision 使退避状态失效（failurestate
+	// 读侧 revision guard），下一轮扫描立即重试，刷新成功后
+	// restoreIfRecovered 自动恢复 active——恢复闭环不受影响。
+	// decrypt-failure 候选 Account 为 nil（行内无凭据可判），回落常规退避。
+	effectiveBackoff := retryBackoff
+	if !candidate.IsDecryptFailure() && accountStatus == "error" &&
+		isManagedOpenAIOAuthRefreshErrorCode(candidate.Account.LastErrorCode) {
+		effectiveBackoff = openAIOAuthRefreshTerminalBackoff
+	}
+	failureState, recordErr := j.failures.Record(ctx, accountID, j.now().Add(effectiveBackoff).UnixMilli(), failureKind, attemptRevision)
 	if recordErr != nil {
 		j.logger.Error("OAuth 刷新失败状态写入失败", "error", recordErr, "accountId", accountID)
 		return

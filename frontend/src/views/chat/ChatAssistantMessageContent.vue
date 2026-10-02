@@ -102,14 +102,14 @@ function rememberReasoningToggleIntent(block: Extract<ChatMessageContentBlock, {
 .chat-process-block { margin: 7px 0; color: #718096; font-size: 12px; }
 .chat-process-block summary { display: flex; width: fit-content; max-width: 100%; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
 .chat-process-status { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #94a3b8; }
-.chat-process-status.is-started, .chat-process-status.is-updated { background: #1677ff; }
+.chat-process-status.is-started, .chat-process-status.is-updated { background: var(--juhe-accent); }
 .chat-process-status.is-started, .chat-process-status.is-updated { animation: chat-process-pulse 1.4s ease-in-out infinite; }
-.chat-process-status.is-completed { background: #52a447; }
-.chat-process-status.is-failed, .chat-process-status.is-canceled { background: #d9534f; }
+.chat-process-status.is-completed { background: var(--juhe-ok); }
+.chat-process-status.is-failed, .chat-process-status.is-canceled { background: var(--juhe-danger); }
 .chat-process-details { max-height: 220px; margin: 5px 0 0 13px; padding: 5px 9px; overflow: auto; border-left: 2px solid #edf1f5; color: #7b8796; }
 .chat-process-details .chat-process-reasoning { color: #7b8796; font-size: 12px; line-height: 1.6; }
 .chat-process-details .chat-process-reasoning :deep(p) { margin: 0 0 6px; }
 .chat-process-details .chat-process-reasoning :deep(p:last-child) { margin-bottom: 0; }
-@keyframes chat-process-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; box-shadow: 0 0 0 4px rgba(22, 119, 255, .12); } }
+@keyframes chat-process-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; box-shadow: 0 0 0 4px rgba(83, 105, 107, .14); } }
 @media (prefers-reduced-motion: reduce) { .chat-process-status.is-started, .chat-process-status.is-updated { animation: none; } }
 </style>

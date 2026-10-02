@@ -1,429 +1,125 @@
 <template>
   <a-card class="page-card settings-page-card">
     <div class="settings-shell">
-      <a-form layout="vertical" class="settings-form">
-        <section class="settings-section global-section">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>全局展示配置</span>
-                <a-tooltip title="只管理系统名称和系统图标路径；登录页文案与样式按设计固定。仅管理角色可修改，普通用户不会看到这些字段。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-            <div class="global-preview-stack">
-              <div class="brand-preview">
-                <img class="brand-preview-icon" :src="globalForm.appIcon" :alt="`${globalForm.appName} 图标`" />
-                <span>{{ globalForm.appName }}</span>
-              </div>
-            </div>
-          </div>
+      <div class="settings-page-head">
+        <div>
+          <h1 class="settings-page-title">系统设置</h1>
+          <p class="settings-page-desc">网关与账户调度的系统级默认策略；不覆盖账号里的显式配置。</p>
+        </div>
+        <span class="settings-summary">
+          共 {{ settingsTotalItemCount }} 项
+          <template v-if="totalCustomCount > 0"> · <b>{{ totalCustomCount }} 项自定义</b> · 其余默认</template>
+          <template v-else> · 全部默认</template>
+        </span>
+      </div>
 
-          <a-skeleton v-if="!sectionReady.brand" active :paragraph="{ rows: 1 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="系统名称" tooltip="保存后显示到左侧菜单标题、浏览器 tab，并用于登录页“系统名称 + 管理平台”标题。">
-                <a-input v-model:value="globalForm.appName" placeholder="请输入系统名称" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="系统图标路径" tooltip="默认使用 /__aisys__/brand-icon.svg；也可上传 256KB 以内图片并以 Data URL 保存。">
-                <a-input v-model:value="globalForm.appIcon" placeholder="/__aisys__/brand-icon.svg" />
-                <a-space class="brand-icon-actions">
-                  <a-upload accept="image/svg+xml,image/png,image/jpeg,image/webp" :before-upload="handleIconUpload" :show-upload-list="false">
-                    <a-button>上传图标</a-button>
-                  </a-upload>
-                  <a-button type="link" @click="restoreDefaultIcon">恢复默认图标</a-button>
-                </a-space>
-              </a-form-item>
-            </div>
-          </div>
+      <section
+        v-for="group in settingGroups"
+        :key="group.key"
+        class="settings-group"
+        :class="{ open: expandedGroups.has(group.key) }"
+      >
+        <header class="settings-group-bar" @click="toggleGroup(group)">
+          <span class="settings-group-chevron">▶</span>
+          <h2 class="settings-group-title">{{ group.title }}</h2>
+          <span class="settings-group-meta">{{ group.hint }}</span>
+          <span class="settings-group-status" :class="groupStatusClass(group)">{{ groupStatusText(group) }}</span>
+        </header>
 
-          <div class="settings-actions">
-            <a-space>
-              <a-button type="primary" :loading="savingGlobal" :disabled="!sectionReady.brand" @click="saveGlobalSettings">保存全局配置</a-button>
-              <a-button :disabled="savingGlobal || !sectionReady.brand" @click="resetGlobalDefaults">恢复默认配置</a-button>
-            </a-space>
-          </div>
-        </section>
-      </a-form>
-
-      <a-form layout="vertical" class="settings-form">
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'gateway-core')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>网关请求与电路</span>
-                <a-tooltip title="控制文本请求体上限和账户传输电路的独立确认阈值，保存后随运行时缓存刷新生效。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-          </div>
-
-          <a-skeleton v-if="!sectionReady['gateway-core']" active :paragraph="{ rows: 1 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="文本请求体上限（MB）" tooltip="可设置 1 到 64；调大可承载更长上下文，也会增加单请求内存压力。">
-                <a-input-number v-model:value="systemForm.gatewayTextRawBodyLimitMegabytes" :min="1" :max="64" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="电路独立确认失败次数" tooltip="首次 transport 失败进入待确认；默认还需 2 个不同请求的独立失败证据才熔断，完整 HTTP 响应不计失败。">
-                <a-input-number v-model:value="systemForm.accountCircuitConfirmationFailuresRequired" :min="1" :max="5" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section request-limit-section" :ref="(element) => setLazySectionElement(element, 'user-request-limit')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>用户限制</span>
-                <a-tooltip title="设置系统账户的全局请求和 AI 账户数量限制；各用户可以在系统账户编辑中单独覆盖。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-              <p class="section-description">全局默认值，可在系统账户编辑中为单个用户继承、设为无限或单独覆盖。</p>
-            </div>
-          </div>
-
+        <div v-if="expandedGroups.has(group.key)" class="settings-group-body">
           <a-alert
-            v-if="sectionErrors['user-request-limit']"
+            v-if="groupErrorMessage(group)"
             type="error"
             show-icon
-            message="用户限制加载失败"
-            :description="sectionErrors['user-request-limit']"
+            :message="`${group.title}加载失败`"
+            :description="groupErrorMessage(group)"
           >
             <template #action>
-              <a-button size="small" @click="retrySection('user-request-limit')">重新加载</a-button>
+              <a-button size="small" @click="retryGroup(group)">重新加载</a-button>
             </template>
           </a-alert>
-          <a-skeleton v-else-if="!sectionReady['user-request-limit']" active :paragraph="{ rows: 2 }" />
-          <template v-else>
-            <a-alert
-              class="request-limit-alert"
-              type="info"
-              show-icon
-              message="性能优先"
-              description="网关请求不会等待 Redis 或数据库。多节点之间按秒级后台同步，因此高并发时允许短暂超额，但不会拖慢正常请求。"
-            />
-            <div class="settings-grid">
-              <div class="setting-item">
-                <a-form-item label="每分钟请求数" tooltip="0 表示无限；达到上限后，本分钟内的新请求立即返回 429。">
-                  <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerMinute" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
-                </a-form-item>
+          <a-skeleton v-else-if="!groupReady(group)" active :paragraph="{ rows: 3 }" />
+
+          <!-- 展示态：标签 ······ 值（同语义归并行），点「编辑此组」切换表单 -->
+          <template v-else-if="!editingGroups.has(group.key)">
+            <div v-for="(subgroup, index) in groupViewRows(group)" :key="subgroup.title || index" class="settings-view-block">
+              <div v-if="subgroup.title" class="settings-view-subgroup">{{ subgroup.title }}</div>
+              <div v-for="row in subgroup.rows" :key="row.key" class="settings-view-row">
+                <span class="settings-view-key">{{ row.label }}</span>
+                <span class="settings-view-dots" />
+                <span class="settings-view-value" :class="{ custom: row.custom }">
+                  {{ row.value }}<em v-if="row.defaultText">（{{ row.defaultText }}）</em>
+                </span>
               </div>
-              <div class="setting-item">
-                <a-form-item label="每日请求数" tooltip="0 表示无限；按系统使用统计时区的自然日计算。">
-                  <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerDay" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
-                </a-form-item>
-              </div>
-              <div class="setting-item">
-                <a-form-item label="每周请求数" tooltip="0 表示无限；按系统使用统计时区、周一作为一周起点。">
-                  <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerWeek" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
-                </a-form-item>
-              </div>
-              <div class="setting-item">
-                <a-form-item label="每月请求数" tooltip="0 表示无限；按系统使用统计时区的自然月计算。">
-                  <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerMonth" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
-                </a-form-item>
-              </div>
-              <div class="setting-item">
-                <a-form-item label="AI 账户数量限制" tooltip="默认 100；0 表示无限。限制每个用户可创建的自有 AI 账户数量，删除账户后释放名额。">
-                  <a-input-number v-model:value="systemForm.userAiAccountLimit" :min="0" :max="1000000" :precision="0" :step="1" style="width: 100%" />
-                </a-form-item>
-              </div>
+            </div>
+            <div class="settings-group-actions">
+              <a-popconfirm
+                v-for="action in group.actions ?? []"
+                :key="action.key"
+                :title="action.confirm"
+                @confirm="runGroupAction(group, action)"
+              >
+                <a-button size="small" :loading="groupActionPending[`${group.key}:${action.key}`]" @click.stop>{{ action.label }}</a-button>
+              </a-popconfirm>
+              <a-button size="small" @click.stop="beginGroupEditing(group)">编辑此组</a-button>
             </div>
           </template>
-        </section>
 
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'account-health')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>正常账号健康检测</span>
-                <a-tooltip title="只检测长期没有真实成功请求的正常账号；真实请求成功会顺延下次检测，后台分批探测到期账号。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
+          <!-- 编辑态：行式表单（label 左 · 输入右 · 单位后缀），按组保存 -->
+          <template v-else>
+            <template v-for="entry in group.fields" :key="'divider' in entry ? entry.divider : entry.key">
+              <div v-if="'divider' in entry" class="settings-edit-subgroup">{{ entry.divider }}</div>
+              <div v-else class="settings-edit-row">
+                <label class="settings-edit-label">
+                  <span class="settings-edit-label-text">
+                    {{ entry.label }}
+                    <a-tooltip v-if="entry.tip" :title="entry.tip">
+                      <QuestionCircleOutlined class="settings-help-icon" />
+                    </a-tooltip>
+                  </span>
+                </label>
+                <a-input-number
+                  v-if="entry.kind === 'number'"
+                  class="settings-edit-input"
+                  :value="Number(getFormValue(globalForm, systemForm, entry.key))"
+                  :min="entry.min"
+                  :max="entry.max"
+                  :precision="entry.precision ?? 0"
+                  @update:value="(value: string | number | null) => setFormValue(globalForm, systemForm, entry.key, value ?? 0)"
+                >
+                  <template v-if="entry.unit" #addon-after>{{ entry.unit }}</template>
+                </a-input-number>
+                <span v-else-if="entry.kind === 'brandIcon'" class="settings-brand-field">
+                  <img class="settings-brand-preview" :src="globalForm.appIcon" alt="品牌图标预览" />
+                  <a-input
+                    class="settings-edit-input"
+                    :value="String(getFormValue(globalForm, systemForm, entry.key))"
+                    placeholder="/__aisys__/brand-icon.svg"
+                    @update:value="(value: string | number) => setFormValue(globalForm, systemForm, entry.key, value)"
+                  />
+                  <a-upload accept="image/svg+xml,image/png,image/jpeg,image/webp" :before-upload="handleIconUpload" :show-upload-list="false">
+                    <a-button size="small">上传图标</a-button>
+                  </a-upload>
+                  <a-button size="small" type="link" @click="restoreDefaultIcon">恢复默认</a-button>
+                </span>
+                <a-input
+                  v-else
+                  class="settings-edit-input"
+                  :value="String(getFormValue(globalForm, systemForm, entry.key))"
+                  :placeholder="entry.placeholder"
+                  @update:value="(value: string | number) => setFormValue(globalForm, systemForm, entry.key, value)"
+                />
+              </div>
+            </template>
+            <div class="settings-group-actions">
+              <span class="settings-edit-hint">仅保存本组修改 · 其他组不受影响</span>
+              <a-button size="small" @click="resetGroupDefaults(group)">恢复默认值</a-button>
+              <a-button size="small" @click="cancelGroupEditing(group)">取消</a-button>
+              <a-button size="small" type="primary" :loading="savingGroups[group.key]" @click="handleSaveGroup(group)">保存本组</a-button>
             </div>
-          </div>
-
-          <a-skeleton v-if="!sectionReady['account-health']" active :paragraph="{ rows: 2 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="检测间隔（小时）" tooltip="默认 1 小时；账号近期已有真实成功请求时不再额外探测。">
-                <a-input-number v-model:value="systemForm.accountHealthCheckIntervalHours" :min="1" :max="168" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="错峰窗口（分钟）" tooltip="默认 10 分钟；按账号 ID 稳定错峰，避免大量账号同时探测。">
-                <a-input-number v-model:value="systemForm.accountHealthCheckJitterMinutes" :min="0" :max="1440" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="连续失败阈值" tooltip="默认 3 次；达到阈值后才允许进入临时不可调用处理，降低网络抖动误杀。">
-                <a-input-number v-model:value="systemForm.accountHealthCheckFailureThreshold" :min="1" :max="10" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'api-rate-limit')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>后台接口限流</span>
-                <a-tooltip title="保护 /__aisys__/api 后台接口，避免同一来源或同一登录用户在短时间内压垮后端服务；健康检查不受影响，限流固定启用。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-          </div>
-
-          <a-skeleton v-if="!sectionReady['api-rate-limit']" active :paragraph="{ rows: 3 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="IP 读请求每分钟" tooltip="默认 600；适用于 GET、HEAD 和 OPTIONS。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitIpReadPerMinute" :min="0" :max="1000000" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="IP 读请求 10 秒突发" tooltip="默认 120；用于拦截短时间刷新列表和探测接口。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitIpReadBurstPer10Seconds" :min="0" :max="1000000" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="IP 写请求每分钟" tooltip="默认 180；适用于 POST、PATCH、PUT 和 DELETE。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitIpWritePerMinute" :min="0" :max="1000000" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="IP 写请求 10 秒突发" tooltip="默认 40；优先挡住批量提交和暴力探测。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitIpWriteBurstPer10Seconds" :min="0" :max="1000000" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="登录用户读请求每分钟" tooltip="默认 300；同一登录账号的后台读请求保护。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitUserReadPerMinute" :min="0" :max="1000000" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="登录用户写请求每分钟" tooltip="默认 120；对保存、删除、批量操作等写请求再加一层限制。">
-                <a-input-number v-model:value="systemForm.systemApiRateLimitUserWritePerMinute" :min="0" :max="1000000" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'gateway-core')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>账户调度默认值</span>
-                <a-tooltip title="这些配置是系统级运行策略，保存后会影响网关调度和后台任务。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-          </div>
-          <a-skeleton v-if="!sectionReady['gateway-core']" active :paragraph="{ rows: 2 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="临时不可调用最大暂停时间（分钟）" tooltip="默认 2 分钟；账号进入临时不可调用后先走快速恢复通道：3 秒起步，失败后翻倍；单次等待不会超过这个最大暂停时间。">
-                <a-input-number v-model:value="systemForm.defaultTemporaryUnschedulableMinutes" :min="1" :max="1440" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="安全原地重试间隔（秒）" tooltip="仅对可安全重放的文本请求，在主请求已发出且响应头到达前发生传输异常时使用；完整 HTTP、正文中断、配置首字截止和副作用请求不占次数。">
-                <a-input-number v-model:value="systemForm.temporaryUnschedulableRetryIntervalSeconds" :min="0" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="安全原地重试次数" tooltip="整次请求共享的同账户重试上限；兄弟 Key 会先尝试且不占次数。不按上游状态码或正文判断，也不写账户或 Key 状态。">
-                <a-input-number v-model:value="systemForm.temporaryUnschedulableRetryAttempts" :min="0" :max="10" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'cooldown-retest')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>冷却账户复测</span>
-                <a-tooltip title="仅复测临时不可调用和限流中的账户；先快速恢复，再退化到慢速恢复，长期不可用后继续低频复测。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-          </div>
-
-          <a-skeleton v-if="!sectionReady['cooldown-retest']" active :paragraph="{ rows: 1 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="长期不可用观察阈值（小时）" tooltip="默认 12 小时；从进入临时不可调用或限流中开始计时，超过后不转异常，而是显示为长期不可用。">
-                <a-input-number v-model:value="systemForm.cooldownAccountRetestMaxBackoffHours" :min="1" :max="720" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'gateway-core')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>请求等待与流式中断</span>
-                <a-tooltip title="文本和图像请求使用独立的当前账号尝试超时；文本请求按流式/非流式分别配置等待时间；只有暂时没有可派发账号时才累计无账号等待时间。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-          </div>
-
-          <a-skeleton v-if="!sectionReady['gateway-core']" active :paragraph="{ rows: 3 }" />
-          <div v-else class="settings-grid">
-            <div class="settings-subgroup-title">文本流式请求</div>
-            <div class="setting-item">
-              <a-form-item label="文本首响应等待（秒）" tooltip="只作用于文本 lane 的流式请求：当前账号超过该时间仍未返回响应头时，进入未提交接管。">
-                <a-input-number v-model:value="systemForm.textFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="文本流式停顿（秒）" tooltip="只作用于文本 lane 的流式请求：收到首段内容后，超过该时间没有任何上游新数据时收口当前尝试。">
-                <a-input-number v-model:value="systemForm.textStreamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="文本未提交尝试寿命（秒）" tooltip="只作用于文本 lane 的流式请求：当前账号尚未产生模型语义输出时的单次尝试最大存活时间；语义输出后不再使用该绝对寿命。">
-                <a-input-number v-model:value="systemForm.textUncommittedAttemptMaxLifetimeSeconds" :min="60" :max="86400" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="settings-subgroup-title">文本非流式请求</div>
-            <div class="setting-item">
-              <a-form-item label="文本非流式响应等待（秒）" tooltip="只作用于文本 lane 的非流式请求：上游需生成完整结果后才返回，超过该等待时间未收到首个响应则终止当前尝试。默认 600 秒。">
-                <a-input-number v-model:value="systemForm.textNonStreamFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="settings-subgroup-title">图像请求</div>
-            <div class="setting-item">
-              <a-form-item label="图像首响应等待（秒）" tooltip="只作用于 image lane 的单次 attempt；超时终止当前候选，若下游尚未提交则按统一候选机制继续切 Key、账户或分组。快速模式的文本首 token 截止不作用于图片。">
-                <a-input-number v-model:value="systemForm.imageFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="图像流式停顿（秒）" tooltip="只作用于 image lane：收到首段内容后，超过该时间没有任何上游新数据时收口当前尝试。">
-                <a-input-number v-model:value="systemForm.imageStreamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="图像未提交尝试寿命（秒）" tooltip="只作用于 image lane：当前账号尚未产生模型语义输出时的单次尝试最大存活时间。">
-                <a-input-number v-model:value="systemForm.imageUncommittedAttemptMaxLifetimeSeconds" :min="60" :max="86400" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="图像整请求总时限（秒）" tooltip="一次通用网关图片请求从接收到候选切换决策的总墙钟，默认 3600 秒。已在执行且仍处于图片专用 attempt 时限内的请求不会被机械中断；失败后只有总墙钟仍有余量才继续后备候选。">
-                <a-input-number v-model:value="systemForm.imageRequestWallTimeoutSeconds" :min="60" :max="86400" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="AI 对话生图总超时（秒）" tooltip="一次 generate_image 工具调用的整体时限，包含网关选号、账户切换、上游生成、结果读取和资产保存；默认 900 秒。">
-                <a-input-number v-model:value="systemForm.chatImageGenerationTotalTimeoutSeconds" :min="60" :max="86400" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="无可用账号等待（秒）" tooltip="只在没有可立即派发账号时累计；当前账号仍在执行或存在可派发候选时不会因为该时间到达而停止服务端接管。">
-                <a-input-number v-model:value="systemForm.noAvailableAccountWaitTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'gateway-core')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>上游客户端版本覆盖</span>
-                <a-tooltip title="应急热覆盖 Codex Desktop / Claude Code / Gemini CLI / ZCode / Grok CLI 五个家族的内置画像版本；非空即生效，可升可降，保存后即时生效。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-              <p class="section-description">应急覆盖上游客户端画像版本（semver）；留空回内置；代码升级后请清理低于内置的旧配置。详见功能文档。</p>
-            </div>
-          </div>
-
-          <a-skeleton v-if="!sectionReady['gateway-core']" active :paragraph="{ rows: 2 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="Codex Desktop" tooltip="覆盖 GPT/Codex 家族系统请求的 Codex Desktop 画像版本，如 0.159.3；留空使用内置版本。">
-                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.codex" placeholder="留空使用内置版本" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="Claude Code" tooltip="覆盖 Anthropic 家族系统请求与网关 Claude Code 画像补齐的 claude-cli 版本，如 2.1.285；留空使用内置版本。">
-                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.claudeCode" placeholder="留空使用内置版本" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="Gemini CLI" tooltip="覆盖 Gemini OAuth（code_assist / google_one）系统请求的 GeminiCLI 画像版本，如 0.61.0；留空使用内置版本。">
-                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.geminiCLI" placeholder="留空使用内置版本" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="ZCode" tooltip="覆盖 GLM 家族系统请求的 ZCode 画像版本（UA 与 X-ZCode-App-Version 同步），如 3.14.3；留空使用内置版本。">
-                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.zcode" placeholder="留空使用内置版本" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="Grok CLI" tooltip="覆盖 Grok OAuth 上游的 Grok CLI 画像版本（x-grok-client-version 与 UA 同步），如 1.0.13；留空使用内置版本。">
-                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.grokCLI" placeholder="留空使用内置版本" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'data-retention')">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
-                <span>数据保留与清理</span>
-                <a-tooltip title="配置 usage、日志索引和统计缓存的保留期；清理间隔与批量吞吐由后台内部常量控制。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-          </div>
-
-          <a-skeleton v-if="!sectionReady['data-retention']" active :paragraph="{ rows: 2 }" />
-          <div v-else class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="使用记录保留天数" tooltip="默认 30 天，最大 180 天；清理前会等待统计游标处理完成，避免破坏聚合。">
-                <a-input-number v-model:value="systemForm.usageRecordRetentionDays" :min="1" :max="180" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="运行日志索引保留天数" tooltip="默认 14 天，最大 90 天；只影响运行日志索引和文件游标清理，不删除原始日志文件。">
-                <a-input-number v-model:value="systemForm.runtimeLogIndexRetentionDays" :min="1" :max="90" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="公开接口日志保留天数" tooltip="默认 30 天，最大 365 天；用于公开接口日志表的后台清理。">
-                <a-input-number v-model:value="systemForm.publicApiLogRetentionDays" :min="1" :max="365" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <div class="settings-actions">
-          <a-space>
-            <a-button type="primary" :loading="savingSystem" @click="saveSystemSettings">保存系统设置</a-button>
-            <a-button :disabled="savingSystem" @click="resetSystemDefaults">恢复默认配置</a-button>
-          </a-space>
+          </template>
         </div>
-      </a-form>
+      </section>
     </div>
   </a-card>
 </template>
@@ -431,7 +127,7 @@
 <script setup lang="ts">
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { nextTick, onActivated, onMounted, onBeforeUnmount, onDeactivated, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, onBeforeUnmount, onDeactivated, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { ManagementSettingsSectionKey } from '@/api/domains/settings'
@@ -448,40 +144,45 @@ import {
   type GlobalForm,
   type SystemForm
 } from './settingsForm'
+import {
+  fieldSectionIndex,
+  getFormValue,
+  groupCustomCount,
+  groupFieldKeys,
+  setFormValue,
+  settingDefaultValue,
+  settingGroups,
+  settingsSectionFields,
+  settingsTotalItemCount,
+  type SettingGroupAction,
+  type SettingGroupDef,
+  type SettingsDisplayAccess
+} from './settingsDisplay'
 import { buildSettingsSectionRequestSignature, createSettingsSectionRequestGate } from './settingsSectionRequestGate'
 
-const savingGlobal = ref(false)
-const savingSystem = ref(false)
 const globalForm = reactive<GlobalForm>({ ...defaultGlobalSettings })
 const systemForm = reactive<SystemForm>(createDefaultSystemForm())
 const sectionReady = reactive<Record<ManagementSettingsSectionKey, boolean>>({
   brand: false, 'gateway-core': false, 'user-request-limit': false, 'account-health': false, 'api-rate-limit': false,
-  'cooldown-retest': false, 'data-retention': false
+  'cooldown-retest': false, 'data-retention': false, 'log-retention': false
 })
 const sectionLoading = reactive<Record<ManagementSettingsSectionKey, boolean>>({ ...sectionReady })
 const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | undefined>>({
   brand: undefined, 'gateway-core': undefined, 'user-request-limit': undefined, 'account-health': undefined, 'api-rate-limit': undefined,
-  'cooldown-retest': undefined, 'data-retention': undefined
+  'cooldown-retest': undefined, 'data-retention': undefined, 'log-retention': undefined
 })
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
-const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
-  brand: ['appName', 'appIcon'],
-  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textNonStreamFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds', 'upstreamClientVersionOverrides'],
-  'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth', 'userAiAccountLimit'],
-  'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'],
-  'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
-  'cooldown-retest': ['cooldownAccountRetestMaxBackoffHours'],
-  'data-retention': ['usageRecordRetentionDays', 'runtimeLogIndexRetentionDays', 'publicApiLogRetentionDays']
-}
-const sectionElements = new Map<Element, ManagementSettingsSectionKey>()
-let sectionObserver: IntersectionObserver | undefined
 const sectionRequestGate = createSettingsSectionRequestGate()
 const sectionSaveRequestGate = createSettingsSectionRequestGate()
 let pageActive = true
 
+const expandedGroups = ref(new Set<string>())
+const editingGroups = ref(new Set<string>())
+const savingGroups = reactive<Record<string, boolean>>({})
+
 function sectionValues(sectionKey: ManagementSettingsSectionKey): Record<string, unknown> {
   const source = sectionKey === 'brand' ? globalForm : systemForm
-  return Object.fromEntries(sectionFields[sectionKey].map((key) => {
+  return Object.fromEntries(settingsSectionFields[sectionKey].map((key) => {
     if (key === 'upstreamClientVersionOverrides') return [key, serializeUpstreamClientVersionOverrides((source as SystemForm).upstreamClientVersionOverrides)]
     return [key, (source as unknown as Record<string, unknown>)[key]]
   }))
@@ -489,7 +190,7 @@ function sectionValues(sectionKey: ManagementSettingsSectionKey): Record<string,
 
 function applySystemSectionValues(sectionKey: ManagementSettingsSectionKey, values: Record<string, unknown>): void {
   const normalized = normalizeSystemSettings({ ...createDefaultSystemForm(), ...values } as unknown as SystemSettings)
-  for (const key of sectionFields[sectionKey]) {
+  for (const key of settingsSectionFields[sectionKey]) {
     (systemForm as unknown as Record<string, unknown>)[key] = (normalized as unknown as Record<string, unknown>)[key]
   }
 }
@@ -532,44 +233,174 @@ function currentSectionRequestSignature(sectionKey: ManagementSettingsSectionKey
   })
 }
 
-async function loadSettings() {
-  await Promise.all([loadSection('brand'), loadSection('gateway-core')])
+/** 折叠胶囊与展示行需要全部 section 的 baseline，页面打开即并行加载 8 个轻量 GET。 */
+function loadAllSections(): Promise<unknown> {
+  return Promise.all((Object.keys(settingsSectionFields) as ManagementSettingsSectionKey[]).map((key) => loadSection(key)))
 }
 
-async function saveGlobalSettings() {
-  const signature = currentSectionRequestSignature('brand')
-  const requestToken = sectionSaveRequestGate.begin('brand', signature)
-  savingGlobal.value = true
-  try {
-    const payload = changedPayload('brand')
-    if (!Object.keys(payload).length) return
-    const submittedSnapshot = sectionValues('brand')
-    const next = await api.settings.updateSection('brand', payload as Record<string, string | number>)
-    if (!sectionSaveRequestGate.isCurrent(requestToken, currentSectionRequestSignature('brand'))) return
-    const current = sectionValues('brand')
-    const responseValues = { ...next.values }
-    for (const key of sectionFields.brand) {
-      if (current[key] !== submittedSnapshot[key]) responseValues[key] = current[key] as string
+// ---------------------------------------------------------------------------
+// 展示访问器：baseline 读取 + 自定义判定（服务端值 vs 出厂默认）
+// ---------------------------------------------------------------------------
+
+function baselineOf(key: string): string | number | undefined {
+  const sectionKey = fieldSectionIndex[key]
+  if (!sectionKey) return undefined
+  const baseline = sectionBaselines[sectionKey]
+  if (!baseline) return undefined
+  if (key.startsWith('upstreamClientVersionOverrides.')) {
+    const raw = baseline.upstreamClientVersionOverrides
+    if (typeof raw !== 'object' || raw === null) return ''
+    const value = (raw as Record<string, unknown>)[key.slice('upstreamClientVersionOverrides.'.length)]
+    return typeof value === 'string' ? value : ''
+  }
+  const value = baseline[key]
+  if (typeof value === 'string' || typeof value === 'number') return value
+  return undefined
+}
+
+const displayAccess: SettingsDisplayAccess = {
+  baseline: (key) => baselineOf(key),
+  isCustom: (key) => {
+    const baselineValue = baselineOf(key)
+    if (baselineValue === undefined) return false
+    const fallback = settingDefaultValue(key)
+    if (typeof fallback === 'string' || typeof baselineValue === 'string') {
+      return String(baselineValue) !== String(fallback)
     }
-    Object.assign(globalForm, normalizeGlobalSettings(responseValues as unknown as GlobalSettings))
-    sectionBaselines.brand = { ...next.values }
-    applyAppBrand(globalForm)
-    message.success('全局配置已保存')
-  } catch (error) {
-    if (sectionSaveRequestGate.isCurrent(requestToken, currentSectionRequestSignature('brand'))) {
-      console.error(error)
-      message.error(extractApiErrorMessage(error, '保存全局配置失败'))
-    }
-  } finally {
-    if (sectionSaveRequestGate.isCurrent(requestToken, currentSectionRequestSignature('brand'))) savingGlobal.value = false
+    return baselineValue !== fallback
   }
 }
 
-async function saveSystemSettings() {
-  let activeRequest: { sectionKey: ManagementSettingsSectionKey; generation: number; signature: string } | undefined
-  savingSystem.value = true
+// ---------------------------------------------------------------------------
+// 组交互态
+// ---------------------------------------------------------------------------
+
+function toggleGroup(group: SettingGroupDef): void {
+  const next = new Set(expandedGroups.value)
+  if (next.has(group.key)) next.delete(group.key)
+  else next.add(group.key)
+  expandedGroups.value = next
+}
+
+function beginGroupEditing(group: SettingGroupDef): void {
+  const next = new Set(editingGroups.value)
+  next.add(group.key)
+  editingGroups.value = next
+}
+
+function groupReady(group: SettingGroupDef): boolean {
+  return group.sectionKeys.every((key) => sectionReady[key])
+}
+
+function groupErrorMessage(group: SettingGroupDef): string | undefined {
+  for (const key of group.sectionKeys) {
+    if (sectionErrors[key]) return sectionErrors[key]
+  }
+  return undefined
+}
+
+function retryGroup(group: SettingGroupDef): void {
+  for (const key of group.sectionKeys) {
+    if (sectionErrors[key]) void loadSection(key, true)
+  }
+}
+
+function groupViewRows(group: SettingGroupDef) {
+  return group.viewRows(displayAccess)
+}
+
+const groupDirtyCounts = computed<Record<string, number>>(() => {
+  const result: Record<string, number> = {}
+  for (const group of settingGroups) {
+    result[group.key] = groupFieldKeys(group).filter((key) => {
+      const formValue = getFormValue(globalForm, systemForm, key)
+      const baselineValue = baselineOf(key)
+      return !settingValueEquals(formValue, baselineValue)
+    }).length
+  }
+  return result
+})
+
+const groupCustomCounts = computed<Record<string, number>>(() => {
+  const result: Record<string, number> = {}
+  for (const group of settingGroups) result[group.key] = groupCustomCount(group, displayAccess)
+  return result
+})
+
+const totalCustomCount = computed(() => Object.values(groupCustomCounts.value).reduce((sum, count) => sum + count, 0))
+
+function groupStatusText(group: SettingGroupDef): string {
+  const dirty = groupDirtyCounts.value[group.key] ?? 0
+  if (dirty > 0) return `${dirty} 项已修改`
+  const custom = groupCustomCounts.value[group.key] ?? 0
+  return custom > 0 ? `${custom} 项自定义` : '默认'
+}
+
+function groupStatusClass(group: SettingGroupDef): string {
+  const dirty = groupDirtyCounts.value[group.key] ?? 0
+  if (dirty > 0) return 'dirty'
+  const custom = groupCustomCounts.value[group.key] ?? 0
+  return custom > 0 ? 'custom' : 'default'
+}
+
+function cancelGroupEditing(group: SettingGroupDef): void {
+  // 精确回滚组内字段到服务端 baseline（未加载时回退出厂默认），不影响其他组的在途编辑
+  for (const key of groupFieldKeys(group)) {
+    const baselineValue = baselineOf(key)
+    setFormValue(globalForm, systemForm, key, baselineValue !== undefined ? baselineValue : settingDefaultValue(key))
+  }
+  const next = new Set(editingGroups.value)
+  next.delete(group.key)
+  editingGroups.value = next
+}
+
+function resetGroupDefaults(group: SettingGroupDef): void {
+  for (const key of groupFieldKeys(group)) {
+    setFormValue(globalForm, systemForm, key, settingDefaultValue(key))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 组级操作（展示态 actions 按钮，如审计日志手动清理）
+// ---------------------------------------------------------------------------
+
+const groupActionPending = reactive<Record<string, boolean>>({})
+
+async function runGroupAction(group: SettingGroupDef, action: SettingGroupAction): Promise<void> {
+  const pendingKey = `${group.key}:${action.key}`
+  if (groupActionPending[pendingKey]) return
+  groupActionPending[pendingKey] = true
   try {
-    for (const sectionKey of Object.keys(sectionFields).filter((key) => key !== 'brand') as ManagementSettingsSectionKey[]) {
+    if (action.key === 'audit-cleanup') await cleanupAuditLogs()
+  } finally {
+    groupActionPending[pendingKey] = false
+  }
+}
+
+/** 审计日志手动清理：按当前生效保留策略立即执行一轮，toast 展示主要清理统计。 */
+async function cleanupAuditLogs(): Promise<void> {
+  try {
+    const result = await api.settings.cleanupAuditLogs()
+    message.success(`清理完成：删除 ${result.deletedLogs} 条日志、${result.deletedPayloadBlobs} 个正文文件`)
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '清理审计日志失败'))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 保存：按组提交（组内字段的差异按所属 section 分桶，逐 section PATCH）
+// ---------------------------------------------------------------------------
+
+async function handleSaveGroup(group: SettingGroupDef): Promise<void> {
+  if (group.key === 'brand') {
+    await saveGlobalSettings()
+    return
+  }
+  savingGroups[group.key] = true
+  let activeRequest: { sectionKey: ManagementSettingsSectionKey; generation: number; signature: string } | undefined
+  try {
+    for (const sectionKey of group.sectionKeys) {
       if (!sectionReady[sectionKey]) continue
       const payload = changedPayload(sectionKey)
       if (!Object.keys(payload).length) continue
@@ -580,39 +411,77 @@ async function saveSystemSettings() {
       if (!sectionSaveRequestGate.isCurrent(activeRequest, currentSectionRequestSignature(sectionKey))) return
       const current = sectionValues(sectionKey)
       const responseValues = { ...next.values }
-      for (const key of sectionFields[sectionKey]) {
+      for (const key of settingsSectionFields[sectionKey]) {
         if (current[key] !== submittedSnapshot[key]) responseValues[key] = current[key] as string | number
       }
       applySystemSectionValues(sectionKey, responseValues)
       sectionBaselines[sectionKey] = { ...next.values }
     }
-    message.success('系统设置已保存')
+    message.success(`${group.title}已保存`)
+    const nextEditing = new Set(editingGroups.value)
+    nextEditing.delete(group.key)
+    editingGroups.value = nextEditing
   } catch (error) {
-    if (activeRequest && sectionSaveRequestGate.isCurrent(activeRequest, currentSectionRequestSignature(activeRequest.sectionKey))) {
+    // activeRequest 未建立时的失败是本地表单校验（如版本覆盖非法 semver），同样要提示
+    if (!activeRequest || sectionSaveRequestGate.isCurrent(activeRequest, currentSectionRequestSignature(activeRequest.sectionKey))) {
       console.error(error)
-      message.error(extractApiErrorMessage(error, '保存系统设置失败'))
+      message.error(extractApiErrorMessage(error, `保存${group.title}失败`))
     }
   } finally {
-    if (!activeRequest || sectionSaveRequestGate.isCurrent(activeRequest, currentSectionRequestSignature(activeRequest.sectionKey))) savingSystem.value = false
+    if (!activeRequest || sectionSaveRequestGate.isCurrent(activeRequest, currentSectionRequestSignature(activeRequest.sectionKey))) savingGroups[group.key] = false
   }
 }
 
-function resetGlobalDefaults() {
-  Object.assign(globalForm, defaultGlobalSettings)
-}
-
-function resetSystemDefaults() {
-  const defaults = createDefaultSystemForm()
-  for (const sectionKey of Object.keys(sectionFields).filter((key) => key !== 'brand') as ManagementSettingsSectionKey[]) {
-    if (!sectionReady[sectionKey]) continue
-    for (const key of sectionFields[sectionKey]) (systemForm as unknown as Record<string, unknown>)[key] = (defaults as unknown as Record<string, unknown>)[key]
+async function saveGlobalSettings() {
+  const signature = currentSectionRequestSignature('brand')
+  const requestToken = sectionSaveRequestGate.begin('brand', signature)
+  savingGroups.brand = true
+  try {
+    const payload = changedPayload('brand')
+    if (!Object.keys(payload).length) {
+      const nextEditing = new Set(editingGroups.value)
+      nextEditing.delete('brand')
+      editingGroups.value = nextEditing
+      return
+    }
+    const submittedSnapshot = sectionValues('brand')
+    const next = await api.settings.updateSection('brand', payload as Record<string, string | number>)
+    if (!sectionSaveRequestGate.isCurrent(requestToken, currentSectionRequestSignature('brand'))) return
+    const current = sectionValues('brand')
+    const responseValues = { ...next.values }
+    for (const key of settingsSectionFields.brand) {
+      if (current[key] !== submittedSnapshot[key]) responseValues[key] = current[key] as string
+    }
+    Object.assign(globalForm, normalizeGlobalSettings(responseValues as unknown as GlobalSettings))
+    sectionBaselines.brand = { ...next.values }
+    applyAppBrand(globalForm)
+    message.success('品牌与展示已保存')
+    const nextEditing = new Set(editingGroups.value)
+    nextEditing.delete('brand')
+    editingGroups.value = nextEditing
+  } catch (error) {
+    if (sectionSaveRequestGate.isCurrent(requestToken, currentSectionRequestSignature('brand'))) {
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '保存品牌与展示失败'))
+    }
+  } finally {
+    if (sectionSaveRequestGate.isCurrent(requestToken, currentSectionRequestSignature('brand'))) savingGroups.brand = false
   }
 }
 
 function changedPayload(sectionKey: ManagementSettingsSectionKey): Record<string, unknown> {
   const current = sectionValues(sectionKey)
   const baseline = sectionBaselines[sectionKey] ?? {}
-  return Object.fromEntries(Object.entries(current).filter(([key, value]) => !settingValueEquals(value, baseline[key])))
+  return Object.fromEntries(Object.entries(current).filter(([key, value]) => {
+    if (key === 'upstreamClientVersionOverrides') {
+      // 服务端无覆盖时 GET 不返回该键；空覆盖（{}）与缺失语义等价（全部用内置），不算脏
+      const formHas = Object.keys(value as Record<string, string>).length > 0
+      const baselineRaw = baseline[key]
+      const baselineHas = typeof baselineRaw === 'object' && baselineRaw !== null && Object.keys(baselineRaw).length > 0
+      return formHas !== baselineHas || (formHas && !settingValueEquals(value, baselineRaw))
+    }
+    return !settingValueEquals(value, baseline[key])
+  }))
 }
 
 function settingValueEquals(value: unknown, baseline: unknown): boolean {
@@ -623,14 +492,6 @@ function settingValueEquals(value: unknown, baseline: unknown): boolean {
   return false
 }
 
-function setLazySectionElement(element: unknown, sectionKey: ManagementSettingsSectionKey): void {
-  if (!(element instanceof Element)) return
-  sectionElements.set(element, sectionKey)
-  sectionObserver?.observe(element)
-}
-
-function retrySection(sectionKey: ManagementSettingsSectionKey): void { void loadSection(sectionKey, true) }
-
 function resetSectionsForViewerChange(): void {
   Object.assign(globalForm, defaultGlobalSettings)
   Object.assign(systemForm, createDefaultSystemForm())
@@ -640,6 +501,7 @@ function resetSectionsForViewerChange(): void {
     sectionErrors[key] = undefined
     delete sectionBaselines[key]
   }
+  editingGroups.value = new Set()
 }
 
 function restoreDefaultIcon() {
@@ -660,7 +522,7 @@ function handleIconUpload(file: File): boolean {
   reader.onload = () => {
     if (typeof reader.result === 'string') {
       globalForm.appIcon = reader.result
-      message.success('图标已读取，保存全局配置后生效')
+      message.success('图标已读取，保存本组后生效')
     }
   }
   reader.onerror = () => {
@@ -671,24 +533,13 @@ function handleIconUpload(file: File): boolean {
 }
 
 onMounted(() => {
-  sectionObserver = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver((entries) => {
-    for (const entry of entries) if (entry.isIntersecting) {
-      const key = sectionElements.get(entry.target)
-      if (key) void loadSection(key)
-    }
-  }, { rootMargin: '240px' })
-  void loadSettings()
-  if (!sectionObserver) {
-    for (const key of Object.keys(sectionFields) as ManagementSettingsSectionKey[]) void loadSection(key)
-  }
-  void nextTick(() => sectionElements.forEach((_key, element) => sectionObserver?.observe(element)))
+  void loadAllSections()
 })
 
 watch(() => authState.revision.value, () => {
   sectionRequestGate.invalidate()
   sectionSaveRequestGate.invalidate()
-  savingGlobal.value = false
-  savingSystem.value = false
+  for (const key of Object.keys(savingGroups)) savingGroups[key] = false
   for (const key of Object.keys(sectionLoading) as ManagementSettingsSectionKey[]) sectionLoading[key] = false
   resetSectionsForViewerChange()
 })
@@ -697,8 +548,7 @@ onDeactivated(() => {
   pageActive = false
   sectionRequestGate.deactivate()
   sectionSaveRequestGate.deactivate()
-  savingGlobal.value = false
-  savingSystem.value = false
+  for (const key of Object.keys(savingGroups)) savingGroups[key] = false
   for (const key of Object.keys(sectionLoading) as ManagementSettingsSectionKey[]) sectionLoading[key] = false
 })
 
@@ -712,7 +562,6 @@ onBeforeUnmount(() => {
   pageActive = false
   sectionRequestGate.deactivate()
   sectionSaveRequestGate.deactivate()
-  sectionObserver?.disconnect()
 })
 </script>
 
@@ -722,174 +571,267 @@ onBeforeUnmount(() => {
 }
 
 .settings-shell {
+  max-width: 880px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
 }
 
-.settings-form {
-  max-width: 1120px;
-}
-
-.settings-section {
-  padding: 20px;
-  background: #fff;
-  border: 1px solid #edf1f7;
-  border-radius: 16px;
-}
-
-.global-section {
-  background:
-    radial-gradient(circle at top right, rgba(22, 119, 255, 0.08), transparent 34%),
-    #fff;
-}
-
-.settings-section + .settings-section {
-  margin-top: 18px;
-}
-
-.section-heading {
+.settings-page-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-}
-
-.section-heading h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 800;
-}
-
-.section-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.section-description {
-  margin: 6px 0 0;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.request-limit-section {
-  border-color: #dbe7f5;
-}
-
-.request-limit-alert {
-  margin-bottom: 16px;
-}
-
-.help-icon {
-  color: #94a3b8;
-  cursor: help;
-  font-size: 14px;
-}
-
-.help-icon:hover {
-  color: #1677ff;
-}
-
-.global-preview-stack {
-  display: flex;
+  align-items: flex-end;
+  gap: 14px;
   flex-wrap: wrap;
-  gap: 10px;
-  justify-content: flex-end;
 }
 
-.brand-preview,
-.login-preview {
-  display: inline-flex;
+.settings-page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--juhe-fg, #22282b);
+}
+
+.settings-page-desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--juhe-muted, #8b9190);
+}
+
+.settings-summary {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--juhe-muted, #8b9190);
+  white-space: nowrap;
+}
+
+.settings-summary b {
+  color: var(--juhe-warn, #a98548);
+  font-weight: 600;
+}
+
+/* 分组折叠卡 */
+.settings-group {
+  background: var(--juhe-surface, #fff);
+  border: 1px solid var(--juhe-border, rgba(34, 40, 43, 0.1));
+  border-radius: var(--juhe-radius, 12px);
+  box-shadow: 0 10px 30px rgba(34, 40, 43, 0.05);
+  overflow: hidden;
+}
+
+.settings-group-bar {
+  display: flex;
   align-items: center;
   gap: 10px;
-  max-width: 280px;
-  padding: 10px 14px;
-  color: #0f172a;
-  background: rgba(248, 250, 252, 0.88);
-  border: 1px solid #edf1f7;
-  border-radius: 12px;
+  padding: 14px 20px;
+  cursor: pointer;
+  user-select: none;
 }
 
-.brand-preview {
-  font-weight: 700;
+.settings-group-bar:hover {
+  background: var(--juhe-surface-soft, #faf9f7);
 }
 
-.login-preview {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-}
-
-.login-preview span {
-  color: #1677ff;
+.settings-group-chevron {
+  color: var(--juhe-faint, #a9aeac);
   font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  transition: transform 0.18s;
 }
 
-.login-preview strong {
-  font-size: 13px;
+.settings-group.open .settings-group-chevron {
+  transform: rotate(90deg);
 }
 
-.brand-preview-icon {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 auto;
+.settings-group-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
 }
 
-.brand-icon-actions {
+.settings-group-meta {
+  color: var(--juhe-faint, #a9aeac);
+  font-size: 12.5px;
+}
+
+.settings-group-status {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 1px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.settings-group-status.default {
+  color: var(--juhe-muted, #8b9190);
+  background: rgba(139, 145, 144, 0.1);
+  border: 1px solid rgba(139, 145, 144, 0.22);
+}
+
+.settings-group-status.custom,
+.settings-group-status.dirty {
+  color: var(--juhe-warn, #a98548);
+  background: rgba(169, 133, 72, 0.1);
+  border: 1px solid rgba(169, 133, 72, 0.3);
+}
+
+.settings-group-body {
+  border-top: 1px solid var(--juhe-border, rgba(34, 40, 43, 0.1));
+  padding: 6px 20px 16px;
+}
+
+/* 展示行 */
+.settings-view-block {
   margin-top: 10px;
 }
 
-.settings-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+.settings-view-subgroup {
+  font-size: 12px;
+  color: var(--juhe-muted, #8b9190);
+  letter-spacing: 1.5px;
+  margin: 12px 0 6px;
 }
 
-.setting-item {
-  min-height: 118px;
-  padding: 16px 16px 0;
-  background: #f8fafc;
-  border: 1px solid #edf1f7;
-  border-radius: 14px;
+.settings-view-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px dashed rgba(34, 40, 43, 0.06);
 }
 
-.setting-item-wide {
-  grid-column: 1 / -1;
+.settings-view-row:last-child {
+  border-bottom: none;
 }
 
-.settings-subgroup-title {
-  grid-column: 1 / -1;
-  color: #475569;
+.settings-view-key {
+  color: var(--juhe-fg-soft, #3c4447);
   font-size: 13px;
-  font-weight: 700;
+  white-space: nowrap;
 }
 
-.settings-actions {
+.settings-view-dots {
+  flex: 1;
+  border-bottom: 1px dotted rgba(34, 40, 43, 0.16);
+  transform: translateY(-4px);
+  min-width: 24px;
+}
+
+.settings-view-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--juhe-fg, #22282b);
+  white-space: normal;
+  text-align: right;
+}
+
+.settings-view-value em {
+  font-style: normal;
+  color: var(--juhe-faint, #a9aeac);
+  font-weight: 400;
+}
+
+.settings-view-value.custom {
+  color: var(--juhe-warn, #a98548);
+}
+
+/* 编辑行 */
+.settings-edit-subgroup {
+  font-size: 12px;
+  color: var(--juhe-muted, #8b9190);
+  letter-spacing: 1.5px;
+  margin: 14px 0 4px;
+}
+
+.settings-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px dashed rgba(34, 40, 43, 0.06);
+}
+
+.settings-edit-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-edit-label-text {
+  font-size: 13px;
+  color: var(--juhe-fg-soft, #3c4447);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.settings-help-icon {
+  color: var(--juhe-faint, #a9aeac);
+  cursor: help;
+  font-size: 13px;
+}
+
+.settings-help-icon:hover {
+  color: var(--juhe-accent, #53696b);
+}
+
+.settings-edit-input {
+  flex-shrink: 0;
+  width: 170px;
+}
+
+.settings-brand-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.settings-brand-preview {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  object-fit: contain;
+  border: 1px solid var(--juhe-border, rgba(34, 40, 43, 0.1));
+}
+
+.settings-group-actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 18px;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
 }
 
-@media (max-width: 900px) {
-  .settings-grid {
-    grid-template-columns: 1fr;
+.settings-edit-hint {
+  margin-right: auto;
+  color: var(--juhe-faint, #a9aeac);
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .settings-group-meta {
+    display: none;
   }
 
-  .section-heading {
-    align-items: flex-start;
+  .settings-view-dots {
+    display: none;
+  }
+
+  .settings-view-row {
+    justify-content: space-between;
+  }
+
+  .settings-edit-row {
     flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
   }
 
-  .global-preview-stack {
-    justify-content: flex-start;
+  .settings-edit-input {
+    width: 100%;
+    flex-shrink: 1;
   }
 
+  .settings-brand-field {
+    flex-wrap: wrap;
+  }
 }
 </style>

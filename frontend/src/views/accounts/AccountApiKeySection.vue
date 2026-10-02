@@ -143,7 +143,8 @@
         data-1p-ignore="true"
         data-form-type="other"
         :placeholder="baseUrlPlaceholder"
-        @paste="suggestAccountNameFromBaseUrl"
+        @paste="suggestAccountNameFromBaseUrlPaste"
+        @change="suggestAccountNameFromBaseUrlChange"
       />
     </a-form-item>
     <AccountMetaFields
@@ -206,7 +207,7 @@ import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus, AccountTagSummary } from '@/types/domain'
-import { accountNameFromBaseUrl } from './accountNameSuggestion'
+import { followBaseUrlAccountName } from './accountNameSuggestion'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { normalizedAccountApiKeys } from './accountCredentials'
@@ -322,10 +323,19 @@ function ensureApiKeyInputs(): void {
   props.form.apiKeyWeights = [1]
 }
 
-function suggestAccountNameFromBaseUrl(event: ClipboardEvent): void {
-  if (!props.form.name.trim()) return
-  const name = accountNameFromBaseUrl(event.clipboardData?.getData('text') ?? '')
-  if (name) props.form.name = name
+function suggestAccountNameFromBaseUrlPaste(event: ClipboardEvent): void {
+  applyAccountNameFromBaseUrl(event.clipboardData?.getData('text') ?? '')
+}
+
+function suggestAccountNameFromBaseUrlChange(event: Event): void {
+  applyAccountNameFromBaseUrl((event.target as HTMLInputElement | null)?.value ?? '')
+}
+
+// 名称跟随 Base URL：空名生成「域名-随机后缀」默认名；仍是自动默认名时只换域名、保留后缀；
+// 用户已手动命名则不覆盖。粘贴与键入同样跟随。
+function applyAccountNameFromBaseUrl(value: string): void {
+  const suggested = followBaseUrlAccountName(props.form.name, value)
+  if (suggested) props.form.name = suggested
 }
 
 function syncApiKeyWeights(): void {

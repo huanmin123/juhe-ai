@@ -834,7 +834,7 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 
 <style scoped>
 .ai-composer { position: relative; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff; box-shadow: 0 2px 8px rgba(15, 23, 42, .05); }
-.ai-composer:focus-within { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22, 119, 255, .1); }
+.ai-composer:focus-within { border-color: var(--juhe-accent); box-shadow: 0 0 0 2px rgba(83, 105, 107, .12); }
 .ai-composer-footer { min-height: 44px; display: flex; align-items: center; gap: 4px; padding: 5px 8px; color: #94a3b8; font-size: 11px; border-top: 1px solid #eef2f7; }
 .ai-composer-model-controls { min-width: 0; flex: 1; display: flex; align-items: center; gap: 1px; overflow-x: auto; scrollbar-width: none; }
 .ai-composer-model-controls::-webkit-scrollbar { display: none; }
@@ -849,8 +849,8 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .ai-composer-command-menu button { width: 100%; display: grid; grid-template-columns: minmax(96px, auto) minmax(0, 1fr); align-items: start; column-gap: 12px; padding: 8px; text-align: left; border: 0; background: transparent; cursor: pointer; }
 .ai-composer-command-menu strong { color: #1f2937; font-size: 13px; line-height: 19px; white-space: nowrap; }
 .ai-composer-command-description { color: #64748b; font-size: 12px; line-height: 19px; }
-.ai-composer-command-menu button:hover { background: #f0f7ff; }
-.ai-composer-command-menu button.is-active { background: #eaf3ff; }
+.ai-composer-command-menu button:hover { background: var(--juhe-surface-soft); }
+.ai-composer-command-menu button.is-active { background: var(--juhe-accent-soft); }
 :global(.chat-generation-parameters-modal .ant-modal) { max-width: calc(100vw - 24px); }
 :global(.chat-generation-parameters-modal .ant-modal-content) { overflow: hidden; padding: 0; border: 1px solid #dbe7f5; border-radius: 16px; box-shadow: 0 24px 64px rgba(15, 23, 42, .2); }
 :global(.chat-generation-parameters-modal .ant-modal-header) { margin: 0; padding: 20px 24px 16px; border-bottom: 1px solid #e8eef6; background: linear-gradient(135deg, #f8fbff 0%, #ffffff 70%); }
@@ -859,12 +859,12 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .chat-generation-modal-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-right: 28px; }
 .chat-generation-modal-title strong { display: block; color: #172033; font-size: 18px; line-height: 25px; }
 .chat-generation-modal-title span { display: block; margin-top: 3px; color: #718096; font-size: 12px; line-height: 18px; font-weight: 400; }
-.chat-generation-modal-title .chat-generation-modal-count { flex: 0 0 auto; margin-top: 2px; padding: 3px 8px; border: 1px solid #cfe1fa; border-radius: 999px; color: #1768d6; background: #edf6ff; font-size: 12px; line-height: 18px; }
+.chat-generation-modal-title .chat-generation-modal-count { flex: 0 0 auto; margin-top: 2px; padding: 3px 8px; border: 1px solid var(--juhe-border-strong); border-radius: 999px; color: var(--juhe-accent); background: var(--juhe-accent-soft); font-size: 12px; line-height: 18px; }
 .chat-generation-parameters { display: grid; gap: 16px; color: #334155; }
 .chat-generation-modal-intro { margin: 0; color: #64748b; font-size: 13px; line-height: 20px; }
 .chat-generation-parameter-list { display: grid; gap: 10px; }
 .chat-generation-parameter-card { display: grid; gap: 12px; padding: 14px 15px 12px; border: 1px solid #e1e8f0; border-radius: 12px; background: #fbfdff; transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease; }
-.chat-generation-parameter-card.is-enabled { border-color: #bcd8fc; background: #f7fbff; box-shadow: 0 4px 12px rgba(22, 119, 255, .07); }
+.chat-generation-parameter-card.is-enabled { border-color: var(--juhe-border-strong); background: var(--juhe-accent-soft); box-shadow: 0 4px 12px rgba(83, 105, 107, .08); }
 .chat-generation-parameter-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .chat-generation-parameter-card-heading h3 { margin: 0; color: #24344d; font-size: 14px; line-height: 21px; font-weight: 650; }
 .chat-generation-parameter-card-heading p { max-width: 450px; margin: 3px 0 0; color: #718096; font-size: 12px; line-height: 18px; }

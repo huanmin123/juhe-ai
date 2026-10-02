@@ -46,6 +46,12 @@ export interface SystemForm {
   publicApiLogRetentionDays: number
   usageRecordRetentionDays: number
   cooldownAccountRetestMaxBackoffHours: number
+  operationLogRetentionDays: number
+  operationLogMaxChangesPerRecord: number
+  auditLogSuccessRetentionDays: number
+  auditLogProblemRetentionDays: number
+  auditLogSuccessHotRetentionHours: number
+  auditLogSuccessSampleRate: number
   upstreamClientVersionOverrides: UpstreamClientVersionOverridesForm
 }
 
@@ -90,6 +96,12 @@ export const defaultSystemSettings: SystemForm = {
   publicApiLogRetentionDays: 30,
   usageRecordRetentionDays: 30,
   cooldownAccountRetestMaxBackoffHours: 12,
+  operationLogRetentionDays: 365,
+  operationLogMaxChangesPerRecord: 100,
+  auditLogSuccessRetentionDays: 3,
+  auditLogProblemRetentionDays: 7,
+  auditLogSuccessHotRetentionHours: 1,
+  auditLogSuccessSampleRate: 1,
   upstreamClientVersionOverrides: { codex: '', claudeCode: '', geminiCLI: '', zcode: '', grokCLI: '' }
 }
 
@@ -142,6 +154,12 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     publicApiLogRetentionDays: integerValue(settings.publicApiLogRetentionDays, '公开接口日志保留天数', 1, 365),
     usageRecordRetentionDays: integerValue(settings.usageRecordRetentionDays, '使用记录保留天数', 1, 180),
     cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '长期不可用观察阈值', 1, 720),
+    operationLogRetentionDays: integerValue(settings.operationLogRetentionDays, '操作日志保留天数', 1, 3650),
+    operationLogMaxChangesPerRecord: integerValue(settings.operationLogMaxChangesPerRecord, '操作日志每条变更记录上限', 1, 500),
+    auditLogSuccessRetentionDays: integerValue(settings.auditLogSuccessRetentionDays, '审计成功保留天数', 0, 3650),
+    auditLogProblemRetentionDays: integerValue(settings.auditLogProblemRetentionDays, '审计问题保留天数', 1, 3650),
+    auditLogSuccessHotRetentionHours: integerValue(settings.auditLogSuccessHotRetentionHours, '审计成功热窗', 0, 168),
+    auditLogSuccessSampleRate: decimalValue(settings.auditLogSuccessSampleRate, '审计成功采样率必须是 0 到 1 之间且最多 4 位小数', 0, 1, 4),
     upstreamClientVersionOverrides: parseUpstreamClientVersionOverrides(settings.upstreamClientVersionOverrides)
   }
 }
@@ -202,6 +220,14 @@ function integerValue(value: unknown, label: string, min: number, max: number): 
   if (value < min || value > max) {
     throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)
   }
+  return value
+}
+
+/** 小数数值校验：范围内且小数位数不超过 maxFractionDigits；任何非法输入都抛出给定完整文案。 */
+function decimalValue(value: unknown, errorMessage: string, min: number, max: number, maxFractionDigits: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(errorMessage)
+  if (value < min || value > max) throw new Error(errorMessage)
+  if (Math.round(value * 10 ** maxFractionDigits) / 10 ** maxFractionDigits !== value) throw new Error(errorMessage)
   return value
 }
 

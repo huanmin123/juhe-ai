@@ -275,14 +275,16 @@ type RetentionConfig struct {
 	BatchSize                    int
 }
 
-// RetentionResult reports rows and files changed by a retention pass.
+// RetentionResult reports rows and files changed by a retention pass. The
+// json tags serve the manual cleanup API response (camelCase contract in
+// docs/functions/日志与审计设置设计.md).
 type RetentionResult struct {
-	SuccessHotTrimmed       int64
-	DeletedNonPersistedLogs int64
-	DeletedLogs             int64
-	DeletedErrorGroups      int64
-	DeletedPayloadBlobs     int64
-	DeletedHotSearchFiles   int64
+	SuccessHotTrimmed       int64 `json:"successHotTrimmed"`
+	DeletedNonPersistedLogs int64 `json:"deletedNonPersistedLogs"`
+	DeletedLogs             int64 `json:"deletedLogs"`
+	DeletedErrorGroups      int64 `json:"deletedErrorGroups"`
+	DeletedPayloadBlobs     int64 `json:"deletedPayloadBlobs"`
+	DeletedHotSearchFiles   int64 `json:"deletedHotSearchFiles"`
 }
 
 type HotSearchOptions struct {

@@ -343,7 +343,7 @@ function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c
 .chat-markdown :deep(.task-list-item input) { margin: 0 7px 0 -21px; }
 .chat-markdown :deep(blockquote) { margin: 10px 0; padding: 3px 0 3px 12px; color: #5f6c7b; border-left: 3px solid #d8dee8; }
 .chat-markdown :deep(blockquote p) { margin: 0; }
-.chat-markdown :deep(a) { color: #1677ff; text-underline-offset: 2px; }
+.chat-markdown :deep(a) { color: var(--juhe-accent); text-underline-offset: 2px; }
 .chat-markdown :deep(:not(pre) > code) { padding: 1px 5px; color: #9f1239; background: #f5f6f8; border: 1px solid #e8ebef; border-radius: 4px; font-size: .92em; }
 .chat-markdown :deep(code) { font-family: "Cascadia Code", Consolas, monospace; }
 .chat-markdown :deep(.chat-code-block) { max-width: 100%; margin: 10px 0; overflow: hidden; background: #f7f8fa; border: 1px solid #e3e7ec; border-radius: 6px; }

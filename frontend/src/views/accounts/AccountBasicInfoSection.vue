@@ -1,5 +1,23 @@
 <template>
-  <section class="form-section">
+  <!-- bench 变体：编辑工作台"常用配置区"的分组块，仅渲染加入分组；名称/调度/状态由弹框标题栏与摘要卡承载 -->
+  <section v-if="variant === 'bench'" class="form-section">
+    <a-form-item label="加入分组" required>
+      <div @pointerdown.capture="markGroupDropdownRequested" @keydown.capture="markGroupDropdownRequested">
+        <GroupSelect
+          v-model:value="form.groupId"
+          v-model:selected-group="form.group"
+          :filter-option="false"
+          :open="groupDropdownOpen"
+          :loading="groupOptionsLoading"
+          :options="groupOptions"
+          placeholder="输入分组名称"
+          @dropdown-visible-change="handleGroupDropdownVisibleChange"
+          @search="$emit('group-options-search', $event)"
+        />
+      </div>
+    </a-form-item>
+  </section>
+  <section v-else class="form-section">
     <div class="form-grid">
       <a-form-item label="账户名称" :required="form.type === 'api_key' || editing">
         <a-input
@@ -74,7 +92,7 @@ import AccountMetaFields from './AccountMetaFields.vue'
 
 const maxAccountNameLength = 128
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   authorizedEditing: boolean
   editing: boolean
   form: AccountFormModel
@@ -84,7 +102,10 @@ const props = defineProps<{
   tagOptionsLoading: boolean
   tagOptions: AccountTagSummary[]
   deletingTagId?: string
-}>()
+  variant?: 'full' | 'bench'
+}>(), {
+  variant: 'full'
+})
 
 const emit = defineEmits<{
   (event: 'delete-tag', tagId: string): void

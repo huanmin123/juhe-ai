@@ -17,6 +17,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -137,6 +138,9 @@ type settingSpec struct {
 	// clientVersionsJSON 标记 upstreamClientVersionOverrides 的 JSON 对象
 	// 校验（键 ⊆ 五个客户端家族，值为 ^\d+\.\d+\.\d+$；空对象合法）。
 	clientVersionsJSON bool
+	// sampleRate 标记 auditLogSuccessSampleRate：0..1 闭区间、最多 4 位小数
+	// 的非整数数值键（env 侧 auditlog parseBoundedDecimal 同款约束）。
+	sampleRate bool
 }
 
 // systemSettingSpecs mirrors SYSTEM_SETTING_VALIDATORS (integerSetting(min,max)
@@ -172,6 +176,10 @@ var systemSettingSpecs = map[string]settingSpec{
 	"streamFailureThresholdWindowMinutes":        {integer: true, min: 1, max: 1440},
 	"operationLogRetentionDays":                  {integer: true, min: 1, max: 3650},
 	"operationLogMaxChangesPerRecord":            {integer: true, min: 1, max: 500},
+	"auditLogSuccessRetentionDays":               {integer: true, min: 0, max: 3650},
+	"auditLogProblemRetentionDays":               {integer: true, min: 1, max: 3650},
+	"auditLogSuccessHotRetentionHours":           {integer: true, min: 0, max: 168},
+	"auditLogSuccessSampleRate":                  {sampleRate: true},
 	"statsAggregationIntervalSeconds":            {integer: true, min: 5, max: 3600},
 	"statsAggregationBatchSize":                  {integer: true, min: 100, max: 10000},
 	"statsAggregationMaxBatchesPerRun":           {integer: true, min: 1, max: 100},
@@ -212,12 +220,18 @@ var systemSettingSpecs = map[string]settingSpec{
 // upstreamClientVersionOverrides defaults to the empty object (= 全部使用内置
 // 客户端版本，与 jobssettings.DefaultSystemSettings 镜像一致)。
 var compatibleSystemSettingDefaults = map[string]any{
-	"gatewayUserRequestLimitPerMinute":   0,
-	"gatewayUserRequestLimitPerDay":      0,
-	"gatewayUserRequestLimitPerWeek":     0,
-	"gatewayUserRequestLimitPerMonth":    0,
-	"userAiAccountLimit":                 100,
-	"upstreamClientVersionOverrides":     map[string]any{},
+	"gatewayUserRequestLimitPerMinute": 0,
+	"gatewayUserRequestLimitPerDay":    0,
+	"gatewayUserRequestLimitPerWeek":   0,
+	"gatewayUserRequestLimitPerMonth":  0,
+	"userAiAccountLimit":               100,
+	"upstreamClientVersionOverrides":   map[string]any{},
+	// 2026-10-02 日志与审计设置：存量库缺行时按代码默认补齐（与 env 未显式
+	// 配置时的 LoadConfig 默认一致；见 docs/functions/日志与审计设置设计.md）。
+	"auditLogSuccessRetentionDays":     3,
+	"auditLogProblemRetentionDays":     7,
+	"auditLogSuccessHotRetentionHours": 1,
+	"auditLogSuccessSampleRate":        1.0,
 }
 
 // GlobalSettingKeys mirrors globalSettingKeys — the brand subset served by
@@ -236,7 +250,17 @@ var globalSettingKeySet = func() map[string]bool {
 const (
 	settingsSectionDomainGlobal = "global"
 	settingsSectionDomainSystem = "system"
+	// settingsSectionLogRetention 是日志与审计分区键（联动校验入口判定用）。
+	settingsSectionLogRetention = "log-retention"
 )
+
+// logRetentionAuditKeys 是 log-retention 分区里参与联动校验的四个审计键。
+var logRetentionAuditKeys = []string{
+	"auditLogSuccessRetentionDays",
+	"auditLogProblemRetentionDays",
+	"auditLogSuccessHotRetentionHours",
+	"auditLogSuccessSampleRate",
+}
 
 // ManagementSettingsSection mirrors one managementSettingsSectionCatalog
 // entry: the storage domain plus the exact setting key list served and
@@ -247,8 +271,8 @@ type ManagementSettingsSection struct {
 }
 
 // ManagementSettingsSectionCatalog mirrors managementSettingsSectionCatalog
-// (settings.repository.ts): the seven management sections and their key
-// lists. brand lives in global_settings, everything else in system_settings.
+// (settings.repository.ts): the management sections and their key lists. brand
+// lives in global_settings, everything else in system_settings.
 var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
 	"brand": {Domain: settingsSectionDomainGlobal, Keys: GlobalSettingKeys},
 	"gateway-core": {Domain: settingsSectionDomainSystem, Keys: []string{
@@ -297,6 +321,17 @@ var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
 		"runtimeLogIndexRetentionDays",
 		"publicApiLogRetentionDays",
 	}},
+	// log-retention（2026-10-02 日志与审计设置）：审计 retention 四键收编为
+	// 系统设置热更新入口；operationLog 两键原已有白名单与 seed，本次仅获得
+	// section 归属，行为不变（F4 每 tick 热读保持现状）。
+	"log-retention": {Domain: settingsSectionDomainSystem, Keys: []string{
+		"auditLogSuccessRetentionDays",
+		"auditLogProblemRetentionDays",
+		"auditLogSuccessHotRetentionHours",
+		"auditLogSuccessSampleRate",
+		"operationLogRetentionDays",
+		"operationLogMaxChangesPerRecord",
+	}},
 }
 
 // ManagementSettingsSectionKeys mirrors the managementSettingsSectionCatalog
@@ -309,6 +344,7 @@ var ManagementSettingsSectionKeys = []string{
 	"api-rate-limit",
 	"cooldown-retest",
 	"data-retention",
+	"log-retention",
 }
 
 // UnknownSettingsSectionError mirrors InvalidSettingsSectionError
@@ -532,6 +568,11 @@ func (s *Store) Update(ctx context.Context, input map[string]any) (map[string]an
 		return nil, err
 	}
 	if err := s.assertUsageStatsTimezoneUpdateAllowed(ctx, normalized); err != nil {
+		return nil, err
+	}
+	// 全量快照写路径共用同一 spec 表：写入审计保留键时同样执行联动校验，
+	// 防止绕过 log-retention 分区校验破坏采样率/保留天数不变量。
+	if err := s.assertLogRetentionLinkageAllowed(ctx, normalized); err != nil {
 		return nil, err
 	}
 	// The legacy full-snapshot write mirrors Node updateSettingsAsync, which
@@ -894,6 +935,13 @@ func (s *Store) UpdateSection(ctx context.Context, sectionKey string, input map[
 		if err := s.assertUsageStatsTimezoneUpdateAllowed(ctx, normalized); err != nil {
 			return nil, err
 		}
+		// log-retention 分区写入做 section 级联动校验：PATCH 可能只带部分键，
+		// 未提供的键用 DB 现值（含兼容默认）合成完整视图再校验。
+		if sectionKey == settingsSectionLogRetention {
+			if err := s.assertLogRetentionLinkageAllowed(ctx, normalized); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if section.Domain == settingsSectionDomainGlobal {
 		if err := s.upsertGlobalSettings(ctx, normalized); err != nil {
@@ -958,6 +1006,9 @@ func normalizeSystemSetting(key string, value any) (any, error) {
 	if spec.clientVersionsJSON {
 		return normalizeUpstreamClientVersionOverrides(key, value)
 	}
+	if spec.sampleRate {
+		return normalizeSuccessSampleRateSetting(key, value)
+	}
 	if !spec.integer {
 		timezone, err := normalizeUsageStatsTimezone(value)
 		if err != nil {
@@ -973,6 +1024,31 @@ func normalizeSystemSetting(key string, value any) (any, error) {
 		return nil, &ValidationError{Message: key + " 必须在 " + itoa(spec.min) + " 到 " + itoa(spec.max) + " 之间"}
 	}
 	return number, nil
+}
+
+// normalizeSuccessSampleRateSetting 校验 auditLogSuccessSampleRate：0..1 闭
+// 区间、最多 4 位小数的数字（十进制文本判定，避免浮点噪声；env 侧
+// JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE 同款约束）。
+func normalizeSuccessSampleRateSetting(key string, value any) (any, error) {
+	message := key + " 必须在 0 到 1 之间且最多 4 位小数"
+	number, ok := value.(float64)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 || number > 1 {
+		return nil, &ValidationError{Message: message}
+	}
+	if decimalPlaces(number) > 4 {
+		return nil, &ValidationError{Message: message}
+	}
+	return number, nil
+}
+
+// decimalPlaces 用最短十进制文本统计小数位数（strconv 'f'/-1 与 JSON 数字的
+// 十进制原义一致，0.0001 → 4 位）。
+func decimalPlaces(number float64) int {
+	text := strconv.FormatFloat(number, 'f', -1, 64)
+	if point := strings.IndexByte(text, '.'); point >= 0 {
+		return len(text) - point - 1
+	}
+	return 0
 }
 
 // normalizeGlobalSetting mirrors normalizeGlobalSetting + nonEmptyStringSetting:
@@ -1146,6 +1222,46 @@ func assertAllSettingsPresent(settings map[string]any, keys []string, label stri
 		if _, ok := settings[key]; !ok {
 			return &ValidationError{Message: label + "缺少字段：" + key}
 		}
+	}
+	return nil
+}
+
+// assertLogRetentionLinkageAllowed 校验审计保留联动约束（写入路径 400 拒绝，
+// 不落到读时静默回退）：采样率与成功保留天数必须同时为 0 或同时大于 0；
+// 成功保留天数 > 0 时 天数×24 不得小于热窗小时数。normalized 未携带任何
+// 审计键时直接通过；携带部分键时未提供的键用 DB 现值（LoadSection 已合并
+// 兼容默认）合成完整视图再校验。
+func (s *Store) assertLogRetentionLinkageAllowed(ctx context.Context, normalized map[string]any) error {
+	touched := false
+	for _, key := range logRetentionAuditKeys {
+		if _, ok := normalized[key]; ok {
+			touched = true
+			break
+		}
+	}
+	if !touched {
+		return nil
+	}
+	current, err := s.LoadSection(ctx, settingsSectionLogRetention)
+	if err != nil {
+		return err
+	}
+	view := make(map[string]any, len(logRetentionAuditKeys))
+	for _, key := range logRetentionAuditKeys {
+		if value, ok := normalized[key]; ok {
+			view[key] = value
+		} else {
+			view[key] = current[key]
+		}
+	}
+	days, _ := view["auditLogSuccessRetentionDays"].(float64)
+	rate, _ := view["auditLogSuccessSampleRate"].(float64)
+	hotHours, _ := view["auditLogSuccessHotRetentionHours"].(float64)
+	if (rate == 0) != (days == 0) {
+		return &ValidationError{Message: "auditLogSuccessSampleRate 与 auditLogSuccessRetentionDays 必须同时为 0 或同时大于 0"}
+	}
+	if days > 0 && days*24 < hotHours {
+		return &ValidationError{Message: "auditLogSuccessRetentionDays 必须覆盖 auditLogSuccessHotRetentionHours（成功保留天数 × 24 不得小于热窗小时数）"}
 	}
 	return nil
 }

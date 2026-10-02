@@ -2046,16 +2046,16 @@ onBeforeUnmount(() => {
 :deep(.conversation-pane-inner) { height: 100%; display: flex; flex-direction: column; }
 :deep(.conversation-pane-toolbar) { height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 16px; border-bottom: 1px solid #e2e8f0; }
 :deep(.conversation-pane-toolbar strong) { color: #172033; font-size: 15px; }
-:deep(.conversation-new-button) { height: 30px; display: inline-flex; align-items: center; padding: 0 9px; color: #1677ff; background: #fff; border: 1px solid #b9d7ff; border-radius: 6px; cursor: pointer; }
+:deep(.conversation-new-button) { height: 30px; display: inline-flex; align-items: center; padding: 0 9px; color: var(--juhe-accent); background: var(--juhe-surface); border: 1px solid var(--juhe-border-strong); border-radius: 6px; cursor: pointer; }
 :deep(.conversation-new-button:disabled) { color: #94a3b8; border-color: #e2e8f0; cursor: not-allowed; }
 :deep(.conversation-list) { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
 :deep(.conversation-item) { width: 100%; height: 38px; display: flex; align-items: stretch; overflow: hidden; margin-bottom: 3px; color: #273449; font-size: 13px; background: transparent; border: 1px solid transparent; border-radius: 6px; }
 :deep(.conversation-item-select) { min-width: 0; flex: 1; overflow: hidden; padding: 0 10px; color: inherit; font: inherit; line-height: 36px; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 0; cursor: pointer; }
 :deep(.conversation-more-button) { width: 38px; flex: 0 0 38px; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: #64748b; background: transparent; border: 0; cursor: pointer; }
 :deep(.conversation-item:hover) { background: #fff; border-color: #e2e8f0; }
-:deep(.conversation-item.active) { background: #eaf3ff; border-color: #b9d7ff; }
+:deep(.conversation-item.active) { background: var(--juhe-accent-soft); border-color: var(--juhe-border-strong); }
 :deep(.conversation-load-more) { width: 100%; height: 34px; color: #64748b; background: transparent; border: 0; cursor: pointer; }
-:deep(.conversation-load-more:hover) { color: #1677ff; }
+:deep(.conversation-load-more:hover) { color: var(--juhe-accent); }
 :deep(.conversation-load-more:disabled) { color: #94a3b8; cursor: wait; }
 :deep(.conversation-list-empty) { padding: 32px 12px; color: #94a3b8; text-align: center; }
 .conversation-context-menu { position: fixed; z-index: 1100; width: 136px; padding: 5px; background: #fff; border: 1px solid #e2e8f0; border-radius: 7px; box-shadow: 0 10px 26px rgba(15, 23, 42, .16); }

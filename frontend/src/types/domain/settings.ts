@@ -29,6 +29,10 @@ export interface SystemSettings {
   streamFailureThresholdWindowMinutes: number
   operationLogRetentionDays: number
   operationLogMaxChangesPerRecord: number
+  auditLogSuccessRetentionDays: number
+  auditLogProblemRetentionDays: number
+  auditLogSuccessHotRetentionHours: number
+  auditLogSuccessSampleRate: number
   statsAggregationIntervalSeconds: number
   statsAggregationBatchSize: number
   statsAggregationMaxBatchesPerRun: number

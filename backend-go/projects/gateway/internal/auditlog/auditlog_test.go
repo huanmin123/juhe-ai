@@ -1623,11 +1623,33 @@ func cleanupPostgresSmokeRows(t *testing.T, ctx context.Context, db *sql.DB) {
 func sqliteConfig(t *testing.T, root string) Config {
 	t.Helper()
 	env := sqliteEnv(root)
+	// 2026-10-02 设置热读：retention 每 tick 直读业务库 system_settings，
+	// 测试夹具预建空表业务库（缺行回落 env 固化值，与生产首启动一致）。
+	createBusinessSettingsFixture(t, env["JUHE_AI_AUDIT_LOG_BUSINESS_SETTINGS_PATH"], nil)
 	cfg, err := LoadConfig(func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+// createBusinessSettingsFixture 建立带 system_settings 表的业务库（PG 同构
+// 列），rows 以键值对写入 value_json（nil 表示空表）。
+func createBusinessSettingsFixture(t *testing.T, path string, rows map[string]string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS system_settings (system_account_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, key))`); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range rows {
+		if _, err := db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at) VALUES ('sys_admin', ?, ?, ?) ON CONFLICT(system_account_id, key) DO UPDATE SET value_json=excluded.value_json`, key, value, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func sqliteEnv(root string) map[string]string {

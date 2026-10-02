@@ -813,6 +813,19 @@ func main() {
 			fail(fmt.Errorf("compose gateway system api: %w", err))
 		}
 		defer composed.Shutdown()
+		// 2026-10-02 日志与审计设置：审计日志手动清理 API 挂到系统 API kernel
+		// （POST /__aisys__/api/audit-logs/cleanup，仅管理员 + 防重放 + 操作
+		// 日志）。与后台 retention 共用同一 store、共享 keeper lease 与生效值
+		// 合成（DB 行 → env 固化值）；业务设置 reader 进程生命周期持有（只读
+		// 单句柄，停机随进程释放，Serve 之前完成注册）。
+		(&auditlog.Deps{
+			Store:    auditStore,
+			Lease:    auditLease,
+			Config:   auditConfig,
+			Settings: auditlog.NewBusinessSettingsReader(auditConfig),
+			Auth:     composed.authDeps,
+			Sink:     composed.authDeps.Sink,
+		}).Mount(composed.kernel, composed.authDeps)
 		// F4 队列丢弃计数出口（F3 同款 seam，main.go 上方）：producer 在组合
 		// 根内构造，这里在 Server 启动前注入访问器，先于任何 scrape 读取。
 		gatewayusage.SetOperationLogDroppedTotal(composed.producer.DroppedTotal)

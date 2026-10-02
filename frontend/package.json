@@ -175,6 +175,7 @@
     "test:account-proxy-options-lazy-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/account-proxy-options-lazy-loading-regression.ts",
     "test:account-provider-definitions-lazy-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/account-provider-definitions-lazy-loading-regression.ts",
     "test:account-type-choice": "tsx --tsconfig tsconfig.json src/scripts/regression/account-type-choice-regression.ts",
+    "test:account-name-suggestion": "tsx --tsconfig tsconfig.json src/scripts/regression/account-name-suggestion-regression.ts",
     "test:public-api-log-page-window": "tsx --tsconfig tsconfig.json src/scripts/regression/public-api-log-page-window-regression.ts",
     "test:public-api-log-detail-delta": "tsx --tsconfig tsconfig.json src/scripts/regression/public-api-log-detail-delta-regression.ts",
     "test:operation-log-default-window": "tsx --tsconfig tsconfig.json src/scripts/regression/operation-log-default-window-regression.ts",

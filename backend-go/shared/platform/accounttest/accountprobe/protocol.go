@@ -75,7 +75,7 @@ const (
 	outputChallengePrompt = "接口连通性自动测试：请原样输出 " + outputChallengeExpected
 	// 1024 而非 Node 的 256：推理模型的思考 token 计入输出上限，256 会被思考
 	// 耗尽（finish_reason=length）导致 content 为空，探针误判 invalid_probe_output。
-	outputTokenLimit    = 1024
+	outputTokenLimit = 1024
 	// anthropicVersion 是内置默认的 Claude Code 版本锚点（文档用途保留）；
 	// 挑战文本 cc_version 的运行时值改经
 	// upstreamidentity.EffectiveClaudeCodeVersion() 取（可被

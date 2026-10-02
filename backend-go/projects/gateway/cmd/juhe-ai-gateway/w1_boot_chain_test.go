@@ -611,8 +611,10 @@ func TestW1LBootChainFullRequestCoverage(t *testing.T) {
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("场景 W1L-c 期望 503，实际 %d，body=%s", status, body)
 	}
-	if !strings.Contains(body, "当前分组无账户支持请求路径或客户端协议") || !strings.Contains(body, `"code":"model_unsupported"`) {
-		t.Fatalf("场景 W1L-c 缺少模型不匹配契约（model_unsupported + 固定文案），body=%s", body)
+	// BUG-0261：model_unsupported + 非空模型返回精确文案（不再落入能力
+	// 过滤层的泛化协议文案）。
+	if !strings.Contains(body, "当前分组无账户支持请求模型：w1l-unknown-model") || !strings.Contains(body, `"code":"model_unsupported"`) {
+		t.Fatalf("场景 W1L-c 缺少模型不匹配契约（model_unsupported + 精确文案），body=%s", body)
 	}
 
 	// ---- 优雅关闭（CTRL_BREAK → exit 0、无 fail 输出） ----

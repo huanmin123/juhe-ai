@@ -78,5 +78,5 @@ var DefaultSystemSettings = map[string]any{
 	// upstreamClientVersionOverrides 是 JSON 对象默认值（空对象 = 全部使用
 	// 内置客户端版本），与 maintenance 种子的 "{}" 对应；镜像表以解码后的
 	// map[string]any{} 对照（seed_consistency_test）。
-	"upstreamClientVersionOverrides":             map[string]any{},
+	"upstreamClientVersionOverrides": map[string]any{},
 }

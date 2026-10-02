@@ -118,7 +118,7 @@ func (s *Source) Number(ctx context.Context, key string, min, max int) (int, err
 		return 0, fmt.Errorf("系统设置 %s 必须是整数", key)
 	}
 	if number < min || number > max {
-		return 0, fmt.Errorf("系统设置 %s 必须在 %d 到 %d 之间", key)
+		return 0, fmt.Errorf("系统设置 %s 必须在 %d 到 %d 之间", key, min, max)
 	}
 	return number, nil
 }
@@ -134,10 +134,14 @@ var upstreamClientVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 // UpstreamClientVersionOverrides 读取 system_settings 的
 // upstreamClientVersionOverrides 键并做防御式过滤：只保留五家族键且值匹配
 // semver 三段的项（网关侧保存时已严格校验，这里兜底异常数据）；空对象、
-// 缺行（回退默认 {}）与全非法都返回空 map（= 全部使用内置版本）。与
-// gateway settings Store.UpstreamClientVersionOverrides 行为一致。
+// 缺行（回退默认 {}）与全非法都返回空 map（= 全部使用内置版本）。
+//
+// 与 Number 不同，本方法走 readValueStrict 而非 settingValue：DB 读失败
+// 必须返回 error（调用方保持既有覆盖不动），不得降级成默认 {}——否则 PG
+// 瞬断会把已配置的应急覆盖静默清空。不进 per-key TTL 缓存（覆盖项读取
+// 频率仅每 60s 一次刷新，无需缓存）。
 func (s *Source) UpstreamClientVersionOverrides(ctx context.Context) (map[string]string, error) {
-	value, err := s.settingValue(ctx, "upstreamClientVersionOverrides")
+	value, err := s.readValueStrict(ctx, "upstreamClientVersionOverrides")
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +161,31 @@ func (s *Source) UpstreamClientVersionOverrides(ctx context.Context) (map[string
 		overrides[family] = version
 	}
 	return overrides, nil
+}
+
+// readValueStrict 直读一行设置：缺行回退 DEFAULT_SYSTEM_SETTINGS，其余
+// 读错误原样返回（不走 readValue 的 PG 降级/SQLite 缺表降级路径）。
+func (s *Source) readValueStrict(ctx context.Context, key string) (any, error) {
+	query := `SELECT value_json FROM system_settings WHERE system_account_id = ? AND key = ? LIMIT 1`
+	if s.mode == Postgres {
+		query = `SELECT value_json FROM juhe_business.system_settings WHERE system_account_id = $2 AND key = $1 LIMIT 1`
+	}
+	var rawValue sql.NullString
+	readErr := s.db.QueryRowContext(ctx, query, SystemSettingsAccountID, key).Scan(&rawValue)
+	if readErr == sql.ErrNoRows {
+		return DefaultSystemSettings[key], nil
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	if !rawValue.Valid || strings.TrimSpace(rawValue.String) == "" {
+		return DefaultSystemSettings[key], nil
+	}
+	var decoded any
+	if err := jsonUnmarshal([]byte(rawValue.String), &decoded); err != nil {
+		return nil, fmt.Errorf("系统设置 %s 不是合法 JSON", key)
+	}
+	return decoded, nil
 }
 
 // settingValue resolves one key through the 60s window, the stored row and

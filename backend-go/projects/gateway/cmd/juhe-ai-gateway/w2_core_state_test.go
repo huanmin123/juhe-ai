@@ -221,6 +221,7 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		"imageRequestWallTimeoutSeconds":             "600",
 		"chatImageGenerationTotalTimeoutSeconds":     "300",
 		"noAvailableAccountWaitTimeoutSeconds":       "30",
+		"upstreamClientVersionOverrides":             "{}",
 		"streamFailureThresholdCount":                "5",
 		"streamFailureThresholdWindowMinutes":        "5",
 		"operationLogRetentionDays":                  "30",

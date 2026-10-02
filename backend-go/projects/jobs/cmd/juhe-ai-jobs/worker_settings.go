@@ -68,10 +68,10 @@ func settingsMode(postgres bool) jobssettings.Mode {
 // upstreamClientVersionOverrides 当前值应用到 upstreamidentity 的进程内
 // 覆盖（worker_assembly 装配期启动一次 + 每 60s 周期调用）。读取失败只
 // warn 并保持既有覆盖不动，下次刷新或进程重启再对齐。
-func (a *workerAssembly) refreshUpstreamClientVersionOverrides() {
+func (a *workerAssembly) refreshUpstreamClientVersionOverrides(source *jobssettings.Source) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	overrides, err := a.settings.source.UpstreamClientVersionOverrides(ctx)
+	overrides, err := source.UpstreamClientVersionOverrides(ctx)
 	if err != nil {
 		a.logger.Warn("upstream_client_version_overrides_refresh_failed", slog.Any("error", err))
 		return

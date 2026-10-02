@@ -61,7 +61,7 @@ function removeImage(): void {
 
 <style scoped>
 .chat-image-node { position: relative; width: min(180px, 42vw); height: 120px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; margin: 2px 4px; vertical-align: middle; background: #f8fafc; border: 1px solid #dbe3ec; border-radius: 6px; }
-.chat-image-node.is-selected { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22, 119, 255, .12); }
+.chat-image-node.is-selected { border-color: var(--juhe-accent); box-shadow: 0 0 0 2px rgba(83, 105, 107, .14); }
 .chat-image-node img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .chat-image-node.is-preparing img, .chat-image-node.is-uploading img, .chat-image-node.is-failed img { opacity: .55; }
 .chat-image-node-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 6px; color: #334155; font-size: 12px; background: rgba(248, 250, 252, .72); }
