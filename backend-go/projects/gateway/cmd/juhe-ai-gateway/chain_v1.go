@@ -371,7 +371,12 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		DownstreamCommit:   loop.waitCommitState,
 		Signal:             ctx,
 	})
-	if loop.waitHeartbeat != nil {
+	if loop.waitHeartbeat != nil && !shouldKeepCompactSseAliveDuringUpstreamWait(req, context) {
+		// 预算等待心跳只在非压缩保活场景挂载（复审竞态修复）：压缩场景的
+		// compact 保活心跳覆盖整个 fetch 窗口（含等待期，保活块语义更精确），
+		// 是预算心跳等待期职责的超集；两个心跳 goroutine 并发写同一
+		// TrackingWriter / DownstreamCommitState 在 Go 下是真实 data race
+		//（Node 靠单线程事件循环天然串行），收敛为单实例。
 		loop.serverRetryBudget.SetWaitObserver(&gatewaypreauth.ServerRetryBudgetWaitObserver{
 			OnWaitStarted: loop.waitHeartbeat.Start,
 			OnWaitPaused:  loop.waitHeartbeat.Stop,
@@ -623,7 +628,12 @@ func (c *gatewayChain) handleUpstreamResponse(
 				gatewaypreauth.GatewayErrorPayloadOf("上游暂时不可用，请重试", "service_unavailable", gatewaypreauth.GatewayStreamClientRetryErrorCode),
 				gatewaypreauth.SendGatewayErrorOptions{Protocol: clientErrorProtocol(req)})
 		}
-		return gatewayresponse.UpstreamResponseHandlingResult{}
+		// BUG-0267：管线错误兜底 503 已渲染即终态（AlreadyFinalized 语义），且
+		// 无上游传输归因（GatewayLocalFailure）——对齐 Node 响应处理 throw 路径
+		// 的 neutral 结算（routes.ts:1667-1673 reportUnknown/reportUnknown +
+		// recordTerminal unknown/request_lifecycle），否则 post-verdict 结算块把
+		// 零值 handling 误分类为"完整转发"（circuit framing-complete 治愈证据）。
+		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	if handling.RetryUpstream {
 		// Node consumes the retry verdict before the finalize-usage path
@@ -799,7 +809,8 @@ func clientStrategyViewOf(context *gatewaypreauth.DispatchContext) *gatewayrespo
 		// InterpretSemantics 对齐 gatewayClientAllowsUpstreamSemanticInterpretation
 		//（client-profiles/strategy.ts）：仅 codex / claude_code / gemini_cli 三画像
 		// 允许上游响应语义解释，普通 openai 兼容客户端不解释。
-		InterpretSemantics: clientProfileAllowsSemanticInterpretation(strategy.ClientProfile),
+		InterpretSemantics: gatewaycodex.GatewayClientAllowsUpstreamSemanticInterpretation(
+			gatewaycodex.OpenAIGatewayClientStrategyContext{ClientProfile: strategy.ClientProfile}),
 	}
 	resolved, ok := strategy.Opaque.(gatewaycodex.OpenAIGatewayClientStrategyContext)
 	if !ok {
@@ -809,17 +820,6 @@ func clientStrategyViewOf(context *gatewaypreauth.DispatchContext) *gatewayrespo
 	view.AllowClientSourceAccountAvoidance = resolved.AllowClientSourceAccountAvoidance
 	view.RetryPreCommitProtocolError = resolved.RetryCoordination.PreCommitFailureSignal == gatewaycodex.FailureSignalProtocolErrorEvent
 	return view
-}
-
-// clientProfileAllowsSemanticInterpretation 镜像
-// gatewayClientAllowsUpstreamSemanticInterpretation 的三画像门。
-func clientProfileAllowsSemanticInterpretation(clientProfile string) bool {
-	switch clientProfile {
-	case "codex", "claude_code", "gemini_cli":
-		return true
-	default:
-		return false
-	}
 }
 
 // gatewayResponseLogger adapts slog to the response StreamLogger.

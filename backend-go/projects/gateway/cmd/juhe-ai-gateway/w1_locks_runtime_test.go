@@ -34,16 +34,6 @@ func TestW1ChainAccountLocksSmallHelpers(t *testing.T) {
 	if got := locks.bind("a = ?"); got != "a = ?" {
 		t.Fatalf("sqlite bind = %q", got)
 	}
-	// 环境开关。
-	if chainAccountLocksDisabledViaEnv(nil) {
-		t.Fatal("nil getter 必须 false")
-	}
-	if !chainAccountLocksDisabledViaEnv(func(key string) string { return " TRUE " }) {
-		t.Fatal("TRUE 必须开启")
-	}
-	if chainAccountLocksDisabledViaEnv(func(key string) string { return "yes" }) {
-		t.Fatal("yes 必须保持真实实现")
-	}
 	// deadline 解析。
 	if _, ok := chainAccountLockDeadlineMs(sql.NullString{}); ok {
 		t.Fatal("NULL 必须 not-ok")

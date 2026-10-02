@@ -387,11 +387,10 @@ func TestW16GProjectionGateArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := workerConfig{
-		Driver:                "postgres",
-		InstanceID:            "w16g-projection",
-		ListProjectionEnabled: true,
-		Secret:                wgBalanceSecret,
-		RedisNamespace:        w16gNamespace,
+		Driver:         "postgres",
+		InstanceID:     "w16g-projection",
+		Secret:         wgBalanceSecret,
+		RedisNamespace: w16gNamespace,
 	}
 	t.Run("OAuth 族缺席登记 disabled", func(t *testing.T) {
 		config := base

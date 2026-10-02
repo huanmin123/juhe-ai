@@ -15,7 +15,7 @@ maintenance：compose --profile tool 一次性容器（幂等 CLI）
 ```
 
 - Redis `queue` 是 Node 时代残留概念，Go 代码不读 `JUHE_AI_REDIS_QUEUE_URL`，无需第三个实例。
-- 8 个 PG schema：6 个由 `maintenance --ensure-schema` 建（business/usage/stats/chat/dataset/codex_context）；`juhe_jobs`、`juhe_j3b` 需手工 `CREATE SCHEMA AUTHORIZATION juhe_ai` 后由 maintenance `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` 建表；J2 account_balance 四表按代码内 `balancePostgresSchema` 手工执行（完整序列见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）。
+- 8 个 PG schema：6 个由 `maintenance --ensure-schema` 建（business/usage/stats/chat/dataset/codex_context）；`juhe_jobs`、`juhe_j3b` 需手工 `CREATE SCHEMA AUTHORIZATION juhe_ai` 后由 maintenance `--apply-j3a-proxy-latency-postgres` / `--apply-j3b-model-check-postgres` / `--apply-account-balance-postgres`（J2 account_balance 四表，2026-10-02 起取代手工 SQL）建表（完整序列见 `.local/project-resources/prod/runbooks/国内单机Docker部署与运维.md`）。
 - chat 库加表随例行 `--ensure-schema` 幂等生效，无一次性迁移：如 2026-10-02 的 `juhe_chat.chat_user_tool_preferences`（AI 对话工具默认绑定，见 docs/functions/AI问答工具体系与主子模型设计.md §7）。
 - gateway 启动硬性要求 J3b 运行态索引 ready：新库必须先跑 `docker compose run --rm gateway -init-account-circuit-runtime-index`。
 - 管理前端由 gateway 从镜像内 `/app/frontend/dist` 提供（必须显式 `JUHE_AI_FRONTEND_DIST_PATH`，默认空不挂 SPA）；根路径 `/` 由 Caddy 301 到 `/__aisys__/`。
@@ -80,11 +80,11 @@ docker compose up -d
 **推荐用发布脚本**（`docker/single-server/deploy.sh`，防呆流程）：
 
 ```sh
-bash docker/single-server/deploy.sh all          # gateway + jobs 一同发布（默认）
+bash docker/single-server/deploy.sh all          # gateway + jobs + maintenance 一同发布（默认）
 bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / maintenance 同理
 ```
 
-脚本固定执行：**无条件全量重编译**（不信任 `build/bin` 既有产物，防止 shared 模块修复后旧产物上线）→ 上传 → **md5 三点闭环校验**（本地新编译 = 服务器 build/bin = 容器内运行二进制）→ `docker compose build` + `up -d` → 逐容器等待 healthy → 公网健康检查 → **发布后验证**（`verify-release.sh`，见下）。任一环节失败立即退出并给出回滚提示。
+脚本固定执行：**无条件全量重编译**（不信任 `build/bin` 既有产物，防止 shared 模块修复后旧产物上线）→ 上传 → **md5 三点闭环校验**（本地新编译 = 服务器 build/bin = 容器内运行二进制）→ `docker compose build` + `up -d`（maintenance 为一次性 CLI 只重建镜像不 up，`up -d` 会等其入口退出而挂起）→ 逐容器等待 healthy → 公网健康检查 → **发布后验证**（`verify-release.sh`，见下）。任一环节失败立即退出并给出回滚提示。**all 含 maintenance（2026-10-03 起）**：schema/seed 变更必须随发版落地——否则发布后 `--ensure-schema` 用旧清单"幂等成功"却漏建新表（2026-10-02 与 10-03 两次同款事故：旧二进制 623/624 语句"一致"掩盖 chat/j3b 迁移未落地，功能静默不可用）；ensure 后应核对 `StatementCount` 与本地清单期望一致。
 
 手动流程（等价于脚本内部步骤，仅排障时用）：构建（见上节命令）→ 上传 `build/` → `docker compose build gateway jobs maintenance` → `docker compose up -d`。maintenance 幂等，发布后跑一次 `--ensure-schema` 应用加法式 schema。回滚 = 上传上一个版本的 build/ 并重新 build+up。
 
@@ -142,7 +142,7 @@ SELECT pg_get_constraintdef(oid) FROM pg_constraint
 - `JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS`（jobs 侧，J3a 代理延迟管理面）：`POST /__aisys__/api/proxies/{id}/test` 手动探测入口的监听地址，默认 `127.0.0.1:0`（随机回环端口，每次启动变化；`/health` payload 报告实际监听地址）。需稳定入口或跨容器访问时显式配置 `host:port`（端口 0 = 随机）；非法 host/端口启动失败。
 - `JUHE_AI_AUDIT_LOG_BLOB_DIRECTORY`、`JUHE_AI_ACCOUNT_HEALTH_INPUT_SOURCE=postgres`（+ INPUT_POSTGRES_URL）：PG 模式按运维手册显式化。
 - `JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE`（**2026-09-28 默认开启整改起默认 `1`**——成功正文默认全量，原默认 0.1 采样已废除；显式 `0..1` 仍生效，`0` 须与 `JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS=0` 联动）与 `JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS`（默认 1）：成功请求正文长期采样率与热保留窗口（失败/问题请求恒全量保留 7 天，成功正文长期保留 3 天）。当前生产显式配 `1`——与新的出厂默认一致（BUG-0198）。
-- `JUHE_AI_MAINTENANCE_J3A/J3B_POSTGRES_URL`：`--apply-*` 预置命令的 maintenance 专用 URL。
+- `JUHE_AI_MAINTENANCE_J3A/J3B/ACCOUNT_BALANCE_POSTGRES_URL`：`--apply-*` 预置命令的 maintenance 专用 URL（`ACCOUNT_BALANCE` 为 2026-10-02 新增成员，值通常与 J3A 相同——目标都是 `juhe_ai` 库且当前 role 拥有 `juhe_jobs` schema）。
 - `JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT`（compose 为 gateway 显式配 `45s`，BUG-0228，2026-09-28 起）：F3 audit 与 F4 operation-log 两个启动获取点共用的 owner 租约有界等待——被前任进程持有时按 1s 间隔重试到 deadline，超时仍维持 fail-fast 原文案退出（不静默排队活 owner 并存场景）。作用：发布 recreate 窗口旧容器被 SIGKILL 截断 `defer` 租约释放时，新 gateway 在启动期等待 DB 租约 TTL（默认 30s）过期后接管，替代原来的 fail-fast 重启循环。默认空/0 = 既有 fail-fast 契约不变；生产取 `45s`（> 30s TTL）。gateway healthcheck `start_period` 相应配 `75s`（等待发生在 health server 监听之前：45s 等待 + 启动余量）。jobs 无启动 fail-fast 租约（F1/F2/J1/J3a 均为运行期 supervisor 重试），不配置该变量。
 - `JUHE_AI_GO_RUNTIME_METRICS_*`（系统指标页 Go Runtime 采样，2026-09-27 起出厂默认开启）：`JUHE_AI_GO_RUNTIME_METRICS_STORE` 未配置/空时跟随 `JUHE_AI_DATABASE_DRIVER`——生产 PG 模式默认即 postgres，`JUHE_AI_GO_RUNTIME_METRICS_POSTGRES_URL` 可省略（自动回退复用 `JUHE_AI_POSTGRES_URL`），通常无需显式配置；显式 `sqlite|postgres` 仍有效且优先于 driver 跟随，显式 `disabled` 关闭（读接口返回 `samplingEnabled=false`）。写入仍严格限定 `juhe_stats.go_runtime_metrics_samples` / `go_runtime_metrics_hourly` / `go_runtime_metrics_trend_windows` 三表（回退后两个 URL 都空才启动报错）。可选调参：`JUHE_AI_GO_RUNTIME_METRICS_INTERVAL`（默认 `15s`，下限 1s）、`JUHE_AI_GO_RUNTIME_METRICS_RETENTION_DAYS`（默认 `30`，1..3650）、`JUHE_AI_GO_RUNTIME_METRICS_SERVICE`（默认 `juhe-ai`）、`JUHE_AI_GO_RUNTIME_METRICS_DATABASE_PATH`（仅 sqlite 模式生效；未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生为 `<数据根>/go-runtime-metrics.sqlite3`，生产 PG 模式用不到）。`JUHE_AI_GO_RUNTIME_METRICS_ROLE` **已删除、不得配置**（role 由进程身份固定：gateway/gateway、jobs/jobs）。顺序契约按存储分派：**postgres 模式先建表再启动**——新环境首次启动 gateway/jobs 前必须先用 maintenance `--check-go-runtime-metrics` / `--apply-go-runtime-metrics`（配 `--node-stopped --go-stopped --backup-confirmed`）建好三表（Go 启动只读校验 schema、缺表即启动失败并循环重启）；**sqlite 模式启动自举建表（幂等），无需预处理**。之后 `docker compose up -d gateway jobs`；已建表环境发布/重启无需任何额外 env。
 - `JUHE_AI_ALLOWED_ORIGINS`：生产必填、逗号分隔、拒绝 `*`；当前为 `https://aijh.huanmin.top` 加 `http://<生产服务器公网 IP>`（实例值见服务器 `/opt/juhe-ai/.env` 与 `.local` 资产）。

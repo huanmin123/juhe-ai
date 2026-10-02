@@ -409,7 +409,7 @@ func TestW12CLoadWorkerConfigErrorMatrix(t *testing.T) {
 	env := base()
 	env["JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS"] = "1000"
 	config, err := loadWorkerConfig(getenvFrom(env))
-	if err != nil || !config.ListProjectionEnabled {
+	if err != nil {
 		t.Fatalf("合法 projection 配置应通过: %+v %v", config, err)
 	}
 }

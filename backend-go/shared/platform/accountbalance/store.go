@@ -154,18 +154,8 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(918271447)"); err != nil {
 			return err
 		}
-		if err := ensureBalancePGSchema(ctx, tx); err != nil {
+		if err := applyBalancePGSchemaDDL(ctx, tx); err != nil {
 			return err
-		}
-		for _, statement := range strings.Split(balancePostgresSchema, ";") {
-			if statement = strings.TrimSpace(statement); statement != "" {
-				if _, err := tx.ExecContext(ctx, statement); err != nil {
-					return fmt.Errorf("初始化 account-balance postgres schema 失败: %w", err)
-				}
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE juhe_jobs.account_balance_outcomes ADD COLUMN IF NOT EXISTS committed BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
-			return fmt.Errorf("迁移 account-balance postgres outcome committed 字段失败: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
 			return err
@@ -200,6 +190,33 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	}
 	committed = true
 	s.schemaReady = true
+	return nil
+}
+
+// applyBalancePGSchemaDDL applies the J2 account-balance four-table PostgreSQL
+// DDL inside an existing transaction: it first re-asserts the externally
+// provisioned schema contract via ensureBalancePGSchema (juhe_jobs must exist
+// and be owned by the current role; a missing schema fails closed and is never
+// created here), then executes every statement of balancePostgresSchema (all
+// IF NOT EXISTS, so the sequence is idempotent) and finally migrates the
+// outcomes.committed column. The transaction boundary and the advisory lock
+// stay with the caller: EnsureSchema's PostgreSQL arm (isolated tests) and the
+// maintenance one-shot bootstrap (BootstrapPostgres) share this helper under
+// the same lock, so concurrent callers serialize instead of racing.
+func applyBalancePGSchemaDDL(ctx context.Context, tx *sql.Tx) error {
+	if err := ensureBalancePGSchema(ctx, tx); err != nil {
+		return err
+	}
+	for _, statement := range strings.Split(balancePostgresSchema, ";") {
+		if statement = strings.TrimSpace(statement); statement != "" {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("初始化 account-balance postgres schema 失败: %w", err)
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE juhe_jobs.account_balance_outcomes ADD COLUMN IF NOT EXISTS committed BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
+		return fmt.Errorf("迁移 account-balance postgres outcome committed 字段失败: %w", err)
+	}
 	return nil
 }
 

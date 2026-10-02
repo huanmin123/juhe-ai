@@ -37,9 +37,10 @@ type PreparationResult struct {
 	HotQualityExplorationReservation         *HotQualityReservation
 	SettleHotQualityExplorationAfterDispatch func(ctx context.Context, outcome string) error
 	// W1b 决策摘要带出：窗口级授权配额批查否决的账户 ID 与 lane 容量快照
-	// 中繁忙的候选 ID（busy 候选仍留在窗口内，仅排序降位）。仅 ready 出口
-	// 携带；fallback/completed 出口不汇总（原因已在既有审计标签与终局
-	// 响应上）。
+	// 中繁忙的候选 ID（busy 候选仍留在窗口内，仅排序降位）。ready 出口摘要
+	// 以此为数据源；fallback/completed 终态出口的决策摘要（2026-10-02 起）
+	// 由 emitTerminalDispatchDecision 在各出口直接产出，不经这两个字段（见
+	// docs/functions/网关全链路轨迹日志设计.md 能力二）。
 	QuotaDeniedAccountIDs  []string
 	CapacityBusyAccountIDs []string
 	// fallback variant
@@ -93,6 +94,13 @@ type DispatchDecisionSkip struct {
 // gateway_dispatch_candidates 审计标签值与 gateway_dispatch_decision 日志
 // 的摘要形状；空列表/零值字段经 omitempty 保持紧凑。
 type DispatchDecisionSummary struct {
+	// Outcome 是准备窗口结局：ready | fallback | completed（2026-10-02 起
+	// ready 显式标记，终态出口同构产出；空值仅出现在直接构造事件的旧调用
+	// 方，投影层按 omitempty 省略）。
+	Outcome string `json:"outcome,omitempty"`
+	// ExitReason 是 fallback 出口的既有 Reason 值（local_account_suppressed
+	// 等）或 completed 出口的空串；ready 出口恒空。
+	ExitReason string `json:"exitReason,omitempty"`
 	// CandidateTotal 是进入候选准备的窗口总量。能力/模型过滤发生在窗口
 	// 之前：其逐账户明细现随 PreFilterSkipped/PreFilterSkippedCount 进本
 	// 摘要（既有审计标签 account_request_capability_filter /
@@ -121,6 +129,11 @@ type DispatchDecisionSummary struct {
 // 投影（与 PrepareOpenAIGatewayDispatchAccounts 内现成变量一一对应）。
 type DispatchDecisionSummaryInput struct {
 	CandidateTotal int
+	// Outcome/ExitReason 是准备窗口结局标记（ready | fallback | completed
+	// 及 fallback 的既有 Reason；终态出口经 emitTerminalDispatchDecision
+	// 统一覆写，调用方不必填写）。
+	Outcome    string
+	ExitReason string
 	// Eligible 是准备完成的可派发账户（含 busy 降位候选）；首选账户取
 	// 首位（session affinity claim 之后的最终次序）。
 	Eligible      []AccountCandidate
@@ -140,6 +153,8 @@ type DispatchDecisionSummaryInput struct {
 // 排序——截断窗口对同一输入确定可回放（Mock/回归可回放约束）。
 func BuildDispatchDecisionSummary(input DispatchDecisionSummaryInput) DispatchDecisionSummary {
 	summary := DispatchDecisionSummary{
+		Outcome:            input.Outcome,
+		ExitReason:         input.ExitReason,
 		CandidateTotal:     input.CandidateTotal,
 		EligibleCount:      len(input.Eligible),
 		ModelRankAvailable: input.ModelPriority != nil,
@@ -246,9 +261,15 @@ func cappedSlice[T any](items []T) ([]T, bool) {
 }
 
 // DispatchDecisionEvent 是候选准备决策事件的链侧投影：引擎在候选准备完成
-// （ready 出口）时发出，组合根据此输出一条 gateway_dispatch_decision
-// slog 结构化日志（每请求含每次重派至多一条）。
+// （ready 出口）或 fallback/completed 终态出口（2026-10-02 起，两者互斥）
+// 时发出，组合根据此输出一条 gateway_dispatch_decision slog 结构化日志
+// （每请求含每次重派至多一条）。
 type DispatchDecisionEvent struct {
+	// Outcome 是准备窗口结局：ready | fallback | completed；ExitReason 是
+	// fallback 出口的既有 Reason（completed 可为空）。与 Summary 上的同名
+	// 字段同值，链侧投影直接读取。
+	Outcome         string
+	ExitReason      string
 	TraceID         string
 	SystemAccountID string
 	APIKeyID        string
@@ -271,6 +292,43 @@ func SetDispatchDecisionObserver(observer func(DispatchDecisionEvent)) {
 		observer = func(DispatchDecisionEvent) {}
 	}
 	notifyDispatchDecisionObserver = observer
+}
+
+// emitTerminalDispatchDecision 是准备期 fallback/completed 终态出口的共享
+// 决策事件发射器（2026-10-02 起，与 ready 出口同构；见设计文档能力二
+// "准备期终态出口摘要"）。契约：
+//   - 摘要只按该出口作用域内实际可得的数据填充：CandidateTotal 统一取窗口
+//     总量，调用方只传该出口主导的跳过列表（本地抑制出口填 Suppressed、
+//     配额出口填 QuotaDenied、降级出口填 Degraded），拿不到的保持空，
+//     Eligible/SelectedAccountID 恒空——不得为凑字段伪造数据；
+//   - 审计写入与 ready 出口同名的 gateway_dispatch_candidates 标签（同一
+//     AuditCapture 开关门控），是对既有 local_account_suppression 等专项
+//     标签的汇总入口而非替代；
+//   - 每个准备窗口至多一条决策事件：终态出口 return 后不再回到 ready 发射
+//     点，天然互斥；error 路径不产出事件。
+func emitTerminalDispatchDecision(
+	input gatewaypreauth.DispatchPreparationInput,
+	prepareStartedAtMs int64,
+	outcome string,
+	exitReason string,
+	summaryInput DispatchDecisionSummaryInput,
+) {
+	summaryInput.CandidateTotal = len(input.CandidateAccounts)
+	summaryInput.Outcome = outcome
+	summaryInput.ExitReason = exitReason
+	summary := BuildDispatchDecisionSummary(summaryInput)
+	input.AuditCapture.AddGatewayMetadata("gateway_dispatch_candidates", summary.AuditMetadata())
+	notifyDispatchDecisionObserver(DispatchDecisionEvent{
+		Outcome:         outcome,
+		ExitReason:      exitReason,
+		TraceID:         input.UsageContext.TraceID,
+		SystemAccountID: input.SystemAccountID,
+		APIKeyID:        input.APIKeyID,
+		GroupID:         input.GroupID,
+		TrafficSource:   input.UsageContext.TrafficSource,
+		DurationMs:      gatewayupstream.NowMs() - prepareStartedAtMs,
+		Summary:         summary,
+	})
 }
 
 // releaseHalfOpenLease mirrors releaseHalfOpenLease.
@@ -390,6 +448,9 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 				"nextRetryAfterMs":     initialLocalSuppressionFilter.NextRetryAfterMs,
 				"fallbackAttempted":    true,
 			})
+			emitTerminalDispatchDecision(input, prepareStartedAtMs, PreparationOutcomeFallback, "local_account_suppressed", DispatchDecisionSummaryInput{
+				Suppressed: initialLocalSuppressionFilter.SuppressedAccountIDs,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "local_account_suppressed", Context: fallbackContext}, nil
 		}
 		precheckHalfOpenEligible = initialLocalSuppressionFilter.PrecheckSuppressedAccountIDs != nil &&
@@ -424,11 +485,17 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 			return PreparationResult{}, err
 		}
 		if completed {
+			emitTerminalDispatchDecision(input, prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+				Suppressed: initialLocalSuppressionFilter.SuppressedAccountIDs,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
 		localSuppressionFilter = resolved
 	}
 	if localSuppressionFilter == nil {
+		emitTerminalDispatchDecision(input, prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+			Suppressed: initialLocalSuppressionFilter.SuppressedAccountIDs,
+		})
 		return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 	}
 
@@ -448,6 +515,9 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 			return PreparationResult{}, err
 		}
 		if fallbackAttempted {
+			emitTerminalDispatchDecision(input, prepareStartedAtMs, PreparationOutcomeFallback, "runtime_degraded", DispatchDecisionSummaryInput{
+				Degraded: runtimeDegradationOrder.DegradedAccountIDs,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "runtime_degraded", Context: fallbackContext}, nil
 		}
 	}
@@ -525,6 +595,7 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 		latencyDegradedAccountIDs:    latencyDegradedAccountIDs,
 		hotQualityMode:               hotQualityModeFor(input.NormalRouteSpeedFirstConfig),
 		eligibleFirstPrimaryDispatch: input.UsageContext.TrafficSource == "gateway",
+		prepareStartedAtMs:           prepareStartedAtMs,
 	})
 	if err != nil {
 		return PreparationResult{}, err
@@ -596,9 +667,12 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 	// W1b：候选准备完成——把窗口既有决策数据汇成可序列化摘要。写入审计
 	// metadata 标签（门控沿用现有审计开关，不绕过），并经进程级观察槽发出
 	//（组合根装配 gateway_dispatch_decision slog 日志；每请求含每次重派
-	// 至多一条）。fallback/completed 出口不在此汇总：原因已在既有审计标签
-	//（local_account_suppression 等）与终局响应上。
+	// 至多一条）。fallback/completed 终态出口的同构决策事件由
+	// emitTerminalDispatchDecision 在各自出口直接产出（2026-10-02 起，见
+	// docs/functions/网关全链路轨迹日志设计.md 能力二"准备期终态出口摘要"），
+	// 与本 ready 出口互斥。
 	decisionSummary := BuildDispatchDecisionSummary(DispatchDecisionSummaryInput{
+		Outcome:        PreparationOutcomeReady,
 		CandidateTotal: len(input.CandidateAccounts),
 		Eligible:       readyAccounts,
 		ModelPriority:  input.ModelPriority,
@@ -616,6 +690,7 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 	})
 	input.AuditCapture.AddGatewayMetadata("gateway_dispatch_candidates", decisionSummary.AuditMetadata())
 	notifyDispatchDecisionObserver(DispatchDecisionEvent{
+		Outcome:         PreparationOutcomeReady,
 		TraceID:         input.UsageContext.TraceID,
 		SystemAccountID: input.SystemAccountID,
 		APIKeyID:        input.APIKeyID,
@@ -635,6 +710,9 @@ type quotaCapacityInput struct {
 	latencyDegradedAccountIDs    map[string]struct{}
 	hotQualityMode               string
 	eligibleFirstPrimaryDispatch bool
+	// prepareStartedAtMs 是准备窗口起点（终态出口决策事件的 durationMs 基准，
+	// 与 ready 出口同一窗口起点）。
+	prepareStartedAtMs int64
 }
 
 // accountSkipsOfPreFilter 把端口层的预过滤跳过明细投影回引擎侧同形结构
@@ -723,6 +801,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 				return PreparationResult{}, err
 			}
 			if fallbackAttempted {
+				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "authorization_quota_exceeded", DispatchDecisionSummaryInput{
+					QuotaDenied: quotaDeniedAccountIDs,
+				})
 				return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "authorization_quota_exceeded", Context: fallbackContext}, nil
 			}
 			if err := req.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
@@ -734,6 +815,9 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			}); err != nil {
 				return PreparationResult{}, err
 			}
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{
+				QuotaDenied: quotaDeniedAccountIDs,
+			})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
 		if err := req.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
@@ -745,6 +829,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}); err != nil {
 			return PreparationResult{}, err
 		}
+		emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
 		return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 	}
 
@@ -825,6 +910,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			return PreparationResult{}, err
 		}
 		if fallbackAttempted {
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "high_concurrency_group_busy", DispatchDecisionSummaryInput{})
 			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "high_concurrency_group_busy", Context: fallbackContext}, nil
 		}
 	}
@@ -840,6 +926,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 				return PreparationResult{}, err
 			}
 			if fallbackAttempted {
+				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "group_capacity_busy", DispatchDecisionSummaryInput{})
 				return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "group_capacity_busy", Context: fallbackContext}, nil
 			}
 		}
@@ -889,6 +976,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}
 		if !clientIpConcurrency.Acquired {
 			if signalAborted(req.Signal) || resWritableEnded(ctx) {
+				emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
 				return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 			}
 			if err := req.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
@@ -901,10 +989,12 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 			}); err != nil {
 				return PreparationResult{}, err
 			}
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
 		if signalAborted(req.Signal) || resWritableEnded(ctx) {
 			releaseClientIPConcurrencyOnce()
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
 	}
@@ -950,6 +1040,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		})
 		if signalAborted(req.Signal) || resWritableEnded(ctx) {
 			releaseClientIPConcurrencyOnce()
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
 			return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 		}
 		refreshed, err := RefreshGatewayAccountCurrentConcurrencyAsync(ctx, e.Concurrency, accounts)
@@ -973,6 +1064,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}
 		if fallbackAttempted {
 			releaseClientIPConcurrencyOnce()
+			emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeFallback, "high_concurrency_group_busy", DispatchDecisionSummaryInput{})
 			return PreparationResult{Outcome: PreparationOutcomeFallback, Reason: "high_concurrency_group_busy", Context: fallbackContext}, nil
 		}
 		releaseClientIPConcurrencyOnce()
@@ -986,6 +1078,7 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 		}); err != nil {
 			return PreparationResult{}, err
 		}
+		emitTerminalDispatchDecision(req, input.prepareStartedAtMs, PreparationOutcomeCompleted, "", DispatchDecisionSummaryInput{})
 		return PreparationResult{Outcome: PreparationOutcomeCompleted}, nil
 	}
 

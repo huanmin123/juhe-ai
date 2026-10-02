@@ -921,20 +921,34 @@ func TestW1VClientStrategyPreCommitFailureSignal(t *testing.T) {
 	}
 }
 
-// TestW1VClientStrategyViewOf：最终化视图投影（G18 冻结子集）。
+// TestW1VClientStrategyViewOf：最终化视图投影（G18 冻结子集）。InterpretSemantics
+// 对齐 Node client-profiles/strategy.ts:68-74 的三画像门（codex / claude_code /
+// gemini_cli），未知画像与空画像不得允许上游语义解释（BUG-0267 P0-① 行为回正，
+// 旧断言锁定的"恒 true"死逻辑已废除）。
 func TestW1VClientStrategyViewOf(t *testing.T) {
-	context := &gatewaypreauth.DispatchContext{
+	codex := &gatewaypreauth.DispatchContext{
+		ClientStrategy: gatewaypreauth.ClientStrategyContext{
+			ClientProfile:      "codex",
+			DownstreamProtocol: "responses_sse",
+		},
+	}
+	view := clientStrategyViewOf(codex)
+	if view == nil || view.ClientProfile != "codex" || view.DownstreamProtocol != "responses_sse" || !view.InterpretSemantics {
+		t.Fatalf("codex view = %+v", view)
+	}
+	// 未知画像（Node 画像枚举无 codex_cli）：投影透传画像名，但语义解释门必须关。
+	unknown := &gatewaypreauth.DispatchContext{
 		ClientStrategy: gatewaypreauth.ClientStrategyContext{
 			ClientProfile:      "codex_cli",
 			DownstreamProtocol: "responses_sse",
 		},
 	}
-	view := clientStrategyViewOf(context)
-	if view == nil || view.ClientProfile != "codex_cli" || view.DownstreamProtocol != "responses_sse" || !view.InterpretSemantics {
-		t.Fatalf("view = %+v", view)
+	unknownView := clientStrategyViewOf(unknown)
+	if unknownView == nil || unknownView.ClientProfile != "codex_cli" || unknownView.InterpretSemantics {
+		t.Fatalf("unknown profile view = %+v", unknownView)
 	}
 	emptyProfile := clientStrategyViewOf(&gatewaypreauth.DispatchContext{})
-	if emptyProfile == nil || emptyProfile.ClientProfile != "" || !emptyProfile.InterpretSemantics {
+	if emptyProfile == nil || emptyProfile.ClientProfile != "" || emptyProfile.InterpretSemantics {
 		t.Fatalf("empty view = %+v", emptyProfile)
 	}
 }

@@ -229,20 +229,6 @@ func TestW1OComposeSystemAPISQLiteSuccessVariants(t *testing.T) {
 		}
 		composed.Shutdown()
 	})
-
-	t.Run("锁开关经env关闭加链条开启", func(t *testing.T) {
-		t.Setenv("JUHE_AI_ACCOUNT_LOCKS_DISABLED", "true")
-		stack := w1oNewComposeStack(t)
-		stack.cfg.ChainEnabled = true
-		composed, err := stack.compose(t)
-		if err != nil {
-			t.Fatalf("锁开关关闭 + 链条开启变体必须组装成功: %v", err)
-		}
-		if composed.chain == nil || composed.chainServices == nil || composed.chainServices.Identity == nil {
-			t.Fatalf("链条开启时 chain/chainServices/Identity 必须装配")
-		}
-		composed.Shutdown()
-	})
 }
 
 // ---------------------------------------------------------------------------

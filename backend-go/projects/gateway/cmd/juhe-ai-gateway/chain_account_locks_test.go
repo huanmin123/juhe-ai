@@ -863,38 +863,6 @@ func TestSampleLockDelayMsBounds(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 显式关闭开关（JUHE_AI_ACCOUNT_LOCKS_DISABLED）
-// ---------------------------------------------------------------------------
-
-func TestChainAccountLocksDisabledViaEnv(t *testing.T) {
-	cases := []struct {
-		value string
-		want  bool
-	}{
-		{"", false},
-		{"false", false},
-		{"1", false},
-		{"true", true},
-		{"TRUE", true},
-		{" true ", true},
-	}
-	for _, testCase := range cases {
-		getenv := func(key string) string {
-			if key == "JUHE_AI_ACCOUNT_LOCKS_DISABLED" {
-				return testCase.value
-			}
-			return ""
-		}
-		if got := chainAccountLocksDisabledViaEnv(getenv); got != testCase.want {
-			t.Fatalf("disabled(%q) = %v, want %v", testCase.value, got, testCase.want)
-		}
-	}
-	if chainAccountLocksDisabledViaEnv(nil) {
-		t.Fatal("nil getter must keep the real implementation")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // 组合根接线：AccountLocks / EngineSecret / KeyRotation
 // ---------------------------------------------------------------------------
 
@@ -956,7 +924,7 @@ func TestComposeGatewayChainWiresLocksSecretAndRotation(t *testing.T) {
 // TestComposeWiresAccountLockSecretRotationFromConfig locks the compose.go
 // wiring text: EngineSecret/KeyRotation/AccountLocks ride the composition root
 // exactly at the documented sources（水合层 cfg.Secret 同源 + StateClient 同源
-// + 显式关闭开关）。这与 compose_account_balance_refresh_test.go 的源码接线
+// + 锁运行面恒装配）。这与 compose_account_balance_refresh_test.go 的源码接线
 // 断言同一模式——完整 composeSystemAPI 装配过重，此处锁定关键接线文本。
 func TestComposeWiresAccountLockSecretRotationFromConfig(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("compose.go"))
@@ -969,7 +937,6 @@ func TestComposeWiresAccountLockSecretRotationFromConfig(t *testing.T) {
 		"AccountLocks: accountLockPort,",
 		"KeyRotation: newChainAPIKeyRotationCounterOrNil(chainServices.StateClient),",
 		"newChainAccountLocks(composed.db, composed.pgDialect,",
-		`chainAccountLocksDisabledViaEnv(os.Getenv)`,
 	} {
 		if !strings.Contains(text, needle) {
 			t.Fatalf("compose.go missing wiring %q", needle)

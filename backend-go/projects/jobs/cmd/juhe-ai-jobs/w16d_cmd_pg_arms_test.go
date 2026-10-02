@@ -269,7 +269,7 @@ func TestW16DPGWireListProjectionArms(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	assembly := newWorkerAssembly(workerConfig{
 		Driver: "postgres", InstanceID: "w16d-list-projection",
-		Secret: w16dSecret, ListProjectionEnabled: true,
+		Secret:                          w16dSecret,
 		ListProjectionIntervalMS:        1_000,
 		ListProjectionBatchSize:         10,
 		ListProjectionMaxBatchesPerRun:  2,

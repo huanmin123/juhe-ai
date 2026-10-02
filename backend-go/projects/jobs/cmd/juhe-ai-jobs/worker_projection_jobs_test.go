@@ -25,9 +25,6 @@ func TestListProjectionConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadWorkerConfig: %v", err)
 	}
-	if !config.ListProjectionEnabled {
-		t.Fatal("投影面 2026-09-21 起恒开（开关已移除），默认必须为 true")
-	}
 	if config.ListProjectionIntervalMS != 1_000 {
 		t.Fatalf("interval 默认 = %d, 期望 1000", config.ListProjectionIntervalMS)
 	}

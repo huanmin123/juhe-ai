@@ -43,7 +43,11 @@ HEALTH_URL=https://aijh.huanmin.top/__aisys__/health
 
 TARGET="${1:-all}"
 case "$TARGET" in
-  all) TARGETS=(gateway jobs) ;;
+  # all 含 maintenance：一次性 CLI 的 schema/seed 变更必须随发版落地，否则
+  # 发布后 ensure-schema 用旧清单"幂等成功"却漏建新表（2026-10-02/03 两次
+  # 同款事故：623/624 语句一致掩盖 chat/j3b 迁移未落地）。maintenance 分支
+  # 只编译+上传+重建镜像，不 up（一次性容器 up -d 会等入口退出而挂起）。
+  all) TARGETS=(gateway jobs maintenance) ;;
   gateway|jobs|maintenance) TARGETS=("$TARGET") ;;
   *) echo "用法: $0 [all|gateway|jobs|maintenance]" >&2; exit 1 ;;
 esac
@@ -75,7 +79,17 @@ for p in "${TARGETS[@]}"; do
 done
 
 echo "== [4/6] 服务器组装镜像并滚动更新 =="
-$SSH "$SERVER" "cd $SERVER_DIR && docker compose build ${TARGETS[*]} 2>&1 | tail -1 && docker compose up -d ${TARGETS[*]} 2>&1 | tail -2"
+# maintenance 只重建镜像不 up：一次性 CLI 容器 up -d 会等待入口进程退出而
+# 挂起（2026-10-03 实测）；常驻进程照常滚动。
+UP_TARGETS=()
+for p in "${TARGETS[@]}"; do
+  [ "$p" = "maintenance" ] || UP_TARGETS+=("$p")
+done
+if [ ${#UP_TARGETS[@]} -gt 0 ]; then
+  $SSH "$SERVER" "cd $SERVER_DIR && docker compose build ${TARGETS[*]} 2>&1 | tail -1 && docker compose up -d ${UP_TARGETS[*]} 2>&1 | tail -2"
+else
+  $SSH "$SERVER" "cd $SERVER_DIR && docker compose build ${TARGETS[*]} 2>&1 | tail -1"
+fi
 
 echo "== [5/6] 健康 check + 容器运行二进制闭环校验 =="
 for p in "${TARGETS[@]}"; do

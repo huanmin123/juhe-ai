@@ -75,6 +75,19 @@ type UpstreamDispatchResult struct {
 	// upstream-attempts.ts:180-198 观察器在 fetch 后、transform 前挂载，观察
 	// 的是原始上游流而非转换后的客户端形态）。nil = 引擎未装配观察钩子。
 	UpstreamResponseModelSlot *UpstreamResponseModelSlot
+	// AccountCircuitAttempt / KeyModelAttempt 携带本尝试的熔断 confirmation 与
+	// key-model 前台准入句柄（BUG-0267 post-verdict 结算块）：引擎 OK 臂不再
+	// 在拿到 2xx 头部时前置 ReportFramingComplete——Node 在 body 处理完成后按
+	// 实际结局分类结算（routes.ts:1865-1877），"2xx 但 body 中途死亡"被前置
+	// 结算记成治愈证据（framing_complete → RECOVERING）是方向性错误；keyModel
+	// 选中轮的终态（ReportCompleteSuccess / ReportUpstreamNotComplete /
+	// ReportUnknown）同点结算。R2 当年修的 confirmation 租约悬挂担忧由链面
+	// 响应轮 defer 的兜底结算覆盖（Node :2509-2521）。nil = 本尝试未参与熔断
+	// / 未创建 key-model 尝试（含 key-model 准入后 circuit 已让位置 nil 的
+	// 互斥路径，dispatchsingle.go 对齐 upstream-dispatch.ts:1229-1234），链面
+	// nil 检查自然跳过。
+	AccountCircuitAttempt *gatewaycircuit.Attempt
+	KeyModelAttempt       *gatewayaccounteffects.GatewayKeyModelAttempt
 }
 
 // UpstreamResponseModelSlot 携带单次上游尝试观察到的原始响应模型：dispatch

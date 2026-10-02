@@ -167,11 +167,10 @@ func TestCircuitRecoveryProbeRequestPinsScopeModel(t *testing.T) {
 // 逐项 fail closed 登记（登记分支不需要真实 PG 连接）。
 func TestWireListProjectionFamilyDisabledChain(t *testing.T) {
 	base := workerConfig{
-		Driver:                "postgres",
-		InstanceID:            "wg-lp",
-		WorkerRole:            "worker",
-		ListProjectionEnabled: true,
-		Secret:                wgBalanceSecret,
+		Driver:     "postgres",
+		InstanceID: "wg-lp",
+		WorkerRole: "worker",
+		Secret:     wgBalanceSecret,
 	}
 	// 非法 namespace → disabled。
 	assembly := newWorkerAssembly(func() workerConfig {

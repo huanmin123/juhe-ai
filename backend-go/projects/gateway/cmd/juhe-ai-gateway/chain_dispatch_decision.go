@@ -59,6 +59,15 @@ func (o *chainDispatchDecisionObserver) observe(event gatewaydispatch.DispatchDe
 	if event.TrafficSource != "" {
 		fields["trafficSource"] = event.TrafficSource
 	}
+	// outcome/exitReason：准备窗口结局（ready | fallback | completed 及
+	// fallback 的既有 Reason）。空值省略与 skipped 字段同风格（直接构造
+	// 事件的旧调用方无此字段时不出现）。
+	if event.Outcome != "" {
+		fields["outcome"] = event.Outcome
+	}
+	if event.ExitReason != "" {
+		fields["exitReason"] = event.ExitReason
+	}
 	if summary.SelectedAccountID != "" {
 		fields["selectedAccountId"] = summary.SelectedAccountID
 	}

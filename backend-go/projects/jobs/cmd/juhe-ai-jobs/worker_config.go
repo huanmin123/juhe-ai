@@ -107,12 +107,9 @@ type workerConfig struct {
 
 	// 账户列表可用性投影维护（Node runtimeConfig.background
 	// accountListAvailabilityProjection* 同值）：
-	//   - ListProjectionEnabled 2026-09-21 起恒 true（开关移除恒注册；原述
-	//     "Node 默认 false"为过时口径，2026-09-28 默认开启整改回正）；
 	//   - ListProjectionIntervalMS env 1000..60000 默认 1000（运维节奏保留）；
 	//   - ListProjectionBatchSize / MaxBatchesPerRun / WorkerConcurrency
 	//     C4 收编为常量 100/200/4（仅 PG 生效，与 Node 一致）。
-	ListProjectionEnabled           bool
 	ListProjectionIntervalMS        int
 	ListProjectionBatchSize         int
 	ListProjectionMaxBatchesPerRun  int
@@ -289,10 +286,8 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 	}
 	// 手动账号测试队列 env（JUHE_AI_BACKGROUND_ACCOUNT_TEST_*）已随队列
 	// 执行权移交 gateway 组合根，jobs 不再读取。
-	// 2026-09-21 起账号列表可用性投影为常驻能力，
-	// JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED 开关
-	// 移除（投影写入面恒开；gateway 读面同批移除开关）。
-	config.ListProjectionEnabled = true
+	// 2026-09-21 起账号列表可用性投影为常驻能力（投影写入面恒开；
+	// gateway 读面同批移除开关）。
 	config.ListProjectionIntervalMS, err = workerEnvInt(getenv, "JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_INTERVAL_MS", config.ListProjectionIntervalMS)
 	if err != nil {
 		return config, err

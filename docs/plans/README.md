@@ -1,8 +1,10 @@
 # 计划目录
 
+- [PLAN-20261002T165252300Z](计划-20261002T165252300Z-账户锁开关移除与投影死字段清理.md)：落实"功能只存在或不存在，不设开/关"契约，移除 2026-09-21 开关清理批次的两个漏网残留——gateway `JUHE_AI_ACCOUNT_LOCKS_DISABLED` 显式关闭开关（恒装配 SQL 锁运行面，`disabledAccountLocks` 仅保留组合测试 nil-guard）与 jobs `ListProjectionEnabled` 恒 true 死字段；生产从未配置该 env，部署文档无可同步项。**已实施完成（2026-10-03，独立复审 pass 无 blocker；gateway 6 文件 + jobs 9 文件，两模块 build/vet/定向测试与 jobs 全量测试通过）**。
+
 - [PLAN-20261002T114140718Z](计划-20261002T114140718Z-架构评估核对与可靠性提升路线.md)：对外部 AI 架构评估逐条取证核对（三处功能目录过时表述坐实并按代码裁决、调度解释链缺口确认为补建而非验证、发布验证确认为接线 fullchain e2e/deploy.sh 已有资产、分布式"草案"定性修正为待实施设计依据），并给出 P0 在途收尾 → P1 契约统一 → P2 发布验证接线 → P3 调度解释链补缺 → P4 支持成本与最小基线的路线；草稿，待用户确认优先级与清理批次授权。
 
-- [PLAN-20260930T120000000Z](计划-20260930T120000000Z-全面审查清理批次-过度设计与死代码.md)：登记 2026-09-30 全面审查确认的过度设计与死代码清理批次共 10 项——C1 Node→Go 切流门禁与 cutover evidence/readback 链整体空转（约 1440 行、12 个门禁 env 全部署零出现，删留 auto-claim）、C2 前端 7 个死组件 1479 行、C3 juhe-ai-boolcheck 调试二进制（bc27d0e0d 带入的 `.local` 凭据路径已提交，全库零引用）、C4 125/318 env 全名零引用按域分批收编常量（每批同步 docker/single-server/README.md）、C5 pgpool rewrite.go gateway/jobs 双副本收敛 shared/platform（手动 bind 层退役前置）、C6 `JUHE_AI_DEBUG_SQL` 临时 tracer 按自述删除、C7 死导出符号（前端三个零调用导出已随 BUG-0243 批次清理完成，该删除在 BUG-0253 回退批次中保留有效）、C8 env 解析小工具多副本并入 R1 先例、C9 git 追踪 33MB 编译产物 `git rm` + .gitignore、C10 inval 跨实例同步与 Prometheus metrics 两项保守裁决交用户——每项列位置/证据摘要/代价/处置建议；已立案，待用户授权实施（删除类操作需授权，本计划只登记不动代码）。
+- [PLAN-20260930T120000000Z](计划-20260930T120000000Z-全面审查清理批次-过度设计与死代码.md)：2026-09-30 全面审查确认的过度设计与死代码清理批次共 10 项——C1 Node→Go 切流门禁与 cutover evidence/readback 链、C2 前端 7 个死组件 1479 行、C3 juhe-ai-boolcheck 调试二进制、C4 env 全名零引用按域收编常量、C5 pgpool rewrite.go 双副本收敛 shared/platform、C6 `JUHE_AI_DEBUG_SQL` 临时 tracer、C7 死导出符号、C8 env 解析小工具（签名漂移的双副本按行为变化记录关闭、另批统一）、C9 git 追踪 33MB 编译产物、C10 inval 与 Prometheus metrics 两项保守裁决（均裁定保留）。**已实施完成（2026-09-30，用户授权"不留尾巴做完为止"；2026-10-02 复核工作区状态一致）**，各项处置与验证见计划"实施结果"表。
 
 - [PLAN-20260919T093823230Z](计划-20260919T093823230Z-切号有效上游目标冻结与target-aware切号实施.md)：实施《切号时有效上游目标与上下文迁移设计》定稿契约：`gatewaydispatch` 新增请求级 `SwitchTarget` 冻结结构与 `FilterAccountsForSwitchTarget` target-aware 过滤，流式未提交重试、上游失败账户推进、分组 fallback、模型感知 reload 全部消费冻结目标，target 缺失时 fail-closed（`switch_target_unresolved`）；`ConvertedContext` 独立重构与验收矩阵第 8 行 RHS-only 候选加载暂缓。已完成（2026-09-19，独立复审通过；代码随 BUG-0178 批次提交 bc27d0e0d 入库）。
 

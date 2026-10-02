@@ -91,9 +91,7 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 		}
 	}
 	// SQLite 驱动：Node PostgreSQL-only 物化器。
-	sqliteAssembly := build(func(config *workerConfig) {
-		config.ListProjectionEnabled = true
-	})
+	sqliteAssembly := build(func(config *workerConfig) {})
 	business, err := sqliteAssembly.openSQLite(filepath.Join(unitDir, "unit-business.sqlite3"), "w13g8-projection")
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +104,6 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 	// PG 驱动 + 缺 Redis。
 	noRedis := build(func(config *workerConfig) {
 		config.Driver = "postgres"
-		config.ListProjectionEnabled = true
 	})
 	if err := noRedis.wireListProjectionFamily(ctx, &businessDB{}, nil); err != nil {
 		t.Fatalf("缺 Redis 必须 disabled: %v", err)
@@ -116,7 +113,6 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 	// PG + Redis + 非法 namespace。
 	badNamespace := build(func(config *workerConfig) {
 		config.Driver = "postgres"
-		config.ListProjectionEnabled = true
 		config.RedisStateURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8 bad namespace!"
 	})
@@ -128,7 +124,6 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 	// PG + Redis + 合法 namespace + 缺 secret。
 	noSecret := build(func(config *workerConfig) {
 		config.Driver = "postgres"
-		config.ListProjectionEnabled = true
 		config.RedisStateURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8"
 		config.Secret = ""
@@ -141,7 +136,6 @@ func TestW13G8ListProjectionFamilyDisabledArms(t *testing.T) {
 	// secret 就绪 + 探针族未装配。
 	noProbe := build(func(config *workerConfig) {
 		config.Driver = "postgres"
-		config.ListProjectionEnabled = true
 		config.RedisStateURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "w13g8"
 	})

@@ -28,7 +28,6 @@ func TestP0ProjectionFamilyWiresActivationHook(t *testing.T) {
 	unitDir := t.TempDir()
 	assembly := w13g8NewUnitAssembly(t, func(config *workerConfig) {
 		config.Driver = "postgres"
-		config.ListProjectionEnabled = true
 		config.RedisStateURL = "redis://127.0.0.1:6379/9"
 		config.RedisNamespace = "p0"
 	})

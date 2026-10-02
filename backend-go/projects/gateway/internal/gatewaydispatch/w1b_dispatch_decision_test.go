@@ -246,6 +246,13 @@ func TestW1bPrepareDispatchAccountsEmitsGatewayDispatchCandidatesMetadata(t *tes
 	if metadata["candidateTotal"].(float64) != 2 {
 		t.Fatalf("candidateTotal = %#v", metadata["candidateTotal"])
 	}
+	// ready 出口显式标记 outcome=ready（2026-10-02 起）。
+	if metadata["outcome"] != PreparationOutcomeReady {
+		t.Fatalf("outcome = %#v", metadata["outcome"])
+	}
+	if _, present := metadata["exitReason"]; present {
+		t.Fatalf("ready summary must omit exitReason: %#v", metadata)
+	}
 	if metadata["eligibleCount"].(float64) != 1 {
 		t.Fatalf("eligibleCount = %#v", metadata["eligibleCount"])
 	}
@@ -310,6 +317,14 @@ func TestW1bDispatchDecisionObserverReceivesReadyEvent(t *testing.T) {
 	event := received[0]
 	if event.TraceID != "trace-test" || event.GroupID != "group-1" || event.APIKeyID != "apikey-1" {
 		t.Fatalf("identity = %q/%q/%q", event.TraceID, event.GroupID, event.APIKeyID)
+	}
+	// ready 出口显式标记 outcome=ready、exitReason 空（契约：ready 与终态
+	// 事件同构携带结局字段）。
+	if event.Outcome != PreparationOutcomeReady || event.ExitReason != "" {
+		t.Fatalf("outcome/exitReason = %q/%q", event.Outcome, event.ExitReason)
+	}
+	if event.Summary.Outcome != PreparationOutcomeReady || event.Summary.ExitReason != "" {
+		t.Fatalf("summary outcome/exitReason = %q/%q", event.Summary.Outcome, event.Summary.ExitReason)
 	}
 	if event.TrafficSource != "gateway" || event.DurationMs < 0 {
 		t.Fatalf("traffic/duration = %q/%d", event.TrafficSource, event.DurationMs)
@@ -433,5 +448,167 @@ func TestW1bPreFilterSkippedInDecisionSummary(t *testing.T) {
 	truncated := BuildDispatchDecisionSummary(overflow)
 	if !truncated.PreFilterSkippedTrunc || len(truncated.PreFilterSkipped) != dispatchDecisionSummaryListCap || truncated.PreFilterSkippedCount != dispatchDecisionSummaryListCap+5 {
 		t.Fatalf("truncated shape = %v/%d/%d", truncated.PreFilterSkippedTrunc, len(truncated.PreFilterSkipped), truncated.PreFilterSkippedCount)
+	}
+}
+
+// w1bCaptureTerminalDecision 装配决策观察槽并记录事件（每用例独立装配，
+// Cleanup 恢复 no-op，避免进程级观察槽跨用例泄漏）。
+func w1bCaptureTerminalDecision(t *testing.T) *[]DispatchDecisionEvent {
+	t.Helper()
+	received := &[]DispatchDecisionEvent{}
+	SetDispatchDecisionObserver(func(event DispatchDecisionEvent) {
+		*received = append(*received, event)
+	})
+	t.Cleanup(func() { SetDispatchDecisionObserver(nil) })
+	return received
+}
+
+// 终态出口（2026-10-02 契约）：fallback local_account_suppressed——事件
+// outcome/exitReason、candidateTotal、主导跳过列表（suppressed）、
+// eligibleCount=0；恰一条事件（终态路径不产出第二条 ready 事件，互斥）。
+func TestW1bTerminalDispatchDecisionLocalSuppressedFallback(t *testing.T) {
+	pipeline, engine, _, _ := newPipeline(t)
+	engine.Suppression = &fakeSuppression{allSuppressed: true}
+	coordinator := &capturingCoordinator{nextFallback: &gatewayrouting.GatewayRouteFallbackDecision{Attempted: true}}
+	capture := &w1bRecordingAudit{}
+	input := dispatchPreparationInput(t, testAccounts("a-1", "a-2"))
+	input.RouteCoordinator = coordinator
+	input.AuditCapture = capture
+	received := w1bCaptureTerminalDecision(t)
+	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
+	if err != nil {
+		t.Fatalf("PrepareDispatchAccounts: %v", err)
+	}
+	if result.Outcome != gatewaypreauth.CandidateOutcomeFallback || result.Reason != "local_account_suppressed" {
+		t.Fatalf("result outcome/reason = %s/%q", result.Outcome, result.Reason)
+	}
+	if len(*received) != 1 {
+		t.Fatalf("events = %d (ready 与终态必须互斥，恰一条)", len(*received))
+	}
+	event := (*received)[0]
+	if event.Outcome != PreparationOutcomeFallback || event.ExitReason != "local_account_suppressed" {
+		t.Fatalf("outcome/exitReason = %q/%q", event.Outcome, event.ExitReason)
+	}
+	if event.Summary.Outcome != PreparationOutcomeFallback || event.Summary.ExitReason != "local_account_suppressed" {
+		t.Fatalf("summary outcome/exitReason = %q/%q", event.Summary.Outcome, event.Summary.ExitReason)
+	}
+	if event.Summary.CandidateTotal != 2 || event.Summary.EligibleCount != 0 || event.Summary.SelectedAccountID != "" {
+		t.Fatalf("summary head = %#v", event.Summary)
+	}
+	if !reflect.DeepEqual(event.Summary.Suppressed, []string{"a-1", "a-2"}) {
+		t.Fatalf("suppressed = %#v", event.Summary.Suppressed)
+	}
+	if event.TraceID != "trace-test" || event.GroupID != "group-1" || event.APIKeyID != "apikey-1" || event.TrafficSource != "gateway" || event.DurationMs < 0 {
+		t.Fatalf("identity/timing = %q/%q/%q/%q/%d", event.TraceID, event.GroupID, event.APIKeyID, event.TrafficSource, event.DurationMs)
+	}
+	// 审计同内容：同名标签 gateway_dispatch_candidates 恰一条。
+	metadata := capture.single(t, "gateway_dispatch_candidates")
+	if metadata["outcome"] != PreparationOutcomeFallback || metadata["exitReason"] != "local_account_suppressed" {
+		t.Fatalf("metadata outcome/exitReason = %#v/%#v", metadata["outcome"], metadata["exitReason"])
+	}
+	if metadata["candidateTotal"].(float64) != 2 || metadata["eligibleCount"].(float64) != 0 {
+		t.Fatalf("metadata head = %#v", metadata)
+	}
+	suppressed, ok := metadata["suppressedAccountIds"].([]any)
+	if !ok || len(suppressed) != 2 || suppressed[0] != "a-1" || suppressed[1] != "a-2" {
+		t.Fatalf("metadata suppressed = %#v", metadata["suppressedAccountIds"])
+	}
+}
+
+// 终态出口：fallback authorization_quota_exceeded——主导跳过列表是配额
+// 否决账户（skipped reason=quota_denied），eligibleCount=0，恰一条事件。
+func TestW1bTerminalDispatchDecisionQuotaExceededFallback(t *testing.T) {
+	pipeline, engine, _, _ := newPipeline(t)
+	engine.Quota = &fakeQuota{denied: map[string]struct{}{"a-1": {}, "a-2": {}}}
+	coordinator := &capturingCoordinator{nextFallback: &gatewayrouting.GatewayRouteFallbackDecision{Attempted: true}}
+	capture := &w1bRecordingAudit{}
+	input := dispatchPreparationInput(t, testAccounts("a-1", "a-2"))
+	input.RouteCoordinator = coordinator
+	input.AuditCapture = capture
+	received := w1bCaptureTerminalDecision(t)
+	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
+	if err != nil {
+		t.Fatalf("PrepareDispatchAccounts: %v", err)
+	}
+	if result.Outcome != gatewaypreauth.CandidateOutcomeFallback || result.Reason != "authorization_quota_exceeded" {
+		t.Fatalf("result outcome/reason = %s/%q", result.Outcome, result.Reason)
+	}
+	if len(*received) != 1 {
+		t.Fatalf("events = %d (ready 与终态必须互斥，恰一条)", len(*received))
+	}
+	event := (*received)[0]
+	if event.Outcome != PreparationOutcomeFallback || event.ExitReason != "authorization_quota_exceeded" {
+		t.Fatalf("outcome/exitReason = %q/%q", event.Outcome, event.ExitReason)
+	}
+	if event.Summary.CandidateTotal != 2 || event.Summary.EligibleCount != 0 || event.Summary.SelectedAccountID != "" {
+		t.Fatalf("summary head = %#v", event.Summary)
+	}
+	want := []DispatchDecisionSkip{
+		{AccountID: "a-1", Reason: DispatchSkipReasonQuotaDenied},
+		{AccountID: "a-2", Reason: DispatchSkipReasonQuotaDenied},
+	}
+	if !reflect.DeepEqual(event.Summary.Skipped, want) {
+		t.Fatalf("skipped = %#v", event.Summary.Skipped)
+	}
+	if len(event.Summary.Suppressed) != 0 {
+		t.Fatalf("suppressed must stay empty: %#v", event.Summary.Suppressed)
+	}
+	metadata := capture.single(t, "gateway_dispatch_candidates")
+	if metadata["outcome"] != PreparationOutcomeFallback || metadata["exitReason"] != "authorization_quota_exceeded" {
+		t.Fatalf("metadata outcome/exitReason = %#v/%#v", metadata["outcome"], metadata["exitReason"])
+	}
+	skipped, ok := metadata["skipped"].([]any)
+	if !ok || len(skipped) != 2 {
+		t.Fatalf("metadata skipped = %#v", metadata["skipped"])
+	}
+	first := skipped[0].(map[string]any)
+	if first["id"] != "a-1" || first["reason"] != DispatchSkipReasonQuotaDenied {
+		t.Fatalf("metadata skipped[0] = %#v", first)
+	}
+}
+
+// 终态出口：completed（无候选 503 完成态）——outcome=completed、exitReason
+// 为空（键经 omitempty 省略）、candidateTotal=0、无主导跳过列表可填，
+// 恰一条事件（互斥）。
+func TestW1bTerminalDispatchDecisionNoCandidateCompleted(t *testing.T) {
+	pipeline, engine, _, _ := newPipeline(t)
+	engine.Quota = &fakeQuota{denied: map[string]struct{}{}}
+	coordinator := &capturingCoordinator{}
+	capture := &w1bRecordingAudit{}
+	input := dispatchPreparationInput(t, nil)
+	input.RouteCoordinator = coordinator
+	input.AuditCapture = capture
+	received := w1bCaptureTerminalDecision(t)
+	result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
+	if err != nil {
+		t.Fatalf("PrepareDispatchAccounts: %v", err)
+	}
+	if result.Outcome != gatewaypreauth.CandidateOutcomeCompleted {
+		t.Fatalf("result outcome = %s", result.Outcome)
+	}
+	if coordinator.failure == nil || coordinator.failure.ErrorCode != "no_available_upstream_account" {
+		t.Fatalf("failure = %#v", coordinator.failure)
+	}
+	if len(*received) != 1 {
+		t.Fatalf("events = %d (ready 与终态必须互斥，恰一条)", len(*received))
+	}
+	event := (*received)[0]
+	if event.Outcome != PreparationOutcomeCompleted || event.ExitReason != "" {
+		t.Fatalf("outcome/exitReason = %q/%q", event.Outcome, event.ExitReason)
+	}
+	if event.Summary.CandidateTotal != 0 || event.Summary.EligibleCount != 0 || event.Summary.SelectedAccountID != "" {
+		t.Fatalf("summary head = %#v", event.Summary)
+	}
+	if len(event.Summary.Skipped) != 0 || len(event.Summary.Suppressed) != 0 {
+		t.Fatalf("terminal lists must stay empty: %#v", event.Summary)
+	}
+	metadata := capture.single(t, "gateway_dispatch_candidates")
+	if metadata["outcome"] != PreparationOutcomeCompleted {
+		t.Fatalf("metadata outcome = %#v", metadata["outcome"])
+	}
+	for _, absent := range []string{"exitReason", "skipped", "suppressedAccountIds", "selectedAccountId"} {
+		if _, present := metadata[absent]; present {
+			t.Fatalf("completed summary must omit %s: %#v", absent, metadata)
+		}
 	}
 }

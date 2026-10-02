@@ -15,12 +15,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
@@ -67,6 +70,10 @@ type v1DispatchLoop struct {
 	// 写出 compaction 保活块，防客户端/中间层在压缩长等待期空闲断连）。
 	// 每轮 fetch 前创建 Start、fetch 返回即停；nil = 非压缩等待保活场景。
 	compactWaitHeartbeat *gatewayresponse.GatewaySseWaitHeartbeat
+	// forceRecoverableFailureWait 镜像 Node routes.ts:566/1483：切组未成但仍有
+	// 可恢复账户且等待预算未到 recoverable_later 交接点时置位——下一轮引擎
+	// 调用强制进入可恢复等待（优先等即将恢复的账户，保住亲和）。
+	forceRecoverableFailureWait bool
 	// ---- W4-B（BUG-0175 D-114）speed-first per-request 状态
 	//（routes.ts:542-546 locals）----
 	// speedFirstByteRetryCount 是本请求已执行的速度优先切号次数（上限
@@ -139,22 +146,27 @@ func (l *v1DispatchLoop) newRequestCoordination() *gatewaydispatch.RequestCoordi
 	return coordination
 }
 
-// startCompactSseWaitHeartbeat 对齐 Node routes.ts:1229-1239 +
-// shouldKeepCodexCompactSseAliveDuringUpstreamWait（routes.ts:2939-2948）：
-// 流式 codex 压缩请求（G18 上下文 codexCompactionExpected）且下游
-// responses_sse 时，上游派发等待期挂 10s 间隔的 compaction 保活心跳并立即
-// Start（首个保活块即刻写出）。提交状态与预算心跳共享 loop.waitCommitState
-// 单实例（语义已提交后心跳自动停写）。
-func (l *v1DispatchLoop) startCompactSseWaitHeartbeat(ctx context.Context, current *gatewaypreauth.DispatchContext) {
+// shouldKeepCompactSseAliveDuringUpstreamWait 对齐 Node routes.ts:2939-2948
+// shouldKeepCodexCompactSseAliveDuringUpstreamWait：流式 codex 压缩请求（G18
+// 上下文 codexCompactionExpected）且下游 responses_sse。
+func shouldKeepCompactSseAliveDuringUpstreamWait(req *gatewaypreauth.GatewayRequest, current *gatewaypreauth.DispatchContext) bool {
 	view := clientStrategyViewOf(current)
-	if !gatewaypreauth.RequestStream(l.req) ||
-		view.ClientProfile != "codex" || !view.CodexCompactionExpected ||
-		view.DownstreamProtocol != "responses_sse" {
+	return gatewaypreauth.RequestStream(req) &&
+		view.ClientProfile == "codex" && view.CodexCompactionExpected &&
+		view.DownstreamProtocol == "responses_sse"
+}
+
+// startCompactSseWaitHeartbeat 对齐 Node routes.ts:1229-1239：满足挂载条件时
+// 挂 10s 间隔的 compaction 保活心跳并立即 Start（首个保活块即刻写出）。
+// 提交状态与预算心跳共享 loop.waitCommitState 单实例（语义已提交后心跳自动
+// 停写）。
+func (l *v1DispatchLoop) startCompactSseWaitHeartbeat(ctx context.Context, current *gatewaypreauth.DispatchContext) {
+	if !shouldKeepCompactSseAliveDuringUpstreamWait(l.req, current) {
 		return
 	}
 	heartbeat := gatewayresponse.CreateGatewaySseWaitHeartbeat(gatewayresponse.HeartbeatDeps{
 		Res:                         l.res,
-		DownstreamProtocol:          view.DownstreamProtocol,
+		DownstreamProtocol:          clientStrategyViewOf(current).DownstreamProtocol,
 		DownstreamCommit:            l.waitCommitState,
 		Signal:                      ctx,
 		IntervalMs:                  10_000,
@@ -174,6 +186,22 @@ func (l *v1DispatchLoop) stopCompactSseWaitHeartbeat() {
 		l.compactWaitHeartbeat.Stop()
 		l.compactWaitHeartbeat = nil
 	}
+}
+
+// waitForRecoverableFailures 镜像 Node routes.ts:1281-1283：单分组（无备用
+// 可切）、切组跳数已达分组上限、或强制等待置位（账户即将恢复且预算未到
+// recoverable_later 交接点）时，引擎在本轮内等待可恢复失败；多分组未切完
+// 的默认是 false——引擎立即上抛，链面先切备用分组（横向有健康账户时明显
+// 优于干等当前组恢复）。此前恒 true，多分组请求在备用分组健康时也要干等
+// 到当前组预算交接才切组。
+func (l *v1DispatchLoop) waitForRecoverableFailures(current *gatewaypreauth.DispatchContext) bool {
+	bindings := 0
+	if current.APIKeyRecord != nil {
+		bindings = len(current.APIKeyRecord.GroupBindings)
+	}
+	return l.forceRecoverableFailureWait ||
+		bindings <= 1 ||
+		l.fallbackSwitches >= bindings-1
 }
 
 // adoptDispatchContextBudgets 在 loop.current 换代点（初始 resolveRouteAction
@@ -270,7 +298,7 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			CodexTurnAccountAvoidanceApplied: current.CodexTurnAccountAvoidanceApplied,
 			CodexTurnAvoidedAccountIDs:       current.CodexTurnAvoidedAccountIDs,
 			RequestCoordination:              coordination,
-			WaitForRecoverableFailures:       true,
+			WaitForRecoverableFailures:       l.waitForRecoverableFailures(current),
 			// W4-B（BUG-0175）D-114：速度优先切换预留（Node
 			// preAcquiredConcurrency 参数）。
 			PreAcquiredConcurrency: speedFirstReservationHandleOf(dispatchReservation),
@@ -284,89 +312,127 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 			// 挂在 res finish/close；Go 等价点是 handleUpstreamResponse 返回）。
 			// 嵌套函数 + defer：循环体内不能用函数级 defer（会拖到 run 返回），
 			// onceFunc 幂等，panic 与 RetryUpstream 切号都不会漏槽或双释放。
-			handling := func() gatewayresponse.UpstreamResponseHandlingResult {
-				defer func() {
-					if dispatched.ReleaseConcurrency != nil {
-						dispatched.ReleaseConcurrency()
-					}
-					// BUG-0247 项 1：响应轮终态统一消费重试租约释放回调
-					//（Node routes.ts:2498-2501 finally 的
-					// releaseAccountLockRetryLease(accountLockLeaseScheduleNextRetry)）。
-					// 引擎构造结果时已摘走 activeAccountLockRetryLease（引擎出口
-					// defer 因此不兜底），此前 chain 面零消费——"被选中但未协议
-					// 验证成功"路径的派发租约悬挂至 5 分钟 lease_until 过期
-					//（chain_account_locks.go 派发租约 300s），同账户重试
-					// AcquireRetryLease 返回 WaitMs 空耗墙钟预算。
-					// scheduleNextRetry 恒 false 对齐 Node 语义：Node 仅在
-					// same-account 重试携带路径（routes.ts:1914/:1950/:2143/:2160/
-					// :2180/:2274）置 true，Go 链面无这些路径——流式服务端重试
-					// 与速度优先切换均为跨账户轮换（Node 对应分支同样以 false
-					// 释放），首字截止切号的预留由 settleFirstByteDeadlineCutover-
-					// Verdict 消费、与本租约无关。once 语义防双释放。
-					if dispatched.ReleaseAccountLockRetryLease != nil {
-						dispatched.ReleaseAccountLockRetryLease(false)
-					}
-					// 半开探测租约释放（Node routes.ts:2520 finally 的
-					// releaseHalfOpenLease）：keepConcurrencySlot=true 时引擎
-					// releaseTransientState 不释放、所有权移交链面，此前链面
-					// 零消费——选中 2xx 尝试若持有半开认领，租约悬挂至 180s
-					// TTL（localSuppressionHalfOpenLeaseMs），刚成功服务请求的
-					// 健康账户被压在 half-open 排除态且不可再认领。nil 检查
-					// 兼容无租约路径；成功侧由 confirmProtocolSuccessSideEffects
-					// 先行 ConfirmHalfOpenSuccess（Node :2484），此处兜底其余
-					// 终态路径，once 语义防双结算。
-					if dispatched.ReleaseHalfOpenLease != nil {
-						dispatched.ReleaseHalfOpenLease()
-					}
+			//
+			// BUG-0267：整个响应轮（handling 消费 → post-verdict 结算 → 分支树）
+			// 包进 responseRound 闭包，defer 承载 Node routes.ts:2495-2521 attempt
+			// finally 的兜底结算（settleTransferredUpstreamAttemptsSafely）。闭包
+			// 返回 true = 请求已终态（run 返回），false = 继续下一轮派发（等价
+			// 原先各分支的 return / continue）。
+			responseRoundTerminal := func() (settled bool) {
+				// typed nil 防御：*gatewaycircuit.Attempt(nil) /
+				// *gatewayaccounteffects.GatewayKeyModelAttempt(nil) 直接装箱进
+				// 接口会得到非 nil 接口（方法调用 nil receiver panic），引擎
+				// 未装配时字段为 nil 的路径必须保持接口 nil。
+				circuitHandle := postVerdictCircuitHandle(dispatched.AccountCircuitAttempt)
+				keyModelHandle := postVerdictKeyModelHandle(dispatched.KeyModelAttempt)
+				defer l.settleTransferredUpstreamAttemptsSafely(ctx, dispatched.Account.ID, circuitHandle, keyModelHandle)
+				handling := func() gatewayresponse.UpstreamResponseHandlingResult {
+					defer func() {
+						if dispatched.ReleaseConcurrency != nil {
+							dispatched.ReleaseConcurrency()
+						}
+						// BUG-0247 项 1：响应轮终态统一消费重试租约释放回调
+						//（Node routes.ts:2498-2501 finally 的
+						// releaseAccountLockRetryLease(accountLockLeaseScheduleNextRetry)）。
+						// 引擎构造结果时已摘走 activeAccountLockRetryLease（引擎出口
+						// defer 因此不兜底），此前 chain 面零消费——"被选中但未协议
+						// 验证成功"路径的派发租约悬挂至 5 分钟 lease_until 过期
+						//（chain_account_locks.go 派发租约 300s），同账户重试
+						// AcquireRetryLease 返回 WaitMs 空耗墙钟预算。
+						// scheduleNextRetry 恒 false 对齐 Node 语义：Node 仅在
+						// same-account 重试携带路径（routes.ts:1914/:1950/:2143/:2160/
+						// :2180/:2274）置 true，Go 链面无这些路径——流式服务端重试
+						// 与速度优先切换均为跨账户轮换（Node 对应分支同样以 false
+						// 释放），首字截止切号的预留由 settleFirstByteDeadlineCutover-
+						// Verdict 消费、与本租约无关。once 语义防双释放。
+						if dispatched.ReleaseAccountLockRetryLease != nil {
+							dispatched.ReleaseAccountLockRetryLease(false)
+						}
+						// 半开探测租约释放（Node routes.ts:2520 finally 的
+						// releaseHalfOpenLease）：keepConcurrencySlot=true 时引擎
+						// releaseTransientState 不释放、所有权移交链面，此前链面
+						// 零消费——选中 2xx 尝试若持有半开认领，租约悬挂至 180s
+						// TTL（localSuppressionHalfOpenLeaseMs），刚成功服务请求的
+						// 健康账户被压在 half-open 排除态且不可再认领。nil 检查
+						// 兼容无租约路径；成功侧由 confirmProtocolSuccessSideEffects
+						// 先行 ConfirmHalfOpenSuccess（Node :2484），此处兜底其余
+						// 终态路径，once 语义防双结算。
+						// 顺序敏感点：本 defer（Release）先于 confirmProtocolSuccess
+						// SideEffects（Confirm）执行——Node 相反（confirm :2484 在
+						// release :2494 前）。当前无害：生产适配器 CompleteSuccess
+						// 恒 false 且 gateway 流量受 automaticAccountStateMutation
+						// Allowed 门约束为 no-op；未来接入带真实 CompleteSuccess 的
+						// 租约（Node precheck 家族）时需调整为 Confirm 先行，否则
+						// Release 清 leaseID 会使 Confirm 失效。
+						if dispatched.ReleaseHalfOpenLease != nil {
+							dispatched.ReleaseHalfOpenLease()
+						}
+					}()
+					return l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
 				}()
-				return l.c.handleUpstreamResponse(l.req, l.res, l.auditCapture, current, dispatched, l.startedAt, current.ActiveGatewaySettings, l.budgets, l.waitCommitState)
-			}()
-			if handling.FirstByteDeadlineCutover {
-				// BUG-0241 留档收口：首字截止切号的本 attempt 以 timeout 终态
-				// 结算（Node catch 响应段 timeout 族；速度优先排序正依赖该
-				// 信号识别慢账户），再走 cutover 消费端。
-				if dispatched.HotQualityAttempt != nil {
-					dispatched.HotQualityAttempt.RecordTerminal(ctx, gatewaydispatch.HotQualityTerminal{
-						OutcomeClass: gatewaydispatch.HotQualityOutcomeTimeout,
-						FailureScope: "protocol_model",
-						Source:       "gateway_transport",
-					})
+				// BUG-0267 post-verdict 结算块（Node routes.ts:1780-1877）：引擎
+				// OK 臂已收回前置 ReportFramingComplete，circuit confirmation 与
+				// keyModel 尝试在此按 body 处理后的实际结局分类结算；账户锁的
+				// upstream_body_transport_failure 失败记录同点补齐（Node :1813-
+				// 1823）。结算先于下方分支树（Node 的结算块在 alreadyFinalized
+				// 早退与 retryUpstream 消费之前），三类分支（cutover / 终态 /
+				// 重派）统一经过。
+				var postVerdictLockRecorder postVerdictAccountLockFailureRecorder
+				if l.c != nil && l.c.engine != nil {
+					postVerdictLockRecorder = l.c.engine.Locks
 				}
-				// R5：非流式管线 configured_deadline 首字超时的切号 verdict
-				// （Node routes.ts catch 响应段）交给既有 cutover 消费端：
-				// 收窄到保留目标重派（false → continue）或耗尽退出（true）。
-				// 预留已在响应面 TransferForCutover 转移进 verdict，此处只
-				// 消费、不重复转移（Transfer 为 active→transferred once 语义）。
-				if l.settleFirstByteDeadlineCutoverVerdict(ctx, dispatched, handling) {
-					return
+				l.settlePostVerdictUpstreamAttempts(ctx, dispatched, handling, circuitHandle, keyModelHandle, postVerdictLockRecorder)
+				if handling.FirstByteDeadlineCutover {
+					// BUG-0241 留档收口：首字截止切号的本 attempt 以 timeout 终态
+					// 结算（Node catch 响应段 timeout 族；速度优先排序正依赖该
+					// 信号识别慢账户），再走 cutover 消费端。
+					if dispatched.HotQualityAttempt != nil {
+						dispatched.HotQualityAttempt.RecordTerminal(ctx, gatewaydispatch.HotQualityTerminal{
+							OutcomeClass: gatewaydispatch.HotQualityOutcomeTimeout,
+							FailureScope: "protocol_model",
+							Source:       "gateway_transport",
+						})
+					}
+					// R5：非流式管线 configured_deadline 首字超时的切号 verdict
+					// （Node routes.ts catch 响应段）交给既有 cutover 消费端：
+					// 收窄到保留目标重派（false → continue）或耗尽退出（true）。
+					// 预留已在响应面 TransferForCutover 转移进 verdict，此处只
+					// 消费、不重复转移（Transfer 为 active→transferred once 语义）。
+					if l.settleFirstByteDeadlineCutoverVerdict(ctx, dispatched, handling) {
+						return true
+					}
+					return false
 				}
-				continue
-			}
-			if !handling.RetryUpstream {
-				// routes.ts:1841-1860: the unified hot-quality terminal
-				// settlement runs first (BUG-0241): completed_response on
-				// protocol-validated success (with the explicit first-byte
-				// sample) / upstream_response_failure on the diagnostic
-				// forwarded response.
+				if !handling.RetryUpstream {
+					// routes.ts:1841-1860: the unified hot-quality terminal
+					// settlement runs first (BUG-0241): completed_response on
+					// protocol-validated success (with the explicit first-byte
+					// sample) / upstream_response_failure on the diagnostic
+					// forwarded response.
+					l.settleHotQualityTerminal(ctx, dispatched, handling)
+					// routes.ts:2393-2455: the speed-first response observation
+					// (slow/success sampling) runs once the response completed
+					// without a server-retry verdict.
+					l.observeSpeedFirstResponseOutcome(ctx, current, dispatched, handling)
+					// routes.ts:2478-2486: the final protocol oracle confirms the
+					// pending sibling Key failures + the winning Key success.
+					l.confirmProtocolSuccessSideEffects(ctx, dispatched, handling)
+					return true
+				}
+				// BUG-0241 留档收口：响应期重试族的当前 attempt 在换号前结算诊断
+				// 终态（重试轮次是新 attempt 与新 lifecycle），对齐 Node 统一
+				// 结算点对所有响应轮生效的语义。
 				l.settleHotQualityTerminal(ctx, dispatched, handling)
-				// routes.ts:2393-2455: the speed-first response observation
-				// (slow/success sampling) runs once the response completed
-				// without a server-retry verdict.
-				l.observeSpeedFirstResponseOutcome(ctx, current, dispatched, handling)
-				// routes.ts:2478-2486: the final protocol oracle confirms the
-				// pending sibling Key failures + the winning Key success.
-				l.confirmProtocolSuccessSideEffects(ctx, dispatched, handling)
-				return
-			}
-			// BUG-0241 留档收口：响应期重试族的当前 attempt 在换号前结算诊断
-			// 终态（重试轮次是新 attempt 与新 lifecycle），对齐 Node 统一
-			// 结算点对所有响应轮生效的语义。
-			l.settleHotQualityTerminal(ctx, dispatched, handling)
-			// D1: the response layer asked for a server-side account switch
-			// (Node routes.ts:1899 `if (handledResponse.retryUpstream)`); the
-			// loop continues on the remaining candidates or settles the
-			// exhausted exit — never an empty 200.
-			if l.settleResponseStreamServerRetry(ctx, dispatched, handling) {
+				// D1: the response layer asked for a server-side account switch
+				// (Node routes.ts:1899 `if (handledResponse.retryUpstream)`); the
+				// loop continues on the remaining candidates or settles the
+				// exhausted exit — never an empty 200.
+				if l.settleResponseStreamServerRetry(ctx, dispatched, handling) {
+					return true
+				}
+				return false
+			}()
+			if responseRoundTerminal {
 				return
 			}
 			continue
@@ -612,6 +678,14 @@ func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr er
 			case fallback == v1FallbackCompleted:
 				return true
 			case fallback == v1FallbackSwitched:
+				return false
+			case fallback == v1FallbackNone && len(attempt.RecoverableAccountIDs) > 0 &&
+				!l.serverRetryBudget.HandoffRequired(gatewaypreauth.AvailabilityRecoverableLater, nil):
+				// Node routes.ts:1479-1486：切组未成但仍有可恢复账户、等待预算
+				// 未到 recoverable_later 交接点——置强制等待并继续循环，下一轮
+				// 引擎调用进入可恢复等待（优先等即将恢复的账户，保住亲和）；
+				// 预算已到交接点则落入下方耗尽渲染。
+				l.forceRecoverableFailureWait = true
 				return false
 			}
 		}
@@ -1177,6 +1251,287 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 	if dispatched.ConfirmHalfOpenSuccess != nil {
 		dispatched.ConfirmHalfOpenSuccess()
 	}
+}
+
+// ---------------------------------------------------------------------------
+// BUG-0267 post-verdict 结算块（Node routes.ts:1780-1877 + :2509-2521）
+// ---------------------------------------------------------------------------
+
+// postVerdictCircuitAttempt 是 post-verdict 结算块消费的熔断尝试句柄面
+//（生产为引擎带出的 *gatewaycircuit.Attempt，UpstreamDispatchResult 字段的
+// 方法子集；测试注入计数闭包）。方法语义与 gatewaycircuit.Attempt 一致。
+type postVerdictCircuitAttempt interface {
+	IsConfirmation() bool
+	ReportTransportFailure(ctx context.Context, failure gatewaycircuit.TransportFailure) (gatewaycircuit.FailureDecision, error)
+	ReportFramingComplete(ctx context.Context) (*gatewaycircuit.MutationResult, error)
+	ReportUnknown(ctx context.Context) (*gatewaycircuit.MutationResult, error)
+}
+
+// postVerdictKeyModelAttempt 是 post-verdict 结算块消费的 key-model 尝试
+// 句柄面（生产为 *gatewayaccounteffects.GatewayKeyModelAttempt 的方法子集；
+// 测试注入计数闭包）。Report 族是 terminalOnce 幂等结算（首个终态生效）。
+type postVerdictKeyModelAttempt interface {
+	ReportCompleteSuccess(ctx context.Context) error
+	ReportUpstreamNotComplete(ctx context.Context) error
+	ReportUnknown(ctx context.Context) error
+}
+
+// postVerdictAccountLockFailureRecorder 是账户锁失败记录的消费面（生产为
+// gatewaydispatch.AccountLocks 的方法子集；测试注入计数闭包）。
+type postVerdictAccountLockFailureRecorder interface {
+	RecordFailureAsync(ctx context.Context, accountID, reason string, observation *gatewaydispatch.AccountLockObservation) error
+}
+
+// postVerdictClassification 承载 Node routes.ts:1750-1803 判定变量组的 Go 投影。
+type postVerdictClassification struct {
+	neutralSchedulingTermination bool
+	hardFirstByteCutover         bool
+	transportFailure             *gatewayresponse.StreamTransportFailure
+	explicitUserPolicyRetry      bool
+	requestLocalProtocolFailure  bool
+	protocolValidatedSuccess     bool
+}
+
+// classifyPostVerdictOutcome 对齐 Node routes.ts:1750-1803 的判定组。字段映射：
+//   - responseRetryUpstream / responseErrorCode → handling.RetryUpstream /
+//     handling.ErrorCode；neutralRequestWallTermination（:1752）→ ErrorCode 等于
+//     gateway_request_wall_budget_exhausted（GatewayRequestWallBudgetExhaustedCode）；
+//     gatewayLocalFailure（:1753）→ handling.GatewayLocalFailure；
+//   - normalRouteFirstByteCutover（:1754-1756，Node 是 retryUpstream &&
+//     retryReason==='normal_route_first_byte_timeout'）→ Go 响应面把同一场景
+//     编码为 handling.FirstByteDeadlineCutover（chain_v1.go 的 cutover verdict
+//     构造点），limiting factor 取尝试级 dispatched.NormalRouteFirstByteDeadline；
+//   - hard/neutral cutover 按 limitingFactor 划分（:1768-1775）：
+//     configured / wall_precommit → neutral（调度决策，网关主动停读仍在存活的
+//     响应——既非传输失败也非帧完成证据）；lane_timeout / uncommitted_attempt
+//     → hard（合成 {kind:'timeout', reason} 传输失败，:1781-1787）；
+//   - transportFailure 三元（:1777-1790）：neutral → nil；hard → 原生
+//     TransportFailure 或合成 timeout；其余（非 neutral cutover）→ 原生
+//     TransportFailure（含 nil）。
+func classifyPostVerdictOutcome(
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	handling gatewayresponse.UpstreamResponseHandlingResult,
+) postVerdictClassification {
+	neutralRequestWallTermination := handling.ErrorCode == gatewayresponse.GatewayRequestWallBudgetExhaustedCode
+	gatewayLocalFailure := handling.GatewayLocalFailure
+	normalRouteFirstByteCutover := handling.FirstByteDeadlineCutover
+	limitingFactor := ""
+	if dispatched.NormalRouteFirstByteDeadline != nil {
+		limitingFactor = dispatched.NormalRouteFirstByteDeadline.LimitingFactor
+	}
+	neutralNormalRouteFirstByteCutover := normalRouteFirstByteCutover &&
+		(limitingFactor == gatewayrouting.FirstByteLimitingFactorConfigured ||
+			limitingFactor == gatewayrouting.FirstByteLimitingFactorWallPrecommit)
+	hardNormalRouteFirstByteCutover := normalRouteFirstByteCutover &&
+		(limitingFactor == gatewayrouting.FirstByteLimitingFactorLaneTimeout ||
+			limitingFactor == gatewayrouting.FirstByteLimitingFactorUncommittedAttempt)
+	neutralSchedulingTermination := neutralRequestWallTermination || neutralNormalRouteFirstByteCutover || gatewayLocalFailure
+	var transportFailure *gatewayresponse.StreamTransportFailure
+	switch {
+	case neutralSchedulingTermination:
+		// A configured speed-first deadline is a scheduling decision. The
+		// gateway deliberately stopped reading this otherwise-live response,
+		// so it is neither transport-failure nor framing-complete evidence.
+		transportFailure = nil
+	case hardNormalRouteFirstByteCutover:
+		if handling.TransportFailure != nil {
+			transportFailure = handling.TransportFailure
+		} else {
+			reason := handling.Message
+			if reason == "" {
+				reason = "普通路由首字硬截止已到达"
+			}
+			transportFailure = &gatewayresponse.StreamTransportFailure{Kind: "timeout", Reason: reason}
+		}
+	case handling.TransportFailure != nil:
+		transportFailure = handling.TransportFailure
+	}
+	// explicitUserPolicyRetry（:1791-1796）：Node 判 responseInspection.
+	// replayAuthority === 'explicit_user_policy'（注意区别于热质量结算用的
+	// isExplicitPolicyRetry 的 Reason 字段——ReplayAuthority 还要求决策携带
+	// 账户切换语义，是它的真子集）。
+	explicitUserPolicyRetry := handling.RetryUpstream &&
+		handling.RetryReason == gatewayresponse.StreamServerRetryResponseInspection &&
+		handling.ResponseInspection != nil &&
+		handling.ResponseInspection.ReplayAuthority == "explicit_user_policy"
+	requestLocalProtocolFailure := handling.RetryUpstream &&
+		handling.RetryReason == gatewayresponse.StreamServerRetryUpstreamProtocolFailure
+	protocolValidatedSuccess := !handling.RetryUpstream && handling.ProtocolValidatedSuccess
+	return postVerdictClassification{
+		neutralSchedulingTermination: neutralSchedulingTermination,
+		hardFirstByteCutover:         hardNormalRouteFirstByteCutover,
+		transportFailure:             transportFailure,
+		explicitUserPolicyRetry:      explicitUserPolicyRetry,
+		requestLocalProtocolFailure:  requestLocalProtocolFailure,
+		protocolValidatedSuccess:     protocolValidatedSuccess,
+	}
+}
+
+// settlePostVerdictUpstreamAttempts 镜像 Node routes.ts:1780-1877 的 post-verdict
+// 结算块（结算错误只记日志不改写已提交的下游，与 confirmProtocolSuccess
+// SideEffects 同风格）。三类消费者的分类表（Node :1813-1823 / :1839-1848 /
+// :1865-1876）：
+//
+//	circuit  = transportFailure 且未中止且非 downstream_connection_closed →
+//	           ReportTransportFailure(kind, reason)；neutral → ReportUnknown；
+//	           其余非 transportFailure → ReportFramingComplete；transportFailure
+//	           但已中止/下游关闭 → 不结算（兜底 defer 以 unknown 收口，对齐
+//	           Node 同形态下 circuitDecision undefined 且第二支不触发）；
+//	keyModel = neutral || requestLocalProtocolFailure || explicitUserPolicyRetry
+//	           → ReportUnknown；protocolValidatedSuccess → ReportCompleteSuccess；
+//	           其余 → ReportUpstreamNotComplete；
+//	账户锁   = transportFailure 且未中止且非 downstream_connection_closed 且
+//	           !neutral 且 !requestLocalProtocolFailure 且 !hardCutover →
+//	           RecordFailureAsync('upstream_body_transport_failure')。
+//
+// 与 Node 的顺序偏差（无行为耦合，各消费者独立记账）：Node 先锁记录（:1813）
+// 再 circuit transport-failure（:1839）；Go 本块整体在 settleHotQualityTerminal
+// 之后执行。cutover 分支内本块先于 BUG-0241 的 hotQuality timeout 终态执行
+//（Node :1841 在 :1865 前），hotQuality 与 circuit/keyModel 为独立句柄。
+func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
+	ctx context.Context,
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	handling gatewayresponse.UpstreamResponseHandlingResult,
+	circuitAttempt postVerdictCircuitAttempt,
+	keyModelAttempt postVerdictKeyModelAttempt,
+	lockRecorder postVerdictAccountLockFailureRecorder,
+) {
+	class := classifyPostVerdictOutcome(dispatched, handling)
+	aborted := ctx.Err() != nil
+	downstreamClosed := handling.ErrorCode == "downstream_connection_closed"
+
+	// 账户锁失败侧（Node :1813-1823）：accountLockTrafficEnabled 与引擎同源
+	//（TrafficSource == gateway，即链面传给引擎的 AccountStateMutationEnabled）。
+	if class.transportFailure != nil && !aborted && !downstreamClosed &&
+		!class.neutralSchedulingTermination && !class.requestLocalProtocolFailure && !class.hardFirstByteCutover &&
+		lockRecorder != nil &&
+		l.current != nil && l.current.UsageContext.TrafficSource == gatewayTrafficSource {
+		if err := lockRecorder.RecordFailureAsync(ctx, dispatched.Account.ID, "upstream_body_transport_failure", dispatched.AccountLockObservation); err != nil {
+			l.c.observability.Logger().Warn("gateway_account_lock_failure_record_failed", map[string]any{
+				"event":     "gateway_account_lock_failure_record_failed",
+				"traceId":   l.traceID,
+				"accountId": dispatched.Account.ID,
+				"error":     err.Error(),
+			}, "响应期传输失败的账户锁失败记录未完成")
+		}
+	}
+
+	// circuit 结算（Node :1839-1848 + :1865-1869）。
+	if circuitAttempt != nil {
+		if class.transportFailure != nil && !aborted && !downstreamClosed {
+			if _, err := circuitAttempt.ReportTransportFailure(ctx, gatewaycircuit.TransportFailure{
+				Kind:  class.transportFailure.Kind,
+				Reason: class.transportFailure.Reason,
+			}); err != nil {
+				l.c.observability.Logger().Warn("gateway_account_circuit_transport_failure_report_failed", map[string]any{
+					"event":     "gateway_account_circuit_transport_failure_report_failed",
+					"traceId":   l.traceID,
+					"accountId": dispatched.Account.ID,
+					"error":     err.Error(),
+				}, "账户熔断传输失败结算未完成")
+			}
+		} else if class.neutralSchedulingTermination {
+			if _, err := circuitAttempt.ReportUnknown(ctx); err != nil {
+				l.c.observability.Logger().Warn("gateway_account_circuit_unknown_report_failed", map[string]any{
+					"event":     "gateway_account_circuit_unknown_report_failed",
+					"traceId":   l.traceID,
+					"accountId": dispatched.Account.ID,
+					"error":     err.Error(),
+				}, "账户熔断中性结算未完成")
+			}
+		} else if class.transportFailure == nil {
+			if _, err := circuitAttempt.ReportFramingComplete(ctx); err != nil {
+				l.c.observability.Logger().Warn("gateway_account_circuit_framing_complete_report_failed", map[string]any{
+					"event":     "gateway_account_circuit_framing_complete_report_failed",
+					"traceId":   l.traceID,
+					"accountId": dispatched.Account.ID,
+					"error":     err.Error(),
+				}, "账户熔断帧完成结算未完成")
+			}
+		}
+	}
+
+	// keyModel 结算（Node :1870-1876）。
+	if keyModelAttempt != nil {
+		var err error
+		switch {
+		case class.neutralSchedulingTermination || class.requestLocalProtocolFailure || class.explicitUserPolicyRetry:
+			err = keyModelAttempt.ReportUnknown(ctx)
+		case class.protocolValidatedSuccess:
+			err = keyModelAttempt.ReportCompleteSuccess(ctx)
+		default:
+			err = keyModelAttempt.ReportUpstreamNotComplete(ctx)
+		}
+		if err != nil {
+			l.c.observability.Logger().Warn("gateway_key_model_attempt_report_failed", map[string]any{
+				"event":     "gateway_key_model_attempt_report_failed",
+				"traceId":   l.traceID,
+				"accountId": dispatched.Account.ID,
+				"error":     err.Error(),
+			}, "key-model 尝试终态结算未完成")
+		}
+	}
+}
+
+// settleTransferredUpstreamAttemptsSafely 镜像 Node routes.ts:2509-2521 finally +
+// :2649-2666 settleTransferredAccountCircuitAttemptSafely：引擎 OK 臂不再前置
+// 结算（BUG-0267），句柄移交链面后，主结算块（settlePostVerdictUpstreamAttempts）
+// 未覆盖的路径（panic、分支树早退）由本兜底收口。circuit 仅对 confirmation 尝试
+// 结算（observer 尝试 no-op）；reportUnknown 重试首个 pin 定的终态意图——Go 的
+// settleConfirmation 与 Node 同构（confirmationSettlementIntent 先到先得、二次
+// 调用返回同一 memoized 结果，首个终态不被推翻），失败重试一次后告警留痕并
+// 等待租约到期；keyModel 无条件 reportUnknown（terminalOnce 幂等，主结算已定
+// 终态时为 no-op）。挂在响应轮闭包的 defer 上，即 Node 的 attempt 作用域终点。
+func (l *v1DispatchLoop) settleTransferredUpstreamAttemptsSafely(
+	ctx context.Context,
+	accountID string,
+	circuitAttempt postVerdictCircuitAttempt,
+	keyModelAttempt postVerdictKeyModelAttempt,
+) {
+	if circuitAttempt != nil && circuitAttempt.IsConfirmation() {
+		// 复审对齐：兜底结算用 WithoutCancel——请求 ctx 取消（客户端断开）时
+		// 结算仍须落库释放租约（引擎侧同模式 business/gateway_dispatch），用
+		// 原 ctx 会退到告警+租约到期，R2 的悬挂担忧在此路径复发。
+		settleCtx := context.WithoutCancel(ctx)
+		settled := false
+		var lastErr error
+		for retry := 0; retry < 2 && !settled; retry++ {
+			if _, err := circuitAttempt.ReportUnknown(settleCtx); err != nil {
+				lastErr = err
+			} else {
+				settled = true
+			}
+		}
+		if !settled {
+			l.c.observability.Logger().Warn("gateway_account_circuit_transferred_confirmation_settlement_failed", map[string]any{
+				"event":     "gateway_account_circuit_transferred_confirmation_settlement_failed",
+				"traceId":   l.traceID,
+				"accountId": accountID,
+				"error":     lastErr.Error(),
+			}, "账户 confirmation 在上游处理结束后结算失败，保留原终态意图并等待租约到期")
+		}
+	}
+	if keyModelAttempt != nil {
+		_ = keyModelAttempt.ReportUnknown(context.WithoutCancel(ctx))
+	}
+}
+
+// postVerdictCircuitHandle 把引擎带出的具体熔断句柄装箱为结算接口；nil 指针
+// 保持接口 nil（typed nil 装箱陷阱见调用点注释）。
+func postVerdictCircuitHandle(attempt *gatewaycircuit.Attempt) postVerdictCircuitAttempt {
+	if attempt == nil {
+		return nil
+	}
+	return attempt
+}
+
+// postVerdictKeyModelHandle 把引擎带出的具体 key-model 句柄装箱为结算接口；
+// nil 指针保持接口 nil。
+func postVerdictKeyModelHandle(attempt *gatewayaccounteffects.GatewayKeyModelAttempt) postVerdictKeyModelAttempt {
+	if attempt == nil {
+		return nil
+	}
+	return attempt
 }
 
 // fallbackOptions mirrors the option bag Node passes from the current

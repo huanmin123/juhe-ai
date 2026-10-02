@@ -41,14 +41,15 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			GroupID:         usageContext.GroupID,
 		})
 		*c.loop.keepConcurrencySlotRef = true
-		// R2 修复（成功侧结算）：真成功拿到完整 2xx 响应即结算 confirmation
-		//（framing_complete → RECOVERING，原 store API 语义在此位置正确），
-		// 不再把租约挂到 30s leaseUntil 过期。失败/错误分支的结算见各分支的
-		// ReportUnknown / ReportTransportFailure；nil 句柄（未参与熔断的尝试
-		// 或已被置 nil）自然跳过。
-		if in.accountCircuitAttempt != nil {
-			_, _ = in.accountCircuitAttempt.ReportFramingComplete(ctx)
-		}
+		// R2 前移收回（BUG-0267 post-verdict 结算块）：confirmation 不再在拿到
+		// 2xx 头部时前置 ReportFramingComplete——Node 在 body 处理完成后按实际
+		// 结局分类结算（routes.ts:1865-1869），"2xx 但 body 中途死亡"被前置
+		// 结算记成治愈证据（framing_complete → RECOVERING、失败证据清零）是
+		// 方向性错误。结算移交链面 post-verdict 块（Node :1865-1877），句柄经
+		// UpstreamDispatchResult 带出；R2 的租约悬挂担忧由链面响应轮 defer 的
+		// 兜底结算覆盖（settleTransferredUpstreamAttemptsSafely，对齐 Node
+		// :2509-2521）。失败/错误分支的前置结算保持不变（各分支的
+		// ReportUnknown / ReportTransportFailure 见下文与 handleUpstreamAttemptError）。
 		var responsePrecommitDeadlineAtMs *int64
 		if in.requestLane != "image" && !in.coordination.GatewayRequestWallBudget.Unbounded {
 			value := in.coordination.GatewayRequestWallBudget.DeadlineAtMs - gatewayrouting.DefaultGatewayFinalResponseReserveMs
@@ -65,6 +66,12 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 			AttemptStartedAt:     c.attemptStartedAt,
 			EffectiveServiceTier: c.loop.effectiveServiceTier,
 			TimeoutProfile:       in.timeoutProfile,
+			// BUG-0267：circuit/keyModel 句柄带出——链面 post-verdict 结算块按
+			// body 实际结局分类结算（Node routes.ts:1865-1877）。key-model 准入
+			// 让位路径（dispatchsingle.go 准入互斥）已把 circuit 句柄置 nil 并在
+			// 引擎内 ReportUnknown，链面 nil 跳过语义自洽。
+			AccountCircuitAttempt: in.accountCircuitAttempt,
+			KeyModelAttempt:       c.keyModelAttempt,
 			// 观测面带出本尝试的真实索引（与失败派发器输入同值域：
 			// auditAttemptIndex 在每次真实尝试前自增，是该尝试的 1-based 序数）。
 			AttemptIndex:       *c.attemptIndex,

@@ -27,7 +27,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/helpweb"
@@ -1164,23 +1163,19 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if errorPolicyBridgeErr != nil {
 			return nil, fmt.Errorf("compose account error policy effects bridge: %w", errorPolicyBridgeErr)
 		}
-		// ENGAGED 锁运行链装配（BUG-0174 B-2，chain_account_locks.go）：默认
+		// ENGAGED 锁运行链装配（BUG-0174 B-2，chain_account_locks.go）：恒
 		// 注入 SQL 运行面（四操作 + 重试租约族 + 结算写 temporary_unavailable/
-		// cooldown 后的 account_lock_deadline 失效通知）。nil 只保留给显式
-		// 关闭开关 JUHE_AI_ACCOUNT_LOCKS_DISABLED=true——关闭时链条回落
-		// chain_ports.go disabledAccountLocks（账户视为未锁），而非默认降级。
-		var accountLockPort gatewaydispatch.AccountLocks
-		if !chainAccountLocksDisabledViaEnv(os.Getenv) {
-			locks, locksErr := newChainAccountLocks(composed.db, composed.pgDialect, func(reason string) {
-				if composed.Bus != nil {
-					composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)
-				}
-			})
-			if locksErr != nil {
-				chainServices.Close()
-				return nil, fmt.Errorf("compose gateway account locks port: %w", locksErr)
+		// cooldown 后的 account_lock_deadline 失效通知）；装配失败按组合根
+		// 约定 fail-fast。nil 只出现在组合测试（链条回落 chain_ports.go
+		// disabledAccountLocks 的「视为未锁」降级），生产不提供关闭开关。
+		accountLockPort, locksErr := newChainAccountLocks(composed.db, composed.pgDialect, func(reason string) {
+			if composed.Bus != nil {
+				composed.Bus.Invalidate(inval.TopicGatewayRuntime, reason)
 			}
-			accountLockPort = locks
+		})
+		if locksErr != nil {
+			chainServices.Close()
+			return nil, fmt.Errorf("compose gateway account locks port: %w", locksErr)
 		}
 		// Shutdown order is LIFO: services registered first close last, after
 		// the chain drained its usage buffer.
@@ -1247,8 +1242,8 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			// account_health_probe_request_outbox 交接表）。resetBridge 在本块
 			// L1103 已构造，句柄顺序先于本 deps 组装。
 			KeyModelHealthDispatch: chainKeyModelHealthDispatcher{bridge: resetBridge},
-			// ENGAGED 锁运行链（BUG-0174 B-2）：真实 SQL 运行面；显式关闭时为
-			// nil → disabledAccountLocks（视为未锁）。
+			// ENGAGED 锁运行链（BUG-0174 B-2）：真实 SQL 运行面（恒装配；
+			// nil 仅组合测试 → disabledAccountLocks）。
 			AccountLocks: accountLockPort,
 			// B-1（BUG-0174）：dispatch Key 指纹密钥与水合层同源——
 			// chain_runtime.go newChainAccountsSelectorWithStats(..., cfg.Secret, ...)

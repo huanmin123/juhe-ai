@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -17,6 +18,9 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3aproxylatency"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/j3bmodelcheck"
 	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/mockdata"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
@@ -47,6 +51,7 @@ func runMaintenance(argv []string) int {
 	j3Apply := fs.Bool("apply-j3a-proxy-latency-postgres", false, "add missing J3a PostgreSQL jobs tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_J3A_POSTGRES_URL)")
 	j3bApply := fs.Bool("apply-j3b-model-check-postgres", false, "add missing J3b PostgreSQL juhe_j3b tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL)")
 	j3bSQLiteApply := fs.Bool("apply-j3b-model-check-sqlite", false, "bootstrap dedicated J3b SQLite schema after stop and backup confirmations (reads JUHE_AI_MAINTENANCE_J3B_SQLITE_PATH)")
+	accountBalanceApply := fs.Bool("apply-account-balance-postgres", false, "add missing J2 account-balance PostgreSQL juhe_jobs tables/indexes after explicit authorization (reads JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL)")
 	nodeStopped := fs.Bool("node-stopped", false, "confirm Node writers are stopped for an offline migration")
 	goStopped := fs.Bool("go-stopped", false, "confirm Go owners are stopped for an offline migration")
 	backupConfirmed := fs.Bool("backup-confirmed", false, "confirm a recoverable backup was verified")
@@ -82,21 +87,21 @@ func runMaintenance(argv []string) int {
 		return 2
 	}
 	if *migrateChatBinding {
-		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *mockdataRun || *mockdataVerifyCoverage {
+		if *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "chat account-only binding migration flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return chatAccountOnlyBindingMigrationResult(*bootstrapDriver, *chatSQLitePath, *bootstrapDSN)
 	}
 	if *postgresSchemaSnapshot {
-		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *mockdataRun || *mockdataVerifyCoverage {
+		if *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "PostgreSQL schema snapshot flag is mutually exclusive with other maintenance commands")
 			return 2
 		}
 		return postgresSchemaSnapshotResult()
 	}
 	if *businessDatasetExport || *businessDatasetImport {
-		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *j3Apply || *j3bApply || *j3bSQLiteApply || *mockdataRun || *mockdataVerifyCoverage {
+		if *businessDatasetExport && *businessDatasetImport || *ensureSchema || *seedDefaults || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "business dataset export/import flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -106,7 +111,7 @@ func runMaintenance(argv []string) int {
 		return businessDatasetImportResultWithReplace(*businessDatasetURL, *businessDatasetDir, businessDatasetAllowMissing, *businessDatasetExpectedTargetDB, *businessDatasetExpectedSourceDB, *businessDatasetReplaceExisting)
 	}
 	if *ensureSchema || *seedDefaults {
-		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *mockdataRun || *mockdataVerifyCoverage {
+		if *postgresSchemaSnapshot || *version || *check || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "storage bootstrap flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -117,7 +122,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "Go runtime metrics check and apply flags are mutually exclusive")
 			return 2
 		}
-		if *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *mockdataRun || *mockdataVerifyCoverage {
+		if *version || *check || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply || *mockdataRun || *mockdataVerifyCoverage {
 			fmt.Fprintln(os.Stderr, "Go runtime metrics flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -128,7 +133,7 @@ func runMaintenance(argv []string) int {
 			fmt.Fprintln(os.Stderr, "mockdata seeding and mockdata coverage verification flags are mutually exclusive")
 			return 2
 		}
-		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply {
+		if *version || *check || *postgresSchemaSnapshot || *ensureSchema || *seedDefaults || *goRuntimeMetricsCheck || *goRuntimeMetricsApply || *businessDatasetExport || *businessDatasetImport || *businessDatasetReplaceExisting || *j3Apply || *j3bApply || *j3bSQLiteApply || *accountBalanceApply {
 			fmt.Fprintln(os.Stderr, "mockdata flags are mutually exclusive with other maintenance commands")
 			return 2
 		}
@@ -151,8 +156,9 @@ func runMaintenance(argv []string) int {
 		fmt.Println("juhe-ai-maintenance boundary=ready runtime=one-shot-scaffold")
 		return 0
 	}
-	// J3a/J3b 一次性 bootstrap：dispatch 顺序与基线一致（SQLite 优先于 PG，
-	// PG 优先于 J3a），apply flag 互斥由上游各命令分支的互斥链承载。
+	// J3a/J3b/J2 account-balance 一次性 bootstrap：dispatch 顺序与基线一致
+	// （SQLite 优先于 PG，PG 优先于 J3a，J2 account-balance 随 J3 族之后），
+	// apply flag 互斥由上游各命令分支的互斥链承载。
 	if *j3bSQLiteApply {
 		return j3bModelCheckSQLiteBootstrapResult(*j3bSQLiteApply, *nodeStopped, *goStopped, *backupConfirmed)
 	}
@@ -161,6 +167,9 @@ func runMaintenance(argv []string) int {
 	}
 	if *j3Apply {
 		return j3aProxyLatencyBootstrapResult(*j3Apply)
+	}
+	if *accountBalanceApply {
+		return accountBalanceBootstrapResult()
 	}
 	fmt.Fprintln(os.Stderr, "maintenance project runtime is not switched yet; select an explicit one-shot command")
 	return 2
@@ -377,6 +386,65 @@ func j3aBootstrapOutcomeExitCode(report j3aproxylatency.Report, runErr error) in
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "encode J3a bootstrap report: %v\n", err)
+		return 1
+	}
+	if !report.Ready() {
+		return 3
+	}
+	return 0
+}
+
+// accountBalanceBootstrapEnv 对齐 j3a/j3b 的 JUHE_AI_MAINTENANCE_*_POSTGRES_URL
+// 家族；accountbalance 是纯库包（连接打开与 CLI 契约留在 maintenance）。
+const accountBalanceBootstrapEnv = "JUHE_AI_MAINTENANCE_ACCOUNT_BALANCE_POSTGRES_URL"
+
+// accountBalanceBootstrapResult returns the CLI exit code; runMaintenance dispatches it and tests call it in-process.
+func accountBalanceBootstrapResult() int {
+	rawURL := strings.TrimSpace(os.Getenv(accountBalanceBootstrapEnv))
+	if rawURL == "" {
+		fmt.Fprintf(os.Stderr, "J2 account-balance PostgreSQL bootstrap requires %s\n", accountBalanceBootstrapEnv)
+		return 2
+	}
+	db, err := openAccountBalancePostgres(rawURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open J2 account-balance PostgreSQL bootstrap connection: %v\n", err)
+		return 2
+	}
+	defer db.Close()
+	report, runErr := accountbalance.BootstrapPostgres(context.Background(), db)
+	return accountBalanceBootstrapOutcomeExitCode(report, runErr)
+}
+
+// openAccountBalancePostgres mirrors j3aproxylatency.Open: it validates the
+// maintenance-only URL shape (postgres scheme, host, database, explicit role)
+// before opening a one-shot single-connection pool. It never falls back to
+// application URLs.
+func openAccountBalancePostgres(rawURL string) (*sql.DB, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
+		return nil, errors.New("J2 account-balance bootstrap 必须提供 postgres/postgresql URL")
+	}
+	if parsed.Hostname() == "" || strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" || parsed.User == nil || strings.TrimSpace(parsed.User.Username()) == "" {
+		return nil, errors.New("J2 account-balance bootstrap URL 必须包含主机、数据库和显式角色")
+	}
+	db, err := sql.Open("pgx", parsed.String())
+	if err != nil {
+		return nil, fmt.Errorf("打开 J2 account-balance bootstrap PostgreSQL 连接失败: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	return db, nil
+}
+
+// accountBalanceBootstrapOutcomeExitCode renders the J2 account-balance
+// bootstrap report and maps the outcome to the maintenance exit-code contract.
+func accountBalanceBootstrapOutcomeExitCode(report accountbalance.BootstrapReport, runErr error) int {
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "J2 account-balance PostgreSQL bootstrap failed: %v\n", runErr)
+		return 1
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+		fmt.Fprintf(os.Stderr, "encode J2 account-balance bootstrap report: %v\n", err)
 		return 1
 	}
 	if !report.Ready() {

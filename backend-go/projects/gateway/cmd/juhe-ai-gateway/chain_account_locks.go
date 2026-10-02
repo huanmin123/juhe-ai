@@ -788,16 +788,5 @@ func chainLockRandomToken() string {
 	return hex.EncodeToString(buf[:])
 }
 
-// chainAccountLocksDisabledViaEnv reads the explicit off-switch
-// (JUHE_AI_ACCOUNT_LOCKS_DISABLED)：仅字面量 "true"（不区分大小写）关闭运行
-// 锁端口；其余取值保持真实实现。env 读取经注入的 getter，测试无需改动进程
-// 环境即可验证开关。
-func chainAccountLocksDisabledViaEnv(getenv func(string) string) bool {
-	if getenv == nil {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(getenv("JUHE_AI_ACCOUNT_LOCKS_DISABLED")), "true")
-}
-
 // compile-time: the bridge satisfies the dispatch lock port.
 var _ gatewaydispatch.AccountLocks = (*chainAccountLocks)(nil)

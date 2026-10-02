@@ -197,3 +197,81 @@ func TestW1bChainDispatchDecisionPreFilterSkippedField(t *testing.T) {
 		t.Fatalf("empty preFilterSkipped keys must be omitted: %s", emptyBuffer.String())
 	}
 }
+
+// TestW1bChainDispatchDecisionOutcomeExitReasonFields 验证 2026-10-02 终态
+// 契约投影：outcome/exitReason 进日志行；ready 只有 outcome；空值省略与
+// skipped 字段同风格。
+func TestW1bChainDispatchDecisionOutcomeExitReasonFields(t *testing.T) {
+	var buffer bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	observer := newChainDispatchDecisionObserver(logger)
+	// 终态 fallback 事件：两键都在场且值正确（exitReason 为 fallback 的
+	// 既有 Reason 值域之一）。
+	observer(gatewaydispatch.DispatchDecisionEvent{
+		TraceID:    "trace-term",
+		GroupID:    "group-1",
+		APIKeyID:   "apikey-1",
+		DurationMs: 5,
+		Outcome:    gatewaydispatch.PreparationOutcomeFallback,
+		ExitReason: "authorization_quota_exceeded",
+		Summary: gatewaydispatch.DispatchDecisionSummary{
+			Outcome:        gatewaydispatch.PreparationOutcomeFallback,
+			ExitReason:     "authorization_quota_exceeded",
+			CandidateTotal: 3,
+			EligibleCount:  0,
+		},
+	})
+	var record map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buffer.String())), &record); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if record["outcome"] != gatewaydispatch.PreparationOutcomeFallback || record["exitReason"] != "authorization_quota_exceeded" {
+		t.Fatalf("outcome/exitReason = %#v/%#v", record["outcome"], record["exitReason"])
+	}
+	if record["candidateTotal"].(float64) != 3 || record["eligibleCount"].(float64) != 0 {
+		t.Fatalf("window = %#v/%#v", record["candidateTotal"], record["eligibleCount"])
+	}
+	if _, present := record["selectedAccountId"]; present {
+		t.Fatal("terminal decision log must omit selectedAccountId")
+	}
+	// ready 事件：outcome=ready 在场，exitReason 空值省略。
+	var readyBuffer bytes.Buffer
+	readyLogger := slog.New(slog.NewJSONHandler(&readyBuffer, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	newChainDispatchDecisionObserver(readyLogger)(gatewaydispatch.DispatchDecisionEvent{
+		TraceID:    "trace-ready",
+		GroupID:    "group-1",
+		DurationMs: 4,
+		Outcome:    gatewaydispatch.PreparationOutcomeReady,
+		Summary: gatewaydispatch.DispatchDecisionSummary{
+			Outcome:        gatewaydispatch.PreparationOutcomeReady,
+			CandidateTotal: 2,
+			EligibleCount:  2,
+		},
+	})
+	var readyRecord map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(readyBuffer.String())), &readyRecord); err != nil {
+		t.Fatalf("decode ready: %v", err)
+	}
+	if readyRecord["outcome"] != gatewaydispatch.PreparationOutcomeReady {
+		t.Fatalf("ready outcome = %#v", readyRecord["outcome"])
+	}
+	if _, present := readyRecord["exitReason"]; present {
+		t.Fatalf("ready decision log must omit exitReason: %s", readyBuffer.String())
+	}
+	// 旧调用方直接构造事件（无结局字段）：两键均省略，不破坏既有形状。
+	var legacyBuffer bytes.Buffer
+	legacyLogger := slog.New(slog.NewJSONHandler(&legacyBuffer, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	newChainDispatchDecisionObserver(legacyLogger)(gatewaydispatch.DispatchDecisionEvent{
+		TraceID: "trace-legacy", GroupID: "group-1", DurationMs: 1,
+		Summary: gatewaydispatch.DispatchDecisionSummary{CandidateTotal: 1, EligibleCount: 1},
+	})
+	var legacyRecord map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(legacyBuffer.String())), &legacyRecord); err != nil {
+		t.Fatalf("decode legacy: %v", err)
+	}
+	for _, absent := range []string{"outcome", "exitReason"} {
+		if _, present := legacyRecord[absent]; present {
+			t.Fatalf("legacy decision log must omit %s: %s", absent, legacyBuffer.String())
+		}
+	}
+}

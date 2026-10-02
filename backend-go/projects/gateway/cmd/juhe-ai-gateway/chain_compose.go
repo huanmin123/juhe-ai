@@ -153,9 +153,8 @@ type chainRuntimeDeps struct {
 
 	// Suppression / degradation / locks (optional; disabled implementations
 	// below keep the attempt loop defined). AccountLocks 生产装配为
-	// chain_account_locks.go 的 SQL 运行面（BUG-0174 B-2）；nil 仅保留给
-	// 显式关闭开关（compose.go JUHE_AI_ACCOUNT_LOCKS_DISABLED），落到
-	// disabledAccountLocks 的「视为未锁」降级。
+	// chain_account_locks.go 的 SQL 运行面（BUG-0174 B-2）；nil 仅组合测试
+	//（生产恒装配），落到 disabledAccountLocks 的「视为未锁」降级。
 	Suppression  gatewaydispatch.SuppressionPort
 	Degradation  gatewaydispatch.DegradationPort
 	AccountLocks gatewaydispatch.AccountLocks

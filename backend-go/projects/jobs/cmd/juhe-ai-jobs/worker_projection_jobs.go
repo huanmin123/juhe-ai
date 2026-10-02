@@ -19,8 +19,6 @@ import (
 // 运行态读面，对照 Node loadProjectedAccountListItems）。
 //
 // 依赖门禁（逐项登记 disabled，不静默跳过）：
-//   - JUHE_AI_BACKGROUND_ACCOUNT_LIST_AVAILABILITY_PROJECTION_ENABLED：Node
-//     runtimeConfig.background 默认 false，不启用不注册（Node background-jobs.ts:334）；
 //   - databaseDriver=postgres：Node PostgreSQL-only 物化器，非 PG 返回空结果，
 //     SQLite 分支不注册（account-list-availability-projection.service.ts）；
 //   - JUHE_AI_REDIS_STATE_URL + 合法 namespace：concurrency/runtime
@@ -33,9 +31,6 @@ import (
 // 进程无该组件，等价于 Node 协调器空状态（恒 false）。
 func (a *workerAssembly) wireListProjectionFamily(ctx context.Context, business *businessDB, probeStore *proberepo.Store) error {
 	const jobName = "account-list-availability-projection-maintenance"
-	if !a.config.ListProjectionEnabled {
-		return nil
-	}
 	if a.config.Driver != "postgres" {
 		a.registerDisabledJob(jobName,
 			"Node PostgreSQL-only 物化器：databaseDriver != postgres 时 runAccountListAvailabilityProjectionMaintenance 返回空结果，默认/SQLite 分支不注册（account-list-availability-projection.service.ts）")
