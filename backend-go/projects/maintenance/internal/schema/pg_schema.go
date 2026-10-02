@@ -891,6 +891,7 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	{Key: "usageRankSnapshotRetentionDays", ValueJSON: "30"},
 	{Key: "systemMetricsRetentionDays", ValueJSON: "7"},
 	{Key: "systemMetricsHourlyRetentionDays", ValueJSON: "30"},
+	{Key: "upstreamClientVersionOverrides", ValueJSON: "{}"},
 }
 
 // pgSeedKeyValue is one key -> JSON-encoded value pair.

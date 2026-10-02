@@ -28,6 +28,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/proberepo"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/safego"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/supervisor"
 )
 
@@ -438,6 +439,19 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 		Mode: settingsMode(postgres),
 		Warn: jobssettingsWarn(a.logger),
 	})}
+
+	// 上游客户端身份版本覆盖（system_settings 键
+	// upstreamClientVersionOverrides）：启动立即应用一次，之后每 60s 对齐
+	//（jobs 无网关的设置失效通道，用周期刷新保证管理端改动 ≤60s 生效；
+	// 读取失败保持既有覆盖不动）。本函数在进程装配期只执行一次。
+	a.refreshUpstreamClientVersionOverrides()
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			a.refreshUpstreamClientVersionOverrides()
+		}
+	}()
 
 	// usage-stats-aggregation（批量循环对齐 stats-writer aggregate_usage_stats）。
 	// Node runUsageStatsAggregation 先过 usageStatsAggregationSafety 排干门控

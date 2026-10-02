@@ -114,6 +114,7 @@
 - [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)
 - [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)
 - [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)
+- [上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)：系统设置 `upstreamClientVersionOverrides` 按五家族热覆盖上游客户端画像版本（非空即生效、可降级、清空回内置），含内置锚点表与维护规则。
 - [智谱 GLM 账号接入](智谱GLM账号接入.md)
 - [DeepSeek 账号接入](DeepSeek账号接入.md)
 - [Gemini 账号接入](Gemini账号接入.md)

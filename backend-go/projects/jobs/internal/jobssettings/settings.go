@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -117,9 +118,45 @@ func (s *Source) Number(ctx context.Context, key string, min, max int) (int, err
 		return 0, fmt.Errorf("系统设置 %s 必须是整数", key)
 	}
 	if number < min || number > max {
-		return 0, fmt.Errorf("系统设置 %s 必须在 %d 到 %d 之间", key, min, max)
+		return 0, fmt.Errorf("系统设置 %s 必须在 %d 到 %d 之间", key)
 	}
 	return number, nil
+}
+
+// upstreamClientVersionFamilySet 是 upstreamClientVersionOverrides 允许的
+// 家族键（与 gateway settings 校验、upstreamidentity 覆盖 API 一致）。
+var upstreamClientVersionFamilySet = map[string]bool{
+	"codex": true, "claudeCode": true, "geminiCLI": true, "zcode": true, "grokCLI": true,
+}
+
+var upstreamClientVersionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
+// UpstreamClientVersionOverrides 读取 system_settings 的
+// upstreamClientVersionOverrides 键并做防御式过滤：只保留五家族键且值匹配
+// semver 三段的项（网关侧保存时已严格校验，这里兜底异常数据）；空对象、
+// 缺行（回退默认 {}）与全非法都返回空 map（= 全部使用内置版本）。与
+// gateway settings Store.UpstreamClientVersionOverrides 行为一致。
+func (s *Source) UpstreamClientVersionOverrides(ctx context.Context) (map[string]string, error) {
+	value, err := s.settingValue(ctx, "upstreamClientVersionOverrides")
+	if err != nil {
+		return nil, err
+	}
+	decoded, ok := value.(map[string]any)
+	if !ok {
+		return map[string]string{}, nil
+	}
+	overrides := make(map[string]string, len(decoded))
+	for family, raw := range decoded {
+		if !upstreamClientVersionFamilySet[family] {
+			continue
+		}
+		version, ok := raw.(string)
+		if !ok || !upstreamClientVersionPattern.MatchString(version) {
+			continue
+		}
+		overrides[family] = version
+	}
+	return overrides, nil
 }
 
 // settingValue resolves one key through the 60s window, the stored row and

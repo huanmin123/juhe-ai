@@ -52,6 +52,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/uibootstrap"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/gometrics"
 	sharedsqlpool "github.com/huanminabc/juhe-ai/backend-go-platform/sqlpool"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // 系统组合根 PG 池默认规格（gateway-system-api / gateway-chat 两个角色
@@ -512,6 +513,16 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	}
 	composed.settingsStore = settingsStore
 	settingValue := settingsValueReader(settingsStore)
+	// upstreamClientVersionOverrides 启动接线：把 system_settings 的客户端
+	// 版本覆盖应用进 upstreamidentity 进程内存储（后续写入经 settings.Store
+	// 的 Update/UpdateSection 成功路径即时刷新）。缺行/空对象 = 清空回内置；
+	// 读取失败仅告警不阻断启动——内置客户端身份仍然正确，覆盖属增强项。
+	if overrides, overridesErr := settingsStore.UpstreamClientVersionOverrides(context.Background()); overridesErr != nil {
+		slog.Default().Warn("启动读取上游客户端版本覆盖失败，先使用内置客户端版本",
+			"event", "upstream_client_version_overrides_startup_read_failed", "error", overridesErr.Error())
+	} else {
+		upstreamidentity.SetClientVersionOverrides(overrides)
+	}
 
 	// X04 404 项补齐 (logreads three-family reads): build the audit/runtime/
 	// public-api log readers over the dataset handles opened above.

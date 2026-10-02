@@ -342,6 +342,49 @@
           </div>
         </section>
 
+        <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'gateway-core')">
+          <div class="section-heading">
+            <div>
+              <h3 class="section-title">
+                <span>上游客户端版本覆盖</span>
+                <a-tooltip title="应急热覆盖 Codex Desktop / Claude Code / Gemini CLI / ZCode / Grok CLI 五个家族的内置画像版本；非空即生效，可升可降，保存后即时生效。">
+                  <QuestionCircleOutlined class="help-icon" />
+                </a-tooltip>
+              </h3>
+              <p class="section-description">应急覆盖上游客户端画像版本（semver）；留空回内置；代码升级后请清理低于内置的旧配置。详见功能文档。</p>
+            </div>
+          </div>
+
+          <a-skeleton v-if="!sectionReady['gateway-core']" active :paragraph="{ rows: 2 }" />
+          <div v-else class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="Codex Desktop" tooltip="覆盖 GPT/Codex 家族系统请求的 Codex Desktop 画像版本，如 0.159.3；留空使用内置版本。">
+                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.codex" placeholder="留空使用内置版本" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="Claude Code" tooltip="覆盖 Anthropic 家族系统请求与网关 Claude Code 画像补齐的 claude-cli 版本，如 2.1.285；留空使用内置版本。">
+                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.claudeCode" placeholder="留空使用内置版本" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="Gemini CLI" tooltip="覆盖 Gemini OAuth（code_assist / google_one）系统请求的 GeminiCLI 画像版本，如 0.61.0；留空使用内置版本。">
+                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.geminiCLI" placeholder="留空使用内置版本" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="ZCode" tooltip="覆盖 GLM 家族系统请求的 ZCode 画像版本（UA 与 X-ZCode-App-Version 同步），如 3.14.3；留空使用内置版本。">
+                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.zcode" placeholder="留空使用内置版本" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="Grok CLI" tooltip="覆盖 Grok OAuth 上游的 Grok CLI 画像版本（x-grok-client-version 与 UA 同步），如 1.0.13；留空使用内置版本。">
+                <a-input v-model:value="systemForm.upstreamClientVersionOverrides.grokCLI" placeholder="留空使用内置版本" />
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
         <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'data-retention')">
           <div class="section-heading">
             <div>
@@ -397,10 +440,11 @@ import { authState } from '@/composables/useAuth'
 import { applyAppBrand } from '@/composables/useAppBrand'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import {
+  createDefaultSystemForm,
   defaultGlobalSettings,
-  defaultSystemSettings,
   normalizeGlobalSettings,
   normalizeSystemSettings,
+  serializeUpstreamClientVersionOverrides,
   type GlobalForm,
   type SystemForm
 } from './settingsForm'
@@ -409,7 +453,7 @@ import { buildSettingsSectionRequestSignature, createSettingsSectionRequestGate 
 const savingGlobal = ref(false)
 const savingSystem = ref(false)
 const globalForm = reactive<GlobalForm>({ ...defaultGlobalSettings })
-const systemForm = reactive<SystemForm>({ ...defaultSystemSettings })
+const systemForm = reactive<SystemForm>(createDefaultSystemForm())
 const sectionReady = reactive<Record<ManagementSettingsSectionKey, boolean>>({
   brand: false, 'gateway-core': false, 'user-request-limit': false, 'account-health': false, 'api-rate-limit': false,
   'cooldown-retest': false, 'data-retention': false
@@ -422,7 +466,7 @@ const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | und
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
 const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
-  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textNonStreamFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
+  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textNonStreamFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds', 'upstreamClientVersionOverrides'],
   'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth', 'userAiAccountLimit'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
@@ -437,11 +481,14 @@ let pageActive = true
 
 function sectionValues(sectionKey: ManagementSettingsSectionKey): Record<string, unknown> {
   const source = sectionKey === 'brand' ? globalForm : systemForm
-  return Object.fromEntries(sectionFields[sectionKey].map((key) => [key, (source as unknown as Record<string, unknown>)[key]]))
+  return Object.fromEntries(sectionFields[sectionKey].map((key) => {
+    if (key === 'upstreamClientVersionOverrides') return [key, serializeUpstreamClientVersionOverrides((source as SystemForm).upstreamClientVersionOverrides)]
+    return [key, (source as unknown as Record<string, unknown>)[key]]
+  }))
 }
 
 function applySystemSectionValues(sectionKey: ManagementSettingsSectionKey, values: Record<string, unknown>): void {
-  const normalized = normalizeSystemSettings({ ...defaultSystemSettings, ...values } as SystemSettings)
+  const normalized = normalizeSystemSettings({ ...createDefaultSystemForm(), ...values } as unknown as SystemSettings)
   for (const key of sectionFields[sectionKey]) {
     (systemForm as unknown as Record<string, unknown>)[key] = (normalized as unknown as Record<string, unknown>)[key]
   }
@@ -497,7 +544,7 @@ async function saveGlobalSettings() {
     const payload = changedPayload('brand')
     if (!Object.keys(payload).length) return
     const submittedSnapshot = sectionValues('brand')
-    const next = await api.settings.updateSection('brand', payload)
+    const next = await api.settings.updateSection('brand', payload as Record<string, string | number>)
     if (!sectionSaveRequestGate.isCurrent(requestToken, currentSectionRequestSignature('brand'))) return
     const current = sectionValues('brand')
     const responseValues = { ...next.values }
@@ -529,7 +576,7 @@ async function saveSystemSettings() {
       const signature = currentSectionRequestSignature(sectionKey)
       activeRequest = sectionSaveRequestGate.begin(sectionKey, signature)
       const submittedSnapshot = sectionValues(sectionKey)
-      const next = await api.settings.updateSection(sectionKey, payload)
+      const next = await api.settings.updateSection(sectionKey, payload as Record<string, string | number>)
       if (!sectionSaveRequestGate.isCurrent(activeRequest, currentSectionRequestSignature(sectionKey))) return
       const current = sectionValues(sectionKey)
       const responseValues = { ...next.values }
@@ -555,16 +602,25 @@ function resetGlobalDefaults() {
 }
 
 function resetSystemDefaults() {
+  const defaults = createDefaultSystemForm()
   for (const sectionKey of Object.keys(sectionFields).filter((key) => key !== 'brand') as ManagementSettingsSectionKey[]) {
     if (!sectionReady[sectionKey]) continue
-    for (const key of sectionFields[sectionKey]) (systemForm as unknown as Record<string, unknown>)[key] = (defaultSystemSettings as unknown as Record<string, unknown>)[key]
+    for (const key of sectionFields[sectionKey]) (systemForm as unknown as Record<string, unknown>)[key] = (defaults as unknown as Record<string, unknown>)[key]
   }
 }
 
-function changedPayload(sectionKey: ManagementSettingsSectionKey): Record<string, string | number> {
+function changedPayload(sectionKey: ManagementSettingsSectionKey): Record<string, unknown> {
   const current = sectionValues(sectionKey)
   const baseline = sectionBaselines[sectionKey] ?? {}
-  return Object.fromEntries(Object.entries(current).filter(([key, value]) => value !== baseline[key])) as Record<string, string | number>
+  return Object.fromEntries(Object.entries(current).filter(([key, value]) => !settingValueEquals(value, baseline[key])))
+}
+
+function settingValueEquals(value: unknown, baseline: unknown): boolean {
+  if (value === baseline) return true
+  if (typeof value === 'object' && value !== null && typeof baseline === 'object' && baseline !== null) {
+    return JSON.stringify(value, Object.keys(value).sort()) === JSON.stringify(baseline, Object.keys(baseline).sort())
+  }
+  return false
 }
 
 function setLazySectionElement(element: unknown, sectionKey: ManagementSettingsSectionKey): void {
@@ -577,7 +633,7 @@ function retrySection(sectionKey: ManagementSettingsSectionKey): void { void loa
 
 function resetSectionsForViewerChange(): void {
   Object.assign(globalForm, defaultGlobalSettings)
-  Object.assign(systemForm, defaultSystemSettings)
+  Object.assign(systemForm, createDefaultSystemForm())
   for (const key of Object.keys(sectionReady) as ManagementSettingsSectionKey[]) {
     sectionReady[key] = false
     sectionLoading[key] = false

@@ -57,6 +57,7 @@ export interface SystemSettings {
   usageStatsWeeklyRetentionWeeks: number
   usageStatsMonthlyRetentionMonths: number
   usageRankSnapshotRetentionDays: number
+  upstreamClientVersionOverrides?: Record<string, string>
 }
 
 export type SystemSettingsPatch = Partial<SystemSettings>

@@ -6,6 +6,10 @@ export interface GlobalForm {
   appIcon: string
 }
 
+export type UpstreamClientVersionKey = 'codex' | 'claudeCode' | 'geminiCLI' | 'zcode' | 'grokCLI'
+
+export type UpstreamClientVersionOverridesForm = Record<UpstreamClientVersionKey, string>
+
 export interface SystemForm {
   gatewayTextRawBodyLimitMegabytes: number
   accountCircuitConfirmationFailuresRequired: number
@@ -42,6 +46,7 @@ export interface SystemForm {
   publicApiLogRetentionDays: number
   usageRecordRetentionDays: number
   cooldownAccountRetestMaxBackoffHours: number
+  upstreamClientVersionOverrides: UpstreamClientVersionOverridesForm
 }
 
 export const defaultGlobalSettings: GlobalForm = {
@@ -84,7 +89,13 @@ export const defaultSystemSettings: SystemForm = {
   runtimeLogIndexRetentionDays: 14,
   publicApiLogRetentionDays: 30,
   usageRecordRetentionDays: 30,
-  cooldownAccountRetestMaxBackoffHours: 12
+  cooldownAccountRetestMaxBackoffHours: 12,
+  upstreamClientVersionOverrides: { codex: '', claudeCode: '', geminiCLI: '', zcode: '', grokCLI: '' }
+}
+
+/** 返回嵌套对象不共享引用的默认 SystemForm，供 reactive 初始化与重置使用。 */
+export function createDefaultSystemForm(): SystemForm {
+  return { ...defaultSystemSettings, upstreamClientVersionOverrides: { ...defaultSystemSettings.upstreamClientVersionOverrides } }
 }
 
 export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalForm {
@@ -130,7 +141,8 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     runtimeLogIndexRetentionDays: integerValue(settings.runtimeLogIndexRetentionDays, '运行日志索引保留天数', 1, 90),
     publicApiLogRetentionDays: integerValue(settings.publicApiLogRetentionDays, '公开接口日志保留天数', 1, 365),
     usageRecordRetentionDays: integerValue(settings.usageRecordRetentionDays, '使用记录保留天数', 1, 180),
-    cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '长期不可用观察阈值', 1, 720)
+    cooldownAccountRetestMaxBackoffHours: integerValue(settings.cooldownAccountRetestMaxBackoffHours, '长期不可用观察阈值', 1, 720),
+    upstreamClientVersionOverrides: parseUpstreamClientVersionOverrides(settings.upstreamClientVersionOverrides)
   }
 }
 
@@ -139,7 +151,48 @@ export function buildGlobalSettingsPayload(form: GlobalForm): GlobalSettings {
 }
 
 export function buildSystemSettingsPayload(form: SystemForm): SystemSettingsPatch {
-  return normalizeSystemSettings(form)
+  const normalized = normalizeSystemSettings(form)
+  return { ...normalized, upstreamClientVersionOverrides: serializeUpstreamClientVersionOverrides(normalized.upstreamClientVersionOverrides) }
+}
+
+const upstreamClientVersionKeys: readonly UpstreamClientVersionKey[] = ['codex', 'claudeCode', 'geminiCLI', 'zcode', 'grokCLI']
+
+const upstreamClientVersionLabels: Record<UpstreamClientVersionKey, string> = {
+  codex: 'Codex Desktop 版本覆盖',
+  claudeCode: 'Claude Code 版本覆盖',
+  geminiCLI: 'Gemini CLI 版本覆盖',
+  zcode: 'ZCode 版本覆盖',
+  grokCLI: 'Grok CLI 版本覆盖'
+}
+
+const semverPattern = /^\d+\.\d+\.\d+$/
+
+/** 解析（加载方向）：五个家族键只取合法 semver 或空，其余输入整体回退全空。 */
+export function parseUpstreamClientVersionOverrides(value: unknown): UpstreamClientVersionOverridesForm {
+  const result: UpstreamClientVersionOverridesForm = { codex: '', claudeCode: '', geminiCLI: '', zcode: '', grokCLI: '' }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return result
+  const source = value as Record<string, unknown>
+  for (const key of upstreamClientVersionKeys) {
+    const raw = source[key]
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    result[key] = semverPattern.test(trimmed) ? trimmed : ''
+  }
+  return result
+}
+
+/** 序列化（保存方向）：非空字段必须是合法 semver，否则抛出中文错误；空字段剔除，全空存储 {}。 */
+export function serializeUpstreamClientVersionOverrides(form: UpstreamClientVersionOverridesForm): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const key of upstreamClientVersionKeys) {
+    const trimmed = String(form[key] ?? '').trim()
+    if (!trimmed) continue
+    if (!semverPattern.test(trimmed)) {
+      throw new Error(`${upstreamClientVersionLabels[key]}必须是 x.y.z 格式的三段版本号`)
+    }
+    result[key] = trimmed
+  }
+  return result
 }
 
 function integerValue(value: unknown, label: string, min: number, max: number): number {

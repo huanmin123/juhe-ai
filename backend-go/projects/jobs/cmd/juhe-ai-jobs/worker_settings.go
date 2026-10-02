@@ -11,10 +11,12 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobssettings"
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/statsverify"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // workerSettingsSource 是任务闭包读取调度参数的边界（Node
@@ -60,6 +62,21 @@ func settingsMode(postgres bool) jobssettings.Mode {
 		return jobssettings.Postgres
 	}
 	return jobssettings.SQLite
+}
+
+// refreshUpstreamClientVersionOverrides 把 system_settings 的
+// upstreamClientVersionOverrides 当前值应用到 upstreamidentity 的进程内
+// 覆盖（worker_assembly 装配期启动一次 + 每 60s 周期调用）。读取失败只
+// warn 并保持既有覆盖不动，下次刷新或进程重启再对齐。
+func (a *workerAssembly) refreshUpstreamClientVersionOverrides() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	overrides, err := a.settings.source.UpstreamClientVersionOverrides(ctx)
+	if err != nil {
+		a.logger.Warn("upstream_client_version_overrides_refresh_failed", slog.Any("error", err))
+		return
+	}
+	upstreamidentity.SetClientVersionOverrides(overrides)
 }
 
 // probeSettingsSource 经 system_settings 读模型解析 probe 族设置（Node

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // ValidationError maps to the throw-Error paths of settings.repository.ts
@@ -114,6 +116,7 @@ var SystemSettingKeys = []string{
 	"usageRankSnapshotRetentionDays",
 	"systemMetricsRetentionDays",
 	"systemMetricsHourlyRetentionDays",
+	"upstreamClientVersionOverrides",
 }
 
 var systemSettingKeySet = func() map[string]bool {
@@ -124,12 +127,16 @@ var systemSettingKeySet = func() map[string]bool {
 	return set
 }()
 
-// settingSpec mirrors one SYSTEM_SETTING_VALIDATORS entry: either an integer
-// with a closed range or the timezone validator.
+// settingSpec mirrors one SYSTEM_SETTING_VALIDATORS entry: an integer with a
+// closed range, the timezone validator, or the upstreamClientVersionOverrides
+// JSON object validator.
 type settingSpec struct {
 	integer bool
 	min     int
 	max     int
+	// clientVersionsJSON 标记 upstreamClientVersionOverrides 的 JSON 对象
+	// 校验（键 ⊆ 五个客户端家族，值为 ^\d+\.\d+\.\d+$；空对象合法）。
+	clientVersionsJSON bool
 }
 
 // systemSettingSpecs mirrors SYSTEM_SETTING_VALIDATORS (integerSetting(min,max)
@@ -196,16 +203,21 @@ var systemSettingSpecs = map[string]settingSpec{
 	"usageRankSnapshotRetentionDays":             {integer: true, min: 1, max: 365},
 	"systemMetricsRetentionDays":                 {integer: true, min: 1, max: 7},
 	"systemMetricsHourlyRetentionDays":           {integer: true, min: 1, max: 30},
+	"upstreamClientVersionOverrides":             {clientVersionsJSON: true},
 }
 
 // compatibleSystemSettingDefaults mirrors compatibleSystemSettingDefaults:
-// legacy databases may miss these rows and the loader fills them in.
-var compatibleSystemSettingDefaults = map[string]int{
-	"gatewayUserRequestLimitPerMinute": 0,
-	"gatewayUserRequestLimitPerDay":    0,
-	"gatewayUserRequestLimitPerWeek":   0,
-	"gatewayUserRequestLimitPerMonth":  0,
-	"userAiAccountLimit":               100,
+// legacy databases may miss these rows and the loader fills them in. Integer
+// entries keep the Node semantics (stored as float64); the object entry
+// upstreamClientVersionOverrides defaults to the empty object (= 全部使用内置
+// 客户端版本，与 jobssettings.DefaultSystemSettings 镜像一致)。
+var compatibleSystemSettingDefaults = map[string]any{
+	"gatewayUserRequestLimitPerMinute":   0,
+	"gatewayUserRequestLimitPerDay":      0,
+	"gatewayUserRequestLimitPerWeek":     0,
+	"gatewayUserRequestLimitPerMonth":    0,
+	"userAiAccountLimit":                 100,
+	"upstreamClientVersionOverrides":     map[string]any{},
 }
 
 // GlobalSettingKeys mirrors globalSettingKeys — the brand subset served by
@@ -255,6 +267,7 @@ var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
 		"imageRequestWallTimeoutSeconds",
 		"chatImageGenerationTotalTimeoutSeconds",
 		"noAvailableAccountWaitTimeoutSeconds",
+		"upstreamClientVersionOverrides",
 	}},
 	"user-request-limit": {Domain: settingsSectionDomainSystem, Keys: []string{
 		"gatewayUserRequestLimitPerMinute",
@@ -535,7 +548,15 @@ func (s *Store) Update(ctx context.Context, input map[string]any) (map[string]an
 	if s.inval != nil {
 		s.inval.Invalidate(TopicGatewayRuntime, settingsUpdatedReason)
 	}
-	return s.refreshSystemCache(ctx)
+	snapshot, err := s.refreshSystemCache(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// upstreamClientVersionOverrides 覆盖的进程内即时生效点：写入与缓存
+	// 刷新全部成功后同步刷新 upstreamidentity（upstream 请求 UA/版本头不经
+	// runtime cache，需在此直接刷新）。
+	s.refreshUpstreamClientVersionOverrides(ctx)
+	return snapshot, nil
 }
 
 // upsertSystemSettings persists normalized system settings in a single
@@ -895,6 +916,8 @@ func (s *Store) UpdateSection(ctx context.Context, sectionKey string, input map[
 		if _, err := s.refreshSystemCache(ctx); err != nil {
 			return nil, err
 		}
+		// 与 Update 相同的覆盖即时生效点（分区写入路径，缓存刷新成功后）。
+		s.refreshUpstreamClientVersionOverrides(ctx)
 	}
 	return s.LoadSection(ctx, sectionKey)
 }
@@ -931,6 +954,9 @@ func normalizeSystemSetting(key string, value any) (any, error) {
 	spec, ok := systemSettingSpecs[key]
 	if !ok {
 		return nil, &ValidationError{Message: "未知系统设置字段：" + key}
+	}
+	if spec.clientVersionsJSON {
+		return normalizeUpstreamClientVersionOverrides(key, value)
 	}
 	if !spec.integer {
 		timezone, err := normalizeUsageStatsTimezone(value)
@@ -993,6 +1019,110 @@ func normalizeUsageStatsTimezone(value any) (string, error) {
 	return timezone, nil
 }
 
+// upstreamClientVersionOverridesKey 是系统设置键（白名单成员）。
+const upstreamClientVersionOverridesKey = "upstreamClientVersionOverrides"
+
+// upstreamClientVersionFamilies 是该键允许的客户端家族（与
+// upstreamidentity 的家族键一致）。
+var upstreamClientVersionFamilies = map[string]bool{
+	"codex":      true,
+	"claudeCode": true,
+	"geminiCLI":  true,
+	"zcode":      true,
+	"grokCLI":    true,
+}
+
+// normalizeUpstreamClientVersionOverrides 是 upstreamClientVersionOverrides
+// 的写入/读取严格校验：值必须是 JSON 对象；键 ⊆ 五个客户端家族；每个值是
+// 匹配 ^\d+\.\d+\.\d+$ 的字符串；空对象合法（= 全部使用内置版本）。
+func normalizeUpstreamClientVersionOverrides(key string, value any) (any, error) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, &ValidationError{Message: key + " 必须是 JSON 对象（键为客户端家族，值为三段版本字符串，空对象表示全部使用内置版本）"}
+	}
+	for family, familyValue := range object {
+		if !upstreamClientVersionFamilies[family] {
+			return nil, &ValidationError{Message: key + " 包含不支持的客户端家族：" + family}
+		}
+		version, ok := familyValue.(string)
+		if !ok || !isUpstreamSemverVersion(version) {
+			return nil, &ValidationError{Message: key + "." + family + " 必须是三段语义化版本字符串（如 1.2.3）"}
+		}
+	}
+	return object, nil
+}
+
+// filterUpstreamClientVersionOverrides 把已解码值宽容过滤为「家族 -> 版本」
+// 表：未知键与非法值忽略（供运行时消费，防御存量脏数据；正常校验在
+// normalizeUpstreamClientVersionOverrides 写入路径）。
+func filterUpstreamClientVersionOverrides(value any) map[string]string {
+	object, _ := value.(map[string]any)
+	filtered := map[string]string{}
+	for family, familyValue := range object {
+		if !upstreamClientVersionFamilies[family] {
+			continue
+		}
+		version, ok := familyValue.(string)
+		if !ok || !isUpstreamSemverVersion(version) {
+			continue
+		}
+		filtered[family] = version
+	}
+	return filtered
+}
+
+// isUpstreamSemverVersion 匹配 ^\d+\.\d+\.\d+$（三段纯数字版本）。
+func isUpstreamSemverVersion(version string) bool {
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// UpstreamClientVersionOverrides 读取该键当前生效的覆盖表：缺行/空对象/无法
+// 解析返回空 map（= 全部使用内置版本），数据库错误原样返回。直读数据库不经
+// 过 60s 应用缓存，供组合根启动接线与设置写入后的即时刷新。
+func (s *Store) UpstreamClientVersionOverrides(ctx context.Context) (map[string]string, error) {
+	ctx = ensureCtx(ctx)
+	var valueJSON sql.NullString
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT value_json FROM `+s.table("system_settings")+`
+		WHERE system_account_id = ? AND key = ?`), SystemSettingsAccountID, upstreamClientVersionOverridesKey).Scan(&valueJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var decoded any
+	if json.Unmarshal([]byte(valueJSON.String), &decoded) != nil {
+		return map[string]string{}, nil
+	}
+	return filterUpstreamClientVersionOverrides(decoded), nil
+}
+
+// refreshUpstreamClientVersionOverrides 把该键当前值应用到
+// upstreamidentity 的进程内覆盖（gateway 组合根在启动与每次系统设置写入
+// 成功后调用，管理端保存后新请求立即使用新版本）。读取失败保持既有覆盖
+// 不动（不影响写请求结果，下一轮写入或进程重启再对齐）。
+func (s *Store) refreshUpstreamClientVersionOverrides(ctx context.Context) {
+	overrides, err := s.UpstreamClientVersionOverrides(ctx)
+	if err != nil {
+		return
+	}
+	upstreamidentity.SetClientVersionOverrides(overrides)
+}
+
 // applyCompatibleSystemSettingDefaults mirrors applyCompatibleSystemSettingDefaults:
 // legacy databases may miss these rows and the loader fills them in for the
 // requested key list only.
@@ -1002,7 +1132,11 @@ func applyCompatibleSystemSettingDefaults(settings map[string]any, keys []string
 			continue
 		}
 		if fallback, ok := compatibleSystemSettingDefaults[key]; ok {
-			settings[key] = float64(fallback)
+			if number, isInt := fallback.(int); isInt {
+				settings[key] = float64(number)
+				continue
+			}
+			settings[key] = fallback
 		}
 	}
 }
