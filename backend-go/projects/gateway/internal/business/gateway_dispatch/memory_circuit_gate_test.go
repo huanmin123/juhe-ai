@@ -109,6 +109,15 @@ func TestMemoryCircuitGateDecisionMatrix(t *testing.T) {
 		if err != nil || decision != AccountCircuitBlocked || attempt != nil {
 			t.Fatalf("退避期内必须拦截: %s %v %v", decision, attempt, err)
 		}
+		// BUG-0262 形态二：诊断（模型检测）请求穿透退避窗口并走确认租约——
+		// 退避保护的是生产流量，不能挡死用户主动发起的诊断。
+		diagnostic := memoryGateInput("a-suspect", "ev-2d")
+		diagnostic.ConfirmationEligible = true
+		diagnostic.Diagnostic = true
+		decision, attempt, err = gate.Prepare(ctx, diagnostic)
+		if err != nil || decision != AccountCircuitDispatchable || attempt == nil {
+			t.Fatalf("诊断请求必须穿透退避: %s %v %v", decision, attempt, err)
+		}
 	})
 
 	t.Run("SUSPECT 非资格拦截、资格获确认租约且租约互斥", func(t *testing.T) {

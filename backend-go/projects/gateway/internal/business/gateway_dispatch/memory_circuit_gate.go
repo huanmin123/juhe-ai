@@ -81,7 +81,10 @@ func (g *MemoryCircuitGate) Prepare(_ context.Context, input AccountCircuitInput
 	g.normalizeExpiredLease(state, now)
 	if state.phase == circuitruntime.GatewayAccountCircuitPhaseOpen || state.phase == circuitruntime.GatewayAccountCircuitPhaseSuspect {
 		if state.retryAt.IsZero() || state.retryAt.After(now) {
-			return AccountCircuitBlocked, nil, nil
+			// 诊断请求穿透退避窗口（镜像 circuit_runtime_gate.go BUG-0262 形态二）。
+			if !input.Diagnostic {
+				return AccountCircuitBlocked, nil, nil
+			}
 		}
 	}
 	// A SUSPECT circuit may only be probed by a request independently qualified

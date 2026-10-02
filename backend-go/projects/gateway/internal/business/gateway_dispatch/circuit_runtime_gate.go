@@ -37,7 +37,13 @@ func (g RuntimeCircuitGate) Prepare(ctx context.Context, input AccountCircuitInp
 	}
 	if state.Phase == circuitruntime.GatewayAccountCircuitPhaseOpen || state.Phase == circuitruntime.GatewayAccountCircuitPhaseSuspect {
 		if state.RetryAt == nil || state.RetryAt.After(now) {
-			return AccountCircuitBlocked, nil, nil
+			// 诊断（模型检测）请求穿透退避窗口（BUG-0262 形态二）：退避是
+			// 对生产流量的保护，不该挡死用户主动发起的诊断——"确认被熔断
+			// 账户是否恢复"正是检测的用途之一。穿透后仍走下方 confirmation
+			// lease 语义：检测成功即构成电路恢复证据，失败按中性结算。
+			if !input.Diagnostic {
+				return AccountCircuitBlocked, nil, nil
+			}
 		}
 	}
 	// A SUSPECT circuit may only be probed by a request independently qualified

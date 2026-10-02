@@ -524,12 +524,17 @@ func Execute(ctx context.Context, request Request, options Options) (Result, err
 		if settle != nil {
 			settle(false)
 		}
-		if errors.Is(requestCtx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		// BUG-0262：错误分类保留底层错误（含派发层 ErrAccountCircuitBlocked
+		// 等），否则 attempt 证据只剩固定文案无法排障；外层 ctx 先于本次
+		// attempt 预算到期（DeadlineExceeded）按超时归类，不误报 upstream
+		// failed。requestCtx 未到期时 errors.Is 判 requestCtx.Err() 为 nil。
+		switch {
+		case errors.Is(requestCtx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 			result.ErrorMessage = "J3b probe canceled"
-		} else if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+		case errors.Is(requestCtx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 			result.ErrorMessage = "J3b probe timed out"
-		} else {
-			result.ErrorMessage = "J3b upstream request failed"
+		default:
+			result.ErrorMessage = "J3b upstream request failed: " + err.Error()
 		}
 		return result, nil
 	}

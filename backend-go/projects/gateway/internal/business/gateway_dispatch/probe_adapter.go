@@ -37,6 +37,9 @@ func (a ProbeAdapter) dispatch(ctx context.Context, request *http.Request, capab
 		ConfirmationLeaseDuration: time.Minute,
 		ConfirmationEligible:      true,
 		FailureEvidenceKey:        attemptID,
+		// 探针是诊断者：传输失败不得 Suspect 被测账户（BUG-0262，§230
+		// 探针失败不处罚），否则首次超时触发熔断挡死 10/20/30s 重试预算。
+		Diagnostic: true,
 	}
 	// A nil *http.Client must stay a nil interface here: wrapping it would
 	// create a typed-nil Client that passes Dispatcher.Dispatch's nil check

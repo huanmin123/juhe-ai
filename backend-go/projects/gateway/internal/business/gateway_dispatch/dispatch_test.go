@@ -168,6 +168,30 @@ func TestDispatchTransportFailureSettlesCircuit(t *testing.T) {
 	}
 }
 
+// BUG-0262：诊断（模型检测）请求的传输失败按中性结算，不得 Suspect 被测
+// 账户——否则探针第一次超时触发熔断，挡死自己的 10/20/30s 重试预算。
+// 同时不得记录 key-model FailureIntent（Attempt.Unknown 的实际行为），否则
+// key-model 运行态被推离 CLOSED，后续 attempt 的准入同样被 blocked。
+func TestDispatchDiagnosticTransportFailureSettlesUnknown(t *testing.T) {
+	gate := &fakeGate{admitted: true}
+	circuit := &fakeCircuitGate{}
+	d := Dispatcher{Client: fakeClient{err: errors.New("timeout")}, KeyModel: gate, Circuit: circuit}
+	req, _ := http.NewRequest(http.MethodGet, "https://example.test", nil)
+	_, err := d.Dispatch(context.Background(), Request{
+		HTTP: req, Capability: dispatchCapability(), AttemptID: "attempt",
+		AccountCircuit: &AccountCircuitInput{AccountID: "a", RequestLane: "text", Model: "m", DispatchRevision: 1, ConfirmationLeaseDuration: time.Minute, ConfirmationEligible: true, FailureEvidenceKey: "evidence", Diagnostic: true},
+	})
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if circuit.attempt.transport != 0 || circuit.attempt.unknown != 1 {
+		t.Fatalf("diagnostic request must settle circuit unknown, circuit=%+v", circuit.attempt)
+	}
+	if gate.unknown != 0 {
+		t.Fatalf("diagnostic request must not record key-model failure intent, unknown=%d", gate.unknown)
+	}
+}
+
 func TestDispatchCircuitBlockPreventsKeyModelAdmission(t *testing.T) {
 	gate := &fakeGate{admitted: true}
 	circuit := &fakeCircuitGate{decision: AccountCircuitBlocked}

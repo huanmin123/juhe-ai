@@ -48,6 +48,12 @@ type AccountCircuitInput struct {
 	ConfirmationLeaseDuration time.Duration
 	ConfirmationEligible      bool
 	FailureEvidenceKey        string
+	// Diagnostic marks a model-check probe request（BUG-0262）。诊断请求的
+	// 传输失败按中性结算（ReportUnknown），不得把被测账户推入 SUSPECT——
+	// 模型检测契约（docs/functions/模型检测设计.md §230）明确探针失败不处罚
+	// 被测账户；真熔断证据应来自生产流量。否则探针第一次超时会触发熔断，
+	// 挡死自己的 10/20/30s 重试预算（§1.2），慢上游检测恒 unavailable。
+	Diagnostic bool
 }
 
 type AccountCircuitDecision string
@@ -226,10 +232,23 @@ func (d Dispatcher) Dispatch(ctx context.Context, input Request) (Result, error)
 		return Result{}, ErrAttemptBlocked
 	}
 	attempt := &Attempt{gate: d.KeyModel, permit: permit, cap: input.Capability, attemptID: input.AttemptID, circuit: circuitAttempt}
+	diagnostic := input.AccountCircuit != nil && input.AccountCircuit.Diagnostic
 	response, err := client.Do(input.HTTP.WithContext(ctx))
 	if err != nil {
-		_ = attempt.Unknown(context.WithoutCancel(ctx), time.Now().UTC(), input.AttemptID)
-		_ = attempt.ReportTransportFailure(context.WithoutCancel(ctx), err)
+		// 诊断（模型检测）请求的传输失败按中性结算（BUG-0262）：
+		// - Attempt.Unknown 实际记录 key-model FailureIntent，会把运行态
+		//   推离 CLOSED，admitScript 对非 CLOSED 状态直接 blocked——探针
+		//   attempt1 超时会挡死 attempt2/3 的准入（与电路层同构）；
+		// - suspect 会把被测账户推入 SUSPECT 并设置 RetryAt 退避。
+		// 两者都违反模型检测 §230「探针失败不处罚被测账户」契约。
+		if !diagnostic {
+			_ = attempt.Unknown(context.WithoutCancel(ctx), time.Now().UTC(), input.AttemptID)
+		}
+		if diagnostic {
+			_ = attempt.ReportUnknown(context.WithoutCancel(ctx))
+		} else {
+			_ = attempt.ReportTransportFailure(context.WithoutCancel(ctx), err)
+		}
 		return Result{Attempt: attempt, Permit: permit}, fmt.Errorf("gateway upstream transport: %w", err)
 	}
 	if response == nil || response.Body == nil {

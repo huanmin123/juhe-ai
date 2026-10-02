@@ -225,7 +225,20 @@ func TestWlExecuteTransportFailureBoundaries(t *testing.T) {
 	})
 	t.Run("传输错误", func(t *testing.T) {
 		result, err := Execute(context.Background(), mustWlBasicRequest(t), Options{Endpoint: "https://upstream.example", Client: &http.Client{Transport: &wlStubTransport{err: errors.New("dial failed")}}, Timeout: time.Second})
-		if err != nil || result.ErrorMessage != "J3b upstream request failed" {
+		// BUG-0262：传输失败文案必须携带底层错误（http.Client 会以
+		// *url.Error 包装，含方法与 URL 前缀），否则 attempt 证据只剩固定
+		// 文案无法排障。
+		if err != nil || !strings.HasPrefix(result.ErrorMessage, "J3b upstream request failed: ") || !strings.Contains(result.ErrorMessage, "dial failed") {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+	t.Run("外层预算先于本次 attempt 到期按超时归类", func(t *testing.T) {
+		// BUG-0262：外层 ctx DeadlineExceeded 时内层 requestCtx 尚未到期，
+		// 旧分类落入 upstream request failed；必须归入 timed out。
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		defer cancel()
+		result, err := Execute(ctx, mustWlBasicRequest(t), Options{Endpoint: "https://upstream.example", Client: &http.Client{Transport: &wlStubTransport{block: true}}, Timeout: 5*time.Second})
+		if err != nil || result.ErrorMessage != "J3b probe timed out" {
 			t.Fatalf("result=%+v err=%v", result, err)
 		}
 	})
