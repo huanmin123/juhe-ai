@@ -6,6 +6,7 @@ package upstreamidentity
 import (
 	"net/http"
 	"strings"
+	"sync/atomic"
 )
 
 const (
@@ -14,20 +15,48 @@ const (
 	ProfileGLMCodingAnthropicV1 = "profile_glm_coding_anthropic_v1"
 	ProfileGLMCodingOpenAIV1    = "profile_glm_coding_openai_v1"
 	ProfileXAIOpenAIV1          = "profile_xai_openai_v1"
+	// GrokCLIClientVersion 是 xai Grok CLI 客户端画像的伪装版本。xAI 自
+	// 2026-10 起对 cli-chat-proxy.grok.com 强制 CLI >= 1.0.13，旧版本画像
+	// 返回 426 Upgrade Required（"Grok CLI version ... outdated"）；跟随
+	// 门槛取最低要求值，升级时同步本常量与文档。运行时可被
+	// SetClientVersionOverrides 覆盖（EffectiveGrokCLIVersion）。
+	GrokCLIClientVersion = "1.0.13"
 	// 两个 hybrid 档案当前桥接的目标上游都是 GLM（BUG-0176 时代的兼容事实），
 	// 因此归入 GLM 家族选择 ZCode 身份。
 	ProfileHybridOpenAIChatV1        = "profile_hybrid_openai_chat_v1"
 	ProfileHybridAnthropicMessagesV1 = "profile_hybrid_anthropic_messages_v1"
+	// 内置客户端版本常量：下方 UA 常量由这些版本拼接。运行时可被
+	// SetClientVersionOverrides 覆盖（system_settings 键
+	// upstreamClientVersionOverrides）；常量本身保留为内置默认与文档锚点。
+	builtInCodexDesktopVersion = "0.159.3"
+	builtInClaudeCodeVersion   = "2.1.285"
+	builtInGeminiCLIVersion    = "0.61.0"
 	// OpenCodeUserAgent is the static identity observed in OpenCode 1.18.5.
 	// BUG-0201 之后本包不再把它注入任何系统请求；常量仅为兼容既有引用保留。
 	OpenCodeUserAgent = "opencode/1.18.5"
 	// CodexDesktopUserAgent is the static Codex Desktop identity. GPT/Codex
 	// 家族的系统请求在本包与 accountprobe 的 codex_responses 动态头分支共用
-	// 该常量，避免两处硬编码漂移。
-	CodexDesktopUserAgent = "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)"
-	zcodeVersion          = "3.11.2"
-	claudeCodeUserAgent   = "claude-cli/2.1.161 (external, cli)"
-	claudeCodeBeta        = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+	// 的身份子集。版本跟随 openai/codex 官方最新稳定（GitHub Releases；
+	// 2026-10-02 锚点 0.159.3）。运行时可被 SetClientVersionOverrides 覆盖
+	//（EffectiveCodexDesktopUserAgent）。
+	CodexDesktopUserAgent = "Codex Desktop/" + builtInCodexDesktopVersion + " (Windows 10.0.22621; x86_64) unknown (codex_exec; " + builtInCodexDesktopVersion + ")"
+	// ZCodeVersion 是 GLM 家族注入的 ZCode 客户端版本（UA 与
+	// X-ZCode-App-Version 共用）。版本跟随 zcode.z.ai 官方 changelog 最新
+	//（2026-10-02 锚点 3.14.3）。运行时可被 SetClientVersionOverrides 覆盖
+	//（EffectiveZCodeVersion）。
+	ZCodeVersion = "3.14.3"
+	// ClaudeCodeUserAgent 是 Anthropic 家族 OAuth 系统请求的静态身份。
+	// 版本跟随 Claude Code 官方 changelog 最新稳定（code.claude.com；
+	// 2026-10-02 锚点 2.1.285）。anthropic-beta 特性集与 x-stainless SDK
+	// 版本无公开对应关系，维持实测值不随版本号联动。运行时可被
+	// SetClientVersionOverrides 覆盖（EffectiveClaudeCodeUserAgent）。
+	ClaudeCodeUserAgent = "claude-cli/" + builtInClaudeCodeVersion + " (external, cli)"
+	// GeminiCLIUserAgent 是 Gemini OAuth（code_assist/google_one）系统请求的
+	// 静态身份。版本跟随 @google/gemini-cli npm 最新稳定（2026-10-02 锚点
+	// 0.61.0）。运行时可被 SetClientVersionOverrides 覆盖
+	//（EffectiveGeminiCLIUserAgent）。
+	GeminiCLIUserAgent = "GeminiCLI/" + builtInGeminiCLIVersion + " (Windows; AMD64)"
+	claudeCodeBeta     = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
 )
 
 // Input identifies one system-generated upstream request. ProviderCode is
@@ -39,6 +68,114 @@ type Input struct {
 	CredentialType            string
 	OAuthType                 string
 	UpstreamHostname          string
+}
+
+// clientVersionOverrides 保存 system_settings 键 upstreamClientVersionOverrides
+// 解析出的「客户端家族 -> 版本」覆盖（拷贝存储，调用方再改原 map 不影响已存
+// 值）。nil/空 map 表示全部使用内置版本；进程内由 gateway/jobs 组合根在启动
+// 与设置写入后刷新。
+var clientVersionOverrides atomic.Value
+
+// 客户端家族键，与 upstreamClientVersionOverrides 的合法 JSON 键一一对应。
+const (
+	clientFamilyCodex      = "codex"
+	clientFamilyClaudeCode = "claudeCode"
+	clientFamilyGeminiCLI  = "geminiCLI"
+	clientFamilyZCode      = "zcode"
+	clientFamilyGrokCLI    = "grokCLI"
+)
+
+// SetClientVersionOverrides 全量替换客户端版本覆盖：nil/空 map 清空回内置；
+// 只接受五个合法家族键，未知键与不匹配 ^\d+\.\d+\.\d+$ 的值忽略（防御性，
+// 正常校验在 settings 层）。覆盖语义为「非空即生效」：可升可降，不做与内置
+// 版本的 max 合并。
+func SetClientVersionOverrides(overrides map[string]string) {
+	filtered := make(map[string]string, len(overrides))
+	for family, version := range overrides {
+		if !isKnownClientFamily(family) || !isSemverVersion(version) {
+			continue
+		}
+		filtered[family] = version
+	}
+	clientVersionOverrides.Store(filtered)
+}
+
+// EffectiveClientVersion 返回该客户端家族的生效版本：覆盖优先，否则内置；
+// 未知家族返回 ""。
+func EffectiveClientVersion(family string) string {
+	if stored, _ := clientVersionOverrides.Load().(map[string]string); stored != nil {
+		if version, ok := stored[family]; ok {
+			return version
+		}
+	}
+	switch family {
+	case clientFamilyCodex:
+		return builtInCodexDesktopVersion
+	case clientFamilyClaudeCode:
+		return builtInClaudeCodeVersion
+	case clientFamilyGeminiCLI:
+		return builtInGeminiCLIVersion
+	case clientFamilyZCode:
+		return ZCodeVersion
+	case clientFamilyGrokCLI:
+		return GrokCLIClientVersion
+	}
+	return ""
+}
+
+// 便捷 getter：五个客户端家族的生效版本（覆盖或内置）。
+func EffectiveCodexVersion() string      { return EffectiveClientVersion(clientFamilyCodex) }
+func EffectiveClaudeCodeVersion() string { return EffectiveClientVersion(clientFamilyClaudeCode) }
+func EffectiveGeminiCLIVersion() string  { return EffectiveClientVersion(clientFamilyGeminiCLI) }
+func EffectiveZCodeVersion() string      { return EffectiveClientVersion(clientFamilyZCode) }
+func EffectiveGrokCLIVersion() string    { return EffectiveClientVersion(clientFamilyGrokCLI) }
+
+// EffectiveCodexDesktopUserAgent 运行时拼接 Codex Desktop UA（版本取
+// EffectiveCodexVersion，无覆盖时与 CodexDesktopUserAgent 常量逐字一致）。
+func EffectiveCodexDesktopUserAgent() string {
+	version := EffectiveCodexVersion()
+	return "Codex Desktop/" + version + " (Windows 10.0.22621; x86_64) unknown (codex_exec; " + version + ")"
+}
+
+// EffectiveClaudeCodeUserAgent 运行时拼接 Claude Code CLI 入口 UA（与
+// ClaudeCodeUserAgent 常量同格式的 cli 变体；sdk-cli 入口变体在
+// gatewayanthropic 包，格式不同，保持差异）。
+func EffectiveClaudeCodeUserAgent() string {
+	return "claude-cli/" + EffectiveClaudeCodeVersion() + " (external, cli)"
+}
+
+// EffectiveGeminiCLIUserAgent 运行时拼接 Gemini CLI UA。
+func EffectiveGeminiCLIUserAgent() string {
+	return "GeminiCLI/" + EffectiveGeminiCLIVersion() + " (Windows; AMD64)"
+}
+
+// isKnownClientFamily 判定 upstreamClientVersionOverrides 的合法家族键。
+func isKnownClientFamily(family string) bool {
+	switch family {
+	case clientFamilyCodex, clientFamilyClaudeCode, clientFamilyGeminiCLI,
+		clientFamilyZCode, clientFamilyGrokCLI:
+		return true
+	}
+	return false
+}
+
+// isSemverVersion 匹配 ^\d+\.\d+\.\d+$（三段纯数字版本）。
+func isSemverVersion(version string) bool {
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ApplySystemClientHeaders 按「上游家族 -> 官方客户端身份」为系统生成的上游
@@ -71,7 +208,7 @@ func ApplySystemClientHeaders(headers http.Header, input Input) {
 	case credentialType == "api_key" && matchesGLMFamily(provider, profileID):
 		applyZCode(headers)
 	case credentialType == "api_key" && matchesGPTFamily(provider, profileID):
-		headers.Set("User-Agent", CodexDesktopUserAgent)
+		headers.Set("User-Agent", EffectiveCodexDesktopUserAgent())
 	case matchesAnthropicFamily(provider, profileID) && credentialType == "oauth":
 		applyClaudeCode(headers)
 	// Anthropic 家族 API Key 不注入任何身份：实测 supeai.cc 等上游对已知
@@ -79,12 +216,13 @@ func ApplySystemClientHeaders(headers http.Header, input Input) {
 	// Go UA 稳定放行（BUG-0201）。
 	case providerMatches(provider, "gemini") && profileID == ProfileGeminiNativeV1Beta && credentialType == "google_oauth" &&
 		(normalized(input.OAuthType) == "code_assist" || normalized(input.OAuthType) == "google_one"):
-		headers.Set("User-Agent", "GeminiCLI/0.1.5 (Windows; AMD64)")
+		headers.Set("User-Agent", EffectiveGeminiCLIUserAgent())
 	case providerMatches(provider, "xai") && profileID == ProfileXAIOpenAIV1 && credentialType == "oauth" &&
 		strings.EqualFold(strings.TrimSpace(input.UpstreamHostname), "cli-chat-proxy.grok.com"):
-		headers.Set("User-Agent", "xai-grok-workspace/0.2.93")
+		grokVersion := EffectiveGrokCLIVersion()
+		headers.Set("User-Agent", "xai-grok-workspace/"+grokVersion)
 		headers.Set("x-xai-token-auth", "xai-grok-cli")
-		headers.Set("x-grok-client-version", "0.2.93")
+		headers.Set("x-grok-client-version", grokVersion)
 	}
 }
 
@@ -116,17 +254,18 @@ func matchesAnthropicFamily(provider, profileID string) bool {
 }
 
 func applyZCode(headers http.Header) {
-	// ZCode 3.11.2 model requests use this static identity. Dynamic security
+	// ZCode model requests use this static identity. Dynamic security
 	// fields (device/session/signature/nonce/PoW) are intentionally excluded.
-	headers.Set("User-Agent", "ZCode/"+zcodeVersion)
+	version := EffectiveZCodeVersion()
+	headers.Set("User-Agent", "ZCode/"+version)
 	headers.Set("HTTP-Referer", "https://zcode.z.ai")
-	headers.Set("X-ZCode-App-Version", zcodeVersion)
+	headers.Set("X-ZCode-App-Version", version)
 	headers.Set("X-Title", "Z Code@electron")
 }
 
 func applyClaudeCode(headers http.Header) {
 	headers.Set("anthropic-beta", claudeCodeBeta)
-	headers.Set("User-Agent", claudeCodeUserAgent)
+	headers.Set("User-Agent", EffectiveClaudeCodeUserAgent())
 	headers.Set("x-stainless-lang", "js")
 	headers.Set("x-stainless-package-version", "0.94.0")
 	headers.Set("x-stainless-os", "Linux")

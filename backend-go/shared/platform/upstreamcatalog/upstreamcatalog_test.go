@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 type stubDoer struct {
@@ -201,7 +203,7 @@ func TestFetchGLMCodingModelsUsesProfileAuthAndZCodeIdentity(t *testing.T) {
 				if r.Header.Get("Authorization") != tc.wantAuth || r.Header.Get("x-api-key") != tc.wantAPIKey || r.Header.Get("anthropic-version") != tc.wantVersion {
 					t.Errorf("auth headers=%v", r.Header)
 				}
-				if r.Header.Get("User-Agent") != "ZCode/3.11.2" || r.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || r.Header.Get("X-ZCode-App-Version") != "3.11.2" {
+				if r.Header.Get("User-Agent") != "ZCode/"+upstreamidentity.ZCodeVersion || r.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || r.Header.Get("X-ZCode-App-Version") != upstreamidentity.ZCodeVersion {
 					t.Errorf("ZCode identity headers=%v", r.Header)
 				}
 				_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.3"}]}`))
@@ -222,7 +224,7 @@ func TestFetchGLMCodingModelsUsesProfileAuthAndZCodeIdentity(t *testing.T) {
 // 不再使用 OpenCode 兜底。
 func TestFetchGLMGeneralModelsUsesZCodeFamilyIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") != "ZCode/3.11.2" || r.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || r.Header.Get("X-ZCode-App-Version") != "3.11.2" || r.Header.Get("X-Title") != "Z Code@electron" {
+		if r.Header.Get("User-Agent") != "ZCode/"+upstreamidentity.ZCodeVersion || r.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || r.Header.Get("X-ZCode-App-Version") != upstreamidentity.ZCodeVersion || r.Header.Get("X-Title") != "Z Code@electron" {
 			t.Errorf("GLM General system request must use the ZCode family identity: %v", r.Header)
 		}
 		if r.Header.Get("User-Agent") == "opencode/1.18.5" {

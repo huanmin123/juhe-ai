@@ -18,7 +18,7 @@
           <a-tag :color="record.imageGenerationEnabled ? 'green' : 'default'">{{ record.imageGenerationEnabled ? '支持' : '不支持' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'mustChangePassword'">
-          <a-tag :color="record.mustChangePassword ? 'warning' : 'success'">{{ record.mustChangePassword ? '提醒' : '不提醒' }}</a-tag>
+          <a-tag :color="record.mustChangePassword ? 'gold' : 'green'">{{ record.mustChangePassword ? '提醒' : '不提醒' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'lastLoginAt'">
           <span class="muted-cell">{{ formatDateTime(record.lastLoginAt) }}</span>
@@ -38,7 +38,7 @@
               <a-tag :color="systemAccountRoleColor(record.role)">{{ systemAccountRoleLabel(record.role) }}</a-tag>
               <a-tag :color="record.status === 'active' ? 'green' : 'red'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
               <a-tag :color="record.imageGenerationEnabled ? 'green' : 'default'">{{ record.imageGenerationEnabled ? '支持图像' : '禁用图像' }}</a-tag>
-              <a-tag :color="record.mustChangePassword ? 'warning' : 'success'">{{ record.mustChangePassword ? '提醒改密' : '不提醒改密' }}</a-tag>
+              <a-tag :color="record.mustChangePassword ? 'gold' : 'green'">{{ record.mustChangePassword ? '提醒改密' : '不提醒改密' }}</a-tag>
             </div>
           </div>
           <div class="mobile-list-meta-grid">

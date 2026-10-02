@@ -19,9 +19,9 @@ import (
 func wbBusinessQualityDDL(t *testing.T) []string {
 	t.Helper()
 	return []string{
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,name TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,name TEXT,status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,created_at TEXT,updated_at TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,state TEXT,action TEXT,recovery_due_at TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT, model TEXT)`,
 		`CREATE TABLE account_model_mappings (account_id TEXT, source_model TEXT, source_endpoint_family TEXT, upstream_model TEXT, upstream_endpoint_family TEXT, enabled INTEGER)`,
@@ -142,20 +142,29 @@ func TestWBBusinessQualityManagerCRUDContract(t *testing.T) {
 		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, Model: ptrString(" ")}); err == nil {
 			t.Fatal("空白模型必须拒绝")
 		}
-		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, IntervalMinutes: ptrInt(1)}); err == nil {
+		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, IntervalMinutes: ptrInt(0)}); err == nil {
 			t.Fatal("非法间隔必须拒绝")
+		}
+		// D2：interval=1 是新契约下限，patch 校验必须放行。
+		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, IntervalMinutes: ptrInt(1), Profile: ptrString("quick"), PenaltyThreshold: ptrInt(70), PenaltyAction: ptrString("fallback"), RecoveryIntervalMinutes: ptrInt(10)}); err != nil {
+			t.Fatalf("interval=1 必须合法: %v", err)
 		}
 		if err := validateSchedulePatch(QualitySchedulePatch{ExpectedRevision: 1, Profile: ptrString("fast")}); err == nil {
 			t.Fatal("非法 profile 必须拒绝")
 		}
 		for name, input := range map[string]QualityScheduleInput{
-			"missing account": {Model: "m", IntervalMinutes: 60, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10},
-			"bad interval":    {AccountID: "acct", Model: "m", IntervalMinutes: 1, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10},
-			"bad values":      {AccountID: "acct", Model: "m", IntervalMinutes: 60, Profile: "quick", PenaltyThreshold: 10, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10},
+			"missing account":    {Model: "m", IntervalMinutes: 60, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10},
+			"zero interval":      {AccountID: "acct", Model: "m", IntervalMinutes: 0, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10},
+			"interval above max": {AccountID: "acct", Model: "m", IntervalMinutes: 10081, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10},
+			"bad values":         {AccountID: "acct", Model: "m", IntervalMinutes: 60, Profile: "quick", PenaltyThreshold: 10, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10},
 		} {
 			if err := validateSchedule(input); err == nil {
 				t.Fatalf("%s 必须拒绝", name)
 			}
+		}
+		// D2：创建校验同样接受 1 分钟间隔。
+		if err := validateSchedule(QualityScheduleInput{AccountID: "acct", Model: "m", IntervalMinutes: 1, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err != nil {
+			t.Fatalf("interval=1 创建校验必须合法: %v", err)
 		}
 		if err := validateQualityValues("fast", 70, "fallback", 10); err == nil {
 			t.Fatal("非法 profile 必须拒绝")
@@ -293,7 +302,7 @@ func ctx2() context.Context { return context.Background() }
 func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 	ddl := []string{
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,status TEXT,config_revision INTEGER,fallback_enabled INTEGER,super_priority_enabled INTEGER,deleted_at TEXT,schedulable INTEGER,last_error_code TEXT,last_error_message TEXT,updated_at TEXT)`,
-		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT UNIQUE,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,created_at TEXT,updated_at TEXT,cleared_at TEXT)`,
+		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,system_account_id TEXT,enforcement_id TEXT UNIQUE,generation INTEGER,state TEXT,action TEXT,trigger_run_id TEXT,config_source TEXT,config_source_id TEXT,policy_revision INTEGER,profile TEXT,penalty_threshold INTEGER,recovery_interval_minutes INTEGER,recovery_model TEXT,account_config_revision INTEGER,before_status TEXT,after_status TEXT,fallback_was_enabled INTEGER,super_priority_was_enabled INTEGER,started_at TEXT,recovery_due_at TEXT,created_at TEXT,updated_at TEXT,cleared_at TEXT)`,
 		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,revision INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,model TEXT,custom_question_ids TEXT)`,
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,custom_question_ids TEXT)`,
 	}
@@ -311,11 +320,11 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 			t.Fatal("nil 数据库必须报错")
 		}
 		_, applier := open(t)
-		if err := applier.Apply(ctx2(), QualityEnforcement{Action: "disable", Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10}); err == nil {
+		if _, err := applier.Apply(ctx2(), QualityEnforcement{Action: "disable", Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10}); err == nil {
 			t.Fatal("缺身份必须报错")
 		}
 		var nilApplier *BusinessEnforcementApplier
-		if err := nilApplier.Apply(ctx2(), QualityEnforcement{}); err == nil {
+		if _, err := nilApplier.Apply(ctx2(), QualityEnforcement{}); err == nil {
 			t.Fatal("nil 适配器必须报错")
 		}
 	})
@@ -334,7 +343,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				if err := applier.Apply(ctx2(), tc.input); err == nil {
+				if _, err := applier.Apply(ctx2(), tc.input); err == nil {
 					t.Fatal("非法输入必须报错")
 				}
 			})
@@ -346,7 +355,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 			t.Fatal(err)
 		}
 		input := QualityEnforcement{AccountID: "acct", SystemAccountID: "sys", RunID: "run-1", Action: "fallback", Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10, PolicyRevision: "0", AccountConfigRevision: "4", Profile: "quick"}
-		if err := applier.Apply(ctx2(), input); err == nil || !strings.Contains(err.Error(), "configuration is stale") {
+		if _, err := applier.Apply(ctx2(), input); err == nil || !strings.Contains(err.Error(), "configuration is stale") {
 			t.Fatalf("策略漂移必须失败: err=%v", err)
 		}
 		matched := input
@@ -358,7 +367,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct','sys','active',4,0,1,NULL,1,NULL,NULL,NULL)`); err != nil {
 			t.Fatal(err)
 		}
-		if err := applier.Apply(ctx2(), matched); err != nil {
+		if _, err := applier.Apply(ctx2(), matched); err != nil {
 			t.Fatalf("匹配策略必须执行: %v", err)
 		}
 		var status string
@@ -391,7 +400,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 					}
 				}
 				input := QualityEnforcement{AccountID: "acct", SystemAccountID: "sys", RunID: "run-1", Action: "fallback", Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10, PolicyRevision: "0", AccountConfigRevision: "4", Profile: "quick"}
-				err := applier.Apply(ctx2(), input)
+				_, err := applier.Apply(ctx2(), input)
 				if tc.account == "" {
 					if err == nil || !strings.Contains(err.Error(), tc.need) {
 						t.Fatalf("缺失账户必须报错: err=%v", err)
@@ -415,7 +424,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 					t.Fatal(err)
 				}
 				input := QualityEnforcement{AccountID: "acct", SystemAccountID: "sys", RunID: "run-1", Action: action, Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10, PolicyRevision: "0", AccountConfigRevision: "4", Profile: "quick"}
-				if err := applier.Apply(ctx2(), input); err != nil {
+				if _, err := applier.Apply(ctx2(), input); err != nil {
 					t.Fatalf("%s 执行失败: %v", action, err)
 				}
 				var status string
@@ -441,7 +450,7 @@ func TestWBBusinessEnforcementApplierPolicyAndFences(t *testing.T) {
 			t.Fatal(err)
 		}
 		input := QualityEnforcement{AccountID: "acct", SystemAccountID: "sys", RunID: "run-2", Action: "fallback", Threshold: 70, Score: 20, RecoveryIntervalMinutes: 10, PolicyRevision: "0", AccountConfigRevision: "5", Profile: "quick"}
-		if err := applier.Apply(ctx2(), input); err == nil || !strings.Contains(err.Error(), "revision is stale") {
+		if _, err := applier.Apply(ctx2(), input); err == nil || !strings.Contains(err.Error(), "revision is stale") {
 			t.Fatalf("历史执行后的陈旧修订必须拒绝: err=%v", err)
 		}
 	})

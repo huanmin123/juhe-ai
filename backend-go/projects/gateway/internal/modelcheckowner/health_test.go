@@ -3,6 +3,7 @@ package modelcheckowner
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -83,19 +84,45 @@ func TestQualityProjectorMarksRetryWhenCallerContextIsCanceled(t *testing.T) {
 
 type recordingEnforcement struct{ calls int }
 
-func (r *recordingEnforcement) Apply(_ context.Context, enforcement QualityEnforcement) error {
+func (r *recordingEnforcement) Apply(_ context.Context, enforcement QualityEnforcement) (EnforcementOutcome, error) {
 	r.calls++
-	if enforcement.Action != "quality_isolate" || enforcement.Score >= enforcement.Threshold {
-		return errors.New("invalid enforcement request")
+	if enforcement.Action != "quality_isolate" || (enforcement.Score >= enforcement.Threshold && !enforcement.HardQualityFailure) {
+		return EnforcementOutcome{}, errors.New("invalid enforcement request")
 	}
-	return nil
+	return EnforcementOutcome{EnforcementID: "enf-recording", Generation: 1, BeforeStatus: "active", AfterStatus: "quality_isolated", RecoveryDueAt: "2026-08-27T10:11:00Z"}, nil
 }
 
 type countingEnforcement struct{ calls int }
 
-func (r *countingEnforcement) Apply(_ context.Context, _ QualityEnforcement) error {
+func (r *countingEnforcement) Apply(_ context.Context, _ QualityEnforcement) (EnforcementOutcome, error) {
 	r.calls++
-	return nil
+	return EnforcementOutcome{EnforcementID: "enf-counting", Generation: 1, BeforeStatus: "active", AfterStatus: "quality_isolated", RecoveryDueAt: "2026-08-27T10:11:00Z"}, nil
+}
+
+// failingEnforcement 固化处罚端口错误，用于解耦契约：stale/failed 均不得
+// 阻断健康事实写入。
+type failingEnforcement struct {
+	calls int
+	err   error
+}
+
+func (r *failingEnforcement) Apply(_ context.Context, _ QualityEnforcement) (EnforcementOutcome, error) {
+	r.calls++
+	return EnforcementOutcome{}, r.err
+}
+
+// readMergedDecision 读取 run 行合并后的 quality_decision_json。
+func readMergedDecision(t *testing.T, db *sql.DB, runID string) map[string]any {
+	t.Helper()
+	var decision string
+	if err := db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, runID).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]any{}
+	if err := json.Unmarshal([]byte(decision), &fields); err != nil {
+		t.Fatalf("decision=%s err=%v", decision, err)
+	}
+	return fields
 }
 
 func TestQualityProjectorTreatsSuspiciousAsHardFailureAboveThreshold(t *testing.T) {
@@ -106,14 +133,14 @@ func TestQualityProjectorTreatsSuspiciousAsHardFailureAboveThreshold(t *testing.
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,updated_at) VALUES ('run-suspicious','pending','2026-08-27T10:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-suspicious','pending','{}','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	enforcement := &countingEnforcement{}
@@ -125,6 +152,13 @@ func TestQualityProjectorTreatsSuspiciousAsHardFailureAboveThreshold(t *testing.
 	}
 	if enforcement.calls != 1 {
 		t.Fatalf("suspicious hard failure enforcement calls=%d, want 1", enforcement.calls)
+	}
+	decision := readMergedDecision(t, db, "run-suspicious")
+	if decision["result"] != "applied" || decision["healthSyncResult"] != "applied" || decision["healthStatHour"] != "2026-08-27T10:00:00Z" {
+		t.Fatalf("suspicious decision=%+v", decision)
+	}
+	if decision["enforcementId"] != "enf-counting" || decision["generation"] != float64(1) || decision["beforeStatus"] != "active" || decision["afterStatus"] != "quality_isolated" || decision["recoveryDueAt"] != "2026-08-27T10:11:00Z" {
+		t.Fatalf("suspicious decision outcome=%+v", decision)
 	}
 	var level string
 	if err := db.QueryRow(`SELECT level FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&level); err != nil || level != "suspicious" {
@@ -140,14 +174,14 @@ func TestQualityProjectorPublishesQuickHardFailureAboveThresholdWithoutAggregate
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,updated_at) VALUES ('run-hard-mismatch','pending','2026-08-27T10:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-hard-mismatch','pending','{"triggered":true,"hardFailure":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	enforcement := &countingEnforcement{}
@@ -164,9 +198,16 @@ func TestQualityProjectorPublishesQuickHardFailureAboveThresholdWithoutAggregate
 	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-hard-mismatch'`).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("health sync state=%q err=%v", state, err)
 	}
+	// 投影增补必须保留 finalize 基础字段并覆盖 result。
+	decision := readMergedDecision(t, db, "run-hard-mismatch")
+	if decision["result"] != "applied" || decision["triggered"] != true || decision["hardFailure"] != true || decision["healthSyncResult"] != "applied" || decision["afterStatus"] != "quality_isolated" {
+		t.Fatalf("quick hard failure decision=%+v", decision)
+	}
 }
 
-func TestQualityProjectorRequiresEnforcementForFormedFailure(t *testing.T) {
+// 处罚与健康事实解耦（J3B 修复）：处罚端口缺失/失败不再阻断健康事实，
+// result 分别记录 skipped/stale/failed，run 的健康同步状态仍为 applied。
+func TestQualityProjectorRecordsSkippedWhenEnforcementOwnerMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enforcement.db")
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
 	if err != nil {
@@ -174,22 +215,31 @@ func TestQualityProjectorRequiresEnforcementForFormedFailure(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,updated_at) VALUES ('run-failure','pending_retry','2026-08-27T10:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-failure','pending_retry','{}','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	store := &Store{db: db, mode: "sqlite"}
 	projector := &QualityProjector{Store: store}
 	fact := HealthFact{AccountID: "acct-1", SystemAccountID: "sys-1", StatHour: "2026-08-27T10:00:00Z", RunID: "run-failure", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", EnforcementAllowed: true}
-	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil || !strings.Contains(err.Error(), "enforcement") {
-		t.Fatalf("missing enforcement err=%v", err)
+	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
+		t.Fatal(err)
 	}
+	decision := readMergedDecision(t, db, "run-failure")
+	if decision["result"] != "skipped" || decision["message"] == nil || decision["enforcementId"] != nil {
+		t.Fatalf("missing enforcement owner decision=%+v", decision)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-failure'`).Scan(&state); err != nil || state != "applied" {
+		t.Fatalf("health fact must publish without enforcement owner: state=%q err=%v", state, err)
+	}
+	// 配置好处罚端口后同一事实可正常处罚。
 	recorder := &recordingEnforcement{}
 	projector.Enforcement = recorder
 	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
@@ -197,6 +247,120 @@ func TestQualityProjectorRequiresEnforcementForFormedFailure(t *testing.T) {
 	}
 	if recorder.calls != 1 {
 		t.Fatalf("enforcement calls=%d", recorder.calls)
+	}
+	if decision := readMergedDecision(t, db, "run-failure"); decision["result"] != "applied" {
+		t.Fatalf("second projection decision=%+v", decision)
+	}
+}
+
+func TestQualityProjectorStaleEnforcementStillAppliesHealthFact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stale-enforcement.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-stale','failed','{}','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	enforcement := &failingEnforcement{err: errors.New("J3b Business enforcement configuration is stale")}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: enforcement}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-stale", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
+	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
+		t.Fatalf("stale enforcement must not block the projection: %v", err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-stale'`).Scan(&state); err != nil || state != "applied" {
+		t.Fatalf("health fact must still apply: state=%q err=%v", state, err)
+	}
+	decision := readMergedDecision(t, db, "run-stale")
+	if decision["result"] != "stale" || decision["healthSyncResult"] != "applied" || decision["message"] == nil || decision["afterStatus"] != nil {
+		t.Fatalf("stale decision=%+v", decision)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("health fact row count=%d err=%v", count, err)
+	}
+}
+
+func TestQualityProjectorFailedEnforcementStillWritesHealthFact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "failed-enforcement.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-apply-failed','failed','{}','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	enforcement := &failingEnforcement{err: errors.New("connection refused")}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: enforcement}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-apply-failed", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
+	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err != nil {
+		t.Fatalf("enforcement failure must not block health fact: %v", err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-apply-failed'`).Scan(&state); err != nil || state != "applied" {
+		t.Fatalf("health fact must be written: state=%q err=%v", state, err)
+	}
+	decision := readMergedDecision(t, db, "run-apply-failed")
+	if decision["result"] != "failed" || decision["healthSyncResult"] != "applied" || decision["message"] != "connection refused" {
+		t.Fatalf("failed decision=%+v", decision)
+	}
+}
+
+// 健康事实写入失败（此处 health 表缺失）：处罚副作用已发生，run 行必须
+// 保留 markHealthSyncFailure 的 failed 重试标记，quality_decision 记录
+// healthSyncResult=pending_retry 与已发生的处罚结果，等待重试覆盖终值。
+func TestQualityProjectorMarksPendingRetryWhenHealthFactFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "health-fact-failure.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// 只建 run 表：ApplyHealthFact 因 health 表缺失而失败，但 MergeRunQualityDecision 仍可写 run 行。
+	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-pending','pending','{"triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	enforcement := &countingEnforcement{}
+	projector := &QualityProjector{Store: &Store{db: db, mode: "sqlite"}, Enforcement: enforcement}
+	fact := HealthFact{AccountID: "acct", SystemAccountID: "sys", StatHour: "2026-08-27T10:00:00Z", RunID: "run-pending", ProviderCode: "openai", Model: "gpt-5.6", Profile: "quick", ObservedAt: time.Date(2026, 8, 27, 10, 1, 0, 0, time.UTC), Score: 30, Threshold: 70, Level: "failure", PenaltyAction: "quality_isolate", EnforcementAllowed: true}
+	if err := projector.Project(context.Background(), fact.RunID, EvidenceAggregate{Formed: true, TrustFormed: true}, fact); err == nil {
+		t.Fatal("health fact failure must surface the projection error")
+	}
+	if enforcement.calls != 1 {
+		t.Fatalf("enforcement must run before the health fact, calls=%d", enforcement.calls)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-pending'`).Scan(&state); err != nil || state != "failed" {
+		t.Fatalf("retry marker must remain failed: state=%q err=%v", state, err)
+	}
+	decision := readMergedDecision(t, db, "run-pending")
+	if decision["healthSyncResult"] != "pending_retry" || decision["result"] != "applied" || decision["enforcementId"] != "enf-counting" || decision["afterStatus"] != "quality_isolated" || decision["recoveryDueAt"] != "2026-08-27T10:11:00Z" {
+		t.Fatalf("pending retry decision=%+v", decision)
+	}
+	if decision["triggered"] != true {
+		t.Fatalf("merge must preserve finalize base fields: %+v", decision)
 	}
 }
 
@@ -208,14 +372,14 @@ func TestQualityProjectorPublishesDiagnosticManualFailureWithoutEnforcement(t *t
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,updated_at) VALUES ('run-diagnostic','pending_retry','2026-08-27T10:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-diagnostic','pending_retry','{}','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
@@ -230,6 +394,9 @@ func TestQualityProjectorPublishesDiagnosticManualFailureWithoutEnforcement(t *t
 	var state string
 	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-diagnostic'`).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("health fact must still publish: state=%q err=%v", state, err)
+	}
+	if decision := readMergedDecision(t, db, "run-diagnostic"); decision["result"] != "skipped" || decision["healthSyncResult"] != "applied" {
+		t.Fatalf("diagnostic decision=%+v", decision)
 	}
 }
 
@@ -288,14 +455,14 @@ func TestQualityProjectorUnavailableNeverEnforces(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,updated_at) VALUES ('run-u','pending_retry','2026-08-27T10:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-u','pending_retry','{"triggered":false,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
@@ -315,6 +482,10 @@ func TestQualityProjectorUnavailableNeverEnforces(t *testing.T) {
 	if err := db.QueryRow(`SELECT level FROM account_quality_health_hourly WHERE account_id='acct' AND stat_hour='2026-08-27T10:00:00Z'`).Scan(&level); err != nil || level != "unavailable" {
 		t.Fatalf("unavailable health fact level=%q err=%v", level, err)
 	}
+	// unavailable 不是质量不达标判定：result 保持 not_triggered，仅记录健康同步结果。
+	if decision := readMergedDecision(t, db, "run-u"); decision["result"] != "not_triggered" || decision["healthSyncResult"] != "applied" || decision["enforcementId"] != nil {
+		t.Fatalf("unavailable decision=%+v", decision)
+	}
 }
 
 func TestQualityProjectorPublishesUnformedQuickFailure(t *testing.T) {
@@ -325,14 +496,14 @@ func TestQualityProjectorPublishesUnformedQuickFailure(t *testing.T) {
 	}
 	defer db.Close()
 	for _, ddl := range []string{
-		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,updated_at TEXT)`,
+		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_health_sync_status TEXT,quality_decision_json TEXT,updated_at TEXT)`,
 		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL,system_account_id TEXT NOT NULL,provider_code TEXT NOT NULL,stat_hour TEXT NOT NULL,observed_at TEXT NOT NULL,model_check_run_id TEXT NOT NULL,model TEXT NOT NULL,profile TEXT NOT NULL,score INTEGER NOT NULL,threshold INTEGER NOT NULL,level TEXT NOT NULL,error_code TEXT,error_message TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(account_id,stat_hour))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,updated_at) VALUES ('run-quick-unformed','pending_retry','2026-08-27T10:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_health_sync_status,quality_decision_json,updated_at) VALUES ('run-quick-unformed','pending_retry','{}','2026-08-27T10:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &recordingEnforcement{}
@@ -347,6 +518,9 @@ func TestQualityProjectorPublishesUnformedQuickFailure(t *testing.T) {
 	var state string
 	if err := db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id='run-quick-unformed'`).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("quick unformed health state=%q err=%v", state, err)
+	}
+	if decision := readMergedDecision(t, db, "run-quick-unformed"); decision["result"] != "applied" || decision["enforcementId"] != "enf-recording" {
+		t.Fatalf("quick unformed decision=%+v", decision)
 	}
 }
 

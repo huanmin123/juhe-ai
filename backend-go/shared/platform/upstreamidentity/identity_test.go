@@ -10,7 +10,7 @@ func TestApplySystemClientHeadersUsesZCodeForExactGLMCodingProfiles(t *testing.T
 		t.Run(profileID, func(t *testing.T) {
 			headers := http.Header{}
 			ApplySystemClientHeaders(headers, Input{ProviderCode: "glm", ProviderProtocolProfileID: profileID, CredentialType: "api_key"})
-			if headers.Get("User-Agent") != "ZCode/3.11.2" || headers.Get("HTTP-Referer") != "https://zcode.z.ai" || headers.Get("X-ZCode-App-Version") != "3.11.2" || headers.Get("X-Title") != "Z Code@electron" {
+			if headers.Get("User-Agent") != "ZCode/"+ZCodeVersion || headers.Get("HTTP-Referer") != "https://zcode.z.ai" || headers.Get("X-ZCode-App-Version") != ZCodeVersion || headers.Get("X-Title") != "Z Code@electron" {
 				t.Fatalf("ZCode identity headers=%v", headers)
 			}
 			for _, dynamic := range []string{"X-Client-Ts", "X-Client-Sig", "X-Client-Nonce", "X-Device-Mid", "X-Client-Pow", "X-Session-Id"} {
@@ -35,7 +35,7 @@ func TestApplySystemClientHeadersSelectsZCodeForWholeGLMFamily(t *testing.T) {
 	} {
 		headers := http.Header{}
 		ApplySystemClientHeaders(headers, input)
-		if headers.Get("User-Agent") != "ZCode/3.11.2" || headers.Get("HTTP-Referer") != "https://zcode.z.ai" || headers.Get("X-ZCode-App-Version") != "3.11.2" || headers.Get("X-Title") != "Z Code@electron" {
+		if headers.Get("User-Agent") != "ZCode/"+ZCodeVersion || headers.Get("HTTP-Referer") != "https://zcode.z.ai" || headers.Get("X-ZCode-App-Version") != ZCodeVersion || headers.Get("X-Title") != "Z Code@electron" {
 			t.Fatalf("GLM family must use the full ZCode identity: input=%+v headers=%v", input, headers)
 		}
 		if headers.Get("anthropic-beta") != "" || headers.Get("User-Agent") == OpenCodeUserAgent {
@@ -115,7 +115,7 @@ func TestApplySystemClientHeadersDoesNotImpersonateOpenCodeForOAuthFallback(t *t
 func TestApplySystemClientHeadersKeepsKnownClientBoundIdentities(t *testing.T) {
 	claude := http.Header{}
 	ApplySystemClientHeaders(claude, Input{ProviderCode: "anthropic", ProviderProtocolProfileID: ProfileAnthropicAnthropicV1, CredentialType: "oauth"})
-	if claude.Get("User-Agent") != "claude-cli/2.1.161 (external, cli)" || claude.Get("x-stainless-runtime") != "node" || claude.Get("anthropic-beta") == "" {
+	if claude.Get("User-Agent") != ClaudeCodeUserAgent || claude.Get("x-stainless-runtime") != "node" || claude.Get("anthropic-beta") == "" {
 		t.Fatalf("Claude Code identity headers=%v", claude)
 	}
 
@@ -136,13 +136,15 @@ func TestApplySystemClientHeadersKeepsKnownClientBoundIdentities(t *testing.T) {
 
 	gemini := http.Header{}
 	ApplySystemClientHeaders(gemini, Input{ProviderCode: "gemini", ProviderProtocolProfileID: ProfileGeminiNativeV1Beta, CredentialType: "google_oauth", OAuthType: "code_assist"})
-	if gemini.Get("User-Agent") != "GeminiCLI/0.1.5 (Windows; AMD64)" {
+	if gemini.Get("User-Agent") != GeminiCLIUserAgent {
 		t.Fatalf("Gemini CLI identity headers=%v", gemini)
 	}
 
 	grok := http.Header{}
 	ApplySystemClientHeaders(grok, Input{ProviderCode: "xai", ProviderProtocolProfileID: ProfileXAIOpenAIV1, CredentialType: "oauth", UpstreamHostname: "cli-chat-proxy.grok.com"})
-	if grok.Get("User-Agent") != "xai-grok-workspace/0.2.93" || grok.Get("x-xai-token-auth") != "xai-grok-cli" {
+	if grok.Get("User-Agent") != "xai-grok-workspace/"+GrokCLIClientVersion ||
+		grok.Get("x-xai-token-auth") != "xai-grok-cli" ||
+		grok.Get("x-grok-client-version") != GrokCLIClientVersion {
 		t.Fatalf("Grok identity headers=%v", grok)
 	}
 

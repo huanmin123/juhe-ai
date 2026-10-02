@@ -18,7 +18,11 @@ import type {
   ModelQualitySchedule,
   ModelQualityScheduleListResult,
   ModelQualityScheduleMutationInput,
-  ModelQualitySchedulePatchInput
+  ModelQualitySchedulePatchInput,
+  ModelQualityScheduleRunNowBatchItem,
+  ModelQualityScheduleRunNowBatchResult,
+  ModelQualityScheduleRunNowInput,
+  ModelQualityScheduleRunNowResult
 } from '@/types/domain'
 import type { ModelCheckScopeParams, ModelCheckStreamOptions } from '../contracts'
 import { http, noTimeout, unwrap } from '../http'
@@ -40,6 +44,8 @@ export const modelChecksApi = {
   saveQualitySchedule: (payload: ModelQualityScheduleMutationInput, params?: ModelCheckScopeParams) => unwrap<ModelQualitySchedule>(http.post('/model-checks/quality-schedules', payload, { params })),
   patchQualitySchedule: (id: string, payload: ModelQualitySchedulePatchInput, params?: ModelCheckScopeParams) => unwrap<ModelQualitySchedule>(http.patch(`/model-checks/quality-schedules/${id}`, payload, { params })),
   deleteQualitySchedule: (id: string, params?: ModelCheckScopeParams) => unwrap<{ deleted: boolean }>(http.delete(`/model-checks/quality-schedules/${id}`, { params })),
+  runNowQualitySchedule: (scheduleId: string, payload: ModelQualityScheduleRunNowInput, params?: ModelCheckScopeParams) => unwrap<ModelQualityScheduleRunNowResult>(http.post(`/model-checks/quality-schedules/${scheduleId}/run-now`, payload, { params })),
+  runNowQualitySchedulesBatch: (items: ModelQualityScheduleRunNowBatchItem[], params?: ModelCheckScopeParams) => unwrap<ModelQualityScheduleRunNowBatchResult>(http.post('/model-checks/quality-schedules/run-now-batch', { items }, { params })),
   questionBankList: (params?: ModelCheckScopeParams & ModelCheckQuestionBankListParams) => unwrap<ModelCheckQuestionBankListResult>(http.get('/model-checks/question-bank', { params })),
   questionBankCreate: (payload: ModelCheckQuestionBankMutationInput, params?: ModelCheckScopeParams) => unwrap<ModelCheckQuestionBankItem>(http.post('/model-checks/question-bank', payload, { params })),
   questionBankDetail: (id: string, params?: ModelCheckScopeParams) => unwrap<ModelCheckQuestionBankItem>(http.get(`/model-checks/question-bank/${id}`, { params })),
@@ -65,6 +71,8 @@ export const myModelChecksApi = {
   saveQualitySchedule: (payload: ModelQualityScheduleMutationInput) => unwrap<ModelQualitySchedule>(http.post('/my-model-checks/quality-schedules', payload)),
   patchQualitySchedule: (id: string, payload: ModelQualitySchedulePatchInput) => unwrap<ModelQualitySchedule>(http.patch(`/my-model-checks/quality-schedules/${id}`, payload)),
   deleteQualitySchedule: (id: string) => unwrap<{ deleted: boolean }>(http.delete(`/my-model-checks/quality-schedules/${id}`)),
+  runNowQualitySchedule: (scheduleId: string, payload: ModelQualityScheduleRunNowInput) => unwrap<ModelQualityScheduleRunNowResult>(http.post(`/my-model-checks/quality-schedules/${scheduleId}/run-now`, payload)),
+  runNowQualitySchedulesBatch: (items: ModelQualityScheduleRunNowBatchItem[]) => unwrap<ModelQualityScheduleRunNowBatchResult>(http.post('/my-model-checks/quality-schedules/run-now-batch', { items })),
   questionBankList: (params?: ModelCheckQuestionBankListParams) => unwrap<ModelCheckQuestionBankListResult>(http.get('/my-model-checks/question-bank', { params })),
   questionBankCreate: (payload: ModelCheckQuestionBankMutationInput) => unwrap<ModelCheckQuestionBankItem>(http.post('/my-model-checks/question-bank', payload)),
   questionBankDetail: (id: string) => unwrap<ModelCheckQuestionBankItem>(http.get(`/my-model-checks/question-bank/${id}`)),

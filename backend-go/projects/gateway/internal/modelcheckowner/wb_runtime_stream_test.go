@@ -132,14 +132,12 @@ func TestWBStoreAppendItemOnlyPersistsWhileRunRunning(t *testing.T) {
 	})
 }
 
-// wbHealthRuntimeDDL 在运行时 DDL 之上补齐健康表的两个错误列，
-// 使 ApplyHealthFact 的完整列契约可以在内存库中执行。
+// wbHealthRuntimeDDL 提供含健康表完整列契约（含 error_code/error_message）
+// 的运行时 DDL：这两列已并入 runtimeTestDDL 基础夹具，与真实 schema 及
+// ApplyHealthFact 的写入列保持一致。
 func wbHealthRuntimeDDL(t *testing.T) []string {
 	t.Helper()
-	return append(runtimeTestDDL(),
-		`ALTER TABLE account_quality_health_hourly ADD COLUMN error_code TEXT`,
-		`ALTER TABLE account_quality_health_hourly ADD COLUMN error_message TEXT`,
-	)
+	return runtimeTestDDL()
 }
 
 // 健康发布契约：quick 质量失败 + 明确允许执行时必须发布健康事实并标记 applied；
@@ -154,9 +152,9 @@ func TestWBRunQuickQualityFailurePublishesHealthFactOrRetryableFailure(t *testin
 		}
 		store.HealthStatHour = statHour
 		enforced := make(chan QualityEnforcement, 1)
-		projector := &QualityProjector{Store: store, Enforcement: EnforcementApplierFunc(func(_ context.Context, input QualityEnforcement) error {
+		projector := &QualityProjector{Store: store, Enforcement: EnforcementApplierFunc(func(_ context.Context, input QualityEnforcement) (EnforcementOutcome, error) {
 			enforced <- input
-			return nil
+			return EnforcementOutcome{EnforcementID: "enf-stream", Generation: 1, BeforeStatus: "active", AfterStatus: "quality_isolated"}, nil
 		})}
 		result, events := wbRunQualityFailingProbe(t, store, projector, nil)
 		if result.Status != string(RunCompleted) {
@@ -246,8 +244,8 @@ func wbRunQualityFailingProbe(t *testing.T, store *Store, projector *QualityProj
 }
 
 // EnforcementApplierFunc 让测试内联实现 Business 执行端口。
-type EnforcementApplierFunc func(context.Context, QualityEnforcement) error
+type EnforcementApplierFunc func(context.Context, QualityEnforcement) (EnforcementOutcome, error)
 
-func (f EnforcementApplierFunc) Apply(ctx context.Context, input QualityEnforcement) error {
+func (f EnforcementApplierFunc) Apply(ctx context.Context, input QualityEnforcement) (EnforcementOutcome, error) {
 	return f(ctx, input)
 }

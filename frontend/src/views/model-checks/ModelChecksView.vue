@@ -126,6 +126,8 @@
       @model-dropdown-visible-change="handleScheduleModelOptionsDropdown"
       @delete="deleteSchedule"
       @page-change="handleSchedulePageChange"
+      @run-now="runScheduleNow"
+      @run-now-batch="runSchedulesNowBatch"
       @save="saveSchedule"
     />
 
@@ -135,6 +137,7 @@
 
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import axios from 'axios'
 import { message } from '@/lib/antd'
 
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -167,7 +170,9 @@ import type {
   ModelQualityPolicyUpdateInput,
   ModelQualitySchedule,
   ModelQualityScheduleMutationInput,
-  ModelQualitySchedulePatchInput
+  ModelQualitySchedulePatchInput,
+  ModelQualityScheduleRunNowBatchItem,
+  ModelQualityScheduleRunNowBatchItemResult
 } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import {
@@ -270,6 +275,7 @@ let scheduleAccountOptionsLoadedKeyword: string | undefined
 let scheduleAccountModelOptionsLoadingKey: string | undefined
 let scheduleAccountOptionsGeneration = 0
 let schedulesRequestId = 0
+let scheduleRunNowRequestId = 0
 let pageActive = true
 const scheduleAccountModelRequestCoordinator = createModelCheckDemandRequestCoordinator()
 const scheduleAccountModelOptionsLoadedIds = new Set<string>()
@@ -749,6 +755,82 @@ async function deleteSchedule(id: string) {
 async function handleSchedulePageChange(page: number) {
   schedulesPage.value = page
   await loadSchedules()
+}
+
+async function runScheduleNow(item: ModelQualitySchedule) {
+  if (item.executionState === 'running') {
+    message.warning('该账户正在执行检测')
+    return
+  }
+  const requestId = ++scheduleRunNowRequestId
+  const contextKey = scheduleRequestContextKey()
+  try {
+    await modelChecksApi.runNowQualitySchedule(item.id, { revision: item.revision }, modelCheckScopeParams.value)
+    if (!isCurrentScheduleRunNowRequest(requestId, contextKey)) return
+    message.success('已发起立即执行')
+    await loadSchedules()
+  } catch (error) {
+    if (!isCurrentScheduleRunNowRequest(requestId, contextKey)) return
+    if (isQualityScheduleRunConflict(error)) {
+      message.warning('该账户正在执行检测')
+      return
+    }
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '发起立即执行失败'))
+  }
+}
+
+async function runSchedulesNowBatch(items: ModelQualityScheduleRunNowBatchItem[]) {
+  if (!items.length) return
+  const requestId = ++scheduleRunNowRequestId
+  const contextKey = scheduleRequestContextKey()
+  try {
+    const result = await modelChecksApi.runNowQualitySchedulesBatch(items, modelCheckScopeParams.value)
+    if (!isCurrentScheduleRunNowRequest(requestId, contextKey)) return
+    summarizeScheduleRunNowBatch(result.results)
+    await loadSchedules()
+  } catch (error) {
+    if (!isCurrentScheduleRunNowRequest(requestId, contextKey)) return
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '发起批量立即执行失败'))
+  }
+}
+
+function summarizeScheduleRunNowBatch(results: ModelQualityScheduleRunNowBatchItemResult[]): void {
+  const accepted = results.filter((item) => item.accepted).length
+  const skippedByStatus = new Map<ModelQualityScheduleRunNowBatchItemResult['status'], number>()
+  for (const item of results) {
+    if (item.accepted) continue
+    skippedByStatus.set(item.status, (skippedByStatus.get(item.status) ?? 0) + 1)
+  }
+  const skipped = results.length - accepted
+  if (!skipped) {
+    message.success(`受理 ${accepted} 条，跳过 0 条`)
+    return
+  }
+  const reasonSummary = [...skippedByStatus.entries()]
+    .map(([status, count]) => `${scheduleRunNowSkipReasonText(status)} ${count}`)
+    .join('，')
+  message.warning(`受理 ${accepted} 条，跳过 ${skipped} 条：${reasonSummary}`)
+}
+
+function scheduleRunNowSkipReasonText(status: ModelQualityScheduleRunNowBatchItemResult['status']): string {
+  if (status === 'already_running') return '执行中'
+  if (status === 'stale_revision') return '配置已更新'
+  if (status === 'not_found') return '计划不存在'
+  if (status === 'invalid') return '无效计划'
+  return status
+}
+
+function isQualityScheduleRunConflict(error: unknown): boolean {
+  return axios.isAxiosError(error) && error.response?.status === 409
+}
+
+function isCurrentScheduleRunNowRequest(requestId: number, contextKey: string): boolean {
+  return pageActive
+    && schedulesOpen.value
+    && requestId === scheduleRunNowRequestId
+    && contextKey === scheduleRequestContextKey()
 }
 
 function handleTargetChange() {

@@ -226,7 +226,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if triggerKind == "" {
 		triggerKind = "manual"
 	}
-	if triggerKind != "manual" && triggerKind != "scheduled" && triggerKind != "quality_recovery" {
+	if triggerKind != "manual" && triggerKind != "scheduled" && triggerKind != "quality_recovery" && triggerKind != TriggerKindScheduleNow {
 		return RunResult{}, errors.New("J3b runtime trigger is invalid")
 	}
 	manualEnforcementEligible := runtimeEnforcementAllowed(triggerKind, request)
@@ -275,6 +275,11 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	if err := s.Store.CreateRun(ctx, RunRecord{ID: runID, SystemAccountID: request.SystemAccountID, ActorSystemAccountID: request.ActorSystemAccountID, ProviderCode: providerCode, TargetType: request.TargetType, TargetID: request.TargetID, TargetName: target.TargetName, TargetOwnerSystemAccountID: targetOwnerOrDefault(target.TargetOwnerSystemAccountID, request.SystemAccountID), AccountID: accountID, GroupID: target.GroupID, Model: request.Model, Profile: request.Profile, TriggerKind: triggerKind, ScheduleID: request.ScheduleID, TrustedComparison: request.TrustedComparison, TrustedComparisonAvailable: request.TrustedComparison && comparisonTarget.Endpoint != "", ProbeSetVersion: probeSet, TraceID: traceID, StartedAt: now, RequestSummary: payload, PolicySnapshot: policySnapshot}); err != nil {
 		return RunResult{}, err
+	}
+	// OnStarted 让受理方（run-now handler）在异步执行早期拿到 runId；
+	// 仅在 CreateRun 成功后回调一次，回调方自行保证非阻塞。
+	if request.OnStarted != nil {
+		request.OnStarted(runID)
 	}
 	lease := s.Lease
 	if lease <= 0 {
@@ -496,14 +501,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	// Recovery validates whether an existing isolation can be cleared; it must
 	// not create a second enforcement generation when the recovery probe fails.
 	enforcementAllowed := manualEnforcementEligible && qualityFailed && triggerKind != "quality_recovery"
-	qualityDecisionPayload := map[string]any{"evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "hardQualityFailure": hardQualityFailure, "enforcementAllowed": enforcementAllowed, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified}
-	if modelCheckUnverified {
-		qualityDecisionPayload["result"] = "not_triggered"
-		qualityDecisionPayload["qualityDecisionSuppressedReason"] = "未形成质量判定证据"
-		enforcementAllowed = false
-		qualityDecisionPayload["enforcementAllowed"] = false
-	}
-	qualityDecision, _ := json.Marshal(qualityDecisionPayload)
+	triggered := qualityFailed && !modelCheckUnverified
 	if err := ctx.Err(); err != nil {
 		return s.finishFailure(ctx, runID, input, claim, now, err)
 	}
@@ -513,6 +511,27 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	if s.Now != nil {
 		finishedAt = s.Now().UTC()
 	}
+	// quality_decision_json v2：finalize 先写判定基础字段（triggerKind/
+	// triggered/hardFailure/score/threshold/configuredAction/reasonCodes/
+	// decidedAt 与 result 初值），健康投影完成后由 MergeRunQualityDecision
+	// 增补 result/beforeStatus/afterStatus/recoveryDueAt/enforcementId/
+	// generation/healthSyncResult/healthStatHour/message。旧历史不回填。
+	decisionReasonCodes := trustReport.ReasonCodes
+	if decisionReasonCodes == nil {
+		decisionReasonCodes = []string{}
+	}
+	decisionThreshold := any(nil)
+	if request.Threshold > 0 {
+		decisionThreshold = request.Threshold
+	}
+	qualityDecisionPayload := map[string]any{"triggerKind": triggerKind, "triggered": triggered, "hardFailure": hardQualityFailure, "score": score, "threshold": decisionThreshold, "configuredAction": penaltyAction, "reasonCodes": decisionReasonCodes, "result": "not_triggered", "decidedAt": finishedAt.Format(time.RFC3339), "evidenceFormed": aggregate.Formed, "trustFormed": aggregate.TrustFormed, "missingFamilies": aggregate.Missing, "partialFamilies": aggregate.Partial, "invalidFamilies": aggregate.Invalid, "manualEnforcementEnabled": request.ManualEnforcementEnabled, "ownPhysicalAccount": request.OwnPhysicalAccount, "hardQualityFailure": hardQualityFailure, "enforcementAllowed": enforcementAllowed, "trustReport": trustReport, "modelCheckUnverified": modelCheckUnverified}
+	if modelCheckUnverified {
+		qualityDecisionPayload["result"] = "not_triggered"
+		qualityDecisionPayload["qualityDecisionSuppressedReason"] = "未形成质量判定证据"
+		enforcementAllowed = false
+		qualityDecisionPayload["enforcementAllowed"] = false
+	}
+	qualityDecision, _ := json.Marshal(qualityDecisionPayload)
 	if err := s.Store.CommitOutcome(finalizeCtx, Outcome{OutcomeID: outcomeID, InputID: input.InputID, InputDigest: input.InputDigest, Payload: resultPayload}, claim, finishedAt); err != nil {
 		return RunResult{}, err
 	}
@@ -568,6 +587,10 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		"partialFamilies":      aggregate.Partial,
 		"invalidFamilies":      aggregate.Invalid,
 		"modelCheckUnverified": modelCheckUnverified,
+		// 恢复门槛输入：quick 与 full 的证据要求不同，hardFailure 独立于
+		// 分数阻止恢复（hardFailure 缺键按无硬失败处理）。
+		"profile":     request.Profile,
+		"hardFailure": hardQualityFailure,
 		"qualityDecisionSuppressedReason": func() string {
 			if modelCheckUnverified {
 				return "未形成质量判定证据"
@@ -578,15 +601,16 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 }
 
 // runtimeEnforcementAllowed freezes the Node manual-diagnostics rule before
-// any probe runs. Scheduled and recovery checks are policy-owned automation;
-// only a manual run additionally requires both the explicit policy flag and a
-// physical account, never an authorization instance.
+// any probe runs. Scheduled, schedule-now, and recovery checks are
+// policy-owned automation; only a manual run additionally requires both the
+// explicit policy flag and a physical account, never an authorization
+// instance.
 func runtimeEnforcementAllowed(triggerKind string, request RunRequest) bool {
 	if triggerKind == "" {
 		triggerKind = "manual"
 	}
 	if triggerKind != "manual" {
-		return triggerKind == "scheduled" || triggerKind == "quality_recovery"
+		return triggerKind == "scheduled" || triggerKind == "quality_recovery" || triggerKind == TriggerKindScheduleNow
 	}
 	return request.ManualEnforcementEnabled && request.OwnPhysicalAccount
 }

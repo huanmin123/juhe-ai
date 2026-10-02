@@ -226,6 +226,34 @@ body.immersive-layout-active {
   background: rgba(169, 133, 72, 0.14);
   border-color: rgba(169, 133, 72, 0.26);
 }
+
+/* 语义 tag 全站浅色化：App.vue 的纸墨 seed（低饱和）经 antd 色板派生出的
+   colorXxxBg 是中等明度不透明底（如 success → rgb(194,207,196)），观感发深发闷；
+   覆盖为 type-tag 同款「主色字 + 12% 底 + 26% 边」。双类选择器压过 antdv
+   运行时注入的 :where(hash).ant-tag-success 单类规则 */
+.ant-tag.ant-tag-success {
+  color: var(--juhe-ok);
+  background: rgba(111, 143, 122, 0.12);
+  border-color: rgba(111, 143, 122, 0.26);
+}
+
+.ant-tag.ant-tag-warning {
+  color: var(--juhe-warn);
+  background: rgba(169, 133, 72, 0.12);
+  border-color: rgba(169, 133, 72, 0.26);
+}
+
+.ant-tag.ant-tag-error {
+  color: var(--juhe-danger);
+  background: rgba(157, 85, 71, 0.12);
+  border-color: rgba(157, 85, 71, 0.26);
+}
+
+.ant-tag.ant-tag-processing {
+  color: var(--juhe-accent);
+  background: rgba(83, 105, 107, 0.12);
+  border-color: rgba(83, 105, 107, 0.26);
+}
 .responsive-page-card {
   height: calc(100dvh - 114px);
   overflow: hidden;

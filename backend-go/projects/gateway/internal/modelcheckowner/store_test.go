@@ -396,6 +396,81 @@ func TestListHealthSyncRetriesSkipsMalformedRowsBeforeLaterValidRow(t *testing.T
 	}
 }
 
+// unavailable 结果的重试筛选与首发同规则：可用性事实不要求 formed/trusted，
+// 不得出现"能首发、进不了重试"的窄门（J3B 修复）。
+func TestListHealthSyncRetriesAdmitsUnavailableWithoutFormedEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "health-unavailable-retry.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,status TEXT,account_id TEXT,system_account_id TEXT,provider_code TEXT,model TEXT,profile TEXT,level TEXT,score INTEGER,schedule_id TEXT,policy_snapshot_json TEXT,quality_decision_json TEXT,request_summary_json TEXT,finished_at TEXT,quality_health_sync_status TEXT,updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	finished := "2026-08-27T10:15:00Z"
+	if _, err := db.Exec(`INSERT INTO model_check_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"run-unavailable", "completed", "acct-unavail", "sys-unavail", "openai", "gpt-5.6", "full", "unavailable", 0, nil,
+		`{"revision":"policy-unavail","threshold":70,"action":"quality_isolate","recoveryIntervalMinutes":10}`,
+		`{"evidenceFormed":false,"trustFormed":false}`,
+		`{"configRevision":"3"}`, finished, "failed", finished); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, mode: "sqlite", HealthStatHour: mustHealthStatHourFunc(t, "Asia/Shanghai")}
+	retries, err := store.ListHealthSyncRetries(context.Background(), 10)
+	if err != nil || len(retries) != 1 {
+		t.Fatalf("unavailable retry must be admitted: retries=%#v err=%v", retries, err)
+	}
+	if retries[0].Level != "unavailable" || retries[0].EvidenceFormed || retries[0].TrustFormed {
+		t.Fatalf("unavailable retry=%+v", retries[0])
+	}
+}
+
+// MergeRunQualityDecision：读现有 quality_decision_json、合并结果字段并写回；
+// run 不存在时静默跳过；非法输入必须报错。
+func TestMergeRunQualityDecisionMergesResultFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "merge-decision.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY,quality_decision_json TEXT,updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO model_check_runs(id,quality_decision_json,updated_at) VALUES ('run-merge','{"triggerKind":"scheduled","triggered":true,"result":"not_triggered"}','2026-08-27T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, mode: "sqlite"}
+	if err := store.MergeRunQualityDecision(context.Background(), "run-merge", map[string]any{"result": "applied", "enforcementId": "enf-1", "generation": 2, "beforeStatus": nil, "afterStatus": "quality_isolated", "healthSyncResult": "applied", "healthStatHour": "2026-08-27T10:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	var merged string
+	if err := db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id='run-merge'`).Scan(&merged); err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]any{}
+	if err := json.Unmarshal([]byte(merged), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["triggerKind"] != "scheduled" || fields["result"] != "applied" || fields["enforcementId"] != "enf-1" || fields["generation"] != float64(2) || fields["afterStatus"] != "quality_isolated" || fields["healthSyncResult"] != "applied" {
+		t.Fatalf("merged decision=%s", merged)
+	}
+	if _, ok := fields["beforeStatus"]; !ok {
+		t.Fatalf("explicit null must be preserved: %s", merged)
+	}
+	// run 不存在：静默跳过，不报错（终态 run 可能已被清理）。
+	if err := store.MergeRunQualityDecision(context.Background(), "run-missing", map[string]any{"result": "applied"}); err != nil {
+		t.Fatalf("missing run must be skipped silently: %v", err)
+	}
+	if err := store.MergeRunQualityDecision(context.Background(), "", map[string]any{"result": "applied"}); err == nil {
+		t.Fatal("empty run id must fail closed")
+	}
+	if err := store.MergeRunQualityDecision(context.Background(), "run-merge", nil); err == nil {
+		t.Fatal("empty patch must fail closed")
+	}
+}
+
 func TestIssueInputIsImmutableAndIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j3b.db")
 	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")

@@ -343,9 +343,7 @@ defineEmits<{
     display: none;
   }
 
-  .subtitle {
-    display: block;
-  }
+  /* 副标题（页面描述）在窄屏维持隐藏：截断省略后无信息量，单行标题保持顶栏紧凑 */
 }
 
 @media (max-width: 768px) {

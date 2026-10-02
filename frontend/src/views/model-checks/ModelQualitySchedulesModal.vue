@@ -57,7 +57,7 @@
             <div class="schedule-section-label">运行规则</div>
             <div class="schedule-rule-grid">
               <a-form-item label="检查间隔" name="intervalMinutes" :rules="intervalRules">
-                <a-input-number v-model:value="form.intervalMinutes" :min="10" :max="10080" :precision="0" addon-after="分钟" />
+                <a-input-number v-model:value="form.intervalMinutes" :min="1" :max="10080" :precision="0" addon-after="分钟" />
               </a-form-item>
               <a-form-item class="schedule-profile-field" label="检测模式">
                 <a-radio-group v-model:value="form.profile" button-style="solid">
@@ -124,6 +124,10 @@
             <h3>已配置计划</h3>
             <p>共 {{ total }} 条，按账户管理自动检测状态。</p>
           </div>
+          <div v-if="schedules.length" class="schedule-batch-toolbar">
+            <span class="schedule-batch-count">已选 {{ selectedScheduleCount }} 项</span>
+            <a-button size="small" :disabled="!selectedScheduleCount" @click="emitBatchRunNow">批量立即执行</a-button>
+          </div>
         </header>
 
         <a-spin :spinning="loading">
@@ -137,6 +141,7 @@
           </a-empty>
           <div v-else class="schedule-list">
             <div class="schedule-list-columns" aria-hidden="true">
+              <span></span>
               <span>账户</span>
               <span>检查频率</span>
               <span>下次运行</span>
@@ -145,10 +150,17 @@
               <span>操作</span>
             </div>
             <article v-for="item in schedules" :key="item.id" class="schedule-item" :class="{ 'schedule-item-disabled': !item.enabled }">
+              <div class="schedule-item-select">
+                <a-checkbox
+                  :checked="isScheduleSelected(item.id)"
+                  aria-label="选择这条定时检查计划"
+                  @change="handleScheduleChecked(item.id, $event)"
+                />
+              </div>
               <div class="schedule-item-identity">
                 <div class="schedule-item-title-row">
                   <h4>{{ item.accountName || item.accountId }}</h4>
-                  <a-tag :color="item.enabled ? 'green' : 'default'">{{ item.enabled ? '运行中' : '已暂停' }}</a-tag>
+                  <a-tag :color="executionStateColor(item.executionState)">{{ executionStateText(item.executionState) }}</a-tag>
                   <a-tag v-if="item.currentEnforcementAction === 'quality_isolate'" color="red">质量隔离中</a-tag>
                 </div>
                 <div class="schedule-item-subtitle">
@@ -163,7 +175,7 @@
               </div>
               <div class="schedule-metric">
                 <span>下次运行</span>
-                <strong>{{ item.enabled ? formatDateTime(item.nextRunAt) : '计划已暂停' }}</strong>
+                <strong>{{ nextRunText(item) }}</strong>
               </div>
               <div class="schedule-metric">
                 <span>不达标处理</span>
@@ -175,7 +187,7 @@
                 <strong>{{ lastRunText(item) }}</strong>
                 <small v-if="item.lastRunAt">{{ formatDateTime(item.lastRunAt) }}</small>
               </div>
-              <RowActions class="schedule-item-actions" :actions="scheduleActions" @action-click="handleScheduleAction($event, item)" />
+              <RowActions class="schedule-item-actions" :actions="scheduleActionsFor(item)" @action-click="handleScheduleAction($event, item)" />
             </article>
           </div>
 
@@ -201,9 +213,14 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { formatDateTime } from '@/shared/formatters'
-import type { ModelQualityPenaltyAction, ModelQualitySchedule, ModelQualityScheduleMutationInput } from '@/types/domain'
+import type {
+  ModelQualityPenaltyAction,
+  ModelQualitySchedule,
+  ModelQualityScheduleMutationInput,
+  ModelQualityScheduleRunNowBatchItem
+} from '@/types/domain'
 import QuestionBankSelect from './QuestionBankSelect.vue'
-import { statusText } from './modelCheckFormatters'
+import { executionStateColor, executionStateText, statusText } from './modelCheckFormatters'
 import { mergeModelCheckRunModelOptions } from './modelCheckProviderCapabilities'
 
 interface ScheduleAccountOption {
@@ -237,6 +254,8 @@ const emit = defineEmits<{
   (event: 'model-dropdown-visible-change', open: boolean, accountId: string): void
   (event: 'delete', id: string): void
   (event: 'page-change', page: number): void
+  (event: 'run-now', item: ModelQualitySchedule): void
+  (event: 'run-now-batch', items: ModelQualityScheduleRunNowBatchItem[]): void
   (event: 'save', value: ModelQualityScheduleMutationInput): void
   (event: 'update:open', value: boolean): void
 }>()
@@ -253,20 +272,26 @@ const form = reactive<ModelQualityScheduleMutationInput>({
 })
 const scheduleEditorRef = ref<HTMLElement>()
 const selectedScheduleAccountOption = ref<SelectedScheduleAccountOption>()
+const selectedScheduleIds = ref<Set<string>>(new Set())
+const selectedScheduleCount = computed(() => selectedScheduleIds.value.size)
 const simpleEmptyImage = Empty.PRESENTED_IMAGE_SIMPLE
-const scheduleActions: RowActionItem[] = [
-  { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
-  { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: '确认删除这条定时检查计划？' }
-]
+function scheduleActionsFor(item: ModelQualitySchedule): RowActionItem[] {
+  const running = item.executionState === 'running'
+  return [
+    { key: 'run-now', label: running ? '执行中' : '立即执行', icon: 'test', tone: 'info', disabled: running },
+    { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
+    { key: 'delete', label: '删除', icon: 'delete', tone: 'danger', confirmTitle: '确认删除这条定时检查计划？' }
+  ]
+}
 const penaltyOptions: Array<{ label: string; value: ModelQualityPenaltyAction }> = [
   { label: '降级备用', value: 'fallback' },
   { label: '停用', value: 'disable' },
   { label: '质量隔离', value: 'quality_isolate' }
 ]
 const intervalRules = [{
-  validator: (_rule: unknown, value: number) => Number.isInteger(value) && value >= 10 && value <= 10080
+  validator: (_rule: unknown, value: number) => Number.isInteger(value) && value >= 1 && value <= 10080
     ? Promise.resolve()
-    : Promise.reject(new Error('请输入 10 到 10080 的整数'))
+    : Promise.reject(new Error('请输入 1 到 10080 的整数'))
 }]
 const thresholdRules = [{
   validator: (_rule: unknown, value: number) => Number.isInteger(value) && value >= 40 && value <= 100
@@ -304,13 +329,22 @@ const selectedModelOptions = computed(() => {
   return options
 })
 
-watch(() => props.open, (open) => { if (!open) resetForm() })
+watch(() => props.open, (open) => {
+  if (!open) {
+    resetForm()
+    selectedScheduleIds.value = new Set()
+  }
+})
+// 翻页清空已选：批量提交只携带当前页条目，保留跨页选中会让"已选 N 项"与实际提交不一致。
+watch(() => props.page, () => {
+  selectedScheduleIds.value = new Set()
+})
 watch(() => props.resetToken, () => resetForm())
 watch(() => form.accountId, () => ensureSelectedModel())
 watch(() => props.accountOptions, () => ensureSelectedModel(), { deep: true })
 
 function save() {
-  if (!form.accountId || !form.model || !Number.isInteger(form.intervalMinutes) || form.intervalMinutes < 10) return
+  if (!form.accountId || !form.model || !Number.isInteger(form.intervalMinutes) || form.intervalMinutes < 1 || form.intervalMinutes > 10080) return
   if (!selectedModelOptions.value.some((item) => item.value === form.model)) return
   if (!Number.isInteger(form.penaltyThreshold) || form.penaltyThreshold < 40 || form.penaltyThreshold > 100) return
   if (form.penaltyAction === 'quality_isolate' && (!Number.isInteger(form.recoveryIntervalMinutes) || form.recoveryIntervalMinutes < 10 || form.recoveryIntervalMinutes > 10080)) return
@@ -356,8 +390,27 @@ function handleAccountChange(accountId?: string): void {
 }
 
 function handleScheduleAction(action: string, item: ModelQualitySchedule) {
+  if (action === 'run-now') emit('run-now', item)
   if (action === 'edit') edit(item)
   if (action === 'delete') emit('delete', item.id)
+}
+
+function isScheduleSelected(id: string): boolean {
+  return selectedScheduleIds.value.has(id)
+}
+
+function handleScheduleChecked(id: string, event: { target: { checked: boolean } }): void {
+  const next = new Set(selectedScheduleIds.value)
+  if (event.target.checked) next.add(id)
+  else next.delete(id)
+  selectedScheduleIds.value = next
+}
+
+function emitBatchRunNow(): void {
+  const items = props.schedules.filter((item) => selectedScheduleIds.value.has(item.id))
+  if (!items.length) return
+  selectedScheduleIds.value = new Set()
+  emit('run-now-batch', items.map((item) => ({ scheduleId: item.id, revision: item.revision })))
 }
 
 function resetForm() {
@@ -392,8 +445,17 @@ function penaltyActionHint(action: ModelQualityPenaltyAction): string {
   return '账户将降级为备用'
 }
 
+function nextRunText(item: ModelQualitySchedule): string {
+  if (item.executionState === 'paused') return '计划已暂停'
+  if (item.executionState === 'blocked_account') return item.accountStatus ? `账户状态阻塞（${item.accountStatus}）` : '账户状态阻塞'
+  return formatDateTime(item.nextRunAt)
+}
+
 function lastRunText(item: ModelQualitySchedule): string {
-  return item.lastRunStatus ? statusText(item.lastRunStatus) : '尚未运行'
+  const scoreMissing = item.lastRunScore === null || item.lastRunScore === undefined
+  if (!item.lastRunStatus && scoreMissing) return '尚未运行'
+  const statusLabel = item.lastRunStatus ? statusText(item.lastRunStatus) : '尚未运行'
+  return `${statusLabel} · ${scoreMissing ? '-' : `${item.lastRunScore} 分`}`
 }
 </script>
 
@@ -591,6 +653,19 @@ function lastRunText(item: ModelQualitySchedule): string {
   margin-bottom: 12px;
 }
 
+.schedule-batch-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.schedule-batch-count {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .schedule-list {
   border-top: 1px solid #e2e8f0;
 }
@@ -598,8 +673,13 @@ function lastRunText(item: ModelQualitySchedule): string {
 .schedule-list-columns,
 .schedule-item {
   display: grid;
-  grid-template-columns: minmax(190px, 1.25fr) minmax(90px, .65fr) minmax(150px, 1fr) minmax(170px, 1.15fr) minmax(100px, .75fr) 64px;
+  grid-template-columns: 32px minmax(190px, 1.25fr) minmax(90px, .65fr) minmax(150px, 1fr) minmax(170px, 1.15fr) minmax(100px, .75fr) 92px;
   gap: 14px;
+}
+
+.schedule-item-select {
+  display: flex;
+  align-items: center;
 }
 
 .schedule-list-columns {
@@ -781,19 +861,31 @@ function lastRunText(item: ModelQualitySchedule): string {
     margin-top: 0;
   }
 
+  .schedule-list-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .schedule-list-columns {
     display: none;
   }
 
   .schedule-item {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: auto minmax(0, 1fr);
     gap: 14px 20px;
     align-items: start;
   }
 
+  .schedule-item-select {
+    grid-column: 1;
+    grid-row: 1;
+    padding-top: 1px;
+  }
+
   .schedule-item-identity {
-    grid-column: 1 / -1;
-    padding-right: 76px;
+    grid-column: 2;
+    grid-row: 1;
+    padding-right: 96px;
   }
 
   .schedule-item-actions {
@@ -841,21 +933,33 @@ function lastRunText(item: ModelQualitySchedule): string {
   }
 
   .schedule-item {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 12px;
     padding: 14px 0;
   }
 
-  .schedule-item-identity {
+  .schedule-item-select {
     grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .schedule-item-identity {
+    grid-column: 2;
+    grid-row: 1;
     padding-right: 0;
   }
 
   .schedule-item-actions {
     position: static;
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 1;
     align-self: start;
+  }
+
+  .schedule-item-actions :deep(.row-actions) {
+    flex-direction: column;
+    align-items: flex-end;
   }
 
   .schedule-metric {

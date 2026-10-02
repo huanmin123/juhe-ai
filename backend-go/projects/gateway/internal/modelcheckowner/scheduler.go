@@ -70,14 +70,13 @@ type Scheduler struct {
 	Executor SchedulerExecutor
 	Interval time.Duration
 	Batch    int
-	// MaxConcurrency bounds how many claimed tasks execute at the same time
-	// inside one claimed batch (default 4). The claim implementations own
-	// lease and concurrency policy at the store level; this cap only stops
-	// one oversized batch from spawning unbounded probe goroutines. Claimed
-	// tasks beyond the cap wait for a slot instead of being re-claimed later;
-	// a queued task may therefore start after its lease has already expired,
-	// and the store's stale-lease owner/fence CAS fail-safes its final
-	// lifecycle write in that case.
+	// MaxConcurrency bounds how many tasks one owner cycle claims (and
+	// therefore executes) per kind (default 4). The claim limit is the
+	// execution capacity: a claimed task receives its slot immediately, so a
+	// task never sits queued past its lease while siblings hold the slots.
+	// The claim/settlement CAS (owner + lease + fence) remains the zombie
+	// write barrier; Batch only lowers the per-kind claim limit below the
+	// concurrency cap when explicitly configured.
 	MaxConcurrency int
 	Kinds          []SchedulerKind
 	Now            func() time.Time
@@ -91,10 +90,11 @@ type Scheduler struct {
 const schedulerMaxConcurrencyDefault = 4
 
 // Run executes all configured scheduler kinds in one Gateway owner process.
-// Concurrent task execution inside a claimed batch is bounded by
-// MaxConcurrency (default 4); claim implementations own the store-level lease
-// and concurrency policy. A failed task remains claimable for the next retry
-// scan.
+// Every cycle claims at most MaxConcurrency tasks per kind (further lowered by
+// Batch when Batch>0), so the lease clock starts exactly when an execution
+// slot is available and no kind's due backlog can starve the other kinds'
+// scans: recovery and health compensation stay bounded in the same loop.
+// A failed task remains claimable for the next retry scan.
 func (s *Scheduler) Run(ctx context.Context) error {
 	if s == nil || s.Source == nil || s.Executor == nil {
 		return errors.New("J3b scheduler is not initialized")
@@ -110,6 +110,12 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	maxConcurrency := s.MaxConcurrency
 	if maxConcurrency <= 0 {
 		maxConcurrency = schedulerMaxConcurrencyDefault
+	}
+	// 领取上限即执行容量：每轮每 kind 最多领取可立即并发执行的任务数，
+	// 避免租约在排队等待中烧完（D1）。
+	claimLimit := batch
+	if claimLimit > maxConcurrency {
+		claimLimit = maxConcurrency
 	}
 	kinds := s.Kinds
 	if len(kinds) == 0 {
@@ -137,7 +143,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 	runCycle := func() {
 		for _, kind := range kinds {
-			tasks, err := s.Source.Claim(ctx, kind, now().UTC(), batch)
+			tasks, err := s.Source.Claim(ctx, kind, now().UTC(), claimLimit)
 			if err != nil {
 				report(SchedulerError{Operation: SchedulerErrorClaim, Kind: kind, Err: err})
 				continue
@@ -159,14 +165,16 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 // executeSchedulerBatch runs independently leased tasks concurrently, bounded
-// by maxConcurrency. Each task owns its own completion/failure fence; one slow
-// or failed probe does not serialize unrelated work until the cap is reached,
-// and tasks beyond the cap wait for a slot inside the lease they were claimed
-// under (scheduled runs are additionally bounded by RunBudget, health retries
-// are pure durable projections). Execution errors are persisted through
-// lifecycle.Fail for retry. Every error is emitted to report, but no single
-// leased task is allowed to terminate the owner loop. report may be called
-// concurrently because sibling tasks run concurrently.
+// by maxConcurrency. Run claims at most maxConcurrency tasks per kind, so
+// every task receives its slot immediately; the bound is kept here as a
+// defensive cap for direct executeSchedulerBatch callers. Each task owns its
+// own completion/failure fence; one slow or failed probe does not serialize
+// unrelated work until the cap is reached (scheduled runs are additionally
+// bounded by RunBudget, health retries are pure durable projections).
+// Execution errors are persisted through lifecycle.Fail for retry. Every
+// error is emitted to report, but no single leased task is allowed to
+// terminate the owner loop. report may be called concurrently because sibling
+// tasks run concurrently.
 func executeSchedulerBatch(ctx context.Context, executor SchedulerExecutor, source SchedulerSource, kind SchedulerKind, tasks []ScheduleTask, report func(SchedulerError), maxConcurrency int) {
 	if len(tasks) == 0 {
 		return

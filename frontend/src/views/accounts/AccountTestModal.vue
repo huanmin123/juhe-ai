@@ -17,7 +17,7 @@
           <div class="test-account-detail">
             <div class="test-account-name">{{ account.name }}</div>
             <div class="test-account-meta">
-              <a-tag color="processing">{{ accountTypeText(account.type) }}</a-tag>
+              <a-tag :class="`type-tag type-tag-${account.type}`">{{ accountTypeText(account.type) }}</a-tag>
               <a-tag :color="proxyTagColor">{{ proxyTagText }}</a-tag>
               <a-tag color="geekblue">{{ currentProviderName }}</a-tag>
             </div>

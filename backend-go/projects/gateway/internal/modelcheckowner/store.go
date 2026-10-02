@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -407,6 +408,101 @@ func (s *Store) ReadHealthFact(ctx context.Context, accountID, statHour string) 
 	return fact, true, nil
 }
 
+// MergeRunQualityDecision 用健康投影产生的结果字段（result/beforeStatus/
+// afterStatus/recoveryDueAt/enforcementId/generation/healthSyncResult/
+// healthStatHour/message）增补终态 run 的 quality_decision_json：读取现有
+// JSON、合并 patch 键、写回。旧历史不回填不伪造；run 不存在时静默跳过并
+// 记录告警（终态 run 可能已被清理，投影结果无处落地不构成错误）。
+func (s *Store) MergeRunQualityDecision(ctx context.Context, runID string, patch map[string]any) error {
+	if s == nil || s.db == nil {
+		return errors.New("J3b store is not open")
+	}
+	if strings.TrimSpace(runID) == "" || len(patch) == 0 {
+		return errors.New("J3b quality decision merge input is invalid")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin J3b quality decision merge: %w", err)
+	}
+	defer tx.Rollback()
+	var existing []byte
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT quality_decision_json FROM `+s.table("model_check_runs")+` WHERE id=?`), runID).Scan(&existing); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("J3b quality decision merge skipped: run not found", "runId", runID)
+			return nil
+		}
+		return fmt.Errorf("read J3b quality decision for merge: %w", err)
+	}
+	merged := map[string]any{}
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &merged); err != nil || merged == nil {
+			return fmt.Errorf("parse J3b quality decision for merge: %w", err)
+		}
+	}
+	for key, value := range patch {
+		merged[key] = value
+	}
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return fmt.Errorf("encode J3b quality decision merge: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_check_runs")+` SET quality_decision_json=?,updated_at=? WHERE id=?`), string(normalizeJSON(encoded)), time.Now().UTC().Format(time.RFC3339Nano), runID); err != nil {
+		return fmt.Errorf("merge J3b quality decision: %w", err)
+	}
+	return tx.Commit()
+}
+
+// RunScoresByIDs 批量读取 run 的 score（D5 lastRunScore 数据源）。ids 上限
+// 200（分页最大 100+1 的两倍冗余）；不存在的 id 不出现在结果里。
+func (s *Store) RunScoresByIDs(ctx context.Context, ids []string) (map[string]int, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("J3b store is not open")
+	}
+	cleaned := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+	if len(cleaned) == 0 {
+		return map[string]int{}, nil
+	}
+	if len(cleaned) > 200 {
+		return nil, errors.New("J3b run score lookup input is too large")
+	}
+	placeholders := make([]string, len(cleaned))
+	args := make([]any, len(cleaned))
+	for i, id := range cleaned {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT id,score FROM `+s.table("model_check_runs")+` WHERE id IN (`+strings.Join(placeholders, ",")+`)`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("read J3b run scores: %w", err)
+	}
+	defer rows.Close()
+	scores := make(map[string]int, len(cleaned))
+	for rows.Next() {
+		var id string
+		var score int
+		if err := rows.Scan(&id, &score); err != nil {
+			return nil, fmt.Errorf("scan J3b run score: %w", err)
+		}
+		scores[id] = score
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate J3b run scores: %w", err)
+	}
+	return scores, nil
+}
+
 // MarkHealthSync records the health publication outcome without changing the
 // terminal run status. It is fenced by the run ID and is idempotent for the
 // same state.
@@ -496,9 +592,11 @@ func (s *Store) ListHealthSyncRetries(ctx context.Context, limit int) ([]HealthS
 		qualityFailure := retry.Score < retry.Threshold || retry.Level == "suspicious" || retry.HardQualityFailure
 		// Full diagnostics still require their formed/trusted aggregate. Quick
 		// quality failures are admitted with their explicit quality gate,
-		// matching QualityProjector's direct publication path.
+		// matching QualityProjector's direct publication path. Unavailable rows
+		// follow the first-publication rule: an availability fact never
+		// requires formed/trusted evidence, so its retry must not either.
 		quickFailure := retry.Profile == "quick" && retry.Level != "unavailable" && qualityFailure
-		if !quickFailure && (!decisionFields.EvidenceFormed || !decisionFields.TrustFormed) {
+		if retry.Level != "unavailable" && !quickFailure && (!decisionFields.EvidenceFormed || !decisionFields.TrustFormed) {
 			continue
 		}
 		retry.EvidenceFormed, retry.TrustFormed = decisionFields.EvidenceFormed, decisionFields.TrustFormed

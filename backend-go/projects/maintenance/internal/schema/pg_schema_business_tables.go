@@ -713,7 +713,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       system_account_id text NOT NULL,
       account_id text NOT NULL,
       model text NOT NULL,
-      interval_minutes integer NOT NULL DEFAULT 60 CHECK (interval_minutes BETWEEN 10 AND 10080),
+      interval_minutes integer NOT NULL DEFAULT 60 CHECK (interval_minutes BETWEEN 1 AND 10080),
       profile text NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
       penalty_threshold integer NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
       penalty_action text NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
@@ -2202,5 +2202,50 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health
 		SchemaName: "juhe_business",
 		Source:     "model-quality-custom-question-ids-pg-column",
 		SQL:        `ALTER TABLE model_quality_schedules ADD COLUMN IF NOT EXISTS custom_question_ids text`,
+	},
+	{
+		// 定时质量检查间隔下限从 10 分钟放开到 1 分钟（schedule_now 契约）。
+		// 幂等迁移：仅当存量表上仍挂着旧的下限 10 匿名 CHECK 时替换。旧内联
+		// 约束被 PG 规范化为 ((interval_minutes >= 10) AND (interval_minutes <=
+		// 10080))，按表 + conkey 列 + 规范化文本定位（recovery_interval_minutes
+		// 的 BETWEEN 10 约束不在范围内：列名不同且 conkey 不同）。建表 DDL 的
+		// 新库不会命中旧文本，只会补上具名约束，语义一致、重复执行无副作用。
+		SchemaName: "juhe_business",
+		Source:     "model-quality-schedule-interval-pg-check",
+		SQL: `DO $$
+DECLARE
+  legacy_constraint text;
+BEGIN
+  IF to_regclass('juhe_business.model_quality_schedules') IS NOT NULL THEN
+    SELECT c.conname INTO legacy_constraint
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_business'
+      AND relation.relname = 'model_quality_schedules'
+      AND c.contype = 'c'
+      AND pg_get_constraintdef(c.oid) LIKE '%(interval_minutes >= 10)%'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+        WHERE a.attrelid = c.conrelid
+          AND a.attname = 'interval_minutes'
+          AND a.attnum = ANY(c.conkey)
+      );
+    IF legacy_constraint IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.model_quality_schedules DROP CONSTRAINT %I', legacy_constraint);
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'model_quality_schedules'
+        AND c.conname = 'model_quality_schedules_interval_minutes_range_check'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.model_quality_schedules ADD CONSTRAINT model_quality_schedules_interval_minutes_range_check CHECK (interval_minutes BETWEEN 1 AND 10080)';
+    END IF;
+  END IF;
+END
+$$`,
 	},
 }

@@ -61,18 +61,26 @@ type QualitySchedulePatch struct {
 	CustomQuestionIds *[]string `json:"customQuestionIds,omitempty"`
 }
 type QualityScheduleView struct {
-	ID                              string   `json:"id"`
-	SystemAccountID                 string   `json:"systemAccountId"`
-	AccountID                       string   `json:"accountId"`
-	AccountName                     string   `json:"accountName,omitempty"`
-	ProviderCode                    string   `json:"providerCode,omitempty"`
-	Model                           string   `json:"model"`
-	IntervalMinutes                 int      `json:"intervalMinutes"`
-	Profile                         string   `json:"profile"`
-	PenaltyThreshold                int      `json:"penaltyThreshold"`
-	PenaltyAction                   string   `json:"penaltyAction"`
-	RecoveryIntervalMinutes         int      `json:"recoveryIntervalMinutes"`
-	Enabled                         bool     `json:"enabled"`
+	ID                      string `json:"id"`
+	SystemAccountID         string `json:"systemAccountId"`
+	AccountID               string `json:"accountId"`
+	AccountName             string `json:"accountName,omitempty"`
+	ProviderCode            string `json:"providerCode,omitempty"`
+	Model                   string `json:"model"`
+	IntervalMinutes         int    `json:"intervalMinutes"`
+	Profile                 string `json:"profile"`
+	PenaltyThreshold        int    `json:"penaltyThreshold"`
+	PenaltyAction           string `json:"penaltyAction"`
+	RecoveryIntervalMinutes int    `json:"recoveryIntervalMinutes"`
+	Enabled                 bool   `json:"enabled"`
+	// ExecutionState 是计划的可观察执行态（D5，优先级：paused > running >
+	// blocked_account > queued > enabled）。
+	ExecutionState string `json:"executionState"`
+	// AccountStatus 是 blocked_account 判定用的账户状态快照（string|null）。
+	AccountStatus *string `json:"accountStatus,omitempty"`
+	// LastRunScore 取 last_run_id 对应 run 的 score（number|null；runs 表在
+	// J3b 库，与业务库不同源，经 QualityRunScoreReader 端口查询）。
+	LastRunScore                    *int     `json:"lastRunScore,omitempty"`
 	Revision                        int      `json:"revision"`
 	CustomQuestionIds               []string `json:"customQuestionIds"`
 	NextRunAt                       string   `json:"nextRunAt"`
@@ -116,6 +124,23 @@ type BusinessQualityManager struct {
 	// questionBank 是可选端口：nil 且配置了非空 customQuestionIds 时按
 	// fail-closed 拒绝写入，绝不跳过 approved 存在性校验。
 	questionBank QualityQuestionBankVerifier
+	// runScores 是可选端口（D5）：model_check_runs 在 J3b 库（与业务库不同
+	// 源），lastRunScore 经该端口按 run id 批量查询；nil 时 lastRunScore 恒
+	// 为 null，列表其余字段不受影响。
+	runScores QualityRunScoreReader
+}
+
+// QualityRunScoreReader 按 run id 批量读取 score（D5）；*Store 以
+// RunScoresByIDs 满足该端口。
+type QualityRunScoreReader interface {
+	RunScoresByIDs(ctx context.Context, ids []string) (map[string]int, error)
+}
+
+// SetRunScoreReader 注入 lastRunScore 查询端口（照组合根 Set* 可选端口惯例）。
+func (m *BusinessQualityManager) SetRunScoreReader(reader QualityRunScoreReader) {
+	if m != nil {
+		m.runScores = reader
+	}
 }
 
 // SetQuestionBankVerifier 注入题库验证端口（照组合根 Set* 可选端口惯例）。
@@ -262,14 +287,15 @@ func (m *BusinessQualityManager) ListSchedules(ctx context.Context, systemID str
 	if err := m.db.QueryRowContext(ctx, m.bind(`SELECT COUNT(*) FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL WHERE mqs.system_account_id=?`), systemID).Scan(&total); err != nil {
 		return QualityScheduleList{}, err
 	}
-	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,a.provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.enabled,mqs.revision,mqs.custom_question_ids,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,aqe.action,aqe.recovery_due_at,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.system_account_id=? ORDER BY mqs.created_at DESC,mqs.id DESC LIMIT ? OFFSET ?`), systemID, size+1, (page-1)*size)
+	rows, err := m.db.QueryContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,a.provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.enabled,mqs.revision,mqs.custom_question_ids,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,mqs.lease_until,aqe.action,aqe.recovery_due_at,a.status,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.system_account_id=? ORDER BY mqs.created_at DESC,mqs.id DESC LIMIT ? OFFSET ?`), systemID, size+1, (page-1)*size)
 	if err != nil {
 		return QualityScheduleList{}, err
 	}
 	defer rows.Close()
+	now := time.Now().UTC()
 	items := make([]QualityScheduleView, 0, size)
 	for rows.Next() {
-		v, err := scanQualitySchedule(rows)
+		v, err := scanQualitySchedule(rows, now)
 		if err != nil {
 			return QualityScheduleList{}, err
 		}
@@ -281,6 +307,9 @@ func (m *BusinessQualityManager) ListSchedules(ctx context.Context, systemID str
 	more := len(items) > size
 	if more {
 		items = items[:size]
+	}
+	if err := m.enrichRunScores(ctx, items); err != nil {
+		return QualityScheduleList{}, err
 	}
 	return QualityScheduleList{Items: items, Total: total, HasMore: more, Page: page, PageSize: size}, nil
 }
@@ -389,12 +418,49 @@ func (m *BusinessQualityManager) policyTx(ctx context.Context, tx *sql.Tx, syste
 	return out, nil
 }
 func (m *BusinessQualityManager) scheduleByID(ctx context.Context, systemID, id string) (QualityScheduleView, error) {
-	row := m.db.QueryRowContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,a.provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.enabled,mqs.revision,mqs.custom_question_ids,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,aqe.action,aqe.recovery_due_at,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.id=? AND mqs.system_account_id=?`), id, systemID)
-	v, err := scanQualitySchedule(row)
+	row := m.db.QueryRowContext(ctx, m.bind(`SELECT mqs.id,mqs.system_account_id,mqs.account_id,a.name,a.provider_code,mqs.model,mqs.interval_minutes,mqs.profile,mqs.penalty_threshold,mqs.penalty_action,mqs.recovery_interval_minutes,mqs.enabled,mqs.revision,mqs.custom_question_ids,mqs.next_run_at,mqs.last_run_id,mqs.last_run_at,mqs.last_run_status,mqs.lease_until,aqe.action,aqe.recovery_due_at,a.status,mqs.created_at,mqs.updated_at FROM `+m.table("model_quality_schedules")+` mqs JOIN `+m.table("accounts")+` a ON a.id=mqs.account_id AND a.deleted_at IS NULL LEFT JOIN `+m.table("account_quality_enforcements")+` aqe ON aqe.account_id=mqs.account_id AND aqe.state='active' WHERE mqs.id=? AND mqs.system_account_id=?`), id, systemID)
+	v, err := scanQualitySchedule(row, time.Now().UTC())
 	if errors.Is(err, sql.ErrNoRows) {
 		return QualityScheduleView{}, errors.New("定时检查配置不存在")
 	}
-	return v, err
+	if err != nil {
+		return v, err
+	}
+	items := []QualityScheduleView{v}
+	if err := m.enrichRunScores(ctx, items); err != nil {
+		return QualityScheduleView{}, err
+	}
+	return items[0], nil
+}
+
+// enrichRunScores 批量填充 lastRunScore。items 元素按索引写回（切片共享）。
+func (m *BusinessQualityManager) enrichRunScores(ctx context.Context, items []QualityScheduleView) error {
+	if m == nil || m.runScores == nil || len(items) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for i := range items {
+		if items[i].LastRunID != nil && strings.TrimSpace(*items[i].LastRunID) != "" {
+			ids = append(ids, *items[i].LastRunID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	scores, err := m.runScores.RunScoresByIDs(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if items[i].LastRunID == nil {
+			continue
+		}
+		if score, ok := scores[strings.TrimSpace(*items[i].LastRunID)]; ok {
+			score := score
+			items[i].LastRunScore = &score
+		}
+	}
+	return nil
 }
 func (m *BusinessQualityManager) checkScheduleAccount(ctx context.Context, systemID, accountID, model string) error {
 	var provider, profileID string
@@ -440,11 +506,33 @@ func (m *BusinessQualityManager) bind(s string) string {
 	}
 	return b.String()
 }
-func scanQualitySchedule(row interface{ Scan(...any) error }) (QualityScheduleView, error) {
+
+// scheduleExecutionState 按 D5 契约推导计划执行态，优先级固定：
+// !enabled -> paused；lease_until>now -> running（定时执行中）；
+// 账户非 active -> blocked_account（已删账户被 JOIN 过滤，不会走到这里）；
+// next_run_at<=now -> queued；否则 enabled。时间串解析失败按"不满足该条件"
+// 处理（next_run_at 异常时保守归 enabled，不阻塞列表）。
+func scheduleExecutionState(enabled bool, leaseUntil, accountStatus, nextRunAt string, now time.Time) string {
+	if !enabled {
+		return "paused"
+	}
+	if until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(leaseUntil)); err == nil && until.After(now) {
+		return "running"
+	}
+	if strings.TrimSpace(accountStatus) != "active" {
+		return "blocked_account"
+	}
+	if next, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(nextRunAt)); err == nil && !next.After(now) {
+		return "queued"
+	}
+	return "enabled"
+}
+
+func scanQualitySchedule(row interface{ Scan(...any) error }, now time.Time) (QualityScheduleView, error) {
 	var v QualityScheduleView
 	var enabled int
-	var accountName, providerCode, lastID, lastAt, lastStatus, enforcementAction, enforcementRecoveryDueAt, customQuestionIds sql.NullString
-	err := row.Scan(&v.ID, &v.SystemAccountID, &v.AccountID, &accountName, &providerCode, &v.Model, &v.IntervalMinutes, &v.Profile, &v.PenaltyThreshold, &v.PenaltyAction, &v.RecoveryIntervalMinutes, &enabled, &v.Revision, &customQuestionIds, &v.NextRunAt, &lastID, &lastAt, &lastStatus, &enforcementAction, &enforcementRecoveryDueAt, &v.CreatedAt, &v.UpdatedAt)
+	var accountName, providerCode, lastID, lastAt, lastStatus, leaseUntil, enforcementAction, enforcementRecoveryDueAt, customQuestionIds, accountStatus sql.NullString
+	err := row.Scan(&v.ID, &v.SystemAccountID, &v.AccountID, &accountName, &providerCode, &v.Model, &v.IntervalMinutes, &v.Profile, &v.PenaltyThreshold, &v.PenaltyAction, &v.RecoveryIntervalMinutes, &enabled, &v.Revision, &customQuestionIds, &v.NextRunAt, &lastID, &lastAt, &lastStatus, &leaseUntil, &enforcementAction, &enforcementRecoveryDueAt, &accountStatus, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return v, err
 	}
@@ -455,6 +543,10 @@ func scanQualitySchedule(row interface{ Scan(...any) error }) (QualityScheduleVi
 	}
 	if providerCode.Valid {
 		v.ProviderCode = providerCode.String
+	}
+	if accountStatus.Valid {
+		status := accountStatus.String
+		v.AccountStatus = &status
 	}
 	if lastID.Valid {
 		v.LastRunID = &lastID.String
@@ -471,6 +563,7 @@ func scanQualitySchedule(row interface{ Scan(...any) error }) (QualityScheduleVi
 	if enforcementRecoveryDueAt.Valid {
 		v.CurrentEnforcementRecoveryDueAt = enforcementRecoveryDueAt.String
 	}
+	v.ExecutionState = scheduleExecutionState(v.Enabled, leaseUntil.String, accountStatus.String, v.NextRunAt, now)
 	return v, nil
 }
 func validatePolicyPatch(p QualityPolicyPatch) error {
@@ -489,8 +582,8 @@ func validateSchedule(i QualityScheduleInput) error {
 	if strings.TrimSpace(i.AccountID) == "" || strings.TrimSpace(i.Model) == "" {
 		return errors.New("定时检查账户和模型不能为空")
 	}
-	if i.IntervalMinutes < 10 || i.IntervalMinutes > 10080 {
-		return errors.New("定时检查间隔必须是 10 到 10080 的整数分钟")
+	if i.IntervalMinutes < 1 || i.IntervalMinutes > 10080 {
+		return errors.New("定时检查间隔必须是 1 到 10080 的整数分钟")
 	}
 	if err := validateQualityCustomQuestionIds(i.CustomQuestionIds); err != nil {
 		return err
@@ -507,8 +600,8 @@ func validateSchedulePatch(p QualitySchedulePatch) error {
 	if p.Model != nil && strings.TrimSpace(*p.Model) == "" {
 		return errors.New("定时检查模型不能为空")
 	}
-	if p.IntervalMinutes != nil && (*p.IntervalMinutes < 10 || *p.IntervalMinutes > 10080) {
-		return errors.New("定时检查间隔必须是 10 到 10080 的整数分钟")
+	if p.IntervalMinutes != nil && (*p.IntervalMinutes < 1 || *p.IntervalMinutes > 10080) {
+		return errors.New("定时检查间隔必须是 1 到 10080 的整数分钟")
 	}
 	if err := validateQualityCustomQuestionIds(valueOrSlice(p.CustomQuestionIds)); err != nil {
 		return err

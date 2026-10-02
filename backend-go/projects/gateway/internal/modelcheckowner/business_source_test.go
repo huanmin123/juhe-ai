@@ -16,6 +16,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprofile"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 	_ "modernc.org/sqlite"
 )
 
@@ -565,7 +566,7 @@ func TestCredentialHeadersFollowProtocolAndType(t *testing.T) {
 	if err != nil || anthropicOAuthHeaders.Get("anthropic-beta") != "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14" {
 		t.Fatalf("Anthropic OAuth beta headers=%v err=%v", anthropicOAuthHeaders, err)
 	}
-	if anthropicOAuthHeaders.Get("user-agent") != "claude-cli/2.1.161 (external, cli)" || anthropicOAuthHeaders.Get("x-stainless-runtime") != "node" {
+	if anthropicOAuthHeaders.Get("user-agent") != upstreamidentity.ClaudeCodeUserAgent || anthropicOAuthHeaders.Get("x-stainless-runtime") != "node" {
 		t.Fatalf("Anthropic OAuth CLI identity headers=%v", anthropicOAuthHeaders)
 	}
 	if _, err := credentialHeaders("", "", modelcheckprofile.ProtocolOpenAIChat, "openai", "google_oauth", "key"); err == nil {
@@ -588,19 +589,19 @@ func TestCredentialHeadersFollowProtocolAndType(t *testing.T) {
 	if err != nil || glmHeaders.Get("Authorization") != "Bearer key" || glmHeaders.Get("x-api-key") != "" {
 		t.Fatalf("GLM Coding Anthropic API key headers=%v err=%v", glmHeaders, err)
 	}
-	if glmHeaders.Get("anthropic-beta") != "" || glmHeaders.Get("user-agent") != "ZCode/3.11.2" || glmHeaders.Get("HTTP-Referer") != "https://zcode.z.ai" {
+	if glmHeaders.Get("anthropic-beta") != "" || glmHeaders.Get("user-agent") != "ZCode/"+upstreamidentity.ZCodeVersion || glmHeaders.Get("HTTP-Referer") != "https://zcode.z.ai" {
 		t.Fatalf("GLM Coding API key must use ZCode without Anthropic OAuth headers=%v", glmHeaders)
 	}
 	glmOpenAIHeaders, err := credentialHeaders("glm", "profile_glm_coding_openai_v1", modelcheckprofile.ProtocolOpenAIChat, "openai", "api_key", "key")
 	applySystemIdentity(glmOpenAIHeaders, "glm", "profile_glm_coding_openai_v1", "api_key", "", "https://open.bigmodel.cn/api/coding/paas/v4")
-	if err != nil || glmOpenAIHeaders.Get("Authorization") != "Bearer key" || glmOpenAIHeaders.Get("user-agent") != "ZCode/3.11.2" {
+	if err != nil || glmOpenAIHeaders.Get("Authorization") != "Bearer key" || glmOpenAIHeaders.Get("user-agent") != "ZCode/"+upstreamidentity.ZCodeVersion {
 		t.Fatalf("GLM Coding OpenAI headers=%v err=%v", glmOpenAIHeaders, err)
 	}
 	// BUG-0201：hybrid 桥接档案归 GLM 家族，系统请求使用 ZCode 身份，
 	// OpenCode 兜底删除。
 	hybridHeaders, err := credentialHeaders("hybrid", "profile_hybrid_openai_chat_v1", modelcheckprofile.ProtocolOpenAIChat, "openai", "api_key", "key")
 	applySystemIdentity(hybridHeaders, "hybrid", "profile_hybrid_openai_chat_v1", "api_key", "", "https://upstream.test/v1")
-	if err != nil || hybridHeaders.Get("Authorization") != "Bearer key" || hybridHeaders.Get("User-Agent") != "ZCode/3.11.2" || hybridHeaders.Get("HTTP-Referer") != "https://zcode.z.ai" {
+	if err != nil || hybridHeaders.Get("Authorization") != "Bearer key" || hybridHeaders.Get("User-Agent") != "ZCode/"+upstreamidentity.ZCodeVersion || hybridHeaders.Get("HTTP-Referer") != "https://zcode.z.ai" {
 		t.Fatalf("hybrid system API-key headers=%v err=%v", hybridHeaders, err)
 	}
 }

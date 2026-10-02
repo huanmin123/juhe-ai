@@ -26,6 +26,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/openaicompatcore"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // Protocol codes mirrored from the protocol packages (the preauth re-exports
@@ -460,7 +461,7 @@ func (d *chainProviderDriver) buildGeminiCodeAssistRequestParts(req *gatewayprea
 		headers.Set("Authorization", "Bearer "+credential)
 	}
 	headers.Set("Content-Type", "application/json")
-	headers.Set("User-Agent", geminiCLIUserAgent)
+	headers.Set("User-Agent", upstreamidentity.EffectiveGeminiCLIUserAgent())
 	return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 }
 
@@ -664,8 +665,12 @@ var anthropicOAuthBetaMergeValues = []string{
 const anthropicVersionHeaderValue = "2023-06-01"
 
 // geminiCLIUserAgent 对齐 GEMINI_CLI_USER_AGENT
-// （code-assist-runtime.ts:8；探针 probe.go:1019 逐值一致）。
-const geminiCLIUserAgent = "GeminiCLI/0.1.5 (Windows; AMD64)"
+// （code-assist-runtime.ts:8；探针 probe.go:1019 逐值一致）。版本跟随
+// @google/gemini-cli npm 最新稳定（2026-10-02 锚点 0.61.0），与
+// upstreamidentity.GeminiCLIUserAgent 同步维护。内置默认；运行时可被
+// upstreamidentity.SetClientVersionOverrides 覆盖（使用点经
+// upstreamidentity.EffectiveGeminiCLIUserAgent 运行时拼接）。
+const geminiCLIUserAgent = "GeminiCLI/0.61.0 (Windows; AMD64)"
 
 // glmCodingAnthropicProfileID 是 GLM Coding Anthropic 档案标识（Node
 // GLM_CODING_ANTHROPIC_V1_PROFILE_ID；探针 probe.go:416 同值判定）。
@@ -739,7 +744,7 @@ func mergeAnthropicBetaHeader(clientBeta string, isOAuth bool) string {
 // （anthropic/driver.ts:278-292；探针 probe.go:423-433 逐值一致）。
 func applyAnthropicOAuthCliIdentityHeaders(headers http.Header) {
 	identityHeaders := []struct{ Name, Value string }{
-		{"User-Agent", "claude-cli/2.1.161 (external, cli)"},
+		{"User-Agent", upstreamidentity.EffectiveClaudeCodeUserAgent()},
 		{"X-Stainless-Lang", "js"},
 		{"X-Stainless-Package-Version", "0.94.0"},
 		{"X-Stainless-Os", "Linux"},

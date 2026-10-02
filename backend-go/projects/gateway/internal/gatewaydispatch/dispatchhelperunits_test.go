@@ -1256,11 +1256,19 @@ func TestStripV1Prefix(t *testing.T) {
 
 func TestRequestCapabilityMismatchMessage(t *testing.T) {
 	anthropicMessage := "当前 API Key 绑定的是 Anthropic 原生分组，不兼容 Codex / OpenAI 请求路径；请改用 Anthropic /v1/messages 客户端，或绑定支持 OpenAI Responses / Chat Completions 的分组"
-	if got := requestCapabilityMismatchMessage("anthropic_native_group_openai_compatible_request"); got != anthropicMessage {
+	if got := requestCapabilityMismatchMessage("anthropic_native_group_openai_compatible_request", ""); got != anthropicMessage {
 		t.Fatalf("anthropic 原生分组 message = %q", got)
 	}
-	if got := requestCapabilityMismatchMessage("other"); got != "当前分组无账户支持请求路径或客户端协议" {
+	if got := requestCapabilityMismatchMessage("other", ""); got != "当前分组无账户支持请求路径或客户端协议" {
 		t.Fatalf("default message = %q", got)
+	}
+	// BUG-0261：能力过滤层判 model_unsupported 时带出请求模型，对齐模型
+	// 过滤层文案，不再误报为协议问题。
+	if got := requestCapabilityMismatchMessage("model_unsupported", "deepseek-v4-pro-fast"); got != "当前分组无账户支持请求模型：deepseek-v4-pro-fast" {
+		t.Fatalf("model_unsupported message = %q", got)
+	}
+	if got := requestCapabilityMismatchMessage("model_unsupported", "  "); got != "当前分组无账户支持请求路径或客户端协议" {
+		t.Fatalf("model_unsupported 无模型时回退泛化 message = %q", got)
 	}
 }
 

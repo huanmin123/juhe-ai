@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 func TestProbeOpenAIChatUsesDirectNativeRequest(t *testing.T) {
@@ -79,7 +80,7 @@ func TestProbeOpenAIResponsesSSEUsesCompletedStream(t *testing.T) {
 func TestProbeOpenAICodexResponsesMatchesManualCompatibilityContract(t *testing.T) {
 	secret := "test-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Originator") != "Codex Desktop" || request.Header.Get("User-Agent") != "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)" {
+		if request.Header.Get("Originator") != "Codex Desktop" || request.Header.Get("User-Agent") != upstreamidentity.CodexDesktopUserAgent {
 			t.Fatalf("unexpected Codex client headers: %#v", request.Header)
 		}
 		sessionID := request.Header.Get("Session-Id")
@@ -636,7 +637,7 @@ func TestBuildProbeRequestGLMCodingUsesZCodeIdentityForBothProtocols(t *testing.
 			if request.Header.Get("Authorization") != tc.wantAuth || request.Header.Get("x-api-key") != tc.wantAPIKey {
 				t.Fatalf("auth headers=%v", request.Header)
 			}
-			if request.Header.Get("User-Agent") != "ZCode/3.11.2" || request.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || request.Header.Get("X-Title") != "Z Code@electron" {
+			if request.Header.Get("User-Agent") != "ZCode/"+upstreamidentity.ZCodeVersion || request.Header.Get("HTTP-Referer") != "https://zcode.z.ai" || request.Header.Get("X-Title") != "Z Code@electron" {
 				t.Fatalf("ZCode identity headers=%v", request.Header)
 			}
 		})

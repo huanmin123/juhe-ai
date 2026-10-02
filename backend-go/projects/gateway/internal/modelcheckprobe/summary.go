@@ -72,12 +72,22 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 			return SummaryResult{"suspicious", score, 100, "Astra 专项探针发现疑似响应替换或混用，建议结合其他证据复核"}
 		}
 	}
+	terminalCoreFailure := hasTerminalCoreProbeFailure(checks)
 	checks = unscopedEvaluations(checks)
 	basic := findEvaluation(checks, "protocol_basic")
 	// Node marks any basic probe without a successful response as unavailable,
 	// even when other core probes still answered; unavailable never authorizes
-	// enforcement and always publishes the health failure.
+	// enforcement, and terminal failures carry no health-failure fact either
+	// (the runtime suppresses the projection on terminal evidence).
 	if basic != nil && (basic.Status == "failed" || !evidenceBool(basic.Evidence, "success")) {
+		return SummaryResult{"unavailable", score, 100, "目标模型链路不可检测或上游不可用"}
+	}
+	// §1.2 contract: the third consecutive non-200 on ANY required core
+	// protocol probe is terminal for the whole run, not only for basic. The
+	// suite already truncated the remaining probes and kept the terminal
+	// request-failure evidence, so the partial family must resolve to
+	// unavailable instead of entering the ordinary score ladder.
+	if terminalCoreFailure {
 		return SummaryResult{"unavailable", score, 100, "目标模型链路不可检测或上游不可用"}
 	}
 	long := findEvaluation(checks, "long_context")
@@ -143,6 +153,30 @@ func findEvaluation(items []Evaluation, kind string) *Evaluation {
 		}
 	}
 	return nil
+}
+
+// hasTerminalCoreProbeFailure reports whether any of the target's required
+// core protocol probes carries terminal request-failure evidence (the
+// requestFailureEvaluation convention: requestFailure plus terminalFailure).
+// It must inspect the raw, still-scoped items so a trusted-comparison
+// account's own terminal failure stays on the comparison-aggregate uncertain
+// path instead of marking the target unavailable. Custom-quiz items are not
+// core protocol probes and cannot enter this gate; a quiz family terminal
+// failure does carry terminalFailure and is handled by the runtime's
+// any-family suppression (§5.7: the whole run fails without penalty).
+func hasTerminalCoreProbeFailure(items []Evaluation) bool {
+	for _, item := range items {
+		if strings.HasPrefix(item.Kind, "trusted_comparison.") {
+			continue
+		}
+		switch unscopedKind(item.Kind) {
+		case "protocol_basic", "protocol_stream", "responses_stream", "structured_output", "tool_calling":
+			if evidenceBool(item.Evidence, "requestFailure") && evidenceBool(item.Evidence, "terminalFailure") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func unscopedKind(kind string) string {

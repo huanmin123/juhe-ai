@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // EndpointMode 与 Node AccountSupportedEndpointMode 的探针子集一致。
@@ -74,7 +76,11 @@ const (
 	// 1024 而非 Node 的 256：推理模型的思考 token 计入输出上限，256 会被思考
 	// 耗尽（finish_reason=length）导致 content 为空，探针误判 invalid_probe_output。
 	outputTokenLimit    = 1024
-	anthropicVersion    = "2.1.201"
+	// anthropicVersion 是内置默认的 Claude Code 版本锚点（文档用途保留）；
+	// 挑战文本 cc_version 的运行时值改经
+	// upstreamidentity.EffectiveClaudeCodeVersion() 取（可被
+	// system_settings 的 upstreamClientVersionOverrides 覆盖）。
+	anthropicVersion    = "2.1.285"
 	anthropicBuildID    = "eb7"
 	anthropicDeviceID   = "7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc"
 	clientProfileHeader = "x-juhe-client-profile"
@@ -332,7 +338,7 @@ func buildAnthropicMessagesPayload(model, prompt string, stream bool, sessionID 
 		},
 	}
 	system := []map[string]any{
-		{"type": "text", "text": fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli;", anthropicVersion, anthropicBuildID)},
+		{"type": "text", "text": fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli;", upstreamidentity.EffectiveClaudeCodeVersion(), anthropicBuildID)},
 		{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.", "cache_control": map[string]any{"type": "ephemeral"}},
 		{"type": "text", "text": fmt.Sprintf("CWD: %s\nDate: %s", cwdOrEmpty(), time.Now().UTC().Format("2006-01-02"))},
 	}

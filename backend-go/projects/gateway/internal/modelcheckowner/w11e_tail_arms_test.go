@@ -17,11 +17,11 @@ import (
 func w11eQualityDDL() []string {
 	return []string{
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
 		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,action TEXT,state TEXT,recovery_due_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 	}
 }
 
@@ -110,7 +110,7 @@ func TestW11EQualityManagerPolicyArms(t *testing.T) {
 func TestW11EQualityManagerScheduleArms(t *testing.T) {
 	manager, db := w11eQualityManager(t)
 	ctx := context.Background()
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','Account','openai','profile_openai_openai_v1',NULL,NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-1','sys-1','Account','openai','profile_openai_openai_v1',NULL,NULL,'active')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO account_supported_models VALUES ('acct-1','gpt-5.6-sol')`); err != nil {
@@ -120,7 +120,7 @@ func TestW11EQualityManagerScheduleArms(t *testing.T) {
 	if _, err := manager.CreateSchedule(ctx, "sys-1", QualityScheduleInput{AccountID: " ", Model: "m", IntervalMinutes: 10, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err == nil || !strings.Contains(err.Error(), "不能为空") {
 		t.Fatalf("空账户必须拒绝: %v", err)
 	}
-	if _, err := manager.CreateSchedule(ctx, "sys-1", QualityScheduleInput{AccountID: "acct-1", Model: "gpt-5.6-sol", IntervalMinutes: 5, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err == nil || !strings.Contains(err.Error(), "间隔") {
+	if _, err := manager.CreateSchedule(ctx, "sys-1", QualityScheduleInput{AccountID: "acct-1", Model: "gpt-5.6-sol", IntervalMinutes: 0, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err == nil || !strings.Contains(err.Error(), "间隔") {
 		t.Fatalf("非法间隔必须拒绝: %v", err)
 	}
 	// 账户不存在。
@@ -169,7 +169,7 @@ func TestW11EQualityManagerScheduleArms(t *testing.T) {
 	if _, err := manager.PatchSchedule(ctx, "sys-1", item.ID, QualitySchedulePatch{ExpectedRevision: 1, Model: w11eString(" ")}); err == nil || !strings.Contains(err.Error(), "模型不能为空") {
 		t.Fatalf("空模型必须拒绝: %v", err)
 	}
-	if _, err := manager.PatchSchedule(ctx, "sys-1", item.ID, QualitySchedulePatch{ExpectedRevision: 1, IntervalMinutes: w11eInt(5)}); err == nil || !strings.Contains(err.Error(), "间隔") {
+	if _, err := manager.PatchSchedule(ctx, "sys-1", item.ID, QualitySchedulePatch{ExpectedRevision: 1, IntervalMinutes: w11eInt(0)}); err == nil || !strings.Contains(err.Error(), "间隔") {
 		t.Fatalf("非法间隔必须拒绝: %v", err)
 	}
 	if _, err := manager.PatchSchedule(ctx, "sys-1", item.ID, QualitySchedulePatch{ExpectedRevision: 1, Profile: w11eString("medium")}); err == nil || !strings.Contains(err.Error(), "profile") {

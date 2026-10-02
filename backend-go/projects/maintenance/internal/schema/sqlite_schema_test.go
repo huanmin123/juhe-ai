@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -437,6 +438,146 @@ func TestEnsureSQLiteBusinessAddsCustomQuestionIDsColumns(t *testing.T) {
 			if !sqliteTableHasColumn(t, db, table, "custom_question_ids") {
 				t.Errorf("legacy table %s lacks custom_question_ids after ensure", table)
 			}
+		}
+	})
+}
+
+// TestEnsureSQLiteBusinessScheduleIntervalCheckMigration covers the widened
+// model_quality_schedules.interval_minutes CHECK (lower bound 10 -> 1 minute):
+// legacy databases created with the old column CHECK are rebuilt through the
+// guarded sqlite_master lookup (staging table -> copy -> drop -> rename ->
+// index recreation), keep their rows, accept interval_minutes=1 and still
+// reject 0/10081 plus the untouched 10-minute recovery floor; fresh databases
+// already declare the new CHECK; repeated ensure runs are idempotent.
+func TestEnsureSQLiteBusinessScheduleIntervalCheckMigration(t *testing.T) {
+	legacySchedulesIntervalDDL := `CREATE TABLE model_quality_schedules (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      interval_minutes INTEGER NOT NULL DEFAULT 60 CHECK (interval_minutes BETWEEN 10 AND 10080),
+      profile TEXT NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
+      penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
+      penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
+      recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      next_run_at TEXT NOT NULL,
+      last_run_id TEXT,
+      last_run_at TEXT,
+      last_run_status TEXT CHECK (last_run_status IS NULL OR last_run_status IN ('completed', 'failed', 'canceled')),
+      lease_owner TEXT,
+      lease_until TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      UNIQUE (system_account_id, account_id)
+    )`
+	insertLegacySchedule := func(t *testing.T, db *sql.DB, id, accountID string, intervalMinutes int) {
+		t.Helper()
+		_, err := db.Exec(`INSERT INTO model_quality_schedules
+      (id, system_account_id, account_id, model, interval_minutes, profile, penalty_threshold, penalty_action,
+       recovery_interval_minutes, enabled, revision, next_run_at, created_at, updated_at)
+      VALUES (?, 'sys-1', ?, 'gpt-5.6-sol', ?, 'quick', 70, 'fallback', 10, 1, 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, id, accountID, intervalMinutes)
+		if err != nil {
+			t.Fatalf("insert schedule %s: %v", id, err)
+		}
+	}
+	scheduleTableSQL := func(t *testing.T, db *sql.DB) string {
+		t.Helper()
+		var ddl string
+		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='model_quality_schedules'`).Scan(&ddl); err != nil {
+			t.Fatalf("read schedule DDL: %v", err)
+		}
+		return ddl
+	}
+
+	t.Run("legacy table is rebuilt with the widened check", func(t *testing.T) {
+		db := openSharedMemorySQLite(t, "authsys-schema-test-schedule-interval-legacy")
+		ctx := context.Background()
+		if _, err := db.Exec(legacySchedulesIntervalDDL); err != nil {
+			t.Fatalf("seed legacy DDL: %v", err)
+		}
+		insertLegacySchedule(t, db, "sched-legacy", "acct-1", 60)
+
+		if _, err := EnsureSQLiteBusiness(ctx, db); err != nil {
+			t.Fatalf("EnsureSQLiteBusiness over legacy schedule table: %v", err)
+		}
+
+		ddl := scheduleTableSQL(t, db)
+		if !strings.Contains(ddl, "CHECK (interval_minutes BETWEEN 1 AND 10080)") {
+			t.Fatalf("rebuilt table must widen interval_minutes to BETWEEN 1 AND 10080:\n%s", ddl)
+		}
+		if strings.Contains(ddl, "(interval_minutes BETWEEN 10 AND 10080)") {
+			t.Fatalf("rebuilt table must not keep the old interval_minutes check:\n%s", ddl)
+		}
+		if !strings.Contains(ddl, "CHECK (recovery_interval_minutes BETWEEN 10 AND 10080)") {
+			t.Fatalf("rebuilt table must keep the 10-minute recovery floor:\n%s", ddl)
+		}
+		var legacyInterval int
+		if err := db.QueryRow(`SELECT interval_minutes FROM model_quality_schedules WHERE id='sched-legacy'`).Scan(&legacyInterval); err != nil {
+			t.Fatalf("legacy row must survive the rebuild: %v", err)
+		}
+		if legacyInterval != 60 {
+			t.Fatalf("legacy row interval_minutes = %d, want 60", legacyInterval)
+		}
+		for _, index := range []string{"idx_model_quality_schedules_due", "idx_model_quality_schedules_scope"} {
+			if !querySQLiteMasterNames(t, db, "index")[index] {
+				t.Fatalf("rebuilt table must recreate index %s", index)
+			}
+		}
+
+		// 下限 1 分钟可用，区间外仍被拒绝；recovery 下限保持 10。
+		// ensure 脚本会执行 PRAGMA foreign_keys = ON，而本测试未播种
+		// system_accounts/accounts 父行：插入断言阶段关闭 FK，保证
+		// 0/10081/recovery=1 的拒绝可归因于列级 CHECK 而非外键。
+		if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+			t.Fatalf("disable foreign_keys for check assertions: %v", err)
+		}
+		insertLegacySchedule(t, db, "sched-min-1", "acct-4", 1)
+		for _, invalid := range []struct {
+			id       string
+			interval int
+		}{{"sched-zero", 0}, {"sched-over", 10081}} {
+			if _, err := db.Exec(`INSERT INTO model_quality_schedules
+      (id, system_account_id, account_id, model, interval_minutes, profile, penalty_threshold, penalty_action,
+       recovery_interval_minutes, enabled, revision, next_run_at, created_at, updated_at)
+      VALUES (?, 'sys-1', 'acct-2', 'gpt-5.6-sol', ?, 'quick', 70, 'fallback', 10, 1, 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`, invalid.id, invalid.interval); err == nil {
+				t.Fatalf("interval_minutes=%d must still be rejected", invalid.interval)
+			}
+		}
+		if _, err := db.Exec(`INSERT INTO model_quality_schedules
+      (id, system_account_id, account_id, model, interval_minutes, recovery_interval_minutes, next_run_at, created_at, updated_at)
+      VALUES ('sched-recovery', 'sys-1', 'acct-3', 'gpt-5.6-sol', 60, 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`); err == nil {
+			t.Fatal("recovery_interval_minutes=1 must stay rejected (10-minute floor)")
+		}
+
+		// 重复 ensure：不重建（DDL 文本不变）、不报错。
+		if _, err := EnsureSQLiteBusiness(ctx, db); err != nil {
+			t.Fatalf("second EnsureSQLiteBusiness: %v", err)
+		}
+		if after := scheduleTableSQL(t, db); after != ddl {
+			t.Fatalf("second ensure must not rewrite the table DDL")
+		}
+		// 第二次 ensure 的脚本同样会重新打开 FK，插入前再关一次。
+		if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+			t.Fatalf("disable foreign_keys after second ensure: %v", err)
+		}
+		insertLegacySchedule(t, db, "sched-after-rerun", "acct-5", 1)
+	})
+
+	t.Run("fresh database already declares the widened check", func(t *testing.T) {
+		db := openSharedMemorySQLite(t, "authsys-schema-test-schedule-interval-fresh")
+		if _, err := EnsureSQLiteBusiness(context.Background(), db); err != nil {
+			t.Fatalf("EnsureSQLiteBusiness: %v", err)
+		}
+		ddl := scheduleTableSQL(t, db)
+		if !strings.Contains(ddl, "CHECK (interval_minutes BETWEEN 1 AND 10080)") {
+			t.Fatalf("fresh table must declare interval_minutes BETWEEN 1 AND 10080:\n%s", ddl)
+		}
+		if !strings.Contains(ddl, "CHECK (recovery_interval_minutes BETWEEN 10 AND 10080)") {
+			t.Fatalf("fresh table must keep the 10-minute recovery floor:\n%s", ddl)
 		}
 	})
 }

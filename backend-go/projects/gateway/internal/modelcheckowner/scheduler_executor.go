@@ -54,6 +54,31 @@ type ScheduledCompletion func(context.Context, ScheduledPayload, RunResult) erro
 // the matching enforcement lease.
 type RecoveryCompletion func(context.Context, RecoveryPayload, bool) error
 
+// FailedRunRecorder persists a queryable terminal failed run when a leased
+// build fails before any probe executes (D6). *Store satisfies it with
+// CreateFailedRun.
+type FailedRunRecorder interface {
+	CreateFailedRun(context.Context, RunRecord, string, string, time.Time) error
+}
+
+// buildFailureRunRecord freezes the payload's scope into a failed-run row.
+// triggerKind keeps the leased kind (scheduled / quality_recovery) so run
+// history stays attributable to the owning scheduler family.
+func buildFailureRunRecord(runID string, kind SchedulerKind, payload ScheduledPayload, cause error, now time.Time) RunRecord {
+	summary := map[string]any{"targetType": payload.TargetType, "targetId": payload.TargetID, "model": payload.Model, "profile": payload.Profile, "configRevision": payload.ConfigRevision, "sourceConfigRevision": payload.SourceConfigRevision, "policyRevision": payload.PolicyRevision, "probeSetVersion": payload.ProbeSetVersion}
+	if payload.ScheduleID != "" {
+		summary["scheduleId"] = payload.ScheduleID
+	}
+	policy := map[string]any{"revision": payload.PolicyRevision, "threshold": payload.Threshold, "action": payload.PenaltyAction, "recoveryIntervalMinutes": payload.RecoveryIntervalMinutes}
+	request, _ := json.Marshal(summary)
+	policySnapshot, _ := json.Marshal(policy)
+	accountID := ""
+	if payload.TargetType == "account" {
+		accountID = payload.TargetID
+	}
+	return RunRecord{ID: runID, SystemAccountID: payload.SystemAccountID, ActorSystemAccountID: payload.ActorSystemAccountID, ProviderCode: payload.ProviderCode, TargetType: payload.TargetType, TargetID: payload.TargetID, AccountID: accountID, Model: payload.Model, Profile: payload.Profile, TriggerKind: string(kind), ScheduleID: payload.ScheduleID, ProbeSetVersion: payload.ProbeSetVersion, RequestSummary: request, PolicySnapshot: policySnapshot, StartedAt: now}
+}
+
 type RecoveryPayload struct {
 	OwnerID, AccountID, EnforcementID, RunID string
 	Generation, PolicyRevision               int
@@ -73,6 +98,10 @@ type SchedulerRunExecutor struct {
 	Build     SchedulerRunBuilder
 	Recovery  RecoveryCompletion
 	Scheduled ScheduledCompletion
+	// FailedRuns optionally records a terminal failed run when Build fails
+	// before any probe executes, so CompleteScheduled can point last_run_id at
+	// a queryable detail (D6). nil keeps the legacy behavior (no run row).
+	FailedRuns FailedRunRecorder
 	// RunBudget bounds one leased run's probe execution. The Business
 	// scheduler claims schedule/recovery rows with a finite lease
 	// (BusinessSchedulerSource.EffectiveLease, default six minutes) and never
@@ -129,13 +158,29 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 	if strings.TrimSpace(payload.SystemAccountID) == "" || strings.TrimSpace(payload.ActorSystemAccountID) == "" || strings.TrimSpace(payload.TargetType) == "" || strings.TrimSpace(payload.TargetID) == "" || strings.TrimSpace(payload.Model) == "" || strings.TrimSpace(payload.Profile) == "" || strings.TrimSpace(payload.ProviderCode) == "" || strings.TrimSpace(payload.ConfigRevision) == "" || payload.DispatchRevision < 1 || strings.TrimSpace(payload.SourceConfigRevision) == "" || payload.SourceDispatchRevision < 1 || strings.TrimSpace(payload.PolicyRevision) == "" || strings.TrimSpace(payload.ProbeSetVersion) == "" || strings.TrimSpace(payload.IdentityKey) == "" || (payload.PenaltyAction != "disable" && payload.PenaltyAction != "fallback" && payload.PenaltyAction != "quality_isolate") || payload.Threshold < 40 || payload.Threshold > 100 {
 		return errors.New("J3b scheduler payload scope or policy snapshot is incomplete")
 	}
-	if task.Kind == SchedulerScheduled && (e.Scheduled == nil || strings.TrimSpace(payload.OwnerID) == "" || payload.ScheduleRevision < 1 || payload.IntervalMinutes < 10) {
+	if task.Kind == SchedulerScheduled && (e.Scheduled == nil || strings.TrimSpace(payload.OwnerID) == "" || payload.ScheduleRevision < 1 || payload.IntervalMinutes < 1) {
 		return errors.New("J3b scheduled task completion metadata is incomplete")
 	}
 	request, err := e.Build(ctx, payload)
 	if err != nil {
+		// D6：Build 失败先落一条可查的 failed run 记录，再走计划/恢复回写，
+		// 让 last_run_id 指向失败详情而不是 NULL。恢复类保持既有语义：
+		// 记录 run 后返回错误，恢复租约自然到期后重试。
+		failedRunID := ""
+		if e.FailedRuns != nil {
+			failureAt := time.Now().UTC()
+			record := buildFailureRunRecord(newID("run"), task.Kind, payload, err, failureAt)
+			if createErr := e.FailedRuns.CreateFailedRun(ctx, record, "model_check_build_failed", err.Error(), failureAt); createErr != nil {
+				return errors.Join(fmt.Errorf("build J3b scheduled request: %w", err), fmt.Errorf("record J3b build-failure run: %w", createErr))
+			}
+			failedRunID = record.ID
+		}
 		if task.Kind == SchedulerScheduled {
-			if completeErr := e.Scheduled(ctx, payload, RunResult{Status: string(RunFailed)}); completeErr != nil {
+			completion := RunResult{Status: string(RunFailed)}
+			if failedRunID != "" {
+				completion.RunID = failedRunID
+			}
+			if completeErr := e.Scheduled(ctx, payload, completion); completeErr != nil {
 				return errors.Join(fmt.Errorf("build J3b scheduled request: %w", err), fmt.Errorf("complete J3b scheduled task: %w", completeErr))
 			}
 		}
@@ -203,7 +248,7 @@ func (e *SchedulerRunExecutor) Execute(ctx context.Context, task ScheduleTask) e
 		// quality-isolated account. Recovery must observe the same durable
 		// evidence/trust gates used by health projection; missing metadata is
 		// fail-closed so an older/partial runtime cannot accidentally recover.
-		passed := runErr == nil && result.Status == string(RunCompleted) && runResultRecoveryEligible(result, payload.Threshold)
+		passed := runErr == nil && result.Status == string(RunCompleted) && runResultRecoveryEligible(result, payload.Threshold, payload.Profile)
 		return e.Recovery(ctx, RecoveryPayload{OwnerID: payload.OwnerID, AccountID: payload.TargetID, EnforcementID: payload.EnforcementID, RunID: result.RunID, Generation: generation, PolicyRevision: policyRevision, RecoveryIntervalMinutes: interval, CompletedAt: time.Now().UTC()}, passed)
 	}
 	if runErr != nil {
@@ -223,11 +268,13 @@ func runResultEvidenceFormed(result RunResult) bool {
 }
 
 // runResultRecoveryEligible mirrors the Node recovery boundary: only a
-// completed, formed and trusted result whose score meets the frozen threshold
-// and whose level is not unavailable may clear quality isolation. A successful
-// transport alone must never release an enforcement lease.
-func runResultRecoveryEligible(result RunResult, threshold int) bool {
-	if !runResultEvidenceFormed(result) || threshold < 40 || threshold > 100 {
+// completed result whose score meets the frozen threshold and whose level is
+// not unavailable may clear quality isolation. A successful transport alone
+// must never release an enforcement lease. quick 检测证据族少于 full，与发布
+// 口径对齐：不要求 formed/trusted，但 suspicious 与 hardFailure 同样不可
+// 放行；full/空 profile 维持 formed+trusted 的 9 族证据门槛。
+func runResultRecoveryEligible(result RunResult, threshold int, profile string) bool {
+	if threshold < 40 || threshold > 100 {
 		return false
 	}
 	data, ok := result.Data.(map[string]any)
@@ -236,7 +283,17 @@ func runResultRecoveryEligible(result RunResult, threshold int) bool {
 	}
 	score, scoreOK := data["score"].(int)
 	level, levelOK := data["level"].(string)
-	return scoreOK && levelOK && score >= threshold && level != "unavailable"
+	if !scoreOK || !levelOK {
+		return false
+	}
+	hardFailure, _ := data["hardFailure"].(bool)
+	if profile != "quick" && !runResultEvidenceFormed(result) {
+		return false
+	}
+	if score < threshold || level == "unavailable" || hardFailure {
+		return false
+	}
+	return profile != "quick" || level != "suspicious"
 }
 
 var _ SchedulerExecutor = (*SchedulerRunExecutor)(nil)

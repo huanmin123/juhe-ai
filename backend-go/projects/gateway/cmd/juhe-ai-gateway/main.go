@@ -32,6 +32,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckowner"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
@@ -461,6 +462,9 @@ func main() {
 			SchedulerFactory: func(store *modelcheckowner.Store, runtime *modelcheckowner.Runtime, projector *modelcheckowner.QualityProjector) (modelcheckowner.SchedulerSource, modelcheckowner.SchedulerExecutor) {
 				source := schedulerSource
 				source.Store = store
+				// D5：lastRunScore 数据源是 J3b 库的 model_check_runs（与业务库
+				// 不同源），在 J3b store 就绪处注入读取端口。
+				quality.SetRunScoreReader(store)
 				build := func(ctx context.Context, payload modelcheckowner.ScheduledPayload) (modelcheckowner.RunRequest, error) {
 					trigger := "scheduled"
 					if payload.EnforcementID != "" {
@@ -479,8 +483,30 @@ func main() {
 				// 的业务租约执行期不续期，超预算的运行走既有失败终态路径，
 				// CompleteScheduled/恢复 CAS 仍在租约窗口内落库，避免租约过期
 				// 后同 schedule 被二次认领且首个运行的结算被永久拒绝。
-				executor := &modelcheckowner.SchedulerExecutorMux{Runs: &modelcheckowner.SchedulerRunExecutor{Runtime: runtime, Build: build, Recovery: recovery.Complete, Scheduled: source.CompleteScheduled, RunBudget: modelcheckowner.ScheduleRunBudget(source.EffectiveLease())}, Health: &modelcheckowner.HealthSyncRetryExecutor{Projector: projector}}
+				executor := &modelcheckowner.SchedulerExecutorMux{Runs: &modelcheckowner.SchedulerRunExecutor{Runtime: runtime, Build: build, Recovery: recovery.Complete, Scheduled: source.CompleteScheduled, FailedRuns: store, RunBudget: modelcheckowner.ScheduleRunBudget(source.EffectiveLease())}, Health: &modelcheckowner.HealthSyncRetryExecutor{Projector: projector}}
 				return source, executor
+			},
+			// 计划立即执行（D3/D4）：受理快照 -> businessSource.Resolve（恢复类
+			// 门禁对 schedule_now 放行被本计划处罚的账户）-> runtime 异步执行；
+			// 处罚恢复复用 BusinessRecoveryApplier 的 CAS 语义。
+			RunNowFactory: func(store *modelcheckowner.Store, runtime *modelcheckowner.Runtime, active *modelcheckactive.Registry) *modelcheckowner.ScheduleRunNowService {
+				return &modelcheckowner.ScheduleRunNowService{
+					Source:  schedulerSource,
+					Store:   store,
+					Runtime: runtime,
+					Restore: recovery,
+					Active:  active,
+					Build: func(ctx context.Context, snapshot modelcheckowner.ScheduleRunNowSnapshot) (modelcheckowner.RunRequest, error) {
+						target, err := businessSource.Resolve(ctx, modelcheckowner.RunRequest{SystemAccountID: snapshot.SystemAccountID, TargetType: "account", TargetID: snapshot.AccountID, Model: snapshot.Model, ConfigRevision: strconv.Itoa(snapshot.ConfigRevision), DispatchRevision: int64(snapshot.DispatchRevision), TriggerKind: modelcheckowner.TriggerKindScheduleNow})
+						if err != nil {
+							return modelcheckowner.RunRequest{}, err
+						}
+						if target.ConfigRevision != strconv.Itoa(snapshot.ConfigRevision) {
+							return modelcheckowner.RunRequest{}, errors.New("J3b run-now account config revision is stale")
+						}
+						return modelcheckowner.RunRequest{SystemAccountID: snapshot.SystemAccountID, ActorSystemAccountID: snapshot.SystemAccountID, TargetType: "account", TargetID: snapshot.AccountID, Model: snapshot.Model, Profile: snapshot.Profile, ProviderCode: target.ProviderCode, ConfigRevision: target.ConfigRevision, DispatchRevision: target.DispatchRevision, SourceConfigRevision: target.SourceConfigRevision, SourceDispatchRevision: target.SourceDispatchRevision, SourceEndpointFamily: string(target.SourceEndpointFamily), UpstreamEndpointFamily: string(target.UpstreamEndpointFamily), UpstreamProtocol: string(target.UpstreamProtocol), UpstreamEndpointMode: target.UpstreamEndpointMode}, nil
+					},
+				}
 			},
 		})
 		if hostErr != nil {

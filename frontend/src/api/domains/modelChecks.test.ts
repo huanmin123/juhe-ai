@@ -90,6 +90,8 @@ describe('modelChecksApi 请求形状', () => {
     await modelChecksApi.saveQualitySchedule({ accountId: 'a-1', model: 'gpt-4o', cron: '* * * * *' } as never)
     await modelChecksApi.patchQualitySchedule('qs-1', { cron: '0 * * * *' } as never)
     await modelChecksApi.deleteQualitySchedule('qs-1')
+    await modelChecksApi.runNowQualitySchedule('qs-1', { revision: 3 })
+    await modelChecksApi.runNowQualitySchedulesBatch([{ scheduleId: 'qs-1', revision: 3 }])
     expect(requestShapes()).toEqual([
       ['GET', '/model-checks/options'],
       ['GET', '/model-checks/account-options'],
@@ -103,7 +105,9 @@ describe('modelChecksApi 请求形状', () => {
       ['GET', '/model-checks/quality-schedules'],
       ['POST', '/model-checks/quality-schedules'],
       ['PATCH', '/model-checks/quality-schedules/qs-1'],
-      ['DELETE', '/model-checks/quality-schedules/qs-1']
+      ['DELETE', '/model-checks/quality-schedules/qs-1'],
+      ['POST', '/model-checks/quality-schedules/qs-1/run-now'],
+      ['POST', '/model-checks/quality-schedules/run-now-batch']
     ])
   })
 
@@ -158,6 +162,8 @@ describe('myModelChecksApi 请求形状', () => {
     await myModelChecksApi.saveQualitySchedule({ accountId: 'a-1', model: 'gpt-4o', cron: '* * * * *' } as never)
     await myModelChecksApi.patchQualitySchedule('qs-1', { cron: '0 * * * *' } as never)
     await myModelChecksApi.deleteQualitySchedule('qs-1')
+    await myModelChecksApi.runNowQualitySchedule('qs-1', { revision: 3 })
+    await myModelChecksApi.runNowQualitySchedulesBatch([{ scheduleId: 'qs-1', revision: 3 }])
     expect(requestShapes()).toEqual([
       ['GET', '/my-model-checks/options'],
       ['GET', '/my-model-checks/account-options'],
@@ -171,7 +177,9 @@ describe('myModelChecksApi 请求形状', () => {
       ['GET', '/my-model-checks/quality-schedules'],
       ['POST', '/my-model-checks/quality-schedules'],
       ['PATCH', '/my-model-checks/quality-schedules/qs-1'],
-      ['DELETE', '/my-model-checks/quality-schedules/qs-1']
+      ['DELETE', '/my-model-checks/quality-schedules/qs-1'],
+      ['POST', '/my-model-checks/quality-schedules/qs-1/run-now'],
+      ['POST', '/my-model-checks/quality-schedules/run-now-batch']
     ])
     expect(requests[3].timeout).toBe(0)
   })

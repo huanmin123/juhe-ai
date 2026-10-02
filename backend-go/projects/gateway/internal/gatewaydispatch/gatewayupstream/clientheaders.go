@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // Codex client headers, migrated from adapters/gpt-codex/client-headers.ts.
@@ -13,11 +15,24 @@ import (
 // Codex header constants mirror the Node exports.
 const (
 	OpenAICodexOriginator = "Codex Desktop"
-	OpenAICodexVersion    = "0.145.0"
-	// OpenAICodexUserAgent mirrors the composed UA string.
+	// 版本跟随 openai/codex 官方最新稳定（2026-10-02 锚点 0.159.3），与
+	// upstreamidentity.CodexDesktopUserAgent 同步维护。运行时可被
+	// upstreamidentity.SetClientVersionOverrides 覆盖（EffectiveCodexVersion）。
+	OpenAICodexVersion = "0.159.3"
+	// OpenAICodexUserAgent mirrors the composed UA string（内置默认；
+	// 运行时注入请用 EffectiveOpenAICodexUserAgent 消费版本覆盖）。
 	OpenAICodexUserAgent           = "Codex Desktop/" + OpenAICodexVersion + " (Windows 10.0.22621; x86_64) unknown (codex_exec; " + OpenAICodexVersion + ")"
 	OpenAICodexResponsesLiteHeader = "x-openai-internal-codex-responses-lite"
 )
+
+// EffectiveOpenAICodexUserAgent 运行时拼接 Codex Desktop UA：版本取
+// upstreamidentity.EffectiveCodexVersion()（system_settings 键
+// upstreamClientVersionOverrides 可覆盖），无覆盖时与 OpenAICodexUserAgent
+// 常量逐字一致。
+func EffectiveOpenAICodexUserAgent() string {
+	version := upstreamidentity.EffectiveCodexVersion()
+	return "Codex Desktop/" + version + " (Windows 10.0.22621; x86_64) unknown (codex_exec; " + version + ")"
+}
 
 // openAICodexResponsesLiteModels mirrors the lite model set.
 var openAICodexResponsesLiteModels = map[string]struct{}{
@@ -81,7 +96,7 @@ func NormalizeOpenAICodexClientHeaders(headers http.Header, model string) {
 
 	metadata := SyntheticCodexTurnMetadata(headers)
 	headers.Set("Originator", OpenAICodexOriginator)
-	headers.Set("User-Agent", OpenAICodexUserAgent)
+	headers.Set("User-Agent", EffectiveOpenAICodexUserAgent())
 	SetHeaderIfMissing(headers, "Session-Id", metadata.SessionID)
 	SetHeaderIfMissing(headers, "Thread-Id", metadata.ThreadID)
 	SetHeaderIfMissing(headers, "X-Client-Request-Id", metadata.SessionID)

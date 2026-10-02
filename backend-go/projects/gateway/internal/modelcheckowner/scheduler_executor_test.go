@@ -183,6 +183,52 @@ func TestSchedulerRecoveryRequiresFormedEvidenceAndTrust(t *testing.T) {
 	}
 }
 
+// quick 检测的恢复门槛（J3B 修复）：不要求 9 族 formed/trusted 证据，
+// 100 分且 level 正常即可解除隔离；suspicious 与 hardFailure 不放行；
+// full 无证据仍不通过。
+func TestSchedulerRecoveryQuickProfileEligibility(t *testing.T) {
+	var passed []bool
+	runner := &schedulerRunnerStub{}
+	executor := &SchedulerRunExecutor{
+		Runtime: runner,
+		Build: func(_ context.Context, payload ScheduledPayload) (RunRequest, error) {
+			return RunRequest{Endpoint: "https://example.invalid", Prompt: "probe"}, nil
+		},
+		Recovery: func(_ context.Context, _ RecoveryPayload, value bool) error {
+			passed = append(passed, value)
+			return nil
+		},
+	}
+	quick := ScheduledPayload{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6", Profile: "quick", ProviderCode: "openai", Threshold: 70, PenaltyAction: "quality_isolate", ConfigRevision: "4", DispatchRevision: 4, SourceConfigRevision: "src-4", SourceDispatchRevision: 4, PolicyRevision: "3", ProbeSetVersion: "probe-4", IdentityKey: "identity-5", OwnerID: "gateway-1", EnforcementID: "enf-1", Generation: 2, RecoveryIntervalMinutes: 10}
+	encodedQuick, _ := json.Marshal(quick)
+	// quick 100 分、无证据：通过恢复门槛。
+	runner.resultData = map[string]any{"evidenceFormed": false, "trustFormed": false, "score": 100, "level": "success", "hardFailure": false}
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: encodedQuick}); err != nil {
+		t.Fatal(err)
+	}
+	// quick suspicious：不通过。
+	runner.resultData = map[string]any{"score": 100, "level": "suspicious", "hardFailure": false}
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: encodedQuick}); err != nil {
+		t.Fatal(err)
+	}
+	// quick hardFailure：分数达标也不通过。
+	runner.resultData = map[string]any{"score": 100, "level": "success", "hardFailure": true}
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: encodedQuick}); err != nil {
+		t.Fatal(err)
+	}
+	// full 无证据：维持 fail-closed。
+	full := quick
+	full.Profile = "full"
+	encodedFull, _ := json.Marshal(full)
+	runner.resultData = map[string]any{"evidenceFormed": false, "trustFormed": false, "score": 100, "level": "success", "hardFailure": false}
+	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerQualityRecovery, Payload: encodedFull}); err != nil {
+		t.Fatal(err)
+	}
+	if len(passed) != 4 || !passed[0] || passed[1] || passed[2] || passed[3] {
+		t.Fatalf("recovery eligibility=%#v, want [true false false false]", passed)
+	}
+}
+
 func TestSchedulerRecoveryRunErrorReschedulesThroughCompletion(t *testing.T) {
 	runner := &schedulerRunnerStub{err: errors.New("upstream unavailable")}
 	var passed bool

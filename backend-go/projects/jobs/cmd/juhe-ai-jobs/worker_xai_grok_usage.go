@@ -32,6 +32,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/internal/jobsched"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountbalance"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 const (
@@ -350,6 +351,8 @@ func (r *xaiGrokUsageRuntime) fetchXAIGrokJSON(ctx context.Context, client *http
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	request.Header.Set("x-xai-token-auth", "xai-grok-cli")
+	request.Header.Set("User-Agent", "xai-grok-workspace/"+upstreamidentity.EffectiveGrokCLIVersion())
+	request.Header.Set("x-grok-client-version", upstreamidentity.EffectiveGrokCLIVersion())
 	request.Header.Set("accept", "application/json")
 	response, err := client.Do(request)
 	if err != nil {

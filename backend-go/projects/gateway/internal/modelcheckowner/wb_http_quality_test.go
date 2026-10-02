@@ -74,7 +74,7 @@ func TestWBHTTPPatchQualityScheduleRouteMapsErrorSemantics(t *testing.T) {
 		{name: "invalid body", path: "/quality-schedules/sch-1", body: `{"unexpected":true}`, status: http.StatusBadRequest},
 		{name: "conflict", path: "/quality-schedules/sch-1", body: `{"expectedRevision":1}`, stub: wbQualityStub{patchErr: errors.New("定时检查配置已被其他操作修改")}, status: http.StatusConflict, need: "已被其他操作修改"},
 		{name: "missing schedule", path: "/quality-schedules/sch-1", body: `{"expectedRevision":1}`, stub: wbQualityStub{patchErr: errors.New("定时检查配置不存在")}, status: http.StatusNotFound, need: "不存在"},
-		{name: "invalid values", path: "/quality-schedules/sch-1", body: `{"expectedRevision":1,"intervalMinutes":1}`, stub: wbQualityStub{patchErr: errors.New("定时检查间隔必须是 10 到 10080 的整数分钟")}, status: http.StatusBadRequest, need: "10 到 10080"},
+		{name: "invalid values", path: "/quality-schedules/sch-1", body: `{"expectedRevision":1,"intervalMinutes":0}`, stub: wbQualityStub{patchErr: errors.New("定时检查间隔必须是 1 到 10080 的整数分钟")}, status: http.StatusBadRequest, need: "1 到 10080"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

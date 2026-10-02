@@ -109,6 +109,38 @@ func (s *Store) CreateRun(ctx context.Context, run RunRecord) error {
 	return nil
 }
 
+// CreateFailedRun persists a terminal failed run for scheduler/run-now builds
+// that fail before any probe can execute (D6). The row mirrors
+// Runtime.finishFailure's durable projection — status failed, one
+// target.execution item, error code/message — so last_run_id can point at a
+// queryable detail even when the run never issued an input. finishedAt must
+// be non-zero; the started_at timestamp stays run.StartedAt.
+func (s *Store) CreateFailedRun(ctx context.Context, run RunRecord, errorCode, message string, finishedAt time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("J3b store is not open")
+	}
+	if err := validateRun(run); err != nil {
+		return err
+	}
+	if finishedAt.IsZero() {
+		return errors.New("J3b failed run finish time is required")
+	}
+	request := normalizeJSON(run.RequestSummary)
+	policy := normalizeJSON(run.PolicySnapshot)
+	started := run.StartedAt.UTC().Format(time.RFC3339Nano)
+	finished := finishedAt.UTC().Format(time.RFC3339Nano)
+	sanitizedMessage := sanitizeSummaryString(message)
+	if _, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_check_runs")+` (id,system_account_id,actor_system_account_id,provider_code,target_type,target_id,target_name,target_owner_system_account_id,account_id,group_id,api_key_id,model,profile,trigger_kind,schedule_id,trusted_comparison_enabled,trusted_comparison_available,status,level,score,max_score,message,request_summary_json,result_summary_json,policy_snapshot_json,quality_decision_json,probe_set_version,started_at,trace_id,quality_health_sync_status,created_at,updated_at,finished_at,duration_ms,error_code,error_message) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+		run.ID, run.SystemAccountID, run.ActorSystemAccountID, run.ProviderCode, run.TargetType, run.TargetID, nullable(run.TargetName), nullable(run.TargetOwnerSystemAccountID), nullable(run.AccountID), nullable(run.GroupID), nullable(run.APIKeyID), run.Model, run.Profile, run.TriggerKind, nullable(run.ScheduleID), boolToInt(run.TrustedComparison), boolToInt(run.TrustedComparisonAvailable), string(RunFailed), "unavailable", 0, 100, sanitizedMessage, string(request), "{}", string(policy), "{}", run.ProbeSetVersion, started, nullable(run.TraceID), nil, finished, finished, finished, int64(0), nullable(sanitizeSummaryString(errorCode)), nullable(sanitizedMessage)); err != nil {
+		return fmt.Errorf("create J3b failed run: %w", err)
+	}
+	item := ItemRecord{ID: run.ID + "-item-0001", RunID: run.ID, ItemKey: "target.execution", ItemType: "execution", Status: ItemFailed, Score: 0, MaxScore: 100, EvidenceSummary: fmt.Sprintf(`{"message":%q}`, sanitizedMessage), ErrorCode: errorCode, ErrorMessage: message}
+	if _, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_check_items")+` (id,run_id,item_key,item_type,status,score,max_score,duration_ms,trace_id,evidence_summary_json,error_code,error_message,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), item.ID, item.RunID, item.ItemKey, item.ItemType, string(item.Status), item.Score, item.MaxScore, nil, nullable(item.TraceID), string(normalizeJSON([]byte(item.EvidenceSummary))), nullable(sanitizeSummaryString(item.ErrorCode)), nullable(sanitizeSummaryString(item.ErrorMessage)), finished, finished); err != nil {
+		return fmt.Errorf("create J3b failed run item: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) AppendItem(ctx context.Context, item ItemRecord) error {
 	if err := validateItem(item); err != nil {
 		return err

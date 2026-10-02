@@ -3,6 +3,7 @@ package modelcheckowner
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -144,7 +145,9 @@ func TestWBStoreProjectTrustReceiptConflict(t *testing.T) {
 	})
 }
 
-// 执行适配器失败契约：健康发布中的执行错误必须保留可重试的 failed 状态。
+// 执行适配器失败契约（J3B 修复后）：处罚失败不再阻断健康事实，健康同步
+// 状态为 applied，quality_decision_json 记录 result=failed，且不发出
+// health_sync_failed 事件（stale/failed 均不注册无限重试）。
 func TestWBRunHealthPublishingSurvivesEnforcementFailure(t *testing.T) {
 	store := &Store{db: wbOpenMemoryDB(t, wbHealthRuntimeDDL(t)), mode: "sqlite"}
 	defer store.Close()
@@ -153,26 +156,34 @@ func TestWBRunHealthPublishingSurvivesEnforcementFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.HealthStatHour = statHour
-	projector := &QualityProjector{Store: store, Enforcement: EnforcementApplierFunc(func(context.Context, QualityEnforcement) error {
-		return errors.New("Business 执行冲突")
+	projector := &QualityProjector{Store: store, Enforcement: EnforcementApplierFunc(func(context.Context, QualityEnforcement) (EnforcementOutcome, error) {
+		return EnforcementOutcome{}, errors.New("Business 执行冲突")
 	})}
 	events := make(chan ProgressEvent, 4)
 	result, _ := wbRunQualityFailingProbeWithEvents(t, store, projector, events)
 	var syncStatus string
-	if err := store.db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id=?`, result.RunID).Scan(&syncStatus); err != nil || syncStatus != "failed" {
+	if err := store.db.QueryRow(`SELECT quality_health_sync_status FROM model_check_runs WHERE id=?`, result.RunID).Scan(&syncStatus); err != nil || syncStatus != "applied" {
 		t.Fatalf("执行失败后的同步状态=%q err=%v", syncStatus, err)
 	}
-	found := false
+	var factCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&factCount); err != nil || factCount != 1 {
+		t.Fatalf("执行失败后健康事实行数=%d err=%v", factCount, err)
+	}
+	var decision string
+	if err := store.db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(decision), &fields); err != nil || fields["result"] != "failed" || fields["healthSyncResult"] != "applied" {
+		t.Fatalf("执行失败后的决策=%s err=%v", decision, err)
+	}
 	for {
 		select {
 		case event := <-events:
 			if event.Kind == "health_sync_failed" {
-				found = true
+				t.Fatal("处罚失败不得再发出 health_sync_failed 事件")
 			}
 		default:
-			if !found {
-				t.Fatal("执行失败必须发出 health_sync_failed")
-			}
 			return
 		}
 	}

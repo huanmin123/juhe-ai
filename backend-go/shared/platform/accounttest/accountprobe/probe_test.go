@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // fakeSource 是 CandidateSource 的 Mock：按 ProbeRequest 返回预置视图。
@@ -189,7 +190,7 @@ func TestProbeGLMCodingUsesZCodeIdentityAndDoesNotLeakInternalProfile(t *testing
 	if err != nil || !observation.Result.Success {
 		t.Fatalf("GLM Coding probe observation=%+v err=%v", observation, err)
 	}
-	if captured.Get("User-Agent") != "ZCode/3.11.2" || captured.Get("HTTP-Referer") != "https://zcode.z.ai" || captured.Get("X-ZCode-App-Version") != "3.11.2" || captured.Get("X-Title") != "Z Code@electron" {
+	if captured.Get("User-Agent") != "ZCode/"+upstreamidentity.ZCodeVersion || captured.Get("HTTP-Referer") != "https://zcode.z.ai" || captured.Get("X-ZCode-App-Version") != upstreamidentity.ZCodeVersion || captured.Get("X-Title") != "Z Code@electron" {
 		t.Fatalf("GLM Coding identity headers=%v", captured)
 	}
 	if captured.Get(clientProfileHeader) != "" {
@@ -218,7 +219,7 @@ func TestProbeGLMCodingAnthropicUsesBearerAndZCodeIdentity(t *testing.T) {
 	if err != nil || !observation.Result.Success {
 		t.Fatalf("GLM Coding Anthropic probe observation=%+v err=%v", observation, err)
 	}
-	if captured.Get("Authorization") != "Bearer sk-test" || captured.Get("x-api-key") != "" || captured.Get("User-Agent") != "ZCode/3.11.2" {
+	if captured.Get("Authorization") != "Bearer sk-test" || captured.Get("x-api-key") != "" || captured.Get("User-Agent") != "ZCode/"+upstreamidentity.ZCodeVersion {
 		t.Fatalf("GLM Coding Anthropic headers=%v", captured)
 	}
 	if captured.Get(clientProfileHeader) != "" {
@@ -544,7 +545,7 @@ func TestProbeChatSSEStreaming(t *testing.T) {
 	if observation.Result.FirstTokenMS < 0 {
 		t.Fatalf("firstTokenMs=%d", observation.Result.FirstTokenMS)
 	}
-	if captured.Get("User-Agent") != "ZCode/3.11.2" || captured.Get("HTTP-Referer") != "https://zcode.z.ai" {
+	if captured.Get("User-Agent") != "ZCode/"+upstreamidentity.ZCodeVersion || captured.Get("HTTP-Referer") != "https://zcode.z.ai" {
 		t.Fatalf("GLM Coding SSE identity headers=%v", captured)
 	}
 }

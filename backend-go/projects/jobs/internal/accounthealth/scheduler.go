@@ -35,6 +35,11 @@ type Runner struct {
 	// go-only 形态探针直连上游，Node 时代经 /v1 派发链天然产生的
 	// account_health_check 等使用记录在此补齐；nil 表示未装配，跳过）。
 	usageRecorder ProbeUsageRecorder
+	// terminalProjector 是 J1 终态投影补落地的事务入口（BUG-0260）：与
+	// OutcomeProjector 的 drain 消费路径同源（ProjectOutcomeNow）。nil 表示
+	// 组合根投影面装配失败降级；触发 cooldown_terminal_reproject 时以错误
+	// 显式暴露，绝不回退为复测探针循环。
+	terminalProjector *OutcomeProjector
 	// backlogWarnedAt 是 outbox 堆积告警的上次触发时刻（drain 频控用；
 	// mu 保护：告警窗口 10 分钟内不重复）。
 	backlogWarnedAt time.Time
@@ -115,6 +120,13 @@ func NewRunnerWithDirectInputReader(cfg Config, store *Store, logger *slog.Logge
 		reader.SetSuppressionProvider(store.LoadDirectInputSuppressions)
 	}
 	return runner
+}
+
+// SetOutcomeProjector 注入 outcome 投影器（BUG-0260：组合根在 J1 runner 与
+// 投影面都就绪后回绑，与 SetProbeRequestDrain 同款模式；投影面装配失败降级
+// 时不注入，终态补落地以错误显式暴露而非静默回退复测循环）。
+func (r *Runner) SetOutcomeProjector(projector *OutcomeProjector) {
+	r.terminalProjector = projector
 }
 
 func (r *Runner) Ready() bool {
@@ -382,14 +394,12 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 					continue
 				}
 				started := time.Now()
-				r.applyScheduledOutcome(&task.outcome, task.input, task.state, task.found, task.kind)
-				if _, err := r.store.AppendOutcome(ctx, lease, task.outcome); err != nil {
+				if err := r.settleScheduledTask(ctx, lease, &task); err != nil {
 					recordError(err)
 				} else {
 					// This is a scan-attempt metric; durable outcome count remains in
 					// the store and is never inferred from this in-memory value.
 					executed.Add(1)
-					r.recordProbeUsage(ctx, task.outcome, task.input, probeTrafficSourceForKind(task.kind))
 				}
 				r.logger.Debug("account-health DB worker 完成", "phase", "db_write", "account_id", task.input.AccountID, "latency_ms", time.Since(started).Milliseconds(), "queue_depth", len(dbQueue))
 			}
@@ -632,6 +642,9 @@ func (r *Runner) prepareScheduledInput(ctx context.Context, lease OwnerLease, in
 	if !ok || due.After(now) {
 		return task, nil
 	}
+	if kind == cooldownTerminalReprojectKind {
+		return r.prepareCooldownTerminalReproject(ctx, input, state, now)
+	}
 	request := ProbeRequest{
 		RequestID:        scheduledRequestID(input, kind, due),
 		AccountID:        input.AccountID,
@@ -672,6 +685,124 @@ func (r *Runner) applyScheduledOutcome(outcome *Outcome, input Input, state Curr
 	applyOutcomeDecision(outcome, input, state, found, decisionKind)
 }
 
+// cooldownTerminalReprojectKind 是 nextDue 对「jobs current_state 为 error 终态
+// × business 行仍 temporary_unavailable/rate_limited」脑裂形态返回的修复 kind
+// （BUG-0260）：不发复测探针，改为补落地丢失的 cooldown_error 终态投影。
+const cooldownTerminalReprojectKind = "cooldown_terminal_reproject"
+
+// prepareCooldownTerminalReproject 为终态脑裂形态构造不发探针的补投影任务
+// （BUG-0260）。幂等：request ID 只由账户 + input epoch + kind 派生（不含
+// 时钟），同一 input_version 内至多尝试一次；已尝试过的 epoch 直接跳过。
+func (r *Runner) prepareCooldownTerminalReproject(ctx context.Context, input Input, state CurrentState, now time.Time) (scheduledDBTask, error) {
+	var task scheduledDBTask
+	requestID := cooldownTerminalReprojectRequestID(input)
+	already, err := r.store.HasRequest(ctx, requestID)
+	if err != nil {
+		return task, err
+	}
+	if already {
+		return task, nil
+	}
+	task.input, task.state, task.found = input, state, true
+	task.kind = cooldownTerminalReprojectKind
+	task.outcome = cooldownTerminalReprojectOutcome(input, state, requestID, now)
+	task.ready = true
+	return task, nil
+}
+
+// cooldownTerminalReprojectOutcome 重建丢失的 cooldown_error 终态投影
+// （BUG-0260）：写入集对齐 applyCooldownDecision 观察期超时分支的投影形状；
+// error_code/error_message/StatusCode/FailureCount 从 jobs state 行透传（保留
+// 原终态审计语义，不新造判定）；ExpectedAccountStatus/ExpectedCooldownFence 与
+// CooldownFence 取 business 现存状态与 fence（input 快照），业务库 CAS 守卫
+// 才能命中。Outcome 取 upstream_failure 以满足投影契约
+// outcomeMatchesTransition 对 cooldown_error 的要求。
+func cooldownTerminalReprojectOutcome(input Input, state CurrentState, requestID string, observed time.Time) Outcome {
+	return Outcome{
+		OutcomeID:        newOutcomeID(),
+		RequestID:        requestID,
+		AccountID:        input.AccountID,
+		Outcome:          OutcomeUpstreamFailed,
+		ObservedAt:       observed,
+		InputVersion:     input.InputVersion,
+		ConfigRevision:   input.ConfigRevision,
+		DispatchRevision: input.DispatchRevision,
+		StatusCode:       state.StatusCode,
+		ErrorCode:        state.ErrorCode,
+		ErrorMessage:     state.ErrorMessage,
+		AccountStatus:    "error",
+		FailureCount:     state.FailureCount,
+		CooldownFence:    input.Cooldown,
+		Projection: &Projection{
+			TargetAccountID:       input.AccountID,
+			TransitionKind:        "cooldown_error",
+			InputVersion:          input.InputVersion,
+			ConfigRevision:        input.ConfigRevision,
+			DispatchRevision:      input.DispatchRevision,
+			SourceRevision:        input.Eligibility.SourceConfigRevision,
+			ExpectedAccountStatus: input.Eligibility.AccountStatus,
+			ExpectedCooldownFence: input.Cooldown,
+			CooldownFence:         input.Cooldown,
+		},
+	}
+}
+
+// applyCooldownTerminalReproject 补落地终态投影并落 audit 行（BUG-0260）。
+// 顺序契约：先经投影事务入口（与 drain 消费同源）落地 business，
+// applied/stale/rejected 均落 receipt（幂等）；投影瞬时错误直接返回 err 进入
+// 下轮重试，此时不写 outcome 行，避免把未投影的尝试记为已处理。投影结论
+// 落定后才追加幂等 audit outcome 行。jobs current_state 不改写：error 终态
+// 本就是正确状态，且 AppendOutcome 对该形态的 state CAS 永不命中、epoch
+// 相同不推进，state 行保持原样。
+func (r *Runner) applyCooldownTerminalReproject(ctx context.Context, lease OwnerLease, outcome Outcome) error {
+	if r.terminalProjector == nil {
+		return fmt.Errorf("补落地 J1 冷却终态投影失败（account=%s）：outcome 投影器未装配", outcome.AccountID)
+	}
+	result, err := r.terminalProjector.ProjectOutcomeNow(ctx, outcome)
+	if err != nil {
+		return fmt.Errorf("补落地 J1 冷却终态投影失败（account=%s）: %w", outcome.AccountID, err)
+	}
+	r.logger.Info("J1 冷却终态投影补落地完成",
+		"event", "account_health_cooldown_terminal_reproject",
+		"accountId", outcome.AccountID,
+		"outcomeId", outcome.OutcomeID,
+		"disposition", string(result.Disposition),
+		"reason", result.Reason)
+	if _, err := r.store.AppendOutcome(ctx, lease, outcome); err != nil {
+		return fmt.Errorf("落库 J1 冷却终态补投影 audit outcome 失败（account=%s）: %w", outcome.AccountID, err)
+	}
+	return nil
+}
+
+// cooldownTerminalReprojectRequestID 派生终态补投影的幂等 request ID：仅由
+// 账户 + input epoch + kind 构成（不含时钟），保证同一 input_version 内同
+// kind 至多尝试一次（BUG-0260 防放大下界）。
+func cooldownTerminalReprojectRequestID(input Input) string {
+	value := sha256.Sum256([]byte(strings.Join([]string{
+		input.AccountID,
+		fmt.Sprintf("%d", input.InputVersion),
+		fmt.Sprintf("%d", input.ConfigRevision),
+		fmt.Sprintf("%d", input.DispatchRevision),
+		cooldownTerminalReprojectKind,
+	}, "\n")))
+	return "account-health-" + hex.EncodeToString(value[:])
+}
+
+// settleScheduledTask 是周期批处理与单账户 runInput 共用的任务结算入口：
+// 普通 kind 走决策应用 + AppendOutcome + 使用记录补记；终态补投影 kind
+// （BUG-0260）不发探针、不补使用记录，改走投影直调通道。
+func (r *Runner) settleScheduledTask(ctx context.Context, lease OwnerLease, task *scheduledDBTask) error {
+	if task.kind == cooldownTerminalReprojectKind {
+		return r.applyCooldownTerminalReproject(ctx, lease, task.outcome)
+	}
+	r.applyScheduledOutcome(&task.outcome, task.input, task.state, task.found, task.kind)
+	if _, err := r.store.AppendOutcome(ctx, lease, task.outcome); err != nil {
+		return err
+	}
+	r.recordProbeUsage(ctx, task.outcome, task.input, probeTrafficSourceForKind(task.kind))
+	return nil
+}
+
 func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, now time.Time) error {
 	task, err := r.prepareScheduledInput(ctx, lease, input, now)
 	if err != nil {
@@ -680,12 +811,7 @@ func (r *Runner) runInput(ctx context.Context, lease OwnerLease, input Input, no
 	if !task.ready {
 		return nil
 	}
-	r.applyScheduledOutcome(&task.outcome, task.input, task.state, task.found, task.kind)
-	if _, err := r.store.AppendOutcome(ctx, lease, task.outcome); err != nil {
-		return err
-	}
-	r.recordProbeUsage(ctx, task.outcome, task.input, probeTrafficSourceForKind(task.kind))
-	return nil
+	return r.settleScheduledTask(ctx, lease, &task)
 }
 
 func (r *Runner) persistTaskFailure(ctx context.Context, lease OwnerLease, input Input, observed time.Time, code, message string) error {
@@ -750,6 +876,15 @@ func nextDue(input Input, state CurrentState, found bool, now time.Time) (kind s
 		state.AccountStatus != input.Eligibility.AccountStatus {
 		if !validCooldownFence(input.Cooldown, input) || input.Eligibility.CooldownUntil == nil {
 			return "", time.Time{}, false
+		}
+		// BUG-0260：jobs current_state 已是 error 终态而 business 行仍冷却，是
+		// 终态投影丢失的脑裂形态。若按普通 reconciliation 放行复测，复测 outcome
+		// 的 state CAS（updateCooldownCurrentStateTx 要求 account_status=expected
+		// 且 epoch 相同不推进）永不命中，jobs state 永卡终态，形成每个扫描周期
+		// 一发探针的死循环（生产 21283 次/约两天）。error 是终态语义，不允许被
+		// 复测推翻：改走终态投影补落地，不再发探针。
+		if state.AccountStatus == "error" {
+			return cooldownTerminalReprojectKind, reconciliationDue(*input.Eligibility.CooldownUntil, now), true
 		}
 		// A due time in the past may already identify an earlier settled request.
 		// Use this reconciliation cycle as the idempotency epoch so stale jobs

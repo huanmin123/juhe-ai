@@ -94,11 +94,28 @@ func (s *Store) markAllGroupStatsDirty(ctx context.Context, reason string) error
 }
 
 // finishPatchSideEffects mirrors applyAccountPatchPostCommitEffects' sync arm:
-// per-account lookup flush and the conditional gateway runtime invalidation,
-// best-effort — a channel failure is logged and never reported to the client
-// (the Node warn channels).
-func (s *Store) finishPatchSideEffects(result *PatchResult) {
-	if s.invalidator == nil || result == nil {
+// the group-stats dirty marker (groupStatsAffected: groupChanged ||
+// dispatchBindingChanged), the per-account lookup flush and the conditional
+// gateway runtime invalidation, best-effort — a channel failure is logged and
+// never reported to the client (the Node warn channels).
+func (s *Store) finishPatchSideEffects(ctx context.Context, result *PatchResult) {
+	if result == nil {
+		return
+	}
+	// Node groupStatsAffected 联动（归档 account-management-patch.repository.ts
+	// :1731-1737 applyAccountPatchPostCommitEffects → 授权路径 :1036 的
+	// groupChanged || dispatchBindingChanged 臂）：提交后按账户 id 落分组统计
+	// 脏标记（refreshGroupAccountStatsAfterWriteAsync 的 accountIds 臂）。统计
+	// 通道独立于 CacheInvalidator（同批量路径 FinishBatchUpdateSideEffects），
+	// 先于 invalidator 判空执行。
+	if result.GroupChanged || result.DispatchBindingChanged {
+		if err := s.markBatchGroupStatsDirty(ctx, []string{result.ID}, accountPatchRuntimeInvalidationReason); err != nil {
+			slog.Warn("账户编辑已提交，但分组账户统计脏标记失败",
+				"event", "account_management_patch_stats_refresh_failed",
+				"accountId", result.ID, "error", err)
+		}
+	}
+	if s.invalidator == nil {
 		return
 	}
 	lookupAffected := false

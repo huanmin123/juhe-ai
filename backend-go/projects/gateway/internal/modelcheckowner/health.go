@@ -48,7 +48,20 @@ type QualityProjector struct {
 // quality failure. Implementations must perform account status and
 // account_quality_enforcements CAS in one transaction using frozen revisions.
 type EnforcementApplier interface {
-	Apply(context.Context, QualityEnforcement) error
+	Apply(context.Context, QualityEnforcement) (EnforcementOutcome, error)
+}
+
+// EnforcementOutcome 是处罚端口的可观察结果：健康投影据此把 result/
+// enforcementId/generation/beforeStatus/afterStatus/recoveryDueAt 增补回
+// run 行的 quality_decision_json。AlreadyEffective 表示账户已处于同
+// action 的有效处罚（含同 run 重试幂等命中），不是错误。
+type EnforcementOutcome struct {
+	EnforcementID    string
+	Generation       int
+	BeforeStatus     string
+	AfterStatus      string
+	RecoveryDueAt    string
+	AlreadyEffective bool
 }
 
 type QualityEnforcement struct {
@@ -58,6 +71,9 @@ type QualityEnforcement struct {
 	Score, Threshold, RecoveryIntervalMinutes                                   int
 	Message                                                                     string
 	OccurredAt                                                                  time.Time
+	// HardQualityFailure 表示独立于分数的显式质量硬失败（例如
+	// undeclared_mismatch）。分数达标但硬失败为真时仍是合法处罚输入。
+	HardQualityFailure bool
 }
 
 type HealthSyncRetryExecutor struct {
@@ -136,29 +152,122 @@ func (p *QualityProjector) Project(ctx context.Context, runID string, aggregate 
 	if fact.Level == "unavailable" {
 		fact.EnforcementAllowed = false
 	}
-	if qualityFailure && fact.EnforcementAllowed {
+	// 处罚与健康事实解耦（J3B 修复）：处罚结果只记入 quality_decision_json
+	// 的结果字段，不再阻断 ApplyHealthFact，也不再注册无限重试；stale 类
+	// 配置漂移明确不重试。unavailable 只是可用性事实，不构成质量不达标
+	// 判定，保持 finalize 写入的 not_triggered 不被改写。
+	triggered := fact.Level != "unavailable" && qualityFailure
+	enforcementResult, enforcementMessage := "", ""
+	var outcome EnforcementOutcome
+	if triggered && fact.EnforcementAllowed {
 		if p.Enforcement == nil {
-			p.markHealthSyncFailure(ctx, runID)
-			return errors.New("J3b quality enforcement owner is not configured")
+			enforcementResult, enforcementMessage = "skipped", "J3b quality enforcement owner is not configured"
+		} else {
+			action := fact.PenaltyAction
+			if action == "" {
+				action = "quality_isolate"
+			}
+			if action != "disable" && action != "fallback" && action != "quality_isolate" {
+				p.markHealthSyncFailure(ctx, runID)
+				return errors.New("J3b quality enforcement action is invalid")
+			}
+			applied, applyErr := p.Enforcement.Apply(ctx, QualityEnforcement{AccountID: fact.AccountID, SystemAccountID: fact.SystemAccountID, RunID: fact.RunID, ProviderCode: fact.ProviderCode, Model: fact.Model, Profile: fact.Profile, PolicyRevision: fact.PolicyRevision, AccountConfigRevision: fact.AccountConfigRevision, ScheduleID: fact.ScheduleID, Score: fact.Score, Threshold: fact.Threshold, RecoveryIntervalMinutes: fact.RecoveryIntervalMinutes, Action: action, OccurredAt: fact.ObservedAt, Message: fact.ErrorMessage, HardQualityFailure: fact.HardQualityFailure})
+			switch {
+			case applyErr == nil && applied.AlreadyEffective:
+				enforcementResult, outcome = "already_effective", applied
+			case applyErr == nil:
+				enforcementResult, outcome = "applied", applied
+			case isStaleEnforcementError(applyErr):
+				enforcementResult, enforcementMessage = "stale", applyErr.Error()
+			default:
+				enforcementResult, enforcementMessage = "failed", applyErr.Error()
+			}
 		}
-		action := fact.PenaltyAction
-		if action == "" {
-			action = "quality_isolate"
-		}
-		if action != "disable" && action != "fallback" && action != "quality_isolate" {
-			p.markHealthSyncFailure(ctx, runID)
-			return errors.New("J3b quality enforcement action is invalid")
-		}
-		if err := p.Enforcement.Apply(ctx, QualityEnforcement{AccountID: fact.AccountID, SystemAccountID: fact.SystemAccountID, RunID: fact.RunID, ProviderCode: fact.ProviderCode, Model: fact.Model, Profile: fact.Profile, PolicyRevision: fact.PolicyRevision, AccountConfigRevision: fact.AccountConfigRevision, ScheduleID: fact.ScheduleID, Score: fact.Score, Threshold: fact.Threshold, RecoveryIntervalMinutes: fact.RecoveryIntervalMinutes, Action: action, OccurredAt: fact.ObservedAt, Message: fact.ErrorMessage}); err != nil {
-			p.markHealthSyncFailure(ctx, runID)
-			return fmt.Errorf("apply J3b quality enforcement: %w", err)
-		}
+	} else if triggered {
+		enforcementResult, enforcementMessage = "skipped", "质量处罚未启用或本次运行不满足处罚资格"
 	}
+	// 健康事实写入失败时处罚副作用已经发生：先尽力把处罚结果与
+	// healthSyncResult="pending_retry" 合并进 quality_decision，再保留
+	// markHealthSyncFailure 的重试标记并返回原始错误；重试成功后由
+	// applied/already_effective 终值覆盖 pending_retry。
+	outcomePatch := qualityDecisionOutcomePatch(enforcementResult, enforcementMessage, outcome)
 	if _, err := p.Store.ApplyHealthFact(ctx, fact); err != nil {
 		p.markHealthSyncFailure(ctx, runID)
+		p.mergeHealthPendingRetry(ctx, runID, outcomePatch)
 		return err
 	}
+	patch := outcomePatch
+	patch["healthSyncResult"] = "applied"
+	patch["healthStatHour"] = fact.StatHour
+	if err := p.Store.MergeRunQualityDecision(ctx, runID, patch); err != nil {
+		// 健康事实已写入但结果字段未落 run：保持 failed 以便重试幂等补写，
+		// 重试会经 AlreadyEffectives 分支得到 already_effective 终值。
+		p.markHealthSyncFailure(ctx, runID)
+		return fmt.Errorf("merge J3b quality decision outcome: %w", err)
+	}
 	return p.Store.MarkHealthSync(ctx, runID, "applied")
+}
+
+// qualityDecisionOutcomePatch 构造处罚结果的 quality_decision 增补字段；
+// 未触发处罚（result 为空）时返回空 patch，不写任何处罚键。
+func qualityDecisionOutcomePatch(enforcementResult, enforcementMessage string, outcome EnforcementOutcome) map[string]any {
+	patch := map[string]any{}
+	if enforcementResult == "" {
+		return patch
+	}
+	patch["result"] = enforcementResult
+	patch["enforcementId"] = nullIfEmpty(outcome.EnforcementID)
+	patch["generation"] = intOrNull(outcome.Generation)
+	patch["beforeStatus"] = nullIfEmpty(outcome.BeforeStatus)
+	patch["afterStatus"] = nullIfEmpty(outcome.AfterStatus)
+	patch["recoveryDueAt"] = nullIfEmpty(outcome.RecoveryDueAt)
+	if enforcementMessage != "" {
+		patch["message"] = enforcementMessage
+	}
+	return patch
+}
+
+// mergeHealthPendingRetry 在健康事实写入失败后把 healthSyncResult=
+// "pending_retry" 连同已发生的处罚结果合并进 quality_decision；ctx 已
+// 取消时改用后台超时上下文（与 markHealthSyncFailure 同一防御），合并
+// 失败不掩盖健康事实的原始错误。
+func (p *QualityProjector) mergeHealthPendingRetry(ctx context.Context, runID string, patch map[string]any) {
+	if patch == nil {
+		patch = map[string]any{}
+	}
+	patch["healthSyncResult"] = "pending_retry"
+	mergeCtx := ctx
+	if ctx == nil || ctx.Err() != nil {
+		background, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		mergeCtx = background
+	}
+	_ = p.Store.MergeRunQualityDecision(mergeCtx, runID, patch)
+}
+
+// isStaleEnforcementError 识别处罚端口返回的配置过期类错误（策略/账户
+// revision 漂移）。这类错误重试必然复用冻结 revision 而永远失败，投影
+// 层将其记为 result=stale 且不再注册重试。
+func isStaleEnforcementError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "configuration is stale") || strings.Contains(message, "revision is stale")
+}
+
+func nullIfEmpty(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+func intOrNull(value int) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
 }
 
 // CompareLatestWins matches Node's predicate: observed_at first, then run ID.

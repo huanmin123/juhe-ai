@@ -126,7 +126,7 @@
           <a-tag :color="profileColor(record.profile)">{{ profileText(record.profile) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'triggerKind'">
-          <a-tag :color="triggerColor(record.triggerKind)">{{ triggerText(record.triggerKind) }}</a-tag>
+          <a-tag :color="triggerKindColor(record.triggerKind)">{{ triggerKindText(record.triggerKind) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'createdAt'">
           {{ formatDateTime(record.createdAt) }}
@@ -151,7 +151,7 @@
             <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
             <a-tag>{{ modelText(record.model) }}</a-tag>
             <a-tag :color="profileColor(record.profile)">{{ profileText(record.profile) }}</a-tag>
-            <a-tag :color="triggerColor(record.triggerKind)">{{ triggerText(record.triggerKind) }}</a-tag>
+            <a-tag :color="triggerKindColor(record.triggerKind)">{{ triggerKindText(record.triggerKind) }}</a-tag>
             <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
             <a-tag v-if="runTrustedComparison(record)" color="blue">可信对比</a-tag>
           </div>
@@ -213,7 +213,9 @@ import {
   runTrustedComparison,
   statusColor,
   statusText,
-  targetTypeText
+  targetTypeText,
+  triggerKindColor,
+  triggerKindText
 } from './modelCheckFormatters'
 import { modelCheckHistoryColumns } from './modelCheckPageConfig'
 
@@ -294,14 +296,6 @@ function handleLevelChange(value: SelectValue) {
 function handleTriggerChange(value: SelectValue) {
   emit('update:triggerKind', typeof value === 'string' ? value as ModelCheckTriggerKind : undefined)
   emit('reload')
-}
-
-function triggerText(value: ModelCheckTriggerKind) {
-  return value === 'scheduled' ? '定时检查' : value === 'quality_recovery' ? '质量恢复' : '手动检查'
-}
-
-function triggerColor(value: ModelCheckTriggerKind) {
-  return value === 'scheduled' ? 'purple' : value === 'quality_recovery' ? 'orange' : 'blue'
 }
 
 function handleSystemAccountChange(value: SelectValue) {

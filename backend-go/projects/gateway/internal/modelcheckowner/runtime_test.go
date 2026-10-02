@@ -34,6 +34,85 @@ func TestHasTerminalEvidenceIgnoresTokenIntegrityFailures(t *testing.T) {
 	}
 }
 
+// BUG-0259 / §1.2：非 basic 核心协议探针的终态请求失败同样必须抑制质量
+// 判定，与 basic 终态失败走同一 hasTerminalEvidence 门。
+func TestHasTerminalEvidenceCoversNonBasicCoreProbes(t *testing.T) {
+	for _, kind := range []string{"tool_calling", "structured_output", "protocol_stream", "responses_stream"} {
+		if !hasTerminalEvidence([]map[string]any{{
+			"kind":     kind,
+			"evidence": map[string]any{"requestFailure": true, "terminalFailure": true},
+		}}) {
+			t.Fatalf("%s 终态失败必须抑制质量判定", kind)
+		}
+	}
+	// 无 terminalFailure 的请求失败证据（重试中非终态）不得抑制；题库环节的
+	// 真实终态失败会带 terminalFailure 并走任意族抑制（§5.7 整跑失败不扣分），
+	// 不因其缺席本门而漏抑制。
+	if hasTerminalEvidence([]map[string]any{{
+		"kind":     "custom_quiz",
+		"evidence": map[string]any{"requestFailure": true, "excludedFromScoring": true},
+	}}) {
+		t.Fatal("request failure without terminal evidence must not suppress the quality decision")
+	}
+}
+
+// BUG-0259 / §1.2：核心协议探针（tool）第三次仍非 HTTP 200 时整轮判
+// unavailable，且必须抑制质量判定（not_triggered、不处罚、不写健康事实），
+// 不得按部分证据正常计分为达标。
+func TestRuntimeSuppressesQualityDecisionOnCoreProbeTerminalFailure(t *testing.T) {
+	server := w14mNewProbeServer(t, func(body string) (int, string) {
+		if strings.Contains(body, "record_model_check") {
+			return http.StatusServiceUnavailable, `{"error":"tool probe unavailable"}`
+		}
+		if strings.Contains(body, `"status"`) {
+			return http.StatusOK, w14mOKResponse("gpt-5.6-sol", `{"status":"ok","value":7}`)
+		}
+		return http.StatusOK, w14mOKResponse("gpt-5.6-sol", "OK-MODEL-CHECK")
+	})
+	store, fp := w14mRuntimeDB(t)
+	fp.disarm()
+	store.HealthStatHour = mustHealthStatHourFunc(t, "UTC")
+	enforcement := &countingEnforcement{}
+	runtime := &Runtime{Store: store, OwnerID: "gateway-b0259", Now: w14mFrozenNow, Resolve: w14mResolveOK(server.URL), Projector: &QualityProjector{Store: store, Enforcement: enforcement}}
+	request := w14mQuickRequest()
+	request.Threshold = 70
+	request.ProviderCode = "openai"
+	request.TriggerKind = "scheduled"
+	result, err := runtime.Run(context.Background(), request)
+	if err != nil || result.Status != string(RunCompleted) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var level string
+	if err := store.db.QueryRow(`SELECT level FROM model_check_runs WHERE id=?`, result.RunID).Scan(&level); err != nil || level != "unavailable" {
+		t.Fatalf("level=%q err=%v，核心探针终态失败必须判整轮不可用", level, err)
+	}
+	data, ok := result.Data.(map[string]any)
+	if !ok || data["modelCheckUnverified"] != true {
+		t.Fatalf("data=%v，want modelCheckUnverified=true", result.Data)
+	}
+	if reason, _ := data["qualityDecisionSuppressedReason"].(string); reason != "未形成质量判定证据" {
+		t.Fatalf("qualityDecisionSuppressedReason=%v", data["qualityDecisionSuppressedReason"])
+	}
+	var decision string
+	if err := store.db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]any{}
+	if err := json.Unmarshal([]byte(decision), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["result"] != "not_triggered" || fields["triggered"] != false || fields["modelCheckUnverified"] != true || fields["qualityDecisionSuppressedReason"] != "未形成质量判定证据" {
+		t.Fatalf("decision=%+v", fields)
+	}
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("健康事实行数=%d err=%v，抑制链路不得写质量健康失败统计", count, err)
+	}
+	if enforcement.calls != 0 {
+		t.Fatalf("处罚调用次数=%d，终态失败不得处罚", enforcement.calls)
+	}
+}
+
 func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.db")
 	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
@@ -158,6 +237,72 @@ func TestRuntimeKeepsHTTP200QualityFailureCompleted(t *testing.T) {
 	var level string
 	if err := store.db.QueryRow(`SELECT level FROM model_check_runs WHERE id=?`, result.RunID).Scan(&level); err != nil || level == "likely" || level == "high_confidence" {
 		t.Fatalf("negative HTTP 200 evidence level=%q err=%v, want non-positive quality level", level, err)
+	}
+}
+
+// quality_decision_json v2：finalize 写入判定基础字段，健康投影完成后由
+// MergeRunQualityDecision 增补处罚结果字段；RunResult.Data 暴露 profile 与
+// hardFailure 供恢复门槛使用。
+func TestRuntimeWritesQualityDecisionV2Fields(t *testing.T) {
+	store := newRuntimeTestStore(t)
+	defer store.Close()
+	store.HealthStatHour = mustHealthStatHourFunc(t, "UTC")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"gpt-5.6-sol","output_text":"WRONG-CONTENT","usage":{"total_tokens":2}}`))
+	}))
+	defer server.Close()
+	enforcement := &countingEnforcement{}
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "gateway-decision",
+		Now:     func() time.Time { return time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC) },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", DispatchRevision: 1}, nil
+		},
+		Projector: &QualityProjector{Store: store, Enforcement: enforcement},
+	}
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ProviderCode: "openai", Threshold: 70, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	if err != nil || result.Status != string(RunCompleted) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("runtime result data=%T, want map", result.Data)
+	}
+	if data["profile"] != "quick" {
+		t.Fatalf("result data profile=%v", data["profile"])
+	}
+	if hardFailure, ok := data["hardFailure"].(bool); !ok || hardFailure {
+		t.Fatalf("result data hardFailure=%v", data["hardFailure"])
+	}
+	var decision string
+	if err := store.db.QueryRow(`SELECT quality_decision_json FROM model_check_runs WHERE id=?`, result.RunID).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]any{}
+	if err := json.Unmarshal([]byte(decision), &fields); err != nil {
+		t.Fatal(err)
+	}
+	// finalize 基础字段。
+	if fields["triggerKind"] != "scheduled" || fields["triggered"] != true || fields["hardFailure"] != false || fields["configuredAction"] != "quality_isolate" || fields["decidedAt"] == "" {
+		t.Fatalf("decision base fields=%+v", fields)
+	}
+	if _, ok := fields["reasonCodes"].([]any); !ok {
+		t.Fatalf("decision reasonCodes=%v", fields["reasonCodes"])
+	}
+	if score, ok := fields["score"].(float64); !ok || score < 0 || score > 100 {
+		t.Fatalf("decision score=%v", fields["score"])
+	}
+	if threshold, ok := fields["threshold"].(float64); !ok || threshold != 70 {
+		t.Fatalf("decision threshold=%v", fields["threshold"])
+	}
+	// 投影增补字段：低分触发处罚并同步健康事实。
+	if fields["result"] != "applied" || fields["healthSyncResult"] != "applied" || fields["enforcementId"] != "enf-counting" || fields["generation"] != float64(1) || fields["beforeStatus"] != "active" || fields["afterStatus"] != "quality_isolated" || fields["recoveryDueAt"] == "" || fields["healthStatHour"] == "" {
+		t.Fatalf("decision merged fields=%+v", fields)
+	}
+	if enforcement.calls != 1 {
+		t.Fatalf("enforcement calls=%d", enforcement.calls)
 	}
 }
 
@@ -803,7 +948,7 @@ func runtimeTestDDL() []string {
 		`CREATE TABLE model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL, trigger_kind TEXT NOT NULL, schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, request_summary_json TEXT NOT NULL, result_summary_json TEXT NOT NULL, policy_snapshot_json TEXT NOT NULL, quality_decision_json TEXT NOT NULL, probe_set_version TEXT NOT NULL, started_at TEXT NOT NULL, trace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, level TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, message TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, error_code TEXT, error_message TEXT, quality_health_sync_status TEXT)`,
 		`CREATE TABLE model_check_items (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, item_key TEXT NOT NULL, item_type TEXT NOT NULL, status TEXT NOT NULL, score INTEGER NOT NULL, max_score INTEGER NOT NULL, duration_ms INTEGER, trace_id TEXT, evidence_summary_json TEXT NOT NULL, error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE model_check_observations (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, provider_code TEXT NOT NULL, requested_model TEXT NOT NULL, mapped_upstream_model TEXT NOT NULL, probe_family TEXT NOT NULL, observation_status TEXT NOT NULL, identity_status TEXT NOT NULL, mapping_status TEXT NOT NULL, protocol_status TEXT NOT NULL, evidence_coverage INTEGER NOT NULL, created_at TEXT NOT NULL, aggregation_completed_at TEXT)`,
-		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL, score INTEGER NOT NULL, threshold INTEGER NOT NULL, level TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(account_id,stat_hour))`,
+		`CREATE TABLE account_quality_health_hourly (account_id TEXT NOT NULL, system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, stat_hour TEXT NOT NULL, observed_at TEXT NOT NULL, model_check_run_id TEXT NOT NULL, model TEXT NOT NULL, profile TEXT NOT NULL, score INTEGER NOT NULL, threshold INTEGER NOT NULL, level TEXT NOT NULL, error_code TEXT, error_message TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(account_id,stat_hour))`,
 		`CREATE TABLE model_account_trust_results (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, identity_status TEXT NOT NULL DEFAULT 'insufficient_evidence', mapping_status TEXT NOT NULL DEFAULT 'unknown', usage_integrity_status TEXT NOT NULL DEFAULT 'insufficient_evidence', protocol_status TEXT NOT NULL DEFAULT 'insufficient_evidence', evidence_status TEXT NOT NULL DEFAULT 'insufficient', evidence_coverage INTEGER NOT NULL DEFAULT 0, observation_count INTEGER NOT NULL DEFAULT 0, reason_codes_json TEXT NOT NULL DEFAULT '[]', last_observed_id TEXT, last_observed_at TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
 		`CREATE TABLE model_trust_latest_dirty_accounts (system_account_id TEXT NOT NULL, account_id TEXT NOT NULL, requested_model TEXT NOT NULL, dirty_reason TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(system_account_id,account_id,requested_model))`,
 		`CREATE TABLE model_trust_observation_receipts (observation_id TEXT PRIMARY KEY, observation_created_at TEXT NOT NULL, processed_at TEXT NOT NULL)`,

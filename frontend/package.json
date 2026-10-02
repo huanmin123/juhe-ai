@@ -137,6 +137,7 @@
     "test:provider-catalog-progressive-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/provider-catalog-progressive-loading-regression.ts",
     "test:settings-sections-progressive-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/settings-sections-progressive-loading-regression.ts",
     "test:model-check-trust-contract": "tsx --tsconfig tsconfig.json scripts/regression/model-check-trust-contract-regression.ts",
+    "test:model-check-quality-schedules": "tsx --tsconfig tsconfig.json scripts/regression/model-check-quality-schedules-regression.ts",
     "test:provider-model-formatters": "tsx --tsconfig tsconfig.json scripts/regression/provider-model-formatters-regression.ts",
     "test:custom-provider-model-form": "tsx --tsconfig tsconfig.json scripts/regression/custom-provider-model-form-regression.ts",
     "test:provider-model-source-operation": "tsx --tsconfig tsconfig.json scripts/regression/provider-model-source-operation-regression.ts",

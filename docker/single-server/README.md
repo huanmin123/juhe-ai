@@ -87,6 +87,24 @@ bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / ma
 
 手动流程（等价于脚本内部步骤，仅排障时用）：构建（见上节命令）→ 上传 `build/` → `docker compose build gateway jobs maintenance` → `docker compose up -d`。maintenance 幂等，发布后跑一次 `--ensure-schema` 应用加法式 schema。回滚 = 上传上一个版本的 build/ 并重新 build+up。
 
+**数据库约束迁移（2026-10-01 起，模型质量检测批次，两步）**：本次升级的两处 CHECK 约束分属两条迁移通道，发布检查必须两步分别执行——
+1. `maintenance --ensure-schema`（业务库，例行幂等）：迁移 `model_quality_schedules.interval_minutes`（`10..10080` → `1..10080`，对应定时检查间隔下限放宽到 1 分钟）。实现方式：PG 在 ensure-schema 内用 DO 块替换约束；SQLite 业务库重建 `model_quality_schedules` 表迁移（数据保持；SQLite 无法原位改列约束）。
+2. `maintenance --apply-j3b-model-check-postgres`（j3b 库，读 env `JUHE_AI_MAINTENANCE_J3B_POSTGRES_URL`，幂等可重入，与 ensure-schema 相互独立）：迁移 `juhe_j3b.model_check_runs.trigger_kind`（取值域加 `schedule_now`，计划立即执行）。`--ensure-schema` 不包含该迁移；未执行时存量三值 CHECK 不变，首个 `schedule_now` run 插入会因 CHECK 约束写入失败（用户侧表现为"已发起"后静默无记录）。
+
+升级后验证（PG，`docker compose exec postgres psql -U juhe_ai juhe_ai`）：
+
+```sql
+-- interval_minutes 相关约束定义应显示 PG 规范化形态 ((interval_minutes >= 1) AND (interval_minutes <= 10080))
+SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+ WHERE conrelid = 'juhe_business.model_quality_schedules'::regclass;
+-- trigger_kind 约束应包含 schedule_now
+SELECT pg_get_constraintdef(oid) FROM pg_constraint
+ WHERE conrelid = 'juhe_j3b.model_check_runs'::regclass
+   AND pg_get_constraintdef(oid) LIKE '%trigger_kind%';
+```
+
+也可直接经管理面创建/编辑一条 `intervalMinutes=1` 的定时检查计划做写入面验证。回滚提示：约束放宽向后兼容（旧二进制接受的取值是新约束的子集），回滚上一版二进制时**无需回滚约束**，直接按常规流程回滚即可。
+
 ## .env 契约（当前实例全集见服务器 /opt/juhe-ai/.env）
 
 ### Compose 与 deploy 脚本级必含变量（BUG-0225 实例事实变量化）

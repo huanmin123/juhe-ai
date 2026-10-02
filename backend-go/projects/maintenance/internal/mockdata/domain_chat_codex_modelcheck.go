@@ -1941,7 +1941,7 @@ func writeModelCheckRuns(w *chatCodexWriter, resources chatCodexResources) error
 		requestSummary := chatCodexRequestSummary(seed, account, probeSet)
 		policySnapshot := chatCodexPolicySnapshot(resources)
 		resultSummary := chatCodexResultSummary(seed, resources, now)
-		qualityDecision := chatCodexQualityDecision(seed, resultSummary)
+		qualityDecision := chatCodexQualityDecision(seed, resultSummary, now)
 		columns := map[string]any{
 			"id": runID, "system_account_id": account.Owner, "actor_system_account_id": account.Owner,
 			"provider_code": account.Provider, "target_type": "account", "target_id": account.ID,
@@ -2128,25 +2128,48 @@ func chatCodexQuizSummary(resources chatCodexResources) (map[string]any, bool) {
 }
 
 // chatCodexQualityDecision 复刻 quality_decision 形状（判定与运行状态一致）。
-func chatCodexQualityDecision(seed chatCodexRunSeed, resultSummary string) string {
+// v2 判定键（triggerKind/triggered/hardFailure/score/threshold/configuredAction/
+// result/reasonCodes/beforeStatus/afterStatus/recoveryDueAt/enforcementId/
+// generation/healthSyncResult/healthStatHour/message/decidedAt）与 v1 内部键
+// 并存：样本分数均高于阈值 70，因此全部走 not_triggered 分支（处置字段为
+// null，账户状态前后保持 active），时间字段与运行矩阵 / 小时健康样本同源。
+func chatCodexQualityDecision(seed chatCodexRunSeed, resultSummary string, now time.Time) string {
 	if seed.status == "running" {
 		return "{}"
 	}
 	var summary map[string]any
 	_ = json.Unmarshal([]byte(resultSummary), &summary)
+	// 与 writeModelCheckRuns / writeAccountQualityHealthHourly 同源的时间：
+	// startedAt = now-ageHours-4m，finishedAt = startedAt+3m；小时健康的
+	// observedAt = now-ageHours，stat_hour 截断到小时。
+	finishedAt := now.Add(-time.Duration(seed.ageHours)*time.Hour - time.Minute)
+	healthStatHour := now.Add(-time.Duration(seed.ageHours) * time.Hour).UTC().Format("2006-01-02T15")
+	decisionMessage := CleanupNamePrefix + "质量达标，未触发处置"
+	if seed.status != "completed" {
+		decisionMessage = CleanupNamePrefix + "运行未完成，未形成质量判定"
+	}
 	decision := map[string]any{
 		"evidenceFormed": seed.status == "completed", "trustFormed": seed.status == "completed",
 		"missingFamilies": []string{}, "partialFamilies": []string{}, "invalidFamilies": []string{},
 		"manualEnforcementEnabled": true, "ownPhysicalAccount": true,
 		"hardQualityFailure": false, "enforcementAllowed": false,
 		"modelCheckUnverified": seed.status != "completed",
+		"triggerKind":          "manual", "triggered": false, "hardFailure": false,
+		"score": seed.score, "threshold": 70, "configuredAction": "fallback",
+		"reasonCodes":  []string{},
+		"beforeStatus": "active", "afterStatus": "active",
+		"recoveryDueAt": nil, "enforcementId": nil, "generation": nil,
+		"message": decisionMessage, "decidedAt": chatCodexStamp(finishedAt),
+		"healthSyncResult": nil, "healthStatHour": nil,
+	}
+	if seed.status == "completed" {
+		decision["healthSyncResult"] = "applied"
+		decision["healthStatHour"] = healthStatHour
 	}
 	if trust, ok := summary["trustReport"]; ok {
 		decision["trustReport"] = trust
 	}
-	if seed.status != "completed" {
-		decision["result"] = "not_triggered"
-	}
+	decision["result"] = "not_triggered"
 	return string(chatCodexMustJSON(decision))
 }
 

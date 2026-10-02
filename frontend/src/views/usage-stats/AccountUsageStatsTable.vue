@@ -44,7 +44,7 @@
           </div>
         </template>
         <template v-else-if="column.key === 'type'">
-          <a-tag color="processing">{{ accountTypeText(record.type) }}</a-tag>
+          <a-tag :class="`type-tag type-tag-${record.type}`">{{ accountTypeText(record.type) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'providerCode'">
           <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
@@ -83,7 +83,7 @@
                 <span>{{ record.name }}</span>
               </div>
               <div class="usage-mobile-subtitle">
-                <a-tag color="processing">{{ accountTypeText(record.type) }}</a-tag>
+                <a-tag :class="`type-tag type-tag-${record.type}`">{{ accountTypeText(record.type) }}</a-tag>
                 <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
                 <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
                 <a-tag v-if="record.accessType === 'authorized'" color="blue">{{ authorizationAccountTagText(record) }}</a-tag>

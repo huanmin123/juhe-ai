@@ -178,10 +178,10 @@ func wbPayloadBytes(t *testing.T, payload ScheduledPayload) []byte {
 }
 
 // 恢复资格判定契约：只有 formed+trusted、分数达阈值且非 unavailable 的
-// 完成结果才能清除质量隔离。
+// 完成结果才能清除质量隔离（空 profile 按 full 门槛）。
 func TestWBRunResultRecoveryEligible(t *testing.T) {
 	eligible := RunResult{Status: string(RunCompleted), Data: map[string]any{"evidenceFormed": true, "trustFormed": true, "score": 90, "level": "likely"}}
-	if !runResultRecoveryEligible(eligible, 70) {
+	if !runResultRecoveryEligible(eligible, 70, "") {
 		t.Fatal("formed+trusted 且达标的结果必须可恢复")
 	}
 	cases := []struct {
@@ -195,12 +195,12 @@ func TestWBRunResultRecoveryEligible(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if runResultRecoveryEligible(tc.result, 70) {
+			if runResultRecoveryEligible(tc.result, 70, "") {
 				t.Fatal("不满足质量门的结果不得恢复")
 			}
 		})
 	}
-	if runResultRecoveryEligible(eligible, 10) {
+	if runResultRecoveryEligible(eligible, 10, "") {
 		t.Fatal("阈值越界必须拒绝恢复")
 	}
 }
@@ -245,7 +245,9 @@ func TestWBHealthSyncRetryExecutorContract(t *testing.T) {
 	}
 	store.HealthStatHour = statHour
 	wbSeedFailedHealthRun(t, store, "run-retry-exec", map[string]any{"account": "acct", "profile": "quick", "policy": `{"revision":"1","threshold":70,"action":"fallback","recoveryIntervalMinutes":10}`, "decision": `{"evidenceFormed":false,"trustFormed":false}`, "request": `{"configRevision":"cfg-1"}`, "finished": "2026-09-05T09:29:00Z"})
-	projector := &QualityProjector{Store: store, Enforcement: EnforcementApplierFunc(func(context.Context, QualityEnforcement) error { return nil })}
+	projector := &QualityProjector{Store: store, Enforcement: EnforcementApplierFunc(func(context.Context, QualityEnforcement) (EnforcementOutcome, error) {
+		return EnforcementOutcome{}, nil
+	})}
 	executor := &HealthSyncRetryExecutor{Projector: projector}
 	if err := executor.Execute(context.Background(), ScheduleTask{Kind: SchedulerScheduled, Payload: []byte(`{}`)}); err == nil {
 		t.Fatal("非健康重试任务必须报错")

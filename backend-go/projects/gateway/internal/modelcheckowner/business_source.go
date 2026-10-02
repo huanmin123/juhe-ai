@@ -289,14 +289,29 @@ func (s *BusinessTargetSource) Resolve(ctx context.Context, request RunRequest) 
 		return Target{}, errors.New("J3b Business source account dispatch revision is stale")
 	}
 	qualityRecovery := request.TriggerKind == string(SchedulerQualityRecovery)
+	// schedule_now（计划立即执行）承担"立即复测恢复"（D4）：必须能探测被
+	// 本计划处罚的账户（quality_isolate 的 quality_isolated、disable 的
+	// disabled），恢复类门禁（schedulable/冷却/可用时段）同步放行。
+	restoreProbe := qualityRecovery || request.TriggerKind == TriggerKindScheduleNow
 	availabilityNow := s.nowUTC()
-	if (qualityRecovery && status != "quality_isolated") || (!qualityRecovery && status != "active" && status != "temporary_unavailable" && status != "rate_limited") {
-		return Target{}, errors.New("J3b Business account is unavailable")
+	switch {
+	case qualityRecovery:
+		if status != "quality_isolated" {
+			return Target{}, errors.New("J3b Business account is unavailable")
+		}
+	case restoreProbe:
+		if status != "quality_isolated" && status != "disabled" && status != "active" && status != "temporary_unavailable" && status != "rate_limited" {
+			return Target{}, errors.New("J3b Business account is unavailable")
+		}
+	default:
+		if status != "active" && status != "temporary_unavailable" && status != "rate_limited" {
+			return Target{}, errors.New("J3b Business account is unavailable")
+		}
 	}
-	if (!qualityRecovery && !schedulable) || !profileEnabled || accountUnavailableAt(accountExpiresAt.String, cooldownUntil.String, lastErrorCode.String, availabilityNow, qualityRecovery) {
+	if (!restoreProbe && !schedulable) || !profileEnabled || accountUnavailableAt(accountExpiresAt.String, cooldownUntil.String, lastErrorCode.String, availabilityNow, restoreProbe) {
 		return Target{}, errors.New("J3b Business account is not schedulable")
 	}
-	if allowed, err := availabilityAllowedGateway(availabilitySchedule.String, availabilityNow); err != nil || (!qualityRecovery && !allowed) {
+	if allowed, err := availabilityAllowedGateway(availabilitySchedule.String, availabilityNow); err != nil || (!restoreProbe && !allowed) {
 		if err != nil {
 			return Target{}, fmt.Errorf("evaluate J3b account availability schedule: %w", err)
 		}

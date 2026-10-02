@@ -72,10 +72,12 @@ func wbSeedSQLiteFile(t *testing.T, name string, complete bool) string {
 
 func wbValidHostDeps() HostDependencies {
 	return HostDependencies{
-		Resolve:        func(context.Context, RunRequest) (Target, error) { return Target{}, nil },
-		Authorize:      func(context.Context, *http.Request) (string, error) { return "sys-1", nil },
-		Build:          func(context.Context, string, RunCommand) (RunRequest, error) { return RunRequest{}, nil },
-		Enforcement:    EnforcementApplierFunc(func(context.Context, QualityEnforcement) error { return nil }),
+		Resolve:   func(context.Context, RunRequest) (Target, error) { return Target{}, nil },
+		Authorize: func(context.Context, *http.Request) (string, error) { return "sys-1", nil },
+		Build:     func(context.Context, string, RunCommand) (RunRequest, error) { return RunRequest{}, nil },
+		Enforcement: EnforcementApplierFunc(func(context.Context, QualityEnforcement) (EnforcementOutcome, error) {
+			return EnforcementOutcome{}, nil
+		}),
 		Quality:        &wbQualityStub{},
 		HealthStatHour: func(time.Time) (string, error) { return "2026-09-01T10", nil },
 		Tokenizer:      runtimeTestTokenizer{},

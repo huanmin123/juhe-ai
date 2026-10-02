@@ -56,6 +56,9 @@ type RunRequest struct {
 	SourceEndpointFamily, UpstreamEndpointFamily string
 	UpstreamProtocol, UpstreamEndpointMode       string
 	Headers                                      http.Header
+	// OnStarted 在 CreateRun 成功后回调一次（runId 早期可取，D3）。回调方
+	// 必须非阻塞（run-now 受理方用带缓冲 channel 接收）。
+	OnStarted func(runID string)
 }
 
 type RunResult struct {
@@ -245,6 +248,10 @@ type HTTPHandler struct {
 	// legacy handler's fail-closed behavior for an unwired foreign scope while
 	// making the self route ignore any caller-supplied systemAccountId.
 	ForceActorScope bool
+	// RunNow 承载计划立即执行端点（D3/D4）。指针类型：MountScoped 的值拷贝
+	// 克隆共享同一服务实例（幂等缓存/在途表跨管理面与自助面共享）。nil 时
+	// run-now 路由按 owner 未接线返回 503。
+	RunNow *ScheduleRunNowService
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -323,6 +330,13 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.listScopedQualitySchedules(w, r, scope)
 	case r.Method == http.MethodPost && path == "/quality-schedules":
 		h.createScopedQualitySchedule(w, r, scope)
+	// 计划立即执行（D3）：固定段 /quality-schedules/run-now-batch 必须先于
+	// 前缀段 /quality-schedules/ 匹配——本 switch 按书写顺序求值，与题库
+	// 路由的精确段/前缀段排列同一语义（否则批量路径会落进 {id} 前缀分支）。
+	case r.Method == http.MethodPost && path == "/quality-schedules/run-now-batch":
+		h.runNowQualitySchedulesBatch(w, r, scope)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/quality-schedules/") && strings.HasSuffix(path, "/run-now"):
+		h.runNowQualitySchedule(w, r, scope, strings.TrimSuffix(strings.TrimPrefix(path, "/quality-schedules/"), "/run-now"))
 	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/quality-schedules/"):
 		h.patchScopedQualitySchedule(w, r, scope, strings.TrimPrefix(path, "/quality-schedules/"))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/quality-schedules/"):
@@ -698,6 +712,141 @@ func (h *HTTPHandler) deleteScopedQualitySchedule(w http.ResponseWriter, r *http
 		return
 	}
 	writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
+}
+
+// ScheduleRunNowInput 是 POST /quality-schedules/{id}/run-now 的请求体。
+type ScheduleRunNowInput struct {
+	Revision  *int   `json:"revision,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+}
+
+// ScheduleRunNowBatchInput 是 POST /quality-schedules/run-now-batch 的请求体。
+type ScheduleRunNowBatchInput struct {
+	Items []ScheduleRunNowBatchItemInput `json:"items"`
+}
+
+type ScheduleRunNowBatchItemInput struct {
+	ScheduleID string `json:"scheduleId"`
+	Revision   *int   `json:"revision,omitempty"`
+	RequestID  string `json:"requestId,omitempty"`
+}
+
+// scheduleRunNowBatchItemLimit 约束单次批量受理条数（D3 契约：>100 整体 400）。
+const scheduleRunNowBatchItemLimit = 100
+
+func scheduleRunNowRunID(outcome ScheduleRunNowOutcome) any {
+	if outcome.RunID != nil {
+		return *outcome.RunID
+	}
+	return nil
+}
+
+func scheduleRunNowMessage(outcome ScheduleRunNowOutcome) any {
+	if outcome.Message != "" {
+		return outcome.Message
+	}
+	return nil
+}
+
+// writeScheduleRunNowConflict 沿用 writeOwnerActiveConflict 的载荷形态
+// （message + active + error.code），message 语义换成"该账户正在执行检测"。
+func writeScheduleRunNowConflict(w http.ResponseWriter, outcome ScheduleRunNowOutcome) {
+	message := outcome.Message
+	if message == "" {
+		message = "该账户正在执行检测，请等待完成或停止后再试"
+	}
+	var active any
+	if outcome.Active != nil {
+		active = *outcome.Active
+	}
+	writeOwnerJSON(w, http.StatusConflict, map[string]any{
+		"message": message,
+		"active":  active,
+		"error":   map[string]any{"code": "active", "message": message, "active": active},
+	})
+}
+
+// runNowQualitySchedule 处理单条立即执行：受理/409 已执行/404/版本过期/幂等。
+func (h *HTTPHandler) runNowQualitySchedule(w http.ResponseWriter, r *http.Request, scope ManagementScope, id string) {
+	if strings.TrimSpace(id) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	systemID, ok := scope.specificSystemAccountID()
+	if !ok {
+		writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
+		return
+	}
+	if h.RunNow == nil {
+		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 计划立即执行 owner 未完成接线")
+		return
+	}
+	var input ScheduleRunNowInput
+	if err := decodeOwnerJSON(r, h.maxBody(), &input); err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	outcome, err := h.RunNow.RunNow(r.Context(), systemID, id, input.Revision, input.RequestID)
+	if err != nil {
+		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	switch outcome.Status {
+	case ScheduleRunNowStarted:
+		writeOwnerJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"scheduleId": outcome.ScheduleID, "accepted": true, "status": outcome.Status, "runId": scheduleRunNowRunID(outcome)}})
+	case ScheduleRunNowAlreadyRunning:
+		w.Header().Set("Retry-After", "1")
+		writeScheduleRunNowConflict(w, outcome)
+	case ScheduleRunNowStaleRevision:
+		writeQualityError(w, errors.New(outcome.Message))
+	case ScheduleRunNowNotFound:
+		writeQualityError(w, errors.New(outcome.Message))
+	case ScheduleRunNowInvalid:
+		writeOwnerError(w, http.StatusBadRequest, outcome.Message)
+	default:
+		writeOwnerError(w, http.StatusInternalServerError, "计划立即执行受理失败")
+	}
+}
+
+// runNowQualitySchedulesBatch 处理批量立即执行：恒 200 逐条透出受理结果，
+// 空 items 或超限整体 400，逐条互不影响。
+func (h *HTTPHandler) runNowQualitySchedulesBatch(w http.ResponseWriter, r *http.Request, scope ManagementScope) {
+	systemID, ok := scope.specificSystemAccountID()
+	if !ok {
+		writeOwnerError(w, http.StatusBadRequest, "请先选择具体系统账户")
+		return
+	}
+	if h.RunNow == nil {
+		writeOwnerError(w, http.StatusServiceUnavailable, "J3b Gateway 计划立即执行 owner 未完成接线")
+		return
+	}
+	var input ScheduleRunNowBatchInput
+	if err := decodeOwnerJSON(r, h.maxBody(), &input); err != nil {
+		writeOwnerError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(input.Items) == 0 {
+		writeOwnerError(w, http.StatusBadRequest, "items 不能为空")
+		return
+	}
+	if len(input.Items) > scheduleRunNowBatchItemLimit {
+		writeOwnerError(w, http.StatusBadRequest, "单次最多受理 100 条计划")
+		return
+	}
+	commands := make([]ScheduleRunNowBatchCommand, 0, len(input.Items))
+	for _, item := range input.Items {
+		commands = append(commands, ScheduleRunNowBatchCommand{ScheduleID: item.ScheduleID, Revision: item.Revision, RequestID: item.RequestID})
+	}
+	outcomes, err := h.RunNow.RunNowBatch(r.Context(), systemID, commands)
+	if err != nil {
+		writeOwnerError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	results := make([]map[string]any, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		results = append(results, map[string]any{"scheduleId": outcome.ScheduleID, "accepted": outcome.Accepted, "status": outcome.Status, "runId": scheduleRunNowRunID(outcome), "message": scheduleRunNowMessage(outcome)})
+	}
+	writeOwnerJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"results": results}})
 }
 func decodeOwnerJSON(r *http.Request, max int64, target any) error {
 	if r.Body == nil {

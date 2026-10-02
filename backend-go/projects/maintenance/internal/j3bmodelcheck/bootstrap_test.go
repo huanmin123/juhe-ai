@@ -531,6 +531,38 @@ func TestJ3bBootstrapDDLIsScopedAndComplete(t *testing.T) {
 	}
 }
 
+// TestJ3bBootstrapTriggerKindCheckContract pins the four-value
+// model_check_runs.trigger_kind CHECK ('schedule_now' added for on-demand
+// schedule execution) in both the bootstrap DDL and the guarded legacy
+// migration. The migration runs outside postgresSchema on every apply
+// (ready databases skip the DDL), so the two constants are asserted
+// separately; the DO block itself needs a live PostgreSQL and is only
+// checked textually here (its LIKE patterns follow pg_get_constraintdef's
+// normalized rendering, verified against a real catalog).
+func TestJ3bBootstrapTriggerKindCheckContract(t *testing.T) {
+	if !strings.Contains(postgresSchema, "CHECK (trigger_kind IN ('manual','scheduled','quality_recovery','schedule_now'))") {
+		t.Fatal("bootstrap DDL must declare the four-value trigger_kind CHECK")
+	}
+	if strings.Count(postgresSchema, "schedule_now") != 1 {
+		t.Fatalf("bootstrap DDL should mention schedule_now exactly once (the trigger_kind CHECK), got %d", strings.Count(postgresSchema, "schedule_now"))
+	}
+	for _, fragment := range []string{
+		"to_regclass('juhe_j3b.model_check_runs') IS NOT NULL",
+		"pg_get_constraintdef(c.oid) LIKE '%trigger_kind%'",
+		"pg_get_constraintdef(c.oid) NOT LIKE '%schedule_now%'",
+		"a.attname = 'trigger_kind'",
+		"DROP CONSTRAINT %I",
+		"ADD CONSTRAINT model_check_runs_trigger_kind_check CHECK (trigger_kind IN (''manual'',''scheduled'',''quality_recovery'',''schedule_now''))",
+	} {
+		if !strings.Contains(postgresTriggerKindCheckMigration, fragment) {
+			t.Fatalf("trigger_kind migration missing fragment %q", fragment)
+		}
+	}
+	if strings.Contains(postgresSchema, "DROP CONSTRAINT") {
+		t.Fatal("migration must stay outside postgresSchema (the DDL completeness test forbids DROP inside it)")
+	}
+}
+
 func TestJ3bReportReadinessRejectsMissingOrMalformedObjects(t *testing.T) {
 	if (Report{Schema: SchemaName, MissingSchema: true}).Ready() {
 		t.Fatal("missing schema must fail readiness")

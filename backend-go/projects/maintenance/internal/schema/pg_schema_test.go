@@ -25,16 +25,17 @@ import (
 // collectPostgresSchemaStatements() in backend/src/storage/postgres-schema.ts,
 // plus the Go-appended statements (model-check question bank table, its
 // indexes, the custom_question_ids ALTER columns, the stats
-// success_cost_usd ALTER/backfill statements, and the chat_conversations
-// account-binding ALTER columns; the retired bind-mode ALTERs were removed
-// with the account-only binding migration). Regenerate them when either
-// source changes.
-const goldenPostgresSchemaStatementCount = 623
+// success_cost_usd ALTER/backfill statements, the chat_conversations
+// account-binding ALTER columns, and the model_quality_schedules
+// interval_minutes CHECK migration DO block; the retired bind-mode ALTERs
+// were removed with the account-only binding migration). Regenerate them when
+// either source changes.
+const goldenPostgresSchemaStatementCount = 624
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      309,
+	"juhe_business":      310,
 	"juhe_chat":          42,
 	"juhe_dataset":       7,
 	"juhe_usage":         48,
@@ -131,8 +132,8 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	if alterColumns != 17 {
 		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 17", alterColumns)
 	}
-	if doBlocks != 1 {
-		t.Fatalf("DO block count = %d, want 1", doBlocks)
+	if doBlocks != 2 {
+		t.Fatalf("DO block count = %d, want 2", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)
@@ -152,6 +153,61 @@ func statementIndex(statements []PGStatement, target PGStatement) int {
 		}
 	}
 	return -1
+}
+
+// TestPostgresQualityScheduleIntervalCheckContract pins the widened
+// model_quality_schedules.interval_minutes CHECK (lower bound 10 -> 1 minute)
+// in both the CREATE TABLE statement and the guarded legacy migration, while
+// the three recovery_interval_minutes CHECKs keep the 10-minute floor. The
+// DO block cannot be exercised without a live PostgreSQL, so this asserts the
+// SQL text (the migration targets pg_get_constraintdef's normalized
+// '((interval_minutes >= 10) AND ...)' rendering, verified against a real
+// catalog).
+func TestPostgresQualityScheduleIntervalCheckContract(t *testing.T) {
+	var createTable string
+	var migration string
+	for _, statement := range postgresSchemaStatements {
+		switch {
+		case strings.Contains(statement.SQL, "CREATE TABLE IF NOT EXISTS model_quality_schedules"):
+			createTable = statement.SQL
+		case strings.Contains(statement.SQL, "model_quality_schedules_interval_minutes_range_check"):
+			migration = statement.SQL
+		}
+	}
+	if createTable == "" || migration == "" {
+		t.Fatalf("missing schedule CREATE TABLE or migration statement")
+	}
+	if !strings.Contains(createTable, "CHECK (interval_minutes BETWEEN 1 AND 10080)") {
+		t.Fatalf("schedule CREATE TABLE must widen interval_minutes to BETWEEN 1 AND 10080")
+	}
+	recoveryChecks := strings.Count(createTable, "CHECK (recovery_interval_minutes BETWEEN 10 AND 10080)")
+	if recoveryChecks != 1 {
+		t.Fatalf("schedule CREATE TABLE must keep exactly one recovery_interval_minutes BETWEEN 10 AND 10080 check, got %d", recoveryChecks)
+	}
+	for _, legacyFragment := range []string{
+		"to_regclass('juhe_business.model_quality_schedules') IS NOT NULL",
+		"LIKE '%(interval_minutes >= 10)%'",
+		"EXECUTE format('ALTER TABLE juhe_business.model_quality_schedules DROP CONSTRAINT %I', legacy_constraint)",
+		"ADD CONSTRAINT model_quality_schedules_interval_minutes_range_check CHECK (interval_minutes BETWEEN 1 AND 10080)",
+	} {
+		if !strings.Contains(migration, legacyFragment) {
+			t.Fatalf("interval migration missing fragment %q", legacyFragment)
+		}
+	}
+	if strings.Contains(migration, "recovery_interval_minutes") {
+		t.Fatalf("interval migration must not touch recovery_interval_minutes")
+	}
+	// policies 与 enforcements 的 recovery 下限不受本次放开影响。
+	for _, statement := range postgresSchemaStatements {
+		if strings.Contains(statement.SQL, "CREATE TABLE IF NOT EXISTS model_quality_policies") &&
+			!strings.Contains(statement.SQL, "CHECK (recovery_interval_minutes BETWEEN 10 AND 10080)") {
+			t.Fatalf("model_quality_policies must keep the 10-minute recovery floor")
+		}
+		if strings.Contains(statement.SQL, "CREATE TABLE IF NOT EXISTS account_quality_enforcements") &&
+			!strings.Contains(statement.SQL, "CHECK (recovery_interval_minutes BETWEEN 10 AND 10080)") {
+			t.Fatalf("account_quality_enforcements must keep the 10-minute recovery floor")
+		}
+	}
 }
 
 func TestPostgresSeedPasswordHashFormat(t *testing.T) {
@@ -257,8 +313,8 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
 	}
-	if len(pgSeedSystemSettings) != 61 {
-		t.Fatalf("system settings = %d, want 61", len(pgSeedSystemSettings))
+	if len(pgSeedSystemSettings) != 62 {
+		t.Fatalf("system settings = %d, want 62", len(pgSeedSystemSettings))
 	}
 	profileFamilyCount := 0
 	for _, profile := range pgSeedProfiles {

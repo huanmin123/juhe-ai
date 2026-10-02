@@ -582,6 +582,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				"event", "account_health_projection_assembly_failed", "error", projectorErr.Error())
 		} else {
 			healthOutcomeProjector = projector
+			// BUG-0260：runner 的终态脑裂自愈（cooldown_terminal_reproject）复用
+			// 同一投影器直调落投影；投影面缺席时不注入，触发时以错误显式暴露
+			// 而非回退为复测探针死循环。
+			if accountHealthRunner != nil && projector != nil {
+				accountHealthRunner.SetOutcomeProjector(projector)
+			}
 		}
 	}
 

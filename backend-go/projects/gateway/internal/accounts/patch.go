@@ -35,6 +35,13 @@ type PatchResult struct {
 	// it feeds the gateway runtime invalidation condition
 	// (gatewayRuntimeAffected: groupChanged || credentialsChanged || ...).
 	GroupChanged bool `json:"-"`
+	// DispatchBindingChanged mirrors dispatchBindingChanged（归档
+	// account-management-patch.repository.ts:514-516）：调度三字段
+	// priority/superPriorityEnabled/fallbackEnabled 的终值偏离行内现值。
+	// 与 GroupChanged 一起构成 Node groupStatsAffected 联动条件（授权路径
+	// 归档 :1036：groupChanged || dispatchBindingChanged → 提交后分组统计
+	// 脏标记 refreshGroupAccountStatsAfterWriteAsync）。
+	DispatchBindingChanged bool `json:"-"`
 	// BalanceIdentityChanged mirrors balanceIdentityChanged (归档
 	// :744-761)：余额查询身份（开关/配置/Key 指纹/base URL/代理）发生变化，
 	// 提交后触发余额快照旧代次清理端口。
@@ -435,6 +442,26 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			setArgs = append(setArgs, next)
 		}
 	}
+	// 调度绑定终值派生（归档 account-management-patch.repository.ts:494-516）：
+	// 三个终值取输入或行内现值（Go 编辑面无 Node 的互斥自动让位归一化，
+	// 双输入同真已由上方校验拒绝），任一偏离现值即 dispatchBindingChanged；
+	// 未换组时驱动下方 group_accounts 绑定列同步（else 分支），换组时作为
+	// replaceGroupBinding 的入参（归档 :830-834 传 next 值）。
+	nextPriority := row.priority
+	if input.Priority != nil {
+		nextPriority = *input.Priority
+	}
+	nextSuperPriority := row.superPriorityEnabled
+	if input.SuperPriorityEnabled != nil {
+		nextSuperPriority = boolInt(*input.SuperPriorityEnabled)
+	}
+	nextFallback := row.fallbackEnabled
+	if input.FallbackEnabled != nil {
+		nextFallback = boolInt(*input.FallbackEnabled)
+	}
+	dispatchBindingChanged := nextPriority != row.priority ||
+		nextSuperPriority != row.superPriorityEnabled ||
+		nextFallback != row.fallbackEnabled
 	// schedulable 的写入移到状态机分支（归档 :596-600 的 nextSchedulable
 	// 归一化：过期/强制关调度状态压为 false，其余状态变化恢复 true）。
 	// 归档 :583-590 的状态机输入：过期时间变化、时间计划变化与其派生状态。
@@ -1202,9 +1229,27 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		result.HealthCheckReason = "configuration"
 	}
 	result.GroupChanged = groupChanged
+	result.DispatchBindingChanged = dispatchBindingChanged
 	if groupChanged {
+		// 归档 :830-834：换组重建绑定携带调度字段 next 终值（非行内旧值）。
 		if err := s.replaceGroupBinding(ctx, tx, row.id, row.systemAccountID, row.authorizationID,
-			groupBindingTarget, row.priority, row.superPriorityEnabled == 1, row.fallbackEnabled == 1, nowISO); err != nil {
+			groupBindingTarget, nextPriority, nextSuperPriority == 1, nextFallback == 1, nowISO); err != nil {
+			return nil, err
+		}
+	} else if dispatchBindingChanged {
+		// 归档 :835-845 的 else-if 臂（BUG-0258）：未换组但调度字段终值变化时，
+		// 同一事务内同步启用绑定行的 local_* 快照——网关调度候选排序只读分组
+		// 绑定级字段（chain_accounts.go ORDER BY / chain_accounts_secret.go 合成），
+		// 只写 accounts 不同步绑定会让排序永远按创建时旧值。
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("group_accounts")+` SET
+			local_priority = ?,
+			local_super_priority_enabled = ?,
+			local_fallback_enabled = ?,
+			updated_at = ?
+			WHERE account_id = ?
+				AND system_account_id = ?
+				AND enabled = 1`),
+			nextPriority, nextSuperPriority, nextFallback, nowISO, row.id, row.systemAccountID); err != nil {
 			return nil, err
 		}
 	}
@@ -1226,7 +1271,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// Post-commit invalidation (T2 audit; Node
 	// account-management-patch.repository.ts:1877-1896): conditional lookup
 	// flush + gateway runtime invalidation, best-effort.
-	s.finishPatchSideEffects(result)
+	s.finishPatchSideEffects(ctx, result)
 	return result, nil
 }
 

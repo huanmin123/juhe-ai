@@ -6,13 +6,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // Claude Code 客户端兼容常量（对齐 client-compatibility.ts）。
 const (
 	GatewayClientProfileHeader = "x-juhe-client-profile"
 
-	AnthropicClaudeCodeVersion    = "2.1.201"
+	// Claude Code 画像补齐版本（对齐真实 Claude Code CLI）。版本跟随官方
+	// changelog 最新稳定（code.claude.com；2026-10-02 锚点 2.1.285），与
+	// upstreamidentity.ClaudeCodeUserAgent 的 cli 入口变体同步维护。内置
+	// 默认；运行时可被 upstreamidentity.SetClientVersionOverrides 覆盖
+	//（EffectiveAnthropicClaudeCodeUserAgent / upstreamidentity.
+	// EffectiveClaudeCodeVersion）。
+	AnthropicClaudeCodeVersion    = "2.1.285"
 	AnthropicClaudeCodeUserAgent  = "claude-cli/" + AnthropicClaudeCodeVersion + " (external, sdk-cli)"
 	ClaudeCodeSessionIDHeader     = "x-claude-code-session-id"
 	ClaudeCodeAgentIDHeader       = "x-claude-code-agent-id"
@@ -21,6 +29,15 @@ const (
 	RequestIDHeader               = "x-request-id"
 	AnthropicClaudeCodeBetaHeader = "claude-code-20250219"
 )
+
+// EffectiveAnthropicClaudeCodeUserAgent 运行时拼接 Claude Code 的 sdk-cli
+// 入口变体 UA：版本取 upstreamidentity.EffectiveClaudeCodeVersion()（同
+// upstreamClientVersionOverrides 覆盖的 claudeCode 家族）。注意这是
+// sdk-cli 入口变体，与 upstreamidentity.EffectiveClaudeCodeUserAgent 的
+// cli 变体格式不同，保持差异。
+func EffectiveAnthropicClaudeCodeUserAgent() string {
+	return "claude-cli/" + upstreamidentity.EffectiveClaudeCodeVersion() + " (external, sdk-cli)"
+}
 
 // AnthropicClaudeCodeBetaHeaders 对齐 anthropicClaudeCodeBetaHeaders。
 var AnthropicClaudeCodeBetaHeaders = []string{
@@ -72,7 +89,7 @@ func ApplyClientCompatibilityHeaders(r *http.Request, options ClientCompatibilit
 		return ""
 	}
 	if !isClaudeCodeUserAgent(r.Header.Get("User-Agent")) {
-		r.Header.Set("User-Agent", AnthropicClaudeCodeUserAgent)
+		r.Header.Set("User-Agent", EffectiveAnthropicClaudeCodeUserAgent())
 	}
 	r.Header.Set(AnthropicBetaHeader, mergeAnthropicBetaHeader(r.Header.Get(AnthropicBetaHeader), AnthropicClaudeCodeBetaHeaders))
 	if r.Header.Get(ClaudeCodeSessionIDHeader) == "" {

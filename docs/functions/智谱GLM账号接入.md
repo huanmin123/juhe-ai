@@ -121,9 +121,9 @@ Responses 模型能力必须独立于 Chat 能力维护。当前目录所有 GLM
 - 不从账号配置生成 `OpenAI-Organization`、`OpenAI-Project` 或 GPT / Codex 专属 header。
 - Coding Plan 面向指定工具和产品环境；网关不应无故覆盖客户端 `User-Agent`。在安全过滤之后，尽量保留工具侧用于官方识别的普通请求形态，避免影响套餐额度识别。
 
-系统主动请求（人工账户测试、J1 后台探活、J3b 主动模型检测和受控模型目录刷新）与普通网关转发是两个边界：系统请求没有真实下游客户端画像，因此由 `provider_protocol_profile_id` 选择最小的静态渠道身份。`profile_glm_coding_openai_v1` 和 `profile_glm_coding_anthropic_v1` 使用从 ZCode 3.11.2 模型请求确认的静态头：`User-Agent: ZCode/3.11.2`、`HTTP-Referer: https://zcode.z.ai`、`X-ZCode-App-Version: 3.11.2`、`X-Title: Z Code@electron`。没有精确客户端身份的 API Key 请求，在没有已有 `User-Agent` 时只补从 OpenCode 1.18.5 观测到的 `User-Agent: opencode/1.18.5` 作为兼容兜底；它不是完整 OpenCode 身份，也不把该通用兜底当作 GLM Coding 专属身份。`OpenCode` 的 `x-opencode-*`、session、project、request、client 以及其他动态安全字段不生成。不生成 ZCode 的 `X-Client-Ts`、`X-Client-Sig`、`X-Client-Nonce`、`X-Device-Mid`、`X-Session-Id`、`X-Client-Pow` 等动态安全字段，也不把 ZCode 身份应用到 `profile_glm_general_openai_v1`。
+系统主动请求（人工账户测试、J1 后台探活、J3b 主动模型检测和受控模型目录刷新）与普通网关转发是两个边界：系统请求没有真实下游客户端画像，因此由 `provider_protocol_profile_id` 选择最小的静态渠道身份。`profile_glm_coding_openai_v1` 和 `profile_glm_coding_anthropic_v1` 使用从 ZCode 模型请求确认的静态头（版本跟随 zcode.z.ai 官方 changelog 最新稳定维护，`upstreamidentity.ZCodeVersion`，2026-10-02 锚点 3.14.3）：`User-Agent: ZCode/3.14.3`、`HTTP-Referer: https://zcode.z.ai`、`X-ZCode-App-Version: 3.14.3`、`X-Title: Z Code@electron`。无法识别上游家族的 API Key 系统请求不注入任何客户端身份，保持传输层默认 Go User-Agent（BUG-0201：实测 supeai.cc 等第三方上游对已知代理客户端 UA 挂起，OpenCode UA-only 兜底已删除）。不生成 ZCode 的 `X-Client-Ts`、`X-Client-Sig`、`X-Client-Nonce`、`X-Device-Mid`、`X-Session-Id`、`X-Client-Pow` 等动态安全字段，也不把 ZCode 身份应用到 `profile_glm_general_openai_v1`。ZCode 版本可经系统设置 `upstreamClientVersionOverrides` 的 zcode 键热覆盖，见[上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)。
 
-普通网关请求仍保留真实调用方的客户端身份，不能全局覆盖成 ZCode 或 OpenCode；探针使用的内部 `x-juhe-client-profile` 只用于本地构造，不得发送到智谱上游。其他已有精确客户端绑定档案（GPT/Codex、Anthropic OAuth、Gemini Code Assist、Grok OAuth）只在各自支持的请求形态沿用适配器身份；例如 GPT/Codex Responses 身份不套用到 `GET /models`。OpenCode 的 UA-only 兜底只用于系统主动请求，不伪装完整官方 CLI 会话。
+普通网关请求仍保留真实调用方的客户端身份，不能全局覆盖成 ZCode 或其他客户端；探针使用的内部 `x-juhe-client-profile` 只用于本地构造，不得发送到智谱上游。其他已有精确客户端绑定档案（GPT/Codex、Anthropic OAuth、Gemini Code Assist、Grok OAuth）只在各自支持的请求形态沿用适配器身份；例如 GPT/Codex Responses 身份不套用到 `GET /models`。
 
 ## Codex Responses 到 Chat 桥接
 

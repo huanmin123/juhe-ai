@@ -101,36 +101,60 @@
           </a-alert>
           <template v-if="healthSnapshot">
             <div class="health-meta">检查时间：{{ formatDateTime(healthSnapshot.checkedAt) }}</div>
-            <a-row :gutter="[16, 16]">
-              <a-col v-for="process in healthProcessSections" :key="process.key" :xs="24" :md="12">
-                <section class="health-process-card">
-                  <header class="health-process-head">
-                    <span class="health-process-title">{{ process.title }}</span>
-                    <a-tag :color="healthConclusionColor(process.section.conclusion)">
-                      {{ healthConclusionText(process.section.conclusion) }}
-                    </a-tag>
-                  </header>
-                  <a-alert
-                    v-if="process.section.conclusion === 'unreachable'"
-                    class="health-process-alert"
-                    type="warning"
-                    show-icon
-                    :message="`jobs 健康面不可达：${process.section.reason || '原因未知'}`"
-                  />
-                  <div v-else-if="process.section.entries.length" class="health-kv-grid">
-                    <div v-for="[key, value] in process.section.entries" :key="key" class="health-kv-item">
-                      <span class="health-kv-key">{{ healthStatusLabel(key) }}</span>
-                      <span v-if="typeof value === 'boolean'" class="health-kv-value">
-                        <span class="health-status-dot" :class="value ? 'health-status-ok' : 'health-status-off'" />
-                        {{ value ? '正常' : '未启用' }}
-                      </span>
-                      <span v-else class="health-kv-value">{{ healthValueText(key, value) }}</span>
-                    </div>
+            <div class="health-process-list">
+              <section v-for="process in healthProcessSections" :key="process.key" class="health-process-card" :class="{ degraded: process.display.conclusion !== 'ok' }">
+                <header class="health-process-head">
+                  <span class="health-process-title">{{ process.title }}</span>
+                  <span v-if="process.display.ownerMode" class="health-process-owner">{{ process.display.ownerMode }}</span>
+                  <a-tag :color="healthConclusionColor(process.display.conclusion)">
+                    {{ healthConclusionText(process.display.conclusion) }}
+                  </a-tag>
+                </header>
+                <a-alert
+                  v-if="process.display.conclusion === 'unreachable'"
+                  class="health-process-alert"
+                  type="warning"
+                  show-icon
+                  :message="`${process.title} 健康面不可达：${process.display.reason || '原因未知'}`"
+                />
+                <template v-else>
+                  <!-- 真异常优先：已启用但不就绪的功能，醒目提示 -->
+                  <div v-if="process.display.unhealthyLabels.length" class="health-line health-line-unhealthy">
+                    <span class="health-line-label">未就绪</span>
+                    <span>{{ process.display.unhealthyLabels.join('、') }}</span>
                   </div>
-                  <a-empty v-else class="health-group-empty" description="暂无状态明细" />
-                </section>
-              </a-col>
-            </a-row>
+                  <!-- 就绪汇总：全绿时一行带过 -->
+                  <div v-if="process.display.readyLabels.length" class="health-line">
+                    <span class="health-line-label">已就绪 {{ process.display.readyLabels.length }} 项</span>
+                    <span class="health-line-items">{{ process.display.readyLabels.join(' · ') }}</span>
+                  </div>
+                  <!-- 未启用：部署形态预期配置（项内附原因），中性呈现，不算异常 -->
+                  <div v-if="process.display.disabledLabels.length" class="health-line health-line-muted">
+                    <span class="health-line-label">未启用 {{ process.display.disabledLabels.length }} 项 · 非故障</span>
+                    <span class="health-line-items">{{ process.display.disabledLabels.join(' · ') }}</span>
+                  </div>
+                  <!-- 已停用任务：一行摘要，展开后按根因归并（一行一问题） -->
+                  <a-collapse v-if="process.display.disabledJobs.length" class="health-disabled-jobs" ghost>
+                    <a-collapse-panel key="jobs" :header="`此部署形态下有 ${process.display.disabledJobs.length} 个任务不注册（${process.display.disabledJobGroups.length} 类原因）`">
+                      <div v-for="group in process.display.disabledJobGroups" :key="group.cause" class="health-disabled-job-group">
+                        <span class="health-disabled-job-cause">{{ group.cause }}（{{ group.jobs.length }} 个）</span>
+                        <span class="health-disabled-job-names">{{ group.jobs.join(' · ') }}</span>
+                      </div>
+                    </a-collapse-panel>
+                  </a-collapse>
+                  <a-collapse v-if="process.display.diagnostics.length" class="health-diagnostics" ghost>
+                    <a-collapse-panel key="diagnostics" :header="`诊断明细（${process.display.diagnostics.length} 项运维遥测）`">
+                      <div class="health-kv-grid">
+                        <div v-for="item in process.display.diagnostics" :key="item.key" class="health-kv-item">
+                          <span class="health-kv-key">{{ item.label }}</span>
+                          <span class="health-kv-value">{{ item.value }}</span>
+                        </div>
+                      </div>
+                    </a-collapse-panel>
+                  </a-collapse>
+                </template>
+              </section>
+            </div>
           </template>
         </StatsChartCard>
       </a-col>
@@ -140,7 +164,6 @@
       <a-col :xs="24">
         <StatsChartCard
           :title="`Go Runtime 指标趋势（${currentWindowLabel}）`"
-          :description="goRuntimeDescription"
           :loading="goRuntimeLoading && !goRuntimeTrend"
           :has-data="hasGoRuntimeTrend || Boolean(goRuntimeError)"
           :empty-description="goRuntimeEmptyDescription"
@@ -231,12 +254,10 @@ import StatsChartCard from './StatsChartCard.vue'
 import { buildGoRuntimeOption, hasGoRuntimeChartData, type GoRuntimeChartView } from './statsChartOptions'
 import { bytesToMiB, formatInteger } from './statsFormatters'
 import {
-  gatewayHealthSection,
+  gatewayHealthDisplay,
   healthConclusionColor,
   healthConclusionText,
-  healthStatusLabel,
-  healthValueText,
-  jobsHealthSection
+  jobsHealthDisplay
 } from './systemMetricsHealth'
 
 const MAX_RANGE_DAYS = 31
@@ -382,18 +403,14 @@ const goRuntimeChartViewOptions = computed(() => [
   { label: 'CPU（%）', value: 'resource' }
 ])
 const goRuntimeViewUnavailable = computed(() => activeGoRuntimeRoleItems.value.length > 0 && !hasGoRuntimeChartDataForView.value)
-const goRuntimeDescription = computed(() => {
-  const trend = goRuntimeTrend.value
-  return trend ? `${trend.service} · runtimeKind=${trend.runtimeKind}` : undefined
-})
 const goRuntimeEmptyDescription = computed(() => `${currentWindowLabel.value}暂无 Go runtime 采样`)
 const healthSnapshotEmptyDescription = computed(() => '暂无进程状态快照')
 const healthProcessSections = computed(() => {
   const snapshot = healthSnapshot.value
   if (!snapshot) return []
   return [
-    { key: 'gateway', title: 'Gateway', section: gatewayHealthSection(snapshot.gateway) },
-    { key: 'jobs', title: 'Jobs', section: jobsHealthSection(snapshot.jobs) }
+    { key: 'gateway', title: 'Gateway', display: gatewayHealthDisplay(snapshot.gateway) },
+    { key: 'jobs', title: 'Jobs', display: jobsHealthDisplay(snapshot.jobs) }
   ]
 })
 const backgroundJobRows = computed(() => backgroundJobsResult.value?.items ?? [])
@@ -803,25 +820,119 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.health-process-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .health-process-card {
-  height: 100%;
-  padding: 12px 14px;
+  padding: 10px 14px 8px;
   border: 1px solid #edf2f7;
   border-radius: 8px;
+}
+
+.health-process-card.degraded {
+  border-color: #ffd591;
+  background: #fffbe6;
 }
 
 .health-process-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .health-process-title {
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+}
+
+.health-process-owner {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.health-process-head .ant-tag {
+  margin-left: auto;
+}
+
+/* 汇总行：标签列固定宽，内容列可换行——全绿时安静收拢，异常行醒目 */
+.health-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12.5px;
+  line-height: 20px;
+}
+
+.health-line-label {
+  flex: 0 0 auto;
+  color: #94a3b8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.health-line-items {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #475569;
+}
+
+.health-line-unhealthy {
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: #fff1f0;
+}
+
+.health-line-unhealthy .health-line-label {
+  color: #cf1322;
+  font-weight: 600;
+}
+
+.health-line-unhealthy .health-line-items {
+  color: #a8071a;
+  font-weight: 500;
+}
+
+.health-line-muted .health-line-items {
+  color: #94a3b8;
+}
+
+.health-disabled-jobs :deep(.ant-collapse-header),
+.health-diagnostics :deep(.ant-collapse-header) {
+  padding: 4px 0 !important;
+  color: #64748b !important;
+  font-size: 12px;
+}
+
+.health-disabled-jobs :deep(.ant-collapse-content-box) {
+  padding: 2px 0 6px !important;
+}
+
+.health-disabled-job-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 10px;
+  border-left: 2px solid #e2e8f0;
+  margin-bottom: 4px;
+}
+
+.health-disabled-job-cause {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.health-disabled-job-names {
+  color: #94a3b8;
+  font-size: 11.5px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
 }
 
 .health-process-alert {
@@ -834,6 +945,15 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+/* 诊断明细折叠区：与主状态区视觉区隔（弱化边框），避免运维遥测喧宾夺主 */
+.health-diagnostics {
+  margin-top: 4px;
+}
+
+.health-diagnostics :deep(.ant-collapse-content-box) {
+  padding: 2px 0 6px !important;
+}
+
 .health-kv-item {
   display: flex;
   align-items: center;
@@ -841,7 +961,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   min-width: 0;
   padding: 6px 10px;
-  border: 1px solid #edf2f7;
+  border: 1px solid #f1f5f9;
   border-radius: 6px;
 }
 
@@ -857,28 +977,12 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: none;
+  flex: 1 1 auto;
+  white-space: pre-line;
+  text-align: left;
+  overflow-wrap: anywhere;
   color: #1f2937;
   font-size: 12px;
-}
-
-.health-status-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.health-status-ok {
-  background: #52c41a;
-}
-
-.health-status-off {
-  background: #d9d9d9;
-}
-
-.health-group-empty {
-  padding: 12px 0;
 }
 
 .go-runtime-error {

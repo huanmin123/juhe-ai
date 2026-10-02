@@ -16,17 +16,17 @@ func TestBusinessQualityManagerPolicyAndScheduleCAS(t *testing.T) {
 	defer db.Close()
 	for _, ddl := range []string{
 		`CREATE TABLE model_quality_policies (system_account_id TEXT PRIMARY KEY,revision INTEGER,profile TEXT,manual_enforcement_enabled INTEGER,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,created_at TEXT,updated_at TEXT,custom_question_ids TEXT)`,
-		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT)`,
+		`CREATE TABLE accounts (id TEXT PRIMARY KEY,system_account_id TEXT,name TEXT,provider_code TEXT,provider_protocol_profile_id TEXT,deleted_at TEXT,authorization_instance_authorization_id TEXT,status TEXT NOT NULL DEFAULT 'active')`,
 		`CREATE TABLE account_supported_models (account_id TEXT,model TEXT)`,
 		`CREATE TABLE account_model_mappings (account_id TEXT,source_model TEXT,source_endpoint_family TEXT,upstream_model TEXT,upstream_endpoint_family TEXT,enabled INTEGER)`,
 		`CREATE TABLE account_quality_enforcements (account_id TEXT PRIMARY KEY,action TEXT,state TEXT,recovery_due_at TEXT)`,
-		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
+		`CREATE TABLE model_quality_schedules (id TEXT PRIMARY KEY,system_account_id TEXT,account_id TEXT,model TEXT,interval_minutes INTEGER,profile TEXT,penalty_threshold INTEGER,penalty_action TEXT,recovery_interval_minutes INTEGER,enabled INTEGER,revision INTEGER,next_run_at TEXT,lease_owner TEXT,lease_until TEXT,created_at TEXT,updated_at TEXT,last_run_id TEXT,last_run_at TEXT,last_run_status TEXT,custom_question_ids TEXT,UNIQUE(system_account_id,account_id))`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct','sys','Primary account','openai','profile_openai_openai_v1',NULL,NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct','sys','Primary account','openai','profile_openai_openai_v1',NULL,NULL,'active')`); err != nil {
 		t.Fatal(err)
 	}
 	m, err := NewBusinessQualityManager(db, false)
@@ -59,7 +59,7 @@ func TestBusinessQualityManagerPolicyAndScheduleCAS(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO account_quality_enforcements(account_id,action,state,recovery_due_at) VALUES ('acct','quality_isolate','active','2026-08-28T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-deleted','sys','Deleted account','openai','profile_openai_openai_v1','2026-08-28T12:00:00Z',NULL)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO accounts VALUES ('acct-deleted','sys','Deleted account','openai','profile_openai_openai_v1','2026-08-28T12:00:00Z',NULL,'active')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO model_quality_schedules(id,system_account_id,account_id,model,interval_minutes,profile,penalty_threshold,penalty_action,recovery_interval_minutes,enabled,revision,next_run_at,created_at,updated_at) VALUES ('mqs-deleted','sys','acct-deleted','gpt-5.6-sol',60,'quick',70,'fallback',10,1,1,'2026-08-28T13:00:00Z','2026-08-28T12:00:00Z','2026-08-28T12:00:00Z')`); err != nil {
@@ -75,7 +75,7 @@ func TestBusinessQualityManagerPolicyAndScheduleCAS(t *testing.T) {
 	if _, err := m.CreateSchedule(context.Background(), "sys", QualityScheduleInput{AccountID: "acct", Model: "gpt-5.6-sol", IntervalMinutes: 60, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err == nil {
 		t.Fatal("duplicate account schedule must be rejected")
 	}
-	if _, err := m.CreateSchedule(context.Background(), "sys", QualityScheduleInput{AccountID: "acct", Model: "gpt-5.6-terra", IntervalMinutes: 1, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err == nil {
+	if _, err := m.CreateSchedule(context.Background(), "sys", QualityScheduleInput{AccountID: "acct", Model: "gpt-5.6-terra", IntervalMinutes: 0, Profile: "quick", PenaltyThreshold: 70, PenaltyAction: "fallback", RecoveryIntervalMinutes: 10}); err == nil {
 		t.Fatal("schedule interval below the contract minimum must be rejected")
 	}
 	list, err := m.ListSchedules(context.Background(), "sys", 1, 50)
@@ -90,8 +90,14 @@ func TestBusinessQualityManagerPolicyAndScheduleCAS(t *testing.T) {
 	if updated.Revision != schedule.Revision+1 || updated.IntervalMinutes != 120 {
 		t.Fatalf("updated=%+v", updated)
 	}
-	unchanged, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: updated.Revision, IntervalMinutes: &interval})
-	if err != nil || unchanged.Revision != updated.Revision {
+	// D2：interval_minutes 下限收敛到 1，1 分钟为合法配置。
+	minInterval := 1
+	minimal, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: updated.Revision, IntervalMinutes: &minInterval})
+	if err != nil || minimal.IntervalMinutes != 1 {
+		t.Fatalf("interval=1 必须合法: %+v err=%v", minimal, err)
+	}
+	unchanged, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: minimal.Revision, IntervalMinutes: &minInterval})
+	if err != nil || unchanged.Revision != minimal.Revision {
 		t.Fatalf("unchanged=%+v err=%v", unchanged, err)
 	}
 	if _, err := m.PatchSchedule(context.Background(), "sys", schedule.ID, QualitySchedulePatch{ExpectedRevision: schedule.Revision, IntervalMinutes: &interval}); err == nil {

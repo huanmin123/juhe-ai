@@ -28,23 +28,25 @@ func NewBusinessEnforcementApplier(db *sql.DB, postgres bool) (*BusinessEnforcem
 	return &BusinessEnforcementApplier{db: db, postgres: postgres}, nil
 }
 
-func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnforcement) error {
+func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnforcement) (EnforcementOutcome, error) {
 	if a == nil || a.db == nil {
-		return errors.New("J3b Business enforcement owner is not initialized")
+		return EnforcementOutcome{}, errors.New("J3b Business enforcement owner is not initialized")
 	}
-	if strings.TrimSpace(input.AccountID) == "" || strings.TrimSpace(input.SystemAccountID) == "" || strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Action) == "" || input.Threshold < 40 || input.Threshold > 100 || input.Score >= input.Threshold || input.RecoveryIntervalMinutes < 10 || input.RecoveryIntervalMinutes > 10080 {
-		return errors.New("J3b Business enforcement input is invalid")
+	// 硬失败（undeclared_mismatch 等显式质量门）独立于分数触发处罚：仅当
+	// 分数达标且无硬失败时才判定为非法输入，避免"96 分+硬失败"被拒绝。
+	if strings.TrimSpace(input.AccountID) == "" || strings.TrimSpace(input.SystemAccountID) == "" || strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Action) == "" || input.Threshold < 40 || input.Threshold > 100 || (input.Score >= input.Threshold && !input.HardQualityFailure) || input.RecoveryIntervalMinutes < 10 || input.RecoveryIntervalMinutes > 10080 {
+		return EnforcementOutcome{}, errors.New("J3b Business enforcement input is invalid")
 	}
 	if input.Action != "disable" && input.Action != "fallback" && input.Action != "quality_isolate" {
-		return errors.New("J3b Business enforcement action is invalid")
+		return EnforcementOutcome{}, errors.New("J3b Business enforcement action is invalid")
 	}
 	policyRevision, err := nonNegativeInt(input.PolicyRevision)
 	if err != nil {
-		return fmt.Errorf("J3b Business enforcement policy revision: %w", err)
+		return EnforcementOutcome{}, fmt.Errorf("J3b Business enforcement policy revision: %w", err)
 	}
 	accountRevision, err := positiveInt(input.AccountConfigRevision)
 	if err != nil {
-		return fmt.Errorf("J3b Business enforcement account revision: %w", err)
+		return EnforcementOutcome{}, fmt.Errorf("J3b Business enforcement account revision: %w", err)
 	}
 	now := input.OccurredAt.UTC()
 	if now.IsZero() {
@@ -52,15 +54,15 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 	}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin J3b Business enforcement: %w", err)
+		return EnforcementOutcome{}, fmt.Errorf("begin J3b Business enforcement: %w", err)
 	}
 	defer tx.Rollback()
 	matched, err := a.configurationMatches(ctx, tx, input, policyRevision)
 	if err != nil {
-		return fmt.Errorf("read J3b Business enforcement configuration: %w", err)
+		return EnforcementOutcome{}, fmt.Errorf("read J3b Business enforcement configuration: %w", err)
 	}
 	if !matched {
-		return errors.New("J3b Business enforcement configuration is stale")
+		return EnforcementOutcome{}, errors.New("J3b Business enforcement configuration is stale")
 	}
 	accountTable := a.table("accounts")
 	var status string
@@ -69,12 +71,12 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 	query := `SELECT status,config_revision,fallback_enabled,super_priority_enabled,deleted_at FROM ` + accountTable + ` WHERE id=` + a.placeholder(1) + ` AND system_account_id=` + a.placeholder(2)
 	if err := tx.QueryRowContext(ctx, query, input.AccountID, input.SystemAccountID).Scan(&status, &currentRevision, &fallbackEnabled, &superPriority, &deletedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New("J3b Business enforcement account not found")
+			return EnforcementOutcome{}, errors.New("J3b Business enforcement account not found")
 		}
-		return fmt.Errorf("read J3b Business enforcement account: %w", err)
+		return EnforcementOutcome{}, fmt.Errorf("read J3b Business enforcement account: %w", err)
 	}
 	if deletedAt.Valid {
-		return errors.New("J3b Business enforcement account revision is stale")
+		return EnforcementOutcome{}, errors.New("J3b Business enforcement account revision is stale")
 	}
 	// Health publication is stored separately and may fail after this
 	// transaction commits. A retry for the same run must therefore succeed
@@ -84,16 +86,34 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 	var priorGeneration int
 	priorErr := tx.QueryRowContext(ctx, `SELECT enforcement_id,generation,state,trigger_run_id FROM `+a.table("account_quality_enforcements")+` WHERE account_id=`+a.placeholder(1), input.AccountID).Scan(&priorID, &priorGeneration, &priorState, &priorRun)
 	if priorErr != nil && !errors.Is(priorErr, sql.ErrNoRows) {
-		return fmt.Errorf("read J3b existing enforcement: %w", priorErr)
+		return EnforcementOutcome{}, fmt.Errorf("read J3b existing enforcement: %w", priorErr)
 	}
-	if priorErr == nil && priorRun == input.RunID && priorState == "active" {
-		return tx.Commit()
+	priorFound := priorErr == nil
+	if priorFound && priorRun == input.RunID && priorState == "active" {
+		// 同 run 重试幂等：处罚已生效，返回既有事实而非再开一代。
+		outcome, readErr := a.readEffectiveOutcome(ctx, tx, input.AccountID)
+		if readErr != nil {
+			return EnforcementOutcome{}, readErr
+		}
+		outcome.AlreadyEffective = true
+		return outcome, tx.Commit()
 	}
 	if currentRevision != accountRevision {
-		return errors.New("J3b Business enforcement account revision is stale")
+		return EnforcementOutcome{}, errors.New("J3b Business enforcement account revision is stale")
 	}
 	if status != "active" && status != "temporary_unavailable" && status != "rate_limited" {
-		return errors.New("J3b Business enforcement account status is not enforceable")
+		// 账户已处于同 action 的有效处罚状态时，处罚目标已达成：返回
+		// AlreadyEffective 而非报错，健康投影据此记录 already_effective；
+		// 其他状态属于不同 action 的冲突，保持 fail-closed。
+		if (status == "quality_isolated" && input.Action == "quality_isolate") || (status == "disabled" && input.Action == "disable") {
+			outcome, readErr := a.readEffectiveOutcome(ctx, tx, input.AccountID)
+			if readErr != nil {
+				return EnforcementOutcome{}, readErr
+			}
+			outcome.AlreadyEffective = true
+			return outcome, tx.Commit()
+		}
+		return EnforcementOutcome{}, errors.New("J3b Business enforcement account status is not enforceable")
 	}
 	newStatus, schedulable, nextFallback, nextPriority := status, 1, fallbackEnabled, superPriority
 	if input.Action == "disable" {
@@ -110,26 +130,59 @@ func (a *BusinessEnforcementApplier) Apply(ctx context.Context, input QualityEnf
 	update := `UPDATE ` + accountTable + ` SET status=` + a.placeholder(1) + `,schedulable=` + a.placeholder(2) + `,fallback_enabled=` + a.placeholder(3) + `,super_priority_enabled=` + a.placeholder(4) + `,last_error_code=` + a.placeholder(5) + `,last_error_message=` + a.placeholder(6) + `,config_revision=config_revision+1,updated_at=` + a.placeholder(7) + ` WHERE id=` + a.placeholder(8) + ` AND system_account_id=` + a.placeholder(9) + ` AND config_revision=` + a.placeholder(10)
 	result, err := tx.ExecContext(ctx, update, newStatus, schedulable, nextFallback, nextPriority, "model_quality_failed", message, now.Format(time.RFC3339Nano), input.AccountID, input.SystemAccountID, accountRevision)
 	if err != nil {
-		return fmt.Errorf("update J3b Business enforcement account: %w", err)
+		return EnforcementOutcome{}, fmt.Errorf("update J3b Business enforcement account: %w", err)
 	}
 	if changed, _ := result.RowsAffected(); changed != 1 {
-		return errors.New("J3b Business enforcement account changed before commit")
+		return EnforcementOutcome{}, errors.New("J3b Business enforcement account changed before commit")
 	}
 	enforcementID := newEnforcementID()
+	generation := 1
+	if priorFound {
+		generation = priorGeneration + 1
+	}
 	interval := input.RecoveryIntervalMinutes
 	source, sourceID := "manual", any(nil)
 	if strings.TrimSpace(input.ScheduleID) != "" {
 		source, sourceID = "schedule", input.ScheduleID
 	}
-	enforcement := `INSERT INTO ` + a.table("account_quality_enforcements") + ` (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,config_source,config_source_id,policy_revision,profile,penalty_threshold,recovery_interval_minutes,account_config_revision,before_status,after_status,fallback_was_enabled,super_priority_was_enabled,started_at,recovery_due_at,created_at,updated_at) VALUES (` + a.placeholders(22) + `) ON CONFLICT(account_id) DO UPDATE SET system_account_id=excluded.system_account_id,enforcement_id=excluded.enforcement_id,generation=generation+1,state='active',action=excluded.action,trigger_run_id=excluded.trigger_run_id,config_source=excluded.config_source,config_source_id=excluded.config_source_id,policy_revision=excluded.policy_revision,profile=excluded.profile,penalty_threshold=excluded.penalty_threshold,recovery_interval_minutes=excluded.recovery_interval_minutes,account_config_revision=excluded.account_config_revision,before_status=excluded.before_status,after_status=excluded.after_status,fallback_was_enabled=excluded.fallback_was_enabled,super_priority_was_enabled=excluded.super_priority_was_enabled,started_at=excluded.started_at,recovery_due_at=excluded.recovery_due_at,cleared_at=NULL,updated_at=excluded.updated_at`
-	args := []any{input.AccountID, input.SystemAccountID, enforcementID, 1, "active", input.Action, input.RunID, source, sourceID, policyRevision, defaultProfile(input.Profile), input.Threshold, interval, accountRevision, status, newStatus, fallbackEnabled, superPriority, now.Format(time.RFC3339Nano), nullableTime(now.Add(time.Duration(interval)*time.Minute), input.Action == "quality_isolate"), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}
+	recoveryDueAt := nullableTime(now.Add(time.Duration(interval)*time.Minute), input.Action == "quality_isolate")
+	// recovery_model 冻结触发本次处罚的检测模型：恢复调度按它回放探针，
+	// 不得回退到账户当前 health_check_model（可能已被改配）。
+	enforcement := `INSERT INTO ` + a.table("account_quality_enforcements") + ` (account_id,system_account_id,enforcement_id,generation,state,action,trigger_run_id,config_source,config_source_id,policy_revision,profile,penalty_threshold,recovery_interval_minutes,recovery_model,account_config_revision,before_status,after_status,fallback_was_enabled,super_priority_was_enabled,started_at,recovery_due_at,created_at,updated_at) VALUES (` + a.placeholders(23) + `) ON CONFLICT(account_id) DO UPDATE SET system_account_id=excluded.system_account_id,enforcement_id=excluded.enforcement_id,generation=generation+1,state='active',action=excluded.action,trigger_run_id=excluded.trigger_run_id,config_source=excluded.config_source,config_source_id=excluded.config_source_id,policy_revision=excluded.policy_revision,profile=excluded.profile,penalty_threshold=excluded.penalty_threshold,recovery_interval_minutes=excluded.recovery_interval_minutes,recovery_model=excluded.recovery_model,account_config_revision=excluded.account_config_revision,before_status=excluded.before_status,after_status=excluded.after_status,fallback_was_enabled=excluded.fallback_was_enabled,super_priority_was_enabled=excluded.super_priority_was_enabled,started_at=excluded.started_at,recovery_due_at=excluded.recovery_due_at,cleared_at=NULL,updated_at=excluded.updated_at`
+	args := []any{input.AccountID, input.SystemAccountID, enforcementID, 1, "active", input.Action, input.RunID, source, sourceID, policyRevision, defaultProfile(input.Profile), input.Threshold, interval, nullable(input.Model), accountRevision, status, newStatus, fallbackEnabled, superPriority, now.Format(time.RFC3339Nano), recoveryDueAt, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}
 	if _, err := tx.ExecContext(ctx, enforcement, args...); err != nil {
-		return fmt.Errorf("persist J3b Business enforcement: %w", err)
+		return EnforcementOutcome{}, fmt.Errorf("persist J3b Business enforcement: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit J3b Business enforcement: %w", err)
+		return EnforcementOutcome{}, fmt.Errorf("commit J3b Business enforcement: %w", err)
 	}
-	return nil
+	outcome := EnforcementOutcome{EnforcementID: enforcementID, Generation: generation, BeforeStatus: status, AfterStatus: newStatus, AlreadyEffective: false}
+	if due, ok := recoveryDueAt.(string); ok {
+		outcome.RecoveryDueAt = due
+	}
+	return outcome, nil
+}
+
+// readEffectiveOutcome 读取既有效处罚行的可观察事实，供 AlreadyEffective
+// 分支返回（同 run 重试与同 action 已生效共用）。
+func (a *BusinessEnforcementApplier) readEffectiveOutcome(ctx context.Context, tx *sql.Tx, accountID string) (EnforcementOutcome, error) {
+	var enforcementID, beforeStatus, afterStatus string
+	var generation int
+	var recoveryDueAt sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT enforcement_id,generation,before_status,after_status,recovery_due_at FROM `+a.table("account_quality_enforcements")+` WHERE account_id=`+a.placeholder(1), accountID).Scan(&enforcementID, &generation, &beforeStatus, &afterStatus, &recoveryDueAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// 账户状态已处于处罚结果但无处罚行（例如人工改态）：返回零值
+			// outcome，仅由 AlreadyEffective 表达语义。
+			return EnforcementOutcome{}, nil
+		}
+		return EnforcementOutcome{}, fmt.Errorf("read J3b effective enforcement: %w", err)
+	}
+	outcome := EnforcementOutcome{EnforcementID: enforcementID, Generation: generation, BeforeStatus: beforeStatus, AfterStatus: afterStatus}
+	if recoveryDueAt.Valid {
+		outcome.RecoveryDueAt = recoveryDueAt.String
+	}
+	return outcome, nil
 }
 
 func (a *BusinessEnforcementApplier) configurationMatches(ctx context.Context, tx *sql.Tx, input QualityEnforcement, policyRevision int) (bool, error) {

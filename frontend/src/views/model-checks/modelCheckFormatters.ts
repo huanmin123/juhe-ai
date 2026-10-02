@@ -10,7 +10,9 @@ import type {
   ModelCheckQuizSummary,
   ModelCheckRunSummary,
   ModelCheckProfile,
-  ModelCheckStatus
+  ModelCheckStatus,
+  ModelCheckTriggerKind,
+  ModelQualityScheduleExecutionState
 } from '@/types/domain'
 
 export type ModelCheckTerminalLineLevel = 'info' | 'success' | 'warning' | 'error' | 'muted'
@@ -60,6 +62,36 @@ export function statusColor(value: ModelCheckStatus): string {
   if (value === 'failed') return 'red'
   if (value === 'running') return 'blue'
   return 'default'
+}
+
+export function triggerKindText(value: ModelCheckTriggerKind): string {
+  if (value === 'scheduled') return '定时检查'
+  if (value === 'quality_recovery') return '质量恢复'
+  if (value === 'schedule_now') return '计划立即执行'
+  return '手动检查'
+}
+
+export function triggerKindColor(value: ModelCheckTriggerKind): string {
+  if (value === 'scheduled') return 'purple'
+  if (value === 'quality_recovery') return 'orange'
+  if (value === 'schedule_now') return 'cyan'
+  return 'blue'
+}
+
+export function executionStateText(value: ModelQualityScheduleExecutionState): string {
+  if (value === 'paused') return '已暂停'
+  if (value === 'running') return '执行中'
+  if (value === 'blocked_account') return '账户阻塞'
+  if (value === 'queued') return '排队中'
+  return '已启用'
+}
+
+export function executionStateColor(value: ModelQualityScheduleExecutionState): string {
+  if (value === 'paused') return 'default'
+  if (value === 'running') return 'processing'
+  if (value === 'blocked_account') return 'warning'
+  if (value === 'queued') return 'gold'
+  return 'green'
 }
 
 export function levelText(value: ModelCheckLevel): string {

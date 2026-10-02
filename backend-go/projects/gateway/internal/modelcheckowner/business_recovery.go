@@ -111,6 +111,179 @@ func (a *BusinessRecoveryApplier) Complete(ctx context.Context, input RecoveryPa
 	return tx.Commit()
 }
 
+// SchedulePenaltyRestoreInput 是立即复测恢复（D4）的输入：恢复目标只来自
+// enforcement 行（config_source='schedule' AND config_source_id=计划ID AND
+// state='active'），账户人工停用（非质量处罚）不会被此路径改动。
+type SchedulePenaltyRestoreInput struct {
+	AccountID, SystemAccountID, ScheduleID, RunID string
+	OccurredAt                                    time.Time
+}
+
+// SchedulePenaltyRestoreOutcome 汇总一次恢复尝试：Restored=成功清除并回滚
+// 账户侧处罚效果的行数；Skipped=行存在但被代次/版本 CAS 或状态前置校验跳过
+// （含账户行缺失/状态不符）。恢复失败（DB 错误）以 error 返回。
+type SchedulePenaltyRestoreOutcome struct {
+	Restored int
+	Skipped  int
+}
+
+// RestoreSchedulePenalties 恢复"该计划造成"的处罚（D4）：对每条
+// config_source='schedule' 且 state='active' 的 enforcement 行，按行内记录
+// 的处罚语义回滚——quality_isolate 复用 Complete 的恢复 CAS（账户
+// quality_isolated->active/disabled + enforcement cleared）；disable 恢复为
+// 行内 before_status（空则 active）；fallback 恢复行内记录的降级标记前值。
+// config_source='manual' 的行一律不碰。
+//
+// 账户 config_revision 的 CAS 基准与 claimRecoveries 同语义：处罚事务把
+// 账户 revision+1 后，enforcement 行记录的是处罚前值，两者恒差 1；因此
+// 恢复事务先锁定账户行（PG FOR UPDATE，SQLite 依赖事务写锁）读取**当前**
+// config_revision 作为基准（账户 UPDATE 的 WHERE 与比对都用当前值），并把
+// 处罚行 account_config_revision 刷新为当前值。纯 revision 漂移（执行期
+// 账户被并发编辑但仍处于本处罚的目标状态）不阻断恢复；真正跳过恢复的是
+// 状态前置校验（quality_isolated/disabled 不再匹配，说明并发变更已改变
+// 处罚语义）与代次（generation）CAS，均计 Skipped 不覆盖。账户缺失/已删
+// 按既有 Skipped 处理。
+func (a *BusinessRecoveryApplier) RestoreSchedulePenalties(ctx context.Context, input SchedulePenaltyRestoreInput) (SchedulePenaltyRestoreOutcome, error) {
+	if a == nil || a.db == nil {
+		return SchedulePenaltyRestoreOutcome{}, errors.New("J3b Business recovery owner is not initialized")
+	}
+	if strings.TrimSpace(input.AccountID) == "" || strings.TrimSpace(input.SystemAccountID) == "" || strings.TrimSpace(input.ScheduleID) == "" || strings.TrimSpace(input.RunID) == "" {
+		return SchedulePenaltyRestoreOutcome{}, errors.New("J3b schedule penalty restore input is invalid")
+	}
+	now := input.OccurredAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("begin J3b schedule penalty restore: %w", err)
+	}
+	defer tx.Rollback()
+	lock := ""
+	if a.postgres {
+		lock = " FOR UPDATE"
+	}
+	rows, err := tx.QueryContext(ctx, a.bind(`SELECT enforcement_id,generation,action,before_status,fallback_was_enabled,super_priority_was_enabled FROM `+a.table("account_quality_enforcements")+` WHERE account_id=? AND system_account_id=? AND config_source='schedule' AND config_source_id=? AND state='active'`+lock), input.AccountID, input.SystemAccountID, input.ScheduleID)
+	if err != nil {
+		return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("read J3b schedule penalty rows: %w", err)
+	}
+	type pendingRestore struct {
+		enforcementID           string
+		generation              int
+		action, beforeStatus    string
+		fallbackWasEnabled      bool
+		superPriorityWasEnabled bool
+	}
+	pending := make([]pendingRestore, 0, 1)
+	for rows.Next() {
+		var item pendingRestore
+		if err := rows.Scan(&item.enforcementID, &item.generation, &item.action, &item.beforeStatus, &item.fallbackWasEnabled, &item.superPriorityWasEnabled); err != nil {
+			rows.Close()
+			return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("scan J3b schedule penalty row: %w", err)
+		}
+		pending = append(pending, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("iterate J3b schedule penalty rows: %w", err)
+	}
+	outcome := SchedulePenaltyRestoreOutcome{}
+	// clearEnforcement 清除处罚行并把 account_config_revision 刷新为恢复
+	// 事务锁定的账户当前值（claimRecoveries 的刷新语义），使行内 revision
+	// 与账户事实保持一致。
+	clearEnforcement := func(item pendingRestore, accountRevision int) bool {
+		res, err := tx.ExecContext(ctx, a.bind(`UPDATE `+a.table("account_quality_enforcements")+` SET state='cleared',last_recovery_run_id=?,cleared_at=?,recovery_due_at=NULL,recovery_lease_owner=NULL,recovery_lease_until=NULL,account_config_revision=?,updated_at=? WHERE account_id=? AND enforcement_id=? AND generation=? AND state='active'`), input.RunID, now.Format(time.RFC3339Nano), accountRevision, now.Format(time.RFC3339Nano), input.AccountID, item.enforcementID, item.generation)
+		if err != nil {
+			return false
+		}
+		n, _ := res.RowsAffected()
+		return n == 1
+	}
+	for _, item := range pending {
+		var status, availability string
+		var currentRevision int
+		err := tx.QueryRowContext(ctx, a.bind(`SELECT status,config_revision,COALESCE(availability_schedule_json,'') FROM `+a.table("accounts")+` WHERE id=? AND system_account_id=? AND deleted_at IS NULL`+lock), input.AccountID, input.SystemAccountID).Scan(&status, &currentRevision, &availability)
+		if errors.Is(err, sql.ErrNoRows) {
+			outcome.Skipped++
+			continue
+		}
+		if err != nil {
+			return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("read J3b schedule penalty account: %w", err)
+		}
+		// CAS 基准 = 锁定账户行后读到的当前 config_revision（处罚事务已把
+		// 账户 revision+1，处罚行内是旧值，不能用于比对）。纯 revision 漂移
+		// 不跳过；跳过由下方各 action 的状态前置校验与 generation CAS 表达。
+		switch item.action {
+		case "quality_isolate":
+			if status != "quality_isolated" {
+				outcome.Skipped++
+				continue
+			}
+			allowed, err := availabilityAllowedGateway(availability, now)
+			if err != nil {
+				return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("evaluate J3b schedule restore availability: %w", err)
+			}
+			after := "disabled"
+			if allowed {
+				after = "active"
+			}
+			res, err := tx.ExecContext(ctx, a.bind(`UPDATE `+a.table("accounts")+` SET status=?,schedulable=?,last_error_code=NULL,last_error_message=NULL,config_revision=config_revision+1,updated_at=? WHERE id=? AND system_account_id=? AND status='quality_isolated' AND config_revision=?`), after, boolIntGateway(after == "active"), now.Format(time.RFC3339Nano), input.AccountID, input.SystemAccountID, currentRevision)
+			if err != nil {
+				return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("restore J3b schedule isolate account: %w", err)
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				outcome.Skipped++
+				continue
+			}
+			if !clearEnforcement(item, currentRevision) {
+				// 账户侧已回滚处罚效果，处罚行清除必须同一事务落库；失败整体
+				// 回滚，绝不留下"账户已恢复但处罚仍 active"的半程状态。
+				return SchedulePenaltyRestoreOutcome{}, errors.New("J3b schedule penalty restore enforcement CAS failed")
+			}
+		case "disable":
+			after := strings.TrimSpace(item.beforeStatus)
+			if after == "" {
+				after = "active"
+			}
+			if status != "disabled" {
+				outcome.Skipped++
+				continue
+			}
+			res, err := tx.ExecContext(ctx, a.bind(`UPDATE `+a.table("accounts")+` SET status=?,schedulable=?,last_error_code=NULL,last_error_message=NULL,config_revision=config_revision+1,updated_at=? WHERE id=? AND system_account_id=? AND status='disabled' AND config_revision=?`), after, boolIntGateway(after == "active"), now.Format(time.RFC3339Nano), input.AccountID, input.SystemAccountID, currentRevision)
+			if err != nil {
+				return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("restore J3b schedule disable account: %w", err)
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				outcome.Skipped++
+				continue
+			}
+			if !clearEnforcement(item, currentRevision) {
+				return SchedulePenaltyRestoreOutcome{}, errors.New("J3b schedule penalty restore enforcement CAS failed")
+			}
+		case "fallback":
+			res, err := tx.ExecContext(ctx, a.bind(`UPDATE `+a.table("accounts")+` SET fallback_enabled=?,super_priority_enabled=?,last_error_code=NULL,last_error_message=NULL,config_revision=config_revision+1,updated_at=? WHERE id=? AND system_account_id=? AND config_revision=?`), boolIntGateway(item.fallbackWasEnabled), boolIntGateway(item.superPriorityWasEnabled), now.Format(time.RFC3339Nano), input.AccountID, input.SystemAccountID, currentRevision)
+			if err != nil {
+				return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("restore J3b schedule fallback account: %w", err)
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				outcome.Skipped++
+				continue
+			}
+			if !clearEnforcement(item, currentRevision) {
+				return SchedulePenaltyRestoreOutcome{}, errors.New("J3b schedule penalty restore enforcement CAS failed")
+			}
+		default:
+			outcome.Skipped++
+			continue
+		}
+		outcome.Restored++
+	}
+	if err := tx.Commit(); err != nil {
+		return SchedulePenaltyRestoreOutcome{}, fmt.Errorf("commit J3b schedule penalty restore: %w", err)
+	}
+	return outcome, nil
+}
+
 func (a *BusinessRecoveryApplier) table(name string) string {
 	if a.postgres {
 		return "juhe_business." + name

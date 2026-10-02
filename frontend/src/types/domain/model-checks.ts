@@ -1,8 +1,9 @@
 export type ModelCheckTargetType = 'account'
 export type ModelCheckModel = string
 export type ModelCheckProfile = 'quick' | 'full'
-export type ModelCheckTriggerKind = 'manual' | 'scheduled' | 'quality_recovery'
+export type ModelCheckTriggerKind = 'manual' | 'scheduled' | 'quality_recovery' | 'schedule_now'
 export type ModelQualityPenaltyAction = 'disable' | 'fallback' | 'quality_isolate'
+export type ModelQualityScheduleExecutionState = 'paused' | 'running' | 'blocked_account' | 'queued' | 'enabled'
 export type ModelQualityEnforcementResult = 'not_triggered' | 'applied' | 'already_effective' | 'skipped' | 'stale' | 'pending_retry' | 'failed'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 export type ModelCheckStatus = 'running' | 'completed' | 'failed' | 'canceled'
@@ -125,12 +126,16 @@ export interface ModelQualitySchedule {
   penaltyAction: ModelQualityPenaltyAction
   recoveryIntervalMinutes: number
   enabled: boolean
+  executionState: ModelQualityScheduleExecutionState
+  /** 触发 executionState=blocked_account 时的账户状态快照（如 disabled/quality_isolated） */
+  accountStatus?: string
   revision: number
   customQuestionIds?: string[]
   nextRunAt: string
   lastRunId?: string
   lastRunAt?: string
   lastRunStatus?: Exclude<ModelCheckStatus, 'running'>
+  lastRunScore?: number | null
   currentEnforcementAction?: ModelQualityPenaltyAction
   currentEnforcementRecoveryDueAt?: string
   createdAt: string
@@ -143,6 +148,36 @@ export interface ModelQualityScheduleListResult {
   hasMore: boolean
   page: number
   pageSize: number
+}
+
+export interface ModelQualityScheduleRunNowInput {
+  revision?: number
+  requestId?: string
+}
+
+export interface ModelQualityScheduleRunNowResult {
+  scheduleId: string
+  accepted: boolean
+  status: 'started'
+  runId: string | null
+}
+
+export interface ModelQualityScheduleRunNowBatchItem extends ModelQualityScheduleRunNowInput {
+  scheduleId: string
+}
+
+export type ModelQualityScheduleRunNowBatchItemStatus = 'started' | 'already_running' | 'not_found' | 'stale_revision' | 'invalid'
+
+export interface ModelQualityScheduleRunNowBatchItemResult {
+  scheduleId: string
+  accepted: boolean
+  status: ModelQualityScheduleRunNowBatchItemStatus
+  runId: string | null
+  message: string | null
+}
+
+export interface ModelQualityScheduleRunNowBatchResult {
+  results: ModelQualityScheduleRunNowBatchItemResult[]
 }
 
 export interface ModelQualityPolicySnapshot {

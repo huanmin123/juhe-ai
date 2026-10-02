@@ -117,7 +117,7 @@ func TestW14MBusinessEnforcementArms(t *testing.T) {
 		}
 		fp.arm("SET status=")
 		defer fp.disarm()
-		if err := applier.Apply(ctx, input); err == nil || !strings.Contains(err.Error(), "update J3b Business enforcement account") {
+		if _, err := applier.Apply(ctx, input); err == nil || !strings.Contains(err.Error(), "update J3b Business enforcement account") {
 			t.Fatalf("err = %v", err)
 		}
 	})

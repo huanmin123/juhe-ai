@@ -41,7 +41,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 - 浏览器授权使用 xAI OAuth authorization code + PKCE S256，会话保存 `state`、`nonce`、verifier、client、scope 和回调地址，30 分钟内一次性消费。
 - 前端可以粘贴完整 callback URL、裸 query、`code#state` 或 Refresh Token 创建账户，也可直接录入当前可用的 Access Token；已有 OAuth 账户支持手动刷新和两种重新授权入口。
 - 管理端使用 `/grok-oauth/*`，个人端使用 `/my-grok-oauth/*`；创建、刷新和重新授权都复用账户绑定代理。
-- OAuth 上游只在目标主机精确为 `cli-chat-proxy.grok.com` 时补充 `X-XAI-Token-Auth: xai-grok-cli`、`x-grok-client-version: 0.2.93` 和 `xai-grok-workspace/0.2.93` User-Agent；`api.x.ai` 与自定义主机不得携带这些 CLI 身份头。它不继承 GPT/Codex OAuth 的 compact、attestation、Chat 兼容或账户请求覆盖规则。
+- OAuth 上游只在目标主机精确为 `cli-chat-proxy.grok.com` 时补充 `X-XAI-Token-Auth: xai-grok-cli`、`x-grok-client-version: 1.0.13` 和 `xai-grok-workspace/1.0.13` User-Agent；`api.x.ai` 与自定义主机不得携带这些 CLI 身份头。它不继承 GPT/Codex OAuth 的 compact、attestation、Chat 兼容或账户请求覆盖规则。CLI 版本号跟随 xAI 服务端门槛维护：2026-10 起上游对低于 1.0.13 的 CLI 画像返回 426 Upgrade Required（错误体 "Grok CLI version ... outdated"），版本常量 `upstreamidentity.GrokCLIClientVersion`，升级门槛时同步该常量与本文。版本可经系统设置 `upstreamClientVersionOverrides` 的 grokCLI 键热覆盖，见[上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)。
 
 ### Grok Web SSO 转 OAuth
 

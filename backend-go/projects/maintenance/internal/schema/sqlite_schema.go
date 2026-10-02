@@ -52,6 +52,7 @@ package schema
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -168,6 +169,9 @@ func EnsureSQLiteBusiness(ctx context.Context, db *sql.DB) (SchemaCounts, error)
 	if err := ensureSQLiteBusinessCustomQuestionColumns(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite business custom_question_ids columns: %w", err)
 	}
+	if err := ensureSQLiteBusinessScheduleIntervalCheck(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite business schedule interval check: %w", err)
+	}
 	return counts, nil
 }
 
@@ -187,6 +191,163 @@ func ensureSQLiteBusinessCustomQuestionColumns(ctx context.Context, db *sql.DB) 
 		}
 	}
 	return nil
+}
+
+// sqliteScheduleIntervalLegacyCheckText 是 model_quality_schedules 旧建表
+// DDL 中 interval_minutes 列级 CHECK 的原文片段。必须带左括号前缀：
+// recovery_interval_minutes 的 CHECK 同样含 "BETWEEN 10 AND 10080"，但列名
+// 不同，不会被 "(interval_minutes BETWEEN 10 AND 10080)" 命中。
+const sqliteScheduleIntervalLegacyCheckText = "(interval_minutes BETWEEN 10 AND 10080)"
+
+// sqliteScheduleRebuildColumns 是重建后 model_quality_schedules 的完整列清单
+// （顺序与 sqlite_schema_business.go 的建表 DDL 一致）。复制阶段按旧表实际
+// 列求交集，兼容 custom_question_ids 尚未由上方守卫补齐的更老形状。
+var sqliteScheduleRebuildColumns = []string{
+	"id", "system_account_id", "account_id", "model", "interval_minutes",
+	"profile", "penalty_threshold", "penalty_action", "recovery_interval_minutes",
+	"enabled", "revision", "next_run_at", "last_run_id", "last_run_at",
+	"last_run_status", "lease_owner", "lease_until", "created_at", "updated_at",
+	"custom_question_ids",
+}
+
+// sqliteScheduleRebuildIndexes 在 rename 后按 business 脚本的索引定义重建
+// model_quality_schedules 的两个索引（DROP TABLE 会连带删除旧表索引）。
+var sqliteScheduleRebuildIndexes = []string{
+	`CREATE INDEX IF NOT EXISTS idx_model_quality_schedules_due
+      ON model_quality_schedules(enabled, next_run_at, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_quality_schedules_scope
+      ON model_quality_schedules(system_account_id, created_at DESC, id DESC)`,
+}
+
+// sqliteScheduleRebuildDDL is the post-migration model_quality_schedules shape
+// (mirrors the updated business schema DDL; the only change is the widened
+// interval_minutes CHECK lower bound from 10 to 1 minute). Column and index
+// parity is asserted by the schema tests so the two definitions cannot drift.
+const sqliteScheduleRebuildDDL = `CREATE TABLE model_quality_schedules_migrating (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      interval_minutes INTEGER NOT NULL DEFAULT 60 CHECK (interval_minutes BETWEEN 1 AND 10080),
+      profile TEXT NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
+      penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
+      penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
+      recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      next_run_at TEXT NOT NULL,
+      last_run_id TEXT,
+      last_run_at TEXT,
+      last_run_status TEXT CHECK (last_run_status IS NULL OR last_run_status IN ('completed', 'failed', 'canceled')),
+      lease_owner TEXT,
+      lease_until TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      custom_question_ids TEXT,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      UNIQUE (system_account_id, account_id)
+    )`
+
+// ensureSQLiteBusinessScheduleIntervalCheck delivers the widened
+// model_quality_schedules.interval_minutes CHECK (lower bound 10 -> 1 minute,
+// schedule_now contract) to legacy SQLite databases. SQLite cannot DROP a
+// column CHECK, so the table is rebuilt inside one transaction following the
+// chatbindingmigration precedent (staging table -> copy -> drop -> rename ->
+// recreate indexes), with PRAGMA foreign_keys toggled off and restored around
+// the rebuild exactly like that migration. Fresh databases (new CREATE TABLE
+// text) and already-migrated tables exit before writing; no other table
+// references model_quality_schedules so the drop/rename stays dependency-free.
+func ensureSQLiteBusinessScheduleIntervalCheck(ctx context.Context, db *sql.DB) error {
+	var ddl sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='model_quality_schedules'`).Scan(&ddl)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 表不存在：由同一次 ensure 的建表阶段负责，无需迁移。
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !ddl.Valid || !strings.Contains(ddl.String, sqliteScheduleIntervalLegacyCheckText) {
+		// 已是新约束（或非预期形状）：不重建。
+		return nil
+	}
+	existing, err := sqliteTableColumnSet(ctx, db, "model_quality_schedules")
+	if err != nil {
+		return err
+	}
+	copyColumns := make([]string, 0, len(sqliteScheduleRebuildColumns))
+	for _, column := range sqliteScheduleRebuildColumns {
+		if existing[column] {
+			copyColumns = append(copyColumns, column)
+		}
+	}
+	if len(copyColumns) == 0 {
+		return nil
+	}
+	foreignKeys := 0
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("读取 PRAGMA foreign_keys 失败: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("关闭 PRAGMA foreign_keys 失败: %w", err)
+	}
+	defer func() {
+		if foreignKeys != 0 {
+			_, _ = db.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys=ON")
+		}
+	}()
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS model_quality_schedules_migrating"); err != nil {
+		return fmt.Errorf("清理上次重建残留失败: %w", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, sqliteScheduleRebuildDDL); err != nil {
+		return fmt.Errorf("创建 model_quality_schedules 重建表失败: %w", err)
+	}
+	columnList := strings.Join(copyColumns, ", ")
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+		"INSERT INTO model_quality_schedules_migrating (%s)\nSELECT %s FROM model_quality_schedules",
+		columnList, columnList)); err != nil {
+		return fmt.Errorf("回填 model_quality_schedules 重建表数据失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DROP TABLE model_quality_schedules"); err != nil {
+		return fmt.Errorf("删除旧 model_quality_schedules 失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE model_quality_schedules_migrating RENAME TO model_quality_schedules"); err != nil {
+		return fmt.Errorf("重命名 model_quality_schedules 重建表失败: %w", err)
+	}
+	for _, statement := range sqliteScheduleRebuildIndexes {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("重建 model_quality_schedules 索引失败: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// sqliteTableColumnSet returns the set of column names the table currently
+// declares. A missing table returns an empty set (callers decide whether that
+// is meaningful).
+func sqliteTableColumnSet(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, declaredType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
 }
 
 // ensureSQLiteTableColumn adds "<column> <decl>" to table when the table

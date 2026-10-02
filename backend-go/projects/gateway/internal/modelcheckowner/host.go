@@ -34,6 +34,10 @@ type HostDependencies struct {
 	SchedulerFactory  func(*Store, *Runtime, *QualityProjector) (SchedulerSource, SchedulerExecutor)
 	Dispatcher        modelcheckprobe.DispatcherPort
 	HealthStatHour    HealthStatHourFunc
+	// RunNowFactory 组装计划立即执行服务（D3/D4）。在 handler 与共享
+	// modelcheckactive Registry 创建之后调用，返回的服务挂进 HTTPHandler；
+	// nil 表示该部署不暴露 run-now 端点（路由按 owner 未接线返回 503）。
+	RunNowFactory func(*Store, *Runtime, *modelcheckactive.Registry) *ScheduleRunNowService
 	// QuestionBankAdmin/QuestionBankSelf 是题库端点的双前缀 handlers
 	// （admin 实例挂管理面，self 实例挂自助面）。两者同持一个全局共享的
 	// modelcheckquestionbank.Store；nil 时题库路由按 owner 未接线返回 503，
@@ -90,6 +94,11 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	projector := &QualityProjector{Store: store, Enforcement: deps.Enforcement}
 	runtime := &Runtime{Store: store, Resolve: deps.Resolve, ResolveComparison: deps.ResolveComparison, Tokenizer: deps.Tokenizer, ModelLimits: deps.ModelLimits, Projector: projector, OwnerID: cfg.InstanceID, Dispatcher: deps.Dispatcher, QuestionBank: deps.QuestionBank}
 	handler := &HTTPHandler{Service: runtime, Quality: deps.Quality, AccountOptions: deps.AccountOptions, Baseline: store, Active: modelcheckactive.NewRegistry(), Authorize: deps.Authorize, Build: deps.Build, BuildScoped: deps.BuildScoped, QuestionBankAdmin: deps.QuestionBankAdmin, QuestionBankSelf: deps.QuestionBankSelf}
+	// run-now 服务与 HTTP 面、手动检测共用同一 Store/Runtime/Registry，
+	// 保证 target 槽互斥跨入口成立（D3）。
+	if deps.RunNowFactory != nil {
+		handler.RunNow = deps.RunNowFactory(store, runtime, handler.Active)
+	}
 	// HTTP and scheduler share the same Runtime/Store but never call across
 	// processes. A Gateway owner is not ready until all durable scheduler
 	// dependencies are present; serving only the HTTP half would create a

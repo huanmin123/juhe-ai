@@ -90,15 +90,15 @@ assert.match(goChartSource, /xAxis: \{ type: 'category', data: items\.map\(\(ite
 
 // —— 第一层：进程状态双卡 ——
 assert.match(viewSource, /title="进程状态"/, 'the process status card must replace the retired runtime status card')
-assert.match(viewSource, /:xs="24" :md="12"/, 'gateway and jobs process cards must sit side by side from md up')
-assert.match(viewSource, /healthStatusLabel\(key\)/, 'process cards must render Chinese readiness labels with raw-key fallback')
-assert.match(viewSource, /healthConclusionColor\(process\.section\.conclusion\)/, 'each process card must show an overall conclusion tag')
-assert.match(viewSource, /jobs 健康面不可达/, 'unreachable jobs health must surface its reason inside the jobs card')
+assert.match(viewSource, /class="health-process-list"/, 'gateway and jobs process cards must stack as full-width rows (2026-10 重设计：整宽横条卡取代失衡双栏)')
+assert.match(viewSource, /health-line-unhealthy/, 'process cards must lead with an unhealthy-items line so real failures stand out')
+assert.match(viewSource, /healthConclusionColor\(process\.display\.conclusion\)/, 'each process card must show an overall conclusion tag')
+assert.match(viewSource, /健康面不可达/, 'unreachable health must surface its reason inside the process card')
 assert.match(healthSource, /accountCircuitRuntimeReady: '账户熔断运行时'/, 'readiness label map must follow the gateway payload keys')
 assert.match(healthSource, /sessionRetentionReady: '会话保留'/, 'readiness label map must cover session retention')
 assert.match(healthSource, /if \(value === 'active'\) return '主用'/, 'ownerMode text values must map active to the primary wording')
 assert.match(healthSource, /if \(conclusion === 'partial'\) return 'warning'/, 'readiness conclusion colors must cover the partial state')
-assert.match(healthSource, /booleans\.every\(\(\[, value\]\) => value === true\) \? 'ok' : 'partial'/, 'conclusion must be ok only when every boolean entry is ready')
+assert.match(healthSource, /unhealthyLabels\.length > 0 \? 'partial' : 'ok'/, 'conclusion must be partial only for enabled-but-not-ready items; disabled-by-deployment features are expected, not degraded')
 
 // —— 第三层：后台任务状态过滤与中文任务名 ——
 assert.match(jobsCardSource, /label: '成功', value: 'completed'/, 'status filter must expose completed')

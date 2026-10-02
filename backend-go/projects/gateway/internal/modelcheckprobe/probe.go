@@ -949,7 +949,7 @@ func normalizeOpenAIOAuthCodexRequest(request Request, headers http.Header) ([]b
 		return nil, headers, errors.New("J3b OpenAI OAuth Codex authorization is missing")
 	}
 	headers.Set("originator", "Codex Desktop")
-	headers.Set("user-agent", "Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)")
+	headers.Set("user-agent", "Codex Desktop/0.159.3 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.159.3)")
 	sessionID, err := codexUUID()
 	if err != nil {
 		return nil, headers, errors.New("J3b OpenAI OAuth Codex identity unavailable")

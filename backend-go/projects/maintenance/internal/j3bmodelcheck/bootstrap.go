@@ -460,7 +460,20 @@ func Run(ctx context.Context, db *sql.DB, apply bool) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	if !apply || report.Ready() {
+	if !apply {
+		if err := tx.Commit(); err != nil {
+			return Report{}, err
+		}
+		return report, nil
+	}
+	// Ready 的存量库不会执行 postgresSchema（下方短路），而 trigger_kind 的
+	// CHECK 收窄是唯一无法通过列/索引检查发现的漂移，因此迁移块独立于
+	// postgresSchema，在 apply 且通过 schema/owner 门禁后始终执行。块本身
+	// 幂等：表不存在或约束已含 schedule_now 时不写任何内容。
+	if report.Ready() {
+		if err := migrateTriggerKindCheck(ctx, tx); err != nil {
+			return Report{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return Report{}, err
 		}
@@ -471,6 +484,9 @@ func Run(ctx context.Context, db *sql.DB, apply bool) (Report, error) {
 	}
 	if report.SchemaOwner != report.CurrentRole {
 		return Report{}, fmt.Errorf("J3b bootstrap 拒绝跨角色修改 juhe_j3b schema: owner=%s current=%s", report.SchemaOwner, report.CurrentRole)
+	}
+	if err := migrateTriggerKindCheck(ctx, tx); err != nil {
+		return Report{}, err
 	}
 	if _, err := tx.ExecContext(ctx, postgresSchema); err != nil {
 		return Report{}, fmt.Errorf("执行 J3b PostgreSQL juhe_j3b schema bootstrap 失败: %w", err)
@@ -487,6 +503,16 @@ func Run(ctx context.Context, db *sql.DB, apply bool) (Report, error) {
 		return Report{}, err
 	}
 	return report, nil
+}
+
+// migrateTriggerKindCheck executes postgresTriggerKindCheckMigration inside
+// the caller's transaction. Callers must already hold the apply-side schema
+// and owner gates (or a Ready report, which implies them).
+func migrateTriggerKindCheck(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, postgresTriggerKindCheckMigration); err != nil {
+		return fmt.Errorf("执行 J3b model_check_runs trigger_kind CHECK 迁移失败: %w", err)
+	}
+	return nil
 }
 
 func inspectTx(ctx context.Context, tx *sql.Tx) (Report, error) {
@@ -646,7 +672,7 @@ CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_input_versions (identity_key TEX
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_inputs (input_id TEXT PRIMARY KEY, identity_key TEXT NOT NULL, input_version BIGINT NOT NULL, input_digest TEXT NOT NULL, target_id TEXT NOT NULL, config_revision TEXT NOT NULL, policy_revision TEXT NOT NULL, trigger TEXT NOT NULL, issued_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, UNIQUE(identity_key,input_version), UNIQUE(identity_key,input_digest));
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_execution_claims (input_id TEXT PRIMARY KEY, claim_token TEXT NOT NULL, outcome_id TEXT NOT NULL, owner_id TEXT NOT NULL, fence_token BIGINT NOT NULL, claim_until TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL);
 CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_outcomes (outcome_id TEXT PRIMARY KEY, input_id TEXT NOT NULL UNIQUE, input_digest TEXT NOT NULL, fence_token BIGINT NOT NULL, observed_at TIMESTAMPTZ NOT NULL, stored_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, payload_digest TEXT NOT NULL, committed BOOLEAN NOT NULL DEFAULT FALSE);
-CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL DEFAULT 'quick', trigger_kind TEXT NOT NULL DEFAULT 'manual' CHECK (trigger_kind IN ('manual','scheduled','quality_recovery')), schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','completed','failed','canceled')), message TEXT NOT NULL DEFAULT '', trace_id TEXT, probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1', started_at TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, request_summary_json TEXT NOT NULL DEFAULT '{}', result_summary_json TEXT NOT NULL DEFAULT '{}', policy_snapshot_json TEXT NOT NULL DEFAULT '{}', quality_decision_json TEXT NOT NULL DEFAULT '{}', quality_health_sync_status TEXT CHECK (quality_health_sync_status IS NULL OR quality_health_sync_status IN ('applied','pending_retry','failed')), error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS juhe_j3b.model_check_runs (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, actor_system_account_id TEXT NOT NULL, provider_code TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT, target_owner_system_account_id TEXT, account_id TEXT, group_id TEXT, api_key_id TEXT, model TEXT NOT NULL, profile TEXT NOT NULL DEFAULT 'quick', trigger_kind TEXT NOT NULL DEFAULT 'manual' CHECK (trigger_kind IN ('manual','scheduled','quality_recovery','schedule_now')), schedule_id TEXT, trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0, trusted_comparison_available INTEGER NOT NULL DEFAULT 0, level TEXT NOT NULL DEFAULT 'unavailable', score INTEGER NOT NULL DEFAULT 0, max_score INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','completed','failed','canceled')), message TEXT NOT NULL DEFAULT '', trace_id TEXT, probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1', started_at TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER, request_summary_json TEXT NOT NULL DEFAULT '{}', result_summary_json TEXT NOT NULL DEFAULT '{}', policy_snapshot_json TEXT NOT NULL DEFAULT '{}', quality_decision_json TEXT NOT NULL DEFAULT '{}', quality_health_sync_status TEXT CHECK (quality_health_sync_status IS NULL OR quality_health_sync_status IN ('applied','pending_retry','failed')), error_code TEXT, error_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 ALTER TABLE juhe_j3b.model_check_runs ADD COLUMN IF NOT EXISTS schedule_id TEXT;
 ALTER TABLE juhe_j3b.model_check_runs ADD COLUMN IF NOT EXISTS target_name TEXT;
 ALTER TABLE juhe_j3b.model_check_runs ADD COLUMN IF NOT EXISTS target_owner_system_account_id TEXT;
@@ -701,3 +727,51 @@ CREATE INDEX IF NOT EXISTS idx_model_check_observations_cursor ON juhe_j3b.model
 CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON juhe_j3b.model_check_observations(created_at,id) WHERE aggregation_completed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_account_quality_health_hourly_scope ON juhe_j3b.account_quality_health_hourly(system_account_id,stat_hour,account_id);
 `
+
+// postgresTriggerKindCheckMigration widens the durable model_check_runs
+// trigger_kind CHECK from the three-value contract to the four-value contract
+// ('schedule_now' added for on-demand schedule execution). It lives outside
+// postgresSchema on purpose: ready databases skip the bootstrap DDL entirely,
+// so the migration is executed by Run on every apply. The block is idempotent:
+// it only replaces a trigger_kind constraint whose normalized definition still
+// lacks 'schedule_now' (pg_get_constraintdef renders the inline CHECK as
+// (trigger_kind = ANY (ARRAY[...])), and the conkey guard pins the constraint
+// to the trigger_kind column), then adds the same constraint name fresh
+// databases get from the inline CHECK. Empty schemas (table absent) exit
+// before writing anything.
+const postgresTriggerKindCheckMigration = `DO $$
+DECLARE
+  legacy_constraint text;
+BEGIN
+  IF to_regclass('juhe_j3b.model_check_runs') IS NOT NULL THEN
+    SELECT c.conname INTO legacy_constraint
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_j3b'
+      AND relation.relname = 'model_check_runs'
+      AND c.contype = 'c'
+      AND pg_get_constraintdef(c.oid) LIKE '%trigger_kind%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%schedule_now%'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+        WHERE a.attrelid = c.conrelid
+          AND a.attname = 'trigger_kind'
+          AND a.attnum = ANY(c.conkey)
+      );
+    IF legacy_constraint IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_j3b.model_check_runs DROP CONSTRAINT %I', legacy_constraint);
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_j3b'
+        AND relation.relname = 'model_check_runs'
+        AND c.conname = 'model_check_runs_trigger_kind_check'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_j3b.model_check_runs ADD CONSTRAINT model_check_runs_trigger_kind_check CHECK (trigger_kind IN (''manual'',''scheduled'',''quality_recovery'',''schedule_now''))';
+    END IF;
+  END IF;
+END
+$$`

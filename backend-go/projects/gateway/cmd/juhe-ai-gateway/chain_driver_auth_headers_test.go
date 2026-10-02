@@ -11,6 +11,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
 // BUG-0174 M-4/M-5：主链上游认证头矩阵，对齐 Node driver.ts + 探针
@@ -100,7 +101,7 @@ func TestChainProviderDriverAnthropicAuthHeaderMatrix(t *testing.T) {
 			t.Fatalf("anthropic-version = %q, want 2023-06-01", got)
 		}
 		identity := map[string]string{
-			"User-Agent":                                "claude-cli/2.1.161 (external, cli)",
+			"User-Agent":                                upstreamidentity.ClaudeCodeUserAgent,
 			"X-Stainless-Lang":                          "js",
 			"X-Stainless-Package-Version":               "0.94.0",
 			"X-Stainless-Os":                            "Linux",
@@ -257,8 +258,8 @@ func TestChainProviderDriverGeminiAuthHeaderMatrix(t *testing.T) {
 		if got := parts.Headers.Get("Content-Type"); got != "application/json" {
 			t.Fatalf("content-type = %q, want application/json", got)
 		}
-		if got := parts.Headers.Get("User-Agent"); got != "GeminiCLI/0.1.5 (Windows; AMD64)" {
-			t.Fatalf("user-agent = %q, want GeminiCLI/0.1.5 (Windows; AMD64)", got)
+		if got := parts.Headers.Get("User-Agent"); got != upstreamidentity.GeminiCLIUserAgent {
+			t.Fatalf("user-agent = %q, want %s", got, upstreamidentity.GeminiCLIUserAgent)
 		}
 		if got := parts.Headers.Get("X-Custom-Trace"); got != "" {
 			t.Fatalf("code assist headers must be a fresh set, got x-custom-trace %q", got)

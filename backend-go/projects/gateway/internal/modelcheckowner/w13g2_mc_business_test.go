@@ -111,7 +111,7 @@ func TestW13g2McBusinessArms(t *testing.T) {
 		}
 		fp.arm("SELECT enforcement_id,generation,state,trigger_run_id FROM")
 		defer fp.disarm()
-		if err := applier.Apply(ctx, input); err == nil {
+		if _, err := applier.Apply(ctx, input); err == nil {
 			t.Fatalf("应失败")
 		}
 	})

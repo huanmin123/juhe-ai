@@ -560,6 +560,15 @@ func compareProjectionCursor(left, right *OutcomeCursor) int {
 	return strings.Compare(left.OutcomeID, right.OutcomeID)
 }
 
+// ProjectOutcomeNow 对单条 outcome 直接执行与 drain 消费（DrainOnce）同源的
+// 投影事务（BUG-0260：J1 终态投影补落地通道，供 Runner 的
+// cooldown_terminal_reproject kind 调用）。不推进 drain 游标：receipt 以
+// outcome_id 幂等，后续 drain 重放到同一 outcome 时命中 receipt 直接跳过，
+// 不会二次改写业务行。
+func (p *OutcomeProjector) ProjectOutcomeNow(ctx context.Context, outcome Outcome) (ProjectionResult, error) {
+	return p.projectOutcome(ctx, outcome)
+}
+
 // projectOutcome 对单条 outcome 执行投影事务（归档
 // projectAccountHealthJobsOutcome/projectAccountHealthJobsOutcomeAsync）。
 func (p *OutcomeProjector) projectOutcome(ctx context.Context, outcome Outcome) (ProjectionResult, error) {

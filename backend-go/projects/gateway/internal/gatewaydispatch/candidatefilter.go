@@ -45,9 +45,17 @@ type CandidateFilterArgs struct {
 }
 
 // requestCapabilityMismatchMessage mirrors requestCapabilityMismatchMessage.
-func requestCapabilityMismatchMessage(reason string) string {
+// model_unsupported 特判（BUG-0261）：driver 能力判定链末段按账户支持模型
+// 列表拒绝时（chain_driver.go gatewayRequestCapabilityMismatchReasonFor），
+// 泛化协议文案会把模型问题误报成"请求路径或客户端协议"，客户端与排障均
+// 无法定位；对齐模型过滤层文案（candfilters.go GatewayModelFilterFailureMessage）
+// 带出请求模型。
+func requestCapabilityMismatchMessage(reason string, requestedModel string) string {
 	if reason == "anthropic_native_group_openai_compatible_request" {
 		return "当前 API Key 绑定的是 Anthropic 原生分组，不兼容 Codex / OpenAI 请求路径；请改用 Anthropic /v1/messages 客户端，或绑定支持 OpenAI Responses / Chat Completions 的分组"
+	}
+	if reason == "model_unsupported" && trimString(requestedModel) != "" {
+		return "当前分组无账户支持请求模型：" + trimString(requestedModel)
 	}
 	return "当前分组无账户支持请求路径或客户端协议"
 }
@@ -126,7 +134,7 @@ func (p *CandidatePipeline) FilterOpenAIGatewayRequestCandidateAccounts(ctx cont
 		if fallback.Attempted {
 			return CandidateFilterOutput{Outcome: gatewaypreauth.CandidateOutcomeFallback, Reason: reason, Context: fallback.Context}, nil
 		}
-		message := requestCapabilityMismatchMessage(reason)
+		message := requestCapabilityMismatchMessage(reason, requestedModel)
 		if err := input.RouteCoordinator.CompleteFailure(ctx, gatewayrouting.GatewayRouteFinalFailure{
 			StatusCode: 503,
 			Message:    message,
