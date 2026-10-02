@@ -54,7 +54,7 @@
 
       <template v-if="quizSummary">
         <a-descriptions bordered size="small" :column="descriptionColumns" class="run-descriptions" title="题库测试">
-          <a-descriptions-item label="环节小计">{{ quizSummary.score }} / {{ quizSummary.maxScore }}，扣 {{ quizSummary.deduction }} 分</a-descriptions-item>
+          <a-descriptions-item label="环节小计">{{ quizSummary.executed === false ? '未执行题库测试' : `${quizSummary.score} / ${quizSummary.maxScore}，扣 ${quizSummary.deduction} 分` }}</a-descriptions-item>
           <a-descriptions-item label="启用状态">{{ quizSummary.enabled ? '已启用题库测试' : '未启用题库测试' }}</a-descriptions-item>
         </a-descriptions>
         <a-collapse v-if="quizSummary.items.length" class="quiz-items-collapse">

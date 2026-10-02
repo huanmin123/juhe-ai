@@ -185,11 +185,23 @@ export function modelCheckQuizSummary(resultSummary: Record<string, unknown> | u
     : []
   return {
     enabled: value.enabled === true,
+    executed: modelCheckQuizExecuted(value, items),
     score: numberValue(value.score) ?? 0,
     maxScore: numberValue(value.maxScore) ?? 31,
     deduction: numberValue(value.deduction) ?? 0,
     items
   }
+}
+
+// 题库未执行判定：新数据以后端 executed 字段为准（false 即未执行，score=0）；
+// 历史数据无 executed 字段时以判定结果兜底——只有拿到 passed/failed 判定的题
+// 才算执行过；「全请求失败转 skipped（verdict=unavailable）」与「题目不可用」
+// 的历史 run 同样视为未执行，避免被展示成 31/31 满分（与后端 executed 语义
+// 对齐：拿到判定才算执行）。
+function modelCheckQuizExecuted(value: Record<string, unknown>, items: ModelCheckQuizItem[]): boolean {
+  if (value.executed === true) return true
+  if (value.executed === false) return false
+  return items.some((item) => item.verdict === 'passed' || item.verdict === 'failed')
 }
 
 export function checkTitle(check: ModelCheckCheckResult): string {

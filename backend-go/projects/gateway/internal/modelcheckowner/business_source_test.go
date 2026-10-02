@@ -656,6 +656,65 @@ func TestCredentialMaterialUsesCredentialBaseURLAndRejectsUnknownJSON(t *testing
 	}
 }
 
+// TestAPIKeyCredentialAcceptsMultiKeyEnvelope 钉死多密钥账户凭据契约
+// （BUG-0263）：api_key 型白名单放行 api_keys/api_key_strategy/
+// api_key_weights；token 优先单把 api_key，缺失时回落池内第一把；池畸形
+// 报明确中文错误；单密钥行为不变。
+func TestAPIKeyCredentialAcceptsMultiKeyEnvelope(t *testing.T) {
+	multiKey := `{"api_key":"key-first","api_keys":["key-first","key-second"],"api_key_strategy":"failover","api_key_weights":[2,1],"base_url":"https://api.example/v1","supported_endpoint_modes":["chat_sse"]}`
+	if err := validateAccountCredentialFields(mustCredentialFields(t, multiKey), "api_key"); err != nil {
+		t.Fatalf("multi-key envelope must pass the whitelist: %v", err)
+	}
+	// normalize 写入的多密钥信封同时带首把 api_key：token 仍是该首选 key。
+	if token, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", multiKey), "api_key"); err != nil || token != "key-first" {
+		t.Fatalf("multi-key token=%q err=%v, want key-first", token, err)
+	}
+	// 单把 api_key 缺失、仅有池：取池内第一把（与主链 failover 首选一致）。
+	poolOnly := `{"api_keys":["pool-first","pool-second"],"api_key_strategy":"weighted_round_robin","api_key_weights":[3,1],"base_url":"https://api.example/v1","supported_endpoint_modes":["chat_sse"]}`
+	if err := validateAccountCredentialFields(mustCredentialFields(t, poolOnly), "api_key"); err != nil {
+		t.Fatalf("pool-only envelope must pass the whitelist: %v", err)
+	}
+	if token, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", poolOnly), "api_key"); err != nil || token != "pool-first" {
+		t.Fatalf("pool-only token=%q err=%v, want pool-first", token, err)
+	}
+	// 池畸形：非数组 / 空数组 / 元素非字符串 / 全空白元素，均报中文错误。
+	for _, malformed := range []string{
+		`{"api_keys":"key-first"}`,
+		`{"api_keys":[]}`,
+		`{"api_keys":["key-first",42]}`,
+		`{"api_keys":["   "]}`,
+	} {
+		if _, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", malformed), "api_key"); err == nil || !strings.Contains(err.Error(), "api_keys 无效") {
+			t.Fatalf("malformed api_keys %s must fail with a Chinese error: %v", malformed, err)
+		}
+	}
+	// 单密钥行为不变：仅 api_key 时既过白名单也照常提取。
+	single := `{"api_key":"key-single","base_url":"https://api.example/v1","supported_endpoint_modes":["chat_sse"]}`
+	if err := validateAccountCredentialFields(mustCredentialFields(t, single), "api_key"); err != nil {
+		t.Fatalf("single-key envelope must pass the whitelist: %v", err)
+	}
+	if token, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", single), "api_key"); err != nil || token != "key-single" {
+		t.Fatalf("single-key token=%q err=%v", token, err)
+	}
+	// 无任何可用 key 的信封仍保持既有 fail-closed 行为。
+	if _, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", `{"base_url":"https://api.example/v1"}`), "api_key"); err == nil || !strings.Contains(err.Error(), "no usable token") {
+		t.Fatalf("keyless envelope must fail closed: %v", err)
+	}
+	// 未知字段在 api_key 型下依旧拒绝（白名单只新增三个多密钥键）。
+	if _, err := decryptAccountCredential("secret", testCredentialEnvelope(t, "secret", `{"api_key":"k","api_keys":["k"],"metadata":"x"}`), "api_key"); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("unknown field must still fail closed: %v", err)
+	}
+}
+
+func mustCredentialFields(t *testing.T, plain string) map[string]any {
+	t.Helper()
+	fields, structured, err := parseCredentialFields(plain)
+	if err != nil || !structured {
+		t.Fatalf("parse credential fixture: structured=%v err=%v", structured, err)
+	}
+	return fields
+}
+
 func TestBusinessTargetSourceUsesCredentialBaseURLAndGeminiOAuthHeaders(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/business.db?mode=rwc")
 	if err != nil {

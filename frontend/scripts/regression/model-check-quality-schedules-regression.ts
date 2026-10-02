@@ -130,4 +130,10 @@ assert.match(formattersSource, /export function executionStateText/, 'formatters
 assert.match(formattersSource, /export function executionStateColor/, 'formatters 必须导出 executionStateColor')
 assert.match(formattersSource, /export function triggerKindText/, 'formatters 必须导出 triggerKindText')
 
+// —— 题库测试未执行兜底：新 executed 字段 + 历史空执行项数据 ——
+assert.match(typesSource, /executed\?: boolean/, '题库小计类型必须包含可选 executed 字段')
+assert.match(formattersSource, /value\.executed === false/, '题库小计必须优先消费后端 executed=false 事实')
+assert.match(formattersSource, /items\.some\(\(item\) => item\.verdict === 'passed' \|\| item\.verdict === 'failed'\)/, '历史数据无 executed 字段时必须以 passed/failed 判定兜底（unavailable 全请求失败形态同为未执行）')
+assert.match(drawerSource, /quizSummary\.executed === false \? '未执行题库测试'/, '题库未执行时小计必须显示未执行而非 31/31 满分误导')
+
 console.log('模型质量计划回归通过：间隔下限 1、五状态标签、lastRunScore、run-now 单条/批量、未记录兜底与 schedule_now 文案')

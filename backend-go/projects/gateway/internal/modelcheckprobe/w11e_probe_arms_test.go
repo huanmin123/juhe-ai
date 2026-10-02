@@ -1,7 +1,7 @@
 package modelcheckprobe
 
 // w11e modelcheckprobe 错误臂：核心探测终止短路、协议范围跳过、纯函数
-// 分支（错误消息提取、UUID、随机 Juice/token nonce、分布相似度、重试证据）。
+// 分支（错误消息提取、UUID、随机 token nonce、分布相似度、重试证据）。
 
 import (
 	"context"
@@ -46,7 +46,7 @@ func TestW11ERunSuiteTerminalShortCircuits(t *testing.T) {
 	if usage.Kind == "" {
 		t.Fatalf("终止短路必须包含 usage 证据: %+v", items)
 	}
-	// 非 Responses 协议：token/identity 探测按协议范围跳过。
+	// 非 Responses 协议：token 探测按协议范围跳过。
 	skip := &w11eStaticTransport{status: http.StatusOK, body: `{"model":"gpt-5.6-sol","output_text":"OK-MODEL-CHECK","usage":{"total_tokens":2}}`}
 	items, err = RunSuite(context.Background(), Suite{
 		Endpoint: "https://w11e.invalid", Client: &http.Client{Transport: skip},
@@ -107,15 +107,7 @@ func TestW11EErrorValueMessageAndUUIDArms(t *testing.T) {
 	}
 }
 
-func TestW11EJuiceAndTokenRandomArms(t *testing.T) {
-	nonce, err := randomJuiceNonce()
-	if err != nil || len(nonce) < 4 {
-		t.Fatalf("juice nonce=%q err=%v", nonce, err)
-	}
-	coverage, err := randomJuiceCoverage()
-	if err != nil || coverage == "" || strings.HasPrefix(coverage, "8") || strings.HasPrefix(coverage, "16") || strings.HasPrefix(coverage, "40") {
-		t.Fatalf("juice coverage=%q err=%v", coverage, err)
-	}
+func TestW11ETokenRandomArms(t *testing.T) {
 	tokenNonce, err := randomTokenNonce()
 	if err != nil || tokenNonce == "" {
 		t.Fatalf("token nonce=%q err=%v", tokenNonce, err)

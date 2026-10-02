@@ -310,6 +310,8 @@ export interface ModelCheckQuizItem {
 
 export interface ModelCheckQuizSummary {
   enabled: boolean
+  /** 新数据由后端显式标记（未执行时为 false 且 score=0）；历史数据缺失时由执行项兜底推断，见 modelCheckQuizSummary */
+  executed?: boolean
   score: number
   maxScore: number
   deduction: number

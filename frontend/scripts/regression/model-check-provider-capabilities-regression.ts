@@ -18,6 +18,8 @@ const capabilitySource = readFileSync(resolve(frontendRoot, 'src/views/model-che
 const schedulesModalSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelQualitySchedulesModal.vue'), 'utf8')
 const modelChecksViewSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelChecksView.vue'), 'utf8')
 const qualityConfigSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelQualityConfigPopover.vue'), 'utf8')
+const runPanelSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelCheckRunPanel.vue'), 'utf8')
+const runModelOptionsSource = computedSource(modelChecksViewSource, 'const runModelOptions = computed')
 const openSchedulesSource = functionSource(modelChecksViewSource, 'async function openSchedules')
 const scheduleAccountDropdownSource = functionSource(modelChecksViewSource, 'function handleScheduleAccountOptionsDropdown')
 const loadScheduleAccountOptionsSource = functionSource(modelChecksViewSource, 'async function loadScheduleAccountOptions')
@@ -142,6 +144,20 @@ assert.match(qualityConfigSource, /耗时更长且消耗更多 Token/, '深度�
 assert.match(qualityConfigSource, /关闭后仅记录检测结果与健康状态，不修改账户/, '手动处罚说明必须明确关闭后的行为边界')
 assert.match(qualityConfigSource, /仅用于页面手动检查；定时计划使用各自独立配置/, '外部质量配置必须明确只作用于手动检查')
 assert.match(modelChecksViewSource, /modelCheckModels:\s*\[\.\.\.\(item\.modelCheckModels \?\? \[\]\)\]/, '定时检查账户选项必须保留后台按需返回的账户级模型能力并兼容空能力事实')
+
+// —— 发起模型下拉收敛为账户支持模型：未选账户禁用，不再回退全局目录 ——
+assert.match(runModelOptionsSource, /mergeModelCheckRunModelOptions\(options\.value\.supportedModels, accountModels\)/, '账户能力加载后发起模型下拉必须收敛为目录 ∪ 账户支持模型')
+assert.match(runModelOptionsSource, /accountModels === undefined\) return \[\]/, '账户模型能力未按需加载前发起模型下拉候选必须为空')
+assert.doesNotMatch(runModelOptionsSource, /supportedModels\.map/, '未选检测账户时发起模型下拉不得回退全局模型目录')
+assert.match(modelChecksViewSource, /:model="runModelSelectValue"/, '发起下拉展示值必须收敛为账户支持模型，超出候选时显示占位文案')
+assert.match(modelChecksViewSource, /:model-options-loading="runModelSelectLoading"/, '发起下拉加载态必须覆盖账户模型能力未加载状态')
+assert.match(runPanelSource, /const modelSelectDisabled = computed\(\(\) => props\.submitting \|\| !props\.targetId\?\.trim\(\)\)/, '未选择检测账户时模型下拉必须禁用')
+assert.match(runPanelSource, /'请先选择检测账户'/, '未选择检测账户时模型下拉必须提示先选择检测账户')
+assert.match(runPanelSource, /'正在加载该账户支持的模型'/, '账户模型能力未加载时模型下拉必须提示加载中')
+assert.equal((runPanelSource.match(/:disabled="modelSelectDisabled"/g) ?? []).length, 2, '桌面与手机端模型下拉必须同时应用禁用语义')
+assert.equal((runPanelSource.match(/:placeholder="modelSelectPlaceholder"/g) ?? []).length, 2, '桌面与手机端模型下拉必须同时应用占位文案')
+assert.match(schedulesModalSource, /:disabled="!form\.accountId\.trim\(\)"/, '定时检查未选检查账户时模型下拉必须禁用')
+
 assert.match(modelChecksViewSource, /scheduleFormResetToken\.value \+= 1/, '定时检查成功写入后必须推进表单重置代次')
 assert.doesNotMatch(openSchedulesSource, /loadScheduleAccountOptions/, '打开定时检查弹窗不得预取账户候选')
 assert.match(openSchedulesSource, /await loadSchedules\(\)/, '打开定时检查弹窗仍应加载计划列表')
@@ -209,5 +225,12 @@ function functionSource(source: string, signature: string): string {
   const start = source.indexOf(signature)
   assert.notEqual(start, -1, `必须找到 ${signature}`)
   const next = source.slice(start + signature.length).search(/\n(?:async\s+)?function\s+/)
+  return source.slice(start, next < 0 ? undefined : start + signature.length + next)
+}
+
+function computedSource(source: string, signature: string): string {
+  const start = source.indexOf(signature)
+  assert.notEqual(start, -1, `必须找到 ${signature}`)
+  const next = source.slice(start + signature.length).search(/\nconst \w+ = (?:computed|ref|reactive)\(/)
   return source.slice(start, next < 0 ? undefined : start + signature.length + next)
 }

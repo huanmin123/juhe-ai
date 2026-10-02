@@ -1049,6 +1049,17 @@ func decryptAccountCredentialMaterial(secret, envelope, credentialType string) (
 			break
 		}
 	}
+	if token == "" && credentialType == "api_key" {
+		// 单把 api_key 缺失时回落多密钥池：模型检测是确定性诊断请求，取池中
+		// 第一把（首选 key），与主链 failover 策略的首选一致；不引入运行态轮转。
+		if _, present := fields["api_keys"]; present {
+			first, err := firstAPIKeyFromPool(fields["api_keys"])
+			if err != nil {
+				return accountCredentialMaterial{}, err
+			}
+			token = first
+		}
+	}
 	if token == "" && (credentialType == "oauth" || credentialType == "google_oauth") {
 		if refresh, ok := fields["refresh_token"].(string); ok && strings.TrimSpace(refresh) != "" {
 			return accountCredentialMaterial{}, errors.New("J3b Business OAuth credential has refresh_token only; access token refresh is required")
@@ -1122,7 +1133,10 @@ func validateAccountCredentialFields(fields map[string]any, credentialType strin
 	switch credentialType {
 	case "api_key":
 		add(common...)
-		add("api_key")
+		// 多密钥账户（≥2 把 key）由主链 normalize（accounts/credentials_normalize.go）
+		// 写入 api_keys/api_key_strategy/api_key_weights，与单把 api_key 并存；
+		// 白名单必须放行，否则多密钥账户在模型检测解密校验时直接报 unsupported field。
+		add("api_key", "api_keys", "api_key_strategy", "api_key_weights")
 	case "oauth":
 		add(common...)
 		add("access_token", "refresh_token", "expires_at", "client_id", "id_token", "token_type", "scope", "email", "account_id", "chatgpt_account_id", "organization_id", "chatgpt_user_id", "plan_type", "sub", "team_id", "subscription_tier", "entitlement_status")
@@ -1138,6 +1152,30 @@ func validateAccountCredentialFields(fields map[string]any, credentialType strin
 		}
 	}
 	return nil
+}
+
+// firstAPIKeyFromPool 解析 api_key 型凭据中的多密钥池并取第一把非空 key。
+// 池非法（非数组、空数组、任一元素非字符串或全为空白）时返回明确错误，
+// 不静默回落到无凭据状态。
+func firstAPIKeyFromPool(raw any) (string, error) {
+	list, ok := raw.([]any)
+	if !ok {
+		return "", errors.New("J3b Business 多密钥账户凭据 api_keys 无效：必须为非空字符串数组")
+	}
+	first := ""
+	for _, item := range list {
+		value, ok := item.(string)
+		if !ok {
+			return "", errors.New("J3b Business 多密钥账户凭据 api_keys 无效：必须为非空字符串数组")
+		}
+		if trimmed := strings.TrimSpace(value); trimmed != "" && first == "" {
+			first = trimmed
+		}
+	}
+	if first == "" {
+		return "", errors.New("J3b Business 多密钥账户凭据 api_keys 无效：数组内没有可用的密钥")
+	}
+	return first, nil
 }
 
 // parseCredentialEndpointModes deliberately permits additional Node-only

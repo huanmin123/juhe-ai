@@ -272,7 +272,7 @@ func runResultEvidenceFormed(result RunResult) bool {
 // not unavailable may clear quality isolation. A successful transport alone
 // must never release an enforcement lease. quick 检测证据族少于 full，与发布
 // 口径对齐：不要求 formed/trusted，但 suspicious 与 hardFailure 同样不可
-// 放行；full/空 profile 维持 formed+trusted 的 9 族证据门槛。
+// 放行；full/空 profile 维持 formed+trusted 的 6 族通用证据门槛。
 func runResultRecoveryEligible(result RunResult, threshold int, profile string) bool {
 	if threshold < 40 || threshold > 100 {
 		return false

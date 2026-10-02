@@ -45,8 +45,8 @@
               :value="model"
               :options="modelOptions"
               :loading="modelOptionsLoading"
-              :disabled="submitting"
-              placeholder="模型"
+              :disabled="modelSelectDisabled"
+              :placeholder="modelSelectPlaceholder"
               @dropdown-visible-change="emit('model-dropdown-visible-change', $event)"
               @update:value="handleModelValueUpdate"
             />
@@ -175,8 +175,8 @@
             :value="model"
             :options="modelOptions"
             :loading="modelOptionsLoading"
-            :disabled="submitting"
-            placeholder="模型"
+            :disabled="modelSelectDisabled"
+            :placeholder="modelSelectPlaceholder"
             class="model-checks-mobile-control"
             @dropdown-visible-change="emit('model-dropdown-visible-change', $event)"
             @update:value="handleModelValueUpdate"
@@ -273,7 +273,7 @@ const props = defineProps<{
   comparisonSelectPlaceholder: string
   deepDetection: boolean
   isManagementView: boolean
-  model: ModelCheckModel
+  model?: ModelCheckModel
   modelOptions: Array<{ label: string; value: string }>
   modelOptionsLoading: boolean
   optionsLoading: boolean
@@ -328,6 +328,14 @@ const emit = defineEmits<{
 
 // 手机端：条件抽屉开合；紧凑条摘要显示当前检测账户/模型。
 const mobileConditionsOpen = ref(false)
+// 模型下拉收敛为账户支持模型：未选检测账户时禁用；已选账户但账户模型能力
+// 未按需加载时保持可打开并提示加载中（选项为空，打开下拉触发补拉）。
+const modelSelectDisabled = computed(() => props.submitting || !props.targetId?.trim())
+const modelSelectPlaceholder = computed(() => {
+  if (!props.targetId?.trim()) return '请先选择检测账户'
+  if (props.modelOptionsLoading) return '正在加载该账户支持的模型'
+  return '模型'
+})
 const mobileConditionSummary = computed(() => {
   const accountLabel = props.selectedTargetAccount?.name
   const modelLabel = props.modelOptions.find((option) => option.value === props.model)?.label ?? props.model

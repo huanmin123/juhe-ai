@@ -31,10 +31,9 @@ type configuredModelResolution struct {
 // model inherits that profile's protocol family; the account's
 // health_check_endpoint_mode is validated against the same protocol by the
 // business resolver before any probe is issued. Such a target runs the
-// protocol-consistency subset only: brand-specific hidden probes (juice,
-// astra), the cross-model pair and the GPT-tokenizer token-integrity baseline
-// skip it inside modelcheckprobe with excludedFromScoring evidence. The
-// identity canaries remain generic capability probes and still apply.
+// protocol-consistency subset only: the cross-account comparison evidence and
+// the GPT-tokenizer token-integrity baseline skip it inside modelcheckprobe
+// with excludedFromScoring evidence.
 func resolveConfiguredUpstreamModelMapping(ctx context.Context, db *sql.DB, postgres bool, accountID string, profile modelcheckprofile.ProtocolProfile, model string) (configuredModelResolution, error) {
 	if db == nil || strings.TrimSpace(accountID) == "" || strings.TrimSpace(model) == "" {
 		return configuredModelResolution{}, nil

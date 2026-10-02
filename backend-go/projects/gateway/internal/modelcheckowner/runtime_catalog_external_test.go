@@ -100,13 +100,13 @@ func TestRuntimeRunsCatalogExternalAccountSupportedModel(t *testing.T) {
 		t.Fatalf("catalog-external run must form a quality level, report=%s", resultSummary)
 	}
 	items := readRunItemKinds(t, store, result.RunID)
-	for _, kind := range []string{"protocol_basic", "structured_output", "tool_calling", "usage_shape"} {
+	for _, kind := range []string{"protocol_basic", "structured_output", "tool_calling", "usage_shape", "token_integrity"} {
 		if _, ok := items[kind]; !ok {
 			t.Fatalf("protocol-consistency item %s missing: %v", kind, items)
 		}
 	}
-	if kind, ok := items["cross_model"]; !ok || kind != "skipped" {
-		t.Fatalf("catalog-external cross_model must be skipped without a paired model: %v", items)
+	if _, ok := items["cross_model"]; ok {
+		t.Fatalf("self cross-model retired; no cross_model item may be emitted: %v", items)
 	}
 	catalog := newRuntime()
 	catalogResult, err := catalog.Run(context.Background(), RunRequest{SystemAccountID: "sys-2", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct-2", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-2", PolicyRevision: "pol-2"})
@@ -272,13 +272,13 @@ func TestBusinessResolveRunsChatShapeAccountCatalogExternalModel(t *testing.T) {
 		t.Fatalf("chat-shape catalog-external run must form a quality level, report=%s", resultSummary)
 	}
 	items := readRunItemKinds(t, store, result.RunID)
-	for _, kind := range []string{"protocol_basic", "structured_output", "tool_calling", "usage_shape"} {
+	for _, kind := range []string{"protocol_basic", "structured_output", "tool_calling", "usage_shape", "token_integrity"} {
 		if _, ok := items[kind]; !ok {
 			t.Fatalf("protocol-consistency item %s missing: %v", kind, items)
 		}
 	}
-	if kind, ok := items["cross_model"]; !ok || kind != "skipped" {
-		t.Fatalf("catalog-external cross_model must be skipped: %v", items)
+	if _, ok := items["cross_model"]; ok {
+		t.Fatalf("self cross-model retired; no cross_model item may be emitted: %v", items)
 	}
 }
 

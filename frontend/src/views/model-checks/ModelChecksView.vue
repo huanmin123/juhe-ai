@@ -9,9 +9,9 @@
       :comparison-select-placeholder="comparisonSelectPlaceholder"
       :deep-detection="deepDetection"
       :is-management-view="isManagementView"
-      :model="form.model"
+      :model="runModelSelectValue"
       :model-options="runModelOptions"
-      :model-options-loading="optionsLoading || targetModelOptionsLoading"
+      :model-options-loading="runModelSelectLoading"
       :options-loading="optionsLoading"
       :quality-actions-disabled="qualityActionsDisabled"
       :quality-policy="qualityPolicy"
@@ -404,8 +404,8 @@ const {
   ]))
 })
 selectedHistoryTargetAccount.value = initialPageState.historyTargetAccount
-// 历史模型筛选与发起下拉同源合并：选中历史目标账户且其候选已缓存时，
-// 目录外模型也可作为筛选条件；未选中账户时保持目录全集。
+// 历史模型筛选沿用「目录 ∪ 账户支持模型」合并：选中历史目标账户且其候选已缓存时，
+// 目录外模型也可作为筛选条件；未选中账户时历史筛选保持目录全集（发起下拉不回退全局目录）。
 const historyModelOptions = computed(() => {
   const historyProfile = selectedHistoryTargetAccountProfile.value
   if (!historyProfile) {
@@ -413,13 +413,24 @@ const historyModelOptions = computed(() => {
   }
   return mergeModelCheckRunModelOptions(options.value.supportedModels, modelCheckModelsForAccount(historyProfile))
 })
+// 发起检测的模型候选只来自当前账户：未选账户时不回退全局目录（下拉禁用、选项为空），
+// 已选账户但 modelCheckModels 尚未按需加载时保持空候选 + 加载提示（打开下拉触发补拉），
+// 加载完成后收敛为「目录 ∪ 账户支持模型」。
 const runModelOptions = computed(() => {
   const accountProfile = selectedTargetAccountProfile.value
-  const accountModels = accountProfile?.modelCheckModels ?? modelCheckModelsForAccount(accountProfile)
-  if (!accountProfile) {
-    return options.value.supportedModels.map((item) => ({ label: item.label, value: item.value }))
-  }
+  const accountModels = accountProfile?.modelCheckModels
+  if (!accountProfile || accountModels === undefined) return []
   return mergeModelCheckRunModelOptions(options.value.supportedModels, accountModels)
+})
+const runTargetSelected = computed(() => Boolean(form.targetId.trim()))
+const runModelSelectLoading = computed(() => runTargetSelected.value
+  && (targetModelOptionsLoading.value || selectedTargetAccountProfile.value?.modelCheckModels === undefined))
+// 展示值收敛：form.model 不在当前账户候选内（未选账户/能力未加载/残留旧模型）时
+// 不回显，让占位文案说明状态，避免诱导提交目录外模型。
+const runModelSelectValue = computed<ModelCheckModel | undefined>(() => {
+  const currentModel = form.model?.trim()
+  if (currentModel && runModelOptions.value.some((item) => item.value === currentModel)) return form.model
+  return undefined
 })
 const viewportWidth = ref(window.innerWidth)
 const detailDescriptionColumns = computed(() => (viewportWidth.value < 900 ? 1 : 2))

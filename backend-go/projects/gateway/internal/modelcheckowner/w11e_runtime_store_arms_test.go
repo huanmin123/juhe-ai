@@ -331,7 +331,7 @@ func TestW11EHasResponseModelEvidenceArms(t *testing.T) {
 		t.Fatal("成功响应模型必须构成证据")
 	}
 	mismatch := []map[string]any{
-		{"kind": "cross_model", "evidence": map[string]any{"success": true, "modelMismatch": true, "responseModel": "other"}},
+		{"kind": "comparison", "evidence": map[string]any{"success": true, "modelMismatch": true, "responseModel": "other"}},
 		{"kind": "behavior", "evidence": map[string]any{"success": true, "modelMismatch": true, "responseModel": ""}},
 		{"kind": "behavior", "evidence": map[string]any{"success": true, "modelMismatch": false, "responseModel": "upstream-x"}},
 		{"kind": "behavior", "evidence": map[string]any{"success": true, "modelMismatch": true, "responseModel": "upstream-x"}},

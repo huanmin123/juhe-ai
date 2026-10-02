@@ -114,7 +114,7 @@ func TestRunSuitePropagatesStreamingEndpointModeToCoreRequests(t *testing.T) {
 	if err != nil || len(items) == 0 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
-	if transport.requests != 8 || transport.nonStreaming != 0 {
+	if transport.requests != 7 || transport.nonStreaming != 0 {
 		t.Fatalf("requests=%d nonStreaming=%d", transport.requests, transport.nonStreaming)
 	}
 	for _, item := range items {
@@ -191,7 +191,7 @@ func TestRunSuiteUsesMappedUpstreamProtocolAndEndpointMode(t *testing.T) {
 	if err != nil || len(items) == 0 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
-	if transport.requests != 4 || transport.wrongPath != 0 || transport.wrongModel != 0 {
+	if transport.requests != 3 || transport.wrongPath != 0 || transport.wrongModel != 0 {
 		t.Fatalf("mapped upstream request shape not preserved: %+v", transport)
 	}
 	for _, item := range items {
@@ -222,8 +222,8 @@ func TestRunSuiteQuickIncludesOneTokenIntegrityRound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transport.requests != 7 {
-		t.Fatalf("quick request count=%d want=7", transport.requests)
+	if transport.requests != 6 {
+		t.Fatalf("quick request count=%d want=6（basic+structured+tool+三轮 Token）", transport.requests)
 	}
 	found := false
 	for _, item := range items {
@@ -239,7 +239,7 @@ func TestRunSuiteQuickIncludesOneTokenIntegrityRound(t *testing.T) {
 	}
 }
 
-func TestRunSuiteQuickIncludesCrossModelAndTrustedAggregate(t *testing.T) {
+func TestRunSuiteQuickIncludesTrustedAggregate(t *testing.T) {
 	targetTransport := &comparisonTransport{expectedAuthorization: "Bearer target", expectedModel: "gpt-5.6-sol"}
 	comparisonTransport := &comparisonTransport{expectedAuthorization: "Bearer comparison", expectedModel: "gpt-5.6-terra"}
 	items, err := RunSuite(context.Background(), Suite{
@@ -267,22 +267,22 @@ func TestRunSuiteQuickIncludesCrossModelAndTrustedAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	foundTargetCross, foundComparisonCross, foundAggregate := false, false, false
+	foundTargetToken, foundComparisonToken, foundAggregate := false, false, false
 	for _, item := range items {
 		switch item.Kind {
-		case "cross_model":
-			foundTargetCross = true
-		case "trusted_comparison.cross_model":
-			foundComparisonCross = true
+		case "token_integrity":
+			foundTargetToken = true
+		case "trusted_comparison.token_integrity":
+			foundComparisonToken = true
 		case "trusted_comparison.comparison":
 			foundAggregate = true
 		}
 	}
-	if !foundTargetCross || !foundComparisonCross || !foundAggregate {
+	if !foundTargetToken || !foundComparisonToken || !foundAggregate {
 		t.Fatalf("quick trusted comparison items=%+v", items)
 	}
-	if targetTransport.requests != 7 || comparisonTransport.requests != 7 {
-		t.Fatalf("quick trusted comparison must use core+token+cross for both accounts: target=%d comparison=%d", targetTransport.requests, comparisonTransport.requests)
+	if targetTransport.requests != 6 || comparisonTransport.requests != 6 {
+		t.Fatalf("quick trusted comparison must use core+token for both accounts: target=%d comparison=%d", targetTransport.requests, comparisonTransport.requests)
 	}
 }
 
@@ -291,14 +291,14 @@ func TestQuickQualityScoreCountsFailedAndWarningItems(t *testing.T) {
 		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10},
 		{Kind: "structured_output", Status: "failed", Score: 0, MaxScore: 20},
 		{Kind: "tool_calling", Status: "warning", Score: 4, MaxScore: 30},
-		{Kind: "cross_model", Status: "skipped", Score: 0, MaxScore: 40},
+		{Kind: "token_integrity", Status: "skipped", Score: 0, MaxScore: 40},
 	})
 	if score != 14 || maxScore != 60 {
 		t.Fatalf("quick quality score=%d/%d, want 14/60 (failed and warning items must remain in the denominator)", score, maxScore)
 	}
 }
 
-func TestRunSuiteOnlyRunsTokenAndIdentityForResponsesProfile(t *testing.T) {
+func TestRunSuiteOnlyRunsTokenForResponsesProfile(t *testing.T) {
 	transport := &orderedProbeTransport{}
 	items, err := RunSuite(context.Background(), Suite{
 		Endpoint:     "https://example.test",
@@ -315,26 +315,20 @@ func TestRunSuiteOnlyRunsTokenAndIdentityForResponsesProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	foundToken, foundIdentity := false, false
+	foundToken := false
 	for _, item := range items {
-		switch unscopedKind(item.Kind) {
-		case "token_integrity":
+		if unscopedKind(item.Kind) == "token_integrity" {
 			foundToken = true
 			if item.Status != "skipped" || item.Evidence["notApplicable"] != true || item.Evidence["excludedFromScoring"] != true {
 				t.Fatalf("non-Responses token evidence=%+v", item)
 			}
-		case "identity_observation":
-			foundIdentity = true
-			if item.Status != "skipped" || item.Evidence["notApplicable"] != true || item.Evidence["excludedFromScoring"] != true {
-				t.Fatalf("non-Responses identity evidence=%+v", item)
-			}
 		}
 	}
-	if !foundToken || !foundIdentity {
-		t.Fatalf("non-Responses scope items missing: %+v", items)
+	if !foundToken {
+		t.Fatalf("non-Responses scope item missing: %+v", items)
 	}
 	for _, kind := range transport.kinds {
-		if kind == "token" || kind == "identity" {
+		if kind == "token" {
 			t.Fatalf("non-Responses profile issued %s request: %v", kind, transport.kinds)
 		}
 	}
@@ -615,7 +609,7 @@ func TestRunTrustedComparisonRunsComparisonFullSuiteWithoutRecursion(t *testing.
 	if comparisonFamilies < 8 {
 		t.Fatalf("comparison full-suite evidence was discarded: items=%+v", items)
 	}
-	for _, family := range []string{"behavior", "long_context", "stability", "token_integrity", "identity", "juice"} {
+	for _, family := range []string{"behavior", "long_context", "stability", "token_integrity"} {
 		if comparisonTransport.families[family] == 0 {
 			t.Fatalf("comparison full suite did not run %s: requests=%d families=%v", family, comparisonTransport.requests, comparisonTransport.families)
 		}
@@ -664,10 +658,6 @@ func (t *fullSuiteTrackingTransport) RoundTrip(request *http.Request) (*http.Res
 		t.families["long_context"]++
 	case strings.Contains(textBody, "VECTOR"):
 		t.families["stability"]++
-	case strings.Contains(textBody, "CANARY-"):
-		t.families["identity"]++
-	case strings.Contains(textBody, "Valid Channels") || strings.Contains(textBody, "Reply with exactly: 32") || strings.Contains(textBody, "Reply with exactly: 48"):
-		t.families["juice"]++
 	case strings.Contains(textBody, "QUARTZ") || strings.Contains(textBody, "并发") || strings.Contains(textBody, "ZETA"):
 		t.families["behavior"]++
 	}
@@ -729,31 +719,6 @@ type countingTransport struct {
 func (t *countingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	t.requests++
 	return t.base.RoundTrip(request)
-}
-
-func TestRunSelfCrossModelUsesPairedModelOnSameEndpoint(t *testing.T) {
-	var requested []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var request struct {
-			Model string `json:"model"`
-		}
-		if err := json.Unmarshal(body, &request); err != nil {
-			t.Fatal(err)
-		}
-		requested = append(requested, request.Model)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"` + request.Model + `","output_text":"CROSS-MODEL-OK","usage":{"total_tokens":2}}`))
-	}))
-	defer server.Close()
-	first := Result{Success: true, ObservedModel: "gpt-5.6-sol", Output: "OK-MODEL-CHECK"}
-	item, err := RunSelfCrossModel(context.Background(), Suite{Endpoint: server.URL, Model: "gpt-5.6-sol", Protocol: modelcheckprofile.ProtocolOpenAIResponses}, first, time.Second)
-	if err != nil || item.Status != "passed" || len(requested) != 1 || requested[0] != "gpt-5.6-terra" {
-		t.Fatalf("item=%+v requested=%v err=%v", item, requested, err)
-	}
 }
 
 func mustJSONText(t *testing.T, value string) string {

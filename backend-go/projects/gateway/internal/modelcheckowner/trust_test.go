@@ -3,7 +3,10 @@ package modelcheckowner
 import "testing"
 
 func TestBuildTrustReportFailsClosedAndFlagsAnomaly(t *testing.T) {
-	report := BuildTrustReport(EvidenceAggregate{Formed: false, Missing: []string{"token_integrity"}}, []map[string]any{{"kind": "identity_observation", "status": "failed"}, {"kind": "juice", "hardAnomaly": true}})
+	report := BuildTrustReport(EvidenceAggregate{Formed: false, Missing: []string{"token_integrity"}}, []map[string]any{
+		{"kind": "behavior_probe", "status": "failed"},
+		{"kind": "protocol_basic", "status": "passed", "evidence": map[string]any{"success": true, "responseModel": "other-model", "modelMismatch": true}},
+	})
 	if report.EvidenceFormed || report.IdentityStatus != "suspected_downgrade" || !report.HardAnomaly {
 		t.Fatalf("report=%#v", report)
 	}
@@ -12,14 +15,17 @@ func TestBuildTrustReportFailsClosedAndFlagsAnomaly(t *testing.T) {
 func TestBuildTrustReportReadsNestedEvaluatorEvidence(t *testing.T) {
 	aggregate := EvidenceAggregate{Formed: true, TrustFormed: true, TrustScore: 1}
 	report := BuildTrustReport(aggregate, []map[string]any{
-		{"kind": "juice", "status": "failed", "evidence": map[string]any{"hardAnomaly": true}},
+		{"kind": "protocol_basic", "status": "passed", "evidence": map[string]any{"success": true, "responseModel": "other-model", "modelMismatch": true}},
 		{"kind": "cross_model", "status": "passed", "evidence": map[string]any{"modelMismatch": true}},
+		{"kind": "comparison", "status": "failed", "evidence": map[string]any{"modelMismatch": true}},
 		{"kind": "token_integrity", "status": "warning", "evidence": map[string]any{"reasonCodes": []any{"proportional_padding"}}},
 	})
 	if !report.TrustFormed || !report.HardAnomaly {
 		t.Fatalf("nested anomalies must preserve formed trust and hard anomaly: %+v", report)
 	}
-	for _, reason := range []string{"gpt56_juice_mixed_or_replaced", "cross_model_mismatch", "token_integrity_anomaly"} {
+	// cross_model 门同时命中原始 cross_model 族证据与可信对比链 comparison 项
+	// （后者经 canonicalEvidenceFamily 映射回 cross_model 族）。
+	for _, reason := range []string{"cross_model_mismatch", "token_integrity_anomaly"} {
 		found := false
 		for _, current := range report.ReasonCodes {
 			if current == reason {
@@ -91,13 +97,13 @@ func TestBuildTrustReportMarksWarningAndMismatchIdentity(t *testing.T) {
 	}
 }
 
-func TestBuildTrustReportDoesNotPromoteIdentityBehaviorFailureToHardDowngrade(t *testing.T) {
+func TestBuildTrustReportDoesNotPromoteBehaviorFailureToHardDowngrade(t *testing.T) {
 	report := BuildTrustReport(EvidenceAggregate{}, []map[string]any{
 		{"kind": "responses_basic", "status": "passed", "evidence": map[string]any{"success": true, "responseModel": "gpt-5.6"}},
-		{"kind": "identity_observation", "status": "failed", "evidence": map[string]any{"success": true, "requestFailureCount": 0, "scoringProbeCount": 7}},
+		{"kind": "behavior_probe", "status": "failed", "evidence": map[string]any{"success": true, "requestFailureCount": 0, "scoringProbeCount": 7}},
 	})
 	if report.IdentityStatus != "consistent" || report.HardAnomaly {
-		t.Fatalf("report=%+v, identity behavior quality failure must remain score evidence", report)
+		t.Fatalf("report=%+v, behavior quality failure must remain score evidence", report)
 	}
 }
 

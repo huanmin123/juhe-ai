@@ -19,17 +19,11 @@ import (
 // wlEchoTransport 是"全能正确上游"：按探针关键词回放每类探针的期望输出，
 // 用于在不依赖外部服务的情况下驱动完整套件的成功路径。
 type wlEchoTransport struct {
-	mu        sync.Mutex
-	requests  []string
-	failJuice bool
-	juiceHits int
+	mu       sync.Mutex
+	requests []string
 }
 
-var (
-	wlCanaryTagPattern = regexp.MustCompile(`CANARY-[0-9A-F]{6}`)
-	wlNeedlePattern    = regexp.MustCompile(`NEEDLE-(?:LOW|MEDIUM|HIGH)-[0-9]+`)
-	wlCoveragePattern  = regexp.MustCompile(`Juice=([0-9]+)`)
-)
+var wlNeedlePattern = regexp.MustCompile(`NEEDLE-(?:LOW|MEDIUM|HIGH)-[0-9]+`)
 
 func (t *wlEchoTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	body, err := io.ReadAll(request.Body)
@@ -44,17 +38,6 @@ func (t *wlEchoTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	t.mu.Lock()
 	t.requests = append(t.requests, text)
 	t.mu.Unlock()
-
-	isJuice := strings.Contains(text, "Valid Channels") || strings.Contains(text, "Reply with exactly: 32") || strings.Contains(text, "Reply with exactly: 48") || strings.Contains(text, "Juice=")
-	if t.failJuice && isJuice {
-		t.mu.Lock()
-		t.juiceHits++
-		shouldFail := t.juiceHits >= 2
-		t.mu.Unlock()
-		if shouldFail {
-			return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"juice unavailable"}`)), Request: request}, nil
-		}
-	}
 
 	output := t.wlEchoOutput(payload.Model, text)
 	usage := `{"input_tokens":10,"total_tokens":11}`
@@ -73,7 +56,7 @@ func (t *wlEchoTransport) RoundTrip(request *http.Request) (*http.Response, erro
 }
 
 // wlEchoOutput 按各探针的判定契约构造正解输出。
-func (t *wlEchoTransport) wlEchoOutput(model, text string) string {
+func (t *wlEchoTransport) wlEchoOutput(_, text string) string {
 	switch {
 	case strings.Contains(text, "Controlled token integrity probe"):
 		return "OK"
@@ -82,36 +65,6 @@ func (t *wlEchoTransport) wlEchoOutput(model, text string) string {
 			return marker
 		}
 		return "NEEDLE"
-	case strings.Contains(text, "CANARY-"):
-		tag := wlCanaryTagPattern.FindString(text)
-		switch {
-		case strings.Contains(text, "TypeScript"):
-			return fmt.Sprintf("[2,7,9].filter(x=>x>2).sort((a,b)=>a-b) // %s", tag)
-		case strings.Contains(text, "23 + 19"):
-			return fmt.Sprintf(`{"result":42,"tag":%q}`, tag)
-		case strings.Contains(text, "2、11、21"):
-			return fmt.Sprintf(`{"largest":15,"tag":%q}`, tag)
-		case strings.Contains(text, "23+19=43"):
-			return fmt.Sprintf(`{"correct":42,"tag":%q}`, tag)
-		case strings.Contains(text, "队列超时"):
-			return fmt.Sprintf(`{"zh":"队列超时","en":"queue timeout","tag":%q}`, tag)
-		case strings.Contains(text, "inspect"):
-			return fmt.Sprintf(`{"action":"inspect","tag":%q,"payload":{"ids":[2,7,9],"dryRun":true}}`, tag)
-		case strings.Contains(text, "2024-10"):
-			return fmt.Sprintf(`{"version":"B","tag":%q}`, tag)
-		}
-		return "OK"
-	case strings.Contains(text, "Juice="):
-		if match := wlCoveragePattern.FindStringSubmatch(text); match != nil {
-			return match[1]
-		}
-		return "0"
-	case strings.Contains(text, "Valid Channels") || strings.Contains(text, "Trace "):
-		return juiceSignature(model)
-	case strings.Contains(text, "Reply with exactly: 32"):
-		return "32"
-	case strings.Contains(text, "Reply with exactly: 48"):
-		return "48"
 	case strings.Contains(text, "VECTOR"):
 		return "VECTOR"
 	case strings.Contains(text, "第一行"):
@@ -148,9 +101,10 @@ func (t *wlEchoTransport) wlEchoOutput(model, text string) string {
 	return "OK-MODEL-CHECK"
 }
 
-func TestWlRunSuiteFullWithJuiceAndTrustedComparison(t *testing.T) {
-	// 业务契约：gpt-5.6 + full + responses 必须跑满 Juice 专项，且可信对比账户
-	// 先形成自己的完整证据族，再输出 distribution 与 comparison 聚合。
+func TestWlRunSuiteFullUniversalWithTrustedComparison(t *testing.T) {
+	// 业务契约（通用套件 v5）：full + 可信对比时，可信对比账户先形成自己的
+	// 完整证据族，再输出 distribution 与 comparison 聚合；定制探针家族
+	//（juice/astra/identity/自配 cross_model）已退役，不再产生证据项。
 	newSuite := func(endpoint string, transport *wlEchoTransport, model string) Suite {
 		return Suite{
 			Endpoint:                  endpoint,
@@ -177,7 +131,7 @@ func TestWlRunSuiteFullWithJuiceAndTrustedComparison(t *testing.T) {
 	for _, item := range items {
 		kinds[unscopedKind(item.Kind)] = item
 	}
-	for _, kind := range []string{"protocol_basic", "structured_output", "tool_calling", "behavior_probe", "long_context", "stability", "token_integrity", "identity_observation", "juice", "distribution_similarity", "usage_shape"} {
+	for _, kind := range []string{"protocol_basic", "structured_output", "tool_calling", "behavior_probe", "long_context", "stability", "token_integrity", "distribution_similarity", "usage_shape"} {
 		item, ok := kinds[kind]
 		if !ok {
 			t.Fatalf("缺少 %s 证据项: items=%v", kind, kinds)
@@ -186,70 +140,19 @@ func TestWlRunSuiteFullWithJuiceAndTrustedComparison(t *testing.T) {
 			t.Fatalf("%s 必须 passed, got=%s evidence=%v", kind, item.Status, item.Evidence)
 		}
 	}
-	if kinds["juice"].Score != 0 || kinds["juice"].MaxScore != 0 {
-		t.Fatalf("juice 是排除评分项: %+v", kinds["juice"])
+	for _, retired := range []string{"juice", "astra_constants", "identity_observation", "cross_model"} {
+		if _, ok := kinds[retired]; ok {
+			t.Fatalf("退役家族 %s 不得再产生证据项: %+v", retired, kinds[retired])
+		}
 	}
-	// 行为存疑：RunTrustedComparison 复制的对比套件固定清空 Comparison，
-	// 其 full 套件内的 distribution 项恒为 skipped（trusted_comparison_not_attached），
-	// 因而嵌套对比聚合即使全部成功也只能到 warning（不能到 passed）。
-	// 此处按当前实际行为断言，是否与 Node oracle 一致待人工核对。
-	if kinds["comparison"].Status != "warning" || kinds["comparison"].Evidence["evidenceInsufficient"] != true {
-		t.Fatalf("嵌套对比聚合按当前实现应为 warning: %+v", kinds["comparison"])
+	// 嵌套对比套件自身的 distribution 是构造性 scope-neutral 跳过，不再把
+	// 聚合降级为 warning：健康可信账户的 comparison 聚合应为 passed。
+	if kinds["comparison"].Status != "passed" {
+		t.Fatalf("健康可信账户的对比聚合应为 passed: %+v", kinds["comparison"])
 	}
 	summary := SummarizeChecks(items, true, "full")
 	if summary.Level != "high_confidence" {
 		t.Fatalf("全链路通过必须高可信: %+v", summary)
-	}
-}
-
-func TestWlRunSuiteFullJuiceTerminalBreakSkipsRest(t *testing.T) {
-	// 业务契约：Juice 请求在重试边界失败后必须停止剩余 Juice 请求，
-	// 且不阻断 cross-model 与 distribution skipped 证据。
-	transport := &wlEchoTransport{failJuice: true}
-	items, err := RunSuite(context.Background(), Suite{
-		Endpoint:    "https://example.test",
-		Client:      &http.Client{Transport: transport},
-		Model:       "gpt-5.6-sol",
-		Profile:     "full",
-		Protocol:    modelcheckprofile.ProtocolOpenAIResponses,
-		Tokenizer:   deterministicTokenizer{},
-		ModelLimits: deterministicLimits{},
-		Retry:       RetryOptions{AttemptTimeouts: []time.Duration{time.Millisecond}, Delay: func(context.Context) error { return nil }},
-	}, time.Second)
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	juiceRequests := 0
-	for _, request := range transport.requests {
-		if strings.Contains(request, "Valid Channels") || strings.Contains(request, "Reply with exactly: 32") || strings.Contains(request, "Reply with exactly: 48") || strings.Contains(request, "Juice=") {
-			juiceRequests++
-		}
-	}
-	if juiceRequests != 2 {
-		t.Fatalf("第二个 Juice 请求终局失败后必须停止: juice 请求=%d", juiceRequests)
-	}
-	foundJuice, foundCross, foundDistribution := false, false, false
-	for _, item := range items {
-		switch unscopedKind(item.Kind) {
-		case "juice":
-			foundJuice = true
-			if item.Status != "skipped" || item.Evidence["terminalFailure"] != true {
-				t.Fatalf("juice 终局证据=%+v", item)
-			}
-		case "cross_model":
-			foundCross = true
-			if item.Status != "passed" {
-				t.Fatalf("basic 成功时 cross-model 必须执行: %+v", item)
-			}
-		case "distribution":
-			foundDistribution = true
-			if item.Evidence["reason"] != "trusted_comparison_not_attached" {
-				t.Fatalf("未挂可信对比时 distribution 必须 skipped: %+v", item)
-			}
-		}
-	}
-	if !foundJuice || !foundCross || !foundDistribution {
-		t.Fatalf("items=%+v", items)
 	}
 }
 
@@ -362,24 +265,8 @@ func TestWlSuiteProbeModeCodexRestrictions(t *testing.T) {
 	}
 }
 
-func TestWlSuitePairedModelAndFamilyAllowlist(t *testing.T) {
+func TestWlSuiteProfileForModelFallback(t *testing.T) {
 	suite := Suite{Model: "gpt-5.6-sol", Protocol: modelcheckprofile.ProtocolOpenAIResponses}
-	if got := suite.pairedModel(); got != "gpt-5.6-terra" && got != "gpt-5.6-luna" {
-		t.Fatalf("sol 的配对模型=%q", got)
-	}
-	suite.SupportedModels = []string{"gpt-5.6-sol"}
-	if got := suite.pairedModel(); got != "" {
-		t.Fatalf("允许列表只有自身时配对模型必须为空: %q", got)
-	}
-	if got := allowedFamilyModels("m", nil); len(got) != 1 || got[0] != "m" {
-		t.Fatalf("空允许列表返回候选: %v", got)
-	}
-	if got := allowedFamilyModels("m", []string{" ", "other"}); len(got) != 1 || got[0] != "m" {
-		t.Fatalf("候选全被排除时回退目标模型: %v", got)
-	}
-	if got := suite.identityModels(); len(got) == 0 {
-		t.Fatal("identity 模型不能为空")
-	}
 	profile := suite.ProfileForModel()
 	if profile.Protocol != modelcheckprofile.ProtocolOpenAIResponses {
 		t.Fatalf("ProfileForModel 回退协议=%q", profile.Protocol)
@@ -500,18 +387,18 @@ func TestWlRunTrustedComparisonFullIncompleteErrors(t *testing.T) {
 }
 
 func TestWlRunTrustedComparisonFullNegativeMarksWarning(t *testing.T) {
-	// 对比账户核心探针均成功但 Juice 族失败（证据不足）时，
-	// 聚合 comparison 必须携带 warning 与合并证据，而不是硬失败。
+	// 对比账户核心探针均成功但某个评分族（这里用 stability）在 HTTP 200 上
+	// 软失败（证据不足、非终局）时，聚合 comparison 必须携带 warning 与合并
+	// 证据，而不是硬失败。
 	target := Suite{
 		Endpoint: "https://a.example", Client: &http.Client{Transport: &wlEchoTransport{}},
 		Model: "gpt-5.6-sol", ProviderCode: "openai", ProviderProtocolProfileID: "p1",
 		Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 		Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{},
 	}
-	comparisonTransport := &wlEchoTransport{failJuice: false}
-	// 用一个只在 Juice 请求上返回 HTTP 200 失败信封的包装 transport。
+	comparisonTransport := &wlEchoTransport{}
 	comparison := Suite{
-		Endpoint: "https://b.example", Client: &http.Client{Transport: &wlJuiceSoftFailTransport{inner: comparisonTransport}},
+		Endpoint: "https://b.example", Client: &http.Client{Transport: &wlStabilitySoftFailTransport{inner: comparisonTransport}},
 		Model: "gpt-5.6-terra", ProviderCode: "openai", ProviderProtocolProfileID: "p1",
 		Profile: "full", Protocol: modelcheckprofile.ProtocolOpenAIResponses,
 		Tokenizer: deterministicTokenizer{}, ModelLimits: deterministicLimits{},
@@ -543,19 +430,19 @@ func TestWlRunTrustedComparisonFullNegativeMarksWarning(t *testing.T) {
 	}
 }
 
-// wlJuiceSoftFailTransport 对 Juice 请求返回 HTTP 200 + 失败信封（非终局），
-// 使 Juice 族进入"证据不足"而不是重试边界失败。
-type wlJuiceSoftFailTransport struct{ inner *wlEchoTransport }
+// wlStabilitySoftFailTransport 对稳定性 VECTOR 请求返回 HTTP 200 + 失败信封
+// （非终局），使 stability 族进入"证据不足"而不是重试边界失败。
+type wlStabilitySoftFailTransport struct{ inner *wlEchoTransport }
 
-func (t *wlJuiceSoftFailTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (t *wlStabilitySoftFailTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	body, err := io.ReadAll(request.Body)
 	if err != nil {
 		return nil, err
 	}
 	text := string(body)
 	request.Body = io.NopCloser(strings.NewReader(text))
-	if strings.Contains(text, "Valid Channels") || strings.Contains(text, "Reply with exactly: 32") || strings.Contains(text, "Reply with exactly: 48") || strings.Contains(text, "Juice=") {
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"juice degraded"}`)), Request: request}, nil
+	if strings.Contains(text, "VECTOR") {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"stability degraded"}`)), Request: request}, nil
 	}
 	return t.inner.RoundTrip(request)
 }
@@ -591,15 +478,15 @@ func TestWlComparisonEvidenceStateAndPredicates(t *testing.T) {
 	})
 	t.Run("可信族跳过记为不完整", func(t *testing.T) {
 		items := []Evaluation{passed("protocol_basic"), passed("structured_output"), passed("tool_calling"),
-			{Kind: "trusted_comparison.juice", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true}}}
+			{Kind: "trusted_comparison.stability", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true}}}
 		formed, incomplete, negative := comparisonEvidenceState(items)
 		if !formed || !incomplete || negative {
 			t.Fatalf("formed=%v incomplete=%v negative=%v", formed, incomplete, negative)
 		}
 	})
-	t.Run("notApplicable juice 不影响", func(t *testing.T) {
+	t.Run("构造性 distribution 中性跳过不影响", func(t *testing.T) {
 		items := []Evaluation{passed("protocol_basic"), passed("structured_output"), passed("tool_calling"),
-			{Kind: "trusted_comparison.juice", Status: "skipped", Evidence: map[string]any{"notApplicable": true}}}
+			{Kind: "trusted_comparison.distribution", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "trusted_comparison_not_attached"}}}
 		formed, incomplete, negative := comparisonEvidenceState(items)
 		if !formed || incomplete || negative {
 			t.Fatalf("formed=%v incomplete=%v negative=%v", formed, incomplete, negative)
@@ -652,7 +539,6 @@ func TestWlBuildQuickTrustedComparisonVerdicts(t *testing.T) {
 		return []Evaluation{
 			basic(map[string]any{"success": true}),
 			{Kind: "structured_output", Status: "passed", Score: 15, MaxScore: 15, Evidence: map[string]any{"success": true}},
-			{Kind: "cross_model", Status: "skipped"},
 		}
 	}
 	t.Run("双方可比通过", func(t *testing.T) {
@@ -712,9 +598,6 @@ func TestWlFindSuiteEvaluation(t *testing.T) {
 	}
 	if score, max := quickQualityScore(nil); score != 0 || max != 0 {
 		t.Fatalf("空列表=%d/%d", score, max)
-	}
-	if quickQualitySkipped([]Evaluation{{Kind: "cross_model", Status: "skipped", MaxScore: 10}}) {
-		t.Fatal("cross_model skipped 不视为质量缺失")
 	}
 	if !quickQualitySkipped([]Evaluation{{Kind: "structured_output", Status: "skipped", MaxScore: 10}}) {
 		t.Fatal("核心项 skipped 视为质量缺失")

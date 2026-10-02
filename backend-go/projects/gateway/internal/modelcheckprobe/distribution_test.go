@@ -8,7 +8,7 @@ func TestEvaluateDistributionAndCrossModel(t *testing.T) {
 	if item.Status != "passed" || item.Score != 14 {
 		t.Fatalf("distribution=%#v", item)
 	}
-	cross := EvaluateCrossModel(Result{Success: true, ObservedModel: "gpt-5.6-sol", Output: "OK-MODEL-CHECK"}, Result{Success: true, ObservedModel: "gpt-5.6-sol", Output: "CROSS-MODEL-OK"}, "gpt-5.6-sol")
+	cross := EvaluateCrossModelPair(Result{Success: true, ObservedModel: "gpt-5.6-sol", Output: "OK-MODEL-CHECK"}, Result{Success: true, ObservedModel: "gpt-5.6-terra", Output: "CROSS-MODEL-OK"}, "gpt-5.6-sol", "gpt-5.6-terra")
 	if cross.Status != "passed" || cross.Score != 10 {
 		t.Fatalf("cross=%#v", cross)
 	}

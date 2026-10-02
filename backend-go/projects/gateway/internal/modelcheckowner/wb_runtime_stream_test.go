@@ -203,13 +203,14 @@ func TestWBRunQuickQualityFailurePublishesHealthFactOrRetryableFailure(t *testin
 	})
 }
 
-// wbRunQualityFailingProbe 以固定上游内容触发一次 quick 质量失败 run，
-// 返回执行结果与全部进度事件，供健康发布断言复用。
+// wbRunQualityFailingProbe 以响应模型字段不匹配触发一次 quick 质量失败 run，
+// 返回执行结果与全部进度事件，供健康发布断言复用（自配 cross_model 退役后，
+// quick 质量失败改由未声明模型失配驱动）。
 func wbRunQualityFailingProbe(t *testing.T, store *Store, projector *QualityProjector, onEvent func(ProgressEvent)) (RunResult, []ProgressEvent) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"gpt-5.6-sol","output_text":"WRONG-CONTENT","usage":{"total_tokens":2}}`))
+		_, _ = w.Write([]byte(`{"model":"gpt-5.6-terra","output_text":"OK-MODEL-CHECK","usage":{"total_tokens":2}}`))
 	}))
 	t.Cleanup(server.Close)
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)

@@ -75,9 +75,13 @@ type quizAggregateItem struct {
 }
 
 // quizAggregate 是 resultSummary.customQuiz 的形状：
-// { enabled, score, maxScore:31, deduction, items[] }。
+// { enabled, executed, score, maxScore:31, deduction, items[] }。
 type quizAggregate struct {
-	Enabled   bool                `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// Executed 表示本次运行是否实际执行了作答题（存在任何拿到判定的题）。
+	// 未执行（题目全部不可用或全部请求失败转 skipped）时 Score 必须为 0，
+	// 不得把"没做"展示成满分；MaxScore 保留 31 作为展示分母。
+	Executed  bool                `json:"executed"`
 	Score     int                 `json:"score"`
 	MaxScore  int                 `json:"maxScore"`
 	Deduction int                 `json:"deduction"`
@@ -88,11 +92,13 @@ type quizAggregate struct {
 // 扣分口径与 SummarizeChecks 一致：仅 failed 且非 excludedFromScoring、
 // 非 requestFailure 的项按 MaxScore-Score 扣减；第二返回值为 false 表示
 // 本次运行未配置题库（家族未执行），调用方不得写入 customQuiz 键。
+// 未执行任何作答题（无 verdict）时 Score 固定为 0，有执行题时 Score=
+// QuizMaxPool-Deduction（下限 0）。
 func buildCustomQuizSummary(evaluations []modelcheckprobe.Evaluation, quizRequested bool) (quizAggregate, bool) {
 	if !quizRequested {
 		return quizAggregate{}, false
 	}
-	aggregate := quizAggregate{Enabled: true, MaxScore: modelcheckprobe.QuizMaxPool, Score: modelcheckprobe.QuizMaxPool, Items: []quizAggregateItem{}}
+	aggregate := quizAggregate{Enabled: true, MaxScore: modelcheckprobe.QuizMaxPool, Items: []quizAggregateItem{}}
 	for _, evaluation := range evaluations {
 		if evaluation.Kind != "custom_quiz" {
 			continue
@@ -111,14 +117,21 @@ func buildCustomQuizSummary(evaluations []modelcheckprobe.Evaluation, quizReques
 				}
 			}
 		}
+		// 拿到 pass/fail/invalid 判定的项即实际执行（作答且完成对比判定）；
+		// skipped（题目不可用、请求失败）与异常 verdict 不算执行。
+		if item.Verdict == "passed" || item.Verdict == "failed" {
+			aggregate.Executed = true
+		}
 		aggregate.Items = append(aggregate.Items, item)
 		if evaluation.Status == "failed" && evaluation.MaxScore > 0 && !quizEvidenceExcludesScoring(evaluation.Evidence) {
 			aggregate.Deduction += evaluation.MaxScore - evaluation.Score
 		}
 	}
-	aggregate.Score = modelcheckprobe.QuizMaxPool - aggregate.Deduction
-	if aggregate.Score < 0 {
-		aggregate.Score = 0
+	if aggregate.Executed {
+		aggregate.Score = modelcheckprobe.QuizMaxPool - aggregate.Deduction
+		if aggregate.Score < 0 {
+			aggregate.Score = 0
+		}
 	}
 	return aggregate, true
 }

@@ -463,7 +463,8 @@ func quizBaseChecks() []Evaluation {
 		{Kind: "behavior_probe", Status: "passed", Score: 35, MaxScore: 35},
 		{Kind: "long_context", Status: "passed", Score: 15, MaxScore: 15},
 		{Kind: "stability", Status: "passed", Score: 15, MaxScore: 15},
-		{Kind: "cross_model", Status: "passed", Score: 10, MaxScore: 10},
+		{Kind: "distribution_similarity", Status: "passed", Score: 15, MaxScore: 15},
+		{Kind: "comparison", Status: "passed", Score: 10, MaxScore: 10},
 	}
 }
 
@@ -501,23 +502,9 @@ func TestSummarizeChecksQuizTerminalFamilyDoesNotDeduct(t *testing.T) {
 
 func TestSummarizeChecksQuizSkippedKeepsScoreAndLevel(t *testing.T) {
 	checks := append(quizBaseChecks(), Evaluation{Kind: "custom_quiz", Status: "skipped", Evidence: map[string]any{"excludedFromScoring": true, "reason": "quiz_questions_unavailable"}})
-	got := SummarizeChecks(checks, false, "full")
+	got := SummarizeChecks(checks, true, "full")
 	if got.Score != 100 || got.Level != "high_confidence" {
 		t.Fatalf("skipped quiz item must not affect the summary: %+v", got)
-	}
-}
-
-func TestSummarizeChecksQuizDeductionClampsToZero(t *testing.T) {
-	checks := append(quizBaseChecks(),
-		Evaluation{Kind: "juice", Status: "failed", Evidence: map[string]any{"hardAnomaly": true, "scorePenalty": 80}},
-		Evaluation{Kind: "custom_quiz", Status: "failed", Score: 0, MaxScore: 31, Evidence: map[string]any{"verdict": "fail"}},
-	)
-	got := SummarizeChecks(checks, false, "full")
-	if got.Score != 0 {
-		t.Fatalf("deduction must clamp at zero: score=%d", got.Score)
-	}
-	if got.Level != "suspicious" {
-		t.Fatalf("juice hard anomaly must keep the suspicious short-circuit: %+v", got)
 	}
 }
 
@@ -531,7 +518,7 @@ func TestSummarizeChecksQuizQuickLadderUsesDeductedScore(t *testing.T) {
 
 func TestSummarizeChecksIgnoresNestedPrefixQuizItems(t *testing.T) {
 	checks := append(quizBaseChecks(), Evaluation{Kind: "trusted_comparison.custom_quiz", Status: "failed", Score: 0, MaxScore: 31, Evidence: map[string]any{"verdict": "fail"}})
-	got := SummarizeChecks(checks, false, "full")
+	got := SummarizeChecks(checks, true, "full")
 	if got.Score != 100 || got.Level != "high_confidence" {
 		t.Fatalf("nested quiz items must not touch the main score: %+v", got)
 	}

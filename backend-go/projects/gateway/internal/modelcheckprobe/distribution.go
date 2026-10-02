@@ -280,10 +280,6 @@ func distributionComparableTokens(value string) map[distributionToken]struct{} {
 	return tokens
 }
 
-func EvaluateCrossModel(target, comparison Result, expectedModel string) Evaluation {
-	return EvaluateCrossModelPair(target, comparison, expectedModel, expectedModel)
-}
-
 func EvaluateCrossModelPair(target, comparison Result, targetExpectedModel, comparisonExpectedModel string) Evaluation {
 	if !target.Success || !comparison.Success {
 		evidence := map[string]any{"requestFailure": true, "excludedFromScoring": true}

@@ -424,8 +424,8 @@ func TestW11EModelMappingAndEvidenceArms(t *testing.T) {
 	// 证据聚合边臂（使用契约 family 名）。
 	items := []map[string]any{
 		{"kind": "behavior_probe", "status": "passed", "evidence": map[string]any{}},
-		{"kind": "juice", "status": "skipped", "evidence": map[string]any{"partial": true}},
-		{"kind": "identity_observation", "status": "passed", "evidence": map[string]any{"completedProbeCount": 1.0, "requiredProbeCount": 2.0}},
+		{"kind": "stability", "status": "skipped", "evidence": map[string]any{"partial": true}},
+		{"kind": "long_context", "status": "passed", "evidence": map[string]any{"completedProbeCount": 1.0, "requiredProbeCount": 2.0}},
 		{"kind": "token_integrity", "status": "passed", "evidence": map[string]any{}, "score": 15, "maxScore": 10},
 	}
 	aggregate := AggregateEvidence(items)

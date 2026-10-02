@@ -50,8 +50,8 @@ type ProtocolProfile struct {
 const (
 	DefaultModel            = "gpt-5.6-sol"
 	DefaultProfile          = "quick"
-	ProbeSetVersion         = "multi-provider-model-check-v4-gpt56-preview"
-	QuickProbeSetVersion    = "multi-provider-model-check-quick-v2-light-suite"
+	ProbeSetVersion         = "multi-provider-model-check-v5-universal"
+	QuickProbeSetVersion    = "multi-provider-model-check-quick-v3-universal"
 	DistributionSampleCount = 5
 )
 
@@ -65,12 +65,6 @@ var catalog = []ProtocolProfile{
 	{ID: "anthropic_messages_strong", Protocol: ProtocolAnthropic, ProtocolLabel: "Anthropic Messages", ProviderCode: "anthropic", ProviderProtocolProfileIDs: []string{"profile_anthropic_anthropic_v1"}, Models: []string{"claude-opus-5", "claude-opus-4-8"}, DefaultModel: "claude-opus-5"},
 	{ID: "gemini_native_strong", Protocol: ProtocolGeminiNative, ProtocolLabel: "Gemini native v1beta", ProviderCode: "gemini", ProviderProtocolProfileIDs: []string{"profile_gemini_native_v1beta"}, Models: []string{"gemini-3.5-flash", "gemini-3.1-pro-preview"}, DefaultModel: "gemini-3.5-flash"},
 	{ID: "openai_chat_strong", Protocol: ProtocolOpenAIChat, ProtocolLabel: "OpenAI Chat Completions", ProviderCode: "gemini", ProviderProtocolProfileIDs: []string{"profile_gemini_openai_chat_v1beta"}, Models: []string{"gemini-3.5-flash", "gemini-3.1-pro-preview"}, DefaultModel: "gemini-3.5-flash"},
-}
-
-var pairedModels = map[string]string{
-	"gpt-5.6-sol": "gpt-5.6-terra", "gpt-5.6-terra": "gpt-5.6-sol", "gpt-5.6-luna": "gpt-5.6-terra", "gpt-5.5": "gpt-5.4", "gpt-5.4": "gpt-5.5",
-	"claude-opus-5": "claude-opus-4-8", "claude-opus-4-8": "claude-opus-5", "glm-5.2": "glm-5.1", "glm-5.1": "glm-5.2",
-	"deepseek-flash": "deepseek-v4-pro", "deepseek-v4-flash": "deepseek-v4-pro", "deepseek-v4-pro": "deepseek-v4-flash", "gemini-3.5-flash": "gemini-3.1-pro-preview", "gemini-3.1-pro-preview": "gemini-3.5-flash",
 }
 
 func Profiles() []ProtocolProfile {
@@ -119,21 +113,6 @@ func SupportedModels() []string {
 		}
 	}
 	return result
-}
-func PairedModel(profile ProtocolProfile, model string) string {
-	if preferred, ok := pairedModels[model]; ok {
-		for _, candidate := range profile.Models {
-			if candidate == preferred {
-				return preferred
-			}
-		}
-	}
-	for _, candidate := range profile.Models {
-		if candidate != model {
-			return candidate
-		}
-	}
-	return ""
 }
 func SourceEndpointFamilies(profile ProtocolProfile) []EndpointFamily {
 	switch profile.Protocol {

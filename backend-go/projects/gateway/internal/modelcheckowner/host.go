@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckactive"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckprobe"
@@ -89,6 +90,10 @@ func OpenHost(ctx context.Context, cfg Config, deps HostDependencies) (*Host, er
 	}
 	if err := store.CheckSchema(ctx); err != nil {
 		return closeOnError(fmt.Errorf("verify J3b Gateway schema: %w", err))
+	}
+	// 启动期一次性收尾遗留 running run（原执行进程已丢失的 run，BUG-0265）。
+	if _, err := store.SweepStaleRuns(ctx, time.Now().UTC()); err != nil {
+		return closeOnError(fmt.Errorf("sweep stale J3b Gateway runs: %w", err))
 	}
 	store.HealthStatHour = deps.HealthStatHour
 	projector := &QualityProjector{Store: store, Enforcement: deps.Enforcement}

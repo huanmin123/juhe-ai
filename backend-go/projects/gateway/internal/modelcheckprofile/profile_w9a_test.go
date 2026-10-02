@@ -49,8 +49,8 @@ func TestW9AFrozenCatalogShape(t *testing.T) {
 	if DefaultModel != "gpt-5.6-sol" || DefaultProfile != "quick" || DistributionSampleCount != 5 {
 		t.Fatalf("frozen constants drifted: %q %q %d", DefaultModel, DefaultProfile, DistributionSampleCount)
 	}
-	if ProbeSetVersion == "" || QuickProbeSetVersion == "" {
-		t.Fatal("probe set versions must not be empty")
+	if ProbeSetVersion != "multi-provider-model-check-v5-universal" || QuickProbeSetVersion != "multi-provider-model-check-quick-v3-universal" {
+		t.Fatalf("probe set versions drifted: %q %q", ProbeSetVersion, QuickProbeSetVersion)
 	}
 }
 
@@ -131,31 +131,6 @@ func TestW9ASupportedModels(t *testing.T) {
 	}
 	if !seen[DefaultModel] {
 		t.Fatalf("default model %s missing from SupportedModels", DefaultModel)
-	}
-}
-
-func TestW9APairedModel(t *testing.T) {
-	gptProfile, ok := Find("gpt", "profile_gpt_openai_v1")
-	if !ok {
-		t.Fatal("gpt profile missing")
-	}
-	if got := PairedModel(gptProfile, "gpt-5.6-sol"); got != "gpt-5.6-terra" {
-		t.Fatalf("paired model = %q, want gpt-5.6-terra", got)
-	}
-	// Paired entry exists globally but is not part of this profile: fall
-	// through to the first different candidate.
-	narrow := ProtocolProfile{Models: []string{"gpt-5.6-sol", "gpt-5.4"}}
-	if got := PairedModel(narrow, "gpt-5.6-sol"); got != "gpt-5.4" {
-		t.Fatalf("pair outside profile = %q, want gpt-5.4", got)
-	}
-	// No global pair: first different candidate.
-	if got := PairedModel(narrow, "unknown-model"); got != "gpt-5.6-sol" {
-		t.Fatalf("unpaired model = %q, want gpt-5.6-sol", got)
-	}
-	// Profile contains only the model itself: empty result.
-	single := ProtocolProfile{Models: []string{"only-model"}}
-	if got := PairedModel(single, "only-model"); got != "" {
-		t.Fatalf("single-model profile pair = %q, want empty", got)
 	}
 }
 

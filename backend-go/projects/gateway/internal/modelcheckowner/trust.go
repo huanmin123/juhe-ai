@@ -83,21 +83,10 @@ func BuildTrustReport(aggregate EvidenceAggregate, items []map[string]any) Trust
 				}
 			}
 		}
-		if kind == "juice" {
-			anomaly, _ := item["hardAnomaly"].(bool)
-			if !anomaly {
-				anomaly, _ = evidence["hardAnomaly"].(bool)
-			}
-			if anomaly {
-				report.HardAnomaly = true
-				report.IdentityStatus = "suspected_downgrade"
-				// Keep the historical reason code for API/report compatibility;
-				// the more precise code is additive.
-				report.ReasonCodes = appendReason(report.ReasonCodes, "gpt56_juice_anomaly")
-				report.ReasonCodes = appendReason(report.ReasonCodes, "gpt56_juice_mixed_or_replaced")
-			}
-		}
-		if strings.Contains(kind, "cross_model") && (status == "failed" || evidenceBool(evidence, "modelMismatch")) {
+		// The self cross-model pair retired with the universal suite (v5); the
+		// gate survives through the trusted-comparison chain, whose comparison
+		// item maps back to the canonical cross_model evidence family.
+		if strings.Contains(canonicalEvidenceFamily(kind), "cross_model") && (status == "failed" || evidenceBool(evidence, "modelMismatch")) {
 			report.ReasonCodes = appendReason(report.ReasonCodes, "cross_model_mismatch")
 		}
 		if kind == "token_integrity" && (status == "failed" || evidenceString(evidence, "reasonCodes", "proportional_padding")) {

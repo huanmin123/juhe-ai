@@ -46,7 +46,7 @@ func TestAggregateEvidenceRejectsIncompleteReceiptsAndDuplicates(t *testing.T) {
 	items[0]["evidence"] = map[string]any{"partial": true}
 	items = append(items, map[string]any{"kind": "stability", "status": "passed", "score": 10, "maxScore": 10, "evidence": map[string]any{}})
 	aggregate := AggregateEvidence(items)
-	if aggregate.Formed || aggregate.TrustFormed || len(aggregate.Invalid) != 1 || aggregate.Invalid[0] != "identity_observation" {
+	if aggregate.Formed || aggregate.TrustFormed || len(aggregate.Invalid) != 1 || aggregate.Invalid[0] != requiredEvidenceFamilies[0] {
 		t.Fatalf("incomplete or duplicate receipts must fail closed: %+v", aggregate)
 	}
 }
@@ -66,18 +66,14 @@ func TestAggregateEvidenceAllowsScopedNeutralExclusions(t *testing.T) {
 	items := make([]map[string]any, 0, len(requiredEvidenceFamilies))
 	for _, family := range requiredEvidenceFamilies {
 		item := map[string]any{"kind": family, "status": "passed", "score": 10, "maxScore": 10, "evidence": map[string]any{}}
-		switch family {
-		case "juice":
-			item["status"] = "skipped"
-			item["evidence"] = map[string]any{"excludedFromScoring": true, "notApplicable": true, "reason": "juice_scope_not_applicable"}
-		case "distribution":
+		if family == "distribution" {
 			item["status"] = "skipped"
 			item["evidence"] = map[string]any{"excludedFromScoring": true, "reason": "trusted_comparison_not_attached"}
 		}
 		items = append(items, item)
 	}
 	aggregate := AggregateEvidence(items)
-	if !aggregate.Formed || !aggregate.TrustFormed || aggregate.TrustScore != 1 || len(aggregate.Neutral) != 2 || len(aggregate.Invalid) != 0 {
+	if !aggregate.Formed || !aggregate.TrustFormed || aggregate.TrustScore != 1 || len(aggregate.Neutral) != 1 || len(aggregate.Invalid) != 0 {
 		t.Fatalf("scoped neutral exclusions should be formed: %+v", aggregate)
 	}
 }

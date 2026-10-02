@@ -181,7 +181,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 		t.Fatalf("request snapshot=%s err=%v", requestSummary, err)
 	}
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 6 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 5 {
 		t.Fatalf("item count=%d err=%v", count, err)
 	}
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 0 {
@@ -262,7 +262,7 @@ func TestRuntimeWritesQualityDecisionV2Fields(t *testing.T) {
 		},
 		Projector: &QualityProjector{Store: store, Enforcement: enforcement},
 	}
-	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ProviderCode: "openai", Threshold: 70, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	result, err := runtime.Run(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ProviderCode: "openai", Threshold: 80, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
 	if err != nil || result.Status != string(RunCompleted) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -294,7 +294,7 @@ func TestRuntimeWritesQualityDecisionV2Fields(t *testing.T) {
 	if score, ok := fields["score"].(float64); !ok || score < 0 || score > 100 {
 		t.Fatalf("decision score=%v", fields["score"])
 	}
-	if threshold, ok := fields["threshold"].(float64); !ok || threshold != 70 {
+	if threshold, ok := fields["threshold"].(float64); !ok || threshold != 80 {
 		t.Fatalf("decision threshold=%v", fields["threshold"])
 	}
 	// 投影增补字段：低分触发处罚并同步健康事实。
@@ -482,25 +482,23 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	mu.Lock()
-	if len(models) != 4 {
+	if len(models) != 3 {
 		mu.Unlock()
 		t.Fatalf("terminal quick suite probe calls=%d models=%v", len(models), models)
 	}
-	resolvedCount, pairedCount := 0, 0
+	resolvedCount := 0
 	for _, model := range models {
 		switch model {
 		case "gpt-5.6-terra":
 			resolvedCount++
-		case "gpt-5.6-sol":
-			pairedCount++
 		default:
 			mu.Unlock()
 			t.Fatalf("probe used unexpected model %q", model)
 		}
 	}
-	if resolvedCount != 3 || pairedCount != 1 {
+	if resolvedCount != 3 {
 		mu.Unlock()
-		t.Fatalf("probe model distribution resolved=%d paired=%d models=%v", resolvedCount, pairedCount, models)
+		t.Fatalf("probe model distribution resolved=%d models=%v", resolvedCount, models)
 	}
 	mu.Unlock()
 	var requestSummary string
@@ -589,7 +587,7 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 		t.Fatalf("trusted comparison durable state enabled=%d available=%d err=%v", trustedComparisonEnabled, trustedComparisonAvailable, err)
 	}
 	var observations int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations < 12 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&observations); err != nil || observations < 10 {
 		t.Fatalf("observations=%d err=%v", observations, err)
 	}
 	var trusted int
@@ -621,6 +619,105 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 	}
 	if latestProtocol != report.ProtocolStatus || latestIdentity != report.IdentityStatus || latestCoverage != report.EvidenceCoverage {
 		t.Fatalf("full run trust/latest drift report=%+v latest=(protocol=%q identity=%q coverage=%d)", report, latestProtocol, latestIdentity, latestCoverage)
+	}
+}
+
+// TestRuntimeFullRunFormsUniversalEvidenceBothWays 验证通用套件 v5（退役
+// juice/astra/identity/自配 cross_model 后）的 full 档证据形成：
+//   - 非信任路径：6 族通用证据表中 distribution 以 trusted_comparison_not_attached
+//     中性跳过，其余族形成完整回执 → evidenceFormed/trustFormed 均为真；
+//   - 信任路径：distribution_similarity/comparison 项映射回通用族 → 同样形成；
+//   - 形成证据的质量失败（长上下文失败驱动 suspicious）不再被健康投影门阻断，
+//     健康事实与处罚结果正常落地（health.go 投影门随族表收敛）。
+func TestRuntimeFullRunFormsUniversalEvidenceBothWays(t *testing.T) {
+	store := newRuntimeTestStore(t)
+	defer store.Close()
+	statHour, err := NewHealthStatHourFunc("UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.HealthStatHour = statHour
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		text := string(body)
+		var request struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &request)
+		model := request.Model
+		if model == "" {
+			model = "gpt-5.6-sol"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		output := "OK-MODEL-CHECK"
+		usage := `{"input_tokens":10,"total_tokens":11}`
+		switch {
+		case strings.Contains(text, "Controlled token integrity probe"):
+			output = "OK"
+			local := strings.Count(text, " x") + 1
+			usage = fmt.Sprintf(`{"input_tokens":%d,"total_tokens":%d}`, local, local+1)
+		case strings.Contains(text, "record_model_check"):
+			_, _ = w.Write([]byte(`{"model":"` + model + `","output":[{"type":"function_call","name":"record_model_check","arguments":"{\"code\":\"ok\",\"count\":1}"}],"usage":{"total_tokens":2}}`))
+			return
+		case strings.Contains(text, "status"):
+			output = `{"status":"ok","value":7}`
+		}
+		_, _ = w.Write([]byte(`{"model":"` + model + `","output_text":"` + output + `","usage":` + usage + `}`))
+	}))
+	defer server.Close()
+	now := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)
+	enforcement := &countingEnforcement{}
+	runtime := &Runtime{
+		Store:       store,
+		OwnerID:     "gateway-universal",
+		Tokenizer:   runtimeTestTokenizer{},
+		ModelLimits: runtimeTestModelLimits{},
+		Projector:   &QualityProjector{Store: store, Enforcement: enforcement},
+		Now:         func() time.Time { return now },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-sol", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", CredentialType: "api_key", ConfigRevision: "cfg-1", DispatchRevision: 3, SourceConfigRevision: "src-1", SourceDispatchRevision: 4}, nil
+		},
+		ResolveComparison: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", UpstreamModel: "gpt-5.6-terra", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai_openai_v1", CredentialType: "api_key", ConfigRevision: "cfg-2", DispatchRevision: 4, SourceConfigRevision: "src-2", SourceDispatchRevision: 5}, nil
+		},
+	}
+	assertFormedQualityFailure := func(t *testing.T, request RunRequest) {
+		t.Helper()
+		result, err := runtime.Run(context.Background(), request)
+		if err != nil || result.Status != string(RunCompleted) {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		data, ok := result.Data.(map[string]any)
+		if !ok {
+			t.Fatalf("result data=%T", result.Data)
+		}
+		if formed, ok := data["evidenceFormed"].(bool); !ok || !formed {
+			t.Fatalf("full run evidenceFormed=%v missing=%v", data["evidenceFormed"], data["missingFamilies"])
+		}
+		if trusted, ok := data["trustFormed"].(bool); !ok || !trusted {
+			t.Fatalf("full run trustFormed=%v", data["trustFormed"])
+		}
+		if missing, ok := data["missingFamilies"].([]string); ok && len(missing) != 0 {
+			t.Fatalf("full run missingFamilies=%v", missing)
+		}
+		if level := data["level"]; level != "suspicious" {
+			t.Fatalf("long-context failure must stay score-driven suspicious: %v", level)
+		}
+	}
+	// 非信任 full：通用 6 族形成 + 质量失败健康投影。
+	assertFormedQualityFailure(t, RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ProviderCode: "openai", Threshold: 70, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
+	// 信任 full：distribution_similarity/comparison 映射回通用族后同样形成。
+	assertFormedQualityFailure(t, RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ProviderCode: "openai", Threshold: 70, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "acct-2", TrustedComparisonSystemAccountID: "sys", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 4, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 5})
+	if enforcement.calls != 2 {
+		t.Fatalf("formed quality failures must reach the enforcement adapter: calls=%d", enforcement.calls)
+	}
+	var facts int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM account_quality_health_hourly WHERE account_id='acct'`).Scan(&facts); err != nil || facts != 1 {
+		t.Fatalf("health facts=%d err=%v", facts, err)
+	}
+	var latest int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6-sol'`).Scan(&latest); err != nil || latest != 1 {
+		t.Fatalf("full trust latest rows=%d err=%v", latest, err)
 	}
 }
 
@@ -752,7 +849,7 @@ func TestAppendEvaluationObservationsPersistsFamilyRowsWithoutEvidencePayload(t 
 	now := time.Date(2026, 8, 28, 1, 2, 3, 0, time.UTC)
 	evaluations := []modelcheckprobe.Evaluation{
 		{Kind: "token_integrity", Status: "skipped", Evidence: map[string]any{"secret": "must-not-persist"}},
-		{Kind: "identity_observation", Status: "mystery", Evidence: map[string]any{"raw": "must-not-persist"}},
+		{Kind: "behavior_probe", Status: "mystery", Evidence: map[string]any{"raw": "must-not-persist"}},
 		{Kind: "stability", Status: "passed", Evidence: map[string]any{"response": "must-not-persist"}},
 	}
 	if err := appendEvaluationObservations(context.Background(), store, "run-family", "sys", "acct", "openai", "requested", "mapped", "mapped", "passed", "unknown", 2, evaluations, now); err != nil {
@@ -781,7 +878,7 @@ func TestAppendEvaluationObservationsPersistsFamilyRowsWithoutEvidencePayload(t 
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got[0][0] != "token_integrity" || got[0][1] != "partial" || got[1][0] != "identity_observation" || got[1][1] != "partial" || got[2][0] != "stability" || got[2][1] != "complete" {
+	if len(got) != 3 || got[0][0] != "token_integrity" || got[0][1] != "partial" || got[1][0] != "behavior_probe" || got[1][1] != "partial" || got[2][0] != "stability" || got[2][1] != "complete" {
 		t.Fatalf("family observations=%v", got)
 	}
 }

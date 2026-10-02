@@ -243,13 +243,11 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 		payloadSnapshot["trustedComparison"] = map[string]any{"accountId": request.TrustedComparisonAccountID, "systemAccountId": request.TrustedComparisonSystemAccountID, "configRevision": request.TrustedComparisonConfigRevision, "dispatchRevision": request.TrustedComparisonDispatchRevision, "sourceConfigRevision": request.TrustedComparisonSourceConfigRevision, "sourceDispatchRevision": request.TrustedComparisonSourceDispatchRevision, "upstreamModel": comparisonTarget.UpstreamModel, "protocol": comparisonTarget.Protocol, "providerProtocolProfileId": comparisonTarget.ProviderProtocolProfileID, "sourceEndpointFamily": comparisonTarget.SourceEndpointFamily, "upstreamProtocol": comparisonTarget.UpstreamProtocol, "upstreamEndpointFamily": comparisonTarget.UpstreamEndpointFamily, "upstreamAdapter": comparisonTarget.UpstreamAdapter, "endpointFingerprint": endpointFingerprint(comparisonTarget.Endpoint)}
 	}
 	// Catalog-external targets (account-supported models) run the
-	// protocol-consistency probe subset only: brand-specific hidden probes
-	// (juice/astra), the cross-model pair and the GPT-tokenizer
-	// token-integrity baseline skip them with excludedFromScoring evidence
-	// inside modelcheckprobe; the identity canaries stay generic and still
-	// apply. The durable request snapshot and report carry an explicit
-	// detectionScope so the report source stays honest; catalog models never
-	// gain the key and keep their byte shape.
+	// protocol-consistency probe subset only: the cross-account comparison
+	// evidence and the GPT-tokenizer token-integrity baseline skip them with
+	// excludedFromScoring evidence inside modelcheckprobe. The durable request
+	// snapshot and report carry an explicit detectionScope so the report source
+	// stays honest; catalog models never gain the key and keep their byte shape.
 	detectionScope := ""
 	if _, modelInCatalog := modelcheckprofile.FindForModel(target.ProviderCode, target.ProviderProtocolProfileID, request.Model); !modelInCatalog {
 		detectionScope = "protocol_consistency"
@@ -439,7 +437,7 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	evidenceItems := make([]map[string]any, 0, len(items))
 	for _, evaluation := range items {
 		// Keep the evaluator's bounded, credential-free evidence available to
-		// the trust projector. Dropping it here would make Juice/token/identity
+		// the trust projector. Dropping it here would make token or comparison
 		// anomalies indistinguishable from a successful receipt and would force
 		// downstream code to infer trust from score alone.
 		evidenceItems = append(evidenceItems, map[string]any{
@@ -492,10 +490,9 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	}
 	qualityUnavailable := level == "unavailable"
 	// Node's hard gate is narrower than the run-level suspicious label: a
-	// quality anomaly (for example a single Juice or long-context failure)
-	// remains score-driven until it is independently confirmed. Only an
-	// explicit, non-empty response model conflict bypasses the threshold here;
-	// repeated Juice evidence is not available in this in-process projection.
+	// quality anomaly (for example a long-context failure) remains score-driven
+	// until it is independently confirmed. Only an explicit, non-empty response
+	// model conflict bypasses the threshold here.
 	hardQualityFailure := mappingStatus == "undeclared_mismatch"
 	qualityFailed := status == RunCompleted && !qualityUnavailable && (score < request.Threshold || hardQualityFailure)
 	// Recovery validates whether an existing isolation can be cleared; it must
@@ -670,9 +667,9 @@ func hasUndeclaredResponseModelMismatch(items []map[string]any) bool {
 			continue
 		}
 		switch modelcheckprobe.UnscopedKindForOwner(kind) {
-		case "cross_model", "comparison", "distribution", "distribution_similarity":
+		case "comparison", "distribution", "distribution_similarity":
 			// Node's hard mapping gate uses target response evidence only. A
-			// paired/self comparison is supporting diagnostic evidence, never a
+			// trusted comparison is supporting diagnostic evidence, never a
 			// configured-model mapping decision.
 			continue
 		}

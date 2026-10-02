@@ -44,9 +44,10 @@
               <a-form-item label="检查模型" name="model" :rules="[{ required: true, message: '请选择检查模型' }]">
                 <a-select
                   v-model:value="form.model"
+                  :disabled="!form.accountId.trim()"
                   :loading="accountOptionsLoading"
                   :options="selectedModelOptions"
-                  placeholder="请选择模型"
+                  :placeholder="form.accountId.trim() ? '请选择模型' : '请先选择检查账户'"
                   @dropdown-visible-change="emit('model-dropdown-visible-change', $event, form.accountId)"
                 />
               </a-form-item>

@@ -14,15 +14,11 @@ package modelcheckprobe
 //     （parseSSEResponseEvents 只收非空 JSON 载荷）与其 json.Marshal 错误臂；
 //   - probe.go normalizeOpenAIOAuthCodexRequest 内 codexUUID /
 //     mustHeaderUUID / json.Marshal 的错误臂（crypto/rand 不失败）；
-//   - token.go randomTokenNonce、juice.go randomJuiceNonce /
-//     randomJuiceCoverage / buildJuiceRequest、identity.go rand.Read 的
-//     crypto/rand 与序列化错误臂；
-//   - juice.go randomJuiceCoverage 的 32 次全签名碰撞臂（概率 ~1e-29）；
+//   - token.go randomTokenNonce 的 crypto/rand 错误臂；
 //   - retry.go ExecuteWithRetry 循环自然退出臂（末次尝试必在循环内返回）；
 //   - suite.go probeMode 之后的 tunedBasic / buildStructured / buildTool /
-//     RunSelfCrossModel / RunTrustedComparison 内部构建错误臂（协议与模式在
-//     probeMode 已通过校验，同参数构建不会再失败）；
-//   - suite.go RunSelfCrossModel 的 probeMode 二次错误臂（同一输入已通过）；
+//     RunTrustedComparison 内部构建错误臂（协议与模式在 probeMode 已通过
+//     校验，同参数构建不会再失败）；
 //   - distribution.go EvaluateDistribution 的 `score < 0` / `score > 15` 收敛臂
 //     （加权分量均非负且权重和为 1）。
 
@@ -104,11 +100,6 @@ func TestW14fSuiteHelperArms(t *testing.T) {
 	codex := Suite{Adapter: AdapterOpenAIOAuthCodex, Protocol: modelcheckprofile.ProtocolOpenAIResponses}
 	if request, err := codex.tunedBasic("w14f-m", "w14f-p", "responses_json", false, 16, 0); err != nil || request.Path != "/responses" {
 		t.Fatalf("codex tunedBasic: %+v %v", request, err)
-	}
-	// SupportedModels 限定下 pairedModel 取第一个异于主模型的候选（515）。
-	paired := Suite{Model: "gpt-5.6-sol", SupportedModels: []string{"gpt-5.6-sol", "gpt-5.6-terra"}}.pairedModel()
-	if paired != "gpt-5.6-terra" {
-		t.Fatalf("pairedModel = %q", paired)
 	}
 }
 
@@ -380,63 +371,9 @@ func TestW14fBehaviorArms(t *testing.T) {
 	}
 }
 
-func TestW14fIdentityArms(t *testing.T) {
-	ctx := context.Background()
-	responses := modelcheckprofile.ProtocolOpenAIResponses
-	// 模式不匹配（64）。
-	if _, err := RunIdentityForModels(ctx, responses, "w14f-m", nil, w14fBehaviorRun(nil, false), "chat_json"); err == nil {
-		t.Fatalf("模式不匹配应报错")
-	}
-	// 6/7 通过 → warning（87）。
-	identityRun := func(_ context.Context, request Request) (Result, error) {
-		var payload struct {
-			Input string `json:"input"`
-		}
-		_ = json.Unmarshal(request.Body, &payload)
-		tagStart := strings.Index(payload.Input, "CANARY-")
-		tag := "CANARY-XXXXXX"
-		if tagStart >= 0 {
-			tag = strings.TrimSpace(payload.Input[tagStart : tagStart+13])
-		}
-		output := "not-json"
-		switch {
-		case strings.Contains(payload.Input, "23 + 19"):
-			output = `{"result":42,"tag":"` + tag + `"}`
-		case strings.Contains(payload.Input, "filter"):
-			output = "wrong"
-		case strings.Contains(payload.Input, "第二大值"):
-			output = `{"largest":15,"tag":"` + tag + `"}`
-		case strings.Contains(payload.Input, "43"):
-			output = `{"correct":42,"tag":"` + tag + `"}`
-		case strings.Contains(payload.Input, "queue timeout"):
-			output = `{"zh":"队列超时","en":"queue timeout","tag":"` + tag + `"}`
-		case strings.Contains(payload.Input, "inspect"):
-			output = `{"action":"inspect","payload":{"ids":[2,7,9],"dryRun":true},"tag":"` + tag + `"}`
-		case strings.Contains(payload.Input, "2024-10"):
-			output = `{"version":"B","tag":"` + tag + `"}`
-		}
-		return Result{Success: true, HTTPStatus: 200, ObservedModel: request.ExpectedModel, Output: output}, nil
-	}
-	item, err := RunIdentityForModels(ctx, responses, "w14f-m", []string{"w14f-m"}, identityRun)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if item.Status != "warning" {
-		t.Fatalf("6/7 通过应为 warning: %+v", item)
-	}
-}
-
 // ---- summary 阶梯臂 ----
 
 func TestW14fSummaryArms(t *testing.T) {
-	// juice 大额罚分把分数压到负数 → 收敛 0（44）。
-	penalized := SummarizeChecks([]Evaluation{
-		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
-		{Kind: "juice", Status: "passed", Score: 0, MaxScore: 0, Evidence: map[string]any{"scorePenalty": 150}},
-	}, false, "full")
-	if penalized.Score != 0 {
-		t.Fatalf("罚分后分数应收敛 0: %+v", penalized)
-	}
 	// stability skipped → uncertain（75）。
 	uncertain := SummarizeChecks([]Evaluation{
 		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
@@ -576,14 +513,10 @@ func TestW14fSuiteStageFailures(t *testing.T) {
 		{"structured error", "quick", nil, func(text string) bool { return strings.Contains(text, "json_schema") }, "retry timeout must be positive"},
 		{"tool error", "quick", nil, func(text string) bool { return strings.Contains(text, "record_model_check") }, "retry timeout must be positive"},
 		{"quick token error", "quick", nil, func(text string) bool { return strings.Contains(text, "token-integrity-v1") }, "retry timeout must be positive"},
-		{"quick cross error", "quick", nil, func(text string) bool { return strings.Contains(text, "CROSS-MODEL-OK") }, "retry timeout must be positive"},
 		{"full behavior error", "full", nil, func(text string) bool { return strings.Contains(text, "OMEGA") }, "retry timeout must be positive"},
 		{"full long error", "full", nil, func(text string) bool { return strings.Contains(text, "NEEDLE") }, "retry timeout must be positive"},
 		{"full stability error", "full", nil, func(text string) bool { return strings.Contains(text, "VECTOR") }, "retry timeout must be positive"},
 		{"full token error", "full", nil, func(text string) bool { return strings.Contains(text, "token-integrity-v1") }, "retry timeout must be positive"},
-		{"full identity error", "full", nil, func(text string) bool { return strings.Contains(text, "CANARY") }, "retry timeout must be positive"},
-		{"full juice error", "full", nil, func(text string) bool { return strings.Contains(text, "Valid Channels") }, "retry timeout must be positive"},
-		{"full cross error", "full", nil, func(text string) bool { return strings.Contains(text, "CROSS-MODEL-OK") }, "retry timeout must be positive"},
 		{"basic url error", "quick", func(s *Suite) { s.Endpoint = "://w14f-bad" }, nil, "endpoint URL is invalid"},
 	}
 	for _, item := range cases {
@@ -637,36 +570,39 @@ func TestW14fSuiteTerminalFamilyArms(t *testing.T) {
 		t.Fatalf("long context 终局项缺失: %+v", items)
 	}
 
-	// full profile：identity 终局（500）→ 提前返回。
-	identityTransport := &w14fStageTransport{statusMRkr: func(text string) bool { return strings.Contains(text, "CANARY") }}
-	items, err = w14fRunSuite(t, w14fStageSuite(t, identityTransport, "full", nil))
+	// full profile：stability 终局（500）→ 提前返回并保留终局证据。
+	stabilityTransport := &w14fStageTransport{statusMRkr: func(text string) bool { return strings.Contains(text, "VECTOR") }}
+	items, err = w14fRunSuite(t, w14fStageSuite(t, stabilityTransport, "full", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	foundIdentity := false
+	foundStability := false
 	for _, item := range items {
-		if item.Kind == "identity_observation" {
-			foundIdentity = true
+		if item.Kind == "stability" {
+			foundStability = true
+			if item.Status != "skipped" || item.Evidence["terminalFailure"] != true {
+				t.Fatalf("stability 终局证据=%+v", item)
+			}
 		}
 	}
-	if !foundIdentity {
-		t.Fatalf("identity 终局项缺失: %+v", items)
+	if !foundStability {
+		t.Fatalf("stability 终局项缺失: %+v", items)
 	}
 
-	// basic 200 错误信封 → 非终局失败，full 流程 cross_model 走 skipped 臂（284）。
+	// basic 200 错误信封 → 非终局失败，full 流程仍以 usage 收尾且无对照证据。
 	envelopeTransport := &w14fStageTransport{envelopeMRk: func(text string) bool { return strings.Contains(text, "OK-MODEL-CHECK") }}
 	items, err = w14fRunSuite(t, w14fStageSuite(t, envelopeTransport, "full", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	crossSkipped := false
+	foundUsageTail := false
 	for _, item := range items {
-		if item.Kind == "cross_model" && item.Status == "skipped" {
-			crossSkipped = true
+		if item.Kind == "usage_shape" {
+			foundUsageTail = true
 		}
 	}
-	if !crossSkipped {
-		t.Fatalf("basic 失败时 cross_model 应 skipped: %+v", items)
+	if !foundUsageTail {
+		t.Fatalf("basic 失败时 run 仍应保留 usage 收尾项: %+v", items)
 	}
 }
 
@@ -721,9 +657,9 @@ func TestW14fRunTrustedComparisonArms(t *testing.T) {
 		t.Fatalf("target basic 失败应报错")
 	}
 
-	// comparison cross 请求失败（745）：对比端内部套件先用掉第 1 次 CROSS 请求，
-	// RunTrustedComparison 744 行的对比 basic 是第 2 次 → 从第 2 次起 500 +
-	// 重试边界报错。
+	// comparison cross 请求失败（745）：嵌套对比套件不再发出自配 cross 请求，
+	// RunTrustedComparison 的对比 basic（CROSS-MODEL-OK）即第一次 cross 请求 →
+	// 从第 1 次起 500 + 重试边界报错。
 	comparisonCrossFail := newSuite(&w14fStageTransport{crossFailFrom: 1}, "w14f-terra")
 	comparisonCrossFail.Profile = "full"
 	comparisonCrossFail.Retry = RetryOptions{AttemptTimeouts: []time.Duration{time.Second, 0}}

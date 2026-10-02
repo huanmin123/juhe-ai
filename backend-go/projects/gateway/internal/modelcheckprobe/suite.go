@@ -165,13 +165,6 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		} else {
 			items = append(items, scopeEvaluation(input.Prefix, catalogScopeSkip("token_integrity", reason)))
 		}
-		if results[0].Success {
-			crossModel, crossErr := RunSelfCrossModel(ctx, input, results[0], timeout)
-			if crossErr != nil {
-				return nil, crossErr
-			}
-			items = append(items, scopeEvaluation(input.Prefix, crossModel))
-		}
 		if input.Comparison != nil {
 			// Node forms the trusted aggregate from the complete quick target
 			// suite, including usage-shape evidence. Keep that evidence in the
@@ -253,72 +246,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		} else {
 			items = append(items, scopeEvaluation(input.Prefix, catalogScopeSkip("token_integrity", reason)))
 		}
-		if input.supportsTokenIdentityProbes() {
-			identityRun, identityTerminal := input.familyRunner(timeout)
-			identity, identityErr := RunIdentityForModels(ctx, input.UpstreamProtocol, input.Model, input.identityModels(), identityRun, upstreamMode)
-			if identityErr != nil {
-				return nil, identityErr
-			}
-			if identityTerminal() {
-				identity = terminalFamilyEvaluation(identity)
-			}
-			items = append(items, scopeEvaluation(input.Prefix, identity))
-			if identityTerminal() {
-				return append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results))), nil
-			}
-		} else {
-			items = append(items, scopeEvaluation(input.Prefix, protocolScopedSkip("identity_observation")))
-		}
-		if ShouldRunJuice(input.Model, input.Profile, string(input.UpstreamProtocol)) {
-			juiceResults := make([]Result, 0, 6)
-			juiceRequests, coverage, juiceErr := JuiceRequestsForStream(input.Model, stream)
-			if juiceErr != nil {
-				return nil, juiceErr
-			}
-			for _, request := range juiceRequests {
-				result, executeErr := input.execute(ctx, request, timeout)
-				if executeErr != nil {
-					return nil, executeErr
-				}
-				juiceResults = append(juiceResults, result)
-				if isTerminalProbeFailure(result) {
-					break
-				}
-			}
-			items = append(items, scopeEvaluation(input.Prefix, EvaluateJuice(input.Model, juiceResults, coverage)))
-		} else {
-			items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "juice", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "notApplicable": true, "reason": "juice_scope_not_applicable"}}))
-		}
-		if ShouldRunAstraConstants(input.Model, input.Profile, string(input.UpstreamProtocol)) {
-			astraResults := make([]Result, 0, 4)
-			astraRequests, astraCoverage, astraErr := AstraConstantsRequestsForStream(input.Model, stream)
-			if astraErr != nil {
-				return nil, astraErr
-			}
-			for _, request := range astraRequests {
-				result, executeErr := input.execute(ctx, request, timeout)
-				if executeErr != nil {
-					return nil, executeErr
-				}
-				astraResults = append(astraResults, result)
-				if isTerminalProbeFailure(result) {
-					break
-				}
-			}
-			items = append(items, scopeEvaluation(input.Prefix, EvaluateAstraConstants(input.Model, astraResults, astraCoverage)))
-		} else {
-			items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "astra_constants", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "notApplicable": true, "reason": "astra_constants_scope_not_applicable"}}))
-		}
 		if input.Comparison == nil {
-			if results[0].Success {
-				crossModel, crossErr := RunSelfCrossModel(ctx, input, results[0], timeout)
-				if crossErr != nil {
-					return nil, crossErr
-				}
-				items = append(items, scopeEvaluation(input.Prefix, crossModel))
-			} else {
-				items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "target_basic_probe_failed"}}))
-			}
 			items = append(items, scopeEvaluation(input.Prefix, Evaluation{Kind: "distribution", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "trusted_comparison_not_attached"}}))
 		} else {
 			comparison, comparisonErr := RunTrustedComparison(ctx, input, *input.Comparison, timeout)
@@ -426,8 +354,7 @@ func evaluationBool(item *Evaluation, key string) bool {
 
 func quickQualityScore(items []Evaluation) (score, maxScore int) {
 	for _, item := range items {
-		kind := unscopedKind(item.Kind)
-		if item.MaxScore <= 0 || (item.Status == "skipped" && kind == "cross_model") {
+		if item.MaxScore <= 0 || item.Status == "skipped" {
 			continue
 		}
 		score += item.Score
@@ -438,46 +365,11 @@ func quickQualityScore(items []Evaluation) (score, maxScore int) {
 
 func quickQualitySkipped(items []Evaluation) bool {
 	for _, item := range items {
-		if item.MaxScore > 0 && item.Status == "skipped" && unscopedKind(item.Kind) != "cross_model" {
+		if item.MaxScore > 0 && item.Status == "skipped" {
 			return true
 		}
 	}
 	return false
-}
-
-// RunSelfCrossModel mirrors Node's non-trusted full check: the paired model is
-// sent to the same resolved endpoint, then compared using only response
-// metadata. Distribution similarity remains reserved for a trusted account.
-func RunSelfCrossModel(ctx context.Context, input Suite, targetBasic Result, timeout time.Duration) (Evaluation, error) {
-	_, stream, err := input.probeMode()
-	if err != nil {
-		return Evaluation{}, err
-	}
-	upstreamProtocol := input.UpstreamProtocol
-	if upstreamProtocol == "" {
-		upstreamProtocol = input.Protocol
-	}
-	upstreamMode := strings.TrimSpace(input.UpstreamEndpointMode)
-	if upstreamMode == "" {
-		upstreamMode = modelcheckprofile.EndpointModeForProtocol(upstreamProtocol, stream)
-	}
-	pairedModel := input.pairedModel()
-	if pairedModel == "" {
-		return Evaluation{Kind: "cross_model", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "no_paired_model"}}, nil
-	}
-	request, err := input.tunedBasic(pairedModel, "Reply with exactly: CROSS-MODEL-OK", upstreamMode, stream, 16, 0)
-	if err != nil {
-		return Evaluation{}, err
-	}
-	paired, err := input.execute(ctx, request, timeout)
-	if err != nil {
-		return Evaluation{}, err
-	}
-	return EvaluateCrossModelPair(targetBasic, paired, input.Model, pairedModel), nil
-}
-
-func (s Suite) identityModels() []string {
-	return allowedFamilyModels(s.Model, s.SupportedModels)
 }
 
 // tokenIdentitySkipReason decides whether the token-integrity family may run.
@@ -510,7 +402,7 @@ func protocolScopedSkip(kind string) Evaluation {
 
 // catalogScopeSkip records a family that cannot produce comparable evidence
 // for this target. The item stays out of the score denominator, matching the
-// cross_model/long_context skip precedent.
+// long_context skip precedent.
 func catalogScopeSkip(kind, reason string) Evaluation {
 	return Evaluation{Kind: kind, Status: "skipped", Evidence: map[string]any{
 		"evidenceInsufficient": true,
@@ -569,42 +461,6 @@ func terminalFamilyEvaluation(item Evaluation) Evaluation {
 	}
 	item.Evidence = evidence
 	return item
-}
-
-func (s Suite) pairedModel() string {
-	preferred := modelcheckprofile.PairedModel(s.ProfileForModel(), s.Model)
-	if len(s.SupportedModels) == 0 {
-		return preferred
-	}
-	for _, candidate := range allowedFamilyModels(s.Model, s.SupportedModels) {
-		if candidate != s.Model {
-			return candidate
-		}
-	}
-	return ""
-}
-
-func allowedFamilyModels(model string, supported []string) []string {
-	candidates := pairedIdentityModels(model)
-	if len(supported) == 0 {
-		return candidates
-	}
-	allowed := make(map[string]struct{}, len(supported))
-	for _, candidate := range supported {
-		if candidate = strings.TrimSpace(candidate); candidate != "" {
-			allowed[candidate] = struct{}{}
-		}
-	}
-	result := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		if _, ok := allowed[candidate]; ok {
-			result = append(result, candidate)
-		}
-	}
-	if len(result) == 0 {
-		return []string{model}
-	}
-	return result
 }
 
 func (s Suite) probeMode() (string, bool, error) {
@@ -897,8 +753,18 @@ func comparisonEvidenceState(items []Evaluation) (formed, incomplete, negative b
 			// A trusted family that stopped at its retry boundary is incomplete
 			// even when earlier requests gave it a warning/partial status. Do not
 			// let that partial account form a comparable aggregate.
-			if (kind == "juice" || kind == "astra_constants") && evidenceBool(item.Evidence, "notApplicable") {
-				continue
+			//
+			// Exception: the nested comparison suite structurally cannot attach
+			// its own comparison, so its distribution family is a scope-neutral
+			// skip (trusted_comparison_not_attached). Treating that as incomplete
+			// would permanently cap the comparison aggregate at warning and make
+			// high_confidence unreachable for every trusted full run after the
+			// self cross-model retirement.
+			if kind == "distribution" {
+				reason, _ := item.Evidence["reason"].(string)
+				if reason == "trusted_comparison_not_attached" && evidenceBool(item.Evidence, "excludedFromScoring") {
+					continue
+				}
 			}
 			if item.Status == "failed" {
 				negative = true

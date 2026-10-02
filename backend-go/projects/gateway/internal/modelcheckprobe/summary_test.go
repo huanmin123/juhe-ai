@@ -2,27 +2,30 @@ package modelcheckprobe
 
 import "testing"
 
-func TestSummarizeChecksReportsHighConfidenceOnlyWhenDiagnosticFamiliesFormed(t *testing.T) {
+func TestSummarizeChecksCapsFullWithoutTrustedComparisonAtLikely(t *testing.T) {
+	// 自配 cross_model 退役后：即使全诊断族通过，无可信对比的 full run
+	// 最高只能到 likely；high_confidence 需要独立账户的对照证据。
 	checks := []Evaluation{
 		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
 		{Kind: "behavior_probe", Status: "passed", Score: 35, MaxScore: 35},
 		{Kind: "long_context", Status: "passed", Score: 15, MaxScore: 15},
 		{Kind: "stability", Status: "passed", Score: 15, MaxScore: 15},
-		{Kind: "cross_model", Status: "passed", Score: 10, MaxScore: 10},
 	}
-	if got := SummarizeChecks(checks, false, "full"); got.Level != "high_confidence" {
+	if got := SummarizeChecks(checks, false, "full"); got.Level != "likely" {
 		t.Fatalf("summary=%+v", got)
 	}
 }
 
-func TestSummarizeChecksRequiresCrossModelForHighConfidenceWithoutTrustedComparison(t *testing.T) {
+func TestSummarizeChecksHighConfidenceRequiresDiagnosticFamiliesFormed(t *testing.T) {
+	// 缺任一诊断族（长上下文）时，可信对比也不得给出最高置信。
 	checks := []Evaluation{
 		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
 		{Kind: "behavior_probe", Status: "passed", Score: 35, MaxScore: 35},
-		{Kind: "long_context", Status: "passed", Score: 15, MaxScore: 15},
 		{Kind: "stability", Status: "passed", Score: 15, MaxScore: 15},
+		{Kind: "comparison", Status: "passed", Score: 10, MaxScore: 10},
+		{Kind: "distribution_similarity", Status: "passed", Score: 15, MaxScore: 15},
 	}
-	if got := SummarizeChecks(checks, false, "full"); got.Level == "high_confidence" {
+	if got := SummarizeChecks(checks, true, "full"); got.Level == "high_confidence" {
 		t.Fatalf("summary=%+v", got)
 	}
 }
@@ -37,16 +40,6 @@ func TestSummarizeChecksTrustedComparisonCanSatisfyHighConfidenceWithoutSelfCros
 		{Kind: "distribution_similarity", Status: "passed", Score: 15, MaxScore: 15},
 	}
 	if got := SummarizeChecks(checks, true, "full"); got.Level != "high_confidence" {
-		t.Fatalf("summary=%+v", got)
-	}
-}
-
-func TestSummarizeChecksFailsClosedOnJuiceAnomaly(t *testing.T) {
-	checks := []Evaluation{
-		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
-		{Kind: "juice", Status: "failed", Evidence: map[string]any{"hardAnomaly": true}},
-	}
-	if got := SummarizeChecks(checks, false, "quick"); got.Level != "suspicious" {
 		t.Fatalf("summary=%+v", got)
 	}
 }
@@ -150,10 +143,11 @@ func TestSummarizeChecksQuizRequestFailureStaysScoredRun(t *testing.T) {
 		{Kind: "behavior_probe", Status: "passed", Score: 35, MaxScore: 35},
 		{Kind: "long_context", Status: "passed", Score: 15, MaxScore: 15},
 		{Kind: "stability", Status: "passed", Score: 15, MaxScore: 15},
-		{Kind: "cross_model", Status: "passed", Score: 10, MaxScore: 10},
+		{Kind: "comparison", Status: "passed", Score: 10, MaxScore: 10},
+		{Kind: "distribution_similarity", Status: "passed", Score: 15, MaxScore: 15},
 		{Kind: "custom_quiz", Status: "skipped", Evidence: map[string]any{"requestFailure": true, "excludedFromScoring": true, "evidenceInsufficient": true}},
 	}
-	got := SummarizeChecks(checks, false, "full")
+	got := SummarizeChecks(checks, true, "full")
 	if got.Level == "unavailable" {
 		t.Fatalf("题库请求失败按 §5.7 排除计分，不得判整轮不可用: %+v", got)
 	}

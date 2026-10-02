@@ -237,7 +237,7 @@ func TestWlExecuteTransportFailureBoundaries(t *testing.T) {
 		// 旧分类落入 upstream request failed；必须归入 timed out。
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		defer cancel()
-		result, err := Execute(ctx, mustWlBasicRequest(t), Options{Endpoint: "https://upstream.example", Client: &http.Client{Transport: &wlStubTransport{block: true}}, Timeout: 5*time.Second})
+		result, err := Execute(ctx, mustWlBasicRequest(t), Options{Endpoint: "https://upstream.example", Client: &http.Client{Transport: &wlStubTransport{block: true}}, Timeout: 5 * time.Second})
 		if err != nil || result.ErrorMessage != "J3b probe timed out" {
 			t.Fatalf("result=%+v err=%v", result, err)
 		}
@@ -857,9 +857,6 @@ func TestWlEvaluateCrossModelPairEvidence(t *testing.T) {
 	if suspicious.Status != "failed" || suspicious.Evidence["suspiciousSameBackend"] != true {
 		t.Fatalf("同后端疑点=%+v", suspicious)
 	}
-	if item := EvaluateCrossModel(Result{Success: true, ObservedModel: "m", Output: "OK"}, Result{Success: true, ObservedModel: "m", Output: "OK"}, "m"); item.Evidence["crossModelMismatch"] != false {
-		t.Fatalf("EvaluateCross 包装=%+v", item)
-	}
 	if item := EvaluateDistributionPassedCompat(); item != false {
 		t.Fatalf("未知分布约束必须返回 false: %v", item)
 	}
@@ -1185,239 +1182,6 @@ func TestWlRoundAndPaddingOrder(t *testing.T) {
 	}
 }
 
-func TestWlRunIdentityWrapperAndVerdicts(t *testing.T) {
-	t.Run("包装函数缺省模型族", func(t *testing.T) {
-		item, err := RunIdentity(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, "unknown-model", func(_ context.Context, _ Request) (Result, error) {
-			return Result{Success: false, HTTPStatus: 503}, nil
-		})
-		if err != nil || item.Kind != "identity_observation" || item.Status != "skipped" || item.Evidence["observationCount"] != 7 {
-			t.Fatalf("item=%+v err=%v", item, err)
-		}
-	})
-	t.Run("输入非法", func(t *testing.T) {
-		if _, err := RunIdentity(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, " ", nil); err == nil {
-			t.Fatal("空模型必须拒绝")
-		}
-		if _, err := RunIdentityForModels(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, "m", nil, nil); err == nil {
-			t.Fatal("nil run 必须拒绝")
-		}
-	})
-	t.Run("全部成功但未通过约束计失败", func(t *testing.T) {
-		item, err := RunIdentityForModels(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, "unknown-model", nil, func(_ context.Context, _ Request) (Result, error) {
-			return Result{Success: true, HTTPStatus: 200, ObservedModel: "unknown-model", Output: "wrong"}, nil
-		})
-		if err != nil || item.Status != "failed" || item.Evidence["successCount"] != 7 {
-			t.Fatalf("item=%+v err=%v", item, err)
-		}
-	})
-	t.Run("run 失败上抛", func(t *testing.T) {
-		if _, err := RunIdentityForModels(context.Background(), modelcheckprofile.ProtocolOpenAIResponses, "m", nil, func(_ context.Context, _ Request) (Result, error) {
-			return Result{}, errors.New("boom-run")
-		}); err == nil {
-			t.Fatal("run 错误必须上抛")
-		}
-	})
-}
-
-func TestWlIdentityPassedKeys(t *testing.T) {
-	tests := []struct {
-		key, output string
-		want        bool
-	}{
-		{"constraint_json", `{"result":42,"tag":"T"}`, true},
-		{"constraint_json", `{"result":41,"tag":"T"}`, false},
-		{"error_recovery", `{"correct":42,"tag":"T"}`, true},
-		{"reasoning_order", `{"largest":15,"tag":"T"}`, true},
-		{"multilingual_consistency", `{"zh":"队列超时","en":"queue timeout","tag":"T"}`, true},
-		{"tool_schema", `{"action":"inspect","tag":"T","payload":{"ids":[2,7,9],"dryRun":true}}`, true},
-		{"knowledge_window", `{"version":"B","tag":"T"}`, true},
-		{"unknown", `{"a":1}`, false},
-		{"constraint_json", "not json", false},
-	}
-	for _, test := range tests {
-		if got := identityPassed(test.key, test.output, "T"); got != test.want {
-			t.Fatalf("identityPassed(%q)=%v want=%v", test.key, got, test.want)
-		}
-	}
-	if !identityPassed("code_patch", "xs.filter(x=>x>2).sort((a,b)=>a-b) // T", "t") {
-		t.Fatal("code_patch 必须匹配 filter/sort 与 tag")
-	}
-	if identityPassed("code_patch", "xs.filter(x=>x>2) // T", "T") {
-		t.Fatal("缺少 sort 的输出不能通过")
-	}
-}
-
-func TestWlPairedIdentityModels(t *testing.T) {
-	if got := pairedIdentityModels("gpt-5.5"); len(got) != 2 || got[0] != "gpt-5.5" || got[1] != "gpt-5.4" {
-		t.Fatalf("got=%v", got)
-	}
-	if got := pairedIdentityModels("other"); len(got) != 1 || got[0] != "other" {
-		t.Fatalf("got=%v", got)
-	}
-	if got := uniqueModels(" a ", "a", "b", ""); len(got) != 2 {
-		t.Fatalf("去重失败: %v", got)
-	}
-}
-
-func TestWlJuiceRequestBuilders(t *testing.T) {
-	requests := JuiceRequests("gpt-5.6-sol")
-	if len(requests) != 6 {
-		t.Fatalf("Juice 探针必须六个请求: %d", len(requests))
-	}
-	if got := JuiceRequests(" "); got != nil {
-		t.Fatalf("空模型必须返回 nil: %v", got)
-	}
-	requestsStream, coverage, err := JuiceRequestsForStream("gpt-5.6-terra", true)
-	if err != nil || len(requestsStream) != 6 {
-		t.Fatalf("流式 Juice 请求构造失败: %v", err)
-	}
-	if !validJuiceCoverage(coverage) {
-		t.Fatalf("coverage=%q 必须合法", coverage)
-	}
-	for _, request := range requestsStream {
-		var payload map[string]any
-		if err := json.Unmarshal(request.Body, &payload); err != nil {
-			t.Fatalf("Juice body 非法: %v", err)
-		}
-		if payload["reasoning"].(map[string]any)["effort"] != "high" || payload["temperature"] != float64(0) {
-			t.Fatalf("Juice 采样配置不符: %#v", payload)
-		}
-	}
-	if _, _, err := JuiceRequestsForStream("", false); err == nil {
-		t.Fatal("空模型必须报错")
-	}
-}
-
-func TestWlValidJuiceCoverage(t *testing.T) {
-	tests := []struct {
-		value string
-		want  bool
-	}{
-		{"12345", true}, {" 12345 ", true}, {"10000", true},
-		{"80000", false}, {"16000", false}, {"40000", false},
-		{"9999", false}, {"100000", false}, {"abc", false}, {"", false},
-	}
-	for _, test := range tests {
-		if got := validJuiceCoverage(test.value); got != test.want {
-			t.Fatalf("validJuiceCoverage(%q)=%v want=%v", test.value, got, test.want)
-		}
-	}
-}
-
-func TestWlEvaluateJuiceVerdicts(t *testing.T) {
-	base := func() []Result {
-		return []Result{
-			{Success: true, HTTPStatus: 200, Output: "40"},
-			{Success: true, HTTPStatus: 200, Output: "40"},
-			{Success: true, HTTPStatus: 200, Output: "40"},
-			{Success: true, HTTPStatus: 200, Output: "32"},
-			{Success: true, HTTPStatus: 200, Output: "48"},
-			{Success: true, HTTPStatus: 200, Output: "12345"},
-		}
-	}
-	t.Run("全部通过", func(t *testing.T) {
-		item := EvaluateJuice("gpt-5.6-sol", base(), "12345")
-		if item.Status != "passed" || item.Evidence["hardAnomaly"] != false {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("模型不适用", func(t *testing.T) {
-		item := EvaluateJuice("gpt-other", base(), "12345")
-		if item.Status != "skipped" || item.Evidence["notApplicable"] != true {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("结果缺失", func(t *testing.T) {
-		item := EvaluateJuice("gpt-5.6-sol", nil, "12345")
-		if item.Evidence["requestFailure"] != true {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("coverage 非法", func(t *testing.T) {
-		item := EvaluateJuice("gpt-5.6-sol", base(), "8")
-		if item.Evidence["reason"] != "juice_coverage_value_invalid" {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("输出被替换为强异常", func(t *testing.T) {
-		results := base()
-		results[3].Output = "99"
-		item := EvaluateJuice("gpt-5.6-sol", results, "12345")
-		if item.Status != "failed" || item.Evidence["strongAnomaly"] != true || item.Evidence["scorePenalty"] != JuiceStrongPenalty {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("coverage 不匹配", func(t *testing.T) {
-		results := base()
-		results[5].Output = "54321"
-		item := EvaluateJuice("gpt-5.6-sol", results, "12345")
-		if item.Status != "failed" || item.Evidence["scorePenalty"] != JuiceCoveragePenalty {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("混合已知值为弱异常", func(t *testing.T) {
-		results := base()
-		results[0].Output = "16"
-		item := EvaluateJuice("gpt-5.6-sol", results, "12345")
-		if item.Status != "failed" || item.Evidence["scorePenalty"] != JuiceWeakPenalty {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("非数值 juice 输出为弱异常", func(t *testing.T) {
-		results := base()
-		results[1].Output = "abc"
-		item := EvaluateJuice("gpt-5.6-sol", results, "12345")
-		if item.Status != "failed" || item.Evidence["scorePenalty"] != JuiceWeakPenalty {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("三次相同混合值为强异常", func(t *testing.T) {
-		results := base()
-		for index := 0; index < 3; index++ {
-			results[index].Output = "24"
-		}
-		item := EvaluateJuice("gpt-5.6-sol", results, "12345")
-		if item.Status != "failed" || item.Evidence["strongAnomaly"] != true {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("终局失败排除评分", func(t *testing.T) {
-		results := base()
-		results[0].HTTPStatus = 500
-		results[0].Success = false
-		item := EvaluateJuice("gpt-5.6-sol", results, "12345")
-		if item.Status != "skipped" || item.Evidence["terminalFailure"] != true || item.Evidence["excludedFromScoring"] != true {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-	t.Run("部分失败降级 skipped", func(t *testing.T) {
-		results := base()
-		results[2].Success = false
-		item := EvaluateJuice("gpt-5.6-sol", results, "12345")
-		if item.Status != "skipped" {
-			t.Fatalf("item=%+v", item)
-		}
-	})
-}
-
-func TestWlJuiceSmallHelpers(t *testing.T) {
-	if juiceKind(0) != "juice" || juiceKind(2) != "juice" || juiceKind(3) != "output_integrity" || juiceKind(5) != "coverage" {
-		t.Fatalf("juiceKind 分类错误")
-	}
-	if !isKnownJuice(" 32 ") || isKnownJuice("31") {
-		t.Fatal("isKnownJuice 判定错误")
-	}
-	if juiceSignature("gpt-5.6-sol") != "40" || juiceSignature("gpt-5.6-terra") != "32" || juiceSignature("gpt-5.6-luna") != "48" || juiceSignature("other") != "" {
-		t.Fatal("juiceSignature 映射错误")
-	}
-	if !ShouldRunJuice("gpt-5.6-sol", "full", "openai_responses") {
-		t.Fatal("gpt-5.6 full responses 必须运行 Juice")
-	}
-	if ShouldRunJuice("gpt-5.6-sol", "quick", "openai_responses") || ShouldRunJuice("gpt-other", "full", "openai_responses") || ShouldRunJuice("gpt-5.6-sol", "full", "openai_chat") {
-		t.Fatal("非目标范围必须跳过 Juice")
-	}
-}
-
 func TestWlEvaluateStabilityLadder(t *testing.T) {
 	passed := EvaluateStability([]Result{
 		{Success: true, ObservedModel: "m", Output: "VECTOR"},
@@ -1583,14 +1347,14 @@ func TestWlSummaryHelpers(t *testing.T) {
 	if items[0].Kind != "basic" || items[1].Kind != "z" {
 		t.Fatalf("unscopedEvaluations=%+v", items)
 	}
-	evaluations := []Evaluation{{Kind: "basic", Status: "passed"}, {Kind: "juice", Status: "skipped", Evidence: map[string]any{"requestFailure": true}}}
+	evaluations := []Evaluation{{Kind: "basic", Status: "passed"}, {Kind: "token_integrity", Status: "skipped", Evidence: map[string]any{"requestFailure": true}}}
 	if !hasStatus(evaluations, "basic", "passed") || hasStatus(evaluations, "basic", "failed") {
 		t.Fatal("hasStatus 判定错误")
 	}
-	if !hasStatusAny(evaluations, "passed", "basic", "juice") || hasStatusAny(evaluations, "failed", "basic") {
+	if !hasStatusAny(evaluations, "passed", "basic", "token_integrity") || hasStatusAny(evaluations, "failed", "basic") {
 		t.Fatal("hasStatusAny 判定错误")
 	}
-	if !hasRequestFailure(evaluations, "juice") || hasRequestFailure(evaluations, "basic") {
+	if !hasRequestFailure(evaluations, "token_integrity") || hasRequestFailure(evaluations, "basic") {
 		t.Fatal("hasRequestFailure 判定错误")
 	}
 	if !evidenceBool(map[string]any{"k": true}, "k") || evidenceBool(nil, "k") {
@@ -1610,7 +1374,6 @@ func TestWlSummarizeChecksDecisionLadder(t *testing.T) {
 		level string
 	}{
 		{"模型不匹配即可疑", []Evaluation{{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true, "modelMismatch": true}}}, false, "full", "suspicious"},
-		{"juice 硬异常即可疑", []Evaluation{{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}}, {Kind: "juice", Status: "failed", Evidence: map[string]any{"hardAnomaly": true, "scorePenalty": 25}}}, false, "full", "suspicious"},
 		{"basic 失败不可用", []Evaluation{{Kind: "protocol_basic", Status: "failed", MaxScore: 10, Evidence: map[string]any{"success": false}}}, false, "full", "unavailable"},
 		{"长上下文失败可疑", []Evaluation{{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}}, {Kind: "long_context", Status: "failed", MaxScore: 15}}, false, "full", "suspicious"},
 		{"长上下文警告不确定", []Evaluation{{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}}, {Kind: "long_context", Status: "warning", MaxScore: 15}}, false, "full", "uncertain"},
@@ -1634,13 +1397,6 @@ func TestWlSummarizeChecksDecisionLadder(t *testing.T) {
 			}
 		})
 	}
-	t.Run("float 惩罚也计入", func(t *testing.T) {
-		summary := SummarizeChecks([]Evaluation{{Kind: "juice", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"scorePenalty": 12.0}}}, false, "quick")
-		// float64 形态的惩罚同样扣减：100-12=88，quick 仍落 likely 档。
-		if summary.Score != 88 {
-			t.Fatalf("惩罚必须按 float64 扣减: %+v", summary)
-		}
-	})
 	t.Run("高可信需要全链路通过", func(t *testing.T) {
 		items := []Evaluation{
 			{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
@@ -1650,13 +1406,16 @@ func TestWlSummarizeChecksDecisionLadder(t *testing.T) {
 			{Kind: "long_context", Status: "passed", Score: 15, MaxScore: 15},
 			{Kind: "stability", Status: "passed", Score: 15, MaxScore: 15},
 			{Kind: "token_integrity", Status: "passed", Score: 10, MaxScore: 10},
-			{Kind: "cross_model", Status: "passed", Score: 10, MaxScore: 10},
 			{Kind: "distribution_similarity", Status: "passed", Score: 15, MaxScore: 15},
 			{Kind: "comparison", Status: "passed", Score: 10, MaxScore: 10},
 		}
 		summary := SummarizeChecks(items, true, "full")
 		if summary.Level != "high_confidence" {
-			t.Fatalf("全链路通过必须高可信: %+v", summary)
+			t.Fatalf("可信对比全链路通过必须高可信: %+v", summary)
+		}
+		summary = SummarizeChecks(items, false, "full")
+		if summary.Level != "likely" {
+			t.Fatalf("无可信对比时最高只能 likely（high_confidence 仅信任对比可达）: %+v", summary)
 		}
 	})
 }

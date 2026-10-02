@@ -79,7 +79,7 @@ func TestBuildCustomQuizSummary(t *testing.T) {
 		{Kind: "custom_quiz", Status: "skipped", Score: 0, MaxScore: 10, Evidence: map[string]any{"questionId": "q4", "questionTitle": "题四", "requestFailure": true, "excludedFromScoring": true}},
 	}
 	summary, present := buildCustomQuizSummary(evaluations, true)
-	if !present || !summary.Enabled || summary.MaxScore != 31 {
+	if !present || !summary.Enabled || !summary.Executed || summary.MaxScore != 31 {
 		t.Fatalf("summary=%+v present=%v", summary, present)
 	}
 	// q2 判定不符扣 15；q3 invalid→failed 扣 10；q4 请求失败不扣。
@@ -98,18 +98,33 @@ func TestBuildCustomQuizSummary(t *testing.T) {
 	if summary.Items[3].Reason != "" || summary.Items[3].QuestionID != "q4" {
 		t.Fatalf("request failure item keeps its identity: %+v", summary.Items[3])
 	}
-	// 空题库：家族产出单条 skipped unavailable 行。
+	// 空题库：家族产出单条 skipped unavailable 行；未作答任何题，score=0
+	// 且 executed=false（BUG-0264：不得把未执行展示成满分）。
 	empty, present := buildCustomQuizSummary([]modelcheckprobe.Evaluation{{Kind: "custom_quiz", Status: "skipped", Evidence: map[string]any{"evidenceInsufficient": true, "excludedFromScoring": true, "reason": "quiz_questions_unavailable"}}}, true)
-	if !present || empty.Score != 31 || empty.Deduction != 0 || len(empty.Items) != 1 {
+	if !present || empty.Score != 0 || empty.Executed || empty.MaxScore != 31 || empty.Deduction != 0 || len(empty.Items) != 1 {
 		t.Fatalf("empty bank summary=%+v", empty)
 	}
 	if empty.Items[0].QuestionID != "" || empty.Items[0].Title != "" || empty.Items[0].Verdict != "unavailable" || empty.Items[0].Reason != "quiz_questions_unavailable" {
 		t.Fatalf("empty bank item=%+v", empty.Items[0])
 	}
+	// 全部请求失败转 skipped：同样未执行，score=0、executed=false。
+	allFailed := []modelcheckprobe.Evaluation{{Kind: "custom_quiz", Status: "skipped", Evidence: map[string]any{"questionId": "q1", "requestFailure": true, "excludedFromScoring": true}}, {Kind: "custom_quiz", Status: "skipped", Evidence: map[string]any{"questionId": "q2", "requestFailure": true, "excludedFromScoring": true}}}
+	requestFailure, present := buildCustomQuizSummary(allFailed, true)
+	if !present || requestFailure.Score != 0 || requestFailure.Executed || len(requestFailure.Items) != 2 {
+		t.Fatalf("request-failure-only summary=%+v", requestFailure)
+	}
+	// 有执行题 + 有 skipped：executed=true，扣分口径维持既有行为。
+	mixed, _ := buildCustomQuizSummary([]modelcheckprobe.Evaluation{
+		{Kind: "custom_quiz", Status: "passed", Score: 15, MaxScore: 15, Evidence: map[string]any{"questionId": "q1", "verdict": "pass"}},
+		{Kind: "custom_quiz", Status: "skipped", Evidence: map[string]any{"questionId": "q2", "requestFailure": true, "excludedFromScoring": true}},
+	}, true)
+	if !mixed.Executed || mixed.Score != 31 || mixed.Deduction != 0 {
+		t.Fatalf("mixed summary=%+v", mixed)
+	}
 	// 扣分不会把环节得分打成负数。
 	negative, _ := buildCustomQuizSummary([]modelcheckprobe.Evaluation{{Kind: "custom_quiz", Status: "failed", Score: 0, MaxScore: 40, Evidence: map[string]any{"questionId": "q", "verdict": "fail"}}}, true)
-	if negative.Score != 0 {
-		t.Fatalf("clamped score=%d", negative.Score)
+	if negative.Score != 0 || !negative.Executed {
+		t.Fatalf("clamped score=%d executed=%v", negative.Score, negative.Executed)
 	}
 }
 
@@ -211,6 +226,9 @@ func TestQBRuntimeRunsCustomQuizFamily(t *testing.T) {
 	if deduction, _ := quiz["deduction"].(float64); int(deduction) != 16 {
 		t.Fatalf("deduction=%v, want 16", quiz["deduction"])
 	}
+	if executed, _ := quiz["executed"].(bool); !executed {
+		t.Fatalf("run with answered questions must mark executed=true: quiz=%+v", quiz)
+	}
 	items, _ := quiz["items"].([]any)
 	if len(items) != 2 {
 		t.Fatalf("items=%+v", items)
@@ -293,8 +311,12 @@ func TestQBRuntimeScheduledCarriesFrozenQuestions(t *testing.T) {
 	if !present {
 		t.Fatal("scheduled run with frozen ids must surface customQuiz even when all ids became invalid")
 	}
-	if score, _ := quiz["score"].(float64); int(score) != 31 {
-		t.Fatalf("invalid-only ids must not deduct: quiz=%+v", quiz)
+	// id 全部失效 → 未作答任何题：score=0、executed=false（BUG-0264）。
+	if score, _ := quiz["score"].(float64); int(score) != 0 {
+		t.Fatalf("invalid-only ids must stay unexecuted: quiz=%+v", quiz)
+	}
+	if executed, _ := quiz["executed"].(bool); executed {
+		t.Fatalf("invalid-only ids must mark executed=false: quiz=%+v", quiz)
 	}
 	items, _ := quiz["items"].([]any)
 	if len(items) != 1 {

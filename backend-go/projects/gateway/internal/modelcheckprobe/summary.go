@@ -12,20 +12,12 @@ type SummaryResult struct {
 }
 
 func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string) SummaryResult {
-	maxScore, rawScore, failed, juicePenalty, quizDeduction := 0, 0, 0, 0, 0
+	maxScore, rawScore, failed, quizDeduction := 0, 0, 0, 0
 	for _, item := range checks {
 		originalKind := item.Kind
 		item.Kind = unscopedKind(item.Kind)
 		if strings.HasPrefix(originalKind, "trusted_comparison.") && item.Kind != "comparison" && item.Kind != "distribution_similarity" {
 			continue
-		}
-		if item.Evidence != nil {
-			if value, ok := item.Evidence["scorePenalty"].(int); ok {
-				juicePenalty += value
-			}
-			if value, ok := item.Evidence["scorePenalty"].(float64); ok {
-				juicePenalty += int(value)
-			}
 		}
 		if item.Kind == "custom_quiz" {
 			// Custom quiz items never enter the shared denominator. A graded
@@ -52,7 +44,6 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 	if maxScore > 0 {
 		score = (rawScore*100 + maxScore/2) / maxScore
 	}
-	score -= juicePenalty
 	score -= quizDeduction
 	if score < 0 {
 		score = 0
@@ -61,15 +52,6 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 		item.Kind = unscopedKind(item.Kind)
 		if item.Evidence != nil && evidenceBool(item.Evidence, "modelMismatch") {
 			return SummaryResult{"suspicious", score, 100, "响应模型字段与请求模型不一致，目标链路疑似被替换或降级"}
-		}
-		if item.Kind == "juice" && item.Evidence != nil && evidenceBool(item.Evidence, "hardAnomaly") {
-			return SummaryResult{"suspicious", score, 100, "GPT-5.6 Juice 专项探针发现疑似混用或响应替换，建议结合其他证据复核"}
-		}
-		// astra_constants 的罚分不需要额外处理：上方 scorePenalty 累加对所有
-		// 证据项通用（juicePenalty 变量承载的是全部专项罚分），这里只补齐与
-		// Juice 同型的硬异常短路。仅 trace/覆盖轮弱异常不进入该分支。
-		if item.Kind == "astra_constants" && item.Evidence != nil && evidenceBool(item.Evidence, "hardAnomaly") {
-			return SummaryResult{"suspicious", score, 100, "Astra 专项探针发现疑似响应替换或混用，建议结合其他证据复核"}
 		}
 	}
 	terminalCoreFailure := hasTerminalCoreProbeFailure(checks)
@@ -124,18 +106,17 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 	}
 	// A similar output distribution is supporting evidence only. Node requires
 	// the independently resolved trusted-comparison aggregate itself to pass
-	// before granting the highest confidence level.
-	// With a trusted comparison attached, Node accepts the independently
-	// resolved comparison aggregate in place of the self cross-model check.
-	// Without one, the self cross-model result remains mandatory for the
-	// highest confidence level.
-	crossModelSatisfied := trustedComparison || hasStatusAny(checks, "passed", "cross_model")
-	trustedOK := !trustedComparison || (hasStatusAny(checks, "passed", "comparison", "cross_model") && hasStatusAny(checks, "passed", "distribution_similarity", "distribution"))
+	// before granting the highest confidence level. The self cross-model check
+	// retired with the universal suite (v5): without a trusted comparison the
+	// highest achievable level for a full run is likely, because the highest
+	// confidence requires comparison evidence from an independent account.
+	crossModelSatisfied := trustedComparison
+	trustedOK := !trustedComparison || (hasStatusAny(checks, "passed", "comparison") && hasStatusAny(checks, "passed", "distribution_similarity", "distribution"))
 	behaviorPassed := behavior != nil && behavior.Status == "passed"
 	stabilityPassed := stability != nil && stability.Status == "passed"
 	longPassed := long != nil && long.Status == "passed"
 	if score >= 92 && failed == 0 && trustedOK && crossModelSatisfied && behaviorPassed && stabilityPassed && longPassed {
-		return SummaryResult{"high_confidence", score, 100, "目标模型链路高可信，强诊断协议、行为指纹、长上下文、稳定性和辅助模型对照均通过"}
+		return SummaryResult{"high_confidence", score, 100, "目标模型链路高可信，强诊断协议、行为指纹、长上下文、稳定性和可信对照证据均通过"}
 	}
 	if score >= 78 && failed <= 1 {
 		return SummaryResult{"likely", score, 100, "目标模型链路较可信，仍建议结合多次检测结果观察"}

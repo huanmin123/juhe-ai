@@ -21,7 +21,13 @@ type EvidenceAggregate struct {
 	Neutral []string
 }
 
-var requiredEvidenceFamilies = []string{"identity_observation", "token_integrity", "stability", "distribution", "cross_model", "juice", "usage_shape", "behavior_probe", "long_context"}
+// requiredEvidenceFamilies is the universal full-profile evidence contract
+// (probe set v5): the brand-specific families (identity canary, Juice, Astra
+// constants) and the self cross-model pair retired with the universal suite.
+// distribution keeps its neutral-skip semantics: without a trusted comparison
+// account the suite emits a trusted_comparison_not_attached skip that does not
+// block formation.
+var requiredEvidenceFamilies = []string{"token_integrity", "stability", "distribution", "usage_shape", "behavior_probe", "long_context"}
 
 // AggregateEvidence validates family coverage and computes a bounded score.
 // It intentionally does not infer missing families from the run score.
@@ -124,8 +130,6 @@ func neutralExcludedFamily(family string, value any) bool {
 	}
 	reason, _ := record["reason"].(string)
 	switch family {
-	case "juice":
-		return record["notApplicable"] == true && reason == "juice_scope_not_applicable"
 	case "distribution":
 		return reason == "trusted_comparison_not_attached"
 	default:
