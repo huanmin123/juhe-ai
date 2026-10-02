@@ -114,7 +114,7 @@ func TestRunSuitePropagatesStreamingEndpointModeToCoreRequests(t *testing.T) {
 	if err != nil || len(items) == 0 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
-	if transport.requests != 7 || transport.nonStreaming != 0 {
+	if transport.requests != 12 || transport.nonStreaming != 0 {
 		t.Fatalf("requests=%d nonStreaming=%d", transport.requests, transport.nonStreaming)
 	}
 	for _, item := range items {
@@ -191,7 +191,7 @@ func TestRunSuiteUsesMappedUpstreamProtocolAndEndpointMode(t *testing.T) {
 	if err != nil || len(items) == 0 {
 		t.Fatalf("items=%#v err=%v", items, err)
 	}
-	if transport.requests != 3 || transport.wrongPath != 0 || transport.wrongModel != 0 {
+	if transport.requests != 8 || transport.wrongPath != 0 || transport.wrongModel != 0 {
 		t.Fatalf("mapped upstream request shape not preserved: %+v", transport)
 	}
 	for _, item := range items {
@@ -222,8 +222,8 @@ func TestRunSuiteQuickIncludesOneTokenIntegrityRound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transport.requests != 6 {
-		t.Fatalf("quick request count=%d want=6（basic+structured+tool+三轮 Token）", transport.requests)
+	if transport.requests != 11 {
+		t.Fatalf("quick request count=%d want=11（basic+structured+tool+三轮 Token+身份组 5 请求）", transport.requests)
 	}
 	found := false
 	for _, item := range items {
@@ -281,8 +281,8 @@ func TestRunSuiteQuickIncludesTrustedAggregate(t *testing.T) {
 	if !foundTargetToken || !foundComparisonToken || !foundAggregate {
 		t.Fatalf("quick trusted comparison items=%+v", items)
 	}
-	if targetTransport.requests != 6 || comparisonTransport.requests != 6 {
-		t.Fatalf("quick trusted comparison must use core+token for both accounts: target=%d comparison=%d", targetTransport.requests, comparisonTransport.requests)
+	if targetTransport.requests != 11 || comparisonTransport.requests != 11 {
+		t.Fatalf("quick trusted comparison must use core+identity+token for both accounts: target=%d comparison=%d", targetTransport.requests, comparisonTransport.requests)
 	}
 }
 

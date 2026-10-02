@@ -65,6 +65,15 @@ type Suite struct {
 	// layer. Only the top-level suite (empty Prefix) may run the quiz family;
 	// trusted-comparison nested suites never see quiz requests.
 	QuizQuestions []QuizQuestion
+	// probeCapture collects this round's per-probe executed outcomes (behavior
+	// probes and the identity anchor) for the sampling family's paired
+	// McNemar test. It never leaves the in-memory run.
+	probeCapture *probeCapture
+	// anchorProbe carries this suite's executed identity anchor. The trusted
+	// comparison suite reuses the target's anchor question (same parameters) so
+	// the sampling family's paired McNemar test compares both accounts on the
+	// same question instead of mixing in per-question difficulty noise.
+	anchorProbe *IdentityAnchorProbe
 }
 
 func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evaluation, error) {
@@ -153,6 +162,27 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		items = append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results)))
 		return items, nil
 	}
+	// §16 身份与篡改探针组：quick 与 full 都在五核心通过后执行（核心失败
+	// 截断语义不变；空 Profile 不执行）。终局请求失败按家族约定截断整轮。
+	var identityAnchor IdentityAnchorProbe
+	if input.Profile == "quick" || input.Profile == "full" {
+		if input.probeCapture == nil {
+			input.probeCapture = newProbeCapture()
+		}
+		identityItems, anchor, identityTerminal, identityErr := RunIdentityFamily(ctx, input, timeout)
+		if identityErr != nil {
+			return nil, identityErr
+		}
+		for _, item := range identityItems {
+			items = append(items, scopeEvaluation(input.Prefix, item))
+		}
+		if identityTerminal {
+			return append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results))), nil
+		}
+		identityAnchor = anchor
+		// 记录本轮锚点题：可信对照套件复用它（同题同参数），供 §17 配对检验。
+		input.anchorProbe = &anchor
+	}
 	if input.Profile == "quick" {
 		if reason := input.tokenIdentitySkipReason(); reason == "" {
 			tokenIntegrity, tokenErr := runTokenIntegrity(ctx, input.UpstreamProtocol, input.Model, input.Tokenizer, func(runCtx context.Context, request Request) (Result, error) {
@@ -188,6 +218,18 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 	}
 	if input.Profile == "full" {
 		behaviorRun, behaviorTerminal := input.familyRunner(timeout)
+		if capture := input.probeCapture; capture != nil {
+			// §17 paired_divergence 需要本轮行为题的逐题对错格局；包装家族
+			// runner 记录每次行为题请求的 executed 结果（不改判分）。
+			innerRun := behaviorRun
+			behaviorRun = func(runCtx context.Context, request Request) (Result, error) {
+				result, runErr := innerRun(runCtx, request)
+				if runErr == nil {
+					capture.recordBehaviorSample(input.Prefix, request, result)
+				}
+				return result, runErr
+			}
+		}
 		behavior, behaviorErr := RunBehavior(ctx, input.UpstreamProtocol, input.Model, behaviorRun, upstreamMode)
 		if behaviorErr != nil {
 			return nil, behaviorErr
@@ -255,6 +297,23 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 			}
 			for _, item := range comparison {
 				items = append(items, scopeEvaluation(input.Prefix, item))
+			}
+		}
+		// §17 采样统计族：full 在既有家族之后追加。嵌套可信对照套件自身
+		// 不执行本族（预算契约：有对照翻倍而非四倍），由下方构造性 scope
+		// 跳过；对照模型不可用时不再消耗采样请求，直接落跳过证据。
+		if strings.TrimSpace(input.Prefix) == "trusted_comparison" {
+			items = append(items, scopeEvaluation(input.Prefix, catalogScopeSkip("sampling_statistics", "trusted_comparison_not_attached")))
+		} else if comparisonSamplingBlocked(items) {
+			items = append(items, scopeEvaluation(input.Prefix, SamplingComparisonUnavailableSkip(input.Comparison.Model)))
+		} else {
+			sampling, samplingTerminal, samplingErr := RunSamplingStatistics(ctx, input, timeout, identityAnchor)
+			if samplingErr != nil {
+				return nil, samplingErr
+			}
+			items = append(items, scopeEvaluation(input.Prefix, sampling))
+			if samplingTerminal {
+				return append(items, scopeEvaluation(input.Prefix, EvaluateUsage(results))), nil
 			}
 		}
 	}
@@ -615,6 +674,15 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 		comparisonSuite.Profile = "full"
 		comparisonSuite.Comparison = nil
 		comparisonSuite.Prefix = "trusted_comparison"
+		// The sampling family's paired McNemar test needs the comparison
+		// account's own per-probe executed outcomes, so the capture buffer is
+		// shared with the target suite for the duration of this run.
+		comparisonSuite.probeCapture = target.probeCapture
+		// The comparison suite reuses the target's anchor question (same
+		// parameters): the paired anchor must be the same question on both
+		// sides, or per-question difficulty noise enters the McNemar
+		// discordant pairs.
+		comparisonSuite.anchorProbe = target.anchorProbe
 		// Long-context and token-integrity evidence must be generated with the
 		// same versioned snapshots as the target. The comparison resolver may
 		// omit these fields; they are owner-wide dependencies, not account
@@ -709,6 +777,14 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	return comparisonItems, nil
 }
 
+// comparisonSamplingBlocked reports whether the trusted comparison account was
+// rejected as model-unavailable by the earlier comparison run; the sampling
+// family must not spend interleaved requests on an unavailable comparison.
+func comparisonSamplingBlocked(items []Evaluation) bool {
+	item := findEvaluation(unscopedEvaluations(items), "comparison")
+	return item != nil && evidenceBool(item.Evidence, "modelUnavailable")
+}
+
 func comparisonCoreModelUnavailable(items []Evaluation) bool {
 	found := false
 	for _, item := range items {
@@ -755,12 +831,12 @@ func comparisonEvidenceState(items []Evaluation) (formed, incomplete, negative b
 			// let that partial account form a comparable aggregate.
 			//
 			// Exception: the nested comparison suite structurally cannot attach
-			// its own comparison, so its distribution family is a scope-neutral
-			// skip (trusted_comparison_not_attached). Treating that as incomplete
-			// would permanently cap the comparison aggregate at warning and make
-			// high_confidence unreachable for every trusted full run after the
-			// self cross-model retirement.
-			if kind == "distribution" {
+			// its own comparison, so its distribution and sampling families are
+			// scope-neutral skips (trusted_comparison_not_attached). Treating
+			// those as incomplete would permanently cap the comparison aggregate
+			// at warning and make high_confidence unreachable for every trusted
+			// full run after the self cross-model retirement.
+			if kind == "distribution" || kind == "sampling_statistics" {
 				reason, _ := item.Evidence["reason"].(string)
 				if reason == "trusted_comparison_not_attached" && evidenceBool(item.Evidence, "excludedFromScoring") {
 					continue

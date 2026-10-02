@@ -22,12 +22,13 @@ type EvidenceAggregate struct {
 }
 
 // requiredEvidenceFamilies is the universal full-profile evidence contract
-// (probe set v5): the brand-specific families (identity canary, Juice, Astra
+// (probe set v6): the brand-specific families (identity canary, Juice, Astra
 // constants) and the self cross-model pair retired with the universal suite.
 // distribution keeps its neutral-skip semantics: without a trusted comparison
 // account the suite emits a trusted_comparison_not_attached skip that does not
-// block formation.
-var requiredEvidenceFamilies = []string{"token_integrity", "stability", "distribution", "usage_shape", "behavior_probe", "long_context"}
+// block formation. sampling_statistics (§17) is required since v6; quick does
+// not participate in family formation, so its quality path is unaffected.
+var requiredEvidenceFamilies = []string{"token_integrity", "stability", "distribution", "usage_shape", "behavior_probe", "long_context", "sampling_statistics"}
 
 // AggregateEvidence validates family coverage and computes a bounded score.
 // It intentionally does not infer missing families from the run score.

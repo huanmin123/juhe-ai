@@ -50,8 +50,8 @@ type ProtocolProfile struct {
 const (
 	DefaultModel            = "gpt-5.6-sol"
 	DefaultProfile          = "quick"
-	ProbeSetVersion         = "multi-provider-model-check-v5-universal"
-	QuickProbeSetVersion    = "multi-provider-model-check-quick-v3-universal"
+	ProbeSetVersion         = "multi-provider-model-check-v6-universal-sampling"
+	QuickProbeSetVersion    = "multi-provider-model-check-quick-v4-identity"
 	DistributionSampleCount = 5
 )
 

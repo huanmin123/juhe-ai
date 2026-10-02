@@ -54,6 +54,27 @@ func SummarizeChecks(checks []Evaluation, trustedComparison bool, profile string
 			return SummaryResult{"suspicious", score, 100, "响应模型字段与请求模型不一致，目标链路疑似被替换或降级"}
 		}
 	}
+	// §16/§17 质量短路：identity_extraction 命中篡改（context_tampering）或
+	// 采样统计出现 mixing_detected / systematic_divergence 任一，整轮
+	// suspicious（处罚路径既有）。token_distribution 的 JSD 判分已于
+	// 2026-10-02 降级为 evidence_only，distribution_mismatch /
+	// distribution_divergent 不再产生也不短路。可信对照账户自身的同名项不
+	// 进入目标短路，其异常走 comparison 聚合路径。
+	for index := range checks {
+		if strings.HasPrefix(checks[index].Kind, "trusted_comparison.") {
+			continue
+		}
+		switch unscopedKind(checks[index].Kind) {
+		case "identity_extraction":
+			if evidenceBool(checks[index].Evidence, "contextTampering") {
+				return SummaryResult{"suspicious", score, 100, "复读指令中出现与请求模型不符的身份声明，检测到上下文篡改，目标链路疑似被替换"}
+			}
+		case "sampling_statistics":
+			if hasSamplingShortCircuitReason(checks[index].Evidence) {
+				return SummaryResult{"suspicious", score, 100, "采样统计发现输出分布、采样一致性或配对表现异常，目标链路疑似被替换、降级或混用"}
+			}
+		}
+	}
 	terminalCoreFailure := hasTerminalCoreProbeFailure(checks)
 	checks = unscopedEvaluations(checks)
 	basic := findEvaluation(checks, "protocol_basic")
@@ -198,3 +219,38 @@ func hasStatusAny(items []Evaluation, status string, kinds ...string) bool {
 }
 
 func evidenceBool(e map[string]any, key string) bool { v, _ := e[key].(bool); return v }
+
+// hasSamplingShortCircuitReason 检查 sampling_statistics 证据中的
+// reasonCodes 是否包含任一整轮短路码（§17 评分契约；token_distribution
+// 判分已降级，distribution 两码不再短路）。
+func hasSamplingShortCircuitReason(evidence map[string]any) bool {
+	if evidence == nil {
+		return false
+	}
+	for _, key := range []string{"mixing_detected", "systematic_divergence"} {
+		if samplingReasonCodesContain(evidence, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func samplingReasonCodesContain(evidence map[string]any, reason string) bool {
+	codes, ok := evidence["reasonCodes"].([]string)
+	if ok {
+		for _, code := range codes {
+			if code == reason {
+				return true
+			}
+		}
+	}
+	values, ok := evidence["reasonCodes"].([]any)
+	if ok {
+		for _, value := range values {
+			if text, _ := value.(string); text == reason {
+				return true
+			}
+		}
+	}
+	return false
+}

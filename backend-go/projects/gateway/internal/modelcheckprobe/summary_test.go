@@ -186,6 +186,72 @@ func TestSummarizeChecksMarksTrustedComparisonFailureUncertain(t *testing.T) {
 	}
 }
 
+// §16：identity_extraction 命中篡改（context_tampering）→ 整轮 suspicious，
+// quick 与 full 都短路。
+func TestSummarizeChecksShortCircuitsOnContextTampering(t *testing.T) {
+	base := func(profile string) []Evaluation {
+		return []Evaluation{
+			{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+			{Kind: "structured_output", Status: "passed", Score: 15, MaxScore: 15, Evidence: map[string]any{"success": true}},
+			{Kind: "tool_calling", Status: "passed", Score: 15, MaxScore: 15, Evidence: map[string]any{"success": true}},
+		}
+	}
+	for _, profile := range []string{"quick", "full"} {
+		checks := base(profile)
+		checks = append(checks,
+			Evaluation{Kind: "identity_selfreport", Status: "passed", Evidence: map[string]any{"consistent": true}},
+			Evaluation{Kind: "identity_extraction", Status: "failed", Evidence: map[string]any{"reasonCode": "context_tampering", "contextTampering": true, "tamperedClaim": "gpt-6-luna"}},
+		)
+		got := SummarizeChecks(checks, false, profile)
+		if got.Level != "suspicious" {
+			t.Fatalf("profile=%s 篡改命中必须整轮 suspicious: %+v", profile, got)
+		}
+	}
+	// 干净复读与注入警告不短路。
+	checks := base("quick")
+	checks = append(checks, Evaluation{Kind: "identity_extraction", Status: "warning", Evidence: map[string]any{"reasonCode": "injected_instructions_detected"}})
+	if got := SummarizeChecks(checks, false, "quick"); got.Level == "suspicious" {
+		t.Fatalf("注入警告不触发整轮短路: %+v", got)
+	}
+	// 可信对照账户自身的命中不进入目标短路。
+	checks = base("full")
+	checks = append(checks, Evaluation{Kind: "trusted_comparison.identity_extraction", Status: "failed", Evidence: map[string]any{"reasonCode": "context_tampering", "contextTampering": true}})
+	if got := SummarizeChecks(checks, true, "full"); got.Level == "suspicious" {
+		t.Fatalf("对照账户篡改走对照路径，不短路目标: %+v", got)
+	}
+}
+
+// §17：mixing_detected / systematic_divergence 任一 → 整轮 suspicious。
+// token_distribution 的 JSD 判分已于 2026-10-02 降级为 evidence_only：
+// distribution_mismatch / distribution_divergent 不再产生，也不得短路。
+func TestSummarizeChecksShortCircuitsOnSamplingStatistics(t *testing.T) {
+	base := []Evaluation{
+		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},
+		{Kind: "behavior_probe", Status: "passed", Score: 35, MaxScore: 35},
+		{Kind: "long_context", Status: "passed", Score: 15, MaxScore: 15},
+		{Kind: "stability", Status: "passed", Score: 15, MaxScore: 15},
+	}
+	for _, code := range []string{"mixing_detected", "systematic_divergence"} {
+		checks := append(append([]Evaluation(nil), base...), Evaluation{Kind: "sampling_statistics", Status: "failed", Evidence: map[string]any{"reasonCodes": []string{code}}})
+		got := SummarizeChecks(checks, false, "full")
+		if got.Level != "suspicious" {
+			t.Fatalf("%s 必须整轮 suspicious: %+v", code, got)
+		}
+	}
+	// 已降级的 distribution 两码（仅历史证据可能残留）不短路，走正常阶梯。
+	for _, code := range []string{"distribution_mismatch", "distribution_divergent"} {
+		checks := append(append([]Evaluation(nil), base...), Evaluation{Kind: "sampling_statistics", Status: "failed", Evidence: map[string]any{"reasonCodes": []string{code}}})
+		if got := SummarizeChecks(checks, false, "full"); got.Level == "suspicious" {
+			t.Fatalf("已降级码 %s 不得短路: %+v", code, got)
+		}
+	}
+	// 证据性通过（无短路码）不短路。
+	checks := append(append([]Evaluation(nil), base...), Evaluation{Kind: "sampling_statistics", Status: "passed", Evidence: map[string]any{"reasonCodes": []string{}}})
+	if got := SummarizeChecks(checks, false, "full"); got.Level == "suspicious" {
+		t.Fatalf("证据性通过不短路: %+v", got)
+	}
+}
+
 func TestSummarizeChecksLetsTrustedComparisonWarningUseScoreLadder(t *testing.T) {
 	checks := []Evaluation{
 		{Kind: "protocol_basic", Status: "passed", Score: 10, MaxScore: 10, Evidence: map[string]any{"success": true}},

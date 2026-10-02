@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +59,17 @@ func (t *wlEchoTransport) RoundTrip(request *http.Request) (*http.Response, erro
 // wlEchoOutput 按各探针的判定契约构造正解输出。
 func (t *wlEchoTransport) wlEchoOutput(_, text string) string {
 	switch {
+	case strings.Contains(text, "仓库清点锚点题"):
+		// §16 锚点题：从请求体截取题干（避免 max_output_tokens 等数字混入）
+		// 后按同一公式反解标准答案。
+		question := text[strings.Index(text, "仓库清点锚点题"):]
+		if end := strings.IndexByte(question, '"'); end > 0 {
+			question = question[:end]
+		}
+		if answer, ok := IdentityAnchorAnswerForQuestion(question); ok {
+			return strconv.Itoa(answer)
+		}
+		return "0"
 	case strings.Contains(text, "Controlled token integrity probe"):
 		return "OK"
 	case strings.Contains(text, "NEEDLE-"):

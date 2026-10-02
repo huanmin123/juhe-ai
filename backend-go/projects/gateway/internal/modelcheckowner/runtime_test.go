@@ -181,7 +181,7 @@ func TestRuntimeExecutesAndPersistsBasicProbe(t *testing.T) {
 		t.Fatalf("request snapshot=%s err=%v", requestSummary, err)
 	}
 	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 5 {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 8 {
 		t.Fatalf("item count=%d err=%v", count, err)
 	}
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE run_id=?`, result.RunID).Scan(&count); err != nil || count != 0 {
@@ -482,7 +482,7 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	mu.Lock()
-	if len(models) != 3 {
+	if len(models) != 8 {
 		mu.Unlock()
 		t.Fatalf("terminal quick suite probe calls=%d models=%v", len(models), models)
 	}
@@ -496,7 +496,7 @@ func TestRuntimeUsesAndFreezesResolvedUpstreamModel(t *testing.T) {
 			t.Fatalf("probe used unexpected model %q", model)
 		}
 	}
-	if resolvedCount != 3 {
+	if resolvedCount != 8 {
 		mu.Unlock()
 		t.Fatalf("probe model distribution resolved=%d models=%v", resolvedCount, models)
 	}
@@ -622,11 +622,13 @@ func TestRuntimeExecutesAndFreezesTrustedComparison(t *testing.T) {
 	}
 }
 
-// TestRuntimeFullRunFormsUniversalEvidenceBothWays 验证通用套件 v5（退役
-// juice/astra/identity/自配 cross_model 后）的 full 档证据形成：
-//   - 非信任路径：6 族通用证据表中 distribution 以 trusted_comparison_not_attached
-//     中性跳过，其余族形成完整回执 → evidenceFormed/trustFormed 均为真；
-//   - 信任路径：distribution_similarity/comparison 项映射回通用族 → 同样形成；
+// TestRuntimeFullRunFormsUniversalEvidenceBothWays 验证通用套件（退役
+// juice/astra/identity/自配 cross_model 后）的 full 档证据形成（v6 起 7 族）：
+//   - 非信任路径：7 族通用证据表中 distribution 以 trusted_comparison_not_attached
+//     中性跳过、sampling_statistics 以证据性通过形成，其余族形成完整回执 →
+//     evidenceFormed/trustFormed 均为真；
+//   - 信任路径：distribution_similarity/comparison 项映射回通用族 → 同样形成，
+//     sampling_statistics 携带对照采样证据；
 //   - 形成证据的质量失败（长上下文失败驱动 suspicious）不再被健康投影门阻断，
 //     健康事实与处罚结果正常落地（health.go 投影门随族表收敛）。
 func TestRuntimeFullRunFormsUniversalEvidenceBothWays(t *testing.T) {
@@ -704,10 +706,18 @@ func TestRuntimeFullRunFormsUniversalEvidenceBothWays(t *testing.T) {
 			t.Fatalf("long-context failure must stay score-driven suspicious: %v", level)
 		}
 	}
-	// 非信任 full：通用 6 族形成 + 质量失败健康投影。
+	// 非信任 full：通用 7 族形成 + 质量失败健康投影。
 	assertFormedQualityFailure(t, RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ProviderCode: "openai", Threshold: 70, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"})
 	// 信任 full：distribution_similarity/comparison 映射回通用族后同样形成。
 	assertFormedQualityFailure(t, RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "full", ProviderCode: "openai", Threshold: 70, TriggerKind: "scheduled", ConfigRevision: "cfg-1", PolicyRevision: "pol-1", TrustedComparison: true, TrustedComparisonAccountID: "acct-2", TrustedComparisonSystemAccountID: "sys", TrustedComparisonConfigRevision: "cfg-2", TrustedComparisonDispatchRevision: 4, TrustedComparisonSourceConfigRevision: "src-2", TrustedComparisonSourceDispatchRevision: 5})
+	// v6 第 7 族：两次 full 运行的 sampling_statistics 观测行必须为 complete。
+	var samplingComplete, samplingPartial int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE probe_family='sampling_statistics' AND observation_status='complete'`).Scan(&samplingComplete); err != nil || samplingComplete != 2 {
+		t.Fatalf("sampling_statistics complete observations=%d err=%v", samplingComplete, err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_observations WHERE probe_family='sampling_statistics' AND observation_status<>'complete'`).Scan(&samplingPartial); err != nil || samplingPartial != 0 {
+		t.Fatalf("sampling_statistics partial observations=%d err=%v", samplingPartial, err)
+	}
 	if enforcement.calls != 2 {
 		t.Fatalf("formed quality failures must reach the enforcement adapter: calls=%d", enforcement.calls)
 	}

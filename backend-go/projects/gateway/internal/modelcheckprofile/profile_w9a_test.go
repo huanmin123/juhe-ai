@@ -49,7 +49,7 @@ func TestW9AFrozenCatalogShape(t *testing.T) {
 	if DefaultModel != "gpt-5.6-sol" || DefaultProfile != "quick" || DistributionSampleCount != 5 {
 		t.Fatalf("frozen constants drifted: %q %q %d", DefaultModel, DefaultProfile, DistributionSampleCount)
 	}
-	if ProbeSetVersion != "multi-provider-model-check-v5-universal" || QuickProbeSetVersion != "multi-provider-model-check-quick-v3-universal" {
+	if ProbeSetVersion != "multi-provider-model-check-v6-universal-sampling" || QuickProbeSetVersion != "multi-provider-model-check-quick-v4-identity" {
 		t.Fatalf("probe set versions drifted: %q %q", ProbeSetVersion, QuickProbeSetVersion)
 	}
 }
