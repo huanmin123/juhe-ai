@@ -39,6 +39,6 @@ const hiddenTagText = computed(() => hiddenTags.value.map((tag) => tag.name).joi
 }
 
 .muted-cell {
-  color: #94a3b8;
+  color: var(--juhe-faint);
 }
 </style>

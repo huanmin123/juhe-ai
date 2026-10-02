@@ -1673,9 +1673,9 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 
 <style scoped>
 .route-strategies-page-card {
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 28px rgba(34, 40, 43, 0.04);
 }
 
 .modal-alert {
@@ -1689,7 +1689,7 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 .mobile-filter-field {
   display: grid;
   gap: 8px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }
@@ -1736,12 +1736,12 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 }
 
 .speed-first-latency-status-unavailable {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .route-strategy-name-text {
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1778,20 +1778,20 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   align-items: center;
   gap: 6px;
   margin: 18px 0 10px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 700;
 }
 
 .route-strategy-field-help-icon {
   flex: none;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   cursor: help;
   font-size: 14px;
 }
 
 .route-strategy-field-help-icon:hover {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .route-strategy-binding-list {
@@ -1814,12 +1814,12 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 
 .route-strategy-binding-row.is-drag-over {
   border-radius: 6px;
-  outline: 1px dashed #1677ff;
+  outline: 1px dashed var(--juhe-accent);
   outline-offset: 3px;
 }
 
 .route-strategy-binding-header {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -1859,7 +1859,7 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #64748b;
+  color: var(--juhe-muted);
   cursor: grab;
 }
 
@@ -1869,8 +1869,8 @@ function boundedInteger(value: unknown, min: number, max: number): number {
 
 .route-strategy-binding-drag-handle:hover,
 .route-strategy-binding-drag-handle:focus-visible {
-  background: #f1f5f9;
-  color: #1677ff;
+  background: var(--juhe-surface-soft);
+  color: var(--juhe-accent);
   outline: none;
 }
 

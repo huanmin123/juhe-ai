@@ -132,7 +132,7 @@ watch(
 .announcement-title-wrap h3 {
   min-width: 0;
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 15px;
   font-weight: 700;
   line-height: 22px;
@@ -141,7 +141,7 @@ watch(
 
 .announcement-item time {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 22px;
   white-space: nowrap;
@@ -151,7 +151,7 @@ watch(
   display: -webkit-box;
   margin: 0;
   overflow: hidden;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 14px;
   line-height: 24px;
   overflow-wrap: anywhere;

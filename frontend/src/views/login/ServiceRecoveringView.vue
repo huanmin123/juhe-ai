@@ -43,7 +43,7 @@ async function retry(): Promise<void> {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: #f5f7fa;
+  background: var(--juhe-surface-soft);
 }
 
 .service-recovering-card {

@@ -193,7 +193,7 @@ watch(
 }
 
 :global(.mobile-drawer .ant-drawer-content-wrapper) {
-  box-shadow: 18px 0 32px rgba(3, 17, 31, 0.2);
+  box-shadow: 18px 0 32px rgba(34, 40, 43, 0.2);
 }
 
 :global(.mobile-drawer .ant-drawer-content) {

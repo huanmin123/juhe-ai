@@ -359,7 +359,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .login-page {
-  --bg: #f4f4f2;
+  --bg: var(--juhe-bg);
   --surface: rgba(255, 255, 255, .6);
   --surface-strong: #ffffff;
   --white: #ffffff;
@@ -375,7 +375,7 @@ onBeforeUnmount(() => {
   --coral: oklch(.55 .06 40);
   --danger: #9d5547;
   --danger: oklch(.5 .1 22);
-  --focus-ring: rgba(82, 105, 107, .16);
+  --focus-ring: rgba(83, 105, 107, .16);
   --focus-ring: oklch(.38 .05 212 / .16);
   --ease-in: cubic-bezier(.22, 1, .36, 1);
   --ease-bounce: cubic-bezier(.34, 1.56, .64, 1);

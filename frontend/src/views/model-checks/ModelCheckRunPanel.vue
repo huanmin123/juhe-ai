@@ -362,7 +362,7 @@ function selectStringValue(value: SelectValue): string | undefined {
 <style scoped>
 .model-checks-run-card {
   flex: 0 0 auto;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
 }
 
@@ -437,7 +437,7 @@ function selectStringValue(value: SelectValue): string | undefined {
 .model-checks-mobile-summary-main {
   max-width: 100%;
   overflow: hidden;
-  color: var(--juhe-fg, #22282b);
+  color: var(--juhe-fg, var(--juhe-fg));
   font-size: 13px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -445,7 +445,7 @@ function selectStringValue(value: SelectValue): string | undefined {
 }
 
 .model-checks-mobile-summary-hint {
-  color: var(--juhe-muted, #53696b);
+  color: var(--juhe-muted, var(--juhe-accent));
   font-size: 11px;
 }
 
@@ -460,7 +460,7 @@ function selectStringValue(value: SelectValue): string | undefined {
 }
 
 .model-checks-mobile-label {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

@@ -256,14 +256,14 @@ function modelText(value: string) {
 }
 
 .run-detail-title {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 16px;
   font-weight: 700;
 }
 
 .run-detail-subtitle {
   margin-top: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 13px;
 }
 
@@ -278,9 +278,9 @@ function modelText(value: string) {
 
 .check-item {
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fbfdff;
+  background: var(--juhe-surface-soft);
 }
 
 .check-item-head {
@@ -288,13 +288,13 @@ function modelText(value: string) {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 700;
 }
 
 .check-message {
   margin-top: 6px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -325,7 +325,7 @@ function modelText(value: string) {
 }
 
 .quiz-item-reason {
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   line-height: 1.6;
   white-space: pre-wrap;

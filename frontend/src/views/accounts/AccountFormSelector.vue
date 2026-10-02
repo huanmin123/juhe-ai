@@ -100,7 +100,7 @@ function providerAccountTypeCount(provider: ProviderDefinition): number {
 }
 
 .entry-label {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }
@@ -112,7 +112,7 @@ function providerAccountTypeCount(provider: ProviderDefinition): number {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

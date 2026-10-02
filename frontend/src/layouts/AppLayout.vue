@@ -787,7 +787,7 @@ watch(
   border-radius: 8px;
   color: var(--juhe-accent);
   background: rgba(250, 249, 247, 0.96);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 8px 20px rgba(34, 40, 43, 0.08);
   font-size: 13px;
 }
 
@@ -812,7 +812,7 @@ watch(
 .route-switch-summary-card {
   border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 28px rgba(34, 40, 43, 0.04);
 }
 
 .route-switch-main-card {
@@ -911,7 +911,7 @@ watch(
 }
 
 .password-lock-state :deep(.ant-result-title) {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 800;
 }
 

@@ -31,7 +31,7 @@ withDefaults(defineProps<{
   grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
   gap: 16px;
   padding: 14px 0;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
 }
 
 .batch-edit-field:last-child {
@@ -47,7 +47,7 @@ withDefaults(defineProps<{
 
 .batch-edit-field-description {
   padding-left: 24px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 1.5;
 }

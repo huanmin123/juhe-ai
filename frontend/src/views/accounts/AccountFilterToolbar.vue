@@ -349,7 +349,7 @@ function isAccountStatus(value: string): value is AccountStatus {
 .mobile-filter-field {
   display: grid;
   gap: 8px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }

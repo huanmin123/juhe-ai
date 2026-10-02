@@ -95,7 +95,7 @@ const emit = defineEmits<{
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 </style>

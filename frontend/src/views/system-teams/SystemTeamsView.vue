@@ -820,9 +820,9 @@ onMounted(loadData)
 
 <style scoped>
 .system-teams-page-card {
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 28px rgba(34, 40, 43, 0.04);
 }
 
 .team-name-cell {
@@ -832,7 +832,7 @@ onMounted(loadData)
 }
 
 .team-name {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 400;
 }
 
@@ -853,7 +853,7 @@ onMounted(loadData)
 
 .form-help {
   margin-top: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -874,7 +874,7 @@ onMounted(loadData)
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -885,12 +885,12 @@ onMounted(loadData)
 }
 
 .team-member-card strong {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 400;
 }
 
 .team-member-card span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

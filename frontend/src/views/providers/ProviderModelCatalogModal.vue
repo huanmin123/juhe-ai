@@ -322,7 +322,7 @@ function modelRowKey(record: ProviderModelPricing): string {
 
 .catalog-display-item > span,
 .model-mobile-catalog-value > span > span {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 11px;
   font-weight: 500;
   overflow-wrap: anywhere;
@@ -331,7 +331,7 @@ function modelRowKey(record: ProviderModelPricing): string {
 
 .catalog-display-item strong {
   min-width: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 600;
   overflow-wrap: anywhere;
   text-align: right;
@@ -343,7 +343,7 @@ function modelRowKey(record: ProviderModelPricing): string {
   gap: 10px;
   padding: 12px;
   background: #fff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
 }
 
@@ -358,14 +358,14 @@ function modelRowKey(record: ProviderModelPricing): string {
   display: grid;
   grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
   gap: 6px 10px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .model-mobile-card-grid strong {
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
 }
 
@@ -397,7 +397,7 @@ function modelRowKey(record: ProviderModelPricing): string {
 
 .tools-matrix-tools {
   min-width: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   overflow-wrap: anywhere;
 }
 

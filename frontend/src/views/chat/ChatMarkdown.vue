@@ -329,10 +329,10 @@ function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c
 </script>
 
 <style scoped>
-.chat-markdown { color: #202936; font-size: 14px; line-height: 1.72; overflow-wrap: anywhere; }
+.chat-markdown { color: var(--juhe-fg); font-size: 14px; line-height: 1.72; overflow-wrap: anywhere; }
 .chat-markdown :deep(p) { margin: 0 0 9px; }
 .chat-markdown :deep(p:last-child) { margin-bottom: 0; }
-.chat-markdown :deep(h1), .chat-markdown :deep(h2), .chat-markdown :deep(h3), .chat-markdown :deep(h4) { margin: 16px 0 7px; color: #182230; font-weight: 650; line-height: 1.35; }
+.chat-markdown :deep(h1), .chat-markdown :deep(h2), .chat-markdown :deep(h3), .chat-markdown :deep(h4) { margin: 16px 0 7px; color: var(--juhe-fg); font-weight: 650; line-height: 1.35; }
 .chat-markdown :deep(h1:first-child), .chat-markdown :deep(h2:first-child), .chat-markdown :deep(h3:first-child) { margin-top: 0; }
 .chat-markdown :deep(h1) { font-size: 20px; }
 .chat-markdown :deep(h2) { font-size: 17px; }
@@ -341,28 +341,28 @@ function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c
 .chat-markdown :deep(li) { margin: 2px 0; }
 .chat-markdown :deep(.task-list-item) { list-style: none; }
 .chat-markdown :deep(.task-list-item input) { margin: 0 7px 0 -21px; }
-.chat-markdown :deep(blockquote) { margin: 10px 0; padding: 3px 0 3px 12px; color: #5f6c7b; border-left: 3px solid #d8dee8; }
+.chat-markdown :deep(blockquote) { margin: 10px 0; padding: 3px 0 3px 12px; color: var(--juhe-muted); border-left: 3px solid var(--juhe-border); }
 .chat-markdown :deep(blockquote p) { margin: 0; }
 .chat-markdown :deep(a) { color: var(--juhe-accent); text-underline-offset: 2px; }
-.chat-markdown :deep(:not(pre) > code) { padding: 1px 5px; color: #9f1239; background: #f5f6f8; border: 1px solid #e8ebef; border-radius: 4px; font-size: .92em; }
+.chat-markdown :deep(:not(pre) > code) { padding: 1px 5px; color: #9f1239; background: var(--juhe-surface-soft); border: 1px solid var(--juhe-border); border-radius: 4px; font-size: .92em; }
 .chat-markdown :deep(code) { font-family: "Cascadia Code", Consolas, monospace; }
-.chat-markdown :deep(.chat-code-block) { max-width: 100%; margin: 10px 0; overflow: hidden; background: #f7f8fa; border: 1px solid #e3e7ec; border-radius: 6px; }
-.chat-markdown :deep(.chat-code-header) { min-height: 30px; display: flex; align-items: center; justify-content: space-between; padding: 0 6px 0 12px; color: #7a8491; border-bottom: 1px solid #e6e9ed; font-size: 11px; }
+.chat-markdown :deep(.chat-code-block) { max-width: 100%; margin: 10px 0; overflow: hidden; background: var(--juhe-surface-soft); border: 1px solid var(--juhe-border); border-radius: 6px; }
+.chat-markdown :deep(.chat-code-header) { min-height: 30px; display: flex; align-items: center; justify-content: space-between; padding: 0 6px 0 12px; color: var(--juhe-muted); border-bottom: 1px solid var(--juhe-border); font-size: 11px; }
 .chat-markdown :deep(.chat-code-language) { text-transform: lowercase; }
-.chat-markdown :deep(.chat-code-copy) { min-width: 48px; min-height: 28px; padding: 0 7px; color: #667085; background: transparent; border: 0; border-radius: 4px; cursor: pointer; font: inherit; }
-.chat-markdown :deep(.chat-code-copy:hover), .chat-markdown :deep(.chat-code-copy:focus-visible) { color: #182230; background: #eceff3; outline: none; }
+.chat-markdown :deep(.chat-code-copy) { min-width: 48px; min-height: 28px; padding: 0 7px; color: var(--juhe-muted); background: transparent; border: 0; border-radius: 4px; cursor: pointer; font: inherit; }
+.chat-markdown :deep(.chat-code-copy:hover), .chat-markdown :deep(.chat-code-copy:focus-visible) { color: var(--juhe-fg); background: var(--juhe-border); outline: none; }
 .chat-markdown :deep(.chat-code-actions) { display: flex; gap: 4px; }
 .chat-markdown :deep(.chat-code-block > iframe.chat-html-preview) { display: block; width: 100%; height: min(60vh, 520px); border: 0; background: #fff; }
 .chat-markdown :deep(.chat-code-block > pre) { max-width: 100%; max-height: 520px; margin: 0; padding: 12px 14px; overflow: auto; background: transparent; }
 .chat-markdown :deep(.chat-svg-pending pre), .chat-markdown :deep(.chat-svg-source pre), .chat-markdown :deep(pre.mermaid-pending), .chat-markdown :deep(pre.mermaid-source) { max-height: 520px; overflow: auto; }
 .chat-markdown :deep(table) { display: block; max-width: 100%; margin: 10px 0; overflow-x: auto; border-collapse: collapse; }
-.chat-markdown :deep(th), .chat-markdown :deep(td) { padding: 6px 9px; border: 1px solid #dfe3e8; text-align: left; white-space: nowrap; }
-.chat-markdown :deep(th) { background: #f7f8fa; font-weight: 600; }
+.chat-markdown :deep(th), .chat-markdown :deep(td) { padding: 6px 9px; border: 1px solid var(--juhe-border); text-align: left; white-space: nowrap; }
+.chat-markdown :deep(th) { background: var(--juhe-surface-soft); font-weight: 600; }
 .chat-markdown :deep(img) { display: block; max-width: 100%; max-height: 520px; margin: 10px 0; object-fit: contain; border-radius: 6px; }
 .chat-markdown :deep(.katex-display) { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
 .chat-markdown :deep(.mermaid) { max-width: 100%; margin: 12px 0; overflow-x: auto; text-align: center; }
 .chat-markdown :deep(.mermaid svg) { max-width: 100%; height: auto; }
-.chat-markdown :deep(.mermaid-error) { max-height: 168px; margin: 10px 0; padding: 9px; overflow: auto; white-space: pre-wrap; color: #b42318; background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 5px; }
-.chat-markdown :deep(.chat-svg-preview) { display: block; max-width: 100%; margin: 10px 0; border: 1px solid #e3e7ec; border-radius: 6px; background: #fff; }
-.chat-markdown :deep(.chat-svg-error) { max-height: 220px; margin: 10px 0; padding: 9px; overflow: auto; white-space: pre-wrap; color: #b42318; background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 5px; }
+.chat-markdown :deep(.mermaid-error) { max-height: 168px; margin: 10px 0; padding: 9px; overflow: auto; white-space: pre-wrap; color: var(--juhe-danger); background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 5px; }
+.chat-markdown :deep(.chat-svg-preview) { display: block; max-width: 100%; margin: 10px 0; border: 1px solid var(--juhe-border); border-radius: 6px; background: #fff; }
+.chat-markdown :deep(.chat-svg-error) { max-height: 220px; margin: 10px 0; padding: 9px; overflow: auto; white-space: pre-wrap; color: var(--juhe-danger); background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 5px; }
 </style>

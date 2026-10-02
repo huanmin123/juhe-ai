@@ -588,24 +588,24 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 22px;
   font-weight: 600;
-  color: var(--juhe-fg, #22282b);
+  color: var(--juhe-fg, var(--juhe-fg));
 }
 
 .settings-page-desc {
   margin: 4px 0 0;
   font-size: 13px;
-  color: var(--juhe-muted, #8b9190);
+  color: var(--juhe-muted, var(--juhe-muted));
 }
 
 .settings-summary {
   margin-left: auto;
   font-size: 13px;
-  color: var(--juhe-muted, #8b9190);
+  color: var(--juhe-muted, var(--juhe-muted));
   white-space: nowrap;
 }
 
 .settings-summary b {
-  color: var(--juhe-warn, #a98548);
+  color: var(--juhe-warn, var(--juhe-warn));
   font-weight: 600;
 }
 
@@ -628,11 +628,11 @@ onBeforeUnmount(() => {
 }
 
 .settings-group-bar:hover {
-  background: var(--juhe-surface-soft, #faf9f7);
+  background: var(--juhe-surface-soft, var(--juhe-surface-soft));
 }
 
 .settings-group-chevron {
-  color: var(--juhe-faint, #a9aeac);
+  color: var(--juhe-faint, var(--juhe-faint));
   font-size: 11px;
   transition: transform 0.18s;
 }
@@ -648,7 +648,7 @@ onBeforeUnmount(() => {
 }
 
 .settings-group-meta {
-  color: var(--juhe-faint, #a9aeac);
+  color: var(--juhe-faint, var(--juhe-faint));
   font-size: 12.5px;
 }
 
@@ -661,14 +661,14 @@ onBeforeUnmount(() => {
 }
 
 .settings-group-status.default {
-  color: var(--juhe-muted, #8b9190);
+  color: var(--juhe-muted, var(--juhe-muted));
   background: rgba(139, 145, 144, 0.1);
   border: 1px solid rgba(139, 145, 144, 0.22);
 }
 
 .settings-group-status.custom,
 .settings-group-status.dirty {
-  color: var(--juhe-warn, #a98548);
+  color: var(--juhe-warn, var(--juhe-warn));
   background: rgba(169, 133, 72, 0.1);
   border: 1px solid rgba(169, 133, 72, 0.3);
 }
@@ -685,7 +685,7 @@ onBeforeUnmount(() => {
 
 .settings-view-subgroup {
   font-size: 12px;
-  color: var(--juhe-muted, #8b9190);
+  color: var(--juhe-muted, var(--juhe-muted));
   letter-spacing: 1.5px;
   margin: 12px 0 6px;
 }
@@ -703,7 +703,7 @@ onBeforeUnmount(() => {
 }
 
 .settings-view-key {
-  color: var(--juhe-fg-soft, #3c4447);
+  color: var(--juhe-fg-soft, var(--juhe-fg-soft));
   font-size: 13px;
   white-space: nowrap;
 }
@@ -718,25 +718,25 @@ onBeforeUnmount(() => {
 .settings-view-value {
   font-size: 13px;
   font-weight: 500;
-  color: var(--juhe-fg, #22282b);
+  color: var(--juhe-fg, var(--juhe-fg));
   white-space: normal;
   text-align: right;
 }
 
 .settings-view-value em {
   font-style: normal;
-  color: var(--juhe-faint, #a9aeac);
+  color: var(--juhe-faint, var(--juhe-faint));
   font-weight: 400;
 }
 
 .settings-view-value.custom {
-  color: var(--juhe-warn, #a98548);
+  color: var(--juhe-warn, var(--juhe-warn));
 }
 
 /* 编辑行 */
 .settings-edit-subgroup {
   font-size: 12px;
-  color: var(--juhe-muted, #8b9190);
+  color: var(--juhe-muted, var(--juhe-muted));
   letter-spacing: 1.5px;
   margin: 14px 0 4px;
 }
@@ -756,20 +756,20 @@ onBeforeUnmount(() => {
 
 .settings-edit-label-text {
   font-size: 13px;
-  color: var(--juhe-fg-soft, #3c4447);
+  color: var(--juhe-fg-soft, var(--juhe-fg-soft));
   display: inline-flex;
   align-items: center;
   gap: 5px;
 }
 
 .settings-help-icon {
-  color: var(--juhe-faint, #a9aeac);
+  color: var(--juhe-faint, var(--juhe-faint));
   cursor: help;
   font-size: 13px;
 }
 
 .settings-help-icon:hover {
-  color: var(--juhe-accent, #53696b);
+  color: var(--juhe-accent, var(--juhe-accent));
 }
 
 .settings-edit-input {
@@ -802,7 +802,7 @@ onBeforeUnmount(() => {
 
 .settings-edit-hint {
   margin-right: auto;
-  color: var(--juhe-faint, #a9aeac);
+  color: var(--juhe-faint, var(--juhe-faint));
   font-size: 12px;
 }
 

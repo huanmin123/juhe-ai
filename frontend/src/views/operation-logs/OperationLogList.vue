@@ -118,12 +118,12 @@ function handleActionClick(key: string, record: OperationLogListItem): void {
 .summary-cell span {
   max-width: 280px;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
 }
 
 .muted-cell {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 12px;
 }
 
@@ -131,14 +131,14 @@ function handleActionClick(key: string, record: OperationLogListItem): void {
   display: inline-block;
   max-width: 190px;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
 }
 
 .mono-cell {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
 }
@@ -149,8 +149,8 @@ function handleActionClick(key: string, record: OperationLogListItem): void {
   gap: 10px;
   padding: 12px;
   text-align: left;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  background: var(--juhe-surface);
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
@@ -164,7 +164,7 @@ function handleActionClick(key: string, record: OperationLogListItem): void {
 
 .mobile-card-head > span {
   min-width: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   line-height: 1.35;
 }
 
@@ -172,12 +172,12 @@ function handleActionClick(key: string, record: OperationLogListItem): void {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 12px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 12px;
 }
 
 .mobile-card-summary {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
   line-height: 1.4;
 }

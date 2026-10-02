@@ -145,11 +145,11 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
 
 .account-priority-trigger:hover,
 .account-priority-trigger:focus-visible {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .account-priority-edit-icon {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
 }
 
@@ -159,20 +159,20 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
   width: 85px;
   align-items: center;
   overflow: hidden;
-  border: 1px solid #91caff;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 8px;
   background: #fff;
-  box-shadow: 0 0 0 2px rgb(22 119 255 / 10%);
+  box-shadow: 0 0 0 2px rgba(83, 105, 107, .10);
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .account-priority-control:focus-within {
-  border-color: #1677ff;
-  box-shadow: 0 0 0 2px rgb(22 119 255 / 14%);
+  border-color: var(--juhe-accent);
+  box-shadow: 0 0 0 2px rgba(83, 105, 107, .14);
 }
 
 .account-priority-control.is-saving {
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .account-priority-input {
@@ -204,12 +204,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
   height: auto;
   padding: 0;
   border: 0;
-  border-left: 1px solid #dbeafe;
+  border-left: 1px solid var(--juhe-border-strong);
   border-radius: 0;
   align-items: center;
   justify-content: center;
-  background: #eff6ff;
-  color: #1677ff;
+  background: var(--juhe-accent-soft);
+  color: var(--juhe-accent);
   cursor: pointer;
   font-size: 13px;
   transition: background-color 160ms ease, color 160ms ease;
@@ -217,18 +217,18 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
 
 .account-priority-confirm:hover:not(:disabled),
 .account-priority-confirm:focus-visible {
-  background: #1677ff;
+  background: var(--juhe-accent);
   color: #fff;
   outline: none;
 }
 
 .account-priority-confirm:disabled {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   cursor: wait;
 }
 
 .account-priority-readonly {
-  color: #475569;
+  color: var(--juhe-fg-soft);
 }
 
 .account-priority-editor-mobile {

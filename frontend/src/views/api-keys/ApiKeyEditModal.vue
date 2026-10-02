@@ -501,7 +501,7 @@ defineExpose({ openCreate, openEdit })
 
 .modal-section-title {
   margin: 18px 0 10px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 700;
 }

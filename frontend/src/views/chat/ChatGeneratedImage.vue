@@ -30,6 +30,6 @@ watch([previewUrl, originalUrl], () => {
 <style scoped>
 .chat-generated-image { max-width: min(100%, 640px); margin: 10px 0 2px; }
 .chat-generated-image-preview { display: block; width: fit-content; max-width: 100%; }
-.chat-generated-image :deep(.ant-image-img) { display: block; max-width: 100%; max-height: 560px; border: 1px solid #e4e7ec; border-radius: 6px; object-fit: contain; background: #f8fafc; cursor: zoom-in; }
-.chat-generated-image-fallback { padding: 16px; color: #b42318; background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 6px; }
+.chat-generated-image :deep(.ant-image-img) { display: block; max-width: 100%; max-height: 560px; border: 1px solid var(--juhe-border); border-radius: 6px; object-fit: contain; background: var(--juhe-surface-soft); cursor: zoom-in; }
+.chat-generated-image-fallback { padding: 16px; color: var(--juhe-danger); background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 6px; }
 </style>

@@ -174,7 +174,7 @@ defineEmits<{
   width: 8px;
   height: 8px;
   background: var(--juhe-coral);
-  border: 2px solid #f4f4f2;
+  border: 2px solid var(--juhe-bg);
   border-radius: 50%;
   box-shadow: 0 0 0 2px rgba(166, 117, 94, 0.18);
 }

@@ -640,8 +640,8 @@ watch(() => form.role, (role) => {
 .request-limit-editor {
   margin-top: 8px;
   padding: 16px;
-  background: #f8fafc;
-  border: 1px solid #e5eaf1;
+  background: var(--juhe-surface-soft);
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
 }
 
@@ -654,7 +654,7 @@ watch(() => form.role, (role) => {
 }
 
 .request-limit-editor-head span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

@@ -98,7 +98,7 @@ const reasoningEffortValue = computed<AccountGptReasoningEffortOverride>({
 <style scoped>
 .gpt-request-overrides-section h4 {
   margin: 0 0 12px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 600;
 }

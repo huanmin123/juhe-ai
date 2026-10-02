@@ -53,9 +53,9 @@ defineProps<{
 .metric-card {
   width: 100%;
   height: 100%;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 28px rgba(34, 40, 43, 0.04);
 }
 
 .metric-card :deep(.ant-card-body) {
@@ -68,20 +68,20 @@ defineProps<{
 }
 
 .metric-label {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 13px;
 }
 
 .metric-value {
   margin-top: 8px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 26px;
   font-weight: 800;
 }
 
 .metric-extra {
   margin-top: 6px;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
 }
 

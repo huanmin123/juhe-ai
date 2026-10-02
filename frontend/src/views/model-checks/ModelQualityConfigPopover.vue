@@ -109,10 +109,10 @@ function save() {
 
 <style scoped>
 .quality-config { display: grid; gap: 14px; }
-.quality-config-title, .quality-config-label { color: #0f172a; font-weight: 600; }
-.quality-config-help { margin-top: 3px; color: #64748b; font-size: 12px; line-height: 1.5; }
+.quality-config-title, .quality-config-label { color: var(--juhe-fg); font-weight: 600; }
+.quality-config-help { margin-top: 3px; color: var(--juhe-muted); font-size: 12px; line-height: 1.5; }
 .quality-config-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.quality-config-field { display: grid; gap: 6px; color: #334155; font-size: 13px; font-weight: 600; }
+.quality-config-field { display: grid; gap: 6px; color: var(--juhe-fg-soft); font-size: 13px; font-weight: 600; }
 .quality-config-field :deep(.ant-select), .quality-config-field :deep(.ant-input-number-group-wrapper) { width: 100%; }
 .quality-config-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

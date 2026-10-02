@@ -286,7 +286,7 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
   min-width: 0;
   flex-direction: column;
   gap: 12px;
-  border-right: 1px solid #edf1f7;
+  border-right: 1px solid var(--juhe-border);
   padding-right: 16px;
 }
 
@@ -311,7 +311,7 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
   min-width: 0;
   flex-direction: column;
   gap: 4px;
-  border: 1px solid #edf1f7;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   padding: 10px;
   background: #fff;
@@ -321,17 +321,17 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
 
 .api-doc-list-item.active,
 .api-doc-list-item:hover {
-  border-color: #1677ff;
+  border-color: var(--juhe-accent);
 }
 
 .api-doc-list-title {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 600;
 }
 
 .api-doc-list-path {
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -366,7 +366,7 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
 
 .api-doc-detail-head p {
   margin: 6px 0 0;
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .api-doc-title-line h3 {
@@ -386,20 +386,20 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
 
 .api-doc-section h5 {
   margin-top: 12px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
 }
 
 .api-doc-content-type {
   margin-bottom: 8px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
 }
 
 .api-doc-field-table {
   display: grid;
   gap: 1px;
   overflow: hidden;
-  border: 1px solid #edf1f7;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
 }
 
@@ -417,8 +417,8 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
 }
 
 .api-doc-field-row.head {
-  background: #f8fafc;
-  color: #64748b;
+  background: var(--juhe-surface-soft);
+  color: var(--juhe-muted);
   font-weight: 600;
 }
 
@@ -426,7 +426,7 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
   overflow: auto;
   max-height: 260px;
   margin: 0;
-  border: 1px solid #edf1f7;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   padding: 12px;
   background: #0f172a;
@@ -448,7 +448,7 @@ function exportApiMarkdown(item: ExternalPublicApiDocItem | undefined): void {
   .api-doc-sidebar {
     max-height: 380px;
     border-right: 0;
-    border-bottom: 1px solid #edf1f7;
+    border-bottom: 1px solid var(--juhe-border);
     padding-right: 0;
     padding-bottom: 12px;
   }

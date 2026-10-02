@@ -85,12 +85,12 @@ const guideActionColumns = [
 
 .guide-section h4 {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
 }
 
 .guide-note {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 20px;
 }
@@ -102,11 +102,11 @@ const guideActionColumns = [
 .guide-code {
   overflow-x: auto;
   margin: 0;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
   padding: 12px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 20px;

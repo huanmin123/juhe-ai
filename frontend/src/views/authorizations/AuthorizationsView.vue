@@ -811,9 +811,9 @@ watch(() => filters.granteeSystemAccount, (selection) => rememberPrincipalSelect
 
 <style scoped>
 .authorizations-page-card {
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 28px rgba(34, 40, 43, 0.04);
 }
 
 </style>

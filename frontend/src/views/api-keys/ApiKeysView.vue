@@ -670,9 +670,9 @@ onMounted(loadData)
 
 <style scoped>
 .api-keys-page-card {
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 28px rgba(34, 40, 43, 0.04);
 }
 
 .toolbar-select {
@@ -682,7 +682,7 @@ onMounted(loadData)
 .mobile-filter-field {
   display: grid;
   gap: 8px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }

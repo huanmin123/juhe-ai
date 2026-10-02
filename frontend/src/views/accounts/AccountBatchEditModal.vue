@@ -985,7 +985,7 @@ function clearAccountModelContext(account: AccountBatchEditContextItem): Account
   justify-content: space-between;
   gap: 20px;
   padding: 2px 0 12px;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
 }
 
 .batch-edit-summary-main {
@@ -997,7 +997,7 @@ function clearAccountModelContext(account: AccountBatchEditContextItem): Account
 
 .batch-edit-summary-main span,
 .batch-edit-summary-hint {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -1058,7 +1058,7 @@ function clearAccountModelContext(account: AccountBatchEditContextItem): Account
 }
 
 .mapping-arrow {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .batch-edit-footer {
@@ -1067,8 +1067,8 @@ function clearAccountModelContext(account: AccountBatchEditContextItem): Account
   justify-content: space-between;
   gap: 16px;
   padding-top: 14px;
-  border-top: 1px solid #eef2f7;
-  color: #64748b;
+  border-top: 1px solid var(--juhe-border);
+  color: var(--juhe-muted);
   font-size: 13px;
 }
 

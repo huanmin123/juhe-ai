@@ -925,7 +925,7 @@ const {
   groupIdForAccount,
   groups,
   isManagementView,
-  onCreateGuardSystemAccount: openFilterDrawerForSystemAccount,
+  onCreateGuardSystemAccount: () => openFilterDrawerForSystemAccount('create'),
   ensureProviderDefinition,
   loadGroupOptions,
   loadData,
@@ -1354,16 +1354,29 @@ async function confirmBatchDisable(): Promise<void> {
 
 // 「未选系统账户」guard 拦截创建/导入时，直接打开筛选抽屉引导用户选择系统账户
 //（手机端系统账户选择藏在筛选抽屉里，光靠 toast 无法指路）。
+// 记住拦截意图：抽屉关闭且已选出系统账户时自动继续创建/导入，避免“选完还要再点一次”的断头流程；
+// 用户手动打开抽屉（无意图）或未选账户就关闭时均不接续。
 const filterDrawerOpen = ref<boolean | undefined>(undefined)
+const pendingGuardIntent = ref<'create' | 'import' | undefined>(undefined)
 
-function openFilterDrawerForSystemAccount() {
+function openFilterDrawerForSystemAccount(intent: 'create' | 'import') {
+  pendingGuardIntent.value = intent
   filterDrawerOpen.value = true
 }
+
+watch(filterDrawerOpen, (next) => {
+  if (next !== false || !pendingGuardIntent.value) return
+  const intent = pendingGuardIntent.value
+  pendingGuardIntent.value = undefined
+  if (!accountScopeParams.value?.systemAccountId) return
+  if (intent === 'create') openCreate()
+  else importModalOpen.value = true
+})
 
 function openImportModal() {
   if (isManagementView.value && !accountScopeParams.value?.systemAccountId) {
     message.warning('请先选择目标系统账户，再导入 AI 账户')
-    openFilterDrawerForSystemAccount()
+    openFilterDrawerForSystemAccount('import')
     return
   }
   importModalOpen.value = true
@@ -1395,9 +1408,9 @@ onMounted(() => {
 
 <style scoped>
 .accounts-page-card {
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 28px rgba(34, 40, 43, 0.04);
 }
 
 .credential-cell {
@@ -1420,7 +1433,7 @@ onMounted(() => {
 
 .form-help {
   margin-top: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -1441,7 +1454,7 @@ onMounted(() => {
 
 .form-section {
   padding: 16px;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
   background: #fff;
 }

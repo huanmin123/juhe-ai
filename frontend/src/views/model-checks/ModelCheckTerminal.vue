@@ -119,7 +119,7 @@ onBeforeUnmount(() => {
 
 .terminal-subtitle {
   margin-top: 2px;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
 }
 
@@ -143,7 +143,7 @@ onBeforeUnmount(() => {
 }
 
 .terminal-time {
-  color: #64748b;
+  color: var(--juhe-muted);
   white-space: nowrap;
 }
 
@@ -164,7 +164,7 @@ onBeforeUnmount(() => {
 }
 
 .terminal-line-muted .terminal-text {
-  color: #94a3b8;
+  color: var(--juhe-faint);
 }
 
 .terminal-cursor::after {

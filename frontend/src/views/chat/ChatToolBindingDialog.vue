@@ -163,9 +163,9 @@ async function save(): Promise<void> {
 </script>
 
 <style scoped>
-.chat-tool-binding-intro { margin: 0 0 10px; color: #64748b; font-size: 12px; }
-.chat-tool-binding-warning { margin: 0 0 10px; color: #b45309; font-size: 12px; }
+.chat-tool-binding-intro { margin: 0 0 10px; color: var(--juhe-muted); font-size: 12px; }
+.chat-tool-binding-warning { margin: 0 0 10px; color: var(--juhe-warn); font-size: 12px; }
 .chat-tool-binding-filter { margin-bottom: 10px; }
 .chat-tool-binding-options { display: grid; gap: 8px; width: 100%; max-height: 300px; overflow-y: auto; }
-.chat-tool-binding-unbound span { color: #64748b; }
+.chat-tool-binding-unbound span { color: var(--juhe-muted); }
 </style>

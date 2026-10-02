@@ -438,7 +438,7 @@ defineEmits<{
   gap: 10px;
   min-width: 0;
   padding: 12px;
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 14px;
   background: #fff;
 }
@@ -450,10 +450,10 @@ defineEmits<{
   justify-content: center;
   width: 26px;
   height: 26px;
-  color: #1d4ed8;
+  color: var(--juhe-accent);
   font-weight: 700;
   border-radius: 999px;
-  background: #dbeafe;
+  background: var(--juhe-accent-soft);
 }
 
 .oauth-step-card div {
@@ -464,13 +464,13 @@ defineEmits<{
 }
 
 .oauth-step-card strong {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
 }
 
 .oauth-step-card small {
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -484,7 +484,7 @@ defineEmits<{
 
 .form-help {
   margin-top: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

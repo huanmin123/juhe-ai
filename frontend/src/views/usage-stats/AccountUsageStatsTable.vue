@@ -157,9 +157,9 @@ const emit = defineEmits<{
 
 <style scoped>
 .usage-stats-table-card {
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 10px 28px rgba(34, 40, 43, 0.04);
 }
 
 .usage-stats-table-head {
@@ -171,14 +171,14 @@ const emit = defineEmits<{
 
 .usage-stats-table-head h3 {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 16px;
   font-weight: 700;
 }
 
 .usage-stats-table-head p {
   margin: 4px 0 0;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -201,14 +201,14 @@ const emit = defineEmits<{
   display: inline-block;
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .usage-account-meta {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -219,14 +219,14 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: center;
   border-radius: 6px;
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--juhe-surface-soft);
+  color: var(--juhe-fg-soft);
   font-size: 12px;
   font-weight: 700;
 }
 
 .usage-number {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-family: Consolas, 'Courier New', monospace;
 }
 
@@ -235,7 +235,7 @@ const emit = defineEmits<{
   flex-direction: column;
   gap: 14px;
   padding: 14px;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -250,7 +250,7 @@ const emit = defineEmits<{
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 700;
 }
 
@@ -260,7 +260,7 @@ const emit = defineEmits<{
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 6px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -273,14 +273,14 @@ const emit = defineEmits<{
 .usage-mobile-metric {
   min-width: 0;
   padding: 10px;
-  border: 1px solid #eef2f7;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .usage-mobile-metric span {
   display: block;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -288,7 +288,7 @@ const emit = defineEmits<{
   display: block;
   margin-top: 4px;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -941,7 +941,7 @@ onBeforeUnmount(() => {
 
 :global(.stats-error-tooltip .stats-tooltip-title) {
   margin-bottom: 8px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 700;
 }
 
@@ -954,12 +954,12 @@ onBeforeUnmount(() => {
 
 :global(.stats-error-tooltip .stats-tooltip-label),
 :global(.stats-error-tooltip .stats-tooltip-block-label) {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 :global(.stats-error-tooltip .stats-tooltip-value),
 :global(.stats-error-tooltip .stats-tooltip-message) {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   word-break: break-word;
@@ -968,7 +968,7 @@ onBeforeUnmount(() => {
 :global(.stats-error-tooltip .stats-tooltip-block) {
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid #e8edf5;
+  border-top: 1px solid var(--juhe-border);
 }
 
 :global(.stats-error-tooltip .stats-tooltip-message) {
@@ -1004,7 +1004,7 @@ onBeforeUnmount(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--juhe-coral, #a6755e);
+  background: var(--juhe-coral, var(--juhe-coral));
 }
 
 .stats-mobile-filter-field {
@@ -1014,7 +1014,7 @@ onBeforeUnmount(() => {
 }
 
 .stats-mobile-filter-label {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

@@ -225,9 +225,9 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
   justify-content: space-between;
   gap: 12px;
   padding: 14px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .test-account-main {
@@ -246,12 +246,12 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
   height: 40px;
   color: #fff;
   border-radius: 8px;
-  background: #1677ff;
+  background: var(--juhe-accent);
 }
 
 .test-account-name {
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 16px;
   font-weight: 700;
   text-overflow: ellipsis;
@@ -267,7 +267,7 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
   align-items: center;
   gap: 6px;
   margin-top: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -313,7 +313,7 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
 }
 
 .test-output-line.muted {
-  color: #94a3b8;
+  color: var(--juhe-faint);
 }
 
 .test-output-line.info {
@@ -353,7 +353,7 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
 
 .test-result-collapse {
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .test-modal-footer {
@@ -363,13 +363,13 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
   gap: 12px;
   flex-wrap: wrap;
   padding-top: 12px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .test-footer-hint {
   display: flex;
   gap: 16px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

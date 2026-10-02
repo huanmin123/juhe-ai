@@ -143,7 +143,7 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
 <style scoped>
 .form-section {
   padding: 2px 0 4px;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
   background: transparent;
 }
 
@@ -176,7 +176,7 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
 
 .form-help {
   margin-top: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

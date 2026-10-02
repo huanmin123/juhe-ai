@@ -168,9 +168,9 @@ const grepRawText = computed(() => props.grepItem?.line ? prettyRawJson(props.gr
   margin: 0;
   padding: 12px;
   overflow: auto;
-  color: #0f172a;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  color: var(--juhe-fg);
+  background: var(--juhe-surface-soft);
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;

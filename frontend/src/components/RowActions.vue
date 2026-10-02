@@ -345,7 +345,7 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 }
 
 .row-action-tone-default {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .row-action-tone-primary {
@@ -379,12 +379,12 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 }
 
 .row-actions-icon .row-action-button:hover {
-  background: #f1f5f9;
+  background: var(--juhe-surface-soft);
 }
 
 .row-actions-icon .row-action-tone-primary:hover {
   color: #0958d9;
-  background: #e6f4ff;
+  background: var(--juhe-accent-soft);
 }
 
 .row-actions-icon .row-action-tone-success:hover {
@@ -413,7 +413,7 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 }
 
 .row-action-more-button {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .row-action-menu-label {
@@ -427,7 +427,7 @@ function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | 
 }
 
 .row-action-menu-tone-default .row-action-menu-icon {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .row-action-menu-tone-primary .row-action-menu-icon {

@@ -483,14 +483,14 @@ async function confirmReject() {
 }
 
 .question-bank-modal-title > span {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 17px;
   font-weight: 600;
   line-height: 24px;
 }
 
 .question-bank-modal-title small {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 400;
   line-height: 18px;
@@ -513,7 +513,7 @@ async function confirmReject() {
 .question-list-head h3,
 .question-item h4 {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
 }
 
 .question-editor h3,
@@ -526,7 +526,7 @@ async function confirmReject() {
 .question-editor-head p,
 .question-list-head p {
   margin: 3px 0 0;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -551,14 +551,14 @@ async function confirmReject() {
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 0 0;
-  border-top: 1px solid #eef2f7;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .question-list-section {
   min-width: 0;
   margin-top: 22px;
   padding-top: 18px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .question-list-head {
@@ -579,7 +579,7 @@ async function confirmReject() {
 }
 
 .question-list {
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .question-item {
@@ -588,12 +588,12 @@ async function confirmReject() {
   justify-content: space-between;
   gap: 14px;
   padding: 14px 0;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
   transition: background-color .2s ease;
 }
 
 .question-item:hover {
-  background: #fafcff;
+  background: var(--juhe-surface-soft);
 }
 
 .question-item-main {
@@ -622,7 +622,7 @@ async function confirmReject() {
   display: -webkit-box;
   margin: 5px 0 0;
   overflow: hidden;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 12px;
   line-height: 20px;
   -webkit-box-orient: vertical;
@@ -635,7 +635,7 @@ async function confirmReject() {
   flex-wrap: wrap;
   gap: 4px 12px;
   margin-top: 6px;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 11px;
   line-height: 16px;
 }
@@ -647,12 +647,12 @@ async function confirmReject() {
 .question-empty {
   margin: 0;
   padding: 28px 16px 20px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .question-empty-help {
   display: block;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
   line-height: 18px;
 }
@@ -675,7 +675,7 @@ async function confirmReject() {
 }
 
 .question-detail-title {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 16px;
   font-weight: 700;
   line-height: 24px;
@@ -684,7 +684,7 @@ async function confirmReject() {
 
 .question-detail-subtitle {
   margin-top: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -698,14 +698,14 @@ async function confirmReject() {
 }
 
 .question-detail-label {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }
 
 .question-detail-text {
   margin: 0;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   line-height: 1.7;
   white-space: pre-wrap;
@@ -713,7 +713,7 @@ async function confirmReject() {
 }
 
 .question-detail-muted {
-  color: #94a3b8;
+  color: var(--juhe-faint);
 }
 
 .question-detail-descriptions {
@@ -722,7 +722,7 @@ async function confirmReject() {
 
 .question-reject-hint {
   margin: 0;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -741,15 +741,15 @@ async function confirmReject() {
 :global(.question-bank-modal-wrap .ant-modal-content) {
   overflow: hidden;
   padding: 0;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  box-shadow: 0 24px 64px rgba(15, 23, 42, .18);
+  box-shadow: 0 24px 64px rgba(34, 40, 43, .18);
 }
 
 :global(.question-bank-modal-wrap .ant-modal-header) {
   margin: 0;
   padding: 18px 22px 15px;
-  border-bottom: 1px solid #e8eef6;
+  border-bottom: 1px solid var(--juhe-border);
 }
 
 :global(.question-bank-modal-wrap .ant-modal-body) {
@@ -761,7 +761,7 @@ async function confirmReject() {
 :global(.question-bank-modal-wrap .ant-modal-close) {
   top: 17px;
   inset-inline-end: 18px;
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 @media (max-width: 940px) {

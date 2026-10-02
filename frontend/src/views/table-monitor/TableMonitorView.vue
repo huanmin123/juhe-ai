@@ -752,7 +752,7 @@ onBeforeUnmount(() => {
 }
 
 .table-monitor-freshness {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -762,7 +762,7 @@ onBeforeUnmount(() => {
 }
 
 .table-monitor-mobile-card-clickable:focus-visible {
-  outline: 2px solid #1677ff;
+  outline: 2px solid var(--juhe-accent);
   outline-offset: 2px;
 }
 
@@ -786,7 +786,7 @@ onBeforeUnmount(() => {
 
 .database-summary-card {
   width: 100%;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
 }
 
@@ -809,7 +809,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   cursor: default;
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   text-overflow: ellipsis;
@@ -818,7 +818,7 @@ onBeforeUnmount(() => {
 
 .database-summary-value {
   margin-top: 12px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 28px;
   font-weight: 800;
   line-height: 1.2;
@@ -829,7 +829,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 10px 14px;
   margin-top: 10px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 13px;
 }
 
@@ -846,12 +846,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: flex-start;
   gap: 8px;
-  color: #0f172a;
+  color: var(--juhe-fg);
 }
 
 .table-parent-cell,
 .index-ratio {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -867,7 +867,7 @@ onBeforeUnmount(() => {
   padding: 12px;
   text-align: left;
   background: #fff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
@@ -889,7 +889,7 @@ onBeforeUnmount(() => {
 .growth-rows {
   display: inline-block;
   margin-left: 6px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

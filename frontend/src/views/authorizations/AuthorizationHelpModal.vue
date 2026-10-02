@@ -34,22 +34,22 @@ const open = defineModel<boolean>('open', { required: true })
 
 .authorization-help-section {
   padding: 14px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 12px;
-  background: #fbfdff;
+  background: var(--juhe-surface-soft);
 }
 
 .authorization-help-title {
   display: block;
   margin-bottom: 6px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 15px;
   font-weight: 700;
 }
 
 .authorization-help-section p {
   margin: 0;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   line-height: 1.7;
 }

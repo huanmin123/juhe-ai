@@ -305,13 +305,13 @@ function modelMappingProtocolContext() {
 .form-section {
   min-width: 0;
   padding: 0 0 16px;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
   background: transparent;
 }
 
 .form-help {
   margin-top: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -375,7 +375,7 @@ function modelMappingProtocolContext() {
 }
 
 .model-mapping-arrow {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 16px;
 }
 

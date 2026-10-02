@@ -423,7 +423,7 @@ function downloadTextFile(filename: string, content: string, type: string): void
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }
@@ -442,7 +442,7 @@ function downloadTextFile(filename: string, content: string, type: string): void
 .protocol-panel,
 .preview-panel {
   padding: 14px;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 12px;
   background: #fff;
 }
@@ -457,7 +457,7 @@ function downloadTextFile(filename: string, content: string, type: string): void
 
 .import-section-head h4 {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 15px;
 }
 
@@ -481,10 +481,10 @@ function downloadTextFile(filename: string, content: string, type: string): void
 .ai-prompt {
   margin: 0;
   padding: 10px 12px;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed var(--juhe-border-strong);
   border-radius: 10px;
-  color: #475569;
-  background: #f8fafc;
+  color: var(--juhe-fg-soft);
+  background: var(--juhe-surface-soft);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -496,7 +496,7 @@ function downloadTextFile(filename: string, content: string, type: string): void
   justify-content: space-between;
   gap: 12px;
   margin: 14px 0 6px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 12px;
   font-weight: 600;
 }
@@ -506,10 +506,10 @@ function downloadTextFile(filename: string, content: string, type: string): void
   margin: 0;
   padding: 10px 12px;
   overflow: auto;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  color: #334155;
-  background: #f8fafc;
+  color: var(--juhe-fg-soft);
+  background: var(--juhe-surface-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.55;
@@ -526,15 +526,15 @@ function downloadTextFile(filename: string, content: string, type: string): void
 
 .summary-item {
   padding: 10px 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 10px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .summary-item span,
 .summary-item em {
   display: block;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-style: normal;
 }
@@ -542,7 +542,7 @@ function downloadTextFile(filename: string, content: string, type: string): void
 .summary-item strong {
   display: block;
   margin: 2px 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 22px;
   line-height: 1.2;
 }
@@ -556,20 +556,20 @@ function downloadTextFile(filename: string, content: string, type: string): void
   gap: 2px;
   margin: 0 0 12px;
   padding: 10px 12px;
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 10px;
-  background: #eff6ff;
+  background: var(--juhe-accent-soft);
 }
 
 .source-summary span,
 .source-summary em {
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 12px;
   font-style: normal;
 }
 
 .source-summary strong {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 18px;
 }
 

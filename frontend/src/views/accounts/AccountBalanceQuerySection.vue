@@ -84,7 +84,7 @@ const adapterOptions = [
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #1f2937;
+  color: var(--juhe-fg);
   font-weight: 600;
 }
 
@@ -97,7 +97,7 @@ const adapterOptions = [
 }
 
 .balance-query-help {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   cursor: help;
   font-size: 13px;
 }

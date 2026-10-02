@@ -52,21 +52,21 @@ defineEmits<{
   flex-wrap: wrap;
   padding: 14px 16px;
   margin-bottom: 16px;
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 8px;
-  background: #f8fbff;
+  background: var(--juhe-surface-soft);
 }
 
 .batch-toolbar-info {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  color: #1d4ed8;
+  color: var(--juhe-accent);
   font-weight: 600;
 }
 
 .batch-toolbar-hint {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 400;
 }

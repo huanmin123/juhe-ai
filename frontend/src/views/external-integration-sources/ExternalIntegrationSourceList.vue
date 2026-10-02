@@ -218,7 +218,7 @@ function sourceStatusColor(status: ExternalIntegrationSourceStatus): string {
   display: -webkit-box;
   max-width: 260px;
   overflow: hidden;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   line-height: 1.5;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
@@ -230,17 +230,17 @@ function sourceStatusColor(status: ExternalIntegrationSourceStatus): string {
   min-width: 0;
   flex-direction: column;
   gap: 4px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid var(--juhe-border);
   padding-top: 10px;
 }
 
 .mobile-list-note span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .mobile-list-note strong {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 500;
   line-height: 1.5;
@@ -278,7 +278,7 @@ function sourceStatusColor(status: ExternalIntegrationSourceStatus): string {
 }
 
 .token-copy-button {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .token-copy-button-wrap {
@@ -286,7 +286,7 @@ function sourceStatusColor(status: ExternalIntegrationSourceStatus): string {
 }
 
 .token-copy-button:hover:not(:disabled) {
-  color: #1677ff;
-  background: #eff6ff;
+  color: var(--juhe-accent);
+  background: var(--juhe-accent-soft);
 }
 </style>

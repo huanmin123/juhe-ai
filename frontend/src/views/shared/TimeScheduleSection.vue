@@ -80,7 +80,7 @@ function removeScheduleWindow(index: number): void {
 
 .time-schedule-section-bordered {
   padding: 0 0 16px;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
 }
 
 .schedule-toggle-row {
@@ -95,19 +95,19 @@ function removeScheduleWindow(index: number): void {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }
 
 .help-icon {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   cursor: help;
   font-size: 14px;
 }
 
 .help-icon:hover {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .schedule-config,

@@ -753,8 +753,8 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
 
 .usage-stats-account-filter-entry:hover,
 .usage-stats-account-filter-entry.active {
-  border-color: #91caff;
-  background: #e6f4ff;
+  border-color: var(--juhe-border-strong);
+  background: var(--juhe-accent-soft);
 }
 
 .usage-stats-account-filter-entry.muted {
@@ -768,7 +768,7 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
   gap: 6px;
   padding: 2px 8px;
   border: 0;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   background: transparent;
   font-size: 13px;
   line-height: 20px;
@@ -785,7 +785,7 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
   padding: 0;
   border: 0;
   border-radius: 5px;
-  color: #64748b;
+  color: var(--juhe-muted);
   background: transparent;
   font-size: 12px;
   cursor: pointer;
@@ -838,7 +838,7 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--juhe-coral, #a6755e);
+  background: var(--juhe-coral, var(--juhe-coral));
 }
 
 .usage-stats-chips-toggle {
@@ -852,7 +852,7 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
   border: 0;
   border-radius: var(--juhe-radius-sm, 8px);
   background: transparent;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   cursor: pointer;
 }
@@ -873,7 +873,7 @@ watch(() => filters.systemAccount, (selection) => rememberPrincipalSelection(sel
 }
 
 .stats-mobile-filter-label {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

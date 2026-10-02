@@ -286,7 +286,7 @@ function normalizeDraftItemOrder(items: TableColumnManagerItem[]): TableColumnMa
 
 .table-column-manager-header {
   padding: 0 12px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 600;
 }
@@ -302,14 +302,14 @@ function normalizeDraftItemOrder(items: TableColumnManagerItem[]): TableColumnMa
 .table-column-manager-item {
   position: relative;
   padding: 10px 12px 10px 38px;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
   transition: border-color 0.16s ease, background-color 0.16s ease, opacity 0.16s ease;
 }
 
 .table-column-manager-item.hidden {
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .table-column-manager-item.dragging {
@@ -318,27 +318,27 @@ function normalizeDraftItemOrder(items: TableColumnManagerItem[]): TableColumnMa
 
 .table-column-manager-item.drag-over {
   border-color: var(--juhe-accent);
-  background: #f8fbff;
+  background: var(--juhe-surface-soft);
 }
 
 .table-column-manager-drag {
   position: absolute;
   left: 12px;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   cursor: grab;
 }
 
 .table-column-manager-title {
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .table-column-manager-item.hidden .table-column-manager-title {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .table-column-manager-order {

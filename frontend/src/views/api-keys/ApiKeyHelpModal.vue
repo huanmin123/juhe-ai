@@ -49,9 +49,9 @@ const open = defineModel<boolean>('open', { required: true })
 
 .gateway-help-section {
   padding: 14px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 12px;
-  background: #fbfdff;
+  background: var(--juhe-surface-soft);
 }
 
 .gateway-help-note {
@@ -59,7 +59,7 @@ const open = defineModel<boolean>('open', { required: true })
 }
 
 .gateway-step-title {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 15px;
   font-weight: 700;
 }
@@ -73,7 +73,7 @@ const open = defineModel<boolean>('open', { required: true })
 
 .gateway-url-label {
   flex: none;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 600;
 }
@@ -99,11 +99,11 @@ const open = defineModel<boolean>('open', { required: true })
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.6;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.8);
 }

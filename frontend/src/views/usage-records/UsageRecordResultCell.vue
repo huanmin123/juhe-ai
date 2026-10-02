@@ -41,7 +41,7 @@ const failureDetail = computed(() => {
 }
 
 .usage-failure-info {
-  color: #667085;
+  color: var(--juhe-muted);
   cursor: help;
   font-size: 14px;
 }

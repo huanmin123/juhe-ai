@@ -154,7 +154,7 @@ defineEmits<{
 
 <style scoped>
 .account-table {
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 14px;
 }
 

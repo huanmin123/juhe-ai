@@ -26,12 +26,12 @@ onBeforeUnmount(() => { if (timer !== undefined) window.clearInterval(timer) })
 </script>
 
 <style scoped>
-.chat-thinking { min-height: 32px; display: inline-flex; align-items: center; gap: 8px; color: #64748b; font-size: 13px; }
+.chat-thinking { min-height: 32px; display: inline-flex; align-items: center; gap: 8px; color: var(--juhe-muted); font-size: 13px; }
 .chat-thinking-mark { display: inline-flex; align-items: center; gap: 3px; }
 .chat-thinking-mark i { width: 4px; height: 4px; border-radius: 50%; background: var(--juhe-accent); animation: chat-thinking-dot 1.2s ease-in-out infinite; }
 .chat-thinking-mark i:nth-child(2) { animation-delay: .16s; }
 .chat-thinking-mark i:nth-child(3) { animation-delay: .32s; }
-.chat-thinking-elapsed { min-width: 4.5em; color: #98a2b3; font-variant-numeric: tabular-nums; }
+.chat-thinking-elapsed { min-width: 4.5em; color: var(--juhe-faint); font-variant-numeric: tabular-nums; }
 @keyframes chat-thinking-dot { 0%, 70%, 100% { opacity: .28; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) { .chat-thinking-mark i { animation: none; opacity: .7; } }
 </style>

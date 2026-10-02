@@ -572,13 +572,13 @@ function handleRequestChainAction(record: RequestChainRow): void {
 }
 
 .request-chain-heading strong {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
 }
 
 .request-chain-heading span,
 .chain-secondary-text {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -642,8 +642,8 @@ function handleRequestChainAction(record: RequestChainRow): void {
   gap: 16px;
   min-height: 42px;
   padding: 0 10px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: var(--juhe-surface-soft);
+  border: 1px solid var(--juhe-border);
   border-bottom: 0;
   border-radius: 8px 8px 0 0;
 }
@@ -654,14 +654,14 @@ function handleRequestChainAction(record: RequestChainRow): void {
   min-width: 0;
   flex: 1 1 auto;
   gap: 12px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   white-space: nowrap;
 }
 
 .payload-viewer-main strong {
   flex: 0 0 auto;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
 }
 
@@ -696,16 +696,16 @@ function handleRequestChainAction(record: RequestChainRow): void {
 
 .payload-empty {
   padding: 28px 12px;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed var(--juhe-border-strong);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .payload-mobile-card {
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -720,21 +720,21 @@ function handleRequestChainAction(record: RequestChainRow): void {
 .payload-mobile-title {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: #0f172a;
+  color: var(--juhe-fg);
 }
 
 .payload-mobile-card-grid {
   display: grid;
   grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
   gap: 6px 10px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .payload-mobile-card-grid strong {
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
 }
 </style>

@@ -149,7 +149,7 @@ function cardTitle(record: RuntimeLogListRecord): string {
 
 .link-button {
   padding: 0;
-  color: #1677ff;
+  color: var(--juhe-accent);
   background: transparent;
   border: 0;
   cursor: pointer;

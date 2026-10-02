@@ -1356,13 +1356,13 @@ const emit = defineEmits<{
 
 .account-advanced-collapse :deep(.ant-collapse-content) {
   min-width: 0;
-  border-top: 1px solid #eef2f7;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .account-advanced-collapse :deep(.ant-collapse-content-box) {
   min-width: 0;
   padding: 16px !important;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .advanced-header {
@@ -1373,13 +1373,13 @@ const emit = defineEmits<{
 }
 
 .advanced-header span {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 15px;
   font-weight: 600;
 }
 
 .advanced-header small {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -1403,7 +1403,7 @@ const emit = defineEmits<{
 }
 
 .lock-runtime-state small {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -1449,11 +1449,11 @@ const emit = defineEmits<{
 }
 
 .advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content) {
-  border-top-color: #eef2f7;
+  border-top-color: var(--juhe-border);
 }
 
 .advanced-section-stack :deep(.response-policy-collapse .ant-collapse-content) {
-  border-top-color: #eef2f7;
+  border-top-color: var(--juhe-border);
 }
 
 .advanced-section-stack :deep(.error-policy-collapse .ant-collapse-content-box) {

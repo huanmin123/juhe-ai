@@ -286,7 +286,7 @@ const emit = defineEmits<{
 }
 
 .key-copy-button {
-  color: #94a3b8;
+  color: var(--juhe-faint);
 }
 
 .key-copy-button-wrap {
@@ -294,7 +294,7 @@ const emit = defineEmits<{
 }
 
 .key-copy-button:hover:not(:disabled) {
-  color: #1677ff;
-  background: #eff6ff;
+  color: var(--juhe-accent);
+  background: var(--juhe-accent-soft);
 }
 </style>

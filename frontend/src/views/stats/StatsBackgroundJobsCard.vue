@@ -201,7 +201,7 @@ function handleTableChange(...args: unknown[]): void {
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -228,7 +228,7 @@ function handleTableChange(...args: unknown[]): void {
 
 .background-job-card-head strong {
   min-width: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 400;
   overflow-wrap: anywhere;
 }

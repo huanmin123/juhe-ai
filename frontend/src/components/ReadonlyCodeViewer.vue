@@ -193,7 +193,7 @@ function createEditorState(doc: string, shouldUseJson: boolean): EditorState {
       EditorView.theme({
         '&': {
           height: editorHeight,
-          border: '1px solid #e2e8f0',
+          border: '1px solid var(--juhe-border)',
           borderRadius: editorBorderRadius,
           fontSize: '12px'
         },
@@ -207,15 +207,15 @@ function createEditorState(doc: string, shouldUseJson: boolean): EditorState {
           minHeight: editorHeight
         },
         '.cm-gutters': {
-          backgroundColor: '#f8fafc',
-          borderRight: '1px solid #e2e8f0',
-          color: '#64748b'
+          backgroundColor: 'var(--juhe-surface-soft)',
+          borderRight: '1px solid var(--juhe-border)',
+          color: 'var(--juhe-muted)'
         },
         '.cm-activeLine': {
-          backgroundColor: '#f8fafc'
+          backgroundColor: 'var(--juhe-surface-soft)'
         },
         '.cm-activeLineGutter': {
-          backgroundColor: '#eef6ff'
+          backgroundColor: 'var(--juhe-accent-soft)'
         }
       }),
       shouldUseJson ? json() : []
@@ -279,10 +279,10 @@ function formatBytes(value: number): string {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 10px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-bottom: 0;
   border-radius: 8px 8px 0 0;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .readonly-code-viewer-meta {
@@ -290,13 +290,13 @@ function formatBytes(value: number): string {
   align-items: center;
   min-width: 0;
   gap: 8px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .readonly-code-viewer-title {
   flex: 0 0 auto;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
   font-weight: 700;
 }
@@ -315,9 +315,9 @@ function formatBytes(value: number): string {
   align-items: center;
   gap: 6px;
   padding: 8px 34px 8px 10px;
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
-  color: #475569;
+  border-bottom: 1px solid var(--juhe-border);
+  background: var(--juhe-surface-soft);
+  color: var(--juhe-fg-soft);
   font-size: 12px;
 }
 
@@ -325,10 +325,10 @@ function formatBytes(value: number): string {
   width: min(260px, 100%);
   height: 24px;
   padding: 0 7px;
-  border: 1px solid #d9d9d9;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 6px;
   background: #fff;
-  color: #0f172a;
+  color: var(--juhe-fg);
 }
 
 .readonly-code-viewer-editor :deep(.cm-panel.cm-search input.cm-textfield:focus) {
@@ -340,10 +340,10 @@ function formatBytes(value: number): string {
 .readonly-code-viewer-editor :deep(.cm-panel.cm-search .cm-button) {
   height: 24px;
   padding: 0 8px;
-  border: 1px solid #d9d9d9;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 6px;
   background: #fff;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   cursor: pointer;
 }
 
@@ -357,13 +357,13 @@ function formatBytes(value: number): string {
   align-items: center;
   gap: 4px;
   margin: 0;
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .readonly-code-viewer-editor :deep(.cm-panel.cm-search [name='close']) {
   top: 8px;
   right: 10px;
-  color: #64748b;
+  color: var(--juhe-muted);
   cursor: pointer;
 }
 

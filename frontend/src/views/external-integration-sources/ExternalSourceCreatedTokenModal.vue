@@ -97,14 +97,14 @@ function copyPublicApiBaseUrl(): void {
   min-width: 0;
   flex-direction: column;
   gap: 10px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   padding: 12px;
-  background: #fbfdff;
+  background: var(--juhe-surface-soft);
 }
 
 .created-token-step-title {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 700;
 }
@@ -118,7 +118,7 @@ function copyPublicApiBaseUrl(): void {
 
 .created-token-label {
   flex: none;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 600;
 }
@@ -151,11 +151,11 @@ function copyPublicApiBaseUrl(): void {
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.6;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }

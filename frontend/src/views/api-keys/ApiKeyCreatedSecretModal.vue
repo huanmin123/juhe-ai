@@ -103,9 +103,9 @@ const open = defineModel<boolean>('open', { required: true })
   grid-template-columns: 30px minmax(0, 1fr);
   gap: 12px;
   padding: 14px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 12px;
-  background: #fbfdff;
+  background: var(--juhe-surface-soft);
 }
 
 .created-key-step-index {
@@ -114,11 +114,11 @@ const open = defineModel<boolean>('open', { required: true })
   justify-content: center;
   width: 30px;
   height: 30px;
-  color: #1677ff;
+  color: var(--juhe-accent);
   font-size: 14px;
   font-weight: 700;
   border-radius: 50%;
-  background: #e6f4ff;
+  background: var(--juhe-accent-soft);
 }
 
 .created-key-step-body {
@@ -135,12 +135,12 @@ const open = defineModel<boolean>('open', { required: true })
 }
 
 .created-key-step-header strong {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 15px;
 }
 
 .created-key-step-header span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -158,7 +158,7 @@ const open = defineModel<boolean>('open', { required: true })
 
 .created-key-label {
   flex: none;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 600;
 }
@@ -184,11 +184,11 @@ const open = defineModel<boolean>('open', { required: true })
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   line-height: 1.7;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.8);
 }

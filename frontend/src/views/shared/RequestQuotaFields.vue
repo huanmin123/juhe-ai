@@ -44,9 +44,9 @@ watch(() => props.model, () => {
 
 <style scoped>
 .quota-limit-collapse {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fbfdff;
+  background: var(--juhe-surface-soft);
 }
 
 .quota-limit-summary {
@@ -58,7 +58,7 @@ watch(() => props.model, () => {
 }
 
 .quota-limit-heading {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 700;
 }
@@ -74,9 +74,9 @@ watch(() => props.model, () => {
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #fbfdff;
+  background: var(--juhe-surface-soft);
 }
 
 .quota-limit-hourly {
@@ -85,7 +85,7 @@ watch(() => props.model, () => {
 
 .quota-limit-title {
   min-width: 0;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }

@@ -49,15 +49,15 @@ const emit = defineEmits<{
 .batch-disable-list {
   max-height: 260px;
   overflow: auto;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--juhe-border);
   border-radius: 6px;
 }
 
 .batch-disable-item {
   padding: 9px 12px;
   overflow: hidden;
-  border-bottom: 1px solid #eef2f7;
-  color: #334155;
+  border-bottom: 1px solid var(--juhe-border);
+  color: var(--juhe-fg-soft);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

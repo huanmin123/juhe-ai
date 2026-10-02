@@ -120,7 +120,7 @@ function publicApiEndpointText(record: PublicApiLogListItem): string {
 
 .source-name-text {
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 400;
   text-overflow: ellipsis;
 }
@@ -148,7 +148,7 @@ function publicApiEndpointText(record: PublicApiLogListItem): string {
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -174,7 +174,7 @@ function publicApiEndpointText(record: PublicApiLogListItem): string {
 }
 
 .log-mobile-card-head span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
 }
@@ -183,14 +183,14 @@ function publicApiEndpointText(record: PublicApiLogListItem): string {
   display: grid;
   grid-template-columns: minmax(86px, auto) minmax(0, 1fr);
   gap: 6px 10px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .log-mobile-card-grid strong {
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
 }
 </style>

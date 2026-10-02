@@ -277,7 +277,7 @@ onBeforeUnmount(() => {
 }
 
 .responsive-list-search-icon {
-  color: #94a3b8;
+  color: var(--juhe-faint);
 }
 
 .responsive-list-toolbar-actions {

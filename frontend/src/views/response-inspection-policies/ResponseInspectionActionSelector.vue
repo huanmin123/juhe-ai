@@ -66,7 +66,7 @@ function actionTagColor(template: ResponseInspectionActionTemplate): string {
   min-height: 78px;
   flex-direction: column;
   gap: 7px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
   padding: 10px 12px;
@@ -77,14 +77,14 @@ function actionTagColor(template: ResponseInspectionActionTemplate): string {
 }
 
 .response-action-option:hover:not(:disabled) {
-  border-color: #91caff;
-  background: #f8fbff;
+  border-color: var(--juhe-border-strong);
+  background: var(--juhe-surface-soft);
 }
 
 .response-action-option.active {
-  border-color: #1677ff;
-  background: #f0f7ff;
-  box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.18);
+  border-color: var(--juhe-accent);
+  background: var(--juhe-accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(83, 105, 107, 0.18);
 }
 
 .response-action-option:disabled {
@@ -100,7 +100,7 @@ function actionTagColor(template: ResponseInspectionActionTemplate): string {
 
 .response-action-option-title strong {
   overflow: hidden;
-  color: #111827;
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -109,19 +109,19 @@ function actionTagColor(template: ResponseInspectionActionTemplate): string {
   width: 10px;
   height: 10px;
   flex: 0 0 auto;
-  border: 2px solid #cbd5e1;
+  border: 2px solid var(--juhe-border-strong);
   border-radius: 50%;
   background: #fff;
 }
 
 .response-action-option.active .response-action-option-dot {
-  border-color: #1677ff;
+  border-color: var(--juhe-accent);
   box-shadow: inset 0 0 0 2px #fff;
-  background: #1677ff;
+  background: var(--juhe-accent);
 }
 
 .response-action-option-description {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }

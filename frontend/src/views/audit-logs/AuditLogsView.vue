@@ -554,7 +554,7 @@ onDeactivated(() => {
 
 .form-help {
   margin-top: 6px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 1.6;
 }

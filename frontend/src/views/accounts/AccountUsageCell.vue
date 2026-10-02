@@ -198,7 +198,7 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
 }
 
 .oauth-usage-percent.normal {
-  color: #475569;
+  color: var(--juhe-fg-soft);
 }
 
 .oauth-usage-percent.warning {
@@ -210,7 +210,7 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
 }
 
 .oauth-usage-reset {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -235,17 +235,17 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
 }
 
 .balance-label {
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .balance-failed { color: #dc2626; }
 .balance-fresh { color: #15803d; }
 .balance-pending,
 .balance-refreshing,
-.balance-unsupported { color: #64748b; }
+.balance-unsupported { color: var(--juhe-muted); }
 
 .balance-refresh-icon {
-  color: #1677ff;
+  color: var(--juhe-accent);
   cursor: pointer;
   font-size: 11px;
 }
@@ -253,7 +253,7 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
 .balance-refresh-icon:hover { color: #0958d9; }
 
 .balance-refresh-icon.disabled {
-  color: #b8b8b8;
+  color: var(--juhe-faint);
   cursor: not-allowed;
 }
 
@@ -279,14 +279,14 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
   justify-content: space-between;
   gap: 12px;
   padding-bottom: 8px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
   font-weight: 600;
 }
 
 .balance-details-count,
 .balance-details-hint {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 400;
 }
@@ -304,13 +304,13 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
   justify-content: space-between;
   gap: 12px;
   min-height: 32px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .balance-details-key {
   min-width: 0;
   overflow: hidden;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   text-overflow: ellipsis;
@@ -325,7 +325,7 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
 }
 
 .balance-details-updated {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 11px;
   line-height: 1.2;
 }
@@ -338,7 +338,7 @@ function keyBalanceUpdatedText(item: AccountBalanceKeySnapshot): string {
 
 .balance-details-state {
   padding: 14px 0;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   text-align: center;
 }

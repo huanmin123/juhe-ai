@@ -246,7 +246,7 @@ function clientProfileLabel(value: string): string {
 
 .policy-title-row h4 {
   margin: 0;
-  color: #111827;
+  color: var(--juhe-fg);
   font-size: 16px;
 }
 
@@ -257,13 +257,13 @@ function clientProfileLabel(value: string): string {
 }
 
 .help-icon {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   cursor: help;
   font-size: 14px;
 }
 
 .help-icon:hover {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .response-policy-actions,
@@ -287,7 +287,7 @@ function clientProfileLabel(value: string): string {
 
 .rule-collapse :deep(.ant-collapse-item) {
   overflow: hidden;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 12px !important;
   background: #fff;
 }
@@ -309,7 +309,7 @@ function clientProfileLabel(value: string): string {
 
 .rule-collapse :deep(.ant-collapse-content-box) {
   padding: 10px 12px 12px !important;
-  border-top: 1px solid #eef2f7;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .rule-summary {
@@ -328,7 +328,7 @@ function clientProfileLabel(value: string): string {
 .rule-summary-main strong {
   overflow: hidden;
   max-width: 180px;
-  color: #111827;
+  color: var(--juhe-fg);
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -337,7 +337,7 @@ function clientProfileLabel(value: string): string {
 .rule-condition-summary {
   display: block;
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
   text-overflow: ellipsis;

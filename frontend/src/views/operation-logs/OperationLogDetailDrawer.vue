@@ -127,25 +127,25 @@ function viewerRowKey(viewer: OperationLogDetailViewer): string {
   display: grid;
   gap: 6px;
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .detail-table-card strong {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
 }
 
 .muted-cell {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 12px;
 }
 
 .mono-cell {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
 }

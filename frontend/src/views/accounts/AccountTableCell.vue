@@ -219,7 +219,7 @@ const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, prop
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;

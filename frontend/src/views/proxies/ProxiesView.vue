@@ -454,7 +454,7 @@ onMounted(loadData)
 }
 
 .latency-value {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-variant-numeric: tabular-nums;
 }
 

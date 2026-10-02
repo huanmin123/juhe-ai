@@ -343,14 +343,14 @@ function requiredPositiveInt(value: unknown, label: string, max = Number.POSITIV
 
 .form-section {
   padding: 14px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
 
 .form-section-title {
   margin-bottom: 12px;
-  color: #111827;
+  color: var(--juhe-fg);
   font-size: 15px;
   font-weight: 700;
 }

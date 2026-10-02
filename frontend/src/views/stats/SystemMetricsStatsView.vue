@@ -816,7 +816,7 @@ onBeforeUnmount(() => {
 
 .health-meta {
   margin-bottom: 12px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -828,7 +828,7 @@ onBeforeUnmount(() => {
 
 .health-process-card {
   padding: 10px 14px 8px;
-  border: 1px solid #edf2f7;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
 }
 
@@ -845,13 +845,13 @@ onBeforeUnmount(() => {
 }
 
 .health-process-title {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
 }
 
 .health-process-owner {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
 }
 
@@ -871,7 +871,7 @@ onBeforeUnmount(() => {
 
 .health-line-label {
   flex: 0 0 auto;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -879,7 +879,7 @@ onBeforeUnmount(() => {
 .health-line-items {
   min-width: 0;
   overflow-wrap: anywhere;
-  color: #475569;
+  color: var(--juhe-fg-soft);
 }
 
 .health-line-unhealthy {
@@ -899,13 +899,13 @@ onBeforeUnmount(() => {
 }
 
 .health-line-muted .health-line-items {
-  color: #94a3b8;
+  color: var(--juhe-faint);
 }
 
 .health-disabled-jobs :deep(.ant-collapse-header),
 .health-diagnostics :deep(.ant-collapse-header) {
   padding: 4px 0 !important;
-  color: #64748b !important;
+  color: var(--juhe-muted) !important;
   font-size: 12px;
 }
 
@@ -918,18 +918,18 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 1px;
   padding: 5px 10px;
-  border-left: 2px solid #e2e8f0;
+  border-left: 2px solid var(--juhe-border);
   margin-bottom: 4px;
 }
 
 .health-disabled-job-cause {
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 12px;
   font-weight: 500;
 }
 
 .health-disabled-job-names {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 11.5px;
   line-height: 17px;
   overflow-wrap: anywhere;
@@ -967,7 +967,7 @@ onBeforeUnmount(() => {
 
 .health-kv-key {
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -981,7 +981,7 @@ onBeforeUnmount(() => {
   white-space: pre-line;
   text-align: left;
   overflow-wrap: anywhere;
-  color: #1f2937;
+  color: var(--juhe-fg);
   font-size: 12px;
 }
 
@@ -996,7 +996,7 @@ onBeforeUnmount(() => {
 .go-runtime-sampling-guide {
   max-width: 560px;
   margin: 0 auto;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 13px;
   line-height: 1.8;
   text-align: left;
@@ -1018,7 +1018,7 @@ onBeforeUnmount(() => {
 }
 
 .go-runtime-view-hint {
-  color: #8c8c8c;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -1035,15 +1035,15 @@ onBeforeUnmount(() => {
   gap: 2px;
   min-width: 0;
   padding: 8px 10px;
-  border: 1px solid #edf2f7;
+  border: 1px solid var(--juhe-border);
   border-radius: 6px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .go-runtime-summary-item strong {
   overflow: hidden;
-  color: #1f2937;
+  color: var(--juhe-fg);
   font-size: 15px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -1082,7 +1082,7 @@ onBeforeUnmount(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--juhe-coral, #a6755e);
+  background: var(--juhe-coral, var(--juhe-coral));
 }
 
 .system-metrics-mobile-filter-field {
@@ -1092,7 +1092,7 @@ onBeforeUnmount(() => {
 }
 
 .system-metrics-mobile-filter-label {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

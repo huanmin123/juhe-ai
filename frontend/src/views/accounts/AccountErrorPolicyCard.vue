@@ -395,9 +395,9 @@ function collapseAllRules() {
 
 <style scoped>
 .error-policy-shell {
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--juhe-border-strong);
   border-radius: 16px;
-  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+  background: linear-gradient(180deg, var(--juhe-surface-soft) 0%, var(--juhe-surface) 100%);
 }
 
 .error-policy-collapse {
@@ -415,7 +415,7 @@ function collapseAllRules() {
 }
 
 .error-policy-collapse :deep(.ant-collapse-content) {
-  border-top: 1px solid #e8edf5;
+  border-top: 1px solid var(--juhe-border);
   background: transparent;
 }
 
@@ -442,7 +442,7 @@ function collapseAllRules() {
 
 .policy-title-row h4 {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 16px;
 }
 
@@ -453,13 +453,13 @@ function collapseAllRules() {
 }
 
 .help-icon {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   cursor: help;
   font-size: 14px;
 }
 
 .help-icon:hover {
-  color: #1677ff;
+  color: var(--juhe-accent);
 }
 
 .error-policy-actions {
@@ -490,7 +490,7 @@ function collapseAllRules() {
 
 .rule-collapse :deep(.ant-collapse-item) {
   overflow: hidden;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 12px !important;
   background: #fff;
 }
@@ -512,7 +512,7 @@ function collapseAllRules() {
 
 .rule-collapse :deep(.ant-collapse-content-box) {
   padding: 10px 12px 12px !important;
-  border-top: 1px solid #eef2f7;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .rule-panel.disabled {
@@ -538,7 +538,7 @@ function collapseAllRules() {
 .rule-summary-main strong {
   overflow: hidden;
   max-width: 180px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -549,7 +549,7 @@ function collapseAllRules() {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
   overflow-wrap: anywhere;
@@ -611,12 +611,12 @@ function collapseAllRules() {
 
 .guide-section h4 {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
 }
 
 .guide-note {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 20px;
 }
@@ -624,11 +624,11 @@ function collapseAllRules() {
 .guide-code {
   overflow-x: auto;
   margin: 0;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
   padding: 12px;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 20px;

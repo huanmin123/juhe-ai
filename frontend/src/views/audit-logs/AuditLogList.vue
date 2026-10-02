@@ -248,7 +248,7 @@ function auditDurationLabel(record: AuditLogListItem): string {
   align-items: center;
   min-width: 0;
   gap: 4px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -261,7 +261,7 @@ function auditDurationLabel(record: AuditLogListItem): string {
 .mobile-list-meta-item small {
   display: block;
   overflow-wrap: anywhere;
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 .endpoint-cell {

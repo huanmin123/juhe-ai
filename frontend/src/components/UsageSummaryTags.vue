@@ -42,7 +42,7 @@ defineProps<{
   margin-inline-end: 0;
   padding-inline: 6px;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   line-height: 20px;

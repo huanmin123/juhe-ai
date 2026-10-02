@@ -82,13 +82,17 @@ var maintenanceSeedSystemSettingsJSON = map[string]string{
 	"systemMetricsRetentionDays":                 "7",
 	"systemMetricsHourlyRetentionDays":           "30",
 	"upstreamClientVersionOverrides":             "{}",
+	"auditLogSuccessRetentionDays":               "3",
+	"auditLogProblemRetentionDays":               "7",
+	"auditLogSuccessHotRetentionHours":           "1",
+	"auditLogSuccessSampleRate":                  "1.0",
 }
 
 // TestDefaultSystemSettingsMatchMaintenanceSeed 逐键对照：键集合与解码后的值
 // 都必须一致（数值键解出 float64，字符串键解出 string）。任一侧漂移即失败。
 func TestDefaultSystemSettingsMatchMaintenanceSeed(t *testing.T) {
-	if len(maintenanceSeedSystemSettingsJSON) != 62 {
-		t.Fatalf("镜像表键数=%d，want 62（与 pgSeedSystemSettings 一致）", len(maintenanceSeedSystemSettingsJSON))
+	if len(maintenanceSeedSystemSettingsJSON) != 66 {
+		t.Fatalf("镜像表键数=%d，want 66（与 pgSeedSystemSettings 一致）", len(maintenanceSeedSystemSettingsJSON))
 	}
 	seeded := make(map[string]any, len(maintenanceSeedSystemSettingsJSON))
 	for key, valueJSON := range maintenanceSeedSystemSettingsJSON {

@@ -129,9 +129,9 @@ const emit = defineEmits<{
   gap: 20px;
   margin-bottom: 20px;
   padding: 22px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .proxy-report-main {
@@ -141,14 +141,14 @@ const emit = defineEmits<{
 .proxy-report-main h3,
 .proxy-test-start h3 {
   margin: 0 0 8px;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 16px;
   font-weight: 700;
 }
 
 .proxy-report-main p {
   margin: 0 0 14px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 14px;
 }
 
@@ -156,7 +156,7 @@ const emit = defineEmits<{
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px 28px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
 }
 
@@ -173,7 +173,7 @@ const emit = defineEmits<{
   flex-direction: column;
   align-items: center;
   min-width: 74px;
-  color: #0f172a;
+  color: var(--juhe-fg);
 }
 
 .proxy-score strong {
@@ -183,7 +183,7 @@ const emit = defineEmits<{
 
 .proxy-score span {
   margin-top: 6px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 13px;
 }
 
@@ -199,7 +199,7 @@ const emit = defineEmits<{
   display: grid;
   gap: 10px;
   padding: 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -215,13 +215,13 @@ const emit = defineEmits<{
   display: grid;
   grid-template-columns: minmax(52px, auto) minmax(0, 1fr);
   gap: 6px 10px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .proxy-report-card-grid strong {
   min-width: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 400;
 }
 

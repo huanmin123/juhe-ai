@@ -221,7 +221,7 @@ function forwardTableChange(...args: unknown[]) {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
 }
 
 .group-name-text,
@@ -234,7 +234,7 @@ function forwardTableChange(...args: unknown[]) {
 }
 
 .group-name-text {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 400;
 }
 
@@ -243,7 +243,7 @@ function forwardTableChange(...args: unknown[]) {
 }
 
 .group-description-column-text {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -258,7 +258,7 @@ function forwardTableChange(...args: unknown[]) {
 }
 
 .account-count-value {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-weight: 400;
 }
@@ -273,14 +273,14 @@ function forwardTableChange(...args: unknown[]) {
 
 .account-count-unit {
   padding: 1px 6px;
-  color: #334155;
-  background: #f1f5f9;
+  color: var(--juhe-fg-soft);
+  background: var(--juhe-surface-soft);
   border-radius: 4px;
 }
 
 .account-count-row,
 .account-count-unit {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

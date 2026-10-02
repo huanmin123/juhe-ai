@@ -703,12 +703,12 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
 }
 
 .muted-cell {
-  color: #8c8c8c;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .name-cell {
-  color: #1f2937;
+  color: var(--juhe-fg);
 }
 
 .number-cell {
@@ -744,7 +744,7 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   flex-direction: column;
   gap: 12px;
   padding: 14px;
-  border: 1px solid #f0f0f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
   background: #fff;
 }
@@ -766,7 +766,7 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
 }
 
 .ip-detail-owner-text {
-  color: #6b7280;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 1.5;
 }

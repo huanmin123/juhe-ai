@@ -454,7 +454,7 @@ async function focusRequestedSection(): Promise<void> {
 
 .profile-title-row h2 {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 24px;
   line-height: 32px;
 }
@@ -472,13 +472,13 @@ async function focusRequestedSection(): Promise<void> {
 
 .profile-username {
   margin-top: 5px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 14px;
 }
 
 .profile-summary {
   margin-top: 8px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 13px;
   line-height: 20px;
 }
@@ -536,7 +536,7 @@ async function focusRequestedSection(): Promise<void> {
 
 .profile-basic-editor {
   padding-bottom: 20px;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
 }
 
 .profile-basic-editor-head {
@@ -554,14 +554,14 @@ async function focusRequestedSection(): Promise<void> {
 
 .profile-basic-editor-head label {
   width: max-content;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 650;
   cursor: pointer;
 }
 
 .profile-basic-editor-head span:last-child {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -592,7 +592,7 @@ async function focusRequestedSection(): Promise<void> {
 
 .profile-basic-editor-help {
   margin: 7px 0 0;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
   line-height: 18px;
 }
@@ -610,12 +610,12 @@ async function focusRequestedSection(): Promise<void> {
 }
 
 .profile-account-title strong {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
 }
 
 .profile-account-title span {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
 }
 
@@ -631,8 +631,8 @@ async function focusRequestedSection(): Promise<void> {
   align-items: center;
   gap: 10px;
   padding: 9px 11px;
-  background: #f8fafc;
-  border: 1px solid #eef2f7;
+  background: var(--juhe-surface-soft);
+  border: 1px solid var(--juhe-border);
   border-radius: 10px;
 }
 
@@ -642,10 +642,10 @@ async function focusRequestedSection(): Promise<void> {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 15px;
   background: #fff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 9px;
 }
 
@@ -656,7 +656,7 @@ async function focusRequestedSection(): Promise<void> {
 }
 
 .profile-account-copy > span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -665,7 +665,7 @@ async function focusRequestedSection(): Promise<void> {
 .profile-account-copy :deep(.ant-typography) {
   min-width: 0;
   margin-bottom: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 14px;
   font-weight: 600;
   line-height: 20px;
@@ -686,8 +686,8 @@ async function focusRequestedSection(): Promise<void> {
   align-items: center;
   gap: 12px;
   padding: 14px;
-  background: #f8fafc;
-  border: 1px solid #eef2f7;
+  background: var(--juhe-surface-soft);
+  border: 1px solid var(--juhe-border);
   border-radius: 14px;
 }
 
@@ -702,8 +702,8 @@ async function focusRequestedSection(): Promise<void> {
 }
 
 .profile-capability-icon.role {
-  color: #1d4ed8;
-  background: #dbeafe;
+  color: var(--juhe-accent);
+  background: var(--juhe-accent-soft);
 }
 
 .profile-capability-icon.image {
@@ -723,17 +723,17 @@ async function focusRequestedSection(): Promise<void> {
 }
 
 .profile-capability-copy span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .profile-capability-copy strong {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 15px;
 }
 
 .profile-capability-copy small {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -743,7 +743,7 @@ async function focusRequestedSection(): Promise<void> {
 }
 
 .profile-security-extra {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
@@ -772,17 +772,17 @@ async function focusRequestedSection(): Promise<void> {
   display: grid;
   gap: 4px;
   padding-left: 14px;
-  border-left: 3px solid #e2e8f0;
+  border-left: 3px solid var(--juhe-border);
 }
 
 .profile-time-grid span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .profile-time-grid strong {
   overflow: hidden;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -249,7 +249,7 @@ function handleActionClick(key: string) {
   display: grid;
   gap: 12px;
   padding: 14px;
-  border: 1px solid #e8edf5;
+  border: 1px solid var(--juhe-border);
   border-radius: 14px;
   background: #fff;
 }
@@ -278,7 +278,7 @@ function handleActionClick(key: string) {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -288,7 +288,7 @@ function handleActionClick(key: string) {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -343,7 +343,7 @@ function handleActionClick(key: string) {
   gap: 2px;
   padding: 8px 10px;
   border-radius: 10px;
-  background: #f8fafc;
+  background: var(--juhe-surface-soft);
 }
 
 .account-mobile-meta-wide {
@@ -351,14 +351,14 @@ function handleActionClick(key: string) {
 }
 
 .account-mobile-meta-item span {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .account-mobile-meta-item strong {
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 13px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -375,7 +375,7 @@ function handleActionClick(key: string) {
 .account-mobile-priority-suffix {
   min-width: 0;
   overflow: hidden;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;

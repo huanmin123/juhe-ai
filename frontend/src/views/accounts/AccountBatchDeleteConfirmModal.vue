@@ -53,13 +53,13 @@ const emit = defineEmits<{
 
 .batch-delete-summary {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
 }
 
 .batch-delete-list {
   max-height: 320px;
   overflow: auto;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
 }
 
@@ -69,7 +69,7 @@ const emit = defineEmits<{
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
 }
 
 .batch-delete-item:last-child {
@@ -79,7 +79,7 @@ const emit = defineEmits<{
 .batch-delete-name {
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -89,7 +89,7 @@ const emit = defineEmits<{
   display: flex;
   flex-shrink: 0;
   gap: 8px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   white-space: nowrap;
 }

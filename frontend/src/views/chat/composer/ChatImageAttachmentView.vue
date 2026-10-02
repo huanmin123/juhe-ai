@@ -60,17 +60,17 @@ function removeImage(): void {
 </script>
 
 <style scoped>
-.chat-image-node { position: relative; width: min(180px, 42vw); height: 120px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; margin: 2px 4px; vertical-align: middle; background: #f8fafc; border: 1px solid #dbe3ec; border-radius: 6px; }
+.chat-image-node { position: relative; width: min(180px, 42vw); height: 120px; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; margin: 2px 4px; vertical-align: middle; background: var(--juhe-surface-soft); border: 1px solid var(--juhe-border); border-radius: 6px; }
 .chat-image-node.is-selected { border-color: var(--juhe-accent); box-shadow: 0 0 0 2px rgba(83, 105, 107, .14); }
 .chat-image-node img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .chat-image-node.is-preparing img, .chat-image-node.is-uploading img, .chat-image-node.is-failed img { opacity: .55; }
-.chat-image-node-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 6px; color: #334155; font-size: 12px; background: rgba(248, 250, 252, .72); }
-.chat-image-node-status.is-error { display: grid; grid-template-columns: 16px minmax(0, 1fr) 28px; align-items: center; gap: 5px; padding: 8px; color: #b42318; background: rgba(255, 247, 237, .84); }
+.chat-image-node-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--juhe-fg-soft); font-size: 12px; background: rgba(250, 249, 247, .72); }
+.chat-image-node-status.is-error { display: grid; grid-template-columns: 16px minmax(0, 1fr) 28px; align-items: center; gap: 5px; padding: 8px; color: var(--juhe-danger); background: rgba(255, 247, 237, .84); }
 .chat-image-node-failure { min-width: 0; display: grid; gap: 1px; line-height: 16px; }
 .chat-image-node-failure-title { font-weight: 600; }
 .chat-image-node-failure-message { max-height: 48px; overflow: hidden; overflow-wrap: anywhere; word-break: break-word; }
 .chat-image-node-status button, .chat-image-node-remove { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: inherit; background: rgba(255, 255, 255, .92); border: 1px solid currentColor; border-radius: 50%; cursor: pointer; }
-.chat-image-node-remove { position: absolute; top: 5px; right: 5px; color: #475569; border-color: #cbd5e1; opacity: 0; transition: opacity .15s ease; }
+.chat-image-node-remove { position: absolute; top: 5px; right: 5px; color: var(--juhe-fg-soft); border-color: var(--juhe-border-strong); opacity: 0; transition: opacity .15s ease; }
 .chat-image-node:hover .chat-image-node-remove, .chat-image-node:focus-within .chat-image-node-remove, .chat-image-node.is-selected .chat-image-node-remove, .chat-image-node.is-failed .chat-image-node-remove { opacity: 1; }
 @media (pointer: coarse) {
   .chat-image-node-status button, .chat-image-node-remove { width: 44px; height: 44px; }

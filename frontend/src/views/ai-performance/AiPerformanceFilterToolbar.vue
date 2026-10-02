@@ -310,8 +310,8 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
 
 .ai-performance-account-filter-entry:hover,
 .ai-performance-account-filter-entry.active {
-  border-color: #91caff;
-  background: #e6f4ff;
+  border-color: var(--juhe-border-strong);
+  background: var(--juhe-accent-soft);
 }
 
 .ai-performance-account-filter-entry.muted {
@@ -325,7 +325,7 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   gap: 6px;
   padding: 2px 8px;
   border: 0;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   background: transparent;
   font-size: 13px;
   line-height: 20px;
@@ -342,7 +342,7 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   padding: 0;
   border: 0;
   border-radius: 5px;
-  color: #64748b;
+  color: var(--juhe-muted);
   background: transparent;
   font-size: 12px;
   cursor: pointer;
@@ -410,7 +410,7 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--juhe-coral, #a6755e);
+  background: var(--juhe-coral, var(--juhe-coral));
 }
 
 .ai-performance-chips-toggle {
@@ -424,7 +424,7 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   border: 0;
   border-radius: var(--juhe-radius-sm, 8px);
   background: transparent;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   cursor: pointer;
 }
@@ -445,7 +445,7 @@ function handleAddedAccountsChange(value: string[], previousValue: string[]) {
 }
 
 .ai-performance-mobile-filter-label {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 

@@ -466,14 +466,14 @@ function lastRunText(item: ModelQualitySchedule): string {
 }
 
 .schedule-modal-title > span {
-  color: #0f172a;
+  color: var(--juhe-fg);
   font-size: 17px;
   font-weight: 600;
   line-height: 24px;
 }
 
 .schedule-modal-title small {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   font-weight: 400;
   line-height: 18px;
@@ -508,7 +508,7 @@ function lastRunText(item: ModelQualitySchedule): string {
 .schedule-list-head h3,
 .schedule-item h4 {
   margin: 0;
-  color: #0f172a;
+  color: var(--juhe-fg);
 }
 
 .schedule-editor h3,
@@ -521,7 +521,7 @@ function lastRunText(item: ModelQualitySchedule): string {
 .schedule-editor-head p,
 .schedule-list-head p {
   margin: 3px 0 0;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -531,12 +531,12 @@ function lastRunText(item: ModelQualitySchedule): string {
   grid-template-columns: 112px minmax(0, 1fr);
   gap: 16px;
   padding: 16px 0 0;
-  border-top: 1px solid #eef2f7;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .schedule-section-label {
   padding-top: 30px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 600;
   line-height: 20px;
@@ -589,7 +589,7 @@ function lastRunText(item: ModelQualitySchedule): string {
 
 .schedule-field-help,
 .schedule-policy-hint {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
@@ -611,14 +611,14 @@ function lastRunText(item: ModelQualitySchedule): string {
 }
 
 .schedule-switch-row strong {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 13px;
   font-weight: 500;
   line-height: 18px;
 }
 
 .schedule-switch-row span {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 11px;
   line-height: 16px;
 }
@@ -637,14 +637,14 @@ function lastRunText(item: ModelQualitySchedule): string {
   min-width: 0;
   margin-top: 4px;
   padding: 14px 0 0;
-  border-top: 1px solid #eef2f7;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .schedule-list-section {
   min-width: 0;
   margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .schedule-list-head {
@@ -661,13 +661,13 @@ function lastRunText(item: ModelQualitySchedule): string {
 }
 
 .schedule-batch-count {
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 18px;
 }
 
 .schedule-list {
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .schedule-list-columns,
@@ -685,8 +685,8 @@ function lastRunText(item: ModelQualitySchedule): string {
 .schedule-list-columns {
   align-items: center;
   padding: 8px 0;
-  border-bottom: 1px solid #e2e8f0;
-  color: #94a3b8;
+  border-bottom: 1px solid var(--juhe-border);
+  color: var(--juhe-faint);
   font-size: 11px;
   line-height: 16px;
 }
@@ -699,12 +699,12 @@ function lastRunText(item: ModelQualitySchedule): string {
   position: relative;
   align-items: center;
   padding: 14px 0;
-  border-bottom: 1px solid #eef2f7;
+  border-bottom: 1px solid var(--juhe-border);
   transition: background-color .2s ease;
 }
 
 .schedule-item:hover {
-  background: #fafcff;
+  background: var(--juhe-surface-soft);
 }
 
 .schedule-item-disabled {
@@ -733,21 +733,21 @@ function lastRunText(item: ModelQualitySchedule): string {
 
 .schedule-item-subtitle {
   margin-top: 5px;
-  color: #64748b;
+  color: var(--juhe-muted);
   font-size: 12px;
   line-height: 20px;
 }
 
 .schedule-item-subtitle > span + span::before {
   margin-right: 6px;
-  color: #cbd5e1;
+  color: var(--juhe-faint);
   content: '·';
 }
 
 .schedule-item-model {
   min-width: 0;
   overflow: hidden;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -762,7 +762,7 @@ function lastRunText(item: ModelQualitySchedule): string {
 
 .schedule-metric span,
 .schedule-metric small {
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 11px;
   line-height: 16px;
 }
@@ -774,7 +774,7 @@ function lastRunText(item: ModelQualitySchedule): string {
 .schedule-metric strong {
   min-width: 0;
   overflow: hidden;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-size: 12px;
   font-weight: 500;
   line-height: 18px;
@@ -785,17 +785,17 @@ function lastRunText(item: ModelQualitySchedule): string {
 .schedule-empty {
   margin: 0;
   padding: 28px 16px 20px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--juhe-border);
 }
 
 .schedule-empty :deep(.ant-empty-description) {
   margin-bottom: 2px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
 }
 
 .schedule-empty-help {
   display: block;
-  color: #94a3b8;
+  color: var(--juhe-faint);
   font-size: 12px;
   line-height: 18px;
 }
@@ -814,15 +814,15 @@ function lastRunText(item: ModelQualitySchedule): string {
 :global(.model-quality-schedule-modal-wrap .ant-modal-content) {
   overflow: hidden;
   padding: 0;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--juhe-border);
   border-radius: 8px;
-  box-shadow: 0 24px 64px rgba(15, 23, 42, .18);
+  box-shadow: 0 24px 64px rgba(34, 40, 43, .18);
 }
 
 :global(.model-quality-schedule-modal-wrap .ant-modal-header) {
   margin: 0;
   padding: 18px 22px 15px;
-  border-bottom: 1px solid #e8eef6;
+  border-bottom: 1px solid var(--juhe-border);
 }
 
 :global(.model-quality-schedule-modal-wrap .ant-modal-body) {
@@ -834,7 +834,7 @@ function lastRunText(item: ModelQualitySchedule): string {
 :global(.model-quality-schedule-modal-wrap .ant-modal-close) {
   top: 17px;
   inset-inline-end: 18px;
-  color: #64748b;
+  color: var(--juhe-muted);
 }
 
 @media (max-width: 940px) {

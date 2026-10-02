@@ -238,12 +238,12 @@ function emitPolicyAction(record: ClientIpStatsRow, action: IpStatsPolicyAction)
 }
 
 .muted-cell {
-  color: #8c8c8c;
+  color: var(--juhe-muted);
   font-size: 12px;
 }
 
 .name-cell {
-  color: #1f2937;
+  color: var(--juhe-fg);
 }
 
 .number-cell {

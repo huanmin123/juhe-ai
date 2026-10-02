@@ -172,7 +172,7 @@ function handleTableChange(...args: unknown[]): void {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 12px;
   line-height: 1.3;
 }
@@ -202,7 +202,7 @@ function handleTableChange(...args: unknown[]): void {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  color: #475569;
+  color: var(--juhe-fg-soft);
   font-size: 12px;
   line-height: 1.3;
 }
@@ -224,7 +224,7 @@ function handleTableChange(...args: unknown[]): void {
 .trace-id-text {
   min-width: 0;
   overflow: hidden;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   text-overflow: ellipsis;
@@ -235,14 +235,14 @@ function handleTableChange(...args: unknown[]): void {
   display: inline-block;
   max-width: 160px;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
 }
 
 .ip-cell {
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
 }
@@ -251,7 +251,7 @@ function handleTableChange(...args: unknown[]): void {
   display: inline-block;
   max-width: 140px;
   overflow: hidden;
-  color: #334155;
+  color: var(--juhe-fg-soft);
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   text-overflow: ellipsis;

@@ -166,7 +166,7 @@ function resourceTypeTag(resourceType: AuthorizationResourceType) {
 .resource-name {
   min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--juhe-fg);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

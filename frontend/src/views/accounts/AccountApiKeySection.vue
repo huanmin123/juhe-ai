@@ -508,7 +508,7 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 
 .api-key-help-button:hover,
 .api-key-help-button:focus-visible {
-  color: #1677ff;
+  color: var(--juhe-accent);
   outline: none;
 }
 
@@ -554,7 +554,7 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 
 .base-url-help-button:hover,
 .base-url-help-button:focus-visible {
-  color: #1677ff;
+  color: var(--juhe-accent);
   outline: none;
 }
 
@@ -581,7 +581,7 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 .base-url-help-content code {
   padding: 1px 4px;
   border-radius: 3px;
-  background: #f5f5f5;
+  background: var(--juhe-surface-soft);
   color: rgba(0, 0, 0, 0.78);
   font-size: 11px;
 }
@@ -691,7 +691,7 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #64748b;
+  color: var(--juhe-muted);
   cursor: grab;
 }
 
@@ -701,8 +701,8 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 
 .api-key-drag-handle:hover,
 .api-key-drag-handle:focus-visible {
-  background: #f1f5f9;
-  color: #1677ff;
+  background: var(--juhe-surface-soft);
+  color: var(--juhe-accent);
   outline: none;
 }
 
@@ -711,7 +711,7 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 }
 
 .api-key-input-row.is-drag-over {
-  outline: 1px dashed #1677ff;
+  outline: 1px dashed var(--juhe-accent);
   outline-offset: 2px;
 }
 
@@ -725,7 +725,7 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
   margin-inline-end: 8px;
   padding: 0 8px 0 0;
   border: 0;
-  border-inline-end: 1px solid #d9d9d9;
+  border-inline-end: 1px solid var(--juhe-border-strong);
   border-radius: 0;
   background: transparent !important;
   overflow: hidden;
