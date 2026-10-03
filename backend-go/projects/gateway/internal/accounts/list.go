@@ -255,13 +255,21 @@ type ListItem struct {
 	BalanceSnapshot           *AccountBalanceSnapshotPublic `json:"balanceSnapshot,omitempty"`
 	// 运行态 overlay 三字段（缺陷修复批次一，hydrateRuntimeOverlay 叠加）：
 	// 全部 omitempty——无运行态事实/端口 nil/读失败时字段缺席；circuitSummary
-	// 的 status=normal 时同样缺席（前端过滤 normal）。第二批在此补
-	// availabilityPresentation（探针 tooltip 的 probePresentation /
-	// lastObservation / traceId 同批）；第三批把同一 overlay 带到
-	// /my-accounts PG 投影。
+	// 的 status=normal 时同样缺席（前端过滤 normal）。runtimeAvailability 刻意
+	// 不发 probePresentation 键（前端零消费，批次一/二纪律保持）；探针 tooltip
+	// 的 lastObservation/traceId 由 availabilityPresentation.probe 承载（批次二
+	// hydrateAvailabilityPresentation 合成，来源=accounts 健康列）；第三批把同
+	// 一 overlay 带到 /my-accounts PG 投影。
 	RuntimeAvailability *AccountRuntimeAvailabilityPublic  `json:"runtimeAvailability,omitempty"`
 	CircuitSummary      *AccountCircuitSummaryPublic       `json:"circuitSummary,omitempty"`
 	APIKeyRuntime       *AccountApiKeyRuntimeSummaryPublic `json:"apiKeyRuntime,omitempty"`
+	// AvailabilityPresentation（BUG-0278 批次二）：状态→(status,label,action)
+	// 映射 + 可选 reason/statusBoundary/probe，形状对齐前端
+	// AccountAvailabilityPresentation（accounts.ts:213-223）。由
+	// hydrateAvailabilityPresentation 在全部 hydrate 之后按行合成（输入=行健康
+	// 列 + 最终 effectiveAvailability 状态），恒产出；管理面/用户面共用
+	// ListPage，同构生效。
+	AvailabilityPresentation *AccountAvailabilityPresentation `json:"availabilityPresentation,omitempty"`
 	LockStatePublic
 }
 
@@ -392,8 +400,21 @@ type listRow struct {
 	lastErrorMessage          sql.NullString
 	lastErrorTraceID          sql.NullString
 	lastUsedAt                sql.NullString
-	healthCheckModel          string
-	healthCheckEndpointMode   string
+	// BUG-0278 批次二扩列（同表加法扩选，不动既有列）：availabilityPresentation
+	// 合成的行内健康输入（jobs listavailability_rows.go 持久列镜像的 gateway
+	// 窄投影）。cooldown_retest_last_* 当前只被未移植的 jobs sourceProbePayload
+	// 分支消费，随行载入保持列镜像完整（list_availability_presentation.go 文件
+	// 头差异说明）。
+	lastHealthCheckAt            sql.NullString
+	nextHealthCheckAt            sql.NullString
+	lastHealthCheckStatusCode    sql.NullInt64
+	lastHealthCheckErrorCode     sql.NullString
+	lastHealthCheckErrorMessage  sql.NullString
+	lastHealthCheckTraceID       sql.NullString
+	cooldownRetestLastAt         sql.NullString
+	cooldownRetestLastStatusCode sql.NullInt64
+	healthCheckModel             string
+	healthCheckEndpointMode      string
 	proxyProfileID            sql.NullString
 	proxyProfileName          sql.NullString
 	proxyProfileType          sql.NullString
@@ -463,6 +484,17 @@ func listItemColumns(alias string) []string {
 		alias + ".last_error_message",
 		alias + ".last_error_trace_id",
 		alias + ".last_used_at",
+		// BUG-0278 批次二同表加法扩列（列名以
+		// maintenance/internal/schema/pg_schema_business_tables.go:648-665 为准；
+		// SQLite fixture 建表已含同名列）。
+		alias + ".last_health_check_at",
+		alias + ".next_health_check_at",
+		alias + ".last_health_check_status_code",
+		alias + ".last_health_check_error_code",
+		alias + ".last_health_check_error_message",
+		alias + ".last_health_check_trace_id",
+		alias + ".cooldown_retest_last_at",
+		alias + ".cooldown_retest_last_status_code",
 		alias + ".health_check_model",
 		alias + ".health_check_endpoint_mode",
 		alias + ".proxy_profile_id",
@@ -571,7 +603,11 @@ func scanListRow(scan func(...any) error) (listRow, error) {
 		&row.superPriorityEnabled, &row.fallbackEnabled, &row.clientCompatibility,
 		&row.schedulable, &row.availabilityScheduleJSON, &row.accountExpiresAt,
 		&row.cooldownUntil, &row.lastErrorCode, &row.lastErrorMessage,
-		&row.lastErrorTraceID, &row.lastUsedAt, &row.healthCheckModel,
+		&row.lastErrorTraceID, &row.lastUsedAt,
+		&row.lastHealthCheckAt, &row.nextHealthCheckAt, &row.lastHealthCheckStatusCode,
+		&row.lastHealthCheckErrorCode, &row.lastHealthCheckErrorMessage,
+		&row.lastHealthCheckTraceID, &row.cooldownRetestLastAt, &row.cooldownRetestLastStatusCode,
+		&row.healthCheckModel,
 		&row.healthCheckEndpointMode, &row.proxyProfileID, &row.proxyProfileName,
 		&row.proxyProfileType, &row.proxyProfileEnabled,
 		&row.bindingSystemAccountID, &row.boundGroupID, &row.boundGroupName,
@@ -802,6 +838,9 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	// api_key_pool/runtime 分支重算；端口 nil 或读失败逐源降级字段缺席，
 	// 不阻断页面（hydrateBalanceSnapshots 同款失败语义）。
 	s.hydrateRuntimeOverlay(ctx, items)
+	// availabilityPresentation 合成（缺陷修复批次二）：必须在 hydrateRuntimeOverlay
+	// 之后（输入含重算后的最终 effective 状态）；纯进程内合成，恒产出。
+	s.hydrateAvailabilityPresentation(items, records)
 	total := (normalized.Page-1)*normalized.PageSize + len(items)
 	if hasMore {
 		total++
