@@ -425,7 +425,8 @@ func TestW11DDetailErrorArms(t *testing.T) {
 	if _, err := env.db.Exec(`DROP TABLE client_ip_account_usage_range_windows`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dropStore.Detail(ctx, DetailOptions{IPHash: detailIPHash, StartDate: "2026-09-01", EndDate: "2026-09-03"}); err == nil {
+	startDate, endDate := detailRangeKeys()
+	if _, err := dropStore.Detail(ctx, DetailOptions{IPHash: detailIPHash, StartDate: startDate, EndDate: endDate}); err == nil {
 		t.Fatal("账户窗口查询失败必须上抛")
 	}
 }
@@ -437,23 +438,24 @@ func TestW11DDetailPaginationAndLookupArms(t *testing.T) {
 	ctx := context.Background()
 
 	// 25 行账户窗口：pageSize=20 → hasMore，page=2 越过后半。
+	startDate, endDate := detailRangeKeys()
 	for i := 0; i < 25; i++ {
 		account := fmt.Sprintf("acc_bulk_%03d", i)
 		if _, err := env.db.Exec(`INSERT INTO client_ip_account_usage_range_windows
 			(ip_hash, account_id, start_date, end_date, request_count, updated_at)
-			VALUES (?, ?, '2026-09-01', '2026-09-03', ?, '2026-09-04T00:00:00.000Z')`,
-			detailIPHash, account, 100+i); err != nil {
+			VALUES (?, ?, ?, ?, ?, '2026-09-04T00:00:00.000Z')`,
+			detailIPHash, account, startDate, endDate, 100+i); err != nil {
 			t.Fatal(err)
 		}
 	}
-	result, err := env.store.Detail(ctx, DetailOptions{IPHash: detailIPHash, StartDate: "2026-09-01", EndDate: "2026-09-03"})
+	result, err := env.store.Detail(ctx, DetailOptions{IPHash: detailIPHash, StartDate: startDate, EndDate: endDate})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.HasMore || len(result.Items) != 20 {
 		t.Fatalf("分页上限 = %d hasMore=%v", len(result.Items), result.HasMore)
 	}
-	page2, err := env.store.Detail(ctx, DetailOptions{IPHash: detailIPHash, Page: 2, PageSize: 20, StartDate: "2026-09-01", EndDate: "2026-09-03"})
+	page2, err := env.store.Detail(ctx, DetailOptions{IPHash: detailIPHash, Page: 2, PageSize: 20, StartDate: startDate, EndDate: endDate})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +463,7 @@ func TestW11DDetailPaginationAndLookupArms(t *testing.T) {
 		t.Fatalf("第二页 = %d hasMore=%v", len(page2.Items), page2.HasMore)
 	}
 	// 远超窗口的页码钳制到最后一页。
-	farPage, err := env.store.Detail(ctx, DetailOptions{IPHash: detailIPHash, Page: 99999, PageSize: 50, StartDate: "2026-09-01", EndDate: "2026-09-03"})
+	farPage, err := env.store.Detail(ctx, DetailOptions{IPHash: detailIPHash, Page: 99999, PageSize: 50, StartDate: startDate, EndDate: endDate})
 	if err != nil {
 		t.Fatal(err)
 	}

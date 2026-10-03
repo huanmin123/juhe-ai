@@ -156,6 +156,11 @@ func (c preauthAuditCapture) FinalizeExtended(input gatewaypreauth.AuditFinalize
 		firstTokenMs := int(*extras.FirstTokenMs)
 		converted.FirstTokenMs = &firstTokenMs
 	}
+	// 响应层扩展面随 extras 带账户归属（nonstream.go / nonstreaminspection.go
+	// 的 AccountID），Finalize 消费侧用它覆盖审计行 accountId。
+	if extras.AccountID != "" {
+		converted.AccountID = extras.AccountID
+	}
 	c.inner.Finalize(converted)
 }
 

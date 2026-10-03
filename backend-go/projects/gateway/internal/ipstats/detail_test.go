@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newDetailEnv builds the detail fixture: the account usage window table plus
@@ -59,9 +60,20 @@ func newDetailEnv(t *testing.T) *testEnv {
 
 const detailIPHash = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
 
+// detailRangeKeys 返回落在 maxRangeDays=31 窗口中段的相对日期键。此前硬编码
+// 2026-09-01..03 在 2026-10-01 后越出 earliest=today-30 下界，被
+// normalizeRange 钳制塌缩成单日（窗口行 0 命中、rangeReady 恒 false，三个
+// detail 回归集体转红）；now-10d..now-5d 两侧留 ≥4 天余量，跨午夜执行也
+// 不会改变钳制结果。
+func detailRangeKeys() (string, string) {
+	now := time.Now()
+	return now.AddDate(0, 0, -10).Format("2006-01-02"), now.AddDate(0, 0, -5).Format("2006-01-02")
+}
+
 func seedDetailRows(t *testing.T, env *testEnv, adminID string) {
 	t.Helper()
 	now := "2026-09-04T00:00:00.000Z"
+	startDate, endDate := detailRangeKeys()
 	if _, err := env.db.Exec(`INSERT INTO client_ip_registry (ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version, first_seen_at, last_seen_at, created_at, updated_at)
 		VALUES (?, 1, ?, '203.0.113.7', 4, ?, ?, ?, ?)`, detailIPHash, strings.ToUpper(detailIPHash), now, now, now, now); err != nil {
 		t.Fatal(err)
@@ -72,20 +84,20 @@ func seedDetailRows(t *testing.T, env *testEnv, adminID string) {
 	// Materialize the range window row so the readiness probe passes (the
 	// stats_job_state cursor is absent; the fallback checks the window table).
 	if _, err := env.db.Exec(`INSERT INTO client_ip_usage_range_windows (ip_hash, start_date, end_date, updated_at)
-		VALUES (?, '2026-09-01', '2026-09-03', ?)`, detailIPHash, now); err != nil {
+		VALUES (?, ?, ?, ?)`, detailIPHash, startDate, endDate, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := env.db.Exec(`INSERT INTO client_ip_account_usage_range_windows
 		(ip_hash, account_id, start_date, end_date, request_count, success_count, error_count,
 		 input_tokens, output_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
 		 first_token_ms_sum, first_token_ms_count, active_days, last_used_at, updated_at)
-		VALUES (?, 'acc_alpha', '2026-09-01', '2026-09-03', 10, 8, 2, 100, 200, 1.25, 300, 3, 200, 600, 3, 2, ?, ?)`,
-		detailIPHash, now, now); err != nil {
+		VALUES (?, 'acc_alpha', ?, ?, 10, 8, 2, 100, 200, 1.25, 300, 3, 200, 600, 3, 2, ?, ?)`,
+		detailIPHash, startDate, endDate, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := env.db.Exec(`INSERT INTO client_ip_account_usage_range_windows
 		(ip_hash, account_id, start_date, end_date, request_count, updated_at)
-		VALUES (?, 'acc_beta', '2026-09-01', '2026-09-03', 4, ?)`, detailIPHash, now); err != nil {
+		VALUES (?, 'acc_beta', ?, ?, 4, ?)`, detailIPHash, startDate, endDate, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -99,7 +111,8 @@ func TestIPStatsDetailEndpointLocksIn(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	seedDetailRows(t, env, adminID)
 
-	status, payload := env.do(t, http.MethodGet, "/__aisys__/api/ip-stats/"+detailIPHash+"/detail?startDate=2026-09-01&endDate=2026-09-03&sortField=requestCount", "")
+	startDate, endDate := detailRangeKeys()
+	status, payload := env.do(t, http.MethodGet, "/__aisys__/api/ip-stats/"+detailIPHash+"/detail?startDate="+startDate+"&endDate="+endDate+"&sortField=requestCount", "")
 	if status != http.StatusOK {
 		t.Fatalf("detail failed: %d %v", status, payload)
 	}
@@ -151,7 +164,7 @@ func TestIPStatsDetailEndpointLocksIn(t *testing.T) {
 	if data["rangeReady"] != true {
 		t.Fatalf("rangeReady mismatch: %v", data["rangeReady"])
 	}
-	if data["range"].(map[string]any)["startDate"] != "2026-09-01" || data["range"].(map[string]any)["endDate"] != "2026-09-03" {
+	if data["range"].(map[string]any)["startDate"] != startDate || data["range"].(map[string]any)["endDate"] != endDate {
 		t.Fatalf("range mismatch: %v", data["range"])
 	}
 

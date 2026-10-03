@@ -39,8 +39,12 @@ func (f *fakeGroupUsageSource) GroupListUsageSummaries(_ context.Context, scopes
 	return f.totals, nil
 }
 
-// newUsageHydrateFixture builds the minimal business schema (providers +
-// system_accounts + groups, mirroring stats_hydration_test.go).
+// newUsageHydrateFixture builds the minimal business schema ListPage /
+// FindDetail read: providers + system_accounts + groups + group_accounts +
+// accounts, the real-shape resource_authorizations + group_authorization_settings
+// the authorized UNION arm joins (same DDL as groups_test.go) and
+// group_account_stats so the stats hydrate reads an empty table instead of
+// warn-degrading on a missing one.
 func newUsageHydrateFixture(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:groups-usage-hydrate-"+t.Name()+"?mode=memory&cache=shared")
@@ -55,7 +59,9 @@ func newUsageHydrateFixture(t *testing.T) *sql.DB {
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, name TEXT NOT NULL, provider_code TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE group_accounts (system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, account_id TEXT NOT NULL, account_authorization_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (group_id, account_id))`,
 		`CREATE TABLE accounts (id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, deleted_at TEXT)`,
-		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, status TEXT NOT NULL)`,
+		`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE group_authorization_settings (authorization_id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, group_type TEXT NOT NULL DEFAULT 'personal', scheduling_policy_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE group_account_stats (system_account_id TEXT NOT NULL DEFAULT 'sys_admin', group_id TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, available INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, error INTEGER NOT NULL DEFAULT 0, rate_limited INTEGER NOT NULL DEFAULT 0, current_concurrency INTEGER NOT NULL DEFAULT 0, concurrency_limit INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY (system_account_id, group_id))`,
 		`INSERT INTO providers (code, enabled) VALUES ('openai', 1)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
@@ -82,8 +88,10 @@ func TestListPageHydratesUsageSummaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 种子模拟 usage_reader 的产物契约（totalTokens=input+output 在读取器
+	// 内推导，usage-summary-loaders 移植；投影层直通不复算）。
 	source.todays = map[string]UsageSummary{
-		created.ID: {RequestCount: 12, InputTokens: 100, OutputTokens: 40, TotalCost: 1.5},
+		created.ID: {RequestCount: 12, InputTokens: 100, OutputTokens: 40, TotalTokens: 140, TotalCost: 1.5},
 	}
 	source.totals = map[string]UsageSummary{
 		created.ID: {RequestCount: 99, TotalCost: 42.25},

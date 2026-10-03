@@ -1,4 +1,7 @@
-package gatewayusage
+// 外部测试包：本文件引用 internal/auditlog（其经 internal/kernel 依赖本包），
+// in-package 测试会构成 "import cycle not allowed in test"。断言只用导出
+// 标识符，故放 gatewayusage_test。
+package gatewayusage_test
 
 import (
 	"encoding/base64"
@@ -7,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/auditlog"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 )
 
 // E2E-FINDING #11（F11）：chain_ports.go 类型桥 auditUsageDispatcher 用
@@ -16,8 +20,8 @@ import (
 // 接收侧 PayloadBody.Present 推导。
 func TestAuditLogPayloadInputMarshalBodyBufferForm(t *testing.T) {
 	body := []byte(`{"type":"gateway_metadata","label":"canary"}`)
-	encoded, err := json.Marshal(AuditLogPayloadInput{
-		PartType:    AuditPartGatewayMetadata,
+	encoded, err := json.Marshal(gatewayusage.AuditLogPayloadInput{
+		PartType:    gatewayusage.AuditPartGatewayMetadata,
 		ContentType: "application/json; audit=gateway-metadata",
 		Body:        body,
 		HasBody:     true,
@@ -51,7 +55,7 @@ func jsonString(t *testing.T, value string) string {
 // base64 分支无损接收（StdEncoding 解码回原字节并置 Present）。
 func TestAuditLogPayloadInputMarshalFeedsAuditlogPayloadBody(t *testing.T) {
 	body := []byte("hi")
-	encoded, err := json.Marshal(AuditLogPayloadInput{PartType: AuditPartGatewayMetadata, Body: body, HasBody: true})
+	encoded, err := json.Marshal(gatewayusage.AuditLogPayloadInput{PartType: gatewayusage.AuditPartGatewayMetadata, Body: body, HasBody: true})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -71,7 +75,7 @@ func TestAuditLogPayloadInputMarshalFeedsAuditlogPayloadBody(t *testing.T) {
 // 空 Body：不输出 body 字段，接收侧保持零值（Present=false），
 // 与 UnmarshalJSON 的 null/缺失分支形态对齐。
 func TestAuditLogPayloadInputMarshalEmptyBodyOmitsField(t *testing.T) {
-	encoded, err := json.Marshal(AuditLogPayloadInput{PartType: AuditPartClientRequest, HasBody: false})
+	encoded, err := json.Marshal(gatewayusage.AuditLogPayloadInput{PartType: gatewayusage.AuditPartClientRequest, HasBody: false})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -84,12 +88,12 @@ func TestAuditLogPayloadInputMarshalEmptyBodyOmitsField(t *testing.T) {
 // auditlog.AuditLogInput 的 payload body 不再丢失。
 func TestAuditLogInputBridgeRoundTripKeepsPayloadBody(t *testing.T) {
 	body := gatewayMetadataBodyForTest("canary")
-	input := AuditLogInput{
+	input := gatewayusage.AuditLogInput{
 		TraceID: "trace-f11",
 		Method:  "POST",
 		Path:    "/v1/chat/completions",
-		Payloads: []AuditLogPayloadInput{{
-			PartType:    AuditPartGatewayMetadata,
+		Payloads: []gatewayusage.AuditLogPayloadInput{{
+			PartType:    gatewayusage.AuditPartGatewayMetadata,
 			ContentType: "application/json; audit=gateway-metadata",
 			Body:        body,
 			HasBody:     true,

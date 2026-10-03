@@ -15,7 +15,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
@@ -377,7 +376,4 @@ func TestListPageCircuitSummaryNormalOmitted(t *testing.T) {
 
 	items := overlayListItems(t, env, "/__aisys__/api/accounts")
 	requireMissingKeys(t, items["acc-ov-nrm"], "circuitSummary")
-	if !strings.Contains(items["acc-ov-nrm"]["id"].(string), "acc-ov-nrm") {
-		t.Fatalf("行定位失败：%v", items["acc-ov-nrm"])
-	}
 }

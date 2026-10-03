@@ -105,6 +105,8 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"usageRankSnapshotRetentionDays":             "30",
 		"systemMetricsRetentionDays":                 "7",
 		"systemMetricsHourlyRetentionDays":           "30",
+		// 上游客户端版本覆盖（613f2c618 新增键）：空对象是校验器认可的合法默认。
+		"upstreamClientVersionOverrides": "{}",
 	}
 	for _, key := range settings.SystemSettingKeys {
 		value, ok := defaults[key]

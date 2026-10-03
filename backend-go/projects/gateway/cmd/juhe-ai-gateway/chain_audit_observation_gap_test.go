@@ -127,7 +127,10 @@ func TestGatewayHTTPCompletionObserveDelivery(t *testing.T) {
 	}
 }
 
-// auditGapChain 构造启用审计的链替身（定价面按需注入）。
+// auditGapChain 构造启用审计的链替身（定价面按需注入）。模型解析面与生产
+// 同源（chain_compose.go usageModelResolver: usageModelResolverAdapter{}）：
+// 缺省时 auditModelAccounting 的 c.input.Models 为 nil，映射解析被整体跳过、
+// upstreamModel 回落请求模型，定价入参吃不到映射目标。
 func auditGapChain(dispatcher *mergeCapturingAuditDispatcher, pricing gatewayusage.PricingCatalog) *gatewayChain {
 	return &gatewayChain{
 		auditSettings: gatewayusage.FixedAuditLogSettingsSource{Settings: gatewayusage.AuditLogSettings{
@@ -136,6 +139,7 @@ func auditGapChain(dispatcher *mergeCapturingAuditDispatcher, pricing gatewayusa
 			FullBodyCaptureEnabled: true,
 		}},
 		auditDispatcher:                dispatcher,
+		usageModelResolver:             usageModelResolverAdapter{},
 		finalizationPricing:            pricing,
 		finalizationSyncPricingAllowed: pricing != nil,
 	}
