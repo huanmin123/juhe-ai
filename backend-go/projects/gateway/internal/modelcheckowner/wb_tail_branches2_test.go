@@ -37,7 +37,13 @@ func TestWBCredentialEnvelopeAuthenticationMatrix(t *testing.T) {
 			parts := strings.Split(valid, ":")
 			plain := parts[3]
 			bytes := []byte(plain)
-			bytes[0] = 'A'
+			// 密文随随机 IV 变化：首字符可能本来就是 'A'（1/64），固定替换
+			// 会退化成空操作、GCM 校验合法通过。翻成必然不同的字符。
+			if bytes[0] == 'A' {
+				bytes[0] = 'B'
+			} else {
+				bytes[0] = 'A'
+			}
 			return strings.Join([]string{"v1", parts[1], parts[2], string(bytes)}, ":")
 		}()},
 	}
@@ -218,12 +224,19 @@ func TestWBRunFullProfilePersistsObservations(t *testing.T) {
 }
 
 // wbRunQualityFailingProbeWithEvents 与 wbRunQualityFailingProbe 等价，
-// 但通过 channel 把进度事件交给调用方断言。
+// 但通过 channel 把进度事件交给调用方断言。转发不得阻塞 run（生产 SSE 侧
+// onEvent 满通道时让位断开、永不阻塞 run，http.go:1014）：逐探针事件接线后
+// 单 run 事件量超过小缓冲通道容量，阻塞发送会把 run 挂死（此前 buffer=4 恒
+// 够用是事件只有 run 级三键的巧合）；测试无消费方背压语义，取满即丢，
+// collected 恒完整。
 func wbRunQualityFailingProbeWithEvents(t *testing.T, store *Store, projector *QualityProjector, events chan<- ProgressEvent) (RunResult, []ProgressEvent) {
 	t.Helper()
 	collected := make([]ProgressEvent, 0)
 	result, _ := wbRunQualityFailingProbe(t, store, projector, func(event ProgressEvent) {
-		events <- event
+		select {
+		case events <- event:
+		default:
+		}
 		collected = append(collected, event)
 	})
 	return result, collected

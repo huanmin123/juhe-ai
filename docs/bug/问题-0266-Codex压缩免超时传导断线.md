@@ -31,7 +31,7 @@ Go 侧 preflight 识别、engine 判定、transport 闸门均正确（生产审�
 3. `chain_v1.go:494` 改用 `responseTimeoutProfileOf(dispatched, settings, lane)`：优先投影 `dispatched.TimeoutProfile`（映射 `gatewayresponse.TimeoutProfile` 消费字段子集），零值（engine 未带出）回退 settings 派生——非压缩请求行为不变（dispatch 层对普通请求本就按同 settings/lane/false 生成）。
 4. **响应层超时锚点改为 attempt 级**（同日追加，attempt2-9 秒败的直接根因）：`chain_v1.go` handleUpstreamResponse 的 `StartedAtMs` 基准从请求级 `startedAt` 改为 `dispatched.AttemptStartedAt`（`dispatchsingle.go` 每 attempt 赋值；零值回退请求级）——对齐 Node routes.ts:1574/:1604 从 upstreamResult 解构 `attemptStartedAt` 传响应层的契约。修复前：首字（first_chunk）/语义结果（semantic_result）/attempt 生命周期（stream_lifetime）/非流式首响应的预算与 `usage_records.first_token_ms` 统计全部从**请求进入时刻**起算，第一个账户耗掉的时间直接从后续账户预算里扣除，换号重试的流一建立即预算耗尽秒败（生产 attempt2-9 同毫秒「120s 内未返回首段数据」形态）。修复后每 attempt 独立计量；请求级总墙钟（`GatewayRequestWallBudget` 默认 270s，Node 同构）仍封顶多账户轮换总时长，`ServerRetryBudget`/`RouteCoordinationBudget` 等待类总预算维持请求级语义不变。**例外**：Prometheus 首字直方图（`firstOutputMetricMarkOf`）保持请求级锚点——Node routes.ts:1507-1508 `recordGatewayFirstOutputMetric(Date.now() - requestContext.startedAt, ...)` 以请求入口时刻为锚，attempt 级只用于 :1509 的 markFirstByte（hot-quality），锚点复审发现的分叉契约按 Node 恢复。
 
-不改：`gatewaydispatch`/`gatewaypreauth`/`gatewayresponse`/`gatewayrouting` 生产代码（判定与结构本就正确）；`chatbridgestate.go` 的 `ReplaceGatewayJSONBody` 丢 `CodexCompactionTrigger` 标记问题为跨协议桥场景加固项，另行登记，不在本档范围。
+不改：`gatewaydispatch`/`gatewaypreauth`/`gatewayresponse`/`gatewayrouting` 生产代码（判定与结构本就正确）；`chatbridgestate.go` 的 `ReplaceGatewayJSONBody` 丢 `CodexCompactionTrigger` 标记问题为跨协议桥场景加固项，另行登记，不在本档范围（已登记为 BUG-0280，2026-10-03 修复收口）。
 
 ## 4. 验证
 

@@ -360,6 +360,7 @@ func runSamplingRequest(ctx context.Context, input Suite, run func(context.Conte
 	if err != nil {
 		return Result{}, err
 	}
+	request.ItemKey = "sampling_statistics"
 	return run(ctx, request)
 }
 

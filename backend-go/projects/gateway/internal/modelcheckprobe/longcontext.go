@@ -55,6 +55,7 @@ func RunLongContext(ctx context.Context, providerCode, model string, protocol mo
 		if buildErr != nil {
 			return Evaluation{}, buildErr
 		}
+		request.ItemKey = "long_context"
 		result, runErr := run(ctx, request)
 		if runErr != nil {
 			return Evaluation{}, runErr

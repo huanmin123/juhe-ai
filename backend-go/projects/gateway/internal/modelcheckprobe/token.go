@@ -61,6 +61,7 @@ func runTokenIntegrity(ctx context.Context, protocol modelcheckprofile.Protocol,
 			if err != nil {
 				return Evaluation{}, err
 			}
+			request.ItemKey = "token_integrity"
 			result, err := run(ctx, request)
 			if err != nil {
 				return Evaluation{}, err

@@ -228,7 +228,7 @@ func RunIdentityFamily(ctx context.Context, input Suite, timeout time.Duration) 
 	selfOutputs := make([]string, 0, 2)
 	selfSkipped := false
 	for _, prompt := range []string{selfDirect, selfIndirect} {
-		result, requestErr := runIdentityRequest(ctx, input, run, prompt, identitySelfReportMaxOutputTokens, upstreamMode, stream)
+		result, requestErr := runIdentityRequest(ctx, input, run, prompt, "identity_selfreport", identitySelfReportMaxOutputTokens, upstreamMode, stream)
 		if requestErr != nil {
 			return nil, IdentityAnchorProbe{}, false, requestErr
 		}
@@ -260,7 +260,7 @@ func RunIdentityFamily(ctx context.Context, input Suite, timeout time.Duration) 
 	extractionOutputs := make([]string, 0, 2)
 	extractionFailed := false
 	for _, prompt := range extractionVariants {
-		result, requestErr := runIdentityRequest(ctx, input, run, prompt, identityExtractionMaxOutputTokens, upstreamMode, stream)
+		result, requestErr := runIdentityRequest(ctx, input, run, prompt, "identity_extraction", identityExtractionMaxOutputTokens, upstreamMode, stream)
 		if requestErr != nil {
 			return nil, IdentityAnchorProbe{}, false, requestErr
 		}
@@ -295,7 +295,7 @@ func RunIdentityFamily(ctx context.Context, input Suite, timeout time.Duration) 
 		}
 		anchor = built
 	}
-	anchorResult, requestErr := runIdentityRequest(ctx, input, run, anchor.Question, identityAnchorMaxOutputTokens, upstreamMode, stream)
+	anchorResult, requestErr := runIdentityRequest(ctx, input, run, anchor.Question, "identity_anchor", identityAnchorMaxOutputTokens, upstreamMode, stream)
 	if requestErr != nil {
 		return nil, IdentityAnchorProbe{}, false, requestErr
 	}
@@ -311,11 +311,12 @@ func RunIdentityFamily(ctx context.Context, input Suite, timeout time.Duration) 
 	return items, anchor, false, nil
 }
 
-func runIdentityRequest(ctx context.Context, input Suite, run func(context.Context, Request) (Result, error), prompt string, maxOutputTokens int, mode string, stream bool) (Result, error) {
+func runIdentityRequest(ctx context.Context, input Suite, run func(context.Context, Request) (Result, error), prompt string, kind string, maxOutputTokens int, mode string, stream bool) (Result, error) {
 	request, err := input.tunedBasic(input.Model, prompt, mode, stream, maxOutputTokens, 0)
 	if err != nil {
 		return Result{}, err
 	}
+	request.ItemKey = kind
 	return run(ctx, request)
 }
 

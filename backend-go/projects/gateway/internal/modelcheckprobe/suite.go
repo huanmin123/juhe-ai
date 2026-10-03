@@ -74,6 +74,32 @@ type Suite struct {
 	// the sampling family's paired McNemar test compares both accounts on the
 	// same question instead of mixing in per-question difficulty noise.
 	anchorProbe *IdentityAnchorProbe
+	// OnProbeStarted 在每个带 ItemKey 标签的真实探针请求发出前回调。回调在
+	// 探针执行 goroutine 上同步触发；nil 时零行为变化。
+	OnProbeStarted func(ProbeHook)
+	// OnProbeCompleted 在同一探针请求拿到最终 Result 后回调；传输层返回
+	// error 时不回调（运行即将整体失败，不虚构完成事件）。nil 时零行为变化。
+	OnProbeCompleted func(ProbeHook)
+}
+
+// ProbeHook 是逐探针回调载荷，字段与前端 probe_started / probe_completed
+// 进度事件契约（frontend/src/types/domain/model-checks.ts）对齐。started 只
+// 填请求侧字段（ItemKey/Method/Path/ExpectedModel/RequestModel/UpstreamModel/
+// ModelMappingApplied）；completed 在此之上追加结果侧字段。事件只来自真实
+// 请求，执行路径不合成探针事件。
+type ProbeHook struct {
+	ItemKey             string
+	Method              string
+	Path                string
+	ExpectedModel       string
+	RequestModel        string
+	UpstreamModel       string
+	ModelMappingApplied bool
+	StatusCode          int
+	Success             bool
+	DurationMS          int64
+	ResponseModel       string
+	OutputPreview       string
 }
 
 func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evaluation, error) {
@@ -93,6 +119,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 	if err != nil {
 		return nil, err
 	}
+	basic.ItemKey = "protocol_basic"
 	basicResult, executeErr := input.execute(ctx, basic, timeout)
 	if executeErr != nil {
 		return nil, executeErr
@@ -112,6 +139,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 		if streamErr != nil {
 			return nil, streamErr
 		}
+		streamRequest.ItemKey = "protocol_stream"
 		streamResult, streamExecuteErr := input.execute(ctx, streamRequest, timeout)
 		if streamExecuteErr != nil {
 			return nil, streamExecuteErr
@@ -127,6 +155,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 	if err != nil {
 		return nil, err
 	}
+	structured.ItemKey = "structured_output"
 	structuredResult, structuredExecuteErr := input.execute(ctx, structured, timeout)
 	if structuredExecuteErr != nil {
 		return nil, structuredExecuteErr
@@ -141,6 +170,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 	if err != nil {
 		return nil, err
 	}
+	tool.ItemKey = "tool_calling"
 	toolResult, toolExecuteErr := input.execute(ctx, tool, timeout)
 	if toolExecuteErr != nil {
 		return nil, toolExecuteErr
@@ -259,6 +289,7 @@ func RunSuite(ctx context.Context, input Suite, timeout time.Duration) ([]Evalua
 			if stabilityErr != nil {
 				return nil, stabilityErr
 			}
+			stability.ItemKey = "stability"
 			result, executeErr := input.execute(ctx, stability, timeout)
 			if executeErr != nil {
 				return nil, executeErr
@@ -481,7 +512,48 @@ func (s Suite) execute(ctx context.Context, request Request, timeout time.Durati
 	}
 	options := s.options(s.Endpoint, s.Headers, timeout)
 	options.Client = s.Client
-	return ExecuteWithRetry(ctx, request, options, s.Retry)
+	itemKey := scopedItemKey(s.Prefix, request.ItemKey)
+	hooksEnabled := itemKey != "" && (s.OnProbeStarted != nil || s.OnProbeCompleted != nil)
+	var hook ProbeHook
+	if hooksEnabled {
+		hook = ProbeHook{ItemKey: itemKey, Method: http.MethodPost, Path: request.Path, ExpectedModel: request.ExpectedModel, RequestModel: request.RequestModel, UpstreamModel: s.Model, ModelMappingApplied: request.ModelMappingApplied}
+		if s.OnProbeStarted != nil {
+			s.OnProbeStarted(hook)
+		}
+	}
+	result, err := ExecuteWithRetry(ctx, request, options, s.Retry)
+	if hooksEnabled && s.OnProbeCompleted != nil && err == nil {
+		hook.StatusCode = result.HTTPStatus
+		hook.Success = result.Success
+		hook.DurationMS = result.Duration.Milliseconds()
+		hook.ResponseModel = result.ObservedModel
+		hook.OutputPreview = probeOutputPreview(result.Output)
+		s.OnProbeCompleted(hook)
+	}
+	return result, err
+}
+
+// scopedItemKey mirrors scopeEvaluation for probe labels: a non-empty suite
+// prefix scopes the tag so trusted-comparison probes stay attributable, and an
+// already-scoped tag is kept verbatim.
+func scopedItemKey(prefix, itemKey string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" || strings.Contains(itemKey, ".") {
+		return itemKey
+	}
+	return prefix + "." + itemKey
+}
+
+// probeOutputPreview bounds the observed completion to a terminal-friendly
+// prefix. The output is provider completion text only; probe evidence never
+// carries credentials or raw headers.
+func probeOutputPreview(output string) string {
+	trimmed := strings.TrimSpace(output)
+	runes := []rune(trimmed)
+	if len(runes) > 120 {
+		return string(runes[:120])
+	}
+	return trimmed
 }
 
 // familyRunner prevents a family helper that has no terminal-aware callback
@@ -718,6 +790,7 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	if err != nil {
 		return nil, err
 	}
+	targetBasic.ItemKey = "comparison"
 	// The paired request is the independent cross-model contract. The
 	// comparison suite above already ran its own ordinary basic probe; this
 	// request must use the CROSS-MODEL-OK output contract so the comparison item
@@ -726,6 +799,10 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 	if err != nil {
 		return nil, err
 	}
+	// These direct comparison probes run on suites whose Prefix is empty, so
+	// they carry the trusted_comparison scope explicitly and stay attributable
+	// in the per-probe progress hooks.
+	comparisonBasic.ItemKey = "trusted_comparison.comparison"
 	targetBasicResult, err := execute(target, targetBasic)
 	if err != nil {
 		return nil, err
@@ -745,10 +822,12 @@ func RunTrustedComparison(ctx context.Context, target, comparison Suite, timeout
 		if err != nil {
 			return nil, err
 		}
+		targetRequest.ItemKey = "distribution_similarity"
 		comparisonRequest, err := comparison.tunedBasic(comparisonModel, definition.Prompt, comparisonMode, comparisonStream, 96, 0.2)
 		if err != nil {
 			return nil, err
 		}
+		comparisonRequest.ItemKey = "trusted_comparison.distribution_similarity"
 		targetResult, err := execute(target, targetRequest)
 		if err != nil {
 			return nil, err

@@ -40,6 +40,10 @@ type Request struct {
 	// remains explicit so callers do not infer a path from protocol alone.
 	EndpointMode string
 	Body         json.RawMessage
+	// ItemKey labels the probe family a request belongs to (for example
+	// "protocol_basic"). It feeds only the per-probe progress hooks; an empty
+	// label never fires a hook and changes nothing about execution.
+	ItemKey string
 }
 
 const (

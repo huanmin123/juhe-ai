@@ -13,7 +13,7 @@ package accounts
 //   - 第二批：availabilityPresentation 投影 + 探针 tooltip（probePresentation /
 //     lastObservation / traceId）——本批 DTO 刻意不含 probePresentation 键
 //     （前端一旦收到该键，内部 schedule 形状即为必填）；
-//   - 第三批：/my-accounts PG 投影的同一 overlay。
+//   - 第三批已裁决不实施（见 docs/bug/问题-0278 残余项登记）。
 //
 // 数据源（装配见 cmd/juhe-ai-gateway/compose_account_runtime_overlay.go）：
 //   - runtime ← 网关进程内 LocalSuppressionStore 快照 + 配置策略避让状态合并；

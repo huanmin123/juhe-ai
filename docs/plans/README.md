@@ -1,5 +1,11 @@
 # 计划目录
 
+- [PLAN-20261003T071031978Z](计划-20261003T071031978Z-mainProbeFence清理侧接线.md)：BUG-0277 残余项立项——mainProbeFence 清理侧接线：写侧已接线（gatewayaccounteffects settleOnce → `RecordMainProbeFence`，Redis `SET mainProbeFence:<capabilityHash> PX 90000`）但 `ClearMainProbeFence`/`DeferMainProbeFence` 零生产调用，现靠 90s TTL（`KeyModelForegroundPrecommitLeaseMs`）自愈；范围=outbox 行承载 `KeyModelFenceReference` 三元组（gateway `chain_request_failure_health.go:54-70` 与 jobs `worker_health_probe_outbox.go` 两侧 DDL 同步 + `w0cross_contract_golden_test.go` golden 更新）+ `compose_accounts_reset.go:268` 透传替代 `_` 丢弃 + J1 outcome 观察器（success+winner→Clear、unknown→Defer，落点推荐 gateway 观察复用现成方法）；非目标=不动 admitScript/90s TTL 兜底；待开始。
+
+- [PLAN-20261003T065946077Z](计划-20261003T065946077Z-CodexOAuth账户模型映射消费.md)：BUG-0269 残余项立项——Codex OAuth 账户的模型映射在请求链未被消费（`chain_driver.go:312-313` OAuth 分支 `ModelOverride` 用 `canonicalAccountModel` 不走映射解析，api_key 分支消费；Node `gpt/driver.ts` 同分支传 `modelMapping?.upstreamModel`），生产零可达（236 条启用映射全 api_key）；范围=OAuth 分支接入同源映射解析 + OAuth mock fixture 全覆盖，控险靠零生产 OAuth 映射现状；待开始。
+
+- [PLAN-20261003T065859991Z](计划-20261003T065859991Z-模型检测窗口聚合与预聚合管线.md)：BUG-0273 deferred 立项——模型检测窗口聚合/预聚合管线：gateway owner 域按 `(created_at, id)` 游标增量 worker + 7 张只预置 schema 的 stats 表写入器（`model_token_integrity_windows` 等，设计 §15.9 :953/:955）+ TrustReport 证据源从单 run 切窗口 + 阈值口径裁决（0.8 vs 0.5）+ 读侧只 mergeLatest 切换 + retention `inventory.go:152-157` LegacyFactRetain 登记更新；非目标=不改探针执行链；待开始。
+
 - [PLAN-20261002T165252300Z](计划-20261002T165252300Z-账户锁开关移除与投影死字段清理.md)：落实"功能只存在或不存在，不设开/关"契约，移除 2026-09-21 开关清理批次的两个漏网残留——gateway `JUHE_AI_ACCOUNT_LOCKS_DISABLED` 显式关闭开关（恒装配 SQL 锁运行面，`disabledAccountLocks` 仅保留组合测试 nil-guard）与 jobs `ListProjectionEnabled` 恒 true 死字段；生产从未配置该 env，部署文档无可同步项。**已实施完成（2026-10-03，独立复审 pass 无 blocker；gateway 6 文件 + jobs 9 文件，两模块 build/vet/定向测试与 jobs 全量测试通过）**。
 
 - [PLAN-20261002T114140718Z](计划-20261002T114140718Z-架构评估核对与可靠性提升路线.md)：对外部 AI 架构评估逐条取证核对（三处功能目录过时表述坐实并按代码裁决、调度解释链缺口确认为补建而非验证、发布验证确认为接线 fullchain e2e/deploy.sh 已有资产、分布式"草案"定性修正为待实施设计依据），并给出 P0 在途收尾 → P1 契约统一 → P2 发布验证接线 → P3 调度解释链补缺 → P4 支持成本与最小基线的路线；草稿，待用户确认优先级与清理批次授权。

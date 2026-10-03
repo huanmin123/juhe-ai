@@ -42,6 +42,7 @@ func RunBehavior(ctx context.Context, protocol modelcheckprofile.Protocol, model
 		if err != nil {
 			return Evaluation{}, err
 		}
+		request.ItemKey = "behavior_probe"
 		result, err := run(ctx, request)
 		if err != nil {
 			return Evaluation{}, err

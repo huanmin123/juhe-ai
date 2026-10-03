@@ -407,6 +407,39 @@ func TestW11EAdaptFrontendProgressEventArms(t *testing.T) {
 	}
 }
 
+// TestW11EAdaptFrontendProbeItemEventArms：probe_started / probe_completed /
+// item_completed 三个逐探针事件的字段映射与丢弃边界（缺 itemKey / traceId
+// 丢弃、数值缺失补默认、message 证据为空回退默认文案）。
+func TestW11EAdaptFrontendProbeItemEventArms(t *testing.T) {
+	request := RunRequest{TargetID: "acct-1", Model: "m", Profile: "quick"}
+	if _, ok := adaptFrontendProgressEvent(ProgressEvent{Kind: "probe_started", Data: map[string]any{"method": "POST", "path": "/v1/responses"}}, request); ok {
+		t.Fatal("缺 itemKey 的 probe_started 必须被丢弃")
+	}
+	payload, ok := adaptFrontendProgressEvent(ProgressEvent{Kind: "probe_started", Data: map[string]any{"itemKey": "protocol_basic", "method": "POST", "path": "/v1/responses"}}, request)
+	if !ok || payload["type"] != "probe_started" || payload["itemKey"] != "protocol_basic" || payload["method"] != "POST" || payload["path"] != "/v1/responses" || payload["message"] != "探针请求已发出" {
+		t.Fatalf("probe_started 载荷=%v", payload)
+	}
+	if _, ok := adaptFrontendProgressEvent(ProgressEvent{Kind: "probe_completed", Data: map[string]any{"itemKey": "protocol_basic"}}, request); ok {
+		t.Fatal("缺 traceId 的 probe_completed 必须被丢弃")
+	}
+	payload, ok = adaptFrontendProgressEvent(ProgressEvent{Kind: "probe_completed", Data: map[string]any{"itemKey": "protocol_basic", "traceId": "trace-1", "statusCode": 200, "success": true, "durationMs": int64(12), "responseModel": "gpt-5.6-sol", "outputPreview": "OK-MODEL-CHECK"}}, request)
+	if !ok || payload["type"] != "probe_completed" || payload["traceId"] != "trace-1" || payload["statusCode"] != 200 || payload["success"] != true || payload["durationMs"] != int64(12) || payload["responseModel"] != "gpt-5.6-sol" || payload["outputPreview"] != "OK-MODEL-CHECK" || payload["message"] != "探针响应完成" {
+		t.Fatalf("probe_completed 载荷=%v", payload)
+	}
+	payload, ok = adaptFrontendProgressEvent(ProgressEvent{Kind: "probe_completed", Data: map[string]any{"itemKey": "protocol_basic", "traceId": "trace-1"}}, request)
+	if !ok || payload["statusCode"] != 0 || payload["success"] != false || payload["durationMs"] != int64(0) {
+		t.Fatalf("probe_completed 默认值载荷=%v", payload)
+	}
+	payload, ok = adaptFrontendProgressEvent(ProgressEvent{Kind: "item_completed", Data: map[string]any{"itemKey": "custom_quiz", "itemType": "custom_quiz", "status": "failed", "score": 20, "maxScore": 31, "message": "题目判定失败"}}, request)
+	if !ok || payload["type"] != "item_completed" || payload["itemType"] != "custom_quiz" || payload["status"] != "failed" || payload["score"] != 20 || payload["maxScore"] != 31 || payload["message"] != "题目判定失败" {
+		t.Fatalf("item_completed 载荷=%v", payload)
+	}
+	payload, ok = adaptFrontendProgressEvent(ProgressEvent{Kind: "item_completed", Data: map[string]any{"itemKey": "token_integrity"}}, request)
+	if !ok || payload["status"] != "skipped" || payload["score"] != 0 || payload["maxScore"] != 0 || payload["message"] != "评分完成" {
+		t.Fatalf("item_completed 默认值载荷=%v", payload)
+	}
+}
+
 func TestW11EStreamErrorPayloadHelpers(t *testing.T) {
 	if payload := ownerStreamError(nil); payload["message"] != "模型检测失败" {
 		t.Fatalf("nil 错误载荷=%v", payload)

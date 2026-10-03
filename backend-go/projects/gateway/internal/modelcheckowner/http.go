@@ -1422,10 +1422,11 @@ func writeSSE(w io.Writer, flusher http.Flusher, event string, data any) error {
 
 // adaptFrontendProgressEvent converts the internal runtime notification into
 // the top-level discriminated union consumed by frontend/src/api/modelCheckStream.ts.
-// Runtime notifications intentionally remain sparse: until the probe runner
-// exposes per-probe hooks, unsupported internal kinds are not emitted as
-// synthetic probe events. This keeps the stream honest while ensuring the
-// events that do cross HTTP are directly consumable by the UI.
+// The probe runner now exposes per-probe hooks and runtime.go wires them into
+// the stream: probe_started / probe_completed carry only real probe requests
+// and item_completed carries the real returned evaluations — no synthetic
+// probe events are produced anywhere. Unsupported internal kinds are still
+// dropped so the events that cross HTTP remain directly consumable by the UI.
 func adaptFrontendProgressEvent(event ProgressEvent, request RunRequest) (map[string]any, bool) {
 	data, _ := event.Data.(map[string]any)
 	payload := make(map[string]any, len(data)+8)
@@ -1460,6 +1461,46 @@ func adaptFrontendProgressEvent(event ProgressEvent, request RunRequest) (map[st
 			payload["maxScore"] = 100
 		}
 		return payload, true
+	case "probe_started":
+		if progressText(payload, "itemKey", "") == "" {
+			return nil, false
+		}
+		payload["type"] = "probe_started"
+		payload["message"] = progressMessage(payload, "探针请求已发出")
+		payload["method"] = progressText(payload, "method", "POST")
+		payload["path"] = progressText(payload, "path", "")
+		return payload, true
+	case "probe_completed":
+		if progressText(payload, "itemKey", "") == "" || progressText(payload, "traceId", "") == "" {
+			return nil, false
+		}
+		payload["type"] = "probe_completed"
+		payload["message"] = progressMessage(payload, "探针响应完成")
+		if _, ok := payload["statusCode"]; !ok {
+			payload["statusCode"] = 0
+		}
+		if _, ok := payload["success"]; !ok {
+			payload["success"] = false
+		}
+		if _, ok := payload["durationMs"]; !ok {
+			payload["durationMs"] = int64(0)
+		}
+		return payload, true
+	case "item_completed":
+		if progressText(payload, "itemKey", "") == "" {
+			return nil, false
+		}
+		payload["type"] = "item_completed"
+		payload["message"] = progressMessage(payload, "评分完成")
+		payload["itemType"] = progressText(payload, "itemType", "")
+		payload["status"] = progressText(payload, "status", "skipped")
+		if _, ok := payload["score"]; !ok {
+			payload["score"] = 0
+		}
+		if _, ok := payload["maxScore"]; !ok {
+			payload["maxScore"] = 0
+		}
+		return payload, true
 	case "quality_health_sync", "health_sync_failed":
 		payload["type"] = "quality_health_sync"
 		result := progressText(payload, "result", "")
@@ -1485,6 +1526,15 @@ func adaptFrontendProgressEvent(event ProgressEvent, request RunRequest) (map[st
 func progressText(data map[string]any, key, fallback string) string {
 	if value, ok := data[key].(string); ok {
 		return value
+	}
+	return fallback
+}
+
+// progressMessage reads a display message and falls back when the key is
+// absent or empty; the frontend progress contract requires a message string.
+func progressMessage(data map[string]any, fallback string) string {
+	if message := progressText(data, "message", ""); message != "" {
+		return message
 	}
 	return fallback
 }

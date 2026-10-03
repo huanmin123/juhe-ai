@@ -445,6 +445,20 @@ func finalizationUsageSemanticOf(account gatewayresponse.AccountView) string {
 	return chainUsageSemanticResolver{}.UsageSemanticForProfile(profile)
 }
 
+// chainUsageRecordSnapshot 对齐 gatewayusage.usageRecordSnapshot
+// （internal/gatewayusage/service.go:508-515，包内未导出）与 Node records.ts
+// usageRecordSnapshot：账号探针流量（account_health_check /
+// runtime_recovery_probe / cooldown_retest）不落快照。64KB 截断不在此处做：
+// 直投 recorder 的入口（spooledUsageRecorder.EnqueueUsageRecord）第一步即走
+// NormalizeUsageRecordInput → BoundUsageRecordSnapshot（chain_usage.go:123 →
+// internal/gatewayusage/records.go:143-144），与本函数产出同链生效。
+func chainUsageRecordSnapshot(trafficSource string, snapshot any) any {
+	if gatewayusage.IsAccountProbeTrafficSource(trafficSource) {
+		return nil
+	}
+	return snapshot
+}
+
 func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresponse.CompletedAttemptInput) {
 	if u.recorder == nil {
 		return
@@ -518,6 +532,23 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	record.OutputImageCount = input.Usage.OutputImageCount
 	record.UpstreamResponseModel = input.Usage.UpstreamResponseModel
 	record.ReportedServiceTier = input.Usage.ServiceTier
+	// 快照为失败记录专属契约（docs/functions/核心功能设计.md:568-569；Node
+	// finalization.ts:2211-2241 成功时显式 undefined）：成功行输入恒 nil（响应
+	// 管线三态门控已保证，非流式 nonstream.go:1038-1053 与 Node 同构——成功
+	// nil、失败完整快照、bodyOmission 带 omission 快照），此处不再加成功态
+	// 防御；probe 流量统一置 nil（Node records.ts:375-376 同款门控）。
+	// 注意 CompletedAttemptInput 的快照字段是具体指针类型：直接把 nil 指针
+	// 传进 any 形参会得到 typed-nil（接口非 nil），BoundUsageRecordSnapshot
+	// 会把 nil 指针 walk 成 "<nil>" 垃圾字符串落库——先判具体 nil 再包 any。
+	// ResponseSnapshot 走 gatewayFailureResponseSnapshotOf 同款 View→usage 转
+	// 换：response_snapshot_json 列键形与失败记账路径（BUG-0271）一致为
+	// camelCase，不因入口不同分叉。
+	if input.RequestSnapshot != nil {
+		record.RequestSnapshot = chainUsageRecordSnapshot(input.UsageContext.TrafficSource, input.RequestSnapshot)
+	}
+	if input.ResponseSnapshot != nil {
+		record.ResponseSnapshot = chainUsageRecordSnapshot(input.UsageContext.TrafficSource, gatewayFailureResponseSnapshotOf(input.ResponseSnapshot))
+	}
 	applyUsageAccountScope(&record, input.Account)
 	// 成本估算对齐 Node recordCompletedUpstreamAttempt 的“记录时同步估算”
 	// 语义：gate 由组合根表达（cacheDriver !== 'redis' ⇒

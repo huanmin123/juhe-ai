@@ -371,6 +371,16 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 	probeSuite := modelcheckprobe.Suite{Endpoint: target.Endpoint, ProviderCode: target.ProviderCode, ProviderProtocolProfileID: target.ProviderProtocolProfileID, Headers: target.Headers, Model: probeModel, RequestModel: request.Model, ModelMappingApplied: probeModel != request.Model, Profile: request.Profile, Protocol: target.Protocol, UpstreamProtocol: target.UpstreamProtocol, EndpointMode: target.EndpointMode, UpstreamEndpointMode: target.UpstreamEndpointMode, SupportedEndpointModes: append([]string(nil), target.SupportedEndpointModes...), SupportedModels: append([]string(nil), target.SupportedModels...), Tokenizer: s.Tokenizer, ModelLimits: s.ModelLimits, Adapter: target.UpstreamAdapter, Retry: modelcheckprobe.RetryOptionsForProfile(request.Profile), QuizRequested: quizRequested, QuizQuestions: quizQuestions}
 	probeSuite.Dispatcher = s.Dispatcher
 	probeSuite.Client = target.Client
+	// 逐探针进度事件：只转发 modelcheckprobe 的真实 hook（每个带标签探针
+	// 请求一条 started / completed），不合成探针事件，也不新增 quality_* 类型。
+	probeStartedHook := func(hook modelcheckprobe.ProbeHook) {
+		emit(ProgressEvent{Kind: "probe_started", Data: map[string]any{"itemKey": hook.ItemKey, "method": hook.Method, "path": hook.Path}})
+	}
+	probeCompletedHook := func(hook modelcheckprobe.ProbeHook) {
+		emit(ProgressEvent{Kind: "probe_completed", Data: probeCompletedEventData(hook, traceID, request.Model, target.SourceEndpointFamily, target.UpstreamEndpointFamily)})
+	}
+	probeSuite.OnProbeStarted = probeStartedHook
+	probeSuite.OnProbeCompleted = probeCompletedHook
 	credentialSourceID := target.CredentialSourceAccountID
 	if credentialSourceID == "" {
 		credentialSourceID = request.TargetID
@@ -396,6 +406,10 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			comparisonClientEndpointFamily = string(comparisonTarget.Protocol)
 		}
 		comparisonSuite.Capability = keymodelruntime.Capability{CredentialSourceAccountID: comparisonSourceID, KeyFingerprint: comparisonSourceID, ClientModel: request.Model, ClientEndpointFamily: comparisonClientEndpointFamily, FinalUpstreamModel: comparisonTarget.UpstreamModel, UpstreamEndpointMode: comparisonEndpointMode, DispatchRevision: comparisonTarget.DispatchRevision}
+		comparisonSuite.OnProbeStarted = probeStartedHook
+		comparisonSuite.OnProbeCompleted = func(hook modelcheckprobe.ProbeHook) {
+			emit(ProgressEvent{Kind: "probe_completed", Data: probeCompletedEventData(hook, traceID, request.Model, comparisonTarget.SourceEndpointFamily, comparisonTarget.UpstreamEndpointFamily)})
+		}
 		probeSuite.Comparison = comparisonSuite
 	}
 	items, probeErr := modelcheckprobe.RunSuite(heartbeatCtx, probeSuite, lease)
@@ -424,7 +438,12 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			status = ItemSkipped
 		}
 		evidence, _ := json.Marshal(evaluation.Evidence)
-		itemRecords = append(itemRecords, ItemRecord{ID: fmt.Sprintf("%s-item-%04d", runID, index+1), RunID: runID, ItemKey: customQuizAwareItemKey(evaluation), ItemType: evaluation.Kind, Status: status, Score: evaluation.Score, MaxScore: evaluation.MaxScore, EvidenceSummary: string(evidence)})
+		itemKey := customQuizAwareItemKey(evaluation)
+		itemRecords = append(itemRecords, ItemRecord{ID: fmt.Sprintf("%s-item-%04d", runID, index+1), RunID: runID, ItemKey: itemKey, ItemType: evaluation.Kind, Status: status, Score: evaluation.Score, MaxScore: evaluation.MaxScore, EvidenceSummary: string(evidence)})
+		// 逐项评分事件：数据全部来自真实 Evaluation，在 run_completed 前按
+		// 既有项顺序发出，不合成、不重复计数。
+		evaluationMessage, _ := evaluation.Evidence["message"].(string)
+		emit(ProgressEvent{Kind: "item_completed", Data: map[string]any{"itemKey": itemKey, "itemType": evaluation.Kind, "status": string(status), "score": evaluation.Score, "maxScore": evaluation.MaxScore, "message": evaluationMessage}})
 	}
 	score := levelSummary.Score
 	status := RunCompleted
@@ -595,6 +614,28 @@ func (s *Runtime) run(ctx context.Context, request RunRequest, onEvent func(Prog
 			return ""
 		}(),
 	}}, nil
+}
+
+// probeCompletedEventData 组织 probe_completed 进度事件数据。必填字段来自
+// 真实探针 hook；可选字段只在有真实值时写入，不虚构映射来源或端点家族。
+func probeCompletedEventData(hook modelcheckprobe.ProbeHook, traceID, requestModel string, sourceEndpointFamily, upstreamEndpointFamily modelcheckprofile.EndpointFamily) map[string]any {
+	data := map[string]any{"itemKey": hook.ItemKey, "traceId": traceID, "statusCode": hook.StatusCode, "success": hook.Success, "durationMs": hook.DurationMS, "requestModel": requestModel, "upstreamModel": hook.UpstreamModel, "modelMappingApplied": hook.ModelMappingApplied}
+	if hook.ExpectedModel != "" {
+		data["expectedModel"] = hook.ExpectedModel
+	}
+	if hook.ResponseModel != "" {
+		data["responseModel"] = hook.ResponseModel
+	}
+	if hook.OutputPreview != "" {
+		data["outputPreview"] = hook.OutputPreview
+	}
+	if strings.TrimSpace(string(sourceEndpointFamily)) != "" {
+		data["sourceEndpointFamily"] = string(sourceEndpointFamily)
+	}
+	if strings.TrimSpace(string(upstreamEndpointFamily)) != "" {
+		data["upstreamEndpointFamily"] = string(upstreamEndpointFamily)
+	}
+	return data
 }
 
 // runtimeEnforcementAllowed freezes the Node manual-diagnostics rule before

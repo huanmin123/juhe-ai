@@ -253,12 +253,20 @@ func ReplaceGatewayJSONBody(req *Request, body map[string]any) {
 	req.materialization = nil
 	req.UpstreamBodyCache = nil
 	req.Serialized = serialized
-	req.State = CreateBodyState(BodyStateInput{
+	stateInput := BodyStateInput{
 		RawBody:         serialized.Raw,
 		ContentType:     contentType,
 		JSONParseStatus: JSONParseStatusParsed,
 		ParsedBody:      body,
-	})
+	}
+	// The compaction flag is a request-level fact established by the ingress
+	// scan; a rewritten body (protocol bridge, model mapping) may no longer
+	// carry the trigger item, so the flag must survive the state rebuild.
+	if req.State != nil && req.State.CodexCompactionTrigger {
+		trigger := true
+		stateInput.CodexCompactionTrigger = &trigger
+	}
+	req.State = CreateBodyState(stateInput)
 }
 
 // ReplaceGatewayJSONBodyModel mirrors replaceGatewayJsonBodyModel.

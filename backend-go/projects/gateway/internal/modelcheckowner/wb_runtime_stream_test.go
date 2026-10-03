@@ -250,3 +250,102 @@ type EnforcementApplierFunc func(context.Context, QualityEnforcement) (Enforceme
 func (f EnforcementApplierFunc) Apply(ctx context.Context, input QualityEnforcement) (EnforcementOutcome, error) {
 	return f(ctx, input)
 }
+
+// 逐探针事件接线契约：RunStream 必须把探针执行器的真实 hook 转发为
+// probe_started / probe_completed，并在 run_completed 前按持久化条目逐项
+// 发出 item_completed；事件数据来自真实探针（状态码、路径、traceId），
+// 不合成探针事件。
+func TestWBRunStreamEmitsPerProbeAndItemEvents(t *testing.T) {
+	store := &Store{db: wbOpenMemoryDB(t, runtimeTestDDL()), mode: "sqlite"}
+	defer store.Close()
+	var mu sync.Mutex
+	server := httptest.NewServer(&wbRunStartedServer{t: t})
+	defer server.Close()
+	now := time.Date(2026, 10, 3, 8, 0, 0, 0, time.UTC)
+	var events []ProgressEvent
+	runtime := &Runtime{
+		Store:   store,
+		OwnerID: "wb-probe-hooks",
+		Now:     func() time.Time { return now },
+		Resolve: func(context.Context, RunRequest) (Target, error) {
+			return Target{Endpoint: server.URL, Protocol: modelcheckprofile.ProtocolOpenAIResponses, Prompt: "hello", DispatchRevision: 1}, nil
+		},
+	}
+	result, err := runtime.RunStream(context.Background(), RunRequest{SystemAccountID: "sys", ActorSystemAccountID: "actor", TargetType: "account", TargetID: "acct", Model: "gpt-5.6-sol", Profile: "quick", ConfigRevision: "cfg-1", PolicyRevision: "pol-1"}, func(event ProgressEvent) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	})
+	if err != nil || result.Status != string(RunCompleted) {
+		t.Fatalf("RunStream result=%+v err=%v", result, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) < 2 || events[0].Kind != "run_started" || events[len(events)-1].Kind != "run_completed" {
+		t.Fatalf("进度事件序列=%v", kindsOf(events))
+	}
+	startedItems := make([]string, 0, 4)
+	completedItems := make([]string, 0, 4)
+	itemCompletedCount := 0
+	lastItemCompletedIndex := -1
+	for index, event := range events {
+		data, _ := event.Data.(map[string]any)
+		switch event.Kind {
+		case "probe_started":
+			itemKey, _ := data["itemKey"].(string)
+			method, _ := data["method"].(string)
+			path, _ := data["path"].(string)
+			if itemKey == "" || method != http.MethodPost || !strings.HasPrefix(path, "/v1/") {
+				t.Fatalf("probe_started 数据=%v", data)
+			}
+			startedItems = append(startedItems, itemKey)
+		case "probe_completed":
+			itemKey, _ := data["itemKey"].(string)
+			traceID, _ := data["traceId"].(string)
+			statusCode, _ := data["statusCode"].(int)
+			success, _ := data["success"].(bool)
+			if itemKey == "" || traceID == "" || statusCode != http.StatusOK || !success {
+				t.Fatalf("probe_completed 数据=%v", data)
+			}
+			completedItems = append(completedItems, itemKey)
+		case "item_completed":
+			itemKey, _ := data["itemKey"].(string)
+			itemType, _ := data["itemType"].(string)
+			status, _ := data["status"].(string)
+			if itemKey == "" || itemType == "" || status == "" {
+				t.Fatalf("item_completed 数据=%v", data)
+			}
+			if _, ok := data["score"]; !ok {
+				t.Fatalf("item_completed 缺 score: %v", data)
+			}
+			itemCompletedCount++
+			lastItemCompletedIndex = index
+		}
+	}
+	if len(startedItems) == 0 || startedItems[0] != "protocol_basic" || len(startedItems) != len(completedItems) {
+		t.Fatalf("probe started=%v completed=%v", startedItems, completedItems)
+	}
+	for index, itemKey := range startedItems {
+		if completedItems[index] != itemKey {
+			t.Fatalf("probe started/completed 不成对: %s vs %s", itemKey, completedItems[index])
+		}
+	}
+	var durableItems int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM model_check_items WHERE run_id=?`, result.RunID).Scan(&durableItems); err != nil {
+		t.Fatalf("读取持久化条目: %v", err)
+	}
+	if itemCompletedCount != durableItems {
+		t.Fatalf("item_completed 数量=%d 与持久化条目=%d 不一致", itemCompletedCount, durableItems)
+	}
+	if lastItemCompletedIndex > len(events)-2 {
+		t.Fatalf("item_completed 必须先于 run_completed: %v", kindsOf(events))
+	}
+}
+
+func kindsOf(events []ProgressEvent) []string {
+	kinds := make([]string, 0, len(events))
+	for _, event := range events {
+		kinds = append(kinds, event.Kind)
+	}
+	return kinds
+}

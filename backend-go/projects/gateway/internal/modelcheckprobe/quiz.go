@@ -83,6 +83,7 @@ func RunQuizFamily(ctx context.Context, input Suite, timeout time.Duration) ([]E
 		if answerErr != nil {
 			return nil, answerErr
 		}
+		answerRequest.ItemKey = "custom_quiz"
 		answerResult, answerExecuteErr := run(ctx, answerRequest)
 		if answerExecuteErr != nil {
 			return nil, answerExecuteErr
@@ -94,6 +95,7 @@ func RunQuizFamily(ctx context.Context, input Suite, timeout time.Duration) ([]E
 		if gradeErr != nil {
 			return nil, gradeErr
 		}
+		gradeRequest.ItemKey = "custom_quiz"
 		gradeResult, gradeExecuteErr := run(ctx, gradeRequest)
 		if gradeExecuteErr != nil {
 			return nil, gradeExecuteErr
