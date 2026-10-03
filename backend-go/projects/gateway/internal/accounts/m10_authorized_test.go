@@ -49,7 +49,9 @@ func newAuthorizedTestEnv(t *testing.T) (*testEnv, *authz.Store) {
 	(&Deps{Store: store, Auth: base.deps, Authorized: authzStore}).Mount(k)
 	server := httptest.NewServer(k.Handler())
 	t.Cleanup(server.Close)
-	wired := &testEnv{deps: base.deps, k: k, server: server, jar: map[string]string{}, db: base.db}
+	// store 一并保留（列表运行态 overlay 等端口 setter 需要 store 引用；
+	// wired.kernel 挂载的是本 store，base.store 是未接 authz reader 的旧实例）。
+	wired := &testEnv{deps: base.deps, k: k, server: server, jar: map[string]string{}, db: base.db, store: store}
 	return wired, authzStore
 }
 

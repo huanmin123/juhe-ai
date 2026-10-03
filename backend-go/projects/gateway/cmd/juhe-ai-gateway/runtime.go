@@ -67,6 +67,12 @@ type runtimeConfig struct {
 	UsageCatalogDatabasePath string
 	StatsDatabasePath        string
 	TableMonitorDatabasePath string
+	// CodexContextRoot is the codex-context segments root (Node
+	// runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_ROOT, default
+	// <DATA_DIR>/codex-context): the Responses↔Chat bridge SegmentStore root
+	// on the gateway and the retention segments cleanup root on jobs — both
+	// processes must derive the same directory.
+	CodexContextRoot string
 	// Codex context state shard layout (Node JUHE_AI_CODEX_CONTEXT_STATE_*,
 	// Node default 16 shards within the 1..256 bound). Consumed by the SQLite
 	// six-database startup preflight.
@@ -426,6 +432,11 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.UsageCatalogDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", datadir.UsageCatalogDatabase)
 	cfg.StatsDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_STATS_DATABASE_PATH", datadir.StatsDatabase)
 	cfg.TableMonitorDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", datadir.TableMonitorDatabase)
+	// Codex Context segments 根（JUHE_AI_CODEX_CONTEXT_ROOT，缺省
+	// <DATA_DIR>/codex-context，与 docs/functions/SQLite存储说明.md 同名同
+	// 默认）：gateway Responses↔Chat 桥 SegmentStore 与 jobs retention
+	// segments 清理的同源根，两侧派生规则必须一致。
+	cfg.CodexContextRoot = datadir.Path(getenv, dataDir, "JUHE_AI_CODEX_CONTEXT_ROOT", datadir.CodexContextRoot)
 	cfg.CodexContextShardRoot = datadir.Path(getenv, dataDir, "JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT", datadir.CodexContextStateShardRoot)
 	cfg.CodexContextShardCount = 16
 	if raw := strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT")); raw != "" {

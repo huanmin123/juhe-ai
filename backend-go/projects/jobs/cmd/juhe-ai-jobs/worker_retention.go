@@ -232,7 +232,7 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	dataRetentionJob.Stats = &familyStatsWriter{family: family}
 	dataRetentionJob.DB = dbService
 	dataRetentionJob.Enqueuer = &queueEnqueuer{queue: queue}
-	dataRetentionJob.CodexStorage = &codexStorageProcessor{db: dbService, store: codexStore, logger: a.logger}
+	dataRetentionJob.CodexStorage = &codexStorageProcessor{db: dbService, store: codexStore, segmentRoot: a.config.CodexContextRoot, logger: a.logger}
 	if !postgres {
 		dataRetentionJob.Checkpointer = &datasetCheckpointer{dataset: dataset.DB, usageCatalog: usageCatalog.DB, stats: stats.DB}
 	}
@@ -806,10 +806,17 @@ type codexStorageProcessor struct {
 	db     retention.DbService
 	store  *cleanuprepo.CodexContextStore
 	logger interface{ Warn(msg string, args ...any) }
+	// segmentRoot 是 codex-context segments 根（JUHE_AI_CODEX_CONTEXT_ROOT，
+	// gateway runtime.go 同名 env 同派生默认）。storageKey 是相对该根的路径
+	// （sessions/<safe>/segments/<hour>.json.gz，gateway
+	// gatewaycodex.SegmentStorageKey），不能用 store.ShardRoot（state-shards
+	// 根）——根错位时删除永远 miss 并按「不存在=成功」结算，segment 文件
+	// 永不清理（存储泄漏）。
+	segmentRoot string
 }
 
 func (p *codexStorageProcessor) ProcessBatch(ctx context.Context, storageKeys []string) (int64, error) {
-	deleter := retention.NewCodexContextStorageProcessor(p.store.ShardRoot, nil, nil)
+	deleter := retention.NewCodexContextStorageProcessor(p.segmentRoot, nil, nil)
 	deletion, err := deleter.Deleter.DeleteStorageKeys(ctx, storageKeys)
 	if err != nil {
 		return 0, err

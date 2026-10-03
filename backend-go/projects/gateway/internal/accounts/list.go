@@ -170,9 +170,12 @@ type LockStatePublic struct {
 }
 
 // ListItem mirrors the hydrated AccountListItem the management list returns
-// (owner mode). Runtime overlays (runtimeAvailability, circuitSummary,
-// balanceSnapshot, apiKeyRuntime) belong to the runtime/circuit/balance
-// companion slices and stay omitted, exactly like the usage zero value.
+// (owner mode). 运行态 overlay（runtimeAvailability / circuitSummary /
+// apiKeyRuntime，缺陷修复批次一）由 hydrateRuntimeOverlay 按注入的运行态端口
+// 叠加：无运行态事实、端口 nil 或读失败时字段缺席（前端按 undefined 回退
+// 基线展示，与 Node "stay omitted" 语义一致）；effectiveAvailability 的
+// api_key_pool/runtime 分支随 overlay 同步重算（applyRuntimeOverlayAvailability）。
+// balanceSnapshot 属余额伴随切片（hydrateBalanceSnapshots 叠加）。
 // CurrentConcurrency is the exception: the gateway process-local live counter
 // is hydrated at list time (Node standalone semantics — the list request reads
 // the runtime tracker, not a stats column), always rendered as a number (0
@@ -250,6 +253,15 @@ type ListItem struct {
 	BalanceQueryEnabled       *bool                         `json:"balanceQueryEnabled,omitempty"`
 	BalanceQueryNextRefreshAt *string                       `json:"balanceQueryNextRefreshAt,omitempty"`
 	BalanceSnapshot           *AccountBalanceSnapshotPublic `json:"balanceSnapshot,omitempty"`
+	// 运行态 overlay 三字段（缺陷修复批次一，hydrateRuntimeOverlay 叠加）：
+	// 全部 omitempty——无运行态事实/端口 nil/读失败时字段缺席；circuitSummary
+	// 的 status=normal 时同样缺席（前端过滤 normal）。第二批在此补
+	// availabilityPresentation（探针 tooltip 的 probePresentation /
+	// lastObservation / traceId 同批）；第三批把同一 overlay 带到
+	// /my-accounts PG 投影。
+	RuntimeAvailability *AccountRuntimeAvailabilityPublic  `json:"runtimeAvailability,omitempty"`
+	CircuitSummary      *AccountCircuitSummaryPublic       `json:"circuitSummary,omitempty"`
+	APIKeyRuntime       *AccountApiKeyRuntimeSummaryPublic `json:"apiKeyRuntime,omitempty"`
 	LockStatePublic
 }
 
@@ -785,6 +797,11 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, options ListOp
 	// 运行时并发注入（Node standalone 语义：列表请求实时读进程内计数）；
 	// 端口 nil 或读数缺失时保持 0，失败降级不阻断。
 	s.hydrateCurrentConcurrency(ctx, items)
+	// 运行态 overlay 注入（缺陷修复批次一）：runtimeAvailability /
+	// circuitSummary / apiKeyRuntime + effectiveAvailability 的
+	// api_key_pool/runtime 分支重算；端口 nil 或读失败逐源降级字段缺席，
+	// 不阻断页面（hydrateBalanceSnapshots 同款失败语义）。
+	s.hydrateRuntimeOverlay(ctx, items)
 	total := (normalized.Page-1)*normalized.PageSize + len(items)
 	if hasMore {
 		total++
@@ -1119,7 +1136,10 @@ func normalizeLockRange(value, fallback, min, max int) int {
 }
 
 // ownerEffectiveAvailability mirrors accountEffectiveAvailability for owner
-// rows without runtime overlays (the instance branch only).
+// rows：实例臂（instance branch only）。api_key_pool / runtime 运行态分支由
+// hydrateRuntimeOverlay 叠加 overlay 后重算（applyRuntimeOverlayAvailability，
+// 分支顺序对齐 jobs accountEffectiveAvailability：实例臂 → api_key_pool →
+// runtime）。
 func ownerEffectiveAvailability(item ListItem, now time.Time) EffectiveAvailability {
 	expired := false
 	if item.AccountExpiresAt != nil {

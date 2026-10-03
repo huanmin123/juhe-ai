@@ -37,33 +37,6 @@ func TestRedisStoreAdmissionAndFailureAreAtomic(t *testing.T) {
 	}
 }
 
-func TestRedisStoreUsesNodeNamespaceAndReleasesMainProbePermit(t *testing.T) {
-	server := miniredis.RunT(t)
-	store, err := NewRedisStore("redis://"+server.Addr(), "interop-test", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if got, want := store.prefix, "juhe-ai:interop-test:gateway-account-circuit-key-model"; got != want {
-		t.Fatalf("Redis prefix = %q, want %q", got, want)
-	}
-	ctx := context.Background()
-	capability := testCapability()
-	decision, permit, _, err := store.AdmitForeground(ctx, capability, "main-probe-attempt")
-	if err != nil || decision != ForegroundAdmitted {
-		t.Fatalf("admit main probe: %s %v", decision, err)
-	}
-	if err := store.RecordMainProbeFence(ctx, capability, permit.AttemptID, time.Minute); err != nil {
-		t.Fatalf("record main probe fence: %v", err)
-	}
-	if exists, err := store.client.Exists(ctx, store.admissionLeaseKey(permit.CapabilityHash, permit.AttemptID)).Result(); err != nil || exists != 0 {
-		t.Fatalf("main probe permit was not released: exists=%d err=%v", exists, err)
-	}
-	if exists, err := store.client.Exists(ctx, store.key("mainProbeFence", permit.CapabilityHash)).Result(); err != nil || exists != 1 {
-		t.Fatalf("main probe fence was not written: exists=%d err=%v", exists, err)
-	}
-}
-
 func TestRedisStoreFailureIntentReleasesActualPermit(t *testing.T) {
 	server := miniredis.RunT(t)
 	store, err := NewRedisStore("redis://"+server.Addr(), "interop-test", OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})

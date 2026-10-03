@@ -137,6 +137,7 @@ SELECT pg_get_constraintdef(oid) FROM pg_constraint
   - `JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION`：单会话最大轮次，默认 `50`，合法 `1..1000`。
   - `JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER`：单用户最大会话数，默认 `50`，合法 `1..1000`。
   - `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS`：单轮上游 SSE 事件预算，默认 `65536`，合法 `2048..262144`（调高只为容纳合法长输出，不解除单事件/累计内容等 DoS 防护）。
+- `JUHE_AI_CODEX_CONTEXT_ROOT`（Codex Responses↔Chat 桥 segments 根，gateway/jobs 双进程；2026-10-03 起 gateway 组合根装配该状态，gateway 现亦消费本 env）：可选，未配置时按 `JUHE_AI_DATA_DIR`（缺省 `./data`）派生 `<数据根>/codex-context`。gateway 桥 segment 写入与 jobs retention segment 文件清理**双进程必须同值**（同卷同目录）——根不同源时清理按「文件不存在=成功」落账而文件永不删除（存储泄漏）。PG 模式另要求 `juhe_codex_context` schema（`juhe-ai-maintenance --ensure-schema` 预置六个 schema 之一）：缺失时 gateway 启动期 schema 探针 fail-fast（错误含 `codex context postgres schema 探针失败`），属部署错误，先补 schema 再启动，无静默降级。
 - `JUHE_AI_REDIS_STATE_URL`：Redis 运行态键空间连接串（cache/state/queue 三实例约定中的 state 实例）。**依赖门禁非开关**：未配置时 jobs 的账户恢复探针、速度优先运行态、电路控制面 reconcile 等族按 disabled 登记（`/health` 的 `workerWired`/`workerJobs` 与任务登记可见缺席），配置后自动启用；gateway 主链运行态也按它归一。生产 compose 三容器共享同值。
 - `JUHE_AI_J3B_CIRCUIT_REDIS_URL`：J3b 电路运行态专用 Redis。**必须显式且不得与 `JUHE_AI_REDIS_STATE_URL` 相同键空间**（gateway 启动强校验——主链 state URL 回退会让两套 Lua 状态机并发写同一 states hash，语义不兼容；现用同实例 DB2）。未配置/无 Redis 时 J3b 电路回退**进程内 memory 状态机（重启即失，跨进程不共享）**——功能性可用但持久性降级，生产应显式配置独立 Redis URL。
 - `JUHE_AI_PROXY_LATENCY_MANAGEMENT_LISTEN_ADDRESS`（jobs 侧，J3a 代理延迟管理面）：`POST /__aisys__/api/proxies/{id}/test` 手动探测入口的监听地址，默认 `127.0.0.1:0`（随机回环端口，每次启动变化；`/health` payload 报告实际监听地址）。需稳定入口或跨容器访问时显式配置 `host:port`（端口 0 = 随机）；非法 host/端口启动失败。

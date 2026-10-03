@@ -281,51 +281,7 @@ func (s *RedisStore) ListDue(ctx context.Context, now time.Time, limit int) ([]S
 	return out, nil
 }
 
-func (s *RedisStore) RecordMainProbeFence(ctx context.Context, capability Capability, ownerID string, lease time.Duration) error {
-	if err := s.requireOwner(); err != nil {
-		return err
-	}
-	hash, err := HashCapability(capability)
-	if err != nil {
-		return err
-	}
-	if ownerID == "" || lease <= 0 {
-		return errors.New("main-probe fence identity is invalid")
-	}
-	_, err = recordMainProbeFenceScript.Run(ctx, s.client, []string{
-		s.key("mainProbeFence", hash),
-		s.admissionKey(hash),
-		s.admissionLeaseKey(hash, ownerID),
-		s.wakeKey(hash),
-		s.key("admission-events"),
-	}, ownerID, hash, lease.Milliseconds()).Result()
-	return err
-}
-
-func (s *RedisStore) ClearMainProbeFence(ctx context.Context, capability Capability, ownerID string) (bool, error) {
-	if err := s.requireOwner(); err != nil {
-		return false, err
-	}
-	hash, err := HashCapability(capability)
-	if err != nil {
-		return false, err
-	}
-	result, err := clearFenceScript.Run(ctx, s.client, []string{s.key("mainProbeFence", hash)}, ownerID).Int()
-	return result == 1, err
-}
-
-func (s *RedisStore) DeferMainProbeFence(ctx context.Context, capability Capability, ownerID string, retry time.Duration) (bool, error) {
-	if err := s.requireOwner(); err != nil {
-		return false, err
-	}
-	hash, err := HashCapability(capability)
-	if err != nil {
-		return false, err
-	}
-	result, err := deferFenceScript.Run(ctx, s.client, []string{s.key("mainProbeFence", hash)}, ownerID, strconv.FormatInt(retry.Milliseconds(), 10)).Int()
-	return result == 1, err
-}
-
+// mainProbeFence 的写/清/延由 gatewayaccounteffects 统一承担（keymodelattempt.go），此处仅保留 admitScript 的准入读取。
 func (s *RedisStore) ClaimJ1Confirmation(ctx context.Context, sourceAccountID string, revision int64) (bool, error) {
 	if err := s.requireOwner(); err != nil {
 		return false, err
@@ -465,9 +421,6 @@ func decodeRedisState(raw string) (State, error) {
 var admitScript = redis.NewScript(`local existing=redis.call('GET',KEYS[3]); if existing then return {'idempotent',redis.call('GET',KEYS[4]) or '0',existing} end; local raw=redis.call('GET',KEYS[1]); if raw then local state=cjson.decode(raw); if tonumber(state.dispatchRevision)==tonumber(ARGV[4]) and state.phase~='CLOSED' then return {'blocked',redis.call('GET',KEYS[4]) or '0','0'} end end; if redis.call('EXISTS',KEYS[5])==1 then return {'blocked',redis.call('GET',KEYS[4]) or '0','0'} end; local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); redis.call('ZREMRANGEBYSCORE',KEYS[2],'-inf',now); if redis.call('ZCARD',KEYS[2])>=tonumber(ARGV[3]) then return {'busy',redis.call('GET',KEYS[4]) or '0','0'} end; local leaseUntil=now+tonumber(ARGV[2]); redis.call('SET',KEYS[3],leaseUntil,'PX',ARGV[2]); redis.call('ZADD',KEYS[2],leaseUntil,ARGV[1]); redis.call('PEXPIRE',KEYS[2],ARGV[2]); return {'admitted',redis.call('GET',KEYS[4]) or '0',tostring(leaseUntil)}`)
 var releaseScript = redis.NewScript(`if redis.call('DEL',KEYS[2])==0 then return {0,redis.call('GET',KEYS[3]) or '0'} end; redis.call('ZREM',KEYS[1],ARGV[2]); local wake=redis.call('INCR',KEYS[3]); redis.call('PUBLISH',KEYS[4],ARGV[1]..':'..tostring(wake)); return {1,wake}`)
 var renewScript = redis.NewScript(`if not redis.call('GET',KEYS[2]) then return {'lost','0'} end; local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); local leaseUntil=now+tonumber(ARGV[2]); redis.call('SET',KEYS[2],leaseUntil,'PX',ARGV[2]); redis.call('ZADD',KEYS[1],leaseUntil,ARGV[1]); redis.call('PEXPIRE',KEYS[1],ARGV[2]); return {'renewed',tostring(leaseUntil)}`)
-var clearFenceScript = redis.NewScript(`if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end; redis.call('DEL',KEYS[1]); return 1`)
-var deferFenceScript = redis.NewScript(`if redis.call('GET',KEYS[1]) ~= ARGV[1] then return 0 end; redis.call('PEXPIRE',KEYS[1],ARGV[2]); return 1`)
-var recordMainProbeFenceScript = redis.NewScript(`redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[3]); if redis.call('DEL',KEYS[3])==1 then redis.call('ZREM',KEYS[2],ARGV[1]) end; local wake=redis.call('INCR',KEYS[4]); redis.call('PUBLISH',KEYS[5],ARGV[2]..':'..tostring(wake)); return {'applied',wake}`)
 var acquireRecoveryScript = redis.NewScript(`local raw=redis.call('GET',KEYS[1]); if not raw then return {'stale',''} end; local state=cjson.decode(raw); if tonumber(state.generation)~=tonumber(ARGV[1]) or tonumber(state.dispatchRevision)~=tonumber(ARGV[2]) then return {'stale',raw} end; if state.phase~='OPEN' and state.phase~='RECOVERING' then return {'not_due',raw} end; local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); if tonumber(state.retryAtMs or 0)>now then return {'not_due',raw} end; if redis.call('SET',KEYS[2],ARGV[3],'NX','PX',ARGV[4])==false then return {'lease_mismatch',raw} end; redis.call('ZREMRANGEBYSCORE',KEYS[4],'-inf',now); redis.call('ZREMRANGEBYSCORE',KEYS[5],'-inf',now); local globalLimit=100000; local sourceLimit=100000; if tonumber(redis.call('ZCARD',KEYS[4]))>=globalLimit or tonumber(redis.call('ZCARD',KEYS[5]))>=sourceLimit then redis.call('DEL',KEYS[2]); return {'not_due',raw} end; local leaseUntil=now+tonumber(ARGV[4]); redis.call('ZADD',KEYS[4],leaseUntil,ARGV[3]); redis.call('ZADD',KEYS[5],leaseUntil,ARGV[3]); state.phase='HALF_OPEN'; state.probeLease={leaseId=ARGV[3],leaseUntilMs=leaseUntil,priorSuccessCount=tonumber(state.recoverySuccessCount or 0)}; local encoded=cjson.encode(state); redis.call('SET',KEYS[1],encoded); return {'applied',encoded}`)
 var renewRecoveryScript = redis.NewScript(`local raw=redis.call('GET',KEYS[1]); if not raw or redis.call('GET',KEYS[2])~=ARGV[3] then return 0 end; local state=cjson.decode(raw); if tonumber(state.generation)~=tonumber(ARGV[1]) or tonumber(state.dispatchRevision)~=tonumber(ARGV[2]) then return 0 end; local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); local leaseUntil=now+tonumber(ARGV[4]); redis.call('PEXPIRE',KEYS[2],ARGV[4]); redis.call('ZADD',KEYS[3],leaseUntil,ARGV[3]); redis.call('ZADD',KEYS[4],leaseUntil,ARGV[3]); state.probeLease.leaseUntilMs=leaseUntil; redis.call('SET',KEYS[1],cjson.encode(state)); return 1`)
 var commitRecoveryScript = redis.NewScript(`local raw=redis.call('GET',KEYS[1]); if not raw or redis.call('GET',KEYS[2])~=ARGV[3] then return 'stale' end; local state=cjson.decode(raw); if tonumber(state.generation)~=tonumber(ARGV[1]) or tonumber(state.dispatchRevision)~=tonumber(ARGV[2]) then return 'stale' end; redis.call('SET',KEYS[1],ARGV[4]); redis.call('DEL',KEYS[2]); redis.call('ZREM',KEYS[4],ARGV[3]); redis.call('ZREM',KEYS[5],ARGV[3]); if ARGV[6]=='CLOSED' then redis.call('ZREM',KEYS[3],state.capabilityHash); local now=tonumber(redis.call('TIME')[1])*1000+math.floor(tonumber(redis.call('TIME')[2])/1000); redis.call('ZADD',KEYS[6],now+300000,state.capabilityHash) else redis.call('ZADD',KEYS[3],ARGV[5],state.capabilityHash); redis.call('ZREM',KEYS[6],state.capabilityHash) end; return 'applied'`)

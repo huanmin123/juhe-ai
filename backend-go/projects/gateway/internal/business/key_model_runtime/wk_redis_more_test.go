@@ -71,15 +71,6 @@ func TestRedisStoreGateFencesEveryOperation(t *testing.T) {
 	if _, err := store.ListDue(ctx, time.Now(), 1); err == nil {
 		t.Fatal("gate 未确认时 ListDue 必须失败")
 	}
-	if err := store.RecordMainProbeFence(ctx, capability, "owner", time.Minute); err == nil {
-		t.Fatal("gate 未确认时 RecordMainProbeFence 必须失败")
-	}
-	if _, err := store.ClearMainProbeFence(ctx, capability, "owner"); err == nil {
-		t.Fatal("gate 未确认时 ClearMainProbeFence 必须失败")
-	}
-	if _, err := store.DeferMainProbeFence(ctx, capability, "owner", time.Minute); err == nil {
-		t.Fatal("gate 未确认时 DeferMainProbeFence 必须失败")
-	}
 	if _, err := store.ClaimJ1Confirmation(ctx, "source", 1); err == nil {
 		t.Fatal("gate 未确认时 ClaimJ1Confirmation 必须失败")
 	}
@@ -219,47 +210,6 @@ func TestRedisStoreForegroundRenewAndPermit(t *testing.T) {
 	}
 	if _, ok, err := store.RenewForeground(ctx, admitted); ok || err != nil {
 		t.Fatalf("释放后续期必须丢失: %v %v", ok, err)
-	}
-}
-
-func TestRedisStoreMainProbeFenceLifecycle(t *testing.T) {
-	store, _ := wkRedisStore(t, OwnerGate{Confirmed: true, SchemaReady: true, NodeWriterStopped: true})
-	ctx := context.Background()
-	capability := testCapability()
-	if err := store.RecordMainProbeFence(ctx, capability, "", time.Minute); err == nil {
-		t.Fatal("空 owner 必须失败")
-	}
-	if err := store.RecordMainProbeFence(ctx, capability, "owner-1", 0); err == nil {
-		t.Fatal("非正租约必须失败")
-	}
-	if err := store.RecordMainProbeFence(ctx, Capability{}, "owner-1", time.Minute); err == nil {
-		t.Fatal("非法 capability 必须失败")
-	}
-	if err := store.RecordMainProbeFence(ctx, capability, "owner-1", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	// defer 命中：owner 匹配。
-	if ok, err := store.DeferMainProbeFence(ctx, capability, "owner-1", 30*time.Second); err != nil || !ok {
-		t.Fatalf("defer: %v %v", ok, err)
-	}
-	if ok, err := store.DeferMainProbeFence(ctx, capability, "owner-2", 30*time.Second); err != nil || ok {
-		t.Fatalf("defer owner 不匹配: %v %v", ok, err)
-	}
-	// clear 命中与未命中。
-	if ok, err := store.ClearMainProbeFence(ctx, capability, "owner-2"); err != nil || ok {
-		t.Fatalf("clear owner 不匹配: %v %v", ok, err)
-	}
-	if ok, err := store.ClearMainProbeFence(ctx, capability, "owner-1"); err != nil || !ok {
-		t.Fatalf("clear: %v %v", ok, err)
-	}
-	if ok, err := store.ClearMainProbeFence(ctx, capability, "owner-1"); err != nil || ok {
-		t.Fatalf("重复 clear 必须未命中: %v %v", ok, err)
-	}
-	if _, err := store.ClearMainProbeFence(ctx, Capability{}, "owner-1"); err == nil {
-		t.Fatal("非法 capability clear 必须失败")
-	}
-	if _, err := store.DeferMainProbeFence(ctx, Capability{}, "owner-1", time.Minute); err == nil {
-		t.Fatal("非法 capability defer 必须失败")
 	}
 }
 

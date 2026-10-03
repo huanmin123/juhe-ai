@@ -256,7 +256,12 @@ func loadWorkerConfig(getenv func(string) string) (workerConfig, error) {
 		return config, fmt.Errorf("JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT 必须在 1 到 256 之间")
 	}
 	config.ChatAssetsRoot = datadir.Path(getenv, "JUHE_AI_CHAT_ASSETS_ROOT", "chat-assets")
-	config.CodexContextRoot = strings.TrimSpace(getenv("JUHE_AI_CODEX_CONTEXT_ROOT"))
+	// Codex Context segments 根：与 gateway runtime.go 同名 env 同派生规则
+	// （显式优先，缺省 <DATA_DIR>/codex-context）。retention 的 codex storage
+	// 清理按它解析 storageKey（相对该根的 segments 相对路径，gateway
+	// gatewaycodex.SegmentStorageKey 语义）；根与 gateway 写侧不同源会让删除
+	// 永远 miss 而按「不存在=成功」结算（segment 文件永不清理，存储泄漏）。
+	config.CodexContextRoot = datadir.Path(getenv, "JUHE_AI_CODEX_CONTEXT_ROOT", "codex-context")
 	config.ChatRetentionDays, err = workerEnvInt(getenv, "JUHE_AI_CHAT_RETENTION_DAYS", config.ChatRetentionDays)
 	if err != nil {
 		return config, err

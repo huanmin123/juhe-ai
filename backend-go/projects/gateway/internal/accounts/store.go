@@ -135,6 +135,13 @@ type Store struct {
 	// :1608-1610). Nil until SetAuthorizationStatsSource wires it; a nil port
 	// keeps the zero fields.
 	authorizationStats AuthorizationStatsSource
+	// 运行态 overlay 三端口（list_runtime_overlay.go，缺陷修复批次一）：
+	// runtimeAvailability / circuitSummary / apiKeyRuntime 列表叠加的事实源。
+	// Nil until the matching setters wire them（组合根在网关链启用分支注入）；
+	// nil 端口保持字段缺席（前端按 undefined 回退基线展示，零回归）。
+	runtimeAvailabilitySource  RuntimeAvailabilitySource
+	circuitSummarySource       CircuitSummarySource
+	apiKeyRuntimeSummarySource APIKeyRuntimeSummarySource
 	// log 是降级日志落点（BUG-0248：authorized 读路径曾用裸 println 绕过
 	// JSONL 管道）。Nil until SetLogger wires it（Deps.Mount 注入
 	// Deps.Log）；nil 保持静默。

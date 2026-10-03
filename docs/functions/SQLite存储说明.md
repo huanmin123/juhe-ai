@@ -30,6 +30,9 @@ JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
 JUHE_AI_CHAT_DATABASE_PATH=./data/juhe-ai-chat.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
+# gateway 自 2026-10-03 起同样消费该 env（Responses↔Chat 桥 segments 根）：
+# 未配置时按 datadir 约定派生 <DATA_DIR>/codex-context，与 jobs retention
+# 清理根同名同默认，双进程必须同源。
 JUHE_AI_CODEX_CONTEXT_ROOT=./data/codex-context
 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT=./data/codex-context/state-shards
 JUHE_AI_USAGE_SHARD_COUNT=16
