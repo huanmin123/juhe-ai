@@ -42,11 +42,14 @@ func (c *gatewayChain) newAuditCapture(
 		Stream:         gatewaypreauth.RequestStream(req),
 		RawBody:        rawBodySnapshotOf(req),
 		RequestHeaders: headers,
-		Settings:       c.auditSettings,
-		Dispatcher:     c.auditDispatcher,
-		Models:         c.usageModelResolver,
-		Logger:         slogLogger{inner: slog.Default()},
-		StageLogger:    chainAuditStageLogger{},
+		// 请求侧 endpoint family 与派发链模型改写同源，审计 attempt 行的
+		// 模型映射记账据此解析（缺省时空 family 使映射恒不命中）。
+		SourceEndpointFamily: requestMappingSourceFamilyOf(req),
+		Settings:             c.auditSettings,
+		Dispatcher:           c.auditDispatcher,
+		Models:               c.usageModelResolver,
+		Logger:               slogLogger{inner: slog.Default()},
+		StageLogger:          chainAuditStageLogger{},
 	})
 	return preauthAuditCapture{inner: concrete}
 }

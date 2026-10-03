@@ -531,6 +531,12 @@ func (c *gatewayChain) handleUpstreamResponse(
 				pricing:            c.finalizationPricing,
 				syncPricingAllowed: c.finalizationSyncPricingAllowed,
 				enqueueFailures:    &c.finalizationEnqueueFailures,
+				// 请求模型、请求侧 endpoint family 与模型解析器按请求注入：
+				// finalize 侧映射记账必须与派发链改写同源（requestedModel 供
+				// 失败行使用，完成行自带 RequestedModel）。
+				requestedModel:       requestModelHintOf(req),
+				sourceEndpointFamily: requestMappingSourceFamilyOf(req),
+				models:               c.usageModelResolver,
 			},
 			Logger: gatewayResponseLogger{inner: slog.Default()},
 			NowMs:  func() int64 { return c.preauth.NowMs() },

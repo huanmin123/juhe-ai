@@ -121,7 +121,11 @@ const (
 //     mounted through the always-assembled serving chain (the former
 //     JUHE_AI_GATEWAY_CHAIN_ENABLED gate was removed on 2026-09-21), see
 //     gatewaychain.go (the compat families mount into the chain's
-//     non-protocol paths).
+//     non-protocol paths). BUG-0268: the version prefix is optional — bare
+//     root forms (/responses, /messages, /models/{id}:<action>, ...) and
+//     /v1beta forms re-enter the chain rewritten to the canonical /v1
+//     prefix (chain_gateway_root.go), mirroring Node's optional-prefix
+//     protocol matching.
 const (
 	systemAPIPrefix = "/__aisys__/api"
 	publicAPIPrefix = "/__aipublic__"
@@ -1299,9 +1303,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// The /v1 subtree serves the gateway protocol paths; the
 		// openai-compatible files / vector-stores families mount into the
 		// chain's non-protocol paths (chain_openaicompat.go); everything else
-		// answers the Node 404 JSON inside the chain.
+		// answers the Node 404 JSON inside the chain. BUG-0268: the version
+		// prefix is optional (Node drivers strip an optional /v1|/v1beta),
+		// so bare root forms and /v1beta forms re-enter the chain rewritten
+		// to the canonical /v1 prefix (chain_gateway_root.go).
 		kern.Register("/v1", chain)
 		kern.Register("/v1/", chain)
+		mountGatewayRootForms(kern, chain)
 		if chainErr := mountChainOpenAICompatFamilies(composed, chain, cfg, chainServices); chainErr != nil {
 			return nil, fmt.Errorf("mount openai-compatible families: %w", chainErr)
 		}

@@ -329,6 +329,15 @@ type chainFinalizationUsage struct {
 	// ServiceConfig.SyncPricingAllowed 同一字面量，chain_compose.go）。
 	pricing            gatewayusage.PricingCatalog
 	syncPricingAllowed bool
+	// requestedModel / sourceEndpointFamily / models 是按请求注入的运行时同源
+	// 值：失败记账用 requestedModel（完成路径的 CompletedAttemptInput 自带
+	// RequestedModel，无需重复注入）；family 必须与派发链模型改写同源
+	// （requestMappingSourceFamilyOf），模型解析器复用运行时同一适配器
+	// （c.usageModelResolver）。三者缺一都会让 finalize 侧映射记账退化
+	// （2026-10-03 映射记账收口：此前成功记账的映射六字段全空、落库 NULL/0）。
+	requestedModel       string
+	sourceEndpointFamily string
+	models               gatewayusage.UsageModelResolver
 	// enqueueFailures 统计 EnqueueUsageRecord 失败次数并驱动采样告警（前 10
 	// 条逐条、之后每 100 条一条，对齐本文件 spooledUsageRecorder 既有采样
 	// 模式）。方法为指针接收者：值接收者会在每次接口调用时复制接收者，计数
@@ -364,10 +373,88 @@ func (u *chainFinalizationUsage) recordEnqueueFailureSampled(traceID, accountID,
 	}
 }
 
+// chainFinalizationModelAccounting 承载完成/失败两条记账路径共用的账号模型
+// 映射记账（Node accountUsageModelAccounting）：上游模型、计价模型、映射
+// 命中标记/来源与两端 endpoint family。requestedModel 由调用方给出（完成
+// 路径用 input.RequestedModel，失败路径用构造点注入的请求模型）；family 用
+// 构造点注入的运行时同源值。
+type chainFinalizationModelAccounting struct {
+	upstreamModel          string
+	pricingModel           string
+	modelMappingApplied    bool
+	modelMappingSource     string
+	sourceEndpointFamily   string
+	upstreamEndpointFamily string
+}
+
+// finalizationModelAccounting 解析账号映射（复用运行时同一 resolver 与
+// usageModelAccountOf 投影）。非 OpenAIAccountView 或未注入模型解析器时退化
+// 为请求模型原样透传（applied=false，两端 family 取注入值），与
+// gatewayusage.Service.accountUsageModelAccounting 的缺省分支同形。
+func (u *chainFinalizationUsage) finalizationModelAccounting(account gatewayresponse.AccountView, requestedModel string) chainFinalizationModelAccounting {
+	accounting := chainFinalizationModelAccounting{
+		upstreamModel:          requestedModel,
+		sourceEndpointFamily:   u.sourceEndpointFamily,
+		upstreamEndpointFamily: u.sourceEndpointFamily,
+	}
+	if u.models == nil {
+		return accounting
+	}
+	view, ok := account.(gatewayresponse.OpenAIAccountView)
+	if !ok {
+		return accounting
+	}
+	resolved := u.models.ResolveUsageModel(usageModelAccountOf(view.Account), requestedModel, u.sourceEndpointFamily)
+	accounting.upstreamModel = firstNonEmptyChainUsage(resolved.UpstreamModel, requestedModel)
+	accounting.modelMappingApplied = resolved.ModelMappingApplied
+	accounting.modelMappingSource = resolved.ModelMappingSource
+	accounting.sourceEndpointFamily = firstNonEmptyChainUsage(resolved.SourceEndpointFamily, u.sourceEndpointFamily)
+	accounting.upstreamEndpointFamily = firstNonEmptyChainUsage(resolved.UpstreamEndpointFamily, u.sourceEndpointFamily)
+	return accounting
+}
+
+// resolveFinalizationPricingModel 解析同步定价模型名（Node
+// resolveUsagePricingModel）：gate 开启且目录装配且上游模型非空时调用，空串
+// 保持 NULL（不写 0）。
+func (u *chainFinalizationUsage) resolveFinalizationPricingModel(providerCode, catalogSystemAccountID, upstreamModel string) string {
+	if upstreamModel == "" || !u.syncPricingAllowed || u.pricing == nil {
+		return ""
+	}
+	return u.pricing.ResolvePricingModel(providerCode, catalogSystemAccountID, upstreamModel)
+}
+
+// finalizationAccountProviderOf 取账号视图的 provider 身份字段（Node
+// input.account.providerCode / providerProtocolProfileId）；非 OpenAIAccountView
+// 返回空。
+func finalizationAccountProviderOf(account gatewayresponse.AccountView) (providerCode, providerProtocolProfileID string) {
+	view, ok := account.(gatewayresponse.OpenAIAccountView)
+	if !ok {
+		return "", ""
+	}
+	return view.Account.ProviderCode, view.Account.ProviderProtocolProfileID
+}
+
+// finalizationUsageSemanticOf 按账号协议档案解析 usage_semantic（Node
+// usageSemanticForProfile(account)：openai / anthropic / gemini）；非
+// OpenAIAccountView 按缺省 openai 档案解析。
+func finalizationUsageSemanticOf(account gatewayresponse.AccountView) string {
+	var profile *gatewayusage.ProviderProtocolProfile
+	if view, ok := account.(gatewayresponse.OpenAIAccountView); ok {
+		profile = usageModelAccountOf(view.Account).Profile
+	}
+	return chainUsageSemanticResolver{}.UsageSemanticForProfile(profile)
+}
+
 func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayresponse.CompletedAttemptInput) {
 	if u.recorder == nil {
 		return
 	}
+	accounting := u.finalizationModelAccounting(input.Account, input.RequestedModel)
+	providerCode, providerProtocolProfileID := finalizationAccountProviderOf(input.Account)
+	providerCode = firstNonEmptyChainUsage(providerCode, input.UsageContext.ProviderCode)
+	catalogSystemAccountID := chainCatalogSystemAccountID(input.Account, input.UsageContext.SystemAccountID)
+	pricingModel := u.resolveFinalizationPricingModel(providerCode, catalogSystemAccountID, accounting.upstreamModel)
+	modelMappingApplied := accounting.modelMappingApplied
 	record := gatewayusage.UsageRecordInput{
 		TraceID:         input.UsageContext.TraceID,
 		TrafficSource:   gatewayusage.OpenAIGatewayTrafficSource(input.UsageContext.TrafficSource),
@@ -376,12 +463,17 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		APIKeyID:        input.UsageContext.APIKeyID,
 		GroupID:         input.UsageContext.GroupID,
 		Endpoint:        input.UsageContext.Endpoint,
-		ProviderCode:    input.UsageContext.ProviderCode,
-		UsageSemantic:   "gateway_request",
-		Success:         input.Success,
-		ErrorCode:       input.ErrorCode,
-		ErrorMessage:    input.ErrorMessage,
-		CreatedAt:       time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		ProviderCode:    providerCode,
+		// 账号视图 provider 身份优先，空回落 usage context；协议档案 id 随账号
+		// 视图携带（Node input.account.providerProtocolProfileId）。
+		ProviderProtocolProfileID: providerProtocolProfileID,
+		// 语义按账号协议档案解析（openai/anthropic/gemini），不再硬编码
+		// gateway_request（docs/functions/Anthropic账号接入.md:374 等）。
+		UsageSemantic: finalizationUsageSemanticOf(input.Account),
+		Success:       input.Success,
+		ErrorCode:     input.ErrorCode,
+		ErrorMessage:  input.ErrorMessage,
+		CreatedAt:     time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 		// Node normalizeUsageRecordInput 的 scope 完整性规则：groupId/accountId
 		// 只有伴随 owner/accessType 授权五元组齐备才保留，否则整组清空。
 		// Group scope 在 usageContext 上，Account scope 在账户视图上。
@@ -391,6 +483,23 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		GroupAuthorizationSourceType:   input.UsageContext.GroupAuthorizationSourceType,
 		GroupAuthorizationSourceTeamID: input.UsageContext.GroupAuthorizationSourceTeamID,
 		Model:                          input.RequestedModel,
+		// 模型映射记账六字段（Node accountUsageModelAccounting 同源）。
+		UpstreamModel:          accounting.upstreamModel,
+		PricingModel:           pricingModel,
+		ModelMappingApplied:    &modelMappingApplied,
+		ModelMappingSource:     accounting.modelMappingSource,
+		SourceEndpointFamily:   accounting.sourceEndpointFamily,
+		UpstreamEndpointFamily: accounting.upstreamEndpointFamily,
+		// 服务层级/推理档位直传 usage context（Node records.ts:333-335）。
+		RequestedServiceTier:     input.UsageContext.RequestedServiceTier,
+		EffectiveServiceTier:     input.UsageContext.EffectiveServiceTier,
+		RequestedReasoningEffort: input.UsageContext.RequestedReasoningEffort,
+		EffectiveReasoningEffort: input.UsageContext.EffectiveReasoningEffort,
+	}
+	if !input.Success {
+		// 失败归因：成功尝试不写归因；失败尝试缺省 account_upstream（Node
+		// `input.success ? undefined : input.failureAttribution ?? 'account_upstream'`）。
+		record.FailureAttribution = firstNonEmptyChainUsage(input.FailureAttribution, gatewayusage.FailureAttributionAccountUpstream)
 	}
 	// ParsedUsage 的 token 字段、响应模型名与上报服务层级全量透传（*int
 	// 直接赋值，缺失保持 nil→NULL、0 保持零值；string 空串 = 缺失，rows.go
@@ -413,17 +522,23 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	// 成本估算对齐 Node recordCompletedUpstreamAttempt 的“记录时同步估算”
 	// 语义：gate 由组合根表达（cacheDriver !== 'redis' ⇒
 	// SyncPricingAllowed=true，chain_compose.go 与 usageService 同源），gate
-	// 开启且定价模型名非空时按同步定价目录估算三成本字段；估算器对空模型/
+	// 开启且计价模型名非空时按同步定价目录估算三成本字段；估算器对空模型/
 	// 无维度/目录未命中已内置守卫，返回 nil 一律保持 NULL（不写 0）。
 	// cost_breakdown_snapshot_json 快照列链路不在本步骤范围。
 	if u.syncPricingAllowed && u.pricing != nil {
-		pricingModel := firstNonEmptyChainUsage(input.Usage.UpstreamResponseModel, input.RequestedModel)
-		if pricingModel != "" {
+		// 计价键对齐 Node usageCostCatalogModel：pricingModel ?? upstreamModel
+		// ?? requestedModel；upstream_response_model 是上游响应观察事实，不是
+		// 模型映射、计费、路由或失败判定机制（docs/functions/上游响应模型不一致审计.md）。
+		costModel := firstNonEmptyChainUsage(pricingModel, accounting.upstreamModel, input.RequestedModel)
+		if costModel != "" {
 			costInput := gatewayusage.PricingCostInput{
-				ProviderCode:       input.UsageContext.ProviderCode,
-				SystemAccountID:    chainCatalogSystemAccountID(input.Account, input.UsageContext.SystemAccountID),
-				Model:              pricingModel,
-				ServiceTier:        input.Usage.ServiceTier,
+				ProviderCode:    providerCode,
+				SystemAccountID: catalogSystemAccountID,
+				Model:           costModel,
+				// 计价档位对齐 Node resolveUsageServiceTiers 的 billedServiceTier
+				// （reported ?? effective ?? requested ?? default）：与 jobs 冻结
+				// 侧 serviceTierForWrite 同源，避免网关估算与快照档位价不一致。
+				ServiceTier:        firstNonEmptyChainUsage(input.Usage.ServiceTier, input.UsageContext.EffectiveServiceTier, input.UsageContext.RequestedServiceTier),
 				InputTokens:        input.Usage.InputTokens,
 				OutputTokens:       input.Usage.OutputTokens,
 				CacheReadTokens:    input.Usage.CacheReadTokens,
@@ -461,6 +576,10 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		completedAtMs = &now
 	}
 	durationMs := int(*completedAtMs - input.StartedAtMs)
+	// Node `Math.max(0, completedAt - startedAt)`：时钟回拨等负值夹取为 0。
+	if durationMs < 0 {
+		durationMs = 0
+	}
 	record.DurationMs = &durationMs
 	if err := u.recorder.EnqueueUsageRecord(context.Background(), record); err != nil {
 		// 计费用量记录入队失败 = 整条丢失（缓冲满 + spool 写盘失败路径），
@@ -546,6 +665,18 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 	if u.recorder == nil {
 		return
 	}
+	// 失败尝试同样做账号模型映射记账（Node recordFailedUpstreamAttempt 经
+	// accountUsageModelAccounting）：请求模型取构造点注入值，family 取注入的
+	// 运行时同源值，否则映射后上游模型名在失败行丢失。
+	accounting := u.finalizationModelAccounting(input.Account, u.requestedModel)
+	providerCode, _ := finalizationAccountProviderOf(input.Account)
+	providerCode = firstNonEmptyChainUsage(providerCode, input.UsageContext.ProviderCode)
+	pricingModel := u.resolveFinalizationPricingModel(
+		providerCode,
+		chainCatalogSystemAccountID(input.Account, input.UsageContext.SystemAccountID),
+		accounting.upstreamModel,
+	)
+	modelMappingApplied := accounting.modelMappingApplied
 	record := gatewayusage.UsageRecordInput{
 		TraceID:            input.UsageContext.TraceID,
 		TrafficSource:      "gateway",
@@ -567,6 +698,14 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 		GroupAuthorizationID:           input.UsageContext.GroupAuthorizationID,
 		GroupAuthorizationSourceType:   input.UsageContext.GroupAuthorizationSourceType,
 		GroupAuthorizationSourceTeamID: input.UsageContext.GroupAuthorizationSourceTeamID,
+		Model:                          u.requestedModel,
+		// 模型映射记账六字段（与成功路径同源）。
+		UpstreamModel:          accounting.upstreamModel,
+		PricingModel:           pricingModel,
+		ModelMappingApplied:    &modelMappingApplied,
+		ModelMappingSource:     accounting.modelMappingSource,
+		SourceEndpointFamily:   accounting.sourceEndpointFamily,
+		UpstreamEndpointFamily: accounting.upstreamEndpointFamily,
 	}
 	applyUsageAccountScope(&record, input.Account)
 	if input.StatusCode != nil {

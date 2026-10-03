@@ -617,7 +617,9 @@ func TestW1ZChainFinalizationUsageRecordCompletedUpstreamAttempt(t *testing.T) {
 		record.Endpoint != "/v1/chat/completions" || record.ProviderCode != "openai" || record.AccountID != "acc-w1z-completed" {
 		t.Fatalf("身份投影 = %+v", record)
 	}
-	if record.UsageSemantic != "gateway_request" || !record.Success || record.CreatedAt == "" {
+	// usage_semantic 按账号协议档案解析（Node usageSemanticForProfile）：账号
+	// 无协议身份时回落 openai，不再硬编码 gateway_request。
+	if record.UsageSemantic != "openai" || !record.Success || record.CreatedAt == "" {
 		t.Fatalf("语义/成功/时间戳投影 = %+v", record)
 	}
 	if record.Stream == nil || !*record.Stream {

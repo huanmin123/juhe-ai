@@ -53,8 +53,10 @@ func (a usageAttemptRecorderAdapter) RecordFailedUpstreamAttempt(ctx context.Con
 		return nil
 	}
 	return a.service.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(usageContext, account)), usageModelAccountOf(account), gatewayusage.RecordFailedUpstreamAttemptInput{
-		Model:                      requestModelHintOf(req),
-		Stream:                     gatewaypreauth.IsOpenAIStreamRequest(req),
+		Model:  requestModelHintOf(req),
+		Stream: gatewaypreauth.IsOpenAIStreamRequest(req),
+		// family 必须与派发链模型改写同源，否则服务层映射记账恒不命中。
+		SourceEndpointFamily:       requestMappingSourceFamilyOf(req),
 		UpstreamURL:                record.UpstreamURL,
 		StartedAtMs:                record.StartedAt,
 		StatusCode:                 attemptStatusCodeOf(record),
@@ -447,15 +449,17 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 	}
 	if d.usage != nil {
 		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
-			Model:        requestModelHintOf(input.Req),
-			Stream:       gatewaypreauth.IsOpenAIStreamRequest(input.Req),
-			UpstreamURL:  input.UpstreamURL,
-			StartedAtMs:  input.AttemptStartedAt,
-			StatusCode:   statusPointer(hasStatus, statusCode),
-			Headers:      usageFailureHeadersOf(input.Response),
-			BodyText:     bodyText,
-			ErrorMessage: lastAttempt.Message,
-			ErrorPayload: usageErrorPayloadOf(failurePayload),
+			Model:  requestModelHintOf(input.Req),
+			Stream: gatewaypreauth.IsOpenAIStreamRequest(input.Req),
+			// family 与派发链模型改写同源，服务层映射记账据此命中。
+			SourceEndpointFamily: requestMappingSourceFamilyOf(input.Req),
+			UpstreamURL:          input.UpstreamURL,
+			StartedAtMs:          input.AttemptStartedAt,
+			StatusCode:           statusPointer(hasStatus, statusCode),
+			Headers:              usageFailureHeadersOf(input.Response),
+			BodyText:             bodyText,
+			ErrorMessage:         lastAttempt.Message,
+			ErrorPayload:         usageErrorPayloadOf(failurePayload),
 		}); err != nil {
 			return gatewaydispatch.FailedUpstreamResponseResult{}, err
 		}
@@ -724,11 +728,13 @@ func (d *chainFailureDispatcher) HandleUpstreamRequestError(ctx context.Context,
 	}
 	if d.usage != nil {
 		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
-			Model:        requestModelHintOf(input.Req),
-			Stream:       gatewaypreauth.IsOpenAIStreamRequest(input.Req),
-			UpstreamURL:  input.UpstreamURL,
-			StartedAtMs:  input.AttemptStartedAt,
-			ErrorMessage: message,
+			Model:  requestModelHintOf(input.Req),
+			Stream: gatewaypreauth.IsOpenAIStreamRequest(input.Req),
+			// family 与派发链模型改写同源，服务层映射记账据此命中。
+			SourceEndpointFamily: requestMappingSourceFamilyOf(input.Req),
+			UpstreamURL:          input.UpstreamURL,
+			StartedAtMs:          input.AttemptStartedAt,
+			ErrorMessage:         message,
 		}); err != nil {
 			return gatewaydispatch.UpstreamRequestErrorResult{}, err
 		}
@@ -938,13 +944,14 @@ func (d *chainFailureDispatcher) recordDownstreamClosedRequestError(ctx context.
 	}
 	if d.usage != nil {
 		if err := d.usage.RecordFailedUpstreamAttempt(ctx, usageContextOf(usageContextForAccount(input.UsageContext, input.Account)), usageModelAccountOf(input.Account), gatewayusage.RecordFailedUpstreamAttemptInput{
-			Model:              requestModelHintOf(input.Req),
-			Stream:             gatewaypreauth.IsOpenAIStreamRequest(input.Req),
-			UpstreamURL:        input.UpstreamURL,
-			StartedAtMs:        input.AttemptStartedAt,
-			StatusCode:         statusPointer(hasStatus, statusCode),
-			ErrorMessage:       gatewayresponse.DownstreamConnectionClosedMessage,
-			FailureAttribution: gatewayusage.FailureAttributionDownstreamClosed,
+			Model:                requestModelHintOf(input.Req),
+			Stream:               gatewaypreauth.IsOpenAIStreamRequest(input.Req),
+			SourceEndpointFamily: requestMappingSourceFamilyOf(input.Req),
+			UpstreamURL:          input.UpstreamURL,
+			StartedAtMs:          input.AttemptStartedAt,
+			StatusCode:           statusPointer(hasStatus, statusCode),
+			ErrorMessage:         gatewayresponse.DownstreamConnectionClosedMessage,
+			FailureAttribution:   gatewayusage.FailureAttributionDownstreamClosed,
 		}); err != nil {
 			return err
 		}

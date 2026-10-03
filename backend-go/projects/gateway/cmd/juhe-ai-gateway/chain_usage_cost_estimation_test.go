@@ -85,7 +85,9 @@ func completedAttemptCostInput() gatewayresponse.CompletedAttemptInput {
 
 // TestChainFinalizationUsageCostEstimatedWhenGateOpen：(a) gate 开 + 目录命中
 // → 三成本字段落 mock 返回值；估算输入的 SystemAccountID 取账号视图 owner、
-// Model 取上游响应模型优先、ServiceTier 与 token 指针全量透传。
+// Model 取计价目录模型（pricingModel ?? upstreamModel ?? requestedModel；未
+// 映射时即请求模型；upstream_response_model 是响应观察事实，不参与计价）、
+// ServiceTier 与 token 指针全量透传。
 func TestChainFinalizationUsageCostEstimatedWhenGateOpen(t *testing.T) {
 	recorder := &capturingUsageRecorder{}
 	catalog := &fakeChainUsagePricingCatalog{
@@ -120,8 +122,8 @@ func TestChainFinalizationUsageCostEstimatedWhenGateOpen(t *testing.T) {
 	if input.SystemAccountID != "owner_sys_acc" {
 		t.Errorf("SystemAccountID = %q, want owner_sys_acc（账号视图 owner 优先）", input.SystemAccountID)
 	}
-	if input.Model != "gpt-upstream-real" {
-		t.Errorf("Model = %q, want gpt-upstream-real（上游响应模型优先于请求模型）", input.Model)
+	if input.Model != "gpt-request-alias" {
+		t.Errorf("Model = %q, want gpt-request-alias（未映射时计价键取请求模型；上游响应观察模型不参与计价）", input.Model)
 	}
 	if input.ServiceTier != "priority" {
 		t.Errorf("ServiceTier = %q, want priority", input.ServiceTier)
@@ -138,8 +140,9 @@ func TestChainFinalizationUsageCostEstimatedWhenGateOpen(t *testing.T) {
 	}
 }
 
-// TestChainFinalizationUsageCostModelFallbackToRequestedModel：上游响应模型为
-// 空时定价模型名回落请求模型。
+// TestChainFinalizationUsageCostModelFallbackToRequestedModel：未映射时计价键
+// 恒取请求模型；上游响应模型为空与否都不改变计价键（Node
+// pricingModel ?? upstreamModel ?? requestedModel）。
 func TestChainFinalizationUsageCostModelFallbackToRequestedModel(t *testing.T) {
 	recorder := &capturingUsageRecorder{}
 	catalog := &fakeChainUsagePricingCatalog{cost: floatPtrOf(0.5)}
