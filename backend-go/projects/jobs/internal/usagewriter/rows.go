@@ -111,6 +111,11 @@ var UsageRecordColumns = []string{
 	"input_audio_tokens",
 	"output_audio_tokens",
 	"output_image_count",
+	// M1 同步音频计量列（音频设计 §10）：TTS 输入字符、STT 输入秒、上游
+	// 缺计量标记；列序与 PG/SQLite DDL 一致。
+	"tts_input_chars",
+	"audio_input_seconds",
+	"usage_missing",
 	"cost_usd",
 	"error_code",
 	"error_message",
@@ -259,6 +264,9 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 				nilableInt(input.InputAudioTokens),
 				nilableInt(input.OutputAudioTokens),
 				nilableInt(input.OutputImageCount),
+				nilableInt64OrZero(input.TtsInputChars),
+				nilableFloat64OrZero(input.AudioInputSeconds),
+				boolToInt(&input.UsageMissing),
 				nilableFloat(input.CostUsd),
 				nilableString(input.ErrorCode),
 				nilableString(input.ErrorMessage),
@@ -421,6 +429,23 @@ func nilableInt(value *int) any {
 func nilableFloat(value *float64) any {
 	if value == nil {
 		return nil
+	}
+	return *value
+}
+
+// nilableInt64OrZero / nilableFloat64OrZero 落 M1 音频计量列（NOT NULL
+// DEFAULT 0）：nil 计量写 0（与 usage_missing 标记配合区分"缺计量"与
+// "零计量"）。
+func nilableInt64OrZero(value *int64) any {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func nilableFloat64OrZero(value *float64) any {
+	if value == nil {
+		return 0.0
 	}
 	return *value
 }

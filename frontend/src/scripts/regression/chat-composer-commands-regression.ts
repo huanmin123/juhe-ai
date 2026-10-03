@@ -28,20 +28,15 @@ const stateAt = (doc: ReturnType<typeof schema.node>, anchor: number, head = anc
 
 assert.deepEqual(filterChatComposerCommands('代码'), [])
 assert.deepEqual(filterChatComposerCommands('列表'), [])
-assert.deepEqual(chatComposerCommands.map((item) => item.key), ['image', 'parameters', 'image-model', 'tool-defaults', 'image-tool-defaults', 'compact', 'clear'])
+assert.deepEqual(chatComposerCommands.map((item) => item.key), ['image', 'parameters', 'tool-defaults', 'compact', 'clear'])
 assert.equal(chatComposerCommands.some((item) => item.key === 'clear-input' || item.key === 'code'), false, '低价值草稿命令不得重新进入菜单')
+assert.equal(chatComposerCommands.some((item) => item.key === 'image-model' || item.key === 'image-tool-defaults'), false, '图像模型与生图绑定命令必须收敛进统一 /tool-defaults（工具体系设计 §10.7）')
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'compact'), {
   key: 'compact', kind: 'conversation', action: 'compact-context', label: '压缩上下文', description: '调用模型整理较早消息以释放上下文空间；会产生用量。'
 })
-assert.deepEqual(chatComposerCommands.find((item) => item.key === 'image-model'), {
-  key: 'image-model', kind: 'conversation', action: 'set-image-model', label: '默认图像模型', description: '选择当前会话生成或编辑图片时使用的默认图像模型。'
-})
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'tool-defaults'), {
-  key: 'tool-defaults', kind: 'conversation', action: 'set-tool-defaults', label: '搜索默认绑定', description: '设置网页搜索的全局默认绑定「账户 + 模型」；新会话自动继承，会话内修改会同步为默认。'
-}, '搜索默认绑定命令必须紧随默认图像模型之后注册（工具体系设计 §10.7）')
-assert.deepEqual(chatComposerCommands.find((item) => item.key === 'image-tool-defaults'), {
-  key: 'image-tool-defaults', kind: 'conversation', action: 'set-image-tool-defaults', label: '生图默认绑定', description: '设置图片生成的全局默认绑定账户；新会话自动继承，会话内修改会同步为默认。'
-}, '生图默认绑定命令必须紧随搜索默认绑定之后注册（generate_image 全局默认入口）')
+  key: 'tool-defaults', kind: 'conversation', action: 'set-tool-defaults', label: '工具模型绑定', description: '打开工具模型绑定弹窗，设置网页搜索与图像生成的全局默认绑定（账户 + 模型）。'
+}, '工具模型绑定统一命令必须注册（工具体系设计 §10.7）')
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'parameters'), {
   key: 'parameters', kind: 'generation', label: '生成参数', description: '调整当前模型支持的温度、Top P、重复惩罚和回复长度等生成控制。'
 })

@@ -216,6 +216,22 @@ func (s *w1vDecisionsStub) RecordFirstByteSuccessAsync(ctx context.Context, acco
 	return s.successResult, nil
 }
 
+func (s *w1vDecisionsStub) RecordTotalTimeSlowAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error) {
+	s.slowCalls++
+	if s.slowErr != nil {
+		return nil, s.slowErr
+	}
+	return s.slowResult, nil
+}
+
+func (s *w1vDecisionsStub) RecordTotalTimeSuccessAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, effectiveDeadlineMs int64, elapsedMs int64) (*gatewayproxyhealth.LatencySuccessResult, error) {
+	s.successCalls++
+	if s.successErr != nil {
+		return nil, s.successErr
+	}
+	return s.successResult, nil
+}
+
 // w1vLatencyPortOnly 只实现 LatencyDegradationPort（不实现决策面），
 // 用于 speedFirstDecisionsOf 的类型断言失败臂。
 type w1vLatencyPortOnly struct{}

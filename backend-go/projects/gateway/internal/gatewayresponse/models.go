@@ -17,8 +17,8 @@ import (
 type ModelCatalogEntry struct {
 	Model                         string
 	Scope                         string // 'built_in' | 'global' | 'personal' | ...
-	ReleaseDate                   string // YYYY-MM-DD
-	CreatedAt                     string // RFC3339
+	ReleaseDate                   string
+	CreatedAt                     string
 	CapabilityNotes               string
 	PricingNotes                  string
 	Notes                         string
@@ -27,6 +27,9 @@ type ModelCatalogEntry struct {
 	CodexSupportedReasoningLevels []string
 	CodexDefaultReasoningLevel    string
 	CodexMultiAgentVersion        string
+	// InputModalities 是目录行真实输入模态（音频设计 §4.3：Codex 形态
+	// input_modalities 不再硬编码 ["text","image"]）。空 = 目录无数据。
+	InputModalities []string
 }
 
 // openAIModelListItem 对齐 OpenAIModelListItem。
@@ -179,7 +182,7 @@ func buildCodexModelInfo(item ModelCatalogEntry, index int) codexModelListItem {
 		MaxContextWindow:              contextWindow,
 		EffectiveContextWindowPercent: 95,
 		ExperimentalSupportedTools:    []string{},
-		InputModalities:               []string{"text", "image"},
+		InputModalities:               codexInputModalities(item),
 		UseResponsesLite:              usesOpenAICodexResponsesLite(item.Model),
 	}
 	if len(supportedReasoningLevels) > 0 {
@@ -228,6 +231,16 @@ func codexContextWindow(item ModelCatalogEntry) int {
 		return item.ContextWindowTokens
 	}
 	return 272_000
+}
+
+// codexInputModalities 返回模型目录行真实的输入模态；目录行没有 modalities
+// 数据时回退现状两值 ["text","image"]（音频设计 §4.3，M1 起 audio 分类模型
+// 按目录真实值返回，如 STT 模型 ["audio"]）。
+func codexInputModalities(item ModelCatalogEntry) []string {
+	if len(item.InputModalities) > 0 {
+		return append([]string{}, item.InputModalities...)
+	}
+	return []string{"text", "image"}
 }
 
 // usesOpenAICodexResponsesLite 对齐 usesOpenAICodexResponsesLite（按模型名

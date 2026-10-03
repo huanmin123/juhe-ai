@@ -126,6 +126,9 @@ var postgresSchemaUsage = []PGStatement{
       input_audio_tokens integer,
       output_audio_tokens integer,
       output_image_count integer,
+      tts_input_chars bigint NOT NULL DEFAULT 0,
+      audio_input_seconds double precision NOT NULL DEFAULT 0,
+      usage_missing integer NOT NULL DEFAULT 0,
       cost_usd double precision,
       error_code text,
       error_message text,
@@ -149,6 +152,21 @@ var postgresSchemaUsage = []PGStatement{
 		SchemaName: "juhe_usage",
 		Source:     "upstream-response-model-pg-columns",
 		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS upstream_response_model text`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-m1-audio-metering-pg-columns",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS tts_input_chars bigint NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-m1-audio-metering-pg-columns",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS audio_input_seconds double precision NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-m1-audio-metering-pg-columns",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS usage_missing integer NOT NULL DEFAULT 0`,
 	},
 	{
 		SchemaName: "juhe_usage",

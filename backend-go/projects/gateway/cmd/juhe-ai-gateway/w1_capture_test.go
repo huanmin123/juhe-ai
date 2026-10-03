@@ -168,6 +168,14 @@ func (f *w1LatencyFake) RecordFirstByteSuccessAsync(context.Context, gatewaydisp
 	return nil, nil
 }
 
+func (f *w1LatencyFake) RecordTotalTimeSlowAsync(context.Context, gatewaydispatch.AccountCandidate, *gatewaydispatch.LatencyScopeInput, *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, string) (*gatewayproxyhealth.LatencySlowResult, error) {
+	return nil, nil
+}
+
+func (f *w1LatencyFake) RecordTotalTimeSuccessAsync(context.Context, gatewaydispatch.AccountCandidate, *gatewaydispatch.LatencyScopeInput, *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, int64, int64) (*gatewayproxyhealth.LatencySuccessResult, error) {
+	return nil, nil
+}
+
 func TestW1V1LoopSpeedFirstDecisionsOf(t *testing.T) {
 	loop := &v1DispatchLoop{c: &gatewayChain{engine: &gatewaydispatch.Engine{}}}
 	// Latency 未装配：nil（Node 缺席 continue 语义）。

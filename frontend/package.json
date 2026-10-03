@@ -44,7 +44,6 @@
     "test:chat-composer-state": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-composer-state-regression.ts",
     "test:chat-composer-document": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-composer-document-regression.ts",
     "test:chat-composer-commands": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-composer-commands-regression.ts",
-    "test:chat-image-model-command": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-image-model-command-regression.ts",
     "test:chat-manual-context-actions": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-manual-context-actions-regression.ts",
     "test:chat-composer-keyboard": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-composer-keyboard-regression.ts",
     "test:chat-composer-editor-keydown": "tsx --tsconfig tsconfig.json src/scripts/regression/chat-composer-editor-keydown-regression.ts",

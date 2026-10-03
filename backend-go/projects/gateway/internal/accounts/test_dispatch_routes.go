@@ -28,6 +28,8 @@ var accountTestEndpointModeValues = []string{
 	"messages_json", "messages_sse",
 	"generate_content_json", "generate_content_sse",
 	"interactions_json", "interactions_sse",
+	// M1 同步音频探针形态。
+	"audio_speech", "audio_transcription_json",
 }
 
 // unsupportedGatewayProtocolTestMessage mirrors the route copy.

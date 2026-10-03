@@ -58,9 +58,23 @@ export const responsesEndpointModes: AccountSupportedEndpointMode[] = ['response
 // images_json 是 openai 族的合法可表达能力（/v1/images 图像 lane 派发依赖它），
 // 词表与后端 OpenAIEndpointModeValues 同构（images_json 居首）；但它只能显式
 // 开启——defaultEndpointModesForAccount 会在默认集中过滤掉它。
-export const openAIEndpointModes: AccountSupportedEndpointMode[] = ['images_json', ...chatEndpointModes, ...responsesEndpointModes]
+// M1 同步音频新增 audio_speech（POST /v1/audio/speech）与
+// audio_transcription_json（POST /v1/audio/transcriptions|translations），与
+// accounts.health_check_endpoint_mode CHECK 及 gatewaypreauth 端点模式词表同步
+// （音频设计 §11.1/§11.6）；同样只能显式开启，不进默认集。
+export const openAIEndpointModes: AccountSupportedEndpointMode[] = [
+  'images_json',
+  'audio_speech',
+  'audio_transcription_json',
+  ...chatEndpointModes,
+  ...responsesEndpointModes
+]
 export const anthropicAccountEndpointModes: AccountSupportedEndpointMode[] = ['messages_json', 'messages_sse', 'message_token_counting']
-export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content', 'interactions_json', 'interactions_sse']
+// gemini 族含 audio_speech（gemini TTS 经混合账户跨协议转换服务
+// /v1/audio/speech，契约 §5.1）：与 openai 族的 audio 两值同样只能显式开启
+//（defaultEndpointModesForAccount 过滤，不进默认集）。audio_speech 是跨协议
+// 共享 token（同时属于 openai/gemini 词表），协议互斥校验按非共享 token 判定。
+export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content', 'interactions_json', 'interactions_sse', 'audio_speech']
 export const allAccountEndpointModes: AccountSupportedEndpointMode[] = [
   ...openAIEndpointModes,
   ...anthropicAccountEndpointModes,
@@ -230,12 +244,18 @@ export function defaultEndpointModesForAccount(input: {
   if (isHybridProviderProfile(input.profile ?? input.provider)) return [...allAccountEndpointModes]
   const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
   if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
-  if (protocolKind === 'gemini_v1beta') return endpointModesForProfile(input.profile ?? input.provider)
+  // gemini 新账户默认集保持 generateContent/interactions 推导结果；audio_speech
+  // 与 openai 族的 audio 两值同样只能显式开启。
+  if (protocolKind === 'gemini_v1beta') {
+    return endpointModesForProfile(input.profile ?? input.provider)
+      .filter((mode) => mode !== 'audio_speech')
+  }
   if (input.type === 'oauth' && protocolKind === 'openai_v1') return [...responsesEndpointModes]
   if (protocolKind === 'openai_v1') {
-    // 新账户默认集保持 chat/responses 推导结果；images_json 只能显式开启。
+    // 新账户默认集保持 chat/responses 推导结果；images_json 与 M1 音频模式
+    // 只能显式开启。
     return endpointModesForProfile(input.profile ?? input.provider)
-      .filter((mode) => mode !== 'images_json')
+      .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json')
   }
   return [...allAccountEndpointModes]
 }
@@ -256,13 +276,19 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
     { family: ANTHROPIC_MESSAGES_FAMILY, modes: ['messages_json', 'messages_sse'] },
     { family: ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY, modes: ['message_token_counting'] }
   ])
-  if (protocolKind === 'gemini_v1beta') return endpointModesForFamilies(profile, geminiAccountEndpointModes, [
-    { family: GEMINI_GENERATE_CONTENT_FAMILY, modes: ['generate_content_json'] },
-    { family: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, modes: ['generate_content_sse'] },
-    { family: GEMINI_COUNT_TOKENS_FAMILY, modes: ['count_tokens'] },
-    { family: GEMINI_EMBED_CONTENT_FAMILY, modes: ['embed_content'] },
-    { family: 'interactions', modes: ['interactions_json', 'interactions_sse'] }
-  ])
+  if (protocolKind === 'gemini_v1beta') {
+    const familyModes = endpointModesForFamilies(profile, geminiAccountEndpointModes, [
+      { family: GEMINI_GENERATE_CONTENT_FAMILY, modes: ['generate_content_json'] },
+      { family: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, modes: ['generate_content_sse'] },
+      { family: GEMINI_COUNT_TOKENS_FAMILY, modes: ['count_tokens'] },
+      { family: GEMINI_EMBED_CONTENT_FAMILY, modes: ['embed_content'] },
+      { family: 'interactions', modes: ['interactions_json', 'interactions_sse'] }
+    ])
+    // audio_speech 是 gemini 族的显式可选能力（gemini TTS 经混合转换派发），
+    // 不进默认集（defaultEndpointModesForAccount 过滤），照 openai 族先例。
+    const selectable: AccountSupportedEndpointMode[] = [...familyModes, 'audio_speech']
+    return [...new Set(selectable)]
+  }
   if (protocolKind === 'openai_v1') {
     const familyModes = endpointModesForFamilies(
       profile,
@@ -272,9 +298,9 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
         { family: OPENAI_RESPONSES_FAMILY, modes: responsesEndpointModes }
       ]
     )
-    // images_json 是 openai 族的显式可选能力：允许勾选（图像 lane 派发依赖），
-    // 不进默认集（defaultEndpointModesForAccount 过滤）。
-    const selectable: AccountSupportedEndpointMode[] = [...familyModes, 'images_json']
+    // images_json 与 M1 音频模式是 openai 族的显式可选能力：允许勾选（媒体
+    // lane 派发依赖），不进默认集（defaultEndpointModesForAccount 过滤）。
+    const selectable: AccountSupportedEndpointMode[] = [...familyModes, 'images_json', 'audio_speech', 'audio_transcription_json']
     return [...new Set(selectable)]
   }
   return [...allAccountEndpointModes]

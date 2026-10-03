@@ -88,6 +88,7 @@ func (f routeStrategySpeedFirstFacade) ListDegradedRuntime(ctx context.Context, 
 			RecoveryProbeRoundAttemptCount: item.RecoveryProbeRoundAttemptCount,
 			RecoveryProbeRoundSuccessCount: item.RecoveryProbeRoundSuccessCount,
 			Reason:                         item.Reason,
+			Dimension:                      item.Dimension,
 		})
 	}
 	return out, true, nil

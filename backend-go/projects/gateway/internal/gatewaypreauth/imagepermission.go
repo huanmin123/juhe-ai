@@ -33,7 +33,7 @@ func IsImageGenerationDisabledForAPIKey(apiKey *gatewayruntimecache.GatewayAPIKe
 // captured bodyState.imageGeneration flag is checked here like the Node
 // source.
 func ResolveOpenAIGatewayRequestLane(req *GatewayRequest) gatewayproto.RequestLane {
-	lane := gatewayopenai.ResolveRequestLane(req.PathAndQuery(), laneInspectionBody(req), requestModelHint(req))
+	lane := gatewayopenai.ResolveRequestLane(req.MethodUpper(), req.PathAndQuery(), laneInspectionBody(req), requestModelHint(req))
 	if lane == gatewayproto.LaneImage {
 		return lane
 	}

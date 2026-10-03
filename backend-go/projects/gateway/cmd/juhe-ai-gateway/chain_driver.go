@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
@@ -237,6 +239,20 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		}
 		return urls, nil
 	case driverProtocolGemini:
+		// M1 同步音频（音频设计 §5/契约 §5.1）：gemini 账户的 speech 请求由
+		// gatewaymedia 注册表的 gemini TTS adapter 承载（URL/body 改写 +
+		// 响应转换），不进入原生路由 helper；模型直达（映射面 M1 不介入）。
+		if adapter, ir, ok := d.geminiSpeechRequest(req, account); ok {
+			path, _, err := adapter.BuildRequest(ir)
+			if err != nil {
+				return nil, geminiSpeechAdapterBoundaryError(err)
+			}
+			url, urlErr := gatewaygemini.BuildUpstreamURL(account.BaseURL, path, false)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{url}, nil
+		}
 		// Code Assist / Google One OAuth 运行时恒定走 /v1internal 流式包装端点
 		//（对齐 Node gemini/driver.ts:123-125 buildUpstreamUrls）；其余原生
 		// 请求维持 gemini 路由 helper 的 URL 构建。
@@ -294,6 +310,8 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 // account resolves a mapping) with the protocol auth header injected.
 // 导出方法 BuildGatewayUpstreamRequestParts（chain_switchtarget.go）在构造
 // 成功后冻结本请求的 SwitchTarget。
+// M1 同步音频：gemini 账户的 speech 请求经 gatewaymedia adapter 改写
+// （音频设计 §5），在协议透传之前短路返回。
 func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	ctx context.Context,
 	req *gatewaypreauth.GatewayRequest,
@@ -305,6 +323,16 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	_ = identity
 	if req == nil {
 		return gatewaydispatch.PreparedRequestParts{}, fmt.Errorf("构建上游请求缺少请求上下文")
+	}
+	// M1 同步音频：gemini speech adapter 分派（URL/body 同源 BuildRequest）。
+	if adapter, ir, ok := d.geminiSpeechRequest(req, account); ok {
+		_, body, err := adapter.BuildRequest(ir)
+		if err != nil {
+			return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(err)
+		}
+		headers := upstreamHeadersOf(req, account)
+		headers.Set("Content-Type", "application/json")
+		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
 	if normalizeProtocol(account.ProtocolCode) == driverProtocolGemini && geminiAccountUsesCodeAssistRuntime(account) {
 		return d.buildGeminiCodeAssistRequestParts(req, account)
@@ -512,13 +540,18 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 		}
 	case driverProtocolGemini:
 		if req != nil {
-			if !gatewaygemini.IsNativeRequest(req.HTTP) {
-				return "gemini_native_unsupported"
-			}
-			// Code Assist / Google One OAuth 仅支持 generateContent 与
-			// streamGenerateContent（Node accountSupportsRequest 同门）。
-			if geminiAccountUsesCodeAssistRuntime(account) && !isGeminiCodeAssistGenerationRequest(req) {
-				return "gemini_code_assist_unsupported_endpoint"
+			// M1 同步音频：speech 形态经 gemini TTS adapter 承载（音频设计
+			// §5），不要求 gemini 原生路径族；后续 endpoint mode 与模型门
+			// 继续生效（audio_speech mode 过滤沿 images_json 语义）。
+			if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
+				if !gatewaygemini.IsNativeRequest(req.HTTP) {
+					return "gemini_native_unsupported"
+				}
+				// Code Assist / Google One OAuth 仅支持 generateContent 与
+				// streamGenerateContent（Node accountSupportsRequest 同门）。
+				if geminiAccountUsesCodeAssistRuntime(account) && !isGeminiCodeAssistGenerationRequest(req) {
+					return "gemini_code_assist_unsupported_endpoint"
+				}
 			}
 		}
 	}
@@ -1207,6 +1240,62 @@ func gptRequestOverrideEndpointFamily(req *gatewaypreauth.GatewayRequest, accoun
 	default:
 		return ""
 	}
+}
+
+// geminiSpeechRequest 解析“gemini 账户 + speech 请求”的 adapter 分派三元组
+// （M1 同步音频，音频设计 §5）。ok=false 表示本请求不走媒体 adapter（原生
+// gemini 或 openai 族路径）。SpeechIR 从请求体解析（模型映射面 M1 不介入：
+// 请求模型直达上游；账户 canonical 拼写优先）；请求体未解析/不完整返回
+// ok=false 并由 capability/url 链路以各自错误语义拒绝，不在此静默改道。
+func (d *chainProviderDriver) geminiSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool) {
+	if req == nil || req.HTTP == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if normalizeProtocol(account.ProtocolCode) != driverProtocolGemini {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if geminiAccountUsesCodeAssistRuntime(account) {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	adapter := gatewaymedia.SpeechAdapterForProvider("gemini")
+	if adapter == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	body := req.ParsedJSONObjectBody()
+	if body == nil {
+		body = d.materializedParsedJSONObjectBody(req)
+	}
+	if body == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	ir, err := gatewaymedia.ParseSpeechRequest(body)
+	if err != nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if canonical := canonicalAccountModel(req, account); canonical != "" {
+		ir.Model = canonical
+	}
+	return adapter, ir, true
+}
+
+// geminiSpeechAdapterBoundaryError 把 speech adapter 的能力边界错误（契约
+// §5.1 定稿：response_format 非 pcm → 拒绝，零转码）包装为请求侧 400 语义：
+// GatewayRequestValidationError 沿 dispatch 错误通路（非账户级 validation
+// rethrow）到达 HandleGatewayRequestKnownErrorResponse，按 invalid_request_
+// error 契约渲染客户端 400；不包装则会落入 503"上游暂时不可用"契约，把
+// 客户端参数错误误报成上游故障。
+func geminiSpeechAdapterBoundaryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var validation *gatewaypreauth.GatewayRequestValidationError
+	if errors.As(err, &validation) {
+		return err
+	}
+	return gatewaypreauth.NewGatewayRequestValidationError(err.Error())
 }
 
 // ---------------------------------------------------------------------------

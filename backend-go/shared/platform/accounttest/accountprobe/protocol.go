@@ -16,6 +16,7 @@ package accountprobe
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -40,11 +41,21 @@ const (
 	ModeInteractionsJSON    EndpointMode = "interactions_json"
 	ModeInteractionsSSE     EndpointMode = "interactions_sse"
 	ModeImagesJSON          EndpointMode = "images_json"
+	// M1 同步音频探针形态（音频设计 §11.9）：audio_speech = POST
+	// /v1/audio/speech（2xx + audio/* 判活）；audio_transcription_json =
+	// multipart POST /v1/audio/transcriptions（2xx + JSON text 判活）。
+	ModeAudioSpeech            EndpointMode = "audio_speech"
+	ModeAudioTranscriptionJSON EndpointMode = "audio_transcription_json"
 )
 
 func (m EndpointMode) streaming() bool {
 	return m == ModeChatSSE || m == ModeResponsesSSE || m == ModeMessagesSSE ||
 		m == ModeGenerateContentSSE || m == ModeInteractionsSSE
+}
+
+// audio 判定：M1 同步音频探针形态（非流式、非文本对话协议）。
+func (m EndpointMode) audio() bool {
+	return m == ModeAudioSpeech || m == ModeAudioTranscriptionJSON
 }
 
 func (m EndpointMode) anthropic() bool {
@@ -197,7 +208,7 @@ func manualTestEndpointModes(defaultMode EndpointMode, normalizedModes map[Endpo
 
 // EndpointModeOrderOpenAI 是 accountTestEndpointModeOrder 的 api_key 分支。
 func EndpointModeOrderOpenAI() []EndpointMode {
-	return []EndpointMode{ModeChatSSE, ModeResponsesSSE, ModeChatJSON, ModeResponsesJSON}
+	return []EndpointMode{ModeChatSSE, ModeResponsesSSE, ModeChatJSON, ModeResponsesJSON, ModeAudioSpeech, ModeAudioTranscriptionJSON}
 }
 
 // EndpointModeOrderAnthropic / Gemini / OAuth 对齐 Node 其余分支。
@@ -206,7 +217,9 @@ func EndpointModeOrderAnthropic() []EndpointMode {
 }
 
 func EndpointModeOrderGemini() []EndpointMode {
-	return []EndpointMode{ModeInteractionsJSON, ModeInteractionsSSE, ModeGenerateContentJSON, ModeGenerateContentSSE}
+	// M1：gemini 族的 audio_speech 探针形态在尾部（TTS adapter 承载；
+	// gemini 无 /v1/audio/transcriptions 直连形态，不列 transcription）。
+	return []EndpointMode{ModeInteractionsJSON, ModeInteractionsSSE, ModeGenerateContentJSON, ModeGenerateContentSSE, ModeAudioSpeech}
 }
 
 func EndpointModeOrderOAuth() []EndpointMode {
@@ -326,6 +339,27 @@ func buildGeminiGenerateContentPayload(prompt string) ([]byte, error) {
 	})
 }
 
+// buildGeminiSpeechPayload 构造 gemini 协议 audio_speech 探针报文（契约
+// §5.1）：contents 文本 + responseModalities=["AUDIO"] + voiceName 取 "Kore"
+// （gemini 预置音色，openai 音色词表对 gemini 无效）。
+func buildGeminiSpeechPayload() ([]byte, error) {
+	contents := []map[string]any{
+		{
+			"parts": []map[string]any{{"text": "ok"}},
+		},
+	}
+	generationConfig := map[string]any{
+		"responseModalities": []string{"AUDIO"},
+		"speechConfig": map[string]any{
+			"prebuiltVoiceConfig": map[string]any{"voiceName": "Kore"},
+		},
+	}
+	return orderedJSON([]orderedField{
+		rawField("contents", marshalValue(contents)),
+		rawField("generationConfig", marshalValue(generationConfig)),
+	})
+}
+
 // buildAnthropicMessagesPayload 等价 createAnthropicClaudeCodeAccountTestPayload。
 func buildAnthropicMessagesPayload(model, prompt string, stream bool, sessionID string) ([]byte, error) {
 	messages := []map[string]any{
@@ -376,6 +410,73 @@ func buildImagesPayload(model string) ([]byte, error) {
 		{key: "output_format", marshal: func() ([]byte, error) { return rawText("webp"), nil }},
 		{key: "output_compression", marshal: func() ([]byte, error) { return rawInt(100), nil }},
 	})
+}
+
+// buildSpeechPayload 构造 M1 audio_speech 探针报文（音频设计 §11.9）：
+// input 固定短文本 "ok"（低成本），voice 取目录默认或 alloy（openai 官方
+// 常用音色），response_format=wav（合法 WAV 头可结构断言）。
+func buildSpeechPayload(model, voice string) ([]byte, error) {
+	return orderedJSON([]orderedField{
+		{key: "model", marshal: func() ([]byte, error) { return rawText(model), nil }},
+		{key: "input", marshal: func() ([]byte, error) { return rawText("ok"), nil }},
+		{key: "voice", marshal: func() ([]byte, error) { return rawText(voice), nil }},
+		{key: "response_format", marshal: func() ([]byte, error) { return rawText("wav"), nil }},
+	})
+}
+
+// probeSpeechDefaultVoice 是目录 voices 未承载时的探针音色缺省（任务报告
+// 标注 voices 清单缺口；上游对不支持音色回 400，探针按失败证据呈现）。
+const probeSpeechDefaultVoice = "alloy"
+
+// probeWAVPayload 是 STT 探针的内置小 WAV 样本：合法 RIFF/WAVE 头（PCM
+// 24kHz/16bit/mono）+ 极短静音帧。合成思路与 shared/platform/mockupstream
+// payload_audio.go 的 wavPayload 同构，但 accountprobe 不 import mockupstream
+// （测试基建互引），在本包内内置等价最小字节。
+func probeWAVPayload() []byte {
+	const (
+		sampleRate = 24000
+		channels   = 1
+		bits       = 16
+		frames     = 240 // 10ms 静音（24000Hz * 0.01s）
+	)
+	data := make([]byte, frames*channels*(bits/8))
+	blockAlign := channels * bits / 8
+	b := make([]byte, 0, 44+len(data))
+	b = append(b, "RIFF"...)
+	b = binary.LittleEndian.AppendUint32(b, uint32(36+len(data)))
+	b = append(b, "WAVE"...)
+	b = append(b, "fmt "...)
+	b = binary.LittleEndian.AppendUint32(b, 16)
+	b = binary.LittleEndian.AppendUint16(b, 1) // PCM
+	b = binary.LittleEndian.AppendUint16(b, channels)
+	b = binary.LittleEndian.AppendUint32(b, sampleRate)
+	b = binary.LittleEndian.AppendUint32(b, sampleRate*uint32(blockAlign))
+	b = binary.LittleEndian.AppendUint16(b, uint16(blockAlign))
+	b = binary.LittleEndian.AppendUint16(b, bits)
+	b = append(b, "data"...)
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(data)))
+	b = append(b, data...)
+	return b
+}
+
+// buildTranscriptionMultipart 构造 M1 audio_transcription_json 探针的
+// multipart/form-data body（file 字段 = 内置小 WAV + model 字段），返回
+// body 与含 boundary 的 content-type。
+func buildTranscriptionMultipart(model string) (body []byte, contentType string, err error) {
+	boundary := "juheprobe-audio-" + hex.EncodeToString([]byte(newUUID())[:8])
+	var buf bytes.Buffer
+	writeField := func(name, value string) {
+		buf.WriteString("--" + boundary + "\r\n")
+		buf.WriteString("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n")
+		buf.WriteString(value + "\r\n")
+	}
+	writeField("model", model)
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Disposition: form-data; name=\"file\"; filename=\"probe.wav\"\r\n")
+	buf.WriteString("Content-Type: audio/wav\r\n\r\n")
+	buf.Write(probeWAVPayload())
+	buf.WriteString("\r\n--" + boundary + "--\r\n")
+	return buf.Bytes(), "multipart/form-data; boundary=" + boundary, nil
 }
 
 func anthropicSystemReminder() string {

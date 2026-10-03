@@ -248,6 +248,25 @@
                 addon-after="次"
               />
             </a-form-item>
+            <a-form-item
+              label="请求总时间截止"
+              required
+              tooltip="总耗时超过该值的请求计为总时间慢样本；估算输入 ≥10 万 token 的大请求自动按压缩档兜底。默认 120 秒，范围 60-270 秒。"
+            >
+              <a-input-number v-model:value="form.normal.speedFirstConfig.totalTimeDeadlineSeconds" :min="60" :max="270" addon-after="秒" />
+            </a-form-item>
+            <a-form-item
+              label="压缩总时间截止"
+              required
+              tooltip="压缩与大输入请求的总时长兜底阈值。默认 300 秒，范围 300-900 秒。"
+            >
+              <a-input-number
+                v-model:value="form.normal.speedFirstConfig.compactionTotalTimeDeadlineSeconds"
+                :min="300"
+                :max="900"
+                addon-after="秒"
+              />
+            </a-form-item>
           </div>
         </template>
 
@@ -419,7 +438,11 @@ interface NormalRoutingForm {
   speedFirstConfig: SpeedFirstConfigForm
 }
 
-interface SpeedFirstConfigForm extends RouteStrategySpeedFirstConfig {}
+interface SpeedFirstConfigForm extends RouteStrategySpeedFirstConfig {
+  /** 表单内始终落具体数值：旧配置缺省时由 defaultSpeedFirstConfigForm 回落默认。 */
+  totalTimeDeadlineSeconds: number
+  compactionTotalTimeDeadlineSeconds: number
+}
 
 const routeStrategiesPageSize = 20
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -1603,7 +1626,9 @@ function defaultSpeedFirstConfigForm(): SpeedFirstConfigForm {
     recoverySuccessCount: 3,
     probeIntervalSeconds: 30,
     degradedTtlSeconds: 300,
-    maxFirstByteRetriesPerRequest: 2
+    maxFirstByteRetriesPerRequest: 2,
+    totalTimeDeadlineSeconds: 120,
+    compactionTotalTimeDeadlineSeconds: 300
   }
 }
 
@@ -1630,7 +1655,9 @@ function speedFirstConfigFormFromConfig(config?: RouteStrategySpeedFirstConfig):
     recoverySuccessCount: config?.recoverySuccessCount ?? fallback.recoverySuccessCount,
     probeIntervalSeconds: config?.probeIntervalSeconds ?? fallback.probeIntervalSeconds,
     degradedTtlSeconds: config?.degradedTtlSeconds ?? fallback.degradedTtlSeconds,
-    maxFirstByteRetriesPerRequest: config?.maxFirstByteRetriesPerRequest ?? fallback.maxFirstByteRetriesPerRequest
+    maxFirstByteRetriesPerRequest: config?.maxFirstByteRetriesPerRequest ?? fallback.maxFirstByteRetriesPerRequest,
+    totalTimeDeadlineSeconds: config?.totalTimeDeadlineSeconds ?? fallback.totalTimeDeadlineSeconds,
+    compactionTotalTimeDeadlineSeconds: config?.compactionTotalTimeDeadlineSeconds ?? fallback.compactionTotalTimeDeadlineSeconds
   }
 }
 
@@ -1649,7 +1676,9 @@ function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
       recoverySuccessCount: boundedInteger(speedFirstConfig.recoverySuccessCount, 3, 10),
       probeIntervalSeconds: boundedInteger(speedFirstConfig.probeIntervalSeconds, 10, 300),
       degradedTtlSeconds: boundedInteger(speedFirstConfig.degradedTtlSeconds, 60, 3600),
-      maxFirstByteRetriesPerRequest: boundedInteger(speedFirstConfig.maxFirstByteRetriesPerRequest, 1, 3)
+      maxFirstByteRetriesPerRequest: boundedInteger(speedFirstConfig.maxFirstByteRetriesPerRequest, 1, 3),
+      totalTimeDeadlineSeconds: boundedInteger(speedFirstConfig.totalTimeDeadlineSeconds, 60, 270),
+      compactionTotalTimeDeadlineSeconds: boundedInteger(speedFirstConfig.compactionTotalTimeDeadlineSeconds, 300, 900)
     }
   }
 }

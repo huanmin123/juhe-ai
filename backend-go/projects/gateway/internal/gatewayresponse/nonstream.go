@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
@@ -487,6 +489,9 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 
 	var pipeResult NonStreamPipeResult
 	var pipeErr error
+	// M1 同步音频：媒体 speech 转换计划（gemini 账户 + /audio/speech + 2xx
+	// 时激活），透传管道与检查管道共用。
+	mediaSpeechTransform := mediaSpeechTransformPlan(input)
 	if input.UpstreamResponse.Body == nil {
 		if input.UpstreamResponse.Status == 204 || input.UpstreamResponse.Status == 205 {
 			if !input.successfulEmptyUpstreamAllowed() {
@@ -519,7 +524,10 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		// Node inspectJsonResponse（finalization.ts:944-949）：上游错误体、协议
 		// 校验路径，或 JSON 内容类型且策略/语义要求缓冲时才走有界检查缓冲；
 		// 其余正文走纯透传管道（如 audio/speech 二进制），不再无条件 1MB 缓冲。
-		inspectJSON := !input.UpstreamResponse.OK() || protocolValidationEnabled ||
+		// M1 同步音频：gemini 账户的 speech 请求上游回 JSON（inlineData base64
+		// PCM），必须完整缓冲转二进制音频（音频设计 §5/契约 §5.1），走媒体
+		// 转换缓冲窗口。
+		inspectJSON := !input.UpstreamResponse.OK() || protocolValidationEnabled || mediaSpeechTransform.active ||
 			(isOpenAIJSONResponseContentType(input.UpstreamResponse.Header.Get("Content-Type")) &&
 				shouldBufferNonStreamJSONResponse(input))
 		pipeSpec := NonStreamPipeInput{
@@ -559,9 +567,17 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			OnFirstByteDeadlineSuperseded: input.OnFirstByteDeadlineSuperseded,
 		}
 		if inspectJSON {
-			pipeSpec.InspectBytes = NonStreamResponseInspectionMaxBytes
-			// Node requireFullyBuffered: protocolValidationEnabled。
-			pipeSpec.RequireFullyBuffered = protocolValidationEnabled
+			if mediaSpeechTransform.active {
+				// 媒体转换窗口：base64 PCM JSON 的体积上限（语音产物远超 1MB
+				// 协议检查窗口）；requireFullyBuffered——超限即拒绝（不把未
+				// 转换的 JSON 透传给期待音频的客户端）。
+				pipeSpec.InspectBytes = mediaSpeechTransformMaxBytes
+				pipeSpec.RequireFullyBuffered = true
+			} else {
+				pipeSpec.InspectBytes = NonStreamResponseInspectionMaxBytes
+				// Node requireFullyBuffered: protocolValidationEnabled。
+				pipeSpec.RequireFullyBuffered = protocolValidationEnabled
+			}
 		}
 		pipeResult, pipeErr = PipeNonStreamUpstreamResponse(pipeSpec)
 	}
@@ -592,7 +608,59 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		failure := ValidateBufferedJsonProtocolResponse(parsedForValidation, true, true, string(responseEndpointFamily), LowercasedRequestPath(input.Req.PathAndQuery()))
 		return input.finalizeBufferedJSONProtocolFailure(failure, parsedForValidation, pipeResult, responseBody, responseBodyText, driver)
 	}
-	if pipeResult.FullyBuffered {
+	// M1 同步音频：媒体 speech 响应转换。完整缓冲且转换成功 → 覆盖响应头
+	// 发送音频字节；超限或转换失败 → 按 502 协议失败收尾（未转换 JSON 不
+	// 透传给期待音频的客户端，也不静默降级）。
+	if mediaSpeechTransform.active {
+		if pipeResult.InspectionLimitExceeded {
+			failure := &ProtocolFailure{
+				Message:   "上游 Gemini TTS 响应超过网关媒体转换上限，已拒绝返回未转换响应",
+				ErrorCode: "upstream_protocol_error",
+			}
+			return input.finalizeBufferedJSONProtocolFailure(failure, GatewayNonStreamJsonBody{}, pipeResult, nil, responseBodyText, driver)
+		}
+		if pipeResult.FullyBuffered {
+			audio, contentType, transformErr := mediaSpeechTransform.adapter.TransformResponse(pipeResult.CapturedBody)
+			if transformErr != nil {
+				failure := &ProtocolFailure{
+					Message:   transformErr.Error(),
+					ErrorCode: "upstream_protocol_error",
+				}
+				return input.finalizeBufferedJSONProtocolFailure(failure, GatewayNonStreamJsonBody{}, pipeResult, pipeResult.CapturedBody, pipeResult.CapturedBodyText, driver)
+			}
+			if pipeResult.FirstByteMs == nil {
+				value := nowMsOf(&input)() - input.StartedAtMs
+				pipeResult.FirstByteMs = &value
+			}
+			if input.UpstreamResponse.Header == nil {
+				input.UpstreamResponse.Header = http.Header{}
+			}
+			input.UpstreamResponse.Header.Set("Content-Type", contentType)
+			forwardInput := NonStreamPipeInput{
+				Downstream:  input.Downstream,
+				StartedAtMs: input.StartedAtMs,
+				Signal:      input.Signal,
+				PrepareDownstream: func() {
+					prepareUpstreamResponseForDownstream(input.Downstream, input.UpstreamResponse, false)
+					input.DownstreamCommitState.MarkTransportCommitted(0)
+				},
+				OnChunkWritten: func(bytesWritten int64) {
+					input.DownstreamCommitState.MarkSemanticCommitted(bytesWritten)
+				},
+				NowMs: nowMsOf(&input),
+			}
+			if err := SendFullyBufferedNonStreamBody(forwardInput, audio); err != nil {
+				return UpstreamResponseHandlingResult{}, err
+			}
+			markFirstOutputOnce(&firstOutputMarked, input.MarkFirstOutput)
+			// 转换成功：usage（gemini usageMetadata token 计量）从缓冲 JSON
+			// 抽取，媒体计量（TTS 字符数）在下方统一注入。
+			responseBodyText = pipeResult.CapturedBodyText
+		}
+	}
+	// 媒体转换分支已发送音频字节并 return/或仅覆盖 responseBodyText；原
+	// JSON 发送路径对 media 请求跳过（不重复发送缓冲 JSON）。
+	if pipeResult.FullyBuffered && !mediaSpeechTransform.active {
 		// 检查策略主链（D-112）：完整缓冲 JSON 先跑响应检查策略（含 codex
 		// 契约帧），命中时由此收尾（失败改写或服务端换号重试）；未命中回退
 		// 协议校验与原样发送。
@@ -663,6 +731,50 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 		usage = driver.ExtractUsageFromJSONValue(parsedJsonBody.Value)
 	} else if pipeResult.UsageTailText != "" {
 		usage = driver.ExtractUsageFromJSONTextFragment(pipeResult.UsageTailText, parsedJsonBody.Status == NonStreamJSONStatusInvalid)
+	}
+	// M1 同步音频计量注入（契约 §2.8 计量来源表，仅成功转发计量）：
+	//   - TTS speech：上游无 usage 回报，网关按请求 input 字符数自算；
+	//     token 口径模型（gpt-4o-mini-tts / gpt-4o-tts 系）无 token 事实时
+	//     同样置 usage_missing（不猜测）；
+	//   - STT：usage token（上方 driver 抽取已落既有 token 字段）优先，缺
+	//     失时取 verbose_json duration 秒；两者都缺 → 计量 0 + usage_missing
+	//     标记（不猜测）。
+	if forwardedMetering := transportResponseSuccessful && !responsesFailedTerminal; forwardedMetering {
+		requestPath := input.Req.PathAndQuery()
+		switch {
+		case gatewaymedia.IsSpeechPath(requestPath):
+			speechBody := input.Req.ParsedJSONObjectBody()
+			if speechBody == nil && input.Req.Body != nil && len(input.Req.Body.RawBody) > 0 {
+				var parsed map[string]any
+				if json.Unmarshal(input.Req.Body.RawBody, &parsed) == nil {
+					speechBody = parsed
+				}
+			}
+			chars := gatewaymedia.SpeechInputCharsFromBody(speechBody)
+			usage.TtsInputChars = &chars
+			// token 口径 TTS（gpt-4o-mini-tts / gpt-4o-tts 系）：上游
+			// 二进制响应无 usage 回报，网关无 token 自算维度（字符自算
+			// 只服务 tts-1 族字符口径）→ 0 计费 + usage_missing（§2.8
+			// 不猜测；沿 STT 的置位先例）。gemini TTS（generateContent
+			// JSON）usageMetadata 沿既有抽取链，不命中本词表。
+			speechModel, _ := speechBody["model"].(string)
+			if usage.InputTokens == nil && usage.OutputTokens == nil &&
+				gatewaymedia.IsTokenMeteredSpeechModel(speechModel) {
+				usage.UsageMissing = true
+			}
+		case gatewaymedia.IsTranscriptionPath(requestPath):
+			if usage.InputTokens == nil && usage.OutputTokens == nil {
+				if root, ok := parsedJsonBody.Value.(map[string]any); ok {
+					if seconds, hasDuration := gatewaymedia.SttDurationSeconds(root); hasDuration {
+						usage.AudioInputSeconds = &seconds
+					} else {
+						usage.UsageMissing = true
+					}
+				} else {
+					usage.UsageMissing = true
+				}
+			}
+		}
 	}
 	_ = responseBody
 	var errorPayload gatewayproto.ErrorPayload

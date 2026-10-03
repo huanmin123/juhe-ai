@@ -279,19 +279,30 @@ func chainPricingCostInput(catalogPricing *pricing.Pricing, input gatewayusagePr
 		InputAudioTokens:   chainIntToFloat(input.InputAudioTokens),
 		OutputAudioTokens:  chainIntToFloat(input.OutputAudioTokens),
 		OutputImageCount:   chainIntToFloat(input.OutputImageCount),
+		TtsInputChars:      chainInt64ToFloat(input.TtsInputChars),
+		AudioInputSeconds:  input.AudioInputSeconds,
 	}
 }
 
-// chainHasAnyCostDimension mirrors hasAnyCostDimension.
+// chainHasAnyCostDimension mirrors hasAnyCostDimension（M1 音频计量维度计入）.
 func chainHasAnyCostDimension(input gatewayusagePricingCostInput) bool {
 	return input.InputTokens != nil || input.OutputTokens != nil ||
 		input.CacheReadTokens != nil || input.CacheWriteTokens != nil ||
 		input.CacheWrite1hTokens != nil || input.InputImageTokens != nil ||
 		input.OutputImageTokens != nil || input.InputAudioTokens != nil ||
-		input.OutputAudioTokens != nil || input.OutputImageCount != nil
+		input.OutputAudioTokens != nil || input.OutputImageCount != nil ||
+		input.TtsInputChars != nil || input.AudioInputSeconds != nil
 }
 
 func chainIntToFloat(value *int) *float64 {
+	if value == nil {
+		return nil
+	}
+	out := float64(*value)
+	return &out
+}
+
+func chainInt64ToFloat(value *int64) *float64 {
 	if value == nil {
 		return nil
 	}

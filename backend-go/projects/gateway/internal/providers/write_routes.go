@@ -21,12 +21,15 @@ import (
 )
 
 // customModelProtocolEnum mirrors the customModelSchema protocol enum.
+// audio_speech / audio_transcription 随 M1 同步音频放开（设计 §11.3）；
+// realtime 维持不放开（M5）。
 var customModelProtocolEnum = map[string]bool{
 	"chat_completions": true, "responses": true, "messages": true,
 	"message_token_counting": true, "generate_content": true,
 	"stream_generate_content": true, "count_tokens": true,
 	"embed_content": true, "interactions": true,
 	"completions": true, "images": true,
+	"audio_speech": true, "audio_transcription": true,
 }
 
 // providerModelValidationFields mirrors providerModelValidationFields.
@@ -279,7 +282,7 @@ func parseCustomModelBody(body map[string]json.RawMessage, options customModelPa
 			if err := json.Unmarshal(raw, &value); err != nil {
 				return fail()
 			}
-			if value != nil && *value != "text" && *value != "image" {
+			if value != nil && *value != "text" && *value != "image" && *value != "audio" {
 				return fail()
 			}
 			parsed.present[key] = true

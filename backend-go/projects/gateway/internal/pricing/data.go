@@ -45,6 +45,10 @@ type rawModel struct {
 	InputCostPerAudioTokenPriority *float64
 	InputCostPerAudioTokenFlex     *float64
 	OutputCostPerAudioToken        *float64
+	// M1 同步音频维度（音频设计 §10）：TTS 输入按 USD/字符字面量
+	// （perMillion 折算 USD/1M chars）；STT 输入按 USD/秒字面量。
+	TtsInputCostPerChar     *float64
+	AudioInputCostPerSecond *float64
 
 	ContextWindowTokens *int
 	MaxInputTokens      *int
@@ -59,6 +63,10 @@ type rawModel struct {
 	SupportedAPIProtocols []string
 	InputModalities       []string
 	OutputModalities      []string
+	// ResponseFormats 是 TTS 行的对外 response_format 清单（音频设计 §4.1：
+	// openai tts 官方全集 ["mp3","opus","aac","flac","wav","pcm"]、gemini tts
+	// ["pcm"]，零转码）。
+	ResponseFormats []string
 	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（AI问答工具体系与主子模型
 	// 设计 6.4）：键为该行 SupportedAPIProtocols 的现有枚举值，值为该协议下
 	// 可用的工具集。hosted 工具只在能执行它的协议下声明；一维 SupportedTools
@@ -87,6 +95,19 @@ type rawModel struct {
 func perToken(usdPer1M float64) *float64 {
 	out := usdPer1M / 1_000_000
 	return &out
+}
+
+// usdPerMinuteToPerSecond 把官方按分钟标价的音频输入单价折算为每秒单价
+// （M1 STT 计量落秒，音频设计 §10/契约 §2.8；运行时除法保持来源可追溯）。
+func usdPerMinuteToPerSecond(usdPerMinute float64) *float64 {
+	out := usdPerMinute / 60
+	return &out
+}
+
+// perChar 把 USD/1M characters 官方字符价折算为每字符字面量（TTS 行
+// TtsInputCostPerChar 使用；算术与 perToken 相同，perMillion 回转无损）。
+func perChar(usdPer1MChars float64) *float64 {
+	return perToken(usdPer1MChars)
 }
 
 // toolsByProtocol 按静态快照的统一拆分口径，把一行的一维工具集分配到其

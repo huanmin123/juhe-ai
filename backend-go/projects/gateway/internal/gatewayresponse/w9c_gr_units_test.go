@@ -281,9 +281,10 @@ func TestW9CBuildCodexModelsPayload(t *testing.T) {
 		},
 		{Model: "fallback", CreatedAt: "2026-01-05T10:00:00Z"},
 		{Model: "bad-date", ReleaseDate: "nope"},
+		{Model: "whisper-1", InputModalities: []string{"audio"}},
 	}
 	payload := buildCodexModelsPayload(catalog)
-	if len(payload.Models) != 3 {
+	if len(payload.Models) != 4 {
 		t.Fatalf("models = %d", len(payload.Models))
 	}
 	first := payload.Models[0]
@@ -314,6 +315,14 @@ func TestW9CBuildCodexModelsPayload(t *testing.T) {
 	if payload.Models[2].ContextWindow != 272_000 {
 		t.Fatalf("bad-date context window = %d", payload.Models[2].ContextWindow)
 	}
+	// M1（音频设计 §4.3）：input_modalities 按目录真实值返回；无数据回退
+	// 现状两值 ["text","image"]。
+	if len(first.InputModalities) != 2 || first.InputModalities[0] != "text" || first.InputModalities[1] != "image" {
+		t.Fatalf("default input modalities = %v", first.InputModalities)
+	}
+	if got := payload.Models[3].InputModalities; len(got) != 1 || got[0] != "audio" {
+		t.Fatalf("audio model input modalities = %v", got)
+	}
 	if got := codexReasoningLevelDescription("xhigh"); got != "XHigh" {
 		t.Fatalf("xhigh description = %q", got)
 	}
@@ -324,7 +333,7 @@ func TestW9CBuildCodexModelsPayload(t *testing.T) {
 	// OpenAI shape + created seconds resolution.
 	openai := buildOpenAIModelsPayload(catalog, nil)
 	list, ok := openai.(openAIModelsListResponse)
-	if !ok || len(list.Data) != 3 {
+	if !ok || len(list.Data) != 4 {
 		t.Fatalf("openai payload = %#v", openai)
 	}
 	if list.Data[0].Created != 1767571200 { // 2026-01-05 UTC

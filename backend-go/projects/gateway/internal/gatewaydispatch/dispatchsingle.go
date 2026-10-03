@@ -8,9 +8,11 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
 
 // dispatchSingleAccount owns the per-candidate dispatch loop of
@@ -584,6 +586,36 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				}
 			}
 
+			// Normal-route total-time deadline（设计 6.3）：与首字 timer 并存
+			// 互不替代的 attempt 级软观察 timer。档位在装配时解析一次（压缩
+			// 识别优先；非压缩按估算输入 token 与 100000 分界选档），压缩请求
+			// 在首字豁免门之外照常装配（total_time 维度生效）。适用门与首字
+			// 同 lane 判定（副作用 lane 不装）；阈值选档的纯函数与 chain 层
+			// 完成观测共用（ResolveNormalRouteTotalTimeDeadline），保证同一
+			// attempt 样本只用一把尺。
+			var normalRouteTotalTimeDeadlineMs *int64
+			var onTotalTimeDeadline gatewayupstream.TotalTimeDeadlineHandler
+			if in.coordination.NormalRouteSpeedFirstConfig != nil &&
+				gatewayrouting.NormalRouteFirstByteDeadlineAppliesToLane(gatewayprotoLane(in.requestLane)) {
+				totalTimeDeadline, ok := ResolveNormalRouteTotalTimeDeadline(NormalRouteTotalTimeDeadlineInput{
+					Config:                     in.coordination.NormalRouteSpeedFirstConfig,
+					CompactionTimeoutsDisabled: in.compactionTimeoutsDisabled,
+					EstimatedInputTokens:       estimateNormalRouteRequestInputTokens(in.args.Req),
+					AttemptStartedAtMs:         attemptStartedAt,
+				})
+				if ok {
+					thresholdMs := totalTimeDeadline.ThresholdMs
+					normalRouteTotalTimeDeadlineMs = &thresholdMs
+					onTotalTimeDeadline = func(deadlineInput gatewayupstream.TotalTimeDeadlineDecisionInput) FirstByteDeadlineAction {
+						if in.coordination.OnNormalRouteTotalTimeDeadline != nil {
+							return in.coordination.OnNormalRouteTotalTimeDeadline(deadlineInput, c.account, thresholdMs)
+						}
+						// 决策面缺席（观测未接线）= 软观察继续，不中止请求。
+						return FirstByteDeadlineActionContinue
+					}
+				}
+			}
+
 			// Key-model admission.
 			keyModelAttemptID := "keymodel:" + usageContext.TraceID + ":" + int64ToString(int64(attemptIndex)) + ":" + int64ToString(int64(*in.auditAttemptIndex+1)) + ":" + uuid4String()
 			var keyModelAttempt *gatewayaccounteffects.GatewayKeyModelAttempt
@@ -826,6 +858,8 @@ func (e *Engine) runUpstreamAttemptLoop(ctx context.Context, c upstreamAttemptLo
 				AttemptStartedAt:           attemptStartedAt,
 				FirstByteDeadlineMs:        deadlineMsPtr(normalRouteFirstByteDeadline),
 				OnFirstByteDeadline:        onFirstByteDeadline,
+				TotalTimeDeadlineMs:        normalRouteTotalTimeDeadlineMs,
+				OnTotalTimeDeadline:        onTotalTimeDeadline,
 				Signal:                     attemptSignal,
 				RequestClientCompatibility: in.args.RequestClientCompatibility,
 				UpstreamResponseModelSlot:  upstreamResponseModelSlot,
@@ -962,6 +996,81 @@ const (
 	responseStopSkipAccount
 	responseStopSemanticRetry
 )
+
+// NormalRouteTotalTimeDeadlineDefaultMs / NormalRouteCompactionTotalTimeDeadlineDefaultMs
+// 是总时间档位阈值的缺省回落（设计 6.2：普通档默认 120s、压缩档默认 300s），
+// preauth 运行态两字段为 nil（存量策略缺省提交）时生效；取值与 chain 侧
+// chainSpeedFirstRuntimeConfigOf 的内联默认一致。
+const (
+	NormalRouteTotalTimeDeadlineDefaultMs           = 120_000
+	NormalRouteCompactionTotalTimeDeadlineDefaultMs = 300_000
+)
+
+// NormalRouteTotalTimeDeadlineInput 汇总总时间档位解析输入（设计 6.3：选档
+// 在 attempt 装配时解析一次，完成补记沿用该档，不因 usage 精确值换档）。
+type NormalRouteTotalTimeDeadlineInput struct {
+	// Config 是 preauth 运行态速度优先配置；nil = 不装配总时间 timer。
+	Config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig
+	// CompactionTimeoutsDisabled 是 dispatch 侧压缩豁免门（TimeoutPolicy
+	// codex_compaction_unbounded 或 codexCompactionExpectedForRequest）：
+	// true = 压缩请求，恒压缩档。
+	CompactionTimeoutsDisabled bool
+	// EstimatedInputTokens 是请求体估算输入 token（转发前没有精确值；估算
+	// 失败按 0 = 普通档处理）。
+	EstimatedInputTokens int
+	AttemptStartedAtMs   int64
+}
+
+// NormalRouteTotalTimeDeadline 携带该 attempt 选定的总时间档位。
+type NormalRouteTotalTimeDeadline struct {
+	// ThresholdMs 是选定档位阈值（相对 attempt 起点的时长）。
+	ThresholdMs int64
+	// CompactionLane 标记压缩/大输入档（true）或普通档（false）。
+	CompactionLane bool
+	// DeadlineAtMs 是绝对截止（attemptStartedAtMs + ThresholdMs）。
+	DeadlineAtMs int64
+}
+
+// ResolveNormalRouteTotalTimeDeadline 镜像设计 6.3 的总时间选档：压缩识别
+// 优先（恒压缩档）；非压缩请求按估算输入 token 与
+// routestrategies.SpeedFirstLargeInputTokenThreshold 分界选档。阈值取
+// preauth 配置对应档位字段，nil 回落内联默认。返回 false = 不装配（配置
+// 缺席或阈值非正）。该函数同时被 dispatch 层 timer 装配与 chain 层完成观测
+// 消费：同一样本只用一把尺。
+func ResolveNormalRouteTotalTimeDeadline(input NormalRouteTotalTimeDeadlineInput) (NormalRouteTotalTimeDeadline, bool) {
+	if input.Config == nil {
+		return NormalRouteTotalTimeDeadline{}, false
+	}
+	compactionLane := input.CompactionTimeoutsDisabled ||
+		input.EstimatedInputTokens >= routestrategies.SpeedFirstLargeInputTokenThreshold
+	var configuredMs int64 = NormalRouteTotalTimeDeadlineDefaultMs
+	if compactionLane {
+		configuredMs = NormalRouteCompactionTotalTimeDeadlineDefaultMs
+		if input.Config.CompactionTotalTimeDeadlineMs != nil && *input.Config.CompactionTotalTimeDeadlineMs > 0 {
+			configuredMs = *input.Config.CompactionTotalTimeDeadlineMs
+		}
+	} else if input.Config.TotalTimeDeadlineMs != nil && *input.Config.TotalTimeDeadlineMs > 0 {
+		configuredMs = *input.Config.TotalTimeDeadlineMs
+	}
+	if configuredMs <= 0 {
+		return NormalRouteTotalTimeDeadline{}, false
+	}
+	return NormalRouteTotalTimeDeadline{
+		ThresholdMs:    configuredMs,
+		CompactionLane: compactionLane,
+		DeadlineAtMs:   input.AttemptStartedAtMs + configuredMs,
+	}, true
+}
+
+// estimateNormalRouteRequestInputTokens 投影请求体估算输入（nil body 安全；
+// 估算失败按 0 = 普通档处理，设计 6.10 接受边界带误档）。
+func estimateNormalRouteRequestInputTokens(req *gatewaypreauth.GatewayRequest) int {
+	if req == nil || req.Body == nil {
+		return 0
+	}
+	tokens, _ := gatewayopenai.EstimateRequestInputTokens(req.Body.Body, req.Body.RawBody)
+	return tokens
+}
 
 // upstreamAttemptResponseContext carries the response handling inputs.
 type upstreamAttemptResponseContext struct {

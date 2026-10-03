@@ -105,6 +105,15 @@ type UpstreamRequestOptions struct {
 	FirstByteDeadlineTransport string
 	// OnFirstByteDeadline mirrors options.onFirstByteDeadline.
 	OnFirstByteDeadline FirstByteDeadlineHandler
+	// TotalTimeDeadlineMs 是普通路由速度优先总时间兜底截止的档位阈值（设计
+	// 6.2/6.3，相对 transport 发起时刻的时长）。与首字 timer 并存互不替代；
+	// 只覆盖响应头之前的请求阶段——响应头到达后该 timer 随既有
+	// startRequestPhaseTimer 的 responseReceived 守卫失效，body 阶段的到期
+	// 观察由 chain 层响应轮 timer 承接。
+	TotalTimeDeadlineMs *int64
+	// OnTotalTimeDeadline 是总时间截止到期决策回调（nil = 默认 Continue，
+	// 软观察语义下观测缺席不中止请求）。
+	OnTotalTimeDeadline TotalTimeDeadlineHandler
 	// DisableTimeouts mirrors options.disableTimeouts.
 	DisableTimeouts bool
 	// Signal mirrors options.signal.
@@ -113,6 +122,70 @@ type UpstreamRequestOptions struct {
 	// branches through the same pooled client, the field stays for contract
 	// parity of the anthropic /messages allowlist.
 	Transport string
+}
+
+// TotalTimeDeadlineDecisionInput 是总时间截止决策回调的输入（设计 6.3），
+// 形状镜像 FirstByteDeadlineDecisionInput；Transport 取该请求的首字
+// transport 形态（'stream' | 'non_stream'）。
+type TotalTimeDeadlineDecisionInput struct {
+	ElapsedMs int64
+	TimeoutMs int64
+	// Transport is 'stream' | 'non_stream'.
+	Transport string
+}
+
+// TotalTimeDeadlineHandler 是总时间截止到期决策回调；返回值复用首字截止的
+// action 联合（continue = 软观察继续，abort = 销毁请求进入切号通路）。
+type TotalTimeDeadlineHandler func(input TotalTimeDeadlineDecisionInput) FirstByteDeadlineAction
+
+// RunTotalTimeDeadlineHandler mirrors RunDeadlineHandler for the total-time
+// deadline: the hook runs synchronously inside the deadline goroutine and a
+// panic becomes a handler error (request destroyed) instead of crashing.
+func RunTotalTimeDeadlineHandler(handler TotalTimeDeadlineHandler, input TotalTimeDeadlineDecisionInput) (action FirstByteDeadlineAction, err error) {
+	if handler == nil {
+		return FirstByteDeadlineActionContinue, nil
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			action = ""
+			if panicErr, ok := recovered.(error); ok {
+				err = panicErr
+				return
+			}
+			err = &DeadlineHandlerPanic{value: recovered}
+		}
+	}()
+	return handler(input), nil
+}
+
+// NormalRouteTotalTimeTimeoutError 是普通路由速度优先总时间兜底截止的中止
+// 错误（设计 6.6）：与首字的 GatewayFirstByteTimeoutError 分流，引擎错误
+// 路径不识别该类型（原样 rethrow），由 chain 层 settleDispatchError 消费。
+type NormalRouteTotalTimeTimeoutError struct {
+	Message   string
+	TimeoutMs int64
+	// ElapsedMs 是截止时刻相对 transport 发起点的耗时（审计 elapsedMs 口径）。
+	ElapsedMs int64
+}
+
+func (e *NormalRouteTotalTimeTimeoutError) Error() string { return e.Message }
+
+// Code mirrors the readonly code property.
+func (e *NormalRouteTotalTimeTimeoutError) Code() string { return "normal_route_total_time_timeout" }
+
+func newNormalRouteTotalTimeTimeoutError(timeoutMs, elapsedMs int64) *NormalRouteTotalTimeTimeoutError {
+	return &NormalRouteTotalTimeTimeoutError{
+		Message:   "上游请求 " + strconv.FormatInt(Int64CeilDiv(timeoutMs, 1000), 10) + "s 后仍未完成（总时间截止）",
+		TimeoutMs: timeoutMs,
+		ElapsedMs: elapsedMs,
+	}
+}
+
+// IsNormalRouteTotalTimeTimeoutError mirrors the predicate style of
+// IsGatewayFirstByteTimeoutError.
+func IsNormalRouteTotalTimeTimeoutError(err error) bool {
+	var target *NormalRouteTotalTimeTimeoutError
+	return errors.As(err, &target)
 }
 
 // ConcurrencyGovernor mirrors shared/concurrency-governor.ts
@@ -271,6 +344,31 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 					TimeoutMs: deadlineMs,
 					Source:    FirstByteTimeoutSourceConfiguredDeadline,
 				}
+			})
+		}
+		// NormalRouteTotalTimeDeadlineMs 与首字 deadline 同型（设计 6.3）：到点
+		// 先跑决策回调（记慢样本 + 切号裁决），决策 abort 才销毁请求；错误
+		// 类型独立（NormalRouteTotalTimeTimeoutError），引擎与 chain 据此与
+		// 首字截止分流。响应头到达后由 startRequestPhaseTimer 的
+		// responseReceived 守卫失效，随 requestCtx 销毁。
+		if options.TotalTimeDeadlineMs != nil {
+			deadlineMs := *options.TotalTimeDeadlineMs
+			deadlineStartedAtMs := NowMs()
+			startRequestPhaseTimer(requestCtx, requestCancel, state, deadlineMs, true, func() error {
+				return newNormalRouteTotalTimeTimeoutError(deadlineMs, NowMs()-deadlineStartedAtMs)
+			}, func() error {
+				action, handlerErr := RunTotalTimeDeadlineHandler(options.OnTotalTimeDeadline, TotalTimeDeadlineDecisionInput{
+					ElapsedMs: NowMs() - deadlineStartedAtMs,
+					TimeoutMs: deadlineMs,
+					Transport: FirstNonEmpty(options.FirstByteDeadlineTransport, "non_stream"),
+				})
+				if handlerErr != nil {
+					return handlerErr
+				}
+				if action != FirstByteDeadlineActionAbort {
+					return nil // 'continue': the request keeps running
+				}
+				return newNormalRouteTotalTimeTimeoutError(deadlineMs, NowMs()-deadlineStartedAtMs)
 			})
 		}
 		// TimeoutMs applies to the header phase as well.

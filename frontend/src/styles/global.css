@@ -198,6 +198,10 @@ body.immersive-layout-active {
   background: #f6f8f7 !important;
 }
 
+.page-card .ant-table-tbody > tr.ant-table-row-selected > td {
+  background: #f6f8f7 !important;
+}
+
 .page-card .ant-btn-primary {
   box-shadow: 0 8px 18px rgba(34, 40, 43, 0.16);
 }

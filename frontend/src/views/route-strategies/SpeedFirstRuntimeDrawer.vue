@@ -96,7 +96,11 @@
               <span>{{ record.recoveryProbeRoundSuccessCount }}/{{ record.recoveryProbeRoundAttemptCount }}</span>
             </template>
             <template v-else-if="column.key === 'reason'">
-              <span>{{ record.reason || '-' }}</span>
+              <div class="speed-first-runtime-reason">
+                <a-tag v-if="record.dimension === 'total_time'" color="purple">总时间</a-tag>
+                <a-tag v-else-if="record.dimension === 'first_byte'" color="blue">首字</a-tag>
+                <span>{{ record.reason || '-' }}</span>
+              </div>
             </template>
           </template>
         </a-table>
@@ -161,6 +165,18 @@ const runtimeColumns = [
   display: grid;
   gap: 2px;
   min-width: 0;
+}
+
+.speed-first-runtime-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.speed-first-runtime-reason .ant-tag {
+  margin-inline-end: 0;
+  flex-shrink: 0;
 }
 
 .speed-first-runtime-empty {

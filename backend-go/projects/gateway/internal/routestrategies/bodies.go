@@ -25,13 +25,15 @@ var normalRoutingConfigKeys = map[string]bool{
 }
 
 var speedFirstConfigKeys = map[string]bool{
-	"firstByteThresholdMs":          true,
-	"slowTriggerCount":              true,
-	"slowWindowSeconds":             true,
-	"recoverySuccessCount":          true,
-	"probeIntervalSeconds":          true,
-	"degradedTtlSeconds":            true,
-	"maxFirstByteRetriesPerRequest": true,
+	"firstByteThresholdMs":               true,
+	"slowTriggerCount":                   true,
+	"slowWindowSeconds":                  true,
+	"recoverySuccessCount":               true,
+	"probeIntervalSeconds":               true,
+	"degradedTtlSeconds":                 true,
+	"maxFirstByteRetriesPerRequest":      true,
+	"totalTimeDeadlineSeconds":           true,
+	"compactionTotalTimeDeadlineSeconds": true,
 }
 
 var bindingItemKeys = map[string]bool{

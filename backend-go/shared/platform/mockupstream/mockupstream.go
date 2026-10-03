@@ -11,7 +11,11 @@
 // out of the repo, retrievable from git history):
 //
 //   - exact method+path whitelist (POST /v1/chat/completions,
-//     /v1/responses, /v1/embeddings; GET /v1/models); any other
+//     /v1/responses, /v1/embeddings; GET /v1/models) extended by the
+//     media families (POST /v1/audio/speech, /v1/audio/transcriptions,
+//     /v1/audio/translations and the Gemini TTS form
+//     POST /v1beta/models/{model}:generateContent, matched by
+//     prefix+suffix with a non-empty single-segment model); any other
 //     method+path pair is a Node-equivalent 404;
 //   - the JSON body "stream" boolean decides SSE vs JSON (the Node
 //     fixtures read body.stream after parsing the request body); the
@@ -25,7 +29,15 @@
 //   - the slow-first-byte delay budget is consumed exactly once per
 //     request, matching the Node single-timer fixture;
 //   - client disconnects cancel pending delays and stop the remaining
-//     script; each request records at most one abort.
+//     script; each request records at most one abort;
+//
+//   - media endpoints (media.go / payload_audio.go) add the media_*
+//     scenario family per the media upstream contract: OpenAI TTS binary
+//     responses negotiated by response_format, STT json / verbose_json
+//     transcripts, and Gemini generateContent inlineData base64 PCM with
+//     usageMetadata; unknown scenarios on a media endpoint default to that
+//     family's OK response, and the generic status/fault scenarios keep
+//     applying to every accepted endpoint.
 //
 // Recorded requests (Requests()) keep the full request triple (method,
 // path + raw query, body) plus the parsed model and body stream flag so
@@ -110,6 +122,16 @@ var acceptedEndpoints = map[endpoint]bool{
 	{http.MethodPost, "/v1/responses"}:        true,
 	{http.MethodPost, "/v1/embeddings"}:       true,
 	{http.MethodGet, "/v1/models"}:            true,
+}
+
+// acceptsEndpoint reports whether the method+path pair is whitelisted: the
+// exact chat/responses/embeddings/models pairs above plus the media
+// families registered in media.go. Any other pair keeps the 404 behavior.
+func acceptsEndpoint(method, path string) bool {
+	if acceptedEndpoints[endpoint{method, path}] {
+		return true
+	}
+	return acceptsMediaEndpoint(method, path)
 }
 
 // New starts the mock upstream; every path is served deterministically per
@@ -243,9 +265,9 @@ func (m *Server) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Server) serve2(w http.ResponseWriter, r *http.Request, idx int, bodyStream *bool) {
-	// Exact method+path whitelist first, like the Node entry check:
-	// everything else is a 404 regardless of scenario.
-	if !acceptedEndpoints[endpoint{r.Method, r.URL.Path}] {
+	// Exact method+path whitelist first (plus the media families), like the
+	// Node entry check: everything else is a 404 regardless of scenario.
+	if !acceptsEndpoint(r.Method, r.URL.Path) {
 		writeJSONStatus(w, http.StatusNotFound, `{"error":{"message":"Unknown path","type":"invalid_request_error"}}`)
 		return
 	}
@@ -291,6 +313,13 @@ func (m *Server) serve2(w http.ResponseWriter, r *http.Request, idx int, bodyStr
 		return
 	case ScenarioMalformedJSON:
 		writeJSONStatus(w, http.StatusOK, `{"id":"chatcmpl-broken", "choices": [`)
+		return
+	}
+
+	// Media endpoints speak their own scenario family and never fall
+	// through to the chat/responses handlers below.
+	if isMediaPath(r.URL.Path) {
+		m.serveMedia(w, r, idx, scenario)
 		return
 	}
 

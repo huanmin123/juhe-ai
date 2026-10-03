@@ -38,6 +38,8 @@ export type AccountTestEndpointModeDraftSource = {
 
 export const accountEndpointModeOptions: Array<{ label: string; value: AccountSupportedEndpointMode }> = [
   { label: 'Images API', value: 'images_json' },
+  { label: 'Audio Speech (TTS)', value: 'audio_speech' },
+  { label: 'Audio Transcription (JSON)', value: 'audio_transcription_json' },
   { label: 'Chat Completions (JSON)', value: 'chat_json' },
   { label: 'Chat Completions (Streaming)', value: 'chat_sse' },
   { label: 'Responses API (JSON)', value: 'responses_json' },
@@ -105,9 +107,11 @@ export function validateAccountEndpointModes(input: {
       return `当前供应商协议不支持上游接口能力：${unsupportedModes.map((mode) => accountEndpointModeLabel(mode, input.profile)).join('、')}`
     }
   }
+  // audio_speech 是跨协议共享 token（同时属于 openai/gemini 词表），协议
+  // 归属只由各自专属 token 判定，避免共享 token 同时触发两个归属而误报混选。
   const hasAnthropicMode = input.modes.some((mode) => anthropicAccountEndpointModes.includes(mode))
-  const hasGeminiMode = input.modes.some((mode) => geminiAccountEndpointModes.includes(mode))
-  const hasOpenAIMode = input.modes.some((mode) => openAIEndpointModes.includes(mode))
+  const hasGeminiMode = input.modes.some((mode) => geminiAccountEndpointModes.includes(mode) && !openAIEndpointModes.includes(mode))
+  const hasOpenAIMode = input.modes.some((mode) => openAIEndpointModes.includes(mode) && !geminiAccountEndpointModes.includes(mode))
   const protocolModeCount = [hasOpenAIMode, hasAnthropicMode, hasGeminiMode].filter(Boolean).length
   if (protocolModeCount > 1 && !isHybridEndpointModeContext(input.profile)) {
     return '不同协议的上游接口能力不能混选'
@@ -156,6 +160,10 @@ export function accountEndpointModeLabel(mode: AccountSupportedEndpointMode, con
   switch (mode) {
     case 'images_json':
       return 'Images API'
+    case 'audio_speech':
+      return 'Audio Speech (TTS)'
+    case 'audio_transcription_json':
+      return 'Audio Transcription (JSON)'
     case 'chat_json':
       return `${chatCapabilityName(context)} (JSON)`
     case 'chat_sse':

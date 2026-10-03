@@ -76,6 +76,22 @@ func (f *w1DeepLatencyFake) RecordFirstByteSuccessAsync(context.Context, gateway
 	return f.successResult, nil
 }
 
+func (f *w1DeepLatencyFake) RecordTotalTimeSlowAsync(context.Context, gatewaydispatch.AccountCandidate, *gatewaydispatch.LatencyScopeInput, *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, string) (*gatewayproxyhealth.LatencySlowResult, error) {
+	f.slowCalls++
+	if f.errSlow != nil {
+		return nil, f.errSlow
+	}
+	return f.slowResult, nil
+}
+
+func (f *w1DeepLatencyFake) RecordTotalTimeSuccessAsync(context.Context, gatewaydispatch.AccountCandidate, *gatewaydispatch.LatencyScopeInput, *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, int64, int64) (*gatewayproxyhealth.LatencySuccessResult, error) {
+	f.successCalls++
+	if f.errSuccess != nil {
+		return nil, f.errSuccess
+	}
+	return f.successResult, nil
+}
+
 // w1FakeConcurrencyStore 是 AccountConcurrencyStore 的最小 stub：默认
 // TryAcquireAsync 恒成功，验证切号预留能拿到并发槽（Node
 // tryAcquireAccountConcurrencyAsync 共享实现）。

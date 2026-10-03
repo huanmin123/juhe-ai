@@ -46,6 +46,10 @@ export interface RouteStrategySpeedFirstConfig {
   probeIntervalSeconds: number
   degradedTtlSeconds: number
   maxFirstByteRetriesPerRequest: number
+  /** 速度优先可重放文本的总时间软截止（秒）；旧配置无此字段时后端按默认 120 生效，录入范围 60..270。 */
+  totalTimeDeadlineSeconds?: number
+  /** 压缩与估算输入 ≥10 万 token 大输入请求的总时间软截止（秒）；旧配置无此字段时后端按默认 300 生效，录入范围 300..900。 */
+  compactionTotalTimeDeadlineSeconds?: number
 }
 
 export interface RouteStrategySpeedFirstLatencyRuntimeSummary {
@@ -69,6 +73,8 @@ export interface RouteStrategySpeedFirstLatencyRuntimeItem {
   recoveryProbeRoundAttemptCount: number
   recoveryProbeRoundSuccessCount: number
   reason: string
+  /** 慢样本维度；旧运行实例可能不返回该字段，缺失时按首字维度语义展示。 */
+  dimension?: 'first_byte' | 'total_time'
 }
 
 export interface RouteStrategySpeedFirstLatencyRuntime {

@@ -31,7 +31,7 @@
 | `normal` | 无运行态 / `accounts.status = active` | 正常调度 | 运行态 transport 怀疑被清理；持久账户业务状态仅由匹配来源的 `complete_success` 或明确恢复动作激活 | 无需恢复 |
 | `recovery_wait` | memory / Redis 后台任务 | 不影响普通调度，不作为账户状态展示 | 普通请求的本地 transport failure 原子首次投递后台核实 | 后台任务接管后按探针三态删除、退避或推进；普通请求不得续期或改写 |
 | `failure_observed` | memory / Redis 后台观察 | 不影响排序 | 后台核实任务开始处理 transport failure | 后台探针 `framing_complete_neutral` 只清理匹配 transport 怀疑，或观察过期清理 |
-| `latency_degraded` | memory / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，首字慢账号兜底；有效期内可临时覆盖账户偏好 | 同一运行态键在 `slowWindowSeconds` 内累计慢样本达到 `slowTriggerCount`，请求链路直接建立 | 真实请求连续达标达到 `recoverySuccessCount`、后台恢复探针两次窗口均达标、TTL 到期或手动恢复清理 |
+| `latency_degraded` | memory / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，慢账号兜底；有效期内可临时覆盖账户偏好 | 同一运行态键在 `slowWindowSeconds` 内累计慢样本达到 `slowTriggerCount`，请求链路直接建立；慢样本分双维度（`dimension`）：首字截止（`first_byte`）与总时间兜底截止（`total_time`，含大输入 / 压缩档，见《普通路由速度优先延迟切换设计》第 6 节），独立计数、共享降级 | 真实请求连续达标达到 `recoverySuccessCount`（按维度双向过滤：`first_byte` 降级只认首字达标、`total_time` 降级只认总时间达标，异维达标为中性样本）；后台恢复探针仅对 `first_byte` 维度生效（两次窗口均达标，`total_time` 维度不被探针选中、清理或续租）；TTL 到期或手动恢复清理 |
 | `local_suppressed` | memory / Redis TTL 运行态 | 暂不选中该账号 | 用户显式响应拦截 `avoid_account_ttl` 等主动策略 | 配置 TTL 到期或人工恢复清理；后台自动成功不能提前解除显式策略 |
 | `runtime_degraded` | memory / Redis 运行态快照 | 普通候选优先，降级账号兜底 | 后台 transport 探针确认近期不稳 | 只有匹配 generation / provenance 的 `complete_success`、观察窗口过期或手动恢复清理；`framing_complete_neutral` 只保留诊断 / 顺延，不恢复该运行态 |
 | `precheck_pending` | memory / Redis 运行态快照 | 软阻断普通候选；后台探针、主动健康检查和 generation 租约半开可访问 | 首次有效独立后台探针形成 `transport_failed` | 只有匹配 generation / provenance 的 `complete_success` 或专属人工出口恢复；`framing_complete_neutral` 只保留 transport 怀疑并顺延，transport failure 释放租约并继续后台确认，unknown 只退避 |

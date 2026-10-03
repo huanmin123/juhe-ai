@@ -221,8 +221,11 @@ func (s *Service) normalRouteFirstByteConfigForAPIKey(apiKeyRecord *gatewayrunti
 }
 
 // normalRouteSpeedFirstConfigForAPIKey mirrors normalRouteSpeedFirstConfigForApiKey.
+// 压缩请求（compactionTimeoutsDisabled）只豁免首字截止维度（FirstByteDeadlineMs
+// 保持 nil），总时间两阈值与 Raw 照常解析带出（设计 6.8：整体短路会把压缩总
+// 时间维度一并熄灭）；lane 门（图片等副作用 lane）对两个维度都生效。
 func (s *Service) normalRouteSpeedFirstConfigForAPIKey(apiKeyRecord *gatewayruntimecache.GatewayAPIKeyRow, lane gatewayProtoLane, compactionTimeoutsDisabled bool) *NormalRouteSpeedFirstRuntimeConfig {
-	if compactionTimeoutsDisabled || !gatewayrouting.NormalRouteSpeedFirstAppliesToLane(lane) {
+	if !gatewayrouting.NormalRouteSpeedFirstAppliesToLane(lane) {
 		return nil
 	}
 	if apiKeyRecord == nil {
@@ -236,8 +239,10 @@ func (s *Service) normalRouteSpeedFirstConfigForAPIKey(apiKeyRecord *gatewayrunt
 		return nil
 	}
 	var speedFirstConfig struct {
-		FirstByteDeadlineMs *int64         `json:"firstByteDeadlineMs"`
-		Raw                 map[string]any `json:"-"`
+		FirstByteDeadlineMs           *int64
+		TotalTimeDeadlineMs           *int64
+		CompactionTotalTimeDeadlineMs *int64
+		Raw                           map[string]any
 	}
 	// The stored speedFirstConfig object is carried opaquely: decode the
 	// deadline field and keep the raw object for the latency slice.
@@ -246,24 +251,56 @@ func (s *Service) normalRouteSpeedFirstConfigForAPIKey(apiKeyRecord *gatewayrunt
 		return nil
 	}
 	speedFirstConfig.Raw = decoded
-	if deadline, ok := decoded["firstByteDeadlineMs"].(float64); ok {
-		value := int64(deadline)
-		speedFirstConfig.FirstByteDeadlineMs = &value
-	} else if normalConfig.SchedulingPreference == "speed_first" && apiKeyRecord.NormalRoutingConfig != nil {
-		// firstByteDeadlineMs rides on the normal config next to the
-		// preference, exactly like the Node spread.
-		if root, err := gatewaybodyDecodeJSON(apiKeyRecord.NormalRoutingConfig.Raw); err == nil {
-			if deadline, ok := root["firstByteDeadlineMs"].(float64); ok {
-				value := int64(deadline)
-				speedFirstConfig.FirstByteDeadlineMs = &value
+	if !compactionTimeoutsDisabled {
+		if deadline, ok := decoded["firstByteDeadlineMs"].(float64); ok {
+			value := int64(deadline)
+			speedFirstConfig.FirstByteDeadlineMs = &value
+		} else if normalConfig.SchedulingPreference == "speed_first" && apiKeyRecord.NormalRoutingConfig != nil {
+			// firstByteDeadlineMs rides on the normal config next to the
+			// preference, exactly like the Node spread.
+			if root, err := gatewaybodyDecodeJSON(apiKeyRecord.NormalRoutingConfig.Raw); err == nil {
+				if deadline, ok := root["firstByteDeadlineMs"].(float64); ok {
+					value := int64(deadline)
+					speedFirstConfig.FirstByteDeadlineMs = &value
+				}
 			}
 		}
 	}
-	return &NormalRouteSpeedFirstRuntimeConfig{
-		SchedulingPreference: "speed_first",
-		FirstByteDeadlineMs:  speedFirstConfig.FirstByteDeadlineMs,
-		Raw:                  speedFirstConfig.Raw,
+	// 总时间两阈值无条件解析（压缩与否一致，秒→毫秒）：档位选择需要请求规模
+	// 信息，由 chain 侧 attempt 装配时决定，preauth 只透传两个阈值。
+	if speedFirst, ok := decoded["speedFirstConfig"].(map[string]any); ok {
+		speedFirstConfig.TotalTimeDeadlineMs = speedFirstTotalTimeDeadlineMsOf(speedFirst["totalTimeDeadlineSeconds"])
+		speedFirstConfig.CompactionTotalTimeDeadlineMs = speedFirstTotalTimeDeadlineMsOf(speedFirst["compactionTotalTimeDeadlineSeconds"])
 	}
+	return &NormalRouteSpeedFirstRuntimeConfig{
+		SchedulingPreference:          "speed_first",
+		FirstByteDeadlineMs:           speedFirstConfig.FirstByteDeadlineMs,
+		TotalTimeDeadlineMs:           speedFirstConfig.TotalTimeDeadlineMs,
+		CompactionTotalTimeDeadlineMs: speedFirstConfig.CompactionTotalTimeDeadlineMs,
+		Raw:                           speedFirstConfig.Raw,
+	}
+}
+
+// speedFirstTotalTimeDeadlineMsOf 把存储的总时间秒阈值转毫秒指针
+// （chainConfigIntOf 同型数值收窄）：非数值或非正数视为未设置（nil），由
+// chain 侧回落默认。
+func speedFirstTotalTimeDeadlineMsOf(value any) *int64 {
+	var seconds int64
+	switch typed := value.(type) {
+	case float64:
+		seconds = int64(typed)
+	case int64:
+		seconds = typed
+	case int:
+		seconds = int64(typed)
+	default:
+		return nil
+	}
+	if seconds <= 0 {
+		return nil
+	}
+	ms := seconds * 1000
+	return &ms
 }
 
 // normalRouteFirstByteConfigForAPIKeyRecord mirrors the Node helper without

@@ -86,6 +86,8 @@
             @submit="handleComposerSubmit"
             @stop="stopGeneration"
             @conversation-action="handleConversationAction"
+            :tool-bindings-summary="toolBindingsSummary"
+            @open-tool-bindings="toolBindingDialogOpen = true"
           />
         </footer>
       </template>
@@ -122,23 +124,6 @@
         <a-descriptions-item label="绑定">{{ conversationBindLabel(detailConversation) }}</a-descriptions-item>
         <a-descriptions-item label="API Key">{{ detailConversation.apiKeyNameSnapshot }}</a-descriptions-item>
         <a-descriptions-item label="最近模型">{{ detailConversation.lastModel || '未使用' }}</a-descriptions-item>
-        <a-descriptions-item label="默认图像模型">{{ imageModelLabel(detailConversation.defaultImageModel) }}</a-descriptions-item>
-        <a-descriptions-item label="工具能力">
-          <a-spin v-if="detailLoading" size="small" />
-          <div v-else-if="detailConversation.toolCapabilities" class="conversation-tool-capabilities">
-            <div v-for="tool in detailConversation.toolCapabilities.tools" :key="tool.id" class="conversation-tool-capability">
-              <a-tag :color="toolCapabilityTagColor(tool)">{{ toolCapabilityTitle(tool) }}：{{ toolCapabilityState(tool) }}</a-tag>
-              <span v-if="tool.invalidReason" class="conversation-tool-capability-reason">{{ tool.invalidReason }}</span>
-              <a-button
-                v-if="tool.kind === 'model' && !detailConversation.archived"
-                type="link"
-                size="small"
-                @click="openToolBindingDialog(tool.id)"
-              >{{ tool.bound ? '更换绑定' : '设置绑定' }}</a-button>
-            </div>
-          </div>
-          <span v-else class="conversation-tool-capability-reason">暂无能力信息</span>
-        </a-descriptions-item>
         <a-descriptions-item label="状态">{{ detailConversation.activeTurnId ? '生成中' : '空闲' }}</a-descriptions-item>
         <a-descriptions-item label="置顶">{{ detailConversation.isPinned ? '是' : '否' }}</a-descriptions-item>
         <a-descriptions-item label="创建时间">{{ formatDetailTime(detailConversation.createdAt) }}</a-descriptions-item>
@@ -146,18 +131,8 @@
       </a-descriptions>
       <template #footer><a-button @click="detailsDialogOpen = false">关闭</a-button></template>
     </a-modal>
-    <a-modal v-model:open="imageModelDialogOpen" title="默认图像模型" ok-text="保存" cancel-text="取消" :confirm-loading="imageModelUpdating" @ok="saveDefaultImageModel">
-      <a-radio-group v-model:value="pendingImageModel" class="chat-image-model-options">
-        <a-radio v-for="option in imageModelOptions" :key="option.value" :value="option.value">
-          <span>{{ option.label }}</span>
-        </a-radio>
-      </a-radio-group>
-    </a-modal>
     <ChatToolBindingDialog
       :open="toolBindingDialogOpen"
-      :conversation="selectedConversation!"
-      :tool-id="toolBindingToolId"
-      :mode="toolBindingMode"
       @close="toolBindingDialogOpen = false"
       @saved="handleToolBindingSaved"
     />
@@ -176,7 +151,7 @@ import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateTime, serverDateTimeTimestamp } from '@/shared/formatters'
-import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatConversationToolCapability, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatGenerationParameters, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatToolPreferencesPatch } from '@/types/domain/chat'
 
 import { beginLatestTurnEdit, beginLatestTurnRetry, isDefinitiveChatHttpRejection, removeInvalidatedGeneratedAssetsFromDraft, resolveChatReconciliationNotice, resolveChatSubmitFailure, restoreChatMessagesAfterRejectedReplacement } from './chatTurnEditing'
 import {
@@ -256,10 +231,25 @@ const models = ref<ChatModelListOption[]>([])
 const accounts = ref<ChatAccountOption[]>([])
 const accountsLoading = ref(false)
 const toolBindingDialogOpen = ref(false)
-const toolBindingToolId = ref('web_search')
-// 绑定弹窗模式（工具体系设计 §10.7）：'conversation' 会话级覆盖（会话详情/
-// binding_required 引导入口）；'user' 全局默认（/ 命令「搜索/生图默认绑定」入口）。
-const toolBindingMode = ref<'conversation' | 'user'>('conversation')
+// 「工具模型绑定」统一弹窗（工具体系设计 §10.7）：纯全局语义，读写用户级默认
+// 偏好端点；保存后当前会话立即跟随（见 handleToolBindingSaved）。
+// 工具箱入口的常驻状态摘要（全局偏好，非会话级）：页面加载与每次保存后刷新；
+// 读取失败静默留空，不打扰对话主流程。
+const toolBindingsSummary = ref('')
+async function refreshToolBindingsSummary(): Promise<void> {
+  try {
+    const preferences = await chatApi.getToolPreferences()
+    const stateText = (bound: boolean, valid: boolean) => (!bound ? '未设置' : valid ? '已绑定' : '已失效')
+    const search = preferences.tools.find((tool) => tool.id === 'web_search')
+    const image = preferences.tools.find((tool) => tool.id === 'generate_image')
+    toolBindingsSummary.value = search && image
+      ? `搜索${stateText(Boolean(search.bound), Boolean(search.valid))} · 生图${stateText(Boolean(image.bound), Boolean(image.valid))}`
+      : ''
+  } catch {
+    toolBindingsSummary.value = ''
+  }
+}
+void refreshToolBindingsSummary()
 const imagePolicy = ref<ChatImagePolicy>()
 const selectedModel = ref<string>()
 const selectedModelCapabilities = ref<ChatModelCapabilities>()
@@ -288,12 +278,8 @@ const conversationMenu = ref<{ item: ChatConversation; x: number; y: number }>()
 const conversationMenuElement = ref<HTMLElement>()
 const renameDialogOpen = ref(false)
 const detailsDialogOpen = ref(false)
-const detailLoading = ref(false)
 const deleteDialogOpen = ref(false)
 const creatingConversation = ref(false)
-const imageModelDialogOpen = ref(false)
-const imageModelUpdating = ref(false)
-const pendingImageModel = ref<ChatImageModel>('gpt-image-2')
 const conversationUpdating = ref(false)
 const showJumpToBottom = ref(false)
 const pendingConversation = ref<ChatConversation>()
@@ -305,11 +291,6 @@ const editingTurn = ref<ChatTurnEditingState>()
 const conversationMutationVersions = new Map<string, number>()
 const conversationMutationConfirmedValues = new Map<string, string | boolean>()
 const conversationMutationQueue = new ChatConversationMutationQueue()
-const imageModelOptions: ReadonlyArray<{ value: ChatImageModel; label: string }> = [
-  { value: 'gpt-image-2', label: 'GPT Image 2' },
-  { value: 'grok-imagine-image', label: 'Grok Imagine' },
-  { value: 'grok-imagine-image-quality', label: 'Grok Imagine 高清' }
-]
 const requestLifecycleEpochs = new ChatRequestLifecycleEpochs()
 let activeStopTarget: ActiveChatStopTarget | undefined
 const reconcilingSubmissionClientMessageIds = new Set<string>()
@@ -686,9 +667,9 @@ async function changeAccount(accountId?: string): Promise<void> {
 // 账户切换后的静默联动（§10.5）：① lastModel 为空时从新账户模型列表取首项
 // 选定（模型随下次发送随请求体生效），原模型被清且列表为空时维持「请重新
 // 选择」提示；② web_search/generate_image 绑定未设置或已失效时，取同账户第
-// 一个候选自动 PATCH（生图模型与 defaultImageModel 不同时一并更新，与弹窗
-// 保存逻辑同款）；已绑定且有效的不覆盖，同账户无候选跳过（保留 binding_required
-// 引导）。
+// 一个候选自动 PATCH（生图模型与 defaultImageModel 不同时一并更新，与统一
+// 弹窗的当前会话同步逻辑同款）；已绑定且有效的不覆盖，同账户无候选跳过
+// （保留 binding_required 引导）。
 async function applyAccountSwitchDefaults(previous: ChatConversation, updated: ChatConversation): Promise<void> {
   const conversationId = updated.id
   if (!updated.lastModel) {
@@ -742,30 +723,27 @@ async function applyAccountSwitchDefaults(previous: ChatConversation, updated: C
   }
 }
 
-// 打开绑定弹窗：默认会话模式（须有未归档会话）；user 模式读写用户级默认偏好，
-// 不依赖当前会话状态（工具体系设计 §10.7）。
-function openToolBindingDialog(toolId: string, mode: 'conversation' | 'user' = 'conversation'): void {
-  if (mode === 'conversation' && (!selectedConversation.value || selectedConversation.value.archived)) return
-  toolBindingToolId.value = toolId
-  toolBindingMode.value = mode
-  toolBindingDialogOpen.value = true
-}
-// 绑定保存回调（工具体系设计 §10.6/§10.7）：conversation 模式沿用会话刷新链；
-// user 模式保存只改用户全局默认（不触碰任何会话），仅轻提示，不
-// replaceConversation、不刷新详情（新会话由服务端创建时自动继承默认）。
-async function handleToolBindingSaved(updated?: ChatConversation): Promise<void> {
-  if (toolBindingMode.value === 'user') {
-    message.success('全局默认已更新，新会话自动继承')
+// 绑定保存回调（工具体系设计 §10.6/§10.7，2026-10-03 收敛）：全局默认已由统一
+// 弹窗 PATCH /my-chat/tool-preferences 落库；存在未归档当前会话时按 UI 最终值
+// 再 PATCH 该会话三键，使当前会话立即跟随全局绑定（replaceConversation 沿用
+// 既有刷新链）；无当前会话或会话已归档时仅全局生效，跳过会话同步。
+async function handleToolBindingSaved(payload: ChatToolPreferencesPatch): Promise<void> {
+  void refreshToolBindingsSummary()
+  const conversation = selectedConversation.value
+  if (!conversation || conversation.archived) {
+    message.success('全局绑定已更新，新会话自动继承')
     return
   }
-  if (!updated) return
-  replaceConversation(updated)
-  // 详情弹窗开着时同步刷新（工具能力状态随绑定变化）。
-  if (detailsDialogOpen.value) {
-    try {
-      const loaded = await chatApi.getConversation(updated.id)
-      if (detailsDialogOpen.value && detailConversation.value?.id === updated.id) detailConversation.value = loaded
-    } catch { /* 详情刷新失败不打断主流程 */ }
+  try {
+    const updated = await conversationMutationQueue.enqueue(conversation.id, () => chatApi.updateConversation(conversation.id, {
+      searchBinding: payload.searchBinding ?? null,
+      imageBinding: payload.imageBinding ?? null,
+      defaultImageModel: payload.defaultImageModel ?? conversation.defaultImageModel
+    }))
+    replaceConversation(updated)
+    message.success('全局绑定已更新，当前会话已同步')
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '全局绑定已保存，当前会话同步失败'))
   }
 }
 async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatInputBlock[]): Promise<void> {
@@ -998,7 +976,8 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
     ...(turn.status === 'failed' && turn.error?.message ? { errorMessage: turn.error.message } : {})
   }
   // tool.binding_required 引导（工具体系设计 §9）：事件是瞬态投影，不落库；
-  // 首次出现时 toast 提示并打开对应工具的绑定弹窗，按 callId 去重。
+  // 首次出现时 toast 提示并打开「工具模型绑定」统一弹窗，按 conversationId:callId
+  // 去重；保存后的当前会话跟随统一由 handleToolBindingSaved 覆盖。
   for (const toolEvent of projection.toolEvents ?? []) {
     if (toolEvent.item?.errorCode !== 'tool_binding_required') continue
     const promptKey = `${turn.conversationId}:${toolEvent.id}`
@@ -1008,7 +987,7 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
       ? toolEvent.item.errorMessage
       : '该能力需要先设置绑定的账户和模型后才能使用'
     message.warning(hint)
-    openToolBindingDialog(String(toolEvent.item.toolId ?? toolEvent.type ?? 'web_search'))
+    toolBindingDialogOpen.value = true
   }
   if (projection.id) {
     const index = messages.value.findIndex((item) => item.id === projection.id || (item.role === 'assistant' && item.clientMessageId === turn.clientMessageId && item.id.startsWith('optimistic-assistant:')))
@@ -1268,23 +1247,13 @@ function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSO
   const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
   void sendMessage(content, payload.snapshot, payload.blocks)
 }
-async function handleConversationAction(action: 'set-image-model' | 'set-tool-defaults' | 'set-image-tool-defaults' | 'compact-context' | 'clear-conversation'): Promise<void> {
+async function handleConversationAction(action: 'set-tool-defaults' | 'compact-context' | 'clear-conversation'): Promise<void> {
   const conversation = selectedConversation.value
   if (!conversation || conversationActionLoading.value || generating.value || submissionBlocked.value) return
-  if (action === 'set-image-model') {
-    pendingImageModel.value = conversation.defaultImageModel
-    imageModelDialogOpen.value = true
-    return
-  }
   if (action === 'set-tool-defaults') {
-    // / 命令「搜索默认绑定」（工具体系设计 §10.7）：打开绑定弹窗的全局模式，
-    // 读写用户级默认偏好端点，不依赖当前会话状态。
-    openToolBindingDialog('web_search', 'user')
-    return
-  }
-  if (action === 'set-image-tool-defaults') {
-    // / 命令「生图默认绑定」：同上，全局模式打开 generate_image 绑定弹窗。
-    openToolBindingDialog('generate_image', 'user')
+    // / 命令「工具模型绑定」（工具体系设计 §10.7）：打开统一弹窗，读写用户级
+    // 默认偏好端点，不依赖当前会话状态；保存后当前会话立即跟随。
+    toolBindingDialogOpen.value = true
     return
   }
   if (action === 'compact-context') {
@@ -1332,44 +1301,6 @@ async function handleConversationAction(action: 'set-image-model' | 'set-tool-de
   }
 }
 
-async function saveDefaultImageModel(): Promise<void> {
-  const conversation = selectedConversation.value
-  if (!conversation || imageModelUpdating.value) return
-  const defaultImageModel = pendingImageModel.value
-  const previous = conversation
-  replaceConversation({ ...conversation, defaultImageModel })
-  imageModelDialogOpen.value = false
-  imageModelUpdating.value = true
-  try {
-    const updated = await conversationMutationQueue.enqueue(conversation.id, () => chatApi.updateConversation(conversation.id, { defaultImageModel }))
-    replaceConversation(updated)
-    message.success('默认图像模型已更新')
-  } catch (error) {
-    const current = conversations.value.find((item) => item.id === conversation.id)
-    if (current?.defaultImageModel === defaultImageModel) replaceConversation(previous)
-    message.error(extractApiErrorMessage(error, '默认图像模型更新失败'))
-  } finally {
-    imageModelUpdating.value = false
-  }
-}
-
-function imageModelLabel(model: ChatImageModel): string {
-  return imageModelOptions.find((option) => option.value === model)?.label ?? model
-}
-const toolCapabilityTitles: Record<string, string> = { web_search: '网页搜索', generate_image: '图片生成', diagnostic_echo: '诊断回显' }
-function toolCapabilityTitle(tool: ChatConversationToolCapability): string {
-  return toolCapabilityTitles[tool.id] ?? tool.id
-}
-function toolCapabilityState(tool: ChatConversationToolCapability): string {
-  if (tool.kind === 'code') return '内置工具'
-  if (!tool.bound) return '未设置'
-  return tool.valid ? '已绑定' : '已失效'
-}
-function toolCapabilityTagColor(tool: ChatConversationToolCapability): string {
-  if (tool.kind === 'code') return 'default'
-  if (tool.valid) return 'success'
-  return 'warning'
-}
 function conversationBindLabel(item: ChatConversation): string {
   // 账户唯一绑定：仅展示绑定账户或未配置态；归档（存量旧模式）会话标注只读。
   if (item.archived) return '已归档（只读）'
@@ -1742,17 +1673,14 @@ function openRenameDialog(item: ChatConversation): void { pendingConversation.va
 async function openDetails(item: ChatConversation): Promise<void> {
   detailConversation.value = item
   detailsDialogOpen.value = true
-  detailLoading.value = true
   closeConversationMenu()
   try {
     const loaded = await chatApi.getConversation(item.id)
     if (detailsDialogOpen.value && detailConversation.value?.id === item.id) detailConversation.value = loaded
   } catch (error) {
     if (detailsDialogOpen.value && detailConversation.value?.id === item.id) {
-      message.error(extractApiErrorMessage(error, '加载会话工具能力失败'))
+      message.error(extractApiErrorMessage(error, '加载会话详情失败'))
     }
-  } finally {
-    if (detailConversation.value?.id === item.id) detailLoading.value = false
   }
 }
 function openDeleteDialog(item: ChatConversation): void { pendingConversation.value = item; deleteDialogOpen.value = true; closeConversationMenu() }
@@ -1929,7 +1857,6 @@ onBeforeUnmount(() => {
 .turn-limit-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; padding: 0 4px 4px; color: var(--juhe-muted); font-size: 12px; }
 .submission-confirmation-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 0 4px 4px; color: var(--juhe-warn); font-size: 12px; }
 .conversation-action-bar { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 4px 4px; color: var(--juhe-fg-soft); font-size: 12px; }
-.chat-image-model-options { display: grid; gap: 10px; width: 100%; }
 .jump-bottom-button { position: absolute; z-index: 4; top: -46px; left: 50%; color: var(--juhe-fg-soft); background: rgba(255, 255, 255, .96); border-color: var(--juhe-border); box-shadow: 0 4px 14px rgba(34, 40, 43, .14); transform: translateX(-50%); }
 .chat-start-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: var(--juhe-muted); }
 .chat-start-state > :deep(.anticon) { font-size: 36px; color: var(--juhe-faint); }
@@ -1955,9 +1882,6 @@ onBeforeUnmount(() => {
 .conversation-context-menu button.is-danger { color: var(--juhe-danger); }
 .conversation-detail-id { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .conversation-detail-id code { flex: 1; min-width: 0; color: var(--juhe-fg-soft); overflow-wrap: anywhere; }
-.conversation-tool-capabilities { display: grid; gap: 7px; }
-.conversation-tool-capability { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
-.conversation-tool-capability-reason { color: var(--juhe-muted); font-size: 12px; overflow-wrap: anywhere; }
 @media (max-width: 991px) and (min-width: 821px) { :deep(.conversation-pane-toolbar) { padding-left: 56px; } }
 @media (max-width: 820px) { .chat-workspace { grid-template-columns: minmax(0, 1fr); } .composer-shell { padding: 9px calc(9px + env(safe-area-inset-right)) calc(9px + env(safe-area-inset-bottom)) calc(9px + env(safe-area-inset-left)); } }
 @media (pointer: coarse) {

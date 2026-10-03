@@ -9,9 +9,9 @@
 #      等待前任 F3/F4 租约 TTL（默认 30s）过期后接管，等待计入 healthcheck
 #      start_period=75s，healthy 滞后至多约 1 分钟属预期，不再有重启循环）；
 #   4. 发布后验证（verify-release.sh，PLAN-20261002T114140718Z）：usage spool
-#      同源与 jobs drain 接线为强制断言；服务器配置一次性凭据文件
-#      .release-verify/api-key 后，追加"一条 /v1 请求 → 审计 + 用量落库"
-#      闭环门禁（缺凭据文件时该项告警跳过，不阻塞发布）。
+#      同源与 jobs drain 接线为强制断言。（原可选"/v1 请求 → 审计 + 用量落库"
+#      闭环门禁已于 2026-10-03 按用户裁定移除：依赖账户/模型实时可用性无法
+#      保证稳定；见 README 发布后验证节。）
 #
 # 红线：本机构建（服务器严禁编译，仅 docker compose build 组装镜像），见同目录 README 与
 # .local/project-resources/prod/runbooks/国内单机Docker部署与运维.md。

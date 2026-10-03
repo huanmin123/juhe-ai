@@ -3,6 +3,10 @@ package gatewayproto
 // ParsedUsage mirrors the Node ParsedUsage contract
 // (backend/src/modules/gateway/usage/types.ts). Every field is optional;
 // a zero ParsedUsage means "no usage evidence observed".
+// M1 同步音频计量扩展（音频设计 §10/契约 §2.8）：TtsInputChars 是 TTS 请求
+// 输入字符数（网关自算，UTF-8 rune 数）；AudioInputSeconds 是 STT 音频秒数
+// （上游 verbose_json duration）；UsageMissing 标记上游既无 usage 回报也无
+// duration 的 STT 响应（0 计费 + 可审计，不猜测）。
 type ParsedUsage struct {
 	UpstreamResponseModel string
 	ServiceTier           string
@@ -17,6 +21,9 @@ type ParsedUsage struct {
 	InputAudioTokens      *int
 	OutputAudioTokens     *int
 	OutputImageCount      *int
+	TtsInputChars         *int64
+	AudioInputSeconds     *float64
+	UsageMissing          bool
 }
 
 // EmptyUsage returns the zero-evidence usage value.
@@ -49,6 +56,9 @@ func MergeUsage(current, next ParsedUsage) ParsedUsage {
 		InputAudioTokens:      orInt(next.InputAudioTokens, current.InputAudioTokens),
 		OutputAudioTokens:     orInt(next.OutputAudioTokens, current.OutputAudioTokens),
 		OutputImageCount:      orInt(next.OutputImageCount, current.OutputImageCount),
+		TtsInputChars:         orInt64(next.TtsInputChars, current.TtsInputChars),
+		AudioInputSeconds:     orFloat64(next.AudioInputSeconds, current.AudioInputSeconds),
+		UsageMissing:          current.UsageMissing || next.UsageMissing,
 	}
 }
 
@@ -65,7 +75,9 @@ func HasAnyUsageValue(value ParsedUsage) bool {
 		value.OutputImageTokens != nil ||
 		value.InputAudioTokens != nil ||
 		value.OutputAudioTokens != nil ||
-		value.OutputImageCount != nil
+		value.OutputImageCount != nil ||
+		value.TtsInputChars != nil ||
+		value.AudioInputSeconds != nil
 }
 
 func orString(next, current string) string {
@@ -76,6 +88,20 @@ func orString(next, current string) string {
 }
 
 func orInt(next, current *int) *int {
+	if next != nil {
+		return next
+	}
+	return current
+}
+
+func orInt64(next, current *int64) *int64 {
+	if next != nil {
+		return next
+	}
+	return current
+}
+
+func orFloat64(next, current *float64) *float64 {
 	if next != nil {
 		return next
 	}

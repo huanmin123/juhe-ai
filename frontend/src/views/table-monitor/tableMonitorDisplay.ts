@@ -133,7 +133,7 @@ export function buildTableMonitorHistoryChartOption(input: {
 }): EChartsOption {
   const buckets = [...new Set(input.rows.map((row) => row.sampledAt))].sort()
   return {
-    color: ['#53696b', '#fa8c16', '#13c2c2', '#722ed1', '#eb2f96', '#2f54eb'],
+    color: ['#53696b', '#a98548', '#6f8f7a', '#7a6d8f', '#9d5547', '#758789'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => historyTooltip(params)
@@ -160,7 +160,7 @@ export function buildTableMonitorHistoryChartOption(input: {
 
 export function buildTableStorageHistoryChartOption(rows: TableStorageHistoryPoint[]): EChartsOption {
   return {
-    color: ['#53696b', '#13a8a8'],
+    color: ['#53696b', '#a98548'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => tableHistoryTooltip(params)

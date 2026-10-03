@@ -37,6 +37,10 @@ type SpeedFirstRuntimeConfig struct {
 	ProbeIntervalSeconds          int64 `json:"probeIntervalSeconds"`
 	DegradedTTLSeconds            int64 `json:"degradedTtlSeconds"`
 	MaxFirstByteRetriesPerRequest int64 `json:"maxFirstByteRetriesPerRequest"`
+	// 总时间兜底截止（设计 6.2）：不纳入 isRouteStrategySpeedFirstConfig 的
+	// 七字段存量校验；存量状态解码时缺省零值视为"未设置"，回落策略当前配置。
+	TotalTimeDeadlineMs           int64 `json:"totalTimeDeadlineMs"`
+	CompactionTotalTimeDeadlineMs int64 `json:"compactionTotalTimeDeadlineMs"`
 }
 
 // LatencyDegradationOrderResult mirrors
@@ -82,6 +86,9 @@ type LatencyProbeCandidate struct {
 	RecoverySuccessCount           int64
 	RecoveryProbeRoundAttemptCount int64
 	RecoveryProbeRoundSuccessCount int64
+	// Dimension 是归一后的降级维度（first_byte | total_time）；候选选择已把
+	// total_time 维度排除在外，透出该字段供调用方兜底核对。
+	Dimension string
 }
 
 // LatencyProbeClaim mirrors NormalRouteLatencyProbeClaim.
@@ -109,6 +116,9 @@ type DegradedRuntimeItem struct {
 	RecoveryProbeRoundAttemptCount int64
 	RecoveryProbeRoundSuccessCount int64
 	Reason                         string
+	// Dimension 是归一后的降级维度（first_byte | total_time），供运行态展示
+	// 区分触发通道（设计 6.4）。
+	Dimension string `json:"dimension"`
 }
 
 // LatencyGenerationEvent mirrors NormalRouteLatencyGenerationEvent.
@@ -116,6 +126,13 @@ type LatencyGenerationEvent struct {
 	Version     string `json:"version"`
 	PublishedAt string `json:"publishedAt"`
 }
+
+// 慢样本维度（设计 6.4 / 6.5）：首字通道与总时间通道共享一次降级，恢复入口
+// 按触发维度双向过滤。存量状态没有 dimension 字段，空串兼容读作 first_byte。
+const (
+	LatencyDimensionFirstByte = "first_byte"
+	LatencyDimensionTotalTime = "total_time"
+)
 
 // latencyState mirrors NormalRouteLatencyState with Node JSON field names.
 type latencyState struct {
@@ -135,6 +152,22 @@ type latencyState struct {
 	RecoveryProbeRoundSuccessCount *int64                  `json:"recoveryProbeRoundSuccessCount,omitempty"`
 	NextProbeAtMs                  *int64                  `json:"nextProbeAtMs,omitempty"`
 	Reason                         string                  `json:"reason"`
+	// 总时间通道计数（设计 6.4）：与首字通道各自独立滑窗计数。
+	TotalTimeSlowCount     int64 `json:"totalTimeSlowCount"`
+	FirstTotalTimeSlowAtMs int64 `json:"firstTotalTimeSlowAtMs"`
+	LastTotalTimeSlowAtMs  int64 `json:"lastTotalTimeSlowAtMs"`
+	// Dimension 是最近一次触发降级的维度；空串=存量首字状态，兼容读作
+	// first_byte（latencyDimensionOf）。
+	Dimension string `json:"dimension,omitempty"`
+}
+
+// latencyDimensionOf 归一状态的降级维度：只有显式 total_time 读作
+// total_time，其余（含存量空串）读作 first_byte。
+func latencyDimensionOf(state latencyState) string {
+	if state.Dimension == LatencyDimensionTotalTime {
+		return LatencyDimensionTotalTime
+	}
+	return LatencyDimensionFirstByte
 }
 
 func (s *latencyState) clone() latencyState {
@@ -328,11 +361,36 @@ func (s *LatencyDegradationService) RecordNormalRouteFirstByteSlow(
 	config *SpeedFirstRuntimeConfig,
 	reason string,
 ) (*LatencySlowResult, error) {
+	return s.recordNormalRouteSlow(ctx, account, scope, config, reason, LatencyDimensionFirstByte, "普通路由速度优先首字等待超时")
+}
+
+// RecordNormalRouteTotalTimeSlow 是总时间维度的慢样本入口（设计 6.4）：滑窗、
+// 触发、TTL、事件 ID 与探针调度与首字维度完全同构，仅计数通道不同；空
+// reason 回落到总时间默认文案。
+func (s *LatencyDegradationService) RecordNormalRouteTotalTimeSlow(
+	ctx context.Context,
+	account SuppressibleGatewayAccount,
+	scope *LatencyDegradationScope,
+	config *SpeedFirstRuntimeConfig,
+	reason string,
+) (*LatencySlowResult, error) {
+	return s.recordNormalRouteSlow(ctx, account, scope, config, reason, LatencyDimensionTotalTime, "普通路由速度优先总时间等待超时")
+}
+
+func (s *LatencyDegradationService) recordNormalRouteSlow(
+	ctx context.Context,
+	account SuppressibleGatewayAccount,
+	scope *LatencyDegradationScope,
+	config *SpeedFirstRuntimeConfig,
+	reason string,
+	dimension string,
+	defaultReason string,
+) (*LatencySlowResult, error) {
 	if scope == nil || config == nil {
 		return nil, nil
 	}
 	if reason == "" {
-		reason = "普通路由速度优先首字等待超时"
+		reason = defaultReason
 	}
 	// 键与存储 Scope 必须同源（设计 3.6 / B25）：state.Scope 落盘解析后的
 	// scope，jobs 探针按存储 Scope 重建键、按 Scope.GroupID 找凭据。
@@ -347,7 +405,7 @@ func (s *LatencyDegradationService) RecordNormalRouteFirstByteSlow(
 	}
 	var result *LatencySlowResult
 	ok, err := s.withLatencyStateMutationLock(ctx, key, generation, func() (bool, error) {
-		value, err := s.recordNormalRouteFirstByteSlowLocked(ctx, account, resolvedScope, *config, reason, key, generation)
+		value, err := s.recordNormalRouteSlowLocked(ctx, account, resolvedScope, *config, reason, key, generation, dimension)
 		if err != nil {
 			return false, err
 		}
@@ -363,7 +421,7 @@ func (s *LatencyDegradationService) RecordNormalRouteFirstByteSlow(
 	return result, nil
 }
 
-func (s *LatencyDegradationService) recordNormalRouteFirstByteSlowLocked(
+func (s *LatencyDegradationService) recordNormalRouteSlowLocked(
 	ctx context.Context,
 	account SuppressibleGatewayAccount,
 	scope LatencyDegradationScope,
@@ -371,6 +429,7 @@ func (s *LatencyDegradationService) recordNormalRouteFirstByteSlowLocked(
 	reason string,
 	key string,
 	generation string,
+	dimension string,
 ) (*LatencySlowResult, error) {
 	now := s.nowMs()
 	current, err := s.loadLatencyState(ctx, key, generation)
@@ -378,10 +437,25 @@ func (s *LatencyDegradationService) recordNormalRouteFirstByteSlowLocked(
 		return nil, err
 	}
 	slowWindowMs := maxInt64(60, config.SlowWindowSeconds) * 1000
-	withinWindow := current != nil && now-current.FirstSlowAtMs <= slowWindowMs
+	// 慢样本按维度选通道（设计 6.4）：窗口判定与计数取所选通道的
+	// First*SlowAtMs / *SlowCount，两个通道互不干扰。
 	slowCount := int64(1)
-	if withinWindow {
-		slowCount = current.SlowCount + 1
+	withinWindow := false
+	if current != nil {
+		var channelFirstSlowAtMs int64
+		if dimension == LatencyDimensionTotalTime {
+			channelFirstSlowAtMs = current.FirstTotalTimeSlowAtMs
+		} else {
+			channelFirstSlowAtMs = current.FirstSlowAtMs
+		}
+		if now-channelFirstSlowAtMs <= slowWindowMs {
+			withinWindow = true
+			if dimension == LatencyDimensionTotalTime {
+				slowCount = current.TotalTimeSlowCount + 1
+			} else {
+				slowCount = current.SlowCount + 1
+			}
+		}
 	}
 	currentStillDegraded := current != nil && current.DegradedUntilMs != nil && *current.DegradedUntilMs > now
 	triggeredDegraded := slowCount >= config.SlowTriggerCount
@@ -423,9 +497,6 @@ func (s *LatencyDegradationService) recordNormalRouteFirstByteSlowLocked(
 		RuntimeKey:                     runtimeKey,
 		Scope:                          scope,
 		Config:                         config,
-		FirstSlowAtMs:                  now,
-		LastSlowAtMs:                   now,
-		SlowCount:                      slowCount,
 		DegradationEventID:             degradationEventID,
 		DegradedUntilMs:                degradedUntilMs,
 		SuccessCount:                   0,
@@ -434,8 +505,37 @@ func (s *LatencyDegradationService) recordNormalRouteFirstByteSlowLocked(
 		NextProbeAtMs:                  nextProbeAtMs,
 		Reason:                         reason,
 	}
-	if withinWindow {
-		state.FirstSlowAtMs = current.FirstSlowAtMs
+	// Dimension 只在触发降级时更新为最近触发维度（两个维度都慢的号按最新
+	// 触发维度走恢复路径）；观察期样本沿用既有值，新状态保持空串。
+	if triggeredDegraded {
+		state.Dimension = dimension
+	} else if current != nil {
+		state.Dimension = current.Dimension
+	}
+	if dimension == LatencyDimensionTotalTime {
+		state.TotalTimeSlowCount = slowCount
+		state.FirstTotalTimeSlowAtMs = now
+		state.LastTotalTimeSlowAtMs = now
+		if current != nil {
+			state.SlowCount = current.SlowCount
+			state.FirstSlowAtMs = current.FirstSlowAtMs
+			state.LastSlowAtMs = current.LastSlowAtMs
+			if withinWindow {
+				state.FirstTotalTimeSlowAtMs = current.FirstTotalTimeSlowAtMs
+			}
+		}
+	} else {
+		state.SlowCount = slowCount
+		state.FirstSlowAtMs = now
+		state.LastSlowAtMs = now
+		if current != nil {
+			state.TotalTimeSlowCount = current.TotalTimeSlowCount
+			state.FirstTotalTimeSlowAtMs = current.FirstTotalTimeSlowAtMs
+			state.LastTotalTimeSlowAtMs = current.LastTotalTimeSlowAtMs
+			if withinWindow {
+				state.FirstSlowAtMs = current.FirstSlowAtMs
+			}
+		}
 	}
 	var ttlMs int64
 	if degraded {
@@ -476,6 +576,36 @@ func (s *LatencyDegradationService) RecordNormalRouteFirstByteSuccess(
 	if scope == nil || config == nil || firstByteMs == nil || *firstByteMs > config.FirstByteDeadlineMs {
 		return nil, nil
 	}
+	return s.recordNormalRouteSuccess(ctx, account, scope, config, LatencyDimensionFirstByte, false, nil)
+}
+
+// RecordNormalRouteTotalTimeSuccess 是总时间维度的达标（恢复）样本入口
+// （设计 6.5）：effectiveDeadlineMs 由调用方按 attempt 装配时选定的档位传入
+// （普通档或压缩档），这里只做门槛与维度双向过滤后的恢复累计；total_time
+// 维度不参与探针恢复，仅累计真实流量达标样本。
+func (s *LatencyDegradationService) RecordNormalRouteTotalTimeSuccess(
+	ctx context.Context,
+	account SuppressibleGatewayAccount,
+	scope *LatencyDegradationScope,
+	config *SpeedFirstRuntimeConfig,
+	effectiveDeadlineMs int64,
+	elapsedMs int64,
+) (*LatencySuccessResult, error) {
+	if scope == nil || config == nil || elapsedMs > effectiveDeadlineMs {
+		return nil, nil
+	}
+	return s.recordNormalRouteSuccess(ctx, account, scope, config, LatencyDimensionTotalTime, false, nil)
+}
+
+func (s *LatencyDegradationService) recordNormalRouteSuccess(
+	ctx context.Context,
+	account SuppressibleGatewayAccount,
+	scope *LatencyDegradationScope,
+	config *SpeedFirstRuntimeConfig,
+	dimension string,
+	clearOnSuccess bool,
+	candidate *LatencyProbeCandidate,
+) (*LatencySuccessResult, error) {
 	// 读键与写慢样本同源解析（设计 3.6 / B25）：恢复观察只 clone 既有
 	// state（Scope 不变），键必须落在同一存储 Scope 的组分量上。
 	key, err := accountLatencyStateKeyChecked(resolvedLatencyScopeForAccount(*scope, account), account)
@@ -488,7 +618,7 @@ func (s *LatencyDegradationService) RecordNormalRouteFirstByteSuccess(
 	}
 	var result *LatencySuccessResult
 	ok, err := s.withLatencyStateMutationLock(ctx, key, generation, func() (bool, error) {
-		value, err := s.recordNormalRouteFirstByteSuccessLocked(ctx, account, *config, key, generation, false, nil)
+		value, err := s.recordNormalRouteSuccessLocked(ctx, account, *config, key, generation, dimension, clearOnSuccess, candidate)
 		if err != nil {
 			return false, err
 		}
@@ -525,7 +655,7 @@ func (s *LatencyDegradationService) RecordNormalRouteRecoveryProbeSuccess(
 	}
 	var result *LatencySuccessResult
 	ok, err := s.withLatencyStateMutationLock(ctx, candidate.StateKey, candidate.Generation, func() (bool, error) {
-		value, err := s.recordNormalRouteFirstByteSuccessLocked(ctx, account, candidate.Config, candidate.StateKey, candidate.Generation, true, &candidate)
+		value, err := s.recordNormalRouteSuccessLocked(ctx, account, candidate.Config, candidate.StateKey, candidate.Generation, LatencyDimensionFirstByte, true, &candidate)
 		if err != nil {
 			return false, err
 		}
@@ -541,12 +671,13 @@ func (s *LatencyDegradationService) RecordNormalRouteRecoveryProbeSuccess(
 	return result, nil
 }
 
-func (s *LatencyDegradationService) recordNormalRouteFirstByteSuccessLocked(
+func (s *LatencyDegradationService) recordNormalRouteSuccessLocked(
 	ctx context.Context,
 	account SuppressibleGatewayAccount,
 	config SpeedFirstRuntimeConfig,
 	key string,
 	generation string,
+	dimension string,
 	clearOnSuccess bool,
 	candidate *LatencyProbeCandidate,
 ) (*LatencySuccessResult, error) {
@@ -562,6 +693,8 @@ func (s *LatencyDegradationService) recordNormalRouteFirstByteSuccessLocked(
 	}
 	now := s.nowMs()
 	if current.DegradedUntilMs == nil || *current.DegradedUntilMs <= now {
+		// 过期清理与维度无关（设计 6.5）：任一维度的达标样本都先兜底清理
+		// 已过期降级，避免残留状态依赖 Redis TTL 才消失。
 		if err := s.deleteLatencyStateAndIndexesStrict(ctx, key); err != nil {
 			return nil, err
 		}
@@ -571,6 +704,12 @@ func (s *LatencyDegradationService) recordNormalRouteFirstByteSuccessLocked(
 			RecoverySuccessCount:         0,
 			RequiredRecoverySuccessCount: config.RecoverySuccessCount,
 		}, nil
+	}
+	// 维度双向过滤（设计 6.5）：达标样本只推进与降级维度同向的恢复；另一
+	// 维度的达标样本是中性样本，不推进 SuccessCount、不动探针轮次、不改
+	// NextProbeAtMs。
+	if latencyDimensionOf(*current) != dimension {
+		return nil, nil
 	}
 	successCount := current.SuccessCount
 	if !clearOnSuccess {
@@ -705,6 +844,11 @@ func (s *LatencyDegradationService) ListNormalRouteLatencyProbeCandidates(
 		if state == nil || state.DegradedUntilMs == nil || *state.DegradedUntilMs <= nowMs {
 			continue
 		}
+		// total_time 维度不参与探针恢复（设计 6.5）：探针请求规模小，测不出
+		// 容量型慢，不探、不清理、不续租，只认真实流量达标或 TTL 过期。
+		if latencyDimensionOf(*state) == LatencyDimensionTotalTime {
+			continue
+		}
 		if state.NextProbeAtMs == nil || *state.NextProbeAtMs > nowMs {
 			continue
 		}
@@ -816,6 +960,7 @@ func (s *LatencyDegradationService) ListNormalRouteLatencyDegradedRuntime(
 			RecoveryProbeRoundAttemptCount: recoveryProbeRoundAttempts(state),
 			RecoveryProbeRoundSuccessCount: recoveryProbeRoundSuccesses(state),
 			Reason:                         state.Reason,
+			Dimension:                      latencyDimensionOf(state),
 		}
 		items = append(items, item)
 	}
@@ -1479,6 +1624,7 @@ func probeCandidateFromState(key string, state latencyState) (LatencyProbeCandid
 		RecoverySuccessCount:           state.SuccessCount,
 		RecoveryProbeRoundAttemptCount: recoveryProbeRoundAttempts(state),
 		RecoveryProbeRoundSuccessCount: recoveryProbeRoundSuccesses(state),
+		Dimension:                      latencyDimensionOf(state),
 	}, true
 }
 

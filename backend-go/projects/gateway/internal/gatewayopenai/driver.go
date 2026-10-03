@@ -122,7 +122,7 @@ func (d *Driver) BuildUpstreamRequest(input gatewayproto.BuildUpstreamRequestInp
 		stream = value
 	}
 
-	lane := ResolveRequestLane(input.ClientPathAndQuery, parsedBody, requestedModel)
+	lane := ResolveRequestLane(method, input.ClientPathAndQuery, parsedBody, requestedModel)
 
 	body := input.Body
 	upstreamModel := requestedModel

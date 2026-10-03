@@ -9,9 +9,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayresponse"
@@ -38,6 +41,8 @@ func (l *v1DispatchLoop) resetSpeedFirstState() {
 		l.speedFirstCutoverReservation = nil
 	}
 	l.speedFirstSlowObservedForAttempt = nil
+	l.speedFirstTotalTimeSlowObservedForAttempt = nil
+	l.speedFirstTotalTimeCutoverSignal = nil
 }
 
 // settleFirstByteDeadlineCutoverVerdict 把响应面的非流式首字截止切号
@@ -62,14 +67,16 @@ func (l *v1DispatchLoop) settleFirstByteDeadlineCutoverVerdict(
 		Deadline:           *deadline,
 		Message:            handling.Message,
 		CutoverReservation: handling.CutoverReservationView,
-	})
+	}, gatewayproxyhealth.LatencyDimensionFirstByte, 0)
 }
 
 // settleSpeedFirstCutoverError 镜像 routes.ts:1295-1345 的
 // NormalRouteFirstByteCutoverError 分支。返回 true = 请求已结算（终端退出或
 // 锁定重派已在引擎预算内完成——Go 侧引擎把同账户重派内化，锁定臂直接按
-// 耗尽退出渲染）；false = 循环继续。
-func (l *v1DispatchLoop) settleSpeedFirstCutoverError(ctx context.Context, cutover *gatewaydispatch.NormalRouteFirstByteCutoverError) bool {
+// 耗尽退出渲染）；false = 循环继续。dimension/elapsedMs 是审计维度标记
+// （设计 6.7：首字切号 first_byte / 总时间切号 total_time；总时间另带
+// elapsedMs，首字路径传 0 不带出）。
+func (l *v1DispatchLoop) settleSpeedFirstCutoverError(ctx context.Context, cutover *gatewaydispatch.NormalRouteFirstByteCutoverError, dimension string, elapsedMs int64) bool {
 	current := l.current
 	// routes.ts:1297-1317: a cross-account lock denies the cutover — release
 	// the reservation, un-exclude the slow account and settle the request
@@ -100,16 +107,21 @@ func (l *v1DispatchLoop) settleSpeedFirstCutoverError(ctx context.Context, cutov
 	l.streamRetryExcludedAccounts[cutover.AccountID] = struct{}{}
 	l.speedFirstByteRetryCount++
 	retryAllowed := targetAccountID != ""
-	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_retry_dispatch", map[string]any{
+	cutoverAudit := map[string]any{
 		"accountId":               cutover.AccountID,
 		"responseHeadersReceived": false,
 		"limitingFactor":          cutover.Deadline.LimitingFactor,
+		"dimension":               dimension,
 		"retryCount":              l.speedFirstByteRetryCount,
 		"maxRetries":              chainSpeedFirstMaxRetriesOf(current),
 		"retryAllowed":            retryAllowed,
 		"retryBlockedReason":      map[bool]string{true: "", false: "cutover_not_confirmed"}[retryAllowed],
 		"targetAccountId":         targetAccountID,
-	})
+	}
+	if elapsedMs > 0 {
+		cutoverAudit["elapsedMs"] = elapsedMs
+	}
+	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_retry_dispatch", cutoverAudit)
 	if reservation != nil && targetAccountID != "" {
 		// routes.ts:1328-1332: carry the reservation into the next dispatch
 		// and narrow the window to the reserved target.
@@ -388,6 +400,7 @@ func (l *v1DispatchLoop) speedFirstDeadlineDecision(
 	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_slow_observed", map[string]any{
 		"accountId":                    account.ID,
 		"accountName":                  account.Name,
+		"dimension":                    gatewayproxyhealth.LatencyDimensionFirstByte,
 		"thresholdMs":                  thresholdMs,
 		"observedAt":                   "first_byte_deadline",
 		"alreadyDegraded":              alreadyDegraded,
@@ -558,16 +571,346 @@ func speedFirstReservationHandleOf(reservation *gatewayhotquality.SpeedFirstCuto
 	}
 }
 
-// observeSpeedFirstResponseOutcome 镜像 routes.ts:2393-2455 的响应观测：
-// 首字耗时超阈值补记慢采样（同尝试去重），达标则记成功恢复采样。
-func (l *v1DispatchLoop) observeSpeedFirstResponseOutcome(
+// ---------------------------------------------------------------------------
+// 总时间兜底截止（设计 6.3-6.7）：决策闭包、切号消费与完成观测
+// ---------------------------------------------------------------------------
+
+// speedFirstTotalTimeCutoverSignal 是总时间决策闭包确认切号后的载荷快照：
+// transport timer goroutine 写入、settleDispatchError 主循环读取（transport
+// 侧 NormalRouteTotalTimeTimeoutError 只带阈值与 elapsed，账户信息留在决策
+// 闭包可见的 loop 槽）。
+type speedFirstTotalTimeCutoverSignal struct {
+	accountID   string
+	accountName string
+	thresholdMs int64
+	elapsedMs   int64
+}
+
+// speedFirstCompactionGateOf 镜像 dispatch 侧压缩豁免门
+// （upstreamdispatch.go compactionTimeoutsDisabled）：wall budget 无界
+// （codex 压缩请求的 TimeoutPolicy 源头）或请求体压缩识别。loop 层与引擎的
+// coordination.TimeoutPolicy 同源（newRequestCoordination 以 wall.Unbounded
+// 导出该策略），压缩判定由此保持两侧一致。
+func (l *v1DispatchLoop) speedFirstCompactionGateOf(current *gatewaypreauth.DispatchContext) bool {
+	if l.budgets.wall != nil && l.budgets.wall.Unbounded {
+		return true
+	}
+	return gatewaydispatch.CodexCompactionExpectedForRequest(l.req)
+}
+
+// speedFirstDownstreamCommittedOf 判断当前请求是否已向下游写出可见内容
+// （设计 6.6 总时间切号安全条件：SemanticCommitted = false 且
+// DownstreamBytesWritten = 0 才可切号；已写出的请求对总时间截止只是软观察）。
+func (l *v1DispatchLoop) speedFirstDownstreamCommittedOf() bool {
+	return l.waitCommitState != nil &&
+		(l.waitCommitState.SemanticCommitted || l.waitCommitState.DownstreamBytesWritten > 0)
+}
+
+// speedFirstTotalTimeThresholdMsOf 在 chain 层复算该请求的总时间档位阈值：
+// 与 dispatch 侧 attempt 装配共用 ResolveNormalRouteTotalTimeDeadline 纯
+// 函数（同一样本只用一把尺——timer、软观察与完成补记同档）。ok=false =
+// 该请求未装配总时间维度（无速度优先配置 / 非文本 lane / 阈值非法）。
+func (l *v1DispatchLoop) speedFirstTotalTimeThresholdMsOf(current *gatewaypreauth.DispatchContext) (int64, bool) {
+	config := current.NormalRouteSpeedFirstConfig
+	if config == nil {
+		return 0, false
+	}
+	if !gatewayrouting.NormalRouteFirstByteDeadlineAppliesToLane(current.RequestLane) {
+		return 0, false
+	}
+	deadline, ok := gatewaydispatch.ResolveNormalRouteTotalTimeDeadline(gatewaydispatch.NormalRouteTotalTimeDeadlineInput{
+		Config:                     config,
+		CompactionTimeoutsDisabled: l.speedFirstCompactionGateOf(current),
+		EstimatedInputTokens:       estimateChainRequestInputTokens(l.req),
+		AttemptStartedAtMs:         l.c.preauth.NowMs(),
+	})
+	if !ok {
+		return 0, false
+	}
+	return deadline.ThresholdMs, true
+}
+
+// estimateChainRequestInputTokens 投影请求体估算输入（与 dispatch 侧
+// estimateNormalRouteRequestInputTokens 同源估算；nil body 安全）。
+func estimateChainRequestInputTokens(req *gatewaypreauth.GatewayRequest) int {
+	if req == nil || req.Body == nil {
+		return 0
+	}
+	tokens, _ := gatewayopenai.EstimateRequestInputTokens(req.Body.Body, req.Body.RawBody)
+	return tokens
+}
+
+// onNormalRouteTotalTimeDeadline 构造总时间截止到期决策闭包（镜像
+// onNormalRouteFirstByteDeadline 的接线形态）：锁检查与候选评估失败一律
+// continue 当前上游（Node 决策 catch 语义），确认切号返回 abort 由
+// transport 销毁请求进入 NormalRouteTotalTimeTimeoutError 通路。
+func (l *v1DispatchLoop) onNormalRouteTotalTimeDeadline(
 	ctx context.Context,
 	current *gatewaypreauth.DispatchContext,
-	dispatched gatewaydispatch.UpstreamDispatchResult,
-	handling gatewayresponse.UpstreamResponseHandlingResult,
-) {
+) func(gatewaydispatch.TotalTimeDeadlineDecisionInput, gatewaydispatch.AccountCandidate, int64) gatewaydispatch.FirstByteDeadlineAction {
+	return func(input gatewaydispatch.TotalTimeDeadlineDecisionInput, account gatewaydispatch.AccountCandidate, thresholdMs int64) gatewaydispatch.FirstByteDeadlineAction {
+		config := current.NormalRouteSpeedFirstConfig
+		if config == nil {
+			return gatewaydispatch.FirstByteDeadlineActionContinue
+		}
+		decisions := l.speedFirstDecisionsOf()
+		scope := l.speedFirstLatencyScopeOf(current)
+		if decisions == nil || scope == nil {
+			return gatewaydispatch.FirstByteDeadlineActionContinue
+		}
+		action, decisionErr := l.speedFirstTotalTimeDeadlineDecision(ctx, current, account, thresholdMs, input.ElapsedMs, decisions, scope, config)
+		if decisionErr != nil {
+			// 决策失败兜底（镜像首字 ReleaseReservation）：载荷槽与预留只在
+			// 确认切号后写入，err 分支至多释放本决策已写对的组合。
+			l.speedFirstTotalTimeObservationMu.Lock()
+			signal := l.speedFirstTotalTimeCutoverSignal
+			l.speedFirstTotalTimeObservationMu.Unlock()
+			if signal != nil {
+				if reservation := l.speedFirstCutoverReservation; reservation != nil {
+					reservation.Release()
+					l.speedFirstCutoverReservation = nil
+				}
+				l.speedFirstTotalTimeCutoverSignal = nil
+			}
+			l.c.observability.Logger().Warn("normal_route_speed_first_local_decision_failed", map[string]any{
+				"event":           "normal_route_speed_first_local_decision_failed",
+				"stage":           "total_time_cutover",
+				"accountId":       account.ID,
+				"routeStrategyId": scope.RouteStrategyID,
+				"groupId":         scope.GroupID,
+				"error":           decisionErr.Error(),
+			}, "普通路由速度优先本地决策失败，继续当前上游")
+			l.auditCapture.AddGatewayMetadata("normal_route_speed_first_local_decision_failed", map[string]any{
+				"stage":     "total_time_cutover",
+				"accountId": account.ID,
+			})
+			return gatewaydispatch.FirstByteDeadlineActionContinue
+		}
+		return action
+	}
+}
+
+// speedFirstTotalTimeDeadlineDecision 镜像 speedFirstDeadlineDecision 的总
+// 时间维度主体（设计 6.3/6.6）：锁阻断 → 降级查询 → 记慢样本 → 写出检查
+// （已写出不切号，软观察）→ 剩余候选 → 预占 → 审计 → Abort/Continue。
+// 总时间预留不经引擎 coordinator（请求头阶段无原始字节竞争，attach 竞争臂
+// 不存在）：预占成功即确认切号，视图经 settleTotalTimeCutoverError 接回
+// loop 携带槽收窄重派。
+func (l *v1DispatchLoop) speedFirstTotalTimeDeadlineDecision(
+	ctx context.Context,
+	current *gatewaypreauth.DispatchContext,
+	account gatewaydispatch.AccountCandidate,
+	thresholdMs int64,
+	elapsedMs int64,
+	decisions chainSpeedFirstDecisions,
+	scope *gatewaydispatch.LatencyScopeInput,
+	config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig,
+) (speedFirstDeadlineAction, error) {
+	// routes.ts:1124-1139 同型：a cross-account lock blocks the cutover.
+	if current.UsageContext.TrafficSource == gatewayTrafficSource && l.c.engine.Locks != nil {
+		lockState, err := l.c.engine.Locks.FindStateAsync(ctx, account.ID)
+		if err != nil {
+			return "", err
+		}
+		if lockState != nil && lockState.BlocksCrossAccount {
+			l.auditCapture.AddGatewayMetadata("account_lock_speed_first_cutover_denied", map[string]any{
+				"accountId": account.ID,
+				"dimension": gatewayproxyhealth.LatencyDimensionTotalTime,
+			})
+			return gatewaydispatch.FirstByteDeadlineActionContinue, nil
+		}
+	}
+	alreadyDegraded, err := decisions.IsAccountLatencyDegradedAsync(ctx, account, scope)
+	if err != nil {
+		return "", err
+	}
+	slowResult, slowErr := l.recordTotalTimeSlowSample(ctx, decisions, scope, config, account,
+		"普通路由速度优先总时间观察阈值 "+fmt.Sprintf("%d", thresholdMs)+"ms 已到达")
+	if slowErr != nil {
+		// 镜像首字决策：慢采样失败向上抛，由决策闭包兜底释放并 continue。
+		return "", slowErr
+	}
+	// 写出检查（设计 6.6 总时间档与首字档的关键差异）：已向下游写出可见内容
+	// 的请求不切号——只记慢样本继续等待当前上游（软观察）。
+	if l.speedFirstDownstreamCommittedOf() {
+		l.auditCapture.AddGatewayMetadata("normal_route_speed_first_total_time_cutover_blocked", map[string]any{
+			"accountId":          account.ID,
+			"dimension":          gatewayproxyhealth.LatencyDimensionTotalTime,
+			"retryBlockedReason": "downstream_committed",
+			"elapsedMs":          elapsedMs,
+			"thresholdMs":        thresholdMs,
+		})
+		return gatewaydispatch.FirstByteDeadlineActionContinue, nil
+	}
+	nextExcluded := make(map[string]struct{}, len(l.streamRetryExcludedAccounts)+1)
+	for id := range l.streamRetryExcludedAccounts {
+		nextExcluded[id] = struct{}{}
+	}
+	nextExcluded[account.ID] = struct{}{}
+	remainingAccounts, err := l.speedFirstRouteEligibleDispatchAccounts(ctx, current, nextExcluded, scope, decisions)
+	if err != nil {
+		return "", err
+	}
+	remainingCandidateCount := len(remainingAccounts)
+	typedConfig := chainSpeedFirstRuntimeConfigOf(config)
+	maxRetries := int64(0)
+	if typedConfig != nil {
+		maxRetries = typedConfig.MaxFirstByteRetriesPerRequest
+	}
+	degradedForCutover := alreadyDegraded || (slowResult != nil && slowResult.Degraded)
+	preconditionsMet := degradedForCutover &&
+		int64(l.speedFirstByteRetryCount) < maxRetries &&
+		remainingCandidateCount > 0
+	var reservation *gatewayhotquality.SpeedFirstCutoverReservation
+	if preconditionsMet {
+		reservation, err = gatewayhotquality.ReserveSpeedFirstCutoverTarget(ctx, gatewayhotquality.SpeedFirstCutoverReservationInput{
+			SystemAccountID:       scope.SystemAccountID,
+			RouteStrategyID:       scope.RouteStrategyID,
+			GroupID:               scope.GroupID,
+			SlowAccountID:         chainConcurrencyAccountIDOf(account),
+			Targets:               chainCutoverTargetsOf(remainingAccounts),
+			Lane:                  string(current.RequestLane),
+			GroupSchedulingPolicy: chainSchedulingPolicyValueOf(current.GroupSchedulingPolicy),
+			SlotAcquirer:          l.speedFirstSlotAcquirer(current),
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	cutoverAllowed := false
+	if reservation != nil {
+		// 预占成功即确认切号：预留写入 loop 携带槽，载荷快照供
+		// settleTotalTimeCutoverError 还原账户与 elapsedMs。
+		cutoverAllowed = true
+		l.speedFirstCutoverReservation = reservation
+		l.speedFirstTotalTimeCutoverSignal = &speedFirstTotalTimeCutoverSignal{
+			accountID:   account.ID,
+			accountName: account.Name,
+			thresholdMs: thresholdMs,
+			elapsedMs:   elapsedMs,
+		}
+	}
+	remainingIDs := make([]string, 0, remainingCandidateCount)
+	for _, candidate := range remainingAccounts {
+		remainingIDs = append(remainingIDs, candidate.ID)
+	}
+	retryBlockedReason := ""
+	if !cutoverAllowed {
+		switch {
+		case remainingCandidateCount <= 0:
+			retryBlockedReason = "no_remaining_candidate"
+		case !degradedForCutover:
+			retryBlockedReason = "slow_observation_not_degraded"
+		case !preconditionsMet:
+			retryBlockedReason = "max_retry_exceeded"
+		default:
+			retryBlockedReason = "target_slot_or_cutover_budget_unavailable"
+		}
+	}
+	slowCount := int64(0)
+	degraded := false
+	var degradedUntil, nextProbeAt *string
+	if slowResult != nil {
+		slowCount = slowResult.SlowCount
+		degraded = slowResult.Degraded
+		degradedUntil = slowResult.DegradedUntil
+		nextProbeAt = slowResult.NextProbeAt
+	}
+	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_slow_observed", map[string]any{
+		"accountId":                    account.ID,
+		"accountName":                  account.Name,
+		"dimension":                    gatewayproxyhealth.LatencyDimensionTotalTime,
+		"thresholdMs":                  thresholdMs,
+		"elapsedMs":                    elapsedMs,
+		"observedAt":                   "total_time_deadline",
+		"alreadyDegraded":              alreadyDegraded,
+		"slowCount":                    slowCount,
+		"degraded":                     degraded,
+		"degradedUntil":                degradedUntil,
+		"nextProbeAt":                  nextProbeAt,
+		"cutoverAllowed":               cutoverAllowed,
+		"retryBlockedReason":           retryBlockedReason,
+		"retryCount":                   l.speedFirstByteRetryCount,
+		"maxRetries":                   maxRetries,
+		"remainingCandidateCount":      remainingCandidateCount,
+		"remainingCandidateAccountIds": remainingIDs,
+	})
+	if cutoverAllowed {
+		return gatewaydispatch.FirstByteDeadlineActionAbort, nil
+	}
+	if reservation != nil {
+		// 未确认切号（attach 前置条件失败）的预留确定性释放。
+		reservation.Release()
+	}
+	return gatewaydispatch.FirstByteDeadlineActionContinue, nil
+}
+
+// settleTotalTimeCutoverError 消费总时间截止切号（设计 6.6）：复用
+// settleSpeedFirstCutoverError 消费链（锁定臂 / 预留携带收窄重派 / 无预留
+// 耗尽退出），载荷槽还原账户与 elapsedMs，审计带 dimension=total_time。
+func (l *v1DispatchLoop) settleTotalTimeCutoverError(ctx context.Context, totalTimeout *gatewaydispatch.NormalRouteTotalTimeTimeoutError) bool {
+	l.speedFirstTotalTimeObservationMu.Lock()
+	signal := l.speedFirstTotalTimeCutoverSignal
+	l.speedFirstTotalTimeObservationMu.Unlock()
+	if signal == nil {
+		// 决策未确认切号的 abort（RunTotalTimeDeadlineHandler panic 路径）：
+		// 无载荷槽即无重派目标，按耗尽契约渲染，避免空 200。
+		l.auditCapture.AddGatewayMetadata("normal_route_speed_first_total_time_decision_failed", map[string]any{
+			"accountId":   "",
+			"dimension":   gatewayproxyhealth.LatencyDimensionTotalTime,
+			"thresholdMs": totalTimeout.TimeoutMs,
+		})
+		l.renderDispatchExhaustedWithMessage(ctx, totalTimeout.Message, "", "")
+		return true
+	}
+	cutover := &gatewaydispatch.NormalRouteFirstByteCutoverError{
+		AccountID:   signal.accountID,
+		AccountName: signal.accountName,
+		Deadline: gatewayrouting.NormalRouteAttemptFirstByteDeadline{
+			ConfiguredDeadlineMs: signal.thresholdMs,
+			EffectiveDeadlineMs:  signal.thresholdMs,
+			LimitingFactor:       gatewayrouting.FirstByteLimitingFactorConfigured,
+		},
+		Message: totalTimeout.Message,
+	}
+	if reservation := l.speedFirstCutoverReservation; reservation != nil {
+		view := speedFirstReservationViewOf(reservation)
+		l.recordAttachedSpeedFirstReservation(view, reservation)
+		cutover.CutoverReservation = view
+		l.speedFirstCutoverReservation = nil
+	}
+	return l.settleSpeedFirstCutoverError(ctx, cutover, gatewayproxyhealth.LatencyDimensionTotalTime, signal.elapsedMs)
+}
+
+// armTotalTimeDeadlineObserver 挂响应轮总时间软观察 timer（设计 6.3 采样点
+// 1 的 body 阶段承接）：transport 总时间 timer 在响应头到达后由
+// responseReceived 守卫失效，本 timer 补上响应处理期的到期观察——只记慢
+// 样本（每 attempt 去重一次），不中断当前响应轮；完成时采样点 2/3 由
+// observeSpeedFirstResponseOutcome 承接。返回 stop（幂等）。
+func (l *v1DispatchLoop) armTotalTimeDeadlineObserver(ctx context.Context, current *gatewaypreauth.DispatchContext, dispatched gatewaydispatch.UpstreamDispatchResult, finished *atomic.Int32) func() {
+	thresholdMs, ok := l.speedFirstTotalTimeThresholdMsOf(current)
+	if !ok {
+		return func() {}
+	}
+	remainingMs := thresholdMs - (l.c.preauth.NowMs() - dispatched.AttemptStartedAt)
+	if remainingMs < 1 {
+		remainingMs = 1
+	}
+	timer := time.AfterFunc(time.Duration(remainingMs)*time.Millisecond, func() {
+		if finished.Load() != 0 {
+			return
+		}
+		l.observeTotalTimeDeadlineSample(ctx, current, dispatched, thresholdMs)
+	})
+	return func() { timer.Stop() }
+}
+
+// observeTotalTimeDeadlineSample 是响应轮软观察 timer 的到期执行体：响应
+// 未完成（finished=0）时记一次总时间慢样本（去重锁内，每 attempt 一次），
+// 不切号。
+func (l *v1DispatchLoop) observeTotalTimeDeadlineSample(ctx context.Context, current *gatewaypreauth.DispatchContext, dispatched gatewaydispatch.UpstreamDispatchResult, thresholdMs int64) {
 	config := current.NormalRouteSpeedFirstConfig
-	if config == nil || handling.FirstTokenMs == nil {
+	if config == nil {
 		return
 	}
 	decisions := l.speedFirstDecisionsOf()
@@ -575,6 +918,86 @@ func (l *v1DispatchLoop) observeSpeedFirstResponseOutcome(
 	if decisions == nil || scope == nil {
 		return
 	}
+	elapsedMs := l.c.preauth.NowMs() - dispatched.AttemptStartedAt
+	slowResult, slowErr := l.recordTotalTimeSlowSample(ctx, decisions, scope, config, dispatched.Account,
+		"普通路由速度优先总时间观察阈值 "+fmt.Sprintf("%d", thresholdMs)+"ms 已到达")
+	if slowErr != nil {
+		l.warnSpeedFirstDecisionFailure(dispatched.Account, scope, "total_time_observation", slowErr)
+		return
+	}
+	if slowResult == nil {
+		return
+	}
+	l.auditCapture.AddGatewayMetadata("normal_route_speed_first_slow_observed", map[string]any{
+		"accountId":     dispatched.Account.ID,
+		"dimension":     gatewayproxyhealth.LatencyDimensionTotalTime,
+		"thresholdMs":   thresholdMs,
+		"elapsedMs":     elapsedMs,
+		"observedAt":    "total_time_deadline",
+		"slowCount":     slowResult.SlowCount,
+		"degraded":      slowResult.Degraded,
+		"degradedUntil": slowResult.DegradedUntil,
+		"nextProbeAt":   slowResult.NextProbeAt,
+	})
+}
+
+// recordTotalTimeSlowSample 在总时间维度去重锁内记录慢样本（设计 6.3：每
+// attempt 每维度恰好一次；三个写入点——transport 决策闭包、响应轮软观察
+// timer、完成观测补记——并发可达，双记即双慢样本）。已有标记返回
+// (nil, nil)；采样失败返回错误（决策闭包透传，观测调用方告警吞并）。
+func (l *v1DispatchLoop) recordTotalTimeSlowSample(ctx context.Context, decisions chainSpeedFirstDecisions, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, account gatewaydispatch.AccountCandidate, reason string) (*gatewayproxyhealth.LatencySlowResult, error) {
+	l.speedFirstTotalTimeObservationMu.Lock()
+	defer l.speedFirstTotalTimeObservationMu.Unlock()
+	if l.speedFirstTotalTimeSlowObservedForAttempt != nil {
+		return nil, nil
+	}
+	slowResult, err := decisions.RecordTotalTimeSlowAsync(ctx, account, scope, config, reason)
+	if err != nil {
+		return nil, err
+	}
+	l.speedFirstTotalTimeSlowObservedForAttempt = slowResult
+	return slowResult, nil
+}
+
+// observeSpeedFirstResponseOutcome 镜像 routes.ts:2393-2455 的响应观测：
+// 首字耗时超阈值补记慢采样（同尝试去重），达标则记成功恢复采样；总时间
+// 分支按 attempt 选定档位补记慢采样或达标恢复采样（设计 6.3 采样点 2/3）。
+func (l *v1DispatchLoop) observeSpeedFirstResponseOutcome(
+	ctx context.Context,
+	current *gatewaypreauth.DispatchContext,
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	handling gatewayresponse.UpstreamResponseHandlingResult,
+) {
+	config := current.NormalRouteSpeedFirstConfig
+	if config == nil {
+		return
+	}
+	decisions := l.speedFirstDecisionsOf()
+	scope := l.speedFirstLatencyScopeOf(current)
+	if decisions == nil || scope == nil {
+		return
+	}
+	// 压缩守卫（设计 6.3）：压缩请求首字维度维持既有豁免——不补记首字慢
+	// 样本、不记首字恢复样本（成功压缩首输出可达 125 秒以上，属正常形态，
+	// 不得进入首字慢样本通道）。
+	if !l.speedFirstCompactionGateOf(current) && handling.FirstTokenMs != nil {
+		l.observeSpeedFirstFirstByteOutcome(ctx, dispatched, handling, decisions, scope, config)
+	}
+	// 总时间维度照常生效（含压缩请求）：timer 未到点时由完成观测补记慢
+	// 样本（采样点 2），elapsed 未超阈值记达标恢复样本（采样点 3）。
+	l.observeSpeedFirstTotalTimeOutcome(ctx, current, dispatched, decisions, scope, config)
+}
+
+// observeSpeedFirstFirstByteOutcome 承接首字维度的完成观测（原
+// observeSpeedFirstResponseOutcome 首字主体）。
+func (l *v1DispatchLoop) observeSpeedFirstFirstByteOutcome(
+	ctx context.Context,
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	handling gatewayresponse.UpstreamResponseHandlingResult,
+	decisions chainSpeedFirstDecisions,
+	scope *gatewaydispatch.LatencyScopeInput,
+	config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig,
+) {
 	thresholdMs := int64(0)
 	if config.FirstByteDeadlineMs != nil {
 		thresholdMs = *config.FirstByteDeadlineMs
@@ -600,6 +1023,7 @@ func (l *v1DispatchLoop) observeSpeedFirstResponseOutcome(
 		}
 		l.auditCapture.AddGatewayMetadata("normal_route_speed_first_slow_observed", map[string]any{
 			"accountId":     dispatched.Account.ID,
+			"dimension":     gatewayproxyhealth.LatencyDimensionFirstByte,
 			"firstTokenMs":  *handling.FirstTokenMs,
 			"thresholdMs":   thresholdMs,
 			"observedAt":    "response_completed",
@@ -618,11 +1042,73 @@ func (l *v1DispatchLoop) observeSpeedFirstResponseOutcome(
 	if recoveryResult != nil {
 		l.auditCapture.AddGatewayMetadata("normal_route_speed_first_recovery_observed", map[string]any{
 			"accountId":                    dispatched.Account.ID,
+			"dimension":                    gatewayproxyhealth.LatencyDimensionFirstByte,
 			"firstTokenMs":                 *handling.FirstTokenMs,
 			"thresholdMs":                  thresholdMs,
 			"cleared":                      recoveryResult.Cleared,
 			"recoverySuccessCount":         recoveryResult.RecoverySuccessCount,
 			"requiredRecoverySuccessCount": recoveryResult.RequiredRecoverySuccessCount,
+		})
+	}
+}
+
+// observeSpeedFirstTotalTimeOutcome 承接总时间维度的完成观测（设计 6.3
+// 采样点 2/3）：该请求装配过总时间维度（与 dispatch 侧同一选档函数复算）
+// 才观测；elapsed 超阈值且本 attempt 未记过 → 补记慢样本；未超阈值 → 记
+// 达标（恢复）样本，effectiveDeadlineMs 用选定档阈值。timer 已记样本的
+// attempt（回调路径已写去重标记）不再补记。
+func (l *v1DispatchLoop) observeSpeedFirstTotalTimeOutcome(
+	ctx context.Context,
+	current *gatewaypreauth.DispatchContext,
+	dispatched gatewaydispatch.UpstreamDispatchResult,
+	decisions chainSpeedFirstDecisions,
+	scope *gatewaydispatch.LatencyScopeInput,
+	config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig,
+) {
+	thresholdMs, ok := l.speedFirstTotalTimeThresholdMsOf(current)
+	if !ok {
+		return
+	}
+	// 完成观测点即当下（handling 无终态时刻字段；AttemptStartedAt 与
+	// dispatch 侧锚点同源）。
+	elapsedMs := l.c.preauth.NowMs() - dispatched.AttemptStartedAt
+	if elapsedMs > thresholdMs {
+		reason := "普通路由速度优先总时间耗时 " + fmt.Sprintf("%d", elapsedMs) + "ms 超过阈值 " + fmt.Sprintf("%d", thresholdMs) + "ms"
+		slowResult, slowErr := l.recordTotalTimeSlowSample(ctx, decisions, scope, config, dispatched.Account, reason)
+		if slowErr != nil {
+			l.warnSpeedFirstDecisionFailure(dispatched.Account, scope, "total_time_response_observation", slowErr)
+			return
+		}
+		if slowResult == nil {
+			return
+		}
+		l.auditCapture.AddGatewayMetadata("normal_route_speed_first_slow_observed", map[string]any{
+			"accountId":     dispatched.Account.ID,
+			"dimension":     gatewayproxyhealth.LatencyDimensionTotalTime,
+			"thresholdMs":   thresholdMs,
+			"elapsedMs":     elapsedMs,
+			"observedAt":    "response_completed",
+			"slowCount":     slowResult.SlowCount,
+			"degraded":      slowResult.Degraded,
+			"degradedUntil": slowResult.DegradedUntil,
+			"nextProbeAt":   slowResult.NextProbeAt,
+		})
+		return
+	}
+	successResult, err := decisions.RecordTotalTimeSuccessAsync(ctx, dispatched.Account, scope, config, thresholdMs, elapsedMs)
+	if err != nil {
+		l.warnSpeedFirstDecisionFailure(dispatched.Account, scope, "total_time_response_observation", err)
+		return
+	}
+	if successResult != nil {
+		l.auditCapture.AddGatewayMetadata("normal_route_speed_first_recovery_observed", map[string]any{
+			"accountId":                    dispatched.Account.ID,
+			"dimension":                    gatewayproxyhealth.LatencyDimensionTotalTime,
+			"elapsedMs":                    elapsedMs,
+			"thresholdMs":                  thresholdMs,
+			"cleared":                      successResult.Cleared,
+			"recoverySuccessCount":         successResult.RecoverySuccessCount,
+			"requiredRecoverySuccessCount": successResult.RequiredRecoverySuccessCount,
 		})
 	}
 }

@@ -559,6 +559,8 @@ var accountHealthCheckEndpointModeOrder = []string{
 	"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse",
 	"messages_json", "messages_sse", "generate_content_json", "generate_content_sse",
 	"interactions_json", "interactions_sse",
+	// M1 同步音频探针形态（尾部，opt-in）。
+	"audio_speech", "audio_transcription_json",
 }
 
 func isAccountHealthCheckEndpointMode(value string) bool {

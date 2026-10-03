@@ -100,7 +100,7 @@ func TestW1SettleSpeedFirstCutoverLockDenied(t *testing.T) {
 		Deadline: gatewayrouting.NormalRouteAttemptFirstByteDeadline{LimitingFactor: gatewayrouting.FirstByteLimitingFactorConfigured},
 	}
 	// 跨账户锁阻断：释放预留、解除排除、按耗尽结算、返回 true。
-	if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover); !settled {
+	if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover, gatewayproxyhealth.LatencyDimensionFirstByte, 0); !settled {
 		t.Fatal("锁定臂必须结算")
 	}
 	if !released {
@@ -131,7 +131,7 @@ func TestW1SettleSpeedFirstCutoverReservationCarry(t *testing.T) {
 		Deadline:           gatewayrouting.NormalRouteAttemptFirstByteDeadline{LimitingFactor: gatewayrouting.FirstByteLimitingFactorConfigured},
 	}
 	// 有确认目标：预留接回循环携带状态，返回 false（继续派发）。
-	if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover); settled {
+	if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover, gatewayproxyhealth.LatencyDimensionFirstByte, 0); settled {
 		t.Fatal("预留携带臂不得结算")
 	}
 	if loop.speedFirstByteRetryCount != 1 {
@@ -156,7 +156,7 @@ func TestW1SettleSpeedFirstCutoverNoReservation(t *testing.T) {
 		AccountID: "acc_slow", Message: "首字超时",
 		Deadline: gatewayrouting.NormalRouteAttemptFirstByteDeadline{LimitingFactor: gatewayrouting.FirstByteLimitingFactorConfigured},
 	}
-	if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover); !settled {
+	if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover, gatewayproxyhealth.LatencyDimensionFirstByte, 0); !settled {
 		t.Fatal("无预留臂必须结算")
 	}
 	if len(sink.inputs) != 1 || sink.inputs[0].StatusCode != 503 {
@@ -169,7 +169,7 @@ func TestW1SettleSpeedFirstCutoverNoReservation(t *testing.T) {
 		CutoverReservation: &gatewaydispatch.SpeedFirstCutoverReservationView{ReleaseFunc: func() { fired = true }},
 		Deadline:           gatewayrouting.NormalRouteAttemptFirstByteDeadline{},
 	}
-	loop.settleSpeedFirstCutoverError(context.Background(), orphan)
+	loop.settleSpeedFirstCutoverError(context.Background(), orphan, gatewayproxyhealth.LatencyDimensionFirstByte, 0)
 	if !fired {
 		t.Fatal("孤儿视图必须确定性释放")
 	}

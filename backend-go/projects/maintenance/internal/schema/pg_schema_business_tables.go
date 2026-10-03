@@ -653,7 +653,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       cooldown_retest_last_status_code integer,
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       health_check_model text NOT NULL,
-      health_check_endpoint_mode text NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')),
+      health_check_endpoint_mode text NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json')),
       last_health_check_at text,
       next_health_check_at text,
       last_health_success_at text,
@@ -2243,6 +2243,54 @@ BEGIN
         AND c.conname = 'model_quality_schedules_interval_minutes_range_check'
     ) THEN
       EXECUTE 'ALTER TABLE juhe_business.model_quality_schedules ADD CONSTRAINT model_quality_schedules_interval_minutes_range_check CHECK (interval_minutes BETWEEN 1 AND 10080)';
+    END IF;
+  END IF;
+END
+$$`,
+	},
+	{
+		// accounts.health_check_endpoint_mode CHECK 增补 M1 同步音频探针形态
+		// （音频设计 §11.1）：audio_speech、audio_transcription_json。幂等迁移
+		// 沿 model-quality-schedule-interval-pg-check 先例：按表 + conkey 列 +
+		// 约束定义文本定位——存量表上缺 audio_speech 的旧 CHECK（建表内联约束
+		// 被 PG 自动命名为 accounts_health_check_endpoint_mode_check）先删除，
+		// 再按名字补上含新值的具名约束。建表 DDL 已含新值的新库：内联约束的
+		// PG 自动名与具名约束同名，第二步 IF NOT EXISTS 直接命中跳过，不会产
+		// 生重复约束；重复执行无副作用。
+		SchemaName: "juhe_business",
+		Source:     "accounts-health-check-endpoint-mode-pg-check",
+		SQL: `DO $$
+DECLARE
+  legacy_constraint text;
+BEGIN
+  IF to_regclass('juhe_business.accounts') IS NOT NULL THEN
+    SELECT c.conname INTO legacy_constraint
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_business'
+      AND relation.relname = 'accounts'
+      AND c.contype = 'c'
+      AND pg_get_constraintdef(c.oid) LIKE '%health_check_endpoint_mode%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%audio_speech%'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+        WHERE a.attrelid = c.conrelid
+          AND a.attname = 'health_check_endpoint_mode'
+          AND a.attnum = ANY(c.conkey)
+      );
+    IF legacy_constraint IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.accounts DROP CONSTRAINT %I', legacy_constraint);
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'accounts'
+        AND c.conname = 'accounts_health_check_endpoint_mode_check'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''audio_speech'', ''audio_transcription_json''))';
     END IF;
   END IF;
 END

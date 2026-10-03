@@ -186,6 +186,9 @@ type PricingCostInput struct {
 	InputAudioTokens   *int
 	OutputAudioTokens  *int
 	OutputImageCount   *int
+	// TtsInputChars / AudioInputSeconds 是 M1 同步音频计量（音频设计 §10）。
+	TtsInputChars     *int64
+	AudioInputSeconds *float64
 }
 
 // UpstreamFailureMetricRecorder ports recordGatewayUpstreamFailureMetric

@@ -143,6 +143,9 @@ const UsageShardBaseSchemaSQL = `
       input_audio_tokens INTEGER,
       output_audio_tokens INTEGER,
       output_image_count INTEGER,
+      tts_input_chars INTEGER NOT NULL DEFAULT 0,
+      audio_input_seconds REAL NOT NULL DEFAULT 0,
+      usage_missing INTEGER NOT NULL DEFAULT 0,
       cost_usd REAL,
       error_code TEXT,
       error_message TEXT,
@@ -288,8 +291,61 @@ func (s *SqliteShardStore) openShardDB(location UsageRecordShardLocation) (*sql.
 		db.Close()
 		return nil, err
 	}
+	// M1 同步音频计量列（音频设计 §10）：存量分片文件的幂等补列，模式同
+	// upstream_response_model。
+	if err := ensureAudioMeteringColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s.shardDBs[location.FilePath] = db
 	return db, nil
+}
+
+// audioMeteringShardColumns 是 M1 音频计量列的（列名, DDL）清单。
+var audioMeteringShardColumns = [][2]string{
+	{"tts_input_chars", "tts_input_chars INTEGER NOT NULL DEFAULT 0"},
+	{"audio_input_seconds", "audio_input_seconds REAL NOT NULL DEFAULT 0"},
+	{"usage_missing", "usage_missing INTEGER NOT NULL DEFAULT 0"},
+}
+
+// ensureAudioMeteringColumns 对既有 usage 分片文件补 M1 音频计量列
+// （ensureUpstreamResponseModelColumn 同款幂等：PRAGMA 探测 + ALTER ADD
+// COLUMN，并发重复列错误视为成功）。
+func ensureAudioMeteringColumns(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(usage_records)")
+	if err != nil {
+		return nil
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name string
+		var ctype sql.NullString
+		var notNull any
+		var dflt any
+		var pk any
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err == nil {
+			existing[name] = true
+		}
+	}
+	scanErr := rows.Err()
+	rows.Close()
+	if scanErr != nil {
+		return scanErr
+	}
+	for _, column := range audioMeteringShardColumns {
+		if existing[column[0]] {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE usage_records ADD COLUMN " + column[1]); err != nil {
+			// A concurrent writer may have added it first; treat duplicate
+			// column errors as success like the Node presence check.
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func ensureUpstreamResponseModelColumn(db *sql.DB) error {

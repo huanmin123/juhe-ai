@@ -532,6 +532,13 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	record.OutputImageCount = input.Usage.OutputImageCount
 	record.UpstreamResponseModel = input.Usage.UpstreamResponseModel
 	record.ReportedServiceTier = input.Usage.ServiceTier
+	// M1 同步音频计量直传（契约 §2.8）：TtsInputChars 是 TTS 请求 input 的
+	// rune 数（网关自算，response 管线注入）；AudioInputSeconds 是 STT 音频
+	// 秒数（上游 usage token 优先，缺时 verbose_json duration）；UsageMissing
+	// 标记两者皆缺的 0 计费响应。nil 保持 NULL，bool 直传。
+	record.TtsInputChars = input.Usage.TtsInputChars
+	record.AudioInputSeconds = input.Usage.AudioInputSeconds
+	record.UsageMissing = input.Usage.UsageMissing
 	// 快照为失败记录专属契约（docs/functions/核心功能设计.md:568-569；Node
 	// finalization.ts:2211-2241 成功时显式 undefined）：成功行输入恒 nil（响应
 	// 管线三态门控已保证，非流式 nonstream.go:1038-1053 与 Node 同构——成功
@@ -581,6 +588,10 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 				InputAudioTokens:   input.Usage.InputAudioTokens,
 				OutputAudioTokens:  input.Usage.OutputAudioTokens,
 				OutputImageCount:   input.Usage.OutputImageCount,
+				// M1 同步音频计量维度（音频设计 §10）：tts_input_chars /
+				// audio_input_seconds 行项经同步定价目录估算。
+				TtsInputChars:     input.Usage.TtsInputChars,
+				AudioInputSeconds: input.Usage.AudioInputSeconds,
 			}
 			record.CostUsd = u.pricing.EstimateCost(costInput)
 			record.CacheReadCostUsd = u.pricing.EstimateCacheReadCost(costInput)

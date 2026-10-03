@@ -121,8 +121,8 @@ func TestEnsureSQLiteUsageShardCreatesJobCompatibleSchema(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('usage_records')`).Scan(&columns); err != nil {
 		t.Fatal(err)
 	}
-	if columns != 62 {
-		t.Fatalf("usage_records columns = %d, want 62", columns)
+	if columns != 65 {
+		t.Fatalf("usage_records columns = %d, want 65", columns)
 	}
 	// 幂等：重复 ensure 不改计数也不报错（legacy index drop 在新库上是 no-op）。
 	if _, err := EnsureSQLiteUsageShard(context.Background(), db); err != nil {

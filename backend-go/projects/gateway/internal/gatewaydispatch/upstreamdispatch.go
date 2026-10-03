@@ -155,6 +155,15 @@ type RequestCoordinationContext struct {
 	RequestBodyOverride            *RequestBodyOverride
 	NormalRouteFirstByteConfig     *gatewayrouting.NormalRouteFirstByteRuntimeConfig
 	OnNormalRouteFirstByteDeadline func(input FirstByteDeadlineDecisionInput, account AccountCandidate, deadline gatewayrouting.NormalRouteAttemptFirstByteDeadline, coordinator *NormalRouteFirstByteAttemptCoordinator) FirstByteDeadlineAction
+	// NormalRouteSpeedFirstConfig 是普通路由速度优先运行态配置（preauth 投影
+	// 原样透传）：总时间兜底截止的装配前提（设计 6.3）；nil = 不装配总时间
+	// timer。压缩请求 FirstByteDeadlineMs 为 nil 时本配置照常携带（A 分片
+	// chainSpeedFirstRuntimeConfigOf 已按维度分开判活）。
+	NormalRouteSpeedFirstConfig *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig
+	// OnNormalRouteTotalTimeDeadline 是总时间截止到期决策回调（签名镜像
+	// OnNormalRouteFirstByteDeadline；thresholdMs 是该 attempt 选定的档位阈
+	// 值）。nil = 观测未接线，transport 侧默认软观察继续。
+	OnNormalRouteTotalTimeDeadline func(input gatewayupstream.TotalTimeDeadlineDecisionInput, account AccountCandidate, thresholdMs int64) FirstByteDeadlineAction
 	// OnUpstreamAttemptStarted is invoked once per upstream attempt start.
 	OnUpstreamAttemptStarted func(account AccountCandidate, upstreamURL string)
 }
@@ -168,6 +177,21 @@ const (
 const (
 	TimeoutPolicyCodexCompactionUnbounded = "codex_compaction_unbounded"
 )
+
+// NormalRouteTotalTimeTimeoutError 与其谓词的包内桥接（gatewayupstream 传输
+// 族叶子类型的 alias，REFACTOR-0006 门面模式；总时间截止族随设计 6.x 新增，
+// 桥接随消费面落在 upstreamdispatch.go 以保持 gatewayupstream_bridge.go
+// 既有内容不动）。chain 层（cmd/juhe-ai-gateway）经 gatewaydispatch 前缀
+// 消费，不直接依赖叶子包。
+type NormalRouteTotalTimeTimeoutError = gatewayupstream.NormalRouteTotalTimeTimeoutError
+
+type TotalTimeDeadlineDecisionInput = gatewayupstream.TotalTimeDeadlineDecisionInput
+
+type TotalTimeDeadlineHandler = gatewayupstream.TotalTimeDeadlineHandler
+
+func IsNormalRouteTotalTimeTimeoutError(err error) bool {
+	return gatewayupstream.IsNormalRouteTotalTimeTimeoutError(err)
+}
 
 // SameAccountRetry mirrors the same-account retry carry.
 type SameAccountRetry struct {

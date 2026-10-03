@@ -5,13 +5,14 @@ package pricing
 // are USD per token literals identical to the Node snapshot rows.
 
 // openAIModelPricingData = openAIGPT4 + openAIGPT5 + openAIImage +
-// openAIReasoning (order preserved).
+// openAIReasoning + openAIAudio (order preserved).
 var openAIModelPricingData = func() []rawModel {
-	out := make([]rawModel, 0, len(openAIGPT4ModelPricingData)+len(openAIGPT5ModelPricingData)+len(openAIImageModelPricingData)+len(openAIReasoningModelPricingData))
+	out := make([]rawModel, 0, len(openAIGPT4ModelPricingData)+len(openAIGPT5ModelPricingData)+len(openAIImageModelPricingData)+len(openAIReasoningModelPricingData)+len(openAIAudioModelPricingData))
 	out = append(out, openAIGPT4ModelPricingData...)
 	out = append(out, openAIGPT5ModelPricingData...)
 	out = append(out, openAIImageModelPricingData...)
 	out = append(out, openAIReasoningModelPricingData...)
+	out = append(out, openAIAudioModelPricingData...)
 	return out
 }()
 
@@ -921,5 +922,76 @@ var openAIReasoningModelPricingData = []rawModel{
 		SupportsPromptCaching:     true,
 		SupportedReasoningEfforts: []string{"low", "medium", "high"},
 		SupportedServiceTiers:     []string{"priority", "flex"},
+	},
+}
+
+// openAIAudioModelPricingData — M1 同步音频模型（mode=audio），价格取自
+// OpenAI 官方定价页 platform.openai.com/docs/pricing（核实于 2026-10-04）：
+//   - TTS：tts-1 $15.00/1M chars、tts-1-hd $30.00/1M chars（按字符计费）；
+//     gpt-4o-mini-tts 官方按 token 计价（text input $0.60/1M tokens +
+//     audio output $12.00/1M tokens），无官方字符价，TtsInputCostPerChar 留空。
+//   - STT：whisper-1 $0.006/min（折算每秒）；gpt-4o-transcribe
+//     $2.50/1M text in + $10.00/1M text out + $6.00/1M audio in
+//     （官方折算约 $0.006/min）；gpt-4o-mini-transcribe $1.25 / $5.00 /
+//     $3.00（约 $0.003/min）。
+//   - 发布日期：gpt-4o-mini-tts / gpt-4o-transcribe / gpt-4o-mini-transcribe
+//     2025-03-20（官方发布日）；tts-1 / tts-1-hd 2023-11-06（TTS API GA）；
+//     whisper-1 2023-03-01（Whisper API 发布）。
+//
+// 任务书列出的 gpt-4o-tts 不在官方定价页与官方 audio API 文档模型清单中，
+// 无官方价可查，按「不得编造」不落行（报告已注明）。
+// ResponseFormats 为 OpenAI TTS 官方全集（音频设计 §4.1 / 契约 §5.1 裁决）。
+var openAIAudioModelPricingData = []rawModel{
+	{
+		Model: "gpt-4o-mini-tts", Mode: "audio", ReleaseDate: "2025-03-20",
+		InputModalities:         []string{"text"},
+		OutputModalities:        []string{"audio"},
+		SupportedAPIProtocols:   []string{"audio_speech"},
+		ResponseFormats:         []string{"mp3", "opus", "aac", "flac", "wav", "pcm"},
+		InputCostPerToken:       perToken(0.6),
+		OutputCostPerAudioToken: perToken(12),
+	},
+	{
+		Model: "gpt-4o-transcribe", Mode: "audio", ReleaseDate: "2025-03-20",
+		InputModalities:         []string{"audio"},
+		OutputModalities:        []string{"text"},
+		SupportedAPIProtocols:   []string{"audio_transcription"},
+		InputCostPerToken:       perToken(2.5),
+		OutputCostPerToken:      perToken(10),
+		InputCostPerAudioToken:  perToken(6),
+		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.006),
+	},
+	{
+		Model: "gpt-4o-mini-transcribe", Mode: "audio", ReleaseDate: "2025-03-20",
+		InputModalities:         []string{"audio"},
+		OutputModalities:        []string{"text"},
+		SupportedAPIProtocols:   []string{"audio_transcription"},
+		InputCostPerToken:       perToken(1.25),
+		OutputCostPerToken:      perToken(5),
+		InputCostPerAudioToken:  perToken(3),
+		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.003),
+	},
+	{
+		Model: "tts-1", Mode: "audio", ReleaseDate: "2023-11-06",
+		InputModalities:       []string{"text"},
+		OutputModalities:      []string{"audio"},
+		SupportedAPIProtocols: []string{"audio_speech"},
+		ResponseFormats:       []string{"mp3", "opus", "aac", "flac", "wav", "pcm"},
+		TtsInputCostPerChar:   perChar(15),
+	},
+	{
+		Model: "tts-1-hd", Mode: "audio", ReleaseDate: "2023-11-06",
+		InputModalities:       []string{"text"},
+		OutputModalities:      []string{"audio"},
+		SupportedAPIProtocols: []string{"audio_speech"},
+		ResponseFormats:       []string{"mp3", "opus", "aac", "flac", "wav", "pcm"},
+		TtsInputCostPerChar:   perChar(30),
+	},
+	{
+		Model: "whisper-1", Mode: "audio", ReleaseDate: "2023-03-01",
+		InputModalities:         []string{"audio"},
+		OutputModalities:        []string{"text"},
+		SupportedAPIProtocols:   []string{"audio_transcription"},
+		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.006),
 	},
 }

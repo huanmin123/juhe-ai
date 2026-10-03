@@ -767,6 +767,9 @@ var customProviderModelProtocolSet = map[string]bool{
 	"interactions":            true,
 	"completions":             true,
 	"images":                  true,
+	// M1 同步音频协议词表（设计 §11.3）；realtime 不放开（M5）。
+	"audio_speech":        true,
+	"audio_transcription": true,
 }
 
 var customModelCapabilityTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -807,8 +810,8 @@ func normalizeCustomModelCapabilities(providerCode string, input customModelCapa
 	if input.Mode != nil && strings.TrimSpace(*input.Mode) != "" {
 		mode = strings.TrimSpace(*input.Mode)
 	}
-	if mode != "text" && mode != "image" {
-		return nil, fmt.Errorf("当前只支持文本和图像自定义模型")
+	if mode != "text" && mode != "image" && mode != "audio" {
+		return nil, fmt.Errorf("当前只支持文本、图像和音频自定义模型")
 	}
 	supportedServiceTiers, err := normalizeCapabilityTokenArray(input.SupportedServiceTiers, "服务等级")
 	if err != nil {

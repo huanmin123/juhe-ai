@@ -100,6 +100,11 @@ type SpeedFirstRuntimeItem struct {
 	RecoveryProbeRoundAttemptCount int64        `json:"recoveryProbeRoundAttemptCount"`
 	RecoveryProbeRoundSuccessCount int64        `json:"recoveryProbeRoundSuccessCount"`
 	Reason                         string       `json:"reason"`
+	// Dimension 是归一后的降级维度（first_byte | total_time，设计 6.4），
+	// 供运行态展示区分触发通道；投影源是
+	// gatewayproxyhealth.DegradedRuntimeItem.Dimension（存量状态兼容读作
+	// first_byte）。
+	Dimension string `json:"dimension"`
 }
 
 type runtimeScope struct {

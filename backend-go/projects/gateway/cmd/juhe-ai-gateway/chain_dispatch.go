@@ -809,12 +809,37 @@ func (p chainLatencyDegradationPort) RecordFirstByteSuccessAsync(ctx context.Con
 	}, chainSpeedFirstRuntimeConfigOf(config), &firstByteMs)
 }
 
+func (p chainLatencyDegradationPort) RecordTotalTimeSlowAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error) {
+	if p.service == nil || scope == nil {
+		return nil, nil
+	}
+	return p.service.RecordNormalRouteTotalTimeSlow(ctx, chainLatencyAccountOf(account), &gatewayproxyhealth.LatencyDegradationScope{
+		SystemAccountID: scope.SystemAccountID,
+		RouteStrategyID: scope.RouteStrategyID,
+		GroupID:         scope.GroupID,
+	}, chainSpeedFirstRuntimeConfigOf(config), reason)
+}
+
+func (p chainLatencyDegradationPort) RecordTotalTimeSuccessAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, effectiveDeadlineMs int64, elapsedMs int64) (*gatewayproxyhealth.LatencySuccessResult, error) {
+	if p.service == nil || scope == nil {
+		return nil, nil
+	}
+	return p.service.RecordNormalRouteTotalTimeSuccess(ctx, chainLatencyAccountOf(account), &gatewayproxyhealth.LatencyDegradationScope{
+		SystemAccountID: scope.SystemAccountID,
+		RouteStrategyID: scope.RouteStrategyID,
+		GroupID:         scope.GroupID,
+	}, chainSpeedFirstRuntimeConfigOf(config), effectiveDeadlineMs, elapsedMs)
+}
+
 // chainSpeedFirstDecisions 镜像 Node normalRouteSpeedFirstDecisionOperations
-// 的 store 函数面；组合根在链条侧以接口断言消费（决策闭包）。
+// 的 store 函数面；组合根在链条侧以接口断言消费（决策闭包）。首字与总时间
+// 两个维度的采样入口成对携带（设计 6.4 双通道共享降级）。
 type chainSpeedFirstDecisions interface {
 	IsAccountLatencyDegradedAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput) (bool, error)
 	RecordFirstByteSlowAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error)
 	RecordFirstByteSuccessAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, firstByteMs int64) (*gatewayproxyhealth.LatencySuccessResult, error)
+	RecordTotalTimeSlowAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error)
+	RecordTotalTimeSuccessAsync(ctx context.Context, account gatewaydispatch.AccountCandidate, scope *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, effectiveDeadlineMs int64, elapsedMs int64) (*gatewayproxyhealth.LatencySuccessResult, error)
 }
 
 // chainLatencyAccountOf 把派发候选投影为时延降级服务的账户载体。
@@ -832,20 +857,43 @@ func chainLatencyAccountOf(account gatewaydispatch.AccountCandidate) gatewayprox
 // chainSpeedFirstRuntimeConfigOf 解码速度优先运行态配置（preflight 的 opaque
 // Raw 载荷 → 时延降级服务的类型化配置）。firstByteDeadlineMs 取 preflight 已
 // 解出的指针，六个旋钮读 Raw["speedFirstConfig"]（写侧已按 routestrategies
-// 归一化，缺省回落同一组默认值：3/120/3/30/300/2）。deadline 缺失即配置无效，
-// 返回 nil（排序直通、观测跳过——Node !normalRouteSpeedFirstConfig 分支）。
+// 归一化，缺省回落同一组默认值：3/120/3/30/300/2）；总时间两阈值取 preflight
+// 已解出的指针（秒→毫秒在 preauth 完成），缺省回落 120000/300000。首字与总
+// 时间两个维度分开判活：两者全部缺失才是配置无效返回 nil。压缩请求的
+// FirstByteDeadlineMs 为 nil 时不得整体短路——总时间维度必须照常带出（设计
+// 6.8，否则压缩总时间被一并熄灭）；首字 timer 的压缩豁免由 dispatch 侧
+// compaction 门负责。FirstByteDeadlineMs 落内联默认 30000 仅为保持运行态
+// 七字段全正的存量校验成立，压缩请求不消费该字段（首字观测由 dispatch/观测
+// 分片按压缩豁免门关闭）。
 func chainSpeedFirstRuntimeConfigOf(config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig) *gatewayproxyhealth.SpeedFirstRuntimeConfig {
-	if config == nil || config.FirstByteDeadlineMs == nil || *config.FirstByteDeadlineMs <= 0 {
+	if config == nil {
+		return nil
+	}
+	hasFirstByteDeadline := config.FirstByteDeadlineMs != nil && *config.FirstByteDeadlineMs > 0
+	hasTotalTimeDeadline := (config.TotalTimeDeadlineMs != nil && *config.TotalTimeDeadlineMs > 0) ||
+		(config.CompactionTotalTimeDeadlineMs != nil && *config.CompactionTotalTimeDeadlineMs > 0)
+	if !hasFirstByteDeadline && !hasTotalTimeDeadline {
 		return nil
 	}
 	typed := &gatewayproxyhealth.SpeedFirstRuntimeConfig{
-		FirstByteDeadlineMs:           *config.FirstByteDeadlineMs,
+		FirstByteDeadlineMs:           30_000,
 		SlowTriggerCount:              3,
 		SlowWindowSeconds:             120,
 		RecoverySuccessCount:          3,
 		ProbeIntervalSeconds:          30,
 		DegradedTTLSeconds:            300,
 		MaxFirstByteRetriesPerRequest: 2,
+		TotalTimeDeadlineMs:           120_000,
+		CompactionTotalTimeDeadlineMs: 300_000,
+	}
+	if hasFirstByteDeadline {
+		typed.FirstByteDeadlineMs = *config.FirstByteDeadlineMs
+	}
+	if config.TotalTimeDeadlineMs != nil && *config.TotalTimeDeadlineMs > 0 {
+		typed.TotalTimeDeadlineMs = *config.TotalTimeDeadlineMs
+	}
+	if config.CompactionTotalTimeDeadlineMs != nil && *config.CompactionTotalTimeDeadlineMs > 0 {
+		typed.CompactionTotalTimeDeadlineMs = *config.CompactionTotalTimeDeadlineMs
 	}
 	speedFirst, ok := config.Raw["speedFirstConfig"].(map[string]any)
 	if !ok {

@@ -258,9 +258,13 @@ func TestW14dHasDirectPriceAndSupport(t *testing.T) {
 	if !isSupportedCatalogModel(ModelCatalogItem{Model: "m", Status: "active"}) {
 		t.Fatal("plain active model is supported")
 	}
+	// M1 裁决（音频设计 §2）：mode=audio 且协议为音频协议才收录。
 	audioMode := "audio"
 	if isSupportedCatalogModel(ModelCatalogItem{Model: "m", Status: "active", Mode: &audioMode}) {
-		t.Fatal("audio mode is not supported")
+		t.Fatal("audio mode without audio protocols is not supported")
+	}
+	if !isSupportedCatalogModel(ModelCatalogItem{Model: "m", Status: "active", Mode: &audioMode, SupportedAPIProtocols: []string{"audio_speech"}}) {
+		t.Fatal("audio mode with speech protocol is supported")
 	}
 	if isSupportedCatalogModel(ModelCatalogItem{Model: "m", Status: "active", SupportedAPIProtocols: []string{"realtime"}}) {
 		t.Fatal("realtime protocol is not supported")
@@ -351,7 +355,7 @@ func TestW14dNormalizeCustomModelCapabilitiesDirect(t *testing.T) {
 		input    customModelCapabilityInput
 		wantErr  string
 	}{
-		{"invalid mode", "gpt", customModelCapabilityInput{Mode: stringPtr("video")}, "当前只支持文本和图像自定义模型"},
+		{"invalid mode", "gpt", customModelCapabilityInput{Mode: stringPtr("video")}, "当前只支持文本、图像和音频自定义模型"},
 		{"bad tier token", "gpt", customModelCapabilityInput{SupportedServiceTiers: []string{"!!"}}, "服务等级包含不支持的值"},
 		{"bad effort token", "gpt", customModelCapabilityInput{SupportedReasoningEfforts: []string{"!"}}, "思考级别包含不支持的值"},
 		{"gpt too many tiers", "gpt", customModelCapabilityInput{SupportedServiceTiers: []string{"a", "b", "c"}}, "自定义模型参数无效"},
@@ -386,6 +390,13 @@ func TestW14dNormalizeCustomModelCapabilitiesDirect(t *testing.T) {
 	}
 	if len(ok.supportedReasoningEfforts) != 1 || ok.supportedReasoningEfforts[0] != "high" {
 		t.Fatalf("deduped efforts: %v", ok.supportedReasoningEfforts)
+	}
+	// M1：mode=audio 合法，但沿用 image 的非文本规则（不支持 tier/effort）。
+	if _, err := normalizeCustomModelCapabilities("gpt", customModelCapabilityInput{Mode: stringPtr("audio")}); err != nil {
+		t.Fatalf("audio mode: %v", err)
+	}
+	if _, err := normalizeCustomModelCapabilities("gpt", customModelCapabilityInput{Mode: stringPtr("audio"), SupportedServiceTiers: []string{"priority"}}); err == nil || err.Error() != "只有文本自定义模型支持服务等级和思考能力配置" {
+		t.Fatalf("audio tiers: %v", err)
 	}
 }
 

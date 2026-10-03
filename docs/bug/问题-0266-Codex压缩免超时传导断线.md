@@ -56,3 +56,7 @@ Go 侧 preflight 识别、engine 判定、transport 闸门均正确（生产审�
 ## 6. 已知偏差（终审登记，非阻断）
 
 **usage 成功终态记录的 started_at 语义漂移**：`FinalizeHandledUpstreamResponse` → `RecordCompletedUpstreamAttempt` 传 `StartedAtMs: input.StartedAtMs`（`nonstream.go` 审计完成路径），锚点修复（第 3 节第 4 项）后随 input 变为 attempt 级；Node 对应路径（finalization 的 `recordCompletedUpstreamAttempt`）的 startedAt 来自 finalization 入参的**请求级** startedAt（routes.ts:257）。根因是 Go 单一 `HandleUpstreamResponseInput` 无法区分 Node 的双 startedAt（响应管道 attempt 级 / 审计记录请求级）。影响限于多 attempt 请求的 usage 记录时间轴（单 attempt 仅差 preflight 时长，方向更精确），`first_token_ms` 不受影响（响应处理内 attempt 级计算，与 Node dist 口径一致）。留档声明该偏差，后续如需严格对齐可与双字段拆分任务绑定处理。
+
+## 7. 后续边界变更（2026-10-03 设计登记）
+
+《普通路由速度优先延迟切换设计》第 6 节"总时间兜底截止"（待实施）将给压缩请求增加**调度层总时长软观察**（`speedFirstConfig.compactionTotalTimeDeadlineSeconds`，默认 300 秒）：到期未完成记总时间慢样本、确认慢后经 `latency_degraded` 降级兜底。该机制不属于本文修复或豁免的 lane 硬超时范围——本文语义全部保持：首字截止、首响应 / 语义结果 / attempt 生命周期 / 非流式首响应等 lane 超时豁免、transport watch 禁用、`Unbounded` wall budget 与读超时 plan 为 nil 均不变。总时间软截止对已写出内容的压缩流不做任何中断（照常读完）；仅当压缩流尚未写出任何可见内容、账户已被确认总时间慢且满足速度优先安全切号链（未写出、有候选、未超每请求换号上限、无坑不跳）时，允许与其他可重放文本一致的隐藏切号（中止当前上游并在新账户重放 compact 契约检查），不产生 lane 硬超时类失败语义。实施时的接线变化：preflight 对压缩请求的首字运行态配置（`NormalRouteFirstByteConfig`）维持 nil、速度优先配置整体照常携带，仅观测层按维度分流（见该设计 6.8）；`codex_compaction_timeouts_disabled` 审计含义不变。

@@ -44,7 +44,11 @@ const (
 // images_json survive the dispatch candidate filter instead of every new
 // account being rejected by the images lane (endpoint_mode_unsupported).
 var (
-	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse"}
+	// M1 同步音频（音频设计 §11.6）：audio_speech / audio_transcription_json
+	// 是可表达、opt-in 的 openai 族能力（与 images_json 同语义：进词表、
+	// 不进默认集，显式 supported_endpoint_modes 含它的账户在 audio 车道
+	// 存活）。
+	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json"}
 	OpenAIChatEndpointModes      = []string{"chat_json", "chat_sse"}
 	OpenAIResponsesEndpointModes = []string{"responses_json", "responses_sse"}
 	// OpenAIDefaultEndpointModes is the write-side default set for new openai
@@ -54,9 +58,11 @@ var (
 	// account defaults).
 	OpenAIDefaultEndpointModes  = []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}
 	AnthropicEndpointModeValues = []string{"messages_json", "messages_sse", "message_token_counting"}
-	GeminiEndpointModeValues    = []string{
+	// gemini 族 M1 仅补 audio_speech（gemini TTS adapter 承载；gemini 无
+	// /v1/audio/transcriptions 直连形态）。
+	GeminiEndpointModeValues = []string{
 		"generate_content_json", "generate_content_sse", "count_tokens",
-		"embed_content", "interactions_json", "interactions_sse",
+		"embed_content", "interactions_json", "interactions_sse", "audio_speech",
 	}
 	HybridEndpointModeValues = append(append(append([]string{}, OpenAIEndpointModeValues...), AnthropicEndpointModeValues...), GeminiEndpointModeValues...)
 )

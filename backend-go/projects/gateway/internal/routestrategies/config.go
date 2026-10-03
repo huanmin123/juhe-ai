@@ -46,7 +46,16 @@ func ModeSupportsSchedulingPreference(mode string) bool {
 const (
 	defaultNormalSchedulingPreference = "cost_first"
 	defaultSpeedFirstDeadlineMs       = 30_000
+	// 总时间兜底截止默认值（设计 6.2）：普通档 120 秒、压缩档（含大输入请求
+	// 自动套用）300 秒；显式 0 / 越界在写侧拒绝，缺省按默认生效。
+	defaultSpeedFirstTotalTimeSeconds           = 120
+	defaultSpeedFirstCompactionTotalTimeSeconds = 300
 )
+
+// SpeedFirstLargeInputTokenThreshold 是总时间档位分界的硬编码契约常量（设计
+// 6.2）：请求体估算输入 token ≥ 该值的非压缩请求自动套用压缩档阈值；选档
+// 在 dispatch 侧 attempt 装配时执行，配置层只透传两个档位阈值。
+const SpeedFirstLargeInputTokenThreshold = 100_000
 
 // SpeedFirstConfig mirrors RouteStrategySpeedFirstConfig.
 type SpeedFirstConfig struct {
@@ -56,6 +65,11 @@ type SpeedFirstConfig struct {
 	ProbeIntervalSeconds          int `json:"probeIntervalSeconds"`
 	DegradedTtlSeconds            int `json:"degradedTtlSeconds"`
 	MaxFirstByteRetriesPerRequest int `json:"maxFirstByteRetriesPerRequest"`
+	// TotalTimeDeadlineSeconds / CompactionTotalTimeDeadlineSeconds 是总时间
+	// 兜底截止（设计 6.2）：普通档作用于速度优先可重放文本，压缩档作用于
+	// 压缩请求与估算大输入请求。
+	TotalTimeDeadlineSeconds           int `json:"totalTimeDeadlineSeconds"`
+	CompactionTotalTimeDeadlineSeconds int `json:"compactionTotalTimeDeadlineSeconds"`
 }
 
 // NormalRoutingConfig mirrors RouteStrategyNormalRoutingConfig: cost_first
@@ -207,12 +221,14 @@ func normalizeSchedulingPreference(value any) (string, error) {
 // defaults and range-checks the rest (速度优先 messages mirror the source).
 func normalizeSpeedFirstConfig(value any) (*SpeedFirstConfig, error) {
 	fallback := SpeedFirstConfig{
-		SlowTriggerCount:              3,
-		SlowWindowSeconds:             120,
-		RecoverySuccessCount:          3,
-		ProbeIntervalSeconds:          30,
-		DegradedTtlSeconds:            300,
-		MaxFirstByteRetriesPerRequest: 2,
+		SlowTriggerCount:                   3,
+		SlowWindowSeconds:                  120,
+		RecoverySuccessCount:               3,
+		ProbeIntervalSeconds:               30,
+		DegradedTtlSeconds:                 300,
+		MaxFirstByteRetriesPerRequest:      2,
+		TotalTimeDeadlineSeconds:           defaultSpeedFirstTotalTimeSeconds,
+		CompactionTotalTimeDeadlineSeconds: defaultSpeedFirstCompactionTotalTimeSeconds,
 	}
 	if value == nil {
 		return &fallback, nil
@@ -245,13 +261,23 @@ func normalizeSpeedFirstConfig(value any) (*SpeedFirstConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	totalTimeDeadlineSeconds, err := normalizeIntegerRange(record["totalTimeDeadlineSeconds"], fallback.TotalTimeDeadlineSeconds, 60, 270, "请求总时间截止必须是 60-270 秒")
+	if err != nil {
+		return nil, err
+	}
+	compactionTotalTimeDeadlineSeconds, err := normalizeIntegerRange(record["compactionTotalTimeDeadlineSeconds"], fallback.CompactionTotalTimeDeadlineSeconds, 300, 900, "压缩总时间截止必须是 300-900 秒")
+	if err != nil {
+		return nil, err
+	}
 	return &SpeedFirstConfig{
-		SlowTriggerCount:              slowTriggerCount,
-		SlowWindowSeconds:             slowWindowSeconds,
-		RecoverySuccessCount:          recoverySuccessCount,
-		ProbeIntervalSeconds:          probeIntervalSeconds,
-		DegradedTtlSeconds:            degradedTtlSeconds,
-		MaxFirstByteRetriesPerRequest: maxRetries,
+		SlowTriggerCount:                   slowTriggerCount,
+		SlowWindowSeconds:                  slowWindowSeconds,
+		RecoverySuccessCount:               recoverySuccessCount,
+		ProbeIntervalSeconds:               probeIntervalSeconds,
+		DegradedTtlSeconds:                 degradedTtlSeconds,
+		MaxFirstByteRetriesPerRequest:      maxRetries,
+		TotalTimeDeadlineSeconds:           totalTimeDeadlineSeconds,
+		CompactionTotalTimeDeadlineSeconds: compactionTotalTimeDeadlineSeconds,
 	}, nil
 }
 

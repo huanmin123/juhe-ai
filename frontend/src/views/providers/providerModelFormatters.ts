@@ -54,7 +54,9 @@ export const apiProtocolLabels: Record<string, string> = {
   embed_content: 'Embed Content',
   interactions: 'Interactions',
   completions: 'Completions',
-  images: 'Images API'
+  images: 'Images API',
+  audio_speech: 'Audio Speech (TTS)',
+  audio_transcription: 'Audio Transcription (STT)'
 }
 
 export const modelStatusOptions: Array<{ label: string; value: ProviderModelStatus }> = [
@@ -65,7 +67,8 @@ export const modelStatusOptions: Array<{ label: string; value: ProviderModelStat
 
 export const modelModeOptions: Array<{ label: string; value: ProviderModelMode }> = [
   { label: '对话 / 编码', value: 'text' },
-  { label: '图像', value: 'image' }
+  { label: '图像', value: 'image' },
+  { label: '音频', value: 'audio' }
 ]
 
 export const apiProtocolOptions: Array<{ label: string; value: ProviderModelApiProtocol }> = Object.entries(apiProtocolLabels)
@@ -87,7 +90,13 @@ export const directPriceFieldKeys: DirectPriceFieldKey[] = [
 
 export const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFieldKey[]> = {
   text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour', 'audioInputUsdPer1M'],
-  image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage']
+  image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage'],
+  // 音频直接价格对齐后端写路径契约（write_routes.go customInputHasDirectPrice
+  // 的 audio 分支）：TTS（语音合成）记 audioOutputUsdPer1M、STT（转写）记
+  // audioInputUsdPer1M，均为 USD / 1M 口径；目录 API 无独立的字符价/秒价字段
+  // （TtsInputUsdPer1MChars / AudioInputUsdPerSecond 仅存在于后端内部计费
+  // 静态目录，不暴露给管理面）。
+  audio: ['audioOutputUsdPer1M', 'audioInputUsdPer1M']
 }
 
 const priceFieldDefinitions: Record<DirectPriceFieldKey, ModelPriceFieldDefinition> = {
@@ -122,6 +131,14 @@ export function customModelPriceFields(providerCode: string, category: ModelCate
   return keys.map((key) => {
     if (code === 'anthropic' && key === 'cacheWriteUsdPer1M') {
       return { ...priceFieldDefinitions[key], label: '5m 缓存写入', description: '每 100 万写入并保留 5 分钟的缓存 Token 美元价格。' }
+    }
+    // 音频分类下按任务语义展示（合成/转写），单位仍是字段本身的 USD / 1M
+    // 口径；文本分类（如 Gemini 音频输入）沿用通用「音频输入/输出」标签。
+    if (category === 'audio' && key === 'audioOutputUsdPer1M') {
+      return { ...priceFieldDefinitions[key], label: '语音合成', description: '每 100 万语音合成（TTS）输出 Token 的美元价格。' }
+    }
+    if (category === 'audio' && key === 'audioInputUsdPer1M') {
+      return { ...priceFieldDefinitions[key], label: '转写', description: '每 100 万转写（STT）音频输入 Token 的美元价格。' }
     }
     return priceFieldDefinitions[key]
   })
@@ -165,6 +182,7 @@ export function hasDirectModelPrice(item: ProviderModelPricing): boolean {
 
 export function defaultProtocolsForModelCategory(category: ModelCategoryKey): ProviderModelApiProtocol[] {
   if (category === 'image') return ['images']
+  if (category === 'audio') return ['audio_speech']
   return ['responses', 'chat_completions']
 }
 
@@ -372,6 +390,7 @@ function apiProtocolForEndpointFamily(code: string): ProviderModelApiProtocol | 
 
 function apiProtocolMatchesModelCategory(protocol: ProviderModelApiProtocol, category: ModelCategoryKey): boolean {
   if (category === 'image') return protocol === 'images'
+  if (category === 'audio') return protocol === 'audio_speech' || protocol === 'audio_transcription'
   return protocol === 'responses'
     || protocol === 'chat_completions'
     || protocol === 'messages'

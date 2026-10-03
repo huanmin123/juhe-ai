@@ -258,7 +258,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 文本以 Markdown 语义输入；在块首输入 `- `、`1. `、`> `、代码围栏等 Markdown 前缀时由 StarterKit 输入规则创建真实列表、引用或代码块，后续 `Enter` 按该块的编辑器规则处理。图片是行内编辑节点，保持“文字、图片、文字”的原始顺序。
 - 图片选择或粘贴后立即使用原始 Blob URL 显示本地预览，压缩准备最多并发 2 张，再走 multipart 资产上传；编辑器节点只保存 `assetId` 和私有预览 URL，发送请求只传资产引用，不把 Data URL 放入聊天 JSON。删除图片会取消排队、压缩或上传任务；被取消的 active 任务继续占物理并发槽直至真实结束，但不阻塞新会话发送，被取消的 queued 任务不得保留原图强引用。迟到结果只有在节点仍属于当前文档且任务代次未失效时才能写回。提交成功后释放原始 `File`、压缩结果与临时 Blob URL，暂存记录同时按原图和压缩文件计入内存边界。
 - 同一次富文本粘贴同时含文字和图片时，必须使用浏览器 DOM 结构按“文字、图片、文字”的原顺序插入，不能把全部文字移到图片前面；图片大小/数量过滤保留原剪贴板文件槽位，远程装饰图不消耗本地图片槽位，避免后一张合法图片错绑到前一个 HTML 图片位置。只有剪贴板没有 HTML 图片位置时才回退为文字后追加图片。图片节点通过 Backspace/Delete 或按钮离开文档后统一取消仍在进行的上传；切换会话、清空或离开页面会删除已上传但未提交的资产，上传响应晚于卸载时也要补偿删除。有序列表编号和嵌套层级在 Tiptap JSON 转 Markdown 时必须保持，并通过标准 Markdown 解析器验证。
-- `/` 只在当前普通文本块的光标前触发命令建议菜单；命令固定包含 `/image` 添加图片、`/参数`（兼容 `/parameters`）打开生成参数弹窗、`/image-model` 设置当前会话默认图像模型、`/compact` 手动压缩上下文和 `/clear` 清空当前对话。不提供 `/clear-input` 或 `/code`：清空草稿使用编辑器原生选中删除，代码块通过 Markdown 输入规则或直接输入/粘贴完成。`/image-model` 打开中文单选弹窗并可回滚乐观更新；`/参数` 只在模型存在实际可调的生成参数时打开弹窗，否则提示且不产生消息内容；`/compact` 与 `/clear` 是页面级动作，必须确认并等待服务端接受，不能作为文本插入或乐观完成。列表通过 Markdown 输入规则创建，不再提供独立 `/list` 命令。
+- `/` 只在当前普通文本块的光标前触发命令建议菜单；命令固定包含 `/image` 添加图片、`/参数`（兼容 `/parameters`）打开生成参数弹窗、`/tool-defaults` 打开「工具模型绑定」统一弹窗（设置网页搜索与图像生成的全局默认绑定，见 8.6）、`/compact` 手动压缩上下文和 `/clear` 清空当前对话。不提供 `/clear-input` 或 `/code`：清空草稿使用编辑器原生选中删除，代码块通过 Markdown 输入规则或直接输入/粘贴完成。`/tool-defaults` 弹窗一次保存全局偏好并同步当前会话（见 8.6）；`/参数` 只在模型存在实际可调的生成参数时打开弹窗，否则提示且不产生消息内容；`/compact` 与 `/clear` 是页面级动作，必须确认并等待服务端接受，不能作为文本插入或乐观完成。列表通过 Markdown 输入规则创建，不再提供独立 `/list` 命令。
 - 斜杠查询没有候选项时，Enter 回到普通发送语义，不能被空命令菜单吞掉。
 - 发送前保存 Tiptap JSON 快照；发送成功清空编辑器，失败恢复快照，停止生成不恢复已经提交的用户消息。
 - 编辑器输出转换为 `input_text` / `input_image` 内容块；纯文本请求仍可降级为现有 `content` 字段。
@@ -278,10 +278,10 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - Chat Completions 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段（function tools），由网关做协议适配和安全校验。
 - 用户选择 reasoning effort 时按所选协议发送对应 reasoning 参数；前端只展示上游公开的 reasoning summary 事件，不展示或伪造隐藏思维链。
 - Chat 模块将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块；上游自行执行的内置工具只展示状态和结果，Chat 模块不重复执行、不伪造工具结果。
-- **联网搜索（`web_search` 模型工具）**：未绑定时仍注入工具定义；主模型发起调用后返回 `tool.binding_required` SSE 引导事件（含候选列表与用户提示），主轮继续；已绑定时由子代理以绑定「账号 + 模型」发起非流式 Responses 请求（`tools:[{type:"web_search"}]`、`x-juhe-ai-purpose: chat_web_search`），经网关 /v1 链固定派发绑定账户，结果与来源 URL 裁剪后回喂主模型。绑定候选 = 全部授权可派发账户 × 目录「协议 × 工具」矩阵声明 `web_search` 的 responses 可派发模型（跨账户合法，如 GPT 对话 + Grok 搜索）。
+- **联网搜索（`web_search` 模型工具）**：未绑定时仍注入工具定义；主模型发起调用后返回 `tool.binding_required` SSE 引导事件（含候选列表与用户提示），主轮继续；已绑定时由子代理以绑定「账号 + 模型」发起**流式**子调用（按绑定模型与账号实际协议执行，典型为 Responses + hosted `web_search`，`x-juhe-ai-purpose: chat_web_search`），过程经内容块投影通道渐进下发（见设计文档 §6.1），经网关 /v1 链固定派发绑定账户，结果与来源 URL 裁剪后回喂主模型。绑定候选 = 全部授权可派发账户 × 目录「协议 × 工具」矩阵声明 `web_search` 的 responses 可派发模型（跨账户合法，如 GPT 对话 + Grok 搜索）。
 - **图片生成（`generate_image` 模型工具）**：绑定粒度为账户，生效模型沿会话 `defaultImageModel`（枚举白名单 GPT 系 `gpt-image-2` 与 Grok 系 `grok-imagine-image` / `grok-imagine-image-quality`）；候选 = 可路由注册图像模型的 api_key 型账户。文本模型明确需要位图时调用 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败。工具循环上限见设计文档（`MaxModelRounds=4`、`MaxToolCalls=8`、`MaxImageCalls=2`）。`chatImageGenerationTotalTimeoutSeconds` 控制一次图片工具调用从网关选号到资产提交的整体时限，默认 `900` 秒、范围 `60..86400`；每个新聊天任务冻结当次系统设置快照。通用边界见 [AI 工具创建规范](../architecture/backend/AI工具创建规范.md)。
-- 会话详情的工具能力（`toolCapabilities`：`web_search` / `generate_image` 的 `bound` / `binding` / `valid` / `invalidReason` / `candidates`）按候选口径聚合（见《AI 问答工具体系与主子模型设计》§8）；会话绑定候选不随主对话账户收敛（跨账户组合合法）。
-- **用户级默认工具绑定（2026-10-02）**：搜索与生图的默认绑定按登录用户服务端存储（`chat_user_tool_preferences`，跨设备生效）；新建会话由服务端以默认值初始化绑定三列与 `defaultImageModel`（失效组合沿「已失效，请重设」引导，不静默漂移）；任一会话显式保存/解绑 `searchBinding`/`imageBinding` 后服务端回写全局默认（解绑置空；best-effort 不阻断会话保存）。`GET/PATCH /my-chat/tool-preferences`（PATCH 严格键 `searchBinding`/`imageBinding`/`defaultImageModel`，候选校验同会话 PATCH，只改用户默认不触碰会话）；入口为输入框 `/` 命令「搜索默认绑定」/「生图默认绑定」（复用绑定弹窗全局模式）；旧纯前端 localStorage 偏好复用机制已删除。完整契约见设计文档 §2.11/§7/§8.5-8.6/§10.6-10.7。
+- 会话详情内嵌的 `toolCapabilities`（`web_search` / `generate_image` 的 `bound` / `binding` / `valid` / `invalidReason` / `candidates`）按候选口径聚合（见《AI 问答工具体系与主子模型设计》§8）；会话绑定候选不随主对话账户收敛（跨账户组合合法）。前端会话详情弹窗不展示该字段（2026-10-03 起「工具能力」行已移除，见 8.10）。
+- **用户级默认工具绑定（2026-10-02；2026-10-03 入口收敛）**：搜索与生图的默认绑定按登录用户服务端存储（`chat_user_tool_preferences`，跨设备生效）；新建会话由服务端以默认值初始化绑定三列与 `defaultImageModel`（失效组合沿「已失效，请重设」引导，不静默漂移）；任一会话显式保存/解绑 `searchBinding`/`imageBinding` 后服务端回写全局默认（解绑置空；best-effort 不阻断会话保存）。`GET/PATCH /my-chat/tool-preferences`（PATCH 严格键 `searchBinding`/`imageBinding`/`defaultImageModel`，候选校验同会话 PATCH，只改用户默认不触碰会话）；入口为输入框 `/` 单一命令 `/tool-defaults`（「工具模型绑定」统一弹窗：一次展示网页搜索与图像生成各一区，候选来自偏好端点响应、无前端硬编码图像模型枚举，一次 PATCH 携带全部键；保存成功后存在未归档当前会话时按 UI 最终值再 PATCH 该会话三键，使当前会话立即同步为全局值，无会话或已归档则仅全局生效）；旧「搜索默认绑定」/「生图默认绑定」双命令与会话详情工具能力入口已删除。完整契约见设计文档 §2.11/§7/§8.5-8.6/§10.6-10.7。
 - 模型目录能力为「协议 × 工具」二维矩阵（`supportedToolsByProtocol`）：内置行未声明时按 8.5 节静态快照兜底填充，custom 目录行按本节末「custom 目录行能力继承」继承声明；一维 `supportedTools` 已退场。
 - 图像账户需显式声明 Images 端点能力（`supported_endpoint_modes` 含 `images_json`，非默认项）；图像账户后台健康检查使用上游 `GET /v1/models` 精确确认模型 ID，不得把普通对话模型写进 Images 请求。
 - `generate_image` 完成后通过 artifact sink 原子写入同一个 `assetId` 的 original/preview 两个对象：original 保留 provider 实际 WebP/PNG/JPEG，preview 统一 WebP、最长边约 640；消息只加载 `?variant=preview`；点击预览通过页面内 Ant Design Vue 图片灯箱按需请求 `?variant=original`。下载和复制都位于助手消息底部工具栏：下载通过 fetch + blob 保存本地文件，复制在用户点击时把原图转换为 PNG 并写入真实图片 ClipboardItem，不能复制 `attachment://` Markdown。内部附件 Markdown 已由结构化图片块渲染，渲染器必须忽略它的 alt/书签名称。资产响应默认 `Content-Disposition: inline`，可选 `download=1` 时改为 attachment；两个版本分别使用 SHA-256 ETag、`private, max-age=86400, immutable` 和条件请求 304；对象提交成功后才解除补偿删除。
@@ -362,7 +362,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 - 对话主区不显示会话标题、API Key 快照和顶部模型工具条，垂直空间全部让给消息窗口。
 - 会话列表每项只显示一行标题，超长省略；重命名、置顶/取消置顶、详情和删除放在右键菜单。
-- 会话详情按需展示 API Key 快照、最近模型、活动状态、置顶状态、创建时间和更新时间，不在列表重复展示。
+- 会话详情按需展示会话 ID、标题、账户唯一绑定、API Key 快照、最近模型、活动状态、置顶状态、创建时间和更新时间，不在列表重复展示；不展示「工具能力」绑定状态与「默认图像模型」行（2026-10-03 移除，工具绑定查看与设置统一经 `/tool-defaults` 命令与「工具模型绑定」弹窗）。
 - 重命名和置顶 / 取消置顶允许先更新当前列表，再以服务端返回覆盖；失败时只在当前值仍等于本次乐观值时回滚，避免旧请求覆盖用户后续操作。创建、删除、手动压缩和清空会话继续等待服务端成功，不伪造完成态。
 - 用户位于底部附近时，文本、工具、思考和异步高度变化自动跟随；用户向上滚轮、触摸、键盘或拖动滚动条离开底部后立即解除跟随，流式输出不得抢回滚动位置。
 - 距离底部超过 72px 时，在输入框上方中央显示“回到底部”按钮；点击后恢复跟随并滚到最新消息。

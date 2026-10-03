@@ -94,6 +94,21 @@ func TestRequestSupportedEndpointMode(t *testing.T) {
 			expect: EndpointModeImagesJSON,
 		},
 		{
+			name:   "audio speech",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/audio/speech", nil)},
+			expect: EndpointModeAudioSpeech,
+		},
+		{
+			name:   "audio transcription",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/audio/transcriptions", nil)},
+			expect: EndpointModeAudioTranscriptionJSON,
+		},
+		{
+			name:   "audio translation",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/audio/translations", nil)},
+			expect: EndpointModeAudioTranscriptionJSON,
+		},
+		{
 			name:   "ungated shape (GET models)",
 			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/models", nil)},
 			expect: "",

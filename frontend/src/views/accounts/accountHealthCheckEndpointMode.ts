@@ -2,6 +2,8 @@ import type { AccountHealthCheckEndpointMode, AccountSupportedEndpointMode } fro
 
 const options: Array<{ label: string; value: AccountHealthCheckEndpointMode }> = [
   { label: 'Images API', value: 'images_json' },
+  { label: 'Audio Speech（TTS）', value: 'audio_speech' },
+  { label: 'Audio Transcription（JSON）', value: 'audio_transcription_json' },
   { label: 'Chat Completions（JSON）', value: 'chat_json' },
   { label: 'Chat Completions（Streaming）', value: 'chat_sse' },
   { label: 'Responses API（JSON）', value: 'responses_json' },

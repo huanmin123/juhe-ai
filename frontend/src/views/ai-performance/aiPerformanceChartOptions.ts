@@ -2,10 +2,11 @@ import type { EChartsOption } from 'echarts'
 
 import { formatMillisecondsAsSeconds } from '@/shared/formatters'
 import { providerDisplayName } from '@/shared/providerDisplay'
+import { chartPalette } from '@/shared/chartPalette'
 import type { AiPerformanceOverview } from '@/types/domain'
 import { formatInteger } from '@/views/stats/statsFormatters'
 
-export const chartColors = ['#53696b', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#2f54eb', '#a0d911', '#fa541c', '#8c8c8c', '#08979c', '#531dab']
+export const chartColors = chartPalette
 
 export type AiPerformanceMetric = 'averageFirstToken' | 'maxFirstToken' | 'averageDuration' | 'maxDuration'
 type AiPerformanceSeries = AiPerformanceOverview['hourlySeries'][number]

@@ -123,13 +123,19 @@ func TestChainCatalogItemID(t *testing.T) {
 }
 
 func TestChainIsSupportedCatalogModel(t *testing.T) {
+	// M1 裁决（音频设计 §2）：mode=audio（含别名）且协议为音频协议的模型
+	// 收录；无音频协议的 audio 行、realtime 协议、旧词表单 audio 协议继续
+	// 排除；名字 token 排除只对未标注 audio 的模型生效。
 	audio := "audio"
 	mode := func(m string) *string { return &m }
-	if chainIsSupportedCatalogModel(gatewayruntimecache.ProviderModelCatalogItem{Mode: &audio}) {
-		t.Fatal("audio 模式必须判不支持")
+	if !chainIsSupportedCatalogModel(gatewayruntimecache.ProviderModelCatalogItem{Model: "whisper-1", Mode: &audio, SupportedAPIProtocols: []string{"audio_transcription"}}) {
+		t.Fatal("显式 audio 分类的模型必须判支持")
 	}
 	if chainIsSupportedCatalogModel(gatewayruntimecache.ProviderModelCatalogItem{Mode: mode("audio_speech")}) {
-		t.Fatal("audio_speech 模式必须判不支持")
+		t.Fatal("无音频协议的 audio_speech 模式必须判不支持")
+	}
+	if chainIsSupportedCatalogModel(gatewayruntimecache.ProviderModelCatalogItem{Mode: &audio, SupportedAPIProtocols: []string{"chat_completions"}}) {
+		t.Fatal("audio 模式 + 对话协议必须判不支持")
 	}
 	if chainIsSupportedCatalogModel(gatewayruntimecache.ProviderModelCatalogItem{SupportedAPIProtocols: []string{"realtime"}}) {
 		t.Fatal("realtime 协议必须判不支持")

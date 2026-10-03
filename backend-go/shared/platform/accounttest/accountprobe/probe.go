@@ -735,6 +735,19 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 				parseUpstreamMessage(context.bodyText, protocol, true),
 			)
 		}
+	} else if mode.audio() {
+		// M1 同步音频探针（音频设计 §11.9）：audio_speech 按协议分支验
+		// HTTP 信封（openai：2xx + content-type audio/*；gemini：2xx + JSON
+		// candidates 含 inlineData，窄投影同 images 先例）；STT 验 JSON 信封
+		// 含 text 字段（契约 §4.2 响应形态）。
+		protocolEvidence = hasAudioProbeSuccessEvidence(mode, protocol, context, headers)
+		if !protocolEvidence {
+			upstreamErrorCode = parseUpstreamErrorCodeFromBody(bodyText)
+			upstreamMessage = firstNonEmpty(
+				protocolMessage(context.record, protocol),
+				parseUpstreamMessage(context.bodyText, protocol, true),
+			)
+		}
 	} else {
 		protocolEvidence = hasProtocolSuccessEvidence(mode, context)
 		upstreamErrorCode = parseUpstreamErrorCodeFromBody(bodyText)
@@ -748,7 +761,7 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 		}
 		rawVisible, rawVisibleOK = extractRawVisibleOutputText(context, protocol)
 	}
-	challengeMatched := mode == ModeImagesJSON
+	challengeMatched := mode == ModeImagesJSON || mode.audio()
 	if !challengeMatched {
 		challengeMatched = rawVisibleOK && strings.Contains(rawVisible, challenge.ExpectedOutput)
 	}
@@ -759,13 +772,24 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 	success := httpSucceeded && streamFailure == "" && protocolEvidence && challengeMatched
 	protocolEvidenceError := ""
 	if httpSucceeded && streamFailure == "" && !protocolEvidence {
-		if mode == ModeImagesJSON {
+		switch {
+		case mode == ModeImagesJSON:
 			if upstreamMessage != "" || upstreamErrorCode != "" {
 				protocolEvidenceError = "上游 Images API 返回错误响应"
 			} else {
 				protocolEvidenceError = "上游 Images API 响应缺少有效图片结果"
 			}
-		} else {
+		case mode.audio():
+			if mode == ModeAudioSpeech {
+				if protocol == ProtocolGemini {
+					protocolEvidenceError = "上游 Gemini TTS 未返回音频结果（2xx 且 candidates 含 inlineData）"
+				} else {
+					protocolEvidenceError = "上游 Audio Speech API 未返回音频响应（2xx 且 content-type audio/*）"
+				}
+			} else {
+				protocolEvidenceError = "上游 Audio Transcription API 响应缺少 text 字段"
+			}
+		default:
 			protocolEvidenceError = "上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据"
 		}
 	}
@@ -774,7 +798,7 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 	errorCode := ""
 	switch {
 	case success:
-		message = fmt.Sprintf("%s 测试通过", protocolName(mode))
+		message = fmt.Sprintf("%s 测试通过", protocolName(protocol, mode))
 	default:
 		switch {
 		case outputChallengeError != "":
@@ -791,12 +815,16 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 		default:
 			errorCode = upstreamErrorCode
 		}
-		if mode == ModeImagesJSON && upstreamMessage != "" {
+		if (mode == ModeImagesJSON || mode.audio()) && upstreamMessage != "" {
+			apiLabel := "Images API"
+			if mode.audio() {
+				apiLabel = "Audio API"
+			}
 			suffix := ""
 			if upstreamErrorCode != "" {
 				suffix = "（" + upstreamErrorCode + "）"
 			}
-			message = "上游 Images API 返回错误" + suffix + "：" + upstreamMessage
+			message = "上游 " + apiLabel + " 返回错误" + suffix + "：" + upstreamMessage
 		} else {
 			message = firstNonEmpty(outputChallengeError, protocolEvidenceError, upstreamMessage, streamFailure)
 		}
@@ -835,6 +863,60 @@ func classifyResponse(view *View, protocol DiagnosticProtocol, mode EndpointMode
 			UpstreamStatus:         statusCode,
 		},
 	}
+}
+
+// hasAudioProbeSuccessEvidence 是 M1 音频探针的成功证据窄投影（images
+// 先例）：audio_speech 按协议分支——openai 验 2xx 响应的 content-type 为
+// audio/*，gemini（generateContent 形态，契约 §5.1）验 JSON 信封
+// candidates[].content.parts[].inlineData（不要求特定 mimeType）；
+// audio_transcription_json 验 JSON 信封含 text 字段（契约 §4.2 响应形态；
+// 静音样本真实上游可能返回空 text，字段存在即判活）。
+func hasAudioProbeSuccessEvidence(mode EndpointMode, protocol DiagnosticProtocol, context responseContext, headers map[string]string) bool {
+	if mode == ModeAudioSpeech {
+		if protocol == ProtocolGemini {
+			return hasGeminiSpeechInlineDataEvidence(context)
+		}
+		contentType := strings.TrimSpace(headers["content-type"])
+		return strings.HasPrefix(strings.ToLower(contentType), "audio/")
+	}
+	record := context.record
+	if record == nil {
+		return false
+	}
+	_, hasTextField := record["text"].(string)
+	return hasTextField
+}
+
+// hasGeminiSpeechInlineDataEvidence 验 gemini TTS 探针响应（契约 §5.1）：
+// candidates[].content.parts[] 任一 part 携带 inlineData 即视为有效音频结果
+// （载荷格式/mimeType 不在判活面）。
+func hasGeminiSpeechInlineDataEvidence(context responseContext) bool {
+	record := context.record
+	if record == nil {
+		return false
+	}
+	candidates, _ := record["candidates"].([]any)
+	for _, candidate := range candidates {
+		candidateMap, ok := candidate.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := candidateMap["content"].(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, _ := content["parts"].([]any)
+		for _, part := range parts {
+			partMap, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, hasInlineData := partMap["inlineData"].(map[string]any); hasInlineData {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasImagesSuccessEvidence 是 inspectAccountTestImageResponseEnvelope 的窄投影：
@@ -921,12 +1003,19 @@ func parseUpstreamErrorCodeFromBody(bodyText string) string {
 	return ""
 }
 
-func protocolName(mode EndpointMode) string {
+func protocolName(protocol DiagnosticProtocol, mode EndpointMode) string {
 	switch {
 	case mode.anthropic():
 		return "Anthropic Messages"
 	case mode.gemini():
 		return "Gemini GenerateContent"
+	case mode == ModeAudioSpeech:
+		if protocol == ProtocolGemini {
+			return "Gemini Audio Speech"
+		}
+		return "OpenAI Audio Speech"
+	case mode == ModeAudioTranscriptionJSON:
+		return "OpenAI Audio Transcription"
 	case mode == ModeChatJSON || mode == ModeChatSSE:
 		return "OpenAI Chat Completions"
 	default:
@@ -1135,6 +1224,35 @@ func resolveTestModel(view *View, explicitModel string) (string, error) {
 // createAnthropicTestRequest / createGeminiTestRequest / Images）。
 func buildTestRequest(view *View, mode EndpointMode, model string, challenge OutputChallenge) (*testRequest, error) {
 	switch {
+	case mode == ModeAudioSpeech:
+		if isGeminiProtocol(view) {
+			// gemini 上游无 /v1/audio/speech 端点（恒 404），audio_speech
+			// 探针按契约 §5.1 走 generateContent，URL 沿既有 gemini 拼接分支。
+			body, err := buildGeminiSpeechPayload()
+			if err != nil {
+				return nil, err
+			}
+			return &testRequest{
+				path:    "/v1beta/" + geminiModelPath(model) + ":generateContent",
+				body:    body,
+				headers: map[string]string{"content-type": "application/json"},
+				model:   model,
+			}, nil
+		}
+		// M1 audio_speech 探针（音频设计 §11.9）：短输入 + wav 格式，voice
+		// 用缺省音色（目录 voices 清单 M1 未承载，缺口见任务报告）。
+		body, err := buildSpeechPayload(model, probeSpeechDefaultVoice)
+		if err != nil {
+			return nil, err
+		}
+		return &testRequest{path: "/v1/audio/speech", body: body, headers: map[string]string{"content-type": "application/json"}, model: model}, nil
+	case mode == ModeAudioTranscriptionJSON:
+		// M1 STT 探针：multipart，file 携带本包内置小 WAV 样本。
+		body, contentType, err := buildTranscriptionMultipart(model)
+		if err != nil {
+			return nil, err
+		}
+		return &testRequest{path: "/v1/audio/transcriptions", body: body, headers: map[string]string{"content-type": contentType}, model: model}, nil
 	case mode == ModeImagesJSON:
 		body, err := buildImagesPayload(model)
 		if err != nil {

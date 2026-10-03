@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 )
@@ -27,6 +28,11 @@ type AttemptInput struct {
 	RequestClientCompatibility string
 	FirstByteDeadlineMs        *int64
 	OnFirstByteDeadline        FirstByteDeadlineHandler
+	// TotalTimeDeadlineMs 是普通路由速度优先总时间兜底截止的档位阈值（设计
+	// 6.3，attempt 装配时解析一次；nil = 不装配，成本优先/图片 lane/无速度
+	// 优先配置）。OnTotalTimeDeadline 同点装配。
+	TotalTimeDeadlineMs *int64
+	OnTotalTimeDeadline gatewayupstream.TotalTimeDeadlineHandler
 	// UpstreamResponseModelSlot 是本次尝试的原始上游模型归因 slot（dispatch
 	// loop 每次 attempt 创建；观察钩子经 Set 发布、成功结果带回调用方）。
 	// nil = 调用方不消费归因，跳过观察。
@@ -89,6 +95,8 @@ func (e *Engine) requestUpstreamForAttempt(
 		FirstByteDeadlineMs:        input.FirstByteDeadlineMs,
 		FirstByteDeadlineTransport: firstByteDeadlineTransport,
 		OnFirstByteDeadline:        input.OnFirstByteDeadline,
+		TotalTimeDeadlineMs:        input.TotalTimeDeadlineMs,
+		OnTotalTimeDeadline:        input.OnTotalTimeDeadline,
 		DisableTimeouts:            input.TimeoutProfile.TimeoutsDisabled,
 		Signal:                     input.Signal,
 		Transport:                  upstreamTransportForAttempt(headers, upstreamURL),

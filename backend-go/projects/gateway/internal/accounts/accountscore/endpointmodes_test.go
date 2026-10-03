@@ -10,7 +10,9 @@ func TestOpenAIEndpointModeValuesIncludeImages(t *testing.T) {
 	if !IsOpenAIEndpointMode("images_json") {
 		t.Fatal("images_json 应是 openai 族合法上游接口能力")
 	}
-	want := []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse"}
+	// M1 同步音频：audio_speech / audio_transcription_json 随 images_json
+	// 同语义追加（可表达、opt-in、不进默认集）。
+	want := []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json"}
 	if len(OpenAIEndpointModeValues) != len(want) {
 		t.Fatalf("openai 模式表长度不一致：%v", OpenAIEndpointModeValues)
 	}

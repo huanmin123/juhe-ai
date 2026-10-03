@@ -202,8 +202,16 @@ func TestWeSupportedCatalogModelAndScopePriority(t *testing.T) {
 	if !isSupportedCatalogModel(supported) {
 		t.Fatal("文本模型应受支持")
 	}
+	// M1 裁决（音频设计 §2）：mode=audio（含别名）且协议为音频协议才收录；
+	// 无音频协议的 audio 行维持排除。
 	if isSupportedCatalogModel(ModelCatalogItem{Mode: &audioMode, Model: "m"}) {
-		t.Fatal("audio 模式不受支持")
+		t.Fatal("audio 模式无音频协议不受支持")
+	}
+	if !isSupportedCatalogModel(ModelCatalogItem{Mode: &audioMode, Model: "m", SupportedAPIProtocols: []string{"audio_speech"}}) {
+		t.Fatal("audio 模式 + 音频协议应受支持")
+	}
+	if !isSupportedCatalogModel(ModelCatalogItem{Mode: &audioMode, Model: "whisper-x", SupportedAPIProtocols: []string{"audio_transcription"}}) {
+		t.Fatal("显式 audio 分类的模型不按名字排除")
 	}
 	realtime := ModelCatalogItem{SupportedAPIProtocols: []string{"realtime"}, Model: "m"}
 	if isSupportedCatalogModel(realtime) {

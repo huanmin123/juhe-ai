@@ -671,21 +671,33 @@ func catalogScopePriority(scope string) int {
 	return 1
 }
 
-// isSupportedCatalogModel ports isSupportedCatalogModel.
+// isSupportedCatalogModel ports isSupportedCatalogModel. M1 裁决（音频设计
+// §2）：mode=audio（含 audio_speech / audio_transcription 别名）且协议为
+// audio_speech / audio_transcription 的模型收录（名字 token 排除不再生效）；
+// realtime 协议与旧词表的单 audio 协议继续排除；mode 标注 audio 但协议集里
+// 没有音频协议的行维持排除（防止 audio 分类行进对话链）；mode 未标注 audio
+// 的模型继续按名字 token 排除。
+// 与 chain_catalog.go 的 chainIsSupportedCatalogModel 同源，改动必须两处同步。
 func isSupportedCatalogModel(item ModelCatalogItem) bool {
 	mode := ""
 	if item.Mode != nil {
 		mode = strings.ToLower(strings.TrimSpace(*item.Mode))
 	}
-	if mode == "audio" || mode == "audio_speech" || mode == "audio_transcription" {
-		return false
-	}
+	modeIsAudio := mode == "audio" || mode == "audio_speech" || mode == "audio_transcription"
 	for _, protocol := range item.SupportedAPIProtocols {
 		if protocol == "realtime" {
 			return false
 		}
 	}
 	if len(item.SupportedAPIProtocols) == 1 && item.SupportedAPIProtocols[0] == "audio" {
+		return false
+	}
+	if modeIsAudio {
+		for _, protocol := range item.SupportedAPIProtocols {
+			if protocol == "audio_speech" || protocol == "audio_transcription" {
+				return true
+			}
+		}
 		return false
 	}
 	model := strings.ToLower(strings.TrimSpace(item.Model))

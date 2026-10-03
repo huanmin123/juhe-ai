@@ -21,6 +21,8 @@ export type AccountSupportedEndpointMode =
   | 'embed_content'
   | 'interactions_json'
   | 'interactions_sse'
+  | 'audio_speech'
+  | 'audio_transcription_json'
 export type AccountHealthCheckEndpointMode = Extract<
   AccountSupportedEndpointMode,
   | 'images_json'
@@ -34,6 +36,8 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'generate_content_sse'
   | 'interactions_json'
   | 'interactions_sse'
+  | 'audio_speech'
+  | 'audio_transcription_json'
 >
 export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 

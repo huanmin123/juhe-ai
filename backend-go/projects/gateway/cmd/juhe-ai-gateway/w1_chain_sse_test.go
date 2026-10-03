@@ -1171,7 +1171,7 @@ func TestW1VSettleSpeedFirstCutoverFallbackArms(t *testing.T) {
 	t.Run("fallback_error_propagates", func(t *testing.T) {
 		loop, sink, shutdown := newLoop(t, []w1vResolveStep{{err: errors.New("w1v: 候选存储故障")}}, "")
 		defer shutdown()
-		if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover()); !settled {
+		if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover(), gatewayproxyhealth.LatencyDimensionFirstByte, 0); !settled {
 			t.Fatal("回退错误必须结算")
 		}
 		// loop.c 是组合链：渲染走真实 Responses 写到 loop.res。
@@ -1186,7 +1186,7 @@ func TestW1VSettleSpeedFirstCutoverFallbackArms(t *testing.T) {
 	t.Run("fallback_completed_via_blocked_preflight", func(t *testing.T) {
 		loop, sink, shutdown := newLoop(t, []w1vResolveStep{{found: true, groupID: "w1v_group_fb"}}, "w1v_group_fb")
 		defer shutdown()
-		if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover()); !settled {
+		if settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover(), gatewayproxyhealth.LatencyDimensionFirstByte, 0); !settled {
 			t.Fatal("回退预检已渲染（Completed）必须结算")
 		}
 		if loop.res.StatusCode() != http.StatusTooManyRequests {
@@ -1202,7 +1202,7 @@ func TestW1VSettleSpeedFirstCutoverFallbackArms(t *testing.T) {
 			{found: true, groupID: "w1v_group_fb", accountIDs: []string{"acc_w1v_group_fb"}},
 		}, "")
 		defer shutdown()
-		settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover())
+		settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover(), gatewayproxyhealth.LatencyDimensionFirstByte, 0)
 		if settled {
 			t.Fatalf("Switched 应返回 false 续环（res status=%d）", loop.res.StatusCode())
 		}

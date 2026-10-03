@@ -42,6 +42,9 @@ import (
 
 // PriceSet mirrors provider-billing.types ProviderBillingPriceSet. nil means
 // the Node undefined price; a non-nil 0 is a real free price (glm-4.7-flash).
+// TtsInputUsdPer1MChars / AudioInputUsdPerSecond 是 M1 同步音频计费维度
+// （音频设计 §10）：TTS 按输入字符（USD/1M chars）、STT 按音频秒（USD/s）；
+// 计费引擎行项消费由 billing 扩展另行交付，本结构只承载目录单价。
 type PriceSet struct {
 	InputUsdPer1M               *float64
 	OutputUsdPer1M              *float64
@@ -54,6 +57,8 @@ type PriceSet struct {
 	AudioInputUsdPer1M          *float64
 	AudioOutputUsdPer1M         *float64
 	OutputUsdPerImage           *float64
+	TtsInputUsdPer1MChars       *float64
+	AudioInputUsdPerSecond      *float64
 }
 
 // ServiceTierPrices mirrors Record<string, ModelPriceSet> (priority/flex/batch).
@@ -77,6 +82,9 @@ type Pricing struct {
 	SupportedAPIProtocols []string
 	InputModalities       []string
 	OutputModalities      []string
+	// ResponseFormats 是 TTS 模型的对外 response_format 支持清单（音频设计
+	// §4.1/契约 §5.1：openai tts 官方全集、gemini tts 仅 ["pcm"]，零转码）。
+	ResponseFormats []string
 	// SupportedToolsByProtocol 是「协议 × 工具」矩阵（6.4）：键为该行协议枚举，
 	// 值为该协议下可用的工具集。一维 SupportedTools 已随阶段 2 退场。
 	SupportedToolsByProtocol  map[string][]string
@@ -111,6 +119,9 @@ type Pricing struct {
 
 // CostInput mirrors ProviderBillingCostInput plus the costUsd override the
 // CostBreakdownInput extension carries. nil = Node undefined.
+// TtsInputChars / AudioInputSeconds 是 M1 同步音频计量维度（音频设计 §10）：
+// TTS 请求输入字符数、STT 音频秒数，行项由 billing.go 的
+// tts_input_chars / audio_input_seconds 消费。
 type CostInput struct {
 	ProviderCode string
 	Model        string
@@ -127,6 +138,8 @@ type CostInput struct {
 	InputAudioTokens   *float64
 	OutputAudioTokens  *float64
 	OutputImageCount   *float64
+	TtsInputChars      *float64
+	AudioInputSeconds  *float64
 	CostUsd            *float64
 }
 
@@ -145,9 +158,17 @@ const (
 	LineAudioOutput  CostLineKind = "audio_output"
 	LineImageOutUnit CostLineKind = "image_output_unit"
 	LineOther        CostLineKind = "other"
-	LineUnitToken                 = "token"
-	LineUnitImage                 = "image"
-	tokenUnitSize                 = 1_000_000.0
+	// M1 同步音频行项（音频设计 §10）：TTS 按输入字符、STT 按音频秒。
+	// 行项生成（billing.go 消费）由计费扩展另行交付。
+	CostLineKindTtsInputChars     CostLineKind = "tts_input_chars"
+	CostLineKindAudioInputSeconds CostLineKind = "audio_input_seconds"
+	LineUnitToken                              = "token"
+	LineUnitImage                              = "image"
+	// LineUnitChar / LineUnitSecond 是 M1 音频行项的计量单位（tts_input_chars
+	// 按 1M 字符计价、audio_input_seconds 按秒计价）。
+	LineUnitChar   = "char"
+	LineUnitSecond = "second"
+	tokenUnitSize  = 1_000_000.0
 )
 
 // CostLineItem mirrors ProviderCostLineItem.
@@ -296,6 +317,8 @@ func sumOptionalCosts(parts ...*float64) *float64 {
 }
 
 // hasAnyRate mirrors hasAnyRate: at least one finite rate must exist.
+// M1 音频单价（TtsInputUsdPer1MChars / AudioInputUsdPerSecond）计入：纯
+// TTS/STT 模型可能只携带这两个单价（tts-1 / whisper-1）。
 func hasAnyRate(set PriceSet) bool {
 	for _, v := range []*float64{
 		set.InputUsdPer1M, set.OutputUsdPer1M, set.CachedInputUsdPer1M,
@@ -303,6 +326,7 @@ func hasAnyRate(set PriceSet) bool {
 		set.CacheStorageUsdPer1MPerHour, set.ImageInputUsdPer1M,
 		set.ImageOutputUsdPer1M, set.AudioInputUsdPer1M,
 		set.AudioOutputUsdPer1M, set.OutputUsdPerImage,
+		set.TtsInputUsdPer1MChars, set.AudioInputUsdPerSecond,
 	} {
 		if v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0) {
 			return true
@@ -311,11 +335,13 @@ func hasAnyRate(set PriceSet) bool {
 	return false
 }
 
-// hasAnyCostDimension mirrors hasAnyCostDimension.
+// hasAnyCostDimension mirrors hasAnyCostDimension. M1 音频计量维度同样计入
+// （TTS 请求只有字符计量、无 token 计量）。
 func hasAnyCostDimension(input CostInput) bool {
 	return input.InputTokens != nil || input.OutputTokens != nil ||
 		input.CacheReadTokens != nil || input.CacheWriteTokens != nil ||
 		input.CacheWrite1hTokens != nil || input.InputImageTokens != nil ||
 		input.OutputImageTokens != nil || input.InputAudioTokens != nil ||
-		input.OutputAudioTokens != nil || input.OutputImageCount != nil
+		input.OutputAudioTokens != nil || input.OutputImageCount != nil ||
+		input.TtsInputChars != nil || input.AudioInputSeconds != nil
 }

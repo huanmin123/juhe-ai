@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
 
@@ -11,8 +12,13 @@ var geminiImageModelPattern = regexp.MustCompile(`(?:^|-)gemini(?:[^/]*-)?image(
 
 // ResolveRequestLane mirrors resolveOpenAIGatewayRequestLane. The body may
 // be nil; bodyModel carries the request model hint when the caller already
-// parsed the JSON body.
-func ResolveRequestLane(pathWithQuery string, body any, bodyModel string) gatewayproto.RequestLane {
+// parsed the JSON body. 音频路径族判定（音频设计 §3：媒体车道全部豁免
+// speed-first 与同账户瞬态重试）在 image/模型名前缀清单之前接入，路径词表
+// 唯一落点是 gatewaymedia.RequestLaneForPath，本包不重复维护词表。
+func ResolveRequestLane(method, pathWithQuery string, body any, bodyModel string) gatewayproto.RequestLane {
+	if lane, ok := gatewaymedia.RequestLaneForPath(strings.ToUpper(strings.TrimSpace(method)), pathWithQuery); ok {
+		return lane
+	}
 	path, _ := SplitPathAndQuery(pathWithQuery)
 	path = strings.ToLower(path)
 	if isImageEndpointOrModelPath(path, bodyModel) {

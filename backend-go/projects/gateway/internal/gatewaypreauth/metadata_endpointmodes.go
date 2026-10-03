@@ -11,21 +11,27 @@ import (
 // account.SupportedEndpointModes (zero consumption before this hunk).
 
 // Account endpoint mode vocabulary (domain/types.ts AccountSupportedEndpointMode).
+// M1 同步音频新增 audio_speech（POST /v1/audio/speech）与
+// audio_transcription_json（POST /v1/audio/transcriptions|translations）两个
+// token（音频设计 §11.6）；词表与 accounts.health_check_endpoint_mode CHECK
+// 同步（maintenance pg_schema_business_tables.go）。
 const (
-	EndpointModeImagesJSON           = "images_json"
-	EndpointModeChatJSON             = "chat_json"
-	EndpointModeChatSSE              = "chat_sse"
-	EndpointModeResponsesJSON        = "responses_json"
-	EndpointModeResponsesSSE         = "responses_sse"
-	EndpointModeMessagesJSON         = "messages_json"
-	EndpointModeMessagesSSE          = "messages_sse"
-	EndpointModeMessageTokenCounting = "message_token_counting"
-	EndpointModeGenerateContentJSON  = "generate_content_json"
-	EndpointModeGenerateContentSSE   = "generate_content_sse"
-	EndpointModeCountTokens          = "count_tokens"
-	EndpointModeEmbedContent         = "embed_content"
-	EndpointModeInteractionsJSON     = "interactions_json"
-	EndpointModeInteractionsSSE      = "interactions_sse"
+	EndpointModeImagesJSON             = "images_json"
+	EndpointModeChatJSON               = "chat_json"
+	EndpointModeChatSSE                = "chat_sse"
+	EndpointModeResponsesJSON          = "responses_json"
+	EndpointModeResponsesSSE           = "responses_sse"
+	EndpointModeMessagesJSON           = "messages_json"
+	EndpointModeMessagesSSE            = "messages_sse"
+	EndpointModeMessageTokenCounting   = "message_token_counting"
+	EndpointModeGenerateContentJSON    = "generate_content_json"
+	EndpointModeGenerateContentSSE     = "generate_content_sse"
+	EndpointModeCountTokens            = "count_tokens"
+	EndpointModeEmbedContent           = "embed_content"
+	EndpointModeInteractionsJSON       = "interactions_json"
+	EndpointModeInteractionsSSE        = "interactions_sse"
+	EndpointModeAudioSpeech            = "audio_speech"
+	EndpointModeAudioTranscriptionJSON = "audio_transcription_json"
 )
 
 // RequestSupportedEndpointMode mirrors openAIEndpointModeForGatewayRequest +
@@ -52,6 +58,10 @@ func RequestSupportedEndpointMode(req *GatewayRequest) string {
 		return EndpointModeResponsesJSON
 	case method == "POST" && (normalizedV1StrippedPath(path) == "/images" || strings.HasPrefix(normalizedV1StrippedPath(path), "/images/")):
 		return EndpointModeImagesJSON
+	case method == "POST" && normalizedV1StrippedPath(path) == "/audio/speech":
+		return EndpointModeAudioSpeech
+	case method == "POST" && (normalizedV1StrippedPath(path) == "/audio/transcriptions" || normalizedV1StrippedPath(path) == "/audio/translations"):
+		return EndpointModeAudioTranscriptionJSON
 	case method == "POST" && normalizedV1StrippedPath(path) == "/messages":
 		if stream {
 			return EndpointModeMessagesSSE

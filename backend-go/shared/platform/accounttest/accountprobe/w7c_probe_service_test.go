@@ -459,16 +459,16 @@ func TestW7CRequestBuildersPerMode(t *testing.T) {
 	if got := quotaResponseHeaders(map[string]string{"Retry-After": "5", "secret": "x"}); len(got) != 1 || got["Retry-After"] != "5" {
 		t.Fatalf("quota headers: %v", got)
 	}
-	if got := protocolName(ModeMessagesJSON); got != "Anthropic Messages" {
+	if got := protocolName(ProtocolAnthropic, ModeMessagesJSON); got != "Anthropic Messages" {
 		t.Fatalf("anthropic name: %q", got)
 	}
-	if got := protocolName(ModeGenerateContentJSON); got != "Gemini GenerateContent" {
+	if got := protocolName(ProtocolGemini, ModeGenerateContentJSON); got != "Gemini GenerateContent" {
 		t.Fatalf("gemini name: %q", got)
 	}
-	if got := protocolName(ModeChatSSE); got != "OpenAI Chat Completions" {
+	if got := protocolName(ProtocolOpenAI, ModeChatSSE); got != "OpenAI Chat Completions" {
 		t.Fatalf("chat name: %q", got)
 	}
-	if got := protocolName(ModeResponsesJSON); got != "OpenAI Responses" {
+	if got := protocolName(ProtocolOpenAI, ModeResponsesJSON); got != "OpenAI Responses" {
 		t.Fatalf("responses name: %q", got)
 	}
 }

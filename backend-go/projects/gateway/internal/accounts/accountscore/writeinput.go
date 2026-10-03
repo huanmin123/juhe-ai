@@ -91,4 +91,7 @@ var AccountHealthCheckEndpointModes = map[string]bool{
 	"messages_json": true, "messages_sse": true,
 	"generate_content_json": true, "generate_content_sse": true,
 	"interactions_json": true, "interactions_sse": true,
+	// M1 同步音频探针形态（与 accounts.health_check_endpoint_mode CHECK
+	// 同步，maintenance pg_schema_business_tables.go）。
+	"audio_speech": true, "audio_transcription_json": true,
 }

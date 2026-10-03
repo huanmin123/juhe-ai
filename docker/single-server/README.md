@@ -88,15 +88,7 @@ bash docker/single-server/deploy.sh gateway      # 只发布 gateway / jobs / ma
 
 手动流程（等价于脚本内部步骤，仅排障时用）：构建（见上节命令）→ 上传 `build/` → `docker compose build gateway jobs maintenance` → `docker compose up -d`。maintenance 幂等，发布后跑一次 `--ensure-schema` 应用加法式 schema。回滚 = 上传上一个版本的 build/ 并重新 build+up。
 
-**发布后验证（`verify-release.sh`，2026-10-02 起 deploy.sh 第 [6/6] 步自动上传并在服务器运行；也可手动 `cd /opt/juhe-ai && bash verify-release.sh`）**。强制断言（无凭据）：① gateway 与 jobs 的 `/app/backend/data` 挂载解析到同一宿主目录且两侧 `usage-record-spool` 目录存在——不同源时接口照常 200 但用量永不到库（BUG-0193）；② jobs 近 10 分钟日志无 `usage_record_spool_drain_unwired`。可选闭环（一次性配置凭据后变为强制）：从 gateway 容器内发一条最小 `/v1/chat/completions` 请求（`max_tokens:1`），按响应头 `X-Trace-Id` 断言 `juhe_dataset.audit_logs` 与 `juhe_usage.usage_records` 各至少一行落库（请求 → 审计 → spool → jobs drain → PG 全链路）；失败时输出分诊信息（spool 文件数 / 近 5 分钟落库行数 / 容器状态）。凭据一次性配置（Key 经 `docker exec` 环境变量传入容器内 wget，不进脚本/日志/进程参数；每次发布产生一条用量与一条审计记录，等价并取代此前管理面手工调 `/v1` 的验证步骤）：
-
-```sh
-mkdir -p /opt/juhe-ai/.release-verify && chmod 700 /opt/juhe-ai/.release-verify
-echo -n '<网关 API Key>' > /opt/juhe-ai/.release-verify/api-key && chmod 600 /opt/juhe-ai/.release-verify/api-key
-echo -n '<模型 ID>' > /opt/juhe-ai/.release-verify/model   # 可选；缺省取 /v1/models 第一项（可能是图像类等非典型模型，建议固定便宜稳定的文本模型）
-```
-
-凭据文件缺省时闭环项告警跳过、不阻塞发布；配置后闭环失败会使 deploy.sh 以失败退出。落库轮询超时默认 180 秒，可用环境变量 `JUHE_AI_RELEASE_VERIFY_TIMEOUT` 覆盖。
+**发布后验证（`verify-release.sh`，2026-10-02 起 deploy.sh 第 [6/6] 步自动上传并在服务器运行；也可手动 `cd /opt/juhe-ai && bash verify-release.sh`）**。强制断言（无凭据）：① gateway 与 jobs 的 `/app/backend/data` 挂载解析到同一宿主目录且两侧 `usage-record-spool` 目录存在——不同源时接口照常 200 但用量永不到库（BUG-0193）；② jobs 近 10 分钟日志无 `usage_record_spool_drain_unwired`。容器内端口拓扑（实测 2026-10-03）：3000=业务链路（`/v1/*`），3306=health 专用（无 `/v1` 路由）。~~可选闭环（`/v1` 请求 → 审计+用量落库 trace 级门禁）~~ **已于 2026-10-03 按用户裁定移除**：闭环依赖具体账户/模型的实时可用性，无法保证稳定，作为门禁会随上游波动误报；本实例曾配置并实测 PASS 一次（trace 双落库、新修复字段活体实证），随后移除凭据与该项，链路落库正确性改由发布后巡检（`audit_logs`/`usage_records` 新行字段核验）覆盖。
 
 **数据库约束迁移（2026-10-01 起，模型质量检测批次，两步）**：本次升级的两处 CHECK 约束分属两条迁移通道，发布检查必须两步分别执行——
 1. `maintenance --ensure-schema`（业务库，例行幂等）：迁移 `model_quality_schedules.interval_minutes`（`10..10080` → `1..10080`，对应定时检查间隔下限放宽到 1 分钟）。实现方式：PG 在 ensure-schema 内用 DO 块替换约束；SQLite 业务库重建 `model_quality_schedules` 表迁移（数据保持；SQLite 无法原位改列约束）。

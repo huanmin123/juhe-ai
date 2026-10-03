@@ -96,6 +96,26 @@ func geminiTierField(tier *geminiTierPrices, get func(*geminiTierPrices) *float6
 	return get(tier)
 }
 
+// geminiTTSModel 是 M1 同步音频的 TTS 工厂（mode=audio、协议 audio_speech）：
+// 官方按 token 计价——text input 单价 + audio output 单价，计费沿既有
+// usageMetadata token 链路（音频设计 §9/契约 §5.1）。输出恒为裸 PCM
+// （24kHz/16bit/mono），ResponseFormats 固定 ["pcm"]（契约 §5.1 裁决：
+// 其余格式 400，零转码）。
+func geminiTTSModel(in geminiModelInput) rawModel {
+	out := rawModel{
+		Model: in.model, Mode: "audio", CatalogOrder: &in.catalogOrder, ReleaseDate: in.releaseDate,
+		InputCostPerToken:       perToken(in.inputUsdPer1M),
+		OutputCostPerAudioToken: perToken(in.outputUsdPer1M),
+		SupportedAPIProtocols:   in.supportedAPIProtocols,
+		InputModalities:         in.inputModalities,
+		OutputModalities:        in.outputModalities,
+		ResponseFormats:         []string{"pcm"},
+	}
+	visible := true
+	out.CatalogVisible = &visible
+	return out
+}
+
 func (t *geminiTierPrices) inputPtr() *float64   { return &t.inputUsdPer1M }
 func (t *geminiTierPrices) outputPtr() *float64  { return &t.outputUsdPer1M }
 func (t *geminiTierPrices) cachedPtr() *float64  { return t.cachedInputUsdPer1M }
@@ -298,5 +318,25 @@ var geminiModelPricingData = []rawModel{
 		supportedAPIProtocols: geminiEmbeddingProtocols,
 		inputModalities:       []string{"text", "image", "video", "audio", "file"},
 		outputModalities:      []string{"text"},
+	}),
+	// M1 同步音频 TTS（音频设计 §9）：价格取自 Gemini 官方定价页
+	// ai.google.dev/gemini-api/docs/pricing（核实于 2026-10-04）——
+	// flash-preview-tts text input $0.50 / audio output $10.00 per 1M tokens、
+	// pro-preview-tts $1.00 / $20.00。发布 2025-05-20（Google I/O 2025）。
+	geminiTTSModel(geminiModelInput{
+		model: "gemini-2.5-flash-preview-tts", catalogOrder: 110, releaseDate: "2025-05-20",
+		inputUsdPer1M:         0.5,
+		outputUsdPer1M:        10,
+		supportedAPIProtocols: []string{"audio_speech"},
+		inputModalities:       []string{"text"},
+		outputModalities:      []string{"audio"},
+	}),
+	geminiTTSModel(geminiModelInput{
+		model: "gemini-2.5-pro-preview-tts", catalogOrder: 111, releaseDate: "2025-05-20",
+		inputUsdPer1M:         1,
+		outputUsdPer1M:        20,
+		supportedAPIProtocols: []string{"audio_speech"},
+		inputModalities:       []string{"text"},
+		outputModalities:      []string{"audio"},
 	}),
 }

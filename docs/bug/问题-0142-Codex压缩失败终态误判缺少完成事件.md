@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0142
-- 状态：本地修复完成，待统一上线/生产验证
+- 状态：已关闭（2026-10-03，Node 时代遗留状态收口）
 - 严重程度：P1
 - 发现时间：2026-07-29
 - 发现方式：生产审计定位，回归固化
@@ -57,3 +57,11 @@
 - 完成时间：2026-07-29
 - 结论：本地修复完成，待统一上线/生产验证。
 - 后续建议：统一发布前复核真实环境的 Codex compact 失败链路。
+
+## 关闭记录（2026-10-03）
+
+本档按 Node 后端时代（pnpm/juhe-ai-backend）口径收口，不作为 Go 后端的待办：
+
+- 修复载体已消失：Node 后端已于 2026-09-05 完成全量 Go 迁移并清零，本档 2026-07-29 的 Node 侧补丁不存在「待上线」对象。
+- Go 实现复核无此病灶（2026-10-03，代码级核查）：Go 的压缩契约检查为逐事件即时判定——`gatewayresponse/interceptor.go` 只对 `response.output_item.done` 事件调用 `CountCodexCompactionOutputItemsFromStreamEvent` 计数并判定 mismatch（`gatewayresponse/codexcontract.go`）；`response.failed` 事件不进入 compact 计数，即时经 `ExtractSseSemanticFrames` 走通用结构失败管线；EOF 收尾（`FlushPendingOnEOF`）只冲残留缓冲字节，无本地 compact mismatch 补判步骤。本档病灶依赖的「EOF 本地补判且不区分失败终态」形态在 Go 架构中不存在，精确失败终态天然进入通用失败路径（与 Node 补丁的目标行为一致）。
+- 处置：状态关闭，档案保留（BUG-0060/0142 的经验教训仍有效：失败终态只按协议事件身份判断，不得让本地契约收尾覆盖已到达的精确失败终态）。

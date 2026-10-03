@@ -404,7 +404,10 @@ var (
 	// images_json first, so openai family accounts with an explicit
 	// supported_endpoint_modes containing images_json keep that mode through
 	// the gateway secret projection and survive the images-lane filter.
-	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse"}
+	// M1 同步音频（音频设计 §11.6）：audio_speech / audio_transcription_json
+	// 与 images_json 同语义进词表（可表达、opt-in、不进默认集）——词表缺失
+	// 会让显式勾选的账户在 secret 投影时被滤除，/v1/audio 派发无账户可命中。
+	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json"}
 	chainOpenAIChatEndpointModes  = []string{"chat_json", "chat_sse"}
 	chainOpenAIResponsesModes     = []string{"responses_json", "responses_sse"}
 	// chainOpenAIDefaultEndpointModes mirrors
@@ -412,11 +415,15 @@ var (
 	// stay the four chat/responses modes — images_json is opt-in only.
 	chainOpenAIDefaultEndpointModes = []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}
 	chainAnthropicEndpointModes     = []string{"messages_json", "messages_sse", "message_token_counting"}
-	chainGeminiDefaultModes         = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse"}
+	// chainGeminiDefaultModes 兼作 gemini 投影的允许清单（下方
+	// chainNormalizeGatewayEndpointModesForRuntime gemini 分支），镜像
+	// accountscore.GeminiEndpointModeValues；M1 补 audio_speech（gemini TTS
+	// adapter 承载；gemini 无 /v1/audio/transcriptions 直连形态）。
+	chainGeminiDefaultModes = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse", "audio_speech"}
 	// chainHybridEndpointModes mirrors accountscore.HybridEndpointModeValues
 	// (the three-family union; images_json rides the openai family).
 	chainHybridEndpointModes = []string{
-		"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse",
+		"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json",
 		"messages_json", "messages_sse", "message_token_counting",
 		"generate_content_json", "generate_content_sse", "count_tokens", "embed_content", "interactions_json", "interactions_sse",
 	}

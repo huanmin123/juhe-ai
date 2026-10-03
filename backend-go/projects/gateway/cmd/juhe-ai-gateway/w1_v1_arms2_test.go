@@ -398,7 +398,7 @@ func TestW1VSettleSpeedFirstCutoverErrorLockBlocked(t *testing.T) {
 		CutoverReservation: view,
 	}
 
-	settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover)
+	settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover, gatewayproxyhealth.LatencyDimensionFirstByte, 0)
 	if !settled {
 		t.Fatal("锁拒绝必须结算请求")
 	}
@@ -431,7 +431,7 @@ func TestW1VSettleSpeedFirstCutoverErrorNonGatewaySkipsLock(t *testing.T) {
 	settled := loop.settleSpeedFirstCutoverError(context.Background(), &gatewaydispatch.NormalRouteFirstByteCutoverError{
 		AccountID: "acc_slow",
 		Message:   "首字截止已到",
-	})
+	}, gatewayproxyhealth.LatencyDimensionFirstByte, 0)
 	if !settled {
 		t.Fatal("无预留且无 fallback 时应按耗尽收尾")
 	}
@@ -463,7 +463,7 @@ func TestW1VSettleSpeedFirstCutoverErrorCarriesReservation(t *testing.T) {
 		CutoverReservation: view,
 	}
 
-	settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover)
+	settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover, gatewayproxyhealth.LatencyDimensionFirstByte, 0)
 	if settled {
 		t.Fatal("确认切换应继续循环")
 	}
@@ -514,7 +514,7 @@ func TestW1VSettleSpeedFirstCutoverErrorWithoutReservationTarget(t *testing.T) {
 			CutoverReservation: testCase.reservation,
 		}
 
-		settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover)
+		settled := loop.settleSpeedFirstCutoverError(context.Background(), cutover, gatewayproxyhealth.LatencyDimensionFirstByte, 0)
 		if !settled {
 			t.Fatalf("%s: 应按耗尽收尾", testCase.name)
 		}

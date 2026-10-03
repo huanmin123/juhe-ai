@@ -1,5 +1,7 @@
 # 计划目录
 
+- [PLAN-20261003T164247971Z](计划-20261003T164247971Z-音频视频模型接入与多供应商扩展.md)：音频/视频模型接入与多供应商扩展总计划——设计契约见《音频视频模型接入与统一媒体网关设计》；范围=同步音频（TTS/STT）链路、`media_jobs` 异步任务框架（`/v1/videos`、`/v1/audio/jobs`）、`audio`/`video` 分类与 lane、受理切换边界统一、零资源存储、`provider_options` 扩展通道、已有供应商音视频能力补齐（openai/gemini/glm，xai 核实）+ 新增 `minimax`/`volcengine`/`qwen`；分期 M1 同步音频 → M2 异步任务+视频 → M3 多厂商 → M4 统计 → M5 Realtime（独立立项）；M0 文档裁决已完成，M1 待开始。
+
 - [PLAN-20261003T071031978Z](计划-20261003T071031978Z-mainProbeFence清理侧接线.md)：BUG-0277 残余项立项——mainProbeFence 清理侧接线：写侧已接线（gatewayaccounteffects settleOnce → `RecordMainProbeFence`，Redis `SET mainProbeFence:<capabilityHash> PX 90000`）但 `ClearMainProbeFence`/`DeferMainProbeFence` 零生产调用，现靠 90s TTL（`KeyModelForegroundPrecommitLeaseMs`）自愈；范围=outbox 行承载 `KeyModelFenceReference` 三元组（gateway `chain_request_failure_health.go:54-70` 与 jobs `worker_health_probe_outbox.go` 两侧 DDL 同步 + `w0cross_contract_golden_test.go` golden 更新）+ `compose_accounts_reset.go:268` 透传替代 `_` 丢弃 + J1 outcome 观察器（success+winner→Clear、unknown→Defer，落点推荐 gateway 观察复用现成方法）；非目标=不动 admitScript/90s TTL 兜底；待开始。
 
 - [PLAN-20261003T065946077Z](计划-20261003T065946077Z-CodexOAuth账户模型映射消费.md)：BUG-0269 残余项立项——Codex OAuth 账户的模型映射在请求链未被消费（`chain_driver.go:312-313` OAuth 分支 `ModelOverride` 用 `canonicalAccountModel` 不走映射解析，api_key 分支消费；Node `gpt/driver.ts` 同分支传 `modelMapping?.upstreamModel`），生产零可达（236 条启用映射全 api_key）；范围=OAuth 分支接入同源映射解析 + OAuth mock fixture 全覆盖，控险靠零生产 OAuth 映射现状；待开始。
@@ -351,6 +353,7 @@ docs/plans/
 
 | 计划 ID | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| PLAN-20261003T164247971Z | 音频视频模型接入与多供应商扩展 | 进行中（M0 文档裁决完成；M1–M5 待开始） | 2026-10-03 | Go 网关 / jobs / maintenance / 模型目录 / 计费 / 前端 / 文档 | `docs/plans/计划-20261003T164247971Z-音频视频模型接入与多供应商扩展.md` |
 | PLAN-20260921T000325644Z | GPT-6 Astra 专项检测探针 | 待验证（探针已实现并测试绿，待平台内接入真实账户端到端验收） | 2026-09-21 | Go 网关 / 模型检测 / 文档 / 验证 | `docs/plans/计划-20260921T000325644Z-GPT6Astra专项检测探针.md` |
 | PLAN-20260920T160000384Z | 模型检测题库自定义测试阶段 | 待验证（代码实施完成，待隔离实例人工验收） | 2026-09-20 | 前端 / Go 网关 / 检测管线 / 定时调度 / 存储 / 文档 / 验证 | `docs/plans/计划-20260920T160000384Z-模型检测题库自定义测试阶段.md` |
 | PLAN-20260904T071852927Z | 已提交 Go 迁移功能审计与缺陷修复 | 进行中（M08 及以前历史迁移逐项复核；M09/M09b 与未提交迁移排除） | 2026-09-04 | Go 迁移 / Node 行为对照 / BUG 记录 / 定向测试 / 复审 | `docs/plans/计划-20260904T071852927Z-已提交Go迁移功能审计与缺陷修复.md` |
@@ -359,7 +362,7 @@ docs/plans/
 | PLAN-20260820T235441488Z | J3 后台任务 L1 语义冻结 | 已完成（仅文档冻结） | 2026-08-21 | 后台任务 / Node->Go 迁移 / 代理延迟 / 模型检测 / 质量检查 / SQLite / PostgreSQL / 文档 | `docs/plans/计划-20260820T235441488Z-J3后台任务L1语义冻结.md` |
 | PLAN-20260820T025332906Z | 上游额度不足继承错误策略 | 已完成 | 2026-08-20 | Node 网关 / AI 账户错误策略 / 健康探针 / Vue / 权限 / 文档 / 验证 | `docs/plans/计划-20260820T025332906Z-上游额度不足继承错误策略.md` |
 | PLAN-20260810T000000000Z | 第三方登录与个人委托授权 | 已下线（该功能已于 2026-09-27 整体下线移除，计划文档已删除） | 2026-08-10 | Node / Vue / OAuth 2.1 / OIDC / 个人委托 API / 用户请求限制 | 无（原计划文档已删除） |
-| PLAN-20260729T130300133Z | Codex 压缩失败终态结构处理修复 | 本地修复完成，待统一上线/生产验证 | 2026-07-29 | Node 后端 / 网关 / Codex Responses / SSE / 响应检查 | `docs/plans/计划-20260729T130300133Z-Codex压缩失败终态结构处理修复.md` |
+| PLAN-20260729T130300133Z | Codex 压缩失败终态结构处理修复 | 已关闭（Node 遗留收口，Go 无此病灶；见 BUG-0142 关闭记录） | 2026-07-29 | Node 后端 / 网关 / Codex Responses / SSE / 响应检查 | `docs/plans/计划-20260729T130300133Z-Codex压缩失败终态结构处理修复.md` |
 | PLAN-20260729T094521796Z | 使用记录 PostgreSQL 死锁修复 | 待发布验证 | 2026-07-29 | Node 后端 / Usage worker / Redis Stream / PostgreSQL / accounts | `docs/plans/计划-20260729T094521796Z-使用记录PostgreSQL死锁修复.md` |
 | PLAN-20260729T071220373Z | AI 账户余额探测与刷新闭环修复 | 已完成（本地验证完成） | 2026-07-29 | Node 后端 / AI 账户 / ops-worker / 余额快照 / 前端展示 / PostgreSQL | `docs/plans/计划-20260729T071220373Z-AI账户余额探测与刷新闭环修复.md` |
 | PLAN-20260728T141710063Z | Node 管理接口按需读写后续分批治理 | 已关闭（Node 归档收口；Go 管理接口现状以 functions 文档为准）| 2026-07-28 | Node 管理 API / Vue / 供应商模型 / 授权 / 响应策略 / 模型检测 / 其他管理页 | `docs/plans/计划-20260728T141710063Z-Node管理接口按需读写后续分批治理.md` |

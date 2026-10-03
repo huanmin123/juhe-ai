@@ -995,6 +995,7 @@ func clientCatalogEntryOf(item gatewayruntimecache.ProviderModelCatalogItem) gat
 		CodexSupportedReasoningLevels: rawMessageStringList(item.CodexSupportedReasoningLevels),
 		CodexDefaultReasoningLevel:    rawMessageString(item.CodexDefaultReasoningLevel),
 		CodexMultiAgentVersion:        nilString(item.CodexMultiAgentVersion),
+		InputModalities:               item.InputModalities,
 	}
 }
 

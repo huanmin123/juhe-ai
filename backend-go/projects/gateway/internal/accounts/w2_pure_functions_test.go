@@ -25,7 +25,9 @@ func TestW2OpenAIImagesEndpointMode(t *testing.T) {
 		if !isHybridEndpointMode("images_json") {
 			t.Fatal("hybrid 词表是三族并集，应随 openai 族扩展包含 images_json")
 		}
-		if got := accountscore.OpenAIEndpointModeValues; len(got) != 5 || got[0] != "images_json" {
+		// M1 同步音频：词表扩至 7（audio_speech / audio_transcription_json
+		// 追加在尾部，opt-in 同 images_json）。
+		if got := accountscore.OpenAIEndpointModeValues; len(got) != 7 || got[0] != "images_json" {
 			t.Fatalf("openai 模式表应含 images_json 且居首：%v", got)
 		}
 	})

@@ -419,6 +419,25 @@ type speedFirstState struct {
 	RecoveryProbeRoundSuccessCount *int             `json:"recoveryProbeRoundSuccessCount,omitempty"`
 	NextProbeAtMS                  *int64           `json:"nextProbeAtMs,omitempty"`
 	Reason                         string           `json:"reason"`
+	// 总时间通道计数与触发维度（设计 6.4）：JSON 键与 gateway latencyState
+	// 完全一致；存量状态没有 dimension 字段，空串兼容读作 first_byte。
+	TotalTimeSlowCount     int    `json:"totalTimeSlowCount"`
+	FirstTotalTimeSlowAtMS int64  `json:"firstTotalTimeSlowAtMs"`
+	LastTotalTimeSlowAtMS  int64  `json:"lastTotalTimeSlowAtMs"`
+	Dimension              string `json:"dimension,omitempty"`
+}
+
+// speedFirstDimensionTotalTime 与 gateway LatencyDimensionTotalTime 同值；
+// 本包不跨模块引用 gateway，按值对齐。
+const speedFirstDimensionTotalTime = "total_time"
+
+// dimension 归一状态的降级维度：只有显式 total_time 读作 total_time，其余
+// （含存量空串）读作 first_byte。
+func (st *speedFirstState) dimension() string {
+	if st.Dimension == speedFirstDimensionTotalTime {
+		return speedFirstDimensionTotalTime
+	}
+	return "first_byte"
 }
 
 func (s *speedFirstState) roundAttempts() int {
@@ -835,6 +854,11 @@ func (s *SpeedFirstStore) RecordSuccess(ctx context.Context, candidate opsjobs.P
 		if candidate.AccountID != candidateAccountRef.AccountID {
 			return nil
 		}
+		// total_time 维度只认真实流量达标恢复（设计 6.5）：探针成功对容量型
+		// 慢不构成恢复证据，候选过滤后本不应到达，此处兜底为严格 no-op。
+		if current.dimension() == speedFirstDimensionTotalTime {
+			return nil
+		}
 		now := s.now().UnixMilli()
 		if current.DegradedUntilMS == nil || *current.DegradedUntilMS <= now {
 			if err := s.deleteStateAndIndexes(ctx, candidate.StateKey); err != nil {
@@ -891,6 +915,11 @@ func (s *SpeedFirstStore) RecordFailure(ctx context.Context, candidate opsjobs.P
 			return err
 		}
 		if !candidateMatchesState(candidate, current) {
+			return nil
+		}
+		// total_time 维度不参与探针（设计 6.5）：失败不续租、不覆写 Reason、
+		// 不动轮次；候选过滤后本不应到达，此处兜底为严格 no-op。
+		if current.dimension() == speedFirstDimensionTotalTime {
 			return nil
 		}
 		now := s.now().UnixMilli()
@@ -970,6 +999,10 @@ func (s *SpeedFirstStore) ListProbeCandidates(ctx context.Context, limit int) ([
 			continue
 		}
 		if state.DegradedUntilMS == nil || *state.DegradedUntilMS <= now {
+			continue
+		}
+		// total_time 维度不参与探针恢复（设计 6.5）：不探、不清理、不续租。
+		if state.dimension() == speedFirstDimensionTotalTime {
 			continue
 		}
 		if state.NextProbeAtMS == nil || *state.NextProbeAtMS > now {

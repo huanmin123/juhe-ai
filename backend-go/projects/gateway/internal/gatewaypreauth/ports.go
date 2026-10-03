@@ -542,6 +542,12 @@ type DispatchedAuditLogInput struct {
 type NormalRouteSpeedFirstRuntimeConfig struct {
 	SchedulingPreference string
 	FirstByteDeadlineMs  *int64
+	// TotalTimeDeadlineMs / CompactionTotalTimeDeadlineMs 是总时间兜底截止
+	// （设计 6.2，秒已在 preauth 侧转毫秒）：nil 表示未配置，由 chain 侧回落
+	// 默认；档位选择（压缩/大输入）需要请求规模信息，preauth 不判断，两个
+	// 阈值照常透传。压缩请求 FirstByteDeadlineMs 恒 nil，总时间两字段照常携带。
+	TotalTimeDeadlineMs           *int64
+	CompactionTotalTimeDeadlineMs *int64
 	// Raw mirrors the stored speedFirstConfig object (opaque to G05; typed
 	// decoding belongs to the latency-degradation slice).
 	Raw map[string]any

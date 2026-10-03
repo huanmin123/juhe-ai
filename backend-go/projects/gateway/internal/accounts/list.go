@@ -415,9 +415,9 @@ type listRow struct {
 	cooldownRetestLastStatusCode sql.NullInt64
 	healthCheckModel             string
 	healthCheckEndpointMode      string
-	proxyProfileID            sql.NullString
-	proxyProfileName          sql.NullString
-	proxyProfileType          sql.NullString
+	proxyProfileID               sql.NullString
+	proxyProfileName             sql.NullString
+	proxyProfileType             sql.NullString
 	// proxy_profiles.enabled 在 PostgreSQL 为 boolean、SQLite 为 integer，
 	// 扫描目标必须用 NullBool 才能同时兼容两种驱动。
 	proxyProfileEnabled    sql.NullBool

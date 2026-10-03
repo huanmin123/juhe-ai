@@ -26,8 +26,17 @@ func TestW14HRouteConfigArms(t *testing.T) {
 			},
 		}
 	}
-	if got := service.normalRouteSpeedFirstConfigForAPIKey(speedRow(`{}`, "speed_first"), lane, true); got != nil {
-		t.Fatal("禁用超时必须返回 nil")
+	// 压缩请求只豁免首字截止维度：配置对象照常带出（FirstByteDeadlineMs=nil、
+	// 总时间阈值按 Raw 解析、Raw 完整透传——设计 6.8）。
+	compacted := service.normalRouteSpeedFirstConfigForAPIKey(speedRow(`{"speedFirstConfig": {"totalTimeDeadlineSeconds": 90}}`, "speed_first"), lane, true)
+	if compacted == nil || compacted.FirstByteDeadlineMs != nil {
+		t.Fatalf("压缩请求必须带出配置对象=%v", compacted)
+	}
+	if compacted.TotalTimeDeadlineMs == nil || *compacted.TotalTimeDeadlineMs != 90_000 || compacted.CompactionTotalTimeDeadlineMs != nil {
+		t.Fatalf("压缩请求总时间阈值=%v", compacted)
+	}
+	if len(compacted.Raw) == 0 {
+		t.Fatal("压缩请求 Raw 必须完整透传")
 	}
 	if got := service.normalRouteSpeedFirstConfigForAPIKey(speedRow(`{}`, "speed_first"), "image", false); got != nil {
 		t.Fatal("非 text 通道必须返回 nil")

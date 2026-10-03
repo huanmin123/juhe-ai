@@ -137,75 +137,88 @@ func TestWAEndpointModeForShape(t *testing.T) {
 // 图片通道判定：路径 / 模型名 / 工具描述 / 输出模态四条路径。
 func TestWAResolveRequestLane(t *testing.T) {
 	t.Run("图片端点", func(t *testing.T) {
-		if got := ResolveRequestLane("/v1/images/generations", nil, ""); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/images/generations", nil, ""); got != gatewayproto.LaneImage {
 			t.Fatalf("图片端点 = %q", got)
 		}
 	})
 	t.Run("图片模型", func(t *testing.T) {
-		if got := ResolveRequestLane("/v1/chat/completions", nil, "gpt-image-1"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "gpt-image-1"); got != gatewayproto.LaneImage {
 			t.Fatalf("gpt-image = %q", got)
 		}
-		if got := ResolveRequestLane("/v1/chat/completions", nil, "dall-e-3"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "dall-e-3"); got != gatewayproto.LaneImage {
 			t.Fatalf("dall-e = %q", got)
 		}
-		if got := ResolveRequestLane("/v1/chat/completions", nil, "imagen-4"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "imagen-4"); got != gatewayproto.LaneImage {
 			t.Fatalf("imagen = %q", got)
 		}
-		if got := ResolveRequestLane("/v1/chat/completions", nil, "nano-banana-pro"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "nano-banana-pro"); got != gatewayproto.LaneImage {
 			t.Fatalf("nano-banana = %q", got)
 		}
-		if got := ResolveRequestLane("/v1/chat/completions", nil, "gemini-2.5-flash-image"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "gemini-2.5-flash-image"); got != gatewayproto.LaneImage {
 			t.Fatalf("gemini image = %q", got)
 		}
-		if got := ResolveRequestLane("/v1/chat/completions", nil, "gemini-2.5-flash"); got != gatewayproto.LaneText {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, "gemini-2.5-flash"); got != gatewayproto.LaneText {
 			t.Fatalf("普通 gemini = %q", got)
 		}
 	})
 	t.Run("工具提示", func(t *testing.T) {
 		body := mustParseJSON(t, `{"tools":[{"type":"image_generation"}]}`)
-		if got := ResolveRequestLane("/v1/responses", body, "gpt-x"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/responses", body, "gpt-x"); got != gatewayproto.LaneImage {
 			t.Fatalf("image_generation 工具 = %q", got)
 		}
 		body = mustParseJSON(t, `{"tools":[{"type":"web_search"}]}`)
-		if got := ResolveRequestLane("/v1/responses", body, "gpt-x"); got != gatewayproto.LaneText {
+		if got := ResolveRequestLane("POST", "/v1/responses", body, "gpt-x"); got != gatewayproto.LaneText {
 			t.Fatalf("非图片工具 = %q", got)
 		}
 		// tool_choice 显式指定图片工具。
 		body = mustParseJSON(t, `{"tool_choice":{"type":"image_generation"}}`)
-		if got := ResolveRequestLane("/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
 			t.Fatalf("tool_choice 图片 = %q", got)
 		}
 		// tool_choice=required 且只有图片工具。
 		body = mustParseJSON(t, `{"tool_choice":"required","tools":[{"type":"image_generation"}]}`)
-		if got := ResolveRequestLane("/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
 			t.Fatalf("required 图片 = %q", got)
 		}
 		// 字符串工具名。
 		body = mustParseJSON(t, `{"tools":["image_generation"]}`)
-		if got := ResolveRequestLane("/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
 			t.Fatalf("字符串工具 = %q", got)
 		}
 	})
 	t.Run("输出模态", func(t *testing.T) {
 		body := mustParseJSON(t, `{"generationConfig":{"responseModalities":["TEXT","IMAGE"]}}`)
-		if got := ResolveRequestLane("/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
 			t.Fatalf("responseModalities image = %q", got)
 		}
 		body = mustParseJSON(t, `{"generation_config":{"response_mime_type":"image/png"}}`)
-		if got := ResolveRequestLane("/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneImage {
 			t.Fatalf("response_mime_type image = %q", got)
 		}
 		body = mustParseJSON(t, `{"generationConfig":{"responseModalities":["TEXT"]}}`)
-		if got := ResolveRequestLane("/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneText {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneText {
 			t.Fatalf("纯文本模态 = %q", got)
+		}
+	})
+	t.Run("音频路径族", func(t *testing.T) {
+		// 音频设计 §3：/v1/audio/* 同步端点（POST）解析为 LaneAudio，豁免
+		// speed-first 与同账户瞬态重试；词表落点 gatewaymedia.RequestLaneForPath。
+		for _, path := range []string{"/v1/audio/speech", "/v1/audio/transcriptions", "/v1/audio/translations"} {
+			if got := ResolveRequestLane("POST", path, nil, ""); got != gatewayproto.LaneAudio {
+				t.Fatalf("%s = %q，期望 audio", path, got)
+			}
+		}
+		// 非 POST 不命中音频路径族（回退 text），image/text 行为不变。
+		if got := ResolveRequestLane("GET", "/v1/audio/speech", nil, ""); got != gatewayproto.LaneText {
+			t.Fatalf("GET audio speech = %q，期望 text", got)
 		}
 	})
 	t.Run("普通文本", func(t *testing.T) {
 		body := mustParseJSON(t, `{"messages":[{"role":"user","content":"hi"}]}`)
-		if got := ResolveRequestLane("/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneText {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", body, "gpt-x"); got != gatewayproto.LaneText {
 			t.Fatalf("普通请求 = %q", got)
 		}
-		if got := ResolveRequestLane("/v1/chat/completions", nil, ""); got != gatewayproto.LaneText {
+		if got := ResolveRequestLane("POST", "/v1/chat/completions", nil, ""); got != gatewayproto.LaneText {
 			t.Fatalf("空请求 = %q", got)
 		}
 	})

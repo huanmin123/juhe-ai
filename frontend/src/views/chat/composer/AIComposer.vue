@@ -89,6 +89,14 @@
                   <span><PictureOutlined /> 添加图片</span>
                 </a-tooltip>
               </a-menu-item>
+              <a-menu-item key="tool-bindings">
+                <a-tooltip title="设置网页搜索与图片生成的全局默认绑定（账户 + 模型）" placement="right">
+                  <span>
+                    <ApiOutlined /> 工具模型绑定
+                    <span v-if="toolBindingsSummary" class="ai-composer-toolbox-summary">{{ toolBindingsSummary }}</span>
+                  </span>
+                </a-tooltip>
+              </a-menu-item>
             </a-menu>
           </template>
         </a-dropdown>
@@ -126,7 +134,7 @@
 
 <script setup lang="ts">
 import { Empty as AEmpty } from 'ant-design-vue'
-import { PictureOutlined, PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
+import { ApiOutlined, PictureOutlined, PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
 import Placeholder from '@tiptap/extension-placeholder'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
@@ -172,11 +180,13 @@ const props = defineProps<{
   serviceTier: ChatServiceTier | ''
   generationParameters: ChatGenerationParameters
   mobile: boolean
+  toolBindingsSummary?: string
 }>()
 const emit = defineEmits<{
   (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void
   (event: 'stop' | 'models-open' | 'accounts-open'): void
-  (event: 'conversation-action', action: 'set-image-model' | 'set-tool-defaults' | 'set-image-tool-defaults' | 'compact-context' | 'clear-conversation'): void
+  (event: 'conversation-action', action: 'set-tool-defaults' | 'compact-context' | 'clear-conversation'): void
+  (event: 'open-tool-bindings'): void
   (event: 'update:accountValue', value?: string): void
   (event: 'update:modelValue', value?: string): void
   (event: 'update:reasoningEffort', value: ChatReasoningEffort | ''): void
@@ -222,6 +232,7 @@ function toggleGenerationParameter(parameter: ChatGenerationParameter, enabled: 
 }
 function handleToolboxMenuClick(event: { key: string | number }): void {
   if (String(event.key) === 'image') openImagePicker()
+  if (String(event.key) === 'tool-bindings') emit('open-tool-bindings')
 }
 function openImagePicker(): void {
   if (imageToolDisabledReason.value) {
@@ -841,6 +852,7 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .ai-composer-model-controls :deep(.ant-select-selector) { padding-inline: 5px !important; color: var(--juhe-fg-soft); font-size: 12px; }
 .ai-composer-context { width: 26px; height: 26px; flex: 0 0 26px; display: inline-flex; align-items: center; justify-content: center; color: var(--juhe-muted); }
 .ai-composer-toolbox-trigger { flex: 0 0 auto; }
+.ai-composer-toolbox-summary { margin-left: 12px; color: var(--juhe-muted); font-size: 12px; }
 .ai-composer-file { display: none; }
 .ai-composer-editor { min-height: 56px; max-height: 220px; overflow-y: auto; padding: 9px 12px; }
 .ai-composer-editor :deep(.ProseMirror) { min-height: 38px; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }

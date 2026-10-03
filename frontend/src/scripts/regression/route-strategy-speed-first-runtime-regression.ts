@@ -13,6 +13,16 @@ assert.match(apiSource, /\/my-route-strategies\/\$\{id\}\/speed-first-runtime/, 
 assert.match(scopedApiSource, /speedFirstRuntime: \(id: string,[\s\S]*api\.routeStrategies\.speedFirstRuntime\(id, params, options\)[\s\S]*api\.myRouteStrategies\.speedFirstRuntime\(id, options\)/, '速度运行态详情必须沿用 scoped domain API')
 assert.match(typesSource, /speedFirstLatencyRuntime\?: RouteStrategySpeedFirstLatencyRuntimeSummary/, '策略列表行必须声明速度运行态汇总')
 assert.match(typesSource, /interface RouteStrategySpeedFirstLatencyRuntime[\s\S]*degradedCount: number[\s\S]*items: RouteStrategySpeedFirstLatencyRuntimeItem\[\]/, '速度运行态详情必须声明汇总和明细字段')
+assert.match(
+  typesSource,
+  /interface RouteStrategySpeedFirstConfig[\s\S]*?totalTimeDeadlineSeconds\?: number[\s\S]*?compactionTotalTimeDeadlineSeconds\?: number/,
+  '速度优先配置必须声明两个总时间截止可选字段（旧配置缺省回落默认）'
+)
+assert.match(
+  typesSource,
+  /interface RouteStrategySpeedFirstLatencyRuntimeItem[\s\S]*?dimension\?: 'first_byte' \| 'total_time'/,
+  '速度运行态明细必须声明可选慢样本维度'
+)
 
 assert.match(viewSource, /速度降级 \$\{runtime\.degradedCount\} 个账号` : ''/, '列表必须显示速度降级账号数量，且正常态返回空文案')
 assert.doesNotMatch(viewSource, /速度正常/, '列表正常态不得常驻展示速度正常文案')
@@ -49,5 +59,14 @@ assert.match(drawerSource, /function speedFirstRuntimeRowKey\([\s\S]*record\.acc
 assert.match(drawerSource, /record\.recoverySuccessCount.*record\.requiredRecoverySuccessCount/, 'Drawer 必须展示真实请求恢复进度')
 assert.match(drawerSource, /record\.recoveryProbeRoundSuccessCount.*record\.recoveryProbeRoundAttemptCount/, 'Drawer 必须展示后台探针窗口进度')
 assert.match(drawerSource, /record\.reason/, 'Drawer 必须展示速度运行态原因')
+assert.match(viewSource, /v-model:value="form\.normal\.speedFirstConfig\.totalTimeDeadlineSeconds"[\s\S]{0,200}:min="60"[\s\S]{0,200}:max="270"/, '请求总时间截止输入必须绑定表单且范围 60-270 秒')
+assert.match(viewSource, /v-model:value="form\.normal\.speedFirstConfig\.compactionTotalTimeDeadlineSeconds"[\s\S]{0,200}:min="300"[\s\S]{0,200}:max="900"/, '压缩总时间截止输入必须绑定表单且范围 300-900 秒')
+assert.match(viewSource, /totalTimeDeadlineSeconds: 120[\s\S]{0,200}compactionTotalTimeDeadlineSeconds: 300/, '速度优先表单默认值必须为请求 120 秒、压缩 300 秒')
+assert.match(viewSource, /totalTimeDeadlineSeconds: config\?\.totalTimeDeadlineSeconds \?\? fallback\.totalTimeDeadlineSeconds/, '旧配置缺省请求总时间截止时表单必须回落默认值')
+assert.match(viewSource, /compactionTotalTimeDeadlineSeconds: config\?\.compactionTotalTimeDeadlineSeconds \?\? fallback\.compactionTotalTimeDeadlineSeconds/, '旧配置缺省压缩总时间截止时表单必须回落默认值')
+assert.match(viewSource, /totalTimeDeadlineSeconds: boundedInteger\(speedFirstConfig\.totalTimeDeadlineSeconds, 60, 270\)/, '提交体必须携带请求总时间截止并夹紧到 60-270 秒')
+assert.match(viewSource, /compactionTotalTimeDeadlineSeconds: boundedInteger\(speedFirstConfig\.compactionTotalTimeDeadlineSeconds, 300, 900\)/, '提交体必须携带压缩总时间截止并夹紧到 300-900 秒')
+assert.match(drawerSource, /record\.dimension === 'total_time'[\s\S]{0,200}总时间/, 'Drawer 必须按维度展示总时间标签')
+assert.match(drawerSource, /record\.dimension === 'first_byte'[\s\S]{0,200}首字/, 'Drawer 必须按维度展示首字标签')
 
 console.log('策略路由速度优先运行态前端回归通过：API 路径、异常态内联标记、行操作入口、按需加载、竞态作废和 Drawer 字段均已覆盖')

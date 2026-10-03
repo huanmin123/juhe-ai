@@ -203,9 +203,9 @@ func w1mWaitOutputContains(t *testing.T, buffer *w1mSyncBuffer, needle string, t
 
 // w1mWaitHealthReady 有界轮询健康端点直至 ready=true（owner 全部组件已
 // 启动并持有租约），超时即 Fatal。
-func w1mWaitHealthReady(t *testing.T, client *http.Client, address string) {
+func w1mTryWaitHealthReady(t *testing.T, client *http.Client, address string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		response, err := client.Get("http://" + address + "/health")
 		if err == nil {
@@ -216,13 +216,19 @@ func w1mWaitHealthReady(t *testing.T, client *http.Client, address string) {
 					Ready bool `json:"ready"`
 				}
 				if json.Unmarshal(body, &payload) == nil && payload.Ready {
-					return
+					return true
 				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("健康端点 %s 在 20s 内未就绪", address)
+	return false
+}
+
+func w1mWaitHealthReady(t *testing.T, client *http.Client, address string) {
+	if !w1mTryWaitHealthReady(t, client, address, 20*time.Second) {
+		t.Fatalf("健康端点 %s 在 20s 内未就绪", address)
+	}
 }
 
 // w1mGracefulShutdownOwner 投递 CTRL_BREAK 并有界等待进程 0 退出；覆盖
@@ -279,8 +285,11 @@ func TestW1MBootF4OwnerPrivateLeaseLifecycle(t *testing.T) {
 	env1 = append(env1, "JUHE_AI_GATEWAY_HEALTH_LISTEN_ADDRESS="+healthAddr)
 	// 2026-09-21 起组合根恒开（SYSTEM_API/CHAIN 开关移除）；F4 专有租约
 	// 分支成为唯一路径，进程照常只暴露 gateway health 监听。
-	cmd1, done1, cancel1, _, _ := w1mStartOwnerProcess(t, coverageDir1, env1)
-	w1mWaitHealthReady(t, client, healthAddr)
+	cmd1, done1, cancel1, bootStdout1, bootStderr1 := w1mStartOwnerProcess(t, coverageDir1, env1)
+	if !w1mTryWaitHealthReady(t, client, healthAddr, 20*time.Second) {
+		t.Fatalf("健康端点 %s 在 20s 内未就绪\n--- 子进程 stdout ---\n%s\n--- 子进程 stderr ---\n%s",
+			healthAddr, bootStdout1.String(), bootStderr1.String())
+	}
 
 	// 健康端点契约：GET /health 就绪、POST /health 404、
 	// GET /__aisys__/metrics 命中指标分支。

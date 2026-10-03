@@ -370,6 +370,7 @@ const customModelDirectPriceFields = computed(() => customModelPriceFields(custo
 const customModelTierPriceFieldOptions = computed(() => customModelTierPriceFields(customModelTargetProviderCode.value))
 const customModelPriceSectionTitle = computed(() => {
   if (customModelPricingCategory.value === 'image') return '图像计费 · USD'
+  if (customModelPricingCategory.value === 'audio') return '音频计费 · USD'
   return 'Token 计费 · USD / 1M Token'
 })
 const customModelCategoryRecords = computed(() => providerModels.value.filter((item) => getModelCategory(item) === customModelPricingCategory.value))

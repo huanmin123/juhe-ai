@@ -33,20 +33,25 @@ type tokenBillingLabels struct {
 	audioInput      string
 	audioOutput     string
 	imageOutputUnit string
+	// ttsInputChars / audioInputSeconds 是 M1 音频行项标签（音频设计 §10）。
+	ttsInputChars     string
+	audioInputSeconds string
 }
 
 // defaultTokenBillingLabels mirrors defaultTokenBillingLabels.
 var defaultTokenBillingLabels = tokenBillingLabels{
-	input:           "输入 Token",
-	output:          "输出 Token",
-	cacheRead:       "缓存读 Token",
-	cacheWrite:      "缓存写入 Token",
-	cacheWrite1h:    "1h 缓存写入 Token",
-	imageInput:      "图片输入 Token",
-	imageOutput:     "图片输出 Token",
-	audioInput:      "音频输入 Token",
-	audioOutput:     "音频输出 Token",
-	imageOutputUnit: "输出图片",
+	input:             "输入 Token",
+	output:            "输出 Token",
+	cacheRead:         "缓存读 Token",
+	cacheWrite:        "缓存写入 Token",
+	cacheWrite1h:      "1h 缓存写入 Token",
+	imageInput:        "图片输入 Token",
+	imageOutput:       "图片输出 Token",
+	audioInput:        "音频输入 Token",
+	audioOutput:       "音频输出 Token",
+	imageOutputUnit:   "输出图片",
+	ttsInputChars:     "TTS 输入字符",
+	audioInputSeconds: "STT 输入秒",
 }
 
 // tokenBillingOptions mirrors provider-billing.shared TokenBillingOptions.
@@ -98,6 +103,9 @@ var billingPolicies = []*billingPolicy{
 			audioInput:      "音频输入 Token",
 			audioOutput:     "音频输出 Token",
 			imageOutputUnit: "输出图片",
+			// M1 音频行项标签随默认集（音频设计 §10）；各 policy 不单独定制。
+			ttsInputChars:     defaultTokenBillingLabels.ttsInputChars,
+			audioInputSeconds: defaultTokenBillingLabels.audioInputSeconds,
 		},
 	},
 	{
@@ -115,6 +123,9 @@ var billingPolicies = []*billingPolicy{
 			audioInput:      "音频输入 Token",
 			audioOutput:     "音频输出 Token",
 			imageOutputUnit: "输出图片",
+			// M1 音频行项标签随默认集（音频设计 §10）；各 policy 不单独定制。
+			ttsInputChars:     defaultTokenBillingLabels.ttsInputChars,
+			audioInputSeconds: defaultTokenBillingLabels.audioInputSeconds,
 		},
 	},
 	{
@@ -138,6 +149,9 @@ var billingPolicies = []*billingPolicy{
 			audioInput:      "音频输入 Token",
 			audioOutput:     "音频输出 Token",
 			imageOutputUnit: "输出图片",
+			// M1 音频行项标签随默认集（音频设计 §10）；各 policy 不单独定制。
+			ttsInputChars:     defaultTokenBillingLabels.ttsInputChars,
+			audioInputSeconds: defaultTokenBillingLabels.audioInputSeconds,
 		},
 	},
 	{
@@ -155,6 +169,9 @@ var billingPolicies = []*billingPolicy{
 			audioInput:      "音频输入 Token",
 			audioOutput:     "音频输出 Token",
 			imageOutputUnit: "输出图片",
+			// M1 音频行项标签随默认集（音频设计 §10）；各 policy 不单独定制。
+			ttsInputChars:     defaultTokenBillingLabels.ttsInputChars,
+			audioInputSeconds: defaultTokenBillingLabels.audioInputSeconds,
 		},
 	},
 }
@@ -343,6 +360,12 @@ func serviceTierRates(pricing *Pricing, input CostInput) resolvedRates {
 	if resolved.OutputUsdPerImage == nil {
 		resolved.OutputUsdPerImage = finite(pricing.OutputUsdPerImage)
 	}
+	if resolved.TtsInputUsdPer1MChars == nil {
+		resolved.TtsInputUsdPer1MChars = finite(pricing.TtsInputUsdPer1MChars)
+	}
+	if resolved.AudioInputUsdPerSecond == nil {
+		resolved.AudioInputUsdPerSecond = finite(pricing.AudioInputUsdPerSecond)
+	}
 	source, multiplier := tierPricingMetadata(pricing.PriceSet, tierRates)
 	return resolvedRates{
 		PriceSet:                 resolved,
@@ -453,6 +476,11 @@ func buildTokenCostBreakdown(pricing *Pricing, input CostInput, rates resolvedRa
 	lines = addTokenLine(lines, "audio_input", LineAudioInput, options.labels.audioInput, inputAudioTokens, rates.AudioInputUsdPer1M)
 	lines = addTokenLine(lines, "audio_output", LineAudioOutput, options.labels.audioOutput, outputAudioTokens, rates.AudioOutputUsdPer1M)
 	lines = addUnitLine(lines, "image_output_unit", LineImageOutUnit, options.labels.imageOutputUnit, outputImageCount, LineUnitImage, rates.OutputUsdPerImage)
+	// M1 同步音频行项（音频设计 §10）：TTS 按输入字符（USD/1M chars，与
+	// token 行同构的 UnitSize=1M 折算）、STT 按音频秒（USD/s 直乘）。无价格
+	// 或计量为 0 不产行项（0 计费不产生行，与 token 行一致）。
+	lines = addPerMillionUnitLine(lines, "tts_input_chars", CostLineKindTtsInputChars, options.labels.ttsInputChars, nonNegative(input.TtsInputChars), LineUnitChar, rates.TtsInputUsdPer1MChars)
+	lines = addUnitLine(lines, "audio_input_seconds", CostLineKindAudioInputSeconds, options.labels.audioInputSeconds, nonNegative(input.AudioInputSeconds), LineUnitSecond, rates.AudioInputUsdPerSecond)
 
 	return legacyBreakdownFromLines(lines, input, rates)
 }
@@ -536,6 +564,8 @@ func legacyBreakdownFromLines(lines []CostLineItem, input CostInput, rates resol
 }
 
 // directRates mirrors provider-billing.shared directRates.
+// M1 音频单价同样经 finite 收敛透传（tier 表不携带时由 serviceTierRates
+// 回落标准价，模式同 image/audio token 价）。
 func directRates(set PriceSet) PriceSet {
 	return PriceSet{
 		InputUsdPer1M:               finite(set.InputUsdPer1M),
@@ -549,6 +579,8 @@ func directRates(set PriceSet) PriceSet {
 		AudioInputUsdPer1M:          finite(set.AudioInputUsdPer1M),
 		AudioOutputUsdPer1M:         finite(set.AudioOutputUsdPer1M),
 		OutputUsdPerImage:           finite(set.OutputUsdPerImage),
+		TtsInputUsdPer1MChars:       finite(set.TtsInputUsdPer1MChars),
+		AudioInputUsdPerSecond:      finite(set.AudioInputUsdPerSecond),
 	}
 }
 
@@ -641,6 +673,26 @@ func addUnitLine(lines []CostLineItem, key string, kind CostLineKind, label stri
 		Quantity:     quantity,
 		Unit:         unit,
 		UnitSize:     1,
+		UnitPriceUsd: *unitPriceUsd,
+		CostUsd:      cost,
+	})
+}
+
+// addPerMillionUnitLine 是 M1 音频字符行项的折算 helper：单价以「每 1M 计量
+// 单位」标价（USD/1M chars），折算与 addTokenLine 同构（quantity/1M×单价），
+// 仅 Unit 标签不同（char）。
+func addPerMillionUnitLine(lines []CostLineItem, key string, kind CostLineKind, label string, quantity float64, unit string, unitPriceUsd *float64) []CostLineItem {
+	if quantity <= 0 || unitPriceUsd == nil {
+		return lines
+	}
+	cost := roundCost(quantity / tokenUnitSize * *unitPriceUsd)
+	return append(lines, CostLineItem{
+		Key:          key,
+		Kind:         kind,
+		Label:        label,
+		Quantity:     quantity,
+		Unit:         unit,
+		UnitSize:     tokenUnitSize,
 		UnitPriceUsd: *unitPriceUsd,
 		CostUsd:      cost,
 	})

@@ -13,11 +13,12 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -91,6 +92,19 @@ type v1DispatchLoop struct {
 	// speedFirstSlowObservedForAttempt 记录本次尝试的首字慢观察（
 	// routes.ts:1109 闭包写入、2395 响应观测读取，避免重复记录）。
 	speedFirstSlowObservedForAttempt *gatewayproxyhealth.LatencySlowResult
+	// speedFirstTotalTimeSlowObservedForAttempt 是总时间维度的同 attempt 去重
+	// 标记（设计 6.3：每 attempt 每维度恰好一次；与首字标记按维度独立，互不
+	// 吞并）。写入点：transport 总时间决策闭包、响应轮总时间软观察 timer、
+	// 完成观测补记；清零点：每轮 fetch 前、组切换 resetSpeedFirstState。
+	speedFirstTotalTimeSlowObservedForAttempt *gatewayproxyhealth.LatencySlowResult
+	// speedFirstTotalTimeObservationMu 串行化总时间去重标记的读改写：决策
+	// 闭包（transport timer goroutine）与响应轮软观察 timer goroutine、完成
+	// 观测（主循环）三个写入点并发可达，双记即双慢样本。
+	speedFirstTotalTimeObservationMu sync.Mutex
+	// speedFirstTotalTimeCutoverSignal 是总时间决策闭包确认切号后的载荷槽
+	//（timer goroutine 写、settleDispatchError 主循环读；Abort 错误类型不携
+	// 带账户信息——transport 构造点只有 handler 返回值，账户快照留在闭包）。
+	speedFirstTotalTimeCutoverSignal *speedFirstTotalTimeCutoverSignal
 	// releases 收集每个 DispatchContext 的 client-IP 并发槽释放闭包
 	//（D-109；Node attachClientIpSlotRelease 在组切换时重新 attach）。
 	releases *clientIPSlotReleaseList
@@ -165,11 +179,11 @@ func (l *v1DispatchLoop) startCompactSseWaitHeartbeat(ctx context.Context, curre
 		return
 	}
 	heartbeat := gatewayresponse.CreateGatewaySseWaitHeartbeat(gatewayresponse.HeartbeatDeps{
-		Res:                         l.res,
-		DownstreamProtocol:          clientStrategyViewOf(current).DownstreamProtocol,
-		DownstreamCommit:            l.waitCommitState,
-		Signal:                      ctx,
-		IntervalMs:                  10_000,
+		Res:                          l.res,
+		DownstreamProtocol:           clientStrategyViewOf(current).DownstreamProtocol,
+		DownstreamCommit:             l.waitCommitState,
+		Signal:                       ctx,
+		IntervalMs:                   10_000,
 		EmitCodexCompactionKeepalive: true,
 	})
 	if heartbeat == nil {
@@ -247,11 +261,17 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		// routes.ts:1272-1273 的 coordination 注入）。
 		coordination.NormalRouteFirstByteConfig = chainFirstByteConfigOf(current.NormalRouteFirstByteConfig)
 		coordination.OnNormalRouteFirstByteDeadline = l.onNormalRouteFirstByteDeadline(ctx, current)
+		// 总时间兜底截止接线（设计 6.3/6.6）：速度优先运行态配置原样透传，
+		// 到期决策闭包镜像首字（记慢样本 → 安全切号裁决）。
+		coordination.NormalRouteSpeedFirstConfig = current.NormalRouteSpeedFirstConfig
+		coordination.OnNormalRouteTotalTimeDeadline = l.onNormalRouteTotalTimeDeadline(ctx, current)
 		// W4-B（BUG-0175）D-114 接线：取走上次切号留下的并发槽预留
 		//（routes.ts:1103-1104 dispatchCutoverReservation）。
 		dispatchReservation := l.speedFirstCutoverReservation
 		l.speedFirstCutoverReservation = nil
 		l.speedFirstSlowObservedForAttempt = nil
+		l.speedFirstTotalTimeSlowObservedForAttempt = nil
+		l.speedFirstTotalTimeCutoverSignal = nil
 		// Node dispatches streamRetryDispatchAccounts(accounts,
 		// streamServerRetryExcludedAccountIds) (routes.ts:942): the accounts a
 		// previous response-layer RetryUpstream verdict excluded never re-enter
@@ -325,6 +345,19 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 				// 未装配时字段为 nil 的路径必须保持接口 nil。
 				circuitHandle := postVerdictCircuitHandle(dispatched.AccountCircuitAttempt)
 				keyModelHandle := postVerdictKeyModelHandle(dispatched.KeyModelAttempt)
+				// 总时间兜底截止的响应轮软观察 timer（设计 6.3 采样点 1 的
+				// body 阶段承接）：transport 总时间 timer 只覆盖响应头之前的
+				// 请求阶段（startRequestPhaseTimer 的 responseReceived 守卫），
+				// 响应头到达后的到期观察由本 timer 承接——只记慢样本（软观察
+				// 采样点 1），不中断当前响应轮；完成时采样点 2/3 由
+				// observeSpeedFirstResponseOutcome 承接。attempt 生命周期销毁：
+				// responseRound 返回即 finished 置位 + stop。
+				totalTimeObserverFinished := &atomic.Int32{}
+				stopTotalTimeObserver := l.armTotalTimeDeadlineObserver(ctx, current, dispatched, totalTimeObserverFinished)
+				defer func() {
+					totalTimeObserverFinished.Store(1)
+					stopTotalTimeObserver()
+				}()
 				defer l.settleTransferredUpstreamAttemptsSafely(ctx, dispatched.Account.ID, circuitHandle, keyModelHandle)
 				handling := func() gatewayresponse.UpstreamResponseHandlingResult {
 					defer func() {
@@ -570,11 +603,23 @@ func (l *v1DispatchLoop) settleResponseStreamServerRetry(
 // terminal exit rendered) and false when the loop should continue on the
 // switched fallback group.
 func (l *v1DispatchLoop) settleDispatchError(ctx context.Context, dispatchErr error) bool {
+	// 总时间兜底截止切号（设计 6.6）：transport 总时间 timer 到点决策确认切
+	// 号后销毁请求，NormalRouteTotalTimeTimeoutError 沿引擎错误通路原样上抛
+	// （引擎错误分类不识别该类型，unproven rethrow 透传），此处凭决策闭包写
+	// 下的载荷槽构造 cutover 消费（收窄到保留目标重派或耗尽退出）。首字截止
+	// 的分支在下方既有 errors.As 臂；两维度共享切号链与上限。
+	var totalTimeout *gatewaydispatch.NormalRouteTotalTimeTimeoutError
+	if errors.As(dispatchErr, &totalTimeout) {
+		if l.settleTotalTimeCutoverError(ctx, totalTimeout) {
+			return true
+		}
+		return false
+	}
 	// W4-B（BUG-0175）D-114：速度优先切号错误（routes.ts:1295-1345）。持有
 	// 切换预留时收窄到保留目标重派；预留缺席/已锁定走耗尽退出。
 	var cutover *gatewaydispatch.NormalRouteFirstByteCutoverError
 	if errors.As(dispatchErr, &cutover) {
-		if l.settleSpeedFirstCutoverError(ctx, cutover) {
+		if l.settleSpeedFirstCutoverError(ctx, cutover, gatewayproxyhealth.LatencyDimensionFirstByte, 0) {
 			return true
 		}
 		return false
@@ -1258,7 +1303,7 @@ func (l *v1DispatchLoop) confirmProtocolSuccessSideEffects(ctx context.Context, 
 // ---------------------------------------------------------------------------
 
 // postVerdictCircuitAttempt 是 post-verdict 结算块消费的熔断尝试句柄面
-//（生产为引擎带出的 *gatewaycircuit.Attempt，UpstreamDispatchResult 字段的
+// （生产为引擎带出的 *gatewaycircuit.Attempt，UpstreamDispatchResult 字段的
 // 方法子集；测试注入计数闭包）。方法语义与 gatewaycircuit.Attempt 一致。
 type postVerdictCircuitAttempt interface {
 	IsConfirmation() bool
@@ -1387,7 +1432,7 @@ func classifyPostVerdictOutcome(
 // 与 Node 的顺序偏差（无行为耦合，各消费者独立记账）：Node 先锁记录（:1813）
 // 再 circuit transport-failure（:1839）；Go 本块整体在 settleHotQualityTerminal
 // 之后执行。cutover 分支内本块先于 BUG-0241 的 hotQuality timeout 终态执行
-//（Node :1841 在 :1865 前），hotQuality 与 circuit/keyModel 为独立句柄。
+// （Node :1841 在 :1865 前），hotQuality 与 circuit/keyModel 为独立句柄。
 func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
 	ctx context.Context,
 	dispatched gatewaydispatch.UpstreamDispatchResult,
@@ -1420,7 +1465,7 @@ func (l *v1DispatchLoop) settlePostVerdictUpstreamAttempts(
 	if circuitAttempt != nil {
 		if class.transportFailure != nil && !aborted && !downstreamClosed {
 			if _, err := circuitAttempt.ReportTransportFailure(ctx, gatewaycircuit.TransportFailure{
-				Kind:  class.transportFailure.Kind,
+				Kind:   class.transportFailure.Kind,
 				Reason: class.transportFailure.Reason,
 			}); err != nil {
 				l.c.observability.Logger().Warn("gateway_account_circuit_transport_failure_report_failed", map[string]any{

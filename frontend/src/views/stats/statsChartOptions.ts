@@ -2,6 +2,7 @@ import type { EChartsOption } from 'echarts'
 
 import { providerDisplayName } from '@/shared/providerDisplay'
 import { formatDateLabel, formatDateShortLabel } from '@/shared/dateRange'
+import { chartNeutral, chartPalette, chartSemantic } from '@/shared/chartPalette'
 import type { GoRuntimeTrendItem, UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
 import {
   axisNumberLabel,
@@ -18,7 +19,7 @@ const ERROR_TOOLTIP_EDGE_GAP = 12
 
 export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']): EChartsOption {
   return {
-    color: ['#53696b', '#ff4d4f', '#faad14'],
+    color: ['#53696b', chartSemantic.danger, chartSemantic.warning],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => usageTrendTooltip(params)
@@ -37,22 +38,22 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
       type: 'category',
       boundaryGap: true,
       data: trend.map((item) => formatHourLabel(item.statHour)),
-      axisLabel: { color: '#64748b' },
-      axisLine: { lineStyle: { color: '#d9e2ef' } }
+      axisLabel: { color: chartNeutral.axisLabel },
+      axisLine: { lineStyle: { color: chartNeutral.axisLine } }
     },
     yAxis: [
       {
         type: 'value',
         name: '次数',
         position: 'left',
-        axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
-        splitLine: { lineStyle: { color: '#edf2f7' } }
+        axisLabel: { formatter: axisNumberLabel, color: chartNeutral.axisLabel },
+        splitLine: { lineStyle: { color: chartNeutral.splitLine } }
       },
       {
         type: 'value',
         name: '响应',
         position: 'right',
-        axisLabel: { formatter: durationAxisLabel, color: '#64748b' },
+        axisLabel: { formatter: durationAxisLabel, color: chartNeutral.axisLabel },
         splitLine: { show: false }
       }
     ],
@@ -104,23 +105,23 @@ export function buildDailyConsumptionOption(trend: UsageStatsOverviewDailyTrendR
       type: 'category',
       boundaryGap: true,
       data: trend.map((item) => formatDateShortLabel(item.statDate)),
-      axisLabel: { color: '#64748b', hideOverlap: true },
-      axisLine: { lineStyle: { color: '#d9e2ef' } },
+      axisLabel: { color: chartNeutral.axisLabel, hideOverlap: true },
+      axisLine: { lineStyle: { color: chartNeutral.axisLine } },
       axisTick: { alignWithLabel: true }
     },
     yAxis: {
       type: 'value',
       name: 'Token',
       min: 0,
-      axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
-      splitLine: { lineStyle: { color: '#edf2f7' } }
+      axisLabel: { formatter: axisNumberLabel, color: chartNeutral.axisLabel },
+      splitLine: { lineStyle: { color: chartNeutral.splitLine } }
     },
     series: [{
       name: 'Token 消耗',
       type: 'bar',
       barMaxWidth: 24,
       itemStyle: { borderRadius: [4, 4, 0, 0] },
-      emphasis: { itemStyle: { color: '#0958d9' } },
+        emphasis: { itemStyle: { color: chartSemantic.emphasis } },
       data: trend.map((item) => ({
         value: item.totalTokens,
         statDate: item.statDate,
@@ -133,7 +134,7 @@ export function buildDailyConsumptionOption(trend: UsageStatsOverviewDailyTrendR
 
 export function buildModelDistributionOption(distribution: UsageStatsOverview['modelDistribution']): EChartsOption {
   return {
-    color: ['#53696b', '#52c41a', '#722ed1', '#faad14', '#13c2c2', '#eb2f96', '#fa541c', '#2f54eb', '#a0d911', '#8c8c8c'],
+    color: chartPalette,
     tooltip: {
       trigger: 'item',
       formatter: (params: unknown) => modelTooltip(params)
@@ -154,7 +155,7 @@ export function buildModelDistributionOption(distribution: UsageStatsOverview['m
         minAngle: 8,
         label: {
           formatter: '{b}\n{d}%',
-          color: '#334155'
+          color: chartNeutral.labelStrong
         },
         labelLine: { length: 12, length2: 8 },
         data: distribution.map((item) => ({
@@ -172,7 +173,7 @@ export function buildModelDistributionOption(distribution: UsageStatsOverview['m
 
 export function buildErrorOption(errors: UsageStatsOverview['errors']): EChartsOption {
   return {
-    color: ['#ff4d4f'],
+    color: [chartSemantic.danger],
     tooltip: {
       trigger: 'item',
       triggerOn: 'mousemove|click',
@@ -195,14 +196,14 @@ export function buildErrorOption(errors: UsageStatsOverview['errors']): EChartsO
     xAxis: {
       type: 'category',
       data: errors.map((item, index) => errorAxisLabel(item, index)),
-      axisLabel: { color: '#64748b', interval: 0, rotate: 35 },
-      axisLine: { lineStyle: { color: '#d9e2ef' } }
+      axisLabel: { color: chartNeutral.axisLabel, interval: 0, rotate: 35 },
+      axisLine: { lineStyle: { color: chartNeutral.axisLine } }
     },
     yAxis: {
       type: 'value',
       name: '次数',
-      axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
-      splitLine: { lineStyle: { color: '#edf2f7' } }
+      axisLabel: { formatter: axisNumberLabel, color: chartNeutral.axisLabel },
+      splitLine: { lineStyle: { color: chartNeutral.splitLine } }
     },
     series: [
       {
@@ -283,22 +284,22 @@ export function buildGoRuntimeOption(items: GoRuntimeTrendItem[], timezone = 'As
   const isResourceView = view === 'resource'
   return {
     color: isMemoryView
-      ? ['#52c41a', '#95de64', '#13c2c2', '#87e8de', '#53696b', '#69b1ff', '#fa8c16', '#ffc069']
+      ? ['#6f8f7a', '#93a39c', '#53696b', '#8b9db3', '#a98548', '#c2b28c', '#7a6d8f', '#a4a5a0']
       : isResourceView
-        ? ['#53696b', '#ff4d4f']
-        : ['#53696b', '#69b1ff', '#52c41a', '#95de64', '#fa8c16', '#ffc069', '#722ed1', '#b37feb', '#13c2c2', '#5cdbd3', '#eb2f96'],
+        ? ['#53696b', chartSemantic.danger]
+        : chartPalette,
     tooltip: { trigger: 'axis', formatter: (params: unknown) => goRuntimeTooltip(params, items) },
     legend: { type: 'scroll', bottom: 0, data: series.map((item) => item.name) },
     grid: { left: 56, right: 64, top: 28, bottom: 72 },
-    xAxis: { type: 'category', data: items.map((item) => goRuntimeWindowLabel(item.windowStart, timezone)), axisLabel: { color: '#64748b' }, axisLine: { lineStyle: { color: '#d9e2ef' } } },
+    xAxis: { type: 'category', data: items.map((item) => goRuntimeWindowLabel(item.windowStart, timezone)), axisLabel: { color: chartNeutral.axisLabel }, axisLine: { lineStyle: { color: chartNeutral.axisLine } } },
     yAxis: isMemoryView
       ? [
-        { type: 'value', name: 'MiB', axisLabel: { formatter: (value: number) => `${value}`, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
-        { type: 'value', name: '对象数（个）', axisLabel: { formatter: axisNumberLabel, color: '#64748b' }, splitLine: { show: false } }
+        { type: 'value', name: 'MiB', axisLabel: { formatter: (value: number) => `${value}`, color: chartNeutral.axisLabel }, splitLine: { lineStyle: { color: chartNeutral.splitLine } } },
+        { type: 'value', name: '对象数（个）', axisLabel: { formatter: axisNumberLabel, color: chartNeutral.axisLabel }, splitLine: { show: false } }
       ]
       : isResourceView
-        ? { type: 'value', name: 'CPU（%）', axisLabel: { formatter: (value: number) => `${value}`, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } }
-        : { type: 'value', name: '数量（个）', axisLabel: { formatter: formatInteger, color: '#64748b' }, splitLine: { lineStyle: { color: '#edf2f7' } } },
+        ? { type: 'value', name: 'CPU（%）', axisLabel: { formatter: (value: number) => `${value}`, color: chartNeutral.axisLabel }, splitLine: { lineStyle: { color: chartNeutral.splitLine } } }
+        : { type: 'value', name: '数量（个）', axisLabel: { formatter: formatInteger, color: chartNeutral.axisLabel }, splitLine: { lineStyle: { color: chartNeutral.splitLine } } },
     series: [
       ...series.map((item) => ({ ...item, type: 'line' as const, smooth: true, symbolSize: 6 }))
     ]
