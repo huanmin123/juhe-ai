@@ -201,7 +201,9 @@ func TestBalanceDetectMultiKeyPersistsKeyBalances(t *testing.T) {
 
 // TestBalancePersistSingleKeyStaysNarrow：单 Key 快照回归——缓存的单 Key
 // J2 快照持久化后不得长出多 Key 字段（shared Snapshot 的 omitempty 契约，
-// 既有 JSON 形状零变化）。
+// 既有 JSON 形状零变化）。瞬时失败三字段同为零值省略：输入不带瞬态字段时
+// 不得长出 consecutiveTransientFailures 等键（「输入不带 → JSON 形状与既有
+// 完全一致」的回归断言，修复前后恒绿）。
 func TestBalancePersistSingleKeyStaysNarrow(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(http.NotFound))
 	defer upstream.Close()
@@ -234,12 +236,68 @@ func TestBalancePersistSingleKeyStaysNarrow(t *testing.T) {
 	if err := json.Unmarshal([]byte(snapshotJSON), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"keyCount", "queriedKeyCount", "scope", "aggregation", "keyBalances"} {
+	for _, key := range []string{
+		"keyCount", "queriedKeyCount", "scope", "aggregation", "keyBalances",
+		"consecutiveTransientFailures", "lastTransientErrorMessage", "lastTransientFailureAt",
+	} {
 		if _, ok := decoded[key]; ok {
 			t.Fatalf("单 Key 持久化 JSON 不得携带 %s: %s", key, snapshotJSON)
 		}
 	}
 	if decoded["remainingUsd"] != "1.250000" {
 		t.Fatalf("单 Key 余额必须原样保留: %s", snapshotJSON)
+	}
+}
+
+// TestBalancePersistTransientFieldsPersisted：pending 瞬态快照的瞬时失败
+// 三字段（consecutiveTransientFailures/lastTransientErrorMessage/
+// lastTransientFailureAt，shared Snapshot 原名）必须从 detector 缓存的完整
+// J2 快照透传进 relay_balance 持久化 JSON——gateway 读端
+// （accountsbalance/list_snapshot.go）与前端「刷新暂时失败（N/3）」提示的
+// 数据源。修复前必红：buildSnapshotJSON 未拷贝三字段，JSON 缺键。
+func TestBalancePersistTransientFieldsPersisted(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(http.NotFound))
+	defer upstream.Close()
+	runtime, businessDB, statsDB := wgNewBalanceRuntime(t, "", false)
+	wgSeedDueAccount(t, businessDB, "acc-transient", upstream.URL, -time.Minute)
+	if _, err := businessDB.Exec(`UPDATE accounts SET balance_query_enabled = 1, balance_query_config_json = '{"adapter":"builtin","intervalMinutes":5}' WHERE id = 'acc-transient'`); err != nil {
+		t.Fatal(err)
+	}
+	runtime.detected.Store("snapshot:acc-transient", &accountbalance.Snapshot{
+		Status:                    accountbalance.StatusPending,
+		LastAttemptAt:             "2026-09-27T07:59:00Z",
+		ConsecutiveTransientFails: 2,
+		LastTransientErrorMessage: "上游余额查询超时",
+		LastTransientFailureAt:    "2026-09-27T07:58:30Z",
+	})
+	ctx := context.Background()
+	ok, err := runtime.ReplaceSnapshotIfCurrent(ctx, opsjobs.BalanceSnapshotInput{
+		AccountID: "acc-transient", SystemAccountID: "sys-1",
+		ExpectedConfigRevision: 1,
+		ExpectedConfig:         opsjobs.BalanceQueryConfig{Adapter: "builtin", IntervalMinutes: 5},
+		Snapshot:               opsjobs.BalanceSnapshotWrite{Status: opsjobs.BalanceSnapshotStatus("pending"), ConfigRevision: 1, LastAttemptAt: "2026-09-27T07:59:00Z"},
+	})
+	if err != nil || !ok {
+		t.Fatalf("瞬态快照写入必须成功: %v %v", ok, err)
+	}
+	var snapshotJSON string
+	if err := statsDB.QueryRow(`SELECT snapshot_json FROM account_usage_snapshots WHERE account_id = 'acc-transient'`).Scan(&snapshotJSON); err != nil {
+		t.Fatal(err)
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(snapshotJSON), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["status"] != "pending" {
+		t.Fatalf("瞬态快照状态必须直通: %v", decoded["status"])
+	}
+	if decoded["consecutiveTransientFailures"] != float64(2) {
+		t.Fatalf("缺 consecutiveTransientFailures 或值错误: %s", snapshotJSON)
+	}
+	if decoded["lastTransientErrorMessage"] != "上游余额查询超时" {
+		t.Fatalf("缺 lastTransientErrorMessage 或值错误: %s", snapshotJSON)
+	}
+	if decoded["lastTransientFailureAt"] != "2026-09-27T07:58:30Z" {
+		t.Fatalf("缺 lastTransientFailureAt 或值错误: %s", snapshotJSON)
 	}
 }

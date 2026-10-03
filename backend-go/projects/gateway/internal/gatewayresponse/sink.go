@@ -91,7 +91,7 @@ func (s *Sink) SendGatewayFailureResponse(input gatewaypreauth.FailureResponseIn
 	// 与 buildGatewayErrorResponseSnapshot 读取 clientPayload.error.message 一致。
 	clientPayloadMessage := deliveredPayload.Error.Message
 	clientPayloadSnapshot := clientPayloadJSON
-	completion := s.observeCompletion(input.Res)
+	completion := s.observeCompletion(input)
 	go func() {
 		defer safego.Recover("gatewayresponse.sink.failure_usage")
 		var completedAtMs int64
@@ -109,7 +109,11 @@ func (s *Sink) SendGatewayFailureResponse(input gatewaypreauth.FailureResponseIn
 			completedAtMs = s.nowMs()
 		}
 		s.Deps.UsageRecords.RecordGatewayFailure(FailureUsageRecordInput{
-			UsageContext:  usageContext,
+			UsageContext: usageContext,
+			// 请求事实（requestModel / requestStream）：网关策略失败 usage 行
+			// 的 model / stream 列来源；helper 对 nil req 安全。
+			Model:         requestModelHint(input.Req),
+			Stream:        gatewaypreauth.RequestStream(input.Req),
 			StatusCode:    statusCode,
 			StartedAtMs:   startedAt,
 			CompletedAtMs: completedAtMs,
@@ -155,11 +159,11 @@ func failureUsageFinalizeTimeout() <-chan struct{} {
 	return ch
 }
 
-func (s *Sink) observeCompletion(res gatewaypreauth.GatewayResponseWriter) HTTPCompletion {
+func (s *Sink) observeCompletion(input gatewaypreauth.FailureResponseInput) HTTPCompletion {
 	if s.Deps.HTTPCompletion == nil {
 		return nil
 	}
-	return s.Deps.HTTPCompletion.Observe(res)
+	return s.Deps.HTTPCompletion.Observe(input.Req, input.Res)
 }
 
 // FinalizeGatewayAuthFailureAudit 对齐 finalizeGatewayAuthFailureAudit。

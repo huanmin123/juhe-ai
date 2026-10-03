@@ -108,7 +108,7 @@ func TestNewAuditCaptureWiresAuditFinalizeStageIntoAccumulator(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test"}`))
 	req := gatewaypreauth.NewGatewayRequest(request)
 	chain := &gatewayChain{}
-	capture := chain.newAuditCapture(req, traceID, 1728000000000)
+	capture := chain.newAuditCapture(req, traceID, 1728000000000, newGatewayHTTPCompletion())
 	t.Cleanup(func() { gatewaypreauth.CancelAuditCapture(capture) })
 
 	recorder := &kernel.RequestContext{TraceID: traceID, StartedAt: time.Now().Add(-time.Second)}

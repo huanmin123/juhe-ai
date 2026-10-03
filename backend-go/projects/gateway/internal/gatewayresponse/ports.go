@@ -125,7 +125,12 @@ type UsageAttemptRecorder interface {
 
 // FailureUsageRecordInput 对齐 recordGatewayFailure 的负载。
 type FailureUsageRecordInput struct {
-	UsageContext       gatewaypreauth.GatewayFailureUsageContext
+	UsageContext gatewaypreauth.GatewayFailureUsageContext
+	// Model / Stream 对齐 recordGatewayFailure 的请求事实（requestModel(req)
+	// / requestStream(req)）：失败 usage 行据此落 model 与 stream 列。空
+	// Model 表示请求体缺失或未携带 model。
+	Model              string
+	Stream             bool
 	StatusCode         int
 	StartedAtMs        int64
 	CompletedAtMs      int64
@@ -229,9 +234,12 @@ type HTTPCompletion interface {
 	Wait() <-chan int64
 }
 
-// HTTPCompletionObserver 对齐 observeGatewayHttpCompletion。
+// HTTPCompletionObserver 对齐 observeGatewayHttpCompletion。req 携带请求级
+// 完成观测载体（Go 侧完成 subject 挂请求上下文，与每请求生命周期一一对应，
+// 组合根据此解析同一 subject）；实现必须对 nil req 安全（返回 nil 时 sink
+// 回退 nowMs 兜底）。
 type HTTPCompletionObserver interface {
-	Observe(res gatewaypreauth.GatewayResponseWriter) HTTPCompletion
+	Observe(req *gatewaypreauth.GatewayRequest, res gatewaypreauth.GatewayResponseWriter) HTTPCompletion
 }
 
 // ClientSourceAvoidance 对齐 client-profiles 的来源避让（G18）。

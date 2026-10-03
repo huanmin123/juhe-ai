@@ -714,15 +714,23 @@ func TestW11FStatsReader(t *testing.T) {
 	if g2.Total != 1 || g2.Available != 1 || g2.ConcurrencyLimit != 1 {
 		t.Fatalf("g2 = %+v", g2)
 	}
-	// TodayUsage/Usage 属 usage-summary hydrate 键，不在本投影，保持零值。
-	if g1.TodayUsage != nil || g1.Usage != nil || g2.TodayUsage != nil || g2.Usage != nil {
-		t.Fatalf("usage hydrate 键必须为零值: %+v %+v", g1, g2)
+	// TodayUsage/Usage 先铺 emptyAccountUsageSummary 13 键空形状（恢复 Node
+	// 响应形状：行存在时 two key 也必须非 nil），真值由 WithUsageSource 端口
+	// 的 usage-summary hydrate 覆盖。修复前这里钉的是"零值（nil）"旧契约，
+	// 随"用量(日)"列恒 0 修复回正。
+	for _, item := range []AccountStats{g1, g2} {
+		if item.TodayUsage == nil || item.Usage == nil {
+			t.Fatalf("usage hydrate 键必须非 nil 空形状: %+v", item)
+		}
 	}
 	// accountStatsFromGroupRow 直连。
 	row := groupAccountStatsRow{GroupID: "g", Total: 1, Available: 2, Active: 3, Disabled: 4, Error: 5, RateLimited: 6, CurrentConcurrency: 7, ConcurrencyLimit: 8}
 	fromRow := accountStatsFromGroupRow(row)
-	if fromRow.RateLimited != 6 || fromRow.Total != 1 || fromRow.TodayUsage != nil || fromRow.Usage != nil {
+	if fromRow.RateLimited != 6 || fromRow.Total != 1 || fromRow.TodayUsage == nil || fromRow.Usage == nil {
 		t.Fatalf("fromRow = %+v", fromRow)
+	}
+	if _, ok := fromRow.TodayUsage.(map[string]any); !ok {
+		t.Fatalf("fromRow.TodayUsage 必须是 emptyAccountUsageSummary 形状: %#v", fromRow.TodayUsage)
 	}
 
 	// 查询错误 / Scan 错误 / rows.Err。

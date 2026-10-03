@@ -53,6 +53,16 @@ type chainUsageSemanticResolver struct{}
 
 func (chainUsageSemanticResolver) UsageSemanticForProfile(profile *gatewayusage.ProviderProtocolProfile) string {
 	if profile != nil {
+		// 真实协议档案优先（Node registry：anthropic/gemini 驱动按协议分派）：
+		// deepseek/glm 等 providerCode 挂 anthropic/gemini 协议档案时语义跟随
+		// 协议（anthropic/anthropic_v1 → anthropic；gemini/gemini_v1beta →
+		// gemini），而不是驱动回退的 openai。
+		switch strings.ToLower(strings.TrimSpace(profile.ProtocolCode)) {
+		case "anthropic", "anthropic_v1":
+			return "anthropic"
+		case "gemini", "gemini_v1beta":
+			return "gemini"
+		}
 		provider := strings.ToLower(strings.TrimSpace(profile.ProviderCode))
 		if provider == "hybrid" {
 			// hybrid profile 级覆盖（Node registry hybrid driver 的档案分派）：

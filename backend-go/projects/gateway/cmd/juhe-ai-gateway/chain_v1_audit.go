@@ -7,6 +7,7 @@ package main
 
 import (
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ func (c *gatewayChain) newAuditCapture(
 	req *gatewaypreauth.GatewayRequest,
 	traceID string,
 	startedAt int64,
+	httpCompletion *gatewayHTTPCompletion,
 ) gatewaypreauth.AuditCaptureContext {
 	model, _ := gatewaypreauth.RequestModel(req)
 	headers := map[string]any{}
@@ -48,8 +50,20 @@ func (c *gatewayChain) newAuditCapture(
 		Settings:             c.auditSettings,
 		Dispatcher:           c.auditDispatcher,
 		Models:               c.usageModelResolver,
-		Logger:               slogLogger{inner: slog.Default()},
-		StageLogger:          chainAuditStageLogger{},
+		// 定价面与完成尝试记录（chainFinalizationUsage）同源：catalog 与
+		// usageService 共享同一实例，gate = cacheDriver !== 'redis'
+		// （chain_compose.go chainSyncPricingAllowed）。缺省时 audit
+		// pricing_model 恒 NULL（生产 13,691 行全空的根因）。
+		Pricing:            c.finalizationPricing,
+		SyncPricingAllowed: c.finalizationSyncPricingAllowed,
+		// HTTP 完成观测：flush 等待本 subject 的完成信号，缺省退化内联
+		// flush（audit http_completed_at / http_duration_ms 恒 NULL 的根因）。
+		HTTPCompletion: httpCompletion,
+		Logger:         slogLogger{inner: slog.Default()},
+		StageLogger:    chainAuditStageLogger{},
+		// Node processRole === 'server' 语义：网关进程承载审计 payload 保留
+		// 决策，offload 语义恒开启。
+		OffloadPayloadRetention: true,
 	})
 	return preauthAuditCapture{inner: concrete}
 }
@@ -128,6 +142,26 @@ func (c preauthAuditCapture) AddGatewayMetadata(label string, metadata map[strin
 func (c preauthAuditCapture) Cancel() { c.inner.Cancel() }
 
 func (c preauthAuditCapture) Finalize(input gatewaypreauth.AuditFinalizeInput) {
+	c.inner.Finalize(finalizeAuditInputOf(input))
+}
+
+// FinalizeExtended implements gatewayresponse.AuditFinalizeExtender：按
+// Finalize 同款转换投影冻结输入，并透传扩展字段 extras.FirstTokenMs
+// （gatewaypreauth.AuditFinalizeInput 无该字段）。响应层对扩展面与 Finalize
+// 二选一调用（nonstreaminspection.go finalizeAuditWithExtras 与 sink.go
+// models 路径先探扩展面），不会双写 finalize。
+func (c preauthAuditCapture) FinalizeExtended(input gatewaypreauth.AuditFinalizeInput, extras gatewayresponse.AuditFinalizeExtras) {
+	converted := finalizeAuditInputOf(input)
+	if extras.FirstTokenMs != nil {
+		firstTokenMs := int(*extras.FirstTokenMs)
+		converted.FirstTokenMs = &firstTokenMs
+	}
+	c.inner.Finalize(converted)
+}
+
+// finalizeAuditInputOf 把冻结的 finalize 输入投影到 gatewayusage 消费面
+// （Finalize 与 FinalizeExtended 共用的同款转换）。
+func finalizeAuditInputOf(input gatewaypreauth.AuditFinalizeInput) gatewayusage.FinalizeAuditInput {
 	converted := gatewayusage.FinalizeAuditInput{
 		Success:      input.Success,
 		ErrorPhase:   input.ErrorPhase,
@@ -149,7 +183,7 @@ func (c preauthAuditCapture) Finalize(input gatewaypreauth.AuditFinalizeInput) {
 	if input.ResponsePartType != "" {
 		converted.ResponsePartType = gatewayusage.AuditPayloadPartType(input.ResponsePartType)
 	}
-	c.inner.Finalize(converted)
+	return converted
 }
 
 // chainResponseAuditCapture bridges the G17 capture into
@@ -170,6 +204,12 @@ func (c chainResponseAuditCapture) Finalize(input gatewaypreauth.AuditFinalizeIn
 	preauthAuditCapture{inner: c.capture}.Finalize(input)
 }
 
+// FinalizeExtended implements gatewayresponse.AuditFinalizeExtender：委托
+// preauthAuditCapture 的同款投影（extras.FirstTokenMs → FinalizeAuditInput）。
+func (c chainResponseAuditCapture) FinalizeExtended(input gatewaypreauth.AuditFinalizeInput, extras gatewayresponse.AuditFinalizeExtras) {
+	preauthAuditCapture{inner: c.capture}.FinalizeExtended(input, extras)
+}
+
 func (c chainResponseAuditCapture) CompleteAttempt(attemptID string, input gatewayresponse.AttemptAuditInput) {
 	converted := gatewayusage.CompleteAttemptInput{
 		Success:      input.Success,
@@ -180,7 +220,17 @@ func (c chainResponseAuditCapture) CompleteAttempt(attemptID string, input gatew
 	status := input.StatusCode
 	converted.StatusCode = &status
 	if input.ResponseHeaders != nil {
-		if headers, ok := input.ResponseHeaders.(map[string]any); ok {
+		switch headers := input.ResponseHeaders.(type) {
+		case http.Header:
+			// 响应层传入原始 http.Header（nonstream.go / finalize.go /
+			// nonstreaminspection.go 的 UpstreamResponse.Header）：每键取首值，
+			// 键保持 http.Header 规范化形态——与 gatewayresponse
+			// responseHeadersToObject 及 chainAttemptAuditSink.CompleteAttempt
+			// 的上游审计头产物同形态。此前仅接受 map[string]any，该分支恒丢
+			// （audit_payload_refs upstream_response 8,498 条仅 624 条带头部的
+			// 根因）。
+			converted.ResponseHeaders = responseHeadersFirstValueOf(headers)
+		case map[string]any:
 			converted.ResponseHeaders = headers
 		}
 	}
@@ -189,6 +239,18 @@ func (c chainResponseAuditCapture) CompleteAttempt(attemptID string, input gatew
 		converted.HasResponseBody = true
 	}
 	c.capture.CompleteAttempt(attemptID, converted)
+}
+
+// responseHeadersFirstValueOf 投影 http.Header 为审计 payload 头对象（每键
+// 取首值）。
+func responseHeadersFirstValueOf(header http.Header) map[string]any {
+	out := make(map[string]any, len(header))
+	for name, values := range header {
+		if len(values) > 0 {
+			out[name] = values[0]
+		}
+	}
+	return out
 }
 
 func (c chainResponseAuditCapture) FinalizeLazy(provider func() gatewaypreauth.AuditFinalizeInput) {

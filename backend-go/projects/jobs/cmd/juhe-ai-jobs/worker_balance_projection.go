@@ -200,11 +200,11 @@ func (r *balanceProjectionRuntime) loadSystemAccountIDs(ctx context.Context, row
 // 持久化形状：同时返回映射视图（供列值提取）与其 JSON 序列化（供
 // snapshot_json 落列），一次解析两者共用。字段集对齐 balanceSnapshotPersist
 // （status/configRevision/remainingUsd/rawRemaining/rawUnit/basis/errorMessage/
-// lastAttemptAt/lastSuccessAt）+ 多 Key 字段透传（keyCount/queriedKeyCount/
-// scope/aggregation/keyBalances，元素键名即 shared KeyBalance 的 camelCase
-// tag）。J2 JSON 本就是 shared Snapshot 的 camelCase 序列化（gateway 读端按
-// 同名键消费），映射为直通 + configRevision 覆写；未知键在反序列化时丢弃
-// （只放行契约字段）。
+// lastAttemptAt/lastSuccessAt/瞬时失败三字段）+ 多 Key 字段透传（keyCount/
+// queriedKeyCount/scope/aggregation/keyBalances，元素键名即 shared KeyBalance
+// 的 camelCase tag）。J2 JSON 本就是 shared Snapshot 的 camelCase 序列化
+// （gateway 读端按同名键消费），映射为直通 + configRevision 覆写；未知键在
+// 反序列化时丢弃（只放行契约字段）。
 func projectBalanceSnapshot(snapshotJSON string, configRevision int64) (*balanceSnapshotPersist, string, error) {
 	var source accountbalance.Snapshot
 	if err := json.Unmarshal([]byte(snapshotJSON), &source); err != nil {
@@ -224,18 +224,23 @@ func projectBalanceSnapshot(snapshotJSON string, configRevision int64) (*balance
 // balanceSnapshotFromJ2 是 J2 Snapshot → balanceSnapshotPersist 的逐字段映射
 // （纯函数，供投影与测试共用）：remainingUsd 为规范小数文本直通（gateway 读端
 // 按字符串消费，无货币换算），lastAttemptAt/lastSuccessAt 为 RFC3339 文本直通，
-// 多 Key 五字段原样透传，configRevision 一律取 juhe_jobs 行的 config_revision
-// 列（J2 JSON 内无该字段，这也是 gateway 匹配围栏的权威来源）。
+// 瞬时失败三字段直通（pending/failed 瞬态快照的三振计数与最近失败消息/时间，
+// 成功快照零值省略），多 Key 五字段原样透传，configRevision 一律取 juhe_jobs
+// 行的 config_revision 列（J2 JSON 内无该字段，这也是 gateway 匹配围栏的权威
+// 来源）。
 func balanceSnapshotFromJ2(source *accountbalance.Snapshot, configRevision int64) *balanceSnapshotPersist {
 	view := &balanceSnapshotPersist{
-		Status:          string(source.Status),
-		ConfigRevision:  configRevision,
-		LastAttemptAt:   source.LastAttemptAt,
-		LastSuccessAt:   source.LastSuccessAt,
-		KeyCount:        source.KeyCount,
-		QueriedKeyCount: source.QueriedKeyCount,
-		Scope:           source.Scope,
-		Aggregation:     source.Aggregation,
+		Status:                    string(source.Status),
+		ConfigRevision:            configRevision,
+		LastAttemptAt:             source.LastAttemptAt,
+		LastSuccessAt:             source.LastSuccessAt,
+		ConsecutiveTransientFails: source.ConsecutiveTransientFails,
+		LastTransientErrorMessage: source.LastTransientErrorMessage,
+		LastTransientFailureAt:    source.LastTransientFailureAt,
+		KeyCount:                  source.KeyCount,
+		QueriedKeyCount:           source.QueriedKeyCount,
+		Scope:                     source.Scope,
+		Aggregation:               source.Aggregation,
 	}
 	view.RemainingUSD = optionalString(source.RemainingUSD)
 	view.RawRemaining = optionalString(source.RawRemaining)

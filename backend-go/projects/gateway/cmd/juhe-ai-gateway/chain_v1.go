@@ -236,11 +236,25 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	}, "success", c.clock.Now())
 
 	requestSnapshot := usageRequestSnapshotOf(req, traceID)
-	auditCapture := c.newAuditCapture(req, traceID, startedAt)
+	// HTTP 完成观测 subject：链入口 defer 处 complete 一次；audit capture
+	// （http_completed_at / http_duration_ms 的 flush 等待源）与 sink 失败
+	// usage（CompletedAtMs）从同一 subject 读取完成时刻。经请求上下文传递
+	// 给 sink 侧 Observe（对齐上方 D-119 runtime 快照的传递模式）。
+	httpCompletion := newGatewayHTTPCompletion()
+	if req.HTTP != nil {
+		r = req.HTTP.WithContext(context.WithValue(req.HTTP.Context(), chainHTTPCompletionKey, httpCompletion))
+		req.HTTP = r
+	}
+	auditCapture := c.newAuditCapture(req, traceID, startedAt, httpCompletion)
 	// Node finally (routes.ts:2645): an un-finalized capture is canceled at
 	// request end so its active-capture slot is recycled. Idempotent; the
 	// failure paths below may cancel earlier.
 	defer gatewaypreauth.CancelAuditCapture(auditCapture)
+	// 完成信号在本 defer 注册（LIFO：先于上方 cancel defer 执行）——审计
+	// flush 与 sink 失败记录先拿到真实完成时刻，再回收 capture 活跃槽。
+	// complete 幂等，对 Finalize/Cancel 已收尾的路径无副作用；startedAt 取
+	// c.preauth.NowMs()（UnixMilli），此处直接取 wall clock 同域绝对毫秒。
+	defer httpCompletion.complete(time.Now().UnixMilli())
 
 	// ---- preflight (request/preflight.ts) ----
 	preflightOptions := c.preflightOptions(requestLane)

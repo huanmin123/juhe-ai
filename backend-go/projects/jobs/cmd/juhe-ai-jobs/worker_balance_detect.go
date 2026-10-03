@@ -490,6 +490,11 @@ func (r *balanceDetectRuntime) EnableDetectedQuery(ctx context.Context, input op
 // accountbalance.Snapshot 的 json tag 原样透传：单 Key 快照全部为零值省略
 // （不改变既有 JSON 形状），多 Key 快照携带逐 Key 明细——gateway 列表端剥
 // keyBalances、明细端按 keyFingerprint join（stats 行保留是明细端契约）。
+// 瞬时失败三字段（consecutiveTransientFailures/lastTransientErrorMessage/
+// lastTransientFailureAt）同理按 shared tag 透传：pending/failed 瞬态快照
+// 携带三振计数与最近一次失败消息/时间——gateway 读端（list_snapshot.go）与
+// 前端「刷新暂时失败（N/3）」提示的数据源；成功快照零值省略（JSON 形状零
+// 变化）。
 type balanceSnapshotPersist struct {
 	Status         string  `json:"status"`
 	ConfigRevision int64   `json:"configRevision"`
@@ -500,6 +505,12 @@ type balanceSnapshotPersist struct {
 	ErrorMessage   *string `json:"errorMessage,omitempty"`
 	LastAttemptAt  string  `json:"lastAttemptAt,omitempty"`
 	LastSuccessAt  string  `json:"lastSuccessAt,omitempty"`
+	// 瞬时失败三字段：tag 与 shared accountbalance.Snapshot 完全一致
+	// （ConsecutiveTransientFails/LastTransientErrorMessage/
+	// LastTransientFailureAt，camelCase + omitempty）。
+	ConsecutiveTransientFails int    `json:"consecutiveTransientFailures,omitempty"`
+	LastTransientErrorMessage string `json:"lastTransientErrorMessage,omitempty"`
+	LastTransientFailureAt    string `json:"lastTransientFailureAt,omitempty"`
 	// 多 Key 合并结果专用字段（对齐 shared accountbalance.Snapshot 的
 	// keyCount/queriedKeyCount/scope/aggregation/keyBalances；KeyBalances
 	// 元素键名即 shared KeyBalance 的 camelCase tag）。
@@ -595,11 +606,12 @@ func nullableTextPtr(value *string) any {
 }
 
 // buildSnapshotJSON 组装 Node 等价快照 JSON：优先使用 detector 缓存的完整
-// J2 快照（remainingUsd/rawUnit/basis 等），并按 Node 规则覆盖
+// J2 快照（remainingUsd/rawUnit/basis/瞬时失败三字段等），并按 Node 规则覆盖
 // configRevision/lastAttemptAt/lastSuccessAt。
 func (r *balanceDetectRuntime) buildSnapshotJSON(input opsjobs.BalanceSnapshotInput) (*balanceSnapshotPersist, error) {
-	// 注意：opsjobs.BalanceSnapshotWrite 窄投影不含 errorMessage；error 信息
-	// 仅在 detector 缓存的完整 J2 快照可用时持久化（Node 快照形状）。
+	// 注意：opsjobs.BalanceSnapshotWrite 窄投影不含 errorMessage 与瞬时失败
+	// 三字段；error/瞬态信息仅在 detector 缓存的完整 J2 快照可用时持久化
+	// （Node 快照形状）。
 	view := &balanceSnapshotPersist{
 		Status:         string(input.Snapshot.Status),
 		ConfigRevision: input.Snapshot.ConfigRevision,
@@ -622,6 +634,11 @@ func (r *balanceDetectRuntime) buildSnapshotJSON(input opsjobs.BalanceSnapshotIn
 				message := full.ErrorMessage
 				view.ErrorMessage = &message
 			}
+			// 瞬时失败三字段透传：pending/failed 瞬态快照携带三振计数与最近
+			// 一次失败消息/时间；成功快照零值省略（JSON 形状零变化）。
+			view.ConsecutiveTransientFails = full.ConsecutiveTransientFails
+			view.LastTransientErrorMessage = full.LastTransientErrorMessage
+			view.LastTransientFailureAt = full.LastTransientFailureAt
 			// 多 Key 合并结果透传：仅多 Key 执行路径产出非零字段，单 Key 快照
 			// 保持零值省略（JSON 形状零变化）。
 			view.KeyCount = full.KeyCount

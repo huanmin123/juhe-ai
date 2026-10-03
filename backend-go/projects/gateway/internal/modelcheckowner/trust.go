@@ -89,8 +89,17 @@ func BuildTrustReport(aggregate EvidenceAggregate, items []map[string]any) Trust
 		if strings.Contains(canonicalEvidenceFamily(kind), "cross_model") && (status == "failed" || evidenceBool(evidence, "modelMismatch")) {
 			report.ReasonCodes = appendReason(report.ReasonCodes, "cross_model_mismatch")
 		}
-		if kind == "token_integrity" && (status == "failed" || evidenceString(evidence, "reasonCodes", "proportional_padding")) {
-			report.ReasonCodes = appendReason(report.ReasonCodes, "token_integrity_anomaly")
+		if kind == "token_integrity" {
+			if status == "failed" || evidenceString(evidence, "reasonCodes", "proportional_padding") {
+				report.ReasonCodes = appendReason(report.ReasonCodes, "token_integrity_anomaly")
+			}
+			// The usage integrity dimension is the run-level projection of this
+			// single run's token_integrity evidence. Multiple decisive items
+			// escalate (never de-escalate) so a later weaker item cannot hide an
+			// earlier anomaly; items without a decisive fact keep the default.
+			if candidate := tokenIntegrityUsageStatus(status, evidence); usageIntegritySeverity(candidate) > usageIntegritySeverity(report.UsageIntegrityStatus) {
+				report.UsageIntegrityStatus = candidate
+			}
 		}
 	}
 	if !hasModelResponseEvidence || successfulProtocolCount == 0 {
@@ -113,6 +122,42 @@ func BuildTrustReport(aggregate EvidenceAggregate, items []map[string]any) Trust
 		report.ReasonCodes = appendReason(report.ReasonCodes, "protocol_check_failed")
 	}
 	return report
+}
+
+// tokenIntegrityUsageStatus applies the usage integrity decision table to one
+// token_integrity evidence item, matched top-down. It returns "" when the item
+// carries no decisive usage fact, which leaves the report at its
+// insufficient_evidence default.
+func tokenIntegrityUsageStatus(status string, evidence map[string]any) string {
+	switch {
+	case status == "passed":
+		return "consistent"
+	case status == "failed" || evidenceString(evidence, "reasonCodes", "proportional_padding"):
+		return "suspected_padding"
+	case status == "warning" && (evidenceString(evidence, "reasonCodes", "slope_warning") || evidenceString(evidence, "reasonCodes", "bucket_rounding")):
+		return "warning"
+	case status == "skipped" && (evidenceString(evidence, "reasonCodes", "reported_usage_missing") || evidenceString(evidence, "reasonCodes", "reported_usage_incompatible")):
+		return "unsupported"
+	default:
+		return ""
+	}
+}
+
+// usageIntegritySeverity ranks conclusive usage states so multiple decisive
+// token_integrity items escalate instead of overwriting each other.
+func usageIntegritySeverity(status string) int {
+	switch status {
+	case "consistent":
+		return 1
+	case "warning":
+		return 2
+	case "unsupported":
+		return 3
+	case "suspected_padding":
+		return 4
+	default:
+		return 0
+	}
 }
 
 func isTrustedComparisonEvidence(kind string) bool {

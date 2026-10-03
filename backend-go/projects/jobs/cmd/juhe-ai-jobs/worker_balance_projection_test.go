@@ -42,6 +42,9 @@ func j2SnapshotJSON(t *testing.T, snapshot accountbalance.Snapshot) string {
 // TestBalanceProjectionMappingSingleKey：单 Key J2 快照映射——键集合精确
 // 等于 balanceSnapshotPersist 契约集（configRevision 由列注入），remainingUsd
 // 等字段直通（gateway 读端按字符串消费，无货币换算），单 Key 无多 Key 字段。
+// 该用例同时是「输入不带瞬时失败三字段 → JSON 形状与既有完全一致」的回归
+// 断言：三字段为零值 omitempty，fresh 输入不会长出 consecutiveTransientFailures
+// 等键（len(decoded) 精确相等检查覆盖）。
 func TestBalanceProjectionMappingSingleKey(t *testing.T) {
 	source := j2SnapshotJSON(t, accountbalance.Snapshot{
 		Status:        accountbalance.StatusFresh,
@@ -152,6 +155,45 @@ func TestBalanceProjectionMappingMultiKey(t *testing.T) {
 	second, ok := entries[1].(map[string]any)
 	if !ok || second["errorMessage"] != "上游余额查询超时" {
 		t.Fatalf("失败 Key 的诊断必须透传: %v", entries[1])
+	}
+}
+
+// TestBalanceProjectionMappingTransientFields：J2 pending/failed 瞬态快照的
+// 瞬时失败三字段（consecutiveTransientFailures/lastTransientErrorMessage/
+// lastTransientFailureAt，shared Snapshot 原名）必须直通进 stats snapshot_json
+// ——gateway 读端（accountsbalance/list_snapshot.go）与前端
+// 「刷新暂时失败（N/3）」提示的数据源。修复前必红：balanceSnapshotFromJ2
+// 未拷贝三字段，投影 JSON 缺键。
+func TestBalanceProjectionMappingTransientFields(t *testing.T) {
+	source := j2SnapshotJSON(t, accountbalance.Snapshot{
+		Status:                    accountbalance.StatusPending,
+		LastAttemptAt:             "2026-09-27T07:59:00Z",
+		ConsecutiveTransientFails: 2,
+		LastTransientErrorMessage: "上游余额查询超时",
+		LastTransientFailureAt:    "2026-09-27T07:58:30Z",
+	})
+	view, serialized, err := projectBalanceSnapshot(source, 5)
+	if err != nil {
+		t.Fatalf("瞬态快照映射必须成功: %v", err)
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(serialized), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["status"] != "pending" {
+		t.Fatalf("瞬态快照状态必须直通: %v", decoded["status"])
+	}
+	if decoded["consecutiveTransientFailures"] != float64(2) {
+		t.Fatalf("缺 consecutiveTransientFailures 或值错误: %s", serialized)
+	}
+	if decoded["lastTransientErrorMessage"] != "上游余额查询超时" {
+		t.Fatalf("缺 lastTransientErrorMessage 或值错误: %s", serialized)
+	}
+	if decoded["lastTransientFailureAt"] != "2026-09-27T07:58:30Z" {
+		t.Fatalf("缺 lastTransientFailureAt 或值错误: %s", serialized)
+	}
+	if view.ConsecutiveTransientFails != 2 || view.LastTransientErrorMessage != "上游余额查询超时" || view.LastTransientFailureAt != "2026-09-27T07:58:30Z" {
+		t.Fatalf("映射视图瞬时失败三字段错误: %+v", view)
 	}
 }
 

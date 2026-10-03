@@ -542,7 +542,10 @@ func TestNewAuditCaptureCarriesSourceEndpointFamilyForModelAccounting(t *testing
 		auditDispatcher:    dispatcher,
 		usageModelResolver: usageModelResolverAdapter{},
 	}
-	capture := chain.newAuditCapture(req, "trace_audit_accounting", 1728000000000)
+	// HTTP 完成观测接线后，启用态 capture 的 Finalize 会等待完成信号再
+	// flush；本测试先送达信号使 Finalize 立即内联投递。
+	subject := newGatewayHTTPCompletion()
+	capture := chain.newAuditCapture(req, "trace_audit_accounting", 1728000000000, subject)
 	t.Cleanup(func() { gatewaypreauth.CancelAuditCapture(capture) })
 	concrete := auditCaptureConcrete(capture)
 	if concrete == nil {
@@ -551,6 +554,7 @@ func TestNewAuditCaptureCarriesSourceEndpointFamilyForModelAccounting(t *testing
 	if !concrete.IsEnabled() {
 		t.Fatal("审计设置 Enabled=true 时 capture 必须启用")
 	}
+	subject.complete(1728000000500)
 
 	concrete.StartAttempt(gatewayusage.StartAttemptInput{
 		Account: usageModelAccountOf(gatewaydispatch.AccountCandidate{

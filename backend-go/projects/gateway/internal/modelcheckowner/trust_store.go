@@ -165,21 +165,30 @@ func (s *Store) upsertTrustLatest(ctx context.Context, tx *sql.Tx, projection Tr
 	evidenceCoverage := projection.Report.EvidenceCoverage
 	for attempt := 0; attempt < 2; attempt++ {
 		var currentLast, currentLastID sql.NullString
-		var currentIdentity, currentMapping, currentProtocol, currentEvidence, currentReason string
+		var currentIdentity, currentMapping, currentUsage, currentProtocol, currentEvidence, currentReason string
 		var currentCoverage, currentCount int
-		err = tx.QueryRowContext(ctx, s.bind(`SELECT identity_status,mapping_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at FROM `+s.table("model_account_trust_results")+` WHERE system_account_id=? AND account_id=? AND requested_model=?`+s.forUpdate()), projection.SystemAccountID, projection.AccountID, projection.RequestedModel).Scan(&currentIdentity, &currentMapping, &currentProtocol, &currentEvidence, &currentCoverage, &currentCount, &currentReason, &currentLastID, &currentLast)
+		err = tx.QueryRowContext(ctx, s.bind(`SELECT identity_status,mapping_status,usage_integrity_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at FROM `+s.table("model_account_trust_results")+` WHERE system_account_id=? AND account_id=? AND requested_model=?`+s.forUpdate()), projection.SystemAccountID, projection.AccountID, projection.RequestedModel).Scan(&currentIdentity, &currentMapping, &currentUsage, &currentProtocol, &currentEvidence, &currentCoverage, &currentCount, &currentReason, &currentLastID, &currentLast)
+		// Only a conclusive run-level usage status may overwrite a stored
+		// conclusive state. An insufficient_evidence projection carries no usage
+		// fact for this run and keeps the previous conclusion instead of
+		// demoting it. The insert path sees no current row, so it writes the
+		// projection value verbatim.
+		usageStatus := projection.Report.UsageIntegrityStatus
+		if usageStatus == "insufficient_evidence" && oneOf(currentUsage, "consistent", "warning", "suspected_padding", "unsupported") {
+			usageStatus = currentUsage
+		}
 		if err == nil {
 			comparison := compareTrustCursor(currentLast.String, currentLastID.String, last.createdAt, last.id)
 			if comparison > 0 {
 				return nil
 			}
-			if comparison == 0 && (currentIdentity != projection.Report.IdentityStatus || currentMapping != mappingStatus || currentProtocol != protocolStatus || currentEvidence != evidenceStatus || currentCoverage != evidenceCoverage || currentCount != len(observations) || !jsonEqual([]byte(currentReason), reasonJSON)) {
+			if comparison == 0 && (currentIdentity != projection.Report.IdentityStatus || currentMapping != mappingStatus || currentUsage != usageStatus || currentProtocol != protocolStatus || currentEvidence != evidenceStatus || currentCoverage != evidenceCoverage || currentCount != len(observations) || !jsonEqual([]byte(currentReason), reasonJSON)) {
 				return errors.New("J3b trust latest result replay conflicts with original projection")
 			}
 			if comparison == 0 {
 				return nil
 			}
-			result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_account_trust_results")+` SET identity_status=?,mapping_status=?,usage_integrity_status='insufficient_evidence',protocol_status=?,evidence_status=?,evidence_coverage=?,observation_count=?,reason_codes_json=?,last_observed_id=?,last_observed_at=?,updated_at=? WHERE system_account_id=? AND account_id=? AND requested_model=?`), projection.Report.IdentityStatus, mappingStatus, protocolStatus, evidenceStatus, evidenceCoverage, len(observations), string(reasonJSON), last.id, last.createdAt, updatedAt, projection.SystemAccountID, projection.AccountID, projection.RequestedModel)
+			result, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("model_account_trust_results")+` SET identity_status=?,mapping_status=?,usage_integrity_status=?,protocol_status=?,evidence_status=?,evidence_coverage=?,observation_count=?,reason_codes_json=?,last_observed_id=?,last_observed_at=?,updated_at=? WHERE system_account_id=? AND account_id=? AND requested_model=?`), projection.Report.IdentityStatus, mappingStatus, usageStatus, protocolStatus, evidenceStatus, evidenceCoverage, len(observations), string(reasonJSON), last.id, last.createdAt, updatedAt, projection.SystemAccountID, projection.AccountID, projection.RequestedModel)
 			if err != nil {
 				return fmt.Errorf("update J3b trust latest result: %w", err)
 			}
@@ -194,7 +203,7 @@ func (s *Store) upsertTrustLatest(ctx context.Context, tx *sql.Tx, projection Tr
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("read J3b trust latest result: %w", err)
 		}
-		result, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_account_trust_results")+` (system_account_id,account_id,requested_model,identity_status,mapping_status,usage_integrity_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(system_account_id,account_id,requested_model) DO NOTHING`), projection.SystemAccountID, projection.AccountID, projection.RequestedModel, projection.Report.IdentityStatus, mappingStatus, "insufficient_evidence", protocolStatus, evidenceStatus, evidenceCoverage, len(observations), string(reasonJSON), last.id, last.createdAt, updatedAt)
+		result, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("model_account_trust_results")+` (system_account_id,account_id,requested_model,identity_status,mapping_status,usage_integrity_status,protocol_status,evidence_status,evidence_coverage,observation_count,reason_codes_json,last_observed_id,last_observed_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(system_account_id,account_id,requested_model) DO NOTHING`), projection.SystemAccountID, projection.AccountID, projection.RequestedModel, projection.Report.IdentityStatus, mappingStatus, usageStatus, protocolStatus, evidenceStatus, evidenceCoverage, len(observations), string(reasonJSON), last.id, last.createdAt, updatedAt)
 		if err != nil {
 			return fmt.Errorf("insert J3b trust latest result: %w", err)
 		}

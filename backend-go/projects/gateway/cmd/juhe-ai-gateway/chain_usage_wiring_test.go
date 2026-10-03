@@ -32,7 +32,14 @@ func TestChainUsageSemanticResolver(t *testing.T) {
 		{name: "gemini", provider: "gemini", protocol: "gemini_v1beta", expect: "gemini"},
 		{name: "gpt", provider: "gpt", protocol: "openai_v1", expect: "openai"},
 		{name: "openai-compatible", provider: "openai-compatible", protocol: "openai_v1", expect: "openai"},
-		{name: "空 provider", provider: "", protocol: "anthropic_v1", expect: "openai"},
+		// 真实协议档案优先（A8 修复前必红：此前按 providerCode 驱动回退恒
+		// openai）：协议为 anthropic/gemini 时语义跟随协议，与 providerCode
+		// 无关（deepseek/glm + anthropic 协议档案在生产语义应落 anthropic）。
+		{name: "空 provider anthropic 协议", provider: "", protocol: "anthropic_v1", expect: "anthropic"},
+		{name: "deepseek anthropic 协议", provider: "deepseek", protocol: "anthropic", expect: "anthropic"},
+		{name: "glm anthropic_v1 协议", provider: "glm", protocol: "anthropic_v1", expect: "anthropic"},
+		{name: "deepseek gemini 协议", provider: "deepseek", protocol: "gemini_v1beta", expect: "gemini"},
+		{name: "deepseek openai 协议", provider: "deepseek", protocol: "openai", expect: "openai"},
 		// hybrid profile 级覆盖：语义按档案 ID 决定（对齐 Node registry hybrid
 		// driver 的 anthropic-messages / gemini-native / openai chat 分派）。
 		{

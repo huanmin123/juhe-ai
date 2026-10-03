@@ -116,3 +116,39 @@ func TestBuildTrustReportCoverageIncludesTrustedComparisonRequestFailures(t *tes
 		t.Fatalf("coverage=%d, want target and trusted comparison probes counted like the Node completeness summary", report.EvidenceCoverage)
 	}
 }
+
+func TestBuildTrustReportPromotesUsageIntegrityByDecisionTable(t *testing.T) {
+	tokenItem := func(status string, reasonCodes ...string) map[string]any {
+		codes := make([]any, 0, len(reasonCodes))
+		for _, reason := range reasonCodes {
+			codes = append(codes, reason)
+		}
+		return map[string]any{"kind": "token_integrity", "status": status, "evidence": map[string]any{"reasonCodes": codes}}
+	}
+	for _, tc := range []struct {
+		name  string
+		items []map[string]any
+		want  string
+	}{
+		{name: "no token item keeps default", items: []map[string]any{{"kind": "protocol_basic", "status": "passed", "evidence": map[string]any{"success": true, "responseModel": "gpt-5.6"}}}, want: "insufficient_evidence"},
+		{name: "passed projects consistent", items: []map[string]any{tokenItem("passed")}, want: "consistent"},
+		{name: "failed projects suspected padding", items: []map[string]any{tokenItem("failed", "proportional_padding")}, want: "suspected_padding"},
+		{name: "proportional padding reason escalates non-failed status", items: []map[string]any{{"kind": "token_integrity", "status": "warning", "evidence": map[string]any{"reasonCodes": []string{"proportional_padding"}}}}, want: "suspected_padding"},
+		{name: "warning with slope warning projects warning", items: []map[string]any{tokenItem("warning", "slope_warning")}, want: "warning"},
+		{name: "warning with bucket rounding projects warning", items: []map[string]any{tokenItem("warning", "bucket_rounding")}, want: "warning"},
+		{name: "warning without decisive reason keeps default", items: []map[string]any{tokenItem("warning")}, want: "insufficient_evidence"},
+		{name: "skipped with missing reported usage projects unsupported", items: []map[string]any{tokenItem("skipped", "reported_usage_missing")}, want: "unsupported"},
+		{name: "skipped with incompatible reported usage projects unsupported", items: []map[string]any{tokenItem("skipped", "reported_usage_incompatible")}, want: "unsupported"},
+		{name: "skipped tokenizer snapshot missing keeps default", items: []map[string]any{{"kind": "token_integrity", "status": "skipped", "evidence": map[string]any{"reason": "tokenizer_snapshot_not_attached"}}}, want: "insufficient_evidence"},
+		{name: "unknown status keeps default", items: []map[string]any{tokenItem("mystery")}, want: "insufficient_evidence"},
+		{name: "decisive items escalate to the strongest fact", items: []map[string]any{tokenItem("passed"), tokenItem("skipped", "reported_usage_missing")}, want: "unsupported"},
+		{name: "trusted comparison token item never promotes", items: []map[string]any{{"kind": "trusted_comparison.token_integrity", "status": "failed", "evidence": map[string]any{"reasonCodes": []any{"proportional_padding"}}}}, want: "insufficient_evidence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := BuildTrustReport(EvidenceAggregate{}, tc.items)
+			if report.UsageIntegrityStatus != tc.want {
+				t.Fatalf("usage integrity status=%q, want %q (report=%+v)", report.UsageIntegrityStatus, tc.want, report)
+			}
+		})
+	}
+}

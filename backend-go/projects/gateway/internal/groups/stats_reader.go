@@ -63,8 +63,10 @@ func (r *GroupAccountStatsDBReader) bind(query string) string {
 // system_account_id），此前 SELECT 的 today_usage/usage 两列不存在（恒
 // "no such column" → hydrate 整体丢弃），`updated_at > 读时刻` 也恒假，两者
 // 均为移植错误。TodayUsage/Usage 在 Node 由 usage-summary hydrate 单独供给
-// （group-summary.repository.ts 的 loadGroupUsageSummariesForScopes 后 merge），
-// 不属于本投影，这里保持零值。
+// （group-summary.repository.ts 的 loadGroupUsageSummariesForScopes 后
+// merge），Go 侧由 WithUsageSource 端口 + hydrateListUsage /
+// hydrateDetailUsage 供给，行存在时先铺 emptyAccountUsageSummary 空形状
+// （见 accountStatsFromGroupRow）。
 func (r *GroupAccountStatsDBReader) ReadGroupAccountStats(ctx context.Context, groupIDs []string) (map[string]AccountStats, error) {
 	if len(groupIDs) == 0 || r.db == nil {
 		return map[string]AccountStats{}, nil
@@ -128,17 +130,20 @@ type groupAccountStatsRow struct {
 
 // accountStatsFromGroupRow mirrors the Node GroupAccountStats mapper:
 // reads the stats row and converts it to the AccountStats projection.
-// TodayUsage/Usage 由 usage-summary hydrate 单独供给（见
-// ReadGroupAccountStats 注释），保持零值。
+// TodayUsage/Usage 先铺 emptyAccountUsageSummary 的 13 键空形状，再由
+// hydrateListUsage / hydrateDetailUsage 覆盖真值（恢复 Node 响应形状：
+// group_account_stats 行存在时 two key 也必须非 nil；修复前这里整体替换
+// emptyAccountStats，行存在时连零值 key 都缺失，是前端"用量(日)"列恒 0
+// 的根因之一）。
 func accountStatsFromGroupRow(row groupAccountStatsRow) AccountStats {
-	return AccountStats{
-		Total:              row.Total,
-		Available:          row.Available,
-		Active:             row.Active,
-		Disabled:           row.Disabled,
-		Error:              row.Error,
-		RateLimited:        row.RateLimited,
-		CurrentConcurrency: row.CurrentConcurrency,
-		ConcurrencyLimit:   row.ConcurrencyLimit,
-	}
+	stats := emptyAccountStats()
+	stats.Total = row.Total
+	stats.Available = row.Available
+	stats.Active = row.Active
+	stats.Disabled = row.Disabled
+	stats.Error = row.Error
+	stats.RateLimited = row.RateLimited
+	stats.CurrentConcurrency = row.CurrentConcurrency
+	stats.ConcurrencyLimit = row.ConcurrencyLimit
+	return stats
 }

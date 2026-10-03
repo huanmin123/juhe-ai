@@ -108,6 +108,11 @@ type Store struct {
 	// SetAccountConcurrencyReader wires it (the gateway composition builds the
 	// tracker after this store); nil keeps the stats-table concurrency value.
 	concurrency AccountConcurrencyReader
+	// usage is the optional usage-summary read port behind the list/detail
+	// accountStats.TodayUsage/Usage overlay (Node
+	// loadGroupUsageSummariesForScopes). Nil until WithUsageSource wires it;
+	// nil keeps the zero summaries (same degradation policy as stats).
+	usage UsageSource
 }
 
 // WithStatsReader injects the stats reader for group_account_stats reads.
@@ -117,6 +122,16 @@ type StoreOption func(*Store)
 func WithStatsReader(stats StatsReader) StoreOption {
 	return func(s *Store) {
 		s.stats = stats
+	}
+}
+
+// WithUsageSource configures the usage-summary read dependency behind the
+// list/detail accountStats.TodayUsage (usage_stats_daily at today's stat
+// date) and accountStats.Usage (usage_stats_totals) hydration. Nil (the
+// default) keeps the zero-value degradation.
+func WithUsageSource(source UsageSource) StoreOption {
+	return func(s *Store) {
+		s.usage = source
 	}
 }
 
@@ -642,6 +657,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 		items = append(items, listItem)
 	}
 	s.hydrateListAccountStats(ctx, items)
+	s.hydrateListUsage(ctx, items)
 	s.hydrateListRuntimeConcurrency(ctx, items)
 	total := (page-1)*pageSize + len(items)
 	if hasMore {
@@ -971,8 +987,9 @@ func (s *Store) newListItem(ctx context.Context, row accessListRow, names map[st
 // buildGroupListItems loads loadGroupAccountStatsByGroupIds for every row,
 // owner and authorized alike). The D-38 FindDetail merge set the precedent:
 // a stats-reader failure keeps the empty projection instead of failing the
-// page, and the reader owns the numeric counts only; TodayUsage/Usage stay
-// zero here (Node supplies them via the usage-summary hydrate separately).
+// page, and the reader owns the numeric counters; TodayUsage/Usage are
+// hydrated separately by hydrateListUsage (the WithUsageSource port, Node
+// supplies them via the usage-summary hydrate separately).
 // 失败不再纯静默：slog warn 留痕一次（生产 PG 42P01 裸表名事故的排查入口）。
 func (s *Store) hydrateListAccountStats(ctx context.Context, items []ListItem) {
 	if len(items) == 0 || s.stats == nil {
@@ -1045,6 +1062,111 @@ func (s *Store) hydrateListRuntimeConcurrency(ctx context.Context, items []ListI
 			sum += currents[id]
 		}
 		items[index].AccountStats.CurrentConcurrency = sum
+	}
+}
+
+// usageStatsTodayKey mirrors todayDateKey(usageStatsTimezone()) and the
+// account-side accounts.(*Store).usageStatsTodayKey one-for-one: the
+// sys_admin usageStatsTimezone system setting applied to the current time.
+// 缺失/非法回退 UTC 且不抛错是有意偏差（Node todayDateKey 对非法时区抛错）：
+// 对齐账户面同名降级，分组列表不因时区配置损坏而失败。
+func (s *Store) usageStatsTodayKey(ctx context.Context) string {
+	var raw sql.NullString
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT value_json FROM `+s.table("system_settings")+`
+		WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'
+		LIMIT 1`)).Scan(&raw)
+	location := time.UTC
+	if err == nil && raw.Valid {
+		var text string
+		if json.Unmarshal([]byte(raw.String), &text) == nil {
+			if loaded, loadErr := time.LoadLocation(strings.TrimSpace(text)); loadErr == nil {
+				location = loaded
+			}
+		}
+	}
+	return s.now().In(location).Format("2006-01-02")
+}
+
+// loadUsageSummaries fetches the today summaries (usage_stats_daily at
+// today's stat date) and the totals summaries (usage_stats_totals) for the
+// scopes. ok=false means the usage source errored and the caller keeps the
+// empty projection.
+func (s *Store) loadUsageSummaries(ctx context.Context, scopes []UsageScope) (map[string]UsageSummary, map[string]UsageSummary, bool) {
+	todayKey := s.usageStatsTodayKey(ctx)
+	todays, err := s.usage.GroupListUsageSummaries(ctx, scopes, todayKey)
+	if err != nil {
+		slog.Warn("分组今日用量摘要读取失败，回退空投影",
+			"event", "group_usage_summary_hydrate_failed",
+			"stage", "today",
+			"error", err)
+		return nil, nil, false
+	}
+	totals, err := s.usage.GroupListUsageSummaries(ctx, scopes, "")
+	if err != nil {
+		slog.Warn("分组累计用量摘要读取失败，回退空投影",
+			"event", "group_usage_summary_hydrate_failed",
+			"stage", "totals",
+			"error", err)
+		return nil, nil, false
+	}
+	return todays, totals, true
+}
+
+// hydrateListUsage overlays the usage summaries onto the list projection's
+// accountStats.TodayUsage (daily bucket at today's stat date) and
+// accountStats.Usage (totals aggregate) — Node hydrateGroupListPage /
+// loadGroupUsageSummariesForScopes, owner and authorized rows alike（授权行读
+// group_authorization scope）。行基座是 emptyAccountStats() 的 13 键空摘要，
+// 缺失 map 条目保持该形状，因此 two key 恒非 nil（修复前"用量(日)"列恒 0：
+// TodayUsage/Usage 从未被真实 hydrate，group_account_stats 行存在时连零值
+// key 都缺失）。
+//
+// 降级：nil source 整体跳过（与 stats reader 同策略）；source 错误 slog
+// warn + 保留空投影、不失败整页——有意偏差：账户面 hydrateListUsage 是
+// fail-fast，分组面对齐本包 D-38 hydrateListAccountStats /
+// hydrateListRuntimeConcurrency 的降级先例。
+func (s *Store) hydrateListUsage(ctx context.Context, items []ListItem) {
+	if len(items) == 0 || s.usage == nil {
+		return
+	}
+	scopes := make([]UsageScope, 0, len(items))
+	for _, item := range items {
+		authorizationID := ""
+		if item.GroupAuthorizationID != nil {
+			authorizationID = *item.GroupAuthorizationID
+		}
+		scopes = append(scopes, groupUsageScope(item.ID, item.OwnerSystemAccountID, item.AccessType, authorizationID))
+	}
+	todays, totals, ok := s.loadUsageSummaries(ctx, scopes)
+	if !ok {
+		return
+	}
+	for index := range items {
+		if summary, present := todays[items[index].ID]; present {
+			items[index].AccountStats.TodayUsage = summary
+		}
+		if summary, present := totals[items[index].ID]; present {
+			items[index].AccountStats.Usage = summary
+		}
+	}
+}
+
+// hydrateDetailUsage mirrors the list usage hydrate for the detail
+// projection (Node findGroupSummary loads the same summaries; 授权视图读
+// group_authorization scope)。降级策略与 hydrateListUsage 一致。
+func (s *Store) hydrateDetailUsage(ctx context.Context, stats *AccountStats, rowKey, ownerSystemAccountID, accessType, authorizationID string) {
+	if stats == nil || s.usage == nil {
+		return
+	}
+	todays, totals, ok := s.loadUsageSummaries(ctx, []UsageScope{groupUsageScope(rowKey, ownerSystemAccountID, accessType, authorizationID)})
+	if !ok {
+		return
+	}
+	if summary, present := todays[rowKey]; present {
+		stats.TodayUsage = summary
+	}
+	if summary, present := totals[rowKey]; present {
+		stats.Usage = summary
 	}
 }
 
@@ -1156,6 +1278,10 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 			}
 		}
 	}
+	// Node findGroupSummary loads the usage summaries for the same row
+	// (owner and authorized views alike; the authorized view reads the
+	// group_authorization scope).
+	s.hydrateDetailUsage(ctx, &accountStats, row.row.id, row.row.systemAccountID, row.accessType, nullText(row.authorizationID))
 	limits, err := parseAuthorizationLimitsView(row.authorizationLimits)
 	if err != nil {
 		return nil, err

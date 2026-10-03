@@ -669,7 +669,9 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 	// accountUsageModelAccounting）：请求模型取构造点注入值，family 取注入的
 	// 运行时同源值，否则映射后上游模型名在失败行丢失。
 	accounting := u.finalizationModelAccounting(input.Account, u.requestedModel)
-	providerCode, _ := finalizationAccountProviderOf(input.Account)
+	// provider 身份与 usage_semantic 与成功路径同源：账号视图优先回落
+	// usage context，语义按账号协议档案解析（openai/anthropic/gemini）。
+	providerCode, providerProtocolProfileID := finalizationAccountProviderOf(input.Account)
 	providerCode = firstNonEmptyChainUsage(providerCode, input.UsageContext.ProviderCode)
 	pricingModel := u.resolveFinalizationPricingModel(
 		providerCode,
@@ -678,18 +680,22 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 	)
 	modelMappingApplied := accounting.modelMappingApplied
 	record := gatewayusage.UsageRecordInput{
-		TraceID:            input.UsageContext.TraceID,
-		TrafficSource:      "gateway",
-		ClientIP:           input.UsageContext.ClientIP,
-		SystemAccountID:    input.UsageContext.SystemAccountID,
-		APIKeyID:           input.UsageContext.APIKeyID,
-		GroupID:            input.UsageContext.GroupID,
-		Endpoint:           input.UsageContext.Endpoint,
-		ProviderCode:       input.UsageContext.ProviderCode,
-		UsageSemantic:      "gateway_request",
-		Success:            false,
-		ErrorCode:          "upstream_retryable_error",
-		ErrorMessage:       input.ErrorMessage,
+		TraceID:         input.UsageContext.TraceID,
+		TrafficSource:   "gateway",
+		ClientIP:        input.UsageContext.ClientIP,
+		SystemAccountID: input.UsageContext.SystemAccountID,
+		APIKeyID:        input.UsageContext.APIKeyID,
+		GroupID:         input.UsageContext.GroupID,
+		Endpoint:        input.UsageContext.Endpoint,
+		ProviderCode:    providerCode,
+		// 账号视图协议档案 id（Node input.account.providerProtocolProfileId）。
+		ProviderProtocolProfileID: providerProtocolProfileID,
+		UsageSemantic:             finalizationUsageSemanticOf(input.Account),
+		Success:                   false,
+		ErrorCode:                 "upstream_retryable_error",
+		ErrorMessage:              input.ErrorMessage,
+		// 失败归因：input.FailedAttemptInput 自带 FailureAttribution，缺省时
+		// 由服务层归因推断兜底（与成功路径的 account_upstream 缺省不同源）。
 		FailureAttribution: input.FailureAttribution,
 		CreatedAt:          time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 		// scope 完整性五元组，与成功路径同规则。
@@ -706,6 +712,11 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 		ModelMappingSource:     accounting.modelMappingSource,
 		SourceEndpointFamily:   accounting.sourceEndpointFamily,
 		UpstreamEndpointFamily: accounting.upstreamEndpointFamily,
+		// 服务层级/推理档位直传 usage context（与成功路径 records.ts 同源）。
+		RequestedServiceTier:     input.UsageContext.RequestedServiceTier,
+		EffectiveServiceTier:     input.UsageContext.EffectiveServiceTier,
+		RequestedReasoningEffort: input.UsageContext.RequestedReasoningEffort,
+		EffectiveReasoningEffort: input.UsageContext.EffectiveReasoningEffort,
 	}
 	applyUsageAccountScope(&record, input.Account)
 	if input.StatusCode != nil {

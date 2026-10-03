@@ -155,7 +155,7 @@ type mockHTTPObserver struct {
 	ch chan int64
 }
 
-func (m *mockHTTPObserver) Observe(res gatewaypreauth.GatewayResponseWriter) HTTPCompletion {
+func (m *mockHTTPObserver) Observe(req *gatewaypreauth.GatewayRequest, res gatewaypreauth.GatewayResponseWriter) HTTPCompletion {
 	return &mockCompletion{ch: m.ch}
 }
 

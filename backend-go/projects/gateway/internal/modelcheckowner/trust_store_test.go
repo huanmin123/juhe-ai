@@ -152,3 +152,91 @@ func TestTrustMappingStatusInvalidFailsClosed(t *testing.T) {
 		t.Fatal("invalid mapping vocabulary must not be accepted as a trust report")
 	}
 }
+
+func openTrustProjectionStore(t *testing.T) *Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "trust-projection.db")
+	seed, err := sql.Open("sqlite", "file:"+path+"?mode=rwc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range runtimeTestDDL() {
+		if _, err := seed.Exec(ddl); err != nil {
+			seed.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(testSQLiteConfig(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+func insertTrustProjectionObservation(t *testing.T, store *Store, id, runID, createdAt string) {
+	t.Helper()
+	if _, err := store.db.Exec(`INSERT INTO model_check_observations(id,run_id,system_account_id,account_id,provider_code,requested_model,mapped_upstream_model,probe_family,observation_status,identity_status,mapping_status,protocol_status,evidence_coverage,created_at) VALUES (?,?,'sys','acct','openai','gpt-5.6','gpt-5.6','protocol_basic','complete','consistent','direct','consistent',100,?)`, id, runID, createdAt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func trustLatestUsageStatus(t *testing.T, store *Store) string {
+	t.Helper()
+	var usage string
+	if err := store.db.QueryRow(`SELECT usage_integrity_status FROM model_account_trust_results WHERE system_account_id='sys' AND account_id='acct' AND requested_model='gpt-5.6'`).Scan(&usage); err != nil {
+		t.Fatal(err)
+	}
+	return usage
+}
+
+func TestProjectTrustPersistsUsageIntegrityTruth(t *testing.T) {
+	store := openTrustProjectionStore(t)
+	insertTrustProjectionObservation(t, store, "obs-a", "run-1", "2026-08-31T10:00:00Z")
+	projection := TrustProjection{RunID: "run-1", SystemAccountID: "sys", AccountID: "acct", RequestedModel: "gpt-5.6", Report: TrustReport{IdentityStatus: "consistent", MappingStatus: "direct", UsageIntegrityStatus: "suspected_padding", ProtocolStatus: "consistent", EvidenceStatus: "stable", EvidenceFormed: true, TrustFormed: true, TrustScore: 1, EvidenceCoverage: 100}}
+	if err := store.ProjectTrust(context.Background(), projection); err != nil {
+		t.Fatal(err)
+	}
+	if usage := trustLatestUsageStatus(t, store); usage != "suspected_padding" {
+		t.Fatalf("usage=%q, projection truth must reach the latest row instead of the pinned constant", usage)
+	}
+	// The usage column participates in the same-cursor comparison, so an
+	// identical projection must still replay cleanly.
+	if err := store.ProjectTrust(context.Background(), projection); err != nil {
+		t.Fatalf("identical projection must replay with the usage column in the comparison: %v", err)
+	}
+}
+
+func TestProjectTrustKeepsConclusiveUsageWithoutNewEvidence(t *testing.T) {
+	store := openTrustProjectionStore(t)
+	insertTrustProjectionObservation(t, store, "obs-a", "run-1", "2026-08-31T10:00:00Z")
+	conclusive := TrustProjection{RunID: "run-1", SystemAccountID: "sys", AccountID: "acct", RequestedModel: "gpt-5.6", Report: TrustReport{IdentityStatus: "consistent", MappingStatus: "direct", UsageIntegrityStatus: "consistent", ProtocolStatus: "consistent", EvidenceStatus: "stable", EvidenceFormed: true, TrustFormed: true, TrustScore: 1, EvidenceCoverage: 100}}
+	if err := store.ProjectTrust(context.Background(), conclusive); err != nil {
+		t.Fatal(err)
+	}
+	insertTrustProjectionObservation(t, store, "obs-b", "run-2", "2026-08-31T10:01:00Z")
+	noEvidence := TrustProjection{RunID: "run-2", SystemAccountID: "sys", AccountID: "acct", RequestedModel: "gpt-5.6", Report: TrustReport{IdentityStatus: "consistent", MappingStatus: "direct", UsageIntegrityStatus: "insufficient_evidence", ProtocolStatus: "consistent", EvidenceStatus: "stable", EvidenceFormed: true, TrustFormed: true, TrustScore: 1, EvidenceCoverage: 100}}
+	if err := store.ProjectTrust(context.Background(), noEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if usage := trustLatestUsageStatus(t, store); usage != "consistent" {
+		t.Fatalf("usage=%q, an insufficient_evidence projection must keep the stored conclusive state", usage)
+	}
+}
+
+func TestProjectTrustReplayConflictsOnUsageStatusChange(t *testing.T) {
+	store := openTrustProjectionStore(t)
+	insertTrustProjectionObservation(t, store, "obs-a", "run-1", "2026-08-31T10:00:00Z")
+	projection := TrustProjection{RunID: "run-1", SystemAccountID: "sys", AccountID: "acct", RequestedModel: "gpt-5.6", Report: TrustReport{IdentityStatus: "consistent", MappingStatus: "direct", UsageIntegrityStatus: "consistent", ProtocolStatus: "consistent", EvidenceStatus: "stable", EvidenceFormed: true, TrustFormed: true, TrustScore: 1, EvidenceCoverage: 100}}
+	if err := store.ProjectTrust(context.Background(), projection); err != nil {
+		t.Fatal(err)
+	}
+	conflict := projection
+	conflict.Report.UsageIntegrityStatus = "suspected_padding"
+	if err := store.ProjectTrust(context.Background(), conflict); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("same cursor with a different usage status must fail closed, err=%v", err)
+	}
+}

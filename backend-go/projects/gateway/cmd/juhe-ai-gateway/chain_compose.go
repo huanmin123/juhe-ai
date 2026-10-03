@@ -375,8 +375,11 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		UsageRecords:  &usageDispatchAdapter{service: usageService, recorder: recorder},
 		UsageDispatch: &usageDispatchAdapter{service: usageService, recorder: recorder},
 		ModelCatalog:  chainClientModelCatalog{cache: deps.Cache},
-		Logger:        gatewayResponseLogger{inner: slog.Default()},
-		NowMs:         func() int64 { return clock.Now().UnixMilli() },
+		// HTTP 完成观测：sink 失败 usage 的 CompletedAtMs 按请求上下文里的
+		// subject 解析（chain_http_completion.go），缺失回退 nowMs 兜底。
+		HTTPCompletion: chainHTTPCompletionObserver{},
+		Logger:         gatewayResponseLogger{inner: slog.Default()},
+		NowMs:          func() int64 { return clock.Now().UnixMilli() },
 	})
 
 	// ---- observability ----

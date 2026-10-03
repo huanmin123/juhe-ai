@@ -569,10 +569,11 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 
 // requestMappingSourceFamilyOf returns the request-side source endpoint family
 // in the stored model-mapping vocabulary (chat_completions / responses /
-// messages / generate_content / stream_generate_content). The gateway dispatch
-// filter resolves mappings with the same vocabulary (dispatch/candfilters.go
-// gatewayRequestEndpointFamily); the previous chat/responses-only view made
-// messages-source bridge mappings unresolvable in the driver chain (D-149).
+// messages / generate_content / stream_generate_content / count_tokens). The
+// gateway dispatch filter resolves mappings with the same vocabulary
+// (dispatch/candfilters.go gatewayRequestEndpointFamily); the previous
+// chat/responses-only view made messages-source bridge mappings unresolvable
+// in the driver chain (D-149).
 func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
 	if req == nil {
 		return gatewayopenai.FamilyChatCompletions
@@ -588,7 +589,11 @@ func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
 	case strings.Contains(path, ":streamGenerateContent"):
 		return "stream_generate_content"
 	case strings.Contains(path, ":countTokens"):
-		return "messages"
+		// Node gatewayRequestEndpointFamily 对 countTokens 返回 count_tokens，
+		// 且其不在 isAccountModelMappingSourceEndpointFamily 允许集：映射不参
+		// 与 countTokens 请求。此前误归 "messages"，带 messages 源映射的账号
+		// 会在记账/冻结侧命中映射而派发侧恒不命中，两侧词表不一致。
+		return "count_tokens"
 	default:
 		if chainStripGatewayVersionPrefix(path) == "/messages" && req.MethodUpper() == "POST" {
 			return "messages"

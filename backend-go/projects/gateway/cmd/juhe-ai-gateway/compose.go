@@ -615,6 +615,10 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	groupsStore, err := groups.NewStore(composed.db, composed.pgDialect, time.Now, newCompositionID, bus,
 		groups.WithGlobalConcurrencyMax(cfg.ConcurrencyGlobalMax),
 		groups.WithStatsReader(groupStatsReader),
+		// 分组列表"用量(日)"列（accountStats.todayUsage/usage）：同一 juhe_stats
+		// 句柄的 usage summary 读端口（usage_stats_daily/totals，维度
+		// group / group_authorization）；nil 保持零值降级。
+		groups.WithUsageSource(groupStatsReader),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create groups store: %w", err)
@@ -1143,6 +1147,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		listConcurrencyReader := chainAccountConcurrencyReader{tracker: services.ConcurrencyTracker}
 		groupsStore.SetAccountConcurrencyReader(listConcurrencyReader)
 		accountStore.SetConcurrencyReader(listConcurrencyReader)
+		// 账户列表运行态 overlay 装配（缺陷修复批次一：runtimeAvailability /
+		// circuitSummary / apiKeyRuntime / effectiveAvailability runtime 分支，
+		// 见 compose_account_runtime_overlay.go）。读失败逐源降级字段缺席、
+		// 不阻断页面；构造失败按组合根约定 fail-fast。
+		if overlayErr := wireAccountRuntimeOverlaySources(composed, cfg, accountStore, services); overlayErr != nil {
+			return nil, fmt.Errorf("wire account runtime overlay sources: %w", overlayErr)
+		}
 		// Runtime-reset port assembly (compose_accounts_reset.go): the
 		// maintenance reset endpoint reaches the gateway runtime surfaces
 		// through this bridge, and reset/activation health-check dispatches
@@ -1180,6 +1191,22 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		if locksErr != nil {
 			chainServices.Close()
 			return nil, fmt.Errorf("compose gateway account locks port: %w", locksErr)
+		}
+		// Codex Responses↔Chat 桥状态装配（G18 chat-bridge-state.ts，迁移漏
+		// 装配修复）：组合根按数据库驱动装配双模行存储（sqlite 分片 /
+		// postgres juhe_codex_context schema，PG 缺 schema 启动期探针
+		// fail-fast）；segments 根为空仅直接构造配置可发生，保持既有 no-op
+		// 退出。失败按组合根惯例关闭已装配的 chainServices 后报错。
+		codexContextStore, codexContextStoreErr := newChainCodexContextStateStore(cfg, postgresPools)
+		if codexContextStoreErr != nil {
+			chainServices.Close()
+			return nil, fmt.Errorf("compose gateway codex context state store: %w", codexContextStoreErr)
+		}
+		// sqlite 分片行存储持有惰性打开的 shard 句柄，注册进 shutdown（LIFO：
+		// chainServices.Close 之后、组合根其余资源之前关闭），避免 Windows 下
+		// 句柄泄漏阻塞数据目录清理；postgres 驱动共享池句柄无独立关闭面。
+		if codexContextStoreCloser, ok := codexContextStore.(interface{ Close() error }); ok {
+			composed.shutdowns = append(composed.shutdowns, func() { _ = codexContextStoreCloser.Close() })
 		}
 		// Shutdown order is LIFO: services registered first close last, after
 		// the chain drained its usage buffer.
@@ -1226,6 +1253,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			DispatchRecoverableWait: chainServices.DispatchRecoverableWait,
 			// G14 session identity services (degrade by driver axes, never nil).
 			Identity: chainServices.Identity,
+			// G18 Codex Responses↔Chat 桥状态（迁移漏装配修复）：segments 根 +
+			// 双模行存储由组合根装配（codex_context_store.go）；两者齐备时链
+			// 组装构造真实桥（newChainCodexBridgePreflight），任一缺席保持
+			// 既有 no-op 降级（组合测试语义不变）。
+			CodexContextRoot:       cfg.CodexContextRoot,
+			CodexContextStateStore: codexContextStore,
 			// 显式账户错误策略：failureKind / 换 Key 授权 / cooldown-disable
 			// 状态变更 / system quota 归因（Node decideAccountErrorPolicy 接线）。
 			AccountErrorPolicy:        errorPolicyService,

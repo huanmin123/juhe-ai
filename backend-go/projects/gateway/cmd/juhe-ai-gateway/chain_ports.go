@@ -205,12 +205,48 @@ func (a *usageDispatchAdapter) RecordGatewayFailure(input gatewayresponse.Failur
 	}
 	failureContext := usageFailureContextOf(input.UsageContext)
 	_ = a.service.RecordGatewayFailure(context.Background(), failureContext, gatewayusage.RecordGatewayFailureInput{
-		StatusCode:      input.StatusCode,
-		StartedAtMs:     input.StartedAtMs,
-		CompletedAtMs:   input.CompletedAtMs,
-		ResponsePayload: responsePayload,
-		ErrorMessage:    input.ErrorMessage,
+		// 请求事实（model / stream）与归因、响应快照原样透传：网关策略失败
+		// usage 行此前 model 恒空（生产 1,239 行仅 23 行有 model 的根因）。
+		Model:              input.Model,
+		Stream:             input.Stream,
+		StatusCode:         input.StatusCode,
+		StartedAtMs:        input.StartedAtMs,
+		CompletedAtMs:      input.CompletedAtMs,
+		ResponsePayload:    responsePayload,
+		ErrorMessage:       input.ErrorMessage,
+		FailureAttribution: gatewayusage.UsageFailureAttribution(input.FailureAttribution),
+		ResponseSnapshot:   gatewayFailureResponseSnapshotOf(input.ResponseSnapshot),
 	})
+}
+
+// gatewayFailureResponseSnapshotOf 把响应层失败快照视图转换为 usage 侧快照
+// （对齐 UsageResponseSnapshotView 与 gatewayusage.UsageResponseSnapshot 的
+// 字段集；nil 透传，service 侧回落 ResponsePayload 构造）。
+func gatewayFailureResponseSnapshotOf(view *gatewayresponse.UsageResponseSnapshotView) *gatewayusage.UsageResponseSnapshot {
+	if view == nil {
+		return nil
+	}
+	var headers map[string]any
+	if view.Headers != nil {
+		headers = make(map[string]any, len(view.Headers))
+		for name, value := range view.Headers {
+			headers[name] = value
+		}
+	}
+	var bodyOmission any
+	if view.BodyOmission != nil {
+		bodyOmission = *view.BodyOmission
+	}
+	statusCode := view.StatusCode
+	return &gatewayusage.UsageResponseSnapshot{
+		UpstreamURL:  view.UpstreamURL,
+		StatusCode:   &statusCode,
+		Headers:      headers,
+		BodyText:     view.BodyText,
+		BodyOmission: bodyOmission,
+		ErrorMessage: view.ErrorMessage,
+		GeneratedBy:  view.GeneratedBy,
+	}
 }
 
 // ---------------------------------------------------------------------------

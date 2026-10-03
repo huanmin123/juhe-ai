@@ -836,7 +836,7 @@ func TestW1VAuditCaptureAdapters(t *testing.T) {
 	req.Body = &gatewaybody.Request{RawBody: []byte(`{"model":"gpt-test"}`)}
 
 	chain := &gatewayChain{}
-	capture := chain.newAuditCapture(req, "trace_w1v_audit", 1728000000000)
+	capture := chain.newAuditCapture(req, "trace_w1v_audit", 1728000000000, newGatewayHTTPCompletion())
 	t.Cleanup(func() { gatewaypreauth.CancelAuditCapture(capture) })
 
 	// 具体 G17 capture 在适配器内部构建且默认停用（无 settings 装配）。

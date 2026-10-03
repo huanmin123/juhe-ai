@@ -560,7 +560,7 @@ func TestW11BHeartbeatHelpers(t *testing.T) {
 
 func TestW11BSinkAndModelsHelpers(t *testing.T) {
 	bare := NewSink(SinkDeps{})
-	if bare.observeCompletion(nil) != nil {
+	if bare.observeCompletion(gatewaypreauth.FailureResponseInput{}) != nil {
 		t.Fatal("无完成观察器时为 nil")
 	}
 	if bare.loadCatalog("sys", nil) != nil {
