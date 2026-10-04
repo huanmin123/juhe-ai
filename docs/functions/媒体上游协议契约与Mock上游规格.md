@@ -97,11 +97,11 @@
 
 | 统一 status | 语义 | openai | gemini(veo) | minimax | volcengine | qwen(dashscope) | glm |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `queued` | 已受理未开始 | `queued` | operation 未 `done` 且无进展字段 | `Preparing` / `Queueing` | `queued` | `PENDING` | 待回填 |
-| `in_progress` | 生成中 | `in_progress`（含 `progress`） | operation 未 `done` | `Processing` | `running` | `RUNNING` | 待回填 |
-| `completed` | 成功 | `completed`（`content` 有下载定位） | `done:true` 且 `response.generateVideoResponse.generatedSamples[].video.uri` 存在 | `Success`（`file_id`/`file_download_url`） | `succeeded`（`content.video_url`） | `SUCCEEDED`（`output.video_url` 等） | 待回填 |
-| `failed` | 失败 | `failed`（`error`） | `done:true` 且 `error` 非空 | `Fail`（`base_resp`） | `failed`（`error`） | `FAILED`（`message`/`code`） | 待回填 |
-| `cancelled` / `expired` | 本地终态 | （上游删除后查询 404 → 本地收敛） | 同左 | 同左 | 同左 | 同左 | 同左 |
+| `queued` | 已受理未开始 | `queued` | operation 未 `done`（Veo 无进展字段，M3 adapter 归一：未 done 恒 queued） | `Preparing` / `Queueing` | `queued` | `PENDING` | （不可达：创建响应即 `PROCESSING`，M3 已实施） |
+| `in_progress` | 生成中 | `in_progress`（含 `progress`） | （不可达：无进展字段，见 queued 行） | `Processing` | `running` | `RUNNING` | `PROCESSING`（M3 已实施） |
+| `completed` | 成功 | `completed`（`content` 有下载定位） | `done:true` 且 `response.generateVideoResponse.generatedSamples[].video.uri` 存在（M3 已实施：uri 冻结进 Artifact.ContentURL，直连下载无凭据） | `Success`（`file_id`/`file_download_url`） | `succeeded`（`content.video_url`） | `SUCCEEDED`（`output.video_url` 等） | `SUCCESS` 且 `video_result.url` 存在（M3 已实施：url 冻结进 Artifact.ContentURL，直连下载无凭据） |
+| `failed` | 失败 | `failed`（`error`） | `done:true` 且 `error` 非空（M3 已实施：error 摘要 code 取 status） | `Fail`（`base_resp`） | `failed`（`error`） | `FAILED`（`message`/`code`） | `FAIL`（M3 已实施：错误摘要 code 取 task_status 原值，error 对象在场则优先） |
+| `cancelled` / `expired` | 本地终态 | （上游删除后查询 404 → 本地收敛） | 同左（`:cancel` 上游 2xx/404/405 均收敛本地 cancelled，M3 裁决） | 同左（minimax 无取消 API：不发上游请求直接本地收敛，M3 裁决，§8.1） | 同左 | 同左 | 同左（glm 无取消 API：不发上游请求直接本地收敛，M3 裁决，§7.1） |
 
 归一规则：未知状态值一律归 `in_progress` 并记录原始值（不猜测失败）；上游 404 查询且本地非终态 → 保持本地状态直至 TTL 过期（不得伪造终态）。
 
@@ -123,10 +123,10 @@
 | --- | --- | --- | --- | --- |
 | openai | 双口径（M1 已实施，按厂商真实定价维度）：`gpt-4o-mini-tts` 按 **token 口径**计价（复用既有 `audioInputUsdPer1M`/`audioOutputUsdPer1M` 单价，seed 已填价；二进制响应无 usage 回报，网关亦无 token 自算维度 → 0 计费 + `usage_missing` 标记，不猜测）；`gpt-4o-tts` 未收录（官方无定价，待官方价后补行，不编造）；`tts-1`/`tts-1-hd` 上游无 usage 回报，**网关自算**按请求 `input` 字符数（新行项 `tts_input_chars`） | 双口径：`gpt-4o-transcribe` 系按 **token 口径**（`usage.input_tokens`/`output_tokens`，同一对 audio token 单价）；`whisper-1` 按 `duration` 秒（verbose_json；新行项 `audio_input_seconds`）；usage 优先 → duration → 0 + `usage_missing` 标记，不猜测 | **网关自算**：按任务参数 `seconds` × 档位；失败任务不虚计 | — |
 | gemini | 对话式 token 计量（`usageMetadata`，已有链路） | 同左（audio token） | 按输出秒（目录价格档） | — |
-| minimax | 按字符（网关自算或上游回报，接入回填） | 待回填 | 任务响应含用量/按次（回填） | — |
+| minimax | 按字符（M3 已实施：`extra_info.usage_characters` 回报优先 → `tts_input_chars`，缺失回落请求字符自算；官方口径 ¥2.00/万字符人民币、无官方美元价 → 目录不落字符价，计量照落成本不虚计） | 待回填（长转写未接入） | 任务响应不回报时长（M3 已实施：无可查证官方 USD 秒价 → 0 计费 + `usage_missing`，不编造） | — |
 | volcengine | 按字符（回填） | 长转写按时长（回填） | 任务响应 `usage`（检索确认部分包含；字段回填） | — |
 | qwen | CosyVoice 按字符（回填） | paraformer 按时长（回填） | 万相按次/时长（回填） | — |
-| glm | 回填 | 回填 | 回填 | — |
+| glm | 回填 | 回填 | **0 计费 + `usage_missing`**（M3 已实施：CogVideoX 按次计费、官方精确秒价不可查证且轮询响应无时长回报——不编造秒价，目录行不落价；官方口径可查证后补秒价，§7.1 计费落法） | — |
 
 规则：上游回报 usage 优先；上游不回报的维度网关按可观察参数（字符数/请求秒数）自算；两者都缺 → 0 计费 + 记录 `usage_missing` 标记，**不猜测**。
 
@@ -149,7 +149,7 @@
    - `media_stt_ok`（JSON `text`）、`media_stt_ok_verbose`（`verbose_json` 含 `duration`/`usage`）、`media_stt_400_bad_file`——M1 已交付
    - `media_gemini_tts_ok`（inlineData base64 PCM）、`media_gemini_tts_400_format`（`response_format` 非 `pcm` → 400）——M1 已交付
    - `media_video_ok_poll3`（#1/#2 `in_progress` → #3 `completed`）、`media_video_ok_poll1`（#1 即 `completed`，快路径）、`media_video_fail_after_accept`（受理后轮询 `failed`）、`media_video_429_create`（创建 429，可换账户重试）、`media_video_create_400_bad_size`（`size` 值域外 → 400，参数类不换账户）、`media_video_create_500`（创建 5xx）、`media_video_poll_500`（受理后轮询 5xx，不得换账户）、`media_video_content_expired`（content 404/410 → 网关透出"产物已过期"）、`media_video_cancel_ok`（保持 `queued`，验证 DELETE 流程）——M2 已交付（2026-10-04；其中 `media_video_ok_poll1` 与 `media_video_create_400_bad_size` 为 W1 批次交付、本清单同日补登记）
-   - 厂商原生形态场景：`media_<provider>_create_ok` / `media_<provider>_poll_running` / `media_<provider>_poll_success` / `media_<provider>_poll_fail`（报文按 §4-§10 各章）——M3+（§5.1 的 `media_gemini_tts_*` 已随 M1 交付；§5.2 的 `media_gemini_video_*` 随 M3）
+   - 厂商原生形态场景：`media_<provider>_create_ok` / `media_<provider>_poll_running` / `media_<provider>_poll_success` / `media_<provider>_poll_fail`（报文按 §4-§10 各章）——M3+（§5.1 的 `media_gemini_tts_*` 已随 M1 交付；**§5.2 的 `media_gemini_video_create_ok` / `_poll_running` / `_poll_done_uri` / `_poll_error` 已随 M3 交付（2026-10-04）**；**§7.1 的 `media_glm_video_*` 已随 M3 交付；§8 的 `media_minimax_create_ok` / `_poll_running` / `_poll_success` / `_poll_fail` 与 §8.2 的 `media_minimax_tts_ok` 已随 M3 第三批交付（2026-10-04）**）
 5. **slow/abort 基建复用**：首字节延迟、分块延迟、中途断连直接复用现有 `slow_first_byte`/`mid_stream_close` 机制，用于受理边界与流中断用例。
 
 ### 3.3 acceptance E2E 扩展规格
@@ -216,6 +216,8 @@ Mock：`media_gemini_tts_ok`（inlineData base64 PCM 载荷）、`media_gemini_t
 
 ### 5.2 视频（Veo）：`POST /v1beta/models/{model}:predictLongRunning`
 
+**M3 已实施 adapter**（`backend-go/projects/gateway/internal/gatewaymedia/veo_video.go`，注册键 `gemini`；api_key 账户 `X-Goog-Api-Key`、google_oauth 账户 Bearer，沿 gemini 主链认权分支）。参数映射（§2.2/§2.4 裁决）：`size` WxH → `aspectRatio`（宽 ≥ 高 `16:9`、反之 `9:16`）+ `resolution`（短边 ≥1080 → `1080p`，否则 `720p`，两档取最近档）；`negative_prompt` → `parameters.negativePrompt` 原生支持；`input_reference` 仅支持 base64/data URL 直传 `instances[0].image.bytesBase64Encoded`（url 形态 400——网关零存储不代为下载）；`seconds`/`n`/`seed`/`audio` 请求面无对应字段 → 忽略 + 回显 `params_ignored`。
+
 请求：
 
 ```json
@@ -228,36 +230,68 @@ Mock：`media_gemini_tts_ok`（inlineData base64 PCM 载荷）、`media_gemini_t
 模型：`veo-3.0-generate-preview` / `veo-3.0-fast-generate-preview` / `veo-3.1` 系（以目录 seed 为准）。
 创建响应：`{"name":"models/<model>/operations/<op_id>"}`——**受理凭据 = `name` 字段**。
 轮询：`GET /v1beta/{name}` → `{"done":bool,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"<GCS 签名 URL>"}}]}},"error":{...}}`；uri 时效约 2 天。
-下载：直连 uri（经网关流式代理，认证按 GCS 签名内嵌，不需要额外凭据）。
-计费：按输出秒（目录档）；usage 不回报，网关按请求时长参数自算。
-Mock：`media_gemini_video_create_ok` / `media_gemini_video_poll_running` / `media_gemini_video_poll_done_uri`。
+下载：直连 uri（经网关流式代理，认证按 GCS 签名内嵌，不需要额外凭据；M3 已实施——uri 冻结进 Artifact.ContentURL，`ContentFromArtifact` 形态不经 base_url 拼接）。
+取消：`POST /v1beta/{name}:cancel`（上游不支持时网关本地收敛 cancelled）。
+计费：按输出秒（目录档）；usage 不回报，且 `seconds` 属 ignored 参数不构成计量基源——网关按 §2.8 兜底（0 计费 + `usage_missing` 标记，不猜测；目录秒价 `VideoOutputUsdPerSecond` 已落，待 Veo 回报时长字段或固定档裁决后生效）。
+Mock：`media_gemini_video_create_ok` / `media_gemini_video_poll_running` / `media_gemini_video_poll_done_uri` / `media_gemini_video_poll_error`（M3 已交付，创建场景冻结任务脚本）。
 
-## 6. xai（置信度 C：能力确认，端点待官方回填）
+## 6. xai（置信度 B-：模式与字段多源确认，精确端点待官方页回填）
 
-能力事实（2026-10 检索）：Grok Voice API 提供 Speech-to-Speech、Speech-to-Text、Text-to-Speech；grok-imagine 视频生成支持文生视频/图生视频（6/10 秒、480p/720p、视频原生带音频）。
-**接入前必做**：以 `docs.x.ai` 官方 API 参考回填端点路径、请求/响应字段、任务状态机与 usage 字段；回填前本节不作为实现依据。M3 排期时先完成回填再写 adapter。
+能力与模式事实（2026-10-04 检索升级）：Grok Voice API 提供 TTS/STT/STS；视频为 Grok Imagine Video（`grok-imagine-video` / `grok-imagine-video-1.5`，2026-06 发布），**submit-then-poll 异步任务模式**：POST 创建（请求字段 `model`、`prompt`、源图（图生视频）、`duration`、`aspect_ratio`，最长约 60 秒）→ 返回任务 `id` → GET 轮询 `status`（pending/in-progress → 终态 `succeeded`/`failed`）→ 终态经 `file_id`/视频 URL 下载。
+**待回填**：精确端点路径与响应字段全名（`docs.x.ai` Video Generation guide 未被搜索引擎索引）；接入前以官方页回填本节并升 B/A 级。M3 排期时先完成回填再写 adapter。
 
-## 7. glm / 智谱（置信度 C：模式确认，报文待回填）
+## 7. glm / 智谱（视频 B 级：报文多源确认；语音 C 级：模型确认字段待回填）
 
-模式事实：CogVideoX 系视频生成走异步任务（提交得 `id` → 轮询 → 视频 URL），端点族为 `/api/paas/v4/videos`（`open.bigmodel.cn`）；ASR 存在流式接口；TTS 端点待核实。
-**接入前必做**：以 `open.bigmodel.cn` 官方文档回填本节（创建/查询请求响应 JSON、状态词表、usage 字段、语音端点与计费单位）。既有 `glm` 供应商档案沿用，仅新增媒体 profile 能力（endpoint families + modes），不新增 provider_code。
+### 7.1 视频（CogVideoX / 清影系，2026-10-04 回填；M3 已实施 adapter）
 
-## 8. minimax（置信度 B：官方文档多源确认）
+**M3 已实施**（`backend-go/projects/gateway/internal/gatewaymedia/glm_video.go`，注册键 `glm`；认证 Bearer API Key，沿链上 openai 族认权分支）。参数映射（§2.2/§2.4/§2.7 裁决）：`negative_prompt` 原生直传；`input_reference`→`image_url`（url/base64 字符串均透传，glm 原生即 URL 形态，网关不代为下载）；`seconds`→`duration`（数值取 5s/10s **最近档**换算，等距取小档）；`audio`→`with_audio`；`size` 原样直传（glm 的 size 即 WxH 像素串形态，档位由上游裁决，网关不硬编码）；`n`/`seed` 请求面无对应字段 → 忽略 + 回显 `params_ignored`。出站路径自带 `/api/paas/v4` 服务根，账户 base_url 已含该根时链上去重（`chainGlmVideoUpstreamURL`，不得走 openai /v1 强制补缀归一）。
 
-### 8.1 视频：`POST /v1/video_generation`（host `api.minimax.chat` 或 `api.minimaxi.com`，以账户 base_url 为准）
+- 创建：`POST https://open.bigmodel.cn/api/paas/v4/videos/generations`，`Authorization: Bearer <KEY>`。请求：`model`（cogvideox / cogvideox-2 / cogvideox-3 系）、`prompt`、`negative_prompt`、`image_url`（图生视频，承接公共 `input_reference`）、`size`、`duration`（如 5s/10s）、`fps`、`quality`（speed/quality）、`with_audio`（承接公共 `audio`）。响应含 `id`、`request_id`、`task_status`——**受理凭据 = `id`**。
+- 轮询：`GET https://open.bigmodel.cn/api/paas/v4/async-result/{id}` → `task_status ∈ PROCESSING | SUCCESS | FAIL`；SUCCESS 返回 `video_result{url, cover_image_url}`（url 即产物下载定位；M3 已实施：url 冻结进 Artifact.ContentURL，`ContentFromArtifact` 直连下载无凭据）。
+- 状态归一：PROCESSING→`in_progress`、SUCCESS→`completed`、FAIL→`failed`（§2.6 总表 glm 列以此回填；M3 已实施：FAIL 错误摘要 code 取 task_status 原值，error 对象在场则优先）。
+- 取消：glm 无取消 API（回填面无取消端点，M3 裁决）——`SupportsCancel=false`，链上不发上游请求、直接本地收敛 `cancelled`（§2.6 本地终态语义）。
+- 计费（M3 落法，不编造）：CogVideoX 按次计费（2026-09 第三方聚合口径称 ¥1/次，官方定价页 bigmodel.cn 为 SPA 无法直接核实精确单价），网关计费面只有秒价维度（`VideoOutputCostPerSecond`）且轮询响应无时长回报——目录行 `cogvideox-3` 不落秒价，终态计费走 §2.8 兜底（0 计费 + `usage_missing` 标记）；官方秒价/时长口径可查证后再补。
+- Mock：`media_glm_video_create_ok` / `_poll_processing` / `_poll_success_url` / `_poll_fail`（M3 已交付，端点 `/api/paas/v4/videos/generations`、`/api/paas/v4/async-result/{id}` 与 `/content` 产物通道）。
+
+### 7.2 语音（模型确认，报文待回填）
+
+模型事实（2026-10-04 检索）：`GLM-ASR-2512`（新一代语音识别，实时转写）、`GLM-TTS`（2025-12 发布，两阶段生成，3 秒样本复刻音色）已上线开放平台 API（docs.bigmodel.cn「语音能力」章节）。**待回填**：端点路径、请求/响应字段、音频编码形态、计费单位——接入前以 docs.bigmodel.cn 回填，回填前不得实现 adapter。
+
+既有 `glm` 供应商档案沿用，仅新增媒体 profile 能力（endpoint families + modes），不新增 provider_code。
+
+## 8. minimax（置信度 B：官方文档多源确认；M3 第三批已实施 adapter，2026-10-04）
+
+### 8.1 视频：`POST /v1/video_generation`（host `api.minimax.chat` 或 `api.minimaxi.com`，以账户 base_url 为准）——M3 已实施 adapter（`gatewaymedia/minimax_video.go`；账号接入见《MiniMax账号接入.md》）
 
 请求：`{"model":"MiniMax-Hailuo-2.3","prompt":"...","prompt_optimizer":true,"duration":6,"first_frame_image":"<base64>"}`（`first_frame_image` 承接公共 `input_reference`）。
 创建响应：`{"task_id":"...","base_resp":{"status_code":...,"status_msg":"..."}}`——**受理凭据 = `task_id`**；`base_resp.status_code != 0` 视为失败（受理前错误）。
 轮询：`GET /v1/query/video_generation?task_id=...` → `{"task_id","status":"Preparing|Queueing|Processing|Success|Fail","file_id":"...","file_download_url":"..."}`。
-下载：`GET /v1/files/retrieve?file_id=...`（或 `file_download_url`，以回填为准）。
-计费：任务响应用量字段待回填（§2.8）；按官方定价档。
+下载：`GET /v1/files/retrieve?file_id=...`（或 `file_download_url`，以回填为准）。**M3 裁决：取 `file_download_url` 直连**（无凭据，与 Veo uri / glm video_result.url 同族先例；`ContentFromArtifact=true`）。
+计费：任务响应用量字段待回填（§2.8）；按官方定价档。M3 已实施口径：官方无可查证精确 USD 秒价（按次/档位计费，定价页为登录态 SPA）且轮询响应不回报时长——不落秒价，终态 0 计费 + `usage_missing`，不编造（依据见 `pricing/data_minimax.go` 注释）。
 `provider_options.minimax` 示例：`{"prompt_optimizer":true}`。
-Mock：`media_minimax_create_ok` / `_poll_running` / `_poll_success(file_id)` / `_poll_fail(base_resp)`。
+取消：无上游取消端点（M3 裁决：`SupportsCancel=false`，不发上游请求直接本地收敛 `cancelled`，沿 glm §7.1 先例）。
+Mock：`media_minimax_create_ok` / `_poll_running` / `_poll_success(file_id)` / `_poll_fail(base_resp)`——M3 已交付（`mockupstream/video_minimax.go`）。
 
-### 8.2 TTS / 长转写
+### 8.2 TTS / 长转写（t2a_v2 已回填 B 级；M3 已实施 adapter，2026-10-04；长音频待回填）
 
-`POST /v1/t2a_v2`（同步/流式 TTS，`voice_setting`、`text`、`audio_format`）与异步长音频任务：端点与字段**接入前以 platform.minimax.io 回填**；计费按字符（§2.8）。
-Mock 场景随回填补齐。
+**同步 TTS：`POST /v1/t2a_v2`**（host `api.minimax.chat` 或 `api.minimaxi.com`，Bearer 认证）。请求：
+
+```json
+{
+  "model": "speech-02-turbo",
+  "text": "<10000 字符；>3000 建议流式>",
+  "stream": false,
+  "voice_setting": { "voice_id": "...", "speed": 1.0, "vol": 1.0, "pitch": 0 },
+  "audio_setting": { "sample_rate": 32000, "bitrate": 128000, "format": "mp3", "channel": 1 }
+}
+```
+
+公共参数映射：`input`→`text`、`voice`→`voice_setting.voice_id`、`speed`（厂商区间 0.5–2.0，公共 0.25–4.0 超区间按 §2.4 规则 400）、`response_format`→`audio_setting.format`（mp3/pcm/flac/wav）；厂商个例（`vol`/`pitch`/情感）走 `provider_options.minimax`。
+响应：`data.audio`（**hex 编码**音频字符串——adapter 必须 hex→bytes 解码后透传，不得把 hex 字符串当音频下发）、`data.status`、`extra_info`（时长/占用字符数——TTS 字符计量优先来源）、`trace_id`。
+计费：按字符（`extra_info` 回报优先，§2.8）。M3 已实施口径：TTS 字符计量按 `extra_info.usage_characters` 回报优先、缺失回落请求字符自算；官方口径为 ¥2.00/万字符（人民币、无官方美元价），引擎无官方汇率折算链——不落字符价，计量照落、成本不虚计，不编造（依据见 `pricing/data_minimax.go` 注释）。
+Mock：`media_minimax_tts_ok`（data.audio hex 载荷，断言解码后 magic bytes）——M3 已交付（`mockupstream/video_minimax.go`；`usage_characters` 刻意 +1 偏离请求字符数，以证明网关回报优先）。
+
+异步长音频（长转写）：端点与字段接入前以 platform.minimax.io 回填；`/v1/audio/jobs` 长音频面首个上游以回填结果定（候选：百炼 paraformer / 火山长转写 / MiniMax）。
 
 ## 9. volcengine / 火山方舟（置信度 B：官方格式多源确认）
 

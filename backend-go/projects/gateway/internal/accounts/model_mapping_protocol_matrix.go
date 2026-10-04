@@ -377,12 +377,40 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		// 亦属本档案能力）——供 GPT/Grok 等系生图账户声明纯图像模型（如
 		// gpt-image-2、grok-imagine 系）进入 supportedModels。
 		profileProtocols = []string{mappingFamilyChatCompletions, mappingFamilyResponses, "images"}
+		// glm openai 档案同族承接 video 协议模型（M3 cogvideo adapter：/api/
+		// paas/v4/videos/generations 与 chat 共享 base_url 与 Bearer 凭据，
+		// endpoint_modes 的 video_* 亦属本档案能力）——供 glm 账户声明
+		// cogvideox 系纯视频模型进入 supportedModels（契约 §7.1）。按供应商
+		// 收窄而非全 openai 族放开：其余 openai 族供应商无已实施视频 adapter。
+		if isGlmProviderCodeToken(profile.providerCode) {
+			profileProtocols = append(profileProtocols, "video")
+		}
+		// minimax 媒体档案同族承接 video / audio_speech 协议模型（M3
+		// hailuo + t2a_v2 adapter，契约 §8：统一 /v1/videos 与
+		// /v1/audio/speech 面经媒体 adapter 改写，与账户 base_url/Bearer 凭据
+		// 同源）——供 minimax 账户声明 Hailuo 视频与 speech 系 TTS 模型进入
+		// supportedModels（档案 Capabilities 只声明媒体，无 chat 模型）。
+		if isMinimaxProviderCodeToken(profile.providerCode) {
+			profileProtocols = append(profileProtocols, "video", "audio_speech")
+		}
+		// volcengine 媒体档案同族承接 video 协议模型（M3 seedance adapter，
+		// 契约 §9.1：统一 /v1/videos 面经媒体 adapter 改写，与账户 base_url/
+		// Bearer 凭据同源；TTS 面 §9.2 未回填，不承接 audio_speech）——供
+		// volcengine 账户声明 Seedance 系纯视频模型进入 supportedModels
+		//（档案 Capabilities 只声明视频，无 chat/audio 模型）。
+		if isVolcengineProviderCodeToken(profile.providerCode) {
+			profileProtocols = append(profileProtocols, "video")
+		}
 	case isAnthropicProtocolProfileOf(profile):
 		profileProtocols = []string{mappingFamilyMessages}
 	case isGeminiProtocolProfileOf(profile):
+		// gemini v1beta 档案同族承接 video 协议模型（M3 veo adapter：
+		// predictLongRunning 与 generateContent 共享 base_url 与凭据，
+		// endpoint_modes 的 video_* 亦属本档案能力）——供 Veo 系账户声明纯
+		// 视频模型进入 supportedModels（契约 §5.2）。
 		profileProtocols = []string{
 			mappingFamilyGenerateContent, mappingFamilyStreamGenerateContent,
-			"count_tokens", "embed_content", "interactions",
+			"count_tokens", "embed_content", "interactions", "video",
 		}
 	default:
 		return false

@@ -118,6 +118,7 @@
 - [Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)
 - [上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)：系统设置 `upstreamClientVersionOverrides` 按五家族热覆盖上游客户端画像版本（非空即生效、可降级、清空回内置），含内置锚点表与维护规则。
 - [智谱 GLM 账号接入](智谱GLM账号接入.md)
+- [MiniMax 账号接入](MiniMax账号接入.md)：M3 媒体专用供应商（Hailuo 视频 + speech TTS，API Key 单档案 `profile_minimax_openai_v1`，不承接聊天流量）。
 - [DeepSeek 账号接入](DeepSeek账号接入.md)
 - [Gemini 账号接入](Gemini账号接入.md)
 - [Gemini 协议兼容设计](Gemini协议兼容设计.md)

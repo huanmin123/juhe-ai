@@ -15,11 +15,16 @@ const (
 	GptVendorCode = "gpt"
 	// XaiProviderCode / DeepSeekProviderCode / GlmProviderCode /
 	// GeminiProviderCode / AnthropicProviderCode mirror the vendor tokens.
+	// MinimaxProviderCode / VolcengineProviderCode 是 M3 媒体新增供应商 token
+	//（媒体设计 §9/契约 §8/§9，仅媒体能力——不参与 DefaultOpenAIEndpointModes
+	// 的 chat 默认分支）。
 	XaiProviderCode       = "xai"
 	DeepSeekProviderCode  = "deepseek"
 	GlmProviderCode       = "glm"
 	GeminiProviderCode    = "gemini"
 	AnthropicProviderCode = "anthropic"
+	MinimaxProviderCode   = "minimax"
+	VolcengineProviderCode = "volcengine"
 	// HybridProviderCode mirrors the hybrid pseudo provider token.
 	HybridProviderCode = "hybrid"
 	// OpenAICompatibleProviderCode mirrors openai (openai-compatible token).
@@ -64,11 +69,15 @@ var (
 	// account defaults).
 	OpenAIDefaultEndpointModes  = []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}
 	AnthropicEndpointModeValues = []string{"messages_json", "messages_sse", "message_token_counting"}
-	// gemini 族 M1 仅补 audio_speech（gemini TTS adapter 承载；gemini 无
-	// /v1/audio/transcriptions 直连形态）。
+	// gemini 族 M1 补 audio_speech（gemini TTS adapter 承载；gemini 无
+	// /v1/audio/transcriptions 直连形态）；M3 视频补 video_create /
+	// video_get / video_content / video_cancel（veo adapter 承载
+	// predictLongRunning 形态，契约 §5.2；与 openai 族同 token——跨协议
+	// 共享，opt-in、不进默认集 DefaultGeminiEndpointModes）。
 	GeminiEndpointModeValues = []string{
 		"generate_content_json", "generate_content_sse", "count_tokens",
 		"embed_content", "interactions_json", "interactions_sse", "audio_speech",
+		"video_create", "video_get", "video_content", "video_cancel",
 	}
 	HybridEndpointModeValues = append(append(append([]string{}, OpenAIEndpointModeValues...), AnthropicEndpointModeValues...), GeminiEndpointModeValues...)
 )
@@ -113,6 +122,16 @@ func IsDeepSeekProviderCodeToken(value string) bool {
 // IsGlmProviderCodeToken mirrors isGlmProviderCodeToken.
 func IsGlmProviderCodeToken(value string) bool {
 	return NormalizeProviderToken(value) == GlmProviderCode
+}
+
+// IsMinimaxProviderCodeToken mirrors isMinimaxProviderCodeToken.
+func IsMinimaxProviderCodeToken(value string) bool {
+	return NormalizeProviderToken(value) == MinimaxProviderCode
+}
+
+// IsVolcengineProviderCodeToken mirrors isVolcengineProviderCodeToken.
+func IsVolcengineProviderCodeToken(value string) bool {
+	return NormalizeProviderToken(value) == VolcengineProviderCode
 }
 
 // IsGeminiProviderCodeToken mirrors isGeminiProviderCodeToken.

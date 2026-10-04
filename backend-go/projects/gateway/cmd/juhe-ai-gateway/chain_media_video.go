@@ -27,6 +27,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch/gatewayupstream"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayopenai"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
@@ -134,14 +136,40 @@ func chainIsVideoTaskPlaneRequest(req *gatewaypreauth.GatewayRequest) bool {
 //     或 gpt（openai 的 OAuth 子供应商代码，协议同族）都归一到 openai
 //     adapter（对外契约即本体，契约 §4.3）；注册键即 videoadapter.go 的
 //     videoAdapters 表键（VideoAdapterForProvider 内部小写归一）。
-//   - 其余 provider（anthropic/gemini/deepseek/hybrid 等）→ ""：M2 无对应
-//     adapter。创建链在 driver 构造点显式失败（能力缺失不静默回退，媒体
-//     设计 §5 禁止项：不把厂商差异写进组合根 switch）；gemini/minimax/
-//     volcengine/qwen 系 M3 起只新增注册表条目与本映射分支。
+//   - gemini 账户 → "gemini"（M3：api_key 与 google_oauth 两类账户同键，
+//     认证头差异由任务面按协议/账户类型构造）：Veo predictLongRunning
+//     形态（契约 §5.2），URL 前缀按账户 base_url + /v1beta。
+//   - glm 账户 → "glm"（M3：CogVideoX videos/generations 形态，契约 §7.1；
+//     账户 provider_code 恒为 glm，无子供应商代码）：api_key Bearer 认证
+//     （沿链上 openai 族认权分支），URL 按 chainGlmVideoUpstreamURL 归一
+//     （/api/paas/v4 服务根，不走 /v1 强制补缀的 openai 归一）。
+//   - minimax 账户 → "minimax"（M3：Hailuo video_generation 形态，契约
+//     §8.1）：api_key Bearer 认证（沿链上 openai 族认权分支），出站路径
+//     为 /v1 前缀的 openai 族形态（video_generation / query/
+//     video_generation），URL 走 gatewayopenai.BuildUpstreamURL 归一
+//     （base 强制 /v1 结尾、path 剥 /v1 前缀去重——api.minimax.chat 与
+//     api.minimaxi.com 两种官方 host 均适用，无需专用归一函数）。
+//   - volcengine 账户 → "volcengine"（M3：Seedance contents/generations/
+//     tasks 形态，契约 §9.1）：api_key Bearer 认证（沿链上 openai 族认权
+//     分支），出站路径自带 /api/v3 服务根，URL 按
+//     chainVolcengineVideoUpstreamURL 归一（官方根 ark.cn-beijing.volces.com
+//     去重，不走 /v1 强制补缀的 openai 归一——同 glm /api/paas/v4 先例）。
+//   - 其余 provider（anthropic/deepseek/hybrid 等）→ ""：无对应 adapter。
+//     创建链在 driver 构造点显式失败（能力缺失不静默回退，媒体设计 §5
+//     禁止项：不把厂商差异写进组合根 switch）；qwen 系 M3+ 起只新增
+//     注册表条目与本映射分支。
 func chainVideoAdapterKeyOfProvider(providerCode string) string {
 	switch strings.ToLower(strings.TrimSpace(providerCode)) {
 	case "openai", "gpt":
 		return "openai"
+	case "gemini":
+		return "gemini"
+	case "glm":
+		return "glm"
+	case "minimax":
+		return "minimax"
+	case "volcengine":
+		return "volcengine"
 	default:
 		return ""
 	}
@@ -177,14 +205,14 @@ func chainVideoCreateDeterministicParamStatus(statusCode int) bool {
 // 错误短路"：视频 lane（LaneVideo；POST /v1/videos 创建形态——音频同步
 // lane 的受理凭据是 2xx 响应头到达，参数 400 属普通失败语义，不在此列）
 // + 确定性参数类 4xx。消费点是 chain_ports.go HandleFailedUpstreamResponse
-//（审计尝试与 usage 失败记录落账之后、SkipAccount 决策之前）。
+// （审计尝试与 usage 失败记录落账之后、SkipAccount 决策之前）。
 func chainMediaCreateParamErrorShortCircuit(requestLane string, statusCode int) bool {
 	return requestLane == string(gatewayproto.LaneVideo) &&
 		chainVideoCreateDeterministicParamStatus(statusCode)
 }
 
 // chainRebuiltUpstreamErrorResponse 用失败面已捕获的响应体重建可读上游响应
-//（失败派发器读尽并关闭了原始 body；短路透传路径以捕获体复原，供响应面
+// （失败派发器读尽并关闭了原始 body；短路透传路径以捕获体复原，供响应面
 // 渲染客户端可见的错误状态与正文）。response 为 nil 返回 nil。
 func chainRebuiltUpstreamErrorResponse(response *gatewayupstream.GatewayUpstreamResponse, bodyText string) *gatewayupstream.GatewayUpstreamResponse {
 	if response == nil {
@@ -202,10 +230,10 @@ func chainRebuiltUpstreamErrorResponse(response *gatewayupstream.GatewayUpstream
 // 参数（params_applied/params_ignored 回显来源）+ provider_options 生效键名
 // 摘要（provider_options_applied 回显来源，契约 §2.4 规则 4）。
 type chainVideoCreatePlan struct {
-	adapter                 gatewaymedia.VideoProviderAdapter
-	createRequest           gatewaymedia.VideoCreateOutput
-	params                  gatewaymedia.NormalizedVideoParams
-	providerOptionsApplied  []string
+	adapter                gatewaymedia.VideoProviderAdapter
+	createRequest          gatewaymedia.VideoCreateOutput
+	params                 gatewaymedia.NormalizedVideoParams
+	providerOptionsApplied []string
 }
 
 // chainVideoCreatePlanOf 解析请求体并构造 adapter 出站报文。body 为 nil
@@ -357,6 +385,9 @@ type mediaJobsRuntime struct {
 }
 
 // chainMediaJobAccount 是任务面水合的账户亲和事实（media_jobs 三元组回查）。
+// Credentials 保留解密后的凭据对象（M3 gemini：google_oauth 账户的认证头
+// 沿 applyGeminiUpstreamAuthHeaders 消费 quota_project_id 等字段，不重复
+// 实现认权分支）。
 type chainMediaJobAccount struct {
 	ID                        string
 	OwnerSystemAccountID      string
@@ -369,6 +400,7 @@ type chainMediaJobAccount struct {
 	Deleted                   bool
 	BaseURL                   string
 	Credential                string
+	Credentials               map[string]any
 }
 
 // hydrateAccount 按 account_id 水合账户凭据（媒体设计 §7 账户亲和）。返回
@@ -401,6 +433,7 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	}
 	entries := chainAccountAPIKeyEntries(m.secret, credentials)
 	account.Credential = chainRuntimeCredentialSource(account.Type, credentials, chainAPIKeyEntriesFirstKey(entries))
+	account.Credentials = credentials
 	account.BaseURL = chainBaseURLOf(credentials, account.ProtocolCode, account.ProtocolVersion)
 	return &account, nil
 }
@@ -644,17 +677,17 @@ func (c *gatewayChain) serveMediaJobTaskPlane(ctx context.Context, req *gatewayp
 }
 
 // finalizeMediaJobTaskPlaneAudit 收口任务面短路路径的最小审计：身份绑定
-//（API Key 属主 + Key id）、任务 id 网关元数据与请求级 Finalize。状态码取
+// （API Key 属主 + Key id）、任务 id 网关元数据与请求级 Finalize。状态码取
 // TrackingWriter 观测值（content 流式转发后仍可观测）；Finalize 幂等，链入口
 // 的 defer CancelAuditCapture 对已 Finalize 的捕获是 no-op。capture 为 nil
-//（组合测试未装配审计面）保持静默。
+// （组合测试未装配审计面）保持静默。
 func (c *gatewayChain) finalizeMediaJobTaskPlaneAudit(capture gatewaypreauth.AuditCaptureContext, req *gatewaypreauth.GatewayRequest, res *gatewaypreauth.TrackingWriter, jobID string) {
 	if capture == nil {
 		return
 	}
 	capture.BindContext(gatewaypreauth.AuditGatewayContext{
 		SystemAccountID: apiKeyOwnerSystemAccountIDOf(req),
-		APIKeyID:       apiKeyIDOfGatewayRequest(req),
+		APIKeyID:        apiKeyIDOfGatewayRequest(req),
 	})
 	if jobID != "" {
 		capture.AddGatewayMetadata("media_job_task_plane", map[string]any{"jobId": jobID})
@@ -828,8 +861,12 @@ func (c *gatewayChain) serveMediaVideoPoll(ctx context.Context, res *gatewayprea
 
 // serveMediaVideoContent GET /v1/videos/{id}/content：completed 才可下载；
 // 上游产物 http 流式转发（io.Copy 零缓冲落盘，content-type 透传——媒体设计
-// §8.1.2 纯流式透传代理）。上游 404/410 → media_artifact_expired（产物可取
-// 回性由上游时效决定，网关不补救，§8.1.5）。
+// §8.1.2 纯流式透传代理）。下载定位按 adapter 声明二分：openai 族由
+// base_url + job id 构造（BuildContentRequest，认证头携带）；Veo 形态
+// （ContentFromArtifact，M3）直连轮询冻结的绝对签名 URL（无账户凭据，契约
+// §5.2；URL 缺失即产物从未产生或已被清理 → media_artifact_expired）。
+// 上游 404/410 → media_artifact_expired（产物可取回性由上游时效决定，
+// 网关不补救，§8.1.5）。
 func (c *gatewayChain) serveMediaVideoContent(ctx context.Context, res *gatewaypreauth.TrackingWriter, req *gatewaypreauth.GatewayRequest, apiKeyID, jobID string) {
 	record := c.loadMediaVideoJob(ctx, res, req, apiKeyID, jobID)
 	if record == nil {
@@ -845,8 +882,19 @@ func (c *gatewayChain) serveMediaVideoContent(ctx context.Context, res *gatewayp
 		return
 	}
 	adapter := chainVideoAdapterForAccount(account.ProviderCode)
-	method, path := adapter.BuildContentRequest(record.UpstreamJobID)
-	response, upstreamErr := c.mediaJobRequestUpstream(ctx, account, method, path, nil)
+	var response *gatewayupstream.GatewayUpstreamResponse
+	var upstreamErr error
+	if adapter.ContentFromArtifact() {
+		artifactURL := strings.TrimSpace(record.Artifact.ContentURL)
+		if artifactURL == "" {
+			c.renderMediaVideoLocalError(res, req, http.StatusGone, "视频产物已过期或已被上游清除", "media_artifact_expired")
+			return
+		}
+		response, upstreamErr = c.mediaJobArtifactRequestUpstream(ctx, artifactURL)
+	} else {
+		method, path := adapter.BuildContentRequest(record.UpstreamJobID)
+		response, upstreamErr = c.mediaJobRequestUpstream(ctx, account, method, path, nil)
+	}
 	if upstreamErr != nil {
 		c.renderMediaVideoTransportError(res, req, upstreamErr)
 		return
@@ -880,9 +928,13 @@ func (c *gatewayChain) serveMediaVideoContent(ctx context.Context, res *gatewayp
 	}
 }
 
-// serveMediaVideoCancel DELETE /v1/videos/{id}：转发上游取消；上游 2xx 或
-// 404（任务已被上游删除）均置本地 cancelled，回 204。上游其他失败透传错误、
-// 本地行不动。
+// serveMediaVideoCancel DELETE /v1/videos/{id}：转发上游取消；上游 2xx、
+// 404（任务已被上游删除）或 405（上游不暴露取消方法——M3 gemini 裁决：
+// operations :cancel 不被支持时本地收敛 cancelled，不把能力缺口透传成
+// 客户端错误）均置本地 cancelled，回 204。上游其他失败透传错误、本地行
+// 不动。glm（M3，契约 §7.1）无上游取消 API：SupportsCancel=false 时不发
+// 上游请求，直接本地收敛 cancelled（专用分支而非 405 收敛——不发必然
+// 404/405 的垃圾请求，cancelled 本就是 §2.6 的本地终态语义）。
 func (c *gatewayChain) serveMediaVideoCancel(ctx context.Context, res *gatewaypreauth.TrackingWriter, req *gatewaypreauth.GatewayRequest, apiKeyID, jobID string) {
 	record := c.loadMediaVideoJob(ctx, res, req, apiKeyID, jobID)
 	if record == nil {
@@ -893,6 +945,16 @@ func (c *gatewayChain) serveMediaVideoCancel(ctx context.Context, res *gatewaypr
 		return
 	}
 	adapter := chainVideoAdapterForAccount(account.ProviderCode)
+	if !adapter.SupportsCancel() {
+		// UpdateStatus 的非终态守卫：0 行 = 行已终态（并发轮询/清理先落终态），
+		// 不把终态行回退为 cancelled；本地收敛语义已达成，仍回 204。
+		if _, updateErr := c.mediaJobs.repo.UpdateStatus(ctx, record.ID, gatewaymedia.JobStatusCancelled); updateErr != nil {
+			c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, "更新媒体任务取消状态失败", "internal_error")
+			return
+		}
+		res.WriteHeader(http.StatusNoContent)
+		return
+	}
 	method, path := adapter.BuildCancelRequest(record.UpstreamJobID)
 	response, upstreamErr := c.mediaJobRequestUpstream(ctx, account, method, path, nil)
 	if upstreamErr != nil {
@@ -901,7 +963,7 @@ func (c *gatewayChain) serveMediaVideoCancel(ctx context.Context, res *gatewaypr
 	}
 	_ = response.Body.Close()
 	status := response.Status()
-	if (status >= http.StatusOK && status < http.StatusMultipleChoices) || status == http.StatusNotFound {
+	if (status >= http.StatusOK && status < http.StatusMultipleChoices) || status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
 		// UpdateStatus 的非终态守卫：0 行 = 行已终态（并发轮询/清理先落终态），
 		// 不把终态行回退为 cancelled；上游已确认取消/删除，仍回 204。
 		if _, updateErr := c.mediaJobs.repo.UpdateStatus(ctx, record.ID, gatewaymedia.JobStatusCancelled); updateErr != nil {
@@ -919,19 +981,114 @@ func (c *gatewayChain) serveMediaVideoCancel(ctx context.Context, res *gatewaypr
 // 任务面上游直连（复用派发引擎同源传输面）
 // ---------------------------------------------------------------------------
 
+// glmVideoServiceRoot 是 glm 媒体出站路径自带的服务根（契约 §7.1：
+// open.bigmodel.cn 官方端点 /api/paas/v4/videos/generations 族）。
+const glmVideoServiceRoot = "/api/paas/v4"
+
+// chainGlmVideoUpstreamURL 归一 glm 媒体任务面的上游 URL：base + adapter
+// 出站路径做直拼，base 已含 /api/paas/v4 服务根时去重（镜像 gatewaygemini.
+// BuildUpstreamURL 的 /v1beta 去重先例）。不得走 gatewayopenai.
+// BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1（endpoint_test.go 钉
+// 住的 openai 族契约），会把官方根 https://open.bigmodel.cn/api/paas/v4 错
+// 拼 /api/paas/v4/v1/...（智谱GLM账号接入.md「网关把请求发往 base_url +
+// 路径」的既有裁决）。glm coding 根（/api/coding/paas/v4）不含通用服务根，
+// 不做去重直拼（coding 计划面向编码模型，视频能力以通用根为准）。
+func chainGlmVideoUpstreamURL(baseURL, path string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+		return "", fmt.Errorf("glm 媒体账户 base_url 无效: %q", baseURL)
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	suffix := path
+	if !strings.HasPrefix(suffix, "/") {
+		suffix = "/" + suffix
+	}
+	if suffix != glmVideoServiceRoot && strings.HasSuffix(strings.ToLower(basePath), glmVideoServiceRoot) {
+		if trimmed, ok := strings.CutPrefix(suffix, glmVideoServiceRoot); ok && trimmed != "" {
+			suffix = trimmed
+		}
+	}
+	parsed.Path = basePath + suffix
+	return parsed.String(), nil
+}
+
+// volcengineVideoServiceRoot 是 volcengine 媒体出站路径自带的服务根（契约
+// §9.1：ark.cn-beijing.volces.com 官方端点 /api/v3/contents/generations/
+// tasks 族）。
+const volcengineVideoServiceRoot = "/api/v3"
+
+// chainVolcengineVideoUpstreamURL 归一 volcengine 媒体任务面的上游 URL：base
+// + adapter 出站路径做直拼，base 已含 /api/v3 服务根时去重（镜像
+// chainGlmVideoUpstreamURL 的 /api/paas/v4 去重先例）。不得走 gatewayopenai.
+// BuildUpstreamURL——它对非 /v1 结尾的 base 强制补 /v1（endpoint_test.go 钉
+// 住的 openai 族契约），会把官方根 https://ark.cn-beijing.volces.com 错拼
+// /v1/api/v3/...。
+func chainVolcengineVideoUpstreamURL(baseURL, path string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+		return "", fmt.Errorf("volcengine 媒体账户 base_url 无效: %q", baseURL)
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	suffix := path
+	if !strings.HasPrefix(suffix, "/") {
+		suffix = "/" + suffix
+	}
+	if suffix != volcengineVideoServiceRoot && strings.HasSuffix(strings.ToLower(basePath), volcengineVideoServiceRoot) {
+		if trimmed, ok := strings.CutPrefix(suffix, volcengineVideoServiceRoot); ok && trimmed != "" {
+			suffix = trimmed
+		}
+	}
+	parsed.Path = basePath + suffix
+	return parsed.String(), nil
+}
+
 // mediaJobRequestUpstream 账户亲和直连上游（不走派发循环）：URL 由账户
-// base_url + adapter 出站路径经 BuildUpstreamURL 归一；头部为全新最小集
-// （Authorization + Accept，任务面身份=网关，不透传客户端头——沿
-// buildGeminiCodeAssistRequestParts 先例）；传输复用引擎 TransportDeps
-// （URL 安全策略 / 全局并发槽 / keep-alive 池）。
+// base_url + adapter 出站路径归一——gemini 协议走 gatewaygemini.
+// BuildUpstreamURL（/v1beta 前缀与 base 去重，M1 speech 创建链同先例），
+// glm 媒体路径走 chainGlmVideoUpstreamURL（/api/paas/v4 服务根去重，M3
+// glm cogvideo adapter），volcengine 媒体路径走 chainVolcengineVideoUpstreamURL
+// （/api/v3 服务根去重，M3 seedance adapter，契约 §9.1），其余走
+// gatewayopenai.BuildUpstreamURL（/v1 后缀形态）；认证头按协议构造：gemini
+// 沿 applyGeminiUpstreamAuthHeaders（api_key → X-Goog-Api-Key、
+// google_oauth → Bearer + 可选 x-goog-user-project，与主链认权分支同一实现，
+// 不重复实现），其余维持最小 Bearer 集（任务面身份=网关，不透传客户端头
+// ——沿 buildGeminiCodeAssistRequestParts 先例；glm/volcengine 账户即
+// Bearer API Key，契约 §7.1/§9.1）；传输复用引擎 TransportDeps（URL 安全
+// 策略 / 全局并发槽 / keep-alive 池）。
 func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *chainMediaJobAccount, method, path string, body []byte) (*gatewayupstream.GatewayUpstreamResponse, error) {
 	adapterKey := chainVideoAdapterKeyOfProvider(account.ProviderCode)
 	if adapterKey == "" {
 		return nil, fmt.Errorf("账户 %s 的供应商 %s 无视频 adapter", account.ID, account.ProviderCode)
 	}
-	upstreamURL := gatewayopenai.BuildUpstreamURL(account.BaseURL, path)
+	var upstreamURL string
+	if chainIsGeminiProtocolProfile(account.ProtocolCode, account.ProtocolVersion) {
+		built, err := gatewaygemini.BuildUpstreamURL(account.BaseURL, path, false)
+		if err != nil {
+			return nil, err
+		}
+		upstreamURL = built
+	} else if adapterKey == "glm" {
+		built, err := chainGlmVideoUpstreamURL(account.BaseURL, path)
+		if err != nil {
+			return nil, err
+		}
+		upstreamURL = built
+	} else if adapterKey == "volcengine" {
+		built, err := chainVolcengineVideoUpstreamURL(account.BaseURL, path)
+		if err != nil {
+			return nil, err
+		}
+		upstreamURL = built
+	} else {
+		upstreamURL = gatewayopenai.BuildUpstreamURL(account.BaseURL, path)
+	}
 	headers := http.Header{}
-	if account.Credential != "" {
+	if chainIsGeminiProtocolProfile(account.ProtocolCode, account.ProtocolVersion) {
+		applyGeminiUpstreamAuthHeaders(headers, gatewaydispatch.AccountCandidate{
+			Type:        account.Type,
+			Credentials: account.Credentials,
+		}, account.Credential)
+	} else if account.Credential != "" {
 		headers.Set("Authorization", "Bearer "+account.Credential)
 	}
 	headers.Set("Accept", "application/json")
@@ -939,6 +1096,17 @@ func (c *gatewayChain) mediaJobRequestUpstream(ctx context.Context, account *cha
 		Method: method,
 		Header: headers,
 		Body:   body,
+		Signal: ctx,
+	}, c.mediaJobs.transport)
+}
+
+// mediaJobArtifactRequestUpstream 直连 completed 任务的产物 URL（M3 gemini：
+// Veo 的 GCS 签名 URL，凭据内嵌于 URL，契约 §5.2——不携带任何账户认证头，
+// 带 Authorization 反而会被 GCS 拒绝）；传输复用引擎 TransportDeps（URL
+// 安全策略与任务面直连同源）。
+func (c *gatewayChain) mediaJobArtifactRequestUpstream(ctx context.Context, artifactURL string) (*gatewayupstream.GatewayUpstreamResponse, error) {
+	return gatewayupstream.RequestUpstream(ctx, artifactURL, gatewayupstream.UpstreamRequestOptions{
+		Method: http.MethodGet,
 		Signal: ctx,
 	}, c.mediaJobs.transport)
 }

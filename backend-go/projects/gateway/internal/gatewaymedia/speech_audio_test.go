@@ -211,7 +211,7 @@ func TestGeminiSpeechAdapterTransformViaHTTPReplay(t *testing.T) {
 	raw, _ := io.ReadAll(response.Body)
 
 	adapter := SpeechAdapterForProvider("gemini")
-	audio, contentType, transformErr := adapter.TransformResponse(raw)
+	audio, contentType, transformErr := adapter.TransformResponse(raw, SpeechRequest{})
 	if transformErr != nil {
 		t.Fatalf("transform: %v", transformErr)
 	}
@@ -225,17 +225,17 @@ func TestGeminiSpeechAdapterTransformViaHTTPReplay(t *testing.T) {
 
 func TestGeminiSpeechAdapterTransformFailures(t *testing.T) {
 	adapter := SpeechAdapterForProvider("gemini")
-	if _, _, err := adapter.TransformResponse([]byte(`not-json`)); err == nil {
+	if _, _, err := adapter.TransformResponse([]byte(`not-json`), SpeechRequest{}); err == nil {
 		t.Fatal("invalid json must fail")
 	}
-	if _, _, err := adapter.TransformResponse([]byte(`{"candidates":[{"content":{"parts":[{"text":"no audio"}]}}]}`)); err == nil {
+	if _, _, err := adapter.TransformResponse([]byte(`{"candidates":[{"content":{"parts":[{"text":"no audio"}]}}]}`), SpeechRequest{}); err == nil {
 		t.Fatal("missing inlineData must fail")
 	}
-	if _, _, err := adapter.TransformResponse([]byte(`{"error":{"code":400,"message":"bad voice","status":"INVALID_ARGUMENT"}}`)); err == nil ||
+	if _, _, err := adapter.TransformResponse([]byte(`{"error":{"code":400,"message":"bad voice","status":"INVALID_ARGUMENT"}}`), SpeechRequest{}); err == nil ||
 		!strings.Contains(err.Error(), "bad voice") {
 		t.Fatalf("upstream error must surface: %v", err)
 	}
-	if _, _, err := adapter.TransformResponse([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/L16;rate=24000","data":"!!!"}}]}}]}`)); err == nil {
+	if _, _, err := adapter.TransformResponse([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/L16;rate=24000","data":"!!!"}}]}}]}`), SpeechRequest{}); err == nil {
 		t.Fatal("invalid base64 must fail")
 	}
 }

@@ -176,7 +176,14 @@ func TestFindProviderModelPricingCacheReadMultipliers(t *testing.T) {
 	if tools, ok := glmFlash.SupportedToolsByProtocol["chat_completions"]; !ok || len(tools) != 1 || tools[0] != "function_calling" {
 		t.Fatalf("glm-5.3-flash chat_completions tools = %v, want [function_calling]", glmFlash.SupportedToolsByProtocol)
 	}
+	// BUG-0231：glm 全系快照必须声明 function_calling（chat_completions），
+	// 否则 glm 主模型会话内部工具零注入。M3 视频行（mode=video，如
+	// cogvideox-3）不进主对话、不注入工具，与下方 openai 家 BUG-0231 盘点
+	// 扩展同一豁免口径。
 	for _, model := range glmModelPricingData {
+		if model.Mode != "" && model.Mode != "chat" {
+			continue
+		}
 		tools, ok := model.SupportedToolsByProtocol["chat_completions"]
 		if !ok || len(tools) != 1 || tools[0] != "function_calling" {
 			t.Fatalf("glm %s chat_completions tools = %v, want [function_calling] (BUG-0231)", model.Model, model.SupportedToolsByProtocol)

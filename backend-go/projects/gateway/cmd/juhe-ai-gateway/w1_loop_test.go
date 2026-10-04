@@ -239,9 +239,17 @@ func TestW1LoopStateResetsAndBudgets(t *testing.T) {
 	loop.speedFirstByteRetryCount = 3
 	loop.speedFirstRetryCandidateAccountIds = map[string]struct{}{"a": {}}
 	loop.speedFirstSlowObservedForAttempt = &gatewayproxyhealth.LatencySlowResult{}
+	// 总时间双标记（去重 + 切号信号）必须一并清零（设计 6.3"每 attempt 每维度
+	// 恰好一次"的根基）：组切换/换轮携带旧标记会静默吞掉新 attempt 的总时间
+	// 慢样本与切号信号。
+	loop.speedFirstTotalTimeSlowObservedForAttempt = &gatewayproxyhealth.LatencySlowResult{}
+	loop.speedFirstTotalTimeCutoverSignal = &speedFirstTotalTimeCutoverSignal{accountID: "acc_1"}
 	loop.resetSpeedFirstState()
 	if loop.speedFirstByteRetryCount != 0 || loop.speedFirstRetryCandidateAccountIds != nil || loop.speedFirstSlowObservedForAttempt != nil {
 		t.Fatalf("reset 后 = %+v", loop)
+	}
+	if loop.speedFirstTotalTimeSlowObservedForAttempt != nil || loop.speedFirstTotalTimeCutoverSignal != nil {
+		t.Fatalf("总时间双标记必须清零: mark=%+v signal=%+v", loop.speedFirstTotalTimeSlowObservedForAttempt, loop.speedFirstTotalTimeCutoverSignal)
 	}
 	if loop.speedFirstCutoverReservation != nil {
 		t.Fatal("reset 必须释放预留")

@@ -19,8 +19,12 @@ import {
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_RESPONSES_FAMILY,
+  OPENAI_TTS_FAMILY,
+  OPENAI_VIDEO_GENERATION_FAMILY,
   isGptVendorCode,
   isGeminiProviderCode,
+  isMinimaxProviderCode,
+  isVolcengineProviderCode,
   isXaiProviderCode,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
@@ -79,10 +83,13 @@ export const openAIEndpointModes: AccountSupportedEndpointMode[] = [
 ]
 export const anthropicAccountEndpointModes: AccountSupportedEndpointMode[] = ['messages_json', 'messages_sse', 'message_token_counting']
 // gemini 族含 audio_speech（gemini TTS 经混合账户跨协议转换服务
-// /v1/audio/speech，契约 §5.1）：与 openai 族的 audio 两值同样只能显式开启
-//（defaultEndpointModesForAccount 过滤，不进默认集）。audio_speech 是跨协议
-// 共享 token（同时属于 openai/gemini 词表），协议互斥校验按非共享 token 判定。
-export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content', 'interactions_json', 'interactions_sse', 'audio_speech']
+// /v1/audio/speech，契约 §5.1）与 M3 视频四值 video_create / video_get /
+// video_content / video_cancel（gemini Veo 经 veo adapter 承载
+// predictLongRunning 形态，契约 §5.2）：与 openai 族的 audio/video 值同样
+// 只能显式开启（defaultEndpointModesForAccount 过滤，不进默认集）。
+// audio_speech 与 video_* 是跨协议共享 token（同时属于 openai/gemini 词表），
+// 协议互斥校验按非共享 token 判定。
+export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content', 'interactions_json', 'interactions_sse', 'audio_speech', 'video_create', 'video_get', 'video_content', 'video_cancel']
 export const allAccountEndpointModes: AccountSupportedEndpointMode[] = [
   ...openAIEndpointModes,
   ...anthropicAccountEndpointModes,
@@ -253,15 +260,18 @@ export function defaultEndpointModesForAccount(input: {
   const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
   if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
   // gemini 新账户默认集保持 generateContent/interactions 推导结果；audio_speech
-  // 与 openai 族的 audio 两值同样只能显式开启。
+  // 与 M3 视频四值（veo adapter 承载）同样只能显式开启。
   if (protocolKind === 'gemini_v1beta') {
     return endpointModesForProfile(input.profile ?? input.provider)
-      .filter((mode) => mode !== 'audio_speech')
+      .filter((mode) => mode !== 'audio_speech'
+        && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel')
   }
   if (input.type === 'oauth' && protocolKind === 'openai_v1') return [...responsesEndpointModes]
   if (protocolKind === 'openai_v1') {
     // 新账户默认集保持 chat/responses 推导结果；images_json、M1 音频模式与
-    // M2 视频模式只能显式开启。
+    // M2 视频模式只能显式开启。minimax/volcengine 档案（M3）只挂媒体
+    // families，推导结果经此过滤后为空集——媒体端点模式全部 opt-in，与
+    // openai/gemini 族媒体模式同语义。
     return endpointModesForProfile(input.profile ?? input.provider)
       .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json'
         && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel')
@@ -293,12 +303,48 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       { family: GEMINI_EMBED_CONTENT_FAMILY, modes: ['embed_content'] },
       { family: 'interactions', modes: ['interactions_json', 'interactions_sse'] }
     ])
-    // audio_speech 是 gemini 族的显式可选能力（gemini TTS 经混合转换派发），
-    // 不进默认集（defaultEndpointModesForAccount 过滤），照 openai 族先例。
-    const selectable: AccountSupportedEndpointMode[] = [...familyModes, 'audio_speech']
+    // audio_speech 与 M3 视频四值是 gemini 族的显式可选能力（gemini TTS 经
+    // 混合转换派发、veo 经 veo adapter 承载），不进默认集
+    // （defaultEndpointModesForAccount 过滤），照 openai 族先例。
+    const selectable: AccountSupportedEndpointMode[] = [
+      ...familyModes,
+      'audio_speech',
+      'video_create',
+      'video_get',
+      'video_content',
+      'video_cancel'
+    ]
     return [...new Set(selectable)]
   }
   if (protocolKind === 'openai_v1') {
+    // M3 媒体供应商（媒体设计 §9/契约 §8）：minimax 档案只声明媒体
+    // families（video_generation/tts），openai 族推导不回退 chat 词表
+    //（MiniMax 聊天端点非 OpenAI Chat 形态，档案不承接聊天流量）；video_*
+    // 四值与 audio_speech 照 openai 族先例属显式可选能力（opt-in，不进
+    // 默认集——defaultEndpointModesForAccount 过滤）。
+    if (isMinimaxProviderCode(profile?.providerCode ?? profile?.code)) {
+      const families = new Set(endpointFamilyCodes(profile))
+      const modes: AccountSupportedEndpointMode[] = []
+      if (families.has(OPENAI_VIDEO_GENERATION_FAMILY)) {
+        modes.push('video_create', 'video_get', 'video_content', 'video_cancel')
+      }
+      if (families.has(OPENAI_TTS_FAMILY)) {
+        modes.push('audio_speech')
+      }
+      return modes
+    }
+    // M3 媒体供应商（媒体设计 §9/契约 §9.1）：volcengine 档案只声明
+    // video_generation 一个媒体 family（TTS 面 §9.2 未回填），推导不回退
+    // chat 词表（火山方舟聊天走独立 doubao 模型面，档案不承接聊天流量）；
+    // video_* 四值照 openai 族先例属显式可选能力（opt-in，不进默认集）。
+    if (isVolcengineProviderCode(profile?.providerCode ?? profile?.code)) {
+      const families = new Set(endpointFamilyCodes(profile))
+      const modes: AccountSupportedEndpointMode[] = []
+      if (families.has(OPENAI_VIDEO_GENERATION_FAMILY)) {
+        modes.push('video_create', 'video_get', 'video_content', 'video_cancel')
+      }
+      return modes
+    }
     const familyModes = endpointModesForFamilies(
       profile,
       profileSupportsCodexResponsesChatBridge(profile) ? chatEndpointModes : openAIEndpointModes,

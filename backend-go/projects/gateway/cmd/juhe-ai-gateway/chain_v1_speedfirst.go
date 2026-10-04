@@ -41,8 +41,11 @@ func (l *v1DispatchLoop) resetSpeedFirstState() {
 		l.speedFirstCutoverReservation = nil
 	}
 	l.speedFirstSlowObservedForAttempt = nil
+	// 与 transport timer goroutine 并发（major-2 修复）：清零持观察互斥锁。
+	l.speedFirstTotalTimeObservationMu.Lock()
 	l.speedFirstTotalTimeSlowObservedForAttempt = nil
 	l.speedFirstTotalTimeCutoverSignal = nil
+	l.speedFirstTotalTimeObservationMu.Unlock()
 }
 
 // settleFirstByteDeadlineCutoverVerdict 把响应面的非流式首字截止切号
@@ -780,15 +783,19 @@ func (l *v1DispatchLoop) speedFirstTotalTimeDeadlineDecision(
 	cutoverAllowed := false
 	if reservation != nil {
 		// 预占成功即确认切号：预留写入 loop 携带槽，载荷快照供
-		// settleTotalTimeCutoverError 还原账户与 elapsedMs。
+		// settleTotalTimeCutoverError 还原账户与 elapsedMs。决策回调跑在
+		// transport timer goroutine 上，与轮级清零并发（major-2 修复）：
+		// 写入持观察互斥锁，与清零/读取点同锁建立 happens-before。
 		cutoverAllowed = true
 		l.speedFirstCutoverReservation = reservation
+		l.speedFirstTotalTimeObservationMu.Lock()
 		l.speedFirstTotalTimeCutoverSignal = &speedFirstTotalTimeCutoverSignal{
 			accountID:   account.ID,
 			accountName: account.Name,
 			thresholdMs: thresholdMs,
 			elapsedMs:   elapsedMs,
 		}
+		l.speedFirstTotalTimeObservationMu.Unlock()
 	}
 	remainingIDs := make([]string, 0, remainingCandidateCount)
 	for _, candidate := range remainingAccounts {

@@ -97,13 +97,17 @@ const (
 // Server is the scripted OpenAI-compatible upstream.
 type Server struct {
 	*httptest.Server
-	now        func() time.Time
-	slowDelay  time.Duration
-	chunkDelay time.Duration
-	seenReqs   []Request
-	aborts     int
-	videos     map[string]*videoTask // async video job table (video.go, contract §3.2.2)
-	mu         sync.Mutex
+	now                  func() time.Time
+	slowDelay            time.Duration
+	chunkDelay           time.Duration
+	seenReqs             []Request
+	aborts               int
+	videos               map[string]*videoTask           // async video job table (video.go, contract §3.2.2)
+	veoOperations        map[string]*veoOperation        // gemini veo operation table (video_gemini.go, contract §5.2)
+	glmVideoTasks        map[string]*glmVideoTask        // glm cogvideo task table (video_glm.go, contract §7.1)
+	minimaxVideoTasks    map[string]*minimaxVideoTask    // minimax hailuo task table (video_minimax.go, contract §8.1)
+	volcengineVideoTasks map[string]*volcengineVideoTask // volcengine seedance task table (video_volcengine.go, contract §9.1)
+	mu                   sync.Mutex
 }
 
 // Request records what the caller under test actually sent upstream.
@@ -151,7 +155,7 @@ func acceptsEndpoint(method, path string) bool {
 // the requested scenario (sentinel "x-mock-scenario" header or ?scenario=
 // query, defaulting to chat_ok).
 func New() *Server {
-	m := &Server{now: time.Now, videos: map[string]*videoTask{}}
+	m := &Server{now: time.Now, videos: map[string]*videoTask{}, veoOperations: map[string]*veoOperation{}, glmVideoTasks: map[string]*glmVideoTask{}, minimaxVideoTasks: map[string]*minimaxVideoTask{}, volcengineVideoTasks: map[string]*volcengineVideoTask{}}
 	m.Server = httptest.NewServer(http.HandlerFunc(m.serve))
 	return m
 }

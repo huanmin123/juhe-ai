@@ -485,3 +485,55 @@ func TestWtdObservationWindowCrossDimensionRetention(t *testing.T) {
 		t.Fatal("两通道计数归零后 state 必须删除")
 	}
 }
+
+
+// K10 反向：total_time 降级后首字通道再触发——DegradedUntilMs 不续期，
+// Dimension 翻转为 first_byte（最近触发维度，设计 6.4）。
+func TestWtdFirstByteTriggerOnTotalTimeDegradedKeepsLeaseAndFlipsDimension(t *testing.T) {
+	clock := newFakeClock(1_000_000)
+	service, store := newMemoryLatencyService(clock)
+	scope := latencyScope()
+	config := wtdTotalTimeConfig()
+	account := latencyAccount("flip")
+
+	for i := 0; i < 3; i++ {
+		if _, err := service.RecordNormalRouteTotalTimeSlow(contextBackground(), account, scope, &config, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := wtdLoadState(t, store, scope, account)
+	if state.Dimension != LatencyDimensionTotalTime || state.DegradedUntilMs == nil {
+		t.Fatalf("前置 total_time 降级未建立: %+v", state)
+	}
+	degradedUntil := *state.DegradedUntilMs
+
+	// 首字通道在已降级 state 上从 0 独立计数，攒满 slowTriggerCount(3) 才翻转
+	// 维度（期间 Degraded 恒 true——账户确实仍处于 total_time 降级中，
+	// currentStillDegraded 语义）。
+	clock.Advance(1_000)
+	var trigger *LatencySlowResult
+	for i := 0; i < 3; i++ {
+		if i < 2 {
+			clock.Advance(1_000)
+		}
+		var err error
+		trigger, err = service.RecordNormalRouteFirstByteSlow(contextBackground(), account, scope, &config, "")
+		if err != nil || trigger == nil {
+			t.Fatalf("首字通道在已降级 state 上记录 %d: %+v err=%v", i+1, trigger, err)
+		}
+		intermediate := wtdLoadState(t, store, scope, account)
+		if i < 2 && intermediate.Dimension != LatencyDimensionTotalTime {
+			t.Fatalf("首字第 %d 条不应翻转维度，Dimension=%q", i+1, intermediate.Dimension)
+		}
+	}
+	if !trigger.Degraded {
+		t.Fatalf("首字第 3 条必须触发: %+v", trigger)
+	}
+	state = wtdLoadState(t, store, scope, account)
+	if state.DegradedUntilMs == nil || *state.DegradedUntilMs != degradedUntil {
+		t.Fatalf("已降级不续期被破坏: got %v want %v", state.DegradedUntilMs, degradedUntil)
+	}
+	if state.Dimension != LatencyDimensionFirstByte {
+		t.Fatalf("Dimension=%q，want 翻转为 first_byte", state.Dimension)
+	}
+}

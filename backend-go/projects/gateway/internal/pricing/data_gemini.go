@@ -339,4 +339,28 @@ var geminiModelPricingData = []rawModel{
 		inputModalities:       []string{"text"},
 		outputModalities:      []string{"audio"},
 	}),
+	// M3 视频增补（媒体设计 §10/契约 §5.2）：Veo 3 两行，mode=video、协议
+	// video。价格取 Gemini 官方定价页 ai.google.dev/gemini-api/docs/pricing
+	// Veo 段（核实于 2026-10-04）——veo-3.0-generate-preview 720p $0.40/秒、
+	// veo-3.0-fast-generate-preview 720p $0.15/秒（1080p 分档价机制本任务
+	// 不建，沿 M2 sora 先例：单值按 720p 基准档落价，1080p 分档随 M3+ 计价
+	// 完善扩展）。Veo operation 响应不回报输出秒数且 seconds 属 ignored
+	// 参数（veo adapter Capabilities），网关当前无计量基源——终态计费走
+	// 契约 §2.8 兜底（0 计费 + usage_missing），目录秒价留待 Veo 回报时长
+	// 字段（或固定档裁决）后生效。发布 2025-05-20（Google I/O 2025，Veo 3
+	// 首发日，与 TTS 两行同日）。
+	rawModel{
+		Model: "veo-3.0-generate-preview", Mode: "video", ReleaseDate: "2025-05-20",
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"video"},
+		SupportedAPIProtocols:    []string{"video"},
+		VideoOutputCostPerSecond: f64p(0.40),
+	},
+	rawModel{
+		Model: "veo-3.0-fast-generate-preview", Mode: "video", ReleaseDate: "2025-05-20",
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"video"},
+		SupportedAPIProtocols:    []string{"video"},
+		VideoOutputCostPerSecond: f64p(0.15),
+	},
 }

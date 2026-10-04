@@ -157,12 +157,13 @@ func TestSeedPostgresDefaultsSmoke(t *testing.T) {
 	).Scan(&catalogRows); err != nil {
 		t.Fatalf("count catalog rows: %v", err)
 	}
-	// pgSeedTestClock 钉在 2026-09-04：2026-10-04 M1 音频增补后 seed 数据共
-	// 130 行（audio/video 行无 ShutdownDate），且最早的 ShutdownDate 为 2026-09-10，
-	// 故该时钟下活跃行数 = 全量 130（与 sqlite_seed_test.go 的
-	// sqliteSeedTestClock 一致）。
-	if catalogRows != 130 {
-		t.Fatalf("active catalog rows = %d, want 130", catalogRows)
+	// pgSeedTestClock 钉在 2026-09-04：2026-10-04 M1 音频 + M2/M3 视频增补后
+	// seed 数据共 136 行（audio/video 行无 ShutdownDate，含 M3 minimax 2 行与
+	// M3 第四批 volcengine 1 行），且最早的
+	// ShutdownDate 为 2026-09-10，故该时钟下活跃行数 = 全量 136（与
+	// sqlite_seed_test.go 的 sqliteSeedTestClock 一致）。
+	if catalogRows != 136 {
+		t.Fatalf("active catalog rows = %d, want 136", catalogRows)
 	}
 	var defaultKeys int
 	if err := db.QueryRowContext(ctx,

@@ -42,8 +42,11 @@ func TestVideoAdapterRegistry(t *testing.T) {
 	if VideoAdapterForProvider("OpenAI ") == nil {
 		t.Fatal("provider_code 归一匹配失败")
 	}
-	if VideoAdapterForProvider("minimax") != nil {
-		t.Fatal("未注册 provider 应返回 nil（M3 才接入，不静默回退）")
+	// M3 四批接入后的未注册示例：qwen 尚未接入（媒体设计 §9，未接入返回
+	// nil 不静默回退；volcengine 已随 M3 第四批注册——见
+	// TestVolcengineVideoAdapterRegistry）。
+	if VideoAdapterForProvider("qwen") != nil {
+		t.Fatal("未注册 provider 应返回 nil（M3+ 才接入，不静默回退）")
 	}
 }
 

@@ -556,6 +556,30 @@ var pgSeedProviders = []pgSeedProvider{
 		DefaultSupportedModelsJSON: "[\"glm-5.3\",\"glm-5.2\",\"glm-5.1\",\"glm-5\",\"glm-5-turbo\",\"glm-4.7-flashx\",\"glm-4.7-flash\"]",
 	},
 	{
+		// M3 媒体新增供应商（媒体设计 §9/契约 §8）：MiniMax 仅声明媒体能力
+		//（Hailuo 视频生成 + speech 系 TTS），不承接聊天流量——MiniMax 聊天
+		// 端点非 /v1/chat/completions，目录亦无 chat 模型行。
+		ID:                         "minimax",
+		Code:                       "minimax",
+		Name:                       "MiniMax",
+		Description:                "MiniMax 官方供应商，支持 API Key 接入视频生成（Hailuo 系 video_generation）与语音合成（speech 系 t2a_v2）媒体能力",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"MiniMax-Hailuo-2.3\",\"speech-02-turbo\"]",
+	},
+	{
+		// M3 媒体新增供应商（媒体设计 §9/契约 §9）：火山方舟仅声明视频能力
+		//（豆包 Seedance 系 contents/generations/tasks），TTS 面未回填
+		//（契约 §9.2）不声明——档案与目录均无 audio/chat 能力。
+		ID:                         "volcengine",
+		Code:                       "volcengine",
+		Name:                       "火山方舟",
+		Description:                "火山方舟官方供应商，支持 API Key 接入视频生成（豆包 Seedance 系 contents/generations/tasks）媒体能力",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"doubao-seedance-1-0-pro-250528\"]",
+	},
+	{
 		ID:                         "hybrid",
 		Code:                       "hybrid",
 		Name:                       "混合供应商",
@@ -595,6 +619,11 @@ var pgSeedEndpointFamilies = []pgSeedEndpointFamily{
 	{ID: "gemini_v1beta_stream_generate_content", ProtocolCode: "gemini", ProtocolVersion: "v1beta", Code: "stream_generate_content", Name: "streamGenerateContent", Description: "Gemini v1beta :streamGenerateContent SSE 接口族", Enabled: 1},
 	{ID: "gemini_v1beta_count_tokens", ProtocolCode: "gemini", ProtocolVersion: "v1beta", Code: "count_tokens", Name: "countTokens", Description: "Gemini v1beta :countTokens 接口族", Enabled: 1},
 	{ID: "gemini_v1beta_embed_content", ProtocolCode: "gemini", ProtocolVersion: "v1beta", Code: "embed_content", Name: "embedContent", Description: "Gemini v1beta :embedContent 接口族", Enabled: 1},
+	// M3 媒体新增（媒体设计 §9/§11.2）：openai 协议族的厂商原生媒体端点族——
+	// 统一 /v1/videos、/v1/audio/speech 面承载，厂商原生报文经媒体 adapter
+	// 改写（minimax video_generation / t2a_v2，契约 §8）。
+	{ID: "openai_v1_video_generation", ProtocolCode: "openai", ProtocolVersion: "v1", Code: "video_generation", Name: "Video Generation", Description: "OpenAI v1 统一 /videos 面承载的厂商原生视频生成任务形态", Enabled: 1},
+	{ID: "openai_v1_tts", ProtocolCode: "openai", ProtocolVersion: "v1", Code: "tts", Name: "TTS", Description: "OpenAI v1 统一 /audio/speech 面承载的厂商原生语音合成形态", Enabled: 1},
 }
 
 // pgSeedProfile mirrors DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS. AccountTypes
@@ -798,6 +827,48 @@ var pgSeedProfiles = []pgSeedProfile{
 		Capabilities:            []string{"messages", "bridge"},
 		EndpointFamilies:        []string{"messages"},
 	},
+	{
+		// M3 媒体新增供应商档案（媒体设计 §9/契约 §8）：MiniMax API Key 单
+		// 档案，Capabilities 只声明媒体（video_generation/tts，与
+		// EndpointFamilies 同名）——不声明 chat/responses/passthrough：
+		// MiniMax 聊天端点非 /v1/chat/completions，档案不得让聊天流量路由
+		// 进来（目录亦无 chat 模型行，模型门双保险）。BaseURL 为国内官方根
+		// api.minimax.chat（海外 api.minimaxi.com 由账户 base_url 覆盖）；
+		// 出站路径 /v1/video_generation、/v1/t2a_v2 由链上 openai 归一拼缀。
+		ID:                      "profile_minimax_openai_v1",
+		ProviderCode:            "minimax",
+		Name:                    "MiniMax / OpenAI v1 媒体",
+		Description:             "MiniMax 官方 API Key 协议档案，仅承载视频生成（Hailuo video_generation）与语音合成（speech 系 t2a_v2）媒体能力；MiniMax 聊天端点非 OpenAI Chat 形态，本档案不承接聊天流量",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://api.minimax.chat",
+		DefaultHealthCheckModel: "speech-02-turbo",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"video_generation", "tts"},
+		EndpointFamilies:        []string{"video_generation", "tts"},
+	},
+	{
+		// M3 媒体新增供应商档案（媒体设计 §9/契约 §9）：火山方舟 API Key 单
+		// 档案，Capabilities 只声明 video_generation（与 EndpointFamilies 同名，
+		// 复用 minimax 批次的 openai_v1_video_generation 族，不新增 family 行）
+		//——TTS 面（契约 §9.2）未回填不声明，聊天端点非 OpenAI Chat 形态亦
+		// 不承接聊天流量（目录无 chat 模型行，模型门双保险）。BaseURL 为
+		// 官方根 ark.cn-beijing.volces.com；出站路径 /api/v3/contents/
+		// generations/tasks 由链上 chainVolcengineVideoUpstreamURL 归一拼缀。
+		ID:                      "profile_volcengine_openai_v1",
+		ProviderCode:            "volcengine",
+		Name:                    "火山方舟 / OpenAI v1 媒体",
+		Description:             "火山方舟官方 API Key 协议档案，仅承载视频生成（豆包 Seedance 系 contents/generations/tasks）媒体能力；豆包 TTS 面未回填，本档案不声明",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://ark.cn-beijing.volces.com",
+		DefaultHealthCheckModel: "doubao-seedance-1-0-pro-250528",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"video_generation"},
+		EndpointFamilies:        []string{"video_generation"},
+	},
 }
 
 // pgSeedGroup mirrors DEFAULT_BUILT_IN_GROUPS.
@@ -813,6 +884,8 @@ var pgSeedGroups = []pgSeedGroup{
 	{ID: "grp_default_anthropic_sys_admin", SystemAccountID: "sys_admin", Name: "默认 Anthropic 分组", ProviderCode: "anthropic", Description: ""},
 	{ID: "grp_default_gemini_sys_admin", SystemAccountID: "sys_admin", Name: "默认 Gemini 分组", ProviderCode: "gemini", Description: ""},
 	{ID: "grp_default_glm_sys_admin", SystemAccountID: "sys_admin", Name: "默认 GLM 分组", ProviderCode: "glm", Description: ""},
+	{ID: "grp_default_minimax_sys_admin", SystemAccountID: "sys_admin", Name: "默认 MiniMax 分组", ProviderCode: "minimax", Description: ""},
+	{ID: "grp_default_volcengine_sys_admin", SystemAccountID: "sys_admin", Name: "默认火山方舟分组", ProviderCode: "volcengine", Description: ""},
 	{ID: "grp_default_hybrid_openai_chat_sys_admin", SystemAccountID: "sys_admin", Name: "默认混合供应商分组", ProviderCode: "hybrid", Description: "混合供应商账户保存真实上游凭据和 Base URL，允许账户内配置跨协议入口映射"},
 }
 

@@ -175,8 +175,22 @@ var glmModelPricingData = []rawModel{
 		ContextWindowTokens: intp(128_000), MaxOutputTokens: intp(98_304),
 		SupportedAPIProtocols:    []string{"chat_completions"},
 		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions"}, []string{"function_calling"}),
-		SupportsPromptCaching:    true,
-		InputModalities:          []string{"text"},
-		OutputModalities:         []string{"text"},
+		SupportsPromptCaching:     true,
+		InputModalities:           []string{"text"},
+		OutputModalities:          []string{"text"},
+	},
+	// M3 视频增补（媒体设计 §10/契约 §7.1）：cogvideox-3 一行，mode=video、
+	// 协议 video、输入 text+image（文生/图生视频）。计价落法（不编造）：
+	// CogVideoX 按次计费（2026-09 第三方聚合口径称 ¥1/次，官方定价页
+	// bigmodel.cn 为 SPA 无法直接核实精确单价），网关计费面只有秒价维度
+	//（VideoOutputCostPerSecond），且 glm 轮询响应不回报时长（§7.1
+	// video_result 仅 url/cover_image_url）——本行不落秒价，终态计费走契约
+	// §2.8 兜底（0 计费 + usage_missing 标记）；官方秒价/时长口径可查证后
+	// 再补 VideoOutputCostPerSecond。
+	rawModel{
+		Model: "cogvideox-3", Mode: "video",
+		InputModalities:       []string{"text", "image"},
+		OutputModalities:      []string{"video"},
+		SupportedAPIProtocols: []string{"video"},
 	},
 }

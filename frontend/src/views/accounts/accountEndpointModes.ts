@@ -111,8 +111,9 @@ export function validateAccountEndpointModes(input: {
       return `当前供应商协议不支持上游接口能力：${unsupportedModes.map((mode) => accountEndpointModeLabel(mode, input.profile)).join('、')}`
     }
   }
-  // audio_speech 是跨协议共享 token（同时属于 openai/gemini 词表），协议
-  // 归属只由各自专属 token 判定，避免共享 token 同时触发两个归属而误报混选。
+  // audio_speech 与 video_* 是跨协议共享 token（同时属于 openai/gemini 词表，
+  // M3 起 gemini 族经 veo adapter 承载视频），协议归属只由各自专属 token
+  // 判定，避免共享 token 同时触发两个归属而误报混选。
   const hasAnthropicMode = input.modes.some((mode) => anthropicAccountEndpointModes.includes(mode))
   const hasGeminiMode = input.modes.some((mode) => geminiAccountEndpointModes.includes(mode) && !openAIEndpointModes.includes(mode))
   const hasOpenAIMode = input.modes.some((mode) => openAIEndpointModes.includes(mode) && !geminiAccountEndpointModes.includes(mode))

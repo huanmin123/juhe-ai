@@ -293,6 +293,19 @@ func fullchainScriptableRequest(r *http.Request, model string) bool {
 //   - /v1/videos 全 5 端点：POST 创建、GET 列表、GET 单个、GET content、DELETE
 //   - POST /v1beta/models/{model}:generateContent（Gemini TTS 形态，{model}
 //     为非空单段模型名）
+//   - M3 Gemini Veo 形态（契约 §5.2）：POST /v1beta/models/{model}:
+//     predictLongRunning、GET /v1beta/models/{model}/operations/{op}、POST
+//     同路径 :cancel、GET 同路径 /content（轮询/取消/产物按引擎任务表脚本
+//     推进，场景值不读——与 /v1/videos 任务面同语义）
+//   - M3 GLM CogVideoX 形态（契约 §7.1）：POST /api/paas/v4/videos/
+//     generations、GET /api/paas/v4/async-result/{id}（与 /content 产物，
+//     同上不读场景值；glm 无取消端点）
+//   - M3 MiniMax 形态（契约 §8）：POST /v1/video_generation、POST /v1/t2a_v2
+//     与 GET /v1/query/video_generation、/v1/files/retrieve（同上不读场景值；
+//     minimax 无取消端点）
+//   - M3 火山方舟 Seedance 形态（契约 §9.1）：POST /api/v3/contents/
+//     generations/tasks 与 GET 同路径 /{id}[/content]（同上不读场景值；
+//     volcengine §9.1 面无取消端点）
 func fullchainMediaScriptable(method, path string) bool {
 	switch path {
 	case "/v1/audio/speech", "/v1/audio/transcriptions", "/v1/audio/translations":
@@ -314,11 +327,75 @@ func fullchainMediaScriptable(method, path string) bool {
 		model := strings.TrimSuffix(strings.TrimPrefix(path, "/v1beta/models/"), ":generateContent")
 		return model != "" && !strings.Contains(model, "/")
 	}
+	// Gemini Veo：predictLongRunning 创建（POST，{model} 非空单段）与
+	// operations 轮询（GET）/取消（POST :cancel）/产物（GET /content）。
+	if method == http.MethodPost && strings.HasPrefix(path, "/v1beta/models/") && strings.HasSuffix(path, ":predictLongRunning") {
+		model := strings.TrimSuffix(strings.TrimPrefix(path, "/v1beta/models/"), ":predictLongRunning")
+		return model != "" && !strings.Contains(model, "/")
+	}
+	if rest, ok := strings.CutPrefix(path, "/v1beta/models/"); ok {
+		model, rest, ok := strings.Cut(rest, "/operations/")
+		if ok && model != "" && !strings.Contains(model, "/") && rest != "" {
+			if op, hasCancel := strings.CutSuffix(rest, ":cancel"); hasCancel {
+				return op != "" && !strings.Contains(op, "/") && method == http.MethodPost
+			}
+			if op, hasContent := strings.CutSuffix(rest, "/content"); hasContent {
+				return op != "" && !strings.Contains(op, "/") && method == http.MethodGet
+			}
+			return !strings.Contains(rest, "/") && method == http.MethodGet
+		}
+	}
+	// M3 GLM CogVideoX（契约 §7.1）：POST /api/paas/v4/videos/generations 创建
+	// 与 GET /api/paas/v4/async-result/{id} 轮询/产物（轮询按引擎任务表脚本
+	// 推进，场景值不读——与 /v1/videos 任务面同语义；glm 无取消端点）。
+	if method == http.MethodPost && path == "/api/paas/v4/videos/generations" {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/api/paas/v4/async-result/"); ok && rest != "" {
+		id, tail, hasTail := strings.Cut(rest, "/")
+		if id != "" && !strings.Contains(id, "/") {
+			if !hasTail {
+				return method == http.MethodGet
+			}
+			return tail == "content" && method == http.MethodGet
+		}
+	}
+	// M3 MiniMax（契约 §8）：POST /v1/video_generation 创建、POST /v1/t2a_v2
+	// 同步 TTS 与 GET /v1/query/video_generation | /v1/files/retrieve 任务面/
+	// 产物（轮询按引擎任务表脚本推进，场景值不读——与 /v1/videos 任务面同
+	// 语义；minimax 无取消端点）。
+	if method == http.MethodPost && (path == "/v1/video_generation" || path == "/v1/t2a_v2") {
+		return true
+	}
+	if method == http.MethodGet && (path == "/v1/query/video_generation" || path == "/v1/files/retrieve") {
+		return true
+	}
+	// M3 火山方舟 Seedance（契约 §9.1）：POST /api/v3/contents/generations/
+	// tasks 创建与 GET /api/v3/contents/generations/tasks/{id}[/content] 轮询/
+	// 产物（轮询按引擎任务表脚本推进，场景值不读——与 /v1/videos 任务面同
+	// 语义；volcengine §9.1 面无取消端点）。
+	if method == http.MethodPost && path == "/api/v3/contents/generations/tasks" {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/api/v3/contents/generations/tasks/"); ok && rest != "" {
+		id, tail, hasTail := strings.Cut(rest, "/")
+		if id != "" && !strings.Contains(id, "/") {
+			if !hasTail {
+				return method == http.MethodGet
+			}
+			return tail == "content" && method == http.MethodGet
+		}
+	}
 	return false
 }
 
 func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
+	// 上游 key 身份按协议头提取：openai 族走 Authorization Bearer；gemini
+	// 账户（M3 veo）走 X-Goog-Api-Key（网关任务面/创建链沿 gemini 认权分支）。
 	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if key == "" {
+		key = r.Header.Get("X-Goog-Api-Key")
+	}
 	raw, _ := io.ReadAll(r.Body)
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(strings.NewReader(string(raw)))
@@ -381,7 +458,7 @@ func (m *fullchainMockUpstream) proxy(w http.ResponseWriter, r *http.Request, sc
 		http.Error(w, "build upstream request: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	for _, name := range []string{"Content-Type", "Accept", "Authorization"} {
+	for _, name := range []string{"Content-Type", "Accept", "Authorization", "X-Goog-Api-Key"} {
 		if value := r.Header.Get(name); value != "" {
 			outbound.Header.Set(name, value)
 		}

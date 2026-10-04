@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,11 @@ import (
 // speedFirstTotalTimeFake 分维度记录决策面调用（首字与总时间通道独立计数，
 // 供"并存各自记录"与"压缩守卫首字零调用"断言）。
 type speedFirstTotalTimeFake struct {
+	// mu 保护全部计数与切片：软观察 timer / transport timer 回调跑在独立
+	// goroutine 上，与测试主 goroutine 的断言轮询构成并发读写（race 门禁
+	// 修复），所有 Record* 写入与断言读取必须持锁。
+	mu sync.Mutex
+
 	degraded map[string]bool
 
 	firstSlowCalls    int
@@ -37,33 +43,50 @@ type speedFirstTotalTimeFake struct {
 	totalSuccessArgs    [][2]int64
 	totalSlowLastConfig *gatewayproxyhealth.SpeedFirstRuntimeConfig
 
-	degradedErr  error
-	totalSlowErr error
+	degradedErr   error
+	totalSlowErr  error
+	eligibleErr   error
+	degradedCalls int
+}
+
+func (f *speedFirstTotalTimeFake) lock() func() {
+	f.mu.Lock()
+	return f.mu.Unlock
 }
 
 func (f *speedFirstTotalTimeFake) OrderAsync(context.Context, []gatewaydispatch.AccountCandidate, *gatewaydispatch.LatencyScopeInput, *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, *gatewaydispatch.ModelPriority) (gatewaydispatch.LatencyDegradationOrder, error) {
+	if f.eligibleErr != nil {
+		return gatewaydispatch.LatencyDegradationOrder{}, f.eligibleErr
+	}
 	return gatewaydispatch.LatencyDegradationOrder{}, nil
 }
 
 func (f *speedFirstTotalTimeFake) IsAccountLatencyDegradedAsync(_ context.Context, account gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput) (bool, error) {
+	f.degradedCalls++
 	if f.degradedErr != nil {
 		return false, f.degradedErr
+	}
+	if f.degradedCalls > 1 && f.eligibleErr != nil {
+		return false, f.eligibleErr
 	}
 	return f.degraded[account.ID], nil
 }
 
 func (f *speedFirstTotalTimeFake) RecordFirstByteSlowAsync(_ context.Context, _ gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput, _ *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error) {
+	defer f.lock()()
 	f.firstSlowCalls++
 	f.firstSlowReasons = append(f.firstSlowReasons, reason)
 	return &gatewayproxyhealth.LatencySlowResult{SlowCount: 1}, nil
 }
 
 func (f *speedFirstTotalTimeFake) RecordFirstByteSuccessAsync(context.Context, gatewaydispatch.AccountCandidate, *gatewaydispatch.LatencyScopeInput, *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, int64) (*gatewayproxyhealth.LatencySuccessResult, error) {
+	defer f.lock()()
 	f.firstSuccessCalls++
 	return &gatewayproxyhealth.LatencySuccessResult{Cleared: true}, nil
 }
 
 func (f *speedFirstTotalTimeFake) RecordTotalTimeSlowAsync(_ context.Context, _ gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput, config *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, reason string) (*gatewayproxyhealth.LatencySlowResult, error) {
+	defer f.lock()()
 	f.totalSlowCalls++
 	f.totalSlowReasons = append(f.totalSlowReasons, reason)
 	f.totalSlowLastConfig = chainSpeedFirstRuntimeConfigOf(config)
@@ -73,11 +96,21 @@ func (f *speedFirstTotalTimeFake) RecordTotalTimeSlowAsync(_ context.Context, _ 
 	return &gatewayproxyhealth.LatencySlowResult{SlowCount: 1, Degraded: f.degradedForSlow()}, nil
 }
 
+// degradedForSlow 只在 RecordTotalTimeSlowAsync 持锁内调用（sync.Mutex
+// 不可重入）：调用方已持 f.mu，这里不再加锁。
 func (f *speedFirstTotalTimeFake) degradedForSlow() bool {
 	return f.totalSlowCalls >= 2
 }
 
+// totalSlowCallsSnapshot 带锁读取总时间慢样本计数（timer goroutine 与测试
+// 主 goroutine 并发，race 门禁要求读取持锁）。
+func (f *speedFirstTotalTimeFake) totalSlowCallsSnapshot() int {
+	defer f.lock()()
+	return f.totalSlowCalls
+}
+
 func (f *speedFirstTotalTimeFake) RecordTotalTimeSuccessAsync(_ context.Context, _ gatewaydispatch.AccountCandidate, _ *gatewaydispatch.LatencyScopeInput, _ *gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig, effectiveDeadlineMs int64, elapsedMs int64) (*gatewayproxyhealth.LatencySuccessResult, error) {
+	defer f.lock()()
 	f.totalSuccessCalls++
 	f.totalSuccessArgs = append(f.totalSuccessArgs, [2]int64{effectiveDeadlineMs, elapsedMs})
 	return &gatewayproxyhealth.LatencySuccessResult{Cleared: true}, nil
@@ -123,6 +156,36 @@ func totalDeadlineLoop(t *testing.T, fake *speedFirstTotalTimeFake) *v1DispatchL
 	}
 	loop.current.NormalRouteSpeedFirstConfig = speedFirstTotalTimeConfig(120_000, 300_000)
 	return loop
+}
+
+// 决策内部错误透传（镜像首字档：慢采样失败向上抛，由入口闭包兜底
+// continue；候选降级查询失败同样透传）。
+func TestSpeedFirstTotalTimeDeadlineDecisionErrorPropagation(t *testing.T) {
+	// 降级查询错误：第一次查询即失败，向上抛由闭包兜底。
+	t.Run("降级查询错误透传", func(t *testing.T) {
+		fake := &speedFirstTotalTimeFake{degradedErr: errors.New("降级查询失败")}
+		loop := totalDeadlineLoop(t, fake)
+		_, err := loop.speedFirstTotalTimeDeadlineDecision(context.Background(), loop.current,
+			gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "慢账户"},
+			60_000, 60_500, loop.speedFirstDecisionsOf(),
+			loop.speedFirstLatencyScopeOf(loop.current), loop.current.NormalRouteSpeedFirstConfig)
+		if err == nil {
+			t.Fatal("降级查询错误必须透传")
+		}
+	})
+
+	// 剩余候选评估里的降级查询失败（第 2 次起报错）：同样透传。
+	t.Run("剩余候选评估错误透传", func(t *testing.T) {
+		fake := &speedFirstTotalTimeFake{eligibleErr: errors.New("候选降级查询失败")}
+		loop := totalDeadlineLoop(t, fake)
+		_, err := loop.speedFirstTotalTimeDeadlineDecision(context.Background(), loop.current,
+			gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "慢账户"},
+			60_000, 60_500, loop.speedFirstDecisionsOf(),
+			loop.speedFirstLatencyScopeOf(loop.current), loop.current.NormalRouteSpeedFirstConfig)
+		if err == nil {
+			t.Fatal("剩余候选评估错误必须透传")
+		}
+	})
 }
 
 func TestSpeedFirstTotalTimeDeadlineDecision(t *testing.T) {
@@ -178,13 +241,16 @@ func TestSpeedFirstTotalTimeDeadlineDecision(t *testing.T) {
 		}
 	})
 
-	// 已向下游写出：只记样本继续等待，不进入切号裁决。
+	// 已向下游写出：只记样本继续等待，不进入切号裁决；审计携带
+	// dimension=total_time 与 retryBlockedReason=downstream_committed（设计 6.7）。
 	t.Run("已写出只记样本", func(t *testing.T) {
 		fake := &speedFirstTotalTimeFake{degraded: map[string]bool{"acc_1": true}}
 		store := &w1FakeConcurrencyStore{}
+		rec := &recordingMetadataCapture{}
 		action, loop := run(t, fake, func(loop *v1DispatchLoop) {
 			loop.c.engine.Concurrency = store
 			loop.waitCommitState = &gatewayresponse.DownstreamCommitState{SemanticCommitted: true}
+			loop.auditCapture = rec
 		})
 		if action != gatewaydispatch.FirstByteDeadlineActionContinue {
 			t.Fatalf("action = %v", action)
@@ -194,6 +260,16 @@ func TestSpeedFirstTotalTimeDeadlineDecision(t *testing.T) {
 		}
 		if loop.speedFirstCutoverReservation != nil || loop.speedFirstTotalTimeCutoverSignal != nil {
 			t.Fatal("已写出请求不得预占切号")
+		}
+		observed := rec.byLabel("normal_route_speed_first_total_time_cutover_blocked")
+		if observed == nil {
+			t.Fatal("已写出切号阻断必须写审计 normal_route_speed_first_total_time_cutover_blocked")
+		}
+		if observed["dimension"] != gatewayproxyhealth.LatencyDimensionTotalTime {
+			t.Fatalf("dimension = %v", observed["dimension"])
+		}
+		if observed["retryBlockedReason"] != "downstream_committed" {
+			t.Fatalf("retryBlockedReason = %v", observed["retryBlockedReason"])
 		}
 	})
 
@@ -419,19 +495,19 @@ func TestArmTotalTimeDeadlineObserver(t *testing.T) {
 		stop := loop.armTotalTimeDeadlineObserver(context.Background(), loop.current, dispatched, finished)
 		defer stop()
 		deadline := time.Now().Add(2 * time.Second)
-		for fake.totalSlowCalls == 0 && time.Now().Before(deadline) {
+		for fake.totalSlowCallsSnapshot() == 0 && time.Now().Before(deadline) {
 			time.Sleep(5 * time.Millisecond)
 		}
-		if fake.totalSlowCalls != 1 {
-			t.Fatalf("totalSlowCalls = %d", fake.totalSlowCalls)
+		if got := fake.totalSlowCallsSnapshot(); got != 1 {
+			t.Fatalf("totalSlowCalls = %d", got)
 		}
 		if loop.speedFirstCutoverReservation != nil {
 			t.Fatal("软观察 timer 不得切号")
 		}
 		// 去重：同一 attempt 二次到点不重复记录。
 		loop.observeTotalTimeDeadlineSample(context.Background(), loop.current, dispatched, 50)
-		if fake.totalSlowCalls != 1 {
-			t.Fatalf("去重失败 totalSlowCalls = %d", fake.totalSlowCalls)
+		if got := fake.totalSlowCallsSnapshot(); got != 1 {
+			t.Fatalf("去重失败 totalSlowCalls = %d", got)
 		}
 	})
 	// finished 置位（响应轮已返回）后到点不触发。
@@ -448,8 +524,8 @@ func TestArmTotalTimeDeadlineObserver(t *testing.T) {
 		stop := loop.armTotalTimeDeadlineObserver(context.Background(), loop.current, dispatched, finished)
 		defer stop()
 		time.Sleep(100 * time.Millisecond)
-		if fake.totalSlowCalls != 0 {
-			t.Fatalf("完成后不得触发 totalSlowCalls = %d", fake.totalSlowCalls)
+		if got := fake.totalSlowCallsSnapshot(); got != 0 {
+			t.Fatalf("完成后不得触发 totalSlowCalls = %d", got)
 		}
 	})
 }
@@ -499,5 +575,201 @@ func TestChainLatencyDegradationPortTotalTimeRecords(t *testing.T) {
 	result, err := nilPort.RecordTotalTimeSlowAsync(context.Background(), account, scope, config, "慢")
 	if err != nil || result != nil {
 		t.Fatalf("nil port = %+v err %v", result, err)
+	}
+}
+
+
+// 压缩端到端切号（设计 6.9 压缩项）：压缩形态（wall 无界 + 首字阈值缺省）
+// 下总时间决策照常工作——确认慢 + 未写出 + 有候选 → abort + 预占 + 载荷槽
+// 按压缩档阈值；切号后 compact 契约重查为既有链（chain_v1 主流程）。
+func TestSpeedFirstTotalTimeDeadlineDecisionCompactionLane(t *testing.T) {
+	fake := &speedFirstTotalTimeFake{degraded: map[string]bool{"acc_1": true}}
+	store := &w1FakeConcurrencyStore{}
+	loop := totalDeadlineLoop(t, fake)
+	// 压缩形态：wall 无界（TimeoutPolicyCodexCompactionUnbounded 同源）+
+	// 首字阈值缺省（preflight 对压缩请求只豁免首字段）。
+	loop.budgets.wall = &gatewayrouting.GatewayRequestWallBudget{Unbounded: true}
+	loop.current.NormalRouteSpeedFirstConfig = &gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig{
+		SchedulingPreference:          "speed_first",
+		CompactionTotalTimeDeadlineMs: int64PtrOf(300_000),
+		Raw:                           map[string]any{"speedFirstConfig": map[string]any{"maxFirstByteRetriesPerRequest": 3}},
+	}
+	loop.c.engine.Concurrency = store
+	action, err := loop.speedFirstTotalTimeDeadlineDecision(context.Background(), loop.current,
+		gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "慢账户"},
+		300_000, 300_500, loop.speedFirstDecisionsOf(),
+		loop.speedFirstLatencyScopeOf(loop.current), loop.current.NormalRouteSpeedFirstConfig)
+	if err != nil {
+		t.Fatalf("决策错误 = %v", err)
+	}
+	if action != gatewaydispatch.FirstByteDeadlineActionAbort {
+		t.Fatalf("压缩请求确认慢必须可切号，action = %v", action)
+	}
+	if loop.speedFirstTotalTimeCutoverSignal == nil || loop.speedFirstTotalTimeCutoverSignal.thresholdMs != 300_000 {
+		t.Fatalf("载荷槽必须携带压缩档阈值 = %+v", loop.speedFirstTotalTimeCutoverSignal)
+	}
+	if len(store.acquired) == 0 {
+		t.Fatal("切号目标必须尝试获取并发槽")
+	}
+}
+
+// 引擎级同账户重试不变量（设计 6.9）：轮内二次完成观测（引擎内重试不触发
+// loop 轮级清零）不得重复计数——去重标记只在换轮/组切换时重置。
+func TestObserveSpeedFirstTotalTimeEngineRetryKeepsDedup(t *testing.T) {
+	fake := &speedFirstTotalTimeFake{}
+	loop := totalDeadlineLoop(t, fake)
+	nowMs := time.Now().UnixMilli()
+	dispatched := gatewaydispatch.UpstreamDispatchResult{
+		Account:          gatewaydispatch.AccountCandidate{ID: "acc_1"},
+		AttemptStartedAt: nowMs - 121_000,
+	}
+	firstToken := int64(500)
+	handling := gatewayresponse.UpstreamResponseHandlingResult{FirstTokenMs: &firstToken}
+	loop.observeSpeedFirstResponseOutcome(context.Background(), loop.current, dispatched, handling)
+	// 引擎内同账户重试：不经过 loop 轮级清零，直接二次完成观测。
+	loop.observeSpeedFirstResponseOutcome(context.Background(), loop.current, dispatched, handling)
+	if fake.totalSlowCalls != 1 {
+		t.Fatalf("轮内重试不得重复计数 totalSlowCalls = %d", fake.totalSlowCalls)
+	}
+}
+
+// 压缩档达标样本的 effectiveDeadlineMs 必须是压缩档阈值（K21：同一样本
+// 一把尺的压缩侧锚定）。
+func TestObserveSpeedFirstTotalTimeCompactionSuccessUsesCompactionDeadline(t *testing.T) {
+	fake := &speedFirstTotalTimeFake{}
+	loop := totalDeadlineLoop(t, fake)
+	loop.budgets.wall = &gatewayrouting.GatewayRequestWallBudget{Unbounded: true}
+	loop.current.NormalRouteSpeedFirstConfig = &gatewaypreauth.NormalRouteSpeedFirstRuntimeConfig{
+		SchedulingPreference:          "speed_first",
+		CompactionTotalTimeDeadlineMs: int64PtrOf(300_000),
+		Raw:                           map[string]any{"speedFirstConfig": map[string]any{}},
+	}
+	nowMs := time.Now().UnixMilli()
+	dispatched := gatewaydispatch.UpstreamDispatchResult{
+		Account:          gatewaydispatch.AccountCandidate{ID: "acc_1"},
+		AttemptStartedAt: nowMs - 1_000,
+	}
+	firstToken := int64(500)
+	loop.observeSpeedFirstResponseOutcome(context.Background(), loop.current, dispatched,
+		gatewayresponse.UpstreamResponseHandlingResult{FirstTokenMs: &firstToken})
+	if fake.totalSuccessCalls != 1 {
+		t.Fatalf("totalSuccessCalls = %d", fake.totalSuccessCalls)
+	}
+	if len(fake.totalSuccessArgs) != 1 || fake.totalSuccessArgs[0][0] != 300_000 {
+		t.Fatalf("压缩档达标阈值 = %v，want 300000", fake.totalSuccessArgs)
+	}
+	if fake.firstSuccessCalls != 0 {
+		t.Fatalf("压缩请求不得进入首字恢复通道 firstSuccessCalls = %d", fake.firstSuccessCalls)
+	}
+}
+
+// 决策入口闭包（onNormalRouteTotalTimeDeadline）的包装行为：早退与错误
+// 兜底（释放残留预留 + 清载荷槽 + 审计 + continue 当前上游）。
+func TestOnNormalRouteTotalTimeDeadlineClosure(t *testing.T) {
+	input := gatewaydispatch.TotalTimeDeadlineDecisionInput{ElapsedMs: 60_500, TimeoutMs: 60_000}
+	account := gatewaydispatch.AccountCandidate{ID: "acc_1", Name: "慢账户"}
+
+	// 配置缺席（非速度优先策略）：闭包 continue，不触碰决策面。
+	t.Run("配置缺席继续", func(t *testing.T) {
+		fake := &speedFirstTotalTimeFake{}
+		loop := totalDeadlineLoop(t, fake)
+		loop.current.NormalRouteSpeedFirstConfig = nil
+		action := loop.onNormalRouteTotalTimeDeadline(context.Background(), loop.current)(input, account, 60_000)
+		if action != gatewaydispatch.FirstByteDeadlineActionContinue {
+			t.Fatalf("action = %v", action)
+		}
+		if fake.totalSlowCalls != 0 {
+			t.Fatalf("配置缺席不得触碰决策面 totalSlowCalls = %d", fake.totalSlowCalls)
+		}
+	})
+
+	// 决策面缺席（组合根未装配延迟服务）：continue。
+	t.Run("决策面缺席继续", func(t *testing.T) {
+		fake := &speedFirstTotalTimeFake{}
+		loop := totalDeadlineLoop(t, fake)
+		loop.c.engine.Latency = nil
+		action := loop.onNormalRouteTotalTimeDeadline(context.Background(), loop.current)(input, account, 60_000)
+		if action != gatewaydispatch.FirstByteDeadlineActionContinue {
+			t.Fatalf("action = %v", action)
+		}
+	})
+
+	// 决策错误：释放残留预留与载荷槽、写审计、continue 当前上游。
+	t.Run("决策错误兜底清理", func(t *testing.T) {
+		fake := &speedFirstTotalTimeFake{totalSlowErr: errors.New("总时间慢采样写入失败")}
+		store := &w1FakeConcurrencyStore{}
+		loop := totalDeadlineLoop(t, fake)
+		loop.c.engine.Concurrency = store
+		rec := &recordingMetadataCapture{}
+		loop.auditCapture = rec
+		// 模拟上一路径残留：兜底段必须释放预留并清载荷槽。
+		loop.speedFirstCutoverReservation = w1Reservation(t)
+		loop.speedFirstTotalTimeCutoverSignal = &speedFirstTotalTimeCutoverSignal{accountID: "acc_stale"}
+		action := loop.onNormalRouteTotalTimeDeadline(context.Background(), loop.current)(input, account, 60_000)
+		if action != gatewaydispatch.FirstByteDeadlineActionContinue {
+			t.Fatalf("决策错误必须 continue，action = %v", action)
+		}
+		if loop.speedFirstCutoverReservation != nil || loop.speedFirstTotalTimeCutoverSignal != nil {
+			t.Fatal("兜底必须释放残留预留并清载荷槽")
+		}
+		if rec.byLabel("normal_route_speed_first_local_decision_failed") == nil {
+			t.Fatal("决策错误必须写审计 normal_route_speed_first_local_decision_failed")
+		}
+	})
+
+	// 正常委托：确认慢透传 abort（闭包不改变决策结果）。
+	t.Run("正常委托透传abort", func(t *testing.T) {
+		fake := &speedFirstTotalTimeFake{degraded: map[string]bool{"acc_1": true}}
+		loop := totalDeadlineLoop(t, fake)
+		loop.c.engine.Concurrency = &w1FakeConcurrencyStore{}
+		action := loop.onNormalRouteTotalTimeDeadline(context.Background(), loop.current)(input, account, 60_000)
+		if action != gatewaydispatch.FirstByteDeadlineActionAbort {
+			t.Fatalf("确认慢必须透传 abort，action = %v", action)
+		}
+		if fake.totalSlowCalls != 1 {
+			t.Fatalf("totalSlowCalls = %d", fake.totalSlowCalls)
+		}
+	})
+}
+
+// 软观察样本记录的静默分支：配置缺席时不写审计不触碰决策面。
+func TestObserveTotalTimeDeadlineSampleConfigNil(t *testing.T) {
+	fake := &speedFirstTotalTimeFake{}
+	loop := totalDeadlineLoop(t, fake)
+	rec := &recordingMetadataCapture{}
+	loop.auditCapture = rec
+	loop.current.NormalRouteSpeedFirstConfig = nil
+	loop.observeTotalTimeDeadlineSample(context.Background(), loop.current, gatewaydispatch.UpstreamDispatchResult{
+		Account:          gatewaydispatch.AccountCandidate{ID: "acc_1"},
+		AttemptStartedAt: time.Now().UnixMilli() - 60_000,
+	}, 60_000)
+	if fake.totalSlowCalls != 0 || len(rec.labels) != 0 {
+		t.Fatalf("配置缺席必须静默: slowCalls=%d labels=%v", fake.totalSlowCalls, rec.labels)
+	}
+}
+
+
+// 副作用 lane（图片等）不参与总时间维度：软观察不 arm、完成观测静默
+//（speedFirstTotalTimeThresholdMsOf 的 lane 门，设计 6.2）。
+func TestTotalTimeDeadlineSilentOnNonTextLane(t *testing.T) {
+	fake := &speedFirstTotalTimeFake{}
+	loop := totalDeadlineLoop(t, fake)
+	loop.current.RequestLane = "image"
+	finished := &atomic.Int32{}
+	stop := loop.armTotalTimeDeadlineObserver(context.Background(), loop.current, gatewaydispatch.UpstreamDispatchResult{
+		Account:          gatewaydispatch.AccountCandidate{ID: "acc_1"},
+		AttemptStartedAt: time.Now().UnixMilli() - 120_000,
+	}, finished)
+	defer stop()
+	if fake.totalSlowCalls != 0 {
+		t.Fatalf("非 text lane 不得记总时间样本 totalSlowCalls = %d", fake.totalSlowCalls)
+	}
+	firstToken := int64(500)
+	loop.observeSpeedFirstResponseOutcome(context.Background(), loop.current, gatewaydispatch.UpstreamDispatchResult{
+		Account:          gatewaydispatch.AccountCandidate{ID: "acc_1"},
+		AttemptStartedAt: time.Now().UnixMilli() - 120_000,
+	}, gatewayresponse.UpstreamResponseHandlingResult{FirstTokenMs: &firstToken})
+	if fake.totalSlowCalls != 0 || fake.totalSuccessCalls != 0 {
+		t.Fatalf("非 text lane 完成观测必须静默 slow=%d success=%d", fake.totalSlowCalls, fake.totalSuccessCalls)
 	}
 }

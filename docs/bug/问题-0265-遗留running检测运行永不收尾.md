@@ -1,6 +1,6 @@
 # BUG-0265：遗留 running 检测运行永不收尾
 
-- 状态：已修复（2026-10-02，待发布）
+- 状态：已修复（2026-10-02，待发布）；2026-10-04 补齐 SQLite 方言收尾（初版误把 SQLite standalone 当"本地开发夹具"跳过，与架构总览"SQLite 是正式默认部署模式"冲突，SQLite 部署的遗留 running 同样会永不收尾）
 - 定性：Go 实现收口缺口——run 终态的唯一收口是发起进程内的 CAS，进程崩溃/重启后该 run 永久停留 running，包内无任何启动/周期收尾扫描
 - 发现方式：生产数据取证（2026-09-28 一条 running 滞留）+ 代码取证（`modelcheckowner/run.go` / `host.go` / `scheduler.go`）
 
@@ -31,18 +31,19 @@ WHERE status='running' AND updated_at::timestamptz < <now-阈值>::timestamptz
 
 - **幂等**：条件含 `status='running'`，重复执行自然空转；语句只标记 updated_at 超过阈值的行，不波及本次启动新发起的 run。
 - **阈值 30 分钟**（契约原定 15 分钟，经核实改为保守值）：run 表 updated_at 在运行期不推进（见根因），阈值必须覆盖"存活的长 run"——代码内最长 run 预算为 run-now 默认 10 分钟（`ScheduleRunNowService.execute`）、计划/恢复执行 `ScheduleRunBudget(6 分钟 lease)`=5.5 分钟；手动 SSE run 无代码内墙钟预算，仅受每跳重试边界（10/20/30 秒）与客户端连接约束，带大题库的 full 手动 run 可合法超过 15 分钟而 updated_at 不动。30 分钟为最大代码内预算（10 分钟）的 3 倍，误收存活 run 的代价是该 run 终态写以显式错误失败（ProjectOutcome 的 status='running' CAS），不会静默污染数据。
-- **方言**：比较用 `::timestamptz` 双侧 cast（updated_at 为 text 时间戳，避免文本字典序在零分数秒边界的误序）；j3b 生产为 PG-only，SQLite 模式（本地开发夹具）不执行收尾并静默返回 0。
+- **方言**：PostgreSQL 与 SQLite（standalone 正式部署模式）都执行收尾。PG 比较用 `::timestamptz` 双侧 cast（updated_at 为 text 时间戳，避免文本字典序在零分数秒边界的误序）；SQLite 无 `::timestamptz` cast，updated_at 与 cutoff 均为本进程写入的 RFC3339Nano UTC 文本，直接字典序比较，零分数秒边界至多引入 1 秒级误序，相对 30 分钟阈值可忽略。初版（2026-10-02）把 SQLite 模式当"本地开发夹具"静默跳过，2026-10-04 起修正为双方言。
 - **失败语义**：收尾失败使 OpenHost fail-closed（与 CheckSchema 同级）——同一张表的 UPDATE 不可用意味着本 owner 也无法写任何 run 终态。
 - **生产存量**：2026-09-28 那条 running 记录在新代码上线启动时自动收尾（updated_at 已远超 30 分钟阈值），无需手工 SQL。
 
 ## 4. 验证
 
 - 单测（`stale_runs_test.go`，包内 PG 测试基建为 opt-in 且需外部 DSN，故按 SQL 构造与判定逻辑覆盖）：
-  - `TestStaleRunSweepSQLConstruction`：语句含 schema 限定表名、`status='failed'`/`owner_lost` 字段序、`WHERE status='running'`、双侧 `::timestamptz` cast，PG bind 后参数序 `$1..$4`；
-  - `TestSweepStaleRunsSkipsSQLiteMode`：SQLite 夹具静默不执行，遗留 running 行保持原状；
+  - `TestStaleRunSweepSQLConstruction`：PG 语句含 schema 限定表名、`status='failed'`/`owner_lost` 字段序、`WHERE status='running'`、双侧 `::timestamptz` cast，PG bind 后参数序 `$1..$4`；
+  - `TestStaleRunSweepSQLiteSQLConstruction`：SQLite 语句同字段序、纯文本比较（无 PG cast）、bind 保留 `?` 占位符；
+  - `TestSweepStaleRunsSQLiteMode`：SQLite 真实收尾——超阈值 running run 收尾为 failed/owner_lost、阈值内新鲜 run 不波及、重复执行幂等空转（2026-10-04 替换初版的"SQLite 静默跳过"测试）；
   - `TestSweepStaleRunsInputGuards`：nil store / 零时间入参拒绝；
   - `TestStaleRunSweepThresholdCoversBoundedBudgets`：阈值 > run-now 10 分钟预算且 ≥2 倍余量（对 ScheduleRunBudget 的预算推导一并钉死）。
-- `go build ./...` 通过；`go test ./internal/modelcheckowner/ -count=1` 全绿（60.0s，ok）；gofmt 无差异。
+- `go build ./...` 通过；`go test ./internal/modelcheckowner/ -count=1` 全绿（2026-10-04 复跑 62.8s ok）；gofmt 无差异。
 - **未做 PG 集成验证**：收尾语句未在真实 PG 实例上执行过（opt-in smoke 需运维 DSN）；上线后首次启动观察日志 `J3b 遗留 running 检测运行已收尾`（count=1）与该 run 的 failed/owner_lost 终态即可确认。
 
 ## 5. 关联

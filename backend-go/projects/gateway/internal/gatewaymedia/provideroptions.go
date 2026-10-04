@@ -93,11 +93,13 @@ func AppliedProviderOptionKeys(providerCode string, opts map[string]any) []strin
 }
 
 // providerOptionKeyMatches 报告 provider_options 的键 key 是否命中
-// providerCode（adapter 注册键，如 openai）。匹配键同时认账户 provider_code
-// 原键与 adapter 注册键：gpt 账户（openai 的 OAuth 子供应商）既可用
-// {"gpt":{...}} 也可用 {"openai":{...}} 表达同一 provider 的扩展参数——
+// providerCode（adapter 注册键，如 openai/gemini）。匹配键同时认账户
+// provider_code 原键与 adapter 注册键：gpt 账户（openai 的 OAuth 子供应商）
+// 既可用 {"gpt":{...}} 也可用 {"openai":{...}} 表达同一 provider 的扩展参数——
 // providerFamilyAlias 在归一映射处把子供应商代码折叠到协议族基键，两侧
-// 同一归一后比较。M3+ 新增供应商若有子供应商代码，同表扩展。
+// 同一归一后比较。gemini（M3 veo adapter 注册键）无子供应商代码，provider_
+// code 恒为 "gemini"，恒等映射即命中（{"gemini":{...}}）。M3+ 新增供应商
+// 若有子供应商代码，同表扩展。
 func providerOptionKeyMatches(providerCode, key string) bool {
 	return providerFamilyAlias(normalizeProviderKey(key)) == providerFamilyAlias(normalizeProviderKey(providerCode))
 }

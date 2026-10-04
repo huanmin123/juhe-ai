@@ -47,7 +47,10 @@ var mediaEndpoints = map[endpoint]bool{
 }
 
 // acceptsMediaEndpoint matches the exact audio paths, the videos family
-// (video.go), and the Gemini TTS path form
+// (video.go), the Gemini Veo operation family (video_gemini.go, M3), the GLM
+// CogVideoX task family (video_glm.go, M3), the MiniMax video/TTS family
+// (video_minimax.go, M3), the Volcengine Seedance task family
+// (video_volcengine.go, M3), and the Gemini TTS path form
 // POST /v1beta/models/{model}:generateContent, where {model} is a non-empty
 // single path segment.
 func acceptsMediaEndpoint(method, path string) bool {
@@ -57,6 +60,18 @@ func acceptsMediaEndpoint(method, path string) bool {
 	if acceptsVideoEndpoint(method, path) {
 		return true
 	}
+	if acceptsGeminiVeoEndpoint(method, path) {
+		return true
+	}
+	if acceptsGlmVideoEndpoint(method, path) {
+		return true
+	}
+	if acceptsMinimaxVideoEndpoint(method, path) {
+		return true
+	}
+	if acceptsVolcengineVideoEndpoint(method, path) {
+		return true
+	}
 	return method == http.MethodPost && geminiGenerateContentModel(path) != ""
 }
 
@@ -64,7 +79,10 @@ func acceptsMediaEndpoint(method, path string) bool {
 // It runs after the method-aware whitelist check, so the POST-keyed map
 // lookup is only reached by requests that already passed as POST.
 func isMediaPath(path string) bool {
-	return mediaEndpoints[endpoint{http.MethodPost, path}] || isVideoPath(path) || geminiGenerateContentModel(path) != ""
+	if mediaEndpoints[endpoint{http.MethodPost, path}] || isVideoPath(path) || isGeminiVeoPath(path) || isGlmVideoPath(path) || isMinimaxVideoPath(path) || isVolcengineVideoPath(path) {
+		return true
+	}
+	return geminiGenerateContentModel(path) != ""
 }
 
 // geminiGenerateContentModel returns the {model} segment when path matches
@@ -86,6 +104,22 @@ func geminiGenerateContentModel(path string) string {
 func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, scenario Scenario) {
 	if isVideoPath(r.URL.Path) {
 		m.serveVideo(w, r, idx, scenario)
+		return
+	}
+	if isGeminiVeoPath(r.URL.Path) {
+		m.serveGeminiVeo(w, r, scenario)
+		return
+	}
+	if isGlmVideoPath(r.URL.Path) {
+		m.serveGlmVideo(w, r, scenario)
+		return
+	}
+	if isMinimaxVideoPath(r.URL.Path) {
+		m.serveMinimax(w, r, idx, scenario)
+		return
+	}
+	if isVolcengineVideoPath(r.URL.Path) {
+		m.serveVolcengineVideo(w, r, scenario)
 		return
 	}
 	if model := geminiGenerateContentModel(r.URL.Path); model != "" {

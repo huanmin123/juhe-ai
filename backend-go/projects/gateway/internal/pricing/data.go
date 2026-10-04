@@ -212,6 +212,25 @@ var providerCatalog = []*providerEntry{
 		supports:      func(code string) bool { return normalizeProviderToken(code) == "xai" },
 		rawModels:     xAIModelPricingData,
 	},
+	{
+		// M3 媒体供应商新增（媒体设计 §9/契约 §8）：MiniMax 仅媒体行
+		//（Hailuo 视频 + speech TTS），无 chat 行——目录命中仅发生在媒体面。
+		providerID:    "minimax",
+		pricingSource: "minimax-pricing-snapshot",
+		billingPolicy: "minimax",
+		supports:      func(code string) bool { return normalizeProviderToken(code) == "minimax" },
+		rawModels:     minimaxModelPricingData,
+	},
+	{
+		// M3 媒体供应商新增（媒体设计 §9/契约 §9）：火山方舟仅视频媒体行
+		//（Seedance 系），TTS 面未回填（§9.2）无 audio 行——目录命中仅发生
+		// 在媒体面。
+		providerID:    "volcengine",
+		pricingSource: "volcengine-pricing-snapshot",
+		billingPolicy: "volcengine",
+		supports:      func(code string) bool { return normalizeProviderToken(code) == "volcengine" },
+		rawModels:     volcengineModelPricingData,
+	},
 }
 
 // providerEntryFor mirrors modelPricingProviderDriverForProvider: the first

@@ -15,14 +15,18 @@ import (
 // Voice；L2：Speed/ResponseFormat/Instructions/Language（契约 §2.3 值域，
 // 校验裁决按厂商 adapter 承载——openai 族直连透传由上游裁决，gemini 等转换
 // 型 adapter 在 BuildSpeechUpstreamRequest 内做能力裁决）。
+// ProviderOptions 是 L3 扩展通道的对象形态投影（键=provider_code，契约
+// §2.1；M3 minimax TTS 起消费——vol/pitch 等厂商个例参数 deep-merge 进
+// t2a_v2 报文；openai 族直连与 gemini TTS 不消费该字段）。
 type SpeechRequest struct {
-	Model          string
-	Input          string
-	Voice          string
-	Speed          *float64
-	ResponseFormat string
-	Instructions   string
-	Language       string
+	Model            string
+	Input            string
+	Voice            string
+	Speed            *float64
+	ResponseFormat   string
+	Instructions     string
+	Language         string
+	ProviderOptions  map[string]any
 }
 
 // OpenAISpeechResponseFormats 是 OpenAI TTS 的官方 response_format 全集

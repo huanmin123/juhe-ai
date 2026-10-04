@@ -51,3 +51,34 @@ func TestSoraVideoSnapshotPricing(t *testing.T) {
 		t.Fatal("sora-2/image-to-video must not be in the catalog (slash model name)")
 	}
 }
+
+// TestGlmCogVideoSnapshotPricing 锁定 glm 视频目录行（M3，契约 §7.1）：
+// cogvideox-3 收录进 glm 静态目录（mode=video、协议 ["video"]、
+// OutputModalities ["video"]），但不得携带任何单价——CogVideoX 按次计费
+// 且官方精确秒价不可查证，glm 轮询响应无时长回报，终态计费走契约 §2.8
+// 兜底（0 计费 + usage_missing），不编造秒价。
+func TestGlmCogVideoSnapshotPricing(t *testing.T) {
+	got := mustFindPricingForTest(t, "glm", "cogvideox-3")
+	if got.Mode != "video" {
+		t.Fatalf("cogvideox-3 mode = %q want video", got.Mode)
+	}
+	if len(got.SupportedAPIProtocols) != 1 || got.SupportedAPIProtocols[0] != "video" {
+		t.Fatalf("cogvideox-3 protocols = %v want [video]", got.SupportedAPIProtocols)
+	}
+	if len(got.OutputModalities) != 1 || got.OutputModalities[0] != "video" {
+		t.Fatalf("cogvideox-3 outputModalities = %v want [video]", got.OutputModalities)
+	}
+	if len(got.InputModalities) != 2 {
+		t.Fatalf("cogvideox-3 inputModalities = %v want [text image]（文生/图生视频）", got.InputModalities)
+	}
+	// 不落价：无秒价、无 token 价、无任何档价（usage_missing 兜底口径）。
+	if got.VideoOutputUsdPerSecond != nil {
+		t.Fatalf("cogvideox-3 must not carry a per-second rate（官方按次计价不可查证，不编造）: %v", *got.VideoOutputUsdPerSecond)
+	}
+	if got.InputUsdPer1M != nil || got.OutputUsdPer1M != nil || got.OutputUsdPerImage != nil {
+		t.Fatalf("cogvideox-3 must not carry token/image prices (video model)")
+	}
+	if hasAnyRate(got.PriceSet) {
+		t.Fatalf("cogvideox-3 must carry no rate at all（按次计价待官方口径回填）: %+v", got.PriceSet)
+	}
+}

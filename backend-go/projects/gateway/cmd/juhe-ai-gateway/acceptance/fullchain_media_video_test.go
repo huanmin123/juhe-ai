@@ -414,3 +414,459 @@ func TestFullchainMediaVideoArtifactExpired(t *testing.T) {
 		t.Fatalf("MV expired content 错误码缺少 media_artifact_expired: %s", content.Body)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 用例 5：Gemini Veo 全生命周期（media_gemini_video_*，M3/契约 §5.2）
+// ---------------------------------------------------------------------------
+
+// fullchainGeminiVideoCreateBody 是 gemini 视频创建请求体：size 换算
+// aspectRatio/resolution（16:9/720p）、negative_prompt 进 parameters（veo
+// 原生支持）；seconds 对 veo 请求面不存在 → params_ignored 回显。
+const fullchainGeminiVideoCreateBody = `{"model":"veo-3.0-generate-preview","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"低清画质","seconds":"8"}`
+
+// fullchainCreateGeminiVideoAccount 经管理面创建指向 mock 上游的 gemini
+// api_key 账户并绑定分组（gemini 供应商 + 原生 v1beta 档案；目录 seed 预置
+// veo-3.0-generate-preview 行）；凭据显式声明 gemini 词表的 video_* 端点
+// 模式（opt-in，与 openai 族同语义）。
+func (f *fullchainFixture) fullchainCreateGeminiVideoAccount(name, upstreamKey, groupID string) string {
+	f.t.Helper()
+	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
+		"providerCode":              "gemini",
+		"providerProtocolProfileId": "profile_gemini_native_v1beta",
+		"name":                      name,
+		"type":                      "api_key",
+		"credentials": map[string]any{
+			"api_key":  upstreamKey,
+			"base_url": f.mock.server.URL,
+			"supported_endpoint_modes": []string{
+				"generate_content_json", "video_create", "video_get", "video_content", "video_cancel",
+			},
+		},
+		"supportedModels": []string{"veo-3.0-generate-preview"},
+		"status":          "active",
+		"groupId":         groupID,
+	}, wantStatus(http.StatusCreated))
+	accountID := str(data(created)["id"])
+	if accountID == "" {
+		f.t.Fatalf("gemini video account create payload wrong: %#v", created)
+	}
+	return accountID
+}
+
+// TestFullchainMediaVideoGeminiVeo 验证 M3 gemini（Veo）视频链主流程（契约
+// §5.2）：管理面配置（gemini 分组 + veo 模型账户）→ 创建（predictLongRunning
+// 改写、统一 job 对象、provider=gemini、params 回显 seconds 进 ignored）→
+// 轮询 queued → completed（operation done 归一 + uri 冻结）→ content 经绝对
+// 签名 URL 无凭据直连下载 mp4 → 管理面 media-jobs 行终态（usage_missing 口
+// 径 cost=0，不虚计）→ 账户亲和（上游命中只打 gemini 账户 key 的 veo 端点）。
+func TestFullchainMediaVideoGeminiVeo(t *testing.T) {
+	requireFullchainGate(t)
+	f := startFullchainFixture(t)
+
+	key := fullchainUpstreamKey(t, "mvg")
+	groupID := f.createGroupWithProvider("MVgemini组", "gemini")
+	accountID := f.fullchainCreateGeminiVideoAccount("全链路-MVgemini账户", key, groupID)
+	strategyID := f.createStrategy("全链路-MVgemini策略", "normal", []map[string]any{
+		{"groupId": groupID, "priority": 1, "weight": 100},
+	}, nil)
+	apiKey := f.createAPIKey("全链路-MVgemini-Key", strategyID)
+	apiKeyID := f.apiKeyIDByName("全链路-MVgemini-Key")
+
+	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status queued、
+	// provider_job_id 为 operation 名、params_applied 含 size/negative_prompt、
+	// params_ignored 含 seconds）。
+	f.mock.script(key, platformmock.ScenarioMediaGeminiVideoCreateOK)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainGeminiVideoCreateBody)
+	if created.Status != http.StatusOK {
+		t.Fatalf("MV gemini create status=%d body=%s", created.Status, created.Body)
+	}
+	job := decodeVideoJob(t, created)
+	jobID := str(job["id"])
+	if !strings.HasPrefix(jobID, "video_") {
+		t.Fatalf("MV gemini job id 缺少 video_ 前缀: %#v", job)
+	}
+	if job["status"] != "queued" {
+		t.Fatalf("MV gemini create status 字段 = %v, want queued（operation 未 done 归一 queued）", job["status"])
+	}
+	if job["provider"] != "gemini" {
+		t.Fatalf("MV gemini provider = %v, want gemini", job["provider"])
+	}
+	providerJobID := str(job["provider_job_id"])
+	if !strings.HasPrefix(providerJobID, "models/veo-3.0-generate-preview/operations/") {
+		t.Fatalf("MV gemini provider_job_id = %q, want operation name 形态", providerJobID)
+	}
+	applied := fmt.Sprintf("%v", job["params_applied"])
+	for _, want := range []string{"model", "prompt", "size", "negative_prompt"} {
+		if !strings.Contains(applied, want) {
+			t.Fatalf("MV gemini params_applied 缺少 %s: %v", want, job["params_applied"])
+		}
+	}
+	if !strings.Contains(fmt.Sprintf("%v", job["params_ignored"]), "seconds") {
+		t.Fatalf("MV gemini params_ignored 缺少 seconds（veo 请求面无时长参数）: %v", job["params_ignored"])
+	}
+
+	// 轮询两次：queued（done:false）→ completed（done:true + uri 冻结）。
+	first := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+	if first.Status != http.StatusOK {
+		t.Fatalf("MV gemini poll#1 status=%d body=%s", first.Status, first.Body)
+	}
+	if object := decodeVideoJob(t, first); object["status"] != "queued" {
+		t.Fatalf("MV gemini poll#1 status 字段 = %v, want queued", object["status"])
+	}
+	second := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+	if second.Status != http.StatusOK {
+		t.Fatalf("MV gemini poll#2 status=%d body=%s", second.Status, second.Body)
+	}
+	if object := decodeVideoJob(t, second); object["status"] != "completed" {
+		t.Fatalf("MV gemini poll#2 status 字段 = %v, want completed: %v", object["status"], object)
+	}
+
+	// content 下载：completed 的产物 uri 是引擎渲染的绝对签名 URL，网关
+	// 无凭据直连（video/mp4 + ftyp magic bytes）。
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	if content.Status != http.StatusOK {
+		t.Fatalf("MV gemini content status=%d body=%s", content.Status, content.Body)
+	}
+	if !strings.Contains(content.ContentType, "video/mp4") {
+		t.Fatalf("MV gemini content-type=%q, want video/mp4", content.ContentType)
+	}
+	payload := []byte(content.Body)
+	if len(payload) < 12 || string(payload[4:8]) != "ftyp" {
+		t.Fatalf("MV gemini content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
+	}
+
+	// 管理面 media-jobs：行终态 completed 归因 gemini 账户；veo 无输出秒
+	// 回报且 seconds 属 ignored → cost_usd=0（契约 §2.8 usage_missing 不虚计）。
+	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
+		return row.Status == "completed"
+	}, "completed")
+	if row.AccountID != accountID {
+		t.Fatalf("MV gemini row accountId=%s, want %s", row.AccountID, accountID)
+	}
+	if row.CostUsd != 0 {
+		t.Fatalf("MV gemini row costUsd=%v, want 0（usage_missing 不虚计）", row.CostUsd)
+	}
+
+	// 账户亲和 + 出站形态：gemini key 命中创建（predictLongRunning）与两轮
+	// 轮询（GET /v1beta/{name}），无其它上游流量打到该 key。
+	creates, polls := 0, 0
+	for _, call := range f.mock.callsByKey(key) {
+		switch {
+		case call.Method == http.MethodPost && strings.HasSuffix(call.Path, ":predictLongRunning"):
+			creates++
+		case call.Method == http.MethodGet && strings.Contains(call.Path, "/operations/"):
+			polls++
+		default:
+			t.Fatalf("MV gemini 未预期的上游请求: %#v", call)
+		}
+	}
+	if creates != 1 || polls != 2 {
+		t.Fatalf("MV gemini 上游命中 creates=%d polls=%d, want 1/2", creates, polls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 用例 6：GLM CogVideoX 全生命周期（media_glm_video_*，M3/契约 §7.1）
+// ---------------------------------------------------------------------------
+
+// fullchainGlmVideoCreateBody 是 glm 视频创建请求体：negative_prompt/audio/
+// seconds 直达 glm 请求面（原生字段），size 原样透传；seed 对 glm 请求面
+// 不存在 → params_ignored 回显。
+const fullchainGlmVideoCreateBody = `{"model":"cogvideox-3","prompt":"一只猫在弹钢琴","size":"1280x720","negative_prompt":"低清画质","seconds":"6","audio":true,"seed":42}`
+// fullchainCreateGlmVideoAccount 经管理面创建指向 mock 上游的 glm api_key
+// 账户并绑定分组（glm 供应商 + 通用 openai v1 档案；目录 seed 预置
+// cogvideox-3 行）；凭据显式声明 openai 族词表的 video_* 端点模式（opt-in，
+// glm 写侧词表已放宽 video_*，本用例同时覆盖该写侧门禁）。
+func (f *fullchainFixture) fullchainCreateGlmVideoAccount(name, upstreamKey, groupID string) string {
+	f.t.Helper()
+	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
+		"providerCode":              "glm",
+		"providerProtocolProfileId": "profile_glm_general_openai_v1",
+		"name":                      name,
+		"type":                      "api_key",
+		"credentials": map[string]any{
+			"api_key":  upstreamKey,
+			"base_url": f.mock.server.URL,
+			"supported_endpoint_modes": []string{
+				"chat_json", "chat_sse", "video_create", "video_get", "video_content", "video_cancel",
+			},
+		},
+		"supportedModels": []string{"cogvideox-3"},
+		"status":          "active",
+		"groupId":         groupID,
+	}, wantStatus(http.StatusCreated))
+	accountID := str(data(created)["id"])
+	if accountID == "" {
+		f.t.Fatalf("glm video account create payload wrong: %#v", created)
+	}
+	return accountID
+}
+
+// TestFullchainMediaVideoGlmCogVideo 验证 M3 glm（CogVideoX）视频链主流程
+// （契约 §7.1）：管理面配置（glm 分组 + cogvideox 模型账户，含写侧 video_*
+// 端点模式受理）→ 创建（videos/generations 报文改写、统一 job 对象、
+// provider=glm、params 回显 seed 进 ignored）→ 轮询 in_progress → completed
+// （task_status 归一 + video_result.url 冻结）→ content 经绝对 URL 无凭据
+// 直连下载 mp4 → 管理面 media-jobs 行终态（usage_missing 口径 cost=0，
+// 不虚计）→ 账户亲和（上游命中只打 glm 账户 key 的 cogvideo 端点）。
+func TestFullchainMediaVideoGlmCogVideo(t *testing.T) {
+	requireFullchainGate(t)
+	f := startFullchainFixture(t)
+
+	key := fullchainUpstreamKey(t, "mvglm")
+	groupID := f.createGroupWithProvider("MVglm组", "glm")
+	accountID := f.fullchainCreateGlmVideoAccount("全链路-MVglm账户", key, groupID)
+	strategyID := f.createStrategy("全链路-MVglm策略", "normal", []map[string]any{
+		{"groupId": groupID, "priority": 1, "weight": 100},
+	}, nil)
+	apiKey := f.createAPIKey("全链路-MVglm-Key", strategyID)
+	apiKeyID := f.apiKeyIDByName("全链路-MVglm-Key")
+
+	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status in_progress、
+	// provider_job_id 为 12 hex 任务 id、params_applied 含 size/
+	// negative_prompt/seconds/audio、params_ignored 含 seed）。
+	f.mock.script(key, platformmock.ScenarioMediaGlmVideoCreateOK)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainGlmVideoCreateBody)
+	if created.Status != http.StatusOK {
+		t.Fatalf("MV glm create status=%d body=%s", created.Status, created.Body)
+	}
+	job := decodeVideoJob(t, created)
+	jobID := str(job["id"])
+	if !strings.HasPrefix(jobID, "video_") {
+		t.Fatalf("MV glm job id 缺少 video_ 前缀: %#v", job)
+	}
+	if job["status"] != "in_progress" {
+		t.Fatalf("MV glm create status 字段 = %v, want in_progress（task_status=PROCESSING 归一）", job["status"])
+	}
+	if job["provider"] != "glm" {
+		t.Fatalf("MV glm provider = %v, want glm", job["provider"])
+	}
+	providerJobID := str(job["provider_job_id"])
+	if len(providerJobID) != 12 || strings.ContainsAny(providerJobID, "/-") {
+		t.Fatalf("MV glm provider_job_id = %q, want 12 hex 任务 id 形态", providerJobID)
+	}
+	applied := fmt.Sprintf("%v", job["params_applied"])
+	for _, want := range []string{"model", "prompt", "size", "negative_prompt", "seconds", "audio"} {
+		if !strings.Contains(applied, want) {
+			t.Fatalf("MV glm params_applied 缺少 %s: %v", want, job["params_applied"])
+		}
+	}
+	if !strings.Contains(fmt.Sprintf("%v", job["params_ignored"]), "seed") {
+		t.Fatalf("MV glm params_ignored 缺少 seed（glm 请求面无 seed）: %v", job["params_ignored"])
+	}
+
+	// 轮询两次：in_progress（PROCESSING）→ completed（SUCCESS + url 冻结）。
+	first := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+	if first.Status != http.StatusOK {
+		t.Fatalf("MV glm poll#1 status=%d body=%s", first.Status, first.Body)
+	}
+	if object := decodeVideoJob(t, first); object["status"] != "in_progress" {
+		t.Fatalf("MV glm poll#1 status 字段 = %v, want in_progress", object["status"])
+	}
+	second := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+	if second.Status != http.StatusOK {
+		t.Fatalf("MV glm poll#2 status=%d body=%s", second.Status, second.Body)
+	}
+	if object := decodeVideoJob(t, second); object["status"] != "completed" {
+		t.Fatalf("MV glm poll#2 status 字段 = %v, want completed: %v", object["status"], object)
+	}
+
+	// content 下载：completed 的产物 url 是引擎渲染的绝对 URL，网关无凭据
+	// 直连（video/mp4 + ftyp magic bytes）。
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	if content.Status != http.StatusOK {
+		t.Fatalf("MV glm content status=%d body=%s", content.Status, content.Body)
+	}
+	if !strings.Contains(content.ContentType, "video/mp4") {
+		t.Fatalf("MV glm content-type=%q, want video/mp4", content.ContentType)
+	}
+	payload := []byte(content.Body)
+	if len(payload) < 12 || string(payload[4:8]) != "ftyp" {
+		t.Fatalf("MV glm content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
+	}
+
+	// 管理面 media-jobs：行终态 completed 归因 glm 账户；glm 无输出秒回报且
+	// 目录未落秒价 → cost_usd=0（契约 §2.8 usage_missing 不虚计）。
+	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
+		return row.Status == "completed"
+	}, "completed")
+	if row.AccountID != accountID {
+		t.Fatalf("MV glm row accountId=%s, want %s", row.AccountID, accountID)
+	}
+	if row.CostUsd != 0 {
+		t.Fatalf("MV glm row costUsd=%v, want 0（usage_missing 不虚计）", row.CostUsd)
+	}
+
+	// 账户亲和 + 出站形态：glm key 命中创建（videos/generations）与两轮轮询
+	//（GET async-result/{id}），无其它带凭据流量打到该 key（content 直连无
+	// Authorization，不落入该 key 的命中记录）。
+	creates, polls := 0, 0
+	for _, call := range f.mock.callsByKey(key) {
+		switch {
+		case call.Method == http.MethodPost && call.Path == "/api/paas/v4/videos/generations":
+			creates++
+		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, "/api/paas/v4/async-result/"):
+			polls++
+		default:
+			t.Fatalf("MV glm 未预期的上游请求: %#v", call)
+		}
+	}
+	if creates != 1 || polls != 2 {
+		t.Fatalf("MV glm 上游命中 creates=%d polls=%d, want 1/2", creates, polls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 用例 7：MiniMax Hailuo 全生命周期（media_minimax_*，M3/契约 §8.1）
+// ---------------------------------------------------------------------------
+
+// fullchainMinimaxVideoCreateBody 是 minimax 视频创建请求体：seconds 数值
+// 直传 duration、input_reference（base64 data URL）进 first_frame_image；
+// seed 对 minimax 请求面不存在 → params_ignored 回显；prompt_optimizer 经
+// provider_options.minimax 命中 → provider_options_applied 回显。
+const fullchainMinimaxVideoCreateBody = `{"model":"MiniMax-Hailuo-2.3","prompt":"一只猫在弹钢琴","seconds":"6","input_reference":"data:image/png;base64,aGVsbG8=","seed":42,"provider_options":{"minimax":{"prompt_optimizer":true}}}`
+
+// fullchainCreateMinimaxVideoAccount 经管理面创建指向 mock 上游的 minimax
+// api_key 账户并绑定分组（minimax 供应商 + 媒体档案 profile_minimax_openai_
+// v1；目录 seed 预置 MiniMax-Hailuo-2.3 行）；凭据显式声明 openai 族词表的
+// video_* 端点模式（opt-in，minimax 档案 Capabilities 只声明媒体——无 chat
+// 模式，本用例同时覆盖该写侧门禁）。
+func (f *fullchainFixture) fullchainCreateMinimaxVideoAccount(name, upstreamKey, groupID string) string {
+	f.t.Helper()
+	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
+		"providerCode":              "minimax",
+		"providerProtocolProfileId": "profile_minimax_openai_v1",
+		"name":                      name,
+		"type":                      "api_key",
+		"credentials": map[string]any{
+			"api_key":  upstreamKey,
+			"base_url": f.mock.server.URL,
+			"supported_endpoint_modes": []string{
+				"video_create", "video_get", "video_content", "video_cancel",
+			},
+		},
+		"supportedModels": []string{"MiniMax-Hailuo-2.3"},
+		"status":          "active",
+		"groupId":         groupID,
+	}, wantStatus(http.StatusCreated))
+	accountID := str(data(created)["id"])
+	if accountID == "" {
+		f.t.Fatalf("minimax video account create payload wrong: %#v", created)
+	}
+	return accountID
+}
+
+// TestFullchainMediaVideoMinimaxHailuo 验证 M3 minimax（Hailuo）视频链主流程
+// （契约 §8.1）：管理面配置（minimax 分组 + Hailuo 模型账户，媒体档案无
+// chat 模式）→ 创建（video_generation 报文改写、统一 job 对象、provider=
+// minimax、params 回显 seed 进 ignored / provider_options_applied 命中）→
+// 轮询 queued → queued → completed（status 归一 + file_download_url 冻结）→
+// content 经绝对 URL 无凭据直连下载 mp4 → 管理面 media-jobs 行终态
+//（usage_missing 口径 cost=0，不虚计）→ 账户亲和（上游命中只打 minimax
+// 账户 key 的 video_generation/query/files 端点）。
+func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
+	requireFullchainGate(t)
+	f := startFullchainFixture(t)
+
+	key := fullchainUpstreamKey(t, "mvmx")
+	groupID := f.createGroupWithProvider("MVminimax组", "minimax")
+	accountID := f.fullchainCreateMinimaxVideoAccount("全链路-MVminimax账户", key, groupID)
+	strategyID := f.createStrategy("全链路-MVminimax策略", "normal", []map[string]any{
+		{"groupId": groupID, "priority": 1, "weight": 100},
+	}, nil)
+	apiKey := f.createAPIKey("全链路-MVminimax-Key", strategyID)
+	apiKeyID := f.apiKeyIDByName("全链路-MVminimax-Key")
+
+	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status queued、
+	// provider_job_id 为 16 hex 任务 id、params_applied 含 seconds/
+	// input_reference、params_ignored 含 seed、provider_options_applied 含
+	// minimax）。
+	f.mock.script(key, platformmock.ScenarioMediaMinimaxCreateOK)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainMinimaxVideoCreateBody)
+	if created.Status != http.StatusOK {
+		t.Fatalf("MV minimax create status=%d body=%s", created.Status, created.Body)
+	}
+	job := decodeVideoJob(t, created)
+	jobID := str(job["id"])
+	if !strings.HasPrefix(jobID, "video_") {
+		t.Fatalf("MV minimax job id 缺少 video_ 前缀: %#v", job)
+	}
+	if job["status"] != "queued" {
+		t.Fatalf("MV minimax create status 字段 = %v, want queued（创建响应无 status 字段，已受理未开始）", job["status"])
+	}
+	if job["provider"] != "minimax" {
+		t.Fatalf("MV minimax provider = %v, want minimax", job["provider"])
+	}
+	providerJobID := str(job["provider_job_id"])
+	if len(providerJobID) != 16 || strings.ContainsAny(providerJobID, "/-") {
+		t.Fatalf("MV minimax provider_job_id = %q, want 16 hex 任务 id 形态", providerJobID)
+	}
+	applied := fmt.Sprintf("%v", job["params_applied"])
+	for _, want := range []string{"model", "prompt", "seconds", "input_reference"} {
+		if !strings.Contains(applied, want) {
+			t.Fatalf("MV minimax params_applied 缺少 %s: %v", want, job["params_applied"])
+		}
+	}
+	if !strings.Contains(fmt.Sprintf("%v", job["params_ignored"]), "seed") {
+		t.Fatalf("MV minimax params_ignored 缺少 seed（minimax 请求面无 seed）: %v", job["params_ignored"])
+	}
+	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "prompt_optimizer") {
+		t.Fatalf("MV minimax provider_options_applied 缺少 prompt_optimizer（minimax 子对象命中键名回显）: %v", job["provider_options_applied"])
+	}
+
+	// 轮询三次：queued（Preparing）→ queued（Queueing）→ completed
+	//（Success + file_download_url 冻结）。
+	for index, want := range []string{"queued", "queued", "completed"} {
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+		if polled.Status != http.StatusOK {
+			t.Fatalf("MV minimax poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
+		}
+		if object := decodeVideoJob(t, polled); object["status"] != want {
+			t.Fatalf("MV minimax poll #%d status 字段 = %v, want %s", index+1, object["status"], want)
+		}
+	}
+
+	// content 下载：completed 的产物 url 是引擎渲染的绝对 URL，网关无凭据
+	// 直连（video/mp4 + ftyp magic bytes）。
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	if content.Status != http.StatusOK {
+		t.Fatalf("MV minimax content status=%d body=%s", content.Status, content.Body)
+	}
+	if !strings.Contains(content.ContentType, "video/mp4") {
+		t.Fatalf("MV minimax content-type=%q, want video/mp4", content.ContentType)
+	}
+	payload := []byte(content.Body)
+	if len(payload) < 12 || string(payload[4:8]) != "ftyp" {
+		t.Fatalf("MV minimax content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
+	}
+
+	// 管理面 media-jobs：行终态 completed 归因 minimax 账户；minimax 无输出秒
+	// 回报且目录未落秒价 → cost_usd=0（契约 §2.8 usage_missing 不虚计）。
+	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
+		return row.Status == "completed"
+	}, "completed")
+	if row.AccountID != accountID {
+		t.Fatalf("MV minimax row accountId=%s, want %s", row.AccountID, accountID)
+	}
+	if row.CostUsd != 0 {
+		t.Fatalf("MV minimax row costUsd=%v, want 0（usage_missing 不虚计）", row.CostUsd)
+	}
+
+	// 账户亲和 + 出站形态：minimax key 命中创建（POST /v1/video_generation）
+	// 与三轮轮询（GET /v1/query/video_generation），无其它带凭据流量打到该
+	// key（content 直连无 Authorization，不落入该 key 的命中记录）。
+	creates, polls := 0, 0
+	for _, call := range f.mock.callsByKey(key) {
+		switch {
+		case call.Method == http.MethodPost && call.Path == "/v1/video_generation":
+			creates++
+		case call.Method == http.MethodGet && call.Path == "/v1/query/video_generation":
+			polls++
+		default:
+			t.Fatalf("MV minimax 未预期的上游请求: %#v", call)
+		}
+	}
+	if creates != 1 || polls != 3 {
+		t.Fatalf("MV minimax 上游命中 creates=%d polls=%d, want 1/3", creates, polls)
+	}
+}

@@ -89,3 +89,56 @@ func TestRequestUpstreamTotalTimeDeadlineAbortRecheckResponseReceived(t *testing
 		t.Fatal("响应体为空：流被中止")
 	}
 }
+
+// Continue 决策必须让请求继续（守护 transport.go 总时间臂的 continue 分支：
+// 若坏成 abort，所有速度优先请求会在总时间到点被硬中断而下面的 abort 用例
+// 无法报警——abort 用例本来就期待失败）。
+func TestRequestUpstreamTotalTimeDeadlineContinueKeepsRequestAlive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"late":true}`))
+	}))
+	defer server.Close()
+
+	deadlineMs := int64(30)
+	response, err := RequestUpstream(context.Background(), server.URL, UpstreamRequestOptions{
+		Method:              http.MethodGet,
+		TotalTimeDeadlineMs: &deadlineMs,
+		OnTotalTimeDeadline: func(input TotalTimeDeadlineDecisionInput) FirstByteDeadlineAction {
+			return FirstByteDeadlineActionContinue
+		},
+	}, TransportDeps{})
+	if err != nil {
+		t.Fatalf("expected deadline-continue success, got %v", err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if len(body) == 0 {
+		t.Fatal("响应体为空：请求被中止")
+	}
+}
+
+// 决策回调 panic 必须转成本地终止错误（RunTotalTimeDeadlineHandler 的
+// recover 是 timer goroutine 的最后防线），不能带崩进程。
+func TestRequestUpstreamTotalTimeDeadlineHandlerPanic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	deadlineMs := int64(30)
+	_, err := RequestUpstream(context.Background(), server.URL, UpstreamRequestOptions{
+		Method:              http.MethodGet,
+		TotalTimeDeadlineMs: &deadlineMs,
+		OnTotalTimeDeadline: func(input TotalTimeDeadlineDecisionInput) FirstByteDeadlineAction {
+			panic("总时间决策崩溃")
+		},
+	}, TransportDeps{})
+	if err == nil {
+		t.Fatal("expected the handler panic to fail the request")
+	}
+	if IsNormalRouteTotalTimeTimeoutError(err) {
+		t.Fatalf("panic 不得伪装成正常总时间截止错误: %v", err)
+	}
+}

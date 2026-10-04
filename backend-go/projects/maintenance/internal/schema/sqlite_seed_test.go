@@ -117,8 +117,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
-	if first.ModelCatalogRows != 130 {
-		t.Fatalf("first seed model catalog rows = %d, want 130", first.ModelCatalogRows)
+	if first.ModelCatalogRows != 136 {
+		t.Fatalf("first seed model catalog rows = %d, want 136", first.ModelCatalogRows)
 	}
 	snapshotAfterFirst := seedTestSnapshot(t, db)
 
@@ -152,23 +152,25 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		t.Fatalf("seeded admin must_change_password = %d, want 1 (BUG-0224: first login must be forced to change the default password)", mustChangePassword)
 	}
 
-	// Key row counts (Node seedDefaults contract).
+	// Key row counts (Node seedDefaults contract; 2026-10-04 M3 第四批
+	// volcengine 增补后 providers 10 / families 12（复用既有媒体族）/ profiles
+	// 15 / profile 绑定 33 / groups 10 / 目录 136）。
 	expectCounts := map[string]int{
 		"global_settings":                     2,
 		"request_quota_hourly_window_configs": 8,
-		"providers":                           8,
+		"providers":                           10,
 		"protocols":                           3,
-		"protocol_endpoint_families":          10,
-		"provider_protocol_profiles":          13,
-		"provider_protocol_profile_families":  30,
-		"groups":                              8,
-		"route_strategies":                    7,
-		"route_strategy_groups":               7,
-		"api_keys":                            8,
+		"protocol_endpoint_families":          12,
+		"provider_protocol_profiles":          15,
+		"provider_protocol_profile_families":  33,
+		"groups":                              10,
+		"route_strategies":                    8,
+		"route_strategy_groups":               8,
+		"api_keys":                            9,
 		"external_integration_sources":        1,
 		"external_integration_source_tokens":  1,
 		"system_settings":                     68,
-		"provider_model_catalog":              130,
+		"provider_model_catalog":              136,
 	}
 	for table, want := range expectCounts {
 		if got := countSeedTestRows(t, db, "SELECT count(*) FROM "+table); got != want {
@@ -310,8 +312,8 @@ func verifySeedTestAPIKeys(t *testing.T, db *sql.DB) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if count != 8 {
-		t.Fatalf("api key rows = %d, want 8", count)
+	if count != 9 {
+		t.Fatalf("api key rows = %d, want 9", count)
 	}
 	// Exactly one chat-purpose key bound to the default GPT route.
 	var chatKeys int

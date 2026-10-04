@@ -422,8 +422,11 @@ var (
 	// chainGeminiDefaultModes 兼作 gemini 投影的允许清单（下方
 	// chainNormalizeGatewayEndpointModesForRuntime gemini 分支），镜像
 	// accountscore.GeminiEndpointModeValues；M1 补 audio_speech（gemini TTS
-	// adapter 承载；gemini 无 /v1/audio/transcriptions 直连形态）。
-	chainGeminiDefaultModes = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse", "audio_speech"}
+	// adapter 承载；gemini 无 /v1/audio/transcriptions 直连形态），M3 补
+	// video_create / video_get / video_content / video_cancel（veo adapter
+	// 承载，契约 §5.2；词表缺失会让显式勾选的账户在 secret 投影时被滤除，
+	// /v1/videos 创建链按 video_create 候选过滤无账户可命中）。
+	chainGeminiDefaultModes = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse", "audio_speech", "video_create", "video_get", "video_content", "video_cancel"}
 	// chainHybridEndpointModes mirrors accountscore.HybridEndpointModeValues
 	// (the three-family union; images_json rides the openai family).
 	chainHybridEndpointModes = []string{

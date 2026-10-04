@@ -15,7 +15,8 @@ import (
 )
 
 // SpeechAdapter 是同步音频出站 adapter 端口（M1 仅 gemini TTS；M2 MediaJobIR
-// 的异步任务 adapter 沿本注册表结构扩展，不新增组合根 switch）。
+// 的异步任务 adapter 沿本注册表结构扩展，不新增组合根 switch；M3 起
+// minimax t2a_v2 同族接入）。
 type SpeechAdapter interface {
 	// Provider 返回注册键（provider_code 归一小写）。
 	Provider() string
@@ -23,14 +24,18 @@ type SpeechAdapter interface {
 	// 请求侧 400 语义（能力边界裁决：零转码不猜测）。
 	BuildRequest(ir SpeechRequest) (path string, body []byte, err error)
 	// TransformResponse 把上游成功响应 JSON 转为下游音频载荷（裸字节 +
-	// content-type）。错误为上游协议失败语义。
-	TransformResponse(upstreamBody []byte) (audio []byte, contentType string, err error)
+	// content-type）。request 携带归一后的 SpeechRequest 供按请求参数推导
+	// content-type（M3 minimax：t2a_v2 响应不回显 mime，按 response_format
+	// 推导；gemini 忽略该参数，mimeType 优先）。错误为上游协议失败语义。
+	TransformResponse(upstreamBody []byte, request SpeechRequest) (audio []byte, contentType string, err error)
 }
 
 // speechAdapters 是 provider → adapter 注册表（音频设计 §5：媒体 adapter 以
-// provider 注册表挂载）。
+// provider 注册表挂载；M3 起 minimax t2a_v2 已接入，volcengine/qwen 只新增
+// 条目）。
 var speechAdapters = map[string]SpeechAdapter{
 	"gemini": geminiSpeechAdapter{},
+	"minimax": minimaxSpeechAdapter{},
 }
 
 // SpeechAdapterForProvider 按 provider_code 解析同步音频 adapter；nil 表示
@@ -152,7 +157,9 @@ type geminiSpeechResponseBody struct {
 
 // TransformResponse 解码 inlineData base64 PCM。contentType 优先上游
 // mimeType（gemini 事实为 audio/L16;rate=24000），缺失回落固定 PCM 形态。
-func (a geminiSpeechAdapter) TransformResponse(upstreamBody []byte) ([]byte, string, error) {
+// request 参数不被消费（gemini mimeType 是响应内事实，契约 §5.1；M3 接口
+// 扩展供 minimax 按请求 format 推导 content-type）。
+func (a geminiSpeechAdapter) TransformResponse(upstreamBody []byte, _ SpeechRequest) ([]byte, string, error) {
 	var decoded geminiSpeechResponseBody
 	if err := json.Unmarshal(upstreamBody, &decoded); err != nil {
 		return nil, "", fmt.Errorf("Gemini TTS 响应不是有效 JSON: %w", err)

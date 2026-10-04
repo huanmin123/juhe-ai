@@ -33,14 +33,22 @@ func staleRunSweepSQL(table string) string {
 	return `UPDATE ` + table + ` SET status='failed',error_code=?,error_message=?,updated_at=? WHERE status='running' AND updated_at::timestamptz < ?::timestamptz`
 }
 
+// staleRunSweepSQLiteSQL 构造 SQLite 方言的收尾语句：SQLite 不支持 PG 的
+// ::timestamptz cast；updated_at 与 cutoff 均为本进程写入的 RFC3339Nano UTC
+// 文本，直接字典序比较，零分数秒边界（45Z 与 45.5Z 配对）至多引入 1 秒级
+// 误序，相对 30 分钟阈值可忽略。
+func staleRunSweepSQLiteSQL(table string) string {
+	return `UPDATE ` + table + ` SET status='failed',error_code=?,error_message=?,updated_at=? WHERE status='running' AND updated_at < ?`
+}
+
 // SweepStaleRuns 是启动期的一次性幂等收尾：发起进程崩溃/重启后，run 终态的
 // 唯一收口（进程内 ProjectOutcome 的 CAS）永久丢失，run 停留 running。本方法
 // 把超过 staleRunSweepThreshold 仍未收尾的 running run 标记为 failed
 // （error_code=owner_lost）。语句以 status='running' 为条件，重复执行自然
 // 空转；只标记 updated_at 超过阈值的行，不会波及刚启动的正常 run。
 //
-// j3b 生产形态为 PostgreSQL，比较方言为 PG-only；SQLite 模式（本地开发夹具）
-// 不执行收尾并静默返回 0，避免把 PG 方言引入 SQLite 路径。
+// PostgreSQL 与 SQLite（standalone 正式部署模式）都执行收尾，语句按存储
+// 模式选择方言构造（staleRunSweepSQL / staleRunSweepSQLiteSQL）。
 func (s *Store) SweepStaleRuns(ctx context.Context, now time.Time) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, errors.New("J3b store is not open")
@@ -48,12 +56,14 @@ func (s *Store) SweepStaleRuns(ctx context.Context, now time.Time) (int64, error
 	if now.IsZero() {
 		return 0, errors.New("J3b stale run sweep time is required")
 	}
+	table := s.table("model_check_runs")
+	query := staleRunSweepSQL(table)
 	if s.mode != "postgres" {
-		return 0, nil
+		query = staleRunSweepSQLiteSQL(table)
 	}
 	cutoff := now.Add(-staleRunSweepThreshold).UTC().Format(time.RFC3339Nano)
 	stamped := now.UTC().Format(time.RFC3339Nano)
-	result, err := s.db.ExecContext(ctx, s.bind(staleRunSweepSQL(s.table("model_check_runs"))), staleRunErrorCode, staleRunErrorMessage, stamped, cutoff)
+	result, err := s.db.ExecContext(ctx, s.bind(query), staleRunErrorCode, staleRunErrorMessage, stamped, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("sweep stale J3b running runs: %w", err)
 	}

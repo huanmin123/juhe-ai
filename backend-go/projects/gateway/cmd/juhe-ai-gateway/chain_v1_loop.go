@@ -270,8 +270,13 @@ func (l *v1DispatchLoop) run(ctx context.Context) {
 		dispatchReservation := l.speedFirstCutoverReservation
 		l.speedFirstCutoverReservation = nil
 		l.speedFirstSlowObservedForAttempt = nil
+		// 总时间去重标记与切号信号槽由 transport timer goroutine 并发读写
+		//（major-2 修复）：轮级清零必须持同一把观察互斥锁，否则上一 attempt
+		// 的迟到回调会在清零后把标记写回（内存模型违规 + 下一样本被误去重）。
+		l.speedFirstTotalTimeObservationMu.Lock()
 		l.speedFirstTotalTimeSlowObservedForAttempt = nil
 		l.speedFirstTotalTimeCutoverSignal = nil
+		l.speedFirstTotalTimeObservationMu.Unlock()
 		// Node dispatches streamRetryDispatchAccounts(accounts,
 		// streamServerRetryExcludedAccountIds) (routes.ts:942): the accounts a
 		// previous response-layer RetryUpstream verdict excluded never re-enter

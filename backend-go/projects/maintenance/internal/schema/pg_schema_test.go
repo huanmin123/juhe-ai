@@ -299,20 +299,28 @@ func TestSeedPasswordHashMatchesNodeVerifySemantics(t *testing.T) {
 
 func TestPostgresSeedDataParity(t *testing.T) {
 	// The default seed data must stay aligned with the schema objects it feeds.
-	if len(pgSeedProviders) != 8 {
-		t.Fatalf("provider seeds = %d, want 8", len(pgSeedProviders))
+	// 2026-10-04 M3 minimax 增补（媒体设计 §9/契约 §8）：providers 8→9、
+	// endpoint families 10→12（openai_v1_video_generation/tts）、profiles
+	// 13→14（profile_minimax_openai_v1）、groups 8→9、profile family 绑定
+	// 30→32（minimax 档案挂 2 个媒体族）。同日 M3 第四批 volcengine 增补
+	//（媒体设计 §9/契约 §9）：providers 9→10、profiles 14→15
+	//（profile_volcengine_openai_v1）、groups 9→10、profile family 绑定
+	// 32→33（volcengine 档案只挂 video_generation 1 个媒体族——复用既有
+	// openai_v1_video_generation 族，endpoint families 维持 12）。
+	if len(pgSeedProviders) != 10 {
+		t.Fatalf("provider seeds = %d, want 10", len(pgSeedProviders))
 	}
 	if len(pgSeedProtocols) != 3 {
 		t.Fatalf("protocol seeds = %d, want 3", len(pgSeedProtocols))
 	}
-	if len(pgSeedEndpointFamilies) != 10 {
-		t.Fatalf("endpoint family seeds = %d, want 10", len(pgSeedEndpointFamilies))
+	if len(pgSeedEndpointFamilies) != 12 {
+		t.Fatalf("endpoint family seeds = %d, want 12", len(pgSeedEndpointFamilies))
 	}
-	if len(pgSeedProfiles) != 13 {
-		t.Fatalf("profile seeds = %d, want 13", len(pgSeedProfiles))
+	if len(pgSeedProfiles) != 15 {
+		t.Fatalf("profile seeds = %d, want 15", len(pgSeedProfiles))
 	}
-	if len(pgSeedGroups) != 8 {
-		t.Fatalf("group seeds = %d, want 8", len(pgSeedGroups))
+	if len(pgSeedGroups) != 10 {
+		t.Fatalf("group seeds = %d, want 10", len(pgSeedGroups))
 	}
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
@@ -324,8 +332,8 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	for _, profile := range pgSeedProfiles {
 		profileFamilyCount += len(profile.EndpointFamilies)
 	}
-	if profileFamilyCount != 30 {
-		t.Fatalf("profile endpoint family bindings = %d, want 30", profileFamilyCount)
+	if profileFamilyCount != 33 {
+		t.Fatalf("profile endpoint family bindings = %d, want 33", profileFamilyCount)
 	}
 	for _, key := range []string{"appName", "appIcon"} {
 		found := false

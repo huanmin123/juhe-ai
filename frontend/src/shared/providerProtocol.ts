@@ -7,6 +7,8 @@ export const GPT_VENDOR_CODE = 'gpt'
 export const XAI_PROVIDER_CODE = 'xai'
 export const DEEPSEEK_PROVIDER_CODE = 'deepseek'
 export const GLM_PROVIDER_CODE = 'glm'
+export const MINIMAX_PROVIDER_CODE = 'minimax'
+export const VOLCENGINE_PROVIDER_CODE = 'volcengine'
 export const ANTHROPIC_PROTOCOL_CODE = 'anthropic'
 export const ANTHROPIC_PROTOCOL_VERSION = 'v1'
 export const ANTHROPIC_PROVIDER_CODE = 'anthropic'
@@ -22,6 +24,8 @@ export const DEEPSEEK_ANTHROPIC_V1_PROFILE_ID = 'profile_deepseek_anthropic_v1'
 export const GLM_GENERAL_OPENAI_V1_PROFILE_ID = 'profile_glm_general_openai_v1'
 export const GLM_CODING_OPENAI_V1_PROFILE_ID = 'profile_glm_coding_openai_v1'
 export const GLM_CODING_ANTHROPIC_V1_PROFILE_ID = 'profile_glm_coding_anthropic_v1'
+export const MINIMAX_OPENAI_V1_PROFILE_ID = 'profile_minimax_openai_v1'
+export const VOLCENGINE_OPENAI_V1_PROFILE_ID = 'profile_volcengine_openai_v1'
 export const ANTHROPIC_ANTHROPIC_V1_PROFILE_ID = 'profile_anthropic_anthropic_v1'
 export const GEMINI_NATIVE_V1BETA_PROFILE_ID = 'profile_gemini_native_v1beta'
 export const GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID = 'profile_gemini_openai_chat_v1beta'
@@ -30,6 +34,10 @@ export const HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_ID = 'profile_hybrid_anthropic
 export const HYBRID_GEMINI_NATIVE_V1BETA_PROFILE_ID = 'profile_hybrid_gemini_native_v1beta'
 export const OPENAI_CHAT_COMPLETIONS_FAMILY = 'chat_completions'
 export const OPENAI_RESPONSES_FAMILY = 'responses'
+// M3 媒体新增（媒体设计 §9/契约 §8）：openai 协议族的厂商原生媒体端点族——
+// minimax 档案（profile_minimax_openai_v1）只挂这两个族。
+export const OPENAI_VIDEO_GENERATION_FAMILY = 'video_generation'
+export const OPENAI_TTS_FAMILY = 'tts'
 export const ANTHROPIC_MESSAGES_FAMILY = 'messages'
 export const ANTHROPIC_MODELS_FAMILY = 'models'
 export const ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY = 'message_token_counting'
@@ -81,6 +89,14 @@ export function isDeepSeekProviderCode(value: unknown): boolean {
 
 export function isGlmProviderCode(value: unknown): boolean {
   return normalizeProviderToken(value) === GLM_PROVIDER_CODE
+}
+
+export function isMinimaxProviderCode(value: unknown): boolean {
+  return normalizeProviderToken(value) === MINIMAX_PROVIDER_CODE
+}
+
+export function isVolcengineProviderCode(value: unknown): boolean {
+  return normalizeProviderToken(value) === VOLCENGINE_PROVIDER_CODE
 }
 
 export function isGeminiProviderCode(value: unknown): boolean {

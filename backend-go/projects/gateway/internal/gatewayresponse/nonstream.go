@@ -620,7 +620,7 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 			return input.finalizeBufferedJSONProtocolFailure(failure, GatewayNonStreamJsonBody{}, pipeResult, nil, responseBodyText, driver)
 		}
 		if pipeResult.FullyBuffered {
-			audio, contentType, transformErr := mediaSpeechTransform.adapter.TransformResponse(pipeResult.CapturedBody)
+			audio, contentType, transformErr := mediaSpeechTransform.adapter.TransformResponse(pipeResult.CapturedBody, mediaSpeechTransform.request)
 			if transformErr != nil {
 				failure := &ProtocolFailure{
 					Message:   transformErr.Error(),
@@ -751,6 +751,15 @@ func HandleNonStreamUpstreamResponse(input HandleUpstreamResponseInput) (Upstrea
 				}
 			}
 			chars := gatewaymedia.SpeechInputCharsFromBody(speechBody)
+			// M3 minimax TTS（契约 §8.2/§2.8）：extra_info.usage_characters
+			// 是字符计量的上游回报，优先于网关请求字符自算；非 minimax
+			// 形态（无该字段，含 gemini inlineData 响应）恒取 0 保持既有
+			// 自算口径。
+			if mediaSpeechTransform.active {
+				if reported := gatewaymedia.SpeechReportedCharsFromJSON(parsedJsonBody.Value); reported > 0 {
+					chars = reported
+				}
+			}
 			usage.TtsInputChars = &chars
 			// token 口径 TTS（gpt-4o-mini-tts / gpt-4o-tts 系）：上游
 			// 二进制响应无 usage 回报，网关无 token 自算维度（字符自算

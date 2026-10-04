@@ -253,6 +253,18 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 			}
 			return []string{url}, nil
 		}
+		// M3 视频（契约 §5.2）：gemini 账户的视频创建经 veo adapter 构造
+		// predictLongRunning 报文，URL 与 M1 speech 同走 gemini 归一（/v1beta
+		// 前缀 + base 去重），不进原生路由 helper。
+		if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
+			url, urlErr := gatewaygemini.BuildUpstreamURL(account.BaseURL, videoPlan.createRequest.Path, false)
+			if urlErr != nil {
+				return nil, urlErr
+			}
+			return []string{url}, nil
+		} else if videoErr != nil {
+			return nil, videoErr
+		}
 		// Code Assist / Google One OAuth 运行时恒定走 /v1internal 流式包装端点
 		//（对齐 Node gemini/driver.ts:123-125 buildUpstreamUrls）；其余原生
 		// 请求维持 gemini 路由 helper 的 URL 构建。
@@ -289,11 +301,40 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// M2 视频创建（媒体设计 §5）：视频请求出站报文经 gatewaymedia 注册表
 		// adapter 构造（URL 与 body 同源 adapter.Create），与 M1 gemini speech
 		// adapter 同模式短路返回；不进通用映射/改写链（统一参数规范在归一层
-		// 完成，不透传厂商参数面）。
+		// 完成，不透传厂商参数面）。glm 账户（M3 cogvideo adapter）的出站路径
+		// 自带 /api/paas/v4 服务根，volcengine 账户（M3 seedance adapter，契约
+		// §9.1）自带 /api/v3 服务根，URL 分别按 chainGlmVideoUpstreamURL /
+		// chainVolcengineVideoUpstreamURL 归一（官方根去重，不走 openai /v1
+		// 强制补缀）；其余走 openai 归一。
 		if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
+			if chainVideoAdapterKeyOfProvider(account.ProviderCode) == "glm" {
+				upstreamURL, urlErr := chainGlmVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
+				if urlErr != nil {
+					return nil, urlErr
+				}
+				return []string{upstreamURL}, nil
+			}
+			if chainVideoAdapterKeyOfProvider(account.ProviderCode) == "volcengine" {
+				upstreamURL, urlErr := chainVolcengineVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
+				if urlErr != nil {
+					return nil, urlErr
+				}
+				return []string{upstreamURL}, nil
+			}
 			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)}, nil
 		} else if videoErr != nil {
 			return nil, videoErr
+		}
+		// M3 同步音频（契约 §8.2）：minimax 账户的 speech 请求由 gatewaymedia
+		// 注册表的 minimax t2a_v2 adapter 承载（URL/body 改写 + 响应 hex 解码
+		// 转换），/v1/t2a_v2 是 /v1 前缀形态，走 openai 归一；openai 族其它
+		// provider 的 speech 维持直连透传。
+		if adapter, ir, ok := d.minimaxSpeechRequest(req, account); ok {
+			path, _, err := adapter.BuildRequest(ir)
+			if err != nil {
+				return nil, geminiSpeechAdapterBoundaryError(err)
+			}
+			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, path)}, nil
 		}
 		// openai-compatible (openai / hybrid and any other OpenAI-style
 		// upstream): always /v1-suffixed base + version-stripped path. Mapped
@@ -345,6 +386,17 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	}
 	// M1 同步音频：gemini speech adapter 分派（URL/body 同源 BuildRequest）。
 	if adapter, ir, ok := d.geminiSpeechRequest(req, account); ok {
+		_, body, err := adapter.BuildRequest(ir)
+		if err != nil {
+			return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(err)
+		}
+		headers := upstreamHeadersOf(req, account)
+		headers.Set("Content-Type", "application/json")
+		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
+	}
+	// M3 同步音频：minimax t2a_v2 adapter 分派（URL/body 同源 BuildRequest，
+	// 契约 §8.2；provider_options 已投影进 SpeechRequest）。
+	if adapter, ir, ok := d.minimaxSpeechRequest(req, account); ok {
 		_, body, err := adapter.BuildRequest(ir)
 		if err != nil {
 			return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(err)
@@ -560,10 +612,15 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 	case driverProtocolGemini:
 		if req != nil {
 			// M1 同步音频：speech 形态经 gemini TTS adapter 承载（音频设计
-			// §5），不要求 gemini 原生路径族；后续 endpoint mode 与模型门
-			// 继续生效（audio_speech mode 过滤沿 images_json 语义）。
+			// §5），不要求 gemini 原生路径族，也不受 code assist 运行时门
+			// （geminiSpeechRequest 对 code assist 账户自身短路拒绝）；后续
+			// endpoint mode 与模型门继续生效（audio_speech mode 过滤沿
+			// images_json 语义）。M3 视频：POST /v1/videos 创建形态同理由
+			// veo adapter 承载（契约 §5.2），不要求原生路径族，但 code
+			// assist 运行时仍不支持（predictLongRunning 不在其端点集）；
+			// video_create 端点模式门继续生效。
 			if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
-				if !gatewaygemini.IsNativeRequest(req.HTTP) {
+				if !chainIsVideoCreateRequest(req) && !gatewaygemini.IsNativeRequest(req.HTTP) {
 					return "gemini_native_unsupported"
 				}
 				// Code Assist / Google One OAuth 仅支持 generateContent 与
@@ -1305,7 +1362,9 @@ func (d *chainProviderDriver) geminiSpeechRequest(req *gatewaypreauth.GatewayReq
 // GatewayRequestValidationError 沿 dispatch 错误通路（非账户级 validation
 // rethrow）到达 HandleGatewayRequestKnownErrorResponse，按 invalid_request_
 // error 契约渲染客户端 400；不包装则会落入 503"上游暂时不可用"契约，把
-// 客户端参数错误误报成上游故障。
+// 客户端参数错误误报成上游故障。M3 起 minimax t2a_v2 的能力边界错误
+// （response_format 词表外 / speed 超厂商区间 0.5–2.0，契约 §8.2/§2.4 规则 2）
+// 复用同一包装语义。
 func geminiSpeechAdapterBoundaryError(err error) error {
 	if err == nil {
 		return nil
@@ -1317,11 +1376,55 @@ func geminiSpeechAdapterBoundaryError(err error) error {
 	return gatewaypreauth.NewGatewayRequestValidationError(err.Error())
 }
 
+// minimaxSpeechRequest 解析"minimax 账户 + speech 请求"的 adapter 分派
+// 三元组（M3 同步音频，契约 §8.2；沿 geminiSpeechRequest 同模式）。ok=false
+// 表示本请求不走 minimax adapter（openai 族直连透传或其它 provider）。
+// SpeechIR 从请求体解析（模型映射面不介入：请求模型直达上游；账户
+// canonical 拼写优先）；provider_options 命中 minimax 的子对象投影进
+// SpeechRequest.ProviderOptions（vol/pitch 等厂商个例参数，契约 §2.1 L3）。
+func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool) {
+	if req == nil || req.HTTP == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if chainNormalizeProviderToken(account.ProviderCode) != "minimax" {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	adapter := gatewaymedia.SpeechAdapterForProvider("minimax")
+	if adapter == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	body := req.ParsedJSONObjectBody()
+	if body == nil {
+		body = d.materializedParsedJSONObjectBody(req)
+	}
+	if body == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	ir, err := gatewaymedia.ParseSpeechRequest(body)
+	if err != nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if canonical := canonicalAccountModel(req, account); canonical != "" {
+		ir.Model = canonical
+	}
+	providerOptions, optionsErr := chainVideoProviderOptionsOf(body)
+	if optionsErr != nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	ir.ProviderOptions = providerOptions
+	return adapter, ir, true
+}
+
 // videoCreateRequest 解析“视频创建请求 + 账户”的 adapter 出站计划（M2 视频，
-// 媒体设计 §5/§6）。ok=false 且 err=nil 表示本请求不是视频创建形态（或请求
-// 体不可解析——沿 geminiSpeechRequest 语义，由 capability/url 链路拒绝）；
-// err 非 nil 是构造失败（参数能力边界 → GatewayRequestValidationError 本地
-// 400 不换账户；provider 无视频 adapter → 原生错误，能力缺失不静默回退）。
+// 媒体设计 §5/§6；M3 起 openai 与 gemini 两协议族：gemini 经 veo adapter
+// 构造 predictLongRunning 报文，契约 §5.2）。ok=false 且 err=nil 表示本请求
+// 不是视频创建形态（或请求体不可解析——沿 geminiSpeechRequest 语义，由
+// capability/url 链路拒绝）；err 非 nil 是构造失败（参数能力边界 →
+// GatewayRequestValidationError 本地 400 不换账户；provider 无视频 adapter →
+// 原生错误，能力缺失不静默回退）。
 func (d *chainProviderDriver) videoCreateRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (*chainVideoCreatePlan, error) {
 	if req == nil || req.HTTP == nil {
 		return nil, nil
@@ -1329,7 +1432,8 @@ func (d *chainProviderDriver) videoCreateRequest(req *gatewaypreauth.GatewayRequ
 	if !chainIsVideoCreateRequest(req) {
 		return nil, nil
 	}
-	if normalizeProtocol(account.ProtocolCode) != driverProtocolOpenAI {
+	protocol := normalizeProtocol(account.ProtocolCode)
+	if protocol != driverProtocolOpenAI && protocol != driverProtocolGemini {
 		return nil, nil
 	}
 	if chainVideoAdapterForAccount(account.ProviderCode) == nil {

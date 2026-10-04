@@ -38,12 +38,23 @@ type VideoProviderAdapter interface {
 	// BuildContentRequest 构造产物下载请求（GET /v1/videos/{id}/content 族，
 	// 纯流式透传代理的出站请求）。
 	BuildContentRequest(upstreamJobID string) (method, path string)
+	// ContentFromArtifact 声明产物下载定位来源：true 表示 completed 的下载
+	// 地址是轮询冻结的绝对 Artifact.ContentURL（如 Veo 的 GCS 签名 URL，
+	// 凭据内嵌、不能由 job id 推导），链上层直连该 URL 且不携带账户认证，
+	// 不调用 BuildContentRequest；false（openai 族）按 BuildContentRequest
+	// 由 base_url + job id 构造（M3 gemini 接入引入）。
+	ContentFromArtifact() bool
 	// BuildCancelRequest 构造取消/删除请求（DELETE /v1/videos/{id} 族）。
 	BuildCancelRequest(upstreamJobID string) (method, path string)
+	// SupportsCancel 声明上游是否暴露任务取消/删除端点：false（glm，契约
+	// §7.1 无取消 API；M3 glm 接入引入）时链上层不发上游请求、直接本地收敛
+	// cancelled（契约 §2.6 cancelled 本地终态语义）；true 的 provider 照常
+	// BuildCancelRequest 转发（2xx/404/405 收敛本地 cancelled，veo 裁决）。
+	SupportsCancel() bool
 }
 
 // VideoCreateInput 是创建请求的输入：归一参数 + provider_options 对象形态
-//（键=provider_code，Create 内按本 provider 取命中子对象 deep-merge 覆盖
+// （键=provider_code，Create 内按本 provider 取命中子对象 deep-merge 覆盖
 // 同名 L2 值，其余子对象忽略，契约 §2.1 L3/§2.4 规则 4）。
 type VideoCreateInput struct {
 	Params          NormalizedVideoParams
@@ -71,9 +82,14 @@ func (e *UpstreamStatusError) Error() string {
 }
 
 // videoAdapters 是 provider → adapter 注册表（媒体设计 §5：媒体 adapter 以
-// provider 注册表挂载；M3 的 gemini/minimax/volcengine/qwen 只新增条目）。
+// provider 注册表挂载；M3 起 gemini（Veo）、glm（CogVideoX）、minimax
+// （Hailuo）与 volcengine（Seedance）已接入，qwen 只新增条目）。
 var videoAdapters = map[string]VideoProviderAdapter{
-	"openai": openaiVideoAdapter{},
+	"openai":     openaiVideoAdapter{},
+	"gemini":     veoVideoAdapter{},
+	"glm":        glmVideoAdapter{},
+	"minimax":    minimaxVideoAdapter{},
+	"volcengine": volcengineVideoAdapter{},
 }
 
 // VideoAdapterForProvider 按 provider_code 解析视频 adapter；nil 表示该
@@ -83,7 +99,7 @@ func VideoAdapterForProvider(providerCode string) VideoProviderAdapter {
 }
 
 // openaiVideoAdapter 实现 openai（sora-2 系）视频直连转换。对外契约即本体
-//（契约 §4.3：网关直连转发），本 adapter 承担：seconds 归一值的原生字符串
+// （契约 §4.3：网关直连转发），本 adapter 承担：seconds 归一值的原生字符串
 // 形态序列化、provider_options 合并、轮询响应 → MediaJobIR 归一。
 type openaiVideoAdapter struct{}
 
@@ -113,7 +129,7 @@ func (openaiVideoAdapter) Capabilities() VideoCapabilities {
 // 回归字符串）；归一层判为 ignored 的词表外字段（negative_prompt/seed/
 // audio）不进报文；n 未显式传入时按默认 1 显式携带（§2.2）。input_reference
 // 以字符串进入 JSON body；真实上游的 multipart 文件装配属链上层传输面
-//（M2 后续任务），此处保持 IR 字符串透传不解析存储（契约 §2.7）。
+// （M2 后续任务），此处保持 IR 字符串透传不解析存储（契约 §2.7）。
 func (a openaiVideoAdapter) Create(_ context.Context, in VideoCreateInput) (VideoCreateOutput, error) {
 	params := in.Params
 	if params.Model == "" {
@@ -164,10 +180,17 @@ func (openaiVideoAdapter) BuildCancelRequest(upstreamJobID string) (string, stri
 	return http.MethodDelete, "/v1/videos/" + upstreamJobID
 }
 
+// SupportsCancel：openai videos 族有 DELETE 取消端点（契约 §4.3）→ true。
+func (openaiVideoAdapter) SupportsCancel() bool { return true }
+
+// ContentFromArtifact：openai 形态的下载定位由 base_url + job id 构造
+// （BuildContentRequest），产物不经绝对 URL 直连（M3 gemini 对比项）。
+func (openaiVideoAdapter) ContentFromArtifact() bool { return false }
+
 // openaiVideoObject 是契约 §4.3 video 对象的消费面（id/object/status/
 // progress/model/prompt/seconds_length/size，completed 时 content 数组提供
 // 下载定位，failed 时 error 对象）。字段顺序对齐 mockupstream videoObject
-//（Mock 上游按本契约派生，adapter 按同一契约消费）。
+// （Mock 上游按本契约派生，adapter 按同一契约消费）。
 type openaiVideoObject struct {
 	ID            string                   `json:"id"`
 	Object        string                   `json:"object"`

@@ -33,6 +33,8 @@ const (
 	glmCodingOpenAIV1ProfileID           = "profile_glm_coding_openai_v1"
 	glmCodingAnthropicV1ProfileID        = accountscore.GlmCodingAnthropicV1ProfileID
 	geminiOpenAIChatV1BetaProfileID      = "profile_gemini_openai_chat_v1beta"
+	minimaxOpenAIV1ProfileID             = "profile_minimax_openai_v1"
+	volcengineOpenAIV1ProfileID          = "profile_volcengine_openai_v1"
 	anthropicProviderCode                = accountscore.AnthropicProviderCode
 	geminiProviderCode                   = accountscore.GeminiProviderCode
 	anthropicProtocolCodeConstant        = accountscore.AnthropicProtocolCode
@@ -41,6 +43,8 @@ const (
 	geminiProtocolVersionConstant        = accountscore.GeminiProtocolVersion
 	deepSeekProviderCode                 = accountscore.DeepSeekProviderCode
 	glmProviderCode                      = accountscore.GlmProviderCode
+	minimaxProviderCode                  = accountscore.MinimaxProviderCode
+	volcengineProviderCode               = accountscore.VolcengineProviderCode
 	xaiProviderCode                      = accountscore.XaiProviderCode
 	hybridProviderCode                   = accountscore.HybridProviderCode
 	openAICompatibleProviderCodeConstant = accountscore.OpenAICompatibleProviderCode
@@ -53,6 +57,36 @@ var anthropicEndpointModeValues = accountscore.AnthropicEndpointModeValues
 var geminiEndpointModeValues = accountscore.GeminiEndpointModeValues
 var hybridEndpointModeValues = accountscore.HybridEndpointModeValues
 var openAIChatEndpointModeSet = accountscore.StringSet(openAIChatEndpointModes)
+
+// glmVideoEndpointModeSet 是 glm OpenAI 协议档案可显式勾选的视频端点模式
+//（M3 cogvideo adapter，契约 §7.1；与 openai 族共享 video_* token，opt-in
+// 不进默认集——DefaultOpenAIEndpointModes 的 glm 分支仍只落 chat 对）。
+var glmVideoEndpointModeSet = accountscore.StringSet([]string{
+	"video_create", "video_get", "video_content", "video_cancel",
+})
+
+// minimaxMediaEndpointModeSet 是 minimax 媒体档案（profile_minimax_openai_v1）
+// 可声明的全部端点模式（M3，契约 §8）：audio_speech（t2a_v2）+ video_*
+// 四值（video_generation）——档案 Capabilities 只声明媒体，不承接 chat/
+// responses（MiniMax 聊天端点非 OpenAI Chat 形态）；全部 opt-in，默认集
+// 只有 audio_speech（与档案 DefaultHealthCheckModel=speech-02-turbo 的
+// 健康检查面对应，同 glm 默认 chat 对的先例结构）。
+var minimaxMediaEndpointModeSet = accountscore.StringSet([]string{
+	"audio_speech", "video_create", "video_get", "video_content", "video_cancel",
+})
+
+// volcengineVideoEndpointModeSet 是 volcengine 媒体档案（profile_volcengine_
+// openai_v1）可声明的全部端点模式（M3，契约 §9.1）：仅 video_* 四值
+//（video_generation）——TTS 面（契约 §9.2）未回填不收录 audio_speech；档案
+// Capabilities 只声明视频，不承接 chat/responses（火山方舟聊天走独立
+// doubao 模型面，本档案不声明）。全部 opt-in；默认集 video_get（只读任务
+// 查询形态——volcengine 无可自动探针的健康检查面，视频不做自动真实生成
+// 探针（按秒计费成本高，媒体设计 §11.9），video_get 是唯一零费用档的
+// 合法默认；创建 video_create 仍需显式开启，与 minimax 默认集结构的差异
+// 在于 minimax 有 TTS 廉价探针面而 volcengine 只有视频面）。
+var volcengineVideoEndpointModeSet = accountscore.StringSet([]string{
+	"video_create", "video_get", "video_content", "video_cancel",
+})
 
 func stringSet(values []string) map[string]bool {
 	return accountscore.StringSet(values)
@@ -79,6 +113,14 @@ func isDeepSeekProviderCodeToken(value string) bool {
 
 func isGlmProviderCodeToken(value string) bool {
 	return accountscore.IsGlmProviderCodeToken(value)
+}
+
+func isMinimaxProviderCodeToken(value string) bool {
+	return accountscore.IsMinimaxProviderCodeToken(value)
+}
+
+func isVolcengineProviderCodeToken(value string) bool {
+	return accountscore.IsVolcengineProviderCodeToken(value)
 }
 
 func isGeminiProviderCodeToken(value string) bool {
@@ -333,6 +375,31 @@ var providerAccountCredentialDrivers = []credentialDriver{
 		normalizeForWrite: normalizeGLMEndpointModesForWrite,
 	},
 	{
+		// M3 媒体供应商（契约 §8）：minimax 唯一档案 profile_minimax_openai_v1
+		//（openai 协议、API Key）。词表只放媒体 token——词表缺失会让管理面
+		// 账户创建报「供应商协议档案未注册接口能力归一化：minimax」。
+		id: "minimax",
+		supportsContext: func(c endpointModeDefaultContext) bool {
+			return isMinimaxProviderCodeToken(c.providerCode) &&
+				isOpenAIProtocolProfileOf(c.predicate()) &&
+				c.providerProtocolProfileID == minimaxOpenAIV1ProfileID
+		},
+		normalizeForWrite: normalizeMinimaxEndpointModesForWrite,
+	},
+	{
+		// M3 媒体供应商（契约 §9.1）：volcengine 唯一档案
+		// profile_volcengine_openai_v1（openai 协议、API Key）。词表只放视频
+		// token——词表缺失会让管理面账户创建报「供应商协议档案未注册接口
+		// 能力归一化：volcengine」（同 minimax 结构先例）。
+		id: "volcengine",
+		supportsContext: func(c endpointModeDefaultContext) bool {
+			return isVolcengineProviderCodeToken(c.providerCode) &&
+				isOpenAIProtocolProfileOf(c.predicate()) &&
+				c.providerProtocolProfileID == volcengineOpenAIV1ProfileID
+		},
+		normalizeForWrite: normalizeVolcengineEndpointModesForWrite,
+	},
+	{
 		id: "hybrid",
 		supportsContext: func(c endpointModeDefaultContext) bool {
 			return isHybridProviderCodeToken(c.providerCode)
@@ -385,7 +452,10 @@ func normalizeDeepSeekEndpointModesForWrite(value optionalValue, context endpoin
 }
 
 // normalizeGLMEndpointModesForWrite mirrors the glm driver body: anthropic
-// profiles pin the messages pair, openai profiles pin the chat pair.
+// profiles pin the messages pair, openai profiles pin the chat pair + the M3
+// video tokens (opt-in, cogvideo adapter; 契约 §7.1——词表缺失会让显式勾选
+// 视频能力的 glm 账户在创建/编辑时被拒，/v1/videos 创建链按 video_create
+// 候选过滤无账户可命中，与 M2 openai 族 video_* 同语义，不进默认集)。
 func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	anthropicMessagesModes := map[string]bool{"messages_json": true, "messages_sse": true}
 	if isAnthropicProtocolProfileOf(context.predicate()) || context.providerProtocolProfileID == glmCodingAnthropicV1ProfileID {
@@ -416,7 +486,7 @@ func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointMode
 	}
 	unsupported := []string{}
 	for _, mode := range modes {
-		if !openAIChatEndpointModeSet[mode] {
+		if !openAIChatEndpointModeSet[mode] && !glmVideoEndpointModeSet[mode] {
 			unsupported = append(unsupported, mode)
 		}
 	}
@@ -425,10 +495,72 @@ func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointMode
 		if context.providerProtocolProfileID == glmCodingOpenAIV1ProfileID {
 			chatCapabilityName = "OpenAI Chat Completions"
 		}
-		return nil, fmt.Errorf("智谱 GLM 账户上游接口能力只支持 %s (JSON) 或 %s (Streaming)：%s",
+		return nil, fmt.Errorf("智谱 GLM 账户上游接口能力只支持 %s (JSON)、%s (Streaming) 或视频生成端点 (video_*)：%s",
 			chatCapabilityName, chatCapabilityName, strings.Join(unsupported, ", "))
 	}
 	return modes, nil
+}
+
+// normalizeMinimaxEndpointModesForWrite 是 minimax 媒体档案的写侧归一化
+//（M3，契约 §8；沿 glm driver 结构）：值域校验用 openai 族词表（audio_
+// speech/video_* 是跨协议共享 token），再收敛到 minimax 媒体集——chat/
+// responses 等对话模式对 minimax 账户报错（档案 Capabilities 只声明媒体，
+// MiniMax 聊天端点非 OpenAI Chat 形态）。默认集 audio_speech（TTS 健康检查
+// 面）；video_* opt-in。
+func normalizeMinimaxEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
+	pinned := context
+	pinned.providerCode = minimaxProviderCode
+	modes, err := normalizeOpenAIEndpointModesForWrite(optOrDefault(value, []string{"audio_speech"}), pinned)
+	if err != nil {
+		return nil, err
+	}
+	unsupported := []string{}
+	for _, mode := range modes {
+		if !minimaxMediaEndpointModeSet[mode] {
+			unsupported = append(unsupported, mode)
+		}
+	}
+	if len(unsupported) > 0 {
+		return nil, fmt.Errorf("MiniMax 账户上游接口能力只支持语音合成 (audio_speech) 或视频生成端点 (video_*)：%s",
+			strings.Join(unsupported, ", "))
+	}
+	return modes, nil
+}
+
+// normalizeVolcengineEndpointModesForWrite 是 volcengine 媒体档案的写侧
+// 归一化（M3，契约 §9.1；沿 minimax driver 结构）：值域校验用 openai 族
+// 词表（video_* 是跨协议共享 token），再收敛到 volcengine 视频集——chat/
+// responses/audio_speech 等模式对 volcengine 账户报错（档案 Capabilities
+// 只声明视频，TTS 面未回填、聊天端点非 OpenAI Chat 形态）。默认集
+// video_get（只读任务查询，零费用档）；video_create/video_content/
+// video_cancel opt-in。
+func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
+	pinned := context
+	pinned.providerCode = volcengineProviderCode
+	modes, err := normalizeOpenAIEndpointModesForWrite(optOrDefault(value, []string{"video_get"}), pinned)
+	if err != nil {
+		return nil, err
+	}
+	unsupported := []string{}
+	for _, mode := range modes {
+		if !volcengineVideoEndpointModeSet[mode] {
+			unsupported = append(unsupported, mode)
+		}
+	}
+	if len(unsupported) > 0 {
+		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持视频生成端点 (video_*)：%s",
+			strings.Join(unsupported, ", "))
+	}
+	return modes, nil
+}
+
+// optOrDefault 把缺省（!present）的可选值替换为固定默认（minimax/volcengine
+// 写侧默认集不参与 DefaultOpenAIEndpointModes 的 chat 分支，单独承载）。
+func optOrDefault(value optionalValue, defaults []string) optionalValue {
+	if !value.present {
+		return opt(append([]string{}, defaults...))
+	}
+	return value
 }
 
 // providerAccountCredentialDriverForContext mirrors

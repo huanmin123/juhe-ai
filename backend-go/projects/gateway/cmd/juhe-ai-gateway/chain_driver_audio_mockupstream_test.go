@@ -101,7 +101,7 @@ func TestChainDriverGeminiSpeechUpstreamRoundTrip(t *testing.T) {
 	if adapter == nil {
 		t.Fatal("gemini speech adapter missing")
 	}
-	audio, contentType, err := adapter.TransformResponse(body)
+	audio, contentType, err := adapter.TransformResponse(body, gatewaymedia.SpeechRequest{})
 	if err != nil {
 		t.Fatalf("transform response: %v", err)
 	}

@@ -201,7 +201,7 @@ func TestMediaJobsListRowsAndFilters(t *testing.T) {
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: longPrompt, Seconds: &seconds, Size: "1280x720"},
 	})
 	secondsOut := 4.0
-	if err := env.repo.UpdateTerminal(context.Background(), "video_admin_completed", gatewaymedia.JobStatusCompleted,
+	if _, err := env.repo.UpdateTerminal(context.Background(), "video_admin_completed", gatewaymedia.JobStatusCompleted,
 		nil, gatewaymedia.MediaJobArtifact{}, gatewaymedia.MediaJobUsage{OutputVideoSeconds: &secondsOut}, 0.4); err != nil {
 		t.Fatalf("update terminal: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestMediaJobsListRowsAndFilters(t *testing.T) {
 		ProviderCode: "openai", UpstreamJobID: "up_2", Status: gatewaymedia.JobStatusQueued,
 		RequestSnapshot: gatewaymedia.MediaJobRequestSnapshot{Model: "sora-2", Prompt: "失败任务"},
 	})
-	if err := env.repo.UpdateTerminal(context.Background(), "video_admin_failed", gatewaymedia.JobStatusFailed,
+	if _, err := env.repo.UpdateTerminal(context.Background(), "video_admin_failed", gatewaymedia.JobStatusFailed,
 		&gatewaymedia.MediaJobError{Code: "upstream_5xx", Message: "上游失败"}, gatewaymedia.MediaJobArtifact{},
 		gatewaymedia.MediaJobUsage{}, 0); err != nil {
 		t.Fatalf("update terminal failed row: %v", err)

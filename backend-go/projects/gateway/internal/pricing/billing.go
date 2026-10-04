@@ -181,6 +181,24 @@ var billingPolicies = []*billingPolicy{
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
 		},
 	},
+	{
+		// M3 媒体供应商新增（媒体设计 §9/契约 §8）：MiniMax 只有媒体行项
+		//（tts_input_chars / video_output_seconds，目录未落价——见
+		// data_minimax.go 计价落法注释），token 行项标签沿用默认集。
+		id:                       "minimax",
+		rejectUnsupportedTier:    true,
+		cacheReadIncludedInInput: true,
+		labels:                   defaultTokenBillingLabels,
+	},
+	{
+		// M3 媒体供应商新增（媒体设计 §9/契约 §9）：火山方舟只有媒体行项
+		//（video_output_seconds，目录未落价——见 data_volcengine.go 计价落法
+		// 注释），token 行项标签沿用默认集。
+		id:                       "volcengine",
+		rejectUnsupportedTier:    true,
+		cacheReadIncludedInInput: true,
+		labels:                   defaultTokenBillingLabels,
+	},
 }
 
 // billingPolicyForProvider mirrors providerBillingPolicyForProvider

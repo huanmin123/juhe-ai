@@ -9,6 +9,7 @@ package gatewaydispatch
 import (
 	"testing"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/routestrategies"
 )
@@ -126,5 +127,22 @@ func TestResolveNormalRouteTotalTimeDeadline(t *testing.T) {
 				t.Fatalf("deadlineAtMs = %d, want %d", deadline.DeadlineAtMs, tt.wantDeadlineAtMs)
 			}
 		})
+	}
+}
+
+// 估算输入投影（nil 安全）：nil 请求 / nil body 按 0（普通档）处理；
+// 正常 body 走 gatewayopenai 字符加权估算。
+func TestEstimateNormalRouteRequestInputTokens(t *testing.T) {
+	if got := estimateNormalRouteRequestInputTokens(nil); got != 0 {
+		t.Fatalf("nil req = %d, want 0", got)
+	}
+	if got := estimateNormalRouteRequestInputTokens(&gatewaypreauth.GatewayRequest{}); got != 0 {
+		t.Fatalf("nil body = %d, want 0", got)
+	}
+	req := &gatewaypreauth.GatewayRequest{Body: &gatewaybody.Request{
+		RawBody: []byte(`{"model":"gpt-6.1-sol","messages":[{"role":"user","content":"hello world"}]}`),
+	}}
+	if got := estimateNormalRouteRequestInputTokens(req); got <= 0 {
+		t.Fatalf("正常 body 估算 = %d，必须为正", got)
 	}
 }
