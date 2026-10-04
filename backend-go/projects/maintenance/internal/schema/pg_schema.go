@@ -580,6 +580,18 @@ var pgSeedProviders = []pgSeedProvider{
 		DefaultSupportedModelsJSON: "[\"doubao-seedance-1-0-pro-250528\"]",
 	},
 	{
+		// M3 媒体新增供应商（媒体设计 §9/契约 §10）：通义百炼仅声明视频能力
+		//（万相 wan 系 DashScope 异步任务），CosyVoice TTS/paraformer 长转写
+		// 面未回填（契约 §10.2）不声明——档案与目录均无 audio/chat 能力。
+		ID:                         "qwen",
+		Code:                       "qwen",
+		Name:                       "通义百炼",
+		Description:                "通义百炼（阿里云 DashScope）官方供应商，支持 API Key 接入视频生成（万相 wan 系 video-synthesis 异步任务）媒体能力",
+		ParentCode:                 "",
+		Enabled:                    1,
+		DefaultSupportedModelsJSON: "[\"wan2.2-t2v-plus\"]",
+	},
+	{
 		ID:                         "hybrid",
 		Code:                       "hybrid",
 		Name:                       "混合供应商",
@@ -624,6 +636,11 @@ var pgSeedEndpointFamilies = []pgSeedEndpointFamily{
 	// 改写（minimax video_generation / t2a_v2，契约 §8）。
 	{ID: "openai_v1_video_generation", ProtocolCode: "openai", ProtocolVersion: "v1", Code: "video_generation", Name: "Video Generation", Description: "OpenAI v1 统一 /videos 面承载的厂商原生视频生成任务形态", Enabled: 1},
 	{ID: "openai_v1_tts", ProtocolCode: "openai", ProtocolVersion: "v1", Code: "tts", Name: "TTS", Description: "OpenAI v1 统一 /audio/speech 面承载的厂商原生语音合成形态", Enabled: 1},
+	// M3f 长音频任务族（媒体设计 §4.2，契约 §10.2）：openai 协议族的厂商
+	// 原生长转写端点族——统一 /v1/audio/jobs 面承载，厂商原生报文经长转写
+	// adapter 改写（首个上游 qwen paraformer 录音文件识别；沿 video_generation
+	// family 先例）。
+	{ID: "openai_v1_audio_transcription", ProtocolCode: "openai", ProtocolVersion: "v1", Code: "audio_transcription", Name: "Audio Transcription", Description: "OpenAI v1 统一 /audio/jobs 面承载的厂商原生长音频转写任务形态", Enabled: 1},
 }
 
 // pgSeedProfile mirrors DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS. AccountTypes
@@ -810,8 +827,14 @@ var pgSeedProfiles = []pgSeedProfile{
 		BaseURL:                 "",
 		DefaultHealthCheckModel: "",
 		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"chat", "responses", "messages", "generate_content", "stream_generate_content", "bridge"},
-		EndpointFamilies:        []string{"chat_completions", "responses", "messages", "generate_content", "stream_generate_content"},
+		// M4b 媒体映射（媒体设计 §9 hybrid 行）：Capabilities/EndpointFamilies
+		// 补媒体族（video_generation/tts，与 schema 端点族 seed
+		// openai_v1_video_generation / openai_v1_tts 同码）——hybrid 聚合中转
+		// 的媒体模型映射（source 对外媒体模型名 → upstream 真实媒体模型名）
+		// 经账号映射的 video_generation/tts 族表达，执行走 openai 形态媒体
+		// 端点（/v1/videos、/v1/audio/speech）直连该中转。
+		Capabilities:     []string{"chat", "responses", "messages", "generate_content", "stream_generate_content", "bridge", "video_generation", "tts"},
+		EndpointFamilies: []string{"chat_completions", "responses", "messages", "generate_content", "stream_generate_content", "video_generation", "tts"},
 	},
 	{
 		ID:                      "profile_hybrid_anthropic_messages_v1",
@@ -869,6 +892,32 @@ var pgSeedProfiles = []pgSeedProfile{
 		Capabilities:            []string{"video_generation"},
 		EndpointFamilies:        []string{"video_generation"},
 	},
+	{
+		// M3 媒体新增供应商档案（媒体设计 §9/契约 §10）：通义百炼 API Key 单
+		// 档案，Capabilities 声明 video_generation 与 audio_transcription
+		//（M3f 长转写，契约 §10.2 回填；EndpointFamilies 同名——video_
+		// generation 复用 minimax 批次族行，audio_transcription 复用 M3f 新增
+		// 族行）——CosyVoice TTS 面（契约 §10.2）未回填不声明，百炼聊天走 qwen
+		// 对话模型面（非本媒体档案）不承接聊天流量（目录无 chat 模型行，模型
+		// 门双保险）。BaseURL 为 DashScope 官方根 dashscope.aliyuncs.com；出站
+		// 路径 /api/v1/services/aigc/video-generation/video-synthesis、
+		// /api/v1/services/audio/asr/transcription 与 /api/v1/tasks/{id} 由链上
+		// chainQwenVideoUpstreamURL 归一拼缀；万相创建请求头带
+		// X-DashScope-Async: enable（DashScope 异步任务约定），paraformer 创建
+		// 无该头（天然异步服务）。
+		ID:                      "profile_qwen_openai_v1",
+		ProviderCode:            "qwen",
+		Name:                    "通义百炼 / OpenAI v1 媒体",
+		Description:             "通义百炼（阿里云 DashScope）官方 API Key 协议档案，承载视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别异步任务）媒体能力；CosyVoice TTS 面未回填，本档案不声明",
+		Enabled:                 1,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		BaseURL:                 "https://dashscope.aliyuncs.com",
+		DefaultHealthCheckModel: "wan2.2-t2v-plus",
+		AccountTypes:            []string{"api_key"},
+		Capabilities:            []string{"video_generation", "audio_transcription"},
+		EndpointFamilies:        []string{"video_generation", "audio_transcription"},
+	},
 }
 
 // pgSeedGroup mirrors DEFAULT_BUILT_IN_GROUPS.
@@ -886,6 +935,7 @@ var pgSeedGroups = []pgSeedGroup{
 	{ID: "grp_default_glm_sys_admin", SystemAccountID: "sys_admin", Name: "默认 GLM 分组", ProviderCode: "glm", Description: ""},
 	{ID: "grp_default_minimax_sys_admin", SystemAccountID: "sys_admin", Name: "默认 MiniMax 分组", ProviderCode: "minimax", Description: ""},
 	{ID: "grp_default_volcengine_sys_admin", SystemAccountID: "sys_admin", Name: "默认火山方舟分组", ProviderCode: "volcengine", Description: ""},
+	{ID: "grp_default_qwen_sys_admin", SystemAccountID: "sys_admin", Name: "默认通义百炼分组", ProviderCode: "qwen", Description: ""},
 	{ID: "grp_default_hybrid_openai_chat_sys_admin", SystemAccountID: "sys_admin", Name: "默认混合供应商分组", ProviderCode: "hybrid", Description: "混合供应商账户保存真实上游凭据和 Base URL，允许账户内配置跨协议入口映射"},
 }
 

@@ -119,6 +119,8 @@
 - [上游客户端身份版本覆盖](上游客户端身份版本覆盖.md)：系统设置 `upstreamClientVersionOverrides` 按五家族热覆盖上游客户端画像版本（非空即生效、可降级、清空回内置），含内置锚点表与维护规则。
 - [智谱 GLM 账号接入](智谱GLM账号接入.md)
 - [MiniMax 账号接入](MiniMax账号接入.md)：M3 媒体专用供应商（Hailuo 视频 + speech TTS，API Key 单档案 `profile_minimax_openai_v1`，不承接聊天流量）。
+- [火山方舟 账号接入](火山方舟账号接入.md)：M3 媒体专用供应商（豆包 Seedance 视频，API Key 单档案 `profile_volcengine_openai_v1`，不承接聊天/TTS 流量）。
+- [通义百炼 账号接入](通义百炼账号接入.md)：M3 媒体专用供应商（万相 wan 系视频，DashScope 异步任务 + `X-DashScope-Async` 创建头，API Key 单档案 `profile_qwen_openai_v1`，不承接聊天/TTS 流量）。
 - [DeepSeek 账号接入](DeepSeek账号接入.md)
 - [Gemini 账号接入](Gemini账号接入.md)
 - [Gemini 协议兼容设计](Gemini协议兼容设计.md)

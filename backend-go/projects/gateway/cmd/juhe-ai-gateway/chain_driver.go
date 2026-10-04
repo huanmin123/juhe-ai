@@ -303,9 +303,10 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		// adapter 同模式短路返回；不进通用映射/改写链（统一参数规范在归一层
 		// 完成，不透传厂商参数面）。glm 账户（M3 cogvideo adapter）的出站路径
 		// 自带 /api/paas/v4 服务根，volcengine 账户（M3 seedance adapter，契约
-		// §9.1）自带 /api/v3 服务根，URL 分别按 chainGlmVideoUpstreamURL /
-		// chainVolcengineVideoUpstreamURL 归一（官方根去重，不走 openai /v1
-		// 强制补缀）；其余走 openai 归一。
+		// §9.1）自带 /api/v3 服务根，qwen 账户（M3 万相 adapter，契约 §10.1）
+		// 自带 /api/v1 服务根，URL 分别按 chainGlmVideoUpstreamURL /
+		// chainVolcengineVideoUpstreamURL / chainQwenVideoUpstreamURL 归一
+		//（官方根去重，不走 openai /v1 强制补缀）；其余走 openai 归一。
 		if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
 			if chainVideoAdapterKeyOfProvider(account.ProviderCode) == "glm" {
 				upstreamURL, urlErr := chainGlmVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
@@ -321,9 +322,33 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 				}
 				return []string{upstreamURL}, nil
 			}
+			if chainVideoAdapterKeyOfProvider(account.ProviderCode) == "qwen" {
+				upstreamURL, urlErr := chainQwenVideoUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)
+				if urlErr != nil {
+					return nil, urlErr
+				}
+				return []string{upstreamURL}, nil
+			}
 			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)}, nil
 		} else if videoErr != nil {
 			return nil, videoErr
+		}
+		// M3f 长音频任务创建（POST /v1/audio/jobs）：qwen 账户（paraformer，
+		// 契约 §10.2）出站路径自带 /api/v1 服务根，URL 按
+		// chainQwenVideoUpstreamURL 归一（官方根去重，与万相视频共用该 /api/v1
+		// 归一）；其余无长转写 adapter 的 provider 在 audioJobCreateRequest
+		// 内显式失败（能力缺失不静默回退）。
+		if audioPlan, audioErr := d.audioJobCreateRequest(req, account); audioPlan != nil {
+			if chainAudioJobAdapterKeyOfProvider(account.ProviderCode) == "qwen" {
+				upstreamURL, urlErr := chainQwenVideoUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)
+				if urlErr != nil {
+					return nil, urlErr
+				}
+				return []string{upstreamURL}, nil
+			}
+			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, audioPlan.createRequest.Path)}, nil
+		} else if audioErr != nil {
+			return nil, audioErr
 		}
 		// M3 同步音频（契约 §8.2）：minimax 账户的 speech 请求由 gatewaymedia
 		// 注册表的 minimax t2a_v2 adapter 承载（URL/body 改写 + 响应 hex 解码
@@ -376,13 +401,33 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	}
 	// M2 视频创建（媒体设计 §5）：adapter 出站报文（URL 与 body 同源
 	// adapter.Create），在协议透传之前短路返回；客户端 body 不进通用映射/
-	// compatibility 链（统一参数规范 L1/L2/L3 已在归一层完成）。
+	// compatibility 链（统一参数规范 L1/L2/L3 已在归一层完成）。M3 qwen 起
+	// adapter 可声明厂商私有创建头（ExtraHeaders，DashScope 异步任务约定
+	// X-DashScope-Async，契约 §10.1）——在此注入；既有 provider 的 ExtraHeaders
+	// 为 nil 零差异。
 	if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
 		headers := upstreamHeadersOf(req, account)
 		headers.Set("Content-Type", "application/json")
+		for name, value := range videoPlan.createRequest.ExtraHeaders {
+			headers.Set(name, value)
+		}
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: videoPlan.createRequest.Body}, nil
 	} else if videoErr != nil {
 		return gatewaydispatch.PreparedRequestParts{}, videoErr
+	}
+	// M3f 长音频任务创建（POST /v1/audio/jobs，媒体设计 §4.2/§5）：结构与
+	// 视频创建短路一致——adapter 出站报文（URL 与 body 同源 adapter.Create）
+	// 在协议透传之前短路返回；paraformer 的 ExtraHeaders 恒 nil（天然异步
+	// 服务无 DashScope 私有头，契约 §10.2）。
+	if audioPlan, audioErr := d.audioJobCreateRequest(req, account); audioPlan != nil {
+		headers := upstreamHeadersOf(req, account)
+		headers.Set("Content-Type", "application/json")
+		for name, value := range audioPlan.createRequest.ExtraHeaders {
+			headers.Set(name, value)
+		}
+		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: audioPlan.createRequest.Body}, nil
+	} else if audioErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, audioErr
 	}
 	// M1 同步音频：gemini speech adapter 分派（URL/body 同源 BuildRequest）。
 	if adapter, ir, ok := d.geminiSpeechRequest(req, account); ok {
@@ -678,11 +723,13 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 
 // requestMappingSourceFamilyOf returns the request-side source endpoint family
 // in the stored model-mapping vocabulary (chat_completions / responses /
-// messages / generate_content / stream_generate_content / count_tokens). The
-// gateway dispatch filter resolves mappings with the same vocabulary
-// (dispatch/candfilters.go gatewayRequestEndpointFamily); the previous
-// chat/responses-only view made messages-source bridge mappings unresolvable
-// in the driver chain (D-149).
+// messages / generate_content / stream_generate_content / count_tokens /
+// video_generation / tts). The gateway dispatch filter resolves mappings with
+// the same vocabulary (dispatch/candfilters.go gatewayRequestEndpointFamily);
+// the previous chat/responses-only view made messages-source bridge mappings
+// unresolvable in the driver chain (D-149). M4b 媒体映射（媒体设计 §9 hybrid
+// 行）：POST /v1/videos 创建形态归 video_generation、POST /v1/audio/speech
+// 归 tts——两侧（构造/记账/冻结与候选过滤）同词表解析媒体映射。
 func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
 	if req == nil {
 		return gatewayopenai.FamilyChatCompletions
@@ -704,6 +751,16 @@ func requestMappingSourceFamilyOf(req *gatewaypreauth.GatewayRequest) string {
 		// 会在记账/冻结侧命中映射而派发侧恒不命中，两侧词表不一致。
 		return "count_tokens"
 	default:
+		if req.MethodUpper() == http.MethodPost {
+			switch chainStripGatewayVersionPrefix(strings.ToLower(strings.TrimSpace(path))) {
+			case "/videos":
+				// 仅创建形态归媒体映射族（任务面 GET/DELETE 走账户亲和直连，
+				// 不经映射解析）。
+				return gatewayopenai.FamilyVideoGeneration
+			case "/audio/speech":
+				return gatewayopenai.FamilyTts
+			}
+		}
 		if chainStripGatewayVersionPrefix(path) == "/messages" && req.MethodUpper() == "POST" {
 			return "messages"
 		}
@@ -1444,6 +1501,35 @@ func (d *chainProviderDriver) videoCreateRequest(req *gatewaypreauth.GatewayRequ
 		body = d.materializedParsedJSONObjectBody(req)
 	}
 	return chainVideoCreatePlanOf(body, req, account)
+}
+
+// audioJobCreateRequest 解析"长音频任务创建请求 + 账户"的 adapter 出站计划
+// （M3f，POST /v1/audio/jobs，媒体设计 §4.2/§5；当前仅 openai 协议族——
+// paraformer 经 qwen 媒体档案 profile_qwen_openai_v1 承载，gemini 族无长
+// 转写 adapter：写侧词表不含 audio_job_*，账户不会进入本分支）。ok=false
+// 且 err=nil 表示本请求不是长音频创建形态；err 非 nil 是构造失败（请求体非
+// JSON 对象（multipart）或参数能力边界 → GatewayRequestValidationError 本地
+// 400 不换账户——multipart 文件输入对任何账户都会重演，契约 §10.2 上游只收
+// file_urls、零存储不暂存；provider 无长转写 adapter → 原生错误，能力缺失
+// 不静默回退）。
+func (d *chainProviderDriver) audioJobCreateRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (*chainAudioJobCreatePlan, error) {
+	if req == nil || req.HTTP == nil {
+		return nil, nil
+	}
+	if !chainIsAudioJobCreateRequest(req) {
+		return nil, nil
+	}
+	if normalizeProtocol(account.ProtocolCode) != driverProtocolOpenAI {
+		return nil, nil
+	}
+	if chainAudioJobAdapterForAccount(account.ProviderCode) == nil {
+		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持长音频转写", account.ID, account.ProviderCode)
+	}
+	body := req.ParsedJSONObjectBody()
+	if body == nil {
+		body = d.materializedParsedJSONObjectBody(req)
+	}
+	return chainAudioJobCreatePlanOf(body, req, account)
 }
 
 // ---------------------------------------------------------------------------

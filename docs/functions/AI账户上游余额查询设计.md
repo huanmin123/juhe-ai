@@ -274,6 +274,7 @@ POST /__aisys__/api/accounts/:id/balance/refresh
 - 前端收到最新快照后必须替换当前页的目标账户对象和列表数组引用，只重渲染该行余额；禁止为了显示新金额重新请求整张账户列表。当前列表使用 `shallowRef`，不能只修改数组内部对象的 `balanceSnapshot`。
 - 列表人工刷新拿到本次结果后先替换当前行；失败或不支持立即显示“余额查询失败”，不能继续展示旧金额。
 - 人工刷新允许对当前不可调用账户主动检测；失败只保存本次诊断语义，不能取消自动周期。
+- **双方言装配（2026-10-04 起）**：手动刷新执行器在 gateway 进程内双方言装配——PG 模式经共享池使用 `juhe_jobs.account_balance_*` 租约四表（与 J2 周期任务同表互斥），SQLite standalone 模式经共享核心 `StoreSQLite` 在 `JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH`（默认 `<数据根>/account-balance.sqlite3`）自建同构四表（gateway 独占；与周期探测 auto-detect-recovery 的 task-runs 租约无四表级互斥，并发仅为幂等读）。SQLite 模式 committed 快照由 gateway 直写 `account_usage_snapshots`（kind='relay_balance'，UPSERT 语义与 J2 投影一致）供列表 overlay 读取；PG 模式该通道由 jobs `account-balance-stats-projection` 周期投影承担，行为不变。失败分级双方言一致：租约库路径缺失或契约校验（CheckSchema）失败时端口降级为既有 500/失败快照契约并登记告警（不阻塞启动）；store 打开或执行器创建失败则组合根启动失败（fail-fast）。
 
 新增/编辑弹窗使用独立草稿测试接口：
 

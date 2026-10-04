@@ -93,6 +93,7 @@ func decodeVideoJob(t *testing.T, response fullchainChatResponse) map[string]any
 // fullchainMediaJobRow 是 GET /__aisys__/api/media-jobs 列表行的断言投影。
 type fullchainMediaJobRow struct {
 	ID            string
+	Kind          string
 	Status        string
 	AccountID     string
 	ProviderJobID string
@@ -115,6 +116,7 @@ func (f *fullchainFixture) listMediaJobRows(t *testing.T, apiKeyID string) []ful
 		cost, _ := item["costUsd"].(float64)
 		out = append(out, fullchainMediaJobRow{
 			ID:            str(item["id"]),
+			Kind:          str(item["kind"]),
 			Status:        str(item["status"]),
 			AccountID:     str(item["accountId"]),
 			ProviderJobID: str(item["providerJobId"]),
@@ -868,5 +870,449 @@ func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 	}
 	if creates != 1 || polls != 3 {
 		t.Fatalf("MV minimax 上游命中 creates=%d polls=%d, want 1/3", creates, polls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 用例 8：火山方舟 Seedance 全生命周期（media_volcengine_*，M3/契约 §9.1）
+// ---------------------------------------------------------------------------
+
+// fullchainVolcengineVideoCreateBody 是 volcengine 视频创建请求体：size
+// 1280x720 换算 resolution 720p + ratio 16:9、seconds 5 直传 duration、seed
+// 直传、input_reference（base64 data URL）进 content[].image_url 直传；
+// negative_prompt/audio 对 volcengine 请求面不存在 → params_ignored 回显；
+// camera_fixed 经 provider_options.volcengine 命中 → provider_options_applied
+// 回显。
+const fullchainVolcengineVideoCreateBody = `{"model":"doubao-seedance-1-0-pro-250528","prompt":"一只猫在弹钢琴","seconds":5,"size":"1280x720","seed":42,"input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","audio":false,"provider_options":{"volcengine":{"camera_fixed":true}}}`
+
+// fullchainCreateVolcengineVideoAccount 经管理面创建指向 mock 上游的
+// volcengine api_key 账户并绑定分组（volcengine 供应商 + 媒体档案
+// profile_volcengine_openai_v1；目录 seed 预置 doubao-seedance-1-0-pro-250528
+// 行）；凭据显式声明 openai 族词表的 video_* 端点模式（opt-in，volcengine
+// 档案 Capabilities 只声明视频——无 chat/audio 模式，本用例同时覆盖该写侧
+// 门禁）。
+func (f *fullchainFixture) fullchainCreateVolcengineVideoAccount(name, upstreamKey, groupID string) string {
+	f.t.Helper()
+	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
+		"providerCode":              "volcengine",
+		"providerProtocolProfileId": "profile_volcengine_openai_v1",
+		"name":                      name,
+		"type":                      "api_key",
+		"credentials": map[string]any{
+			"api_key":  upstreamKey,
+			"base_url": f.mock.server.URL,
+			"supported_endpoint_modes": []string{
+				"video_create", "video_get", "video_content", "video_cancel",
+			},
+		},
+		"supportedModels": []string{"doubao-seedance-1-0-pro-250528"},
+		"status":          "active",
+		"groupId":         groupID,
+	}, wantStatus(http.StatusCreated))
+	accountID := str(data(created)["id"])
+	if accountID == "" {
+		f.t.Fatalf("volcengine video account create payload wrong: %#v", created)
+	}
+	return accountID
+}
+
+// TestFullchainMediaVideoVolcengineSeedance 验证 M3 volcengine（Seedance）视频
+// 链主流程（契约 §9.1）：管理面配置（volcengine 分组 + Seedance 模型账户，
+// 媒体档案无 chat 模式）→ 创建（contents/generations/tasks 报文改写、统一
+// job 对象、provider=volcengine、params 回显 negative_prompt/audio 进 ignored /
+// provider_options_applied 命中）→ 轮询 queued → in_progress → completed
+//（status 归一 + content.video_url 冻结）→ content 经绝对 URL 无凭据直连下载
+// mp4 → 管理面 media-jobs 行终态（usage_missing 口径 cost=0，不虚计）→ 账户
+// 亲和（上游命中只打 volcengine 账户 key 的 tasks 创建/轮询端点）。
+func TestFullchainMediaVideoVolcengineSeedance(t *testing.T) {
+	requireFullchainGate(t)
+	f := startFullchainFixture(t)
+
+	key := fullchainUpstreamKey(t, "mvve")
+	groupID := f.createGroupWithProvider("MVvolcengine组", "volcengine")
+	accountID := f.fullchainCreateVolcengineVideoAccount("全链路-MVvolcengine账户", key, groupID)
+	strategyID := f.createStrategy("全链路-MVvolcengine策略", "normal", []map[string]any{
+		{"groupId": groupID, "priority": 1, "weight": 100},
+	}, nil)
+	apiKey := f.createAPIKey("全链路-MVvolcengine-Key", strategyID)
+	apiKeyID := f.apiKeyIDByName("全链路-MVvolcengine-Key")
+
+	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status queued、
+	// provider_job_id 为 cgt-<16hex> 任务 id、params_applied 含 seconds/size/
+	// seed/input_reference、params_ignored 含 negative_prompt/audio、
+	// provider_options_applied 含 volcengine）。
+	f.mock.script(key, platformmock.ScenarioMediaVolcengineCreateOK)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainVolcengineVideoCreateBody)
+	if created.Status != http.StatusOK {
+		t.Fatalf("MV volcengine create status=%d body=%s", created.Status, created.Body)
+	}
+	job := decodeVideoJob(t, created)
+	jobID := str(job["id"])
+	if !strings.HasPrefix(jobID, "video_") {
+		t.Fatalf("MV volcengine job id 缺少 video_ 前缀: %#v", job)
+	}
+	if job["status"] != "queued" {
+		t.Fatalf("MV volcengine create status 字段 = %v, want queued", job["status"])
+	}
+	if job["provider"] != "volcengine" {
+		t.Fatalf("MV volcengine provider = %v, want volcengine", job["provider"])
+	}
+	providerJobID := str(job["provider_job_id"])
+	if !strings.HasPrefix(providerJobID, "cgt-") || len(providerJobID) != len("cgt-")+16 {
+		t.Fatalf("MV volcengine provider_job_id = %q, want cgt-<16hex> 任务 id 形态", providerJobID)
+	}
+	applied := fmt.Sprintf("%v", job["params_applied"])
+	for _, want := range []string{"model", "prompt", "seconds", "size", "seed", "input_reference"} {
+		if !strings.Contains(applied, want) {
+			t.Fatalf("MV volcengine params_applied 缺少 %s: %v", want, job["params_applied"])
+		}
+	}
+	ignoredList := fmt.Sprintf("%v", job["params_ignored"])
+	for _, want := range []string{"negative_prompt", "audio"} {
+		if !strings.Contains(ignoredList, want) {
+			t.Fatalf("MV volcengine params_ignored 缺少 %s（volcengine 请求面无对应字段）: %v", want, job["params_ignored"])
+		}
+	}
+	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "camera_fixed") {
+		t.Fatalf("MV volcengine provider_options_applied 缺少 camera_fixed（volcengine 子对象命中键名回显）: %v", job["provider_options_applied"])
+	}
+
+	// 轮询三次：queued → in_progress（running 归一）→ completed（succeeded +
+	// content.video_url 冻结）。
+	for index, want := range []string{"queued", "in_progress", "completed"} {
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+		if polled.Status != http.StatusOK {
+			t.Fatalf("MV volcengine poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
+		}
+		if object := decodeVideoJob(t, polled); object["status"] != want {
+			t.Fatalf("MV volcengine poll #%d status 字段 = %v, want %s", index+1, object["status"], want)
+		}
+	}
+
+	// content 下载：completed 的产物 url 是引擎渲染的绝对 URL，网关无凭据
+	// 直连（video/mp4 + ftyp magic bytes）。
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	if content.Status != http.StatusOK {
+		t.Fatalf("MV volcengine content status=%d body=%s", content.Status, content.Body)
+	}
+	if !strings.Contains(content.ContentType, "video/mp4") {
+		t.Fatalf("MV volcengine content-type=%q, want video/mp4", content.ContentType)
+	}
+	payload := []byte(content.Body)
+	if len(payload) < 12 || string(payload[4:8]) != "ftyp" {
+		t.Fatalf("MV volcengine content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
+	}
+
+	// 管理面 media-jobs：行终态 completed 归因 volcengine 账户；volcengine 无
+	// 输出秒回报且目录未落秒价 → cost_usd=0（契约 §2.8 usage_missing 不虚计）。
+	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
+		return row.Status == "completed"
+	}, "completed")
+	if row.AccountID != accountID {
+		t.Fatalf("MV volcengine row accountId=%s, want %s", row.AccountID, accountID)
+	}
+	if row.CostUsd != 0 {
+		t.Fatalf("MV volcengine row costUsd=%v, want 0（usage_missing 不虚计）", row.CostUsd)
+	}
+
+	// 账户亲和 + 出站形态：volcengine key 命中创建（POST /api/v3/contents/
+	// generations/tasks）与三轮轮询（GET 同路径 /{id}），无其它带凭据流量打到
+	// 该 key（content 直连无 Authorization，不落入该 key 的命中记录）。
+	creates, polls := 0, 0
+	for _, call := range f.mock.callsByKey(key) {
+		switch {
+		case call.Method == http.MethodPost && call.Path == "/api/v3/contents/generations/tasks":
+			creates++
+		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, "/api/v3/contents/generations/tasks/"):
+			polls++
+		default:
+			t.Fatalf("MV volcengine 未预期的上游请求: %#v", call)
+		}
+	}
+	if creates != 1 || polls != 3 {
+		t.Fatalf("MV volcengine 上游命中 creates=%d polls=%d, want 1/3", creates, polls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 用例 9：通义百炼万相全生命周期（media_qwen_*，M3 第五批/契约 §10.1）
+// ---------------------------------------------------------------------------
+
+// fullchainQwenVideoCreateBody 是 qwen 视频创建请求体：size 1920x1080 换算
+// parameters.size "1920*1080"（x→* 星号格式转换）、seconds 5 直传
+// parameters.duration、seed 直传、input_reference（base64 data URL）进
+// input.img_url 直传、negative_prompt 进 input.negative_prompt（官方原生
+// 字段，M3 首个 negative_prompt 生效的视频供应商）；audio 对 qwen 请求面
+// 无生成开关 → params_ignored 回显；prompt_extend 经 provider_options.qwen
+// 命中 → provider_options_applied 回显。
+const fullchainQwenVideoCreateBody = `{"model":"wan2.2-t2v-plus","prompt":"一只猫在弹钢琴","seconds":5,"size":"1920x1080","seed":42,"input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","audio":false,"provider_options":{"qwen":{"parameters":{"prompt_extend":true}}}}`
+
+// fullchainCreateQwenVideoAccount 经管理面创建指向 mock 上游的 qwen api_key
+// 账户并绑定分组（qwen 供应商 + 媒体档案 profile_qwen_openai_v1；目录 seed
+// 预置 wan2.2-t2v-plus 行）；凭据显式声明 openai 族词表的 video_* 端点模式
+//（opt-in，qwen 档案 Capabilities 只声明视频——无 chat/audio 模式，本用例
+// 同时覆盖该写侧门禁）。
+func (f *fullchainFixture) fullchainCreateQwenVideoAccount(name, upstreamKey, groupID string) string {
+	f.t.Helper()
+	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
+		"providerCode":              "qwen",
+		"providerProtocolProfileId": "profile_qwen_openai_v1",
+		"name":                      name,
+		"type":                      "api_key",
+		"credentials": map[string]any{
+			"api_key":  upstreamKey,
+			"base_url": f.mock.server.URL,
+			"supported_endpoint_modes": []string{
+				"video_create", "video_get", "video_content", "video_cancel",
+			},
+		},
+		"supportedModels": []string{"wan2.2-t2v-plus"},
+		"status":          "active",
+		"groupId":         groupID,
+	}, wantStatus(http.StatusCreated))
+	accountID := str(data(created)["id"])
+	if accountID == "" {
+		f.t.Fatalf("qwen video account create payload wrong: %#v", created)
+	}
+	return accountID
+}
+
+// TestFullchainMediaVideoQwenWanx 验证 M3 第五批 qwen（万相）视频链主流程
+//（契约 §10.1）：管理面配置（qwen 分组 + 万相模型账户，媒体档案无 chat
+// 模式）→ 创建（video-synthesis 报文改写 + X-DashScope-Async 异步头——mock
+// 引擎对无头创建按上游语义拒绝 400，创建成功本身即异步头到达的行为断言、
+// 统一 job 对象、provider=qwen、params 回显 negative_prompt 生效 / audio 进
+// ignored / provider_options_applied 命中）→ 轮询 queued → in_progress →
+// completed（task_status 归一 + output.video_url 冻结）→ content 经绝对 URL
+// 无凭据直连下载 mp4 → 管理面 media-jobs 行终态（usage JSON 字符串解析出
+// 5 秒计量照落、目录无 USD 秒价 cost=0 不虚计）→ 账户亲和（上游命中只打
+// qwen 账户 key 的 video-synthesis 创建与 /api/v1/tasks 轮询端点）。
+func TestFullchainMediaVideoQwenWanx(t *testing.T) {
+	requireFullchainGate(t)
+	f := startFullchainFixture(t)
+
+	key := fullchainUpstreamKey(t, "mvqw")
+	groupID := f.createGroupWithProvider("MVqwen组", "qwen")
+	accountID := f.fullchainCreateQwenVideoAccount("全链路-MVqwen账户", key, groupID)
+	strategyID := f.createStrategy("全链路-MVqwen策略", "normal", []map[string]any{
+		{"groupId": groupID, "priority": 1, "weight": 100},
+	}, nil)
+	apiKey := f.createAPIKey("全链路-MVqwen-Key", strategyID)
+	apiKeyID := f.apiKeyIDByName("全链路-MVqwen-Key")
+
+	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status queued、
+	// provider_job_id 为 uuid 任务 id、params_applied 含 seconds/size/seed/
+	// input_reference/negative_prompt、params_ignored 含 audio、
+	// provider_options_applied 含 qwen 子对象键名）。X-DashScope-Async 头
+	// 由 mock 引擎的创建门禁校验（缺失即 400，契约 §10.1）——创建成功即
+	// 证明链上已注入异步头（链级测试另直接断言头值）。
+	f.mock.script(key, platformmock.ScenarioMediaQwenCreatePending)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainQwenVideoCreateBody)
+	if created.Status != http.StatusOK {
+		t.Fatalf("MV qwen create status=%d body=%s", created.Status, created.Body)
+	}
+	job := decodeVideoJob(t, created)
+	jobID := str(job["id"])
+	if !strings.HasPrefix(jobID, "video_") {
+		t.Fatalf("MV qwen job id 缺少 video_ 前缀: %#v", job)
+	}
+	if job["status"] != "queued" {
+		t.Fatalf("MV qwen create status 字段 = %v, want queued", job["status"])
+	}
+	if job["provider"] != "qwen" {
+		t.Fatalf("MV qwen provider = %v, want qwen", job["provider"])
+	}
+	providerJobID := str(job["provider_job_id"])
+	if len(providerJobID) != 36 || !strings.Contains(providerJobID, "-") {
+		t.Fatalf("MV qwen provider_job_id = %q, want uuid 任务 id 形态", providerJobID)
+	}
+	applied := fmt.Sprintf("%v", job["params_applied"])
+	for _, want := range []string{"model", "prompt", "seconds", "size", "seed", "input_reference", "negative_prompt"} {
+		if !strings.Contains(applied, want) {
+			t.Fatalf("MV qwen params_applied 缺少 %s: %v", want, job["params_applied"])
+		}
+	}
+	ignoredList := fmt.Sprintf("%v", job["params_ignored"])
+	if !strings.Contains(ignoredList, "audio") {
+		t.Fatalf("MV qwen params_ignored 缺少 audio（qwen 请求面无生成音频开关）: %v", job["params_ignored"])
+	}
+	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "parameters") {
+		t.Fatalf("MV qwen provider_options_applied 缺少 parameters（qwen 子对象命中键名回显）: %v", job["provider_options_applied"])
+	}
+
+	// 轮询三次：queued → in_progress（RUNNING 归一）→ completed（SUCCEEDED +
+	// output.video_url 冻结 + usage JSON 字符串解析出 5 秒计量）。
+	for index, want := range []string{"queued", "in_progress", "completed"} {
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+		if polled.Status != http.StatusOK {
+			t.Fatalf("MV qwen poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
+		}
+		if object := decodeVideoJob(t, polled); object["status"] != want {
+			t.Fatalf("MV qwen poll #%d status 字段 = %v, want %s", index+1, object["status"], want)
+		}
+	}
+
+	// content 下载：completed 的产物 url 是引擎渲染的绝对 URL，网关无凭据
+	// 直连（video/mp4 + ftyp magic bytes）。
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	if content.Status != http.StatusOK {
+		t.Fatalf("MV qwen content status=%d body=%s", content.Status, content.Body)
+	}
+	if !strings.Contains(content.ContentType, "video/mp4") {
+		t.Fatalf("MV qwen content-type=%q, want video/mp4", content.ContentType)
+	}
+	payload := []byte(content.Body)
+	if len(payload) < 12 || string(payload[4:8]) != "ftyp" {
+		t.Fatalf("MV qwen content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
+	}
+
+	// 管理面 media-jobs：行终态 completed 归因 qwen 账户；usage JSON 字符串
+	// 解析出 5 秒计量（链级测试断言 outputVideoSeconds=5 的 spool 记录）但
+	// 目录未落 USD 秒价 → cost_usd=0（契约 §2.8 计量照落成本不虚计）。
+	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
+		return row.Status == "completed"
+	}, "completed")
+	if row.AccountID != accountID {
+		t.Fatalf("MV qwen row accountId=%s, want %s", row.AccountID, accountID)
+	}
+	if row.CostUsd != 0 {
+		t.Fatalf("MV qwen row costUsd=%v, want 0（目录无 USD 秒价不虚计）", row.CostUsd)
+	}
+
+	// 账户亲和 + 出站形态：qwen key 命中创建（POST /api/v1/services/aigc/
+	// video-generation/video-synthesis）与三轮轮询（GET /api/v1/tasks/{id}），
+	// 无其它带凭据流量打到该 key（content 直连无 Authorization，不落入该 key
+	// 的命中记录）。
+	creates, polls := 0, 0
+	for _, call := range f.mock.callsByKey(key) {
+		switch {
+		case call.Method == http.MethodPost && call.Path == "/api/v1/services/aigc/video-generation/video-synthesis":
+			creates++
+		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, "/api/v1/tasks/"):
+			polls++
+		default:
+			t.Fatalf("MV qwen 未预期的上游请求: %#v", call)
+		}
+	}
+	if creates != 1 || polls != 3 {
+		t.Fatalf("MV qwen 上游命中 creates=%d polls=%d, want 1/3", creates, polls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 用例 10：hybrid 供应商媒体映射全链路（M4b，媒体设计 §9 hybrid 行）
+// ---------------------------------------------------------------------------
+
+// fullchainCreateHybridVideoAccount 经管理面创建指向 mock 上游的 hybrid
+// api_key 账户并绑定分组（hybrid 供应商 + 通用 openai v1 档案 profile_
+// hybrid_openai_chat_v1）。账号媒体映射 source sora-2-pro → upstream sora-2
+//（video_generation 族，写侧矩阵/协议模型池放行的端到端覆盖）；supportedModels
+// 只声明 upstream 名（候选过滤必须经映射命中，不得直连 source 名）；凭据声明
+// openai 族词表的 video_* 端点模式（opt-in，hybrid 模式词表并集）。
+func (f *fullchainFixture) fullchainCreateHybridVideoAccount(name, upstreamKey, groupID string) string {
+	f.t.Helper()
+	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
+		"providerCode":              "hybrid",
+		"providerProtocolProfileId": "profile_hybrid_openai_chat_v1",
+		"name":                      name,
+		"type":                      "api_key",
+		"credentials": map[string]any{
+			"api_key":  upstreamKey,
+			"base_url": f.mock.server.URL,
+			"supported_endpoint_modes": []string{
+				"chat_json", "chat_sse", "video_create", "video_get", "video_content", "video_cancel",
+			},
+		},
+		"supportedModels": []string{"sora-2"},
+		"modelMappings": []map[string]any{{
+			"sourceModel": "sora-2-pro", "sourceEndpointFamily": "video_generation",
+			"upstreamModel": "sora-2", "upstreamEndpointFamily": "video_generation",
+		}},
+		"status":  "active",
+		"groupId": groupID,
+	}, wantStatus(http.StatusCreated))
+	accountID := str(data(created)["id"])
+	if accountID == "" {
+		f.t.Fatalf("hybrid video account create payload wrong: %#v", created)
+	}
+	return accountID
+}
+
+// TestFullchainMediaVideoHybridMapped 验证 M4b（媒体设计 §9 hybrid 行）：
+// 管理面配置（hybrid 分组 + 媒体映射账户，写侧矩阵与协议模型池放行）→ 客户端
+// 请求 source 模型名 sora-2-pro → 候选过滤经映射命中 → 创建链把出站 model
+// 改写为 upstream 名 sora-2 打到中转 base_url 的 /v1/videos（mock 命中记录
+// 断言）→ 统一 job 对象 provider=openai（hybrid 媒体执行面 = 中转的 OpenAI
+// 形态媒体端点）→ 轮询 completed → 管理面 media-jobs 行归因 hybrid 账户。
+func TestFullchainMediaVideoHybridMapped(t *testing.T) {
+	requireFullchainGate(t)
+	f := startFullchainFixture(t)
+
+	key := fullchainUpstreamKey(t, "mvhb")
+	groupID := f.createGroupWithProvider("MVhybrid组", "hybrid")
+	accountID := f.fullchainCreateHybridVideoAccount("全链路-MVhybrid账户", key, groupID)
+	strategyID := f.createStrategy("全链路-MVhybrid策略", "normal", []map[string]any{
+		{"groupId": groupID, "priority": 1, "weight": 100},
+	}, nil)
+	apiKey := f.createAPIKey("全链路-MVhybrid-Key", strategyID)
+	apiKeyID := f.apiKeyIDByName("全链路-MVhybrid-Key")
+
+	// 创建：请求模型是 source 名 sora-2-pro；200 + 统一 job 对象（对外 id
+	// video_ 前缀、status queued、provider=openai）。
+	f.mock.script(key, platformmock.ScenarioMediaVideoOKPoll1)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos",
+		`{"model":"sora-2-pro","prompt":"一只猫在弹钢琴","seconds":"4","size":"1280x720"}`)
+	if created.Status != http.StatusOK {
+		t.Fatalf("MV hybrid create status=%d body=%s", created.Status, created.Body)
+	}
+	job := decodeVideoJob(t, created)
+	jobID := str(job["id"])
+	if !strings.HasPrefix(jobID, "video_") {
+		t.Fatalf("MV hybrid job id 缺少 video_ 前缀: %#v", job)
+	}
+	if job["status"] != "queued" {
+		t.Fatalf("MV hybrid create status 字段 = %v, want queued", job["status"])
+	}
+	if job["provider"] != "openai" {
+		t.Fatalf("MV hybrid provider = %v, want openai（hybrid 媒体执行面为中转 OpenAI 形态媒体端点）", job["provider"])
+	}
+	// params 回显的 model 是改写后的 upstream 名（不得回显 source 名）。
+	if strings.Contains(fmt.Sprintf("%v", job["params_applied"]), "sora-2-pro") {
+		t.Fatalf("MV hybrid params_applied 不得回显 source 模型名: %v", job["params_applied"])
+	}
+
+	// 出站模型改写证据：mock 命中记录的 POST /v1/videos 恰好一次且 Model 为
+	// upstream 名 sora-2（source 名不出站）。
+	creates := 0
+	for _, call := range f.mock.callsByKey(key) {
+		if call.Method == http.MethodPost && call.Path == "/v1/videos" {
+			creates++
+			if call.Model != "sora-2" {
+				t.Fatalf("MV hybrid 出站创建 model = %q, want upstream 名 sora-2", call.Model)
+			}
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("MV hybrid 创建出站 %d 次, want 1", creates)
+	}
+
+	// 轮询一次到 completed（ok_poll1 快路径），行归因 hybrid 账户。
+	polled := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+	if polled.Status != http.StatusOK {
+		t.Fatalf("MV hybrid poll status=%d body=%s", polled.Status, polled.Body)
+	}
+	if object := decodeVideoJob(t, polled); object["status"] != "completed" {
+		t.Fatalf("MV hybrid poll status 字段 = %v, want completed", object["status"])
+	}
+	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
+		return row.Status == "completed"
+	}, "completed")
+	if row.AccountID != accountID {
+		t.Fatalf("MV hybrid row accountId=%s, want %s", row.AccountID, accountID)
+	}
+	// 终态计费沿用静态目录秒价（provider=openai + upstream 模型 sora-2 ×
+	// seconds_length=4 > 0）。
+	if row.CostUsd <= 0 {
+		t.Fatalf("MV hybrid row costUsd=%v, want >0（sora-2 秒价计费）", row.CostUsd)
 	}
 }

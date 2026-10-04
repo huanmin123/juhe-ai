@@ -785,8 +785,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	accountStore.SetModelCatalogReader(accountModelCatalogReaderAdapter{store: modelCatalogReaderStore})
 	// BUG-0162 第五刀：余额手动刷新 + 模型目录刷新两个执行端口的进程内装配
 	// （去跨进程战役：原 Node jobs /account-balance/manual HTTP 桥已随第四刀
-	// 删除；上游 /models 拉取此前在 Go 侧无实现）。SQLite 模式余额端口保持
-	// nil（路由维持 500/降级快照契约），契约表缺失按 nil 端口降级并告警。
+	// 删除；上游 /models 拉取此前在 Go 侧无实现）。2026-10-04 起余额端口双方言
+	// 装配（SQLite 独立租约库自建四表），租约库路径缺失/契约表缺失按 nil 端口
+	// 降级并告警，打开/创建失败上抛。
 	if err := wireInProcessBalanceAndCatalogRefresh(composed, cfg, accountStore, providerStore); err != nil {
 		return nil, fmt.Errorf("wire in-process balance and catalog refresh: %w", err)
 	}

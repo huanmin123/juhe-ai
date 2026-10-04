@@ -157,13 +157,13 @@ func TestSeedPostgresDefaultsSmoke(t *testing.T) {
 	).Scan(&catalogRows); err != nil {
 		t.Fatalf("count catalog rows: %v", err)
 	}
-	// pgSeedTestClock 钉在 2026-09-04：2026-10-04 M1 音频 + M2/M3 视频增补后
-	// seed 数据共 136 行（audio/video 行无 ShutdownDate，含 M3 minimax 2 行与
-	// M3 第四批 volcengine 1 行），且最早的
-	// ShutdownDate 为 2026-09-10，故该时钟下活跃行数 = 全量 136（与
-	// sqlite_seed_test.go 的 sqliteSeedTestClock 一致）。
-	if catalogRows != 136 {
-		t.Fatalf("active catalog rows = %d, want 136", catalogRows)
+	// pgSeedTestClock 钉在 2026-09-04：2026-10-04 M1 音频 + M2/M3 视频 + M3f
+	// 长音频增补后 seed 数据共 138 行（audio/video 行无 ShutdownDate，含 M3
+	// minimax 2 行、第四批 volcengine 1 行、第五批 qwen 1 行与 M3f paraformer
+	// 1 行），且最早的 ShutdownDate 为 2026-09-10，故该时钟下活跃行数 =
+	// 全量 138（与 sqlite_seed_test.go 的 sqliteSeedTestClock 一致）。
+	if catalogRows != 138 {
+		t.Fatalf("active catalog rows = %d, want 138", catalogRows)
 	}
 	var defaultKeys int
 	if err := db.QueryRowContext(ctx,
@@ -171,8 +171,13 @@ func TestSeedPostgresDefaultsSmoke(t *testing.T) {
 	).Scan(&defaultKeys); err != nil {
 		t.Fatalf("count seeded api keys: %v", err)
 	}
-	if defaultKeys != 8 {
-		t.Fatalf("seeded api keys = %d, want 8", defaultKeys)
+	// 2026-10-04 M3 minimax 批（8→9 非混合默认分组）、第四批 volcengine 批
+	//（9→10）与第五批 qwen 批（10→11）各派生一个默认 API Key：默认 Key 10
+	// 把 + admin chat Key（is_default=0、purpose='chat'）1 把 = 11。注：本
+	// 断言在 minimax 批后曾遗留 8 未同步（本测试 env 门禁默认跳过），
+	// volcengine 批一并回正。
+	if defaultKeys != 11 {
+		t.Fatalf("seeded api keys = %d, want 11", defaultKeys)
 	}
 	var tokens int
 	if err := db.QueryRowContext(ctx,

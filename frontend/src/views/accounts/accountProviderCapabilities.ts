@@ -21,10 +21,12 @@ import {
   OPENAI_RESPONSES_FAMILY,
   OPENAI_TTS_FAMILY,
   OPENAI_VIDEO_GENERATION_FAMILY,
+  OPENAI_AUDIO_TRANSCRIPTION_FAMILY,
   isGptVendorCode,
   isGeminiProviderCode,
   isMinimaxProviderCode,
   isVolcengineProviderCode,
+  isQwenProviderCode,
   isXaiProviderCode,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
@@ -78,6 +80,10 @@ export const openAIEndpointModes: AccountSupportedEndpointMode[] = [
   'video_get',
   'video_content',
   'video_cancel',
+  'audio_job_create',
+  'audio_job_get',
+  'audio_job_content',
+  'audio_job_cancel',
   ...chatEndpointModes,
   ...responsesEndpointModes
 ]
@@ -269,12 +275,13 @@ export function defaultEndpointModesForAccount(input: {
   if (input.type === 'oauth' && protocolKind === 'openai_v1') return [...responsesEndpointModes]
   if (protocolKind === 'openai_v1') {
     // 新账户默认集保持 chat/responses 推导结果；images_json、M1 音频模式与
-    // M2 视频模式只能显式开启。minimax/volcengine 档案（M3）只挂媒体
+    // M2 视频模式只能显式开启。minimax/volcengine/qwen 档案（M3）只挂媒体
     // families，推导结果经此过滤后为空集——媒体端点模式全部 opt-in，与
     // openai/gemini 族媒体模式同语义。
     return endpointModesForProfile(input.profile ?? input.provider)
       .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json'
-        && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel')
+        && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel'
+        && mode !== 'audio_job_create' && mode !== 'audio_job_get' && mode !== 'audio_job_content' && mode !== 'audio_job_cancel')
   }
   return [...allAccountEndpointModes]
 }
@@ -345,6 +352,22 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       }
       return modes
     }
+    // M3 媒体供应商（媒体设计 §9/契约 §10.1/§10.2）：qwen 档案声明
+    // video_generation 与 audio_transcription（M3f 长转写）两个媒体 family
+    //（CosyVoice TTS 面 §10.2 未回填），推导不回退 chat 词表（百炼聊天走
+    // qwen 对话模型面，档案不承接聊天流量）；video_* 与 audio_job_* 照
+    // openai 族先例属显式可选能力（opt-in，不进默认集）。
+    if (isQwenProviderCode(profile?.providerCode ?? profile?.code)) {
+      const families = new Set(endpointFamilyCodes(profile))
+      const modes: AccountSupportedEndpointMode[] = []
+      if (families.has(OPENAI_VIDEO_GENERATION_FAMILY)) {
+        modes.push('video_create', 'video_get', 'video_content', 'video_cancel')
+      }
+      if (families.has(OPENAI_AUDIO_TRANSCRIPTION_FAMILY)) {
+        modes.push('audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel')
+      }
+      return modes
+    }
     const familyModes = endpointModesForFamilies(
       profile,
       profileSupportsCodexResponsesChatBridge(profile) ? chatEndpointModes : openAIEndpointModes,
@@ -364,7 +387,11 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       'video_create',
       'video_get',
       'video_content',
-      'video_cancel'
+      'video_cancel',
+      'audio_job_create',
+      'audio_job_get',
+      'audio_job_content',
+      'audio_job_cancel'
     ]
     return [...new Set(selectable)]
   }

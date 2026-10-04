@@ -97,11 +97,11 @@
 
 | 统一 status | 语义 | openai | gemini(veo) | minimax | volcengine | qwen(dashscope) | glm |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `queued` | 已受理未开始 | `queued` | operation 未 `done`（Veo 无进展字段，M3 adapter 归一：未 done 恒 queued） | `Preparing` / `Queueing` | `queued` | `PENDING` | （不可达：创建响应即 `PROCESSING`，M3 已实施） |
-| `in_progress` | 生成中 | `in_progress`（含 `progress`） | （不可达：无进展字段，见 queued 行） | `Processing` | `running` | `RUNNING` | `PROCESSING`（M3 已实施） |
-| `completed` | 成功 | `completed`（`content` 有下载定位） | `done:true` 且 `response.generateVideoResponse.generatedSamples[].video.uri` 存在（M3 已实施：uri 冻结进 Artifact.ContentURL，直连下载无凭据） | `Success`（`file_id`/`file_download_url`） | `succeeded`（`content.video_url`） | `SUCCEEDED`（`output.video_url` 等） | `SUCCESS` 且 `video_result.url` 存在（M3 已实施：url 冻结进 Artifact.ContentURL，直连下载无凭据） |
-| `failed` | 失败 | `failed`（`error`） | `done:true` 且 `error` 非空（M3 已实施：error 摘要 code 取 status） | `Fail`（`base_resp`） | `failed`（`error`） | `FAILED`（`message`/`code`） | `FAIL`（M3 已实施：错误摘要 code 取 task_status 原值，error 对象在场则优先） |
-| `cancelled` / `expired` | 本地终态 | （上游删除后查询 404 → 本地收敛） | 同左（`:cancel` 上游 2xx/404/405 均收敛本地 cancelled，M3 裁决） | 同左（minimax 无取消 API：不发上游请求直接本地收敛，M3 裁决，§8.1） | 同左 | 同左 | 同左（glm 无取消 API：不发上游请求直接本地收敛，M3 裁决，§7.1） |
+| `queued` | 已受理未开始 | `queued` | operation 未 `done`（Veo 无进展字段，M3 adapter 归一：未 done 恒 queued） | `Preparing` / `Queueing` | `queued` | `PENDING`（M3 已实施） | （不可达：创建响应即 `PROCESSING`，M3 已实施） |
+| `in_progress` | 生成中 | `in_progress`（含 `progress`） | （不可达：无进展字段，见 queued 行） | `Processing` | `running` | `RUNNING`（M3 已实施） | `PROCESSING`（M3 已实施） |
+| `completed` | 成功 | `completed`（`content` 有下载定位） | `done:true` 且 `response.generateVideoResponse.generatedSamples[].video.uri` 存在（M3 已实施：uri 冻结进 Artifact.ContentURL，直连下载无凭据） | `Success`（`file_id`/`file_download_url`） | `succeeded`（`content.video_url`） | `SUCCEEDED`（`output.video_url`，M3 已实施：url 冻结进 Artifact.ContentURL，直连下载无凭据） | `SUCCESS` 且 `video_result.url` 存在（M3 已实施：url 冻结进 Artifact.ContentURL，直连下载无凭据） |
+| `failed` | 失败 | `failed`（`error`） | `done:true` 且 `error` 非空（M3 已实施：error 摘要 code 取 status） | `Fail`（`base_resp`） | `failed`（`error`） | `FAILED`（顶层 `message`/`code`，M3 已实施） | `FAIL`（M3 已实施：错误摘要 code 取 task_status 原值，error 对象在场则优先） |
+| `cancelled` / `expired` | 本地终态 | （上游删除后查询 404 → 本地收敛） | 同左（`:cancel` 上游 2xx/404/405 均收敛本地 cancelled，M3 裁决） | 同左（minimax 无取消 API：不发上游请求直接本地收敛，M3 裁决，§8.1） | 同左 | 同左（qwen 无取消 API：不发上游请求直接本地收敛，M3 裁决，§10.1） | 同左（glm 无取消 API：不发上游请求直接本地收敛，M3 裁决，§7.1） |
 
 归一规则：未知状态值一律归 `in_progress` 并记录原始值（不猜测失败）；上游 404 查询且本地非终态 → 保持本地状态直至 TTL 过期（不得伪造终态）。
 
@@ -111,10 +111,10 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | `model` | 同名 | URL 路径段（`:generateContent` 前） | `model` | `model` | URL/model 字段 | — |
 | `prompt` | 同名 | `contents[].parts[].text` | `prompt` | `content[].text` | `input.prompt` 等 | — |
-| `seconds` | `seconds`（响应回显 `seconds_length`） | —— | `duration` | —— | —— | 无对应者的厂商按其默认时长，不做换算猜测 |
-| `size` | `size`（如 `1280x720`） | `parameters.aspectRatio`（`16:9`/`9:16`） | —— | `resolution` 档 | —— | 分辨率→宽高比换算仅此一处，写入 adapter |
+| `seconds` | `seconds`（响应回显 `seconds_length`） | —— | `duration` | `duration`（数值秒直传，2026-10-04 官方核实；M3 已实施） | `parameters.duration`（数值秒直传，2026-10-04 官方核实；M3 已实施——模型级档位由上游裁决） | 无对应者的厂商按其默认时长，不做换算猜测 |
+| `size` | `size`（如 `1280x720`） | `parameters.aspectRatio`（`16:9`/`9:16`） | —— | `resolution` + `ratio` 档（M3 已实施：ratio 约分精确命中官方词表，词表外 400；resolution 短边最近档） | `parameters.size` W\*H 星号形态（M3 已实施：WxH→W\*H 纯格式转换，档位由上游裁决） | 分辨率→宽高比/档位换算写入 adapter（gemini、volcengine） |
 | `n` | `n` | —— | —— | —— | —— | 多数厂商固定 1；请求 `n>1` 且厂商不支持时创建即 400 |
-| `input_reference`（图生视频首帧） | `input_reference`（multipart 文件） | `instances[].image.bytesBase64Encoded` | `first_frame_image`（base64） | `content[].image_url` | `input.img_url` | 网关只透传不解析存储 |
+| `input_reference`（图生视频首帧） | `input_reference`（multipart 文件） | `instances[].image.bytesBase64Encoded` | `first_frame_image`（base64） | `content[].image_url`（url/base64 双形态直传，M3 已实施） | `input.img_url`（url/base64 双形态直传，M3 已实施——图生视频形态同端点） | 网关只透传不解析存储 |
 | `voice`（TTS） | `voice` | `generationConfig.speechConfig.prebuiltVoiceConfig.voiceName` | （TTS 章） | （TTS 章） | （TTS 章） | — |
 
 ### 2.8 usage / 计量来源表（谁出数字）
@@ -124,8 +124,8 @@
 | openai | 双口径（M1 已实施，按厂商真实定价维度）：`gpt-4o-mini-tts` 按 **token 口径**计价（复用既有 `audioInputUsdPer1M`/`audioOutputUsdPer1M` 单价，seed 已填价；二进制响应无 usage 回报，网关亦无 token 自算维度 → 0 计费 + `usage_missing` 标记，不猜测）；`gpt-4o-tts` 未收录（官方无定价，待官方价后补行，不编造）；`tts-1`/`tts-1-hd` 上游无 usage 回报，**网关自算**按请求 `input` 字符数（新行项 `tts_input_chars`） | 双口径：`gpt-4o-transcribe` 系按 **token 口径**（`usage.input_tokens`/`output_tokens`，同一对 audio token 单价）；`whisper-1` 按 `duration` 秒（verbose_json；新行项 `audio_input_seconds`）；usage 优先 → duration → 0 + `usage_missing` 标记，不猜测 | **网关自算**：按任务参数 `seconds` × 档位；失败任务不虚计 | — |
 | gemini | 对话式 token 计量（`usageMetadata`，已有链路） | 同左（audio token） | 按输出秒（目录价格档） | — |
 | minimax | 按字符（M3 已实施：`extra_info.usage_characters` 回报优先 → `tts_input_chars`，缺失回落请求字符自算；官方口径 ¥2.00/万字符人民币、无官方美元价 → 目录不落字符价，计量照落成本不虚计） | 待回填（长转写未接入） | 任务响应不回报时长（M3 已实施：无可查证官方 USD 秒价 → 0 计费 + `usage_missing`，不编造） | — |
-| volcengine | 按字符（回填） | 长转写按时长（回填） | 任务响应 `usage`（检索确认部分包含；字段回填） | — |
-| qwen | CosyVoice 按字符（回填） | paraformer 按时长（回填） | 万相按次/时长（回填） | — |
+| volcengine | 按字符（回填） | 长转写按时长（回填） | 任务响应 `usage`（检索确认部分包含；字段回填）。M3 已实施口径：usage/duration 字段未回填前不抽秒 → 0 计费 + `usage_missing`（不落秒价，官方口径为人民币无 USD 秒价），字段回填后再启用 | — |
+| qwen | CosyVoice 按字符（回填） | paraformer 按时长（回填） | 万相按次/时长人民币口径，无可查证 USD 秒价（M3 已实施：目录不落秒价，`usage` JSON 字符串的 `video_duration`/`output_video_duration`/`duration` 字段族秒计量照抽、成本 0 不虚计；无秒可抽时才落 usage_missing 兜底） | — |
 | glm | 回填 | 回填 | **0 计费 + `usage_missing`**（M3 已实施：CogVideoX 按次计费、官方精确秒价不可查证且轮询响应无时长回报——不编造秒价，目录行不落价；官方口径可查证后补秒价，§7.1 计费落法） | — |
 
 规则：上游回报 usage 优先；上游不回报的维度网关按可观察参数（字符数/请求秒数）自算；两者都缺 → 0 计费 + 记录 `usage_missing` 标记，**不猜测**。
@@ -149,7 +149,7 @@
    - `media_stt_ok`（JSON `text`）、`media_stt_ok_verbose`（`verbose_json` 含 `duration`/`usage`）、`media_stt_400_bad_file`——M1 已交付
    - `media_gemini_tts_ok`（inlineData base64 PCM）、`media_gemini_tts_400_format`（`response_format` 非 `pcm` → 400）——M1 已交付
    - `media_video_ok_poll3`（#1/#2 `in_progress` → #3 `completed`）、`media_video_ok_poll1`（#1 即 `completed`，快路径）、`media_video_fail_after_accept`（受理后轮询 `failed`）、`media_video_429_create`（创建 429，可换账户重试）、`media_video_create_400_bad_size`（`size` 值域外 → 400，参数类不换账户）、`media_video_create_500`（创建 5xx）、`media_video_poll_500`（受理后轮询 5xx，不得换账户）、`media_video_content_expired`（content 404/410 → 网关透出"产物已过期"）、`media_video_cancel_ok`（保持 `queued`，验证 DELETE 流程）——M2 已交付（2026-10-04；其中 `media_video_ok_poll1` 与 `media_video_create_400_bad_size` 为 W1 批次交付、本清单同日补登记）
-   - 厂商原生形态场景：`media_<provider>_create_ok` / `media_<provider>_poll_running` / `media_<provider>_poll_success` / `media_<provider>_poll_fail`（报文按 §4-§10 各章）——M3+（§5.1 的 `media_gemini_tts_*` 已随 M1 交付；**§5.2 的 `media_gemini_video_create_ok` / `_poll_running` / `_poll_done_uri` / `_poll_error` 已随 M3 交付（2026-10-04）**；**§7.1 的 `media_glm_video_*` 已随 M3 交付；§8 的 `media_minimax_create_ok` / `_poll_running` / `_poll_success` / `_poll_fail` 与 §8.2 的 `media_minimax_tts_ok` 已随 M3 第三批交付（2026-10-04）**）
+   - 厂商原生形态场景：`media_<provider>_create_ok` / `media_<provider>_poll_running` / `media_<provider>_poll_success` / `media_<provider>_poll_fail`（报文按 §4-§10 各章）——M3+（§5.1 的 `media_gemini_tts_*` 已随 M1 交付；**§5.2 的 `media_gemini_video_create_ok` / `_poll_running` / `_poll_done_uri` / `_poll_error` 已随 M3 交付（2026-10-04）**；**§7.1 的 `media_glm_video_*` 已随 M3 交付；§8 的 `media_minimax_create_ok` / `_poll_running` / `_poll_success` / `_poll_fail` 与 §8.2 的 `media_minimax_tts_ok` 已随 M3 第三批交付（2026-10-04）**；**§9.1 的 `media_volcengine_create_ok` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error` 已随 M3 第四批交付（2026-10-04）**；**§10 的 `media_qwen_create_pending` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error` 已随 M3 第五批交付（2026-10-04）**）
 5. **slow/abort 基建复用**：首字节延迟、分块延迟、中途断连直接复用现有 `slow_first_byte`/`mid_stream_close` 机制，用于受理边界与流中断用例。
 
 ### 3.3 acceptance E2E 扩展规格
@@ -293,39 +293,52 @@ Mock：`media_minimax_tts_ok`（data.audio hex 载荷，断言解码后 magic by
 
 异步长音频（长转写）：端点与字段接入前以 platform.minimax.io 回填；`/v1/audio/jobs` 长音频面首个上游以回填结果定（候选：百炼 paraformer / 火山长转写 / MiniMax）。
 
-## 9. volcengine / 火山方舟（置信度 B：官方格式多源确认）
+## 9. volcengine / 火山方舟（置信度 B：官方格式多源确认；M3 第四批已实施视频 adapter，2026-10-04）
 
 host：`ark.cn-beijing.volces.com`；认证 `Authorization: Bearer <ARK_API_KEY>`。
 
-### 9.1 视频（seedance 系）：`POST /api/v3/contents/generations/tasks`
+### 9.1 视频（seedance 系）：`POST /api/v3/contents/generations/tasks`——M3 已实施 adapter（`gatewaymedia/volcengine_video.go`；账号接入见《火山方舟账号接入.md》）
 
-请求：`{"model":"seedance-1.0-pro" 系,"content":[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"..."}}]}`（图生视频经 content 数组）。
-创建响应：`{"id":"cgt-...","status":"queued",...}`——**受理凭据 = `id`**。
-轮询：`GET /api/v3/contents/generations/tasks/{id}` → `status ∈ queued|running|succeeded|failed`；成功 `content.video_url`（时效内下载 URL）；失败 `error{code,message}`；部分任务含 `usage`（字段名接入回填）。
-下载：`video_url` 直连流式代理。
-计费：seedance 按秒 × 分辨率档；`usage` 回报优先。
-`provider_options.volcengine` 示例：`{"resolution":"720p","ratio":"16:9"}`（以官方参数名为准回填）。
-Mock：`media_volcengine_create_ok` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error`。
+**M3 已实施**（注册键 `volcengine`；api_key Bearer 认证，沿链上 openai 族认权分支）。参数映射（§2.2/§2.4/§2.7 裁决；`resolution`/`ratio`/`duration`/`seed` 参数名与 `content` 数组的 url/base64 双形态已于 2026-10-04 经官方 API 参考页核实）：`prompt` → `content[0]`（`{"type":"text"}`）；`input_reference` → `content` 追加 `{"type":"image_url","image_url":{"url":...}}`（公网 URL 与 Base64 data URL 双形态字符串直传，官方由上游拉取，网关不代为下载——与 minimax 仅 base64 不同）；`size` WxH → `resolution` + `ratio` 档位换算（ratio 约分须精确命中官方词表 16:9/9:16/1:1/4:3/3:4/21:9，词表外本地 400 不近似贴合；resolution 官方词表 480p/720p/1080p，按短边取最近档，合法组合由上游裁决）；`seconds` → `duration` 数值秒直传（官方默认 5）；`seed` 整数直传；`camera_fixed` 等厂商个例经 `provider_options.volcengine` deep-merge；`negative_prompt`/`audio`（`generate_audio` 仅 seedance 2.0/1.5 pro，M3 目录 1.0 pro 不声明）/`n` 请求面无对应字段 → 忽略 + 回显 `params_ignored`。出站路径自带 `/api/v3` 服务根，账户 base_url 已含该根时链上去重（`chainVolcengineVideoUpstreamURL`，不得走 openai /v1 强制补缀归一——同 glm §7.1 先例）。
+
+- 创建：`POST https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks`，请求 `{"model":"doubao-seedance-1-0-pro-250528" 系,"content":[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"..."}}],"resolution":"720p","ratio":"16:9","duration":5,"seed":42,...}`。创建响应：`{"id":"cgt-...","status":"queued",...}`——**受理凭据 = `id`**（任务记录保留 7 天）。
+- 轮询：`GET /api/v3/contents/generations/tasks/{id}` → `status ∈ queued|running|succeeded|failed`；成功 `content.video_url`（时效内下载 URL；M3 已实施：冻结进 Artifact.ContentURL，直连下载无凭据）；失败 `error{code,message}`（M3 已实施：错误摘要 code/message 透传，缺席以 status 原值兜底）；官方回调面另有 `expired` 等终态词，轮询面未回填——未知状态归 `in_progress` 记 RawStatus（§2.6 归一规则）。部分任务含 `usage`（字段名接入回填）。
+- 下载：`video_url` 直连流式代理（M3 已实施：`ContentFromArtifact=true`）。
+- 计费：seedance 按秒 × 分辨率档；`usage` 回报优先。M3 已实施口径：官方计费口径为人民币（按 token 或按秒×档）且轮询响应 usage/duration 字段未回填——不落秒价、不抽秒，终态 0 计费 + `usage_missing`，不编造（依据见 `pricing/data_volcengine.go` 注释；字段回填后再启用）。
+- `provider_options.volcengine` 示例：`{"resolution":"720p","ratio":"16:9","camera_fixed":true}`（以官方参数名为准）。
+- 取消：§9.1 回填面无取消端点（M3 裁决：`SupportsCancel=false`，不发上游请求直接本地收敛 `cancelled`，沿 glm/minimax 先例；官方回调文档提及任务存在 cancelled 终态、仅排队中任务可取消，取消端点回填后升级）。
+- Mock：`media_volcengine_create_ok` / `_poll_running` / `_poll_succeeded_video_url` / `_poll_failed_error`——M3 第四批已交付（`mockupstream/video_volcengine.go`，端点 `/api/v3/contents/generations/tasks` 族与 `/content` 产物通道）。
 
 ### 9.2 TTS / 长转写
 
-豆包 TTS（`/api/v3/tts` 族）与异步长转写：端点与字段接入前以火山官方文档回填；计费 TTS 按字符、转写按时长。
+豆包 TTS（`/api/v3/tts` 族）与异步长转写：端点与字段接入前以火山官方文档回填；计费 TTS 按字符、转写按时长。**M3 第四批未实施**（档案与目录不声明 audio 能力）。
 
-## 10. qwen / 通义百炼（置信度 B：DashScope 通用任务模式确认，端点细节回填）
+## 10. qwen / 通义百炼（置信度 B：DashScope 通用任务模式确认；§10.1 端点与参数面已于 2026-10-04 经百炼官方 legacy 万相 API 参考核实并实施）
 
-host：`dashscope.aliyuncs.com`；兼容模式认证 `Authorization: Bearer <DASHSCOPE_API_KEY>`；**异步任务约定：创建请求带 `X-DashScope-Async: enable` 头**。
+host：`dashscope.aliyuncs.com`；兼容模式认证 `Authorization: Bearer <DASHSCOPE_API_KEY>`；**异步任务约定：创建请求带 `X-DashScope-Async: enable` 头**（缺失上游报 "current user api does not support synchronous calls"）。
 
-### 10.1 视频（万相 wanx / wan 系）
+### 10.1 视频（万相 wanx / wan 系）——**M3 第五批已实施 adapter**（`gatewaymedia/qwen_video.go`，2026-10-04）
 
-创建：`POST /api/v1/services/aigc/video-generation/video-synthesis`（或新版 `/api/v1/videos`，接入时以百炼文档定稿）+ `X-DashScope-Async: enable` → `{"output":{"task_id":"...","task_status":"PENDING"},"request_id":"..."}`——**受理凭据 = `output.task_id`**。
-轮询：`GET /api/v1/tasks/{task_id}` → `{"output":{"task_status":"PENDING|RUNNING|SUCCEEDED|FAILED","video_url":"..."},"usage":"<原始 JSON 字符串>","code","message"}`（DashScope 的 `usage` 为 JSON 字符串形态，解析时注意）。
-下载：`video_url` 直连。
-计费：万相按次/时长（档位回填）；`usage` 回报优先。
+创建：`POST /api/v1/services/aigc/video-generation/video-synthesis`（端点已定稿：百炼 legacy 万相 API 参考，wan2.1～2.6 系走本端点；wan2.7 新版协议同为 `/api/v1/services/aigc/` 前缀，不采用 `/api/v1/videos` 形态）+ `X-DashScope-Async: enable`，body `{model,input:{prompt,negative_prompt?,img_url?},parameters:{size?,duration?,seed?}}` → `{"output":{"task_id":"...","task_status":"PENDING"},"request_id":"..."}`——**受理凭据 = `output.task_id`**（uuid 形态）。
+轮询：`GET /api/v1/tasks/{task_id}` → `{"output":{"task_status":"PENDING|RUNNING|SUCCEEDED|FAILED","video_url":"..."},"usage":"<原始 JSON 字符串>","code","message"}`（DashScope 的 `usage` 为 JSON 字符串形态——字符串内再嵌一层 JSON；官方文档示例亦展示对象形态，adapter 双形态兼容解析）。
+下载：`video_url` 直连（官方为 OSS 签名地址、约 24 小时时效，凭据内嵌）。
+计费：万相按次/时长人民币口径，无可查证 USD 秒价——M3 目录不落秒价；`usage` 计量照抽（wan2.5 及以下字段族 `video_duration`/`video_ratio`、wan2.6 字段族 `duration`/`output_video_duration`/`SR`/`size`/`video_count`，adapter 按 `video_duration` → `output_video_duration` → `duration` 顺序取第一个正值），成本 0 不虚计（§2.8）。
 
-### 10.2 TTS（CosyVoice 系）/ 长转写（paraformer 系）
+M3 第五批实施面（保守面，检索核实）：
+- **参数**：`negative_prompt` → `input.negative_prompt`（官方示例章节"所有模型"）；`seed` → `parameters.seed`（可选整数 [0, 2147483647]）；`size` WxH → `parameters.size` "W\*H" 星号形态（档位合法性由上游裁决，不硬编码词表）；`seconds` → `parameters.duration` 数值直传（模型级档位由上游裁决：wan2.2-t2v-plus 固定 5 秒、wan2.5 取 5/10、wan2.6 取 [2,15]）；`input_reference` → `input.img_url`（图生视频形态同端点，公网 URL 与 Base64 data URL 双形态直传）；`n`/`audio` 请求面无对应（`input.audio_url` 是 wan2.6/2.5 的输入素材字段非生成开关，经 L3 provider_options 传递）→ `params_ignored` 回显。
+- **取消**：§10.1 面无取消端点（官方词表有 CANCELED 终态词但未回填可调用 API）→ `SupportsCancel=false` 本地收敛 `cancelled`；CANCELED/UNKNOWN 轮询值按 §2.6 归一规则记 `RawStatus` 归 `in_progress`（不猜测失败，同 volcengine `expired` 先例）。
+- **TTS 不承接**：CosyVoice/长转写面（§10.2）未回填，档案与目录不声明 audio 能力。
 
-CosyVoice 同步/流式（按字符）；paraformer 文件转写同为 DashScope 异步任务模式（提交 → `task_id` → `GET /api/v1/tasks/{id}`，转写结果 JSON 在 `output.results` 形态，接入回填）。
-Mock：`media_qwen_create_pending` / `_poll_running` / `_poll_succeeded_video_url` / `_tts_ok`。
+### 10.2 TTS（CosyVoice 系，待回填）/ 长转写（paraformer 系，B 级已回填 2026-10-04；M3f 已实施）
+
+**长转写（`/v1/audio/jobs` 首个上游）——M3f 已实施（2026-10-04，`gatewaymedia/qwen_asr.go`，对外端点族与任务面泛化见链上 `chain_media_video.go`/`chain_driver.go`；usage 时长字段钉 `duration` 秒（JSON 字符串/对象双形态兼容解析，沿 §10.1 先例）；创建无 X-DashScope-Async 头（天然异步，adapter ExtraHeaders 恒 nil）；取消面无 API 回填 → SupportsCancel=false 本地收敛 cancelled）**：
+- 创建：`POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription`，Bearer，**无需 X-DashScope-Async 头**（该服务天然异步）。请求：`{"model":"paraformer-v2","input":{"file_urls":["<公网音频 URL>"]},"parameters":{"language_hints":[...],"disfluency_removal_enabled":true,"diarization_enabled":true,"vocabulary_id":"..."}}`——**只接受公网 URL 数组，不支持文件上传**（与零存储对齐：对外 `/v1/audio/jobs` 首版输入只支持 `input_url`，multipart 文件输入待有文件上传型上游再开）。响应：`{"output":{"task_id":"...","task_status":"PENDING"},"request_id":"..."}`——受理凭据=`output.task_id`。
+- 轮询：`GET /api/v1/tasks/{task_id}`（与万相视频同一 DashScope 任务接口）：`PENDING|RUNNING|SUCCEEDED|FAILED`；SUCCEEDED → `output.results[].transcription_url`（**转写结果 JSON 文件的下载链接**，内容含 `transcripts[].text`/句级时间戳/说话人——content 端点流式代理该 URL，产物为 JSON 非 audio）；FAILED → `output.message`；`usage`（JSON 字符串，时长计量）。
+- 状态归一与万相同表（§2.6 qwen 列）；计费：paraformer 按时长人民币口径——无可查证 USD 不落价（0 计费+usage_missing 不编造），usage 时长计量照抽（`AudioInputSeconds`）。
+- Mock：`media_qwen_asr_create_pending` / `_poll_running` / `_poll_succeeded_transcription_url` / `_poll_failed`——**M3f 已交付**（`mockupstream/asr_qwen.go`，创建端点按契约 §10.2 校验 model + input.file_urls 非空数组（缺失 400，参数错误透传断言点）；轮询/产物通道与万相共用 `/api/v1/tasks/{id}` 族（任务表按 id 分表查询），content 回转写结果 JSON 文件）。
+
+CosyVoice TTS 同步/流式（按字符）：端点字段仍待官方页回填（C 级）。
+Mock（视频四场景 **M3 第五批已交付**，`mockupstream/video_qwen.go`——创建端点按契约 §10.1 校验 `X-DashScope-Async` 头，缺失即 400 同步调用拒绝；`_tts_ok` 随 TTS 接入交付）。
 
 ## 11. 与设计的衔接及前置裁决项清单
 
@@ -341,6 +354,6 @@ Mock：`media_qwen_create_pending` / `_poll_running` / `_poll_succeeded_video_ur
 - Veo REST：多源交叉（`:predictLongRunning` → operation name → `GET /v1beta/{name}` → `generateVideoResponse.generatedSamples[].video.uri`，uri 时效约 2 天）。
 - MiniMax：`platform.minimax.io` API 参考（video_generation / query/video_generation / files/retrieve，状态词表）。
 - 火山方舟：官方任务接口格式（`/api/v3/contents/generations/tasks` 创建与 `{id}` 查询、`queued|running|succeeded|failed`、`content.video_url`）。
-- 百炼：DashScope 异步任务约定（`X-DashScope-Async`、`GET /api/v1/tasks/{task_id}`、PENDING/RUNNING/SUCCEEDED/FAILED）。
+- 百炼：DashScope 异步任务约定（`X-DashScope-Async`、`GET /api/v1/tasks/{task_id}`、PENDING/RUNNING/SUCCEEDED/FAILED）。M3 第五批接入时经百炼官方 legacy 万相文生视频/图生视频 API 参考补全并实施：创建端点 `/api/v1/services/aigc/video-generation/video-synthesis`（无异步头时上游报 "current user api does not support synchronous calls"）、`input.prompt/negative_prompt/img_url`（图生视频公网 URL 与 Base64 data URL 双形态）、`parameters.size`（`1920*1080` 星号形态）/`duration`/`seed`、轮询 usage 字符串/对象双形态与 `video_duration`（wan2.5 及以下）/`duration`/`output_video_duration`（wan2.6）字段族、wan2.2-t2v-plus 档位（480P/1080P 全档、duration 固定 5 秒）。
 - xAI：Grok API 定价页与评测（Voice API 三能力、grok-imagine 6/10s 480p/720p）。
 - 智谱：社区与聚合层证据（CogVideoX 异步任务、ASR 流式）；官方文档搜索引擎收录有限，列为 C 级回填。

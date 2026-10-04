@@ -9,6 +9,7 @@ export const DEEPSEEK_PROVIDER_CODE = 'deepseek'
 export const GLM_PROVIDER_CODE = 'glm'
 export const MINIMAX_PROVIDER_CODE = 'minimax'
 export const VOLCENGINE_PROVIDER_CODE = 'volcengine'
+export const QWEN_PROVIDER_CODE = 'qwen'
 export const ANTHROPIC_PROTOCOL_CODE = 'anthropic'
 export const ANTHROPIC_PROTOCOL_VERSION = 'v1'
 export const ANTHROPIC_PROVIDER_CODE = 'anthropic'
@@ -26,6 +27,7 @@ export const GLM_CODING_OPENAI_V1_PROFILE_ID = 'profile_glm_coding_openai_v1'
 export const GLM_CODING_ANTHROPIC_V1_PROFILE_ID = 'profile_glm_coding_anthropic_v1'
 export const MINIMAX_OPENAI_V1_PROFILE_ID = 'profile_minimax_openai_v1'
 export const VOLCENGINE_OPENAI_V1_PROFILE_ID = 'profile_volcengine_openai_v1'
+export const QWEN_OPENAI_V1_PROFILE_ID = 'profile_qwen_openai_v1'
 export const ANTHROPIC_ANTHROPIC_V1_PROFILE_ID = 'profile_anthropic_anthropic_v1'
 export const GEMINI_NATIVE_V1BETA_PROFILE_ID = 'profile_gemini_native_v1beta'
 export const GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID = 'profile_gemini_openai_chat_v1beta'
@@ -38,6 +40,7 @@ export const OPENAI_RESPONSES_FAMILY = 'responses'
 // minimax 档案（profile_minimax_openai_v1）只挂这两个族。
 export const OPENAI_VIDEO_GENERATION_FAMILY = 'video_generation'
 export const OPENAI_TTS_FAMILY = 'tts'
+export const OPENAI_AUDIO_TRANSCRIPTION_FAMILY = 'audio_transcription'
 export const ANTHROPIC_MESSAGES_FAMILY = 'messages'
 export const ANTHROPIC_MODELS_FAMILY = 'models'
 export const ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY = 'message_token_counting'
@@ -97,6 +100,10 @@ export function isMinimaxProviderCode(value: unknown): boolean {
 
 export function isVolcengineProviderCode(value: unknown): boolean {
   return normalizeProviderToken(value) === VOLCENGINE_PROVIDER_CODE
+}
+
+export function isQwenProviderCode(value: unknown): boolean {
+  return normalizeProviderToken(value) === QWEN_PROVIDER_CODE
 }
 
 export function isGeminiProviderCode(value: unknown): boolean {

@@ -319,7 +319,7 @@ func ensureBalanceProjectionContract(ctx context.Context, db *sql.DB, postgres b
 func (a *workerAssembly) wireBalanceStatsProjectionFamily(ctx context.Context) error {
 	name := "account-balance-stats-projection"
 	if a.config.Driver != "postgres" {
-		a.registerDisabledJob(name, "J2 快照仅存在于 PostgreSQL（juhe_jobs.account_balance_snapshots，shared accountbalance store 只允许 postgres）；SQLite 部署无投影源")
+		a.registerDisabledJob(name, "J2 投影链 PG-only（juhe_jobs.account_balance_snapshots 仅 PG 形态存在）；SQLite 部署无投影源：周期快照由 balance-detect 直写 stats、手动刷新由 gateway 进程内直写 stats")
 		return nil
 	}
 	business, err := openBusinessDB(a, "balance-projection-business")

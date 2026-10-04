@@ -50,7 +50,8 @@ var mediaEndpoints = map[endpoint]bool{
 // (video.go), the Gemini Veo operation family (video_gemini.go, M3), the GLM
 // CogVideoX task family (video_glm.go, M3), the MiniMax video/TTS family
 // (video_minimax.go, M3), the Volcengine Seedance task family
-// (video_volcengine.go, M3), and the Gemini TTS path form
+// (video_volcengine.go, M3), the Qwen Wan DashScope task family
+// (video_qwen.go, M3), and the Gemini TTS path form
 // POST /v1beta/models/{model}:generateContent, where {model} is a non-empty
 // single path segment.
 func acceptsMediaEndpoint(method, path string) bool {
@@ -72,6 +73,12 @@ func acceptsMediaEndpoint(method, path string) bool {
 	if acceptsVolcengineVideoEndpoint(method, path) {
 		return true
 	}
+	if acceptsQwenVideoEndpoint(method, path) {
+		return true
+	}
+	if acceptsQwenASREndpoint(method, path) {
+		return true
+	}
 	return method == http.MethodPost && geminiGenerateContentModel(path) != ""
 }
 
@@ -79,7 +86,7 @@ func acceptsMediaEndpoint(method, path string) bool {
 // It runs after the method-aware whitelist check, so the POST-keyed map
 // lookup is only reached by requests that already passed as POST.
 func isMediaPath(path string) bool {
-	if mediaEndpoints[endpoint{http.MethodPost, path}] || isVideoPath(path) || isGeminiVeoPath(path) || isGlmVideoPath(path) || isMinimaxVideoPath(path) || isVolcengineVideoPath(path) {
+	if mediaEndpoints[endpoint{http.MethodPost, path}] || isVideoPath(path) || isGeminiVeoPath(path) || isGlmVideoPath(path) || isMinimaxVideoPath(path) || isVolcengineVideoPath(path) || isQwenVideoPath(path) || isQwenASRPath(path) {
 		return true
 	}
 	return geminiGenerateContentModel(path) != ""
@@ -120,6 +127,14 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 	}
 	if isVolcengineVideoPath(r.URL.Path) {
 		m.serveVolcengineVideo(w, r, scenario)
+		return
+	}
+	if isQwenASRPath(r.URL.Path) {
+		m.serveQwenASRCreate(w, r, scenario)
+		return
+	}
+	if isQwenVideoPath(r.URL.Path) {
+		m.serveQwenVideo(w, r, scenario)
 		return
 	}
 	if model := geminiGenerateContentModel(r.URL.Path); model != "" {

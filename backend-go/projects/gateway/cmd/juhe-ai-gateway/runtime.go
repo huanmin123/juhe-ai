@@ -67,6 +67,10 @@ type runtimeConfig struct {
 	UsageCatalogDatabasePath string
 	StatsDatabasePath        string
 	TableMonitorDatabasePath string
+	// AccountBalanceDatabasePath 是余额手动刷新租约库路径（SQLite 模式
+	// gateway 独占的 account-balance.sqlite3；JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH
+	// 显式配置优先）。PG 模式不打开该文件（租约四表在 juhe_jobs schema）。
+	AccountBalanceDatabasePath string
 	// CodexContextRoot is the codex-context segments root (Node
 	// runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_ROOT, default
 	// <DATA_DIR>/codex-context): the Responses↔Chat bridge SegmentStore root
@@ -432,6 +436,9 @@ func loadRuntimeConfig(getenv func(string) string) (runtimeConfig, error) {
 	cfg.UsageCatalogDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_USAGE_CATALOG_DATABASE_PATH", datadir.UsageCatalogDatabase)
 	cfg.StatsDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_STATS_DATABASE_PATH", datadir.StatsDatabase)
 	cfg.TableMonitorDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_TABLE_MONITOR_DATABASE_PATH", datadir.TableMonitorDatabase)
+	// 余额租约库（共享核心 accountbalance 的 SQLite 模式四表自建于该文件；
+	// gateway 独占，与 jobs 的 task-runs 租约/直写 stats 链路无文件级交集）。
+	cfg.AccountBalanceDatabasePath = datadir.Path(getenv, dataDir, "JUHE_AI_ACCOUNT_BALANCE_DATABASE_PATH", datadir.AccountBalanceDatabase)
 	// Codex Context segments 根（JUHE_AI_CODEX_CONTEXT_ROOT，缺省
 	// <DATA_DIR>/codex-context，与 docs/functions/SQLite存储说明.md 同名同
 	// 默认）：gateway Responses↔Chat 桥 SegmentStore 与 jobs retention

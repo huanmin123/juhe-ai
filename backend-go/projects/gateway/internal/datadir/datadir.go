@@ -51,6 +51,12 @@ const (
 	// (2026-09-20 zero-config arm). It must stay distinct from
 	// BusinessDatabase: the J3b owner contract requires a separate file.
 	ModelCheckDatabase = "model-check.sqlite3"
+	// AccountBalanceDatabase 是余额手动刷新租约库（SQLite 模式 gateway 独占，
+	// 2026-10-04 装配臂）。必须与 BusinessDatabase 分文件：共享核心
+	// accountbalance 的租约四表（owner/account leases、snapshots、outcomes）
+	// 独立落盘，gateway 独占该文件、无跨进程争用；PG 模式不打开该文件（同构
+	// 四表在 juhe_jobs schema）。
+	AccountBalanceDatabase = "account-balance.sqlite3"
 )
 
 // Dir resolves the data root: JUHE_AI_DATA_DIR when configured (trimmed),

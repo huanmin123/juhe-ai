@@ -231,6 +231,16 @@ var providerCatalog = []*providerEntry{
 		supports:      func(code string) bool { return normalizeProviderToken(code) == "volcengine" },
 		rawModels:     volcengineModelPricingData,
 	},
+	{
+		// M3 媒体供应商新增（媒体设计 §9/契约 §10）：通义百炼仅视频媒体行
+		//（万相 wan 系），CosyVoice TTS/长转写面未回填（§10.2）无 audio 行
+		//——目录命中仅发生在媒体面。
+		providerID:    "qwen",
+		pricingSource: "qwen-pricing-snapshot",
+		billingPolicy: "qwen",
+		supports:      func(code string) bool { return normalizeProviderToken(code) == "qwen" },
+		rawModels:     qwenModelPricingData,
+	},
 }
 
 // providerEntryFor mirrors modelPricingProviderDriverForProvider: the first

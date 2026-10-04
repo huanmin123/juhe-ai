@@ -262,4 +262,23 @@ var modelCatalogSeedRows = []modelCatalogSeedRow{
 	// 见该文件注释。发布日期未获官方可查证精确值，不落（nil 日期置末，同
 	// glm cogvideox 行）。
 	{ID: "provider_model_volcengine_doubao_seedance_1_0_pro_250528_4d5da55545d0", ProviderCode: "volcengine", Model: "doubao-seedance-1-0-pro-250528", Mode: seedStrPtr("video"), CatalogOrder: nil, ReleaseDate: nil, ShutdownDate: nil, SupportedAPIProtocolsJSON: "[\"video\"]", SupportedServiceTiersJSON: "[]", SupportedReasoningEffortsJSON: "[]", DefaultReasoningEffort: nil, CodexSupportedReasoningLevelsJSON: "[]", CodexDefaultReasoningLevel: nil, CodexMultiAgentVersion: nil, ContextWindowTokens: nil, MaxInputTokens: nil, MaxOutputTokens: nil, MaxTokens: nil, InputUsdPer1M: nil, OutputUsdPer1M: nil, CachedInputUsdPer1M: nil, CacheWriteUsdPer1M: nil, CacheWrite1HUsdPer1M: nil, CacheStorageUsdPer1MPerHour: nil, ServiceTierPricesJSON: "{}", LongContextInputTokenThreshold: nil, LongContextInputTokenThresholdInclusive: false, LongContextInputCostMultiplier: nil, LongContextOutputCostMultiplier: nil, ImageInputUsdPer1M: nil, ImageOutputUsdPer1M: nil, AudioInputUsdPer1M: nil, AudioOutputUsdPer1M: nil, OutputUsdPerImage: nil, SupportsPromptCaching: false, CatalogVisible: true, Source: "volcengine-pricing-snapshot"},
+	// M3 第五批媒体供应商增补（契约 §10.1）：qwen 1 行——视频 wan2.2-t2v-plus
+	//（mode=video、协议 video；官方模型 ID 形态 wan2.2-t2v-plus，2026-10-04
+	// 百炼 legacy 万相 API 参考核实）。不落价：万相官方按次/时长人民币计费，
+	// 无可查证 USD 秒价（自选汇率折算即编造）——gateway pricing 静态层
+	// data_qwen.go 同样不落 VideoOutputCostPerSecond；usage 计量照抽
+	//（轮询响应 usage JSON 字符串的 video_duration/output_video_duration/
+	// duration 字段族，官方核实），目录无价 → 成本 0 不虚计（契约 §2.8），
+	// 依据见该文件注释。发布日期未获官方可查证精确值，不落（nil 日期置末，
+	// 同 glm cogvideox / volcengine seedance 行）。
+	{ID: "provider_model_qwen_wan2_2_t2v_plus_283c423593fa", ProviderCode: "qwen", Model: "wan2.2-t2v-plus", Mode: seedStrPtr("video"), CatalogOrder: nil, ReleaseDate: nil, ShutdownDate: nil, SupportedAPIProtocolsJSON: "[\"video\"]", SupportedServiceTiersJSON: "[]", SupportedReasoningEffortsJSON: "[]", DefaultReasoningEffort: nil, CodexSupportedReasoningLevelsJSON: "[]", CodexDefaultReasoningLevel: nil, CodexMultiAgentVersion: nil, ContextWindowTokens: nil, MaxInputTokens: nil, MaxOutputTokens: nil, MaxTokens: nil, InputUsdPer1M: nil, OutputUsdPer1M: nil, CachedInputUsdPer1M: nil, CacheWriteUsdPer1M: nil, CacheWrite1HUsdPer1M: nil, CacheStorageUsdPer1MPerHour: nil, ServiceTierPricesJSON: "{}", LongContextInputTokenThreshold: nil, LongContextInputTokenThresholdInclusive: false, LongContextInputCostMultiplier: nil, LongContextOutputCostMultiplier: nil, ImageInputUsdPer1M: nil, ImageOutputUsdPer1M: nil, AudioInputUsdPer1M: nil, AudioOutputUsdPer1M: nil, OutputUsdPerImage: nil, SupportsPromptCaching: false, CatalogVisible: true, Source: "qwen-pricing-snapshot"},
+	// M3f 长音频批增补（契约 §10.2）：qwen 长转写 1 行——paraformer-v2
+	//（mode=audio、协议 audio_transcription；paraformer-v2 为官方通用长转写
+	// 模型 ID 形态，录音文件识别异步任务）。不落价：paraformer 按时长人民币
+	// 计费口径、无可查证 USD 秒价（自选汇率折算即编造）——gateway pricing
+	// 静态层 data_qwen.go 同样不落 AudioInputCostPerSecond；usage 时长计量照抽
+	//（轮询响应 usage JSON 字符串的 duration 字段，契约 §10.2），目录无价 →
+	// 成本 0 不虚计（§2.8），依据见该文件注释。发布日期未获官方可查证精确
+	// 值，不落（nil 日期置末，同 wan2.2 行）。
+	{ID: "provider_model_qwen_paraformer_v2_7c1e94d2b8a3", ProviderCode: "qwen", Model: "paraformer-v2", Mode: seedStrPtr("audio"), CatalogOrder: nil, ReleaseDate: nil, ShutdownDate: nil, SupportedAPIProtocolsJSON: "[\"audio_transcription\"]", SupportedServiceTiersJSON: "[]", SupportedReasoningEffortsJSON: "[]", DefaultReasoningEffort: nil, CodexSupportedReasoningLevelsJSON: "[]", CodexDefaultReasoningLevel: nil, CodexMultiAgentVersion: nil, ContextWindowTokens: nil, MaxInputTokens: nil, MaxOutputTokens: nil, MaxTokens: nil, InputUsdPer1M: nil, OutputUsdPer1M: nil, CachedInputUsdPer1M: nil, CacheWriteUsdPer1M: nil, CacheWrite1HUsdPer1M: nil, CacheStorageUsdPer1MPerHour: nil, ServiceTierPricesJSON: "{}", LongContextInputTokenThreshold: nil, LongContextInputTokenThresholdInclusive: false, LongContextInputCostMultiplier: nil, LongContextOutputCostMultiplier: nil, ImageInputUsdPer1M: nil, ImageOutputUsdPer1M: nil, AudioInputUsdPer1M: nil, AudioOutputUsdPer1M: nil, OutputUsdPerImage: nil, SupportsPromptCaching: false, CatalogVisible: true, Source: "qwen-pricing-snapshot"},
 }

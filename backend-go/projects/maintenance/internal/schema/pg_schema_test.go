@@ -34,7 +34,7 @@ import (
 // the retired bind-mode ALTERs
 // were removed with the account-only binding migration). Regenerate them when
 // either source changes.
-const goldenPostgresSchemaStatementCount = 634
+const goldenPostgresSchemaStatementCount = 694
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -43,7 +43,7 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	"juhe_chat":          43,
 	"juhe_dataset":       7,
 	"juhe_usage":         52,
-	"juhe_stats":         201,
+	"juhe_stats":         261,
 	"juhe_codex_context": 16,
 }
 
@@ -133,8 +133,8 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			droppedTriggers += strings.Count(statement.SQL, "DROP TRIGGER IF EXISTS ")
 		}
 	}
-	if alterColumns != 21 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 21", alterColumns)
+	if alterColumns != 81 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 81", alterColumns)
 	}
 	if doBlocks != 3 {
 		t.Fatalf("DO block count = %d, want 3", doBlocks)
@@ -306,9 +306,12 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	//（媒体设计 §9/契约 §9）：providers 9→10、profiles 14→15
 	//（profile_volcengine_openai_v1）、groups 9→10、profile family 绑定
 	// 32→33（volcengine 档案只挂 video_generation 1 个媒体族——复用既有
-	// openai_v1_video_generation 族，endpoint families 维持 12）。
-	if len(pgSeedProviders) != 10 {
-		t.Fatalf("provider seeds = %d, want 10", len(pgSeedProviders))
+	// openai_v1_video_generation 族，endpoint families 维持 12）。同日 M3
+	// 第五批 qwen 增补（契约 §10）：providers 10→11、profiles 15→16
+	//（profile_qwen_openai_v1）、groups 10→11、profile family 绑定 33→34
+	//（qwen 档案只挂 video_generation 1 个媒体族，families 维持 12）。
+	if len(pgSeedProviders) != 11 {
+		t.Fatalf("provider seeds = %d, want 11", len(pgSeedProviders))
 	}
 	if len(pgSeedProtocols) != 3 {
 		t.Fatalf("protocol seeds = %d, want 3", len(pgSeedProtocols))
@@ -316,11 +319,11 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedEndpointFamilies) != 12 {
 		t.Fatalf("endpoint family seeds = %d, want 12", len(pgSeedEndpointFamilies))
 	}
-	if len(pgSeedProfiles) != 15 {
-		t.Fatalf("profile seeds = %d, want 15", len(pgSeedProfiles))
+	if len(pgSeedProfiles) != 16 {
+		t.Fatalf("profile seeds = %d, want 16", len(pgSeedProfiles))
 	}
-	if len(pgSeedGroups) != 10 {
-		t.Fatalf("group seeds = %d, want 10", len(pgSeedGroups))
+	if len(pgSeedGroups) != 11 {
+		t.Fatalf("group seeds = %d, want 11", len(pgSeedGroups))
 	}
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
@@ -332,8 +335,8 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	for _, profile := range pgSeedProfiles {
 		profileFamilyCount += len(profile.EndpointFamilies)
 	}
-	if profileFamilyCount != 33 {
-		t.Fatalf("profile endpoint family bindings = %d, want 33", profileFamilyCount)
+	if profileFamilyCount != 34 {
+		t.Fatalf("profile endpoint family bindings = %d, want 34", profileFamilyCount)
 	}
 	for _, key := range []string{"appName", "appIcon"} {
 		found := false

@@ -107,6 +107,8 @@ type Server struct {
 	glmVideoTasks        map[string]*glmVideoTask        // glm cogvideo task table (video_glm.go, contract §7.1)
 	minimaxVideoTasks    map[string]*minimaxVideoTask    // minimax hailuo task table (video_minimax.go, contract §8.1)
 	volcengineVideoTasks map[string]*volcengineVideoTask // volcengine seedance task table (video_volcengine.go, contract §9.1)
+	qwenVideoTasks       map[string]*qwenVideoTask       // qwen wanx task table (video_qwen.go, contract §10.1)
+	qwenASRTasks         map[string]*qwenASRTask         // qwen paraformer ASR task table (asr_qwen.go, contract §10.2, M3f)
 	mu                   sync.Mutex
 }
 
@@ -155,7 +157,7 @@ func acceptsEndpoint(method, path string) bool {
 // the requested scenario (sentinel "x-mock-scenario" header or ?scenario=
 // query, defaulting to chat_ok).
 func New() *Server {
-	m := &Server{now: time.Now, videos: map[string]*videoTask{}, veoOperations: map[string]*veoOperation{}, glmVideoTasks: map[string]*glmVideoTask{}, minimaxVideoTasks: map[string]*minimaxVideoTask{}, volcengineVideoTasks: map[string]*volcengineVideoTask{}}
+	m := &Server{now: time.Now, videos: map[string]*videoTask{}, veoOperations: map[string]*veoOperation{}, glmVideoTasks: map[string]*glmVideoTask{}, minimaxVideoTasks: map[string]*minimaxVideoTask{}, volcengineVideoTasks: map[string]*volcengineVideoTask{}, qwenVideoTasks: map[string]*qwenVideoTask{}, qwenASRTasks: map[string]*qwenASRTask{}}
 	m.Server = httptest.NewServer(http.HandlerFunc(m.serve))
 	return m
 }

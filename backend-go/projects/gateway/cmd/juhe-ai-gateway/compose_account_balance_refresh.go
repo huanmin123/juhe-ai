@@ -16,10 +16,18 @@ package main
 //     {addedModels, recommendedHealthCheckModel}（归档
 //     account-model-catalog-refresh.service.ts:44-57 的结果形状）。
 //
-// 两个端口都只在 PostgreSQL 模式（手动余额刷新依赖 juhe_jobs 租约表）装配；
-// SQLite 模式保持 nil 端口，路由维持既有 500 / 降级快照契约（余额手动刷新为
-// PG 模式能力，与周期 runner 现状一致）。目录刷新无 store 依赖，但与余额刷新
-// 共用同一装配门（双模都可用，见 wireInProcessBalanceAndCatalogRefresh）。
+// 手动余额刷新在双方言装配（2026-10-04 起 SQLite 分支不再保持 nil 端口）：
+// PG 模式经共享池使用 juhe_jobs.account_balance_* 租约四表；SQLite 模式经
+// StoreSQLite 在独立 account-balance.sqlite3 自建同构四表（打开即
+// WAL+busy_timeout+单写者，EnsureSchema 以 BEGIN IMMEDIATE 幂等建表补列），
+// gateway 独占该文件、无跨进程争用；与周期探测 auto-detect-recovery
+// （task-runs 租约 + 直写 stats）之间无四表级互斥——并发仅为幂等读，无数据
+// 风险。store 打开/契约校验失败时按 nil 端口降级（路由保持既有 500/降级
+// 快照契约）并登记告警。目录刷新无 store 依赖，与余额刷新共用同一装配门
+// （双模都可用，见 wireInProcessBalanceAndCatalogRefresh）。SQLite 模式下
+// committed 快照由本进程直写 stats 库 account_usage_snapshots kind=
+// 'relay_balance'（列表 overlay 的最终一致通道；PG 模式由 jobs 的
+// account-balance-stats-projection 周期投影承担，gateway 不直写）。
 
 import (
 	"context"
@@ -60,7 +68,11 @@ type gatewayManualBalanceRefresher struct {
 	secret string
 	store  *accountbalance.Store
 	runner *accountbalance.Runner
-	now    func() time.Time
+	// statsDB 是 SQLite 模式 committed 快照直写 stats 库的句柄（裸表名 +
+	// `?` 占位符）；PG 模式保持 nil——PG 由 jobs 的
+	// account-balance-stats-projection 周期投影，gateway 不直写。
+	statsDB *sql.DB
+	now     func() time.Time
 }
 
 // gatewayModelCatalogRefresher 实现 accounts.ModelCatalogRefresher。
@@ -72,10 +84,12 @@ type gatewayModelCatalogRefresher struct {
 	now     func() time.Time
 }
 
-// wireInProcessBalanceAndCatalogRefresh 装配两个进程内执行端口。
-// 手动余额刷新在 PG 模式下要求 juhe_jobs 租约四表已由受控数据库流程预置；
-// 契约校验失败时按 nil 端口降级（路由保持既有 500/降级快照契约）并登记告警，
-// 不阻塞组合根（对齐 wireInProcessAccountTestDispatch 的降级先例）。
+// wireInProcessBalanceAndCatalogRefresh 装配两个进程内执行端口（双方言）。
+// 手动余额刷新的租约四表在 PG 模式要求由受控数据库流程预置（只读契约校验），
+// 在 SQLite 模式由 StoreSQLite 打开独立文件并幂等自建；任一模式契约校验
+// （CheckSchema）失败时按 nil 端口降级（路由保持既有 500/降级快照契约）并
+// 登记告警，不阻塞组合根（对齐 wireInProcessAccountTestDispatch 的降级先例）；
+// store 打开或 runner 创建失败则原样上抛使组合根启动失败（双方言同分级）。
 func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeConfig, accountStore *accounts.Store, providerStore *providers.Store) error {
 	// 模型目录刷新：纯进程内 HTTP + 本地目录投影读，SQLite/PG 双模可用。
 	accountStore.SetModelCatalogRefresher(&gatewayModelCatalogRefresher{
@@ -86,10 +100,53 @@ func wireInProcessBalanceAndCatalogRefresh(composed *composition, cfg runtimeCon
 		now:     time.Now,
 	})
 
-	// 手动余额刷新：仅 PG 模式（SQLite 无 juhe_jobs 租约表，端口保持 nil）。
+	// 手动余额刷新：SQLite 模式打开独立租约库（gateway 独占，EnsureSchema
+	// 幂等建表）；路径缺失按既有 nil 端口降级语义处理（生产 loadRuntimeConfig
+	// 恒派生该路径，此分支只覆盖手构配置的组合根测试与显式清空 env 的部署）。
 	if !composed.pgDialect {
-		slog.Info("SQLite 模式不装配进程内余额手动刷新执行器（余额手动刷新为 PG 模式能力）",
-			"event", "account_balance_manual_refresher_skipped_sqlite")
+		if strings.TrimSpace(cfg.AccountBalanceDatabasePath) == "" {
+			slog.Warn("SQLite 模式缺少余额租约库路径，进程内余额手动刷新不装配（路由保持 500 契约）",
+				"event", "account_balance_manual_refresher_skipped_sqlite")
+			return nil
+		}
+		store, err := accountbalance.OpenStore(accountbalance.StoreConfig{
+			Mode:         accountbalance.StoreSQLite,
+			DatabasePath: cfg.AccountBalanceDatabasePath,
+		})
+		if err != nil {
+			return fmt.Errorf("open account-balance gateway store: %w", err)
+		}
+		// SQLite 模式 CheckSchema 即 EnsureSchema（幂等建表补列）；I/O 类失败
+		// 按 nil 端口降级，与 PG 分支契约校验失败同门。
+		if err := store.CheckSchema(context.Background()); err != nil {
+			_ = store.Close()
+			slog.Warn("SQLite 余额租约库初始化失败，进程内余额手动刷新不装配（路由保持 500 契约）",
+				"event", "account_balance_manual_refresher_sqlite_store_failed", "error", err.Error())
+			return nil
+		}
+		runner, err := accountbalance.NewRunner(accountbalance.RunnerConfig{
+			Store:            store,
+			OwnerID:          newGatewayBalanceOwnerID(),
+			OwnerLeaseTTL:    time.Minute,
+			AccountLeaseTTL:  30 * time.Second,
+			CredentialSecret: cfg.Secret,
+			ProbeTimeout:     15 * time.Second,
+			Now:              time.Now,
+		})
+		if err != nil {
+			_ = store.Close()
+			return fmt.Errorf("create account-balance gateway runner: %w", err)
+		}
+		composed.shutdowns = append(composed.shutdowns, func() { _ = store.Close() })
+		accountStore.SetManualBalanceRefresher(&gatewayManualBalanceRefresher{
+			db:      composed.db,
+			pg:      composed.pgDialect,
+			secret:  cfg.Secret,
+			store:   store,
+			runner:  runner,
+			statsDB: composed.statsDB,
+			now:     time.Now,
+		})
 		return nil
 	}
 	store, err := accountbalance.OpenStore(accountbalance.StoreConfig{
@@ -306,7 +363,76 @@ func (r *gatewayManualBalanceRefresher) RefreshManual(ctx context.Context, candi
 		return accounts.BalanceManualRefreshOutcome{}, errors.New("余额手动刷新 outcome 未生成结果")
 	}
 	snapshot := snapshotToMap(outcome.Snapshot)
+	// SQLite 分支直写 stats overlay（PG 分支由 jobs 投影 job 承担，行为零
+	// 变化）；直写失败只登记告警，不影响本次已 committed 的返回（快照已
+	// 持久化于租约四表）。
+	if !r.pg {
+		r.persistSQLiteStatsSnapshot(ctx, outcome)
+	}
 	return accounts.BalanceManualRefreshOutcome{Persisted: true, Outcome: "committed", Snapshot: snapshot}, nil
+}
+
+// persistSQLiteStatsSnapshot 把已 committed 的手动刷新 outcome 按 jobs
+// ReplaceSnapshotIfCurrent（worker_balance_detect.go）与 J2 投影
+// projectRow（worker_balance_projection.go）同款 UPSERT 形状直写 stats 库
+// account_usage_snapshots kind='relay_balance'：列集合、冲突目标
+// (system_account_id, account_id, kind)、next_refresh_after 语义完全一致；
+// snapshot_json 为 shared Snapshot 的 camelCase 形状并注入 configRevision
+// （gateway 读端 BalanceSnapshotMatchesConfiguration / list_snapshot 按
+// configRevision 比对配置一致性，列契约必须成立）。SQLite stats 库无 schema
+// 前缀，绑定用 `?` 占位符 + RFC3339Nano UTC 文本（jobs timeParam 的 SQLite
+// 臂等价）。写入失败不静默（warn + event），由下一次手动刷新收敛。
+func (r *gatewayManualBalanceRefresher) persistSQLiteStatsSnapshot(ctx context.Context, outcome accountbalance.Outcome) {
+	if r.statsDB == nil {
+		return
+	}
+	// 独立构造持久化 JSON：不污染 RefreshManual 返回给路由的 snapshot map。
+	persist := snapshotToMap(outcome.Snapshot)
+	persist["configRevision"] = outcome.ConfigRevision
+	serialized, err := json.Marshal(persist)
+	if err != nil {
+		slog.Warn("余额手动刷新快照 stats 直写序列化失败", "event", "account_balance_manual_stats_write_failed",
+			"accountId", outcome.AccountID, "error", err.Error())
+		return
+	}
+	now := r.now().UTC()
+	lastAttempt := now.Format(time.RFC3339Nano)
+	if outcome.Snapshot.LastAttemptAt != "" {
+		lastAttempt = outcome.Snapshot.LastAttemptAt
+	}
+	var lastSuccess any
+	if outcome.Snapshot.LastSuccessAt != "" {
+		lastSuccess = outcome.Snapshot.LastSuccessAt
+	}
+	var nextRefreshAfter any
+	if outcome.NextRefreshAt != nil {
+		nextRefreshAfter = outcome.NextRefreshAt.UTC().Format(time.RFC3339Nano)
+	}
+	var errorMessage any
+	if outcome.Snapshot.ErrorMessage != "" {
+		errorMessage = outcome.Snapshot.ErrorMessage
+	}
+	nowText := now.Format(time.RFC3339Nano)
+	upsert := `INSERT INTO account_usage_snapshots (
+      system_account_id, account_id, kind, source, snapshot_json, refresh_status,
+      last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at, created_at
+    ) VALUES (?, ?, 'relay_balance', 'upstream_api', ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, account_id, kind) DO UPDATE SET
+      source = excluded.source,
+      snapshot_json = excluded.snapshot_json,
+      refresh_status = excluded.refresh_status,
+      last_attempt_at = excluded.last_attempt_at,
+      last_success_at = excluded.last_success_at,
+      next_refresh_after = excluded.next_refresh_after,
+      last_error_message = excluded.last_error_message,
+      updated_at = excluded.updated_at`
+	if _, err := r.statsDB.ExecContext(ctx, upsert,
+		outcome.SystemAccountID, outcome.AccountID, string(serialized), string(outcome.Snapshot.Status),
+		lastAttempt, lastSuccess, nextRefreshAfter, errorMessage, nowText, nowText); err != nil {
+		slog.Warn("余额手动刷新快照 stats 直写失败（列表 overlay 待下次刷新收敛）",
+			"event", "account_balance_manual_stats_write_failed",
+			"accountId", outcome.AccountID, "error", err.Error())
+	}
 }
 
 // TestDraft 执行非持久化草稿探测（Node testAccountBalanceCandidate 契约：

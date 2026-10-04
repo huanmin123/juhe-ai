@@ -199,6 +199,15 @@ var billingPolicies = []*billingPolicy{
 		cacheReadIncludedInInput: true,
 		labels:                   defaultTokenBillingLabels,
 	},
+	{
+		// M3 媒体供应商新增（媒体设计 §9/契约 §10）：通义百炼只有媒体行项
+		//（video_output_seconds，目录未落价——见 data_qwen.go 计价落法注释，
+		// usage 秒计量照抽、成本不虚计），token 行项标签沿用默认集。
+		id:                       "qwen",
+		rejectUnsupportedTier:    true,
+		cacheReadIncludedInInput: true,
+		labels:                   defaultTokenBillingLabels,
+	},
 }
 
 // billingPolicyForProvider mirrors providerBillingPolicyForProvider

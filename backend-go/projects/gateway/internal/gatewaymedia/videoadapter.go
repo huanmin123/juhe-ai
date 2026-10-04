@@ -62,11 +62,16 @@ type VideoCreateInput struct {
 }
 
 // VideoCreateOutput 是创建请求的构造结果：Method/Path/Body 组成上游出站
-// 请求（Path 相对账户 base_url）。
+// 请求（Path 相对账户 base_url）。ExtraHeaders 是创建请求的厂商私有头
+// （M3 qwen 接入引入，最小扩展面：DashScope 异步任务约定的
+// X-DashScope-Async: enable，契约 §10.1）——链上层 driver 出站构造时注入
+// 创建请求头；nil（openai/gemini/glm/minimax/volcengine 全部既有实现）时
+// 零行为差异。轮询/下载/取消面无厂商私有头需求，不设对应字段。
 type VideoCreateOutput struct {
-	Method string
-	Path   string
-	Body   []byte
+	Method       string
+	Path         string
+	Body         []byte
+	ExtraHeaders map[string]string
 }
 
 // UpstreamStatusError 保留上游非 2xx 的状态码与响应体。契约 §2.6：上游 404
@@ -83,13 +88,14 @@ func (e *UpstreamStatusError) Error() string {
 
 // videoAdapters 是 provider → adapter 注册表（媒体设计 §5：媒体 adapter 以
 // provider 注册表挂载；M3 起 gemini（Veo）、glm（CogVideoX）、minimax
-// （Hailuo）与 volcengine（Seedance）已接入，qwen 只新增条目）。
+// （Hailuo）、volcengine（Seedance）与 qwen（万相）已接入，后续只新增条目）。
 var videoAdapters = map[string]VideoProviderAdapter{
 	"openai":     openaiVideoAdapter{},
 	"gemini":     veoVideoAdapter{},
 	"glm":        glmVideoAdapter{},
 	"minimax":    minimaxVideoAdapter{},
 	"volcengine": volcengineVideoAdapter{},
+	"qwen":       qwenVideoAdapter{},
 }
 
 // VideoAdapterForProvider 按 provider_code 解析视频 adapter；nil 表示该

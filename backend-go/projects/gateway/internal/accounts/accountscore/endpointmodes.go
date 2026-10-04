@@ -15,16 +15,17 @@ const (
 	GptVendorCode = "gpt"
 	// XaiProviderCode / DeepSeekProviderCode / GlmProviderCode /
 	// GeminiProviderCode / AnthropicProviderCode mirror the vendor tokens.
-	// MinimaxProviderCode / VolcengineProviderCode 是 M3 媒体新增供应商 token
-	//（媒体设计 §9/契约 §8/§9，仅媒体能力——不参与 DefaultOpenAIEndpointModes
-	// 的 chat 默认分支）。
-	XaiProviderCode       = "xai"
-	DeepSeekProviderCode  = "deepseek"
-	GlmProviderCode       = "glm"
-	GeminiProviderCode    = "gemini"
-	AnthropicProviderCode = "anthropic"
-	MinimaxProviderCode   = "minimax"
+	// MinimaxProviderCode / VolcengineProviderCode / QwenProviderCode 是 M3
+	// 媒体新增供应商 token（媒体设计 §9/契约 §8/§9/§10，仅媒体能力——不参与
+	// DefaultOpenAIEndpointModes 的 chat 默认分支）。
+	XaiProviderCode        = "xai"
+	DeepSeekProviderCode   = "deepseek"
+	GlmProviderCode        = "glm"
+	GeminiProviderCode     = "gemini"
+	AnthropicProviderCode  = "anthropic"
+	MinimaxProviderCode    = "minimax"
 	VolcengineProviderCode = "volcengine"
+	QwenProviderCode       = "qwen"
 	// HybridProviderCode mirrors the hybrid pseudo provider token.
 	HybridProviderCode = "hybrid"
 	// OpenAICompatibleProviderCode mirrors openai (openai-compatible token).
@@ -59,7 +60,11 @@ var (
 	// chainOpenAIEndpointModeValues 及 accounts.health_check_endpoint_mode
 	// CHECK 一致。词表缺失会让管理面无法创建视频账户，/v1/videos 创建链
 	// 按 video_create 候选过滤无账户可命中）。
-	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel"}
+	// M3f 长音频任务族（媒体设计 §4.2，契约 §10.2）：audio_job_create /
+	// audio_job_get / audio_job_content / audio_job_cancel 四 token 同语义
+	// 追加（audio_job_create 是 /v1/audio/jobs 创建链候选过滤消费面；词表
+	// 缺失会让管理面无法勾选长转写能力，创建链无账户可命中）。
+	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}
 	OpenAIChatEndpointModes      = []string{"chat_json", "chat_sse"}
 	OpenAIResponsesEndpointModes = []string{"responses_json", "responses_sse"}
 	// OpenAIDefaultEndpointModes is the write-side default set for new openai
@@ -132,6 +137,11 @@ func IsMinimaxProviderCodeToken(value string) bool {
 // IsVolcengineProviderCodeToken mirrors isVolcengineProviderCodeToken.
 func IsVolcengineProviderCodeToken(value string) bool {
 	return NormalizeProviderToken(value) == VolcengineProviderCode
+}
+
+// IsQwenProviderCodeToken mirrors isQwenProviderCodeToken.
+func IsQwenProviderCodeToken(value string) bool {
+	return NormalizeProviderToken(value) == QwenProviderCode
 }
 
 // IsGeminiProviderCodeToken mirrors isGeminiProviderCodeToken.

@@ -35,6 +35,7 @@ const (
 	geminiOpenAIChatV1BetaProfileID      = "profile_gemini_openai_chat_v1beta"
 	minimaxOpenAIV1ProfileID             = "profile_minimax_openai_v1"
 	volcengineOpenAIV1ProfileID          = "profile_volcengine_openai_v1"
+	qwenOpenAIV1ProfileID                = "profile_qwen_openai_v1"
 	anthropicProviderCode                = accountscore.AnthropicProviderCode
 	geminiProviderCode                   = accountscore.GeminiProviderCode
 	anthropicProtocolCodeConstant        = accountscore.AnthropicProtocolCode
@@ -45,6 +46,7 @@ const (
 	glmProviderCode                      = accountscore.GlmProviderCode
 	minimaxProviderCode                  = accountscore.MinimaxProviderCode
 	volcengineProviderCode               = accountscore.VolcengineProviderCode
+	qwenProviderCode                     = accountscore.QwenProviderCode
 	xaiProviderCode                      = accountscore.XaiProviderCode
 	hybridProviderCode                   = accountscore.HybridProviderCode
 	openAICompatibleProviderCodeConstant = accountscore.OpenAICompatibleProviderCode
@@ -59,7 +61,7 @@ var hybridEndpointModeValues = accountscore.HybridEndpointModeValues
 var openAIChatEndpointModeSet = accountscore.StringSet(openAIChatEndpointModes)
 
 // glmVideoEndpointModeSet 是 glm OpenAI 协议档案可显式勾选的视频端点模式
-//（M3 cogvideo adapter，契约 §7.1；与 openai 族共享 video_* token，opt-in
+// （M3 cogvideo adapter，契约 §7.1；与 openai 族共享 video_* token，opt-in
 // 不进默认集——DefaultOpenAIEndpointModes 的 glm 分支仍只落 chat 对）。
 var glmVideoEndpointModeSet = accountscore.StringSet([]string{
 	"video_create", "video_get", "video_content", "video_cancel",
@@ -77,7 +79,7 @@ var minimaxMediaEndpointModeSet = accountscore.StringSet([]string{
 
 // volcengineVideoEndpointModeSet 是 volcengine 媒体档案（profile_volcengine_
 // openai_v1）可声明的全部端点模式（M3，契约 §9.1）：仅 video_* 四值
-//（video_generation）——TTS 面（契约 §9.2）未回填不收录 audio_speech；档案
+// （video_generation）——TTS 面（契约 §9.2）未回填不收录 audio_speech；档案
 // Capabilities 只声明视频，不承接 chat/responses（火山方舟聊天走独立
 // doubao 模型面，本档案不声明）。全部 opt-in；默认集 video_get（只读任务
 // 查询形态——volcengine 无可自动探针的健康检查面，视频不做自动真实生成
@@ -86,6 +88,20 @@ var minimaxMediaEndpointModeSet = accountscore.StringSet([]string{
 // 在于 minimax 有 TTS 廉价探针面而 volcengine 只有视频面）。
 var volcengineVideoEndpointModeSet = accountscore.StringSet([]string{
 	"video_create", "video_get", "video_content", "video_cancel",
+})
+
+// qwenMediaEndpointModeSet 是 qwen 媒体档案（profile_qwen_openai_v1）可声明
+// 的全部端点模式（M3 第五批 video_* 四值 + M3f 长音频 audio_job_* 四值，
+// 契约 §10.1/§10.2）：video_*（video_generation）与 audio_job_*
+// （audio_transcription 长转写，首个上游 paraformer）——CosyVoice TTS 面
+// （契约 §10.2）未回填不收录 audio_speech；档案 Capabilities 只声明媒体，
+// 不承接 chat/responses（百炼聊天走 qwen 对话模型面，本档案不声明）。全部
+// opt-in；默认集 video_get（只读任务查询形态，零费用档——同 volcengine
+// 先例：qwen 无 TTS 廉价探针面，视频/长转写不做自动真实生成探针（媒体设计
+// §11.9），创建 video_create / audio_job_create 仍需显式开启）。
+var qwenMediaEndpointModeSet = accountscore.StringSet([]string{
+	"video_create", "video_get", "video_content", "video_cancel",
+	"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
 })
 
 func stringSet(values []string) map[string]bool {
@@ -121,6 +137,10 @@ func isMinimaxProviderCodeToken(value string) bool {
 
 func isVolcengineProviderCodeToken(value string) bool {
 	return accountscore.IsVolcengineProviderCodeToken(value)
+}
+
+func isQwenProviderCodeToken(value string) bool {
+	return accountscore.IsQwenProviderCodeToken(value)
 }
 
 func isGeminiProviderCodeToken(value string) bool {
@@ -400,6 +420,20 @@ var providerAccountCredentialDrivers = []credentialDriver{
 		normalizeForWrite: normalizeVolcengineEndpointModesForWrite,
 	},
 	{
+		// M3 媒体供应商（契约 §10.1/§10.2）：qwen 唯一档案
+		// profile_qwen_openai_v1（openai 协议、API Key）。词表放媒体 token
+		//（video_* 四值 + M3f audio_job_* 长转写四值）——词表缺失会让管理面
+		// 账户创建报「供应商协议档案未注册接口能力归一化：qwen」（同
+		// minimax/volcengine 结构先例）。
+		id: "qwen",
+		supportsContext: func(c endpointModeDefaultContext) bool {
+			return isQwenProviderCodeToken(c.providerCode) &&
+				isOpenAIProtocolProfileOf(c.predicate()) &&
+				c.providerProtocolProfileID == qwenOpenAIV1ProfileID
+		},
+		normalizeForWrite: normalizeQwenEndpointModesForWrite,
+	},
+	{
 		id: "hybrid",
 		supportsContext: func(c endpointModeDefaultContext) bool {
 			return isHybridProviderCodeToken(c.providerCode)
@@ -502,7 +536,7 @@ func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointMode
 }
 
 // normalizeMinimaxEndpointModesForWrite 是 minimax 媒体档案的写侧归一化
-//（M3，契约 §8；沿 glm driver 结构）：值域校验用 openai 族词表（audio_
+// （M3，契约 §8；沿 glm driver 结构）：值域校验用 openai 族词表（audio_
 // speech/video_* 是跨协议共享 token），再收敛到 minimax 媒体集——chat/
 // responses 等对话模式对 minimax 账户报错（档案 Capabilities 只声明媒体，
 // MiniMax 聊天端点非 OpenAI Chat 形态）。默认集 audio_speech（TTS 健康检查
@@ -549,6 +583,33 @@ func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpo
 	}
 	if len(unsupported) > 0 {
 		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持视频生成端点 (video_*)：%s",
+			strings.Join(unsupported, ", "))
+	}
+	return modes, nil
+}
+
+// normalizeQwenEndpointModesForWrite 是 qwen 媒体档案的写侧归一化（M3
+// 第五批，契约 §10.1；沿 volcengine driver 结构）：值域校验用 openai 族
+// 词表（video_* / audio_job_* 是跨协议共享 token），再收敛到 qwen 媒体集
+// （video_* 视频四值 + M3f audio_job_* 长转写四值，契约 §10.2）——chat/
+// responses/audio_speech 等模式对 qwen 账户报错（档案 Capabilities 只声明
+// 媒体，TTS 面未回填、聊天端点非 OpenAI Chat 形态）。默认集 video_get
+// （只读任务查询，零费用档）；video_create/audio_job_* opt-in。
+func normalizeQwenEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
+	pinned := context
+	pinned.providerCode = qwenProviderCode
+	modes, err := normalizeOpenAIEndpointModesForWrite(optOrDefault(value, []string{"video_get"}), pinned)
+	if err != nil {
+		return nil, err
+	}
+	unsupported := []string{}
+	for _, mode := range modes {
+		if !qwenMediaEndpointModeSet[mode] {
+			unsupported = append(unsupported, mode)
+		}
+	}
+	if len(unsupported) > 0 {
+		return nil, fmt.Errorf("通义百炼账户上游接口能力只支持视频生成端点 (video_*) 或长音频转写端点 (audio_job_*)：%s",
 			strings.Join(unsupported, ", "))
 	}
 	return modes, nil

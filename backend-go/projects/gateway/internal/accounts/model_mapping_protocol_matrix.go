@@ -34,7 +34,36 @@ const (
 	mappingFamilyMessages              = "messages"
 	mappingFamilyGenerateContent       = "generate_content"
 	mappingFamilyStreamGenerateContent = "stream_generate_content"
+	// M4b 媒体映射族（媒体设计 §9 hybrid 行）：与 schema 端点族 seed 同码
+	// （openai_v1_video_generation / openai_v1_tts，pg_schema.go）。媒体映射
+	// 是同族模型名改写（source 对外媒体模型名 → upstream 该中转真实媒体
+	// 模型名），执行走 OpenAI 形态媒体端点直连真实上游。
+	mappingFamilyVideoGeneration = "video_generation"
+	mappingFamilyTts             = "tts"
 )
+
+// isMediaMappingEndpointFamily 报告端点族是否媒体映射族（M4b）。媒体族的
+// 上游面恒为 OpenAI 形态媒体端点（/v1/videos、/v1/audio/speech），只允许
+// OpenAI 兼容协议档案声明。
+func isMediaMappingEndpointFamily(value string) bool {
+	return value == mappingFamilyVideoGeneration || value == mappingFamilyTts
+}
+
+// mappingFamilyProtocolToken 把映射端点族翻译成目录模型 supportedApiProtocols
+// 的协议 token：chat 族两者同名；媒体族端点族码（schema endpoint family code）
+// 与模型协议 token（model catalog protocol token）不同名——video_generation
+// 对应目录行的 "video"、tts 对应 "audio_speech"（model_catalog_data.go 媒体
+// 行的 SupportedAPIProtocolsJSON）。协议模型池（hybrid）与上游协议目录断言
+//（非 hybrid）都按 token 建池，消费端点族时必须经本翻译。
+func mappingFamilyProtocolToken(endpointFamily string) string {
+	switch endpointFamily {
+	case mappingFamilyVideoGeneration:
+		return "video"
+	case mappingFamilyTts:
+		return "audio_speech"
+	}
+	return endpointFamily
+}
 
 // geminiNativeV1BetaProfileID mirrors GEMINI_NATIVE_V1BETA_PROFILE_ID
 // (provider-protocol.ts). 归档 domain 模块被裁剪，字面量以 schema 种子的
@@ -61,6 +90,11 @@ var accountModelMappingProtocolRules = []protocolConversionRule{
 	{source: mappingFamilyMessages, upstream: mappingFamilyMessages, upstreamProfile: "anthropic"},
 	{source: mappingFamilyGenerateContent, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
 	{source: mappingFamilyStreamGenerateContent, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
+	// M4b 媒体映射（媒体设计 §9 hybrid 行）：video_generation / tts 同族
+	// 模型名改写，上游面是 OpenAI 形态媒体端点，仅 openai 档案供应商可声明
+	//（能力门要求账户启用 video_create / audio_speech 端点模式）。
+	{source: mappingFamilyVideoGeneration, upstream: mappingFamilyVideoGeneration, upstreamProfile: "openai"},
+	{source: mappingFamilyTts, upstream: mappingFamilyTts, upstreamProfile: "openai"},
 }
 
 // hybridAccountModelMappingProtocolRules mirrors the same-named table: 混合
@@ -82,6 +116,11 @@ var hybridAccountModelMappingProtocolRules = []protocolConversionRule{
 	{source: mappingFamilyChatCompletions, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
 	{source: mappingFamilyResponses, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
 	{source: mappingFamilyMessages, upstream: mappingFamilyGenerateContent, upstreamProfile: "gemini"},
+	// M4b 媒体映射（媒体设计 §9 hybrid 行）：hybrid 聚合中转的媒体模型映射
+	// ——source 对外视频/语音模型名 → upstream 该中转的真实媒体模型名，同族
+	// 改写（媒体上游面恒为 OpenAI 形态媒体端点，无跨协议矩阵需求）。
+	{source: mappingFamilyVideoGeneration, upstream: mappingFamilyVideoGeneration, upstreamProfile: "openai"},
+	{source: mappingFamilyTts, upstream: mappingFamilyTts, upstreamProfile: "openai"},
 }
 
 func findProtocolConversionRule(rules []protocolConversionRule, source, upstream string) *protocolConversionRule {
@@ -107,6 +146,10 @@ func accountModelMappingEndpointFamilyLabel(value string) string {
 		return "Gemini GenerateContent"
 	case mappingFamilyStreamGenerateContent:
 		return "Gemini StreamGenerateContent"
+	case mappingFamilyVideoGeneration:
+		return "Video Generation"
+	case mappingFamilyTts:
+		return "TTS"
 	}
 	return "Chat Completions"
 }
@@ -128,6 +171,13 @@ func hasAccountModelMappingUpstreamEndpointFamilyCapability(upstream string, mod
 		allowed = []string{"responses_json", "responses_sse"}
 	case mappingFamilyMessages:
 		allowed = []string{"messages_json", "messages_sse"}
+	case mappingFamilyVideoGeneration:
+		// M4b：视频映射上游面要求账户可承接 /v1/videos 创建（候选过滤的
+		// opt-in 模式，与 dispatch 侧 requiredSupportedEndpointMode 同词表）。
+		allowed = []string{"video_create"}
+	case mappingFamilyTts:
+		// M4b：语音映射上游面要求账户可承接 /v1/audio/speech。
+		allowed = []string{"audio_speech"}
 	default:
 		allowed = []string{"generate_content_json", "generate_content_sse"}
 	}
@@ -221,6 +271,11 @@ func assertAccountModelMappingProtocolAllowed(mapping ModelMapping, profile prot
 	if (mapping.SourceEndpointFamily == mappingFamilyChatCompletions || mapping.SourceEndpointFamily == mappingFamilyResponses) && !openAIProfile {
 		return &ValidationError{Message: "当前供应商协议不支持 OpenAI 账号模型别名"}
 	}
+	// M4b：媒体映射族（video_generation/tts）的上游面恒为 OpenAI 形态媒体
+	// 端点，仅 openai 档案供应商可声明（anthropic/gemini 档案无对应执行面）。
+	if isMediaMappingEndpointFamily(mapping.SourceEndpointFamily) && !openAIProfile {
+		return &ValidationError{Message: "当前供应商协议不支持媒体账号模型别名"}
+	}
 	if mapping.SourceEndpointFamily == mappingFamilyMessages && !anthropicProfile {
 		return &ValidationError{Message: "当前供应商协议不支持 Anthropic Messages 账号模型别名"}
 	}
@@ -264,6 +319,12 @@ func protocolPoolForMapping(endpointFamily string) (protocolCode, protocolVersio
 		return anthropicProtocolCodeConstant, anthropicProtocolVersionConstant
 	case mappingFamilyGenerateContent, mappingFamilyStreamGenerateContent:
 		return geminiProtocolCodeConstant, geminiProtocolVersionConstant
+	case mappingFamilyVideoGeneration, mappingFamilyTts:
+		// M4b：媒体族端点族 seed 挂在 openai 协议对（openai_v1_video_
+		// generation / openai_v1_tts），媒体模型池取 openai 协议全部启用供应
+		// 商的目录行（gpt 的 sora/tts 行、glm/minimax/volcengine/qwen 的
+		// 媒体行都按协议 token 进池）。
+		return openAIProtocolCode, openAIProtocolVersion
 	}
 	return openAIProtocolCode, openAIProtocolVersion
 }
@@ -289,13 +350,21 @@ func (s *Store) assertMappingModelsInProtocolPools(ctx context.Context, q querye
 			return nil, err
 		}
 		pool := map[string]bool{}
+		// M4b：目录行按协议 token（supportedApiProtocols 值）建池，端点族先
+		// 经 mappingFamilyProtocolToken 翻译（媒体族码 video_generation/tts
+		// 与目录协议 token video/audio_speech 不同名；chat 族两者同名，行为
+		// 不变）。媒体目录行无价格列（媒体价格只落在 gateway 静态 pricing，
+		// model_catalog_data.go 头注），媒体族池必须 includeUnpriced=true，
+		// 否则 priced-only 过滤把全部媒体行滤掉、映射池恒空。
+		protocolToken := mappingFamilyProtocolToken(endpointFamily)
+		includeUnpriced := isMediaMappingEndpointFamily(endpointFamily)
 		for _, code := range codes {
-			items, err := s.modelCatalog.ListAccountModelCatalog(ctx, code, systemAccountID, false)
+			items, err := s.modelCatalog.ListAccountModelCatalog(ctx, code, systemAccountID, includeUnpriced)
 			if err != nil {
 				return nil, err
 			}
 			for _, item := range items {
-				if containsString(item.SupportedAPIProtocols, endpointFamily) {
+				if containsString(item.SupportedAPIProtocols, protocolToken) {
 					pool[strings.ToLower(strings.TrimSpace(item.Model))] = true
 				}
 			}
@@ -400,6 +469,17 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		//（档案 Capabilities 只声明视频，无 chat/audio 模型）。
 		if isVolcengineProviderCodeToken(profile.providerCode) {
 			profileProtocols = append(profileProtocols, "video")
+		}
+		// qwen 媒体档案同族承接 video 协议模型（M3 万相 adapter，契约
+		// §10.1：统一 /v1/videos 面经媒体 adapter 改写，与账户 base_url/
+		// Bearer 凭据同源）与 audio_transcription 协议模型（M3f paraformer
+		// 长转写 adapter，契约 §10.2：统一 /v1/audio/jobs 面改写，同源凭据；
+		// CosyVoice TTS 面 §10.2 未回填，不承接 audio_speech）——供 qwen
+		// 账户声明万相系纯视频与 paraformer 系长转写模型进入 supportedModels
+		//（档案 Capabilities 声明 video_generation + audio_transcription，
+		// 无 chat 模型）。
+		if isQwenProviderCodeToken(profile.providerCode) {
+			profileProtocols = append(profileProtocols, "video", "audio_transcription")
 		}
 	case isAnthropicProtocolProfileOf(profile):
 		profileProtocols = []string{mappingFamilyMessages}

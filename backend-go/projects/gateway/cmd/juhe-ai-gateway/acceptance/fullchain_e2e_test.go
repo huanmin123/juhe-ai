@@ -306,6 +306,9 @@ func fullchainScriptableRequest(r *http.Request, model string) bool {
 //   - M3 火山方舟 Seedance 形态（契约 §9.1）：POST /api/v3/contents/
 //     generations/tasks 与 GET 同路径 /{id}[/content]（同上不读场景值；
 //     volcengine §9.1 面无取消端点）
+//   - M3 通义百炼万相形态（契约 §10.1）：POST /api/v1/services/aigc/
+//     video-generation/video-synthesis 与 GET /api/v1/tasks/{id}[/content]
+//     （同上不读场景值；qwen §10.1 面无取消端点）
 func fullchainMediaScriptable(method, path string) bool {
 	switch path {
 	case "/v1/audio/speech", "/v1/audio/transcriptions", "/v1/audio/translations":
@@ -386,6 +389,23 @@ func fullchainMediaScriptable(method, path string) bool {
 			return tail == "content" && method == http.MethodGet
 		}
 	}
+	// M3 通义百炼万相（契约 §10.1）：POST /api/v1/services/aigc/video-
+	// generation/video-synthesis 创建（X-DashScope-Async 异步头由引擎按契约
+	// 校验）与 GET /api/v1/tasks/{task_id}[/content] 轮询/产物（轮询按引擎
+	// 任务表脚本推进，场景值不读——与 /v1/videos 任务面同语义；qwen §10.1
+	// 面无取消端点）。
+	if method == http.MethodPost && path == "/api/v1/services/aigc/video-generation/video-synthesis" {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/api/v1/tasks/"); ok && rest != "" {
+		id, tail, hasTail := strings.Cut(rest, "/")
+		if id != "" && !strings.Contains(id, "/") {
+			if !hasTail {
+				return method == http.MethodGet
+			}
+			return tail == "content" && method == http.MethodGet
+		}
+	}
 	return false
 }
 
@@ -458,7 +478,10 @@ func (m *fullchainMockUpstream) proxy(w http.ResponseWriter, r *http.Request, sc
 		http.Error(w, "build upstream request: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	for _, name := range []string{"Content-Type", "Accept", "Authorization", "X-Goog-Api-Key"} {
+	// 转发头白名单：通用面（Content-Type/Accept/认证族）+ DashScope 异步
+	// 任务头 X-DashScope-Async（M3 qwen 创建链注入，契约 §10.1——引擎按该
+	// 头门禁创建请求，丢弃会让 qwen 创建被误拒 400）。
+	for _, name := range []string{"Content-Type", "Accept", "Authorization", "X-Goog-Api-Key", "X-DashScope-Async"} {
 		if value := r.Header.Get(name); value != "" {
 			outbound.Header.Set(name, value)
 		}
