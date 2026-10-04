@@ -635,8 +635,15 @@ WHERE (juhe_jobs.account_health_current_state.input_version < EXCLUDED.input_ver
 			// recovery may leave jobs state in a cooldown or terminal status;
 			// allow the current input projection to reconcile that split-brain
 			// row instead of recording an outcome that can never advance state.
+			// A quarantined direct-input baseline (blank account_status, retry
+			// metadata only) carries no status authority: a same-epoch
+			// pending_test health success must advance it, otherwise the
+			// account can never activate (BUG-0284 — the active escape below
+			// does not cover the activation epoch).
 			query += ` AND (juhe_jobs.account_health_current_state.account_status = $18
-                 OR ($18 = 'active' AND juhe_jobs.account_health_current_state.account_status <> 'active'))`
+                 OR ($18 = 'active' AND juhe_jobs.account_health_current_state.account_status <> 'active')
+                 OR ($18 = 'pending_test' AND juhe_jobs.account_health_current_state.account_status = ''
+                     AND juhe_jobs.account_health_current_state.error_code = 'direct_input_invalid'))`
 			args = append(args, outcome.Projection.ExpectedAccountStatus)
 		}
 		query += `))`
@@ -656,7 +663,10 @@ WHERE (account_health_current_state.input_version < excluded.input_version
 	   AND account_health_current_state.observed_at <= excluded.observed_at`
 		if outcome.Projection != nil {
 			query += ` AND (account_health_current_state.account_status = ?
-                 OR (? = 'active' AND account_health_current_state.account_status <> 'active'))`
+                 OR (? = 'active' AND account_health_current_state.account_status <> 'active')
+                 OR (? = 'pending_test' AND account_health_current_state.account_status = ''
+                     AND account_health_current_state.error_code = 'direct_input_invalid'))`
+			args = append(args, outcome.Projection.ExpectedAccountStatus)
 			args = append(args, outcome.Projection.ExpectedAccountStatus)
 			args = append(args, outcome.Projection.ExpectedAccountStatus)
 		}

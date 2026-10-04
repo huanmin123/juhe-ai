@@ -523,6 +523,59 @@ func TestSQLiteCooldownCASDoesNotRehydrateOtherBlankState(t *testing.T) {
 	assertStoredOutcomeProjectionPresent(t, store, candidate.RequestID)
 }
 
+// TestSQLiteHealthCASAdvancesDirectInputQuarantineForPendingTest 锁定 BUG-0284：
+// 同 epoch 的 pending_test 激活成功必须推进 direct_input_invalid 隔离基线
+// （account_status='' 且无冷却围栏），否则账户永久停在待检查；对非隔离状态行
+// （temporary_unavailable）仍不得越权推进。
+func TestSQLiteHealthCASAdvancesDirectInputQuarantineForPendingTest(t *testing.T) {
+	store, lease := openSQLiteStoreWithLease(t)
+	ctx := context.Background()
+	observed := time.Now().UTC().Round(0)
+	quarantineDue := observed.Add(5 * time.Minute)
+	appendStoreOutcome(t, store, lease, Outcome{
+		OutcomeID: "health-quarantine-invalid", RequestID: "health-quarantine-invalid-request", AccountID: "account-health-quarantine-pending",
+		Outcome: OutcomeTaskFailed, ObservedAt: observed, InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		ErrorCode: "direct_input_invalid", NextDueAt: &quarantineDue, FailureCount: 1,
+	})
+
+	activation := Outcome{
+		OutcomeID: "health-quarantine-success", RequestID: "health-quarantine-success-request", AccountID: "account-health-quarantine-pending",
+		Outcome: OutcomeSuccess, ObservedAt: observed.Add(time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		AccountStatus: "pending_test",
+		Projection: &Projection{
+			TargetAccountID: "account-health-quarantine-pending", TransitionKind: "health_success", InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+			ExpectedAccountStatus: "pending_test",
+		},
+	}
+	appendStoreOutcome(t, store, lease, activation)
+	state, found, err := store.LoadCurrentState(ctx, activation.AccountID)
+	if err != nil || !found || state.OutcomeID != activation.OutcomeID || state.AccountStatus != "pending_test" {
+		t.Fatalf("same-epoch pending_test success must advance direct-input quarantine: found=%t state=%#v err=%v", found, state, err)
+	}
+	assertStoredOutcomeProjectionPresent(t, store, activation.RequestID)
+
+	// 收窄：pending_test 健康成功不得推进已有权威状态（temporary_unavailable）的行。
+	fence := &CooldownFence{ObservationStartedAt: observed.Add(2 * time.Minute), Generation: "health-quarantine-narrow-fence"}
+	cooldown := cooldownCASOutcome("health-quarantine-narrow-cooldown", "health-quarantine-narrow-cooldown-request", "account-health-quarantine-narrow", observed.Add(2*time.Minute), fence)
+	appendStoreOutcome(t, store, lease, cooldown)
+	narrow := Outcome{
+		OutcomeID: "health-quarantine-narrow-success", RequestID: "health-quarantine-narrow-success-request", AccountID: cooldown.AccountID,
+		Outcome: OutcomeSuccess, ObservedAt: observed.Add(3 * time.Minute), InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+		AccountStatus: "pending_test",
+		Projection: &Projection{
+			TargetAccountID: cooldown.AccountID, TransitionKind: "health_success", InputVersion: 7, ConfigRevision: 11, DispatchRevision: 17,
+			ExpectedAccountStatus: "pending_test",
+		},
+	}
+	if _, err := store.AppendOutcome(context.Background(), lease, narrow); err != nil {
+		t.Fatal(err)
+	}
+	state, found, err = store.LoadCurrentState(ctx, narrow.AccountID)
+	if err != nil || !found || state.OutcomeID != cooldown.OutcomeID || state.AccountStatus != "temporary_unavailable" {
+		t.Fatalf("pending_test success must not advance an authoritative cooldown row: found=%t state=%#v err=%v", found, state, err)
+	}
+}
+
 func TestSQLiteCurrentStateCooldownCASRejectsGenerationMismatchAndBootstrapsMissingState(t *testing.T) {
 	store, lease := openSQLiteStoreWithLease(t)
 	ctx := context.Background()
