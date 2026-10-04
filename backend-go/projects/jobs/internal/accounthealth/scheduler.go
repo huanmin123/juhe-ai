@@ -461,6 +461,11 @@ func (r *Runner) runCycle(ctx context.Context, lease OwnerLease) error {
 func (r *Runner) persistDirectInputFailure(ctx context.Context, lease OwnerLease, failure DirectInputFailure, observed time.Time) error {
 	requestID := directInputFailureRequestID(failure, observed)
 	nextDue := observed.Add(schedulejitter.Delay(directInputFailureRetryBackoff))
+	reason := strings.TrimSpace(failure.Reason)
+	message := "PG direct input 候选无效；已隔离该账户探活任务并延迟重试"
+	if reason != "" {
+		message = "PG direct input 候选无效：" + reason + "；已隔离该账户探活任务并延迟重试"
+	}
 	outcome := Outcome{
 		OutcomeID:        requestID,
 		RequestID:        requestID,
@@ -471,12 +476,22 @@ func (r *Runner) persistDirectInputFailure(ctx context.Context, lease OwnerLease
 		ConfigRevision:   failure.ConfigRevision,
 		DispatchRevision: failure.DispatchRevision,
 		ErrorCode:        "direct_input_invalid",
-		ErrorMessage:     "PG direct input 候选无效；已隔离该账户探活任务并延迟重试",
+		ErrorMessage:     message,
 		NextDueAt:        &nextDue,
 		FailureCount:     1,
 		FailureStartedAt: &observed,
 	}
-	_, err := r.store.AppendOutcome(ctx, lease, outcome)
+	inserted, err := r.store.AppendOutcome(ctx, lease, outcome)
+	if err == nil && inserted {
+		// 仅在新的 fence 代次首次落库时告警：抑制重试每 5 分钟刷新一次，
+		// 逐轮打点会把同一确定性失败刷成日志噪音。
+		r.logger.Warn("PG direct input 候选被隔离，探活暂停并延迟重试",
+			"event", "account_health_direct_input_invalid",
+			"accountId", failure.AccountID,
+			"configRevision", failure.ConfigRevision,
+			"dispatchRevision", failure.DispatchRevision,
+			"reason", message)
+	}
 	return err
 }
 

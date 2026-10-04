@@ -78,12 +78,15 @@ type DirectInputLoadResult struct {
 
 // DirectInputFailure carries only the immutable account generation needed for
 // a durable, idempotent task receipt. It deliberately excludes credentials,
-// proxy values, and the underlying conversion error.
+// proxy values, and the underlying conversion error from the receipt identity;
+// Reason 记录转换失败的具体原因，仅用于 outcome 文案与日志可观测，不参与
+// request_id 派生与去重匹配。
 type DirectInputFailure struct {
 	AccountID        string
 	InputVersion     int64
 	ConfigRevision   int64
 	DispatchRevision int64
+	Reason           string
 }
 
 // DirectInputSuppression is jobs-owned retry metadata for a malformed
@@ -305,7 +308,7 @@ func buildDirectCandidateInput(candidate directCandidate, direct DirectInput, se
 	if err == nil {
 		return input, nil, nil
 	}
-	failure := DirectInputFailure{AccountID: candidate.account.ID, InputVersion: candidate.inputVersion, ConfigRevision: candidate.account.ConfigRevision, DispatchRevision: candidate.account.DispatchRevision}
+	failure := DirectInputFailure{AccountID: candidate.account.ID, InputVersion: candidate.inputVersion, ConfigRevision: candidate.account.ConfigRevision, DispatchRevision: candidate.account.DispatchRevision, Reason: err.Error()}
 	if strings.TrimSpace(failure.AccountID) == "" || failure.InputVersion < 1 || failure.ConfigRevision < 1 || failure.DispatchRevision < 1 {
 		return Input{}, nil, fmt.Errorf("PG direct input 坏候选缺少可持久化的 account/revision fence")
 	}

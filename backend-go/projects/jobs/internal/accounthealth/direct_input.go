@@ -281,20 +281,42 @@ func validateDirectAccount(account DirectAccount, now time.Time) error {
 	return nil
 }
 
+// directProfileProtocolMetadata 是 provider_protocol_profiles 规范种子的协议
+// 元数据投影（maintenance pg_schema.go；profile_hybrid_gemini_native_v1beta
+// 为 Node 遗留形态，种子未含但 isSupportedDirectProfile 保留兼容）。校验对照
+// 该表而不是从 profile 名猜协议：子串猜测把 profile_gemini_openai_chat_v1beta
+// （规范协议 openai/v1）误判为 gemini/v1beta，导致该 profile 全部账户永久
+// 无法构建探活输入（BUG-0283）。
+var directProfileProtocolMetadata = map[string][2]string{
+	"profile_openai_openai_v1":             {"openai", "v1"},
+	"profile_gpt_openai_v1":                {"openai", "v1"},
+	"profile_xai_openai_v1":                {"openai", "v1"},
+	"profile_deepseek_openai_v1":           {"openai", "v1"},
+	"profile_deepseek_anthropic_v1":        {"anthropic", "v1"},
+	"profile_anthropic_anthropic_v1":       {"anthropic", "v1"},
+	"profile_glm_general_openai_v1":        {"openai", "v1"},
+	"profile_glm_coding_openai_v1":         {"openai", "v1"},
+	"profile_glm_coding_anthropic_v1":      {"anthropic", "v1"},
+	"profile_gemini_openai_chat_v1beta":    {"openai", "v1"},
+	"profile_gemini_native_v1beta":         {"gemini", "v1beta"},
+	"profile_hybrid_openai_chat_v1":        {"openai", "v1"},
+	"profile_hybrid_anthropic_messages_v1": {"anthropic", "v1"},
+	"profile_hybrid_gemini_native_v1beta":  {"gemini", "v1beta"},
+}
+
 func validateDirectProtocolMetadata(profile, code, version string) error {
-	if strings.TrimSpace(profile) == "" {
+	trimmed := strings.TrimSpace(profile)
+	if trimmed == "" {
 		return nil
 	}
-	expectedCode, expectedVersion := "openai", "v1"
-	if strings.Contains(profile, "anthropic") {
-		expectedCode, expectedVersion = "anthropic", "v1"
-	} else if strings.Contains(profile, "gemini") {
-		expectedCode, expectedVersion = "gemini", "v1beta"
+	expected, known := directProfileProtocolMetadata[trimmed]
+	if !known {
+		return fmt.Errorf("PG direct input 的协议 profile 未注册协议元数据")
 	}
-	if strings.TrimSpace(code) != "" && code != expectedCode {
+	if strings.TrimSpace(code) != "" && code != expected[0] {
 		return fmt.Errorf("PG direct input 的 protocol_code 与 profile 不一致")
 	}
-	if strings.TrimSpace(version) != "" && version != expectedVersion {
+	if strings.TrimSpace(version) != "" && version != expected[1] {
 		return fmt.Errorf("PG direct input 的 protocol_version 与 profile 不一致")
 	}
 	return nil

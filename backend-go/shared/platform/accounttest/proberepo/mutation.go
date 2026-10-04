@@ -2,6 +2,7 @@ package proberepo
 
 import (
 	"context"
+	crand "crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -85,14 +86,24 @@ func (s *Store) MarkPrecheckTemporaryUnavailable(ctx context.Context, input acco
 			return skipped("stale_account_updated"), nil
 		}
 	}
+	// 冷却恢复锚点（cooldown_until + 观察起点 + generation）与网关传输失败
+	// 路径（markAccountCooldown）同构：temporary_unavailable 的恢复探测只认
+	// 这组五元 fence，缺失会把账户永久隔离在 J1 候选之外（BUG-0282）。
+	now := s.now()
+	nowText := now.UTC().Format(rfc3339Milli)
+	cooldownUntil := now.Add(3 * time.Second).UTC().Format(rfc3339Milli)
+	generation := "cooldown:" + newUUIDv4()
 	query := fmt.Sprintf(`
     UPDATE %s
     SET status = 'temporary_unavailable',
+        schedulable = 1,
         last_error_code = 'precheck_temporary_unavailable',
         last_error_message = ?,
+        last_error_trace_id = NULL,
+        cooldown_until = ?,
         cooldown_retest_failure_count = 0,
-        cooldown_retest_observation_started_at = NULL,
-        cooldown_retest_generation = NULL,
+        cooldown_retest_observation_started_at = ?,
+        cooldown_retest_generation = ?,
         cooldown_retest_last_at = NULL,
         cooldown_retest_last_status_code = NULL,
         stream_failure_count = 0,
@@ -105,7 +116,7 @@ func (s *Store) MarkPrecheckTemporaryUnavailable(ctx context.Context, input acco
       AND status = ?
   `, s.table("accounts"))
 	result, err := s.db.ExecContext(ctx, s.bind(query),
-		input.Reason, s.timeParam(s.now()),
+		input.Reason, cooldownUntil, nowText, generation, s.timeParam(now),
 		input.AccountID, input.ExpectedDispatchRevision, input.ExpectedStatus)
 	if err != nil {
 		return accountquality.PrecheckMutationResult{}, err
@@ -790,6 +801,18 @@ func normalizeProbeDeferSeconds(value int) int {
 // 钳制与 ms 整除语义）。
 func passiveJitterWindowMS(intervalMS int64) int64 {
 	return int64(schedulejitter.Window(time.Duration(intervalMS)*time.Millisecond) / time.Millisecond)
+}
+
+// newUUIDv4 生成 UUIDv4 形状的随机串（与 gateway chain_error_policy_effects
+// 的 cooldown generation 同构，Node randomUUID 的最小投影）。
+func newUUIDv4() string {
+	var bytes [16]byte
+	if _, err := crand.Read(bytes[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	bytes[6] = (bytes[6] & 0x0f) | 0x40
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
 }
 
 // passiveScheduleDelayMS 等价 passiveScheduleDelayMs（对称抖动，零偏移取 1）。

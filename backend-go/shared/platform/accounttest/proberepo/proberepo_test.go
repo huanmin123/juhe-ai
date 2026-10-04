@@ -74,6 +74,7 @@ func (h *testDB) seedSchema(t *testing.T) {
       cooldown_until TEXT,
       last_error_code TEXT,
       last_error_message TEXT,
+      last_error_trace_id TEXT,
       credentials_encrypted TEXT NOT NULL DEFAULT '{}',
       proxy_profile_id TEXT,
       authorization_instance_authorization_id TEXT,
@@ -488,6 +489,30 @@ func TestMarkPrecheckTemporaryUnavailableFenceOrder(t *testing.T) {
 	}
 	if dispatchRevision != 4 {
 		t.Fatalf("dispatchRevision=%d", dispatchRevision)
+	}
+
+	// 成功标记必须写入冷却恢复锚点（BUG-0282）：缺失会把 temporary_unavailable
+	// 账户永久隔离在 J1 候选之外，无法自动恢复。
+	var cooldownUntil, observationStartedAt, generation, lastTraceID sql.NullString
+	var schedulable int
+	if err := h.db.QueryRow(`SELECT cooldown_until, cooldown_retest_observation_started_at, cooldown_retest_generation, last_error_trace_id, schedulable FROM accounts WHERE id='acc-1'`).
+		Scan(&cooldownUntil, &observationStartedAt, &generation, &lastTraceID, &schedulable); err != nil {
+		t.Fatal(err)
+	}
+	if !cooldownUntil.Valid || cooldownUntil.String == "" {
+		t.Fatal("标记后必须写入 cooldown_until 冷却锚点")
+	}
+	if !observationStartedAt.Valid || observationStartedAt.String == "" {
+		t.Fatal("标记后必须写入冷却复测观察起点")
+	}
+	if !generation.Valid || !strings.HasPrefix(generation.String, "cooldown:") {
+		t.Fatalf("标记后必须写入冷却复测 generation: %q", generation.String)
+	}
+	if lastTraceID.Valid && lastTraceID.String != "" {
+		t.Fatalf("precheck 无 trace，必须清空 last_error_trace_id: %q", lastTraceID.String)
+	}
+	if schedulable != 1 {
+		t.Fatalf("标记后 schedulable 必须保持可调度: %d", schedulable)
 	}
 }
 

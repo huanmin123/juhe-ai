@@ -535,6 +535,24 @@ func TestDirectInputRejectsProtocolMetadataMismatch(t *testing.T) {
 	}
 }
 
+// TestDirectInputAcceptsGeminiOpenAIChatProfileMetadata 保护 BUG-0262 修复：
+// profile_gemini_openai_chat_v1beta 的规范协议是 openai/v1（provider_protocol_profiles
+// 种子），J1 输入校验必须对照规范元数据，不得按 profile 名子串猜测协议。
+func TestDirectInputAcceptsGeminiOpenAIChatProfileMetadata(t *testing.T) {
+	if err := validateDirectProtocolMetadata("profile_gemini_openai_chat_v1beta", "openai", "v1"); err != nil {
+		t.Fatalf("gemini openai-chat 规范协议必须通过校验: %v", err)
+	}
+	if err := validateDirectProtocolMetadata("profile_gemini_openai_chat_v1beta", "gemini", "v1beta"); err == nil {
+		t.Fatal("gemini openai-chat profile 携带 gemini 原生协议必须拒绝")
+	}
+	if err := validateDirectProtocolMetadata("profile_gemini_native_v1beta", "gemini", "v1beta"); err != nil {
+		t.Fatalf("gemini native 规范协议必须通过校验: %v", err)
+	}
+	if err := validateDirectProtocolMetadata("profile_nonexistent_v9", "openai", "v1"); err == nil {
+		t.Fatal("未注册协议元数据的 profile 必须拒绝")
+	}
+}
+
 // TestDirectProbeTargetSharesHybridRouteWithManualDiagnostics protects the
 // common resolver used by J1 and accountprobe. A change in endpoint family,
 // streaming intent, or model must therefore affect both callers together.
