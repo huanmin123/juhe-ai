@@ -27,6 +27,20 @@ func IsTranscriptionPath(path string) bool {
 	return normalized == "/audio/transcriptions" || normalized == "/audio/translations"
 }
 
+// AudioEndpointPath 返回归一后的同步音频端点路径（"/audio/speech" |
+// "/audio/transcriptions" | "/audio/translations"），非同步音频端点返回
+// ok=false。M6 glm 透传分支消费（契约 §7.2）：把统一面路径改写为 glm
+// 通用根 /api/paas/v4 前缀形态（与 IsSpeechPath/IsTranscriptionPath 同一
+// 归一口径）。
+func AudioEndpointPath(pathAndQuery string) (string, bool) {
+	normalized := normalizeAudioPath(pathAndQuery)
+	switch normalized {
+	case "/audio/speech", "/audio/transcriptions", "/audio/translations":
+		return normalized, true
+	}
+	return "", false
+}
+
 // normalizeAudioPath 去查询串、小写化并剥 /v1 前缀段。
 func normalizeAudioPath(path string) string {
 	if index := strings.IndexByte(path, '?'); index >= 0 {

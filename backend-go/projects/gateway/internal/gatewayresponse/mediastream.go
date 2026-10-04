@@ -31,8 +31,9 @@ type mediaSpeechTransform struct {
 // mediaSpeechTransformPlan 判定本响应是否需要媒体 speech 转换：请求路径
 // 是 /audio/speech、账户是转换型 speech 上游（gemini 协议，或 M3 起
 // provider=minimax 的 openai 协议族账户——t2a_v2 报文由链上 minimax
-// speech 分派改写）且上游 2xx。openai 族直连与其它 provider 恒不激活
-//（现有行为零改动）。
+// speech 分派改写；M6 起 provider=volcengine 的 /api/v3/tts 报文由链上
+// 火山 speech 分派改写，契约 §9.2）且上游 2xx。openai 族直连与其它
+// provider 恒不激活（现有行为零改动）。
 func mediaSpeechTransformPlan(input HandleUpstreamResponseInput) mediaSpeechTransform {
 	plan := mediaSpeechTransform{}
 	if input.Req == nil || !input.UpstreamResponse.OK() {
@@ -49,6 +50,8 @@ func mediaSpeechTransformPlan(input HandleUpstreamResponseInput) mediaSpeechTran
 		adapterKey = "gemini"
 	} else if strings.ToLower(strings.TrimSpace(input.Account.GetProviderCode())) == "minimax" {
 		adapterKey = "minimax"
+	} else if strings.ToLower(strings.TrimSpace(input.Account.GetProviderCode())) == "volcengine" {
+		adapterKey = "volcengine"
 	}
 	if adapterKey == "" {
 		return plan

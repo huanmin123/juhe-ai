@@ -249,9 +249,13 @@ type gatewayEnvOptions struct {
 	// PGDSN 非空时以 postgres 模式组装（其余路径仍指向隔离临时目录的
 	// 审计/操作日志等专用存储）。
 	PGDSN string
-	// J3bPinnedListener 固定模型检测管理 listener 地址并暴露到
-	// fixture.j3bURL（模型检测已默认常驻，此项只为断言提供已知端口）。
+	// J3bPinnedListener 固定模型检测管理 listener 地址并暴露到 fixture.j3bURL
+	//（模型检测已默认常驻，此项只为断言提供已知端口）。
 	J3bPinnedListener bool
+	// ExtraEnv 追加到网关子进程的 env（M6 起火山语音 E2E 用：把
+	// JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL 测试 seam 指向本夹具
+	// mock 上游）。
+	ExtraEnv map[string]string
 }
 
 type gatewayFixture struct {
@@ -370,6 +374,9 @@ func startGateway(t *testing.T, opts gatewayEnvOptions) *gatewayFixture {
 	}
 	if opts.ChainEnabled {
 		env["JUHE_AI_GATEWAY_CHAIN_ENABLED"] = "true"
+	}
+	for key, value := range opts.ExtraEnv {
+		env[key] = value
 	}
 	if opts.J3bPinnedListener {
 		j3bPort := freePort(t)

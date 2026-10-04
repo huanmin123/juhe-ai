@@ -359,6 +359,11 @@ func runtimeCredentialsOf(credentials map[string]any) map[string]any {
 	chainCopyRuntimeCredentialText(credentials, out, "api_key_strategy")
 	chainCopyRuntimeCredentialText(credentials, out, "service_tier_override")
 	chainCopyRuntimeCredentialText(credentials, out, "reasoning_effort_override")
+	// M6 火山语音（契约 §9.2）：语音应用双值凭据随 secret 投影（volcengine
+	// speech 分派消费——Bearer; 鉴权头与 user.uid 固定值；其它 provider 无
+	// 该键零差异）。
+	chainCopyRuntimeCredentialText(credentials, out, "speech_appid")
+	chainCopyRuntimeCredentialText(credentials, out, "speech_token")
 	chainCopyRuntimeCredentialValue(credentials, out, "supported_endpoint_modes")
 	chainCopyRuntimeCredentialValue(credentials, out, "api_key_weights")
 	chainCopyRuntimeCredentialValue(credentials, out, "error_handling_rules")

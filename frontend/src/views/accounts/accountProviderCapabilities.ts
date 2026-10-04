@@ -342,15 +342,20 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       }
       return modes
     }
-    // M3 媒体供应商（媒体设计 §9/契约 §9.1）：volcengine 档案只声明
-    // video_generation 一个媒体 family（TTS 面 §9.2 未回填），推导不回退
-    // chat 词表（火山方舟聊天走独立 doubao 模型面，档案不承接聊天流量）；
-    // video_* 四值照 openai 族先例属显式可选能力（opt-in，不进默认集）。
+    // M3 媒体供应商（媒体设计 §9/契约 §9.1）：volcengine 档案声明视频与
+    // 语音两个媒体 family（M6 起补 tts——契约 §9.2 回填 B 级后实施，豆包
+    // TTS 走 openspeech /api/v3/tts adapter，凭据双值 speech_appid/
+    // speech_token），推导不回退 chat 词表（火山方舟聊天走独立 doubao 模型
+    // 面，档案不承接聊天流量）；video_* 四值与 audio_speech 照 openai 族
+    // 先例属显式可选能力（opt-in，不进默认集）。
     if (isVolcengineProviderCode(profile?.providerCode ?? profile?.code)) {
       const families = new Set(endpointFamilyCodes(profile))
       const modes: AccountSupportedEndpointMode[] = []
       if (families.has(OPENAI_VIDEO_GENERATION_FAMILY)) {
         modes.push('video_create', 'video_get', 'video_content', 'video_cancel')
+      }
+      if (families.has(OPENAI_TTS_FAMILY)) {
+        modes.push('audio_speech')
       }
       return modes
     }

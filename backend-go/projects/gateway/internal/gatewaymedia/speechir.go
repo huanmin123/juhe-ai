@@ -18,15 +18,19 @@ import (
 // ProviderOptions 是 L3 扩展通道的对象形态投影（键=provider_code，契约
 // §2.1；M3 minimax TTS 起消费——vol/pitch 等厂商个例参数 deep-merge 进
 // t2a_v2 报文；openai 族直连与 gemini TTS 不消费该字段）。
+// AccountVendorRefs 是链上注入的账户级厂商引用（非请求面参数，客户端不可
+// 控制；M6 火山 TTS 起消费——speech_appid 构造 user.uid 固定值，契约 §9.2；
+// openai 族直连与 gemini/minimax adapter 不读取该字段）。
 type SpeechRequest struct {
-	Model            string
-	Input            string
-	Voice            string
-	Speed            *float64
-	ResponseFormat   string
-	Instructions     string
-	Language         string
-	ProviderOptions  map[string]any
+	Model             string
+	Input             string
+	Voice             string
+	Speed             *float64
+	ResponseFormat    string
+	Instructions      string
+	Language          string
+	ProviderOptions   map[string]any
+	AccountVendorRefs map[string]string
 }
 
 // OpenAISpeechResponseFormats 是 OpenAI TTS 的官方 response_format 全集

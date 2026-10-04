@@ -193,4 +193,18 @@ var glmModelPricingData = []rawModel{
 		OutputModalities:      []string{"video"},
 		SupportedAPIProtocols: []string{"video"},
 	},
+	// M6 语音增补（契约 §7.2 回填 B 级后实施）：cogtts 一行，mode=audio、
+	// 协议 audio_speech（openai 透传分支，官方端点 /api/paas/v4/audio/speech，
+	// 模型名取官方 api-reference「文本转语音」curl 示例）。计价落法（不
+	// 编造）：官方按字符计费、定价页无可查证 USD 字符价——不落
+	// TtsInputCostPerChar；上游响应无字符回报（openai 兼容二进制音频流）→
+	// 网关按请求 input 字符自算计量照落（§2.8），成本不虚计（0 计费）。
+	// ResponseFormats 不声明：glm 是 openai 兼容透传，response_format 词表
+	// 由上游裁决（本地不做零转码门禁，与 gemini/minimax 转换型 adapter 不同）。
+	rawModel{
+		Model: "cogtts", Mode: "audio",
+		InputModalities:       []string{"text"},
+		OutputModalities:      []string{"audio"},
+		SupportedAPIProtocols: []string{"audio_speech"},
+	},
 }

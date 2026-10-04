@@ -244,10 +244,14 @@ Mock：`media_gemini_tts_ok`（inlineData base64 PCM 载荷）、`media_gemini_t
 计费：按输出秒（目录档）；usage 不回报，且 `seconds` 属 ignored 参数不构成计量基源——网关按 §2.8 兜底（0 计费 + `usage_missing` 标记，不猜测；目录秒价 `VideoOutputUsdPerSecond` 已落，待 Veo 回报时长字段或固定档裁决后生效）。
 Mock：`media_gemini_video_create_ok` / `media_gemini_video_poll_running` / `media_gemini_video_poll_done_uri` / `media_gemini_video_poll_error`（M3 已交付，创建场景冻结任务脚本）。
 
+### 5.3 Live（实时语音，M6a；置信度 B：多源确认 2026-10-04）
+
+上游端点 `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`（API key 头；google_oauth 同面）。客户端消息：`setup{model,generationConfig}`（首帧，会话配置 voice/modalities/systemInstruction/tools）、`realtimeInput{audio}`（音频分块 base64）、`clientContent{turns,turnComplete}`（文本/轮次）、`toolResponse`。服务端事件：`setupComplete`、`serverContent`（modelTurn.inlineData 音频、outputTranscription、interrupted、turnComplete）、`toolCall`。**Live 无 usage 事件**（turnComplete 不携带计量）→ 网关终态 usage_missing（不估算）。事件映射矩阵与不映射面见《流式语音跨协议转换设计》§3（M6 实施契约唯一事实源）。Mock：`media_gemini_live_setup_audio_turn`（setup 断言/audio 回吐/turnComplete）等随 M6a 交付。
+
 ## 6. xai（置信度 B-：模式与字段多源确认，精确端点待官方页回填）
 
 能力与模式事实（2026-10-04 检索升级）：Grok Voice API 提供 TTS/STT/STS；视频为 Grok Imagine Video（`grok-imagine-video` / `grok-imagine-video-1.5`，2026-06 发布），**submit-then-poll 异步任务模式**：POST 创建（请求字段 `model`、`prompt`、源图（图生视频）、`duration`、`aspect_ratio`，最长约 60 秒）→ 返回任务 `id` → GET 轮询 `status`（pending/in-progress → 终态 `succeeded`/`failed`）→ 终态经 `file_id`/视频 URL 下载。
-**待回填**：精确端点路径与响应字段全名（`docs.x.ai` Video Generation guide 未被搜索引擎索引）；接入前以官方页回填本节并升 B/A 级。M3 排期时先完成回填再写 adapter。
+**待回填**：精确端点路径与响应字段全名——官方页 URL 已定位：`https://docs.x.ai/developers/model-capabilities/video/generation`（含 reference-to-video/keyframes/duration=12 示例，2026-10-04 确认存在），但该域名自本机网络直连不可达（连接超时），字段级内容仍未取得；接入前以官方页回填并升 B/A 级。
 
 ## 7. glm / 智谱（视频 B 级：报文多源确认；语音 C 级：模型确认字段待回填）
 
@@ -262,9 +266,13 @@ Mock：`media_gemini_video_create_ok` / `media_gemini_video_poll_running` / `med
 - 计费（M3 落法，不编造）：CogVideoX 按次计费（2026-09 第三方聚合口径称 ¥1/次，官方定价页 bigmodel.cn 为 SPA 无法直接核实精确单价），网关计费面只有秒价维度（`VideoOutputCostPerSecond`）且轮询响应无时长回报——目录行 `cogvideox-3` 不落秒价，终态计费走 §2.8 兜底（0 计费 + `usage_missing` 标记）；官方秒价/时长口径可查证后再补。
 - Mock：`media_glm_video_create_ok` / `_poll_processing` / `_poll_success_url` / `_poll_fail`（M3 已交付，端点 `/api/paas/v4/videos/generations`、`/api/paas/v4/async-result/{id}` 与 `/content` 产物通道）。
 
-### 7.2 语音（模型确认，报文待回填）
+### 7.2 语音（B 级已回填 2026-10-04：OpenAI 兼容端点官方确认；**M6 已实施**）
 
-模型事实（2026-10-04 检索）：`GLM-ASR-2512`（新一代语音识别，实时转写）、`GLM-TTS`（2025-12 发布，两阶段生成，3 秒样本复刻音色）已上线开放平台 API（docs.bigmodel.cn「语音能力」章节）。**待回填**：端点路径、请求/响应字段、音频编码形态、计费单位——接入前以 docs.bigmodel.cn 回填，回填前不得实现 adapter。
+- **TTS**：`POST https://open.bigmodel.cn/api/paas/v4/audio/speech`，Bearer——**OpenAI 兼容形态**（官方 api-reference「文本转语音」页 curl 确认）：`{"model":"cogtts","input":"...","voice":"tongtong","response_format":"wav",...}`；厂商扩展 `ref_audio`/`ref_text`（3 秒样本声音复刻）走 `provider_options.glm`；GLM-TTS 模型（`GLM-TTS`/开源权重部署）同面。计费按字符（官方页可查证后落价，查不到不编造）。
+- **ASR**：对应 `audio/transcriptions` 路径（OpenAI 兼容同面；GLM-ASR-2512 系模型）；字段全集以官方页为准（B 级：端点形态官方确认、字段全集多源）。
+- 接入形态：**openai 透传分支**（无独立 adapter 需求）——glm 账户 TTS/STT 走 openai 形态直连（URL 按 glm 通用根 `/api/paas/v4` 归一，同 CogVideo 先例）。
+- Mock：`media_glm_tts_ok`（OpenAI speech 形态回 wav 载荷）。
+- **M6 实施注（2026-10-04）**：glm 账户的 `/v1/audio/speech|transcriptions|translations` 走链上透传分支（`chain_driver.go` glm speech URL 归一 + `provider_options.glm` 子对象深合并进上游 body、通道键不透传；URL 归一复用 `chainGlmVideoUpstreamURL` 的 `/api/paas/v4` 服务根去重）。端点模式 `audio_speech`/`audio_transcription_json` opt-in（写侧词表 `glmSpeechEndpointModeSet` 放行）。目录行 `cogtts`（mode=audio、协议 audio_speech、不落字符价——计量照落成本不虚计）；GLM-ASR 目录行待官方 API 模型名可查证后补（第三方口径 `glm-asr` 不作数）。`response_format` 词表由上游裁决（透传零转码，无本地门禁）。账号接入见《智谱GLM账号接入.md》语音节。
 
 既有 `glm` 供应商档案沿用，仅新增媒体 profile 能力（endpoint families + modes），不新增 provider_code。
 
@@ -320,7 +328,10 @@ host：`ark.cn-beijing.volces.com`；认证 `Authorization: Bearer <ARK_API_KEY>
 
 ### 9.2 TTS / 长转写
 
-豆包 TTS（`/api/v3/tts` 族）与异步长转写：端点与字段接入前以火山官方文档回填；计费 TTS 按字符、转写按时长。**M3 第四批未实施**（档案与目录不声明 audio 能力）。
+**TTS（B 级已回填 2026-10-04，多源交叉；M6 已实施 2026-10-04）**：`POST https://openspeech.bytedance.com/api/v3/tts`——**注意 host 为 openspeech.bytedance.com（语音服务域）非 ark**，鉴权特例 `Authorization: Bearer;<token>`（**分号**分隔，火山特有，凭据需 appid+token 双值）。请求：`{"user":{"uid":"..."},"req_params":{"text":"...","speaker":"BV700_streaming","audio_params":{"format":"mp3","sample_rate":24000,"speed_ratio":1.0}},"reqid":"<uuid>","operation":"query"}`。响应：`{"reqid","code":3000(成功),"message","data":"<base64 音频>"}`——code!=3000 即失败；data base64 解码透传。公共参数映射：`input`→req_params.text、`voice`→speaker、`response_format`→audio_params.format（pcm/mp3/ogg_opus/wav）、`speed`→speed_ratio（厂商区间约 0.2–3.0，公共 0.25–4.0 超区间按 §2.4 规则 400）；reqid 网关生成（uuid）。计费按字符（官方页可查证后落价）。Mock：`media_volcengine_tts_ok`（code 3000 + data base64 载荷）+ `media_volcengine_tts_failed`（code 3001 错误信封）。
+异步长转写：仍待回填（docs.volcengine.com 页面 JS 渲染不可抓取）；计费按时长。**M3 第四批未实施**（档案与目录不声明长转写能力）。
+
+**M6 实施注（2026-10-04，TTS 面）**：`gatewaymedia/volcengine_tts.go` adapter 挂 `speechAdapters` 的 `volcengine` 条目；链上 `volcengineSpeechRequest` 分派（沿 minimax 同模式）。落地事实：出站 URL 恒 `https://openspeech.bytedance.com` 语音服务域（与账户 ark base_url 无关的 URL 构造特例；`JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL` 仅为验收 E2E 的测试 seam，生产不设置）；凭据双值 `speech_appid`/`speech_token`（api_key 账户凭据可选键，写侧仅 volcengine 放行，缺失即该账户无 audio_speech 能力——派发时显式失败，不静默回退）；`user.uid` = 账户 `speech_appid`（网关固定注入的调用方标识，非请求面参数）；统一面 `model` 仅必填占位（V3 请求面无 model 字段——模型由语音应用决定，官方无可查证模型 ID，目录不落行不编造，模型门经运营自定义目录行承载占位名）；`speed` 区间 [0.2,3.0] 词表外/越界本地 400（§2.4 规则 2）；响应转换 `code!=3000` 错误上抛（同步面无任务受理语义）。档案 Capabilities 补 `tts` family；`audio_speech` 端点模式 opt-in（默认集维持 video_get）。计费：上游无字符回报 → 网关按请求字符自算计量照落、成本不虚计（0 计费，§2.8）。账号接入见《火山方舟账号接入.md》TTS 节。
 
 ## 10. qwen / 通义百炼（置信度 B：DashScope 通用任务模式确认；§10.1 端点与参数面已于 2026-10-04 经百炼官方 legacy 万相 API 参考核实并实施）
 
@@ -346,13 +357,13 @@ M3 第五批实施面（保守面，检索核实）：
 - 状态归一与万相同表（§2.6 qwen 列）；计费：paraformer 按时长人民币口径——无可查证 USD 不落价（0 计费+usage_missing 不编造），usage 时长计量照抽（`AudioInputSeconds`）。
 - Mock：`media_qwen_asr_create_pending` / `_poll_running` / `_poll_succeeded_transcription_url` / `_poll_failed`——**M3f 已交付**（`mockupstream/asr_qwen.go`，创建端点按契约 §10.2 校验 model + input.file_urls 非空数组（缺失 400，参数错误透传断言点）；轮询/产物通道与万相共用 `/api/v1/tasks/{id}` 族（任务表按 id 分表查询），content 回转写结果 JSON 文件）。
 
-CosyVoice TTS 同步/流式（按字符）：端点字段仍待官方页回填（C 级）。
+CosyVoice（**契约事实修正 2026-10-04**）：官方分类为"实时语音合成"，接入协议为 **AOQ（QUIC）/WebSocket 双向事件流**（客户端事件/服务端事件），**非 REST/SSE 同步 TTS**——从同步 TTS 回填池移出，归 M6 流式语音转换池（与 Gemini Live 同类，届时经 Realtime 转换层接入）。
 Mock（视频四场景 **M3 第五批已交付**，`mockupstream/video_qwen.go`——创建端点按契约 §10.1 校验 `X-DashScope-Async` 头，缺失即 400 同步调用拒绝；`_tts_ok` 随 TTS 接入交付）。
 
 ## 11. 与设计的衔接及前置裁决项清单
 
 1. ~~§5.1 Gemini TTS 对外 `response_format` 约束（PCM 透传 vs 400）——M1 实施首日裁决并回填本节~~ **已裁决（2026-10-04）：pcm 透传、其余 400、零转码，见 §5.1**。
-2. §6 xai、§7 glm、§8.2、§9.2、§10.2 的"待回填"项——对应期接入前完成，回填前不得实现该 adapter。
+2. 剩余"待回填"项——§6 xai（docs.x.ai 直连不可达）、§7.2 GLM-ASR 模型名、§9.2 火山长转写、§10.2 CosyVoice（归 M6 流式池）：对应期接入前完成回填，回填前不得实现该 adapter（§7.2 glm 语音、§8.2、§9.2 TTS、§10.2 长转写均已回填并实施）。
 3. Mock 上游基建扩展（§3.2/§3.3）为 M1 首个交付物（先有 Mock 再写链路）；mockdata 域扩展随管理面能力同批。
 4. 本文与《音频视频模型接入与统一媒体网关设计》冲突时，以设计文档的目标/边界为准、以本文的报文字段为准。
 

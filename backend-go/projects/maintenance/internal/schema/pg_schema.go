@@ -875,22 +875,25 @@ var pgSeedProfiles = []pgSeedProfile{
 		// M3 媒体新增供应商档案（媒体设计 §9/契约 §9）：火山方舟 API Key 单
 		// 档案，Capabilities 只声明 video_generation（与 EndpointFamilies 同名，
 		// 复用 minimax 批次的 openai_v1_video_generation 族，不新增 family 行）
-		//——TTS 面（契约 §9.2）未回填不声明，聊天端点非 OpenAI Chat 形态亦
-		// 不承接聊天流量（目录无 chat 模型行，模型门双保险）。BaseURL 为
-		// 官方根 ark.cn-beijing.volces.com；出站路径 /api/v3/contents/
-		// generations/tasks 由链上 chainVolcengineVideoUpstreamURL 归一拼缀。
+		//——M6 起补 tts（契约 §9.2 回填 B 级后实施：豆包 TTS 走 openspeech
+		// 语音服务域 /api/v3/tts，复用 openai_v1_tts 族行，语音凭据双值
+		// speech_appid/speech_token 见《火山方舟账号接入.md》）；聊天端点非
+		// OpenAI Chat 形态不承接聊天流量（目录无 chat 模型行，模型门双保险）。
+		// BaseURL 为官方根 ark.cn-beijing.volces.com；出站路径 /api/v3/
+		// contents/generations/tasks 由链上 chainVolcengineVideoUpstreamURL
+		// 归一拼缀，TTS 出站 host 恒 openspeech.bytedance.com（URL 构造特例）。
 		ID:                      "profile_volcengine_openai_v1",
 		ProviderCode:            "volcengine",
 		Name:                    "火山方舟 / OpenAI v1 媒体",
-		Description:             "火山方舟官方 API Key 协议档案，仅承载视频生成（豆包 Seedance 系 contents/generations/tasks）媒体能力；豆包 TTS 面未回填，本档案不声明",
+		Description:             "火山方舟官方 API Key 协议档案，承载视频生成（豆包 Seedance 系 contents/generations/tasks）与语音合成（豆包 TTS openspeech /api/v3/tts，语音应用凭据）媒体能力；聊天流量不承接",
 		Enabled:                 1,
 		ProtocolCode:            "openai",
 		ProtocolVersion:         "v1",
 		BaseURL:                 "https://ark.cn-beijing.volces.com",
 		DefaultHealthCheckModel: "doubao-seedance-1-0-pro-250528",
 		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"video_generation"},
-		EndpointFamilies:        []string{"video_generation"},
+		Capabilities:            []string{"video_generation", "tts"},
+		EndpointFamilies:        []string{"video_generation", "tts"},
 	},
 	{
 		// M3 媒体新增供应商档案（媒体设计 §9/契约 §10）：通义百炼 API Key 单

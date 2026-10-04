@@ -17,6 +17,17 @@ package main
 //     cancelled）；
 //  4. language 参数映射在出站报文断言（链路 1 内联覆盖）。
 //
+// M6 追加（契约 §7.2/§9.2）：
+//  5. glm TTS 透传链路：/v1/audio/speech → 出站 POST /api/paas/v4/audio/speech
+//     （glm 通用根归一，非 openai /v1 补缀）+ Bearer + provider_options.glm
+//     的 ref_audio/ref_text 深合并进顶层 body（通道键不透传），mock
+//     media_glm_tts_ok 回 wav 载荷（RIFF magic bytes）；
+//  6. volcengine TTS adapter 链路：/v1/audio/speech → 出站 POST /api/v3/tts
+//     （固定语音服务域，经测试 seam env 指回 mock）+ `Authorization:
+//     Bearer;<token>` 分号鉴权特例 + req_params 嵌套报文（user.uid=
+//     speech_appid、reqid uuid、operation=query），响应 code 3000 + data
+//     base64 解码后透传 mp3（frame sync magic bytes）。
+//
 // 上游拓扑沿 chain_media_video_qwen_test.go：账户 base_url 指向记录层
 //（断言认证头与异步头缺席），内层为 mockupstream 引擎；completed 的产物
 // url 由引擎按自身 URL 渲染，网关直连该 URL（不经过记录层）。
@@ -351,5 +362,276 @@ func TestChainMediaAudioJobCancel(t *testing.T) {
 	}
 	if len(recorder.snapshot()) != 1 {
 		t.Fatalf("终态轮询不得再打上游: %+v", recorder.snapshot())
+	}
+}
+
+// seedMediaGlmSpeechAccount 种 glm 分组 + TTS 测试账户 + 独立路由策略与
+// API Key（M6，契约 §7.2 透传分支；profile_glm_general_openai_v1）。凭据带
+// base_url 与 supported_endpoint_modes（openai 族词表 audio_speech，opt-in
+// 语义）；模型约束种 cogtts（目录 seed M6 增补行）。
+func seedMediaGlmSpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
+	t.Helper()
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(query, args...); err != nil {
+			t.Fatalf("seed glm speech row: %v: %v", query, err)
+		}
+	}
+	keySecret := "sk-chain-glm-speech"
+	credentials := map[string]any{
+		"api_key":  apiKey,
+		"base_url": baseURL,
+		"supported_endpoint_modes": []string{
+			"audio_speech",
+		},
+	}
+	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
+		VALUES ('group_glm_speech', ?, 'glm', 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (
+			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
+		) VALUES (?, ?, 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
+	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES ('group_glm_speech', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
+		VALUES (?, 'glm', 'cogtts', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
+		VALUES ('rs_glm_speech', ?, 'glm语音', 'normal', NULL, 'active')`, fixture.systemAccount)
+	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
+		VALUES ('rsg_glm_speech', 'rs_glm_speech', ?, 'group_glm_speech', 0, 1, 'active', '2026-10-04T00:00:00.000Z')`, fixture.systemAccount)
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
+		VALUES ('key_glm_speech', ?, 'rs_glm_speech', 'glm语音Key', ?, 'active', '2026-10-04T00:00:00.000Z')`,
+		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
+	return keySecret
+}
+
+// TestChainMediaGlmSpeechUrlPassthroughRefAudio 覆盖 M6 链路 5（契约 §7.2）：
+// glm 账户 /v1/audio/speech 走 openai 透传——出站 URL 归一到官方通用根
+// /api/paas/v4/audio/speech（CogVideo 同根去重先例，非 openai /v1 补缀）、
+// provider_options.glm 的 ref_audio/ref_text 深合并进顶层（通道键不透传）、
+// Bearer 认证；mock media_glm_tts_ok 回 wav 载荷（RIFF magic bytes——未转换
+// 的报文通道即音频二进制）；usage 按请求字符自算（透传面无上游回报）。
+func TestChainMediaGlmSpeechUrlPassthroughRefAudio(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	apiKey := seedMediaGlmSpeechAccount(t, fixture, "acc_glm_speech", mock.URL, "glm-key-tts")
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	chain := composeMediaVideoChain(t, fixture, spoolDir)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/audio/speech", apiKey,
+		`{"model":"cogtts","input":"你好智谱","voice":"tongtong","response_format":"wav","provider_options":{"glm":{"ref_audio":"data:audio/wav;base64,aGVsbG8=","ref_text":"样本文本"}}}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaGlmTTSOK)})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("glm speech status=%d body=%s", response.StatusCode, payload)
+	}
+	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "audio/wav") {
+		t.Fatalf("content-type = %q, want audio/wav", got)
+	}
+	// wav magic bytes：RIFF 头（透传面直接是音频二进制，mock 按请求 wav 协商）。
+	if len(payload) < 12 || string(payload[0:4]) != "RIFF" || string(payload[8:12]) != "WAVE" {
+		t.Fatalf("响应不是 wav 载荷（RIFF/WAVE magic bytes 缺失）: % x", payload[:min(12, len(payload))])
+	}
+
+	// 出站断言：POST /api/paas/v4/audio/speech（官方通用根归一）+ Bearer +
+	// ref_audio/ref_text 深合并进顶层 + provider_options 通道键不透传。
+	requests := mock.Requests()
+	if len(requests) != 1 || requests[0].Method != http.MethodPost || requests[0].Path != "/api/paas/v4/audio/speech" {
+		t.Fatalf("glm speech 出站请求形态错误: %+v", requests)
+	}
+	if requests[0].AuthHeader != "Bearer glm-key-tts" {
+		t.Fatalf("glm speech Authorization = %q, want Bearer glm-key-tts", requests[0].AuthHeader)
+	}
+	body := requests[0].Body
+	for _, want := range []string{
+		`"model":"cogtts"`, `"input":"你好智谱"`, `"voice":"tongtong"`,
+		`"ref_audio":"data:audio/wav;base64,aGVsbG8="`, `"ref_text":"样本文本"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("出站报文缺少 %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"provider_options"`) {
+		t.Fatalf("网关私有 provider_options 通道键不得透传上游: %s", body)
+	}
+
+	// usage：透传面无上游字符回报 → 网关按请求 input 自算（4 runes）。
+	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+		return strings.Contains(text, `"ttsInputChars":4`) && strings.Contains(text, `"endpoint":"POST /v1/audio/speech"`)
+	}, "glm tts 请求字符自算终态记录")
+}
+
+// TestChainMediaGlmSpeechUpstreamURLDedup 钉住 glm 语音 URL 归一的服务根去重
+//（契约 §7.2/CogVideo §7.1 同一先例）：base 已含 /api/paas/v4 时不重复拼接，
+// 不含时直拼官方根——两种形态都不得出现 openai /v1 强制补缀。
+func TestChainMediaGlmSpeechUpstreamURLDedup(t *testing.T) {
+	dedup, err := chainGlmVideoUpstreamURL("https://open.bigmodel.cn/api/paas/v4", "/api/paas/v4/audio/speech")
+	if err != nil {
+		t.Fatalf("dedup url: %v", err)
+	}
+	if dedup != "https://open.bigmodel.cn/api/paas/v4/audio/speech" {
+		t.Fatalf("base 含服务根时未去重: %q", dedup)
+	}
+	plain, err := chainGlmVideoUpstreamURL("https://open.bigmodel.cn", "/api/paas/v4/audio/speech")
+	if err != nil {
+		t.Fatalf("plain url: %v", err)
+	}
+	if plain != "https://open.bigmodel.cn/api/paas/v4/audio/speech" {
+		t.Fatalf("base 不含服务根时未直拼官方根: %q", plain)
+	}
+}
+
+// seedMediaVolcengineSpeechAccount 种 volcengine 分组 + TTS 测试账户 + 独立
+// 路由策略与 API Key（M6，契约 §9.2）。凭据带 ark API Key、base_url 与
+// **语音应用双值 speech_appid/speech_token**（凭据归一化 M6 放行键）与
+// supported_endpoint_modes（openai 族词表 audio_speech，opt-in 语义）。模型
+// 约束种统一面占位名 doubao-tts（网关模型门要求账户显式声明支持模型——
+// V3 TTS 无官方模型面、官方目录不落行，占位名经运营自定义目录行承载，
+// 值不透传上游，见《火山方舟账号接入.md》TTS 节取舍说明）。
+func seedMediaVolcengineSpeechAccount(t *testing.T, fixture *chainFixture, id, baseURL, arkKey string, withSpeechCredentials bool) string {
+	t.Helper()
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := fixture.db.Exec(query, args...); err != nil {
+			t.Fatalf("seed volcengine speech row: %v: %v", query, err)
+		}
+	}
+	keySecret := "sk-chain-volcengine-speech"
+	credentials := map[string]any{
+		"api_key":  arkKey,
+		"base_url": baseURL,
+		"supported_endpoint_modes": []string{
+			"audio_speech",
+		},
+	}
+	if withSpeechCredentials {
+		credentials["speech_appid"] = "app-voice-123"
+		credentials["speech_token"] = "volc-tts-token-a"
+	}
+	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type)
+		VALUES ('group_volcengine_speech', ?, 'volcengine', 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (
+			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
+		) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
+	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
+		VALUES ('group_volcengine_speech', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at)
+		VALUES (?, 'volcengine', 'doubao-tts', '2026-10-04T00:00:00.000Z')`, id)
+	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status)
+		VALUES ('rs_volcengine_speech', ?, 'volcengine语音', 'normal', NULL, 'active')`, fixture.systemAccount)
+	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
+		VALUES ('rsg_volcengine_speech', 'rs_volcengine_speech', ?, 'group_volcengine_speech', 0, 1, 'active', '2026-10-04T00:00:00.000Z')`, fixture.systemAccount)
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
+		VALUES ('key_volcengine_speech', ?, 'rs_volcengine_speech', 'volcengine语音Key', ?, 'active', '2026-10-04T00:00:00.000Z')`,
+		fixture.systemAccount, gatewayruntimecache.HashSecret(keySecret))
+	return keySecret
+}
+
+// TestChainMediaVolcengineSpeechFullChain 覆盖 M6 链路 6（契约 §9.2）：出站
+// POST /api/v3/tts（固定语音服务域——测试 seam env 指回 mock，未设置时恒
+// openspeech.bytedance.com）+ `Authorization: Bearer;<token>` 分号鉴权特例 +
+// req_params 嵌套报文（input→text、voice→speaker、response_format→format、
+// user.uid=speech_appid、reqid uuid、operation=query、model 不透传）；响应
+// code 3000 + data base64 解码后以二进制 mp3 透传（frame sync magic bytes）；
+// usage 按请求字符自算（V3 响应无字符回报，§2.8）。
+func TestChainMediaVolcengineSpeechFullChain(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	// 测试 seam：把火山语音固定 host 指回本进程 mock（生产缺省恒官方根，
+	// 见 chainVolcengineSpeechUpstreamURL 注释）。
+	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
+	apiKey := seedMediaVolcengineSpeechAccount(t, fixture, "acc_volcengine_speech", mock.URL, "ark-key-a", true)
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	chain := composeMediaVideoChain(t, fixture, spoolDir)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/audio/speech", apiKey,
+		`{"model":"doubao-tts","input":"你好火山","voice":"BV700_streaming","response_format":"mp3","speed":1.5}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVolcengineTTSOK)})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("volcengine speech status=%d body=%s", response.StatusCode, payload)
+	}
+	if got := response.Header.Get("Content-Type"); !strings.Contains(got, "audio/mpeg") {
+		t.Fatalf("content-type = %q, want audio/mpeg（data base64 解码后的二进制通道）", got)
+	}
+	// base64 解码断言：mp3 frame sync（0xFF 0xFB）。上游 data 是 base64 字符串，
+	// 未解码的透传不满足二进制 magic bytes。
+	if len(payload) < 4 || payload[0] != 0xFF || payload[1] != 0xFB {
+		t.Fatalf("响应不是解码后的 mp3 载荷（frame sync 缺失）: % x", payload[:min(4, len(payload))])
+	}
+
+	// 出站断言：POST /api/v3/tts + Bearer; 分号鉴权特例 + req_params 嵌套报文。
+	requests := mock.Requests()
+	if len(requests) != 1 || requests[0].Method != http.MethodPost || requests[0].Path != "/api/v3/tts" {
+		t.Fatalf("volcengine speech 出站请求形态错误: %+v", requests)
+	}
+	if requests[0].AuthHeader != "Bearer;volc-tts-token-a" {
+		t.Fatalf("volcengine speech Authorization = %q, want Bearer;volc-tts-token-a（分号特例）", requests[0].AuthHeader)
+	}
+	body := requests[0].Body
+	for _, want := range []string{
+		`"user":{"uid":"app-voice-123"}`,
+		`"text":"你好火山"`,
+		`"speaker":"BV700_streaming"`,
+		`"format":"mp3"`,
+		`"speed_ratio":1.5`,
+		`"operation":"query"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("出站报文缺少 %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"model"`) {
+		t.Fatalf("V3 请求面无 model 字段，统一面 model 占位不得透传: %s", body)
+	}
+	// reqid 网关生成（uuid v4 形状）。
+	var decoded struct {
+		Reqid string `json:"reqid"`
+	}
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("decode outbound body: %v", err)
+	}
+	if len(decoded.Reqid) != 36 || decoded.Reqid[14] != '4' {
+		t.Fatalf("reqid = %q, want uuid v4 shape（网关生成）", decoded.Reqid)
+	}
+
+	// usage：V3 响应无字符回报 → 网关按请求 input 自算（4 runes）；目录无
+	// 字符价 → 成本不虚计。
+	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+		return strings.Contains(text, `"ttsInputChars":4`) && strings.Contains(text, `"endpoint":"POST /v1/audio/speech"`)
+	}, "volcengine tts 请求字符自算终态记录")
+}
+
+// TestChainMediaVolcengineSpeechMissingCredentials 钉住能力语义（契约 §9.2）：
+// volcengine 账户勾选 audio_speech 但缺语音双值凭据 → 显式失败（账户级能力
+// 缺失，不静默回退、不打上游），不是客户端 400（沿 videoCreateRequest 能力
+// 缺失先例）。
+func TestChainMediaVolcengineSpeechMissingCredentials(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
+	apiKey := seedMediaVolcengineSpeechAccount(t, fixture, "acc_volcengine_speech_nocred", mock.URL, "ark-key-nocred", false)
+
+	chain := composeMediaVideoChain(t, fixture, filepath.Join(t.TempDir(), "spool"))
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	response, payload := mediaVideoClientDo(t, server.URL, http.MethodPost, "/v1/audio/speech", apiKey,
+		`{"model":"doubao-tts","input":"hi","voice":"BV700_streaming"}`, nil)
+	if response.StatusCode < 500 {
+		t.Fatalf("缺凭据 speech status=%d, want 5xx（账户级能力缺失，非客户端 400）body=%s", response.StatusCode, payload)
+	}
+	if len(mock.Requests()) != 0 {
+		t.Fatalf("缺凭据不得打上游: %+v", mock.Requests())
 	}
 }

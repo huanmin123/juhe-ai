@@ -67,6 +67,15 @@ var glmVideoEndpointModeSet = accountscore.StringSet([]string{
 	"video_create", "video_get", "video_content", "video_cancel",
 })
 
+// glmSpeechEndpointModeSet 是 glm OpenAI 协议档案可显式勾选的同步音频端点
+// 模式（M6 语音透传，契约 §7.2：audio_speech（TTS 透传 /api/paas/v4/
+// audio/speech）+ audio_transcription_json（STT 透传 transcriptions/
+// translations）；与 openai 族共享 token，opt-in 不进默认集——glm 默认集
+// 仍只落 chat 对）。
+var glmSpeechEndpointModeSet = accountscore.StringSet([]string{
+	"audio_speech", "audio_transcription_json",
+})
+
 // minimaxMediaEndpointModeSet 是 minimax 媒体档案（profile_minimax_openai_v1）
 // 可声明的全部端点模式（M3，契约 §8）：audio_speech（t2a_v2）+ video_*
 // 四值（video_generation）——档案 Capabilities 只声明媒体，不承接 chat/
@@ -78,16 +87,18 @@ var minimaxMediaEndpointModeSet = accountscore.StringSet([]string{
 })
 
 // volcengineVideoEndpointModeSet 是 volcengine 媒体档案（profile_volcengine_
-// openai_v1）可声明的全部端点模式（M3，契约 §9.1）：仅 video_* 四值
-// （video_generation）——TTS 面（契约 §9.2）未回填不收录 audio_speech；档案
-// Capabilities 只声明视频，不承接 chat/responses（火山方舟聊天走独立
-// doubao 模型面，本档案不声明）。全部 opt-in；默认集 video_get（只读任务
-// 查询形态——volcengine 无可自动探针的健康检查面，视频不做自动真实生成
-// 探针（按秒计费成本高，媒体设计 §11.9），video_get 是唯一零费用档的
-// 合法默认；创建 video_create 仍需显式开启，与 minimax 默认集结构的差异
-// 在于 minimax 有 TTS 廉价探针面而 volcengine 只有视频面）。
+// openai_v1）可声明的全部端点模式（M3，契约 §9.1 + M6 TTS §9.2）：video_*
+// 四值（video_generation）+ audio_speech（豆包 TTS openspeech /api/v3/tts
+// adapter，语音应用双值凭据 speech_appid/speech_token——缺失即该账户无该
+// 能力，派发时显式失败）；档案 Capabilities 声明视频+语音，不承接 chat/
+// responses（火山方舟聊天走独立 doubao 模型面，本档案不声明）。全部
+// opt-in；默认集 video_get（只读任务查询形态——volcengine 无可自动探针的
+// 健康检查面，视频/语音均按量计费不做自动真实生成探针（媒体设计 §11.9），
+// video_get 是唯一零费用档的合法默认；创建 video_create / 语音 audio_speech
+// 均需显式开启——TTS 无只读探针面，与 minimax 默认集含 audio_speech 的
+// 差异在于 minimax TTS 有廉价探针承载而火山语音是独立计费服务面）。
 var volcengineVideoEndpointModeSet = accountscore.StringSet([]string{
-	"video_create", "video_get", "video_content", "video_cancel",
+	"video_create", "video_get", "video_content", "video_cancel", "audio_speech",
 })
 
 // qwenMediaEndpointModeSet 是 qwen 媒体档案（profile_qwen_openai_v1）可声明
@@ -520,7 +531,9 @@ func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointMode
 	}
 	unsupported := []string{}
 	for _, mode := range modes {
-		if !openAIChatEndpointModeSet[mode] && !glmVideoEndpointModeSet[mode] {
+		// M6 语音透传（契约 §7.2）：audio_speech / audio_transcription_json
+		// 与 openai 族共享 token，glm 账户 opt-in 声明（官方通用根端点）。
+		if !openAIChatEndpointModeSet[mode] && !glmVideoEndpointModeSet[mode] && !glmSpeechEndpointModeSet[mode] {
 			unsupported = append(unsupported, mode)
 		}
 	}
@@ -529,7 +542,7 @@ func normalizeGLMEndpointModesForWrite(value optionalValue, context endpointMode
 		if context.providerProtocolProfileID == glmCodingOpenAIV1ProfileID {
 			chatCapabilityName = "OpenAI Chat Completions"
 		}
-		return nil, fmt.Errorf("智谱 GLM 账户上游接口能力只支持 %s (JSON)、%s (Streaming) 或视频生成端点 (video_*)：%s",
+		return nil, fmt.Errorf("智谱 GLM 账户上游接口能力只支持 %s (JSON)、%s (Streaming)、视频生成端点 (video_*) 或同步音频端点 (audio_speech/audio_transcription_json)：%s",
 			chatCapabilityName, chatCapabilityName, strings.Join(unsupported, ", "))
 	}
 	return modes, nil
@@ -562,12 +575,12 @@ func normalizeMinimaxEndpointModesForWrite(value optionalValue, context endpoint
 }
 
 // normalizeVolcengineEndpointModesForWrite 是 volcengine 媒体档案的写侧
-// 归一化（M3，契约 §9.1；沿 minimax driver 结构）：值域校验用 openai 族
-// 词表（video_* 是跨协议共享 token），再收敛到 volcengine 视频集——chat/
-// responses/audio_speech 等模式对 volcengine 账户报错（档案 Capabilities
-// 只声明视频，TTS 面未回填、聊天端点非 OpenAI Chat 形态）。默认集
+// 归一化（M3，契约 §9.1 + M6 TTS §9.2；沿 minimax driver 结构）：值域校验
+// 用 openai 族词表（video_*/audio_speech 是跨协议共享 token），再收敛到
+// volcengine 媒体集——chat/responses 等模式对 volcengine 账户报错（档案
+// Capabilities 只声明视频+语音，聊天端点非 OpenAI Chat 形态）。默认集
 // video_get（只读任务查询，零费用档）；video_create/video_content/
-// video_cancel opt-in。
+// video_cancel/audio_speech opt-in（语音凭据双值缺失时派发显式失败）。
 func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	pinned := context
 	pinned.providerCode = volcengineProviderCode
@@ -582,7 +595,7 @@ func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpo
 		}
 	}
 	if len(unsupported) > 0 {
-		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持视频生成端点 (video_*)：%s",
+		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持视频生成端点 (video_*) 或语音合成端点 (audio_speech)：%s",
 			strings.Join(unsupported, ", "))
 	}
 	return modes, nil

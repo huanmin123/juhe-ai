@@ -451,8 +451,11 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		// endpoint_modes 的 video_* 亦属本档案能力）——供 glm 账户声明
 		// cogvideox 系纯视频模型进入 supportedModels（契约 §7.1）。按供应商
 		// 收窄而非全 openai 族放开：其余 openai 族供应商无已实施视频 adapter。
+		// M6 起同族追加 audio_speech 协议模型（契约 §7.2 语音透传：
+		// /api/paas/v4/audio/speech 与 chat 同根同凭据）——供 glm 账户声明
+		// cogtts 系纯 TTS 模型进入 supportedModels。
 		if isGlmProviderCodeToken(profile.providerCode) {
-			profileProtocols = append(profileProtocols, "video")
+			profileProtocols = append(profileProtocols, "video", "audio_speech")
 		}
 		// minimax 媒体档案同族承接 video / audio_speech 协议模型（M3
 		// hailuo + t2a_v2 adapter，契约 §8：统一 /v1/videos 与
@@ -464,11 +467,13 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		}
 		// volcengine 媒体档案同族承接 video 协议模型（M3 seedance adapter，
 		// 契约 §9.1：统一 /v1/videos 面经媒体 adapter 改写，与账户 base_url/
-		// Bearer 凭据同源；TTS 面 §9.2 未回填，不承接 audio_speech）——供
-		// volcengine 账户声明 Seedance 系纯视频模型进入 supportedModels
-		//（档案 Capabilities 只声明视频，无 chat/audio 模型）。
+		// Bearer 凭据同源）与 audio_speech 协议模型（M6 TTS adapter，契约
+		// §9.2：统一 /v1/audio/speech 面经 openspeech /api/v3/tts 改写——
+		// 语音凭据双值独立，目录模型经运营自定义行承载统一面占位名）——供
+		// volcengine 账户声明 Seedance 系纯视频与 TTS 占位模型进入
+		// supportedModels（档案 Capabilities 声明视频+语音，无 chat 模型）。
 		if isVolcengineProviderCodeToken(profile.providerCode) {
-			profileProtocols = append(profileProtocols, "video")
+			profileProtocols = append(profileProtocols, "video", "audio_speech")
 		}
 		// qwen 媒体档案同族承接 video 协议模型（M3 万相 adapter，契约
 		// §10.1：统一 /v1/videos 面经媒体 adapter 改写，与账户 base_url/

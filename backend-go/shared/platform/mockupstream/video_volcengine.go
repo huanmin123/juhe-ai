@@ -32,6 +32,7 @@ package mockupstream
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -39,12 +40,15 @@ import (
 	"strings"
 )
 
-// M3 volcengine scenario names (contract §3.2.4 M3 list, §9.1 Mock row).
+// M3 volcengine scenario names (contract §3.2.4 M3 list, §9.1 Mock row); M6
+// adds the sync TTS pair (contract §9.2 Mock rows).
 const (
 	ScenarioMediaVolcengineCreateOK         Scenario = "media_volcengine_create_ok"
 	ScenarioMediaVolcenginePollRunning      Scenario = "media_volcengine_poll_running"
 	ScenarioMediaVolcenginePollSucceededURL Scenario = "media_volcengine_poll_succeeded_video_url"
 	ScenarioMediaVolcenginePollFailedError  Scenario = "media_volcengine_poll_failed_error"
+	ScenarioMediaVolcengineTTSOK            Scenario = "media_volcengine_tts_ok"
+	ScenarioMediaVolcengineTTSFailed        Scenario = "media_volcengine_tts_failed"
 )
 
 // volcengineVideoTask is one registered volcengine async video task. The id
@@ -242,4 +246,59 @@ func (m *Server) serveVolcengineVideoContent(w http.ResponseWriter, id string) {
 	w.Header().Set("Content-Type", "video/mp4")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(mp4Payload())
+}
+
+// serveVolcengineTTS implements POST /api/v3/tts (contract §9.2, M6): the OK
+// scenario answers HTTP 200 {"reqid","code":3000,"message","data":<base64>} —
+// data carries a payload selected by the request's audio_params.format
+// (mp3 default / pcm / ogg_opus / wav — the adapter MUST base64-decode before
+// forwarding; the chain tests assert the decoded magic bytes). The failure
+// scenario answers 200 with code 3001 (contract: code!=3000 即失败——the
+// gateway surfaces it as an upstream protocol error, not a silent audio
+// passthrough). Out-of-word-list formats 400 like the real upstream.
+func (m *Server) serveVolcengineTTS(w http.ResponseWriter, idx int, scenario Scenario) {
+	// Read the recorded body under the Server mutex: concurrent requests
+	// append to m.seenReqs and an unlocked read races the writer.
+	m.mu.Lock()
+	requestBody := m.seenReqs[idx].Body
+	m.mu.Unlock()
+	var req struct {
+		ReqParams struct {
+			Text    string `json:"text"`
+			Speaker string `json:"speaker"`
+			AudioParams struct {
+				Format string `json:"format"`
+			} `json:"audio_params"`
+		} `json:"req_params"`
+	}
+	_ = json.Unmarshal([]byte(requestBody), &req)
+
+	if scenario == ScenarioMediaVolcengineTTSFailed {
+		writeJSONStatus(w, http.StatusOK, `{"reqid":"mock-volc-tts-failed","code":3001,"message":"mock tts synthesis failed","data":""}`)
+		return
+	}
+	// media_volcengine_tts_ok (unknown scenarios default OK): base64(audio
+	// payload) + code 3000. Format negotiation stays inside the §9.2 word
+	// list (mp3 default / pcm / ogg_opus / wav).
+	var payload []byte
+	switch req.ReqParams.AudioParams.Format {
+	case "", "mp3":
+		payload = mp3Payload()
+	case "wav":
+		payload = wavPayload()
+	case "pcm":
+		payload = silencePCM()
+	case "ogg_opus":
+		payload = oggOpusPayload()
+	default:
+		writeJSONStatus(w, http.StatusBadRequest, `{"reqid":"mock-volc-tts-400","code":3002,"message":"audio_params.format not supported","data":""}`)
+		return
+	}
+	body, _ := json.Marshal(map[string]any{
+		"reqid":   "mock-volc-tts-ok",
+		"code":    3000,
+		"message": "success",
+		"data":    base64.StdEncoding.EncodeToString(payload),
+	})
+	writeJSONStatus(w, http.StatusOK, string(body))
 }

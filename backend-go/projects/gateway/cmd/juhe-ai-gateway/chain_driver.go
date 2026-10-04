@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
@@ -350,6 +351,39 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		} else if audioErr != nil {
 			return nil, audioErr
 		}
+		// M6 同步音频（契约 §7.2）：glm 账户的 speech/transcriptions 请求走
+		// openai 透传（报文零改写，provider_options.glm 深合并在 prepared
+		// parts 分支承载），仅 URL 按 glm 通用根 /api/paas/v4 归一（官方
+		// audio/speech|transcriptions 端点，CogVideo §7.1 同根先例——不得走
+		// openai /v1 强制补缀归一，否则 /api/paas/v4 base 会被错拼
+		// /api/paas/v4/v1/audio/...）。
+		if chainNormalizeProviderToken(account.ProviderCode) == "glm" {
+			if glmPath, ok := glmSpeechUpstreamPathOf(req); ok {
+				upstreamURL, urlErr := chainGlmVideoUpstreamURL(account.BaseURL, glmPath)
+				if urlErr != nil {
+					return nil, urlErr
+				}
+				return []string{upstreamURL}, nil
+			}
+		}
+		// M6 同步音频（契约 §9.2）：volcengine 账户的 speech 请求由
+		// gatewaymedia 注册表的火山 TTS adapter 承载（body 改写 + 响应 base64
+		// 解码转换）。URL 构造特例：host 恒 openspeech.bytedance.com（语音
+		// 服务域，与账户 ark base_url 无关），凭据是语音应用双值
+		//（speech_appid/speech_token）——缺失即无 audio_speech 能力，显式
+		// 失败不静默回退（沿 videoCreateRequest 能力缺失语义）。
+		if adapter, ir, ok := d.volcengineSpeechRequest(req, account); ok {
+			appid, _, credErr := chainVolcengineSpeechCredentials(account)
+			if credErr != nil {
+				return nil, credErr
+			}
+			ir.AccountVendorRefs = map[string]string{"speech_appid": appid}
+			path, _, err := adapter.BuildRequest(ir)
+			if err != nil {
+				return nil, geminiSpeechAdapterBoundaryError(err)
+			}
+			return []string{chainVolcengineSpeechUpstreamURL(path)}, nil
+		}
 		// M3 同步音频（契约 §8.2）：minimax 账户的 speech 请求由 gatewaymedia
 		// 注册表的 minimax t2a_v2 adapter 承载（URL/body 改写 + 响应 hex 解码
 		// 转换），/v1/t2a_v2 是 /v1 前缀形态，走 openai 归一；openai 族其它
@@ -448,6 +482,36 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 		}
 		headers := upstreamHeadersOf(req, account)
 		headers.Set("Content-Type", "application/json")
+		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
+	}
+	// M6 同步音频（契约 §7.2）：glm 账户的 speech 请求走 openai 透传——唯一
+	// body 改写是 provider_options.glm 子对象 deep-merge 进上游 body（官方
+	// 厂商扩展 ref_audio/ref_text 声音复刻参数），网关私有 provider_options
+	// 通道键不透传上游；无扩展参数时维持字节级透传（不进本分支）。
+	// transcriptions/translations（multipart 表单）零改写，由通用透传链转发
+	//（URL 已在 BuildGatewayUpstreamURLsForAccount 归一）。
+	if body, ok := d.glmSpeechUpstreamBody(req, account); ok {
+		headers := upstreamHeadersOf(req, account)
+		headers.Set("Content-Type", "application/json")
+		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
+	}
+	// M6 同步音频（契约 §9.2）：volcengine 账户的 speech 请求经火山 TTS
+	// adapter 改写报文；鉴权特例 `Authorization: Bearer;<token>`（分号分隔，
+	// 火山语音服务域独有——凭据为语音应用 speech_token，不能复用 openai 族
+	// Bearer 空格形态，故在 upstreamHeadersOf 之后覆盖该头）。
+	if adapter, ir, ok := d.volcengineSpeechRequest(req, account); ok {
+		appid, token, credErr := chainVolcengineSpeechCredentials(account)
+		if credErr != nil {
+			return gatewaydispatch.PreparedRequestParts{}, credErr
+		}
+		ir.AccountVendorRefs = map[string]string{"speech_appid": appid}
+		_, body, err := adapter.BuildRequest(ir)
+		if err != nil {
+			return gatewaydispatch.PreparedRequestParts{}, geminiSpeechAdapterBoundaryError(err)
+		}
+		headers := upstreamHeadersOf(req, account)
+		headers.Set("Content-Type", "application/json")
+		headers.Set("Authorization", "Bearer;"+token)
 		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: body}, nil
 	}
 	if normalizeProtocol(account.ProtocolCode) == driverProtocolGemini && geminiAccountUsesCodeAssistRuntime(account) {
@@ -1473,6 +1537,139 @@ func (d *chainProviderDriver) minimaxSpeechRequest(req *gatewaypreauth.GatewayRe
 	}
 	ir.ProviderOptions = providerOptions
 	return adapter, ir, true
+}
+
+// volcengineSpeechRequest 解析"volcengine 账户 + speech 请求"的 adapter 分派
+// 三元组（M6 同步音频，契约 §9.2；沿 minimaxSpeechRequest 同模式）。ok=false
+// 表示本请求不走火山 TTS adapter（openai 族直连透传或其它 provider）。
+// SpeechIR 从请求体解析（模型映射面不介入：请求模型直达上游；账户 canonical
+// 拼写优先）；provider_options 命中 volcengine 的子对象投影进
+// SpeechRequest.ProviderOptions（emotion 等厂商个例参数，契约 §2.1 L3）。
+// 语音凭据（speech_appid/speech_token）不在此分支承载——由
+// chainVolcengineSpeechCredentials 在 URL/parts 两个消费点先行校验注入。
+func (d *chainProviderDriver) volcengineSpeechRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (gatewaymedia.SpeechAdapter, gatewaymedia.SpeechRequest, bool) {
+	if req == nil || req.HTTP == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if chainNormalizeProviderToken(account.ProviderCode) != "volcengine" {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	adapter := gatewaymedia.SpeechAdapterForProvider("volcengine")
+	if adapter == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	body := req.ParsedJSONObjectBody()
+	if body == nil {
+		body = d.materializedParsedJSONObjectBody(req)
+	}
+	if body == nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	ir, err := gatewaymedia.ParseSpeechRequest(body)
+	if err != nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	if canonical := canonicalAccountModel(req, account); canonical != "" {
+		ir.Model = canonical
+	}
+	providerOptions, optionsErr := chainVideoProviderOptionsOf(body)
+	if optionsErr != nil {
+		return nil, gatewaymedia.SpeechRequest{}, false
+	}
+	ir.ProviderOptions = providerOptions
+	return adapter, ir, true
+}
+
+// glmSpeechUpstreamPathOf 把 glm 账户的同步音频请求路径改写为官方通用根
+// 形态（契约 §7.2：/api/paas/v4/audio/speech|transcriptions|translations——
+// CogVideo §7.1 同根先例）。ok=false 表示非同步音频端点（chat/videos 等
+// 维持既有归一）。
+func glmSpeechUpstreamPathOf(req *gatewaypreauth.GatewayRequest) (string, bool) {
+	if req == nil || req.HTTP == nil {
+		return "", false
+	}
+	suffix, ok := gatewaymedia.AudioEndpointPath(req.PathAndQuery())
+	if !ok {
+		return "", false
+	}
+	return glmVideoServiceRoot + suffix, true
+}
+
+// glmSpeechUpstreamBody 构造 glm 账户 speech 请求的上游 body（M6，契约
+// §7.2 透传语义）：openai 形态报文原样透传，唯一改写是 provider_options.glm
+// 子对象 deep-merge 进顶层（ref_audio/ref_text 声音复刻扩展），并剥除网关
+// 私有的 provider_options 通道键（契约 §2.1：L3 通道不是上游参数）。
+// ok=false 表示维持通用透传：非 glm 账户、非 speech 路径、body 非 JSON 对象
+// 或未携带扩展参数（字节级透传不改写）。
+func (d *chainProviderDriver) glmSpeechUpstreamBody(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) ([]byte, bool) {
+	if req == nil || req.HTTP == nil {
+		return nil, false
+	}
+	if chainNormalizeProviderToken(account.ProviderCode) != "glm" {
+		return nil, false
+	}
+	if !gatewaymedia.IsSpeechPath(req.PathAndQuery()) {
+		return nil, false
+	}
+	body := req.ParsedJSONObjectBody()
+	if body == nil {
+		body = d.materializedParsedJSONObjectBody(req)
+	}
+	if body == nil {
+		return nil, false
+	}
+	providerOptions, optionsErr := chainVideoProviderOptionsOf(body)
+	if optionsErr != nil || len(providerOptions) == 0 {
+		return nil, false
+	}
+	merged := gatewaymedia.MergeProviderOptions(body, "glm", providerOptions)
+	delete(merged, gatewaymedia.ProviderOptionsKey)
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+// chainVolcengineSpeechCredentials 提取火山语音应用双值凭据（契约 §9.2：
+// speech_appid + speech_token，与账户 ark API Key 独立——语音服务域
+// openspeech.bytedance.com 的鉴权面）。任一缺失返回原生错误（该账户无
+// audio_speech 能力，显式失败不静默回退；audio_speech 端点模式本身是
+// opt-in，凭据缺失属于配置缺位而非客户端参数错误）。
+func chainVolcengineSpeechCredentials(account gatewaydispatch.AccountCandidate) (string, string, error) {
+	appid := accountCredentialText(account, "speech_appid")
+	token := accountCredentialText(account, "speech_token")
+	if appid == "" || token == "" {
+		return "", "", fmt.Errorf("账户 %s 缺少火山语音凭据（speech_appid/speech_token 双值），不能承接 audio_speech 请求", account.ID)
+	}
+	return appid, token, nil
+}
+
+// chainVolcengineSpeechUpstreamBaseURLDefault 是火山同步语音出站的官方服务
+// 根（契约 §9.2：openspeech.bytedance.com 语音服务域——与账户 ark base_url
+// 无关的 URL 构造特例）。
+const chainVolcengineSpeechUpstreamBaseURLDefault = "https://openspeech.bytedance.com"
+
+// chainVolcengineSpeechUpstreamEnv 是把火山语音出站根指向隔离上游的测试
+// seam（acceptance E2E 的 gateway 子进程注入；仅测试消费，生产不设置——
+// 非功能开关，语音能力恒生效，缺省恒官方根）。
+const chainVolcengineSpeechUpstreamEnv = "JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL"
+
+// chainVolcengineSpeechUpstreamURL 拼接火山 TTS 出站 URL：固定语音服务域根
+// + adapter 出站路径（/api/v3/tts）。不经账户 base_url（ark 域与语音域是
+// 两个服务面），也不走 gatewayopenai.BuildUpstreamURL（/v1 强制补缀契约）。
+func chainVolcengineSpeechUpstreamURL(path string) string {
+	base := strings.TrimSpace(os.Getenv(chainVolcengineSpeechUpstreamEnv))
+	if base == "" {
+		base = chainVolcengineSpeechUpstreamBaseURLDefault
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return strings.TrimRight(base, "/") + path
 }
 
 // videoCreateRequest 解析“视频创建请求 + 账户”的 adapter 出站计划（M2 视频，

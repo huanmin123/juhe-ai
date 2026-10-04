@@ -103,6 +103,17 @@ GLM OpenAI Chat 档案复用 OpenAI v1 Chat Completions 协议适配器；方案
 - Responses 的 `previous_response_id`、加密内容、压缩和托管工具等不透明状态按供应商/档案隔离。GPT 与 GLM、或不同 GLM profile 之间不得自动换号；无状态物化或同档案保证时应拒绝并保留原始错误。
 - 官方页面尚未说明完整 Responses 字段、事件和模型白名单；未完成验证前，目标档案只在方案文档中存在，不得在账户导入、模型目录或健康检查中宣称已支持。
 
+### 语音（TTS/STT 透传，M6 已实施，2026-10-04）
+
+GLM 官方通用根提供 OpenAI 兼容语音端点（契约 §7.2，B 级官方确认）：glm 账户的语音请求走 **openai 透传分支**（无独立 adapter），与 Chat 同根同凭据。
+
+- 端点：客户端 `POST /v1/audio/speech`（TTS）与 `POST /v1/audio/transcriptions|translations`（STT）；出站 URL 归一到官方通用根 `/api/paas/v4/audio/speech|transcriptions|translations`（复用 CogVideo 的 `chainGlmVideoUpstreamURL` 服务根去重——base 已含 `/api/paas/v4` 时不重复拼接；**不走** openai `/v1` 强制补缀归一）。报文零改写透传（`response_format` 词表由上游裁决，网关零转码不做本地门禁）。
+- 厂商扩展：`provider_options.glm` 子对象（如声音复刻 `ref_audio`/`ref_text`）deep-merge 进上游 body 顶层，网关私有的 `provider_options` 通道键不透传上游；未携带扩展参数时字节级透传。
+- 鉴权：与 Chat 相同的 `Authorization: Bearer <GLM API Key>`。
+- 端点模式：`audio_speech`/`audio_transcription_json` 属 openai 族共享 token，opt-in 显式勾选（写侧 `glmSpeechEndpointModeSet` 放行），不进默认集（glm 默认集仍只落 chat 对）。
+- 目录：`cogtts` 一行（mode=audio、协议 `audio_speech`、不落字符价——计量按请求字符自算照落、成本 0 不虚计，官方 USD 字符价可查证后补）；**GLM-ASR 行待回填**（GLM-ASR-2512 系的官方 API 模型名未在官方页查证到精确字符串，第三方口径 `glm-asr` 不作数——STT 透传链路不依赖目录行，模型门由账户 `supportedModels` 显式配置承载）。
+- 测试：Mock `media_glm_tts_ok`（OpenAI speech 形态回 wav）；链级 `TestChainMediaGlmSpeechUrlPassthroughRefAudio`/`TestChainMediaGlmSpeechUpstreamURLDedup`（出站 URL 归一 + ref_audio 深合并断言）；E2E `TestFullchainMediaSpeechGlmTTS`。
+
 ### 三协议模型与验证策略
 
 Responses 模型能力必须独立于 Chat 能力维护。当前目录所有 GLM 模型仍以 `chat_completions` 为已验证事实；`glm-5.3`、`glm-5.3-flash`、`glm-5-turbo` 仅作为待验证候选。通过 Mock JSON/SSE 和最小真实 Coding Plan 请求确认模型、reasoning、tool、usage、上下文和错误语义后，才把 `responses` 写入该模型的 `SupportedAPIProtocolsJSON`。未知或仅 Chat 的模型必须在候选阶段拒绝，不能运行时静默改投 Chat。

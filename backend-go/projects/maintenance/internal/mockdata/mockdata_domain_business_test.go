@@ -204,7 +204,12 @@ func TestSeedBusinessRequiredTables(t *testing.T) {
 		{name: "媒体任务状态种类", query: "SELECT COUNT(DISTINCT status) FROM media_jobs WHERE kind = 'video'", min: 6},
 		{name: "媒体任务完成用量", query: "SELECT COUNT(*) FROM media_jobs WHERE status = 'completed' AND usage_json <> '{}' AND cost_usd > 0", min: 1},
 		{name: "音频分类自定义模型", query: "SELECT COUNT(*) FROM custom_provider_models WHERE mode = 'audio'", min: 1},
-		{name: "媒体账户模型引用", query: "SELECT COUNT(*) FROM account_supported_models WHERE account_id = 'mockdata_acc_media' AND model IN ('mockdata-global-audio', 'sora-2')", min: 2},
+		// 媒体账户模型引用（媒体契约 §3.4）：media 账户支持模型按目录分类引用
+		// audio / video 模型（audioModelAt/videoModelAt 的取值口径：目录有该分类
+		// 行时取目录模型，没有时回落造数常量），按 mode 分类 + 回落常量断言，
+		// 不硬编码目录位置或具体模型名，目录批次增删不影响语义。
+		{name: "媒体账户音频模型引用", query: "SELECT COUNT(*) FROM account_supported_models m WHERE m.account_id = 'mockdata_acc_media' AND (m.model = 'mockdata-global-audio' OR EXISTS (SELECT 1 FROM provider_model_catalog c WHERE c.model = m.model AND c.mode = 'audio' AND c.status = 'active' AND c.catalog_visible = 1))", min: 1},
+		{name: "媒体账户视频模型引用", query: "SELECT COUNT(*) FROM account_supported_models m WHERE m.account_id = 'mockdata_acc_media' AND (m.model = 'sora-2' OR EXISTS (SELECT 1 FROM provider_model_catalog c WHERE c.model = m.model AND c.mode = 'video' AND c.status = 'active' AND c.catalog_visible = 1))", min: 1},
 	}
 	for _, testCase := range cases {
 		testCase := testCase

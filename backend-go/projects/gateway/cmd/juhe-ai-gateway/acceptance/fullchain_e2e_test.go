@@ -81,7 +81,10 @@ type fullchainUpstreamCall struct {
 	Path     string
 	Model    string
 	Scenario platformmock.Scenario
-	At       time.Time
+	// AuthHeader 是该次上游请求的原始 Authorization 头（M6 火山语音
+	// `Bearer;<token>` 分号特例断言面；空串=无认证头）。
+	AuthHeader string
+	At         time.Time
 }
 
 // fullchainProbeModel 是验收账户的专用健康检查模型：探针/冷却重试等后台
@@ -257,10 +260,10 @@ func (m *fullchainMockUpstream) nextScenario(key string, scriptable bool) platfo
 	return m.globalDefault
 }
 
-func (m *fullchainMockUpstream) record(key, method, path, model string, scenario platformmock.Scenario) {
+func (m *fullchainMockUpstream) record(key, method, path, model, authHeader string, scenario platformmock.Scenario) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, At: time.Now()})
+	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, AuthHeader: authHeader, At: time.Now()})
 }
 
 // fullchainScriptableRequest 判定该请求是否参与场景队列消费（媒体契约
@@ -373,6 +376,17 @@ func fullchainMediaScriptable(method, path string) bool {
 	if method == http.MethodGet && (path == "/v1/query/video_generation" || path == "/v1/files/retrieve") {
 		return true
 	}
+	// M6 glm 透传语音（契约 §7.2）：官方通用根同步音频端点（speech 透传 +
+	// transcriptions/translations STT 面，网关 glm speech 分支的出站路径）。
+	if method == http.MethodPost && (path == "/api/paas/v4/audio/speech" || path == "/api/paas/v4/audio/transcriptions" || path == "/api/paas/v4/audio/translations") {
+		return true
+	}
+	// M6 火山 TTS（契约 §9.2）：POST /api/v3/tts 同步语音合成（固定语音
+	// 服务域，E2E 经 JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL 测试 seam
+	// 指回本 mock）。
+	if method == http.MethodPost && path == "/api/v3/tts" {
+		return true
+	}
 	// M3 火山方舟 Seedance（契约 §9.1）：POST /api/v3/contents/generations/
 	// tasks 创建与 GET /api/v3/contents/generations/tasks/{id}[/content] 轮询/
 	// 产物（轮询按引擎任务表脚本推进，场景值不读——与 /v1/videos 任务面同
@@ -411,8 +425,18 @@ func fullchainMediaScriptable(method, path string) bool {
 
 func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	// 上游 key 身份按协议头提取：openai 族走 Authorization Bearer；gemini
-	// 账户（M3 veo）走 X-Goog-Api-Key（网关任务面/创建链沿 gemini 认权分支）。
-	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	// 账户（M3 veo）走 X-Goog-Api-Key（网关任务面/创建链沿 gemini 认权分支）；
+	// 火山语音（M6 TTS）走 `Authorization: Bearer;<token>` 分号特例（契约
+	// §9.2，key=语音 speech_token——与账户 ark API Key 是两套凭据）。
+	authorization := r.Header.Get("Authorization")
+	// 分号形态先行判别：`Bearer;xxx` 不以 "Bearer "（带空格）开头，先做
+	// 空格 TrimPrefix 会把整串当 key 短路后续分支。
+	key := ""
+	if rest, ok := strings.CutPrefix(authorization, "Bearer;"); ok {
+		key = rest
+	} else {
+		key = strings.TrimPrefix(authorization, "Bearer ")
+	}
 	if key == "" {
 		key = r.Header.Get("X-Goog-Api-Key")
 	}
@@ -425,7 +449,7 @@ func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &parsed)
 	scriptable := fullchainScriptableRequest(r, parsed.Model)
 	scenario := m.nextScenario(key, scriptable)
-	m.record(key, r.Method, r.URL.Path, parsed.Model, scenario)
+	m.record(key, r.Method, r.URL.Path, parsed.Model, authorization, scenario)
 	if scenario == fullchainHoldScenario {
 		m.mu.Lock()
 		waiter, ok := m.holdWaiters[key]
@@ -561,9 +585,21 @@ type fullchainFixture struct {
 // 管理面登录客户端。复用 acceptance harness（真实二进制 + SQLite 六库 +
 // 私网上游白名单 env）。
 func startFullchainFixture(t *testing.T) *fullchainFixture {
+	return startFullchainFixtureExtraEnv(t, nil)
+}
+
+// startFullchainFixtureExtraEnv 是 startFullchainFixture 的 extraEnv 变体
+//（M6 火山 TTS E2E：把 JUHE_AI_GATEWAY_VOLCENGINE_SPEECH_BASE_URL 测试
+// seam 指向本夹具 mock——env 值依赖夹具 mock URL，故以回调在 mock 就绪
+// 后、网关启动前求值）。
+func startFullchainFixtureExtraEnv(t *testing.T, extraEnv func(mockURL string) map[string]string) *fullchainFixture {
 	t.Helper()
 	mock := newFullchainMockUpstream(t)
-	gw := startGateway(t, gatewayEnvOptions{ChainEnabled: true})
+	var env map[string]string
+	if extraEnv != nil {
+		env = extraEnv(mock.server.URL)
+	}
+	gw := startGateway(t, gatewayEnvOptions{ChainEnabled: true, ExtraEnv: env})
 	admin := &acceptanceClient{t: t, http: gw.admin, baseURL: gw.baseURL}
 	jobs := startFullchainJobsWorker(t, gw)
 	f := &fullchainFixture{t: t, gw: gw, admin: admin, mock: mock, jobs: jobs}

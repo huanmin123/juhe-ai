@@ -31,6 +31,10 @@ var apiKeyAccountCredentialKeys = map[string]bool{
 	"reasoning_effort_override": true, "error_handling_rules": true,
 	"error_handling_rule_overrides": true, "response_inspection_rules": true,
 	"quota_recovery_policy": true,
+	// M6 火山语音（契约 §9.2）：语音应用双值凭据（openspeech 语音服务域与
+	// ark API Key 独立），仅 volcengine 账户写入有效（下方按 provider 放行），
+	// 缺失即该账户无 audio_speech 能力（opt-in 端点模式 + 派发时显式失败）。
+	"speech_appid": true, "speech_token": true,
 }
 
 var oauthAccountCredentialKeys = map[string]bool{
@@ -207,10 +211,35 @@ func normalizeAPIKeyAccountCredentials(input map[string]any, defaults EndpointMo
 	if err := normalizeGPTAccountRequestOverrides(input, credentials, defaults); err != nil {
 		return nil, err
 	}
+	if err := normalizeVolcengineSpeechCredentials(input, credentials, defaults); err != nil {
+		return nil, err
+	}
 	if err := assertAccountCredentialsJSONSize(credentials); err != nil {
 		return nil, err
 	}
 	return credentials, nil
+}
+
+// normalizeVolcengineSpeechCredentials 放行 volcengine 账户的语音应用双值
+// 凭据（M6，契约 §9.2：speech_appid/speech_token，均为可选——缺失即该账户
+// 不承接 audio_speech 请求，能力由派发时显式失败表达，不在写入面强制）。
+// 仅 volcengine provider 消费；其它 provider 的同名字段按无效输入拒绝
+//（allowlist 全局放行 + 此处按 provider 过滤，与 GPT request overrides 的
+// provider 门控同一模式）。
+func normalizeVolcengineSpeechCredentials(input map[string]any, credentials Credentials, defaults EndpointModeDefaultContext) error {
+	if endpointModeContextOf(defaults).providerCode != "volcengine" {
+		if _, hasAppID := input["speech_appid"]; hasAppID {
+			return &ValidationError{Message: "speech_appid 仅火山方舟账户支持"}
+		}
+		if _, hasToken := input["speech_token"]; hasToken {
+			return &ValidationError{Message: "speech_token 仅火山方舟账户支持"}
+		}
+		return nil
+	}
+	if err := copyOptionalCredentialText(input, credentials, "speech_appid", "火山语音 App ID", accountCredentialMetadataMaxBytes); err != nil {
+		return err
+	}
+	return copyOptionalCredentialText(input, credentials, "speech_token", "火山语音 Access Token", accountCredentialSecretMaxBytes)
 }
 
 // credentialField renders the optionalValue tri-state from the raw record.

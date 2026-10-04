@@ -36,14 +36,24 @@ const (
 	ScenarioMediaSTT400BadFile      Scenario = "media_stt_400_bad_file"
 	ScenarioMediaGeminiTTSOK        Scenario = "media_gemini_tts_ok"
 	ScenarioMediaGeminiTTS400Format Scenario = "media_gemini_tts_400_format"
+	// M6 glm 透传语音（契约 §7.2）：官方通用根端点 /api/paas/v4/audio/speech
+	//（OpenAI 兼容形态回 wav 载荷）；transcriptions 复用 STT 面（serveSTT）。
+	ScenarioMediaGlmTTSOK Scenario = "media_glm_tts_ok"
 )
 
 // mediaEndpoints are the exact media method+path pairs added to the engine
-// whitelist (contract §3.2.1).
+// whitelist (contract §3.2.1). M6 追加 glm 官方通用根同步音频端点（契约
+// §7.2：/api/paas/v4/audio/speech|transcriptions|translations——网关 glm
+// speech 透传分支的出站路径）与火山 TTS 端点（契约 §9.2：/api/v3/tts，
+// handler 在 video_volcengine.go）。
 var mediaEndpoints = map[endpoint]bool{
-	{http.MethodPost, "/v1/audio/speech"}:         true,
-	{http.MethodPost, "/v1/audio/transcriptions"}: true,
-	{http.MethodPost, "/v1/audio/translations"}:   true,
+	{http.MethodPost, "/v1/audio/speech"}:                 true,
+	{http.MethodPost, "/v1/audio/transcriptions"}:         true,
+	{http.MethodPost, "/v1/audio/translations"}:           true,
+	{http.MethodPost, "/api/paas/v4/audio/speech"}:        true,
+	{http.MethodPost, "/api/paas/v4/audio/transcriptions"}: true,
+	{http.MethodPost, "/api/paas/v4/audio/translations"}:   true,
+	{http.MethodPost, "/api/v3/tts"}:                      true,
 }
 
 // acceptsMediaEndpoint matches the exact audio paths, the videos family
@@ -144,6 +154,18 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 		m.serveGeminiTTS(w, scenario, model)
 		return
 	}
+	// M6 glm 官方通用根同步音频端点（契约 §7.2）：speech 复用 OpenAI TTS 面
+	//（透传语义——mock 按请求 response_format 协商载荷），transcriptions/
+	// translations 复用 STT 面（§4.2 同构）。
+	if r.URL.Path == "/api/paas/v4/audio/speech" {
+		m.serveSpeech(w, idx, scenario)
+		return
+	}
+	// M6 火山 TTS（契约 §9.2）：/api/v3/tts 报文面（code 3000 + data base64）。
+	if r.URL.Path == "/api/v3/tts" {
+		m.serveVolcengineTTS(w, idx, scenario)
+		return
+	}
 	if r.URL.Path == "/v1/audio/speech" {
 		m.serveSpeech(w, idx, scenario)
 		return
@@ -178,6 +200,19 @@ func (m *Server) serveSpeech(w http.ResponseWriter, idx int, scenario Scenario) 
 		// 受理前限流：换账户重试用例（contract §3.2.4）。
 		w.Header().Set("Retry-After", FormatRetryAfter(30))
 		writeJSONStatus(w, http.StatusTooManyRequests, `{"error":{"message":"Rate limit reached before accepting request","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)
+	case ScenarioMediaGlmTTSOK:
+		// media_glm_tts_ok（契约 §7.2 Mock 行）：glm 透传形态——OpenAI 兼容
+		// speech 面，按请求 response_format 协商载荷（官方示例 wav；未知
+		// 场景落入 default 同语义）。
+		contentType, payload, ok := audioResponseFor(req.ResponseFormat)
+		if !ok {
+			message, _ := json.Marshal(fmt.Sprintf("Invalid response_format: %s", req.ResponseFormat))
+			writeJSONStatus(w, http.StatusBadRequest, fmt.Sprintf(`{"error":{"message":%s,"type":"invalid_request_error","code":"invalid_response_format"}}`, message))
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
 	default:
 		// media_tts_ok（未知场景同样默认 OK，镜像 chat 默认哲学）：按请求
 		// response_format 协商 content-type 与内置载荷；response_format 缺省

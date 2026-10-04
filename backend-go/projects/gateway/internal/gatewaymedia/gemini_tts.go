@@ -31,11 +31,12 @@ type SpeechAdapter interface {
 }
 
 // speechAdapters 是 provider → adapter 注册表（音频设计 §5：媒体 adapter 以
-// provider 注册表挂载；M3 起 minimax t2a_v2 已接入，volcengine/qwen 只新增
-// 条目）。
+// provider 注册表挂载；M3 minimax t2a_v2、M6 火山 /api/v3/tts 已接入，后续
+// 供应商只新增条目）。
 var speechAdapters = map[string]SpeechAdapter{
-	"gemini": geminiSpeechAdapter{},
-	"minimax": minimaxSpeechAdapter{},
+	"gemini":     geminiSpeechAdapter{},
+	"minimax":    minimaxSpeechAdapter{},
+	"volcengine": volcengineSpeechAdapter{},
 }
 
 // SpeechAdapterForProvider 按 provider_code 解析同步音频 adapter；nil 表示

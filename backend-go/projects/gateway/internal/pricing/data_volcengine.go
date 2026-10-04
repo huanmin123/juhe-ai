@@ -26,4 +26,11 @@ var volcengineModelPricingData = []rawModel{
 		OutputModalities:     []string{"video"},
 		SupportedAPIProtocols: []string{"video"},
 	},
+	// M6 TTS（契约 §9.2 已实施，openspeech /api/v3/tts adapter）**不落目录
+	// 行**（不编造）：V3 TTS 请求面无 model 字段——音色经 req_params.speaker
+	// 配置、模型由语音应用/资源决定，官方文档无可查证的模型 ID 字符串
+	//（BV700_streaming 等是 speaker 名非模型名）；统一面 model 仅必填占位、
+	// 由 adapter 忽略。计费按字符、上游无字符回报 → 网关按请求 input 自算
+	// 计量照落、成本不虚计（0 计费，§2.8）；官方字符价可查证后再补。配置
+	// 事实见 docs/functions/火山方舟账号接入.md TTS 节。
 }
