@@ -15,7 +15,8 @@ import (
 
 // goldenBusinessTables is the golden table list extracted from the Node
 // business-schema.ts (72 tables) plus the Go-appended
-// model_check_question_bank table (model-check question bank feature).
+// model_check_question_bank table (model-check question bank feature) and
+// the Go-appended media_jobs table (M2 异步媒体任务，媒体设计 §8.2).
 var goldenBusinessTables = []string{
 	"account_api_key_pool_probe_cursors",
 	"account_api_key_runtime_states",
@@ -59,6 +60,7 @@ var goldenBusinessTables = []string{
 	"group_accounts",
 	"group_authorization_settings",
 	"groups",
+	"media_jobs",
 	"model_check_question_bank",
 	"model_quality_policies",
 	"model_quality_schedules",
@@ -203,7 +205,7 @@ var goldenUsageCatalogTables = []string{
 // statement counts; goldenTotalTables/goldenTotalIndexes below count distinct
 // objects.
 var goldenSchemaCounts = SQLiteResult{
-	Business:     SchemaCounts{Tables: 73, Indexes: 214},
+	Business:     SchemaCounts{Tables: 74, Indexes: 217},
 	Stats:        SchemaCounts{Tables: 64, Indexes: 124},
 	Chat:         SchemaCounts{Tables: 11, Indexes: 26},
 	CodexContext: SchemaCounts{Tables: 4, Indexes: 12},
@@ -214,12 +216,12 @@ var goldenSchemaCounts = SQLiteResult{
 // goldenTotalTables is the total number of distinct tables across all six
 // schemas (the golden lists are disjoint, so a single shared database can
 // verify every schema exactly).
-const goldenTotalTables = 157
+const goldenTotalTables = 158
 
 // goldenTotalIndexes is the total number of distinct explicitly created
 // indexes across all six schemas. Duplicate CREATE INDEX statements inside one
 // schema (IF NOT EXISTS no-ops on a fresh database) are not counted twice.
-const goldenTotalIndexes = 387
+const goldenTotalIndexes = 390
 
 // openSharedMemorySQLite opens one shared-cache in-memory SQLite database.
 func openSharedMemorySQLite(t *testing.T, name string) *sql.DB {

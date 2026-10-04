@@ -37,6 +37,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayhotquality"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
@@ -661,6 +662,13 @@ func chainHotQualityAccountViewOf(account gatewaydispatch.AccountCandidate) gate
 // (attempt record / first-byte / terminal settlement) onto the engine hook.
 func newChainHotQualityLifecycleFactory(runtime *gatewayhotquality.GatewayHotQualityRuntime) gatewaydispatch.HotQualityAttemptLifecycleFactory {
 	return func(input gatewaydispatch.HotQualityLifecycleInput) gatewaydispatch.HotQualityAttemptLifecycle {
+		// 媒体车道豁免文本调度优化机制（媒体设计 §3 + 2026-10-04 主代理
+		// 裁决）：audio/video lane 不参与热质量统计，返回 nil 保持引擎中性
+		// no-op lifecycle——否则每次媒体派发尝试的 attempt 记账都会被
+		// NormalizeHotQualityScope 的 text/image 词表拒斥并刷 WARN。
+		if input.RequestLane == string(gatewayproto.LaneAudio) || input.RequestLane == string(gatewayproto.LaneVideo) {
+			return nil
+		}
 		lifecycle, err := gatewayhotquality.NewGatewayHotQualityAttemptLifecycle(gatewayhotquality.GatewayHotQualityAttemptLifecycleInput{
 			Runtime:     runtime,
 			AttemptID:   input.AttemptID,

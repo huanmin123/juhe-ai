@@ -519,14 +519,16 @@ func chainInheritCustomCatalogCapabilities(merged, builtinRows []gatewayruntimec
 // 设计 §2）：mode=audio（含别名）且协议为 audio_speech / audio_transcription
 // 的模型收录（名字 token 排除不再生效）；realtime 协议与旧词表的单 audio
 // 协议继续排除；mode 标注 audio 但协议集里没有音频协议的行维持排除；mode
-// 未标注 audio 的模型继续按名字 token 排除。与 internal/providers/catalog.go
-// 的 isSupportedCatalogModel 同源，改动必须两处同步。
+// 未标注 audio 的模型继续按名字 token 排除。M2 裁决（媒体设计 §2）同构放开
+// video：mode=video 且协议含 video 的模型收录，其余维持排除。与
+// internal/providers/catalog.go 的 isSupportedCatalogModel 同源，改动必须两处同步。
 func chainIsSupportedCatalogModel(item gatewayruntimecache.ProviderModelCatalogItem) bool {
 	mode := ""
 	if item.Mode != nil {
 		mode = strings.ToLower(strings.TrimSpace(*item.Mode))
 	}
 	modeIsAudio := mode == "audio" || mode == "audio_speech" || mode == "audio_transcription"
+	modeIsVideo := mode == "video"
 	for _, protocol := range item.SupportedAPIProtocols {
 		if protocol == "realtime" {
 			return false
@@ -538,6 +540,14 @@ func chainIsSupportedCatalogModel(item gatewayruntimecache.ProviderModelCatalogI
 	if modeIsAudio {
 		for _, protocol := range item.SupportedAPIProtocols {
 			if protocol == "audio_speech" || protocol == "audio_transcription" {
+				return true
+			}
+		}
+		return false
+	}
+	if modeIsVideo {
+		for _, protocol := range item.SupportedAPIProtocols {
+			if protocol == "video" {
 				return true
 			}
 		}

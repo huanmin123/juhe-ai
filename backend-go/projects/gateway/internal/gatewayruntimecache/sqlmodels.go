@@ -247,6 +247,14 @@ func projectGatewaySettings(raw map[string]any) (GatewaySettings, error) {
 	if out.ImageRequestWallTimeoutSeconds, err = numberSetting(raw, "imageRequestWallTimeoutSeconds", 60, 86400); err != nil {
 		return GatewaySettings{}, err
 	}
+	// 媒体车道独立超时档位（音频视频模型接入设计 §3）：audio 同步端点首响、
+	// video 创建请求。
+	if out.AudioFirstResponseTimeoutSeconds, err = numberSetting(raw, "audioFirstResponseTimeoutSeconds", 10, 3600); err != nil {
+		return GatewaySettings{}, err
+	}
+	if out.VideoCreateTimeoutSeconds, err = numberSetting(raw, "videoCreateTimeoutSeconds", 10, 3600); err != nil {
+		return GatewaySettings{}, err
+	}
 	if out.NoAvailableAccountWaitTimeoutSeconds, err = numberSetting(raw, "noAvailableAccountWaitTimeoutSeconds", 10, 3600); err != nil {
 		return GatewaySettings{}, err
 	}

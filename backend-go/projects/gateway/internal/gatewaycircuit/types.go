@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/circuitstate"
 )
 
@@ -550,11 +551,20 @@ func requiredScopePart(value, name string) (string, error) {
 	return circuitstate.RequiredScopePart(value, name)
 }
 
+// requiredRequestLane 校验 protocol_model 作用域的 requestLane。词表读
+// gatewayproto 的车道常量（text/image/audio/video，媒体设计 §3 的唯一权威
+// 源，不在此重复维护清单）：媒体车道不归并 text、不拒斥（2026-10-04 主代理
+// 裁决 + 媒体设计 §3 车道行为规则），以独立 lane 维度入作用域键，与
+// text/image 电路自然隔离；账户级熔断保护语义不变。
 func requiredRequestLane(value string) (string, error) {
-	if value != LaneText && value != LaneImage {
-		return "", errors.New("账户电路作用域 requestLane 必须是 text 或 image")
+	switch value {
+	case string(gatewayproto.LaneText),
+		string(gatewayproto.LaneImage),
+		string(gatewayproto.LaneAudio),
+		string(gatewayproto.LaneVideo):
+		return value, nil
 	}
-	return value, nil
+	return "", errors.New("账户电路作用域 requestLane 必须是 text/image/audio/video")
 }
 
 func encodedScopeKey(parts ...string) string { return circuitstate.EncodedScopeKey(parts...) }

@@ -508,6 +508,20 @@ func TestChainHotQualityPortOrdersAndDrivesLifecycle(t *testing.T) {
 	if factory(gatewaydispatch.HotQualityLifecycleInput{AccountID: "a1"}) != nil {
 		t.Fatal("an input without attempt id must fall back to the no-op lifecycle")
 	}
+
+	// 媒体车道豁免（2026-10-04 裁决 + 媒体设计 §3）：audio/video lane 不参与
+	// 热质量统计，工厂返回 nil 保持引擎中性 no-op lifecycle。
+	for _, lane := range []string{"audio", "video"} {
+		if got := factory(gatewaydispatch.HotQualityLifecycleInput{
+			AttemptID:       "att-media-" + lane,
+			AccountID:       "a1",
+			RequestLane:     lane,
+			Model:           "sora-2",
+			ProtocolProfile: "profile",
+		}); got != nil {
+			t.Fatalf("media lane %s must keep the no-op lifecycle, got %T", lane, got)
+		}
+	}
 }
 
 // W5（杂项修复）：hotquality port 输出必须是输入候选元素的直接重排（透传），

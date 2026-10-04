@@ -692,8 +692,8 @@ func (s *LatencyDegradationService) recordNormalRouteSuccessLocked(
 		return nil, nil
 	}
 	now := s.nowMs()
-	if current.DegradedUntilMs == nil || *current.DegradedUntilMs <= now {
-		// 过期清理与维度无关（设计 6.5）：任一维度的达标样本都先兜底清理
+	if current.DegradedUntilMs != nil && *current.DegradedUntilMs <= now {
+		// 过期降级清理与维度无关（设计 6.5）：任一维度的达标样本都先兜底清理
 		// 已过期降级，避免残留状态依赖 Redis TTL 才消失。
 		if err := s.deleteLatencyStateAndIndexesStrict(ctx, key); err != nil {
 			return nil, err
@@ -701,6 +701,44 @@ func (s *LatencyDegradationService) recordNormalRouteSuccessLocked(
 		return &LatencySuccessResult{
 			AccountID:                    account.ID,
 			Cleared:                      true,
+			RecoverySuccessCount:         0,
+			RequiredRecoverySuccessCount: config.RecoverySuccessCount,
+		}, nil
+	}
+	if current.DegradedUntilMs == nil {
+		// 观察期（未降级）达标样本只清自己维度的慢样本计数（设计 6.4 双通道）：
+		// 首字快但总时长慢的请求上，一个维度的达标与另一维度的慢样本并存是
+		// 常态——达标样本顺手删除整个 state 会把另一维度正在累计的观察期计数
+		// 一起清零，该维度永远攒不满 slowTriggerCount。两通道计数都归零才删除
+		// state（单通道场景行为与既有语义一致：达标清观察期）。
+		next := current.clone()
+		if dimension == LatencyDimensionFirstByte {
+			next.SlowCount = 0
+			next.FirstSlowAtMs = 0
+			next.LastSlowAtMs = 0
+		} else {
+			next.TotalTimeSlowCount = 0
+			next.FirstTotalTimeSlowAtMs = 0
+			next.LastTotalTimeSlowAtMs = 0
+		}
+		if next.SlowCount == 0 && next.TotalTimeSlowCount == 0 {
+			if err := s.deleteLatencyStateAndIndexesStrict(ctx, key); err != nil {
+				return nil, err
+			}
+			return &LatencySuccessResult{
+				AccountID:                    account.ID,
+				Cleared:                      true,
+				RecoverySuccessCount:         0,
+				RequiredRecoverySuccessCount: config.RecoverySuccessCount,
+			}, nil
+		}
+		remainingWindowMs := maxInt64(60, config.SlowWindowSeconds) * 1000
+		if err := s.store.SetJSON(ctx, key, next, remainingWindowMs); err != nil {
+			return nil, err
+		}
+		return &LatencySuccessResult{
+			AccountID:                    account.ID,
+			Cleared:                      false,
 			RecoverySuccessCount:         0,
 			RequiredRecoverySuccessCount: config.RecoverySuccessCount,
 		}, nil

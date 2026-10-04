@@ -28,7 +28,7 @@ func TestWeProvidersCreateModelParseMatrix(t *testing.T) {
 		{"scope 非法", `{"model":"x","scope":"team",` + base + `}`},
 		{"scope 非字符串", `{"model":"x","scope":1,` + base + `}`},
 		{"mode 非字符串", `{"model":"x","mode":1,` + base + `}`},
-		{"mode 非法枚举", `{"model":"x","mode":"video",` + base + `}`},
+		{"mode 非法枚举", `{"model":"x","mode":"realtime",` + base + `}`},
 		{"mode audio 协议非法", `{"model":"x","mode":"audio","supportedApiProtocols":["realtime"],"audioOutputUsdPer1M":2}`},
 		{"protocols 非数组", `{"model":"x","supportedApiProtocols":"chat_completions",` + strings.Replace(base, `"supportedApiProtocols":["chat_completions"],`, "", 1) + `}`},
 		{"protocols 项非法", `{"model":"x","supportedApiProtocols":["nope"],` + strings.Replace(base, `"supportedApiProtocols":["chat_completions"],`, "", 1) + `}`},
@@ -77,7 +77,7 @@ func TestWeProvidersPatchCustomModelParseMatrix(t *testing.T) {
 		{"expectedUpdatedAt 缺失", `{"inputUsdPer1M":2}`},
 		{"expectedUpdatedAt 非字符串", `{"expectedUpdatedAt":1,"inputUsdPer1M":2}`},
 		{"expectedUpdatedAt 空白", `{"expectedUpdatedAt":" ","inputUsdPer1M":2}`},
-		{"mode 非法", `{"expectedUpdatedAt":"2026-01-01T00:00:00.000Z","mode":"video"}`},
+		{"mode 非法", `{"expectedUpdatedAt":"2026-01-01T00:00:00.000Z","mode":"realtime"}`},
 		{"protocols 项非法", `{"expectedUpdatedAt":"2026-01-01T00:00:00.000Z","supportedApiProtocols":["x"]}`},
 		{"releaseDate 非法", `{"expectedUpdatedAt":"2026-01-01T00:00:00.000Z","releaseDate":"x"}`},
 		{"contextWindowTokens 非数字", `{"expectedUpdatedAt":"2026-01-01T00:00:00.000Z","contextWindowTokens":"x"}`},
@@ -125,5 +125,42 @@ func TestWeProvidersCreateAudioModeModel(t *testing.T) {
 			`"releaseDate":"2026-01-01","audioInputUsdPer1M":1}`)
 	if code != http.StatusCreated {
 		t.Fatalf("transcription create: %d", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M2 视频：mode=video + video 协议合法（draft 创建路径）；启用态因无管理面
+// 价格通道被价格完整性校验挡住（write_routes.go customInputHasDirectPrice
+// video 分支，价格通道随 M3 计价完善交付）。
+// ---------------------------------------------------------------------------
+
+func TestWeProvidersCreateVideoModeModel(t *testing.T) {
+	env := newTestEnv(t)
+	env.seedCatalog(t)
+	env.login(t, "root", "root-pass", "super_admin")
+
+	code, created := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
+		`{"model":"my-sora","scope":"global","status":"draft","mode":"video",`+
+			`"supportedApiProtocols":["video"],`+
+			`"releaseDate":"2026-01-01"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("video draft create: %d %v", code, created)
+	}
+	var mode, protocols string
+	if err := env.db.QueryRow(`SELECT mode, supported_api_protocols_json FROM custom_provider_models WHERE model = ?`, "my-sora").Scan(&mode, &protocols); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "video" || protocols != `["video"]` {
+		t.Fatalf("video row persisted mode=%q protocols=%s", mode, protocols)
+	}
+
+	// 启用态（默认 status=active）被价格完整性校验挡住：视频分类无管理面
+	// 价格字段可配（M2 词表只放开分类与协议）。
+	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/providers/gpt/models",
+		`{"model":"my-sora-2","scope":"global","mode":"video",`+
+			`"supportedApiProtocols":["video"],`+
+			`"releaseDate":"2026-01-01"}`)
+	if code != http.StatusBadRequest || payload["message"] != "启用的自定义模型必须配置完整当前价格" {
+		t.Fatalf("video active create: %d %v", code, payload)
 	}
 }

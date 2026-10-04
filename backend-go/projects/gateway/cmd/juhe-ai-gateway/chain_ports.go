@@ -501,6 +501,30 @@ func (d *chainFailureDispatcher) HandleFailedUpstreamResponse(ctx context.Contex
 		}
 	}
 
+	// M2 媒体创建受理前参数错误短路（媒体设计 §7 创建行原文：4xx 参数类
+	// 400/413/422 不切换——换账户无效；401/403/429/5xx/网络仍可切换）：
+	// 视频 lane 创建请求的上游确定性参数错误直接把上游错误渲染给客户端
+	//（ReturnResponse），不换账户、不触发账户错误策略状态变更、同账号 Key
+	// 轮换与健康检查探测（参数错误不是账户故障，状态归因错误会误伤账户）。
+	// 审计尝试与 usage 失败记录已在上方按既有面落账，此处只改派发决策。
+	// body 已被上方失败面捕获读尽（256KB 上限），以捕获体重建可读响应；
+	// 参数类错误体远小于上限，截断仅存在于病态上游场景（错误状态本身仍
+	// 确定成立）。
+	if chainMediaCreateParamErrorShortCircuit(input.RequestLane, statusCode) {
+		input.AuditCapture.AddGatewayMetadata("media_create_param_error_short_circuit", map[string]any{
+			"accountId":   input.Account.ID,
+			"requestLane": input.RequestLane,
+			"statusCode":  statusCode,
+		})
+		return gatewaydispatch.FailedUpstreamResponseResult{
+			Action: gatewaydispatch.FailedResponseActionReturnResponse,
+			Response: chainRebuiltUpstreamErrorResponse(input.Response, bodyText),
+			FailureKind:           chainFailureKindOpaqueHTTP,
+			LastAttempt:           lastAttempt,
+			UpstreamStageRecorded: true,
+		}, nil
+	}
+
 	// failure-dispatch.ts:292-327: the codex encrypted-content compatibility
 	// recovery runs after the audit/usage records and before the policy
 	// branches. A retry_with_body_variant result short-circuits the skip flow

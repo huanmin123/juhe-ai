@@ -21,9 +21,10 @@ import (
 //
 // 范围：gateway / manual_account_test / account_health_check / cooldown_retest /
 // runtime_recovery_probe 来源，OpenAI（responses / chat completions / images /
-// models）与 Anthropic（messages / count_tokens）端点，成功与失败样本，图片
-// token、缓存读取、模型映射命中、上游响应模型一致 / 映射后不一致 / 未映射不一致
-// 三连样本、流式与非流式、服务档位与思考强度样本，时间跨度由 Options.Days 决定；
+// models / M1 同步音频 speech、transcriptions）与 Anthropic（messages /
+// count_tokens）端点，成功与失败样本，图片 token、TTS 字符 / STT 秒计量、缓存
+// 读取、模型映射命中、上游响应模型一致 / 映射后不一致 / 未映射不一致三连样本、
+// 流式与非流式、服务档位与思考强度样本，时间跨度由 Options.Days 决定；
 // 另按 business 域的真实账户逐小时生成 account_health_check 记录（含缺口与失败
 // 小时），供 jobs 聚合出 account_health_hourly；并对授权实例账户（调用者=被授权人）
 // 与团队授权分组的记录回填授权归属列（account/group_authorization_*），供
@@ -125,6 +126,13 @@ var usageRecordColumns = []string{
 	"input_audio_tokens",
 	"output_audio_tokens",
 	"output_image_count",
+	// M1 同步音频计量列（音频设计 §10）：TTS 输入字符、STT 输入秒、上游
+	// 缺计量标记；M2 视频输出秒列（媒体设计 §10）；列序与 PG/SQLite DDL
+	// 一致（jobs usagewriter UsageRecordColumns 逐字副本）。
+	"tts_input_chars",
+	"audio_input_seconds",
+	"usage_missing",
+	"output_video_seconds",
 	"cost_usd",
 	"error_code",
 	"error_message",
@@ -318,12 +326,18 @@ type usageEndpointVariant struct {
 	semantic  string
 	stream    int
 	imageMode bool
+	// audioMode 标记 M1 同步音频端点（媒体契约 §3.4）：计量列走 TTS 字符 /
+	// STT 秒（fillMetrics 的音频分支），模型取目录 audio 分类。
+	audioMode bool
 	// tokenless 标记不计 token 的端点（models 目录查询）。
 	tokenless bool
 }
 
 // usageEndpointVariants 是端点样本矩阵：覆盖 OpenAI responses / chat completions /
-// images / models 与 Anthropic messages / count_tokens，流式与非流式混合。
+// images / models、M1 同步音频（TTS speech / STT transcriptions）与 Anthropic
+// messages / count_tokens，流式与非流式混合。audio 端点的 gatewayrouting 端点族
+// 解析为空（openAIRequestEndpointFamily 只认 chat/responses），family 保持空串
+// 不造词表。
 var usageEndpointVariants = []usageEndpointVariant{
 	{method: "POST", path: "/v1/responses", family: "responses", semantic: "openai", stream: 1},
 	{method: "POST", path: "/v1/responses", family: "responses", semantic: "openai"},
@@ -333,6 +347,8 @@ var usageEndpointVariants = []usageEndpointVariant{
 	{method: "GET", path: "/v1/models", family: "models", semantic: "openai", tokenless: true},
 	{method: "POST", path: "/v1/messages", family: "messages", semantic: "anthropic", stream: 1},
 	{method: "POST", path: "/v1/messages/count_tokens", family: "count_tokens", semantic: "anthropic"},
+	{method: "POST", path: "/v1/audio/speech", semantic: "openai", audioMode: true},
+	{method: "POST", path: "/v1/audio/transcriptions", semantic: "openai", audioMode: true},
 }
 
 // usageFailureSample 是一条失败样本：状态码与错误码覆盖设计文档要求分布。
@@ -377,6 +393,9 @@ type usageResources struct {
 	mappings []usageMappingRow
 	models   []string
 	images   []string
+	// audio 是目录里 mode=audio 的模型（M1 同步音频样本的请求模型来源，
+	// 媒体契约 §3.4）。
+	audio []string
 	// 授权归属（statsagg 授权日报的输入，见 usageAuthInstanceRow / usageGroupAuthRow）。
 	authInstances         []usageAuthInstanceRow
 	authInstanceByAccount map[string]usageAuthInstanceRow
@@ -627,6 +646,9 @@ func loadUsageResources(ctx context.Context, e *env) (usageResources, error) {
 		if mode == "image" {
 			resources.images = append(resources.images, model)
 		}
+		if mode == "audio" {
+			resources.audio = append(resources.audio, model)
+		}
 	}
 	if err := modelRows.Err(); err != nil {
 		modelRows.Close()
@@ -676,6 +698,18 @@ func (r usageResources) imageModelAt(index int) (string, bool) {
 		index = 0
 	}
 	return r.images[index%len(r.images)], true
+}
+
+// audioModelAt 取第 index 个音频目录模型；目录里没有 audio 分类模型时回落
+// 首个模型（与 imageModelAt 同构，保证音频样本不因目录版本缺 audio 行而失败）。
+func (r usageResources) audioModelAt(index int) (string, bool) {
+	if len(r.audio) == 0 {
+		return r.modelAt(index)
+	}
+	if index < 0 {
+		index = 0
+	}
+	return r.audio[index%len(r.audio)], true
 }
 
 // groupsForOwner 返回该账户归属人名下的分组（优先 enabled）。
@@ -791,6 +825,7 @@ type usageRecordSpec struct {
 	requestedEffort       string
 	effectiveEffort       string
 	imageMode             bool
+	audioMode             bool
 	tokenless             bool
 	// ordinal 只用于生成确定性的 token / 延迟数值。
 	ordinal int
@@ -1004,6 +1039,7 @@ func (w *usageWriter) dailySpec(ordinal int, createdAt time.Time, scenario usage
 		reportedTier:  "default",
 		billedTier:    "default",
 		imageMode:     variant.imageMode,
+		audioMode:     variant.audioMode,
 		tokenless:     variant.tokenless,
 		ordinal:       ordinal,
 	}
@@ -1015,6 +1051,9 @@ func (w *usageWriter) dailySpec(ordinal int, createdAt time.Time, scenario usage
 	}
 	if variant.imageMode {
 		requestedModel, _ = w.resources.imageModelAt(ordinal)
+	}
+	if variant.audioMode {
+		requestedModel, _ = w.resources.audioModelAt(ordinal)
 	}
 	spec.model = requestedModel
 	spec.upstreamModel = requestedModel
@@ -1035,8 +1074,9 @@ func (w *usageWriter) dailySpec(ordinal int, createdAt time.Time, scenario usage
 	case 1:
 		spec.effectiveTier, spec.reportedTier, spec.billedTier = "flex", "flex", "flex"
 	}
-	// 思考强度：requests/effective 分别覆盖 low / medium / high 且允许不一致。
-	if !variant.imageMode && !variant.tokenless && variant.family != "count_tokens" {
+	// 思考强度：requests/effective 分别覆盖 low / medium / high 且允许不一致
+	//（图像/音频/tokenless 端点无思考强度概念，不参与）。
+	if !variant.imageMode && !variant.audioMode && !variant.tokenless && variant.family != "count_tokens" {
 		efforts := []string{"low", "medium", "high"}
 		spec.requestedEffort = efforts[ordinal%3]
 		spec.effectiveEffort = efforts[(ordinal+1)%3]
@@ -1356,6 +1396,12 @@ func (w *usageWriter) newRecord(spec usageRecordSpec) usageRecordEntry {
 		"created_at":                      spec.createdAt.UTC().Format(isoMillisLayout),
 		"account_owner_system_account_id": nullString(accountOwner),
 		"account_access_type":             accountAccessType,
+		// 媒体计量列（NOT NULL DEFAULT 0）：先落 0 默认，音频分支在
+		// fillMetrics 里覆盖 TTS 字符 / STT 秒（失败行保持 0，不虚计）。
+		"tts_input_chars":      int64(0),
+		"audio_input_seconds":  float64(0),
+		"usage_missing":        int64(0),
+		"output_video_seconds": float64(0),
 	}
 	// 授权实例账户归属：调用者是被授权人（实例账户 namespace 的归属者）时，账户
 	// 归属改写为原资源归属人并回填授权三列。statsagg 授权日报的 account 分支
@@ -1415,6 +1461,22 @@ func (w *usageWriter) fillMetrics(spec usageRecordSpec, columns map[string]any) 
 		columns["output_image_tokens"] = 512
 		columns["output_image_count"] = 2
 		columns["cost_usd"] = usageCostUSD(spec.ordinal, 120, 0, spec.billedTier)
+		return
+	}
+	if spec.audioMode {
+		// M1 同步音频计量行（媒体契约 §3.4 / §2.8）：TTS 无上游 usage 回报，
+		// 网关按请求 input 字符数自算（tts_input_chars）；STT 按输入秒
+		//（audio_input_seconds）。token 列不虚计。
+		firstToken := 140 + spec.ordinal%700
+		columns["first_token_ms"] = firstToken
+		columns["duration_ms"] = firstToken + 500 + spec.ordinal%1600
+		if spec.variant.path == "/v1/audio/speech" {
+			columns["tts_input_chars"] = int64(420 + spec.ordinal%2800)
+			columns["cost_usd"] = usageCostUSD(spec.ordinal, 600, 180, spec.billedTier)
+			return
+		}
+		columns["audio_input_seconds"] = float64(12+spec.ordinal%48) + 0.5
+		columns["cost_usd"] = usageCostUSD(spec.ordinal, 800, 220, spec.billedTier)
 		return
 	}
 	if spec.variant.family == "count_tokens" {

@@ -76,6 +76,10 @@ type GatewaySettings struct {
 	ImageStreamIdleTimeoutSeconds              int64  `json:"imageStreamIdleTimeoutSeconds"`
 	ImageUncommittedAttemptMaxLifetimeSeconds  int64  `json:"imageUncommittedAttemptMaxLifetimeSeconds"`
 	ImageRequestWallTimeoutSeconds             int64  `json:"imageRequestWallTimeoutSeconds"`
+	// 媒体车道独立超时档位（音频视频模型接入设计 §3）：audio 同步端点首响、
+	// video 创建请求快速返回 job 对象。
+	AudioFirstResponseTimeoutSeconds           int64  `json:"audioFirstResponseTimeoutSeconds"`
+	VideoCreateTimeoutSeconds                  int64  `json:"videoCreateTimeoutSeconds"`
 	NoAvailableAccountWaitTimeoutSeconds       int64  `json:"noAvailableAccountWaitTimeoutSeconds"`
 	StreamFailureThresholdCount                int64  `json:"streamFailureThresholdCount"`
 	StreamFailureThresholdWindowMinutes        int64  `json:"streamFailureThresholdWindowMinutes"`

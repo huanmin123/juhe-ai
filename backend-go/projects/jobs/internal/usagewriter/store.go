@@ -146,6 +146,7 @@ const UsageShardBaseSchemaSQL = `
       tts_input_chars INTEGER NOT NULL DEFAULT 0,
       audio_input_seconds REAL NOT NULL DEFAULT 0,
       usage_missing INTEGER NOT NULL DEFAULT 0,
+      output_video_seconds REAL NOT NULL DEFAULT 0,
       cost_usd REAL,
       error_code TEXT,
       error_message TEXT,
@@ -291,8 +292,8 @@ func (s *SqliteShardStore) openShardDB(location UsageRecordShardLocation) (*sql.
 		db.Close()
 		return nil, err
 	}
-	// M1 同步音频计量列（音频设计 §10）：存量分片文件的幂等补列，模式同
-	// upstream_response_model。
+	// M1/M2 媒体计量列（音频设计 §10 / 媒体设计 §10）：存量分片文件的幂等
+	// 补列，模式同 upstream_response_model。
 	if err := ensureAudioMeteringColumns(db); err != nil {
 		db.Close()
 		return nil, err
@@ -301,15 +302,17 @@ func (s *SqliteShardStore) openShardDB(location UsageRecordShardLocation) (*sql.
 	return db, nil
 }
 
-// audioMeteringShardColumns 是 M1 音频计量列的（列名, DDL）清单。
+// audioMeteringShardColumns 是 M1/M2 媒体计量列的（列名, DDL）清单
+//（音频设计 §10 音频计量 + 媒体设计 §10 视频输出秒）。
 var audioMeteringShardColumns = [][2]string{
 	{"tts_input_chars", "tts_input_chars INTEGER NOT NULL DEFAULT 0"},
 	{"audio_input_seconds", "audio_input_seconds REAL NOT NULL DEFAULT 0"},
 	{"usage_missing", "usage_missing INTEGER NOT NULL DEFAULT 0"},
+	{"output_video_seconds", "output_video_seconds REAL NOT NULL DEFAULT 0"},
 }
 
-// ensureAudioMeteringColumns 对既有 usage 分片文件补 M1 音频计量列
-// （ensureUpstreamResponseModelColumn 同款幂等：PRAGMA 探测 + ALTER ADD
+// ensureAudioMeteringColumns 对既有 usage 分片文件补 M1/M2 媒体计量列
+//（ensureUpstreamResponseModelColumn 同款幂等：PRAGMA 探测 + ALTER ADD
 // COLUMN，并发重复列错误视为成功）。
 func ensureAudioMeteringColumns(db *sql.DB) error {
 	rows, err := db.Query("PRAGMA table_info(usage_records)")

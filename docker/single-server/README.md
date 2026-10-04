@@ -143,6 +143,11 @@ SELECT pg_get_constraintdef(oid) FROM pg_constraint
 - `JUHE_AI_REDIS_NAMESPACE=prod`：redis 驱动下必填非空。
 - 管理后台账号沿用老生产 `system_accounts`（154 个），无默认密码残留；seed 的 `sys_admin`（admin/admin）仅在全新部署或重置 schema 后出现，且 `must_change_password=1` 首登强制改密（BUG-0224），现有实例行不被 seed 重跑改写。
 
+## 系统设置键（DB `system_settings`，非 env；2026-10-04 M2 媒体批次新增）
+
+- `audioFirstResponseTimeoutSeconds`：默认 `120`（单位秒），音频车道（`/v1/audio/*` 同步 TTS/STT）单次 attempt 首响应超时；`videoCreateTimeoutSeconds`：默认 `60`（单位秒），`POST /v1/videos` 创建请求超时。两键合法区间均为 `10..3600` 整数，归属管理面系统设置 `gateway-core` section（与其他 `*TimeoutSeconds` 车道键同组）。
+- **存量库自动补齐**：键行由 maintenance `--seed` 播种（`pgSeedSystemSettings`）；存量库在例行发布 `--ensure-schema --seed` 前缺行时，gateway（`compatibleSystemSettingDefaults` 兜底）与 jobs（`jobssettings.DefaultSystemSettings`）按同默认值（120/60）运行，行为一致、无需手工补行；重新播种后键行自动落库。非环境变量，compose 与直跑形态同源。
+
 ## 非承诺功能面登记（2026-09-28 默认开启整改一并登记）
 
 以下面均为**已文档化的降级面**，不属于"未配置即禁用"的反模式整改范围（它们缺失的根因是 Node IPC 对等体消失，而非配置缺失），不承诺恢复：

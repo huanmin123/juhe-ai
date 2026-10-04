@@ -227,6 +227,15 @@ func TestWeSupportedCatalogModelAndScopePriority(t *testing.T) {
 	if isSupportedCatalogModel(ModelCatalogItem{Model: "model_tts"}) {
 		t.Fatal("tts 命名不受支持")
 	}
+	// M2 裁决（媒体设计 §2）：mode=video 且协议含 video 才收录；无 video
+	// 协议的 video 行维持排除（同 audio 口径）。
+	videoMode := "video"
+	if !isSupportedCatalogModel(ModelCatalogItem{Mode: &videoMode, Model: "sora-2", SupportedAPIProtocols: []string{"video"}}) {
+		t.Fatal("video 模式 + video 协议应受支持")
+	}
+	if isSupportedCatalogModel(ModelCatalogItem{Mode: &videoMode, Model: "m", SupportedAPIProtocols: []string{"chat_completions"}}) {
+		t.Fatal("video 模式无 video 协议不受支持")
+	}
 
 	// hasDirectPrice：直接价格或层级价格任一存在即视为有价。
 	if hasDirectPrice(ModelCatalogItem{}) {

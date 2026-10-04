@@ -1720,8 +1720,15 @@ func requiredIncidentPart(value *string, name string) string {
 	return strings.TrimSpace(*value)
 }
 
+// requiredIncidentRequestLane 校验持久化 incident 的 requestLane，词表与
+// requiredRequestLane 同源（gatewayproto text/image/audio/video；媒体车道
+// 不拒斥——2026-10-04 裁决 + 媒体设计 §3，媒体 lane 电路以独立 lane 维度
+// 持久化，与 text/image 电路隔离）。
 func requiredIncidentRequestLane(value *string) string {
-	if value == nil || (*value != LaneText && *value != LaneImage) {
+	if value == nil {
+		panic("持久化账户 circuit requestLane 无效")
+	}
+	if _, err := requiredRequestLane(*value); err != nil {
 		panic("持久化账户 circuit requestLane 无效")
 	}
 	return *value

@@ -1352,4 +1352,21 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		Source:     "model-check-question-bank-indexes",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_model_check_question_bank_title_norm ON model_check_question_bank(title_norm)`,
 	},
+	{
+		// media_jobs 查询索引（媒体设计 §8.2）：API Key 列表/鉴权过滤、
+		// 账户亲和定位、状态扫描（清理 job TTL 置 expired）。
+		SchemaName: "juhe_business",
+		Source:     "media-jobs-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_api_key_created ON media_jobs(api_key_id, created_at DESC)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "media-jobs-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_account ON media_jobs(account_id)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "media-jobs-indexes",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_jobs(status)`,
+	},
 }

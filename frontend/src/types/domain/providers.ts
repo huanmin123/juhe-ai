@@ -3,7 +3,7 @@ import type { AccountType, ProviderCode } from './base'
 export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
-export type ProviderModelMode = 'text' | 'image' | 'audio'
+export type ProviderModelMode = 'text' | 'image' | 'audio' | 'video'
 export type ProviderModelServiceTier = string
 export type ProviderModelReasoningEffort = string
 export type ProviderModelCodexReasoningLevel = ProviderModelReasoningEffort | 'ultra'
@@ -57,6 +57,7 @@ export type ProviderModelApiProtocol =
   | 'audio'
   | 'audio_speech'
   | 'audio_transcription'
+  | 'video'
   | 'realtime'
 
 export interface ProviderDefinition {

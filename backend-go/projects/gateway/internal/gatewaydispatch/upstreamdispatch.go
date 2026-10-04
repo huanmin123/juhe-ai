@@ -503,6 +503,8 @@ func (e *Engine) FetchFirstAvailableUpstream(ctx context.Context, args FetchFirs
 		ImageFirstResponseTimeoutSeconds:          settings.ImageFirstResponseTimeoutSeconds,
 		ImageStreamIdleTimeoutSeconds:             settings.ImageStreamIdleTimeoutSeconds,
 		ImageUncommittedAttemptMaxLifetimeSeconds: settings.ImageUncommittedAttemptMaxLifetimeSeconds,
+		AudioFirstResponseTimeoutSeconds:          settings.AudioFirstResponseTimeoutSeconds,
+		VideoCreateTimeoutSeconds:                 settings.VideoCreateTimeoutSeconds,
 		NoAvailableAccountWaitTimeoutSeconds:      settings.NoAvailableAccountWaitTimeoutSeconds,
 	}, gatewayprotoLane(requestLane), compactionTimeoutsDisabled)
 

@@ -111,7 +111,11 @@ type businessCatalog struct {
 	profiles       []businessProfile
 	models         []string
 	imageModels    []string
-	healthModel    string
+	// audioModels / videoModels 是目录里 mode=audio / mode=video 的模型
+	//（媒体契约 §3.4：business 域样本引用媒体分类目录行）。
+	audioModels []string
+	videoModels []string
+	healthModel string
 }
 
 // businessProfile 是 provider_protocol_profiles 的一行读投影。
@@ -264,6 +268,12 @@ func loadBusinessCatalog(ctx context.Context, db *sql.DB) (businessCatalog, erro
 		if mode.Valid && mode.String == "image" && len(catalog.imageModels) < 6 {
 			catalog.imageModels = append(catalog.imageModels, model)
 		}
+		if mode.Valid && mode.String == "audio" && len(catalog.audioModels) < 6 {
+			catalog.audioModels = append(catalog.audioModels, model)
+		}
+		if mode.Valid && mode.String == "video" && len(catalog.videoModels) < 6 {
+			catalog.videoModels = append(catalog.videoModels, model)
+		}
 	}
 	if err := modelRows.Err(); err != nil {
 		modelRows.Close()
@@ -305,6 +315,30 @@ func (c businessCatalog) imageModelAt(index int) string {
 	return c.imageModels[len(c.imageModels)-1]
 }
 
+// audioModelAt 取第 index 个音频目录模型；目录里没有 audio 分类模型时回落到
+// 造数自建的全域音频模型（seedCustomProviderModels 有定义，账户支持模型可解析）。
+func (c businessCatalog) audioModelAt(index int) string {
+	if len(c.audioModels) == 0 {
+		return mockCustomModelAudio
+	}
+	if index < len(c.audioModels) {
+		return c.audioModels[index]
+	}
+	return c.audioModels[len(c.audioModels)-1]
+}
+
+// videoModelAt 取第 index 个视频目录模型；目录里没有 video 分类模型时回落
+// sora-2（媒体设计 §4.2 的 OpenAI 视频形态基准模型，media_jobs 样本行用它）。
+func (c businessCatalog) videoModelAt(index int) string {
+	if len(c.videoModels) == 0 {
+		return mockVideoModelFallback
+	}
+	if index < len(c.videoModels) {
+		return c.videoModels[index]
+	}
+	return c.videoModels[len(c.videoModels)-1]
+}
+
 // profileFor 按首选 provider 与账户类型挑一个可用档案；没有匹配时返回 false，
 // 调用方据此跳过该类账户而不是写出协议不兼容的行。
 func (c businessCatalog) profileFor(provider string, accountType string) (businessProfile, bool) {
@@ -344,7 +378,11 @@ const (
 	mockAuthorizationReturned   = "returned"
 	mockCustomModelLongContext  = "mockdata-global-long-context"
 	mockCustomModelImage        = "mockdata-global-image"
+	mockCustomModelAudio        = "mockdata-global-audio"
 	mockModelMappingSourceModel = "mockdata-global-long-context"
+	// mockVideoModelFallback 是目录缺 video 分类行时 media_jobs 样本与账户
+	// 支持模型的回落模型（媒体设计 §4.2 的 OpenAI 视频基准模型）。
+	mockVideoModelFallback = "sora-2"
 )
 
 // businessWriter 承载一次 business 域写入的上下文：统一时钟、信封密钥与按表
@@ -531,6 +569,9 @@ func (w *businessWriter) seed(tx *sql.Tx, guard businessGuard) error {
 		return err
 	}
 	if err := w.seedCustomProviderModels(tx, guard, users); err != nil {
+		return err
+	}
+	if err := w.seedMediaJobs(tx, guard, accounts, keys); err != nil {
 		return err
 	}
 	if err := w.seedAnnouncements(tx, guard, users); err != nil {
@@ -896,14 +937,17 @@ type mockAccountSeed struct {
 	tags          []string
 	modelSlots    []int
 	extraModels   []string
-	expiresIn     time.Duration
-	cooldownIn    time.Duration
-	errorCode     string
-	errorMsg      string
-	keyPool       int
-	keyStrategy   string
-	mappings      []mockMappingSeed
-	oauth         bool
+	// mediaModels 让 accountModels 追加目录里 audio / video 分类的模型引用
+	//（媒体契约 §3.4：business 域样本引用 audio 分类模型目录行）。
+	mediaModels  bool
+	expiresIn    time.Duration
+	cooldownIn   time.Duration
+	errorCode    string
+	errorMsg     string
+	keyPool      int
+	keyStrategy  string
+	mappings     []mockMappingSeed
+	oauth        bool
 }
 
 // seedAccounts 写入 AI 账户及其分组绑定、支持模型、标签与模型映射。
@@ -960,6 +1004,11 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			priority: 50, concurrency: 18, mode: "images_json", modelSlots: []int{2},
 			extraModels: []string{mockCustomModelImage}, tags: []string{"图像生成"},
 			notes: "Mockdata 图像生成账号，用于 Images API、图片 token 和系统账户图像权限展示"},
+		{id: CleanupIDPrefix + "acc_media", name: CleanupNamePrefix + "媒体生成账户", owner: guard.adminID,
+			group: groups["experiment"], slug: "media", typ: "api_key", status: mockAccountStatusActive,
+			priority: 55, concurrency: 16, mode: "responses_sse", modelSlots: []int{2},
+			extraModels: []string{mockCustomModelAudio}, mediaModels: true, tags: []string{"音频", "视频任务"},
+			notes: "Mockdata 媒体生成账号，引用目录 audio/video 分类模型（媒体契约 §3.4），media_jobs 任务行的账户亲和载体"},
 		{id: CleanupIDPrefix + "acc_burst_fast", name: CleanupNamePrefix + "高并发快响账户", owner: guard.adminID,
 			group: groups["high"], slug: "burst-fast", typ: "api_key", status: mockAccountStatusActive,
 			priority: 2, concurrency: 180, super: true, mode: "responses_sse",
@@ -1187,7 +1236,8 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 	return seeds, nil
 }
 
-// accountModels 解析一条账户的支持模型：目录模型按槽位取，附加模型直接拼接。
+// accountModels 解析一条账户的支持模型：目录模型按槽位取，附加模型直接拼接；
+// mediaModels 账户追加目录 audio / video 分类模型（媒体契约 §3.4）。
 func (w *businessWriter) accountModels(seed *mockAccountSeed, guard businessGuard) []string {
 	var models []string
 	seen := map[string]bool{}
@@ -1202,6 +1252,14 @@ func (w *businessWriter) accountModels(seed *mockAccountSeed, guard businessGuar
 		if !seen[model] {
 			seen[model] = true
 			models = append(models, model)
+		}
+	}
+	if seed.mediaModels {
+		for _, model := range []string{guard.catalog.audioModelAt(0), guard.catalog.videoModelAt(0)} {
+			if model != "" && !seen[model] {
+				seen[model] = true
+				models = append(models, model)
+			}
 		}
 	}
 	return models
@@ -2645,6 +2703,8 @@ type mockCustomModelSeed struct {
 	cached   float64
 	imgIn    float64
 	imgOut   float64
+	audIn    float64
+	audOut   float64
 	perImage float64
 	shutdown string
 }
@@ -2667,6 +2727,12 @@ func (w *businessWriter) seedCustomProviderModels(tx *sql.Tx, guard businessGuar
 			context:  32000, maxOut: 8000, imgIn: 5, imgOut: 40, perImage: 0.02,
 			cap:   "Mockdata 全局图像模型，用于图片用量与图像权限验收",
 			notes: "Mockdata 全局图像模型样本"},
+		{id: CleanupIDPrefix + "model_global_audio", model: mockCustomModelAudio,
+			scope: "global", status: "active", mode: "audio",
+			protocol: []string{"audio_speech"},
+			audIn: 0.6, audOut: 12,
+			cap:   "Mockdata 全局音频模型（TTS），用于音频分类目录与同步音频用量验收",
+			notes: "Mockdata 全局音频模型样本"},
 		{id: CleanupIDPrefix + "model_personal_codex", model: "mockdata-personal-codex",
 			scope: "personal", owner: CleanupIDPrefix + "user_admin", status: "active",
 			mode: "text", protocol: []string{"responses"},
@@ -2710,6 +2776,8 @@ func (w *businessWriter) seedCustomProviderModels(tx *sql.Tx, guard businessGuar
 			"cached_input_usd_per_1m":          nullFloat(seed.cached),
 			"image_input_usd_per_1m":           nullFloat(seed.imgIn),
 			"image_output_usd_per_1m":          nullFloat(seed.imgOut),
+			"audio_input_usd_per_1m":           nullFloat(seed.audIn),
+			"audio_output_usd_per_1m":          nullFloat(seed.audOut),
 			"output_usd_per_image":             nullFloat(seed.perImage),
 			"shutdown_date":                    nullString(seed.shutdown),
 			"currency":                         "USD",
@@ -2729,6 +2797,124 @@ func nullInt(value int) any {
 		return nil
 	}
 	return value
+}
+
+// seedMediaJobs 写入 media_jobs 异步媒体任务样本行（媒体契约 §3.4 / 媒体设计
+// §8.2）：kind=video 各 status 覆盖，模型取目录 video 分类（回落 sora-2），
+// completed 行带 usage/cost，failed 行带 error，账户亲和外键取 acc_media 的
+// 真实行（provider 三元组与账户一致）。id 用 video_ 前缀的对外 job id 形态
+//（表注释契约），清理经 api_key/account 父键子查询定位（cleanupRules）。
+func (w *businessWriter) seedMediaJobs(tx *sql.Tx, guard businessGuard, accounts []mockAccountSeed, keys map[string]string) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	mediaAccountID := CleanupIDPrefix + "acc_media"
+	var accountID, providerCode, profileID string
+	mediaAccount := false
+	for _, account := range accounts {
+		if account.id == mediaAccountID {
+			mediaAccount = true
+			break
+		}
+	}
+	if mediaAccount {
+		if err := tx.QueryRow(`SELECT id, provider_code, COALESCE(provider_protocol_profile_id, '')
+			FROM accounts WHERE id = ?`, mediaAccountID).Scan(&accountID, &providerCode, &profileID); err != nil {
+			return fmt.Errorf("读取媒体账户行: %w", err)
+		}
+	} else {
+		// 老库没有 acc_media 样本（样本表更新滞后）时回落第一个账户，保证
+		// media_jobs 行不缺席；外键仍指向真实存在的行。
+		fallback := accounts[0]
+		if err := tx.QueryRow(`SELECT id, provider_code, COALESCE(provider_protocol_profile_id, '')
+			FROM accounts WHERE id = ?`, fallback.id).Scan(&accountID, &providerCode, &profileID); err != nil {
+			return fmt.Errorf("读取媒体账户回落行: %w", err)
+		}
+	}
+	apiKeyID := keys["main"]
+	model := guard.catalog.videoModelAt(0)
+	type mediaJobSeed struct {
+		suffix   string
+		status   string
+		ageHours int
+	}
+	seeds := []mediaJobSeed{
+		{suffix: "completed", status: "completed", ageHours: 26},
+		{suffix: "failed", status: "failed", ageHours: 20},
+		{suffix: "running", status: "in_progress", ageHours: 2},
+		{suffix: "queued", status: "queued", ageHours: 1},
+		{suffix: "cancelled", status: "cancelled", ageHours: 40},
+		{suffix: "expired", status: "expired", ageHours: 60},
+	}
+	for _, seed := range seeds {
+		id := "video_" + CleanupIDPrefix + seed.suffix
+		createdAt := w.at(-time.Duration(seed.ageHours) * time.Hour)
+		updatedAt := w.at(-time.Duration(seed.ageHours-1) * time.Hour)
+		requestSnapshot := map[string]any{
+			"model": model, "prompt": CleanupNamePrefix + "视频任务样本 " + seed.suffix,
+			"seconds": 4, "size": "1280x720",
+		}
+		artifact := map[string]any{}
+		jobError := map[string]any{}
+		usage := map[string]any{}
+		cost := 0.0
+		switch seed.status {
+		case "completed":
+			artifact = map[string]any{
+				"content_url": "/v1/videos/" + id + "/content",
+				"expires_at":  w.at(24 * time.Hour),
+			}
+			usage = map[string]any{"output_video_seconds": 4.0}
+			cost = 0.32
+		case "failed":
+			jobError = map[string]any{"code": "upstream_5xx", "message": CleanupNamePrefix + "模拟上游任务失败"}
+		case "expired":
+			artifact = map[string]any{
+				"content_url": "/v1/videos/" + id + "/content",
+				"expires_at":  w.at(-2 * time.Hour),
+			}
+			usage = map[string]any{"output_video_seconds": 4.0}
+			cost = 0.32
+		}
+		requestJSON, err := w.putJSON(requestSnapshot)
+		if err != nil {
+			return err
+		}
+		artifactJSON, err := w.putJSON(artifact)
+		if err != nil {
+			return err
+		}
+		errorJSON, err := w.putJSON(jobError)
+		if err != nil {
+			return err
+		}
+		usageJSON, err := w.putJSON(usage)
+		if err != nil {
+			return err
+		}
+		appliedJSON, err := w.putJSON([]string{"seconds", "size"})
+		if err != nil {
+			return err
+		}
+		ignoredJSON, err := w.putJSON([]string{"n"})
+		if err != nil {
+			return err
+		}
+		if err := w.put(tx, "media_jobs", map[string]any{
+			"id": id, "kind": "video",
+			"api_key_id": apiKeyID, "account_id": accountID,
+			"provider_code": providerCode, "provider_protocol_profile_id": nullString(profileID),
+			"upstream_job_id": "video_" + CleanupIDPrefix + "upstream_" + seed.suffix,
+			"status":           seed.status,
+			"request_snapshot_json": requestJSON, "artifact_json": artifactJSON,
+			"error_json": errorJSON, "usage_json": usageJSON, "cost_usd": cost,
+			"params_applied_json": appliedJSON, "params_ignored_json": ignoredJSON,
+			"created_at": createdAt, "updated_at": updatedAt,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // nullFloat 把 0 投影成 SQL NULL。

@@ -393,6 +393,7 @@ func toProviderModelPricing(item *rawModel, entry *providerEntry, providerCode s
 			OutputUsdPerImage:           normalizePrice(item.OutputCostPerImage),
 			TtsInputUsdPer1MChars:       perMillion(item.TtsInputCostPerChar),
 			AudioInputUsdPerSecond:      normalizePrice(item.AudioInputCostPerSecond),
+			VideoOutputUsdPerSecond:     normalizePrice(item.VideoOutputCostPerSecond),
 		},
 		CachedImageInputUsdPer1M: perMillion(item.CacheReadInputImageTokenCost),
 		ServiceTierPrices:        rawServiceTierPrices(item),

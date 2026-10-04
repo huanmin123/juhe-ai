@@ -140,16 +140,22 @@ func coverageAssertions() []coverageAssertion {
 		{Name: "custom_provider_models.status_distribution", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM custom_provider_models", Min: 2},
 		{Name: "model_check_question_bank", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM model_check_question_bank", Min: 1},
 		{Name: "api_keys.mock_sample", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(*) FROM api_keys WHERE id LIKE '" + id + "' OR name LIKE '" + name + "'", Min: 1},
-		// 用量域：图片 token、模型映射命中、上游响应模型一致 / 不一致样本。
+		// 业务域媒体任务（媒体契约 §3.4）：kind=video 各状态样本行。
+		{Name: "media_jobs.video_status_distribution", Domain: DomainBusiness, Store: StoreBusiness, Query: "SELECT COUNT(DISTINCT status) FROM media_jobs WHERE kind = 'video'", Min: 4},
+		// 用量域：图片 token、模型映射命中、上游响应模型一致 / 不一致样本、
+		// M1 同步音频计量（TTS 字符 / STT 秒，媒体契约 §3.4）。
 		{Name: "usage_records.image_tokens", Domain: DomainUsage, Store: StoreUsageShardPrefix + "[", Query: "SELECT COUNT(*) FROM usage_records WHERE input_image_tokens IS NOT NULL OR output_image_tokens IS NOT NULL", Min: 1},
+		{Name: "usage_records.audio_metering", Domain: DomainUsage, Store: StoreUsageShardPrefix + "[", Query: "SELECT COUNT(*) FROM usage_records WHERE tts_input_chars > 0 OR audio_input_seconds > 0", Min: 1},
 		{Name: "usage_records.model_mapping_applied", Domain: DomainUsage, Store: StoreUsageShardPrefix + "[", Query: "SELECT COUNT(*) FROM usage_records WHERE model_mapping_applied = 1", Min: 1},
 		{Name: "usage_records.upstream_response_model.match", Domain: DomainUsage, Store: StoreUsageShardPrefix + "[", Query: "SELECT COUNT(*) FROM usage_records WHERE upstream_model IS NOT NULL AND upstream_response_model IS NOT NULL AND upstream_model = upstream_response_model", Min: 1},
 		{Name: "usage_records.upstream_response_model.mismatch", Domain: DomainUsage, Store: StoreUsageShardPrefix + "[", Query: "SELECT COUNT(*) FROM usage_records WHERE upstream_model IS NOT NULL AND upstream_response_model IS NOT NULL AND upstream_model <> upstream_response_model", Min: 1},
 		{Name: "usage_records.traffic_source.gateway", Domain: DomainUsage, Store: StoreUsageShardPrefix + "[", Query: "SELECT COUNT(*) FROM usage_records WHERE traffic_source = 'gateway'", Min: 1},
 		// 统计域：后台任务运行样本。
 		{Name: "background_task_runs", Domain: DomainStats, Store: StoreStats, Query: "SELECT COUNT(*) FROM background_task_runs", Min: 1},
-		// 可观测域：审计 / 操作 / 运行日志、公开接口日志、表空间监控。
+		// 可观测域：审计 / 操作 / 运行日志、公开接口日志、表空间监控、
+		// 媒体端点审计样本（媒体契约 §3.4）。
 		{Name: "audit_logs", Domain: DomainObservability, Store: StoreAuditLog, Query: "SELECT COUNT(*) FROM audit_logs", Min: 1},
+		{Name: "audit_logs.media_endpoints", Domain: DomainObservability, Store: StoreAuditLog, Query: "SELECT COUNT(*) FROM audit_logs WHERE path IN ('/v1/audio/speech', '/v1/videos')", Min: 1},
 		{Name: "operation_logs", Domain: DomainObservability, Store: StoreOperationLog, Query: "SELECT COUNT(*) FROM operation_logs", Min: 1},
 		{Name: "runtime_logs", Domain: DomainObservability, Store: StoreRuntimeLog, Query: "SELECT COUNT(*) FROM runtime_logs", Min: 1},
 		{Name: "public_api_logs", Domain: DomainObservability, Store: StoreDataset, Query: "SELECT COUNT(*) FROM public_api_logs", Min: 1},

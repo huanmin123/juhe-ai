@@ -40,6 +40,10 @@ export const accountEndpointModeOptions: Array<{ label: string; value: AccountSu
   { label: 'Images API', value: 'images_json' },
   { label: 'Audio Speech (TTS)', value: 'audio_speech' },
   { label: 'Audio Transcription (JSON)', value: 'audio_transcription_json' },
+  { label: 'Videos API (Create)', value: 'video_create' },
+  { label: 'Videos API (Get)', value: 'video_get' },
+  { label: 'Videos API (Content)', value: 'video_content' },
+  { label: 'Videos API (Cancel)', value: 'video_cancel' },
   { label: 'Chat Completions (JSON)', value: 'chat_json' },
   { label: 'Chat Completions (Streaming)', value: 'chat_sse' },
   { label: 'Responses API (JSON)', value: 'responses_json' },
@@ -164,6 +168,14 @@ export function accountEndpointModeLabel(mode: AccountSupportedEndpointMode, con
       return 'Audio Speech (TTS)'
     case 'audio_transcription_json':
       return 'Audio Transcription (JSON)'
+    case 'video_create':
+      return 'Videos API (Create)'
+    case 'video_get':
+      return 'Videos API (Get)'
+    case 'video_content':
+      return 'Videos API (Content)'
+    case 'video_cancel':
+      return 'Videos API (Cancel)'
     case 'chat_json':
       return `${chatCapabilityName(context)} (JSON)`
     case 'chat_sse':

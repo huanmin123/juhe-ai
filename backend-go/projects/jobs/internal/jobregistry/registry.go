@@ -320,9 +320,23 @@ func ScheduledEntries() []Entry {
 		{
 			JobName: "expired-deleted-account-cleanup", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
 			SingleOwner: true, LeaseRequired: true,
-			Writes:   []string{"business:accounts", "business:resource_authorizations"},
+			Writes: []string{"business:accounts", "business:resource_authorizations"},
 			GoStatus: GoWired, GoPackage: "cleanuprepo + retention",
 			GoBinding: "ExpiredDeletedAccountJob + cleanuprepo.DeletedAccountStore（候选/相关记录守卫/物理删除双模）+ 本地 record maintenance 队列投递；孤儿授权实例扫尾仅 PG（SQLite 依赖 resource-authorization 运行态同步域，跳过时显式 warn）",
+		},
+		{
+			// Go 新增条目：media_jobs TTL 保留清理（媒体设计 §8.2 清理任务，
+			// M2 异步媒体任务框架；归档 Node 无对应 scheduled job——媒体域新
+			// 表）。每小时扫 created_at 早于 now-7d 的超期行：未终态
+			//（queued/in_progress）置 expired、全部超期行（含终态）删除；
+			// 每阶段每轮 ≤500 行分批限流，零任务快速返回，过期清理不产生
+			// 计费（媒体设计 §10）。表缺席（老库未跑 maintenance 迁移）按
+			// 零任务处理。业务库 media_jobs（gateway 媒体任务面写入）。
+			JobName: "media-jobs-retention", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
+			SingleOwner: true, LeaseRequired: true,
+			Writes:      []string{"business:media_jobs"},
+			GoStatus:    GoWired, GoPackage: "retention",
+			GoBinding: "MediaJobsRetentionJob + retention.MediaJobsSQLStore（worker_retention.go 组合根接线：retention-business 句柄双模复用；未终态置 expired → 全部超期行删除，id 子查询 LIMIT 500 限流）",
 		},
 	}
 }

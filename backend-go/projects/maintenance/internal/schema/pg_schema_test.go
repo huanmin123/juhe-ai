@@ -28,19 +28,21 @@ import (
 // success_cost_usd ALTER/backfill statements, the chat_conversations
 // account-binding ALTER columns, the model_quality_schedules
 // interval_minutes CHECK migration DO block, the chat_user_tool_preferences
-// user-level tool binding table, and the accounts health_check_endpoint_mode
-// audio CHECK migration DO block; the retired bind-mode ALTERs
+// user-level tool binding table, the accounts health_check_endpoint_mode
+// audio/video CHECK migration DO block, the M2 media_jobs table with its
+// three indexes, and the usage_records output_video_seconds ALTER column;
+// the retired bind-mode ALTERs
 // were removed with the account-only binding migration). Regenerate them when
 // either source changes.
-const goldenPostgresSchemaStatementCount = 629
+const goldenPostgresSchemaStatementCount = 634
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
-	"juhe_business":      311,
+	"juhe_business":      315,
 	"juhe_chat":          43,
 	"juhe_dataset":       7,
-	"juhe_usage":         51,
+	"juhe_usage":         52,
 	"juhe_stats":         201,
 	"juhe_codex_context": 16,
 }
@@ -131,8 +133,8 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			droppedTriggers += strings.Count(statement.SQL, "DROP TRIGGER IF EXISTS ")
 		}
 	}
-	if alterColumns != 20 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 20", alterColumns)
+	if alterColumns != 21 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 21", alterColumns)
 	}
 	if doBlocks != 3 {
 		t.Fatalf("DO block count = %d, want 3", doBlocks)
@@ -315,8 +317,8 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
 	}
-	if len(pgSeedSystemSettings) != 66 {
-		t.Fatalf("system settings = %d, want 66", len(pgSeedSystemSettings))
+	if len(pgSeedSystemSettings) != 68 {
+		t.Fatalf("system settings = %d, want 68", len(pgSeedSystemSettings))
 	}
 	profileFamilyCount := 0
 	for _, profile := range pgSeedProfiles {

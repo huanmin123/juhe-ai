@@ -1,13 +1,14 @@
 import type { ProviderModelPricing } from '@/types/domain'
 
-export const modelCategoryOrder = ['text', 'image', 'audio'] as const
+export const modelCategoryOrder = ['text', 'image', 'audio', 'video'] as const
 
 export type ModelCategoryKey = typeof modelCategoryOrder[number]
 
 export const modelCategoryLabels: Record<ModelCategoryKey, string> = {
   text: '对话 / 编码',
   image: '图像',
-  audio: '音频'
+  audio: '音频',
+  video: '视频'
 }
 
 type ModelNameCategoryRule = {

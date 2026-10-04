@@ -167,6 +167,17 @@ func isAudioTranscriptionEndpointPath(path string) bool {
 		path == "/v1/audio/translations"
 }
 
+// isAudioEndpointPath 匹配 audio 车道同步端点族（媒体设计 §3：/v1/audio/*
+// 路径族优先判定车道）：speech（TTS，JSON 体）与 transcriptions/translations
+//（STT，multipart 上传体）。body 限额按此把 audio 车道对齐 image 的 64MB 档。
+func isAudioEndpointPath(path string) bool {
+	path = strings.ToLower(path)
+	if path == "/audio/speech" || path == "/v1/audio/speech" {
+		return true
+	}
+	return isAudioTranscriptionEndpointPath(path)
+}
+
 // isSafeModelID mirrors isSafeModelId: non-empty and free of C0 control
 // characters and DEL.
 func isSafeModelID(value string) bool {

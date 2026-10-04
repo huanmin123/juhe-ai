@@ -17,17 +17,22 @@
 //     POST /v1beta/models/{model}:generateContent, matched by
 //     prefix+suffix with a non-empty single-segment model); any other
 //     method+path pair is a Node-equivalent 404;
+//
 //   - the JSON body "stream" boolean decides SSE vs JSON (the Node
 //     fixtures read body.stream after parsing the request body); the
 //     legacy ?stream=true query / Accept: text/event-stream signals only
 //     apply when the body field is absent;
+//
 //   - Chat SSE uses the Node two-chunk shape: the first chunk carries
 //     delta.role and the full delta.content together, the terminal chunk
 //     carries finish_reason "stop" plus usage, followed by "data: [DONE]";
+//
 //   - /v1/responses speaks Responses JSON and the Responses SSE timeline
 //     ("event:"/"data:" frames ending at response.completed, no [DONE]);
+//
 //   - the slow-first-byte delay budget is consumed exactly once per
 //     request, matching the Node single-timer fixture;
+//
 //   - client disconnects cancel pending delays and stop the remaining
 //     script; each request records at most one abort;
 //
@@ -38,6 +43,13 @@
 //     usageMetadata; unknown scenarios on a media endpoint default to that
 //     family's OK response, and the generic status/fault scenarios keep
 //     applying to every accepted endpoint.
+//
+//   - the videos face (video.go / payload_video.go) adds the OpenAI videos
+//     async job family (contract §3.2/§4.3): POST/GET /v1/videos,
+//     GET /v1/videos/{id}, .../content and DELETE /v1/videos/{id} run an
+//     in-memory job table whose per-job poll scripts advance the video
+//     state machine ("poll #N returns state X", decided by the creating
+//     request's scenario).
 //
 // Recorded requests (Requests()) keep the full request triple (method,
 // path + raw query, body) plus the parsed model and body stream flag so
@@ -90,6 +102,7 @@ type Server struct {
 	chunkDelay time.Duration
 	seenReqs   []Request
 	aborts     int
+	videos     map[string]*videoTask // async video job table (video.go, contract §3.2.2)
 	mu         sync.Mutex
 }
 
@@ -138,7 +151,7 @@ func acceptsEndpoint(method, path string) bool {
 // the requested scenario (sentinel "x-mock-scenario" header or ?scenario=
 // query, defaulting to chat_ok).
 func New() *Server {
-	m := &Server{now: time.Now}
+	m := &Server{now: time.Now, videos: map[string]*videoTask{}}
 	m.Server = httptest.NewServer(http.HandlerFunc(m.serve))
 	return m
 }

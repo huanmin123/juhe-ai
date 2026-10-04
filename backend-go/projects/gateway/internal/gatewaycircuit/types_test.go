@@ -32,14 +32,33 @@ func TestScopeKeyEncoding(t *testing.T) {
 			want: "14:protocol_model|1:a|1:p|4:text|6:gpt-4o",
 		},
 		{
+			// 2026-10-04 裁决 + 媒体设计 §3：媒体 lane 以独立维度入作用域键
+			// （不拒斥、不归并 text），与 text/image 电路隔离。
+			name: "protocol_model scope media audio lane",
+			scope: Scope{
+				Kind: ScopeKindProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p",
+				RequestLane: "audio", ModelBucket: "whisper-1",
+			},
+			want: "14:protocol_model|1:a|1:p|5:audio|9:whisper-1",
+		},
+		{
+			name: "protocol_model scope media video lane",
+			scope: Scope{
+				Kind: ScopeKindProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p",
+				RequestLane: "video", ModelBucket: "sora-2",
+			},
+			want: "14:protocol_model|1:a|1:p|5:video|6:sora-2",
+		},
+		{
 			name:    "missing accountRuntimeKey",
 			scope:   Scope{Kind: ScopeKindAccount},
 			wantErr: "账户电路作用域缺少 accountRuntimeKey",
 		},
 		{
+			// realtime 在 M5 前不在车道词表（媒体设计 §3），仍是非法值。
 			name:    "invalid lane",
-			scope:   Scope{Kind: ScopeKindProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "audio", ModelBucket: "m"},
-			wantErr: "账户电路作用域 requestLane 必须是 text 或 image",
+			scope:   Scope{Kind: ScopeKindProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "realtime", ModelBucket: "m"},
+			wantErr: "账户电路作用域 requestLane 必须是 text/image/audio/video",
 		},
 	}
 	for _, tt := range tests {

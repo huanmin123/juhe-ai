@@ -236,7 +236,16 @@ func TestW7DAccountCircuitScopeKeyErrors(t *testing.T) {
 	if _, err := AccountCircuitScopeKey(CircuitScope{Kind: CircuitScopeProtocolModel, AccountRuntimeKey: "a"}); err == nil {
 		t.Fatal("protocol_model 缺少 profile 必须拒绝")
 	}
-	if _, err := AccountCircuitScopeKey(CircuitScope{Kind: CircuitScopeProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "video", ModelBucket: "b"}); err == nil {
+	// 2026-10-04 裁决 + 媒体设计 §3：媒体 lane（audio/video）以独立维度入
+	// 电路作用域键（与 gatewaycircuit 词表成对同步），键计算放行；realtime
+	// 在 M5 前不在车道词表，仍为非法值。
+	if _, err := AccountCircuitScopeKey(CircuitScope{Kind: CircuitScopeProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "audio", ModelBucket: "b"}); err != nil {
+		t.Fatalf("媒体 lane audio 不得被拒斥: %v", err)
+	}
+	if _, err := AccountCircuitScopeKey(CircuitScope{Kind: CircuitScopeProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "video", ModelBucket: "b"}); err != nil {
+		t.Fatalf("媒体 lane video 不得被拒斥: %v", err)
+	}
+	if _, err := AccountCircuitScopeKey(CircuitScope{Kind: CircuitScopeProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "realtime", ModelBucket: "b"}); err == nil {
 		t.Fatal("非法 requestLane 必须拒绝")
 	}
 	if _, err := AccountCircuitScopeKey(CircuitScope{Kind: CircuitScopeProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "text"}); err == nil {

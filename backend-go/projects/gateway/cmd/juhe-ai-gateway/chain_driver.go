@@ -286,6 +286,15 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 		}
 		return urls, nil
 	default:
+		// M2 视频创建（媒体设计 §5）：视频请求出站报文经 gatewaymedia 注册表
+		// adapter 构造（URL 与 body 同源 adapter.Create），与 M1 gemini speech
+		// adapter 同模式短路返回；不进通用映射/改写链（统一参数规范在归一层
+		// 完成，不透传厂商参数面）。
+		if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
+			return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, videoPlan.createRequest.Path)}, nil
+		} else if videoErr != nil {
+			return nil, videoErr
+		}
 		// openai-compatible (openai / hybrid and any other OpenAI-style
 		// upstream): always /v1-suffixed base + version-stripped path. Mapped
 		// requests carry the same path rewrite as the driver body transform
@@ -323,6 +332,16 @@ func (d *chainProviderDriver) buildGatewayUpstreamRequestParts(
 	_ = identity
 	if req == nil {
 		return gatewaydispatch.PreparedRequestParts{}, fmt.Errorf("构建上游请求缺少请求上下文")
+	}
+	// M2 视频创建（媒体设计 §5）：adapter 出站报文（URL 与 body 同源
+	// adapter.Create），在协议透传之前短路返回；客户端 body 不进通用映射/
+	// compatibility 链（统一参数规范 L1/L2/L3 已在归一层完成）。
+	if videoPlan, videoErr := d.videoCreateRequest(req, account); videoPlan != nil {
+		headers := upstreamHeadersOf(req, account)
+		headers.Set("Content-Type", "application/json")
+		return gatewaydispatch.PreparedRequestParts{Headers: headers, Body: videoPlan.createRequest.Body}, nil
+	} else if videoErr != nil {
+		return gatewaydispatch.PreparedRequestParts{}, videoErr
 	}
 	// M1 同步音频：gemini speech adapter 分派（URL/body 同源 BuildRequest）。
 	if adapter, ir, ok := d.geminiSpeechRequest(req, account); ok {
@@ -1296,6 +1315,31 @@ func geminiSpeechAdapterBoundaryError(err error) error {
 		return err
 	}
 	return gatewaypreauth.NewGatewayRequestValidationError(err.Error())
+}
+
+// videoCreateRequest 解析“视频创建请求 + 账户”的 adapter 出站计划（M2 视频，
+// 媒体设计 §5/§6）。ok=false 且 err=nil 表示本请求不是视频创建形态（或请求
+// 体不可解析——沿 geminiSpeechRequest 语义，由 capability/url 链路拒绝）；
+// err 非 nil 是构造失败（参数能力边界 → GatewayRequestValidationError 本地
+// 400 不换账户；provider 无视频 adapter → 原生错误，能力缺失不静默回退）。
+func (d *chainProviderDriver) videoCreateRequest(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) (*chainVideoCreatePlan, error) {
+	if req == nil || req.HTTP == nil {
+		return nil, nil
+	}
+	if !chainIsVideoCreateRequest(req) {
+		return nil, nil
+	}
+	if normalizeProtocol(account.ProtocolCode) != driverProtocolOpenAI {
+		return nil, nil
+	}
+	if chainVideoAdapterForAccount(account.ProviderCode) == nil {
+		return nil, fmt.Errorf("账户 %s 的供应商 %s 暂不支持视频生成", account.ID, account.ProviderCode)
+	}
+	body := req.ParsedJSONObjectBody()
+	if body == nil {
+		body = d.materializedParsedJSONObjectBody(req)
+	}
+	return chainVideoCreatePlanOf(body, req, account)
 }
 
 // ---------------------------------------------------------------------------

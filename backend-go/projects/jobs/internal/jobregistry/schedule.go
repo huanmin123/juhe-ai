@@ -247,6 +247,16 @@ func schedules() map[string]Schedule {
 		"expired-deleted-account-cleanup": {
 			Interval: 24 * hour, InitialDelay: 14 * minute, PassiveJitter: true, LeaseTTL: 10 * minute,
 		},
+		// media-jobs-retention：Go 新增任务（媒体设计 §8.2，M2；归档无对应
+		// scheduled job 可对照）。TTL 7 天的任务行清理量级小，interval=1h
+		// 足够收敛；fixedDelay + storage-maintenance lane 对齐 retention 邻居
+		//（data/chat-retention 10min/450s/270s），initial delay 9min 与两者
+		// 错峰；timeout 2min/LeaseTTL 5min 对齐 chat-retention-cleanup。
+		"media-jobs-retention": {
+			Interval: hour, InitialDelay: 9 * minute, StablePhaseWindow: 30 * second,
+			PassiveJitter: true, ScheduleMode: "fixedDelay", Lane: "storage-maintenance", Timeout: 2 * minute,
+			BackoffBase: 30 * second, BackoffMax: 10 * minute, LeaseTTL: 5 * minute,
+		},
 
 		// ops-worker（探针与恢复）
 		"account-balance-refresh": {

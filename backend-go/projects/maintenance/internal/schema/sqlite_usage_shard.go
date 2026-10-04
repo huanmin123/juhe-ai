@@ -67,6 +67,7 @@ const sqliteUsageShardBaseDDL = `
       tts_input_chars INTEGER NOT NULL DEFAULT 0,
       audio_input_seconds REAL NOT NULL DEFAULT 0,
       usage_missing INTEGER NOT NULL DEFAULT 0,
+      output_video_seconds REAL NOT NULL DEFAULT 0,
       cost_usd REAL,
       error_code TEXT,
       error_message TEXT,

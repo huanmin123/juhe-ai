@@ -76,6 +76,10 @@ type gatewayChain struct {
 	// 响应头的成功面持久化窄口（AI账户Grok用量快照设计 §8.2；失败面在
 	// chainFailureDispatcher.anthropicUsageHeaders）；nil 保持静默。
 	anthropicUsageHeaders gatewaycodex.AnthropicUsageHeadersDispatcher
+	// mediaJobs 是 M2 媒体任务面运行时（媒体设计 §4.2/§7/§8：media_jobs
+	// 仓储 + 账户亲和水合 + 上游直连传输面）。nil 仅组合测试——任务面端点
+	// 显式 503 降级，创建链受理后落库失败同样显式报错。
+	mediaJobs *mediaJobsRuntime
 	// speed-first（D-114，routes.ts:542-546）的 per-request 状态在
 	// v1DispatchLoop 上；组合级字段到此为止。
 	// compat answers the openai-compatible files / vector-stores families.
@@ -255,6 +259,16 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// complete 幂等，对 Finalize/Cancel 已收尾的路径无副作用；startedAt 取
 	// c.preauth.NowMs()（UnixMilli），此处直接取 wall clock 同域绝对毫秒。
 	defer httpCompletion.complete(time.Now().UnixMilli())
+
+	// M2 视频任务面（媒体设计 §4.2/§7）：GET/DELETE /v1/videos* 是受理后操作，
+	// 不走派发循环——preauth 认证完成后短路到账户亲和直连（查表定位原账户
+	// 原上游）。创建请求（POST /v1/videos）继续走下方完整派发链（受理边界
+	// 生效）。auditCapture 是上方已构造的请求级捕获：任务面短路路径在
+	// serveMediaJobTaskPlane 内做最小审计收尾（身份 + 任务 id + 状态码 Finalize）。
+	if chainIsVideoTaskPlaneRequest(req) {
+		c.serveMediaJobTaskPlane(ctx, req, res, traceID, auditCapture)
+		return
+	}
 
 	// ---- preflight (request/preflight.ts) ----
 	preflightOptions := c.preflightOptions(requestLane)
@@ -479,6 +493,19 @@ func (c *gatewayChain) handleUpstreamResponse(
 	}
 	upstream := dispatched.Response
 	c.recordUpstreamFetchHeadersStage(context, dispatched)
+	// M2 视频创建响应（媒体设计 §4.2/§8.2）：2xx + job id = 受理凭据确立，
+	// 落 media_jobs 后返回统一 job 对象；不进通用流式/非流式管道（chat 语义
+	// 的响应处理对 video 对象无意义）。网关流量的非 2xx 创建失败中，参数类
+	// 400/413/422 经失败派发器短路为 ReturnResponse（媒体设计 §7：确定性
+	// 参数错误不换账户）到达错误透传分支——同样不进通用管道（chat 错误
+	// 检查/改写会把上游参数错误吞成 502）；其余失败在引擎 attempt 语义内
+	// 换候选（受理前可切换），不会到达本拦截。
+	if upstream != nil && upstream.OK() && chainIsVideoCreateRequest(req) {
+		return c.handleVideoCreateUpstreamResponse(ctx, req, res, context, dispatched, upstream)
+	}
+	if upstream != nil && chainIsVideoCreateRequest(req) && chainVideoCreateDeterministicParamStatus(upstream.Status()) {
+		return c.handleVideoCreateUpstreamErrorPassthrough(res, req, upstream)
+	}
 	streamRequest := gatewaypreauth.IsOpenAIStreamRequest(req)
 	// Node routes.ts:1550-1553: shouldHandleAsStream = upstreamResponse.ok &&
 	// shouldHandle... . A complete non-2xx is already the terminal upstream
@@ -802,6 +829,8 @@ func timeoutProfileOf(settings gatewayruntimecache.GatewaySettings, lane string)
 		ImageFirstResponseTimeoutSeconds:          settings.ImageFirstResponseTimeoutSeconds,
 		ImageStreamIdleTimeoutSeconds:             settings.ImageStreamIdleTimeoutSeconds,
 		ImageUncommittedAttemptMaxLifetimeSeconds: settings.ImageUncommittedAttemptMaxLifetimeSeconds,
+		AudioFirstResponseTimeoutSeconds:          settings.AudioFirstResponseTimeoutSeconds,
+		VideoCreateTimeoutSeconds:                 settings.VideoCreateTimeoutSeconds,
 		NoAvailableAccountWaitTimeoutSeconds:      settings.NoAvailableAccountWaitTimeoutSeconds,
 	}, gatewayproto.RequestLane(lane), false)
 	return gatewayresponse.TimeoutProfile{

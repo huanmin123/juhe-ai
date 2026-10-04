@@ -47,8 +47,10 @@ type rawModel struct {
 	OutputCostPerAudioToken        *float64
 	// M1 同步音频维度（音频设计 §10）：TTS 输入按 USD/字符字面量
 	// （perMillion 折算 USD/1M chars）；STT 输入按 USD/秒字面量。
-	TtsInputCostPerChar     *float64
-	AudioInputCostPerSecond *float64
+	// M2 视频维度（媒体设计 §10）：视频输出按 USD/秒字面量。
+	TtsInputCostPerChar      *float64
+	AudioInputCostPerSecond  *float64
+	VideoOutputCostPerSecond *float64
 
 	ContextWindowTokens *int
 	MaxInputTokens      *int

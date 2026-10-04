@@ -23,6 +23,10 @@ export type AccountSupportedEndpointMode =
   | 'interactions_sse'
   | 'audio_speech'
   | 'audio_transcription_json'
+  | 'video_create'
+  | 'video_get'
+  | 'video_content'
+  | 'video_cancel'
 export type AccountHealthCheckEndpointMode = Extract<
   AccountSupportedEndpointMode,
   | 'images_json'
@@ -38,6 +42,10 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'interactions_sse'
   | 'audio_speech'
   | 'audio_transcription_json'
+  | 'video_create'
+  | 'video_get'
+  | 'video_content'
+  | 'video_cancel'
 >
 export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 

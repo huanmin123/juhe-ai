@@ -11,6 +11,8 @@ import type {
   ModelCheckProgressEvent,
   ModelCheckRunDetail,
   ModelCheckRunListParams,
+  MediaJobKind,
+  MediaJobStatus,
   MonitoredDatabaseRole,
   PublicApiLogResultFilter,
   ResponseInspectionPolicyAction,
@@ -252,6 +254,16 @@ export interface UsageRecordListParams extends ListParams {
   endDate?: string
   sortBy?: 'createdAt'
   sortOrder?: SortDirection
+}
+
+/** 媒体任务列表查询参数；键名与后端 `/media-jobs` 查询串契约一致（limit/offset + snake_case 过滤键）。 */
+export interface MediaJobListParams {
+  limit?: number
+  offset?: number
+  status?: MediaJobStatus
+  kind?: MediaJobKind
+  api_key_id?: string
+  account_id?: string
 }
 
 export interface AuditLogListParams extends ListParams {

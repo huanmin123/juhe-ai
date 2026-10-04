@@ -368,7 +368,7 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       cooldown_retest_last_status_code INTEGER,
       temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       health_check_model TEXT NOT NULL,
-      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json')),
+      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel')),
       last_health_check_at TEXT,
       next_health_check_at TEXT,
       last_health_success_at TEXT,
@@ -1321,6 +1321,28 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     );
 
+    -- media_jobs 异步媒体任务表（媒体设计 §8.2，M2）：与 PG 版同构，引用列
+    -- 不加外键（usage_records 记录表先例：账户删除后任务行仍需存在）。
+    CREATE TABLE IF NOT EXISTS media_jobs (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
+      api_key_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      provider_protocol_profile_id TEXT,
+      upstream_job_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
+      request_snapshot_json TEXT NOT NULL DEFAULT '{}',
+      artifact_json TEXT NOT NULL DEFAULT '{}',
+      error_json TEXT NOT NULL DEFAULT '{}',
+      usage_json TEXT NOT NULL DEFAULT '{}',
+      cost_usd REAL NOT NULL DEFAULT 0,
+      params_applied_json TEXT NOT NULL DEFAULT '[]',
+      params_ignored_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_status ON accounts(provider_code, status);
     CREATE INDEX IF NOT EXISTS idx_accounts_protocol_profile_status ON accounts(provider_protocol_profile_id, status);
     CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);
@@ -1685,6 +1707,9 @@ const sqliteBusinessMainDDL = `    CREATE TABLE IF NOT EXISTS system_accounts (
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_media_jobs_api_key_created ON media_jobs(api_key_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_media_jobs_account ON media_jobs(account_id);
+    CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_jobs(status);
 `
 const sqliteBusinessCircuitControlPlaneIndexDDL = `    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_circuit_incidents_key_model_capability
       ON account_circuit_incidents(scope_kind, capability_hash)

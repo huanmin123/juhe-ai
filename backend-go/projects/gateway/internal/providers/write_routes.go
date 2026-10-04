@@ -22,7 +22,7 @@ import (
 
 // customModelProtocolEnum mirrors the customModelSchema protocol enum.
 // audio_speech / audio_transcription 随 M1 同步音频放开（设计 §11.3）；
-// realtime 维持不放开（M5）。
+// video 随 M2 视频放开；realtime 维持不放开（M5）。
 var customModelProtocolEnum = map[string]bool{
 	"chat_completions": true, "responses": true, "messages": true,
 	"message_token_counting": true, "generate_content": true,
@@ -30,6 +30,7 @@ var customModelProtocolEnum = map[string]bool{
 	"embed_content": true, "interactions": true,
 	"completions": true, "images": true,
 	"audio_speech": true, "audio_transcription": true,
+	"video": true,
 }
 
 // providerModelValidationFields mirrors providerModelValidationFields.
@@ -282,7 +283,7 @@ func parseCustomModelBody(body map[string]json.RawMessage, options customModelPa
 			if err := json.Unmarshal(raw, &value); err != nil {
 				return fail()
 			}
-			if value != nil && *value != "text" && *value != "image" && *value != "audio" {
+			if value != nil && *value != "text" && *value != "image" && *value != "audio" && *value != "video" {
 				return fail()
 			}
 			parsed.present[key] = true
@@ -741,7 +742,9 @@ func customModelInputFromConfigurationTemplate(template *ModelCatalogItem) custo
 	}
 	protocols := []string{}
 	for _, protocol := range template.SupportedAPIProtocols {
-		if protocol == "audio" || protocol == "realtime" {
+		// audio / realtime / video 媒体协议不随配置模板继承（M1 audio、M2
+		// video 同构裁决：媒体模型不经模板通道派生自定义模型）。
+		if protocol == "audio" || protocol == "realtime" || protocol == "video" {
 			continue
 		}
 		protocols = append(protocols, protocol)
@@ -852,7 +855,7 @@ func validateServiceTierPriceKeys(mode *string, supportedServiceTiers []string, 
 	if len(keys) == 0 {
 		return ""
 	}
-	if mode != nil && (*mode == "image" || *mode == "audio") {
+	if mode != nil && (*mode == "image" || *mode == "audio" || *mode == "video") {
 		return "只有文本自定义模型支持服务档位价格"
 	}
 	known := map[string]bool{}
@@ -902,6 +905,13 @@ func customInputHasDirectPrice(input customProviderModelUpsertInput) bool {
 	if mode == "audio" {
 		return input.AudioInputUsdPer1M != nil || input.AudioOutputUsdPer1M != nil
 	}
+	// M2 视频自定义模型无管理面价格通道（目录秒价 videoOutputUsdPerSecond
+	// 的编辑字段随 M3 计价完善交付），启用态价格校验按"无直接价"处理，
+	// draft/disabled 不受影响；不回落 token 价通道（视频按秒计费，token 价
+	// 无意义，不猜测）。
+	if mode == "video" {
+		return false
+	}
 	return input.InputUsdPer1M != nil || input.OutputUsdPer1M != nil || input.CachedInputUsdPer1M != nil ||
 		input.CacheWriteUsdPer1M != nil || input.CacheWrite1hUsdPer1M != nil ||
 		input.CacheStorageUsdPer1MPerHour != nil ||
@@ -923,7 +933,7 @@ func validateBuiltInModelCompleteness(next *ModelCatalogItem) string {
 	if next.Mode != nil {
 		mode = *next.Mode
 	}
-	isTextModel := !strings.HasPrefix(mode, "image") && !strings.HasPrefix(mode, "audio") && mode != "embedding"
+	isTextModel := !strings.HasPrefix(mode, "image") && !strings.HasPrefix(mode, "audio") && mode != "embedding" && mode != "video"
 	if isTextModel && (next.ContextWindowTokens == nil || *next.ContextWindowTokens == 0) &&
 		(next.MaxInputTokens == nil || *next.MaxInputTokens == 0) {
 		return "内置文本模型必须配置上下文或最大输入容量"
@@ -963,7 +973,7 @@ func customModelBoundToAccountMessage(summary *customProviderModelBindingSummary
 
 // isProviderModelUsableForAccountTest ports isProviderModelUsableForAccountTest.
 func isProviderModelUsableForAccountTest(item *ModelCatalogItem) bool {
-	if item.Mode != nil && (*item.Mode == "image" || *item.Mode == "audio") {
+	if item.Mode != nil && (*item.Mode == "image" || *item.Mode == "audio" || *item.Mode == "video") {
 		return false
 	}
 	if len(item.SupportedAPIProtocols) == 0 {
@@ -990,7 +1000,7 @@ func providerModelIsUsableAsDefault(status string, catalogVisible *bool, shutdow
 			return false
 		}
 	}
-	if mode != nil && (*mode == "image" || *mode == "audio") {
+	if mode != nil && (*mode == "image" || *mode == "audio" || *mode == "video") {
 		return false
 	}
 	if len(protocols) == 0 {

@@ -1160,6 +1160,12 @@ func mergeGatewaySettings(base gatewayruntimecache.GatewaySettings, override *ga
 	if override.ImageRequestWallTimeoutSeconds != 0 {
 		merged.ImageRequestWallTimeoutSeconds = override.ImageRequestWallTimeoutSeconds
 	}
+	if override.AudioFirstResponseTimeoutSeconds != 0 {
+		merged.AudioFirstResponseTimeoutSeconds = override.AudioFirstResponseTimeoutSeconds
+	}
+	if override.VideoCreateTimeoutSeconds != 0 {
+		merged.VideoCreateTimeoutSeconds = override.VideoCreateTimeoutSeconds
+	}
 	if override.NoAvailableAccountWaitTimeoutSeconds != 0 {
 		merged.NoAvailableAccountWaitTimeoutSeconds = override.NoAvailableAccountWaitTimeoutSeconds
 	}

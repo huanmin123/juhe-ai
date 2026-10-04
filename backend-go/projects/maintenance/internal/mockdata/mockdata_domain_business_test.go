@@ -199,6 +199,12 @@ func TestSeedBusinessRequiredTables(t *testing.T) {
 		{name: "题库已通过", query: "SELECT COUNT(*) FROM model_check_question_bank WHERE status = 'approved' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND reference_answer <> '' AND key_points_json IS NOT NULL", min: 3},
 		{name: "题库已驳回", query: "SELECT COUNT(*) FROM model_check_question_bank WHERE status = 'rejected' AND reject_reason IS NOT NULL", min: 1},
 		{name: "授权账户实例", query: "SELECT COUNT(*) FROM accounts WHERE authorization_instance_source_account_id IS NOT NULL", min: 1},
+		// 媒体域样本（媒体契约 §3.4）：media_jobs 各状态、audio 分类模型目录引用。
+		{name: "媒体任务行", query: "SELECT COUNT(*) FROM media_jobs WHERE kind = 'video'", min: 6},
+		{name: "媒体任务状态种类", query: "SELECT COUNT(DISTINCT status) FROM media_jobs WHERE kind = 'video'", min: 6},
+		{name: "媒体任务完成用量", query: "SELECT COUNT(*) FROM media_jobs WHERE status = 'completed' AND usage_json <> '{}' AND cost_usd > 0", min: 1},
+		{name: "音频分类自定义模型", query: "SELECT COUNT(*) FROM custom_provider_models WHERE mode = 'audio'", min: 1},
+		{name: "媒体账户模型引用", query: "SELECT COUNT(*) FROM account_supported_models WHERE account_id = 'mockdata_acc_media' AND model IN ('mockdata-global-audio', 'sora-2')", min: 2},
 	}
 	for _, testCase := range cases {
 		testCase := testCase

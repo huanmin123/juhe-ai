@@ -81,6 +81,8 @@ var SystemSettingKeys = []string{
 	"imageUncommittedAttemptMaxLifetimeSeconds",
 	"imageRequestWallTimeoutSeconds",
 	"chatImageGenerationTotalTimeoutSeconds",
+	"audioFirstResponseTimeoutSeconds",
+	"videoCreateTimeoutSeconds",
 	"noAvailableAccountWaitTimeoutSeconds",
 	"streamFailureThresholdCount",
 	"streamFailureThresholdWindowMinutes",
@@ -171,6 +173,8 @@ var systemSettingSpecs = map[string]settingSpec{
 	"imageUncommittedAttemptMaxLifetimeSeconds":  {integer: true, min: 60, max: 86400},
 	"imageRequestWallTimeoutSeconds":             {integer: true, min: 60, max: 86400},
 	"chatImageGenerationTotalTimeoutSeconds":     {integer: true, min: 60, max: 86400},
+	"audioFirstResponseTimeoutSeconds":           {integer: true, min: 10, max: 3600},
+	"videoCreateTimeoutSeconds":                  {integer: true, min: 10, max: 3600},
 	"noAvailableAccountWaitTimeoutSeconds":       {integer: true, min: 10, max: 3600},
 	"streamFailureThresholdCount":                {integer: true, min: 1, max: 100},
 	"streamFailureThresholdWindowMinutes":        {integer: true, min: 1, max: 1440},
@@ -232,6 +236,11 @@ var compatibleSystemSettingDefaults = map[string]any{
 	"auditLogProblemRetentionDays":     7,
 	"auditLogSuccessHotRetentionHours": 1,
 	"auditLogSuccessSampleRate":        1.0,
+	// 媒体车道独立超时档位（音频视频模型接入设计 §3）：存量库在 maintenance
+	// 重新播种前缺行，按种子默认补齐（audio 120 / video create 60），与
+	// pgSeedSystemSettings、jobssettings.DefaultSystemSettings 一致。
+	"audioFirstResponseTimeoutSeconds": 120,
+	"videoCreateTimeoutSeconds":        60,
 }
 
 // GlobalSettingKeys mirrors globalSettingKeys — the brand subset served by
@@ -290,6 +299,8 @@ var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
 		"imageUncommittedAttemptMaxLifetimeSeconds",
 		"imageRequestWallTimeoutSeconds",
 		"chatImageGenerationTotalTimeoutSeconds",
+		"audioFirstResponseTimeoutSeconds",
+		"videoCreateTimeoutSeconds",
 		"noAvailableAccountWaitTimeoutSeconds",
 		"upstreamClientVersionOverrides",
 	}},

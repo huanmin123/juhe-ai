@@ -93,6 +93,8 @@ type Lane string
 const (
 	LaneText  Lane = "text"
 	LaneImage Lane = "image"
+	// LaneAudio 是媒体车道（媒体设计 §3）：/v1/audio/* 同步端点族。
+	LaneAudio Lane = "audio"
 )
 
 // LaneResolver overrides the capture-time lane resolution. The default
@@ -553,6 +555,11 @@ func (m *Middleware) resolveContentLengthLimit(r *http.Request) (int, RawBodyLim
 	if isImageEndpointPath(path) {
 		return GatewayImageRawBodyHardLimitBytes, RawBodyLimitScopeImage, true
 	}
+	// audio 车道 body 限额对齐 image 的 64MB 档（媒体设计 §3：同步上传体
+	// 事实约束 25MB + 余量；multipart 文件上传不能落 text 的 16MB 档）。
+	if isAudioEndpointPath(path) {
+		return GatewayImageRawBodyHardLimitBytes, RawBodyLimitScopeAudio, true
+	}
 	if isGatewayTextJSONBodyPath(path) {
 		megabytes, configured := m.textRawBodyLimitMegabytes()
 		return GatewayTextRawBodyLimitBytes(megabytes, configured), RawBodyLimitScopeText, true
@@ -605,8 +612,14 @@ func (m *Middleware) rejectByRequestLane(w http.ResponseWriter, r *http.Request,
 }
 
 func (m *Middleware) resolveRequestLimit(r *http.Request, req *Request) (int, RawBodyLimitScope) {
-	if m.resolveLane(r, req) == LaneImage {
+	lane := m.resolveLane(r, req)
+	if lane == LaneImage {
 		return GatewayImageRawBodyHardLimitBytes, RawBodyLimitScopeImage
+	}
+	// audio 车道与 image 同为 64MB 档（媒体设计 §3）；video 创建请求是小
+	// JSON，产物走流式代理不受 body 限额约束，维持 text 档。
+	if lane == LaneAudio {
+		return GatewayImageRawBodyHardLimitBytes, RawBodyLimitScopeAudio
 	}
 	megabytes, configured := m.textRawBodyLimitMegabytes()
 	return GatewayTextRawBodyLimitBytes(megabytes, configured), RawBodyLimitScopeText
@@ -620,6 +633,10 @@ func (m *Middleware) resolveLane(r *http.Request, req *Request) Lane {
 	path := strings.ToLower(EndpointPathOf(requestPathOf(r)))
 	if isImageEndpointPath(path) {
 		return LaneImage
+	}
+	// 媒体车道按路径族优先（媒体设计 §3），不依赖请求体解析。
+	if isAudioEndpointPath(path) {
+		return LaneAudio
 	}
 	var model string
 	if req.State != nil && req.State.Model != nil {

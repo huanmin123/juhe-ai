@@ -73,6 +73,10 @@ func cleanupRules() []cleanupRule {
 		{Store: StoreBusiness, Table: "group_authorization_settings", Query: "DELETE FROM group_authorization_settings WHERE authorization_id IN (SELECT id FROM resource_authorizations WHERE id LIKE ? OR remark LIKE ?)", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "resource_authorization_grants", Query: "DELETE FROM resource_authorization_grants WHERE id LIKE ? OR remark LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "resource_authorizations", Query: "DELETE FROM resource_authorizations WHERE id LIKE ? OR remark LIKE ?", Args: []any{id, name}},
+		// media_jobs：对外 job id 用 video_ 前缀（表注释契约），自身不带
+		// mockdata_ 标识，经 api_key / account 父键子查询定位清理；必须排在
+		// api_keys / accounts 删除之前，否则父行已删、子查询落空。
+		{Store: StoreBusiness, Table: "media_jobs", Query: "DELETE FROM media_jobs WHERE api_key_id IN (SELECT id FROM api_keys WHERE id LIKE ?) OR account_id IN (SELECT id FROM accounts WHERE id LIKE ?)", Args: []any{id, id}},
 		// 路由族：API Key → 绑定 → 策略。
 		{Store: StoreBusiness, Table: "api_keys", Query: "DELETE FROM api_keys WHERE id LIKE ? OR name LIKE ?", Args: []any{id, name}},
 		{Store: StoreBusiness, Table: "route_strategy_groups", Query: "DELETE FROM route_strategy_groups WHERE route_strategy_id IN (SELECT id FROM route_strategies WHERE id LIKE ? OR name LIKE ?)", Args: []any{id, name}},

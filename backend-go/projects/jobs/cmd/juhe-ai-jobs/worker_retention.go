@@ -276,6 +276,21 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		return jobsched.TaskResult{}, nil
 	})
 
+	// media-jobs-retention（媒体设计 §8.2，M2）：media_jobs TTL 保留清理，复用
+	// retention-business 句柄（同业务库双模方言）；表缺席（老库未跑
+	// maintenance 迁移）按零任务快速返回（job 内部判 IsMediaJobsTableMissing）。
+	mediaJobsRetention := &retention.MediaJobsRetentionJob{
+		Store:  &retention.MediaJobsSQLStore{DB: business.DB, Postgres: postgres},
+		Clock:  func() time.Time { return family.now() },
+		Logger: a.logger,
+	}
+	a.scheduleWiredJob("media-jobs-retention", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		if _, err := mediaJobsRetention.Run(taskCtx); err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		return jobsched.TaskResult{}, nil
+	})
+
 	retryJob := &retention.RecordCleanupRetryJob{
 		Mode: func() retention.Mode {
 			if postgres {

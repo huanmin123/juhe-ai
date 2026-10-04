@@ -93,7 +93,7 @@ func TestW14dParseCustomModelBodyFieldForks(t *testing.T) {
 		{"catalogVisible not allowed", `{"model":"a","catalogVisible":true}`, postOptions},
 		{"catalogVisible non-bool", `{"catalogVisible":"yes","expectedUpdatedAt":"2026-01-01T00:00:00.000Z"}`, builtInOptions},
 		{"mode non-string", `{"model":"a","mode":3}`, postOptions},
-		{"mode invalid", `{"model":"a","mode":"video"}`, postOptions},
+		{"mode invalid", `{"model":"a","mode":"realtime"}`, postOptions},
 		{"protocols non-array", `{"model":"a","supportedApiProtocols":"chat"}`, postOptions},
 		{"protocols bad entry", `{"model":"a","supportedApiProtocols":[7]}`, postOptions},
 		{"tiers too many", `{"model":"a","supportedServiceTiers":["t1","t2","t3","t4","t5","t6","t7","t8","t9","ta","tb","tc","td","te","tf","tg","th"]}`, postOptions},
@@ -150,6 +150,16 @@ func TestW14dParseCustomModelBodyFieldForks(t *testing.T) {
 	}
 	if !parsed.present["status"] || !parsed.present["notes"] {
 		t.Fatalf("present keys: %v", parsed.present)
+	}
+	// M2 视频：mode=video + video 协议是合法 parse 形状（词表放开后）。
+	videoBody := w14dDecodeBody(t, `{"model":"sora-x","mode":"video","supportedApiProtocols":["video"],"releaseDate":"2026-01-01"}`)
+	videoParsed, ok := parseCustomModelBody(videoBody, postOptions)
+	if !ok {
+		t.Fatal("video mode body must parse (M2)")
+	}
+	if videoParsed.values.Mode == nil || *videoParsed.values.Mode != "video" ||
+		len(videoParsed.values.SupportedAPIProtocols) != 1 || videoParsed.values.SupportedAPIProtocols[0] != "video" {
+		t.Fatalf("video parsed values: %+v", videoParsed.values)
 	}
 	// hasContentBeyondExpectedUpdatedAt: model/scope/template alone count as
 	// content even though they carry no present key.

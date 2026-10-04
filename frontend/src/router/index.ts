@@ -398,6 +398,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/media-jobs',
+    component: () => import('@/views/media-jobs/MediaJobsView.vue'),
+    meta: {
+      title: '媒体任务',
+      description: '查看异步媒体任务的类型、状态、归属 API Key / AI 账户、成本和错误摘要。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
     path: '/operation-logs',
     component: () => import('@/views/operation-logs/OperationLogsView.vue'),
     meta: {

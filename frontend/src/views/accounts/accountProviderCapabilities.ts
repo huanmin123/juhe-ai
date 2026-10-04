@@ -61,11 +61,19 @@ export const responsesEndpointModes: AccountSupportedEndpointMode[] = ['response
 // M1 同步音频新增 audio_speech（POST /v1/audio/speech）与
 // audio_transcription_json（POST /v1/audio/transcriptions|translations），与
 // accounts.health_check_endpoint_mode CHECK 及 gatewaypreauth 端点模式词表同步
-// （音频设计 §11.1/§11.6）；同样只能显式开启，不进默认集。
+// （音频设计 §11.1/§11.6）；M2 视频新增 video_create（POST /v1/videos）、
+// video_get（GET /v1/videos|/v1/videos/{id}）、video_content
+// （GET /v1/videos/{id}/content）、video_cancel（DELETE /v1/videos/{id}），同步
+// 口径同上（媒体设计 §11.6）；同样只能显式开启，不进默认集（视频不做自动
+// 真实生成探针，媒体设计 §11.9）。
 export const openAIEndpointModes: AccountSupportedEndpointMode[] = [
   'images_json',
   'audio_speech',
   'audio_transcription_json',
+  'video_create',
+  'video_get',
+  'video_content',
+  'video_cancel',
   ...chatEndpointModes,
   ...responsesEndpointModes
 ]
@@ -252,10 +260,11 @@ export function defaultEndpointModesForAccount(input: {
   }
   if (input.type === 'oauth' && protocolKind === 'openai_v1') return [...responsesEndpointModes]
   if (protocolKind === 'openai_v1') {
-    // 新账户默认集保持 chat/responses 推导结果；images_json 与 M1 音频模式
-    // 只能显式开启。
+    // 新账户默认集保持 chat/responses 推导结果；images_json、M1 音频模式与
+    // M2 视频模式只能显式开启。
     return endpointModesForProfile(input.profile ?? input.provider)
-      .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json')
+      .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json'
+        && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel')
   }
   return [...allAccountEndpointModes]
 }
@@ -298,9 +307,19 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
         { family: OPENAI_RESPONSES_FAMILY, modes: responsesEndpointModes }
       ]
     )
-    // images_json 与 M1 音频模式是 openai 族的显式可选能力：允许勾选（媒体
-    // lane 派发依赖），不进默认集（defaultEndpointModesForAccount 过滤）。
-    const selectable: AccountSupportedEndpointMode[] = [...familyModes, 'images_json', 'audio_speech', 'audio_transcription_json']
+    // images_json 与 M1 音频模式、M2 视频模式是 openai 族的显式可选能力：
+    // 允许勾选（媒体 lane 派发依赖），不进默认集（defaultEndpointModesForAccount
+    // 过滤）。
+    const selectable: AccountSupportedEndpointMode[] = [
+      ...familyModes,
+      'images_json',
+      'audio_speech',
+      'audio_transcription_json',
+      'video_create',
+      'video_get',
+      'video_content',
+      'video_cancel'
+    ]
     return [...new Set(selectable)]
   }
   return [...allAccountEndpointModes]

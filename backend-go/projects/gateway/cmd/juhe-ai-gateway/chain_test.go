@@ -225,6 +225,26 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			base_url TEXT NOT NULL, default_health_check_model TEXT NOT NULL,
 			account_types_json TEXT NOT NULL, capabilities_json TEXT NOT NULL,
 			created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		// M2 媒体任务面（媒体设计 §8.2）：与 maintenance sqlite_schema_business
+		// 的 media_jobs DDL 同构。
+		`CREATE TABLE media_jobs (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
+			api_key_id TEXT NOT NULL,
+			account_id TEXT NOT NULL,
+			provider_code TEXT NOT NULL,
+			provider_protocol_profile_id TEXT,
+			upstream_job_id TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
+			request_snapshot_json TEXT NOT NULL DEFAULT '{}',
+			artifact_json TEXT NOT NULL DEFAULT '{}',
+			error_json TEXT NOT NULL DEFAULT '{}',
+			usage_json TEXT NOT NULL DEFAULT '{}',
+			cost_usd REAL NOT NULL DEFAULT 0,
+			params_applied_json TEXT NOT NULL DEFAULT '[]',
+			params_ignored_json TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

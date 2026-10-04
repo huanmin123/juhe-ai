@@ -141,20 +141,20 @@
 
 ### 3.2 mockupstream 引擎扩展规格
 
-1. **端点白名单扩展**（`mockupstream.go` `acceptedEndpoints`）：`POST /v1/audio/speech`、`POST /v1/audio/transcriptions`、`POST /v1/audio/translations`、`POST /v1/videos`、`GET /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content`、`DELETE /v1/videos/{id}`，以及 `/v1/audio/jobs` 族与 §4-§10 各厂商原生端点（每厂商一章的"Mock 端点"小节为准）。
-2. **异步任务场景能力（新增机制）**：按场景脚本驱动任务状态机——创建请求返回该厂商创建响应（含任务 id，id 由 mock 生成并登记内存任务表）；轮询请求按"第 N 次查询返回状态 X"脚本推进（如 `video_poll_twice_then_success`：前两次 `in_progress`，第三次终态）；同一 mock 实例内任务表隔离，支持并发用例。
-3. **二进制载荷通道（新增机制）**：场景可声明响应为 `audio/wav`、`audio/mpeg`、`video/mp4` 等二进制（内置小体积合成载荷：合法 WAV 头+静音帧、最小 MP4 box 结构），供 speech/content/下载端点流式返回；断言侧校验 magic bytes 与 content-type。
-4. **场景命名规范**（进 `mockupstream` 内置清单，格式 `media_<域>_<行为>`）。**M1 已交付 8 个同步音频场景与二进制载荷通道（2026-10-04）**：`media_tts_ok`、`media_tts_400_voice_invalid`、`media_tts_429_before_accept`、`media_stt_ok`、`media_stt_ok_verbose`、`media_stt_400_bad_file`、`media_gemini_tts_ok`、`media_gemini_tts_400_format`；`media_video_*` 与厂商原生异步任务场景仍属 M2+：
+1. **端点白名单扩展**（`mockupstream.go` `acceptedEndpoints`）：`POST /v1/audio/speech`、`POST /v1/audio/transcriptions`、`POST /v1/audio/translations`、`POST /v1/videos`、`GET /v1/videos`、`GET /v1/videos/{id}`、`GET /v1/videos/{id}/content`、`DELETE /v1/videos/{id}`，以及 `/v1/audio/jobs` 族与 §4-§10 各厂商原生端点（每厂商一章的"Mock 端点"小节为准）。音频三端点 M1 已交付；`/v1/videos` 全 5 端点 M2 已交付（2026-10-04）；`/v1/audio/jobs` 族与厂商原生端点随对应期。
+2. **异步任务场景能力（新增机制）**：按场景脚本驱动任务状态机——创建请求返回该厂商创建响应（含任务 id，id 由 mock 生成并登记内存任务表）；轮询请求按"第 N 次查询返回状态 X"脚本推进（如 `video_poll_twice_then_success`：前两次 `in_progress`，第三次终态）；同一 mock 实例内任务表隔离，支持并发用例。（M2 已交付，2026-10-04：视频任务状态机按场景脚本推进。）
+3. **二进制载荷通道（新增机制）**：场景可声明响应为 `audio/wav`、`audio/mpeg`、`video/mp4` 等二进制（内置小体积合成载荷：合法 WAV 头+静音帧、最小 MP4 box 结构），供 speech/content/下载端点流式返回；断言侧校验 magic bytes 与 content-type。（音频载荷 M1 已交付；`video/mp4` 载荷 M2 增补交付，2026-10-04。）
+4. **场景命名规范**（进 `mockupstream` 内置清单，格式 `media_<域>_<行为>`）。**M1 已交付 8 个同步音频场景与二进制载荷通道（2026-10-04）**：`media_tts_ok`、`media_tts_400_voice_invalid`、`media_tts_429_before_accept`、`media_stt_ok`、`media_stt_ok_verbose`、`media_stt_400_bad_file`、`media_gemini_tts_ok`、`media_gemini_tts_400_format`；**视频场景已随 M2 交付（2026-10-04，共 9 个）**，厂商原生异步任务场景属 M3+：
    - `media_tts_ok`（二进制音频）、`media_tts_400_voice_invalid`、`media_tts_429_before_accept`——M1 已交付
    - `media_stt_ok`（JSON `text`）、`media_stt_ok_verbose`（`verbose_json` 含 `duration`/`usage`）、`media_stt_400_bad_file`——M1 已交付
    - `media_gemini_tts_ok`（inlineData base64 PCM）、`media_gemini_tts_400_format`（`response_format` 非 `pcm` → 400）——M1 已交付
-   - `media_video_ok_poll3`（三次轮询完成）、`media_video_fail_after_accept`（受理后轮询 `failed`）、`media_video_429_create`（创建 429，可换账户重试）、`media_video_create_500`（创建 5xx）、`media_video_poll_500`（受理后轮询 5xx，不得换账户）、`media_video_content_expired`（content 404/410 → 网关透出"产物已过期"）、`media_video_cancel_ok`——M2
-   - 厂商原生形态场景：`media_<provider>_create_ok` / `media_<provider>_poll_running` / `media_<provider>_poll_success` / `media_<provider>_poll_fail`（报文按 §4-§10 各章）——M2+（§5.1 的 `media_gemini_tts_*` 已随 M1 交付）
+   - `media_video_ok_poll3`（#1/#2 `in_progress` → #3 `completed`）、`media_video_ok_poll1`（#1 即 `completed`，快路径）、`media_video_fail_after_accept`（受理后轮询 `failed`）、`media_video_429_create`（创建 429，可换账户重试）、`media_video_create_400_bad_size`（`size` 值域外 → 400，参数类不换账户）、`media_video_create_500`（创建 5xx）、`media_video_poll_500`（受理后轮询 5xx，不得换账户）、`media_video_content_expired`（content 404/410 → 网关透出"产物已过期"）、`media_video_cancel_ok`（保持 `queued`，验证 DELETE 流程）——M2 已交付（2026-10-04；其中 `media_video_ok_poll1` 与 `media_video_create_400_bad_size` 为 W1 批次交付、本清单同日补登记）
+   - 厂商原生形态场景：`media_<provider>_create_ok` / `media_<provider>_poll_running` / `media_<provider>_poll_success` / `media_<provider>_poll_fail`（报文按 §4-§10 各章）——M3+（§5.1 的 `media_gemini_tts_*` 已随 M1 交付；§5.2 的 `media_gemini_video_*` 随 M3）
 5. **slow/abort 基建复用**：首字节延迟、分块延迟、中途断连直接复用现有 `slow_first_byte`/`mid_stream_close` 机制，用于受理边界与流中断用例。
 
 ### 3.3 acceptance E2E 扩展规格
 
-1. `fullchainMockUpstream` 的 scriptable 路径判定扩至 §3.2.1 全部端点（含 GET/DELETE 方法）。
+1. `fullchainMockUpstream` 的 scriptable 路径判定扩至 §3.2.1 全部端点（含 GET/DELETE 方法）。（已交付，2026-10-04：`fullchainMediaScriptable` 覆盖音频 3 端点 + `/v1/videos` 全 5 端点 + Gemini `:generateContent`，与 mockupstream `acceptsMediaEndpoint` 同一端点清单；视频任务面 GET/DELETE 计入判定但不读场景值，轮询按引擎任务表脚本推进。）
 2. 场景控制器新增"任务型脚本"队列语义：创建请求消耗一个队列条目决定创建结果，后续轮询按任务表脚本推进（与 mockupstream 3.2.2 同一状态机实现，不重复实现两份）。
 3. E2E 断言包：`media_jobs` 行状态推进、终态 usage 落库金额、审计无资源字节（`rg` 级别断言快照字段白名单）、账户亲和（轮询请求打回原 mock key 的请求记录）。
 

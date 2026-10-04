@@ -39,7 +39,7 @@ type CircuitScope struct {
 	AccountRuntimeKey string           `json:"account_runtime_key"`
 	KeyFingerprint    string           `json:"key_fingerprint,omitempty"`
 	ProtocolProfile   string           `json:"protocol_profile,omitempty"`
-	RequestLane       string           `json:"request_lane,omitempty"` // text | image
+	RequestLane       string           `json:"request_lane,omitempty"` // text | image | audio | video（2026-10-04 裁决：媒体 lane 以独立维度入键）
 	ModelBucket       string           `json:"model_bucket,omitempty"`
 }
 
@@ -214,8 +214,12 @@ func AccountCircuitScopeKey(scope CircuitScope) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if scope.RequestLane != "text" && scope.RequestLane != "image" {
-			return "", errors.New("账户电路作用域 requestLane 必须是 text 或 image")
+		// 媒体车道不拒斥（2026-10-04 裁决 + 媒体设计 §3，与 gatewaycircuit
+		// requiredRequestLane 成对）：本键契约与网关共享，网关侧已接受
+		// audio/video lane 作用域，词表必须同步。跨模块不可 import
+		// gatewayproto，字面量按 REFACTOR-0008 成对复制约定维护。
+		if scope.RequestLane != "text" && scope.RequestLane != "image" && scope.RequestLane != "audio" && scope.RequestLane != "video" {
+			return "", errors.New("账户电路作用域 requestLane 必须是 text/image/audio/video")
 		}
 		bucket, err := requiredScopePart(scope.ModelBucket, "modelBucket")
 		if err != nil {

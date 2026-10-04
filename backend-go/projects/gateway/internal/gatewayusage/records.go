@@ -69,8 +69,11 @@ type UsageRecordInput struct {
 	OutputImageCount                 *int     `json:"outputImageCount,omitempty"`
 	// M1 同步音频计量（音频设计 §10）：TTS 输入字符数、STT 音频秒数与
 	// usage_missing 标记（上游无 usage 回报也无 duration）。
+	// M2 视频计量（媒体设计 §10）：OutputVideoSeconds 是视频任务输出秒数
+	//（任务参数 seconds 口径，网关自算；失败任务不虚计）。
 	TtsInputChars                    *int64   `json:"ttsInputChars,omitempty"`
 	AudioInputSeconds                *float64 `json:"audioInputSeconds,omitempty"`
+	OutputVideoSeconds               *float64 `json:"outputVideoSeconds,omitempty"`
 	UsageMissing                     bool     `json:"usageMissing,omitempty"`
 	CostUsd                          *float64 `json:"costUsd,omitempty"`
 	ErrorCode                        string   `json:"errorCode,omitempty"`

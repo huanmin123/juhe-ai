@@ -27,6 +27,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/businessauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycircuit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/groups"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/helpweb"
@@ -34,6 +35,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ipstats"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/logreads"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/mediajobsadmin"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/modelcheckauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/oauthmgmt"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/operationlog"
@@ -1090,6 +1092,13 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		GatewayReadiness:        ownerHealth.readiness,
 		JobsHealthURL:           statreads.JobsHealthURL(jobsHealthListenAddress(os.Getenv)),
 	}).Mount(kern)
+	// M2 媒体任务管理面（媒体设计 §8.2 只读列表）：GET /__aisys__/api/media-jobs，
+	// 权限沿使用记录列表（requireAdmin）；与 /v1 任务面同源业务库（repo 只读
+	// 查询，独立实例无共享写状态）。
+	(&mediajobsadmin.Deps{
+		Repo: gatewaymedia.NewMediaJobsRepo(composed.db, composed.pgDialect, time.Now),
+		Auth: authDeps,
+	}).Mount(kern)
 	// X04: the /__aisys__/help static help center, session-gated like the Node
 	// web layer (requireHelpSession + role redirects over dist/help).
 	(&helpweb.Deps{
@@ -1228,6 +1237,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 				PerAPIKeyQueueLimit: cfg.ConcurrencyGlobalMax,
 			},
 			SpoolDirectory: spoolDirectory,
+			// M2 媒体任务面（媒体设计 §8.2）：media_jobs 仓储 + 账户亲和水合走
+			// 同一业务库；secret 与 chain_runtime.go newChainAccountsSelector
+			// 的 cfg.Secret 同源（B-1 同款约定）。
+			MediaJobsDB:       composed.db,
+			MediaJobsPostgres: composed.pgDialect,
+			MediaJobsSecret:   cfg.Secret,
 			// D-209 / D-147 / D-192+D-146（BUG-0175）：spool 容量、用量收尾
 			// 队列与全局并发容量、请求期上游 URL 安全配置的组合根传参。
 			UsageSpoolMaxItems:           cfg.UsageSpoolMaxItems,

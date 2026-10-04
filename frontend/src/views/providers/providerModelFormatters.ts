@@ -56,7 +56,8 @@ export const apiProtocolLabels: Record<string, string> = {
   completions: 'Completions',
   images: 'Images API',
   audio_speech: 'Audio Speech (TTS)',
-  audio_transcription: 'Audio Transcription (STT)'
+  audio_transcription: 'Audio Transcription (STT)',
+  video: 'Videos API'
 }
 
 export const modelStatusOptions: Array<{ label: string; value: ProviderModelStatus }> = [
@@ -68,7 +69,8 @@ export const modelStatusOptions: Array<{ label: string; value: ProviderModelStat
 export const modelModeOptions: Array<{ label: string; value: ProviderModelMode }> = [
   { label: '对话 / 编码', value: 'text' },
   { label: '图像', value: 'image' },
-  { label: '音频', value: 'audio' }
+  { label: '音频', value: 'audio' },
+  { label: '视频', value: 'video' }
 ]
 
 export const apiProtocolOptions: Array<{ label: string; value: ProviderModelApiProtocol }> = Object.entries(apiProtocolLabels)
@@ -96,7 +98,11 @@ export const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFi
   // audioInputUsdPer1M，均为 USD / 1M 口径；目录 API 无独立的字符价/秒价字段
   // （TtsInputUsdPer1MChars / AudioInputUsdPerSecond 仅存在于后端内部计费
   // 静态目录，不暴露给管理面）。
-  audio: ['audioOutputUsdPer1M', 'audioInputUsdPer1M']
+  audio: ['audioOutputUsdPer1M', 'audioInputUsdPer1M'],
+  // 视频分类（M2）无管理面价格通道：秒价（VideoOutputUsdPerSecond）仅存在于
+  // 后端内部计费静态目录，直接价格编辑字段随 M3 计价完善交付（后端
+  // write_routes.go customInputHasDirectPrice 的 video 分支同款裁决）。
+  video: []
 }
 
 const priceFieldDefinitions: Record<DirectPriceFieldKey, ModelPriceFieldDefinition> = {
@@ -183,6 +189,7 @@ export function hasDirectModelPrice(item: ProviderModelPricing): boolean {
 export function defaultProtocolsForModelCategory(category: ModelCategoryKey): ProviderModelApiProtocol[] {
   if (category === 'image') return ['images']
   if (category === 'audio') return ['audio_speech']
+  if (category === 'video') return ['video']
   return ['responses', 'chat_completions']
 }
 
@@ -391,6 +398,7 @@ function apiProtocolForEndpointFamily(code: string): ProviderModelApiProtocol | 
 function apiProtocolMatchesModelCategory(protocol: ProviderModelApiProtocol, category: ModelCategoryKey): boolean {
   if (category === 'image') return protocol === 'images'
   if (category === 'audio') return protocol === 'audio_speech' || protocol === 'audio_transcription'
+  if (category === 'video') return protocol === 'video'
   return protocol === 'responses'
     || protocol === 'chat_completions'
     || protocol === 'messages'

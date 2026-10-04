@@ -526,7 +526,7 @@ func TestSeedUsageSampleMatrix(t *testing.T) {
 			t.Errorf("traffic_source 缺样本 %q", want)
 		}
 	}
-	for _, want := range []string{"/v1/responses", "/v1/chat/completions", "/v1/images/generations", "/v1/models", "/v1/messages", "/v1/messages/count_tokens"} {
+	for _, want := range []string{"/v1/responses", "/v1/chat/completions", "/v1/images/generations", "/v1/models", "/v1/messages", "/v1/messages/count_tokens", "/v1/audio/speech", "/v1/audio/transcriptions"} {
 		found := false
 		for endpoint := range endpoints {
 			if strings.HasSuffix(endpoint, want) {
@@ -571,6 +571,41 @@ func TestSeedUsageSampleMatrix(t *testing.T) {
 	}
 	if len(clientIPFamilies) != 2 {
 		t.Errorf("client_ip 应覆盖 10.10. 与 10.20. 两个网段，现有 %v", sortedKeys(clientIPFamilies))
+	}
+}
+
+// TestSeedUsageAudioMeteringSamples 核对 M1 同步音频计量列（媒体契约 §3.4）：
+// TTS 行带 tts_input_chars、STT 行带 audio_input_seconds，且不与 token 列混写。
+func TestSeedUsageAudioMeteringSamples(t *testing.T) {
+	e, _ := usageTestEnv(t, usageTestOptions(7, 20))
+	var ttsRows, sttRows int
+	for _, item := range e.options.Paths.usageShardStores() {
+		db := usageOpenShard(t, item.Path)
+		var count int
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM usage_records WHERE endpoint = 'POST /v1/audio/speech' AND tts_input_chars > 0").Scan(&count); err != nil {
+			t.Fatalf("查询 TTS 计量行: %v", err)
+		}
+		ttsRows += count
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM usage_records WHERE endpoint = 'POST /v1/audio/transcriptions' AND audio_input_seconds > 0").Scan(&count); err != nil {
+			t.Fatalf("查询 STT 计量行: %v", err)
+		}
+		sttRows += count
+		if err := db.QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM usage_records WHERE (endpoint = 'POST /v1/audio/speech' OR endpoint = 'POST /v1/audio/transcriptions') AND (input_tokens > 0 OR output_tokens > 0)").Scan(&count); err != nil {
+			t.Fatalf("查询音频行 token 混写: %v", err)
+		}
+		if count > 0 {
+			t.Fatalf("音频计量行不得虚计 token 列（命中 %d 行）", count)
+		}
+		db.Close()
+	}
+	if ttsRows == 0 {
+		t.Fatal("必须有 tts_input_chars > 0 的 TTS 样本行")
+	}
+	if sttRows == 0 {
+		t.Fatal("必须有 audio_input_seconds > 0 的 STT 样本行")
 	}
 }
 

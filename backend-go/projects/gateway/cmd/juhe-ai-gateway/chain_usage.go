@@ -536,8 +536,11 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 	// rune 数（网关自算，response 管线注入）；AudioInputSeconds 是 STT 音频
 	// 秒数（上游 usage token 优先，缺时 verbose_json duration）；UsageMissing
 	// 标记两者皆缺的 0 计费响应。nil 保持 NULL，bool 直传。
+	// M2 视频计量直传（契约 §2.8）：OutputVideoSeconds 是视频任务输出秒数
+	//（任务终态回填口径，本任务只透传结构）。
 	record.TtsInputChars = input.Usage.TtsInputChars
 	record.AudioInputSeconds = input.Usage.AudioInputSeconds
+	record.OutputVideoSeconds = input.Usage.OutputVideoSeconds
 	record.UsageMissing = input.Usage.UsageMissing
 	// 快照为失败记录专属契约（docs/functions/核心功能设计.md:568-569；Node
 	// finalization.ts:2211-2241 成功时显式 undefined）：成功行输入恒 nil（响应

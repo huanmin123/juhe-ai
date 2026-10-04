@@ -87,11 +87,11 @@ func TestW14dUpsertCapabilityNormalizeAfterLookup(t *testing.T) {
 	}); err == nil || err.Error() != "只有文本自定义模型支持服务档位价格" {
 		t.Fatalf("image tier prices: %v", err)
 	}
-	// Same for an invalid mode string.
-	weird := "video"
+	// Same for an invalid mode string（video 已随 M2 放开，realtime 仍非法）。
+	weird := "realtime"
 	if _, err := env.providersDeps.Store.upsertCustomProviderModel(context.Background(), customProviderModelUpsertInput{
 		ProviderCode: "gpt", Model: "m2", SystemAccountID: "u1", Mode: &weird,
-	}); err == nil || err.Error() != "当前只支持文本、图像和音频自定义模型" {
+	}); err == nil || err.Error() != "当前只支持文本、图像、音频和视频自定义模型" {
 		t.Fatalf("invalid mode: %v", err)
 	}
 }

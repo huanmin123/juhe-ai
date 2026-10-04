@@ -346,37 +346,44 @@ func RequestUpstream(ctx context.Context, upstreamURL string, options UpstreamRe
 				}
 			})
 		}
-		// NormalRouteTotalTimeDeadlineMs 与首字 deadline 同型（设计 6.3）：到点
-		// 先跑决策回调（记慢样本 + 切号裁决），决策 abort 才销毁请求；错误
-		// 类型独立（NormalRouteTotalTimeTimeoutError），引擎与 chain 据此与
-		// 首字截止分流。响应头到达后由 startRequestPhaseTimer 的
-		// responseReceived 守卫失效，随 requestCtx 销毁。
-		if options.TotalTimeDeadlineMs != nil {
-			deadlineMs := *options.TotalTimeDeadlineMs
-			deadlineStartedAtMs := NowMs()
-			startRequestPhaseTimer(requestCtx, requestCancel, state, deadlineMs, true, func() error {
-				return newNormalRouteTotalTimeTimeoutError(deadlineMs, NowMs()-deadlineStartedAtMs)
-			}, func() error {
-				action, handlerErr := RunTotalTimeDeadlineHandler(options.OnTotalTimeDeadline, TotalTimeDeadlineDecisionInput{
-					ElapsedMs: NowMs() - deadlineStartedAtMs,
-					TimeoutMs: deadlineMs,
-					Transport: FirstNonEmpty(options.FirstByteDeadlineTransport, "non_stream"),
-				})
-				if handlerErr != nil {
-					return handlerErr
-				}
-				if action != FirstByteDeadlineActionAbort {
-					return nil // 'continue': the request keeps running
-				}
-				return newNormalRouteTotalTimeTimeoutError(deadlineMs, NowMs()-deadlineStartedAtMs)
-			})
-		}
 		// TimeoutMs applies to the header phase as well.
 		if options.TimeoutMs != nil {
 			startRequestPhaseTimer(requestCtx, requestCancel, state, *options.TimeoutMs, false, func() error {
 				return &UpstreamRequestTimeoutError{Message: "上游请求超时"}
 			}, nil)
 		}
+	}
+	// NormalRouteTotalTimeDeadlineMs 是独立的调度层软兜底（设计 6.3），不属
+	// 于 lane 硬超时设施：必须放在 DisableTimeouts 块之外——压缩请求
+	// DisableTimeouts=true（lane 硬超时全豁免），若被该块短路，压缩档总时间
+	// 兜底将整体失效（设计核心场景）。到点先跑决策回调（记慢样本 + 切号裁
+	// 决），决策 abort 才销毁请求；abort 生效前二次复查响应头——决策闭包含
+	// 多次网络往返，期间上游响应可能已到达，此时改为软观察（慢样本已记），
+	// 不得截断可能已向下游转发的响应（设计 6.1 非目标）。响应头到达后由
+	// startRequestPhaseTimer 的 responseReceived 守卫失效，随 requestCtx
+	// 销毁。
+	if options.TotalTimeDeadlineMs != nil {
+		deadlineMs := *options.TotalTimeDeadlineMs
+		deadlineStartedAtMs := NowMs()
+		startRequestPhaseTimer(requestCtx, requestCancel, state, deadlineMs, true, func() error {
+			return newNormalRouteTotalTimeTimeoutError(deadlineMs, NowMs()-deadlineStartedAtMs)
+		}, func() error {
+			action, handlerErr := RunTotalTimeDeadlineHandler(options.OnTotalTimeDeadline, TotalTimeDeadlineDecisionInput{
+				ElapsedMs: NowMs() - deadlineStartedAtMs,
+				TimeoutMs: deadlineMs,
+				Transport: FirstNonEmpty(options.FirstByteDeadlineTransport, "non_stream"),
+			})
+			if handlerErr != nil {
+				return handlerErr
+			}
+			if action != FirstByteDeadlineActionAbort {
+				return nil // 'continue': the request keeps running
+			}
+			if state.isResponseReceived() {
+				return nil // 响应头已到达：软观察，不中止（决策回调已记慢样本）
+			}
+			return newNormalRouteTotalTimeTimeoutError(deadlineMs, NowMs()-deadlineStartedAtMs)
+		})
 	}
 
 	// Node sets upstreamRequestStarted = true immediately after

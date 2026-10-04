@@ -112,10 +112,12 @@ var UsageRecordColumns = []string{
 	"output_audio_tokens",
 	"output_image_count",
 	// M1 同步音频计量列（音频设计 §10）：TTS 输入字符、STT 输入秒、上游
-	// 缺计量标记；列序与 PG/SQLite DDL 一致。
+	// 缺计量标记；M2 视频输出秒列（媒体设计 §10）；列序与 PG/SQLite DDL
+	// 一致。
 	"tts_input_chars",
 	"audio_input_seconds",
 	"usage_missing",
+	"output_video_seconds",
 	"cost_usd",
 	"error_code",
 	"error_message",
@@ -267,6 +269,7 @@ func BuildWritePlan(ctx Ctx, inputs []UsageRecordInput, options WritePlanOptions
 				nilableInt64OrZero(input.TtsInputChars),
 				nilableFloat64OrZero(input.AudioInputSeconds),
 				boolToInt(&input.UsageMissing),
+				nilableFloat64OrZero(input.OutputVideoSeconds),
 				nilableFloat(input.CostUsd),
 				nilableString(input.ErrorCode),
 				nilableString(input.ErrorMessage),

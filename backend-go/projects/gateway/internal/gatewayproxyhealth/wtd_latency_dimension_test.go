@@ -393,3 +393,95 @@ func TestWtdTotalTimeSlowFullFlow(t *testing.T) {
 		t.Fatalf("空 reason 必须回落默认文案=%q", state.Reason)
 	}
 }
+
+// 端到端实测（2026-10-04）抓到的观察期跨通道缺陷回归：观察期（未降级）下
+// 一个维度的达标样本不得清掉另一维度正在累计的慢样本计数——"首字快但总
+// 时长慢"的请求上达标与慢样本并存是常态，否则总时间计数永远攒不满
+// slowTriggerCount。两通道计数都归零才删除观察期 state。
+func TestWtdObservationWindowCrossDimensionRetention(t *testing.T) {
+	clock := newFakeClock(1_000_000)
+	service, store := newMemoryLatencyService(clock)
+	scope := latencyScope()
+	config := wtdTotalTimeConfig()
+	fast := int64(1_000)
+
+	// 流式形态：总时间慢样本 #1 建立观察期；首字达标（1s < 阈值）只清首字
+	// 通道，总时间计数必须保留。
+	if _, err := service.RecordNormalRouteTotalTimeSlow(contextBackground(), latencyAccount("obs"), scope, &config, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RecordNormalRouteFirstByteSuccess(contextBackground(), latencyAccount("obs"), scope, &config, &fast)
+	if err != nil || result == nil {
+		t.Fatalf("首字达标: %+v err=%v", result, err)
+	}
+	if result.Cleared {
+		t.Fatal("另一维度仍有观察期计数时达标样本不得删除 state")
+	}
+	state := wtdLoadState(t, store, scope, latencyAccount("obs"))
+	if state.TotalTimeSlowCount != 1 {
+		t.Fatalf("总时间观察期计数必须保留，got %d", state.TotalTimeSlowCount)
+	}
+	if state.SlowCount != 0 {
+		t.Fatalf("首字通道必须被达标清零，got %d", state.SlowCount)
+	}
+
+	// 总时间慢样本 #2 → 通道计数累计（基线 slowTriggerCount=3 未达不触发）。
+	clock.Advance(1_000)
+	second, err := service.RecordNormalRouteTotalTimeSlow(contextBackground(), latencyAccount("obs"), scope, &config, "")
+	if err != nil || second == nil || second.Degraded || second.SlowCount != 2 {
+		t.Fatalf("总时间第二条计数: %+v err=%v", second, err)
+	}
+	// 总时间慢样本 #3 → 计数达 slowTriggerCount，触发降级 dimension=total_time。
+	clock.Advance(1_000)
+	trigger, err := service.RecordNormalRouteTotalTimeSlow(contextBackground(), latencyAccount("obs"), scope, &config, "")
+	if err != nil || trigger == nil || !trigger.Degraded {
+		t.Fatalf("总时间第三条必须触发降级: %+v err=%v", trigger, err)
+	}
+	state = wtdLoadState(t, store, scope, latencyAccount("obs"))
+	if state.Dimension != LatencyDimensionTotalTime {
+		t.Fatalf("Dimension=%q，want total_time", state.Dimension)
+	}
+
+	// 对称：观察期首字慢样本被总时间达标清零后，首字通道计数保留语义同构。
+	clock.Advance(1_000)
+	other := latencyAccount("obs2")
+	if _, err := service.RecordNormalRouteFirstByteSlow(contextBackground(), other, scope, &config, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RecordNormalRouteTotalTimeSuccess(contextBackground(), other, scope, &config, config.TotalTimeDeadlineMs, 1_000); err != nil {
+		t.Fatal(err)
+	}
+	otherState := wtdLoadState(t, store, scope, other)
+	if otherState.SlowCount != 1 {
+		t.Fatalf("首字观察期计数必须保留，got %d", otherState.SlowCount)
+	}
+	// 首字第 2、3 条 → 计数达 slowTriggerCount(3) 触发降级（基线 3）。
+	for i := 2; i <= 3; i++ {
+		clock.Advance(1_000)
+		firstTrigger, err := service.RecordNormalRouteFirstByteSlow(contextBackground(), other, scope, &config, "")
+		if err != nil || firstTrigger == nil {
+			t.Fatalf("首字第 %d 条: %+v err=%v", i, firstTrigger, err)
+		}
+		if firstTrigger.Degraded != (i == 3) {
+			t.Fatalf("首字第 %d 条 Degraded=%v", i, firstTrigger.Degraded)
+		}
+	}
+
+	// 单通道场景既有语义回归：观察期唯一维度的慢样本被同维度达标清零 →
+	// state 删除（Cleared）。
+	solo := latencyAccount("obs3")
+	if _, err := service.RecordNormalRouteFirstByteSlow(contextBackground(), solo, scope, &config, ""); err != nil {
+		t.Fatal(err)
+	}
+	soloResult, err := service.RecordNormalRouteFirstByteSuccess(contextBackground(), solo, scope, &config, &fast)
+	if err != nil || soloResult == nil || !soloResult.Cleared {
+		t.Fatalf("单通道达标清观察期: %+v err=%v", soloResult, err)
+	}
+	soloKey := accountLatencyStateKey(*scope, solo)
+	store.mu.Lock()
+	_, exists := store.entries[soloKey]
+	store.mu.Unlock()
+	if exists {
+		t.Fatal("两通道计数归零后 state 必须删除")
+	}
+}

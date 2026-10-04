@@ -129,7 +129,16 @@ func TestScopeKeyValidation(t *testing.T) {
 	if _, err := ScopeKey(Scope{Kind: "protocol_model", AccountRuntimeKey: "acc-1", ProtocolProfile: "p", RequestLane: "text"}); err == nil {
 		t.Fatal("protocol_model 缺 modelBucket 必须报错")
 	}
-	if _, err := ScopeKey(Scope{Kind: "protocol_model", AccountRuntimeKey: "acc-1", ProtocolProfile: "p", RequestLane: "audio", ModelBucket: "m"}); err == nil {
+	// 2026-10-04 裁决 + 媒体设计 §3：媒体 lane（audio/video）以独立维度入
+	// 电路作用域键（与 gatewaycircuit 词表成对同步），ScopeKey 放行；
+	// realtime 在 M5 前不在车道词表，仍为非法值。
+	if _, err := ScopeKey(Scope{Kind: "protocol_model", AccountRuntimeKey: "acc-1", ProtocolProfile: "p", RequestLane: "audio", ModelBucket: "m"}); err != nil {
+		t.Fatalf("媒体 lane audio 不得被拒斥: %v", err)
+	}
+	if _, err := ScopeKey(Scope{Kind: "protocol_model", AccountRuntimeKey: "acc-1", ProtocolProfile: "p", RequestLane: "video", ModelBucket: "m"}); err != nil {
+		t.Fatalf("媒体 lane video 不得被拒斥: %v", err)
+	}
+	if _, err := ScopeKey(Scope{Kind: "protocol_model", AccountRuntimeKey: "acc-1", ProtocolProfile: "p", RequestLane: "realtime", ModelBucket: "m"}); err == nil {
 		t.Fatal("非法 requestLane 必须报错")
 	}
 	if _, err := ScopeKey(Scope{Kind: "protocol_model", AccountRuntimeKey: "acc-1", RequestLane: "text", ModelBucket: "m"}); err == nil {

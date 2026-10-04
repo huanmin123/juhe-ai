@@ -5,14 +5,15 @@ package pricing
 // are USD per token literals identical to the Node snapshot rows.
 
 // openAIModelPricingData = openAIGPT4 + openAIGPT5 + openAIImage +
-// openAIReasoning + openAIAudio (order preserved).
+// openAIReasoning + openAIAudio + openAIVideo (order preserved).
 var openAIModelPricingData = func() []rawModel {
-	out := make([]rawModel, 0, len(openAIGPT4ModelPricingData)+len(openAIGPT5ModelPricingData)+len(openAIImageModelPricingData)+len(openAIReasoningModelPricingData)+len(openAIAudioModelPricingData))
+	out := make([]rawModel, 0, len(openAIGPT4ModelPricingData)+len(openAIGPT5ModelPricingData)+len(openAIImageModelPricingData)+len(openAIReasoningModelPricingData)+len(openAIAudioModelPricingData)+len(openAIVideoModelPricingData))
 	out = append(out, openAIGPT4ModelPricingData...)
 	out = append(out, openAIGPT5ModelPricingData...)
 	out = append(out, openAIImageModelPricingData...)
 	out = append(out, openAIReasoningModelPricingData...)
 	out = append(out, openAIAudioModelPricingData...)
+	out = append(out, openAIVideoModelPricingData...)
 	return out
 }()
 
@@ -993,5 +994,38 @@ var openAIAudioModelPricingData = []rawModel{
 		OutputModalities:        []string{"text"},
 		SupportedAPIProtocols:   []string{"audio_transcription"},
 		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.006),
+	},
+}
+
+// openAIVideoModelPricingData — M2 视频模型（mode=video），价格取自 OpenAI
+// 官方公布价（Sora 2 API，OpenAI DevDay 2025-10-06 发布会公布，
+// platform.openai.com/docs/pricing 为权威页；2026-10-04 检索多源复核一致
+// [itechguides.com / wavespeed.ai 等转引]，官方页反爬 403 未直接抓取）：
+//   - sora-2：720p $0.10/秒（batch $0.05/秒，batch 档不落价——网关无 batch
+//     语义，不猜测）；
+//   - sora-2-pro：720p $0.30/秒（1080p $0.50/秒）。
+//
+// 分辨率分档价机制本任务不建（媒体设计 §10"可按分辨率分档"留待扩展）：
+// 单值按 720p 基准档落价，1080p/480p 分档随 M3 计价完善（目录价格字段沿
+// PriceSet 单值模式扩展）。
+// sora-2/image-to-video（图生视频模型）因模型名含斜杠、与目录行
+// provider_model_catalog 的 model 标识冲突，本任务不收录；待图生视频接入
+// 任务再裁决命名（别名或独立行）。
+// 发布日期：sora-2 / sora-2-pro 2025-10-06（DevDay 2025 发布日，与
+// gpt-5-pro 同日）。
+var openAIVideoModelPricingData = []rawModel{
+	{
+		Model: "sora-2", Mode: "video", ReleaseDate: "2025-10-06",
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"video"},
+		SupportedAPIProtocols:    []string{"video"},
+		VideoOutputCostPerSecond: f64p(0.10),
+	},
+	{
+		Model: "sora-2-pro", Mode: "video", ReleaseDate: "2025-10-06",
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"video"},
+		SupportedAPIProtocols:    []string{"video"},
+		VideoOutputCostPerSecond: f64p(0.30),
 	},
 }

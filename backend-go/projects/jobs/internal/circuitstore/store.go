@@ -76,8 +76,13 @@ func ScopeKey(scope Scope) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if scope.RequestLane != "text" && scope.RequestLane != "image" {
-			return "", errors.New("账户电路作用域 requestLane 必须是 text 或 image")
+		// 媒体车道不拒斥（2026-10-04 裁决 + 媒体设计 §3，与 gatewaycircuit
+		// requiredRequestLane 成对）：本 store 与网关读写同一批电路键，网关侧
+		// 已接受 audio/video lane 作用域，读取侧词表必须同步，否则媒体 lane
+		// 状态加载失败（MustScopeKey 直接 panic）。跨模块不可 import
+		// gatewayproto，词表字面量按 REFACTOR-0008 成对复制约定维护。
+		if scope.RequestLane != "text" && scope.RequestLane != "image" && scope.RequestLane != "audio" && scope.RequestLane != "video" {
+			return "", errors.New("账户电路作用域 requestLane 必须是 text/image/audio/video")
 		}
 		modelBucket, err := requiredScopePart(scope.ModelBucket, "modelBucket")
 		if err != nil {

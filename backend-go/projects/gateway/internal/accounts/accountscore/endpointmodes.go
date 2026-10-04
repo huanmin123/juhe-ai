@@ -48,7 +48,13 @@ var (
 	// 是可表达、opt-in 的 openai 族能力（与 images_json 同语义：进词表、
 	// 不进默认集，显式 supported_endpoint_modes 含它的账户在 audio 车道
 	// 存活）。
-	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json"}
+	// M2 同步视频（媒体设计 §11.6）：video_create / video_get /
+	// video_content / video_cancel 四 token 同语义追加（进词表、opt-in、
+	// 不进默认集；与 gatewaypreauth 词表、链路投影词表
+	// chainOpenAIEndpointModeValues 及 accounts.health_check_endpoint_mode
+	// CHECK 一致。词表缺失会让管理面无法创建视频账户，/v1/videos 创建链
+	// 按 video_create 候选过滤无账户可命中）。
+	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel"}
 	OpenAIChatEndpointModes      = []string{"chat_json", "chat_sse"}
 	OpenAIResponsesEndpointModes = []string{"responses_json", "responses_sse"}
 	// OpenAIDefaultEndpointModes is the write-side default set for new openai

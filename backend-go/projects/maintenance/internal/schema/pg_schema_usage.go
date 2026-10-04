@@ -129,6 +129,7 @@ var postgresSchemaUsage = []PGStatement{
       tts_input_chars bigint NOT NULL DEFAULT 0,
       audio_input_seconds double precision NOT NULL DEFAULT 0,
       usage_missing integer NOT NULL DEFAULT 0,
+      output_video_seconds double precision NOT NULL DEFAULT 0,
       cost_usd double precision,
       error_code text,
       error_message text,
@@ -167,6 +168,13 @@ var postgresSchemaUsage = []PGStatement{
 		SchemaName: "juhe_usage",
 		Source:     "usage-records-m1-audio-metering-pg-columns",
 		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS usage_missing integer NOT NULL DEFAULT 0`,
+	},
+	{
+		// M2 视频计量列（媒体设计 §10）：视频任务输出秒数，任务终态回填；
+		// 幂等模式同 M1 音频计量列。
+		SchemaName: "juhe_usage",
+		Source:     "usage-records-m2-video-metering-pg-columns",
+		SQL:        `ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS output_video_seconds double precision NOT NULL DEFAULT 0`,
 	},
 	{
 		SchemaName: "juhe_usage",

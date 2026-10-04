@@ -67,13 +67,20 @@ var goAddedAfterBalanceDetectJobNames = []string{
 	"account-balance-stats-projection",
 }
 
+// goAddedAfterRetentionJobNames 是插在 expired-deleted-account-cleanup
+// 登记位置之后的 Go 附加条目（retention 家族同族登记：media_jobs TTL 保留
+// 清理，媒体设计 §8.2 M2；归档无对应 scheduled job）。
+var goAddedAfterRetentionJobNames = []string{
+	"media-jobs-retention",
+}
+
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在
 // authorization-usage-range-windows-refresh 之后，keepalive 刷新插在
 // openai-oauth-access-token-refresh 之后，grok 用量快照刷新插在
 // account-balance-auto-detect-recovery 之后，与 ScheduledEntries 的登记位置
 // 一致。
 func expectedScheduledOrder() []string {
-	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames))
+	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames))
 	for _, name := range nodeScheduledJobNames {
 		result = append(result, name)
 		if name == "authorization-usage-range-windows-refresh" {
@@ -85,6 +92,9 @@ func expectedScheduledOrder() []string {
 		if name == "openai-oauth-access-token-refresh" {
 			result = append(result, goAddedAfterOAuthRefreshJobNames...)
 		}
+		if name == "expired-deleted-account-cleanup" {
+			result = append(result, goAddedAfterRetentionJobNames...)
+		}
 	}
 	return result
 }
@@ -95,7 +105,7 @@ func TestScheduledRegistryCoversAllNodeJobs(t *testing.T) {
 	if len(entries) != len(want) {
 		t.Fatalf("scheduled entries=%d want=%d（Node %d 项 + Go 附加 %d 项）",
 			len(entries), len(want), len(nodeScheduledJobNames),
-			len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames))
+			len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames))
 	}
 	for index, name := range want {
 		if entries[index].JobName != name {
@@ -172,6 +182,31 @@ func TestFindCoversBothCategories(t *testing.T) {
 	}
 	if _, ok := Find("not-a-job"); ok {
 		t.Fatal("Find 不应命中未知任务")
+	}
+}
+
+// TestMediaJobsRetentionRegistered 显式锁定 M2 media-jobs-retention 注册
+//（媒体设计 §8.2 清理任务）：GoWired、storage-maintenance lane、每小时节拍。
+func TestMediaJobsRetentionRegistered(t *testing.T) {
+	entry, ok := Find("media-jobs-retention")
+	if !ok {
+		t.Fatal("media-jobs-retention 未注册")
+	}
+	if entry.GoStatus != GoWired {
+		t.Fatalf("media-jobs-retention GoStatus = %s, want go-wired", entry.GoStatus)
+	}
+	if entry.Category != CategoryScheduled || !entry.LeaseRequired || !entry.SingleOwner {
+		t.Fatalf("media-jobs-retention 登记形态错误: %+v", entry)
+	}
+	schedule, ok := ScheduleFor("media-jobs-retention")
+	if !ok {
+		t.Fatal("media-jobs-retention 缺少调度参数")
+	}
+	if schedule.Interval != time.Hour {
+		t.Fatalf("media-jobs-retention interval = %v, want 1h", schedule.Interval)
+	}
+	if schedule.Lane != "storage-maintenance" || schedule.LeaseTTL <= 0 {
+		t.Fatalf("media-jobs-retention lane/lease 错误: %+v", schedule)
 	}
 }
 

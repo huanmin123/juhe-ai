@@ -540,7 +540,11 @@ func IncidentToRuntimeState(incident CircuitIncidentRecord, hierarchyScopeKeys m
 		if err != nil {
 			return CircuitState{}, err
 		}
-		if incident.RequestLane != "text" && incident.RequestLane != "image" {
+		// 媒体车道不拒斥（2026-10-04 裁决 + 媒体设计 §3，与 gatewaycircuit
+		// requiredIncidentRequestLane 成对）：网关侧已按 audio/video lane 持久化
+		// 媒体电路 incident，jobs 读取侧词表必须同步。跨模块不可 import
+		// gatewayproto，字面量按成对复制约定维护。
+		if incident.RequestLane != "text" && incident.RequestLane != "image" && incident.RequestLane != "audio" && incident.RequestLane != "video" {
 			return CircuitState{}, errors.New("持久化账户 circuit requestLane 无效")
 		}
 		bucket, err := requiredText(incident.ModelFamily, "modelFamily")

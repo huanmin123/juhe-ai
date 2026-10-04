@@ -263,12 +263,12 @@ func TestMediaSTTScenarios(t *testing.T) {
 		t.Fatalf("stt verbose status = %d", code)
 	}
 	var verbose struct {
-		Text      string `json:"text"`
-		Language  string `json:"language"`
-		Duration  any    `json:"duration"`
-		Segments  []any  `json:"segments"`
-		Words     []any  `json:"words"`
-		Usage     struct {
+		Text     string `json:"text"`
+		Language string `json:"language"`
+		Duration any    `json:"duration"`
+		Segments []any  `json:"segments"`
+		Words    []any  `json:"words"`
+		Usage    struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
@@ -402,8 +402,9 @@ func TestMediaGeminiTTSScenarios(t *testing.T) {
 
 // TestMediaEndpointWhitelist proves the media endpoint acceptance boundary:
 // exact audio paths plus the {model}:generateContent path form with a
-// non-empty single-segment model; everything else (including the M2/M3
-// families not yet in scope) keeps the 404 behavior.
+// non-empty single-segment model; everything else (including the M3
+// families not yet in scope) keeps the 404 behavior. The M2 videos family
+// has its own method/path matrix in media_video_test.go.
 func TestMediaEndpointWhitelist(t *testing.T) {
 	m := New()
 	defer m.Close()
@@ -421,7 +422,6 @@ func TestMediaEndpointWhitelist(t *testing.T) {
 		{http.MethodPost, "/v1beta/models/a/b:generateContent"},        // model segment with slash
 		{http.MethodPost, "/v1beta/models/gemini-x:generateContentEx"}, // wrong suffix
 		{http.MethodPost, "/v1beta2/models/gemini-x:generateContent"},  // wrong prefix
-		{http.MethodPost, "/v1/videos"},                                // M2, not yet whitelisted
 		{http.MethodPost, "/v1/audio/jobs"},                            // M3, not yet whitelisted
 	}
 	for _, tc := range bad {

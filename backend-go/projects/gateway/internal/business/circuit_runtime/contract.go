@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 )
 
 const (
@@ -335,7 +337,9 @@ func ValidateGatewayAccountCircuitScope(scope GatewayAccountCircuitScope) error 
 		if err := validateGatewayAccountCircuitText(scope.ProtocolProfile, 256, "protocol profile"); err != nil {
 			return err
 		}
-		if scope.RequestLane != "text" && scope.RequestLane != "image" {
+		// 媒体车道不拒斥（2026-10-04 裁决 + 媒体设计 §3）：词表读 gatewayproto，
+		// audio/video 以独立 lane 维度入电路作用域，与 text/image 隔离。
+		if !ValidGatewayAccountCircuitRequestLane(scope.RequestLane) {
 			return fmt.Errorf("account circuit request lane is invalid")
 		}
 		if err := validateGatewayAccountCircuitText(scope.ModelBucket, 512, "model bucket"); err != nil {
@@ -372,6 +376,21 @@ func ValidateGatewayAccountCircuitScope(scope GatewayAccountCircuitScope) error 
 func hasKeyModelScopeFields(scope GatewayAccountCircuitScope) bool {
 	return scope.ClientModel != "" || scope.CapabilityHash != "" || scope.CredentialSourceAccountID != "" ||
 		scope.ClientEndpointFamily != "" || scope.FinalUpstreamModel != "" || scope.UpstreamEndpointMode != ""
+}
+
+// ValidGatewayAccountCircuitRequestLane 校验电路作用域 requestLane。词表读
+// gatewayproto 车道常量（媒体设计 §3 唯一权威源）：媒体车道（audio/video）
+// 不拒斥、不归并 text（2026-10-04 裁决），以独立 lane 维度与 text/image
+// 电路隔离。
+func ValidGatewayAccountCircuitRequestLane(lane string) bool {
+	switch lane {
+	case string(gatewayproto.LaneText),
+		string(gatewayproto.LaneImage),
+		string(gatewayproto.LaneAudio),
+		string(gatewayproto.LaneVideo):
+		return true
+	}
+	return false
 }
 
 func GatewayAccountCircuitRuntimeKeyMatchesFamily(target, candidate string) bool {

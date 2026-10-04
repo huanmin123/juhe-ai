@@ -518,7 +518,10 @@ func accountCircuitIncidentRuntimeStateFromIncident(incident GatewayAccountCircu
 		scope.ProtocolProfile = incident.ProtocolCode
 		scope.RequestLane = incident.RequestLane
 		scope.ModelBucket = incident.ModelFamily
-		if !validAccountCircuitRevisionText(scope.ProtocolProfile, 256) || (scope.RequestLane != "text" && scope.RequestLane != "image") || !validAccountCircuitRevisionText(scope.ModelBucket, 512) {
+		// 媒体车道不拒斥（2026-10-04 裁决 + 媒体设计 §3，词表见
+		// ValidGatewayAccountCircuitRequestLane）：gateway 侧媒体 lane 电路
+		// incident 以独立 lane 维度持久化，读取侧不得拒斥。
+		if !validAccountCircuitRevisionText(scope.ProtocolProfile, 256) || !ValidGatewayAccountCircuitRequestLane(scope.RequestLane) || !validAccountCircuitRevisionText(scope.ModelBucket, 512) {
 			return accountCircuitIncidentRuntimeState{}, fmt.Errorf("account circuit protocol scope is invalid")
 		}
 	case "key_model":

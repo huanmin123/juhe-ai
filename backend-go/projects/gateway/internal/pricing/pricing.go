@@ -44,7 +44,9 @@ import (
 // the Node undefined price; a non-nil 0 is a real free price (glm-4.7-flash).
 // TtsInputUsdPer1MChars / AudioInputUsdPerSecond 是 M1 同步音频计费维度
 // （音频设计 §10）：TTS 按输入字符（USD/1M chars）、STT 按音频秒（USD/s）；
-// 计费引擎行项消费由 billing 扩展另行交付，本结构只承载目录单价。
+// VideoOutputUsdPerSecond 是 M2 视频计费维度（媒体设计 §10）：视频按输出
+// 秒（USD/s）。计费引擎行项消费由 billing 扩展另行交付，本结构只承载目录
+// 单价。
 type PriceSet struct {
 	InputUsdPer1M               *float64
 	OutputUsdPer1M              *float64
@@ -59,6 +61,7 @@ type PriceSet struct {
 	OutputUsdPerImage           *float64
 	TtsInputUsdPer1MChars       *float64
 	AudioInputUsdPerSecond      *float64
+	VideoOutputUsdPerSecond     *float64
 }
 
 // ServiceTierPrices mirrors Record<string, ModelPriceSet> (priority/flex/batch).
@@ -122,6 +125,8 @@ type Pricing struct {
 // TtsInputChars / AudioInputSeconds 是 M1 同步音频计量维度（音频设计 §10）：
 // TTS 请求输入字符数、STT 音频秒数，行项由 billing.go 的
 // tts_input_chars / audio_input_seconds 消费。
+// OutputVideoSeconds 是 M2 视频任务输出秒数（媒体设计 §10：任务终态由轮询
+// 响应驱动，失败任务不虚计），行项由 billing.go 的 video_output_seconds 消费。
 type CostInput struct {
 	ProviderCode string
 	Model        string
@@ -140,6 +145,7 @@ type CostInput struct {
 	OutputImageCount   *float64
 	TtsInputChars      *float64
 	AudioInputSeconds  *float64
+	OutputVideoSeconds *float64
 	CostUsd            *float64
 }
 
@@ -162,10 +168,14 @@ const (
 	// 行项生成（billing.go 消费）由计费扩展另行交付。
 	CostLineKindTtsInputChars     CostLineKind = "tts_input_chars"
 	CostLineKindAudioInputSeconds CostLineKind = "audio_input_seconds"
-	LineUnitToken                              = "token"
-	LineUnitImage                              = "image"
+	// M2 视频行项（媒体设计 §10）：视频按输出秒计费（video_output_seconds）。
+	// 行项生成由 billing.go 消费（终态计费任务交付），本枚举先落词表。
+	CostLineKindVideoOutputSeconds CostLineKind = "video_output_seconds"
+	LineUnitToken                               = "token"
+	LineUnitImage                               = "image"
 	// LineUnitChar / LineUnitSecond 是 M1 音频行项的计量单位（tts_input_chars
-	// 按 1M 字符计价、audio_input_seconds 按秒计价）。
+	// 按 1M 字符计价、audio_input_seconds 按秒计价）；video_output_seconds
+	// 同按秒计价（M2），复用 LineUnitSecond。
 	LineUnitChar   = "char"
 	LineUnitSecond = "second"
 	tokenUnitSize  = 1_000_000.0
@@ -317,8 +327,9 @@ func sumOptionalCosts(parts ...*float64) *float64 {
 }
 
 // hasAnyRate mirrors hasAnyRate: at least one finite rate must exist.
-// M1 音频单价（TtsInputUsdPer1MChars / AudioInputUsdPerSecond）计入：纯
-// TTS/STT 模型可能只携带这两个单价（tts-1 / whisper-1）。
+// M1 音频单价（TtsInputUsdPer1MChars / AudioInputUsdPerSecond）与 M2 视频单价
+// （VideoOutputUsdPerSecond）计入：纯 TTS/STT/视频模型可能只携带这些单价
+// （tts-1 / whisper-1 / sora-2）。
 func hasAnyRate(set PriceSet) bool {
 	for _, v := range []*float64{
 		set.InputUsdPer1M, set.OutputUsdPer1M, set.CachedInputUsdPer1M,
@@ -327,6 +338,7 @@ func hasAnyRate(set PriceSet) bool {
 		set.ImageOutputUsdPer1M, set.AudioInputUsdPer1M,
 		set.AudioOutputUsdPer1M, set.OutputUsdPerImage,
 		set.TtsInputUsdPer1MChars, set.AudioInputUsdPerSecond,
+		set.VideoOutputUsdPerSecond,
 	} {
 		if v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0) {
 			return true
@@ -335,13 +347,14 @@ func hasAnyRate(set PriceSet) bool {
 	return false
 }
 
-// hasAnyCostDimension mirrors hasAnyCostDimension. M1 音频计量维度同样计入
-// （TTS 请求只有字符计量、无 token 计量）。
+// hasAnyCostDimension mirrors hasAnyCostDimension. M1 音频计量维度与 M2 视频
+// 计量维度同样计入（TTS 请求只有字符计量、视频任务只有秒计量，无 token 计量）。
 func hasAnyCostDimension(input CostInput) bool {
 	return input.InputTokens != nil || input.OutputTokens != nil ||
 		input.CacheReadTokens != nil || input.CacheWriteTokens != nil ||
 		input.CacheWrite1hTokens != nil || input.InputImageTokens != nil ||
 		input.OutputImageTokens != nil || input.InputAudioTokens != nil ||
 		input.OutputAudioTokens != nil || input.OutputImageCount != nil ||
-		input.TtsInputChars != nil || input.AudioInputSeconds != nil
+		input.TtsInputChars != nil || input.AudioInputSeconds != nil ||
+		input.OutputVideoSeconds != nil
 }

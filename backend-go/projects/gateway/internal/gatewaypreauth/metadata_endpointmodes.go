@@ -13,8 +13,12 @@ import (
 // Account endpoint mode vocabulary (domain/types.ts AccountSupportedEndpointMode).
 // M1 同步音频新增 audio_speech（POST /v1/audio/speech）与
 // audio_transcription_json（POST /v1/audio/transcriptions|translations）两个
-// token（音频设计 §11.6）；词表与 accounts.health_check_endpoint_mode CHECK
-// 同步（maintenance pg_schema_business_tables.go）。
+// token（音频设计 §11.6）；M2 视频新增 video_create（POST /v1/videos）、
+// video_get（GET /v1/videos 与 /v1/videos/{id}）、video_content
+// （GET /v1/videos/{id}/content）、video_cancel（DELETE /v1/videos/{id}）四个
+// token（媒体设计 §11.6；任务面端点不设候选过滤 mode，走账户亲和直连，
+// 词表仅为能力表达与健康检查形态）；词表与 accounts.health_check_endpoint_mode
+// CHECK 同步（maintenance pg_schema_business_tables.go）。
 const (
 	EndpointModeImagesJSON             = "images_json"
 	EndpointModeChatJSON               = "chat_json"
@@ -32,6 +36,10 @@ const (
 	EndpointModeInteractionsSSE        = "interactions_sse"
 	EndpointModeAudioSpeech            = "audio_speech"
 	EndpointModeAudioTranscriptionJSON = "audio_transcription_json"
+	EndpointModeVideoCreate            = "video_create"
+	EndpointModeVideoGet               = "video_get"
+	EndpointModeVideoContent           = "video_content"
+	EndpointModeVideoCancel            = "video_cancel"
 )
 
 // RequestSupportedEndpointMode mirrors openAIEndpointModeForGatewayRequest +
@@ -62,6 +70,12 @@ func RequestSupportedEndpointMode(req *GatewayRequest) string {
 		return EndpointModeAudioSpeech
 	case method == "POST" && (normalizedV1StrippedPath(path) == "/audio/transcriptions" || normalizedV1StrippedPath(path) == "/audio/translations"):
 		return EndpointModeAudioTranscriptionJSON
+	case method == "POST" && normalizedV1StrippedPath(path) == "/videos":
+		return EndpointModeVideoCreate
+	case method == "GET" && videoGetEndpointMode(path) != "":
+		return videoGetEndpointMode(path)
+	case method == "DELETE" && strings.HasPrefix(normalizedV1StrippedPath(path), "/videos/"):
+		return EndpointModeVideoCancel
 	case method == "POST" && normalizedV1StrippedPath(path) == "/messages":
 		if stream {
 			return EndpointModeMessagesSSE
@@ -120,4 +134,22 @@ func normalizedV1StrippedPath(path string) string {
 		return "/"
 	}
 	return path
+}
+
+// videoGetEndpointMode maps the GET /v1/videos* family (M2 视频，媒体设计
+// §11.6）：列表（GET /v1/videos）与轮询（GET /v1/videos/{id}）是 video_get，
+// 产物下载（GET /v1/videos/{id}/content）是 video_content。非本族路径返回
+// 空串（调用方不进入 video 判定）。
+func videoGetEndpointMode(path string) string {
+	stripped := normalizedV1StrippedPath(path)
+	if stripped == "/videos" {
+		return EndpointModeVideoGet
+	}
+	if !strings.HasPrefix(stripped, "/videos/") {
+		return ""
+	}
+	if strings.HasSuffix(stripped, "/content") {
+		return EndpointModeVideoContent
+	}
+	return EndpointModeVideoGet
 }

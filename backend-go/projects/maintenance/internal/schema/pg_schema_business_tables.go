@@ -653,7 +653,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       cooldown_retest_last_status_code integer,
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       health_check_model text NOT NULL,
-      health_check_endpoint_mode text NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json')),
+      health_check_endpoint_mode text NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel')),
       last_health_check_at text,
       next_health_check_at text,
       last_health_success_at text,
@@ -2187,8 +2187,39 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_projection_delete_health
       reject_reason text,
       created_by text NOT NULL,
       created_scope text NOT NULL,
-      reviewed_by text,
-      reviewed_at text,
+	      reviewed_by text,
+	      reviewed_at text,
+	      created_at text NOT NULL,
+	      updated_at text NOT NULL
+	    )`,
+	},
+	{
+		// media_jobs 异步媒体任务表（媒体设计 §8.2，M2）：id 是对外 job id
+		//（video_ 前缀，不用上游 id）；kind 覆盖视频与 M3 长音频两形态；
+		// account_id / provider_code / provider_protocol_profile_id 是账户亲和
+		// 三元组（§7：任务面不进派发循环）；artifact_json 只存定位指针与上游
+		// 时效时间，零资源存储（§8.1）。引用列沿表族事实（api_keys.id /
+		// accounts.id 均为 text）与 usage_records 记录表先例不加外键——账户
+		// 删除后任务行仍需存在（任务不可达错误语义），避免记录表反向阻断
+		// 账户物理清理。CREATE TABLE IF NOT EXISTS 幂等。
+		SchemaName: "juhe_business",
+		Source:     "media-jobs-table",
+		SQL: `CREATE TABLE IF NOT EXISTS media_jobs (
+      id text PRIMARY KEY,
+      kind text NOT NULL CHECK (kind IN ('video', 'audio_transcription', 'audio_speech')),
+      api_key_id text NOT NULL,
+      account_id text NOT NULL,
+      provider_code text NOT NULL,
+      provider_protocol_profile_id text,
+      upstream_job_id text NOT NULL,
+      status text NOT NULL CHECK (status IN ('queued', 'in_progress', 'completed', 'failed', 'cancelled', 'expired')),
+      request_snapshot_json text NOT NULL DEFAULT '{}',
+      artifact_json text NOT NULL DEFAULT '{}',
+      error_json text NOT NULL DEFAULT '{}',
+      usage_json text NOT NULL DEFAULT '{}',
+      cost_usd double precision NOT NULL DEFAULT 0,
+      params_applied_json text NOT NULL DEFAULT '[]',
+      params_ignored_json text NOT NULL DEFAULT '[]',
       created_at text NOT NULL,
       updated_at text NOT NULL
     )`,
@@ -2250,9 +2281,11 @@ $$`,
 	},
 	{
 		// accounts.health_check_endpoint_mode CHECK 增补 M1 同步音频探针形态
-		// （音频设计 §11.1）：audio_speech、audio_transcription_json。幂等迁移
-		// 沿 model-quality-schedule-interval-pg-check 先例：按表 + conkey 列 +
-		// 约束定义文本定位——存量表上缺 audio_speech 的旧 CHECK（建表内联约束
+		// （音频设计 §11.1）：audio_speech、audio_transcription_json；M2 视频
+		// 增补 video_create / video_get / video_content / video_cancel（媒体
+		// 设计 §11.6，词表与前端 AccountHealthCheckEndpointMode 同步）。幂等
+		// 迁移沿 model-quality-schedule-interval-pg-check 先例：按表 + conkey 列 +
+		// 约束定义文本定位——存量表上缺 video_create 的旧 CHECK（建表内联约束
 		// 被 PG 自动命名为 accounts_health_check_endpoint_mode_check）先删除，
 		// 再按名字补上含新值的具名约束。建表 DDL 已含新值的新库：内联约束的
 		// PG 自动名与具名约束同名，第二步 IF NOT EXISTS 直接命中跳过，不会产
@@ -2272,7 +2305,7 @@ BEGIN
       AND relation.relname = 'accounts'
       AND c.contype = 'c'
       AND pg_get_constraintdef(c.oid) LIKE '%health_check_endpoint_mode%'
-      AND pg_get_constraintdef(c.oid) NOT LIKE '%audio_speech%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%video_create%'
       AND EXISTS (
         SELECT 1 FROM pg_attribute AS a
         WHERE a.attrelid = c.conrelid
@@ -2290,7 +2323,7 @@ BEGIN
         AND relation.relname = 'accounts'
         AND c.conname = 'accounts_health_check_endpoint_mode_check'
     ) THEN
-      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''audio_speech'', ''audio_transcription_json''))';
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel''))';
     END IF;
   END IF;
 END

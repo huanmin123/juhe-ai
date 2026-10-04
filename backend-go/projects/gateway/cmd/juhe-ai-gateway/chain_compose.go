@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaygemini"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayobs"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
@@ -109,6 +111,15 @@ type chainRuntimeDeps struct {
 	// high-concurrency scheduling bounds (Node runtimeConfig.concurrency.
 	// globalMax, default 5000) for the speed-first body admission gate.
 	QueueDefaults gatewayclientip.HighConcurrencyPolicyDefaults
+
+	// M2 媒体任务面运行时输入（媒体设计 §8.2）：MediaJobsDB 是业务库句柄
+	//（media_jobs 仓储 + 账户亲和水合读面）；MediaJobsPostgres 报告方言
+	//（PG $n 绑定 + juhe_business schema 限定）；MediaJobsSecret 是账户凭据
+	// 解密密钥（生产与 newChainAccountsSelector 的 cfg.Secret 同源）。DB 为
+	// nil 仅组合测试——任务面端点显式 503 降级（不静默吞请求）。
+	MediaJobsDB       *sql.DB
+	MediaJobsPostgres bool
+	MediaJobsSecret   string
 
 	// G13 runtime services (required: preflight hot path).
 	Circuits        gatewaypreauth.PreAuthCircuits
@@ -546,6 +557,19 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		ClientPool: upstreamClientPool,
 		DialGuard:  upstreamURLPolicy.Guard(),
 	}
+	// M2 媒体任务面运行时（媒体设计 §7/§8）：与派发引擎同源传输面（URL 安全
+	// 策略 / 全局并发槽 / keep-alive 池共用同一实例）；DB 缺席（组合测试）
+	// 保持 nil——任务面端点显式 503 降级。
+	var mediaJobs *mediaJobsRuntime
+	if deps.MediaJobsDB != nil {
+		mediaJobs = &mediaJobsRuntime{
+			repo:      gatewaymedia.NewMediaJobsRepo(deps.MediaJobsDB, deps.MediaJobsPostgres, clock.Now),
+			db:        deps.MediaJobsDB,
+			postgres:  deps.MediaJobsPostgres,
+			secret:    deps.MediaJobsSecret,
+			transport: engine.Transport,
+		}
+	}
 	// B-3（BUG-0174）波1遗留接线：Redis 轮转计数器（nil 保持进程内回退）。
 	engine.KeyRotation = deps.KeyRotation
 	engine.Clock = clock
@@ -730,6 +754,8 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		// anthropic unified rate limit 头成功面派发（AI账户Grok用量快照设计
 		// §8.2；失败面对称口在 chainFailureDispatcher.anthropicUsageHeaders）。
 		anthropicUsageHeaders: deps.AnthropicUsageHeadersDispatcher,
+		// M2 媒体任务面（媒体设计 §4.2/§7/§8）。
+		mediaJobs: mediaJobs,
 	}
 	// W4-B（BUG-0175）D-132 接线：响应层账户副作用面（配置策略避让 +
 	// 上游桶避让写侧）。nil 服务（组合测试）保持 nil——finalization 对 nil

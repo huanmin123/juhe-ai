@@ -263,6 +263,60 @@ func (m *fullchainMockUpstream) record(key, method, path, model string, scenario
 	m.calls = append(m.calls, fullchainUpstreamCall{Key: key, Method: method, Path: path, Model: model, Scenario: scenario, At: time.Now()})
 }
 
+// fullchainScriptableRequest 判定该请求是否参与场景队列消费（媒体契约
+// §3.3.1：scriptable 路径扩至媒体端点族，含 GET/DELETE 方法）。
+//
+// 两类判定口径：
+//   - 文本协议路径沿用既有门控：POST + 四条协议路径 + 请求模型 =
+//     acceptanceModel（模型隔离，避免探针流量消耗场景脚本）；
+//   - 媒体端点族按方法 + 路径族判定，不做模型门控：transcriptions/
+//     translations 是 multipart 表单、任务面 GET/DELETE 无请求体，请求体里
+//     没有可解析的 JSON 模型；POST /v1beta/models/{model}:generateContent 的
+//     路径模型也不等于 acceptanceModel。
+//
+// 视频任务面请求（GET 列表/轮询/content、DELETE）计入 scriptable 判定，但
+// mockupstream 引擎里这些 handler 不读场景值（轮询按引擎内任务表脚本推进，
+// 契约 §3.3.2 同一状态机，不重复实现两份）；它们只在队列有剩余条目时才会
+// 消耗一个条目，脚本化创建用例把创建场景排在队首即可避免被任务面请求吃掉。
+func fullchainScriptableRequest(r *http.Request, model string) bool {
+	if fullchainMediaScriptable(r.Method, r.URL.Path) {
+		return true
+	}
+	return r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/embeddings" || r.URL.Path == "/v1/messages") &&
+		model == acceptanceModel
+}
+
+// fullchainMediaScriptable 按「媒体契约 §3.2.1 全部端点」匹配方法 + 路径族，
+// 与 shared/platform/mockupstream 的 acceptsMediaEndpoint 同一端点清单：
+//   - POST /v1/audio/speech | /v1/audio/transcriptions | /v1/audio/translations
+//   - /v1/videos 全 5 端点：POST 创建、GET 列表、GET 单个、GET content、DELETE
+//   - POST /v1beta/models/{model}:generateContent（Gemini TTS 形态，{model}
+//     为非空单段模型名）
+func fullchainMediaScriptable(method, path string) bool {
+	switch path {
+	case "/v1/audio/speech", "/v1/audio/transcriptions", "/v1/audio/translations":
+		return method == http.MethodPost
+	case "/v1/videos":
+		return method == http.MethodPost || method == http.MethodGet
+	}
+	if rest, ok := strings.CutPrefix(path, "/v1/videos/"); ok && rest != "" {
+		id, tail, hasTail := strings.Cut(rest, "/")
+		if id == "" {
+			return false
+		}
+		if !hasTail {
+			return method == http.MethodGet || method == http.MethodDelete
+		}
+		return tail == "content" && method == http.MethodGet
+	}
+	if method == http.MethodPost && strings.HasPrefix(path, "/v1beta/models/") && strings.HasSuffix(path, ":generateContent") {
+		model := strings.TrimSuffix(strings.TrimPrefix(path, "/v1beta/models/"), ":generateContent")
+		return model != "" && !strings.Contains(model, "/")
+	}
+	return false
+}
+
 func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	raw, _ := io.ReadAll(r.Body)
@@ -272,9 +326,7 @@ func (m *fullchainMockUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(raw, &parsed)
-	scriptable := r.Method == http.MethodPost &&
-		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/embeddings" || r.URL.Path == "/v1/messages") &&
-		parsed.Model == acceptanceModel
+	scriptable := fullchainScriptableRequest(r, parsed.Model)
 	scenario := m.nextScenario(key, scriptable)
 	m.record(key, r.Method, r.URL.Path, parsed.Model, scenario)
 	if scenario == fullchainHoldScenario {

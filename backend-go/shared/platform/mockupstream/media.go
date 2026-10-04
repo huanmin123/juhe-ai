@@ -9,6 +9,7 @@ package mockupstream
 //     (同构, contract §4.2) — json / verbose_json transcripts;
 //   - Gemini TTS  POST /v1beta/models/{model}:generateContent (contract
 //     §5.1) — inlineData base64 PCM + usageMetadata.
+//   - OpenAI videos async job face (video.go, contract §3.2/§4.3) — M2.
 //
 // Scenario selection reuses the X-Mock-Scenario / ?scenario= mechanism.
 // Like the chat face (unknown scenarios default to chat_ok), an unknown
@@ -45,11 +46,15 @@ var mediaEndpoints = map[endpoint]bool{
 	{http.MethodPost, "/v1/audio/translations"}:   true,
 }
 
-// acceptsMediaEndpoint matches the exact audio paths plus the Gemini TTS
-// path form POST /v1beta/models/{model}:generateContent, where {model} is a
-// non-empty single path segment.
+// acceptsMediaEndpoint matches the exact audio paths, the videos family
+// (video.go), and the Gemini TTS path form
+// POST /v1beta/models/{model}:generateContent, where {model} is a non-empty
+// single path segment.
 func acceptsMediaEndpoint(method, path string) bool {
 	if mediaEndpoints[endpoint{method, path}] {
+		return true
+	}
+	if acceptsVideoEndpoint(method, path) {
 		return true
 	}
 	return method == http.MethodPost && geminiGenerateContentModel(path) != ""
@@ -59,7 +64,7 @@ func acceptsMediaEndpoint(method, path string) bool {
 // It runs after the method-aware whitelist check, so the POST-keyed map
 // lookup is only reached by requests that already passed as POST.
 func isMediaPath(path string) bool {
-	return mediaEndpoints[endpoint{http.MethodPost, path}] || geminiGenerateContentModel(path) != ""
+	return mediaEndpoints[endpoint{http.MethodPost, path}] || isVideoPath(path) || geminiGenerateContentModel(path) != ""
 }
 
 // geminiGenerateContentModel returns the {model} segment when path matches
@@ -79,6 +84,10 @@ func geminiGenerateContentModel(path string) string {
 
 // serveMedia dispatches a whitelisted media endpoint to its family handler.
 func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, scenario Scenario) {
+	if isVideoPath(r.URL.Path) {
+		m.serveVideo(w, r, idx, scenario)
+		return
+	}
 	if model := geminiGenerateContentModel(r.URL.Path); model != "" {
 		m.serveGeminiTTS(w, scenario, model)
 		return
@@ -92,11 +101,16 @@ func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, sce
 
 // serveSpeech implements the OpenAI TTS face (contract §4.1).
 func (m *Server) serveSpeech(w http.ResponseWriter, idx int, scenario Scenario) {
+	// Read the recorded body under the Server mutex: concurrent requests
+	// append to m.seenReqs and an unlocked read races the writer.
+	m.mu.Lock()
+	requestBody := m.seenReqs[idx].Body
+	m.mu.Unlock()
 	var req struct {
 		Voice          string `json:"voice"`
 		ResponseFormat string `json:"response_format"`
 	}
-	_ = json.Unmarshal([]byte(m.seenReqs[idx].Body), &req)
+	_ = json.Unmarshal([]byte(requestBody), &req)
 
 	switch scenario {
 	case ScenarioMediaTTS400VoiceInvalid:

@@ -7,6 +7,9 @@ package gatewayproto
 // 输入字符数（网关自算，UTF-8 rune 数）；AudioInputSeconds 是 STT 音频秒数
 // （上游 verbose_json duration）；UsageMissing 标记上游既无 usage 回报也无
 // duration 的 STT 响应（0 计费 + 可审计，不猜测）。
+// M2 视频计量扩展（媒体设计 §10/契约 §2.8）：OutputVideoSeconds 是视频任务
+// 输出秒数（任务参数 seconds 口径，网关自算；失败任务不虚计）。指针语义沿
+// M1 先例：nil = 无证据。
 type ParsedUsage struct {
 	UpstreamResponseModel string
 	ServiceTier           string
@@ -23,6 +26,7 @@ type ParsedUsage struct {
 	OutputImageCount      *int
 	TtsInputChars         *int64
 	AudioInputSeconds     *float64
+	OutputVideoSeconds    *float64
 	UsageMissing          bool
 }
 
@@ -58,6 +62,7 @@ func MergeUsage(current, next ParsedUsage) ParsedUsage {
 		OutputImageCount:      orInt(next.OutputImageCount, current.OutputImageCount),
 		TtsInputChars:         orInt64(next.TtsInputChars, current.TtsInputChars),
 		AudioInputSeconds:     orFloat64(next.AudioInputSeconds, current.AudioInputSeconds),
+		OutputVideoSeconds:    orFloat64(next.OutputVideoSeconds, current.OutputVideoSeconds),
 		UsageMissing:          current.UsageMissing || next.UsageMissing,
 	}
 }
@@ -77,7 +82,8 @@ func HasAnyUsageValue(value ParsedUsage) bool {
 		value.OutputAudioTokens != nil ||
 		value.OutputImageCount != nil ||
 		value.TtsInputChars != nil ||
-		value.AudioInputSeconds != nil
+		value.AudioInputSeconds != nil ||
+		value.OutputVideoSeconds != nil
 }
 
 func orString(next, current string) string {

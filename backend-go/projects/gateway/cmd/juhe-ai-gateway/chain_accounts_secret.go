@@ -407,7 +407,11 @@ var (
 	// M1 同步音频（音频设计 §11.6）：audio_speech / audio_transcription_json
 	// 与 images_json 同语义进词表（可表达、opt-in、不进默认集）——词表缺失
 	// 会让显式勾选的账户在 secret 投影时被滤除，/v1/audio 派发无账户可命中。
-	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json"}
+	// M2 视频（媒体设计 §11.6）：video_create / video_get / video_content /
+	// video_cancel 四 token 同语义进词表（与 gatewaypreauth 词表及
+	// accounts.health_check_endpoint_mode CHECK 同步；video_create 是候选过滤
+	// 消费面，任务面三 token 仅为能力表达与健康检查形态，不进默认集）。
+	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel"}
 	chainOpenAIChatEndpointModes  = []string{"chat_json", "chat_sse"}
 	chainOpenAIResponsesModes     = []string{"responses_json", "responses_sse"}
 	// chainOpenAIDefaultEndpointModes mirrors

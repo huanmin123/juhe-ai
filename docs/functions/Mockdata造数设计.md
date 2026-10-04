@@ -6,7 +6,7 @@
 ## 1. 目标
 
 - 一条命令在指定 SQLite 数据根上生成完整业务闭环数据，覆盖管理端与公开面的全部页面数据来源。
-- 覆盖 business 库（系统账户与配套用户、AI 账户、分组、路由策略与分组绑定、API Key、授权与授权来源、团队、代理、公告、自定义模型目录、响应检查策略、外部来源系统、模型检测题库、账户测试任务、熔断与时间计划样本）、usage 分片与分片登记、stats 原始采样、observability（审计、操作、运行日志、公开接口日志、后台清理目标）、chat/codex-context/J3b 模型检测。
+- 覆盖 business 库（系统账户与配套用户、AI 账户、分组、路由策略与分组绑定、API Key、授权与授权来源、团队、代理、公告、自定义模型目录、响应检查策略、外部来源系统、模型检测题库、账户测试任务、异步媒体任务（`media_jobs`）、熔断与时间计划样本）、usage 分片与分片登记、stats 原始采样、observability（审计、操作、运行日志、公开接口日志、后台清理目标）、chat/codex-context/J3b 模型检测。
 - 覆盖 OpenAI OAuth、OpenAI API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、冷却、错误、不可调度和时间计划等状态 / 类型样本；覆盖 API Key 的优先级故障转移、轮询、加权轮询、绑定禁用、额度窗口、过期、停用和时间计划样本。
 - 默认生成近 31 天明细与监控样本；派生表（`usage_stats_*`、`*_windows`、排行、健康小时、账号质量等）不伪造，全部由 jobs 聚合 / 窗口任务重建。
 - 可重复执行：每次先按固定清理标识删除上一批数据，再重新插入；执行结束时做只读覆盖校验。
@@ -115,6 +115,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 
 - 派生表不造假：`usage_stats_*`、各 `*_windows`、`usage_rank_snapshots`、`account_health_hourly`、`group_account_stats`、`client_ip_*`、`authorization_*_usage_*`、`account_quality_*`、`system_metrics_*` / `process_event_loop_*` 的小时与趋势表，全部由脚本第 4 步的 jobs `-run-jobs-once` 或常驻 jobs 启动后重建；页面读取路径与真实数据一致。
 - 上游响应模型定向样本固定三条：trace 分别为 `mockdata-usage-coverage_upstream_response_model_match`、`mockdata-usage-coverage_upstream_response_model_mismatch`、`mockdata-usage-coverage_upstream_response_model_unmapped_mismatch`，摘要 `upstreamResponseModelSamples` 提供 ID、trace 与相关原始字段，供覆盖断言与页面检索。
+- 媒体域样本（M2 起，媒体契约 §3.4）：business 库由 `seedMediaJobs` 写入 `media_jobs` kind=video 六状态样本行（`queued/in_progress/completed/failed/cancelled/expired`，completed 行带 usage（`output_video_seconds`）与 `cost_usd`，failed 行带 error；模型取目录 video 分类、回落 sora-2，账户亲和外键指向 `acc_media` 媒体样本账户——该账户同时引用 audio/video 分类模型）；usage 分片含 `tts_input_chars`/`audio_input_seconds` 音频计量样本行与 `output_video_seconds` 视频计量列；observability 审计含 `/v1/audio/speech`、`/v1/videos` 媒体端点样本行。覆盖断言三条已内置：`media_jobs.video_status_distribution`（video 状态种类 ≥4）、`usage_records.audio_metering`、`audit_logs.media_endpoints`。
 - 本地网关 Key、上游 API Key、OAuth Token 和代理密码均为模拟值，不会真实请求外部服务。
 - mock 用户明文口令固定为 `mockdata123456`，只用于本地登录联调；摘要同时记录各 API Key 明文。
 - 身份归属：主数据归属 seed 超管 `admin`（`sys_admin`，账户/分组/API Key/标签的主体），免登录联调推荐 `JUHE_AI_DEV_AUTO_LOGIN_USERNAME=admin`；`mockdata_admin` 是普通管理员（admin 角色）视角样本，名下有自有账户、标签与团队成员，用于管理员自有资源与 owner 作用域页面验收。

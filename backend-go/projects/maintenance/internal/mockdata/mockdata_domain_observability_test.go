@@ -390,6 +390,8 @@ func TestSeedObservabilitySampleMatrix(t *testing.T) {
 	wantEndpoints := map[string]bool{
 		"/v1/responses": false, "/v1/chat/completions": false,
 		"/v1/images/generations": false, "/v1/models": false,
+		// 媒体端点样本（媒体契约 §3.4）。
+		"/v1/audio/speech": false, "/v1/videos": false,
 	}
 	for _, endpoint := range endpoints {
 		if _, ok := wantEndpoints[endpoint]; ok {

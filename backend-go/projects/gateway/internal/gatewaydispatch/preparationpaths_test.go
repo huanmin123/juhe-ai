@@ -847,3 +847,77 @@ func TestFetchSameAccountRetryCarry(t *testing.T) {
 		t.Fatalf("account = %s", result.Account.ID)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 媒体车道豁免热质量排序（2026-10-04 主代理裁决 + 媒体设计 §3 车道行为规则）
+// ---------------------------------------------------------------------------
+
+// recordingHotQualityPort 记录调用次数并反转候选顺序，使热质量排序是否
+// 生效可观察。
+type recordingHotQualityPort struct {
+	calls atomic.Int32
+}
+
+func (f *recordingHotQualityPort) OrderAsync(_ context.Context, input HotQualityOrderInput) (HotQualityOrder, error) {
+	f.calls.Add(1)
+	reversed := make([]AccountCandidate, 0, len(input.Accounts))
+	for index := len(input.Accounts) - 1; index >= 0; index-- {
+		reversed = append(reversed, input.Accounts[index])
+	}
+	return HotQualityOrder{Accounts: reversed, DispatchIntent: "primary_service"}, nil
+}
+
+// TestMediaLaneSkipsHotQualityOrder：audio/video lane 跳过热质量排序——
+// 端口不被调用、候选保持既有顺序、不携带探索预留/结算钩子；text lane
+// 照常进入热质量排序。
+func TestMediaLaneSkipsHotQualityOrder(t *testing.T) {
+	for _, lane := range []string{"audio", "video"} {
+		t.Run("lane="+lane, func(t *testing.T) {
+			pipeline, engine, _, _ := newPipeline(t)
+			hot := &recordingHotQualityPort{}
+			engine.HotQuality = hot
+			accounts := testAccounts("a-1", "a-2", "a-3")
+			input := w13g3DispatchPrepInput(t, newTestRequest(t, `{"model":"gpt-test","stream":false}`), accounts, &w13g3Coordinator{})
+			input.RequestLane = lane
+			result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
+			if err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts {
+				t.Fatalf("outcome = %#v", result)
+			}
+			if got := hot.calls.Load(); got != 0 {
+				t.Fatalf("媒体 lane 必须跳过热质量排序，端口被调用 %d 次", got)
+			}
+			if len(result.Accounts) != len(accounts) {
+				t.Fatalf("accounts = %v", result.Accounts)
+			}
+			for index, account := range accounts {
+				if result.Accounts[index].ID != account.ID {
+					t.Fatalf("媒体 lane 候选顺序必须保持不变: got %v", result.Accounts)
+				}
+			}
+			if result.HotQualityExplorationReservation != nil || result.SettleHotQualityExplorationAfterDispatch != nil {
+				t.Fatalf("媒体 lane 不得携带热质量探索预留/结算钩子")
+			}
+		})
+	}
+
+	t.Run("lane=text still orders", func(t *testing.T) {
+		pipeline, engine, _, _ := newPipeline(t)
+		hot := &recordingHotQualityPort{}
+		engine.HotQuality = hot
+		input := w13g3DispatchPrepInput(t, newTestRequest(t, `{"model":"gpt-test","stream":false}`), testAccounts("a-1", "a-2", "a-3"), &w13g3Coordinator{})
+		input.RequestLane = "text"
+		result, err := pipeline.PrepareDispatchAccounts(context.Background(), input)
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts {
+			t.Fatalf("outcome = %#v", result)
+		}
+		if got := hot.calls.Load(); got == 0 {
+			t.Fatalf("text lane 必须照常进入热质量排序")
+		}
+	})
+}

@@ -12,7 +12,9 @@ func TestOpenAIEndpointModeValuesIncludeImages(t *testing.T) {
 	}
 	// M1 同步音频：audio_speech / audio_transcription_json 随 images_json
 	// 同语义追加（可表达、opt-in、不进默认集）。
-	want := []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json"}
+	// M2 同步视频：video_create / video_get / video_content / video_cancel
+	// 四 token 同语义追加（候选过滤消费 video_create，其余为能力表达）。
+	want := []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel"}
 	if len(OpenAIEndpointModeValues) != len(want) {
 		t.Fatalf("openai 模式表长度不一致：%v", OpenAIEndpointModeValues)
 	}

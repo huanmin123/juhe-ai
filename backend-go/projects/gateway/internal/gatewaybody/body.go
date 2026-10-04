@@ -334,6 +334,9 @@ const (
 	RawBodyLimitScopeGateway RawBodyLimitScope = "gateway"
 	RawBodyLimitScopeText    RawBodyLimitScope = "text"
 	RawBodyLimitScopeImage   RawBodyLimitScope = "image"
+	// RawBodyLimitScopeAudio 是媒体车道独立 body 限额档（媒体设计 §3）：
+	// audio 同步上传体对齐 image 的 64MB 档（OpenAI 事实约束 25MB + 余量）。
+	RawBodyLimitScopeAudio RawBodyLimitScope = "audio"
 )
 
 // InFlightState mirrors GatewayBodyInFlightState.

@@ -149,6 +149,15 @@ func TestChainIsSupportedCatalogModel(t *testing.T) {
 	if !chainIsSupportedCatalogModel(gatewayruntimecache.ProviderModelCatalogItem{Model: "gpt-5.6"}) {
 		t.Fatal("普通模型必须判支持")
 	}
+	// M2 裁决（媒体设计 §2）：mode=video 且协议含 video 的模型收录；无
+	// video 协议的 video 行维持排除。
+	video := "video"
+	if !chainIsSupportedCatalogModel(gatewayruntimecache.ProviderModelCatalogItem{Model: "sora-2", Mode: &video, SupportedAPIProtocols: []string{"video"}}) {
+		t.Fatal("video 模式 + video 协议必须判支持")
+	}
+	if chainIsSupportedCatalogModel(gatewayruntimecache.ProviderModelCatalogItem{Mode: &video, SupportedAPIProtocols: []string{"chat_completions"}}) {
+		t.Fatal("video 模式无 video 协议必须判不支持")
+	}
 }
 
 func TestChainCompareCatalogModelsCaseTiebreak(t *testing.T) {

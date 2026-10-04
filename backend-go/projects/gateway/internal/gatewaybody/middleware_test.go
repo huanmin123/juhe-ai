@@ -231,8 +231,20 @@ func TestRejectByContentLength(t *testing.T) {
 			wantHandled:   true, wantStatus: 413, wantBody: wantTooLargeBody,
 		},
 		{
-			name:          "unrelated path skipped",
+			name:          "audio path allows text-size bodies",
 			path:          "/v1/audio/transcriptions",
+			contentLength: "33554432",
+			wantHandled:   false,
+		},
+		{
+			name:          "audio path over 64mb",
+			path:          "/v1/audio/speech",
+			contentLength: "67108865",
+			wantHandled:   true, wantStatus: 413, wantBody: wantTooLargeBody,
+		},
+		{
+			name:          "unrelated path skipped",
+			path:          "/v1/other/endpoint",
 			contentLength: "999999999",
 			wantHandled:   false,
 		},

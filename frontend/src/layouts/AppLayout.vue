@@ -120,7 +120,8 @@ import {
   SafetyCertificateOutlined,
   SettingOutlined,
   TeamOutlined,
-  UserSwitchOutlined
+  UserSwitchOutlined,
+  VideoCameraOutlined
 } from '@ant-design/icons-vue'
 import type { MenuProps } from 'ant-design-vue'
 import { message } from '@/lib/antd'
@@ -274,6 +275,7 @@ const menuIconMap = {
   '/usage-stats': FundOutlined,
   '/my-usage-records': HistoryOutlined,
   '/usage-records': HistoryOutlined,
+  '/media-jobs': VideoCameraOutlined,
   '/my-operation-logs': ProfileOutlined,
   '/operation-logs': ProfileOutlined,
   '/public-api-logs': ApiOutlined,

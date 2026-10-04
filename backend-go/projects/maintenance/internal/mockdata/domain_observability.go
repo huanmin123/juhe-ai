@@ -527,7 +527,8 @@ type observabilityAuditSample struct {
 
 // observabilityAuditSamples 覆盖成功 / 重试成功 / 模型映射 / 上游失败 / 网关失败 /
 // 请求体拒绝 / 流式中断 / 下游断开 / 健康检查流量来源，端点覆盖
-// /v1/responses、/v1/chat/completions、/v1/images/generations、/v1/models。
+// /v1/responses、/v1/chat/completions、/v1/images/generations、/v1/models 与
+// 媒体端点 /v1/audio/speech、/v1/videos（媒体契约 §3.4）。
 var observabilityAuditSamples = []observabilityAuditSample{
 	{
 		Method: "POST", Path: "/v1/chat/completions", Family: "chat_completions",
@@ -549,6 +550,21 @@ var observabilityAuditSamples = []observabilityAuditSample{
 		TrafficSource: "gateway", ClientType: "generic_openai",
 		Outcome: "success", Success: true, StatusCode: 200, SampleReason: "always",
 		Attempts: 1, Parts: []string{"client_request", "gateway_response"},
+	},
+	// 媒体任务审计样本（媒体契约 §3.4）：M1 同步音频 speech 与 M2 视频创建。
+	{
+		Method: "POST", Path: "/v1/audio/speech", Family: "audio",
+		Model: "gpt-4o-mini-tts", UpstreamModel: "gpt-4o-mini-tts", PricingModel: "gpt-4o-mini-tts",
+		TrafficSource: "gateway", ClientType: "generic_openai",
+		Outcome: "success", Success: true, StatusCode: 200, SampleReason: "always",
+		Attempts: 1, Parts: []string{"client_request", "upstream_response", "gateway_response"},
+	},
+	{
+		Method: "POST", Path: "/v1/videos", Family: "videos",
+		Model: "sora-2", UpstreamModel: "sora-2", PricingModel: "sora-2",
+		TrafficSource: "gateway", ClientType: "generic_openai",
+		Outcome: "success", Success: true, StatusCode: 200, SampleReason: "always",
+		Attempts: 1, Parts: []string{"client_request", "upstream_response", "gateway_response"},
 	},
 	{
 		Method: "GET", Path: "/v1/models", Family: "models",
@@ -1162,6 +1178,10 @@ func observabilityAuditUpstreamURL(row observabilityAuditRow) string {
 	switch row.Family {
 	case "images":
 		return "https://api.openai.example.invalid/v1/images/generations"
+	case "audio":
+		return "https://api.openai.example.invalid/v1/audio/speech"
+	case "videos":
+		return "https://api.openai.example.invalid/v1/videos"
 	case "models":
 		return "https://api.openai.example.invalid/v1/models"
 	case "responses":
@@ -1941,6 +1961,9 @@ var observabilityRuntimeServerEvents = []struct {
 	{Level: "error", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "GET", Path: "/v1/models", Status: 500, Failure: "gateway", Duration: 204},
 	{Level: "warn", Event: "gateway_upstream_response_failed", Message: "上游返回非成功状态", Method: "POST", Path: "/v1/chat/completions", Status: 502, Failure: "upstream", Duration: 1877},
 	{Level: "error", Event: "http_request_closed", Message: "HTTP 请求已断开", Method: "POST", Path: "/v1/images/generations", Status: 499, Failure: "downstream", Duration: 4201},
+	// 媒体请求日志样本（媒体契约 §3.4）：同步音频与视频任务创建。
+	{Level: "info", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "POST", Path: "/v1/audio/speech", Status: 200, Duration: 2210},
+	{Level: "info", Event: "http_request_completed", Message: "HTTP 请求已结束", Method: "POST", Path: "/v1/videos", Status: 200, Duration: 310},
 }
 
 // observabilityRuntimeWorkerEvents 是 stats-worker 角色的定时任务事件序列：
