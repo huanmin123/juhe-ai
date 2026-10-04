@@ -312,12 +312,16 @@ func fullchainScriptableRequest(r *http.Request, model string) bool {
 //   - M3 通义百炼万相形态（契约 §10.1）：POST /api/v1/services/aigc/
 //     video-generation/video-synthesis 与 GET /api/v1/tasks/{id}[/content]
 //     （同上不读场景值；qwen §10.1 面无取消端点）
+//   - M3 回填 xAI 形态（契约 §6.1）：POST /v1/videos/generations（轮询/
+//     产物复用 /v1/videos/{id} 任务面，同上不读场景值；xai 无取消端点）
 func fullchainMediaScriptable(method, path string) bool {
 	switch path {
 	case "/v1/audio/speech", "/v1/audio/transcriptions", "/v1/audio/translations":
 		return method == http.MethodPost
 	case "/v1/videos":
 		return method == http.MethodPost || method == http.MethodGet
+	case "/v1/videos/generations":
+		return method == http.MethodPost
 	}
 	if rest, ok := strings.CutPrefix(path, "/v1/videos/"); ok && rest != "" {
 		id, tail, hasTail := strings.Cut(rest, "/")

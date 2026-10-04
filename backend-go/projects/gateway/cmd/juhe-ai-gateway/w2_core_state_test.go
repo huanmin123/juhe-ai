@@ -220,6 +220,11 @@ func w2aFixtureDatabases(t *testing.T) (*sql.DB, *sql.DB) {
 		"imageUncommittedAttemptMaxLifetimeSeconds":  "300",
 		"imageRequestWallTimeoutSeconds":             "600",
 		"chatImageGenerationTotalTimeoutSeconds":     "300",
+		// M5b realtime 会话生命周期三键（Realtime 设计 §3）：夹具值与
+		// pg_schema 种子默认同源（120/1800/5）。
+		"realtimeIdleTimeoutSeconds":           "120",
+		"realtimeMaxSessionSeconds":            "1800",
+		"realtimeMaxConnectionsPerApiKey":      "5",
 		"audioFirstResponseTimeoutSeconds":           "120",
 		"videoCreateTimeoutSeconds":                  "60",
 		"noAvailableAccountWaitTimeoutSeconds":       "30",

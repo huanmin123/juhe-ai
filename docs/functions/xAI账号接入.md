@@ -19,7 +19,7 @@ type ProtocolCode = 'openai'
 type ProtocolVersion = 'v1'
 type ProviderProtocolProfileId = 'profile_xai_openai_v1'
 type XaiAccountType = 'api_key' | 'oauth'
-type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse'
+type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' | 'responses_sse' | 'video_create' | 'video_get' | 'video_content' | 'video_cancel'
 ```
 
 | 档案 | 默认 Base URL | 账户类型 | 默认模型 | 默认能力 |
@@ -32,6 +32,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 - `credentials.api_key` 加密保存，列表和导入回显不得暴露完整值；账户测试与网关都从命中账户替换本地认证头。
 - OAuth 凭据保存 `access_token`、`refresh_token`、`id_token`、`token_type`、`expires_at`、`client_id`、`scope` 及可取得的 `email`、`sub`、`team_id`、`subscription_tier`、`entitlement_status`；刷新响应未轮换 Refresh Token 时保留旧值。
 - API Key 的 `credentials.supported_endpoint_modes` 省略时默认四种 JSON / SSE 能力；OAuth 固定为 `responses_json`、`responses_sse`，不能通过表单扩展到 Chat。
+- API Key 账户可显式 opt-in 视频四值（`video_create` / `video_get` / `video_content` / `video_cancel`，openai 族统一词表）承接 `/v1/videos` 媒体链（2026-10-04 M3 回填批，契约 §6.1）：`supportedModels` 声明 `grok-imagine-video-1.5`（目录协议 `video`，经 xai openai 档案协议白名单放行）；取消为本地收敛（上游无取消端点）。
 - xAI API Key 账户默认写入 `pending_test`，由后台检查通过后才允许调度；人工测试只生成诊断、使用记录和审计，不改变账户健康事实。
 - Grok OAuth 创建也写入 `pending_test`，默认并发为 1；请求前按到期时间单飞刷新并持久化轮换后的 token，自定义 `base_url` 在刷新和重新授权后继续保留。
 - 默认数据初始化和系统账户创建都会在每个系统账户缺少默认分组时，幂等创建启用的 `providerCode = xai` 默认分组；已有默认分组不改变其启停状态。xAI 账户只能加入该供应商的分组。API Key / 路由策略只负责入口和分组调度，不保存 xAI 专属客户端画像或跨协议转换规则。
@@ -57,6 +58,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 | API Key：`/v1/chat/completions`、`/chat/completions` | `<base_url>/chat/completions` | OpenAI Chat Completions 直连 |
 | API Key：`/v1/responses`、`/responses` | `<base_url>/responses` | OpenAI Responses 直连 |
 | OAuth：`/v1/responses`、`/responses` | `<base_url>/responses` | Grok CLI Responses 直连 |
+| API Key：`/v1/videos` 族（创建/轮询/产物） | `<base_url>/videos/generations` 创建 + `<base_url>/videos/{request_id}` 轮询/产物 | Grok Imagine Video 异步视频（opt-in `video_*` 端点模式；契约 §6.1；统一参数经媒体 adapter 改写，受理凭据 = `request_id`） |
 
 请求体默认 raw passthrough；只在账户模型映射、Codex 客户端兼容或 GPT 受控参数覆盖明确命中时做最小 JSON 改写。Chat / Responses 的 usage 复用 OpenAI 语义，`providerCode`、`providerProtocolProfileId` 和真实上游模型仍记录为 xAI 事实。
 
@@ -73,7 +75,8 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 本地内置目录按 `2026-07-18` xAI 官方模型页和价格页快照维护，当前包含：
 
 - 文本模型：`grok-4.5`、`grok-4.20-0309-reasoning`、`grok-4.20-0309-non-reasoning`、`grok-build-0.1`、`grok-4.20-multi-agent-0309`；官方模型页均记录 `Text, Image -> Text`，本地目录按模型保留图片输入能力。`grok-4.3` 因无法交叉确认精确首发日期，已从内置目录移除。
-- 图片模型计价项：`grok-imagine-image` 每张 0.02 USD、`grok-imagine-image-quality` 每张 0.05 USD。当前 xAI provider driver 只开放 Chat / Responses 文本主链；账户模型选项和最终保存会按 `profile_xai_openai_v1` 的 Chat / Responses 协议交集过滤，图片专用模型不能进入 `supportedModels` 或 `healthCheckModel`。实际使用图片模型前需补专用 Images driver / 回归。
+- 图片模型计价项：`grok-imagine-image` 每张 0.02 USD、`grok-imagine-image-quality` 每张 0.05 USD。图片专用模型按 images 协议可过目录协议校验，但网关当前无 xAI Images 出站 driver，实际使用图片模型前需补专用 Images driver / 回归。
+- 视频模型：`grok-imagine-video-1.5`（2026-10-04 M3 回填批收录，mode=video、目录协议 `video`，1–15 秒 / 七档宽高比 / 480p–1080p / 音轨默认开启，契约 §6.1）。账户声明该模型即可经 opt-in `video_*` 端点模式承接 `/v1/videos` 链；官方 USD 秒价未核实，目录不落价（done 的 `video.duration` 秒计量照抽、成本不虚计）。
 - 当前没有可靠证据支持为这些模型暴露可选 `reasoning_effort` 枚举或默认档位，因此目录保持空数组，My Chat 不显示思考档位控件；模型名中的 reasoning / non-reasoning 事实不等于可任意猜测请求参数。
 
 文本价格以 USD / 1M token 记录：

@@ -663,7 +663,11 @@ func isImageGenerationModel(model string) bool {
 		strings.HasPrefix(normalized, "dall-e") ||
 		strings.HasPrefix(normalized, "imagen-") ||
 		strings.HasPrefix(normalized, "nano-banana") ||
-		strings.HasPrefix(normalized, "grok-imagine") ||
+		// grok-imagine 前缀排除 grok-imagine-video 段（与 gatewayopenai.
+		// IsImageGenerationModel 同步）：xAI 官方 grok-imagine-video-* 是
+		// 视频模型（/v1/videos 面），误入图像档会让视频创建请求落 image
+		// 限额档位（64MB + Image scope），与同端点 sora 的 text 档不一致。
+		(strings.HasPrefix(normalized, "grok-imagine") && !strings.HasPrefix(normalized, "grok-imagine-video")) ||
 		geminiImageModelPattern.MatchString(normalized)
 }
 
