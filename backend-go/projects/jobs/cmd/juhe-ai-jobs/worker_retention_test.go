@@ -447,6 +447,12 @@ func seedDeletedAccount(t *testing.T, dir string) {
 		"CREATE TABLE IF NOT EXISTS account_supported_models (account_id TEXT)",
 		"CREATE TABLE IF NOT EXISTS account_model_mappings (account_id TEXT)",
 		"CREATE TABLE IF NOT EXISTS account_tag_bindings (account_id TEXT)",
+		// 物理删除三表清理双方言（SQLite 句柄未开 foreign_keys，CASCADE 不
+		// 生效，主链显式 DELETE 要求三表存在；真实 schema 见 maintenance
+		// sqlite_schema_business.go）。
+		"CREATE TABLE IF NOT EXISTS account_name_search_terms (account_id TEXT)",
+		"CREATE TABLE IF NOT EXISTS account_name_search_documents (account_id TEXT)",
+		"CREATE TABLE IF NOT EXISTS account_api_key_runtime_states (account_id TEXT)",
 		// 完整列集（DerivedWindows 接线后 listQuotaHourlyWindowScopeBindings
 		// 按 system_account_id/window_hours 读取）。
 		"CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (system_account_id TEXT NOT NULL DEFAULT '', scope_type TEXT NOT NULL DEFAULT '', scope_id TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL DEFAULT '', window_hours INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')",

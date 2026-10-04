@@ -1721,9 +1721,9 @@ func requiredIncidentPart(value *string, name string) string {
 }
 
 // requiredIncidentRequestLane 校验持久化 incident 的 requestLane，词表与
-// requiredRequestLane 同源（gatewayproto text/image/audio/video；媒体车道
-// 不拒斥——2026-10-04 裁决 + 媒体设计 §3，媒体 lane 电路以独立 lane 维度
-// 持久化，与 text/image 电路隔离）。
+// requiredRequestLane 同源（gatewayproto text/image/audio/video/realtime；
+// 媒体车道不拒斥——2026-10-04 裁决 + 媒体设计 §3 + M5b Realtime 设计 §6，
+// 媒体 lane 电路以独立 lane 维度持久化，与 text/image 电路隔离）。
 func requiredIncidentRequestLane(value *string) string {
 	if value == nil {
 		panic("持久化账户 circuit requestLane 无效")

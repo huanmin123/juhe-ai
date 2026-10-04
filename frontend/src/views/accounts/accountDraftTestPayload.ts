@@ -199,6 +199,12 @@ function emptyAccountUsageSummary(): AccountSummary['usage'] {
     thinkingTokens: 0,
     inputImageTokens: 0,
     outputImageTokens: 0,
+    inputAudioTokens: 0,
+    outputAudioTokens: 0,
+    ttsInputChars: 0,
+    audioInputSeconds: 0,
+    outputVideoSeconds: 0,
+
     totalTokens: 0,
     totalCost: 0
   }

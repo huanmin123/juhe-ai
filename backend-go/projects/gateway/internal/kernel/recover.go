@@ -1,7 +1,10 @@
 package kernel
 
 import (
+	"bufio"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 )
@@ -42,6 +45,16 @@ func recoverMiddleware(next http.Handler) http.Handler {
 type committedWriter struct {
 	http.ResponseWriter
 	wrote bool
+}
+
+// Hijack forwards the WebSocket upgrade hijack to the wrapped writer
+// （M5b2 realtime WS 面：内嵌接口不提升 Hijacker，必须显式转发）。
+func (c *committedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := c.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("committed writer: 底层 writer 未实现 http.Hijacker")
+	}
+	return hijacker.Hijack()
 }
 
 func (c *committedWriter) WriteHeader(status int) {

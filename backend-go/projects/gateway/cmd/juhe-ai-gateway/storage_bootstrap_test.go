@@ -96,15 +96,15 @@ func TestEnsureGatewaySQLiteStoragePreflight(t *testing.T) {
 	if err := businessDB.QueryRow("SELECT count(*) FROM api_keys").Scan(&apiKeys); err != nil {
 		t.Fatalf("query api keys: %v", err)
 	}
-	if apiKeys != 8 {
-		t.Fatalf("api keys = %d, want 8 (7 default + 1 chat)", apiKeys)
+	if apiKeys != 11 {
+		t.Fatalf("api keys = %d, want 11 (10 default + 1 chat)", apiKeys)
 	}
 	var defaultGroups int
 	if err := businessDB.QueryRow("SELECT count(*) FROM groups WHERE is_default = 1 AND system_account_id = 'sys_admin'").Scan(&defaultGroups); err != nil {
 		t.Fatalf("query groups: %v", err)
 	}
-	if defaultGroups != 8 {
-		t.Fatalf("default groups = %d, want 8", defaultGroups)
+	if defaultGroups != 11 {
+		t.Fatalf("default groups = %d, want 11", defaultGroups)
 	}
 
 	assertPreflightTables(t, filepath.Join(root, "stats.sqlite3"))

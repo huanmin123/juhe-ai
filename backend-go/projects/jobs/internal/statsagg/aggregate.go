@@ -168,6 +168,11 @@ const usageStatsRecordSelectColumns = `
 	thinking_tokens,
 	input_image_tokens,
 	output_image_tokens,
+	input_audio_tokens,
+	output_audio_tokens,
+	tts_input_chars,
+	audio_input_seconds,
+	output_video_seconds,
 	cost_usd,
 	error_code,
 	error_message,
@@ -196,6 +201,7 @@ func nullableStringScanner(rows *sql.Rows) ([]any, *UsageStatsRecordRow) {
 		&row.CacheReadTokens, &row.CacheReadCostUsd,
 		&row.CacheWriteTokens, &row.CacheWrite1hTokens, &row.CacheWriteCostUsd,
 		&row.ThinkingTokens, &row.InputImageTokens, &row.OutputImageTokens,
+		&row.InputAudioTokens, &row.OutputAudioTokens, &row.TTSInputChars, &row.AudioInputSeconds, &row.OutputVideoSeconds,
 		&row.CostUsd, &row.ErrorCode, &row.ErrorMessage,
 		&row.AccountOwnerSystemAccountID, &row.GroupOwnerSystemAccountID,
 		&row.AccountAccessType, &row.GroupAccessType,
@@ -238,6 +244,11 @@ func normalizePostgresUsageStatsRecordRow(row UsageStatsRecordRow) UsageStatsRec
 	row.ThinkingTokens = nullableNumber(row.ThinkingTokens)
 	row.InputImageTokens = nullableNumber(row.InputImageTokens)
 	row.OutputImageTokens = nullableNumber(row.OutputImageTokens)
+	row.InputAudioTokens = nullableNumber(row.InputAudioTokens)
+	row.OutputAudioTokens = nullableNumber(row.OutputAudioTokens)
+	row.TTSInputChars = nullableNumber(row.TTSInputChars)
+	row.AudioInputSeconds = nullableNumber(row.AudioInputSeconds)
+	row.OutputVideoSeconds = nullableNumber(row.OutputVideoSeconds)
 	row.CostUsd = nullableNumber(row.CostUsd)
 	return row
 }

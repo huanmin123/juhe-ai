@@ -365,7 +365,11 @@ func resolveAccountModelMapping(account AccountCandidate, requestedModel, source
 // ---------------------------------------------------------------------------
 
 // GatewayRequestEndpointFamily mirrors gatewayRequestEndpointFamily(req):
-// the OpenAI family wins, then anthropic messages, then gemini.
+// the OpenAI family wins, then anthropic messages, then gemini. M4b 媒体映射
+//（媒体设计 §9 hybrid 行）：chat/responses/messages 之后的媒体创建形态归
+// 媒体映射族（POST /v1/videos → video_generation、POST /v1/audio/speech →
+// tts），让候选过滤/模型感知加载与构造侧 requestMappingSourceFamilyOf 用
+// 同一词表解析媒体映射（此前空族使映射账户在模型过滤恒 miss）。
 func GatewayRequestEndpointFamily(req *gatewaypreauth.GatewayRequest) string {
 	if family := openAIRequestEndpointFamily(req); family != "" {
 		return family
@@ -373,7 +377,31 @@ func GatewayRequestEndpointFamily(req *gatewaypreauth.GatewayRequest) string {
 	if family := anthropicMessagesRequestEndpointFamily(req); family != "" {
 		return family
 	}
+	if family := mediaRequestEndpointFamily(req); family != "" {
+		return family
+	}
 	return geminiRequestEndpointFamilyOf(req)
+}
+
+// mediaRequestEndpointFamily maps the media creation request shapes onto the
+// M4b media mapping families. 任务面 GET/DELETE 不归族（账户亲和直连，不经
+// 映射解析）；STT 转写形态本批不设映射族，维持空。
+func mediaRequestEndpointFamily(req *gatewaypreauth.GatewayRequest) string {
+	if req == nil || req.MethodUpper() != "POST" {
+		return ""
+	}
+	path := strings.ToLower(trimString(splitPath(req.PathAndQuery())))
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	path = stripV1Prefix(path)
+	switch path {
+	case "/videos":
+		return gatewayopenai.FamilyVideoGeneration
+	case "/audio/speech":
+		return gatewayopenai.FamilyTts
+	}
+	return ""
 }
 
 func openAIRequestEndpointFamily(req *gatewaypreauth.GatewayRequest) string {

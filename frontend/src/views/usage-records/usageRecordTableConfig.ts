@@ -15,6 +15,7 @@ export function usageRecordTableColumns(input: {
     { title: '类型', key: 'stream', width: 90 },
     { title: '状态', key: 'status', width: 220 },
     { title: 'Token 用量', key: 'tokens', width: 150 },
+    { title: '媒体用量', key: 'media', width: 150 },
     { title: '成本', key: 'cost', width: 110 },
     { title: '延迟', key: 'latency', width: 150 },
     { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180, sorter: true, sortOrder: input.columnSortOrder('createdAt') },

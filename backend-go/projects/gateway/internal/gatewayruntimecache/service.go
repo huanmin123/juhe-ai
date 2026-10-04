@@ -130,6 +130,10 @@ type ReadModels interface {
 	// 'read_gateway_runtime', key, skipDynamicRouteSelection: true}): the full
 	// validated runtime read for one raw API key.
 	ReadGatewayRuntime(ctx context.Context, key string) (GatewayRuntime, error)
+	// ReadGatewayRuntimeByAPIKeyID 是 M5b realtime ephemeral token 面（Realtime
+	// 设计 §4）的按 id 读取：token 载荷只携带 api_key_id，WS 升级侧按 id 解
+	// 析 API Key 行与所选分组运行时（状态/过期/绑定校验与 raw-key 读一致）。
+	ReadGatewayRuntimeByAPIKeyID(ctx context.Context, apiKeyID string) (GatewayRuntime, error)
 	// ResolveGroupUsageAccessMetadata mirrors resolveGroupUsageAccessMetadata.
 	ResolveGroupUsageAccessMetadata(ctx context.Context, groupID, systemAccountID string) (*GroupUsageAccessMetadata, error)
 	// ListOpenAIAccountsForGroupResult mirrors listOpenAIAccountsForGroupResult.

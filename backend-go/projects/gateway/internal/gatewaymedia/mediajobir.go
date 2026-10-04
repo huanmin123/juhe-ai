@@ -51,9 +51,12 @@ type MediaJobError struct {
 
 // MediaJobUsage 是任务用量面。OutputVideoSeconds 是输出视频秒数（契约 §2.8：
 // openai 视频上游无 usage 回报，网关自算口径取轮询响应 seconds_length；失败
-// 任务不虚计）；Raw 保留厂商原生用量字段（openai 无，留空不猜测）。
+// 任务不虚计）；AudioInputSeconds 是长转写输入音频秒数（契约 §10.2：paraformer
+// 轮询 usage 的时长计量照抽，M3f）；Raw 保留厂商原生用量字段（openai 无，
+// 留空不猜测）。
 type MediaJobUsage struct {
 	OutputVideoSeconds *float64
+	AudioInputSeconds  *float64
 	Raw                map[string]any
 }
 

@@ -83,6 +83,9 @@ var SystemSettingKeys = []string{
 	"chatImageGenerationTotalTimeoutSeconds",
 	"audioFirstResponseTimeoutSeconds",
 	"videoCreateTimeoutSeconds",
+	"realtimeIdleTimeoutSeconds",
+	"realtimeMaxSessionSeconds",
+	"realtimeMaxConnectionsPerApiKey",
 	"noAvailableAccountWaitTimeoutSeconds",
 	"streamFailureThresholdCount",
 	"streamFailureThresholdWindowMinutes",
@@ -175,6 +178,11 @@ var systemSettingSpecs = map[string]settingSpec{
 	"chatImageGenerationTotalTimeoutSeconds":     {integer: true, min: 60, max: 86400},
 	"audioFirstResponseTimeoutSeconds":           {integer: true, min: 10, max: 3600},
 	"videoCreateTimeoutSeconds":                  {integer: true, min: 10, max: 3600},
+	// M5b realtime 会话生命周期键（Realtime 设计 §3；消费面随 M5b2 WS
+	// 桥接 handler 生效）。
+	"realtimeIdleTimeoutSeconds":                 {integer: true, min: 10, max: 3600},
+	"realtimeMaxSessionSeconds":                  {integer: true, min: 60, max: 86400},
+	"realtimeMaxConnectionsPerApiKey":            {integer: true, min: 1, max: 100},
 	"noAvailableAccountWaitTimeoutSeconds":       {integer: true, min: 10, max: 3600},
 	"streamFailureThresholdCount":                {integer: true, min: 1, max: 100},
 	"streamFailureThresholdWindowMinutes":        {integer: true, min: 1, max: 1440},
@@ -241,6 +249,11 @@ var compatibleSystemSettingDefaults = map[string]any{
 	// pgSeedSystemSettings、jobssettings.DefaultSystemSettings 一致。
 	"audioFirstResponseTimeoutSeconds": 120,
 	"videoCreateTimeoutSeconds":        60,
+	// M5b realtime 会话生命周期键（Realtime 设计 §3）：同语义按种子默认
+	// 补齐（消费面随 M5b2 WS 桥接 handler 生效）。
+	"realtimeIdleTimeoutSeconds":      120,
+	"realtimeMaxSessionSeconds":       1800,
+	"realtimeMaxConnectionsPerApiKey": 5,
 }
 
 // GlobalSettingKeys mirrors globalSettingKeys — the brand subset served by
@@ -301,6 +314,9 @@ var ManagementSettingsSectionCatalog = map[string]ManagementSettingsSection{
 		"chatImageGenerationTotalTimeoutSeconds",
 		"audioFirstResponseTimeoutSeconds",
 		"videoCreateTimeoutSeconds",
+		"realtimeIdleTimeoutSeconds",
+		"realtimeMaxSessionSeconds",
+		"realtimeMaxConnectionsPerApiKey",
 		"noAvailableAccountWaitTimeoutSeconds",
 		"upstreamClientVersionOverrides",
 	}},

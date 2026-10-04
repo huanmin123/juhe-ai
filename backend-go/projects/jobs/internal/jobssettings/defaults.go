@@ -40,8 +40,13 @@ var DefaultSystemSettings = map[string]any{
 	"imageRequestWallTimeoutSeconds":             float64(3600),
 	"chatImageGenerationTotalTimeoutSeconds":     float64(900),
 	// 媒体车道独立超时档位（音频视频模型接入设计 §3，与 maintenance 种子同步）。
-	"audioFirstResponseTimeoutSeconds":           float64(120),
-	"videoCreateTimeoutSeconds":                  float64(60),
+	"audioFirstResponseTimeoutSeconds": float64(120),
+	"videoCreateTimeoutSeconds":        float64(60),
+	// M5b realtime 会话生命周期键（Realtime 设计 §3，与 maintenance 种子
+	// 同步；消费面随 M5b2 WS 桥接 handler 生效）。
+	"realtimeIdleTimeoutSeconds":                 float64(120),
+	"realtimeMaxSessionSeconds":                  float64(1800),
+	"realtimeMaxConnectionsPerApiKey":            float64(5),
 	"noAvailableAccountWaitTimeoutSeconds":       float64(270),
 	"streamFailureThresholdCount":                float64(3),
 	"streamFailureThresholdWindowMinutes":        float64(5),

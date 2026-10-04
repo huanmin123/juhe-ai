@@ -43,6 +43,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
 	sharedupstreamhttp "github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 )
 
@@ -120,6 +121,11 @@ type chainRuntimeDeps struct {
 	MediaJobsDB       *sql.DB
 	MediaJobsPostgres bool
 	MediaJobsSecret   string
+
+	// RealtimeTokens 是 M5b realtime ephemeral token 签发/校验面（Realtime
+	// 设计 §4；runtimeStateDriver!=='redis' 时 nil——client_secrets 端点显式
+	// 503 降级，同 MediaJobsDB nil 的降级先例）。
+	RealtimeTokens *realtimetoken.Service
 
 	// G13 runtime services (required: preflight hot path).
 	Circuits        gatewaypreauth.PreAuthCircuits
@@ -756,6 +762,12 @@ func composeGatewayChain(deps chainRuntimeDeps) (*gatewayChain, func(), error) {
 		anthropicUsageHeaders: deps.AnthropicUsageHeadersDispatcher,
 		// M2 媒体任务面（媒体设计 §4.2/§7/§8）。
 		mediaJobs: mediaJobs,
+		// M5b realtime ephemeral token 面（Realtime 设计 §2/§4）。
+		realtimeTokens: deps.RealtimeTokens,
+		// M5b2 realtime WS 桥接面（Realtime 设计 §3）：运行时缓存句柄 +
+		// 每 API Key 并发连接计数器（进程内原子）。
+		cache:               deps.Cache,
+		realtimeConnections: &chainRealtimeConnectionLimiter{},
 	}
 	// W4-B（BUG-0175）D-132 接线：响应层账户副作用面（配置策略避让 +
 	// 上游桶避让写侧）。nil 服务（组合测试）保持 nil——finalization 对 nil

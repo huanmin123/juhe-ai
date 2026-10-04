@@ -67,6 +67,16 @@ func OpenSQLite(path string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	// 与 maintenance/bootstrap.OpenSQLiteFile 先例对齐的连接 PRAGMA。WAL 是
+	// 文件持久属性：gateway 零配置臂经 OpenSQLiteFile 创建的库均为 WAL，专库
+	// 必须保持同一 journal 形态，否则 rollback journal 下写事务独占会阻塞
+	// 读池；对已存在的 rollback journal 文件重设 WAL 是安全幂等转换。
+	for _, pragma := range []string{"PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000", "PRAGMA journal_mode=WAL"} {
+		if _, err := db.Exec(pragma); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("配置 J3b SQLite bootstrap 连接 PRAGMA 失败: %w", err)
+		}
+	}
 	return db, nil
 }
 

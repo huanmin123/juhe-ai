@@ -768,10 +768,11 @@ var customProviderModelProtocolSet = map[string]bool{
 	"completions":             true,
 	"images":                  true,
 	// M1 同步音频协议词表（设计 §11.3）；M2 视频协议 video（设计 §11.3）；
-	// realtime 不放开（M5）。
+	// realtime 随 M5b realtime 基建放开（Realtime 设计 §6；不进映射面）。
 	"audio_speech":        true,
 	"audio_transcription": true,
 	"video":               true,
+	"realtime":            true,
 }
 
 var customModelCapabilityTokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)

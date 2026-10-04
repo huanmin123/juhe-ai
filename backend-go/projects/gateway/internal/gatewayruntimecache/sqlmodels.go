@@ -255,6 +255,18 @@ func projectGatewaySettings(raw map[string]any) (GatewaySettings, error) {
 	if out.VideoCreateTimeoutSeconds, err = numberSetting(raw, "videoCreateTimeoutSeconds", 10, 3600); err != nil {
 		return GatewaySettings{}, err
 	}
+	// M5b realtime 会话生命周期键（Realtime 设计 §3；值域与 settings 校验器
+	// 同源）。settings Store 的 compatible defaults 已保证键存在（M5b1 落键），
+	// 旧库缺行同样由 Load 兜底，不会因缺键中断投影。
+	if out.RealtimeIdleTimeoutSeconds, err = numberSetting(raw, "realtimeIdleTimeoutSeconds", 10, 3600); err != nil {
+		return GatewaySettings{}, err
+	}
+	if out.RealtimeMaxSessionSeconds, err = numberSetting(raw, "realtimeMaxSessionSeconds", 60, 86400); err != nil {
+		return GatewaySettings{}, err
+	}
+	if out.RealtimeMaxConnectionsPerAPIKey, err = numberSetting(raw, "realtimeMaxConnectionsPerApiKey", 1, 100); err != nil {
+		return GatewaySettings{}, err
+	}
 	if out.NoAvailableAccountWaitTimeoutSeconds, err = numberSetting(raw, "noAvailableAccountWaitTimeoutSeconds", 10, 3600); err != nil {
 		return GatewaySettings{}, err
 	}

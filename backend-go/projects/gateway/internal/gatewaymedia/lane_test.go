@@ -32,9 +32,13 @@ func TestRequestLaneForPath(t *testing.T) {
 		{"GET speech", "GET", "/v1/audio/speech", "", false},
 		{"chat completions", "POST", "/v1/chat/completions", "", false},
 		{"models", "GET", "/v1/models", "", false},
-		{"audio jobs (M2)", "POST", "/v1/audio/jobs", "", false},
+		{"audio jobs create (M3f, video lane)", "POST", "/v1/audio/jobs", gatewayproto.LaneVideo, true},
 		{"audio subpath not family", "POST", "/v1/audio/speech/extra", "", false},
-		{"realtime ws", "POST", "/v1/realtime", "", false},
+		{"realtime ws upgrade (M5b)", "GET", "/v1/realtime", gatewayproto.LaneRealtime, true},
+		{"realtime ws upgrade no v1", "GET", "/realtime", gatewayproto.LaneRealtime, true},
+		{"realtime ws upgrade query", "GET", "/v1/realtime?model=gpt-realtime", gatewayproto.LaneRealtime, true},
+		{"realtime POST is not the upgrade shape", "POST", "/v1/realtime", "", false},
+		{"realtime subpath not family", "GET", "/v1/realtime/extra", "", false},
 		{"empty", "POST", "", "", false},
 	}
 	for _, tc := range cases {

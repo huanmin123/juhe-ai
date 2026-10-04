@@ -37,6 +37,36 @@ export function usageRecordTokenParts(record: UsageRecordListItem): string[] {
   ]
 }
 
+/** 媒体秒数一位小数（M4a 媒体计量口径）。 */
+export function formatMediaSeconds(value?: unknown): string {
+  const numericValue = numberValue(value)
+  if (!numericValue) return '0.0'
+  return numericValue.toFixed(1)
+}
+
+/** 媒体计量部件：仅展示非零维度（音频 token 千分位、TTS 字符千分位、秒一位小数）。 */
+export function usageRecordMediaParts(record: Pick<UsageRecordListItem,
+  'inputAudioTokens' | 'outputAudioTokens' | 'ttsInputChars' | 'audioInputSeconds' | 'outputVideoSeconds'>): string[] {
+  const parts: string[] = []
+  const inputAudioTokens = numberValue(record.inputAudioTokens) ?? 0
+  const outputAudioTokens = numberValue(record.outputAudioTokens) ?? 0
+  const ttsInputChars = numberValue(record.ttsInputChars) ?? 0
+  const audioInputSeconds = numberValue(record.audioInputSeconds) ?? 0
+  const outputVideoSeconds = numberValue(record.outputVideoSeconds) ?? 0
+  if (inputAudioTokens > 0) parts.push(`音入 ${formatTokens(inputAudioTokens)}`)
+  if (outputAudioTokens > 0) parts.push(`音出 ${formatTokens(outputAudioTokens)}`)
+  if (ttsInputChars > 0) parts.push(`字符 ${formatTokens(ttsInputChars)}`)
+  if (audioInputSeconds > 0) parts.push(`音秒 ${formatMediaSeconds(audioInputSeconds)}`)
+  if (outputVideoSeconds > 0) parts.push(`视频秒 ${formatMediaSeconds(outputVideoSeconds)}`)
+  return parts
+}
+
+/** 记录是否存在任一媒体计量（全零或缺失时表格显示占位符）。 */
+export function usageRecordHasMediaMetering(record: Pick<UsageRecordListItem,
+  'inputAudioTokens' | 'outputAudioTokens' | 'ttsInputChars' | 'audioInputSeconds' | 'outputVideoSeconds'>): boolean {
+  return usageRecordMediaParts(record).length > 0
+}
+
 export function formatRecordTokens(record: UsageRecordListItem): string {
   return usageRecordTokenParts(record).join(' / ')
 }

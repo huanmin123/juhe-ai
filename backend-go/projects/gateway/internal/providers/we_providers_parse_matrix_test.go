@@ -29,7 +29,7 @@ func TestWeProvidersCreateModelParseMatrix(t *testing.T) {
 		{"scope 非字符串", `{"model":"x","scope":1,` + base + `}`},
 		{"mode 非字符串", `{"model":"x","mode":1,` + base + `}`},
 		{"mode 非法枚举", `{"model":"x","mode":"realtime",` + base + `}`},
-		{"mode audio 协议非法", `{"model":"x","mode":"audio","supportedApiProtocols":["realtime"],"audioOutputUsdPer1M":2}`},
+		{"mode audio 协议非法", `{"model":"x","mode":"audio","supportedApiProtocols":["nope"],"audioOutputUsdPer1M":2}`},
 		{"protocols 非数组", `{"model":"x","supportedApiProtocols":"chat_completions",` + strings.Replace(base, `"supportedApiProtocols":["chat_completions"],`, "", 1) + `}`},
 		{"protocols 项非法", `{"model":"x","supportedApiProtocols":["nope"],` + strings.Replace(base, `"supportedApiProtocols":["chat_completions"],`, "", 1) + `}`},
 		{"tiers 非数组", `{"model":"x","supportedServiceTiers":"priority",` + base + `}`},

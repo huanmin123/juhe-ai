@@ -154,6 +154,11 @@ export function emptyUsageSummary(): AccountUsageSummary {
     thinkingTokens: 0,
     inputImageTokens: 0,
     outputImageTokens: 0,
+    inputAudioTokens: 0,
+    outputAudioTokens: 0,
+    ttsInputChars: 0,
+    audioInputSeconds: 0,
+    outputVideoSeconds: 0,
     totalTokens: 0,
     totalCost: 0
   }
@@ -172,6 +177,11 @@ export function normalizeUsageSummary(usage?: Partial<AccountUsageSummary>): Acc
     thinkingTokens: numberValue(usage?.thinkingTokens),
     inputImageTokens: numberValue(usage?.inputImageTokens),
     outputImageTokens: numberValue(usage?.outputImageTokens),
+    inputAudioTokens: numberValue(usage?.inputAudioTokens),
+    outputAudioTokens: numberValue(usage?.outputAudioTokens),
+    ttsInputChars: numberValue(usage?.ttsInputChars),
+    audioInputSeconds: numberValue(usage?.audioInputSeconds),
+    outputVideoSeconds: numberValue(usage?.outputVideoSeconds),
     totalTokens: numberValue(usage?.totalTokens),
     totalCost: numberValue(usage?.totalCost),
     lastUsedAt: usage?.lastUsedAt
@@ -196,6 +206,11 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
       thinkingTokens: summary.thinkingTokens + current.thinkingTokens,
       inputImageTokens: summary.inputImageTokens + current.inputImageTokens,
       outputImageTokens: summary.outputImageTokens + current.outputImageTokens,
+      inputAudioTokens: summary.inputAudioTokens + current.inputAudioTokens,
+      outputAudioTokens: summary.outputAudioTokens + current.outputAudioTokens,
+      ttsInputChars: summary.ttsInputChars + current.ttsInputChars,
+      audioInputSeconds: summary.audioInputSeconds + current.audioInputSeconds,
+      outputVideoSeconds: summary.outputVideoSeconds + current.outputVideoSeconds,
       totalTokens: summary.totalTokens + current.totalTokens,
       totalCost: summary.totalCost + current.totalCost,
       lastUsedAt

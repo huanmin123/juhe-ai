@@ -379,15 +379,16 @@ func hasKeyModelScopeFields(scope GatewayAccountCircuitScope) bool {
 }
 
 // ValidGatewayAccountCircuitRequestLane 校验电路作用域 requestLane。词表读
-// gatewayproto 车道常量（媒体设计 §3 唯一权威源）：媒体车道（audio/video）
-// 不拒斥、不归并 text（2026-10-04 裁决），以独立 lane 维度与 text/image
-// 电路隔离。
+// gatewayproto 车道常量（媒体设计 §3 与 Realtime 设计 §6 唯一权威源）：
+// 媒体车道（audio/video/realtime）不拒斥、不归并 text（2026-10-04 裁决；
+// M5b realtime 同语义），以独立 lane 维度与 text/image 电路隔离。
 func ValidGatewayAccountCircuitRequestLane(lane string) bool {
 	switch lane {
 	case string(gatewayproto.LaneText),
 		string(gatewayproto.LaneImage),
 		string(gatewayproto.LaneAudio),
-		string(gatewayproto.LaneVideo):
+		string(gatewayproto.LaneVideo),
+		string(gatewayproto.LaneRealtime):
 		return true
 	}
 	return false

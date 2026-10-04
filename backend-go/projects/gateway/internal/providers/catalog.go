@@ -674,10 +674,13 @@ func catalogScopePriority(scope string) int {
 // isSupportedCatalogModel ports isSupportedCatalogModel. M1 裁决（音频设计
 // §2）：mode=audio（含 audio_speech / audio_transcription 别名）且协议为
 // audio_speech / audio_transcription 的模型收录（名字 token 排除不再生效）；
-// realtime 协议与旧词表的单 audio 协议继续排除；mode 标注 audio 但协议集里
-// 没有音频协议的行维持排除（防止 audio 分类行进对话链）；mode 未标注 audio
-// 的模型继续按名字 token 排除。M2 裁决（媒体设计 §2）同构放开 video：
-// mode=video 且协议含 video 的模型收录，其余维持排除。
+// 旧词表的单 audio 协议继续排除；mode 标注 audio 但协议集里没有音频协议的行
+// 维持排除（防止 audio 分类行进对话链）；mode 未标注 audio 的模型继续按名字
+// token 排除。M2 裁决（媒体设计 §2）同构放开 video：mode=video 且协议含
+// video 的模型收录。M5b 裁决（Realtime 设计 §6）同构放开 realtime：
+// mode=audio 且协议含 realtime 的目录行收录（显式标注行不受名字 token
+// 排除，沿 M1 裁决）；mode 未标注的行 realtime 协议维持排除（词表放行只
+// 对显式标注行生效）。其余维持排除。
 // 与 chain_catalog.go 的 chainIsSupportedCatalogModel 同源，改动必须两处同步。
 func isSupportedCatalogModel(item ModelCatalogItem) bool {
 	mode := ""
@@ -686,17 +689,12 @@ func isSupportedCatalogModel(item ModelCatalogItem) bool {
 	}
 	modeIsAudio := mode == "audio" || mode == "audio_speech" || mode == "audio_transcription"
 	modeIsVideo := mode == "video"
-	for _, protocol := range item.SupportedAPIProtocols {
-		if protocol == "realtime" {
-			return false
-		}
-	}
 	if len(item.SupportedAPIProtocols) == 1 && item.SupportedAPIProtocols[0] == "audio" {
 		return false
 	}
 	if modeIsAudio {
 		for _, protocol := range item.SupportedAPIProtocols {
-			if protocol == "audio_speech" || protocol == "audio_transcription" {
+			if protocol == "audio_speech" || protocol == "audio_transcription" || protocol == "realtime" {
 				return true
 			}
 		}
@@ -709,6 +707,11 @@ func isSupportedCatalogModel(item ModelCatalogItem) bool {
 			}
 		}
 		return false
+	}
+	for _, protocol := range item.SupportedAPIProtocols {
+		if protocol == "realtime" {
+			return false
+		}
 	}
 	model := strings.ToLower(strings.TrimSpace(item.Model))
 	for _, token := range []string{"audio", "realtime", "transcribe", "tts", "whisper"} {

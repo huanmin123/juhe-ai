@@ -80,6 +80,13 @@ func IsProtocolRequestPath(originalPathAndQuery string) bool {
 	// 方法与子路径的细分由链内各处理面裁决（创建走派发、任务面走账户亲和）。
 	case normalized == "/videos", strings.HasPrefix(normalized, "/videos/"):
 		return true
+	// M5b realtime（Realtime 设计 §2）：ephemeral token 签发端点进协议面
+	//（POST /v1/realtime/client_secrets，preauth API Key 认证后链内短路）；
+	// GET /v1/realtime WS 升级面随 M5b2 WS 桥接 handler 放行（精确路径，
+	// 升级请求形态——方法与子路径细分由链内 realtime 面裁决：非 GET 404、
+	// client_secrets 子路径仍走签发分支）。
+	case normalized == "/realtime", normalized == "/realtime/client_secrets":
+		return true
 	}
 	return false
 }

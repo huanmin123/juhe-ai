@@ -27,6 +27,11 @@ export type AccountSupportedEndpointMode =
   | 'video_get'
   | 'video_content'
   | 'video_cancel'
+  | 'audio_job_create'
+  | 'audio_job_get'
+  | 'audio_job_content'
+  | 'audio_job_cancel'
+  | 'realtime_session'
 export type AccountHealthCheckEndpointMode = Extract<
   AccountSupportedEndpointMode,
   | 'images_json'
@@ -46,6 +51,11 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'video_get'
   | 'video_content'
   | 'video_cancel'
+  | 'audio_job_create'
+  | 'audio_job_get'
+  | 'audio_job_content'
+  | 'audio_job_cancel'
+  | 'realtime_session'
 >
 export type AccountApiKeyRuntimeStatus = 'active' | 'unverified' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
@@ -282,9 +292,13 @@ export interface GroupAccountStats {
 
 export interface AccountModelMapping {
   sourceModel: string
-  sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'
+  // M4b 媒体映射族（媒体设计 §9 hybrid 行）：video_generation / tts 同族
+  // 模型名改写，与后端 write.go accountSourceEndpointFamilies 同枚举。
+  sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content' | 'video_generation' | 'tts'
   upstreamModel: string
-  upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content'
+  // 上游枚举与后端 accountUpstreamEndpointFamilies 同集（stream_generate_content
+  // 仅作 source，媒体族上游面恒为 OpenAI 形态媒体端点）。
+  upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'video_generation' | 'tts'
   enabled: boolean
 }
 

@@ -64,6 +64,10 @@ type MediaJobRequestSnapshot struct {
 	Seconds *float64 `json:"seconds,omitempty"`
 	Size    string   `json:"size,omitempty"`
 	N       int      `json:"n,omitempty"`
+	// Language 是长转写任务的语言提示（M3f，kind=audio_transcription 行；
+	// 纯参数元数据）。input_url 不入快照（资源定位指针，沿 video 行不存
+	// InputReference 的零存储裁决）。
+	Language string `json:"language,omitempty"`
 	// ProviderOptionsApplied 是 provider_options 命中子对象的键名摘要
 	//（不含值，契约 §2.4 规则 4 回显）：创建时随快照冻结，任务面/列表的
 	// job 对象回显同一份数据（终态后原始请求不可得）。
@@ -75,12 +79,12 @@ type MediaJobRequestSnapshot struct {
 	AccountAuthorizationSourceType   string `json:"accountAuthorizationSourceType,omitempty"`
 	AccountAuthorizationSourceTeamID string `json:"accountAuthorizationSourceTeamId,omitempty"`
 	// Group scope 五元组（groupAccess=authorized 时 groupAuthorizationID 必填）。
-	GroupID                          string `json:"groupId,omitempty"`
-	GroupOwnerSystemAccountID        string `json:"groupOwnerSystemAccountId,omitempty"`
-	GroupAccessType                  string `json:"groupAccessType,omitempty"`
-	GroupAuthorizationID             string `json:"groupAuthorizationId,omitempty"`
-	GroupAuthorizationSourceType     string `json:"groupAuthorizationSourceType,omitempty"`
-	GroupAuthorizationSourceTeamID   string `json:"groupAuthorizationSourceTeamId,omitempty"`
+	GroupID                        string `json:"groupId,omitempty"`
+	GroupOwnerSystemAccountID      string `json:"groupOwnerSystemAccountId,omitempty"`
+	GroupAccessType                string `json:"groupAccessType,omitempty"`
+	GroupAuthorizationID           string `json:"groupAuthorizationId,omitempty"`
+	GroupAuthorizationSourceType   string `json:"groupAuthorizationSourceType,omitempty"`
+	GroupAuthorizationSourceTeamID string `json:"groupAuthorizationSourceTeamId,omitempty"`
 }
 
 // ErrMediaJobNotFound 是 GetByIDAndAPIKey 未命中（不存在或非本人任务）的哨兵
@@ -233,15 +237,30 @@ func (r *MediaJobsRepo) GetByIDAndAPIKey(ctx context.Context, id, apiKeyID strin
 	return rows[0], nil
 }
 
-// ListByAPIKey 按归属 API Key 倒序分页（GET /v1/videos 列表消费）。
+// ListByAPIKey 按归属 API Key 倒序分页（GET /v1/videos 列表消费；kind 过滤
+// 由 ListByAPIKeyAndKind 承载——/v1/videos 与 /v1/audio/jobs 列表互不混行，
+// M3f 起按 kind 泛化）。
 func (r *MediaJobsRepo) ListByAPIKey(ctx context.Context, apiKeyID string, limit, offset int) ([]*MediaJobRecord, error) {
+	return r.listByAPIKeyWhere(ctx, apiKeyID, "", limit, offset)
+}
+
+// ListByAPIKeyAndKind 按归属 API Key + 任务种类倒序分页（GET /v1/videos 与
+// GET /v1/audio/jobs 列表消费：kind 空串 = 不过滤）。
+func (r *MediaJobsRepo) ListByAPIKeyAndKind(ctx context.Context, apiKeyID string, kind MediaJobKind, limit, offset int) ([]*MediaJobRecord, error) {
+	return r.listByAPIKeyWhere(ctx, apiKeyID, string(kind), limit, offset)
+}
+
+func (r *MediaJobsRepo) listByAPIKeyWhere(ctx context.Context, apiKeyID, kind string, limit, offset int) ([]*MediaJobRecord, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	return r.query(ctx, `WHERE api_key_id = ?`, apiKeyID, limit, offset)
+	if strings.TrimSpace(kind) == "" {
+		return r.query(ctx, `WHERE api_key_id = ?`, apiKeyID, limit, offset)
+	}
+	return r.query(ctx, `WHERE api_key_id = ? AND kind = ?`, apiKeyID, kind, limit, offset)
 }
 
 // ListExpired 取超过保留 TTL 的行（清理 job 消费：置 expired / 删行；清理
@@ -386,12 +405,15 @@ func marshalMediaJobError(jobError *MediaJobError) (string, error) {
 	return string(encoded), nil
 }
 
-// marshalMediaJobUsage 编码 usage_json：结构化字段（output_video_seconds）+
-// Raw 原样保留（厂商原生用量字段，openai 无）。
+// marshalMediaJobUsage 编码 usage_json：结构化字段（output_video_seconds /
+// audio_input_seconds）+ Raw 原样保留（厂商原生用量字段，openai 无）。
 func marshalMediaJobUsage(usage MediaJobUsage) (string, error) {
 	payload := map[string]any{}
 	if usage.OutputVideoSeconds != nil {
 		payload["output_video_seconds"] = *usage.OutputVideoSeconds
+	}
+	if usage.AudioInputSeconds != nil {
+		payload["audio_input_seconds"] = *usage.AudioInputSeconds
 	}
 	for key, value := range usage.Raw {
 		payload[key] = value
@@ -419,6 +441,11 @@ func unmarshalMediaJobUsage(raw string, usage *MediaJobUsage) error {
 		value := seconds
 		usage.OutputVideoSeconds = &value
 		delete(payload, "output_video_seconds")
+	}
+	if seconds, ok := payload["audio_input_seconds"].(float64); ok {
+		value := seconds
+		usage.AudioInputSeconds = &value
+		delete(payload, "audio_input_seconds")
 	}
 	if len(payload) > 0 {
 		usage.Raw = payload

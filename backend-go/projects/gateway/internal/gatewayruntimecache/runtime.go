@@ -48,6 +48,18 @@ func (s *Service) ReadCachedGatewayRuntimeAsync(ctx context.Context, apiKey stri
 	return s.dispatchGatewayRuntimeForSend(ctx, runtime)
 }
 
+// ReadGatewayRuntimeByAPIKeyIDAsync 是 M5b realtime ephemeral token 面的按 id
+// 读取（Realtime 设计 §4）：不经 raw-key 运行时缓存（id 没有可索引的缓存
+// 键），直接走读模型并复用与 raw-key 读相同的 dispatch 尾部（sanitize +
+// dynamic re-route + concurrency overlay）。
+func (s *Service) ReadGatewayRuntimeByAPIKeyIDAsync(ctx context.Context, apiKeyID string) (GatewayRuntime, error) {
+	runtime, err := s.models.ReadGatewayRuntimeByAPIKeyID(ctx, apiKeyID)
+	if err != nil {
+		return GatewayRuntime{}, err
+	}
+	return s.dispatchGatewayRuntimeForSend(ctx, runtime)
+}
+
 // dispatchGatewayRuntimeForSend mirrors the shared dispatch tail of every
 // Node read path: sanitize, then dynamic re-route / concurrency overlay.
 func (s *Service) dispatchGatewayRuntimeForSend(ctx context.Context, runtime GatewayRuntime) (GatewayRuntime, error) {

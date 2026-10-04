@@ -215,7 +215,13 @@ func TestWeSupportedCatalogModelAndScopePriority(t *testing.T) {
 	}
 	realtime := ModelCatalogItem{SupportedAPIProtocols: []string{"realtime"}, Model: "m"}
 	if isSupportedCatalogModel(realtime) {
-		t.Fatal("realtime 协议不受支持")
+		t.Fatal("mode 未标注的 realtime 协议行不受支持")
+	}
+	if !isSupportedCatalogModel(ModelCatalogItem{Mode: &audioMode, Model: "m", SupportedAPIProtocols: []string{"realtime"}}) {
+		t.Fatal("M5b：mode=audio + realtime 协议应受支持")
+	}
+	if !isSupportedCatalogModel(ModelCatalogItem{Mode: &audioMode, Model: "gpt-realtime-x", SupportedAPIProtocols: []string{"realtime"}}) {
+		t.Fatal("显式 audio 分类的 realtime 模型不按名字排除")
 	}
 	audioOnly := ModelCatalogItem{SupportedAPIProtocols: []string{"audio"}, Model: "m"}
 	if isSupportedCatalogModel(audioOnly) {

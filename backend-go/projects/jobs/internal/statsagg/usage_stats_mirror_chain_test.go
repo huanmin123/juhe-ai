@@ -6,7 +6,7 @@ package statsagg
 // Aggregator 聚合（含业务库授权链查找）→ 断言 stats 镜像行与投影表数值。
 //
 // 库形状对齐生产 dev 拓扑：statsverify EnsureSchema 建 usage_records（聚合
-// 41 列形状）与 client-ip 子集；聚合投影表由 SQLiteTestSchema 补齐（生产里
+// 46 列形状，M4a 含媒体计量 5 列）与 client-ip 子集；聚合投影表由 SQLiteTestSchema 补齐（生产里
 // 由 gateway bootstrap 经 maintenance EnsureSQLiteStats 创建，jobs 模块不依
 // 赖 maintenance，测试用同形 DDL 替身）。resource_authorizations / accounts
 // 只允许出现在业务库——stats 侧影子表会让授权查找的句柄修复失去覆盖。
@@ -88,7 +88,7 @@ func TestUsageStatsMirrorChainSQLite(t *testing.T) {
 		t.Fatalf("seed 业务库授权链失败: %v", err)
 	}
 
-	// stats 库：生产 statsverify schema（含本修复的聚合 41 列 usage_records）。
+	// stats 库：生产 statsverify schema（含媒体计量 5 列的聚合 usage_records）。
 	store, err := statsverify.OpenStore(statsverify.StoreConfig{
 		Mode:               statsverify.StoreSQLite,
 		SQLiteStatsPath:    statsPath,
@@ -115,6 +115,10 @@ func TestUsageStatsMirrorChainSQLite(t *testing.T) {
 	// 尚未同步该列（另一写域），这里在测试内等价复刻该加法迁移，保证聚合
 	// INSERT 与生产 schema 一致。
 	ensureSuccessCostUsdColumns(t, statsDB)
+	// 同理复刻 M4a 媒体计量列守卫迁移（usage_stats 六层 + usage_model 五层 +
+	// usage_scope_range_windows；statsverify 先建的旧表缺列，IF NOT EXISTS
+	// 不会覆盖）。
+	ensureMediaStatsColumns(t, statsDB)
 
 	// usagewriter：真实分片写 + stats 镜像写。
 	catalogDB := chainOpenSQLite(t, filepath.Join(dir, "usage-catalog.sqlite3"))
@@ -335,6 +339,59 @@ func ensureSuccessCostUsdColumns(t *testing.T, db *sql.DB) {
 		}
 		if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN success_cost_usd REAL NOT NULL DEFAULT 0"); err != nil {
 			t.Fatalf("补 %s.success_cost_usd 失败: %v", table, err)
+		}
+	}
+}
+
+// ensureMediaStatsColumns 在测试内复刻 maintenance EnsureSQLiteStats 的 M4a
+// 媒体计量列守卫迁移（PRAGMA 检测 + ALTER ADD COLUMN），使 statsverify 旧
+// 形态表与生产聚合 INSERT 列集一致。
+func ensureMediaStatsColumns(t *testing.T, db *sql.DB) {
+	t.Helper()
+	tables := []string{
+		"usage_stats_totals", "usage_stats_minute", "usage_stats_hourly",
+		"usage_stats_daily", "usage_stats_weekly", "usage_stats_monthly",
+		"usage_model_minute", "usage_model_hourly", "usage_model_daily",
+		"usage_model_weekly", "usage_model_monthly", "usage_scope_range_windows",
+	}
+	columns := []struct {
+		name string
+		decl string
+	}{
+		{"input_audio_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"output_audio_tokens", "INTEGER NOT NULL DEFAULT 0"},
+		{"tts_input_chars", "INTEGER NOT NULL DEFAULT 0"},
+		{"audio_input_seconds", "REAL NOT NULL DEFAULT 0"},
+		{"output_video_seconds", "REAL NOT NULL DEFAULT 0"},
+	}
+	for _, table := range tables {
+		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			t.Fatalf("读取 %s 列失败: %v", table, err)
+		}
+		existing := map[string]bool{}
+		for rows.Next() {
+			var cid, notNull, pk int
+			var name, declaredType string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &declaredType, &notNull, &defaultValue, &pk); err != nil {
+				rows.Close()
+				t.Fatalf("扫描 %s 列失败: %v", table, err)
+			}
+			existing[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatalf("遍历 %s 列失败: %v", table, err)
+		}
+		rows.Close()
+		for _, column := range columns {
+			if existing[column.name] {
+				continue
+			}
+			if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column.name + " " + column.decl); err != nil {
+				t.Fatalf("补 %s.%s 失败: %v", table, column.name, err)
+			}
 		}
 	}
 }

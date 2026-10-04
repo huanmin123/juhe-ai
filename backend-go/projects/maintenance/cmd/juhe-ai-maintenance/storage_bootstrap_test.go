@@ -133,8 +133,8 @@ func TestRunStorageBootstrapSQLiteEndToEnd(t *testing.T) {
 	if err := db.QueryRow("SELECT count(*) FROM api_keys").Scan(&apiKeys); err != nil {
 		t.Fatalf("query api keys: %v", err)
 	}
-	if apiKeys != 8 {
-		t.Fatalf("api keys = %d, want 8", apiKeys)
+	if apiKeys != 11 {
+		t.Fatalf("api keys = %d, want 11", apiKeys)
 	}
 	for _, name := range []string{"chat.sqlite3", "dataset.sqlite3", "usage-catalog.sqlite3", "stats.sqlite3", filepath.Join("shards", "state-000.sqlite3"), filepath.Join("shards", "state-001.sqlite3")} {
 		db, err := sql.Open("sqlite", "file:"+filepath.Join(root, filepath.FromSlash(name))+"?mode=ro")

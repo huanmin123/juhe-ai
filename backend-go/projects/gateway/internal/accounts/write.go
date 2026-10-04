@@ -21,10 +21,17 @@ var (
 	accountSourceEndpointFamilies = map[string]bool{
 		"chat_completions": true, "responses": true, "messages": true,
 		"generate_content": true, "stream_generate_content": true,
+		// M4b 媒体映射族（媒体设计 §9 hybrid 行）：与 schema 端点族 seed
+		// 同码（openai_v1_video_generation / openai_v1_tts）。
+		"video_generation": true, "tts": true,
 	}
 	accountUpstreamEndpointFamilies = map[string]bool{
 		"chat_completions": true, "responses": true, "messages": true,
 		"generate_content": true,
+		// M4b：媒体映射是同族模型名改写（上游面恒为 OpenAI 形态媒体端点）；
+		// stream_generate_content 无上游形态不进上游枚举——与 chat 族仅作
+		// source 的既有先例一致。
+		"video_generation": true, "tts": true,
 	}
 )
 

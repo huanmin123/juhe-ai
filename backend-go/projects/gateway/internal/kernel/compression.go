@@ -1,11 +1,14 @@
 package kernel
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"regexp"
 	"sort"
@@ -170,6 +173,18 @@ func (c *compressionWriter) Flush() {
 	if flusher, ok := c.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// Hijack forwards the WebSocket upgrade hijack to the wrapped writer
+// （M5b2 realtime WS 面：内嵌接口不提升 Hijacker，必须显式转发）。hijack 后
+// 压缩决策不再适用：会话字节不经本 writer，defer 的 finish() 对已 hijack 连
+// 接的补写只产生一条 net/http 告警日志，无协议影响。
+func (c *compressionWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := c.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("compression writer: 底层 writer 未实现 http.Hijacker")
+	}
+	return hijacker.Hijack()
 }
 
 func (c *compressionWriter) MarkUpstream() {

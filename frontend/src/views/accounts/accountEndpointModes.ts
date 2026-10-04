@@ -44,6 +44,11 @@ export const accountEndpointModeOptions: Array<{ label: string; value: AccountSu
   { label: 'Videos API (Get)', value: 'video_get' },
   { label: 'Videos API (Content)', value: 'video_content' },
   { label: 'Videos API (Cancel)', value: 'video_cancel' },
+  { label: 'Audio Jobs API (Create)', value: 'audio_job_create' },
+  { label: 'Audio Jobs API (Get)', value: 'audio_job_get' },
+  { label: 'Audio Jobs API (Content)', value: 'audio_job_content' },
+  { label: 'Audio Jobs API (Cancel)', value: 'audio_job_cancel' },
+  { label: 'Realtime Sessions (WebSocket)', value: 'realtime_session' },
   { label: 'Chat Completions (JSON)', value: 'chat_json' },
   { label: 'Chat Completions (Streaming)', value: 'chat_sse' },
   { label: 'Responses API (JSON)', value: 'responses_json' },
@@ -177,6 +182,16 @@ export function accountEndpointModeLabel(mode: AccountSupportedEndpointMode, con
       return 'Videos API (Content)'
     case 'video_cancel':
       return 'Videos API (Cancel)'
+    case 'audio_job_create':
+      return 'Audio Jobs API (Create)'
+    case 'audio_job_get':
+      return 'Audio Jobs API (Get)'
+    case 'audio_job_content':
+      return 'Audio Jobs API (Content)'
+    case 'audio_job_cancel':
+      return 'Audio Jobs API (Cancel)'
+    case 'realtime_session':
+      return 'Realtime Sessions (WebSocket)'
     case 'chat_json':
       return `${chatCapabilityName(context)} (JSON)`
     case 'chat_sse':

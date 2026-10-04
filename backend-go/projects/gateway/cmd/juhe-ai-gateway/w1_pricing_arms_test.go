@@ -60,6 +60,12 @@ func (s *w1gStubCatalogModels) ListActiveResponseInspectionPolicies(context.Cont
 	return nil, nil
 }
 
+// ReadGatewayRuntimeByAPIKeyID 是 M5b realtime 按 id 读（接口成员）：测试
+// 双不消费该面，恒返回空运行时。
+func (s *w1gStubCatalogModels) ReadGatewayRuntimeByAPIKeyID(context.Context, string) (gatewayruntimecache.GatewayRuntime, error) {
+	return gatewayruntimecache.GatewayRuntime{}, nil
+}
+
 func (s *w1gStubCatalogModels) LoadAccountCurrentConcurrencyByID(context.Context, []string) (map[string]int, error) {
 	return map[string]int{}, nil
 }

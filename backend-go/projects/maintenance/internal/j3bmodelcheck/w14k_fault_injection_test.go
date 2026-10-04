@@ -47,16 +47,12 @@ func TestW14KValidateSQLitePathsStatsMissingSource(t *testing.T) {
 }
 
 func TestW14KBackfillSQLiteTargetNotADatabase(t *testing.T) {
-	ctx := context.Background()
-	_, _, datasetPath, statsPath := w12gBuildBackfillTree(t)
 	textTarget := w12gTextFile(t, "text-target.db")
-	target, err := OpenSQLite(textTarget)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer target.Close()
-	if _, err := BackfillSQLite(ctx, target, datasetPath, statsPath); err == nil {
-		t.Fatal("文本 target 的 inspect 必须失败")
+	// OpenSQLite 的连接 PRAGMA（对齐 bootstrap.OpenSQLiteFile 先例）对非数据
+	// 库文件 fail-fast：坏 target 在打开阶段即被拒绝，不再进入 backfill 的
+	// inspect 链；BackfillSQLite 的 schema 门禁由空 target 场景继续覆盖。
+	if _, err := OpenSQLite(textTarget); err == nil {
+		t.Fatal("文本 target 必须在 OpenSQLite 打开阶段被拒绝")
 	}
 }
 
@@ -113,15 +109,12 @@ func TestW14KBackfillSQLiteSourceColumnMismatch(t *testing.T) {
 
 func TestW14KRunSQLitePragmasAndInspectFailures(t *testing.T) {
 	ctx := context.Background()
-	t.Run("text file fails PRAGMA busy_timeout", func(t *testing.T) {
+	t.Run("text file fails at open PRAGMA", func(t *testing.T) {
 		textPath := w12gTextFile(t, "runsqlite-text.db")
-		db, err := OpenSQLite(textPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-		if _, err := RunSQLite(ctx, db, false); err == nil {
-			t.Fatal("文本文件的 PRAGMA 必须失败")
+		// OpenSQLite 的连接 PRAGMA 对非数据库文件 fail-fast：PRAGMA 错误在
+		// 打开阶段上抛，不再等到 RunSQLite 的 PRAGMA busy_timeout。
+		if _, err := OpenSQLite(textPath); err == nil {
+			t.Fatal("文本文件的连接 PRAGMA 必须在 OpenSQLite 打开阶段失败")
 		}
 	})
 	t.Run("inspect failure propagates", func(t *testing.T) {

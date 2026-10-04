@@ -1117,3 +1117,123 @@ func TestChainMediaJobTaskPlaneAuditMinimal(t *testing.T) {
 		t.Fatalf("问题行 jobId 元数据缺失: %#v", failed.Payloads)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// M4b：hybrid 供应商媒体模型映射（媒体设计 §9 hybrid 行）
+// ---------------------------------------------------------------------------
+
+// seedMediaHybridAccount 种一个指向 mock 上游的 hybrid api_key 账户并绑定
+// 专用分组/策略/网关 Key：supportedModels 只声明映射 upstream 模型（sora-2），
+// account_model_mappings 配 video_generation 族映射（sora-2-pro → sora-2）。
+// 请求模型是 source 名（sora-2-pro），账户直连目录不含它——候选过滤必须经
+// 映射解析命中（ModelPriorityRankMapping 路径）。
+func seedMediaHybridAccount(t *testing.T, db *sql.DB, fixture *chainFixture, baseURL, apiKey string) string {
+	t.Helper()
+	now := "2026-10-04T00:00:00.000Z"
+	secret := "sk-chain-hybrid-video-key"
+	credentials := mustEncryptCredentials(t, map[string]any{
+		"api_key":  apiKey,
+		"base_url": baseURL,
+		"supported_endpoint_modes": []string{
+			"chat_json", "chat_sse", "video_create", "video_get", "video_content", "video_cancel",
+		},
+	})
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatalf("seed hybrid media row: %v: %v", query, err)
+		}
+	}
+	seed(`INSERT INTO groups (id, system_account_id, provider_code, enabled, group_type) VALUES ('group_hyb_vid', ?, 'hybrid', 1, 'personal')`, fixture.systemAccount)
+	seed(`INSERT INTO accounts (
+			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
+		) VALUES ('acc_hyb_vid', ?, 'hybrid', 'profile_hybrid_openai_chat_v1', 'openai', 'v1', '混合媒体账户', 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+		fixture.systemAccount, credentials)
+	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES ('group_hyb_vid', ?, 'acc_hyb_vid', 1, ?)`,
+		fixture.systemAccount, now)
+	seed(`INSERT INTO account_supported_models (account_id, provider_code, model, created_at) VALUES ('acc_hyb_vid', 'hybrid', 'sora-2', ?)`, now)
+	seed(`INSERT INTO account_model_mappings (
+			account_id, provider_code, source_model, source_endpoint_family,
+			upstream_model, upstream_endpoint_family, enabled, created_at, updated_at
+		) VALUES ('acc_hyb_vid', 'hybrid', 'sora-2-pro', 'video_generation', 'sora-2', 'video_generation', 1, ?, ?)`, now, now)
+	seed(`INSERT INTO route_strategies (id, system_account_id, name, mode, config_json, status) VALUES ('rs_hyb_vid', ?, '混合媒体', 'normal', NULL, 'active')`, fixture.systemAccount)
+	seed(`INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at)
+		VALUES ('rsg_hyb_vid', 'rs_hyb_vid', ?, 'group_hyb_vid', 0, 1, 'active', ?)`, fixture.systemAccount, now)
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, created_at)
+		VALUES ('key_hyb_vid', ?, 'rs_hyb_vid', '混合媒体Key', ?, 'active', ?)`,
+		fixture.systemAccount, gatewayruntimecache.HashSecret(secret), now)
+	return secret
+}
+
+// TestChainMediaVideoHybridMapped 覆盖 M4b（媒体设计 §9 hybrid 行）：hybrid
+// 账户承接 POST /v1/videos，创建链消费账号媒体映射——出站报文 model 改写为
+// upstream 名（sora-2），provider 归一为 openai（中转的 OpenAI 形态媒体面），
+// 出站 URL 为中转 base_url 的 /v1/videos。mock 上游断言命中记录的出站 body。
+func TestChainMediaVideoHybridMapped(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	apiKey := seedMediaHybridAccount(t, fixture.db, fixture, mock.URL, "sk-hybrid-upstream")
+
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	chain := composeMediaVideoChain(t, fixture, spoolDir)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	// 请求模型是 source 名 sora-2-pro（账户 supportedModels 只含 sora-2，
+	// 候选过滤必须经映射命中）。
+	job := mediaVideoCreateJob(t, server.URL, apiKey,
+		`{"model":"sora-2-pro","prompt":"混合供应商映射视频","seconds":"4","size":"1280x720"}`,
+		map[string]string{"X-Mock-Scenario": string(platformmock.ScenarioMediaVideoOKPoll1)})
+	jobID, _ := job["id"].(string)
+	if jobID == "" || !strings.HasPrefix(jobID, "video_") {
+		t.Fatalf("hybrid mapped job id 缺失或非 video_ 前缀: %#v", job)
+	}
+	if job["status"] != "queued" {
+		t.Fatalf("hybrid mapped 创建响应 status = %v, want queued", job["status"])
+	}
+	// provider 回显 adapter 注册键 openai（M4b：hybrid 媒体执行面 = 中转的
+	// OpenAI 形态媒体端点）。
+	if job["provider"] != "openai" {
+		t.Fatalf("hybrid mapped provider = %v, want openai", job["provider"])
+	}
+	// params_applied 的 model 是改写后的 upstream 名。
+	applied := fmt.Sprintf("%v", job["params_applied"])
+	if strings.Contains(applied, "sora-2-pro") {
+		t.Fatalf("params_applied 不得回显 source 模型名: %v", job["params_applied"])
+	}
+
+	// mock 上游出站断言：POST /v1/videos 恰好一次，body model 为 upstream 名。
+	creates := 0
+	for _, request := range mock.Requests() {
+		if request.Method == http.MethodPost && request.Path == "/v1/videos" {
+			creates++
+			if request.Model != "sora-2" {
+				t.Fatalf("出站创建报文 model = %q, want upstream 名 sora-2（body=%s）", request.Model, request.Body)
+			}
+			if strings.Contains(request.Body, "sora-2-pro") {
+				t.Fatalf("出站创建报文残留 source 模型名: %s", request.Body)
+			}
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("hybrid mapped 创建出站 %d 次, want 1", creates)
+	}
+
+	// 轮询一次到 completed（ok_poll1 快路径），行归因 hybrid 账户。
+	polled, payload := mediaVideoClientDo(t, server.URL, http.MethodGet, "/v1/videos/"+jobID, apiKey, "", nil)
+	if polled.StatusCode != http.StatusOK {
+		t.Fatalf("hybrid mapped poll status=%d body=%s", polled.StatusCode, payload)
+	}
+	if object := mediaVideoDecodeJob(t, payload); object["status"] != "completed" {
+		t.Fatalf("hybrid mapped poll status = %v, want completed", object["status"])
+	}
+	var accountID string
+	if err := fixture.db.QueryRow(`SELECT account_id FROM media_jobs WHERE id = ?`, jobID).Scan(&accountID); err != nil {
+		t.Fatalf("查询 media_jobs 行: %v", err)
+	}
+	if accountID != "acc_hyb_vid" {
+		t.Fatalf("media_jobs account_id = %s, want acc_hyb_vid", accountID)
+	}
+}

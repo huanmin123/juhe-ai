@@ -767,6 +767,8 @@ function endpointFamilyText(value: AccountFormModel['modelMappings'][number]['so
   if (value === 'messages') return 'Messages'
   if (value === 'generate_content') return 'Gemini GenerateContent'
   if (value === 'stream_generate_content') return 'Gemini StreamGenerateContent'
+  if (value === 'video_generation') return '视频生成'
+  if (value === 'tts') return '语音合成'
   return 'Chat Completions'
 }
 const confirmButtonProps = computed(() => ({

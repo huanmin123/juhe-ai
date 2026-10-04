@@ -78,11 +78,18 @@ type GatewaySettings struct {
 	ImageRequestWallTimeoutSeconds             int64  `json:"imageRequestWallTimeoutSeconds"`
 	// 媒体车道独立超时档位（音频视频模型接入设计 §3）：audio 同步端点首响、
 	// video 创建请求快速返回 job 对象。
-	AudioFirstResponseTimeoutSeconds           int64  `json:"audioFirstResponseTimeoutSeconds"`
-	VideoCreateTimeoutSeconds                  int64  `json:"videoCreateTimeoutSeconds"`
-	NoAvailableAccountWaitTimeoutSeconds       int64  `json:"noAvailableAccountWaitTimeoutSeconds"`
-	StreamFailureThresholdCount                int64  `json:"streamFailureThresholdCount"`
-	StreamFailureThresholdWindowMinutes        int64  `json:"streamFailureThresholdWindowMinutes"`
+	AudioFirstResponseTimeoutSeconds int64 `json:"audioFirstResponseTimeoutSeconds"`
+	VideoCreateTimeoutSeconds        int64 `json:"videoCreateTimeoutSeconds"`
+	// M5b realtime 会话生命周期键（Realtime 设计 §3，M5b2 WS 桥接消费）：
+	// 空闲超时（双向无帧）、最大会话时长、每 API Key 并发 WS 连接数。取值
+	// 域与 settings 校验器同源（idle 10-3600 / max session 60-86400 /
+	// max connections 1-100）。
+	RealtimeIdleTimeoutSeconds           int64 `json:"realtimeIdleTimeoutSeconds"`
+	RealtimeMaxSessionSeconds            int64 `json:"realtimeMaxSessionSeconds"`
+	RealtimeMaxConnectionsPerAPIKey      int64 `json:"realtimeMaxConnectionsPerApiKey"`
+	NoAvailableAccountWaitTimeoutSeconds int64 `json:"noAvailableAccountWaitTimeoutSeconds"`
+	StreamFailureThresholdCount          int64 `json:"streamFailureThresholdCount"`
+	StreamFailureThresholdWindowMinutes  int64 `json:"streamFailureThresholdWindowMinutes"`
 }
 
 // CloneGatewaySettings mirrors cloneGatewaySettings: the shallow copy keeps

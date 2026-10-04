@@ -186,6 +186,12 @@ func (f *fakeModels) LoadAccountCurrentConcurrencyByID(ctx context.Context, acco
 	return out, nil
 }
 
+// ReadGatewayRuntimeByAPIKeyID 是 M5b realtime 按 id 读（接口成员）：测试
+// 双不消费该面，恒返回空运行时。
+func (f *fakeModels) ReadGatewayRuntimeByAPIKeyID(context.Context, string) (GatewayRuntime, error) {
+	return GatewayRuntime{}, nil
+}
+
 func (f *fakeModels) runtimeCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

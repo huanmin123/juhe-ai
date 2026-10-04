@@ -31,7 +31,7 @@ import type { AccountModelMappingProviderProfile } from './accountModelMappingPr
 import {
   isHybridProviderCode
 } from '@/shared/providerProtocol'
-import { accountModelMappingSourceModelOptions } from './accountModelMappingModelOptions'
+import { accountModelMappingEndpointFamilyProtocol, accountModelMappingSourceModelOptions } from './accountModelMappingModelOptions'
 import {
   accountGptRequestOverrideCapabilities,
   isAccountGptReasoningEffortOverrideAvailable,
@@ -563,7 +563,10 @@ function modelOptionSupportsProtocol(
 ): boolean {
   if (!options?.length) return true
   const item = options.find((option) => option.value === model)
-  return Boolean(item?.supportedApiProtocols?.includes(endpointFamily as ProviderModelApiProtocol))
+  // 媒体族端点族码与目录协议 token 不同名（video_generation→video、
+  // tts→audio_speech），必须经协议换算后再对目录声明做包含判断。
+  const protocol = accountModelMappingEndpointFamilyProtocol(endpointFamily)
+  return Boolean(item?.supportedApiProtocols?.includes(protocol))
 }
 
 function modelExistsInOptions(model: string, options: ModelMappingProtocolOption[] | undefined): boolean {

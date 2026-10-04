@@ -44,6 +44,11 @@ export function aggregateUsageSummaries(summaries: AccountUsageSummary[]): Accou
     summary.thinkingTokens += positiveUsageNumber(item.thinkingTokens)
     summary.inputImageTokens += positiveUsageNumber(item.inputImageTokens)
     summary.outputImageTokens += positiveUsageNumber(item.outputImageTokens)
+    summary.inputAudioTokens += positiveUsageNumber(item.inputAudioTokens)
+    summary.outputAudioTokens += positiveUsageNumber(item.outputAudioTokens)
+    summary.ttsInputChars += positiveUsageNumber(item.ttsInputChars)
+    summary.audioInputSeconds += positiveUsageNumber(item.audioInputSeconds)
+    summary.outputVideoSeconds += positiveUsageNumber(item.outputVideoSeconds)
     summary.totalCost += positiveUsageNumber(item.totalCost)
     if (item.lastUsedAt && (!lastUsedAt || item.lastUsedAt > lastUsedAt)) {
       lastUsedAt = item.lastUsedAt
@@ -67,6 +72,11 @@ export function zeroUsageSummary(): AccountUsageSummary {
     thinkingTokens: 0,
     inputImageTokens: 0,
     outputImageTokens: 0,
+    inputAudioTokens: 0,
+    outputAudioTokens: 0,
+    ttsInputChars: 0,
+    audioInputSeconds: 0,
+    outputVideoSeconds: 0,
     totalTokens: 0,
     totalCost: 0
   }

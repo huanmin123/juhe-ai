@@ -304,8 +304,10 @@ func (s *RecordCleanupStore) subtractStatsTotalsAndBuckets(ctx context.Context, 
       AND request_count = 0 AND success_count = 0 AND error_count = 0
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
-      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
-      AND success_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0
+      AND input_audio_tokens = 0 AND output_audio_tokens = 0 AND tts_input_chars = 0
+      AND audio_input_seconds = 0 AND output_video_seconds = 0
+      AND total_cost_usd = 0 AND success_cost_usd = 0
 	`, where), entry.SystemAccountID, entry.ScopeType, entry.ScopeID); err != nil {
 		return err
 	}
@@ -335,8 +337,10 @@ func (s *RecordCleanupStore) subtractStatsTotalsAndBuckets(ctx context.Context, 
         AND request_count = 0 AND success_count = 0 AND error_count = 0
         AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
         AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
-        AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
-        AND success_cost_usd = 0
+        AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0
+        AND input_audio_tokens = 0 AND output_audio_tokens = 0 AND tts_input_chars = 0
+        AND audio_input_seconds = 0 AND output_video_seconds = 0
+        AND total_cost_usd = 0 AND success_cost_usd = 0
 		`, bucket.TableName, column),
 			entry.SystemAccountID, entry.ScopeType, entry.ScopeID, timeKeyValue(timeKeys, bucket.ValueKey)); err != nil {
 			return err
@@ -349,12 +353,14 @@ func (s *RecordCleanupStore) subtractStatsTotalsAndBuckets(ctx context.Context, 
 // success_cost_usd 紧随 total_cost_usd（列序对齐 statsagg upsert 的
 // usageStatsMetricColumns）：回减量取累加器的成功口径成本（按记录 success
 // 标志计算——成功记录回减其 cost、失败记录回减 0），与聚合写入口径对称，
-// 已删记录的成功成本不再滞留新列。
+// 已删记录的成功成本不再滞留新列。媒体计量五列（M4a）同样与聚合写侧
+// usageStatsMetricColumns 列序对齐（output_image_tokens 之后）。
 func statsSubtractSetExpr(prefix string) string {
 	columns := []string{
 		"request_count", "success_count", "error_count", "input_tokens", "output_tokens",
 		"cache_read_tokens", "cache_read_cost_usd", "cache_write_tokens", "cache_write_1h_tokens",
 		"cache_write_cost_usd", "thinking_tokens", "input_image_tokens", "output_image_tokens",
+		"input_audio_tokens", "output_audio_tokens", "tts_input_chars", "audio_input_seconds", "output_video_seconds",
 		"total_cost_usd", "success_cost_usd", "duration_ms_sum", "duration_ms_count",
 	}
 	assignments := make([]string, 0, len(columns)+4)
@@ -369,13 +375,36 @@ func statsSubtractSetExpr(prefix string) string {
 
 // statsSubtractParams 照 statsSubtractParams（列序与 set 表达式一致；
 // SuccessCostUsd 由 statsagg.UsageStatsAccumulatorFromRecord / UsageStatsEntries
-// 按记录 success 标志给出：成功记录 = cost，失败记录 = 0）。
+// 按记录 success 标志给出：成功记录 = cost，失败记录 = 0；媒体计量五列
+// （M4a）与 usage_stats / usage_model 桶的聚合写侧对称回减）。授权日报
+// 参数另见 authorizationSubtractParams（无媒体/成功口径列）。
 func statsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
 	return []any{
 		stats.RequestCount, stats.SuccessCount, stats.ErrorCount,
 		stats.InputTokens, stats.OutputTokens, stats.CacheReadTokens, stats.CacheReadCostUsd,
 		stats.CacheWriteTokens, stats.CacheWrite1hTokens, stats.CacheWriteCostUsd, stats.ThinkingTokens,
-		stats.InputImageTokens, stats.OutputImageTokens, stats.TotalCostUsd, stats.SuccessCostUsd,
+		stats.InputImageTokens, stats.OutputImageTokens,
+		stats.InputAudioTokens, stats.OutputAudioTokens, stats.TTSInputChars,
+		stats.AudioInputSeconds, stats.OutputVideoSeconds,
+		stats.TotalCostUsd, stats.SuccessCostUsd,
+		stats.DurationMsSum, stats.DurationMsCount,
+		stats.FirstTokenMsSum, stats.FirstTokenMsCount,
+	}
+}
+
+// authorizationSubtractParams 是授权日报（team/user summary daily）扣减的
+// 参数集：授权表族不承载媒体计量与 success_cost_usd 列，从 accumulator
+// 显式取 14 基础指标 + duration/first_token 四列，与 subtractAuthorization
+// SummaryRows UPDATE SET 列一一对应（位置切片在媒体列加入后易错位，改为
+// 命名展开）。
+func authorizationSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
+	return []any{
+		stats.RequestCount, stats.SuccessCount, stats.ErrorCount,
+		stats.InputTokens, stats.OutputTokens,
+		stats.CacheReadTokens, stats.CacheReadCostUsd,
+		stats.CacheWriteTokens, stats.CacheWrite1hTokens, stats.CacheWriteCostUsd,
+		stats.ThinkingTokens, stats.InputImageTokens, stats.OutputImageTokens,
+		stats.TotalCostUsd,
 		stats.DurationMsSum, stats.DurationMsCount,
 		stats.FirstTokenMsSum, stats.FirstTokenMsCount,
 	}
@@ -482,7 +511,9 @@ func (s *RecordCleanupStore) subtractModelBuckets(ctx context.Context, tx *sql.T
 	if row.ProviderCode != nil && *row.ProviderCode != "" {
 		providerCode = *row.ProviderCode
 	}
-	params := statsSubtractParams(stats)[:14]
+	// 模型桶无 success_cost_usd 列：取 statsSubtractParams 前 19 项
+	// （基础 13 + 媒体 5 + total_cost_usd，与 UPDATE SET 列序一致）。
+	params := statsSubtractParams(stats)[:19]
 	for _, systemAccountID := range []string{row.SystemAccountID, statsagg.GlobalStatsSystemAccountID} {
 		for _, bucket := range usageModelBucketDefs {
 			args := append(append([]any{}, params...), updatedAt,
@@ -502,6 +533,11 @@ func (s *RecordCleanupStore) subtractModelBuckets(ctx context.Context, tx *sql.T
             thinking_tokens = MAX(0, thinking_tokens - ?),
             input_image_tokens = MAX(0, input_image_tokens - ?),
             output_image_tokens = MAX(0, output_image_tokens - ?),
+            input_audio_tokens = MAX(0, input_audio_tokens - ?),
+            output_audio_tokens = MAX(0, output_audio_tokens - ?),
+            tts_input_chars = MAX(0, tts_input_chars - ?),
+            audio_input_seconds = MAX(0, audio_input_seconds - ?),
+            output_video_seconds = MAX(0, output_video_seconds - ?),
             total_cost_usd = MAX(0, total_cost_usd - ?),
             updated_at = ?
         WHERE system_account_id = ? AND %s = ? AND provider_code = ? AND model = ?
@@ -514,7 +550,10 @@ func (s *RecordCleanupStore) subtractModelBuckets(ctx context.Context, tx *sql.T
           AND request_count = 0 AND success_count = 0 AND error_count = 0
           AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
           AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
-          AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+          AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0
+          AND input_audio_tokens = 0 AND output_audio_tokens = 0 AND tts_input_chars = 0
+          AND audio_input_seconds = 0 AND output_video_seconds = 0
+          AND total_cost_usd = 0
 			`, bucket.TableName, bucket.ColumnName),
 				systemAccountID, timeKeyValue(timeKeys, bucket.ValueKey), providerCode, model); err != nil {
 				return err
@@ -694,13 +733,12 @@ func authorizationReportRowsOf(row statsagg.UsageStatsRecordRow) []authorization
 }
 
 func (s *RecordCleanupStore) subtractAuthorizationSummaryRows(ctx context.Context, tx *sql.Tx, reportRow authorizationReportRowData, scope authorizationReportScope, stats statsagg.UsageStatsAccumulator, statDate, updatedAt string) error {
-	// 授权摘要表无 success_cost_usd 列（usage_stats 表族专有），跳过
-	// statsSubtractParams[14]；SET 占位符与列一一对应：14 基础指标 +
+	// 授权摘要表无 success_cost_usd 与媒体计量列（usage_stats / usage_model
+	// 表族专有），参数经 authorizationSubtractParams 命名展开：14 基础指标 +
 	// duration_ms_sum/count + first_token_ms_sum/count，与累加侧
 	// upsertAuthorization*UsageSummaryRow DO UPDATE 的加法列镜像。
 	// duration/first_token 的 max 与 last_* 非可逆聚合，不回减。
-	full := statsSubtractParams(stats)
-	params := append(append([]any{}, full[:14]...), full[15], full[16], full[17], full[18])
+	params := authorizationSubtractParams(stats)
 	filters := [][2]string{
 		{"all", ""},
 		{reportRow.resourceType, ""},

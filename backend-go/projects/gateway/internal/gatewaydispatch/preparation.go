@@ -853,10 +853,11 @@ func (p *CandidatePipeline) prepareQuotaAndCapacityReadyAccounts(ctx context.Con
 
 	applyHotQualityOrder := func() error {
 		// 媒体车道豁免文本调度优化机制（docs/functions/音频视频模型接入与
-		// 统一媒体网关设计.md §3 车道行为规则 + 2026-10-04 主代理裁决）：
-		// audio/video lane 跳过热质量排序——不排序、不报错、不归并 text、
-		// 不污染文本质量统计，候选保持既有顺序走普通派发；独立媒体质量
-		// 维度留作后续增强。
+		// 统一媒体网关设计.md §3 车道行为规则 + 2026-10-04 主代理裁决；
+		// M5b realtime 车道沿媒体裁决同语义豁免，Realtime 设计 §6）：
+		// audio/video/realtime lane 跳过热质量排序——不排序、不报错、不归并
+		// text、不污染文本质量统计，候选保持既有顺序走普通派发；独立媒体
+		// 质量维度留作后续增强。
 		if isMediaRequestLane(req.RequestLane) {
 			return nil
 		}
@@ -1152,11 +1153,12 @@ func requestModelOrEmpty(req *gatewaypreauth.GatewayRequest) string {
 	return ""
 }
 
-// isMediaRequestLane 判定媒体车道（audio/video）。词表直接读 gatewayproto
-// 的 LaneAudio/LaneVideo（媒体设计 §3 车道词表的唯一权威源），不在此重复
-// 维护清单。
+// isMediaRequestLane 判定媒体车道（audio/video/realtime）。词表直接读
+// gatewayproto 的 LaneAudio/LaneVideo/LaneRealtime（媒体设计 §3 车道词表的
+// 唯一权威源；M5b realtime 沿媒体裁决豁免热质量排序，Realtime 设计 §6），
+// 不在此重复维护清单。
 func isMediaRequestLane(lane string) bool {
-	return lane == string(gatewayproto.LaneAudio) || lane == string(gatewayproto.LaneVideo)
+	return lane == string(gatewayproto.LaneAudio) || lane == string(gatewayproto.LaneVideo) || lane == string(gatewayproto.LaneRealtime)
 }
 
 // gatewayruntimecacheGroupTypeHighConcurrency mirrors groupType value.

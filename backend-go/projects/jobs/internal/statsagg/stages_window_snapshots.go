@@ -674,7 +674,9 @@ func scopeRangeWindowInsertSQL(dialect Dialect, _ bool) string {
 		INSERT INTO ` + dialect.StatsTable("usage_scope_range_windows") + ` (
 		  system_account_id, scope_type, scope_id, start_date, end_date,
 		  request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-		  cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+		  cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+		  input_audio_tokens, output_audio_tokens, tts_input_chars, audio_input_seconds, output_video_seconds,
+		  total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
 		  first_token_ms_sum, first_token_ms_count, first_token_ms_max, active_days,
 		  last_used_at, last_error_at, updated_at)
 		SELECT
@@ -696,6 +698,11 @@ func scopeRangeWindowInsertSQL(dialect Dialect, _ bool) string {
 		  COALESCE(SUM(thinking_tokens), 0),
 		  COALESCE(SUM(input_image_tokens), 0),
 		  COALESCE(SUM(output_image_tokens), 0),
+		  COALESCE(SUM(input_audio_tokens), 0),
+		  COALESCE(SUM(output_audio_tokens), 0),
+		  COALESCE(SUM(tts_input_chars), 0),
+		  COALESCE(SUM(audio_input_seconds), 0),
+		  COALESCE(SUM(output_video_seconds), 0),
 		  COALESCE(SUM(total_cost_usd), 0),
 		  COALESCE(SUM(duration_ms_sum), 0),
 		  COALESCE(SUM(duration_ms_count), 0),
@@ -713,6 +720,11 @@ func scopeRangeWindowInsertSQL(dialect Dialect, _ bool) string {
 			  OR thinking_tokens > 0
 			  OR input_image_tokens > 0
 			  OR output_image_tokens > 0
+			  OR input_audio_tokens > 0
+			  OR output_audio_tokens > 0
+			  OR tts_input_chars > 0
+			  OR audio_input_seconds > 0
+			  OR output_video_seconds > 0
 			  OR total_cost_usd > 0
 		  THEN 1 END),
 		  MAX(last_used_at),
@@ -733,6 +745,11 @@ func scopeRangeWindowInsertSQL(dialect Dialect, _ bool) string {
 		  OR COALESCE(SUM(thinking_tokens), 0) > 0
 		  OR COALESCE(SUM(input_image_tokens), 0) > 0
 		  OR COALESCE(SUM(output_image_tokens), 0) > 0
+		  OR COALESCE(SUM(input_audio_tokens), 0) > 0
+		  OR COALESCE(SUM(output_audio_tokens), 0) > 0
+		  OR COALESCE(SUM(tts_input_chars), 0) > 0
+		  OR COALESCE(SUM(audio_input_seconds), 0) > 0
+		  OR COALESCE(SUM(output_video_seconds), 0) > 0
 		  OR COALESCE(SUM(total_cost_usd), 0) > 0
 	`
 }

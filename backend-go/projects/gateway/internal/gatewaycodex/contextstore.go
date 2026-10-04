@@ -351,10 +351,17 @@ func (s *SQLiteShardContextStateStore) databaseForKey(key string) (*sql.DB, erro
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create codex context shard directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	// _txlock=immediate 使该句柄上所有事务（含 BeginTx(ctx, nil)）以
+	// BEGIN IMMEDIATE 起始：同一批 state-*.sqlite3 文件被 jobs 侧
+	// cleanuprepo/codexcontext.go 以 _txlock=immediate + 单连接池跨进程
+	// 清理，deferred 事务升级写锁时 SQLITE_BUSY 不受 busy_timeout 重试，
+	// 必须与写者侧契约对齐。单连接池与 jobs 侧写句柄一致，进程内串行化。
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open codex context state shard %d: %w", shardIndex, err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if _, err := db.Exec(codexContextStateSchemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply codex context state schema on shard %d: %w", shardIndex, err)

@@ -3,12 +3,31 @@ package j3bmodelcheck
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
 	_ "modernc.org/sqlite"
 )
+
+// OpenSQLite 必须与 maintenance/bootstrap.OpenSQLiteFile 先例保持同一
+// journal 形态：新库文件落在 WAL（rollback journal 下写事务独占会阻塞
+// 读池）；对已存在的 rollback journal 文件重设是安全幂等转换。
+func TestOpenSQLiteJournalModeWAL(t *testing.T) {
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "j3b-wal-shape.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite: %v", err)
+	}
+	defer db.Close()
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("PRAGMA journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", mode)
+	}
+}
 
 func TestQuotedColumnHelpersSeparateProjectionAndPrimaryKeyOrder(t *testing.T) {
 	primaryKeys := []string{"tenant_id", "account_id"}

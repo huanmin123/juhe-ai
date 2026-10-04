@@ -299,7 +299,18 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 	if s.modelCatalog == nil {
 		return nil
 	}
-	catalog, _, err := s.guardedAccountModelCatalog(ctx, q, providerCode, systemAccountID, profile)
+	// M4b：媒体映射（video_generation/tts 族）的目录行无价格列（媒体价格只
+	// 落在 gateway 静态 pricing），媒体映射在场时目录读取放开
+	// includeUnpriced——否则 priced-only 过滤把媒体行滤掉、来源/目标模型恒
+	// 报"不在当前供应商模型目录中"。纯 chat 映射维持 priced-only 既有语义。
+	mediaMappingPresent := false
+	for _, mapping := range mappings {
+		if isMediaMappingEndpointFamily(mapping.SourceEndpointFamily) || isMediaMappingEndpointFamily(mapping.UpstreamEndpointFamily) {
+			mediaMappingPresent = true
+			break
+		}
+	}
+	catalog, _, err := s.guardedAccountModelCatalog(ctx, q, providerCode, systemAccountID, profile, mediaMappingPresent)
 	if err != nil {
 		return err
 	}
@@ -336,7 +347,10 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 	}
 	invalidUpstreamProtocolModels := []string{}
 	for _, mapping := range mappings {
-		if !familyPools[mapping.UpstreamEndpointFamily][mapping.UpstreamModel] {
+		// M4b：familyPools 按目录协议 token（supportedApiProtocols 值）建
+		// 池，端点族经 mappingFamilyProtocolToken 翻译（媒体族码与协议 token
+		// 不同名；chat 族两者同名，行为不变）。
+		if !familyPools[mappingFamilyProtocolToken(mapping.UpstreamEndpointFamily)][mapping.UpstreamModel] {
 			invalidUpstreamProtocolModels = append(invalidUpstreamProtocolModels, mapping.UpstreamModel)
 		}
 	}
@@ -352,8 +366,9 @@ func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context,
 // anthropic/gemini protocol profile, yields no catalog at all (Node returns
 // an empty pool and every model fails the membership check; guarded=false
 // reproduces that empty-pool behavior). The catalog read keeps the Node
-// default includeUnpriced=false.
-func (s *Store) guardedAccountModelCatalog(ctx context.Context, q queryer, providerCode, systemAccountID string, profile protocolPredicateInput) (catalog []AccountModelCatalogFact, guarded bool, err error) {
+// default includeUnpriced=false; M4b 媒体映射在场时由调用方放开为 true
+//（媒体目录行无价格列）。
+func (s *Store) guardedAccountModelCatalog(ctx context.Context, q queryer, providerCode, systemAccountID string, profile protocolPredicateInput, includeUnpriced bool) (catalog []AccountModelCatalogFact, guarded bool, err error) {
 	normalized := normalizeProviderToken(providerCode)
 	if normalized == "" {
 		return nil, false, nil
@@ -365,7 +380,7 @@ func (s *Store) guardedAccountModelCatalog(ctx context.Context, q queryer, provi
 	if !openAIProtocol && !isAnthropicProtocolProfileOf(profile) && !isGeminiProtocolProfileOf(profile) {
 		return nil, false, nil
 	}
-	catalog, err = s.modelCatalog.ListAccountModelCatalog(ctx, normalized, systemAccountID, false)
+	catalog, err = s.modelCatalog.ListAccountModelCatalog(ctx, normalized, systemAccountID, includeUnpriced)
 	if err != nil {
 		return nil, false, err
 	}

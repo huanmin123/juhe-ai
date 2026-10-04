@@ -653,7 +653,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       cooldown_retest_last_status_code integer,
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       health_check_model text NOT NULL,
-      health_check_endpoint_mode text NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel')),
+      health_check_endpoint_mode text NOT NULL CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
       last_health_check_at text,
       next_health_check_at text,
       last_health_success_at text,
@@ -2283,13 +2283,20 @@ $$`,
 		// accounts.health_check_endpoint_mode CHECK 增补 M1 同步音频探针形态
 		// （音频设计 §11.1）：audio_speech、audio_transcription_json；M2 视频
 		// 增补 video_create / video_get / video_content / video_cancel（媒体
-		// 设计 §11.6，词表与前端 AccountHealthCheckEndpointMode 同步）。幂等
-		// 迁移沿 model-quality-schedule-interval-pg-check 先例：按表 + conkey 列 +
-		// 约束定义文本定位——存量表上缺 video_create 的旧 CHECK（建表内联约束
-		// 被 PG 自动命名为 accounts_health_check_endpoint_mode_check）先删除，
-		// 再按名字补上含新值的具名约束。建表 DDL 已含新值的新库：内联约束的
-		// PG 自动名与具名约束同名，第二步 IF NOT EXISTS 直接命中跳过，不会产
-		// 生重复约束；重复执行无副作用。
+		// 设计 §11.6）；M3f 长音频任务族增补 audio_job_create / audio_job_get /
+		// audio_job_content / audio_job_cancel（媒体设计 §4.2，词表与前端
+		// AccountSupportedEndpointMode 同步；四值非健康检查形态，仅随列
+		// CHECK 词表一致性入库）；M5b realtime 增 realtime_session（GET
+		// /v1/realtime WS 升级请求，Realtime 设计 §6，同随词表一致性入库，
+		// 自动探针形态未定不设默认）。幂等迁移沿 model-quality-schedule-
+		// interval-pg-check 先例：按表 + conkey 列 + 约束定义文本定位——
+		// 存量表上缺 realtime_session 的旧 CHECK（含 M2 之前无 video_*、
+		// M2～M3e 有 video_* 无 audio_job_* 与 M3f 后有 audio_job_* 无
+		// realtime_session 三种状态；建表内联约束被 PG 自动命名为
+		// accounts_health_check_endpoint_mode_check）先删除，再按名字补上含
+		// 新值的具名约束。建表 DDL 已含新值的新库：内联约束的 PG 自动名与
+		// 具名约束同名，第二步 IF NOT EXISTS 直接命中跳过，不会产生重复约束；
+		// 重复执行无副作用。
 		SchemaName: "juhe_business",
 		Source:     "accounts-health-check-endpoint-mode-pg-check",
 		SQL: `DO $$
@@ -2305,7 +2312,7 @@ BEGIN
       AND relation.relname = 'accounts'
       AND c.contype = 'c'
       AND pg_get_constraintdef(c.oid) LIKE '%health_check_endpoint_mode%'
-      AND pg_get_constraintdef(c.oid) NOT LIKE '%video_create%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%realtime_session%'
       AND EXISTS (
         SELECT 1 FROM pg_attribute AS a
         WHERE a.attrelid = c.conrelid
@@ -2323,7 +2330,7 @@ BEGIN
         AND relation.relname = 'accounts'
         AND c.conname = 'accounts_health_check_endpoint_mode_check'
     ) THEN
-      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel''))';
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_health_check_endpoint_mode_check CHECK (health_check_endpoint_mode IN (''images_json'', ''chat_json'', ''chat_sse'', ''responses_json'', ''responses_sse'', ''messages_json'', ''messages_sse'', ''generate_content_json'', ''generate_content_sse'', ''interactions_json'', ''interactions_sse'', ''audio_speech'', ''audio_transcription_json'', ''video_create'', ''video_get'', ''video_content'', ''video_cancel'', ''audio_job_create'', ''audio_job_get'', ''audio_job_content'', ''audio_job_cancel'', ''realtime_session''))';
     END IF;
   END IF;
 END

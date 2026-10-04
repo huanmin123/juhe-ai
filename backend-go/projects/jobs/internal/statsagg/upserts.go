@@ -9,8 +9,9 @@ import (
 
 // statsParamsTail mirrors usage-stats.repository.ts statsParamsTail：accumulator
 // 按列顺序展开为参数，时间戳列以 ” 表示 NULL。授权摘要 writer
-// （authorization.go）复用该 23 参数尾；usage_stats 表族走
-// usageStatsParamsTail（多一列成功口径成本）。
+// （authorization.go）复用该 23 参数尾（授权表族不承载媒体计量与成功口径
+// 成本列）；usage_stats 表族走 usageStatsParamsTail（多五列媒体计量与一列
+// 成功口径成本）。
 func statsParamsTail(stats UsageStatsAccumulator, updatedAt string) []any {
 	var lastUsedAt any
 	if stats.LastUsedAt != "" {
@@ -34,15 +35,32 @@ func statsParamsTail(stats UsageStatsAccumulator, updatedAt string) []any {
 }
 
 // usageStatsParamsTail 是 usage_stats 表族（totals + 时间桶）的参数尾：
-// 在 statsParamsTail 基础上于 total_cost_usd 之后插入成功口径成本列
-// success_cost_usd（配额/账单读侧 gatewayquota 消费，失败尝试不计入）。
+// 在 statsParamsTail 的 13 个基础指标（到 OutputImageTokens）后展开五个
+// 媒体计量列（M4a，与 usageStatsMetricColumns 列序一致），随后是成功口径
+// 成本 success_cost_usd 与耗时/首 token/时间列。
 func usageStatsParamsTail(stats UsageStatsAccumulator, updatedAt string) []any {
-	tail := statsParamsTail(stats, updatedAt)
-	result := make([]any, 0, len(tail)+1)
-	result = append(result, tail[:14]...)
-	result = append(result, stats.SuccessCostUsd)
-	result = append(result, tail[14:]...)
-	return result
+	var lastUsedAt any
+	if stats.LastUsedAt != "" {
+		lastUsedAt = stats.LastUsedAt
+	}
+	var lastErrorAt any
+	if stats.LastErrorAt != "" {
+		lastErrorAt = stats.LastErrorAt
+	}
+	return []any{
+		stats.RequestCount, stats.SuccessCount, stats.ErrorCount,
+		stats.InputTokens, stats.OutputTokens,
+		stats.CacheReadTokens, stats.CacheReadCostUsd,
+		stats.CacheWriteTokens, stats.CacheWrite1hTokens, stats.CacheWriteCostUsd,
+		stats.ThinkingTokens, stats.InputImageTokens, stats.OutputImageTokens,
+		stats.InputAudioTokens, stats.OutputAudioTokens, stats.TTSInputChars,
+		stats.AudioInputSeconds, stats.OutputVideoSeconds,
+		stats.TotalCostUsd,
+		stats.SuccessCostUsd,
+		stats.DurationMsSum, stats.DurationMsCount, stats.DurationMsMax,
+		stats.FirstTokenMsSum, stats.FirstTokenMsCount, stats.FirstTokenMsMax,
+		lastUsedAt, lastErrorAt, updatedAt,
+	}
 }
 
 const usageStatsMetricColumns = `
@@ -51,6 +69,7 @@ const usageStatsMetricColumns = `
 	cache_read_tokens, cache_read_cost_usd,
 	cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
 	thinking_tokens, input_image_tokens, output_image_tokens,
+	input_audio_tokens, output_audio_tokens, tts_input_chars, audio_input_seconds, output_video_seconds,
 	total_cost_usd,
 	success_cost_usd,
 	duration_ms_sum, duration_ms_count, duration_ms_max,
@@ -67,6 +86,7 @@ func upsertDeltaExpr(target string) []string {
 		"cache_read_tokens", "cache_read_cost_usd",
 		"cache_write_tokens", "cache_write_1h_tokens", "cache_write_cost_usd",
 		"thinking_tokens", "input_image_tokens", "output_image_tokens",
+		"input_audio_tokens", "output_audio_tokens", "tts_input_chars", "audio_input_seconds", "output_video_seconds",
 		"total_cost_usd",
 		"success_cost_usd",
 		"duration_ms_sum", "duration_ms_count",
@@ -111,7 +131,7 @@ func (a *Aggregator) upsertUsageStatsTotals(ctx context.Context, tx *sql.Tx, ent
 		query := a.Dialect.bind(`
 			INSERT INTO ` + a.Dialect.StatsTable("usage_stats_totals") + ` (
 			  system_account_id, scope_type, scope_id, ` + usageStatsMetricColumns + `)
-			VALUES (?, ?, ?, ` + placeholders(24) + `)
+			VALUES (?, ?, ?, ` + placeholders(29) + `)
 			ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
 			  ` + joinExprs(upsertDeltaExpr(a.Dialect.qualifiedTarget("usage_stats_totals"))) + `
 		`)
@@ -142,7 +162,7 @@ func (a *Aggregator) upsertUsageStatsTimeBucket(ctx context.Context, tx *sql.Tx,
 		query := a.Dialect.bind(`
 			INSERT INTO ` + a.Dialect.StatsTable(bucket.TableName) + ` (
 			  system_account_id, scope_type, scope_id, ` + conflictColumn + `, ` + usageStatsMetricColumns + `)
-			VALUES (?, ?, ?, ?, ` + placeholders(24) + `)
+			VALUES (?, ?, ?, ?, ` + placeholders(29) + `)
 			ON CONFLICT(system_account_id, scope_type, scope_id, ` + conflictColumn + `) DO UPDATE SET
 			  ` + joinExprs(upsertDeltaExpr(target)) + `
 		`)
@@ -224,8 +244,10 @@ func (a *Aggregator) upsertUsageModelEntries(ctx context.Context, tx *sql.Tx, en
 				  request_count, success_count, error_count,
 				  input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
 				  cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-				  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, updated_at)
-				VALUES (?, ?, ?, ?, ` + placeholders(15) + `)
+				  thinking_tokens, input_image_tokens, output_image_tokens,
+				  input_audio_tokens, output_audio_tokens, tts_input_chars, audio_input_seconds, output_video_seconds,
+				  total_cost_usd, updated_at)
+				VALUES (?, ?, ?, ?, ` + placeholders(20) + `)
 				ON CONFLICT(system_account_id, ` + bucket.ColumnName + `, provider_code, model) DO UPDATE SET
 				  request_count = ` + target + `.request_count + excluded.request_count,
 				  success_count = ` + target + `.success_count + excluded.success_count,
@@ -240,6 +262,11 @@ func (a *Aggregator) upsertUsageModelEntries(ctx context.Context, tx *sql.Tx, en
 				  thinking_tokens = ` + target + `.thinking_tokens + excluded.thinking_tokens,
 				  input_image_tokens = ` + target + `.input_image_tokens + excluded.input_image_tokens,
 				  output_image_tokens = ` + target + `.output_image_tokens + excluded.output_image_tokens,
+				  input_audio_tokens = ` + target + `.input_audio_tokens + excluded.input_audio_tokens,
+				  output_audio_tokens = ` + target + `.output_audio_tokens + excluded.output_audio_tokens,
+				  tts_input_chars = ` + target + `.tts_input_chars + excluded.tts_input_chars,
+				  audio_input_seconds = ` + target + `.audio_input_seconds + excluded.audio_input_seconds,
+				  output_video_seconds = ` + target + `.output_video_seconds + excluded.output_video_seconds,
 				  total_cost_usd = ` + target + `.total_cost_usd + excluded.total_cost_usd,
 				  updated_at = excluded.updated_at
 			`)
@@ -248,7 +275,10 @@ func (a *Aggregator) upsertUsageModelEntries(ctx context.Context, tx *sql.Tx, en
 				stats.RequestCount, stats.SuccessCount, stats.ErrorCount,
 				stats.InputTokens, stats.OutputTokens, stats.CacheReadTokens, stats.CacheReadCostUsd,
 				stats.CacheWriteTokens, stats.CacheWrite1hTokens, stats.CacheWriteCostUsd,
-				stats.ThinkingTokens, stats.InputImageTokens, stats.OutputImageTokens, stats.TotalCostUsd,
+				stats.ThinkingTokens, stats.InputImageTokens, stats.OutputImageTokens,
+				stats.InputAudioTokens, stats.OutputAudioTokens, stats.TTSInputChars,
+				stats.AudioInputSeconds, stats.OutputVideoSeconds,
+				stats.TotalCostUsd,
 				updatedAt); err != nil {
 				return err
 			}

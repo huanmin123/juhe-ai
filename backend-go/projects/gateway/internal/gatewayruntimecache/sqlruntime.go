@@ -50,6 +50,20 @@ func (m *SQLReadModels) ReadGatewayRuntimeByKeyHash(ctx context.Context, keyHash
 	return m.readGatewayRuntimeForAPIKey(ctx, apiKey)
 }
 
+// ReadGatewayRuntimeByAPIKeyID mirrors the raw-key read for the M5b realtime
+// ephemeral token face (Realtime 设计 §4): resolves the runtime from the API
+// key row id the token payload carries. Same loader (status / expiry /
+// bindings) as the hash read — an id that matches no usable key yields the
+// empty runtime (APIKey == nil), which the caller treats as invalid identity.
+func (m *SQLReadModels) ReadGatewayRuntimeByAPIKeyID(ctx context.Context, apiKeyID string) (GatewayRuntime, error) {
+	ctx = ensureModelCtx(ctx)
+	apiKey, err := m.loadGatewayAPIKeyByID(ctx, apiKeyID)
+	if err != nil {
+		return GatewayRuntime{}, err
+	}
+	return m.readGatewayRuntimeForAPIKey(ctx, apiKey)
+}
+
 // readGatewayRuntimeForAPIKey carries the shared read_gateway_runtime tail
 // (Node db-service readGatewayRuntime after validateGatewayApiKey): the first
 // candidate group with usage access and a dispatchable account set wins.
@@ -183,6 +197,20 @@ func (m *SQLReadModels) loadGatewayAPIKeyByKeyHash(ctx context.Context, key stri
 // active owner join, expiry/status gates, normalized route fields and active
 // bindings.
 func (m *SQLReadModels) loadGatewayAPIKeyByHash(ctx context.Context, keyHash string) (*GatewayAPIKeyRow, error) {
+	return m.loadGatewayAPIKeyRow(ctx, "api_keys.key_hash = ?", keyHash)
+}
+
+// loadGatewayAPIKeyByID 是按 id 的同一读取（M5b realtime ephemeral token 面，
+// Realtime 设计 §4）：校验语义与 by-hash 完全一致，仅定位谓词不同。
+func (m *SQLReadModels) loadGatewayAPIKeyByID(ctx context.Context, apiKeyID string) (*GatewayAPIKeyRow, error) {
+	return m.loadGatewayAPIKeyRow(ctx, "api_keys.id = ?", apiKeyID)
+}
+
+// loadGatewayAPIKeyRow is the shared loader body: active owner join, expiry /
+// status gates, normalized route fields and active bindings. predicate is the
+// api_keys locating predicate ("api_keys.key_hash = ?" / "api_keys.id = ?");
+// no usable row yields nil (the raw-key read's invalid-key semantics).
+func (m *SQLReadModels) loadGatewayAPIKeyRow(ctx context.Context, predicate string, value any) (*GatewayAPIKeyRow, error) {
 	var id, systemAccountID, routeStrategyID, routeStrategyMode, status string
 	var routeConfigJSON, expiresAt, quotaLimitsJSON, requestLimitsJSON sql.NullString
 	var imageGenerationEnabled int
@@ -205,8 +233,8 @@ func (m *SQLReadModels) loadGatewayAPIKeyByHash(ctx context.Context, keyHash str
 			ON route_strategies.id = api_keys.route_strategy_id
 			AND route_strategies.system_account_id = api_keys.system_account_id
 			AND route_strategies.status = 'active'
-		WHERE api_keys.key_hash = ?
-		LIMIT 1`), keyHash).
+		WHERE `+predicate+`
+		LIMIT 1`), value).
 		Scan(&id, &systemAccountID, &routeStrategyID, &routeStrategyMode, &routeConfigJSON,
 			&status, &expiresAt, &quotaLimitsJSON, &imageGenerationEnabled, &requestLimitsJSON)
 	if errors.Is(err, sql.ErrNoRows) {

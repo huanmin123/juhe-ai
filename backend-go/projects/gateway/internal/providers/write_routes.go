@@ -22,7 +22,8 @@ import (
 
 // customModelProtocolEnum mirrors the customModelSchema protocol enum.
 // audio_speech / audio_transcription 随 M1 同步音频放开（设计 §11.3）；
-// video 随 M2 视频放开；realtime 维持不放开（M5）。
+// video 随 M2 视频放开；realtime 随 M5b realtime 基建放开（Realtime 设计
+// §6 协议枚举加 realtime；realtime 不进 model_mapping 映射面）。
 var customModelProtocolEnum = map[string]bool{
 	"chat_completions": true, "responses": true, "messages": true,
 	"message_token_counting": true, "generate_content": true,
@@ -31,6 +32,7 @@ var customModelProtocolEnum = map[string]bool{
 	"completions": true, "images": true,
 	"audio_speech": true, "audio_transcription": true,
 	"video": true,
+	"realtime": true,
 }
 
 // providerModelValidationFields mirrors providerModelValidationFields.

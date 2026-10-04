@@ -438,11 +438,10 @@ func TestW13ePGDeletedAccountArms(t *testing.T) {
 		// 所有句柄共享同一注入配置（failOn 作用于装饰句柄）。
 		decorated := w13eOpenDecoratedPG(t, rec, w13ePGOptions{failOn: failOn})
 		return &DeletedAccountStore{
-			Business:           decorated,
-			Dataset:            decorated,
-			Records:            &RecordCleanupStore{Stats: decorated, Dataset: decorated, Business: decorated, Now: kitNow},
-			Now:                kitNow,
-			OrphanSweepEnabled: true,
+			Business: decorated,
+			Dataset:  decorated,
+			Records:  &RecordCleanupStore{Stats: decorated, Dataset: decorated, Business: decorated, Now: kitNow},
+			Now:      kitNow,
 		}
 	}
 	pgAccountSeed := func(rec *pgRecorder) {
@@ -489,7 +488,6 @@ func TestW13ePGDeletedAccountArms(t *testing.T) {
 		rec := newPGRecorder()
 		rec.script("FROM juhe_dataset.account_record_cleanup_targets", []string{"found"}, [][]driver.Value{{int64(1)}})
 		store := newStore(t, rec)
-		store.OrphanSweepEnabled = false
 		ok, err := store.hasRelatedRecordData(ctx, &cleanupTarget{AccountID: "acc-1", SystemAccountID: "sys-1"})
 		if err != nil || !ok {
 			t.Fatalf("目标未清应返回 true: %v %v", ok, err)

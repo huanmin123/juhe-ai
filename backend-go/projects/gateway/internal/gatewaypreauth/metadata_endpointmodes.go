@@ -17,8 +17,16 @@ import (
 // video_get（GET /v1/videos 与 /v1/videos/{id}）、video_content
 // （GET /v1/videos/{id}/content）、video_cancel（DELETE /v1/videos/{id}）四个
 // token（媒体设计 §11.6；任务面端点不设候选过滤 mode，走账户亲和直连，
-// 词表仅为能力表达与健康检查形态）；词表与 accounts.health_check_endpoint_mode
-// CHECK 同步（maintenance pg_schema_business_tables.go）。
+// 词表仅为能力表达与健康检查形态）；M3f 长音频任务族新增 audio_job_create
+// （POST /v1/audio/jobs，候选过滤消费面——按本 token 过滤账户）、audio_job_get
+// （GET /v1/audio/jobs 与 /v1/audio/jobs/{id}）、audio_job_content
+// （GET /v1/audio/jobs/{id}/content）、audio_job_cancel（DELETE
+// /v1/audio/jobs/{id}）四个 token（媒体设计 §4.2/§11.6，契约 §10.2；任务面
+// 三 token 同视频族不设候选过滤）；M5b realtime 增 realtime_session（GET
+// /v1/realtime WS 升级请求，Realtime 设计 §6——WS 桥接 handler 未交付前
+// 词表先行，候选过滤消费面随 handler 生效）；词表与
+// accounts.health_check_endpoint_mode CHECK 同步（maintenance
+// pg_schema_business_tables.go）。
 const (
 	EndpointModeImagesJSON             = "images_json"
 	EndpointModeChatJSON               = "chat_json"
@@ -40,6 +48,11 @@ const (
 	EndpointModeVideoGet               = "video_get"
 	EndpointModeVideoContent           = "video_content"
 	EndpointModeVideoCancel            = "video_cancel"
+	EndpointModeAudioJobCreate         = "audio_job_create"
+	EndpointModeAudioJobGet            = "audio_job_get"
+	EndpointModeAudioJobContent        = "audio_job_content"
+	EndpointModeAudioJobCancel         = "audio_job_cancel"
+	EndpointModeRealtimeSession        = "realtime_session"
 )
 
 // RequestSupportedEndpointMode mirrors openAIEndpointModeForGatewayRequest +
@@ -76,6 +89,14 @@ func RequestSupportedEndpointMode(req *GatewayRequest) string {
 		return videoGetEndpointMode(path)
 	case method == "DELETE" && strings.HasPrefix(normalizedV1StrippedPath(path), "/videos/"):
 		return EndpointModeVideoCancel
+	case method == "POST" && normalizedV1StrippedPath(path) == "/audio/jobs":
+		return EndpointModeAudioJobCreate
+	case method == "GET" && audioJobGetEndpointMode(path) != "":
+		return audioJobGetEndpointMode(path)
+	case method == "DELETE" && strings.HasPrefix(normalizedV1StrippedPath(path), "/audio/jobs/"):
+		return EndpointModeAudioJobCancel
+	case method == "GET" && normalizedV1StrippedPath(path) == "/realtime":
+		return EndpointModeRealtimeSession
 	case method == "POST" && normalizedV1StrippedPath(path) == "/messages":
 		if stream {
 			return EndpointModeMessagesSSE
@@ -152,4 +173,23 @@ func videoGetEndpointMode(path string) string {
 		return EndpointModeVideoContent
 	}
 	return EndpointModeVideoGet
+}
+
+// audioJobGetEndpointMode maps the GET /v1/audio/jobs* family（M3f 长音频，
+// 媒体设计 §4.2/§11.6，契约 §10.2）：列表（GET /v1/audio/jobs）与轮询
+// （GET /v1/audio/jobs/{id}）是 audio_job_get，产物下载
+// （GET /v1/audio/jobs/{id}/content，转写结果 JSON）是 audio_job_content。
+// 非本族路径返回空串。
+func audioJobGetEndpointMode(path string) string {
+	stripped := normalizedV1StrippedPath(path)
+	if stripped == "/audio/jobs" {
+		return EndpointModeAudioJobGet
+	}
+	if !strings.HasPrefix(stripped, "/audio/jobs/") {
+		return ""
+	}
+	if strings.HasSuffix(stripped, "/content") {
+		return EndpointModeAudioJobContent
+	}
+	return EndpointModeAudioJobGet
 }

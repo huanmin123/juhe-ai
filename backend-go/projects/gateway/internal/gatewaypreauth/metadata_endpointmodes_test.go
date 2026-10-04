@@ -134,6 +134,21 @@ func TestRequestSupportedEndpointMode(t *testing.T) {
 			expect: EndpointModeVideoCancel,
 		},
 		{
+			name:   "realtime session (M5b, GET /v1/realtime)",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/realtime?model=gpt-realtime", nil)},
+			expect: EndpointModeRealtimeSession,
+		},
+		{
+			name:   "realtime session no v1",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/realtime", nil)},
+			expect: EndpointModeRealtimeSession,
+		},
+		{
+			name:   "realtime client secrets POST is not the session shape",
+			req:    &GatewayRequest{HTTP: httptest.NewRequest("POST", "/v1/realtime/client_secrets", nil)},
+			expect: "",
+		},
+		{
 			name:   "ungated shape (GET models)",
 			req:    &GatewayRequest{HTTP: httptest.NewRequest("GET", "/v1/models", nil)},
 			expect: "",

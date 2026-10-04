@@ -37,7 +37,13 @@ func isAccountModelMappingSourceEndpointFamily(value string) bool {
 		FamilyResponses,
 		FamilyAnthropicMessages,
 		FamilyGeminiGenerateContent,
-		FamilyGeminiStreamGenerate:
+		FamilyGeminiStreamGenerate,
+		// M4b 媒体映射族（媒体设计 §9 hybrid 行）：/v1/videos 创建形态解析
+		// video_generation 源映射、/v1/audio/speech 形态解析 tts 源映射（同族
+		// 模型名改写，isOpenAIModelMappingRuntimeConversionSupported 的
+		// source==upstream 分支放行）。
+		FamilyVideoGeneration,
+		FamilyTts:
 		return true
 	}
 	return false

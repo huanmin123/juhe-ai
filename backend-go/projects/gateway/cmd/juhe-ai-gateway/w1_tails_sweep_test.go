@@ -91,6 +91,12 @@ type w1tAccountPlan struct {
 	err      error
 }
 
+// ReadGatewayRuntimeByAPIKeyID 是 M5b realtime 按 id 读（接口成员）：测试
+// 双不消费该面，恒返回空运行时。
+func (m *w1tTailModels) ReadGatewayRuntimeByAPIKeyID(context.Context, string) (gatewayruntimecache.GatewayRuntime, error) {
+	return gatewayruntimecache.GatewayRuntime{}, nil
+}
+
 func (m *w1tTailModels) ReadGatewaySettings(context.Context) (gatewayruntimecache.GatewaySettings, error) {
 	return gatewayruntimecache.GatewaySettings{}, nil
 }

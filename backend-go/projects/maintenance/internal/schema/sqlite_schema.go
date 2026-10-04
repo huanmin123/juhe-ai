@@ -395,7 +395,61 @@ func EnsureSQLiteStats(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
 	if err := ensureSQLiteStatsSuccessCostColumns(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite stats success_cost_usd columns: %w", err)
 	}
+	if err := ensureSQLiteStatsMediaColumns(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite stats media metering columns: %w", err)
+	}
 	return counts, nil
+}
+
+// sqliteStatsMediaColumnTables 列出承载媒体计量维度（M4a）的 stats 聚合表：
+// usage_stats 六层、usage_model 五层与 usage_scope_range_windows 范围窗口。
+// 概览窗口族、AI 性能摘要、授权日报族、IP 高基数表族与错误/直方图计数表
+// 不承载媒体维度，不在守卫清单内。
+var sqliteStatsMediaColumnTables = []string{
+	"usage_stats_totals",
+	"usage_stats_minute",
+	"usage_stats_hourly",
+	"usage_stats_daily",
+	"usage_stats_weekly",
+	"usage_stats_monthly",
+	"usage_model_minute",
+	"usage_model_hourly",
+	"usage_model_daily",
+	"usage_model_weekly",
+	"usage_model_monthly",
+	"usage_scope_range_windows",
+}
+
+// sqliteStatsMediaColumnDecls 是五个媒体计量列在既有库上的幂等补齐声明，
+// 列序与基线 CREATE TABLE 一致（output_image_tokens 之后）。
+var sqliteStatsMediaColumnDecls = []struct {
+	column string
+	decl   string
+}{
+	{"input_audio_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"output_audio_tokens", "INTEGER NOT NULL DEFAULT 0"},
+	{"tts_input_chars", "INTEGER NOT NULL DEFAULT 0"},
+	{"audio_input_seconds", "REAL NOT NULL DEFAULT 0"},
+	{"output_video_seconds", "REAL NOT NULL DEFAULT 0"},
+}
+
+// ensureSQLiteStatsMediaColumns delivers the media metering columns
+// (input_audio_tokens / output_audio_tokens / tts_input_chars /
+// audio_input_seconds / output_video_seconds，M4a) to legacy databases
+// through the same guarded PRAGMA table_info / ALTER TABLE ADD COLUMN
+// pattern as the success_cost_usd guard: fresh databases declare them
+// inside the CREATE TABLE statements, legacy databases receive the
+// in-place ADD COLUMN. No backfill: historical aggregate rows keep 0 and
+// accumulate from new usage records (统计体系按当前口径从新请求起累计).
+func ensureSQLiteStatsMediaColumns(ctx context.Context, db *sql.DB) error {
+	for _, table := range sqliteStatsMediaColumnTables {
+		for _, target := range sqliteStatsMediaColumnDecls {
+			if err := ensureSQLiteTableColumn(ctx, db, table, target.column, target.decl); err != nil {
+				return fmt.Errorf("ensure %s.%s: %w", table, target.column, err)
+			}
+		}
+	}
+	return nil
 }
 
 // sqliteStatsSuccessCostGuardTables 列出需要补 success_cost_usd 列的 stats

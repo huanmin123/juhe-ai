@@ -12,6 +12,12 @@ export interface AccountUsageSummary {
   thinkingTokens: number
   inputImageTokens: number
   outputImageTokens: number
+  /** 媒体计量维度（M4a，usage_stats 聚合列）。 */
+  inputAudioTokens: number
+  outputAudioTokens: number
+  ttsInputChars: number
+  audioInputSeconds: number
+  outputVideoSeconds: number
   totalTokens: number
   totalCost: number
   lastUsedAt?: string

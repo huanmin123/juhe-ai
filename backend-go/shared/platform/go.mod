@@ -3,6 +3,7 @@ module github.com/huanminabc/juhe-ai/backend-go-platform
 go 1.26.0
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
 	golang.org/x/text v0.41.0
 	modernc.org/sqlite v1.58.0

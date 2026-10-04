@@ -1,7 +1,10 @@
 package gatewaypreauth
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"strings"
 
@@ -272,6 +275,22 @@ func (w *TrackingWriter) MarkUpstreamError() {
 	if marker, ok := w.ResponseWriter.(kernel.UpstreamMarker); ok {
 		marker.MarkUpstream()
 	}
+}
+
+// Hijack forwards the WebSocket upgrade hijack to the wrapped writer
+// （M5b2 realtime WS 面：gorilla Upgrader 需要静态可见的 http.Hijacker——
+// 内嵌接口不提升方法集，必须显式转发）。转发成功时记录 101 状态，使链面
+// 审计拿到升级语义而非默认 200。
+func (w *TrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("tracking writer: 底层 writer 未实现 http.Hijacker")
+	}
+	if !w.wroteHeader {
+		w.status = http.StatusSwitchingProtocols
+		w.wroteHeader = true
+	}
+	return hijacker.Hijack()
 }
 
 // Flush forwards to the wrapped flusher for SSE paths.

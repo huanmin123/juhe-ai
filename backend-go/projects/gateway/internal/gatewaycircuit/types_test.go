@@ -50,15 +50,24 @@ func TestScopeKeyEncoding(t *testing.T) {
 			want: "14:protocol_model|1:a|1:p|5:video|6:sora-2",
 		},
 		{
+			// M5b 起 realtime 进车道词表（Realtime 设计 §6），同语义独立入键。
+			name: "protocol_model scope realtime lane (M5b)",
+			scope: Scope{
+				Kind: ScopeKindProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p",
+				RequestLane: "realtime", ModelBucket: "gpt-realtime",
+			},
+			want: "14:protocol_model|1:a|1:p|8:realtime|12:gpt-realtime",
+		},
+		{
 			name:    "missing accountRuntimeKey",
 			scope:   Scope{Kind: ScopeKindAccount},
 			wantErr: "账户电路作用域缺少 accountRuntimeKey",
 		},
 		{
-			// realtime 在 M5 前不在车道词表（媒体设计 §3），仍是非法值。
+			// realtime 已随 M5b 进词表，非法样本用 m5 占位（Realtime 设计 §6）。
 			name:    "invalid lane",
-			scope:   Scope{Kind: ScopeKindProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "realtime", ModelBucket: "m"},
-			wantErr: "账户电路作用域 requestLane 必须是 text/image/audio/video",
+			scope:   Scope{Kind: ScopeKindProtocolModel, AccountRuntimeKey: "a", ProtocolProfile: "p", RequestLane: "m5", ModelBucket: "m"},
+			wantErr: "账户电路作用域 requestLane 必须是 text/image/audio/video/realtime",
 		},
 	}
 	for _, tt := range tests {

@@ -41,6 +41,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
 )
 
 // gatewayTrafficSource mirrors normalizeOpenAIGatewayTrafficSource(undefined).
@@ -80,6 +81,18 @@ type gatewayChain struct {
 	// 仓储 + 账户亲和水合 + 上游直连传输面）。nil 仅组合测试——任务面端点
 	// 显式 503 降级，创建链受理后落库失败同样显式报错。
 	mediaJobs *mediaJobsRuntime
+	// realtimeTokens 是 M5b realtime ephemeral token 面（Realtime 设计
+	// §2/§4）：POST /v1/realtime/client_secrets 签发端点与 GET /v1/realtime
+	// WS 升级面（?token= 认证）的运行时。nil（runtimeStateDriver!=='redis'
+	// 或组合测试）时两端点显式 503 降级。
+	realtimeTokens *realtimetoken.Service
+	// cache 是网关运行时缓存句柄（M5b2 realtime 面：按 api_key_id 的运行时
+	// 读、realtime 目录行解析与候选账户回退加载直接消费；此前各面经
+	// preauth/engine 适配层访问，链结构体不持有）。
+	cache *gatewayruntimecache.Service
+	// realtimeConnections 是 M5b2 realtime 每 API Key 并发 WS 连接计数器
+	//（Realtime 设计 §3：realtimeMaxConnectionsPerApiKey，进程内原子）。
+	realtimeConnections *chainRealtimeConnectionLimiter
 	// speed-first（D-114，routes.ts:542-546）的 per-request 状态在
 	// v1DispatchLoop 上；组合级字段到此为止。
 	// compat answers the openai-compatible files / vector-stores families.
@@ -153,6 +166,17 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	defer chainUnregisterRequestStageRecorder(traceID, requestStageCtx)
 	endpoint := gatewaypreauth.RequestEndpoint(req)
 	requestLane := gatewaypreauth.ResolveOpenAIGatewayRequestLane(req)
+
+	// M5b2 realtime WS 升级面（Realtime 设计 §3）：GET /v1/realtime 短路进
+	// 专用 WS handler（HTTP 101 hijack），不进 body 管道 / preflight / 派发
+	// 链——?token= 浏览器形态没有 Bearer，不能先过 PreResolveGatewayRuntime
+	// 的强制 Bearer 认证（认证在 handler 内完成：Bearer 或 ephemeral）。
+	// 非 GET 的 /v1/realtime 形态同样在此收敛 404（协议门已放行该精确路径，
+	// 不放落派发链）。
+	if chainIsRealtimePath(req) {
+		c.serveRealtimeUpgrade(ctx, req, res, traceID, endpoint)
+		return
+	}
 
 	// ---- pre-auth stage (request/preauth.ts middleware order) ----
 	if err := c.preauth.PreResolveGatewayRuntime(ctx, res, req, func() {}); err != nil {
@@ -260,13 +284,37 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 	// c.preauth.NowMs()（UnixMilli），此处直接取 wall clock 同域绝对毫秒。
 	defer httpCompletion.complete(time.Now().UnixMilli())
 
-	// M2 视频任务面（媒体设计 §4.2/§7）：GET/DELETE /v1/videos* 是受理后操作，
-	// 不走派发循环——preauth 认证完成后短路到账户亲和直连（查表定位原账户
-	// 原上游）。创建请求（POST /v1/videos）继续走下方完整派发链（受理边界
-	// 生效）。auditCapture 是上方已构造的请求级捕获：任务面短路路径在
-	// serveMediaJobTaskPlane 内做最小审计收尾（身份 + 任务 id + 状态码 Finalize）。
-	if chainIsVideoTaskPlaneRequest(req) {
+	// M2 视频任务面（媒体设计 §4.2/§7；M3f 起含长音频 /v1/audio/jobs* 族）：
+	// GET/DELETE /v1/videos* 与 /v1/audio/jobs* 是受理后操作，不走派发循环
+	// ——preauth 认证完成后短路到账户亲和直连（查表定位原账户原上游）。
+	// 创建请求（POST /v1/videos 与 POST /v1/audio/jobs）继续走下方完整派发
+	// 链（受理边界生效）。auditCapture 是上方已构造的请求级捕获：任务面短路
+	// 路径在 serveMediaJobTaskPlane 内做最小审计收尾（身份 + 任务 id + 状态码
+	// Finalize）。
+	// M5b realtime ephemeral token 签发面（Realtime 设计 §2/§4）：POST
+	// /v1/realtime/client_secrets 是无上游签发请求，不走派发循环——preauth
+	// 认证（含用户请求限流消费）与 body 管道完成后短路到 token 服务。审计
+	// 沿任务面最小收尾（身份 + 状态码 Finalize，token 值不进审计）。
+	if chainIsRealtimeClientSecretsPath(req) {
+		c.serveRealtimeClientSecrets(ctx, req, res, auditCapture)
+		return
+	}
+
+	if chainIsMediaJobTaskPlaneRequest(req) {
 		c.serveMediaJobTaskPlane(ctx, req, res, traceID, auditCapture)
+		return
+	}
+
+	// M3f 长音频创建形态门（媒体设计 §4.2/契约 §10.2）：唯一输入形态是
+	// input_url 公网音频 URL（上游只收 file_urls、网关零存储不暂存）——请求
+	// 体不是 JSON 对象（multipart 文件输入）本地 400，不进派发链。不在此拦截
+	// 会落入 preflight 模型门的 missing_model 503，把客户端输入形态错误误报成
+	// 上游不可用（视频创建面无此门：报文本身必含 model，形态错误上游 400 透
+	// 传短路承载）。审计沿任务面最小收尾（身份 + 状态码 Finalize，不记 body）。
+	if chainIsAudioJobCreateRequest(req) && chainVideoRequestBodyOf(req) == nil {
+		c.renderMediaVideoLocalError(res, req, http.StatusBadRequest,
+			"长音频任务请求体必须是 JSON 对象（唯一输入形态 input_url 公网音频 URL，不支持 multipart 文件输入）", "invalid_request_body")
+		c.finalizeMediaJobTaskPlaneAudit(auditCapture, req, res, "")
 		return
 	}
 
@@ -493,17 +541,17 @@ func (c *gatewayChain) handleUpstreamResponse(
 	}
 	upstream := dispatched.Response
 	c.recordUpstreamFetchHeadersStage(context, dispatched)
-	// M2 视频创建响应（媒体设计 §4.2/§8.2）：2xx + job id = 受理凭据确立，
-	// 落 media_jobs 后返回统一 job 对象；不进通用流式/非流式管道（chat 语义
-	// 的响应处理对 video 对象无意义）。网关流量的非 2xx 创建失败中，参数类
-	// 400/413/422 经失败派发器短路为 ReturnResponse（媒体设计 §7：确定性
-	// 参数错误不换账户）到达错误透传分支——同样不进通用管道（chat 错误
-	// 检查/改写会把上游参数错误吞成 502）；其余失败在引擎 attempt 语义内
-	// 换候选（受理前可切换），不会到达本拦截。
-	if upstream != nil && upstream.OK() && chainIsVideoCreateRequest(req) {
-		return c.handleVideoCreateUpstreamResponse(ctx, req, res, context, dispatched, upstream)
+	// M2 视频创建响应（媒体设计 §4.2/§8.2；M3f 起含长音频任务创建响应）：
+	// 2xx + job id = 受理凭据确立，落 media_jobs 后返回统一 job 对象；不进
+	// 通用流式/非流式管道（chat 语义的响应处理对 job 对象无意义）。网关流量
+	// 的非 2xx 创建失败中，参数类 400/413/422 经失败派发器短路为
+	// ReturnResponse（媒体设计 §7：确定性参数错误不换账户）到达错误透传分支
+	// ——同样不进通用管道（chat 错误检查/改写会把上游参数错误吞成 502）；
+	// 其余失败在引擎 attempt 语义内换候选（受理前可切换），不会到达本拦截。
+	if upstream != nil && upstream.OK() && chainIsMediaJobCreateRequest(req) {
+		return c.handleMediaJobCreateUpstreamResponse(ctx, req, res, context, dispatched, upstream)
 	}
-	if upstream != nil && chainIsVideoCreateRequest(req) && chainVideoCreateDeterministicParamStatus(upstream.Status()) {
+	if upstream != nil && chainIsMediaJobCreateRequest(req) && chainVideoCreateDeterministicParamStatus(upstream.Status()) {
 		return c.handleVideoCreateUpstreamErrorPassthrough(res, req, upstream)
 	}
 	streamRequest := gatewaypreauth.IsOpenAIStreamRequest(req)

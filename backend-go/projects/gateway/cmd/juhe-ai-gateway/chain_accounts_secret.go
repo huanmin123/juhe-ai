@@ -411,7 +411,15 @@ var (
 	// video_cancel 四 token 同语义进词表（与 gatewaypreauth 词表及
 	// accounts.health_check_endpoint_mode CHECK 同步；video_create 是候选过滤
 	// 消费面，任务面三 token 仅为能力表达与健康检查形态，不进默认集）。
-	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel"}
+	// M3f 长音频任务族（媒体设计 §4.2，契约 §10.2）：audio_job_create /
+	// audio_job_get / audio_job_content / audio_job_cancel 四 token 同语义
+	// 进词表（audio_job_create 是 /v1/audio/jobs 创建链候选过滤消费面——
+	// 词表缺失会让显式勾选长转写能力的 qwen 账户在 secret 投影时被滤除，
+	// 创建链无账户可命中）。
+	// M5b realtime（Realtime 设计 §6）：realtime_session 同语义进词表
+	//（词表缺失会让显式勾选 realtime 能力的账户在 secret 投影时被滤除，
+	// WS 桥接候选过滤随 handler 生效）。
+	chainOpenAIEndpointModeValues = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session"}
 	chainOpenAIChatEndpointModes  = []string{"chat_json", "chat_sse"}
 	chainOpenAIResponsesModes     = []string{"responses_json", "responses_sse"}
 	// chainOpenAIDefaultEndpointModes mirrors
@@ -428,11 +436,21 @@ var (
 	// /v1/videos 创建链按 video_create 候选过滤无账户可命中）。
 	chainGeminiDefaultModes = []string{"generate_content_json", "generate_content_sse", "count_tokens", "interactions_json", "interactions_sse", "audio_speech", "video_create", "video_get", "video_content", "video_cancel"}
 	// chainHybridEndpointModes mirrors accountscore.HybridEndpointModeValues
-	// (the three-family union; images_json rides the openai family).
+	// (the three-family union; images_json rides the openai family). M4b 媒体
+	// 映射（媒体设计 §9 hybrid 行）：补 video_create / video_get /
+	// video_content / video_cancel 四 token（随 openai 族并集——写侧
+	// accountscore hybrid 并集已含，此处缺会让显式声明视频能力的 hybrid 账户
+	// 在 secret 投影时被滤除，/v1/videos 创建链按 video_create 候选过滤无账户
+	// 可命中，镜像 M3 gemini 词表缺失同款缺陷）。M3f 长音频四 token 随
+	// openai 族并集同批进入（hybrid 无长转写 adapter，声明后创建链按能力
+	// 缺失失败——词表并集仅为投影一致性，非能力承诺）。
 	chainHybridEndpointModes = []string{
 		"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json",
 		"messages_json", "messages_sse", "message_token_counting",
 		"generate_content_json", "generate_content_sse", "count_tokens", "embed_content", "interactions_json", "interactions_sse",
+		"video_create", "video_get", "video_content", "video_cancel",
+		"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
+		"realtime_session",
 	}
 )
 

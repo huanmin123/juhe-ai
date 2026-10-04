@@ -995,6 +995,25 @@ var openAIAudioModelPricingData = []rawModel{
 		SupportedAPIProtocols:   []string{"audio_transcription"},
 		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.006),
 	},
+	{
+		// M5b realtime（Realtime 设计 §5/契约 §4.4）：gpt-realtime 系首个
+		// 目录行，audio token 计价。价格核实于 2026-10-04：官方定价页
+		//（developers.openai.com/pricing，反爬 403，以检索快照核对该页
+		// "Realtime and audio generation models" 表 audio $32.00 输入 /
+		// $64.00 输出 per 1M tokens；多源一致 [openrouter / glamdringresearch
+		// / apidog / trembit]）。快照三连中 cached audio $0.40/1M 属缓存
+		// 维度，price 字段面无 audio-cache 独立列，不落（M5b2 计费面接线
+		// 时再裁决归属）；text token 价多源分歧（$2.50～$5 输入 / $10～$20
+		// 输出），按「查不到精确不编造」不落。发布日期 2025-08-28（Realtime
+		// API GA 同日，Techmeme 转载 OpenAI 公告）。usage 从事件流累计、
+		// 连接关闭终态落库（M5b2 交付），空会话 0 计费 + usage_missing。
+		Model: "gpt-realtime", Mode: "audio", ReleaseDate: "2025-08-28",
+		InputModalities:         []string{"text", "audio"},
+		OutputModalities:        []string{"text", "audio"},
+		SupportedAPIProtocols:   []string{"realtime"},
+		InputCostPerAudioToken:  perToken(32),
+		OutputCostPerAudioToken: perToken(64),
+	},
 }
 
 // openAIVideoModelPricingData — M2 视频模型（mode=video），价格取自 OpenAI

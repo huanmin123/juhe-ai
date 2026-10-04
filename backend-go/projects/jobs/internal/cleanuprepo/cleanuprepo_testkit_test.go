@@ -412,6 +412,11 @@ func createKitBusinessSchema(t *testing.T, db *sql.DB) {
 		execKitSchema(t, db, fmt.Sprintf(
 			`CREATE TABLE IF NOT EXISTS %s (id TEXT PRIMARY KEY, account_id TEXT)`, table))
 	}
+	// account_api_key_runtime_states 最小形（DELETE 仅按 account_id；真实
+	// schema 见 maintenance sqlite_schema_business.go，物理删除主链双方言
+	// 清理的 SQLite 断言对象）。
+	execKitSchema(t, db, `CREATE TABLE IF NOT EXISTS account_api_key_runtime_states (
+      id TEXT PRIMARY KEY, account_id TEXT NOT NULL)`)
 	execKitSchema(t, db, `CREATE TABLE IF NOT EXISTS account_health_jobs_input_versions (
       account_id TEXT PRIMARY KEY, current_version INTEGER NOT NULL, reserved_at TEXT)`)
 	execKitSchema(t, db, `CREATE TABLE IF NOT EXISTS account_health_jobs_input_outbox (

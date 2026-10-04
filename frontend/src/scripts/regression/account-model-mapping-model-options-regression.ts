@@ -32,6 +32,8 @@ const options: AccountModelMappingModelOption[] = [
   { label: 'gpt-dual', value: 'gpt-dual', supportedApiProtocols: ['chat_completions', 'responses'] },
   { label: 'claude-messages', value: 'claude-messages', supportedApiProtocols: ['messages', 'message_token_counting'] },
   { label: 'gemini-native', value: 'gemini-native', supportedApiProtocols: ['generate_content', 'stream_generate_content'] },
+  { label: 'sora-video', value: 'sora-video', supportedApiProtocols: ['video'] },
+  { label: 'gpt-tts', value: 'gpt-tts', supportedApiProtocols: ['audio_speech'] },
   { label: 'unknown-legacy', value: 'unknown-legacy' }
 ]
 
@@ -94,6 +96,19 @@ assertDeepEqual(
 assertEqual(accountModelMappingEndpointFamilyProtocol('chat_completions'), 'chat_completions', 'Chat 协议映射错误')
 assertEqual(accountModelMappingEndpointFamilyProtocol('responses'), 'responses', 'Responses 协议映射错误')
 assertEqual(accountModelMappingEndpointFamilyProtocol('messages'), 'messages', 'Messages 协议映射错误')
+// M4b 媒体族端点族码与目录协议 token 不同名，必须经换算后过滤。
+assertEqual(accountModelMappingEndpointFamilyProtocol('video_generation'), 'video', '视频生成族协议 token 换算错误')
+assertEqual(accountModelMappingEndpointFamilyProtocol('tts'), 'audio_speech', '语音合成族协议 token 换算错误')
+assertDeepEqual(
+  values(filterAccountModelMappingOptionsByEndpointFamily(options, 'video_generation')),
+  ['sora-video'],
+  '视频生成来源只能展示声明 video 协议 token 的媒体模型'
+)
+assertDeepEqual(
+  values(filterAccountModelMappingOptionsByEndpointFamily(options, 'tts')),
+  ['gpt-tts'],
+  '语音合成来源只能展示声明 audio_speech 协议 token 的媒体模型'
+)
 assertIncludes(accountEditModalSource, 'for (const item of props.form.supportedModels)', '账号模型别名右侧下拉只能从账户支持模型构建')
 assertNotIncludes(accountEditModalSource, 'buildAccountModelMappingUpstreamOptions', '账号模型别名右侧下拉不应合并整个供应商模型目录')
 assertIncludes(accountApiKeySectionSource, 'mode="multiple"', '支持模型必须只能从模型目录多选')
@@ -152,6 +167,7 @@ const geminiNativeProfile = {
   protocolCode: 'gemini',
   protocolVersion: 'v1beta'
 }
+const hybridProfile = { providerCode: 'hybrid' }
 
 assertDefaultMappingFamilies(
   { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] },
@@ -248,6 +264,47 @@ assertMatch(
   }) ?? '',
   /Gemini GenerateContent.*上游接口能力/,
   '前端 Gemini 目标族必须要求 GenerateContent JSON 或 SSE 上游能力'
+)
+// M4b 媒体映射（矩阵 17 行对齐后端 model_mapping_protocol_matrix.go）。
+assertEqual(
+  isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'video_generation',
+    upstreamEndpointFamily: 'video_generation',
+    enabled: true,
+    context: { providerProfile: hybridProfile, supportedEndpointModes: ['video_create'] }
+  }),
+  true,
+  'Hybrid 视频生成同族映射必须在账户启用 video_create 时可用'
+)
+assertMatch(
+  accountModelMappingProtocolValidationMessage({
+    sourceEndpointFamily: 'tts',
+    upstreamEndpointFamily: 'tts',
+    enabled: true,
+    context: { providerProfile: hybridProfile, supportedEndpointModes: [] }
+  }) ?? '',
+  /语音合成.*上游接口能力/,
+  'Hybrid 语音合成映射必须按 audio_speech 上游能力门校验'
+)
+assertEqual(
+  isAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'tts',
+    upstreamEndpointFamily: 'tts',
+    enabled: true,
+    context: { providerProfile: openAIProfile, supportedEndpointModes: ['audio_speech'] }
+  }),
+  true,
+  'OpenAI 档案媒体同族映射在启用对应媒体端点模式时必须可用'
+)
+assertEqual(
+  accountModelMappingProtocolValidationMessage({
+    sourceEndpointFamily: 'video_generation',
+    upstreamEndpointFamily: 'video_generation',
+    enabled: true,
+    context: { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json'] }
+  }),
+  '当前供应商协议不支持媒体账号模型别名',
+  '非 OpenAI 档案不得声明媒体映射族'
 )
 assertIncludes(accountSavePayloadSource, 'enabled: item.enabled', '前端保存校验必须把映射启停状态传给统一协议矩阵')
 assertIncludes(accountStrategySectionSource, 'upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, option.value, mapping.enabled)', '前端目标协议下拉联动必须区分启用与停用映射')

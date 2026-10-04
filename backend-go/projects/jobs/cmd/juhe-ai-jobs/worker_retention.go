@@ -126,17 +126,15 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 	}
 	family.recordCleanup = recordCleanup
 
+	// 孤儿授权实例扫尾双模内聚于 DeletedAccountStore（orphanSweep 按
+	// Business.Postgres 分派，SQLite 臂与 PG 臂同 bulk 终态语义），组合根
+	// 不再持模式开关。
 	deletedAccounts := &cleanuprepo.DeletedAccountStore{
-		Business:           business,
-		Dataset:            dataset,
-		Stats:              stats,
-		Records:            recordCleanup,
-		OrphanSweepEnabled: postgres,
-		OnOrphanSweepSkipped: func(ctx context.Context, reason string) {
-			a.logger.Warn("逻辑删除 AI 账户物理清理跳过孤儿授权实例扫尾",
-				"event", "background_expired_deleted_account_orphan_sweep_skipped", "reason", reason)
-		},
-		Now: family.now,
+		Business: business,
+		Dataset:  dataset,
+		Stats:    stats,
+		Records:  recordCleanup,
+		Now:      family.now,
 	}
 
 	codexStore := &cleanuprepo.CodexContextStore{

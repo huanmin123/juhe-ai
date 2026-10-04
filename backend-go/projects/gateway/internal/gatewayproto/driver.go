@@ -16,15 +16,17 @@ const (
 )
 
 // RequestLane mirrors OpenAIGatewayRequestLane. Lane 词表随媒体域分期扩展
-// （媒体设计 §3）：M1 加 audio，M2 加 video，M5 启用 realtime（仅占位，
-// realtime 值在 M5 前不进词表）。
+// （媒体设计 §3）：M1 加 audio，M2 加 video，M5b 启用 realtime（Realtime
+// 网关设计 §6：GET /v1/realtime WS 升级请求解析为 LaneRealtime，豁免热
+// 质量排序、电路以独立 lane 值隔离）。
 type RequestLane string
 
 const (
-	LaneText  RequestLane = "text"
-	LaneImage RequestLane = "image"
-	LaneAudio RequestLane = "audio"
-	LaneVideo RequestLane = "video"
+	LaneText     RequestLane = "text"
+	LaneImage    RequestLane = "image"
+	LaneAudio    RequestLane = "audio"
+	LaneVideo    RequestLane = "video"
+	LaneRealtime RequestLane = "realtime"
 )
 
 // RequestShape identifies how a client addressed the gateway.

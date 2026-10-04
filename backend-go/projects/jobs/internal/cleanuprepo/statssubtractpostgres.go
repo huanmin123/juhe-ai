@@ -50,17 +50,23 @@ func postgresStatsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
 	}
 }
 
-// postgresUsageStatsSubtractParams 在 postgresStatsSubtractParams 基础上于
-// total_cost_usd 之后插入成功口径成本 success_cost_usd（回减量按记录 success
-// 标志：成功记录 = cost、失败记录 = 0），仅用于 usage_stats_totals 与五个
-// 时间桶的扣减——这六张表有该列；authorization 日报与 usage_model 桶无该列，
-// 继续用 postgresStatsSubtractParams 原参集。
+// postgresUsageStatsSubtractParams 在 postgresStatsSubtractParams 的基础上
+// 展开 usage_stats 表族（totals + 五时间桶）的回减参数：媒体计量五列
+// （M4a）插在 output_image_tokens 与 total_cost_usd 之间、成功口径成本
+// success_cost_usd 紧随 total_cost_usd（列序对齐 statsagg upsert 的
+// usageStatsMetricColumns；回减量按记录 success 标志：成功记录 = cost、
+// 失败记录 = 0）。authorization 日报与 usage_model 桶无该两族列，继续用
+// postgresStatsSubtractParams / 显式参数。
 func postgresUsageStatsSubtractParams(stats statsagg.UsageStatsAccumulator) []any {
-	params := postgresStatsSubtractParams(stats)
-	result := make([]any, 0, len(params)+1)
-	result = append(result, params[:14]...)
+	base := postgresStatsSubtractParams(stats)
+	result := make([]any, 0, len(base)+6)
+	result = append(result, base[:13]...) // Req..OutputImageTokens
+	result = append(result,
+		stats.InputAudioTokens, stats.OutputAudioTokens, stats.TTSInputChars,
+		stats.AudioInputSeconds, stats.OutputVideoSeconds)
+	result = append(result, base[13]) // total_cost_usd
 	result = append(result, stats.SuccessCostUsd)
-	result = append(result, params[14:]...)
+	result = append(result, base[14:]...) // duration/first_token 双份 + 尾部 request/error
 	return result
 }
 
@@ -691,6 +697,11 @@ func (s *RecordCleanupStore) subtractPostgresUsageStatsTotals(ctx context.Contex
           thinking_tokens = GREATEST(0, thinking_tokens - ?),
           input_image_tokens = GREATEST(0, input_image_tokens - ?),
           output_image_tokens = GREATEST(0, output_image_tokens - ?),
+          input_audio_tokens = GREATEST(0, input_audio_tokens - ?),
+          output_audio_tokens = GREATEST(0, output_audio_tokens - ?),
+          tts_input_chars = GREATEST(0, tts_input_chars - ?),
+          audio_input_seconds = GREATEST(0, audio_input_seconds - ?),
+          output_video_seconds = GREATEST(0, output_video_seconds - ?),
           total_cost_usd = GREATEST(0, total_cost_usd - ?),
           success_cost_usd = GREATEST(0, success_cost_usd - ?),
           duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
@@ -722,8 +733,10 @@ func (s *RecordCleanupStore) deleteEmptyPostgresUsageStatsTotal(ctx context.Cont
       AND request_count = 0 AND success_count = 0 AND error_count = 0
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
-      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
-      AND success_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0
+      AND input_audio_tokens = 0 AND output_audio_tokens = 0 AND tts_input_chars = 0
+      AND audio_input_seconds = 0 AND output_video_seconds = 0
+      AND total_cost_usd = 0 AND success_cost_usd = 0
   `), systemAccountID, scopeType, scopeID)
 	return err
 }
@@ -745,6 +758,11 @@ func (s *RecordCleanupStore) subtractPostgresUsageStatsTimeBucket(ctx context.Co
           thinking_tokens = GREATEST(0, thinking_tokens - ?),
           input_image_tokens = GREATEST(0, input_image_tokens - ?),
           output_image_tokens = GREATEST(0, output_image_tokens - ?),
+          input_audio_tokens = GREATEST(0, input_audio_tokens - ?),
+          output_audio_tokens = GREATEST(0, output_audio_tokens - ?),
+          tts_input_chars = GREATEST(0, tts_input_chars - ?),
+          audio_input_seconds = GREATEST(0, audio_input_seconds - ?),
+          output_video_seconds = GREATEST(0, output_video_seconds - ?),
           total_cost_usd = GREATEST(0, total_cost_usd - ?),
           success_cost_usd = GREATEST(0, success_cost_usd - ?),
           duration_ms_sum = GREATEST(0, duration_ms_sum - ?),
@@ -777,8 +795,10 @@ func (s *RecordCleanupStore) deleteEmptyPostgresUsageStatsTimeBucket(ctx context
       AND request_count = 0 AND success_count = 0 AND error_count = 0
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
-      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
-      AND success_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0
+      AND input_audio_tokens = 0 AND output_audio_tokens = 0 AND tts_input_chars = 0
+      AND audio_input_seconds = 0 AND output_video_seconds = 0
+      AND total_cost_usd = 0 AND success_cost_usd = 0
   `, bucket.TableName, bucket.ColumnName)), systemAccountID, scopeType, scopeID, timeValue)
 	return err
 }
@@ -829,6 +849,11 @@ func (s *RecordCleanupStore) subtractPostgresUsageModelEntries(ctx context.Conte
           thinking_tokens = GREATEST(0, thinking_tokens - ?),
           input_image_tokens = GREATEST(0, input_image_tokens - ?),
           output_image_tokens = GREATEST(0, output_image_tokens - ?),
+          input_audio_tokens = GREATEST(0, input_audio_tokens - ?),
+          output_audio_tokens = GREATEST(0, output_audio_tokens - ?),
+          tts_input_chars = GREATEST(0, tts_input_chars - ?),
+          audio_input_seconds = GREATEST(0, audio_input_seconds - ?),
+          output_video_seconds = GREATEST(0, output_video_seconds - ?),
           total_cost_usd = GREATEST(0, total_cost_usd - ?),
           updated_at = ?
       WHERE system_account_id = ? AND %s = ? AND provider_code = ? AND model = ?
@@ -838,6 +863,8 @@ func (s *RecordCleanupStore) subtractPostgresUsageModelEntries(ctx context.Conte
 			stats.CacheReadTokens, stats.CacheReadCostUsd,
 			stats.CacheWriteTokens, stats.CacheWrite1hTokens, stats.CacheWriteCostUsd,
 			stats.ThinkingTokens, stats.InputImageTokens, stats.OutputImageTokens,
+			stats.InputAudioTokens, stats.OutputAudioTokens, stats.TTSInputChars,
+			stats.AudioInputSeconds, stats.OutputVideoSeconds,
 			stats.TotalCostUsd,
 			updatedAt,
 			entry.systemAccountID, entry.timeValue, entry.providerCode, entry.model); err != nil {
@@ -857,7 +884,10 @@ func (s *RecordCleanupStore) deleteEmptyPostgresUsageModelBucket(ctx context.Con
       AND request_count = 0 AND success_count = 0 AND error_count = 0
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0
       AND cache_write_tokens = 0 AND cache_write_1h_tokens = 0 AND cache_write_cost_usd = 0
-      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0 AND total_cost_usd = 0
+      AND thinking_tokens = 0 AND input_image_tokens = 0 AND output_image_tokens = 0
+      AND input_audio_tokens = 0 AND output_audio_tokens = 0 AND tts_input_chars = 0
+      AND audio_input_seconds = 0 AND output_video_seconds = 0
+      AND total_cost_usd = 0
   `, entry.bucket.TableName, entry.bucket.ColumnName)),
 		entry.systemAccountID, entry.timeValue, entry.providerCode, entry.model)
 	return err

@@ -34,6 +34,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaysession"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/ratelimit"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/realtimetoken"
 )
 
 // chainRuntimeServices bundles every concrete service the chain assembly
@@ -80,6 +81,11 @@ type chainRuntimeServices struct {
 	// runtimeStateDriver === 'redis'); shared with the aipublic penalty-window
 	// limiter so both limiter families sit in one Redis keyspace.
 	StateClient *redis.Client
+	// RealtimeTokens is the M5b realtime ephemeral token service (Realtime
+	// design §4): built over the same runtime-state client; nil when the state
+	// driver is not redis — the client_secrets endpoint degrades explicitly
+	// (503), it has no correct non-redis behavior.
+	RealtimeTokens *realtimetoken.Service
 	// AccountAPIKeyGuard is the process-local api-key failure guard
 	// (gatewayaccounteffects); the runtime-reset bridge reaches the failure
 	// guard / transient tombstone clears through it.
@@ -283,6 +289,9 @@ func composeChainRuntimeServices(composed *composition, cfg runtimeConfig, setti
 		// Exposed for siblings that share the runtime-state client (aipublic
 		// penalty-window limiter). nil when runtimeStateDriver !== 'redis'.
 		services.StateClient = stateClient
+		// M5b realtime ephemeral token 面（Realtime 设计 §4）：与状态键空间
+		// 共用同一客户端（键位 realtime_token:<t> 经 namespace 隔离）。
+		services.RealtimeTokens = realtimetoken.NewService(realtimetoken.GoRedisClient{Client: stateClient}, cfg.RedisNamespace)
 		// K5 invalidation shared-version persistence (inval.SharedStore, T2
 		// audit wiring): the runtime-state redis, mirroring the Node topology
 		// (publish + sync both gated on runtimeStateDriver === 'redis', which

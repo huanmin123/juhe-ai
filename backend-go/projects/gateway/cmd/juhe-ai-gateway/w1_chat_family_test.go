@@ -85,6 +85,12 @@ func (m *w1hReadModels) LoadAccountCurrentConcurrencyByID(context.Context, []str
 	return map[string]int{}, nil
 }
 
+// ReadGatewayRuntimeByAPIKeyID 是 M5b realtime 按 id 读（接口成员）：测试
+// 双不消费该面，恒返回空运行时。
+func (m *w1hReadModels) ReadGatewayRuntimeByAPIKeyID(context.Context, string) (gatewayruntimecache.GatewayRuntime, error) {
+	return gatewayruntimecache.GatewayRuntime{}, nil
+}
+
 func w1hNewRuntimeCache(t *testing.T, models *w1hReadModels) *gatewayruntimecache.Service {
 	t.Helper()
 	service, err := gatewayruntimecache.New(models, gatewayruntimecache.Options{})

@@ -2206,4 +2206,312 @@ FOR EACH ROW EXECUTE FUNCTION account_list_availability_quota_crossing_trigger('
 		Source:     "success-cost-usd-backfill",
 		SQL:        `UPDATE usage_stats_monthly SET success_cost_usd = total_cost_usd WHERE error_count = 0 AND success_cost_usd <> total_cost_usd`,
 	},
+	// 媒体计量维度列（M4a，媒体设计 §10 / 统计指标与分层聚合设计）：usage_records
+	// 已落的 input_audio_tokens / output_audio_tokens / tts_input_chars /
+	// audio_input_seconds / output_video_seconds 纳入统计聚合。覆盖三族表：
+	// usage_stats 六层（totals + minute/hourly/daily/weekly/monthly）、
+	// usage_model 五层（模型分布）、usage_scope_range_windows（账户范围窗口快照）。
+	// 不加列：概览窗口族（usage_overview_* / usage_model_rank_windows）为窄契约
+	// 承接、AI 性能摘要只有耗时、授权日报族按授权关系粒度、IP 高基数表族、
+	// 错误/直方图计数表。历史行默认 0，从新记录起自然累计，无需回填。
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_totals ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_totals ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_totals ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_totals ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_totals ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_minute ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_minute ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_minute ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_minute ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_minute ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_hourly ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_hourly ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_hourly ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_hourly ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_hourly ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_daily ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_daily ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_daily ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_daily ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_daily ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_weekly ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_weekly ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_weekly ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_weekly ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_weekly ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_monthly ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_monthly ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_monthly ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_monthly ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_stats_monthly ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_minute ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_minute ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_minute ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_minute ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_minute ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_hourly ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_hourly ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_hourly ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_hourly ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_hourly ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_daily ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_daily ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_daily ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_daily ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_daily ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_weekly ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_weekly ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_weekly ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_weekly ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_weekly ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_monthly ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_monthly ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_monthly ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_monthly ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_model_monthly ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_scope_range_windows ADD COLUMN IF NOT EXISTS input_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_scope_range_windows ADD COLUMN IF NOT EXISTS output_audio_tokens BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_scope_range_windows ADD COLUMN IF NOT EXISTS tts_input_chars BIGINT NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_scope_range_windows ADD COLUMN IF NOT EXISTS audio_input_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
+	{
+		SchemaName: "juhe_stats",
+		Source:     "media-stats-pg-columns",
+		SQL:        `ALTER TABLE usage_scope_range_windows ADD COLUMN IF NOT EXISTS output_video_seconds DOUBLE PRECISION NOT NULL DEFAULT 0`,
+	},
 }

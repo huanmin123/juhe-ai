@@ -426,7 +426,8 @@ const usageRecordListSelectColumns = `ur.id, ur.system_account_id, ur.trace_id, 
 	ur.upstream_response_model, ur.billed_service_tier, ur.effective_reasoning_effort,
 	ur.model_mapping_applied, ur.stream, ur.status_code, ur.success, ur.failure_attribution,
 	ur.error_code, ur.error_message, ur.first_token_ms, ur.duration_ms, ur.input_tokens,
-	ur.output_tokens, ur.cache_read_tokens, ur.cost_usd, ur.created_at`
+	ur.output_tokens, ur.cache_read_tokens, ur.input_audio_tokens, ur.output_audio_tokens,
+	ur.tts_input_chars, ur.audio_input_seconds, ur.output_video_seconds, ur.cost_usd, ur.created_at`
 
 // usageRecordRowsPG mirrors listPostgresUsageRecordRows.
 func (d *Deps) usageRecordRowsPG(r *http.Request, filters usageRecordFilterSet, sortOrder string, limit int) ([]Row, error) {
@@ -635,10 +636,19 @@ func bucketDateKeyToUTCms(key string) (int64, bool) {
 	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC).UnixMilli(), true
 }
 
-// openUsageShardDB opens a shard file read-write handle with the Node busy
-// timeout pragma.
+// openUsageShardDB 以非 owner 只读契约打开 usage shard：gateway 不是 shard
+// 写者（写入由 jobs 单写者写队列负责），必须以 mode=ro + query_only 打开；
+// mode=ro 下 shard 文件缺失直接报错，不再静默创建空库。调用方对打开/查询
+// 失败按"该 shard 无数据"跳过（见 usageRecordRowsSQLite）。单连接池限制
+// 每请求逐 shard 开合的句柄资源。
 func openUsageShardDB(path string) (*sql.DB, error) {
-	return sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	return db, nil
 }
 
 // hydrateUsageRecordItems mirrors hydrateUsageRecordNames +
@@ -780,6 +790,11 @@ func (d *Deps) mapUsageRecordListItem(row Row, scope AccessScope, apiKeyNames, g
 		InputTokens:              row.nullNumber("input_tokens"),
 		OutputTokens:             row.nullNumber("output_tokens"),
 		CacheReadTokens:          row.nullNumber("cache_read_tokens"),
+		InputAudioTokens:         row.nullNumber("input_audio_tokens"),
+		OutputAudioTokens:        row.nullNumber("output_audio_tokens"),
+		TTSInputChars:            row.nullNumber("tts_input_chars"),
+		AudioInputSeconds:        row.nullFloat("audio_input_seconds"),
+		OutputVideoSeconds:       row.nullFloat("output_video_seconds"),
 		CostUsd:                  row.nullFloat("cost_usd"),
 		CreatedAt:                row.text("created_at"),
 	}
@@ -970,6 +985,11 @@ type usageRecordListItem struct {
 	InputTokens              *int64   `json:"inputTokens,omitempty"`
 	OutputTokens             *int64   `json:"outputTokens,omitempty"`
 	CacheReadTokens          *int64   `json:"cacheReadTokens,omitempty"`
+	InputAudioTokens         *int64   `json:"inputAudioTokens,omitempty"`
+	OutputAudioTokens        *int64   `json:"outputAudioTokens,omitempty"`
+	TTSInputChars            *int64   `json:"ttsInputChars,omitempty"`
+	AudioInputSeconds        *float64 `json:"audioInputSeconds,omitempty"`
+	OutputVideoSeconds       *float64 `json:"outputVideoSeconds,omitempty"`
 	CostUsd                  *float64 `json:"costUsd,omitempty"`
 	CreatedAt                string   `json:"createdAt"`
 }

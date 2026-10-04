@@ -1,9 +1,11 @@
 package kernel
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -219,6 +221,16 @@ type methodContractWriter struct {
 
 // MarkExplicitMethodContract implements the handler-facing opt-out.
 func (m *methodContractWriter) MarkExplicitMethodContract() { m.explicit = true }
+
+// Hijack forwards the WebSocket upgrade hijack to the wrapped writer
+// （M5b2 realtime WS 面：内嵌接口不提升 Hijacker，必须显式转发）。
+func (m *methodContractWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := m.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("method contract writer: 底层 writer 未实现 http.Hijacker")
+	}
+	return hijacker.Hijack()
+}
 
 func (m *methodContractWriter) WriteHeader(status int) {
 	if status == http.StatusMethodNotAllowed && !m.converted && !m.explicit {

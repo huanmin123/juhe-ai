@@ -40,4 +40,9 @@ const (
 	FamilyAnthropicMessages     = "messages"
 	FamilyGeminiGenerateContent = "generate_content"
 	FamilyGeminiStreamGenerate  = "stream_generate_content"
+	// M4b 媒体映射族（媒体设计 §9 hybrid 行）：与 schema 端点族 seed 同码；
+	// 媒体映射是同族模型名改写（source 对外媒体模型名 → upstream 真实上游
+	// 媒体模型名），执行走 OpenAI 形态媒体端点（/v1/videos、/v1/audio/speech）。
+	FamilyVideoGeneration = "video_generation"
+	FamilyTts             = "tts"
 )

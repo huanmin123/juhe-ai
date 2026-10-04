@@ -99,6 +99,12 @@ export interface UsageRecordSummary {
   outputImageTokens?: number
   inputAudioTokens?: number
   outputAudioTokens?: number
+  /** TTS 合成输入字符数（M4a 媒体计量）。 */
+  ttsInputChars?: number
+  /** STT 音频输入秒数（M4a 媒体计量）。 */
+  audioInputSeconds?: number
+  /** 视频任务输出秒数（M4a 媒体计量）。 */
+  outputVideoSeconds?: number
   outputImageCount?: number
   costUsd?: number
   costBreakdown?: UsageRecordCostBreakdown
@@ -143,6 +149,11 @@ export type UsageRecordListItem = Pick<UsageRecordSummary,
   | 'inputTokens'
   | 'outputTokens'
   | 'cacheReadTokens'
+  | 'inputAudioTokens'
+  | 'outputAudioTokens'
+  | 'ttsInputChars'
+  | 'audioInputSeconds'
+  | 'outputVideoSeconds'
   | 'costUsd'
   | 'createdAt'
 >

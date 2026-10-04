@@ -190,7 +190,7 @@ export interface AccountDraftTestAccountPayload {
   supportedModels: string[]
   healthCheckModel: string
   healthCheckEndpointMode: import('@/types/domain').AccountHealthCheckEndpointMode
-  modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content'; enabled: boolean }>
+  modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content' | 'video_generation' | 'tts'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'video_generation' | 'tts'; enabled: boolean }>
   proxyProfileId?: string | null
   groupId: string
   accountExpiresAt?: string | null

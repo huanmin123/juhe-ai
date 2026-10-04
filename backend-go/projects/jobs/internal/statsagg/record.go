@@ -277,6 +277,12 @@ func UsageStatsAccumulatorFromRecord(row UsageStatsRecordRow) UsageStatsAccumula
 		ThinkingTokens:     math.Max(0, orZero(row.ThinkingTokens)),
 		InputImageTokens:   math.Max(0, orZero(row.InputImageTokens)),
 		OutputImageTokens:  math.Max(0, orZero(row.OutputImageTokens)),
+		// 媒体计量维度（M4a）：与 image token 同层非负钳位累加。
+		InputAudioTokens:   math.Max(0, orZero(row.InputAudioTokens)),
+		OutputAudioTokens:  math.Max(0, orZero(row.OutputAudioTokens)),
+		TTSInputChars:      math.Max(0, orZero(row.TTSInputChars)),
+		AudioInputSeconds:  math.Max(0, orZero(row.AudioInputSeconds)),
+		OutputVideoSeconds: math.Max(0, orZero(row.OutputVideoSeconds)),
 		TotalCostUsd:       math.Max(0, orZero(row.CostUsd)),
 		DurationMsSum:      durationMs,
 		DurationMsMax:      durationMs,
@@ -321,6 +327,11 @@ func MergeAccumulator(target *UsageStatsAccumulator, source UsageStatsAccumulato
 	target.ThinkingTokens += source.ThinkingTokens
 	target.InputImageTokens += source.InputImageTokens
 	target.OutputImageTokens += source.OutputImageTokens
+	target.InputAudioTokens += source.InputAudioTokens
+	target.OutputAudioTokens += source.OutputAudioTokens
+	target.TTSInputChars += source.TTSInputChars
+	target.AudioInputSeconds += source.AudioInputSeconds
+	target.OutputVideoSeconds += source.OutputVideoSeconds
 	target.TotalCostUsd += source.TotalCostUsd
 	target.SuccessCostUsd += source.SuccessCostUsd
 	target.DurationMsSum += source.DurationMsSum

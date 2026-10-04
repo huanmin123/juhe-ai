@@ -61,6 +61,12 @@
         <template v-else-if="column.key === 'tokens'">
           <span class="usage-number">{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</span>
         </template>
+        <template v-else-if="column.key === 'media'">
+          <div v-if="usageRecordHasMediaMetering(record.rangeUsage)" class="usage-media-cell">
+            <span v-for="part in usageRecordMediaParts(record.rangeUsage)" :key="part">{{ part }}</span>
+          </div>
+          <span v-else class="muted-cell">-</span>
+        </template>
         <template v-else-if="column.key === 'cacheRate'">
           <span class="usage-number">{{ formatPercent(cacheReadRate(record.rangeUsage, record.providerCode)) }}</span>
         </template>
@@ -129,6 +135,7 @@ import type { AccountUsageStatsRow, AccountUsageSummary } from '@/types/domain'
 import { accountTypeText } from '@/views/accounts/accountBasicFormatters'
 import { statusColor, statusText } from '@/views/accounts/accountFormatters'
 import { formatCompactInteger, formatCost, formatInteger, formatPercent } from '@/views/stats/statsFormatters'
+import { usageRecordHasMediaMetering, usageRecordMediaParts } from '@/views/usage-records/usageRecordFormatters'
 
 type TablePagination = false | Record<string, unknown>
 
@@ -228,6 +235,15 @@ const emit = defineEmits<{
 .usage-number {
   color: var(--juhe-fg);
   font-family: Consolas, 'Courier New', monospace;
+}
+
+.usage-media-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--juhe-fg-soft);
+  font-size: 12px;
+  line-height: 1.3;
 }
 
 .usage-mobile-card {

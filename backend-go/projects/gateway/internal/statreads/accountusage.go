@@ -200,6 +200,11 @@ func (d *Deps) accountUsageOverviewPage(r *http.Request, input accountUsagePageI
 			SUM(usage_window.output_tokens) AS output_tokens,
 			SUM(usage_window.cache_read_tokens) AS cache_read_tokens,
 			SUM(usage_window.cache_read_cost_usd) AS cache_read_cost_usd,
+			SUM(usage_window.input_audio_tokens) AS input_audio_tokens,
+			SUM(usage_window.output_audio_tokens) AS output_audio_tokens,
+			SUM(usage_window.tts_input_chars) AS tts_input_chars,
+			SUM(usage_window.audio_input_seconds) AS audio_input_seconds,
+			SUM(usage_window.output_video_seconds) AS output_video_seconds,
 			SUM(usage_window.total_cost_usd) AS total_cost,
 			MAX(usage_window.last_used_at) AS last_used_at
 		FROM `+d.statsTable("usage_stats_daily")+` usage_window
@@ -397,6 +402,11 @@ func (d *Deps) loadSelectedAccountUsageRows(r *http.Request, input accountUsageP
 			SUM(usage_window.output_tokens) AS output_tokens,
 			SUM(usage_window.cache_read_tokens) AS cache_read_tokens,
 			SUM(usage_window.cache_read_cost_usd) AS cache_read_cost_usd,
+			SUM(usage_window.input_audio_tokens) AS input_audio_tokens,
+			SUM(usage_window.output_audio_tokens) AS output_audio_tokens,
+			SUM(usage_window.tts_input_chars) AS tts_input_chars,
+			SUM(usage_window.audio_input_seconds) AS audio_input_seconds,
+			SUM(usage_window.output_video_seconds) AS output_video_seconds,
 			SUM(usage_window.total_cost_usd) AS total_cost,
 			MAX(usage_window.last_used_at) AS last_used_at
 		FROM `+d.statsTable("usage_stats_daily")+` usage_window
@@ -535,6 +545,11 @@ func (d *Deps) loadAccountUsageOverviewSummary(r *http.Request, scope AccessScop
 			COALESCE(SUM(thinking_tokens), 0) AS thinking_tokens,
 			COALESCE(SUM(input_image_tokens), 0) AS input_image_tokens,
 			COALESCE(SUM(output_image_tokens), 0) AS output_image_tokens,
+			COALESCE(SUM(input_audio_tokens), 0) AS input_audio_tokens,
+			COALESCE(SUM(output_audio_tokens), 0) AS output_audio_tokens,
+			COALESCE(SUM(tts_input_chars), 0) AS tts_input_chars,
+			COALESCE(SUM(audio_input_seconds), 0) AS audio_input_seconds,
+			COALESCE(SUM(output_video_seconds), 0) AS output_video_seconds,
 			COALESCE(SUM(total_cost_usd), 0) AS total_cost,
 			MAX(last_used_at) AS last_used_at
 		FROM `+d.statsTable("usage_stats_daily")+`
@@ -680,6 +695,11 @@ func (d *Deps) loadUsageDailySeries(r *http.Request, scopes []usageScopeRequest,
 					thinking_tokens,
 					input_image_tokens,
 					output_image_tokens,
+					input_audio_tokens,
+					output_audio_tokens,
+					tts_input_chars,
+					audio_input_seconds,
+					output_video_seconds,
 					total_cost_usd AS total_cost,
 					last_used_at
 				FROM `+d.statsTable("usage_stats_daily")+`
@@ -1055,6 +1075,11 @@ func mapUsageSummaryAggregate(row Row) accountUsageSummary {
 		ThinkingTokens:     int64(row.number("thinking_tokens")),
 		InputImageTokens:   int64(row.number("input_image_tokens")),
 		OutputImageTokens:  int64(row.number("output_image_tokens")),
+		InputAudioTokens:   int64(row.number("input_audio_tokens")),
+		OutputAudioTokens:  int64(row.number("output_audio_tokens")),
+		TTSInputChars:      int64(row.number("tts_input_chars")),
+		AudioInputSeconds:  row.number("audio_input_seconds"),
+		OutputVideoSeconds: row.number("output_video_seconds"),
 		TotalTokens:        int64(inputTokens + outputTokens),
 		TotalCost:          row.number("total_cost"),
 		LastUsedAt:         row.nullText("last_used_at"),
@@ -1079,6 +1104,11 @@ func accountUsageDailyPointFromRow(row Row, statDate string) accountUsageDailyPo
 	point.ThinkingTokens = summary.ThinkingTokens
 	point.InputImageTokens = summary.InputImageTokens
 	point.OutputImageTokens = summary.OutputImageTokens
+	point.InputAudioTokens = summary.InputAudioTokens
+	point.OutputAudioTokens = summary.OutputAudioTokens
+	point.TTSInputChars = summary.TTSInputChars
+	point.AudioInputSeconds = summary.AudioInputSeconds
+	point.OutputVideoSeconds = summary.OutputVideoSeconds
 	point.TotalTokens = summary.TotalTokens
 	point.TotalCost = summary.TotalCost
 	point.LastUsedAt = summary.LastUsedAt
@@ -1164,6 +1194,12 @@ type accountUsageSummary struct {
 	ThinkingTokens     int64   `json:"thinkingTokens"`
 	InputImageTokens   int64   `json:"inputImageTokens"`
 	OutputImageTokens  int64   `json:"outputImageTokens"`
+	// 媒体计量维度（M4a，usage_stats 聚合列）。
+	InputAudioTokens   int64   `json:"inputAudioTokens"`
+	OutputAudioTokens  int64   `json:"outputAudioTokens"`
+	TTSInputChars      int64   `json:"ttsInputChars"`
+	AudioInputSeconds  float64 `json:"audioInputSeconds"`
+	OutputVideoSeconds float64 `json:"outputVideoSeconds"`
 	TotalTokens        int64   `json:"totalTokens"`
 	TotalCost          float64 `json:"totalCost"`
 	LastUsedAt         *string `json:"lastUsedAt"`
@@ -1182,6 +1218,11 @@ type accountUsageDailyPoint struct {
 	ThinkingTokens     int64   `json:"thinkingTokens"`
 	InputImageTokens   int64   `json:"inputImageTokens"`
 	OutputImageTokens  int64   `json:"outputImageTokens"`
+	InputAudioTokens   int64   `json:"inputAudioTokens"`
+	OutputAudioTokens  int64   `json:"outputAudioTokens"`
+	TTSInputChars      int64   `json:"ttsInputChars"`
+	AudioInputSeconds  float64 `json:"audioInputSeconds"`
+	OutputVideoSeconds float64 `json:"outputVideoSeconds"`
 	TotalTokens        int64   `json:"totalTokens"`
 	TotalCost          float64 `json:"totalCost"`
 	LastUsedAt         *string `json:"lastUsedAt,omitempty"`

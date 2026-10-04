@@ -1,7 +1,10 @@
 package kernel
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 )
 
@@ -48,6 +51,20 @@ type localizeWriter struct {
 
 func newLocalizeWriter(w http.ResponseWriter) *localizeWriter {
 	return &localizeWriter{ResponseWriter: w}
+}
+
+// Hijack forwards the WebSocket upgrade hijack to the wrapped writer
+// （M5b2 realtime WS 面：内嵌接口不提升 Hijacker，必须显式转发）。
+func (l *localizeWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := l.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("localize writer: 底层 writer 未实现 http.Hijacker")
+	}
+	if !l.wroteHeader {
+		l.status = http.StatusSwitchingProtocols
+		l.wroteHeader = true
+	}
+	return hijacker.Hijack()
 }
 
 func (l *localizeWriter) WriteHeader(status int) {

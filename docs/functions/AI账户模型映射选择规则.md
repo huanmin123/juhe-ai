@@ -81,7 +81,8 @@
 | Gemini OpenAI Chat | Gemini 目录 | Chat -> Chat；Responses -> Chat；目标只能是 Chat |
 | Anthropic、DeepSeek Anthropic、GLM Anthropic | 当前供应商目录 | Messages -> Messages |
 | Gemini native | Gemini 目录 | GenerateContent -> GenerateContent；StreamGenerateContent -> GenerateContent |
-| Hybrid | 左侧协议对应的全局协议模型池 | 按混合供应商白名单转到 Chat、Messages 或 GenerateContent；不合成 Responses 上游 |
+| openai 协议档案（媒体映射，M4b） | 当前供应商目录的媒体行（协议 token `video` / `audio_speech`） | Video Generation -> Video Generation；TTS -> TTS（同族模型名改写；账户需含 `video_create` / `audio_speech` 端点模式） |
+| Hybrid | 左侧协议对应的全局协议模型池 | 按混合供应商白名单转到 Chat、Messages 或 GenerateContent；媒体族 Video Generation -> Video Generation、TTS -> TTS（M4b，同族改写，执行走中转的 OpenAI 形态媒体端点）；不合成 Responses 上游 |
 
 通用 `openai` 供应商的“当前供应商目录”本身是 OpenAI-compatible 聚合目录，因此它仍可覆盖未深度接入但兼容 OpenAI v1 的模型；专用供应商不能引用其他供应商目录模型。
 

@@ -620,7 +620,10 @@ const sourceEndpointBaseOptions = [
   { label: 'Responses', value: 'responses' },
   { label: 'Messages', value: 'messages' },
   { label: 'Gemini GenerateContent', value: 'generate_content' },
-  { label: 'Gemini StreamGenerateContent', value: 'stream_generate_content' }
+  { label: 'Gemini StreamGenerateContent', value: 'stream_generate_content' },
+  // M4b 媒体映射族：同族模型名改写，上游面恒为 OpenAI 形态媒体端点。
+  { label: '视频生成', value: 'video_generation' },
+  { label: '语音合成', value: 'tts' }
 ] as const
 const sourceEndpointOptions = computed(() => sourceEndpointBaseOptions.map((option) => ({
   ...option,
@@ -630,7 +633,10 @@ const upstreamEndpointBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
   { label: 'Messages', value: 'messages' },
-  { label: 'Gemini GenerateContent', value: 'generate_content' }
+  { label: 'Gemini GenerateContent', value: 'generate_content' },
+  // M4b 媒体映射族：同族模型名改写，上游面恒为 OpenAI 形态媒体端点。
+  { label: '视频生成', value: 'video_generation' },
+  { label: '语音合成', value: 'tts' }
 ] as const
 
 watch(open, (next) => {

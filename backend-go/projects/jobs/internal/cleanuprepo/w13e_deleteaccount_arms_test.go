@@ -33,6 +33,8 @@ func TestW13eDeletedAccountSweepArms(t *testing.T) {
 		{"source grants", "FROM resource_authorization_grants"},
 		{"targets self check", "FROM account_record_cleanup_targets WHERE account_id = ?"},
 		{"physically delete models", "DELETE FROM account_supported_models"},
+		{"physically delete search terms", "DELETE FROM account_name_search_terms"},
+		{"physically delete runtime states", "DELETE FROM account_api_key_runtime_states"},
 		{"physically delete grants", "DELETE FROM resource_authorization_grants WHERE id IN"},
 		{"physically delete authorizations", "DELETE FROM resource_authorizations WHERE id IN"},
 		{"physically delete root", "DELETE FROM accounts WHERE id = ?"},
@@ -185,18 +187,22 @@ func TestW13eDeletedAccountDirectArms(t *testing.T) {
 		}
 		_ = retention.ExpiredDeletedAccountTarget{}
 	}
-	// 孤儿扫尾未接线（SQLite）。
+	// 孤儿扫尾（SQLite）真实执行：孤儿实例账户被逻辑删除并计数（原「显式
+	// 跳过」臂已随扫尾双方言化反转为真实扫尾断言）。
 	{
 		store, _, business := w13eDeletedFixture(t)
-		seedKitDeletedAccount(t, business, "acc-1", "2026-06-01T00:00:00.000Z", "", "")
-		store.OrphanSweepEnabled = true
-		var reasons []string
-		store.OnOrphanSweepSkipped = func(_ context.Context, reason string) { reasons = append(reasons, reason) }
-		if _, err := store.CleanupExpired(ctx); err != nil {
+		// 孤儿实例：活跃账户持有的实例授权指向缺失授权行（ra.id IS NULL
+		// 分支），source 账户行同样缺失。
+		seedKitOrphanInstance(t, business, "acc-orphan", "iauth-missing", "acc-gone")
+		summary, err := store.CleanupExpired(ctx)
+		if err != nil {
 			t.Fatalf("CleanupExpired: %v", err)
 		}
-		if len(reasons) == 0 {
-			t.Fatalf("SQLite 扫尾应显式跳过")
+		if summary.OrphanedAuthorizationInstances != 1 {
+			t.Fatalf("SQLite 孤儿扫尾应命中 1: %+v", summary)
+		}
+		if got := mustQueryCountKit(t, business, `SELECT COUNT(*) FROM accounts WHERE id = 'acc-orphan' AND deleted_at IS NOT NULL`); got != 1 {
+			t.Fatalf("孤儿实例应被逻辑删除")
 		}
 	}
 	// 目标移交 record cleanup 时 buildTarget 的 related ids 汇集。
@@ -212,4 +218,41 @@ func TestW13eDeletedAccountDirectArms(t *testing.T) {
 			t.Fatalf("应移交 record cleanup: %+v %v", summary, err)
 		}
 	}
+}
+
+// TestOrphanSweepSQLiteErrorStages：SQLite 孤儿扫尾链逐语句失败臂（照
+// sqlite_error_stages 模式：真实孤儿数据 + failOn 装饰句柄，断言错误来自
+// 注入器命中的语句，杜绝伪覆盖）。种子走普通句柄，被测 store 用注入句柄。
+func TestOrphanSweepSQLiteErrorStages(t *testing.T) {
+	stages := []pgStage{
+		{"orphan select", "LEFT JOIN"},
+		{"revoke lookup", "SELECT resource_type, resource_id"},
+		{"quota bindings", "DELETE FROM request_quota_hourly_window_scope_bindings"},
+		{"grants revoke", "UPDATE resource_authorization_grants"},
+		{"sources revoke", "UPDATE resource_authorization_sources"},
+		{"auth revoke", "UPDATE resource_authorizations"},
+		{"account update", "SET status = 'disabled'"},
+		{"deleted ids", "deleted_at = ? AND id IN"},
+		{"tombstone select", "provider_code IN"},
+		{"version select", "SELECT current_version"},
+		{"version upsert", "INSERT INTO account_health_jobs_input_versions"},
+		{"outbox insert", "INSERT INTO account_health_jobs_input_outbox"},
+		{"tags delete", "DELETE FROM account_tag_bindings"},
+		{"search terms", "DELETE FROM account_name_search_terms"},
+		{"search documents", "DELETE FROM account_name_search_documents"},
+	}
+	runSQLiteStages(t, stages, func(t *testing.T, stage pgStage) error {
+		path := filepath.Join(t.TempDir(), "w13e-orphan-business.sqlite3")
+		seed, err := sql.Open("sqlite", path)
+		if err != nil {
+			return err
+		}
+		t.Cleanup(func() { _ = seed.Close() })
+		seed.SetMaxOpenConns(1)
+		createKitBusinessSchema(t, seed)
+		seedKitOrphanFullChain(t, &DB{DB: seed})
+		store := &DeletedAccountStore{Business: w13eOpenDecoratedSQLite(t, path, w13eSQLiteOptions{failOn: stage.failOn}), Now: kitNow}
+		_, err = store.orphanSweepSQLite(context.Background(), 10)
+		return err
+	})
 }

@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -23,8 +24,10 @@ const shardSchema = `
 		effective_reasoning_effort TEXT, model_mapping_applied INTEGER DEFAULT 0, stream INTEGER DEFAULT 0,
 		status_code INTEGER, success INTEGER DEFAULT 0, failure_attribution TEXT,
 		error_code TEXT, error_message TEXT, first_token_ms INTEGER, duration_ms INTEGER,
-		input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cost_usd REAL,
-		created_at TEXT NOT NULL);
+		input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+		input_audio_tokens INTEGER, output_audio_tokens INTEGER, tts_input_chars INTEGER NOT NULL DEFAULT 0,
+		audio_input_seconds REAL NOT NULL DEFAULT 0, output_video_seconds REAL NOT NULL DEFAULT 0,
+		cost_usd REAL, created_at TEXT NOT NULL);
 `
 
 func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
@@ -168,4 +171,48 @@ func TestUsageRecordsSQLiteShardWalk(t *testing.T) {
 		t.Fatalf("admin hydration wrong: %#v", adminPayload.Data.Items)
 	}
 	_ = context.Background
+}
+
+// openUsageShardDB 非 owner 只读契约：gateway 不是 usage shard 写者，必须
+// 以 mode=ro + query_only 打开。shard 文件缺失时从"静默创建空库 + 空结果"
+// 变为查询报错，调用方（usageRecordRowsSQLite）按"该 shard 无数据"跳过，
+// 磁盘上不得落新文件；已存在的 shard 打开后写路径被阻断。
+func TestOpenUsageShardDBReadOnlyContract(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing.sqlite3")
+	db, err := openUsageShardDB(missingPath)
+	if err != nil {
+		t.Fatalf("openUsageShardDB 懒连接应成功: %v", err)
+	}
+	defer db.Close()
+	if _, queryErr := db.Query(`SELECT count(*) FROM usage_records`); queryErr == nil {
+		t.Fatal("缺失 shard 文件的查询必须报错，不得静默返回空库结果")
+	}
+	if _, statErr := os.Stat(missingPath); !os.IsNotExist(statErr) {
+		t.Fatalf("缺失 shard 文件不得被创建: %v", statErr)
+	}
+
+	existingPath := filepath.Join(t.TempDir(), "existing.sqlite3")
+	seed, err := sql.Open("sqlite", existingPath)
+	if err != nil {
+		t.Fatalf("seed open: %v", err)
+	}
+	if _, err := seed.Exec(`CREATE TABLE usage_records (id TEXT PRIMARY KEY)`); err != nil {
+		seed.Close()
+		t.Fatalf("seed schema: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+	readOnly, err := openUsageShardDB(existingPath)
+	if err != nil {
+		t.Fatalf("openUsageShardDB(existing): %v", err)
+	}
+	defer readOnly.Close()
+	var queryOnly int
+	if err := readOnly.QueryRow(`PRAGMA query_only`).Scan(&queryOnly); err != nil {
+		t.Fatalf("PRAGMA query_only: %v", err)
+	}
+	if queryOnly != 1 {
+		t.Fatalf("query_only = %d, want 1（非 owner 进程必须只读打开 usage shard）", queryOnly)
+	}
 }

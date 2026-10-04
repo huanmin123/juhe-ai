@@ -30,7 +30,11 @@ const testSchema = `
 		cache_read_cost_usd REAL NOT NULL DEFAULT 0, cache_write_tokens REAL NOT NULL DEFAULT 0,
 		cache_write_1h_tokens REAL NOT NULL DEFAULT 0, cache_write_cost_usd REAL NOT NULL DEFAULT 0,
 		thinking_tokens REAL NOT NULL DEFAULT 0, input_image_tokens REAL NOT NULL DEFAULT 0,
-		output_image_tokens REAL NOT NULL DEFAULT 0, total_cost_usd REAL NOT NULL DEFAULT 0,
+		output_image_tokens REAL NOT NULL DEFAULT 0,
+		input_audio_tokens REAL NOT NULL DEFAULT 0, output_audio_tokens REAL NOT NULL DEFAULT 0,
+		tts_input_chars REAL NOT NULL DEFAULT 0, audio_input_seconds REAL NOT NULL DEFAULT 0,
+		output_video_seconds REAL NOT NULL DEFAULT 0,
+		total_cost_usd REAL NOT NULL DEFAULT 0,
 		duration_ms_sum REAL NOT NULL DEFAULT 0, duration_ms_count REAL NOT NULL DEFAULT 0,
 		first_token_ms_sum REAL NOT NULL DEFAULT 0, first_token_ms_count REAL NOT NULL DEFAULT 0,
 		last_used_at TEXT, PRIMARY KEY (system_account_id, scope_type, scope_id, stat_date));

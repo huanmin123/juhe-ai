@@ -74,6 +74,10 @@ func seedGatewaySettingsKeys(t *testing.T, db *sql.DB) {
 		"noAvailableAccountWaitTimeoutSeconds":       "30",
 		"streamFailureThresholdCount":                "3",
 		"streamFailureThresholdWindowMinutes":        "5",
+		// M5b realtime 会话生命周期键（Realtime 设计 §3；与 settings 种子默认同值）。
+		"realtimeIdleTimeoutSeconds":                 "120",
+		"realtimeMaxSessionSeconds":                  "1800",
+		"realtimeMaxConnectionsPerApiKey":            "5",
 		"operationLogRetentionDays":                  "365",
 		"operationLogMaxChangesPerRecord":            "100",
 		"statsAggregationIntervalSeconds":            "60",

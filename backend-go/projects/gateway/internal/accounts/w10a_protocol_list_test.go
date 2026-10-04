@@ -314,3 +314,135 @@ func TestW10AUsageStatsTodayKey(t *testing.T) {
 		t.Fatal("非法时区应回退 UTC")
 	}
 }
+
+// TestW10AMediaMappingMatrix 覆盖 M4b 媒体映射矩阵（媒体设计 §9 hybrid 行）：
+// video_generation / tts 族的标签、协议 token 翻译、规则放行（普通 openai 档案
+// 与 hybrid）、能力门（video_create / audio_speech 端点模式）与 chat 语义零
+// 变化回归。
+func TestW10AMediaMappingMatrix(t *testing.T) {
+	// 标签与族判定。
+	if accountModelMappingEndpointFamilyLabel(mappingFamilyVideoGeneration) != "Video Generation" {
+		t.Fatal("Video Generation 标签不一致")
+	}
+	if accountModelMappingEndpointFamilyLabel(mappingFamilyTts) != "TTS" {
+		t.Fatal("TTS 标签不一致")
+	}
+	if !isMediaMappingEndpointFamily(mappingFamilyVideoGeneration) || !isMediaMappingEndpointFamily(mappingFamilyTts) {
+		t.Fatal("媒体族判定不一致")
+	}
+	if isMediaMappingEndpointFamily(mappingFamilyChatCompletions) {
+		t.Fatal("chat 族不得误判为媒体族")
+	}
+
+	// 协议 token 翻译：媒体族码与目录协议 token 不同名；chat 族同名透传。
+	if token := mappingFamilyProtocolToken(mappingFamilyVideoGeneration); token != "video" {
+		t.Fatalf("video_generation token = %q, want video", token)
+	}
+	if token := mappingFamilyProtocolToken(mappingFamilyTts); token != "audio_speech" {
+		t.Fatalf("tts token = %q, want audio_speech", token)
+	}
+	if token := mappingFamilyProtocolToken(mappingFamilyChatCompletions); token != mappingFamilyChatCompletions {
+		t.Fatal("chat 族 token 应同名透传")
+	}
+
+	// 协议池：媒体族挂 openai 协议对（schema 端点族 seed 同源）。
+	if code, version := protocolPoolForMapping(mappingFamilyVideoGeneration); code != openAIProtocolCode || version != openAIProtocolVersion {
+		t.Fatalf("video_generation 池错误：%s %s", code, version)
+	}
+	if code, version := protocolPoolForMapping(mappingFamilyTts); code != openAIProtocolCode || version != openAIProtocolVersion {
+		t.Fatalf("tts 池错误：%s %s", code, version)
+	}
+
+	// 能力门：媒体上游族要求对应媒体端点模式。
+	if !hasAccountModelMappingUpstreamEndpointFamilyCapability(mappingFamilyVideoGeneration, []string{"video_create"}) {
+		t.Fatal("video_generation 上游应要求/接受 video_create")
+	}
+	if hasAccountModelMappingUpstreamEndpointFamilyCapability(mappingFamilyVideoGeneration, []string{"chat_json"}) {
+		t.Fatal("video_generation 上游不得由 chat 模式满足")
+	}
+	if !hasAccountModelMappingUpstreamEndpointFamilyCapability(mappingFamilyTts, []string{"audio_speech"}) {
+		t.Fatal("tts 上游应要求/接受 audio_speech")
+	}
+	if hasAccountModelMappingUpstreamEndpointFamilyCapability(mappingFamilyTts, []string{"video_create"}) {
+		t.Fatal("tts 上游不得由 video_create 满足")
+	}
+
+	// 单映射配对断言：媒体同族放行、跨族拒绝。
+	if err := assertSupportedAccountModelMappingEndpointFamilyConversion(mappingFamilyVideoGeneration, mappingFamilyVideoGeneration); err != nil {
+		t.Fatalf("video_generation 同族映射应通过：%v", err)
+	}
+	if err := assertSupportedAccountModelMappingEndpointFamilyConversion(mappingFamilyTts, mappingFamilyTts); err != nil {
+		t.Fatalf("tts 同族映射应通过：%v", err)
+	}
+	if err := assertSupportedAccountModelMappingEndpointFamilyConversion(mappingFamilyVideoGeneration, mappingFamilyChatCompletions); err == nil {
+		t.Fatal("媒体→chat 跨族映射应拒绝")
+	}
+
+	openAIProfile := protocolPredicateInput{protocolCode: openAIProtocolCode, protocolVersion: openAIProtocolVersion}
+	anthropicProfile := protocolPredicateInput{protocolCode: anthropicProtocolCodeConstant, protocolVersion: anthropicProtocolVersionConstant}
+
+	// 非 hybrid：openai 档案 + 媒体模式放行；缺媒体模式拒绝；anthropic 档案
+	// 拒绝（媒体上游面恒为 OpenAI 形态媒体端点）。
+	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyVideoGeneration,
+	}, openAIProfile, []string{"video_create"}); err != nil {
+		t.Fatalf("openai 档案视频映射应通过：%v", err)
+	}
+	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyTts, UpstreamEndpointFamily: mappingFamilyTts,
+	}, openAIProfile, []string{"audio_speech"}); err != nil {
+		t.Fatalf("openai 档案 tts 映射应通过：%v", err)
+	}
+	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyVideoGeneration,
+	}, openAIProfile, []string{"chat_json"}); err == nil ||
+		!strings.Contains(err.Error(), "要求账户至少启用一种对应的上游接口能力") {
+		t.Fatalf("缺失 video_create 能力应拒绝：%v", err)
+	}
+	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyTts, UpstreamEndpointFamily: mappingFamilyTts,
+	}, anthropicProfile, []string{"audio_speech"}); err == nil ||
+		!strings.Contains(err.Error(), "当前供应商协议不支持媒体账号模型别名") {
+		t.Fatalf("anthropic 档案媒体映射应拒绝：%v", err)
+	}
+
+	// hybrid：媒体同族放行；规则表外（媒体→chat）拒绝；缺能力拒绝。
+	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyVideoGeneration,
+	}, []string{"video_create"}); err != nil {
+		t.Fatalf("hybrid 视频映射应通过：%v", err)
+	}
+	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyTts, UpstreamEndpointFamily: mappingFamilyTts,
+	}, []string{"audio_speech"}); err != nil {
+		t.Fatalf("hybrid tts 映射应通过：%v", err)
+	}
+	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyChatCompletions,
+	}, []string{"chat_json"}); err == nil {
+		t.Fatal("hybrid 媒体→chat 跨族映射应拒绝")
+	}
+	if err := assertHybridAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyVideoGeneration, UpstreamEndpointFamily: mappingFamilyVideoGeneration,
+	}, nil); err == nil || !strings.Contains(err.Error(), "要求账户至少启用一种对应的上游接口能力") {
+		t.Fatalf("hybrid 缺媒体能力应拒绝：%v", err)
+	}
+
+	// chat 语义零变化回归：15 条跨协议矩阵仍在，chat 拒绝臂不受媒体族影响。
+	if len(hybridAccountModelMappingProtocolRules) != 17 {
+		t.Fatalf("hybrid 矩阵行数 = %d, want 17（15 chat + 2 媒体）", len(hybridAccountModelMappingProtocolRules))
+	}
+	if len(accountModelMappingProtocolRules) != 8 {
+		t.Fatalf("普通账户规则行数 = %d, want 8（6 chat + 2 媒体）", len(accountModelMappingProtocolRules))
+	}
+	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyChatCompletions, UpstreamEndpointFamily: mappingFamilyChatCompletions,
+	}, openAIProfile, []string{"chat_json"}); err != nil {
+		t.Fatalf("chat 同协议映射回归应通过：%v", err)
+	}
+	if err := assertAccountModelMappingProtocolAllowed(ModelMapping{
+		SourceEndpointFamily: mappingFamilyChatCompletions, UpstreamEndpointFamily: mappingFamilyMessages,
+	}, openAIProfile, nil); err == nil {
+		t.Fatal("chat 跨协议普通账户应继续拒绝")
+	}
+}

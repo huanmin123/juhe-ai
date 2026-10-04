@@ -62,6 +62,8 @@ func TestW11GUsageShardFileReadChain(t *testing.T) {
 		model_mapping_applied INTEGER, stream INTEGER, status_code INTEGER, success INTEGER,
 		failure_attribution TEXT, error_code TEXT, error_message TEXT, first_token_ms INTEGER,
 		duration_ms INTEGER, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+		input_audio_tokens INTEGER, output_audio_tokens INTEGER, tts_input_chars INTEGER NOT NULL DEFAULT 0,
+		audio_input_seconds REAL NOT NULL DEFAULT 0, output_video_seconds REAL NOT NULL DEFAULT 0,
 		cost_usd REAL, created_at TEXT)`); err != nil {
 		t.Fatal(err)
 	}

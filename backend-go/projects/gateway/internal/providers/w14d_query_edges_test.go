@@ -267,7 +267,10 @@ func TestW14dHasDirectPriceAndSupport(t *testing.T) {
 		t.Fatal("audio mode with speech protocol is supported")
 	}
 	if isSupportedCatalogModel(ModelCatalogItem{Model: "m", Status: "active", SupportedAPIProtocols: []string{"realtime"}}) {
-		t.Fatal("realtime protocol is not supported")
+		t.Fatal("realtime protocol without audio mode is not supported")
+	}
+	if !isSupportedCatalogModel(ModelCatalogItem{Model: "m", Status: "active", Mode: &audioMode, SupportedAPIProtocols: []string{"realtime"}}) {
+		t.Fatal("M5b realtime protocol with audio mode is supported")
 	}
 	if isSupportedCatalogModel(ModelCatalogItem{Model: "whisper-1", Status: "active"}) {
 		t.Fatal("whisper models are not supported")

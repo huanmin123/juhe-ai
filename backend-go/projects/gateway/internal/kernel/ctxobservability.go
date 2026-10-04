@@ -1,7 +1,10 @@
 package kernel
 
 import (
+	"bufio"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -125,6 +128,16 @@ func (w *statusTrackingWriter) statusPointer() *int {
 	}
 	status := w.status
 	return &status
+}
+
+// Hijack forwards the WebSocket upgrade hijack to the wrapped writer
+// （M5b2 realtime WS 面：内嵌接口不提升 Hijacker，必须显式转发）。
+func (w *statusTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("status tracking writer: 底层 writer 未实现 http.Hijacker")
+	}
+	return hijacker.Hijack()
 }
 
 // Flush forwards the flusher capability so SSE handlers below keep streaming.

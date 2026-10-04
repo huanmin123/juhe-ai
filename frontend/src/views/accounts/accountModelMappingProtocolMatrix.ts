@@ -7,6 +7,8 @@ import {
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY,
+  OPENAI_TTS_FAMILY,
+  OPENAI_VIDEO_GENERATION_FAMILY,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
   isHybridProviderCode,
@@ -38,15 +40,31 @@ type ProtocolConversionRule = {
   requiresNativeResponses?: boolean
 }
 
+// isMediaMappingEndpointFamily 报告端点族是否媒体映射族（M4b，镜像后端
+// model_mapping_protocol_matrix.go）：媒体族映射是同族模型名改写，上游面恒为
+// OpenAI 形态媒体端点（/v1/videos、/v1/audio/speech），只允许 OpenAI 兼容
+// 协议档案声明。
+export function isMediaMappingEndpointFamily(
+  value: AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily
+): boolean {
+  return value === OPENAI_VIDEO_GENERATION_FAMILY || value === OPENAI_TTS_FAMILY
+}
+
 export const accountModelMappingProtocolRules: readonly ProtocolConversionRule[] = [
   { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
   { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
   { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_RESPONSES_FAMILY, upstreamProfile: 'openai', requiresNativeResponses: true },
   { source: ANTHROPIC_MESSAGES_FAMILY, upstream: ANTHROPIC_MESSAGES_FAMILY, upstreamProfile: 'anthropic' },
   { source: GEMINI_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
-  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' }
+  { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  // M4b 媒体映射（媒体设计 §9）：video_generation / tts 同族模型名改写，
+  // 上游面是 OpenAI 形态媒体端点，仅 openai 档案供应商可声明（能力门要求
+  // 账户启用 video_create / audio_speech 端点模式）。
+  { source: OPENAI_VIDEO_GENERATION_FAMILY, upstream: OPENAI_VIDEO_GENERATION_FAMILY, upstreamProfile: 'openai' },
+  { source: OPENAI_TTS_FAMILY, upstream: OPENAI_TTS_FAMILY, upstreamProfile: 'openai' }
 ] as const
 
+// 混合供应商账户的 17 条转换矩阵（3 个上游协议族 + M4b 媒体同族改写 2 行）。
 export const hybridAccountModelMappingProtocolRules: readonly ProtocolConversionRule[] = [
   { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
   { source: OPENAI_RESPONSES_FAMILY, upstream: OPENAI_CHAT_COMPLETIONS_FAMILY, upstreamProfile: 'openai' },
@@ -62,7 +80,12 @@ export const hybridAccountModelMappingProtocolRules: readonly ProtocolConversion
   { source: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
   { source: OPENAI_CHAT_COMPLETIONS_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
   { source: OPENAI_RESPONSES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
-  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' }
+  { source: ANTHROPIC_MESSAGES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' },
+  // M4b 媒体映射（媒体设计 §9 hybrid 行）：hybrid 聚合中转的媒体模型映射
+  // ——source 对外视频/语音模型名 → upstream 该中转的真实媒体模型名，同族
+  // 改写（媒体上游面恒为 OpenAI 形态媒体端点，无跨协议矩阵需求）。
+  { source: OPENAI_VIDEO_GENERATION_FAMILY, upstream: OPENAI_VIDEO_GENERATION_FAMILY, upstreamProfile: 'openai' },
+  { source: OPENAI_TTS_FAMILY, upstream: OPENAI_TTS_FAMILY, upstreamProfile: 'openai' }
 ] as const
 
 type AccountModelMappingProtocolStructureInput = {
@@ -137,7 +160,12 @@ function accountModelMappingProtocolStructureValidationMessage(
     return unsupportedProtocolConversionMessage(sourceEndpointFamily, upstreamEndpointFamily)
   }
 
-  if (openAIProfile && upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY) {
+  // M4b：媒体映射族的上游面恒为 OpenAI 形态媒体端点，仅 openai 档案供应商
+  // 可声明（anthropic/gemini 档案无对应执行面）。
+  if (isMediaMappingEndpointFamily(sourceEndpointFamily) && !openAIProfile) {
+    return '当前供应商协议不支持媒体账号模型别名'
+  }
+  if (openAIProfile && upstreamEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY && upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY && !isMediaMappingEndpointFamily(upstreamEndpointFamily)) {
     return 'OpenAI 协议账号模型别名只能使用 Chat Completions 或 Responses'
   }
   if (anthropicProfile && upstreamEndpointFamily !== ANTHROPIC_MESSAGES_FAMILY) {
@@ -210,7 +238,18 @@ export function defaultAccountModelMappingUpstreamEndpointFamily(
     sourceEndpointFamily,
     upstreamEndpointFamily,
     context
-  })) ?? OPENAI_CHAT_COMPLETIONS_FAMILY
+  })) ?? defaultFallbackUpstreamEndpointFamily(sourceEndpointFamily)
+}
+
+// 兜底上游族保持结构合法：媒体来源兜底回同族（chat 兜底对媒体来源是非法
+// 转换，会把新增映射直接摆进必报错状态）；其余维持 Chat Completions 既有
+// 行为不变。
+function defaultFallbackUpstreamEndpointFamily(
+  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
+): AccountModelMappingUpstreamEndpointFamily {
+  if (sourceEndpointFamily === OPENAI_VIDEO_GENERATION_FAMILY) return OPENAI_VIDEO_GENERATION_FAMILY
+  if (sourceEndpointFamily === OPENAI_TTS_FAMILY) return OPENAI_TTS_FAMILY
+  return OPENAI_CHAT_COMPLETIONS_FAMILY
 }
 
 export function accountModelMappingEndpointFamilyText(
@@ -219,6 +258,8 @@ export function accountModelMappingEndpointFamilyText(
   if (value === ANTHROPIC_MESSAGES_FAMILY) return 'Messages'
   if (value === GEMINI_GENERATE_CONTENT_FAMILY) return 'Gemini GenerateContent'
   if (value === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) return 'Gemini StreamGenerateContent'
+  if (value === OPENAI_VIDEO_GENERATION_FAMILY) return '视频生成'
+  if (value === OPENAI_TTS_FAMILY) return '语音合成'
   return value === OPENAI_RESPONSES_FAMILY ? 'Responses' : 'Chat Completions'
 }
 
@@ -243,6 +284,15 @@ export function hasAccountModelMappingUpstreamEndpointFamilyCapability(
   }
   if (upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
     return modes.some((mode) => mode === 'messages_json' || mode === 'messages_sse')
+  }
+  if (upstreamEndpointFamily === OPENAI_VIDEO_GENERATION_FAMILY) {
+    // M4b：视频映射上游面要求账户可承接 /v1/videos 创建（候选过滤的
+    // opt-in 模式，与 dispatch 侧 requiredSupportedEndpointMode 同词表）。
+    return modes.some((mode) => mode === 'video_create')
+  }
+  if (upstreamEndpointFamily === OPENAI_TTS_FAMILY) {
+    // M4b：语音映射上游面要求账户可承接 /v1/audio/speech。
+    return modes.some((mode) => mode === 'audio_speech')
   }
   return modes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')
 }
@@ -299,6 +349,9 @@ function preferredUpstreamFamilies(
   if (isGeminiGenerateContentMappingSource(sourceEndpointFamily)) {
     return [GEMINI_GENERATE_CONTENT_FAMILY]
   }
+  // M4b：媒体映射是同族模型名改写，默认上游就是来源族本身。
+  if (sourceEndpointFamily === OPENAI_VIDEO_GENERATION_FAMILY) return [OPENAI_VIDEO_GENERATION_FAMILY]
+  if (sourceEndpointFamily === OPENAI_TTS_FAMILY) return [OPENAI_TTS_FAMILY]
   return sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
     ? [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
     : [OPENAI_CHAT_COMPLETIONS_FAMILY]

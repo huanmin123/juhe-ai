@@ -37,7 +37,13 @@ type UsageStatsRecordRow struct {
 	ThinkingTokens                   *float64
 	InputImageTokens                 *float64
 	OutputImageTokens                *float64
-	CostUsd                          *float64
+	// 媒体计量列（M4a，从 usage_records 聚合进统计表族）。
+	InputAudioTokens   *float64
+	OutputAudioTokens  *float64
+	TTSInputChars      *float64
+	AudioInputSeconds  *float64
+	OutputVideoSeconds *float64
+	CostUsd            *float64
 	ErrorCode                        *string
 	ErrorMessage                     *string
 	AccountOwnerSystemAccountID      *string
@@ -71,6 +77,13 @@ type UsageStatsAccumulator struct {
 	ThinkingTokens     float64
 	InputImageTokens   float64
 	OutputImageTokens  float64
+	// 媒体计量维度（M4a）：音频 token / TTS 字符 / 音频输入秒 / 视频输出秒，
+	// 与 image token 维度同层级聚合进 usage_stats 与 usage_model 表族。
+	InputAudioTokens   float64
+	OutputAudioTokens  float64
+	TTSInputChars      float64
+	AudioInputSeconds  float64
+	OutputVideoSeconds float64
 	TotalCostUsd       float64
 	// SuccessCostUsd 是成功交付尝试（success=1）的成本口径（配额/账单读侧
 	// gatewayquota 消费）：失败尝试的成本只进 TotalCostUsd，保证账号上游

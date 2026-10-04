@@ -13,12 +13,13 @@ import (
 // account-delete-cleanup.repository.ts 的过期逻辑删除物理清理移植
 // （cleanupExpiredLogicallyDeletedAccounts / Async）。
 //
-// 边界（显式登记，不静默）：SQLite 模式的孤儿授权实例扫尾
-// （orphan sweep）在 Node 侧联动 resource-authorization 运行态同步域
+// 边界（显式登记，不静默）：孤儿授权实例扫尾（orphan sweep）双方言执行，
+// SQLite 臂与 PG 臂同 bulk 终态语义；Node SQLite 同步臂的 per-grant 链
 // （returnResourceAuthorizationGrant → syncUserGrantRuntime →
-// refreshResourceAuthorizationEffectiveSource 等，含 effective_source 落列），
-// 该状态机尚未随迁移进入 jobs；Go 侧 SQLite 模式跳过扫尾并显式 warn，
-// PG 模式按 Node PG 路径完整实现。物理清理主链双模逐函数移植。
+// refreshResourceAuthorizationEffectiveSource，含 effective_source 落列与
+// 进程内缓存失效）不随迁——扫尾场景（资源账户已删/已逻辑删）下两臂终态
+// 等价（都到 revoked，对照 gateway internal/accounts/delete.go 双臂注释），
+// effective_source 等运行态列随 revoke 一并置空。物理清理主链双模逐函数移植。
 
 // DeletedAccountPhysicalCleanupRetentionMonths 照 Node 常量（1 个月）。
 const DeletedAccountPhysicalCleanupRetentionMonths = 1
@@ -39,10 +40,6 @@ type DeletedAccountStore struct {
 	Shards       *ShardStore
 	// Records 承载 SQLite 相关记录检查（targets/usage shards/stats rows）。
 	Records *RecordCleanupStore
-	// OrphanSweepEnabled 由组合根按模式与迁移边界决定（PG=true，SQLite=false）。
-	OrphanSweepEnabled bool
-	// OnOrphanSweepSkipped 显式上报扫尾跳过（禁止静默）。
-	OnOrphanSweepSkipped func(ctx context.Context, reason string)
 	// LastTargetError 记录最近一个目标失败的诊断信息（组合根可上报）。
 	LastTargetError string
 	Now             func() time.Time
@@ -67,21 +64,13 @@ func (s *DeletedAccountStore) CleanupExpired(ctx context.Context) (*retention.Ex
 	limit := DeletedAccountPhysicalCleanupBatchSize
 	summary := &retention.ExpiredDeletedAccountSummary{CutoffDeletedAt: cutoffDeletedAt}
 
-	if s.OrphanSweepEnabled {
-		if !s.Business.Postgres {
-			if s.OnOrphanSweepSkipped != nil {
-				s.OnOrphanSweepSkipped(ctx, "SQLite 孤儿授权实例扫尾依赖 resource-authorization 运行态同步域，尚未随迁移进入 jobs")
-			}
-		} else {
-			orphaned, err := s.orphanSweepPostgres(ctx, limit)
-			if err != nil {
-				return nil, err
-			}
-			summary.OrphanedAuthorizationInstances = int64(len(orphaned))
-		}
-	} else if s.OnOrphanSweepSkipped != nil {
-		s.OnOrphanSweepSkipped(ctx, "孤儿授权实例扫尾未接线")
+	// 孤儿授权实例扫尾：统一入口按方言分派（hasRelatedRecordData 同款分派
+	// 模式），双模交付即生效。
+	orphaned, err := s.orphanSweep(ctx, limit)
+	if err != nil {
+		return nil, err
 	}
+	summary.OrphanedAuthorizationInstances = int64(len(orphaned))
 
 	candidates, err := s.listCandidates(ctx, cutoffDeletedAt, limit)
 	if err != nil {
@@ -496,11 +485,12 @@ func (s *DeletedAccountStore) physicallyDelete(ctx context.Context, rootAccountI
 				return result, err
 			}
 		}
-		if s.Business.Postgres {
-			for _, table := range []string{"account_name_search_terms", "account_name_search_documents", "account_api_key_runtime_states"} {
-				if _, err = exec(fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.table(table), s.Business.BindIn(len(chunk))), args...); err != nil {
-					return result, err
-				}
+		// 搜索索引与 API Key 运行态三表清理双方言：SQLite jobs 句柄未开
+		// foreign_keys pragma，FK CASCADE 不生效，必须与 PG 同语义显式
+		// DELETE（三表在双 schema 均存在）。
+		for _, table := range []string{"account_name_search_terms", "account_name_search_documents", "account_api_key_runtime_states"} {
+			if _, err = exec(fmt.Sprintf(`DELETE FROM %s WHERE account_id IN (%s)`, s.table(table), s.Business.BindIn(len(chunk))), args...); err != nil {
+				return result, err
 			}
 		}
 	}
@@ -556,11 +546,20 @@ func (s *DeletedAccountStore) physicallyDelete(ctx context.Context, rootAccountI
 	return result, err
 }
 
-// orphanSweepPostgres 照 logicallyDeleteOrphanedAuthorizationInstancesForDeletedSourcesAsync
-// （PG bulk 语义：grants/sources/authorizations 批量 revoke + 逻辑删除实例账户 +
-// tombstone outbox）。
-func (s *DeletedAccountStore) orphanSweepPostgres(ctx context.Context, limit int) ([]string, error) {
-	rows, err := queryRows(ctx, s.Business, s.Business.Bind(fmt.Sprintf(`
+// orphanSweep 双方言统一入口（hasRelatedRecordData 同款分派模式）。
+func (s *DeletedAccountStore) orphanSweep(ctx context.Context, limit int) ([]string, error) {
+	if s.Business.Postgres {
+		return s.orphanSweepPostgres(ctx, limit)
+	}
+	return s.orphanSweepSQLite(ctx, limit)
+}
+
+// scanOrphanAuthorizationInstanceRows 扫描孤儿授权实例账户行（双方言通用：
+// LEFT JOIN 三段孤儿判定，仅 LIMIT ? 一个占位符）。命中条件：账户未逻辑删除
+// 且持有实例授权，而授权行缺失 / 资源类型非 account / source 账户行缺失 /
+// source 已逻辑删 / 资源账户行缺失 / 资源账户已逻辑删。
+func (s *DeletedAccountStore) scanOrphanAuthorizationInstanceRows(ctx context.Context, limit int) ([]row, error) {
+	return queryRows(ctx, s.Business, s.Business.Bind(fmt.Sprintf(`
     SELECT accounts.id, accounts.system_account_id,
       accounts.authorization_instance_authorization_id,
       accounts.authorization_instance_source_account_id,
@@ -584,6 +583,13 @@ func (s *DeletedAccountStore) orphanSweepPostgres(ctx context.Context, limit int
     ORDER BY accounts.updated_at ASC, accounts.id ASC
     LIMIT ?
 	`, s.table("accounts"), s.table("resource_authorizations"), s.table("accounts"), s.table("accounts"))), limit)
+}
+
+// orphanSweepPostgres 照 logicallyDeleteOrphanedAuthorizationInstancesForDeletedSourcesAsync
+// （PG bulk 语义：grants/sources/authorizations 批量 revoke + 逻辑删除实例账户 +
+// tombstone outbox）。
+func (s *DeletedAccountStore) orphanSweepPostgres(ctx context.Context, limit int) ([]string, error) {
+	rows, err := s.scanOrphanAuthorizationInstanceRows(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -706,9 +712,9 @@ func revokeAccountAuthorizationsPostgres(ctx context.Context, tx *sql.Tx, accoun
         revoked_at = COALESCE(revoked_at, $1),
         updated_at = $1
     WHERE resource_type = 'account'
-      AND resource_id = $1
+      AND resource_id = $3
       AND status NOT IN ('revoked', 'returned')
-	`, deletedAt, actor); err != nil {
+	`, deletedAt, actor, accountID); err != nil {
 		return err
 	}
 	if len(authorizationIDs) == 0 {
@@ -740,6 +746,170 @@ func revokeAccountAuthorizationsPostgres(ctx context.Context, tx *sql.Tx, accoun
     WHERE id = ANY($1::text[])
       AND status <> 'returned'
 	`, authorizationIDs, deletedAt, actor)
+	return err
+}
+
+// orphanSweepSQLite 是孤儿授权实例扫尾的 SQLite 臂，与 orphanSweepPostgres
+// 同 bulk 终态语义（同扫描；每孤儿行一个事务：revoke → 逻辑删除 → tombstone
+// → tags/搜索清理；LIMIT 20；单行失败整体中断返回错误）。Node SQLite 同步臂
+// 的 per-grant 链与进程内缓存失效不随迁（终态等价，见 gateway internal/
+// accounts/delete.go 双臂对照）。
+func (s *DeletedAccountStore) orphanSweepSQLite(ctx context.Context, limit int) ([]string, error) {
+	rows, err := s.scanOrphanAuthorizationInstanceRows(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return []string{}, nil
+	}
+	actor := internalAccountReadAccessSystemAccountID
+	fallbackDeletedAt := ISOOf(s.now())
+	var deletedIDs []string
+	for _, row := range rows {
+		accountID := textOf(row["id"])
+		authorizationID := textOf(row["authorization_instance_authorization_id"])
+		tx, err := s.Business.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.revokeAuthorizationInstanceSQLite(ctx, tx, authorizationID, actor, fallbackDeletedAt); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		ids, err := s.logicallyDeleteAccountsTx(ctx, tx, []string{accountID}, actor, fallbackDeletedAt)
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		deletedIDs = append(deletedIDs, ids...)
+	}
+	return uniqueNonEmpty(deletedIDs), nil
+}
+
+// revokeAuthorizationInstanceSQLite 照 revokeAuthorizationInstanceForDeletedSourceAccountAsync
+// 的 SQLite 臂（与 revokeAuthorizationInstancePostgres 同 bulk 终态语义；
+// authorizationID 为空直通；授权行缺失（ErrNoRows）跳过 grants 回收，仍更新
+// sources/authorizations 状态）。
+func (s *DeletedAccountStore) revokeAuthorizationInstanceSQLite(ctx context.Context, tx *sql.Tx, authorizationID, actor, deletedAt string) error {
+	if authorizationID == "" {
+		return nil
+	}
+	var resourceType sql.NullString
+	var resourceID sql.NullString
+	err := tx.QueryRowContext(ctx, s.Business.Bind(fmt.Sprintf(
+		`SELECT resource_type, resource_id FROM %s WHERE id = ? LIMIT 1`, s.table("resource_authorizations"))),
+		authorizationID).Scan(&resourceType, &resourceID)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil && resourceType.String == "account" && resourceID.String != "" {
+		if err := s.revokeAccountAuthorizationsSQLite(ctx, tx, resourceID.String, actor, deletedAt); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
+    UPDATE %s
+    SET status = 'revoked',
+        ended_at = COALESCE(ended_at, ?),
+        ended_reason = COALESCE(ended_reason, 'account_deleted'),
+        revoked_by = ?,
+        revoked_at = ?,
+        updated_at = ?
+    WHERE authorization_id = ?
+      AND status IN ('active', 'superseded')
+	`, s.table("resource_authorization_sources"))), deletedAt, actor, deletedAt, deletedAt, authorizationID)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
+    UPDATE %s
+    SET status = 'revoked',
+        effective_source_type = NULL,
+        effective_source_team_id = NULL,
+        revoked_by = COALESCE(revoked_by, ?),
+        revoked_at = COALESCE(revoked_at, ?),
+        revoked_reason = COALESCE(revoked_reason, 'account_deleted'),
+        last_source_changed_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND status <> 'returned'
+	`, s.table("resource_authorizations"))), actor, deletedAt, deletedAt, deletedAt, authorizationID)
+	return err
+}
+
+// revokeAccountAuthorizationsSQLite 照 revokeAccountAuthorizationsForDeletedResourceAsync
+// 的 SQLite 臂（PG 的 ANY($n::text[]) 改写为 placeholderList IN 列表；
+// BUG-0239：SET/WHERE 前置 `?` 与 IN 列表必须由同一次 Bind 编号）。
+func (s *DeletedAccountStore) revokeAccountAuthorizationsSQLite(ctx context.Context, tx *sql.Tx, accountID, actor, deletedAt string) error {
+	rows, err := queryRows(ctx, tx, s.Business.Bind(fmt.Sprintf(`
+    SELECT id FROM %s
+    WHERE resource_type = 'account' AND resource_id = ? AND status <> 'returned'
+	`, s.table("resource_authorizations"))), accountID)
+	if err != nil {
+		return err
+	}
+	authorizationIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if id := textOf(row["id"]); id != "" {
+			authorizationIDs = append(authorizationIDs, id)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
+    DELETE FROM %s
+    WHERE source_type = 'resource_authorization_grant'
+      AND source_id IN (
+        SELECT id FROM %s
+        WHERE resource_type = 'account' AND resource_id = ?
+      )
+	`, s.table("request_quota_hourly_window_scope_bindings"), s.table("resource_authorization_grants"))), accountID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
+    UPDATE %s
+    SET status = 'revoked',
+        revoked_by = COALESCE(revoked_by, ?),
+        revoked_at = COALESCE(revoked_at, ?),
+        updated_at = ?
+    WHERE resource_type = 'account'
+      AND resource_id = ?
+      AND status NOT IN ('revoked', 'returned')
+	`, s.table("resource_authorization_grants"))), actor, deletedAt, deletedAt, accountID); err != nil {
+		return err
+	}
+	if len(authorizationIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
+    UPDATE %s
+    SET status = 'revoked',
+        ended_at = COALESCE(ended_at, ?),
+        ended_reason = COALESCE(ended_reason, 'account_deleted'),
+        revoked_by = ?,
+        revoked_at = ?,
+        updated_at = ?
+    WHERE authorization_id IN (%s)
+      AND status IN ('active', 'superseded')
+	`, s.table("resource_authorization_sources"), placeholderList(len(authorizationIDs)))),
+		append([]any{deletedAt, actor, deletedAt, deletedAt}, stringSliceToAny(authorizationIDs)...)...); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, s.Business.Bind(fmt.Sprintf(`
+    UPDATE %s
+    SET status = 'revoked',
+        effective_source_type = NULL,
+        effective_source_team_id = NULL,
+        revoked_by = COALESCE(revoked_by, ?),
+        revoked_at = COALESCE(revoked_at, ?),
+        revoked_reason = COALESCE(revoked_reason, 'account_deleted'),
+        last_source_changed_at = ?,
+        updated_at = ?
+    WHERE id IN (%s)
+      AND status <> 'returned'
+	`, s.table("resource_authorizations"), placeholderList(len(authorizationIDs)))),
+		append([]any{actor, deletedAt, deletedAt, deletedAt}, stringSliceToAny(authorizationIDs)...)...)
 	return err
 }
 

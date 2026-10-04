@@ -106,6 +106,8 @@ import {
   ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
+  OPENAI_TTS_FAMILY,
+  OPENAI_VIDEO_GENERATION_FAMILY,
   isHybridProviderCode
 } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
@@ -173,14 +175,20 @@ const upstreamEndpointFamilyBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
   { label: 'Messages', value: 'messages' },
-  { label: 'Gemini GenerateContent', value: GEMINI_GENERATE_CONTENT_FAMILY }
+  { label: 'Gemini GenerateContent', value: GEMINI_GENERATE_CONTENT_FAMILY },
+  // M4b 媒体映射族：同族模型名改写，上游面恒为 OpenAI 形态媒体端点。
+  { label: '视频生成', value: OPENAI_VIDEO_GENERATION_FAMILY },
+  { label: '语音合成', value: OPENAI_TTS_FAMILY }
 ] as const
 const sourceEndpointFamilyBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
   { label: 'Messages', value: 'messages' },
   { label: 'Gemini GenerateContent', value: GEMINI_GENERATE_CONTENT_FAMILY },
-  { label: 'Gemini StreamGenerateContent', value: GEMINI_STREAM_GENERATE_CONTENT_FAMILY }
+  { label: 'Gemini StreamGenerateContent', value: GEMINI_STREAM_GENERATE_CONTENT_FAMILY },
+  // M4b 媒体映射族：同族模型名改写，上游面恒为 OpenAI 形态媒体端点。
+  { label: '视频生成', value: OPENAI_VIDEO_GENERATION_FAMILY },
+  { label: '语音合成', value: OPENAI_TTS_FAMILY }
 ] as const
 const sourceEndpointFamilyOptions = computed(() => sourceEndpointFamilyBaseOptions.filter((option) => (
   isAccountModelMappingSourceEndpointFamilyAllowed(option.value, modelMappingProtocolContext())
