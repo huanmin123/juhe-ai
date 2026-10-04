@@ -125,6 +125,8 @@ func createKitScopeStatsTable(t *testing.T, db *sql.DB, table, statColumn string
       cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0,
       cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0,
       input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0,
+      input_audio_tokens REAL DEFAULT 0, output_audio_tokens REAL DEFAULT 0,
+      tts_input_chars REAL DEFAULT 0, audio_input_seconds REAL DEFAULT 0, output_video_seconds REAL DEFAULT 0,
       total_cost_usd REAL DEFAULT 0, success_cost_usd REAL DEFAULT 0, duration_ms_sum REAL DEFAULT 0,
       duration_ms_count REAL DEFAULT 0, duration_ms_max REAL DEFAULT 0,
       first_token_ms_sum REAL DEFAULT 0, first_token_ms_count REAL DEFAULT 0,
@@ -143,6 +145,8 @@ func createKitModelBucketTable(t *testing.T, db *sql.DB, table, statColumn strin
       cache_write_tokens REAL DEFAULT 0, cache_write_1h_tokens REAL DEFAULT 0,
       cache_write_cost_usd REAL DEFAULT 0, thinking_tokens REAL DEFAULT 0,
       input_image_tokens REAL DEFAULT 0, output_image_tokens REAL DEFAULT 0,
+      input_audio_tokens REAL DEFAULT 0, output_audio_tokens REAL DEFAULT 0,
+      tts_input_chars REAL DEFAULT 0, audio_input_seconds REAL DEFAULT 0, output_video_seconds REAL DEFAULT 0,
       total_cost_usd REAL DEFAULT 0, updated_at TEXT,
       PRIMARY KEY (system_account_id, %s, provider_code, model))`, table, statColumn, statColumn))
 }

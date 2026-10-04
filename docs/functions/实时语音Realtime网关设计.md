@@ -57,6 +57,7 @@
 - 观测器旁路解析上游→客户端方向事件：`response.done`（`response.usage.input_tokens/output_tokens`、`*_token_details.audio_tokens`）、`rate_limits`（只观测不计量）——**累计到会话级汇总器**，事件帧本身不改动。
 - 连接关闭（任一侧、任何原因）时终态写 `usage_records`：endpoint=`/v1/realtime`、audio token 计量（既有 `audio_input/audio_output` 行项与 token 单价）、会话时长秒（`realtime` 维度记录进 usage 元数据）；上游无任何 usage 事件（空会话）→ 0 计费 + `usage_missing`。
 - 计费价：gpt-realtime 系目录行落 audio token 单价（官方 $32/$64 每 1M audio token 量级，以接入时官方页为准，查不到不编造）。
+- 终审 o-1 边界裁决（2026-10-04）：客户端升级失败于上游受理后（上游 101 已确立、客户端握手不完整）按代码现状定为契约——无会话不落 usage 终态行，关闭上游连接并释放账户并发槽与每 Key 连接位（`prepareRealtimeSession` 升级失败分支）。
 
 ## 6. lane / 词表 / 目录
 

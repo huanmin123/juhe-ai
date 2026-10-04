@@ -528,6 +528,141 @@ func TestChainRealtimeConnectionLimit(t *testing.T) {
 	t.Fatal("连接位释放后仍无法连接")
 }
 
+// TestChainRealtimeUpstreamIdleTimeout 上游侧空闲超时记账（终审 m-2）：
+// 客户端持续发帧续期客户端侧 deadline，上游静默（idle 场景不回帧）→ 上游
+// 读超时与客户端侧对称记 idle_timeout（close 1001），不落 upstream_closed。
+func TestChainRealtimeUpstreamIdleTimeout(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	seedRealtimeAccount(t, fixture, "acc_realtime_upidle", mock.URL, "sk-realtime-upidle", 0)
+	if _, err := fixture.db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+		VALUES ('sys_admin', 'realtimeIdleTimeoutSeconds', '10', '2026-10-04T00:00:00.000Z')`); err != nil {
+		t.Fatalf("seed idle timeout: %v", err)
+	}
+	chain, apiKey, spoolDir, _ := realtimeBridgeCompose(t, fixture, true)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	started := time.Now()
+	conn, _, err := realtimeDial(t, server.URL,
+		"/v1/realtime?model=gpt-realtime&scenario=media_realtime_idle", apiKey)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// 后台循环每 3s 发一帧：客户端侧 deadline 持续续期，上游侧（无回帧）
+	// 10s 后读超时。读侧等待服务端 close。
+	writeDone := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"input_audio_buffer.append","audio":"aGVsbG8="}`)); err != nil {
+					writeDone <- err
+					return
+				}
+			case <-writeDone:
+				return
+			}
+		}
+	}()
+	_, _, readErr := conn.ReadMessage()
+	elapsed := time.Since(started)
+	close(writeDone)
+	_ = conn.Close()
+	if readErr == nil {
+		t.Fatal("上游静默必须触发空闲断开")
+	}
+	if !websocket.IsCloseError(readErr, websocket.CloseGoingAway) {
+		t.Fatalf("客户端收尾 = %v, want close 1001 (GoingAway)", readErr)
+	}
+	if elapsed < 9*time.Second || elapsed > 20*time.Second {
+		t.Fatalf("上游空闲断开时距 = %v, want ~10s", elapsed)
+	}
+	// 终态落账：closeReason=idle_timeout（不得 upstream_closed）。
+	deadline := time.Now().Add(5 * time.Second)
+	found := false
+	for time.Now().Before(deadline) && !found {
+		for _, record := range waitForSpoolRecordsSilent(spoolDir) {
+			if record["endpoint"] != "/v1/realtime" {
+				continue
+			}
+			found = true
+			snapshot, _ := record["requestSnapshot"].(map[string]any)
+			if snapshot["closeReason"] != "idle_timeout" {
+				t.Fatalf("上游读超时 closeReason = %v, want idle_timeout", snapshot["closeReason"])
+			}
+		}
+		if !found {
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	if !found {
+		t.Fatalf("终态 usage 未落库: %v", waitForSpoolRecordsSilent(spoolDir))
+	}
+}
+
+// TestChainRealtimeMaxSessionDuration 最大会话时长（终审 m-3，设计 §3 timer
+// 路径）：设置键缩到值域下限 60s（min 60，2s 不可注入），echo 场景客户端静
+// 默；idle 默认 120s 不竞争，60s 后服务端 close 1000 且终态 closeReason=
+// max_session。
+func TestChainRealtimeMaxSessionDuration(t *testing.T) {
+	fixture := newChainFixture(t)
+	mock := platformmock.New()
+	defer mock.Close()
+	seedRealtimeAccount(t, fixture, "acc_realtime_maxdur", mock.URL, "sk-realtime-maxdur", 0)
+	if _, err := fixture.db.Exec(`INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+		VALUES ('sys_admin', 'realtimeMaxSessionSeconds', '60', '2026-10-04T00:00:00.000Z')`); err != nil {
+		t.Fatalf("seed max session: %v", err)
+	}
+	chain, apiKey, spoolDir, _ := realtimeBridgeCompose(t, fixture, true)
+	server := httptest.NewServer(chain)
+	defer server.Close()
+
+	started := time.Now()
+	conn, _, err := realtimeDial(t, server.URL,
+		"/v1/realtime?model=gpt-realtime&scenario=media_realtime_echo", apiKey)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// 客户端静默：echo 场景无请求帧则上游无回帧，等待服务端 timer close。
+	_, _, readErr := conn.ReadMessage()
+	elapsed := time.Since(started)
+	_ = conn.Close()
+	if readErr == nil {
+		t.Fatal("最大会话时长到期必须由服务端 close")
+	}
+	if !websocket.IsCloseError(readErr, websocket.CloseNormalClosure) {
+		t.Fatalf("客户端收尾 = %v, want close 1000", readErr)
+	}
+	if elapsed < 58*time.Second || elapsed > 75*time.Second {
+		t.Fatalf("最大会话断开时距 = %v, want ~60s（值域下限）", elapsed)
+	}
+	// 终态落账：closeReason=max_session。
+	deadline := time.Now().Add(5 * time.Second)
+	found := false
+	for time.Now().Before(deadline) && !found {
+		for _, record := range waitForSpoolRecordsSilent(spoolDir) {
+			if record["endpoint"] != "/v1/realtime" {
+				continue
+			}
+			found = true
+			snapshot, _ := record["requestSnapshot"].(map[string]any)
+			if snapshot["closeReason"] != "max_session" {
+				t.Fatalf("最大会话 closeReason = %v, want max_session", snapshot["closeReason"])
+			}
+		}
+		if !found {
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	if !found {
+		t.Fatalf("终态 usage 未落库: %v", waitForSpoolRecordsSilent(spoolDir))
+	}
+}
+
 // TestChainRealtimeModelNotInCatalog 模型解析边界：非 realtime 目录模型 400
 //（不进派发链）。
 func TestChainRealtimeModelNotInCatalog(t *testing.T) {

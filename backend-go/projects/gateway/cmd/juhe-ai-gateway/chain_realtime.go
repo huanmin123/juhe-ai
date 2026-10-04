@@ -517,6 +517,10 @@ func chainRealtimeUpstreamURL(baseURL string, query url.Values) string {
 // 终态把断开原因与会话结束时刻写回 session。
 func (c *gatewayChain) runRealtimeBridge(session *realtimeSession) {
 	bridge := newRealtimeBridge(session)
+	// panic-safe 兜底：主循环 panic（由链入口 kernel recover 捕获）时确保泵
+	// 退出与双侧连接关闭；正常路径所有退出分支已调用 shutdown，closeOnce
+	// 幂等使本 defer 无副作用。
+	defer bridge.shutdown("bridge_panic", websocket.CloseAbnormalClosure, "realtime bridge panic")
 	bridge.run()
 	session.closeReason = bridge.closeReason
 	session.closedAt = time.Now()
@@ -631,8 +635,14 @@ func (b *realtimeBridge) pumpUpstreamToClient() {
 	for {
 		messageType, payload, err := s.upstream.ReadMessage()
 		if err != nil {
-			closeCode, closeText := realtimeCloseErrorOf(err)
-			b.shutdown("upstream_closed", closeCode, closeText)
+			// 与客户端侧对称：读超时（空闲 deadline 到达）记 idle_timeout，
+			// 其余读错误按上游 close 语义收尾。
+			if isRealtimeTimeoutError(err) {
+				b.shutdown("idle_timeout", websocket.CloseGoingAway, "realtime 空闲超时")
+			} else {
+				closeCode, closeText := realtimeCloseErrorOf(err)
+				b.shutdown("upstream_closed", closeCode, closeText)
+			}
 			return
 		}
 		_ = s.upstream.SetReadDeadline(time.Now().Add(s.idleTimeout))
