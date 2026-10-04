@@ -79,6 +79,9 @@ func acceptsMediaEndpoint(method, path string) bool {
 	if acceptsQwenASREndpoint(method, path) {
 		return true
 	}
+	if acceptsRealtimeEndpoint(method, path) {
+		return true
+	}
 	return method == http.MethodPost && geminiGenerateContentModel(path) != ""
 }
 

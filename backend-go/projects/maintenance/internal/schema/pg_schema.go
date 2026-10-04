@@ -982,6 +982,12 @@ var pgSeedSystemSettings = []pgSeedKeyValue{
 	// 同步端点首响 120s；video 创建请求应快速返回 job 对象，60s。
 	{Key: "audioFirstResponseTimeoutSeconds", ValueJSON: "120"},
 	{Key: "videoCreateTimeoutSeconds", ValueJSON: "60"},
+	// M5b realtime 会话生命周期键（Realtime 设计 §3：空闲超时=双向均无帧
+	// 120s；最大会话时长 1800s；每 API Key 并发 WS 连接上限 5——消费面随
+	// M5b2 WS 桥接 handler 生效，键位三处同源先行落地）。
+	{Key: "realtimeIdleTimeoutSeconds", ValueJSON: "120"},
+	{Key: "realtimeMaxSessionSeconds", ValueJSON: "1800"},
+	{Key: "realtimeMaxConnectionsPerApiKey", ValueJSON: "5"},
 	{Key: "noAvailableAccountWaitTimeoutSeconds", ValueJSON: "270"},
 	{Key: "streamFailureThresholdCount", ValueJSON: "3"},
 	{Key: "streamFailureThresholdWindowMinutes", ValueJSON: "5"},

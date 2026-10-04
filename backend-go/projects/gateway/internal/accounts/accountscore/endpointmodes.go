@@ -64,7 +64,10 @@ var (
 	// audio_job_get / audio_job_content / audio_job_cancel 四 token 同语义
 	// 追加（audio_job_create 是 /v1/audio/jobs 创建链候选过滤消费面；词表
 	// 缺失会让管理面无法勾选长转写能力，创建链无账户可命中）。
-	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}
+	// M5b realtime（Realtime 设计 §6）：realtime_session（GET /v1/realtime
+	// WS 升级请求）同语义追加——进词表、opt-in、不进默认集；WS 桥接
+	// handler 未交付前候选过滤消费面未接线，词表先行保持四层一致。
+	OpenAIEndpointModeValues     = []string{"images_json", "chat_json", "chat_sse", "responses_json", "responses_sse", "audio_speech", "audio_transcription_json", "video_create", "video_get", "video_content", "video_cancel", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "realtime_session"}
 	OpenAIChatEndpointModes      = []string{"chat_json", "chat_sse"}
 	OpenAIResponsesEndpointModes = []string{"responses_json", "responses_sse"}
 	// OpenAIDefaultEndpointModes is the write-side default set for new openai

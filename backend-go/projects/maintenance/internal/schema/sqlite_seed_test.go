@@ -117,8 +117,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
-	if first.ModelCatalogRows != 138 {
-		t.Fatalf("first seed model catalog rows = %d, want 138", first.ModelCatalogRows)
+	if first.ModelCatalogRows != 139 {
+		t.Fatalf("first seed model catalog rows = %d, want 139 (M5b gpt-realtime +1)", first.ModelCatalogRows)
 	}
 	snapshotAfterFirst := seedTestSnapshot(t, db)
 
@@ -154,9 +154,11 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 
 	// Key row counts (Node seedDefaults contract; 2026-10-04 M3 第五批
 	// qwen 增补 + M3f 长音频批（families 12→13 增 audio_transcription 族、
-	// 目录 137→138 增 paraformer-v2）后 providers 11 / families 13 / profiles
-	// 16 / profile 绑定 34 / groups 11；默认分组派生 route_strategies 与
-	// bindings 10（hybrid 不派生）、api_keys 11（10 默认 + 1 admin chat）/ 目录 138）。
+	// 目录 136→138 增 wan2.2-t2v-plus 与 paraformer-v2；M5b 批 gpt-realtime
+	// 再 +1 → 139）后 providers 11 / families 13 / profiles
+	// 16 / profile 绑定 37（M3f qwen +audio_transcription、M4b hybrid
+	// +video_generation+tts）/ groups 11；默认分组派生 route_strategies 与
+	// bindings 10（hybrid 不派生）、api_keys 11（10 默认 + 1 admin chat））。
 	expectCounts := map[string]int{
 		"global_settings":                     2,
 		"request_quota_hourly_window_configs": 8,
@@ -164,15 +166,15 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"protocols":                           3,
 		"protocol_endpoint_families":          13,
 		"provider_protocol_profiles":          16,
-		"provider_protocol_profile_families":  34,
+		"provider_protocol_profile_families":  37,
 		"groups":                              11,
 		"route_strategies":                    10,
 		"route_strategy_groups":               10,
 		"api_keys":                            11,
 		"external_integration_sources":        1,
 		"external_integration_source_tokens":  1,
-		"system_settings":                     68,
-		"provider_model_catalog":              138,
+		"system_settings":                     71,
+		"provider_model_catalog":              139,
 	}
 	for table, want := range expectCounts {
 		if got := countSeedTestRows(t, db, "SELECT count(*) FROM "+table); got != want {

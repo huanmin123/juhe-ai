@@ -192,6 +192,15 @@ Mock：`media_stt_ok` / `media_stt_ok_verbose`。
 计费：网关按 `seconds` × 分辨率档自算；失败不虚计。
 Mock：`media_video_*` 全套 + 创建响应必须含 `id`/`status:"queued"`（受理凭据字段，E2E 断言点）。
 
+### 4.4 Realtime（WS 双向流，M5b；置信度 B：官方文档多源确认 2026-10-04）
+
+- 端点：`wss://api.openai.com/v1/realtime?model=gpt-realtime`（另有 WebRTC 变体，网关不做）；上游认证 Bearer（账户凭据）。
+- ephemeral token：`POST /v1/realtime/client_secrets`（2026 年端点；历史文档为 `/v1/realtime/sessions`——网关对外提供 `client_secrets` 形态，接入时以官方页复核）。
+- 事件协议（JSON 文本帧双向）：客户端 `session.update`（model/voice/modalities/tools 配置）、`input_audio_buffer.append`、`response.create` 等；服务端 `session.created`、`response.audio_transcript.delta`/`response.audio.delta`、`response.done`（含 `response.usage.input_tokens/output_tokens` 与 `*_token_details.audio_tokens`——网关旁路解析计量点）。注意 2026-09 后的 GPT Live 系模型会话事件与 gpt-realtime 不同——**网关首版目录只收 gpt-realtime 系**，GPT Live 系待其事件语义回填。
+- 计费：audio token 口径（官方 $32/$64 每 1M audio token 量级，接入时以官方定价页为准落价；查不到不编造）；usage 从事件流累计，连接关闭终态落库；空会话 0 计费+usage_missing。
+- 受理凭据：**上游 WS 101 升级成功**（拨号/握手失败或升级拒绝=受理前可换账户）。
+- Mock：`media_realtime_echo` / `media_realtime_reject_upgrade` / `media_realtime_close_after_established` / `media_realtime_idle`（行为规格见《实时语音Realtime网关设计》§7；**基建已交付**（M5b1，2026-10-04）：`mockupstream/realtime.go` 四场景 + gorilla/websocket v1.5.3 依赖落地，echo 支持脚本参数 `usage_events`（逗号分隔帧序号，到达后发 response.done 含 usage）与 `close_after`（N 帧后 close 1000），`realtime_test.go` 真客户端断言；**网关侧消费已随 M5b2 WS 桥接交付**（2026-10-04：`cmd/juhe-ai-gateway/chain_realtime.go`——观测器按本节 usage 字段累计会话汇总、受理边界按本节凭据语义实施；场景经 `?scenario=` 查询参数由网关透传驱动）。
+
 ## 5. gemini（置信度 A/B：TTS 官方文档确认；Veo REST 多源确认）
 
 ### 5.1 TTS：`POST /v1beta/models/{model}:generateContent`

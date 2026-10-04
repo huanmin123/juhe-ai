@@ -310,14 +310,18 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	// 第五批 qwen 增补（契约 §10）：providers 10→11、profiles 15→16
 	//（profile_qwen_openai_v1）、groups 10→11、profile family 绑定 33→34
 	//（qwen 档案只挂 video_generation 1 个媒体族，families 维持 12）。
+	// 同日 M3f 长音频批 + M4b hybrid 媒体映射（契约 §10.2/媒体设计 §9
+	// hybrid 行）：families 12→13（新增 openai_v1_audio_transcription 族）、
+	// profile family 绑定 34→37（qwen 档案 +audio_transcription、hybrid
+	// 档案 +video_generation+tts）。
 	if len(pgSeedProviders) != 11 {
 		t.Fatalf("provider seeds = %d, want 11", len(pgSeedProviders))
 	}
 	if len(pgSeedProtocols) != 3 {
 		t.Fatalf("protocol seeds = %d, want 3", len(pgSeedProtocols))
 	}
-	if len(pgSeedEndpointFamilies) != 12 {
-		t.Fatalf("endpoint family seeds = %d, want 12", len(pgSeedEndpointFamilies))
+	if len(pgSeedEndpointFamilies) != 13 {
+		t.Fatalf("endpoint family seeds = %d, want 13", len(pgSeedEndpointFamilies))
 	}
 	if len(pgSeedProfiles) != 16 {
 		t.Fatalf("profile seeds = %d, want 16", len(pgSeedProfiles))
@@ -328,15 +332,17 @@ func TestPostgresSeedDataParity(t *testing.T) {
 	if len(pgSeedGlobalSettings) != 2 {
 		t.Fatalf("global settings = %d, want 2", len(pgSeedGlobalSettings))
 	}
-	if len(pgSeedSystemSettings) != 68 {
-		t.Fatalf("system settings = %d, want 68", len(pgSeedSystemSettings))
+	// system settings 68→71：+3 来自 M5b realtime 会话生命周期键与
+	// 2026-10-02 日志与审计 retention 批（与 sqlite 侧钉值同源）。
+	if len(pgSeedSystemSettings) != 71 {
+		t.Fatalf("system settings = %d, want 71", len(pgSeedSystemSettings))
 	}
 	profileFamilyCount := 0
 	for _, profile := range pgSeedProfiles {
 		profileFamilyCount += len(profile.EndpointFamilies)
 	}
-	if profileFamilyCount != 34 {
-		t.Fatalf("profile endpoint family bindings = %d, want 34", profileFamilyCount)
+	if profileFamilyCount != 37 {
+		t.Fatalf("profile endpoint family bindings = %d, want 37", profileFamilyCount)
 	}
 	for _, key := range []string{"appName", "appIcon"} {
 		found := false

@@ -162,8 +162,8 @@ func TestSeedPostgresDefaultsSmoke(t *testing.T) {
 	// minimax 2 行、第四批 volcengine 1 行、第五批 qwen 1 行与 M3f paraformer
 	// 1 行），且最早的 ShutdownDate 为 2026-09-10，故该时钟下活跃行数 =
 	// 全量 138（与 sqlite_seed_test.go 的 sqliteSeedTestClock 一致）。
-	if catalogRows != 138 {
-		t.Fatalf("active catalog rows = %d, want 138", catalogRows)
+	if catalogRows != 139 {
+		t.Fatalf("active catalog rows = %d, want 139 (M5b gpt-realtime +1)", catalogRows)
 	}
 	var defaultKeys int
 	if err := db.QueryRowContext(ctx,

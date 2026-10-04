@@ -49,7 +49,12 @@
 //     GET /v1/videos/{id}, .../content and DELETE /v1/videos/{id} run an
 //     in-memory job table whose per-job poll scripts advance the video
 //     state machine ("poll #N returns state X", decided by the creating
-//     request's scenario).
+//     request's scenario);
+//
+//   - the realtime face (realtime.go) adds the OpenAI Realtime WebSocket
+//     upgrade endpoint GET /v1/realtime (contract §4.4, M5b): scenario
+//     scripts cover echo-with-usage, upgrade rejection, post-establishment
+//     close and idle silence over gorilla/websocket.
 //
 // Recorded requests (Requests()) keep the full request triple (method,
 // path + raw query, body) plus the parsed model and body stream flag so
@@ -336,7 +341,14 @@ func (m *Server) serve2(w http.ResponseWriter, r *http.Request, idx int, bodyStr
 	}
 
 	// Media endpoints speak their own scenario family and never fall
-	// through to the chat/responses handlers below.
+	// through to the chat/responses handlers below. The realtime WS face
+	// (realtime.go, contract §4.4) hijacks ahead of the media dispatch —
+	// after the generic status scenarios so status_429 etc. keep composing
+	// as pre-upgrade rejections.
+	if acceptsRealtimeEndpoint(r.Method, r.URL.Path) {
+		m.serveRealtime(w, r, scenario)
+		return
+	}
 	if isMediaPath(r.URL.Path) {
 		m.serveMedia(w, r, idx, scenario)
 		return

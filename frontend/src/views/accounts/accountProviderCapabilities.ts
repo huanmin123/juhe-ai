@@ -84,6 +84,7 @@ export const openAIEndpointModes: AccountSupportedEndpointMode[] = [
   'audio_job_get',
   'audio_job_content',
   'audio_job_cancel',
+  'realtime_session',
   ...chatEndpointModes,
   ...responsesEndpointModes
 ]
@@ -281,7 +282,8 @@ export function defaultEndpointModesForAccount(input: {
     return endpointModesForProfile(input.profile ?? input.provider)
       .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json'
         && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel'
-        && mode !== 'audio_job_create' && mode !== 'audio_job_get' && mode !== 'audio_job_content' && mode !== 'audio_job_cancel')
+        && mode !== 'audio_job_create' && mode !== 'audio_job_get' && mode !== 'audio_job_content' && mode !== 'audio_job_cancel'
+        && mode !== 'realtime_session')
   }
   return [...allAccountEndpointModes]
 }
@@ -391,7 +393,8 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       'audio_job_create',
       'audio_job_get',
       'audio_job_content',
-      'audio_job_cancel'
+      'audio_job_cancel',
+      'realtime_session'
     ]
     return [...new Set(selectable)]
   }
