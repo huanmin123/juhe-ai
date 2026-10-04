@@ -37,7 +37,10 @@ func isTerminalProcessStatus(status string) bool {
 }
 
 // assistantBlock mirrors AssistantContentBlock. Field order matches the Node
-// object literals so persisted JSON keeps the same shape.
+// object literals so persisted JSON keeps the same shape. M7 媒体块字段
+//（问答音视频工具设计 §3）：JobID/MediaKind/Progress/Model/PromptSummary/
+// MediaError 是 output_media_task 的任务面字段（status 为 media_jobs 任务状态
+// 词表）。
 type assistantBlock struct {
 	Type          string         `json:"type"`
 	BlockID       string         `json:"blockId,omitempty"`
@@ -52,6 +55,12 @@ type assistantBlock struct {
 	Width         *int64         `json:"width,omitempty"`
 	Height        *int64         `json:"height,omitempty"`
 	RevisedPrompt string         `json:"revisedPrompt,omitempty"`
+	JobID         string         `json:"jobId,omitempty"`
+	MediaKind     string         `json:"kind,omitempty"`
+	Progress      *int64         `json:"progress,omitempty"`
+	Model         string         `json:"model,omitempty"`
+	PromptSummary string         `json:"promptSummary,omitempty"`
+	MediaError    string         `json:"error,omitempty"`
 }
 
 func cloneAssistantBlock(block *assistantBlock) *assistantBlock {
@@ -158,6 +167,27 @@ func findToolBlock(blocks []*assistantBlock, callID string) *assistantBlock {
 func findImageBlock(blocks []*assistantBlock, assetID string) *assistantBlock {
 	for _, block := range blocks {
 		if block.Type == "output_image" && block.AssetID == assetID {
+			return block
+		}
+	}
+	return nil
+}
+
+// findAudioBlock 按 assetID 定位 output_audio 块（M7 媒体块，沿 findImageBlock
+// 模式）。
+func findAudioBlock(blocks []*assistantBlock, assetID string) *assistantBlock {
+	for _, block := range blocks {
+		if block.Type == "output_audio" && block.AssetID == assetID {
+			return block
+		}
+	}
+	return nil
+}
+
+// findMediaTaskBlock 按 jobId 定位 output_media_task 块（M7 异步视频任务块）。
+func findMediaTaskBlock(blocks []*assistantBlock, jobID string) *assistantBlock {
+	for _, block := range blocks {
+		if block.Type == "output_media_task" && block.JobID == jobID {
 			return block
 		}
 	}
@@ -284,6 +314,135 @@ func (t *assistantTimeline) UpdateImage(input StartImageInput, status string) *a
 	return cloneAssistantBlock(block)
 }
 
+// StartAudioInput 是 M7 output_audio 块的创建输入（沿 StartImageInput 模式，
+// 无尺寸字段）。
+type StartAudioInput struct {
+	AssetID  string
+	MimeType string
+}
+
+// StartAudio 创建/复用 output_audio 块（按 assetId 幂等）。
+func (t *assistantTimeline) StartAudio(input StartAudioInput) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	if trimSpace(input.AssetID) == "" {
+		return nil
+	}
+	if existing := findAudioBlock(t.blocks, input.AssetID); existing != nil {
+		return cloneAssistantBlock(existing)
+	}
+	block := &assistantBlock{Type: "output_audio", BlockID: t.nextBlockID(), Order: int64(len(t.blocks) + 1), AssetID: input.AssetID, Status: asstStarted}
+	if input.MimeType != "" {
+		block.MimeType = input.MimeType
+	}
+	t.blocks = append(t.blocks, block)
+	return cloneAssistantBlock(block)
+}
+
+// UpdateAudio 更新 output_audio 块状态（终态幂等：已终态的块不再改写）。
+func (t *assistantTimeline) UpdateAudio(input StartAudioInput, status string) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	block := findAudioBlock(t.blocks, input.AssetID)
+	if block == nil {
+		created := t.StartAudio(input)
+		if created == nil {
+			return nil
+		}
+		if status == asstStarted {
+			return created
+		}
+		return t.UpdateAudio(input, status)
+	}
+	if isTerminalProcessStatus(block.Status) {
+		return cloneAssistantBlock(block)
+	}
+	block.Status = status
+	if input.MimeType != "" {
+		block.MimeType = input.MimeType
+	}
+	return cloneAssistantBlock(block)
+}
+
+// MediaTaskBlockInput 是 M7 output_media_task 块的创建/更新输入（状态为
+// media_jobs 任务状态词表，非过程状态词表）。
+type MediaTaskBlockInput struct {
+	JobID         string
+	Kind          string
+	Status        string
+	Progress      *int64
+	Model         string
+	PromptSummary string
+	AssetID       string
+	Error         string
+}
+
+// applyMediaTaskFields 把输入的非零字段套到块上（状态原样携带任务状态）。
+func applyMediaTaskFields(block *assistantBlock, input MediaTaskBlockInput) {
+	if input.Status != "" {
+		block.Status = input.Status
+	}
+	if input.Progress != nil {
+		block.Progress = input.Progress
+	}
+	if input.Model != "" {
+		block.Model = input.Model
+	}
+	if input.PromptSummary != "" {
+		block.PromptSummary = input.PromptSummary
+	}
+	if input.AssetID != "" {
+		block.AssetID = input.AssetID
+	}
+	if input.Error != "" {
+		block.MediaError = input.Error
+	}
+}
+
+// StartMediaTask 创建/复用 output_media_task 块（按 jobId 幂等）。
+func (t *assistantTimeline) StartMediaTask(input MediaTaskBlockInput) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	if trimSpace(input.JobID) == "" {
+		return nil
+	}
+	if existing := findMediaTaskBlock(t.blocks, input.JobID); existing != nil {
+		return cloneAssistantBlock(existing)
+	}
+	status := input.Status
+	if status == "" {
+		status = "queued"
+	}
+	kind := input.Kind
+	if kind == "" {
+		kind = "video"
+	}
+	block := &assistantBlock{Type: "output_media_task", BlockID: t.nextBlockID(), Order: int64(len(t.blocks) + 1), JobID: input.JobID, MediaKind: kind, Status: status}
+	applyMediaTaskFields(block, input)
+	t.blocks = append(t.blocks, block)
+	return cloneAssistantBlock(block)
+}
+
+// UpdateMediaTask 更新 output_media_task 块（终态幂等：已终态的块不再改写；
+// 未终态更新按快照全量覆盖状态相关字段）。
+func (t *assistantTimeline) UpdateMediaTask(input MediaTaskBlockInput) *assistantBlock {
+	if err := t.ensureMutable(); err != nil {
+		return nil
+	}
+	block := findMediaTaskBlock(t.blocks, input.JobID)
+	if block == nil {
+		return t.StartMediaTask(input)
+	}
+	if chatMediaJobStatusTerminal(block.Status) {
+		return cloneAssistantBlock(block)
+	}
+	applyMediaTaskFields(block, input)
+	return cloneAssistantBlock(block)
+}
+
 // CompleteBlock mirrors completeBlock.
 func (t *assistantTimeline) CompleteBlock(blockID string) (*assistantBlock, error) {
 	if err := t.ensureMutable(); err != nil {
@@ -317,6 +476,12 @@ func (t *assistantTimeline) Finalize(status string) assistantTimelineSnapshot {
 			block.Status = status
 		}
 		if block.Type == "output_image" && block.Status == asstStarted {
+			block.Status = status
+		}
+		// M7 output_audio 与图像块同族终态收敛；output_media_task 的状态是
+		// media_jobs 任务状态词表（queued/in_progress 语义上跨越轮次存续），
+		// 不随轮次终态改写——终态定格由 media-tasks 结算补丁完成。
+		if block.Type == "output_audio" && block.Status == asstStarted {
 			block.Status = status
 		}
 	}
@@ -373,6 +538,17 @@ type ChatGenerationImageEvent struct {
 	Item   map[string]any
 }
 
+// ChatGenerationMediaEvent 是 M7 媒体块投影事件（问答音视频工具设计 §3）：
+// Block 区分目标块形——"audio"（output_audio，键=item.assetId，Status 为过程
+// 状态词表）与 "media_task"（output_media_task，键=item.jobId，Status 为
+// media_jobs 任务状态词表）。
+type ChatGenerationMediaEvent struct {
+	Block  string
+	ID     string
+	Status string
+	Item   map[string]any
+}
+
 // ChatGenerationProjectionUpdate mirrors ChatGenerationProjectionUpdate.
 type ChatGenerationProjectionUpdate struct {
 	ContentTextDelta   *string
@@ -380,12 +556,13 @@ type ChatGenerationProjectionUpdate struct {
 	ReasoningCompleted bool
 	ToolEvent          *ChatGenerationToolEvent
 	ImageEvent         *ChatGenerationImageEvent
+	MediaEvent         *ChatGenerationMediaEvent
 }
 
 func (u ChatGenerationProjectionUpdate) hasUpdate() bool {
 	return (u.ContentTextDelta != nil && *u.ContentTextDelta != "") ||
 		(u.ReasoningTextDelta != nil && *u.ReasoningTextDelta != "") ||
-		u.ReasoningCompleted || u.ToolEvent != nil || u.ImageEvent != nil
+		u.ReasoningCompleted || u.ToolEvent != nil || u.ImageEvent != nil || u.MediaEvent != nil
 }
 
 // ChatGenerationSubscriber mirrors ChatGenerationSubscriber.
@@ -769,6 +946,9 @@ func (r *ChatGenerationRunner) applyProjectionUpdateLocked(update ChatGeneration
 	if update.ImageEvent != nil {
 		r.applyImageEventLocked(update.ImageEvent)
 	}
+	if update.MediaEvent != nil {
+		r.applyMediaEventLocked(update.MediaEvent)
+	}
 }
 
 func remainingTextBytes(blocks []*assistantBlock, blockType string, maxBytes int) int {
@@ -947,6 +1127,96 @@ func (r *ChatGenerationRunner) applyImageEventLocked(input *ChatGenerationImageE
 		return
 	}
 	r.updateImageLocked(existing, event.Status, event.Item)
+}
+
+// applyMediaEventLocked 投影 M7 媒体块事件（问答音视频工具设计 §3）：
+// audio → output_audio（沿 applyImageEventLocked 模式，无尺寸字段）；media_task
+// → output_media_task（按 jobId 幂等，状态原样携带任务状态词表）。
+func (r *ChatGenerationRunner) applyMediaEventLocked(input *ChatGenerationMediaEvent) {
+	switch input.Block {
+	case "audio":
+		assetID := stringItem(input.Item, "assetId")
+		if assetID == "" {
+			return
+		}
+		snapshot := r.timeline.Snapshot()
+		existing := findAudioBlock(snapshot.ContentBlocks, assetID)
+		if existing == nil {
+			if input.Status == asstFailed || input.Status == asstCanceled {
+				return
+			}
+			block := r.timeline.StartAudio(StartAudioInput{AssetID: assetID, MimeType: stringItem(input.Item, "mimeType")})
+			if block == nil {
+				return
+			}
+			r.emitEventLocked("content_block.started", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+			if input.Status != asstStarted {
+				r.updateAudioLocked(block, input.Status, input.Item)
+			}
+			return
+		}
+		if input.Status == asstStarted {
+			return
+		}
+		r.updateAudioLocked(existing, input.Status, input.Item)
+	case "media_task":
+		jobID := stringItem(input.Item, "jobId")
+		if jobID == "" {
+			return
+		}
+		progress := nonNegativeIntegerItem(input.Item, "progress")
+		taskInput := MediaTaskBlockInput{
+			JobID:         jobID,
+			Kind:          stringItem(input.Item, "kind"),
+			Status:        input.Status,
+			Progress:      progress,
+			Model:         stringItem(input.Item, "model"),
+			PromptSummary: stringItem(input.Item, "promptSummary"),
+			AssetID:       stringItem(input.Item, "assetId"),
+			Error:         stringItem(input.Item, "error"),
+		}
+		snapshot := r.timeline.Snapshot()
+		existing := findMediaTaskBlock(snapshot.ContentBlocks, jobID)
+		if existing == nil {
+			block := r.timeline.StartMediaTask(taskInput)
+			if block == nil {
+				return
+			}
+			r.emitEventLocked("content_block.started", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+			return
+		}
+		block := r.timeline.UpdateMediaTask(taskInput)
+		if block == nil {
+			return
+		}
+		r.emitEventLocked("content_block.updated", map[string]any{"messageId": r.Identity.AssistantMessageID, "blockId": block.BlockID, "block": jsonRawBlock(block)})
+	}
+}
+
+func (r *ChatGenerationRunner) updateAudioLocked(existing *assistantBlock, status string, item map[string]any) {
+	normalized := status
+	if normalized == asstUpdated {
+		normalized = asstStarted
+	}
+	block := r.timeline.UpdateAudio(StartAudioInput{
+		AssetID:  existing.AssetID,
+		MimeType: stringItem(item, "mimeType"),
+	}, normalized)
+	if block == nil {
+		return
+	}
+	if block.Status == existing.Status && block.MimeType == existing.MimeType {
+		return
+	}
+	if block.Status == asstCompleted {
+		r.emitEventLocked("content_block.completed", map[string]any{"messageId": r.Identity.AssistantMessageID, "block": jsonRawBlock(block)})
+		return
+	}
+	patch := map[string]any{"status": block.Status}
+	if block.MimeType != "" {
+		patch["mimeType"] = block.MimeType
+	}
+	r.emitEventLocked("content_block.updated", map[string]any{"messageId": r.Identity.AssistantMessageID, "blockId": block.BlockID, "patch": patch})
 }
 
 func (r *ChatGenerationRunner) updateImageLocked(existing *assistantBlock, status string, item map[string]any) {
@@ -1207,6 +1477,20 @@ func positiveIntegerItem(item map[string]any, key string) *int64 {
 	return &value
 }
 
+// nonNegativeIntegerItem 读取非负整数字段（output_media_task.progress：0-100
+// 百分比语义）。
+func nonNegativeIntegerItem(item map[string]any, key string) *int64 {
+	if item == nil {
+		return nil
+	}
+	number, ok := numericValue(item[key])
+	if !ok || number < 0 || number > 100 || number != truncF(number) {
+		return nil
+	}
+	value := int64(number)
+	return &value
+}
+
 func numericValue(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:
@@ -1241,11 +1525,13 @@ func terminalizeAssistantBlocks(blocks []*assistantBlock, status string) json.Ra
 	normalized := make([]*assistantBlock, 0, len(blocks))
 	for _, block := range blocks {
 		cloned := cloneAssistantBlock(block)
-		if cloned.Type == "reasoning" || cloned.Type == "tool_call" || cloned.Type == "output_image" {
+		if cloned.Type == "reasoning" || cloned.Type == "tool_call" || cloned.Type == "output_image" || cloned.Type == "output_audio" {
 			if cloned.Status == asstStarted || cloned.Status == asstUpdated {
 				cloned.Status = status
 			}
 		}
+		// output_media_task 的任务状态跨越轮次存续（异步任务在轮次结束后仍由
+		// media-tasks 结算推进），终态化不改写其状态。
 		// 子代理过程增量（item.progress）为限长展示数据，终态落库时保留
 		// 最后一次快照（契约 §10.3），供历史回看重建子代理过程区。
 		normalized = append(normalized, cloned)

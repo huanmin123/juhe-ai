@@ -179,6 +179,57 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 				}
 				return constrainChatImageModel(model, bindings.ImageAccountID, input.defaultImageModel, bindings.ImageCandidates)
 			},
+			DefaultVideoModel: string(input.conversation.DefaultVideoModel),
+			DefaultAudioModel: string(input.conversation.DefaultAudioModel),
+			ConstrainVideoModel: func(model string) string {
+				bindings := input.toolBindings
+				if bindings == nil {
+					return model
+				}
+				return constrainChatMediaModel(model, bindings.VideoAccountID, string(input.conversation.DefaultVideoModel), bindings.VideoCandidates)
+			},
+			ConstrainAudioModel: func(model string) string {
+				bindings := input.toolBindings
+				if bindings == nil {
+					return model
+				}
+				return constrainChatMediaModel(model, bindings.AudioAccountID, string(input.conversation.DefaultAudioModel), bindings.AudioCandidates)
+			},
+			VideoGeneration: func(request ChatVideoCreationRequest) (ChatVideoCreationResult, error) {
+				// M7 视频工具（问答音视频工具设计 §4.4）：未绑定账户 →
+				// binding_required 引导；已绑定 → 经 /v1 链固定派发绑定账户创建
+				// 任务（立即返回，等待由 media-tasks 轮询驱动）。
+				bindings := input.toolBindings
+				if bindings == nil || bindings.VideoAccountID == "" {
+					return ChatVideoCreationResult{}, &chatToolBindingRequiredError{ToolName: "generate_video", UserHint: chatVideoBindingHint, Candidates: chatToolBindingCandidatesOf(bindings, "generate_video")}
+				}
+				request.Model = constrainChatMediaModel(request.Model, bindings.VideoAccountID, string(input.conversation.DefaultVideoModel), bindings.VideoCandidates)
+				if request.Model == "" {
+					return ChatVideoCreationResult{}, errors.New("视频生成模型不能为空")
+				}
+				var ctx context.Context = context.Background()
+				if runCtx.Context != nil {
+					ctx = runCtx.Context
+				}
+				return CreateChatVideo(ctx, bindings.VideoExecutor, request, input.apiKey.Secret, input.traceID)
+			},
+			AudioGeneration: func(request ChatAudioGenerationRequest) (ChatMediaArtifactResult, error) {
+				// M7 音频工具（TTS 同步）：未绑定 → binding_required 引导；
+				// 已绑定 → 经 /v1 链固定派发绑定账户合成。
+				bindings := input.toolBindings
+				if bindings == nil || bindings.AudioAccountID == "" {
+					return ChatMediaArtifactResult{}, &chatToolBindingRequiredError{ToolName: "generate_audio", UserHint: chatAudioBindingHint, Candidates: chatToolBindingCandidatesOf(bindings, "generate_audio")}
+				}
+				request.Model = constrainChatMediaModel(request.Model, bindings.AudioAccountID, string(input.conversation.DefaultAudioModel), bindings.AudioCandidates)
+				if request.Model == "" {
+					return ChatMediaArtifactResult{}, errors.New("语音合成模型不能为空")
+				}
+				var ctx context.Context = context.Background()
+				if runCtx.Context != nil {
+					ctx = runCtx.Context
+				}
+				return GenerateChatAudio(ctx, bindings.AudioExecutor, request, input.apiKey.Secret, input.traceID)
+			},
 			ImageGeneration: func(request ChatImageGenerationRequest) (ChatImageGenerationToolResult, error) {
 				// 生图模型工具（契约 §6.2）：未绑定账户 → binding_required 引导；
 				// 已绑定 → 经 /v1 链固定派发绑定账户（不做旧路由派发兼容）。
@@ -224,6 +275,14 @@ func (rt *chatRoutes) buildGenerationExecute(input generationExecuteInput, ident
 		}
 		if rt.deps.ObjectStore != nil {
 			toolContext.ArtifactSink = &storeGeneratedImageSink{
+				routes:             rt,
+				ownerID:            identity.OwnerID,
+				conversationID:     input.conversation.ID,
+				turnID:             turnID,
+				assistantMessageID: messageID,
+				nextContentOrder:   func() int64 { return int64(len(runCtx.SnapshotBlocks())) },
+			}
+			toolContext.MediaArtifactSink = &storeGeneratedMediaSink{
 				routes:             rt,
 				ownerID:            identity.OwnerID,
 				conversationID:     input.conversation.ID,
@@ -459,6 +518,48 @@ func publishApplicationToolEvent(publish func(string, map[string]any, ChatGenera
 				"height":        event.PublicResult["height"],
 				"revisedPrompt": event.PublicResult["revisedPrompt"],
 			},
+		}
+	}
+	// M7 媒体块投影（问答音视频工具设计 §3）：generate_audio 完成 → output_audio
+	//（按 assetId）；generate_video 完成 → output_media_task（按 jobId，任务状态
+	// 原样携带——异步任务在轮次结束后仍由 media-tasks 轮询结算推进）。
+	if event.Status == "completed" && event.ToolName == "generate_audio" && assetID != "" {
+		projection.MediaEvent = &ChatGenerationMediaEvent{
+			Block:  "audio",
+			ID:     event.CallID,
+			Status: "completed",
+			Item: map[string]any{
+				"assetId":  assetID,
+				"mimeType": event.PublicResult["mimeType"],
+			},
+		}
+	}
+	if event.Status == "completed" && event.ToolName == "generate_video" {
+		jobID := ""
+		if value, ok := event.PublicResult["jobId"].(string); ok {
+			jobID = value
+		}
+		if jobID != "" {
+			taskStatus := "queued"
+			if value, ok := event.PublicResult["status"].(string); ok && value != "" {
+				taskStatus = value
+			}
+			mediaTaskItem := map[string]any{
+				"jobId":         jobID,
+				"kind":          "video",
+				"status":        taskStatus,
+				"model":         event.PublicResult["model"],
+				"promptSummary": event.PublicResult["promptSummary"],
+			}
+			if progress, ok := event.PublicResult["progress"]; ok && progress != nil {
+				mediaTaskItem["progress"] = progress
+			}
+			projection.MediaEvent = &ChatGenerationMediaEvent{
+				Block:  "media_task",
+				ID:     event.CallID,
+				Status: taskStatus,
+				Item:   mediaTaskItem,
+			}
 		}
 	}
 	callItem := map[string]any{"callId": event.CallID}

@@ -61,11 +61,16 @@ var mediaEndpoints = map[endpoint]bool{
 // CogVideoX task family (video_glm.go, M3), the MiniMax video/TTS family
 // (video_minimax.go, M3), the Volcengine Seedance task family
 // (video_volcengine.go, M3), the Qwen Wan DashScope task family
-// (video_qwen.go, M3), and the Gemini TTS path form
-// POST /v1beta/models/{model}:generateContent, where {model} is a non-empty
-// single path segment.
+// (video_qwen.go, M3), the xAI Grok Imagine Video create endpoint
+// (video_xai.go, M3 — poll/content share the OpenAI /v1/videos/{id}
+// namespace via the openai face's table-miss fallback), and the Gemini TTS
+// path form POST /v1beta/models/{model}:generateContent, where {model} is a
+// non-empty single path segment.
 func acceptsMediaEndpoint(method, path string) bool {
 	if mediaEndpoints[endpoint{method, path}] {
+		return true
+	}
+	if acceptsXaiVideoEndpoint(method, path) {
 		return true
 	}
 	if acceptsVideoEndpoint(method, path) {
@@ -99,7 +104,7 @@ func acceptsMediaEndpoint(method, path string) bool {
 // It runs after the method-aware whitelist check, so the POST-keyed map
 // lookup is only reached by requests that already passed as POST.
 func isMediaPath(path string) bool {
-	if mediaEndpoints[endpoint{http.MethodPost, path}] || isVideoPath(path) || isGeminiVeoPath(path) || isGlmVideoPath(path) || isMinimaxVideoPath(path) || isVolcengineVideoPath(path) || isQwenVideoPath(path) || isQwenASRPath(path) {
+	if mediaEndpoints[endpoint{http.MethodPost, path}] || isXaiVideoPath(path) || isVideoPath(path) || isGeminiVeoPath(path) || isGlmVideoPath(path) || isMinimaxVideoPath(path) || isVolcengineVideoPath(path) || isQwenVideoPath(path) || isQwenASRPath(path) {
 		return true
 	}
 	return geminiGenerateContentModel(path) != ""
@@ -120,8 +125,22 @@ func geminiGenerateContentModel(path string) string {
 	return model
 }
 
+// isXaiVideoPath reports whether the path belongs to the xai Grok Imagine
+// Video face's own endpoint form (the create path only — poll/content share
+// the OpenAI /v1/videos/{id} namespace, see video_xai.go's header).
+func isXaiVideoPath(path string) bool {
+	return path == "/v1/videos/generations"
+}
+
 // serveMedia dispatches a whitelisted media endpoint to its family handler.
 func (m *Server) serveMedia(w http.ResponseWriter, r *http.Request, idx int, scenario Scenario) {
+	// xai create first: POST /v1/videos/generations would otherwise fall into
+	// the OpenAI videos dispatch (isVideoPath prefixes /v1/videos/) and be
+	// misrouted to the openai poll handler as id "generations".
+	if isXaiVideoPath(r.URL.Path) && r.Method == http.MethodPost {
+		m.serveXaiVideoCreate(w, scenario)
+		return
+	}
 	if isVideoPath(r.URL.Path) {
 		m.serveVideo(w, r, idx, scenario)
 		return

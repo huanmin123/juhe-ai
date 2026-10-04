@@ -496,7 +496,265 @@ func EnsureSQLiteChat(ctx context.Context, db *sql.DB) (SchemaCounts, error) {
 	if err := ensureSQLiteChatAccountBindingColumns(ctx, db); err != nil {
 		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat account-binding columns: %w", err)
 	}
+	if err := ensureSQLiteChatMediaToolColumns(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat media-tool columns: %w", err)
+	}
+	if err := ensureSQLiteChatAssetsMediaCheck(ctx, db); err != nil {
+		return SchemaCounts{}, fmt.Errorf("ensure sqlite chat_assets media check: %w", err)
+	}
 	return counts, nil
+}
+
+// sqliteChatMediaToolColumns 列出 M7 问答音视频工具（问答音视频工具设计 §3，
+// 2026-10-04）在既有库上的幂等补齐声明：chat_conversations 与
+// chat_user_tool_preferences 各四列（video_account_id/default_video_model/
+// audio_account_id/default_audio_model）。新库由 sqliteChatDDL 直接声明这些
+// 列，守卫先查列存在再 ALTER。
+var sqliteChatMediaToolColumns = []struct {
+	table  string
+	column string
+	decl   string
+}{
+	{"chat_conversations", "video_account_id", "TEXT"},
+	{"chat_conversations", "default_video_model", "TEXT"},
+	{"chat_conversations", "audio_account_id", "TEXT"},
+	{"chat_conversations", "default_audio_model", "TEXT"},
+	{"chat_user_tool_preferences", "video_account_id", "TEXT"},
+	{"chat_user_tool_preferences", "default_video_model", "TEXT"},
+	{"chat_user_tool_preferences", "audio_account_id", "TEXT"},
+	{"chat_user_tool_preferences", "default_audio_model", "TEXT"},
+}
+
+// ensureSQLiteChatMediaToolColumns delivers the M7 media tool binding columns
+// to legacy databases through the same guarded PRAGMA table_info / ALTER TABLE
+// ADD COLUMN pattern as the account-binding columns.
+func ensureSQLiteChatMediaToolColumns(ctx context.Context, db *sql.DB) error {
+	for _, target := range sqliteChatMediaToolColumns {
+		if err := ensureSQLiteTableColumn(ctx, db, target.table, target.column, target.decl); err != nil {
+			return fmt.Errorf("ensure %s.%s: %w", target.table, target.column, err)
+		}
+	}
+	return nil
+}
+
+// sqliteChatAssetsLegacyMimeCheckText 是旧建表 DDL 中 processed_mime_type 词表
+// CHECK 的精确判据片段：旧词表以 'image/webp' 收尾，新词表其后还有媒体 MIME
+// 条目（'image/webp',），不会命中本片段。
+const sqliteChatAssetsLegacyMimeCheckText = "'image/webp')"
+
+// sqliteChatAssetsRebuildColumns 是重建后 chat_assets 的完整列清单（顺序与
+// sqliteChatDDL 的建表 DDL 一致；M7 未新增列，仅放宽约束）。
+var sqliteChatAssetsRebuildColumns = []string{
+	"id", "system_account_id", "conversation_id", "source_kind", "original_filename",
+	"original_mime_type", "original_width", "original_height", "original_bytes", "original_sha256",
+	"processed_mime_type", "processed_width", "processed_height", "processed_bytes", "processed_sha256",
+	"storage_key", "preview_mime_type", "preview_width", "preview_height", "preview_bytes",
+	"preview_sha256", "preview_storage_key", "processing_status", "processing_error_code",
+	"observation_status", "observation_json", "observation_revision", "observation_claim_id",
+	"observation_claimed_at", "quota_bytes", "turn_id", "message_id", "committed_at",
+	"cleanup_status", "cleanup_claim_id", "cleanup_attempt_count", "cleanup_claimed_at",
+	"cleanup_retry_at", "cleanup_error_code", "created_at", "updated_at", "expires_at",
+}
+
+// sqliteChatAssetsRebuildIndexes 在 rename 后按 chat 脚本的索引定义重建
+// chat_assets 的五个索引（DROP TABLE 会连带删除旧表索引）。
+var sqliteChatAssetsRebuildIndexes = []string{
+	`CREATE INDEX IF NOT EXISTS idx_chat_assets_owner_conversation
+      ON chat_assets(system_account_id, conversation_id, created_at DESC, id DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_chat_assets_owner_lookup
+      ON chat_assets(system_account_id, id, conversation_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_chat_assets_message
+      ON chat_assets(conversation_id, turn_id, message_id, id)`,
+	`CREATE INDEX IF NOT EXISTS idx_chat_assets_uncommitted
+      ON chat_assets(system_account_id, conversation_id, expires_at, id)
+      WHERE turn_id IS NULL AND message_id IS NULL
+        AND processing_status IN ('pending', 'ready') AND cleanup_status = 'active'`,
+	`CREATE INDEX IF NOT EXISTS idx_chat_assets_cleanup
+      ON chat_assets(cleanup_status, cleanup_retry_at, expires_at, id)`,
+}
+
+// sqliteChatAssetsRebuildDDL is the post-migration chat_assets shape (mirrors
+// the updated chat schema DDL; the only change is the widened media constraints:
+// processed_mime_type 词表增媒体 MIME、assistant_generated 预览必备对媒体行豁免、
+// ready 形状的宽高必备对媒体行豁免)。Column and index parity is asserted by the
+// schema tests so the two definitions cannot drift.
+const sqliteChatAssetsRebuildDDL = `CREATE TABLE chat_assets_migrating (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL DEFAULT 'user_upload',
+      original_filename TEXT NOT NULL,
+      original_mime_type TEXT NOT NULL,
+      original_width INTEGER,
+      original_height INTEGER,
+      original_bytes INTEGER NOT NULL,
+      original_sha256 TEXT NOT NULL,
+      processed_mime_type TEXT,
+      processed_width INTEGER,
+      processed_height INTEGER,
+      processed_bytes INTEGER,
+      processed_sha256 TEXT,
+      storage_key TEXT,
+      preview_mime_type TEXT,
+      preview_width INTEGER,
+      preview_height INTEGER,
+      preview_bytes INTEGER,
+      preview_sha256 TEXT,
+      preview_storage_key TEXT,
+      processing_status TEXT NOT NULL DEFAULT 'pending',
+      processing_error_code TEXT,
+      observation_status TEXT NOT NULL DEFAULT 'not_requested',
+      observation_json TEXT,
+      observation_revision INTEGER NOT NULL DEFAULT 0,
+      observation_claim_id TEXT,
+      observation_claimed_at TEXT,
+      quota_bytes INTEGER NOT NULL,
+      turn_id TEXT,
+      message_id TEXT,
+      committed_at TEXT,
+      cleanup_status TEXT NOT NULL DEFAULT 'active',
+      cleanup_claim_id TEXT,
+      cleanup_attempt_count INTEGER NOT NULL DEFAULT 0,
+      cleanup_claimed_at TEXT,
+      cleanup_retry_at TEXT,
+      cleanup_error_code TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      UNIQUE (id, conversation_id),
+      CHECK (original_width IS NULL OR original_width > 0),
+      CHECK (original_height IS NULL OR original_height > 0),
+      CHECK ((original_width IS NULL AND original_height IS NULL) OR (original_width IS NOT NULL AND original_height IS NOT NULL)),
+      CHECK (original_bytes > 0),
+      CHECK (length(original_sha256) = 64),
+      CHECK (processed_width IS NULL OR processed_width > 0),
+      CHECK (processed_height IS NULL OR processed_height > 0),
+      CHECK ((processed_width IS NULL AND processed_height IS NULL) OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)),
+      CHECK (processed_bytes IS NULL OR processed_bytes > 0),
+      CHECK (source_kind IN ('user_upload', 'assistant_generated')),
+      CHECK (processed_mime_type IS NULL OR processed_mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')),
+      CHECK (processed_sha256 IS NULL OR length(processed_sha256) = 64),
+      CHECK (preview_mime_type IS NULL OR preview_mime_type = 'image/webp'),
+      CHECK (preview_width IS NULL OR preview_width > 0),
+      CHECK (preview_height IS NULL OR preview_height > 0),
+      CHECK (preview_bytes IS NULL OR preview_bytes > 0),
+      CHECK (preview_sha256 IS NULL OR length(preview_sha256) = 64),
+      CHECK (
+        (preview_mime_type IS NULL AND preview_width IS NULL AND preview_height IS NULL AND preview_bytes IS NULL AND preview_sha256 IS NULL AND preview_storage_key IS NULL)
+        OR (preview_mime_type IS NOT NULL AND preview_width IS NOT NULL AND preview_height IS NOT NULL AND preview_bytes IS NOT NULL AND preview_sha256 IS NOT NULL AND preview_storage_key IS NOT NULL)
+      ),
+      CHECK (source_kind != 'assistant_generated' OR preview_storage_key IS NOT NULL
+        OR processed_mime_type IN ('audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')),
+      CHECK (processing_status IN ('pending', 'ready', 'failed')),
+      CHECK (observation_status IN ('not_requested', 'pending', 'ready', 'failed')),
+      CHECK (observation_revision >= 0),
+      CHECK (quota_bytes > 0),
+      CHECK (cleanup_status IN ('active', 'claimed', 'failed')),
+      CHECK (cleanup_attempt_count >= 0),
+      CHECK (
+        processing_status != 'ready'
+        OR (
+          processed_mime_type IS NOT NULL
+          AND processed_bytes IS NOT NULL
+          AND processed_sha256 IS NOT NULL
+          AND storage_key IS NOT NULL
+          AND (
+            processed_mime_type IN ('audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')
+            OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)
+          )
+        )
+      ),
+      CHECK (
+        (observation_status = 'pending' AND observation_claim_id IS NOT NULL AND observation_claimed_at IS NOT NULL)
+        OR (observation_status != 'pending' AND observation_claim_id IS NULL AND observation_claimed_at IS NULL)
+      ),
+      CHECK (
+        (turn_id IS NULL AND message_id IS NULL AND committed_at IS NULL)
+        OR (turn_id IS NOT NULL AND message_id IS NOT NULL AND committed_at IS NOT NULL)
+      ),
+      CHECK (
+        (cleanup_status = 'claimed' AND cleanup_claim_id IS NOT NULL AND cleanup_claimed_at IS NOT NULL)
+        OR (cleanup_status != 'claimed' AND cleanup_claim_id IS NULL AND cleanup_claimed_at IS NULL)
+      )
+    )`
+
+// ensureSQLiteChatAssetsMediaCheck delivers the widened chat_assets media
+// constraints (M7 问答音视频工具设计 §3) to legacy SQLite databases. SQLite
+// cannot DROP a column CHECK, so the table is rebuilt inside one transaction
+// following the schedule-interval precedent (staging table -> copy -> drop ->
+// rename -> recreate indexes), with PRAGMA foreign_keys toggled off and
+// restored around the rebuild exactly like that migration. Fresh databases
+// (new CREATE TABLE text) and already-migrated tables exit before writing.
+// chat_asset_references / chat_image_generations reference chat_assets by
+// name; the rename restores the name so those foreign keys stay intact.
+func ensureSQLiteChatAssetsMediaCheck(ctx context.Context, db *sql.DB) error {
+	var ddl sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_assets'`).Scan(&ddl)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 表不存在：由同一次 ensure 的建表阶段负责，无需迁移。
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !ddl.Valid || !strings.Contains(ddl.String, sqliteChatAssetsLegacyMimeCheckText) {
+		// 已是新约束（或非预期形状）：不重建。
+		return nil
+	}
+	existing, err := sqliteTableColumnSet(ctx, db, "chat_assets")
+	if err != nil {
+		return err
+	}
+	copyColumns := make([]string, 0, len(sqliteChatAssetsRebuildColumns))
+	for _, column := range sqliteChatAssetsRebuildColumns {
+		if existing[column] {
+			copyColumns = append(copyColumns, column)
+		}
+	}
+	if len(copyColumns) == 0 {
+		return nil
+	}
+	foreignKeys := 0
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("读取 PRAGMA foreign_keys 失败: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("关闭 PRAGMA foreign_keys 失败: %w", err)
+	}
+	defer func() {
+		if foreignKeys != 0 {
+			_, _ = db.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys=ON")
+		}
+	}()
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS chat_assets_migrating"); err != nil {
+		return fmt.Errorf("清理上次重建残留失败: %w", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, sqliteChatAssetsRebuildDDL); err != nil {
+		return fmt.Errorf("创建 chat_assets 重建表失败: %w", err)
+	}
+	columnList := strings.Join(copyColumns, ", ")
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(
+		"INSERT INTO chat_assets_migrating (%s)\nSELECT %s FROM chat_assets",
+		columnList, columnList)); err != nil {
+		return fmt.Errorf("回填 chat_assets 重建表数据失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DROP TABLE chat_assets"); err != nil {
+		return fmt.Errorf("删除旧 chat_assets 失败: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE chat_assets_migrating RENAME TO chat_assets"); err != nil {
+		return fmt.Errorf("重命名 chat_assets 重建表失败: %w", err)
+	}
+	for _, statement := range sqliteChatAssetsRebuildIndexes {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("重建 chat_assets 索引失败: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // sqliteChatAccountBindingColumns 列出 chat_conversations 会话账户唯一绑定

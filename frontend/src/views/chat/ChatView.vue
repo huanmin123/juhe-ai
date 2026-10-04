@@ -184,6 +184,7 @@ import { getDefaultChatLocalCache } from './chatLocalCache'
 import { ChatCacheBroadcast } from './chatCacheBroadcast'
 import { createDefaultChatConversationSyncDependencies, drainChatConversationSyncConversation, hasOlderChatMessages, invalidateChatConversationSyncConversation, projectChatMessagesWithRuntime, restoreChatActiveTurnFromSync, synchronizeChatConversation } from './chatConversationSync'
 import { ChatRuntimeReconciliationScheduler } from './chatRuntimeReconciliation'
+import { startChatMediaTaskPolling, type ChatMediaTaskBlockPatch, type ChatMediaTaskPollingControl } from './chatMediaTaskPolling'
 import { ChatConversationMutationQueue } from './chatConversationMutations'
 import { ChatRequestLifecycleEpochs } from './chatRequestLifecycle'
 import { applyDeletedChatConversation, ChatModelCapabilitiesLoadCoordinator, ChatModelLoadCoordinator, ChatSingleFlightCoordinator } from './chatConversationPerformance'
@@ -242,8 +243,14 @@ async function refreshToolBindingsSummary(): Promise<void> {
     const stateText = (bound: boolean, valid: boolean) => (!bound ? '未设置' : valid ? '已绑定' : '已失效')
     const search = preferences.tools.find((tool) => tool.id === 'web_search')
     const image = preferences.tools.find((tool) => tool.id === 'generate_image')
+    const video = preferences.tools.find((tool) => tool.id === 'generate_video')
+    const audio = preferences.tools.find((tool) => tool.id === 'generate_audio')
+    const mediaParts = [
+      ...(video ? [`视频${stateText(Boolean(video.bound), Boolean(video.valid))}`] : []),
+      ...(audio ? [`语音${stateText(Boolean(audio.bound), Boolean(audio.valid))}`] : [])
+    ]
     toolBindingsSummary.value = search && image
-      ? `搜索${stateText(Boolean(search.bound), Boolean(search.valid))} · 生图${stateText(Boolean(image.bound), Boolean(image.valid))}`
+      ? [`搜索${stateText(Boolean(search.bound), Boolean(search.valid))}`, `生图${stateText(Boolean(image.bound), Boolean(image.valid))}`, ...mediaParts].join(' · ')
       : ''
   } catch {
     toolBindingsSummary.value = ''
@@ -298,6 +305,7 @@ const bindingPromptedKeys = new Set<string>()
 let pendingConfirmationTimer: number | undefined
 let pendingConfirmationRetryCount = 0
 let contextStatusTimer: number | undefined
+let mediaTaskPolling: ChatMediaTaskPollingControl | undefined
 let conversationLoadEpoch = 0
 let disposed = false
 let pageActive = false
@@ -723,10 +731,11 @@ async function applyAccountSwitchDefaults(previous: ChatConversation, updated: C
   }
 }
 
-// 绑定保存回调（工具体系设计 §10.6/§10.7，2026-10-03 收敛）：全局默认已由统一
-// 弹窗 PATCH /my-chat/tool-preferences 落库；存在未归档当前会话时按 UI 最终值
-// 再 PATCH 该会话三键，使当前会话立即跟随全局绑定（replaceConversation 沿用
-// 既有刷新链）；无当前会话或会话已归档时仅全局生效，跳过会话同步。
+// 绑定保存回调（工具体系设计 §10.6/§10.7 + 问答音视频工具设计 §5）：全局默认已由
+// 统一弹窗 PATCH /my-chat/tool-preferences 落库；存在未归档当前会话时按 UI 最终值
+// 再 PATCH 该会话全键（含 M7 videoBinding/audioBinding），使当前会话立即跟随全局
+// 绑定（replaceConversation 沿用既有刷新链）；无当前会话或会话已归档时仅全局生效，
+// 跳过会话同步。
 async function handleToolBindingSaved(payload: ChatToolPreferencesPatch): Promise<void> {
   void refreshToolBindingsSummary()
   const conversation = selectedConversation.value
@@ -738,7 +747,9 @@ async function handleToolBindingSaved(payload: ChatToolPreferencesPatch): Promis
     const updated = await conversationMutationQueue.enqueue(conversation.id, () => chatApi.updateConversation(conversation.id, {
       searchBinding: payload.searchBinding ?? null,
       imageBinding: payload.imageBinding ?? null,
-      defaultImageModel: payload.defaultImageModel ?? conversation.defaultImageModel
+      defaultImageModel: payload.defaultImageModel ?? conversation.defaultImageModel,
+      videoBinding: payload.videoBinding ?? null,
+      audioBinding: payload.audioBinding ?? null
     }))
     replaceConversation(updated)
     message.success('全局绑定已更新，当前会话已同步')
@@ -1793,6 +1804,26 @@ watch(selectedModel, (modelId) => {
   }
   if (selectedModelCapabilities.value?.id !== modelId) void loadSelectedModelCapabilities(modelId)
 })
+// M7 媒体任务轮询（问答音视频工具设计 §5）：按 jobId 就地更新消息列表中的
+// output_media_task 块（替换消息对象驱动重渲染；assetId 到达 → 播放器分支）。
+function applyMediaTaskBlockPatch(patch: ChatMediaTaskBlockPatch): void {
+  for (let index = 0; index < messages.value.length; index += 1) {
+    const current = messages.value[index]
+    if (!current || !(current.contentBlocks ?? []).some((block) => block.type === 'output_media_task' && block.jobId === patch.jobId)) continue
+    const blocks = (current.contentBlocks ?? []).map((block) => {
+      if (block.type !== 'output_media_task' || block.jobId !== patch.jobId) return block
+      return {
+        ...block,
+        status: patch.status,
+        ...(patch.progress !== undefined ? { progress: patch.progress } : {}),
+        ...(patch.assetId ? { assetId: patch.assetId } : {}),
+        ...(patch.error ? { error: patch.error } : {})
+      }
+    })
+    messages.value[index] = { ...current, contentBlocks: blocks }
+    return
+  }
+}
 function activateChatPage(): void {
   if (pageActive || disposed) return
   pageActive = true
@@ -1808,6 +1839,11 @@ function activateChatPage(): void {
     void refreshContextStatus(conversation.id)
   }, 5_000)
   subscribeSelectedRuntime()
+  mediaTaskPolling ??= startChatMediaTaskPolling({
+    conversationId: () => selectedConversationId.value,
+    messages: () => messages.value,
+    applyPatch: applyMediaTaskBlockPatch
+  })
   broadcastUnsubscribe = cacheBroadcast.subscribe((payload) => {
     const conversation = selectedConversation.value
     if (!conversation || payload.systemAccountId !== conversation.systemAccountId || payload.conversationId !== conversation.id || payload.messageRevision <= conversation.messageRevision) return
@@ -1829,6 +1865,8 @@ function deactivateChatPage(): void {
   broadcastUnsubscribe = undefined
   if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }
   if (contextStatusTimer !== undefined) { window.clearInterval(contextStatusTimer); contextStatusTimer = undefined }
+  mediaTaskPolling?.stop()
+  mediaTaskPolling = undefined
   closeConversationMenu()
 }
 onMounted(() => {

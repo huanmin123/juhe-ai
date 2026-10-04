@@ -21,6 +21,7 @@ type (
 	CreateChatAssetInput           = chatassets.CreateChatAssetInput
 	CompleteAssetProcessingInput   = chatassets.CompleteAssetProcessingInput
 	GeneratedAssetCommitInput      = chatassets.GeneratedAssetCommitInput
+	MediaAssetCommitInput          = chatassets.MediaAssetCommitInput
 	GeneratedImageGenerationRecord = chatassets.GeneratedImageGenerationRecord
 	ImageGenerationRecord          = chatassets.ImageGenerationRecord
 )
@@ -120,6 +121,18 @@ func (s *Store) FailChatAssetProcessing(assetID, ownerID, conversationID, errorC
 
 func (s *Store) CommitChatGeneratedAsset(input GeneratedAssetCommitInput) (*Asset, error) {
 	return s.assets.CommitChatGeneratedAsset(input)
+}
+
+// CommitChatGeneratedMediaAsset 把 M7 问答音视频工具产物提交为 ready 资产
+//（媒体行无预览/无宽高；见 chatassets.MediaAssetCommitInput）。
+func (s *Store) CommitChatGeneratedMediaAsset(input MediaAssetCommitInput) (*Asset, error) {
+	return s.assets.CommitChatGeneratedMediaAsset(input)
+}
+
+// FindGeneratedAssetByDigest 按 processed digest 查重（视频结算幂等的资产
+// 查重闸）。
+func (s *Store) FindGeneratedAssetByDigest(ownerID, conversationID, sha256Value string) (*Asset, error) {
+	return s.assets.FindGeneratedAssetByDigest(ownerID, conversationID, sha256Value)
 }
 
 func (s *Store) ListRecentImageGenerations(conversationID, ownerID, nowValue string, limit int) ([]ImageGenerationRecord, error) {

@@ -82,7 +82,7 @@ function toggleExpanded(tool: ChatToolProcessGroup): void {
 function progressStageLabel(tool: ChatToolProcessGroup): string {
   if (isTerminalToolGroup(tool)) return '子代理执行过程'
   const stage = tool.progress?.stage
-  return ({ reasoning: '子代理思考中…', searching: '子代理联网搜索中…', answering: '子代理汇总结果中…', generating: '正在生成图片…' }[stage ?? '']) ?? '子代理执行中…'
+  return ({ reasoning: '子代理思考中…', searching: '子代理联网搜索中…', answering: '子代理汇总结果中…', generating: '正在生成图片…', submitting: '正在提交视频生成任务…', synthesizing: '正在合成语音…' }[stage ?? '']) ?? '子代理执行中…'
 }
 
 // 来源主域聚合（契约 §10.4）：同 hostname 的 URL 聚合一行，非链接文本与解析失败 URL 原样单列。
@@ -144,7 +144,7 @@ watch(() => props.message, async () => {
 }, { flush: 'post' })
 
 function toolLabel(type: string): string {
-  return ({ web_search_call: '联网搜索', web_search: '联网搜索', image_generation: '图片生成', generate_image: '图片生成', file_search_call: '文件检索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用')
+  return ({ web_search_call: '联网搜索', web_search: '联网搜索', image_generation: '图片生成', generate_image: '图片生成', video_generation: '视频生成', generate_video: '视频生成', audio_generation: '语音合成', generate_audio: '语音合成', file_search_call: '文件检索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用')
 }
 function statusLabel(status: ChatToolStatus): string {
   return ({ started: '准备中', updated: '执行中', completed: '已完成', failed: '失败', canceled: '已停止' })[status]

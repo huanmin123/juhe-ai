@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   search_account_id TEXT,
   search_model_id TEXT,
   image_account_id TEXT,
+  video_account_id TEXT,
+  default_video_model TEXT,
+  audio_account_id TEXT,
+  default_audio_model TEXT,
   title TEXT NOT NULL DEFAULT '新对话',
   title_source_message_id TEXT,
   is_pinned INTEGER NOT NULL DEFAULT 0,
@@ -323,6 +327,10 @@ CREATE TABLE IF NOT EXISTS chat_user_tool_preferences (
   search_model_id TEXT,
   image_account_id TEXT,
   default_image_model TEXT,
+  video_account_id TEXT,
+  default_video_model TEXT,
+  audio_account_id TEXT,
+  default_audio_model TEXT,
   updated_at TEXT NOT NULL
 );
 `

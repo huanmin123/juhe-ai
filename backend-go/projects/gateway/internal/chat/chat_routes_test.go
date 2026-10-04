@@ -185,7 +185,9 @@ func TestRouteConversationCRUDMatrix(t *testing.T) {
 		t.Fatal("toolCapabilities missing")
 	}
 	toolList, _ := tools["tools"].([]any)
-	if len(toolList) != 2 {
+	// 兜底形状：候选端口未接线（routeEnv 无 AccountOptionsLookup）→ 四节模型
+	// 工具（M7 媒体两节随问答音视频工具设计 §3 加入）。
+	if len(toolList) != 4 {
 		t.Fatalf("expected fallback tool list, got %v", tools)
 	}
 	missing := env.do("GET", prefix+"/conversations/chat_conv_missing", routeTestOwner, "")

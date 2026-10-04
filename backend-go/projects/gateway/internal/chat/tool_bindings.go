@@ -45,11 +45,13 @@ type ChatToolBindingsPayload struct {
 	Tools []ChatToolBindingStatus `json:"tools"`
 }
 
-// chatToolBindingCandidates 是一次候选解析的产物：两类模型工具的候选列表与
+// chatToolBindingCandidates 是一次候选解析的产物：模型工具的候选列表与
 // 候选账户视图（valid 判定复用）。
 type chatToolBindingCandidates struct {
 	search []ChatToolBindingCandidate
 	image  []ChatToolBindingCandidate
+	video  []ChatToolBindingCandidate
+	audio  []ChatToolBindingCandidate
 }
 
 // chatToolBindingRuntime 是发送链路的绑定运行时视图（stream_route 解析、
@@ -62,6 +64,14 @@ type chatToolBindingRuntime struct {
 	ImageAccountID   string
 	ImageExecutor    GenerationExecutor
 	ImageCandidates  []ChatToolBindingCandidate
+	// M7 问答音视频工具（问答音视频工具设计 §3）：video/audio 绑定 =
+	// 账户 + 默认模型列（默认模型列空时执行侧回落账户候选首项）。
+	VideoAccountID   string
+	VideoExecutor    GenerationExecutor
+	VideoCandidates  []ChatToolBindingCandidate
+	AudioAccountID   string
+	AudioExecutor    GenerationExecutor
+	AudioCandidates  []ChatToolBindingCandidate
 }
 
 // chatToolBindingCandidatesOf 取指定工具的候选摘要（nil 视图返回 nil）。
@@ -74,12 +84,16 @@ func chatToolBindingCandidatesOf(runtime *chatToolBindingRuntime, toolID string)
 		return runtime.SearchCandidates
 	case "generate_image":
 		return runtime.ImageCandidates
+	case "generate_video":
+		return runtime.VideoCandidates
+	case "generate_audio":
+		return runtime.AudioCandidates
 	}
 	return nil
 }
 
 // chatSearchImageModelFamily 返回 provider 家族可路由的注册图像模型枚举
-// （候选白名单：GPT 系供应商（gpt/openai vendor）× gpt-image-2；Grok 系账户 ×
+//（候选白名单：GPT 系供应商（gpt/openai vendor）× gpt-image-2；Grok 系账户 ×
 // grok-imagine 系，契约 §6.3——目录声明 image_generation 的其他模型不进候选）。
 func chatSearchImageModelFamily(providerCode string) []string {
 	switch normalizeProviderToken(providerCode) {
@@ -90,6 +104,88 @@ func chatSearchImageModelFamily(providerCode string) []string {
 	default:
 		return nil
 	}
+}
+
+// chatMediaProviderAllowed 是问答音视频工具的供应商家族白名单（问答音视频
+// 工具设计 §3：openai（含 gpt 子供应商）/gemini/minimax/volcengine/qwen 的
+// 视频/TTS 目录行 × 账户可路由）。
+func chatMediaProviderAllowed(providerCode string) bool {
+	switch normalizeProviderToken(providerCode) {
+	case "openai", "gpt", "gemini", "minimax", "volcengine", "qwen":
+		return true
+	}
+	return false
+}
+
+// accountSupportsMediaModel 判定账户视图可路由目录媒体模型（沿
+// accountSupportsImageModel 的映射/清单口径；差异：媒体路由判定按账户启用的
+// 端点模式——视频要求 video_create、语音要求 audio_speech，与 /v1 媒体链的
+// 候选能力门口径一致，不限 api_key 账户类型）。
+func accountSupportsMediaModel(account ChatTransportAccount, model, requiredEndpointMode string) bool {
+	if !containsString(account.SupportedEndpointModes, requiredEndpointMode) {
+		return false
+	}
+	if len(account.SupportedModels) == 0 {
+		return true
+	}
+	for _, mapping := range account.ModelMappings {
+		if mapping.Enabled != nil && !*mapping.Enabled {
+			continue
+		}
+		if mapping.SourceModel != model {
+			continue
+		}
+		target := mapping.UpstreamModel
+		if target == "" {
+			target = model
+		}
+		for _, candidate := range account.SupportedModels {
+			if candidate == target {
+				return true
+			}
+		}
+	}
+	for _, candidate := range account.SupportedModels {
+		if candidate == model {
+			return true
+		}
+	}
+	return false
+}
+
+// constrainChatMediaModel 把主模型自选的视频/TTS 模型收敛到绑定账户实际可
+// 路由的集合内（BUG-0230 同模式，问答音视频工具设计 §3）：model 已在集合内
+// 原样返回；不在（或为空）时优先会话默认模型（其亦需在集合内），否则取该
+// 账户候选首项（候选解析顺序确定性）。候选为空时不约束（未绑定/解析失败由
+// 绑定校验与发送预检承接）。
+func constrainChatMediaModel(model, accountID, defaultModel string, candidates []ChatToolBindingCandidate) string {
+	if accountID == "" {
+		return model
+	}
+	supported := map[string]bool{}
+	first := ""
+	for _, candidate := range candidates {
+		if candidate.AccountID != accountID {
+			continue
+		}
+		if !supported[candidate.ModelID] && first == "" {
+			first = candidate.ModelID
+		}
+		supported[candidate.ModelID] = true
+	}
+	if len(supported) == 0 {
+		return model
+	}
+	if model != "" && supported[model] {
+		return model
+	}
+	if defaultModel != "" && supported[defaultModel] {
+		return defaultModel
+	}
+	if first != "" {
+		return first
+	}
+	return model
 }
 
 // constrainChatImageModel 把主模型自选的生图模型收敛到绑定账户实际可路由的
@@ -174,9 +270,11 @@ func (rt *chatRoutes) resolveChatToolBindingCandidates(bindScope ChatBindScope) 
 	if err != nil {
 		return nil, err
 	}
-	out := &chatToolBindingCandidates{search: []ChatToolBindingCandidate{}, image: []ChatToolBindingCandidate{}}
+	out := &chatToolBindingCandidates{search: []ChatToolBindingCandidate{}, image: []ChatToolBindingCandidate{}, video: []ChatToolBindingCandidate{}, audio: []ChatToolBindingCandidate{}}
 	seenSearch := map[string]bool{}
 	seenImage := map[string]bool{}
+	seenVideo := map[string]bool{}
+	seenAudio := map[string]bool{}
 	for _, account := range accounts {
 		if account.Status != "active" {
 			continue
@@ -225,6 +323,33 @@ func (rt *chatRoutes) resolveChatToolBindingCandidates(bindScope ChatBindScope) 
 				ModelID: model, ModelName: model,
 			})
 		}
+		// M7 媒体候选（问答音视频工具设计 §3）：供应商白名单内、目录矩阵声明
+		// 协议 video（generate_video）/ audio_speech（generate_audio）的模型 ×
+		// 账户可路由（端点模式 video_create / audio_speech）。
+		if chatMediaProviderAllowed(accountView.ProviderCode) {
+			for _, item := range catalog {
+				if containsString(item.SupportedAPIProtocols, "video") && accountSupportsMediaModel(accountView, item.Model, "video_create") {
+					key := account.ID + "@" + item.Model
+					if !seenVideo[key] {
+						seenVideo[key] = true
+						out.video = append(out.video, ChatToolBindingCandidate{
+							AccountID: account.ID, AccountName: account.Name,
+							ModelID: item.Model, ModelName: item.Model,
+						})
+					}
+				}
+				if containsString(item.SupportedAPIProtocols, "audio_speech") && accountSupportsMediaModel(accountView, item.Model, "audio_speech") {
+					key := account.ID + "@" + item.Model
+					if !seenAudio[key] {
+						seenAudio[key] = true
+						out.audio = append(out.audio, ChatToolBindingCandidate{
+							AccountID: account.ID, AccountName: account.Name,
+							ModelID: item.Model, ModelName: item.Model,
+						})
+					}
+				}
+			}
+		}
 	}
 	return out, nil
 }
@@ -255,6 +380,12 @@ type chatToolBindingSource struct {
 	SearchModelID       string
 	ImageAccountID      string
 	EffectiveImageModel string
+	// M7 媒体绑定（问答音视频工具设计 §3）：账户 + 默认模型二元组（默认模型
+	// 空串时读取侧回落账户候选首项，写入侧原样存储）。
+	VideoAccountID   string
+	VideoModelID     string
+	AudioAccountID   string
+	AudioModelID     string
 }
 
 // buildChatToolBindingStatuses 按候选列表聚合两类模型工具的绑定状态（bound/
@@ -308,6 +439,54 @@ func (rt *chatRoutes) buildChatToolBindingStatuses(bindScope ChatBindScope, sour
 	}
 	tools = append(tools, imageStatus)
 
+	// generate_video（M7 问答音视频工具设计 §3）：绑定 = video_account_id +
+	// default_video_model 二元组；生效模型 = 默认列值（空时回落账户候选首项，
+	// 与执行侧 constrainChatMediaModel 同口径）。
+	videoStatus := ChatToolBindingStatus{
+		ID: "generate_video", Kind: "model",
+		Candidates: candidates.video,
+	}
+	if source.VideoAccountID != "" {
+		videoStatus.Bound = true
+		effectiveVideoModel := constrainChatMediaModel("", source.VideoAccountID, source.VideoModelID, candidates.video)
+		videoStatus.Binding = &ChatToolBindingCandidate{
+			AccountID: source.VideoAccountID,
+			ModelID:   effectiveVideoModel,
+			ModelName: effectiveVideoModel,
+		}
+		if name, ok := rt.bindingAccountName(bindScope, source.VideoAccountID); ok {
+			videoStatus.Binding.AccountName = name
+		}
+		videoStatus.Valid = containsChatToolBindingCandidate(candidates.video, *videoStatus.Binding)
+		if !videoStatus.Valid {
+			videoStatus.InvalidReason = "视频生成绑定已失效（账户停用/删除或视频模型不可路由），请重新设置"
+		}
+	}
+	tools = append(tools, videoStatus)
+
+	// generate_audio：绑定 = audio_account_id + default_audio_model 二元组。
+	audioStatus := ChatToolBindingStatus{
+		ID: "generate_audio", Kind: "model",
+		Candidates: candidates.audio,
+	}
+	if source.AudioAccountID != "" {
+		audioStatus.Bound = true
+		effectiveAudioModel := constrainChatMediaModel("", source.AudioAccountID, source.AudioModelID, candidates.audio)
+		audioStatus.Binding = &ChatToolBindingCandidate{
+			AccountID: source.AudioAccountID,
+			ModelID:   effectiveAudioModel,
+			ModelName: effectiveAudioModel,
+		}
+		if name, ok := rt.bindingAccountName(bindScope, source.AudioAccountID); ok {
+			audioStatus.Binding.AccountName = name
+		}
+		audioStatus.Valid = containsChatToolBindingCandidate(candidates.audio, *audioStatus.Binding)
+		if !audioStatus.Valid {
+			audioStatus.InvalidReason = "语音合成绑定已失效（账户停用/删除或语音模型不可路由），请重新设置"
+		}
+	}
+	tools = append(tools, audioStatus)
+
 	// code 工具仅列出（无绑定概念）：按注册器当前环境的实际注册情况。
 	environment := rt.deps.ToolEnvironment
 	if environment == "" {
@@ -335,6 +514,10 @@ func (rt *chatRoutes) buildChatToolBindingsPayload(bindScope ChatBindScope, conv
 		SearchModelID:       derefString(conversation.SearchModelID),
 		ImageAccountID:      derefString(conversation.ImageAccountID),
 		EffectiveImageModel: string(conversation.DefaultImageModel),
+		VideoAccountID:      derefString(conversation.VideoAccountID),
+		VideoModelID:        conversation.DefaultVideoModel,
+		AudioAccountID:      derefString(conversation.AudioAccountID),
+		AudioModelID:        conversation.DefaultAudioModel,
 	}, candidates)}
 	return payload, nil
 }
@@ -425,12 +608,22 @@ func (rt *chatRoutes) resolveChatToolBindingRuntime(bindScope ChatBindScope, con
 	if conversation.ImageAccountID != nil {
 		runtime.ImageAccountID = *conversation.ImageAccountID
 	}
+	if conversation.VideoAccountID != nil {
+		runtime.VideoAccountID = *conversation.VideoAccountID
+	}
+	if conversation.AudioAccountID != nil {
+		runtime.AudioAccountID = *conversation.AudioAccountID
+	}
 	if candidates, err := rt.resolveChatToolBindingCandidates(bindScope); err == nil {
 		runtime.SearchCandidates = candidates.search
 		runtime.ImageCandidates = candidates.image
+		runtime.VideoCandidates = candidates.video
+		runtime.AudioCandidates = candidates.audio
 	}
 	runtime.SearchExecutor = rt.toolDispatchExecutor(runtime.SearchAccountID)
 	runtime.ImageExecutor = rt.toolDispatchExecutor(runtime.ImageAccountID)
+	runtime.VideoExecutor = rt.toolDispatchExecutor(runtime.VideoAccountID)
+	runtime.AudioExecutor = rt.toolDispatchExecutor(runtime.AudioAccountID)
 	return runtime
 }
 
@@ -472,6 +665,10 @@ func (rt *chatRoutes) buildUserToolPreferencesPayload(bindScope ChatBindScope, p
 		if pref.DefaultImageModel != "" {
 			source.EffectiveImageModel = pref.DefaultImageModel
 		}
+		source.VideoAccountID = pref.VideoAccountID
+		source.VideoModelID = pref.DefaultVideoModel
+		source.AudioAccountID = pref.AudioAccountID
+		source.AudioModelID = pref.DefaultAudioModel
 	}
 	return &ChatToolBindingsPayload{Tools: rt.buildChatToolBindingStatuses(bindScope, source, candidates)}, nil
 }
@@ -508,6 +705,24 @@ func (rt *chatRoutes) writeBackUserToolPreferences(ownerID string, fields update
 			merged.ImageAccountID = fields.imageBinding.accountID
 		}
 		merged.DefaultImageModel = string(effectiveImageModel)
+	}
+	if fields.videoBinding != nil {
+		if fields.videoBinding.unbound {
+			merged.VideoAccountID = ""
+			merged.DefaultVideoModel = ""
+		} else {
+			merged.VideoAccountID = fields.videoBinding.accountID
+			merged.DefaultVideoModel = fields.videoBinding.modelID
+		}
+	}
+	if fields.audioBinding != nil {
+		if fields.audioBinding.unbound {
+			merged.AudioAccountID = ""
+			merged.DefaultAudioModel = ""
+		} else {
+			merged.AudioAccountID = fields.audioBinding.accountID
+			merged.DefaultAudioModel = fields.audioBinding.modelID
+		}
 	}
 	if err := rt.deps.Store.UpsertUserToolPreferences(merged); err != nil {
 		log.Printf("chat: 用户工具偏好回写失败 owner=%s: %v", ownerID, err)

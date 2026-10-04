@@ -24,6 +24,10 @@ var postgresSchemaChat = []PGStatement{
       search_account_id text,
       search_model_id text,
       image_account_id text,
+      video_account_id text,
+      default_video_model text,
+      audio_account_id text,
+      default_audio_model text,
       title text NOT NULL DEFAULT '新对话',
       title_source_message_id text,
       is_pinned integer NOT NULL DEFAULT 0,
@@ -178,8 +182,9 @@ var postgresSchemaChat = []PGStatement{
     )`,
 	},
 	// 用户级默认工具绑定表（AI 问答工具体系与主子模型设计 §2.11/§7，2026-10-02）：
-	// 每用户一行（system_account_id 主键），四列均可空（空 = 未设默认）；
-	// 无存量回填，建表经 --ensure-schema 幂等生效。
+	// 每用户一行（system_account_id 主键），列均可空（空 = 未设默认）；
+	// 无存量回填，建表经 --ensure-schema 幂等生效。M7 问答音视频工具（2026-10-04，
+	// docs/functions/问答音视频工具设计.md §3）增 video/audio 四列。
 	{
 		SchemaName: "juhe_chat",
 		Source:     "chat",
@@ -189,6 +194,10 @@ var postgresSchemaChat = []PGStatement{
       search_model_id text,
       image_account_id text,
       default_image_model text,
+      video_account_id text,
+      default_video_model text,
+      audio_account_id text,
+      default_audio_model text,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`,
 	},
@@ -321,7 +330,7 @@ var postgresSchemaChat = []PGStatement{
       CHECK ((processed_width IS NULL AND processed_height IS NULL) OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)),
       CHECK (processed_bytes IS NULL OR processed_bytes > 0),
       CHECK (source_kind IN ('user_upload', 'assistant_generated')),
-      CHECK (processed_mime_type IS NULL OR processed_mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+      CHECK (processed_mime_type IS NULL OR processed_mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')),
       CHECK (processed_sha256 IS NULL OR length(processed_sha256) = 64),
       CHECK (preview_mime_type IS NULL OR preview_mime_type = 'image/webp'),
       CHECK (preview_width IS NULL OR preview_width > 0),
@@ -332,7 +341,8 @@ var postgresSchemaChat = []PGStatement{
         (preview_mime_type IS NULL AND preview_width IS NULL AND preview_height IS NULL AND preview_bytes IS NULL AND preview_sha256 IS NULL AND preview_storage_key IS NULL)
         OR (preview_mime_type IS NOT NULL AND preview_width IS NOT NULL AND preview_height IS NOT NULL AND preview_bytes IS NOT NULL AND preview_sha256 IS NOT NULL AND preview_storage_key IS NOT NULL)
       ),
-      CHECK (source_kind != 'assistant_generated' OR preview_storage_key IS NOT NULL),
+      CHECK (source_kind != 'assistant_generated' OR preview_storage_key IS NOT NULL
+        OR processed_mime_type IN ('audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')),
       CHECK (processing_status IN ('pending', 'ready', 'failed')),
       CHECK (observation_status IN ('not_requested', 'pending', 'ready', 'failed')),
       CHECK (observation_revision >= 0),
@@ -343,11 +353,13 @@ var postgresSchemaChat = []PGStatement{
         processing_status != 'ready'
         OR (
           processed_mime_type IS NOT NULL
-          AND processed_width IS NOT NULL
-          AND processed_height IS NOT NULL
           AND processed_bytes IS NOT NULL
           AND processed_sha256 IS NOT NULL
           AND storage_key IS NOT NULL
+          AND (
+            processed_mime_type IN ('audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')
+            OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)
+          )
         )
       ),
       CHECK (
@@ -601,5 +613,102 @@ var postgresSchemaChat = []PGStatement{
 		SchemaName: "juhe_chat",
 		Source:     "chat-conversation-account-binding-pg-columns",
 		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS image_account_id text`,
+	},
+	// M7 问答音视频工具绑定列（问答音视频工具设计 §3，2026-10-04）：新库由上方
+	// CREATE TABLE 直接声明；既有库经幂等 ALTER 补齐（列存在即 no-op）。
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS video_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS default_video_model text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS audio_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS default_audio_model text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_user_tool_preferences ADD COLUMN IF NOT EXISTS video_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_user_tool_preferences ADD COLUMN IF NOT EXISTS default_video_model text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_user_tool_preferences ADD COLUMN IF NOT EXISTS audio_account_id text`,
+	},
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-tool-pg-columns",
+		SQL:        `ALTER TABLE chat_user_tool_preferences ADD COLUMN IF NOT EXISTS default_audio_model text`,
+	},
+	// M7 chat_assets 媒体 MIME 词表扩展（问答音视频工具设计 §3，2026-10-04）：
+	// 新库由上方 CREATE TABLE 直接声明新约束；既有库的三条内联无名 CHECK
+	//（processed_mime_type 词表、assistant_generated 预览必备、ready 形状含
+	// 宽高必备）经本 DO 块按约束定义文本特征定位后 DROP（内联约束的自动命名
+	// 不稳定，按列名组合匹配是确定性判据；chat_assets_media_* 为本块新建的
+	// 带名约束，被排除），并以带名约束重建（媒体行无宽高/无预览合法）。幂等：
+	// 目标约束已存在（按名判定）时整块 no-op。存量行不含媒体 MIME，恒满足
+	// 新约束（NOT VALID 不需要）。
+	{
+		SchemaName: "juhe_chat",
+		Source:     "chat-media-asset-pg-constraints",
+		SQL: `DO $$
+DECLARE
+  candidate RECORD;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chat_assets_media_ready_check') THEN
+    FOR candidate IN
+      SELECT c.conname, pg_get_constraintdef(c.oid) AS def
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE c.contype = 'c'
+        AND n.nspname = 'juhe_chat'
+        AND t.relname = 'chat_assets'
+        AND c.conname NOT LIKE 'chat\_assets\_media\_%'
+        AND (
+          (pg_get_constraintdef(c.oid) LIKE '%processed_mime_type%' AND pg_get_constraintdef(c.oid) LIKE '%image/webp%')
+          OR (pg_get_constraintdef(c.oid) LIKE '%processing_status%' AND pg_get_constraintdef(c.oid) LIKE '%storage_key%')
+          OR (pg_get_constraintdef(c.oid) LIKE '%source_kind%' AND pg_get_constraintdef(c.oid) LIKE '%preview_storage_key%')
+        )
+    LOOP
+      EXECUTE format('ALTER TABLE juhe_chat.chat_assets DROP CONSTRAINT %I', candidate.conname);
+    END LOOP;
+    ALTER TABLE juhe_chat.chat_assets ADD CONSTRAINT chat_assets_media_mime_check
+      CHECK (processed_mime_type IS NULL OR processed_mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm'));
+    ALTER TABLE juhe_chat.chat_assets ADD CONSTRAINT chat_assets_media_preview_check
+      CHECK (source_kind != 'assistant_generated' OR preview_storage_key IS NOT NULL
+        OR processed_mime_type IN ('audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm'));
+    ALTER TABLE juhe_chat.chat_assets ADD CONSTRAINT chat_assets_media_ready_check
+      CHECK (
+        processing_status != 'ready'
+        OR (
+          processed_mime_type IS NOT NULL
+          AND processed_bytes IS NOT NULL
+          AND processed_sha256 IS NOT NULL
+          AND storage_key IS NOT NULL
+          AND (
+            processed_mime_type IN ('audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')
+            OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)
+          )
+        )
+      );
+  END IF;
+END $$`,
 	},
 }

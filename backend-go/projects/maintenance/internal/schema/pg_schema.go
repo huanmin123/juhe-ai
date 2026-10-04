@@ -514,10 +514,10 @@ var pgSeedProviders = []pgSeedProvider{
 		ID:                         "xai",
 		Code:                       "xai",
 		Name:                       "xAI / Grok",
-		Description:                "xAI 官方供应商，支持 API Key 与 Grok OAuth 接入 OpenAI v1 文本协议",
+		Description:                "xAI 官方供应商，支持 API Key 与 Grok OAuth 接入 OpenAI v1 文本协议；媒体面支持 Grok Imagine Video 视频（契约 §6.1）",
 		ParentCode:                 "openai",
 		Enabled:                    1,
-		DefaultSupportedModelsJSON: "[\"grok-4.7\",\"grok-4.6\",\"grok-4.5\"]",
+		DefaultSupportedModelsJSON: "[\"grok-4.7\",\"grok-4.6\",\"grok-4.5\",\"grok-imagine-video-1.5\"]",
 	},
 	{
 		ID:                         "deepseek",

@@ -118,7 +118,9 @@ func chatImageModelProfileFor(model string) chatImageModelProfile {
 // 为仅 account（AI 问答会话账户唯一绑定设计）：bindAccountId 为空即「未选账户」
 // 状态；archived=1 是存量旧模式（api_key/group）会话的一次性迁移只读标记。
 // searchAccountId/searchModelId/imageAccountId 是模型工具的会话级绑定列
-// （工具体系设计 §7：空 = 未绑定，绑定语义见 tool_bindings.go）。
+// （工具体系设计 §7：空 = 未绑定，绑定语义见 tool_bindings.go）；video/audio
+// 四列是问答音视频工具（问答音视频工具设计 §3，2026-10-04）的会话级绑定列
+// （空 = 未绑定；默认模型列无注册表兜底，空串 = 未设默认）。
 type Conversation struct {
 	ID                      string         `json:"id"`
 	SystemAccountID         string         `json:"systemAccountId"`
@@ -130,6 +132,10 @@ type Conversation struct {
 	SearchAccountID         *string        `json:"searchAccountId,omitempty"`
 	SearchModelID           *string        `json:"searchModelId,omitempty"`
 	ImageAccountID          *string        `json:"imageAccountId,omitempty"`
+	VideoAccountID          *string        `json:"videoAccountId,omitempty"`
+	DefaultVideoModel       string         `json:"defaultVideoModel"`
+	AudioAccountID          *string        `json:"audioAccountId,omitempty"`
+	DefaultAudioModel       string         `json:"defaultAudioModel"`
 	Title                   string         `json:"title"`
 	IsPinned                bool           `json:"isPinned"`
 	LastModel               *string        `json:"lastModel,omitempty"`
@@ -143,7 +149,11 @@ type Conversation struct {
 }
 
 // ContentBlock is the union of ChatMessageContentBlock variants. Stored and
-// serialized as the tagged JSON objects Node produces.
+// serialized as the tagged JSON objects Node produces. M7 问答音视频工具
+//（问答音视频工具设计 §3，2026-10-04）增两块形：output_audio（assetId +
+// mimeType，与 output_image 同族无尺寸）与 output_media_task（异步视频任务块：
+// jobId/kind/status/progress/model/promptSummary/assetId?/error?，status 词表为
+// media_jobs 任务状态 queued|in_progress|completed|failed）。
 type ContentBlock struct {
 	Type     string         `json:"type"`
 	BlockID  string         `json:"blockId,omitempty"`
@@ -162,6 +172,14 @@ type ContentBlock struct {
 	// provider-rewritten image prompt) so REST reads restore the full
 	// output_image shape the write side persists.
 	RevisedPrompt *string `json:"revisedPrompt,omitempty"`
+	// JobID/MediaKind/Progress/Model/PromptSummary/MediaError 是
+	// output_media_task 块的任务面字段（设计 §3 块形）。
+	JobID         *string `json:"jobId,omitempty"`
+	MediaKind     *string `json:"kind,omitempty"`
+	Progress      *int64  `json:"progress,omitempty"`
+	Model         *string `json:"model,omitempty"`
+	PromptSummary *string `json:"promptSummary,omitempty"`
+	MediaError    *string `json:"error,omitempty"`
 }
 
 // Message mirrors ChatMessage.
@@ -200,6 +218,10 @@ type conversationRow struct {
 	searchAccountID             sql.NullString
 	searchModelID               sql.NullString
 	imageAccountID              sql.NullString
+	videoAccountID              sql.NullString
+	defaultVideoModel           sql.NullString
+	audioAccountID              sql.NullString
+	defaultAudioModel           sql.NullString
 	title                       string
 	titleSourceMessageID        sql.NullString
 	isPinned                    int64
@@ -233,6 +255,7 @@ type conversationRow struct {
 
 const conversationColumns = `id, system_account_id, api_key_id, api_key_name_snapshot,
 	bind_account_id, bind_account_name_snapshot, archived, search_account_id, search_model_id, image_account_id,
+	video_account_id, default_video_model, audio_account_id, default_audio_model,
 	title, title_source_message_id,
 	is_pinned, last_model, default_image_model, next_sequence_no, user_turn_count, message_revision,
 	active_turn_id, active_started_at, context_revision, active_checkpoint_id, compacted_through_sequence,
@@ -245,7 +268,9 @@ func scanConversationRow(scan func(...any) error) (conversationRow, error) {
 	var row conversationRow
 	err := scan(&row.id, &row.systemAccountID, &row.apiKeyID, &row.apiKeyNameSnapshot,
 		&row.bindAccountID, &row.bindAccountNameSnapshot, &row.archived,
-		&row.searchAccountID, &row.searchModelID, &row.imageAccountID, &row.title,
+		&row.searchAccountID, &row.searchModelID, &row.imageAccountID,
+		&row.videoAccountID, &row.defaultVideoModel, &row.audioAccountID, &row.defaultAudioModel,
+		&row.title,
 		&row.titleSourceMessageID, &row.isPinned, &row.lastModel, &row.defaultImageModel,
 		&row.nextSequenceNo, &row.userTurnCount, &row.messageRevision, &row.activeTurnID,
 		&row.activeStartedAt, &row.contextRevision, &row.activeCheckpointID,
@@ -296,6 +321,10 @@ func mapConversation(row conversationRow) (*Conversation, error) {
 		SearchAccountID:         nullText(row.searchAccountID),
 		SearchModelID:           nullText(row.searchModelID),
 		ImageAccountID:          nullText(row.imageAccountID),
+		VideoAccountID:          nullText(row.videoAccountID),
+		DefaultVideoModel:       row.defaultVideoModel.String,
+		AudioAccountID:          nullText(row.audioAccountID),
+		DefaultAudioModel:       row.defaultAudioModel.String,
 		Title:                   row.title,
 		IsPinned:                row.isPinned == 1,
 		LastModel:               nullText(row.lastModel),
@@ -326,7 +355,12 @@ type CreateConversationInput struct {
 	SearchModelID           string
 	ImageAccountID          string
 	DefaultImageModel       string
-	Now                     string
+	// M7 问答音视频工具继承列（问答音视频工具设计 §3）：空 = 未绑定/未设默认。
+	VideoAccountID    string
+	DefaultVideoModel string
+	AudioAccountID    string
+	DefaultAudioModel string
+	Now               string
 	MaxConversationsPerUser int
 }
 
@@ -370,12 +404,15 @@ func (s *Store) CreateConversation(input CreateConversationInput) (*Conversation
 		id, system_account_id, api_key_id, api_key_name_snapshot,
 		bind_account_id, bind_account_name_snapshot,
 		search_account_id, search_model_id, image_account_id,
+		video_account_id, default_video_model, audio_account_id, default_audio_model,
 		title, last_model, default_image_model,
 		next_sequence_no, user_turn_count, last_message_at, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '新对话', NULL, ?, 1, 0, ?, ?, ?)`),
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '新对话', NULL, ?, 1, 0, ?, ?, ?)`),
 		id, input.SystemAccountID, input.APIKeyID, input.APIKeyNameSnapshot,
 		sqlText(optString(input.BindAccountID)), input.BindAccountNameSnapshot,
 		optSQLText(input.SearchAccountID), optSQLText(input.SearchModelID), optSQLText(input.ImageAccountID),
+		optSQLText(input.VideoAccountID), optSQLText(input.DefaultVideoModel),
+		optSQLText(input.AudioAccountID), optSQLText(input.DefaultAudioModel),
 		defaultImageModel,
 		now, now, now)
 	if err != nil {
@@ -550,6 +587,16 @@ func (s *Store) UpdateConversation(input UpdateConversationInput) (*Conversation
 		assignments = append(assignments, "image_account_id = ?")
 		params = append(params, optSQLText(*input.ImageAccountID))
 	}
+	// M7 问答音视频工具绑定列（问答音视频工具设计 §3）：videoBinding/audioBinding
+	// 各为「账户+默认模型」二元组一体写入（nil 列集 = 本次不改，非 nil 空串 = 解绑）。
+	if input.VideoAccountID != nil {
+		assignments = append(assignments, "video_account_id = ?", "default_video_model = ?")
+		params = append(params, optSQLText(*input.VideoAccountID), optSQLText(input.DefaultVideoModel))
+	}
+	if input.AudioAccountID != nil {
+		assignments = append(assignments, "audio_account_id = ?", "default_audio_model = ?")
+		params = append(params, optSQLText(*input.AudioAccountID), optSQLText(input.DefaultAudioModel))
+	}
 	if input.ClearLastModel {
 		assignments = append(assignments, "last_model = NULL")
 	}
@@ -584,12 +631,16 @@ type UpdateConversationInput struct {
 	BindAccountID           *string
 	BindAccountNameSnapshot string
 	// SearchAccountID/SearchModelID 成对携带（nil = 本次不改；非 nil 时空串 =
-	// 解绑，一体写两列）。
+	// 解绑，一体写两列）。Video/Audio 同为二元组一体写入。
 	SearchAccountID *string
 	SearchModelID   string
 	ImageAccountID  *string
-	ClearLastModel  bool
-	Now             string
+	VideoAccountID  *string
+	DefaultVideoModel string
+	AudioAccountID    *string
+	DefaultAudioModel string
+	ClearLastModel    bool
+	Now               string
 }
 
 func joinAssignments(assignments []string) string {
@@ -944,6 +995,88 @@ func contentBlockFromMap(item map[string]any) (ContentBlock, bool) {
 		}
 		if revisedPrompt, ok := item["revisedPrompt"].(string); ok {
 			block.RevisedPrompt = &revisedPrompt
+		}
+		return block, true
+	case "output_audio":
+		// M7 output_audio（问答音视频工具设计 §3）：与 output_image 同族的
+		// 资产回看块，无尺寸字段。
+		blockID, ok := item["blockId"].(string)
+		if !ok || blockID == "" {
+			return ContentBlock{}, false
+		}
+		order, ok := numericIndex(item["order"])
+		if !ok || order < 0 {
+			return ContentBlock{}, false
+		}
+		assetID, ok := item["assetId"].(string)
+		if !ok || assetID == "" {
+			return ContentBlock{}, false
+		}
+		status, ok := item["status"].(string)
+		if !ok {
+			return ContentBlock{}, false
+		}
+		switch status {
+		case "started", "completed", "failed", "canceled":
+		default:
+			return ContentBlock{}, false
+		}
+		block.BlockID = blockID
+		block.Order = &order
+		block.AssetID = &assetID
+		block.Status = &status
+		if mimeType, ok := item["mimeType"].(string); ok {
+			block.MimeType = &mimeType
+		}
+		return block, true
+	case "output_media_task":
+		// M7 output_media_task（问答音视频工具设计 §3）：异步视频任务块，状态
+		// 词表为 media_jobs 任务状态（queued|in_progress|completed|failed|
+		// cancelled|expired——终态幂等结算后随资产/错误字段定格）。
+		blockID, ok := item["blockId"].(string)
+		if !ok || blockID == "" {
+			return ContentBlock{}, false
+		}
+		order, ok := numericIndex(item["order"])
+		if !ok || order < 0 {
+			return ContentBlock{}, false
+		}
+		jobID, ok := item["jobId"].(string)
+		if !ok || jobID == "" {
+			return ContentBlock{}, false
+		}
+		kind, ok := item["kind"].(string)
+		if !ok || kind != "video" {
+			return ContentBlock{}, false
+		}
+		status, ok := item["status"].(string)
+		if !ok {
+			return ContentBlock{}, false
+		}
+		switch status {
+		case "queued", "in_progress", "completed", "failed", "cancelled", "expired":
+		default:
+			return ContentBlock{}, false
+		}
+		block.BlockID = blockID
+		block.Order = &order
+		block.JobID = &jobID
+		block.MediaKind = &kind
+		block.Status = &status
+		if progress, ok := numericIndex(item["progress"]); ok && progress >= 0 && progress <= 100 {
+			block.Progress = &progress
+		}
+		if model, ok := item["model"].(string); ok {
+			block.Model = &model
+		}
+		if promptSummary, ok := item["promptSummary"].(string); ok {
+			block.PromptSummary = &promptSummary
+		}
+		if assetID, ok := item["assetId"].(string); ok && assetID != "" {
+			block.AssetID = &assetID
+		}
+		if mediaError, ok := item["error"].(string); ok && mediaError != "" {
+			block.MediaError = &mediaError
 		}
 		return block, true
 	case "tool_call":

@@ -89,6 +89,7 @@
 - [统一模型能力与计费抽象设计](统一模型能力与计费抽象设计.md)
 - [音频视频模型接入与统一媒体网关设计](音频视频模型接入与统一媒体网关设计.md)：媒体域行为契约——`audio`/`video` 分类、TTS/STT 同步链、`/v1/videos` 与 `/v1/audio/jobs` 异步任务面、媒体 IR + 每厂商 adapter、`provider_options` 扩展通道、受理切换边界、零资源存储；分期实施见 PLAN-20261003T164247971Z。
 - [媒体上游协议契约与Mock上游规格](媒体上游协议契约与Mock上游规格.md)：各音视频厂商报文级协议（认证/端点/请求响应/任务状态机/usage/错误）与 Mock 上游扩展规格（`mockupstream` 端点白名单、异步任务场景、二进制载荷、acceptance 与 mockdata 衔接）；按置信度分级，C 级条目接入前必须以官方文档回填。
+- [问答音视频工具设计](问答音视频工具设计.md)：M7——问答新增 generate_video（异步任务块+前端轮询驱动幂等结算落 chat_assets）/generate_audio（同步落资产）两工具，产物 chat 域落库与 /v1 域零存储的两域边界裁决，任务卡→播放器渲染，Mock 可播放载荷（moov MP4）。
 - [流式语音跨协议转换设计](流式语音跨协议转换设计.md)：M6 立项——/v1/realtime 对外面扩展转换型上游（Gemini Live、CosyVoice WS），RealtimeUpstreamConn 抽象 + 事件映射矩阵（未列事件忽略+观测），透传实现零回归护航。
 - [实时语音Realtime网关设计](实时语音Realtime网关设计.md)：M5 期契约——OpenAI Realtime 形态 WebSocket 双向流代理（事件透传）、ephemeral token 面、会话 usage 抽取计费、`realtime` lane、受理边界 WS 语义（101 升级=受理）；Gemini Live 转换独立 M6。
 - [高并发分组调度设计](高并发分组调度设计.md)

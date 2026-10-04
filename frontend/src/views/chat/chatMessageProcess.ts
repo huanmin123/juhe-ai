@@ -212,6 +212,14 @@ function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {
       summaries: []
     }
   }
+  // M7 媒体工具（问答音视频工具设计 §5）：与 generate_image 同口径——仅状态条
+  // 目（产物走 output_audio / output_media_task 块），摘要不落 callId。
+  if (tool.type === 'generate_video' || tool.type === 'generate_audio') {
+    return {
+      key: stableJson([tool.type, { callId: tool.callId || `event-${tool.fallbackIndex}` }]),
+      summaries: []
+    }
+  }
   if (tool.type === 'web_search_call' || tool.type === 'file_search_call') {
     const action = canonicalizeSearchAction(item)
     if (action) return { key: stableJson([tool.type, action]), summaries: describeSearchAction(tool.type, action) }

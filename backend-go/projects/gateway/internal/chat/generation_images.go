@@ -496,7 +496,8 @@ type ObjectStore interface {
 	Delete(storageKeys []string) error
 }
 
-// chatAssetObjectExtension mirrors extensionForChatAssetMimeType.
+// chatAssetObjectExtension mirrors extensionForChatAssetMimeType. M7 媒体扩展名
+//（问答音视频工具设计 §3：.mp3/.wav/.mp4 等，词表与 MIME 嗅探器一致）。
 func chatAssetObjectExtension(mimeType string) string {
 	switch mimeType {
 	case "image/png":
@@ -505,6 +506,18 @@ func chatAssetObjectExtension(mimeType string) string {
 		return ".jpg"
 	case "image/webp":
 		return ".webp"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/wav":
+		return ".wav"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/mp4":
+		return ".m4a"
+	case "video/webm":
+		return ".webm"
+	case "video/mp4":
+		return ".mp4"
 	}
 	return ".bin"
 }

@@ -8,8 +8,10 @@ package main
 // (Node chat.routes.ts router mount).
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/chat"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaymedia"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pgpool"
 )
 
@@ -83,6 +86,11 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 		ImageDownloadProxy:      newChatImageDownloadProxy(composed.db, composed.pgDialect, cfg.Secret, func(message string) { slog.Warn(message) }),
 		ImageProcessor:          newChatImageProcessor(),
 		ImageObservation:        newChatImageObservations(chatDB, composed.pgDialect, objectStore, executor),
+		// M7 问答音视频工具的 media_jobs 只读端口（问答音视频工具设计 §4：
+		// 任务面归属校验与终态快照；gatewaymedia 仓储适配——internal/chat 不
+		// 直接依赖 gatewaymedia，沿组合根注入先例）。媒体任务面未装配（组合
+		// 测试）保持 nil，media-tasks 端点显式降级。
+		MediaJobs:               newChatMediaJobsLookup(chain),
 		Compactions:             compactions,
 		TokenCount:              tokenCount,
 		MaxTurnsPerConversation: cfg.ChatMaxTurnsPerConversation,
@@ -113,6 +121,42 @@ func composeChatFamily(composed *composition, cfg runtimeConfig, chatDB *sql.DB,
 	composed.shutdowns = append(composed.shutdowns, func() { hub.Shutdown(chatGenerationHubDrainTimeout) })
 	deps.Register(composed.kernel, systemAPIPrefix+"/my-chat")
 	return deps, nil
+}
+
+// chatMediaJobsLookupAdapter 把 gatewaymedia.MediaJobsRepo 适配为 chat 侧的
+// media_jobs 只读端口（FindChatMediaJob；GetByIDAndAPIKey 的归属校验语义
+// 原样透传——未命中/非本 Key 任务统一 not found，归属信息不泄露）。
+type chatMediaJobsLookupAdapter struct {
+	repo *gatewaymedia.MediaJobsRepo
+}
+
+// newChatMediaJobsLookup 从链上的媒体任务面运行时解析端口；任务面未装配
+//（组合测试）返回 nil。
+func newChatMediaJobsLookup(chain *gatewayChain) chat.ChatMediaJobsLookup {
+	if chain == nil || chain.mediaJobs == nil || chain.mediaJobs.repo == nil {
+		return nil
+	}
+	return &chatMediaJobsLookupAdapter{repo: chain.mediaJobs.repo}
+}
+
+// FindChatMediaJob implements chat.ChatMediaJobsLookup.
+func (a *chatMediaJobsLookupAdapter) FindChatMediaJob(jobID, apiKeyID string) (chat.ChatMediaJobSnapshot, bool, error) {
+	record, err := a.repo.GetByIDAndAPIKey(context.Background(), jobID, apiKeyID)
+	if err != nil {
+		if errors.Is(err, gatewaymedia.ErrMediaJobNotFound) {
+			return chat.ChatMediaJobSnapshot{}, false, nil
+		}
+		return chat.ChatMediaJobSnapshot{}, false, err
+	}
+	if record == nil {
+		return chat.ChatMediaJobSnapshot{}, false, nil
+	}
+	return chat.ChatMediaJobSnapshot{
+		ID:            record.ID,
+		Kind:          string(record.Kind),
+		Status:        string(record.Status),
+		UpstreamJobID: record.UpstreamJobID,
+	}, true, nil
 }
 
 // chatAttachStreamHandler builds the Node responseSubscriber equivalent over

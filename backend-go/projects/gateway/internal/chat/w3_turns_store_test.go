@@ -396,7 +396,10 @@ func TestGetConversationPayloadW3(t *testing.T) {
 	}
 	capabilities := data["toolCapabilities"].(map[string]any)
 	tools := capabilities["tools"].([]any)
-	if len(tools) != 2 {
+	// 环境未接线 AccountOptionsLookup → 候选解析失败渲染兜底形状：M7 起为
+	// web_search/generate_image/generate_video/generate_audio 四节（问答音视频
+	// 工具设计 §3）。
+	if len(tools) != 4 {
 		t.Fatalf("工具能力数量 = %d", len(tools))
 	}
 	if missing := env.do("GET", "/__aisys__/api/my-chat/conversations/none", routeTestOwner, ""); missing.status != http.StatusNotFound {

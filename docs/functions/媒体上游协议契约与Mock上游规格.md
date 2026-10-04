@@ -248,10 +248,22 @@ Mock：`media_gemini_video_create_ok` / `media_gemini_video_poll_running` / `med
 
 上游端点 `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`（API key 头；google_oauth 同面）。客户端消息：`setup{model,generationConfig}`（首帧，会话配置 voice/modalities/systemInstruction/tools）、`realtimeInput{audio}`（音频分块 base64）、`clientContent{turns,turnComplete}`（文本/轮次）、`toolResponse`。服务端事件：`setupComplete`、`serverContent`（modelTurn.inlineData 音频、outputTranscription、interrupted、turnComplete）、`toolCall`。**Live 无 usage 事件**（turnComplete 不携带计量）→ 网关终态 usage_missing（不估算）。事件映射矩阵与不映射面见《流式语音跨协议转换设计》§3（M6 实施契约唯一事实源）。Mock：`media_gemini_live_setup_audio_turn`（setup 断言/audio 回吐/turnComplete）等随 M6a 交付。
 
-## 6. xai（置信度 B-：模式与字段多源确认，精确端点待官方页回填）
+## 6. xai（置信度 A：官方文档原文抓取 2026-10-04，经本地代理 web reader）
 
-能力与模式事实（2026-10-04 检索升级）：Grok Voice API 提供 TTS/STT/STS；视频为 Grok Imagine Video（`grok-imagine-video` / `grok-imagine-video-1.5`，2026-06 发布），**submit-then-poll 异步任务模式**：POST 创建（请求字段 `model`、`prompt`、源图（图生视频）、`duration`、`aspect_ratio`，最长约 60 秒）→ 返回任务 `id` → GET 轮询 `status`（pending/in-progress → 终态 `succeeded`/`failed`）→ 终态经 `file_id`/视频 URL 下载。
-**待回填**：精确端点路径与响应字段全名——官方页 URL 已定位：`https://docs.x.ai/developers/model-capabilities/video/generation`（含 reference-to-video/keyframes/duration=12 示例，2026-10-04 确认存在），但该域名自本机网络直连不可达（连接超时），字段级内容仍未取得；接入前以官方页回填并升 B/A 级。
+### 6.1 视频（Grok Imagine Video）——**M3 回填池已实施 adapter**（`backend-go/projects/gateway/internal/gatewaymedia/xai_video.go`，注册键 `xai`，2026-10-04）
+
+**M3 回填池实施面**（参数映射按 §2.2/§2.4/§2.7 裁决）：`seconds`→`duration`（1–15 整数秒，小数取整直传、区间由上游裁决）；`size` WxH → `aspect_ratio`（gcd 约分精确命中七值词表，词表外本地 400）+ `resolution`（短边最近档 ≥900→1080p / ≥600→720p / 其余→480p）；`input_reference`→`image`（url/base64 字符串直传）；`audio`→`generate_audio` 布尔直传（nil 不传，上游默认 true）；`negative_prompt`/`seed`/`n` 请求面无对应字段 → 忽略 + 回显 `params_ignored`。URL 走 openai 族归一（`gatewayopenai.BuildUpstreamURL`，api.x.ai base 自带 /v1，同 minimax 先例）；无取消端点 → `SupportsCancel=false` 本地收敛 `cancelled`。
+
+- 创建：`POST https://api.x.ai/v1/videos/generations`，Bearer（openai URL 归一同族）。请求：`model`（`grok-imagine-video-1.5` 主推；classic `grok-imagine-video` 仍收 `last_frame` 拒绝限制）、`prompt`（文生视频必填；带帧/引用输入时可选）、`duration`（1–15 秒）、`aspect_ratio`（`1:1/16:9/9:16/4:3/3:4/3:2/2:3`，默认 16:9）、`resolution`（`1080p/720p/480p`，默认 480p；1080p 仅 1.5 的文/图生视频）、`image`（图生视频首帧）、`reference_images`/`reference_audios`（reference-to-video，`reference_audios` 预置 `voice_id` 最多 3）、`last_frame`（首尾帧钉定，1.5）、`generate_audio`（默认 true 音轨）。响应：`{"request_id":"<uuid>"}`——**受理凭据 = `request_id`**。
+- 轮询：`GET /v1/videos/{request_id}` → `status ∈ pending | done | expired | failed`；`done` 返回 `video{url（vidgen.x.ai 临时 URL）, duration（秒——**时长计量基源**）, respect_moderation}`；`failed` 返回 `error{code,message}`（code 词表：`invalid_argument/permission_denied/failed_precondition/service_unavailable/internal_error`；鉴权/限流错误在创建时同步返回，不进任务终态）。状态归一：pending→`in_progress`、done→`completed`、failed→`failed`、**expired→`expired`（上游原生终态，直接收敛）**。
+- 产物：临时 URL 直连下载（ContentFromArtifact 无凭据）。
+- 计费：done 的 `video.duration` → `OutputVideoSeconds`（终态秒计量照抽）；官方 USD 秒价未在能力页（定价子页未抓取）→ 不落价 cost=0，价格可查证后补（qwen 先例）。
+- 范围外（记录不实施）：`/v1/videos/edits`（编辑）、`/v1/videos/extensions`（扩展）专用端点；`reference_audios` 自带音频引用（L3 透传 `provider_options.xai` 可达）。
+- Mock：`media_xai_video_create_request_id` / `_poll_pending` / `_poll_done_url_duration` / `_poll_failed_error` / `_poll_expired`。
+
+### 6.2 语音（Grok Voice API）
+
+TTS/STT/STS 能力已确认（2026-10 检索），报文仍待官方页抓取（`docs.x.ai` 语音能力页）——待回填，不编造。
 
 ## 7. glm / 智谱（视频 B 级：报文多源确认；语音 C 级：模型确认字段待回填）
 
@@ -363,7 +375,7 @@ Mock（视频四场景 **M3 第五批已交付**，`mockupstream/video_qwen.go`�
 ## 11. 与设计的衔接及前置裁决项清单
 
 1. ~~§5.1 Gemini TTS 对外 `response_format` 约束（PCM 透传 vs 400）——M1 实施首日裁决并回填本节~~ **已裁决（2026-10-04）：pcm 透传、其余 400、零转码，见 §5.1**。
-2. 剩余"待回填"项——§6 xai（docs.x.ai 直连不可达）、§7.2 GLM-ASR 模型名、§9.2 火山长转写、§10.2 CosyVoice（归 M6 流式池）：对应期接入前完成回填，回填前不得实现该 adapter（§7.2 glm 语音、§8.2、§9.2 TTS、§10.2 长转写均已回填并实施）。
+2. 剩余"待回填"项——§6.2 xai 语音（Grok Voice API 报文）、§7.2 GLM-ASR 模型名、§9.2 火山长转写、§10.2 CosyVoice（归 M6 流式池）：对应期接入前完成回填，回填前不得实现该 adapter（§6.1 xai 视频、§7.2 glm 语音、§8.2、§9.2 TTS、§10.2 长转写均已回填并实施）。
 3. Mock 上游基建扩展（§3.2/§3.3）为 M1 首个交付物（先有 Mock 再写链路）；mockdata 域扩展随管理面能力同批。
 4. 本文与《音频视频模型接入与统一媒体网关设计》冲突时，以设计文档的目标/边界为准、以本文的报文字段为准。
 

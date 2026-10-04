@@ -30,17 +30,18 @@ import (
 // interval_minutes CHECK migration DO block, the chat_user_tool_preferences
 // user-level tool binding table, the accounts health_check_endpoint_mode
 // audio/video CHECK migration DO block, the M2 media_jobs table with its
-// three indexes, and the usage_records output_video_seconds ALTER column;
-// the retired bind-mode ALTERs
+// three indexes, the usage_records output_video_seconds ALTER column, and the
+// M7 chat media-tool binding ALTER columns with the chat_assets media CHECK
+// migration DO block; the retired bind-mode ALTERs
 // were removed with the account-only binding migration). Regenerate them when
 // either source changes.
-const goldenPostgresSchemaStatementCount = 694
+const goldenPostgresSchemaStatementCount = 703
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
 var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	"juhe_business":      315,
-	"juhe_chat":          43,
+	"juhe_chat":          52,
 	"juhe_dataset":       7,
 	"juhe_usage":         52,
 	"juhe_stats":         261,
@@ -133,11 +134,11 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			droppedTriggers += strings.Count(statement.SQL, "DROP TRIGGER IF EXISTS ")
 		}
 	}
-	if alterColumns != 81 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 81", alterColumns)
+	if alterColumns != 89 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 89", alterColumns)
 	}
-	if doBlocks != 3 {
-		t.Fatalf("DO block count = %d, want 3", doBlocks)
+	if doBlocks != 4 {
+		t.Fatalf("DO block count = %d, want 4", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)

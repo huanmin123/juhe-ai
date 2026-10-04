@@ -117,8 +117,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
-	if first.ModelCatalogRows != 140 {
-		t.Fatalf("first seed model catalog rows = %d, want 140 (M5b gpt-realtime +1, M6 glm cogtts +1)", first.ModelCatalogRows)
+	if first.ModelCatalogRows != 141 {
+		t.Fatalf("first seed model catalog rows = %d, want 141 (M5b gpt-realtime +1, M6 glm cogtts +1, M3 回填池 xai grok-imagine-video-1.5 +1)", first.ModelCatalogRows)
 	}
 	snapshotAfterFirst := seedTestSnapshot(t, db)
 
@@ -156,7 +156,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	// qwen 增补 + M3f 长音频批（families 12→13 增 audio_transcription 族、
 	// 目录 136→138 增 wan2.2-t2v-plus 与 paraformer-v2；M5b 批 gpt-realtime
 	// 再 +1 → 139；M6 语音批 volcengine 档案 +tts 绑定 37→38、目录 +cogtts
-	// → 140）后 providers 11 / families 13 / profiles
+	// → 140；M3 回填池 xai 视频 grok-imagine-video-1.5 → 141）后
+	// providers 11 / families 13 / profiles
 	// 16 / profile 绑定 38（M3f qwen +audio_transcription、M4b hybrid
 	// +video_generation+tts、M6 volcengine +tts）/ groups 11；默认分组派生
 	// route_strategies 与 bindings 10（hybrid 不派生）、api_keys 11（10 默认
@@ -176,7 +177,7 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"external_integration_sources":        1,
 		"external_integration_source_tokens":  1,
 		"system_settings":                     71,
-		"provider_model_catalog":              140,
+		"provider_model_catalog":              141,
 	}
 	for table, want := range expectCounts {
 		if got := countSeedTestRows(t, db, "SELECT count(*) FROM "+table); got != want {

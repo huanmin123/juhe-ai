@@ -30,8 +30,8 @@ assert.match(
 )
 assert.match(
   chatTypesSource,
-  /export interface ChatToolPreferencesPatch \{\s*searchBinding\?: \{ accountId: string; modelId: string \} \| null\s*imageBinding\?: \{ accountId: string \} \| null\s*defaultImageModel\?: ChatImageModel\s*\}/,
-  'ChatToolPreferencesPatch 必须是 §8.6 的严格键集（三元组均可选可空）'
+  /export interface ChatToolPreferencesPatch \{\s*searchBinding\?: \{ accountId: string; modelId: string \} \| null\s*imageBinding\?: \{ accountId: string \} \| null\s*defaultImageModel\?: ChatImageModel\s*videoBinding\?: \{ accountId: string; modelId: string \} \| null\s*audioBinding\?: \{ accountId: string; modelId: string \} \| null\s*\}/,
+  'ChatToolPreferencesPatch 必须是严格键集：M7 后为 search/image/defaultImageModel + videoBinding/audioBinding（问答音视频工具设计 §3，均可选可空）'
 )
 
 // --- / 命令入口（§10.7，2026-10-03 收敛为单一命令） ---
@@ -68,8 +68,8 @@ assert.match(
 )
 assert.match(
   chatViewSource,
-  /searchBinding: payload\.searchBinding \?\? null,\s*imageBinding: payload\.imageBinding \?\? null,\s*defaultImageModel: payload\.defaultImageModel \?\? conversation\.defaultImageModel/,
-  '当前会话同步 PATCH 必须按 UI 最终值携带 searchBinding/imageBinding/defaultImageModel 三键'
+  /searchBinding: payload\.searchBinding \?\? null,\s*imageBinding: payload\.imageBinding \?\? null,\s*defaultImageModel: payload\.defaultImageModel \?\? conversation\.defaultImageModel,\s*videoBinding: payload\.videoBinding \?\? null,\s*audioBinding: payload\.audioBinding \?\? null/,
+  '当前会话同步 PATCH 必须按 UI 最终值携带 searchBinding/imageBinding/defaultImageModel/videoBinding/audioBinding 全键'
 )
 assert.match(chatViewSource, /message\.success\('全局绑定已更新，当前会话已同步'\)/, '会话同步成功必须提示全局绑定与当前会话已同步')
 assert.doesNotMatch(chatViewSource, /label="工具能力"|label="默认图像模型"/, '会话详情弹窗必须移除工具能力与默认图像模型行（入口统一为 /tool-defaults）')
@@ -123,6 +123,26 @@ assert.match(chatViewSource, /refreshToolBindingsSummary\(\)[\s\S]{0,120}const c
 assert.doesNotMatch(bindingDialogSource, /需要时由会话内引导设置/, '弹窗不得泄漏「会话内引导」内部术语')
 assert.match(bindingDialogSource, /ok-button-props="okButtonProps"/, '未发生变更时必须禁用保存按钮（dirty 判定）')
 assert.match(bindingDialogSource, /JSON\.stringify\(buildPayload\(\)\) !== initialPayloadJson\.value/, '保存禁用必须基于打开时 payload 快照与当前值的比较')
+
+// --- M7 问答音视频工具（问答音视频工具设计 §3/§5）---
+
+assert.equal(typeof chatApi.mediaTask, 'function', 'chatApi 必须提供 mediaTask 任务查询方法')
+assert.match(
+  chatApiSource,
+  /mediaTask: \(conversationId: string, jobId: string\) => unwrap<ChatMediaTaskSnapshot>\(http\.get\(`\/my-chat\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/media-tasks\/\$\{encodeURIComponent\(jobId\)\}`\)\)/,
+  'GET /my-chat/conversations/{cid}/media-tasks/{jobId} 必须按会话+jobId 查询任务当前态'
+)
+assert.match(
+  bindingDialogSource,
+  /generate_video: '视频生成', generate_audio: '语音合成'/,
+  '统一弹窗必须为 generate_video/generate_audio 提供区段标题（区段本体仍来自偏好响应 tools[]）'
+)
+assert.match(
+  bindingDialogSource,
+  /videoBinding: videoCandidate \? \{ accountId: videoCandidate\.accountId, modelId: videoCandidate\.modelId \} : null,\s*audioBinding: audioCandidate \? \{ accountId: audioCandidate\.accountId, modelId: audioCandidate\.modelId \} : null/,
+  '视频/语音区保存必须以「账户+模型」二元组整体写入或解绑（null）'
+)
+assert.match(chatViewSource, /startChatMediaTaskPolling\(\{/, 'ChatView 必须挂载媒体任务轮询（未终态 output_media_task 块驱动结算）')
 
 // --- localStorage 偏好机制删除（§11.6）：源码全局无残留 ---
 

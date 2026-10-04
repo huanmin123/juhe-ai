@@ -256,6 +256,18 @@ function isContentBlock(value: unknown): value is ChatMessageContentBlock {
     && isProcessStatus(value.status)
     && optionalString(value.mimeType) && optionalInteger(value.width) && optionalInteger(value.height) && optionalString(value.revisedPrompt)
     && Object.keys(value).every((key) => ['type', 'blockId', 'order', 'assetId', 'status', 'mimeType', 'width', 'height', 'revisedPrompt'].includes(key))
+  // M7 媒体块（问答音视频工具设计 §3）：SSE content_block 事件与快照里的
+  // output_audio/output_media_task 必须与既有块同口径验证放行，否则直播链路丢块。
+  if (value.type === 'output_audio') return nonEmptyString(value.blockId) && validOrder(value.order) && nonEmptyString(value.assetId)
+    && (value.status === undefined || isProcessStatus(value.status))
+    && optionalString(value.mimeType) && optionalInteger(value.durationHint)
+    && Object.keys(value).every((key) => ['type', 'blockId', 'order', 'assetId', 'status', 'mimeType', 'durationHint'].includes(key))
+  if (value.type === 'output_media_task') return nonEmptyString(value.blockId) && validOrder(value.order) && nonEmptyString(value.jobId)
+    && value.kind === 'video'
+    && (value.status === 'queued' || value.status === 'in_progress' || value.status === 'completed' || value.status === 'failed')
+    && optionalInteger(value.progress) && optionalString(value.model) && optionalString(value.promptSummary)
+    && optionalString(value.assetId) && optionalString(value.error)
+    && Object.keys(value).every((key) => ['type', 'blockId', 'order', 'jobId', 'kind', 'status', 'progress', 'model', 'promptSummary', 'assetId', 'error'].includes(key))
   return false
 }
 

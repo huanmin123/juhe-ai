@@ -1,5 +1,5 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus, ChatToolPreferencesPatch } from '@/types/domain/chat'
+import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatConversationToolCapabilities, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMediaTaskSnapshot, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus, ChatToolPreferencesPatch } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 /**
@@ -9,11 +9,12 @@ import { parseChatSseBlock } from '@/views/chat/chatStream'
 export interface ChatAccountOption { id: string; name: string; providerCode: string; status: string }
 
 /**
- * 模型工具的会话级绑定键（工具体系设计 §8.2）：searchBinding 为「账户+模型」
- * 二元组（传 null 解绑）；imageBinding 仅账户（生图模型沿用 defaultImageModel）。
+ * 模型工具的会话级绑定键（工具体系设计 §8.2 + 问答音视频工具设计 §3）：
+ * searchBinding/videoBinding/audioBinding 为「账户+模型」二元组（传 null 解绑）；
+ * imageBinding 仅账户（生图模型沿用 defaultImageModel）。
  */
 export type ChatToolBindingPatch =
-  | { searchBinding?: { accountId: string; modelId: string } | null; imageBinding?: { accountId: string } | null }
+  | { searchBinding?: { accountId: string; modelId: string } | null; imageBinding?: { accountId: string } | null; videoBinding?: { accountId: string; modelId: string } | null; audioBinding?: { accountId: string; modelId: string } | null }
 
 export const chatApi = {
   getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
@@ -34,6 +35,8 @@ export const chatApi = {
   listModels: (conversationId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelListOption[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models`, { signal: options?.signal })),
   getModelCapabilities: (conversationId: string, modelId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelCapabilities>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models/${encodeURIComponent(modelId)}`, { signal: options?.signal })),
   getContextStatus: (conversationId: string) => unwrap<ChatContextStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/context-status`)),
+  /** 媒体任务当前态（问答音视频工具设计 §3 任务接口）：后端 poll 上游并幂等结算，终态携带 assetId。 */
+  mediaTask: (conversationId: string, jobId: string) => unwrap<ChatMediaTaskSnapshot>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/media-tasks/${encodeURIComponent(jobId)}`)),
   compactContext: (conversationId: string, payload: { model: string }) => unwrap<{ state: 'accepted' | 'already_running'; serverTime: string }>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/context/compactions`, payload)),
   uploadAsset: (
     conversationId: string,

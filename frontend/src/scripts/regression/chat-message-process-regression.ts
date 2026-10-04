@@ -197,6 +197,26 @@ const generatingImage = projectChatMessageProcess({
 } as ChatMessage)
 assert.equal(generatingImage.toolGroups[0]?.progress?.stage, 'generating', '生图 started 阶段提示必须投影')
 
+// M7 媒体工具（问答音视频工具设计 §4.1/§5）：generate_video started 带 submitting
+// 阶段、generate_audio started 带 synthesizing 阶段；两者与 generate_image 同口径
+// ——仅状态条目，摘要不落 callId（产物走 output_media_task/output_audio 块）。
+const submittingVideo = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_video_submit', toolType: 'generate_video', status: 'started', item: { type: 'generate_video', executionOwner: 'application', progress: { stage: 'submitting' } } }
+  ]
+} as ChatMessage)
+assert.equal(submittingVideo.toolGroups[0]?.progress?.stage, 'submitting', '视频生成 started 阶段提示必须投影')
+assert.equal(submittingVideo.toolGroups[0]?.status, 'started')
+assert.deepEqual(submittingVideo.toolGroups[0]?.summaries, [], '视频生成工具条目不得在摘要中泄露 callId（任务卡走 output_media_task 块）')
+
+const synthesizingAudio = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'call_audio_synth', toolType: 'generate_audio', status: 'started', item: { type: 'generate_audio', executionOwner: 'application', progress: { stage: 'synthesizing' } } }
+  ]
+} as ChatMessage)
+assert.equal(synthesizingAudio.toolGroups[0]?.progress?.stage, 'synthesizing', '语音合成 started 阶段提示必须投影')
+assert.deepEqual(synthesizingAudio.toolGroups[0]?.summaries, [], '语音合成工具条目不得在摘要中泄露 callId（音频走 output_audio 块）')
+
 const settledWithStageTimings = projectChatMessageProcess({
   contentBlocks: [
     { type: 'tool_call', id: 'call_ws_timings', toolType: 'web_search', status: 'completed', item: { type: 'web_search', query: '北京天气', sourceCount: 1, progress: { stage: 'answering', stageTimings: { reasoning: 8400, searching: 41000, answering: 12000 } } } }

@@ -216,6 +216,13 @@ func chainIsMediaJobTaskPlaneRequest(req *gatewaypreauth.GatewayRequest) bool {
 //     不走 /v1 强制补缀的 openai 归一——同 glm/volcengine 先例）；创建
 //     请求头带 X-DashScope-Async: enable（adapter ExtraHeaders，DashScope
 //     异步任务约定）。
+//   - xai 账户 → "xai"（M3 回填池：Grok Imagine Video 形态，契约 §6.1）：
+//     api_key Bearer 认证（沿链上 openai 族认权分支——xai 出站认权与
+//     openai 图像/文本同构），出站路径为 /v1 前缀的 openai 族形态（创建
+//     /v1/videos/generations + 轮询 /v1/videos/{request_id}），URL 走
+//     gatewayopenai.BuildUpstreamURL 归一（base 强制 /v1 结尾、path 剥
+//     /v1 前缀去重——api.x.ai 官方根 seed base_url 已是 https://api.x.ai/v1，
+//     同 minimax 先例，无需专用归一函数）。
 //   - hybrid 账户 → "openai"（M4b 媒体设计 §9 hybrid 行）：hybrid 是真实聚合
 //     中转账户，媒体执行面 = 该中转的 OpenAI 形态媒体端点（/v1/videos、
 //     /v1/audio/speech）——URL 走 openai 归一（base 强制 /v1 结尾）直连中转
@@ -240,6 +247,8 @@ func chainVideoAdapterKeyOfProvider(providerCode string) string {
 		return "volcengine"
 	case "qwen":
 		return "qwen"
+	case "xai":
+		return "xai"
 	default:
 		return ""
 	}
@@ -1445,12 +1454,14 @@ func chainQwenVideoUpstreamURL(baseURL, path string) (string, error) {
 // glm cogvideo adapter），volcengine 媒体路径走 chainVolcengineVideoUpstreamURL
 // （/api/v3 服务根去重，M3 seedance adapter，契约 §9.1），qwen 媒体路径走
 // chainQwenVideoUpstreamURL（/api/v1 服务根去重，M3 万相 adapter 契约 §10.1
-// 与 M3f paraformer 长转写契约 §10.2），其余走 gatewayopenai.
-// BuildUpstreamURL（/v1 后缀形态）；认证头按协议构造：gemini 沿
+// 与 M3f paraformer 长转写契约 §10.2），其余（openai/xai/minimax 族——出站
+// 路径均为 /v1 前缀形态）走 gatewayopenai.
+// BuildUpstreamURL（/v1 后缀形态；xai 契约 §6.1 同 minimax 先例，无需专用
+// 归一函数）；认证头按协议构造：gemini 沿
 // applyGeminiUpstreamAuthHeaders（api_key → X-Goog-Api-Key、google_oauth →
 // Bearer + 可选 x-goog-user-project，与主链认权分支同一实现，不重复实现），
 // 其余维持最小 Bearer 集（任务面身份=网关，不透传客户端头——沿
-// buildGeminiCodeAssistRequestParts 先例；glm/volcengine/qwen 账户即 Bearer
+// buildGeminiCodeAssistRequestParts 先例；glm/volcengine/qwen/xai 账户即 Bearer
 // API Key，契约 §7.1/§9.1/§10.1/§10.2）；传输复用引擎 TransportDeps
 // （URL 安全策略 / 全局并发槽 / keep-alive 池）。qwen 的 X-DashScope-Async
 // 头只在万相视频创建面需要（DashScope 异步任务约定；paraformer 长转写天然

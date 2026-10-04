@@ -193,6 +193,18 @@ type chatToolExecutionContext struct {
 	// 会话绑定解析——未绑定返回 chatToolBindingRequiredError，已绑定经进程内
 	// /v1 链固定派发到绑定「账户+模型」（generation_websearch.go）。
 	WebSearch func(query string) (chatToolExecutionResult, error)
+	// M7 问答音视频工具（问答音视频工具设计 §4，2026-10-04）：VideoGeneration
+	// 创建异步视频任务（POST /v1/videos，立即返回 jobId）；AudioGeneration 同步
+	// 合成音频并落资产（POST /v1/audio/speech）；组装侧（stream_execute）按会话
+	// 绑定解析——未绑定返回 chatToolBindingRequiredError；Constrain*Model 沿
+	// BUG-0230 模式把主模型自选模型收敛到绑定账户可路由集合。
+	DefaultVideoModel   string
+	DefaultAudioModel   string
+	ConstrainVideoModel func(model string) string
+	ConstrainAudioModel func(model string) string
+	VideoGeneration     func(input ChatVideoCreationRequest) (ChatVideoCreationResult, error)
+	AudioGeneration     func(input ChatAudioGenerationRequest) (ChatMediaArtifactResult, error)
+	MediaArtifactSink   ChatMediaArtifactSink
 	// ToolProgress 是当前工具调用的过程增量端口（契约 §10.3 子代理过程区）：
 	// orchestrator 在每次 executeCall 前按 callID 绑定（经内容块投影通道以
 	// item.progress 渐进下发），执行器（web_search 流式解析器）节流上报；

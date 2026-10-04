@@ -11,22 +11,30 @@ import (
 	"errors"
 )
 
-// UserToolPreferences 是 chat_user_tool_preferences 的行投影：四列空串 = 未设
-// 默认（表内为 NULL）。
+// UserToolPreferences 是 chat_user_tool_preferences 的行投影：列空串 = 未设
+// 默认（表内为 NULL）。M7 问答音视频工具（问答音视频工具设计 §3，2026-10-04）
+// 增 video/audio 四列（默认模型列无注册表兜底，空串 = 未设默认）。
 type UserToolPreferences struct {
 	SystemAccountID   string
 	SearchAccountID   string
 	SearchModelID     string
 	ImageAccountID    string
 	DefaultImageModel string
+	VideoAccountID    string
+	DefaultVideoModel string
+	AudioAccountID    string
+	DefaultAudioModel string
 }
 
 // GetUserToolPreferences 读取用户工具偏好行；无行返回 (nil, nil)。
 func (s *Store) GetUserToolPreferences(ownerID string) (*UserToolPreferences, error) {
 	var searchAccountID, searchModelID, imageAccountID, defaultImageModel sql.NullString
-	err := s.db.QueryRow(s.bind(`SELECT search_account_id, search_model_id, image_account_id, default_image_model
+	var videoAccountID, defaultVideoModel, audioAccountID, defaultAudioModel sql.NullString
+	err := s.db.QueryRow(s.bind(`SELECT search_account_id, search_model_id, image_account_id, default_image_model,
+		video_account_id, default_video_model, audio_account_id, default_audio_model
 		FROM `+s.table("chat_user_tool_preferences")+` WHERE system_account_id = ?`), ownerID).
-		Scan(&searchAccountID, &searchModelID, &imageAccountID, &defaultImageModel)
+		Scan(&searchAccountID, &searchModelID, &imageAccountID, &defaultImageModel,
+			&videoAccountID, &defaultVideoModel, &audioAccountID, &defaultAudioModel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -39,6 +47,10 @@ func (s *Store) GetUserToolPreferences(ownerID string) (*UserToolPreferences, er
 		SearchModelID:     searchModelID.String,
 		ImageAccountID:    imageAccountID.String,
 		DefaultImageModel: defaultImageModel.String,
+		VideoAccountID:    videoAccountID.String,
+		DefaultVideoModel: defaultVideoModel.String,
+		AudioAccountID:    audioAccountID.String,
+		DefaultAudioModel: defaultAudioModel.String,
 	}, nil
 }
 
@@ -50,28 +62,42 @@ func (s *Store) UpsertUserToolPreferences(pref UserToolPreferences) error {
 	table := s.table("chat_user_tool_preferences")
 	if s.pg {
 		_, err := s.db.Exec(s.bind(`INSERT INTO `+table+`
-			(system_account_id, search_account_id, search_model_id, image_account_id, default_image_model, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT (system_account_id)
-			DO UPDATE SET search_account_id = EXCLUDED.search_account_id,
-			              search_model_id = EXCLUDED.search_model_id,
-			              image_account_id = EXCLUDED.image_account_id,
-			              default_image_model = EXCLUDED.default_image_model,
-			              updated_at = EXCLUDED.updated_at`),
+		(system_account_id, search_account_id, search_model_id, image_account_id, default_image_model,
+			video_account_id, default_video_model, audio_account_id, default_audio_model, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (system_account_id)
+		DO UPDATE SET search_account_id = EXCLUDED.search_account_id,
+		              search_model_id = EXCLUDED.search_model_id,
+		              image_account_id = EXCLUDED.image_account_id,
+		              default_image_model = EXCLUDED.default_image_model,
+		              video_account_id = EXCLUDED.video_account_id,
+		              default_video_model = EXCLUDED.default_video_model,
+		              audio_account_id = EXCLUDED.audio_account_id,
+		              default_audio_model = EXCLUDED.default_audio_model,
+		              updated_at = EXCLUDED.updated_at`),
 			pref.SystemAccountID, optSQLText(pref.SearchAccountID), optSQLText(pref.SearchModelID),
-			optSQLText(pref.ImageAccountID), optSQLText(pref.DefaultImageModel), now)
+			optSQLText(pref.ImageAccountID), optSQLText(pref.DefaultImageModel),
+			optSQLText(pref.VideoAccountID), optSQLText(pref.DefaultVideoModel),
+			optSQLText(pref.AudioAccountID), optSQLText(pref.DefaultAudioModel), now)
 		return err
 	}
 	_, err := s.db.Exec(s.bind(`INSERT INTO `+table+`
-		(system_account_id, search_account_id, search_model_id, image_account_id, default_image_model, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(system_account_id)
-		DO UPDATE SET search_account_id = excluded.search_account_id,
-		              search_model_id = excluded.search_model_id,
-		              image_account_id = excluded.image_account_id,
-		              default_image_model = excluded.default_image_model,
-		              updated_at = excluded.updated_at`),
+	(system_account_id, search_account_id, search_model_id, image_account_id, default_image_model,
+		video_account_id, default_video_model, audio_account_id, default_audio_model, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(system_account_id)
+	DO UPDATE SET search_account_id = excluded.search_account_id,
+	              search_model_id = excluded.search_model_id,
+	              image_account_id = excluded.image_account_id,
+	              default_image_model = excluded.default_image_model,
+	              video_account_id = excluded.video_account_id,
+	              default_video_model = excluded.default_video_model,
+	              audio_account_id = excluded.audio_account_id,
+	              default_audio_model = excluded.default_audio_model,
+	              updated_at = excluded.updated_at`),
 		pref.SystemAccountID, optSQLText(pref.SearchAccountID), optSQLText(pref.SearchModelID),
-		optSQLText(pref.ImageAccountID), optSQLText(pref.DefaultImageModel), now)
+		optSQLText(pref.ImageAccountID), optSQLText(pref.DefaultImageModel),
+		optSQLText(pref.VideoAccountID), optSQLText(pref.DefaultVideoModel),
+		optSQLText(pref.AudioAccountID), optSQLText(pref.DefaultAudioModel), now)
 	return err
 }

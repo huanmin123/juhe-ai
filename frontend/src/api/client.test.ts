@@ -19,6 +19,7 @@ describe('api 客户端 barrel', () => {
       'groups',
       'grokOAuth',
       'ipStats',
+      'mediaJobs',
       'modelChecks',
       'myAccounts',
       'myAnthropicOAuth',

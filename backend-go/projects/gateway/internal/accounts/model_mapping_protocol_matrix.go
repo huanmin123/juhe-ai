@@ -475,6 +475,15 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		if isVolcengineProviderCodeToken(profile.providerCode) {
 			profileProtocols = append(profileProtocols, "video", "audio_speech")
 		}
+		// xai openai 档案同族承接 video 协议模型（M3 回填批 grok imagine
+		// adapter，契约 §6.1：统一 /v1/videos 面经媒体 adapter 改写，出站
+		// /v1/videos/generations 与 chat 同根同 Bearer 凭据，URL 走 openai
+		// 归一——同 minimax 先例）——供 xai 账户声明 grok-imagine-video 系
+		// 纯视频模型进入 supportedModels；语音面（契约 §6.2）未回填，不承接
+		// audio_speech。
+		if isXaiProviderCodeToken(profile.providerCode) {
+			profileProtocols = append(profileProtocols, "video")
+		}
 		// qwen 媒体档案同族承接 video 协议模型（M3 万相 adapter，契约
 		// §10.1：统一 /v1/videos 面经媒体 adapter 改写，与账户 base_url/
 		// Bearer 凭据同源）与 audio_transcription 协议模型（M3f paraformer

@@ -25,6 +25,20 @@
         :conversation-id="message.conversationId"
         :block="entry.block"
       />
+      <ChatGeneratedAudio
+        v-else-if="entry.kind === 'block' && entry.block.type === 'output_audio'"
+        :conversation-id="message.conversationId"
+        :block="entry.block"
+      />
+      <ChatGeneratedVideo
+        v-else-if="entry.kind === 'block' && entry.block.type === 'output_media_task' && entry.block.assetId && entry.block.status === 'completed'"
+        :conversation-id="message.conversationId"
+        :block="entry.block"
+      />
+      <ChatMediaTask
+        v-else-if="entry.kind === 'block' && entry.block.type === 'output_media_task'"
+        :block="entry.block"
+      />
     </template>
   </div>
 </template>
@@ -32,8 +46,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ChatMessage, ChatMessageContentBlock, ChatToolStatus } from '@/types/domain/chat'
+import ChatGeneratedAudio from './ChatGeneratedAudio.vue'
 import ChatGeneratedImage from './ChatGeneratedImage.vue'
+import ChatGeneratedVideo from './ChatGeneratedVideo.vue'
 import ChatMarkdown from './ChatMarkdown.vue'
+import ChatMediaTask from './ChatMediaTask.vue'
 import ChatToolEvent from './ChatToolEvent.vue'
 
 const props = defineProps<{ message: ChatMessage }>()

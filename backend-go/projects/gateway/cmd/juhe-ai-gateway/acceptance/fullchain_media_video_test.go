@@ -1316,3 +1316,181 @@ func TestFullchainMediaVideoHybridMapped(t *testing.T) {
 		t.Fatalf("MV hybrid row costUsd=%v, want >0（sora-2 秒价计费）", row.CostUsd)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 用例 11：xAI Grok Imagine Video 全生命周期（media_xai_*，M3 回填池/契约 §6.1）
+// ---------------------------------------------------------------------------
+
+// fullchainXaiVideoCreateBody 是 xai 视频创建请求体：size 1280x720 换算
+// aspect_ratio 16:9 + resolution 720p、seconds 6 整数化直传 duration、
+// input_reference（base64 data URL）进 image 直传、audio=false 直传
+// generate_audio；negative_prompt/seed 对 xai 请求面不存在 → params_ignored
+// 回显；reference_audios 经 provider_options.xai 命中 → provider_options_
+// applied 回显（契约 §6.1 范围外能力经 L3 通道可达）。
+const fullchainXaiVideoCreateBody = `{"model":"grok-imagine-video-1.5","prompt":"一只猫在弹钢琴","seconds":6,"size":"1280x720","input_reference":"data:image/png;base64,aGVsbG8=","negative_prompt":"模糊","seed":42,"audio":false,"provider_options":{"xai":{"reference_audios":["voice-1"]}}}`
+
+// fullchainCreateXaiVideoAccount 经管理面创建指向 mock 上游的 xai api_key
+// 账户并绑定分组（xai 供应商 + 既有文本档案 profile_xai_openai_v1——与
+// volcengine/qwen 专属媒体档案不同，xai 是既有综合供应商，视频能力沿
+// openai 族写侧归一 opt-in，无需新档案；目录 seed 预置 grok-imagine-video-1.5
+// 行）；凭据显式声明 openai 族词表的 video_* 端点模式（opt-in，写侧门禁
+// 沿 xai 的 openai 族归一分支）。
+func (f *fullchainFixture) fullchainCreateXaiVideoAccount(name, upstreamKey, groupID string) string {
+	f.t.Helper()
+	_, created := f.admin.do(http.MethodPost, "/__aisys__/api/accounts", map[string]any{
+		"providerCode":              "xai",
+		"providerProtocolProfileId": "profile_xai_openai_v1",
+		"name":                      name,
+		"type":                      "api_key",
+		"credentials": map[string]any{
+			"api_key":  upstreamKey,
+			"base_url": f.mock.server.URL,
+			"supported_endpoint_modes": []string{
+				"video_create", "video_get", "video_content", "video_cancel",
+			},
+		},
+		"supportedModels": []string{"grok-imagine-video-1.5"},
+		"status":          "active",
+		"groupId":         groupID,
+	}, wantStatus(http.StatusCreated))
+	accountID := str(data(created)["id"])
+	if accountID == "" {
+		f.t.Fatalf("xai video account create payload wrong: %#v", created)
+	}
+	return accountID
+}
+
+// TestFullchainMediaVideoXaiGrokImagine 验证 M3 回填池 xai（Grok Imagine
+// Video）视频链主流程（契约 §6.1）：管理面配置（xai 分组 + Grok Imagine 模型
+// 账户，既有文本档案 opt-in 视频）→ 创建（报文改写 + 统一 job 对象、
+// provider=xai、创建响应无 status 字段空归一 in_progress、params 回显
+// negative_prompt/seed 进 ignored / audio 生效进 applied /
+// provider_options_applied 命中）→ 轮询 in_progress（pending 归一）→
+// completed（done 归一 + video.url 冻结 + duration 秒计量）→ content 经绝对
+// URL 无凭据直连下载 mp4 → 终态 usage 行落账（video.duration=6 秒计量照抽，
+// 秒数值断言在链级 TestChainMediaXaiVideoFullFlowLifecycle 的 spool 记录）+
+// 管理面 media-jobs 行终态（目录未落 USD 秒价 cost=0，不虚计）→ 账户亲和
+//（上游命中只打 xai 账户 key 的 /v1/videos/generations 创建与 /v1/videos/
+// {request_id} 轮询端点）。
+func TestFullchainMediaVideoXaiGrokImagine(t *testing.T) {
+	requireFullchainGate(t)
+	f := startFullchainFixture(t)
+
+	key := fullchainUpstreamKey(t, "mvxa")
+	groupID := f.createGroupWithProvider("MVxai组", "xai")
+	accountID := f.fullchainCreateXaiVideoAccount("全链路-MVxai账户", key, groupID)
+	strategyID := f.createStrategy("全链路-MVxai策略", "normal", []map[string]any{
+		{"groupId": groupID, "priority": 1, "weight": 100},
+	}, nil)
+	apiKey := f.createAPIKey("全链路-MVxai-Key", strategyID)
+	apiKeyID := f.apiKeyIDByName("全链路-MVxai-Key")
+
+	// 创建：200 + 统一 job 对象（对外 id video_ 前缀、status in_progress——
+	// 创建响应只有 request_id 无 status 字段，空归一 pending 同义、
+	// provider_job_id 为 uuid request_id、params_applied 含 seconds/size/
+	// input_reference/audio、params_ignored 含 negative_prompt/seed、
+	// provider_options_applied 含 xai 子对象键名）。
+	f.mock.script(key, platformmock.ScenarioMediaXaiVideoCreateRequestID)
+	created := f.videoT(t, apiKey, http.MethodPost, "/v1/videos", fullchainXaiVideoCreateBody)
+	if created.Status != http.StatusOK {
+		t.Fatalf("MV xai create status=%d body=%s", created.Status, created.Body)
+	}
+	job := decodeVideoJob(t, created)
+	jobID := str(job["id"])
+	if !strings.HasPrefix(jobID, "video_") {
+		t.Fatalf("MV xai job id 缺少 video_ 前缀: %#v", job)
+	}
+	if job["status"] != "in_progress" {
+		t.Fatalf("MV xai create status 字段 = %v, want in_progress（创建响应无 status，空归一）", job["status"])
+	}
+	if job["provider"] != "xai" {
+		t.Fatalf("MV xai provider = %v, want xai", job["provider"])
+	}
+	providerJobID := str(job["provider_job_id"])
+	if len(providerJobID) != 36 || !strings.Contains(providerJobID, "-") {
+		t.Fatalf("MV xai provider_job_id = %q, want uuid request_id 形态", providerJobID)
+	}
+	applied := fmt.Sprintf("%v", job["params_applied"])
+	for _, want := range []string{"model", "prompt", "seconds", "size", "input_reference", "audio"} {
+		if !strings.Contains(applied, want) {
+			t.Fatalf("MV xai params_applied 缺少 %s: %v", want, job["params_applied"])
+		}
+	}
+	ignoredList := fmt.Sprintf("%v", job["params_ignored"])
+	for _, want := range []string{"negative_prompt", "seed"} {
+		if !strings.Contains(ignoredList, want) {
+			t.Fatalf("MV xai params_ignored 缺少 %s（xai 请求面无对应字段）: %v", want, job["params_ignored"])
+		}
+	}
+	if !strings.Contains(fmt.Sprintf("%v", job["provider_options_applied"]), "reference_audios") {
+		t.Fatalf("MV xai provider_options_applied 缺少 reference_audios（xai 子对象命中键名回显）: %v", job["provider_options_applied"])
+	}
+
+	// 轮询两次：in_progress（pending 归一）→ completed（done + video.url
+	// 冻结 + duration 秒计量抽取）。
+	for index, want := range []string{"in_progress", "completed"} {
+		polled := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID, "")
+		if polled.Status != http.StatusOK {
+			t.Fatalf("MV xai poll #%d status=%d body=%s", index+1, polled.Status, polled.Body)
+		}
+		if object := decodeVideoJob(t, polled); object["status"] != want {
+			t.Fatalf("MV xai poll #%d status 字段 = %v, want %s", index+1, object["status"], want)
+		}
+	}
+
+	// content 下载：completed 的产物 url 是引擎渲染的绝对 URL，网关无凭据
+	// 直连（video/mp4 + ftyp magic bytes）。
+	content := f.videoT(t, apiKey, http.MethodGet, "/v1/videos/"+jobID+"/content", "")
+	if content.Status != http.StatusOK {
+		t.Fatalf("MV xai content status=%d body=%s", content.Status, content.Body)
+	}
+	if !strings.Contains(content.ContentType, "video/mp4") {
+		t.Fatalf("MV xai content-type=%q, want video/mp4", content.ContentType)
+	}
+	payload := []byte(content.Body)
+	if len(payload) < 12 || string(payload[4:8]) != "ftyp" {
+		t.Fatalf("MV xai content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
+	}
+
+	// 管理面 media-jobs：行终态 completed 归因 xai 账户；done 的
+	// video.duration=6 秒计量照抽（OutputVideoSeconds>0，链级测试断言 spool
+	// 记录秒数值）但目录未落 USD 秒价 → cost_usd=0（契约 §2.8 计量照落成本
+	// 不虚计）。
+	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
+		return row.Status == "completed"
+	}, "completed")
+	if row.AccountID != accountID {
+		t.Fatalf("MV xai row accountId=%s, want %s", row.AccountID, accountID)
+	}
+	if row.CostUsd != 0 {
+		t.Fatalf("MV xai row costUsd=%v, want 0（目录无 USD 秒价不虚计）", row.CostUsd)
+	}
+	// 终态 usage 行落账（completed 成功行，endpoint=/v1/videos，模型直达）：
+	// usage_missing 语义在链级测试钉住（计量在场时无该标记）。
+	f.waitUsageRecords(t, apiKeyID, func(rows []fullchainUsageRecord) bool {
+		for _, record := range rows {
+			if record.Endpoint == "/v1/videos" && record.Success && record.Model == "grok-imagine-video-1.5" {
+				return true
+			}
+		}
+		return false
+	}, "xai completed 秒计量终态 usage 行")
+
+	// 账户亲和 + 出站形态：xai key 命中创建（POST /v1/videos/generations）
+	// 与两轮轮询（GET /v1/videos/{request_id}），无其它带凭据流量打到该
+	// key（content 直连无 Authorization，不落入该 key 的命中记录）。
+	creates, polls := 0, 0
+	for _, call := range f.mock.callsByKey(key) {
+		switch {
+		case call.Method == http.MethodPost && call.Path == "/v1/videos/generations":
+			creates++
+		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, "/v1/videos/") && call.Path != "/v1/videos/generations":
+			polls++
+		default:
+			t.Fatalf("MV xai 未预期的上游请求: %#v", call)
+		}
+	}
+	if creates != 1 || polls != 2 {
+		t.Fatalf("MV xai 上游命中 creates=%d polls=%d, want 1/2", creates, polls)
+	}
+}

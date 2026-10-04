@@ -1,7 +1,7 @@
 export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
 export type ChatImageModel = 'gpt-image-2' | 'grok-imagine-image' | 'grok-imagine-image-quality'
-export type ChatConversationToolId = 'web_search' | 'generate_image' | 'diagnostic_echo'
+export type ChatConversationToolId = 'web_search' | 'generate_image' | 'generate_video' | 'generate_audio' | 'diagnostic_echo'
 export type ChatConversationToolKind = 'code' | 'model'
 
 /**
@@ -33,14 +33,17 @@ export interface ChatConversationToolCapabilities {
 }
 
 /**
- * 用户级默认工具绑定的严格键集（工具体系设计 §8.6）：至少提供一个键；
- * searchBinding 为「账户+模型」二元组、imageBinding 仅账户（传 null 清除默认）；
- * 生图候选模型与生效默认图像模型不同时随请求附带 defaultImageModel。
+ * 用户级默认工具绑定的严格键集（工具体系设计 §8.6 + 问答音视频工具设计 §3）：
+ * 至少提供一个键；searchBinding/videoBinding/audioBinding 为「账户+模型」二元组、
+ * imageBinding 仅账户（传 null 清除默认）；生图候选模型与生效默认图像模型不同时
+ * 随请求附带 defaultImageModel。
  */
 export interface ChatToolPreferencesPatch {
   searchBinding?: { accountId: string; modelId: string } | null
   imageBinding?: { accountId: string } | null
   defaultImageModel?: ChatImageModel
+  videoBinding?: { accountId: string; modelId: string } | null
+  audioBinding?: { accountId: string; modelId: string } | null
 }
 
 export interface ChatConversation {
@@ -99,11 +102,42 @@ export type ChatMessageContentBlock =
   | { type: 'reasoning'; blockId?: string; order?: number; text: string; status?: ChatProcessStatus }
   | { type: 'tool_call'; blockId?: string; order?: number; id?: string; callId?: string; toolType: string; status: ChatToolStatus; item?: Record<string, unknown> }
   | { type: 'output_image'; blockId: string; order: number; assetId: string; status: ChatProcessStatus; mimeType?: string; width?: number; height?: number; revisedPrompt?: string }
+  | { type: 'output_audio'; blockId: string; order: number; assetId: string; status?: ChatProcessStatus; mimeType?: string; durationHint?: number }
+  | { type: 'output_media_task'; blockId: string; order: number; jobId: string; kind: 'video'; status: ChatMediaTaskStatus; progress?: number; model?: string; promptSummary?: string; assetId?: string; error?: string }
   | { type: 'input_text'; text: string; order: number }
   | { type: 'input_image'; assetId: string; order: number }
 
 export type ChatProcessStatus = 'started' | 'completed' | 'failed' | 'canceled'
 export type ChatToolStatus = ChatProcessStatus | 'updated'
+
+/**
+ * output_media_task 块的任务状态词表（问答音视频工具设计 §3）：media_jobs 的
+ * cancelled/expired 终态在任务结算时一律置 failed，块内只见四态。
+ */
+export type ChatMediaTaskStatus = 'queued' | 'in_progress' | 'completed' | 'failed'
+
+/**
+ * GET /my-chat/conversations/{cid}/media-tasks/{jobId} 的响应（问答音视频工具
+ * 设计 §3 任务接口）：后端实时 poll 上游并幂等结算；settlementError 携带结算
+ * 内部错误（下次轮询重试结算），不改变 status 语义。
+ */
+export interface ChatMediaTaskSnapshot {
+  jobId: string
+  kind: 'video'
+  status: ChatMediaTaskStatus
+  model?: string
+  blockId?: string
+  messageId?: string
+  promptSummary?: string
+  assetId?: string
+  progress?: number
+  error?: string
+  settlementError?: string
+}
+
+export function isTerminalChatMediaTaskStatus(status: ChatMediaTaskStatus): boolean {
+  return status === 'completed' || status === 'failed'
+}
 export interface ChatToolEvent { id: string; type: string; status: ChatToolStatus; item?: Record<string, unknown> }
 
 export interface ChatAsset {

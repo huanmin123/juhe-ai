@@ -79,7 +79,7 @@ const emit = defineEmits<{
   (event: 'saved', payload: ChatToolPreferencesPatch): void
 }>()
 
-const toolTitles: Record<string, string> = { web_search: '网页搜索', generate_image: '图片生成' }
+const toolTitles: Record<string, string> = { web_search: '网页搜索', generate_image: '图片生成', generate_video: '视频生成', generate_audio: '语音合成' }
 const loading = ref(false)
 const saving = ref(false)
 // 偏好行当前生效的默认图像模型（来自 generate_image binding.modelId）；未绑定
@@ -98,7 +98,7 @@ interface ChatToolBindingSection {
 }
 const sections = ref<ChatToolBindingSection[]>([])
 
-const introText = '为网页搜索与图片生成设置全局默认绑定「账户 + 模型」；新会话自动继承，保存后当前会话立即同步。'
+const introText = '为网页搜索、图片生成、视频生成与语音合成设置全局默认绑定「账户 + 模型」；新会话自动继承，保存后当前会话立即同步。'
 
 function candidateKey(candidate: ChatToolBindingCandidate): string {
   return `${candidate.accountId}@${candidate.modelId}`
@@ -200,15 +200,20 @@ function sectionCandidate(toolId: string): ChatToolBindingCandidate | undefined 
 }
 
 // UI 最终值的唯一构造点：保存与「未变更禁用保存」共用同一形态，保证 dirty
-// 判定与实际提交的 payload 恒一致。
+// 判定与实际提交的 payload 恒一致。M7 媒体工具（问答音视频工具设计 §3）的
+// videoBinding/audioBinding 与 searchBinding 同为「账户+模型」二元组。
 function buildPayload(): ChatToolPreferencesPatch {
   const searchCandidate = sectionCandidate('web_search')
   const imageCandidate = sectionCandidate('generate_image')
   const imageModel = imageCandidate ? imageCandidate.modelId as ChatImageModel : effectiveImageModel.value
+  const videoCandidate = sectionCandidate('generate_video')
+  const audioCandidate = sectionCandidate('generate_audio')
   return {
     searchBinding: searchCandidate ? { accountId: searchCandidate.accountId, modelId: searchCandidate.modelId } : null,
     imageBinding: imageCandidate ? { accountId: imageCandidate.accountId } : null,
-    ...(imageModel ? { defaultImageModel: imageModel } : {})
+    ...(imageModel ? { defaultImageModel: imageModel } : {}),
+    videoBinding: videoCandidate ? { accountId: videoCandidate.accountId, modelId: videoCandidate.modelId } : null,
+    audioBinding: audioCandidate ? { accountId: audioCandidate.accountId, modelId: audioCandidate.modelId } : null
   }
 }
 

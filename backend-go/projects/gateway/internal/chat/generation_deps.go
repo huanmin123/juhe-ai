@@ -372,6 +372,11 @@ func (rt *chatRoutes) createConversationHandler(w http.ResponseWriter, r *http.R
 		input.SearchModelID = pref.SearchModelID
 		input.ImageAccountID = pref.ImageAccountID
 		input.DefaultImageModel = pref.DefaultImageModel
+		// M7 媒体偏好继承（问答音视频工具设计 §3）：非空列随创建写入。
+		input.VideoAccountID = pref.VideoAccountID
+		input.DefaultVideoModel = pref.DefaultVideoModel
+		input.AudioAccountID = pref.AudioAccountID
+		input.DefaultAudioModel = pref.DefaultAudioModel
 	}
 	conversation, err := rt.deps.Store.CreateConversation(input)
 	if err != nil {

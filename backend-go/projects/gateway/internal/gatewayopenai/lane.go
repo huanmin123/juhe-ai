@@ -48,7 +48,11 @@ func IsImageGenerationModel(model string) bool {
 		strings.HasPrefix(normalized, "dall-e") ||
 		strings.HasPrefix(normalized, "imagen-") ||
 		strings.HasPrefix(normalized, "nano-banana") ||
-		strings.HasPrefix(normalized, "grok-imagine") ||
+		// grok-imagine 前缀排除 grok-imagine-video 段：xAI 官方命名中
+		// grok-imagine-video-*（契约 §6.1）是视频模型（/v1/videos 面），
+		// 只有 grok-imagine-image 与裸 grok-imagine 是图像模型——不排除
+		// 会被 accountModelsTargetImage 强改 LaneImage 并被图像门禁 403。
+		(strings.HasPrefix(normalized, "grok-imagine") && !strings.HasPrefix(normalized, "grok-imagine-video")) ||
 		geminiImageModelPattern.MatchString(normalized)
 }
 

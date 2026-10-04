@@ -154,6 +154,16 @@ describe('chatApi 请求形状', () => {
     expect(payloadOf(requests[2])).toEqual({ searchBinding: null })
   })
 
+  it('M7 媒体绑定 PATCH 与 mediaTask 任务查询（问答音视频工具设计 §3）', async () => {
+    await chatApi.updateConversation('conv-1', { videoBinding: { accountId: 'account-1', modelId: 'sora-2' }, audioBinding: null })
+    expect(payloadOf(requests[0])).toEqual({ videoBinding: { accountId: 'account-1', modelId: 'sora-2' }, audioBinding: null })
+    await chatApi.updateToolPreferences({ audioBinding: { accountId: 'account-2', modelId: 'gpt-audio' } })
+    expect(requestShapes()[1]).toEqual(['PATCH', '/my-chat/tool-preferences'])
+    expect(payloadOf(requests[1])).toEqual({ audioBinding: { accountId: 'account-2', modelId: 'gpt-audio' } })
+    await chatApi.mediaTask('conv-1', 'video/abc?d')
+    expect(requestShapes()[2]).toEqual(['GET', '/my-chat/conversations/conv-1/media-tasks/video%2Fabc%3Fd'])
+  })
+
   it('工具偏好 PATCH：严格键集打到 /my-chat/tool-preferences，null 清除默认', async () => {
     await chatApi.updateToolPreferences({ searchBinding: { accountId: 'account-1', modelId: 'gpt-6-sol' } })
     expect(requestShapes()[0]).toEqual(['PATCH', '/my-chat/tool-preferences'])

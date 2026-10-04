@@ -1549,17 +1549,17 @@ func TestW13BChatInternalToolRegistry(t *testing.T) {
 	if _, err := registry.definition("missing"); err == nil {
 		t.Fatalf("未知工具应报错")
 	}
-	if names := toolNamesOf(registry.resolveTools(true)); !equalStringsW3(names, []string{"diagnostic_echo", "web_search", "generate_image"}) {
-		t.Fatalf("dev 注册表应含诊断/搜索/生图三工具: %v", names)
+	if names := toolNamesOf(registry.resolveTools(true)); !equalStringsW3(names, []string{"diagnostic_echo", "web_search", "generate_image", "generate_video", "generate_audio"}) {
+		t.Fatalf("dev 注册表应含诊断/搜索/生图/媒体工具: %v", names)
 	}
 	if len(registry.resolveTools(false)) != 0 {
 		t.Fatalf("function calling 关闭应为空")
 	}
-	if names := toolNamesOf(newChatInternalToolRegistry("production", true, true).resolveTools(true)); !equalStringsW3(names, []string{"web_search", "generate_image"}) {
-		t.Fatalf("生产环境应有搜索+图片模型工具: %v", names)
+	if names := toolNamesOf(newChatInternalToolRegistry("production", true, true).resolveTools(true)); !equalStringsW3(names, []string{"web_search", "generate_image", "generate_video", "generate_audio"}) {
+		t.Fatalf("生产环境应有搜索/图片/媒体模型工具: %v", names)
 	}
-	if names := toolNamesOf(newChatInternalToolRegistry("development", false, false).resolveTools(true)); !equalStringsW3(names, []string{"web_search"}) {
-		t.Fatalf("开关全关时仍应注册搜索模型工具: %v", names)
+	if names := toolNamesOf(newChatInternalToolRegistry("development", false, false).resolveTools(true)); !equalStringsW3(names, []string{"web_search", "generate_video", "generate_audio"}) {
+		t.Fatalf("开关全关时仍应注册搜索与媒体常驻工具（媒体无全局开关）: %v", names)
 	}
 	if _, err := registry.normalizeArguments("any", "{}", 1); err == nil {
 		t.Fatalf("参数超限应报错")

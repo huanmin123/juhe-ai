@@ -4,6 +4,15 @@ package pricing
 // backend/src/modules/model-pricing/xai-model-pricing.data.ts (curated
 // 2026-08-26). Models with a 200k threshold charge the higher rate for all
 // request tokens once the prompt reaches the threshold.
+//
+// M3 回填池媒体增补（契约 §6.1，curated 2026-10-04）：grok-imagine-video-1.5
+// 视频行，计价落法（不编造）：
+//   - 官方 USD 秒价未核实（契约 §6.1 能力页经代理抓取核实报文，定价子页
+//     未抓取）→ 不落 VideoOutputCostPerSecond；官方秒价可查证后再补
+//    （qwen/minimax/volcengine 同先例）。
+//   - 终态计费走契约 §2.8 兜底：轮询 done 的 video.duration 是时长计量
+//     基源，adapter 照抽 OutputVideoSeconds；目录无价 → 0 计费 +
+//     usage_missing 标记，计量照落成本不虚计。
 type xaiTextModelMetadata struct {
 	catalogVisible            *bool
 	releaseDate               string
@@ -125,5 +134,16 @@ var xAIModelPricingData = []rawModel{
 		SupportedAPIProtocols: []string{"images"},
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"image"},
+	},
+	// 视频（M3 回填池，契约 §6.1）：Grok Imagine Video 1.5 文/图生视频
+	// （image 首帧承接公共 input_reference，url/base64 双形态直传），1–15 秒、
+	// 七档宽高比、480p/720p/1080p、音轨默认开启；统一 /v1/videos 面经 xai
+	// adapter 改写。不落秒价（官方 USD 秒价未核实，见文件头计价落法）。
+	{
+		Model:                 "grok-imagine-video-1.5",
+		Mode:                  "video",
+		SupportedAPIProtocols: []string{"video"},
+		InputModalities:       []string{"text", "image"},
+		OutputModalities:      []string{"video"},
 	},
 }

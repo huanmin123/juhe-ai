@@ -340,14 +340,24 @@ func (m *Server) advanceVideoTaskLocked(task *videoTask) {
 // answer the OpenAI 404 error JSON; poll_500 scripts answer 500 on every
 // poll (after-accept upstream fault, job keeps its pre-fault state — the
 // engine never fakes a terminal state); otherwise the script advances once.
+// The /v1/videos/{id} path form is shared with the xai Grok Imagine Video
+// face (contract §6.1 publishes the same poll path shape): an id missing
+// from the openai table falls through to the xai task table before the 404
+// (ids never collide — openai "video_"+hex vs xai uuid).
 func (m *Server) serveVideoPoll(w http.ResponseWriter, id string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	task, ok := m.videos[id]
 	if !ok {
+		if _, xai := m.xaiVideoTasks[id]; xai {
+			m.mu.Unlock()
+			m.serveXaiVideoPoll(w, id)
+			return
+		}
+		m.mu.Unlock()
 		writeJSONStatus(w, http.StatusNotFound, videoNotFoundBody(id))
 		return
 	}
+	defer m.mu.Unlock()
 	if task.scenario == ScenarioMediaVideoPoll500 {
 		writeJSONStatus(w, http.StatusInternalServerError, `{"error":{"message":"Internal server error","type":"server_error"}}`)
 		return
@@ -358,10 +368,19 @@ func (m *Server) serveVideoPoll(w http.ResponseWriter, id string) {
 
 // serveVideoContent implements GET /v1/videos/{id}/content: the video/mp4
 // binary channel is open only for completed, non-expired jobs; everything
-// else (unknown id, not completed yet, failed, expired artifact) answers 404.
+// else (unknown id, not completed yet, failed, expired artifact) answers
+// 404. The content path form is shared with the xai face (same fallback as
+// serveVideoPoll).
 func (m *Server) serveVideoContent(w http.ResponseWriter, id string) {
 	m.mu.Lock()
 	task, ok := m.videos[id]
+	if !ok {
+		if _, xai := m.xaiVideoTasks[id]; xai {
+			m.mu.Unlock()
+			m.serveXaiVideoContent(w, id)
+			return
+		}
+	}
 	downloadable := ok && task.status == videoStatusCompleted && task.scenario != ScenarioMediaVideoContentExpired
 	m.mu.Unlock()
 	if !downloadable {

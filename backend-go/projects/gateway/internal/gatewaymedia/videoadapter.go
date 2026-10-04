@@ -88,7 +88,8 @@ func (e *UpstreamStatusError) Error() string {
 
 // videoAdapters 是 provider → adapter 注册表（媒体设计 §5：媒体 adapter 以
 // provider 注册表挂载；M3 起 gemini（Veo）、glm（CogVideoX）、minimax
-// （Hailuo）、volcengine（Seedance）与 qwen（万相）已接入，后续只新增条目）。
+// （Hailuo）、volcengine（Seedance）、qwen（万相）与 xai（Grok Imagine
+// Video）已接入，后续只新增条目）。
 var videoAdapters = map[string]VideoProviderAdapter{
 	"openai":     openaiVideoAdapter{},
 	"gemini":     veoVideoAdapter{},
@@ -96,6 +97,7 @@ var videoAdapters = map[string]VideoProviderAdapter{
 	"minimax":    minimaxVideoAdapter{},
 	"volcengine": volcengineVideoAdapter{},
 	"qwen":       qwenVideoAdapter{},
+	"xai":        xaiVideoAdapter{},
 }
 
 // VideoAdapterForProvider 按 provider_code 解析视频 adapter；nil 表示该

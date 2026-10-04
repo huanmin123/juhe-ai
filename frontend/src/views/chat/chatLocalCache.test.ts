@@ -77,6 +77,33 @@ describe('chatLocalCache 克隆层字段保留', () => {
     expect(cloned?.contentBlocks?.[0]).toEqual({ type: 'output_image', blockId: 'block_image', order: 2, assetId: 'asset_generated', status: 'completed', mimeType: 'image/png', width: 1024, height: 768, revisedPrompt: '绿色圆形' })
   })
 
+  it('M7 媒体块 output_audio/output_media_task 必须逐字段保留（问答音视频工具设计 §3）', () => {
+    const cloned = cloneVisibleChatMessage({
+      ...message(2, '音视频'),
+      contentBlocks: [
+        { type: 'output_audio', blockId: 'block_audio', order: 2, assetId: 'asset_audio', status: 'completed', mimeType: 'audio/wav' },
+        { type: 'output_media_task', blockId: 'block_task', order: 3, jobId: 'video_job1', kind: 'video', status: 'in_progress', progress: 40, model: 'sora-2', promptSummary: '一段海边日落' },
+        { type: 'output_media_task', blockId: 'block_task_done', order: 4, jobId: 'video_job2', kind: 'video', status: 'completed', assetId: 'asset_video' }
+      ]
+    })
+    expect(cloned?.contentBlocks?.[0]).toEqual({ type: 'output_audio', blockId: 'block_audio', order: 2, assetId: 'asset_audio', status: 'completed', mimeType: 'audio/wav' })
+    expect(cloned?.contentBlocks?.[1]).toEqual({ type: 'output_media_task', blockId: 'block_task', order: 3, jobId: 'video_job1', kind: 'video', status: 'in_progress', progress: 40, model: 'sora-2', promptSummary: '一段海边日落' })
+    expect(cloned?.contentBlocks?.[2]).toEqual({ type: 'output_media_task', blockId: 'block_task_done', order: 4, jobId: 'video_job2', kind: 'video', status: 'completed', assetId: 'asset_video' })
+  })
+
+  it('M7 媒体块的非法字段形态必须按字段剔除或整块丢弃', () => {
+    const cloned = cloneVisibleChatMessage({
+      ...message(2, '畸形媒体块'),
+      contentBlocks: [
+        { type: 'output_audio', blockId: 'block_audio_bad', order: 2, assetId: 'asset_audio', mimeType: 123 },
+        { type: 'output_audio', blockId: 'block_audio_noref', order: 3, mimeType: 'audio/wav' },
+        { type: 'output_media_task', blockId: 'block_task_bad', order: 4, jobId: 'video_job1', kind: 'video', status: 'finished' },
+        { type: 'output_media_task', blockId: 'block_task_bad2', order: 5, jobId: 'video_job2', kind: 'audio', status: 'queued' }
+      ]
+    })
+    expect(cloned?.contentBlocks).toEqual([{ type: 'output_audio', blockId: 'block_audio_bad', order: 2, assetId: 'asset_audio' }])
+  })
+
   it('缺失新增字段的旧缓存消息仍可克隆且字段保持缺省', () => {
     const cloned = cloneVisibleChatMessage({
       ...message(2, '旧缓存'),

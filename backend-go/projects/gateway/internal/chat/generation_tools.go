@@ -59,6 +59,11 @@ func newChatInternalToolRegistry(environment string, internalToolsEnabled, image
 	if !image.RequiresImageGenerationEnabled || imageGenerationEnabled {
 		registry.definitions[image.ModelName] = image
 	}
+	// M7 问答音视频工具（问答音视频工具设计 §4.1，2026-10-04）：媒体域无
+	// 全局开关（/v1 媒体 API 常驻），常驻注册、不受 imageGenerationEnabled
+	// 门控；会话未绑定时经 chatToolBindingRequiredError 引导。
+	registry.definitions["generate_video"] = newGenerateVideoTool()
+	registry.definitions["generate_audio"] = newGenerateAudioTool()
 	return registry
 }
 
@@ -83,7 +88,7 @@ func (r *chatInternalToolRegistry) resolveTools(functionCalling bool) []*toolDef
 	if !functionCalling {
 		return []*toolDefinition{}
 	}
-	names := []string{"diagnostic_echo", "web_search", "generate_image"}
+	names := []string{"diagnostic_echo", "web_search", "generate_image", "generate_video", "generate_audio"}
 	out := []*toolDefinition{}
 	for _, name := range names {
 		if definition, ok := r.definitions[name]; ok {
@@ -197,6 +202,13 @@ const chatWebSearchBindingHint = "搜索工具未配置：当前会话尚未绑�
 
 // chatImageBindingHint 是 generate_image 未绑定时回喂主模型的 tool result 文案。
 const chatImageBindingHint = "图片生成工具未配置：当前会话尚未绑定生图账户，无法生成图片。请直接告知用户在会话设置中绑定生图账户后重试，不要编造生成结果。"
+
+// chatVideoBindingHint 是 generate_video 未绑定时回喂主模型的 tool result 文案
+//（问答音视频工具设计 §3，沿 chatImageBindingHint 模式）。
+const chatVideoBindingHint = "视频生成工具未配置：当前会话尚未绑定视频生成账户，无法生成视频。请直接告知用户在会话设置中绑定视频生成账户后重试，不要编造生成结果。"
+
+// chatAudioBindingHint 是 generate_audio 未绑定时回喂主模型的 tool result 文案。
+const chatAudioBindingHint = "语音合成工具未配置：当前会话尚未绑定语音合成账户，无法合成音频。请直接告知用户在会话设置中绑定语音合成账户后重试，不要编造生成结果。"
 
 // newWebSearchTool 注册 web_search 模型工具（契约 §6.1）：参数只有搜索词——
 // 由主模型根据用户问题生成；执行经 chatToolExecutionContext.WebSearch 端口
@@ -394,6 +406,157 @@ func executeGenerateImageTool(input map[string]any, context *chatToolExecutionCo
 	}
 	if generated.RevisedPrompt != "" {
 		payload["revisedPrompt"] = generated.RevisedPrompt
+	}
+	modelOutput, _ := json.Marshal(payload)
+	return chatToolExecutionResult{ModelOutput: string(modelOutput), PublicResult: payload}, nil
+}
+
+// newGenerateVideoTool 注册 generate_video 模型工具（问答音视频工具设计 §3，
+// 2026-10-04）：kind=model——执行依赖会话的「视频账户 + 默认视频模型」绑定
+//（video_account_id + default_video_model）。模型词表是目录数据驱动的（无静态
+// 注册枚举）：model 参数为自由字符串，执行侧经 ConstrainVideoModel（BUG-0230
+// 模式）收敛到绑定账户可路由集合；工具创建任务后立即完成调用（jobId 随结果
+// 回喂主模型），异步结算由前端轮询 media-tasks 接口驱动（设计 §2.2）。
+func newGenerateVideoTool() *toolDefinition {
+	return &toolDefinition{
+		ID:          "video.generate",
+		Version:     "1.0.0",
+		ModelName:   "generate_video",
+		Kind:        "model",
+		Description: "根据用户需求生成一段视频（异步任务）：受理后立即返回任务 ID，视频在后台生成，完成后在消息中自动出现可播放的视频。请在用户明确要求生成视频时调用；prompt 用一句连贯的场景描述，seconds 是视频时长（秒），size 是分辨率（如 1280x720）；未指定 model 时使用会话默认视频模型，不要猜测不支持的模型名。",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"prompt":  map[string]any{"type": "string", "minLength": 1, "maxLength": 65536},
+				"seconds": map[string]any{"type": "number", "minimum": 1, "maximum": 120, "description": "视频时长（秒），未指定时使用模型默认"},
+				"size":    map[string]any{"type": "string", "pattern": "^[1-9]\\d{2,3}x[1-9]\\d{2,3}$", "description": "分辨率 WIDTHxHEIGHT，如 1280x720；未指定时使用模型默认"},
+				"model":   map[string]any{"type": "string", "maxLength": 200, "description": "视频模型名；未指定时使用会话默认视频模型"},
+			},
+			"required":             []string{"prompt"},
+			"additionalProperties": false,
+		},
+		MaxArgumentBytes: 96 * 1024,
+		MaxResultBytes:   16 * 1024,
+		TimeoutMs:        120 * 1000,
+		DuplicatePolicy:  "allow_repeat",
+		Execute:          executeGenerateVideoTool,
+	}
+}
+
+// executeGenerateVideoTool 校验参数并经组装侧 VideoGeneration 端口创建任务；
+// 结果只含任务受理事实（jobId/初始状态），主模型据此告知用户生成中。
+func executeGenerateVideoTool(input map[string]any, context *chatToolExecutionContext) (chatToolExecutionResult, error) {
+	if context.VideoGeneration == nil {
+		return chatToolExecutionResult{}, &chatToolBindingRequiredError{ToolName: "generate_video", UserHint: chatVideoBindingHint}
+	}
+	prompt := ""
+	if value, ok := input["prompt"].(string); ok {
+		prompt = strings.TrimSpace(value)
+	}
+	if prompt == "" {
+		return chatToolExecutionResult{}, errors.New("视频提示词不能为空")
+	}
+	request := ChatVideoCreationRequest{Prompt: prompt}
+	if value, ok := input["model"].(string); ok && strings.TrimSpace(value) != "" {
+		request.Model = strings.TrimSpace(value)
+	}
+	if number, ok := numericValue(input["seconds"]); ok && number > 0 {
+		seconds := number
+		request.Seconds = &seconds
+	}
+	if value, ok := input["size"].(string); ok {
+		request.Size = strings.TrimSpace(value)
+	}
+	created, err := context.VideoGeneration(request)
+	if err != nil {
+		return chatToolExecutionResult{}, err
+	}
+	payload := map[string]any{
+		"jobId":         created.JobID,
+		"status":        created.Status,
+		"kind":          "video",
+		"model":         created.Model,
+		"promptSummary": chatMediaPromptSummary(created.Prompt),
+	}
+	if created.Progress != nil {
+		payload["progress"] = *created.Progress
+	}
+	modelOutput, _ := json.Marshal(payload)
+	return chatToolExecutionResult{ModelOutput: string(modelOutput), PublicResult: payload}, nil
+}
+
+// newGenerateAudioTool 注册 generate_audio 模型工具（问答音视频工具设计 §3）：
+// kind=model——执行依赖会话的「音频账户 + 默认音频模型」绑定（audio_account_id
+// + default_audio_model）。TTS 秒级同步完成：合成字节嗅探 MIME 后直接落
+// chat_assets 并随 output_audio 块即时播放（设计 §2.3）。
+func newGenerateAudioTool() *toolDefinition {
+	return &toolDefinition{
+		ID:          "audio.speech",
+		Version:     "1.0.0",
+		ModelName:   "generate_audio",
+		Kind:        "model",
+		Description: "把一段文本合成为语音（TTS，同步完成，完成后消息中直接出现可播放的音频）。text 是要朗读的文本；voice 是音色（未指定用模型默认）；format 可选 mp3、wav、ogg、m4a；未指定 model 时使用会话默认语音模型，不要猜测不支持的模型名。",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"text":   map[string]any{"type": "string", "minLength": 1, "maxLength": 8192},
+				"voice":  map[string]any{"type": "string", "maxLength": 120, "description": "音色名，未指定时使用模型默认音色"},
+				"format": map[string]any{"type": "string", "enum": []string{"mp3", "wav", "ogg", "m4a"}, "description": "音频封装格式，默认 mp3"},
+				"model":  map[string]any{"type": "string", "maxLength": 200, "description": "TTS 模型名；未指定时使用会话默认语音模型"},
+			},
+			"required":             []string{"text"},
+			"additionalProperties": false,
+		},
+		MaxArgumentBytes: 24 * 1024,
+		MaxResultBytes:   16 * 1024,
+		TimeoutMs:        120 * 1000,
+		DuplicatePolicy:  "allow_repeat",
+		Execute:          executeGenerateAudioTool,
+	}
+}
+
+// executeGenerateAudioTool 校验参数并经组装侧 AudioGeneration 端口同步合成；
+// 产物经 MediaArtifactSink 落资产，结果携带 assetId 供块投影。
+func executeGenerateAudioTool(input map[string]any, context *chatToolExecutionContext) (chatToolExecutionResult, error) {
+	if context.AudioGeneration == nil || context.MediaArtifactSink == nil {
+		return chatToolExecutionResult{}, &chatToolBindingRequiredError{ToolName: "generate_audio", UserHint: chatAudioBindingHint}
+	}
+	text := ""
+	if value, ok := input["text"].(string); ok {
+		text = strings.TrimSpace(value)
+	}
+	if text == "" {
+		return chatToolExecutionResult{}, errors.New("语音合成文本不能为空")
+	}
+	request := ChatAudioGenerationRequest{Text: text, Format: "mp3"}
+	if value, ok := input["model"].(string); ok && strings.TrimSpace(value) != "" {
+		request.Model = strings.TrimSpace(value)
+	}
+	if value, ok := input["voice"].(string); ok {
+		request.Voice = strings.TrimSpace(value)
+	}
+	if value, ok := input["format"].(string); ok {
+		request.Format = strings.TrimSpace(value)
+	}
+	generated, err := context.AudioGeneration(request)
+	if err != nil {
+		return chatToolExecutionResult{}, err
+	}
+	artifact, err := context.MediaArtifactSink.CommitGeneratedMedia(GeneratedMediaCommitInput{
+		Artifact: generated,
+		Kind:     "audio",
+		Model:    request.Model,
+		Prompt:   chatMediaPromptSummary(text),
+	})
+	if err != nil {
+		return chatToolExecutionResult{}, err
+	}
+	payload := map[string]any{
+		"assetId":  artifact.AssetID,
+		"mimeType": artifact.MimeType,
+		"bytes":    artifact.Bytes,
+		"model":    request.Model,
+		"kind":     "audio",
 	}
 	modelOutput, _ := json.Marshal(payload)
 	return chatToolExecutionResult{ModelOutput: string(modelOutput), PublicResult: payload}, nil
@@ -635,6 +798,14 @@ func (o *chatInternalToolOrchestrator) executeCalls(calls []ChatToolCall) ([]Cha
 			// 生图无流式过程（Images API），started 即带生成中阶段供前端
 			// 过程区展示（契约 §10.3；progress 结构 stage 通用）。
 			started.PublicResult = map[string]any{"progress": chatWebSearchProgress{Stage: "generating"}}
+		}
+		if toolName == "generate_video" {
+			// M7 视频工具（设计 §4.1）：创建即返回，started 带 submitting 阶段。
+			started.PublicResult = map[string]any{"progress": chatWebSearchProgress{Stage: "submitting"}}
+		}
+		if toolName == "generate_audio" {
+			// M7 音频工具（设计 §4.1）：秒级同步，started 带 synthesizing 阶段。
+			started.PublicResult = map[string]any{"progress": chatWebSearchProgress{Stage: "synthesizing"}}
 		}
 		o.publishEvent(started)
 		result, executed, execErr := o.executeCall(call)

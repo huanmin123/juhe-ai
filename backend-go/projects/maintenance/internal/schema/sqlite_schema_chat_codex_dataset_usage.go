@@ -18,6 +18,10 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
       search_account_id TEXT,
       search_model_id TEXT,
       image_account_id TEXT,
+      video_account_id TEXT,
+      default_video_model TEXT,
+      audio_account_id TEXT,
+      default_audio_model TEXT,
       title TEXT NOT NULL DEFAULT '新对话',
       title_source_message_id TEXT,
       is_pinned INTEGER NOT NULL DEFAULT 0,
@@ -278,7 +282,7 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
       CHECK ((processed_width IS NULL AND processed_height IS NULL) OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)),
       CHECK (processed_bytes IS NULL OR processed_bytes > 0),
       CHECK (source_kind IN ('user_upload', 'assistant_generated')),
-      CHECK (processed_mime_type IS NULL OR processed_mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
+      CHECK (processed_mime_type IS NULL OR processed_mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')),
       CHECK (processed_sha256 IS NULL OR length(processed_sha256) = 64),
       CHECK (preview_mime_type IS NULL OR preview_mime_type = 'image/webp'),
       CHECK (preview_width IS NULL OR preview_width > 0),
@@ -289,7 +293,8 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
         (preview_mime_type IS NULL AND preview_width IS NULL AND preview_height IS NULL AND preview_bytes IS NULL AND preview_sha256 IS NULL AND preview_storage_key IS NULL)
         OR (preview_mime_type IS NOT NULL AND preview_width IS NOT NULL AND preview_height IS NOT NULL AND preview_bytes IS NOT NULL AND preview_sha256 IS NOT NULL AND preview_storage_key IS NOT NULL)
       ),
-      CHECK (source_kind != 'assistant_generated' OR preview_storage_key IS NOT NULL),
+      CHECK (source_kind != 'assistant_generated' OR preview_storage_key IS NOT NULL
+        OR processed_mime_type IN ('audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')),
       CHECK (processing_status IN ('pending', 'ready', 'failed')),
       CHECK (observation_status IN ('not_requested', 'pending', 'ready', 'failed')),
       CHECK (observation_revision >= 0),
@@ -300,11 +305,13 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
         processing_status != 'ready'
         OR (
           processed_mime_type IS NOT NULL
-          AND processed_width IS NOT NULL
-          AND processed_height IS NOT NULL
           AND processed_bytes IS NOT NULL
           AND processed_sha256 IS NOT NULL
           AND storage_key IS NOT NULL
+          AND (
+            processed_mime_type IN ('audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'video/mp4', 'video/webm')
+            OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)
+          )
         )
       ),
       CHECK (
@@ -364,6 +371,10 @@ const sqliteChatDDL = `    CREATE TABLE IF NOT EXISTS chat_conversations (
       search_model_id TEXT,
       image_account_id TEXT,
       default_image_model TEXT,
+      video_account_id TEXT,
+      default_video_model TEXT,
+      audio_account_id TEXT,
+      default_audio_model TEXT,
       updated_at TEXT NOT NULL
     );
 

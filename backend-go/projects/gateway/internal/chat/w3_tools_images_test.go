@@ -76,14 +76,17 @@ func TestChatInternalToolRegistryW3(t *testing.T) {
 	if tools := dev.resolveTools(false); len(tools) != 0 {
 		t.Fatalf("function calling 关闭时应返回空: %d", len(tools))
 	}
-	// web_search 是常驻模型工具（契约 §6.1），不随环境/图片开关变化。
+	// web_search 是常驻模型工具（契约 §6.1），不随环境/图片开关变化；M7
+	// generate_video/generate_audio 同为常驻注册（问答音视频工具设计 §4.1，
+	// 媒体域无全局开关，仅 generate_image 受图片门控）。
 	devTools := dev.resolveTools(true)
-	if len(devTools) != 2 || devTools[0].ModelName != "diagnostic_echo" || devTools[1].ModelName != "web_search" {
+	if len(devTools) != 4 || devTools[0].ModelName != "diagnostic_echo" || devTools[1].ModelName != "web_search" ||
+		devTools[2].ModelName != "generate_video" || devTools[3].ModelName != "generate_audio" {
 		names := make([]string, 0, len(devTools))
 		for _, tool := range devTools {
 			names = append(names, tool.ModelName)
 		}
-		t.Fatalf("resolveTools 应含 diagnostic_echo+web_search: %v", names)
+		t.Fatalf("resolveTools 应含 diagnostic_echo+web_search+媒体两工具: %v", names)
 	}
 	if _, err := dev.definition("bogus"); err == nil {
 		t.Fatalf("未知工具应报错")

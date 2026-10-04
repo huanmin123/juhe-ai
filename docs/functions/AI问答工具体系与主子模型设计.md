@@ -1,6 +1,6 @@
 # AI 问答工具体系与主子模型设计
 
-- 状态：已实施（2026-09-28；阶段 1/2/3 提交 4a5309674 / 195b1cbb6 / 前端改造，候选缺口修复 31a085f97）；2026-10-02 增补「用户级默认工具绑定」（§2.11/§2.12、§7 新表、§8.4/§8.5、§10.4/§10.6/§10.7 改写、§11 删除项、§14 验收）；2026-10-03 增补「工具绑定入口收敛」（§2.11、§8.3、§10.2/§10.4/§10.6/§10.7 改写、§14 验收）：命令收敛为单一 `/tool-defaults`，`ChatToolBindingDialog` 改为纯全局「工具模型绑定」统一弹窗，会话详情移除「工具能力」区，保存后当前会话立即同步。
+- 状态：已实施（2026-09-28；阶段 1/2/3 提交 4a5309674 / 195b1cbb6 / 前端改造，候选缺口修复 31a085f97）；2026-10-02 增补「用户级默认工具绑定」（§2.11/§2.12、§7 新表、§8.4/§8.5、§10.4/§10.6/§10.7 改写、§11 删除项、§14 验收）；2026-10-03 增补「工具绑定入口收敛」（§2.11、§8.3、§10.2/§10.4/§10.6/§10.7 改写、§14 验收）：命令收敛为单一 `/tool-defaults`，`ChatToolBindingDialog` 改为纯全局「工具模型绑定」统一弹窗，会话详情移除「工具能力」区，保存后当前会话立即同步；2026-10-04 增补「问答音视频工具」（M7，§6.5/§6.6、§6.3 媒体候选、§7 媒体四列、§8 媒体绑定键与任务接口，权威设计见《[问答音视频工具设计](问答音视频工具设计.md)》——本节为工具体系侧回填）。
 - 日期：2026-09-28（2026-10-02 增补用户级默认绑定；2026-10-03 收敛绑定入口）
 - 前置：《AI 问答设计》8.6（已按本设计改写为「工具体系与主子模型」节）——能力数据链（8.5 静态快照兜底、custom 目录行能力继承）继续有效并被本设计复用。
 - 验证记录（2026-09-28 隔离实例 + 真实上游）：GPT 纯对话、未绑定 `tool.binding_required` 引导（9 候选 + UserHint 回喂）、GROK 跨账户搜索（grok-4.7 子代理 24 来源实时数据）、GPT 生图（gpt-image-2 真实出图 1370×1148）、非候选绑定 400 + 候选返回、浏览器端免弹窗直进/账户流/绑定弹窗/时间线来源（31 来源 8 链接可展开）全通过。已知限制：GROK 生图账户建模受 xai 供应商 openai 协议档案的目录断言限制（`supportedModels` 不接受 images 协议模型），grok-imagine 生图候选需账户建模层提供 images 档案或映射通道后才能落地；GPT 系生图（gpt vendor 协议直通）不受影响。
@@ -87,7 +87,8 @@ AI 对话（chat 包 + 对话前端）
 - 绑定粒度为「账号 + 模型」：候选条目 = `{ accountId, accountName, modelId, modelName }`。
 - 搜索候选过滤（当前已实现的执行方式仅为 Responses + hosted `web_search`）：账号可派发且端点能力含 `responses_sse` × 账号实际支持的模型中、目录矩阵（经 6.4 细化、8.5 兜底与 custom 继承后）的 `responses` 协议工具集含 `web_search` 的条目。将来接入纯搜索 API 后端时另行扩展候选语义。
 - 生图候选过滤（当前已实现的图像模型仅 GPT 与 Grok 两家的注册枚举：`gpt-image-2`、`grok-imagine-image`、`grok-imagine-image-quality`）：账号可派发且可路由上述注册枚举模型（GPT 系账号 × `gpt-image-2`、Grok 系账号 × grok-imagine 系）；目录声明 `image_generation` 的其他模型不进候选。
-- 子代理执行时固定派发到绑定的账号+模型：经 chat 面现有的调度覆盖机制（与 account 绑定会话同款入口）注入指定账号，不做常规调度漂移。
+- 媒体候选过滤（M7，2026-10-04；详见 §6.5/§6.6 与《问答音视频工具设计》§3）：候选 = 供应商白名单（openai 含 gpt 子供应商 / gemini / minimax / volcengine / qwen）的目录行中 `supportedApiProtocols` 含 `video`（generate_video）/ `audio_speech`（generate_audio）的模型 × 账号可路由（端点模式 `video_create` / `audio_speech`，与 `/v1` 媒体链候选能力门同口径）。媒体模型词表是目录数据驱动的（无 Go 侧静态注册枚举），工具 schema 的 `model` 参数为自由字符串、执行层经 BUG-0230 同款收敛回调折回集合内（`constrainChatMediaModel`：集合内原样 → 会话默认模型 → 账户候选首项）。
+- 子代理执行时固定派发到绑定的账号+模型：经 chat 面现有的调度覆盖机制（与 account 绑定会话同款入口）注入指定账号，不做常规调度漂移。媒体工具子调用统一携带 `x-purpose: chat_media_generation` 头供审计区分。
 
 ### 6.4 模型目录「协议 × 工具」矩阵细化（候选过滤的数据基础）
 
@@ -100,6 +101,22 @@ AI 对话（chat 包 + 对话前端）
 - **管理面展示**：模型目录详情按矩阵呈现（每协议一行、该协议下工具一列），与静态兜底/继承后的值同源。
 - **范围界定**：本细化只动目录数据层（静态快照、读取链、管理面展示），不动 `/v1` 请求链路、调度与协议转换——目录数据链是 AI 对话依赖的数据层，非网关行为（BUG-0210/0229 同款边界）。
 
+### 6.5 generate_video（视频生成子代理，M7 2026-10-04）
+
+- 工具定义：`generate_video`，`kind=model`，schema `{ prompt: string, seconds?: number(1..120), size?: "WIDTHxHEIGHT", model?: string }`；常驻注册（媒体域无全局开关，不受 `imageGenerationEnabled` 门控）。注册落点 `internal/chat/generation_tools.go`（`newGenerateVideoTool`）。
+- 绑定：会话/用户级「视频账户 + 默认视频模型」二元组（`video_account_id` + `default_video_model`，§7）；未绑定时触发 `tool.binding_required` 引导（`chatVideoBindingHint` 回喂主模型），与 web_search/generate_image 同构。
+- 执行（`internal/chat/generation_media.go` `CreateChatVideo`）：经进程内 `POST /v1/videos` 固定派发绑定账户，2xx + jobId 即受理确立（`/v1` 链落 `media_jobs`，归属 chat API Key）后**立即完成工具调用**——工具结果 = `{jobId, status, kind: "video", model, promptSummary}`，主模型据此告知用户生成中。`seconds/size` 参数边界由 `/v1` 视频链的参数归一层裁定。
+- 编排器阶段：`started` 事件携带 `progress {stage: "submitting"}`（§10.3 同款通道）；预算在 `MaxToolCalls`（8）内，无独立计数器。
+- 异步结算（无后台常驻任务）：消息落 `output_media_task` 内容块（完成事件投影，块形见《问答音视频工具设计》§3）；前端对未终态块每 5s 轮询 `GET /my-chat/conversations/{cid}/media-tasks/{jobId}`（§8.7），后端实时查 `media_jobs`（经组合根注入的 `ChatMediaJobsLookup` 只读端口——internal/chat 不直接依赖 gatewaymedia）→ 未终态经进程内 `GET /v1/videos/{jobId}` 任务面 poll（亲和）→ 终态幂等结算：completed → `GET content` 下载（64MB 限额 + 字节嗅探 MIME）落 `chat_assets` + 消息块定点补丁（status=completed + assetId）；failed/cancelled/expired → 块置终态错误。幂等三道闸：`media_jobs` 终态唯一性、分条互斥（同 job 并发请求串行化）、资产 digest 查重。
+- 消息块持久化裁决（M7b）：轮次 finalize 后消息行不可变（`finalizeTurn` 仅写 streaming 行），新增最小定点更新 `PatchChatMediaTaskBlock` 只改任务块的 `status/assetId/error/progress` 字段，不迁移块类型（不把任务块改写为 `output_video`）、不动 content_text 与其他块、不 bump message_revision——前端按块内 `assetId` 渲染播放器（`ChatMediaTask.vue` → 完成后被播放器替换，M7c 前端范围）。
+
+### 6.6 generate_audio（语音合成子代理，M7 2026-10-04）
+
+- 工具定义：`generate_audio`，`kind=model`，schema `{ text: string, voice?: string, format?: "mp3"|"wav"|"ogg"|"m4a", model?: string }`；常驻注册同 §6.5。
+- 绑定：「音频账户 + 默认音频模型」二元组（`audio_account_id` + `default_audio_model`）；未绑定引导同构（`chatAudioBindingHint`）。
+- 执行（`internal/chat/generation_media.go` `GenerateChatAudio`）：经进程内 `POST /v1/audio/speech` 固定派发绑定账户，**秒级同步**完成；响应音频字节按魔数嗅探 MIME（词表 audio/mpeg、audio/wav、audio/ogg、audio/mp4，与 chat_assets 约束词表一致，不信任上游 Content-Type；嗅探不出音频格式按失败处理），32MB 限额内经 `storeGeneratedMediaSink` 落 `chat_assets`（source_kind=assistant_generated，无预览/无宽高——schema M7 约束已放宽）。
+- 完成事件投影 `output_audio` 内容块 `{ blockId, order, assetId, mimeType, status }`（`ChatGenerationMediaEvent` 投影通道，与 output_image 同族）；编排器 `started` 事件携带 `progress {stage: "synthesizing"}`。
+
 ## 7. 数据模型
 
 - `chat_conversations` 新增两列（均可空 TEXT；空 = 未绑定）：
@@ -109,6 +126,8 @@ AI 对话（chat 包 + 对话前端）
 - 绑定完整性约束：账号+模型必须仍在会话作用域且可派发，失效时（账号停用/删除、模型下架）绑定状态返回「已失效，请重设」，不静默漂移到其他账号。
 - 消息内容块：子代理执行以现有 `tool_call` / `tool_result` 内容块落库与呈现；搜索来源列表作为 `tool_result` 的结构化字段（前端时间线渲染「已搜索 + 来源」）。不新增块类型。
 - **用户级默认绑定表（2026-10-02）**：`chat_user_tool_preferences`，`system_account_id` 主键，每用户一行；列 `search_account_id` / `search_model_id` / `image_account_id` / `default_image_model`（均可空，空 = 未设默认）+ `updated_at`。无存量回填；建表经 `maintenance --ensure-schema` 幂等生效，无一次性迁移。新建会话时服务端读取该行并把非空列写入会话的绑定三列与 `default_image_model` 初值（偏好未设时维持现行为：绑定三列 NULL、`default_image_model` 默认 `gpt-image-2`）。
+- **媒体工具绑定列（M7，2026-10-04）**：`chat_conversations` 与 `chat_user_tool_preferences` 各增四列（均可空 TEXT，空 = 未绑定/未设默认）：`video_account_id` / `default_video_model` / `audio_account_id` / `default_audio_model`。新库由建表 DDL 直接声明；既有库经 `--ensure-schema` 幂等 ALTER 补齐。默认模型列无注册表兜底（空串 = 未设默认，生效模型回落账户候选首项）。同批迁移放宽 `chat_assets` 三条 CHECK（processed_mime_type 词表增 audio/mpeg、audio/wav、audio/ogg、audio/mp4、video/mp4、video/webm；assistant_generated 预览必备与 ready 宽高必备对媒体行豁免）——PG 经 DO 块按定义文本定位旧约束重建、SQLite 沿 schedule-interval 表重建先例。
+- **媒体内容块（M7）**：新增两块形——`output_audio { blockId, order, assetId, mimeType, status }`（同步音频，与 output_image 同族）与 `output_media_task { blockId, order, jobId, kind: "video", status: queued|in_progress|completed|failed|cancelled|expired, progress?, model, promptSummary, assetId?(终态), error? }`（异步视频任务块；任务状态词表 = media_jobs 状态，跨轮次存续，不随轮次终态化改写）。块 REST 回读（contentBlockFromMap）已支持两块形。
 
 ## 8. API 契约
 
@@ -118,7 +137,8 @@ AI 对话（chat 包 + 对话前端）
 3. `toolCapabilities`（会话详情内嵌字段）：**形状重写**为上述绑定状态（旧「可用性矩阵 + 不可用原因」语义废弃）；前端同步改。2026-10-03 起前端会话详情弹窗不再展示「工具能力」行，绑定查看与设置入口统一为 `/tool-defaults` 命令 + 统一弹窗；本字段保留作为绑定状态读取契约。
 4. SSE：新增事件 `tool.binding_required`（工具调用触发但未绑定时下发，携带 `toolId` 与候选摘要），前端据此弹引导；主模型本轮收到「工具未配置」的 tool result，可自然告知用户。
 5. `GET /my-chat/tool-preferences`（2026-10-02）：返回用户级默认绑定，**与 `tool-bindings` 同形状**（`{ tools: [...] }`，含 `bound` / `binding` / `valid` / `invalidReason` / `candidates`）；`binding` 来自偏好行（`generate_image` 的生效模型取偏好行 `default_image_model`，组合判定 valid）；候选解析与 `tool-bindings` 同源（`resolveChatToolBindingCandidates(bindScope)`，跨账户合法口径不变）。偏好行不存在时两类模型工具均 `bound: false`。
-6. `PATCH /my-chat/tool-preferences`（2026-10-02）：严格键集 `{ searchBinding, imageBinding, defaultImageModel }`，至少提供一个；`searchBinding: {accountId, modelId}|null`、`imageBinding: {accountId}|null`（null/空 = 清除默认）；候选校验与错误形状同会话 PATCH（不在候选内 400 `chat_tool_binding_invalid` + 候选负载；`imageBinding` 按「账户 × 生效后 `default_imageModel`」判定，同请求带 `defaultImageModel` 时以新值为准）；成功返回 GET 同形状 payload。**该端点只改用户默认，不触碰任何会话**。
+6. `PATCH /my-chat/tool-preferences`（2026-10-02）：严格键集 `{ searchBinding, imageBinding, defaultImageModel, videoBinding, audioBinding }`（后两键 M7 2026-10-04 增补），至少提供一个；`searchBinding: {accountId, modelId}|null`、`imageBinding: {accountId}|null`（null/空 = 清除默认）；`videoBinding` / `audioBinding` 均为 `{accountId, modelId}|null` 二元组（与 searchBinding 同形，候选校验同口径）；候选校验与错误形状同会话 PATCH（不在候选内 400 `chat_tool_binding_invalid` + 候选负载；`imageBinding` 按「账户 × 生效后 `default_imageModel`」判定，同请求带 `defaultImageModel` 时以新值为准）；成功返回 GET 同形状 payload。**该端点只改用户默认，不触碰任何会话**。GET 响应 `tools[]` 自 M7 起为五节模型工具（web_search / generate_image / generate_video / generate_audio，均含 bound/binding/valid/invalidReason/candidates）+ code 工具。会话 PATCH 的媒体绑定键：`videoBinding` / `audioBinding`（`{accountId, modelId}|null`，与 §8.2 同型候选校验），生效值 best-effort 回写用户级默认（§10.6 同款）。
+7. `GET /my-chat/conversations/{cid}/media-tasks/{jobId}`（M7，2026-10-04）：异步视频任务的轮询结算接口。会话归属校验（会话属主 + media_jobs 行 `api_key_id` = 会话 chat Key + 消息内存在对应 `output_media_task` 块，任一不满足 404 `chat_media_task_not_found`，归属信息不泄露）；内部流程与幂等语义见 §6.5。响应负载：`{ jobId, kind: "video", status, progress?, model?, promptSummary?, assetId?(终态 completed), error?(终态失败), blockId, messageId, settlementError? }`；未终态轮询失败 502 `chat_media_task_poll_failed`。成功响应禁缓存（任务态实时变化）。
 
 ## 9. 执行流程
 

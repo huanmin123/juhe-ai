@@ -318,6 +318,13 @@ func (rt *chatRoutes) assetContent(w http.ResponseWriter, r *http.Request) {
 		maxBytes = chatAssetPreviewMaxBytes
 	} else if asset.SourceKind == "assistant_generated" {
 		maxBytes = chatAssetGeneratedMaxBytes
+		// M7 媒体产物（问答音视频工具设计 §2.1）：音频 32MB / 视频 64MB 限额
+		//（与生成侧下载限额一致）。
+		if chatMimeTypeIsVideo(mimeType) {
+			maxBytes = chatMediaVideoMaxBytes
+		} else if chatMimeTypeIsAudio(mimeType) {
+			maxBytes = chatMediaAudioMaxBytes
+		}
 	}
 	etag := "\"" + sha256Value + "\""
 	w.Header().Set("Cache-Control", "private, max-age=86400, immutable")
@@ -336,6 +343,18 @@ func (rt *chatRoutes) assetContent(w http.ResponseWriter, r *http.Request) {
 			extension = "jpg"
 		case "image/webp":
 			extension = "webp"
+		case "audio/mpeg":
+			extension = "mp3"
+		case "audio/wav":
+			extension = "wav"
+		case "audio/ogg":
+			extension = "ogg"
+		case "audio/mp4":
+			extension = "m4a"
+		case "video/webm":
+			extension = "webm"
+		case "video/mp4":
+			extension = "mp4"
 		}
 		w.Header().Set("Content-Disposition", "attachment; filename=\"generated-"+asset.ID+"."+extension+"\"")
 	} else {
