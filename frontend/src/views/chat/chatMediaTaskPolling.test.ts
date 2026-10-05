@@ -111,4 +111,24 @@ describe('chatMediaTaskPolling 轮询调度', () => {
     control.stop()
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  it('结算未完成快照（completed 无 assetId / failed 无 error）不落块并继续轮询重试结算', async () => {
+    const messages = [assistantMessage('m1', [taskBlock('job_a')])]
+    const patches: ChatMediaTaskBlockPatch[] = []
+    const control = startChatMediaTaskPolling({ conversationId: () => 'c1', messages: () => messages, applyPatch: (patch) => patches.push(patch) })
+    // 第一轮：结算内部错误 → completed 却无产物（settlementError 形态）。
+    mediaTaskMock.mockResolvedValueOnce({ jobId: 'job_a', kind: 'video', status: 'completed', progress: 100 } satisfies ChatMediaTaskSnapshot)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(patches).toEqual([])
+    // 第二轮：failed 无 error 文案（结算读库失败的 settledErr 形态）同样不落块。
+    mediaTaskMock.mockResolvedValueOnce({ jobId: 'job_a', kind: 'video', status: 'failed' } satisfies ChatMediaTaskSnapshot)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(patches).toEqual([])
+    expect(mediaTaskMock).toHaveBeenCalledTimes(2)
+    // 第三轮：结算恢复，完整终态快照正常落块。
+    mediaTaskMock.mockResolvedValueOnce({ jobId: 'job_a', kind: 'video', status: 'completed', assetId: 'asset_v', progress: 100 } satisfies ChatMediaTaskSnapshot)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(patches).toEqual([{ jobId: 'job_a', status: 'completed', progress: 100, assetId: 'asset_v' }])
+    control.stop()
+  })
 })

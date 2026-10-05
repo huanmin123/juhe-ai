@@ -719,7 +719,7 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		}
 		blocks = append(blocks, toolCall)
 		blocks = append(blocks, map[string]any{
-			"type": "text", "blockId": "mockdata_chat_block_text", "order": 3, "text": text, "status": "completed",
+			"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 3, "text": text, "status": "completed",
 		})
 		if outputAssetID != "" {
 			blocks = append(blocks, map[string]any{
@@ -738,7 +738,7 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			})
 		}
 		blocks = append(blocks, map[string]any{
-			"type": "text", "blockId": "mockdata_chat_block_user_text", "order": 1, "text": text,
+			"type": "input_text", "blockId": "mockdata_chat_block_user_text", "order": 1, "text": text,
 		})
 		return blocks
 	}
@@ -788,7 +788,7 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		{
 			ID: "mockdata_chat_message_pinned_6", Sequence: 6, Role: "assistant", Status: "completed",
 			Text: CleanupNamePrefix + "配色说明：主色 #1F6FEB，辅助色 #F2F4F7",
-			Blocks: []map[string]any{{"type": "text", "blockId": "mockdata_chat_block_text", "order": 1,
+			Blocks: []map[string]any{{"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 1,
 				"text": CleanupNamePrefix + "配色说明：主色 #1F6FEB，辅助色 #F2F4F7", "status": "completed"}},
 			Model: model, TurnID: "mockdata_chat_turn_pinned_3", Trace: CleanupTracePrefix + "chat-pinned-3",
 			FinishReason: "stop", CreatedAt: now.Add(-2 * time.Hour), CompletedAt: now.Add(-2*time.Hour + time.Minute),
@@ -802,7 +802,7 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		{
 			ID: "mockdata_chat_message_default_2", Sequence: 2, Role: "assistant", Status: "completed",
 			Text: CleanupNamePrefix + "本地联调说明：先跑 ensure-schema 再跑 mockdata",
-			Blocks: []map[string]any{{"type": "text", "blockId": "mockdata_chat_block_text", "order": 1,
+			Blocks: []map[string]any{{"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 1,
 				"text": CleanupNamePrefix + "本地联调说明：先跑 ensure-schema 再跑 mockdata", "status": "completed"}},
 			Model: model, TurnID: "mockdata_chat_turn_default_1", Trace: CleanupTracePrefix + "chat-default-1",
 			FinishReason: "stop", CreatedAt: now.Add(-6*time.Hour + time.Minute), CompletedAt: now.Add(-5*time.Hour + 58*time.Minute),
@@ -829,7 +829,7 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		{
 			ID: "mockdata_chat_message_limit_100", Sequence: 100, Role: "assistant", Status: "completed",
 			Text: CleanupNamePrefix + "最终结论：缓存命中率 92%，无需调整",
-			Blocks: []map[string]any{{"type": "text", "blockId": "mockdata_chat_block_text", "order": 1,
+			Blocks: []map[string]any{{"type": "output_text", "blockId": "mockdata_chat_block_text", "order": 1,
 				"text": CleanupNamePrefix + "最终结论：缓存命中率 92%，无需调整", "status": "completed"}},
 			Model: model, TurnID: "mockdata_chat_turn_limit_50", Trace: CleanupTracePrefix + "chat-limit-50",
 			FinishReason: "stop", CreatedAt: now.Add(-27*time.Hour + time.Minute), CompletedAt: now.Add(-26*time.Hour - 50*time.Minute),

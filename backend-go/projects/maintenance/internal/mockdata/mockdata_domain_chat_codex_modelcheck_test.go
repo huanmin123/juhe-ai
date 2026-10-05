@@ -257,6 +257,11 @@ func TestSeedChatCodexModelCheckChatSampleMatrix(t *testing.T) {
 		{"媒体任务 completed", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"assetId\":\"mockdata_chat_asset_video\"%'", 1},
 		{"媒体任务 failed", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_media_task\"%' AND content_blocks_json LIKE '%\"error\":\"视频生成失败（upstream_error）\"%'", 1},
 		{"音频输出块", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_audio\"%'", 1},
+		// 文本块类型必须走读路径白名单（input_text/output_text）：裸 "text" 会被
+		// gateway parseContentBlocks 静默丢弃，助手叙述在页面上不可见（M7e 复审发现）。
+		{"用户 input_text 块", "SELECT COUNT(*) FROM chat_messages WHERE role = 'user' AND content_blocks_json LIKE '%\"type\":\"input_text\"%'", 10},
+		{"助手 output_text 块", "SELECT COUNT(*) FROM chat_messages WHERE role = 'assistant' AND content_blocks_json LIKE '%\"type\":\"output_text\"%'", 9},
+		{"裸 text 块残留", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"text\"%'", 0},
 		{"媒体资产行", "SELECT COUNT(*) FROM chat_assets WHERE original_mime_type IN ('audio/wav', 'video/mp4')", 2},
 		{"媒体资产无宽高", "SELECT COUNT(*) FROM chat_assets WHERE original_mime_type IN ('audio/wav', 'video/mp4') AND original_width IS NULL AND original_height IS NULL AND preview_storage_key IS NULL", 2},
 		{"上下文检查点", "SELECT COUNT(*) FROM chat_context_checkpoints WHERE status = 'active'", 1},

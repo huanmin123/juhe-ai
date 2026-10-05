@@ -4,7 +4,7 @@
       <details v-if="tool.summaries.length || tool.duplicateCount || tool.progress" class="chat-process-group" :open="isExpanded(tool)">
         <summary @click.prevent="toggleExpanded(tool)">
           <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
-          <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status) }}<template v-if="tool.statusDetail"> · {{ tool.statusDetail }}</template><template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template><template v-if="terminalStageTimingsLabel(tool)"> · {{ terminalStageTimingsLabel(tool) }}</template></span>
+          <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status, tool.type) }}<template v-if="tool.statusDetail"> · {{ tool.statusDetail }}</template><template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template><template v-if="terminalStageTimingsLabel(tool)"> · {{ terminalStageTimingsLabel(tool) }}</template></span>
         </summary>
         <div class="chat-process-details" :class="{ 'is-streaming': isActiveToolGroup(tool) }">
           <div v-if="tool.progress" class="chat-subagent">
@@ -36,7 +36,7 @@
       </details>
       <div v-else class="chat-process-group chat-process-summary-only">
         <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
-        <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status) }}<template v-if="tool.statusDetail"> · {{ tool.statusDetail }}</template><template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template></span>
+        <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status, tool.type) }}<template v-if="tool.statusDetail"> · {{ tool.statusDetail }}</template><template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template></span>
       </div>
     </template>
     <details v-if="process.reasoningText" class="chat-reasoning">
@@ -146,7 +146,11 @@ watch(() => props.message, async () => {
 function toolLabel(type: string): string {
   return ({ web_search_call: '联网搜索', web_search: '联网搜索', image_generation: '图片生成', generate_image: '图片生成', video_generation: '视频生成', generate_video: '视频生成', audio_generation: '语音合成', generate_audio: '语音合成', file_search_call: '文件检索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用')
 }
-function statusLabel(status: ChatToolStatus): string {
+function statusLabel(status: ChatToolStatus, toolType?: string): string {
+  // 视频生成是异步任务工具：调用终态只代表任务受理成功，结果状态由
+  // output_media_task 任务卡展示；这里若写「已完成」会和任务卡的
+  // 「生成失败」等终态文案互相矛盾。
+  if (status === 'completed' && (toolType === 'video_generation' || toolType === 'generate_video')) return '已提交'
   return ({ started: '准备中', updated: '执行中', completed: '已完成', failed: '失败', canceled: '已停止' })[status]
 }
 </script>

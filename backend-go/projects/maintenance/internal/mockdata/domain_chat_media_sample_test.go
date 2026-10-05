@@ -1,6 +1,7 @@
 package mockdata
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 )
@@ -50,5 +51,26 @@ func TestChatCodexWAVHeaderValid(t *testing.T) {
 		if b != 0 {
 			t.Fatalf("采样区第 %d 字节非静音: %d", i, b)
 		}
+	}
+}
+
+// TestChatCodexMP4Structure 钉住 MP4 样本的结构事实：总长 2024、ftyp 起始、
+// moov 前置于 mdat（faststart，浏览器无需下载全文件即可起播）。常量若被误
+// 编辑（丢行/丢字节），靠 magic 或自洽的长度推导都发现不了，只有结构断言能拦。
+func TestChatCodexMP4Structure(t *testing.T) {
+	mp4 := chatCodexMP4()
+	if len(mp4) != 2024 {
+		t.Fatalf("MP4 总长 = %d，期望 2024", len(mp4))
+	}
+	if !bytes.HasPrefix(mp4[4:], []byte("ftyp")) {
+		t.Fatalf("文件头不是 ftyp box: %q", mp4[4:8])
+	}
+	moovAt := bytes.Index(mp4, []byte("moov"))
+	mdatAt := bytes.Index(mp4, []byte("mdat"))
+	if moovAt < 0 || mdatAt < 0 {
+		t.Fatalf("缺少 moov(%d)/mdat(%d) box", moovAt, mdatAt)
+	}
+	if moovAt > mdatAt {
+		t.Fatalf("moov(%d) 必须前置于 mdat(%d)：faststart 失效则浏览器无法流式起播", moovAt, mdatAt)
 	}
 }

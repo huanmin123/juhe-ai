@@ -88,7 +88,10 @@ export function startChatMediaTaskPolling(deps: ChatMediaTaskPollingDependencies
       try {
         const snapshot = await chatApi.mediaTask(conversationId, block.jobId)
         // 会话已切换的迟到响应丢弃（块状态由新会话自己的轮询推进）。
-        if (!stopped && deps.conversationId() === conversationId) deps.applyPatch(patchOf(snapshot))
+        // 结算未完成的快照（isSettlementPendingSnapshot）同样不落块：落了会把任务
+        // 定格成「已完成无产物」/「失败无原因」并因块终态而停轮，违背「下次轮询
+        // 重试结算」契约（§2.2 settlementError 语义）。
+        if (!stopped && deps.conversationId() === conversationId && !isSettlementPendingSnapshot(snapshot)) deps.applyPatch(patchOf(snapshot))
       } catch {
         anyFailure = true
       } finally {
@@ -129,4 +132,13 @@ function patchOf(snapshot: ChatMediaTaskSnapshot): ChatMediaTaskBlockPatch {
     ...(snapshot.assetId ? { assetId: snapshot.assetId } : {}),
     ...(snapshot.error ? { error: snapshot.error } : {})
   }
+}
+
+/** 结算未完成的快照形态：终态字段残缺（completed 无 assetId、failed 无 error），
+ * 只会在结算内部错误（后端 payload 附 settlementError 而不给终态字段）时出现。
+ * 正常链路 completed 必带 assetId、failed 必带 error 文案。 */
+export function isSettlementPendingSnapshot(snapshot: ChatMediaTaskSnapshot): boolean {
+  if (snapshot.status === 'completed') return !snapshot.assetId
+  if (snapshot.status === 'failed') return !snapshot.error
+  return false
 }
