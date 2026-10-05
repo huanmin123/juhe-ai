@@ -118,7 +118,7 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		t.Fatalf("first seed: %v", err)
 	}
 	if first.ModelCatalogRows != 208 {
-		t.Fatalf("first seed model catalog rows = %d, want 207 (目录 213 行，按种子钟 2026-09-04 过滤 shutdown_date 早于该日的 6 行：xai 2026-05-15 四行 + gemini veo-3.0 两行 2026-06-30；2026-10-05 复核批 gemini 新增 4 行无 shutdown)", first.ModelCatalogRows)
+		t.Fatalf("first seed model catalog rows = %d, want 208 (目录 214 行，按种子钟 2026-09-04 过滤 shutdown_date 早于该日的 6 行：xai 2026-05-15 四行 + gemini veo-3.0 两行 2025-11-12；2026-10-05 复核批/核对批 gemini 新增行无 shutdown)", first.ModelCatalogRows)
 	}
 	snapshotAfterFirst := seedTestSnapshot(t, db)
 
@@ -159,7 +159,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	// → 140；M3 回填池 xai 视频 grok-imagine-video-1.5 → 141；对话批
 	// volcengine/qwen 档案 +chat_completions 绑定 38→40，复用既有
 	// openai_v1_chat_completions 族不新增 family 行；2026-10-05 全厂商补全批
-	// 目录 141→208，按种子钟 2026-09-04 过滤 6 行已 shutdown 行 → 202）后
+	// 起 141→214（补全批 208、复核批 213、占位行批 doubao-tts → 214），按
+	// 种子钟 2026-09-04 过滤 6 行已 shutdown 行 → 208）后
 	// providers 11 / families 13 / profiles
 	// 16 / profile 绑定 40（M3f qwen +audio_transcription、M4b hybrid
 	// +video_generation+tts、M6 volcengine +tts、对话批 volcengine/qwen

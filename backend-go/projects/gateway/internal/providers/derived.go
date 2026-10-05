@@ -452,7 +452,10 @@ func geminiCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 
 func xaiCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	label := "Token 计费"
-	if item.Mode != nil && *item.Mode == "image" {
+	// 统一词表双轨：Mode "image_generation" 是统一词表（2026-10-05 核对批
+	// 起数据层落此值），"image" 是旧词表——存量自定义/历史行仍可能携带，
+	// 两轨同按图像行处理（标题切换）。
+	if item.Mode != nil && (*item.Mode == "image" || *item.Mode == "image_generation") {
 		label = "图像输入"
 	}
 	entries := []catalogDisplayItem{
@@ -498,6 +501,10 @@ func glmCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	sections := appendSection(nil, priceSection("token_pricing", label, entries))
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
+	// 2026-10-05 核对批补齐：glm 是九家中唯一缺美元换算披露的投影——CNY
+	// 来源行（如 cogvideox-2 按次价 0.5 元 ÷ 7.0）需展示官方币种/汇率/源价
+	// note，调用方式与其余八家一致。
+	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 

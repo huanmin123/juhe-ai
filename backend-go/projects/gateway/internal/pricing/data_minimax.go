@@ -49,9 +49,12 @@ var minimaxModelPricingData = []rawModel{
 		// 512P-6s $0.10、512P-10s $0.15。按条 → 每秒是推导、禁止折秒
 		//（裁决 §2.4 维持）——每秒槽位保持空（互斥门禁）；轮询响应不回报
 		// 时长（契约 §8.1）→ 终态计费按次（一次任务 = 一次调用）。
+		// 2026-10-05 核对批反向补日期：官方发布记录页明文 2025-10-28，种子
+		// 层 ReleaseDate 已有同值，计价层本行补齐对齐。
 		Model:                 "MiniMax-Hailuo-2.3",
 		Mode:                  "video",
 		CatalogOrder:          intp(1),
+		ReleaseDate:           "2025-10-28",
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"video"},
 		SupportedAPIProtocols: []string{"video"},

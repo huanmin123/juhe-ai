@@ -15,8 +15,14 @@ package pricing
 // 回正（官方明文：<200k $2.00/$0.50|0.30/$6.00，≥200k $4.00/$1.00|0.60/
 // $12.00，上下文 500k；1.1x 是 us.api.x.ai 区域端点全 token 乘数，仅
 // grok-4.7/4.6，非长上下文档）；grok-voice-transcribe-2.0 转正为 REST
-// $0.10/hr 直除；grok-imagine-video-1.5 注释修正（官方统一 $0.080/sec，
-// 无 1080p 分档价）。教训：数值必须以页面原文为准，不得转引。
+// $0.10/hr 直除。教训：数值必须以页面原文为准，不得转引。
+// （本批"grok-imagine-video-1.5 统一 $0.080/sec 无分档"的结论已由 2026-10-05
+// 核对批再次回正为三档明文，见下方行注释。）
+//
+// 2026-10-05 核对批：grok-imagine-video-1.5 秒价回正 $0.14/s（官方三档
+// 480p $0.08 / 720p $0.14 / 1080p $0.25 per sec，主档取 720p，沿 sora/
+// Hailuo「非最低档主档」先例）；grok-imagine-image 系三行 Mode 统一词表
+// "image"→"image_generation"（展示投影双轨兼容）。
 //
 // M3 回填池媒体增补（契约 §6.1，curated 2026-10-04）：grok-imagine-video-1.5
 // 视频行落官方秒价（见下方行注释）。
@@ -156,7 +162,7 @@ var xAIModelPricingData = []rawModel{
 		supportedAPIProtocols:     []string{"responses"},
 	}),
 	{
-		Model: "grok-imagine-image-2.0", Mode: "image",
+		Model: "grok-imagine-image-2.0", Mode: "image_generation",
 		ReleaseDate:           "2026-08-07",
 		OutputCostPerImage:    f64p(0.04),
 		SupportedAPIProtocols: []string{"images"},
@@ -164,7 +170,7 @@ var xAIModelPricingData = []rawModel{
 		OutputModalities:      []string{"image"},
 	},
 	{
-		Model: "grok-imagine-image", Mode: "image",
+		Model: "grok-imagine-image", Mode: "image_generation",
 		ReleaseDate:           "2026-03-02",
 		OutputCostPerImage:    f64p(0.02),
 		SupportedAPIProtocols: []string{"images"},
@@ -176,7 +182,7 @@ var xAIModelPricingData = []rawModel{
 		// "60 天通知期 2026-09-02 起；到期后 slug 重定向 grok-imagine-image-2.0
 		// quality=low，slug 不失效，价格更低"（Requests to the slug will be
 		// served by grok-imagine-image-2.0 with quality set to low）。
-		Model: "grok-imagine-image-quality", Mode: "image",
+		Model: "grok-imagine-image-quality", Mode: "image_generation",
 		ReleaseDate:           "2026-04-03",
 		ShutdownDate:          "2026-11-02",
 		OutputCostPerImage:    f64p(0.05),
@@ -185,12 +191,13 @@ var xAIModelPricingData = []rawModel{
 		OutputModalities:      []string{"image"},
 	},
 	// 视频（M3 回填池，契约 §6.1）：Grok Imagine Video 1.5 文/图生视频
-	// （image 首帧承接公共 input_reference，url/base64 双形态直传），1–15 秒、
+	//（image 首帧承接公共 input_reference，url/base64 双形态直传），1–15 秒、
 	// 七档宽高比、480p/720p/1080p、音轨默认开启；统一 /v1/videos 面经 xai
-	// adapter 改写。2026-10-05 复核批注释修正：官方 Imagine Pricing 明文
-	// "grok-imagine-video-1.5 | $0.080 / sec" 为统一价，无 1080p 分档价
-	// （1080p 是能力描述 native 1080p，非计费档），秒价 0.08 维持；
-	// ReleaseDate 2026-07-31 官方发布日。
+	// adapter 改写。ReleaseDate 2026-07-31 官方发布日。
+	// 2026-10-05 核对批回正：官方 Imagine Pricing 明文三档每秒价——480p
+	// $0.08 / 720p $0.14 / 1080p $0.25 per sec，目录单槽位沿 sora/Hailuo
+	// 「非最低档主档」先例落 720p $0.14/s，480p/1080p 分档注释登记；上一轮
+	// 复核批「官方统一 $0.080/sec 无分档」系漏读分档表，作废。
 	{
 		Model:                    "grok-imagine-video-1.5",
 		Mode:                     "video",
@@ -198,7 +205,7 @@ var xAIModelPricingData = []rawModel{
 		SupportedAPIProtocols:    []string{"video"},
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
-		VideoOutputCostPerSecond: f64p(0.08),
+		VideoOutputCostPerSecond: f64p(0.14),
 	},
 	// 2026-10-05 全厂商补全批新增（官方 docs.x.ai pricing/voice 页 USD
 	// 明文，计划 §3.1）：

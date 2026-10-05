@@ -127,7 +127,7 @@
 | volcengine | 按字符（回填） | 长转写按时长（回填） | 任务响应 `usage`/`duration` 字段未回填契约前不抽秒 → 请求参数自算（§2.8.2：创建请求 `seconds` 生效时按快照秒数落 usage 行，usage_source=request）；目录未落 USD 秒价（seedance 维持无价）→ 计量照落成本 0 不虚计，字段回填后启用回报 | — |
 | qwen | CosyVoice 按字符（回填） | paraformer 按时长（回填） | `usage` JSON 字符串字段族（`video_duration`/`output_video_duration`/`duration`）秒计量回报优先；无秒可抽且请求 `seconds` 生效时按请求参数自算（§2.8.2）；目录已落 USD 秒价（2026-10-05 补价：wan2.2-t2v-plus $0.1/s 等）按秒计费 | — |
 | glm | 回填 | 回填 | **按次计费**（§2.8.1，2026-10-05 按次计费批已实施）：目录行 `VideoOutputCostPerCall`——cogvideox-3 $0.2/次（z.ai USD 明文）、cogvideox-2 $0.0714/次（国内 0.5 元 ÷ 7.0 换算）；轮询响应不回报时长（§7.1）→ 一次任务 = 一次调用，成本 = 次价 × 1，usage 行不落秒计量 | — |
-| xai | 待回填（§6.2 语音面未回填） | 待回填（§6.2） | done 的 `video.duration` 秒计量回报优先；无秒可抽且请求 `seconds` 生效时按请求参数自算（§2.8.2）；目录已落 USD 秒价（grok-imagine-video-1.5 $0.08/s）按秒计费（§6.1） | — |
+| xai | 待回填（§6.2 语音面未回填） | 待回填（§6.2） | done 的 `video.duration` 秒计量回报优先；无秒可抽且请求 `seconds` 生效时按请求参数自算（§2.8.2）；目录已落 USD 秒价（grok-imagine-video-1.5 三档明文主档取 720p $0.14/s，2026-10-05 核对批回正）按秒计费（§6.1） | — |
 
 规则（2026-10-05 按次计费 + 请求参数自算批修订）：
 

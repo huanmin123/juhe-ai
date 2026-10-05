@@ -52,10 +52,6 @@ func anthropicModelCacheRead(cacheReadMultiplier float64, model string, catalogO
 // Active with tentative floors only ("not sooner than"), no confirmed
 // shutdown dates, so no row carries ShutdownDate here.
 var anthropicModelPricingData = []rawModel{
-	// Claude Sonnet 5: the officially scheduled 2026-09-01 increase to
-	// $3/$15 was cancelled; the launch intro price $2/$10 (through
-	// 2026-08-31) is now the standard price (official pricing page,
-	// checked 2026-09-23).
 	anthropicModelCacheRead(0.05, "claude-opus-5-5", 2, "2026-09-22", 4, 20, 1_000_000, 1_000_000, 128_000,
 		[]string{"low", "medium", "high", "xhigh", "max"}, "medium"),
 	anthropicModel("claude-opus-5", 5, "2026-07-24", 5, 25, 1_000_000, 1_000_000, 128_000,
@@ -64,6 +60,10 @@ var anthropicModelPricingData = []rawModel{
 		[]string{"low", "medium", "high", "xhigh", "max"}, "high"),
 	anthropicModel("claude-fable-5", 20, "2026-06-09", 10, 50, 1_000_000, 1_000_000, 128_000,
 		[]string{"low", "medium", "high", "xhigh", "max"}, "high"),
+	// Claude Sonnet 5: the officially scheduled 2026-09-01 increase to
+	// $3/$15 was cancelled; the launch intro price $2/$10 (through
+	// 2026-08-31) is now the standard price (official pricing page,
+	// checked 2026-09-23).
 	anthropicModel("claude-sonnet-5", 25, "2026-06-30", 2, 10, 1_000_000, 1_000_000, 128_000,
 		[]string{"low", "medium", "high", "xhigh", "max"}, "high"),
 	anthropicModel("claude-opus-4-8", 40, "2026-05-28", 5, 25, 1_000_000, 1_000_000, 128_000,

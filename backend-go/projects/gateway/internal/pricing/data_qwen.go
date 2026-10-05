@@ -16,9 +16,10 @@ package pricing
 //     最常用主档（行注释登记调研口径）；人民币价按约定汇率 7.0 换算落
 //     USD（Source 元信息可溯），官方国际站 USD 明文可查证后覆盖。换算值
 //     保留 4 位有效数字，行注释登记「X ÷ 7.0 = Y」可复核。
-//   - 既有 M3 媒体行（wan2.2-t2v-plus / paraformer-v2）A3 批调研未覆盖
-//     其单价，保持无价（0 计费 + usage_missing 兜底，契约 §2.8），待调研
-//     回填后再按约定汇率换算落价。
+//   - 既有 M3 媒体行（wan2.2-t2v-plus / paraformer-v2）已于 2026-10-05
+//     用户裁决补价（wan2.2-t2v-plus 1080P 0.70 元/秒、paraformer-v2
+//     0.00008 元/秒，按约定汇率 7.0 换算落 USD，Source 元信息可溯）；
+//     原「保持无价（0 计费 + usage_missing 兜底）」口径作废。
 //
 // 2026-10-05 复核批（官方国际站 USD 明文覆盖，alibabacloud.com/help/en/
 // model-studio/model-pricing 新加坡 International 口径）：15 行落官方 USD
@@ -31,7 +32,9 @@ package pricing
 // $0.10/秒 720p 牌价、wan2.7-t2v $0.10/秒 720p）、image 1 行
 // （qwen-image-3.0 $0.03/张）、embedding 1 行（text-embedding-v4
 // perToken(0.07)）。SourcePricingNote 改为国际站明文 + 国内人民币原句
-// 留档。wan2.2-t2v-plus / paraformer-v2 国际站未售且调研未覆盖，保持无价。
+// 留档。wan2.2-t2v-plus / paraformer-v2 国际站未售，已按国内人民币明文价
+// 以约定汇率 7.0 换算落价（2026-10-05 用户裁决补价，行内 Source 元信息可
+// 溯）。
 //   - usage 计量照抽（契约 §10.1/§10.2：轮询响应 usage 是 DashScope 的 JSON
 //     字符串形态，adapter 双形态兼容解析）：万相 wan2.5 及以下版本字段族
 //     video_duration/video_ratio，wan2.6 字段族 duration/
@@ -70,21 +73,21 @@ var qwenModelPricingData = []rawModel{
 		// paraformer adapter 改写，契约 §10.2，M3f）；输入是公网音频 URL
 		//（input_url → input.file_urls，零存储不暂存），输出转写结果 JSON
 		// 文件；收录 paraformer-v2（通用长转写档，录音文件识别异步任务）。
-		// A3 批调研未覆盖该行单价 → 保持无价（0 计费 + usage_missing 兜底），
-		// 待调研回填后再按约定汇率 7.0 换算落价。
+		// 2026-10-05 用户裁决补价：官方人民币秒价 0.00008 元/秒（百炼计费
+		// 页 ASR 节）→ 0.00008 ÷ 7.0 = 0.00001143（USD/秒）落
+		// AudioInputCostPerSecond；qwen usage 字段族已核实，秒计量照抽。
+		// 2026-10-05 核对批：换算值 0.0000114 回正 0.00001143（4 位有效
+		// 数字约定，8/7 = 1.142857…×10⁻⁵ 取 1.143）。
 		Model:                 "paraformer-v2",
 		Mode:                  "audio",
 		InputModalities:       []string{"audio"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"audio_transcription"},
-		// 2026-10-05 用户裁决补价：官方人民币秒价 0.00008 元/秒（百炼计费
-		// 页 ASR 节）→ 0.00008 ÷ 7.0 = 0.0000114（USD/秒）落
-		// AudioInputCostPerSecond；qwen usage 字段族已核实，秒计量照抽。
-		AudioInputCostPerSecond: f64p(0.0000114),
+		AudioInputCostPerSecond: f64p(0.00001143),
 		SourcePricingCurrency:   "CNY",
 		SourceExchangeRateToUsd: f64p(7.0),
 		SourceExchangeRateDate:  "2026-10-05",
-		SourcePricingNote:       "官方人民币价 0.00008 元/秒（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio），按约定汇率 7.0 换算 $0.0000114/秒",
+		SourcePricingNote:       "官方人民币价 0.00008 元/秒（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio），按约定汇率 7.0 换算 $0.00001143/秒",
 	},
 	{
 		// 对话：qwen3.8-max（旗舰档，1M 上下文，百炼 OpenAI 兼容

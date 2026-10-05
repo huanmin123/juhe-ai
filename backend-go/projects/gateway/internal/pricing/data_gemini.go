@@ -25,6 +25,18 @@ package pricing
 // 图像、gemini-3.5-transcribe / gemini-3.5-transcribe-live 转写）。
 // 3.6-flash 现价 $0.75/$3.75 复核确认正确；3.8-live-extended-thinking
 // 官方无单独加价不落；3.5-flash >200k 档官方无此档确认未落。
+//
+// 2026-10-05 核对批（两路独立复核代理对官方定价页原文交叉回正）：
+// gemini-3.8-live $0.75/$4.50 + audio $3/$12 + image input $1.00（原误引
+// $3.75/$1.5/$6）；3.8 TTS 两行回正（flash-tts $0.50/$9.00、lite-tts
+// $0.50/$6.00，含 2027-01-01 起翻倍明文注释）；图像两行补 text 输出通道
+// （3.1-flash-image input 回正 $0.50 + output $3.00；3-pro-image output
+// $12.00）；3.5-flash/3.5-flash-lite priority 缓存存储回正 $1.0/hr、
+// 3.5-flash flex 缓存读回正 $0.075（batch $0.08 注释登记）；veo-3.0 两行
+// ReleaseDate/ShutdownDate 按 deprecations preview 条目回正
+// （2025-07-31 / 2025-11-12，2026-06-30 属 GA -001 版）；TTS 四行文件序
+// 108/109/110/111 升序（纯布局移动）。gemini-omni-1.1-flash 官方
+// GA/Preview 两表未区分，存疑不动（登记计划待复核清单）。
 type geminiTierPrices struct {
 	inputUsdPer1M               float64
 	outputUsdPer1M              float64
@@ -203,14 +215,18 @@ var geminiModelPricingData = []rawModel{
 		supportedTools:        []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context", "computer_use"},
 	}),
 	geminiTextModel(geminiModelInput{
-		// 2026-10-05 新增（官方定价页明文）：Live 实时音频对话，text
-		// $0.75/$3.75、audio in $1.50 / audio out $6.00 per 1M tokens。
-		// 协议/工具对照 gemini-omni-1.1-flash 同款（Live 会话面）。
+		// 2026-10-05 核对批回正（两路独立复核官方定价页原句）：Input
+		// $0.75 (text) / $3.00 or $0.005/min (audio) / $1.00 or $0.002/min
+		// (image+video)；Output $4.50 (text) / $12.00 or $0.018/min (audio)
+		// per 1M tokens。image+video 输入 $1.00 落 image 通道（分钟价
+		// $0.002/min 目录无音频/图像分钟通道，注释登记）；协议/工具对照
+		// gemini-omni-1.1-flash 同款（Live 会话面）。
 		model: "gemini-3.8-live", catalogOrder: -2,
-		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75,
-		audioInputUsdPer1M: f64p(1.5), audioOutputUsdPer1M: f64p(6),
+		inputUsdPer1M: 0.75, outputUsdPer1M: 4.5,
+		audioInputUsdPer1M: f64p(3), audioOutputUsdPer1M: f64p(12),
+		imageInputUsdPer1M:    f64p(1),
 		supportedAPIProtocols: []string{"generate_content", "stream_generate_content"},
-		inputModalities:       []string{"text", "audio"},
+		inputModalities:       []string{"text", "image", "audio"},
 		outputModalities:      []string{"text", "audio"},
 		supportedTools:        []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context", "computer_use"},
 	}),
@@ -264,8 +280,10 @@ var geminiModelPricingData = []rawModel{
 	geminiTextModel(geminiModelInput{
 		model: "gemini-3.5-flash-lite", catalogOrder: 5, releaseDate: "2026-07-21",
 		inputUsdPer1M: 0.3, outputUsdPer1M: 2.5, cachedInputUsdPer1M: f64p(0.03), cacheStorageUsdPer1MPerHour: 1,
-		flex:                      &geminiTierPrices{inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: f64p(0.02), cacheStorageUsdPer1MPerHour: 1},
-		priority:                  &geminiTierPrices{inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: f64p(0.05), cacheStorageUsdPer1MPerHour: 1.8},
+		flex: &geminiTierPrices{inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: f64p(0.02), cacheStorageUsdPer1MPerHour: 1},
+		// 2026-10-05 核对批回正：priority 档缓存存储 $1.0/hr（补全批误引
+		// $1.8，官方定价页 priority 段明文 $1.00）。
+		priority:                  &geminiTierPrices{inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: f64p(0.05), cacheStorageUsdPer1MPerHour: 1},
 		supportedAPIProtocols:     []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
 		inputModalities:           []string{"text", "image", "video", "audio", "file"},
 		outputModalities:          []string{"text"},
@@ -276,8 +294,12 @@ var geminiModelPricingData = []rawModel{
 	geminiTextModel(geminiModelInput{
 		model: "gemini-3.5-flash", catalogOrder: 10, releaseDate: "2026-05-19",
 		inputUsdPer1M: 1.5, outputUsdPer1M: 9, cachedInputUsdPer1M: f64p(0.15), cacheStorageUsdPer1MPerHour: 1,
-		flex:                      &geminiTierPrices{inputUsdPer1M: 0.75, outputUsdPer1M: 4.5, cachedInputUsdPer1M: f64p(0.08), cacheStorageUsdPer1MPerHour: 1},
-		priority:                  &geminiTierPrices{inputUsdPer1M: 2.7, outputUsdPer1M: 16.2, cachedInputUsdPer1M: f64p(0.27), cacheStorageUsdPer1MPerHour: 1.8},
+		// 2026-10-05 核对批回正：flex 档缓存读 $0.075（补全批误引 $0.08，
+		// 官方定价页 flex 段明文 $0.075；Batch 档 $0.08 为独立明文价，目录
+		// 无 batch 档通道，注释登记）；priority 档缓存存储 $1.0/hr（误引
+		// $1.8 同上）。
+		flex:                      &geminiTierPrices{inputUsdPer1M: 0.75, outputUsdPer1M: 4.5, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 1},
+		priority:                  &geminiTierPrices{inputUsdPer1M: 2.7, outputUsdPer1M: 16.2, cachedInputUsdPer1M: f64p(0.27), cacheStorageUsdPer1MPerHour: 1},
 		supportedAPIProtocols:     []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
 		inputModalities:           []string{"text", "image", "video", "audio", "file"},
 		outputModalities:          []string{"text"},
@@ -418,18 +440,23 @@ var geminiModelPricingData = []rawModel{
 	// 2026-10-05 全厂商补全批新增（官方定价页明文）：gemini-3.8 TTS 两行，
 	// geminiTTSModel 工厂（audio_speech + ResponseFormats ["pcm"]，对照
 	// gemini-2.5 tts 行字段）。官方无独立发布日明文，ReleaseDate 留空。
+	// 2026-10-05 核对批回正：官方定价页明文 3.8-flash-tts $0.50 / $9.00
+	//（2027-01-01 起 $1.00/$18.00）、3.8-flash-lite-tts $0.50 / $6.00
+	//（2027 起 $1.00/$12.00）per 1M tokens——补全批误引 $0.75/$6 与
+	// $0.30/$3，本轮以页面原文回正。文件序按 catalogOrder 108/109/110/111
+	// 升序排布（纯布局移动，2.5 两行值不变）。
 	geminiTTSModel(geminiModelInput{
 		model: "gemini-3.8-flash-tts", catalogOrder: 108,
-		inputUsdPer1M:         0.75,
-		outputUsdPer1M:        6,
+		inputUsdPer1M:         0.5,
+		outputUsdPer1M:        9,
 		supportedAPIProtocols: []string{"audio_speech"},
 		inputModalities:       []string{"text"},
 		outputModalities:      []string{"audio"},
 	}),
 	geminiTTSModel(geminiModelInput{
 		model: "gemini-3.8-flash-lite-tts", catalogOrder: 109,
-		inputUsdPer1M:         0.30,
-		outputUsdPer1M:        3,
+		inputUsdPer1M:         0.5,
+		outputUsdPer1M:        6,
 		supportedAPIProtocols: []string{"audio_speech"},
 		inputModalities:       []string{"text"},
 		outputModalities:      []string{"audio"},
@@ -442,20 +469,22 @@ var geminiModelPricingData = []rawModel{
 	// 完善扩展）。Veo operation 响应不回报输出秒数且 seconds 属 ignored
 	// 参数（veo adapter Capabilities），网关当前无计量基源——终态计费走
 	// 契约 §2.8 兜底（0 计费 + usage_missing），目录秒价留待 Veo 回报时长
-	// 字段（或固定档裁决）后生效。发布 2025-05-20（Google I/O 2025，Veo 3
-	// 首发日，与 TTS 两行同日）。
-	// 2026-10-05 修正：官方 deprecations 页明文两行 2026-06-30 终止支持
-	//（继任者 veo-3.1 系，见下方新增行），ShutdownDate 落官方明文日期
-	//（裁决 §2.3）。
+	// 字段（或固定档裁决）后生效。发布 2025-07-31（官方 deprecations 页
+	// preview 版条目）。
+	// 2026-10-05 核对批回正：官方 deprecations 页区分 preview 与 GA 两表
+	//——preview 版（本目录两行 ID）Retired November 12, 2025，GA -001 版
+	// 才是 2026-06-30 终止支持；补全批把 GA 日期误挂到 preview 行，本轮
+	// ReleaseDate/ShutdownDate 按官方 preview 条目回正（preview ID 不改名，
+	// GA 日期区分登记于此）。
 	rawModel{
-		Model: "veo-3.0-generate-preview", Mode: "video", ReleaseDate: "2025-05-20", ShutdownDate: "2026-06-30",
+		Model: "veo-3.0-generate-preview", Mode: "video", ReleaseDate: "2025-07-31", ShutdownDate: "2025-11-12",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
 		VideoOutputCostPerSecond: f64p(0.40),
 	},
 	rawModel{
-		Model: "veo-3.0-fast-generate-preview", Mode: "video", ReleaseDate: "2025-05-20", ShutdownDate: "2026-06-30",
+		Model: "veo-3.0-fast-generate-preview", Mode: "video", ReleaseDate: "2025-07-31", ShutdownDate: "2025-11-12",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
@@ -490,25 +519,33 @@ var geminiModelPricingData = []rawModel{
 	rawModel{
 		// Nano Banana 2 图像生成：mode=image_generation（用途分类），走
 		// generate_content 出图（协议对照现役 gemini 行 generate_content +
-		// stream_generate_content 双协议写法）。text input $3.00/1M、
-		// images（image token 输出）$60.00/1M image tokens——等价 $0.045/0.5K
-		// 张、$0.067/1K、$0.101/2K、$0.151/4K（注释登记，不建每张价）。
+		// stream_generate_content 双协议写法）。2026-10-05 核对批回正（官方
+		// 定价页原句）：Input $0.50 (text/image)——text 与 image 输入同价，
+		// 共用模态无关 token 通道；Output $3.00 (text and thinking) +
+		// $60.00 (images)——文本/thinking 输出落 OutputCostPerToken、image
+		// token 输出落 image 通道（补全批误引 text input $3.00 且漏 text
+		// 输出通道）。images $60.00/1M image tokens 等价 $0.045/0.5K 张、
+		// $0.067/1K、$0.101/2K、$0.151/4K（注释登记，不建每张价）。
 		Model: "gemini-3.1-flash-image", Mode: "image_generation", CatalogOrder: intp(101),
 		InputModalities:         []string{"text", "image"},
-		OutputModalities:        []string{"image"},
+		OutputModalities:        []string{"text", "image"},
 		SupportedAPIProtocols:   []string{"generate_content", "stream_generate_content"},
-		InputCostPerToken:       perToken(3),
+		InputCostPerToken:       perToken(0.5),
+		OutputCostPerToken:      perToken(3),
 		OutputCostPerImageToken: perToken(60),
 	},
 	rawModel{
-		// Nano Banana Pro 图像生成：text input $2.00/1M（image input 亦
-		// $2.00/1M，注释登记）、images $120.00/1M image tokens——等价
+		// Nano Banana Pro 图像生成：2026-10-05 核对批补 text 输出通道（官方
+		// 原句 Output $12.00 (text and thinking) + $120.00 (images)——补全批
+		// 只落 image 输出通道）。text input $2.00/1M（image input 亦
+		// $2.00/1M，注释登记）；images $120.00/1M image tokens——等价
 		// $0.134/1K-2K 张、$0.24/4K（注释登记）。
 		Model: "gemini-3-pro-image", Mode: "image_generation", CatalogOrder: intp(102),
 		InputModalities:         []string{"text", "image"},
-		OutputModalities:        []string{"image"},
+		OutputModalities:        []string{"text", "image"},
 		SupportedAPIProtocols:   []string{"generate_content", "stream_generate_content"},
 		InputCostPerToken:       perToken(2),
+		OutputCostPerToken:      perToken(12),
 		OutputCostPerImageToken: perToken(120),
 	},
 	rawModel{

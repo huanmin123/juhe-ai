@@ -841,4 +841,61 @@ func TestWeCatalogDisplayMediaPricingSections(t *testing.T) {
 	}
 }
 
+// TestWeCatalogDisplayVolcengineDoubaoTtsSections 钉住 doubao-tts 占位行的
+// 三 section 组合：naming_notice（占位名标注，SourcePricingNote 前缀触发）+
+// currency_conversion（CNY 换算披露）+ media_pricing（TTS 字符价，静态层
+// 透传）同现——命名性质、来源口径与计费单价在同一目录页可见（照
+// TestWeCatalogDisplayMediaPricingSections 风格）。
+func TestWeCatalogDisplayVolcengineDoubaoTtsSections(t *testing.T) {
+	ttsChars := 4.2857
+	item := ModelCatalogItem{
+		ProviderCode:            "volcengine",
+		Model:                   "doubao-tts",
+		Mode:                    ptr("audio"),
+		SupportedAPIProtocols:   []string{"audio_speech"},
+		TtsInputUsdPer1MChars:   &ttsChars,
+		SourcePricingCurrency:   "CNY",
+		SourceExchangeRateToUsd: ptrFloat64(7.0),
+		SourceExchangeRateDate:  "2026-10-05",
+		SourcePricingNote:       "占位目录行（非官方模型 ID）；官方人民币价 语音合成模型2.0 = 3 元/万字符（豆包语音产品计费 PDF volcengine.com/docs/6561/14275），按约定汇率 7.0 换算 $4.2857/百万字符",
+	}
+	sections := buildProviderCatalogDisplay(&item)
+	byKey := map[string]catalogDisplaySection{}
+	for _, section := range sections {
+		byKey[section.Key] = section
+	}
+
+	naming, ok := byKey["naming_notice"]
+	if !ok {
+		t.Fatalf("doubao-tts 缺少 naming_notice: %+v", sections)
+	}
+	if naming.Items[0].Value != "占位名（非官方模型 ID）——豆包语音按 appid/音色调用，本名称仅用于统一面路由与计费匹配" {
+		t.Fatalf("naming_notice 条目 = %+v", naming.Items)
+	}
+
+	conversion, ok := byKey["currency_conversion"]
+	if !ok {
+		t.Fatalf("doubao-tts 缺少 currency_conversion: %+v", sections)
+	}
+	conversionValues := map[string]any{}
+	for _, entry := range conversion.Items {
+		conversionValues[entry.Key] = entry.Value
+	}
+	if conversionValues["source_currency"] != "CNY" {
+		t.Fatalf("doubao-tts 官方币种应为大写 CNY: %+v", conversion.Items)
+	}
+
+	media, ok := byKey["media_pricing"]
+	if !ok {
+		t.Fatalf("doubao-tts 缺少 media_pricing: %+v", sections)
+	}
+	joined := ""
+	for _, entry := range media.Items {
+		joined += fmt.Sprint(entry.Value)
+	}
+	if !strings.Contains(joined, "$4.2857") {
+		t.Fatalf("media_pricing section = %q, want substring %q", joined, "$4.2857")
+	}
+}
+
 func ptr[T any](value T) *T { return &value }

@@ -1458,17 +1458,17 @@ func TestFullchainMediaVideoXaiGrokImagine(t *testing.T) {
 	}
 
 	// 管理面 media-jobs：行终态 completed 归因 xai 账户；done 的
-	// video.duration=6 秒计量照抽（OutputVideoSeconds>0），目录 $0.08/s
-	//（grok-imagine-video-1.5，复核批回正）→ cost_usd=0.48（6s × $0.08，
-	// 与链级测试同口径；本断言随定价落库回正）。
+	// video.duration=6 秒计量照抽（OutputVideoSeconds>0），目录 $0.14/s
+	//（grok-imagine-video-1.5，核对批回正：官方三档主档取 720p $0.14）→
+	// cost_usd=0.84（6s × $0.14，与链级测试同口径；本断言随定价落库回正）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
 	}, "completed")
 	if row.AccountID != accountID {
 		t.Fatalf("MV xai row accountId=%s, want %s", row.AccountID, accountID)
 	}
-	if row.CostUsd != 0.48 {
-		t.Fatalf("MV xai row costUsd=%v, want 0.48（$0.08/s × 6s）", row.CostUsd)
+	if row.CostUsd != 0.84 {
+		t.Fatalf("MV xai row costUsd=%v, want 0.84（$0.14/s × 6s）", row.CostUsd)
 	}
 	// 终态 usage 行落账（completed 成功行，endpoint=/v1/videos，模型直达）：
 	// usage_missing 语义在链级测试钉住（计量在场时无该标记）。

@@ -4,7 +4,9 @@ package pricing
 // curated 2026-10-04，接入核对于火山方舟官方文档与定价检索）；A2 批模型
 // 目录补全扩至 14 行（curated 2026-10-05）：6 行 chat（doubao-seed 系，
 // OpenAI 兼容 /api/v3）+ 4 行 video（seedance 系，含既有
-// doubao-seedance-1-0-pro-250528）+ 3 行 image（seedream 系）。计价落法
+// doubao-seedance-1-0-pro-250528）+ 3 行 image（seedream 系）；2026-10-05
+// 占位行批再 +1 行 doubao-tts 语音合成占位行（非官方模型 ID，见行注释）
+// → 现 15 行。计价落法
 // （人民币换算裁决，计划 §2.1/§2.6；2026-10-05 A3 批用户裁决：不允许无价）：
 //   - 火山官方计费口径为人民币且无官方 USD 价（模型列表页
 //     docs.volcengine.com/docs/82379/1330310、价格页
@@ -27,8 +29,10 @@ package pricing
 //     （"视频时长与计费相关"），但字段全貌未回填——保守不抽秒（不填
 //     OutputVideoSeconds），秒价落值在回填前不产生计费行项。
 //   - 豆包语音服务（TTS/ASR 应用面）无 model_id（音色经 req_params.speaker
-//     配置、模型由语音应用/资源决定），不落目录行（裁决登记）；M6 TTS
-//     adapter 配置事实见 docs/functions/火山方舟账号接入.md TTS 节。
+//     配置、模型由语音应用/资源决定）——原「不落目录行」裁决已被 2026-10-05
+//     占位行批取代：落 doubao-tts 占位目录行承载统一面路由与计费匹配
+//     （占位名显式标注非官方 ID，见行注释）；M6 TTS adapter 配置事实见
+//     docs/functions/火山方舟账号接入.md TTS 节。
 //   - doubao-seedance-1-0-pro 官方下线公告为"即将下线"但无明文日期 →
 //     不落 ShutdownDate（裁决 §2.3），行注释登记。
 //
@@ -353,11 +357,11 @@ var volcengineModelPricingData = []rawModel{
 		SourceExchangeRateDate:  "2026-10-05",
 		SourcePricingNote:       "官方人民币价 0.22 元/张（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.03143/张",
 	},
-	// M6 TTS（契约 §9.2 已实施，openspeech /api/v3/tts adapter）**不落目录
-	// 行**（不编造）：V3 TTS 请求面无 model 字段——音色经 req_params.speaker
-	// 配置、模型由语音应用/资源决定，官方文档无可查证的模型 ID 字符串
-	//（BV700_streaming 等是 speaker 名非模型名）；统一面 model 仅必填占位、
-	// 由 adapter 忽略。计费按字符、上游无字符回报 → 网关按请求 input 自算
-	// 计量照落、成本不虚计（0 计费，§2.8）；官方字符价可查证后再补。配置
-	// 事实见 docs/functions/火山方舟账号接入.md TTS 节。
+	// M6 TTS（契约 §9.2 已实施，openspeech /api/v3/tts adapter）目录承载
+	// 见文件头 doubao-tts 占位行（2026-10-05 占位行批落行：官方无 model 字
+	// 段——音色经 req_params.speaker 配置、模型由语音应用/资源决定，统一面
+	// model 仅必填占位、由 adapter 忽略；计费按字符、上游无字符回报 → 网关
+	// 按请求 input 自算计量照落。字符价取豆包语音产品计费 PDF 明文换算，
+	// 见占位行 Source 元信息）。配置事实见 docs/functions/火山方舟账号接入.md
+	// TTS 节。
 }
