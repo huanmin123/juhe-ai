@@ -70,7 +70,6 @@ func mustLoadProviderCatalogModels(provider string) []rawModel {
 func jsonToRawModel(entry map[string]any) (rawModel, error) {
 	var out rawModel
 	value := reflect.ValueOf(&out).Elem()
-	typ := value.Type()
 	for key, raw := range entry {
 		if key == "notes" {
 			continue
@@ -163,7 +162,6 @@ func jsonToRawModel(entry map[string]any) (rawModel, error) {
 			return out, fmt.Errorf("%s: unsupported field kind %s", key, field.Kind())
 		}
 	}
-	_ = typ
 	return out, nil
 }
 
