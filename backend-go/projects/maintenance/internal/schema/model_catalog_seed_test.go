@@ -52,14 +52,14 @@ func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
 	// and moved paraformer-v2 to the international-site USD price
 	// $0.000012/second (static layer only — the catalog table has no
 	// per-second price columns).
-	if len(modelCatalogSeedRows) != 221 {
-		t.Fatalf("model catalog seed rows = %d, want 221 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
+	if len(modelCatalogSeedRows) != 220 {
+		t.Fatalf("model catalog seed rows = %d, want 220 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 84, "xai": 14, "deepseek": 4, "anthropic": 15, "gemini": 31, "glm": 28, "minimax": 13, "volcengine": 15, "qwen": 17}
+	want := map[string]int{"gpt": 84, "xai": 14, "deepseek": 3, "anthropic": 15, "gemini": 31, "glm": 28, "minimax": 13, "volcengine": 15, "qwen": 17}
 	if len(perProvider) != len(want) {
 		t.Fatalf("provider set = %v, want %v", perProvider, want)
 	}

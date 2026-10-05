@@ -6,7 +6,7 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.0000015,
+      "inputCostPerToken": 1.5e-06,
       "inputModalities": [
         "text",
         "image",
@@ -18,7 +18,7 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-omni-1.1-flash",
-      "outputCostPerToken": 0.000009,
+      "outputCostPerToken": 9e-06,
       "outputModalities": [
         "text",
         "video"
@@ -62,9 +62,9 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000003,
-      "inputCostPerImageToken": 0.000001,
-      "inputCostPerToken": 7.5e-7,
+      "inputCostPerAudioToken": 3e-06,
+      "inputCostPerImageToken": 1e-06,
+      "inputCostPerToken": 7.5e-07,
       "inputModalities": [
         "text",
         "image",
@@ -75,8 +75,8 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.8-live",
-      "outputCostPerAudioToken": 0.000012,
-      "outputCostPerToken": 0.0000045,
+      "outputCostPerAudioToken": 1.2e-05,
+      "outputCostPerToken": 4.5e-06,
       "outputModalities": [
         "text",
         "audio"
@@ -115,20 +115,20 @@
       "supportsPromptCaching": false
     },
     {
-      "cacheReadInputTokenCost": 7.5e-8,
-      "cacheReadInputTokenCostFlex": 3.75e-8,
-      "cacheReadInputTokenCostPriority": 1.35e-7,
-      "cacheStorageInputTokenCostPerHour": 5e-7,
-      "cacheStorageInputTokenCostPerHourFlex": 5e-7,
-      "cacheStorageInputTokenCostPerHourPriority": 5e-7,
+      "cacheReadInputTokenCost": 7.5e-08,
+      "cacheReadInputTokenCostFlex": 3.75e-08,
+      "cacheReadInputTokenCostPriority": 1.35e-07,
+      "cacheStorageInputTokenCostPerHour": 5e-07,
+      "cacheStorageInputTokenCostPerHourFlex": 5e-07,
+      "cacheStorageInputTokenCostPerHourPriority": 5e-07,
       "catalogOrder": -1,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "medium",
-      "inputCostPerToken": 7.5e-7,
-      "inputCostPerTokenFlex": 3.75e-7,
-      "inputCostPerTokenPriority": 0.00000135,
+      "inputCostPerToken": 7.5e-07,
+      "inputCostPerTokenFlex": 3.75e-07,
+      "inputCostPerTokenPriority": 1.35e-06,
       "inputModalities": [
         "text",
         "image",
@@ -141,9 +141,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.8-flash",
-      "outputCostPerToken": 0.00000375,
-      "outputCostPerTokenFlex": 0.000001875,
-      "outputCostPerTokenPriority": 0.00000675,
+      "outputCostPerToken": 3.75e-06,
+      "outputCostPerTokenFlex": 1.875e-06,
+      "outputCostPerTokenPriority": 6.75e-06,
       "outputModalities": [
         "text"
       ],
@@ -206,20 +206,20 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 7.5e-8,
-      "cacheReadInputTokenCostFlex": 3.75e-8,
-      "cacheReadInputTokenCostPriority": 1.35e-7,
-      "cacheStorageInputTokenCostPerHour": 5e-7,
-      "cacheStorageInputTokenCostPerHourFlex": 5e-7,
-      "cacheStorageInputTokenCostPerHourPriority": 5e-7,
+      "cacheReadInputTokenCost": 7.5e-08,
+      "cacheReadInputTokenCostFlex": 3.75e-08,
+      "cacheReadInputTokenCostPriority": 1.35e-07,
+      "cacheStorageInputTokenCostPerHour": 5e-07,
+      "cacheStorageInputTokenCostPerHourFlex": 5e-07,
+      "cacheStorageInputTokenCostPerHourPriority": 5e-07,
       "catalogOrder": 0,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "medium",
-      "inputCostPerToken": 7.5e-7,
-      "inputCostPerTokenFlex": 3.75e-7,
-      "inputCostPerTokenPriority": 0.00000135,
+      "inputCostPerToken": 7.5e-07,
+      "inputCostPerTokenFlex": 3.75e-07,
+      "inputCostPerTokenPriority": 1.35e-06,
       "inputModalities": [
         "text",
         "image",
@@ -232,9 +232,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.7-flash",
-      "outputCostPerToken": 0.00000375,
-      "outputCostPerTokenFlex": 0.000001875,
-      "outputCostPerTokenPriority": 0.00000675,
+      "outputCostPerToken": 3.75e-06,
+      "outputCostPerTokenFlex": 1.875e-06,
+      "outputCostPerTokenPriority": 6.75e-06,
       "outputModalities": [
         "text"
       ],
@@ -297,20 +297,20 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 7.5e-8,
-      "cacheReadInputTokenCostFlex": 3.75e-8,
-      "cacheReadInputTokenCostPriority": 1.35e-7,
-      "cacheStorageInputTokenCostPerHour": 5e-7,
-      "cacheStorageInputTokenCostPerHourFlex": 5e-7,
-      "cacheStorageInputTokenCostPerHourPriority": 5e-7,
+      "cacheReadInputTokenCost": 7.5e-08,
+      "cacheReadInputTokenCostFlex": 3.75e-08,
+      "cacheReadInputTokenCostPriority": 1.35e-07,
+      "cacheStorageInputTokenCostPerHour": 5e-07,
+      "cacheStorageInputTokenCostPerHourFlex": 5e-07,
+      "cacheStorageInputTokenCostPerHourPriority": 5e-07,
       "catalogOrder": 1,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "medium",
-      "inputCostPerToken": 7.5e-7,
-      "inputCostPerTokenFlex": 3.75e-7,
-      "inputCostPerTokenPriority": 0.00000135,
+      "inputCostPerToken": 7.5e-07,
+      "inputCostPerTokenFlex": 3.75e-07,
+      "inputCostPerTokenPriority": 1.35e-06,
       "inputModalities": [
         "text",
         "image",
@@ -323,9 +323,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.6-flash",
-      "outputCostPerToken": 0.00000375,
-      "outputCostPerTokenFlex": 0.000001875,
-      "outputCostPerTokenPriority": 0.00000675,
+      "outputCostPerToken": 3.75e-06,
+      "outputCostPerTokenFlex": 1.875e-06,
+      "outputCostPerTokenPriority": 6.75e-06,
       "outputModalities": [
         "text"
       ],
@@ -389,20 +389,20 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 3e-8,
-      "cacheReadInputTokenCostFlex": 2e-8,
-      "cacheReadInputTokenCostPriority": 5.0000000000000004e-8,
-      "cacheStorageInputTokenCostPerHour": 0.000001,
-      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
-      "cacheStorageInputTokenCostPerHourPriority": 0.000001,
+      "cacheReadInputTokenCost": 3e-08,
+      "cacheReadInputTokenCostFlex": 2e-08,
+      "cacheReadInputTokenCostPriority": 5.0000000000000004e-08,
+      "cacheStorageInputTokenCostPerHour": 1e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 1e-06,
+      "cacheStorageInputTokenCostPerHourPriority": 1e-06,
       "catalogOrder": 5,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "minimal",
-      "inputCostPerToken": 3e-7,
-      "inputCostPerTokenFlex": 1.5e-7,
-      "inputCostPerTokenPriority": 5.4e-7,
+      "inputCostPerToken": 3e-07,
+      "inputCostPerTokenFlex": 1.5e-07,
+      "inputCostPerTokenPriority": 5.4e-07,
       "inputModalities": [
         "text",
         "image",
@@ -415,9 +415,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.5-flash-lite",
-      "outputCostPerToken": 0.0000025,
-      "outputCostPerTokenFlex": 0.00000125,
-      "outputCostPerTokenPriority": 0.0000045,
+      "outputCostPerToken": 2.5e-06,
+      "outputCostPerTokenFlex": 1.25e-06,
+      "outputCostPerTokenPriority": 4.5e-06,
       "outputModalities": [
         "text"
       ],
@@ -478,20 +478,20 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 1.5e-7,
-      "cacheReadInputTokenCostFlex": 7.5e-8,
-      "cacheReadInputTokenCostPriority": 2.7e-7,
-      "cacheStorageInputTokenCostPerHour": 0.000001,
-      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
-      "cacheStorageInputTokenCostPerHourPriority": 0.000001,
+      "cacheReadInputTokenCost": 1.5e-07,
+      "cacheReadInputTokenCostFlex": 7.5e-08,
+      "cacheReadInputTokenCostPriority": 2.7e-07,
+      "cacheStorageInputTokenCostPerHour": 1e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 1e-06,
+      "cacheStorageInputTokenCostPerHourPriority": 1e-06,
       "catalogOrder": 10,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "medium",
-      "inputCostPerToken": 0.0000015,
-      "inputCostPerTokenFlex": 7.5e-7,
-      "inputCostPerTokenPriority": 0.0000027,
+      "inputCostPerToken": 1.5e-06,
+      "inputCostPerTokenFlex": 7.5e-07,
+      "inputCostPerTokenPriority": 2.7e-06,
       "inputModalities": [
         "text",
         "image",
@@ -504,9 +504,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.5-flash",
-      "outputCostPerToken": 0.000009,
-      "outputCostPerTokenFlex": 0.0000045,
-      "outputCostPerTokenPriority": 0.0000162,
+      "outputCostPerToken": 9e-06,
+      "outputCostPerTokenFlex": 4.5e-06,
+      "outputCostPerTokenPriority": 1.62e-05,
       "outputModalities": [
         "text"
       ],
@@ -570,20 +570,20 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostFlex": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostPriority": 3.6e-7,
-      "cacheStorageInputTokenCostPerHour": 0.0000045,
-      "cacheStorageInputTokenCostPerHourFlex": 0.0000045,
-      "cacheStorageInputTokenCostPerHourPriority": 0.0000081,
+      "cacheReadInputTokenCost": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostFlex": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostPriority": 3.6e-07,
+      "cacheStorageInputTokenCostPerHour": 4.5e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 4.5e-06,
+      "cacheStorageInputTokenCostPerHourPriority": 8.1e-06,
       "catalogOrder": 20,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "high",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenFlex": 0.000001,
-      "inputCostPerTokenPriority": 0.0000036000000000000003,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenFlex": 1e-06,
+      "inputCostPerTokenPriority": 3.6000000000000003e-06,
       "inputModalities": [
         "text",
         "image",
@@ -599,9 +599,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.1-pro-preview",
-      "outputCostPerToken": 0.000012,
-      "outputCostPerTokenFlex": 0.000006,
-      "outputCostPerTokenPriority": 0.0000216,
+      "outputCostPerToken": 1.2e-05,
+      "outputCostPerTokenFlex": 6e-06,
+      "outputCostPerTokenPriority": 2.16e-05,
       "outputModalities": [
         "text"
       ],
@@ -661,20 +661,20 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostFlex": 2.0000000000000002e-7,
-      "cacheReadInputTokenCostPriority": 3.6e-7,
-      "cacheStorageInputTokenCostPerHour": 0.0000045,
-      "cacheStorageInputTokenCostPerHourFlex": 0.0000045,
-      "cacheStorageInputTokenCostPerHourPriority": 0.0000081,
+      "cacheReadInputTokenCost": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostFlex": 2.0000000000000002e-07,
+      "cacheReadInputTokenCostPriority": 3.6e-07,
+      "cacheStorageInputTokenCostPerHour": 4.5e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 4.5e-06,
+      "cacheStorageInputTokenCostPerHourPriority": 8.1e-06,
       "catalogOrder": 30,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "high",
-      "inputCostPerToken": 0.000002,
-      "inputCostPerTokenFlex": 0.000001,
-      "inputCostPerTokenPriority": 0.0000036000000000000003,
+      "inputCostPerToken": 2e-06,
+      "inputCostPerTokenFlex": 1e-06,
+      "inputCostPerTokenPriority": 3.6000000000000003e-06,
       "inputModalities": [
         "text",
         "image",
@@ -690,9 +690,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.1-pro-preview-customtools",
-      "outputCostPerToken": 0.000012,
-      "outputCostPerTokenFlex": 0.000006,
-      "outputCostPerTokenPriority": 0.0000216,
+      "outputCostPerToken": 1.2e-05,
+      "outputCostPerTokenFlex": 6e-06,
+      "outputCostPerTokenPriority": 2.16e-05,
       "outputModalities": [
         "text"
       ],
@@ -742,23 +742,23 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 5.0000000000000004e-8,
-      "cacheReadInputTokenCostFlex": 5.0000000000000004e-8,
-      "cacheReadInputTokenCostPriority": 9e-8,
-      "cacheStorageInputTokenCostPerHour": 0.000001,
-      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
-      "cacheStorageInputTokenCostPerHourPriority": 0.0000018000000000000001,
+      "cacheReadInputTokenCost": 5.0000000000000004e-08,
+      "cacheReadInputTokenCostFlex": 5.0000000000000004e-08,
+      "cacheReadInputTokenCostPriority": 9e-08,
+      "cacheStorageInputTokenCostPerHour": 1e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 1e-06,
+      "cacheStorageInputTokenCostPerHourPriority": 1.8000000000000001e-06,
       "catalogOrder": 40,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "high",
-      "inputCostPerAudioToken": 0.000001,
-      "inputCostPerAudioTokenFlex": 5e-7,
-      "inputCostPerAudioTokenPriority": 0.0000018000000000000001,
-      "inputCostPerToken": 5e-7,
-      "inputCostPerTokenFlex": 2.5e-7,
-      "inputCostPerTokenPriority": 9.000000000000001e-7,
+      "inputCostPerAudioToken": 1e-06,
+      "inputCostPerAudioTokenFlex": 5e-07,
+      "inputCostPerAudioTokenPriority": 1.8000000000000001e-06,
+      "inputCostPerToken": 5e-07,
+      "inputCostPerTokenFlex": 2.5e-07,
+      "inputCostPerTokenPriority": 9.000000000000001e-07,
       "inputModalities": [
         "text",
         "image",
@@ -771,9 +771,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3-flash-preview",
-      "outputCostPerToken": 0.000003,
-      "outputCostPerTokenFlex": 0.0000015,
-      "outputCostPerTokenPriority": 0.0000054,
+      "outputCostPerToken": 3e-06,
+      "outputCostPerTokenFlex": 1.5e-06,
+      "outputCostPerTokenPriority": 5.4e-06,
       "outputModalities": [
         "text"
       ],
@@ -837,23 +837,23 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheReadInputTokenCost": 2.5000000000000002e-8,
-      "cacheReadInputTokenCostFlex": 1.2500000000000001e-8,
-      "cacheReadInputTokenCostPriority": 4.5e-8,
-      "cacheStorageInputTokenCostPerHour": 0.000001,
-      "cacheStorageInputTokenCostPerHourFlex": 5e-7,
-      "cacheStorageInputTokenCostPerHourPriority": 0.0000018000000000000001,
+      "cacheReadInputTokenCost": 2.5000000000000002e-08,
+      "cacheReadInputTokenCostFlex": 1.2500000000000001e-08,
+      "cacheReadInputTokenCostPriority": 4.5e-08,
+      "cacheStorageInputTokenCostPerHour": 1e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 5e-07,
+      "cacheStorageInputTokenCostPerHourPriority": 1.8000000000000001e-06,
       "catalogOrder": 50,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "minimal",
-      "inputCostPerAudioToken": 5e-7,
-      "inputCostPerAudioTokenFlex": 2.5e-7,
-      "inputCostPerAudioTokenPriority": 9.000000000000001e-7,
-      "inputCostPerToken": 2.5e-7,
-      "inputCostPerTokenFlex": 1.25e-7,
-      "inputCostPerTokenPriority": 4.5000000000000003e-7,
+      "inputCostPerAudioToken": 5e-07,
+      "inputCostPerAudioTokenFlex": 2.5e-07,
+      "inputCostPerAudioTokenPriority": 9.000000000000001e-07,
+      "inputCostPerToken": 2.5e-07,
+      "inputCostPerTokenFlex": 1.25e-07,
+      "inputCostPerTokenPriority": 4.5000000000000003e-07,
       "inputModalities": [
         "text",
         "image",
@@ -866,9 +866,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-3.1-flash-lite",
-      "outputCostPerToken": 0.0000015,
-      "outputCostPerTokenFlex": 7.5e-7,
-      "outputCostPerTokenPriority": 0.0000027,
+      "outputCostPerToken": 1.5e-06,
+      "outputCostPerTokenFlex": 7.5e-07,
+      "outputCostPerTokenPriority": 2.7e-06,
       "outputModalities": [
         "text"
       ],
@@ -929,21 +929,21 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 1.25e-7,
-      "cacheReadInputTokenCost": 1.25e-7,
-      "cacheReadInputTokenCostFlex": 1.25e-7,
-      "cacheReadInputTokenCostPriority": 2.2500000000000002e-7,
-      "cacheStorageInputTokenCostPerHour": 0.0000045,
-      "cacheStorageInputTokenCostPerHourFlex": 0.0000045,
-      "cacheStorageInputTokenCostPerHourPriority": 0.0000081,
+      "cacheCreationInputTokenCost": 1.25e-07,
+      "cacheReadInputTokenCost": 1.25e-07,
+      "cacheReadInputTokenCostFlex": 1.25e-07,
+      "cacheReadInputTokenCostPriority": 2.2500000000000002e-07,
+      "cacheStorageInputTokenCostPerHour": 4.5e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 4.5e-06,
+      "cacheStorageInputTokenCostPerHourPriority": 8.1e-06,
       "catalogOrder": 60,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.00000125,
-      "inputCostPerTokenFlex": 6.25e-7,
-      "inputCostPerTokenPriority": 0.00000225,
+      "inputCostPerToken": 1.25e-06,
+      "inputCostPerTokenFlex": 6.25e-07,
+      "inputCostPerTokenPriority": 2.25e-06,
       "inputModalities": [
         "text",
         "image",
@@ -959,9 +959,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-2.5-pro",
-      "outputCostPerToken": 0.00001,
-      "outputCostPerTokenFlex": 0.000005,
-      "outputCostPerTokenPriority": 0.000018,
+      "outputCostPerToken": 1e-05,
+      "outputCostPerTokenFlex": 5e-06,
+      "outputCostPerTokenPriority": 1.8e-05,
       "outputModalities": [
         "text"
       ],
@@ -1016,24 +1016,24 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 3e-8,
-      "cacheReadInputTokenCost": 3e-8,
-      "cacheReadInputTokenCostFlex": 3e-8,
-      "cacheReadInputTokenCostPriority": 5.4e-8,
-      "cacheStorageInputTokenCostPerHour": 0.000001,
-      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
-      "cacheStorageInputTokenCostPerHourPriority": 0.0000018000000000000001,
+      "cacheCreationInputTokenCost": 3e-08,
+      "cacheReadInputTokenCost": 3e-08,
+      "cacheReadInputTokenCostFlex": 3e-08,
+      "cacheReadInputTokenCostPriority": 5.4e-08,
+      "cacheStorageInputTokenCostPerHour": 1e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 1e-06,
+      "cacheStorageInputTokenCostPerHourPriority": 1.8000000000000001e-06,
       "catalogOrder": 70,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000001,
-      "inputCostPerAudioTokenFlex": 5e-7,
-      "inputCostPerAudioTokenPriority": 0.0000018000000000000001,
-      "inputCostPerToken": 3e-7,
-      "inputCostPerTokenFlex": 1.5e-7,
-      "inputCostPerTokenPriority": 5.4e-7,
+      "inputCostPerAudioToken": 1e-06,
+      "inputCostPerAudioTokenFlex": 5e-07,
+      "inputCostPerAudioTokenPriority": 1.8000000000000001e-06,
+      "inputCostPerToken": 3e-07,
+      "inputCostPerTokenFlex": 1.5e-07,
+      "inputCostPerTokenPriority": 5.4e-07,
       "inputModalities": [
         "text",
         "image",
@@ -1045,9 +1045,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-2.5-flash",
-      "outputCostPerToken": 0.0000025,
-      "outputCostPerTokenFlex": 0.00000125,
-      "outputCostPerTokenPriority": 0.0000045,
+      "outputCostPerToken": 2.5e-06,
+      "outputCostPerTokenFlex": 1.25e-06,
+      "outputCostPerTokenPriority": 4.5e-06,
       "outputModalities": [
         "text"
       ],
@@ -1102,24 +1102,24 @@
       "supportsPromptCaching": true
     },
     {
-      "cacheCreationInputTokenCost": 1e-8,
-      "cacheReadInputTokenCost": 1e-8,
-      "cacheReadInputTokenCostFlex": 1e-8,
-      "cacheReadInputTokenCostPriority": 1.8e-8,
-      "cacheStorageInputTokenCostPerHour": 0.000001,
-      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
-      "cacheStorageInputTokenCostPerHourPriority": 0.0000018000000000000001,
+      "cacheCreationInputTokenCost": 1e-08,
+      "cacheReadInputTokenCost": 1e-08,
+      "cacheReadInputTokenCostFlex": 1e-08,
+      "cacheReadInputTokenCostPriority": 1.8e-08,
+      "cacheStorageInputTokenCostPerHour": 1e-06,
+      "cacheStorageInputTokenCostPerHourFlex": 1e-06,
+      "cacheStorageInputTokenCostPerHourPriority": 1.8000000000000001e-06,
       "catalogOrder": 80,
       "catalogVisible": true,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 3e-7,
-      "inputCostPerAudioTokenFlex": 1.5e-7,
-      "inputCostPerAudioTokenPriority": 5.4e-7,
-      "inputCostPerToken": 1.0000000000000001e-7,
-      "inputCostPerTokenFlex": 5.0000000000000004e-8,
-      "inputCostPerTokenPriority": 1.8e-7,
+      "inputCostPerAudioToken": 3e-07,
+      "inputCostPerAudioTokenFlex": 1.5e-07,
+      "inputCostPerAudioTokenPriority": 5.4e-07,
+      "inputCostPerToken": 1.0000000000000001e-07,
+      "inputCostPerTokenFlex": 5.0000000000000004e-08,
+      "inputCostPerTokenPriority": 1.8e-07,
       "inputModalities": [
         "text",
         "image",
@@ -1132,9 +1132,9 @@
       "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "gemini-2.5-flash-lite",
-      "outputCostPerToken": 4.0000000000000003e-7,
-      "outputCostPerTokenFlex": 2.0000000000000002e-7,
-      "outputCostPerTokenPriority": 7.2e-7,
+      "outputCostPerToken": 4.0000000000000003e-07,
+      "outputCostPerTokenFlex": 2.0000000000000002e-07,
+      "outputCostPerTokenPriority": 7.2e-07,
       "outputModalities": [
         "text"
       ],
@@ -1194,9 +1194,9 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.0000065,
-      "inputCostPerImageToken": 4.5000000000000003e-7,
-      "inputCostPerToken": 2.0000000000000002e-7,
+      "inputCostPerAudioToken": 6.5e-06,
+      "inputCostPerImageToken": 4.5000000000000003e-07,
+      "inputCostPerToken": 2.0000000000000002e-07,
       "inputModalities": [
         "text",
         "image",
@@ -1227,14 +1227,14 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000001,
+      "inputCostPerToken": 1e-06,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gemini-3.1-flash-tts-preview",
-      "outputCostPerAudioToken": 0.00002,
+      "outputCostPerAudioToken": 2e-05,
       "outputModalities": [
         "audio"
       ],
@@ -1257,14 +1257,14 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 5e-7,
+      "inputCostPerToken": 5e-07,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gemini-3.8-flash-tts",
-      "outputCostPerAudioToken": 0.000009,
+      "outputCostPerAudioToken": 9e-06,
       "outputModalities": [
         "audio"
       ],
@@ -1287,14 +1287,14 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 5e-7,
+      "inputCostPerToken": 5e-07,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gemini-3.8-flash-lite-tts",
-      "outputCostPerAudioToken": 0.000006,
+      "outputCostPerAudioToken": 6e-06,
       "outputModalities": [
         "audio"
       ],
@@ -1317,14 +1317,14 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 5e-7,
+      "inputCostPerToken": 5e-07,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gemini-2.5-flash-preview-tts",
-      "outputCostPerAudioToken": 0.00001,
+      "outputCostPerAudioToken": 1e-05,
       "outputModalities": [
         "audio"
       ],
@@ -1347,14 +1347,14 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000001,
+      "inputCostPerToken": 1e-06,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gemini-2.5-pro-preview-tts",
-      "outputCostPerAudioToken": 0.00002,
+      "outputCostPerAudioToken": 2e-05,
       "outputModalities": [
         "audio"
       ],
@@ -1501,7 +1501,7 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 5e-7,
+      "inputCostPerToken": 5e-07,
       "inputModalities": [
         "text",
         "image"
@@ -1509,8 +1509,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "gemini-3.1-flash-image",
-      "outputCostPerImageToken": 0.00006,
-      "outputCostPerToken": 0.000003,
+      "outputCostPerImageToken": 6e-05,
+      "outputCostPerToken": 3e-06,
       "outputModalities": [
         "text",
         "image"
@@ -1531,7 +1531,7 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 0.000002,
+      "inputCostPerToken": 2e-06,
       "inputModalities": [
         "text",
         "image"
@@ -1540,7 +1540,7 @@
       "mode": "image_generation",
       "model": "gemini-3-pro-image",
       "outputCostPerImageToken": 0.00012,
-      "outputCostPerToken": 0.000012,
+      "outputCostPerToken": 1.2e-05,
       "outputModalities": [
         "text",
         "image"
@@ -1561,7 +1561,7 @@
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerToken": 2.5e-7,
+      "inputCostPerToken": 2.5e-07,
       "inputModalities": [
         "text",
         "image",
@@ -1570,8 +1570,8 @@
       "longContextInputTokenThresholdInclusive": false,
       "mode": "image_generation",
       "model": "gemini-3.1-flash-lite-image",
-      "outputCostPerImageToken": 0.00003,
-      "outputCostPerToken": 0.0000015,
+      "outputCostPerImageToken": 3e-05,
+      "outputCostPerToken": 1.5e-06,
       "outputModalities": [
         "text",
         "image"
@@ -1588,19 +1588,19 @@
       "supportsPromptCaching": false
     },
     {
-      "audioInputCostPerSecond": 0.00005,
+      "audioInputCostPerSecond": 5e-05,
       "catalogOrder": 112,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.000002,
+      "inputCostPerAudioToken": 2e-06,
       "inputModalities": [
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gemini-3.5-transcribe",
-      "outputCostPerToken": 0.000012,
+      "outputCostPerToken": 1.2e-05,
       "outputModalities": [
         "text"
       ],
@@ -1615,19 +1615,19 @@
       "supportsPromptCaching": false
     },
     {
-      "audioInputCostPerSecond": 0.00008333333333333333,
+      "audioInputCostPerSecond": 8.333333333333333e-05,
       "catalogOrder": 113,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.0000035,
+      "inputCostPerAudioToken": 3.5e-06,
       "inputModalities": [
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gemini-3.5-transcribe-live",
-      "outputCostPerToken": 0.000021,
+      "outputCostPerToken": 2.1e-05,
       "outputModalities": [
         "text"
       ],
@@ -1642,19 +1642,18 @@
       "supportsPromptCaching": false
     },
     {
-      "audioInputCostPerSecond": 0.00008833333333333333,
+      "audioInputCostPerSecond": 8.833333333333333e-05,
       "catalogOrder": 114,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
       "defaultReasoningEffort": "",
-      "inputCostPerAudioToken": 0.0000035,
+      "inputCostPerAudioToken": 3.5e-06,
       "inputModalities": [
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
       "mode": "audio",
       "model": "gemini-3.5-live-translate-preview",
-      "outputCostPerToken": 0.000021,
       "outputModalities": [
         "audio"
       ],
@@ -1666,7 +1665,8 @@
       "supportedAPIProtocols": [
         "realtime"
       ],
-      "supportsPromptCaching": false
+      "supportsPromptCaching": false,
+      "outputCostPerAudioToken": 2.1e-05
     }
   ],
   "provider": "gemini"
