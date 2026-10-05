@@ -46,6 +46,10 @@ package pricing
 // 模态拆分行，确认不缺项；3.8 TTS 两行 2027-01-01 翻倍句逐字确认；新增
 // 3 行（3.1-flash-tts-preview legacy 行 $1.00/$20.00、veo-3.1-fast
 // $0.10/s、3.1-flash-lite-image $0.25/$1.50/$30.00）。
+//
+// 2026-10-05 遗留取证批：新增 gemini-3.5-live-translate-preview（co114，
+// Live 翻译会话面，官方 ID 带 -preview 后缀三源逐字一致）；3.7-flash
+// 输入模态按官方模型卡补全五元组（原 ["text","image"] 确认偏窄）。
 type geminiTierPrices struct {
 	inputUsdPer1M               float64
 	outputUsdPer1M              float64
@@ -267,12 +271,15 @@ var geminiModelPricingData = []rawModel{
 	geminiTextModel(geminiModelInput{
 		// Promotional prices through 2026-12-31, doubling on 2027-01-01 like
 		// gemini-3.8-flash above.
+		// 输入模态 2026-10-05 遗留取证批按官方模型卡补全（逐字 "Inputs
+		// Text, Image, Video, Audio, and PDF"，原 ["text","image"] 确认
+		// 偏窄；PDF 记作 "file"，对齐 3.6-flash 五元组约定）。
 		model: "gemini-3.7-flash", catalogOrder: 0, releaseDate: "2026-08-13",
 		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 0.5,
 		flex:                      &geminiTierPrices{inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: f64p(0.0375), cacheStorageUsdPer1MPerHour: 0.5},
 		priority:                  &geminiTierPrices{inputUsdPer1M: 1.35, outputUsdPer1M: 6.75, cachedInputUsdPer1M: f64p(0.135), cacheStorageUsdPer1MPerHour: 0.5},
 		supportedAPIProtocols:     []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
-		inputModalities:           []string{"text", "image"},
+		inputModalities:           []string{"text", "image", "video", "audio", "file"},
 		outputModalities:          []string{"text"},
 		supportedTools:            []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context", "computer_use"},
 		supportedReasoningEfforts: []string{"low", "medium", "high"},
@@ -633,6 +640,25 @@ var geminiModelPricingData = []rawModel{
 		SupportedAPIProtocols:   []string{"realtime"},
 		InputCostPerAudioToken:  perToken(3.5),
 		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.005),
+		OutputCostPerToken:      perToken(21),
+	},
+	// 2026-10-05 遗留取证批新增（官方定价页 Live Translate 节 + models 表
+	// + Cloud 模型页三源逐字一致）：实时翻译会话面（Live API
+	// speech-to-speech，70+ 语言），官方 ID 必须带 -preview 后缀
+	//（gemini-3.5-live-translate-preview，无后缀公开形态不存在）。字段结构
+	// 对照 transcribe-live 同面：audio input $3.50 or $0.0053/min、output
+	// $21.00 or $0.0315/min（25 tokens/秒音频，输入侧 ≈$0.0368/min）——
+	// per 1M token 价落 InputCostPerAudioToken/OutputCostPerToken、输入
+	// 分钟价明文直除落秒（输出分钟价注释登记，同 transcribe-live 不建输出
+	// 秒价槽位，按 token 计费）。官方无 text 输入/输出价明文（纯语音翻译
+	// 面），text 通道不落；官方无发布日明文，ReleaseDate 留空。
+	rawModel{
+		Model: "gemini-3.5-live-translate-preview", Mode: "audio", CatalogOrder: intp(114),
+		InputModalities:         []string{"audio"},
+		OutputModalities:        []string{"audio"},
+		SupportedAPIProtocols:   []string{"realtime"},
+		InputCostPerAudioToken:  perToken(3.5),
+		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.0053),
 		OutputCostPerToken:      perToken(21),
 	},
 }
