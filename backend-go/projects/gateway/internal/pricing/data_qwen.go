@@ -32,9 +32,10 @@ package pricing
 // $0.10/秒 720p 牌价、wan2.7-t2v $0.10/秒 720p）、image 1 行
 // （qwen-image-3.0 $0.03/张）、embedding 1 行（text-embedding-v4
 // perToken(0.07)）。SourcePricingNote 改为国际站明文 + 国内人民币原句
-// 留档。wan2.2-t2v-plus / paraformer-v2 国际站未售，已按国内人民币明文价
-// 以约定汇率 7.0 换算落价（2026-10-05 用户裁决补价，行内 Source 元信息可
-// 溯）。
+// 留档。wan2.2-t2v-plus 国际站未售，按国内人民币明文价以约定汇率 7.0
+// 换算落价（2026-10-05 用户裁决补价，行内 Source 元信息可溯）；
+// paraformer-v2 于 2026-10-05 取证批改落国际站 USD 明文 $0.000012/秒
+//（Model Studio 计费页 China Beijing tab，行内 Source 元信息可溯）。
 //   - usage 计量照抽（契约 §10.1/§10.2：轮询响应 usage 是 DashScope 的 JSON
 //     字符串形态，adapter 双形态兼容解析）：万相 wan2.5 及以下版本字段族
 //     video_duration/video_ratio，wan2.6 字段族 duration/
@@ -74,20 +75,24 @@ var qwenModelPricingData = []rawModel{
 		//（input_url → input.file_urls，零存储不暂存），输出转写结果 JSON
 		// 文件；收录 paraformer-v2（通用长转写档，录音文件识别异步任务）。
 		// 2026-10-05 用户裁决补价：官方人民币秒价 0.00008 元/秒（百炼计费
-		// 页 ASR 节）→ 0.00008 ÷ 7.0 = 0.00001143（USD/秒）落
-		// AudioInputCostPerSecond；qwen usage 字段族已核实，秒计量照抽。
+		// 页 ASR 节）；qwen usage 字段族已核实，秒计量照抽。
 		// 2026-10-05 核对批：换算值 0.0000114 回正 0.00001143（4 位有效
-		// 数字约定，8/7 = 1.142857…×10⁻⁵ 取 1.143）。
+		// 数字约定）。
+		// 2026-10-05 取证批覆盖：阿里云国际站 Model Studio 计费页
+		//（alibabacloud.com/help/en/model-studio/billing-for-model-studio，
+		// 页面标题 "Alibaba Cloud Model Studio:Model inference pricing"，
+		// 全页 USD 口径）Paraformer → Audio file recognition → China
+		// (Beijing) 区域 tab 明文 "paraformer-v2 | $0.000012/second"——属
+		// 百炼 Model Studio 自有 ASR 价目（非独立语音产品线），按「国际站
+		// USD 明文覆盖换算值」先例（qwen3.8-max 同）落 $0.000012/秒，删
+		// CNY 换算三件套；国内人民币原句留档。原「国际站未售」表述作废。
 		Model:                 "paraformer-v2",
 		Mode:                  "audio",
 		InputModalities:       []string{"audio"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"audio_transcription"},
-		AudioInputCostPerSecond: f64p(0.00001143),
-		SourcePricingCurrency:   "CNY",
-		SourceExchangeRateToUsd: f64p(7.0),
-		SourceExchangeRateDate:  "2026-10-05",
-		SourcePricingNote:       "官方人民币价 0.00008 元/秒（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio），按约定汇率 7.0 换算 $0.00001143/秒",
+		AudioInputCostPerSecond: f64p(0.000012),
+		SourcePricingNote:       "国际站 Model Studio 计费页 China (Beijing) 区域 tab USD 明文 $0.000012/second（alibabacloud.com/help/en/model-studio/billing-for-model-studio）；国内人民币价 0.00008 元/秒原句留档（help.aliyun.com/zh/model-studio/billing-for-model-studio）",
 	},
 	{
 		// 对话：qwen3.8-max（旗舰档，1M 上下文，百炼 OpenAI 兼容

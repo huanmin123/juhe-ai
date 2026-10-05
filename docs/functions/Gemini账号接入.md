@@ -262,15 +262,19 @@ Remove-Item Env:\JUHE_REAL_GEMINI_OPENAI_CHAT_API_KEY, Env:\JUHE_REAL_GEMINI_OPE
 
 Gemini 模型目录必须单独维护在 `providerCode = gemini` 下。
 
-当前内置目录按 `2026-07-15` Google 官方 Gemini API Models / Pricing / Deprecations 页面核对，只收录当前代码已能准确表达端点族的官方文本 / 多模态生成模型和 Embedding 模型：
+当前内置目录按 `2026-07-15` Google 官方页面快照基线维护，2026-10 补全/复核/核对/取证批逐项以官方 Models / Pricing / Deprecations 页原文回正与扩充（计价与能力事实源见 `backend-go/projects/gateway/internal/pricing/data_gemini.go` 行注释），现收录 30 行：
 
-- 文本 / 多模态生成模型：`gemini-3.5-flash`、`gemini-3.1-pro-preview`、`gemini-3.1-pro-preview-customtools`、`gemini-3-flash-preview`、`gemini-3.1-flash-lite`、`gemini-2.5-pro`、`gemini-2.5-flash`、`gemini-2.5-flash-lite`。
+- 文本 / 多模态生成模型（14 行）：`gemini-omni-1.1-flash`（官方定位视频生成/编辑，价格按官方 GA=Preview 同价落 `$1.50` 统一输入 / `$9.00` text 输出）、`gemini-3.8-live`（Live 实时音频对话）、`gemini-3.8-flash`、`gemini-3.7-flash`、`gemini-3.6-flash`、`gemini-3.5-flash`、`gemini-3.5-flash-lite`、`gemini-3.1-pro-preview`、`gemini-3.1-pro-preview-customtools`、`gemini-3-flash-preview`、`gemini-3.1-flash-lite`、`gemini-2.5-pro`、`gemini-2.5-flash`、`gemini-2.5-flash-lite`。
 - Embedding 模型：`gemini-embedding-2`。`gemini-embedding-001` 已于 `2026-07-14` shutdown，不再进入当前可用目录。
+- 图像生成模型（3 行，mode=image_generation、走 generate_content 出图）：`gemini-3.1-flash-image`（Nano Banana 2）、`gemini-3-pro-image`（Nano Banana Pro）、`gemini-3.1-flash-lite-image`（Nano Banana 2 Lite）；按 image-token 价计费（`OutputCostPerImageToken`）。
+- 语音合成模型（5 行，audio_speech 协议）：`gemini-3.8-flash-tts`、`gemini-3.8-flash-lite-tts`、`gemini-3.1-flash-tts-preview`（官方标 legacy）、`gemini-2.5-flash-preview-tts`、`gemini-2.5-pro-preview-tts`。
+- 转写模型（2 行）：`gemini-3.5-transcribe`、`gemini-3.5-transcribe-live`。
+- 视频生成模型（5 行，video 协议）：`veo-3.0-generate-preview`（已 shutdown 2025-11-12）、`veo-3.0-fast-generate-preview`（同上）、`veo-3.1-fast-generate-preview`、`veo-3.1-generate-preview`、`veo-3.1-lite-generate-preview`；按秒价计费（`VideoOutputCostPerSecond` 主档）。
 
 不收录规则：
 
 - 第三方中转自定义型号，例如 `gemini-3.5-flash-antigravity`、`gemini-3.5-flash-antigravity-ultra`，不是 Google 官方 Gemini API model ID，必须由用户按自定义模型添加。
-- Google 官方页面上的 Live、Imagen、Veo、Lyria、Robotics 等专用模型，只有在本项目补齐对应 endpoint family、usage 和响应语义后才加入对应协议目录；不能临时标成普通 Chat / generateContent 模型。
+- Google 官方页面上尚未补齐对应 endpoint family、usage 与响应语义的专用模型（Imagen、Lyria、Robotics，及端点面未建的 Live Translate 等），在补齐前不加入目录；已补齐的 Veo（video 面）、TTS / transcribe（audio 面）按上表收录。
 - 已 shutdown 或官方模型页不再作为当前可用模型展示的历史 ID 不进入默认可见目录；如需历史计价，只能作为隐藏计价项并写明 shutdown date。
 
 字段要求：

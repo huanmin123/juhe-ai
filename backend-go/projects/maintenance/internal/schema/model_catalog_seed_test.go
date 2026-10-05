@@ -39,26 +39,25 @@ func nodeModelCatalogCompare(left, right modelCatalogSeedRow) int {
 }
 
 func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
-	// 214 rows after the 2026-10-05 复核批 sync from the Go pricing catalog:
-	// 214 rows from the all-provider completion batch + 4 gemini additions
-	// (gemini-3.1-flash-image / gemini-3-pro-image image rows +
-	// gemini-3.5-transcribe / gemini-3.5-transcribe-live audio rows). The
-	// review batch also reverted the xAI prices (grok-4.6/4.5 back to
-	// $2/$0.5|0.3/$6 with the 500k window), overrode the volcengine/qwen/glm
-	// conversion values with official international-site USD prices, added
-	// the gemini 2.5-series cache-write prices and the veo-3.1 shutdown
-	// dates, and withdrew the cogvideox per-request prices back to unpriced
-	// (restored the same day by the per-call billing batch:
-	// VideoOutputCostPerCall lives in the gateway static pricing layer only —
-	// the catalog table has no video price columns).
-	if len(modelCatalogSeedRows) != 214 {
-		t.Fatalf("model catalog seed rows = %d, want 214 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
+	// 217 rows after the 2026-10-05 取证批 sync from the Go pricing catalog:
+	// 214 rows from the verification batch + 3 gemini additions
+	// (gemini-3.1-flash-tts-preview legacy TTS at co107 /
+	// veo-3.1-fast-generate-preview video row /
+	// gemini-3.1-flash-lite-image image row at co103). The evidence batch
+	// also reverted gemini-omni-1.1-flash to the official $1.50 input /
+	// $9.00 text output (both GA and Preview tables price identically; the
+	// completion batch's $0.50/$3.00 + audio/image deltas undercharged 3x),
+	// and moved paraformer-v2 to the international-site USD price
+	// $0.000012/second (static layer only — the catalog table has no
+	// per-second price columns).
+	if len(modelCatalogSeedRows) != 217 {
+		t.Fatalf("model catalog seed rows = %d, want 217 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 81, "xai": 14, "deepseek": 4, "anthropic": 15, "gemini": 27, "glm": 28, "minimax": 13, "volcengine": 15, "qwen": 17}
+	want := map[string]int{"gpt": 81, "xai": 14, "deepseek": 4, "anthropic": 15, "gemini": 30, "glm": 28, "minimax": 13, "volcengine": 15, "qwen": 17}
 	if len(perProvider) != len(want) {
 		t.Fatalf("provider set = %v, want %v", perProvider, want)
 	}

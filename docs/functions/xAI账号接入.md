@@ -24,8 +24,8 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 
 | 档案 | 默认 Base URL | 账户类型 | 默认模型 | 默认能力 |
 | --- | --- | --- | --- | --- |
-| `profile_xai_openai_v1` | `https://api.x.ai/v1` | xAI API Key (`api_key`) | `grok-4.5` | Chat JSON/SSE、Responses JSON/SSE |
-| `profile_xai_openai_v1` | `https://cli-chat-proxy.grok.com/v1` | Grok OAuth (`oauth`) | `grok-4.5` | Responses JSON/SSE |
+| `profile_xai_openai_v1` | `https://api.x.ai/v1` | xAI API Key (`api_key`) | `grok-4.7` | Chat JSON/SSE、Responses JSON/SSE |
+| `profile_xai_openai_v1` | `https://cli-chat-proxy.grok.com/v1` | Grok OAuth (`oauth`) | `grok-4.7` | Responses JSON/SSE |
 
 账户保存规则：
 
@@ -72,18 +72,22 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 ## 模型目录与价格快照
 
 - 账户模型同步和人工测试的模型目录检查会在服务端以内部标记发起受控 `GET /v1/models`。仅 `api_key` 账户可将该检查转发至其 `base_url`，用于读取账户可用模型；未标记的客户端 `GET /v1/models` 仍不是 xAI 网关路由，Grok OAuth 始终不承接此检查，也不因此扩展其 Responses-only 边界。
-本地内置目录按 `2026-07-18` xAI 官方模型页和价格页快照维护，当前包含：
+本地内置目录按 `2026-07-18` xAI 官方模型页和价格页快照基线维护（2026-10 补全/复核/核对批逐项以官方页面原文回正与扩充，见 `backend-go/projects/gateway/internal/pricing/data_xai.go` 行注释），当前包含：
 
-- 文本模型：`grok-4.5`、`grok-4.20-0309-reasoning`、`grok-4.20-0309-non-reasoning`、`grok-build-0.1`、`grok-4.20-multi-agent-0309`；官方模型页均记录 `Text, Image -> Text`，本地目录按模型保留图片输入能力。`grok-4.3` 因无法交叉确认精确首发日期，已从内置目录移除。
-- 图片模型计价项：`grok-imagine-image` 每张 0.02 USD、`grok-imagine-image-quality` 每张 0.05 USD。图片专用模型按 images 协议可过目录协议校验，但网关当前无 xAI Images 出站 driver，实际使用图片模型前需补专用 Images driver / 回归。
-- 视频模型：`grok-imagine-video-1.5`（2026-10-04 M3 回填批收录，mode=video、目录协议 `video`，1–15 秒 / 七档宽高比 / 480p–1080p / 音轨默认开启，契约 §6.1）。账户声明该模型即可经 opt-in `video_*` 端点模式承接 `/v1/videos` 链；官方 USD 秒价未核实，目录不落价（done 的 `video.duration` 秒计量照抽、成本不虚计）。
-- 当前没有可靠证据支持为这些模型暴露可选 `reasoning_effort` 枚举或默认档位，因此目录保持空数组，My Chat 不显示思考档位控件；模型名中的 reasoning / non-reasoning 事实不等于可任意猜测请求参数。
+- 文本模型：`grok-4.7`、`grok-4.6`、`grok-4.5`、`grok-4.3`、`grok-4.20-0309-reasoning`、`grok-4.20-0309-non-reasoning`、`grok-build-0.1`、`grok-4.20-multi-agent-0309`。官方模型页均记录 `Text, Image -> Text`，本地目录按模型保留图片输入能力。`grok-4.7`（2026-09-21 发布公告日）与 `grok-4.6`（2026-08-12）为补全批收录；`grok-4.3` 于复核批确认现售后收录（官方模型页无首发日明文，按首发报道锚定 2026-05-01，行注释登记）。`grok-4.20` 系与 `grok-build-0.1` 官方 may-15-retirement 明文 2026-05-15 退役，目录行保留 shutdown 日期。
+- 图片模型计价项：`grok-imagine-image-2.0` 每张 0.04 USD（2026-08-07 发布）、`grok-imagine-image` 每张 0.02 USD、`grok-imagine-image-quality` 每张 0.05 USD（官方 60 天通知期 2026-09-02 起，到期后 slug 由 `grok-imagine-image-2.0` quality=low 承接）。图片专用模型按 images 协议可过目录协议校验，但网关当前无 xAI Images 出站 driver，实际使用图片模型前需补专用 Images driver / 回归。
+- 视频模型：`grok-imagine-video-1.5`（2026-10-04 M3 回填批收录，mode=video、目录协议 `video`，1–15 秒 / 七档宽高比 / 480p–1080p / 音轨默认开启，契约 §6.1）。账户声明该模型即可经 opt-in `video_*` 端点模式承接 `/v1/videos` 链；官方 USD 秒价已核实并落静态层——三档明文 480p $0.08 / 720p $0.14 / 1080p $0.25 per sec，目录单槽位沿「非最低档主档」先例落 720p **$0.14/s**（2026-10-05 核对批回正）；done 的 `video.duration` 秒计量照抽并按目录秒价计费（0 计费兜底已解除，链级/全链路断言钉 6s = $0.84）。
+- 语音模型：`grok-voice-transcribe-2.0`（录音转写，官方 REST 批量面 $0.10/hr 明文直除落每秒价；上一轮误按 Streaming $0.20/hr 换算已回正）与 `grok-voice-agent`（实时语音对话，官方 $0.05/分钟明文直除落每秒价；官方 `-latest` 别名当前指向本行，别名不落目录行、由行注释登记）。两行计价与秒计量事实见 `data_xai.go`。
+- 思考档位：`grok-4.7`/`grok-4.6`/`grok-4.5` 目录行带 `reasoning_effort` 枚举 `low/medium/high/xhigh`（默认 `high`）；`grok-4.3` 为 `none/low/medium/high`（默认 `low`）；`grok-4.20-multi-agent-0309` 的 effort 官方语义是协作 agent 数量（low/medium = 4，high/xhigh = 16），不是推理深度；`grok-4.20-0309` 基础行无官方枚举，目录保持空数组。模型名中的 reasoning / non-reasoning 事实不等于可任意猜测请求参数。
 
-文本价格以 USD / 1M token 记录：
+文本价格以 USD / 1M token 记录（`< 200K` 档；输入达到 200K 阈值时对整次请求按两倍倍率计，`grok-4.5` 长上下文档 cached 为 $0.60、`grok-4.6`/`grok-4.7` 为 $1.00）：
 
 | 模型 | Input | Cached input | Output | 上下文 |
 | --- | ---: | ---: | ---: | ---: |
-| `grok-4.5` | 2.00 | 0.50 | 6.00 | 500K |
+| `grok-4.7` | 2.00 | 0.50 | 6.00 | 500K |
+| `grok-4.6` | 2.00 | 0.50 | 6.00 | 500K |
+| `grok-4.5` | 2.00 | 0.30 | 6.00 | 500K |
+| `grok-4.3` | 1.25 | 0.20 | 2.50 | 1M |
 | `grok-4.20-*` | 1.25 | 0.20 | 2.50 | 1M |
 | `grok-build-0.1` | 1.00 | 0.20 | 2.00 | 256K |
 

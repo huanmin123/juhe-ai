@@ -37,6 +37,15 @@ package pricing
 // （2025-07-31 / 2025-11-12，2026-06-30 属 GA -001 版）；TTS 四行文件序
 // 108/109/110/111 升序（纯布局移动）。gemini-omni-1.1-flash 官方
 // GA/Preview 两表未区分，存疑不动（登记计划待复核清单）。
+//
+// 2026-10-05 取证批（官方定价页/models 页/veo 页原文逐字取证，页面版本
+// 2026-10-01/2026-09-17）：omni-1.1-flash 仲裁落定——GA 与 Preview 两表
+// 价格完全相同（无歧价），官方定位为视频生成模型，补全批的
+// $0.50/$3.00+audio/image 差价全部作废，回正 $1.50 统一输入 / $9.00 text
+// 输出（video 输出 $17.50 无通道注释登记）；3.7-flash 官方单一输入价无
+// 模态拆分行，确认不缺项；3.8 TTS 两行 2027-01-01 翻倍句逐字确认；新增
+// 3 行（3.1-flash-tts-preview legacy 行 $1.00/$20.00、veo-3.1-fast
+// $0.10/s、3.1-flash-lite-image $0.25/$1.50/$30.00）。
 type geminiTierPrices struct {
 	inputUsdPer1M               float64
 	outputUsdPer1M              float64
@@ -199,19 +208,27 @@ var (
 // geminiModelPricingData — curated from the official Gemini docs.
 var geminiModelPricingData = []rawModel{
 	geminiTextModel(geminiModelInput{
-		// 2026-10-05 新增（官方定价页明文）：omni 全模态实时对话，text
-		// $0.50/$3.00、audio in $1.00 / audio out $5.00、image in $0.50
-		// per 1M tokens。mode=chat；协议 generate_content +
-		// stream_generate_content（Live/omni 会话面不经 OpenAI 兼容
-		// chat_completions/count_tokens/interactions），工具清单对照现役
-		// chat 行。官方无缓存/档位明文，缓存字段与档位不落。
+		// 2026-10-05 取证批回正（官方定价页 "Gemini Omni Flash" 与
+		// "Gemini Omni Flash Preview" 两节逐字取证，页脚 Last updated
+		// 2026-10-01）：GA 与 Preview 两表价格完全相同，无档位歧价——
+		// Input $1.50 (text / image / video / audio) 统一价（无 audio/image
+		// 差价行）、Output $9.00 (text) + $17.50 (video)。官方 models 页把
+		// 本模型归类为生成媒体模型（"Fast video generation, editing,
+		// keyframe interpolation, and extension with native audio"，ID
+		// gemini-omni-1.1-flash 无 -preview 后缀），非实时音频对话模型。
+		// 补全批落的 $0.50/$3.00 + audio $1/$5 + image $0.50 差价与官方
+		// 两表均对不上（计费偏低 3 倍），全部回正：统一输入价 $1.50 落
+		// 模态无关通道，audio/image 差价字段置空；video 输出 $17.50/1M
+		// tokens（5,792 tokens/秒 720p ≈ $0.10/秒）目录无 video 输出
+		// token 差价通道，注释登记——video 输出 token 当前按 text 输出
+		// $9.00 计费属已知低估偏差，待计价通道扩展后回正。mode/协议维持
+		// chat + generate_content 面不变（归类调整另行裁决，本批只回正
+		// 价格事实）。
 		model: "gemini-omni-1.1-flash", catalogOrder: -3,
-		inputUsdPer1M: 0.5, outputUsdPer1M: 3,
-		audioInputUsdPer1M: f64p(1), audioOutputUsdPer1M: f64p(5),
-		imageInputUsdPer1M:    f64p(0.5),
+		inputUsdPer1M: 1.5, outputUsdPer1M: 9,
 		supportedAPIProtocols: []string{"generate_content", "stream_generate_content"},
-		inputModalities:       []string{"text", "image", "audio"},
-		outputModalities:      []string{"text", "audio"},
+		inputModalities:       []string{"text", "image", "video", "audio"},
+		outputModalities:      []string{"text", "video"},
 		supportedTools:        []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context", "computer_use"},
 	}),
 	geminiTextModel(geminiModelInput{
@@ -219,8 +236,9 @@ var geminiModelPricingData = []rawModel{
 		// $0.75 (text) / $3.00 or $0.005/min (audio) / $1.00 or $0.002/min
 		// (image+video)；Output $4.50 (text) / $12.00 or $0.018/min (audio)
 		// per 1M tokens。image+video 输入 $1.00 落 image 通道（分钟价
-		// $0.002/min 目录无音频/图像分钟通道，注释登记）；协议/工具对照
-		// gemini-omni-1.1-flash 同款（Live 会话面）。
+		// $0.002/min 目录无音频/图像分钟通道，注释登记）；协议/工具清单与
+		// gemini-omni-1.1-flash 同款（generate_content 会话面；omni 经取证
+		// 批回正为视频生成定位，本行仍为 Live 实时音频对话）。
 		model: "gemini-3.8-live", catalogOrder: -2,
 		inputUsdPer1M: 0.75, outputUsdPer1M: 4.5,
 		audioInputUsdPer1M: f64p(3), audioOutputUsdPer1M: f64p(12),
@@ -417,6 +435,42 @@ var geminiModelPricingData = []rawModel{
 		inputModalities:       []string{"text", "image", "video", "audio", "file"},
 		outputModalities:      []string{"text"},
 	}),
+	// 2026-10-05 全厂商补全批新增（官方定价页明文）：gemini-3.8 TTS 两行，
+	// geminiTTSModel 工厂（audio_speech + ResponseFormats ["pcm"]，对照
+	// gemini-2.5 tts 行字段）。官方无独立发布日明文，ReleaseDate 留空。
+	// 2026-10-05 核对批回正：官方定价页明文 3.8-flash-tts $0.50 / $9.00
+	//（2027-01-01 起 $1.00/$18.00）、3.8-flash-lite-tts $0.50 / $6.00
+	//（2027 起 $1.00/$12.00）per 1M tokens——补全批误引 $0.75/$6 与
+	// $0.30/$3，本轮以页面原文回正。
+	// 2026-10-05 取证批：新增 gemini-3.1-flash-tts-preview（官方定价页
+	// "Gemini 3.1 Flash TTS Preview" 节明文 $1.00 (text) / $20.00 (audio)，
+	// 无 2027 调价句；models 页标 legacy 并建议迁移至 3.8 TTS——按「在售
+	// 且明码标价即收录」口径收录，catalogOrder 107 置于 3.8 系前）。TTS 段
+	// 文件序随新行排布为 catalogOrder 107/108/109/110/111 升序。
+	geminiTTSModel(geminiModelInput{
+		model: "gemini-3.1-flash-tts-preview", catalogOrder: 107,
+		inputUsdPer1M:         1,
+		outputUsdPer1M:        20,
+		supportedAPIProtocols: []string{"audio_speech"},
+		inputModalities:       []string{"text"},
+		outputModalities:      []string{"audio"},
+	}),
+	geminiTTSModel(geminiModelInput{
+		model: "gemini-3.8-flash-tts", catalogOrder: 108,
+		inputUsdPer1M:         0.5,
+		outputUsdPer1M:        9,
+		supportedAPIProtocols: []string{"audio_speech"},
+		inputModalities:       []string{"text"},
+		outputModalities:      []string{"audio"},
+	}),
+	geminiTTSModel(geminiModelInput{
+		model: "gemini-3.8-flash-lite-tts", catalogOrder: 109,
+		inputUsdPer1M:         0.5,
+		outputUsdPer1M:        6,
+		supportedAPIProtocols: []string{"audio_speech"},
+		inputModalities:       []string{"text"},
+		outputModalities:      []string{"audio"},
+	}),
 	// M1 同步音频 TTS（音频设计 §9）：价格取自 Gemini 官方定价页
 	// ai.google.dev/gemini-api/docs/pricing（核实于 2026-10-04）——
 	// flash-preview-tts text input $0.50 / audio output $10.00 per 1M tokens、
@@ -433,30 +487,6 @@ var geminiModelPricingData = []rawModel{
 		model: "gemini-2.5-pro-preview-tts", catalogOrder: 111, releaseDate: "2025-05-20",
 		inputUsdPer1M:         1,
 		outputUsdPer1M:        20,
-		supportedAPIProtocols: []string{"audio_speech"},
-		inputModalities:       []string{"text"},
-		outputModalities:      []string{"audio"},
-	}),
-	// 2026-10-05 全厂商补全批新增（官方定价页明文）：gemini-3.8 TTS 两行，
-	// geminiTTSModel 工厂（audio_speech + ResponseFormats ["pcm"]，对照
-	// gemini-2.5 tts 行字段）。官方无独立发布日明文，ReleaseDate 留空。
-	// 2026-10-05 核对批回正：官方定价页明文 3.8-flash-tts $0.50 / $9.00
-	//（2027-01-01 起 $1.00/$18.00）、3.8-flash-lite-tts $0.50 / $6.00
-	//（2027 起 $1.00/$12.00）per 1M tokens——补全批误引 $0.75/$6 与
-	// $0.30/$3，本轮以页面原文回正。文件序按 catalogOrder 108/109/110/111
-	// 升序排布（纯布局移动，2.5 两行值不变）。
-	geminiTTSModel(geminiModelInput{
-		model: "gemini-3.8-flash-tts", catalogOrder: 108,
-		inputUsdPer1M:         0.5,
-		outputUsdPer1M:        9,
-		supportedAPIProtocols: []string{"audio_speech"},
-		inputModalities:       []string{"text"},
-		outputModalities:      []string{"audio"},
-	}),
-	geminiTTSModel(geminiModelInput{
-		model: "gemini-3.8-flash-lite-tts", catalogOrder: 109,
-		inputUsdPer1M:         0.5,
-		outputUsdPer1M:        6,
 		supportedAPIProtocols: []string{"audio_speech"},
 		inputModalities:       []string{"text"},
 		outputModalities:      []string{"audio"},
@@ -495,6 +525,21 @@ var geminiModelPricingData = []rawModel{
 	// 先例不结构化）。官方无独立发布日明文，ReleaseDate 留空。
 	// 2026-10-05 复核批：官方 deprecations 页明文两行 2026-10-22 终止支持，
 	// ShutdownDate 落官方明文日期（裁决 §2.3）。
+	// 2026-10-05 取证批新增（官方定价页 Veo 3.1 节明文 "Veo 3.1 Fast video
+	// with audio price (default) $0.10 (720p) $0.12 (1080p) $0.30 (4k)" +
+	// veo 文档页 "Model code | Gemini API veo-3.1-fast-generate-preview"，
+	// Latest update January 2026）：在售 Preview，库内原有 3.1 标准版
+	//（$0.40）与 lite 版（$0.05）未覆盖 fast。秒价落主档 $0.10（720p），
+	// 1080p/4k 分档注释登记；官方无发布日与 deprecations 明文，
+	// ReleaseDate/ShutdownDate 留空（裁决 §2.3——veo 文档页 "Latest update
+	// January 2026" 是更新记录非发布日）。
+	rawModel{
+		Model: "veo-3.1-fast-generate-preview", Mode: "video",
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"video"},
+		SupportedAPIProtocols:    []string{"video"},
+		VideoOutputCostPerSecond: f64p(0.10),
+	},
 	rawModel{
 		// veo-3.1：720p/1080p 均 $0.40/秒（主档 $0.40）；4k 档 $0.60/秒
 		// 分档注释登记，不结构化。
@@ -547,6 +592,24 @@ var geminiModelPricingData = []rawModel{
 		InputCostPerToken:       perToken(2),
 		OutputCostPerToken:      perToken(12),
 		OutputCostPerImageToken: perToken(120),
+	},
+	rawModel{
+		// Nano Banana 2 Lite 图像生成：2026-10-05 取证批新增（官方定价页
+		// "Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)" 节明文 Input
+		// $0.25 (text/image/video)、Output $1.50 (text and thinking) +
+		// $30.00 (images)；models 页 Stable 段官方 ID
+		// gemini-3.1-flash-lite-image——"nano-banana-2-lite" 是商品名非模型
+		// ID）。$30/1M image tokens 等价 $0.0336/1K 分辨率张（1120
+		// tokens/张，注释登记不建每张价）；输入模态照官方明文含 video。
+		// 官方无发布日明文，ReleaseDate 留空；字段结构对照
+		// gemini-3.1-flash-image 行。
+		Model: "gemini-3.1-flash-lite-image", Mode: "image_generation", CatalogOrder: intp(103),
+		InputModalities:         []string{"text", "image", "video"},
+		OutputModalities:        []string{"text", "image"},
+		SupportedAPIProtocols:   []string{"generate_content", "stream_generate_content"},
+		InputCostPerToken:       perToken(0.25),
+		OutputCostPerToken:      perToken(1.5),
+		OutputCostPerImageToken: perToken(30),
 	},
 	rawModel{
 		// 同步音频转写：mode=audio、协议 audio_transcription（对照

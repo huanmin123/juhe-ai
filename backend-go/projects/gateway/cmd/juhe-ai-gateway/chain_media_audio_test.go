@@ -220,10 +220,9 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	}
 
 	// media_jobs 行终态：kind=audio_transcription + completed + 时长计量照抽
-	//（usage JSON 字符串 duration=62.5）按目录 USD 秒价计费（2026-10-05 用户
-	// 裁决补价：paraformer-v2 0.00008 元/秒 ÷ 7.0 = $0.00001143/秒（4 位
-	// 有效数字，核对批回正）；本断言随该补价回正——补价落库后本用例断言未
-	// 同步，属定价事实回正非语义变更）。
+	//（usage JSON 字符串 duration=62.5）按目录 USD 秒价计费（2026-10-05
+	// 取证批：国际站 Model Studio USD 明文 $0.000012/秒覆盖换算值——核对批
+	// 换算值 $0.00001143/秒作废；本断言随定价事实回正非语义变更）。
 	var kind, status, upstreamJobID string
 	var costUsd float64
 	if err := fixture.db.QueryRow(`SELECT kind, status, upstream_job_id, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&kind, &status, &upstreamJobID, &costUsd); err != nil {
@@ -232,8 +231,8 @@ func TestChainMediaAudioJobQwenParaformerLifecycle(t *testing.T) {
 	if kind != "audio_transcription" || status != "completed" || upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs = %s/%s/%s, want audio_transcription/completed/%s", kind, status, upstreamJobID, providerJobID)
 	}
-	if costUsd != 0.000714375 {
-		t.Fatalf("paraformer 按目录秒价计费 cost_usd = %v, want 0.000714375（62.5s × $0.00001143/s）", costUsd)
+	if costUsd != 0.00075 {
+		t.Fatalf("paraformer 按目录秒价计费 cost_usd = %v, want 0.00075（62.5s × $0.000012/s）", costUsd)
 	}
 
 	// content 下载：completed 的 transcription_url 是引擎渲染的绝对 URL（不经
