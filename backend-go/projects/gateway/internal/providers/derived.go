@@ -465,7 +465,19 @@ func minimaxCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 }
 
 func volcengineCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
-	return genericMediaCatalogDisplay(item)
+	sections := genericMediaCatalogDisplay(item)
+	// 占位目录行（doubao-tts：豆包语音无官方 model_id，appid/音色调用、
+	// 统一面 model 被 adapter 忽略）在目录页显式标注命名性质，避免被当成
+	// 官方 ID；判定走 SourcePricingNote 前缀（数据驱动），未来同类占位行
+	// 无需改投影。
+	if item.SourcePricingNote != "" && strings.HasPrefix(item.SourcePricingNote, "占位目录行") {
+		sections = append(sections, catalogDisplaySection{
+			Key:   "naming_notice",
+			Label: "模型名称说明",
+			Items: []catalogDisplayItem{{Key: "naming", Label: "命名性质", Value: "占位名（非官方模型 ID）——豆包语音按 appid/音色调用，本名称仅用于统一面路由与计费匹配", Format: "text"}},
+		})
+	}
+	return sections
 }
 
 func qwenCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
