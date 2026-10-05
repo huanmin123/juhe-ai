@@ -163,6 +163,10 @@ func coverageAssertions() []coverageAssertion {
 		// chat / codex / model-check 域：会话与消息、J3b 运行与 observation。
 		{Name: "chat_conversations", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_conversations", Min: 1},
 		{Name: "chat_messages", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_messages", Min: 1},
+		// chat 域媒体块（问答音视频工具设计 §3）：任务块三状态 + 音频输出块 + 媒体资产。
+		{Name: "chat_messages.output_media_task", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_media_task\"%'", Min: 1},
+		{Name: "chat_messages.output_audio", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_audio\"%'", Min: 1},
+		{Name: "chat_assets.media", Domain: DomainChatCodexModelCheck, Store: StoreChat, Query: "SELECT COUNT(*) FROM chat_assets WHERE original_mime_type IN ('audio/mpeg','audio/wav','audio/ogg','audio/mp4','video/mp4','video/webm')", Min: 1},
 		{Name: "model_check_runs", Domain: DomainChatCodexModelCheck, Store: StoreModelCheck, Query: "SELECT COUNT(*) FROM model_check_runs", Min: 1},
 		{Name: "model_check_observations", Domain: DomainChatCodexModelCheck, Store: StoreModelCheck, Query: "SELECT COUNT(*) FROM model_check_observations", Min: 1},
 	}

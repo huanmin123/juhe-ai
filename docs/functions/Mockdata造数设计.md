@@ -40,6 +40,7 @@ Mockdata 是项目里「可复用本地造数」的唯一职责入口：
 | `backend-go/projects/maintenance/internal/mockdata/domain_stats.go` | stats 库原始写入面造数域（派生聚合调用既有聚合器重建） |
 | `backend-go/projects/maintenance/internal/mockdata/domain_observability.go` | 运行日志、审计、操作日志、公开接口日志、后台清理目标等 observability 造数域 |
 | `backend-go/projects/maintenance/internal/mockdata/domain_chat_codex_modelcheck.go` | chat 库、codex context 分片、J3b 模型检测造数域 |
+| `backend-go/projects/maintenance/internal/mockdata/domain_chat_media_sample.go` | chat 域媒体工具样本（M7）：媒体工具演示会话的 `generate_video`/`generate_audio` 消息块（`output_media_task` 三状态 + `output_audio`）、可播放 MP4 常量与静音 WAV 生成器、媒体资产行 |
 | `backend-go/projects/jobs/cmd/juhe-ai-jobs/run_jobs_once.go` | jobs `-run-jobs-once` 一次性执行入口（脚本第 5 步用它重建派生表） |
 
 ## 3. 命令
@@ -107,7 +108,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 | `usage-shards/` + `usage-catalog.sqlite3` | 按 `<root>/usage-shards/<YYYY>/<MM>/<DD>/usage-YYYYMMDD-sNN.sqlite3` 三级布局写入分片，并在 catalog 四表登记；默认 31 天约 1.5 万条量级，含健康检查逐账户逐小时样本、三条上游响应模型定向样本 |
 | `stats.sqlite3` | 原始写入面：系统指标与事件循环采样、`background_task_runs`、`account_usage_snapshots`、dirty 标记；派生聚合表不在此伪造 |
 | observability 各专库 | 审计日志（含 payload blob）、操作日志、运行日志索引 + JSONL 文件（写 `--log-dir`）、公开接口日志、后台记录清理目标 |
-| `chat.sqlite3` | 会话、消息、图片资产文件、上下文与图像生成样本 |
+| `chat.sqlite3` | 会话、消息、图片资产文件、上下文与图像生成样本；「媒体工具演示」会话含 `output_media_task` 三状态任务块与 `output_audio` 播放块，挂真实落盘的 MP4/WAV 媒体资产 |
 | `codex-context/state-shards/` | Codex context 状态分片；分片数与 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT` 对齐（脚本已处理） |
 | J3b 模型检测专库 | 检测 runs/items/observations、信任与基线、输入与调度样本 |
 

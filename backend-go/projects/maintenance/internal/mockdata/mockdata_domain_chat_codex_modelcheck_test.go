@@ -245,17 +245,24 @@ func TestSeedChatCodexModelCheckChatSampleMatrix(t *testing.T) {
 	}{
 		{"置顶会话", "SELECT COUNT(*) FROM chat_conversations WHERE is_pinned = 1", 1},
 		{"达轮次上限会话", "SELECT COUNT(*) FROM chat_conversations WHERE user_turn_count = 50 AND next_sequence_no = 101", 1},
-		{"用户消息", "SELECT COUNT(*) FROM chat_messages WHERE role = 'user' AND client_message_id IS NOT NULL", 6},
-		{"助手消息", "SELECT COUNT(*) FROM chat_messages WHERE role = 'assistant' AND client_message_id IS NULL", 6},
+		{"用户消息", "SELECT COUNT(*) FROM chat_messages WHERE role = 'user' AND client_message_id IS NOT NULL", 10},
+		{"助手消息", "SELECT COUNT(*) FROM chat_messages WHERE role = 'assistant' AND client_message_id IS NULL", 10},
 		{"失败消息", "SELECT COUNT(*) FROM chat_messages WHERE status = 'failed' AND error_code IS NOT NULL", 1},
-		{"reasoning 块", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"reasoning\"%'", 2},
-		{"工具调用块", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"tool_call\"%'", 2},
+		{"reasoning 块", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"reasoning\"%'", 3},
+		{"工具调用块", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"tool_call\"%'", 6},
 		{"图片输出块", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_image\"%'", 2},
 		{"图片输入块", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"input_image\"%'", 1},
+		{"媒体任务块消息", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_media_task\"%'", 3},
+		{"媒体任务 in_progress", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_media_task\"%' AND content_blocks_json LIKE '%\"status\":\"in_progress\"%'", 1},
+		{"媒体任务 completed", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"assetId\":\"mockdata_chat_asset_video\"%'", 1},
+		{"媒体任务 failed", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_media_task\"%' AND content_blocks_json LIKE '%\"error\":\"视频生成失败（upstream_error）\"%'", 1},
+		{"音频输出块", "SELECT COUNT(*) FROM chat_messages WHERE content_blocks_json LIKE '%\"type\":\"output_audio\"%'", 1},
+		{"媒体资产行", "SELECT COUNT(*) FROM chat_assets WHERE original_mime_type IN ('audio/wav', 'video/mp4')", 2},
+		{"媒体资产无宽高", "SELECT COUNT(*) FROM chat_assets WHERE original_mime_type IN ('audio/wav', 'video/mp4') AND original_width IS NULL AND original_height IS NULL AND preview_storage_key IS NULL", 2},
 		{"上下文检查点", "SELECT COUNT(*) FROM chat_context_checkpoints WHERE status = 'active'", 1},
 		{"生成操作", "SELECT COUNT(*) FROM chat_image_generations WHERE operation = 'generate'", 1},
 		{"编辑操作", "SELECT COUNT(*) FROM chat_image_generations WHERE operation = 'edit'", 1},
-		{"资产引用", "SELECT COUNT(*) FROM chat_asset_references", 3},
+		{"资产引用", "SELECT COUNT(*) FROM chat_asset_references", 5},
 	}
 	for _, testCase := range cases {
 		testCase := testCase
@@ -293,6 +300,64 @@ func TestSeedChatCodexModelCheckChatSampleMatrix(t *testing.T) {
 			t.Fatalf("图片生成计费字段为空: %q", row)
 		}
 	}
+	// 媒体块结构（M7）：output_media_task 三状态 + output_audio 播放块，字段与
+	// generation_runner 的 assistantBlock 投影逐字对齐。
+	mediaBlocks := []map[string]any{}
+	for _, raw := range chatCodexTestValues(t, e, StoreChat,
+		`SELECT content_blocks_json FROM chat_messages WHERE conversation_id = 'mockdata_chat_conversation_media' AND role = 'assistant'`) {
+		var decoded []map[string]any
+		if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+			t.Fatalf("媒体消息 content_blocks_json 不是 JSON 数组: %v", err)
+		}
+		for _, block := range decoded {
+			if block["type"] == "output_media_task" || block["type"] == "output_audio" {
+				mediaBlocks = append(mediaBlocks, block)
+			}
+		}
+	}
+	if len(mediaBlocks) != 4 {
+		t.Fatalf("媒体块数量 = %d，期望 4（三状态任务块 + 音频块）", len(mediaBlocks))
+	}
+	taskStatus := map[string]map[string]any{}
+	for _, block := range mediaBlocks {
+		switch block["type"] {
+		case "output_media_task":
+			if block["kind"] != "video" {
+				t.Fatalf("媒体任务块 kind = %v，期望 video", block["kind"])
+			}
+			if _, ok := block["jobId"].(string); !ok {
+				t.Fatalf("媒体任务块缺少 jobId: %v", block)
+			}
+			if block["model"] != chatMediaVideoModel || block["promptSummary"] == "" {
+				t.Fatalf("媒体任务块 model/promptSummary 不完整: %v", block)
+			}
+			taskStatus[block["status"].(string)] = block
+		case "output_audio":
+			if block["assetId"] != chatMediaAssetAudioID || block["mimeType"] != "audio/wav" || block["status"] != "completed" {
+				t.Fatalf("音频输出块字段不符: %v", block)
+			}
+		}
+	}
+	for _, status := range []string{"in_progress", "completed", "failed"} {
+		if taskStatus[status] == nil {
+			t.Fatalf("媒体任务块缺少 %s 状态样本: %v", status, mediaBlocks)
+		}
+	}
+	if progress, ok := taskStatus["in_progress"]["progress"].(float64); !ok || int(progress) != 42 {
+		t.Fatalf("in_progress 任务块 progress = %v，期望 42", taskStatus["in_progress"]["progress"])
+	}
+	if taskStatus["completed"]["assetId"] != chatMediaAssetVideoID {
+		t.Fatalf("completed 任务块 assetId = %v", taskStatus["completed"]["assetId"])
+	}
+	if taskStatus["completed"]["progress"].(float64) != 100 {
+		t.Fatalf("completed 任务块 progress = %v，期望 100", taskStatus["completed"]["progress"])
+	}
+	if taskStatus["failed"]["error"] != chatMediaTaskErrorFailed {
+		t.Fatalf("failed 任务块 error = %v", taskStatus["failed"]["error"])
+	}
+	if _, hasAsset := taskStatus["failed"]["assetId"]; hasAsset {
+		t.Fatalf("failed 任务块不应携带 assetId: %v", taskStatus["failed"])
+	}
 }
 
 func TestSeedChatCodexModelCheckAssetFilesExist(t *testing.T) {
@@ -329,13 +394,26 @@ func TestSeedChatCodexModelCheckAssetFilesExist(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(assets) < 2 {
-		t.Fatalf("资产行数 = %d，要求至少 2", len(assets))
+	if len(assets) < 4 {
+		t.Fatalf("资产行数 = %d，要求至少 4（图片 3 + 媒体 2 的下限组合）", len(assets))
 	}
+	// magic 是「文件头足够判定容器类型」的前缀；WAV 与 WebP 同为 RIFF、MP4 的
+	// ftyp box 在偏移 4，三者按位置特判而不是单段前缀。
 	magic := map[string][]byte{
 		"image/png":  {0x89, 'P', 'N', 'G'},
 		"image/jpeg": {0xff, 0xd8, 0xff},
 		"image/webp": {'R', 'I', 'F', 'F'},
+	}
+	matchesContainer := func(mime string, data []byte) bool {
+		switch mime {
+		case "audio/wav":
+			return len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WAVE"
+		case "video/mp4":
+			return len(data) >= 12 && string(data[4:8]) == "ftyp" && string(data[8:12]) == "isom"
+		default:
+			expected, ok := magic[mime]
+			return ok && len(data) >= len(expected) && string(data[:len(expected)]) == string(expected)
+		}
 	}
 	checked := 0
 	for _, asset := range assets {
@@ -347,12 +425,8 @@ func TestSeedChatCodexModelCheckAssetFilesExist(t *testing.T) {
 		if len(data) != asset.bytes {
 			t.Fatalf("资产文件字节 %d != processed_bytes %d", len(data), asset.bytes)
 		}
-		expected, ok := magic[asset.mime]
-		if !ok {
-			t.Fatalf("未知处理后类型 %q", asset.mime)
-		}
-		if len(data) < len(expected) || string(data[:len(expected)]) != string(expected) {
-			t.Fatalf("资产 %s 的 magic 与 %s 不符: % x", asset.id, asset.mime, data[:len(expected)])
+		if !matchesContainer(asset.mime, data) {
+			t.Fatalf("资产 %s 的容器标识与 %s 不符: % x", asset.id, asset.mime, data[:min(12, len(data))])
 		}
 		if chatCodexDigest(data) != asset.sha {
 			t.Fatalf("资产 %s 的 sha256 与文件不一致", asset.id)

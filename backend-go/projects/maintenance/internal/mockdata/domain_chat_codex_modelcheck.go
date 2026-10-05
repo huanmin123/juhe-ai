@@ -600,6 +600,12 @@ type chatCodexAsset struct {
 	QuotaBytes   int
 	CommittedAt  time.Time
 	CreatedAt    time.Time
+	// NoDimensions 标记媒体资产行（audio/*、video/*）：宽高四列写 NULL、无
+	// 预览变体，与 chatassets.CommitChatGeneratedMediaAsset 的落库形状一致。
+	NoDimensions bool
+	// StorageVariant 是存储键的变体后缀：生成资产（含媒体）为 "original"，
+	// 用户上传与既有图片样本为 ""。
+	StorageVariant string
 }
 
 // writeChatSection 是 chat 段的实际写入：先清后插，顺序为子表 → 父表。
@@ -656,6 +662,13 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			id: "mockdata_chat_conversation_turn_limit", title: CleanupNamePrefix + "达轮次上限会话", pinned: 0,
 			nextSequence: 101, userTurns: chatCodexTurnLimit, messageRev: chatCodexTurnLimit,
 			createdAt: now.Add(-30 * time.Hour), lastMessageAt: now.Add(-27 * time.Hour),
+		},
+		{
+			// 媒体工具演示（M7 问答音视频工具）：四轮消息承载 output_media_task
+			// 三状态与 output_audio 播放块，样本数据在 domain_chat_media_sample.go。
+			id: chatMediaConversationID, title: CleanupNamePrefix + "媒体工具演示", pinned: 0,
+			nextSequence: 9, userTurns: 4, messageRev: 4,
+			createdAt: now.Add(-4 * time.Hour), lastMessageAt: now.Add(-29 * time.Minute),
 		},
 	}
 	for _, conversation := range conversations {
@@ -738,6 +751,7 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 	pinnedConv := conversations[0].id
 	defaultConv := conversations[1].id
 	limitConv := conversations[2].id
+	mediaConv := conversations[3].id
 	messages := []chatCodexMessage{
 		{
 			ID: "mockdata_chat_message_pinned_1", Sequence: 1, Role: "user", Status: "completed",
@@ -821,6 +835,10 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			FinishReason: "stop", CreatedAt: now.Add(-27*time.Hour + time.Minute), CompletedAt: now.Add(-26*time.Hour - 50*time.Minute),
 		},
 	}
+	// 媒体工具演示会话的消息（M7）：随主循环一起写，存储窗口按真实创建日期
+	// 自动分桶累计。
+	mediaMessages := chatMediaMessages(now)
+	messages = append(messages, mediaMessages...)
 	conversationOf := map[string]string{
 		"mockdata_chat_message_pinned_1":  pinnedConv,
 		"mockdata_chat_message_pinned_2":  pinnedConv,
@@ -834,6 +852,9 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		"mockdata_chat_message_limit_98":  limitConv,
 		"mockdata_chat_message_limit_99":  limitConv,
 		"mockdata_chat_message_limit_100": limitConv,
+	}
+	for _, message := range mediaMessages {
+		conversationOf[message.ID] = mediaConv
 	}
 	// 存储窗口按消息的真实创建日期分桶：窗口行必须与消息字节数自洽，否则
 	// 「用户存储用量」页面会与消息列表矛盾。
@@ -974,19 +995,28 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 			CommittedAt: now.Add(-23*time.Hour - 59*time.Minute), CreatedAt: now.Add(-24 * time.Hour),
 		},
 	}
+	// 媒体工具演示会话的资产（M7）：MP4 视频与 WAV 音频各一个，形状与
+	// CommitChatGeneratedMediaAsset 一致（无宽高、无预览、original 变体键）。
+	assets = append(assets, chatMediaAssets(mediaConv, user.ID, now)...)
 	assetBytesTotal := 0
 	for _, asset := range assets {
 		digest := chatCodexDigest(asset.Bytes)
-		storageKey := chatCodexStorageKey(asset.ID, digest, asset.MimeType, "")
+		storageKey := chatCodexStorageKey(asset.ID, digest, asset.MimeType, asset.StorageVariant)
 		if err := chatCodexWriteAssetFile(w.e.options.Paths.ChatAssetsRoot, storageKey, asset.Bytes); err != nil {
 			return err
+		}
+		originalWidth := any(asset.Width)
+		originalHeight := any(asset.Height)
+		if asset.NoDimensions {
+			// 媒体行宽高写 NULL（DDL 允许，ready 宽高 CHECK 对媒体 MIME 豁免）。
+			originalWidth, originalHeight = nil, nil
 		}
 		columns := map[string]any{
 			"id": asset.ID, "system_account_id": asset.Owner, "conversation_id": asset.Conversation,
 			"source_kind": asset.SourceKind, "original_filename": asset.Filename,
-			"original_mime_type": asset.MimeType, "original_width": asset.Width, "original_height": asset.Height,
+			"original_mime_type": asset.MimeType, "original_width": originalWidth, "original_height": originalHeight,
 			"original_bytes": len(asset.Bytes), "original_sha256": digest,
-			"processed_mime_type": asset.MimeType, "processed_width": asset.Width, "processed_height": asset.Height,
+			"processed_mime_type": asset.MimeType, "processed_width": originalWidth, "processed_height": originalHeight,
 			"processed_bytes": len(asset.Bytes), "processed_sha256": digest, "storage_key": storageKey,
 			"preview_mime_type": nil, "preview_width": nil, "preview_height": nil, "preview_bytes": nil,
 			"preview_sha256": nil, "preview_storage_key": nil,
@@ -1035,10 +1065,12 @@ func writeChatSection(w *chatCodexWriter, resources chatCodexResources) error {
 		{assetUploadID, "mockdata_chat_message_pinned_1", "user_input", 0},
 		{assetGenerateID, "mockdata_chat_message_pinned_2", "assistant_output", 0},
 		{assetEditID, "mockdata_chat_message_pinned_4", "assistant_output", 0},
+		{chatMediaAssetVideoID, "mockdata_chat_message_media_4", "assistant_output", 2},
+		{chatMediaAssetAudioID, "mockdata_chat_message_media_8", "assistant_output", 2},
 	}
 	for index, reference := range references {
 		if err := w.put(StoreChat, "chat_asset_references", map[string]any{
-			"asset_id": reference.assetID, "conversation_id": pinnedConv, "turn_id": assets[index].TurnID,
+			"asset_id": reference.assetID, "conversation_id": assets[index].Conversation, "turn_id": assets[index].TurnID,
 			"message_id": reference.messageID, "reference_kind": reference.kind, "content_order": reference.order,
 			"created_at": stamp(assets[index].CreatedAt),
 			"expires_at": stamp(assets[index].CreatedAt.Add(chatCodexAssetRetentionDays * 24 * time.Hour)),
@@ -1175,7 +1207,8 @@ func chatCodexStorageKey(assetID, digestHex, mimeType, variant string) string {
 	return fmt.Sprintf("%s/%s/%s%s-%s%s", digest[:2], digest[2:4], assetID, suffix, digest[:16], chatCodexImageExtension(mimeType))
 }
 
-// chatCodexImageExtension 与 chatAssetObjectExtension 对齐。
+// chatCodexImageExtension 与 chatAssetObjectExtension / GeneratedAssetExtension
+// 对齐（含 M7 媒体产物扩展名，问答音视频工具设计 §3）。
 func chatCodexImageExtension(mimeType string) string {
 	switch strings.ToLower(strings.TrimSpace(mimeType)) {
 	case "image/png":
@@ -1184,6 +1217,18 @@ func chatCodexImageExtension(mimeType string) string {
 		return ".jpg"
 	case "image/webp":
 		return ".webp"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/wav":
+		return ".wav"
+	case "audio/ogg":
+		return ".ogg"
+	case "audio/mp4":
+		return ".m4a"
+	case "video/webm":
+		return ".webm"
+	case "video/mp4":
+		return ".mp4"
 	default:
 		return ".bin"
 	}
