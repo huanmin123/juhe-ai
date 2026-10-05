@@ -24,6 +24,18 @@ package pricing
 //     裁决 §2.6 同型）。
 //   - chat-latest、gpt-rosalind-research 官方在售但不收录（计划 §3.3）。
 //
+// 2026-10-05 遗留取证批（pricing.md 官方表为唯一真值逐行对照）：
+// realtime/audio 族补齐——新增 3 行（gpt-realtime-mini / gpt-audio /
+// gpt-audio-mini，补全批漏收、§3.3 未列）；存量 realtime 系 5 行补 Image
+// 输入价（$5.00，mini 系 $0.80；image cached 与 text/audio cached 异值，
+// 模态无关 cached 通道按 text/audio 主模态计、差异注释登记）；
+// gpt-realtime-1.5 补 cached $0.40（补全批漏落，text/audio cached 同值
+// 与 2.1 同理）；旧 gpt-realtime 行按新口径补 text $4/$16 + cached
+// $0.40 + image $5（「多源分歧不落」旧口径废止，快照门禁断言同步）。
+// gpt-5.5-cyber 维持不收录（证据修正：pricing.md .md 源 Cyber 表有可见
+// 行 $12.50/$1.25/-/$75 而渲染页无，models 页 404——两源矛盾，调用
+// 可用性未证明不落）。
+//
 // openAIModelPricingData = openAIGPT4 + openAIGPT5 + openAIImage +
 // openAIReasoning + openAIAudio + openAIVideo (order preserved).
 var openAIModelPricingData = func() []rawModel {
@@ -1130,10 +1142,20 @@ var openAIAudioModelPricingData = []rawModel{
 		// 连接关闭终态落库（M5b2 交付），空会话 0 计费 + usage_missing。
 		// 2026-10-05 补 ShutdownDate：官方 deprecations.md 明文 2027-01-20。
 		Model: "gpt-realtime", Mode: "audio", ReleaseDate: "2025-08-28",
+		// 2026-10-05 遗留取证批补齐（pricing.md 官方表明文）：text $4/$16
+		// 落 token 通道、text/audio cached 同为 $0.40 → 模态无关
+		// CacheReadInputTokenCost 落值（同 2.1 口径，旧行「多源分歧不落」
+		// 口径废止）；Image 输入 $5.00 落 image 通道（image cached $0.50
+		// 与 text/audio $0.40 异值，cached 单值通道按 text/audio 主模态
+		// $0.40 计、image cached 差异注释登记）。
 		ShutdownDate:            "2027-01-20",
-		InputModalities:         []string{"text", "audio"},
+		InputModalities:         []string{"text", "image", "audio"},
 		OutputModalities:        []string{"text", "audio"},
 		SupportedAPIProtocols:   []string{"realtime"},
+		CacheReadInputTokenCost: perToken(0.40),
+		InputCostPerToken:       perToken(4),
+		OutputCostPerToken:      perToken(16),
+		InputCostPerImageToken:  perToken(5),
 		InputCostPerAudioToken:  perToken(32),
 		OutputCostPerAudioToken: perToken(64),
 	},
@@ -1149,27 +1171,32 @@ var openAIAudioModelPricingData = []rawModel{
 	{
 		// audio $32 in / $0.40 cached / $64 out；text $4/$24 per 1M。
 		// 官方 text cached 与 audio cached 同为 $0.40，模态无关
-		// CacheReadInputTokenCost 通道可安全落值。
+		// CacheReadInputTokenCost 通道可安全落值。2026-10-05 遗留取证批补
+		// Image 输入 $5.00（image cached $0.50 与 text/audio 异值，同旧行
+		// 注释登记）。
 		Model: "gpt-realtime-2.1", Mode: "audio",
-		InputModalities:         []string{"text", "audio"},
+		InputModalities:         []string{"text", "image", "audio"},
 		OutputModalities:        []string{"text", "audio"},
 		SupportedAPIProtocols:   []string{"realtime"},
 		CacheReadInputTokenCost: perToken(0.40),
 		InputCostPerToken:       perToken(4),
 		OutputCostPerToken:      perToken(24),
+		InputCostPerImageToken:  perToken(5),
 		InputCostPerAudioToken:  perToken(32),
 		OutputCostPerAudioToken: perToken(64),
 	},
 	{
 		// audio $32 in / $0.40 cached / $64 out；text $4/$24 per 1M。
 		// 官方 text cached 与 audio cached 同为 $0.40，同上落值。
+		// 2026-10-05 遗留取证批补 Image 输入 $5.00（同 2.1 注释登记）。
 		Model: "gpt-realtime-2", Mode: "audio",
-		InputModalities:         []string{"text", "audio"},
+		InputModalities:         []string{"text", "image", "audio"},
 		OutputModalities:        []string{"text", "audio"},
 		SupportedAPIProtocols:   []string{"realtime"},
 		CacheReadInputTokenCost: perToken(0.40),
 		InputCostPerToken:       perToken(4),
 		OutputCostPerToken:      perToken(24),
+		InputCostPerImageToken:  perToken(5),
 		InputCostPerAudioToken:  perToken(32),
 		OutputCostPerAudioToken: perToken(64),
 	},
@@ -1178,22 +1205,47 @@ var openAIAudioModelPricingData = []rawModel{
 		//（cached $0.06）。text/audio cached 不同值（$0.06 vs $0.30），模态
 		// 无关通道落任一值都会误计另一模态 → 不落，注释登记官方明文。
 		Model: "gpt-realtime-2.1-mini", Mode: "audio",
-		InputModalities:         []string{"text", "audio"},
+		// 2026-10-05 遗留取证批补 Image 输入 $0.80（image cached $0.08
+		// 与 text $0.06 / audio $0.30 三值互异，cached 单值通道本就不落，
+		// image cached 注释登记）。
+		InputModalities:         []string{"text", "image", "audio"},
 		OutputModalities:        []string{"text", "audio"},
 		SupportedAPIProtocols:   []string{"realtime"},
 		InputCostPerToken:       perToken(0.6),
 		OutputCostPerToken:      perToken(2.4),
+		InputCostPerImageToken:  perToken(0.8),
+		InputCostPerAudioToken:  perToken(10),
+		OutputCostPerAudioToken: perToken(20),
+	},
+	{
+		// 2026-10-05 遗留取证批补收录（pricing.md 官方表明文在售，§3.3
+		// 不收录清单未列——补全批漏收）：gpt-realtime-mini 与 -2.1-mini
+		// 同价（audio $10/$0.30/$20、text $0.60/$2.40、image $0.80）。
+		// text/audio/image cached 三值互异（$0.06/$0.30/$0.08），模态无关
+		// cached 通道不落（同 -2.1-mini 裁决）。官方无发布日明文。
+		Model: "gpt-realtime-mini", Mode: "audio",
+		InputModalities:         []string{"text", "image", "audio"},
+		OutputModalities:        []string{"text", "audio"},
+		SupportedAPIProtocols:   []string{"realtime"},
+		InputCostPerToken:       perToken(0.6),
+		OutputCostPerToken:      perToken(2.4),
+		InputCostPerImageToken:  perToken(0.8),
 		InputCostPerAudioToken:  perToken(10),
 		OutputCostPerAudioToken: perToken(20),
 	},
 	{
 		// audio $32 in / $0.40 cached / $64 out；text $4/$16 per 1M。
+		// 2026-10-05 遗留取证批：官方表 text cached 与 audio cached 同为
+		// $0.40 → 补落模态无关 cached 通道（补全批漏落）；Image 输入
+		// $5.00 补落（image cached $0.50 差异注释登记，同 2.1）。
 		Model: "gpt-realtime-1.5", Mode: "audio",
-		InputModalities:         []string{"text", "audio"},
+		InputModalities:         []string{"text", "image", "audio"},
 		OutputModalities:        []string{"text", "audio"},
 		SupportedAPIProtocols:   []string{"realtime"},
+		CacheReadInputTokenCost: perToken(0.40),
 		InputCostPerToken:       perToken(4),
 		OutputCostPerToken:      perToken(16),
+		InputCostPerImageToken:  perToken(5),
 		InputCostPerAudioToken:  perToken(32),
 		OutputCostPerAudioToken: perToken(64),
 	},
@@ -1209,6 +1261,32 @@ var openAIAudioModelPricingData = []rawModel{
 		OutputCostPerToken:      perToken(10),
 		InputCostPerAudioToken:  perToken(32),
 		OutputCostPerAudioToken: perToken(64),
+	},
+	{
+		// 2026-10-05 遗留取证批补收录（pricing.md 官方表明文在售，§3.3
+		// 未列——补全批漏收）：gpt-audio / gpt-audio-mini 现行代与
+		// audio-1.5 同面（chat_completions / responses 音频生成），官方
+		// cached 列 "-" 无缓存价不落。官方无发布日明文。
+		// gpt-audio：audio $32/$64、text $2.50/$10 per 1M。
+		Model: "gpt-audio", Mode: "audio",
+		InputModalities:         []string{"text", "audio"},
+		OutputModalities:        []string{"text", "audio"},
+		SupportedAPIProtocols:   []string{"chat_completions", "responses"},
+		InputCostPerToken:       perToken(2.5),
+		OutputCostPerToken:      perToken(10),
+		InputCostPerAudioToken:  perToken(32),
+		OutputCostPerAudioToken: perToken(64),
+	},
+	{
+		// gpt-audio-mini：audio $10/$20、text $0.60/$2.40 per 1M。
+		Model: "gpt-audio-mini", Mode: "audio",
+		InputModalities:         []string{"text", "audio"},
+		OutputModalities:        []string{"text", "audio"},
+		SupportedAPIProtocols:   []string{"chat_completions", "responses"},
+		InputCostPerToken:       perToken(0.6),
+		OutputCostPerToken:      perToken(2.4),
+		InputCostPerAudioToken:  perToken(10),
+		OutputCostPerAudioToken: perToken(20),
 	},
 	{
 		// gpt-live-1：官方 $0.05/min 明文 → 每秒 usdPerMinuteToPerSecond
