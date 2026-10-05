@@ -239,9 +239,47 @@ func TestWeCatalogDisplayPerProvider(t *testing.T) {
 		t.Fatalf("glm 单价合并: %+v", glmSingle[0].Items)
 	}
 
-	// 未知供应商 → Node [] 默认。
-	if empty := buildProviderCatalogDisplay(weRichCatalogItem("unknown")); len(empty) != 0 {
-		t.Fatalf("未知供应商应返回空: %+v", empty)
+	// 未知供应商 → 无具名投影内容，仅统一收尾 section（weRichCatalogItem
+	// 带 CNY 来源三元组 → 来源披露位仍应渲染——凡有 note 必披露，不因
+	// provider 未知而丢信息；2026-10-05 验收批统一入口化）。
+	unknownDisplay := buildProviderCatalogDisplay(weRichCatalogItem("unknown"))
+	if len(unknownDisplay) != 1 || unknownDisplay[0].Key != "currency_conversion" {
+		t.Fatalf("未知供应商应只剩来源披露: %+v", unknownDisplay)
+	}
+}
+
+// TestWeCatalogDisplaySourceDisclosureUSD 钉住 USD 明文行的来源披露：
+// z.ai 国际站直落行（如 cogvideox-3）无换算三元组，此前 sourceConversion
+// 对 USD 返回空导致「有价格没来源」；统一入口化后渲染 source_disclosure
+// section（官方币种 USD + 官方源价 note），与 CNY 行的美元换算 section
+// 信息对称。
+func TestWeCatalogDisplaySourceDisclosureUSD(t *testing.T) {
+	item := ModelCatalogItem{
+		ProviderCode:          "glm",
+		Model:                 "cogvideox-3",
+		Mode:                  ptr("video"),
+		VideoOutputUsdPerCall: ptrFloat64(0.2),
+		SourcePricingCurrency: "USD",
+		SourcePricingNote:     "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.2/video，按次计费每条=每次）；国内人民币价 1 元/次原句留档（docs.bigmodel.cn 定价页）",
+	}
+	sections := buildProviderCatalogDisplay(&item)
+	byKey := map[string]catalogDisplaySection{}
+	for _, section := range sections {
+		byKey[section.Key] = section
+	}
+	disclosure, ok := byKey["source_disclosure"]
+	if !ok {
+		t.Fatalf("USD 行缺 source_disclosure: %+v", sections)
+	}
+	if _, exists := byKey["currency_conversion"]; exists {
+		t.Fatalf("USD 行不应渲染美元换算: %+v", sections)
+	}
+	joined := ""
+	for _, entry := range disclosure.Items {
+		joined += fmt.Sprint(entry.Label, entry.Value)
+	}
+	if !strings.Contains(joined, "USD") || !strings.Contains(joined, "z.ai") {
+		t.Fatalf("source_disclosure 内容不完整: %+v", disclosure.Items)
 	}
 }
 

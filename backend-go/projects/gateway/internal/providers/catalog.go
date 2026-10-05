@@ -776,13 +776,21 @@ func modelTokenBoundaryEnd(model string, index int) bool {
 	return false
 }
 
-// hasDirectPrice ports hasDirectPrice.
+// hasDirectPrice ports hasDirectPrice. 2026-10-05 验收批补媒体四维：静态
+// 层派生的视频秒价/按次价、TTS 字符价、ASR 秒价已由
+// ApplyBuiltInStaticDerivedFields 填充到 item（目录表无列），不纳入判断会
+// 把 cogvideox/doubao-tts/seedance/paraformer 等纯媒体行误判为无价、在
+// priced-only 目录请求里整行消失（用户验收报「缺行」的直接根因）。
 func hasDirectPrice(item ModelCatalogItem) bool {
 	if item.InputUsdPer1M != nil || item.OutputUsdPer1M != nil || item.CachedInputUsdPer1M != nil ||
 		item.CacheWriteUsdPer1M != nil || item.CacheWrite1hUsdPer1M != nil ||
 		item.CacheStorageUsdPer1MPerHour != nil || item.ImageInputUsdPer1M != nil ||
 		item.ImageOutputUsdPer1M != nil || item.AudioInputUsdPer1M != nil ||
 		item.AudioOutputUsdPer1M != nil || item.OutputUsdPerImage != nil {
+		return true
+	}
+	if item.VideoOutputUsdPerSecond != nil || item.VideoOutputUsdPerCall != nil ||
+		item.TtsInputUsdPer1MChars != nil || item.AudioInputUsdPerSecond != nil {
 		return true
 	}
 	return len(item.ServiceTierPrices) > 0

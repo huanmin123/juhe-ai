@@ -338,27 +338,28 @@ type catalogDisplaySection struct {
 // provider billing policies' buildCatalogDisplay bodies; unknown provider
 // codes render the Node [] default.
 func buildProviderCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
+	var sections []catalogDisplaySection
 	switch normalizeProviderToken(item.ProviderCode) {
 	case "openai", "gpt":
-		return appendStaticMediaPriceSections(openAICatalogDisplay(item), item)
+		sections = openAICatalogDisplay(item)
 	case "anthropic":
-		return appendStaticMediaPriceSections(anthropicCatalogDisplay(item), item)
+		sections = anthropicCatalogDisplay(item)
 	case "deepseek":
-		return appendStaticMediaPriceSections(deepSeekCatalogDisplay(item), item)
+		sections = deepSeekCatalogDisplay(item)
 	case "glm":
-		return appendStaticMediaPriceSections(glmCatalogDisplay(item), item)
+		sections = glmCatalogDisplay(item)
 	case "gemini":
-		return appendStaticMediaPriceSections(geminiCatalogDisplay(item), item)
+		sections = geminiCatalogDisplay(item)
 	case "xai":
-		return appendStaticMediaPriceSections(xaiCatalogDisplay(item), item)
+		sections = xaiCatalogDisplay(item)
 	case "minimax":
-		return appendStaticMediaPriceSections(minimaxCatalogDisplay(item), item)
+		sections = minimaxCatalogDisplay(item)
 	case "volcengine":
-		return appendStaticMediaPriceSections(volcengineCatalogDisplay(item), item)
+		sections = volcengineCatalogDisplay(item)
 	case "qwen":
-		return appendStaticMediaPriceSections(qwenCatalogDisplay(item), item)
+		sections = qwenCatalogDisplay(item)
 	}
-	return appendStaticMediaPriceSections([]catalogDisplaySection{}, item)
+	return appendSourceDisclosureSection(appendStaticMediaPriceSections(sections, item), item)
 }
 
 // appendStaticMediaPriceSections 把目录表无列的媒体单价（视频每秒/每次、
@@ -410,7 +411,6 @@ func openAICatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	sections = appendSection(sections, longContextSection(item))
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
-	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 
@@ -426,7 +426,6 @@ func anthropicCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	sections = appendSections(sections, serviceTierSections(item))
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
-	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 
@@ -446,7 +445,6 @@ func geminiCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	sections = appendSections(sections, serviceTierSections(item))
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
-	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 
@@ -469,7 +467,6 @@ func xaiCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	sections = appendSections(sections, serviceTierSections(item))
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
-	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 
@@ -482,7 +479,6 @@ func deepSeekCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 		}))
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
-	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 
@@ -499,12 +495,14 @@ func glmCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 		entries = []catalogDisplayItem{priceEntry("token", "Token", item.InputUsdPer1M, "usd_per_1m_tokens")}
 	}
 	sections := appendSection(nil, priceSection("token_pricing", label, entries))
+	// 2026-10-05 验收批补 image 场景分支（对齐 genericMediaCatalogDisplay
+	// 双轨条件）：glm-image / cogview-4 的每张价（OutputUsdPerImage 目录
+	// 列有值）此前因投影无 image 分支而整行无价格显示。
+	if item.Mode != nil && (*item.Mode == "image" || *item.Mode == "image_generation") {
+		sections = appendSection(sections, imageUnitSection(item))
+	}
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
-	// 2026-10-05 核对批补齐：glm 是九家中唯一缺美元换算披露的投影——CNY
-	// 来源行（如 cogvideox-2 按次价 0.5 元 ÷ 7.0）需展示官方币种/汇率/源价
-	// note，调用方式与其余八家一致。
-	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 
@@ -548,7 +546,7 @@ func qwenCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 //     字段 → 不落价格 section；行恰带 token 价（如 chat 通道回填）时照实
 //     显示 Token 计费。容量与美元换算照常。
 //
-// 人民币来源行的披露位是 sourceConversionSection（官方币种 CNY + 约定汇率
+// 人民币来源行的披露位是统一 appendSourceDisclosureSection（官方币种 CNY + 约定汇率
 // 7.0 + 官方源价 note），经 ApplyBuiltInStaticDerivedFields 从静态表透传，
 // 媒体行同样携带。无值 section 由 priceSection/textSection 自动丢弃。
 func genericMediaCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
@@ -571,7 +569,6 @@ func genericMediaCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection 
 		sections = appendSection(sections, reasoningSection(item))
 	}
 	sections = appendSection(sections, capacitySection(item))
-	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 
@@ -701,22 +698,40 @@ func serviceTierSections(item *ModelCatalogItem) []catalogDisplaySection {
 	return sections
 }
 
-func sourceConversionSection(item *ModelCatalogItem) *catalogDisplaySection {
-	if item.SourcePricingCurrency == "" || item.SourcePricingCurrency == "USD" {
-		return nil
+// appendSourceDisclosureSection 是全厂商统一的「价格来源披露」收尾
+//（与 appendStaticMediaPriceSections 同构，buildProviderCatalogDisplay
+// 统一附加——投影内不再各自调用）：凡落了 SourcePricingNote 的行必须在
+// 目录页可见其价格来源，USD 明文行不再因无换算三元组而无披露（2026-10-05
+// 验收批：cogvideox-3 等 z.ai USD 行此前只有价格没有来源，与 CNY 行信息
+// 不对称）。非 USD 币种（现役全部 CNY）保持「美元换算」形态（币种 + 约定
+// 汇率 + 日期 + note）；USD/未声明币种行渲染「来源披露」（币种 + note）。
+func appendSourceDisclosureSection(sections []catalogDisplaySection, item *ModelCatalogItem) []catalogDisplaySection {
+	if item.SourcePricingNote == "" {
+		return sections
 	}
-	rate := ""
-	if item.SourceExchangeRateToUsd != nil && *item.SourceExchangeRateToUsd > 0 {
-		// SourceExchangeRateToUsd 语义是「1 USD = N 源币种」；展示同口径，
-		// 不做倒数换算（1 CNY ≈ $0.1429 这类倒数值易被误读为报价精度）。
-		rate = trimTrailingZeros(fixedNumber(*item.SourceExchangeRateToUsd, 4))
+	if item.SourcePricingCurrency != "" && item.SourcePricingCurrency != "USD" {
+		rate := ""
+		if item.SourceExchangeRateToUsd != nil && *item.SourceExchangeRateToUsd > 0 {
+			// SourceExchangeRateToUsd 语义是「1 USD = N 源币种」；展示同
+			// 口径，不做倒数换算（1 CNY ≈ $0.1429 这类倒数值易被误读为
+			// 报价精度）。
+			rate = trimTrailingZeros(fixedNumber(*item.SourceExchangeRateToUsd, 4))
+		}
+		return appendSection(sections, textSection("currency_conversion", "美元换算", []catalogDisplayItem{
+			{Key: "source_currency", Label: "官方币种", Value: item.SourcePricingCurrency, Format: "text"},
+			{Key: "exchange_rate", Label: "1 USD 兑", Value: rate + " " + item.SourcePricingCurrency, Format: "text"},
+			{Key: "exchange_rate_date", Label: "汇率日期", Value: item.SourceExchangeRateDate, Format: "text"},
+			{Key: "source_note", Label: "官方源价", Value: item.SourcePricingNote, Format: "text"},
+		}))
 	}
-	return textSection("currency_conversion", "美元换算", []catalogDisplayItem{
-		{Key: "source_currency", Label: "官方币种", Value: item.SourcePricingCurrency, Format: "text"},
-		{Key: "exchange_rate", Label: "1 USD 兑", Value: rate + " " + item.SourcePricingCurrency, Format: "text"},
-		{Key: "exchange_rate_date", Label: "汇率日期", Value: item.SourceExchangeRateDate, Format: "text"},
+	currency := item.SourcePricingCurrency
+	if currency == "" {
+		currency = "USD"
+	}
+	return appendSection(sections, textSection("source_disclosure", "来源披露", []catalogDisplayItem{
+		{Key: "source_currency", Label: "官方币种", Value: currency, Format: "text"},
 		{Key: "source_note", Label: "官方源价", Value: item.SourcePricingNote, Format: "text"},
-	})
+	}))
 }
 
 func longContextTokenEntries(item *ModelCatalogItem, cacheReadLabel string) []catalogDisplayItem {
