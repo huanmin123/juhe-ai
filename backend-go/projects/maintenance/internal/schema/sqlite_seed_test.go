@@ -117,8 +117,8 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
-	if first.ModelCatalogRows != 141 {
-		t.Fatalf("first seed model catalog rows = %d, want 141 (M5b gpt-realtime +1, M6 glm cogtts +1, M3 回填池 xai grok-imagine-video-1.5 +1)", first.ModelCatalogRows)
+	if first.ModelCatalogRows != 203 {
+		t.Fatalf("first seed model catalog rows = %d, want 203 (目录 209 行，按种子钟 2026-09-04 过滤 shutdown_date 早于该日的 6 行：xai 2026-05-15 四行 + gemini veo-3.0 两行 2026-06-30)", first.ModelCatalogRows)
 	}
 	snapshotAfterFirst := seedTestSnapshot(t, db)
 
@@ -156,12 +156,16 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 	// qwen 增补 + M3f 长音频批（families 12→13 增 audio_transcription 族、
 	// 目录 136→138 增 wan2.2-t2v-plus 与 paraformer-v2；M5b 批 gpt-realtime
 	// 再 +1 → 139；M6 语音批 volcengine 档案 +tts 绑定 37→38、目录 +cogtts
-	// → 140；M3 回填池 xai 视频 grok-imagine-video-1.5 → 141）后
+	// → 140；M3 回填池 xai 视频 grok-imagine-video-1.5 → 141；对话批
+	// volcengine/qwen 档案 +chat_completions 绑定 38→40，复用既有
+	// openai_v1_chat_completions 族不新增 family 行；2026-10-05 全厂商补全批
+	// 目录 141→208，按种子钟 2026-09-04 过滤 6 行已 shutdown 行 → 202）后
 	// providers 11 / families 13 / profiles
-	// 16 / profile 绑定 38（M3f qwen +audio_transcription、M4b hybrid
-	// +video_generation+tts、M6 volcengine +tts）/ groups 11；默认分组派生
+	// 16 / profile 绑定 40（M3f qwen +audio_transcription、M4b hybrid
+	// +video_generation+tts、M6 volcengine +tts、对话批 volcengine/qwen
+	// +chat_completions）/ groups 11；默认分组派生
 	// route_strategies 与 bindings 10（hybrid 不派生）、api_keys 11（10 默认
-	// + 1 admin chat））。
+	// + 1 admin chat）。
 	expectCounts := map[string]int{
 		"global_settings":                     2,
 		"request_quota_hourly_window_configs": 8,
@@ -169,7 +173,7 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"protocols":                           3,
 		"protocol_endpoint_families":          13,
 		"provider_protocol_profiles":          16,
-		"provider_protocol_profile_families":  38,
+		"provider_protocol_profile_families":  40,
 		"groups":                              11,
 		"route_strategies":                    10,
 		"route_strategy_groups":               10,
@@ -177,7 +181,7 @@ func TestSeedSQLiteDefaultsIdempotentAndComplete(t *testing.T) {
 		"external_integration_sources":        1,
 		"external_integration_source_tokens":  1,
 		"system_settings":                     71,
-		"provider_model_catalog":              141,
+		"provider_model_catalog":              203,
 	}
 	for table, want := range expectCounts {
 		if got := countSeedTestRows(t, db, "SELECT count(*) FROM "+table); got != want {

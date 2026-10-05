@@ -1445,6 +1445,62 @@ func chainQwenVideoUpstreamURL(baseURL, path string) (string, error) {
 	return parsed.String(), nil
 }
 
+// chainQwenChatServiceRoot 是 qwen 对话出站的官方 OpenAI 兼容模式服务根
+//（契约 §10：dashscope.aliyuncs.com/compatible-mode/v1/chat/completions）
+// ——与媒体任务面的 /api/v1 服务根（qwenVideoServiceRoot）不同域，不可混用。
+const chainQwenChatServiceRoot = "/compatible-mode/v1"
+
+// chainIsChatCompletionsPathAndQuery 报告路径是否 chat completions 面（与
+// requestMappingSourceFamilyOf 的 /chat/completions 判定同词表；query 剥离
+// 后大小写不敏感匹配，模型映射与 responses→chat 桥改写后的路径一并命中）。
+func chainIsChatCompletionsPathAndQuery(pathAndQuery string) bool {
+	path, _ := gatewayopenai.SplitPathAndQuery(pathAndQuery)
+	return strings.Contains(strings.ToLower(path), "/chat/completions")
+}
+
+// chainVolcengineChatUpstreamURL 归一 volcengine 对话（chat completions）的
+// 上游 URL：官方 OpenAI 兼容端点 /api/v3/chat/completions 与媒体任务面共用
+// /api/v3 服务根（volcengineVideoServiceRoot），base + 客户端版本剥离后的
+// chat 路径直拼，base 已含 /api/v3 服务根时去重（镜像 chainVolcengineVideo
+// UpstreamURL 先例）。不得走 gatewayopenai.BuildUpstreamURL——它对非 /v1
+// 结尾的 base 强制补 /v1（endpoint_test.go 钉住的 openai 族契约），会把官方
+// 根 https://ark.cn-beijing.volces.com 错拼 /v1/chat/completions。
+func chainVolcengineChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
+	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, volcengineVideoServiceRoot, "volcengine")
+}
+
+// chainQwenChatUpstreamURL 归一 qwen 对话（chat completions）的上游 URL：
+// 官方 OpenAI 兼容模式端点 /compatible-mode/v1/chat/completions（服务根
+// chainQwenChatServiceRoot），base + 客户端版本剥离后的 chat 路径直拼，base
+// 已含 /compatible-mode/v1 服务根时去重（镜像 chainQwenVideoUpstreamURL 的
+// /api/v1 去重先例，服务根不同）。不得走 gatewayopenai.BuildUpstreamURL
+// ——它会把官方根 https://dashscope.aliyuncs.com 错拼 /v1/chat/completions。
+func chainQwenChatUpstreamURL(baseURL, pathAndQuery string) (string, error) {
+	return chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, chainQwenChatServiceRoot, "qwen")
+}
+
+// chainChatServiceRootUpstreamURL 是 volcengine/qwen 对话出站的服务根归一
+// 主体：解析并校验 base_url，剥离客户端 /v1 版本前缀，base 未携带服务根时
+// 插入服务根、已携带时去重，最后拼回 query（镜像 chainVolcengineVideo
+// UpstreamURL 的解析与去重结构）。
+func chainChatServiceRootUpstreamURL(baseURL, pathAndQuery, serviceRoot, label string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+		return "", fmt.Errorf("%s 账户 base_url 无效: %q", label, baseURL)
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	path, query := gatewayopenai.SplitPathAndQuery(pathAndQuery)
+	suffix := chainStripGatewayVersionPrefix(path)
+	if !strings.HasPrefix(suffix, "/") {
+		suffix = "/" + suffix
+	}
+	if suffix != serviceRoot && !strings.HasSuffix(strings.ToLower(basePath), strings.ToLower(serviceRoot)) {
+		suffix = serviceRoot + suffix
+	}
+	parsed.Path = basePath + suffix
+	return parsed.String() + query, nil
+}
+
 // mediaJobRequestUpstream 账户亲和直连上游（不走派发循环；kind 区分任务族
 // 的 adapter 注册表——M3f 起 video/audio_transcription 两族各自解析注册键，
 // qwen 两族共用 chainQwenVideoUpstreamURL 的 /api/v1 去重）：URL 由账户

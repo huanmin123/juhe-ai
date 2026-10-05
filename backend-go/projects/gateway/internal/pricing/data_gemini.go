@@ -5,6 +5,17 @@ package pricing
 // 2026-08-26). The Node textModel/embeddingModel factories are preserved:
 // per-million inputs convert through the same runtime /1e6 division and the
 // fixed max_input/max_output defaults stay identical.
+//
+// 2026-10-05 全厂商补全批（依据 docs/plans/计划-20261005T110000000Z-模型
+// 目录全厂商补全与场景化展示.md §3.1/§3.2/§2，来源 = 计划 §6.1：
+// ai.google.dev/gemini-api/docs 的 models / pricing / deprecations 页）：
+// 新增 6 行（veo-3.1-generate-preview / veo-3.1-lite-generate-preview 视频、
+// gemini-3.8-live 与 gemini-omni-1.1-flash 实时音频对话、
+// gemini-3.8-flash-tts / gemini-3.8-flash-lite-tts TTS）；修正 2 行
+// （veo-3.0 两行补 ShutdownDate 2026-06-30，deprecations 页明文，继任者
+// veo-3.1）。gemini-3.6-flash 现价转写级不符（§2.2 低置信）不落，登记
+// 计划 §6.3 待复核。分辨率分档（veo 720p/1080p/4k）沿 M2 sora 先例单值
+// 落主档、分档注释登记，不结构化。
 type geminiTierPrices struct {
 	inputUsdPer1M               float64
 	outputUsdPer1M              float64
@@ -14,15 +25,18 @@ type geminiTierPrices struct {
 }
 
 type geminiModelInput struct {
-	model                           string
-	catalogOrder                    int
-	releaseDate                     string
-	shutdownDate                    string
-	inputUsdPer1M                   float64
-	outputUsdPer1M                  float64
-	cachedInputUsdPer1M             *float64
-	cacheStorageUsdPer1MPerHour     float64
-	audioInputUsdPer1M              *float64
+	model                       string
+	catalogOrder                int
+	releaseDate                 string
+	shutdownDate                string
+	inputUsdPer1M               float64
+	outputUsdPer1M              float64
+	cachedInputUsdPer1M         *float64
+	cacheStorageUsdPer1MPerHour float64
+	audioInputUsdPer1M          *float64
+	// audioOutputUsdPer1M：实时音频对话行（Live/omni）的音频输出 token 价
+	// （2026-10-05 全厂商补全批新增通道；TTS 行沿用 outputUsdPer1M 语义）。
+	audioOutputUsdPer1M             *float64
 	imageInputUsdPer1M              *float64
 	maxInputTokens                  *int
 	flex                            *geminiTierPrices
@@ -46,13 +60,22 @@ func usdPerTokenPtr(usdPer1M *float64) *float64 {
 }
 
 func geminiTextModel(in geminiModelInput) rawModel {
+	// 未声明缓存存储价的行不落 0：PriceSet 语义里非 nil 0 是"真实免费"价
+	//（glm-4.7-flash 先例），Live/omni 等无缓存明文的行不编造（存量行均
+	// 显式非 0，行为不变）。SupportsPromptCaching 同理以缓存读价存在为准。
+	var cacheStoragePerHour *float64
+	if in.cacheStorageUsdPer1MPerHour != 0 {
+		cacheStoragePerHour = perToken(in.cacheStorageUsdPer1MPerHour)
+	}
 	out := rawModel{
 		Model: in.model, Mode: "chat", CatalogOrder: &in.catalogOrder, ReleaseDate: in.releaseDate,
 		InputCostPerToken:                         perToken(in.inputUsdPer1M),
 		OutputCostPerToken:                        perToken(in.outputUsdPer1M),
 		CacheReadInputTokenCost:                   usdPerTokenPtr(in.cachedInputUsdPer1M),
-		CacheStorageInputTokenCostPerHour:         perToken(in.cacheStorageUsdPer1MPerHour),
+		CacheStorageInputTokenCostPerHour:         cacheStoragePerHour,
 		InputCostPerAudioToken:                    usdPerTokenPtr(in.audioInputUsdPer1M),
+		OutputCostPerAudioToken:                   usdPerTokenPtr(in.audioOutputUsdPer1M),
+		InputCostPerImageToken:                    usdPerTokenPtr(in.imageInputUsdPer1M),
 		InputCostPerTokenFlex:                     usdPerTokenPtr(geminiTierField(in.flex, (*geminiTierPrices).inputPtr)),
 		OutputCostPerTokenFlex:                    usdPerTokenPtr(geminiTierField(in.flex, (*geminiTierPrices).outputPtr)),
 		CacheReadInputTokenCostFlex:               usdPerTokenPtr(geminiTierField(in.flex, (*geminiTierPrices).cachedPtr)),
@@ -79,10 +102,11 @@ func geminiTextModel(in geminiModelInput) rawModel {
 		SupportedToolsByProtocol:  toolsByProtocol(in.supportedAPIProtocols, in.supportedTools),
 		SupportedReasoningEfforts: in.supportedReasoningEfforts,
 		DefaultReasoningEffort:    in.defaultReasoningEffort,
-		SupportsPromptCaching:     true,
+		// SupportsPromptCaching 由下方以缓存读价存在为准（见函数头注释）。
 	}
 	visible := true
 	out.CatalogVisible = &visible
+	out.SupportsPromptCaching = in.cachedInputUsdPer1M != nil
 	if in.flex != nil || in.priority != nil {
 		out.SupportedServiceTiers = []string{"priority", "flex"}
 	}
@@ -149,6 +173,34 @@ var (
 
 // geminiModelPricingData — curated from the official Gemini docs.
 var geminiModelPricingData = []rawModel{
+	geminiTextModel(geminiModelInput{
+		// 2026-10-05 新增（官方定价页明文）：omni 全模态实时对话，text
+		// $0.50/$3.00、audio in $1.00 / audio out $5.00、image in $0.50
+		// per 1M tokens。mode=chat；协议 generate_content +
+		// stream_generate_content（Live/omni 会话面不经 OpenAI 兼容
+		// chat_completions/count_tokens/interactions），工具清单对照现役
+		// chat 行。官方无缓存/档位明文，缓存字段与档位不落。
+		model: "gemini-omni-1.1-flash", catalogOrder: -3,
+		inputUsdPer1M: 0.5, outputUsdPer1M: 3,
+		audioInputUsdPer1M: f64p(1), audioOutputUsdPer1M: f64p(5),
+		imageInputUsdPer1M:    f64p(0.5),
+		supportedAPIProtocols: []string{"generate_content", "stream_generate_content"},
+		inputModalities:       []string{"text", "image", "audio"},
+		outputModalities:      []string{"text", "audio"},
+		supportedTools:        []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context", "computer_use"},
+	}),
+	geminiTextModel(geminiModelInput{
+		// 2026-10-05 新增（官方定价页明文）：Live 实时音频对话，text
+		// $0.75/$3.75、audio in $1.50 / audio out $6.00 per 1M tokens。
+		// 协议/工具对照 gemini-omni-1.1-flash 同款（Live 会话面）。
+		model: "gemini-3.8-live", catalogOrder: -2,
+		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75,
+		audioInputUsdPer1M: f64p(1.5), audioOutputUsdPer1M: f64p(6),
+		supportedAPIProtocols: []string{"generate_content", "stream_generate_content"},
+		inputModalities:       []string{"text", "audio"},
+		outputModalities:      []string{"text", "audio"},
+		supportedTools:        []string{"code_execution", "file_search", "function_calling", "google_maps_grounding", "google_search_grounding", "structured_outputs", "url_context", "computer_use"},
+	}),
 	geminiTextModel(geminiModelInput{
 		// Promotional prices through 2026-12-31; everything doubles on
 		// 2027-01-01 (input/output $1.50/$7.50, cache read $0.15, storage
@@ -339,6 +391,25 @@ var geminiModelPricingData = []rawModel{
 		inputModalities:       []string{"text"},
 		outputModalities:      []string{"audio"},
 	}),
+	// 2026-10-05 全厂商补全批新增（官方定价页明文）：gemini-3.8 TTS 两行，
+	// geminiTTSModel 工厂（audio_speech + ResponseFormats ["pcm"]，对照
+	// gemini-2.5 tts 行字段）。官方无独立发布日明文，ReleaseDate 留空。
+	geminiTTSModel(geminiModelInput{
+		model: "gemini-3.8-flash-tts", catalogOrder: 108,
+		inputUsdPer1M:         0.75,
+		outputUsdPer1M:        6,
+		supportedAPIProtocols: []string{"audio_speech"},
+		inputModalities:       []string{"text"},
+		outputModalities:      []string{"audio"},
+	}),
+	geminiTTSModel(geminiModelInput{
+		model: "gemini-3.8-flash-lite-tts", catalogOrder: 109,
+		inputUsdPer1M:         0.30,
+		outputUsdPer1M:        3,
+		supportedAPIProtocols: []string{"audio_speech"},
+		inputModalities:       []string{"text"},
+		outputModalities:      []string{"audio"},
+	}),
 	// M3 视频增补（媒体设计 §10/契约 §5.2）：Veo 3 两行，mode=video、协议
 	// video。价格取 Gemini 官方定价页 ai.google.dev/gemini-api/docs/pricing
 	// Veo 段（核实于 2026-10-04）——veo-3.0-generate-preview 720p $0.40/秒、
@@ -349,18 +420,42 @@ var geminiModelPricingData = []rawModel{
 	// 契约 §2.8 兜底（0 计费 + usage_missing），目录秒价留待 Veo 回报时长
 	// 字段（或固定档裁决）后生效。发布 2025-05-20（Google I/O 2025，Veo 3
 	// 首发日，与 TTS 两行同日）。
+	// 2026-10-05 修正：官方 deprecations 页明文两行 2026-06-30 终止支持
+	//（继任者 veo-3.1 系，见下方新增行），ShutdownDate 落官方明文日期
+	//（裁决 §2.3）。
 	rawModel{
-		Model: "veo-3.0-generate-preview", Mode: "video", ReleaseDate: "2025-05-20",
+		Model: "veo-3.0-generate-preview", Mode: "video", ReleaseDate: "2025-05-20", ShutdownDate: "2026-06-30",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
 		VideoOutputCostPerSecond: f64p(0.40),
 	},
 	rawModel{
-		Model: "veo-3.0-fast-generate-preview", Mode: "video", ReleaseDate: "2025-05-20",
+		Model: "veo-3.0-fast-generate-preview", Mode: "video", ReleaseDate: "2025-05-20", ShutdownDate: "2026-06-30",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
 		VideoOutputCostPerSecond: f64p(0.15),
+	},
+	// 2026-10-05 全厂商补全批新增（官方定价页 Veo 段明文）：veo-3.1 系在售，
+	// mode=video、协议 video，秒价落主档；分辨率分档注释登记（机制沿 M2
+	// 先例不结构化）。官方无独立发布日明文，ReleaseDate 留空。
+	rawModel{
+		// veo-3.1：720p/1080p 均 $0.40/秒（主档 $0.40）；4k 档 $0.60/秒
+		// 分档注释登记，不结构化。
+		Model: "veo-3.1-generate-preview", Mode: "video",
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"video"},
+		SupportedAPIProtocols:    []string{"video"},
+		VideoOutputCostPerSecond: f64p(0.40),
+	},
+	rawModel{
+		// veo-3.1-lite：$0.05/秒（主档）；1080p 档 $0.08/秒分档注释登记，
+		// 不结构化。
+		Model: "veo-3.1-lite-generate-preview", Mode: "video",
+		InputModalities:          []string{"text", "image"},
+		OutputModalities:         []string{"video"},
+		SupportedAPIProtocols:    []string{"video"},
+		VideoOutputCostPerSecond: f64p(0.05),
 	},
 }

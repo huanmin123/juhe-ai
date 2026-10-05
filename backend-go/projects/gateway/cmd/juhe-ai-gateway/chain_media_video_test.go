@@ -206,10 +206,11 @@ func TestChainMediaVideoFullFlowLifecycle(t *testing.T) {
 	if providerJobID, _ := job["provider_job_id"].(string); upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs upstream_job_id = %s, want %s", upstreamJobID, providerJobID)
 	}
-	// 终态计费回填（媒体设计 §10）：sora-2 静态目录 $0.10/s × 4s = $0.40，
-	// cost_usd 随终态一次落行（>0 且精确等于行项价）。
-	if costUsd != 0.40 {
-		t.Fatalf("media_jobs cost_usd = %v, want 0.40", costUsd)
+	// 终态计费回填（媒体设计 §10）：sora-2 / sora-2-pro 已于 2026-09-24
+	// 官方关停（目录行保留 ShutdownDate），运行时目录查找未命中 → cost_usd
+	// 落 0（usage_missing 语义，不虚计）；秒计量列不受影响照抽。
+	if costUsd != 0 {
+		t.Fatalf("media_jobs cost_usd = %v, want 0（sora-2 已 shutdown，目录未命中不虚计）", costUsd)
 	}
 
 	// content 下载：流式转发 mp4（ftyp magic bytes + video/mp4）。

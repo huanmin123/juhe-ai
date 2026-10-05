@@ -276,14 +276,22 @@ export function defaultEndpointModesForAccount(input: {
   if (input.type === 'oauth' && protocolKind === 'openai_v1') return [...responsesEndpointModes]
   if (protocolKind === 'openai_v1') {
     // 新账户默认集保持 chat/responses 推导结果；images_json、M1 音频模式与
-    // M2 视频模式只能显式开启。minimax/volcengine/qwen 档案（M3）只挂媒体
-    // families，推导结果经此过滤后为空集——媒体端点模式全部 opt-in，与
-    // openai/gemini 族媒体模式同语义。
-    return endpointModesForProfile(input.profile ?? input.provider)
+    // M2 视频模式只能显式开启。minimax 档案（M3）只挂媒体 families，推导
+    // 结果经此过滤后为空集——媒体端点模式全部 opt-in，与 openai/gemini 族
+    // 媒体模式同语义；volcengine/qwen 档案（对话批）补 chat_completions
+    // family，但其 chat 对不进默认集（对齐后端 DefaultOpenAIEndpointModes
+    // 的 video_get 默认——两家无零费用健康检查面，chat 探针真实计费且档案
+    // DefaultHealthCheckModel 仍为媒体模型），chat 可显式勾选。
+    const modes = endpointModesForProfile(input.profile ?? input.provider)
       .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json'
         && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel'
         && mode !== 'audio_job_create' && mode !== 'audio_job_get' && mode !== 'audio_job_content' && mode !== 'audio_job_cancel'
         && mode !== 'realtime_session')
+    const code = input.provider?.code ?? input.profile?.providerCode ?? ''
+    if (isVolcengineProviderCode(code) || isQwenProviderCode(code)) {
+      return modes.filter((mode) => mode !== 'chat_json' && mode !== 'chat_sse')
+    }
+    return modes
   }
   return [...allAccountEndpointModes]
 }
@@ -342,15 +350,19 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       }
       return modes
     }
-    // M3 媒体供应商（媒体设计 §9/契约 §9.1）：volcengine 档案声明视频与
-    // 语音两个媒体 family（M6 起补 tts——契约 §9.2 回填 B 级后实施，豆包
-    // TTS 走 openspeech /api/v3/tts adapter，凭据双值 speech_appid/
-    // speech_token），推导不回退 chat 词表（火山方舟聊天走独立 doubao 模型
-    // 面，档案不承接聊天流量）；video_* 四值与 audio_speech 照 openai 族
-    // 先例属显式可选能力（opt-in，不进默认集）。
+    // M3 媒体供应商（媒体设计 §9/契约 §9.1）：volcengine 档案声明对话、视频
+    // 与语音 families（对话批补 chat_completions——ark OpenAI 兼容端点
+    // /api/v3/chat/completions；M6 补 tts——契约 §9.2 回填，豆包 TTS 走
+    // openspeech /api/v3/tts adapter，凭据双值 speech_appid/speech_token）。
+    // chat 可勾选但不进新账户默认集（探针真实计费 + 档案健康检查模型为
+    // 媒体模型，见 defaultEndpointModesForAccount）；video_* 四值与
+    // audio_speech 同为显式可选能力。
     if (isVolcengineProviderCode(profile?.providerCode ?? profile?.code)) {
       const families = new Set(endpointFamilyCodes(profile))
       const modes: AccountSupportedEndpointMode[] = []
+      if (families.has(OPENAI_CHAT_COMPLETIONS_FAMILY)) {
+        modes.push(...chatEndpointModes)
+      }
       if (families.has(OPENAI_VIDEO_GENERATION_FAMILY)) {
         modes.push('video_create', 'video_get', 'video_content', 'video_cancel')
       }
@@ -359,14 +371,18 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
       }
       return modes
     }
-    // M3 媒体供应商（媒体设计 §9/契约 §10.1/§10.2）：qwen 档案声明
-    // video_generation 与 audio_transcription（M3f 长转写）两个媒体 family
-    //（CosyVoice TTS 面 §10.2 未回填），推导不回退 chat 词表（百炼聊天走
-    // qwen 对话模型面，档案不承接聊天流量）；video_* 与 audio_job_* 照
-    // openai 族先例属显式可选能力（opt-in，不进默认集）。
+    // M3 媒体供应商（媒体设计 §9/契约 §10.1/§10.2）：qwen 档案声明对话、
+    // video_generation 与 audio_transcription（M3f 长转写）families（对话批
+    // 补 chat_completions——DashScope OpenAI 兼容模式
+    // /compatible-mode/v1/chat/completions；CosyVoice TTS 面 §10.2 未回填）。
+    // chat 对照 openai 族惯例进默认集；video_* 与 audio_job_* 属显式可选
+    // 能力（opt-in，不进默认集）。
     if (isQwenProviderCode(profile?.providerCode ?? profile?.code)) {
       const families = new Set(endpointFamilyCodes(profile))
       const modes: AccountSupportedEndpointMode[] = []
+      if (families.has(OPENAI_CHAT_COMPLETIONS_FAMILY)) {
+        modes.push(...chatEndpointModes)
+      }
       if (families.has(OPENAI_VIDEO_GENERATION_FAMILY)) {
         modes.push('video_create', 'video_get', 'video_content', 'video_cancel')
       }

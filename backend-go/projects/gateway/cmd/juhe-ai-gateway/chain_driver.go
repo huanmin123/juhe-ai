@@ -408,6 +408,30 @@ func (d *chainProviderDriver) BuildGatewayUpstreamURLsForAccount(_ context.Conte
 				pathAndQuery = rewritten
 			}
 		}
+		// 对话批（火山方舟/通义百炼对话承接）：两档案的 chat completions
+		// 官方 OpenAI 兼容端点自带版本服务根（ark /api/v3、百炼 compatible-
+		// mode /compatible-mode/v1），不得走 openai /v1 强制补缀归一——会把
+		// 官方根错拼 /v1/chat/completions（同 glm 语音 /api/paas/v4 归一先例，
+		// 服务根去重语义见 chainVolcengineChatUpstreamURL /
+		// chainQwenChatUpstreamURL）。仅 chat 路径进本归一：模型映射与
+		// responses→chat 桥改写后的路径同为 /chat/completions，一并覆盖；
+		// 其余路径（媒体面有专用 adapter 分支承接）维持 openai 归一不变。
+		if chainIsChatCompletionsPathAndQuery(pathAndQuery) {
+			switch chainNormalizeProviderToken(account.ProviderCode) {
+			case "volcengine":
+				upstreamURL, urlErr := chainVolcengineChatUpstreamURL(account.BaseURL, pathAndQuery)
+				if urlErr != nil {
+					return nil, urlErr
+				}
+				return []string{upstreamURL}, nil
+			case "qwen":
+				upstreamURL, urlErr := chainQwenChatUpstreamURL(account.BaseURL, pathAndQuery)
+				if urlErr != nil {
+					return nil, urlErr
+				}
+				return []string{upstreamURL}, nil
+			}
+		}
 		return []string{gatewayopenai.BuildUpstreamURL(account.BaseURL, pathAndQuery)}, nil
 	}
 }

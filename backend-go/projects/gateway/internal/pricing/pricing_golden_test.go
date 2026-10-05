@@ -365,7 +365,9 @@ func wantFloat(t *testing.T, name string, got *float64, want float64) {
 }
 
 func TestBuildCostBreakdownOpenAIStandardTokens(t *testing.T) {
-	// gpt-5.5: input 5, output 30 per 1M. 1M in + 0.5M out = 5 + 15.
+	// gpt-5.5: input 5, output 30 per 1M standard rates; 2026-10-05 起落
+	// 长上下文档（>272k：in 2x / out 1.5x），1M 输入触发倍率 → 1M in +
+	// 0.5M out = 10 + 22.5。
 	got := billingBreakdown(t, "openai", "gpt-5.5", CostInput{
 		ProviderCode: "openai",
 		Model:        "gpt-5.5",
@@ -375,11 +377,11 @@ func TestBuildCostBreakdownOpenAIStandardTokens(t *testing.T) {
 	if got.Currency != "USD" || got.BillingPolicy != "openai" {
 		t.Fatalf("currency/policy = %q/%q, want USD/openai", got.Currency, got.BillingPolicy)
 	}
-	wantFloat(t, "inputCostUsd", got.InputCostUsd, 5)
-	wantFloat(t, "outputCostUsd", got.OutputCostUsd, 15)
-	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 20)
-	wantFloat(t, "inputUsdPer1M", got.InputUsdPer1M, 5)
-	wantFloat(t, "outputUsdPer1M", got.OutputUsdPer1M, 30)
+	wantFloat(t, "inputCostUsd", got.InputCostUsd, 10)
+	wantFloat(t, "outputCostUsd", got.OutputCostUsd, 22.5)
+	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 32.5)
+	wantFloat(t, "inputUsdPer1M", got.InputUsdPer1M, 10)
+	wantFloat(t, "outputUsdPer1M", got.OutputUsdPer1M, 30*1.5)
 	if got.CacheReadCostUsd != nil || got.CacheWriteCostUsd != nil || got.CacheWrite1hCostUsd != nil {
 		t.Fatal("cache lines must stay undefined without cache usage")
 	}
@@ -396,8 +398,8 @@ func TestBuildCostBreakdownOpenAIStandardTokens(t *testing.T) {
 	if first.Kind != LineInput || first.Label != "输入 Token" || first.Unit != LineUnitToken || first.UnitSize != 1_000_000 || first.Quantity != 1_000_000 {
 		t.Fatalf("first line = %+v, want default-labeled input token line", first)
 	}
-	if first.CostUsd != 5 {
-		t.Fatalf("first line cost = %v, want 5", first.CostUsd)
+	if first.CostUsd != 10 {
+		t.Fatalf("first line cost = %v, want 10", first.CostUsd)
 	}
 }
 
@@ -455,7 +457,8 @@ func TestBuildCostBreakdownOpenAICacheSplit(t *testing.T) {
 }
 
 func TestBuildCostBreakdownServiceTierExactPrices(t *testing.T) {
-	// gpt-5.5 priority: input 12.5, output 75, cache read 1.25 (tier table).
+	// gpt-5.5 priority: input 12.5, output 75, cache read 1.25 (tier table);
+	// 2026-10-05 起 1M 输入触发长上下文档（in 2x / out 1.5x）→ 25 / 112.5。
 	priority := billingBreakdown(t, "openai", "gpt-5.5", CostInput{
 		ProviderCode: "openai",
 		Model:        "gpt-5.5",
@@ -463,15 +466,16 @@ func TestBuildCostBreakdownServiceTierExactPrices(t *testing.T) {
 		InputTokens:  f64p(1_000_000),
 		OutputTokens: f64p(500_000),
 	})
-	wantFloat(t, "priority inputCostUsd", priority.InputCostUsd, 12.5)
-	wantFloat(t, "priority outputCostUsd", priority.OutputCostUsd, 37.5)
-	wantFloat(t, "priority accountChargeUsd", priority.AccountChargeUsd, 50)
-	wantFloat(t, "priority inputUsdPer1M", priority.InputUsdPer1M, 12.5)
+	wantFloat(t, "priority inputCostUsd", priority.InputCostUsd, 25)
+	wantFloat(t, "priority outputCostUsd", priority.OutputCostUsd, 56.25)
+	wantFloat(t, "priority accountChargeUsd", priority.AccountChargeUsd, 81.25)
+	wantFloat(t, "priority inputUsdPer1M", priority.InputUsdPer1M, 25)
 	if priority.ServiceTierPricingSource != TierSourceTierSpecific {
 		t.Fatalf("priority source = %q, want tier_specific", priority.ServiceTierPricingSource)
 	}
 
-	// flex: input 2.5, output 15.
+	// flex: input 2.5, output 15 → 长上下文档后 5 / 22.5；1M in + 0.5M out
+	// = 5 + 11.25。
 	flex := billingBreakdown(t, "openai", "gpt-5.5", CostInput{
 		ProviderCode: "openai",
 		Model:        "gpt-5.5",
@@ -479,7 +483,7 @@ func TestBuildCostBreakdownServiceTierExactPrices(t *testing.T) {
 		InputTokens:  f64p(1_000_000),
 		OutputTokens: f64p(500_000),
 	})
-	wantFloat(t, "flex accountChargeUsd", flex.AccountChargeUsd, 10)
+	wantFloat(t, "flex accountChargeUsd", flex.AccountChargeUsd, 16.25)
 	if flex.ServiceTierPricingSource != TierSourceTierSpecific {
 		t.Fatalf("flex source = %q, want tier_specific", flex.ServiceTierPricingSource)
 	}
@@ -495,7 +499,7 @@ func TestBuildCostBreakdownServiceTierExactPrices(t *testing.T) {
 			OutputTokens: f64p(500_000),
 		})
 		if tier == "standard" || tier == "default" {
-			wantFloat(t, tier+" accountChargeUsd", got.AccountChargeUsd, 20)
+			wantFloat(t, tier+" accountChargeUsd", got.AccountChargeUsd, 32.5)
 			continue
 		}
 		if got != nil {
@@ -672,7 +676,7 @@ func TestBuildCostBreakdownUnpricedAndOverrides(t *testing.T) {
 		t.Fatal("unpriced output image count must collapse the breakdown")
 	}
 	// The explicit costUsd override wins for accountChargeUsd while the
-	// line items stay computed.
+	// line items stay computed（1M 输入触发 gpt-5.5 长上下文档 in 2x → 10）。
 	got := billingBreakdown(t, "openai", "gpt-5.5", CostInput{
 		ProviderCode: "openai",
 		Model:        "gpt-5.5",
@@ -680,7 +684,7 @@ func TestBuildCostBreakdownUnpricedAndOverrides(t *testing.T) {
 		CostUsd:      f64p(7.77),
 	})
 	wantFloat(t, "accountChargeUsd", got.AccountChargeUsd, 7.77)
-	wantFloat(t, "inputCostUsd", got.InputCostUsd, 5)
+	wantFloat(t, "inputCostUsd", got.InputCostUsd, 10)
 	// Negative costUsd overrides are not finite and fall back to the sum.
 	got = billingBreakdown(t, "openai", "gpt-5.5", CostInput{
 		ProviderCode: "openai",
@@ -688,7 +692,7 @@ func TestBuildCostBreakdownUnpricedAndOverrides(t *testing.T) {
 		InputTokens:  f64p(1_000_000),
 		CostUsd:      f64p(-1),
 	})
-	wantFloat(t, "negative override accountChargeUsd", got.AccountChargeUsd, 5)
+	wantFloat(t, "negative override accountChargeUsd", got.AccountChargeUsd, 10)
 }
 
 func TestBuildCostBreakdownAudioAndImageUnitLines(t *testing.T) {

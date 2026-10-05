@@ -6,7 +6,22 @@ package pricing
 // 秒价是唯一单价（纯视频模型，hasAnyRate 口径）。行项生成（CostLineKind
 // video_output_seconds 的计费引擎消费）由后续终态计费任务交付，此处只锁
 // 目录结构。
+// 2026-10-05 全厂商补全批：sora-2/sora-2-pro 官方 deprecations.md 明文
+// 2026-09-24 关停——目录断言改经 FindProviderModelPricingAsOf 关停日前
+// 回溯查询（快照行仍在，断言语义不变）。
 import "testing"
+
+// soraPreShutdownAsOf 是 sora-2 系关停日（2026-09-24）前一天的回溯截止。
+const soraPreShutdownAsOf = "2026-09-23"
+
+func mustFindSoraPricingForTest(t *testing.T, providerCode, model string) *Pricing {
+	t.Helper()
+	pricing := FindProviderModelPricingAsOf(providerCode, model, soraPreShutdownAsOf)
+	if pricing == nil {
+		t.Fatalf("pricing not found: %s/%s (as of %s)", providerCode, model, soraPreShutdownAsOf)
+	}
+	return pricing
+}
 
 func TestSoraVideoSnapshotPricing(t *testing.T) {
 	cases := []struct {
@@ -19,7 +34,7 @@ func TestSoraVideoSnapshotPricing(t *testing.T) {
 		{"sora-2-pro", 0.30, "2025-10-06", []string{"text", "image"}},
 	}
 	for _, tc := range cases {
-		got := mustFindPricingForTest(t, "gpt", tc.model)
+		got := mustFindSoraPricingForTest(t, "gpt", tc.model)
 		if got.Mode != "video" {
 			t.Fatalf("%s mode = %q want video", tc.model, got.Mode)
 		}
@@ -50,35 +65,57 @@ func TestSoraVideoSnapshotPricing(t *testing.T) {
 	if FindProviderModelPricing("gpt", "sora-2/image-to-video") != nil {
 		t.Fatal("sora-2/image-to-video must not be in the catalog (slash model name)")
 	}
+	// 2026-10-05 新事实：现行 lookup（asOf=今天）对关停后的 sora-2 系
+	// 返回 nil（deprecations 2026-09-24 关停生效，不泄漏进现役解析）。
+	if FindProviderModelPricing("gpt", "sora-2") != nil || FindProviderModelPricing("openai", "sora-2-pro") != nil {
+		t.Fatal("shutdown sora-2 rows must not resolve in the live lookup")
+	}
 }
 
-// TestGlmCogVideoSnapshotPricing 锁定 glm 视频目录行（M3，契约 §7.1）：
-// cogvideox-3 收录进 glm 静态目录（mode=video、协议 ["video"]、
-// OutputModalities ["video"]），但不得携带任何单价——CogVideoX 按次计费
-// 且官方精确秒价不可查证，glm 轮询响应无时长回报，终态计费走契约 §2.8
-// 兜底（0 计费 + usage_missing），不编造秒价。
+// TestGlmCogVideoSnapshotPricing 锁定 glm 视频目录行（M3 + 2026-10-05 A3
+// 批补价）：cogvideox-2/3 收录进 glm 静态目录（mode=video、协议 ["video"]、
+// OutputModalities ["video"]），官方按次计费（cogvideox-2 0.5 元/次、
+// cogvideox-3 1 元/次，docs.bigmodel.cn 定价页）经约定汇率 7.0 换算等价
+// 登记进唯一秒价槽位 VideoOutputUsdPerSecond（按次价非每秒单价；glm 轮询
+// 响应无时长回报 → 行项不产生，现行计费行为与 0 计费兜底一致）；不得携带
+// token/图像价（纯视频行），Source 元信息钉 CNY/7.0 可溯。
 func TestGlmCogVideoSnapshotPricing(t *testing.T) {
-	got := mustFindPricingForTest(t, "glm", "cogvideox-3")
-	if got.Mode != "video" {
-		t.Fatalf("cogvideox-3 mode = %q want video", got.Mode)
+	cases := []struct {
+		model         string
+		usdPerSecond  float64
+		cnyPerRequest string
+	}{
+		{"cogvideox-2", 0.07143, "0.5"},
+		{"cogvideox-3", 0.1429, "1"},
 	}
-	if len(got.SupportedAPIProtocols) != 1 || got.SupportedAPIProtocols[0] != "video" {
-		t.Fatalf("cogvideox-3 protocols = %v want [video]", got.SupportedAPIProtocols)
-	}
-	if len(got.OutputModalities) != 1 || got.OutputModalities[0] != "video" {
-		t.Fatalf("cogvideox-3 outputModalities = %v want [video]", got.OutputModalities)
-	}
-	if len(got.InputModalities) != 2 {
-		t.Fatalf("cogvideox-3 inputModalities = %v want [text image]（文生/图生视频）", got.InputModalities)
-	}
-	// 不落价：无秒价、无 token 价、无任何档价（usage_missing 兜底口径）。
-	if got.VideoOutputUsdPerSecond != nil {
-		t.Fatalf("cogvideox-3 must not carry a per-second rate（官方按次计价不可查证，不编造）: %v", *got.VideoOutputUsdPerSecond)
-	}
-	if got.InputUsdPer1M != nil || got.OutputUsdPer1M != nil || got.OutputUsdPerImage != nil {
-		t.Fatalf("cogvideox-3 must not carry token/image prices (video model)")
-	}
-	if hasAnyRate(got.PriceSet) {
-		t.Fatalf("cogvideox-3 must carry no rate at all（按次计价待官方口径回填）: %+v", got.PriceSet)
+	for _, tc := range cases {
+		got := mustFindPricingForTest(t, "glm", tc.model)
+		if got.Mode != "video" {
+			t.Fatalf("%s mode = %q want video", tc.model, got.Mode)
+		}
+		if len(got.SupportedAPIProtocols) != 1 || got.SupportedAPIProtocols[0] != "video" {
+			t.Fatalf("%s protocols = %v want [video]", tc.model, got.SupportedAPIProtocols)
+		}
+		if len(got.OutputModalities) != 1 || got.OutputModalities[0] != "video" {
+			t.Fatalf("%s outputModalities = %v want [video]", tc.model, got.OutputModalities)
+		}
+		if len(got.InputModalities) != 2 {
+			t.Fatalf("%s inputModalities = %v want [text image]（文生/图生视频）", tc.model, got.InputModalities)
+		}
+		// A3 批补价：按次价（官方人民币，约定汇率 7.0）等价登记进秒价槽位。
+		if got.VideoOutputUsdPerSecond == nil || *got.VideoOutputUsdPerSecond != tc.usdPerSecond {
+			t.Fatalf("%s videoOutputUsdPerSecond = %v want %v（官方 %s 元/次 ÷ 7.0）", tc.model, got.VideoOutputUsdPerSecond, tc.usdPerSecond, tc.cnyPerRequest)
+		}
+		if got.InputUsdPer1M != nil || got.OutputUsdPer1M != nil || got.OutputUsdPerImage != nil {
+			t.Fatalf("%s must not carry token/image prices (video model)", tc.model)
+		}
+		// 秒价槽位是唯一单价（纯视频行 hasAnyRate 口径，同 sora-2）。
+		if !hasAnyRate(got.PriceSet) {
+			t.Fatalf("%s must carry a rate (video second slot only)", tc.model)
+		}
+		// Source 元信息可溯：CNY + 约定汇率 7.0 + 换算日期。
+		if got.SourcePricingCurrency != "CNY" || got.SourceExchangeRateToUsd == nil || *got.SourceExchangeRateToUsd != 7 || got.SourceExchangeRateDate != "2026-10-05" {
+			t.Fatalf("%s source meta = %s/%v/%s want CNY/7/2026-10-05", tc.model, got.SourcePricingCurrency, got.SourceExchangeRateToUsd, got.SourceExchangeRateDate)
+		}
 	}
 }

@@ -246,6 +246,181 @@ func TestWeCatalogDisplayPerProvider(t *testing.T) {
 	}
 }
 
+// TestWeCatalogDisplayGenericMediaProviders 覆盖 minimax/volcengine/qwen 三家
+// 的 genericMediaCatalogDisplay 投影：场景化 section 矩阵（chat 带 token 价、
+// image 带每张价、audio/video 无目录价格通道只落容量与美元换算披露）。
+func TestWeCatalogDisplayGenericMediaProviders(t *testing.T) {
+	sectionByKey := func(display []catalogDisplaySection) map[string]catalogDisplaySection {
+		sections := map[string]catalogDisplaySection{}
+		for _, section := range display {
+			sections[section.Key] = section
+		}
+		return sections
+	}
+	entryKeys := func(section catalogDisplaySection) map[string]bool {
+		keys := map[string]bool{}
+		for _, item := range section.Items {
+			keys[item.Key] = true
+		}
+		return keys
+	}
+
+	// minimax chat（MiniMax-M2.7 形状，国际站 USD 明文）：Token 计费四条 +
+	// 思考 + 容量；官方 USD 价无来源币种 → 无美元换算。
+	minimaxChat := &ModelCatalogItem{
+		ID: "m1", ProviderCode: "minimax", Model: "MiniMax-M2.7", Status: "active",
+		Mode:                      ptr("chat"),
+		ContextWindowTokens:       ptrInt64(204_800),
+		SupportedReasoningEfforts: []string{"low", "medium", "high"},
+		InputUsdPer1M:             ptrFloat64(0.3),
+		OutputUsdPer1M:            ptrFloat64(1.2),
+		CachedInputUsdPer1M:       ptrFloat64(0.06),
+		CacheWriteUsdPer1M:        ptrFloat64(0.375),
+	}
+	minimaxSections := sectionByKey(buildProviderCatalogDisplay(minimaxChat))
+	pricing, ok := minimaxSections["token_pricing"]
+	if !ok {
+		t.Fatalf("minimax chat 缺少 token_pricing: %+v", minimaxSections)
+	}
+	minimaxEntries := entryKeys(pricing)
+	for _, expected := range []string{"input", "cache_read", "cache_write", "output"} {
+		if !minimaxEntries[expected] {
+			t.Fatalf("minimax chat token_pricing 缺少 %s: %+v", expected, pricing.Items)
+		}
+	}
+	if _, ok := minimaxSections["reasoning"]; !ok {
+		t.Fatalf("minimax chat 缺少 reasoning: %+v", minimaxSections)
+	}
+	if _, ok := minimaxSections["capacity"]; !ok {
+		t.Fatalf("minimax chat 缺少 capacity: %+v", minimaxSections)
+	}
+	if _, ok := minimaxSections["currency_conversion"]; ok {
+		t.Fatalf("minimax chat 不应有美元换算: %+v", minimaxSections)
+	}
+
+	// volcengine chat（doubao-seed-2-1-lite 形状，CNY 换算 + 音频输入）：
+	// token_pricing 含音频输入条目；currency_conversion 落官方币种 CNY。
+	volcengineChat := &ModelCatalogItem{
+		ID: "v1", ProviderCode: "volcengine", Model: "doubao-seed-2-1-lite-260915", Status: "active",
+		Mode:                      ptr("chat"),
+		ContextWindowTokens:       ptrInt64(1_000_000),
+		SupportedReasoningEfforts: []string{"low", "medium", "high", "minimal"},
+		InputUsdPer1M:             ptrFloat64(0.1143),
+		OutputUsdPer1M:            ptrFloat64(0.3857),
+		CachedInputUsdPer1M:       ptrFloat64(0.02286),
+		AudioInputUsdPer1M:        ptrFloat64(1.714),
+		SourcePricingCurrency:     "CNY",
+		SourceExchangeRateToUsd:   ptrFloat64(7.0),
+		SourceExchangeRateDate:    "2026-10-05",
+		SourcePricingNote:         "官方人民币价按约定汇率 7.0 换算",
+	}
+	volcengineSections := sectionByKey(buildProviderCatalogDisplay(volcengineChat))
+	volcenginePricing, ok := volcengineSections["token_pricing"]
+	if !ok {
+		t.Fatalf("volcengine chat 缺少 token_pricing: %+v", volcengineSections)
+	}
+	if !entryKeys(volcenginePricing)["audio_input"] {
+		t.Fatalf("volcengine chat token_pricing 缺少音频输入: %+v", volcenginePricing.Items)
+	}
+	conversion, ok := volcengineSections["currency_conversion"]
+	if !ok {
+		t.Fatalf("volcengine chat 缺少 currency_conversion: %+v", volcengineSections)
+	}
+	conversionValues := map[string]any{}
+	for _, item := range conversion.Items {
+		conversionValues[item.Key] = item.Value
+	}
+	if conversionValues["source_currency"] != "CNY" {
+		t.Fatalf("volcengine chat 官方币种应为大写 CNY: %+v", conversion.Items)
+	}
+	if conversionValues["exchange_rate"] != "7 CNY" {
+		t.Fatalf("volcengine chat 汇率展示 = %v", conversionValues["exchange_rate"])
+	}
+
+	// qwen TTS / ASR（mode=audio，协议区分）：目录 Item 无字符/秒价通道 →
+	// 无 token_pricing；CNY 来源披露照落。
+	qwenTTS := &ModelCatalogItem{
+		ID: "q1", ProviderCode: "qwen", Model: "qwen3-tts-flash", Status: "active",
+		Mode:                    ptr("audio"),
+		SupportedAPIProtocols:   []string{"audio_speech"},
+		SourcePricingCurrency:   "CNY",
+		SourceExchangeRateToUsd: ptrFloat64(7.0),
+		SourceExchangeRateDate:  "2026-10-05",
+		SourcePricingNote:       "官方人民币价 0.8 元/万字符，按约定汇率 7.0 换算 $1.143/百万字符",
+	}
+	qwenTTSSections := sectionByKey(buildProviderCatalogDisplay(qwenTTS))
+	if _, ok := qwenTTSSections["token_pricing"]; ok {
+		t.Fatalf("qwen TTS 无目录价格通道，不应有 token_pricing: %+v", qwenTTSSections)
+	}
+	if _, ok := qwenTTSSections["currency_conversion"]; !ok {
+		t.Fatalf("qwen TTS 缺少 currency_conversion: %+v", qwenTTSSections)
+	}
+	qwenASR := &ModelCatalogItem{
+		ID: "q2", ProviderCode: "qwen", Model: "qwen3-asr-flash", Status: "active",
+		Mode:                    ptr("audio"),
+		SupportedAPIProtocols:   []string{"audio_transcription"},
+		SourcePricingCurrency:   "CNY",
+		SourceExchangeRateToUsd: ptrFloat64(7.0),
+		SourcePricingNote:       "官方人民币价 0.00022 元/秒",
+	}
+	qwenASRSections := sectionByKey(buildProviderCatalogDisplay(qwenASR))
+	if _, ok := qwenASRSections["token_pricing"]; ok {
+		t.Fatalf("qwen ASR 无目录价格通道，不应有 token_pricing: %+v", qwenASRSections)
+	}
+
+	// volcengine video（seedance 形状）：秒价无目录通道 → 无价格 section；
+	// CNY 披露照落。
+	volcengineVideo := &ModelCatalogItem{
+		ID: "v2", ProviderCode: "volcengine", Model: "doubao-seedance-2-0-260128", Status: "active",
+		Mode:                    ptr("video"),
+		SupportedAPIProtocols:   []string{"video"},
+		SourcePricingCurrency:   "CNY",
+		SourceExchangeRateToUsd: ptrFloat64(7.0),
+		SourcePricingNote:       "官方人民币每秒参考价 4.97 元/秒，按约定汇率 7.0 换算 $0.71/秒",
+	}
+	volcengineVideoSections := sectionByKey(buildProviderCatalogDisplay(volcengineVideo))
+	if _, ok := volcengineVideoSections["token_pricing"]; ok {
+		t.Fatalf("volcengine video 无目录价格通道，不应有 token_pricing: %+v", volcengineVideoSections)
+	}
+	if _, ok := volcengineVideoSections["image_generation"]; ok {
+		t.Fatalf("volcengine video 不应有图片生成 section: %+v", volcengineVideoSections)
+	}
+	if _, ok := volcengineVideoSections["currency_conversion"]; !ok {
+		t.Fatalf("volcengine video 缺少 currency_conversion: %+v", volcengineVideoSections)
+	}
+
+	// minimax image（image-01 形状，mode=image_generation）：每张价落
+	// 图片生成 section；无 token 价、无来源币种。
+	minimaxImage := &ModelCatalogItem{
+		ID: "m2", ProviderCode: "minimax", Model: "image-01", Status: "active",
+		Mode:                  ptr("image_generation"),
+		SupportedAPIProtocols: []string{"images"},
+		OutputUsdPerImage:     ptrFloat64(0.0035),
+	}
+	minimaxImageSections := sectionByKey(buildProviderCatalogDisplay(minimaxImage))
+	imageSection, ok := minimaxImageSections["image_generation"]
+	if !ok {
+		t.Fatalf("minimax image 缺少 image_generation: %+v", minimaxImageSections)
+	}
+	if len(imageSection.Items) != 1 || imageSection.Items[0].Key != "output_image" {
+		t.Fatalf("minimax image 图片生成条目: %+v", imageSection.Items)
+	}
+	if _, ok := minimaxImageSections["token_pricing"]; ok {
+		t.Fatalf("minimax image 无 token 价，不应有 token_pricing: %+v", minimaxImageSections)
+	}
+
+	// qwen 无价无来源的既有视频行（wan2.2-t2v-plus 现实形态）：全部 section
+	// 无值 → 展示为空数组（宁缺勿假）。
+	qwenBareVideo := &ModelCatalogItem{
+		ID: "q3", ProviderCode: "qwen", Model: "wan2.2-t2v-plus", Status: "active",
+		Mode:                  ptr("video"),
+		SupportedAPIProtocols: []string{"video"},
+	}
+	if bare := buildProviderCatalogDisplay(qwenBareVideo); len(bare) != 0 {
+		t.Fatalf("无价无来源的媒体行应返回空展示: %+v", bare)
+	}
+}
+
 func TestWeCatalogDisplayFormattingHelpers(t *testing.T) {
 	if got := formatTokenThreshold(200000); got != "200K" {
 		t.Fatalf("formatTokenThreshold = %s", got)

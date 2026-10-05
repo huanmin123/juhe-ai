@@ -86,31 +86,34 @@ var minimaxMediaEndpointModeSet = accountscore.StringSet([]string{
 	"audio_speech", "video_create", "video_get", "video_content", "video_cancel",
 })
 
-// volcengineVideoEndpointModeSet 是 volcengine 媒体档案（profile_volcengine_
-// openai_v1）可声明的全部端点模式（M3，契约 §9.1 + M6 TTS §9.2）：video_*
-// 四值（video_generation）+ audio_speech（豆包 TTS openspeech /api/v3/tts
-// adapter，语音应用双值凭据 speech_appid/speech_token——缺失即该账户无该
-// 能力，派发时显式失败）；档案 Capabilities 声明视频+语音，不承接 chat/
-// responses（火山方舟聊天走独立 doubao 模型面，本档案不声明）。全部
-// opt-in；默认集 video_get（只读任务查询形态——volcengine 无可自动探针的
-// 健康检查面，视频/语音均按量计费不做自动真实生成探针（媒体设计 §11.9），
-// video_get 是唯一零费用档的合法默认；创建 video_create / 语音 audio_speech
-// 均需显式开启——TTS 无只读探针面，与 minimax 默认集含 audio_speech 的
-// 差异在于 minimax TTS 有廉价探针承载而火山语音是独立计费服务面）。
-var volcengineVideoEndpointModeSet = accountscore.StringSet([]string{
+// volcengineEndpointModeSet 是 volcengine 档案（profile_volcengine_openai_v1）
+// 可声明的全部端点模式（M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat）：chat 对
+//（豆包对话 OpenAI 兼容端点 ark /api/v3/chat/completions，出站按 /api/v3
+// 服务根归一）+ video_* 四值（video_generation）+ audio_speech（豆包 TTS
+// openspeech /api/v3/tts adapter，语音应用双值凭据 speech_appid/speech_token
+// ——缺失即该账户无该能力，派发时显式失败）。全部 opt-in；默认集 video_get
+//（只读任务查询形态——volcengine 无零费用健康检查面，视频/语音均按量计费
+// 不做自动真实生成探针（媒体设计 §11.9），video_get 是唯一零费用档的合法
+// 默认；chat_json/chat_sse 与创建 video_create / 语音 audio_speech 均需显式
+// 开启——chat 探针同为真实计费请求，且档案 DefaultHealthCheckModel 仍为
+// 媒体模型，chat 进默认集会让直建账户默认形态与检查模型错配）。
+var volcengineEndpointModeSet = accountscore.StringSet([]string{
+	"chat_json", "chat_sse",
 	"video_create", "video_get", "video_content", "video_cancel", "audio_speech",
 })
 
-// qwenMediaEndpointModeSet 是 qwen 媒体档案（profile_qwen_openai_v1）可声明
-// 的全部端点模式（M3 第五批 video_* 四值 + M3f 长音频 audio_job_* 四值，
-// 契约 §10.1/§10.2）：video_*（video_generation）与 audio_job_*
-// （audio_transcription 长转写，首个上游 paraformer）——CosyVoice TTS 面
-// （契约 §10.2）未回填不收录 audio_speech；档案 Capabilities 只声明媒体，
-// 不承接 chat/responses（百炼聊天走 qwen 对话模型面，本档案不声明）。全部
-// opt-in；默认集 video_get（只读任务查询形态，零费用档——同 volcengine
-// 先例：qwen 无 TTS 廉价探针面，视频/长转写不做自动真实生成探针（媒体设计
-// §11.9），创建 video_create / audio_job_create 仍需显式开启）。
-var qwenMediaEndpointModeSet = accountscore.StringSet([]string{
+// qwenEndpointModeSet 是 qwen 档案（profile_qwen_openai_v1）可声明的全部
+// 端点模式（M3 第五批 video_* 四值 + M3f 长音频 audio_job_* 四值 + 对话批
+// chat 对，契约 §10.1/§10.2）：chat 对（qwen 对话 OpenAI 兼容模式
+// /compatible-mode/v1/chat/completions，出站按 /compatible-mode/v1 服务根
+// 归一）+ video_*（video_generation）+ audio_job_*（audio_transcription 长
+// 转写，首个上游 paraformer）——CosyVoice TTS 面（契约 §10.2）未回填不收录
+// audio_speech。全部 opt-in；默认集 video_get（只读任务查询形态，零费用档
+// ——同 volcengine 先例：qwen 无零费用探针面，视频/长转写/对话不做自动真实
+// 生成探针（媒体设计 §11.9），创建 video_create / audio_job_create 与 chat
+// 对仍需显式开启）。
+var qwenEndpointModeSet = accountscore.StringSet([]string{
+	"chat_json", "chat_sse",
 	"video_create", "video_get", "video_content", "video_cancel",
 	"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel",
 })
@@ -419,9 +422,10 @@ var providerAccountCredentialDrivers = []credentialDriver{
 	},
 	{
 		// M3 媒体供应商（契约 §9.1）：volcengine 唯一档案
-		// profile_volcengine_openai_v1（openai 协议、API Key）。词表只放视频
-		// token——词表缺失会让管理面账户创建报「供应商协议档案未注册接口
-		// 能力归一化：volcengine」（同 minimax 结构先例）。
+		// profile_volcengine_openai_v1（openai 协议、API Key）。词表收
+		// chat 对（对话批）+ 视频/语音 token——词表缺失会让管理面账户创建报
+		// 「供应商协议档案未注册接口能力归一化：volcengine」（同 minimax 结构
+		// 先例）。
 		id: "volcengine",
 		supportsContext: func(c endpointModeDefaultContext) bool {
 			return isVolcengineProviderCodeToken(c.providerCode) &&
@@ -432,10 +436,10 @@ var providerAccountCredentialDrivers = []credentialDriver{
 	},
 	{
 		// M3 媒体供应商（契约 §10.1/§10.2）：qwen 唯一档案
-		// profile_qwen_openai_v1（openai 协议、API Key）。词表放媒体 token
-		//（video_* 四值 + M3f audio_job_* 长转写四值）——词表缺失会让管理面
-		// 账户创建报「供应商协议档案未注册接口能力归一化：qwen」（同
-		// minimax/volcengine 结构先例）。
+		// profile_qwen_openai_v1（openai 协议、API Key）。词表收 chat 对
+		//（对话批）+ 媒体 token（video_* 四值 + M3f audio_job_* 长转写四值）
+		// ——词表缺失会让管理面账户创建报「供应商协议档案未注册接口能力归一
+		// 化：qwen」（同 minimax/volcengine 结构先例）。
 		id: "qwen",
 		supportsContext: func(c endpointModeDefaultContext) bool {
 			return isQwenProviderCodeToken(c.providerCode) &&
@@ -574,13 +578,13 @@ func normalizeMinimaxEndpointModesForWrite(value optionalValue, context endpoint
 	return modes, nil
 }
 
-// normalizeVolcengineEndpointModesForWrite 是 volcengine 媒体档案的写侧
-// 归一化（M3，契约 §9.1 + M6 TTS §9.2；沿 minimax driver 结构）：值域校验
-// 用 openai 族词表（video_*/audio_speech 是跨协议共享 token），再收敛到
-// volcengine 媒体集——chat/responses 等模式对 volcengine 账户报错（档案
-// Capabilities 只声明视频+语音，聊天端点非 OpenAI Chat 形态）。默认集
-// video_get（只读任务查询，零费用档）；video_create/video_content/
-// video_cancel/audio_speech opt-in（语音凭据双值缺失时派发显式失败）。
+// normalizeVolcengineEndpointModesForWrite 是 volcengine 档案的写侧归一化
+//（M3，契约 §9.1 + M6 TTS §9.2 + 对话批 chat；沿 minimax driver 结构）：值域
+// 校验用 openai 族词表（chat 对/video_*/audio_speech 是跨协议共享 token），
+// 再收敛到 volcengine 集——responses_json/responses_sse 等模式对 volcengine
+// 账户报错（档案 Capabilities 声明 chat+视频+语音，无原生 Responses 面）。
+// chat 对 opt-in 可勾选（豆包对话 /api/v3/chat/completions）；默认集
+// video_get（只读任务查询，零费用档）不变。
 func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	pinned := context
 	pinned.providerCode = volcengineProviderCode
@@ -590,24 +594,25 @@ func normalizeVolcengineEndpointModesForWrite(value optionalValue, context endpo
 	}
 	unsupported := []string{}
 	for _, mode := range modes {
-		if !volcengineVideoEndpointModeSet[mode] {
+		if !volcengineEndpointModeSet[mode] {
 			unsupported = append(unsupported, mode)
 		}
 	}
 	if len(unsupported) > 0 {
-		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持视频生成端点 (video_*) 或语音合成端点 (audio_speech)：%s",
+		return nil, fmt.Errorf("火山方舟账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*) 或语音合成端点 (audio_speech)：%s",
 			strings.Join(unsupported, ", "))
 	}
 	return modes, nil
 }
 
-// normalizeQwenEndpointModesForWrite 是 qwen 媒体档案的写侧归一化（M3
-// 第五批，契约 §10.1；沿 volcengine driver 结构）：值域校验用 openai 族
-// 词表（video_* / audio_job_* 是跨协议共享 token），再收敛到 qwen 媒体集
-// （video_* 视频四值 + M3f audio_job_* 长转写四值，契约 §10.2）——chat/
-// responses/audio_speech 等模式对 qwen 账户报错（档案 Capabilities 只声明
-// 媒体，TTS 面未回填、聊天端点非 OpenAI Chat 形态）。默认集 video_get
-// （只读任务查询，零费用档）；video_create/audio_job_* opt-in。
+// normalizeQwenEndpointModesForWrite 是 qwen 档案的写侧归一化（M3 第五批，
+// 契约 §10.1 + 对话批 chat；沿 volcengine driver 结构）：值域校验用 openai
+// 族词表（chat 对/video_* / audio_job_* 是跨协议共享 token），再收敛到 qwen
+// 集（chat 对 + video_* 视频四值 + M3f audio_job_* 长转写四值，契约 §10.2）
+// ——responses_json/audio_speech 等模式对 qwen 账户报错（档案 Capabilities
+// 声明 chat+视频+长转写，无原生 Responses 面且 CosyVoice TTS 未回填）。
+// chat 对 opt-in 可勾选（qwen 对话 /compatible-mode/v1/chat/completions）；
+// 默认集 video_get（只读任务查询，零费用档）不变。
 func normalizeQwenEndpointModesForWrite(value optionalValue, context endpointModeDefaultContext) ([]string, error) {
 	pinned := context
 	pinned.providerCode = qwenProviderCode
@@ -617,22 +622,26 @@ func normalizeQwenEndpointModesForWrite(value optionalValue, context endpointMod
 	}
 	unsupported := []string{}
 	for _, mode := range modes {
-		if !qwenMediaEndpointModeSet[mode] {
+		if !qwenEndpointModeSet[mode] {
 			unsupported = append(unsupported, mode)
 		}
 	}
 	if len(unsupported) > 0 {
-		return nil, fmt.Errorf("通义百炼账户上游接口能力只支持视频生成端点 (video_*) 或长音频转写端点 (audio_job_*)：%s",
+		return nil, fmt.Errorf("通义百炼账户上游接口能力只支持对话补全端点 (chat)、视频生成端点 (video_*) 或长音频转写端点 (audio_job_*)：%s",
 			strings.Join(unsupported, ", "))
 	}
 	return modes, nil
 }
 
 // optOrDefault 把缺省（!present）的可选值替换为固定默认（minimax/volcengine
-// 写侧默认集不参与 DefaultOpenAIEndpointModes 的 chat 分支，单独承载）。
+// 写侧默认集不参与 DefaultOpenAIEndpointModes 的 chat 分支，单独承载）。默认
+// 值经 anyStrings 包成 []any——normalizeEndpointModeList 的数组断言只认
+// []any（凭据入口的 JSON 数组形态），包 []string 会让缺省键误报「上游接口
+// 能力必须是数组」（M3 引入的先存缺陷，对话批修复：缺省键恢复文档语义的
+// 默认集行为，对 minimax 同样生效）。
 func optOrDefault(value optionalValue, defaults []string) optionalValue {
 	if !value.present {
-		return opt(append([]string{}, defaults...))
+		return opt(anyStrings(defaults))
 	}
 	return value
 }

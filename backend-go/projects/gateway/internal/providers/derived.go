@@ -332,6 +332,12 @@ func buildProviderCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection
 		return geminiCatalogDisplay(item)
 	case "xai":
 		return xaiCatalogDisplay(item)
+	case "minimax":
+		return minimaxCatalogDisplay(item)
+	case "volcengine":
+		return volcengineCatalogDisplay(item)
+	case "qwen":
+		return qwenCatalogDisplay(item)
 	}
 	return []catalogDisplaySection{}
 }
@@ -448,6 +454,61 @@ func glmCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	sections := appendSection(nil, priceSection("token_pricing", label, entries))
 	sections = appendSection(sections, reasoningSection(item))
 	sections = appendSection(sections, capacitySection(item))
+	return sections
+}
+
+// minimaxCatalogDisplay / volcengineCatalogDisplay / qwenCatalogDisplay 是
+// 三家媒体供应商的目录投影薄壳，共享 genericMediaCatalogDisplay 实现；未来
+// 单家分化时在此分叉。
+func minimaxCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
+	return genericMediaCatalogDisplay(item)
+}
+
+func volcengineCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
+	return genericMediaCatalogDisplay(item)
+}
+
+func qwenCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
+	return genericMediaCatalogDisplay(item)
+}
+
+// genericMediaCatalogDisplay 按 item.Mode 场景化输出（列表按场景不同），
+// 价格只在 ModelCatalogItem 有真实通道时落 section（宁缺勿假）：
+//   - chat（含 mode 未标注的 custom 行兜底）：Token 计费（输入/缓存读/
+//     缓存写入/输出/音频输入）+ 思考能力 + 容量 + 美元换算；
+//   - image / image_generation：Token 计费 + 图片生成（每张，走
+//     OutputUsdPerImage 通道）+ 思考能力 + 容量 + 美元换算；
+//   - audio（audio_speech / audio_transcription 协议行）、video、embedding：
+//     TTS 字符价 / ASR 秒价 / 视频秒价只在 internal/pricing 静态层计费面
+//     （PriceSet 的 TtsInputUsdPer1MChars / AudioInputUsdPerSecond /
+//     VideoOutputUsdPerSecond），目录表无对应列、ModelCatalogItem 无对应
+//     字段 → 不落价格 section；行恰带 token 价（如 chat 通道回填）时照实
+//     显示 Token 计费。容量与美元换算照常。
+//
+// 人民币来源行的披露位是 sourceConversionSection（官方币种 CNY + 约定汇率
+// 7.0 + 官方源价 note），经 ApplyBuiltInStaticDerivedFields 从静态表透传，
+// 媒体行同样携带。无值 section 由 priceSection/textSection 自动丢弃。
+func genericMediaCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
+	mode := ""
+	if item.Mode != nil {
+		mode = strings.ToLower(strings.TrimSpace(*item.Mode))
+	}
+	sections := appendSection(nil,
+		priceSection("token_pricing", "Token 计费", []catalogDisplayItem{
+			priceEntry("input", "输入", item.InputUsdPer1M, "usd_per_1m_tokens"),
+			priceEntry("cache_read", "缓存读", item.CachedInputUsdPer1M, "usd_per_1m_tokens"),
+			priceEntry("cache_write", "缓存写入", item.CacheWriteUsdPer1M, "usd_per_1m_tokens"),
+			priceEntry("output", "输出", item.OutputUsdPer1M, "usd_per_1m_tokens"),
+			priceEntry("audio_input", "音频输入", item.AudioInputUsdPer1M, "usd_per_1m_tokens"),
+		}))
+	if mode == "image" || mode == "image_generation" {
+		sections = appendSection(sections, imageUnitSection(item))
+	}
+	if mode == "" || mode == "chat" || mode == "image" || mode == "image_generation" {
+		sections = appendSection(sections, reasoningSection(item))
+	}
+	sections = appendSection(sections, capacitySection(item))
+	sections = appendSection(sections, sourceConversionSection(item))
 	return sections
 }
 
@@ -582,12 +643,14 @@ func sourceConversionSection(item *ModelCatalogItem) *catalogDisplaySection {
 		return nil
 	}
 	rate := ""
-	if item.SourceExchangeRateToUsd != nil {
-		rate = formatUsdRate(*item.SourceExchangeRateToUsd)
+	if item.SourceExchangeRateToUsd != nil && *item.SourceExchangeRateToUsd > 0 {
+		// SourceExchangeRateToUsd 语义是「1 USD = N 源币种」；展示同口径，
+		// 不做倒数换算（1 CNY ≈ $0.1429 这类倒数值易被误读为报价精度）。
+		rate = trimTrailingZeros(fixedNumber(*item.SourceExchangeRateToUsd, 4))
 	}
 	return textSection("currency_conversion", "美元换算", []catalogDisplayItem{
 		{Key: "source_currency", Label: "官方币种", Value: item.SourcePricingCurrency, Format: "text"},
-		{Key: "exchange_rate", Label: "1 " + item.SourcePricingCurrency, Value: rate, Format: "text"},
+		{Key: "exchange_rate", Label: "1 USD 兑", Value: rate + " " + item.SourcePricingCurrency, Format: "text"},
 		{Key: "exchange_rate_date", Label: "汇率日期", Value: item.SourceExchangeRateDate, Format: "text"},
 		{Key: "source_note", Label: "官方源价", Value: item.SourcePricingNote, Format: "text"},
 	})

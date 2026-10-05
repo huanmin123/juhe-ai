@@ -7,7 +7,7 @@ package main
 //     首帧直传、generate_audio 布尔直传 + Bearer 认证 + openai 族 /v1 URL
 //     归一 + params 回显）→ 轮询 pending→done（video.url 冻结进 artifact +
 //     video.duration=6 秒计量）→ content 经绝对 URL 无凭据直连下载 mp4 +
-//     终态 usage spool（秒计量照落、目录无 USD 秒价成本 0，不虚计）；
+//     终态 usage spool（秒计量照落，目录已落 $0.08/s，6s 成本 $0.48）；
 //  2. DELETE 取消（xai §6.1 面无取消 API → 不发上游请求，本地收敛
 //     cancelled）；
 //  3. 词表外宽高比 → 本地 400 参数边界（契约 §2.4 规则 2），不打上游。
@@ -127,7 +127,7 @@ func seedMediaXaiAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKe
 // TestChainMediaXaiVideoFullFlowLifecycle 覆盖链路 1：创建（报文改写 + Bearer
 // 认证头 + openai 族 /v1 URL 归一 + applied/ignored 回显）→ 轮询 pending→
 // in_progress、done→completed（video.url 进 artifact）→ content 绝对 URL
-// 无凭据直连 mp4 → 终态 usage（video.duration=6 秒计量照落；目录无 USD 秒价
+// 无凭据直连 mp4 → 终态 usage（video.duration=6 秒计量照落；目录 $0.08/s
 // 成本 0，契约 §2.8 不虚计）。
 func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
@@ -235,7 +235,7 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 	}
 
 	// media_jobs 行终态 completed + 任务 id 回填 + 秒计量照抽（done 的
-	// video.duration=6）但目录无 USD 秒价 → cost 0（不虚计）。
+	// video.duration=6）。
 	var status, upstreamJobID string
 	var costUsd float64
 	if err := fixture.db.QueryRow(`SELECT status, upstream_job_id, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&status, &upstreamJobID, &costUsd); err != nil {
@@ -244,8 +244,10 @@ func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 	if status != "completed" || upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs = %s/%s, want completed/%s", status, upstreamJobID, providerJobID)
 	}
-	if costUsd != 0 {
-		t.Fatalf("xai 目录未落 USD 秒价，cost_usd = %v, want 0（计量照落成本不虚计）", costUsd)
+	// 目录已落官方明文秒价（2026-10-05 批：grok-imagine-video-1.5 720p
+	// $0.08/s，契约 §6.1 回填），6s × $0.08 = $0.48，0 计费兜底解除。
+	if costUsd != 0.48 {
+		t.Fatalf("xai cost_usd = %v, want 0.48（$0.08/s × 6s）", costUsd)
 	}
 
 	// content 下载：completed 的 video.url 是引擎渲染的绝对 URL（不经记录层），

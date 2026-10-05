@@ -568,25 +568,27 @@ var pgSeedProviders = []pgSeedProvider{
 		DefaultSupportedModelsJSON: "[\"MiniMax-Hailuo-2.3\",\"speech-02-turbo\"]",
 	},
 	{
-		// M3 媒体新增供应商（媒体设计 §9/契约 §9）：火山方舟仅声明视频能力
-		//（豆包 Seedance 系 contents/generations/tasks），TTS 面未回填
-		//（契约 §9.2）不声明——档案与目录均无 audio/chat 能力。
+		// M3 媒体新增供应商（媒体设计 §9/契约 §9）：火山方舟声明视频能力
+		//（豆包 Seedance 系 contents/generations/tasks）；M6 补 TTS（豆包
+		// openspeech /api/v3/tts）；对话批补聊天（ark OpenAI 兼容端点
+		// /api/v3/chat/completions，豆包 doubao 对话模型面）。
 		ID:                         "volcengine",
 		Code:                       "volcengine",
 		Name:                       "火山方舟",
-		Description:                "火山方舟官方供应商，支持 API Key 接入视频生成（豆包 Seedance 系 contents/generations/tasks）媒体能力",
+		Description:                "火山方舟官方供应商，支持 API Key 接入对话（豆包 doubao 系 OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）与语音合成（豆包 TTS openspeech /api/v3/tts）能力",
 		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"doubao-seedance-1-0-pro-250528\"]",
 	},
 	{
-		// M3 媒体新增供应商（媒体设计 §9/契约 §10）：通义百炼仅声明视频能力
-		//（万相 wan 系 DashScope 异步任务），CosyVoice TTS/paraformer 长转写
-		// 面未回填（契约 §10.2）不声明——档案与目录均无 audio/chat 能力。
+		// M3 媒体新增供应商（媒体设计 §9/契约 §10）：通义百炼声明视频能力
+		//（万相 wan 系 DashScope 异步任务）；M3f 补长转写（paraformer）；
+		// 对话批补聊天（DashScope OpenAI 兼容模式 /compatible-mode/v1/chat/
+		// completions，qwen 对话模型面）。CosyVoice TTS 面仍未回填。
 		ID:                         "qwen",
 		Code:                       "qwen",
 		Name:                       "通义百炼",
-		Description:                "通义百炼（阿里云 DashScope）官方供应商，支持 API Key 接入视频生成（万相 wan 系 video-synthesis 异步任务）媒体能力",
+		Description:                "通义百炼（阿里云 DashScope）官方供应商，支持 API Key 接入对话（qwen 系 OpenAI 兼容模式）、视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别）能力",
 		ParentCode:                 "",
 		Enabled:                    1,
 		DefaultSupportedModelsJSON: "[\"wan2.2-t2v-plus\"]",
@@ -873,53 +875,59 @@ var pgSeedProfiles = []pgSeedProfile{
 	},
 	{
 		// M3 媒体新增供应商档案（媒体设计 §9/契约 §9）：火山方舟 API Key 单
-		// 档案，Capabilities 只声明 video_generation（与 EndpointFamilies 同名，
-		// 复用 minimax 批次的 openai_v1_video_generation 族，不新增 family 行）
-		//——M6 起补 tts（契约 §9.2 回填 B 级后实施：豆包 TTS 走 openspeech
-		// 语音服务域 /api/v3/tts，复用 openai_v1_tts 族行，语音凭据双值
-		// speech_appid/speech_token 见《火山方舟账号接入.md》）；聊天端点非
-		// OpenAI Chat 形态不承接聊天流量（目录无 chat 模型行，模型门双保险）。
+		// 档案，Capabilities 声明 video_generation + tts（M6，契约 §9.2：豆包
+		// TTS 走 openspeech 语音服务域 /api/v3/tts，复用 openai_v1_tts 族行，
+		// 语音凭据双值 speech_appid/speech_token 见《火山方舟账号接入.md》）。
+		// 对话批补 chat/chat_completions（复用既有 openai_v1_chat_completions
+		// 族行，不新增 family 行）：ark 官方 OpenAI 兼容端点 /api/v3/chat/
+		// completions 承接豆包对话模型，与媒体面共享 base_url 与 Bearer 凭据
+		//——出站 chat 请求按 /api/v3 服务根归一（服务根去重，不走 openai /v1
+		// 强制补缀），chat 端点模式 opt-in 不进默认集（默认集仍 video_get）。
 		// BaseURL 为官方根 ark.cn-beijing.volces.com；出站路径 /api/v3/
-		// contents/generations/tasks 由链上 chainVolcengineVideoUpstreamURL
-		// 归一拼缀，TTS 出站 host 恒 openspeech.bytedance.com（URL 构造特例）。
+		// contents/generations/tasks 与 /api/v3/chat/completions 由链上
+		// chainVolcengineVideoUpstreamURL / volcengine chat 归一拼缀，TTS 出站
+		// host 恒 openspeech.bytedance.com（URL 构造特例）。
 		ID:                      "profile_volcengine_openai_v1",
 		ProviderCode:            "volcengine",
 		Name:                    "火山方舟 / OpenAI v1 媒体",
-		Description:             "火山方舟官方 API Key 协议档案，承载视频生成（豆包 Seedance 系 contents/generations/tasks）与语音合成（豆包 TTS openspeech /api/v3/tts，语音应用凭据）媒体能力；聊天流量不承接",
+		Description:             "火山方舟官方 API Key 协议档案，承载对话（豆包 doubao 系 /api/v3/chat/completions OpenAI 兼容端点）、视频生成（豆包 Seedance 系 contents/generations/tasks）与语音合成（豆包 TTS openspeech /api/v3/tts，语音应用凭据）能力",
 		Enabled:                 1,
 		ProtocolCode:            "openai",
 		ProtocolVersion:         "v1",
 		BaseURL:                 "https://ark.cn-beijing.volces.com",
 		DefaultHealthCheckModel: "doubao-seedance-1-0-pro-250528",
 		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"video_generation", "tts"},
-		EndpointFamilies:        []string{"video_generation", "tts"},
+		Capabilities:            []string{"chat", "video_generation", "tts"},
+		EndpointFamilies:        []string{"chat_completions", "video_generation", "tts"},
 	},
 	{
 		// M3 媒体新增供应商档案（媒体设计 §9/契约 §10）：通义百炼 API Key 单
 		// 档案，Capabilities 声明 video_generation 与 audio_transcription
 		//（M3f 长转写，契约 §10.2 回填；EndpointFamilies 同名——video_
 		// generation 复用 minimax 批次族行，audio_transcription 复用 M3f 新增
-		// 族行）——CosyVoice TTS 面（契约 §10.2）未回填不声明，百炼聊天走 qwen
-		// 对话模型面（非本媒体档案）不承接聊天流量（目录无 chat 模型行，模型
-		// 门双保险）。BaseURL 为 DashScope 官方根 dashscope.aliyuncs.com；出站
-		// 路径 /api/v1/services/aigc/video-generation/video-synthesis、
-		// /api/v1/services/audio/asr/transcription 与 /api/v1/tasks/{id} 由链上
-		// chainQwenVideoUpstreamURL 归一拼缀；万相创建请求头带
-		// X-DashScope-Async: enable（DashScope 异步任务约定），paraformer 创建
-		// 无该头（天然异步服务）。
+		// 族行）。对话批补 chat/chat_completions（复用既有
+		// openai_v1_chat_completions 族行，不新增 family 行）：DashScope 官方
+		// OpenAI 兼容模式 /compatible-mode/v1/chat/completions 承接 qwen 对话
+		// 模型，与媒体面共享 base_url 与 Bearer 凭据——出站 chat 请求按
+		// /compatible-mode/v1 服务根归一（服务根去重，不走 openai /v1 强制
+		// 补缀），chat 端点模式 opt-in 不进默认集（默认集仍 video_get）。
+		// CosyVoice TTS 面（契约 §10.2）未回填不声明。BaseURL 为 DashScope
+		// 官方根 dashscope.aliyuncs.com；出站路径 /api/v1/services/... 与
+		// /api/v1/tasks/{id} 由链上 chainQwenVideoUpstreamURL 归一拼缀；万相
+		// 创建请求头带 X-DashScope-Async: enable（DashScope 异步任务约定），
+		// paraformer 创建无该头（天然异步服务）。
 		ID:                      "profile_qwen_openai_v1",
 		ProviderCode:            "qwen",
 		Name:                    "通义百炼 / OpenAI v1 媒体",
-		Description:             "通义百炼（阿里云 DashScope）官方 API Key 协议档案，承载视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别异步任务）媒体能力；CosyVoice TTS 面未回填，本档案不声明",
+		Description:             "通义百炼（阿里云 DashScope）官方 API Key 协议档案，承载对话（qwen 系 /compatible-mode/v1/chat/completions OpenAI 兼容模式）、视频生成（万相 wan 系 video-synthesis 异步任务）与长音频转写（paraformer 系录音文件识别异步任务）能力；CosyVoice TTS 面未回填，本档案不声明",
 		Enabled:                 1,
 		ProtocolCode:            "openai",
 		ProtocolVersion:         "v1",
 		BaseURL:                 "https://dashscope.aliyuncs.com",
 		DefaultHealthCheckModel: "wan2.2-t2v-plus",
 		AccountTypes:            []string{"api_key"},
-		Capabilities:            []string{"video_generation", "audio_transcription"},
-		EndpointFamilies:        []string{"video_generation", "audio_transcription"},
+		Capabilities:            []string{"chat", "video_generation", "audio_transcription"},
+		EndpointFamilies:        []string{"chat_completions", "video_generation", "audio_transcription"},
 	},
 }
 

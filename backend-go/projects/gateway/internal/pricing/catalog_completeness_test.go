@@ -15,13 +15,18 @@ import (
 var datedModelName = regexp.MustCompile(`-(\d{4}-\d{2}-\d{2})$`)
 
 func allSnapshotRows() map[string][]rawModel {
+	// 2026-10-05 全厂商补全批（A1）：MiniMax 新增 chat 行（MiniMax-M3/
+	// M2.7/M2.7-highspeed），纳入 chat 行 function_calling 门禁。
 	return map[string][]rawModel{
-		"openai":    openAIModelPricingData,
-		"deepseek":  deepSeekModelPricingData,
-		"glm":       glmModelPricingData,
-		"anthropic": anthropicModelPricingData,
-		"gemini":    geminiModelPricingData,
-		"xai":       xAIModelPricingData,
+		"openai":     openAIModelPricingData,
+		"deepseek":   deepSeekModelPricingData,
+		"glm":        glmModelPricingData,
+		"anthropic":  anthropicModelPricingData,
+		"gemini":     geminiModelPricingData,
+		"xai":        xAIModelPricingData,
+		"minimax":    minimaxModelPricingData,
+		"volcengine": volcengineModelPricingData,
+		"qwen":       qwenModelPricingData,
 	}
 }
 

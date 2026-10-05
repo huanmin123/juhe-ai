@@ -465,13 +465,14 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		if isMinimaxProviderCodeToken(profile.providerCode) {
 			profileProtocols = append(profileProtocols, "video", "audio_speech")
 		}
-		// volcengine 媒体档案同族承接 video 协议模型（M3 seedance adapter，
+		// volcengine openai 档案同族承接 video 协议模型（M3 seedance adapter，
 		// 契约 §9.1：统一 /v1/videos 面经媒体 adapter 改写，与账户 base_url/
 		// Bearer 凭据同源）与 audio_speech 协议模型（M6 TTS adapter，契约
 		// §9.2：统一 /v1/audio/speech 面经 openspeech /api/v3/tts 改写——
-		// 语音凭据双值独立，目录模型经运营自定义行承载统一面占位名）——供
-		// volcengine 账户声明 Seedance 系纯视频与 TTS 占位模型进入
-		// supportedModels（档案 Capabilities 声明视频+语音，无 chat 模型）。
+		// 语音凭据双值独立，目录模型经运营自定义行承载统一面占位名）。chat
+		// 协议模型（豆包 doubao 对话行，对话批）走基础集 chat_completions，
+		// 无需本分支追加——ark OpenAI 兼容端点 /api/v3/chat/completions 与
+		// chat 同 base_url/凭据，出站 URL 由链上 volcengine chat 服务根归一。
 		if isVolcengineProviderCodeToken(profile.providerCode) {
 			profileProtocols = append(profileProtocols, "video", "audio_speech")
 		}
@@ -484,14 +485,14 @@ func providerModelSupportsProtocolProfile(modelProtocols []string, profile proto
 		if isXaiProviderCodeToken(profile.providerCode) {
 			profileProtocols = append(profileProtocols, "video")
 		}
-		// qwen 媒体档案同族承接 video 协议模型（M3 万相 adapter，契约
+		// qwen openai 档案同族承接 video 协议模型（M3 万相 adapter，契约
 		// §10.1：统一 /v1/videos 面经媒体 adapter 改写，与账户 base_url/
 		// Bearer 凭据同源）与 audio_transcription 协议模型（M3f paraformer
 		// 长转写 adapter，契约 §10.2：统一 /v1/audio/jobs 面改写，同源凭据；
-		// CosyVoice TTS 面 §10.2 未回填，不承接 audio_speech）——供 qwen
-		// 账户声明万相系纯视频与 paraformer 系长转写模型进入 supportedModels
-		//（档案 Capabilities 声明 video_generation + audio_transcription，
-		// 无 chat 模型）。
+		// CosyVoice TTS 面 §10.2 未回填，不承接 audio_speech）。chat 协议模型
+		//（qwen 对话行，对话批）走基础集 chat_completions，无需本分支追加
+		//——DashScope OpenAI 兼容模式 /compatible-mode/v1/chat/completions
+		// 与媒体同 base_url/凭据，出站 URL 由链上 qwen chat 服务根归一。
 		if isQwenProviderCodeToken(profile.providerCode) {
 			profileProtocols = append(profileProtocols, "video", "audio_transcription")
 		}

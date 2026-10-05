@@ -8,8 +8,9 @@ package pricing
 import "testing"
 
 func TestBuildCostBreakdownVideoOutputSecondsLine(t *testing.T) {
-	// sora-2 静态快照：$0.10/s。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "openai", "sora-2"), CostInput{
+	// sora-2 静态快照：$0.10/s（2026-09-24 官方关停，经关停日前回溯查询
+	// 验证历史计费口径）。
+	breakdown := BuildCostBreakdown(mustFindSoraPricingForTest(t, "openai", "sora-2"), CostInput{
 		OutputVideoSeconds: audioTestFloat(4),
 	})
 	if breakdown == nil {
@@ -40,7 +41,7 @@ func TestBuildCostBreakdownVideoOutputSecondsLine(t *testing.T) {
 
 func TestBuildCostBreakdownVideoNoSecondsNoLine(t *testing.T) {
 	// 失败任务不虚计：无秒计量（0）不产行项，charge 回落 0。
-	breakdown := BuildCostBreakdown(mustFindPricingForTest(t, "openai", "sora-2"), CostInput{
+	breakdown := BuildCostBreakdown(mustFindSoraPricingForTest(t, "openai", "sora-2"), CostInput{
 		OutputVideoSeconds: audioTestFloat(0),
 	})
 	if breakdown == nil {
@@ -72,19 +73,25 @@ func TestBuildCostBreakdownVideoNoPriceNoLine(t *testing.T) {
 }
 
 func TestEstimateProviderCostUsdVideoSeconds(t *testing.T) {
-	// 终态计费回填消费面：EstimateProviderCostUsd 静态快照直接估出 sora-2
-	//（4s × $0.10/s = $0.40）与 sora-2-pro（4s × $0.30/s = $1.20）。
-	cost := EstimateProviderCostUsd(CostInput{
-		ProviderCode: "openai", Model: "sora-2", OutputVideoSeconds: audioTestFloat(4),
-	})
-	if cost == nil || *cost != 0.4 {
-		t.Fatalf("sora-2 cost = %v want 0.4", cost)
+	// 2026-10-05 新事实：sora-2/sora-2-pro 官方 2026-09-24 关停，现行
+	// lookup（asOf=今天）不再解析，估算入口同步返回 nil（关停模型不产生
+	// 新计费，不回落历史价）。
+	for _, model := range []string{"sora-2", "sora-2-pro"} {
+		cost := EstimateProviderCostUsd(CostInput{
+			ProviderCode: "openai", Model: model, OutputVideoSeconds: audioTestFloat(4),
+		})
+		if cost != nil {
+			t.Fatalf("shutdown %s estimate = %v want nil", model, cost)
+		}
 	}
-	proCost := EstimateProviderCostUsd(CostInput{
-		ProviderCode: "openai", Model: "sora-2-pro", OutputVideoSeconds: audioTestFloat(4),
+	// 现役视频行的估算消费面由 MiniMax-H3 承接（$0.08/s，4s = $0.32），
+	// 语义与原 sora-2（4s × $0.10/s = $0.40）钉值一致：静态快照直接估出
+	// 终态成本（任务终态计费回填链的消费面）。
+	cost := EstimateProviderCostUsd(CostInput{
+		ProviderCode: "minimax", Model: "MiniMax-H3", OutputVideoSeconds: audioTestFloat(4),
 	})
-	if proCost == nil || *proCost != 1.2 {
-		t.Fatalf("sora-2-pro cost = %v want 1.2", proCost)
+	if cost == nil || *cost != 0.32 {
+		t.Fatalf("MiniMax-H3 cost = %v want 0.32", cost)
 	}
 	// 目录未命中（未知模型）→ nil（0 计费 + usage_missing 标记语义，不猜测）。
 	unknown := EstimateProviderCostUsd(CostInput{
@@ -95,7 +102,7 @@ func TestEstimateProviderCostUsdVideoSeconds(t *testing.T) {
 	}
 	// 无计量维度 → nil。
 	noDimension := EstimateProviderCostUsd(CostInput{
-		ProviderCode: "openai", Model: "sora-2",
+		ProviderCode: "minimax", Model: "MiniMax-H3",
 	})
 	if noDimension != nil {
 		t.Fatalf("no dimension cost = %v want nil", noDimension)
