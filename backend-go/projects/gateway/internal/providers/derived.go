@@ -33,6 +33,12 @@ type staticPricingSnapshot struct {
 	SourceExchangeRateToUsd         *float64
 	SourceExchangeRateDate          string
 	SourcePricingNote               string
+	// 媒体单价四维（目录表无列，读取链从静态定价表透传供目录展示；计费
+	// 真实读取处在 internal/pricing PriceSet，两者同源）：
+	VideoOutputUsdPerSecond *float64
+	VideoOutputUsdPerCall   *float64
+	TtsInputUsdPer1MChars   *float64
+	AudioInputUsdPerSecond  *float64
 }
 
 // staticPricingFor is the internal/pricing seam. nil result = the static
@@ -52,6 +58,10 @@ func staticPricingFor(providerCode, model string) *staticPricingSnapshot {
 		SourceExchangeRateToUsd:  found.SourceExchangeRateToUsd,
 		SourceExchangeRateDate:   found.SourceExchangeRateDate,
 		SourcePricingNote:        found.SourcePricingNote,
+		VideoOutputUsdPerSecond:  found.VideoOutputUsdPerSecond,
+		VideoOutputUsdPerCall:    found.VideoOutputUsdPerCall,
+		TtsInputUsdPer1MChars:    found.TtsInputUsdPer1MChars,
+		AudioInputUsdPerSecond:   found.AudioInputUsdPerSecond,
 	}
 	if snapshot.SupportedToolsByProtocol == nil {
 		snapshot.SupportedToolsByProtocol = map[string][]string{}
@@ -73,14 +83,19 @@ func staticPricingFor(providerCode, model string) *staticPricingSnapshot {
 // （原注释行：
 // 随 chat 面切换删除）。
 type BuiltInStaticDerivedCapabilities struct {
-	InputModalities                 []string
-	OutputModalities                []string
-	SupportedToolsByProtocol        map[string][]string
-	CachedImageInputUsdPer1M        *float64
-	SourcePricingCurrency           string
-	SourceExchangeRateToUsd         *float64
-	SourceExchangeRateDate          string
-	SourcePricingNote               string
+	InputModalities          []string
+	OutputModalities         []string
+	SupportedToolsByProtocol map[string][]string
+	CachedImageInputUsdPer1M *float64
+	SourcePricingCurrency    string
+	SourceExchangeRateToUsd  *float64
+	SourceExchangeRateDate   string
+	SourcePricingNote        string
+	// 媒体单价四维（同 staticPricingSnapshot，目录表无列的透传展示）。
+	VideoOutputUsdPerSecond *float64
+	VideoOutputUsdPerCall   *float64
+	TtsInputUsdPer1MChars   *float64
+	AudioInputUsdPerSecond  *float64
 	GenerationParameterCapabilities map[string]any
 }
 
@@ -115,6 +130,10 @@ func ResolveBuiltInStaticDerivedCapabilities(providerCode, model string, maxOutp
 			resolved.SourceExchangeRateToUsd = static.SourceExchangeRateToUsd
 			resolved.SourceExchangeRateDate = static.SourceExchangeRateDate
 			resolved.SourcePricingNote = static.SourcePricingNote
+			resolved.VideoOutputUsdPerSecond = static.VideoOutputUsdPerSecond
+			resolved.VideoOutputUsdPerCall = static.VideoOutputUsdPerCall
+			resolved.TtsInputUsdPer1MChars = static.TtsInputUsdPer1MChars
+			resolved.AudioInputUsdPerSecond = static.AudioInputUsdPerSecond
 		}
 	}
 	capabilities := generationParameterCapabilitiesForModel(providerCode, model, maxOutputTokens)
@@ -321,25 +340,50 @@ type catalogDisplaySection struct {
 func buildProviderCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 	switch normalizeProviderToken(item.ProviderCode) {
 	case "openai", "gpt":
-		return openAICatalogDisplay(item)
+		return appendStaticMediaPriceSections(openAICatalogDisplay(item), item)
 	case "anthropic":
-		return anthropicCatalogDisplay(item)
+		return appendStaticMediaPriceSections(anthropicCatalogDisplay(item), item)
 	case "deepseek":
-		return deepSeekCatalogDisplay(item)
+		return appendStaticMediaPriceSections(deepSeekCatalogDisplay(item), item)
 	case "glm":
-		return glmCatalogDisplay(item)
+		return appendStaticMediaPriceSections(glmCatalogDisplay(item), item)
 	case "gemini":
-		return geminiCatalogDisplay(item)
+		return appendStaticMediaPriceSections(geminiCatalogDisplay(item), item)
 	case "xai":
-		return xaiCatalogDisplay(item)
+		return appendStaticMediaPriceSections(xaiCatalogDisplay(item), item)
 	case "minimax":
-		return minimaxCatalogDisplay(item)
+		return appendStaticMediaPriceSections(minimaxCatalogDisplay(item), item)
 	case "volcengine":
-		return volcengineCatalogDisplay(item)
+		return appendStaticMediaPriceSections(volcengineCatalogDisplay(item), item)
 	case "qwen":
-		return qwenCatalogDisplay(item)
+		return appendStaticMediaPriceSections(qwenCatalogDisplay(item), item)
 	}
-	return []catalogDisplaySection{}
+	return appendStaticMediaPriceSections([]catalogDisplaySection{}, item)
+}
+
+// appendStaticMediaPriceSections 把目录表无列的媒体单价（视频每秒/每次、
+// TTS 字符、ASR 秒价——计费真实读取处在 internal/pricing PriceSet）以
+// 「媒体计费」section 附加到任意厂商投影之后，全厂商统一：视频/音频行
+// 不再因缺列而在目录页无价格信息。unknown provider 路径与各具名投影
+// 出口都应经过本函数（具名投影各自收尾调用）。
+func appendStaticMediaPriceSections(sections []catalogDisplaySection, item *ModelCatalogItem) []catalogDisplaySection {
+	entries := make([]catalogDisplayItem, 0, 4)
+	if item.VideoOutputUsdPerSecond != nil {
+		entries = append(entries, catalogDisplayItem{Key: "video_per_second", Label: "视频（每秒）", Value: "$" + trimTrailingZeros(fixedNumber(*item.VideoOutputUsdPerSecond, 4)) + "/s", Format: "text"})
+	}
+	if item.VideoOutputUsdPerCall != nil {
+		entries = append(entries, catalogDisplayItem{Key: "video_per_call", Label: "视频（每次）", Value: "$" + trimTrailingZeros(fixedNumber(*item.VideoOutputUsdPerCall, 4)) + "/video", Format: "text"})
+	}
+	if item.TtsInputUsdPer1MChars != nil {
+		entries = append(entries, catalogDisplayItem{Key: "tts_chars", Label: "语音合成（每百万字符）", Value: "$" + trimTrailingZeros(fixedNumber(*item.TtsInputUsdPer1MChars, 4)), Format: "text"})
+	}
+	if item.AudioInputUsdPerSecond != nil {
+		entries = append(entries, catalogDisplayItem{Key: "asr_per_second", Label: "语音识别（每秒）", Value: "$" + trimTrailingZeros(fixedNumber(*item.AudioInputUsdPerSecond, 8)) + "/s", Format: "text"})
+	}
+	if len(entries) == 0 {
+		return sections
+	}
+	return append(sections, catalogDisplaySection{Key: "media_pricing", Label: "媒体计费", Items: entries})
 }
 
 func openAICatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {

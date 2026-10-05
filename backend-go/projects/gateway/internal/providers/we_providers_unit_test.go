@@ -2,6 +2,7 @@ package providers
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -167,8 +168,6 @@ func weRichCatalogItem(providerCode string) *ModelCatalogItem {
 		SourcePricingNote:                       "官方价",
 	}
 }
-
-func ptr[T any](value T) *T { return &value }
 
 func TestWeCatalogDisplayPerProvider(t *testing.T) {
 	// gpt：含模态价格前缀、长上下文、层级、思考、容量与美元换算。
@@ -799,3 +798,47 @@ func TestWeStoreBindAndRequestAccountID(t *testing.T) {
 		t.Fatalf("todayUTCString = %s", got)
 	}
 }
+
+// TestWeCatalogDisplayMediaPricingSections 钉住媒体单价透传展示（目录表无
+// 列的四维：视频每秒/每次、TTS 字符、ASR 秒价——计费读静态层，目录页经
+// 「媒体计费」section 反映，全厂商统一）。
+func TestWeCatalogDisplayMediaPricingSections(t *testing.T) {
+	perSecond := 0.231
+	perCall := 0.2
+	ttsChars := 60.0
+	asrPerSecond := 0.000035
+	cases := []struct {
+		name       string
+		item       ModelCatalogItem
+		wantSubstr string
+	}{
+		{"volcengine 视频每秒", ModelCatalogItem{ProviderCode: "volcengine", Model: "doubao-seedance-2-5-260628", Mode: ptr("video"), VideoOutputUsdPerSecond: &perSecond}, "$0.231/s"},
+		{"glm 视频每次", ModelCatalogItem{ProviderCode: "glm", Model: "cogvideox-3", Mode: ptr("video"), VideoOutputUsdPerCall: &perCall}, "$0.2/video"},
+		{"minimax TTS 字符价", ModelCatalogItem{ProviderCode: "minimax", Model: "speech-2.8-turbo", Mode: ptr("audio"), TtsInputUsdPer1MChars: &ttsChars}, "$60"},
+		{"qwen ASR 秒价", ModelCatalogItem{ProviderCode: "qwen", Model: "qwen3-asr-flash", Mode: ptr("audio"), AudioInputUsdPerSecond: &asrPerSecond}, "$0.000035/s"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			sections := buildProviderCatalogDisplay(&testCase.item)
+			found := false
+			for _, section := range sections {
+				if section.Key != "media_pricing" {
+					continue
+				}
+				found = true
+				joined := ""
+				for _, entry := range section.Items {
+					joined += fmt.Sprint(entry.Value)
+				}
+				if !strings.Contains(joined, testCase.wantSubstr) {
+					t.Fatalf("media_pricing section = %q, want substring %q", joined, testCase.wantSubstr)
+				}
+			}
+			if !found {
+				t.Fatalf("未输出 media_pricing section")
+			}
+		})
+	}
+}
+
+func ptr[T any](value T) *T { return &value }

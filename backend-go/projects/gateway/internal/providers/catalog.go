@@ -96,6 +96,11 @@ type ModelCatalogItem struct {
 	SourceExchangeRateToUsd                 *float64                 `json:"sourceExchangeRateToUsd,omitempty"`
 	SourceExchangeRateDate                  string                   `json:"sourceExchangeRateDate,omitempty"`
 	SourcePricingNote                       string                   `json:"sourcePricingNote,omitempty"`
+	// 媒体单价四维（静态定价表透传；目录表无列，仅供目录展示与前端渲染）。
+	VideoOutputUsdPerSecond                 *float64                 `json:"videoOutputUsdPerSecond,omitempty"`
+	VideoOutputUsdPerCall                   *float64                 `json:"videoOutputUsdPerCall,omitempty"`
+	TtsInputUsdPer1MChars                   *float64                 `json:"ttsInputUsdPer1MChars,omitempty"`
+	AudioInputUsdPerSecond                  *float64                 `json:"audioInputUsdPerSecond,omitempty"`
 	// CatalogDisplay mirrors withCatalogDisplay: present on every merged
 	// catalog row (possibly []), absent on the save/mutation responses
 	// (Node toCustomCatalogItem carries no catalogDisplay).
@@ -427,6 +432,10 @@ func ApplyBuiltInStaticDerivedFields(item *ModelCatalogItem) {
 	if resolved.SourceExchangeRateToUsd != nil {
 		item.SourceExchangeRateToUsd = resolved.SourceExchangeRateToUsd
 	}
+	item.VideoOutputUsdPerSecond = resolved.VideoOutputUsdPerSecond
+	item.VideoOutputUsdPerCall = resolved.VideoOutputUsdPerCall
+	item.TtsInputUsdPer1MChars = resolved.TtsInputUsdPer1MChars
+	item.AudioInputUsdPerSecond = resolved.AudioInputUsdPerSecond
 	item.GenerationParameterCapabilities = resolved.GenerationParameterCapabilities
 }
 
