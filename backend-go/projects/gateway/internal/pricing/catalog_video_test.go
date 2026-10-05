@@ -73,20 +73,21 @@ func TestSoraVideoSnapshotPricing(t *testing.T) {
 }
 
 // TestGlmCogVideoSnapshotPricing 锁定 glm 视频目录行（M3 收录 + 2026-10-05
-// 复核批撤价）：cogvideox-2/3 收录进 glm 静态目录（mode=video、协议
-// ["video"]、OutputModalities ["video"]）。官方按次计费（cogvideox-2 0.5
-// 元/次、cogvideox-3 1 元/次国内口径；z.ai 国际站 $0.2/video 明文）——
-// 按次价进不了秒价槽位语义，2026-10-05 复核批撤除 A3 批的等价换算登记，
-// 回无价：glm 轮询响应无时长回报 → 0 计费兜底 + usage_missing 标记（契约
-// §2.8）；不得携带 token/图像价/秒价（按次 ≠ 按秒），不得再挂 CNY 换算
-// 元信息。
+// 按次计费批落价）：cogvideox-2/3 收录进 glm 静态目录（mode=video、协议
+// ["video"]、OutputModalities ["video"]）。官方按次计费（z.ai 国际站
+// cogvideox-3 $0.2/video 明文；cogvideox-2 国内 0.5 元/次 ÷ 7.0 = $0.0714
+// 换算）落 VideoOutputCostPerCall（2026-10-05 用户裁决：无法返回 usage 的
+// 上游按官网计费规则、按输入计）；秒价槽位保持 nil（按次 ≠ 按秒，互斥），
+// 不得携带 token/图像价。cogvideox-2 挂 CNY 换算四件套；cogvideox-3 为官方
+// USD 明文，只留 SourcePricingNote 不挂换算四件套（同 cogview-4 先例）。
 func TestGlmCogVideoSnapshotPricing(t *testing.T) {
 	cases := []struct {
-		model         string
-		cnyPerRequest string
+		model          string
+		usdPerCall     float64
+		wantCNYSources bool
 	}{
-		{"cogvideox-2", "0.5"},
-		{"cogvideox-3", "1"},
+		{"cogvideox-2", 0.0714, true},
+		{"cogvideox-3", 0.2, false},
 	}
 	for _, tc := range cases {
 		got := mustFindPricingForTest(t, "glm", tc.model)
@@ -102,20 +103,33 @@ func TestGlmCogVideoSnapshotPricing(t *testing.T) {
 		if len(got.InputModalities) != 2 {
 			t.Fatalf("%s inputModalities = %v want [text image]（文生/图生视频）", tc.model, got.InputModalities)
 		}
-		// 2026-10-05 复核批撤价：按次价不落秒价槽位（按次 ≠ 按秒语义）。
+		// 按次计费批落价：VideoOutputCostPerCall 承接官方按次口径。
+		if got.VideoOutputUsdPerCall == nil || *got.VideoOutputUsdPerCall != tc.usdPerCall {
+			t.Fatalf("%s videoOutputUsdPerCall = %v want %v", tc.model, got.VideoOutputUsdPerCall, tc.usdPerCall)
+		}
+		// 按次 ≠ 按秒：秒价槽位保持 nil（互斥）。
 		if got.VideoOutputUsdPerSecond != nil {
-			t.Fatalf("%s videoOutputUsdPerSecond = %v want nil（按次计费 %s 元/次不得换算进秒价槽位）", tc.model, *got.VideoOutputUsdPerSecond, tc.cnyPerRequest)
+			t.Fatalf("%s videoOutputUsdPerSecond = %v want nil（按次计费不得落秒价槽位）", tc.model, *got.VideoOutputUsdPerSecond)
 		}
 		if got.InputUsdPer1M != nil || got.OutputUsdPer1M != nil || got.OutputUsdPerImage != nil {
 			t.Fatalf("%s must not carry token/image prices (video model)", tc.model)
 		}
-		// 撤价后无任何单价 → 0 计费兜底 + usage_missing（契约 §2.8）。
-		if hasAnyRate(got.PriceSet) {
-			t.Fatalf("%s must not carry any rate（按次计费撤价回无价）", tc.model)
+		// 按次价即单价：hasAnyRate 必须为真（纯视频行不被目录过滤）。
+		if !hasAnyRate(got.PriceSet) {
+			t.Fatalf("%s must carry a rate（按次计费批落价）", tc.model)
 		}
-		// 不得再挂 CNY 换算元信息（换算登记已随撤价删除）。
-		if got.SourcePricingCurrency != "" || got.SourceExchangeRateToUsd != nil || got.SourceExchangeRateDate != "" {
-			t.Fatalf("%s source meta = %s/%v/%s want empty（按次撤价不留换算元信息）", tc.model, got.SourcePricingCurrency, got.SourceExchangeRateToUsd, got.SourceExchangeRateDate)
+		// 来源元信息：换算行挂 CNY 四件套，官方 USD 明文行只留 SourcePricingNote。
+		if tc.wantCNYSources {
+			if got.SourcePricingCurrency != "CNY" || got.SourceExchangeRateToUsd == nil || *got.SourceExchangeRateToUsd != 7.0 || got.SourceExchangeRateDate != "2026-10-05" {
+				t.Fatalf("%s source meta = %s/%v/%s want CNY/7.0/2026-10-05（0.5 元/次 ÷ 7.0 换算四件套）", tc.model, got.SourcePricingCurrency, got.SourceExchangeRateToUsd, got.SourceExchangeRateDate)
+			}
+		} else {
+			if got.SourcePricingCurrency != "" || got.SourceExchangeRateToUsd != nil || got.SourceExchangeRateDate != "" {
+				t.Fatalf("%s source meta = %s/%v/%s want empty（官方 USD 明文不挂换算四件套）", tc.model, got.SourcePricingCurrency, got.SourceExchangeRateToUsd, got.SourceExchangeRateDate)
+			}
+			if got.SourcePricingNote == "" {
+				t.Fatalf("%s sourcePricingNote = \"\" want 官方明文来源留档（z.ai $0.2/video + 国内 1 元/次原句）", tc.model)
+			}
 		}
 	}
 }

@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1189,9 +1190,10 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 	}
 	if ir.Status.Terminal() {
 		// 终态计费（媒体设计 §10：任务终态由轮询响应驱动回填）：completed 按
-		// 计量维度 × 静态目录价估成本（视频 OutputVideoSeconds × 秒价、长音频
-		// AudioInputSeconds × 秒价，契约 §2.8 网关自算口径），失败/无计量
-		//（usage_missing）不虚计；成本随终态一次落行。
+		// 静态目录价估成本——视频先按次（目录行有按次价 → PerCall × 1），再
+		// 按秒计量（上游回报优先、无回报按生效请求 seconds 自算）× 秒价；长
+		// 音频 AudioInputSeconds × 秒价（契约 §2.8 网关自算口径 + 按次计费），
+		// 失败/无计量依据（usage_missing）不虚计；成本随终态一次落行。
 		costUsd := chainMediaJobTerminalCostUsd(record, ir)
 		updated, updateErr := c.mediaJobs.repo.UpdateTerminal(ctx, record.ID, ir.Status, ir.Error, ir.Artifact, ir.Usage, costUsd)
 		if updateErr != nil {
@@ -1610,13 +1612,58 @@ func (c *gatewayChain) readMediaJobUpstreamObject(res *gatewaypreauth.TrackingWr
 // usage 终态回填 + 终态计费（媒体设计 §10：任务终态由轮询响应驱动）
 // ---------------------------------------------------------------------------
 
+// chainMediaJobVideoPerCallCostUsd 计算视频任务的按次成本（契约 §2.8 按次
+// 计费，2026-10-05 用户裁决：无法返回 usage 的按次上游按官网计费规则、按
+// 输入计）：目录行携带 VideoOutputCostPerCall（按次上游单槽位，与秒价互斥）
+// 时一次任务 = 一次调用，成本 = PerCall × 1，不依赖秒计量。目录未命中、
+// 行无按次价（秒价行经本入口试算只产出 0——无 PerCall 槽位不成行项）返回
+// 0，调用方回退秒价链。计费键沿 chain_usage costModel 先例（请求模型直达）。
+func chainMediaJobVideoPerCallCostUsd(record *gatewaymedia.MediaJobRecord) float64 {
+	one := 1.0
+	cost := pricing.EstimateProviderCostUsd(pricing.CostInput{
+		ProviderCode: record.ProviderCode,
+		Model:        record.RequestSnapshot.Model,
+		VideoCalls:   &one,
+	})
+	if cost == nil || *cost <= 0 {
+		return 0
+	}
+	return *cost
+}
+
+// chainMediaJobVideoUsageSecondsOf 解析视频任务的秒计量依据（契约 §2.8 网关
+// 自算口径；2026-10-05 请求参数自算批）：上游轮询回报优先（IR
+// OutputVideoSeconds）；上游无回报且创建请求 seconds 生效（进
+// ParamsApplied）时按创建请求参数自算——计量来源 = 创建请求参数自算
+//（usage_source=request 语义；usage_records/IR 无来源字段，来源以本注释与
+// 链级测试钉住，不加 schema 列），请求快照创建时已冻结。ignored 的 seconds
+// 不构成计量基源（§2.4 规则 1/3：不支持时该模型用厂商默认时长、用户值不
+// 生效，网关不猜测默认值——Veo 先例）。两者都缺返回 nil，调用方落
+// usage_missing，不猜测。
+func chainMediaJobVideoUsageSecondsOf(record *gatewaymedia.MediaJobRecord, ir *gatewaymedia.MediaJobIR) *float64 {
+	if ir.Usage.OutputVideoSeconds != nil {
+		return ir.Usage.OutputVideoSeconds
+	}
+	if record.RequestSnapshot.Seconds != nil && *record.RequestSnapshot.Seconds > 0 &&
+		slices.Contains(record.ParamsApplied, "seconds") {
+		return record.RequestSnapshot.Seconds
+	}
+	return nil
+}
+
 // chainMediaJobTerminalCostUsd 计算终态成本（媒体设计 §10；契约 §2.8 网关
-// 自算口径，M3f 起按 kind 分维度）：completed 且有计量时按静态定价目录
-// （pricing 引擎，与 M1 音频行项同一引擎）秒数 × 秒价估 USD——视频取
-// OutputVideoSeconds × 秒价，长转写取 AudioInputSeconds × 秒价（paraformer
-// 目录未落 USD 秒价 → 估不出返回 0，计量照落成本不虚计，契约 §10.2）；
-// 其余（failed/无计量 usage_missing/目录未命中）返回 0——失败任务不虚计、
-// 无计量不猜测。计费键沿 chain_usage costModel 先例（请求模型直达）。
+// 自算口径，M3f 起按 kind 分维度；2026-10-05 按次计费 + 请求参数自算批）。
+// completed 才计费，视频行按三级顺序裁决：
+//  1. 按次计费（目录行有 VideoOutputCostPerCall）：成本 = PerCall × 1（一次
+//     任务 = 一次调用），不依赖秒计量（cogvideox/Hailuo 等按次上游，契约
+//     §2.8 按次计费）；
+//  2. 秒计量计费：上游轮询回报优先，无回报时按创建请求 seconds 自算
+//     （seconds 须生效——ignored 不构成计量基源），秒数 × 目录秒价；
+//  3. 两者都缺 → 0（usage_missing，不猜测）。
+//
+// 长转写行维持原口径：AudioInputSeconds × 秒价（paraformer 目录未落 USD 秒
+// 价 → 估不出返回 0，计量照落成本不虚计，契约 §10.2）。failed/目录未命中
+// 返回 0——失败任务不虚计、无计量不猜测。
 func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatewaymedia.MediaJobIR) float64 {
 	if ir.Status != gatewaymedia.JobStatusCompleted {
 		return 0
@@ -1635,13 +1682,18 @@ func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatew
 		}
 		return *cost
 	}
-	if ir.Usage.OutputVideoSeconds == nil || *ir.Usage.OutputVideoSeconds <= 0 {
+	// 按次计费先行（契约 §2.8 按次上游）：按次行不走秒价链。
+	if cost := chainMediaJobVideoPerCallCostUsd(record); cost > 0 {
+		return cost
+	}
+	seconds := chainMediaJobVideoUsageSecondsOf(record, ir)
+	if seconds == nil || *seconds <= 0 {
 		return 0
 	}
 	cost := pricing.EstimateProviderCostUsd(pricing.CostInput{
 		ProviderCode:       record.ProviderCode,
 		Model:              record.RequestSnapshot.Model,
-		OutputVideoSeconds: ir.Usage.OutputVideoSeconds,
+		OutputVideoSeconds: seconds,
 	})
 	if cost == nil {
 		return 0
@@ -1654,14 +1706,18 @@ func chainMediaJobTerminalCostUsd(record *gatewaymedia.MediaJobRecord, ir *gatew
 // 溢出落盘，与同步请求终态记录同一投递面，链上下文零额外依赖；M3f 起按
 // kind 泛化——endpoint 与计量维度随任务族）。
 // completed 携带任务族计量（视频 OutputVideoSeconds、长音频
-// AudioInputSeconds，IR 从轮询响应抽取，契约 §2.8/§10.2）；completed 但上游
-// 无计量回报 → usage_missing 标记不猜测；failed 不虚计（success=false 无
-// 计量，行项为空）。cancelled/expired 是本地终态，不产生 usage 行（清理不
-// 产生计费；取消按上游实际计量为准）。CostUsd 在 enqueue 前已可算（计量/
-// 模型/供应商都在行上），直接带值落 usage 行——不存在"已 enqueue 留空回追"
-// 的窗口（usage 行只在终态轮询时入队一次）；0 成本（usage_missing/未命中）
-// 不设 CostUsd，与完成尝试记录"估算不出保持 NULL"的既有语义一致。记账
-// scope 五元组从行内 request_snapshot 投影（创建时冻结，
+// AudioInputSeconds，IR 从轮询响应抽取，契约 §2.8/§10.2；2026-10-05 起
+// 视频行上游无回报时按创建请求 seconds 自算——usage_source=request 语义，
+// seconds 须生效，ignored 不构成计量基源）。按次计费行（目录行有
+// VideoOutputCostPerCall）不落秒计量（按次上游无秒计量概念）、成本随
+// CostUsd 落行。completed 但无任何计量依据（无回报且无生效请求参数）→
+// usage_missing 标记不猜测；failed 不虚计（success=false 无计量，行项为
+// 空）。cancelled/expired 是本地终态，不产生 usage 行（清理不产生计费；
+// 取消按上游实际计量为准）。CostUsd 在 enqueue 前已可算（计量/模型/供应商
+// 都在行上），直接带值落 usage 行——不存在"已 enqueue 留空回追"的窗口
+//（usage 行只在终态轮询时入队一次）；0 成本（usage_missing/未命中）不设
+// CostUsd，与完成尝试记录"估算不出保持 NULL"的既有语义一致。记账 scope
+// 五元组从行内 request_snapshot 投影（创建时冻结，
 // chainMediaJobSnapshotScopeOf）。
 func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID, apiKeyOwnerSystemAccountID string, record *gatewaymedia.MediaJobRecord, account *chainMediaJobAccount, ir *gatewaymedia.MediaJobIR, costUsd float64) {
 	if c.finalizationUsage == nil || (ir.Status != gatewaymedia.JobStatusCompleted && ir.Status != gatewaymedia.JobStatusFailed) {
@@ -1714,8 +1770,16 @@ func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID
 			} else {
 				input.UsageMissing = true
 			}
-		} else if ir.Usage.OutputVideoSeconds != nil {
-			input.OutputVideoSeconds = ir.Usage.OutputVideoSeconds
+		} else if chainMediaJobVideoPerCallCostUsd(record) > 0 {
+			// 按次计费行（契约 §2.8 按次上游，2026-10-05 按次计费批）：一次
+			// 任务 = 一次调用，成本已随 CostUsd 落行；usage 行不落秒计量
+			//（按次上游无秒计量概念），也不打 usage_missing——计量与计费依据
+			// 都是目录按次价 × 任务粒度。
+		} else if seconds := chainMediaJobVideoUsageSecondsOf(record, ir); seconds != nil {
+			// 上游回报优先；无回报时为创建请求参数自算（usage_source=request
+			// 语义，见 chainMediaJobVideoUsageSecondsOf）。usage_records/IR 无
+			// 计量来源字段，来源以注释与链级测试钉住，不加 schema 列。
+			input.OutputVideoSeconds = seconds
 		} else {
 			input.UsageMissing = true
 		}

@@ -128,7 +128,7 @@ func seedMediaXaiAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKe
 // 认证头 + openai 族 /v1 URL 归一 + applied/ignored 回显）→ 轮询 pending→
 // in_progress、done→completed（video.url 进 artifact）→ content 绝对 URL
 // 无凭据直连 mp4 → 终态 usage（video.duration=6 秒计量照落；目录 $0.08/s
-// 成本 0，契约 §2.8 不虚计）。
+// × 6s = $0.48，契约 §6.1）。
 func TestChainMediaXaiVideoFullFlowLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, mock, upstreamURL := newXaiRecordedUpstream(t)

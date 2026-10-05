@@ -34,10 +34,12 @@ type tokenBillingLabels struct {
 	audioOutput     string
 	imageOutputUnit string
 	// ttsInputChars / audioInputSeconds 是 M1 音频行项标签（音频设计 §10）；
-	// videoOutputSeconds 是 M2 视频行项标签（媒体设计 §10）。
+	// videoOutputSeconds 是 M2 视频行项标签（媒体设计 §10）；
+	// videoOutputCalls 是视频按次行项标签（2026-10-05 按次计费批，契约 §2.8）。
 	ttsInputChars      string
 	audioInputSeconds  string
 	videoOutputSeconds string
+	videoOutputCalls   string
 }
 
 // defaultTokenBillingLabels mirrors defaultTokenBillingLabels.
@@ -55,6 +57,7 @@ var defaultTokenBillingLabels = tokenBillingLabels{
 	ttsInputChars:      "TTS 输入字符",
 	audioInputSeconds:  "STT 输入秒",
 	videoOutputSeconds: "视频输出秒",
+	videoOutputCalls:   "视频输出次数",
 }
 
 // tokenBillingOptions mirrors provider-billing.shared TokenBillingOptions.
@@ -110,6 +113,7 @@ var billingPolicies = []*billingPolicy{
 			ttsInputChars:      defaultTokenBillingLabels.ttsInputChars,
 			audioInputSeconds:  defaultTokenBillingLabels.audioInputSeconds,
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
+			videoOutputCalls:   defaultTokenBillingLabels.videoOutputCalls,
 		},
 	},
 	{
@@ -131,6 +135,7 @@ var billingPolicies = []*billingPolicy{
 			ttsInputChars:      defaultTokenBillingLabels.ttsInputChars,
 			audioInputSeconds:  defaultTokenBillingLabels.audioInputSeconds,
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
+			videoOutputCalls:   defaultTokenBillingLabels.videoOutputCalls,
 		},
 	},
 	{
@@ -158,6 +163,7 @@ var billingPolicies = []*billingPolicy{
 			ttsInputChars:      defaultTokenBillingLabels.ttsInputChars,
 			audioInputSeconds:  defaultTokenBillingLabels.audioInputSeconds,
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
+			videoOutputCalls:   defaultTokenBillingLabels.videoOutputCalls,
 		},
 	},
 	{
@@ -179,6 +185,7 @@ var billingPolicies = []*billingPolicy{
 			ttsInputChars:      defaultTokenBillingLabels.ttsInputChars,
 			audioInputSeconds:  defaultTokenBillingLabels.audioInputSeconds,
 			videoOutputSeconds: defaultTokenBillingLabels.videoOutputSeconds,
+			videoOutputCalls:   defaultTokenBillingLabels.videoOutputCalls,
 		},
 	},
 	{
@@ -403,6 +410,9 @@ func serviceTierRates(pricing *Pricing, input CostInput) resolvedRates {
 	if resolved.VideoOutputUsdPerSecond == nil {
 		resolved.VideoOutputUsdPerSecond = finite(pricing.VideoOutputUsdPerSecond)
 	}
+	if resolved.VideoOutputUsdPerCall == nil {
+		resolved.VideoOutputUsdPerCall = finite(pricing.VideoOutputUsdPerCall)
+	}
 	source, multiplier := tierPricingMetadata(pricing.PriceSet, tierRates)
 	return resolvedRates{
 		PriceSet:                 resolved,
@@ -521,6 +531,11 @@ func buildTokenCostBreakdown(pricing *Pricing, input CostInput, rates resolvedRa
 	// M2 视频行项（媒体设计 §10）：视频按输出秒计费（USD/s 直乘，与
 	// audio_input_seconds 同构）。无价格或计量为 0 不产行项（失败任务不虚计）。
 	lines = addUnitLine(lines, "video_output_seconds", CostLineKindVideoOutputSeconds, options.labels.videoOutputSeconds, nonNegative(input.OutputVideoSeconds), LineUnitSecond, rates.VideoOutputUsdPerSecond)
+	// 视频按次行项（2026-10-05 按次计费批，契约 §2.8）：按次上游一次任务 =
+	// 一次调用（VideoCalls 由结算链按任务粒度填 1），USD/次直乘。秒价与次
+	// 价互斥（目录门禁：同一行两槽位只落其一），同一行最多产出两行项之一；
+	// 无价格或计量为 0 不产行项。
+	lines = addUnitLine(lines, "video_output_calls", CostLineKindVideoOutputCalls, options.labels.videoOutputCalls, nonNegative(input.VideoCalls), LineUnitCall, rates.VideoOutputUsdPerCall)
 
 	return legacyBreakdownFromLines(lines, input, rates)
 }
@@ -622,6 +637,7 @@ func directRates(set PriceSet) PriceSet {
 		TtsInputUsdPer1MChars:       finite(set.TtsInputUsdPer1MChars),
 		AudioInputUsdPerSecond:      finite(set.AudioInputUsdPerSecond),
 		VideoOutputUsdPerSecond:     finite(set.VideoOutputUsdPerSecond),
+		VideoOutputUsdPerCall:       finite(set.VideoOutputUsdPerCall),
 	}
 }
 

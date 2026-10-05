@@ -394,6 +394,10 @@ func toProviderModelPricing(item *rawModel, entry *providerEntry, providerCode s
 			TtsInputUsdPer1MChars:       perMillion(item.TtsInputCostPerChar),
 			AudioInputUsdPerSecond:      normalizePrice(item.AudioInputCostPerSecond),
 			VideoOutputUsdPerSecond:     normalizePrice(item.VideoOutputCostPerSecond),
+			// VideoOutputUsdPerCall 同秒价处理：直通单价不折算（按次字面量，
+			// 2026-10-05 按次计费批）；目录表无按次列，只落本静态层（同秒价
+			// 先例，计费真实读取处）。
+			VideoOutputUsdPerCall: normalizePrice(item.VideoOutputCostPerCall),
 		},
 		CachedImageInputUsdPer1M: perMillion(item.CacheReadInputImageTokenCost),
 		ServiceTierPrices:        rawServiceTierPrices(item),

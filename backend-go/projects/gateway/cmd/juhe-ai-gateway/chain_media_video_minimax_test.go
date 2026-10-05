@@ -6,7 +6,8 @@ package main
 //  1. 创建（video_generation 报文改写 + Bearer 认证 + /v1 openai 归一 URL +
 //     params 回显）→ 轮询 queued → queued → completed（file_download_url 冻结
 //     进 artifact）→ content 经绝对 URL 无凭据直连下载 mp4 + 终态 usage
-//     spool（usage_missing 口径，不虚计）；
+//     spool（按次计费口径：成本 = VideoOutputCostPerCall × 1 = $0.28，usage
+//     行不落秒计量也不打 usage_missing，2026-10-05 按次计费批）；
 //  2. status=Fail + base_resp → failed 终态（code=1004 摘要 + cost 0）；
 //  3. DELETE 取消（minimax 无上游取消 API → 不发上游请求，本地收敛
 //     cancelled）；
@@ -129,8 +130,8 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 // TestChainMediaMinimaxVideoFullFlowLifecycle 覆盖链路 1：创建
 //（video_generation 报文改写 + Bearer 认证头 + /v1 openai 归一 URL + ignored
 // 回显）→ 轮询 queued → queued → completed（file_download_url 进 artifact）
-// → content 绝对 URL 无凭据直连 mp4 → 终态 usage（usage_missing，契约 §2.8
-// 不虚计）。
+// → content 绝对 URL 无凭据直连 mp4 → 终态 usage（按次计费：Hailuo 按条
+// $0.28/次，契约 §2.8 按次计费，2026-10-05 按次计费批）。
 func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, mock, upstreamURL := newMinimaxRecordedUpstream(t)
@@ -235,7 +236,9 @@ func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 		t.Fatalf("引擎侧 query 形态命中 %d 次, want 3（task_id=%s）: %+v", queryHits, providerJobID, mock.Requests())
 	}
 
-	// media_jobs 行终态 completed + 任务 id 回填 + 无秒计量不虚计（0）。
+	// media_jobs 行终态 completed + 任务 id 回填 + 按次计费成本（2026-10-05
+	// 按次计费批）：Hailuo 目录行按条明文主档 $0.28/次（768P-6s），一次任务
+	// = 一次调用，无秒计量也按次计（上游轮询不回报时长，契约 §2.8 按次计费）。
 	var status, upstreamJobID string
 	var costUsd float64
 	if err := fixture.db.QueryRow(`SELECT status, upstream_job_id, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&status, &upstreamJobID, &costUsd); err != nil {
@@ -244,8 +247,8 @@ func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 	if status != "completed" || upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs = %s/%s, want completed/%s", status, upstreamJobID, providerJobID)
 	}
-	if costUsd != 0 {
-		t.Fatalf("minimax 无输出秒回报且目录未落秒价，cost_usd = %v, want 0（usage_missing 不虚计）", costUsd)
+	if costUsd != 0.28 {
+		t.Fatalf("minimax 按次计费 cost_usd = %v, want 0.28（VideoOutputCostPerCall × 1）", costUsd)
 	}
 
 	// content 下载：completed 的 file_download_url 是引擎渲染的绝对 URL
@@ -270,11 +273,22 @@ func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 		}
 	}
 
-	// 终态 usage：spool 链异步落盘，completed 无秒计量 → usageMissing 标记
-	//（契约 §2.8：上游不回报且无可查证秒价 → 0 计费 + usage_missing，不猜测）。
-	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"usageMissing":true`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
-	}, "minimax completed usage_missing 终态记录")
+	// 终态 usage：spool 链异步落盘，completed 按次计费（2026-10-05 按次计费
+	// 批）：成本 $0.28 落行；usage 行不落秒计量（按次上游无秒计量概念）也不
+	// 打 usage_missing——计量与计费依据都是目录按次价 × 任务粒度（契约
+	// §2.8 按次计费）。
+	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+		return strings.Contains(text, `"endpoint":"/v1/videos"`) && strings.Contains(text, `"model":"MiniMax-Hailuo-2.3"`)
+	}, "minimax completed 按次计费终态记录")
+	if !strings.Contains(record, `"costUsd":0.28`) {
+		t.Fatalf("minimax 按次计费 usage 行缺少 costUsd 0.28: %s", record)
+	}
+	if strings.Contains(record, "usageMissing") {
+		t.Fatalf("minimax 按次计费 usage 行不得打 usage_missing（按次有计量计费依据）: %s", record)
+	}
+	if strings.Contains(record, "outputVideoSeconds") {
+		t.Fatalf("minimax 按次计费 usage 行不得落秒计量（按次上游无秒计量概念）: %s", record)
+	}
 }
 
 // TestChainMediaMinimaxVideoFailedTerminal 覆盖链路 2：status=Fail +

@@ -47,7 +47,10 @@ func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
 	// $2/$0.5|0.3/$6 with the 500k window), overrode the volcengine/qwen/glm
 	// conversion values with official international-site USD prices, added
 	// the gemini 2.5-series cache-write prices and the veo-3.1 shutdown
-	// dates, and withdrew the cogvideox per-request prices back to unpriced.
+	// dates, and withdrew the cogvideox per-request prices back to unpriced
+	// (restored the same day by the per-call billing batch:
+	// VideoOutputCostPerCall lives in the gateway static pricing layer only —
+	// the catalog table has no video price columns).
 	if len(modelCatalogSeedRows) != 214 {
 		t.Fatalf("model catalog seed rows = %d, want 214 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
 	}

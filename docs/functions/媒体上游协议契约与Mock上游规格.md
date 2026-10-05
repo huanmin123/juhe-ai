@@ -121,15 +121,35 @@
 
 | 厂商 | TTS | STT | 视频 | 说明 |
 | --- | --- | --- | --- | --- |
-| openai | 双口径（M1 已实施，按厂商真实定价维度）：`gpt-4o-mini-tts` 按 **token 口径**计价（复用既有 `audioInputUsdPer1M`/`audioOutputUsdPer1M` 单价，seed 已填价；二进制响应无 usage 回报，网关亦无 token 自算维度 → 0 计费 + `usage_missing` 标记，不猜测）；`gpt-4o-tts` 未收录（官方无定价，待官方价后补行，不编造）；`tts-1`/`tts-1-hd` 上游无 usage 回报，**网关自算**按请求 `input` 字符数（新行项 `tts_input_chars`） | 双口径：`gpt-4o-transcribe` 系按 **token 口径**（`usage.input_tokens`/`output_tokens`，同一对 audio token 单价）；`whisper-1` 按 `duration` 秒（verbose_json；新行项 `audio_input_seconds`）；usage 优先 → duration → 0 + `usage_missing` 标记，不猜测 | **网关自算**：按任务参数 `seconds` × 档位；失败任务不虚计 | — |
-| gemini | 对话式 token 计量（`usageMetadata`，已有链路） | 同左（audio token） | 按输出秒（目录价格档） | — |
-| minimax | 按字符（M3 已实施：`extra_info.usage_characters` 回报优先 → `tts_input_chars`，缺失回落请求字符自算；官方口径 ¥2.00/万字符人民币、无官方美元价 → 目录不落字符价，计量照落成本不虚计） | 待回填（长转写未接入） | 任务响应不回报时长（M3 已实施：无可查证官方 USD 秒价 → 0 计费 + `usage_missing`，不编造） | — |
-| volcengine | 按字符（回填） | 长转写按时长（回填） | 任务响应 `usage`（检索确认部分包含；字段回填）。M3 已实施口径：usage/duration 字段未回填前不抽秒 → 0 计费 + `usage_missing`（不落秒价，官方口径为人民币无 USD 秒价），字段回填后再启用 | — |
-| qwen | CosyVoice 按字符（回填） | paraformer 按时长（回填） | 万相按次/时长人民币口径，无可查证 USD 秒价（M3 已实施：目录不落秒价，`usage` JSON 字符串的 `video_duration`/`output_video_duration`/`duration` 字段族秒计量照抽、成本 0 不虚计；无秒可抽时才落 usage_missing 兜底） | — |
-| glm | 回填 | 回填 | **0 计费 + `usage_missing`**（M3 已实施：CogVideoX 按次计费、官方精确秒价不可查证且轮询响应无时长回报——不编造秒价，目录行不落价；官方口径可查证后补秒价，§7.1 计费落法） | — |
-| xai | 待回填（§6.2 语音面未回填） | 待回填（§6.2） | done 的 `video.duration` 秒计量照抽（M3 已实施）；无可查证官方 USD 秒价 → 目录不落秒价、成本 0 不虚计，无秒可抽时才落 `usage_missing` 兜底（§6.1） | — |
+| openai | 双口径（M1 已实施，按厂商真实定价维度）：`gpt-4o-mini-tts` 按 **token 口径**计价（复用既有 `audioInputUsdPer1M`/`audioOutputUsdPer1M` 单价，seed 已填价；二进制响应无 usage 回报，网关亦无 token 自算维度 → 0 计费 + `usage_missing` 标记，不猜测）；`gpt-4o-tts` 未收录（官方无定价，待官方价后补行，不编造）；`tts-1`/`tts-1-hd` 上游无 usage 回报，**网关自算**按请求 `input` 字符数（新行项 `tts_input_chars`） | 双口径：`gpt-4o-transcribe` 系按 **token 口径**（`usage.input_tokens`/`output_tokens`，同一对 audio token 单价）；`whisper-1` 按 `duration` 秒（verbose_json；新行项 `audio_input_seconds`）；usage 优先 → duration → 0 + `usage_missing` 标记，不猜测 | 轮询 `seconds_length` 回报优先；无回报按生效请求参数 `seconds` 自算（§2.8.2）× 档位秒价；失败任务不虚计 | — |
+| gemini | 对话式 token 计量（`usageMetadata`，已有链路） | 同左（audio token） | 按输出秒（目录价格档）；Veo 系轮询无 usage 回报且 `seconds` 属 ignored 参数、不构成计量基源（§2.8.2）→ `usage_missing` 不虚计（§5.2） | — |
+| minimax | 按字符（M3 已实施：`extra_info.usage_characters` 回报优先 → `tts_input_chars`，缺失回落请求字符自算；官方口径 ¥2.00/万字符人民币、无官方美元价 → 目录不落字符价，计量照落成本不虚计） | 待回填（长转写未接入） | **按次计费**（§2.8.1，2026-10-05 按次计费批已实施）：目录行 `VideoOutputCostPerCall` 落国际站按条明文主档 768P-6s $0.28/条（分档注释登记）；轮询响应不回报时长 → 一次任务 = 一次调用，成本 = 次价 × 1，usage 行不落秒计量 | — |
+| volcengine | 按字符（回填） | 长转写按时长（回填） | 任务响应 `usage`/`duration` 字段未回填契约前不抽秒 → 请求参数自算（§2.8.2：创建请求 `seconds` 生效时按快照秒数落 usage 行，usage_source=request）；目录未落 USD 秒价（seedance 维持无价）→ 计量照落成本 0 不虚计，字段回填后启用回报 | — |
+| qwen | CosyVoice 按字符（回填） | paraformer 按时长（回填） | `usage` JSON 字符串字段族（`video_duration`/`output_video_duration`/`duration`）秒计量回报优先；无秒可抽且请求 `seconds` 生效时按请求参数自算（§2.8.2）；目录已落 USD 秒价（2026-10-05 补价：wan2.2-t2v-plus $0.1/s 等）按秒计费 | — |
+| glm | 回填 | 回填 | **按次计费**（§2.8.1，2026-10-05 按次计费批已实施）：目录行 `VideoOutputCostPerCall`——cogvideox-3 $0.2/次（z.ai USD 明文）、cogvideox-2 $0.0714/次（国内 0.5 元 ÷ 7.0 换算）；轮询响应不回报时长（§7.1）→ 一次任务 = 一次调用，成本 = 次价 × 1，usage 行不落秒计量 | — |
+| xai | 待回填（§6.2 语音面未回填） | 待回填（§6.2） | done 的 `video.duration` 秒计量回报优先；无秒可抽且请求 `seconds` 生效时按请求参数自算（§2.8.2）；目录已落 USD 秒价（grok-imagine-video-1.5 $0.08/s）按秒计费（§6.1） | — |
 
-规则：上游回报 usage 优先；上游不回报的维度网关按可观察参数（字符数/请求秒数）自算；两者都缺 → 0 计费 + 记录 `usage_missing` 标记，**不猜测**。
+规则（2026-10-05 按次计费 + 请求参数自算批修订）：
+
+1. 上游回报 usage 优先。
+2. 上游不回报的维度网关按**生效**请求参数自算（见 §2.8.2；ignored 参数不构成计量基源）。
+3. 按次上游按 §2.8.1 计费，一次任务 = 一次调用，不依赖秒计量。
+4. 两者都缺 → 0 计费 + 记录 `usage_missing` 标记，**不猜测**。
+
+#### 2.8.1 视频按次计费（VideoOutputCostPerCall，2026-10-05 用户裁决）
+
+- **裁决**：无法返回 usage 的上游按官网计费规则、按输入计。cogvideox/Hailuo 等上游不返回时长 usage，但官方按次/按条计费且创建请求携带时长参数（快照已冻结）→ 落按次单价，按任务粒度计费。
+- **槽位**：静态目录 `rawModel.VideoOutputCostPerCall` / `PriceSet.VideoOutputUsdPerCall`（USD/次字面量），与 `OutputCostPerImage`（按张=按次语义）同构的按次单槽位；目录表（provider_model_catalog）无按次列，只落 gateway 静态层（同秒价先例，计费真实读取处）。
+- **互斥门禁**：同一目录行 `VideoOutputCostPerSecond` 与 `VideoOutputCostPerCall` 只落其一（按次 ≠ 按秒；门禁测试 `TestVideoCallSecondPriceMutualExclusion` 遍历全部快照行钉住）——同行双价会让秒/次两条结算路径对同一任务重复计费。
+- **结算语义**：任务终态 completed 且目录行有按次价 → 成本 = PerCall × 1（一次任务 = 一次调用），计费行项 `video_output_calls`（unit=call）；usage 行**不落** `outputVideoSeconds`（按次上游无秒计量概念）、不打 `usage_missing`（有计量计费依据）。failed 仍不虚计；cancelled/expired 仍不产生 usage 行。
+- **按次上游清单（当前）**：glm `cogvideox-3`（$0.2/次，z.ai USD 明文）、`cogvideox-2`（$0.0714/次，国内 0.5 元/次 ÷ 7.0 换算）、minimax `MiniMax-Hailuo-2.3`（$0.28/条，768P-6s 主档；分档注释登记）。seedance-1-0-pro 维持无价不动。
+
+#### 2.8.2 视频请求参数自算计量（usage_source=request，2026-10-05 用户裁决）
+
+- **规则**：任务终态 completed 且上游无 usage 回报（IR `OutputVideoSeconds` 为空）且创建请求 `seconds` **生效**（进 `params_applied`，快照创建时已冻结）→ usage 行 `outputVideoSeconds` 取请求秒数落行，成本按目录秒价 × 自算秒数。上游回报在场时回报优先，请求值不覆盖。
+- **来源标注**：usage_records/IR 无计量来源字段——「计量来源 = 创建请求参数自算（usage_source=request）」以结算链注释与链级测试断言语义钉住，**不加 schema 列**。
+- **ignored 不构成计量基源**：`seconds` 属 ignored 参数（如 Veo，`SupportsSeconds=false`）时用户值未生效、该模型用厂商默认时长——网关不猜测默认值（§2.4 规则 1/3），不按 ignored 请求值自算，维持 `usage_missing` 兜底。
+- **无价兜底**：自算秒数落行后目录无 USD 秒价（如 seedance）→ 计量照落、成本 0 不虚计；真正无任何依据（无回报且无生效请求参数）才 `usage_missing`。
 
 ## 3. Mock 上游规格（测试基建扩展契约）
 
@@ -276,7 +296,7 @@ TTS/STT/STS 能力已确认（2026-10 检索），报文仍待官方页抓取（
 - 轮询：`GET https://open.bigmodel.cn/api/paas/v4/async-result/{id}` → `task_status ∈ PROCESSING | SUCCESS | FAIL`；SUCCESS 返回 `video_result{url, cover_image_url}`（url 即产物下载定位；M3 已实施：url 冻结进 Artifact.ContentURL，`ContentFromArtifact` 直连下载无凭据）。
 - 状态归一：PROCESSING→`in_progress`、SUCCESS→`completed`、FAIL→`failed`（§2.6 总表 glm 列以此回填；M3 已实施：FAIL 错误摘要 code 取 task_status 原值，error 对象在场则优先）。
 - 取消：glm 无取消 API（回填面无取消端点，M3 裁决）——`SupportsCancel=false`，链上不发上游请求、直接本地收敛 `cancelled`（§2.6 本地终态语义）。
-- 计费（M3 落法，不编造）：CogVideoX 按次计费（2026-09 第三方聚合口径称 ¥1/次，官方定价页 bigmodel.cn 为 SPA 无法直接核实精确单价），网关计费面只有秒价维度（`VideoOutputCostPerSecond`）且轮询响应无时长回报——目录行 `cogvideox-3` 不落秒价，终态计费走 §2.8 兜底（0 计费 + `usage_missing` 标记）；官方秒价/时长口径可查证后再补。
+- 计费（2026-10-05 按次计费批已实施，§2.8.1）：CogVideoX 官方按次计费——目录行 `VideoOutputCostPerCall`：cogvideox-3 $0.2/次（z.ai docs.z.ai/guides/overview/pricing USD 明文；国内 1 元/次人民币原句留档）、cogvideox-2 $0.0714/次（国内 0.5 元/次 ÷ 7.0 换算）。轮询响应不回报时长（video_result 仅 url/cover_image_url）→ 任务终态 completed 成本 = 次价 × 1（一次任务 = 一次调用，一次任务只产一条视频），usage 行不落秒计量、不打 `usage_missing`；每秒槽位保持空（按次 ≠ 按秒，互斥门禁）。
 - Mock：`media_glm_video_create_ok` / `_poll_processing` / `_poll_success_url` / `_poll_fail`（M3 已交付，端点 `/api/paas/v4/videos/generations`、`/api/paas/v4/async-result/{id}` 与 `/content` 产物通道）。
 
 ### 7.2 语音（B 级已回填 2026-10-04：OpenAI 兼容端点官方确认；**M6 已实施**）
@@ -297,7 +317,7 @@ TTS/STT/STS 能力已确认（2026-10 检索），报文仍待官方页抓取（
 创建响应：`{"task_id":"...","base_resp":{"status_code":...,"status_msg":"..."}}`——**受理凭据 = `task_id`**；`base_resp.status_code != 0` 视为失败（受理前错误）。
 轮询：`GET /v1/query/video_generation?task_id=...` → `{"task_id","status":"Preparing|Queueing|Processing|Success|Fail","file_id":"...","file_download_url":"..."}`。
 下载：`GET /v1/files/retrieve?file_id=...`（或 `file_download_url`，以回填为准）。**M3 裁决：取 `file_download_url` 直连**（无凭据，与 Veo uri / glm video_result.url 同族先例；`ContentFromArtifact=true`）。
-计费：任务响应用量字段待回填（§2.8）；按官方定价档。M3 已实施口径：官方无可查证精确 USD 秒价（按次/档位计费，定价页为登录态 SPA）且轮询响应不回报时长——不落秒价，终态 0 计费 + `usage_missing`，不编造（依据见 `pricing/data_minimax.go` 注释）。
+计费（2026-10-05 按次计费批已实施，§2.8.1）：Hailuo 官方按条/档位计费（分辨率 × 时长）——目录行 `VideoOutputCostPerCall` 落国际站按条明文主档 768P-6s $0.28/条（platform.minimax.io pricing-paygo；768P-10s $0.56、1080P-6s $0.49、512P-6s $0.10、512P-10s $0.15 分档注释登记，裁决 §2.6 不结构化）。轮询响应不回报时长（仅 status/file_id/file_download_url）→ 任务终态 completed 成本 = 次价 × 1（一次任务 = 一次调用），usage 行不落秒计量、不打 `usage_missing`；按条 → 每秒是推导，禁止折秒（裁决 §2.4 维持，每秒槽位保持空）。
 `provider_options.minimax` 示例：`{"prompt_optimizer":true}`。
 取消：无上游取消端点（M3 裁决：`SupportsCancel=false`，不发上游请求直接本地收敛 `cancelled`，沿 glm §7.1 先例）。
 Mock：`media_minimax_create_ok` / `_poll_running` / `_poll_success(file_id)` / `_poll_fail(base_resp)`——M3 已交付（`mockupstream/video_minimax.go`）。

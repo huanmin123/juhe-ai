@@ -6,7 +6,8 @@ package main
 //  1. 创建（videos/generations 报文改写 + Bearer 认证 + /api/paas/v4 服务根
 //     URL 归一 + params 回显）→ 轮询 in_progress → completed（url 冻结进
 //     artifact）→ content 经绝对 URL 无凭据直连下载 mp4 + 终态 usage spool
-//    （usage_missing 口径，不虚计）；
+//    （按次计费口径：成本 = VideoOutputCostPerCall × 1 = $0.2，usage 行不落
+//    秒计量也不打 usage_missing，2026-10-05 按次计费批）；
 //  2. task_status=FAIL → failed 终态（task_status 摘要 code + cost 0）；
 //  3. DELETE 取消（glm 无上游取消 API → 不发上游请求，本地收敛 cancelled）。
 //
@@ -124,7 +125,8 @@ func seedMediaGlmVideoAccount(t *testing.T, fixture *chainFixture, id, baseURL, 
 // TestChainMediaGlmVideoFullFlowLifecycle 覆盖链路 1：创建（videos/generations
 // 报文改写 + Bearer 认证头 + 服务根 URL 归一 + ignored 回显）→ 轮询
 // in_progress → completed（url 进 artifact）→ content 绝对 URL 无凭据直连
-// mp4 → 终态 usage（usage_missing，契约 §2.8 不虚计）。
+// mp4 → 终态 usage（按次计费：cogvideox-3 $0.2/次，契约 §2.8 按次计费，
+// 2026-10-05 按次计费批）。
 func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, mock, upstreamURL := newGlmRecordedUpstream(t)
@@ -213,7 +215,9 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 		}
 	}
 
-	// media_jobs 行终态 completed + 任务 id 回填 + 无秒计量不虚计（0）。
+	// media_jobs 行终态 completed + 任务 id 回填 + 按次计费成本（2026-10-05
+	// 按次计费批）：cogvideox-3 目录行 $0.2/次，一次任务 = 一次调用，无秒
+	// 计量也按次计（上游轮询不回报时长，契约 §2.8 按次计费）。
 	var status, upstreamJobID string
 	var costUsd float64
 	if err := fixture.db.QueryRow(`SELECT status, upstream_job_id, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&status, &upstreamJobID, &costUsd); err != nil {
@@ -222,8 +226,8 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 	if status != "completed" || upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs = %s/%s, want completed/%s", status, upstreamJobID, providerJobID)
 	}
-	if costUsd != 0 {
-		t.Fatalf("glm 无输出秒回报且目录未落秒价，cost_usd = %v, want 0（usage_missing 不虚计）", costUsd)
+	if costUsd != 0.2 {
+		t.Fatalf("glm 按次计费 cost_usd = %v, want 0.2（VideoOutputCostPerCall × 1）", costUsd)
 	}
 
 	// content 下载：completed 的 url 是引擎渲染的绝对 URL（不经记录层），
@@ -247,11 +251,22 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 		}
 	}
 
-	// 终态 usage：spool 链异步落盘，completed 无秒计量 → usageMissing 标记
-	//（契约 §2.8：上游不回报且无可查证秒价 → 0 计费 + usage_missing，不猜测）。
-	waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
-		return strings.Contains(text, `"usageMissing":true`) && strings.Contains(text, `"endpoint":"/v1/videos"`)
-	}, "glm completed usage_missing 终态记录")
+	// 终态 usage：spool 链异步落盘，completed 按次计费（2026-10-05 按次计费
+	// 批）：成本 $0.2 落行；usage 行不落秒计量（按次上游无秒计量概念）也不
+	// 打 usage_missing——计量与计费依据都是目录按次价 × 任务粒度（契约
+	// §2.8 按次计费；usage_source 无字段，来源语义以本断言与结算注释钉住）。
+	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
+		return strings.Contains(text, `"endpoint":"/v1/videos"`) && strings.Contains(text, `"model":"cogvideox-3"`)
+	}, "glm completed 按次计费终态记录")
+	if !strings.Contains(record, `"costUsd":0.2`) {
+		t.Fatalf("glm 按次计费 usage 行缺少 costUsd 0.2: %s", record)
+	}
+	if strings.Contains(record, "usageMissing") {
+		t.Fatalf("glm 按次计费 usage 行不得打 usage_missing（按次有计量计费依据）: %s", record)
+	}
+	if strings.Contains(record, "outputVideoSeconds") {
+		t.Fatalf("glm 按次计费 usage 行不得落秒计量（按次上游无秒计量概念）: %s", record)
+	}
 }
 
 // TestChainMediaGlmVideoFailedTerminal 覆盖链路 2：task_status=FAIL →
@@ -338,9 +353,9 @@ func TestChainMediaGlmVideoCancel(t *testing.T) {
 	}
 }
 
-// waitGlmSpoolRecord 轮询等待 spool 落盘出现满足谓词的记录（smoke 测试
-// 同款轮询等待）。
-func waitGlmSpoolRecord(t *testing.T, spoolDir string, predicate func(string) bool, what string) {
+// waitGlmSpoolRecord 轮询等待 spool 落盘出现满足谓词的记录并返回该记录原文
+//（smoke 测试同款轮询等待；返回文本供调用方做负断言）。
+func waitGlmSpoolRecord(t *testing.T, spoolDir string, predicate func(string) bool, what string) string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -357,11 +372,12 @@ func waitGlmSpoolRecord(t *testing.T, spoolDir string, predicate func(string) bo
 					t.Fatalf("读 spool 文件: %v", err)
 				}
 				if predicate(string(raw)) {
-					return
+					return string(raw)
 				}
 			}
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("usage spool 未出现 %s（entries=%d）", what, len(spoolDirectoryEntries(t, spoolDir)))
+	return ""
 }

@@ -51,6 +51,12 @@ type rawModel struct {
 	TtsInputCostPerChar      *float64
 	AudioInputCostPerSecond  *float64
 	VideoOutputCostPerSecond *float64
+	// VideoOutputCostPerCall 是视频按次计费单价字面量（2026-10-05 用户裁决：
+	// 无法返回 usage 的上游按官网计费规则、按输入计——cogvideox/Hailuo 等
+	// 按次上游，一次任务 = 一次调用）。与 OutputCostPerImage 同构的按次单
+	// 槽位；与 VideoOutputCostPerSecond 互斥（同一行两字段只落其一，互斥
+	// 门禁测试钉住），秒价行不得再落按次价、反之亦然。
+	VideoOutputCostPerCall *float64
 
 	ContextWindowTokens *int
 	MaxInputTokens      *int

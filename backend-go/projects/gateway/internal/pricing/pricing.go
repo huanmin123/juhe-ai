@@ -45,8 +45,10 @@ import (
 // TtsInputUsdPer1MChars / AudioInputUsdPerSecond 是 M1 同步音频计费维度
 // （音频设计 §10）：TTS 按输入字符（USD/1M chars）、STT 按音频秒（USD/s）；
 // VideoOutputUsdPerSecond 是 M2 视频计费维度（媒体设计 §10）：视频按输出
-// 秒（USD/s）。计费引擎行项消费由 billing 扩展另行交付，本结构只承载目录
-// 单价。
+// 秒（USD/s）；VideoOutputUsdPerCall 是视频按次计费维度（2026-10-05 用户
+// 裁决，契约 §2.8）：按次上游单槽位（一次任务 = 一次调用），与秒价槽位
+// 互斥（同一目录行两字段只落其一）。计费引擎行项消费由 billing 扩展另行
+// 交付，本结构只承载目录单价。
 type PriceSet struct {
 	InputUsdPer1M               *float64
 	OutputUsdPer1M              *float64
@@ -62,6 +64,7 @@ type PriceSet struct {
 	TtsInputUsdPer1MChars       *float64
 	AudioInputUsdPerSecond      *float64
 	VideoOutputUsdPerSecond     *float64
+	VideoOutputUsdPerCall       *float64
 }
 
 // ServiceTierPrices mirrors Record<string, ModelPriceSet> (priority/flex/batch).
@@ -127,6 +130,10 @@ type Pricing struct {
 // tts_input_chars / audio_input_seconds 消费。
 // OutputVideoSeconds 是 M2 视频任务输出秒数（媒体设计 §10：任务终态由轮询
 // 响应驱动，失败任务不虚计），行项由 billing.go 的 video_output_seconds 消费。
+// VideoCalls 是视频按次计量（2026-10-05 按次计费批，契约 §2.8）：按次上游
+// 一次任务 = 一次调用（结算链按任务粒度填 1），行项由 billing.go 的
+// video_output_calls 消费；与 OutputVideoSeconds 是互斥维度（同一目录行只
+// 落秒价/按次价其一，按各自槽位计价）。
 type CostInput struct {
 	ProviderCode string
 	Model        string
@@ -146,6 +153,7 @@ type CostInput struct {
 	TtsInputChars      *float64
 	AudioInputSeconds  *float64
 	OutputVideoSeconds *float64
+	VideoCalls         *float64
 	CostUsd            *float64
 }
 
@@ -171,13 +179,19 @@ const (
 	// M2 视频行项（媒体设计 §10）：视频按输出秒计费（video_output_seconds）。
 	// 行项生成由 billing.go 消费（终态计费任务交付），本枚举先落词表。
 	CostLineKindVideoOutputSeconds CostLineKind = "video_output_seconds"
-	LineUnitToken                               = "token"
-	LineUnitImage                               = "image"
+	// CostLineKindVideoOutputCalls 是视频按次行项（2026-10-05 按次计费批，
+	// 契约 §2.8）：按次上游一次任务 = 一次调用，成本 = 次价 × 次数；与秒价
+	// 行项互斥（同一目录行两槽位只落其一，最多产出其一）。
+	CostLineKindVideoOutputCalls CostLineKind = "video_output_calls"
+	LineUnitToken                             = "token"
+	LineUnitImage                             = "image"
 	// LineUnitChar / LineUnitSecond 是 M1 音频行项的计量单位（tts_input_chars
 	// 按 1M 字符计价、audio_input_seconds 按秒计价）；video_output_seconds
-	// 同按秒计价（M2），复用 LineUnitSecond。
+	// 同按秒计价（M2），复用 LineUnitSecond；LineUnitCall 是视频按次行项的
+	// 计量单位（video_output_calls，一次任务 = 一次调用）。
 	LineUnitChar   = "char"
 	LineUnitSecond = "second"
+	LineUnitCall   = "call"
 	tokenUnitSize  = 1_000_000.0
 )
 
@@ -327,9 +341,10 @@ func sumOptionalCosts(parts ...*float64) *float64 {
 }
 
 // hasAnyRate mirrors hasAnyRate: at least one finite rate must exist.
-// M1 音频单价（TtsInputUsdPer1MChars / AudioInputUsdPerSecond）与 M2 视频单价
-// （VideoOutputUsdPerSecond）计入：纯 TTS/STT/视频模型可能只携带这些单价
-// （tts-1 / whisper-1 / sora-2）。
+// M1 音频单价（TtsInputUsdPer1MChars / AudioInputUsdPerSecond）、M2 视频单价
+// （VideoOutputUsdPerSecond）与按次视频单价（VideoOutputUsdPerCall，2026-10-05
+// 按次计费批）计入：纯 TTS/STT/视频模型可能只携带这些单价
+// （tts-1 / whisper-1 / cogvideox 系）。
 func hasAnyRate(set PriceSet) bool {
 	for _, v := range []*float64{
 		set.InputUsdPer1M, set.OutputUsdPer1M, set.CachedInputUsdPer1M,
@@ -338,7 +353,7 @@ func hasAnyRate(set PriceSet) bool {
 		set.ImageOutputUsdPer1M, set.AudioInputUsdPer1M,
 		set.AudioOutputUsdPer1M, set.OutputUsdPerImage,
 		set.TtsInputUsdPer1MChars, set.AudioInputUsdPerSecond,
-		set.VideoOutputUsdPerSecond,
+		set.VideoOutputUsdPerSecond, set.VideoOutputUsdPerCall,
 	} {
 		if v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0) {
 			return true
@@ -347,8 +362,9 @@ func hasAnyRate(set PriceSet) bool {
 	return false
 }
 
-// hasAnyCostDimension mirrors hasAnyCostDimension. M1 音频计量维度与 M2 视频
-// 计量维度同样计入（TTS 请求只有字符计量、视频任务只有秒计量，无 token 计量）。
+// hasAnyCostDimension mirrors hasAnyCostDimension. M1 音频计量维度、M2 视频
+// 秒计量维度与视频按次计量维度（VideoCalls，2026-10-05 按次计费批）同样计入
+// （TTS 请求只有字符计量、视频任务只有秒/次计量，无 token 计量）。
 func hasAnyCostDimension(input CostInput) bool {
 	return input.InputTokens != nil || input.OutputTokens != nil ||
 		input.CacheReadTokens != nil || input.CacheWriteTokens != nil ||
@@ -356,5 +372,5 @@ func hasAnyCostDimension(input CostInput) bool {
 		input.OutputImageTokens != nil || input.InputAudioTokens != nil ||
 		input.OutputAudioTokens != nil || input.OutputImageCount != nil ||
 		input.TtsInputChars != nil || input.AudioInputSeconds != nil ||
-		input.OutputVideoSeconds != nil
+		input.OutputVideoSeconds != nil || input.VideoCalls != nil
 }

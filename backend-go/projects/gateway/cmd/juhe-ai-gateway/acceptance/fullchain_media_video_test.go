@@ -609,8 +609,9 @@ func (f *fullchainFixture) fullchainCreateGlmVideoAccount(name, upstreamKey, gro
 // 端点模式受理）→ 创建（videos/generations 报文改写、统一 job 对象、
 // provider=glm、params 回显 seed 进 ignored）→ 轮询 in_progress → completed
 // （task_status 归一 + video_result.url 冻结）→ content 经绝对 URL 无凭据
-// 直连下载 mp4 → 管理面 media-jobs 行终态（usage_missing 口径 cost=0，
-// 不虚计）→ 账户亲和（上游命中只打 glm 账户 key 的 cogvideo 端点）。
+// 直连下载 mp4 → 管理面 media-jobs 行终态（按次计费口径 cost=$0.2，
+// 2026-10-05 按次计费批）→ 账户亲和（上游命中只打 glm 账户 key 的 cogvideo
+// 端点）。
 func TestFullchainMediaVideoGlmCogVideo(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
@@ -687,16 +688,17 @@ func TestFullchainMediaVideoGlmCogVideo(t *testing.T) {
 		t.Fatalf("MV glm content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
 	}
 
-	// 管理面 media-jobs：行终态 completed 归因 glm 账户；glm 无输出秒回报且
-	// 目录未落秒价 → cost_usd=0（契约 §2.8 usage_missing 不虚计）。
+	// 管理面 media-jobs：行终态 completed 归因 glm 账户；按次计费（2026-10-05
+	// 按次计费批）：cogvideox-3 目录行 $0.2/次，一次任务 = 一次调用，无秒
+	// 计量也按次计（契约 §2.8 按次计费）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
 	}, "completed")
 	if row.AccountID != accountID {
 		t.Fatalf("MV glm row accountId=%s, want %s", row.AccountID, accountID)
 	}
-	if row.CostUsd != 0 {
-		t.Fatalf("MV glm row costUsd=%v, want 0（usage_missing 不虚计）", row.CostUsd)
+	if row.CostUsd != 0.2 {
+		t.Fatalf("MV glm row costUsd=%v, want 0.2（按次计费 VideoOutputCostPerCall × 1）", row.CostUsd)
 	}
 
 	// 账户亲和 + 出站形态：glm key 命中创建（videos/generations）与两轮轮询
@@ -764,8 +766,8 @@ func (f *fullchainFixture) fullchainCreateMinimaxVideoAccount(name, upstreamKey,
 // minimax、params 回显 seed 进 ignored / provider_options_applied 命中）→
 // 轮询 queued → queued → completed（status 归一 + file_download_url 冻结）→
 // content 经绝对 URL 无凭据直连下载 mp4 → 管理面 media-jobs 行终态
-//（usage_missing 口径 cost=0，不虚计）→ 账户亲和（上游命中只打 minimax
-// 账户 key 的 video_generation/query/files 端点）。
+//（按次计费口径 cost=$0.28，2026-10-05 按次计费批）→ 账户亲和（上游命中
+// 只打 minimax 账户 key 的 video_generation/query/files 端点）。
 func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 	requireFullchainGate(t)
 	f := startFullchainFixture(t)
@@ -842,16 +844,17 @@ func TestFullchainMediaVideoMinimaxHailuo(t *testing.T) {
 		t.Fatalf("MV minimax content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
 	}
 
-	// 管理面 media-jobs：行终态 completed 归因 minimax 账户；minimax 无输出秒
-	// 回报且目录未落秒价 → cost_usd=0（契约 §2.8 usage_missing 不虚计）。
+	// 管理面 media-jobs：行终态 completed 归因 minimax 账户；按次计费
+	//（2026-10-05 按次计费批）：Hailuo 目录行按条明文主档 $0.28/次（768P-6s），
+	// 一次任务 = 一次调用，无秒计量也按次计（契约 §2.8 按次计费）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
 	}, "completed")
 	if row.AccountID != accountID {
 		t.Fatalf("MV minimax row accountId=%s, want %s", row.AccountID, accountID)
 	}
-	if row.CostUsd != 0 {
-		t.Fatalf("MV minimax row costUsd=%v, want 0（usage_missing 不虚计）", row.CostUsd)
+	if row.CostUsd != 0.28 {
+		t.Fatalf("MV minimax row costUsd=%v, want 0.28（按次计费 VideoOutputCostPerCall × 1）", row.CostUsd)
 	}
 
 	// 账户亲和 + 出站形态：minimax key 命中创建（POST /v1/video_generation）
@@ -1003,8 +1006,9 @@ func TestFullchainMediaVideoVolcengineSeedance(t *testing.T) {
 		t.Fatalf("MV volcengine content 非 mp4 载荷（ftyp magic bytes 缺失）: % x", payload[:min(12, len(payload))])
 	}
 
-	// 管理面 media-jobs：行终态 completed 归因 volcengine 账户；volcengine 无
-	// 输出秒回报且目录未落秒价 → cost_usd=0（契约 §2.8 usage_missing 不虚计）。
+	// 管理面 media-jobs：行终态 completed 归因 volcengine 账户；请求 seconds=5
+	// 生效、上游无回报 → usage 行按请求参数自算计量（usage_source=request，
+	// 2026-10-05 批）；seedance 目录未落秒价 → cost_usd=0（计量照落成本不虚计）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
 	}, "completed")
@@ -1167,16 +1171,17 @@ func TestFullchainMediaVideoQwenWanx(t *testing.T) {
 	}
 
 	// 管理面 media-jobs：行终态 completed 归因 qwen 账户；usage JSON 字符串
-	// 解析出 5 秒计量（链级测试断言 outputVideoSeconds=5 的 spool 记录）但
-	// 目录未落 USD 秒价 → cost_usd=0（契约 §2.8 计量照落成本不虚计）。
+	// 解析出 5 秒计量（链级测试断言 outputVideoSeconds=5 的 spool 记录），按
+	// 目录 USD 秒价计费（2026-10-05 补价：wan2.2-t2v-plus $0.1/s）→
+	// cost_usd=0.5（5s × $0.1，与链级测试同口径；本断言随定价落库回正）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
 	}, "completed")
 	if row.AccountID != accountID {
 		t.Fatalf("MV qwen row accountId=%s, want %s", row.AccountID, accountID)
 	}
-	if row.CostUsd != 0 {
-		t.Fatalf("MV qwen row costUsd=%v, want 0（目录无 USD 秒价不虚计）", row.CostUsd)
+	if row.CostUsd != 0.5 {
+		t.Fatalf("MV qwen row costUsd=%v, want 0.5（$0.1/s × 5s）", row.CostUsd)
 	}
 
 	// 账户亲和 + 出站形态：qwen key 命中创建（POST /api/v1/services/aigc/
@@ -1453,17 +1458,17 @@ func TestFullchainMediaVideoXaiGrokImagine(t *testing.T) {
 	}
 
 	// 管理面 media-jobs：行终态 completed 归因 xai 账户；done 的
-	// video.duration=6 秒计量照抽（OutputVideoSeconds>0，链级测试断言 spool
-	// 记录秒数值）但目录未落 USD 秒价 → cost_usd=0（契约 §2.8 计量照落成本
-	// 不虚计）。
+	// video.duration=6 秒计量照抽（OutputVideoSeconds>0），目录 $0.08/s
+	//（grok-imagine-video-1.5，复核批回正）→ cost_usd=0.48（6s × $0.08，
+	// 与链级测试同口径；本断言随定价落库回正）。
 	row := f.waitMediaJobRow(t, apiKeyID, jobID, func(row fullchainMediaJobRow) bool {
 		return row.Status == "completed"
 	}, "completed")
 	if row.AccountID != accountID {
 		t.Fatalf("MV xai row accountId=%s, want %s", row.AccountID, accountID)
 	}
-	if row.CostUsd != 0 {
-		t.Fatalf("MV xai row costUsd=%v, want 0（目录无 USD 秒价不虚计）", row.CostUsd)
+	if row.CostUsd != 0.48 {
+		t.Fatalf("MV xai row costUsd=%v, want 0.48（$0.08/s × 6s）", row.CostUsd)
 	}
 	// 终态 usage 行落账（completed 成功行，endpoint=/v1/videos，模型直达）：
 	// usage_missing 语义在链级测试钉住（计量在场时无该标记）。

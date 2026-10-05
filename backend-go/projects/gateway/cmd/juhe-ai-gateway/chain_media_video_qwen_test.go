@@ -239,7 +239,9 @@ func TestChainMediaQwenVideoFullFlowLifecycle(t *testing.T) {
 	}
 
 	// media_jobs 行终态 completed + 任务 id 回填 + 秒计量照抽（usage JSON
-	// 字符串 video_duration=5）但目录无 USD 秒价 → cost 0（不虚计）。
+	// 字符串 video_duration=5）按目录 USD 秒价计费（2026-10-05 用户裁决补价：
+	// wan2.2-t2v-plus 1080P 档 0.70 元/秒 ÷ 7.0 = $0.1/秒；本断言随该补价
+	// 回正——补价落库后本用例断言未同步，属定价事实回正非语义变更）。
 	var status, upstreamJobID string
 	var costUsd float64
 	if err := fixture.db.QueryRow(`SELECT status, upstream_job_id, cost_usd FROM media_jobs WHERE id = ?`, jobID).Scan(&status, &upstreamJobID, &costUsd); err != nil {
@@ -248,8 +250,8 @@ func TestChainMediaQwenVideoFullFlowLifecycle(t *testing.T) {
 	if status != "completed" || upstreamJobID != providerJobID {
 		t.Fatalf("media_jobs = %s/%s, want completed/%s", status, upstreamJobID, providerJobID)
 	}
-	if costUsd != 0 {
-		t.Fatalf("qwen 目录未落 USD 秒价，cost_usd = %v, want 0（计量照落成本不虚计）", costUsd)
+	if costUsd != 0.5 {
+		t.Fatalf("qwen 按目录秒价计费 cost_usd = %v, want 0.5（5s × $0.1/s）", costUsd)
 	}
 
 	// content 下载：completed 的 output.video_url 是引擎渲染的绝对 URL（不经

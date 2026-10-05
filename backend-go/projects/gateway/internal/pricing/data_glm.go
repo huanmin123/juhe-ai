@@ -26,6 +26,14 @@ package pricing
 // usage_missing，契约 §2.8），按次口径改注释登记。保留换算 3 行——
 // glm-5v-turbo / glm-tts / embedding-3 z.ai 无价，维持约定汇率换算
 // （行注释注明）；cogtts 同 glm-tts 口径不变。
+//
+// 2026-10-05 按次计费批（用户裁决：无法返回 usage 的上游按官网计费规则、
+// 按输入计）：pricing 层新增 VideoOutputCostPerCall 按次槽位（与
+// OutputCostPerImage 同构、与秒价槽位互斥），上一段「撤价回无价」口径自此
+// 被取代——cogvideox-3 落 z.ai 官方 USD 明文 $0.2/video、cogvideox-2 落
+// 国内 0.5 元/次 ÷ 7.0 = $0.0714 换算，两行恢复有价（按次，一次任务 =
+// 一次调用，契约 §2.8 按次计费）；glm 轮询响应不回报时长，按次行不依赖
+// 秒计量。
 var glmModelPricingData = []rawModel{
 	{
 		Model: "glm-5.3", Mode: "chat", CatalogOrder: intp(0), ReleaseDate: "2026-08-18",
@@ -202,18 +210,22 @@ var glmModelPricingData = []rawModel{
 		OutputModalities:         []string{"text"},
 	},
 	// M3 视频增补（媒体设计 §10/契约 §7.1）：cogvideox-3 一行，mode=video、
-	// 协议 video、输入 text+image（文生/图生视频）。2026-10-05 复核批撤价：
-	// CogVideoX 官方按次计费（z.ai $0.2/video 明文、国内 docs.bigmodel.cn
-	// 1 元/次），按次价进不了秒价槽位语义（按次 ≠ 按秒）——A3 批曾按汇率
-	// 换算等价登记进 VideoOutputCostPerSecond，本轮撤除回无价：glm 轮询
-	// 响应不回报时长（§7.1 video_result 仅 url/cover_image_url）→ 0 计费
-	// 兜底 + usage_missing 标记（契约 §2.8）。未来若回填 glm 时长提取，
-	// 须先重审该行计价口径（按次计价不应按秒连乘）。
+	// 协议 video、输入 text+image（文生/图生视频）。2026-10-05 按次计费批
+	//（用户裁决：无法返回 usage 的上游按官网计费规则、按输入计）：官方按次
+	// 计费落 VideoOutputCostPerCall——z.ai 官方 USD 明文 $0.2/video
+	//（docs.z.ai/guides/overview/pricing），国内 docs.bigmodel.cn 1 元/次
+	// 人民币原句留档（不落 CNY 换算四件套，同 cogview-4 官方明文先例）；
+	// glm 轮询响应不回报时长（§7.1 video_result 仅 url/cover_image_url）→
+	// 终态计费按次（一次任务 = 一次调用，契约 §2.8 按次计费），不依赖秒
+	// 计量；每秒槽位保持空（按次 ≠ 按秒，互斥门禁）。
 	rawModel{
 		Model: "cogvideox-3", Mode: "video",
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"video"},
 		SupportedAPIProtocols: []string{"video"},
+
+		VideoOutputCostPerCall: f64p(0.2),
+		SourcePricingNote:      "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.2/video，按次计费每条=每次）；国内人民币价 1 元/次原句留档（docs.bigmodel.cn 定价页）",
 	},
 	// M6 语音增补（契约 §7.2 回填 B 级后实施）：cogtts 一行，mode=audio、
 	// 协议 audio_speech（openai 透传分支，官方端点 /api/paas/v4/audio/speech，
@@ -371,15 +383,22 @@ var glmModelPricingData = []rawModel{
 	},
 	{
 		// 视频生成：cogvideox-2（text+image→video，协议 video，按次计费）。
-		// 2026-10-05 复核批撤价（同 cogvideox-3 口径）：官方按次计价（z.ai
-		// $0.2/video 明文、国内 0.5 元/次）进不了秒价槽位语义——A3 批曾按
-		// 汇率换算登记进 VideoOutputCostPerSecond，本轮撤除回无价：glm 轮询
-		// 响应不回报时长（§7.1）→ 0 计费兜底 + usage_missing 标记（契约
-		// §2.8）；未来回填时长提取须先重审按次口径。
+		// 2026-10-05 按次计费批（同 cogvideox-3 口径，用户裁决：无法返回
+		// usage 的上游按官网计费规则、按输入计）：官方按次计价落
+		// VideoOutputCostPerCall——z.ai 国际站无该行明文价，国内 0.5 元/次
+		//（docs.bigmodel.cn 定价页）按约定汇率 7.0 换算：0.5 ÷ 7.0 =
+		// 0.0714（USD/次，4 位有效数字）；glm 轮询响应不回报时长（§7.1）→
+		// 终态计费按次（一次任务 = 一次调用）；每秒槽位保持空（互斥门禁）。
 		Model: "cogvideox-2", Mode: "video",
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"video"},
 		SupportedAPIProtocols: []string{"video"},
+
+		VideoOutputCostPerCall:  f64p(0.0714),
+		SourcePricingCurrency:   "CNY",
+		SourceExchangeRateToUsd: f64p(7.0),
+		SourceExchangeRateDate:  "2026-10-05",
+		SourcePricingNote:       "官方人民币价 0.5 元/次（docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.0714/次；z.ai 国际站无该行明文价",
 	},
 	{
 		// 向量嵌入：mode=embedding、协议 embed_content（对照 gemini-embedding

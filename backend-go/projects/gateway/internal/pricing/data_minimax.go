@@ -17,11 +17,12 @@ package pricing
 //
 // 计价落法（不编造）：
 //   - MiniMax-Hailuo-2.3（视频）：官方按次/档位计费（分辨率 × 时长），
-//     国际站定价页明文为按条价（768P-6s $0.28/条）；按条 → 每秒是推导，
-//     禁止折算（裁决 §2.4）——不落 VideoOutputCostPerSecond；且轮询响应
-//     不回报时长（契约 §8.1 query 响应仅 status/file_id/file_download_url）
-//     ——终态计费走契约 §2.8 兜底（0 计费 + usage_missing 标记），同 glm
-//     cogvideox 先例。
+//     国际站定价页明文为按条价（768P-6s $0.28/条）。2026-10-05 按次计费批
+//     （用户裁决：无法返回 usage 的上游按官网计费规则、按输入计）：按条
+//     主档落 VideoOutputCostPerCall 按次槽位（一次任务 = 一次调用，契约
+//     §2.8 按次计费）；按条 → 每秒是推导，禁止折算（裁决 §2.4 维持）
+//     ——不落 VideoOutputCostPerSecond；轮询响应不回报时长（契约 §8.1
+//     query 响应仅 status/file_id/file_download_url），按次行不依赖秒计量。
 var minimaxModelPricingData = []rawModel{
 	{
 		// TTS：mode=audio、协议 audio_speech（统一 /v1/audio/speech 面）。
@@ -41,15 +42,22 @@ var minimaxModelPricingData = []rawModel{
 	{
 		// 视频：mode=video、协议 video；输入 text+image（文生/图生视频，
 		// first_frame_image 承接公共 input_reference）。
-		// 2026-10-05 口径登记：国际站定价页按条明文（768P-6s $0.28/条），
-		// 按条 → 每秒是推导、禁止折秒（裁决 §2.4），保持无价（见文件头
-		// 计价落法；0 计费 + usage_missing 兜底）。
+		// 2026-10-05 按次计费批（用户裁决：无法返回 usage 的上游按官网计费
+		// 规则、按输入计）：国际站按条明文主档落 VideoOutputCostPerCall——
+		// 768P-6s $0.28/条（platform.minimax.io pricing-paygo）。分档不结构
+		// 化、注释登记（裁决 §2.6）：768P-10s $0.56、1080P-6s $0.49、
+		// 512P-6s $0.10、512P-10s $0.15。按条 → 每秒是推导、禁止折秒
+		//（裁决 §2.4 维持）——每秒槽位保持空（互斥门禁）；轮询响应不回报
+		// 时长（契约 §8.1）→ 终态计费按次（一次任务 = 一次调用）。
 		Model:                 "MiniMax-Hailuo-2.3",
 		Mode:                  "video",
 		CatalogOrder:          intp(1),
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"video"},
 		SupportedAPIProtocols: []string{"video"},
+
+		VideoOutputCostPerCall: f64p(0.28),
+		SourcePricingNote:      "官方国际站按条明文价（platform.minimax.io pricing-paygo：768P-6s $0.28/条 主档，按次计费每条=每次）；分档注释登记：768P-10s $0.56、1080P-6s $0.49、512P-6s $0.10、512P-10s $0.15",
 	},
 	{
 		// 对话主模型（platform.minimax.io 国际站 USD 明文，2026-10-05）：
