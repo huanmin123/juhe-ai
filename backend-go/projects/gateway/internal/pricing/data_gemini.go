@@ -16,6 +16,15 @@ package pricing
 // veo-3.1）。gemini-3.6-flash 现价转写级不符（§2.2 低置信）不落，登记
 // 计划 §6.3 待复核。分辨率分档（veo 720p/1080p/4k）沿 M2 sora 先例单值
 // 落主档、分档注释登记，不结构化。
+//
+// 2026-10-05 复核批（官方 pricing/deprecations 页原文核对）：修正——
+// 2.5 系三行补 cache write 明文价（pro $0.125 / flash $0.03 / flash-lite
+// $0.01，≤200k 主档）、veo-3.1 两行补 ShutdownDate 2026-10-22、
+// 3.6-flash 注释登记 2027-01-01 起官方明文价、embedding-2 注释登记 video
+// input $12.00；新增 4 行（gemini-3.1-flash-image / gemini-3-pro-image
+// 图像、gemini-3.5-transcribe / gemini-3.5-transcribe-live 转写）。
+// 3.6-flash 现价 $0.75/$3.75 复核确认正确；3.8-live-extended-thinking
+// 官方无单独加价不落；3.5-flash >200k 档官方无此档确认未落。
 type geminiTierPrices struct {
 	inputUsdPer1M               float64
 	outputUsdPer1M              float64
@@ -25,13 +34,16 @@ type geminiTierPrices struct {
 }
 
 type geminiModelInput struct {
-	model                       string
-	catalogOrder                int
-	releaseDate                 string
-	shutdownDate                string
-	inputUsdPer1M               float64
-	outputUsdPer1M              float64
-	cachedInputUsdPer1M         *float64
+	model               string
+	catalogOrder        int
+	releaseDate         string
+	shutdownDate        string
+	inputUsdPer1M       float64
+	outputUsdPer1M      float64
+	cachedInputUsdPer1M *float64
+	// cacheWriteUsdPer1M：官方 context cache 明文写入价（2026-10-05 复核批
+	// 新增通道；2.5 系三行落 ≤200k 主档，>200k 档按行注释登记不结构化）。
+	cacheWriteUsdPer1M          *float64
 	cacheStorageUsdPer1MPerHour float64
 	audioInputUsdPer1M          *float64
 	// audioOutputUsdPer1M：实时音频对话行（Live/omni）的音频输出 token 价
@@ -72,6 +84,7 @@ func geminiTextModel(in geminiModelInput) rawModel {
 		InputCostPerToken:                         perToken(in.inputUsdPer1M),
 		OutputCostPerToken:                        perToken(in.outputUsdPer1M),
 		CacheReadInputTokenCost:                   usdPerTokenPtr(in.cachedInputUsdPer1M),
+		CacheCreationInputTokenCost:               usdPerTokenPtr(in.cacheWriteUsdPer1M),
 		CacheStorageInputTokenCostPerHour:         cacheStoragePerHour,
 		InputCostPerAudioToken:                    usdPerTokenPtr(in.audioInputUsdPer1M),
 		OutputCostPerAudioToken:                   usdPerTokenPtr(in.audioOutputUsdPer1M),
@@ -233,7 +246,10 @@ var geminiModelPricingData = []rawModel{
 	}),
 	geminiTextModel(geminiModelInput{
 		// Promotional prices through 2026-12-31, mirroring gemini-3.7-flash
-		// (doubles on 2027-01-01).
+		// (doubles on 2027-01-01). 2026-10-05 复核批：$0.75/$3.75 现值复核
+		// 确认正确；官方定价页明文 2027-01-01 起 input $1.50 / output
+		// $7.50 / cache $0.15，Priority 档 $1.35/$6.75（届时需按明文改价
+		// 并复核 storage/flex 档）。
 		model: "gemini-3.6-flash", catalogOrder: 1, releaseDate: "2026-07-21",
 		inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: f64p(0.075), cacheStorageUsdPer1MPerHour: 0.5,
 		flex:                      &geminiTierPrices{inputUsdPer1M: 0.375, outputUsdPer1M: 1.875, cachedInputUsdPer1M: f64p(0.0375), cacheStorageUsdPer1MPerHour: 0.5},
@@ -324,8 +340,10 @@ var geminiModelPricingData = []rawModel{
 		defaultReasoningEffort:    "minimal",
 	}),
 	geminiTextModel(geminiModelInput{
+		// 2026-10-05 复核批补 cache write：官方定价页明文 context cache 写入
+		// $0.125（≤200k 主档；>200k 档 $0.25，分档不结构化只注释登记）。
 		model: "gemini-2.5-pro", catalogOrder: 60, releaseDate: "2025-06-17",
-		inputUsdPer1M: 1.25, outputUsdPer1M: 10, cachedInputUsdPer1M: f64p(0.125), cacheStorageUsdPer1MPerHour: 4.5,
+		inputUsdPer1M: 1.25, outputUsdPer1M: 10, cachedInputUsdPer1M: f64p(0.125), cacheWriteUsdPer1M: f64p(0.125), cacheStorageUsdPer1MPerHour: 4.5,
 		flex:                            &geminiTierPrices{inputUsdPer1M: 0.625, outputUsdPer1M: 5, cachedInputUsdPer1M: f64p(0.125), cacheStorageUsdPer1MPerHour: 4.5},
 		priority:                        &geminiTierPrices{inputUsdPer1M: 2.25, outputUsdPer1M: 18, cachedInputUsdPer1M: f64p(0.225), cacheStorageUsdPer1MPerHour: 8.1},
 		longContextInputTokenThreshold:  intp(200_000),
@@ -339,8 +357,10 @@ var geminiModelPricingData = []rawModel{
 		// 不记录 effort 档位。
 	}),
 	geminiTextModel(geminiModelInput{
+		// 2026-10-05 复核批补 cache write：官方定价页明文 context cache 写入
+		// $0.03（audio 档 $0.10，无 audio cache write 字段只注释登记）。
 		model: "gemini-2.5-flash", catalogOrder: 70, releaseDate: "2025-06-17",
-		inputUsdPer1M: 0.3, outputUsdPer1M: 2.5, cachedInputUsdPer1M: f64p(0.03), cacheStorageUsdPer1MPerHour: 1, audioInputUsdPer1M: f64p(1),
+		inputUsdPer1M: 0.3, outputUsdPer1M: 2.5, cachedInputUsdPer1M: f64p(0.03), cacheWriteUsdPer1M: f64p(0.03), cacheStorageUsdPer1MPerHour: 1, audioInputUsdPer1M: f64p(1),
 		flex:                  &geminiTierPrices{inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: f64p(0.03), audioInputUsdPer1M: f64p(0.5), cacheStorageUsdPer1MPerHour: 1},
 		priority:              &geminiTierPrices{inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: f64p(0.054), audioInputUsdPer1M: f64p(1.8), cacheStorageUsdPer1MPerHour: 1.8},
 		supportedAPIProtocols: []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
@@ -350,8 +370,10 @@ var geminiModelPricingData = []rawModel{
 		// 2.5 系官方不支持 thinkingLevel（仅 thinkingBudget，0-24576），不记录 effort 档位。
 	}),
 	geminiTextModel(geminiModelInput{
+		// 2026-10-05 复核批补 cache write：官方定价页明文 context cache 写入
+		// $0.01（audio 档 $0.03，无 audio cache write 字段只注释登记）。
 		model: "gemini-2.5-flash-lite", catalogOrder: 80, releaseDate: "2025-07-22",
-		inputUsdPer1M: 0.1, outputUsdPer1M: 0.4, cachedInputUsdPer1M: f64p(0.01), cacheStorageUsdPer1MPerHour: 1, audioInputUsdPer1M: f64p(0.3),
+		inputUsdPer1M: 0.1, outputUsdPer1M: 0.4, cachedInputUsdPer1M: f64p(0.01), cacheWriteUsdPer1M: f64p(0.01), cacheStorageUsdPer1MPerHour: 1, audioInputUsdPer1M: f64p(0.3),
 		flex:                  &geminiTierPrices{inputUsdPer1M: 0.05, outputUsdPer1M: 0.2, cachedInputUsdPer1M: f64p(0.01), audioInputUsdPer1M: f64p(0.15), cacheStorageUsdPer1MPerHour: 1},
 		priority:              &geminiTierPrices{inputUsdPer1M: 0.18, outputUsdPer1M: 0.72, cachedInputUsdPer1M: f64p(0.018), audioInputUsdPer1M: f64p(0.54), cacheStorageUsdPer1MPerHour: 1.8},
 		supportedAPIProtocols: []string{"chat_completions", "generate_content", "stream_generate_content", "count_tokens", "interactions"},
@@ -362,6 +384,8 @@ var geminiModelPricingData = []rawModel{
 		// 不记录 effort 档位。
 	}),
 	geminiEmbeddingModel(geminiModelInput{
+		// 2026-10-05 复核批注释补齐：官方定价页明文 video input $12.00/1M
+		// tokens（目录无 video input 价格字段，只注释登记不落字段）。
 		model: "gemini-embedding-2", catalogOrder: 100, releaseDate: "2026-04-22",
 		inputUsdPer1M:         0.2,
 		imageInputUsdPer1M:    f64p(0.45),
@@ -440,10 +464,12 @@ var geminiModelPricingData = []rawModel{
 	// 2026-10-05 全厂商补全批新增（官方定价页 Veo 段明文）：veo-3.1 系在售，
 	// mode=video、协议 video，秒价落主档；分辨率分档注释登记（机制沿 M2
 	// 先例不结构化）。官方无独立发布日明文，ReleaseDate 留空。
+	// 2026-10-05 复核批：官方 deprecations 页明文两行 2026-10-22 终止支持，
+	// ShutdownDate 落官方明文日期（裁决 §2.3）。
 	rawModel{
 		// veo-3.1：720p/1080p 均 $0.40/秒（主档 $0.40）；4k 档 $0.60/秒
 		// 分档注释登记，不结构化。
-		Model: "veo-3.1-generate-preview", Mode: "video",
+		Model: "veo-3.1-generate-preview", Mode: "video", ShutdownDate: "2026-10-22",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
@@ -452,10 +478,61 @@ var geminiModelPricingData = []rawModel{
 	rawModel{
 		// veo-3.1-lite：$0.05/秒（主档）；1080p 档 $0.08/秒分档注释登记，
 		// 不结构化。
-		Model: "veo-3.1-lite-generate-preview", Mode: "video",
+		Model: "veo-3.1-lite-generate-preview", Mode: "video", ShutdownDate: "2026-10-22",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
 		VideoOutputCostPerSecond: f64p(0.05),
+	},
+	// 2026-10-05 复核批新增 4 行（官方定价页明文，四路复核批 §2.5）：图像
+	// 2 行 + 转写 2 行。CatalogOrder 沿现役惯例（embedding 100、TTS 108+
+	// 之后的专用档位段）；官方无发布日明文，ReleaseDate 置空（nil）。
+	rawModel{
+		// Nano Banana 2 图像生成：mode=image_generation（用途分类），走
+		// generate_content 出图（协议对照现役 gemini 行 generate_content +
+		// stream_generate_content 双协议写法）。text input $3.00/1M、
+		// images（image token 输出）$60.00/1M image tokens——等价 $0.045/0.5K
+		// 张、$0.067/1K、$0.101/2K、$0.151/4K（注释登记，不建每张价）。
+		Model: "gemini-3.1-flash-image", Mode: "image_generation", CatalogOrder: intp(101),
+		InputModalities:         []string{"text", "image"},
+		OutputModalities:        []string{"image"},
+		SupportedAPIProtocols:   []string{"generate_content", "stream_generate_content"},
+		InputCostPerToken:       perToken(3),
+		OutputCostPerImageToken: perToken(60),
+	},
+	rawModel{
+		// Nano Banana Pro 图像生成：text input $2.00/1M（image input 亦
+		// $2.00/1M，注释登记）、images $120.00/1M image tokens——等价
+		// $0.134/1K-2K 张、$0.24/4K（注释登记）。
+		Model: "gemini-3-pro-image", Mode: "image_generation", CatalogOrder: intp(102),
+		InputModalities:         []string{"text", "image"},
+		OutputModalities:        []string{"image"},
+		SupportedAPIProtocols:   []string{"generate_content", "stream_generate_content"},
+		InputCostPerToken:       perToken(2),
+		OutputCostPerImageToken: perToken(120),
+	},
+	rawModel{
+		// 同步音频转写：mode=audio、协议 audio_transcription（对照
+		// grok-voice-transcribe-2.0 行字段）。audio input $2.00/1M tokens +
+		// $0.003/min 明文直除每秒（usdPerMinuteToPerSecond）、text output
+		// $12.00/1M tokens。
+		Model: "gemini-3.5-transcribe", Mode: "audio", CatalogOrder: intp(112),
+		InputModalities:         []string{"audio"},
+		OutputModalities:        []string{"text"},
+		SupportedAPIProtocols:   []string{"audio_transcription"},
+		InputCostPerAudioToken:  perToken(2),
+		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.003),
+		OutputCostPerToken:      perToken(12),
+	},
+	rawModel{
+		// 实时转写会话面：mode=audio、协议 realtime。audio input $3.50/1M
+		// tokens + $0.005/min 明文直除每秒；output $21.00/1M tokens（文本）。
+		Model: "gemini-3.5-transcribe-live", Mode: "audio", CatalogOrder: intp(113),
+		InputModalities:         []string{"audio"},
+		OutputModalities:        []string{"text"},
+		SupportedAPIProtocols:   []string{"realtime"},
+		InputCostPerAudioToken:  perToken(3.5),
+		AudioInputCostPerSecond: usdPerMinuteToPerSecond(0.005),
+		OutputCostPerToken:      perToken(21),
 	},
 }

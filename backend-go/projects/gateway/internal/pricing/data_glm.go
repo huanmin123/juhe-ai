@@ -15,6 +15,17 @@ package pricing
 // §2.5：cogvideox-3 官方 1 元/次；cogtts 与 glm-tts 同族现行价 2 元/万
 // 字符）。阶梯/分档价落最常用主档（行注释登记调研口径），至此 glm 全部
 // 目录行带价（契约 §2.8 兜底仅余上游不回报计量维度的场景）。
+//
+// 2026-10-05 复核批（官方国际站 z.ai 定价页 docs.z.ai/guides/overview/
+// pricing USD 明文覆盖）：6 行落官方 USD 明文价并删除换算三件套——
+// glm-4.6v $0.3/缓存读 $0.05/$0.9、glm-4.6v-flashx $0.04/$0.004/$0.4、
+// glm-ocr $0.03/$0.03、glm-asr-2512 perToken(0.03)（$0.03/MTok）、
+// glm-image $0.015/张、cogview-4 $0.01/张。撤价 2 行——cogvideox-3 与
+// cogvideox-2 按次价（z.ai $0.2/video、国内 1 元/0.5 元/次）进不了每秒
+// 槽位语义，撤除 VideoOutputCostPerSecond 回无价（0 计费兜底 +
+// usage_missing，契约 §2.8），按次口径改注释登记。保留换算 3 行——
+// glm-5v-turbo / glm-tts / embedding-3 z.ai 无价，维持约定汇率换算
+// （行注释注明）；cogtts 同 glm-tts 口径不变。
 var glmModelPricingData = []rawModel{
 	{
 		Model: "glm-5.3", Mode: "chat", CatalogOrder: intp(0), ReleaseDate: "2026-08-18",
@@ -191,26 +202,18 @@ var glmModelPricingData = []rawModel{
 		OutputModalities:         []string{"text"},
 	},
 	// M3 视频增补（媒体设计 §10/契约 §7.1）：cogvideox-3 一行，mode=video、
-	// 协议 video、输入 text+image（文生/图生视频）。计价落法（2026-10-05
-	// A3 批裁决：不允许无价）：CogVideoX 官方按次计费 1 元/次（调研 §2.5，
-	// docs.bigmodel.cn 定价页），网关视频计价面只有秒价维度
-	//（VideoOutputCostPerSecond）且 glm 轮询响应不回报时长（§7.1
-	// video_result 仅 url/cover_image_url）→ 按次价经约定汇率 7.0 换算
-	//（1 ÷ 7.0 = 0.1429）等价登记进秒价槽位：秒计量恒缺、行项不产生，
-	// 现行计费行为与 0 计费兜底一致（契约 §2.8）；SourcePricingNote 写明
-	// 按次口径——未来若回填 glm 时长提取，须先重审该行价格口径
-	//（按次 ≠ 按秒，不得直接按秒连乘）。
+	// 协议 video、输入 text+image（文生/图生视频）。2026-10-05 复核批撤价：
+	// CogVideoX 官方按次计费（z.ai $0.2/video 明文、国内 docs.bigmodel.cn
+	// 1 元/次），按次价进不了秒价槽位语义（按次 ≠ 按秒）——A3 批曾按汇率
+	// 换算等价登记进 VideoOutputCostPerSecond，本轮撤除回无价：glm 轮询
+	// 响应不回报时长（§7.1 video_result 仅 url/cover_image_url）→ 0 计费
+	// 兜底 + usage_missing 标记（契约 §2.8）。未来若回填 glm 时长提取，
+	// 须先重审该行计价口径（按次计价不应按秒连乘）。
 	rawModel{
 		Model: "cogvideox-3", Mode: "video",
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"video"},
 		SupportedAPIProtocols: []string{"video"},
-
-		VideoOutputCostPerSecond: f64p(0.1429),
-		SourcePricingCurrency:    "CNY",
-		SourceExchangeRateToUsd:  f64p(7.0),
-		SourceExchangeRateDate:   "2026-10-05",
-		SourcePricingNote:        "官方人民币价 1 元/次（按次计费，docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.1429/次；网关视频计价面仅秒价维度，按次价等价登记（非每秒单价；glm 轮询不回报时长，行项不产生）",
 	},
 	// M6 语音增补（契约 §7.2 回填 B 级后实施）：cogtts 一行，mode=audio、
 	// 协议 audio_speech（openai 透传分支，官方端点 /api/paas/v4/audio/speech，
@@ -237,7 +240,8 @@ var glmModelPricingData = []rawModel{
 	// BUG-0231 口径：chat 行一律声明 function_calling）。
 	{
 		// 视觉对话：glm-5v-turbo（text+image+video→text，200k 上下文/128k
-		// 输出）；0-32K 档换算：输入 5 ÷ 7.0 = 0.7143、输出 22 ÷ 7.0 =
+		// 输出）。2026-10-05 复核批：z.ai 国际站无该模型明文价 → 保留约定
+		// 汇率换算；0-32K 档换算：输入 5 ÷ 7.0 = 0.7143、输出 22 ÷ 7.0 =
 		// 3.143（USD/百万 tokens，4 位有效数字）；≥32K 档 7/26 元/百万
 		// tokens 阶梯调研口径注释登记（不结构化）。来源：docs.bigmodel.cn
 		// 定价页（2026-10-05 调研）。
@@ -256,10 +260,11 @@ var glmModelPricingData = []rawModel{
 		SourcePricingNote:       "官方人民币价 输入5/输出22 元/百万 tokens（0-32K 档；≥32K 7/26 元/百万 tokens，docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.7143/$3.143 每百万 tokens",
 	},
 	{
-		// 视觉对话：glm-4.6v（text+image→text，128k 上下文/32k 输出）；换算：
-		// 输入 1 ÷ 7.0 = 0.1429、输出 3 ÷ 7.0 = 0.4286、缓存读
-		// 0.2 ÷ 7.0 = 0.02857（USD/百万 tokens）。来源：docs.bigmodel.cn
-		// 定价页（2026-10-05 调研）。
+		// 视觉对话：glm-4.6v（text+image→text，128k 上下文/32k 输出）。
+		// 2026-10-05 复核批：官方国际站 USD 明文价覆盖换算值——输入 $0.3 /
+		// 缓存读 $0.05 / 输出 $0.9 每百万 tokens（z.ai 定价页
+		// docs.z.ai/guides/overview/pricing）；国内人民币价 1/3/0.2 元原句
+		// 留档。
 		Model: "glm-4.6v", Mode: "chat", ReleaseDate: "2025-12-08",
 		ContextWindowTokens: intp(128_000), MaxOutputTokens: intp(32_000),
 		InputModalities:          []string{"text", "image"},
@@ -267,19 +272,17 @@ var glmModelPricingData = []rawModel{
 		SupportedAPIProtocols:    []string{"chat_completions"},
 		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions"}, []string{"function_calling"}),
 
-		InputCostPerToken:       perToken(0.1429),
-		OutputCostPerToken:      perToken(0.4286),
-		CacheReadInputTokenCost: perToken(0.02857),
-		SourcePricingCurrency:   "CNY",
-		SourceExchangeRateToUsd: f64p(7.0),
-		SourceExchangeRateDate:  "2026-10-05",
-		SourcePricingNote:       "官方人民币价 输入1/输出3/缓存读0.2 元/百万 tokens（docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.1429/$0.4286/$0.02857 每百万 tokens",
+		InputCostPerToken:       perToken(0.3),
+		OutputCostPerToken:      perToken(0.9),
+		CacheReadInputTokenCost: perToken(0.05),
+		SourcePricingNote:       "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：输入 $0.3 / 缓存读 $0.05 / 输出 $0.9 每百万 tokens）；国内人民币价 1/3/缓存读 0.2 元原句留档（docs.bigmodel.cn 定价页）",
 	},
 	{
 		// 视觉对话：glm-4.6v-flashx（text+image→text 快速档，128k 上下文/32k
-		// 输出，官方未明文发布日期）；换算：输入 0.15 ÷ 7.0 = 0.02143、输出
-		// 1.5 ÷ 7.0 = 0.2143（USD/百万 tokens）。来源：docs.bigmodel.cn
-		// 定价页（2026-10-05 调研）。
+		// 输出，官方未明文发布日期）。2026-10-05 复核批：官方国际站 USD 明文
+		// 价覆盖换算值——输入 $0.04 / 缓存读 $0.004 / 输出 $0.4 每百万
+		// tokens（z.ai docs.z.ai/guides/overview/pricing）；国内人民币价
+		// 0.15/1.5 元原句留档。
 		Model: "glm-4.6v-flashx", Mode: "chat",
 		ContextWindowTokens: intp(128_000), MaxOutputTokens: intp(32_000),
 		InputModalities:          []string{"text", "image"},
@@ -287,18 +290,17 @@ var glmModelPricingData = []rawModel{
 		SupportedAPIProtocols:    []string{"chat_completions"},
 		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions"}, []string{"function_calling"}),
 
-		InputCostPerToken:       perToken(0.02143),
-		OutputCostPerToken:      perToken(0.2143),
-		SourcePricingCurrency:   "CNY",
-		SourceExchangeRateToUsd: f64p(7.0),
-		SourceExchangeRateDate:  "2026-10-05",
-		SourcePricingNote:       "官方人民币价 输入0.15/输出1.5 元/百万 tokens（docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.02143/$0.2143 每百万 tokens",
+		InputCostPerToken:       perToken(0.04),
+		OutputCostPerToken:      perToken(0.4),
+		CacheReadInputTokenCost: perToken(0.004),
+		SourcePricingNote:       "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：输入 $0.04 / 缓存读 $0.004 / 输出 $0.4 每百万 tokens）；国内人民币价 0.15/1.5 元原句留档（docs.bigmodel.cn 定价页）",
 	},
 	{
 		// OCR 对话：glm-ocr（text+image→text 识别专精档，32k 上下文，官方未
-		// 明文输出上限）；换算：输入 0.2 ÷ 7.0 = 0.02857、输出
-		// 0.2 ÷ 7.0 = 0.02857（USD/百万 tokens）。来源：docs.bigmodel.cn
-		// 定价页（2026-10-05 调研）。
+		// 明文输出上限）。2026-10-05 复核批：官方国际站 USD 明文价覆盖换算
+		// 值——输入 $0.03 / 输出 $0.03 每百万 tokens（z.ai
+		// docs.z.ai/guides/overview/pricing）；国内人民币价 0.2/0.2 元原句
+		// 留档。
 		Model: "glm-ocr", Mode: "chat", ReleaseDate: "2026-02-03",
 		ContextWindowTokens:      intp(32_000),
 		InputModalities:          []string{"text", "image"},
@@ -306,16 +308,14 @@ var glmModelPricingData = []rawModel{
 		SupportedAPIProtocols:    []string{"chat_completions"},
 		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions"}, []string{"function_calling"}),
 
-		InputCostPerToken:       perToken(0.02857),
-		OutputCostPerToken:      perToken(0.02857),
-		SourcePricingCurrency:   "CNY",
-		SourceExchangeRateToUsd: f64p(7.0),
-		SourceExchangeRateDate:  "2026-10-05",
-		SourcePricingNote:       "官方人民币价 输入0.2/输出0.2 元/百万 tokens（docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.02857/$0.02857 每百万 tokens",
+		InputCostPerToken:  perToken(0.03),
+		OutputCostPerToken: perToken(0.03),
+		SourcePricingNote:  "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：输入 $0.03 / 输出 $0.03 每百万 tokens）；国内人民币价 0.2/0.2 元原句留档（docs.bigmodel.cn 定价页）",
 	},
 	{
 		// 语音合成：mode=audio、协议 audio_speech；glm-tts（text→audio）为
-		// 官方现行 TTS ID（cogtts 为历史行保留）。官方按字符人民币计费：
+		// 官方现行 TTS ID（cogtts 为历史行保留）。2026-10-05 复核批：z.ai
+		// 国际站无该模型明文价 → 保留约定汇率换算；官方按字符人民币计费：
 		// 2 元/万字符 = 20 元/百万字符，20 ÷ 7.0 = 2.857（USD/百万字符）
 		// 落 TtsInputCostPerChar。来源：docs.bigmodel.cn 定价页
 		//（2026-10-05 调研）。
@@ -332,72 +332,60 @@ var glmModelPricingData = []rawModel{
 	},
 	{
 		// 语音识别：mode=audio、协议 audio_transcription；glm-asr-2512
-		//（audio→text）。官方按 token 人民币计费（输入 16 元/百万 tokens）：
-		// 16 ÷ 7.0 = 2.286（USD/百万输入 tokens）落 InputCostPerToken。
-		// 来源：docs.bigmodel.cn 定价页（2026-10-05 调研）。
+		//（audio→text）。2026-10-05 复核批：官方国际站 USD 明文价覆盖换算
+		// 值——$0.03/MTok（z.ai docs.z.ai/guides/overview/pricing）落
+		// InputCostPerToken；国内人民币价 16 元/百万 tokens 原句留档。
 		Model: "glm-asr-2512", Mode: "audio", ReleaseDate: "2025-12-10",
 		InputModalities:       []string{"audio"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"audio_transcription"},
 
-		InputCostPerToken:       perToken(2.286),
-		SourcePricingCurrency:   "CNY",
-		SourceExchangeRateToUsd: f64p(7.0),
-		SourceExchangeRateDate:  "2026-10-05",
-		SourcePricingNote:       "官方人民币价 16 元/百万 tokens（输入，docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $2.286 每百万输入 tokens",
+		InputCostPerToken: perToken(0.03),
+		SourcePricingNote: "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.03/MTok 输入）；国内人民币价 16 元/百万 tokens 原句留档（docs.bigmodel.cn 定价页）",
 	},
 	{
-		// 图像生成：glm-image（images 协议，按次计费，每张=每次）；换算：
-		// 0.1 ÷ 7.0 = 0.01429（USD/张）落 OutputCostPerImage。来源：
-		// docs.bigmodel.cn 定价页（2026-10-05 调研）。
+		// 图像生成：glm-image（images 协议，按次计费，每张=每次）。2026-10-05
+		// 复核批：官方国际站 USD 明文价覆盖换算值——$0.015/张（z.ai
+		// docs.z.ai/guides/overview/pricing）落 OutputCostPerImage；国内
+		// 人民币价 0.1 元/次原句留档。
 		Model: "glm-image", Mode: "image_generation", ReleaseDate: "2026-01-14",
 		InputModalities:       []string{"text"},
 		OutputModalities:      []string{"image"},
 		SupportedAPIProtocols: []string{"images"},
 
-		OutputCostPerImage:      f64p(0.01429),
-		SourcePricingCurrency:   "CNY",
-		SourceExchangeRateToUsd: f64p(7.0),
-		SourceExchangeRateDate:  "2026-10-05",
-		SourcePricingNote:       "官方人民币价 0.1 元/次（按次计费，每张=每次，docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.01429/张",
+		OutputCostPerImage: f64p(0.015),
+		SourcePricingNote:  "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.015/张，按次计费每张=每次）；国内人民币价 0.1 元/次原句留档（docs.bigmodel.cn 定价页）",
 	},
 	{
 		// 图像生成：cogview-4（images 协议，按次计费，text→image，每张=
-		// 每次）；换算：0.06 ÷ 7.0 = 0.008571（USD/张，4 位有效数字）落
-		// OutputCostPerImage。来源：docs.bigmodel.cn 定价页（2026-10-05
-		// 调研）。
+		// 每次）。2026-10-05 复核批：官方国际站 USD 明文价覆盖换算值——
+		// $0.01/张（z.ai docs.z.ai/guides/overview/pricing）落
+		// OutputCostPerImage；国内人民币价 0.06 元/次原句留档。
 		Model: "cogview-4", Mode: "image_generation",
 		InputModalities:       []string{"text"},
 		OutputModalities:      []string{"image"},
 		SupportedAPIProtocols: []string{"images"},
 
-		OutputCostPerImage:      f64p(0.008571),
-		SourcePricingCurrency:   "CNY",
-		SourceExchangeRateToUsd: f64p(7.0),
-		SourceExchangeRateDate:  "2026-10-05",
-		SourcePricingNote:       "官方人民币价 0.06 元/次（按次计费，每张=每次，docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.008571/张",
+		OutputCostPerImage: f64p(0.01),
+		SourcePricingNote:  "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.01/张，按次计费每张=每次）；国内人民币价 0.06 元/次原句留档（docs.bigmodel.cn 定价页）",
 	},
 	{
-		// 视频生成：cogvideox-2（text+image→video，协议 video，按次计费）；
-		// 官方 0.5 元/次（docs.bigmodel.cn 定价页）经约定汇率换算
-		//（0.5 ÷ 7.0 = 0.07143）等价登记进秒价槽位（同 cogvideox-3 口径）：
-		// glm 轮询响应不回报时长（§7.1）→ 行项不产生，现行计费行为与
-		// 0 计费兜底一致（契约 §2.8）；按次口径见 SourcePricingNote。
+		// 视频生成：cogvideox-2（text+image→video，协议 video，按次计费）。
+		// 2026-10-05 复核批撤价（同 cogvideox-3 口径）：官方按次计价（z.ai
+		// $0.2/video 明文、国内 0.5 元/次）进不了秒价槽位语义——A3 批曾按
+		// 汇率换算登记进 VideoOutputCostPerSecond，本轮撤除回无价：glm 轮询
+		// 响应不回报时长（§7.1）→ 0 计费兜底 + usage_missing 标记（契约
+		// §2.8）；未来回填时长提取须先重审按次口径。
 		Model: "cogvideox-2", Mode: "video",
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"video"},
 		SupportedAPIProtocols: []string{"video"},
-
-		VideoOutputCostPerSecond: f64p(0.07143),
-		SourcePricingCurrency:    "CNY",
-		SourceExchangeRateToUsd:  f64p(7.0),
-		SourceExchangeRateDate:   "2026-10-05",
-		SourcePricingNote:        "官方人民币价 0.5 元/次（按次计费，docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.07143/次；网关视频计价面仅秒价维度，按次价等价登记（非每秒单价；glm 轮询不回报时长，行项不产生）",
 	},
 	{
 		// 向量嵌入：mode=embedding、协议 embed_content（对照 gemini-embedding
 		// 行写法）；embedding-3（text→向量，8k 输入上下文、2048 维，维度数
-		// 无结构化字段仅注释登记）。官方人民币 0.5 元/百万 tokens：0.5 ÷ 7.0
+		// 无结构化字段仅注释登记）。2026-10-05 复核批：z.ai 国际站无该模型
+		// 明文价 → 保留约定汇率换算；官方人民币 0.5 元/百万 tokens：0.5 ÷ 7.0
 		// = 0.07143（USD/百万 tokens）落 InputCostPerToken。来源：
 		// docs.bigmodel.cn 定价页（2026-10-05 调研）。
 		Model: "embedding-3", Mode: "embedding",

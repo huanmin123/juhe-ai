@@ -83,6 +83,10 @@ var openAIGPT4ModelPricingData = []rawModel{
 		SupportedServiceTiers: []string{"priority"},
 	},
 	{
+		// 2026-10-05 复核批确认：priority 档 $4.25 输入 / $2.125 缓存读 /
+		// $17.00 输出 per 1M 与官方 Fast 表明文一致；2026-07-30 官方
+		// service tier "priority" 改名 "Fast"（计费档沿用行内 priority 通道，
+		// 改名不落枚举，注释登记）。
 		Model: "gpt-4o", Mode: "chat", ReleaseDate: "2024-05-13",
 		MaxTokens: intp(16384), ContextWindowTokens: intp(128000), MaxOutputTokens: intp(16384),
 		InputModalities:       []string{"text", "image"},
@@ -97,6 +101,10 @@ var openAIGPT4ModelPricingData = []rawModel{
 		SupportedServiceTiers: []string{"priority"},
 	},
 	{
+		// 2026-10-05 复核批确认：priority 档 $0.25 输入 / $0.125 缓存读 /
+		// $1.00 输出 per 1M 与官方 Fast 表明文一致；2026-07-30 官方
+		// service tier "priority" 改名 "Fast"（计费档沿用行内 priority 通道，
+		// 改名不落枚举，注释登记）。
 		Model: "gpt-4o-mini", Mode: "chat", ReleaseDate: "2024-07-18",
 		MaxTokens: intp(16384), ContextWindowTokens: intp(128000), MaxOutputTokens: intp(16384),
 		InputModalities:       []string{"text", "image"},
@@ -483,6 +491,10 @@ var openAIGPT5ModelPricingData = []rawModel{
 	{
 		// 2026-10-05 落长上下文档（>272k：in 2x / out 1.5x，官方定价页明文；
 		// 含下方 -2026-03-05 快照行，同一模型同价卡）。
+		// 2026-10-05 复核批确认：flex 缓存读 $0.13/1M（1.3e-7）与官方明文
+		// 一致无需改正；官方另给长上下文档（>272k）flex 缓存读 $0.25/1M，
+		// 现行 ServiceTierPrices 结构无按档长上下文通道（长上下文倍率只有
+		// 行级 Input/Output 两乘数、无 cache 槽位），仅注释登记不落字段。
 		Model: "gpt-5.4", Mode: "chat", ReleaseDate: "2026-03-05",
 		MaxTokens: intp(128000), ContextWindowTokens: intp(1050000), MaxOutputTokens: intp(128000),
 		InputCostPerToken: f64p(0.0000025), InputCostPerTokenPriority: f64p(0.000005), InputCostPerTokenFlex: f64p(0.00000125),
@@ -624,14 +636,18 @@ var openAIGPT5ModelPricingData = []rawModel{
 		SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh"},
 	},
 	{
+		// 2026-10-05 复核批：官方 pricing 明文 flex 档 $0.875 输入 /
+		// $0.0875 缓存读 / $7.00 输出 per 1M tokens（flex = 标准价 50%，
+		// 标准档 $1.75/$0.175/$14 自洽），落 InputCostPerTokenFlex 三字段
+		// 并把 flex 计入 SupportedServiceTiers（原行缺 flex 档）。
 		Model: "gpt-5.2", Mode: "chat", ReleaseDate: "2025-12-11",
 		MaxTokens: intp(128000), MaxInputTokens: intp(400000), MaxOutputTokens: intp(128000),
-		InputCostPerToken: f64p(0.00000175), InputCostPerTokenPriority: f64p(0.0000035),
-		OutputCostPerToken: f64p(0.000014), OutputCostPerTokenPriority: f64p(0.000028),
-		CacheReadInputTokenCost: f64p(1.75e-7), CacheReadInputTokenCostPriority: f64p(3.5e-7),
+		InputCostPerToken: f64p(0.00000175), InputCostPerTokenPriority: f64p(0.0000035), InputCostPerTokenFlex: f64p(8.75e-7),
+		OutputCostPerToken: f64p(0.000014), OutputCostPerTokenPriority: f64p(0.000028), OutputCostPerTokenFlex: f64p(0.000007),
+		CacheReadInputTokenCost: f64p(1.75e-7), CacheReadInputTokenCostPriority: f64p(3.5e-7), CacheReadInputTokenCostFlex: f64p(8.75e-8),
 		SupportsPromptCaching:     true,
 		SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh"},
-		SupportedServiceTiers:     []string{"priority"},
+		SupportedServiceTiers:     []string{"priority", "flex"},
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},
@@ -639,14 +655,15 @@ var openAIGPT5ModelPricingData = []rawModel{
 			[]string{"function_calling", "web_search", "file_search", "image_generation", "code_interpreter", "hosted_shell", "apply_patch", "skills", "mcp"}),
 	},
 	{
+		// flex 档随 gpt-5.2 基行同步（同一模型同价卡，2026-10-05 复核批）。
 		Model: "gpt-5.2-2025-12-11", Mode: "chat", ReleaseDate: "2025-12-11",
 		MaxTokens: intp(128000), MaxInputTokens: intp(400000), MaxOutputTokens: intp(128000),
-		InputCostPerToken: f64p(0.00000175), InputCostPerTokenPriority: f64p(0.0000035),
-		OutputCostPerToken: f64p(0.000014), OutputCostPerTokenPriority: f64p(0.000028),
-		CacheReadInputTokenCost: f64p(1.75e-7), CacheReadInputTokenCostPriority: f64p(3.5e-7),
+		InputCostPerToken: f64p(0.00000175), InputCostPerTokenPriority: f64p(0.0000035), InputCostPerTokenFlex: f64p(8.75e-7),
+		OutputCostPerToken: f64p(0.000014), OutputCostPerTokenPriority: f64p(0.000028), OutputCostPerTokenFlex: f64p(0.000007),
+		CacheReadInputTokenCost: f64p(1.75e-7), CacheReadInputTokenCostPriority: f64p(3.5e-7), CacheReadInputTokenCostFlex: f64p(8.75e-8),
 		SupportsPromptCaching:     true,
 		SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh"},
-		SupportedServiceTiers:     []string{"priority"},
+		SupportedServiceTiers:     []string{"priority", "flex"},
 		SupportedAPIProtocols:     []string{"chat_completions", "responses"},
 		InputModalities:           []string{"text", "image"},
 		OutputModalities:          []string{"text"},

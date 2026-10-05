@@ -31,6 +31,16 @@ package pricing
 //     adapter 配置事实见 docs/functions/火山方舟账号接入.md TTS 节。
 //   - doubao-seedance-1-0-pro 官方下线公告为"即将下线"但无明文日期 →
 //     不落 ShutdownDate（裁决 §2.3），行注释登记。
+//
+// 2026-10-05 复核批（官方国际站 BytePlus ModelArk 定价页
+// docs.byteplus.com/docs/ModelArk/1099320 USD 明文覆盖）：7 行落官方 USD
+// 明文价并删除换算三件套（SourcePricingCurrency/Rate/Date）——chat 3 行
+// （2-1-turbo $0.5/$2.5/$0.1、2-0-lite $0.25/$2.00/$0.05+音频 $3.75、
+// 2-0-mini $0.10/$0.40/$0.02+音频 $1.50）、video 4 行（seedance-2-5
+// $0.231/秒、2-0 $0.15/秒、fast $0.12/秒、mini $0.08/秒，官方每秒示例价
+// 720p 16:9 5s 口径）；SourcePricingNote 改为国际站明文 + 国内人民币原句
+// 留档。doubao-seed-evolving / 2-1-pro-260915 / 2-1-lite-260915 国际站
+// 未售，保留约定汇率换算（行注释注明）。
 var volcengineModelPricingData = []rawModel{
 	{
 		// 视频：mode=video、协议 video（统一 /v1/videos 面经 seedance adapter
@@ -54,7 +64,8 @@ var volcengineModelPricingData = []rawModel{
 		// 输入 6.00 ÷ 7.0 = 0.8571、输出 30.00 ÷ 7.0 = 4.286、缓存读
 		// 1.20 ÷ 7.0 = 0.1714（USD/百万 tokens，4 位有效数字）。来源：模型
 		// 列表页 docs.volcengine.com/docs/82379/1330310（2026-09-28 更新）、
-		// 价格页 /docs/82379/1544106。
+		// 价格页 /docs/82379/1544106。2026-10-05 复核批：国际站未售，保留
+		// 约定汇率换算。
 		Model:                     "doubao-seed-evolving",
 		Mode:                      "chat",
 		ContextWindowTokens:       intp(1_000_000),
@@ -80,7 +91,8 @@ var volcengineModelPricingData = []rawModel{
 		// 6.00 ÷ 7.0 = 0.8571、输出 30.00 ÷ 7.0 = 4.286、缓存读
 		// 1.20 ÷ 7.0 = 0.1714（USD/百万 tokens）。来源：模型列表页
 		// docs.volcengine.com/docs/82379/1330310（2026-09-28 更新）、价格页
-		// /docs/82379/1544106。
+		// /docs/82379/1544106。2026-10-05 复核批：国际站未售，保留约定汇率
+		// 换算。
 		Model:                     "doubao-seed-2-1-pro-260915",
 		Mode:                      "chat",
 		ReleaseDate:               "2026-09-15",
@@ -108,7 +120,8 @@ var volcengineModelPricingData = []rawModel{
 		// 2.70 ÷ 7.0 = 0.3857、缓存读 0.16 ÷ 7.0 = 0.02286、音频输入
 		// 12.00 ÷ 7.0 = 1.714（USD/百万 tokens）。来源：模型列表页
 		// docs.volcengine.com/docs/82379/1330310（2026-09-28 更新）、价格页
-		// /docs/82379/1544106。
+		// /docs/82379/1544106。2026-10-05 复核批：国际站未售，保留约定汇率
+		// 换算。
 		Model:                     "doubao-seed-2-1-lite-260915",
 		Mode:                      "chat",
 		ReleaseDate:               "2026-09-15",
@@ -132,11 +145,11 @@ var volcengineModelPricingData = []rawModel{
 	{
 		// 对话：doubao-seed-2-1-turbo-260628（2.1 代 turbo 档，官方列表页
 		// 上下文 256k 口径）；thinking 型（efforts low/medium/high/minimal，
-		// 官方参数页明文默认 high）。输入长度分段人民币计费（主档换算）：
-		// 输入 3.00 ÷ 7.0 = 0.4286、输出 15.00 ÷ 7.0 = 2.143、缓存读
-		// 0.60 ÷ 7.0 = 0.08571（USD/百万 tokens）。来源：模型列表页
-		// docs.volcengine.com/docs/82379/1330310（2026-09-28 更新）、价格页
-		// /docs/82379/1544106。
+		// 官方参数页明文默认 high）。2026-10-05 复核批：官方国际站 USD 明文价
+		// 覆盖换算值——输入 $0.5 / 输出 $2.5 / 缓存读 $0.1 每百万 tokens
+		//（BytePlus ModelArk 定价页 docs.byteplus.com/docs/ModelArk/1099320）；
+		// Flex/Batch 档 $0.25/$1.25、缓存存储 $0.0083（目录无对应列，注释
+		// 登记）；国内人民币价 3/15/0.6 元原句留档。
 		Model:                     "doubao-seed-2-1-turbo-260628",
 		Mode:                      "chat",
 		ReleaseDate:               "2026-06-28",
@@ -147,145 +160,122 @@ var volcengineModelPricingData = []rawModel{
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions"}, []string{"function_calling"}),
 		SupportedReasoningEfforts: []string{"low", "medium", "high", "minimal"},
 		DefaultReasoningEffort:    "high",
-		InputCostPerToken:         perToken(0.4286),
-		OutputCostPerToken:        perToken(2.143),
-		CacheReadInputTokenCost:   perToken(0.08571),
-		SourcePricingCurrency:     "CNY",
-		SourceExchangeRateToUsd:   f64p(7.0),
-		SourceExchangeRateDate:    "2026-10-05",
-		SourcePricingNote:         "官方人民币价 输入3/输出15/缓存读0.6 元/百万 tokens（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.4286/$2.143/$0.08571 每百万 tokens",
+		InputCostPerToken:         perToken(0.5),
+		OutputCostPerToken:        perToken(2.5),
+		CacheReadInputTokenCost:   perToken(0.1),
+		SourcePricingNote:         "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：输入 $0.5 / 输出 $2.5 / 缓存读 $0.1，Flex/Batch $0.25/$1.25、缓存存储 $0.0083）；国内人民币价 3/15/0.6 元/百万 tokens 原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
 	},
 	{
 		// 对话：doubao-seed-2-0-lite-260428（2.0 代 lite 档，256k 上下文/128k
 		// 输出）；thinking 型（efforts low/medium/high；2.0 系官方无明文默认
-		// effort → 不落 DefaultReasoningEffort）。输入长度分段人民币计费
-		//（调研口径：输入三段 0.6/0.9/1.8 元/百万 tokens）→ 落第一段主档：
-		// 输入 0.6 ÷ 7.0 = 0.08571、输出第一段 3.6 ÷ 7.0 = 0.5143、缓存读
-		// 0.12 ÷ 7.0 = 0.01714（USD/百万 tokens）；其余输出分段调研未登记，
-		// 不编造。来源：模型列表页 docs.volcengine.com/docs/82379/1330310
-		//（2026-09-28 更新）、价格页 /docs/82379/1544106。
+		// effort → 不落 DefaultReasoningEffort）。2026-10-05 复核批：官方国际
+		// 站 USD 明文价覆盖换算值——输入首段 $0.25 / 输出首段 $2.00 / 缓存读
+		// $0.05 / 音频输入 $3.75 每百万 tokens（第二段 $0.50/$4.00 注释登记；
+		// BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320）；国内
+		// 人民币价原句留档。
 		Model:                     "doubao-seed-2-0-lite-260428",
 		Mode:                      "chat",
 		ReleaseDate:               "2026-04-28",
 		ContextWindowTokens:       intp(256_000),
 		MaxOutputTokens:           intp(128_000),
-		InputModalities:           []string{"text"},
+		InputModalities:           []string{"text", "audio"},
 		OutputModalities:          []string{"text"},
 		SupportedAPIProtocols:     []string{"chat_completions"},
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions"}, []string{"function_calling"}),
 		SupportedReasoningEfforts: []string{"low", "medium", "high"},
-		InputCostPerToken:         perToken(0.08571),
-		OutputCostPerToken:        perToken(0.5143),
-		CacheReadInputTokenCost:   perToken(0.01714),
-		SourcePricingCurrency:     "CNY",
-		SourceExchangeRateToUsd:   f64p(7.0),
-		SourceExchangeRateDate:    "2026-10-05",
-		SourcePricingNote:         "官方人民币价 输入0.6（首段；三段 0.6/0.9/1.8）/输出3.6（首段）/缓存读0.12 元/百万 tokens（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.08571/$0.5143/$0.01714 每百万 tokens",
+		InputCostPerToken:         perToken(0.25),
+		OutputCostPerToken:        perToken(2),
+		CacheReadInputTokenCost:   perToken(0.05),
+		InputCostPerAudioToken:    perToken(3.75),
+		SourcePricingNote:         "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：输入 $0.25 首段（第二段 $0.50）/ 输出 $2.00 首段（第二段 $4.00）/ 缓存读 $0.05 / 音频输入 $3.75 每百万 tokens）；国内人民币价 0.6（三段 0.6/0.9/1.8）/3.6/0.12/音频 12 元原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
 	},
 	{
 		// 对话：doubao-seed-2-0-mini-260428（2.0 代 mini 档，256k 上下文/
 		// 128k 输出）；thinking 型（efforts low/medium/high；2.0 系官方无明文
-		// 默认 effort → 不落 DefaultReasoningEffort）。输入长度分段人民币
-		// 计费（调研口径：输入三段 0.2/0.4/0.8、输出三段 2.0/4.0/8.0 元/
-		// 百万 tokens）→ 落第一段主档：输入 0.2 ÷ 7.0 = 0.02857、输出
-		// 2.0 ÷ 7.0 = 0.2857（USD/百万 tokens）；缓存价调研未给出 → 不落
-		// 缓存读价（不编造）。来源：模型列表页
-		// docs.volcengine.com/docs/82379/1330310（2026-09-28 更新）、价格页
-		// /docs/82379/1544106。
+		// 默认 effort → 不落 DefaultReasoningEffort）。2026-10-05 复核批：官方
+		// 国际站 USD 明文价覆盖换算值——输入 $0.10 / 输出 $0.40 / 缓存读
+		// $0.02 / 音频输入 $1.50 每百万 tokens（BytePlus ModelArk
+		// docs.byteplus.com/docs/ModelArk/1099320）；国内人民币分段价原句留档。
 		Model:                     "doubao-seed-2-0-mini-260428",
 		Mode:                      "chat",
 		ReleaseDate:               "2026-04-28",
 		ContextWindowTokens:       intp(256_000),
 		MaxOutputTokens:           intp(128_000),
-		InputModalities:           []string{"text"},
+		InputModalities:           []string{"text", "audio"},
 		OutputModalities:          []string{"text"},
 		SupportedAPIProtocols:     []string{"chat_completions"},
 		SupportedToolsByProtocol:  toolsByProtocol([]string{"chat_completions"}, []string{"function_calling"}),
 		SupportedReasoningEfforts: []string{"low", "medium", "high"},
-		InputCostPerToken:         perToken(0.02857),
-		OutputCostPerToken:        perToken(0.2857),
-		SourcePricingCurrency:     "CNY",
-		SourceExchangeRateToUsd:   f64p(7.0),
-		SourceExchangeRateDate:    "2026-10-05",
-		SourcePricingNote:         "官方人民币价 输入0.2（首段；三段 0.2/0.4/0.8）/输出2.0（首段；三段 2.0/4.0/8.0）元/百万 tokens（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.02857/$0.2857 每百万 tokens",
+		InputCostPerToken:         perToken(0.1),
+		OutputCostPerToken:        perToken(0.4),
+		CacheReadInputTokenCost:   perToken(0.02),
+		InputCostPerAudioToken:    perToken(1.5),
+		SourcePricingNote:         "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：输入 $0.10 / 输出 $0.40 / 缓存读 $0.02 / 音频输入 $1.50 每百万 tokens）；国内人民币价 0.2（三段 0.2/0.4/0.8）/2.0（三段 2.0/4.0/8.0）元原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
 	},
 	{
 		// 视频：doubao-seedance-2-5-260628（2.5 代旗舰，text+image→video，
-		// 协议 video 经 seedance adapter 改写，契约 §9.1）；官方按输出
-		// token 计费 × 分辨率档（调研口径：输出视频分辨率 480p/720p
-		// 70.00/42.00 元/百万 tokens，不含/含视频输入），网关视频计价面只有
-		// 秒价维度 → 按官方每秒参考价换算：1.51 ÷ 7.0 = 0.2157（USD/秒，
-		// 720p 16:9 5 秒示例推导口径）。来源：模型列表页
-		// docs.volcengine.com/docs/82379/1330310（2026-09-28 更新）、价格页
-		// /docs/82379/1544106。
+		// 协议 video 经 seedance adapter 改写，契约 §9.1）。2026-10-05 复核批：
+		// 官方国际站 USD 明文价覆盖换算值——$0.231/秒（官方每秒示例价，720p
+		// 16:9 5 秒口径；BytePlus ModelArk docs.byteplus.com/docs/ModelArk/
+		// 1099320）；官方按输出 token 牌价 $10.70/百万 tokens（限时折扣另计）
+		// 注释登记，目录只有秒价维度仍落秒价。国内人民币换算值 0.2157 作废，
+		// 人民币原句留档。
 		Model:                    "doubao-seedance-2-5-260628",
 		Mode:                     "video",
 		ReleaseDate:              "2026-06-28",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
-		VideoOutputCostPerSecond: f64p(0.2157),
-		SourcePricingCurrency:    "CNY",
-		SourceExchangeRateToUsd:  f64p(7.0),
-		SourceExchangeRateDate:   "2026-10-05",
-		SourcePricingNote:        "官方人民币每秒参考价 1.51 元/秒（720p 16:9 5 秒示例口径；官方按输出 token 计费，调研口径 480p/720p 70.00/42.00 元/百万 tokens，火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.2157/秒",
+		VideoOutputCostPerSecond: f64p(0.231),
+		SourcePricingNote:        "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：每秒示例价 $0.231/秒，720p 16:9 5 秒口径；按输出 token 牌价 $10.70/百万 tokens，限时折扣另计）；国内人民币每秒参考价 1.51 元/秒原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
 	},
 	{
 		// 视频：doubao-seedance-2-0-260128（2.0 代标准档，text+image→video，
-		// 协议 video）；官方按 token/按秒 × 分辨率档人民币计费（价格页
-		// /docs/82379/1544106），网关视频计价面只有秒价维度 → 按官方每秒
-		// 参考价换算：4.97 ÷ 7.0 = 0.71（USD/秒，720p 16:9 5 秒示例推导
-		// 口径）。来源：模型列表页 docs.volcengine.com/docs/82379/1330310
-		//（2026-09-28 更新）。
+		// 协议 video）。2026-10-05 复核批：官方国际站 USD 明文价覆盖换算值——
+		// $0.15/秒（官方每秒示例价，720p 16:9 5 秒口径；BytePlus ModelArk
+		// docs.byteplus.com/docs/ModelArk/1099320）；按输出 token 牌价 $7.0/
+		// 百万 tokens（限时折扣另计）注释登记。国内人民币换算值 0.71 作废，
+		// 人民币原句留档。
 		Model:                    "doubao-seedance-2-0-260128",
 		Mode:                     "video",
 		ReleaseDate:              "2026-01-28",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
-		VideoOutputCostPerSecond: f64p(0.71),
-		SourcePricingCurrency:    "CNY",
-		SourceExchangeRateToUsd:  f64p(7.0),
-		SourceExchangeRateDate:   "2026-10-05",
-		SourcePricingNote:        "官方人民币每秒参考价 4.97 元/秒（720p 16:9 5 秒示例口径，火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.71/秒",
+		VideoOutputCostPerSecond: f64p(0.15),
+		SourcePricingNote:        "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：每秒示例价 $0.15/秒，720p 16:9 5 秒口径；按输出 token 牌价 $7.0/百万 tokens，限时折扣另计）；国内人民币每秒参考价 4.97 元/秒原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
 	},
 	{
 		// 视频：doubao-seedance-2-0-fast-260128（2.0 代快速档，text+image→
-		// video，协议 video）；官方按 token/按秒 × 分辨率档人民币计费（价格
-		// 页 /docs/82379/1544106），网关视频计价面只有秒价维度 → 按官方
-		// 每秒参考价换算：4.00 ÷ 7.0 = 0.5714（USD/秒，720p 16:9 5 秒示例
-		// 推导口径）。来源：模型列表页 docs.volcengine.com/docs/82379/1330310
-		//（2026-09-28 更新）。
+		// video，协议 video）。2026-10-05 复核批：官方国际站 USD 明文价覆盖
+		// 换算值——$0.12/秒（官方每秒示例价，720p 16:9 5 秒口径；BytePlus
+		// ModelArk docs.byteplus.com/docs/ModelArk/1099320）；按输出 token
+		// 牌价 $5.6/百万 tokens（限时折扣另计）注释登记。国内人民币换算值
+		// 0.5714 作废，人民币原句留档。
 		Model:                    "doubao-seedance-2-0-fast-260128",
 		Mode:                     "video",
 		ReleaseDate:              "2026-01-28",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
-		VideoOutputCostPerSecond: f64p(0.5714),
-		SourcePricingCurrency:    "CNY",
-		SourceExchangeRateToUsd:  f64p(7.0),
-		SourceExchangeRateDate:   "2026-10-05",
-		SourcePricingNote:        "官方人民币每秒参考价 4.00 元/秒（720p 16:9 5 秒示例口径，火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.5714/秒",
+		VideoOutputCostPerSecond: f64p(0.12),
+		SourcePricingNote:        "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：每秒示例价 $0.12/秒，720p 16:9 5 秒口径；按输出 token 牌价 $5.6/百万 tokens，限时折扣另计）；国内人民币每秒参考价 4.00 元/秒原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
 	},
 	{
 		// 视频：doubao-seedance-2-0-mini-260615（2.0 代 mini 档，text+image→
-		// video，协议 video）；官方按 token/按秒 × 分辨率档人民币计费（价格
-		// 页 /docs/82379/1544106），网关视频计价面只有秒价维度 → 按官方
-		// 每秒参考价换算：2.48 ÷ 7.0 = 0.3543（USD/秒，720p 16:9 5 秒示例
-		// 推导口径）。来源：模型列表页 docs.volcengine.com/docs/82379/1330310
-		//（2026-09-28 更新）。
+		// video，协议 video）。2026-10-05 复核批：官方国际站 USD 明文价覆盖
+		// 换算值——$0.08/秒（官方每秒示例价，720p 16:9 5 秒口径；BytePlus
+		// ModelArk docs.byteplus.com/docs/ModelArk/1099320）；按输出 token
+		// 牌价 $3.5/百万 tokens（限时折扣另计）注释登记。国内人民币换算值
+		// 0.3543 作废，人民币原句留档。
 		Model:                    "doubao-seedance-2-0-mini-260615",
 		Mode:                     "video",
 		ReleaseDate:              "2026-06-15",
 		InputModalities:          []string{"text", "image"},
 		OutputModalities:         []string{"video"},
 		SupportedAPIProtocols:    []string{"video"},
-		VideoOutputCostPerSecond: f64p(0.3543),
-		SourcePricingCurrency:    "CNY",
-		SourceExchangeRateToUsd:  f64p(7.0),
-		SourceExchangeRateDate:   "2026-10-05",
-		SourcePricingNote:        "官方人民币每秒参考价 2.48 元/秒（720p 16:9 5 秒示例口径，火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.3543/秒",
+		VideoOutputCostPerSecond: f64p(0.08),
+		SourcePricingNote:        "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：每秒示例价 $0.08/秒，720p 16:9 5 秒口径；按输出 token 牌价 $3.5/百万 tokens，限时折扣另计）；国内人民币每秒参考价 2.48 元/秒原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
 	},
 	{
 		// 图像：doubao-seedream-5-0-pro-260628（5.0 代 pro 档，文生/图生
