@@ -55,6 +55,15 @@ var qwenModelPricingData = []rawModel{
 		InputModalities:       []string{"text", "image"},
 		OutputModalities:      []string{"video"},
 		SupportedAPIProtocols: []string{"video"},
+		// 2026-10-05 用户裁决补价（多能力/有价必标注）：官方人民币秒价
+		// 480P 0.14 / 1080P 0.70 元/秒（百炼计费页）——单槽位落 1080P 档
+		// 0.70 ÷ 7.0 = 0.1（USD/秒），480P 档注释登记；qwen usage 字段族
+		// 已核实（M3f），秒计量照抽、按本价计费。
+		VideoOutputCostPerSecond: f64p(0.1),
+		SourcePricingCurrency:   "CNY",
+		SourceExchangeRateToUsd: f64p(7.0),
+		SourceExchangeRateDate:  "2026-10-05",
+		SourcePricingNote:       "官方人民币价 480P 0.14 / 1080P 0.70 元/秒（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio），按约定汇率 7.0 换算，目录落 1080P 档 $0.1/秒（480P $0.02/秒注释登记）",
 	},
 	{
 		// 长转写：mode=audio、协议 audio_transcription（统一 /v1/audio/jobs 面经
@@ -68,6 +77,14 @@ var qwenModelPricingData = []rawModel{
 		InputModalities:       []string{"audio"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"audio_transcription"},
+		// 2026-10-05 用户裁决补价：官方人民币秒价 0.00008 元/秒（百炼计费
+		// 页 ASR 节）→ 0.00008 ÷ 7.0 = 0.0000114（USD/秒）落
+		// AudioInputCostPerSecond；qwen usage 字段族已核实，秒计量照抽。
+		AudioInputCostPerSecond: f64p(0.0000114),
+		SourcePricingCurrency:   "CNY",
+		SourceExchangeRateToUsd: f64p(7.0),
+		SourceExchangeRateDate:  "2026-10-05",
+		SourcePricingNote:       "官方人民币价 0.00008 元/秒（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio），按约定汇率 7.0 换算 $0.0000114/秒",
 	},
 	{
 		// 对话：qwen3.8-max（旗舰档，1M 上下文，百炼 OpenAI 兼容
@@ -190,13 +207,15 @@ var qwenModelPricingData = []rawModel{
 		Model:                    "qwen3-omni-flash",
 		Mode:                     "chat",
 		InputModalities:          []string{"text", "image", "audio"},
-		OutputModalities:         []string{"text"},
+		OutputModalities:         []string{"text", "audio"},
 		SupportedAPIProtocols:    []string{"chat_completions"},
 		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions"}, []string{"function_calling"}),
 		InputCostPerToken:        perToken(0.43),
+		InputCostPerImageToken:   perToken(0.78),
 		InputCostPerAudioToken:   perToken(3.81),
 		OutputCostPerToken:       perToken(1.66),
-		SourcePricingNote:        "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：text 输入 $0.43 / audio 输入 $3.81 / text 输出 $1.66 每百万 tokens；image 输入与音频/多模态输出价同页另列未落）；国内人民币价 0.8/2.7 元原句留档（百炼文本生成模型列表 help.aliyun.com/zh/model-studio/text-generation-model）",
+		OutputCostPerAudioToken:  perToken(15.11),
+		SourcePricingNote:        "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 text $0.43 / audio $3.81 / image $0.78，输出 text $1.66 / audio $15.11 每百万 tokens；多模态输入时 text 输出 $3.06 为条件价、无独立槽位仅注释登记）；国内人民币价 0.8/2.7 元原句留档（百炼文本生成模型列表 help.aliyun.com/zh/model-studio/text-generation-model）",
 	},
 	{
 		// 语音合成：mode=audio、协议 audio_speech；qwen3-tts-flash

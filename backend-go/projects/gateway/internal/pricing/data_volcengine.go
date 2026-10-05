@@ -43,6 +43,29 @@ package pricing
 // 未售，保留约定汇率换算（行注释注明）。
 var volcengineModelPricingData = []rawModel{
 	{
+		// 语音合成占位目录行（2026-10-05 用户裁决：多能力/无 ID 能力也要标注，
+		// 否则调度与计费无从匹配）。`doubao-tts` 是占位名、**非官方模型 ID**——
+		// 豆包语音是独立产品线（appid + cluster + voice_type 音色调用，方舟
+		// 模型列表/价格页无 TTS 模型在售），统一面 model 字段被
+		// volcengine_tts adapter 忽略（M6 契约 §9.2）。凭据 speech_appid/
+		// speech_token 双值缺失即无该能力。计费：官方按字符（语音合成 2.0 =
+		// 3 元/万字符，豆包语音产品计费 PDF），3 元/万字符 = 30 元/百万字符，
+		// 30 ÷ 7.0 = 4.2857（USD/百万字符）落 TtsInputCostPerChar；上游无
+		// 字符回报 → 网关按请求字符自算计量照落。
+		Model:                   "doubao-tts",
+		Mode:                    "audio",
+		InputModalities:         []string{"text"},
+		OutputModalities:        []string{"audio"},
+		SupportedAPIProtocols:   []string{"audio_speech"},
+		ResponseFormats:         []string{"mp3"},
+		TtsInputCostPerChar:     perChar(4.2857),
+		SourcePricingCurrency:   "CNY",
+		SourceExchangeRateToUsd: f64p(7.0),
+		SourceExchangeRateDate:  "2026-10-05",
+		SourcePricingNote:       "占位目录行（非官方模型 ID）；官方人民币价 语音合成模型2.0 = 3 元/万字符（豆包语音产品计费 PDF volcengine.com/docs/6561/14275），按约定汇率 7.0 换算 $4.2857/百万字符",
+	},
+
+	{
 		// 视频：mode=video、协议 video（统一 /v1/videos 面经 seedance adapter
 		// 改写，契约 §9.1）；输入 text+image（文生/图生视频，content[].
 		// image_url 承接公共 input_reference，url/base64 双形态直传）。

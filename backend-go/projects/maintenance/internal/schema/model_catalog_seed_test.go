@@ -39,8 +39,8 @@ func nodeModelCatalogCompare(left, right modelCatalogSeedRow) int {
 }
 
 func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
-	// 213 rows after the 2026-10-05 复核批 sync from the Go pricing catalog:
-	// 209 rows from the all-provider completion batch + 4 gemini additions
+	// 214 rows after the 2026-10-05 复核批 sync from the Go pricing catalog:
+	// 214 rows from the all-provider completion batch + 4 gemini additions
 	// (gemini-3.1-flash-image / gemini-3-pro-image image rows +
 	// gemini-3.5-transcribe / gemini-3.5-transcribe-live audio rows). The
 	// review batch also reverted the xAI prices (grok-4.6/4.5 back to
@@ -48,14 +48,14 @@ func TestModelCatalogSeedRowsPinnedCount(t *testing.T) {
 	// conversion values with official international-site USD prices, added
 	// the gemini 2.5-series cache-write prices and the veo-3.1 shutdown
 	// dates, and withdrew the cogvideox per-request prices back to unpriced.
-	if len(modelCatalogSeedRows) != 213 {
-		t.Fatalf("model catalog seed rows = %d, want 213 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
+	if len(modelCatalogSeedRows) != 214 {
+		t.Fatalf("model catalog seed rows = %d, want 214 (stale snapshot? sync from backend-go/projects/gateway/internal/pricing/data_*.go)", len(modelCatalogSeedRows))
 	}
 	perProvider := map[string]int{}
 	for _, row := range modelCatalogSeedRows {
 		perProvider[row.ProviderCode]++
 	}
-	want := map[string]int{"gpt": 81, "xai": 14, "deepseek": 4, "anthropic": 15, "gemini": 27, "glm": 28, "minimax": 13, "volcengine": 14, "qwen": 17}
+	want := map[string]int{"gpt": 81, "xai": 14, "deepseek": 4, "anthropic": 15, "gemini": 27, "glm": 28, "minimax": 13, "volcengine": 15, "qwen": 17}
 	if len(perProvider) != len(want) {
 		t.Fatalf("provider set = %v, want %v", perProvider, want)
 	}

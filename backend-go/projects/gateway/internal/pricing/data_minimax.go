@@ -61,7 +61,8 @@ var minimaxModelPricingData = []rawModel{
 		// 官方明文；目录价落 ≤512k 主档。
 		Model: "MiniMax-M3", Mode: "chat", CatalogOrder: intp(2), ReleaseDate: "2026-06-01",
 		ContextWindowTokens: intp(1_000_000), MaxOutputTokens: intp(128_000),
-		InputModalities:       []string{"text"},
+		// 官方明文输入模态：文本+图像+视频（platform.minimax.io models-intro）。
+		InputModalities:       []string{"text", "image", "video"},
 		OutputModalities:      []string{"text"},
 		SupportedAPIProtocols: []string{"chat_completions"},
 		SupportedToolsByProtocol: toolsByProtocol([]string{"chat_completions"},
