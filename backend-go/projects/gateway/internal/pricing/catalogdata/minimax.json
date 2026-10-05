@@ -1,0 +1,391 @@
+{
+  "models": [
+    {
+      "catalogOrder": 0,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "speech-02-turbo",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "responseFormats": [
+        "mp3",
+        "pcm",
+        "flac",
+        "wav"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.00006
+    },
+    {
+      "catalogOrder": 1,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "MiniMax-Hailuo-2.3",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2025-10-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站按条明文价（platform.minimax.io pricing-paygo：768P-6s $0.28/条 主档，按次计费每条=每次）；分档注释登记：768P-10s $0.56、1080P-6s $0.49、512P-6s $0.10、512P-10s $0.15",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerCall": 0.28
+    },
+    {
+      "cacheReadInputTokenCost": 6e-8,
+      "catalogOrder": 2,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "MiniMax-M3",
+      "outputCostPerToken": 0.0000012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-06-01",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 3.75e-7,
+      "cacheReadInputTokenCost": 6e-8,
+      "catalogOrder": 3,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 204800,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "MiniMax-M2.7",
+      "outputCostPerToken": 0.0000012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-18",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "catalogOrder": 4,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 204800,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 6e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "MiniMax-M2.7-highspeed",
+      "outputCostPerToken": 0.0000024,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 5,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "speech-2.8-hd",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2026-01-23",
+      "responseFormats": [
+        "mp3",
+        "pcm",
+        "flac",
+        "wav"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.0001
+    },
+    {
+      "catalogOrder": 6,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "speech-2.8-turbo",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2026-01-23",
+      "responseFormats": [
+        "mp3",
+        "pcm",
+        "flac",
+        "wav"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.00006
+    },
+    {
+      "catalogOrder": 7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "speech-2.6-hd",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2025-10-29",
+      "responseFormats": [
+        "mp3",
+        "pcm",
+        "flac",
+        "wav"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.0001
+    },
+    {
+      "catalogOrder": 8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "speech-2.6-turbo",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2025-10-29",
+      "responseFormats": [
+        "mp3",
+        "pcm",
+        "flac",
+        "wav"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.00006
+    },
+    {
+      "audioInputCostPerSecond": 0.00010555555555555555,
+      "catalogOrder": 9,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "asr-1.0",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 10,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "MiniMax-H3",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2026-07-31",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.08
+    },
+    {
+      "catalogOrder": 11,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "MiniMax-H3-Max",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.05
+    },
+    {
+      "catalogOrder": 12,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "image-01",
+      "outputCostPerImage": 0.0035,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2025-02-15",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    }
+  ],
+  "provider": "minimax"
+}

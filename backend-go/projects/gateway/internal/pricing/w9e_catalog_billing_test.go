@@ -303,16 +303,6 @@ func TestW9EFindProviderModelPricingAsOfGuards(t *testing.T) {
 	}
 }
 
-func TestW9EGeminiTierField(t *testing.T) {
-	if got := geminiTierField(nil, (*geminiTierPrices).inputPtr); got != nil {
-		t.Fatal("nil tier should return nil")
-	}
-	tier := &geminiTierPrices{inputUsdPer1M: 1.25}
-	if got := geminiTierField(tier, (*geminiTierPrices).inputPtr); got == nil || *got != 1.25 {
-		t.Fatalf("tier input = %v, want 1.25", got)
-	}
-}
-
 func TestW9ECompareProviderModelsOrdering(t *testing.T) {
 	left := &Pricing{Model: "a", CatalogOrder: iptr(1), ReleaseDate: "2026-01-01"}
 	right := &Pricing{Model: "b", CatalogOrder: iptr(2), ReleaseDate: "2025-01-01"}

@@ -1,0 +1,552 @@
+{
+  "models": [
+    {
+      "cacheReadInputTokenCost": 5e-7,
+      "cacheReadInputTokenCostPriority": 0.000001,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 500000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenPriority": 0.000004,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": true,
+      "longContextOutputCostMultiplier": 2,
+      "mode": "chat",
+      "model": "grok-4.7",
+      "outputCostPerToken": 0.000006,
+      "outputCostPerTokenPriority": 0.000012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-21",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 5e-7,
+      "cacheReadInputTokenCostPriority": 0.000001,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 500000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenPriority": 0.000004,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": true,
+      "longContextOutputCostMultiplier": 2,
+      "mode": "chat",
+      "model": "grok-4.6",
+      "outputCostPerToken": 0.000006,
+      "outputCostPerTokenPriority": 0.000012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-08-12",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 3e-7,
+      "cacheReadInputTokenCostPriority": 6e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 500000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenPriority": 0.000004,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": true,
+      "longContextOutputCostMultiplier": 2,
+      "mode": "chat",
+      "model": "grok-4.5",
+      "outputCostPerToken": 0.000006,
+      "outputCostPerTokenPriority": 0.000012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-07-08",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "low",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenPriority": 0.0000025,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": true,
+      "longContextOutputCostMultiplier": 2,
+      "mode": "chat",
+      "model": "grok-4.3",
+      "outputCostPerToken": 0.0000025,
+      "outputCostPerTokenPriority": 0.000005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-05-01",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenPriority": 0.0000025,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": true,
+      "longContextOutputCostMultiplier": 2,
+      "mode": "chat",
+      "model": "grok-4.20-0309-reasoning",
+      "outputCostPerToken": 0.0000025,
+      "outputCostPerTokenPriority": 0.000005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-10",
+      "shutdownDate": "2026-05-15",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenPriority": 0.0000025,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": true,
+      "longContextOutputCostMultiplier": 2,
+      "mode": "chat",
+      "model": "grok-4.20-0309-non-reasoning",
+      "outputCostPerToken": 0.0000025,
+      "outputCostPerTokenPriority": 0.000005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-10",
+      "shutdownDate": "2026-05-15",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 256000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000001,
+      "inputCostPerTokenPriority": 0.000002,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": true,
+      "longContextOutputCostMultiplier": 2,
+      "mode": "chat",
+      "model": "grok-build-0.1",
+      "outputCostPerToken": 0.000002,
+      "outputCostPerTokenPriority": 0.000004,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "2026-05-15",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenPriority": 0.0000025,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": true,
+      "longContextOutputCostMultiplier": 2,
+      "mode": "chat",
+      "model": "grok-4.20-multi-agent-0309",
+      "outputCostPerToken": 0.0000025,
+      "outputCostPerTokenPriority": 0.000005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-10",
+      "shutdownDate": "2026-05-15",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "grok-imagine-image-2.0",
+      "outputCostPerImage": 0.04,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-08-07",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "grok-imagine-image",
+      "outputCostPerImage": 0.02,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-03-02",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "grok-imagine-image-quality",
+      "outputCostPerImage": 0.05,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-04-03",
+      "shutdownDate": "2026-11-02",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "grok-imagine-video-1.5",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2026-07-31",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.14
+    },
+    {
+      "audioInputCostPerSecond": 0.00002777777777777778,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "grok-voice-transcribe-2.0",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-18",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.0008333333333333334,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "grok-voice-agent",
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    }
+  ],
+  "provider": "xai"
+}

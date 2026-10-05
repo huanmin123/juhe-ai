@@ -1,0 +1,1673 @@
+{
+  "models": [
+    {
+      "catalogOrder": -3,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000015,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-omni-1.1-flash",
+      "outputCostPerToken": 0.000009,
+      "outputModalities": [
+        "text",
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "generate_content",
+        "stream_generate_content"
+      ],
+      "supportedToolsByProtocol": {
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": -2,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000003,
+      "inputCostPerImageToken": 0.000001,
+      "inputCostPerToken": 7.5e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.8-live",
+      "outputCostPerAudioToken": 0.000012,
+      "outputCostPerToken": 0.0000045,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "generate_content",
+        "stream_generate_content"
+      ],
+      "supportedToolsByProtocol": {
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 7.5e-8,
+      "cacheReadInputTokenCostFlex": 3.75e-8,
+      "cacheReadInputTokenCostPriority": 1.35e-7,
+      "cacheStorageInputTokenCostPerHour": 5e-7,
+      "cacheStorageInputTokenCostPerHourFlex": 5e-7,
+      "cacheStorageInputTokenCostPerHourPriority": 5e-7,
+      "catalogOrder": -1,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "medium",
+      "inputCostPerToken": 7.5e-7,
+      "inputCostPerTokenFlex": 3.75e-7,
+      "inputCostPerTokenPriority": 0.00000135,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.8-flash",
+      "outputCostPerToken": 0.00000375,
+      "outputCostPerTokenFlex": 0.000001875,
+      "outputCostPerTokenPriority": 0.00000675,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-02",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 7.5e-8,
+      "cacheReadInputTokenCostFlex": 3.75e-8,
+      "cacheReadInputTokenCostPriority": 1.35e-7,
+      "cacheStorageInputTokenCostPerHour": 5e-7,
+      "cacheStorageInputTokenCostPerHourFlex": 5e-7,
+      "cacheStorageInputTokenCostPerHourPriority": 5e-7,
+      "catalogOrder": 0,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "medium",
+      "inputCostPerToken": 7.5e-7,
+      "inputCostPerTokenFlex": 3.75e-7,
+      "inputCostPerTokenPriority": 0.00000135,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.7-flash",
+      "outputCostPerToken": 0.00000375,
+      "outputCostPerTokenFlex": 0.000001875,
+      "outputCostPerTokenPriority": 0.00000675,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-08-13",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 7.5e-8,
+      "cacheReadInputTokenCostFlex": 3.75e-8,
+      "cacheReadInputTokenCostPriority": 1.35e-7,
+      "cacheStorageInputTokenCostPerHour": 5e-7,
+      "cacheStorageInputTokenCostPerHourFlex": 5e-7,
+      "cacheStorageInputTokenCostPerHourPriority": 5e-7,
+      "catalogOrder": 1,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "medium",
+      "inputCostPerToken": 7.5e-7,
+      "inputCostPerTokenFlex": 3.75e-7,
+      "inputCostPerTokenPriority": 0.00000135,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.6-flash",
+      "outputCostPerToken": 0.00000375,
+      "outputCostPerTokenFlex": 0.000001875,
+      "outputCostPerTokenPriority": 0.00000675,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-07-21",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 3e-8,
+      "cacheReadInputTokenCostFlex": 2e-8,
+      "cacheReadInputTokenCostPriority": 5.0000000000000004e-8,
+      "cacheStorageInputTokenCostPerHour": 0.000001,
+      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
+      "cacheStorageInputTokenCostPerHourPriority": 0.000001,
+      "catalogOrder": 5,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "minimal",
+      "inputCostPerToken": 3e-7,
+      "inputCostPerTokenFlex": 1.5e-7,
+      "inputCostPerTokenPriority": 5.4e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.5-flash-lite",
+      "outputCostPerToken": 0.0000025,
+      "outputCostPerTokenFlex": 0.00000125,
+      "outputCostPerTokenPriority": 0.0000045,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-07-21",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.5e-7,
+      "cacheReadInputTokenCostFlex": 7.5e-8,
+      "cacheReadInputTokenCostPriority": 2.7e-7,
+      "cacheStorageInputTokenCostPerHour": 0.000001,
+      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
+      "cacheStorageInputTokenCostPerHourPriority": 0.000001,
+      "catalogOrder": 10,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "medium",
+      "inputCostPerToken": 0.0000015,
+      "inputCostPerTokenFlex": 7.5e-7,
+      "inputCostPerTokenPriority": 0.0000027,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.5-flash",
+      "outputCostPerToken": 0.000009,
+      "outputCostPerTokenFlex": 0.0000045,
+      "outputCostPerTokenPriority": 0.0000162,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-05-19",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostFlex": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostPriority": 3.6e-7,
+      "cacheStorageInputTokenCostPerHour": 0.0000045,
+      "cacheStorageInputTokenCostPerHourFlex": 0.0000045,
+      "cacheStorageInputTokenCostPerHourPriority": 0.0000081,
+      "catalogOrder": 20,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenFlex": 0.000001,
+      "inputCostPerTokenPriority": 0.0000036000000000000003,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.1-pro-preview",
+      "outputCostPerToken": 0.000012,
+      "outputCostPerTokenFlex": 0.000006,
+      "outputCostPerTokenPriority": 0.0000216,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-02-19",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostFlex": 2.0000000000000002e-7,
+      "cacheReadInputTokenCostPriority": 3.6e-7,
+      "cacheStorageInputTokenCostPerHour": 0.0000045,
+      "cacheStorageInputTokenCostPerHourFlex": 0.0000045,
+      "cacheStorageInputTokenCostPerHourPriority": 0.0000081,
+      "catalogOrder": 30,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenFlex": 0.000001,
+      "inputCostPerTokenPriority": 0.0000036000000000000003,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.1-pro-preview-customtools",
+      "outputCostPerToken": 0.000012,
+      "outputCostPerTokenFlex": 0.000006,
+      "outputCostPerTokenPriority": 0.0000216,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-02-19",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 5.0000000000000004e-8,
+      "cacheReadInputTokenCostFlex": 5.0000000000000004e-8,
+      "cacheReadInputTokenCostPriority": 9e-8,
+      "cacheStorageInputTokenCostPerHour": 0.000001,
+      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
+      "cacheStorageInputTokenCostPerHourPriority": 0.0000018000000000000001,
+      "catalogOrder": 40,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "high",
+      "inputCostPerAudioToken": 0.000001,
+      "inputCostPerAudioTokenFlex": 5e-7,
+      "inputCostPerAudioTokenPriority": 0.0000018000000000000001,
+      "inputCostPerToken": 5e-7,
+      "inputCostPerTokenFlex": 2.5e-7,
+      "inputCostPerTokenPriority": 9.000000000000001e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3-flash-preview",
+      "outputCostPerToken": 0.000003,
+      "outputCostPerTokenFlex": 0.0000015,
+      "outputCostPerTokenPriority": 0.0000054,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-17",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context",
+          "computer_use"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.5000000000000002e-8,
+      "cacheReadInputTokenCostFlex": 1.2500000000000001e-8,
+      "cacheReadInputTokenCostPriority": 4.5e-8,
+      "cacheStorageInputTokenCostPerHour": 0.000001,
+      "cacheStorageInputTokenCostPerHourFlex": 5e-7,
+      "cacheStorageInputTokenCostPerHourPriority": 0.0000018000000000000001,
+      "catalogOrder": 50,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "minimal",
+      "inputCostPerAudioToken": 5e-7,
+      "inputCostPerAudioTokenFlex": 2.5e-7,
+      "inputCostPerAudioTokenPriority": 9.000000000000001e-7,
+      "inputCostPerToken": 2.5e-7,
+      "inputCostPerTokenFlex": 1.25e-7,
+      "inputCostPerTokenPriority": 4.5000000000000003e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-3.1-flash-lite",
+      "outputCostPerToken": 0.0000015,
+      "outputCostPerTokenFlex": 7.5e-7,
+      "outputCostPerTokenPriority": 0.0000027,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-05-07",
+      "shutdownDate": "2027-05-07",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 1.25e-7,
+      "cacheReadInputTokenCost": 1.25e-7,
+      "cacheReadInputTokenCostFlex": 1.25e-7,
+      "cacheReadInputTokenCostPriority": 2.2500000000000002e-7,
+      "cacheStorageInputTokenCostPerHour": 0.0000045,
+      "cacheStorageInputTokenCostPerHourFlex": 0.0000045,
+      "cacheStorageInputTokenCostPerHourPriority": 0.0000081,
+      "catalogOrder": 60,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenFlex": 6.25e-7,
+      "inputCostPerTokenPriority": 0.00000225,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 200000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-2.5-pro",
+      "outputCostPerToken": 0.00001,
+      "outputCostPerTokenFlex": 0.000005,
+      "outputCostPerTokenPriority": 0.000018,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-06-17",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 3e-8,
+      "cacheReadInputTokenCost": 3e-8,
+      "cacheReadInputTokenCostFlex": 3e-8,
+      "cacheReadInputTokenCostPriority": 5.4e-8,
+      "cacheStorageInputTokenCostPerHour": 0.000001,
+      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
+      "cacheStorageInputTokenCostPerHourPriority": 0.0000018000000000000001,
+      "catalogOrder": 70,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000001,
+      "inputCostPerAudioTokenFlex": 5e-7,
+      "inputCostPerAudioTokenPriority": 0.0000018000000000000001,
+      "inputCostPerToken": 3e-7,
+      "inputCostPerTokenFlex": 1.5e-7,
+      "inputCostPerTokenPriority": 5.4e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-2.5-flash",
+      "outputCostPerToken": 0.0000025,
+      "outputCostPerTokenFlex": 0.00000125,
+      "outputCostPerTokenPriority": 0.0000045,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-06-17",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 1e-8,
+      "cacheReadInputTokenCost": 1e-8,
+      "cacheReadInputTokenCostFlex": 1e-8,
+      "cacheReadInputTokenCostPriority": 1.8e-8,
+      "cacheStorageInputTokenCostPerHour": 0.000001,
+      "cacheStorageInputTokenCostPerHourFlex": 0.000001,
+      "cacheStorageInputTokenCostPerHourPriority": 0.0000018000000000000001,
+      "catalogOrder": 80,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 3e-7,
+      "inputCostPerAudioTokenFlex": 1.5e-7,
+      "inputCostPerAudioTokenPriority": 5.4e-7,
+      "inputCostPerToken": 1.0000000000000001e-7,
+      "inputCostPerTokenFlex": 5.0000000000000004e-8,
+      "inputCostPerTokenPriority": 1.8e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "mode": "chat",
+      "model": "gemini-2.5-flash-lite",
+      "outputCostPerToken": 4.0000000000000003e-7,
+      "outputCostPerTokenFlex": 2.0000000000000002e-7,
+      "outputCostPerTokenPriority": 7.2e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-07-22",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "generate_content",
+        "stream_generate_content",
+        "count_tokens",
+        "interactions"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "interactions": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ],
+        "stream_generate_content": [
+          "code_execution",
+          "file_search",
+          "function_calling",
+          "google_maps_grounding",
+          "google_search_grounding",
+          "structured_outputs",
+          "url_context"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "catalogOrder": 100,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.0000065,
+      "inputCostPerImageToken": 4.5000000000000003e-7,
+      "inputCostPerToken": 2.0000000000000002e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 8192,
+      "mode": "embedding",
+      "model": "gemini-embedding-2",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-22",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "embed_content"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 107,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000001,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gemini-3.1-flash-tts-preview",
+      "outputCostPerAudioToken": 0.00002,
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "responseFormats": [
+        "pcm"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 108,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gemini-3.8-flash-tts",
+      "outputCostPerAudioToken": 0.000009,
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "responseFormats": [
+        "pcm"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 109,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gemini-3.8-flash-lite-tts",
+      "outputCostPerAudioToken": 0.000006,
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "responseFormats": [
+        "pcm"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 110,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gemini-2.5-flash-preview-tts",
+      "outputCostPerAudioToken": 0.00001,
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2025-05-20",
+      "responseFormats": [
+        "pcm"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 111,
+      "catalogVisible": true,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000001,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gemini-2.5-pro-preview-tts",
+      "outputCostPerAudioToken": 0.00002,
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2025-05-20",
+      "responseFormats": [
+        "pcm"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "veo-3.0-generate-preview",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2025-07-31",
+      "shutdownDate": "2025-11-12",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.4
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "veo-3.0-fast-generate-preview",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2025-07-31",
+      "shutdownDate": "2025-11-12",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.15
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "veo-3.1-fast-generate-preview",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.1
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "veo-3.1-generate-preview",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "2026-10-22",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.4
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "veo-3.1-lite-generate-preview",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "2026-10-22",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.05
+    },
+    {
+      "catalogOrder": 101,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "gemini-3.1-flash-image",
+      "outputCostPerImageToken": 0.00006,
+      "outputCostPerToken": 0.000003,
+      "outputModalities": [
+        "text",
+        "image"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "generate_content",
+        "stream_generate_content"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 102,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000002,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "gemini-3-pro-image",
+      "outputCostPerImageToken": 0.00012,
+      "outputCostPerToken": 0.000012,
+      "outputModalities": [
+        "text",
+        "image"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "generate_content",
+        "stream_generate_content"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "catalogOrder": 103,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2.5e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "gemini-3.1-flash-lite-image",
+      "outputCostPerImageToken": 0.00003,
+      "outputCostPerToken": 0.0000015,
+      "outputModalities": [
+        "text",
+        "image"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "generate_content",
+        "stream_generate_content"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.00005,
+      "catalogOrder": 112,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000002,
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gemini-3.5-transcribe",
+      "outputCostPerToken": 0.000012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.00008333333333333333,
+      "catalogOrder": 113,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.0000035,
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gemini-3.5-transcribe-live",
+      "outputCostPerToken": 0.000021,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.00008833333333333333,
+      "catalogOrder": 114,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.0000035,
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gemini-3.5-live-translate-preview",
+      "outputCostPerToken": 0.000021,
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    }
+  ],
+  "provider": "gemini"
+}

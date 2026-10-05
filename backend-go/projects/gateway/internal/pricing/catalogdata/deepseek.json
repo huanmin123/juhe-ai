@@ -1,0 +1,148 @@
+{
+  "models": [
+    {
+      "cacheReadInputTokenCost": 6e-9,
+      "catalogOrder": 0,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 384000,
+      "mode": "chat",
+      "model": "deepseek-flash",
+      "outputCostPerToken": 0.0000012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-10",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses",
+        "messages"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "messages": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 6e-9,
+      "catalogOrder": 1,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 384000,
+      "mode": "chat",
+      "model": "deepseek-v4.1-flash",
+      "outputCostPerToken": 0.0000012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-10",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses",
+        "messages"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "messages": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 4.4e-8,
+      "catalogOrder": 20,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.00000132,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 384000,
+      "mode": "chat",
+      "model": "deepseek-v4-pro",
+      "outputCostPerToken": 0.00000396,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-24",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses",
+        "messages",
+        "completions"
+      ],
+      "supportedReasoningEfforts": [
+        "high",
+        "max"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "messages": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    }
+  ],
+  "provider": "deepseek"
+}

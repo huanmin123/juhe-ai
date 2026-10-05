@@ -1,0 +1,475 @@
+{
+  "models": [
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "doubao-tts",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "responseFormats": [
+        "mp3"
+      ],
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "占位目录行（非官方模型 ID）；官方人民币价 语音合成模型2.0 = 3 元/万字符（豆包语音产品计费 PDF volcengine.com/docs/6561/14275），按约定汇率 7.0 换算 $4.2857/百万字符",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.0000042857
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "doubao-seedance-1-0-pro-250528",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 1.7139999999999999e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 8.571e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 256000,
+      "mode": "chat",
+      "model": "doubao-seed-evolving",
+      "outputCostPerToken": 0.000004285999999999999,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 输入6/输出30/缓存读1.2 元/百万 tokens（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.8571/$4.286/$0.1714 每百万 tokens",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "minimal"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 1.7139999999999999e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 8.571e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 256000,
+      "mode": "chat",
+      "model": "doubao-seed-2-1-pro-260915",
+      "outputCostPerToken": 0.000004285999999999999,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-15",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 输入6/输出30/缓存读1.2 元/百万 tokens（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.8571/$4.286/$0.1714 每百万 tokens",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "minimal"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 2.2859999999999998e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerAudioToken": 0.000001714,
+      "inputCostPerToken": 1.143e-7,
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 256000,
+      "mode": "chat",
+      "model": "doubao-seed-2-1-lite-260915",
+      "outputCostPerToken": 3.8569999999999997e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-15",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 输入0.8/输出2.7/缓存读0.16/音频输入12 元/百万 tokens（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.1143/$0.3857/$0.02286/$1.714 每百万 tokens",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "minimal"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 1.0000000000000001e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 256000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 5e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "doubao-seed-2-1-turbo-260628",
+      "outputCostPerToken": 0.0000025,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-06-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：输入 $0.5 / 输出 $2.5 / 缓存读 $0.1，Flex/Batch $0.25/$1.25、缓存存储 $0.0083）；国内人民币价 3/15/0.6 元/百万 tokens 原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "minimal"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 5.0000000000000004e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 256000,
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.00000375,
+      "inputCostPerToken": 2.5e-7,
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "doubao-seed-2-0-lite-260428",
+      "outputCostPerToken": 0.000002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：输入 $0.25 首段（第二段 $0.50）/ 输出 $2.00 首段（第二段 $4.00）/ 缓存读 $0.05 / 音频输入 $3.75 每百万 tokens）；国内人民币价 0.6（三段 0.6/0.9/1.8）/3.6/0.12/音频 12 元原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 2e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 256000,
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.0000015,
+      "inputCostPerToken": 1.0000000000000001e-7,
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "doubao-seed-2-0-mini-260428",
+      "outputCostPerToken": 4.0000000000000003e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：输入 $0.10 / 输出 $0.40 / 缓存读 $0.02 / 音频输入 $1.50 每百万 tokens）；国内人民币价 0.2（三段 0.2/0.4/0.8）/2.0（三段 2.0/4.0/8.0）元原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "doubao-seedance-2-5-260628",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2026-06-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：每秒示例价 $0.231/秒，720p 16:9 5 秒口径；按输出 token 牌价 $10.70/百万 tokens，限时折扣另计）；国内人民币每秒参考价 1.51 元/秒原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.231
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "doubao-seedance-2-0-260128",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2026-01-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：每秒示例价 $0.15/秒，720p 16:9 5 秒口径；按输出 token 牌价 $7.0/百万 tokens，限时折扣另计）；国内人民币每秒参考价 4.97 元/秒原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.15
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "doubao-seedance-2-0-fast-260128",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2026-01-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：每秒示例价 $0.12/秒，720p 16:9 5 秒口径；按输出 token 牌价 $5.6/百万 tokens，限时折扣另计）；国内人民币每秒参考价 4.00 元/秒原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.12
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "doubao-seedance-2-0-mini-260615",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2026-06-15",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（BytePlus ModelArk docs.byteplus.com/docs/ModelArk/1099320：每秒示例价 $0.08/秒，720p 16:9 5 秒口径；按输出 token 牌价 $3.5/百万 tokens，限时折扣另计）；国内人民币每秒参考价 2.48 元/秒原句留档（火山方舟价格页 docs.volcengine.com/docs/82379/1544106）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.08
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "doubao-seedream-5-0-pro-260628",
+      "outputCostPerImage": 0.04286,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-06-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 0.30 元/张（≤261 万像素档；\u003e261 万像素 0.60 元/张及图层价另计，火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.04286/张",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "doubao-seedream-5-0-flash-260915",
+      "outputCostPerImage": 0.01714,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-09-15",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 0.12 元/张（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.01714/张",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "doubao-seedream-5-0-260128",
+      "outputCostPerImage": 0.03143,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-01-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 0.22 元/张（火山方舟价格页 docs.volcengine.com/docs/82379/1544106），按约定汇率 7.0 换算 $0.03143/张",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    }
+  ],
+  "provider": "volcengine"
+}

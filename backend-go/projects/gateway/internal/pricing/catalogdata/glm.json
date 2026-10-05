@@ -1,0 +1,908 @@
+{
+  "models": [
+    {
+      "cacheReadInputTokenCost": 2.6e-7,
+      "catalogOrder": 0,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "max",
+      "inputCostPerToken": 0.0000014,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "glm-5.3",
+      "outputCostPerToken": 0.0000044,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-08-18",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 3e-8,
+      "catalogOrder": 5,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "max",
+      "inputCostPerToken": 1.5e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "glm-5.3-flash",
+      "outputCostPerToken": 5e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-08-26",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 7.5e-8,
+      "catalogOrder": 6,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "max",
+      "inputCostPerToken": 3.7e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video",
+        "file"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "glm-5.3-flashx",
+      "outputCostPerToken": 0.00000125,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-18",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "high",
+        "max"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.6e-7,
+      "catalogOrder": 10,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "max",
+      "inputCostPerToken": 0.0000014,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "glm-5.2",
+      "outputCostPerToken": 0.0000044,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-06-16",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedReasoningEfforts": [
+        "high",
+        "max"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.6e-7,
+      "catalogOrder": 20,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000014,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "glm-5.1",
+      "outputCostPerToken": 0.0000044,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-07",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "catalogOrder": 30,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000001,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "glm-5",
+      "outputCostPerToken": 0.0000032000000000000003,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-02-12",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.4e-7,
+      "catalogOrder": 40,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000012,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "glm-5-turbo",
+      "outputCostPerToken": 0.000004,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-16",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.1e-7,
+      "catalogOrder": 50,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 6e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 131072,
+      "mode": "chat",
+      "model": "glm-4.7",
+      "outputCostPerToken": 0.0000022,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-22",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1e-8,
+      "catalogOrder": 60,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 7e-8,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 131072,
+      "mode": "chat",
+      "model": "glm-4.7-flashx",
+      "outputCostPerToken": 4.0000000000000003e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-22",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 0,
+      "catalogOrder": 70,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 131072,
+      "mode": "chat",
+      "model": "glm-4.7-flash",
+      "outputCostPerToken": 0,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-22",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.1e-7,
+      "catalogOrder": 80,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 6e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 131072,
+      "mode": "chat",
+      "model": "glm-4.6",
+      "outputCostPerToken": 0.0000022,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-09-30",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.1e-7,
+      "catalogOrder": 90,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 6e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 98304,
+      "mode": "chat",
+      "model": "glm-4.5",
+      "outputCostPerToken": 0.0000022,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-07-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 4.5000000000000003e-7,
+      "catalogOrder": 100,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000022,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 98304,
+      "mode": "chat",
+      "model": "glm-4.5-x",
+      "outputCostPerToken": 0.000008900000000000001,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-07-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 3e-8,
+      "catalogOrder": 110,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2.0000000000000002e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 98304,
+      "mode": "chat",
+      "model": "glm-4.5-air",
+      "outputCostPerToken": 0.0000011,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-07-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.2e-7,
+      "catalogOrder": 120,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000011,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 98304,
+      "mode": "chat",
+      "model": "glm-4.5-airx",
+      "outputCostPerToken": 0.0000045,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-07-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 0,
+      "catalogOrder": 130,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 98304,
+      "mode": "chat",
+      "model": "glm-4.5-flash",
+      "outputCostPerToken": 0,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-07-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "cogvideox-3",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.2/video，按次计费每条=每次）；国内人民币价 1 元/次原句留档（docs.bigmodel.cn 定价页）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerCall": 0.2
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "cogtts",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 2 元/万字符（与 glm-tts 同族现行价，docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $2.857/百万字符（2×10÷7.0）",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.0000028570000000000003
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 7.143000000000001e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "video"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "glm-5v-turbo",
+      "outputCostPerToken": 0.000003143,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-02",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 输入5/输出22 元/百万 tokens（0-32K 档；≥32K 7/26 元/百万 tokens，docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.7143/$3.143 每百万 tokens",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 5.0000000000000004e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 32000,
+      "mode": "chat",
+      "model": "glm-4.6v",
+      "outputCostPerToken": 9.000000000000001e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-08",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：输入 $0.3 / 缓存读 $0.05 / 输出 $0.9 每百万 tokens）；国内人民币价 1/3/缓存读 0.2 元原句留档（docs.bigmodel.cn 定价页）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 4e-9,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 4e-8,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 32000,
+      "mode": "chat",
+      "model": "glm-4.6v-flashx",
+      "outputCostPerToken": 4.0000000000000003e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：输入 $0.04 / 缓存读 $0.004 / 输出 $0.4 每百万 tokens）；国内人民币价 0.15/1.5 元原句留档（docs.bigmodel.cn 定价页）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 32000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-8,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "glm-ocr",
+      "outputCostPerToken": 3e-8,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-02-03",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：输入 $0.03 / 输出 $0.03 每百万 tokens）；国内人民币价 0.2/0.2 元原句留档（docs.bigmodel.cn 定价页）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "glm-tts",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2025-12-11",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 2 元/万字符（docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $2.857/百万字符（2×10÷7.0）",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.0000028570000000000003
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-8,
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "glm-asr-2512",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-10",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.03/MTok 输入）；国内人民币价 16 元/百万 tokens 原句留档（docs.bigmodel.cn 定价页）",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "glm-image",
+      "outputCostPerImage": 0.015,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-01-14",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.015/张，按次计费每张=每次）；国内人民币价 0.1 元/次原句留档（docs.bigmodel.cn 定价页）",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "cogview-4",
+      "outputCostPerImage": 0.01,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（z.ai docs.z.ai/guides/overview/pricing：$0.01/张，按次计费每张=每次）；国内人民币价 0.06 元/次原句留档（docs.bigmodel.cn 定价页）",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "cogvideox-2",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 0.5 元/次（docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.0714/次；z.ai 国际站无该行明文价",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerCall": 0.0714
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 7.143e-8,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 8192,
+      "mode": "embedding",
+      "model": "embedding-3",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 0.5 元/百万 tokens（docs.bigmodel.cn 定价页），按约定汇率 7.0 换算 $0.07143 每百万 tokens",
+      "supportedAPIProtocols": [
+        "embed_content"
+      ],
+      "supportsPromptCaching": false
+    }
+  ],
+  "provider": "glm"
+}

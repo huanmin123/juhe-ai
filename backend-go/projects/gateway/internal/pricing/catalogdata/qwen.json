@@ -1,0 +1,476 @@
+{
+  "models": [
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "wan2.2-t2v-plus",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "2026-10-05",
+      "sourceExchangeRateToUsd": 7,
+      "sourcePricingCurrency": "CNY",
+      "sourcePricingNote": "官方人民币价 480P 0.14 / 1080P 0.70 元/秒（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio），按约定汇率 7.0 换算，目录落 1080P 档 $0.1/秒（480P $0.02/秒注释登记）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.1
+    },
+    {
+      "audioInputCostPerSecond": 0.000012,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "paraformer-v2",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "国际站 Model Studio 计费页 China (Beijing) 区域 tab USD 明文 $0.000012/second（alibabacloud.com/help/en/model-studio/billing-for-model-studio）；国内人民币价 0.00008 元/秒原句留档（help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000002,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "qwen3.8-max",
+      "outputCostPerToken": 0.000006,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 $2 / 输出 $6 每百万 tokens）；国内人民币价 12/36 元原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1.5e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "qwen3.8-flash",
+      "outputCostPerToken": 4.6999999999999995e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 $0.15 / 输出 $0.47 每百万 tokens）；国内人民币价 0.8/2.7 元原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 4.0000000000000003e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "qwen3.7-plus",
+      "outputCostPerToken": 0.0000016000000000000001,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 $0.4 / 输出 $1.6 每百万 tokens 首段，限时 20% off）；国内人民币价 2/8 元原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 3e-8,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "qwen3.7-flash",
+      "outputCostPerToken": 1.3e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 $0.030 / 输出 $0.130 每百万 tokens 首段）；国内人民币价 0.2/0.8 元原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2.0000000000000002e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "qwen3-vl-plus",
+      "outputCostPerToken": 0.0000016000000000000001,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 $0.2 / 输出 $1.6 每百万 tokens）；国内人民币价 1/10 元原句留档（百炼文本生成模型列表 help.aliyun.com/zh/model-studio/text-generation-model）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5.0000000000000004e-8,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "qwen3-vl-flash",
+      "outputCostPerToken": 4.0000000000000003e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 $0.05 / 输出 $0.4 每百万 tokens）；国内人民币价 0.15/1.5 元原句留档（百炼文本生成模型列表 help.aliyun.com/zh/model-studio/text-generation-model）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000001,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "qwen3-coder-plus",
+      "outputCostPerToken": 0.000005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 $1 / 输出 $5 每百万 tokens 首段）；国内人民币价 4/16 元原句留档（百炼文本生成模型列表 help.aliyun.com/zh/model-studio/text-generation-model）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.00000381,
+      "inputCostPerImageToken": 7.8e-7,
+      "inputCostPerToken": 4.3e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "qwen3-omni-flash",
+      "outputCostPerAudioToken": 0.00001511,
+      "outputCostPerToken": 0.00000166,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：输入 text $0.43 / audio $3.81 / image $0.78，输出 text $1.66 / audio $15.11 每百万 tokens；多模态输入时 text 输出 $3.06 为条件价、无独立槽位仅注释登记）；国内人民币价 0.8/2.7 元原句留档（百炼文本生成模型列表 help.aliyun.com/zh/model-studio/text-generation-model）",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "qwen3-tts-flash",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：$0.1/万字符 = $10/百万字符）；国内人民币价 0.8 元/万字符原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.00001
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "cosyvoice-v3-flash",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：$0.13/万字符 = $13/百万字符）；国内人民币价 1 元/万字符原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.000013
+    },
+    {
+      "audioInputCostPerSecond": 0.000035,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "qwen3-asr-flash",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：$0.000035/秒）；国内人民币价 0.00022 元/秒原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "wan3.0-video",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：720p $0.10/秒 牌价，限时 30% off 另列）；国内人民币价 720P 0.6 元/秒原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.1
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "wan2.7-t2v",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：720p $0.10/秒）；国内人民币价 720P 0.6 元/秒原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.1
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "qwen-image-3.0",
+      "outputCostPerImage": 0.03,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：$0.03/张）；国内人民币价 0.18 元/张原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 7e-8,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "embedding",
+      "model": "text-embedding-v4",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "官方国际站 USD 明文价（alibabacloud.com/help/en/model-studio/model-pricing 新加坡 International：$0.07/百万 tokens）；国内人民币价 0.5 元/百万 tokens 原句留档（百炼计费页 help.aliyun.com/zh/model-studio/billing-for-model-studio）",
+      "supportedAPIProtocols": [
+        "embed_content"
+      ],
+      "supportsPromptCaching": false
+    }
+  ],
+  "provider": "qwen"
+}

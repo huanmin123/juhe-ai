@@ -1,0 +1,3834 @@
+{
+  "models": [
+    {
+      "cacheReadInputTokenCost": 5e-7,
+      "cacheReadInputTokenCostPriority": 8.75e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1047576,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenPriority": 0.0000035,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 32768,
+      "maxTokens": 32768,
+      "mode": "chat",
+      "model": "gpt-4.1",
+      "outputCostPerToken": 0.000008,
+      "outputCostPerTokenPriority": 0.000014,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-04-14",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1e-7,
+      "cacheReadInputTokenCostPriority": 1.75e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1047576,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 4e-7,
+      "inputCostPerTokenPriority": 7e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 32768,
+      "maxTokens": 32768,
+      "mode": "chat",
+      "model": "gpt-4.1-mini",
+      "outputCostPerToken": 0.0000016,
+      "outputCostPerTokenPriority": 0.0000028,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-04-14",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.5e-8,
+      "cacheReadInputTokenCostPriority": 5e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1047576,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1e-7,
+      "inputCostPerTokenPriority": 2e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 32768,
+      "maxTokens": 32768,
+      "mode": "chat",
+      "model": "gpt-4.1-nano",
+      "outputCostPerToken": 4e-7,
+      "outputCostPerTokenPriority": 8e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-04-14",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 0.00000125,
+      "cacheReadInputTokenCostPriority": 0.000002125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000025,
+      "inputCostPerTokenPriority": 0.00000425,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 16384,
+      "maxTokens": 16384,
+      "mode": "chat",
+      "model": "gpt-4o",
+      "outputCostPerToken": 0.00001,
+      "outputCostPerTokenPriority": 0.000017,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-05-13",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 7.5e-8,
+      "cacheReadInputTokenCostPriority": 1.25e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1.5e-7,
+      "inputCostPerTokenPriority": 2.5e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 16384,
+      "maxTokens": 16384,
+      "mode": "chat",
+      "model": "gpt-4o-mini",
+      "outputCostPerToken": 6e-7,
+      "outputCostPerTokenPriority": 0.000001,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-07-18",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 0.0000025,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 4096,
+      "mode": "chat",
+      "model": "gpt-4o-2024-05-13",
+      "outputCostPerToken": 0.000015,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-05-13",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00001,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 4096,
+      "mode": "chat",
+      "model": "gpt-4-turbo",
+      "outputCostPerToken": 0.00003,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-04-09",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00001,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 4096,
+      "mode": "chat",
+      "model": "gpt-4-turbo-2024-04-09",
+      "outputCostPerToken": 0.00003,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-04-09",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 128000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00001,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 4096,
+      "mode": "chat",
+      "model": "gpt-4-1106-preview",
+      "outputCostPerToken": 0.00003,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2023-11-06",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 8192,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00003,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 8192,
+      "mode": "chat",
+      "model": "gpt-4",
+      "outputCostPerToken": 0.00006,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2023-06-13",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 8192,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00003,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 8192,
+      "mode": "chat",
+      "model": "gpt-4-0613",
+      "outputCostPerToken": 0.00006,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2023-06-13",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 16385,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 4096,
+      "mode": "chat",
+      "model": "gpt-3.5-turbo",
+      "outputCostPerToken": 0.0000015,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2023-06-13",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 16385,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 4096,
+      "mode": "chat",
+      "model": "gpt-3.5-turbo-0125",
+      "outputCostPerToken": 0.0000015,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-01-25",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 16385,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000001,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 4096,
+      "maxTokens": 4096,
+      "mode": "chat",
+      "model": "gpt-3.5-turbo-1106",
+      "outputCostPerToken": 0.000002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2023-11-06",
+      "shutdownDate": "2026-09-28",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ]
+      },
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheCreationInputTokenCost": 0.0000025,
+      "cacheCreationInputTokenCostFlex": 0.00000125,
+      "cacheCreationInputTokenCostPriority": 0.000005,
+      "cacheReadInputTokenCost": 1e-7,
+      "cacheReadInputTokenCostFlex": 5e-8,
+      "cacheReadInputTokenCostPriority": 2e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenFlex": 0.000001,
+      "inputCostPerTokenPriority": 0.000004,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-6.1-sol",
+      "outputCostPerToken": 0.00001,
+      "outputCostPerTokenFlex": 0.000005,
+      "outputCostPerTokenPriority": 0.00002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-30",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.0000025,
+      "cacheCreationInputTokenCostFlex": 0.00000125,
+      "cacheCreationInputTokenCostPriority": 0.000005,
+      "cacheReadInputTokenCost": 2e-7,
+      "cacheReadInputTokenCostFlex": 1e-7,
+      "cacheReadInputTokenCostPriority": 4e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenFlex": 0.000001,
+      "inputCostPerTokenPriority": 0.000004,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-6-sol",
+      "outputCostPerToken": 0.00001,
+      "outputCostPerTokenFlex": 0.000005,
+      "outputCostPerTokenPriority": 0.00002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-22",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 1.25e-7,
+      "cacheCreationInputTokenCostFlex": 6.25e-8,
+      "cacheCreationInputTokenCostPriority": 2.5e-7,
+      "cacheReadInputTokenCost": 1e-8,
+      "cacheReadInputTokenCostFlex": 5e-9,
+      "cacheReadInputTokenCostPriority": 2e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 1e-7,
+      "inputCostPerTokenFlex": 5e-8,
+      "inputCostPerTokenPriority": 2e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-6-luna",
+      "outputCostPerToken": 5e-7,
+      "outputCostPerTokenFlex": 2.5e-7,
+      "outputCostPerTokenPriority": 0.000001,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-22",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.0000125,
+      "cacheCreationInputTokenCostFlex": 0.00000625,
+      "cacheCreationInputTokenCostPriority": 0.000025,
+      "cacheReadInputTokenCost": 0.000001,
+      "cacheReadInputTokenCostFlex": 5e-7,
+      "cacheReadInputTokenCostPriority": 0.000002,
+      "catalogOrder": -1,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00001,
+      "inputCostPerTokenFlex": 0.000005,
+      "inputCostPerTokenPriority": 0.00002,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-6-astra",
+      "outputCostPerToken": 0.00005,
+      "outputCostPerTokenFlex": 0.000025,
+      "outputCostPerTokenPriority": 0.0001,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-03",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.000005,
+      "cacheCreationInputTokenCostFlex": 0.0000025,
+      "cacheCreationInputTokenCostPriority": 0.00001,
+      "cacheReadInputTokenCost": 4e-7,
+      "cacheReadInputTokenCostFlex": 2e-7,
+      "cacheReadInputTokenCostPriority": 8e-7,
+      "catalogOrder": 0,
+      "codexDefaultReasoningLevel": "low",
+      "codexMultiAgentVersion": "v2",
+      "codexSupportedReasoningLevels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000004,
+      "inputCostPerTokenFlex": 0.000002,
+      "inputCostPerTokenPriority": 0.000008,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.6-sol",
+      "outputCostPerToken": 0.00002,
+      "outputCostPerTokenFlex": 0.00001,
+      "outputCostPerTokenPriority": 0.00004,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-06-26",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.0000025,
+      "cacheCreationInputTokenCostFlex": 0.00000125,
+      "cacheCreationInputTokenCostPriority": 0.000005,
+      "cacheReadInputTokenCost": 2e-7,
+      "cacheReadInputTokenCostFlex": 1e-7,
+      "cacheReadInputTokenCostPriority": 4e-7,
+      "catalogOrder": 1,
+      "codexDefaultReasoningLevel": "medium",
+      "codexMultiAgentVersion": "v2",
+      "codexSupportedReasoningLevels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenFlex": 0.000001,
+      "inputCostPerTokenPriority": 0.000004,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.6-terra",
+      "outputCostPerToken": 0.000012,
+      "outputCostPerTokenFlex": 0.000006,
+      "outputCostPerTokenPriority": 0.000024,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-06-26",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 2.5e-7,
+      "cacheCreationInputTokenCostFlex": 1.25e-7,
+      "cacheCreationInputTokenCostPriority": 5e-7,
+      "cacheReadInputTokenCost": 2e-8,
+      "cacheReadInputTokenCostFlex": 1e-8,
+      "cacheReadInputTokenCostPriority": 4e-8,
+      "catalogOrder": 2,
+      "codexDefaultReasoningLevel": "medium",
+      "codexMultiAgentVersion": "",
+      "codexSupportedReasoningLevels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2e-7,
+      "inputCostPerTokenFlex": 1e-7,
+      "inputCostPerTokenPriority": 4e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxInputTokens": 922000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.6-luna",
+      "outputCostPerToken": 0.0000012,
+      "outputCostPerTokenFlex": 6e-7,
+      "outputCostPerTokenPriority": 0.0000024,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-06-26",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.000015625,
+      "cacheReadInputTokenCost": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000125,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "chat",
+      "model": "gpt-5.6-cyber",
+      "outputCostPerToken": 0.000075,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp",
+          "tool_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 5e-7,
+      "cacheReadInputTokenCostFlex": 2.5e-7,
+      "cacheReadInputTokenCostPriority": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000005,
+      "inputCostPerTokenFlex": 0.0000025,
+      "inputCostPerTokenPriority": 0.0000125,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.5",
+      "outputCostPerToken": 0.00003,
+      "outputCostPerTokenFlex": 0.000015,
+      "outputCostPerTokenPriority": 0.000075,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-23",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "tool_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 5e-7,
+      "cacheReadInputTokenCostFlex": 2.5e-7,
+      "cacheReadInputTokenCostPriority": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000005,
+      "inputCostPerTokenFlex": 0.0000025,
+      "inputCostPerTokenPriority": 0.0000125,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.5-2026-04-23",
+      "outputCostPerToken": 0.00003,
+      "outputCostPerTokenFlex": 0.000015,
+      "outputCostPerTokenPriority": 0.000075,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-23",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "tool_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00003,
+      "inputCostPerTokenFlex": 0.000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5.5-pro",
+      "outputCostPerToken": 0.00018,
+      "outputCostPerTokenFlex": 0.00009,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-23",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00003,
+      "inputCostPerTokenFlex": 0.000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5.5-pro-2026-04-23",
+      "outputCostPerToken": 0.00018,
+      "outputCostPerTokenFlex": 0.00009,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-23",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.5e-7,
+      "cacheReadInputTokenCostFlex": 1.3e-7,
+      "cacheReadInputTokenCostPriority": 5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000025,
+      "inputCostPerTokenFlex": 0.00000125,
+      "inputCostPerTokenPriority": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.4",
+      "outputCostPerToken": 0.000015,
+      "outputCostPerTokenFlex": 0.0000075,
+      "outputCostPerTokenPriority": 0.00003,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-05",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "tool_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.5e-7,
+      "cacheReadInputTokenCostFlex": 1.3e-7,
+      "cacheReadInputTokenCostPriority": 5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000025,
+      "inputCostPerTokenFlex": 0.00000125,
+      "inputCostPerTokenPriority": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.4-2026-03-05",
+      "outputCostPerToken": 0.000015,
+      "outputCostPerTokenFlex": 0.0000075,
+      "outputCostPerTokenPriority": 0.00003,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-05",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "tool_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 7.5e-8,
+      "cacheReadInputTokenCostFlex": 3.75e-8,
+      "cacheReadInputTokenCostPriority": 1.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 7.5e-7,
+      "inputCostPerTokenFlex": 3.75e-7,
+      "inputCostPerTokenPriority": 0.0000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.4-mini",
+      "outputCostPerToken": 0.0000045,
+      "outputCostPerTokenFlex": 0.00000225,
+      "outputCostPerTokenPriority": 0.000009,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-17",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "tool_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 7.5e-8,
+      "cacheReadInputTokenCostFlex": 3.75e-8,
+      "cacheReadInputTokenCostPriority": 1.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 7.5e-7,
+      "inputCostPerTokenFlex": 3.75e-7,
+      "inputCostPerTokenPriority": 0.0000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.4-mini-2026-03-17",
+      "outputCostPerToken": 0.0000045,
+      "outputCostPerTokenFlex": 0.00000225,
+      "outputCostPerTokenPriority": 0.000009,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-17",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "tool_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "computer_use",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2e-8,
+      "cacheReadInputTokenCostFlex": 1e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2e-7,
+      "inputCostPerTokenFlex": 1e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.4-nano",
+      "outputCostPerToken": 0.00000125,
+      "outputCostPerTokenFlex": 6.25e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-17",
+      "shutdownDate": "2027-04-01",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2e-8,
+      "cacheReadInputTokenCostFlex": 1e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2e-7,
+      "inputCostPerTokenFlex": 1e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.4-nano-2026-03-17",
+      "outputCostPerToken": 0.00000125,
+      "outputCostPerTokenFlex": 6.25e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-17",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00003,
+      "inputCostPerTokenFlex": 0.000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5.4-pro",
+      "outputCostPerToken": 0.00018,
+      "outputCostPerTokenFlex": 0.00009,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-05",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "tool_search",
+          "image_generation",
+          "apply_patch",
+          "computer_use",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1050000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00003,
+      "inputCostPerTokenFlex": 0.000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputCostMultiplier": 2,
+      "longContextInputTokenThreshold": 272000,
+      "longContextInputTokenThresholdInclusive": false,
+      "longContextOutputCostMultiplier": 1.5,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5.4-pro-2026-03-05",
+      "outputCostPerToken": 0.00018,
+      "outputCostPerTokenFlex": 0.00009,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-03-05",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "tool_search",
+          "image_generation",
+          "apply_patch",
+          "computer_use",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.75e-7,
+      "cacheReadInputTokenCostPriority": 3.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000175,
+      "inputCostPerTokenPriority": 0.0000035,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5.3-codex",
+      "outputCostPerToken": 0.000014,
+      "outputCostPerTokenPriority": 0.000028,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "2027-04-01",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "web_search",
+          "hosted_shell",
+          "skills"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.75e-7,
+      "cacheReadInputTokenCostFlex": 8.75e-8,
+      "cacheReadInputTokenCostPriority": 3.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000175,
+      "inputCostPerTokenFlex": 8.75e-7,
+      "inputCostPerTokenPriority": 0.0000035,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 400000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.2",
+      "outputCostPerToken": 0.000014,
+      "outputCostPerTokenFlex": 0.000007,
+      "outputCostPerTokenPriority": 0.000028,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-11",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.75e-7,
+      "cacheReadInputTokenCostFlex": 8.75e-8,
+      "cacheReadInputTokenCostPriority": 3.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000175,
+      "inputCostPerTokenFlex": 8.75e-7,
+      "inputCostPerTokenPriority": 0.0000035,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 400000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.2-2025-12-11",
+      "outputCostPerToken": 0.000014,
+      "outputCostPerTokenFlex": 0.000007,
+      "outputCostPerTokenPriority": 0.000028,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-11",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "hosted_shell",
+          "apply_patch",
+          "skills",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000021,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 400000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5.2-pro",
+      "outputCostPerToken": 0.000168,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-11",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "file_search",
+          "image_generation",
+          "mcp",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000021,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 400000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5.2-pro-2025-12-11",
+      "outputCostPerToken": 0.000168,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-12-11",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "file_search",
+          "image_generation",
+          "mcp",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.25e-7,
+      "cacheReadInputTokenCostPriority": 2.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenPriority": 0.0000025,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 400000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.1",
+      "outputCostPerToken": 0.00001,
+      "outputCostPerTokenPriority": 0.00002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-11-13",
+      "shutdownDate": "2027-04-01",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "apply_patch",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.25e-7,
+      "cacheReadInputTokenCostPriority": 2.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenPriority": 0.0000025,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 400000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5.1-2025-11-13",
+      "outputCostPerToken": 0.00001,
+      "outputCostPerTokenPriority": 0.00002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-11-13",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "apply_patch",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.25e-7,
+      "cacheReadInputTokenCostPriority": 2.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenPriority": 0.0000025,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5",
+      "outputCostPerToken": 0.00001,
+      "outputCostPerTokenPriority": 0.00002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-08-07",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 1.25e-7,
+      "cacheReadInputTokenCostPriority": 2.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00000125,
+      "inputCostPerTokenPriority": 0.0000025,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5-2025-08-07",
+      "outputCostPerToken": 0.00001,
+      "outputCostPerTokenPriority": 0.00002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-08-07",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.5e-8,
+      "cacheReadInputTokenCostPriority": 4.5e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2.5e-7,
+      "inputCostPerTokenPriority": 4.5e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5-mini",
+      "outputCostPerToken": 0.000002,
+      "outputCostPerTokenPriority": 0.0000036,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-08-07",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.5e-8,
+      "cacheReadInputTokenCostPriority": 4.5e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 2.5e-7,
+      "inputCostPerTokenPriority": 4.5e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5-mini-2025-08-07",
+      "outputCostPerToken": 0.000002,
+      "outputCostPerTokenPriority": 0.0000036,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-08-07",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 5e-9,
+      "cacheReadInputTokenCostPriority": 5e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5e-8,
+      "inputCostPerTokenPriority": 2e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5-nano",
+      "outputCostPerToken": 4e-7,
+      "outputCostPerTokenPriority": 8e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-08-07",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 5e-9,
+      "cacheReadInputTokenCostPriority": 5e-8,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 5e-8,
+      "inputCostPerTokenPriority": 2e-7,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 272000,
+      "maxOutputTokens": 128000,
+      "maxTokens": 128000,
+      "mode": "chat",
+      "model": "gpt-5-nano-2025-08-07",
+      "outputCostPerToken": 4e-7,
+      "outputCostPerTokenPriority": 8e-7,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-08-07",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "web_search",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 272000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5-pro",
+      "outputCostPerToken": 0.00012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-10-06",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "file_search",
+          "image_generation",
+          "mcp",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 272000,
+      "maxTokens": 128000,
+      "mode": "responses",
+      "model": "gpt-5-pro-2025-10-06",
+      "outputCostPerToken": 0.00012,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-10-06",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "file_search",
+          "image_generation",
+          "mcp",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputImageTokenCost": 0.000002,
+      "cacheReadInputTokenCost": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 202752,
+      "defaultReasoningEffort": "",
+      "inputCostPerImageToken": 0.000008,
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 65536,
+      "mode": "image_generation",
+      "model": "gpt-image-2.5-sunburst",
+      "outputCostPerImageToken": 0.00003,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-09-08",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images",
+        "responses"
+      ],
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputImageTokenCost": 0.000002,
+      "cacheReadInputTokenCost": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 202752,
+      "defaultReasoningEffort": "",
+      "inputCostPerImageToken": 0.000008,
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 65536,
+      "mode": "image_generation",
+      "model": "gpt-image-2.5-flare",
+      "outputCostPerImageToken": 0.00003,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-09-08",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images",
+        "responses"
+      ],
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputImageTokenCost": 0.000002,
+      "cacheReadInputTokenCost": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerImageToken": 0.000008,
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "gpt-image-2",
+      "outputCostPerImageToken": 0.00003,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-04-21",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputImageTokenCost": 0.000002,
+      "cacheReadInputTokenCost": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerImageToken": 0.000008,
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "gpt-image-2-2026-04-21",
+      "outputCostPerImageToken": 0.00003,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2026-04-21",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputImageTokenCost": 0.000002,
+      "cacheReadInputTokenCost": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerImageToken": 0.000008,
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "gpt-image-1.5",
+      "outputCostPerImageToken": 0.000032,
+      "outputCostPerToken": 0.00001,
+      "outputModalities": [
+        "image",
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "2026-12-01",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputImageTokenCost": 2.5e-7,
+      "cacheReadInputTokenCost": 2e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerImageToken": 0.0000025,
+      "inputCostPerToken": 0.000002,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "gpt-image-1-mini",
+      "outputCostPerImageToken": 0.000008,
+      "outputModalities": [
+        "image",
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "2026-12-01",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images"
+      ],
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputImageTokenCost": 0.0000025,
+      "cacheReadInputTokenCost": 0.00000125,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerImageToken": 0.00001,
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "image_generation",
+      "model": "gpt-image-1",
+      "outputCostPerImageToken": 0.00004,
+      "outputModalities": [
+        "image"
+      ],
+      "releaseDate": "2025-04-23",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "images",
+        "responses"
+      ],
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 0.0000075,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 100000,
+      "maxTokens": 100000,
+      "mode": "chat",
+      "model": "o1",
+      "outputCostPerToken": 0.00006,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2024-12-05",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "file_search",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00015,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 100000,
+      "maxTokens": 100000,
+      "mode": "responses",
+      "model": "o1-pro",
+      "outputCostPerToken": 0.0006,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "file_search",
+          "mcp"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 5e-7,
+      "cacheReadInputTokenCostPriority": 8.75e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000002,
+      "inputCostPerTokenPriority": 0.0000035,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 100000,
+      "maxTokens": 100000,
+      "mode": "chat",
+      "model": "o3",
+      "outputCostPerToken": 0.000008,
+      "outputCostPerTokenPriority": 0.000014,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-04-16",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "file_search",
+          "image_generation",
+          "code_interpreter",
+          "mcp",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.00002,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 100000,
+      "maxTokens": 100000,
+      "mode": "responses",
+      "model": "o3-pro",
+      "outputCostPerToken": 0.00008,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "responses"
+      ],
+      "supportedToolsByProtocol": {
+        "responses": [
+          "function_calling",
+          "file_search",
+          "image_generation",
+          "mcp",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 5.5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000011,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 100000,
+      "maxTokens": 100000,
+      "mode": "chat",
+      "model": "o3-mini",
+      "outputCostPerToken": 0.0000044,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-01-31",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "file_search",
+          "code_interpreter",
+          "mcp",
+          "image_generation"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheReadInputTokenCost": 2.75e-7,
+      "cacheReadInputTokenCostPriority": 5e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.0000011,
+      "inputCostPerTokenPriority": 0.000002,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 100000,
+      "maxTokens": 100000,
+      "mode": "chat",
+      "model": "o4-mini",
+      "outputCostPerToken": 0.0000044,
+      "outputCostPerTokenPriority": 0.000008,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-04-16",
+      "shutdownDate": "2026-10-23",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [
+        "priority",
+        "flex"
+      ],
+      "supportedToolsByProtocol": {
+        "chat_completions": [
+          "function_calling"
+        ],
+        "responses": [
+          "function_calling",
+          "file_search",
+          "code_interpreter",
+          "mcp",
+          "web_search"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 6e-7,
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-4o-mini-tts",
+      "outputCostPerAudioToken": 0.000012,
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2025-03-20",
+      "responseFormats": [
+        "mp3",
+        "opus",
+        "aac",
+        "flac",
+        "wav",
+        "pcm"
+      ],
+      "shutdownDate": "2027-01-06",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.0001,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000006,
+      "inputCostPerToken": 0.0000025,
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-4o-transcribe",
+      "outputCostPerToken": 0.00001,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-03-20",
+      "shutdownDate": "2027-02-26",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.00005,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000003,
+      "inputCostPerToken": 0.00000125,
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-4o-mini-transcribe",
+      "outputCostPerToken": 0.000005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-03-20",
+      "shutdownDate": "2027-02-26",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "tts-1",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2023-11-06",
+      "responseFormats": [
+        "mp3",
+        "opus",
+        "aac",
+        "flac",
+        "wav",
+        "pcm"
+      ],
+      "shutdownDate": "2027-01-06",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.000015
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "tts-1-hd",
+      "outputModalities": [
+        "audio"
+      ],
+      "releaseDate": "2023-11-06",
+      "responseFormats": [
+        "mp3",
+        "opus",
+        "aac",
+        "flac",
+        "wav",
+        "pcm"
+      ],
+      "shutdownDate": "2027-01-06",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_speech"
+      ],
+      "supportsPromptCaching": false,
+      "ttsInputCostPerChar": 0.00003
+    },
+    {
+      "audioInputCostPerSecond": 0.0001,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "whisper-1",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2023-03-01",
+      "shutdownDate": "2027-02-26",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000032,
+      "inputCostPerImageToken": 0.000005,
+      "inputCostPerToken": 0.000004,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-realtime",
+      "outputCostPerAudioToken": 0.000064,
+      "outputCostPerToken": 0.000016,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "2025-08-28",
+      "shutdownDate": "2027-01-20",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000032,
+      "inputCostPerImageToken": 0.000005,
+      "inputCostPerToken": 0.000004,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-realtime-2.1",
+      "outputCostPerAudioToken": 0.000064,
+      "outputCostPerToken": 0.000024,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000032,
+      "inputCostPerImageToken": 0.000005,
+      "inputCostPerToken": 0.000004,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-realtime-2",
+      "outputCostPerAudioToken": 0.000064,
+      "outputCostPerToken": 0.000024,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.00001,
+      "inputCostPerImageToken": 8.000000000000001e-7,
+      "inputCostPerToken": 6e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-realtime-2.1-mini",
+      "outputCostPerAudioToken": 0.00002,
+      "outputCostPerToken": 0.0000024,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.00001,
+      "inputCostPerImageToken": 8.000000000000001e-7,
+      "inputCostPerToken": 6e-7,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-realtime-mini",
+      "outputCostPerAudioToken": 0.00002,
+      "outputCostPerToken": 0.0000024,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "cacheReadInputTokenCost": 4.0000000000000003e-7,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000032,
+      "inputCostPerImageToken": 0.000005,
+      "inputCostPerToken": 0.000004,
+      "inputModalities": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-realtime-1.5",
+      "outputCostPerAudioToken": 0.000064,
+      "outputCostPerToken": 0.000016,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000032,
+      "inputCostPerToken": 0.0000025,
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-audio-1.5",
+      "outputCostPerAudioToken": 0.000064,
+      "outputCostPerToken": 0.00001,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.000032,
+      "inputCostPerToken": 0.0000025,
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-audio",
+      "outputCostPerAudioToken": 0.000064,
+      "outputCostPerToken": 0.00001,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputCostPerAudioToken": 0.00001,
+      "inputCostPerToken": 6e-7,
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-audio-mini",
+      "outputCostPerAudioToken": 0.00002,
+      "outputCostPerToken": 0.0000024,
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "chat_completions",
+        "responses"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.0008333333333333334,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-live-1",
+      "outputModalities": [
+        "text",
+        "audio"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.000075,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-transcribe",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "audio_transcription"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.00028333333333333335,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-live-transcribe",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.00028333333333333335,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-realtime-whisper",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "audioInputCostPerSecond": 0.0005666666666666667,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "audio"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "audio",
+      "model": "gpt-realtime-translate",
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "realtime"
+      ],
+      "supportsPromptCaching": false
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "sora-2",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2025-10-06",
+      "shutdownDate": "2026-09-24",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.1
+    },
+    {
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "defaultReasoningEffort": "",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "mode": "video",
+      "model": "sora-2-pro",
+      "outputModalities": [
+        "video"
+      ],
+      "releaseDate": "2025-10-06",
+      "shutdownDate": "2026-09-24",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "video"
+      ],
+      "supportsPromptCaching": false,
+      "videoOutputCostPerSecond": 0.3
+    }
+  ],
+  "provider": "gpt"
+}

@@ -1,0 +1,695 @@
+{
+  "models": [
+    {
+      "cacheCreationInputTokenCost": 0.000005,
+      "cacheCreationInputTokenCostAbove1hr": 0.000008,
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "catalogOrder": 2,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "medium",
+      "inputCostPerToken": 0.000004,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "claude-opus-5-5",
+      "outputCostPerToken": 0.00002,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-22",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000625,
+      "cacheCreationInputTokenCostAbove1hr": 0.00001,
+      "cacheReadInputTokenCost": 5e-7,
+      "catalogOrder": 5,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "claude-opus-5",
+      "outputCostPerToken": 0.000025,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-07-24",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.0000125,
+      "cacheCreationInputTokenCostAbove1hr": 0.00002,
+      "cacheReadInputTokenCost": 2.5e-7,
+      "catalogOrder": 10,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.00001,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "claude-fable-5-1",
+      "outputCostPerToken": 0.00005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-09-01",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.0000125,
+      "cacheCreationInputTokenCostAbove1hr": 0.00002,
+      "cacheReadInputTokenCost": 0.000001,
+      "catalogOrder": 20,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.00001,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "claude-fable-5",
+      "outputCostPerToken": 0.00005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-06-09",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.0000025,
+      "cacheCreationInputTokenCostAbove1hr": 0.000004,
+      "cacheReadInputTokenCost": 2.0000000000000002e-7,
+      "catalogOrder": 25,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000002,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "claude-sonnet-5",
+      "outputCostPerToken": 0.00001,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-06-30",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000625,
+      "cacheCreationInputTokenCostAbove1hr": 0.00001,
+      "cacheReadInputTokenCost": 5e-7,
+      "catalogOrder": 40,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "claude-opus-4-8",
+      "outputCostPerToken": 0.000025,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-05-28",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000625,
+      "cacheCreationInputTokenCostAbove1hr": 0.00001,
+      "cacheReadInputTokenCost": 5e-7,
+      "catalogOrder": 50,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "claude-opus-4-7",
+      "outputCostPerToken": 0.000025,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-04-16",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000625,
+      "cacheCreationInputTokenCostAbove1hr": 0.00001,
+      "cacheReadInputTokenCost": 5e-7,
+      "catalogOrder": 60,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "mode": "chat",
+      "model": "claude-opus-4-6",
+      "outputCostPerToken": 0.000025,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-02-05",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000625,
+      "cacheCreationInputTokenCostAbove1hr": 0.00001,
+      "cacheReadInputTokenCost": 5e-7,
+      "catalogOrder": 80,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 64000,
+      "mode": "chat",
+      "model": "claude-opus-4-5",
+      "outputCostPerToken": 0.000025,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-11-24",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000625,
+      "cacheCreationInputTokenCostAbove1hr": 0.00001,
+      "cacheReadInputTokenCost": 5e-7,
+      "catalogOrder": 90,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000005,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 64000,
+      "mode": "chat",
+      "model": "claude-opus-4-5-20251101",
+      "outputCostPerToken": 0.000025,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-11-01",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000375,
+      "cacheCreationInputTokenCostAbove1hr": 0.000006,
+      "cacheReadInputTokenCost": 3.0000000000000004e-7,
+      "catalogOrder": 120,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
+      "defaultReasoningEffort": "high",
+      "inputCostPerToken": 0.000003,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 64000,
+      "mode": "chat",
+      "model": "claude-sonnet-4-6",
+      "outputCostPerToken": 0.000015,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2026-02-17",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000375,
+      "cacheCreationInputTokenCostAbove1hr": 0.000006,
+      "cacheReadInputTokenCost": 3.0000000000000004e-7,
+      "catalogOrder": 140,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000003,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 64000,
+      "mode": "chat",
+      "model": "claude-sonnet-4-5",
+      "outputCostPerToken": 0.000015,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-09-29",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000375,
+      "cacheCreationInputTokenCostAbove1hr": 0.000006,
+      "cacheReadInputTokenCost": 3.0000000000000004e-7,
+      "catalogOrder": 150,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000003,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 64000,
+      "mode": "chat",
+      "model": "claude-sonnet-4-5-20250929",
+      "outputCostPerToken": 0.000015,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-09-29",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000125,
+      "cacheCreationInputTokenCostAbove1hr": 0.000002,
+      "cacheReadInputTokenCost": 1.0000000000000001e-7,
+      "catalogOrder": 160,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000001,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 64000,
+      "mode": "chat",
+      "model": "claude-haiku-4-5",
+      "outputCostPerToken": 0.000005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-10-15",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    },
+    {
+      "cacheCreationInputTokenCost": 0.00000125,
+      "cacheCreationInputTokenCostAbove1hr": 0.000002,
+      "cacheReadInputTokenCost": 1.0000000000000001e-7,
+      "catalogOrder": 170,
+      "codexDefaultReasoningLevel": "",
+      "codexMultiAgentVersion": "",
+      "contextWindowTokens": 200000,
+      "defaultReasoningEffort": "",
+      "inputCostPerToken": 0.000001,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "longContextInputTokenThresholdInclusive": false,
+      "maxInputTokens": 200000,
+      "maxOutputTokens": 64000,
+      "mode": "chat",
+      "model": "claude-haiku-4-5-20251001",
+      "outputCostPerToken": 0.000005,
+      "outputModalities": [
+        "text"
+      ],
+      "releaseDate": "2025-10-01",
+      "shutdownDate": "",
+      "sourceExchangeRateDate": "",
+      "sourcePricingCurrency": "",
+      "sourcePricingNote": "",
+      "supportedAPIProtocols": [
+        "messages",
+        "message_token_counting"
+      ],
+      "supportedReasoningEfforts": [],
+      "supportedServiceTiers": [],
+      "supportedToolsByProtocol": {
+        "messages": [
+          "function_calling",
+          "code_execution"
+        ]
+      },
+      "supportsPromptCaching": true
+    }
+  ],
+  "provider": "anthropic"
+}
