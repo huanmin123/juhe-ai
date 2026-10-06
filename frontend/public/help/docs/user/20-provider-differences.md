@@ -34,7 +34,7 @@
 | `thinking` | 扩展思考对象 | 顶层，如 `{ "type": "enabled" }` 类形态 |
 | `output_config.effort` | 思考强度 | 顶层 `output_config` 对象 |
 | `cache_control` | prompt 缓存标记 | `messages[]` / `system` / `tools` 的 content block 内 |
-| `system` 数组形态 | 顶层 `system` 是 block 数组，不是字符串 | `[{ "type": "text", "text": "…" }]` |
+| `system` | 顶层 `system` 字符串与 block 数组两种写法都可用（数组形态可对单块加缓存等标记） | `"system": "…"` 或 `[{ "type": "text", "text": "…" }]` |
 | `top_k` / `mcp_servers` / `container` / `context_management` / `metadata` | 原生字段，透传 | 顶层 |
 
 请求头：`anthropic-version` 可省（上游自动补 `2023-06-01`）；`anthropic-beta` 客户端带则透传。回包：`content[]` block 结构（`text` / `tool_use` / `thinking`）、`stop_reason`、usage 带 `cache_creation_input_tokens` / `cache_read_input_tokens` / `output_tokens_details.thinking_tokens`。注意流式 `message_delta.usage` 是**累计值**，不要逐帧相加。
@@ -83,7 +83,7 @@
 | `frequency_penalty` / `presence_penalty` | 官方已废弃；**思考模式下 `temperature` / `top_p` / penalty 均不生效** | 顶层 |
 | Beta 能力 | 前缀续写（末条 assistant 消息加 `prefix: true`）与 FIM 补全，属上游 beta 面，可用性以管理员配置为准 | — |
 
-回包：思考内容在 `choices[].message.reasoning_content` / `delta.reasoning_content`（不拼入正文）；usage 带 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`；`finish_reason` 可能出现官方值 `insufficient_system_resource`。
+回包：思考内容在 `choices[].message.reasoning_content` / `delta.reasoning_content`（不拼入正文）；usage 带 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`；`finish_reason` 可能出现官方值 `insufficient_system_resource`。另有一条对客户端超时设置很实用：DeepSeek 流式期间会周期性发 SSE 注释行做**保活心跳**（非流式则以空行保活），长请求可以跑很久——把客户端读超时设得太短（比如几秒）会误杀正常的长思考请求。
 
 ## MiniMax
 
@@ -112,8 +112,8 @@
 
 | 项 | 说明 |
 | --- | --- |
-| `reasoning_effort` | 枚举**按模型不同**：grok-4.7/4.6/4.5 是 `low`–`xhigh`（默认 high）；grok-4.3 多一个 `none`（默认 low）；multi-agent 模型的 effort 语义是**协作 agent 数量**（low/medium=4，high/xhigh=16），不是推理深度 |
-| 工具声明 | `responses` 协议下声明了 `web_search` 工具（本系统各家目录里独一份） |
+| `reasoning_effort` | 枚举**按模型不同，两套四档**：grok-4.7/4.6/4.5 是 `low/medium/high/xhigh`（默认 high）；grok-4.3 是 `none/low/medium/high`——**没有 `xhigh`**，默认 low（给 4.3 传 `xhigh` 是无效值）；multi-agent 模型的 effort 语义是**协作 agent 数量**（low/medium=4，high/xhigh=16），不是推理深度 |
+| 服务端工具 | `web_search` 等收费服务端工具按 xAI 官方语法在请求里声明即可，网关透传；这类工具的计费不经过本系统用量对账 |
 | 其余参数 | 项目内无额外记载——对话面零改写透传，按 xAI 官方文档写 |
 
 ## "思考级别"在四种协议里的字段对照

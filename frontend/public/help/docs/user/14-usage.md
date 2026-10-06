@@ -106,10 +106,12 @@
 
 | 页面 | 看什么 |
 | --- | --- |
-| [团队](/__aisys__/my-teams) | 团队结构与成员 |
-| [授权管理](/__aisys__/my-authorizations) | 授权关系的入口 |
-| [成员用量](/__aisys__/my-authorization-user-usage) | 按用户维度看用量分摊 |
-| [团队用量](/__aisys__/my-authorization-team-usage) | 按团队维度看用量汇总 |
+| [我的授权团队](/__aisys__/my-teams) | 团队结构与成员 |
+| [授权操作](/__aisys__/my-authorizations) | 授权关系的入口 |
+| [用户消耗明细](/__aisys__/my-authorization-user-usage) | 按用户维度看用量分摊 |
+| [团队消耗明细](/__aisys__/my-authorization-team-usage) | 按团队维度看用量汇总 |
+
+以上页面都位于左侧导航的"我的授权"菜单组下。
 
 个人用户记住主线就够：**明细看用量记录，汇总看用量统计，大盘看统计总览。**
 

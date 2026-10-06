@@ -69,7 +69,7 @@ curl -s &quot;$BASE_URL/v1/chat/completions&quot; \
 <h2>网关会改写什么：五种例外</h2>
 <p>透传是默认，但有五种场景网关会动请求体。每种都有明确的触发条件：</p>
 <p><strong>1. 模型映射改写 <code>model</code> 字段。</strong> 你的 Key 绑定的分组里，某账户配了&quot;请求模型 → 上游模型&quot;的映射并命中时，出站请求体的 <code>model</code> 被替换为映射后的上游模型（其余字段不动）。你无感知，但<strong>响应里的 <code>model</code> 可能是上游真实拼写</strong>，与你请求的名字不同。</p>
-<p><strong>2. 跨协议转换时按白名单重建请求体。</strong> 当请求被路由到&quot;协议不同&quot;的账户（比如 Anthropic 客户端 → Chat 协议账户，见《协议总览》），网关按目标协议<strong>重建</strong>请求体——重建时只保留目标协议有语义的字段，多余字段要么报错要么丢失：</p>
+<p><strong>2. 跨协议转换时按白名单重建请求体。</strong> 当请求被路由到&quot;协议不同&quot;的账户（比如 Anthropic 客户端 → Chat 协议账户，见《协议总览：三类协议面怎么选》），网关按目标协议<strong>重建</strong>请求体——重建时只保留目标协议有语义的字段，多余字段要么报错要么丢失：</p>
 <ul>
 <li>Anthropic → Chat 桥：请求体带 <code>thinking</code>、<code>cache_control</code>、<code>top_k</code>、<code>mcp_servers</code> 等字段会<strong>直接 400 拒绝</strong>（错误信息会点名该字段）；白名单外的其他字段<strong>静默丢失</strong>。</li>
 <li>Gemini 桥：<code>reasoning</code>/<code>thinking</code>/<code>logprobs</code> 等在场即拒绝；<code>reasoning_effort</code> 的部分取值会换算为 Gemini 的思考档位。</li>
@@ -125,6 +125,8 @@ curl -s &quot;$BASE_URL/v1/chat/completions&quot; \
 </tr>
 </tbody></table>
 <p>各供应商支持哪些键（如 GLM 声音复刻的 <code>ref_audio</code>/<code>ref_text</code>）查各供应商官方文档；网关层不设白名单。</p>
+<h2>流式请求的重试边界</h2>
+<p>带 <code>&quot;stream&quot;: true</code> 的请求要知道一条规则：<strong>网关在把流提交给你之前失败（比如上游连不上、参数被拒），会自动换其他账户重试</strong>，你只看到变慢；<strong>一旦流已经开始往回吐数据，后续失败不会再换账户重放</strong>——流会以 error 帧或提前结束收尾，需要你自己在客户端重试整次请求。所以同样的请求有时第一次明显更慢，那是网关在悄悄换号重试。</p>
 <h2>请求体大小限制</h2>
 <table>
 <thead>

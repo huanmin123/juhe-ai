@@ -6,7 +6,7 @@
 
 1. 一把可用的 API Key（见《API Key 与认证》）。
 2. 客户端支持"自定义 Gemini Base URL"（Google Gen AI SDK、Code Assist 类工具都支持）。
-3. 模型名以网关目录为准（见《模型列表》）。
+3. 模型名以网关目录为准（见《模型列表：我能用什么模型》）。
 
 ## 端点清单
 
@@ -75,7 +75,7 @@ curl -s "$BASE_URL/v1beta/models/gemini-3.5-flash:generateContent" \
 这条协议面上的错误统一渲染为 Gemini 形态：
 
 ```json
-{ "error": { "message": "…", "status": "…", "code": … } }
+{ "error": { "message": "…", "status": "NOT_FOUND", "code": 404 } }
 ```
 
 常见 `status`：`UNAUTHENTICATED`（Key 问题）、`INVALID_ARGUMENT`（请求问题）、`PERMISSION_DENIED`、`NOT_FOUND`（路径/模型不存在）、`RESOURCE_EXHAUSTED`（限流/额度）、`UNAVAILABLE`（过载/上游不可用）。模型不可调度类错误的判断思路与 OpenAI 面一致，可对照《错误码与排障》解读。
@@ -88,12 +88,12 @@ curl -s "$BASE_URL/v1beta/models/gemini-3.5-flash:generateContent" \
 from google import genai
 
 client = genai.Client(
-    base_url="$BASE_URL/v1beta",
     api_key="$JUHE_AI_API_KEY",
+    http_options={"base_url": "$BASE_URL"},
 )
 ```
 
-其他 Gemini 系工具同理：找"自定义 Base URL / API Key"两个配置项填网关值。模型选择以 `GET /v1beta/models` 实际返回为准。
+注意：`base_url` 只填到网关地址为止，**不要带 `/v1beta` 后缀**——SDK 会自动在后面拼接 `/v1beta` 路径；带了反而会拼出错误地址。其他 Gemini 系工具同理：找"自定义 Base URL / API Key"两个配置项填网关值（同样不带 `/v1beta`）。模型选择以 `GET /v1beta/models` 实际返回为准。
 
 ## 常见错误
 

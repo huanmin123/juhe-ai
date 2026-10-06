@@ -8,7 +8,7 @@
 <ol>
 <li>一把可用的 API Key（见《API Key 与认证》）。</li>
 <li>客户端支持&quot;自定义 Gemini Base URL&quot;（Google Gen AI SDK、Code Assist 类工具都支持）。</li>
-<li>模型名以网关目录为准（见《模型列表》）。</li>
+<li>模型名以网关目录为准（见《模型列表：我能用什么模型》）。</li>
 </ol>
 <h2>端点清单</h2>
 <table>
@@ -104,7 +104,7 @@
 <p><code>name</code> 去掉 <code>models/</code> 前缀就是路径里用的模型名；<code>supportedGenerationMethods</code> 告诉你这个模型能走哪些方法端点。</p>
 <h2>错误信封</h2>
 <p>这条协议面上的错误统一渲染为 Gemini 形态：</p>
-<pre><code class="language-json">{ &quot;error&quot;: { &quot;message&quot;: &quot;…&quot;, &quot;status&quot;: &quot;…&quot;, &quot;code&quot;: … } }
+<pre><code class="language-json">{ &quot;error&quot;: { &quot;message&quot;: &quot;…&quot;, &quot;status&quot;: &quot;NOT_FOUND&quot;, &quot;code&quot;: 404 } }
 </code></pre>
 <p>常见 <code>status</code>：<code>UNAUTHENTICATED</code>（Key 问题）、<code>INVALID_ARGUMENT</code>（请求问题）、<code>PERMISSION_DENIED</code>、<code>NOT_FOUND</code>（路径/模型不存在）、<code>RESOURCE_EXHAUSTED</code>（限流/额度）、<code>UNAVAILABLE</code>（过载/上游不可用）。模型不可调度类错误的判断思路与 OpenAI 面一致，可对照《错误码与排障》解读。</p>
 <h2>接入 Gemini SDK</h2>
@@ -112,11 +112,11 @@
 <pre><code class="language-python">from google import genai
 
 client = genai.Client(
-    base_url=&quot;$BASE_URL/v1beta&quot;,
     api_key=&quot;$JUHE_AI_API_KEY&quot;,
+    http_options={&quot;base_url&quot;: &quot;$BASE_URL&quot;},
 )
 </code></pre>
-<p>其他 Gemini 系工具同理：找&quot;自定义 Base URL / API Key&quot;两个配置项填网关值。模型选择以 <code>GET /v1beta/models</code> 实际返回为准。</p>
+<p>注意：<code>base_url</code> 只填到网关地址为止，<strong>不要带 <code>/v1beta</code> 后缀</strong>——SDK 会自动在后面拼接 <code>/v1beta</code> 路径；带了反而会拼出错误地址。其他 Gemini 系工具同理：找&quot;自定义 Base URL / API Key&quot;两个配置项填网关值（同样不带 <code>/v1beta</code>）。模型选择以 <code>GET /v1beta/models</code> 实际返回为准。</p>
 <h2>常见错误</h2>
 <table>
 <thead>

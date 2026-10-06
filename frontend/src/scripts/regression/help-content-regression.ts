@@ -110,7 +110,7 @@ assertContains(userBundle, '`active`（检查通过且启用）是进入候选�
 assertContains(adminBundle, 'juhe-ai-account-import v1', '管理员篇目必须说明代用户导入协议')
 assertContains(adminBundle, 'pending_test', '管理员篇目必须保留 pending_test 语义')
 assertContains(adminBundle, '最多 50 个账户', '管理员篇目必须保留导入限额')
-assertContains(adminBundle, '分组保存 `providerCode`，它既是账户集合，也是供应商过滤边界', '管理员篇目必须说明分组保存供应商边界')
+assertContains(adminBundle, '每个分组绑定一个供应商，它既是账户集合，也是供应商过滤边界', '管理员篇目必须说明分组绑定供应商边界')
 assertContains(adminBundle, '新建一个同配置的策略', '管理员篇目必须说明复制策略的正确做法')
 
 // 页面壳契约：单一手册（user/ 与 admin/ 路径同壳）、导航挂载点、正文挂载点、下载链接

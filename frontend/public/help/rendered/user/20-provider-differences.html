@@ -93,9 +93,9 @@
 <td><code>messages[]</code> / <code>system</code> / <code>tools</code> 的 content block 内</td>
 </tr>
 <tr>
-<td><code>system</code> 数组形态</td>
-<td>顶层 <code>system</code> 是 block 数组，不是字符串</td>
-<td><code>[{ &quot;type&quot;: &quot;text&quot;, &quot;text&quot;: &quot;…&quot; }]</code></td>
+<td><code>system</code></td>
+<td>顶层 <code>system</code> 字符串与 block 数组两种写法都可用（数组形态可对单块加缓存等标记）</td>
+<td><code>&quot;system&quot;: &quot;…&quot;</code> 或 <code>[{ &quot;type&quot;: &quot;text&quot;, &quot;text&quot;: &quot;…&quot; }]</code></td>
 </tr>
 <tr>
 <td><code>top_k</code> / <code>mcp_servers</code> / <code>container</code> / <code>context_management</code> / <code>metadata</code></td>
@@ -233,7 +233,7 @@
 <td>—</td>
 </tr>
 </tbody></table>
-<p>回包：思考内容在 <code>choices[].message.reasoning_content</code> / <code>delta.reasoning_content</code>（不拼入正文）；usage 带 <code>prompt_cache_hit_tokens</code> / <code>prompt_cache_miss_tokens</code>；<code>finish_reason</code> 可能出现官方值 <code>insufficient_system_resource</code>。</p>
+<p>回包：思考内容在 <code>choices[].message.reasoning_content</code> / <code>delta.reasoning_content</code>（不拼入正文）；usage 带 <code>prompt_cache_hit_tokens</code> / <code>prompt_cache_miss_tokens</code>；<code>finish_reason</code> 可能出现官方值 <code>insufficient_system_resource</code>。另有一条对客户端超时设置很实用：DeepSeek 流式期间会周期性发 SSE 注释行做<strong>保活心跳</strong>（非流式则以空行保活），长请求可以跑很久——把客户端读超时设得太短（比如几秒）会误杀正常的长思考请求。</p>
 <h2>MiniMax</h2>
 <p><strong>注意：账户层面 MiniMax 只承接媒体流量</strong>（视频/TTS），模型目录里虽然列了 chat 协议的模型行，实际能不能调以管理员账户配置为准。</p>
 <table>
@@ -307,11 +307,11 @@
 </thead>
 <tbody><tr>
 <td><code>reasoning_effort</code></td>
-<td>枚举<strong>按模型不同</strong>：grok-4.7/4.6/4.5 是 <code>low</code>–<code>xhigh</code>（默认 high）；grok-4.3 多一个 <code>none</code>（默认 low）；multi-agent 模型的 effort 语义是<strong>协作 agent 数量</strong>（low/medium=4，high/xhigh=16），不是推理深度</td>
+<td>枚举<strong>按模型不同，两套四档</strong>：grok-4.7/4.6/4.5 是 <code>low/medium/high/xhigh</code>（默认 high）；grok-4.3 是 <code>none/low/medium/high</code>——<strong>没有 <code>xhigh</code></strong>，默认 low（给 4.3 传 <code>xhigh</code> 是无效值）；multi-agent 模型的 effort 语义是<strong>协作 agent 数量</strong>（low/medium=4，high/xhigh=16），不是推理深度</td>
 </tr>
 <tr>
-<td>工具声明</td>
-<td><code>responses</code> 协议下声明了 <code>web_search</code> 工具（本系统各家目录里独一份）</td>
+<td>服务端工具</td>
+<td><code>web_search</code> 等收费服务端工具按 xAI 官方语法在请求里声明即可，网关透传；这类工具的计费不经过本系统用量对账</td>
 </tr>
 <tr>
 <td>其余参数</td>

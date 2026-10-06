@@ -61,6 +61,7 @@ data: [DONE]
 <ol>
 <li>每段 JSON 的 <code>object</code> 是 <code>chat.completion.chunk</code>，不是 <code>chat.completion</code>。</li>
 <li>增量放在 <code>delta.content</code>，不是 <code>message.content</code>；<code>delta</code> 里只有&quot;这一小段新增的内容&quot;，某几段里可能根本没有 <code>content</code> 字段（比如开头声明 role 的那段、结尾带 <code>finish_reason</code> 的那段），直接跳过即可。</li>
+<li><strong>有一种特殊的段要当失败处理</strong>：某段 JSON 里带的不是 <code>choices</code> 而是 <code>error</code> 字段——这是网关在流中途失败时补写的失败事件（比如上游过载中断）。看到它就立即按失败处理、重试整个请求，<strong>不要</strong>当普通段跳过。</li>
 </ol>
 <h2>流式与非流式对照</h2>
 <table>
@@ -106,6 +107,7 @@ data: [DONE]
     行是 &quot;data: [DONE]&quot;    -&gt; 正常结束, 关闭连接
     否则:
         chunk = JSON解析( 去掉 &quot;data: &quot; 前缀后的部分 )
+        如果 chunk 里有 &quot;error&quot; 字段 -&gt; 流中途失败, 立即重试整个请求
         piece = chunk.choices[0].delta.content    # 可能不存在
         如果 piece 存在: full = full + piece
 </code></pre>
@@ -124,6 +126,11 @@ data: [DONE]
 <td>收到 <code>data: [DONE]</code> 后连接正常结束</td>
 <td>成功</td>
 <td>用拼好的完整回答</td>
+</tr>
+<tr>
+<td>某段 <code>data:</code> 是合法 JSON 但带 <code>error</code> 字段（没有 <code>choices</code>）</td>
+<td>失败</td>
+<td>流中途失败事件，<strong>立即重试整个请求</strong>，不要再等 <code>[DONE]</code></td>
 </tr>
 <tr>
 <td>某段 <code>data:</code> 的 JSON 解析失败（结构异常）</td>

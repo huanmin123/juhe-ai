@@ -6,7 +6,7 @@
 
 1. 一把可用的 API Key（见《API Key 与认证》）。
 2. 客户端支持"自定义 Anthropic Base URL"（Claude Code、Anthropic SDK 都支持）。
-3. 模型名以网关目录为准（见《模型列表》）。
+3. 模型名以网关目录为准（见《模型列表：我能用什么模型》）。
 
 ## 端点清单
 
@@ -88,7 +88,7 @@ export ANTHROPIC_BASE_URL="$BASE_URL"
 export ANTHROPIC_AUTH_TOKEN="$JUHE_AI_API_KEY"
 ```
 
-之后正常使用即可；模型选择以网关目录为准（`claude -` 交互里看到的可切模型以环境与目录实际匹配结果为准）。
+之后正常使用即可；模型可用性以网关模型目录与实际调用为准——Claude Code 里选不到某个模型时，先用 `GET /v1/models` 核对模型名是否存在。
 
 ## 常见错误
 

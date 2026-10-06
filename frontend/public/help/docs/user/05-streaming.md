@@ -55,6 +55,7 @@ data: [DONE]
 
 1. 每段 JSON 的 `object` 是 `chat.completion.chunk`，不是 `chat.completion`。
 2. 增量放在 `delta.content`，不是 `message.content`；`delta` 里只有"这一小段新增的内容"，某几段里可能根本没有 `content` 字段（比如开头声明 role 的那段、结尾带 `finish_reason` 的那段），直接跳过即可。
+3. **有一种特殊的段要当失败处理**：某段 JSON 里带的不是 `choices` 而是 `error` 字段——这是网关在流中途失败时补写的失败事件（比如上游过载中断）。看到它就立即按失败处理、重试整个请求，**不要**当普通段跳过。
 
 ## 流式与非流式对照
 
@@ -79,6 +80,7 @@ full = ""
     行是 "data: [DONE]"    -> 正常结束, 关闭连接
     否则:
         chunk = JSON解析( 去掉 "data: " 前缀后的部分 )
+        如果 chunk 里有 "error" 字段 -> 流中途失败, 立即重试整个请求
         piece = chunk.choices[0].delta.content    # 可能不存在
         如果 piece 存在: full = full + piece
 ```
@@ -92,6 +94,7 @@ full = ""
 | 流的结局 | 判定 | 处理 |
 | --- | --- | --- |
 | 收到 `data: [DONE]` 后连接正常结束 | 成功 | 用拼好的完整回答 |
+| 某段 `data:` 是合法 JSON 但带 `error` 字段（没有 `choices`） | 失败 | 流中途失败事件，**立即重试整个请求**，不要再等 `[DONE]` |
 | 某段 `data:` 的 JSON 解析失败（结构异常） | 失败 | 按"本次回答未完成"处理，**重试整个请求** |
 | 流在没出现 `[DONE]` 的情况下提前断掉 | 失败 | 同上，重试 |
 | 连接长时间没有任何新数据 | 可能卡住 | 给读操作设超时（如 60 秒无数据即断开），断开后按失败重试 |

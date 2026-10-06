@@ -22,14 +22,6 @@
   }&#39;
 </code></pre>
 <p>与 chat completions 最直观的区别：不用组 <code>messages</code> 数组，一句 <code>input</code> 字符串就能问。</p>
-<pre><code class="language-bash">curl -s &quot;$BASE_URL/v1/responses&quot; \
-  -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \
-  -H &quot;Content-Type: application/json&quot; \
-  -d &#39;{
-    &quot;model&quot;: &quot;gpt-5.4&quot;,
-    &quot;input&quot;: &quot;用一句话介绍你自己&quot;
-  }&#39;
-</code></pre>
 <p><code>input</code> 也支持传结构化的消息数组，多轮上下文与《对话协议 chat completions》同理——协议无状态，历史由你的代码拼进数组：</p>
 <pre><code class="language-bash">curl -s &quot;$BASE_URL/v1/responses&quot; \
   -H &quot;Authorization: Bearer $JUHE_AI_API_KEY&quot; \

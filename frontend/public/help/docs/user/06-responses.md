@@ -26,16 +26,6 @@ curl -s "$BASE_URL/v1/responses" \
 
 与 chat completions 最直观的区别：不用组 `messages` 数组，一句 `input` 字符串就能问。
 
-```bash
-curl -s "$BASE_URL/v1/responses" \
-  -H "Authorization: Bearer $JUHE_AI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-5.4",
-    "input": "用一句话介绍你自己"
-  }'
-```
-
 `input` 也支持传结构化的消息数组，多轮上下文与《对话协议 chat completions》同理——协议无状态，历史由你的代码拼进数组：
 
 ```bash

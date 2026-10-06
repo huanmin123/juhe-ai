@@ -197,6 +197,33 @@ export JUHE_AI_API_KEY=&quot;sk-你的Key&quot;
 </ol>
 <p>所以&quot;我还剩多少额度&quot;这个问题，答案永远在管理台页面上，不要靠客户端本地估算。</p>
 <p>再补一个实用思路：把额度拆到多把 Key 上，一把出问题不影响其他——这也是按用途分 Key 的又一个好处。</p>
+<h2>Key 的三重可用边界</h2>
+<p>一把 Key 能不能用，除了手动停用，还有两个<strong>会自动生效的时间边界</strong>（都在 <a href="/__aisys__/my-api-keys">API Keys</a> 页面配置）：</p>
+<table>
+<thead>
+<tr>
+<th>边界</th>
+<th>行为</th>
+<th>容易踩的坑</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>手动停用 / 删除</td>
+<td>停用立即生效，用它的请求开始收到 401</td>
+<td>怀疑泄露时先停用，处理完再换新 Key</td>
+</tr>
+<tr>
+<td><strong>过期时间</strong></td>
+<td>到达设定的绝对时间点后，Key 自动不可用</td>
+<td>&quot;昨天还好好的今天全 401&quot;——先看是不是 Key 到期了</td>
+</tr>
+<tr>
+<td><strong>时间计划</strong></td>
+<td>只在设定的星期/时段内可用，窗口外自动不可用，窗口内自动恢复</td>
+<td>只在固定时段跑任务的用户常配这个；窗口外调用表现为状态类错误，不是网络问题</td>
+</tr>
+</tbody></table>
+<p>三重边界的表现都是 401 类失败，且<strong>时间边界是自动翻转的</strong>——排查&quot;突然全挂&quot;时，先到 Key 列表看运行状态和这两个时间配置，再查别的。</p>
 <h2>收到 401？按顺序检查</h2>
 <table>
 <thead>
@@ -218,8 +245,8 @@ export JUHE_AI_API_KEY=&quot;sk-你的Key&quot;
 </tr>
 <tr>
 <td>3</td>
-<td>Key 状态</td>
-<td>到 <a href="/__aisys__/my-api-keys">API Keys</a> 看这把 Key 是否还在、状态是否正常（可能已被停用或删除）</td>
+<td>Key 状态与时间边界</td>
+<td>到 <a href="/__aisys__/my-api-keys">API Keys</a> 看这把 Key 是否还在、状态是否正常（可能已被停用或删除），以及<strong>是否已过过期时间、当前是否在时间计划窗口外</strong></td>
 </tr>
 <tr>
 <td>4</td>
