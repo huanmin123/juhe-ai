@@ -90,9 +90,11 @@ func ScheduledEntries() []Entry {
 		{
 			JobName: "usage-hot-window-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
 			Hotspot: true, SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"stats:usage_overview_summary_windows", "stats:usage_overview_trend_windows", "stats:usage_scope_range_windows"},
+			Writes:   []string{"stats:usage_scope_range_windows"},
 			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages(热窗口阶段 overview+scope)",
+			// overview 阶段已移出（BUG-0285）：其写面由 usage-overview-windows-refresh
+			// 覆盖，热任务只保留唯一不可替代的 scope 写面。
+			GoBinding: "WindowRefresher.RunStages(热窗口阶段 scope)",
 		},
 		{
 			JobName: "client-ip-stats-aggregation", Category: CategoryScheduled, Kind: "stats", DefaultRole: "stats-worker",

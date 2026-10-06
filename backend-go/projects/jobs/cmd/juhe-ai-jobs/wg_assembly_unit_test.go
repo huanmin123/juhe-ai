@@ -97,9 +97,11 @@ func TestRankSnapshotCoreStagesBranches(t *testing.T) {
 			t.Fatal("PG 分支不得包含 ai_performance_summary_windows")
 		}
 	}
+	// BUG-0285：热任务只保留 scope 阶段——overview 阶段生产实测 ~52-55s 超
+	// 35s 超时，且其写面已由 usage-overview-windows-refresh 覆盖。
 	hot := hotUsageWindowStages()
-	if len(hot) != 2 {
-		t.Fatalf("热窗口 stage 数错误: %v", hot)
+	if len(hot) != 1 || hot[0] != statsagg.StageUsageScopeRangeWindows {
+		t.Fatalf("热窗口 stage 必须仅为 usage_scope_range_windows: %v", hot)
 	}
 }
 

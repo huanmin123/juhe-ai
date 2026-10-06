@@ -31,8 +31,8 @@ const (
 	StageSystemMetricsTrendWindows            WindowStageName = "system_metrics_trend_windows"
 	StageUsageScopeRangeWindows               WindowStageName = "usage_scope_range_windows"
 	// StageAuthorizationUsageRangeWindows 已随授权消耗明细改为日摘要表现场
-	// 聚合而停用：不再注册进刷新编排（selectStages/runStage 均不认领），仅
-	// 保留常量名待组合根清理残留装配引用后移除。
+	// 聚合而停用：不再注册进刷新编排（selectStages/runStage 均不认领），组合
+	// 根装配已移除；常量仅由停用语义断言测试（w10c“未知阶段应报错”）引用。
 	StageAuthorizationUsageRangeWindows WindowStageName = "authorization_usage_range_windows"
 )
 

@@ -621,9 +621,16 @@ func rankSnapshotCoreStages(postgres bool) []statsagg.WindowStageName {
 	return append(core, statsagg.StageAiPerformanceSummaryWindows)
 }
 
-// hotUsageWindowStages 对齐 Node hotUsageWindowStageNames。
+// hotUsageWindowStages 只保留 usage_scope_range_windows 一个阶段（BUG-0285）：
+// 原 overview+scope 组合中，overview 阶段在当前生产数据量下实测耗时 ~52-55s
+// （background_task_runs duration_ms 实证），远超本任务 35s 超时，导致任务
+// 每轮死在 overview 阶段、唯一不可替代的写面 usage_scope_range_windows 冻结。
+// overview 产出已由 usage-overview-windows-refresh（Interval 5min、Timeout
+// 10min）完整覆盖，热任务里的 overview 是纯重复计算，故从装配层阶段清单中
+// 移除；statsagg.hotUsageWindowStageNames（含 overview+scope 的旧默认组，
+// 仅供 statsagg 层测试消费）保持不动。
 func hotUsageWindowStages() []statsagg.WindowStageName {
-	return []statsagg.WindowStageName{statsagg.StageUsageOverviewWindows, statsagg.StageUsageScopeRangeWindows}
+	return []statsagg.WindowStageName{statsagg.StageUsageScopeRangeWindows}
 }
 
 // wireOAuthFamily：J4 家族（OpenAI OAuth 刷新、anthropic/gemini/grok
