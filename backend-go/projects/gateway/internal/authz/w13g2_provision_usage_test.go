@@ -300,7 +300,7 @@ func TestW13g2ProvisionSyncNames(t *testing.T) {
 }
 
 // TestW13g2UsageDetailMore 覆盖 usage_detail 剩余分支：team 无效、hasMore
-// 截断、无 grantee 跳过、窗口行命中、fallback 的 continue 与合并。
+// 截断、无 grantee 跳过、团队日摘要行聚合命中、fallback 的 continue 与合并。
 func TestW13g2UsageDetailMore(t *testing.T) {
 	f := newUsageFixture(t)
 	w13g2SeedAccounts(t, f)
@@ -351,23 +351,23 @@ func TestW13g2UsageDetailMore(t *testing.T) {
 		t.Fatalf("pageSize=1 两行应有 hasMore")
 	}
 
-	// 窗口行命中 → 直接返回窗口摘要（577-579）。
-	if _, err := f.db.Exec(`INSERT INTO authorization_team_usage_range_windows
-		(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
+	// 日摘要行命中 → 直接按日范围聚合返回团队摘要（窗口表冻结后不再读）。
+	if _, err := f.db.Exec(`INSERT INTO authorization_team_usage_summary_daily
+		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES ('owner', '2026-08-08', '2026-09-06', 'team_u13', 'group', 'grp_s13', 3, 30, 20, 1.5, NULL, '2026-09-06T00:00:00Z')`); err != nil {
+		VALUES ('owner', '2026-09-01', 'team_u13', 'group', 'grp_s13', 3, 30, 20, 1.5, NULL, '2026-09-06T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	usage, err := f.store.loadTeamUsageDetail(ctx, validTeamGrant, teamDetail, rng, 1, 20)
 	if err != nil || usage.TotalCost != 1.5 {
-		t.Fatalf("窗口行应直接返回: %+v %v", usage, err)
+		t.Fatalf("日摘要行应直接聚合返回: %+v %v", usage, err)
 	}
 
 	// fallback account 分支：runtime 无 instance → continue（605-611），
 	// 全部跳过后 total==nil → 零值（634-636）。
 	accountGrant := &grantRow{ResourceType: "account", ResourceID: "acc_none", OwnerID: "owner", GranteeType: "team",
 		GranteeTeamID: sql.NullString{String: "team_u13", Valid: true}}
-	if _, err := f.db.Exec(`DELETE FROM authorization_team_usage_range_windows`); err != nil {
+	if _, err := f.db.Exec(`DELETE FROM authorization_team_usage_summary_daily`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Exec(`DELETE FROM resource_authorizations WHERE id = 'rt_u13_b'`); err != nil {

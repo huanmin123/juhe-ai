@@ -24,15 +24,15 @@ func wdInsertScopeWindow(t *testing.T, f *fixture, systemAccountID, scopeType, s
 	}
 }
 
-func wdInsertTeamFilterWindow(t *testing.T, f *fixture, systemAccountID, teamID, resourceType, resourceID string, requestCount, totalCost float64, lastUsedAt any) {
+func wdInsertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, teamID, resourceType, resourceID string, requestCount, totalCost float64, lastUsedAt any) {
 	t.Helper()
-	_, err := f.db.Exec(`INSERT INTO authorization_team_usage_range_windows
-		(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
+	_, err := f.db.Exec(`INSERT INTO authorization_team_usage_summary_daily
+		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
 		 request_count, total_cost_usd, last_used_at, updated_at)
-		VALUES (?, '2026-08-08', '2026-09-06', ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
+		VALUES (?, '2026-09-01', ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
 		systemAccountID, teamID, resourceType, resourceID, requestCount, totalCost, lastUsedAt)
 	if err != nil {
-		t.Fatalf("seed team window: %v", err)
+		t.Fatalf("seed team daily row: %v", err)
 	}
 }
 
@@ -123,17 +123,17 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 		3, 30, 15, 0.3, "2026-09-06T01:00:00.000Z")
 	wdInsertScopeWindow(t, f, "owner", "group_authorization", id2, "2026-08-08", "2026-09-06",
 		7, 70, 35, 0.7, "2026-09-06T02:00:00.000Z")
-	// 预聚合团队窗口行存在时优先于回退。
-	wdInsertTeamFilterWindow(t, f, "owner", "team_d", "group", "grp_t", 10, 1.0, "2026-09-06T03:00:00.000Z")
+	// 团队日摘要行存在时直接按日范围聚合（窗口表冻结后不再读）。
+	wdInsertTeamDailyRow(t, f, "owner", "team_d", "group", "grp_t", 10, 1.0, "2026-09-06T03:00:00.000Z")
 
 	admin := accessInfo{ViewerID: "admin", IsAdmin: true}
 	detail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, wdDetailRange, 1, 0)
 	if err != nil || detail == nil {
 		t.Fatalf("team usage detail: %v", err)
 	}
-	// 团队总用量来自预聚合窗口行。
+	// 团队总用量来自日摘要行聚合。
 	if detail.Usage.RequestCount != 10 || detail.Usage.TotalCost != 1.0 {
-		t.Fatalf("团队窗口摘要错误: %+v", detail.Usage)
+		t.Fatalf("团队日摘要聚合错误: %+v", detail.Usage)
 	}
 	// 成员行按 lastUsedAt 倒序。
 	if len(detail.UsageBySystemAccount) != 2 {
@@ -146,8 +146,8 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 		t.Fatalf("未超页不应 hasMore")
 	}
 
-	// 无团队窗口行 → 分组资源走 group_authorization_team 回退键。
-	if _, err := f.db.Exec(`DELETE FROM authorization_team_usage_range_windows`); err != nil {
+	// 无团队日摘要行 → 分组资源走 group_authorization_team 回退键。
+	if _, err := f.db.Exec(`DELETE FROM authorization_team_usage_summary_daily`); err != nil {
 		t.Fatal(err)
 	}
 	wdInsertScopeWindow(t, f, "owner", "group_authorization_team", "grp_t:team_d", "2026-08-08", "2026-09-06",
@@ -158,6 +158,60 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 	}
 	if fallback.Usage.RequestCount != 5 || fallback.Usage.TotalCost != 0.5 {
 		t.Fatalf("分组回退摘要错误: %+v", fallback.Usage)
+	}
+}
+
+// TestWdUsageDetailTeamDailyRangeAggregation 回归（窗口表冻结收尾）：团队总
+// 用量改从 authorization_team_usage_summary_daily 按日范围聚合——自定义非锚
+// 点区间（3 天窗）正确折叠逐日行；旧热窗口锚点区间的冻结行
+// （authorization_team_usage_range_windows，jobs 已停刷）不再被读取。
+func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
+	f := newUsageFixture(t)
+	f.seedAccount(t, "owner", "active")
+	f.seedAccount(t, "member1", "active")
+	f.seedTeamWithMember(t, "team_w", "member1")
+	f.seedGroup(t, "grp_w", "owner")
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "group", ResourceID: "grp_w",
+		GranteeType: "team", GranteeID: "team_w",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 3 天窗内的两行日摘要（09-02 / 09-04），窗外一行不参与聚合。
+	insertTeamDailyRow(t, f, "owner", "2026-09-02", "team_w", "group", "grp_w", 2, 20, 10, 0.25, "2026-09-02T01:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner", "2026-09-04", "team_w", "group", "grp_w", 3, 30, 15, 0.5, "2026-09-04T05:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner", "2026-09-05", "team_w", "group", "grp_w", 99, 990, 495, 9.0, "2026-09-05T05:00:00.000Z")
+	// 冻结的旧锚点窗口行：值与日摘要聚合不同，若命中说明仍在读冻结表。
+	if _, err := f.db.Exec(`INSERT INTO authorization_team_usage_range_windows
+		(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
+		 request_count, total_cost_usd, last_used_at, updated_at)
+		VALUES ('owner', '2026-08-08', '2026-09-06', 'team_w', 'group', 'grp_w',
+			777, 7.77, '2026-09-06T00:00:00.000Z', '2026-09-06T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	admin := accessInfo{ViewerID: "admin", IsAdmin: true}
+	// 自定义非锚点 3 天区间：仅折叠 09-02 与 09-04 两行。
+	custom := UsageStatsRange{StartDate: "2026-09-02", EndDate: "2026-09-04", Days: 3, MaxDays: 31}
+	detail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, custom, 1, 0)
+	if err != nil || detail == nil {
+		t.Fatalf("custom range team detail: %v", err)
+	}
+	if detail.Usage.RequestCount != 5 || detail.Usage.TotalCost != 0.75 {
+		t.Fatalf("自定义 3 天窗团队总量错误: %+v", detail.Usage)
+	}
+	if detail.Usage.LastUsedAt == nil || *detail.Usage.LastUsedAt != "2026-09-04T05:00:00.000Z" {
+		t.Fatalf("自定义 3 天窗 lastUsedAt 错误: %v", detail.Usage.LastUsedAt)
+	}
+	// 旧锚点区间同样只读日摘要聚合；冻结行（777/7.77）不得出现。
+	anchor := UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06", Days: 31, MaxDays: 31}
+	anchorDetail, err := f.store.usageDetailSummary(context.Background(), created.Item.ID, admin, anchor, 1, 0)
+	if err != nil || anchorDetail == nil {
+		t.Fatalf("anchor range team detail: %v", err)
+	}
+	if anchorDetail.Usage.RequestCount != 104 || anchorDetail.Usage.TotalCost != 9.75 {
+		t.Fatalf("锚点区间团队总量应来自日摘要聚合: %+v", anchorDetail.Usage)
 	}
 }
 

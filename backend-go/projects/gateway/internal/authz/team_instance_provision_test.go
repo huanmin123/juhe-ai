@@ -257,3 +257,129 @@ func TestGroupTeamGrantDoesNotProvisionInstances(t *testing.T) {
 		}
 	}
 }
+
+// TestTeamGrantPatchReviveProvisionsMemberJoinedDuringExpiry PATCH 复活收尾：
+// 过期期间加入的成员在 expired→active 复活后经 syncTeamGrantRuntime 补齐
+// 实例克隆与默认分组绑定；已有实例的老成员幂等复用，不重复创建。
+func TestTeamGrantPatchReviveProvisionsMemberJoinedDuringExpiry(t *testing.T) {
+	f := teamInstanceFixture(t)
+	f.seedTeamWithMember(t, "team_1", "member1")
+	f.seedGranteeGroup(t, "grp-m1", "member1", "gpt", 1, 1)
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "account", ResourceID: "acc-src",
+		GranteeType: "team", GranteeID: "team_1",
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first1 := f.provisionInstanceByAuthorization(t, "acc-src", "member1")
+
+	// 授权置为 expired（置态用 SQL 即可；复活链路走真实 PATCH）。过期期间
+	// member2 加入团队。
+	if _, err := f.db.Exec(`UPDATE resource_authorization_grants SET status = 'expired' WHERE id = ?`,
+		created.Item.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.seedTeamWithMember(t, "team_1", "member2")
+	f.seedGranteeGroup(t, "grp-m2", "member2", "gpt", 1, 1)
+
+	// PATCH 复活：active + 新的未来过期时间（到期授权恢复必须同时调整
+	// expiresAt 的契约）。
+	active := StatusActive
+	future := "2027-01-01T00:00:00.000Z"
+	outcome, err := f.store.Patch(context.Background(), created.Item.ID, PatchInput{
+		Status:       &active,
+		ExpiresAtSet: true,
+		ExpiresAt:    &future,
+	}, created.Item.UpdatedAt, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Status != "updated" {
+		t.Fatalf("patch revive outcome = %s", outcome.Status)
+	}
+
+	// 过期期间加入的 member2：runtime 激活 + 实例克隆 + 自己的默认分组绑定。
+	var runtimeStatus, effective string
+	if err := f.db.QueryRow(`SELECT status, COALESCE(effective_source_type,'') FROM resource_authorizations
+		WHERE resource_id = 'acc-src' AND grantee_system_account_id = 'member2'`).Scan(&runtimeStatus, &effective); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeStatus != StatusActive || effective != "team" {
+		t.Fatalf("revived member2 runtime = %s/%s", runtimeStatus, effective)
+	}
+	row2 := f.provisionInstanceByAuthorization(t, "acc-src", "member2")
+	if row2.systemAccountID != "member2" || row2.status != "active" || row2.schedulable != 1 {
+		t.Fatalf("revived member2 instance: %+v", row2)
+	}
+	if groupID, enabled := f.provisionBinding(t, row2.id, "acc-src", "member2"); groupID != "grp-m2" || enabled != 1 {
+		t.Fatalf("revived member2 binding = %q %d", groupID, enabled)
+	}
+	// 已有实例的 member1 幂等复用，实例总数不变。
+	restored1 := f.provisionInstanceByAuthorization(t, "acc-src", "member1")
+	if restored1.id != first1.id {
+		t.Fatalf("member1 instance must be reused: %q → %q", first1.id, restored1.id)
+	}
+	var totalInstances int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts
+		WHERE authorization_instance_source_account_id = 'acc-src'`).Scan(&totalInstances); err != nil {
+		t.Fatal(err)
+	}
+	if totalInstances != 2 {
+		t.Fatalf("instance count after revive = %d, want 2", totalInstances)
+	}
+}
+
+// TestTeamMemberJoinCascadeSyncsQuotaHourlyBindings 成员加入级联收尾：带小时
+// 额度的团队账户授权在 ApplyActiveTeamGrantsToMembersTx 后，新成员的
+// account_authorization_team 绑定行（scope = 实例账户 ID:团队 ID，source =
+// 授权业务主记录）立即可见。
+func TestTeamMemberJoinCascadeSyncsQuotaHourlyBindings(t *testing.T) {
+	f := teamInstanceFixture(t)
+	f.seedTeamWithMember(t, "team_1", "member1")
+	f.seedGranteeGroup(t, "grp-m1", "member1", "gpt", 1, 1)
+	hourly := `{"hourly":{"enabled":true,"hours":5,"limit":100}}`
+	created, err := f.store.Create(context.Background(), CreateInput{
+		ResourceType: "account", ResourceID: "acc-src",
+		GranteeType: "team", GranteeID: "team_1",
+		LimitsJSON: &hourly,
+	}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row1 := f.provisionInstanceByAuthorization(t, "acc-src", "member1")
+	countTeamBinding := func(instanceID string) int {
+		t.Helper()
+		var count int
+		if err := f.db.QueryRow(`SELECT COUNT(*) FROM request_quota_hourly_window_scope_bindings
+			WHERE scope_type = 'account_authorization_team' AND scope_id = ? AND source_id = ?`,
+			instanceID+":team_1", created.Item.ID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	if countTeamBinding(row1.id) != 1 {
+		t.Fatalf("创建后 member1 团队额度绑定应存在")
+	}
+
+	// 新成员加入：级联在同一事务内补 runtime + 实例 + quota 绑定。
+	f.seedTeamWithMember(t, "team_1", "member2")
+	f.seedGranteeGroup(t, "grp-m2", "member2", "gpt", 1, 1)
+	ctx := context.Background()
+	now := f.now.UTC().Format(time.RFC3339Nano)
+	tx, err := f.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.ApplyActiveTeamGrantsToMembersTx(ctx, tx, "team_1", []string{"member2"}, "owner", now); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	row2 := f.provisionInstanceByAuthorization(t, "acc-src", "member2")
+	if countTeamBinding(row2.id) != 1 {
+		t.Fatalf("member2 加入后团队额度绑定应立即可见")
+	}
+}

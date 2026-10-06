@@ -13,6 +13,9 @@ import (
 )
 
 const usageFixtureDDL = `
+	-- authorization_team_usage_range_windows 的 DDL 仅为冻结表回归保留
+	--（wd_authz_usage_detail_test.go 的锚点区间断言需要种一行冻结数据）；
+	-- 授权消耗明细读链已全部走日摘要表，不再读写两张范围窗口表。
 	CREATE TABLE IF NOT EXISTS authorization_team_usage_range_windows (
 		system_account_id TEXT NOT NULL,
 		start_date TEXT NOT NULL,
@@ -35,30 +38,6 @@ const usageFixtureDDL = `
 		last_used_at TEXT,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)
-	);
-	CREATE TABLE IF NOT EXISTS authorization_user_usage_range_windows (
-		system_account_id TEXT NOT NULL,
-		start_date TEXT NOT NULL,
-		end_date TEXT NOT NULL,
-		team_filter_id TEXT NOT NULL DEFAULT '',
-		grantee_filter_system_account_id TEXT NOT NULL DEFAULT '',
-		resource_filter_type TEXT NOT NULL DEFAULT 'all',
-		resource_filter_id TEXT NOT NULL DEFAULT '',
-		request_count INTEGER NOT NULL DEFAULT 0,
-		input_tokens INTEGER NOT NULL DEFAULT 0,
-		output_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
-		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
-		cache_write_cost_usd REAL NOT NULL DEFAULT 0,
-		thinking_tokens INTEGER NOT NULL DEFAULT 0,
-		input_image_tokens INTEGER NOT NULL DEFAULT 0,
-		output_image_tokens INTEGER NOT NULL DEFAULT 0,
-		total_cost_usd REAL NOT NULL DEFAULT 0,
-		last_used_at TEXT,
-		updated_at TEXT NOT NULL,
-		PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
 	);
 	CREATE TABLE IF NOT EXISTS authorization_team_usage_summary_daily (
 		system_account_id TEXT NOT NULL,
@@ -178,30 +157,6 @@ func seedResourceAccount(t *testing.T, f *fixture, id, ownerID, name string) {
 	t.Helper()
 	if _, err := f.db.Exec(`INSERT INTO accounts (id, system_account_id, name) VALUES (?, ?, ?)`,
 		id, ownerID, name); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func insertTeamWindowRow(t *testing.T, f *fixture, systemAccountID, teamID, resourceType, resourceID string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
-	t.Helper()
-	_, err := f.db.Exec(`INSERT INTO authorization_team_usage_range_windows
-		(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES (?, '2026-08-08', '2026-09-06', ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
-		systemAccountID, teamID, resourceType, resourceID, requestCount, inputTokens, outputTokens, totalCost, lastUsedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func insertUserWindowRow(t *testing.T, f *fixture, systemAccountID, teamID, granteeID, resourceType, resourceID string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
-	t.Helper()
-	_, err := f.db.Exec(`INSERT INTO authorization_user_usage_range_windows
-		(system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
-		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES (?, '2026-08-08', '2026-09-06', ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
-		systemAccountID, teamID, granteeID, resourceType, resourceID, requestCount, inputTokens, outputTokens, totalCost, lastUsedAt)
-	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -506,6 +461,10 @@ func TestUsageDailyRangeAggregation(t *testing.T) {
 	insertTeamDailyRow(t, f, "owner1", "2026-09-03", "", "all", "", 8, 80, 40, 0.75, "2026-09-03T08:00:00.000Z")
 	insertUserDailyRow(t, f, "owner1", "2026-09-02", "", "grantee1", "account", "acc_daily", 4, 40, 20, 0.25, "2026-09-02T02:00:00.000Z")
 	insertUserDailyRow(t, f, "owner1", "2026-09-03", "", "grantee1", "account", "acc_daily", 6, 60, 30, 0.5, "2026-09-03T03:00:00.000Z")
+	// 全零日摘要行（模拟 retention 扣减归零）：与正常行同资源、独立团队 /
+	// 独立被授权人，用来验证 HAVING 把它们挡在明细之外。
+	insertTeamDailyRow(t, f, "owner1", "2026-09-02", "team_zero", "account", "acc_daily", 0, 0, 0, 0, nil)
+	insertUserDailyRow(t, f, "owner1", "2026-09-02", "", "grantee_zero", "account", "acc_daily", 0, 0, 0, 0, nil)
 	rng := UsageStatsRange{StartDate: "2026-09-02", EndDate: "2026-09-03", Days: 2, MaxDays: 31}
 	access := accessInfo{ViewerID: "admin", IsAdmin: true, FilterID: "owner1"}
 	ctx := context.Background()
@@ -525,6 +484,12 @@ func TestUsageDailyRangeAggregation(t *testing.T) {
 	}
 	if details.Rows[0].LastUsedAt != "2026-09-03T05:00:00.000Z" {
 		t.Fatalf("custom range lastUsedAt = %q", details.Rows[0].LastUsedAt)
+	}
+	// 全零团队日摘要行不进入 details（usageDailyNonEmptyHaving 生效）。
+	for _, row := range details.Rows {
+		if row.TeamID == "team_zero" {
+			t.Fatalf("全零团队日摘要行进入明细: %+v", details.Rows)
+		}
 	}
 
 	// Team summary folds the same two rows.
@@ -574,6 +539,12 @@ func TestUsageDailyRangeAggregation(t *testing.T) {
 		userDetails.Rows[0].Usage.RequestCount != 10 || userDetails.Rows[0].Usage.TotalCost != 0.75 ||
 		userDetails.Rows[0].LastUsedAt != "2026-09-03T03:00:00.000Z" {
 		t.Fatalf("user details = %+v", userDetails.Rows)
+	}
+	// 全零用户日摘要行不进入 details（同一 HAVING 口径）。
+	for _, row := range userDetails.Rows {
+		if row.ID == "grantee_zero:account:acc_daily" {
+			t.Fatalf("全零用户日摘要行进入明细: %+v", userDetails.Rows)
+		}
 	}
 	userSummary, err := f.store.userUsageSummary(ctx, UsageFilters{GranteeID: "grantee1", ResourceType: "account", ResourceID: "acc_daily"}, accessInfo{ViewerID: "owner1"}, rng)
 	if err != nil {

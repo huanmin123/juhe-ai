@@ -180,6 +180,20 @@ func (s *Store) ApplyActiveTeamGrantsToMembersTx(ctx context.Context, tx *sql.Tx
 			}
 		}
 	}
+	// Quota-scope tail: the member-join/reactivate cascade lands on the same
+	// post-fanout contract as the create path — the hourly-window scope
+	// bindings rebuild reads the just-written runtime rows and instance
+	// clones, so a member covered by this cascade is immediately schedulable
+	// under the grant's hourly limits. Same transaction, same bindingGrant
+	// shape as the create tail.
+	for _, grant := range grants {
+		bindingGrant := grant
+		bindingGrant.GranteeType = "team"
+		bindingGrant.GranteeTeamID = sql.NullString{String: teamID, Valid: true}
+		if err := s.syncGrantQuotaScopeBindings(ctx, tx, &bindingGrant, now); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -252,9 +266,10 @@ func (s *Store) RevokeTeamSourcesForMemberTx(ctx context.Context, tx *sql.Tx, te
 }
 
 // activeTeamGrantRowsTx mirrors activeTeamGrantRowsAsync (:1554-1568): active
-// team grants ordered created_at ASC, id ASC with the grants+1 ceiling.
+// team grants ordered created_at ASC, id ASC with the grants+1 ceiling. The id
+// column rides along for the quota-scope bindings tail (source_id).
 func (s *Store) activeTeamGrantRowsTx(ctx context.Context, tx *sql.Tx, teamID string) ([]grantRow, error) {
-	rows, err := tx.QueryContext(ctx, s.bind(`SELECT resource_type, resource_id, resource_owner_system_account_id,
+	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id, resource_type, resource_id, resource_owner_system_account_id,
 		remark, expires_at, limits_json
 		FROM `+s.table("resource_authorization_grants")+`
 		WHERE grantee_type = 'team' AND grantee_team_id = ? AND status = 'active'
@@ -266,7 +281,7 @@ func (s *Store) activeTeamGrantRowsTx(ctx context.Context, tx *sql.Tx, teamID st
 	grants := []grantRow{}
 	for rows.Next() {
 		var grant grantRow
-		if err := rows.Scan(&grant.ResourceType, &grant.ResourceID, &grant.OwnerID,
+		if err := rows.Scan(&grant.ID, &grant.ResourceType, &grant.ResourceID, &grant.OwnerID,
 			&grant.Remark, &grant.ExpiresAt, &grant.LimitsJSON); err != nil {
 			return nil, err
 		}

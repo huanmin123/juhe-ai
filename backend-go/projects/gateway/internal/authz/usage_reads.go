@@ -523,14 +523,6 @@ func (s *Store) userUsageSummary(ctx context.Context, filters UsageFilters, acce
 	return &UserUsageSummaryResult{Range: rng, Summary: summaryAggregate(&aggregate)}, nil
 }
 
-// windowAggregateColumns is the {id}/usage detail select list over the
-// (frozen) range window tables; the details/summary endpoints above no longer
-// read those tables.
-const windowAggregateColumns = `request_count, input_tokens, output_tokens,
-	cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
-	cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
-	total_cost_usd, last_used_at`
-
 func emptyTeamRows(rng UsageStatsRange, page, pageSize int) *TeamUsageRowsResult {
 	return &TeamUsageRowsResult{Range: rng, Rows: []TeamUsageRow{},
 		Page: page, PageSize: pageSize}

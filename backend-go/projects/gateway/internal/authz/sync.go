@@ -10,12 +10,16 @@
 // Every patch/revoke/return/expire/create write routes through this chain so
 // the runtime row is explicitly rewritten (status, revoked_*, expires_at,
 // limits_json, source upsert) instead of being left to the standalone refresh
-// CASE, which only pins whatever status the row already has.
+// CASE, which only pins whatever status the row already has. The Go-specific
+// BUG-0175 tail extends the active team re-expansion with the per-member
+// authorization instance clone (设计 :257), mirroring the create path and the
+// join/reactivate cascade.
 package authz
 
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 // runtimeProjection carries the grant-derived fields the runtime upsert
@@ -155,6 +159,21 @@ func (s *Store) syncTeamGrantRuntime(ctx context.Context, tx *sql.Tx, grant *gra
 			ExpiresAt:  nullStringPointer(grant.ExpiresAt),
 			LimitsJSON: limits,
 		}
+		// BUG-0175 tail on the active re-expansion (patch revive incl. the
+		// expired→active path): a member who joined while the grant sat
+		// expired/paused gets the runtime row below but no authorization
+		// instance. Provision the clone for account grants so every covered
+		// member keeps a schedulable instance bound to their own enabled
+		// default group (设计 :257). Idempotent for already-provisioned
+		// members, and the missing-default-group failure rolls back the whole
+		// patch with the same member-label error as the create path.
+		var nowTime time.Time
+		if grant.ResourceType == "account" {
+			nowTime, err = time.Parse(time.RFC3339Nano, now)
+			if err != nil {
+				nowTime = s.now().UTC()
+			}
+		}
 		for _, memberID := range members {
 			if memberID == grant.OwnerID {
 				continue
@@ -162,6 +181,12 @@ func (s *Store) syncTeamGrantRuntime(ctx context.Context, tx *sql.Tx, grant *gra
 			if err := s.upsertRuntimeForUser(ctx, tx, grant.ResourceType, grant.ResourceID, grant.OwnerID,
 				memberID, &teamID, projection, actor, now); err != nil {
 				return err
+			}
+			if grant.ResourceType == "account" {
+				if err := s.provisionTeamAccountInstanceForMember(ctx, tx, grant.ResourceID, grant.OwnerID,
+					memberID, grantNullStringPointer(grant.ExpiresAt), nowTime, now); err != nil {
+					return err
+				}
 			}
 		}
 	}
