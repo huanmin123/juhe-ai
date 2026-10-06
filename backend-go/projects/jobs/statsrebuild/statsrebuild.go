@@ -105,6 +105,11 @@ var rebuildClearedStatsTables = []string{
 	// 授权消耗日摘要（upsertAuthorizationUsageReportRows）
 	"authorization_team_usage_summary_daily",
 	"authorization_user_usage_summary_daily",
+	// 授权范围窗口退役表（StageAuthorizationUsageRangeWindows 已随授权消耗
+	// 明细改为日摘要直读而停用：无写入方、无读者，仅 retention 按 end_date
+	// 修边）。重建顺带清空，防止僵尸行永久滞留误导排障（边界审计 2026-10-06）。
+	"authorization_team_usage_range_windows",
+	"authorization_user_usage_range_windows",
 	// 排行快照（stages_rank.go）
 	"usage_rank_snapshots",
 	// 派生窗口（stages_window_snapshots.go）

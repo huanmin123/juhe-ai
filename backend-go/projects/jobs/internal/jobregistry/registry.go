@@ -127,7 +127,10 @@ func ScheduledEntries() []Entry {
 		{
 			JobName: "usage-overview-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
 			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"stats:usage_overview_summary_windows", "stats:usage_overview_trend_windows"},
+			// 写面四表：StageUsageOverviewWindows 除 summary/trend 外还全量重建
+			// model/error rank 两张排行窗（stages_window_snapshots.go DELETE+
+			// INSERT 四表），写面登记必须与实际写面对齐（防漂移边界审计 2026-10-06）。
+			Writes:   []string{"stats:usage_overview_summary_windows", "stats:usage_overview_trend_windows", "stats:usage_model_rank_windows", "stats:usage_error_rank_windows"},
 			GoStatus: GoWired, GoPackage: "statsagg",
 			GoBinding: "WindowRefresher.RunStages([usage_overview_windows])；interval 按 databaseDriver 分叉（T6b 已落 ModeConstraint.SQLiteInterval）：PG=5min（Node :294 usageOverviewWindowRefreshIntervalMs）、SQLite=30min（Node :312 usageRankSnapshotRefreshIntervalMs）",
 		},

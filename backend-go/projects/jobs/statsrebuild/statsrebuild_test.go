@@ -336,3 +336,79 @@ func TestPostgresStatementShape(t *testing.T) {
 		t.Fatalf("SQLite 清空语句形态错误: %s", got)
 	}
 }
+
+// TestRebuildSQLiteClearListClassifiesEveryStatsSchemaTable 是清表清单防漂移
+// 守卫（边界审计 2026-10-06）：枚举 stats 测试库 schema 的全部表名，断言每张
+// 表都可归入三类之一——rebuildClearedStatsTables（重建清空面）、
+// completionClearedDirtyTables（完成阶段清理的脏队列）、
+// rebuildUnclassifiedTableReasons（明确不在重建面，逐表附理由）。
+// 统计管线新增派生结果表而忘记进清表清单时，重建会留下旧数据与新重放混写，
+// 本守卫在测试阶段拦截；反向断言清表清单的每张表都真实存在于 schema 且与
+// 不重建清单无交集，防止清单写错表名后 DELETE 静默少清。
+func TestRebuildSQLiteClearListClassifiesEveryStatsSchemaTable(t *testing.T) {
+	fixture := newRebuildFixture(t)
+	rows, err := fixture.statsDB.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		t.Fatalf("枚举 sqlite_master 失败: %v", err)
+	}
+	defer rows.Close()
+	schemaTables := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("扫描表名失败: %v", err)
+		}
+		schemaTables[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("遍历 sqlite_master 失败: %v", err)
+	}
+	if len(schemaTables) == 0 {
+		t.Fatalf("stats 测试库未枚举到任何表，守卫失去意义")
+	}
+
+	// rebuildUnclassifiedTableReasons 登记明确不在重建范围的表与理由；
+	// 未登记的未知表一律失败，新增条目必须附理由。
+	rebuildUnclassifiedTableReasons := map[string]string{
+		"usage_records":                              "聚合事实源（SQLite standalone 为 stats 库镜像），重建只读",
+		"stats_job_state":                            "游标/水位行，仅 rebuildResetJobStateNames 两行重置，其余保留",
+		"background_task_runs":                       "任务运行审计记录，非统计结果面",
+		"background_job_leases":                      "任务租约，非统计结果面",
+		"usage_quota_hourly_window_dirty_scopes":     "保留：PG 增量路径消费标记补建已清空的配额小时窗（包注释 dirty 队列处置）",
+		"account_quality_dirty_accounts":             "保留：gateway 账号质量刷新按它重算 account_quality_scores",
+		"request_quota_hourly_window_scope_bindings": "配额小时窗 scope 绑定表，由 usage-quota-hourly-windows-refresh 在线管理，非聚合重放产物",
+		"system_metrics_samples":                     "系统指标采样面，非 usage_records 派生",
+		"system_metrics_hourly":                      "系统指标聚合面，非 usage_records 派生",
+		"system_metrics_trend_windows":               "系统指标趋势窗（system-metrics-trend-windows-refresh 全量重建），非 usage 派生",
+		"process_event_loop_samples":                 "进程自监控采样面，非 usage_records 派生",
+		"process_event_loop_hourly":                  "进程自监控聚合面，非 usage_records 派生",
+		"process_event_loop_trend_windows":           "进程自监控趋势窗，非 usage_records 派生",
+		"accounts":                                   "业务表：OpenSQLiteTestDB 同形替身携带，生产 stats 库无业务表",
+		"resource_authorizations":                    "业务表：同形替身携带，重建聚合时只读",
+	}
+	completionCleared := map[string]bool{}
+	for _, name := range completionClearedDirtyTables {
+		completionCleared[name] = true
+	}
+	clearedSet := map[string]bool{}
+	for _, name := range rebuildClearedStatsTables {
+		clearedSet[name] = true
+	}
+
+	for name := range schemaTables {
+		if clearedSet[name] || completionCleared[name] {
+			continue
+		}
+		if _, ok := rebuildUnclassifiedTableReasons[name]; !ok {
+			t.Fatalf("stats schema 出现未分类表 %q：统计管线新增派生结果表时必须同步登记 rebuildClearedStatsTables（重建需清空）或 rebuildUnclassifiedTableReasons（明确不重建+理由），否则重建会留下旧数据与新重放混写", name)
+		}
+	}
+	for _, name := range rebuildClearedStatsTables {
+		if !schemaTables[name] {
+			t.Fatalf("rebuildClearedStatsTables 登记的表 %q 在 stats schema 中不存在：清单写错表名会让 DELETE 静默少清", name)
+		}
+		if _, ok := rebuildUnclassifiedTableReasons[name]; ok {
+			t.Fatalf("表 %q 同时登记在 rebuildClearedStatsTables 与 rebuildUnclassifiedTableReasons：分类冲突", name)
+		}
+	}
+}
