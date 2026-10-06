@@ -26,8 +26,14 @@ const workspace = read(join(goRoot, 'go.work'));
 // gateway 组合根在 SQLite 模式启动时必须执行与 Node db-service 相同的六库
 // ensure+seed，唯一允许的跨项目 import 是 maintenance 的受控导出面
 // backend-go-maintenance/bootstrap（该包只暴露存储引导入口、无自身业务逻辑）。
+// 受控例外 2（2026-10-06，BUG-0182 统计缓存离线重建 CLI；基线 §2 同步补记）：
+// maintenance 的 rebuild-usage-stats 子命令必须复用 jobs 的 statsagg 聚合
+// 口径（BUG-0182 建议方案 #3 明确禁止第二套口径实现），唯一允许的 import 是
+// jobs 的受控导出面 backend-go-jobs/statsrebuild（只暴露重建编排入口，
+// 编排内部全部委托 internal/statsagg，无自身口径 SQL）。
 const crossProjectImportAllowlist = [
   { project: 'gateway', allow: /backend-go-maintenance\/bootstrap\b/g },
+  { project: 'maintenance', allow: /backend-go-jobs\/statsrebuild\b/g },
 ];
 for (const project of projects) {
   const projectRoot = join(goRoot, 'projects', project);

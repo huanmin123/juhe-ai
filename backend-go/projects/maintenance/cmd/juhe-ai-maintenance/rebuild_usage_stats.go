@@ -32,7 +32,7 @@ import (
 	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-jobs/statsrebuild"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/sqldialect"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/bootstrap"
 )
 
 // confirmUsageStatsRebuildEnv 与 Node 归档脚本同名的离线确认环境变量。
@@ -72,7 +72,7 @@ func parseRebuildSQLitePaths(raw string) (business, stats string, err error) {
 		case "stats":
 			stats = value
 		case "chat", "dataset", "usage-catalog", "codex-context-shard-root", "codex-context-shard-count":
-			// 与六库 bootstrap 同词汇、重建不消费。
+			// 与六库 bootstrap 同词汇；统计重建不消费这些键。
 		default:
 			return "", "", fmt.Errorf("--paths 未知 key %q（有效 key：business、chat、dataset、usage-catalog、stats、codex-context-shard-root、codex-context-shard-count）", key)
 		}
@@ -119,9 +119,9 @@ func rebuildUsageStatsResult(driver, paths, dsn string, batchSize, maxBatches in
 	}
 
 	var (
-		statsDB     *sql.DB
-		businessDB  *sql.DB
-		bindPostgres bool
+		statsDB    *sql.DB
+		businessDB *sql.DB
+		postgres   bool
 	)
 	if driver == "sqlite" {
 		businessPath, statsPath, parseErr := parseRebuildSQLitePaths(paths)
@@ -130,7 +130,7 @@ func rebuildUsageStatsResult(driver, paths, dsn string, batchSize, maxBatches in
 			return 2
 		}
 		var openErr error
-		statsDB, openErr = bootstrapOpenSQLiteForRebuild(statsPath)
+		statsDB, openErr = bootstrap.OpenSQLiteFile(statsPath)
 		if openErr != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", openErr)
 			return 2
@@ -138,7 +138,7 @@ func rebuildUsageStatsResult(driver, paths, dsn string, batchSize, maxBatches in
 		defer statsDB.Close()
 		// 业务库只读打开（聚合授权链查找 resource_authorizations/accounts 与
 		// 默认统计时区 system_settings 读取所在；绝不写入）。
-		businessDB, openErr = bootstrapOpenSQLiteForRebuild(businessPath)
+		businessDB, openErr = bootstrap.OpenSQLiteFile(businessPath)
 		if openErr != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", openErr)
 			return 2
@@ -157,13 +157,13 @@ func rebuildUsageStatsResult(driver, paths, dsn string, batchSize, maxBatches in
 		}
 		statsDB = db
 		defer statsDB.Close()
-		bindPostgres = true
+		postgres = true
 	}
 
 	fmt.Fprintln(os.Stderr, "统计缓存离线重建开始：清空统计结果面并重置游标，从 usage_records 重放聚合（业务库与 usage_records 源表只读）。")
 	result, rebuildErr := statsrebuild.Rebuild(context.Background(), statsrebuild.Options{
 		DB:         statsDB,
-		Dialect:    sqldialectDialect(bindPostgres),
+		Postgres:   postgres,
 		BusinessDB: businessDB,
 		BatchSize:  batchSize,
 		MaxBatches: maxBatches,

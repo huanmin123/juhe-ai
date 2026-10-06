@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/huanminabc/juhe-ai/backend-go-contracts v0.0.0
+	github.com/huanminabc/juhe-ai/backend-go-jobs v0.0.0-00010101000000-000000000000
 	github.com/huanminabc/juhe-ai/backend-go-platform v0.0.0
 	github.com/jackc/pgx/v5 v5.10.0
 	modernc.org/sqlite v1.58.0
