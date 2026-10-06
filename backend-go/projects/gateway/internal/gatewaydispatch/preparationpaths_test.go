@@ -152,9 +152,6 @@ func TestPrepareDispatchAccountsWithAppliedOrderings(t *testing.T) {
 	if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts {
 		t.Fatalf("outcome = %s", result.Outcome)
 	}
-	if !result.NormalRouteLatencyDegradationApplied {
-		t.Fatal("延迟降级应用标记必须透传")
-	}
 	if !result.CodexTurnAccountAvoidanceApplied || len(result.CodexTurnAvoidedAccountIDs) != 1 {
 		t.Fatalf("codex turn 规避标记 = %v %v", result.CodexTurnAccountAvoidanceApplied, result.CodexTurnAvoidedAccountIDs)
 	}

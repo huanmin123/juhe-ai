@@ -121,8 +121,13 @@ func (d *Deps) runBatchUpdate(w http.ResponseWriter, r *http.Request, access Acc
 			Changes: []authsys.OperationLogChange{
 				safeChange("batchUpdateFields", "批量覆盖字段", []string{}, result.ChangedFields),
 			},
-			// Per-account targets ride on the Node operation-log entry; the Go
-			// sink entry carries changes/viewers only (sink limitation).
+			// BUG-0172 T1②：per-account targets 随本入口落库——批量更新触及
+			// N 个账户，操作日志此前只记聚合 changes/viewers，无逐账户审计
+			// 线索。形状对齐 Go sink 既有契约（authsys.OperationLogTarget，
+			// groups 删除入口同款 "affected" relation）；BatchUpdateItem 只带
+			// ID 不带名称，TargetName 留空由详情页按 ID 解析。原「sink
+			// limitation」注释已过时（authsys/app.go:66-69 sink 支持 Targets）。
+			Targets: batchUpdateTargets(result.Items, owner),
 			Viewers: []authsys.OperationLogViewer{
 				{SystemAccountID: owner, Reason: "resource_owner"},
 			},
@@ -307,4 +312,19 @@ func pipelineErrorMessage(err error, fallback string) string {
 		return fallback
 	}
 	return message
+}
+
+// batchUpdateTargets 把批量更新的逐账户结果映射为操作日志 targets（Go sink
+// 契约形状，Relation 语义对齐 groups 入口的 "affected"）。
+func batchUpdateTargets(items []BatchUpdateItem, owner string) []authsys.OperationLogTarget {
+	targets := make([]authsys.OperationLogTarget, 0, len(items))
+	for _, item := range items {
+		targets = append(targets, authsys.OperationLogTarget{
+			TargetType:                 "account",
+			TargetID:                   item.ID,
+			TargetOwnerSystemAccountID: owner,
+			Relation:                   "affected",
+		})
+	}
+	return targets
 }

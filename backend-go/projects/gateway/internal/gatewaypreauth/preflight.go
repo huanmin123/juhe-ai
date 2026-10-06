@@ -86,7 +86,6 @@ type DispatchContext struct {
 	ResponseInspectionPolicies               []gatewayruntimecache.ResponseInspectionPolicySummary
 	APIKeyRecord                             *gatewayruntimecache.GatewayAPIKeyRow
 	GroupFallbackAPIKeyRecord                *gatewayruntimecache.GatewayAPIKeyRow
-	NormalRouteLatencyDegradationApplied     bool
 	CodexTurnAccountAvoidanceApplied         bool
 	CodexTurnAvoidedAccountIDs               []string
 	PrecheckHalfOpenEligible                 bool
@@ -1049,7 +1048,6 @@ func (s *Service) PrepareOpenAIGatewayDispatchContext(ctx context.Context, input
 		ResponseInspectionPolicies:               orEmptyPolicies(runtimeResponseInspectionPolicies),
 		APIKeyRecord:                             apiKeyRecord,
 		GroupFallbackAPIKeyRecord:                groupFallbackAPIKeyRecord,
-		NormalRouteLatencyDegradationApplied:     dispatchPreparation.NormalRouteLatencyDegradationApplied,
 		CodexTurnAccountAvoidanceApplied:         dispatchPreparation.CodexTurnAccountAvoidanceApplied,
 		CodexTurnAvoidedAccountIDs:               dispatchPreparation.CodexTurnAvoidedAccountIDs,
 		PrecheckHalfOpenEligible:                 dispatchPreparation.PrecheckHalfOpenEligible,

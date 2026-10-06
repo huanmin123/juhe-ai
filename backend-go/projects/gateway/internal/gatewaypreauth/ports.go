@@ -343,7 +343,6 @@ type DispatchPreparationResult struct {
 	HotQualityExplorationReservation         *HotQualityExplorationReservation
 	SettleHotQualityExplorationAfterDispatch func(outcome string) error
 	ReleaseClientIPConcurrency               func()
-	NormalRouteLatencyDegradationApplied     bool
 	CodexTurnAccountAvoidanceApplied         bool
 	CodexTurnAvoidedAccountIDs               []string
 	PrecheckHalfOpenEligible                 bool

@@ -102,7 +102,6 @@ func (p *CandidatePipeline) PrepareDispatchAccounts(ctx context.Context, input g
 			}
 		}
 		result.ReleaseClientIPConcurrency = output.ReleaseClientIPConcurrency
-		result.NormalRouteLatencyDegradationApplied = output.NormalRouteLatencyDegradationApplied
 		result.CodexTurnAccountAvoidanceApplied = output.CodexTurnAccountAvoidanceApplied
 		result.CodexTurnAvoidedAccountIDs = output.CodexTurnAvoidedAccountIDs
 		result.PrecheckHalfOpenEligible = output.PrecheckHalfOpenEligible

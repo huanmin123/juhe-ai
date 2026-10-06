@@ -1233,12 +1233,17 @@ func (l *v1DispatchLoop) settleHotQualityTerminal(
 }
 
 // isExplicitPolicyRetry 识别用户配置的响应检查策略触发的重试（Node
-// routes.ts 的 explicitUserPolicyRetry：检查决策 Reason 为
-// configured_response_policy）。
+// routes.ts 的 explicitUserPolicyRetry）。判定载体是响应层决策的
+// ReplayAuthority：用户配置策略（account/management 来源）被授予
+// explicit_user_policy，系统默认策略授予 system_default_retry_next_account
+// ——原先按 Reason == "configured_response_policy" 判定会把系统默认策略的
+// 重试也计成显式策略失败（BUG-0267 判定差登记；影响面仅热质量
+// outcomeClass/failureScope）。非空 ReplayAuthority 只由响应检查决策产生，
+// 无需再叠加 RetryReason 前置条件。
 func isExplicitPolicyRetry(handling gatewayresponse.UpstreamResponseHandlingResult) bool {
-	return handling.RetryReason == gatewayresponse.StreamServerRetryResponseInspection &&
+	return handling.RetryUpstream &&
 		handling.ResponseInspection != nil &&
-		handling.ResponseInspection.Reason == "configured_response_policy"
+		handling.ResponseInspection.ReplayAuthority == "explicit_user_policy"
 }
 
 // transportFailureOutcomeClass mirrors hotQualityOutcomeForTransportFailure

@@ -31,7 +31,6 @@ type PreparationResult struct {
 	// ready variant
 	Accounts                                 []AccountCandidate
 	ReleaseClientIPConcurrency               func()
-	NormalRouteLatencyDegradationApplied     bool
 	CodexTurnAccountAvoidanceApplied         bool
 	CodexTurnAvoidedAccountIDs               []string
 	PrecheckHalfOpenEligible                 bool
@@ -661,7 +660,6 @@ func (p *CandidatePipeline) PrepareOpenAIGatewayDispatchAccounts(ctx context.Con
 
 	readyPreparation.Accounts = readyAccounts
 	readyPreparation.PrecheckHalfOpenEligible = precheckHalfOpenEligible
-	readyPreparation.NormalRouteLatencyDegradationApplied = latencyDegradationOrder.Applied
 	readyPreparation.CodexTurnAccountAvoidanceApplied = clientSourceAvoidance.ThresholdReached
 	readyPreparation.CodexTurnAvoidedAccountIDs = clientSourceAvoidance.AvoidedAccountIDs
 

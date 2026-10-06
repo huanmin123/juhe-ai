@@ -181,6 +181,14 @@ func (e *Engine) handleUpstreamAttemptResponse(ctx context.Context, c upstreamAt
 		if in.accountCircuitAttempt != nil {
 			_, _ = in.accountCircuitAttempt.ReportUnknown(ctx)
 		}
+		// BUG-0267（ReturnResponse 臂 keyModel 结算）：keyModel 原结算位于
+		// 本分支 return 之后的公共路径，对透传路径不可达，准入许可永不释放
+		// （settle 前 renewal 持续续租）。与上方 circuit 同构就地
+		// ReportUnknown（Node :1876 reportUpstreamNotComplete 同分支语义）；
+		// settle-once 幂等，公共路径对已结算句柄不再重复结算。
+		if c.keyModelAttempt != nil {
+			_ = c.keyModelAttempt.ReportUnknown(ctx)
+		}
 		var responsePrecommitDeadlineAtMs *int64
 		if in.requestLane != "image" && !in.coordination.GatewayRequestWallBudget.Unbounded {
 			value := in.coordination.GatewayRequestWallBudget.DeadlineAtMs - gatewayrouting.DefaultGatewayFinalResponseReserveMs

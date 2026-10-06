@@ -92,8 +92,11 @@ func TestV1SettleHotQualityTerminalDiagnosticForward(t *testing.T) {
 // （BUG-0241，对齐 Node routes.ts:1841-1860 五臂）：
 //   - RetryUpstream（非用户策略）→ upstream_response_failure / none /
 //     upstream_response（重试轮次是新 attempt，本 attempt 诊断终态收口）；
-//   - RetryUpstream（用户配置响应检查策略 configured_response_policy）→
-//     explicit_policy_failure / account / explicit_policy；
+//   - RetryUpstream（用户配置响应检查策略：决策 ReplayAuthority 为
+//     explicit_user_policy）→ explicit_policy_failure / account /
+//     explicit_policy；系统默认策略（system_default_retry_next_account）
+//     与策略未切号（ReplayAuthority 空）不算显式策略失败，走
+//     upstream_response_failure（BUG-0267 判定差对齐）；
 //   - AlreadyFinalized + TransportFailure(read_incomplete) →
 //     read_interruption / protocol_model / gateway_transport；
 //   - AlreadyFinalized + TransportFailure(timeout) → timeout；
@@ -132,13 +135,49 @@ func TestV1SettleHotQualityTerminalRetryAndFinalizedDispatch(t *testing.T) {
 		{
 			name: "retry explicit configured policy",
 			handling: gatewayresponse.UpstreamResponseHandlingResult{
-				RetryUpstream:      true,
-				RetryReason:        gatewayresponse.StreamServerRetryResponseInspection,
-				ResponseInspection: &gatewayresponse.ResponseInspectionDecision{Reason: "configured_response_policy"},
+				RetryUpstream: true,
+				RetryReason:   gatewayresponse.StreamServerRetryResponseInspection,
+				ResponseInspection: &gatewayresponse.ResponseInspectionDecision{
+					Reason:          "configured_response_policy",
+					ReplayAuthority: "explicit_user_policy",
+				},
 			},
 			wantOutcomeClass: gatewaydispatch.HotQualityOutcomeExplicitPolicyFailure,
 			wantFailureScope: "account",
 			wantSource:       "explicit_policy",
+		},
+		{
+			// BUG-0267 判定差：系统默认检查策略的重试不计入显式策略失败，
+			// 与 Node explicitUserPolicyRetry 对齐（仅用户配置策略授予
+			// explicit_user_policy 权威）。
+			name: "retry system default inspection policy",
+			handling: gatewayresponse.UpstreamResponseHandlingResult{
+				RetryUpstream: true,
+				RetryReason:   gatewayresponse.StreamServerRetryResponseInspection,
+				ResponseInspection: &gatewayresponse.ResponseInspectionDecision{
+					Reason:          "configured_response_policy",
+					PolicySource:    gatewayresponse.PolicySourceSystemDefault,
+					ReplayAuthority: "system_default_retry_next_account",
+				},
+			},
+			wantOutcomeClass: gatewaydispatch.HotQualityOutcomeUpstreamResponseFailure,
+			wantFailureScope: "none",
+			wantSource:       "upstream_response",
+		},
+		{
+			// 用户策略但动作未切号（ReplayAuthority 空）：不算显式策略失败。
+			name: "retry user policy without account switch",
+			handling: gatewayresponse.UpstreamResponseHandlingResult{
+				RetryUpstream: true,
+				RetryReason:   gatewayresponse.StreamServerRetryResponseInspection,
+				ResponseInspection: &gatewayresponse.ResponseInspectionDecision{
+					Reason:       "configured_response_policy",
+					PolicySource: gatewayresponse.PolicySourceManagement,
+				},
+			},
+			wantOutcomeClass: gatewaydispatch.HotQualityOutcomeUpstreamResponseFailure,
+			wantFailureScope: "none",
+			wantSource:       "upstream_response",
 		},
 		{
 			name: "finalized transport read_incomplete",

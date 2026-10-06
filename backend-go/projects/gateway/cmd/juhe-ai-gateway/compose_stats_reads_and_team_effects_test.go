@@ -105,12 +105,13 @@ func usageWindowDateKeys() (string, string) {
 }
 
 // TestComposeSystemAPIWiresAuthzUsageStatsReads is the assembly assertion for
-// the authorization usage-window reads: in SQLite standalone mode the
-// authzStore must carry the dedicated stats database handle
-// (authz.Store.AttachStatsDatabase), so a seeded
-// authorization_team_usage_range_windows row in the stats file renders through
-// GET /authorizations/usage/team-details. A missing injection would fall back
-// to the business handle where the stats table does not exist (500).
+// the authorization usage reads: in SQLite standalone mode the authzStore must
+// carry the dedicated stats database handle (authz.Store.AttachStatsDatabase),
+// so a seeded authorization_team_usage_summary_daily row in the stats file
+// renders through GET /authorizations/usage/team-details. A missing injection
+// would fall back to the business handle where the stats table does not exist
+// (500). 种子表随授权消耗明细读端改为日摘要直读同步更新（原
+// authorization_team_usage_range_windows 已退役，无读者）。
 func TestComposeSystemAPIWiresAuthzUsageStatsReads(t *testing.T) {
 	fixture := newComposeStatsWiringFixture(t)
 	composed := fixture.composed
@@ -121,15 +122,18 @@ func TestComposeSystemAPIWiresAuthzUsageStatsReads(t *testing.T) {
 	if composed.statsDB == nil {
 		t.Fatal("composition must own a stats database handle in sqlite mode")
 	}
-	if _, err := composed.statsDB.Exec(`INSERT INTO authorization_team_usage_range_windows
-		(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-		 request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens,
-		 cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
-		 total_cost_usd, last_used_at, updated_at)
-		VALUES ('global', ?, ?, 'team_seed', 'group', 'grp_seed',
-		 3, 10, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0.75, NULL, ?)`,
-		startDate, endDate, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("seed authorization usage window row: %v", err)
+	if _, err := composed.statsDB.Exec(`INSERT INTO authorization_team_usage_summary_daily
+		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
+		 row_count, request_count, success_count, error_count, input_tokens, output_tokens,
+		 cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
+		 cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
+		 total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+		 first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, updated_at)
+		VALUES ('global', ?, 'team_seed', 'group', 'grp_seed',
+		 1, 3, 3, 0, 10, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0.75,
+		 0, 0, 0, 0, 0, 0, NULL, ?)`,
+		startDate, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("seed authorization usage summary row: %v", err)
 	}
 
 	code, payload := fixture.do(http.MethodGet, "/__aisys__/api/authorizations/usage/team-details?startDate="+startDate+"&endDate="+endDate, "")

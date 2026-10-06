@@ -31,9 +31,21 @@ const workspace = read(join(goRoot, 'go.work'));
 // 口径（BUG-0182 建议方案 #3 明确禁止第二套口径实现），唯一允许的 import 是
 // jobs 的受控导出面 backend-go-jobs/statsrebuild（只暴露重建编排入口，
 // 编排内部全部委托 internal/statsagg，无自身口径 SQL）。
+// crossProjectImportPattern 锚定完整 import 路径（github.com/huanminabc/
+// juhe-ai/backend-go-<project>…）：裸 `backend-go-<project>` 串会命中注释里
+// 的模块名描述造成误报（w0cross_contract_golden_test.go 文件头，2026-10-06
+// 修正）；Go 源里的跨项目引用必然以完整 module 路径出现。
+function crossProjectImportPattern(project) {
+  const escaped = project.replace('-', '\\-');
+  return new RegExp(`github\\.com\\/huanminabc\\/juhe-ai\\/backend-go-${escaped}\\b`);
+}
+
 const crossProjectImportAllowlist = [
-  { project: 'gateway', allow: /backend-go-maintenance\/bootstrap\b/g },
-  { project: 'maintenance', allow: /backend-go-jobs\/statsrebuild\b/g },
+  // 匹配锚定完整 import 路径（github.com/huanminabc/juhe-ai/<module>…）：
+  // 裸 `backend-go-<project>` 串会命中注释里的模块名描述造成误报
+  // （w0cross_contract_golden_test.go 文件头，2026-10-06 修正）。
+  { project: 'gateway', allow: /github\.com\/huanminabc\/juhe-ai\/backend-go-maintenance\/bootstrap\b/g },
+  { project: 'maintenance', allow: /github\.com\/huanminabc\/juhe-ai\/backend-go-jobs\/statsrebuild\b/g },
 ];
 for (const project of projects) {
   const projectRoot = join(goRoot, 'projects', project);
@@ -48,7 +60,7 @@ for (const project of projects) {
     const checked = allowEntry ? source.replace(allowEntry.allow, '') : source;
     for (const other of projects) {
       if (other === project) continue;
-      assert.doesNotMatch(checked, new RegExp(`backend-go-${other.replace('-', '\\-')}`), `${relative(repoRoot, file)} imports ${other}`);
+      assert.doesNotMatch(checked, crossProjectImportPattern(other), `${relative(repoRoot, file)} imports ${other}`);
     }
   }
 }
@@ -58,7 +70,7 @@ assert.ok(existsSync(join(contractsRoot, 'go.mod')), 'shared contracts go.mod is
 for (const file of goFiles(contractsRoot)) {
   const source = read(file);
   for (const project of projects) {
-    assert.doesNotMatch(source, new RegExp(`backend-go-${project.replace('-', '\\-')}`), `shared contracts imports ${project}`);
+    assert.doesNotMatch(source, crossProjectImportPattern(project), `shared contracts imports ${project}`);
   }
 }
 
@@ -67,7 +79,7 @@ assert.ok(existsSync(join(platformRoot, 'go.mod')), 'shared platform go.mod is r
 for (const file of goFiles(platformRoot)) {
   const source = read(file);
   for (const project of projects) {
-    assert.doesNotMatch(source, new RegExp(`backend-go-${project.replace('-', '\\-')}`), `shared platform imports ${project}`);
+    assert.doesNotMatch(source, crossProjectImportPattern(project), `shared platform imports ${project}`);
   }
 }
 

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 )
 
 // alwaysAllowSchedule covers every UTC minute (regular windows plus the
@@ -239,6 +241,35 @@ func TestAccountBatchEditContextAndBatchUpdate(t *testing.T) {
 	}
 	if !seen["accounts.batch_update"] {
 		t.Fatalf("operation log actions: %v", env.sink.actions())
+	}
+	// BUG-0172 T1②：批量更新操作日志必须携带 per-account targets（逐账户
+	// 审计线索，形状对齐 Go sink 契约：account/affected/owner）。
+	env.sink.mu.Lock()
+	var batchEntry *authsys.OperationLogEntry
+	for index := range env.sink.entries {
+		if env.sink.entries[index].Action == "batch_update" {
+			batchEntry = &env.sink.entries[index]
+			break
+		}
+	}
+	env.sink.mu.Unlock()
+	if batchEntry == nil {
+		t.Fatal("batch_update entry missing")
+	}
+	if len(batchEntry.Targets) != len(ids) {
+		t.Fatalf("batch targets = %d, want %d", len(batchEntry.Targets), len(ids))
+	}
+	targetIDs := map[string]bool{}
+	for _, target := range batchEntry.Targets {
+		if target.TargetType != "account" || target.Relation != "affected" || target.TargetOwnerSystemAccountID != adminID {
+			t.Fatalf("batch target shape: %+v", target)
+		}
+		targetIDs[target.TargetID] = true
+	}
+	for _, id := range ids {
+		if !targetIDs[id] {
+			t.Fatalf("batch target missing account %s", id)
+		}
 	}
 
 	// Stale revision on any account → 409 with the per-account copy.

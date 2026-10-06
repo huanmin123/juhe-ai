@@ -84,11 +84,10 @@ func requestSystemAccountID(r *http.Request) string {
 		return ""
 	}
 	filter := ""
-	if values := r.URL.Query()["systemAccountId"]; len(values) == 1 {
-		filter = strings.TrimSpace(values[0])
-		if filter == "all" {
-			filter = ""
-		}
+	// BUG-0172 T5③：重复 query 参数取首值（Node req.query 数组首值语义）；
+	// 原先 len == 1 的条件会把重复参数的管理员过滤器静默丢弃。
+	if filter = strings.TrimSpace(firstQueryValue(r, "systemAccountId")); filter == "all" {
+		filter = ""
 	}
 	if filter != "" && isAdminRole(auth.Role) {
 		return filter
