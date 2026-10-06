@@ -81,68 +81,74 @@ func (w *WindowRefresher) refreshUsageOverviewWindowSnapshots(ctx context.Contex
 			return err
 		}
 	}
-	// summary：scope × range 汇总 usage_stats_daily
+	// summary：scope × range 汇总 usage_stats_daily（每 scope 合并为一条多行
+	// VALUES INSERT，ranges 迭代顺序即 VALUES 行序；行集/行值与逐行执行一致）。
+	summaryInsert := `
+		INSERT INTO ` + w.Dialect.StatsTable("usage_overview_summary_windows") + ` (
+		  system_account_id, window_key, start_date, end_date, request_count, success_count, error_count,
+		  input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+		  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
+		  duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count,
+		  last_used_at, updated_at)
+		VALUES `
 	for _, scope := range scopes {
 		rows, err := w.loadDailyWindowRows(ctx, tx, scope.systemAccountID, scope.scopeID, earliestDate, stageContext.todayKey)
 		if err != nil {
 			return err
 		}
 		rowsByDate := RowsByStatDate(rows, func(r DailyWindowRow) string { return r.StatDate })
+		summaryRows := make([][]any, 0, len(ranges))
 		for _, rangeValue := range ranges {
 			aggregate := AggregateUsageRowsForRange(rowsByDate, rangeValue)
-			query := w.Dialect.bind(`
-				INSERT INTO ` + w.Dialect.StatsTable("usage_overview_summary_windows") + ` (
-				  system_account_id, window_key, start_date, end_date, request_count, success_count, error_count,
-				  input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-				  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
-				  duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count,
-				  last_used_at, updated_at)
-				VALUES (` + placeholders(24) + `)
-			`)
 			var lastUsedAt any
 			if aggregate.LastUsedAt != "" {
 				lastUsedAt = aggregate.LastUsedAt
 			}
-			if _, err := tx.ExecContext(ctx, query,
+			summaryRows = append(summaryRows, []any{
 				scope.systemAccountID, RangeWindowKey(rangeValue), rangeValue.StartDate, rangeValue.EndDate,
 				aggregate.RequestCount, aggregate.SuccessCount, aggregate.ErrorCount,
 				aggregate.InputTokens, aggregate.OutputTokens, aggregate.CacheReadTokens, aggregate.CacheReadCostUsd,
 				aggregate.CacheWriteTokens, aggregate.CacheWrite1hTokens, aggregate.CacheWriteCostUsd,
 				aggregate.ThinkingTokens, aggregate.InputImageTokens, aggregate.OutputImageTokens, aggregate.TotalCostUsd,
 				aggregate.DurationMsSum, aggregate.DurationMsCount, aggregate.FirstTokenMsSum, aggregate.FirstTokenMsCount,
-				lastUsedAt, stageContext.updatedAt); err != nil {
-				return err
-			}
+				lastUsedAt, stageContext.updatedAt,
+			})
+		}
+		if err := execOverviewWindowInsertRows(ctx, tx, w.Dialect, summaryInsert, 24, summaryRows); err != nil {
+			return err
 		}
 	}
-	// trend：scope × range 汇总 usage_stats_hourly 趋势桶
+	// trend：scope × range 汇总 usage_stats_hourly 趋势桶（每 scope 合并为
+	// 多行 VALUES INSERT，「ranges 外层顺序 + 桶键字典序」即 VALUES 行序）。
+	trendInsert := `
+		INSERT INTO ` + w.Dialect.StatsTable("usage_overview_trend_windows") + ` (
+		  system_account_id, window_key, start_date, end_date, bucket_key, request_count, error_count,
+		  input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+		  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
+		  duration_ms_sum, duration_ms_count, updated_at)
+		VALUES `
 	for _, scope := range scopes {
 		rows, err := w.loadHourlyWindowRows(ctx, tx, scope.systemAccountID, scope.scopeID, earliestDate, stageContext.todayKey)
 		if err != nil {
 			return err
 		}
+		trendRows := [][]any{}
 		for _, rangeValue := range ranges {
 			buckets := AggregateUsageTrendBuckets(rows, rangeValue)
 			for _, bucketKey := range SortedMapKeys(buckets) {
 				bucket := buckets[bucketKey]
-				query := w.Dialect.bind(`
-					INSERT INTO ` + w.Dialect.StatsTable("usage_overview_trend_windows") + ` (
-					  system_account_id, window_key, start_date, end_date, bucket_key, request_count, error_count,
-					  input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-					  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd,
-					  duration_ms_sum, duration_ms_count, updated_at)
-					VALUES (` + placeholders(21) + `)
-				`)
-				if _, err := tx.ExecContext(ctx, query,
+				trendRows = append(trendRows, []any{
 					scope.systemAccountID, RangeWindowKey(rangeValue), rangeValue.StartDate, rangeValue.EndDate, bucketKey,
 					bucket.RequestCount, bucket.ErrorCount,
 					bucket.InputTokens, bucket.OutputTokens, bucket.CacheReadTokens, bucket.CacheReadCostUsd,
 					bucket.CacheWriteTokens, bucket.CacheWrite1hTokens, bucket.CacheWriteCostUsd,
 					bucket.ThinkingTokens, bucket.InputImageTokens, bucket.OutputImageTokens, bucket.TotalCostUsd,
-					bucket.DurationMsSum, bucket.DurationMsCount, stageContext.updatedAt); err != nil {
-					return err
-				}
+					bucket.DurationMsSum, bucket.DurationMsCount, stageContext.updatedAt,
+				})
 			}
+		}
+		if err := execOverviewWindowInsertRows(ctx, tx, w.Dialect, trendInsert, 21, trendRows); err != nil {
+			return err
 		}
 	}
 	// model rank：uniqueSystemAccountIds + global × range
@@ -165,6 +171,50 @@ func mapKeyList(set map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// overviewWindowInsertMaxRows 是 overview 族窗口表多行 VALUES INSERT 单条
+// 语句的行数上限：最宽 24 列 × 200 行 = 4800 个绑定参数，低于 SQLite
+// （modernc，32766）与 PG（65535）单语句参数上限；行数超出时按行序分片为
+// 多条语句，行集、行值与行序不变。
+const overviewWindowInsertMaxRows = 200
+
+// placeholderRows 生成 rows 行 × cols 列的多行 VALUES 占位符串
+// （"(?, ?, ...), (?, ?, ...)"形态；SQLite `?` 原样，PG 经 bind 得到跨行
+// 连续编号的 $1..$n）。
+func placeholderRows(rows, cols int) string {
+	row := "(" + placeholders(cols) + ")"
+	result := ""
+	for index := 0; index < rows; index++ {
+		if index > 0 {
+			result += ", "
+		}
+		result += row
+	}
+	return result
+}
+
+// execOverviewWindowInsertRows 把同一目标表的全部数据行按
+// overviewWindowInsertMaxRows 分片合并为多行 VALUES INSERT 执行：
+// 行集、行值与行序与逐行单行 INSERT 完全一致，仅语句数收敛。
+// insertSQL 是不含占位符的 "INSERT INTO ... (columns) VALUES " 前缀，
+// 占位符由 placeholderRows 按片内行数生成后统一 bind（双方言）。
+func execOverviewWindowInsertRows(ctx context.Context, tx *sql.Tx, dialect Dialect, insertSQL string, columnCount int, rows [][]any) error {
+	for start := 0; start < len(rows); start += overviewWindowInsertMaxRows {
+		end := start + overviewWindowInsertMaxRows
+		if end > len(rows) {
+			end = len(rows)
+		}
+		query := dialect.bind(insertSQL + placeholderRows(end-start, columnCount))
+		args := make([]any, 0, (end-start)*columnCount)
+		for _, row := range rows[start:end] {
+			args = append(args, row...)
+		}
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (w *WindowRefresher) loadDailyWindowRows(ctx context.Context, tx *sql.Tx, systemAccountID, scopeID, earliestDate, todayKey string) ([]DailyWindowRow, error) {
@@ -424,30 +474,30 @@ func (w *WindowRefresher) refreshUsageModelRankWindows(ctx context.Context, tx *
 		return err
 	}
 	rowsByDate := RowsByStatDate(modelRows, func(r usageModelWindowRow) string { return r.StatDate })
+	// 每个系统账号合并为多行 VALUES INSERT（range 外序 + rank 序即 VALUES 行序）。
+	modelRankInsert := `
+		INSERT INTO ` + w.Dialect.StatsTable("usage_model_rank_windows") + ` (
+		  system_account_id, window_key, start_date, end_date, rank, provider_code, model,
+		  request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+		  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, updated_at)
+		VALUES `
+	rankRows := make([][]any, 0, len(ranges)*10)
 	for _, rangeValue := range ranges {
 		ranked := aggregateUsageModelRows(rowsByDate, rangeValue)
 		if len(ranked) > 10 {
 			ranked = ranked[:10]
 		}
 		for index, row := range ranked {
-			insert := w.Dialect.bind(`
-				INSERT INTO ` + w.Dialect.StatsTable("usage_model_rank_windows") + ` (
-				  system_account_id, window_key, start_date, end_date, rank, provider_code, model,
-				  request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-				  thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, updated_at)
-				VALUES (` + placeholders(20) + `)
-			`)
-			if _, err := tx.ExecContext(ctx, insert,
-				systemAccountID, RangeWindowKey(rangeValue), rangeValue.StartDate, rangeValue.EndDate, index+1,
+			rankRows = append(rankRows, []any{
+				systemAccountID, RangeWindowKey(rangeValue), rangeValue.StartDate, rangeValue.EndDate, index + 1,
 				row.ProviderCode, row.Model,
 				row.RequestCount, row.InputTokens, row.OutputTokens, row.CacheReadTokens, row.CacheReadCostUsd,
 				row.CacheWriteTokens, row.CacheWrite1hTokens, row.CacheWriteCostUsd,
-				row.ThinkingTokens, row.InputImageTokens, row.OutputImageTokens, row.TotalCostUsd, updatedAt); err != nil {
-				return err
-			}
+				row.ThinkingTokens, row.InputImageTokens, row.OutputImageTokens, row.TotalCostUsd, updatedAt,
+			})
 		}
 	}
-	return nil
+	return execOverviewWindowInsertRows(ctx, tx, w.Dialect, modelRankInsert, 20, rankRows)
 }
 
 func consumeModelRows(rows *sql.Rows, scan func(statDate, providerCode, model string, numbers []float64)) error {
@@ -494,30 +544,30 @@ func (w *WindowRefresher) refreshUsageErrorRankWindows(ctx context.Context, tx *
 		return err
 	}
 	rowsByDate := RowsByStatDate(errorRows, func(r usageErrorWindowRow) string { return r.StatDate })
+	// 每个系统账号合并为多行 VALUES INSERT（range 外序 + rank 序即 VALUES 行序）。
+	errorRankInsert := `
+		INSERT INTO ` + w.Dialect.StatsTable("usage_error_rank_windows") + ` (
+		  system_account_id, window_key, start_date, end_date, rank, provider_code, error_code,
+		  status_code, error_message, error_count, updated_at)
+		VALUES `
+	rankRows := make([][]any, 0, len(ranges)*10)
 	for _, rangeValue := range ranges {
 		ranked := aggregateUsageErrorRows(rowsByDate, rangeValue)
 		if len(ranked) > 10 {
 			ranked = ranked[:10]
 		}
 		for index, row := range ranked {
-			insert := w.Dialect.bind(`
-				INSERT INTO ` + w.Dialect.StatsTable("usage_error_rank_windows") + ` (
-				  system_account_id, window_key, start_date, end_date, rank, provider_code, error_code,
-				  status_code, error_message, error_count, updated_at)
-				VALUES (` + placeholders(11) + `)
-			`)
 			var errorMessage any
 			if row.ErrorMessage != "" {
 				errorMessage = row.ErrorMessage
 			}
-			if _, err := tx.ExecContext(ctx, insert,
-				systemAccountID, RangeWindowKey(rangeValue), rangeValue.StartDate, rangeValue.EndDate, index+1,
-				row.ProviderCode, row.ErrorCode, row.StatusCode, errorMessage, row.ErrorCount, updatedAt); err != nil {
-				return err
-			}
+			rankRows = append(rankRows, []any{
+				systemAccountID, RangeWindowKey(rangeValue), rangeValue.StartDate, rangeValue.EndDate, index + 1,
+				row.ProviderCode, row.ErrorCode, row.StatusCode, errorMessage, row.ErrorCount, updatedAt,
+			})
 		}
 	}
-	return nil
+	return execOverviewWindowInsertRows(ctx, tx, w.Dialect, errorRankInsert, 11, rankRows)
 }
 
 // refreshAiPerformanceSummaryWindows mirrors
