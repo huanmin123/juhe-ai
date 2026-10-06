@@ -3,7 +3,8 @@
 // usage-rank-snapshots-refresh、usage-overview-windows-refresh、
 // usage-scope-range-windows-refresh）与窗口 4 个（system-metrics-sample、
 // system-metrics-trend-windows-refresh、ai-performance-summary-windows-refresh、
-// authorization-usage-range-windows-refresh）。
+// authorization-usage-range-windows-refresh；其中 authorization-usage-range-
+// windows-refresh 已随授权消耗明细改为日摘要表现场聚合而停用，不再装配调度）。
 //
 // Node 参考（只读对齐源）：
 //   - backend/src/modules/background/background-jobs.ts（job 调度层）

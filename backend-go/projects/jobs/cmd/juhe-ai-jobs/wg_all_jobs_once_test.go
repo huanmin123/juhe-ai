@@ -427,7 +427,6 @@ var wgAllWiredJobNames = []string{
 	"system-metrics-trend-windows-refresh",
 	"usage-overview-windows-refresh",
 	"usage-scope-range-windows-refresh",
-	"authorization-usage-range-windows-refresh",
 	"usage-hot-window-refresh",
 	"usage-quota-hourly-windows-refresh",
 	"openai-oauth-access-token-refresh",

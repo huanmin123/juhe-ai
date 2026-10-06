@@ -2,7 +2,7 @@
 // getResourceAuthorizationUsageAsync read chain
 // (resource-authorization-usage.repository.ts) — the scope-filtered grant
 // summary plus the range usage, the per-member usageBySystemAccount page and
-// the authorization_team_usage_range_windows / usage_scope_range_windows
+// the authorization_team_usage_summary_daily / usage_scope_range_windows
 // lookups with the account instance fallback.
 package authz
 
@@ -309,29 +309,33 @@ func (s *Store) loadTeamRuntimeUsageRows(ctx context.Context, resourceType, reso
 }
 
 // loadTeamUsageWindowSummary mirrors loadAuthorizationTeamUsageRangeSummary
-// (:565-591): the pre-aggregated team window row for this grant.
+// (:565-591) on the live daily summary table: the team's
+// authorization_team_usage_summary_daily rows aggregate over the requested
+// stat_date range with the same scope key (usage_scope: system_account_id =
+// owner, team/resource filters). The frozen
+// authorization_team_usage_range_windows rows are never consulted — a user
+// selecting an old hot-window anchor range must read the same fresh aggregates
+// as the member rows. An absent (or retention-zeroed, HAVING-filtered)
+// aggregate keeps the nil → fallback contract.
 func (s *Store) loadTeamUsageWindowSummary(ctx context.Context, resourceType, resourceID, ownerID, teamID string, rng UsageStatsRange) (*UsageSummary, error) {
-	query := `SELECT team_filter_id, '' , '', ` + windowAggregateColumns + `
-		FROM ` + s.statsTable("authorization_team_usage_range_windows") + `
-		WHERE system_account_id = ?
-			AND start_date = ?
-			AND end_date = ?
-			AND team_filter_id = ?
-			AND resource_filter_type = ?
-			AND resource_filter_id = ?
-		LIMIT 1`
-	row := s.statsQueryDB().QueryRowContext(ctx, s.bind(query), ownerID,
+	query := `SELECT ` + usageDailyAggregateColumns + `
+		FROM ` + s.statsTable("authorization_team_usage_summary_daily") + ` report
+		WHERE report.system_account_id = ?
+			AND report.stat_date BETWEEN ? AND ?
+			AND report.team_filter_id = ?
+			AND report.resource_filter_type = ?
+			AND report.resource_filter_id = ?
+		` + usageDailyNonEmptyHaving
+	rows, err := s.statsQueryDB().QueryContext(ctx, s.bind(query), ownerID,
 		rng.StartDate, rng.EndDate, teamID, resourceType, resourceID)
-	var aggregate usageWindowRow
-	var teamIDValue, resourceTypeValue, resourceIDValue string
-	err := row.Scan(&teamIDValue, &resourceTypeValue, &resourceIDValue,
-		&aggregate.RequestCount, &aggregate.InputTokens, &aggregate.OutputTokens,
-		&aggregate.CacheReadTokens, &aggregate.CacheReadCostUsd, &aggregate.CacheWriteTokens, &aggregate.CacheWrite1hTokens,
-		&aggregate.CacheWriteCostUsd, &aggregate.ThinkingTokens, &aggregate.InputImageTokens, &aggregate.OutputImageTokens,
-		&aggregate.TotalCostUsd, &aggregate.LastUsedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+	aggregate, err := scanUsageWindowRow(rows)
 	if err != nil {
 		return nil, err
 	}

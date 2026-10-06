@@ -576,7 +576,6 @@ func (a *workerAssembly) wireStatsFamily(ctx context.Context) error {
 	} else {
 		a.scheduleWiredJob("usage-scope-range-windows-refresh", windowTask("usage_scope_range_windows", []statsagg.WindowStageName{statsagg.StageUsageScopeRangeWindows}))
 	}
-	a.scheduleWiredJob("authorization-usage-range-windows-refresh", windowTask("authorization_usage_range_windows", []statsagg.WindowStageName{statsagg.StageAuthorizationUsageRangeWindows}))
 	a.scheduleWiredJob("usage-hot-window-refresh", windowTask("usage_hot_window_refresh", hotUsageWindowStages()))
 	// 配额小时窗刷新（BUG-0175 D-48/D-75/D-86）：不在 RunStages 的 watermark
 	// 阶段模型内（归档 :1795-1951 是独立的 expiry 游标 + 脏范围分批消费
