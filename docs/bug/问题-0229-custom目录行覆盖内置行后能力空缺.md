@@ -5,7 +5,7 @@
 ## 基本信息
 
 - 编号：BUG-0229
-- 状态：已修复（待发布）
+- 状态：已上线（随 09-28 19:16 发布）
 - 严重程度：P1
 - 发现时间：2026-09-28
 - 发现方式：用户反馈（生产 AI 对话 `chat_conv_ed0f35e0a639d9eb60e88f1d17a1bd5b`，2026-09-28 17:10 问天气无搜索）
@@ -102,3 +102,5 @@ custom(global/personal) 目录行在目录读取链上，若同 `(provider_code,
 ## 发布注意
 
 - 生产 cacheDriver 为 redis 时，共享目录缓存键 `gateway:provider-model-catalog` TTL 24h 且发布重启不清缓存（同 BUG-0210 的发布注意）；发布后需清理该键（或触发一次任意目录保存），否则最长 24h 内 custom 覆盖行的旧空能力条目继续命中、修复看似无效。
+
+2026-10-06 状态同步：随 09-28 19:16 发布（发布记录显式点名）；HEAD 复核「chain_catalog.go/generation_deps.go custom 目录合并」命中。

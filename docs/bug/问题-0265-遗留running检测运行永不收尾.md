@@ -1,6 +1,6 @@
 # BUG-0265：遗留 running 检测运行永不收尾
 
-- 状态：已修复（2026-10-02，待发布）；2026-10-04 补齐 SQLite 方言收尾（初版误把 SQLite standalone 当"本地开发夹具"跳过，与架构总览"SQLite 是正式默认部署模式"冲突，SQLite 部署的遗留 running 同样会永不收尾）
+- 状态：已上线（随 10-02 17:1x 发布）；2026-10-04 补齐 SQLite 方言收尾（初版误把 SQLite standalone 当"本地开发夹具"跳过，与架构总览"SQLite 是正式默认部署模式"冲突，SQLite 部署的遗留 running 同样会永不收尾）已随 2026-10-06 前后批次发布
 - 定性：Go 实现收口缺口——run 终态的唯一收口是发起进程内的 CAS，进程崩溃/重启后该 run 永久停留 running，包内无任何启动/周期收尾扫描
 - 发现方式：生产数据取证（2026-09-28 一条 running 滞留）+ 代码取证（`modelcheckowner/run.go` / `host.go` / `scheduler.go`）
 
@@ -53,3 +53,5 @@ WHERE status='running' AND updated_at::timestamptz < <now-阈值>::timestamptz
 - 预算依据代码：`scheduler_executor.go` `ScheduleRunBudget`/`BusinessLeaseExecutionMargin`、`business_scheduler.go` run-now 默认预算
 
 2026-10-02
+
+2026-10-06 状态同步：随 10-02 17:1x 发布（发布记录显式点名）；10-04 SQLite 补齐已入库随后续批次；HEAD 复核「SweepStaleRuns/StaleRunningMS（modelcheckowner host.go、accounttest/queue.go）」命中。

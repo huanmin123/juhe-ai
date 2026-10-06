@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0003
-- 状态：已修复
+- 状态：不适用（历史形态）（2026-10-06 清账：Node 主进程/DB service/worker 多连接 SQLite 形态已随 Node 后端退役，现行生产为国内单机 Docker go-only + PG；Go SQLite standalone 模式 DSN 统一 `busy_timeout(5000)` + WAL）
 - 严重程度：P1
 - 发现时间：2026-05-06
 - 发现方式：用户反馈 traceId
@@ -72,3 +72,5 @@
 - 完成时间：2026-05-06
 - 结论：通过 SQLite 写锁等待和 session 写入节流消除了管理面并发请求下的 `database is locked`；同时修正了运行日志“文件导入 + 实时流”双路径造成的新日志重复索引。
 - 后续建议：如果后续管理面并发和网关写入量继续增大，再评估把登录 session 活跃刷新改为内存批量刷新或独立轻量队列；历史重复运行日志可按需要再做一次离线清理。
+
+- 2026-10-06 清账：不适用（历史形态）。缺陷载体（Node 主进程/worker 各持 SQLite 连接、鉴权中间件逐请求写 `system_sessions.last_seen_at`）已随 Node 后端于 2026-09-05 退役；现行生产形态为国内单机 Docker go-only，主库为 PostgreSQL（无 SQLite 写锁问题域）；Go 的 SQLite standalone 模式在 `backend-go/projects/maintenance/bootstrap/bootstrap.go:162,167` 统一以 `busy_timeout(5000)` + WAL 打开，同类锁等待语义已内建。

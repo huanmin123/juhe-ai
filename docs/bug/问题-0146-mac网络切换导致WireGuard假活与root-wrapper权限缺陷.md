@@ -24,3 +24,9 @@ macOS 网络配置发生变化后，8 条 WireGuard system job 仍显示运行�
 仓库验证覆盖 shell 语法、dry-run、私有值泄露门禁、SSH probe mapping 的缺失/重复/额外记录和非 canary 失败停批约束，以及固定 wrapper 的真实 down/up、ready、运行期退出清理、`WG_*` 覆盖无效、up 失败和 ready 超时路径。真实生产仍须先对私有 manifest、203 adapter、8 个 plist、配置所有权、固定 wrapper 语法、203 SSH key/host fingerprint/forced-command 和 release lock 做预检，再进行受控 apply 与逐 Edge TLS nonce 验收。
 
 共享 Wi-Fi/WAN 仍是物理单点：软件只能在网络恢复后受控重建 WireGuard，不能修复上游网络本身；应单独推进有线链路和固定 DHCP 租约。
+
+2026-10-06 状态同步复核：记录声称的修复未能在当前 HEAD 定位（关键词 root-only WireGuard wrapper/config 迁移器）——修复对象为已下线的 macOS K3s 形态（2026-09-26 下线），现行国内单机 Docker 形态无 macOS launchd/WireGuard 修复面，原"待生产验证"验证对象已不存在；未标上线。
+
+## 2026-10-06 清账终裁
+
+- 状态：不适用（2026-10-06 清账终裁：macOS K3s 与 WireGuard/root-wrapper 验证对象随 09-26 形态下线，缺陷载体不存在）

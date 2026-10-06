@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0044
-- 状态：已修复（待真实环境验证）
+- 状态：已上线（随 2026-10-06 前后批次发布；2026-10-06 状态同步），真实环境验证项保留观察
 - 严重程度：P1
 - 发现时间：2026-07-10
 - 发现方式：Node 转 Go 已迁移切片横向审计
@@ -81,3 +81,5 @@
 - 完成时间：2026-07-10。
 - 结论：已迁移的管理写接口统一使用 Node 等价的 operation log 清洗和 best-effort 入队边界，并由源代码 guard 防止直接 enqueue 回归。
 - 后续建议：在 Docker/testcontainers 健康环境复跑 W3/W4 operation log integration，并在生产接管前为设置读取失败和队列失败补统一指标。
+
+2026-10-06 状态同步：滚动全量发布默认规则（修复已入库，随 2026-10-06 前后批次上线）；HEAD 复核「operationLogMaxChangesPerRecord（maintenance schema）」命中。

@@ -1,6 +1,6 @@
 # BUG-0266：Codex 压缩请求免超时传导断线（响应层重建 profile 掐断压缩流）
 
-- 状态：已修复（2026-10-02，待发布）
+- 状态：已上线（随 10-03 00:4x 发布）
 - 定性：Go 实现与《Responses上下文压缩落地方案.md》契约偏差——Node 迁移遗漏「禁超时」判定的两处传导接线；preflight 识别正确、engine 兜底生效，但响应层/coordination 断线导致压缩流仍被 120s 首响应预算掐断
 - 发现方式：生产用户报障「客户端压缩卡死，使用日志全是 上游流式请求 120s 内未返回首段数据」（2026-10-02，系统账户 huanmin，Codex Desktop 0.159.2）+ 审计/网关日志/Node 权威源码三方对照取证
 
@@ -60,3 +60,5 @@ Go 侧 preflight 识别、engine 判定、transport 闸门均正确（生产审�
 ## 7. 后续边界变更（2026-10-03 设计登记）
 
 《普通路由速度优先延迟切换设计》第 6 节"总时间兜底截止"（待实施）将给压缩请求增加**调度层总时长软观察**（`speedFirstConfig.compactionTotalTimeDeadlineSeconds`，默认 300 秒）：到期未完成记总时间慢样本、确认慢后经 `latency_degraded` 降级兜底。该机制不属于本文修复或豁免的 lane 硬超时范围——本文语义全部保持：首字截止、首响应 / 语义结果 / attempt 生命周期 / 非流式首响应等 lane 超时豁免、transport watch 禁用、`Unbounded` wall budget 与读超时 plan 为 nil 均不变。总时间软截止对已写出内容的压缩流不做任何中断（照常读完）；仅当压缩流尚未写出任何可见内容、账户已被确认总时间慢且满足速度优先安全切号链（未写出、有候选、未超每请求换号上限、无坑不跳）时，允许与其他可重放文本一致的隐藏切号（中止当前上游并在新账户重放 compact 契约检查），不产生 lane 硬超时类失败语义。实施时的接线变化：preflight 对压缩请求的首字运行态配置（`NormalRouteFirstByteConfig`）维持 nil、速度优先配置整体照常携带，仅观测层按维度分流（见该设计 6.8）；`codex_compaction_timeouts_disabled` 审计含义不变。
+
+2026-10-06 状态同步：随 10-03 00:4x 发布（发布记录显式点名）；HEAD 复核「compactWaitHeartbeat（chain_v1_loop.go）」命中。

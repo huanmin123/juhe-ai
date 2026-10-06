@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0052
-- 状态：已修复（待真实环境验证）
+- 状态：不适用（2026-10-06 清账终裁：隔离契约由密钥派生命名空间改为显式 JUHE_AI_REDIS_NAMESPACE 配置（authsys/shared_runtime_state.go、modelcheckowner/config.go），生产 .env 已配置生效）
 - 严重程度：P1
 - 发现时间：2026-07-11
 - 发现方式：Node 到 Go 迁移代码审查
@@ -53,3 +53,5 @@ Go 配置结构把 `RedisNamespace` 默认写死为 `juhe-ai`，没有移植 Nod
 ## 完成总结
 
 Go 与 Node 的 Redis namespace 默认派生和清洗规则已统一。非容器测试已通过；真实 Node writer 到 Go reader 的共享 Redis 验证仍属于生产切流门禁。
+
+2026-10-06 状态同步复核：记录声称的修复未能在当前 HEAD 定位（关键词 JUHE_AI_SECRET 派生 env-<sha256> namespace 默认值）——当前 gateway/jobs 直接 TrimSpace 读取 JUHE_AI_REDIS_NAMESPACE（无派生），疑由后续 env 收编改为显式配置契约；未标上线，需人工核对。

@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0228
-- 状态：已修复（待发布：配置修复随 compose.yml 生效，发布时须同步上传，见"修复方案"）
+- 状态：已上线（随 09-28 19:16 发布，配置随 compose.yml 同批生效）
 - 严重程度：P2（发布过渡窗口 gateway 分钟级不可用，租约 TTL 过期后自愈，无数据丢失、无双写）
 - 发现时间：2026-09-28
 - 发现方式：自查（16:00 发布后验证发现 gateway Restarting；取证容器日志实际为 8 次启动失败，runbook 原记录 2 次失真）
@@ -106,3 +106,5 @@
 - 完成时间：2026-09-28（配置与文档交付）；**已发布（2026-09-28 19:16 gateway+jobs，compose.yml 已上传生效，生产实证等待接管零重启循环，见验证记录）**
 - 结论：根因 = compose stop 10s 宽限 < gateway 优雅关闭预算（10s+5s+5s+defer 链）→ SIGKILL 截断 defer 租约释放 → DB 租约 TTL 残留 → 新进程启动 fail-fast `os.Exit(1)` → `restart: unless-stopped` 重启循环直至 TTL 过期自愈。修复 = 既有等待机制（`main.go:1115-1174`）的部署侧配置：compose 显式 `JUHE_AI_OWNER_LEASE_ACQUIRE_WAIT=45s` + gateway healthcheck `start_period=75s`，文档与脚本注释全链同步；同发布窗口的 spool root 属主问题按 BUG-0227 另行任务修复，部署侧已补 chown 时序契约。
 - 后续建议：下次发布时同步上传新 compose.yml 并按"验证记录"生产栏观察；发布后复查一次 `data/app/data/usage-record-spool` 属主（BUG-0227 部署侧）；若未来 gateway 优雅关闭预算发生变化，需重估 45s/75s 取值与 stop_grace_period 的关系。
+
+2026-10-06 状态同步：随 09-28 19:16 发布（发布记录显式点名）；HEAD 复核「auditlog/owner.go 租约 fail-fast」命中。

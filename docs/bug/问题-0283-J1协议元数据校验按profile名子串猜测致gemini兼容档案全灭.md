@@ -1,7 +1,7 @@
 # 问题-0283：J1 协议元数据校验按 profile 名子串猜测，gemini OpenAI 兼容档案全部无法探活
 
 - 编号：BUG-0283
-- 状态：已修复（2026-10-04 登记并修复代码；待 jobs 发布后生产自动恢复）
+- 状态：已上线（随 10-04 12:0x 发布），生产自动恢复项保留观察
 - 影响面：生产 `profile_gemini_openai_chat_v1beta` 全部 12 个账户 100% 无法构建探活输入——10 个 `pending_test` 自 2026-09-14 起永远无法激活、1 个 `active` 被剥夺周期健康检查、1 个 `temporary_unavailable` 有冷却锚点但复测永远跑不了。
 
 ## 现象
@@ -33,3 +33,5 @@ if strings.Contains(profile, "anthropic") { ... } else if strings.Contains(profi
 ## 回归验证
 
 - `go test -count=1 ./projects/jobs/internal/accounthealth/` 全绿（含新增用例）。
+
+2026-10-06 状态同步：随 10-04 12:0x 发布（发布记录显式点名）；HEAD 复核「profile 表直查替代子串猜测（accounthealth/direct_input.go，提交 9c14882a8）」命中。

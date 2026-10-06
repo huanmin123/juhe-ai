@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0004
-- 状态：已修复
+- 状态：不适用（历史形态）（2026-10-06 清账：macOS LaunchDaemon 部署形态已下线，现行生产为国内单机 Docker Linux；Go 系统指标链为独立实现）
 - 严重程度：P2
 - 发现时间：2026-05-08
 - 发现方式：用户反馈
@@ -71,3 +71,5 @@
 - 完成时间：2026-05-08
 - 结论：已修复 macOS 内存统计口径，新采样使用更接近活动监视器的实际内存压力口径。
 - 后续建议：部署后观察 1 到 2 个采样周期，并等待小时聚合数据自然刷新；旧采样历史不会自动重算。
+
+- 2026-10-06 清账：不适用（历史形态）。缺陷载体（macOS LaunchDaemon 部署 + Node worker `vm_stat` 采样分支）已随 Mac 部署形态下线与 Node 后端退役而消失；现行生产为国内单机 Docker（Linux），Go 侧系统指标为独立实现链（jobs `statsagg/stages_metrics.go` 聚合、gateway `statreads/systemmetrics.go` 读面），macOS 采样口径不再存在于任何受支持部署形态。

@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0231
-- 状态：已修复（待发布）
+- 状态：已上线（随 09-29 14:0x~14:4x 系列发布）
 - 严重程度：P1
 - 发现时间：2026-09-29
 - 发现方式：用户反馈（生产 AI 对话 `chat_conv_f548583419ab5df348829d0505e0d0cf`，2026-09-29 13:44 问「上海今天天气怎么样？」不联网）
@@ -81,3 +81,5 @@
 | ContextWindow/MaxOutput | gpt-image-1/1.5/2 旧行 | 按张计费的图像模型，快照未维护 token 参数（2.5 系新行有值属来源差异，无官方 token 参数佐证旧行数值） |
 
 **防回归固化**：新增 `catalog_completeness_test.go` 三条门禁——①全供应商 chat 行必须声明 function_calling；②全部行 Mode 非空；③名字带 `YYYY-MM-DD` 后缀的行必须带同值 ReleaseDate。
+
+2026-10-06 状态同步：随 09-29 14:0x~14:4x 系列发布（发布记录显式点名）；HEAD 复核「glm function_calling 静态派生断言（chain_catalog_builtin_static_derived_test）」命中。

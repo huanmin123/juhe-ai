@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：BUG-0040
-- 状态：已修复（待真实环境验证）
+- 状态：已上线（随 2026-10-06 前后批次发布；2026-10-06 状态同步），真实环境验证项保留观察
 - 严重程度：P1
 - 发现时间：2026-07-10
 - 发现方式：Node 转 Go 契约对照 / 子 agent 审计
@@ -88,3 +88,5 @@
 - 完成时间：2026-07-10。
 - 结论：Go W1b public API Key CRUD 已补齐 Node validation/runtime/quota 失效顺序、错误边界和生产装配。
 - 后续建议：在真实 PG/Redis/Node gateway 环境执行已缓存 Key 的 update/delete smoke，并记录 validation version 前后值和三个 topic payload。
+
+2026-10-06 状态同步：滚动全量发布默认规则（修复已入库，随 2026-10-06 前后批次上线）；HEAD 复核「InvalidateAPIKeyValidation（apikeys/store.go）」命中。
