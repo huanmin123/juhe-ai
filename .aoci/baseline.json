@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-06T13:40:13Z",
-  "updated_at": "2026-10-06T19:18:04Z",
+  "updated_at": "2026-10-06T21:34:50Z",
   "files": {
     ".codex/config.toml": {
       "role": "index",
@@ -29,9 +29,9 @@
     },
     "AGENTS.md": {
       "role": "index",
-      "sha256": "eeb480663db31d99b39dc8d8929c550ac4eb7c9562ef1a57a56f4f034552a8bf",
+      "sha256": "02a6ea8b22069ca667e5a5610cc706cf37b35e877a1f77a83450df38cbf5e35f",
       "size": 25262,
-      "normalized_sha256": "eeb480663db31d99b39dc8d8929c550ac4eb7c9562ef1a57a56f4f034552a8bf"
+      "normalized_sha256": "02a6ea8b22069ca667e5a5610cc706cf37b35e877a1f77a83450df38cbf5e35f"
     },
     "LICENSE": {
       "role": "index",
@@ -47,9 +47,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "d2963cd50965cb03744ae6b768ab67f5a754ec10d84e0fb648231b897b8c1938",
-      "size": 72069,
-      "normalized_sha256": "d2963cd50965cb03744ae6b768ab67f5a754ec10d84e0fb648231b897b8c1938"
+      "sha256": "fa055c7117c7e994c32235efa56fd890f5d6b5f37e9b8a1121e90e62533a9b4d",
+      "size": 649964,
+      "normalized_sha256": "fa055c7117c7e994c32235efa56fd890f5d6b5f37e9b8a1121e90e62533a9b4d"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -9633,10 +9633,10 @@
     },
     "backend-go/projects/gateway/internal/gatewaydispatch/pipeline.go": {
       "role": "index",
-      "sha256": "4d1e54e7734e8a3d4bba7e3d9751e487a36d53ab8857586328c679c427bcdf0f",
-      "size": 6485,
-      "normalized_sha256": "4d1e54e7734e8a3d4bba7e3d9751e487a36d53ab8857586328c679c427bcdf0f",
-      "format_sha256": "4d1e54e7734e8a3d4bba7e3d9751e487a36d53ab8857586328c679c427bcdf0f",
+      "sha256": "c38fca23d856f581abbc7354c8eb976689100103ce24610eafd3f63062f9ea78",
+      "size": 6393,
+      "normalized_sha256": "c38fca23d856f581abbc7354c8eb976689100103ce24610eafd3f63062f9ea78",
+      "format_sha256": "c38fca23d856f581abbc7354c8eb976689100103ce24610eafd3f63062f9ea78",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/internal/gatewaydispatch/pipeline_test.go": {
@@ -9673,10 +9673,10 @@
     },
     "backend-go/projects/gateway/internal/gatewaydispatch/preparation.go": {
       "role": "index",
-      "sha256": "a5ce284f12c622b672437ea565d1e33267cb765929e62ca878e3f83fad19b991",
-      "size": 51883,
-      "normalized_sha256": "a5ce284f12c622b672437ea565d1e33267cb765929e62ca878e3f83fad19b991",
-      "format_sha256": "58b3e8b6e06acac9a0fc141b1055aeb25574c3e66a8eaed4b15b4be891f70d37",
+      "sha256": "49d21ff868080d8984d12b831d347c35b4ab6f5e6c67095e4f73624bc168c031",
+      "size": 51747,
+      "normalized_sha256": "49d21ff868080d8984d12b831d347c35b4ab6f5e6c67095e4f73624bc168c031",
+      "format_sha256": "e4eef52250d7591224cf4ebdb964e1360293850b1b1e881ff59bdd8827abf1a0",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/internal/gatewaydispatch/preparationpaths_test.go": {
@@ -11065,10 +11065,10 @@
     },
     "backend-go/projects/gateway/internal/gatewaypreauth/ports.go": {
       "role": "index",
-      "sha256": "c0c3a9267490f40d9b983e17bba7fbac6e3b0a63eb62c727323b3cb70a1aa01d",
-      "size": 23648,
-      "normalized_sha256": "c0c3a9267490f40d9b983e17bba7fbac6e3b0a63eb62c727323b3cb70a1aa01d",
-      "format_sha256": "c0c3a9267490f40d9b983e17bba7fbac6e3b0a63eb62c727323b3cb70a1aa01d",
+      "sha256": "70c3a86098211ee839371e95e49888515e9ac228545297e61f43734b31d0df31",
+      "size": 23601,
+      "normalized_sha256": "70c3a86098211ee839371e95e49888515e9ac228545297e61f43734b31d0df31",
+      "format_sha256": "70c3a86098211ee839371e95e49888515e9ac228545297e61f43734b31d0df31",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/internal/gatewaypreauth/preauth.go": {
@@ -11097,10 +11097,10 @@
     },
     "backend-go/projects/gateway/internal/gatewaypreauth/preflight.go": {
       "role": "index",
-      "sha256": "34e78eb64896de63b11524180cee4217891c5bd8f3cf58d9145a2c48fca09ab3",
-      "size": 72920,
-      "normalized_sha256": "34e78eb64896de63b11524180cee4217891c5bd8f3cf58d9145a2c48fca09ab3",
-      "format_sha256": "34e78eb64896de63b11524180cee4217891c5bd8f3cf58d9145a2c48fca09ab3",
+      "sha256": "6b89c208164e6b8718a10165cf95ff25ffd6a4c6e667d940e577ebe1667bc7b9",
+      "size": 72771,
+      "normalized_sha256": "6b89c208164e6b8718a10165cf95ff25ffd6a4c6e667d940e577ebe1667bc7b9",
+      "format_sha256": "6b89c208164e6b8718a10165cf95ff25ffd6a4c6e667d940e577ebe1667bc7b9",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/internal/gatewaypreauth/preflight_test.go": {
@@ -17117,10 +17117,10 @@
     },
     "backend-go/projects/gateway/internal/providers/routes.go": {
       "role": "index",
-      "sha256": "c7995b120fbbca059556fb4a6b7486a33bb103ae55fac0e3c7bb743ff995304a",
-      "size": 13632,
-      "normalized_sha256": "c7995b120fbbca059556fb4a6b7486a33bb103ae55fac0e3c7bb743ff995304a",
-      "format_sha256": "c7995b120fbbca059556fb4a6b7486a33bb103ae55fac0e3c7bb743ff995304a",
+      "sha256": "e423743ac8f406ef0854d742cfd599de660ab56a8eee02cd6c01b20e926385ea",
+      "size": 13762,
+      "normalized_sha256": "e423743ac8f406ef0854d742cfd599de660ab56a8eee02cd6c01b20e926385ea",
+      "format_sha256": "e423743ac8f406ef0854d742cfd599de660ab56a8eee02cd6c01b20e926385ea",
       "format_kind": "gofmt"
     },
     "backend-go/projects/gateway/internal/providers/store.go": {
@@ -20337,10 +20337,10 @@
     },
     "backend-go/projects/jobs/internal/jobregistry/registry.go": {
       "role": "index",
-      "sha256": "34ee6346765e7f023708ea8c709023630ae0876afdce1736a4fdb63934ca5268",
-      "size": 39959,
-      "normalized_sha256": "34ee6346765e7f023708ea8c709023630ae0876afdce1736a4fdb63934ca5268",
-      "format_sha256": "34ee6346765e7f023708ea8c709023630ae0876afdce1736a4fdb63934ca5268",
+      "sha256": "bbaaae6920b7e7464a4565c6471cf78cc34f526e2e31a0b7654d6006dd9d8869",
+      "size": 40293,
+      "normalized_sha256": "bbaaae6920b7e7464a4565c6471cf78cc34f526e2e31a0b7654d6006dd9d8869",
+      "format_sha256": "bbaaae6920b7e7464a4565c6471cf78cc34f526e2e31a0b7654d6006dd9d8869",
       "format_kind": "gofmt"
     },
     "backend-go/projects/jobs/internal/jobregistry/registry_test.go": {
@@ -23361,10 +23361,10 @@
     },
     "backend-go/projects/jobs/statsrebuild/statsrebuild.go": {
       "role": "index",
-      "sha256": "09002da58536c6ace36b890bebe5a0aef09a6cb5d9c80070d830f612ac5fdea3",
-      "size": 17032,
-      "normalized_sha256": "09002da58536c6ace36b890bebe5a0aef09a6cb5d9c80070d830f612ac5fdea3",
-      "format_sha256": "09002da58536c6ace36b890bebe5a0aef09a6cb5d9c80070d830f612ac5fdea3",
+      "sha256": "37184c1448937f989826ca85845fdc3345ff3e394a91a9a2ee31595d9a9ee426",
+      "size": 21155,
+      "normalized_sha256": "37184c1448937f989826ca85845fdc3345ff3e394a91a9a2ee31595d9a9ee426",
+      "format_sha256": "37184c1448937f989826ca85845fdc3345ff3e394a91a9a2ee31595d9a9ee426",
       "format_kind": "gofmt"
     },
     "backend-go/projects/jobs/statsrebuild/statsrebuild_test.go": {
@@ -23433,10 +23433,10 @@
     },
     "backend-go/projects/maintenance/cmd/juhe-ai-maintenance/main.go": {
       "role": "index",
-      "sha256": "1b3ce5de809f96be85324519c1041df42d4894aeae9166ecd9f6ca1c3c13056f",
-      "size": 26337,
-      "normalized_sha256": "1b3ce5de809f96be85324519c1041df42d4894aeae9166ecd9f6ca1c3c13056f",
-      "format_sha256": "1b3ce5de809f96be85324519c1041df42d4894aeae9166ecd9f6ca1c3c13056f",
+      "sha256": "d48701dee6a3b3e488d4604d858fd220d89162e4c0396bab9230adb7cb0b28bd",
+      "size": 27907,
+      "normalized_sha256": "d48701dee6a3b3e488d4604d858fd220d89162e4c0396bab9230adb7cb0b28bd",
+      "format_sha256": "d48701dee6a3b3e488d4604d858fd220d89162e4c0396bab9230adb7cb0b28bd",
       "format_kind": "gofmt"
     },
     "backend-go/projects/maintenance/cmd/juhe-ai-maintenance/main_test.go": {
@@ -23457,10 +23457,10 @@
     },
     "backend-go/projects/maintenance/cmd/juhe-ai-maintenance/rebuild_usage_stats.go": {
       "role": "index",
-      "sha256": "42cb7c10d96607a7aeaaf02a46121c5ebd5626e8fd419a520d0db4e8393e7e72",
-      "size": 7931,
-      "normalized_sha256": "42cb7c10d96607a7aeaaf02a46121c5ebd5626e8fd419a520d0db4e8393e7e72",
-      "format_sha256": "f7f236169faa4ad55d4bc3483400e190e66e2b0d94acc2457135de7ed5fc891a",
+      "sha256": "4a4d3da14353a800ef979ae86c94f87e59cf09c4fdd7d145ba35cbdcbe389165",
+      "size": 8553,
+      "normalized_sha256": "4a4d3da14353a800ef979ae86c94f87e59cf09c4fdd7d145ba35cbdcbe389165",
+      "format_sha256": "4a4d3da14353a800ef979ae86c94f87e59cf09c4fdd7d145ba35cbdcbe389165",
       "format_kind": "gofmt"
     },
     "backend-go/projects/maintenance/cmd/juhe-ai-maintenance/schema_snapshot.go": {
@@ -23577,9 +23577,9 @@
     },
     "backend-go/projects/maintenance/go.mod": {
       "role": "index",
-      "sha256": "deed551cb58c934f7f98925a3452099bdcea0ca40a0f8a6489d70a4b0a4ea12d",
-      "size": 1193,
-      "normalized_sha256": "deed551cb58c934f7f98925a3452099bdcea0ca40a0f8a6489d70a4b0a4ea12d"
+      "sha256": "cb6d38bc278804b99d02f2305dc176b7c4455f58f6866fa6480095f2e277ec49",
+      "size": 1275,
+      "normalized_sha256": "cb6d38bc278804b99d02f2305dc176b7c4455f58f6866fa6480095f2e277ec49"
     },
     "backend-go/projects/maintenance/go.sum": {
       "role": "index",
@@ -26607,9 +26607,9 @@
     },
     "docs/bug/README.md": {
       "role": "index",
-      "sha256": "dbcece12054ee336e428fadc3366ebc65c446a13807c83a701fb53911eecb961",
-      "size": 153981,
-      "normalized_sha256": "f94933b3fb3820d91f2429f38e64e153112663cce4837b653817f26d27868991"
+      "sha256": "ddd3e7001d5445886439208b06258acb3a3c5ae95bad2f258d0469b6d0d4fc41",
+      "size": 154899,
+      "normalized_sha256": "ddd3e7001d5445886439208b06258acb3a3c5ae95bad2f258d0469b6d0d4fc41"
     },
     "docs/bug/问题-0001-授权管理待复查缺陷.md": {
       "role": "index",
@@ -26661,9 +26661,9 @@
     },
     "docs/bug/问题-0009-菜单切换短暂卡顿.md": {
       "role": "index",
-      "sha256": "58aca13588e8304a33293f7c5b35424923ddc250f063fbf999d9ba17e304f28d",
-      "size": 6054,
-      "normalized_sha256": "58aca13588e8304a33293f7c5b35424923ddc250f063fbf999d9ba17e304f28d"
+      "sha256": "f614b040e0c4c7425e45c3a29dc97f0aad7ea0aaa2d1070bf3d1178c22f4ce28",
+      "size": 8504,
+      "normalized_sha256": "f614b040e0c4c7425e45c3a29dc97f0aad7ea0aaa2d1070bf3d1178c22f4ce28"
     },
     "docs/bug/问题-0010-流式失败过早屏蔽账号.md": {
       "role": "index",
@@ -27609,9 +27609,9 @@
     },
     "docs/bug/问题-0172-第三方独立审计M09后迁移缺陷清单.md": {
       "role": "index",
-      "sha256": "78111bee5785afabf9b1c1ac6a4a05edeb847171aaefb79868522b630a687a52",
-      "size": 38316,
-      "normalized_sha256": "78111bee5785afabf9b1c1ac6a4a05edeb847171aaefb79868522b630a687a52"
+      "sha256": "e714fe96deb4edc94f2e5d993b844d0b59a4b1eef9d528663efaf3371a283fc4",
+      "size": 39741,
+      "normalized_sha256": "e714fe96deb4edc94f2e5d993b844d0b59a4b1eef9d528663efaf3371a283fc4"
     },
     "docs/bug/问题-0173-Go运行时生产安全门禁缺失与信号错位.md": {
       "role": "index",
@@ -27651,9 +27651,9 @@
     },
     "docs/bug/问题-0179-CodexResponses画像无法选中Chat桥账户.md": {
       "role": "index",
-      "sha256": "65eb87f78ce736a53db86f2bbeeeac9cf1694869a0d22d29757c0f32403bd309",
-      "size": 3424,
-      "normalized_sha256": "65eb87f78ce736a53db86f2bbeeeac9cf1694869a0d22d29757c0f32403bd309"
+      "sha256": "5507d3d78e404adecb897cf2c641ddc46ecc4e31c96a94338649d88ba0352947",
+      "size": 5138,
+      "normalized_sha256": "5507d3d78e404adecb897cf2c641ddc46ecc4e31c96a94338649d88ba0352947"
     },
     "docs/bug/问题-0180-proberepo脏时间戳panic崩溃循环.md": {
       "role": "index",
@@ -27669,9 +27669,9 @@
     },
     "docs/bug/问题-0182-统计缓存离线重建CLI缺失.md": {
       "role": "index",
-      "sha256": "b5567948f60189bc139f48cd786515c32621f304f7dd429eb05fac3e91257d5c",
-      "size": 5660,
-      "normalized_sha256": "b5567948f60189bc139f48cd786515c32621f304f7dd429eb05fac3e91257d5c"
+      "sha256": "7204730d072a45c341b15baf1882521a5db0ea19a1c39e41faa0076e01929a9e",
+      "size": 12703,
+      "normalized_sha256": "7204730d072a45c341b15baf1882521a5db0ea19a1c39e41faa0076e01929a9e"
     },
     "docs/bug/问题-0183-mockdata占位行毒丸卡死J1调度器.md": {
       "role": "index",
@@ -28143,9 +28143,9 @@
     },
     "docs/bug/问题-0267-Node迁移链面接线系统性断线.md": {
       "role": "index",
-      "sha256": "6de8bc503a9017f709285e4bd7945ce8806b5859134d5be5978533a78ec2ac4b",
-      "size": 15375,
-      "normalized_sha256": "6de8bc503a9017f709285e4bd7945ce8806b5859134d5be5978533a78ec2ac4b"
+      "sha256": "5dad797387eefa5ec8f88ba4e29cc3adf1ff203e2b60476e526ac76da49f8621",
+      "size": 16734,
+      "normalized_sha256": "5dad797387eefa5ec8f88ba4e29cc3adf1ff203e2b60476e526ac76da49f8621"
     },
     "docs/bug/问题-0268-网关协议路径版本前缀可选迁移回归.md": {
       "role": "index",
@@ -28683,9 +28683,9 @@
     },
     "docs/functions/SQLite存储说明.md": {
       "role": "index",
-      "sha256": "1425aa811ec5d11a336257ccdd66e85e67b2d93aea9984dd9eb35395e95bf38b",
-      "size": 190956,
-      "normalized_sha256": "1425aa811ec5d11a336257ccdd66e85e67b2d93aea9984dd9eb35395e95bf38b"
+      "sha256": "6f11584e2a7842954f007c7161669b17826e03a07dbe7436c4c6819cffddfa74",
+      "size": 193578,
+      "normalized_sha256": "6f11584e2a7842954f007c7161669b17826e03a07dbe7436c4c6819cffddfa74"
     },
     "docs/functions/xAI账号接入.md": {
       "role": "index",
@@ -28779,9 +28779,9 @@
     },
     "docs/functions/切号时有效上游目标与上下文迁移设计.md": {
       "role": "index",
-      "sha256": "4423617ee7a0a21e90fa9bcc50047814ca36e7888a194079e4111e43c471991e",
-      "size": 22333,
-      "normalized_sha256": "4423617ee7a0a21e90fa9bcc50047814ca36e7888a194079e4111e43c471991e"
+      "sha256": "fb43ce6acb53cb89b944b58d1da023c01714249f48ac2f1f6fa4a4c5446e7d99",
+      "size": 22507,
+      "normalized_sha256": "fb43ce6acb53cb89b944b58d1da023c01714249f48ac2f1f6fa4a4c5446e7d99"
     },
     "docs/functions/列表手动刷新完整响应设计.md": {
       "role": "index",
@@ -37012,9 +37012,9 @@
     },
     "scripts/regression/go-project-boundary-regression.mjs": {
       "role": "index",
-      "sha256": "3014dfc88d9df049cff8fdf53975aaa2271800d128d08de6a83ecbbc84cf5c5b",
-      "size": 3565,
-      "normalized_sha256": "3014dfc88d9df049cff8fdf53975aaa2271800d128d08de6a83ecbbc84cf5c5b"
+      "sha256": "de6dcb78f5f286b0bab3a225366b00693fd8ee9bc14b6c64367d8f0b80f7b9e0",
+      "size": 4871,
+      "normalized_sha256": "de6dcb78f5f286b0bab3a225366b00693fd8ee9bc14b6c64367d8f0b80f7b9e0"
     },
     "scripts/regression/platform-time-contract.test.mjs": {
       "role": "index",

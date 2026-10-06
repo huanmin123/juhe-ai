@@ -126,6 +126,39 @@
         "created_by": "aoci-init",
         "order": 106,
         "enabled": true
+      },
+      {
+        "rule_id": "generated-coverage-html",
+        "action": "exclude",
+        "pattern": "backend-go/projects/gateway/cover_*.html",
+        "pattern_kind": "glob",
+        "reason": "覆盖率报告生成产物，非业务源码",
+        "source": "user",
+        "created_by": "zcode-host-agent",
+        "order": 500,
+        "enabled": true
+      },
+      {
+        "rule_id": "empty-codex-artifacts",
+        "action": "exclude",
+        "pattern": "backend-go/projects/gateway/internal/gatewaycodex/wi-codex-pg*",
+        "pattern_kind": "glob",
+        "reason": "空的非语义产物文件",
+        "source": "user",
+        "created_by": "zcode-host-agent",
+        "order": 501,
+        "enabled": true
+      },
+      {
+        "rule_id": "binary-images",
+        "action": "exclude",
+        "pattern": "resources/images/*.png",
+        "pattern_kind": "glob",
+        "reason": "二进制图片资源，无文本语义可索引",
+        "source": "user",
+        "created_by": "zcode-host-agent",
+        "order": 502,
+        "enabled": true
       }
     ]
   },
