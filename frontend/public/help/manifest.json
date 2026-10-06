@@ -8,38 +8,180 @@
       "id": "usage",
       "title": "接入与调用",
       "docs": [
-        { "id": "01-first-request", "title": "快速开始：发出你的第一个请求", "summary": "拿 Key、选模型、发对话、看流式，5 分钟走通最小闭环。", "file": "user/01-first-request.md" },
-        { "id": "02-api-key", "title": "API Key 与认证", "summary": "创建 API Key、用 Bearer 头传认证、额度与保管要点。", "file": "user/02-api-key.md" },
-        { "id": "03-models", "title": "模型列表：我能用什么模型", "summary": "GET /v1/models 怎么读、模型名从哪来、选不到怎么办。", "file": "user/03-models.md" },
-        { "id": "04-chat", "title": "对话协议 chat completions", "summary": "POST /v1/chat/completions 参数逐个讲：消息结构、多轮上下文、控温控长、工具调用。", "file": "user/04-chat.md" },
-        { "id": "05-streaming", "title": "流式响应 SSE 怎么读", "summary": "stream:true 之后 data: 行、[DONE]、超时与断流的表现与处理。", "file": "user/05-streaming.md" },
-        { "id": "06-responses", "title": "Responses 协议", "summary": "POST /v1/responses 的用法，以及与 chat completions 怎么选。", "file": "user/06-responses.md" },
-        { "id": "07-video", "title": "视频生成：从提交到取片", "summary": "POST /v1/videos 提交任务、轮询状态、下载成片的完整生命周期。", "file": "user/07-video.md" },
-        { "id": "08-tts", "title": "语音合成 TTS", "summary": "POST /v1/audio/speech 把文本变成音频文件。", "file": "user/08-tts.md" },
-        { "id": "09-transcription", "title": "语音转文字", "summary": "短音频 multipart 同步转写与长音频 URL 异步任务两种方式。", "file": "user/09-transcription.md" },
-        { "id": "10-realtime", "title": "实时语音 Realtime", "summary": "client_secrets 换临时令牌 + WebSocket 直连的双向语音会话。", "file": "user/10-realtime.md" },
-        { "id": "11-images-embeddings", "title": "图像生成与文本嵌入", "summary": "/v1/images 画图与 /v1/embeddings 向量的请求方式。", "file": "user/11-images-embeddings.md" },
-        { "id": "16-protocol-overview", "title": "协议总览：三类协议面怎么选", "summary": "OpenAI 兼容族、Anthropic 原生、Gemini 原生——网关对外的全部入口与选法。", "file": "user/16-protocol-overview.md" },
-        { "id": "17-anthropic", "title": "Anthropic 原生协议", "summary": "Claude 系客户端直连 /v1/messages 的接入方式。", "file": "user/17-anthropic.md" },
-        { "id": "18-gemini", "title": "Gemini 原生协议", "summary": "Gemini SDK 直连 /v1beta 的接入方式。", "file": "user/18-gemini.md" },
-        { "id": "12-errors", "title": "错误码与排障", "summary": "错误信封长什么样、常见错误逐个对号、按症状定位。", "file": "user/12-errors.md" },
-        { "id": "13-concepts", "title": "核心概念：一次请求的旅程", "summary": "API Key→策略路由→分组→账户→上游，五层各自决定什么。", "file": "user/13-concepts.md" },
-        { "id": "14-usage", "title": "用量与统计", "summary": "在管理台哪里看用量、怎么对账、失败请求算不算钱。", "file": "user/14-usage.md" },
-        { "id": "15-faq", "title": "常见问题 FAQ", "summary": "高频问题快答，每条都跳到能解决问题的那一篇。", "file": "user/15-faq.md" }
+        {
+          "id": "01-first-request",
+          "title": "快速开始：发出你的第一个请求",
+          "summary": "拿 Key、选模型、发对话、看流式，5 分钟走通最小闭环。",
+          "file": "user/01-first-request.md"
+        },
+        {
+          "id": "02-api-key",
+          "title": "API Key 与认证",
+          "summary": "创建 API Key、用 Bearer 头传认证、额度与保管要点。",
+          "file": "user/02-api-key.md"
+        },
+        {
+          "id": "03-models",
+          "title": "模型列表：我能用什么模型",
+          "summary": "GET /v1/models 怎么读、模型名从哪来、选不到怎么办。",
+          "file": "user/03-models.md"
+        },
+        {
+          "id": "04-chat",
+          "title": "对话协议 chat completions",
+          "summary": "POST /v1/chat/completions 参数逐个讲：消息结构、多轮上下文、控温控长、工具调用。",
+          "file": "user/04-chat.md"
+        },
+        {
+          "id": "05-streaming",
+          "title": "流式响应 SSE 怎么读",
+          "summary": "stream:true 之后 data: 行、[DONE]、超时与断流的表现与处理。",
+          "file": "user/05-streaming.md"
+        },
+        {
+          "id": "06-responses",
+          "title": "Responses 协议",
+          "summary": "POST /v1/responses 的用法，以及与 chat completions 怎么选。",
+          "file": "user/06-responses.md"
+        },
+        {
+          "id": "07-video",
+          "title": "视频生成：从提交到取片",
+          "summary": "POST /v1/videos 提交任务、轮询状态、下载成片的完整生命周期。",
+          "file": "user/07-video.md"
+        },
+        {
+          "id": "08-tts",
+          "title": "语音合成 TTS",
+          "summary": "POST /v1/audio/speech 把文本变成音频文件。",
+          "file": "user/08-tts.md"
+        },
+        {
+          "id": "09-transcription",
+          "title": "语音转文字",
+          "summary": "短音频 multipart 同步转写与长音频 URL 异步任务两种方式。",
+          "file": "user/09-transcription.md"
+        },
+        {
+          "id": "10-realtime",
+          "title": "实时语音 Realtime",
+          "summary": "client_secrets 换临时令牌 + WebSocket 直连的双向语音会话。",
+          "file": "user/10-realtime.md"
+        },
+        {
+          "id": "11-images-embeddings",
+          "title": "图像生成与文本嵌入",
+          "summary": "/v1/images 画图与 /v1/embeddings 向量的请求方式。",
+          "file": "user/11-images-embeddings.md"
+        },
+        {
+          "id": "16-protocol-overview",
+          "title": "协议总览：三类协议面怎么选",
+          "summary": "OpenAI 兼容族、Anthropic 原生、Gemini 原生——网关对外的全部入口与选法。",
+          "file": "user/16-protocol-overview.md"
+        },
+        {
+          "id": "17-anthropic",
+          "title": "Anthropic 原生协议",
+          "summary": "Claude 系客户端直连 /v1/messages 的接入方式。",
+          "file": "user/17-anthropic.md"
+        },
+        {
+          "id": "18-gemini",
+          "title": "Gemini 原生协议",
+          "summary": "Gemini SDK 直连 /v1beta 的接入方式。",
+          "file": "user/18-gemini.md"
+        },
+        {
+          "id": "19-provider-params",
+          "title": "供应商参数怎么传：透传规则",
+          "summary": "供应商特有参数直接写请求体顶层即可透传；网关会改写/拒绝的五种例外；媒体 provider_options 通道。",
+          "file": "user/19-provider-params.md"
+        },
+        {
+          "id": "20-provider-differences",
+          "title": "各供应商参数差异速查",
+          "summary": "九类供应商逐家：特有参数、回包差异、思考级别字段对照、跨协议限制。",
+          "file": "user/20-provider-differences.md"
+        },
+        {
+          "id": "12-errors",
+          "title": "错误码与排障",
+          "summary": "错误信封长什么样、常见错误逐个对号、按症状定位。",
+          "file": "user/12-errors.md"
+        },
+        {
+          "id": "13-concepts",
+          "title": "核心概念：一次请求的旅程",
+          "summary": "API Key→策略路由→分组→账户→上游，五层各自决定什么。",
+          "file": "user/13-concepts.md"
+        },
+        {
+          "id": "14-usage",
+          "title": "用量与统计",
+          "summary": "在管理台哪里看用量、怎么对账、失败请求算不算钱。",
+          "file": "user/14-usage.md"
+        },
+        {
+          "id": "15-faq",
+          "title": "常见问题 FAQ",
+          "summary": "高频问题快答，每条都跳到能解决问题的那一篇。",
+          "file": "user/15-faq.md"
+        }
       ]
     },
     {
       "id": "admin",
       "title": "管理运维",
       "docs": [
-        { "id": "admin-01-getting-started", "title": "管理员快速上手", "summary": "第一次以管理员身份进入系统，先做什么、按什么顺序做。", "file": "admin/admin-01-getting-started.md" },
-        { "id": "admin-02-accounts", "title": "AI 账户与供应商接入", "summary": "创建账户、检查激活、生命周期状态与常见接入问题。", "file": "admin/admin-02-accounts.md" },
-        { "id": "admin-03-groups-strategies", "title": "分组与路由策略", "summary": "分组管账户池，策略路由管选组规则，两者怎么配怎么调。", "file": "admin/admin-03-groups-strategies.md" },
-        { "id": "admin-04-models-catalog", "title": "模型目录与模型检测", "summary": "模型目录从哪来、模型检测怎么跑、怎么读检测结论。", "file": "admin/admin-04-models-catalog.md" },
-        { "id": "admin-05-authorization", "title": "授权与团队", "summary": "把 API 授权给团队成员、看团队用量、管授权生命周期。", "file": "admin/admin-05-authorization.md" },
-        { "id": "admin-06-observability", "title": "观测：日志与统计", "summary": "六类证据各管什么、一个请求怎么逐层查证据。", "file": "admin/admin-06-observability.md" },
-        { "id": "admin-07-settings-ops", "title": "系统设置与日常运维", "summary": "系统设置逐项说明、日常巡检与例行操作清单。", "file": "admin/admin-07-settings-ops.md" },
-        { "id": "admin-08-troubleshooting", "title": "风险操作与排障", "summary": "高危操作清单与按症状排障的路数。", "file": "admin/admin-08-troubleshooting.md" }
+        {
+          "id": "admin-01-getting-started",
+          "title": "管理员快速上手",
+          "summary": "第一次以管理员身份进入系统，先做什么、按什么顺序做。",
+          "file": "admin/admin-01-getting-started.md"
+        },
+        {
+          "id": "admin-02-accounts",
+          "title": "AI 账户与供应商接入",
+          "summary": "创建账户、检查激活、生命周期状态与常见接入问题。",
+          "file": "admin/admin-02-accounts.md"
+        },
+        {
+          "id": "admin-03-groups-strategies",
+          "title": "分组与路由策略",
+          "summary": "分组管账户池，策略路由管选组规则，两者怎么配怎么调。",
+          "file": "admin/admin-03-groups-strategies.md"
+        },
+        {
+          "id": "admin-04-models-catalog",
+          "title": "模型目录与模型检测",
+          "summary": "模型目录从哪来、模型检测怎么跑、怎么读检测结论。",
+          "file": "admin/admin-04-models-catalog.md"
+        },
+        {
+          "id": "admin-05-authorization",
+          "title": "授权与团队",
+          "summary": "把 API 授权给团队成员、看团队用量、管授权生命周期。",
+          "file": "admin/admin-05-authorization.md"
+        },
+        {
+          "id": "admin-06-observability",
+          "title": "观测：日志与统计",
+          "summary": "六类证据各管什么、一个请求怎么逐层查证据。",
+          "file": "admin/admin-06-observability.md"
+        },
+        {
+          "id": "admin-07-settings-ops",
+          "title": "系统设置与日常运维",
+          "summary": "系统设置逐项说明、日常巡检与例行操作清单。",
+          "file": "admin/admin-07-settings-ops.md"
+        },
+        {
+          "id": "admin-08-troubleshooting",
+          "title": "风险操作与排障",
+          "summary": "高危操作清单与按症状排障的路数。",
+          "file": "admin/admin-08-troubleshooting.md"
+        }
       ]
     }
   ]

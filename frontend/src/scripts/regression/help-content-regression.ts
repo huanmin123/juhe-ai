@@ -67,7 +67,7 @@ const adminSection = manifest.sections.find((section) => section.id === 'admin')
 assertEqual(manifest.sections.length, 2, '手册必须恰好两个分区（接入与调用/管理运维）')
 const userDocs = usageSection?.docs ?? []
 const adminDocs = adminSection?.docs ?? []
-assertEqual(userDocs.length, 18, '接入与调用分区必须维护 18 篇')
+assertEqual(userDocs.length, 20, '接入与调用分区必须维护 20 篇')
 assertEqual(adminDocs.length, 8, '管理运维分区必须维护 8 篇')
 const seenIds = new Set<string>()
 const userMdBundle: string[] = []
