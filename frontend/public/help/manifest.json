@@ -1,10 +1,12 @@
 {
-  "version": 1,
+  "version": 2,
   "updatedAt": "2026-10-06",
-  "audiences": {
-    "user": {
-      "title": "用户帮助",
-      "intro": "从零开始把第一个请求跑通，再逐篇讲透每一类协议怎么调。",
+  "title": "使用手册",
+  "intro": "从零开始把第一个请求跑通，再逐篇讲透每一类协议怎么调、系统怎么管。",
+  "sections": [
+    {
+      "id": "usage",
+      "title": "接入与调用",
       "docs": [
         { "id": "01-first-request", "title": "快速开始：发出你的第一个请求", "summary": "拿 Key、选模型、发对话、看流式，5 分钟走通最小闭环。", "file": "user/01-first-request.md" },
         { "id": "02-api-key", "title": "API Key 与认证", "summary": "创建 API Key、用 Bearer 头传认证、额度与保管要点。", "file": "user/02-api-key.md" },
@@ -17,15 +19,18 @@
         { "id": "09-transcription", "title": "语音转文字", "summary": "短音频 multipart 同步转写与长音频 URL 异步任务两种方式。", "file": "user/09-transcription.md" },
         { "id": "10-realtime", "title": "实时语音 Realtime", "summary": "client_secrets 换临时令牌 + WebSocket 直连的双向语音会话。", "file": "user/10-realtime.md" },
         { "id": "11-images-embeddings", "title": "图像生成与文本嵌入", "summary": "/v1/images 画图与 /v1/embeddings 向量的请求方式。", "file": "user/11-images-embeddings.md" },
+        { "id": "16-protocol-overview", "title": "协议总览：三类协议面怎么选", "summary": "OpenAI 兼容族、Anthropic 原生、Gemini 原生——网关对外的全部入口与选法。", "file": "user/16-protocol-overview.md" },
+        { "id": "17-anthropic", "title": "Anthropic 原生协议", "summary": "Claude 系客户端直连 /v1/messages 的接入方式。", "file": "user/17-anthropic.md" },
+        { "id": "18-gemini", "title": "Gemini 原生协议", "summary": "Gemini SDK 直连 /v1beta 的接入方式。", "file": "user/18-gemini.md" },
         { "id": "12-errors", "title": "错误码与排障", "summary": "错误信封长什么样、常见错误逐个对号、按症状定位。", "file": "user/12-errors.md" },
         { "id": "13-concepts", "title": "核心概念：一次请求的旅程", "summary": "API Key→策略路由→分组→账户→上游，五层各自决定什么。", "file": "user/13-concepts.md" },
         { "id": "14-usage", "title": "用量与统计", "summary": "在管理台哪里看用量、怎么对账、失败请求算不算钱。", "file": "user/14-usage.md" },
         { "id": "15-faq", "title": "常见问题 FAQ", "summary": "高频问题快答，每条都跳到能解决问题的那一篇。", "file": "user/15-faq.md" }
       ]
     },
-    "admin": {
-      "title": "管理员帮助",
-      "intro": "面向系统管理员的资源治理、路由配置与日常运维分篇指南。",
+    {
+      "id": "admin",
+      "title": "管理运维",
       "docs": [
         { "id": "admin-01-getting-started", "title": "管理员快速上手", "summary": "第一次以管理员身份进入系统，先做什么、按什么顺序做。", "file": "admin/admin-01-getting-started.md" },
         { "id": "admin-02-accounts", "title": "AI 账户与供应商接入", "summary": "创建账户、检查激活、生命周期状态与常见接入问题。", "file": "admin/admin-02-accounts.md" },
@@ -37,5 +42,5 @@
         { "id": "admin-08-troubleshooting", "title": "风险操作与排障", "summary": "高危操作清单与按症状排障的路数。", "file": "admin/admin-08-troubleshooting.md" }
       ]
     }
-  }
+  ]
 }

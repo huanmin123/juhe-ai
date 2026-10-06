@@ -436,10 +436,7 @@ function openHelp() {
     void openRequiredPasswordProfile(route.fullPath)
     return
   }
-  const target = isAdminRole(currentUser.value?.role)
-    ? '/__aisys__/help/admin/'
-    : '/__aisys__/help/user/'
-  window.open(target, '_blank', 'noopener,noreferrer')
+  window.open('/__aisys__/help/user/', '_blank', 'noopener,noreferrer')
 }
 
 async function loadAnnouncements(options: AnnouncementLoadOptions = {}): Promise<AnnouncementLoadResult> {

@@ -22,7 +22,8 @@ const routerSource = readRepoFile('frontend', 'src', 'router', 'index.ts')
 const viteConfigSource = readRepoFile('frontend', 'vite.config.ts')
 const manifest = JSON.parse(readRepoFile('frontend', 'public', 'help', 'manifest.json')) as {
   updatedAt: string
-  audiences: Record<string, { title: string; docs: Array<{ id: string; title: string; file: string }> }>
+  title: string
+  sections: Array<{ id: string; title: string; docs: Array<{ id: string; title: string; file: string }> }>
 }
 const helpIndex = readRepoFile('frontend', 'public', 'help', 'index.html')
 const helpCss = readRepoFile('frontend', 'public', 'help', 'help.css')
@@ -60,16 +61,19 @@ const rendered = nodeChildProcess.spawnSync(
 )
 assertEqual(rendered.status ?? -1, 0, `渲染物一致性校验必须通过：${rendered.stderr.toString().trim()}`)
 
-// manifest 结构：双受众、每篇 id/file 唯一、md 与 rendered 生成物都在
-const userDocs = manifest.audiences.user?.docs ?? []
-const adminDocs = manifest.audiences.admin?.docs ?? []
-assertEqual(userDocs.length, 15, '用户篇目必须维护 15 篇')
-assertEqual(adminDocs.length, 8, '管理员篇目必须维护 8 篇')
+// manifest 结构：单一手册双分区（接入与调用 / 管理运维，无角色门槛）、每篇 id/file 唯一、md 与 rendered 生成物都在
+const usageSection = manifest.sections.find((section) => section.id === 'usage')
+const adminSection = manifest.sections.find((section) => section.id === 'admin')
+assertEqual(manifest.sections.length, 2, '手册必须恰好两个分区（接入与调用/管理运维）')
+const userDocs = usageSection?.docs ?? []
+const adminDocs = adminSection?.docs ?? []
+assertEqual(userDocs.length, 18, '接入与调用分区必须维护 18 篇')
+assertEqual(adminDocs.length, 8, '管理运维分区必须维护 8 篇')
 const seenIds = new Set<string>()
 const userMdBundle: string[] = []
 const adminMdBundle: string[] = []
-for (const audience of [manifest.audiences.user, manifest.audiences.admin]) {
-  for (const doc of audience.docs) {
+for (const section of manifest.sections) {
+  for (const doc of section.docs) {
     assertFalse(seenIds.has(doc.id), `篇目 id 不得重复：${doc.id}`)
     seenIds.add(doc.id)
     const mdPath = nodePath.join(helpRoot, 'docs', doc.file)
@@ -109,9 +113,10 @@ assertContains(adminBundle, '最多 50 个账户', '管理员篇目必须保留�
 assertContains(adminBundle, '分组保存 `providerCode`，它既是账户集合，也是供应商过滤边界', '管理员篇目必须说明分组保存供应商边界')
 assertContains(adminBundle, '新建一个同配置的策略', '管理员篇目必须说明复制策略的正确做法')
 
-// 页面壳契约：受众参数、导航挂载点、正文挂载点、下载链接
-assertContains(userShell, 'data-audience="user"', '用户壳必须声明受众')
-assertContains(adminShell, 'data-audience="admin"', '管理员壳必须声明受众')
+// 页面壳契约：单一手册（user/ 与 admin/ 路径同壳）、导航挂载点、正文挂载点、下载链接
+assertContains(userShell, 'data-manual-title', '用户路径壳必须提供手册标题挂载点')
+assertContains(adminShell, 'data-manual-title', '管理员路径壳必须提供手册标题挂载点')
+assertEqual(userShell, adminShell, '两个路径必须放同一份手册壳（单一手册，无角色区分）')
 for (const [shell, label] of [[userShell, '用户'], [adminShell, '管理员']] as const) {
   assertContains(shell, 'data-doc-nav', `${label}壳必须提供篇目导航挂载点`)
   assertContains(shell, 'data-doc-body', `${label}壳必须提供正文挂载点`)

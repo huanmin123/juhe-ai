@@ -1,6 +1,6 @@
-// juhe-ai 在线帮助文档站：manifest 篇目导航 + rendered 预渲染 HTML 加载 + Markdown 原文下载。
+// juhe-ai 在线帮助《使用手册》：manifest 篇目导航 + rendered 预渲染 HTML 加载 + Markdown 原文下载。
 // 内容管线：docs/**/*.md（唯一人工维护层）→ scripts/render-help-docs.mjs → rendered/**/*.html。
-// 本文件零依赖；帮助面不引入任何外部域脚本。
+// 本文件零依赖；帮助面不引入任何外部域脚本。单一手册、双分区（接入与调用 / 管理运维），无角色门槛。
 (function () {
   'use strict';
 
@@ -26,16 +26,12 @@
     }
   });
 
-  // 角色分流门控页（/__aisys__/help/）：按登录身份跳转对应受众文档站。
+  // 角色分流门控页（/__aisys__/help/）：单一手册，确认登录态后直接进入。
   if (document.body.classList.contains('help-gate')) {
     fetch('/__aisys__/api/auth/me', { credentials: 'include' })
       .then(function (response) {
         if (!response.ok) throw new Error('未登录');
-        return response.json();
-      })
-      .then(function (payload) {
-        var role = payload && payload.data && payload.data.role;
-        window.location.assign(role === 'admin' || role === 'super_admin' ? '/__aisys__/help/admin/' : '/__aisys__/help/user/');
+        window.location.assign('/__aisys__/help/user/');
       })
       .catch(function () {
         window.location.assign('/__aisys__/login?redirect=' + encodeURIComponent('/__aisys__/help/'));
@@ -43,7 +39,6 @@
     return;
   }
 
-  var audience = document.body.getAttribute('data-audience') === 'admin' ? 'admin' : 'user';
   var searchInput = document.querySelector('[data-help-search]');
   var liveRegion = document.querySelector('[data-search-status]');
   var navRoot = document.querySelector('[data-doc-nav]');
@@ -53,12 +48,12 @@
   var downloadLink = document.querySelector('[data-download-link]');
   var pagerRoot = document.querySelector('[data-doc-pager]');
   var updatedAtNode = document.querySelector('[data-updated-at]');
-  var docs = [];
+  var flat = [];     // 全部篇目（跨分区扁平，供定位/翻页/搜索）
   var currentId = null;
 
-  function docById(id) {
-    for (var i = 0; i < docs.length; i += 1) {
-      if (docs[i].id === id) return { doc: docs[i], index: i };
+  function entryById(id) {
+    for (var i = 0; i < flat.length; i += 1) {
+      if (flat[i].id === id) return { entry: flat[i], index: i };
     }
     return null;
   }
@@ -68,19 +63,29 @@
     var query = (filter || '').trim().toLocaleLowerCase();
     navRoot.replaceChildren();
     var shown = 0;
-    docs.forEach(function (doc, index) {
-      var haystack = (doc.title + ' ' + (doc.summary || '')).toLocaleLowerCase();
-      if (query && haystack.indexOf(query) === -1) return;
-      shown += 1;
-      var link = document.createElement('a');
-      link.href = '#/doc/' + encodeURIComponent(doc.id);
-      link.textContent = (index + 1) + '. ' + doc.title;
-      link.setAttribute('data-doc-link', doc.id);
-      if (doc.id === currentId) {
-        link.classList.add('active');
-        link.setAttribute('aria-current', 'page');
-      }
-      navRoot.appendChild(link);
+    manifest_sections.forEach(function (section) {
+      var groupShown = [];
+      section.docs.forEach(function (entry) {
+        var haystack = (entry.title + ' ' + (entry.summary || '')).toLocaleLowerCase();
+        if (query && haystack.indexOf(query) === -1) return;
+        groupShown.push(entry);
+      });
+      if (!groupShown.length) return;
+      var heading = document.createElement('strong');
+      heading.textContent = section.title;
+      navRoot.appendChild(heading);
+      groupShown.forEach(function (entry) {
+        shown += 1;
+        var link = document.createElement('a');
+        link.href = '#/doc/' + encodeURIComponent(entry.id);
+        link.textContent = entry.navLabel;
+        link.setAttribute('data-doc-link', entry.id);
+        if (entry.id === currentId) {
+          link.classList.add('active');
+          link.setAttribute('aria-current', 'page');
+        }
+        navRoot.appendChild(link);
+      });
     });
     if (liveRegion) {
       liveRegion.textContent = query
@@ -92,8 +97,8 @@
   function renderPager(index) {
     if (!pagerRoot) return;
     pagerRoot.replaceChildren();
-    var previous = docs[index - 1];
-    var next = docs[index + 1];
+    var previous = flat[index - 1];
+    var next = flat[index + 1];
     [previous && { target: previous, label: '← 上一篇：' }, next && { target: next, label: '下一篇：' }]
       .filter(Boolean)
       .forEach(function (item) {
@@ -106,33 +111,31 @@
   }
 
   function loadDoc(id) {
-    var found = docById(id) || docById(docs.length ? docs[0].id : '');
+    var found = entryById(id) || entryById(flat.length ? flat[0].id : '');
     if (!found) return;
-    var doc = found.doc;
-    currentId = doc.id;
-    window.history.replaceState(null, '', '#/doc/' + encodeURIComponent(doc.id));
+    var entry = found.entry;
+    currentId = entry.id;
+    window.history.replaceState(null, '', '#/doc/' + encodeURIComponent(entry.id));
 
     renderNav(searchInput ? searchInput.value : '');
     renderPager(found.index);
-    docs.forEach(function (item) {
-      var link = navRoot && navRoot.querySelector('[data-doc-link="' + item.id + '"]');
-      if (!link) return;
-      var active = item.id === currentId;
+    navRoot.querySelectorAll('[data-doc-link]').forEach(function (link) {
+      var active = link.getAttribute('data-doc-link') === currentId;
       link.classList.toggle('active', active);
       if (active) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
-    if (titleNode) titleNode.textContent = doc.title;
-    if (summaryNode) summaryNode.textContent = doc.summary || '';
+    if (titleNode) titleNode.textContent = entry.title;
+    if (summaryNode) summaryNode.textContent = entry.summary || '';
     if (downloadLink) {
-      downloadLink.href = '../docs/' + doc.file;
-      downloadLink.setAttribute('download', doc.file.split('/').pop());
+      downloadLink.href = '../docs/' + entry.file;
+      downloadLink.setAttribute('download', entry.file.split('/').pop());
     }
     if (bodyNode) {
       bodyNode.setAttribute('aria-busy', 'true');
       bodyNode.textContent = '正在加载…';
       var request = new XMLHttpRequest();
-      request.open('GET', '../rendered/' + doc.file.replace(/\.md$/, '.html'), true);
+      request.open('GET', '../rendered/' + entry.file.replace(/\.md$/, '.html'), true);
       request.addEventListener('load', function () {
         if (request.status >= 200 && request.status < 400) {
           bodyNode.innerHTML = request.responseText
@@ -168,8 +171,8 @@
     searchInput.addEventListener('keydown', function (event) {
       if (event.key !== 'Enter') return;
       var query = searchInput.value.trim().toLocaleLowerCase();
-      var match = docs.filter(function (doc) {
-        return (doc.title + ' ' + (doc.summary || '')).toLocaleLowerCase().indexOf(query) !== -1;
+      var match = flat.filter(function (entry) {
+        return (entry.title + ' ' + (entry.summary || '')).toLocaleLowerCase().indexOf(query) !== -1;
       })[0];
       if (match) {
         event.preventDefault();
@@ -186,19 +189,32 @@
     });
   }
 
+  var manifest_sections = [];
+
   fetch('../manifest.json')
     .then(function (response) {
       if (!response.ok) throw new Error('manifest 加载失败');
       return response.json();
     })
     .then(function (manifest) {
-      var section = manifest.audiences[audience];
-      if (!section) throw new Error('manifest 缺少受众: ' + audience);
-      docs = section.docs;
+      var sections = manifest.sections || [];
+      var seq = 0;
+      sections.forEach(function (section) {
+        var view = { title: section.title, docs: [] };
+        section.docs.forEach(function (doc) {
+          seq += 1;
+          var labelled = {};
+          for (var key in doc) labelled[key] = doc[key];
+          labelled.navLabel = seq + '. ' + doc.title;
+          view.docs.push(labelled);
+          flat.push(labelled);
+        });
+        manifest_sections.push(view);
+      });
       if (updatedAtNode) updatedAtNode.textContent = '更新于 ' + manifest.updatedAt;
-      var brandTitle = document.querySelector('[data-audience-title]');
-      if (brandTitle) brandTitle.textContent = section.title;
-      loadDoc(currentHashId() || (docs[0] && docs[0].id));
+      var brandTitle = document.querySelector('[data-manual-title]');
+      if (brandTitle) brandTitle.textContent = manifest.title || '使用手册';
+      loadDoc(currentHashId() || (flat[0] && flat[0].id));
     })
     .catch(function () {
       if (bodyNode) bodyNode.textContent = '帮助目录加载失败，请刷新重试；若持续失败请联系管理员。';
