@@ -3,6 +3,7 @@ package statsrebuild
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,6 +45,9 @@ func newRebuildFixture(t *testing.T) *rebuildFixture {
 		value_json TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, key)
 	)`)
+	// stats 库补建 jobs 运行时两表（生产 schema 恒有；离线校验消费它们的
+	// 租约/心跳痕迹，缺表按硬错误拒绝，替身必须与生产同形）。
+	fixture.ensureJobsRuntimeTables(t)
 	return fixture
 }
 
@@ -410,5 +414,124 @@ func TestRebuildSQLiteClearListClassifiesEveryStatsSchemaTable(t *testing.T) {
 		if _, ok := rebuildUnclassifiedTableReasons[name]; ok {
 			t.Fatalf("表 %q 同时登记在 rebuildClearedStatsTables 与 rebuildUnclassifiedTableReasons：分类冲突", name)
 		}
+	}
+}
+
+// ensureJobsRuntimeTables 按 maintenance 生产 schema 形状补建 jobs 运行时
+// 两表（statsagg 同形测试替身不含它们；离线校验消费这两表的租约/心跳痕迹）。
+func (f *rebuildFixture) ensureJobsRuntimeTables(t *testing.T) {
+	t.Helper()
+	f.mustExec(t, f.statsDB, `CREATE TABLE IF NOT EXISTS background_task_runs (
+		run_id TEXT PRIMARY KEY,
+		job_name TEXT NOT NULL,
+		job_type TEXT NOT NULL,
+		worker_role TEXT NOT NULL,
+		status TEXT NOT NULL,
+		lease_key TEXT NOT NULL,
+		owner_id TEXT,
+		params_json TEXT NOT NULL DEFAULT '{}',
+		result_json TEXT NOT NULL DEFAULT '{}',
+		error_message TEXT,
+		submitted_at TEXT NOT NULL,
+		started_at TEXT,
+		heartbeat_at TEXT,
+		finished_at TEXT,
+		duration_ms INTEGER,
+		exit_code INTEGER,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`)
+	f.mustExec(t, f.statsDB, `CREATE TABLE IF NOT EXISTS background_job_leases (
+		lease_key TEXT PRIMARY KEY,
+		job_name TEXT NOT NULL,
+		shard_key TEXT NOT NULL DEFAULT '',
+		owner_id TEXT NOT NULL,
+		run_id TEXT,
+		fencing_token INTEGER NOT NULL DEFAULT 0,
+		lease_until TEXT NOT NULL,
+		heartbeat_at TEXT NOT NULL,
+		started_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`)
+}
+
+// seedJobsLease 插入一条租约行（时间戳 RFC3339 毫秒 UTC 文本，与
+// taskruns.FormatInstant 同形）。
+func (f *rebuildFixture) seedJobsLease(t *testing.T, leaseKey string, leaseUntil, heartbeatAt time.Time) {
+	t.Helper()
+	stamp := func(v time.Time) string { return v.UTC().Format("2006-01-02T15:04:05.000Z") }
+	f.mustExec(t, f.statsDB, `INSERT INTO background_job_leases (
+		lease_key, job_name, shard_key, owner_id, lease_until, heartbeat_at, started_at, updated_at
+	) VALUES (?, 'usage-hot-window-refresh', '', 'owner-test', ?, ?, ?, ?)`,
+		leaseKey, stamp(leaseUntil), stamp(heartbeatAt), stamp(heartbeatAt), stamp(heartbeatAt))
+}
+
+// seedTaskRunHeartbeat 插入一条已完成任务运行行（heartbeat_at 可控）。
+func (f *rebuildFixture) seedTaskRunHeartbeat(t *testing.T, runID string, heartbeatAt time.Time) {
+	t.Helper()
+	stamp := func(v time.Time) string { return v.UTC().Format("2006-01-02T15:04:05.000Z") }
+	f.mustExec(t, f.statsDB, `INSERT INTO background_task_runs (
+		run_id, job_name, job_type, worker_role, status, lease_key, submitted_at, heartbeat_at, created_at, updated_at
+	) VALUES (?, 'usage-hot-window-refresh', 'snapshot', 'stats-worker', 'completed', 'lease-'+?, ?, ?, ?, ?)`,
+		runID, runID, stamp(heartbeatAt.Add(-time.Second)), stamp(heartbeatAt), stamp(heartbeatAt.Add(-time.Second)), stamp(heartbeatAt))
+}
+
+// rebuildPoisonRow 向 usage_stats_totals 植入毒化行，用于断言拒绝路径零副作用
+// （毒化行必须仍在）与放行路径真正清空（毒化行必须消失）。
+func (f *rebuildFixture) rebuildPoisonRow(t *testing.T) {
+	t.Helper()
+	f.mustExec(t, f.statsDB, `INSERT INTO usage_stats_totals (
+		system_account_id, scope_type, scope_id, request_count, updated_at
+	) VALUES ('poison', 'global', 'global', 999, '2026-01-01T00:00:00.000Z')`)
+}
+
+func TestRebuildSQLiteRefusesWhenJobsLeaseAlive(t *testing.T) {
+	fixture := newRebuildFixture(t)
+	fixture.ensureJobsRuntimeTables(t)
+	fixture.rebuildPoisonRow(t)
+	// 未过期租约：lease_until 在 now 之后 30s。
+	fixture.seedJobsLease(t, "lease-alive", fixture.now.Add(30*time.Second), fixture.now.Add(-time.Second))
+	result, err := Rebuild(context.Background(), fixture.options(false))
+	if !errors.Is(err, ErrJobsNotOffline) {
+		t.Fatalf("未过期租约应触发 ErrJobsNotOffline，got %v", err)
+	}
+	if queryCount(t, fixture.statsDB, `SELECT count(*) FROM usage_stats_totals WHERE system_account_id = 'poison'`) != 1 {
+		t.Fatalf("拒绝路径必须零副作用：毒化行应保留")
+	}
+	if result.Batches != 0 {
+		t.Fatalf("拒绝路径不应进入重放：Batches = %d", result.Batches)
+	}
+}
+
+func TestRebuildSQLiteRefusesWhenRecentTaskHeartbeat(t *testing.T) {
+	fixture := newRebuildFixture(t)
+	fixture.ensureJobsRuntimeTables(t)
+	fixture.rebuildPoisonRow(t)
+	// 无租约，但 1 分钟前有任务心跳（空闲期任务不持租约，双信号覆盖）。
+	fixture.seedTaskRunHeartbeat(t, "run-recent", fixture.now.Add(-time.Minute))
+	if _, err := Rebuild(context.Background(), fixture.options(false)); !errors.Is(err, ErrJobsNotOffline) {
+		t.Fatalf("近期任务心跳应触发 ErrJobsNotOffline，got %v", err)
+	}
+	if queryCount(t, fixture.statsDB, `SELECT count(*) FROM usage_stats_totals WHERE system_account_id = 'poison'`) != 1 {
+		t.Fatalf("拒绝路径必须零副作用：毒化行应保留")
+	}
+}
+
+func TestRebuildSQLiteAllowsExpiredJobsTraces(t *testing.T) {
+	fixture := newRebuildFixture(t)
+	fixture.ensureJobsRuntimeTables(t)
+	fixture.rebuildPoisonRow(t)
+	// 租约已过期 + 心跳已滑出回看窗口：判为离线，重建执行且毒化行被清空。
+	fixture.seedJobsLease(t, "lease-expired", fixture.now.Add(-time.Minute), fixture.now.Add(-10*time.Minute))
+	fixture.seedTaskRunHeartbeat(t, "run-old", fixture.now.Add(-10*time.Minute))
+	result, err := Rebuild(context.Background(), fixture.options(false))
+	if err != nil {
+		t.Fatalf("过期痕迹不应拒绝重建: %v", err)
+	}
+	if !result.EmptySource {
+		t.Fatalf("空源场景应 EmptySource=true")
+	}
+	if queryCount(t, fixture.statsDB, `SELECT count(*) FROM usage_stats_totals`) != 0 {
+		t.Fatalf("放行路径应清空统计结果面：毒化行应消失")
 	}
 }

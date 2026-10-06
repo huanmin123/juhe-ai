@@ -353,3 +353,32 @@ func TestRebuildUsageStatsEnvGateAndMutex(t *testing.T) {
 		}
 	})
 }
+
+// TestRebuildUsageStatsOfflineCheckRefusalExit4：stats 库存在未过期租约时，
+// 显式确认门禁已过仍被离线校验拒绝（退出码 4），且零副作用——毒化行与
+// usage_records 源表保持原样。
+func TestRebuildUsageStatsOfflineCheckRefusalExit4(t *testing.T) {
+	_, statsPath, _, pathsFlag := rebuildFixturePaths(t)
+	statsDB := openRebuildSQLite(t, statsPath)
+	defer statsDB.Close()
+	if _, err := statsDB.Exec(`INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, updated_at)
+		VALUES ('poison', 'global', '', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatalf("植入毒化行失败: %v", err)
+	}
+	if _, err := statsDB.Exec(`INSERT INTO background_job_leases (
+		lease_key, job_name, owner_id, lease_until, heartbeat_at, started_at, updated_at
+	) VALUES ('lease-alive', 'usage-hot-window-refresh', 'owner-test', '2099-01-01T00:00:00.000Z',
+		'2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatalf("植入未过期租约失败: %v", err)
+	}
+	code := rebuildUsageStatsResult("sqlite", pathsFlag, "", 0, 0, true)
+	if code != 4 {
+		t.Fatalf("未过期租约应拒绝并返回退出码 4，got %d", code)
+	}
+	if rebuildQueryCount(t, statsDB, `SELECT count(*) FROM usage_stats_totals WHERE system_account_id = 'poison'`) != 1 {
+		t.Fatalf("离线校验拒绝必须零副作用：毒化行应保留")
+	}
+	if rebuildQueryCount(t, statsDB, `SELECT count(*) FROM background_job_leases WHERE lease_key = 'lease-alive'`) != 1 {
+		t.Fatalf("离线校验拒绝必须零副作用：租约行不应被改动")
+	}
+}

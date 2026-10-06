@@ -7,6 +7,9 @@
 // scripts/regression/go-project-boundary-regression.mjs 白名单）。
 //
 // 重建语义（对齐 BUG-0182 记载的 Node rebuild-usage-stats 归档脚本）：
+//  0. 离线校验（CheckJobsOffline）：background_job_leases 存在未过期租约或
+//     background_task_runs 在活动回看窗口内有心跳痕迹时拒绝（jobs 是统计
+//     结果表唯一在线写入方），先于任何清空动作，零副作用；
 //  1. 清空统计缓存面（本包 rebuildClearedStatsTables 清单，全部是
 //     statsagg 实际写入的 usage 派生结果表）并重置 stats_job_state 中
 //     usage_stats_aggregation（聚合游标回零重放）与
@@ -196,8 +199,59 @@ type Result struct {
 	DurationMs   int64            `json:"durationMs"`
 }
 
-// Rebuild 执行一次离线重建编排。返回值总是可编码的报告；错误仅在清空、
-// 聚合或窗口阶段执行失败时返回。达到批数上限不是错误（Drained=false）。
+// ErrJobsNotOffline 是离线校验未通过（检测到 jobs 活动痕迹）的哨兵错误：
+// Rebuild 在清空任何表之前拒绝，零副作用；CLI 据此映射专用退出码。
+var ErrJobsNotOffline = errors.New("jobs 未离线")
+
+// jobsOfflineActivityWindow 是离线校验的任务活动回看窗口：jobs 存活时调度
+// 任务最短节拍为 60s（usage-hot-window-refresh），窗口内必然留下
+// background_task_runs 心跳痕迹；进程停止后等待至多一个窗口即可通过。
+// 方向偏保守——误拒只是让运维稍等重试，漏放（jobs 活着放行重建）才会造成
+// 统计结果面混写。
+const jobsOfflineActivityWindow = 5 * time.Minute
+
+// CheckJobsOffline 校验 jobs 已停止（统计结果表唯一在线写入方）。任一命中
+// 即返回包裹 ErrJobsNotOffline 的错误——
+//  1. background_job_leases 存在 lease_until > now 的未过期租约（任务运行中）；
+//  2. background_task_runs 存在 heartbeat_at 在活动回看窗口内的行（运行心跳
+//     或刚结束的任务；空闲期任务不持租约，单点租约检查不可靠，双信号把漏放
+//     概率压到“jobs 存活却整个窗口无任何调度活动”以下）。
+//
+// 时间戳为写入方 UTC RFC3339 毫秒文本（taskruns.FormatInstant 同形），经
+// statsagg.ParseRFC3339Instant 解析后按时刻比较，不可解析的旧行不参与判定；
+// 空表视为离线。前提：执行重建的机器与 jobs 同源时钟（当前单机部署成立；
+// 多机部署需改用数据库时钟重估）。
+func CheckJobsOffline(ctx context.Context, db *sql.DB, postgres bool, now time.Time) error {
+	dialect := statsagg.Dialect{Postgres: postgres}
+	var maxLeaseUntil, maxHeartbeat sql.NullString
+	if err := db.QueryRowContext(ctx, bind(postgres,
+		`SELECT max(lease_until) FROM `+dialect.StatsTable("background_job_leases"),
+	)).Scan(&maxLeaseUntil); err != nil {
+		return fmt.Errorf("读取后台任务租约失败: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, bind(postgres,
+		`SELECT max(heartbeat_at) FROM `+dialect.StatsTable("background_task_runs"),
+	)).Scan(&maxHeartbeat); err != nil {
+		return fmt.Errorf("读取后台任务运行心跳失败: %w", err)
+	}
+	if maxLeaseUntil.Valid {
+		if until, ok := statsagg.ParseRFC3339Instant(maxLeaseUntil.String); ok && until.After(now) {
+			return fmt.Errorf("%w：background_job_leases 存在未过期租约（lease_until=%s，剩余约 %s）。jobs 是统计结果表唯一在线写入方，请先停止 jobs 再重试",
+				ErrJobsNotOffline, maxLeaseUntil.String, until.Sub(now).Round(time.Second))
+		}
+	}
+	if maxHeartbeat.Valid {
+		if heartbeat, ok := statsagg.ParseRFC3339Instant(maxHeartbeat.String); ok && now.Sub(heartbeat) < jobsOfflineActivityWindow {
+			return fmt.Errorf("%w：background_task_runs 最近活动心跳 %s（约 %s 前，回看窗口 %s）。jobs 是统计结果表唯一在线写入方，请先停止 jobs 并等待活动滑出窗口后重试",
+				ErrJobsNotOffline, maxHeartbeat.String, now.Sub(heartbeat).Round(time.Second), jobsOfflineActivityWindow)
+		}
+	}
+	return nil
+}
+
+// Rebuild 执行一次离线重建编排。返回值总是可编码的报告；错误仅在离线校验
+// 拒绝（ErrJobsNotOffline，零副作用）、清空、聚合或窗口阶段执行失败时返回。
+// 达到批数上限不是错误（Drained=false）。
 func Rebuild(ctx context.Context, options Options) (Result, error) {
 	dialect := statsagg.Dialect{Postgres: options.Postgres}
 	startedAt := nowFunc(options.Now)
@@ -222,6 +276,12 @@ func Rebuild(ctx context.Context, options Options) (Result, error) {
 			return Result{}, errors.New("SQLite 模式统计缓存重建缺少业务库句柄（授权链查找与时区读取必需）")
 		}
 		clock = settingsTimezoneSource{db: businessDB, postgres: options.Postgres}
+	}
+
+	// 0. 离线校验：检测到 jobs 活动痕迹（未过期租约/近期任务心跳）时拒绝，
+	// 先于任何清空动作，零副作用。
+	if err := CheckJobsOffline(ctx, options.DB, options.Postgres, startedAt); err != nil {
+		return Result{}, err
 	}
 
 	// 1. 清空统计缓存面 + 重置游标（单事务：半清空状态不可见）。

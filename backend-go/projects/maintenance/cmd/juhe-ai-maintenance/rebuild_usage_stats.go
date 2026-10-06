@@ -15,17 +15,22 @@
 //     stats 库内 usage_records 镜像表，业务库句柄只读；
 //   - PostgreSQL performance：--driver postgres --dsn URL，事实源
 //     juhe_usage.usage_records，重建目标 juhe_stats，业务库只读；
-//   - 前置条件：gateway 与 jobs 已停止（停服离线窗口内执行）。
+//   - 前置条件：gateway 与 jobs 已停止（停服离线窗口内执行）。除显式确认
+//     门禁外，重建入口还会做离线校验（statsrebuild.CheckJobsOffline）：在
+//     background_job_leases 发现未过期租约或 background_task_runs 在活动
+//     回看窗口（5 分钟）内有心跳痕迹时拒绝，先于任何清空动作，零副作用。
 //
 // 退出码契约：0 重建完成（含空源放弃历史语义）、1 运行失败、2 用法错误
 // （门禁拒绝、driver/连接参数缺失或矛盾）、3 未完成（达到 --max-batches
-// 上限，可再次执行续跑）。
+// 上限，可再次执行续跑）、4 离线校验未通过（检测到 jobs 活动痕迹；零副作用，
+// 停止 jobs 并等待活动滑出回看窗口后重试）。
 package main
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -172,6 +177,10 @@ func rebuildUsageStatsResult(driver, paths, dsn string, batchSize, maxBatches in
 		},
 	})
 	if rebuildErr != nil {
+		if errors.Is(rebuildErr, statsrebuild.ErrJobsNotOffline) {
+			fmt.Fprintf(os.Stderr, "统计缓存离线重建被拒绝（离线校验未通过，零副作用）：%v\n", rebuildErr)
+			return 4
+		}
 		fmt.Fprintf(os.Stderr, "统计缓存离线重建失败：%v\n", rebuildErr)
 		return 1
 	}
