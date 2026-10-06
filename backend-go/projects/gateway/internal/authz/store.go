@@ -162,7 +162,7 @@ type Filters struct {
 	GranteeSystemAccountID       string
 	TeamID                       string
 	Status                       string // active|paused|expired|revoked|returned|all
-	Direction                    string // all|outbound|inbound (my-* only)
+	Direction                    string // all|outbound|inbound (my-* 或 admin ?systemAccountId 作用域)
 	SourceType                   string // all|manual|team
 	Keyword                      string
 	ViewerSystemAccountID        string // set by my-* scope
