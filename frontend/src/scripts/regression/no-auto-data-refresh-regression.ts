@@ -106,7 +106,10 @@ assert.match(accounts, /watch\(\(\) => authState\.revision\.value, \(\) => \{\s*
 
 const appLayout = source('layouts/AppLayout.vue')
 assert.doesNotMatch(appLayout, /announcementsRefreshTimer|announcementsRefreshRunning|refreshAnnouncementsSafely|setInterval\(/, '公告不得由应用壳周期刷新')
-assert.match(appLayout, /function openAnnouncementModal[\s\S]*loadAnnouncements|function refreshAnnouncementsInModal/, '公告面板打开时必须仍可加载公告')
+// 公告弹窗 UI 已抽为独立组件 layouts/AnnouncementModal.vue；打开面板时的加载由 AppLayout 的 openAnnouncements 承载
+// （refreshAnnouncementsInModal 已在 1d7b2c628 合并进该函数，openAnnouncementModal 系原断言笔误，源码中从未存在）
+const openAnnouncementsFn = sourceBetween(appLayout, 'async function openAnnouncements', 'async function loadAnnouncements')
+assert.match(openAnnouncementsFn, /resetAnnouncementContentSession\(\)[\s\S]*announcementModalOpen\.value = true[\s\S]*await loadAnnouncements\(\{ notifyError: true \}\)/, '公告面板打开时必须仍可加载公告')
 assert.match(currentUserWatcher(appLayout), /announcementsInitialLoadAttempted[\s\S]*void loadAnnouncements\(\)/, '公告仅能在首次认证用户确定后初始化加载一次')
 assert.doesNotMatch(currentUserWatcher(appLayout), /announcementsInitialLoadAttempted\s*=\s*false/, '公告身份变化不得重置初始化加载门禁')
 assert.match(currentUserWatcher(appLayout), /announcements\.value = \[\][\s\S]*resetAnnouncementContentSession\(\)/, '身份对象变化必须清空公告和内容会话')

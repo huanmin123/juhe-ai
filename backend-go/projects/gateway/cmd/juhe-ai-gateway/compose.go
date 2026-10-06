@@ -83,7 +83,8 @@ const (
 //	/__aisys__/api/route-strategies + /my-*        -> routestrategies.Deps.Mount
 //	/__aisys__/api/api-keys + /my-api-keys         -> apikeys.Deps.Mount
 //	/__aisys__/api/accounts + /my-accounts         -> accounts.Deps.Mount
-//	/__aisys__/api/providers + /my-providers       -> providers.Deps.Mount
+//	/__aisys__/api/providers                      -> providers.Deps.Mount
+//	  （Node 无 /my-providers 面；早期 Go 镜像已移除，见 providers.Mount 注释）
 //	/__aisys__/api/{provider}-oauth + /my-*        -> oauthmgmt.Deps.Mount
 //	/__aisys__/api/response-inspection-policies    -> policyreads.InspectionDeps
 //	/__aisys__/api/operation-logs + /my-operation-logs -> logreads.Deps (F4)

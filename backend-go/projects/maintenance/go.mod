@@ -29,3 +29,5 @@ require (
 replace github.com/huanminabc/juhe-ai/backend-go-contracts => ../../shared/contracts
 
 replace github.com/huanminabc/juhe-ai/backend-go-platform => ../../shared/platform
+
+replace github.com/huanminabc/juhe-ai/backend-go-jobs => ../jobs
