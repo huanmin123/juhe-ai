@@ -700,7 +700,7 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
-      "maxOutputTokens": 32000,
+      "maxOutputTokens": 32768,
       "mode": "chat",
       "model": "glm-4.6v-flashx",
       "outputCostPerToken": 4.0000000000000003e-7,

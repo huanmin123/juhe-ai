@@ -1104,6 +1104,7 @@
       "cacheReadInputTokenCost": 0.00000125,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
+      "contextWindowTokens": 400000,
       "defaultReasoningEffort": "",
       "inputCostPerToken": 0.0000125,
       "inputModalities": [
@@ -1111,13 +1112,14 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 128000,
       "mode": "chat",
       "model": "gpt-5.6-cyber",
       "outputCostPerToken": 0.000075,
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2026-08-10",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",

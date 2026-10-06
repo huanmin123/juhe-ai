@@ -216,7 +216,7 @@
       "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
-      "contextWindowTokens": 1000000,
+      "contextWindowTokens": 2000000,
       "defaultReasoningEffort": "",
       "inputCostPerToken": 0.00000125,
       "inputCostPerTokenPriority": 0.0000025,
@@ -262,7 +262,7 @@
       "cacheReadInputTokenCostPriority": 4.0000000000000003e-7,
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
-      "contextWindowTokens": 1000000,
+      "contextWindowTokens": 2000000,
       "defaultReasoningEffort": "",
       "inputCostPerToken": 0.00000125,
       "inputCostPerTokenPriority": 0.0000025,
@@ -327,7 +327,7 @@
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2026-09-08",
       "shutdownDate": "2026-05-15",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",

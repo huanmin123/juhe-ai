@@ -309,7 +309,8 @@ func TestListProviderModelPricingOrderAndVendor(t *testing.T) {
 	// gpt-6.1-sol row (no catalog order) sorts first, then the 2026-09-22
 	// gpt-6-sol/luna rows (no catalog order), then the 2026-09-08
 	// gpt-image-2.5 rows (also no catalog order) sort ahead of gpt-6-astra
-	// (catalog_order -1, 2026-09-03), then gpt-5.6-sol (order 0).
+	// (catalog_order -1, 2026-09-03), the 2026-08-10 gpt-5.6-cyber row
+	// (no catalog order), then gpt-5.6-sol (order 0).
 	if openai[0].Model != "gpt-6.1-sol" {
 		t.Fatalf("first model = %q, want gpt-6.1-sol (release 2026-09-30)", openai[0].Model)
 	}
@@ -328,8 +329,11 @@ func TestListProviderModelPricingOrderAndVendor(t *testing.T) {
 	if openai[5].Model != "gpt-6-astra" {
 		t.Fatalf("sixth model = %q, want gpt-6-astra (catalog_order -1)", openai[5].Model)
 	}
-	if openai[6].Model != "gpt-5.6-sol" {
-		t.Fatalf("seventh model = %q, want gpt-5.6-sol (catalog_order 0)", openai[6].Model)
+	if openai[6].Model != "gpt-5.6-cyber" {
+		t.Fatalf("seventh model = %q, want gpt-5.6-cyber (release 2026-08-10)", openai[6].Model)
+	}
+	if openai[7].Model != "gpt-5.6-sol" {
+		t.Fatalf("eighth model = %q, want gpt-5.6-sol (catalog_order 0)", openai[7].Model)
 	}
 	for _, item := range openai {
 		if item.ShutdownDate != "" && item.ShutdownDate <= currentUTCDate() {

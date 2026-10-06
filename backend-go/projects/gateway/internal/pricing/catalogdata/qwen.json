@@ -60,13 +60,14 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 131072,
       "mode": "chat",
       "model": "qwen3.8-max",
       "outputCostPerToken": 0.000006,
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2026-08-02",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
@@ -91,13 +92,14 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 131072,
       "mode": "chat",
       "model": "qwen3.8-flash",
       "outputCostPerToken": 4.6999999999999995e-7,
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2026-08-26",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
@@ -122,13 +124,14 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 131072,
       "mode": "chat",
       "model": "qwen3.7-plus",
       "outputCostPerToken": 0.0000016000000000000001,
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2026-06-01",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
@@ -153,13 +156,14 @@
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 131072,
       "mode": "chat",
       "model": "qwen3.7-flash",
       "outputCostPerToken": 1.3e-7,
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2026-07-21",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
@@ -177,6 +181,7 @@
     {
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
+      "contextWindowTokens": 262144,
       "defaultReasoningEffort": "",
       "inputCostPerToken": 2.0000000000000002e-7,
       "inputModalities": [
@@ -184,13 +189,14 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 32768,
       "mode": "chat",
       "model": "qwen3-vl-plus",
       "outputCostPerToken": 0.0000016000000000000001,
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2025-09-23",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
@@ -208,6 +214,7 @@
     {
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
+      "contextWindowTokens": 262144,
       "defaultReasoningEffort": "",
       "inputCostPerToken": 5.0000000000000004e-8,
       "inputModalities": [
@@ -215,13 +222,14 @@
         "image"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 32768,
       "mode": "chat",
       "model": "qwen3-vl-flash",
       "outputCostPerToken": 4.0000000000000003e-7,
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2025-10-14",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
@@ -239,19 +247,21 @@
     {
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
+      "contextWindowTokens": 1000000,
       "defaultReasoningEffort": "",
       "inputCostPerToken": 0.000001,
       "inputModalities": [
         "text"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 65536,
       "mode": "chat",
       "model": "qwen3-coder-plus",
       "outputCostPerToken": 0.000005,
       "outputModalities": [
         "text"
       ],
-      "releaseDate": "",
+      "releaseDate": "2025-07-22",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
@@ -269,6 +279,7 @@
     {
       "codexDefaultReasoningLevel": "",
       "codexMultiAgentVersion": "",
+      "contextWindowTokens": 65536,
       "defaultReasoningEffort": "",
       "inputCostPerAudioToken": 0.00000381,
       "inputCostPerImageToken": 7.8e-7,
@@ -279,6 +290,7 @@
         "audio"
       ],
       "longContextInputTokenThresholdInclusive": false,
+      "maxOutputTokens": 16384,
       "mode": "chat",
       "model": "qwen3-omni-flash",
       "outputCostPerAudioToken": 0.00001511,
@@ -287,7 +299,7 @@
         "text",
         "audio"
       ],
-      "releaseDate": "",
+      "releaseDate": "2025-09-17",
       "shutdownDate": "",
       "sourceExchangeRateDate": "",
       "sourcePricingCurrency": "",
