@@ -132,11 +132,24 @@ func (s *Store) ReactivateTeamGrantsTx(ctx context.Context, tx *sql.Tx, teamID, 
 // (:1574-1596): for every requested member × active team grant, upsert the
 // member runtime with sourceType='team' (+ sourceTeamId) carrying the grant's
 // remark/expires_at/limits, skipping the resource owner, all inside the
-// caller's transaction.
+// caller's transaction. The BUG-0175 (D-64/D-74) completion adds the instance
+// clone for active account grants: every covered member keeps a schedulable
+// authorization instance bound to their own enabled default group (设计 :257);
+// a member without that default fails the whole team operation.
 func (s *Store) ApplyActiveTeamGrantsToMembersTx(ctx context.Context, tx *sql.Tx, teamID string, memberAccountIDs []string, actor, now string) error {
 	grants, err := s.activeTeamGrantRowsTx(ctx, tx, teamID)
 	if err != nil {
 		return err
+	}
+	if len(grants) == 0 || len(memberAccountIDs) == 0 {
+		return nil
+	}
+	// The provisioning gate compares the grant expiry against the caller's
+	// transaction instant; every caller stamps `now` through RFC3339Nano, and
+	// an unparsable value falls back to the store clock.
+	nowTime, err := time.Parse(time.RFC3339Nano, now)
+	if err != nil {
+		nowTime = s.now().UTC()
 	}
 	teamIDCopy := teamID
 	for _, memberID := range memberAccountIDs {
@@ -158,6 +171,12 @@ func (s *Store) ApplyActiveTeamGrantsToMembersTx(ctx context.Context, tx *sql.Tx
 			if err := s.upsertRuntimeForUser(ctx, tx, grant.ResourceType, grant.ResourceID, grant.OwnerID,
 				memberID, &teamIDCopy, projection, actor, now); err != nil {
 				return err
+			}
+			if grant.ResourceType == "account" {
+				if err := s.provisionTeamAccountInstanceForMember(ctx, tx, grant.ResourceID, grant.OwnerID,
+					memberID, grantNullStringPointer(grant.ExpiresAt), nowTime, now); err != nil {
+					return err
+				}
 			}
 		}
 	}

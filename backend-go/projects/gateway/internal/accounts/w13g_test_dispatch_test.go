@@ -179,6 +179,7 @@ func TestW13GTestAccountAuthorizedGates(t *testing.T) {
 	memberID := env.login(t, "member-w13g", "member-pass", "user")
 	env.seedProviderAndDefaultGroup(t, ownerID)
 	env.seedAccount(t, "acc-w13g-src", ownerID, "w13g-源账户", "active")
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-w13g", ownerID, memberID)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-w13g-src",

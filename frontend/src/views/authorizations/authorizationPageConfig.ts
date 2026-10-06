@@ -60,7 +60,6 @@ export function authorizationVisibleColumns(context: {
   const showActions = context.isManagementView || context.direction === 'outbound' || context.hasReturnableInboundAuthorization
   return authorizationColumns.filter((column) => {
     if (context.isManagementView && column.key === 'direction') return false
-    if (['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
     if (!showActions && column.key === 'actions') return false
     return true
   })

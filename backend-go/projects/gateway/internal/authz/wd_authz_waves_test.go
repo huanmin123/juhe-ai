@@ -126,22 +126,22 @@ func TestWdRouteReadErrorsSurfaceAs400Or500(t *testing.T) {
 	revokeRequest := wdJSONRequest(t, http.MethodDelete, "/", `{"expectedUpdatedAt":"2026-01-01T00:00:00Z"}`, wdAuthCtx("owner", "user"))
 	revokeRequest.SetPathValue("id", "any")
 	deps.revokeScoped(recorder, revokeRequest, true)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("revoke 存储错误应 400: %d", recorder.Code)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("revoke 存储错误应 500: %d", recorder.Code)
 	}
 	recorder = httptest.NewRecorder()
 	patchRequest := wdJSONRequest(t, http.MethodPatch, "/", `{"expectedUpdatedAt":"2026-01-01T00:00:00Z","status":"active"}`, wdAuthCtx("owner", "user"))
 	patchRequest.SetPathValue("id", "any")
 	deps.patchScoped(recorder, patchRequest, false, true)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("patch 存储错误应 400: %d", recorder.Code)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("patch 存储错误应 500: %d", recorder.Code)
 	}
 	recorder = httptest.NewRecorder()
 	returnRequest := wdJSONRequest(t, http.MethodDelete, "/", `{"expectedUpdatedAt":"2026-01-01T00:00:00Z"}`, wdAuthCtx("grantee", "user"))
 	returnRequest.SetPathValue("id", "any")
 	deps.returnValue(recorder, returnRequest, true)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("return 存储错误应 400: %d", recorder.Code)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("return 存储错误应 500: %d", recorder.Code)
 	}
 	if len(sink.entries) != 0 {
 		t.Fatalf("失败路径不应写操作日志: %#v", sink.entries)
@@ -181,15 +181,15 @@ func TestWdCreateRouteLimitsAndConflict(t *testing.T) {
 		t.Fatalf("坏 JSON 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	// 关闭库 → 创建失败兜底 400 创建授权失败。
+	// 关闭库 → 创建存储错误走 500 通道（领域错误仍是 400，见上方重复授权分支）。
 	if err := f.db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	recorder = httptest.NewRecorder()
 	deps.create(recorder, wdJSONRequest(t, http.MethodPost, "/__aisys__/api/my-authorizations",
 		`{"resourceType":"group","resourceId":"grp_x","granteeType":"team","granteeId":"team_r"}`, wdAuthCtx("owner", "user")))
-	if recorder.Code != http.StatusBadRequest || decodeWd(recorder) != "创建授权失败" {
-		t.Fatalf("存储错误应 400 兜底: %d %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusInternalServerError || decodeWd(recorder) != "创建授权失败" {
+		t.Fatalf("存储错误应 500 兜底: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -306,8 +306,8 @@ func TestWdUsageRoutesReadErrorsSurfaceAs500(t *testing.T) {
 
 func TestWdTeamUsageRowsMissingNameProjection(t *testing.T) {
 	f := newUsageFixture(t)
-	// 窗口行引用未注册的团队/资源：名称投影为 nil 而非报错。
-	insertTeamWindowRow(t, f, "owner1", "team_ghost", "account", "acc_ghost", 2, 20, 10, 0.2, nil)
+	// 日摘要行引用未注册的团队/资源：名称投影为 nil 而非报错。
+	insertTeamDailyRow(t, f, "owner1", "2026-09-01", "team_ghost", "account", "acc_ghost", 2, 20, 10, 0.2, nil)
 	result, err := f.store.teamUsageRows(context.Background(), UsageFilters{}, accessInfo{ViewerID: "owner1"}, wdDetailRange, 1, 20)
 	if err != nil {
 		t.Fatal(err)

@@ -44,8 +44,8 @@ function extractTitle(html) {
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 const manifestFiles = [];
-for (const audience of Object.values(manifest.audiences)) {
-  for (const doc of audience.docs) manifestFiles.push(doc.file);
+for (const section of manifest.sections) {
+  for (const doc of section.docs) manifestFiles.push(doc.file);
 }
 
 const diskFiles = listMarkdownFiles(docsRoot).map((p) => relative(docsRoot, p).split(sep).join('/'));

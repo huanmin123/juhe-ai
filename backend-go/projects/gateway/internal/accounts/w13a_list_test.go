@@ -114,6 +114,7 @@ func TestW13AListAuthorizedProxyProjection(t *testing.T) {
 	env.exec(t, `INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, enabled, test_status, created_at, updated_at)
 		VALUES ('proxy-w13a-lsrc', ?, 'w13a-lsrc-proxy', 'socks5', 'h', 1080, 1, 'unknown', ?, ?)`, ownerID, now, now)
 	env.exec(t, `UPDATE accounts SET proxy_profile_id = 'proxy-w13a-lsrc' WHERE id = 'acc-w13a-lsrc'`)
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-w13a-list", ownerID, memberID)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-w13a-lsrc",

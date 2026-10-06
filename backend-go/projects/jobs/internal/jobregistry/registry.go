@@ -136,13 +136,11 @@ func ScheduledEntries() []Entry {
 			GoStatus: GoWired, GoPackage: "statsagg",
 			GoBinding: "WindowRefresher.RunStages([usage_scope_range_windows])；仅默认/SQLite 分支注册（T6b 已落 ModeConstraint.SQLiteOnly），PG 高性能分支跳过并打 background_cold_range_window_refresh_disabled（Node :296-300，冻结清单 §4.1 不得回退）",
 		},
-		{
-			JobName: "authorization-usage-range-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
-			SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,
-			Writes:   []string{"stats:authorization_team_usage_range_windows", "stats:authorization_user_usage_range_windows"},
-			GoStatus: GoWired, GoPackage: "statsagg",
-			GoBinding: "WindowRefresher.RunStages([authorization_usage_range_windows])",
-		},
+		// authorization-usage-range-windows-refresh 已按设计消灭（原登记位置，
+		// Node 31 项名单第 11 项）：授权消耗明细读端改为按日范围直读
+		// authorization_*_usage_summary_daily（约 60 秒聚合节拍近实时），
+		// 范围窗口表不再刷新、不再登记调度。usage-scope-range-windows-refresh
+		// 是另一个 job，不受影响。
 		{
 			JobName: "usage-quota-hourly-windows-refresh", Category: CategoryScheduled, Kind: "snapshot", DefaultRole: "stats-worker",
 			Hotspot: true, SingleOwner: true, LeaseRequired: true, BlocksUserVisibleFreshness: true,

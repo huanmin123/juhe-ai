@@ -85,6 +85,7 @@ func TestW13AForceActivateAuthorizedInstanceForbidden(t *testing.T) {
 	ownerID := env.login(t, "w13a-owner", "owner-pass", "user")
 	memberID := env.login(t, "w13a-member", "member-pass", "user")
 	env.seedAccount(t, "acc-w13a-fsrc", ownerID, "w13a-fsrc", "active")
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-w13a-force", ownerID, memberID)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-w13a-fsrc",

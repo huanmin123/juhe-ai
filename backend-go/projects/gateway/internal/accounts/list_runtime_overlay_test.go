@@ -262,6 +262,7 @@ func TestListPageAuthorizedInstanceRuntimeOverlayKeyDerivation(t *testing.T) {
 	ownerID := env.login(t, "owner1", "owner-pass", "user")
 	memberID := env.login(t, "member1", "member-pass", "user")
 	env.seedAccount(t, "acc-rt-src", ownerID, "运行态源账户", "active")
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-rt", ownerID, memberID)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-rt-src",

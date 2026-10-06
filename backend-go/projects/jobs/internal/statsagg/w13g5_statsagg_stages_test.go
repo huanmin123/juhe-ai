@@ -254,9 +254,8 @@ func TestW13g5OverviewStageHappyPath(t *testing.T) {
 	if err := w13g5RunStage(t, env, StageUsageScopeRangeWindows); err != nil {
 		t.Fatal(err)
 	}
-	if err := w13g5RunStage(t, env, StageAuthorizationUsageRangeWindows); err != nil {
-		t.Fatal(err)
-	}
+	// StageAuthorizationUsageRangeWindows 已停用（授权明细直读日摘要表），
+	// 不再注册进编排。
 }
 
 func TestW13g5OverviewStageStatementArms(t *testing.T) {
@@ -281,18 +280,11 @@ func TestW13g5OverviewStageStatementArms(t *testing.T) {
 		{"ai insert", "INSERT INTO ai_performance_summary_windows", StageAiPerformanceSummaryWindows},
 		{"scope range delete", "DELETE FROM usage_scope_range_windows", StageUsageScopeRangeWindows},
 		{"scope range insert", "INSERT INTO usage_scope_range_windows", StageUsageScopeRangeWindows},
-		{"auth range delete", "DELETE FROM authorization_team_usage_range_windows", StageAuthorizationUsageRangeWindows},
-		{"auth team insert", "INSERT INTO authorization_team_usage_range_windows", StageAuthorizationUsageRangeWindows},
-		{"auth user insert", "INSERT INTO authorization_user_usage_range_windows", StageAuthorizationUsageRangeWindows},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env, spec := w13g5StatsOpenFailEnv(t)
 			w13g5SeedOverviewData(t, env)
-			env.exec(`INSERT INTO authorization_team_usage_summary_daily (system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id, request_count, updated_at)
-				VALUES ('w13g5-sa', '2026-09-18', 'w13g5-team', 'account', 'w13g5-acc', 2, '2026-09-18T01:00:00.000Z')`)
-			env.exec(`INSERT INTO authorization_user_usage_summary_daily (system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id, request_count, updated_at)
-				VALUES ('w13g5-sa', '2026-09-18', '', 'w13g5-grantee', 'account', 'w13g5-acc', 2, '2026-09-18T01:00:00.000Z')`)
 			spec.armOnce(tc.match)
 			defer spec.disarm()
 			if err := w13g5RunStage(t, env, tc.stage); err == nil {

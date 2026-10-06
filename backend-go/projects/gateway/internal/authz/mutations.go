@@ -242,10 +242,44 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 			return nil, err
 		}
 	}
+	// BUG-0175 (D-64/D-74): the archived create tail binds every user account
+	// grant into the grantee's group through a provisioned instance account
+	// (bindActiveAccountAuthorizationToGranteeGroup via
+	// upsertResourceAuthorizationForUser, resource-authorization-write-state
+	// .repository.ts:218-222). Without it the grantee has no schedulable
+	// instance and the read surfaces (which all join on the
+	// authorization_instance_* columns) stay empty. Direct grants bind the
+	// requested target group; the team fanout provisions per active member
+	// (owner excluded above) against each member's own enabled default group
+	// (设计 :257 — missing member defaults fail the whole create). Node runs
+	// the bind inside the per-user upsert (:218-222/:384-438), so provisioning
+	// must precede the quota-scope resync below for the freshly cloned member
+	// instances to enter the account_authorization_team binding join.
+	if input.ResourceType == "account" {
+		if input.GranteeType == "system_account" {
+			if err := s.provisionAuthorizedAccountInstance(ctx, tx, authorizedInstanceProvision{
+				SourceAccountID: input.ResourceID,
+				OwnerID:         ownerID,
+				GranteeID:       input.GranteeID,
+				TargetGroupID:   input.TargetGroupID,
+				GrantExpiresAt:  input.ExpiresAt,
+			}, nowTime, now); err != nil {
+				return nil, err
+			}
+		} else if input.GranteeType == "team" {
+			for _, memberID := range granteeUsers {
+				if err := s.provisionTeamAccountInstanceForMember(ctx, tx, input.ResourceID, ownerID, memberID, input.ExpiresAt, nowTime, now); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
 	// Node create tail (:219/:233/:402/:439): quota scope bindings resync after
-	// the runtime upsert, gated on created/revived exactly like the runtime
-	// fanout above (this point is unreachable for the idempotent no-op, which
-	// returned early). Node create never enqueues health inputs.
+	// the runtime upsert (and the in-upsert instance bind), gated on
+	// created/revived exactly like the runtime fanout above (this point is
+	// unreachable for the idempotent no-op, which returned early). Node create
+	// never enqueues health inputs.
 	bindingGrant := grantRow{ID: grantID, ResourceType: input.ResourceType, ResourceID: input.ResourceID,
 		OwnerID: ownerID, GranteeType: input.GranteeType}
 	if input.GranteeType == "system_account" {
@@ -255,27 +289,6 @@ func (s *Store) Create(ctx context.Context, input CreateInput, actorSystemAccoun
 	}
 	if err := s.syncGrantQuotaScopeBindings(ctx, tx, &bindingGrant, now); err != nil {
 		return nil, err
-	}
-
-	// BUG-0175 (D-64/D-74): the archived create tail binds every direct user
-	// account grant into the grantee's group through a provisioned instance
-	// account (bindActiveAccountAuthorizationToGranteeGroup via
-	// upsertResourceAuthorizationForUser, resource-authorization-write-state
-	// .repository.ts:218-222). Without it the grantee has no schedulable
-	// instance and the read surfaces (which all join on the
-	// authorization_instance_* columns) stay empty. Team fanout provisioning
-	// stays a separate slice; the archived team path fans the same bind per
-	// member runtime row.
-	if input.ResourceType == "account" && input.GranteeType == "system_account" {
-		if err := s.provisionAuthorizedAccountInstance(ctx, tx, authorizedInstanceProvision{
-			SourceAccountID: input.ResourceID,
-			OwnerID:         ownerID,
-			GranteeID:       input.GranteeID,
-			TargetGroupID:   input.TargetGroupID,
-			GrantExpiresAt:  input.ExpiresAt,
-		}, nowTime, now); err != nil {
-			return nil, err
-		}
 	}
 
 	if err := tx.Commit(); err != nil {

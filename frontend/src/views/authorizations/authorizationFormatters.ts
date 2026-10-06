@@ -3,7 +3,6 @@ import {
   formatCompactUsageAmount,
   formatDateTime,
   formatNumber,
-  formatRequestCountTag,
   formatServerDateTimeInput,
   formatUsd,
   parseStrictDatePickerValue,
@@ -13,9 +12,11 @@ import type {
   AccountUsageSummary,
   AuthorizationSourceSummary,
   AuthorizationStatus,
+  RequestQuotaLimits,
   ResourceAuthorizationListItem,
   ResourceAuthorizationSummary
 } from '@/types/domain'
+import { hasQuotaLimits } from '../shared/requestQuotaForm'
 export { extractApiErrorMessage } from '@/shared/apiError'
 export { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 
@@ -31,9 +32,9 @@ export function statusLabel(status: AuthorizationStatus): string {
 export function statusTagColor(status: AuthorizationStatus): string {
   if (status === 'active') return 'green'
   if (status === 'paused') return 'orange'
-  if (status === 'expired') return 'default'
-  if (status === 'revoked') return 'default'
-  if (status === 'returned') return 'default'
+  if (status === 'expired') return 'gold'
+  if (status === 'revoked') return 'red'
+  if (status === 'returned') return 'purple'
   return 'default'
 }
 
@@ -125,12 +126,26 @@ export function authorizationRevokeActionCount(item: ResourceAuthorizationListIt
   return Math.max(1, sourceActionCount)
 }
 
-export function usageSummaryText(usage?: {
-  requestCount?: number
-  totalTokens?: number
-  totalCost?: number
-}): string {
-  return `${formatRequestCountTag(usage?.requestCount)} / ${formatUsageAmount(usage?.totalTokens)} / ${formatCost(usage?.totalCost)}`
+/**
+ * 授权额度限制的紧凑标签文案（与 RequestQuotaFields/requestQuotaForm 档位一致：
+ * 小时/日/周/月/总）。未设置任何档位时返回空数组，由调用方展示"不限"。
+ */
+export function authorizationLimitTags(limits?: RequestQuotaLimits): string[] {
+  if (!hasQuotaLimits(limits)) return []
+  const items: string[] = []
+  if (limits?.hourly?.enabled) items.push(`${limits.hourly.hours}小时 ${formatUsd(limits.hourly.limit)}`)
+  if (limits?.daily?.enabled) items.push(`日 ${formatUsd(limits.daily.limit)}`)
+  if (limits?.weekly?.enabled) items.push(`周 ${formatUsd(limits.weekly.limit)}`)
+  if (limits?.monthly?.enabled) items.push(`月 ${formatUsd(limits.monthly.limit)}`)
+  if (limits?.total?.enabled) items.push(`总 ${formatUsd(limits.total.limit)}`)
+  return items
+}
+
+/** 到期时间已过且授权尚未进入回收/归还终态时视为已过期。 */
+export function isAuthorizationExpired(item: Pick<ResourceAuthorizationListItem, 'expiresAt' | 'status'>): boolean {
+  if (!item.expiresAt || item.status === 'revoked' || item.status === 'returned') return false
+  const expiresAtTimestamp = serverDateTimeTimestamp(item.expiresAt)
+  return expiresAtTimestamp !== undefined && expiresAtTimestamp <= Date.now()
 }
 
 export function formatUsageAmount(value?: number): string {

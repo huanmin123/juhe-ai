@@ -10,10 +10,9 @@ export const authorizationColumns = [
   { title: '方向', key: 'direction', width: 120 },
   { title: '资源归属人', key: 'owner', width: 180 },
   { title: '被授权的目标', key: 'grantee', width: 180 },
-  { title: '今日', key: 'usageTotal', width: 180 },
-  { title: '最后使用', key: 'lastUsedAt', width: 170 },
   { title: '额度限制', key: 'limits', width: 220 },
   { title: '状态', key: 'status', width: 90 },
+  { title: '到期时间', key: 'expiresAt', width: 170 },
   { title: '授权时间', key: 'createdAt', width: 170 },
   { title: '说明', key: 'remark', width: 200 },
   { title: '操作', key: 'actions', fixed: 'right' }

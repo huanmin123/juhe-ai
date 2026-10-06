@@ -346,12 +346,11 @@ func (d *Deps) usageDetail(w http.ResponseWriter, r *http.Request, selfOnly bool
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return
 	}
-	// Node reads run the expiry sweep before the summary lookup
-	// (getResourceAuthorizationUsageAsync :94).
-	if _, err := d.Store.ExpireSweep(r.Context(), 0); err != nil {
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
-		return
-	}
+	// The archived Node read ran the expiry sweep inline before the summary
+	// lookup (getResourceAuthorizationUsageAsync :94); the Go slice dropped the
+	// read-path write — jobs sweeps every minute and the gateway
+	// authz-expiry-runtime-sync reconcile covers the remainder, so this GET
+	// stays a pure read.
 	access := d.accessFor(r, selfOnly)
 	summary, err := d.Store.usageDetailSummary(r.Context(), id, access, rng, page, pageSize)
 	if err != nil {

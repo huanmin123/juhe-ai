@@ -290,11 +290,15 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 		Keyword:                      keyword,
 		IsAdmin:                      access.IsAdmin,
 	}
-	// Claim #12: the query schema validates direction for both surfaces
-	// (authorizations.routes.ts:45), but only the self list forwards it to the
-	// read filters (:153-159); the admin list silently ignores it.
-	if selfOnly && (direction == "outbound" || direction == "inbound") {
-		filters.Direction = direction
+	// Claim #12 + the admin direction contract: the query schema validates
+	// direction on both surfaces (authorizations.routes.ts:45). The self list
+	// always forwards it (:153-159); the admin list forwards it only when
+	// ?systemAccountId selects a scope account — without a scope account the
+	// historical ignore stands, so the unscoped admin list stays unfiltered.
+	if direction == "outbound" || direction == "inbound" {
+		if selfOnly || access.FilterID != "" {
+			filters.Direction = direction
+		}
 	}
 	if selfOnly {
 		filters.ViewerSystemAccountID = access.ViewerID
@@ -338,6 +342,13 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 		return
 	}
 	if selfOnly && !d.visibleTo(summary, access.ViewerID) {
+		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
+		return
+	}
+	// Admin scope parity with the {id}/usage read (findScopedUsageGrant): when
+	// ?systemAccountId selects a scope account, the grant must belong to that
+	// owner; anything else reads as not found.
+	if !selfOnly && access.FilterID != "" && summary.OwnerID != access.FilterID {
 		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
 		return
 	}
@@ -444,7 +455,9 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 			kernel.WriteError(w, http.StatusConflict, conflict.Error())
 			return
 		}
-		kernel.WriteBadRequest(w, "创建授权失败")
+		// Unknown store failures are infrastructure errors: 500 with the cause
+		// recorded, the client message stays the historical text.
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "创建授权失败", err)
 		return
 	}
 	status := http.StatusOK
@@ -544,7 +557,9 @@ func (d *Deps) revokeScoped(w http.ResponseWriter, r *http.Request, selfOnly boo
 	}
 	mutation, err := d.Store.RevokeForOwner(r.Context(), r.PathValue("id"), version, auth.SystemAccountID, ownerScope)
 	if err != nil {
-		kernel.WriteBadRequest(w, "回收授权失败")
+		// Store errors here are infrastructure failures (not_found/conflict are
+		// outcome statuses): 500 with the cause recorded.
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "回收授权失败", err)
 		return
 	}
 	switch mutation.Status {
@@ -618,7 +633,9 @@ func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request, selfOnly bool
 	}
 	mutation, err := d.Store.Return(r.Context(), r.PathValue("id"), version, granteeID)
 	if err != nil {
-		kernel.WriteBadRequest(w, "归还授权使用权失败")
+		// Store errors here are infrastructure failures (not_found/conflict are
+		// outcome statuses): 500 with the cause recorded.
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "归还授权使用权失败", err)
 		return
 	}
 	switch mutation.Status {
@@ -744,13 +761,14 @@ func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, s
 		auth.SystemAccountID, ownerScope)
 	if err != nil {
 		// Node surfaces the domain error message verbatim
-		// (authorizations.routes.ts:492/:548).
+		// (authorizations.routes.ts:492/:548); unknown store failures are
+		// infrastructure errors and land on the 500 channel with the cause.
 		var fail *Fail
 		if errorsAsFail(err, &fail) {
 			kernel.WriteBadRequest(w, fail.Message)
 			return
 		}
-		kernel.WriteBadRequest(w, "修改授权失败")
+		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "修改授权失败", err)
 		return
 	}
 	switch outcome.Status {

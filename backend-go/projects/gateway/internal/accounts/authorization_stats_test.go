@@ -115,6 +115,7 @@ func TestListAuthorizationStatsAuthorizedView(t *testing.T) {
 	ownerID := env.login(t, "owner2", "owner-pass", "user")
 	memberID := env.login(t, "member2", "member-pass", "user")
 	env.seedAccount(t, "acc-inst-src", ownerID, "源账户", "active")
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-stats", ownerID, memberID)
 
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{

@@ -303,6 +303,10 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     }
   }
 
+  // key 与 AuthorizationExpireModal 内的 submittingRef 保持一致：提交期间锁住同名 key，
+  // 弹窗确认按钮据此呈现 loading，并拦截并发重复提交。
+  const submitExpireChange = submitAction('authorizations.updateExpire', confirmExpireChange)
+
   function validateAuthorizationExpiresAt(expiresAt: AuthorizationCreateFormModel['expiresAt'], accountExpiresAt?: string): boolean {
     if (!expiresAt) return true
     if (expiresAt.isBefore(dayjs())) {
@@ -333,7 +337,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
 
   return {
     authorizationCreating,
-    confirmExpireChange,
+    confirmExpireChange: submitExpireChange,
     createAuthorization,
     handleActionMenuClick
   }

@@ -396,17 +396,99 @@ func (s *Store) groupIDForAuthorizationBinding(ctx context.Context, q queryer, p
 		}
 		return id, nil
 	}
+	id, err := s.defaultGroupIDForProvider(ctx, q, providerCode, systemAccountID)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		return "", failf("目标用户缺少启用的默认分组，请按当前数据契约修复目标用户分组后再授权")
+	}
+	return id, nil
+}
+
+// defaultGroupIDForProvider resolves the enabled default group a system
+// account already owns for one provider (设计 :257「团队 AI 账户授权展开到成员时
+// 只使用成员当前已存在且启用的同供应商默认分组」). An empty result means the
+// account has no such group; the caller decides the policy — the direct bind
+// keeps the verbatim rejection, the team fanout fails with the member label.
+func (s *Store) defaultGroupIDForProvider(ctx context.Context, q queryer, providerCode, systemAccountID string) (string, error) {
 	var id string
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("groups")+`
 		WHERE system_account_id = ? AND provider_code = ? AND is_default = 1 AND enabled = 1
 		ORDER BY updated_at DESC, id ASC LIMIT 1`), systemAccountID, providerCode).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", failf("目标用户缺少启用的默认分组，请按当前数据契约修复目标用户分组后再授权")
+		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+// provisionTeamAccountInstanceForMember runs the create-tail instance clone
+// for one member of an active team account grant. 设计 :257: the member keeps
+// their own current enabled default group for the source provider; the group
+// is never auto-created, so a missing default group fails the whole enclosing
+// transaction with the member label (name, falling back to the id). The gate
+// order mirrors provisionAuthorizedAccountInstance: an expired grant skips
+// silently, and an empty source provider stays the archived degenerate skip
+// (the bind step never resolves a group for it).
+func (s *Store) provisionTeamAccountInstanceForMember(ctx context.Context, tx *sql.Tx, sourceAccountID, ownerID, memberID string, grantExpiresAt *string, nowTime time.Time, now string) error {
+	if grantExpiresAt != nil && *grantExpiresAt != "" &&
+		authorizationExpiresPassed(*grantExpiresAt, nowTime) {
+		return nil
+	}
+	var providerCode string
+	err := tx.QueryRowContext(ctx, s.bind(`SELECT provider_code FROM `+s.table("accounts")+`
+		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), sourceAccountID).Scan(&providerCode)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Source deleted: ensureAccountAuthorizationInstance skips silently for
+		// the same condition, so the fanout skips before resolving groups.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if providerCode == "" {
+		// The archived bind short-circuits on the degenerate empty provider
+		// (instance.providerCode check) without requiring any group.
+		return nil
+	}
+	groupID, err := s.defaultGroupIDForProvider(ctx, tx, providerCode, memberID)
+	if err != nil {
+		return err
+	}
+	if groupID == "" {
+		label, err := s.teamMemberDisplayLabel(ctx, tx, memberID)
+		if err != nil {
+			return err
+		}
+		return failf("团队成员 %s 缺少该供应商的默认分组，无法完成团队授权", label)
+	}
+	return s.provisionAuthorizedAccountInstance(ctx, tx, authorizedInstanceProvision{
+		SourceAccountID: sourceAccountID,
+		OwnerID:         ownerID,
+		GranteeID:       memberID,
+		TargetGroupID:   &groupID,
+		GrantExpiresAt:  grantExpiresAt,
+	}, nowTime, now)
+}
+
+// teamMemberDisplayLabel renders the member identity the team-authorization
+// failure messages carry: the display name when present, the raw id otherwise.
+func (s *Store) teamMemberDisplayLabel(ctx context.Context, q queryer, memberID string) (string, error) {
+	var displayName sql.NullString
+	err := q.QueryRowContext(ctx, s.bind(`SELECT display_name FROM `+s.table("system_accounts")+` WHERE id = ?`), memberID).Scan(&displayName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return memberID, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if displayName.Valid && strings.TrimSpace(displayName.String) != "" {
+		return displayName.String, nil
+	}
+	return memberID, nil
 }
 
 // advanceInstanceDispatchRevision mirrors the archived restore-arm

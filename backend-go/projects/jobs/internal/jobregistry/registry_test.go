@@ -7,8 +7,10 @@ import (
 )
 
 // nodeScheduledJobNames 是 Node background-job-registry.entries.ts 的
-// backgroundScheduledJobs 全量名单（31 项，顺序一致）。注册表覆盖测试保证
-// Go 侧登记不缺项：缺失即测试失败，不允许静默跳过。
+// backgroundScheduledJobs 全量名单（31 项）扣除已按设计消灭的
+// authorization-usage-range-windows-refresh（授权消耗明细改为日摘要表现场
+// 聚合，范围窗口表不再刷新）后的 30 项，顺序一致。注册表覆盖测试保证 Go 侧
+// 登记不缺项：缺失即测试失败，不允许静默跳过。
 var nodeScheduledJobNames = []string{
 	"system-metrics-sample",
 	"system-metrics-trend-windows-refresh",
@@ -20,7 +22,6 @@ var nodeScheduledJobNames = []string{
 	"ai-performance-summary-windows-refresh",
 	"usage-overview-windows-refresh",
 	"usage-scope-range-windows-refresh",
-	"authorization-usage-range-windows-refresh",
 	"usage-stats-consistency-check",
 	"background-task-run-reconcile",
 	"api-key-record-cleanup-retry",
@@ -75,15 +76,15 @@ var goAddedAfterRetentionJobNames = []string{
 }
 
 // expectedScheduledOrder 合并 Node 名单与 Go 附加任务：配额小时窗刷新插在
-// authorization-usage-range-windows-refresh 之后，keepalive 刷新插在
-// openai-oauth-access-token-refresh 之后，grok 用量快照刷新插在
-// account-balance-auto-detect-recovery 之后，与 ScheduledEntries 的登记位置
-// 一致。
+// usage-scope-range-windows-refresh 之后（原锚点 authorization-usage-range-
+// windows-refresh 已消灭），keepalive 刷新插在 openai-oauth-access-token-
+// refresh 之后，grok 用量快照刷新插在 account-balance-auto-detect-recovery
+// 之后，与 ScheduledEntries 的登记位置一致。
 func expectedScheduledOrder() []string {
 	result := make([]string, 0, len(nodeScheduledJobNames)+len(goAddedScheduledJobNames)+len(goAddedAfterOAuthRefreshJobNames)+len(goAddedAfterBalanceDetectJobNames)+len(goAddedAfterRetentionJobNames))
 	for _, name := range nodeScheduledJobNames {
 		result = append(result, name)
-		if name == "authorization-usage-range-windows-refresh" {
+		if name == "usage-scope-range-windows-refresh" {
 			result = append(result, goAddedScheduledJobNames...)
 		}
 		if name == "account-balance-auto-detect-recovery" {

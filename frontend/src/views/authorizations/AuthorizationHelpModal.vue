@@ -15,14 +15,21 @@
       </div>
       <div class="authorization-help-section">
         <span class="authorization-help-title">用量口径</span>
-        <p>授权用量不包含资源归属人自己的消耗；管理端在团队消耗明细和用户消耗明细里查看统计，统一授权列表只维护授权关系。</p>
+        <p>授权用量不包含资源归属人自己的消耗；{{ usageEntryClause }}的团队消耗明细和用户消耗明细里查看统计，统一授权列表只维护授权关系。</p>
       </div>
     </div>
   </a-modal>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
+
 const open = defineModel<boolean>('open', { required: true })
+
+const { isManagementView } = useScopedMenuView()
+const usageEntryClause = computed(() => isManagementView.value ? '管理端在统一授权管理下' : '在我的授权下')
 </script>
 
 <style scoped>

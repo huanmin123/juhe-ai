@@ -1,9 +1,12 @@
-// Authorization usage window reads (BUG-0165 slice): the
-// authorization_team_usage_range_windows / authorization_user_usage_range_windows
-// query family ported from storage/authorization-usage.repository.ts. Window
-// rows live in the stats database (juhe_stats on PostgreSQL, the dedicated
-// stats SQLite file otherwise), keyed by
-// (system_account_id, start_date, end_date, [grantee_]team/resource filters).
+// Authorization usage reads (BUG-0165 slice) ported from
+// storage/authorization-usage.repository.ts: the team/user details and
+// summary endpoints aggregate the authorization_team_usage_summary_daily /
+// authorization_user_usage_summary_daily daily rows in the stats database
+// (juhe_stats on PostgreSQL, the dedicated stats SQLite file otherwise) over
+// the requested stat_date range, keyed by (system_account_id, stat_date,
+// [grantee_]team/resource filters). Any date range within the 31-day clamp
+// resolves directly from the daily rows — no pre-materialized range window is
+// consulted on this path.
 package authz
 
 import (
@@ -189,10 +192,31 @@ func usageDetailResourcePredicate(filterType, filterID string) (string, []string
 	}
 }
 
-const usageWindowRowColumns = `report.request_count, report.input_tokens, report.output_tokens,
-	report.cache_read_tokens, report.cache_read_cost_usd, report.cache_write_tokens, report.cache_write_1h_tokens,
-	report.cache_write_cost_usd, report.thinking_tokens, report.input_image_tokens, report.output_image_tokens,
-	report.total_cost_usd, report.last_used_at`
+// usageDailyAggregateColumns is the range-aggregate select list over the
+// authorization daily summary tables: request/token/cost families SUM and
+// last_used_at MAX, projected in the exact column order of the former window
+// row (usageWindowRowColumns) so the scan shape stays identical.
+const usageDailyAggregateColumns = `COALESCE(SUM(report.request_count), 0), COALESCE(SUM(report.input_tokens), 0),
+	COALESCE(SUM(report.output_tokens), 0), COALESCE(SUM(report.cache_read_tokens), 0), COALESCE(SUM(report.cache_read_cost_usd), 0),
+	COALESCE(SUM(report.cache_write_tokens), 0), COALESCE(SUM(report.cache_write_1h_tokens), 0), COALESCE(SUM(report.cache_write_cost_usd), 0),
+	COALESCE(SUM(report.thinking_tokens), 0), COALESCE(SUM(report.input_image_tokens), 0), COALESCE(SUM(report.output_image_tokens), 0),
+	COALESCE(SUM(report.total_cost_usd), 0), MAX(report.last_used_at)`
+
+// usageDailyNonEmptyHaving mirrors the window writer's HAVING (all-zero groups
+// never surface): retention deductions can zero out daily rows, and the former
+// window path never listed such groups.
+const usageDailyNonEmptyHaving = `HAVING COALESCE(SUM(report.request_count), 0) > 0
+		OR COALESCE(SUM(report.input_tokens), 0) > 0
+		OR COALESCE(SUM(report.output_tokens), 0) > 0
+		OR COALESCE(SUM(report.cache_read_tokens), 0) > 0
+		OR COALESCE(SUM(report.cache_read_cost_usd), 0) > 0
+		OR COALESCE(SUM(report.cache_write_tokens), 0) > 0
+		OR COALESCE(SUM(report.cache_write_1h_tokens), 0) > 0
+		OR COALESCE(SUM(report.cache_write_cost_usd), 0) > 0
+		OR COALESCE(SUM(report.thinking_tokens), 0) > 0
+		OR COALESCE(SUM(report.input_image_tokens), 0) > 0
+		OR COALESCE(SUM(report.output_image_tokens), 0) > 0
+		OR COALESCE(SUM(report.total_cost_usd), 0) > 0`
 
 func scanUsageWindowRow(scanner interface{ Scan(...any) error }) (usageWindowRow, error) {
 	var row usageWindowRow
@@ -234,8 +258,9 @@ func rowSummary(row usageWindowRow) UsageRowSummary {
 }
 
 // teamUsageRows mirrors getAuthorizationTeamUsageRows (:93-164 SQLite and the
-// PG variant :181-267; the two share one SQL modulo numeric casts that
-// database/sql handles through the driver).
+// PG variant :181-267): rows aggregate the authorization daily summary rows
+// over the requested stat_date range, grouped by the window display key
+// (team_filter_id, resource_filter_type, resource_filter_id).
 func (s *Store) teamUsageRows(ctx context.Context, filters UsageFilters, access accessInfo, rng UsageStatsRange, page, pageSize int) (*TeamUsageRowsResult, error) {
 	key, ok := usageScopeKey(access)
 	if !ok {
@@ -247,15 +272,16 @@ func (s *Store) teamUsageRows(ctx context.Context, filters UsageFilters, access 
 	}
 	resourcePredicate, predicateArgs := usageDetailResourcePredicate(filterType, filters.resourceFilterID())
 	query := `SELECT report.team_filter_id, report.resource_filter_type, report.resource_filter_id,
-		` + usageWindowRowColumns + `
-		FROM ` + s.statsTable("authorization_team_usage_range_windows") + ` report
+		` + usageDailyAggregateColumns + `
+		FROM ` + s.statsTable("authorization_team_usage_summary_daily") + ` report
 		WHERE report.system_account_id = ?
-			AND report.start_date = ?
-			AND report.end_date = ?
+			AND report.stat_date BETWEEN ? AND ?
 			AND report.team_filter_id <> ''
 			AND (? = '' OR report.team_filter_id = ?)
 			AND ` + resourcePredicate + `
-		ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC,
+		GROUP BY report.team_filter_id, report.resource_filter_type, report.resource_filter_id
+		` + usageDailyNonEmptyHaving + `
+		ORDER BY SUM(report.total_cost_usd) DESC, SUM(report.request_count) DESC, MAX(report.last_used_at) DESC,
 			report.team_filter_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
 		LIMIT ? OFFSET ?`
 	args := []any{key, rng.StartDate, rng.EndDate, filters.TeamID, filters.TeamID}
@@ -330,7 +356,9 @@ func (s *Store) teamUsageRows(ctx context.Context, filters UsageFilters, access 
 }
 
 // teamUsageSummary mirrors getAuthorizationTeamUsageSummary +
-// loadAuthorizationTeamUsageSummary (:166-179, :499-532).
+// loadAuthorizationTeamUsageSummary (:166-179, :499-532): the aggregate folds
+// the daily rows over the requested range; an empty range folds to zero
+// values.
 func (s *Store) teamUsageSummary(ctx context.Context, filters UsageFilters, access accessInfo, rng UsageStatsRange) (*TeamUsageSummaryResult, error) {
 	key, ok := usageScopeKey(access)
 	if !ok {
@@ -340,21 +368,16 @@ func (s *Store) teamUsageSummary(ctx context.Context, filters UsageFilters, acce
 	if filterType == "" {
 		filterType = "all"
 	}
-	query := `SELECT ` + windowAggregateColumns + `
-		FROM ` + s.statsTable("authorization_team_usage_range_windows") + `
-		WHERE system_account_id = ?
-			AND start_date = ?
-			AND end_date = ?
-			AND team_filter_id = ?
-			AND resource_filter_type = ?
-			AND resource_filter_id = ?
-		LIMIT 1`
+	query := `SELECT ` + usageDailyAggregateColumns + `
+		FROM ` + s.statsTable("authorization_team_usage_summary_daily") + ` report
+		WHERE report.system_account_id = ?
+			AND report.stat_date BETWEEN ? AND ?
+			AND report.team_filter_id = ?
+			AND report.resource_filter_type = ?
+			AND report.resource_filter_id = ?`
 	row := s.statsQueryDB().QueryRowContext(ctx, s.bind(query), key,
 		rng.StartDate, rng.EndDate, filters.TeamID, filterType, filters.resourceFilterID())
 	aggregate, err := scanUsageWindowRow(row)
-	if err == sql.ErrNoRows {
-		return &TeamUsageSummaryResult{Range: rng, Summary: UsageAggregateSummary{}}, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +386,9 @@ func (s *Store) teamUsageSummary(ctx context.Context, filters UsageFilters, acce
 
 // userUsageRows mirrors getAuthorizationUserUsageRows (:269-345 SQLite, PG
 // :362-454): the team filter matches unconditionally (empty string means the
-// no-team aggregate rows).
+// no-team aggregate rows); rows aggregate the daily summary rows over the
+// requested range, grouped by the window display key (grantee, resource
+// filters).
 func (s *Store) userUsageRows(ctx context.Context, filters UsageFilters, access accessInfo, rng UsageStatsRange, page, pageSize int) (*UserUsageRowsResult, error) {
 	key, ok := usageScopeKey(access)
 	if !ok {
@@ -376,16 +401,17 @@ func (s *Store) userUsageRows(ctx context.Context, filters UsageFilters, access 
 	resourcePredicate, predicateArgs := usageDetailResourcePredicate(filterType, filters.resourceFilterID())
 	query := `SELECT report.team_filter_id, report.grantee_filter_system_account_id,
 		report.resource_filter_type, report.resource_filter_id,
-		` + usageWindowRowColumns + `
-		FROM ` + s.statsTable("authorization_user_usage_range_windows") + ` report
+		` + usageDailyAggregateColumns + `
+		FROM ` + s.statsTable("authorization_user_usage_summary_daily") + ` report
 		WHERE report.system_account_id = ?
-			AND report.start_date = ?
-			AND report.end_date = ?
+			AND report.stat_date BETWEEN ? AND ?
 			AND report.team_filter_id = ?
 			AND report.grantee_filter_system_account_id <> ''
 			AND (? = '' OR report.grantee_filter_system_account_id = ?)
 			AND ` + resourcePredicate + `
-		ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC,
+		GROUP BY report.team_filter_id, report.grantee_filter_system_account_id, report.resource_filter_type, report.resource_filter_id
+		` + usageDailyNonEmptyHaving + `
+		ORDER BY SUM(report.total_cost_usd) DESC, SUM(report.request_count) DESC, MAX(report.last_used_at) DESC,
 			report.grantee_filter_system_account_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
 		LIMIT ? OFFSET ?`
 	args := []any{key, rng.StartDate, rng.EndDate, filters.TeamID,
@@ -468,7 +494,9 @@ func (s *Store) userUsageRows(ctx context.Context, filters UsageFilters, access 
 }
 
 // userUsageSummary mirrors getAuthorizationUserUsageSummary +
-// loadAuthorizationUserUsageSummary (:347-360, :569-604).
+// loadAuthorizationUserUsageSummary (:347-360, :569-604): the aggregate folds
+// the daily rows over the requested range; an empty range folds to zero
+// values.
 func (s *Store) userUsageSummary(ctx context.Context, filters UsageFilters, access accessInfo, rng UsageStatsRange) (*UserUsageSummaryResult, error) {
 	key, ok := usageScopeKey(access)
 	if !ok {
@@ -478,30 +506,26 @@ func (s *Store) userUsageSummary(ctx context.Context, filters UsageFilters, acce
 	if filterType == "" {
 		filterType = "all"
 	}
-	query := `SELECT ` + windowAggregateColumns + `
-		FROM ` + s.statsTable("authorization_user_usage_range_windows") + `
-		WHERE system_account_id = ?
-			AND start_date = ?
-			AND end_date = ?
-			AND team_filter_id = ?
-			AND grantee_filter_system_account_id = ?
-			AND resource_filter_type = ?
-			AND resource_filter_id = ?
-		LIMIT 1`
+	query := `SELECT ` + usageDailyAggregateColumns + `
+		FROM ` + s.statsTable("authorization_user_usage_summary_daily") + ` report
+		WHERE report.system_account_id = ?
+			AND report.stat_date BETWEEN ? AND ?
+			AND report.team_filter_id = ?
+			AND report.grantee_filter_system_account_id = ?
+			AND report.resource_filter_type = ?
+			AND report.resource_filter_id = ?`
 	row := s.statsQueryDB().QueryRowContext(ctx, s.bind(query), key,
 		rng.StartDate, rng.EndDate, filters.TeamID, filters.GranteeID, filterType, filters.resourceFilterID())
 	aggregate, err := scanUsageWindowRow(row)
-	if err == sql.ErrNoRows {
-		return &UserUsageSummaryResult{Range: rng, Summary: UsageAggregateSummary{}}, nil
-	}
 	if err != nil {
 		return nil, err
 	}
 	return &UserUsageSummaryResult{Range: rng, Summary: summaryAggregate(&aggregate)}, nil
 }
 
-// windowAggregateColumns is the summary select list (the row column set
-// without the group key columns).
+// windowAggregateColumns is the {id}/usage detail select list over the
+// (frozen) range window tables; the details/summary endpoints above no longer
+// read those tables.
 const windowAggregateColumns = `request_count, input_tokens, output_tokens,
 	cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
 	cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,

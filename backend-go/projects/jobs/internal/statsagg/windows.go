@@ -30,7 +30,10 @@ const (
 	StageAiPerformanceSummaryWindows          WindowStageName = "ai_performance_summary_windows"
 	StageSystemMetricsTrendWindows            WindowStageName = "system_metrics_trend_windows"
 	StageUsageScopeRangeWindows               WindowStageName = "usage_scope_range_windows"
-	StageAuthorizationUsageRangeWindows       WindowStageName = "authorization_usage_range_windows"
+	// StageAuthorizationUsageRangeWindows 已随授权消耗明细改为日摘要表现场
+	// 聚合而停用：不再注册进刷新编排（selectStages/runStage 均不认领），仅
+	// 保留常量名待组合根清理残留装配引用后移除。
+	StageAuthorizationUsageRangeWindows WindowStageName = "authorization_usage_range_windows"
 )
 
 // hotUsageWindowStageNames mirrors hotUsageWindowStageNames。
@@ -49,8 +52,6 @@ func stageSourceTables(stage WindowStageName) []string {
 		return []string{"system_metrics_hourly", "process_event_loop_hourly"}
 	case StageUsageScopeRangeWindows:
 		return []string{"usage_stats_daily"}
-	case StageAuthorizationUsageRangeWindows:
-		return []string{"authorization_team_usage_summary_daily", "authorization_user_usage_summary_daily"}
 	}
 	return nil
 }
@@ -75,8 +76,9 @@ type UsageRankStageRun struct {
 // WindowRefresher 执行窗口刷新 job（usage-rank-snapshots-refresh、
 // usage-overview-windows-refresh、system-metrics-trend-windows-refresh、
 // ai-performance-summary-windows-refresh、usage-scope-range-windows-refresh、
-// authorization-usage-range-windows-refresh、usage-hot-window-refresh、
-// usage-quota-hourly-windows-refresh）。
+// usage-hot-window-refresh、usage-quota-hourly-windows-refresh）。授权范围
+// 窗口刷新（authorization-usage-range-windows-refresh）已停用：授权消耗明细
+// 读端改为按日范围直读 authorization_*_usage_summary_daily。
 type WindowRefresher struct {
 	DB      *sql.DB
 	Dialect Dialect
@@ -110,7 +112,6 @@ func (w *WindowRefresher) selectStages(stageNames []WindowStageName) ([]WindowSt
 		StageAiPerformanceSummaryWindows,
 		StageSystemMetricsTrendWindows,
 		StageUsageScopeRangeWindows,
-		StageAuthorizationUsageRangeWindows,
 	}
 	if stageNames == nil {
 		return all, nil
@@ -134,7 +135,7 @@ func (w *WindowRefresher) selectStages(stageNames []WindowStageName) ([]WindowSt
 
 // DefaultJobName mirrors usageRankSnapshotDefaultJobName。
 func DefaultJobName(stages []WindowStageName) string {
-	if len(stages) == 10 {
+	if len(stages) == 9 {
 		return "usage_rank_snapshots_refresh"
 	}
 	result := "usage_rank_snapshots_refresh:"
@@ -273,8 +274,6 @@ func (w *WindowRefresher) runStage(ctx context.Context, stage WindowStageName, s
 		err = w.refreshSystemMetricsTrendWindowsStage(ctx, tx, stageContext)
 	case StageUsageScopeRangeWindows:
 		err = w.refreshUsageScopeRangeWindows(ctx, tx, stageContext)
-	case StageAuthorizationUsageRangeWindows:
-		err = w.refreshAuthorizationUsageRangeWindows(ctx, tx, stageContext)
 	default:
 		err = fmt.Errorf("未知用量排行快照刷新阶段: %s", stage)
 	}

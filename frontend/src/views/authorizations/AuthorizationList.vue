@@ -40,8 +40,17 @@
           <AuthorizationSourceTag :authorization="record" />
         </div>
       </template>
+      <template v-else-if="column.key === 'limits'">
+        <span v-if="authorizationLimitTags(record.limits).length === 0" class="limits-unlimited">不限</span>
+        <span v-else class="limits-tag-list">
+          <a-tag v-for="limitTag in authorizationLimitTags(record.limits)" :key="limitTag" class="limits-tag">{{ limitTag }}</a-tag>
+        </span>
+      </template>
       <template v-else-if="column.key === 'status'">
         <AuthorizationStatusTag :status="record.status" />
+      </template>
+      <template v-else-if="column.key === 'expiresAt'">
+        <span :class="{ 'authorization-expired-text': isAuthorizationExpired(record) }">{{ formatDateTime(record.expiresAt) }}</span>
       </template>
       <template v-else-if="column.key === 'createdAt'">
         {{ formatDateTime(record.createdAt) }}
@@ -97,8 +106,17 @@ import type { ResourceAuthorizationListItem } from '@/types/domain'
 import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
-import { authorizationColumns, type AuthorizationDirectionFilter } from './authorizationTableColumns'
-import { authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName, hasManualSource } from './authorizationFormatters'
+import {
+  authorizationDirectionColor,
+  authorizationDirectionText,
+  authorizationLimitTags,
+  formatDateTime,
+  granteeTargetName,
+  hasManualSource,
+  isAuthorizationExpired
+} from './authorizationFormatters'
+import { authorizationVisibleColumns } from './authorizationPageConfig'
+import type { AuthorizationDirectionFilter } from './authorizationTableColumns'
 import type { AuthorizationResourceType } from '@/types/domain'
 
 const props = defineProps<{
@@ -126,14 +144,13 @@ const hasReturnableInboundAuthorization = computed(() => {
   if (props.isManagementView || props.direction !== 'inbound') return false
   return props.authorizations.some((authorization) => canReturnAuthorization(authorization))
 })
-const defaultColumns = computed(() => authorizationColumns.filter((column) => {
-  if (props.isManagementView && column.key === 'direction') return false
-  if (['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
-  if (!showActions.value && column.key === 'actions') return false
-  return true
+const defaultColumns = computed(() => authorizationVisibleColumns({
+  isManagementView: props.isManagementView,
+  direction: props.direction,
+  hasReturnableInboundAuthorization: hasReturnableInboundAuthorization.value
 }))
 const columns = computed(() => props.columns ?? defaultColumns.value)
-const tableScrollX = computed(() => props.isManagementView ? 1240 : 1320)
+const tableScrollX = computed(() => props.isManagementView ? 1640 : 1760)
 
 function canReturnAuthorization(authorization: ResourceAuthorizationListItem): boolean {
   if (props.isManagementView || props.direction !== 'inbound') return false
@@ -173,5 +190,23 @@ function resourceTypeTag(resourceType: AuthorizationResourceType) {
 
 .authorizations-table :deep(.ant-table-cell) {
   white-space: nowrap;
+}
+
+.limits-tag-list {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.limits-tag {
+  margin-inline-end: 0;
+}
+
+.limits-unlimited {
+  color: var(--juhe-muted);
+}
+
+.authorization-expired-text {
+  color: var(--ant-color-error, var(--juhe-danger));
 }
 </style>

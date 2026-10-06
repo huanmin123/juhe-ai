@@ -966,22 +966,25 @@ func TestW10CRunStagesOrchestration(t *testing.T) {
 	if err := refresher.runStage(ctx, "nope", refreshStageContext{timezone: env.zone}); err == nil {
 		t.Fatalf("runStage 未知阶段应报错")
 	}
-	// DefaultJobName：10 阶段主名 vs 单阶段复合名。
+	// DefaultJobName：9 阶段主名 vs 单阶段复合名（授权范围窗口 stage 已停用）。
 	allStages := []WindowStageName{
 		StageAccountLast7dRequestRank, StageCallerAccountLast7dRequestRank, StageApiKeyCurrentMonthCostRank,
 		StageAccountAuthorizationCurrentMonthRank, StageGroupAuthorizationCurrentMonthRank, StageUsageOverviewWindows,
-		StageAiPerformanceSummaryWindows, StageSystemMetricsTrendWindows, StageUsageScopeRangeWindows, StageAuthorizationUsageRangeWindows,
+		StageAiPerformanceSummaryWindows, StageSystemMetricsTrendWindows, StageUsageScopeRangeWindows,
 	}
 	if got := DefaultJobName(allStages); got != "usage_rank_snapshots_refresh" {
-		t.Fatalf("10 阶段默认名错误: %s", got)
+		t.Fatalf("9 阶段默认名错误: %s", got)
 	}
 	if got := DefaultJobName([]WindowStageName{StageUsageOverviewWindows, StageUsageScopeRangeWindows}); got != "usage_rank_snapshots_refresh:usage_overview_windows+usage_scope_range_windows" {
 		t.Fatalf("单阶段默认名错误: %s", got)
 	}
-	// selectStages nil → 全部阶段。
+	// selectStages nil → 全部阶段；已停用的授权范围窗口 stage 不再可选。
 	selected, err := refresher.selectStages(nil)
-	if err != nil || len(selected) != 10 {
+	if err != nil || len(selected) != 9 {
 		t.Fatalf("nil 阶段应选全部: %d err=%v", len(selected), err)
+	}
+	if _, err := refresher.selectStages([]WindowStageName{StageAuthorizationUsageRangeWindows}); err == nil {
+		t.Fatalf("已停用的授权范围窗口 stage 应报未知阶段")
 	}
 
 	// SkipIfUnchanged：首轮执行后次轮跳过。

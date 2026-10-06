@@ -484,7 +484,7 @@ func TestSyncInstanceNamesFollowsSourceRename(t *testing.T) {
 	}
 }
 
-func TestProvisionSkipsTeamGrantsAndExpiredExpiry(t *testing.T) {
+func TestProvisionTeamGrantMemberWithoutDefaultGroupFailsAndExpiredExpiry(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "member", "active")
@@ -493,25 +493,37 @@ func TestProvisionSkipsTeamGrantsAndExpiredExpiry(t *testing.T) {
 	f.seedTeamWithMember(t, "team_1", "member")
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
 
-	// Team grants fan out runtime rows only; instance provisioning per member
-	// is the follow-up slice (archived fans the bind through per-user upserts).
-	if _, err := f.store.Create(context.Background(), CreateInput{
+	// 团队 AI 账户授权展开时只使用成员已存在且启用的同供应商默认分组（设计
+	// :257）：member 缺少默认分组 → 整个创建事务失败并指明成员，不自动补建。
+	result, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "acc-src",
 		GranteeType: "team", GranteeID: "team_1",
-	}, "owner"); err != nil {
+	}, "owner")
+	if err == nil {
+		t.Fatalf("member without default group must fail the team grant, got %+v", result)
+	}
+	fail, ok := err.(*Fail)
+	if !ok || fail.Message != "团队成员 member 缺少该供应商的默认分组，无法完成团队授权" {
+		t.Fatalf("missing default group error = %v, want member-identifying Fail", err)
+	}
+	// The rejection rolls the whole create back.
+	var grantCount, runtimeCount, instanceCount int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorization_grants WHERE resource_id = 'acc-src'`).Scan(&grantCount); err != nil {
 		t.Fatal(err)
 	}
-	var instanceCount int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM resource_authorizations WHERE resource_id = 'acc-src'`).Scan(&runtimeCount); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.db.QueryRow(`SELECT COUNT(*) FROM accounts WHERE authorization_instance_source_account_id = 'acc-src'`).Scan(&instanceCount); err != nil {
 		t.Fatal(err)
 	}
-	if instanceCount != 0 {
-		t.Fatalf("team grant provisioned %d instances", instanceCount)
+	if grantCount != 0 || runtimeCount != 0 || instanceCount != 0 {
+		t.Fatalf("rollback incomplete: grants=%d runtimes=%d instances=%d", grantCount, runtimeCount, instanceCount)
 	}
 
 	// A past expiry is rejected before provisioning (create validation), so no
 	// instance appears; the bind gating inside provisioning is the second,
-	// archived-parity guard for revive-style callers.
+	// archived-parity guard for cascade-style callers.
 	expired := "2020-01-01T00:00:00Z"
 	if _, err := f.store.Create(context.Background(), CreateInput{
 		ResourceType: "account", ResourceID: "acc-src",

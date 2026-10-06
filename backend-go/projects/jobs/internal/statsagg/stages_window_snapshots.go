@@ -629,7 +629,7 @@ func (w *WindowRefresher) refreshUsageScopeRangeWindows(ctx context.Context, tx 
 		return err
 	}
 	for _, rangeValue := range ranges {
-		query := w.Dialect.bind(scopeRangeWindowInsertSQL(w.Dialect, false))
+		query := w.Dialect.bind(scopeRangeWindowInsertSQL(w.Dialect))
 		if _, err := tx.ExecContext(ctx, query, rangeValue.StartDate, rangeValue.EndDate, stageContext.updatedAt, rangeValue.StartDate, rangeValue.EndDate); err != nil {
 			return err
 		}
@@ -637,39 +637,7 @@ func (w *WindowRefresher) refreshUsageScopeRangeWindows(ctx context.Context, tx 
 	return nil
 }
 
-// refreshAuthorizationUsageRangeWindows mirrors
-// refreshAuthorizationUsageRangeWindowSnapshots。
-func (w *WindowRefresher) refreshAuthorizationUsageRangeWindows(ctx context.Context, tx *sql.Tx, stageContext refreshStageContext) error {
-	ranges := HotUsageStatsRanges(stageContext.todayKey)
-	if len(ranges) == 0 {
-		return nil
-	}
-	earliestStartDate := ranges[0].StartDate
-	for _, rangeValue := range ranges {
-		if rangeValue.StartDate < earliestStartDate {
-			earliestStartDate = rangeValue.StartDate
-		}
-	}
-	for _, tableName := range []string{"authorization_team_usage_range_windows", "authorization_user_usage_range_windows"} {
-		if _, err := tx.ExecContext(ctx, w.Dialect.bind(`DELETE FROM `+w.Dialect.StatsTable(tableName)+
-			` WHERE end_date >= ? AND end_date <= ?`), earliestStartDate, stageContext.todayKey); err != nil {
-			return err
-		}
-	}
-	for _, rangeValue := range ranges {
-		teamQuery := w.Dialect.bind(authorizationRangeWindowInsertSQL(w.Dialect, true))
-		if _, err := tx.ExecContext(ctx, teamQuery, rangeValue.StartDate, rangeValue.EndDate, stageContext.updatedAt, rangeValue.StartDate, rangeValue.EndDate); err != nil {
-			return err
-		}
-		userQuery := w.Dialect.bind(authorizationRangeWindowInsertSQL(w.Dialect, false))
-		if _, err := tx.ExecContext(ctx, userQuery, rangeValue.StartDate, rangeValue.EndDate, stageContext.updatedAt, rangeValue.StartDate, rangeValue.EndDate); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func scopeRangeWindowInsertSQL(dialect Dialect, _ bool) string {
+func scopeRangeWindowInsertSQL(dialect Dialect) string {
 	return `
 		INSERT INTO ` + dialect.StatsTable("usage_scope_range_windows") + ` (
 		  system_account_id, scope_type, scope_id, start_date, end_date,
@@ -754,71 +722,8 @@ func scopeRangeWindowInsertSQL(dialect Dialect, _ bool) string {
 	`
 }
 
-func authorizationRangeWindowInsertSQL(dialect Dialect, team bool) string {
-	// 列顺序与 Node usage-range-windows.repository.ts 的 insertTeamRange /
-	// insertUserRange 逐字对齐。
-	tableName := "authorization_user_usage_range_windows"
-	sourceTable := "authorization_user_usage_summary_daily"
-	insertColumns := `system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
-		  request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at`
-	selectColumns := `
-		  system_account_id,
-		  ?,
-		  ?,
-		  team_filter_id,
-		  grantee_filter_system_account_id,
-		  resource_filter_type,
-		  resource_filter_id,`
-	groupColumns := `system_account_id, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id`
-	if team {
-		tableName = "authorization_team_usage_range_windows"
-		sourceTable = "authorization_team_usage_summary_daily"
-		insertColumns = `system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-		  request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, last_used_at, updated_at`
-		selectColumns = `
-		  system_account_id,
-		  ?,
-		  ?,
-		  team_filter_id,
-		  resource_filter_type,
-		  resource_filter_id,`
-		groupColumns = `system_account_id, team_filter_id, resource_filter_type, resource_filter_id`
-	}
-	return `
-		INSERT INTO ` + dialect.StatsTable(tableName) + ` (
-		  ` + insertColumns + `)
-		SELECT` + selectColumns + `
-		  COALESCE(SUM(request_count), 0),
-		  COALESCE(SUM(input_tokens), 0),
-		  COALESCE(SUM(output_tokens), 0),
-		  COALESCE(SUM(cache_read_tokens), 0),
-		  COALESCE(SUM(cache_read_cost_usd), 0),
-		  COALESCE(SUM(cache_write_tokens), 0),
-		  COALESCE(SUM(cache_write_1h_tokens), 0),
-		  COALESCE(SUM(cache_write_cost_usd), 0),
-		  COALESCE(SUM(thinking_tokens), 0),
-		  COALESCE(SUM(input_image_tokens), 0),
-		  COALESCE(SUM(output_image_tokens), 0),
-		  COALESCE(SUM(total_cost_usd), 0),
-		  MAX(last_used_at),
-		  ?
-		FROM ` + dialect.StatsTable(sourceTable) + `
-		WHERE stat_date >= ?
-		  AND stat_date <= ?
-		GROUP BY ` + groupColumns + `
-		HAVING COALESCE(SUM(request_count), 0) > 0
-		  OR COALESCE(SUM(input_tokens), 0) > 0
-		  OR COALESCE(SUM(output_tokens), 0) > 0
-		  OR COALESCE(SUM(cache_read_tokens), 0) > 0
-		  OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
-		  OR COALESCE(SUM(cache_write_tokens), 0) > 0
-		  OR COALESCE(SUM(cache_write_1h_tokens), 0) > 0
-		  OR COALESCE(SUM(cache_write_cost_usd), 0) > 0
-		  OR COALESCE(SUM(thinking_tokens), 0) > 0
-		  OR COALESCE(SUM(input_image_tokens), 0) > 0
-		  OR COALESCE(SUM(output_image_tokens), 0) > 0
-		  OR COALESCE(SUM(total_cost_usd), 0) > 0
-	`
-}
+// authorizationRangeWindowInsertSQL 已删除：授权消耗明细读端改为按日范围直读
+// authorization_team_usage_summary_daily / authorization_user_usage_summary_daily，
+// 范围窗口表不再由 jobs 刷新（建表定义保留以兼容存量库）。
 
 var _ = time.Time{}

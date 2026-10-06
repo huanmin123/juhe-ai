@@ -184,10 +184,27 @@
 
     <StatsSummaryCards :cards="summaryCards" :loading="summaryLoading" />
 
+    <a-alert v-if="summaryError" class="authorization-usage-error-alert" type="error" show-icon>
+      <template #message>
+        <div class="authorization-usage-error-body">
+          <span class="authorization-usage-error-text">{{ summaryError }}</span>
+          <a-button size="small" :loading="summaryLoading" @click="refreshUsage">重试</a-button>
+        </div>
+      </template>
+    </a-alert>
+
     <a-card class="page-card authorization-usage-table-card" :loading="rowsInitialLoading">
       <div class="authorization-usage-table-head">
         <h3>用户消耗明细</h3>
       </div>
+      <a-alert v-if="rowsError" class="authorization-usage-error-alert" type="error" show-icon>
+        <template #message>
+          <div class="authorization-usage-error-body">
+            <span class="authorization-usage-error-text">{{ rowsError }}</span>
+            <a-button size="small" :loading="loading" @click="refreshUsage">重试</a-button>
+          </div>
+        </template>
+      </a-alert>
       <ResponsiveDataList
         class="authorization-usage-responsive-list"
         table-class="page-table authorization-usage-table"
@@ -294,7 +311,7 @@ import { isDateKey } from '@/shared/dateRange'
 import { sanitizePaginationState, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { AuthorizationUserUsageRowsResult, AuthorizationUserUsageRow, AuthorizationUserUsageSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
-import { formatDateTime } from './authorizationFormatters'
+import { extractApiErrorMessage, formatDateTime } from './authorizationFormatters'
 import {
   buildAuthorizationUserUsageSummaryCards,
   createAuthorizationUsageShowTotal,
@@ -444,7 +461,7 @@ const {
   fetchPage: fetchUserUsagePage,
   onError: (error) => {
     console.error(error)
-    rowsError.value = '加载用户消耗明细失败'
+    rowsError.value = extractApiErrorMessage(error, '加载用户消耗明细失败')
   },
   requestSignature: () => [currentUsageSignature(), requestEpoch.value]
 })
@@ -526,7 +543,7 @@ async function loadUsageSummary() {
   } catch (error) {
     if (requestGate.isCurrent(requestToken, currentUsageSignature())) {
       console.error(error)
-      summaryError.value = '加载用户消耗汇总失败'
+      summaryError.value = extractApiErrorMessage(error, '加载用户消耗汇总失败')
     }
   } finally {
     if (requestGate.isCurrent(requestToken, currentUsageSignature())) summaryLoading.value = false
@@ -762,5 +779,20 @@ onBeforeUnmount(() => requestGate.deactivate())
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.authorization-usage-error-alert {
+  margin-bottom: 12px;
+}
+
+.authorization-usage-error-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.authorization-usage-error-text {
+  min-width: 0;
 }
 </style>

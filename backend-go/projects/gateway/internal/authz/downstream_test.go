@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -154,9 +155,13 @@ func TestCreateResyncsQuotaScopeBindingsWithoutHealthFanout(t *testing.T) {
 	seedPhysicalAccount(t, f, "res-1", "owner")
 	seedGranteeDefaultGroup(t, f, "grantee", "unknown_provider")
 	// A team grantee carries a second member so the team binding branch runs.
+	// Both members keep an enabled default group for the source provider
+	// (设计 :257): the team account fanout provisions per member against it and
+	// fails the whole create when it is missing.
 	f.seedAccount(t, "member", "active")
 	f.seedTeamWithMember(t, "team-1", "grantee")
 	f.seedTeamWithMember(t, "team-1", "member")
+	seedGranteeDefaultGroup(t, f, "member", "unknown_provider")
 
 	limits := hourlyLimits(6)
 	result, err := f.store.Create(context.Background(), CreateInput{
@@ -201,20 +206,31 @@ func TestCreateResyncsQuotaScopeBindingsWithoutHealthFanout(t *testing.T) {
 		t.Fatal(err)
 	}
 	teamBindings := countGrantBindings(t, f, teamResult.Item.ID)
-	// One direct binding per member runtime plus the team-scope binding for the
-	// grantee's authorization instance (the member has no instance row, so its
-	// team binding is skipped exactly like the Node instance join).
-	if len(teamBindings) != 3 {
-		t.Fatalf("team grant bindings = %+v, want two member rows + one team row", teamBindings)
+	// One direct binding per member runtime plus the team-scope binding for
+	// each member's authorization instance: the grantee reuses the instance
+	// from the direct create above, the member gets its own through the team
+	// fanout provisioning (设计 :257 default-group binding).
+	if len(teamBindings) != 4 {
+		t.Fatalf("team grant bindings = %+v, want two member rows + two team rows", teamBindings)
 	}
-	var team *scopeBinding
+	var team, memberTeam *scopeBinding
 	for i := range teamBindings {
-		if teamBindings[i].scopeType == "account_authorization_team" {
+		if teamBindings[i].scopeType != "account_authorization_team" {
+			continue
+		}
+		switch teamBindings[i].systemAccountID {
+		case "grantee":
 			team = &teamBindings[i]
+		case "member":
+			memberTeam = &teamBindings[i]
 		}
 	}
-	if team == nil || team.scopeID != provisionedInstanceID+":team-1" || team.systemAccountID != "grantee" || team.windowHours != 6 {
-		t.Fatalf("team binding = %+v", teamBindings)
+	if team == nil || team.scopeID != provisionedInstanceID+":team-1" || team.windowHours != 6 {
+		t.Fatalf("grantee team binding = %+v", teamBindings)
+	}
+	if memberTeam == nil || !strings.HasSuffix(memberTeam.scopeID, ":team-1") ||
+		strings.HasPrefix(memberTeam.scopeID, provisionedInstanceID+":") {
+		t.Fatalf("member team binding = %+v", teamBindings)
 	}
 
 	// A grant without hourly limits renders no bindings at all.

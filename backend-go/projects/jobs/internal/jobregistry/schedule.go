@@ -197,11 +197,9 @@ func schedules() map[string]Schedule {
 			PassiveJitter: true, OverlapCoalesce: true, Lane: "stats-heavy", Timeout: 10 * minute,
 			BackoffBase: minute, BackoffMax: 30 * minute, LeaseTTL: 15 * minute,
 		},
-		"authorization-usage-range-windows-refresh": {
-			Interval: coldRangeInterval, InitialDelay: 43 * minute, StablePhaseWindow: 30 * second,
-			PassiveJitter: true, OverlapCoalesce: true, Lane: "stats-heavy", Timeout: 10 * minute,
-			BackoffBase: minute, BackoffMax: 30 * minute, LeaseTTL: 15 * minute,
-		},
+		// authorization-usage-range-windows-refresh 已按设计消灭，无调度参数：
+		// 授权消耗明细读端按日范围直读 authorization_*_usage_summary_daily，
+		// 范围窗口表不再刷新。
 		// 配额小时窗刷新（BUG-0175 D-48 族）：归档未保留 background-jobs.ts
 		// 的原始 scheduler.schedule 实参，参数对齐窗口刷新族惯例放宽：
 		// interval=5min（对齐 usage-overview-windows-refresh 的热窗口节拍，

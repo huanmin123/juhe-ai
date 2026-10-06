@@ -1,6 +1,6 @@
-// Store-level replay tests for the authorization usage window reads and the
-// revoke owner scope (BUG-0165): window rows are inserted verbatim and the
-// aggregated reads are asserted against the Node
+// Store-level replay tests for the authorization usage reads and the revoke
+// owner scope (BUG-0165): daily summary rows are inserted verbatim and the
+// range-aggregated reads are asserted against the Node
 // authorization-usage.repository.ts behavior (scope key, stable ordering,
 // pagination upper bound, zero-value summaries, timezone window defaults).
 package authz
@@ -59,6 +59,71 @@ const usageFixtureDDL = `
 		last_used_at TEXT,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
+	);
+	CREATE TABLE IF NOT EXISTS authorization_team_usage_summary_daily (
+		system_account_id TEXT NOT NULL,
+		stat_date TEXT NOT NULL,
+		team_filter_id TEXT NOT NULL DEFAULT '',
+		resource_filter_type TEXT NOT NULL DEFAULT 'all',
+		resource_filter_id TEXT NOT NULL DEFAULT '',
+		row_count INTEGER NOT NULL DEFAULT 0,
+		request_count INTEGER NOT NULL DEFAULT 0,
+		success_count INTEGER NOT NULL DEFAULT 0,
+		error_count INTEGER NOT NULL DEFAULT 0,
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+		thinking_tokens INTEGER NOT NULL DEFAULT 0,
+		input_image_tokens INTEGER NOT NULL DEFAULT 0,
+		output_image_tokens INTEGER NOT NULL DEFAULT 0,
+		total_cost_usd REAL NOT NULL DEFAULT 0,
+		duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+		duration_ms_count INTEGER NOT NULL DEFAULT 0,
+		duration_ms_max INTEGER NOT NULL DEFAULT 0,
+		first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+		first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+		first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+		last_used_at TEXT,
+		last_error_at TEXT,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id)
+	);
+	CREATE TABLE IF NOT EXISTS authorization_user_usage_summary_daily (
+		system_account_id TEXT NOT NULL,
+		stat_date TEXT NOT NULL,
+		team_filter_id TEXT NOT NULL DEFAULT '',
+		grantee_filter_system_account_id TEXT NOT NULL DEFAULT '',
+		resource_filter_type TEXT NOT NULL DEFAULT 'all',
+		resource_filter_id TEXT NOT NULL DEFAULT '',
+		row_count INTEGER NOT NULL DEFAULT 0,
+		request_count INTEGER NOT NULL DEFAULT 0,
+		success_count INTEGER NOT NULL DEFAULT 0,
+		error_count INTEGER NOT NULL DEFAULT 0,
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_cost_usd REAL NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_write_cost_usd REAL NOT NULL DEFAULT 0,
+		thinking_tokens INTEGER NOT NULL DEFAULT 0,
+		input_image_tokens INTEGER NOT NULL DEFAULT 0,
+		output_image_tokens INTEGER NOT NULL DEFAULT 0,
+		total_cost_usd REAL NOT NULL DEFAULT 0,
+		duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+		duration_ms_count INTEGER NOT NULL DEFAULT 0,
+		duration_ms_max INTEGER NOT NULL DEFAULT 0,
+		first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+		first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+		first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+		last_used_at TEXT,
+		last_error_at TEXT,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
 	);
 	CREATE TABLE IF NOT EXISTS usage_scope_range_windows (
 		system_account_id TEXT NOT NULL,
@@ -141,6 +206,34 @@ func insertUserWindowRow(t *testing.T, f *fixture, systemAccountID, teamID, gran
 	}
 }
 
+// insertTeamDailyRow seeds one authorization_team_usage_summary_daily row
+// (writer shape: per-day per-filter-tier aggregate, owner + global dimension
+// rows are plain system_account_id values).
+func insertTeamDailyRow(t *testing.T, f *fixture, systemAccountID, statDate, teamID, resourceType, resourceID string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
+	t.Helper()
+	_, err := f.db.Exec(`INSERT INTO authorization_team_usage_summary_daily
+		(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
+		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
+		systemAccountID, statDate, teamID, resourceType, resourceID, requestCount, inputTokens, outputTokens, totalCost, lastUsedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// insertUserDailyRow seeds one authorization_user_usage_summary_daily row.
+func insertUserDailyRow(t *testing.T, f *fixture, systemAccountID, statDate, teamID, granteeID, resourceType, resourceID string, requestCount, inputTokens, outputTokens, totalCost float64, lastUsedAt any) {
+	t.Helper()
+	_, err := f.db.Exec(`INSERT INTO authorization_user_usage_summary_daily
+		(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
+		 request_count, input_tokens, output_tokens, total_cost_usd, last_used_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-09-06T00:00:00.000Z')`,
+		systemAccountID, statDate, teamID, granteeID, resourceType, resourceID, requestCount, inputTokens, outputTokens, totalCost, lastUsedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func decodeUsageJSON(t *testing.T, payload []byte) map[string]any {
 	t.Helper()
 	var doc map[string]any
@@ -150,11 +243,11 @@ func decodeUsageJSON(t *testing.T, payload []byte) map[string]any {
 	return doc
 }
 
-// TestUsageWindowTeamReadsReplay replays the team window family: scope keys
+// TestUsageTeamReadsReplay replays the team usage read family: scope keys
 // (global for unscoped admins, filter for scoped admins, self for users),
-// cost-desc stable ordering, pagination upper bound and the precise summary
-// row lookup with the zero-value fallback.
-func TestUsageWindowTeamReadsReplay(t *testing.T) {
+// cost-desc stable ordering, pagination upper bound and the summary fold with
+// the zero-value fallback.
+func TestUsageTeamReadsReplay(t *testing.T) {
 	f := newUsageFixture(t)
 	f.seedTeamWithMember(t, "team_cheap", "member1")
 	f.seedTeamWithMember(t, "team_pricey", "member2")
@@ -163,15 +256,15 @@ func TestUsageWindowTeamReadsReplay(t *testing.T) {
 	f.seedGroup(t, "grp1", "owner1")
 	seedResourceAccount(t, f, "acc1", "owner1", "Account acc1")
 	seedResourceAccount(t, f, "acc2", "owner2", "Account acc2")
-	// Window rows mirror the writer shape (usage-stats-authorization-daily-writer.ts
+	// Daily rows mirror the writer shape (usage-stats-authorization-daily-writer.ts
 	// authorizationReportScopeRows): owner rows plus the identical global
 	// copy; team_filter_id carries the team source and the empty team id marks
 	// direct grants (excluded from the team report by `team_filter_id <> ''`).
-	insertTeamWindowRow(t, f, "owner1", "team_cheap", "account", "acc1", 10, 100, 50, 1.5, "2026-09-06T01:00:00.000Z")
-	insertTeamWindowRow(t, f, "owner1", "team_pricey", "group", "grp1", 5, 200, 20, 2.5, "2026-09-06T02:00:00.000Z")
-	insertTeamWindowRow(t, f, "owner1", "", "account", "acc1", 77, 1, 1, 9.9, "2026-09-06T06:00:00.000Z")
-	insertTeamWindowRow(t, f, "owner2", "team_other", "account", "acc2", 99, 1, 1, 9.9, "2026-09-06T03:00:00.000Z")
-	insertTeamWindowRow(t, f, "global", "team_pricey", "group", "grp1", 15, 300, 70, 4.0, "2026-09-06T04:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner1", "2026-09-01", "team_cheap", "account", "acc1", 10, 100, 50, 1.5, "2026-09-06T01:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner1", "2026-09-01", "team_pricey", "group", "grp1", 5, 200, 20, 2.5, "2026-09-06T02:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner1", "2026-09-01", "", "account", "acc1", 77, 1, 1, 9.9, "2026-09-06T06:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner2", "2026-09-01", "team_other", "account", "acc2", 99, 1, 1, 9.9, "2026-09-06T03:00:00.000Z")
+	insertTeamDailyRow(t, f, "global", "2026-09-01", "team_pricey", "group", "grp1", 15, 300, 70, 4.0, "2026-09-06T04:00:00.000Z")
 	rng := UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06", Days: 31, MaxDays: 31}
 	ctx := context.Background()
 
@@ -265,8 +358,8 @@ func TestUsageWindowTeamReadsReplay(t *testing.T) {
 		t.Fatalf("resource rows = %+v", resource.Rows)
 	}
 
-	// Summary reads the exact pre-aggregated row (the same (owner, window,
-	// team, resource) key Node uses).
+	// Summary folds the daily rows of the exact (owner, window, team,
+	// resource) key Node uses.
 	summary, err := f.store.teamUsageSummary(ctx, UsageFilters{TeamID: "team_cheap", ResourceType: "account", ResourceID: "acc1"}, accessInfo{ViewerID: "admin", IsAdmin: true, FilterID: "owner1"}, rng)
 	if err != nil {
 		t.Fatal(err)
@@ -290,11 +383,11 @@ func TestUsageWindowTeamReadsReplay(t *testing.T) {
 	}
 }
 
-// TestUsageWindowUserReadsReplay replays the user window family: the team
+// TestUsageUserReadsReplay replays the user usage read family: the team
 // filter matches unconditionally (the empty team_filter_id rows), the grantee
 // filter is optional, and the projections carry the member principal and the
 // resource owner name.
-func TestUsageWindowUserReadsReplay(t *testing.T) {
+func TestUsageUserReadsReplay(t *testing.T) {
 	f := newUsageFixture(t)
 	f.seedAccount(t, "owner1", "active")
 	f.seedAccount(t, "grantee1", "active")
@@ -303,9 +396,9 @@ func TestUsageWindowUserReadsReplay(t *testing.T) {
 	seedResourceAccount(t, f, "acc1", "owner1", "Account acc1")
 	// Direct rows carry the empty team_filter_id and are the only ones the
 	// unfiltered user report matches (`report.team_filter_id = ''`).
-	insertUserWindowRow(t, f, "owner1", "", "grantee1", "account", "acc1", 7, 70, 35, 0.7, "2026-09-06T05:00:00.000Z")
-	insertUserWindowRow(t, f, "owner1", "team_1", "grantee1", "group", "grp1", 3, 30, 15, 0.3, nil)
-	insertUserWindowRow(t, f, "owner2", "", "grantee9", "account", "acc9", 42, 1, 1, 9.9, nil)
+	insertUserDailyRow(t, f, "owner1", "2026-09-01", "", "grantee1", "account", "acc1", 7, 70, 35, 0.7, "2026-09-06T05:00:00.000Z")
+	insertUserDailyRow(t, f, "owner1", "2026-09-01", "team_1", "grantee1", "group", "grp1", 3, 30, 15, 0.3, nil)
+	insertUserDailyRow(t, f, "owner2", "2026-09-01", "", "grantee9", "account", "acc9", 42, 1, 1, 9.9, nil)
 	rng := UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06", Days: 31, MaxDays: 31}
 	ctx := context.Background()
 
@@ -386,6 +479,127 @@ func TestUsageWindowUserReadsReplay(t *testing.T) {
 	// Unscoped admins read the 'global' key only: owner2's row never leaks.
 	if globalSummary.Summary.RequestCount != 0 {
 		t.Fatalf("global user summary = %+v", globalSummary.Summary)
+	}
+}
+
+// TestUsageDailyRangeAggregation pins the direct daily-summary aggregation:
+// an arbitrary custom range inside the 31-day clamp folds the per-day rows
+// (SUM for counters and cost, MAX for last_used_at) — the shape that returned
+// empty on the materialized-window path — while the no-team summary keeps
+// reading the team_filter_id='' cross-team rows, the details keep excluding
+// them, and the three resource filter tiers keep their semantics.
+func TestUsageDailyRangeAggregation(t *testing.T) {
+	f := newUsageFixture(t)
+	f.seedTeamWithMember(t, "team_daily", "member1")
+	f.seedAccount(t, "owner1", "active")
+	f.seedAccount(t, "grantee1", "active")
+	f.seedGroup(t, "grp_daily", "owner1")
+	seedResourceAccount(t, f, "acc_daily", "owner1", "Account acc_daily")
+	// Two days for the same (team, resource) key, direct-grant rows (empty
+	// team), the 'all' resource tier and the cross-team total rows. Costs pick
+	// binary-exact values so SUM stays exact.
+	insertTeamDailyRow(t, f, "owner1", "2026-09-02", "team_daily", "account", "acc_daily", 2, 20, 10, 0.25, "2026-09-02T01:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner1", "2026-09-03", "team_daily", "account", "acc_daily", 3, 30, 15, 0.5, "2026-09-03T05:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner1", "2026-09-03", "", "account", "acc_daily", 9, 90, 45, 0.875, "2026-09-03T06:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner1", "2026-09-03", "team_daily", "all", "", 5, 50, 25, 0.5, "2026-09-03T07:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner1", "2026-09-02", "", "all", "", 12, 120, 60, 1.25, "2026-09-02T08:00:00.000Z")
+	insertTeamDailyRow(t, f, "owner1", "2026-09-03", "", "all", "", 8, 80, 40, 0.75, "2026-09-03T08:00:00.000Z")
+	insertUserDailyRow(t, f, "owner1", "2026-09-02", "", "grantee1", "account", "acc_daily", 4, 40, 20, 0.25, "2026-09-02T02:00:00.000Z")
+	insertUserDailyRow(t, f, "owner1", "2026-09-03", "", "grantee1", "account", "acc_daily", 6, 60, 30, 0.5, "2026-09-03T03:00:00.000Z")
+	rng := UsageStatsRange{StartDate: "2026-09-02", EndDate: "2026-09-03", Days: 2, MaxDays: 31}
+	access := accessInfo{ViewerID: "admin", IsAdmin: true, FilterID: "owner1"}
+	ctx := context.Background()
+
+	// Custom-range team details: the two daily rows fold into one display row
+	// with summed counters and the later last_used_at; the 'all' tier and the
+	// empty-team rows stay out of the details.
+	details, err := f.store.teamUsageRows(ctx, UsageFilters{}, access, rng, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details.Rows) != 1 || details.Rows[0].TeamID != "team_daily" || details.Rows[0].ResourceID != "acc_daily" {
+		t.Fatalf("custom range details = %+v", details.Rows)
+	}
+	if details.Rows[0].Usage.RequestCount != 5 || details.Rows[0].Usage.TotalTokens != 75 || details.Rows[0].Usage.TotalCost != 0.75 {
+		t.Fatalf("custom range usage = %+v", details.Rows[0].Usage)
+	}
+	if details.Rows[0].LastUsedAt != "2026-09-03T05:00:00.000Z" {
+		t.Fatalf("custom range lastUsedAt = %q", details.Rows[0].LastUsedAt)
+	}
+
+	// Team summary folds the same two rows.
+	summary, err := f.store.teamUsageSummary(ctx, UsageFilters{TeamID: "team_daily", ResourceType: "account", ResourceID: "acc_daily"}, access, rng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Summary.RequestCount != 5 || summary.Summary.TotalTokens != 75 || summary.Summary.TotalCost != 0.75 ||
+		summary.Summary.LastUsedAt == nil || *summary.Summary.LastUsedAt != "2026-09-03T05:00:00.000Z" {
+		t.Fatalf("custom range summary = %+v", summary.Summary)
+	}
+
+	// No teamId summary reads the cross-team team_filter_id='' rows over both
+	// days (12+8 requests).
+	crossTeam, err := f.store.teamUsageSummary(ctx, UsageFilters{}, access, rng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if crossTeam.Summary.RequestCount != 20 || crossTeam.Summary.TotalCost != 2.0 ||
+		crossTeam.Summary.LastUsedAt == nil || *crossTeam.Summary.LastUsedAt != "2026-09-03T08:00:00.000Z" {
+		t.Fatalf("cross-team summary = %+v", crossTeam.Summary)
+	}
+
+	// Resource tiers on the details: type-only narrows to the type rows,
+	// type+id to that resource, a missing type yields nothing.
+	typeOnly, err := f.store.teamUsageRows(ctx, UsageFilters{ResourceType: "account"}, access, rng, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(typeOnly.Rows) != 1 || typeOnly.Rows[0].ResourceType != "account" || typeOnly.Rows[0].TeamID != "team_daily" {
+		t.Fatalf("type-only rows = %+v", typeOnly.Rows)
+	}
+	groupOnly, err := f.store.teamUsageRows(ctx, UsageFilters{ResourceType: "group"}, access, rng, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groupOnly.Rows) != 0 {
+		t.Fatalf("group-only rows = %+v", groupOnly.Rows)
+	}
+
+	// User details/summary fold the two grantee days the same way.
+	userDetails, err := f.store.userUsageRows(ctx, UsageFilters{}, accessInfo{ViewerID: "owner1"}, rng, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(userDetails.Rows) != 1 || userDetails.Rows[0].ID != "grantee1:account:acc_daily" ||
+		userDetails.Rows[0].Usage.RequestCount != 10 || userDetails.Rows[0].Usage.TotalCost != 0.75 ||
+		userDetails.Rows[0].LastUsedAt != "2026-09-03T03:00:00.000Z" {
+		t.Fatalf("user details = %+v", userDetails.Rows)
+	}
+	userSummary, err := f.store.userUsageSummary(ctx, UsageFilters{GranteeID: "grantee1", ResourceType: "account", ResourceID: "acc_daily"}, accessInfo{ViewerID: "owner1"}, rng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userSummary.Summary.RequestCount != 10 || userSummary.Summary.TotalTokens != 150 || userSummary.Summary.TotalCost != 0.75 {
+		t.Fatalf("user summary = %+v", userSummary.Summary)
+	}
+	// A key with no daily rows folds to the zero summary (former ErrNoRows
+	// fallback).
+	missing, err := f.store.userUsageSummary(ctx, UsageFilters{GranteeID: "grantee_none"}, accessInfo{ViewerID: "owner1"}, rng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Summary.RequestCount != 0 || missing.Summary.TotalCost != 0 || missing.Summary.LastUsedAt != nil {
+		t.Fatalf("missing user summary = %+v", missing.Summary)
+	}
+
+	// A range ending before the seeded days stays empty.
+	early := UsageStatsRange{StartDate: "2026-08-30", EndDate: "2026-08-31", Days: 2, MaxDays: 31}
+	emptyDetails, err := f.store.teamUsageRows(ctx, UsageFilters{}, access, early, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emptyDetails.Rows) != 0 {
+		t.Fatalf("early details = %+v", emptyDetails.Rows)
 	}
 }
 

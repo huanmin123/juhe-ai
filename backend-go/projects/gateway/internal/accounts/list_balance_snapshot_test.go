@@ -203,6 +203,7 @@ func TestMyAccountsAuthorizedInstanceHidesBalanceFields(t *testing.T) {
 	ownerID := env.login(t, "owner1", "owner-pass", "user")
 	memberID := env.login(t, "member1", "member-pass", "user")
 	env.seedAccount(t, "acc-bal-src", ownerID, "余额源账户", "active")
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-bal", ownerID, memberID)
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
 		ResourceType: "account", ResourceID: "acc-bal-src",

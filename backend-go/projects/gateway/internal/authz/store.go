@@ -258,7 +258,11 @@ func (s *Store) buildFilters(filters Filters) (string, []any) {
 			args = append(args, viewer, viewer, viewer)
 		}
 	}
-	// Keyword: prefix match over id/resource_id/remark (codePoint upper bound).
+	// Keyword: prefix match over id/resource_id/remark plus the name
+	// dimensions the list promises (设计 :330: 按资源名称、资源 ID、资源归属人、
+	// 被授权用户、被授权团队和备注前缀检索). Every dimension shares the same
+	// codePoint upper-bound range form as the base columns, so the prefix
+	// semantics and escaping stay identical (no LIKE patterns enter the query).
 	if filters.Keyword != "" {
 		kw := filters.Keyword
 		upper := keywordUpperBound(kw)
@@ -266,8 +270,32 @@ func (s *Store) buildFilters(filters Filters) (string, []any) {
 			g.id >= ? AND g.id < ?
 			OR g.resource_id >= ? AND g.resource_id < ?
 			OR (g.remark IS NOT NULL AND g.remark >= ? AND g.remark < ?)
+			OR (g.resource_type = 'account' AND EXISTS (
+				SELECT 1 FROM `+s.table("accounts")+` ra_src
+				WHERE ra_src.id = g.resource_id AND ra_src.name >= ? AND ra_src.name < ?))
+			OR (g.resource_type = 'group' AND EXISTS (
+				SELECT 1 FROM `+s.table("groups")+` ra_grp
+				WHERE ra_grp.id = g.resource_id AND ra_grp.name >= ? AND ra_grp.name < ?))
+			OR EXISTS (
+				SELECT 1 FROM `+s.table("system_accounts")+` ra_grantee
+				WHERE ra_grantee.id = g.grantee_system_account_id
+					AND ((ra_grantee.display_name >= ? AND ra_grantee.display_name < ?)
+					OR (ra_grantee.username >= ? AND ra_grantee.username < ?)))
+			OR EXISTS (
+				SELECT 1 FROM `+s.table("system_teams")+` ra_team
+				WHERE ra_team.id = g.grantee_team_id AND ra_team.name >= ? AND ra_team.name < ?)
+			OR EXISTS (
+				SELECT 1 FROM `+s.table("system_accounts")+` ra_owner
+				WHERE ra_owner.id = g.resource_owner_system_account_id
+					AND ((ra_owner.display_name >= ? AND ra_owner.display_name < ?)
+					OR (ra_owner.username >= ? AND ra_owner.username < ?)))
 		)`)
-		args = append(args, kw, upper, kw, upper, kw, upper)
+		args = append(args, kw, upper, kw, upper, kw, upper,
+			kw, upper,
+			kw, upper,
+			kw, upper, kw, upper,
+			kw, upper,
+			kw, upper, kw, upper)
 	}
 	return strings.Join(clauses, " AND "), args
 }
@@ -285,9 +313,10 @@ func keywordUpperBound(prefix string) string {
 	return string(runes)
 }
 
-// Summary is the list/detail item shape. Limits is only populated on the
-// create outcome today (Node echoes the normalized limits on create :2448
-// and patch :900-910); list/detail DTO parity is a separate pending slice.
+// Summary is the list/detail item shape. Limits carries the normalized limits
+// echo on the create outcome and the detail reads (BUG-0175 D-126: list rows
+// already serialize limits through the ListItem projection; the detail
+// surfaces follow findSummaryWithLimits the same way).
 type Summary struct {
 	ID            string  `json:"id"`
 	ResourceType  string  `json:"resourceType"`
@@ -422,25 +451,21 @@ func (s *Store) queryGrantRowsPage(ctx context.Context, filters Filters, page, p
 	return items, total, hasMore, nil
 }
 
-// Find mirrors findResourceAuthorizationAsync (status forced to all).
+// Find mirrors findResourceAuthorizationAsync (status forced to all). The
+// detail read fills the normalized limits echo (empty limits render as null)
+// exactly like the mutation reads behind it (BUG-0175 D-126 授权面字段缺失).
 func (s *Store) Find(ctx context.Context, id string) (*Summary, error) {
-	ctx = ensureCtx(ctx)
-	row := s.db.QueryRowContext(ctx, s.bind(`SELECT `+grantColumns+` FROM `+s.table("resource_authorization_grants")+` g WHERE g.id = ?`), id)
-	grant, err := s.scanGrant(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+	summary, limits, err := s.findSummaryWithLimits(ctx, id)
+	if summary != nil {
+		summary.Limits = limits
 	}
-	if err != nil {
-		return nil, err
-	}
-	summary := grant.summary()
-	return &summary, nil
+	return summary, err
 }
 
 // findSummaryWithLimits resolves a grant summary plus its normalized limits
 // echo (Node resourceAuthorizationMutationResult :900-910: empty limits render
-// as null). Only create uses it today; the list/detail DTO parity slice will
-// decide the read surfaces.
+// as null). Create reuses it for the mutation echo; Find shares it so the
+// admin and my-* detail reads keep the same limits parity.
 func (s *Store) findSummaryWithLimits(ctx context.Context, id string) (*Summary, any, error) {
 	ctx = ensureCtx(ctx)
 	row := s.db.QueryRowContext(ctx, s.bind(`SELECT `+grantColumns+` FROM `+s.table("resource_authorization_grants")+` g WHERE g.id = ?`), id)

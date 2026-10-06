@@ -93,23 +93,23 @@ func TestW13g2BadScanArms(t *testing.T) {
 		expectErr("enqueue", enqueueErr)
 	})
 
-	// usage_reads.go：team/user 窗口 scan、summary scan。
-	t.Run("teamWindowScan", func(t *testing.T) {
-		fp.armScan("FROM authorization_team_usage_range_windows")
+	// usage_reads.go：team/user 日摘要区间聚合 scan、summary scan。
+	t.Run("teamDailyScan", func(t *testing.T) {
+		fp.armScan("FROM authorization_team_usage_summary_daily")
 		defer fp.disarm()
 		_, err := s.teamUsageRows(ctx, UsageFilters{ResourceType: "account"}, accessInfo{IsAdmin: true, FilterID: "owner"},
 			UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06"}, 1, 20)
 		expectErr("teamRows", err)
 	})
-	t.Run("userWindowScan", func(t *testing.T) {
-		fp.armScan("FROM authorization_user_usage_range_windows")
+	t.Run("userDailyScan", func(t *testing.T) {
+		fp.armScan("FROM authorization_user_usage_summary_daily")
 		defer fp.disarm()
 		_, err := s.userUsageRows(ctx, UsageFilters{ResourceType: "account"}, accessInfo{IsAdmin: true, FilterID: "owner"},
 			UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06"}, 1, 20)
 		expectErr("userRows", err)
 	})
 	t.Run("usageSummaryScan", func(t *testing.T) {
-		fp.armScan("FROM authorization_team_usage_range_windows")
+		fp.armScan("FROM authorization_team_usage_summary_daily")
 		defer fp.disarm()
 		_, err := s.teamUsageSummary(ctx, UsageFilters{TeamID: "team_bs13"}, accessInfo{IsAdmin: true, FilterID: "owner"},
 			UsageStatsRange{StartDate: "2026-08-08", EndDate: "2026-09-06"})

@@ -386,7 +386,7 @@ func TestAggregateBatchEmptyIdempotentAndCursor(t *testing.T) {
 }
 
 // TestFilterAndAuthorizationDailyGolden：不可聚合行被跳过；带授权字段的行写入
-// 授权摘要日报（authorization-usage-range-windows job 的源表）。
+// 授权摘要日报（授权消耗明细读端的直读数据源）。
 func TestFilterAndAuthorizationDailyGolden(t *testing.T) {
 	env := newTestEnv(t)
 	// 非法 access_type → shouldAggregate=false → 无聚合行。
@@ -560,29 +560,9 @@ func TestWindowStagesGolden(t *testing.T) {
 			WHERE system_account_id='alice' AND scope_type='account' AND start_date='2026-04-18' AND end_date='2026-04-18'`),
 		4, 1)
 
-	// authorization-usage-range-windows-refresh。
-	env.exec(`INSERT INTO authorization_team_usage_summary_daily (system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id,
-		request_count, input_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES ('owner-1','2026-04-18','','all','',6,60,0.6,'2026-04-18T09:00:00.000Z','2026-04-18T09:00:00.000Z'),
-		       ('owner-1','2026-04-18','team-7','account','acc-3',2,20,0.2,'2026-04-18T09:00:00.000Z','2026-04-18T09:00:00.000Z'),
-		       ('owner-1','2026-04-17','','all','',1,10,0.1,'2026-04-17T09:00:00.000Z','2026-04-18T09:00:00.000Z')`)
-	env.exec(`INSERT INTO authorization_user_usage_summary_daily (system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
-		request_count, input_tokens, total_cost_usd, last_used_at, updated_at)
-		VALUES ('owner-1','2026-04-18','','grantee-9','all','',3,30,0.3,'2026-04-18T09:00:00.000Z','2026-04-18T09:00:00.000Z')`)
-	if _, err := refresher.RunStages(context.Background(), []WindowStageName{StageAuthorizationUsageRangeWindows}, RefreshOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	env.assertFloats("auth team range 7d",
-		env.queryRowFloats(`SELECT request_count, input_tokens, total_cost_usd FROM authorization_team_usage_range_windows
-			WHERE system_account_id='owner-1' AND start_date='2026-04-12' AND end_date='2026-04-18' AND team_filter_id='' AND resource_filter_type='all'`),
-		7, 70, 0.7)
-	env.assertFloats("auth team range today rows",
-		env.queryRowFloats(`SELECT COUNT(*) FROM authorization_team_usage_range_windows WHERE start_date='2026-04-18' AND end_date='2026-04-18'`),
-		2)
-	env.assertFloats("auth user range 7d",
-		env.queryRowFloats(`SELECT request_count FROM authorization_user_usage_range_windows
-			WHERE system_account_id='owner-1' AND start_date='2026-04-12' AND end_date='2026-04-18' AND grantee_filter_system_account_id='grantee-9'`),
-		3)
+	// authorization-usage-range-windows-refresh 已停用：授权消耗明细改为按日
+	// 范围直读 authorization_*_usage_summary_daily（gateway usage_reads.go），
+	// 该 stage 不再注册，窗口表不再刷新。
 
 	// ai-performance-summary-windows-refresh（scope_type='account' 聚合）。
 	if _, err := refresher.RunStages(context.Background(), []WindowStageName{StageAiPerformanceSummaryWindows}, RefreshOptions{}); err != nil {

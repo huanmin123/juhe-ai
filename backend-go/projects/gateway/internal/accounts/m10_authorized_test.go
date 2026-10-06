@@ -114,6 +114,7 @@ func TestMyAccountsAuthorizedInstanceVisibility(t *testing.T) {
 	memberID := env.login(t, "member1", "member-pass", "user")
 	env.login(t, "outsider1", "outsider-pass", "user")
 	env.seedAccount(t, "acc-src", ownerID, "源账户", "active")
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-m10", ownerID, memberID)
 
 	grant, err := authzStore.Create(context.Background(), authz.CreateInput{
@@ -220,6 +221,7 @@ func TestAccountsAdminSurfaceIgnoresAuthorizedProjection(t *testing.T) {
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	memberID := env.login(t, "member2", "member-pass", "user")
 	env.seedAccount(t, "acc-admin-src", adminID, "管理员账户", "active")
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-admin", adminID, memberID)
 
 	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
@@ -274,6 +276,8 @@ func TestMyAccountsTeamMembersSeeOnlyOwnInstances(t *testing.T) {
 	memberAID := env.login(t, "memberA", "member-pass", "user")
 	memberBID := env.login(t, "memberB", "member-pass", "user")
 	env.seedAccount(t, "acc-team-src", ownerID, "团队源账户", "active")
+	env.seedProviderAndDefaultGroup(t, memberAID)
+	env.seedProviderAndDefaultGroup(t, memberBID)
 	env.seedTeamMember(t, "team-pair", ownerID, memberAID)
 	env.seedTeamMemberRow(t, "team-pair", memberBID)
 
@@ -360,6 +364,7 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	memberID := env.login(t, "member5", "member-pass", "user")
 	manualID := env.login(t, "manual5", "manual-pass", "user")
 	env.seedAccount(t, "acc-proj-src", ownerID, "投影源账户", "active")
+	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-proj", ownerID, memberID)
 
 	// Team grant: the member's runtime row carries effective_source_type='team'
